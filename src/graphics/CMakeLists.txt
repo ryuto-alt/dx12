@@ -4,6 +4,11 @@ add_library(Graphics STATIC
     SwapChain.cpp
     DescriptorHeap.cpp
     FrameResources.cpp
+    GpuResource.cpp
+    Buffer.cpp
+    RootSignature.cpp
+    PipelineState.cpp
+    CommandList.cpp
 )
 
 target_include_directories(Graphics

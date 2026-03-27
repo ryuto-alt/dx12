@@ -5,6 +5,8 @@
 #include "GameClock.h"
 
 #include <memory>
+#include <wrl/client.h>
+#include <directx/d3d12.h>
 
 // Forward declarations for graphics module
 namespace dx12e
@@ -14,6 +16,12 @@ namespace dx12e
     class SwapChain;
     class FrameResources;
     class DescriptorHeap;
+    class RootSignature;
+    class PipelineState;
+    class CommandList;
+    class ConstantBuffer;
+    class Mesh;
+    class Camera;
 }
 
 namespace dx12e
@@ -41,9 +49,18 @@ private:
     std::unique_ptr<CommandQueue>   m_commandQueue;
     std::unique_ptr<SwapChain>      m_swapChain;
     std::unique_ptr<FrameResources> m_frameResources;
-    std::unique_ptr<DescriptorHeap> m_descriptorHeap;
-    GameClock                       m_gameClock;
-    bool                            m_isRunning = false;
+    std::unique_ptr<DescriptorHeap>    m_descriptorHeap;
+    std::unique_ptr<DescriptorHeap>    m_dsvHeap;
+    std::unique_ptr<RootSignature>     m_rootSignature;
+    std::unique_ptr<PipelineState>     m_pipelineState;
+    std::unique_ptr<Mesh>              m_boxMesh;
+    std::unique_ptr<Camera>            m_camera;
+    std::unique_ptr<ConstantBuffer>    m_perFrameCB;
+    std::unique_ptr<CommandList>       m_commandList;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_depthBuffer;
+    D3D12_CPU_DESCRIPTOR_HANDLE        m_dsvHandle{};
+    GameClock                          m_gameClock;
+    bool                               m_isRunning = false;
 };
 
 } // namespace dx12e
