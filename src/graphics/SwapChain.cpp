@@ -58,7 +58,7 @@ void SwapChain::Present(bool vsync)
     m_currentFrameIndex = m_swapChain->GetCurrentBackBufferIndex();
 }
 
-void SwapChain::Resize(u32 width, u32 height, DescriptorHeap& rtvHeap)
+void SwapChain::Resize(u32 width, u32 height, DescriptorHeap& /*rtvHeap*/)
 {
     // バックバッファの参照を解放
     for (auto& buffer : m_backBuffers)
@@ -75,10 +75,14 @@ void SwapChain::Resize(u32 width, u32 height, DescriptorHeap& rtvHeap)
 
     m_currentFrameIndex = m_swapChain->GetCurrentBackBufferIndex();
 
-    // ID3D12Deviceを取得してRTV再作成
+    // バックバッファ再取得 + 既存RTVハンドルにRTV上書き作成
     ComPtr<ID3D12Device> device;
     ThrowIfFailed(m_swapChain->GetDevice(IID_PPV_ARGS(&device)));
-    CreateRenderTargetViews(device.Get(), rtvHeap);
+    for (u32 i = 0; i < kFrameCount; ++i)
+    {
+        ThrowIfFailed(m_swapChain->GetBuffer(i, IID_PPV_ARGS(&m_backBuffers[i])));
+        device->CreateRenderTargetView(m_backBuffers[i].Get(), nullptr, m_rtvHandles[i]);
+    }
 
     Logger::Info("SwapChain resized ({}x{})", width, height);
 }

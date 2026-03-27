@@ -290,6 +290,55 @@ void Application::Run()
         if (m_window->ShouldClose())
             break;
 
+        // リサイズ処理
+        if (m_window->WasResized())
+        {
+            m_window->ResetResizedFlag();
+            u32 w = m_window->GetWidth();
+            u32 h = m_window->GetHeight();
+            if (w > 0 && h > 0)
+            {
+                m_commandQueue->WaitIdle();
+                m_swapChain->Resize(w, h, *m_descriptorHeap);
+
+                // デプスバッファ再作成
+                m_depthBuffer.Reset();
+                D3D12_RESOURCE_DESC depthDesc{};
+                depthDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+                depthDesc.Width = w;
+                depthDesc.Height = h;
+                depthDesc.DepthOrArraySize = 1;
+                depthDesc.MipLevels = 1;
+                depthDesc.Format = DXGI_FORMAT_D32_FLOAT;
+                depthDesc.SampleDesc = {1, 0};
+                depthDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+                D3D12_CLEAR_VALUE clearValue{};
+                clearValue.Format = DXGI_FORMAT_D32_FLOAT;
+                clearValue.DepthStencil = {1.0f, 0};
+
+                D3D12_HEAP_PROPERTIES heapProps{};
+                heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+                ThrowIfFailed(m_graphicsDevice->GetDevice()->CreateCommittedResource(
+                    &heapProps, D3D12_HEAP_FLAG_NONE,
+                    &depthDesc, D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                    &clearValue, IID_PPV_ARGS(&m_depthBuffer)));
+
+                D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc{};
+                dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
+                dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+                m_graphicsDevice->GetDevice()->CreateDepthStencilView(
+                    m_depthBuffer.Get(), &dsvDesc, m_dsvHandle);
+
+                // カメラアスペクト比更新
+                m_camera->SetPerspective(DirectX::XM_PIDIV4,
+                    static_cast<f32>(w) / static_cast<f32>(h), 0.1f, 1000.0f);
+
+                Logger::Info("Resized to {}x{}", w, h);
+            }
+        }
+
         m_gameClock.Tick();
         Update();
         Render();

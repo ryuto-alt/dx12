@@ -22,6 +22,7 @@ public:
                     const wchar_t* title = L"DX12 Engine");
 
     bool ProcessMessages();
+    void ToggleFullscreen();
 
     HWND         GetHwnd() const { return m_hwnd; }
     u32          GetWidth() const { return m_width; }
@@ -29,6 +30,7 @@ public:
     bool         ShouldClose() const { return m_shouldClose; }
     bool         WasResized() const { return m_resized; }
     void         ResetResizedFlag() { m_resized = false; }
+    bool         IsFullscreen() const { return m_fullscreen; }
 
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -39,6 +41,8 @@ private:
     std::wstring m_title = L"DX12 Engine";
     bool         m_shouldClose = false;
     bool         m_resized = false;
+    bool         m_fullscreen = false;
+    RECT         m_windowedRect = {};  // フルスクリーン前のウィンドウ位置・サイズ保存
 };
 
 } // namespace dx12e
