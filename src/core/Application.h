@@ -30,6 +30,7 @@ namespace dx12e
     class AnimationClip;
     class Animator;
     class SkinningBuffer;
+    class ImGuiManager;
 }
 
 namespace dx12e
@@ -66,8 +67,11 @@ private:
     std::vector<std::unique_ptr<Mesh>>     m_modelMeshes;
     std::vector<std::unique_ptr<Material>> m_modelMaterials;
     std::unique_ptr<Skeleton>          m_skeleton;
-    std::unique_ptr<AnimationClip>     m_animClip;
+    std::vector<std::unique_ptr<AnimationClip>> m_animClips;
     std::unique_ptr<Animator>          m_animator;
+    std::unique_ptr<ImGuiManager>      m_imguiManager;
+    i32                                m_currentAnimIndex = 0;
+    float                              m_blendSpeed = 0.3f;
     std::unique_ptr<SkinningBuffer>    m_skinningBuffer;
     std::unique_ptr<PipelineState>     m_skinnedPipelineState;
     std::unique_ptr<Camera>            m_camera;

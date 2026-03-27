@@ -24,6 +24,12 @@
 #include "animation/AnimationClip.h"
 #include "animation/Animator.h"
 #include "animation/SkinningBuffer.h"
+#include "gui/ImGuiManager.h"
+
+#pragma warning(push)
+#pragma warning(disable: 4100 4189 4201 4244 4267 4996)
+#include <imgui.h>
+#pragma warning(pop)
 
 #include <directx/d3d12.h>
 #include <DirectXMath.h>
@@ -176,7 +182,11 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow)
 
             // スケルトン・アニメーション取得
             m_skeleton = std::move(modelData.skeleton);
-            m_animClip = std::move(modelData.animClip);
+            for (auto& clip : modelData.animClips)
+            {
+                clip->SetName("walk");
+                m_animClips.push_back(std::move(clip));
+            }
         }
         else
         {
@@ -215,9 +225,24 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow)
             m_skinnedPipelineState = std::make_unique<PipelineState>();
             m_skinnedPipelineState->Initialize(*m_graphicsDevice, builder);
 
+            // sneakWalk アニメーションも読み込み
+            {
+                std::filesystem::path sneakPath = std::string(ASSETS_DIR) + "models/human/sneakWalk.gltf";
+                if (std::filesystem::exists(sneakPath))
+                {
+                    auto extraAnims = ModelLoader::LoadAnimationsFromFile(sneakPath, *m_skeleton);
+                    for (auto& a : extraAnims)
+                    {
+                        a->SetName("sneakWalk");
+                        m_animClips.push_back(std::move(a));
+                    }
+                }
+            }
+
             // Animator
             m_animator = std::make_unique<Animator>();
-            m_animator->Initialize(m_skeleton.get(), m_animClip.get());
+            m_animator->Initialize(m_skeleton.get(),
+                m_animClips.empty() ? nullptr : m_animClips[0].get());
             m_animator->SetLooping(true);
 
             // SkinningBuffer
@@ -243,6 +268,12 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow)
 
     // CommandList ラッパー
     m_commandList = std::make_unique<CommandList>();
+
+    // ImGui 初期化
+    m_imguiManager = std::make_unique<ImGuiManager>();
+    m_imguiManager->Initialize(
+        m_window->GetHwnd(), *m_graphicsDevice, m_commandQueue->GetQueue(),
+        *m_srvHeap, m_swapChain->GetFormat(), FrameResources::kFrameCount);
 
     m_isRunning = true;
     Logger::Info("Application initialized successfully");
@@ -277,11 +308,18 @@ void Application::Shutdown()
         m_commandQueue->WaitIdle();
     }
 
+    // ImGui 解放
+    if (m_imguiManager)
+    {
+        m_imguiManager->Shutdown();
+        m_imguiManager.reset();
+    }
+
     // リソース解放（逆順）
     m_skinnedPipelineState.reset();
     m_skinningBuffer.reset();
     m_animator.reset();
-    m_animClip.reset();
+    m_animClips.clear();
     m_skeleton.reset();
     m_commandList.reset();
     m_perFrameCB.reset();
@@ -410,6 +448,37 @@ void Application::Render()
         m_commandList->SetIndexBuffer(mesh->GetIndexBuffer().GetView());
         m_commandList->DrawIndexedInstanced(mesh->GetIndexCount());
     }
+
+    // ---- ImGui フレーム ----
+    m_imguiManager->BeginFrame();
+
+    ImGui::Begin("Animation Controller");
+    ImGui::Text("FPS: %.1f", 1.0f / m_gameClock.GetDeltaTime());
+    ImGui::Separator();
+
+    for (i32 i = 0; i < static_cast<i32>(m_animClips.size()); ++i)
+    {
+        const auto& clip = m_animClips[i];
+        bool selected = (i == m_currentAnimIndex);
+        std::string label = clip->GetName().empty()
+            ? ("Animation " + std::to_string(i))
+            : clip->GetName();
+
+        if (ImGui::Selectable(label.c_str(), selected))
+        {
+            if (i != m_currentAnimIndex)
+            {
+                m_currentAnimIndex = i;
+                m_animator->CrossFadeTo(m_animClips[i].get(), m_blendSpeed);
+            }
+        }
+    }
+
+    ImGui::Separator();
+    ImGui::SliderFloat("Blend Speed", &m_blendSpeed, 0.1f, 1.0f);
+    ImGui::End();
+
+    m_imguiManager->EndFrame(nativeCmdList);
 
     m_commandList->TransitionResource(backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
     m_commandList->Close();

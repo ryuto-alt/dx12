@@ -18,6 +18,8 @@ void Animator::Initialize(const Skeleton* skeleton, const AnimationClip* clip)
     m_skeleton    = skeleton;
     m_clip        = clip;
     m_currentTime = 0.0f;
+    m_nextClip    = nullptr;
+    m_blending    = false;
 
     u32 boneCount = skeleton->GetBoneCount();
     m_skinningMatrices.resize(boneCount);
@@ -28,6 +30,89 @@ void Animator::Initialize(const Skeleton* skeleton, const AnimationClip* clip)
     for (u32 i = 0; i < boneCount; ++i)
     {
         m_skinningMatrices[i] = identity;
+    }
+}
+
+// ---------------------------------------------------------------
+// SetClip - 即座にクリップを切り替え
+// ---------------------------------------------------------------
+void Animator::SetClip(const AnimationClip* clip)
+{
+    m_clip        = clip;
+    m_currentTime = 0.0f;
+    m_blending    = false;
+    m_nextClip    = nullptr;
+}
+
+// ---------------------------------------------------------------
+// CrossFadeTo - ブレンドで切り替え
+// ---------------------------------------------------------------
+void Animator::CrossFadeTo(const AnimationClip* nextClip, float blendDuration)
+{
+    if (!nextClip || nextClip == m_clip)
+    {
+        return;
+    }
+
+    m_nextClip      = nextClip;
+    m_nextTime      = 0.0f;
+    m_blendFactor   = 0.0f;
+    m_blendDuration = blendDuration;
+    m_blending      = true;
+}
+
+// ---------------------------------------------------------------
+// ComputeBoneMatrices - 指定クリップ・時間でスキニング行列を計算
+// ---------------------------------------------------------------
+void Animator::ComputeBoneMatrices(
+    const AnimationClip* clip, float time,
+    std::vector<XMFLOAT4X4>& outMatrices) const
+{
+    u32 boneCount = m_skeleton->GetBoneCount();
+    outMatrices.resize(boneCount);
+
+    std::vector<XMMATRIX> globalMatrices(boneCount);
+
+    for (u32 i = 0; i < boneCount; ++i)
+    {
+        const BoneNode& bone = m_skeleton->GetBone(i);
+        const BoneTrack* track = clip->FindTrackForBone(i);
+
+        XMMATRIX localMatrix;
+
+        if (track)
+        {
+            XMFLOAT3 pos   = InterpolatePosition(track->positionKeys, time);
+            XMFLOAT4 rot   = InterpolateRotation(track->rotationKeys, time);
+            XMFLOAT3 scale = InterpolateScale(track->scaleKeys, time);
+
+            XMMATRIX S = XMMatrixScalingFromVector(XMLoadFloat3(&scale));
+            XMMATRIX R = XMMatrixRotationQuaternion(XMLoadFloat4(&rot));
+            XMMATRIX T = XMMatrixTranslationFromVector(XMLoadFloat3(&pos));
+
+            localMatrix = S * R * T;
+        }
+        else
+        {
+            localMatrix = XMLoadFloat4x4(&bone.localBindPose);
+        }
+
+        if (bone.parentIndex >= 0)
+        {
+            globalMatrices[i] = localMatrix * globalMatrices[static_cast<u32>(bone.parentIndex)];
+        }
+        else
+        {
+            globalMatrices[i] = localMatrix;
+        }
+    }
+
+    for (u32 i = 0; i < boneCount; ++i)
+    {
+        const BoneNode& bone = m_skeleton->GetBone(i);
+        XMMATRIX invBind = XMLoadFloat4x4(&bone.inverseBindPose);
+        XMMATRIX skinning = invBind * globalMatrices[i];
+        XMStoreFloat4x4(&outMatrices[i], XMMatrixTranspose(skinning));
     }
 }
 
@@ -47,7 +132,7 @@ void Animator::Update(float deltaTime)
         return;
     }
 
-    // 1. 時間を進める（秒 → ticks に変換）
+    // 現在のクリップの時間を進める
     m_currentTime += deltaTime * m_clip->GetTicksPerSecond();
     if (m_looping)
     {
@@ -62,59 +147,68 @@ void Animator::Update(float deltaTime)
         m_currentTime = std::clamp(m_currentTime, 0.0f, duration);
     }
 
-    u32 boneCount = m_skeleton->GetBoneCount();
-    std::vector<XMMATRIX> globalMatrices(boneCount);
-
-    // 2-4. 各ボーンのローカル変換を計算してグローバル行列を組み立てる
-    for (u32 i = 0; i < boneCount; ++i)
+    if (m_blending && m_nextClip)
     {
-        const BoneNode& bone = m_skeleton->GetBone(i);
-        const BoneTrack* track = m_clip->FindTrackForBone(i);
-
-        XMMATRIX localMatrix;
-
-        if (track)
+        // ブレンド先の時間を進める
+        m_nextTime += deltaTime * m_nextClip->GetTicksPerSecond();
+        float nextDuration = m_nextClip->GetDuration();
+        if (nextDuration > 0.0f && m_looping)
         {
-            // キーフレーム補間でローカルTRSを計算
-            XMFLOAT3 pos   = InterpolatePosition(track->positionKeys, m_currentTime);
-            XMFLOAT4 rot   = InterpolateRotation(track->rotationKeys, m_currentTime);
-            XMFLOAT3 scale = InterpolateScale(track->scaleKeys, m_currentTime);
+            m_nextTime = std::fmod(m_nextTime, nextDuration);
+            if (m_nextTime < 0.0f)
+            {
+                m_nextTime += nextDuration;
+            }
+        }
 
-            XMMATRIX S = XMMatrixScalingFromVector(XMLoadFloat3(&scale));
-            XMMATRIX R = XMMatrixRotationQuaternion(XMLoadFloat4(&rot));
-            XMMATRIX T = XMMatrixTranslationFromVector(XMLoadFloat3(&pos));
+        // ブレンドファクタを進める
+        m_blendFactor += deltaTime / m_blendDuration;
 
-            // S * R * T
-            localMatrix = S * R * T;
+        if (m_blendFactor >= 1.0f)
+        {
+            // ブレンド完了
+            m_clip        = m_nextClip;
+            m_currentTime = m_nextTime;
+            m_nextClip    = nullptr;
+            m_blending    = false;
+            m_blendFactor = 0.0f;
+
+            // 完了したクリップだけで行列計算
+            ComputeBoneMatrices(m_clip, m_currentTime, m_skinningMatrices);
         }
         else
         {
-            // トラックが無いボーンはlocalBindPoseを使う
-            localMatrix = XMLoadFloat4x4(&bone.localBindPose);
-        }
+            // 両クリップの行列を計算してlerp
+            std::vector<XMFLOAT4X4> currentMatrices;
+            std::vector<XMFLOAT4X4> nextMatrices;
 
-        // グローバル行列: local * parent_global
-        if (bone.parentIndex >= 0)
-        {
-            globalMatrices[i] = localMatrix * globalMatrices[static_cast<u32>(bone.parentIndex)];
-        }
-        else
-        {
-            globalMatrices[i] = localMatrix;
+            ComputeBoneMatrices(m_clip, m_currentTime, currentMatrices);
+            ComputeBoneMatrices(m_nextClip, m_nextTime, nextMatrices);
+
+            u32 boneCount = m_skeleton->GetBoneCount();
+            m_skinningMatrices.resize(boneCount);
+
+            float t = m_blendFactor;
+            for (u32 i = 0; i < boneCount; ++i)
+            {
+                XMMATRIX matA = XMLoadFloat4x4(&currentMatrices[i]);
+                XMMATRIX matB = XMLoadFloat4x4(&nextMatrices[i]);
+
+                // 簡易lerp: 各要素ごとの線形補間
+                XMMATRIX blended;
+                blended.r[0] = XMVectorLerp(matA.r[0], matB.r[0], t);
+                blended.r[1] = XMVectorLerp(matA.r[1], matB.r[1], t);
+                blended.r[2] = XMVectorLerp(matA.r[2], matB.r[2], t);
+                blended.r[3] = XMVectorLerp(matA.r[3], matB.r[3], t);
+
+                XMStoreFloat4x4(&m_skinningMatrices[i], blended);
+            }
         }
     }
-
-    // 5-6. スキニング行列を計算して格納
-    for (u32 i = 0; i < boneCount; ++i)
+    else
     {
-        const BoneNode& bone = m_skeleton->GetBone(i);
-        XMMATRIX invBind = XMLoadFloat4x4(&bone.inverseBindPose);
-
-        // skinning = inverseBindPose * globalPose
-        XMMATRIX skinning = invBind * globalMatrices[i];
-
-        // HLSL column-major 用に転置して格納
-        XMStoreFloat4x4(&m_skinningMatrices[i], XMMatrixTranspose(skinning));
+        // ブレンドなし: 通常の行列計算
+        ComputeBoneMatrices(m_clip, m_currentTime, m_skinningMatrices);
     }
 }
 

@@ -7,6 +7,9 @@
     "d3d12-memory-allocator",
     "directxtex",
     "directxmath",
-    "imgui"
+    {
+      "name": "imgui",
+      "features": ["docking-experimental", "dx12-binding", "win32-binding"]
+    }
   ]
 }

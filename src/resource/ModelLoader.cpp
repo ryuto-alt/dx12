@@ -112,20 +112,15 @@ std::unique_ptr<Skeleton> BuildSkeleton(const aiScene* scene)
     return skeleton;
 }
 
-std::unique_ptr<AnimationClip> BuildAnimationClip(const aiScene* scene, const Skeleton& skeleton)
+std::unique_ptr<AnimationClip> BuildAnimationClipFromAnim(
+    const aiAnimation* anim, const Skeleton& skeleton)
 {
-    if (!scene->mAnimations || scene->mNumAnimations == 0)
-    {
-        return nullptr;
-    }
-
-    const aiAnimation* anim = scene->mAnimations[0];
-
     auto clip = std::make_unique<AnimationClip>();
     clip->SetDuration(static_cast<float>(anim->mDuration));
     clip->SetTicksPerSecond(anim->mTicksPerSecond > 0.0
         ? static_cast<float>(anim->mTicksPerSecond)
         : 25.0f);
+    clip->SetName(anim->mName.C_Str());
 
     for (unsigned int ci = 0; ci < anim->mNumChannels; ++ci)
     {
@@ -177,9 +172,31 @@ std::unique_ptr<AnimationClip> BuildAnimationClip(const aiScene* scene, const Sk
         clip->AddTrack(std::move(track));
     }
 
-    Logger::Info("AnimationClip built: {} tracks, duration={:.2f}",
-                 clip->GetTrackCount(), clip->GetDuration());
+    Logger::Info("AnimationClip built: '{}' {} tracks, duration={:.2f}",
+                 clip->GetName(), clip->GetTrackCount(), clip->GetDuration());
     return clip;
+}
+
+std::vector<std::unique_ptr<AnimationClip>> BuildAllAnimationClips(
+    const aiScene* scene, const Skeleton& skeleton)
+{
+    std::vector<std::unique_ptr<AnimationClip>> clips;
+
+    if (!scene->mAnimations || scene->mNumAnimations == 0)
+    {
+        return clips;
+    }
+
+    for (unsigned int ai = 0; ai < scene->mNumAnimations; ++ai)
+    {
+        auto clip = BuildAnimationClipFromAnim(scene->mAnimations[ai], skeleton);
+        if (clip)
+        {
+            clips.push_back(std::move(clip));
+        }
+    }
+
+    return clips;
 }
 
 void WriteBoneWeightsToVertices(
@@ -375,10 +392,10 @@ ModelData ModelLoader::LoadFromFile(
         result.materials.push_back(std::move(material));
     }
 
-    // Build animation clip if skeleton and animations exist
+    // Build animation clips if skeleton and animations exist
     if (skeleton)
     {
-        result.animClip = BuildAnimationClip(scene, *skeleton);
+        result.animClips = BuildAllAnimationClips(scene, *skeleton);
     }
 
     result.skeleton = std::move(skeleton);
@@ -387,6 +404,40 @@ ModelData ModelLoader::LoadFromFile(
                  static_cast<u32>(result.meshes.size()));
 
     return result;
+}
+
+std::vector<std::unique_ptr<AnimationClip>> ModelLoader::LoadAnimationsFromFile(
+    const std::filesystem::path& filePath,
+    const Skeleton& skeleton)
+{
+    Assimp::Importer importer;
+
+    const unsigned int flags =
+        aiProcess_Triangulate |
+        aiProcess_LimitBoneWeights;
+
+    const aiScene* scene = importer.ReadFile(filePath.string(), flags);
+
+    if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || !scene->mRootNode)
+    {
+        Logger::Error("Failed to load animations: {}", filePath.string());
+        return {};
+    }
+
+    auto clips = BuildAllAnimationClips(scene, skeleton);
+
+    // ファイル名をプレフィックスとしてクリップ名にセット（名前が空の場合）
+    std::string filePrefix = filePath.stem().string();
+    for (auto& clip : clips)
+    {
+        if (clip->GetName().empty())
+        {
+            clip->SetName(filePrefix);
+        }
+    }
+
+    Logger::Info("Loaded {} animation(s) from {}", clips.size(), filePath.string());
+    return clips;
 }
 
 } // namespace dx12e
