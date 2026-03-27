@@ -45,13 +45,13 @@ void Window::Initialize(HINSTANCE hInstance, int nCmdShow,
 
     // クライアント領域が指定サイズになるよう調整
     RECT rect = { 0, 0, static_cast<LONG>(m_width), static_cast<LONG>(m_height) };
-    AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
+    AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX, FALSE);
 
     m_hwnd = CreateWindowExW(
         0,
         L"DX12EngineWindowClass",
         m_title.c_str(),
-        WS_OVERLAPPEDWINDOW,
+        WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX,  // 最大化ボタン無効
         CW_USEDEFAULT, CW_USEDEFAULT,
         rect.right - rect.left,
         rect.bottom - rect.top,
@@ -71,6 +71,51 @@ void Window::Initialize(HINSTANCE hInstance, int nCmdShow,
     UpdateWindow(m_hwnd);
 
     Logger::Info("Window created: {}x{}", m_width, m_height);
+}
+
+void Window::ToggleFullscreen()
+{
+    if (!m_fullscreen)
+    {
+        // ウィンドウ → ボーダレスフルスクリーン
+        GetWindowRect(m_hwnd, &m_windowedRect);
+
+        // スタイルをボーダレスに変更
+        SetWindowLongPtrW(m_hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+
+        // モニター情報取得
+        HMONITOR monitor = MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi = {};
+        mi.cbSize = sizeof(mi);
+        GetMonitorInfoW(monitor, &mi);
+
+        SetWindowPos(m_hwnd, HWND_TOP,
+            mi.rcMonitor.left, mi.rcMonitor.top,
+            mi.rcMonitor.right - mi.rcMonitor.left,
+            mi.rcMonitor.bottom - mi.rcMonitor.top,
+            SWP_FRAMECHANGED | SWP_NOACTIVATE);
+
+        ShowWindow(m_hwnd, SW_MAXIMIZE);
+        m_fullscreen = true;
+
+        Logger::Info("Fullscreen enabled");
+    }
+    else
+    {
+        // ボーダレスフルスクリーン → ウィンドウ
+        SetWindowLongPtrW(m_hwnd, GWL_STYLE, WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX | WS_VISIBLE);
+
+        SetWindowPos(m_hwnd, HWND_NOTOPMOST,
+            m_windowedRect.left, m_windowedRect.top,
+            m_windowedRect.right - m_windowedRect.left,
+            m_windowedRect.bottom - m_windowedRect.top,
+            SWP_FRAMECHANGED | SWP_NOACTIVATE);
+
+        ShowWindow(m_hwnd, SW_NORMAL);
+        m_fullscreen = false;
+
+        Logger::Info("Windowed mode restored");
+    }
 }
 
 bool Window::ProcessMessages()
@@ -126,6 +171,13 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             }
             return 0;
         }
+
+        case WM_KEYDOWN:
+            if (wParam == VK_F11)
+            {
+                window->ToggleFullscreen();
+            }
+            return 0;
 
         case WM_DESTROY:
             PostQuitMessage(0);
