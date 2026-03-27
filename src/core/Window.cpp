@@ -137,9 +137,6 @@ bool Window::ProcessMessages()
 
 LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
-    // ImGui にイベントを渡す（結果は無視して InputSystem にも常に通知する）
-    ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam);
-
     Window* window = nullptr;
 
     if (msg == WM_NCCREATE)
@@ -152,6 +149,17 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     {
         window = reinterpret_cast<Window*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     }
+
+    // マウスキャプチャ中は WM_SETCURSOR を自前で処理してカーソルを消す
+    if (window && window->m_inputSystem && window->m_inputSystem->IsMouseCaptured()
+        && msg == WM_SETCURSOR && LOWORD(lParam) == HTCLIENT)
+    {
+        SetCursor(nullptr);
+        return TRUE;
+    }
+
+    // ImGui にイベントを渡す（結果は無視して InputSystem にも常に通知する）
+    ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam);
 
     if (window)
     {

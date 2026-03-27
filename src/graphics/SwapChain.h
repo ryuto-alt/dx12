@@ -34,6 +34,8 @@ public:
     void Present(bool vsync);
     void Resize(u32 width, u32 height, DescriptorHeap& rtvHeap);
 
+    bool IsTearingSupported() const { return m_tearingSupported; }
+
     ID3D12Resource*             GetCurrentBackBuffer()      const { return m_backBuffers[m_currentFrameIndex].Get(); }
     u32                         GetCurrentBackBufferIndex()  const { return m_currentFrameIndex; }
     D3D12_CPU_DESCRIPTOR_HANDLE GetCurrentRTV()             const { return m_rtvHandles[m_currentFrameIndex]; }
@@ -47,6 +49,7 @@ private:
     std::array<D3D12_CPU_DESCRIPTOR_HANDLE, kFrameCount>                 m_rtvHandles{};
     u32                                                                  m_currentFrameIndex = 0;
     DXGI_FORMAT                                                          m_format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    bool                                                                 m_tearingSupported = false;
 };
 
 } // namespace dx12e

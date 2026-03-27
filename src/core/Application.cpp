@@ -35,6 +35,10 @@
 #include <directx/d3d12.h>
 #include <DirectXMath.h>
 #include <filesystem>
+#include <thread>
+#include <immintrin.h>
+#include <mmsystem.h>
+#pragma comment(lib, "winmm.lib")
 
 namespace dx12e
 {
@@ -289,8 +293,13 @@ void Application::Run()
 {
     Logger::Info("Application running...");
 
+    // Windowsタイマー精度を1msに設定
+    timeBeginPeriod(1);
+
     while (!m_window->ShouldClose())
     {
+        m_frameStart = std::chrono::high_resolution_clock::now();
+
         // 入力状態リセット（前フレームのdeltaクリア + prevKeys保存）
         m_inputSystem->Update();
 
@@ -352,7 +361,30 @@ void Application::Run()
         m_gameClock.Tick();
         Update();
         Render();
+
+        // フレームレートリミッター（VSync OFF時のCPU暴走を防止）
+        if (!m_useVsync)
+        {
+            using namespace std::chrono;
+            auto targetDuration = duration_cast<high_resolution_clock::duration>(
+                duration<f64>(1.0 / static_cast<f64>(kTargetFps)));
+            auto elapsed = high_resolution_clock::now() - m_frameStart;
+            auto remaining = targetDuration - elapsed;
+
+            // 1ms以上余裕があればSleepで待つ（CPU負荷軽減）
+            if (remaining > milliseconds(1))
+            {
+                std::this_thread::sleep_for(remaining - milliseconds(1));
+            }
+            // 残りはスピンウェイトで精密に待つ
+            while (high_resolution_clock::now() - m_frameStart < targetDuration)
+            {
+                _mm_pause();
+            }
+        }
     }
+
+    timeEndPeriod(1);
 
     Logger::Info("Main loop ended");
 }
@@ -547,7 +579,8 @@ void Application::Render()
     m_imguiManager->BeginFrame();
 
     ImGui::Begin("Animation Controller");
-    ImGui::Text("FPS: %.1f", 1.0f / m_gameClock.GetDeltaTime());
+    ImGui::Text("FPS: %.1f (target: %.0f)", m_gameClock.GetFPS(), kTargetFps);
+    ImGui::Checkbox("VSync", &m_useVsync);
     ImGui::Separator();
 
     for (i32 i = 0; i < static_cast<i32>(m_animClips.size()); ++i)
@@ -590,7 +623,7 @@ void Application::Render()
     m_commandList->Close();
 
     m_commandQueue->ExecuteCommandList(nativeCmdList);
-    m_swapChain->Present(true);
+    m_swapChain->Present(m_useVsync);
     m_frameResources->EndFrame(*m_commandQueue);
 }
 

@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <vector>
+#include <chrono>
 #include <wrl/client.h>
 #include <directx/d3d12.h>
 
@@ -83,6 +84,11 @@ private:
     std::unique_ptr<InputSystem>       m_inputSystem;
     GameClock                          m_gameClock;
     bool                               m_isRunning = false;
+
+    // フレームレートリミッター
+    static constexpr f32 kTargetFps = 144.0f;
+    bool m_useVsync = false;
+    std::chrono::high_resolution_clock::time_point m_frameStart{};
 };
 
 } // namespace dx12e

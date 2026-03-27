@@ -79,17 +79,21 @@ void InputSystem::SetMouseCapture(bool capture)
         ShowCursor(FALSE);
         SetCapture(m_hwnd);
 
-        // マウスをウィンドウ中央に移動
+        // ウィンドウ内にカーソルを閉じ込める（SetCursorPos不要）
         RECT rect;
         GetClientRect(m_hwnd, &rect);
-        POINT center = {(rect.right - rect.left) / 2, (rect.bottom - rect.top) / 2};
-        ClientToScreen(m_hwnd, &center);
-        SetCursorPos(center.x, center.y);
+        POINT tl = {rect.left, rect.top};
+        POINT br = {rect.right, rect.bottom};
+        ClientToScreen(m_hwnd, &tl);
+        ClientToScreen(m_hwnd, &br);
+        RECT clipRect = {tl.x, tl.y, br.x, br.y};
+        ClipCursor(&clipRect);
     }
     else
     {
         ShowCursor(TRUE);
         ReleaseCapture();
+        ClipCursor(nullptr);  // カーソル制限解除
     }
 }
 

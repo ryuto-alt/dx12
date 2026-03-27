@@ -15,6 +15,19 @@ namespace dx12e
 void SwapChain::Initialize(Window& window, GraphicsDevice& device,
                            CommandQueue& directQueue, DescriptorHeap& rtvHeap)
 {
+    // ティアリングサポート検出
+    ComPtr<IDXGIFactory5> factory5;
+    if (SUCCEEDED(device.GetFactory()->QueryInterface(IID_PPV_ARGS(&factory5))))
+    {
+        BOOL allowTearing = FALSE;
+        if (SUCCEEDED(factory5->CheckFeatureSupport(
+                DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allowTearing, sizeof(allowTearing))))
+        {
+            m_tearingSupported = (allowTearing == TRUE);
+        }
+    }
+    Logger::Info("Tearing support: {}", m_tearingSupported ? "yes" : "no");
+
     DXGI_SWAP_CHAIN_DESC1 swapChainDesc{};
     swapChainDesc.Width       = window.GetWidth();
     swapChainDesc.Height      = window.GetHeight();
@@ -26,7 +39,7 @@ void SwapChain::Initialize(Window& window, GraphicsDevice& device,
     swapChainDesc.Scaling     = DXGI_SCALING_STRETCH;
     swapChainDesc.SwapEffect  = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     swapChainDesc.AlphaMode   = DXGI_ALPHA_MODE_UNSPECIFIED;
-    swapChainDesc.Flags       = 0;
+    swapChainDesc.Flags       = m_tearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
 
     ComPtr<IDXGISwapChain1> swapChain1;
     ThrowIfFailed(device.GetFactory()->CreateSwapChainForHwnd(
@@ -54,7 +67,9 @@ void SwapChain::Initialize(Window& window, GraphicsDevice& device,
 
 void SwapChain::Present(bool vsync)
 {
-    ThrowIfFailed(m_swapChain->Present(vsync ? 1 : 0, 0));
+    UINT syncInterval = vsync ? 1 : 0;
+    UINT flags = (!vsync && m_tearingSupported) ? DXGI_PRESENT_ALLOW_TEARING : 0;
+    ThrowIfFailed(m_swapChain->Present(syncInterval, flags));
     m_currentFrameIndex = m_swapChain->GetCurrentBackBufferIndex();
 }
 
@@ -71,7 +86,7 @@ void SwapChain::Resize(u32 width, u32 height, DescriptorHeap& /*rtvHeap*/)
         width,
         height,
         m_format,
-        0));
+        m_tearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0));
 
     m_currentFrameIndex = m_swapChain->GetCurrentBackBufferIndex();
 

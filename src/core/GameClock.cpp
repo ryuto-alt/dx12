@@ -23,15 +23,16 @@ void GameClock::Tick()
     m_totalTime = total.count();
     m_prevTime = now;
     m_frameCount++;
-}
 
-f32 GameClock::GetFPS() const
-{
-    if (m_totalTime > 0.0f)
+    // FPS計測（0.3秒間隔で更新）
+    m_fpsAccum += m_deltaTime;
+    m_fpsFrames++;
+    if (m_fpsAccum >= 0.3f)
     {
-        return static_cast<f32>(m_frameCount) / m_totalTime;
+        m_displayFps = static_cast<f32>(m_fpsFrames) / m_fpsAccum;
+        m_fpsAccum = 0.0f;
+        m_fpsFrames = 0;
     }
-    return 0.0f;
 }
 
 } // namespace dx12e
