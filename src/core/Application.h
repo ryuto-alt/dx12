@@ -30,6 +30,7 @@ namespace dx12e
     class AnimationClip;
     class Animator;
     class SkinningBuffer;
+    class InputSystem;
     class ImGuiManager;
 }
 
@@ -79,6 +80,7 @@ private:
     std::unique_ptr<CommandList>       m_commandList;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_depthBuffer;
     D3D12_CPU_DESCRIPTOR_HANDLE        m_dsvHandle{};
+    std::unique_ptr<InputSystem>       m_inputSystem;
     GameClock                          m_gameClock;
     bool                               m_isRunning = false;
 };
