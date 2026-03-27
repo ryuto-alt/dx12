@@ -1,0 +1,52 @@
+# MCP config (contains API tokens)
+.mcp.json
+
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+x64/
+x86/
+Debug/
+Release/
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.dll
+*.lib
+*.log
+
+# Legacy VS project
+dx12/
+
+# Build output
+build/
+out/
+bin/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CMakeSettings.json
+
+# vcpkg
+vcpkg_installed/
+
+# VS Code
+.vscode/
+
+# Compiled shaders
+*.cso
+*.pdb
+
+# Claude Code
+.claude/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store

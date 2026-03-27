@@ -1,0 +1,12 @@
+{
+  "name": "dx12-engine",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "spdlog",
+    "directx-headers",
+    "d3d12-memory-allocator",
+    "directxtex",
+    "directxmath",
+    "imgui"
+  ]
+}
