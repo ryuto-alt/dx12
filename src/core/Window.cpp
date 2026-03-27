@@ -1,6 +1,9 @@
 #include "Window.h"
 #include "Logger.h"
 
+// ImGui Win32 WndProc handler (forward declaration)
+extern LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
 namespace dx12e
 {
 
@@ -88,6 +91,11 @@ bool Window::ProcessMessages()
 
 LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam))
+    {
+        return true;
+    }
+
     Window* window = nullptr;
 
     if (msg == WM_NCCREATE)

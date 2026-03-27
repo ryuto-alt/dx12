@@ -1,3 +1,5 @@
+find_package(imgui CONFIG REQUIRED)
+
 add_library(Core STATIC
     Application.cpp
     Window.cpp
@@ -13,6 +15,7 @@ find_package(spdlog CONFIG REQUIRED)
 
 target_link_libraries(Core
     PUBLIC spdlog::spdlog
+    PRIVATE imgui::imgui
 )
 
 target_compile_options(Core PRIVATE ${DX12_COMPILE_OPTIONS})

@@ -20,6 +20,16 @@
 #include "resource/ShaderCompiler.h"
 #include "resource/ModelLoader.h"
 #include "resource/ResourceManager.h"
+#include "animation/Skeleton.h"
+#include "animation/AnimationClip.h"
+#include "animation/Animator.h"
+#include "animation/SkinningBuffer.h"
+#include "gui/ImGuiManager.h"
+
+#pragma warning(push)
+#pragma warning(disable: 4100 4189 4201 4244 4267 4996)
+#include <imgui.h>
+#pragma warning(pop)
 
 #include <directx/d3d12.h>
 #include <DirectXMath.h>
@@ -157,17 +167,25 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow)
         std::filesystem::path modelPath = std::string(ASSETS_DIR) + "models/human/walk.gltf";
         if (std::filesystem::exists(modelPath))
         {
-            auto meshDataList = ModelLoader::LoadFromFile(
+            auto modelData = ModelLoader::LoadFromFile(
                 *m_graphicsDevice, cmdList, modelPath, *m_resourceManager);
 
-            for (auto& md : meshDataList)
+            for (u32 i = 0; i < modelData.meshes.size(); ++i)
             {
-                if (md.material)
+                if (i < modelData.materials.size() && modelData.materials[i])
                 {
-                    md.mesh->SetMaterial(md.material.get());
-                    m_modelMaterials.push_back(std::move(md.material));
+                    modelData.meshes[i]->SetMaterial(modelData.materials[i].get());
+                    m_modelMaterials.push_back(std::move(modelData.materials[i]));
                 }
-                m_modelMeshes.push_back(std::move(md.mesh));
+                m_modelMeshes.push_back(std::move(modelData.meshes[i]));
+            }
+
+            // スケルトン・アニメーション取得
+            m_skeleton = std::move(modelData.skeleton);
+            for (auto& clip : modelData.animClips)
+            {
+                clip->SetName("walk");
+                m_animClips.push_back(std::move(clip));
             }
         }
         else
@@ -188,6 +206,52 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow)
         for (auto& mesh : m_modelMeshes)
             mesh->FinishUpload();
         m_resourceManager->FinishUploads();
+
+        // スキニング PSO 作成（スケルトンがある場合）
+        if (m_skeleton)
+        {
+            auto vs = ShaderCompiler::LoadFromFile(std::wstring(SHADER_DIR) + L"ForwardSkinned_VS.cso");
+            auto ps = ShaderCompiler::LoadFromFile(std::wstring(SHADER_DIR) + L"Forward_PS.cso");
+
+            PipelineStateBuilder builder;
+            builder.SetRootSignature(m_rootSignature->Get())
+                   .SetVertexShader(vs.GetData(), vs.GetSize())
+                   .SetPixelShader(ps.GetData(), ps.GetSize())
+                   .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
+                   .SetRenderTargetFormat(m_swapChain->GetFormat())
+                   .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+                   .SetDepthEnabled(true);
+
+            m_skinnedPipelineState = std::make_unique<PipelineState>();
+            m_skinnedPipelineState->Initialize(*m_graphicsDevice, builder);
+
+            // sneakWalk アニメーションも読み込み
+            {
+                std::filesystem::path sneakPath = std::string(ASSETS_DIR) + "models/human/sneakWalk.gltf";
+                if (std::filesystem::exists(sneakPath))
+                {
+                    auto extraAnims = ModelLoader::LoadAnimationsFromFile(sneakPath, *m_skeleton);
+                    for (auto& a : extraAnims)
+                    {
+                        a->SetName("sneakWalk");
+                        m_animClips.push_back(std::move(a));
+                    }
+                }
+            }
+
+            // Animator
+            m_animator = std::make_unique<Animator>();
+            m_animator->Initialize(m_skeleton.get(),
+                m_animClips.empty() ? nullptr : m_animClips[0].get());
+            m_animator->SetLooping(true);
+
+            // SkinningBuffer
+            m_skinningBuffer = std::make_unique<SkinningBuffer>();
+            m_skinningBuffer->Initialize(*m_graphicsDevice, *m_srvHeap,
+                                         Skeleton::kMaxBones, FrameResources::kFrameCount);
+
+            Logger::Info("Skeletal animation initialized ({} bones)", m_skeleton->GetBoneCount());
+        }
     }
 
     // PerFrame Constant Buffer
@@ -204,6 +268,12 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow)
 
     // CommandList ラッパー
     m_commandList = std::make_unique<CommandList>();
+
+    // ImGui 初期化
+    m_imguiManager = std::make_unique<ImGuiManager>();
+    m_imguiManager->Initialize(
+        m_window->GetHwnd(), *m_graphicsDevice, m_commandQueue->GetQueue(),
+        *m_srvHeap, m_swapChain->GetFormat(), FrameResources::kFrameCount);
 
     m_isRunning = true;
     Logger::Info("Application initialized successfully");
@@ -238,7 +308,19 @@ void Application::Shutdown()
         m_commandQueue->WaitIdle();
     }
 
+    // ImGui 解放
+    if (m_imguiManager)
+    {
+        m_imguiManager->Shutdown();
+        m_imguiManager.reset();
+    }
+
     // リソース解放（逆順）
+    m_skinnedPipelineState.reset();
+    m_skinningBuffer.reset();
+    m_animator.reset();
+    m_animClips.clear();
+    m_skeleton.reset();
     m_commandList.reset();
     m_perFrameCB.reset();
     m_modelMaterials.clear();
@@ -265,7 +347,10 @@ void Application::Shutdown()
 
 void Application::Update()
 {
-    // 何もしない（回転は Render 内で time ベースで計算）
+    if (m_animator)
+    {
+        m_animator->Update(m_gameClock.GetDeltaTime());
+    }
 }
 
 void Application::Render()
@@ -316,12 +401,34 @@ void Application::Render()
     m_perFrameCB->Update(&fc, sizeof(fc), frameIndex);
     m_commandList->SetPerFrameCBV(RootSignature::kSlotPerFrame, m_perFrameCB->GetGpuAddress(frameIndex));
 
+    // ボーン行列 GPU 転送
+    if (m_animator && m_skinningBuffer)
+    {
+        m_skinningBuffer->Update(m_animator->GetSkinningMatrices(), frameIndex);
+    }
+
     // 各メッシュを描画
-    XMMATRIX model = XMMatrixRotationY(totalTime);
+    // スケール縮小 + X軸-90度回転(モデル起こす) + Y軸回転(ターンテーブル)
+    XMMATRIX model = XMMatrixScaling(0.02f, 0.02f, 0.02f)
+                   * XMMatrixRotationX(XM_PIDIV2)
+                   * XMMatrixTranslation(0.0f, -1.0f, 0.0f)
+                   * XMMatrixRotationY(totalTime);
     XMMATRIX viewProj = m_camera->GetViewProjMatrix();
 
     for (const auto& mesh : m_modelMeshes)
     {
+        // スケルトンがあればスキニングPSOを使用
+        if (m_skeleton && m_skinnedPipelineState)
+        {
+            m_commandList->SetPipelineState(*m_skinnedPipelineState);
+            m_commandList->SetSRVTable(RootSignature::kSlotBonesSRV,
+                m_srvHeap->GetGpuHandle(m_skinningBuffer->GetSrvIndex(frameIndex)));
+        }
+        else
+        {
+            m_commandList->SetPipelineState(*m_pipelineState);
+        }
+
         // MVP + Model (各16 DWORD = 合計 32 DWORD)
         struct PerObjectData {
             XMMATRIX mvp;
@@ -341,6 +448,37 @@ void Application::Render()
         m_commandList->SetIndexBuffer(mesh->GetIndexBuffer().GetView());
         m_commandList->DrawIndexedInstanced(mesh->GetIndexCount());
     }
+
+    // ---- ImGui フレーム ----
+    m_imguiManager->BeginFrame();
+
+    ImGui::Begin("Animation Controller");
+    ImGui::Text("FPS: %.1f", 1.0f / m_gameClock.GetDeltaTime());
+    ImGui::Separator();
+
+    for (i32 i = 0; i < static_cast<i32>(m_animClips.size()); ++i)
+    {
+        const auto& clip = m_animClips[i];
+        bool selected = (i == m_currentAnimIndex);
+        std::string label = clip->GetName().empty()
+            ? ("Animation " + std::to_string(i))
+            : clip->GetName();
+
+        if (ImGui::Selectable(label.c_str(), selected))
+        {
+            if (i != m_currentAnimIndex)
+            {
+                m_currentAnimIndex = i;
+                m_animator->CrossFadeTo(m_animClips[i].get(), m_blendSpeed);
+            }
+        }
+    }
+
+    ImGui::Separator();
+    ImGui::SliderFloat("Blend Speed", &m_blendSpeed, 0.1f, 1.0f);
+    ImGui::End();
+
+    m_imguiManager->EndFrame(nativeCmdList);
 
     m_commandList->TransitionResource(backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
     m_commandList->Close();

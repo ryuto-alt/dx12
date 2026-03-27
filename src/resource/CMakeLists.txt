@@ -25,6 +25,7 @@ target_include_directories(Resource PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries(Resource PUBLIC
     Core
     Graphics
+    Animation
     assimp
     Microsoft::DirectXTex
 )
