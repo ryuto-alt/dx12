@@ -8,6 +8,8 @@
 namespace dx12e
 {
 
+class InputSystem;
+
 class Window
 {
 public:
@@ -31,6 +33,7 @@ public:
     bool         WasResized() const { return m_resized; }
     void         ResetResizedFlag() { m_resized = false; }
     bool         IsFullscreen() const { return m_fullscreen; }
+    void         SetInputSystem(InputSystem* input) { m_inputSystem = input; }
 
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -42,7 +45,8 @@ private:
     bool         m_shouldClose = false;
     bool         m_resized = false;
     bool         m_fullscreen = false;
-    RECT         m_windowedRect = {};  // フルスクリーン前のウィンドウ位置・サイズ保存
+    RECT         m_windowedRect = {};
+    InputSystem* m_inputSystem = nullptr;
 };
 
 } // namespace dx12e

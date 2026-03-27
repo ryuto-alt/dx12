@@ -24,6 +24,7 @@
 #include "animation/AnimationClip.h"
 #include "animation/Animator.h"
 #include "animation/SkinningBuffer.h"
+#include "input/InputSystem.h"
 #include "gui/ImGuiManager.h"
 
 #pragma warning(push)
@@ -80,6 +81,11 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow)
 
     // ゲームクロックリセット
     m_gameClock.Reset();
+
+    // Input System
+    m_inputSystem = std::make_unique<InputSystem>();
+    m_inputSystem->Initialize(m_window->GetHwnd());
+    m_window->SetInputSystem(m_inputSystem.get());
 
     // Shader Visible SRV ヒープ
     m_srvHeap = std::make_unique<DescriptorHeap>();
@@ -285,6 +291,10 @@ void Application::Run()
 
     while (!m_window->ShouldClose())
     {
+        // 入力状態リセット（前フレームのdeltaクリア + prevKeys保存）
+        m_inputSystem->Update();
+
+        // メッセージ処理（ここで WM_KEYDOWN/WM_MOUSEMOVE → InputSystem に蓄積）
         m_window->ProcessMessages();
 
         if (m_window->ShouldClose())
@@ -365,6 +375,7 @@ void Application::Shutdown()
     }
 
     // リソース解放（逆順）
+    m_inputSystem.reset();
     m_skinnedPipelineState.reset();
     m_skinningBuffer.reset();
     m_animator.reset();
@@ -396,9 +407,44 @@ void Application::Shutdown()
 
 void Application::Update()
 {
+    f32 dt = m_gameClock.GetDeltaTime();
+
+    // Escape でマウスキャプチャ解除、右クリックでキャプチャ開始
+    if (m_inputSystem->IsKeyPressed(VK_TAB))
+    {
+        m_inputSystem->SetMouseCapture(false);
+    }
+    if (GetAsyncKeyState(VK_RBUTTON) & 0x8000)
+    {
+        if (!m_inputSystem->IsMouseCaptured())
+        {
+            m_inputSystem->SetMouseCapture(true);
+        }
+    }
+
+    // カメラ操作（マウスキャプチャ中のみ）
+    if (m_inputSystem->IsMouseCaptured())
+    {
+        // マウス回転
+        f32 sensitivity = m_camera->GetMouseSensitivity();
+        m_camera->Rotate(
+            m_inputSystem->GetMouseDeltaX() * sensitivity,
+            -m_inputSystem->GetMouseDeltaY() * sensitivity);
+
+        // WASD移動
+        f32 speed = m_camera->GetMoveSpeed() * dt;
+        if (m_inputSystem->IsKeyDown('W')) m_camera->MoveForward(speed);
+        if (m_inputSystem->IsKeyDown('S')) m_camera->MoveForward(-speed);
+        if (m_inputSystem->IsKeyDown('D')) m_camera->MoveRight(speed);
+        if (m_inputSystem->IsKeyDown('A')) m_camera->MoveRight(-speed);
+        if (m_inputSystem->IsKeyDown(VK_SPACE)) m_camera->MoveUp(speed);
+        if (m_inputSystem->IsKeyDown(VK_SHIFT)) m_camera->MoveUp(-speed);
+    }
+
+    // アニメーション更新
     if (m_animator)
     {
-        m_animator->Update(m_gameClock.GetDeltaTime());
+        m_animator->Update(dt);
     }
 }
 
@@ -460,8 +506,7 @@ void Application::Render()
     // スケール縮小 + X軸-90度回転(モデル起こす) + Y軸回転(ターンテーブル)
     XMMATRIX model = XMMatrixScaling(0.02f, 0.02f, 0.02f)
                    * XMMatrixRotationX(XM_PIDIV2)
-                   * XMMatrixTranslation(0.0f, -1.0f, 0.0f)
-                   * XMMatrixRotationY(totalTime);
+                   * XMMatrixTranslation(0.0f, -1.0f, 0.0f);
     XMMATRIX viewProj = m_camera->GetViewProjMatrix();
 
     for (const auto& mesh : m_modelMeshes)
@@ -525,6 +570,18 @@ void Application::Render()
 
     ImGui::Separator();
     ImGui::SliderFloat("Blend Speed", &m_blendSpeed, 0.1f, 1.0f);
+
+    ImGui::Separator();
+    ImGui::Text("Camera");
+    auto camPos = m_camera->GetPosition();
+    ImGui::Text("  Pos: %.1f, %.1f, %.1f", camPos.x, camPos.y, camPos.z);
+    ImGui::Text("  %s", m_inputSystem->IsMouseCaptured() ? "Right-click captured (TAB to release)" : "Right-click to look around");
+
+    f32 moveSpeed = m_camera->GetMoveSpeed();
+    if (ImGui::SliderFloat("Move Speed", &moveSpeed, 1.0f, 50.0f))
+    {
+        m_camera->SetMoveSpeed(moveSpeed);
+    }
     ImGui::End();
 
     m_imguiManager->EndFrame(nativeCmdList);

@@ -1,5 +1,6 @@
 #include "Window.h"
 #include "Logger.h"
+#include "input/InputSystem.h"
 
 // ImGui Win32 WndProc handler (forward declaration)
 extern LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -136,10 +137,8 @@ bool Window::ProcessMessages()
 
 LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
-    if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam))
-    {
-        return true;
-    }
+    // ImGui にイベントを渡す（結果は無視して InputSystem にも常に通知する）
+    ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam);
 
     Window* window = nullptr;
 
@@ -176,6 +175,24 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             if (wParam == VK_F11)
             {
                 window->ToggleFullscreen();
+            }
+            if (window->m_inputSystem)
+            {
+                window->m_inputSystem->OnKeyDown(static_cast<int>(wParam));
+            }
+            return 0;
+
+        case WM_KEYUP:
+            if (window->m_inputSystem)
+            {
+                window->m_inputSystem->OnKeyUp(static_cast<int>(wParam));
+            }
+            return 0;
+
+        case WM_INPUT:
+            if (window->m_inputSystem)
+            {
+                window->m_inputSystem->OnRawInput(lParam);
             }
             return 0;
 
