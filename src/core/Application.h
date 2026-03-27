@@ -25,7 +25,11 @@ namespace dx12e
     class Camera;
     class ResourceManager;
     struct Material;
-    struct MeshData;
+    struct ModelData;
+    class Skeleton;
+    class AnimationClip;
+    class Animator;
+    class SkinningBuffer;
 }
 
 namespace dx12e
@@ -61,6 +65,11 @@ private:
     std::unique_ptr<ResourceManager>   m_resourceManager;
     std::vector<std::unique_ptr<Mesh>>     m_modelMeshes;
     std::vector<std::unique_ptr<Material>> m_modelMaterials;
+    std::unique_ptr<Skeleton>          m_skeleton;
+    std::unique_ptr<AnimationClip>     m_animClip;
+    std::unique_ptr<Animator>          m_animator;
+    std::unique_ptr<SkinningBuffer>    m_skinningBuffer;
+    std::unique_ptr<PipelineState>     m_skinnedPipelineState;
     std::unique_ptr<Camera>            m_camera;
     std::unique_ptr<ConstantBuffer>    m_perFrameCB;
     std::unique_ptr<CommandList>       m_commandList;

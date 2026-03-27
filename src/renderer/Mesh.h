@@ -12,10 +12,12 @@ struct Material;
 
 struct Vertex
 {
-    DirectX::XMFLOAT3 position;  // POSITION
-    DirectX::XMFLOAT3 normal;    // NORMAL
-    DirectX::XMFLOAT4 color;     // COLOR
-    DirectX::XMFLOAT2 texCoord;  // TEXCOORD
+    DirectX::XMFLOAT3 position;                        // POSITION
+    DirectX::XMFLOAT3 normal;                          // NORMAL
+    DirectX::XMFLOAT4 color;                           // COLOR
+    DirectX::XMFLOAT2 texCoord;                        // TEXCOORD
+    DirectX::XMUINT4  boneIndices = {0, 0, 0, 0};     // BLENDINDICES
+    DirectX::XMFLOAT4 boneWeights = {0, 0, 0, 0};     // BLENDWEIGHT
 };
 
 class Mesh

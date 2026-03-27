@@ -24,10 +24,12 @@ cbuffer PerFrameConstants : register(b1)
 
 struct VSInput
 {
-    float3 position : POSITION;
-    float3 normal   : NORMAL;
-    float4 color    : COLOR;
-    float2 texCoord : TEXCOORD0;
+    float3 position    : POSITION;
+    float3 normal      : NORMAL;
+    float4 color       : COLOR;
+    float2 texCoord    : TEXCOORD0;
+    uint4  boneIndices : BLENDINDICES;  // unused (static mesh)
+    float4 boneWeights : BLENDWEIGHT;   // unused (static mesh)
 };
 
 struct PSInput

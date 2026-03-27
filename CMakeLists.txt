@@ -16,6 +16,7 @@ add_subdirectory(src/core)
 add_subdirectory(src/graphics)
 add_subdirectory(src/renderer)
 add_subdirectory(src/resource)
+add_subdirectory(src/animation)
 
 # Main executable
 add_executable(DX12Engine WIN32 src/main.cpp)
@@ -26,6 +27,7 @@ target_link_libraries(DX12Engine
         Graphics
         Renderer
         Resource
+        Animation
 )
 
 if(MSVC)
@@ -43,27 +45,50 @@ find_program(DXC_EXECUTABLE dxc
 if(DXC_EXECUTABLE)
     message(STATUS "Found DXC: ${DXC_EXECUTABLE}")
 
-    set(SHADER_SOURCE "${CMAKE_SOURCE_DIR}/shaders/forward/Forward.hlsl")
     set(SHADER_OUTPUT_DIR "${CMAKE_BINARY_DIR}/shaders")
     file(MAKE_DIRECTORY ${SHADER_OUTPUT_DIR})
+
+    set(SHADER_SOURCES
+        "${CMAKE_SOURCE_DIR}/shaders/forward/Forward.hlsl"
+        "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardSkinned.hlsl"
+    )
+
+    set(SHADER_FORWARD "${CMAKE_SOURCE_DIR}/shaders/forward/Forward.hlsl")
+    set(SHADER_SKINNED "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardSkinned.hlsl")
 
     set(SHADER_OUTPUTS
         "${SHADER_OUTPUT_DIR}/Forward_VS.cso"
         "${SHADER_OUTPUT_DIR}/Forward_PS.cso"
+        "${SHADER_OUTPUT_DIR}/ForwardSkinned_VS.cso"
+        "${SHADER_OUTPUT_DIR}/ForwardSkinned_PS.cso"
     )
 
     add_custom_command(
         OUTPUT "${SHADER_OUTPUT_DIR}/Forward_VS.cso"
-        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/Forward_VS.cso" "${SHADER_SOURCE}"
-        DEPENDS "${SHADER_SOURCE}"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/Forward_VS.cso" "${SHADER_FORWARD}"
+        DEPENDS "${SHADER_FORWARD}"
         COMMENT "Compiling Forward.hlsl -> Forward_VS.cso (vs_6_0)"
     )
 
     add_custom_command(
         OUTPUT "${SHADER_OUTPUT_DIR}/Forward_PS.cso"
-        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/Forward_PS.cso" "${SHADER_SOURCE}"
-        DEPENDS "${SHADER_SOURCE}"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/Forward_PS.cso" "${SHADER_FORWARD}"
+        DEPENDS "${SHADER_FORWARD}"
         COMMENT "Compiling Forward.hlsl -> Forward_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ForwardSkinned_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/ForwardSkinned_VS.cso" "${SHADER_SKINNED}"
+        DEPENDS "${SHADER_SKINNED}"
+        COMMENT "Compiling ForwardSkinned.hlsl -> ForwardSkinned_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ForwardSkinned_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/ForwardSkinned_PS.cso" "${SHADER_SKINNED}"
+        DEPENDS "${SHADER_SKINNED}"
+        COMMENT "Compiling ForwardSkinned.hlsl -> ForwardSkinned_PS.cso (ps_6_0)"
     )
 
     add_custom_target(Shaders ALL DEPENDS ${SHADER_OUTPUTS})

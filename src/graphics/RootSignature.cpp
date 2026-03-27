@@ -8,10 +8,10 @@ namespace dx12e
 
 void RootSignature::Initialize(GraphicsDevice& device)
 {
-    // ルートパラメータ 3つ
-    D3D12_ROOT_PARAMETER1 rootParams[3]{};
+    // Root parameters: 4
+    D3D12_ROOT_PARAMETER1 rootParams[4]{};
 
-    // [0] Per-Object: 32bit constants (16 DWORDs = 4x4 matrix)
+    // [0] Per-Object: 32bit constants (32 DWORDs = MVP(16) + Model(16))
     rootParams[0].ParameterType             = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     rootParams[0].Constants.Num32BitValues  = 32;  // MVP(16) + Model(16)
     rootParams[0].Constants.ShaderRegister  = 0;
@@ -25,7 +25,7 @@ void RootSignature::Initialize(GraphicsDevice& device)
     rootParams[1].Descriptor.Flags              = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     rootParams[1].ShaderVisibility              = D3D12_SHADER_VISIBILITY_ALL;
 
-    // [2] SRV DescriptorTable (t0)
+    // [2] SRV DescriptorTable (t0) - albedo texture
     D3D12_DESCRIPTOR_RANGE1 srvRange{};
     srvRange.RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     srvRange.NumDescriptors                    = 1;
@@ -38,6 +38,20 @@ void RootSignature::Initialize(GraphicsDevice& device)
     rootParams[2].DescriptorTable.NumDescriptorRanges = 1;
     rootParams[2].DescriptorTable.pDescriptorRanges   = &srvRange;
     rootParams[2].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // [3] Bones SRV DescriptorTable (t1) - bone matrices
+    D3D12_DESCRIPTOR_RANGE1 boneRange{};
+    boneRange.RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    boneRange.NumDescriptors                    = 1;
+    boneRange.BaseShaderRegister                = 1;
+    boneRange.RegisterSpace                     = 0;
+    boneRange.Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    boneRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    rootParams[3].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParams[3].DescriptorTable.NumDescriptorRanges = 1;
+    rootParams[3].DescriptorTable.pDescriptorRanges   = &boneRange;
+    rootParams[3].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_VERTEX;
 
     // Static Sampler (s0) - Linear Wrap
     D3D12_STATIC_SAMPLER_DESC staticSampler{};
@@ -55,7 +69,7 @@ void RootSignature::Initialize(GraphicsDevice& device)
     staticSampler.RegisterSpace    = 0;
     staticSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    // ルートシグネチャ記述子 (Version 1.1)
+    // Root Signature descriptor (Version 1.1)
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC versionedDesc{};
     versionedDesc.Version                     = D3D_ROOT_SIGNATURE_VERSION_1_1;
     versionedDesc.Desc_1_1.NumParameters      = _countof(rootParams);
@@ -69,19 +83,19 @@ void RootSignature::Initialize(GraphicsDevice& device)
 
     HRESULT hr = D3D12SerializeVersionedRootSignature(&versionedDesc, &serializedBlob, &errorBlob);
 
-    // Version 1.1 が使えない場合は 1.0 にフォールバック
+    // Fallback to Version 1.0 if 1.1 is not available
     if (FAILED(hr))
     {
         Logger::Warn("Root Signature 1.1 serialization failed, falling back to 1.0");
 
-        D3D12_ROOT_PARAMETER rootParams10[3]{};
+        D3D12_ROOT_PARAMETER rootParams10[4]{};
 
         // [0] Per-Object: 32bit constants
         rootParams10[0].ParameterType             = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        rootParams10[0].Constants.Num32BitValues  = 16;
+        rootParams10[0].Constants.Num32BitValues  = 32;
         rootParams10[0].Constants.ShaderRegister  = 0;
         rootParams10[0].Constants.RegisterSpace   = 0;
-        rootParams10[0].ShaderVisibility          = D3D12_SHADER_VISIBILITY_VERTEX;
+        rootParams10[0].ShaderVisibility          = D3D12_SHADER_VISIBILITY_ALL;
 
         // [1] Per-Frame: CBV (b1)
         rootParams10[1].ParameterType                 = D3D12_ROOT_PARAMETER_TYPE_CBV;
@@ -101,6 +115,19 @@ void RootSignature::Initialize(GraphicsDevice& device)
         rootParams10[2].DescriptorTable.NumDescriptorRanges = 1;
         rootParams10[2].DescriptorTable.pDescriptorRanges   = &srvRange10;
         rootParams10[2].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        // [3] Bones SRV DescriptorTable (t1)
+        D3D12_DESCRIPTOR_RANGE boneRange10{};
+        boneRange10.RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        boneRange10.NumDescriptors                    = 1;
+        boneRange10.BaseShaderRegister                = 1;
+        boneRange10.RegisterSpace                     = 0;
+        boneRange10.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+        rootParams10[3].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        rootParams10[3].DescriptorTable.NumDescriptorRanges = 1;
+        rootParams10[3].DescriptorTable.pDescriptorRanges   = &boneRange10;
+        rootParams10[3].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_VERTEX;
 
         // Static Sampler (s0) - Linear Wrap (fallback 1.0)
         D3D12_STATIC_SAMPLER_DESC staticSampler10{};
