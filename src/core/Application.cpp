@@ -13,12 +13,17 @@
 #include "graphics/RootSignature.h"
 #include "graphics/PipelineState.h"
 #include "graphics/CommandList.h"
+#include "graphics/Texture.h"
 #include "renderer/Mesh.h"
+#include "renderer/Material.h"
 #include "renderer/Camera.h"
 #include "resource/ShaderCompiler.h"
+#include "resource/ModelLoader.h"
+#include "resource/ResourceManager.h"
 
 #include <directx/d3d12.h>
 #include <DirectXMath.h>
+#include <filesystem>
 
 namespace dx12e
 {
@@ -65,6 +70,15 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow)
 
     // ゲームクロックリセット
     m_gameClock.Reset();
+
+    // Shader Visible SRV ヒープ
+    m_srvHeap = std::make_unique<DescriptorHeap>();
+    m_srvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1024, true);
+
+    // ResourceManager
+    m_resourceManager = std::make_unique<ResourceManager>();
+    // ResourceManager は暫定コマンドリストで初期化（デフォルトテクスチャ作成のため）
+    // → モデルロード用の BeginFrame の後に初期化する
 
     // DSV ヒープ
     m_dsvHeap = std::make_unique<DescriptorHeap>();
@@ -131,17 +145,59 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow)
         0.1f, 1000.0f);
     m_camera->LookAt({0.0f, 2.0f, -5.0f}, {0.0f, 0.0f, 0.0f});
 
-    // Box Mesh
-    m_boxMesh = std::make_unique<Mesh>();
-    m_boxMesh->InitializeAsBox(*m_graphicsDevice);
-    m_boxMesh->FinishUpload();
+    // モデル読み込み（Box の代わりにモデルファイルがあればロード）
+    {
+        // 暫定コマンドリストで GPU アップロード
+        auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
+
+        // ResourceManager 初期化（デフォルト白テクスチャ作成にcmdListが必要）
+        m_resourceManager = std::make_unique<ResourceManager>();
+        m_resourceManager->Initialize(m_graphicsDevice.get(), m_srvHeap.get(), cmdList);
+
+        std::filesystem::path modelPath = std::string(ASSETS_DIR) + "models/human/walk.gltf";
+        if (std::filesystem::exists(modelPath))
+        {
+            auto meshDataList = ModelLoader::LoadFromFile(
+                *m_graphicsDevice, cmdList, modelPath, *m_resourceManager);
+
+            for (auto& md : meshDataList)
+            {
+                if (md.material)
+                {
+                    md.mesh->SetMaterial(md.material.get());
+                    m_modelMaterials.push_back(std::move(md.material));
+                }
+                m_modelMeshes.push_back(std::move(md.mesh));
+            }
+        }
+        else
+        {
+            // フォールバック: Boxメッシュ
+            Logger::Warn("Model not found, using fallback box");
+            auto box = std::make_unique<Mesh>();
+            box->InitializeAsBox(*m_graphicsDevice);
+            m_modelMeshes.push_back(std::move(box));
+        }
+
+        // コマンド実行 + GPU待ち
+        ThrowIfFailed(cmdList->Close());
+        m_commandQueue->ExecuteCommandList(cmdList);
+        m_commandQueue->WaitIdle();
+
+        // アップロードバッファ解放
+        for (auto& mesh : m_modelMeshes)
+            mesh->FinishUpload();
+        m_resourceManager->FinishUploads();
+    }
 
     // PerFrame Constant Buffer
     struct FrameConstants {
         DirectX::XMFLOAT4X4 view;
         DirectX::XMFLOAT4X4 proj;
-        float time;
-        float padding[3];
+        DirectX::XMFLOAT3   lightDir;
+        float                time;
+        DirectX::XMFLOAT3   lightColor;
+        float                ambientStrength;
     };
     m_perFrameCB = std::make_unique<ConstantBuffer>();
     m_perFrameCB->Initialize(*m_graphicsDevice, sizeof(FrameConstants), FrameResources::kFrameCount);
@@ -185,7 +241,10 @@ void Application::Shutdown()
     // リソース解放（逆順）
     m_commandList.reset();
     m_perFrameCB.reset();
-    m_boxMesh.reset();
+    m_modelMaterials.clear();
+    m_modelMeshes.clear();
+    m_resourceManager.reset();
+    m_srvHeap.reset();
     m_camera.reset();
     m_pipelineState.reset();
     m_rootSignature.reset();
@@ -219,55 +278,70 @@ void Application::Render()
     auto* backBuffer = m_swapChain->GetCurrentBackBuffer();
     auto rtv = m_swapChain->GetCurrentRTV();
 
-    // バリア: PRESENT → RENDER_TARGET
     m_commandList->TransitionResource(backBuffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
 
-    // クリア
     constexpr float clearColor[4] = {0.392f, 0.584f, 0.929f, 1.0f};
     m_commandList->ClearRenderTarget(rtv, clearColor);
     m_commandList->ClearDepthStencil(m_dsvHandle);
-
-    // レンダーターゲット設定
     m_commandList->SetRenderTarget(rtv, m_dsvHandle);
     m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
 
-    // パイプライン設定
     m_commandList->SetRootSignature(*m_rootSignature);
     m_commandList->SetPipelineState(*m_pipelineState);
 
-    // PerFrame CB 更新
+    // SRV ヒープをバインド
+    m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+
+    // PerFrame CB
     f32 totalTime = m_gameClock.GetTotalTime();
     u32 frameIndex = m_swapChain->GetCurrentBackBufferIndex();
 
     struct FrameConstants {
         XMFLOAT4X4 view;
         XMFLOAT4X4 proj;
-        float time;
-        float padding[3];
+        XMFLOAT3   lightDir;
+        float      time;
+        XMFLOAT3   lightColor;
+        float      ambientStrength;
     };
 
     FrameConstants fc{};
     XMStoreFloat4x4(&fc.view, XMMatrixTranspose(m_camera->GetViewMatrix()));
     XMStoreFloat4x4(&fc.proj, XMMatrixTranspose(m_camera->GetProjectionMatrix()));
+    fc.lightDir = { 0.3f, -1.0f, 0.5f };  // 斜め上からのライト
     fc.time = totalTime;
+    fc.lightColor = { 1.0f, 0.95f, 0.9f };  // 暖色系の白
+    fc.ambientStrength = 0.15f;
 
     m_perFrameCB->Update(&fc, sizeof(fc), frameIndex);
     m_commandList->SetPerFrameCBV(RootSignature::kSlotPerFrame, m_perFrameCB->GetGpuAddress(frameIndex));
 
-    // PerObject: Boxを回転
+    // 各メッシュを描画
     XMMATRIX model = XMMatrixRotationY(totalTime);
     XMMATRIX viewProj = m_camera->GetViewProjMatrix();
-    XMMATRIX mvp = XMMatrixTranspose(model * viewProj);
 
-    m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 16, &mvp);
+    for (const auto& mesh : m_modelMeshes)
+    {
+        // MVP + Model (各16 DWORD = 合計 32 DWORD)
+        struct PerObjectData {
+            XMMATRIX mvp;
+            XMMATRIX mdl;
+        } objData;
+        objData.mvp = XMMatrixTranspose(model * viewProj);
+        objData.mdl = XMMatrixTranspose(model);
+        m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
 
-    // 描画
-    m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    m_commandList->SetVertexBuffer(m_boxMesh->GetVertexBuffer().GetView());
-    m_commandList->SetIndexBuffer(m_boxMesh->GetIndexBuffer().GetView());
-    m_commandList->DrawIndexedInstanced(m_boxMesh->GetIndexCount());
+        // SRV テーブルをセット（テクスチャが無ければデフォルト白）
+        const Material* mat = mesh->GetMaterial();
+        Texture* tex = (mat && mat->albedoTexture) ? mat->albedoTexture : m_resourceManager->GetDefaultWhiteTexture();
+        m_commandList->SetSRVTable(RootSignature::kSlotSRVTable, m_srvHeap->GetGpuHandle(tex->GetSrvIndex()));
 
-    // バリア: RENDER_TARGET → PRESENT
+        m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
+        m_commandList->SetIndexBuffer(mesh->GetIndexBuffer().GetView());
+        m_commandList->DrawIndexedInstanced(mesh->GetIndexCount());
+    }
+
     m_commandList->TransitionResource(backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
     m_commandList->Close();
 

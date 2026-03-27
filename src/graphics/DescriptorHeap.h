@@ -25,6 +25,7 @@ public:
                     u32 numDescriptors, bool shaderVisible = false);
 
     D3D12_CPU_DESCRIPTOR_HANDLE Allocate();
+    u32 AllocateIndex();  // インデックスを返す版
 
     D3D12_CPU_DESCRIPTOR_HANDLE GetCpuHandle(u32 index) const;
     D3D12_GPU_DESCRIPTOR_HANDLE GetGpuHandle(u32 index) const;

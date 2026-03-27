@@ -19,6 +19,7 @@ public:
 
     static constexpr u32 kSlotPerObject = 0;  // RootConstants b0 (16 DWORD = MVP)
     static constexpr u32 kSlotPerFrame  = 1;  // CBV b1
+    static constexpr u32 kSlotSRVTable  = 2;  // DescriptorTable t0
 
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;

@@ -8,11 +8,14 @@
 namespace dx12e
 {
 
+struct Material;
+
 struct Vertex
 {
     DirectX::XMFLOAT3 position;  // POSITION
     DirectX::XMFLOAT3 normal;    // NORMAL
     DirectX::XMFLOAT4 color;     // COLOR
+    DirectX::XMFLOAT2 texCoord;  // TEXCOORD
 };
 
 class Mesh
@@ -30,12 +33,16 @@ public:
     const IndexBuffer&  GetIndexBuffer()  const { return m_indexBuffer; }
     u32 GetIndexCount() const { return m_indexBuffer.GetIndexCount(); }
 
+    void SetMaterial(Material* mat) { m_material = mat; }
+    const Material* GetMaterial() const { return m_material; }
+
     static const D3D12_INPUT_ELEMENT_DESC* GetInputLayout();
     static u32 GetInputLayoutCount();
 
 private:
     VertexBuffer m_vertexBuffer;
     IndexBuffer  m_indexBuffer;
+    Material*    m_material = nullptr;
 };
 
 } // namespace dx12e
