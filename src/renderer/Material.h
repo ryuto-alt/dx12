@@ -1,18 +1,13 @@
 #pragma once
 
-#include <DirectXMath.h>
-
 namespace dx12e
 {
 
-class Material
-{
-public:
-    void SetAlbedo(DirectX::XMFLOAT4 color) { m_albedo = color; }
-    DirectX::XMFLOAT4 GetAlbedo() const { return m_albedo; }
+class Texture;
 
-private:
-    DirectX::XMFLOAT4 m_albedo = {1, 1, 1, 1};
+struct Material
+{
+    Texture* albedoTexture = nullptr;
 };
 
 } // namespace dx12e

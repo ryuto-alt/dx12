@@ -10,6 +10,7 @@ static const D3D12_INPUT_ELEMENT_DESC kInputLayout[] =
     { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
     { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
     { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT,  0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,        0, 40, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
 };
 
 void Mesh::Initialize(GraphicsDevice& device,
@@ -38,54 +39,51 @@ void Mesh::InitializeAsBox(GraphicsDevice& device)
     // Center at origin, size 1x1x1 => half-extent = 0.5
     const f32 h = 0.5f;
 
-    // Face colors:
-    //   +Y = Red,     -Y = Green
-    //   +X = Blue,    -X = Yellow
-    //   +Z = Magenta, -Z = Cyan
-    const XMFLOAT4 red     = {1, 0, 0, 1};
-    const XMFLOAT4 green   = {0, 1, 0, 1};
-    const XMFLOAT4 blue    = {0, 0, 1, 1};
-    const XMFLOAT4 yellow  = {1, 1, 0, 1};
-    const XMFLOAT4 magenta = {1, 0, 1, 1};
-    const XMFLOAT4 cyan    = {0, 1, 1, 1};
+    const XMFLOAT4 white = {1, 1, 1, 1};
+
+    // UV corners
+    const XMFLOAT2 uv00 = {0, 0};
+    const XMFLOAT2 uv10 = {1, 0};
+    const XMFLOAT2 uv11 = {1, 1};
+    const XMFLOAT2 uv01 = {0, 1};
 
     std::vector<Vertex> vertices =
     {
-        // +Y face (top) - Red - normal (0, 1, 0)
-        { {-h,  h, -h}, { 0,  1,  0}, red },
-        { {-h,  h,  h}, { 0,  1,  0}, red },
-        { { h,  h,  h}, { 0,  1,  0}, red },
-        { { h,  h, -h}, { 0,  1,  0}, red },
+        // +Y face (top) - normal (0, 1, 0)
+        { {-h,  h, -h}, { 0,  1,  0}, white, uv00 },
+        { {-h,  h,  h}, { 0,  1,  0}, white, uv10 },
+        { { h,  h,  h}, { 0,  1,  0}, white, uv11 },
+        { { h,  h, -h}, { 0,  1,  0}, white, uv01 },
 
-        // -Y face (bottom) - Green - normal (0, -1, 0)
-        { {-h, -h,  h}, { 0, -1,  0}, green },
-        { {-h, -h, -h}, { 0, -1,  0}, green },
-        { { h, -h, -h}, { 0, -1,  0}, green },
-        { { h, -h,  h}, { 0, -1,  0}, green },
+        // -Y face (bottom) - normal (0, -1, 0)
+        { {-h, -h,  h}, { 0, -1,  0}, white, uv00 },
+        { {-h, -h, -h}, { 0, -1,  0}, white, uv10 },
+        { { h, -h, -h}, { 0, -1,  0}, white, uv11 },
+        { { h, -h,  h}, { 0, -1,  0}, white, uv01 },
 
-        // +X face (right) - Blue - normal (1, 0, 0)
-        { { h, -h, -h}, { 1,  0,  0}, blue },
-        { { h,  h, -h}, { 1,  0,  0}, blue },
-        { { h,  h,  h}, { 1,  0,  0}, blue },
-        { { h, -h,  h}, { 1,  0,  0}, blue },
+        // +X face (right) - normal (1, 0, 0)
+        { { h, -h, -h}, { 1,  0,  0}, white, uv00 },
+        { { h,  h, -h}, { 1,  0,  0}, white, uv10 },
+        { { h,  h,  h}, { 1,  0,  0}, white, uv11 },
+        { { h, -h,  h}, { 1,  0,  0}, white, uv01 },
 
-        // -X face (left) - Yellow - normal (-1, 0, 0)
-        { {-h, -h,  h}, {-1,  0,  0}, yellow },
-        { {-h,  h,  h}, {-1,  0,  0}, yellow },
-        { {-h,  h, -h}, {-1,  0,  0}, yellow },
-        { {-h, -h, -h}, {-1,  0,  0}, yellow },
+        // -X face (left) - normal (-1, 0, 0)
+        { {-h, -h,  h}, {-1,  0,  0}, white, uv00 },
+        { {-h,  h,  h}, {-1,  0,  0}, white, uv10 },
+        { {-h,  h, -h}, {-1,  0,  0}, white, uv11 },
+        { {-h, -h, -h}, {-1,  0,  0}, white, uv01 },
 
-        // +Z face (front) - Magenta - normal (0, 0, 1)
-        { {-h, -h,  h}, { 0,  0,  1}, magenta },
-        { { h, -h,  h}, { 0,  0,  1}, magenta },
-        { { h,  h,  h}, { 0,  0,  1}, magenta },
-        { {-h,  h,  h}, { 0,  0,  1}, magenta },
+        // +Z face (front) - normal (0, 0, 1)
+        { {-h, -h,  h}, { 0,  0,  1}, white, uv00 },
+        { { h, -h,  h}, { 0,  0,  1}, white, uv10 },
+        { { h,  h,  h}, { 0,  0,  1}, white, uv11 },
+        { {-h,  h,  h}, { 0,  0,  1}, white, uv01 },
 
-        // -Z face (back) - Cyan - normal (0, 0, -1)
-        { { h, -h, -h}, { 0,  0, -1}, cyan },
-        { {-h, -h, -h}, { 0,  0, -1}, cyan },
-        { {-h,  h, -h}, { 0,  0, -1}, cyan },
-        { { h,  h, -h}, { 0,  0, -1}, cyan },
+        // -Z face (back) - normal (0, 0, -1)
+        { { h, -h, -h}, { 0,  0, -1}, white, uv00 },
+        { {-h, -h, -h}, { 0,  0, -1}, white, uv10 },
+        { {-h,  h, -h}, { 0,  0, -1}, white, uv11 },
+        { { h,  h, -h}, { 0,  0, -1}, white, uv01 },
     };
 
     std::vector<u32> indices =

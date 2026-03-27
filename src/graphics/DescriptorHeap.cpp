@@ -48,6 +48,14 @@ D3D12_CPU_DESCRIPTOR_HANDLE DescriptorHeap::Allocate()
     return handle;
 }
 
+u32 DescriptorHeap::AllocateIndex()
+{
+    DX_ASSERT(m_numAllocated < m_numDescriptors, "DescriptorHeap is full");
+    u32 index = m_numAllocated;
+    ++m_numAllocated;
+    return index;
+}
+
 D3D12_CPU_DESCRIPTOR_HANDLE DescriptorHeap::GetCpuHandle(u32 index) const
 {
     DX_ASSERT(index < m_numDescriptors, "DescriptorHeap CPU handle index out of range");

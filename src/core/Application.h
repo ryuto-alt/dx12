@@ -5,6 +5,7 @@
 #include "GameClock.h"
 
 #include <memory>
+#include <vector>
 #include <wrl/client.h>
 #include <directx/d3d12.h>
 
@@ -22,6 +23,9 @@ namespace dx12e
     class ConstantBuffer;
     class Mesh;
     class Camera;
+    class ResourceManager;
+    struct Material;
+    struct MeshData;
 }
 
 namespace dx12e
@@ -53,7 +57,10 @@ private:
     std::unique_ptr<DescriptorHeap>    m_dsvHeap;
     std::unique_ptr<RootSignature>     m_rootSignature;
     std::unique_ptr<PipelineState>     m_pipelineState;
-    std::unique_ptr<Mesh>              m_boxMesh;
+    std::unique_ptr<DescriptorHeap>    m_srvHeap;
+    std::unique_ptr<ResourceManager>   m_resourceManager;
+    std::vector<std::unique_ptr<Mesh>>     m_modelMeshes;
+    std::vector<std::unique_ptr<Material>> m_modelMaterials;
     std::unique_ptr<Camera>            m_camera;
     std::unique_ptr<ConstantBuffer>    m_perFrameCB;
     std::unique_ptr<CommandList>       m_commandList;

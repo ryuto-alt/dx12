@@ -30,6 +30,8 @@ public:
     void SetVertexBuffer(const D3D12_VERTEX_BUFFER_VIEW& vbv);
     void SetIndexBuffer(const D3D12_INDEX_BUFFER_VIEW& ibv);
     void DrawIndexedInstanced(u32 indexCount, u32 instanceCount = 1);
+    void SetDescriptorHeap(ID3D12DescriptorHeap* heap);
+    void SetSRVTable(u32 slot, D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle);
     void Close();
 
     ID3D12GraphicsCommandList* GetNative() const { return m_cmdList; }

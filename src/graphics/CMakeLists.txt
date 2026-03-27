@@ -9,6 +9,7 @@ add_library(Graphics STATIC
     RootSignature.cpp
     PipelineState.cpp
     CommandList.cpp
+    Texture.cpp
 )
 
 target_include_directories(Graphics
@@ -28,3 +29,6 @@ target_link_libraries(Graphics
         dxgi.lib
         dxguid.lib
 )
+
+target_compile_options(Graphics PRIVATE ${DX12_COMPILE_OPTIONS})
+target_compile_definitions(Graphics PRIVATE ${DX12_COMPILE_DEFS})

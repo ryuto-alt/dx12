@@ -105,6 +105,17 @@ void CommandList::DrawIndexedInstanced(u32 indexCount, u32 instanceCount)
     m_cmdList->DrawIndexedInstanced(indexCount, instanceCount, 0, 0, 0);
 }
 
+void CommandList::SetDescriptorHeap(ID3D12DescriptorHeap* heap)
+{
+    ID3D12DescriptorHeap* heaps[] = { heap };
+    m_cmdList->SetDescriptorHeaps(1, heaps);
+}
+
+void CommandList::SetSRVTable(u32 slot, D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle)
+{
+    m_cmdList->SetGraphicsRootDescriptorTable(slot, gpuHandle);
+}
+
 void CommandList::Close()
 {
     ThrowIfFailed(m_cmdList->Close());

@@ -14,3 +14,6 @@ find_package(spdlog CONFIG REQUIRED)
 target_link_libraries(Core
     PUBLIC spdlog::spdlog
 )
+
+target_compile_options(Core PRIVATE ${DX12_COMPILE_OPTIONS})
+target_compile_definitions(Core PRIVATE ${DX12_COMPILE_DEFS})

@@ -4,11 +4,9 @@ project(DX12Engine VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# MSVC compile options
-if(MSVC)
-    add_compile_options(/W4 /WX /MP /permissive- /utf-8)
-    add_compile_definitions(UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
-endif()
+# MSVC compile options (not global - applied per-target to avoid conflicts with FetchContent deps)
+set(DX12_COMPILE_OPTIONS /W4 /WX /MP /permissive- /utf-8)
+set(DX12_COMPILE_DEFS UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 
 # Dependencies
 find_package(spdlog CONFIG REQUIRED)
@@ -29,6 +27,11 @@ target_link_libraries(DX12Engine
         Renderer
         Resource
 )
+
+if(MSVC)
+    target_compile_options(DX12Engine PRIVATE ${DX12_COMPILE_OPTIONS})
+    target_compile_definitions(DX12Engine PRIVATE ${DX12_COMPILE_DEFS})
+endif()
 
 # --- DXC Shader Compilation ---
 find_program(DXC_EXECUTABLE dxc
@@ -69,5 +72,8 @@ else()
     message(WARNING "DXC not found -- shader compilation skipped")
 endif()
 
-# Shader directory compile definition (Core needs it because Application.cpp loads shaders)
-target_compile_definitions(Core PRIVATE SHADER_DIR=L"${CMAKE_BINARY_DIR}/shaders/")
+# Shader directory and assets directory (Core needs it because Application.cpp loads shaders/assets)
+target_compile_definitions(Core PRIVATE
+    SHADER_DIR=L"${CMAKE_BINARY_DIR}/shaders/"
+    ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets/"
+)
