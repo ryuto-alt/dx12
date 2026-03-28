@@ -17,10 +17,11 @@ public:
 
     ID3D12RootSignature* Get() const { return m_rootSignature.Get(); }
 
-    static constexpr u32 kSlotPerObject = 0;  // RootConstants b0 (16 DWORD = MVP)
-    static constexpr u32 kSlotPerFrame  = 1;  // CBV b1
-    static constexpr u32 kSlotSRVTable  = 2;  // DescriptorTable t0
-    static constexpr u32 kSlotBonesSRV  = 3;  // DescriptorTable t1 (bones)
+    static constexpr u32 kSlotPerObject   = 0;  // RootConstants b0 (32 DWORD = MVP+Model)
+    static constexpr u32 kSlotPerFrame    = 1;  // CBV b1
+    static constexpr u32 kSlotSRVTable    = 2;  // DescriptorTable t0 (albedo)
+    static constexpr u32 kSlotBonesSRV    = 3;  // DescriptorTable t1 (bones)
+    static constexpr u32 kSlotShadowSRV   = 4;  // DescriptorTable t2 (shadow map)
 
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;

@@ -27,6 +27,7 @@ public:
     PipelineStateBuilder& SetDepthEnabled(bool enabled);
     PipelineStateBuilder& SetAlphaBlendEnabled(bool enabled);
     PipelineStateBuilder& SetCullMode(D3D12_CULL_MODE mode);
+    PipelineStateBuilder& SetDepthBias(i32 bias, f32 slopeScaledBias);
 
     Microsoft::WRL::ComPtr<ID3D12PipelineState> Build(GraphicsDevice& device);
 

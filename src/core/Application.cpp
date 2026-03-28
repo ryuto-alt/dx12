@@ -262,6 +262,86 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow)
         }
     }
 
+    // シャドウマップ作成
+    {
+        m_shadowDsvHeap = std::make_unique<DescriptorHeap>();
+        m_shadowDsvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1, false);
+
+        D3D12_RESOURCE_DESC shadowDesc{};
+        shadowDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        shadowDesc.Width = kShadowMapSize;
+        shadowDesc.Height = kShadowMapSize;
+        shadowDesc.DepthOrArraySize = 1;
+        shadowDesc.MipLevels = 1;
+        shadowDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+        shadowDesc.SampleDesc = {1, 0};
+        shadowDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+        D3D12_CLEAR_VALUE clearValue{};
+        clearValue.Format = DXGI_FORMAT_D32_FLOAT;
+        clearValue.DepthStencil = {1.0f, 0};
+
+        D3D12_HEAP_PROPERTIES heapProps{};
+        heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+        ThrowIfFailed(m_graphicsDevice->GetDevice()->CreateCommittedResource(
+            &heapProps, D3D12_HEAP_FLAG_NONE,
+            &shadowDesc, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            &clearValue, IID_PPV_ARGS(&m_shadowMap)));
+
+        // DSV
+        m_shadowDsvHandle = m_shadowDsvHeap->Allocate();
+        D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc{};
+        dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
+        dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+        m_graphicsDevice->GetDevice()->CreateDepthStencilView(
+            m_shadowMap.Get(), &dsvDesc, m_shadowDsvHandle);
+
+        // SRV
+        m_shadowSrvIndex = m_srvHeap->AllocateIndex();
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+        srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Texture2D.MipLevels = 1;
+        m_graphicsDevice->GetDevice()->CreateShaderResourceView(
+            m_shadowMap.Get(), &srvDesc, m_srvHeap->GetCpuHandle(m_shadowSrvIndex));
+
+        // Shadow PSO (depth-only, no pixel shader, with depth bias)
+        {
+            auto vs = ShaderCompiler::LoadFromFile(std::wstring(SHADER_DIR) + L"ShadowPass_VS.cso");
+            PipelineStateBuilder builder;
+            builder.SetRootSignature(m_rootSignature->Get())
+                   .SetVertexShader(vs.GetData(), vs.GetSize())
+                   .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
+                   .SetRenderTargetFormat(DXGI_FORMAT_UNKNOWN)
+                   .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+                   .SetDepthEnabled(true)
+                   .SetDepthBias(8000, 2.0f);
+
+            m_shadowPipelineState = std::make_unique<PipelineState>();
+            m_shadowPipelineState->Initialize(*m_graphicsDevice, builder);
+        }
+
+        // Shadow Skinned PSO
+        {
+            auto vs = ShaderCompiler::LoadFromFile(std::wstring(SHADER_DIR) + L"ShadowPassSkinned_VS.cso");
+            PipelineStateBuilder builder;
+            builder.SetRootSignature(m_rootSignature->Get())
+                   .SetVertexShader(vs.GetData(), vs.GetSize())
+                   .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
+                   .SetRenderTargetFormat(DXGI_FORMAT_UNKNOWN)
+                   .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+                   .SetDepthEnabled(true)
+                   .SetDepthBias(8000, 2.0f);
+
+            m_shadowSkinnedPipelineState = std::make_unique<PipelineState>();
+            m_shadowSkinnedPipelineState->Initialize(*m_graphicsDevice, builder);
+        }
+
+        Logger::Info("Shadow map initialized ({}x{})", kShadowMapSize, kShadowMapSize);
+    }
+
     // PerFrame Constant Buffer
     struct FrameConstants {
         DirectX::XMFLOAT4X4 view;
@@ -270,6 +350,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow)
         float                time;
         DirectX::XMFLOAT3   lightColor;
         float                ambientStrength;
+        DirectX::XMFLOAT4X4 lightViewProj;
     };
     m_perFrameCB = std::make_unique<ConstantBuffer>();
     m_perFrameCB->Initialize(*m_graphicsDevice, sizeof(FrameConstants), FrameResources::kFrameCount);
@@ -406,6 +487,10 @@ void Application::Shutdown()
 
     // リソース解放（逆順）
     m_inputSystem.reset();
+    m_shadowSkinnedPipelineState.reset();
+    m_shadowPipelineState.reset();
+    m_shadowMap.Reset();
+    m_shadowDsvHeap.reset();
     m_gridPipelineState.reset();
     m_skinnedPipelineState.reset();
     m_scene.reset();
@@ -478,6 +563,81 @@ void Application::Render()
     auto* nativeCmdList = m_frameResources->BeginFrame(*m_commandQueue);
     m_commandList->Wrap(nativeCmdList);
 
+    u32 frameIndex = m_swapChain->GetCurrentBackBufferIndex();
+    f32 totalTime = m_gameClock.GetTotalTime();
+
+    // ライト方向と View/Proj 行列
+    XMFLOAT3 lightDirF3 = {0.3f, -1.0f, 0.5f};
+    XMVECTOR lightDir = XMVector3Normalize(XMLoadFloat3(&lightDirF3));
+    XMVECTOR lightPos = XMVectorScale(lightDir, -30.0f);  // ライト位置（シーン中心から離す）
+    XMMATRIX lightView = XMMatrixLookAtLH(lightPos, XMVectorZero(), XMVectorSet(0, 1, 0, 0));
+    XMMATRIX lightProj = XMMatrixOrthographicLH(30.0f, 30.0f, 0.1f, 60.0f);
+    XMMATRIX lightViewProj = lightView * lightProj;
+
+    // SRV ヒープをバインド（シャドウパスでもボーンSRVが必要）
+    m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+    m_commandList->SetRootSignature(*m_rootSignature);
+
+    // ===== シャドウパス =====
+    {
+        m_commandList->TransitionResource(m_shadowMap.Get(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+
+        m_commandList->ClearDepthStencil(m_shadowDsvHandle);
+
+        // RTVなし、DSVのみ
+        nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_shadowDsvHandle);
+
+        // シャドウマップ用ビューポート
+        D3D12_VIEWPORT shadowVp{};
+        shadowVp.Width    = static_cast<f32>(kShadowMapSize);
+        shadowVp.Height   = static_cast<f32>(kShadowMapSize);
+        shadowVp.MinDepth = 0.0f;
+        shadowVp.MaxDepth = 1.0f;
+        D3D12_RECT shadowScissor = {0, 0, static_cast<LONG>(kShadowMapSize), static_cast<LONG>(kShadowMapSize)};
+        nativeCmdList->RSSetViewports(1, &shadowVp);
+        nativeCmdList->RSSetScissorRects(1, &shadowScissor);
+
+        // シャドウパスで全Entity（グリッドは除外）を描画
+        m_scene->ForEachEntity([&](const Entity& entity) {
+            if (entity.useGridShader) return;  // グリッドはシャドウキャスターにしない
+
+            XMMATRIX world = entity.transform.GetWorldMatrix();
+
+            if (entity.hasSkeleton && entity.skinningBuffer && entity.animator)
+            {
+                entity.skinningBuffer->Update(entity.animator->GetSkinningMatrices(), frameIndex);
+                m_commandList->SetPipelineState(*m_shadowSkinnedPipelineState);
+                m_commandList->SetSRVTable(RootSignature::kSlotBonesSRV,
+                    m_srvHeap->GetGpuHandle(entity.skinningBuffer->GetSrvIndex(frameIndex)));
+            }
+            else
+            {
+                m_commandList->SetPipelineState(*m_shadowPipelineState);
+            }
+
+            for (const auto& mesh : entity.meshes)
+            {
+                struct PerObjectData {
+                    XMMATRIX mvp;
+                    XMMATRIX mdl;
+                } objData;
+                objData.mvp = XMMatrixTranspose(world * lightViewProj);
+                objData.mdl = XMMatrixTranspose(world);
+                m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
+
+                m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
+                m_commandList->SetIndexBuffer(mesh->GetIndexBuffer().GetView());
+                m_commandList->DrawIndexedInstanced(mesh->GetIndexCount());
+            }
+        });
+
+        m_commandList->TransitionResource(m_shadowMap.Get(),
+            D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    }
+
+    // ===== メインパス =====
     auto* backBuffer = m_swapChain->GetCurrentBackBuffer();
     auto rtv = m_swapChain->GetCurrentRTV();
 
@@ -489,16 +649,9 @@ void Application::Render()
     m_commandList->SetRenderTarget(rtv, m_dsvHandle);
     m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
 
-    m_commandList->SetRootSignature(*m_rootSignature);
     m_commandList->SetPipelineState(*m_pipelineState);
 
-    // SRV ヒープをバインド
-    m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-
-    // PerFrame CB
-    f32 totalTime = m_gameClock.GetTotalTime();
-    u32 frameIndex = m_swapChain->GetCurrentBackBufferIndex();
-
+    // PerFrame CB（lightViewProj追加）
     struct FrameConstants {
         XMFLOAT4X4 view;
         XMFLOAT4X4 proj;
@@ -506,18 +659,24 @@ void Application::Render()
         float      time;
         XMFLOAT3   lightColor;
         float      ambientStrength;
+        XMFLOAT4X4 lightVP;
     };
 
     FrameConstants fc{};
     XMStoreFloat4x4(&fc.view, XMMatrixTranspose(m_camera->GetViewMatrix()));
     XMStoreFloat4x4(&fc.proj, XMMatrixTranspose(m_camera->GetProjectionMatrix()));
-    fc.lightDir = { 0.3f, -1.0f, 0.5f };  // 斜め上からのライト
+    fc.lightDir = lightDirF3;
     fc.time = totalTime;
-    fc.lightColor = { 1.0f, 0.95f, 0.9f };  // 暖色系の白
+    fc.lightColor = { 1.0f, 0.95f, 0.9f };
     fc.ambientStrength = 0.15f;
+    XMStoreFloat4x4(&fc.lightVP, XMMatrixTranspose(lightViewProj));
 
     m_perFrameCB->Update(&fc, sizeof(fc), frameIndex);
     m_commandList->SetPerFrameCBV(RootSignature::kSlotPerFrame, m_perFrameCB->GetGpuAddress(frameIndex));
+
+    // シャドウマップSRVをバインド
+    m_commandList->SetSRVTable(RootSignature::kSlotShadowSRV,
+        m_srvHeap->GetGpuHandle(m_shadowSrvIndex));
 
     XMMATRIX viewProj = m_camera->GetViewProjMatrix();
 
@@ -532,7 +691,6 @@ void Application::Render()
         }
         else if (entity.hasSkeleton && entity.skinningBuffer && entity.animator)
         {
-            entity.skinningBuffer->Update(entity.animator->GetSkinningMatrices(), frameIndex);
             m_commandList->SetPipelineState(*m_skinnedPipelineState);
             m_commandList->SetSRVTable(RootSignature::kSlotBonesSRV,
                 m_srvHeap->GetGpuHandle(entity.skinningBuffer->GetSrvIndex(frameIndex)));
@@ -544,7 +702,6 @@ void Application::Render()
 
         for (const auto& mesh : entity.meshes)
         {
-            // MVP + Model (各16 DWORD = 合計 32 DWORD)
             struct PerObjectData {
                 XMMATRIX mvp;
                 XMMATRIX mdl;
@@ -553,7 +710,6 @@ void Application::Render()
             objData.mdl = XMMatrixTranspose(world);
             m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
 
-            // SRV テーブルをセット（テクスチャが無ければデフォルト白）
             const Material* mat = mesh->GetMaterial();
             Texture* tex = (mat && mat->albedoTexture) ? mat->albedoTexture : m_resourceManager->GetDefaultWhiteTexture();
             m_commandList->SetSRVTable(RootSignature::kSlotSRVTable, m_srvHeap->GetGpuHandle(tex->GetSrvIndex()));

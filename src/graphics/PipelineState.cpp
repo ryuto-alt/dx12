@@ -95,6 +95,7 @@ PipelineStateBuilder& PipelineStateBuilder::SetInputLayout(const D3D12_INPUT_ELE
 PipelineStateBuilder& PipelineStateBuilder::SetRenderTargetFormat(DXGI_FORMAT format)
 {
     m_desc.RTVFormats[0] = format;
+    m_desc.NumRenderTargets = (format == DXGI_FORMAT_UNKNOWN) ? 0 : 1;
     return *this;
 }
 
@@ -126,6 +127,14 @@ PipelineStateBuilder& PipelineStateBuilder::SetAlphaBlendEnabled(bool enabled)
 PipelineStateBuilder& PipelineStateBuilder::SetCullMode(D3D12_CULL_MODE mode)
 {
     m_desc.RasterizerState.CullMode = mode;
+    return *this;
+}
+
+PipelineStateBuilder& PipelineStateBuilder::SetDepthBias(i32 bias, f32 slopeScaledBias)
+{
+    m_desc.RasterizerState.DepthBias = bias;
+    m_desc.RasterizerState.SlopeScaledDepthBias = slopeScaledBias;
+    m_desc.RasterizerState.DepthBiasClamp = 0.0f;
     return *this;
 }
 

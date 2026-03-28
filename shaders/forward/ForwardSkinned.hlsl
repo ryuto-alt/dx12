@@ -1,8 +1,12 @@
-// ForwardSkinned.hlsl - Forward rendering with skeletal animation
+// ForwardSkinned.hlsl - Forward rendering with skeletal animation + Shadow
 
-Texture2D    g_albedo  : register(t0);
-SamplerState g_sampler : register(s0);
+Texture2D    g_albedo    : register(t0);
+SamplerState g_sampler   : register(s0);
 StructuredBuffer<float4x4> g_bones : register(t1);
+
+// Shadow map
+Texture2D              g_shadowMap      : register(t2);
+SamplerComparisonState g_shadowSampler  : register(s1);
 
 cbuffer PerObjectConstants : register(b0)
 {
@@ -18,6 +22,7 @@ cbuffer PerFrameConstants : register(b1)
     float    time;
     float3   lightColor;
     float    ambientStrength;
+    float4x4 lightViewProj;
 };
 
 struct VSInput
@@ -32,10 +37,11 @@ struct VSInput
 
 struct PSInput
 {
-    float4 positionSV  : SV_POSITION;
-    float3 worldNormal : NORMAL;
-    float4 color       : COLOR;
-    float2 texCoord    : TEXCOORD0;
+    float4 positionSV   : SV_POSITION;
+    float3 worldNormal  : NORMAL;
+    float4 color        : COLOR;
+    float2 texCoord     : TEXCOORD0;
+    float4 shadowCoord  : TEXCOORD1;
 };
 
 PSInput VSMain(VSInput input)
@@ -73,7 +79,37 @@ PSInput VSMain(VSInput input)
     output.worldNormal = normalize(mul(skinnedNorm, (float3x3)model));
     output.color       = input.color;
     output.texCoord    = input.texCoord;
+
+    // ライト空間座標
+    float4 worldPos = mul(skinnedPos, model);
+    output.shadowCoord = mul(worldPos, lightViewProj);
+
     return output;
+}
+
+float CalcShadow(float4 shadowCoord)
+{
+    float3 projCoords = shadowCoord.xyz / shadowCoord.w;
+    float2 shadowUV = projCoords.xy * 0.5f + 0.5f;
+    shadowUV.y = 1.0f - shadowUV.y;
+
+    if (shadowUV.x < 0 || shadowUV.x > 1 || shadowUV.y < 0 || shadowUV.y > 1)
+        return 1.0f;
+
+    float currentDepth = projCoords.z;
+    float shadow = 0.0f;
+    float texelSize = 1.0f / 2048.0f;
+
+    [unroll]
+    for (int y = -1; y <= 1; y++)
+    {
+        [unroll]
+        for (int x = -1; x <= 1; x++)
+        {
+            shadow += g_shadowMap.SampleCmpLevelZero(g_shadowSampler, shadowUV + float2(x, y) * texelSize, currentDepth);
+        }
+    }
+    return shadow / 9.0f;
 }
 
 float4 PSMain(PSInput input) : SV_TARGET
@@ -85,8 +121,10 @@ float4 PSMain(PSInput input) : SV_TARGET
     float3 L = normalize(-lightDir);
     float  NdotL = max(dot(N, L), 0.0f);
 
+    float shadow = CalcShadow(input.shadowCoord);
+
     float3 ambient = ambientStrength * lightColor;
-    float3 diffuse = NdotL * lightColor;
+    float3 diffuse = NdotL * lightColor * shadow;
     float3 finalColor = baseColor.rgb * (ambient + diffuse);
 
     return float4(finalColor, baseColor.a);

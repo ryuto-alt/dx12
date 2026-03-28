@@ -61,7 +61,9 @@ if(DXC_EXECUTABLE)
 
     set(SHADER_FORWARD "${CMAKE_SOURCE_DIR}/shaders/forward/Forward.hlsl")
     set(SHADER_SKINNED "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardSkinned.hlsl")
-    set(SHADER_GRID    "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardGrid.hlsl")
+    set(SHADER_GRID          "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardGrid.hlsl")
+    set(SHADER_SHADOW        "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPass.hlsl")
+    set(SHADER_SHADOW_SKIN   "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPassSkinned.hlsl")
 
     set(SHADER_OUTPUTS
         "${SHADER_OUTPUT_DIR}/Forward_VS.cso"
@@ -70,6 +72,8 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/ForwardSkinned_PS.cso"
         "${SHADER_OUTPUT_DIR}/ForwardGrid_VS.cso"
         "${SHADER_OUTPUT_DIR}/ForwardGrid_PS.cso"
+        "${SHADER_OUTPUT_DIR}/ShadowPass_VS.cso"
+        "${SHADER_OUTPUT_DIR}/ShadowPassSkinned_VS.cso"
     )
 
     add_custom_command(
@@ -112,6 +116,20 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/ForwardGrid_PS.cso" "${SHADER_GRID}"
         DEPENDS "${SHADER_GRID}"
         COMMENT "Compiling ForwardGrid.hlsl -> ForwardGrid_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ShadowPass_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/ShadowPass_VS.cso" "${SHADER_SHADOW}"
+        DEPENDS "${SHADER_SHADOW}"
+        COMMENT "Compiling ShadowPass.hlsl -> ShadowPass_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ShadowPassSkinned_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/ShadowPassSkinned_VS.cso" "${SHADER_SHADOW_SKIN}"
+        DEPENDS "${SHADER_SHADOW_SKIN}"
+        COMMENT "Compiling ShadowPassSkinned.hlsl -> ShadowPassSkinned_VS.cso (vs_6_0)"
     )
 
     add_custom_target(Shaders ALL DEPENDS ${SHADER_OUTPUTS})

@@ -63,6 +63,13 @@ private:
     std::unique_ptr<ImGuiManager>      m_imguiManager;
     std::unique_ptr<PipelineState>     m_skinnedPipelineState;
     std::unique_ptr<PipelineState>     m_gridPipelineState;
+    std::unique_ptr<PipelineState>     m_shadowPipelineState;
+    std::unique_ptr<PipelineState>     m_shadowSkinnedPipelineState;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_shadowMap;
+    std::unique_ptr<DescriptorHeap>    m_shadowDsvHeap;
+    D3D12_CPU_DESCRIPTOR_HANDLE        m_shadowDsvHandle{};
+    u32                                m_shadowSrvIndex = 0;
+    static constexpr u32 kShadowMapSize = 2048;
     std::unique_ptr<Camera>            m_camera;
     std::unique_ptr<ConstantBuffer>    m_perFrameCB;
     std::unique_ptr<CommandList>       m_commandList;
