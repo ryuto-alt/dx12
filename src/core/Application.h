@@ -30,6 +30,7 @@ namespace dx12e
     class ImGuiManager;
     class Scene;
     class ScriptEngine;
+    class AudioSystem;
 }
 
 namespace dx12e
@@ -44,7 +45,7 @@ public:
     Application(const Application&) = delete;
     Application& operator=(const Application&) = delete;
 
-    void Initialize(HINSTANCE hInstance, int nCmdShow);
+    void Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode = false);
     void Run();
     void Shutdown();
 
@@ -56,6 +57,7 @@ private:
     void RebuildScene();
     void EnterPlayMode();
     void EnterEditorMode();
+    void BuildGame();
 
     std::unique_ptr<Window>         m_window;
     std::unique_ptr<GraphicsDevice> m_graphicsDevice;
@@ -78,6 +80,8 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE        m_shadowDsvHandle{};
     u32                                m_shadowSrvIndex = 0;
     static constexpr u32 kShadowMapSize = 2048;
+    static constexpr f32 kSidebarWidth = 280.0f;
+    bool m_isGameMode = false;  // --game フラグ起動
     std::unique_ptr<Camera>            m_camera;
     std::unique_ptr<ConstantBuffer>    m_perFrameCB;
     std::unique_ptr<CommandList>       m_commandList;
@@ -86,8 +90,10 @@ private:
     std::unique_ptr<InputSystem>       m_inputSystem;
     std::unique_ptr<Scene>             m_scene;
     std::unique_ptr<ScriptEngine>      m_scriptEngine;
+    std::unique_ptr<AudioSystem>       m_audioSystem;
     GameClock                          m_gameClock;
     bool                               m_isRunning = false;
+    u32                                m_framesSinceStart = 0;
 
     // エディタ/プレイモード
     EngineMode m_engineMode = EngineMode::Editor;
@@ -103,6 +109,7 @@ private:
     std::filesystem::file_time_type m_scriptLastWriteTime{};
     f32 m_scriptPollTimer = 0.0f;
     f32 m_hotReloadFlash = 0.0f;
+    f32 m_buildCompleteFlash = 0.0f;
     static constexpr f32 kScriptPollInterval = 0.5f;
 
     // フレームレートリミッター

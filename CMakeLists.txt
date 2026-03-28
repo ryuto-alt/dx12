@@ -18,6 +18,7 @@ add_subdirectory(src/renderer)
 add_subdirectory(src/resource)
 add_subdirectory(src/animation)
 add_subdirectory(src/input)
+add_subdirectory(src/audio)
 add_subdirectory(src/scene)
 add_subdirectory(src/scripting)
 add_subdirectory(src/gui)
@@ -32,6 +33,7 @@ target_link_libraries(DX12Engine
         Renderer
         Resource
         Animation
+        Audio
         Input
         Scene
         Scripting

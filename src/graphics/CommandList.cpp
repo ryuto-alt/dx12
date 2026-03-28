@@ -60,6 +60,25 @@ void CommandList::SetViewportAndScissor(u32 width, u32 height)
     m_cmdList->RSSetScissorRects(1, &scissor);
 }
 
+void CommandList::SetViewportAndScissor(u32 x, u32 y, u32 width, u32 height)
+{
+    D3D12_VIEWPORT viewport{};
+    viewport.TopLeftX = static_cast<float>(x);
+    viewport.TopLeftY = static_cast<float>(y);
+    viewport.Width    = static_cast<float>(width);
+    viewport.Height   = static_cast<float>(height);
+    viewport.MinDepth = 0.0f;
+    viewport.MaxDepth = 1.0f;
+    m_cmdList->RSSetViewports(1, &viewport);
+
+    D3D12_RECT scissor{};
+    scissor.left   = static_cast<LONG>(x);
+    scissor.top    = static_cast<LONG>(y);
+    scissor.right  = static_cast<LONG>(x + width);
+    scissor.bottom = static_cast<LONG>(y + height);
+    m_cmdList->RSSetScissorRects(1, &scissor);
+}
+
 void CommandList::SetRenderTarget(D3D12_CPU_DESCRIPTOR_HANDLE rtv, D3D12_CPU_DESCRIPTOR_HANDLE dsv)
 {
     m_cmdList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);

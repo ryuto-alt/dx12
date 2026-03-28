@@ -21,6 +21,7 @@ public:
     void ClearRenderTarget(D3D12_CPU_DESCRIPTOR_HANDLE rtv, const float color[4]);
     void ClearDepthStencil(D3D12_CPU_DESCRIPTOR_HANDLE dsv, float depth = 1.0f);
     void SetViewportAndScissor(u32 width, u32 height);
+    void SetViewportAndScissor(u32 x, u32 y, u32 width, u32 height);
     void SetRenderTarget(D3D12_CPU_DESCRIPTOR_HANDLE rtv, D3D12_CPU_DESCRIPTOR_HANDLE dsv);
     void SetPipelineState(PipelineState& pso);
     void SetRootSignature(RootSignature& rs);

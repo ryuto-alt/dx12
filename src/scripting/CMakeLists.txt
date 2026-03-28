@@ -14,6 +14,7 @@ target_link_libraries(Scripting PUBLIC
     Input
     Renderer
     Animation
+    Audio
     ${LUA_LIBRARIES}
     sol2::sol2
     Microsoft::DirectXMath

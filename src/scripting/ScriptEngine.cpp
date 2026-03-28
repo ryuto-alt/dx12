@@ -13,6 +13,7 @@
 #include "renderer/Mesh.h"
 #include "input/InputSystem.h"
 #include "renderer/Camera.h"
+#include "audio/AudioSystem.h"
 #include "animation/Animator.h"
 #include "animation/AnimationClip.h"
 
@@ -26,11 +27,12 @@ ScriptEngine::ScriptEngine() = default;
 ScriptEngine::~ScriptEngine() { Shutdown(); }
 
 void ScriptEngine::Initialize(Scene* scene, InputSystem* input, Camera* camera,
-                               const std::string& assetsDir)
+                               AudioSystem* audio, const std::string& assetsDir)
 {
     m_scene     = scene;
     m_input     = input;
     m_camera    = camera;
+    m_audio     = audio;
     m_assetsDir = assetsDir;
 
     m_lua = std::make_unique<sol::state>();
@@ -157,10 +159,30 @@ void ScriptEngine::RegisterBindings()
         "setMouseSensitivity", &Camera::SetMouseSensitivity
     );
 
+    // --- Audio ---
+    lua.new_usertype<AudioSystem>("AudioSystem",
+        "playBGM",         &AudioSystem::PlayBGM,
+        "stopBGM",         &AudioSystem::StopBGM,
+        "pauseBGM",        &AudioSystem::PauseBGM,
+        "resumeBGM",       &AudioSystem::ResumeBGM,
+        "playSFX",         &AudioSystem::PlaySFX,
+        "stopAllSFX",      &AudioSystem::StopAllSFX,
+        "setMasterVolume",  &AudioSystem::SetMasterVolume,
+        "setBGMVolume",     &AudioSystem::SetBGMVolume,
+        "setSFXVolume",     &AudioSystem::SetSFXVolume,
+        "getMasterVolume",  &AudioSystem::GetMasterVolume,
+        "getBGMVolume",     &AudioSystem::GetBGMVolume,
+        "getSFXVolume",     &AudioSystem::GetSFXVolume,
+        "getBGMList",       &AudioSystem::GetBGMList,
+        "getSFXList",       &AudioSystem::GetSFXList,
+        "rescan",           &AudioSystem::ScanAudioFiles
+    );
+
     // --- グローバル変数 ---
     lua["scene"]  = m_scene;
     lua["input"]  = m_input;
     lua["camera"] = m_camera;
+    lua["audio"]  = m_audio;
     lua["ASSETS"] = m_assetsDir;
 
     // --- キーコード定数 ---

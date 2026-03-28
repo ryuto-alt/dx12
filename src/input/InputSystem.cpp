@@ -29,6 +29,16 @@ void InputSystem::Update()
     // マウス差分リセット
     m_mouseDeltaX = 0.0f;
     m_mouseDeltaY = 0.0f;
+
+    // キャプチャ中はカーソルをウィンドウ中央に固定
+    if (m_mouseCaptured && m_hwnd)
+    {
+        RECT rect;
+        GetClientRect(m_hwnd, &rect);
+        POINT center = {(rect.right - rect.left) / 2, (rect.bottom - rect.top) / 2};
+        ClientToScreen(m_hwnd, &center);
+        SetCursorPos(center.x, center.y);
+    }
 }
 
 void InputSystem::OnKeyDown(int vkCode)

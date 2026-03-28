@@ -1,13 +1,22 @@
 #include "core/Application.h"
 
 #include <Windows.h>
+#include <string>
 
-int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR, _In_ int nCmdShow)
+int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCmdLine, _In_ int nCmdShow)
 {
     try
     {
+        bool gameMode = false;
+        if (lpCmdLine)
+        {
+            std::string args(lpCmdLine);
+            if (args.find("--game") != std::string::npos)
+                gameMode = true;
+        }
+
         dx12e::Application app;
-        app.Initialize(hInstance, nCmdShow);
+        app.Initialize(hInstance, nCmdShow, gameMode);
         app.Run();
         app.Shutdown();
     }

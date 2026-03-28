@@ -14,6 +14,7 @@ namespace dx12e
 class Scene;
 class InputSystem;
 class Camera;
+class AudioSystem;
 
 class ScriptEngine
 {
@@ -25,7 +26,7 @@ public:
     ScriptEngine& operator=(const ScriptEngine&) = delete;
 
     void Initialize(Scene* scene, InputSystem* input, Camera* camera,
-                    const std::string& assetsDir);
+                    AudioSystem* audio, const std::string& assetsDir);
 
     void LoadScript(const std::string& filePath);
 
@@ -45,6 +46,7 @@ private:
     Scene*       m_scene  = nullptr;
     InputSystem* m_input  = nullptr;
     Camera*      m_camera = nullptr;
+    AudioSystem* m_audio  = nullptr;
     std::string  m_assetsDir;
     std::string  m_lastError;
 };

@@ -3,6 +3,8 @@
 #include "graphics/DescriptorHeap.h"
 #include "core/Logger.h"
 
+#include <filesystem>
+
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4201 4244 4267 4996)
 #include <imgui.h>
@@ -26,6 +28,21 @@ void ImGuiManager::Initialize(
 
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+
+    // 日本語フォント読み込み
+    {
+        const char* fontPath = "C:\\Windows\\Fonts\\meiryo.ttc";
+        if (std::filesystem::exists(fontPath))
+        {
+            io.Fonts->AddFontFromFileTTF(fontPath, 16.0f, nullptr,
+                io.Fonts->GetGlyphRangesJapanese());
+            Logger::Info("Japanese font loaded: meiryo.ttc");
+        }
+        else
+        {
+            Logger::Warn("Japanese font not found, using default");
+        }
+    }
 
     // スタイルカスタマイズ
     ImGui::StyleColorsDark();
