@@ -110,6 +110,25 @@ PipelineStateBuilder& PipelineStateBuilder::SetDepthEnabled(bool enabled)
     return *this;
 }
 
+PipelineStateBuilder& PipelineStateBuilder::SetAlphaBlendEnabled(bool enabled)
+{
+    auto& rt = m_desc.BlendState.RenderTarget[0];
+    rt.BlendEnable    = enabled ? TRUE : FALSE;
+    rt.SrcBlend       = D3D12_BLEND_SRC_ALPHA;
+    rt.DestBlend      = D3D12_BLEND_INV_SRC_ALPHA;
+    rt.BlendOp        = D3D12_BLEND_OP_ADD;
+    rt.SrcBlendAlpha  = D3D12_BLEND_ONE;
+    rt.DestBlendAlpha = D3D12_BLEND_ZERO;
+    rt.BlendOpAlpha   = D3D12_BLEND_OP_ADD;
+    return *this;
+}
+
+PipelineStateBuilder& PipelineStateBuilder::SetCullMode(D3D12_CULL_MODE mode)
+{
+    m_desc.RasterizerState.CullMode = mode;
+    return *this;
+}
+
 Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateBuilder::Build(GraphicsDevice& device)
 {
     DX_ASSERT(m_desc.pRootSignature, "Root signature must be set before building PSO");

@@ -6,6 +6,7 @@
 #include "graphics/DescriptorHeap.h"
 #include "graphics/GraphicsDevice.h"
 #include "resource/TextureLoader.h"
+#include "resource/ModelLoader.h"
 
 namespace dx12e
 {
@@ -81,12 +82,45 @@ Texture* ResourceManager::GetOrLoadTexture(
     return rawPtr;
 }
 
+const CachedModel* ResourceManager::GetOrLoadModel(
+    const std::string& filePath,
+    ID3D12GraphicsCommandList* cmdList)
+{
+    auto it = m_modelCache.find(filePath);
+    if (it != m_modelCache.end())
+    {
+        return it->second.get();
+    }
+
+    auto modelData = ModelLoader::LoadFromFile(*m_device, cmdList,
+                                               std::filesystem::path(filePath), *this);
+
+    auto cached = std::make_unique<CachedModel>();
+    cached->meshes    = std::move(modelData.meshes);
+    cached->materials = std::move(modelData.materials);
+    cached->skeleton  = std::move(modelData.skeleton);
+    cached->animClips = std::move(modelData.animClips);
+
+    const CachedModel* rawPtr = cached.get();
+    m_modelCache[filePath] = std::move(cached);
+
+    Logger::Info("Model cached: {} ({} meshes)", filePath, rawPtr->meshes.size());
+    return rawPtr;
+}
+
 void ResourceManager::FinishUploads()
 {
     if (m_defaultWhite) m_defaultWhite->FinishUpload();
     for (auto& [path, texture] : m_textureCache)
     {
         texture->FinishUpload();
+    }
+    for (auto& [path, model] : m_modelCache)
+    {
+        for (auto& mesh : model->meshes)
+        {
+            mesh->FinishUpload();
+        }
     }
 }
 

@@ -18,6 +18,7 @@ add_subdirectory(src/renderer)
 add_subdirectory(src/resource)
 add_subdirectory(src/animation)
 add_subdirectory(src/input)
+add_subdirectory(src/scene)
 add_subdirectory(src/gui)
 
 # Main executable
@@ -31,6 +32,7 @@ target_link_libraries(DX12Engine
         Resource
         Animation
         Input
+        Scene
         Gui
 )
 
@@ -59,12 +61,15 @@ if(DXC_EXECUTABLE)
 
     set(SHADER_FORWARD "${CMAKE_SOURCE_DIR}/shaders/forward/Forward.hlsl")
     set(SHADER_SKINNED "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardSkinned.hlsl")
+    set(SHADER_GRID    "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardGrid.hlsl")
 
     set(SHADER_OUTPUTS
         "${SHADER_OUTPUT_DIR}/Forward_VS.cso"
         "${SHADER_OUTPUT_DIR}/Forward_PS.cso"
         "${SHADER_OUTPUT_DIR}/ForwardSkinned_VS.cso"
         "${SHADER_OUTPUT_DIR}/ForwardSkinned_PS.cso"
+        "${SHADER_OUTPUT_DIR}/ForwardGrid_VS.cso"
+        "${SHADER_OUTPUT_DIR}/ForwardGrid_PS.cso"
     )
 
     add_custom_command(
@@ -93,6 +98,20 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/ForwardSkinned_PS.cso" "${SHADER_SKINNED}"
         DEPENDS "${SHADER_SKINNED}"
         COMMENT "Compiling ForwardSkinned.hlsl -> ForwardSkinned_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ForwardGrid_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/ForwardGrid_VS.cso" "${SHADER_GRID}"
+        DEPENDS "${SHADER_GRID}"
+        COMMENT "Compiling ForwardGrid.hlsl -> ForwardGrid_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ForwardGrid_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/ForwardGrid_PS.cso" "${SHADER_GRID}"
+        DEPENDS "${SHADER_GRID}"
+        COMMENT "Compiling ForwardGrid.hlsl -> ForwardGrid_PS.cso (ps_6_0)"
     )
 
     add_custom_target(Shaders ALL DEPENDS ${SHADER_OUTPUTS})

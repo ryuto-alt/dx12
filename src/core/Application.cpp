@@ -25,6 +25,8 @@
 #include "animation/Animator.h"
 #include "animation/SkinningBuffer.h"
 #include "input/InputSystem.h"
+#include "scene/Scene.h"
+#include "scene/Entity.h"
 #include "gui/ImGuiManager.h"
 
 #pragma warning(push)
@@ -165,7 +167,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow)
         0.1f, 1000.0f);
     m_camera->LookAt({0.0f, 2.0f, -5.0f}, {0.0f, 0.0f, 0.0f});
 
-    // モデル読み込み（Box の代わりにモデルファイルがあればロード）
+    // シーン + モデル読み込み
     {
         // 暫定コマンドリストで GPU アップロード
         auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
@@ -174,38 +176,23 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow)
         m_resourceManager = std::make_unique<ResourceManager>();
         m_resourceManager->Initialize(m_graphicsDevice.get(), m_srvHeap.get(), cmdList);
 
-        std::filesystem::path modelPath = std::string(ASSETS_DIR) + "models/human/walk.gltf";
-        if (std::filesystem::exists(modelPath))
-        {
-            auto modelData = ModelLoader::LoadFromFile(
-                *m_graphicsDevice, cmdList, modelPath, *m_resourceManager);
+        // Scene 初期化
+        m_scene = std::make_unique<Scene>();
+        m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
+                            m_srvHeap.get(), cmdList);
 
-            for (u32 i = 0; i < modelData.meshes.size(); ++i)
-            {
-                if (i < modelData.materials.size() && modelData.materials[i])
-                {
-                    modelData.meshes[i]->SetMaterial(modelData.materials[i].get());
-                    m_modelMaterials.push_back(std::move(modelData.materials[i]));
-                }
-                m_modelMeshes.push_back(std::move(modelData.meshes[i]));
-            }
+        // Entity配置
+        std::string humanModel = std::string(ASSETS_DIR) + "models/human/walk.gltf";
+        m_scene->Spawn("human1", humanModel, {0.0f, -1.0f, 0.0f}, {90.0f, 0.0f, 0.0f}, {0.02f, 0.02f, 0.02f});
+        m_scene->Spawn("human2", humanModel, {3.0f, -1.0f, 0.0f}, {90.0f, 0.0f, 0.0f}, {0.02f, 0.02f, 0.02f});
+        m_scene->Spawn("human3", humanModel, {-3.0f, -1.0f, 0.0f}, {90.0f, 180.0f, 0.0f}, {0.02f, 0.02f, 0.02f});
 
-            // スケルトン・アニメーション取得
-            m_skeleton = std::move(modelData.skeleton);
-            for (auto& clip : modelData.animClips)
-            {
-                clip->SetName("walk");
-                m_animClips.push_back(std::move(clip));
-            }
-        }
-        else
-        {
-            // フォールバック: Boxメッシュ
-            Logger::Warn("Model not found, using fallback box");
-            auto box = std::make_unique<Mesh>();
-            box->InitializeAsBox(*m_graphicsDevice);
-            m_modelMeshes.push_back(std::move(box));
-        }
+        // グリッド床
+        m_scene->SpawnPlane("grid_floor", {0.0f, -1.0f, 0.0f}, 50.0f, true);
+
+        // プリミティブオブジェクト
+        m_scene->SpawnBox("box1", {6.0f, -0.5f, 0.0f});
+        m_scene->SpawnSphere("sphere1", {-6.0f, -0.5f, 0.0f});
 
         // コマンド実行 + GPU待ち
         ThrowIfFailed(cmdList->Close());
@@ -213,12 +200,9 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow)
         m_commandQueue->WaitIdle();
 
         // アップロードバッファ解放
-        for (auto& mesh : m_modelMeshes)
-            mesh->FinishUpload();
         m_resourceManager->FinishUploads();
 
-        // スキニング PSO 作成（スケルトンがある場合）
-        if (m_skeleton)
+        // スキニング PSO 作成
         {
             auto vs = ShaderCompiler::LoadFromFile(std::wstring(SHADER_DIR) + L"ForwardSkinned_VS.cso");
             auto ps = ShaderCompiler::LoadFromFile(std::wstring(SHADER_DIR) + L"Forward_PS.cso");
@@ -234,33 +218,47 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow)
 
             m_skinnedPipelineState = std::make_unique<PipelineState>();
             m_skinnedPipelineState->Initialize(*m_graphicsDevice, builder);
+        }
 
-            // sneakWalk アニメーションも読み込み
+        // グリッド PSO 作成（アルファブレンド + 両面描画）
+        {
+            auto vs = ShaderCompiler::LoadFromFile(std::wstring(SHADER_DIR) + L"ForwardGrid_VS.cso");
+            auto ps = ShaderCompiler::LoadFromFile(std::wstring(SHADER_DIR) + L"ForwardGrid_PS.cso");
+
+            PipelineStateBuilder builder;
+            builder.SetRootSignature(m_rootSignature->Get())
+                   .SetVertexShader(vs.GetData(), vs.GetSize())
+                   .SetPixelShader(ps.GetData(), ps.GetSize())
+                   .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
+                   .SetRenderTargetFormat(m_swapChain->GetFormat())
+                   .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+                   .SetDepthEnabled(true)
+                   .SetAlphaBlendEnabled(true)
+                   .SetCullMode(D3D12_CULL_MODE_NONE);
+
+            m_gridPipelineState = std::make_unique<PipelineState>();
+            m_gridPipelineState->Initialize(*m_graphicsDevice, builder);
+        }
+
+        // sneakWalk アニメーションを全スケルタルEntityに追加
+        {
+            std::filesystem::path sneakPath = std::string(ASSETS_DIR) + "models/human/sneakWalk.gltf";
+            if (std::filesystem::exists(sneakPath))
             {
-                std::filesystem::path sneakPath = std::string(ASSETS_DIR) + "models/human/sneakWalk.gltf";
-                if (std::filesystem::exists(sneakPath))
+                for (const auto& entity : m_scene->GetEntities())
                 {
-                    auto extraAnims = ModelLoader::LoadAnimationsFromFile(sneakPath, *m_skeleton);
-                    for (auto& a : extraAnims)
+                    if (entity->skeleton)
                     {
-                        a->SetName("sneakWalk");
-                        m_animClips.push_back(std::move(a));
+                        auto extraAnims = ModelLoader::LoadAnimationsFromFile(
+                            sneakPath, *entity->skeleton);
+                        for (auto& a : extraAnims)
+                        {
+                            a->SetName("sneakWalk");
+                            entity->animClips.push_back(std::move(a));
+                        }
                     }
                 }
             }
-
-            // Animator
-            m_animator = std::make_unique<Animator>();
-            m_animator->Initialize(m_skeleton.get(),
-                m_animClips.empty() ? nullptr : m_animClips[0].get());
-            m_animator->SetLooping(true);
-
-            // SkinningBuffer
-            m_skinningBuffer = std::make_unique<SkinningBuffer>();
-            m_skinningBuffer->Initialize(*m_graphicsDevice, *m_srvHeap,
-                                         Skeleton::kMaxBones, FrameResources::kFrameCount);
-
-            Logger::Info("Skeletal animation initialized ({} bones)", m_skeleton->GetBoneCount());
         }
     }
 
@@ -408,15 +406,11 @@ void Application::Shutdown()
 
     // リソース解放（逆順）
     m_inputSystem.reset();
+    m_gridPipelineState.reset();
     m_skinnedPipelineState.reset();
-    m_skinningBuffer.reset();
-    m_animator.reset();
-    m_animClips.clear();
-    m_skeleton.reset();
+    m_scene.reset();
     m_commandList.reset();
     m_perFrameCB.reset();
-    m_modelMaterials.clear();
-    m_modelMeshes.clear();
     m_resourceManager.reset();
     m_srvHeap.reset();
     m_camera.reset();
@@ -473,11 +467,8 @@ void Application::Update()
         if (m_inputSystem->IsKeyDown(VK_SHIFT)) m_camera->MoveUp(-speed);
     }
 
-    // アニメーション更新
-    if (m_animator)
-    {
-        m_animator->Update(dt);
-    }
+    // シーン更新（全EntityのAnimator）
+    m_scene->Update(dt);
 }
 
 void Application::Render()
@@ -528,52 +519,51 @@ void Application::Render()
     m_perFrameCB->Update(&fc, sizeof(fc), frameIndex);
     m_commandList->SetPerFrameCBV(RootSignature::kSlotPerFrame, m_perFrameCB->GetGpuAddress(frameIndex));
 
-    // ボーン行列 GPU 転送
-    if (m_animator && m_skinningBuffer)
-    {
-        m_skinningBuffer->Update(m_animator->GetSkinningMatrices(), frameIndex);
-    }
-
-    // 各メッシュを描画
-    // スケール縮小 + X軸-90度回転(モデル起こす) + Y軸回転(ターンテーブル)
-    XMMATRIX model = XMMatrixScaling(0.02f, 0.02f, 0.02f)
-                   * XMMatrixRotationX(XM_PIDIV2)
-                   * XMMatrixTranslation(0.0f, -1.0f, 0.0f);
     XMMATRIX viewProj = m_camera->GetViewProjMatrix();
 
-    for (const auto& mesh : m_modelMeshes)
-    {
-        // スケルトンがあればスキニングPSOを使用
-        if (m_skeleton && m_skinnedPipelineState)
+    // 全Entityを描画
+    m_scene->ForEachEntity([&](const Entity& entity) {
+        XMMATRIX world = entity.transform.GetWorldMatrix();
+
+        // パイプライン切り替え
+        if (entity.useGridShader)
         {
+            m_commandList->SetPipelineState(*m_gridPipelineState);
+        }
+        else if (entity.hasSkeleton && entity.skinningBuffer && entity.animator)
+        {
+            entity.skinningBuffer->Update(entity.animator->GetSkinningMatrices(), frameIndex);
             m_commandList->SetPipelineState(*m_skinnedPipelineState);
             m_commandList->SetSRVTable(RootSignature::kSlotBonesSRV,
-                m_srvHeap->GetGpuHandle(m_skinningBuffer->GetSrvIndex(frameIndex)));
+                m_srvHeap->GetGpuHandle(entity.skinningBuffer->GetSrvIndex(frameIndex)));
         }
         else
         {
             m_commandList->SetPipelineState(*m_pipelineState);
         }
 
-        // MVP + Model (各16 DWORD = 合計 32 DWORD)
-        struct PerObjectData {
-            XMMATRIX mvp;
-            XMMATRIX mdl;
-        } objData;
-        objData.mvp = XMMatrixTranspose(model * viewProj);
-        objData.mdl = XMMatrixTranspose(model);
-        m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
+        for (const auto& mesh : entity.meshes)
+        {
+            // MVP + Model (各16 DWORD = 合計 32 DWORD)
+            struct PerObjectData {
+                XMMATRIX mvp;
+                XMMATRIX mdl;
+            } objData;
+            objData.mvp = XMMatrixTranspose(world * viewProj);
+            objData.mdl = XMMatrixTranspose(world);
+            m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
 
-        // SRV テーブルをセット（テクスチャが無ければデフォルト白）
-        const Material* mat = mesh->GetMaterial();
-        Texture* tex = (mat && mat->albedoTexture) ? mat->albedoTexture : m_resourceManager->GetDefaultWhiteTexture();
-        m_commandList->SetSRVTable(RootSignature::kSlotSRVTable, m_srvHeap->GetGpuHandle(tex->GetSrvIndex()));
+            // SRV テーブルをセット（テクスチャが無ければデフォルト白）
+            const Material* mat = mesh->GetMaterial();
+            Texture* tex = (mat && mat->albedoTexture) ? mat->albedoTexture : m_resourceManager->GetDefaultWhiteTexture();
+            m_commandList->SetSRVTable(RootSignature::kSlotSRVTable, m_srvHeap->GetGpuHandle(tex->GetSrvIndex()));
 
-        m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
-        m_commandList->SetIndexBuffer(mesh->GetIndexBuffer().GetView());
-        m_commandList->DrawIndexedInstanced(mesh->GetIndexCount());
-    }
+            m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
+            m_commandList->SetIndexBuffer(mesh->GetIndexBuffer().GetView());
+            m_commandList->DrawIndexedInstanced(mesh->GetIndexCount());
+        }
+    });
 
     // ---- ImGui フレーム ----
     m_imguiManager->BeginFrame();
@@ -583,26 +573,34 @@ void Application::Render()
     ImGui::Checkbox("VSync", &m_useVsync);
     ImGui::Separator();
 
-    for (i32 i = 0; i < static_cast<i32>(m_animClips.size()); ++i)
-    {
-        const auto& clip = m_animClips[i];
-        bool selected = (i == m_currentAnimIndex);
-        std::string label = clip->GetName().empty()
-            ? ("Animation " + std::to_string(i))
-            : clip->GetName();
+    // Scene情報
+    ImGui::Text("Entities: %zu", m_scene->GetEntityCount());
+    ImGui::Separator();
 
-        if (ImGui::Selectable(label.c_str(), selected))
+    // 各EntityのAnimator操作
+    for (const auto& entity : m_scene->GetEntities())
+    {
+        if (!entity->animator || entity->animClips.empty()) continue;
+
+        if (ImGui::TreeNode(entity->name.c_str()))
         {
-            if (i != m_currentAnimIndex)
+            auto& pos = entity->transform.position;
+            ImGui::Text("Pos: %.1f, %.1f, %.1f", pos.x, pos.y, pos.z);
+
+            for (i32 i = 0; i < static_cast<i32>(entity->animClips.size()); ++i)
             {
-                m_currentAnimIndex = i;
-                m_animator->CrossFadeTo(m_animClips[i].get(), m_blendSpeed);
+                const auto& clip = entity->animClips[i];
+                std::string label = clip->GetName().empty()
+                    ? ("Anim " + std::to_string(i))
+                    : clip->GetName();
+                if (ImGui::Selectable(label.c_str()))
+                {
+                    entity->animator->CrossFadeTo(clip.get(), 0.3f);
+                }
             }
+            ImGui::TreePop();
         }
     }
-
-    ImGui::Separator();
-    ImGui::SliderFloat("Blend Speed", &m_blendSpeed, 0.1f, 1.0f);
 
     ImGui::Separator();
     ImGui::Text("Camera");

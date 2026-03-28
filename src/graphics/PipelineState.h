@@ -25,6 +25,8 @@ public:
     PipelineStateBuilder& SetRenderTargetFormat(DXGI_FORMAT format);
     PipelineStateBuilder& SetDepthStencilFormat(DXGI_FORMAT format);
     PipelineStateBuilder& SetDepthEnabled(bool enabled);
+    PipelineStateBuilder& SetAlphaBlendEnabled(bool enabled);
+    PipelineStateBuilder& SetCullMode(D3D12_CULL_MODE mode);
 
     Microsoft::WRL::ComPtr<ID3D12PipelineState> Build(GraphicsDevice& device);
 

@@ -28,6 +28,8 @@ public:
                     const std::vector<u32>& indices);
 
     void InitializeAsBox(GraphicsDevice& device);
+    void InitializeAsPlane(GraphicsDevice& device, f32 size = 50.0f, u32 subdivisions = 1);
+    void InitializeAsSphere(GraphicsDevice& device, f32 radius = 0.5f, u32 slices = 16, u32 stacks = 16);
 
     void FinishUpload();
 
