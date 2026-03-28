@@ -457,6 +457,27 @@ void Application::Run()
         }
 
         m_gameClock.Tick();
+
+        // Luaホットリロード（0.5秒ごとにファイル変更チェック）
+        m_scriptPollTimer += m_gameClock.GetDeltaTime();
+        if (m_scriptPollTimer >= kScriptPollInterval)
+        {
+            m_scriptPollTimer = 0.0f;
+            std::string scriptPath = std::string(SCRIPTS_DIR) + "game.lua";
+            if (std::filesystem::exists(scriptPath))
+            {
+                auto currentTime = std::filesystem::last_write_time(scriptPath);
+                if (currentTime != m_scriptLastWriteTime)
+                {
+                    Logger::Info("Hot-reload: game.lua changed, reloading...");
+                    m_commandQueue->WaitIdle();
+                    RebuildScene();
+                    m_hotReloadFlash = 2.0f;
+                    Logger::Info("Hot-reload complete");
+                }
+            }
+        }
+
         Update();
         Render();
 
@@ -618,6 +639,13 @@ void Application::RebuildScene()
     m_commandQueue->ExecuteCommandList(cmdList);
     m_commandQueue->WaitIdle();
     m_resourceManager->FinishUploads();
+
+    // ホットリロード用タイムスタンプ更新
+    {
+        std::string reloadPath = std::string(SCRIPTS_DIR) + "game.lua";
+        if (std::filesystem::exists(reloadPath))
+            m_scriptLastWriteTime = std::filesystem::last_write_time(reloadPath);
+    }
 }
 
 void Application::EnterPlayMode()
@@ -853,6 +881,16 @@ void Application::Render()
         ImGui::Text("  %s", m_engineMode == EngineMode::Editor ? "EDITOR" : "PLAYING");
         ImGui::SameLine(ImGui::GetWindowWidth() - 200);
         ImGui::Text("FPS: %.1f", m_gameClock.GetFPS());
+
+        if (m_hotReloadFlash > 0.0f)
+        {
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.2f, 1.0f, 0.4f, m_hotReloadFlash));
+            ImGui::Text("Reloaded!");
+            ImGui::PopStyleColor();
+            m_hotReloadFlash -= m_gameClock.GetDeltaTime();
+        }
+
         ImGui::End();
     }
 

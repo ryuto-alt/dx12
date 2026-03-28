@@ -7,6 +7,7 @@
 #include <memory>
 #include <vector>
 #include <chrono>
+#include <filesystem>
 #include <wrl/client.h>
 #include <directx/d3d12.h>
 #include <DirectXMath.h>
@@ -97,6 +98,12 @@ private:
         f32 yaw;
         f32 pitch;
     } m_cameraSnapshot{};
+
+    // Luaホットリロード
+    std::filesystem::file_time_type m_scriptLastWriteTime{};
+    f32 m_scriptPollTimer = 0.0f;
+    f32 m_hotReloadFlash = 0.0f;
+    static constexpr f32 kScriptPollInterval = 0.5f;
 
     // フレームレートリミッター
     static constexpr f32 kTargetFps = 144.0f;
