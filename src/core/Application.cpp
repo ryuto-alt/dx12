@@ -388,6 +388,16 @@ void Application::Run()
     {
         m_frameStart = std::chrono::high_resolution_clock::now();
 
+        // モード切替（前フレームのImGuiボタンから遅延実行）
+        if (m_modeChangeRequested)
+        {
+            m_modeChangeRequested = false;
+            if (m_pendingMode == EngineMode::Playing)
+                EnterPlayMode();
+            else
+                EnterEditorMode();
+        }
+
         // 入力状態リセット（前フレームのdeltaクリア + prevKeys保存）
         m_inputSystem->Update();
 
@@ -530,36 +540,116 @@ void Application::Update()
 {
     f32 dt = m_gameClock.GetDeltaTime();
 
-    // カメラ操作（エンジンレベル — C++で処理）
-    if (m_inputSystem->IsKeyPressed(VK_TAB))
+    if (m_engineMode == EngineMode::Editor)
     {
-        m_inputSystem->SetMouseCapture(false);
-    }
-    if (!m_inputSystem->IsMouseCaptured() && (GetAsyncKeyState(VK_RBUTTON) & 0x8000))
-    {
-        m_inputSystem->SetMouseCapture(true);
-    }
-    if (m_inputSystem->IsMouseCaptured())
-    {
-        f32 sensitivity = m_camera->GetMouseSensitivity();
-        m_camera->Rotate(
-            m_inputSystem->GetMouseDeltaX() * sensitivity,
-            -m_inputSystem->GetMouseDeltaY() * sensitivity);
+        // エディタモード: C++カメラ操作
+        if (m_inputSystem->IsKeyPressed(VK_TAB))
+        {
+            m_inputSystem->SetMouseCapture(false);
+        }
+        if (!m_inputSystem->IsMouseCaptured() && (GetAsyncKeyState(VK_RBUTTON) & 0x8000))
+        {
+            m_inputSystem->SetMouseCapture(true);
+        }
+        if (m_inputSystem->IsMouseCaptured())
+        {
+            f32 sensitivity = m_camera->GetMouseSensitivity();
+            m_camera->Rotate(
+                m_inputSystem->GetMouseDeltaX() * sensitivity,
+                -m_inputSystem->GetMouseDeltaY() * sensitivity);
 
-        f32 speed = m_camera->GetMoveSpeed() * dt;
-        if (GetAsyncKeyState('W') & 0x8000) m_camera->MoveForward(speed);
-        if (GetAsyncKeyState('S') & 0x8000) m_camera->MoveForward(-speed);
-        if (GetAsyncKeyState('D') & 0x8000) m_camera->MoveRight(speed);
-        if (GetAsyncKeyState('A') & 0x8000) m_camera->MoveRight(-speed);
-        if (GetAsyncKeyState(VK_SPACE) & 0x8000) m_camera->MoveUp(speed);
-        if (GetAsyncKeyState(VK_SHIFT) & 0x8000) m_camera->MoveUp(-speed);
+            f32 speed = m_camera->GetMoveSpeed() * dt;
+            if (GetAsyncKeyState('W') & 0x8000) m_camera->MoveForward(speed);
+            if (GetAsyncKeyState('S') & 0x8000) m_camera->MoveForward(-speed);
+            if (GetAsyncKeyState('D') & 0x8000) m_camera->MoveRight(speed);
+            if (GetAsyncKeyState('A') & 0x8000) m_camera->MoveRight(-speed);
+            if (GetAsyncKeyState(VK_SPACE) & 0x8000) m_camera->MoveUp(speed);
+            if (GetAsyncKeyState(VK_SHIFT) & 0x8000) m_camera->MoveUp(-speed);
+        }
     }
-
-    // Lua OnUpdate（ゲームロジック）
-    m_scriptEngine->CallOnUpdate(dt);
+    else
+    {
+        // プレイモード: Luaがカメラ+ゲームロジックを制御
+        m_scriptEngine->CallOnUpdate(dt);
+    }
 
     // シーン更新（全EntityのAnimator）
     m_scene->Update(dt);
+}
+
+void Application::RebuildScene()
+{
+    m_scene->Clear();
+    auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
+    m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
+                        m_srvHeap.get(), cmdList);
+
+    m_scriptEngine->Shutdown();
+    m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
+                               m_camera.get(), std::string(ASSETS_DIR));
+
+    std::string scriptPath = std::string(SCRIPTS_DIR) + "game.lua";
+    if (std::filesystem::exists(scriptPath))
+    {
+        m_scriptEngine->LoadScript(scriptPath);
+    }
+    m_scriptEngine->CallOnStart();
+
+    // sneakWalk アニメーション追加
+    std::filesystem::path sneakPath = std::string(ASSETS_DIR) + "models/human/sneakWalk.gltf";
+    if (std::filesystem::exists(sneakPath))
+    {
+        for (const auto& entity : m_scene->GetEntities())
+        {
+            if (entity->skeleton)
+            {
+                auto extraAnims = ModelLoader::LoadAnimationsFromFile(
+                    sneakPath, *entity->skeleton);
+                for (auto& a : extraAnims)
+                {
+                    a->SetName("sneakWalk");
+                    entity->animClips.push_back(std::move(a));
+                }
+            }
+        }
+    }
+
+    ThrowIfFailed(cmdList->Close());
+    m_commandQueue->ExecuteCommandList(cmdList);
+    m_commandQueue->WaitIdle();
+    m_resourceManager->FinishUploads();
+}
+
+void Application::EnterPlayMode()
+{
+    // カメラ状態保存
+    m_cameraSnapshot.position = m_camera->GetPosition();
+    m_cameraSnapshot.yaw = m_camera->GetYaw();
+    m_cameraSnapshot.pitch = m_camera->GetPitch();
+
+    m_inputSystem->SetMouseCapture(false);
+
+    // シーン再構築（Luaスクリプト再読み込み）
+    RebuildScene();
+
+    m_engineMode = EngineMode::Playing;
+    Logger::Info("Entered PLAY mode");
+}
+
+void Application::EnterEditorMode()
+{
+    m_inputSystem->SetMouseCapture(false);
+
+    // カメラ復元
+    m_camera->SetPosition(m_cameraSnapshot.position);
+    m_camera->SetYaw(m_cameraSnapshot.yaw);
+    m_camera->SetPitch(m_cameraSnapshot.pitch);
+
+    // シーン再構築
+    RebuildScene();
+
+    m_engineMode = EngineMode::Editor;
+    Logger::Info("Entered EDITOR mode");
 }
 
 void Application::Render()
@@ -730,16 +820,64 @@ void Application::Render()
     // ---- ImGui フレーム ----
     m_imguiManager->BeginFrame();
 
-    ImGui::Begin("Animation Controller");
-    ImGui::Text("FPS: %.1f (target: %.0f)", m_gameClock.GetFPS(), kTargetFps);
+    // ===== ツールバー（Play/Stop） =====
+    {
+        ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove
+            | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoSavedSettings;
+        ImGui::SetNextWindowPos(ImVec2(0, 0));
+        ImGui::SetNextWindowSize(ImVec2(ImGui::GetIO().DisplaySize.x, 40));
+        ImGui::Begin("##Toolbar", nullptr, flags);
+
+        if (m_engineMode == EngineMode::Editor)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.7f, 0.2f, 1.0f));
+            if (ImGui::Button("  Play  "))
+            {
+                m_pendingMode = EngineMode::Playing;
+                m_modeChangeRequested = true;
+            }
+            ImGui::PopStyleColor();
+        }
+        else
+        {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
+            if (ImGui::Button("  Stop  "))
+            {
+                m_pendingMode = EngineMode::Editor;
+                m_modeChangeRequested = true;
+            }
+            ImGui::PopStyleColor();
+        }
+
+        ImGui::SameLine();
+        ImGui::Text("  %s", m_engineMode == EngineMode::Editor ? "EDITOR" : "PLAYING");
+        ImGui::SameLine(ImGui::GetWindowWidth() - 200);
+        ImGui::Text("FPS: %.1f", m_gameClock.GetFPS());
+        ImGui::End();
+    }
+
+    // ===== Luaエラー表示（ツールバー直下） =====
+    if (!m_scriptEngine->GetLastError().empty())
+    {
+        ImGui::SetNextWindowPos(ImVec2(0, 40));
+        ImGui::SetNextWindowSize(ImVec2(ImGui::GetIO().DisplaySize.x, 0));
+        ImGui::Begin("##LuaError", nullptr, ImGuiWindowFlags_NoDecoration
+            | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.2f, 0.2f, 1.0f));
+        ImGui::TextWrapped("Lua: %s", m_scriptEngine->GetLastError().c_str());
+        ImGui::PopStyleColor();
+        ImGui::End();
+    }
+
+    // ===== Engineパネル（ツールバー左下にくっつく） =====
+    ImGui::SetNextWindowPos(ImVec2(0, 40), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(260, 0), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Engine", nullptr, ImGuiWindowFlags_NoMove);
+
     ImGui::Checkbox("VSync", &m_useVsync);
     ImGui::Separator();
 
-    // Scene情報
     ImGui::Text("Entities: %zu", m_scene->GetEntityCount());
-    ImGui::Separator();
-
-    // 各EntityのAnimator操作
     for (const auto& entity : m_scene->GetEntities())
     {
         if (!entity->animator || entity->animClips.empty()) continue;
@@ -768,7 +906,8 @@ void Application::Render()
     ImGui::Text("Camera");
     auto camPos = m_camera->GetPosition();
     ImGui::Text("  Pos: %.1f, %.1f, %.1f", camPos.x, camPos.y, camPos.z);
-    ImGui::Text("  %s", m_inputSystem->IsMouseCaptured() ? "Right-click captured (TAB to release)" : "Right-click to look around");
+    ImGui::Text("  %s", m_engineMode == EngineMode::Editor
+        ? "Right-click to look around" : "Lua controlled");
 
     f32 moveSpeed = m_camera->GetMoveSpeed();
     if (ImGui::SliderFloat("Move Speed", &moveSpeed, 1.0f, 50.0f))

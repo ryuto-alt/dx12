@@ -9,6 +9,7 @@
 #include <chrono>
 #include <wrl/client.h>
 #include <directx/d3d12.h>
+#include <DirectXMath.h>
 
 // Forward declarations for graphics module
 namespace dx12e
@@ -46,9 +47,14 @@ public:
     void Run();
     void Shutdown();
 
+    enum class EngineMode { Editor, Playing };
+
 private:
     void Update();
     void Render();
+    void RebuildScene();
+    void EnterPlayMode();
+    void EnterEditorMode();
 
     std::unique_ptr<Window>         m_window;
     std::unique_ptr<GraphicsDevice> m_graphicsDevice;
@@ -81,6 +87,16 @@ private:
     std::unique_ptr<ScriptEngine>      m_scriptEngine;
     GameClock                          m_gameClock;
     bool                               m_isRunning = false;
+
+    // エディタ/プレイモード
+    EngineMode m_engineMode = EngineMode::Editor;
+    EngineMode m_pendingMode = EngineMode::Editor;
+    bool m_modeChangeRequested = false;
+    struct CameraSnapshot {
+        DirectX::XMFLOAT3 position;
+        f32 yaw;
+        f32 pitch;
+    } m_cameraSnapshot{};
 
     // フレームレートリミッター
     static constexpr f32 kTargetFps = 144.0f;

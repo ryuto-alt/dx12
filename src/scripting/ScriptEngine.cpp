@@ -146,6 +146,11 @@ void ScriptEngine::RegisterBindings()
         "moveUp",       &Camera::MoveUp,
         "rotate",       &Camera::Rotate,
         "getPosition",  &Camera::GetPosition,
+        "setPosition",  &Camera::SetPosition,
+        "getYaw",       &Camera::GetYaw,
+        "getPitch",     &Camera::GetPitch,
+        "setYaw",       &Camera::SetYaw,
+        "setPitch",     &Camera::SetPitch,
         "getMoveSpeed",  &Camera::GetMoveSpeed,
         "setMoveSpeed",  &Camera::SetMoveSpeed,
         "getMouseSensitivity", &Camera::GetMouseSensitivity,
@@ -159,18 +164,20 @@ void ScriptEngine::RegisterBindings()
     lua["ASSETS"] = m_assetsDir;
 
     // --- キーコード定数 ---
-    lua["KEY_W"]     = 'W';
-    lua["KEY_A"]     = 'A';
-    lua["KEY_S"]     = 'S';
-    lua["KEY_D"]     = 'D';
-    lua["KEY_SPACE"] = VK_SPACE;
-    lua["KEY_SHIFT"] = VK_SHIFT;
-    lua["KEY_TAB"]   = VK_TAB;
-    lua["KEY_ESCAPE"] = VK_ESCAPE;
-    lua["KEY_F1"]    = VK_F1;
-    lua["KEY_F2"]    = VK_F2;
-    lua["KEY_F3"]    = VK_F3;
-    lua["KEY_RBUTTON"] = VK_RBUTTON;
+    lua["KEY_W"]     = static_cast<int>('W');
+    lua["KEY_A"]     = static_cast<int>('A');
+    lua["KEY_S"]     = static_cast<int>('S');
+    lua["KEY_D"]     = static_cast<int>('D');
+    lua["KEY_E"]     = static_cast<int>('E');
+    lua["KEY_Q"]     = static_cast<int>('Q');
+    lua["KEY_SPACE"] = static_cast<int>(VK_SPACE);
+    lua["KEY_SHIFT"] = static_cast<int>(VK_SHIFT);
+    lua["KEY_TAB"]   = static_cast<int>(VK_TAB);
+    lua["KEY_ESCAPE"] = static_cast<int>(VK_ESCAPE);
+    lua["KEY_F1"]    = static_cast<int>(VK_F1);
+    lua["KEY_F2"]    = static_cast<int>(VK_F2);
+    lua["KEY_F3"]    = static_cast<int>(VK_F3);
+    lua["KEY_RBUTTON"] = static_cast<int>(VK_RBUTTON);
 
     // --- ユーティリティ ---
     lua["log"] = [](const std::string& msg) { Logger::Info("[Lua] {}", msg); };
@@ -184,10 +191,12 @@ void ScriptEngine::LoadScript(const std::string& filePath)
     if (!result.valid())
     {
         sol::error err = result;
-        Logger::Error("Lua load error: {}", err.what());
+        m_lastError = err.what();
+        Logger::Error("Lua load error: {}", m_lastError);
     }
     else
     {
+        m_lastError.clear();
         Logger::Info("Lua script loaded: {}", filePath);
     }
 }
@@ -201,7 +210,12 @@ void ScriptEngine::CallOnStart()
         if (!result.valid())
         {
             sol::error err = result;
-            Logger::Error("Lua OnStart error: {}", err.what());
+            m_lastError = err.what();
+            Logger::Error("Lua OnStart error: {}", m_lastError);
+        }
+        else
+        {
+            m_lastError.clear();
         }
     }
 }
@@ -215,7 +229,8 @@ void ScriptEngine::CallOnUpdate(f32 dt)
         if (!result.valid())
         {
             sol::error err = result;
-            Logger::Error("Lua OnUpdate error: {}", err.what());
+            m_lastError = err.what();
+            Logger::Error("Lua OnUpdate error: {}", m_lastError);
         }
     }
 }

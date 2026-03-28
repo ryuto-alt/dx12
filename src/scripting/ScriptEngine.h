@@ -35,6 +35,9 @@ public:
 
     void Shutdown();
 
+    const std::string& GetLastError() const { return m_lastError; }
+    void ClearError() { m_lastError.clear(); }
+
 private:
     void RegisterBindings();
 
@@ -43,6 +46,7 @@ private:
     InputSystem* m_input  = nullptr;
     Camera*      m_camera = nullptr;
     std::string  m_assetsDir;
+    std::string  m_lastError;
 };
 
 } // namespace dx12e
