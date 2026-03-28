@@ -36,7 +36,7 @@ public:
 private:
     void UpdateVectors();  // yaw/pitch から forward/right/up を再計算
 
-    DirectX::XMFLOAT3 m_position = {0, 2, -5};
+    DirectX::XMFLOAT3 m_position = {-14.7f, 9.6f, -9.0f};
     DirectX::XMFLOAT3 m_forward  = {0, 0, 1};
     DirectX::XMFLOAT3 m_right    = {1, 0, 0};
     DirectX::XMFLOAT3 m_up       = {0, 1, 0};

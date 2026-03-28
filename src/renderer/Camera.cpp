@@ -35,15 +35,21 @@ void Camera::LookAt(XMFLOAT3 eye, XMFLOAT3 target, XMFLOAT3 up)
 
 void Camera::MoveForward(f32 distance)
 {
+    // XZ平面上のforward（水平移動のみ、ピッチの影響を受けない）
+    XMFLOAT3 flatForward = {std::sin(m_yaw), 0.0f, std::cos(m_yaw)};
     XMVECTOR pos = XMLoadFloat3(&m_position);
-    XMVECTOR fwd = XMLoadFloat3(&m_forward);
+    XMVECTOR fwd = XMVector3Normalize(XMLoadFloat3(&flatForward));
     XMStoreFloat3(&m_position, XMVectorAdd(pos, XMVectorScale(fwd, distance)));
 }
 
 void Camera::MoveRight(f32 distance)
 {
+    // rightベクトルも水平のみ
+    XMFLOAT3 flatForward = {std::sin(m_yaw), 0.0f, std::cos(m_yaw)};
+    XMVECTOR fwd = XMVector3Normalize(XMLoadFloat3(&flatForward));
+    XMVECTOR worldUp = XMVectorSet(0, 1, 0, 0);
+    XMVECTOR rgt = XMVector3Normalize(XMVector3Cross(worldUp, fwd));
     XMVECTOR pos = XMLoadFloat3(&m_position);
-    XMVECTOR rgt = XMLoadFloat3(&m_right);
     XMStoreFloat3(&m_position, XMVectorAdd(pos, XMVectorScale(rgt, distance)));
 }
 

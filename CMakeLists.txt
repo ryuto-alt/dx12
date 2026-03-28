@@ -19,6 +19,7 @@ add_subdirectory(src/resource)
 add_subdirectory(src/animation)
 add_subdirectory(src/input)
 add_subdirectory(src/scene)
+add_subdirectory(src/scripting)
 add_subdirectory(src/gui)
 
 # Main executable
@@ -33,6 +34,7 @@ target_link_libraries(DX12Engine
         Animation
         Input
         Scene
+        Scripting
         Gui
 )
 
@@ -142,4 +144,5 @@ endif()
 target_compile_definitions(Core PRIVATE
     SHADER_DIR=L"${CMAKE_BINARY_DIR}/shaders/"
     ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets/"
+    SCRIPTS_DIR="${CMAKE_SOURCE_DIR}/scripts/"
 )

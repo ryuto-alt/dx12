@@ -27,6 +27,7 @@
 #include "input/InputSystem.h"
 #include "scene/Scene.h"
 #include "scene/Entity.h"
+#include "scripting/ScriptEngine.h"
 #include "gui/ImGuiManager.h"
 
 #pragma warning(push)
@@ -165,7 +166,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow)
     m_camera->SetPerspective(DirectX::XM_PIDIV4,
         static_cast<f32>(m_window->GetWidth()) / static_cast<f32>(m_window->GetHeight()),
         0.1f, 1000.0f);
-    m_camera->LookAt({0.0f, 2.0f, -5.0f}, {0.0f, 0.0f, 0.0f});
+    m_camera->LookAt({-14.7f, 9.6f, -9.0f}, {0.0f, 0.0f, 0.0f});
 
     // シーン + モデル読み込み
     {
@@ -181,18 +182,26 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow)
         m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
                             m_srvHeap.get(), cmdList);
 
-        // Entity配置
-        std::string humanModel = std::string(ASSETS_DIR) + "models/human/walk.gltf";
-        m_scene->Spawn("human1", humanModel, {0.0f, -1.0f, 0.0f}, {90.0f, 0.0f, 0.0f}, {0.02f, 0.02f, 0.02f});
-        m_scene->Spawn("human2", humanModel, {3.0f, -1.0f, 0.0f}, {90.0f, 0.0f, 0.0f}, {0.02f, 0.02f, 0.02f});
-        m_scene->Spawn("human3", humanModel, {-3.0f, -1.0f, 0.0f}, {90.0f, 180.0f, 0.0f}, {0.02f, 0.02f, 0.02f});
+        // ScriptEngine 初期化 + ゲームスクリプト実行
+        m_scriptEngine = std::make_unique<ScriptEngine>();
+        m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
+                                   m_camera.get(), std::string(ASSETS_DIR));
 
-        // グリッド床
-        m_scene->SpawnPlane("grid_floor", {0.0f, -1.0f, 0.0f}, 50.0f, true);
+        // ゲームスクリプト読み込み
+        {
+            std::string scriptPath = std::string(SCRIPTS_DIR) + "game.lua";
+            if (std::filesystem::exists(scriptPath))
+            {
+                m_scriptEngine->LoadScript(scriptPath);
+            }
+            else
+            {
+                Logger::Warn("Game script not found: {}", scriptPath);
+            }
+        }
 
-        // プリミティブオブジェクト
-        m_scene->SpawnBox("box1", {6.0f, -0.5f, 0.0f});
-        m_scene->SpawnSphere("sphere1", {-6.0f, -0.5f, 0.0f});
+        // Lua OnStart 実行（Entity配置等）— コマンドリストがまだ開いてる間に
+        m_scriptEngine->CallOnStart();
 
         // コマンド実行 + GPU待ち
         ThrowIfFailed(cmdList->Close());
@@ -487,6 +496,7 @@ void Application::Shutdown()
 
     // リソース解放（逆順）
     m_inputSystem.reset();
+    m_scriptEngine.reset();
     m_shadowSkinnedPipelineState.reset();
     m_shadowPipelineState.reset();
     m_shadowMap.Reset();
@@ -520,37 +530,33 @@ void Application::Update()
 {
     f32 dt = m_gameClock.GetDeltaTime();
 
-    // Escape でマウスキャプチャ解除、右クリックでキャプチャ開始
+    // カメラ操作（エンジンレベル — C++で処理）
     if (m_inputSystem->IsKeyPressed(VK_TAB))
     {
         m_inputSystem->SetMouseCapture(false);
     }
-    if (GetAsyncKeyState(VK_RBUTTON) & 0x8000)
+    if (!m_inputSystem->IsMouseCaptured() && (GetAsyncKeyState(VK_RBUTTON) & 0x8000))
     {
-        if (!m_inputSystem->IsMouseCaptured())
-        {
-            m_inputSystem->SetMouseCapture(true);
-        }
+        m_inputSystem->SetMouseCapture(true);
     }
-
-    // カメラ操作（マウスキャプチャ中のみ）
     if (m_inputSystem->IsMouseCaptured())
     {
-        // マウス回転
         f32 sensitivity = m_camera->GetMouseSensitivity();
         m_camera->Rotate(
             m_inputSystem->GetMouseDeltaX() * sensitivity,
             -m_inputSystem->GetMouseDeltaY() * sensitivity);
 
-        // WASD移動
         f32 speed = m_camera->GetMoveSpeed() * dt;
-        if (m_inputSystem->IsKeyDown('W')) m_camera->MoveForward(speed);
-        if (m_inputSystem->IsKeyDown('S')) m_camera->MoveForward(-speed);
-        if (m_inputSystem->IsKeyDown('D')) m_camera->MoveRight(speed);
-        if (m_inputSystem->IsKeyDown('A')) m_camera->MoveRight(-speed);
-        if (m_inputSystem->IsKeyDown(VK_SPACE)) m_camera->MoveUp(speed);
-        if (m_inputSystem->IsKeyDown(VK_SHIFT)) m_camera->MoveUp(-speed);
+        if (GetAsyncKeyState('W') & 0x8000) m_camera->MoveForward(speed);
+        if (GetAsyncKeyState('S') & 0x8000) m_camera->MoveForward(-speed);
+        if (GetAsyncKeyState('D') & 0x8000) m_camera->MoveRight(speed);
+        if (GetAsyncKeyState('A') & 0x8000) m_camera->MoveRight(-speed);
+        if (GetAsyncKeyState(VK_SPACE) & 0x8000) m_camera->MoveUp(speed);
+        if (GetAsyncKeyState(VK_SHIFT) & 0x8000) m_camera->MoveUp(-speed);
     }
+
+    // Lua OnUpdate（ゲームロジック）
+    m_scriptEngine->CallOnUpdate(dt);
 
     // シーン更新（全EntityのAnimator）
     m_scene->Update(dt);

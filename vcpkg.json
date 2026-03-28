@@ -11,6 +11,8 @@
     {
       "name": "imgui",
       "features": ["docking-experimental", "dx12-binding", "win32-binding"]
-    }
+    },
+    "lua",
+    "sol2"
   ]
 }

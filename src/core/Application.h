@@ -27,6 +27,7 @@ namespace dx12e
     class InputSystem;
     class ImGuiManager;
     class Scene;
+    class ScriptEngine;
 }
 
 namespace dx12e
@@ -77,6 +78,7 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE        m_dsvHandle{};
     std::unique_ptr<InputSystem>       m_inputSystem;
     std::unique_ptr<Scene>             m_scene;
+    std::unique_ptr<ScriptEngine>      m_scriptEngine;
     GameClock                          m_gameClock;
     bool                               m_isRunning = false;
 

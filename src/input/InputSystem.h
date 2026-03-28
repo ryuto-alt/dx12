@@ -15,11 +15,13 @@ public:
     // キーボード
     bool IsKeyDown(int vkCode) const { return m_keys[vkCode]; }
     bool IsKeyPressed(int vkCode) const { return m_keys[vkCode] && !m_prevKeys[vkCode]; }
+    bool IsAsyncKeyDown(int vkCode) const { return (GetAsyncKeyState(vkCode) & 0x8000) != 0; }
 
     // マウス
     f32 GetMouseDeltaX() const { return m_mouseDeltaX; }
     f32 GetMouseDeltaY() const { return m_mouseDeltaY; }
     bool IsMouseCaptured() const { return m_mouseCaptured; }
+    bool IsRightMouseDown() const { return (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0; }
 
     void SetMouseCapture(bool capture);
     void ToggleMouseCapture();
