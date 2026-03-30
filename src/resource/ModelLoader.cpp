@@ -36,6 +36,36 @@ std::wstring ToWideString(const char* str)
     return result;
 }
 
+std::filesystem::path ResolveTexturePath(
+    const char* rawPath,
+    const std::filesystem::path& modelDir)
+{
+    std::wstring wide = ToWideString(rawPath);
+    std::filesystem::path p(wide);
+    std::error_code ec;
+
+    // 1. 絶対パスがそのまま存在する
+    if (p.is_absolute() && std::filesystem::exists(p, ec))
+        return p;
+
+    // 2. モデルと同じディレクトリにファイル名だけで探す
+    auto byFilename = modelDir / p.filename();
+    if (std::filesystem::exists(byFilename, ec))
+        return byFilename;
+
+    // 3. モデルディレクトリからの相対パス
+    auto relative = modelDir / p;
+    if (std::filesystem::exists(relative, ec))
+        return relative;
+
+    // 4. textures/ サブフォルダ
+    auto inTextures = modelDir / "textures" / p.filename();
+    if (std::filesystem::exists(inTextures, ec))
+        return inTextures;
+
+    return {}; // 見つからない
+}
+
 DirectX::XMFLOAT4X4 ToXMFLOAT4X4(const aiMatrix4x4& m)
 {
     // Assimp: translation in a4,b4,c4 (last column)
@@ -265,7 +295,8 @@ ModelData ModelLoader::LoadFromFile(
         aiProcess_FlipUVs |
         aiProcess_GenNormals |
         aiProcess_JoinIdenticalVertices |
-        aiProcess_LimitBoneWeights;
+        aiProcess_LimitBoneWeights |
+        aiProcess_PopulateArmatureData;
 
     const aiScene* scene = importer.ReadFile(filePath.string(), flags);
 
@@ -366,20 +397,19 @@ ModelData ModelLoader::LoadFromFile(
                 {
                     if (texPath.C_Str()[0] != '*')
                     {
-                        std::wstring wideTexPath = ToWideString(texPath.C_Str());
-
-                        std::filesystem::path fullTexPath(wideTexPath);
-                        if (fullTexPath.is_relative())
+                        auto resolvedPath = ResolveTexturePath(texPath.C_Str(), parentDir);
+                        if (!resolvedPath.empty())
                         {
-                            fullTexPath = parentDir / fullTexPath;
+                            Texture* texture = resourceManager.GetOrLoadTexture(
+                                resolvedPath.wstring(), cmdList);
+                            if (texture)
+                            {
+                                material->albedoTexture = texture;
+                            }
                         }
-
-                        Texture* texture = resourceManager.GetOrLoadTexture(
-                            fullTexPath.wstring(), cmdList);
-
-                        if (texture)
+                        else
                         {
-                            material->albedoTexture = texture;
+                            Logger::Warn("Texture not found: {}", texPath.C_Str());
                         }
                     }
                 }
@@ -414,7 +444,8 @@ std::vector<std::unique_ptr<AnimationClip>> ModelLoader::LoadAnimationsFromFile(
 
     const unsigned int flags =
         aiProcess_Triangulate |
-        aiProcess_LimitBoneWeights;
+        aiProcess_LimitBoneWeights |
+        aiProcess_PopulateArmatureData;
 
     const aiScene* scene = importer.ReadFile(filePath.string(), flags);
 

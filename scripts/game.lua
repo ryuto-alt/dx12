@@ -5,6 +5,7 @@
 -- Playモード:   このスクリプトのOnUpdateが毎フレーム呼ばれる
 
 local humanModel = ASSETS .. "models/human/walk.gltf"
+local strutModel = ASSETS .. "models/fbxmodel/Strut Walking.fbx"
 
 function OnStart()
     log("=== Game Starting ===")
@@ -20,9 +21,13 @@ function OnStart()
     scene:spawn("human3", humanModel,
         Vec3.new(-3, -1, 0), Vec3.new(90, 180, 0), Vec3.new(0.02, 0.02, 0.02))
 
+    -- FBX アニメーションモデル（Mixamo: cm単位→0.01スケール、Z-up→回転-90）
+    scene:spawn("strut_walker", strutModel,
+        Vec3.new(6, -1, 0), Vec3.new(-90, 0, 0), Vec3.new(0.01, 0.01, 0.01))
+
     -- プリミティブ
     scene:spawnBox("box1",
-        Vec3.new(6, -0.5, 0), Vec3.new(0, 0, 0), Vec3.new(1, 1, 1))
+        Vec3.new(9, -0.5, 0), Vec3.new(0, 0, 0), Vec3.new(1, 1, 1))
     scene:spawnSphere("sphere1", Vec3.new(-6, -0.5, 0), 0.5)
 
     -- マウスキャプチャ開始（FPSゲームなので即座に）
