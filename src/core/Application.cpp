@@ -41,6 +41,7 @@
 #include <filesystem>
 #include <thread>
 #include <fstream>
+#include <algorithm>
 #include <immintrin.h>
 #include <mmsystem.h>
 #pragma comment(lib, "winmm.lib")
@@ -172,9 +173,12 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode)
     m_camera = std::make_unique<Camera>();
     {
         f32 viewW = static_cast<f32>(m_window->GetWidth());
-        if (!m_isGameMode) viewW = (std::max)(viewW - kSidebarWidth, 1.0f);
-        m_camera->SetPerspective(DirectX::XM_PIDIV4,
-            viewW / static_cast<f32>(m_window->GetHeight()), 0.1f, 1000.0f);
+        f32 viewH = static_cast<f32>(m_window->GetHeight());
+        if (!m_isGameMode) {
+            viewW = (std::max)(viewW - kLeftPanelWidth, 1.0f);
+            viewH = (std::max)(viewH - kToolbarHeight, 1.0f);
+        }
+        m_camera->SetPerspective(DirectX::XM_PIDIV4, viewW / viewH, 0.1f, 1000.0f);
     }
     m_camera->LookAt({-14.7f, 9.6f, -9.0f}, {0.0f, 0.0f, 0.0f});
 
@@ -473,10 +477,12 @@ void Application::Run()
                 // カメラアスペクト比更新（エディタモードではサイドバー分引く）
                 {
                     f32 viewW = static_cast<f32>(w);
-                    if (!m_isGameMode && m_engineMode == EngineMode::Editor)
-                        viewW = (std::max)(viewW - kSidebarWidth, 1.0f);
-                    m_camera->SetPerspective(DirectX::XM_PIDIV4,
-                        viewW / static_cast<f32>(h), 0.1f, 1000.0f);
+                    f32 viewH = static_cast<f32>(h);
+                    if (!m_isGameMode && m_engineMode == EngineMode::Editor) {
+                        viewW = (std::max)(viewW - kLeftPanelWidth, 1.0f);
+                        viewH = (std::max)(viewH - kToolbarHeight, 1.0f);
+                    }
+                    m_camera->SetPerspective(DirectX::XM_PIDIV4, viewW / viewH, 0.1f, 1000.0f);
                 }
 
                 Logger::Info("Resized to {}x{}", w, h);
@@ -713,7 +719,7 @@ void Application::EnterEditorMode()
 
     // Editorモード: サイドバー分を引いたアスペクト比に再計算
     f32 viewW = static_cast<f32>(m_window->GetWidth());
-    if (!m_isGameMode) viewW = (std::max)(viewW - kSidebarWidth, 1.0f);
+    if (!m_isGameMode) viewW = (std::max)(viewW - kLeftPanelWidth, 1.0f);
     m_camera->SetPerspective(DirectX::XM_PIDIV4,
         viewW / static_cast<f32>(m_window->GetHeight()),
         0.1f, 1000.0f);
@@ -881,12 +887,16 @@ void Application::Render()
     m_commandList->ClearDepthStencil(m_dsvHandle);
     m_commandList->SetRenderTarget(rtv, m_dsvHandle);
 
-    // エディタモード: サイドバー分3Dビューをオフセット
+    // エディタモード: パネル分3Dビューをオフセット
     if (!m_isGameMode && m_engineMode == EngineMode::Editor)
     {
-        u32 sideW = static_cast<u32>(kSidebarWidth);
-        u32 viewW = m_window->GetWidth() > sideW ? m_window->GetWidth() - sideW : m_window->GetWidth();
-        m_commandList->SetViewportAndScissor(sideW, 0, viewW, m_window->GetHeight());
+        u32 left = static_cast<u32>(kLeftPanelWidth);
+        u32 top = static_cast<u32>(kToolbarHeight);
+        u32 ww = m_window->GetWidth();
+        u32 wh = m_window->GetHeight();
+        u32 viewW = (ww > left) ? ww - left : 1;
+        u32 viewH = (wh > top) ? wh - top : 1;
+        m_commandList->SetViewportAndScissor(left, top, viewW, viewH);
     }
     else
     {
@@ -970,227 +980,226 @@ void Application::Render()
 
     if (!m_isGameMode)
     {
-    // ===== 左サイドバー「DX12 エンジン」 =====
-    {
-        f32 panelWidth = 280.0f;
-        f32 displayH = ImGui::GetIO().DisplaySize.y;
-        ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(panelWidth, displayH), ImGuiCond_Always);
-        ImGui::Begin("DX12 \xe3\x82\xa8\xe3\x83\xb3\xe3\x82\xb8\xe3\x83\xb3", nullptr,
-            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
+    f32 displayW = ImGui::GetIO().DisplaySize.x;
+    f32 displayH = ImGui::GetIO().DisplaySize.y;
 
-        // --- 再生/停止 + FPS ---
+    // ===== ツールバー（上部全幅） =====
+    {
+        ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(displayW, kToolbarHeight), ImGuiCond_Always);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 6));
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.140f, 0.140f, 0.140f, 1.0f));
+        ImGui::Begin("##Toolbar", nullptr,
+            ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollWithMouse);
+
+        // Play/Stop
         if (m_engineMode == EngineMode::Editor)
         {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.7f, 0.2f, 1.0f));
-            if (ImGui::Button("\xe5\x86\x8d\xe7\x94\x9f"))
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.55f, 0.20f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.65f, 0.25f, 1.0f));
+            if (ImGui::Button("\xe2\x96\xb6 \xe5\x86\x8d\xe7\x94\x9f"))  // ▶ 再生
             {
                 m_pendingMode = EngineMode::Playing;
                 m_modeChangeRequested = true;
             }
-            ImGui::PopStyleColor();
+            ImGui::PopStyleColor(2);
         }
         else
         {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
-            if (ImGui::Button("\xe5\x81\x9c\xe6\xad\xa2"))
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.65f, 0.20f, 0.20f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.75f, 0.25f, 0.25f, 1.0f));
+            if (ImGui::Button("\xe2\x96\xa0 \xe5\x81\x9c\xe6\xad\xa2"))  // ■ 停止
             {
                 m_pendingMode = EngineMode::Editor;
                 m_modeChangeRequested = true;
             }
+            ImGui::PopStyleColor(2);
+        }
+
+        ImGui::SameLine(0, 12);
+        if (m_engineMode == EngineMode::Playing)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 0.4f, 1.0f));
+            ImGui::Text("\xe2\x97\x8f \xe3\x83\x97\xe3\x83\xac\xe3\x82\xa4\xe4\xb8\xad");  // ● プレイ中
             ImGui::PopStyleColor();
         }
-        ImGui::SameLine();
-        ImGui::Text("%s", m_engineMode == EngineMode::Editor
-            ? "\xe3\x82\xa8\xe3\x83\x87\xe3\x82\xa3\xe3\x82\xbf"    // エディタ
-            : "\xe3\x83\x97\xe3\x83\xac\xe3\x82\xa4\xe4\xb8\xad");  // プレイ中
-        ImGui::SameLine(panelWidth - 80);
-        ImGui::Text("%.0f FPS", m_gameClock.GetFPS());
+        else
+        {
+            ImGui::TextDisabled("\xe3\x82\xa8\xe3\x83\x87\xe3\x82\xa3\xe3\x82\xbf");  // エディタ
+        }
 
+        // Luaエラー
+        if (!m_scriptEngine->GetLastError().empty())
+        {
+            ImGui::SameLine(0, 16);
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+            ImGui::Text("\xe2\x9a\xa0 Lua Error");  // ⚠ Lua Error
+            ImGui::PopStyleColor();
+        }
+
+        // ホットリロード通知
         if (m_hotReloadFlash > 0.0f)
         {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.2f, 1.0f, 0.4f, m_hotReloadFlash));
-            ImGui::Text("\xe3\x83\xaa\xe3\x83\xad\xe3\x83\xbc\xe3\x83\x89\xe5\xae\x8c\xe4\xba\x86");  // リロード完了
+            ImGui::SameLine(0, 12);
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.5f, m_hotReloadFlash));
+            ImGui::Text("\xe2\x9c\x93 Reloaded");  // ✓ Reloaded
             ImGui::PopStyleColor();
             m_hotReloadFlash -= m_gameClock.GetDeltaTime();
         }
 
-        // --- Luaエラー ---
-        if (!m_scriptEngine->GetLastError().empty())
+        // FPS（右寄せ）
+        ImGui::SameLine(displayW - 100);
+        ImGui::Text("%.0f FPS", m_gameClock.GetFPS());
+
+        ImGui::End();
+        ImGui::PopStyleColor();
+        ImGui::PopStyleVar();
+    }
+
+    // ===== ヒエラルキー（左パネル） =====
+    {
+        ImGui::SetNextWindowPos(ImVec2(0, kToolbarHeight), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(kLeftPanelWidth, displayH - kToolbarHeight), ImGuiCond_Always);
+        ImGui::Begin("\xe3\x83\x92\xe3\x82\xa8\xe3\x83\xa9\xe3\x83\xab\xe3\x82\xad\xe3\x83\xbc", nullptr,  // ヒエラルキー
+            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
+
+        // --- ヒエラルキー ---
+        ImGui::TextDisabled("\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3  (%zu)", m_scene->GetEntityCount());  // シーン
+        ImGui::Separator();
         {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.2f, 0.2f, 1.0f));
-            ImGui::TextWrapped("Lua: %s", m_scriptEngine->GetLastError().c_str());
-            ImGui::PopStyleColor();
+            const auto& entities = m_scene->GetEntities();
+            for (i32 i = 0; i < static_cast<i32>(entities.size()); ++i)
+            {
+                const auto& entity = entities[i];
+                bool selected = (i == m_selectedEntityIndex);
+
+                ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_SpanAvailWidth;
+                if (selected) flags |= ImGuiTreeNodeFlags_Selected;
+
+                bool open = ImGui::TreeNodeEx(entity->name.c_str(), flags);
+                if (ImGui::IsItemClicked())
+                    m_selectedEntityIndex = selected ? -1 : i;  // 再クリックで解除
+                if (open) ImGui::TreePop();
+            }
         }
 
         ImGui::Separator();
 
-        // --- シーン ---
-        if (ImGui::CollapsingHeader(
-            "\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3",  // シーン
-            ImGuiTreeNodeFlags_DefaultOpen))
+        // --- 選択Entity プロパティ ---
         {
-            ImGui::Text(
-                "\xe3\x82\xa8\xe3\x83\xb3\xe3\x83\x86\xe3\x82\xa3\xe3\x83\x86\xe3\x82\xa3: %zu",  // エンティティ
-                m_scene->GetEntityCount());
-
-            for (const auto& entity : m_scene->GetEntities())
+            const auto& entities = m_scene->GetEntities();
+            if (m_selectedEntityIndex >= 0 && m_selectedEntityIndex < static_cast<i32>(entities.size()))
             {
-                bool hasAnim = entity->animator && !entity->animClips.empty();
+                const auto& ent = entities[m_selectedEntityIndex];
 
-                if (hasAnim)
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.39f, 0.58f, 0.93f, 1.0f));
+                ImGui::Text("%s", ent->name.c_str());
+                ImGui::PopStyleColor();
+
+                auto& pos = ent->transform.position;
+                auto& rot = ent->transform.rotation;
+                auto& scl = ent->transform.scale;
+                ImGui::DragFloat3("Pos", &pos.x, 0.1f);
+                ImGui::DragFloat3("Rot", &rot.x, 1.0f);
+                ImGui::DragFloat3("Scale", &scl.x, 0.01f);
+
+                if (ent->animator && !ent->animClips.empty())
                 {
-                    if (ImGui::TreeNode(entity->name.c_str()))
+                    ImGui::Separator();
+                    ImGui::TextDisabled("Animation");
+                    for (i32 i = 0; i < static_cast<i32>(ent->animClips.size()); ++i)
                     {
-                        auto& pos = entity->transform.position;
-                        ImGui::Text("%.1f, %.1f, %.1f", pos.x, pos.y, pos.z);
-
-                        for (i32 i = 0; i < static_cast<i32>(entity->animClips.size()); ++i)
-                        {
-                            const auto& clip = entity->animClips[i];
-                            std::string label = clip->GetName().empty()
-                                ? ("Anim " + std::to_string(i))
-                                : clip->GetName();
-                            if (ImGui::Selectable(label.c_str()))
-                            {
-                                entity->animator->CrossFadeTo(clip.get(), 0.3f);
-                            }
-                        }
-                        ImGui::TreePop();
+                        const auto& clip = ent->animClips[i];
+                        std::string label = clip->GetName().empty()
+                            ? ("Clip " + std::to_string(i))
+                            : clip->GetName();
+                        if (ImGui::Selectable(label.c_str()))
+                            ent->animator->CrossFadeTo(clip.get(), 0.3f);
                     }
-                }
-                else
-                {
-                    ImGui::BulletText("%s", entity->name.c_str());
                 }
             }
         }
 
+        ImGui::Separator();
+
         // --- カメラ ---
-        if (ImGui::CollapsingHeader(
-            "\xe3\x82\xab\xe3\x83\xa1\xe3\x83\xa9",  // カメラ
-            ImGuiTreeNodeFlags_DefaultOpen))
+        if (ImGui::CollapsingHeader("\xe3\x82\xab\xe3\x83\xa1\xe3\x83\xa9", ImGuiTreeNodeFlags_DefaultOpen))  // カメラ
         {
             auto camPos = m_camera->GetPosition();
-            ImGui::Text(
-                "\xe4\xbd\x8d\xe7\xbd\xae: %.1f, %.1f, %.1f",  // 位置
-                camPos.x, camPos.y, camPos.z);
-            ImGui::Text("%s", m_engineMode == EngineMode::Editor
-                ? "\xe5\x8f\xb3\xe3\x82\xaf\xe3\x83\xaa\xe3\x83\x83\xe3\x82\xaf\xe3\x81\xa7\xe6\x93\x8d\xe4\xbd\x9c"  // 右クリックで操作
-                : "Lua \xe5\x88\xb6\xe5\xbe\xa1");  // Lua 制御
-
+            ImGui::Text("%.1f, %.1f, %.1f", camPos.x, camPos.y, camPos.z);
             f32 moveSpeed = m_camera->GetMoveSpeed();
-            if (ImGui::SliderFloat(
-                "\xe9\x80\x9f\xe5\xba\xa6",  // 速度
-                &moveSpeed, 1.0f, 50.0f))
-            {
+            if (ImGui::SliderFloat("\xe9\x80\x9f\xe5\xba\xa6", &moveSpeed, 1.0f, 50.0f))  // 速度
                 m_camera->SetMoveSpeed(moveSpeed);
-            }
         }
 
         // --- オーディオ ---
-        if (ImGui::CollapsingHeader(
-            "\xe3\x82\xaa\xe3\x83\xbc\xe3\x83\x87\xe3\x82\xa3\xe3\x82\xaa",  // オーディオ
-            ImGuiTreeNodeFlags_DefaultOpen))
+        if (ImGui::CollapsingHeader("\xe3\x82\xaa\xe3\x83\xbc\xe3\x83\x87\xe3\x82\xa3\xe3\x82\xaa"))  // オーディオ
         {
             f32 masterVol = m_audioSystem->GetMasterVolume();
             f32 bgmVol    = m_audioSystem->GetBGMVolume();
             f32 sfxVol    = m_audioSystem->GetSFXVolume();
-            if (ImGui::SliderFloat(
-                "\xe3\x83\x9e\xe3\x82\xb9\xe3\x82\xbf\xe3\x83\xbc",  // マスター
-                &masterVol, 0.0f, 1.0f))
+            if (ImGui::SliderFloat("\xe3\x83\x9e\xe3\x82\xb9\xe3\x82\xbf\xe3\x83\xbc", &masterVol, 0.0f, 1.0f))  // マスター
                 m_audioSystem->SetMasterVolume(masterVol);
             if (ImGui::SliderFloat("BGM", &bgmVol, 0.0f, 1.0f))
                 m_audioSystem->SetBGMVolume(bgmVol);
             if (ImGui::SliderFloat("SE", &sfxVol, 0.0f, 1.0f))
                 m_audioSystem->SetSFXVolume(sfxVol);
 
-            // BGM ファイル一覧
             const auto& bgmList = m_audioSystem->GetBGMList();
-            if (!bgmList.empty())
+            for (const auto& bgm : bgmList)
             {
-                ImGui::Separator();
-                ImGui::Text("BGM");
-                for (const auto& bgm : bgmList)
-                {
-                    std::string filename = std::filesystem::path(bgm).filename().string();
-                    ImGui::PushID(bgm.c_str());
-                    if (ImGui::Button("\xe2\x96\xb6"))  // ▶
-                    {
-                        m_audioSystem->PlayBGM(bgm);
-                    }
-                    ImGui::SameLine();
-                    ImGui::Text("%s", filename.c_str());
-                    ImGui::PopID();
-                }
-                if (ImGui::Button(
-                    "BGM \xe5\x81\x9c\xe6\xad\xa2"))  // BGM 停止
-                {
-                    m_audioSystem->StopBGM();
-                }
+                std::string fn = std::filesystem::path(bgm).filename().string();
+                ImGui::PushID(bgm.c_str());
+                if (ImGui::Button("\xe2\x96\xb6")) m_audioSystem->PlayBGM(bgm);
+                ImGui::SameLine(); ImGui::Text("%s", fn.c_str());
+                ImGui::PopID();
             }
+            if (!bgmList.empty() && ImGui::Button("BGM \xe5\x81\x9c\xe6\xad\xa2"))
+                m_audioSystem->StopBGM();
 
-            // SFX ファイル一覧
             const auto& sfxList = m_audioSystem->GetSFXList();
-            if (!sfxList.empty())
+            for (const auto& sfx : sfxList)
             {
-                ImGui::Separator();
-                ImGui::Text("SE");
-                for (const auto& sfx : sfxList)
-                {
-                    std::string filename = std::filesystem::path(sfx).filename().string();
-                    ImGui::PushID(sfx.c_str());
-                    if (ImGui::Button("\xe2\x96\xb6"))  // ▶
-                    {
-                        m_audioSystem->PlaySFX(sfx);
-                    }
-                    ImGui::SameLine();
-                    ImGui::Text("%s", filename.c_str());
-                    ImGui::PopID();
-                }
-                if (ImGui::Button(
-                    "SE \xe5\x85\xa8\xe5\x81\x9c\xe6\xad\xa2"))  // SE 全停止
-                {
-                    m_audioSystem->StopAllSFX();
-                }
+                std::string fn = std::filesystem::path(sfx).filename().string();
+                ImGui::PushID(sfx.c_str());
+                if (ImGui::Button("\xe2\x96\xb6")) m_audioSystem->PlaySFX(sfx);
+                ImGui::SameLine(); ImGui::Text("%s", fn.c_str());
+                ImGui::PopID();
             }
-
-            if (bgmList.empty() && sfxList.empty())
-            {
-                ImGui::TextDisabled("assets/audio/bgm/ \xe3\x81\xa8 sfx/ \xe3\x81\xab\xe3\x83\x95\xe3\x82\xa1\xe3\x82\xa4\xe3\x83\xab\xe3\x82\x92\xe9\x85\x8d\xe7\xbd\xae");  // assets/audio/bgm/ と sfx/ にファイルを配置
-            }
+            if (!sfxList.empty() && ImGui::Button("SE \xe5\x85\xa8\xe5\x81\x9c\xe6\xad\xa2"))
+                m_audioSystem->StopAllSFX();
         }
 
         // --- 設定 ---
-        if (ImGui::CollapsingHeader(
-            "\xe8\xa8\xad\xe5\xae\x9a"))  // 設定
+        if (ImGui::CollapsingHeader("\xe8\xa8\xad\xe5\xae\x9a"))  // 設定
         {
             ImGui::Checkbox("VSync", &m_useVsync);
         }
 
         // --- ビルド ---
-        ImGui::Separator();
-        if (ImGui::CollapsingHeader(
-            "\xe3\x83\x93\xe3\x83\xab\xe3\x83\x89"))  // ビルド
+        if (ImGui::CollapsingHeader("\xe3\x83\x93\xe3\x83\xab\xe3\x83\x89"))  // ビルド
         {
-            ImGui::TextWrapped(
-                "\xe3\x82\xb2\xe3\x83\xbc\xe3\x83\xa0\xe3\x82\x92\xe3\x83\x93\xe3\x83\xab\xe3\x83\x89\xe3\x81\x97\xe3\x81\xa6"  // ゲームをビルドして
-                " build/game/ "
-                "\xe3\x81\xab\xe5\x87\xba\xe5\x8a\x9b\xe3\x81\x97\xe3\x81\xbe\xe3\x81\x99");  // に出力します
-            if (ImGui::Button(
-                "\xe3\x82\xb2\xe3\x83\xbc\xe3\x83\xa0\xe3\x83\x93\xe3\x83\xab\xe3\x83\x89"))  // ゲームビルド
+            if (ImGui::Button("\xe3\x82\xb2\xe3\x83\xbc\xe3\x83\xa0\xe3\x83\x93\xe3\x83\xab\xe3\x83\x89"))  // ゲームビルド
             {
                 BuildGame();
                 m_buildCompleteFlash = 3.0f;
             }
             if (m_buildCompleteFlash > 0.0f)
             {
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.2f, 1.0f, 0.4f, 1.0f));
-                ImGui::Text(
-                    "\xe3\x83\x93\xe3\x83\xab\xe3\x83\x89\xe5\xae\x8c\xe4\xba\x86!");  // ビルド完了!
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.5f, 1.0f));
+                ImGui::Text("\xe3\x83\x93\xe3\x83\xab\xe3\x83\x89\xe5\xae\x8c\xe4\xba\x86!");  // ビルド完了!
                 ImGui::PopStyleColor();
                 m_buildCompleteFlash -= m_gameClock.GetDeltaTime();
             }
+        }
+
+        // Luaエラー
+        if (!m_scriptEngine->GetLastError().empty())
+        {
+            ImGui::Separator();
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+            ImGui::TextWrapped("%s", m_scriptEngine->GetLastError().c_str());
+            ImGui::PopStyleColor();
         }
 
         ImGui::End();

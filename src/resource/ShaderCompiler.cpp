@@ -22,7 +22,7 @@ ShaderCompiler::ShaderBytecode ShaderCompiler::LoadFromFile(const std::wstring& 
         Logger::Error("ShaderCompiler: .cso file is empty or unreadable");
         throw std::runtime_error("ShaderCompiler: .cso file is empty or unreadable");
     }
-
+    
     ShaderBytecode bytecode;
     bytecode.data.resize(static_cast<size_t>(fileSize));
 

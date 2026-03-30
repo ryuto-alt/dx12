@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # MSVC compile options (not global - applied per-target to avoid conflicts with FetchContent deps)
-set(DX12_COMPILE_OPTIONS /W4 /WX /MP /permissive- /utf-8)
+set(DX12_COMPILE_OPTIONS /W4 /WX /MP /permissive- /utf-8 /external:anglebrackets /external:W0)
 set(DX12_COMPILE_DEFS UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 
 # Dependencies

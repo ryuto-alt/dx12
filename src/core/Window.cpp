@@ -17,7 +17,7 @@ Window::~Window()
     }
 }
 
-void Window::Initialize(HINSTANCE hInstance, int nCmdShow,
+void Window::Initialize(HINSTANCE hInstance, int /*nCmdShow*/,
                          u32 width, u32 height, const wchar_t* title)
 {
     m_width = width;
@@ -52,7 +52,7 @@ void Window::Initialize(HINSTANCE hInstance, int nCmdShow,
         0,
         L"DX12EngineWindowClass",
         m_title.c_str(),
-        WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX,  // 最大化ボタン無効
+        WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT,
         rect.right - rect.left,
         rect.bottom - rect.top,
@@ -68,7 +68,7 @@ void Window::Initialize(HINSTANCE hInstance, int nCmdShow,
         throw std::runtime_error("Failed to create window");
     }
 
-    ShowWindow(m_hwnd, nCmdShow);
+    ShowWindow(m_hwnd, SW_SHOWMAXIMIZED);
     UpdateWindow(m_hwnd);
 
     Logger::Info("Window created: {}x{}", m_width, m_height);

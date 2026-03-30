@@ -80,8 +80,11 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE        m_shadowDsvHandle{};
     u32                                m_shadowSrvIndex = 0;
     static constexpr u32 kShadowMapSize = 2048;
-    static constexpr f32 kSidebarWidth = 280.0f;
-    bool m_isGameMode = false;  // --game フラグ起動
+    // エディタレイアウト
+    static constexpr f32 kLeftPanelWidth  = 280.0f;
+    static constexpr f32 kToolbarHeight   = 36.0f;
+    i32 m_selectedEntityIndex = -1;
+    bool m_isGameMode = false;
     std::unique_ptr<Camera>            m_camera;
     std::unique_ptr<ConstantBuffer>    m_perFrameCB;
     std::unique_ptr<CommandList>       m_commandList;
