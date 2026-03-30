@@ -690,6 +690,11 @@ void Application::EnterPlayMode()
     // シーン再構築（Luaスクリプト再読み込み）
     RebuildScene();
 
+    // Playモード: サイドバーなし全画面幅でアスペクト比再計算
+    m_camera->SetPerspective(DirectX::XM_PIDIV4,
+        static_cast<f32>(m_window->GetWidth()) / static_cast<f32>(m_window->GetHeight()),
+        0.1f, 1000.0f);
+
     m_engineMode = EngineMode::Playing;
     Logger::Info("Entered PLAY mode");
 }
@@ -705,6 +710,13 @@ void Application::EnterEditorMode()
 
     // シーン再構築
     RebuildScene();
+
+    // Editorモード: サイドバー分を引いたアスペクト比に再計算
+    f32 viewW = static_cast<f32>(m_window->GetWidth());
+    if (!m_isGameMode) viewW = (std::max)(viewW - kSidebarWidth, 1.0f);
+    m_camera->SetPerspective(DirectX::XM_PIDIV4,
+        viewW / static_cast<f32>(m_window->GetHeight()),
+        0.1f, 1000.0f);
 
     m_inputSystem->SetMouseCapture(false);
     m_engineMode = EngineMode::Editor;
