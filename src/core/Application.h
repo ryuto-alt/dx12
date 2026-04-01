@@ -79,7 +79,9 @@ private:
     std::unique_ptr<DescriptorHeap>    m_shadowDsvHeap;
     D3D12_CPU_DESCRIPTOR_HANDLE        m_shadowDsvHandle{};
     u32                                m_shadowSrvIndex = 0;
-    static constexpr u32 kShadowMapSize = 2048;
+    u32                                m_shadowMapSize = 4096;
+    i32                                m_shadowQualityIndex = 2;  // 0:1024, 1:2048, 2:4096, 3:8192
+    bool                               m_shadowMapDirty = false;
     // エディタレイアウト
     static constexpr f32 kLeftPanelWidth  = 280.0f;
     static constexpr f32 kToolbarHeight   = 36.0f;

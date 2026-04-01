@@ -63,34 +63,31 @@ PSInput VSMain(VSInput input)
 
 float CalcShadow(float4 shadowCoord)
 {
-    // パースペクティブ除算
     float3 projCoords = shadowCoord.xyz / shadowCoord.w;
 
-    // NDC [-1,1] → UV [0,1]
     float2 shadowUV = projCoords.xy * 0.5f + 0.5f;
-    shadowUV.y = 1.0f - shadowUV.y;  // DX12 UV座標系
+    shadowUV.y = 1.0f - shadowUV.y;
 
-    // 範囲外はシャドウなし
     if (shadowUV.x < 0 || shadowUV.x > 1 || shadowUV.y < 0 || shadowUV.y > 1)
         return 1.0f;
 
     float currentDepth = projCoords.z;
 
-    // 3x3 PCF (Percentage Closer Filtering)
+    // 5x5 PCF (Percentage Closer Filtering)
     float shadow = 0.0f;
-    float texelSize = 1.0f / 2048.0f;  // シャドウマップ解像度
+    float texelSize = 1.0f / 4096.0f;
 
     [unroll]
-    for (int y = -1; y <= 1; y++)
+    for (int y = -2; y <= 2; y++)
     {
         [unroll]
-        for (int x = -1; x <= 1; x++)
+        for (int x = -2; x <= 2; x++)
         {
             float2 offset = float2(x, y) * texelSize;
             shadow += g_shadowMap.SampleCmpLevelZero(g_shadowSampler, shadowUV + offset, currentDepth);
         }
     }
-    shadow /= 9.0f;
+    shadow /= 25.0f;
 
     return shadow;
 }

@@ -299,8 +299,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode)
 
         D3D12_RESOURCE_DESC shadowDesc{};
         shadowDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        shadowDesc.Width = kShadowMapSize;
-        shadowDesc.Height = kShadowMapSize;
+        shadowDesc.Width = m_shadowMapSize;
+        shadowDesc.Height = m_shadowMapSize;
         shadowDesc.DepthOrArraySize = 1;
         shadowDesc.MipLevels = 1;
         shadowDesc.Format = DXGI_FORMAT_R32_TYPELESS;
@@ -369,7 +369,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode)
             m_shadowSkinnedPipelineState->Initialize(*m_graphicsDevice, builder);
         }
 
-        Logger::Info("Shadow map initialized ({}x{})", kShadowMapSize, kShadowMapSize);
+        Logger::Info("Shadow map initialized ({}x{})", m_shadowMapSize, m_shadowMapSize);
     }
 
     // PerFrame Constant Buffer
@@ -808,6 +808,49 @@ void Application::Render()
     u32 frameIndex = m_swapChain->GetCurrentBackBufferIndex();
     f32 totalTime = m_gameClock.GetTotalTime();
 
+    // シャドウマップ再作成（ImGuiで解像度変更時、前フレーム完了後に実行）
+    if (m_shadowMapDirty)
+    {
+        m_shadowMapDirty = false;
+        m_shadowMap.Reset();
+
+        D3D12_RESOURCE_DESC shadowDesc{};
+        shadowDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        shadowDesc.Width = m_shadowMapSize;
+        shadowDesc.Height = m_shadowMapSize;
+        shadowDesc.DepthOrArraySize = 1;
+        shadowDesc.MipLevels = 1;
+        shadowDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+        shadowDesc.SampleDesc = {1, 0};
+        shadowDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+        D3D12_CLEAR_VALUE clearValue{};
+        clearValue.Format = DXGI_FORMAT_D32_FLOAT;
+        clearValue.DepthStencil = {1.0f, 0};
+
+        D3D12_HEAP_PROPERTIES heapProps{};
+        heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+        ThrowIfFailed(m_graphicsDevice->GetDevice()->CreateCommittedResource(
+            &heapProps, D3D12_HEAP_FLAG_NONE,
+            &shadowDesc, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            &clearValue, IID_PPV_ARGS(&m_shadowMap)));
+
+        D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc{};
+        dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
+        dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+        m_graphicsDevice->GetDevice()->CreateDepthStencilView(
+            m_shadowMap.Get(), &dsvDesc, m_shadowDsvHandle);
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+        srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Texture2D.MipLevels = 1;
+        m_graphicsDevice->GetDevice()->CreateShaderResourceView(
+            m_shadowMap.Get(), &srvDesc, m_srvHeap->GetCpuHandle(m_shadowSrvIndex));
+    }
+
     // ライト方向と View/Proj 行列
     XMFLOAT3 lightDirF3 = {-0.3f, -1.0f, -0.5f};
     XMVECTOR lightDir = XMVector3Normalize(XMLoadFloat3(&lightDirF3));
@@ -832,11 +875,11 @@ void Application::Render()
 
         // シャドウマップ用ビューポート
         D3D12_VIEWPORT shadowVp{};
-        shadowVp.Width    = static_cast<f32>(kShadowMapSize);
-        shadowVp.Height   = static_cast<f32>(kShadowMapSize);
+        shadowVp.Width    = static_cast<f32>(m_shadowMapSize);
+        shadowVp.Height   = static_cast<f32>(m_shadowMapSize);
         shadowVp.MinDepth = 0.0f;
         shadowVp.MaxDepth = 1.0f;
-        D3D12_RECT shadowScissor = {0, 0, static_cast<LONG>(kShadowMapSize), static_cast<LONG>(kShadowMapSize)};
+        D3D12_RECT shadowScissor = {0, 0, static_cast<LONG>(m_shadowMapSize), static_cast<LONG>(m_shadowMapSize)};
         nativeCmdList->RSSetViewports(1, &shadowVp);
         nativeCmdList->RSSetScissorRects(1, &shadowScissor);
 
@@ -1168,6 +1211,19 @@ void Application::Render()
             f32 moveSpeed = m_camera->GetMoveSpeed();
             if (ImGui::SliderFloat("\xe9\x80\x9f\xe5\xba\xa6", &moveSpeed, 1.0f, 50.0f))  // 速度
                 m_camera->SetMoveSpeed(moveSpeed);
+        }
+
+        // --- シャドウ品質 ---
+        if (ImGui::CollapsingHeader("\xe3\x82\xb7\xe3\x83\xa3\xe3\x83\x89\xe3\x82\xa6"))  // シャドウ
+        {
+            const char* qualities[] = {"1024 (Low)", "2048 (Medium)", "4096 (High)", "8192 (Ultra)"};
+            const u32 sizes[] = {1024, 2048, 4096, 8192};
+            if (ImGui::Combo("\xe8\xa7\xa3\xe5\x83\x8f\xe5\xba\xa6", &m_shadowQualityIndex, qualities, 4))  // 解像度
+            {
+                m_shadowMapSize = sizes[m_shadowQualityIndex];
+                m_shadowMapDirty = true;  // 次フレームで再作成
+            }
+            ImGui::Text("%ux%u", m_shadowMapSize, m_shadowMapSize);
         }
 
         // --- オーディオ ---

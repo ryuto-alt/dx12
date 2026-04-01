@@ -98,18 +98,18 @@ float CalcShadow(float4 shadowCoord)
 
     float currentDepth = projCoords.z;
     float shadow = 0.0f;
-    float texelSize = 1.0f / 2048.0f;
+    float texelSize = 1.0f / 4096.0f;
 
     [unroll]
-    for (int y = -1; y <= 1; y++)
+    for (int y = -2; y <= 2; y++)
     {
         [unroll]
-        for (int x = -1; x <= 1; x++)
+        for (int x = -2; x <= 2; x++)
         {
             shadow += g_shadowMap.SampleCmpLevelZero(g_shadowSampler, shadowUV + float2(x, y) * texelSize, currentDepth);
         }
     }
-    return shadow / 9.0f;
+    return shadow / 25.0f;
 }
 
 float4 PSMain(PSInput input) : SV_TARGET

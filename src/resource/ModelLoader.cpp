@@ -476,37 +476,6 @@ ModelData ModelLoader::LoadFromFile(
         {
             nodeAnimClips = BuildAllNodeAnimClips(scene, *nodeGraph);
 
-            // デバッグ: ノード名とチャンネル名をVS出力ウィンドウにダンプ
-            {
-                std::string dbg = "[NodeAnim] File: " + filePath.string() + "\n";
-                dbg += "  Nodes (" + std::to_string(nodeGraph->GetNodeCount()) + "):\n";
-                for (u32 ni = 0; ni < nodeGraph->GetNodeCount(); ++ni)
-                {
-                    const auto& nd = nodeGraph->GetNode(ni);
-                    dbg += "    [" + std::to_string(ni) + "] '" + nd.name
-                         + "' meshes=" + std::to_string(nd.meshIndices.size()) + "\n";
-                }
-                dbg += "  Animations (" + std::to_string(scene->mNumAnimations) + "):\n";
-                for (unsigned int ai = 0; ai < scene->mNumAnimations; ++ai)
-                {
-                    const aiAnimation* anim = scene->mAnimations[ai];
-                    dbg += "    Anim[" + std::to_string(ai) + "] '" + anim->mName.C_Str()
-                         + "' channels=" + std::to_string(anim->mNumChannels) + "\n";
-                    for (unsigned int ci = 0; ci < anim->mNumChannels && ci < 5; ++ci)
-                    {
-                        dbg += "      ch[" + std::to_string(ci) + "] '" + anim->mChannels[ci]->mNodeName.C_Str() + "'\n";
-                    }
-                    if (anim->mNumChannels > 5)
-                        dbg += "      ... (" + std::to_string(anim->mNumChannels - 5) + " more)\n";
-                }
-                dbg += "  NodeAnimClips: " + std::to_string(nodeAnimClips.size()) + "\n";
-                for (const auto& clip : nodeAnimClips)
-                {
-                    dbg += "    '" + clip->GetName() + "' tracks=" + std::to_string(clip->GetTrackCount()) + "\n";
-                }
-                OutputDebugStringA(dbg.c_str());
-            }
-
             // ---------------------------------------------------------------
             // Compute bake matrices: static clip (first clip) at time=0
             // Uses the same S*R*T pipeline as NodeAnimator::ComputeRawNodeMatrices
