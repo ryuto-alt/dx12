@@ -24,6 +24,9 @@
 #include "animation/AnimationClip.h"
 #include "animation/Animator.h"
 #include "animation/SkinningBuffer.h"
+#include "animation/NodeGraph.h"
+#include "animation/NodeAnimationClip.h"
+#include "animation/NodeAnimator.h"
 #include "input/InputSystem.h"
 #include "scene/Scene.h"
 #include "scene/Entity.h"
@@ -855,14 +858,24 @@ void Application::Render()
                 m_commandList->SetPipelineState(*m_shadowPipelineState);
             }
 
-            for (const auto& mesh : entity.meshes)
+            for (u32 mi = 0; mi < static_cast<u32>(entity.meshes.size()); ++mi)
             {
+                const auto* mesh = entity.meshes[mi];
+
+                // ノードアニメーション: メッシュごとの個別行列を適用
+                XMMATRIX meshWorld = world;
+                if (entity.hasNodeAnimation && mi < static_cast<u32>(entity.meshNodeTransforms.size()))
+                {
+                    XMMATRIX nodeMat = XMLoadFloat4x4(&entity.meshNodeTransforms[mi]);
+                    meshWorld = nodeMat * world;
+                }
+
                 struct PerObjectData {
                     XMMATRIX mvp;
                     XMMATRIX mdl;
                 } objData;
-                objData.mvp = XMMatrixTranspose(world * lightViewProj);
-                objData.mdl = XMMatrixTranspose(world);
+                objData.mvp = XMMatrixTranspose(meshWorld * lightViewProj);
+                objData.mdl = XMMatrixTranspose(meshWorld);
                 m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
 
                 m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -954,14 +967,24 @@ void Application::Render()
             m_commandList->SetPipelineState(*m_pipelineState);
         }
 
-        for (const auto& mesh : entity.meshes)
+        for (u32 mi = 0; mi < static_cast<u32>(entity.meshes.size()); ++mi)
         {
+            const auto* mesh = entity.meshes[mi];
+
+            // ノードアニメーション: メッシュごとの個別行列を適用
+            XMMATRIX meshWorld = world;
+            if (entity.hasNodeAnimation && mi < static_cast<u32>(entity.meshNodeTransforms.size()))
+            {
+                XMMATRIX nodeMat = XMMatrixTranspose(XMLoadFloat4x4(&entity.meshNodeTransforms[mi]));
+                meshWorld = nodeMat * world;
+            }
+
             struct PerObjectData {
                 XMMATRIX mvp;
                 XMMATRIX mdl;
             } objData;
-            objData.mvp = XMMatrixTranspose(world * viewProj);
-            objData.mdl = XMMatrixTranspose(world);
+            objData.mvp = XMMatrixTranspose(meshWorld * viewProj);
+            objData.mdl = XMMatrixTranspose(meshWorld);
             m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
 
             const Material* mat = mesh->GetMaterial();
@@ -1106,7 +1129,7 @@ void Application::Render()
                 if (ent->animator && !ent->animClips.empty())
                 {
                     ImGui::Separator();
-                    ImGui::TextDisabled("Animation");
+                    ImGui::TextDisabled("Animation (Skeletal)");
                     for (i32 i = 0; i < static_cast<i32>(ent->animClips.size()); ++i)
                     {
                         const auto& clip = ent->animClips[i];
@@ -1115,6 +1138,21 @@ void Application::Render()
                             : clip->GetName();
                         if (ImGui::Selectable(label.c_str()))
                             ent->animator->CrossFadeTo(clip.get(), 0.3f);
+                    }
+                }
+
+                if (ent->nodeAnimator && !ent->nodeAnimClips.empty())
+                {
+                    ImGui::Separator();
+                    ImGui::TextDisabled("Animation (Node)");
+                    for (i32 i = 0; i < static_cast<i32>(ent->nodeAnimClips.size()); ++i)
+                    {
+                        const auto& clip = ent->nodeAnimClips[i];
+                        std::string label = clip->GetName().empty()
+                            ? ("Clip " + std::to_string(i))
+                            : clip->GetName();
+                        if (ImGui::Selectable(label.c_str()))
+                            ent->nodeAnimator->CrossFadeTo(clip.get(), 0.3f);
                     }
                 }
             }

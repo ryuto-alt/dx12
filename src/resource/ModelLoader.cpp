@@ -280,6 +280,154 @@ void WriteBoneWeightsToVertices(
     }
 }
 
+// ---------------------------------------------------------------
+// Node Animation: ノード階層の構築
+// ---------------------------------------------------------------
+void BuildNodeGraphRecursive(
+    const aiNode* node,
+    i32 parentIndex,
+    NodeGraph& graph)
+{
+    SceneNode sn;
+    sn.name = node->mName.C_Str();
+    sn.parentIndex = parentIndex;
+
+    sn.localDefault = ToXMFLOAT4X4(node->mTransformation);
+
+    for (unsigned int m = 0; m < node->mNumMeshes; ++m)
+    {
+        sn.meshIndices.push_back(node->mMeshes[m]);
+    }
+
+    i32 myIndex = static_cast<i32>(graph.GetNodeCount());
+    graph.AddNode(std::move(sn));
+
+    for (unsigned int c = 0; c < node->mNumChildren; ++c)
+    {
+        BuildNodeGraphRecursive(node->mChildren[c], myIndex, graph);
+    }
+}
+
+std::unique_ptr<NodeGraph> BuildNodeGraph(const aiScene* scene)
+{
+    if (!scene->mRootNode)
+    {
+        return nullptr;
+    }
+
+    auto graph = std::make_unique<NodeGraph>();
+    BuildNodeGraphRecursive(scene->mRootNode, -1, *graph);
+
+    // 初期グローバル行列の逆行列を計算（inverseBindPose相当）
+    graph->ComputeInverseDefaultGlobals();
+
+    Logger::Info("NodeGraph built: {} nodes (root='{}')",
+                 graph->GetNodeCount(), scene->mRootNode->mName.C_Str());
+
+    // デバッグ: メッシュ→ノード マッピング状況
+    u32 mappedMeshCount = 0;
+    for (u32 ni = 0; ni < graph->GetNodeCount(); ++ni)
+    {
+        const auto& node = graph->GetNode(ni);
+        mappedMeshCount += static_cast<u32>(node.meshIndices.size());
+        if (!node.meshIndices.empty())
+        {
+            Logger::Info("  Node[{}] '{}': {} meshes, parent={}",
+                         ni, node.name, node.meshIndices.size(), node.parentIndex);
+        }
+    }
+    Logger::Info("  Total mesh-node mappings: {}/{}", mappedMeshCount, scene->mNumMeshes);
+    return graph;
+}
+
+std::unique_ptr<NodeAnimationClip> BuildNodeAnimClipFromAnim(
+    const aiAnimation* anim, const NodeGraph& graph)
+{
+    auto clip = std::make_unique<NodeAnimationClip>();
+    clip->SetDuration(static_cast<float>(anim->mDuration));
+    clip->SetTicksPerSecond(anim->mTicksPerSecond > 0.0
+        ? static_cast<float>(anim->mTicksPerSecond)
+        : 25.0f);
+    clip->SetName(anim->mName.C_Str());
+
+    for (unsigned int ci = 0; ci < anim->mNumChannels; ++ci)
+    {
+        const aiNodeAnim* channel = anim->mChannels[ci];
+        std::string nodeName(channel->mNodeName.C_Str());
+
+        i32 nodeIndex = graph.FindNodeIndex(nodeName);
+        if (nodeIndex < 0)
+        {
+            Logger::Warn("  NodeAnim channel '{}' has no matching node - skipped", nodeName);
+            continue;
+        }
+
+        NodeTrack track;
+        track.nodeIndex = static_cast<u32>(nodeIndex);
+
+        // Position keys
+        track.positionKeys.reserve(channel->mNumPositionKeys);
+        for (unsigned int k = 0; k < channel->mNumPositionKeys; ++k)
+        {
+            const aiVectorKey& key = channel->mPositionKeys[k];
+            track.positionKeys.push_back({
+                static_cast<float>(key.mTime),
+                { key.mValue.x, key.mValue.y, key.mValue.z }
+            });
+        }
+
+        // Rotation keys: aiQuaternion (w,x,y,z) -> XMFLOAT4 (x,y,z,w)
+        track.rotationKeys.reserve(channel->mNumRotationKeys);
+        for (unsigned int k = 0; k < channel->mNumRotationKeys; ++k)
+        {
+            const aiQuatKey& key = channel->mRotationKeys[k];
+            track.rotationKeys.push_back({
+                static_cast<float>(key.mTime),
+                { key.mValue.x, key.mValue.y, key.mValue.z, key.mValue.w }
+            });
+        }
+
+        // Scale keys
+        track.scaleKeys.reserve(channel->mNumScalingKeys);
+        for (unsigned int k = 0; k < channel->mNumScalingKeys; ++k)
+        {
+            const aiVectorKey& key = channel->mScalingKeys[k];
+            track.scaleKeys.push_back({
+                static_cast<float>(key.mTime),
+                { key.mValue.x, key.mValue.y, key.mValue.z }
+            });
+        }
+
+        clip->AddTrack(std::move(track));
+    }
+
+    Logger::Info("NodeAnimClip built: '{}' {} tracks, duration={:.2f}",
+                 clip->GetName(), clip->GetTrackCount(), clip->GetDuration());
+    return clip;
+}
+
+std::vector<std::unique_ptr<NodeAnimationClip>> BuildAllNodeAnimClips(
+    const aiScene* scene, const NodeGraph& graph)
+{
+    std::vector<std::unique_ptr<NodeAnimationClip>> clips;
+
+    if (!scene->mAnimations || scene->mNumAnimations == 0)
+    {
+        return clips;
+    }
+
+    for (unsigned int ai = 0; ai < scene->mNumAnimations; ++ai)
+    {
+        auto clip = BuildNodeAnimClipFromAnim(scene->mAnimations[ai], graph);
+        if (clip && clip->GetTrackCount() > 0)
+        {
+            clips.push_back(std::move(clip));
+        }
+    }
+
+    return clips;
+}
+
 } // anonymous namespace
 
 ModelData ModelLoader::LoadFromFile(
@@ -313,6 +461,120 @@ ModelData ModelLoader::LoadFromFile(
 
     ModelData result;
 
+    // ---------------------------------------------------------------
+    // Build nodeGraph + nodeAnimClips BEFORE mesh creation
+    // (needed for vertex baking with static animation pose)
+    // ---------------------------------------------------------------
+    std::unique_ptr<NodeGraph> nodeGraph;
+    std::vector<std::unique_ptr<NodeAnimationClip>> nodeAnimClips;
+    std::vector<DirectX::XMMATRIX> bakeGlobalMatrices; // per-node bake matrices (empty if not applicable)
+
+    if (!skeleton && scene->mNumAnimations > 0)
+    {
+        nodeGraph = BuildNodeGraph(scene);
+        if (nodeGraph)
+        {
+            nodeAnimClips = BuildAllNodeAnimClips(scene, *nodeGraph);
+
+            // デバッグ: ノード名とチャンネル名をVS出力ウィンドウにダンプ
+            {
+                std::string dbg = "[NodeAnim] File: " + filePath.string() + "\n";
+                dbg += "  Nodes (" + std::to_string(nodeGraph->GetNodeCount()) + "):\n";
+                for (u32 ni = 0; ni < nodeGraph->GetNodeCount(); ++ni)
+                {
+                    const auto& nd = nodeGraph->GetNode(ni);
+                    dbg += "    [" + std::to_string(ni) + "] '" + nd.name
+                         + "' meshes=" + std::to_string(nd.meshIndices.size()) + "\n";
+                }
+                dbg += "  Animations (" + std::to_string(scene->mNumAnimations) + "):\n";
+                for (unsigned int ai = 0; ai < scene->mNumAnimations; ++ai)
+                {
+                    const aiAnimation* anim = scene->mAnimations[ai];
+                    dbg += "    Anim[" + std::to_string(ai) + "] '" + anim->mName.C_Str()
+                         + "' channels=" + std::to_string(anim->mNumChannels) + "\n";
+                    for (unsigned int ci = 0; ci < anim->mNumChannels && ci < 5; ++ci)
+                    {
+                        dbg += "      ch[" + std::to_string(ci) + "] '" + anim->mChannels[ci]->mNodeName.C_Str() + "'\n";
+                    }
+                    if (anim->mNumChannels > 5)
+                        dbg += "      ... (" + std::to_string(anim->mNumChannels - 5) + " more)\n";
+                }
+                dbg += "  NodeAnimClips: " + std::to_string(nodeAnimClips.size()) + "\n";
+                for (const auto& clip : nodeAnimClips)
+                {
+                    dbg += "    '" + clip->GetName() + "' tracks=" + std::to_string(clip->GetTrackCount()) + "\n";
+                }
+                OutputDebugStringA(dbg.c_str());
+            }
+
+            // ---------------------------------------------------------------
+            // Compute bake matrices: static clip (first clip) at time=0
+            // Uses the same S*R*T pipeline as NodeAnimator::ComputeRawNodeMatrices
+            // to avoid mismatch with FBX's complex node transforms (Pivot, PreRotation, etc.)
+            // ---------------------------------------------------------------
+            if (!nodeAnimClips.empty())
+            {
+                const NodeAnimationClip* staticClip = nodeAnimClips[0].get();
+                u32 nodeCount = nodeGraph->GetNodeCount();
+                bakeGlobalMatrices.resize(nodeCount, DirectX::XMMatrixIdentity());
+
+                for (u32 i = 0; i < nodeCount; ++i)
+                {
+                    const SceneNode& sceneNode = nodeGraph->GetNode(i);
+                    const NodeTrack* track = staticClip->FindTrackForNode(i);
+
+                    DirectX::XMMATRIX localMatrix;
+
+                    if (track)
+                    {
+                        // Use time=0 keyframe values (first key or interpolated at 0)
+                        DirectX::XMFLOAT3 pos = { 0.0f, 0.0f, 0.0f };
+                        DirectX::XMFLOAT4 rot = { 0.0f, 0.0f, 0.0f, 1.0f };
+                        DirectX::XMFLOAT3 scale = { 1.0f, 1.0f, 1.0f };
+
+                        if (!track->positionKeys.empty())
+                        {
+                            pos = track->positionKeys.front().value;
+                        }
+                        if (!track->rotationKeys.empty())
+                        {
+                            rot = track->rotationKeys.front().value;
+                        }
+                        if (!track->scaleKeys.empty())
+                        {
+                            scale = track->scaleKeys.front().value;
+                        }
+
+                        DirectX::XMMATRIX S = DirectX::XMMatrixScalingFromVector(DirectX::XMLoadFloat3(&scale));
+                        DirectX::XMMATRIX R = DirectX::XMMatrixRotationQuaternion(DirectX::XMLoadFloat4(&rot));
+                        DirectX::XMMATRIX T = DirectX::XMMatrixTranslationFromVector(DirectX::XMLoadFloat3(&pos));
+
+                        localMatrix = S * R * T;
+                    }
+                    else
+                    {
+                        localMatrix = DirectX::XMLoadFloat4x4(&sceneNode.localDefault);
+                    }
+
+                    if (sceneNode.parentIndex >= 0)
+                    {
+                        bakeGlobalMatrices[i] = localMatrix * bakeGlobalMatrices[static_cast<u32>(sceneNode.parentIndex)];
+                    }
+                    else
+                    {
+                        bakeGlobalMatrices[i] = localMatrix;
+                    }
+                }
+
+                Logger::Info("Bake matrices computed from static clip '{}' for {} nodes",
+                             staticClip->GetName(), nodeCount);
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Create meshes (with vertex baking for node animation)
+    // ---------------------------------------------------------------
     for (unsigned int meshIdx = 0; meshIdx < scene->mNumMeshes; ++meshIdx)
     {
         const aiMesh* aiMeshPtr = scene->mMeshes[meshIdx];
@@ -366,6 +628,32 @@ ModelData ModelLoader::LoadFromFile(
         if (skeleton && aiMeshPtr->mNumBones > 0)
         {
             WriteBoneWeightsToVertices(aiMeshPtr, vertices, *skeleton);
+        }
+
+        // --- Bake vertices with static animation's global matrix ---
+        // Transform mesh vertices into model space using the rest pose (time=0)
+        // so that inv(rest) * current at render time produces correct results
+        if (nodeGraph && !bakeGlobalMatrices.empty())
+        {
+            i32 nodeIdx = nodeGraph->FindNodeForMesh(meshIdx);
+            if (nodeIdx >= 0)
+            {
+                DirectX::XMMATRIX bakeMatrix = bakeGlobalMatrices[static_cast<u32>(nodeIdx)];
+
+                for (auto& vert : vertices)
+                {
+                    // Transform position
+                    DirectX::XMVECTOR pos = DirectX::XMLoadFloat3(&vert.position);
+                    pos = DirectX::XMVector3TransformCoord(pos, bakeMatrix);
+                    DirectX::XMStoreFloat3(&vert.position, pos);
+
+                    // Transform normal
+                    DirectX::XMVECTOR norm = DirectX::XMLoadFloat3(&vert.normal);
+                    norm = DirectX::XMVector3TransformNormal(norm, bakeMatrix);
+                    norm = DirectX::XMVector3Normalize(norm);
+                    DirectX::XMStoreFloat3(&vert.normal, norm);
+                }
+            }
         }
 
         // --- Build index data ---
@@ -422,11 +710,15 @@ ModelData ModelLoader::LoadFromFile(
         result.materials.push_back(std::move(material));
     }
 
-    // Build animation clips if skeleton and animations exist
+    // Build animation clips if skeleton exists
     if (skeleton)
     {
         result.animClips = BuildAllAnimationClips(scene, *skeleton);
     }
+
+    // Move nodeGraph + nodeAnimClips into result
+    result.nodeGraph = std::move(nodeGraph);
+    result.nodeAnimClips = std::move(nodeAnimClips);
 
     result.skeleton = std::move(skeleton);
 

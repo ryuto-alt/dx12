@@ -12,6 +12,9 @@
 #include "animation/AnimationClip.h"
 #include "animation/Animator.h"
 #include "animation/SkinningBuffer.h"
+#include "animation/NodeGraph.h"
+#include "animation/NodeAnimationClip.h"
+#include "animation/NodeAnimator.h"
 
 namespace dx12e
 {
@@ -84,6 +87,53 @@ Entity* Scene::Spawn(const std::string& name,
         entity->skinningBuffer->Initialize(*m_device, *m_srvHeap,
                                            Skeleton::kMaxBones,
                                            FrameResources::kFrameCount);
+    }
+    // ノードアニメーションの場合（ボーンなし＋アニメあり）
+    else if (cached->nodeGraph && !cached->nodeAnimClips.empty())
+    {
+        entity->hasNodeAnimation = true;
+
+        // NodeGraphをコピー
+        entity->nodeGraph = std::make_unique<NodeGraph>(*cached->nodeGraph);
+
+        // NodeAnimationClipをコピー
+        for (const auto& clip : cached->nodeAnimClips)
+        {
+            entity->nodeAnimClips.push_back(std::make_unique<NodeAnimationClip>(*clip));
+        }
+
+        // NodeAnimator作成
+        entity->nodeAnimator = std::make_unique<NodeAnimator>();
+        {
+            // 再生クリップ: idle > walk > 先頭
+            const NodeAnimationClip* playClip = entity->nodeAnimClips[0].get();
+            for (const auto& clip : entity->nodeAnimClips)
+            {
+                if (clip->GetName() == "idle" || clip->GetName() == "walk")
+                {
+                    playClip = clip.get();
+                    break;
+                }
+            }
+
+            // レストポーズクリップ: static > 先頭（inverseRest計算用）
+            const NodeAnimationClip* restClip = entity->nodeAnimClips[0].get();
+            for (const auto& clip : entity->nodeAnimClips)
+            {
+                if (clip->GetName() == "static")
+                {
+                    restClip = clip.get();
+                    break;
+                }
+            }
+
+            entity->nodeAnimator->Initialize(entity->nodeGraph.get(), playClip, restClip);
+        }
+
+        // meshNodeTransformsを単位行列で初期化
+        DirectX::XMFLOAT4X4 identity;
+        DirectX::XMStoreFloat4x4(&identity, DirectX::XMMatrixIdentity());
+        entity->meshNodeTransforms.assign(entity->meshes.size(), identity);
     }
 
     Entity* rawPtr = entity.get();
@@ -185,6 +235,27 @@ void Scene::Update(f32 dt)
         if (entity->animator)
         {
             entity->animator->Update(dt);
+        }
+
+        if (entity->nodeAnimator)
+        {
+            entity->nodeAnimator->Update(dt);
+
+            // NodeAnimatorの結果をmeshNodeTransformsにマッピング
+            const auto& globalMats = entity->nodeAnimator->GetNodeGlobalMatrices();
+            const NodeGraph* graph = entity->nodeGraph.get();
+
+            for (u32 ni = 0; ni < graph->GetNodeCount(); ++ni)
+            {
+                const SceneNode& node = graph->GetNode(ni);
+                for (u32 meshIdx : node.meshIndices)
+                {
+                    if (meshIdx < static_cast<u32>(entity->meshNodeTransforms.size()))
+                    {
+                        entity->meshNodeTransforms[meshIdx] = globalMats[ni];
+                    }
+                }
+            }
         }
     }
 }

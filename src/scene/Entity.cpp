@@ -6,6 +6,9 @@
 #include "animation/AnimationClip.h"
 #include "animation/Animator.h"
 #include "animation/SkinningBuffer.h"
+#include "animation/NodeGraph.h"
+#include "animation/NodeAnimationClip.h"
+#include "animation/NodeAnimator.h"
 
 namespace dx12e
 {

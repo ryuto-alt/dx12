@@ -15,6 +15,8 @@ class Mesh;
 struct Material;
 class Skeleton;
 class AnimationClip;
+class NodeGraph;
+class NodeAnimationClip;
 class GraphicsDevice;
 class DescriptorHeap;
 
@@ -25,6 +27,10 @@ struct CachedModel
     std::vector<std::unique_ptr<Material>>      materials;
     std::unique_ptr<Skeleton>                   skeleton;   // null = static mesh
     std::vector<std::unique_ptr<AnimationClip>> animClips;
+
+    // Node animation（skeleton が null でアニメーションがある場合）
+    std::unique_ptr<NodeGraph>                         nodeGraph;
+    std::vector<std::unique_ptr<NodeAnimationClip>>    nodeAnimClips;
 };
 
 class ResourceManager

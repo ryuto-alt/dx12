@@ -96,10 +96,12 @@ const CachedModel* ResourceManager::GetOrLoadModel(
                                                std::filesystem::path(filePath), *this);
 
     auto cached = std::make_unique<CachedModel>();
-    cached->meshes    = std::move(modelData.meshes);
-    cached->materials = std::move(modelData.materials);
-    cached->skeleton  = std::move(modelData.skeleton);
-    cached->animClips = std::move(modelData.animClips);
+    cached->meshes        = std::move(modelData.meshes);
+    cached->materials     = std::move(modelData.materials);
+    cached->skeleton      = std::move(modelData.skeleton);
+    cached->animClips     = std::move(modelData.animClips);
+    cached->nodeGraph     = std::move(modelData.nodeGraph);
+    cached->nodeAnimClips = std::move(modelData.nodeAnimClips);
 
     const CachedModel* rawPtr = cached.get();
     m_modelCache[filePath] = std::move(cached);

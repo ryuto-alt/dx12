@@ -4,8 +4,17 @@
 -- Editorモード: エンジン側C++カメラ（WASD+マウス）
 -- Playモード:   このスクリプトのOnUpdateが毎フレーム呼ばれる
 
-local humanModel = ASSETS .. "models/human/walk.gltf"
-local strutModel = ASSETS .. "models/fbxmodel/Strut Walking.fbx"
+local humanModel    = ASSETS .. "models/human/walk.gltf"
+local strutModel    = ASSETS .. "models/fbxmodel/Strut Walking.fbx"
+local climbingModel = ASSETS .. "models/fbxmodel/Climbing To Top.fbx"
+
+-- Kenney Animated Animals（アニメーション付きローポリ動物）
+local kenneyDir     = ASSETS .. "models/kennenyfbxmodel/"
+local foxModel      = kenneyDir .. "animal-fox.fbx"
+local penguinModel  = kenneyDir .. "animal-penguin.fbx"
+local catModel      = kenneyDir .. "animal-cat.fbx"
+local bunnyModel    = kenneyDir .. "animal-bunny.fbx"
+local monkeyModel   = kenneyDir .. "animal-monkey.fbx"
 
 function OnStart()
     log("=== Game Starting ===")
@@ -13,22 +22,30 @@ function OnStart()
     -- グリッド床
     scene:spawnPlane("grid_floor", Vec3.new(0, -1, 0), 50.0, true)
 
-    -- 人間モデル 3体
+    -- ===== Mixamo / Human モデル =====
+    -- Strut Walking（Mixamo FBX: cm単位→0.01スケール）
+    scene:spawn("strut_walker", strutModel,
+        Vec3.new(-3, -1, 0), Vec3.new(0, 0, 0), Vec3.new(0.01, 0.01, 0.01))
+
+    -- Human（glTF）
     scene:spawn("human1", humanModel,
         Vec3.new(0, -1, 0), Vec3.new(90, 0, 0), Vec3.new(0.02, 0.02, 0.02))
-    scene:spawn("human2", humanModel,
-        Vec3.new(3, -1, 0), Vec3.new(90, 0, 0), Vec3.new(0.02, 0.02, 0.02))
-    scene:spawn("human3", humanModel,
-        Vec3.new(-3, -1, 0), Vec3.new(90, 180, 0), Vec3.new(0.02, 0.02, 0.02))
 
-    -- FBX アニメーションモデル（Mixamo: cm単位→0.01スケール）
-    scene:spawn("strut_walker", strutModel,
-        Vec3.new(6, -1, 0), Vec3.new(0, 0, 0), Vec3.new(0.01, 0.01, 0.01))
+    -- Climbing To Top（Mixamo FBX: cm単位→0.01スケール）
+    scene:spawn("climbing", climbingModel,
+        Vec3.new(3, -1, 0), Vec3.new(0, 0, 0), Vec3.new(0.01, 0.01, 0.01))
 
-    -- プリミティブ
-    scene:spawnBox("box1",
-        Vec3.new(9, -0.5, 0), Vec3.new(0, 0, 0), Vec3.new(1, 1, 1))
-    scene:spawnSphere("sphere1", Vec3.new(-6, -0.5, 0), 0.5)
+    -- ===== Kenney Animated Animals =====
+    scene:spawn("fox", foxModel,
+        Vec3.new(-6, -1, 2), Vec3.new(0, 0, 0), Vec3.new(0.01, 0.01, 0.01))
+    scene:spawn("penguin", penguinModel,
+        Vec3.new(-3, -1, 2), Vec3.new(0, 0, 0), Vec3.new(0.01, 0.01, 0.01))
+    scene:spawn("cat", catModel,
+        Vec3.new(0, -1, 2), Vec3.new(0, 0, 0), Vec3.new(0.01, 0.01, 0.01))
+    scene:spawn("bunny", bunnyModel,
+        Vec3.new(3, -1, 2), Vec3.new(0, 0, 0), Vec3.new(0.01, 0.01, 0.01))
+    scene:spawn("monkey", monkeyModel,
+        Vec3.new(6, -1, 2), Vec3.new(0, 0, 0), Vec3.new(0.01, 0.01, 0.01))
 
     -- マウスキャプチャ開始（FPSゲームなので即座に）
     input:setMouseCapture(true)
