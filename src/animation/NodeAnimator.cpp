@@ -33,57 +33,18 @@ void NodeAnimator::Initialize(const NodeGraph* graph,
         m_nodeGlobalMatrices[i] = identity;
     }
 
-    // restClip の time=0 で各ノードの「ローカル行列」と「ピボット位置」を計算
-    // ローカル差分 + ピボット方式：親ノードのスケール/回転の影響を受けない
-    m_restLocalMatrices.resize(nodeCount);
-    m_inverseRestLocalMatrices.resize(nodeCount);
-    m_pivotPositions.resize(nodeCount);
+    // restClip の time=0 で rest のグローバル行列を計算し、逆行列を保存
+    // ベイク行列と同じ S*R*T パイプラインで計算するので値が一致する
+    std::vector<XMFLOAT4X4> restGlobals;
+    ComputeRawNodeMatrices(restClip, 0.0f, restGlobals);
 
-    // まず rest のグローバル行列を計算してピボット位置を抽出
-    std::vector<XMMATRIX> restGlobals(nodeCount, XMMatrixIdentity());
-
+    m_inverseRestGlobalMatrices.resize(nodeCount);
     for (u32 i = 0; i < nodeCount; ++i)
     {
-        const SceneNode& node = graph->GetNode(i);
-        const NodeTrack* track = restClip->FindTrackForNode(i);
-
-        XMMATRIX localMatrix;
-        if (track)
-        {
-            XMFLOAT3 pos = !track->positionKeys.empty() ? track->positionKeys.front().value : XMFLOAT3(0, 0, 0);
-            XMFLOAT4 rot = !track->rotationKeys.empty() ? track->rotationKeys.front().value : XMFLOAT4(0, 0, 0, 1);
-            XMFLOAT3 scl = !track->scaleKeys.empty()    ? track->scaleKeys.front().value    : XMFLOAT3(1, 1, 1);
-
-            XMMATRIX S = XMMatrixScalingFromVector(XMLoadFloat3(&scl));
-            XMMATRIX R = XMMatrixRotationQuaternion(XMLoadFloat4(&rot));
-            XMMATRIX T = XMMatrixTranslationFromVector(XMLoadFloat3(&pos));
-            localMatrix = S * R * T;
-        }
-        else
-        {
-            localMatrix = XMLoadFloat4x4(&node.localDefault);
-        }
-
-        // ローカル行列と逆行列を保存
-        XMStoreFloat4x4(&m_restLocalMatrices[i], localMatrix);
+        XMMATRIX mat = XMLoadFloat4x4(&restGlobals[i]);
         XMVECTOR det;
-        XMMATRIX invLocal = XMMatrixInverse(&det, localMatrix);
-        XMStoreFloat4x4(&m_inverseRestLocalMatrices[i], invLocal);
-
-        // グローバル行列を計算（ピボット位置抽出用）
-        if (node.parentIndex >= 0)
-        {
-            restGlobals[i] = localMatrix * restGlobals[static_cast<u32>(node.parentIndex)];
-        }
-        else
-        {
-            restGlobals[i] = localMatrix;
-        }
-
-        // ピボット = rest global の位置成分（row 3 の xyz）
-        XMFLOAT4X4 globalF;
-        XMStoreFloat4x4(&globalF, restGlobals[i]);
-        m_pivotPositions[i] = XMFLOAT3(globalF._41, globalF._42, globalF._43);
+        XMMATRIX inv = XMMatrixInverse(&det, mat);
+        XMStoreFloat4x4(&m_inverseRestGlobalMatrices[i], inv);
     }
 }
 
@@ -255,39 +216,17 @@ void NodeAnimator::Update(float deltaTime)
         ComputeRawNodeMatrices(m_clip, m_currentTime, m_nodeGlobalMatrices);
     }
 
-    // SRT分解で回転差分を安全に計算（逆行列を使わない）
-    if (!m_restLocalMatrices.empty())
+    // グローバル差分: inv(rest_global) * current_global
+    // ベイク済み頂点に対する差分変換。親ノードの変化も子に伝搬する。
+    if (!m_inverseRestGlobalMatrices.empty())
     {
         u32 nodeCount = m_graph->GetNodeCount();
         for (u32 i = 0; i < nodeCount; ++i)
         {
-            const NodeTrack* track = m_clip ? m_clip->FindTrackForNode(i) : nullptr;
-
-            if (!track)
-            {
-                // アニメーションチャンネルがないノードは差分なし
-                XMStoreFloat4x4(&m_nodeGlobalMatrices[i], XMMatrixIdentity());
-                continue;
-            }
-
-            // current の SRT
-            XMFLOAT3 curPos   = InterpolatePosition(track->positionKeys, m_currentTime);
-            XMFLOAT4 curRot   = InterpolateRotation(track->rotationKeys, m_currentTime);
-            XMFLOAT3 curScale = InterpolateScale(track->scaleKeys, m_currentTime);
-
-            // rest の SRT を分解
-            XMMATRIX restLocal = XMLoadFloat4x4(&m_restLocalMatrices[i]);
-            XMVECTOR restS, restR, restT;
-            XMMatrixDecompose(&restS, &restR, &restT, restLocal);
-
-            // 回転差分 = inv(rest_R) * current_R
-            XMVECTOR curR = XMLoadFloat4(&curRot);
-            XMVECTOR diffR = XMQuaternionMultiply(XMQuaternionInverse(restR), curR);
-
-            // 原点基準の回転差分（ピボットは将来対応）
-            XMMATRIX result = XMMatrixRotationQuaternion(diffR);
-
-            XMStoreFloat4x4(&m_nodeGlobalMatrices[i], result);
+            XMMATRIX invRest = XMLoadFloat4x4(&m_inverseRestGlobalMatrices[i]);
+            XMMATRIX current = XMLoadFloat4x4(&m_nodeGlobalMatrices[i]);
+            XMMATRIX diff = invRest * current;
+            XMStoreFloat4x4(&m_nodeGlobalMatrices[i], diff);
         }
     }
 }

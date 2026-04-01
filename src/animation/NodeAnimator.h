@@ -58,12 +58,8 @@ private:
 
     std::vector<DirectX::XMFLOAT4X4> m_nodeGlobalMatrices;
 
-    // rest pose のローカル行列（ノードごと、Initialize時に保存）
-    std::vector<DirectX::XMFLOAT4X4> m_restLocalMatrices;
-    // rest pose のローカル逆行列
-    std::vector<DirectX::XMFLOAT4X4> m_inverseRestLocalMatrices;
-    // rest pose のグローバル行列の位置成分（ピボットポイント）
-    std::vector<DirectX::XMFLOAT3>   m_pivotPositions;
+    // rest pose のグローバル逆行列（ベイク行列と同じ計算で得たもの）
+    std::vector<DirectX::XMFLOAT4X4> m_inverseRestGlobalMatrices;
 };
 
 } // namespace dx12e
