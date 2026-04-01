@@ -17,6 +17,7 @@ add_subdirectory(src/graphics)
 add_subdirectory(src/renderer)
 add_subdirectory(src/resource)
 add_subdirectory(src/animation)
+add_subdirectory(src/ecs)
 add_subdirectory(src/input)
 add_subdirectory(src/audio)
 add_subdirectory(src/scene)
@@ -33,6 +34,7 @@ target_link_libraries(DX12Engine
         Renderer
         Resource
         Animation
+        ECS
         Audio
         Input
         Scene
