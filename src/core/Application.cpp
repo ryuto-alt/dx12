@@ -809,7 +809,7 @@ void Application::Render()
     f32 totalTime = m_gameClock.GetTotalTime();
 
     // ライト方向と View/Proj 行列
-    XMFLOAT3 lightDirF3 = {0.3f, -1.0f, 0.5f};
+    XMFLOAT3 lightDirF3 = {-0.3f, -1.0f, -0.5f};
     XMVECTOR lightDir = XMVector3Normalize(XMLoadFloat3(&lightDirF3));
     XMVECTOR lightPos = XMVectorScale(lightDir, -30.0f);  // ライト位置（シーン中心から離す）
     XMMATRIX lightView = XMMatrixLookAtLH(lightPos, XMVectorZero(), XMVectorSet(0, 1, 0, 0));
@@ -935,7 +935,7 @@ void Application::Render()
     fc.lightDir = lightDirF3;
     fc.time = totalTime;
     fc.lightColor = { 1.0f, 0.95f, 0.9f };
-    fc.ambientStrength = 0.15f;
+    fc.ambientStrength = 0.25f;
     XMStoreFloat4x4(&fc.lightVP, XMMatrixTranspose(lightViewProj));
 
     m_perFrameCB->Update(&fc, sizeof(fc), frameIndex);
