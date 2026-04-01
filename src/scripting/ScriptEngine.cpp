@@ -14,10 +14,13 @@
 #include "input/InputSystem.h"
 #include "renderer/Camera.h"
 #include "audio/AudioSystem.h"
+#include "animation/Skeleton.h"
 #include "animation/Animator.h"
 #include "animation/AnimationClip.h"
+#include "animation/SkinningBuffer.h"
 #include "animation/NodeAnimationClip.h"
 #include "animation/NodeAnimator.h"
+#include "animation/NodeGraph.h"
 
 #include <DirectXMath.h>
 #include <filesystem>
