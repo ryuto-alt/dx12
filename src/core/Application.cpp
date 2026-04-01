@@ -975,7 +975,7 @@ void Application::Render()
             XMMATRIX meshWorld = world;
             if (entity.hasNodeAnimation && mi < static_cast<u32>(entity.meshNodeTransforms.size()))
             {
-                XMMATRIX nodeMat = XMMatrixTranspose(XMLoadFloat4x4(&entity.meshNodeTransforms[mi]));
+                XMMATRIX nodeMat = XMLoadFloat4x4(&entity.meshNodeTransforms[mi]);
                 meshWorld = nodeMat * world;
             }
 
