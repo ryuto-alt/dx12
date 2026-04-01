@@ -638,86 +638,6 @@ void Application::Update()
             if (GetAsyncKeyState('T') & 1) m_gizmoLocalSpace = !m_gizmoLocalSpace;
         }
 
-        // 3Dビュー上の左クリックでオブジェクト選択（レイキャスト）
-        if (!ImGui::GetIO().WantCaptureMouse && !ImGuizmo::IsOver()
-            && !m_inputSystem->IsMouseCaptured()
-            && (GetAsyncKeyState(VK_LBUTTON) & 1))
-        {
-            POINT cursorPos;
-            GetCursorPos(&cursorPos);
-            ScreenToClient(m_window->GetHwnd(), &cursorPos);
-
-            // 3Dビューポート領域
-            f32 vpX = kLeftPanelWidth;
-            f32 vpY = kToolbarHeight;
-            f32 vpW = static_cast<f32>(m_window->GetWidth()) - vpX;
-            f32 vpH = static_cast<f32>(m_window->GetHeight()) - vpY;
-
-            f32 mx = static_cast<f32>(cursorPos.x);
-            f32 my = static_cast<f32>(cursorPos.y);
-
-            // ビューポート内かチェック
-            if (mx >= vpX && mx < vpX + vpW && my >= vpY && my < vpY + vpH)
-            {
-                // NDC座標に変換 (-1〜1)
-                f32 ndcX = ((mx - vpX) / vpW) * 2.0f - 1.0f;
-                f32 ndcY = 1.0f - ((my - vpY) / vpH) * 2.0f;
-
-                // レイを生成（カメラからクリック位置へ）
-                XMMATRIX invProj = XMMatrixInverse(nullptr, m_camera->GetProjectionMatrix());
-                XMMATRIX invView = XMMatrixInverse(nullptr, m_camera->GetViewMatrix());
-
-                XMVECTOR rayClip = XMVectorSet(ndcX, ndcY, 1.0f, 1.0f);
-                XMVECTOR rayEye = XMVector4Transform(rayClip, invProj);
-                rayEye = XMVectorSetZ(rayEye, 1.0f);
-                rayEye = XMVectorSetW(rayEye, 0.0f);
-
-                XMVECTOR rayWorld = XMVector4Transform(rayEye, invView);
-                XMVECTOR rayDir = XMVector3Normalize(rayWorld);
-                XMFLOAT3 camPos = m_camera->GetPosition();
-                XMVECTOR rayOrigin = XMLoadFloat3(&camPos);
-
-                // 全Entityに対してバウンディングスフィアテスト
-                f32 closestDist = FLT_MAX;
-                entt::entity closestEntity = entt::null;
-
-                auto& reg = m_scene->GetRegistry();
-                auto view = reg.view<const Transform, const MeshRenderer>();
-                for (auto [e, transform, renderer] : view.each())
-                {
-                    if (reg.all_of<GridPlane>(e)) continue; // グリッドは選択対象外
-
-                    XMVECTOR entityPos = XMLoadFloat3(&transform.position);
-
-                    // バウンディングスフィア半径を推定（スケールの最大値）
-                    f32 radius = (std::max)({
-                        std::abs(transform.scale.x),
-                        std::abs(transform.scale.y),
-                        std::abs(transform.scale.z)
-                    });
-                    radius = (std::max)(radius, 0.5f); // 最小半径
-
-                    // レイ-スフィア交差テスト
-                    XMVECTOR oc = XMVectorSubtract(rayOrigin, entityPos);
-                    f32 b = XMVectorGetX(XMVector3Dot(oc, rayDir));
-                    f32 c = XMVectorGetX(XMVector3Dot(oc, oc)) - radius * radius;
-                    f32 discriminant = b * b - c;
-
-                    if (discriminant > 0.0f)
-                    {
-                        f32 t = -b - std::sqrt(discriminant);
-                        if (t < 0.0f) t = -b + std::sqrt(discriminant);
-                        if (t > 0.0f && t < closestDist)
-                        {
-                            closestDist = t;
-                            closestEntity = e;
-                        }
-                    }
-                }
-
-                m_selectedEntity = closestEntity;
-            }
-        }
     }
     else
     {
@@ -1507,6 +1427,78 @@ void Application::Render()
         ImGui::End();
     }
     } // !m_isGameMode
+
+    // ===== 3Dビュークリック選択 =====
+    if (!m_isGameMode && m_engineMode == EngineMode::Editor
+        && !ImGui::GetIO().WantCaptureMouse
+        && !ImGuizmo::IsUsing() && !ImGuizmo::IsOver()
+        && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+    {
+        ImVec2 mousePos = ImGui::GetIO().MousePos;
+        f32 vpX = kLeftPanelWidth;
+        f32 vpY = kToolbarHeight;
+        f32 vpW = static_cast<f32>(m_window->GetWidth()) - vpX;
+        f32 vpH = static_cast<f32>(m_window->GetHeight()) - vpY;
+
+        if (mousePos.x >= vpX && mousePos.x < vpX + vpW
+            && mousePos.y >= vpY && mousePos.y < vpY + vpH)
+        {
+            // NDC座標に変換
+            f32 ndcX = ((mousePos.x - vpX) / vpW) * 2.0f - 1.0f;
+            f32 ndcY = 1.0f - ((mousePos.y - vpY) / vpH) * 2.0f;
+
+            XMMATRIX invProj = XMMatrixInverse(nullptr, m_camera->GetProjectionMatrix());
+            XMMATRIX invView = XMMatrixInverse(nullptr, m_camera->GetViewMatrix());
+
+            // レイ生成
+            XMVECTOR rayClip = XMVectorSet(ndcX, ndcY, 1.0f, 1.0f);
+            XMVECTOR rayEye = XMVector4Transform(rayClip, invProj);
+            rayEye = XMVectorSetZ(rayEye, 1.0f);
+            rayEye = XMVectorSetW(rayEye, 0.0f);
+            XMVECTOR rayDir = XMVector3Normalize(XMVector4Transform(rayEye, invView));
+            XMFLOAT3 camPosF = m_camera->GetPosition();
+            XMVECTOR rayOrigin = XMLoadFloat3(&camPosF);
+
+            f32 closestDist = FLT_MAX;
+            entt::entity closestEntity = entt::null;
+
+            auto& reg = m_scene->GetRegistry();
+            auto pickView = reg.view<const Transform, const MeshRenderer>();
+            for (auto [e, transform, renderer] : pickView.each())
+            {
+                if (reg.all_of<GridPlane>(e)) continue;
+
+                // メッシュのバウンディングスフィア（位置 + 推定半径）
+                XMVECTOR entityPos = XMLoadFloat3(&transform.position);
+                f32 maxScale = (std::max)({
+                    std::abs(transform.scale.x),
+                    std::abs(transform.scale.y),
+                    std::abs(transform.scale.z)
+                });
+                // メッシュサイズを考慮した半径（スケールが小さいFBXモデルはメッシュ自体が大きい）
+                f32 radius = (std::max)(maxScale * 50.0f, 1.0f);
+
+                // レイ-スフィア交差テスト
+                XMVECTOR oc = XMVectorSubtract(rayOrigin, entityPos);
+                f32 b = XMVectorGetX(XMVector3Dot(oc, rayDir));
+                f32 c = XMVectorGetX(XMVector3Dot(oc, oc)) - radius * radius;
+                f32 discriminant = b * b - c;
+
+                if (discriminant > 0.0f)
+                {
+                    f32 t = -b - std::sqrt(discriminant);
+                    if (t < 0.0f) t = -b + std::sqrt(discriminant);
+                    if (t > 0.0f && t < closestDist)
+                    {
+                        closestDist = t;
+                        closestEntity = e;
+                    }
+                }
+            }
+
+            m_selectedEntity = closestEntity;
+        }
+    }
 
     // ===== ImGuizmo ギズモ描画 =====
     if (!m_isGameMode && m_engineMode == EngineMode::Editor
