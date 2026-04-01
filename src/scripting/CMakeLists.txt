@@ -11,6 +11,7 @@ find_package(directxmath CONFIG REQUIRED)
 target_link_libraries(Scripting PUBLIC
     Core
     Scene
+    ECS
     Input
     Renderer
     Animation

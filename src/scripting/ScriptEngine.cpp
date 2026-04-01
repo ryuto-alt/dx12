@@ -16,6 +16,8 @@
 #include "audio/AudioSystem.h"
 #include "animation/Animator.h"
 #include "animation/AnimationClip.h"
+#include "animation/NodeAnimationClip.h"
+#include "animation/NodeAnimator.h"
 
 #include <DirectXMath.h>
 #include <filesystem>
@@ -65,37 +67,69 @@ void ScriptEngine::RegisterBindings()
 
     // --- Entity ---
     lua.new_usertype<Entity>("Entity",
-        "name",          &Entity::name,
-        "transform",     &Entity::transform,
-        "hasSkeleton",   sol::readonly(&Entity::hasSkeleton),
-        "useGridShader", sol::readonly(&Entity::useGridShader),
+        // Name access
+        "name", sol::property(
+            [](const Entity& e) -> std::string {
+                return e.HasComponent<NameTag>() ? e.GetComponent<NameTag>().name : "";
+            }
+        ),
+
+        // Transform access
+        "transform", sol::property(
+            [](Entity& e) -> Transform& { return e.GetComponent<Transform>(); }
+        ),
+
+        // Component query
+        "hasComponent", [](const Entity& e, const std::string& type) -> bool {
+            if (type == "Transform")          return e.HasComponent<Transform>();
+            if (type == "MeshRenderer")       return e.HasComponent<MeshRenderer>();
+            if (type == "SkeletalAnimation")  return e.HasComponent<SkeletalAnimation>();
+            if (type == "NodeAnimation")      return e.HasComponent<NodeAnimationComp>();
+            if (type == "GridPlane")          return e.HasComponent<GridPlane>();
+            if (type == "PointLight")         return e.HasComponent<PointLight>();
+            if (type == "DirectionalLight")   return e.HasComponent<DirectionalLight>();
+            if (type == "Camera")             return e.HasComponent<CameraComponent>();
+            return false;
+        },
+
+        // Skeletal animation playback (backward compatible)
         "playAnim", [](Entity& e, int clipIndex, float blendDuration) {
-            if (e.animator && clipIndex >= 0 &&
-                clipIndex < static_cast<int>(e.animClips.size()))
+            if (!e.HasComponent<SkeletalAnimation>()) return;
+            auto& skelAnim = e.GetComponent<SkeletalAnimation>();
+            if (clipIndex >= 0 && clipIndex < static_cast<int>(skelAnim.clips.size()))
             {
-                e.animator->CrossFadeTo(e.animClips[clipIndex].get(), blendDuration);
+                skelAnim.animator->CrossFadeTo(skelAnim.clips[clipIndex].get(), blendDuration);
             }
         },
+
         "playAnimByName", [](Entity& e, const std::string& name, float blendDuration) {
-            if (!e.animator) return;
-            for (const auto& clip : e.animClips)
+            if (!e.HasComponent<SkeletalAnimation>()) return;
+            auto& skelAnim = e.GetComponent<SkeletalAnimation>();
+            for (const auto& clip : skelAnim.clips)
             {
                 if (clip->GetName() == name)
                 {
-                    e.animator->CrossFadeTo(clip.get(), blendDuration);
+                    skelAnim.animator->CrossFadeTo(clip.get(), blendDuration);
                     return;
                 }
             }
         },
+
         "setLooping", [](Entity& e, bool loop) {
-            if (e.animator) e.animator->SetLooping(loop);
+            if (!e.HasComponent<SkeletalAnimation>()) return;
+            e.GetComponent<SkeletalAnimation>().animator->SetLooping(loop);
         },
+
         "getAnimCount", [](const Entity& e) -> int {
-            return static_cast<int>(e.animClips.size());
+            if (!e.HasComponent<SkeletalAnimation>()) return 0;
+            return static_cast<int>(e.GetComponent<SkeletalAnimation>().clips.size());
         },
+
         "getAnimName", [](const Entity& e, int index) -> std::string {
-            if (index >= 0 && index < static_cast<int>(e.animClips.size()))
-                return e.animClips[index]->GetName();
+            if (!e.HasComponent<SkeletalAnimation>()) return "";
+            const auto& clips = e.GetComponent<SkeletalAnimation>().clips;
+            if (index >= 0 && index < static_cast<int>(clips.size()))
+                return clips[index]->GetName();
             return "";
         }
     );
@@ -103,30 +137,24 @@ void ScriptEngine::RegisterBindings()
     // --- Scene ---
     lua.new_usertype<Scene>("Scene",
         "spawn", [](Scene& s, const std::string& name, const std::string& modelPath,
-                     DirectX::XMFLOAT3 pos, DirectX::XMFLOAT3 rot, DirectX::XMFLOAT3 scale) -> Entity* {
+                     DirectX::XMFLOAT3 pos, DirectX::XMFLOAT3 rot, DirectX::XMFLOAT3 scale) -> Entity {
             return s.Spawn(name, modelPath, pos, rot, scale);
         },
         "spawnPlane", [](Scene& s, const std::string& name, DirectX::XMFLOAT3 pos,
-                         float size, bool grid) -> Entity* {
+                         float size, bool grid) -> Entity {
             return s.SpawnPlane(name, pos, size, grid);
         },
         "spawnBox", [](Scene& s, const std::string& name, DirectX::XMFLOAT3 pos,
-                       DirectX::XMFLOAT3 rot, DirectX::XMFLOAT3 scale) -> Entity* {
+                       DirectX::XMFLOAT3 rot, DirectX::XMFLOAT3 scale) -> Entity {
             return s.SpawnBox(name, pos, rot, scale);
         },
         "spawnSphere", [](Scene& s, const std::string& name, DirectX::XMFLOAT3 pos,
-                          float radius) -> Entity* {
+                          float radius) -> Entity {
             return s.SpawnSphere(name, pos, radius);
         },
-        "remove", &Scene::Remove,
+        "remove", [](Scene& s, Entity entity) { s.Remove(entity); },
         "getEntityCount", &Scene::GetEntityCount,
-        "findEntity", [](Scene& s, const std::string& name) -> Entity* {
-            for (const auto& e : s.GetEntities())
-            {
-                if (e->name == name) return e.get();
-            }
-            return nullptr;
-        }
+        "findEntity", &Scene::FindEntity
     );
 
     // --- Input ---
