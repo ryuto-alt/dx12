@@ -29,7 +29,7 @@
 #include "animation/NodeAnimator.h"
 #include "input/InputSystem.h"
 #include "scene/Scene.h"
-#include "scene/Entity.h"
+#include "ecs/Components.h"
 #include "scripting/ScriptEngine.h"
 #include "audio/AudioSystem.h"
 #include "gui/ImGuiManager.h"
@@ -275,17 +275,16 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode)
             std::filesystem::path sneakPath = std::string(ASSETS_DIR) + "models/human/sneakWalk.gltf";
             if (std::filesystem::exists(sneakPath))
             {
-                for (const auto& entity : m_scene->GetEntities())
+                auto& reg = m_scene->GetRegistry();
+                auto skelView = reg.view<SkeletalAnimation>();
+                for (auto [e, skelAnim] : skelView.each())
                 {
-                    if (entity->skeleton)
+                    auto extraAnims = ModelLoader::LoadAnimationsFromFile(
+                        sneakPath, *skelAnim.skeleton);
+                    for (auto& a : extraAnims)
                     {
-                        auto extraAnims = ModelLoader::LoadAnimationsFromFile(
-                            sneakPath, *entity->skeleton);
-                        for (auto& a : extraAnims)
-                        {
-                            a->SetName("sneakWalk");
-                            entity->animClips.push_back(std::move(a));
-                        }
+                        a->SetName("sneakWalk");
+                        skelAnim.clips.push_back(std::move(a));
                     }
                 }
             }
@@ -639,6 +638,7 @@ void Application::Update()
 
 void Application::RebuildScene()
 {
+    m_selectedEntity = entt::null;
     m_scene->Clear();
     auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
     m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
@@ -659,17 +659,16 @@ void Application::RebuildScene()
     std::filesystem::path sneakPath = std::string(ASSETS_DIR) + "models/human/sneakWalk.gltf";
     if (std::filesystem::exists(sneakPath))
     {
-        for (const auto& entity : m_scene->GetEntities())
+        auto& reg = m_scene->GetRegistry();
+        auto skelView = reg.view<SkeletalAnimation>();
+        for (auto [e, skelAnim] : skelView.each())
         {
-            if (entity->skeleton)
+            auto extraAnims = ModelLoader::LoadAnimationsFromFile(
+                sneakPath, *skelAnim.skeleton);
+            for (auto& a : extraAnims)
             {
-                auto extraAnims = ModelLoader::LoadAnimationsFromFile(
-                    sneakPath, *entity->skeleton);
-                for (auto& a : extraAnims)
-                {
-                    a->SetName("sneakWalk");
-                    entity->animClips.push_back(std::move(a));
-                }
+                a->SetName("sneakWalk");
+                skelAnim.clips.push_back(std::move(a));
             }
         }
     }
@@ -884,49 +883,53 @@ void Application::Render()
         nativeCmdList->RSSetScissorRects(1, &shadowScissor);
 
         // シャドウパスで全Entity（グリッドは除外）を描画
-        m_scene->ForEachEntity([&](const Entity& entity) {
-            if (entity.useGridShader) return;  // グリッドはシャドウキャスターにしない
-
-            XMMATRIX world = entity.transform.GetWorldMatrix();
-
-            if (entity.hasSkeleton && entity.skinningBuffer && entity.animator)
+        {
+            auto& reg = m_scene->GetRegistry();
+            auto renderView = reg.view<const Transform, const MeshRenderer>();
+            for (auto [e, transform, renderer] : renderView.each())
             {
-                entity.skinningBuffer->Update(entity.animator->GetSkinningMatrices(), frameIndex);
-                m_commandList->SetPipelineState(*m_shadowSkinnedPipelineState);
-                m_commandList->SetSRVTable(RootSignature::kSlotBonesSRV,
-                    m_srvHeap->GetGpuHandle(entity.skinningBuffer->GetSrvIndex(frameIndex)));
-            }
-            else
-            {
-                m_commandList->SetPipelineState(*m_shadowPipelineState);
-            }
+                if (reg.all_of<GridPlane>(e)) continue;
 
-            for (u32 mi = 0; mi < static_cast<u32>(entity.meshes.size()); ++mi)
-            {
-                const auto* mesh = entity.meshes[mi];
+                XMMATRIX world = transform.GetWorldMatrix();
 
-                // ノードアニメーション: メッシュごとの個別行列を適用
-                XMMATRIX meshWorld = world;
-                if (entity.hasNodeAnimation && mi < static_cast<u32>(entity.meshNodeTransforms.size()))
+                bool isSkinned = reg.all_of<SkeletalAnimation>(e);
+                if (isSkinned)
                 {
-                    XMMATRIX nodeMat = XMLoadFloat4x4(&entity.meshNodeTransforms[mi]);
-                    meshWorld = nodeMat * world;
+                    auto& skelAnim = reg.get<SkeletalAnimation>(e);
+                    skelAnim.skinningBuffer->Update(skelAnim.animator->GetSkinningMatrices(), frameIndex);
+                    m_commandList->SetPipelineState(*m_shadowSkinnedPipelineState);
+                    m_commandList->SetSRVTable(RootSignature::kSlotBonesSRV,
+                        m_srvHeap->GetGpuHandle(skelAnim.skinningBuffer->GetSrvIndex(frameIndex)));
+                }
+                else
+                {
+                    m_commandList->SetPipelineState(*m_shadowPipelineState);
                 }
 
-                struct PerObjectData {
-                    XMMATRIX mvp;
-                    XMMATRIX mdl;
-                } objData;
-                objData.mvp = XMMatrixTranspose(meshWorld * lightViewProj);
-                objData.mdl = XMMatrixTranspose(meshWorld);
-                m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
+                bool hasNodeAnim = reg.all_of<NodeAnimationComp>(e);
+                for (u32 mi = 0; mi < static_cast<u32>(renderer.meshes.size()); ++mi)
+                {
+                    const auto* mesh = renderer.meshes[mi];
 
-                m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-                m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
-                m_commandList->SetIndexBuffer(mesh->GetIndexBuffer().GetView());
-                m_commandList->DrawIndexedInstanced(mesh->GetIndexCount());
+                    XMMATRIX meshWorld = world;
+                    if (hasNodeAnim && mi < static_cast<u32>(renderer.meshNodeTransforms.size()))
+                    {
+                        XMMATRIX nodeMat = XMLoadFloat4x4(&renderer.meshNodeTransforms[mi]);
+                        meshWorld = nodeMat * world;
+                    }
+
+                    struct PerObjectData { XMMATRIX mvp; XMMATRIX mdl; } objData;
+                    objData.mvp = XMMatrixTranspose(meshWorld * lightViewProj);
+                    objData.mdl = XMMatrixTranspose(meshWorld);
+                    m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
+
+                    m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                    m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
+                    m_commandList->SetIndexBuffer(mesh->GetIndexBuffer().GetView());
+                    m_commandList->DrawIndexedInstanced(mesh->GetIndexCount());
+                }
             }
-        });
+        }
 
         m_commandList->TransitionResource(m_shadowMap.Get(),
             D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -991,55 +994,60 @@ void Application::Render()
     XMMATRIX viewProj = m_camera->GetViewProjMatrix();
 
     // 全Entityを描画
-    m_scene->ForEachEntity([&](const Entity& entity) {
-        XMMATRIX world = entity.transform.GetWorldMatrix();
+    {
+        auto& reg = m_scene->GetRegistry();
+        auto renderView = reg.view<const Transform, const MeshRenderer>();
+        for (auto [e, transform, renderer] : renderView.each())
+        {
+            XMMATRIX world = transform.GetWorldMatrix();
 
-        // パイプライン切り替え
-        if (entity.useGridShader)
-        {
-            m_commandList->SetPipelineState(*m_gridPipelineState);
-        }
-        else if (entity.hasSkeleton && entity.skinningBuffer && entity.animator)
-        {
-            m_commandList->SetPipelineState(*m_skinnedPipelineState);
-            m_commandList->SetSRVTable(RootSignature::kSlotBonesSRV,
-                m_srvHeap->GetGpuHandle(entity.skinningBuffer->GetSrvIndex(frameIndex)));
-        }
-        else
-        {
-            m_commandList->SetPipelineState(*m_pipelineState);
-        }
+            bool isGrid = reg.all_of<GridPlane>(e);
+            bool isSkinned = reg.all_of<SkeletalAnimation>(e);
 
-        for (u32 mi = 0; mi < static_cast<u32>(entity.meshes.size()); ++mi)
-        {
-            const auto* mesh = entity.meshes[mi];
-
-            // ノードアニメーション: メッシュごとの個別行列を適用
-            XMMATRIX meshWorld = world;
-            if (entity.hasNodeAnimation && mi < static_cast<u32>(entity.meshNodeTransforms.size()))
+            if (isGrid)
             {
-                XMMATRIX nodeMat = XMLoadFloat4x4(&entity.meshNodeTransforms[mi]);
-                meshWorld = nodeMat * world;
+                m_commandList->SetPipelineState(*m_gridPipelineState);
+            }
+            else if (isSkinned)
+            {
+                auto& skelAnim = reg.get<SkeletalAnimation>(e);
+                m_commandList->SetPipelineState(*m_skinnedPipelineState);
+                m_commandList->SetSRVTable(RootSignature::kSlotBonesSRV,
+                    m_srvHeap->GetGpuHandle(skelAnim.skinningBuffer->GetSrvIndex(frameIndex)));
+            }
+            else
+            {
+                m_commandList->SetPipelineState(*m_pipelineState);
             }
 
-            struct PerObjectData {
-                XMMATRIX mvp;
-                XMMATRIX mdl;
-            } objData;
-            objData.mvp = XMMatrixTranspose(meshWorld * viewProj);
-            objData.mdl = XMMatrixTranspose(meshWorld);
-            m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
+            bool hasNodeAnim = reg.all_of<NodeAnimationComp>(e);
+            for (u32 mi = 0; mi < static_cast<u32>(renderer.meshes.size()); ++mi)
+            {
+                const auto* mesh = renderer.meshes[mi];
 
-            const Material* mat = mesh->GetMaterial();
-            Texture* tex = (mat && mat->albedoTexture) ? mat->albedoTexture : m_resourceManager->GetDefaultWhiteTexture();
-            m_commandList->SetSRVTable(RootSignature::kSlotSRVTable, m_srvHeap->GetGpuHandle(tex->GetSrvIndex()));
+                XMMATRIX meshWorld = world;
+                if (hasNodeAnim && mi < static_cast<u32>(renderer.meshNodeTransforms.size()))
+                {
+                    XMMATRIX nodeMat = XMLoadFloat4x4(&renderer.meshNodeTransforms[mi]);
+                    meshWorld = nodeMat * world;
+                }
 
-            m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-            m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
-            m_commandList->SetIndexBuffer(mesh->GetIndexBuffer().GetView());
-            m_commandList->DrawIndexedInstanced(mesh->GetIndexCount());
+                struct PerObjectData { XMMATRIX mvp; XMMATRIX mdl; } objData;
+                objData.mvp = XMMatrixTranspose(meshWorld * viewProj);
+                objData.mdl = XMMatrixTranspose(meshWorld);
+                m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
+
+                const Material* mat = mesh->GetMaterial();
+                Texture* tex = (mat && mat->albedoTexture) ? mat->albedoTexture : m_resourceManager->GetDefaultWhiteTexture();
+                m_commandList->SetSRVTable(RootSignature::kSlotSRVTable, m_srvHeap->GetGpuHandle(tex->GetSrvIndex()));
+
+                m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
+                m_commandList->SetIndexBuffer(mesh->GetIndexBuffer().GetView());
+                m_commandList->DrawIndexedInstanced(mesh->GetIndexCount());
+            }
         }
-    });
+    }
 
     // ---- ImGui フレーム ----
     m_imguiManager->BeginFrame();
@@ -1133,18 +1141,18 @@ void Application::Render()
         ImGui::TextDisabled("\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3  (%zu)", m_scene->GetEntityCount());  // シーン
         ImGui::Separator();
         {
-            const auto& entities = m_scene->GetEntities();
-            for (i32 i = 0; i < static_cast<i32>(entities.size()); ++i)
+            auto& reg = m_scene->GetRegistry();
+            auto nameView = reg.view<const NameTag>();
+            for (auto [e, tag] : nameView.each())
             {
-                const auto& entity = entities[i];
-                bool selected = (i == m_selectedEntityIndex);
+                bool selected = (e == m_selectedEntity);
 
                 ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_SpanAvailWidth;
                 if (selected) flags |= ImGuiTreeNodeFlags_Selected;
 
-                bool open = ImGui::TreeNodeEx(entity->name.c_str(), flags);
+                bool open = ImGui::TreeNodeEx(tag.name.c_str(), flags);
                 if (ImGui::IsItemClicked())
-                    m_selectedEntityIndex = selected ? -1 : i;  // 再クリックで解除
+                    m_selectedEntity = selected ? entt::null : e;
                 if (open) ImGui::TreePop();
             }
         }
@@ -1153,49 +1161,57 @@ void Application::Render()
 
         // --- 選択Entity プロパティ ---
         {
-            const auto& entities = m_scene->GetEntities();
-            if (m_selectedEntityIndex >= 0 && m_selectedEntityIndex < static_cast<i32>(entities.size()))
+            auto& reg = m_scene->GetRegistry();
+            if (m_selectedEntity != entt::null && reg.valid(m_selectedEntity))
             {
-                const auto& ent = entities[m_selectedEntityIndex];
+                auto& tag = reg.get<NameTag>(m_selectedEntity);
+                auto& transform = reg.get<Transform>(m_selectedEntity);
 
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.39f, 0.58f, 0.93f, 1.0f));
-                ImGui::Text("%s", ent->name.c_str());
+                ImGui::Text("%s", tag.name.c_str());
                 ImGui::PopStyleColor();
 
-                auto& pos = ent->transform.position;
-                auto& rot = ent->transform.rotation;
-                auto& scl = ent->transform.scale;
-                ImGui::DragFloat3("Pos", &pos.x, 0.1f);
-                ImGui::DragFloat3("Rot", &rot.x, 1.0f);
-                ImGui::DragFloat3("Scale", &scl.x, 0.01f);
+                ImGui::DragFloat3("Pos", &transform.position.x, 0.1f);
+                ImGui::DragFloat3("Rot", &transform.rotation.x, 1.0f);
+                ImGui::DragFloat3("Scale", &transform.scale.x, 0.01f);
 
-                if (ent->animator && !ent->animClips.empty())
+                // Skeletal animation UI
+                if (reg.all_of<SkeletalAnimation>(m_selectedEntity))
                 {
-                    ImGui::Separator();
-                    ImGui::TextDisabled("Animation (Skeletal)");
-                    for (i32 i = 0; i < static_cast<i32>(ent->animClips.size()); ++i)
+                    auto& skelAnim = reg.get<SkeletalAnimation>(m_selectedEntity);
+                    if (skelAnim.animator && !skelAnim.clips.empty())
                     {
-                        const auto& clip = ent->animClips[i];
-                        std::string label = clip->GetName().empty()
-                            ? ("Clip " + std::to_string(i))
-                            : clip->GetName();
-                        if (ImGui::Selectable(label.c_str()))
-                            ent->animator->CrossFadeTo(clip.get(), 0.3f);
+                        ImGui::Separator();
+                        ImGui::TextDisabled("Animation (Skeletal)");
+                        for (i32 i = 0; i < static_cast<i32>(skelAnim.clips.size()); ++i)
+                        {
+                            const auto& clip = skelAnim.clips[i];
+                            std::string label = clip->GetName().empty()
+                                ? ("Clip " + std::to_string(i))
+                                : clip->GetName();
+                            if (ImGui::Selectable(label.c_str()))
+                                skelAnim.animator->CrossFadeTo(clip.get(), 0.3f);
+                        }
                     }
                 }
 
-                if (ent->nodeAnimator && !ent->nodeAnimClips.empty())
+                // Node animation UI
+                if (reg.all_of<NodeAnimationComp>(m_selectedEntity))
                 {
-                    ImGui::Separator();
-                    ImGui::TextDisabled("Animation (Node)");
-                    for (i32 i = 0; i < static_cast<i32>(ent->nodeAnimClips.size()); ++i)
+                    auto& nodeAnim = reg.get<NodeAnimationComp>(m_selectedEntity);
+                    if (nodeAnim.nodeAnimator && !nodeAnim.clips.empty())
                     {
-                        const auto& clip = ent->nodeAnimClips[i];
-                        std::string label = clip->GetName().empty()
-                            ? ("Clip " + std::to_string(i))
-                            : clip->GetName();
-                        if (ImGui::Selectable(label.c_str()))
-                            ent->nodeAnimator->CrossFadeTo(clip.get(), 0.3f);
+                        ImGui::Separator();
+                        ImGui::TextDisabled("Animation (Node)");
+                        for (i32 i = 0; i < static_cast<i32>(nodeAnim.clips.size()); ++i)
+                        {
+                            const auto& clip = nodeAnim.clips[i];
+                            std::string label = clip->GetName().empty()
+                                ? ("Clip " + std::to_string(i))
+                                : clip->GetName();
+                            if (ImGui::Selectable(label.c_str()))
+                                nodeAnim.nodeAnimator->CrossFadeTo(clip.get(), 0.3f);
+                        }
                     }
                 }
             }

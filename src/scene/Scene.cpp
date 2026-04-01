@@ -291,8 +291,9 @@ size_t Scene::GetEntityCount() const
 {
     auto view = m_registry.view<const NameTag>();
     size_t count = 0;
-    for (auto /*entity*/ : view)
+    for (auto entity : view)
     {
+        (void)entity;
         ++count;
     }
     return count;

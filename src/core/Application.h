@@ -11,6 +11,7 @@
 #include <wrl/client.h>
 #include <directx/d3d12.h>
 #include <DirectXMath.h>
+#include <entt/entt.hpp>
 
 // Forward declarations for graphics module
 namespace dx12e
@@ -85,7 +86,7 @@ private:
     // エディタレイアウト
     static constexpr f32 kLeftPanelWidth  = 280.0f;
     static constexpr f32 kToolbarHeight   = 36.0f;
-    i32 m_selectedEntityIndex = -1;
+    entt::entity m_selectedEntity = entt::null;
     bool m_isGameMode = false;
     std::unique_ptr<Camera>            m_camera;
     std::unique_ptr<ConstantBuffer>    m_perFrameCB;
