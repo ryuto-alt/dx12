@@ -30,84 +30,100 @@ void Scene::Initialize(ResourceManager* resourceManager,
     m_cmdList         = cmdList;
 }
 
-Entity* Scene::Spawn(const std::string& name,
-                     const std::string& modelPath,
-                     DirectX::XMFLOAT3 position,
-                     DirectX::XMFLOAT3 rotation,
-                     DirectX::XMFLOAT3 scale)
+Entity Scene::CreateEntityWithTransform(const std::string& name,
+                                        DirectX::XMFLOAT3 position,
+                                        DirectX::XMFLOAT3 rotation,
+                                        DirectX::XMFLOAT3 scale)
+{
+    auto handle = m_registry.create();
+    Entity entity(handle, &m_registry);
+
+    entity.AddComponent<NameTag>(NameTag{name});
+
+    Transform t;
+    t.position = position;
+    t.rotation = rotation;
+    t.scale    = scale;
+    entity.AddComponent<Transform>(t);
+
+    return entity;
+}
+
+Entity Scene::Spawn(const std::string& name,
+                    const std::string& modelPath,
+                    DirectX::XMFLOAT3 position,
+                    DirectX::XMFLOAT3 rotation,
+                    DirectX::XMFLOAT3 scale)
 {
     // モデル読み込み（キャッシュ付き）
     const CachedModel* cached = m_resourceManager->GetOrLoadModel(modelPath, m_cmdList);
     if (!cached)
     {
         Logger::Warn("Failed to load model: {}", modelPath);
-        return nullptr;
+        return Entity();
     }
 
-    auto entity = std::make_unique<Entity>();
-    entity->name = name;
-    entity->transform.position = position;
-    entity->transform.rotation = rotation;
-    entity->transform.scale    = scale;
+    Entity entity = CreateEntityWithTransform(name, position, rotation, scale);
 
-    // メッシュ/マテリアル参照（CachedModel所有、借用）
+    // MeshRenderer コンポーネント
+    MeshRenderer& renderer = entity.AddComponent<MeshRenderer>();
     for (const auto& mesh : cached->meshes)
     {
-        entity->meshes.push_back(mesh.get());
+        renderer.meshes.push_back(mesh.get());
     }
     for (const auto& mat : cached->materials)
     {
-        entity->materials.push_back(mat.get());
+        renderer.materials.push_back(mat.get());
     }
 
-    // スケルタルメッシュの場合: Skeleton/AnimClip/Animator/SkinningBufferをEntity固有で作成
+    // スケルタルメッシュの場合
     if (cached->skeleton)
     {
-        entity->hasSkeleton = true;
+        SkeletalAnimation& skelAnim = entity.AddComponent<SkeletalAnimation>();
 
         // Skeletonをコピー
-        entity->skeleton = std::make_unique<Skeleton>(*cached->skeleton);
+        skelAnim.skeleton = std::make_unique<Skeleton>(*cached->skeleton);
 
         // AnimationClipをコピー
         for (const auto& clip : cached->animClips)
         {
-            entity->animClips.push_back(std::make_unique<AnimationClip>(*clip));
+            skelAnim.clips.push_back(std::make_unique<AnimationClip>(*clip));
         }
 
         // Animator作成
-        entity->animator = std::make_unique<Animator>();
-        if (!entity->animClips.empty())
+        skelAnim.animator = std::make_unique<Animator>();
+        if (!skelAnim.clips.empty())
         {
-            entity->animator->Initialize(entity->skeleton.get(),
-                                         entity->animClips[0].get());
+            skelAnim.animator->Initialize(skelAnim.skeleton.get(),
+                                          skelAnim.clips[0].get());
         }
 
         // SkinningBuffer作成
-        entity->skinningBuffer = std::make_unique<SkinningBuffer>();
-        entity->skinningBuffer->Initialize(*m_device, *m_srvHeap,
-                                           Skeleton::kMaxBones,
-                                           FrameResources::kFrameCount);
+        skelAnim.skinningBuffer = std::make_unique<SkinningBuffer>();
+        skelAnim.skinningBuffer->Initialize(*m_device, *m_srvHeap,
+                                            Skeleton::kMaxBones,
+                                            FrameResources::kFrameCount);
     }
     // ノードアニメーションの場合（ボーンなし＋アニメあり）
     else if (cached->nodeGraph && !cached->nodeAnimClips.empty())
     {
-        entity->hasNodeAnimation = true;
+        NodeAnimationComp& nodeAnim = entity.AddComponent<NodeAnimationComp>();
 
         // NodeGraphをコピー
-        entity->nodeGraph = std::make_unique<NodeGraph>(*cached->nodeGraph);
+        nodeAnim.nodeGraph = std::make_unique<NodeGraph>(*cached->nodeGraph);
 
         // NodeAnimationClipをコピー
         for (const auto& clip : cached->nodeAnimClips)
         {
-            entity->nodeAnimClips.push_back(std::make_unique<NodeAnimationClip>(*clip));
+            nodeAnim.clips.push_back(std::make_unique<NodeAnimationClip>(*clip));
         }
 
         // NodeAnimator作成
-        entity->nodeAnimator = std::make_unique<NodeAnimator>();
+        nodeAnim.nodeAnimator = std::make_unique<NodeAnimator>();
         {
             // 再生クリップ: idle > walk > 先頭
-            const NodeAnimationClip* playClip = entity->nodeAnimClips[0].get();
-            for (const auto& clip : entity->nodeAnimClips)
+            const NodeAnimationClip* playClip = nodeAnim.clips[0].get();
+            for (const auto& clip : nodeAnim.clips)
             {
                 if (clip->GetName() == "idle" || clip->GetName() == "walk")
                 {
@@ -117,8 +133,8 @@ Entity* Scene::Spawn(const std::string& name,
             }
 
             // レストポーズクリップ: static > 先頭（inverseRest計算用）
-            const NodeAnimationClip* restClip = entity->nodeAnimClips[0].get();
-            for (const auto& clip : entity->nodeAnimClips)
+            const NodeAnimationClip* restClip = nodeAnim.clips[0].get();
+            for (const auto& clip : nodeAnim.clips)
             {
                 if (clip->GetName() == "static")
                 {
@@ -127,137 +143,159 @@ Entity* Scene::Spawn(const std::string& name,
                 }
             }
 
-            entity->nodeAnimator->Initialize(entity->nodeGraph.get(), playClip, restClip);
+            nodeAnim.nodeAnimator->Initialize(nodeAnim.nodeGraph.get(), playClip, restClip);
         }
 
         // meshNodeTransformsを単位行列で初期化
         DirectX::XMFLOAT4X4 identity;
         DirectX::XMStoreFloat4x4(&identity, DirectX::XMMatrixIdentity());
-        entity->meshNodeTransforms.assign(entity->meshes.size(), identity);
+        renderer.meshNodeTransforms.assign(renderer.meshes.size(), identity);
     }
-
-    Entity* rawPtr = entity.get();
-    m_entities.push_back(std::move(entity));
 
     Logger::Info("Spawned entity '{}' at ({:.1f}, {:.1f}, {:.1f})",
                  name, position.x, position.y, position.z);
-    return rawPtr;
+    return entity;
 }
 
-Entity* Scene::SpawnPlane(const std::string& name,
-                          DirectX::XMFLOAT3 position,
-                          f32 size,
-                          bool gridShader)
+Entity Scene::SpawnPlane(const std::string& name,
+                         DirectX::XMFLOAT3 position,
+                         f32 size,
+                         bool gridShader)
 {
-    auto entity = std::make_unique<Entity>();
-    entity->name = name;
-    entity->transform.position = position;
-    entity->useGridShader = gridShader;
+    Entity entity = CreateEntityWithTransform(name, position, {0, 0, 0}, {1, 1, 1});
 
-    // プリミティブメッシュはEntity自身が所有する（m_ownedMeshesに保持）
+    // MeshRenderer
+    MeshRenderer& renderer = entity.AddComponent<MeshRenderer>();
     auto planeMesh = std::make_unique<Mesh>();
     planeMesh->InitializeAsPlane(*m_device, size);
-    entity->meshes.push_back(planeMesh.get());
+    renderer.meshes.push_back(planeMesh.get());
     m_ownedMeshes.push_back(std::move(planeMesh));
 
-    Entity* rawPtr = entity.get();
-    m_entities.push_back(std::move(entity));
+    if (gridShader)
+    {
+        entity.AddComponent<GridPlane>();
+    }
 
     Logger::Info("Spawned plane '{}' (size={:.0f})", name, size);
-    return rawPtr;
+    return entity;
 }
 
-Entity* Scene::SpawnBox(const std::string& name,
-                        DirectX::XMFLOAT3 position,
-                        DirectX::XMFLOAT3 rotation,
-                        DirectX::XMFLOAT3 scale)
+Entity Scene::SpawnBox(const std::string& name,
+                       DirectX::XMFLOAT3 position,
+                       DirectX::XMFLOAT3 rotation,
+                       DirectX::XMFLOAT3 scale)
 {
-    auto entity = std::make_unique<Entity>();
-    entity->name = name;
-    entity->transform.position = position;
-    entity->transform.rotation = rotation;
-    entity->transform.scale = scale;
+    Entity entity = CreateEntityWithTransform(name, position, rotation, scale);
 
+    MeshRenderer& renderer = entity.AddComponent<MeshRenderer>();
     auto boxMesh = std::make_unique<Mesh>();
     boxMesh->InitializeAsBox(*m_device);
-    entity->meshes.push_back(boxMesh.get());
+    renderer.meshes.push_back(boxMesh.get());
     m_ownedMeshes.push_back(std::move(boxMesh));
 
-    Entity* rawPtr = entity.get();
-    m_entities.push_back(std::move(entity));
-
     Logger::Info("Spawned box '{}'", name);
-    return rawPtr;
+    return entity;
 }
 
-Entity* Scene::SpawnSphere(const std::string& name,
-                           DirectX::XMFLOAT3 position,
-                           f32 radius)
+Entity Scene::SpawnSphere(const std::string& name,
+                          DirectX::XMFLOAT3 position,
+                          f32 radius)
 {
-    auto entity = std::make_unique<Entity>();
-    entity->name = name;
-    entity->transform.position = position;
+    Entity entity = CreateEntityWithTransform(name, position, {0, 0, 0}, {1, 1, 1});
 
+    MeshRenderer& renderer = entity.AddComponent<MeshRenderer>();
     auto sphereMesh = std::make_unique<Mesh>();
     sphereMesh->InitializeAsSphere(*m_device, radius);
-    entity->meshes.push_back(sphereMesh.get());
+    renderer.meshes.push_back(sphereMesh.get());
     m_ownedMeshes.push_back(std::move(sphereMesh));
 
-    Entity* rawPtr = entity.get();
-    m_entities.push_back(std::move(entity));
-
     Logger::Info("Spawned sphere '{}'", name);
-    return rawPtr;
+    return entity;
 }
 
-void Scene::Remove(Entity* entity)
+void Scene::Remove(Entity entity)
 {
-    auto it = std::find_if(m_entities.begin(), m_entities.end(),
-        [entity](const std::unique_ptr<Entity>& e) { return e.get() == entity; });
-
-    if (it != m_entities.end())
+    if (entity.IsValid())
     {
-        Logger::Info("Removed entity '{}'", (*it)->name);
-        m_entities.erase(it);
+        if (entity.HasComponent<NameTag>())
+        {
+            Logger::Info("Removed entity '{}'", entity.GetComponent<NameTag>().name);
+        }
+        m_registry.destroy(entity.GetHandle());
     }
 }
 
 void Scene::Clear()
 {
-    m_entities.clear();
+    m_registry.clear();
     m_ownedMeshes.clear();
 }
 
 void Scene::Update(f32 dt)
 {
-    for (auto& entity : m_entities)
+    // スケルタルアニメーション更新
     {
-        if (entity->animator)
+        auto view = m_registry.view<SkeletalAnimation>();
+        for (auto [entity, skelAnim] : view.each())
         {
-            entity->animator->Update(dt);
-        }
-
-        if (entity->nodeAnimator)
-        {
-            entity->nodeAnimator->Update(dt);
-
-            // NodeAnimatorの結果をmeshNodeTransformsにマッピング
-            const auto& globalMats = entity->nodeAnimator->GetNodeGlobalMatrices();
-            const NodeGraph* graph = entity->nodeGraph.get();
-
-            for (u32 ni = 0; ni < graph->GetNodeCount(); ++ni)
+            if (skelAnim.animator)
             {
-                const SceneNode& node = graph->GetNode(ni);
-                for (u32 meshIdx : node.meshIndices)
+                skelAnim.animator->Update(dt);
+            }
+        }
+    }
+
+    // ノードアニメーション更新
+    {
+        auto view = m_registry.view<NodeAnimationComp, MeshRenderer>();
+        for (auto [entity, nodeAnim, renderer] : view.each())
+        {
+            if (nodeAnim.nodeAnimator)
+            {
+                nodeAnim.nodeAnimator->Update(dt);
+
+                // NodeAnimatorの結果をmeshNodeTransformsにマッピング
+                const auto& globalMats = nodeAnim.nodeAnimator->GetNodeGlobalMatrices();
+                const NodeGraph* graph = nodeAnim.nodeGraph.get();
+
+                for (u32 ni = 0; ni < graph->GetNodeCount(); ++ni)
                 {
-                    if (meshIdx < static_cast<u32>(entity->meshNodeTransforms.size()))
+                    const SceneNode& node = graph->GetNode(ni);
+                    for (u32 meshIdx : node.meshIndices)
                     {
-                        entity->meshNodeTransforms[meshIdx] = globalMats[ni];
+                        if (meshIdx < static_cast<u32>(renderer.meshNodeTransforms.size()))
+                        {
+                            renderer.meshNodeTransforms[meshIdx] = globalMats[ni];
+                        }
                     }
                 }
             }
         }
     }
+}
+
+Entity Scene::FindEntity(const std::string& name)
+{
+    auto view = m_registry.view<const NameTag>();
+    for (auto [handle, tag] : view.each())
+    {
+        if (tag.name == name)
+        {
+            return Entity(handle, &m_registry);
+        }
+    }
+    return Entity();
+}
+
+size_t Scene::GetEntityCount() const
+{
+    auto view = m_registry.view<const NameTag>();
+    size_t count = 0;
+    for (auto /*entity*/ : view)
+    {
+        ++count;
+    }
+    return count;
 }
 
 } // namespace dx12e

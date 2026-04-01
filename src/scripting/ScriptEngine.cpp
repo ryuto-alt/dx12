@@ -9,7 +9,7 @@
 
 #include "scene/Scene.h"
 #include "scene/Entity.h"
-#include "scene/Transform.h"
+#include "ecs/Components.h"
 #include "renderer/Mesh.h"
 #include "input/InputSystem.h"
 #include "renderer/Camera.h"

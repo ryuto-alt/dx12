@@ -1,5 +1,4 @@
 add_library(Scene STATIC
-    Transform.cpp
     Entity.cpp
     Scene.cpp
 )
@@ -14,6 +13,7 @@ target_link_libraries(Scene PUBLIC
     Renderer
     Animation
     Resource
+    ECS
     Microsoft::DirectXMath
 )
 

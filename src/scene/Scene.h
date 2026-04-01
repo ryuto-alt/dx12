@@ -4,8 +4,10 @@
 #include <memory>
 #include <string>
 #include <functional>
+#include <entt/entt.hpp>
 #include <DirectXMath.h>
 #include "core/Types.h"
+#include "ecs/Components.h"
 #include "scene/Entity.h"
 
 struct ID3D12GraphicsCommandList;
@@ -26,50 +28,57 @@ public:
                     DescriptorHeap* srvHeap,
                     ID3D12GraphicsCommandList* cmdList);
 
-    // Entity生成（モデル読み込み + シーンに追加）
-    Entity* Spawn(const std::string& name,
-                  const std::string& modelPath,
-                  DirectX::XMFLOAT3 position,
-                  DirectX::XMFLOAT3 rotation = {0, 0, 0},
-                  DirectX::XMFLOAT3 scale = {1, 1, 1});
+    Entity Spawn(const std::string& name,
+                 const std::string& modelPath,
+                 DirectX::XMFLOAT3 position,
+                 DirectX::XMFLOAT3 rotation = {0, 0, 0},
+                 DirectX::XMFLOAT3 scale = {1, 1, 1});
 
-    // プリミティブEntity生成
-    Entity* SpawnPlane(const std::string& name,
+    Entity SpawnPlane(const std::string& name,
+                      DirectX::XMFLOAT3 position,
+                      f32 size = 50.0f,
+                      bool gridShader = false);
+
+    Entity SpawnBox(const std::string& name,
+                    DirectX::XMFLOAT3 position,
+                    DirectX::XMFLOAT3 rotation = {0, 0, 0},
+                    DirectX::XMFLOAT3 scale = {1, 1, 1});
+
+    Entity SpawnSphere(const std::string& name,
                        DirectX::XMFLOAT3 position,
-                       f32 size = 50.0f,
-                       bool gridShader = false);
+                       f32 radius = 0.5f);
 
-    Entity* SpawnBox(const std::string& name,
-                     DirectX::XMFLOAT3 position,
-                     DirectX::XMFLOAT3 rotation = {0, 0, 0},
-                     DirectX::XMFLOAT3 scale = {1, 1, 1});
-
-    Entity* SpawnSphere(const std::string& name,
-                        DirectX::XMFLOAT3 position,
-                        f32 radius = 0.5f);
-
-    void Remove(Entity* entity);
+    void Remove(Entity entity);
     void Clear();
-
-    // 全EntityのAnimator更新
     void Update(f32 dt);
 
-    // 描画用イテレーション
     template<typename Fn>
     void ForEachEntity(Fn&& fn) const
     {
-        for (const auto& entity : m_entities)
+        auto view = m_registry.view<const NameTag, const Transform>();
+        for (auto [entity, name, transform] : view.each())
         {
-            fn(*entity);
+            (void)name;
+            (void)transform;
+            fn(m_registry, entity);
         }
     }
 
-    size_t GetEntityCount() const { return m_entities.size(); }
-    const std::vector<std::unique_ptr<Entity>>& GetEntities() const { return m_entities; }
+    Entity FindEntity(const std::string& name);
+    size_t GetEntityCount() const;
+
+    entt::registry&       GetRegistry()       { return m_registry; }
+    const entt::registry& GetRegistry() const { return m_registry; }
 
 private:
-    std::vector<std::unique_ptr<Entity>> m_entities;
-    std::vector<std::unique_ptr<Mesh>>  m_ownedMeshes;  // プリミティブメッシュの所有権
+    Entity CreateEntityWithTransform(const std::string& name,
+                                     DirectX::XMFLOAT3 position,
+                                     DirectX::XMFLOAT3 rotation,
+                                     DirectX::XMFLOAT3 scale);
+
+    entt::registry m_registry;
+    std::vector<std::unique_ptr<Mesh>> m_ownedMeshes;
+
     ResourceManager*  m_resourceManager = nullptr;
     GraphicsDevice*   m_device          = nullptr;
     DescriptorHeap*   m_srvHeap         = nullptr;

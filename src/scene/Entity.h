@@ -1,52 +1,56 @@
 #pragma once
 
+#include <entt/entt.hpp>
 #include <string>
-#include <vector>
-#include <memory>
-#include "scene/Transform.h"
 
 namespace dx12e
 {
 
-class Mesh;
-struct Material;
-class Skeleton;
-class AnimationClip;
-class Animator;
-class SkinningBuffer;
-class NodeGraph;
-class NodeAnimationClip;
-class NodeAnimator;
-
-struct Entity
+class Entity
 {
-    std::string name;
-    Transform transform;
+public:
+    Entity() = default;
+    Entity(entt::entity handle, entt::registry* registry);
 
-    // 描画データ（ResourceManager/CachedModel所有、借用ポインタ）
-    std::vector<Mesh*> meshes;
-    std::vector<Material*> materials;
-    bool hasSkeleton = false;
-    bool hasNodeAnimation = false;
-    bool useGridShader = false;  // グリッド床用フラグ
+    template<typename T, typename... Args>
+    T& AddComponent(Args&&... args)
+    {
+        return m_registry->emplace<T>(m_handle, std::forward<Args>(args)...);
+    }
 
-    // スケルタルアニメーション（Entity固有）
-    std::unique_ptr<Skeleton> skeleton;
-    std::vector<std::unique_ptr<AnimationClip>> animClips;
-    std::unique_ptr<Animator> animator;
-    std::unique_ptr<SkinningBuffer> skinningBuffer;
+    template<typename T>
+    T& GetComponent()
+    {
+        return m_registry->get<T>(m_handle);
+    }
 
-    // ノードアニメーション（Entity固有、Kenney系モデル等）
-    std::unique_ptr<NodeGraph> nodeGraph;
-    std::vector<std::unique_ptr<NodeAnimationClip>> nodeAnimClips;
-    std::unique_ptr<NodeAnimator> nodeAnimator;
-    std::vector<DirectX::XMFLOAT4X4> meshNodeTransforms;  // メッシュごとのワールド行列
+    template<typename T>
+    const T& GetComponent() const
+    {
+        return m_registry->get<T>(m_handle);
+    }
 
-    // unique_ptr メンバのため .cpp でデストラクタ定義
-    Entity();
-    ~Entity();
-    Entity(Entity&&) noexcept;
-    Entity& operator=(Entity&&) noexcept;
+    template<typename T>
+    bool HasComponent() const
+    {
+        return m_registry->all_of<T>(m_handle);
+    }
+
+    template<typename T>
+    void RemoveComponent()
+    {
+        m_registry->remove<T>(m_handle);
+    }
+
+    entt::entity GetHandle() const { return m_handle; }
+    bool IsValid() const { return m_registry && m_registry->valid(m_handle); }
+
+    bool operator==(const Entity& other) const { return m_handle == other.m_handle; }
+    bool operator!=(const Entity& other) const { return m_handle != other.m_handle; }
+
+private:
+    entt::entity    m_handle   = entt::null;
+    entt::registry* m_registry = nullptr;
 };
 
 } // namespace dx12e
