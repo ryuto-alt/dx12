@@ -39,6 +39,8 @@
 #include <imgui.h>
 #pragma warning(pop)
 
+#include "gui/ImGuizmo.h"
+
 #include <directx/d3d12.h>
 #include <DirectXMath.h>
 #include <filesystem>
@@ -610,7 +612,7 @@ void Application::Update()
         {
             m_inputSystem->SetMouseCapture(true);
         }
-        if (m_inputSystem->IsMouseCaptured())
+        if (m_inputSystem->IsMouseCaptured() && !ImGuizmo::IsUsing())
         {
             f32 sensitivity = m_camera->GetMouseSensitivity();
             m_camera->Rotate(
@@ -624,6 +626,15 @@ void Application::Update()
             if (GetAsyncKeyState('A') & 0x8000) m_camera->MoveRight(-speed);
             if (GetAsyncKeyState(VK_SPACE) & 0x8000) m_camera->MoveUp(speed);
             if (GetAsyncKeyState(VK_SHIFT) & 0x8000) m_camera->MoveUp(-speed);
+        }
+
+        // ギズモモード切替（エディタモード時、右クリック中でない時のみ）
+        if (!ImGui::GetIO().WantCaptureKeyboard && !m_inputSystem->IsMouseCaptured())
+        {
+            if (GetAsyncKeyState('W') & 1) m_gizmoMode = GizmoMode::Translate;
+            if (GetAsyncKeyState('E') & 1) m_gizmoMode = GizmoMode::Rotate;
+            if (GetAsyncKeyState('R') & 1) m_gizmoMode = GizmoMode::Scale;
+            if (GetAsyncKeyState('T') & 1) m_gizmoLocalSpace = !m_gizmoLocalSpace;
         }
     }
     else
@@ -1121,6 +1132,33 @@ void Application::Render()
             m_hotReloadFlash -= m_gameClock.GetDeltaTime();
         }
 
+        // ギズモモードボタン
+        ImGui::SameLine(0, 12);
+        ImGui::TextDisabled("|");
+        ImGui::SameLine(0, 8);
+
+        bool isTrans = (m_gizmoMode == GizmoMode::Translate);
+        bool isRot   = (m_gizmoMode == GizmoMode::Rotate);
+        bool isScl   = (m_gizmoMode == GizmoMode::Scale);
+
+        if (isTrans) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.5f, 0.8f, 1.0f));
+        if (ImGui::Button("W Move")) m_gizmoMode = GizmoMode::Translate;
+        if (isTrans) ImGui::PopStyleColor();
+
+        ImGui::SameLine();
+        if (isRot) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.5f, 0.8f, 1.0f));
+        if (ImGui::Button("E Rot")) m_gizmoMode = GizmoMode::Rotate;
+        if (isRot) ImGui::PopStyleColor();
+
+        ImGui::SameLine();
+        if (isScl) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.5f, 0.8f, 1.0f));
+        if (ImGui::Button("R Scl")) m_gizmoMode = GizmoMode::Scale;
+        if (isScl) ImGui::PopStyleColor();
+
+        ImGui::SameLine();
+        if (ImGui::Button(m_gizmoLocalSpace ? "Local" : "World"))
+            m_gizmoLocalSpace = !m_gizmoLocalSpace;
+
         // FPS（右寄せ）
         ImGui::SameLine(displayW - 100);
         ImGui::Text("%.0f FPS", m_gameClock.GetFPS());
@@ -1386,6 +1424,62 @@ void Application::Render()
         ImGui::End();
     }
     } // !m_isGameMode
+
+    // ===== ImGuizmo ギズモ描画 =====
+    if (!m_isGameMode && m_engineMode == EngineMode::Editor
+        && m_selectedEntity != entt::null)
+    {
+        auto& reg = m_scene->GetRegistry();
+        if (reg.valid(m_selectedEntity) && reg.all_of<Transform>(m_selectedEntity))
+        {
+            auto& transform = reg.get<Transform>(m_selectedEntity);
+
+            XMFLOAT4X4 viewF, projF;
+            XMStoreFloat4x4(&viewF, m_camera->GetViewMatrix());
+            XMStoreFloat4x4(&projF, m_camera->GetProjectionMatrix());
+
+            XMFLOAT4X4 worldF;
+            XMStoreFloat4x4(&worldF, transform.GetWorldMatrix());
+
+            // 3Dビューポート領域
+            u32 vpX = static_cast<u32>(kLeftPanelWidth);
+            u32 vpY = static_cast<u32>(kToolbarHeight);
+            u32 vpW = (m_window->GetWidth() > vpX) ? m_window->GetWidth() - vpX : 1;
+            u32 vpH = (m_window->GetHeight() > vpY) ? m_window->GetHeight() - vpY : 1;
+
+            ImGuizmo::SetOrthographic(false);
+            ImGuizmo::SetDrawlist(ImGui::GetBackgroundDrawList());
+            ImGuizmo::SetRect(static_cast<float>(vpX), static_cast<float>(vpY),
+                              static_cast<float>(vpW), static_cast<float>(vpH));
+
+            ImGuizmo::OPERATION op = ImGuizmo::TRANSLATE;
+            if (m_gizmoMode == GizmoMode::Rotate) op = ImGuizmo::ROTATE;
+            if (m_gizmoMode == GizmoMode::Scale)  op = ImGuizmo::SCALE;
+
+            ImGuizmo::MODE mode = m_gizmoLocalSpace ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
+
+            float snapValues[3] = {1.0f, 1.0f, 1.0f};
+            if (m_gizmoMode == GizmoMode::Rotate)
+                snapValues[0] = snapValues[1] = snapValues[2] = 15.0f;
+            else if (m_gizmoMode == GizmoMode::Scale)
+                snapValues[0] = snapValues[1] = snapValues[2] = 0.1f;
+            bool useSnap = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+
+            if (ImGuizmo::Manipulate(
+                    &viewF._11, &projF._11,
+                    op, mode,
+                    &worldF._11, nullptr,
+                    useSnap ? snapValues : nullptr))
+            {
+                float translation[3], rotation[3], scale[3];
+                ImGuizmo::DecomposeMatrixToComponents(
+                    &worldF._11, translation, rotation, scale);
+                transform.position = {translation[0], translation[1], translation[2]};
+                transform.rotation = {rotation[0], rotation[1], rotation[2]};
+                transform.scale    = {scale[0], scale[1], scale[2]};
+            }
+        }
+    }
 
     m_imguiManager->EndFrame(nativeCmdList);
 
