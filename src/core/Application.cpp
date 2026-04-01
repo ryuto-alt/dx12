@@ -1164,25 +1164,50 @@ void Application::Render()
             auto& reg = m_scene->GetRegistry();
             if (m_selectedEntity != entt::null && reg.valid(m_selectedEntity))
             {
-                auto& tag = reg.get<NameTag>(m_selectedEntity);
-                auto& transform = reg.get<Transform>(m_selectedEntity);
+                // NameTag
+                if (reg.all_of<NameTag>(m_selectedEntity))
+                {
+                    auto& tag = reg.get<NameTag>(m_selectedEntity);
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.39f, 0.58f, 0.93f, 1.0f));
+                    ImGui::Text("%s", tag.name.c_str());
+                    ImGui::PopStyleColor();
+                }
 
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.39f, 0.58f, 0.93f, 1.0f));
-                ImGui::Text("%s", tag.name.c_str());
-                ImGui::PopStyleColor();
+                ImGui::Separator();
 
-                ImGui::DragFloat3("Pos", &transform.position.x, 0.1f);
-                ImGui::DragFloat3("Rot", &transform.rotation.x, 1.0f);
-                ImGui::DragFloat3("Scale", &transform.scale.x, 0.01f);
+                // Transform
+                if (reg.all_of<Transform>(m_selectedEntity))
+                {
+                    if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen))
+                    {
+                        auto& t = reg.get<Transform>(m_selectedEntity);
+                        ImGui::DragFloat3("Position", &t.position.x, 0.1f);
+                        ImGui::DragFloat3("Rotation", &t.rotation.x, 1.0f);
+                        ImGui::DragFloat3("Scale",    &t.scale.x,    0.01f);
+                    }
+                }
 
-                // Skeletal animation UI
+                // MeshRenderer
+                if (reg.all_of<MeshRenderer>(m_selectedEntity))
+                {
+                    if (ImGui::CollapsingHeader("MeshRenderer"))
+                    {
+                        auto& r = reg.get<MeshRenderer>(m_selectedEntity);
+                        ImGui::Text("Meshes: %d", static_cast<int>(r.meshes.size()));
+                        ImGui::Text("Materials: %d", static_cast<int>(r.materials.size()));
+                    }
+                }
+
+                // SkeletalAnimation
                 if (reg.all_of<SkeletalAnimation>(m_selectedEntity))
                 {
                     auto& skelAnim = reg.get<SkeletalAnimation>(m_selectedEntity);
-                    if (skelAnim.animator && !skelAnim.clips.empty())
+                    if (skelAnim.animator && ImGui::CollapsingHeader("SkeletalAnimation"))
                     {
-                        ImGui::Separator();
-                        ImGui::TextDisabled("Animation (Skeletal)");
+                        ImGui::Text("Bones: %d",
+                            static_cast<int>(skelAnim.skeleton ? skelAnim.skeleton->GetBoneCount() : 0));
+                        ImGui::Text("Clips: %d", static_cast<int>(skelAnim.clips.size()));
+
                         for (i32 i = 0; i < static_cast<i32>(skelAnim.clips.size()); ++i)
                         {
                             const auto& clip = skelAnim.clips[i];
@@ -1195,14 +1220,13 @@ void Application::Render()
                     }
                 }
 
-                // Node animation UI
+                // NodeAnimation
                 if (reg.all_of<NodeAnimationComp>(m_selectedEntity))
                 {
                     auto& nodeAnim = reg.get<NodeAnimationComp>(m_selectedEntity);
-                    if (nodeAnim.nodeAnimator && !nodeAnim.clips.empty())
+                    if (nodeAnim.nodeAnimator && ImGui::CollapsingHeader("NodeAnimation"))
                     {
-                        ImGui::Separator();
-                        ImGui::TextDisabled("Animation (Node)");
+                        ImGui::Text("Clips: %d", static_cast<int>(nodeAnim.clips.size()));
                         for (i32 i = 0; i < static_cast<i32>(nodeAnim.clips.size()); ++i)
                         {
                             const auto& clip = nodeAnim.clips[i];
@@ -1212,6 +1236,53 @@ void Application::Render()
                             if (ImGui::Selectable(label.c_str()))
                                 nodeAnim.nodeAnimator->CrossFadeTo(clip.get(), 0.3f);
                         }
+                    }
+                }
+
+                // GridPlane
+                if (reg.all_of<GridPlane>(m_selectedEntity))
+                {
+                    if (ImGui::CollapsingHeader("GridPlane"))
+                    {
+                        auto& gp = reg.get<GridPlane>(m_selectedEntity);
+                        ImGui::Checkbox("Enabled", &gp.enabled);
+                    }
+                }
+
+                // PointLight
+                if (reg.all_of<PointLight>(m_selectedEntity))
+                {
+                    if (ImGui::CollapsingHeader("PointLight"))
+                    {
+                        auto& pl = reg.get<PointLight>(m_selectedEntity);
+                        ImGui::ColorEdit3("Color", &pl.color.x);
+                        ImGui::DragFloat("Intensity", &pl.intensity, 0.1f, 0.0f, 100.0f);
+                        ImGui::DragFloat("Range", &pl.range, 0.5f, 0.0f, 500.0f);
+                    }
+                }
+
+                // DirectionalLight
+                if (reg.all_of<DirectionalLight>(m_selectedEntity))
+                {
+                    if (ImGui::CollapsingHeader("DirectionalLight"))
+                    {
+                        auto& dl = reg.get<DirectionalLight>(m_selectedEntity);
+                        ImGui::DragFloat3("Direction", &dl.direction.x, 0.01f);
+                        ImGui::ColorEdit3("Color", &dl.color.x);
+                        ImGui::DragFloat("Intensity", &dl.intensity, 0.1f, 0.0f, 100.0f);
+                    }
+                }
+
+                // CameraComponent
+                if (reg.all_of<CameraComponent>(m_selectedEntity))
+                {
+                    if (ImGui::CollapsingHeader("Camera"))
+                    {
+                        auto& cam = reg.get<CameraComponent>(m_selectedEntity);
+                        ImGui::DragFloat("FOV", &cam.fovDegrees, 1.0f, 1.0f, 179.0f);
+                        ImGui::DragFloat("Near", &cam.nearClip, 0.01f, 0.001f, 100.0f);
+                        ImGui::DragFloat("Far", &cam.farClip, 10.0f, 1.0f, 100000.0f);
+                        ImGui::Checkbox("Active", &cam.isActive);
                     }
                 }
             }
