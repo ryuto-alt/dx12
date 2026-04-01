@@ -51,6 +51,7 @@ public:
     void Shutdown();
 
     enum class EngineMode { Editor, Playing };
+    enum class GizmoMode { Translate, Rotate, Scale };
 
 private:
     void Update();
@@ -87,6 +88,8 @@ private:
     static constexpr f32 kLeftPanelWidth  = 280.0f;
     static constexpr f32 kToolbarHeight   = 36.0f;
     entt::entity m_selectedEntity = entt::null;
+    GizmoMode m_gizmoMode = GizmoMode::Translate;
+    bool m_gizmoLocalSpace = false;
     bool m_isGameMode = false;
     std::unique_ptr<Camera>            m_camera;
     std::unique_ptr<ConstantBuffer>    m_perFrameCB;
