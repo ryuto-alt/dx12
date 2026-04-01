@@ -597,6 +597,7 @@ void Application::Shutdown()
 
 void Application::Update()
 {
+    using namespace DirectX;
     f32 dt = m_gameClock.GetDeltaTime();
 
     m_framesSinceStart++;
@@ -635,6 +636,87 @@ void Application::Update()
             if (GetAsyncKeyState('E') & 1) m_gizmoMode = GizmoMode::Rotate;
             if (GetAsyncKeyState('R') & 1) m_gizmoMode = GizmoMode::Scale;
             if (GetAsyncKeyState('T') & 1) m_gizmoLocalSpace = !m_gizmoLocalSpace;
+        }
+
+        // 3Dビュー上の左クリックでオブジェクト選択（レイキャスト）
+        if (!ImGui::GetIO().WantCaptureMouse && !ImGuizmo::IsOver()
+            && !m_inputSystem->IsMouseCaptured()
+            && (GetAsyncKeyState(VK_LBUTTON) & 1))
+        {
+            POINT cursorPos;
+            GetCursorPos(&cursorPos);
+            ScreenToClient(m_window->GetHwnd(), &cursorPos);
+
+            // 3Dビューポート領域
+            f32 vpX = kLeftPanelWidth;
+            f32 vpY = kToolbarHeight;
+            f32 vpW = static_cast<f32>(m_window->GetWidth()) - vpX;
+            f32 vpH = static_cast<f32>(m_window->GetHeight()) - vpY;
+
+            f32 mx = static_cast<f32>(cursorPos.x);
+            f32 my = static_cast<f32>(cursorPos.y);
+
+            // ビューポート内かチェック
+            if (mx >= vpX && mx < vpX + vpW && my >= vpY && my < vpY + vpH)
+            {
+                // NDC座標に変換 (-1〜1)
+                f32 ndcX = ((mx - vpX) / vpW) * 2.0f - 1.0f;
+                f32 ndcY = 1.0f - ((my - vpY) / vpH) * 2.0f;
+
+                // レイを生成（カメラからクリック位置へ）
+                XMMATRIX invProj = XMMatrixInverse(nullptr, m_camera->GetProjectionMatrix());
+                XMMATRIX invView = XMMatrixInverse(nullptr, m_camera->GetViewMatrix());
+
+                XMVECTOR rayClip = XMVectorSet(ndcX, ndcY, 1.0f, 1.0f);
+                XMVECTOR rayEye = XMVector4Transform(rayClip, invProj);
+                rayEye = XMVectorSetZ(rayEye, 1.0f);
+                rayEye = XMVectorSetW(rayEye, 0.0f);
+
+                XMVECTOR rayWorld = XMVector4Transform(rayEye, invView);
+                XMVECTOR rayDir = XMVector3Normalize(rayWorld);
+                XMFLOAT3 camPos = m_camera->GetPosition();
+                XMVECTOR rayOrigin = XMLoadFloat3(&camPos);
+
+                // 全Entityに対してバウンディングスフィアテスト
+                f32 closestDist = FLT_MAX;
+                entt::entity closestEntity = entt::null;
+
+                auto& reg = m_scene->GetRegistry();
+                auto view = reg.view<const Transform, const MeshRenderer>();
+                for (auto [e, transform, renderer] : view.each())
+                {
+                    if (reg.all_of<GridPlane>(e)) continue; // グリッドは選択対象外
+
+                    XMVECTOR entityPos = XMLoadFloat3(&transform.position);
+
+                    // バウンディングスフィア半径を推定（スケールの最大値）
+                    f32 radius = (std::max)({
+                        std::abs(transform.scale.x),
+                        std::abs(transform.scale.y),
+                        std::abs(transform.scale.z)
+                    });
+                    radius = (std::max)(radius, 0.5f); // 最小半径
+
+                    // レイ-スフィア交差テスト
+                    XMVECTOR oc = XMVectorSubtract(rayOrigin, entityPos);
+                    f32 b = XMVectorGetX(XMVector3Dot(oc, rayDir));
+                    f32 c = XMVectorGetX(XMVector3Dot(oc, oc)) - radius * radius;
+                    f32 discriminant = b * b - c;
+
+                    if (discriminant > 0.0f)
+                    {
+                        f32 t = -b - std::sqrt(discriminant);
+                        if (t < 0.0f) t = -b + std::sqrt(discriminant);
+                        if (t > 0.0f && t < closestDist)
+                        {
+                            closestDist = t;
+                            closestEntity = e;
+                        }
+                    }
+                }
+
+                m_selectedEntity = closestEntity;
+            }
         }
     }
     else
@@ -1062,6 +1144,7 @@ void Application::Render()
 
     // ---- ImGui フレーム ----
     m_imguiManager->BeginFrame();
+    ImGuizmo::BeginFrame();
 
     if (!m_isGameMode)
     {
