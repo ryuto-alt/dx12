@@ -121,6 +121,9 @@ private:
     f32 m_buildCompleteFlash = 0.0f;
     static constexpr f32 kScriptPollInterval = 0.5f;
 
+    // シーン保存パス
+    std::string m_currentScenePath;
+
     // フレームレートリミッター
     static constexpr f32 kTargetFps = 144.0f;
     bool m_useVsync = false;

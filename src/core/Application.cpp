@@ -33,6 +33,8 @@
 #include "scripting/ScriptEngine.h"
 #include "audio/AudioSystem.h"
 #include "gui/ImGuiManager.h"
+#include "scene/SceneSerializer.h"
+#include <commdlg.h>
 
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4201 4244 4267 4996)
@@ -636,6 +638,18 @@ void Application::Update()
             if (GetAsyncKeyState('E') & 1) m_gizmoMode = GizmoMode::Rotate;
             if (GetAsyncKeyState('R') & 1) m_gizmoMode = GizmoMode::Scale;
             if (GetAsyncKeyState('T') & 1) m_gizmoLocalSpace = !m_gizmoLocalSpace;
+
+            // Ctrl+S でクイック保存
+            if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState('S') & 1))
+            {
+                if (m_currentScenePath.empty())
+                {
+                    std::filesystem::create_directories(std::string(ASSETS_DIR) + "scenes");
+                    m_currentScenePath = std::string(ASSETS_DIR) + "scenes/default.json";
+                }
+                SceneSerializer::Save(*m_scene, m_currentScenePath, std::string(ASSETS_DIR));
+                Logger::Info("Scene saved: {}", m_currentScenePath);
+            }
         }
 
     }
@@ -1161,6 +1175,67 @@ void Application::Render()
         ImGui::SameLine();
         if (ImGui::Button(m_gizmoLocalSpace ? "Local" : "World"))
             m_gizmoLocalSpace = !m_gizmoLocalSpace;
+
+        // Save/Load
+        ImGui::SameLine(0, 16);
+        ImGui::TextDisabled("|");
+        ImGui::SameLine(0, 8);
+
+        if (ImGui::Button("Save"))
+        {
+            if (m_currentScenePath.empty())
+            {
+                char savePath[MAX_PATH] = "";
+                OPENFILENAMEA ofn = {};
+                ofn.lStructSize = sizeof(ofn);
+                ofn.hwndOwner = m_window->GetHwnd();
+                ofn.lpstrFilter = "Scene Files (*.json)\0*.json\0All Files\0*.*\0";
+                ofn.lpstrFile = savePath;
+                ofn.nMaxFile = MAX_PATH;
+                ofn.lpstrDefExt = "json";
+                ofn.Flags = OFN_OVERWRITEPROMPT;
+                std::string initDir = std::string(ASSETS_DIR) + "scenes";
+                std::filesystem::create_directories(initDir);
+                ofn.lpstrInitialDir = initDir.c_str();
+                if (GetSaveFileNameA(&ofn))
+                    m_currentScenePath = savePath;
+            }
+            if (!m_currentScenePath.empty())
+            {
+                SceneSerializer::Save(*m_scene, m_currentScenePath, std::string(ASSETS_DIR));
+                Logger::Info("Scene saved: {}", m_currentScenePath);
+            }
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button("Load"))
+        {
+            char loadPath[MAX_PATH] = "";
+            OPENFILENAMEA ofn = {};
+            ofn.lStructSize = sizeof(ofn);
+            ofn.hwndOwner = m_window->GetHwnd();
+            ofn.lpstrFilter = "Scene Files (*.json)\0*.json\0All Files\0*.*\0";
+            ofn.lpstrFile = loadPath;
+            ofn.nMaxFile = MAX_PATH;
+            ofn.Flags = OFN_FILEMUSTEXIST;
+            std::string initDir = std::string(ASSETS_DIR) + "scenes";
+            std::filesystem::create_directories(initDir);
+            ofn.lpstrInitialDir = initDir.c_str();
+            if (GetOpenFileNameA(&ofn))
+            {
+                m_selectedEntity = entt::null;
+                auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
+                m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
+                                    m_srvHeap.get(), cmdList);
+                SceneSerializer::Load(*m_scene, loadPath, std::string(ASSETS_DIR));
+                ThrowIfFailed(cmdList->Close());
+                m_commandQueue->ExecuteCommandList(cmdList);
+                m_commandQueue->WaitIdle();
+                m_resourceManager->FinishUploads();
+                m_currentScenePath = loadPath;
+                Logger::Info("Scene loaded: {}", m_currentScenePath);
+            }
+        }
 
         // FPS（右寄せ）
         ImGui::SameLine(displayW - 100);
