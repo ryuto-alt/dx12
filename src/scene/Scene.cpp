@@ -67,6 +67,7 @@ Entity Scene::Spawn(const std::string& name,
 
     // MeshRenderer コンポーネント
     MeshRenderer& renderer = entity.AddComponent<MeshRenderer>();
+    renderer.modelPath = modelPath;
     for (const auto& mesh : cached->meshes)
     {
         renderer.meshes.push_back(mesh.get());

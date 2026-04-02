@@ -35,6 +35,7 @@ struct Transform
 
 struct MeshRenderer
 {
+    std::string modelPath; // アセット相対パス（シーン保存/読み込み用）
     std::vector<Mesh*>     meshes;
     std::vector<Material*> materials;
     std::vector<DirectX::XMFLOAT4X4> meshNodeTransforms;
