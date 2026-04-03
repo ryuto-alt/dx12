@@ -194,7 +194,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode)
         }
         m_camera->SetPerspective(DirectX::XM_PIDIV4, viewW / viewH, 0.1f, 1000.0f);
     }
-    m_camera->LookAt({0.1f, 2.4f, 17.3f}, {0.0f, 0.0f, 0.0f});
+    m_camera->LookAt({-14.7f, 9.6f, -9.0f}, {0.0f, 0.0f, 0.0f});
 
     // シーン + モデル読み込み
     {
@@ -785,6 +785,9 @@ void Application::EnterPlayMode()
     m_cameraSnapshot.position = m_camera->GetPosition();
     m_cameraSnapshot.yaw = m_camera->GetYaw();
     m_cameraSnapshot.pitch = m_camera->GetPitch();
+
+    // ゲーム用カメラ初期位置
+    m_camera->LookAt({0.1f, 2.4f, 17.3f}, {0.0f, 0.0f, 0.0f});
 
     // エディタ上の全エンティティの状態をスナップショット保存
     m_editorSnapshots.clear();
