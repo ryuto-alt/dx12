@@ -1325,8 +1325,11 @@ void Application::Render()
                 pbrParams.roughness = (renderer.overrideRoughness >= 0.0f) ? renderer.overrideRoughness
                                     : (mat ? mat->defaultRoughness : 0.5f);
                 pbrParams.flags     = 0;
-                if (mat && mat->normalMapTexture)      pbrParams.flags |= 1u;
-                if (mat && mat->metalRoughnessTexture) pbrParams.flags |= 2u;
+                if (mat && mat->normalMapTexture) pbrParams.flags |= 1u;
+                // overrideが有効な場合、metalRoughnessテクスチャのスケーリングを無効化
+                // （テクスチャ値×スライダーではなく、スライダー値を直接使う）
+                bool hasOverride = (renderer.overrideMetallic >= 0.0f || renderer.overrideRoughness >= 0.0f);
+                if (!hasOverride && mat && mat->metalRoughnessTexture) pbrParams.flags |= 2u;
                 pbrParams.pad = 0;
                 nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPBRMaterial, 4, &pbrParams, 0);
 
