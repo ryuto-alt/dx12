@@ -17,6 +17,7 @@
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
+#include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/CastResult.h>
 #include <Jolt/Physics/Collision/NarrowPhaseQuery.h>
@@ -170,8 +171,8 @@ void PhysicsSystem::Initialize()
         maxBodies, numBodyMutexes, maxBodyPairs, maxContactConstraints,
         m_impl->bpLayerInterface, m_impl->objVsBpFilter, m_impl->objLayerPairFilter);
 
-    // Gravity: Y-up, -9.81
-    m_impl->physicsSystem->SetGravity(JPH::Vec3(0.0f, -9.81f, 0.0f));
+    // Gravity: Y-up, ゲーム向けにやや強め（リアル=9.81、ゲーム=14.0）
+    m_impl->physicsSystem->SetGravity(JPH::Vec3(0.0f, -14.0f, 0.0f));
 
     m_accumulator = 0.0f;
     m_initialized = true;
@@ -261,9 +262,20 @@ void PhysicsSystem::SyncPhysicsToTransforms(entt::registry& registry)
         JPH::RVec3 pos = bodyInterface.GetPosition(joltId);
         JPH::Quat  rot = bodyInterface.GetRotation(joltId);
 
-        transform.position = { static_cast<f32>(pos.GetX()),
-                               static_cast<f32>(pos.GetY()),
-                               static_cast<f32>(pos.GetZ()) };
+        // コライダーのオフセットを引いてTransform位置に戻す
+        f32 offsetX = 0.0f, offsetY = 0.0f, offsetZ = 0.0f;
+        auto* convex  = registry.try_get<ConvexHullCollider>(entity);
+        auto* box     = registry.try_get<BoxCollider>(entity);
+        auto* sphere  = registry.try_get<SphereCollider>(entity);
+        auto* capsule = registry.try_get<CapsuleCollider>(entity);
+        if (convex)  { offsetX = convex->offset.x;  offsetY = convex->offset.y;  offsetZ = convex->offset.z; }
+        if (box)     { offsetX = box->offset.x;     offsetY = box->offset.y;     offsetZ = box->offset.z; }
+        if (sphere)  { offsetX = sphere->offset.x;  offsetY = sphere->offset.y;  offsetZ = sphere->offset.z; }
+        if (capsule) { offsetX = capsule->offset.x; offsetY = capsule->offset.y; offsetZ = capsule->offset.z; }
+
+        transform.position = { static_cast<f32>(pos.GetX()) - offsetX,
+                               static_cast<f32>(pos.GetY()) - offsetY,
+                               static_cast<f32>(pos.GetZ()) - offsetZ };
 
         // Quaternion で保持（Gimbal Lock 回避）
         transform.quaternion = { rot.GetX(), rot.GetY(), rot.GetZ(), rot.GetW() };
@@ -288,11 +300,29 @@ void PhysicsSystem::RegisterBody(entt::registry& registry, entt::entity entity)
 
     // Determine shape
     JPH::ShapeRefC shape;
+    auto* convex  = registry.try_get<ConvexHullCollider>(entity);
     auto* box     = registry.try_get<BoxCollider>(entity);
     auto* sphere  = registry.try_get<SphereCollider>(entity);
     auto* capsule = registry.try_get<CapsuleCollider>(entity);
 
-    if (box)
+    if (convex && !convex->points.empty())
+    {
+        // Convex Hull: 頂点データから凸包を生成
+        std::vector<JPH::Vec3> joltPoints;
+        joltPoints.reserve(convex->points.size());
+        for (const auto& p : convex->points)
+            joltPoints.push_back(JPH::Vec3(p.x, p.y, p.z));
+
+        JPH::ConvexHullShapeSettings settings(joltPoints.data(),
+            static_cast<int>(joltPoints.size()), 0.01f);  // 0.01 convex radius
+        settings.mMaxConvexRadius = 0.05f;
+        auto result = settings.Create();
+        if (result.IsValid())
+            shape = result.Get();
+        else
+            shape = new JPH::BoxShape(JPH::Vec3(0.5f, 0.5f, 0.5f)); // fallback
+    }
+    else if (box)
     {
         shape = new JPH::BoxShape(JPH::Vec3(box->halfExtents.x, box->halfExtents.y, box->halfExtents.z));
     }
@@ -333,8 +363,16 @@ void PhysicsSystem::RegisterBody(entt::registry& registry, entt::entity entity)
         break;
     }
 
-    // Position & Rotation
-    JPH::RVec3 pos(transform->position.x, transform->position.y, transform->position.z);
+    // Position & Rotation（コライダーのオフセットを加算）
+    f32 offsetX = 0.0f, offsetY = 0.0f, offsetZ = 0.0f;
+    if (convex)  { offsetX = convex->offset.x;  offsetY = convex->offset.y;  offsetZ = convex->offset.z; }
+    if (box)     { offsetX = box->offset.x;     offsetY = box->offset.y;     offsetZ = box->offset.z; }
+    if (sphere)  { offsetX = sphere->offset.x;  offsetY = sphere->offset.y;  offsetZ = sphere->offset.z; }
+    if (capsule) { offsetX = capsule->offset.x; offsetY = capsule->offset.y; offsetZ = capsule->offset.z; }
+
+    JPH::RVec3 pos(transform->position.x + offsetX,
+                   transform->position.y + offsetY,
+                   transform->position.z + offsetZ);
     JPH::Quat  rot = JPH::Quat::sIdentity();
 
     if (transform->useQuaternion)
@@ -366,6 +404,9 @@ void PhysicsSystem::RegisterBody(entt::registry& registry, entt::entity entity)
     bodySettings.mLinearDamping  = rb->linearDamping;
     bodySettings.mAngularDamping = rb->angularDamping;
     bodySettings.mGravityFactor  = rb->useGravity ? 1.0f : 0.0f;
+
+    // ゲーム向け: すぐ sleep しない（不安定な積み方でも少し動き続ける）
+    bodySettings.mAllowSleeping  = true;
 
     JPH::BodyID id = bodyInterface.CreateAndAddBody(bodySettings, JPH::EActivation::Activate);
     rb->bodyId = id.GetIndexAndSequenceNumber();

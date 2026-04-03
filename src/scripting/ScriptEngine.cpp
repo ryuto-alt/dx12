@@ -24,6 +24,8 @@
 #include "animation/NodeGraph.h"
 
 #include <DirectXMath.h>
+#include <cfloat>
+#include <cmath>
 #include <filesystem>
 
 namespace dx12e
@@ -162,7 +164,18 @@ void ScriptEngine::RegisterBindings()
         },
         "remove", [](Scene& s, Entity entity) { s.Remove(entity); },
         "getEntityCount", &Scene::GetEntityCount,
-        "findEntity", &Scene::FindEntity
+        "findEntity", &Scene::FindEntity,
+        "setUVScale", [](Scene& s, Entity& e, float u, float v) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<MeshRenderer>(e.GetHandle())) return;
+            auto& mr = reg.get<MeshRenderer>(e.GetHandle());
+            auto* device = s.GetDevice();
+            if (!device) return;
+            for (auto* mesh : mr.meshes)
+            {
+                if (mesh) mesh->ApplyUVScale(*device, u, v);
+            }
+        }
     );
 
     // --- Input ---
@@ -265,15 +278,70 @@ void ScriptEngine::RegisterPhysicsBindings()
 
     // --- PhysicsSystem ---
     lua.new_usertype<PhysicsSystem>("PhysicsSystem",
+        // メッシュ頂点から Convex Hull コライダーを自動生成（既にコライダーがあればスキップ）
+        "autoCollider", [this](PhysicsSystem& /*ps*/, Entity& e) {
+            auto& reg = m_scene->GetRegistry();
+            // 既にいずれかのコライダーがあればスキップ（保存データを優先）
+            if (reg.any_of<ConvexHullCollider, BoxCollider, SphereCollider, CapsuleCollider>(e.GetHandle()))
+                return;
+            auto* mr = reg.try_get<MeshRenderer>(e.GetHandle());
+            auto* tf = reg.try_get<Transform>(e.GetHandle());
+            if (!mr || !tf || mr->meshes.empty()) return;
+
+            // 全メッシュの頂点を収集（スケール適用済み）
+            std::vector<XMFLOAT3> allPoints;
+            for (const auto* mesh : mr->meshes)
+            {
+                if (!mesh) continue;
+                const auto& positions = mesh->GetPositions();
+                for (const auto& p : positions)
+                {
+                    allPoints.push_back({
+                        p.x * tf->scale.x,
+                        p.y * tf->scale.y,
+                        p.z * tf->scale.z
+                    });
+                }
+            }
+
+            // 頂点数を最大256に間引き（Jolt Convex Hull の上限）
+            constexpr size_t kMaxPoints = 256;
+            if (allPoints.size() > kMaxPoints)
+            {
+                size_t step = allPoints.size() / kMaxPoints;
+                std::vector<XMFLOAT3> sampled;
+                sampled.reserve(kMaxPoints);
+                for (size_t i = 0; i < allPoints.size() && sampled.size() < kMaxPoints; i += step)
+                    sampled.push_back(allPoints[i]);
+                allPoints = std::move(sampled);
+            }
+
+            if (allPoints.empty()) return;
+
+            // 頂点はモデル原点からの相対座標のまま（オフセットなし）
+            // → ボディ位置 = Transform.position そのまま
+            ConvexHullCollider col;
+            col.points = std::move(allPoints);
+            col.offset = { 0.0f, 0.0f, 0.0f };
+            reg.emplace_or_replace<ConvexHullCollider>(e.GetHandle(), col);
+
+            // BoxCollider があれば消す（ConvexHull が優先）
+            reg.remove<BoxCollider>(e.GetHandle());
+            reg.remove<SphereCollider>(e.GetHandle());
+            reg.remove<CapsuleCollider>(e.GetHandle());
+        },
+
         "addBoxCollider", [this](PhysicsSystem& /*ps*/, Entity& e,
                                  float hx, float hy, float hz) {
             auto& reg = m_scene->GetRegistry();
+            if (reg.any_of<BoxCollider, ConvexHullCollider>(e.GetHandle())) return;
             BoxCollider col;
             col.halfExtents = { hx, hy, hz };
             reg.emplace_or_replace<BoxCollider>(e.GetHandle(), col);
         },
         "addSphereCollider", [this](PhysicsSystem& /*ps*/, Entity& e, float radius) {
             auto& reg = m_scene->GetRegistry();
+            if (reg.any_of<SphereCollider, ConvexHullCollider>(e.GetHandle())) return;
             SphereCollider col;
             col.radius = radius;
             reg.emplace_or_replace<SphereCollider>(e.GetHandle(), col);
@@ -281,6 +349,7 @@ void ScriptEngine::RegisterPhysicsBindings()
         "addCapsuleCollider", [this](PhysicsSystem& /*ps*/, Entity& e,
                                      float radius, float halfHeight) {
             auto& reg = m_scene->GetRegistry();
+            if (reg.any_of<CapsuleCollider, ConvexHullCollider>(e.GetHandle())) return;
             CapsuleCollider col;
             col.radius = radius;
             col.halfHeight = halfHeight;
@@ -289,14 +358,12 @@ void ScriptEngine::RegisterPhysicsBindings()
         "addRigidBody", [this](PhysicsSystem& /*ps*/, Entity& e,
                                int motionTypeInt, float mass) {
             auto& reg = m_scene->GetRegistry();
-            // 既存のボディがあれば何もしない（二重登録防止）
-            auto* existing = reg.try_get<RigidBody>(e.GetHandle());
-            if (existing && existing->bodyId != kInvalidBodyId) return;
+            // 既に RigidBody があればスキップ（保存データ/エディタの設定を優先）
+            if (reg.all_of<RigidBody>(e.GetHandle())) return;
             RigidBody rb;
             rb.motionType = static_cast<MotionType>(motionTypeInt);
             rb.mass = mass;
             reg.emplace_or_replace<RigidBody>(e.GetHandle(), rb);
-            // ボディ登録は EnterPlayMode で一括実行（ここでは登録しない）
         },
         "removeRigidBody", [this](PhysicsSystem& ps, Entity& e) {
             auto& reg = m_scene->GetRegistry();

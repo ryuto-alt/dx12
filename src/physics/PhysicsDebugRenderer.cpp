@@ -271,11 +271,42 @@ void PhysicsDebugRenderer::CollectFromRegistry(entt::registry& registry)
             XMStoreFloat4(&quat, q);
         }
 
+        auto* convex  = registry.try_get<ConvexHullCollider>(entity);
         auto* box     = registry.try_get<BoxCollider>(entity);
         auto* sphere  = registry.try_get<SphereCollider>(entity);
         auto* capsule = registry.try_get<CapsuleCollider>(entity);
 
-        if (box)
+        if (convex && !convex->points.empty())
+        {
+            // Convex Hull: 頂点同士を結ぶラインで描画
+            XMVECTOR c = XMLoadFloat3(&transform.position);
+            XMVECTOR off = XMVectorSet(convex->offset.x, convex->offset.y, convex->offset.z, 0);
+            XMVECTOR center = c + off;
+            XMMATRIX rot = XMMatrixRotationQuaternion(XMLoadFloat4(&quat));
+
+            // 凸包の頂点をワールド座標に変換して隣接点と結ぶ
+            std::vector<XMFLOAT3> worldPts;
+            worldPts.reserve(convex->points.size());
+            for (const auto& p : convex->points)
+            {
+                XMVECTOR local = XMVectorSet(p.x, p.y, p.z, 0);
+                XMVECTOR world = XMVector3TransformNormal(local, rot) + center;
+                XMFLOAT3 wp;
+                XMStoreFloat3(&wp, world);
+                worldPts.push_back(wp);
+            }
+
+            // 各頂点から最近傍数点にラインを引く（凸包の輪郭を近似描画）
+            size_t count = worldPts.size();
+            size_t step = (std::max)(count / 32, (size_t)1);
+            for (size_t i = 0; i < count; i += step)
+            {
+                // 次の頂点と結ぶ
+                size_t j = (i + step) % count;
+                AddLine(worldPts[i], worldPts[j], color);
+            }
+        }
+        else if (box)
         {
             AddBox(transform.position, box->halfExtents, quat, color);
         }

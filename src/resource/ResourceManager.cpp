@@ -110,6 +110,29 @@ const CachedModel* ResourceManager::GetOrLoadModel(
     return rawPtr;
 }
 
+Texture* ResourceManager::GetOrLoadEmbeddedTexture(
+    const std::string& key,
+    const uint8_t* data, size_t dataSize,
+    const char* formatHint,
+    ID3D12GraphicsCommandList* cmdList)
+{
+    // wstring キーに変換してキャッシュ検索
+    std::wstring wkey(key.begin(), key.end());
+    auto it = m_textureCache.find(wkey);
+    if (it != m_textureCache.end())
+        return it->second.get();
+
+    auto texture = TextureLoader::LoadFromMemory(*m_device, cmdList, data, dataSize, formatHint);
+    if (!texture) return nullptr;
+
+    u32 srvIdx = m_srvHeap->AllocateIndex();
+    texture->SetSrvIndex(srvIdx);
+    texture->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(srvIdx));
+    auto* rawPtr = texture.get();
+    m_textureCache[wkey] = std::move(texture);
+    return rawPtr;
+}
+
 void ResourceManager::FinishUploads()
 {
     if (m_defaultWhite) m_defaultWhite->FinishUpload();

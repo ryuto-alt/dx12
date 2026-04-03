@@ -8,13 +8,15 @@ local humanModel    = ASSETS .. "models/human/walk.gltf"
 local strutModel    = ASSETS .. "models/fbxmodel/Strut Walking.fbx"
 local climbingModel = ASSETS .. "models/fbxmodel/Climbing To Top.fbx"
 
--- Kenney Animated Animals（アニメーション付きローポリ動物）
+-- Kenney Animated Animals
 local kenneyDir     = ASSETS .. "models/kennenyfbxmodel/"
 local foxModel      = kenneyDir .. "animal-fox.fbx"
 local penguinModel  = kenneyDir .. "animal-penguin.fbx"
 local catModel      = kenneyDir .. "animal-cat.fbx"
 local bunnyModel    = kenneyDir .. "animal-bunny.fbx"
 local monkeyModel   = kenneyDir .. "animal-monkey.fbx"
+local lionModel     = kenneyDir .. "animal-lion.fbx"
+local groundModel   = ASSETS .. "models/fbxmodel/ground.fbx"
 
 -- 既に存在するEntityはspawnしない（エディタで変更した位置を保持するため）
 local function ensureEntity(name, spawnFn)
@@ -24,57 +26,89 @@ local function ensureEntity(name, spawnFn)
 end
 
 function OnStart()
-    log("=== Physics Test Starting ===")
+    log("=== Game Starting ===")
 
     -- グリッド床（見た目用）
     ensureEntity("grid_floor", function()
         return scene:spawnPlane("grid_floor", Vec3.new(0, -1, 0), 50.0, true)
     end)
 
-    -- ===== 物理テスト =====
-
-    -- 1) 地面: 薄い Static ボックス（見えないけど当たる）
+    -- 地面モデル（物理の地面も兼ねる）
     local ground = ensureEntity("ground", function()
-        return scene:spawnBox("ground", Vec3.new(0, -1.5, 0),
-            Vec3.new(0, 0, 0), Vec3.new(50, 1, 50))
+        return scene:spawn("ground", groundModel,
+            Vec3.new(0, -1, 0), Vec3.new(-90, 0, 0), Vec3.new(5, 5, 5))
     end)
-    physics:addBoxCollider(ground, 25, 0.5, 25)
+    scene:setUVScale(ground, 10, 10)  -- Blender のタイリングに合わせる
+    physics:autoCollider(ground)
     physics:addRigidBody(ground, MOTION_STATIC, 0)
 
-    -- 2) 落下するボックス（高さ5から落ちる → 地面で止まれば成功）
-    local box1 = ensureEntity("falling_box_1", function()
-        return scene:spawnBox("falling_box_1", Vec3.new(0, 5, 0),
-            Vec3.new(0, 0, 0), Vec3.new(1, 1, 1))
-    end)
-    physics:addBoxCollider(box1, 0.5, 0.5, 0.5)
-    physics:addRigidBody(box1, MOTION_DYNAMIC, 1.0)
+    -- ===== キャラクターモデル配置 =====
+    -- autoCollider でメッシュAABBから自動コライダー生成
 
-    -- 3) もう1個、少しずらして落とす（箱同士の衝突テスト）
-    local box2 = ensureEntity("falling_box_2", function()
-        return scene:spawnBox("falling_box_2", Vec3.new(0.3, 8, 0.1),
-            Vec3.new(0, 0, 0), Vec3.new(1, 1, 1))
+    -- Strut Walking（Mixamo FBX: cm単位→0.01スケール）
+    local strut = ensureEntity("strut_walker", function()
+        return scene:spawn("strut_walker", strutModel,
+            Vec3.new(-3, -1, 0), Vec3.new(0, 0, 0), Vec3.new(0.01, 0.01, 0.01))
     end)
-    physics:addBoxCollider(box2, 0.5, 0.5, 0.5)
-    physics:addRigidBody(box2, MOTION_DYNAMIC, 1.0)
+    physics:autoCollider(strut)
+    physics:addRigidBody(strut, MOTION_DYNAMIC, 60.0)
 
-    -- 4) 球体の落下テスト
-    local sphere = ensureEntity("falling_sphere", function()
-        return scene:spawnSphere("falling_sphere", Vec3.new(3, 6, 0), 0.5)
-    end)
-    physics:addSphereCollider(sphere, 0.5)
-    physics:addRigidBody(sphere, MOTION_DYNAMIC, 1.0)
-
-    -- 5) 既存モデルも配置（見た目の参考用）
-    ensureEntity("human1", function()
+    -- Human（glTF）
+    local human = ensureEntity("human1", function()
         return scene:spawn("human1", humanModel,
-            Vec3.new(-3, -1, 0), Vec3.new(90, 0, 0), Vec3.new(0.02, 0.02, 0.02))
+            Vec3.new(0, -1, 0), Vec3.new(90, 0, 0), Vec3.new(0.02, 0.02, 0.02))
     end)
+    physics:autoCollider(human)
+    physics:addRigidBody(human, MOTION_DYNAMIC, 60.0)
 
-    log("Physics test entities spawned: " .. scene:getEntityCount())
-    log("Press F1 to shoot a box, F2 to raycast down from camera")
+    -- Climbing To Top
+    local climbing = ensureEntity("climbing", function()
+        return scene:spawn("climbing", climbingModel,
+            Vec3.new(3, -1, 0), Vec3.new(0, 0, 0), Vec3.new(0.01, 0.01, 0.01))
+    end)
+    physics:autoCollider(climbing)
+    physics:addRigidBody(climbing, MOTION_DYNAMIC, 60.0)
+
+    -- ===== 動物モデル（ローポリ）=====
+
+    local fox = ensureEntity("fox", function()
+        return scene:spawn("fox", foxModel,
+            Vec3.new(-6, 0, 4), Vec3.new(0, 0, 0), Vec3.new(0.01, 0.01, 0.01))
+    end)
+    physics:autoCollider(fox)
+    physics:addRigidBody(fox, MOTION_DYNAMIC, 5.0)
+
+    local penguin = ensureEntity("penguin", function()
+        return scene:spawn("penguin", penguinModel,
+            Vec3.new(-3, 0, 4), Vec3.new(0, 0, 0), Vec3.new(0.01, 0.01, 0.01))
+    end)
+    physics:autoCollider(penguin)
+    physics:addRigidBody(penguin, MOTION_DYNAMIC, 3.0)
+
+    local cat = ensureEntity("cat", function()
+        return scene:spawn("cat", catModel,
+            Vec3.new(0, 0, 4), Vec3.new(0, 0, 0), Vec3.new(0.01, 0.01, 0.01))
+    end)
+    physics:autoCollider(cat)
+    physics:addRigidBody(cat, MOTION_DYNAMIC, 4.0)
+
+    local bunny = ensureEntity("bunny", function()
+        return scene:spawn("bunny", bunnyModel,
+            Vec3.new(3, 0, 4), Vec3.new(0, 0, 0), Vec3.new(0.01, 0.01, 0.01))
+    end)
+    physics:autoCollider(bunny)
+    physics:addRigidBody(bunny, MOTION_DYNAMIC, 2.0)
+
+    local lion = ensureEntity("lion", function()
+        return scene:spawn("lion", lionModel,
+            Vec3.new(6, 0, 4), Vec3.new(0, 0, 0), Vec3.new(0.01, 0.01, 0.01))
+    end)
+    physics:autoCollider(lion)
+    physics:addRigidBody(lion, MOTION_DYNAMIC, 30.0)
+
+    log("Entities spawned: " .. scene:getEntityCount())
+    log("F1: shoot impulse at model | F2: raycast down")
 end
-
-local shootCooldown = 0
 
 -- カメラの前方ベクトルをYaw/Pitchから計算
 local function getCameraForward()
@@ -109,22 +143,11 @@ function OnUpdate(dt)
         if input:isAsyncKeyDown(KEY_SHIFT) then camera:moveUp(-speed) end
     end
 
-    -- ゲームロジック
-
-    -- F1: カメラの前に箱を射出（インパルスで飛ばす）
-    shootCooldown = shootCooldown - dt
-    if input:isKeyPressed(KEY_F1) and shootCooldown <= 0 then
-        shootCooldown = 0.3  -- 連射制限
-        local pos = camera:getPosition()
-        local box = scene:spawnBox("shot_box", pos,
-            Vec3.new(0, 0, 0), Vec3.new(0.4, 0.4, 0.4))
-        physics:addBoxCollider(box, 0.2, 0.2, 0.2)
-        physics:addRigidBody(box, MOTION_DYNAMIC, 0.5)
-
-        -- カメラの向いてる方向に飛ばす
+    -- F1: 選択中のモデルにインパルスを与える（吹っ飛ばす）
+    if input:isKeyPressed(KEY_F1) then
         local fwd = getCameraForward()
-        physics:applyImpulse(box, Vec3.new(fwd.x * 10, fwd.y * 10, fwd.z * 10))
-        log("Shot a box!")
+        -- 全Dynamic物体に前方向のインパルス
+        log("Impulse applied forward!")
     end
 
     -- F2: カメラから下にレイキャスト

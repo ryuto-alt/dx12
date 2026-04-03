@@ -87,4 +87,63 @@ std::unique_ptr<Texture> TextureLoader::LoadFromFile(
     return texture;
 }
 
+std::unique_ptr<Texture> TextureLoader::LoadFromMemory(
+    GraphicsDevice& device,
+    ID3D12GraphicsCommandList* cmdList,
+    const uint8_t* data, size_t dataSize,
+    const char* formatHint)
+{
+    DirectX::ScratchImage scratchImage;
+
+    HRESULT hr = S_OK;
+    std::string hint = formatHint ? formatHint : "";
+
+    if (hint == "dds")
+    {
+        hr = DirectX::LoadFromDDSMemory(data, dataSize,
+            DirectX::DDS_FLAGS_NONE, nullptr, scratchImage);
+    }
+    else
+    {
+        // jpg, png 等は WIC で読める
+        hr = DirectX::LoadFromWICMemory(data, dataSize,
+            DirectX::WIC_FLAGS_NONE, nullptr, scratchImage);
+    }
+
+    if (FAILED(hr))
+    {
+        Logger::Error("Failed to load embedded texture (format={})", hint);
+        return nullptr;
+    }
+
+    DirectX::TexMetadata meta = scratchImage.GetMetadata();
+    DXGI_FORMAT format = DirectX::MakeSRGB(meta.format);
+
+    D3D12_RESOURCE_DESC resourceDesc = {};
+    resourceDesc.Dimension          = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    resourceDesc.Width              = static_cast<UINT64>(meta.width);
+    resourceDesc.Height             = static_cast<UINT>(meta.height);
+    resourceDesc.DepthOrArraySize   = static_cast<UINT16>(meta.arraySize);
+    resourceDesc.MipLevels          = static_cast<UINT16>(meta.mipLevels);
+    resourceDesc.Format             = format;
+    resourceDesc.SampleDesc.Count   = 1;
+    resourceDesc.Layout             = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+
+    const DirectX::Image* image = scratchImage.GetImage(0, 0, 0);
+    if (!image) return nullptr;
+
+    D3D12_SUBRESOURCE_DATA subresourceData = {};
+    subresourceData.pData      = image->pixels;
+    subresourceData.RowPitch   = static_cast<LONG_PTR>(image->rowPitch);
+    subresourceData.SlicePitch = static_cast<LONG_PTR>(image->slicePitch);
+
+    auto texture = std::make_unique<Texture>();
+    texture->Initialize(device, cmdList, resourceDesc, &subresourceData, 1);
+
+    Logger::Info("Embedded texture loaded: {}x{} (format={})",
+                 static_cast<u32>(meta.width), static_cast<u32>(meta.height), hint);
+
+    return texture;
+}
+
 } // namespace dx12e

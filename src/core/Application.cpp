@@ -176,7 +176,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode)
                .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
                .SetRenderTargetFormat(m_swapChain->GetFormat())
                .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
-               .SetDepthEnabled(true);
+               .SetDepthEnabled(true)
+               .SetCullMode(D3D12_CULL_MODE_NONE);  // 両面描画（片面メッシュ対応）
 
         m_pipelineState = std::make_unique<PipelineState>();
         m_pipelineState->Initialize(*m_graphicsDevice, builder);
@@ -228,8 +229,20 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode)
             }
         }
 
-        // Lua OnStart 実行（Entity配置等）— コマンドリストがまだ開いてる間に
-        m_scriptEngine->CallOnStart();
+        // 保存シーンがあればロード（OnStart は呼ばない＝保存データが完全に優先）
+        // 保存シーンがなければ Lua OnStart でエンティティ生成
+        {
+            std::string savedScene = std::string(ASSETS_DIR) + "scenes/default.json";
+            if (std::filesystem::exists(savedScene))
+            {
+                SceneSerializer::Load(*m_scene, savedScene, std::string(ASSETS_DIR));
+                m_currentScenePath = savedScene;
+            }
+            else
+            {
+                m_scriptEngine->CallOnStart();
+            }
+        }
 
         // エディタモード初期化時はキャプチャ解除（Luaが OnStart で capture する場合があるため）
         if (!m_isGameMode)
@@ -255,7 +268,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode)
                    .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
                    .SetRenderTargetFormat(m_swapChain->GetFormat())
                    .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
-                   .SetDepthEnabled(true);
+                   .SetDepthEnabled(true)
+                   .SetCullMode(D3D12_CULL_MODE_NONE);
 
             m_skinnedPipelineState = std::make_unique<PipelineState>();
             m_skinnedPipelineState->Initialize(*m_graphicsDevice, builder);
@@ -652,24 +666,38 @@ void Application::Update()
         }
 
         // ギズモモード切替（エディタモード時、右クリック中でない時のみ）
+        // Ctrl+S でクイック保存（常に効く）
+        if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState('S') & 1))
+        {
+            if (m_currentScenePath.empty())
+            {
+                std::filesystem::create_directories(std::string(ASSETS_DIR) + "scenes");
+                m_currentScenePath = std::string(ASSETS_DIR) + "scenes/default.json";
+            }
+            // デバッグ: 保存前に全エンティティの位置をVS出力ウィンドウに出力
+            {
+                auto& dbgReg = m_scene->GetRegistry();
+                auto dbgView = dbgReg.view<NameTag, Transform>();
+                for (auto [dbgE, dbgName, dbgT] : dbgView.each())
+                {
+                    char buf[256];
+                    snprintf(buf, sizeof(buf), "[Save] %s pos=(%.2f, %.2f, %.2f)\n",
+                        dbgName.name.c_str(), dbgT.position.x, dbgT.position.y, dbgT.position.z);
+                    OutputDebugStringA(buf);
+                }
+            }
+            SceneSerializer::Save(*m_scene, m_currentScenePath, std::string(ASSETS_DIR));
+            m_hotReloadFlash = 1.5f;
+            OutputDebugStringA("[Save] Scene saved!\n");
+        }
+
+        // ギズモモード切替（右クリック中・ImGuiフォーカス中は無効）
         if (!ImGui::GetIO().WantCaptureKeyboard && !m_inputSystem->IsMouseCaptured())
         {
             if (GetAsyncKeyState('W') & 1) m_gizmoMode = GizmoMode::Translate;
             if (GetAsyncKeyState('E') & 1) m_gizmoMode = GizmoMode::Rotate;
             if (GetAsyncKeyState('R') & 1) m_gizmoMode = GizmoMode::Scale;
             if (GetAsyncKeyState('T') & 1) m_gizmoLocalSpace = !m_gizmoLocalSpace;
-
-            // Ctrl+S でクイック保存
-            if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState('S') & 1))
-            {
-                if (m_currentScenePath.empty())
-                {
-                    std::filesystem::create_directories(std::string(ASSETS_DIR) + "scenes");
-                    m_currentScenePath = std::string(ASSETS_DIR) + "scenes/default.json";
-                }
-                SceneSerializer::Save(*m_scene, m_currentScenePath, std::string(ASSETS_DIR));
-                Logger::Info("Scene saved: {}", m_currentScenePath);
-            }
         }
 
     }
@@ -679,8 +707,8 @@ void Application::Update()
         m_scriptEngine->CallOnUpdate(dt);
     }
 
-    // シーン更新（全EntityのAnimator）
-    m_scene->Update(dt);
+    // シーン更新（Animator等）— エディタモードは時間を止める（ボーン行列は維持）
+    m_scene->Update(m_engineMode == EngineMode::Playing ? dt : 0.0f);
 
     // 物理更新（プレイモードのみ）
     if (m_engineMode == EngineMode::Playing && m_physicsSystem->IsInitialized())
@@ -707,6 +735,8 @@ void Application::RebuildScene()
     {
         m_scriptEngine->LoadScript(scriptPath);
     }
+
+    // RebuildScene は常に Lua OnStart（ホットリロード・EditorMode復帰用）
     m_scriptEngine->CallOnStart();
 
     // sneakWalk アニメーション追加
@@ -747,17 +777,32 @@ void Application::EnterPlayMode()
     m_cameraSnapshot.yaw = m_camera->GetYaw();
     m_cameraSnapshot.pitch = m_camera->GetPitch();
 
-    // エディタ上の全エンティティの Transform をスナップショット保存
-    m_editorTransforms.clear();
+    // エディタ上の全エンティティの状態をスナップショット保存
+    m_editorSnapshots.clear();
     {
         auto& reg = m_scene->GetRegistry();
         auto view = reg.view<NameTag, Transform>();
         for (auto [entity, name, transform] : view.each())
         {
-            m_editorTransforms[name.name] = {
-                transform.position, transform.rotation, transform.scale,
-                transform.quaternion, transform.useQuaternion
-            };
+            EntitySnapshot snap;
+            // Transform
+            snap.position      = transform.position;
+            snap.rotation      = transform.rotation;
+            snap.scale         = transform.scale;
+            snap.quaternion    = transform.quaternion;
+            snap.useQuaternion = transform.useQuaternion;
+
+            // Physics コンポーネントの有無とデータ
+            snap.hasRigidBody = reg.all_of<RigidBody>(entity);
+            if (snap.hasRigidBody)
+                snap.rigidBodyData = reg.get<RigidBody>(entity);
+
+            snap.hasBoxCollider        = reg.all_of<BoxCollider>(entity);
+            snap.hasSphereCollider     = reg.all_of<SphereCollider>(entity);
+            snap.hasCapsuleCollider    = reg.all_of<CapsuleCollider>(entity);
+            snap.hasConvexHullCollider = reg.all_of<ConvexHullCollider>(entity);
+
+            m_editorSnapshots[name.name] = snap;
         }
     }
 
@@ -776,21 +821,56 @@ void Application::EnterPlayMode()
     }
     m_scriptEngine->CallOnStart();
 
+    // エディタのスナップショットで上書き（Luaが勝手に変えた状態をエディタの状態に戻す）
+    {
+        auto& reg = m_scene->GetRegistry();
+        auto view = reg.view<NameTag, Transform>();
+        for (auto [entity, name, transform] : view.each())
+        {
+            auto it = m_editorSnapshots.find(name.name);
+            if (it == m_editorSnapshots.end()) continue;
+            const auto& snap = it->second;
+
+            // Transform 復元
+            transform.position      = snap.position;
+            transform.rotation      = snap.rotation;
+            transform.scale         = snap.scale;
+            transform.quaternion    = snap.quaternion;
+            transform.useQuaternion = snap.useQuaternion;
+
+            // Physics: エディタで外してたら Lua が付けたものを削除
+            if (!snap.hasRigidBody)
+            {
+                reg.remove<RigidBody>(entity);
+                reg.remove<ConvexHullCollider>(entity);
+                reg.remove<BoxCollider>(entity);
+                reg.remove<SphereCollider>(entity);
+                reg.remove<CapsuleCollider>(entity);
+            }
+            else
+            {
+                // エディタのパラメータで上書き（Luaのデフォルト値ではなくエディタの設定値を使う）
+                auto rb = snap.rigidBodyData;
+                rb.bodyId = kInvalidBodyId; // 新規登録用にリセット
+                reg.emplace_or_replace<RigidBody>(entity, rb);
+            }
+        }
+    }
+
     // Playモード: サイドバーなし全画面幅でアスペクト比再計算
     m_camera->SetPerspective(DirectX::XM_PIDIV4,
         static_cast<f32>(m_window->GetWidth()) / static_cast<f32>(m_window->GetHeight()),
         0.1f, 1000.0f);
 
-    // 物理のタイムステップ蓄積をリセット（前回の残りで初回に余計な更新が走るのを防ぐ）
+    // 物理のタイムステップ蓄積をリセット
     m_physicsSystem->ResetAccumulator();
 
-    // 全 RigidBody を物理エンジンに登録（現在の Transform 位置で）
+    // 全 RigidBody を物理エンジンに登録（エディタで復元した状態で）
     {
         auto& reg = m_scene->GetRegistry();
         auto view = reg.view<RigidBody>();
         for (auto [entity, rb] : view.each())
         {
-            // 既に登録済みのゴーストボディがあれば先に削除
             if (rb.bodyId != kInvalidBodyId)
                 m_physicsSystem->UnregisterBody(reg, entity);
             m_physicsSystem->RegisterBody(reg, entity);
@@ -822,20 +902,37 @@ void Application::EnterEditorMode()
     // RebuildScene で Lua の OnStart から全エンティティを再生成
     RebuildScene();
 
-    // Play開始前に保存していた Transform を復元
+    // Play開始前のエディタ状態を復元
     {
         auto& reg = m_scene->GetRegistry();
         auto view = reg.view<NameTag, Transform>();
         for (auto [entity, name, transform] : view.each())
         {
-            auto it = m_editorTransforms.find(name.name);
-            if (it != m_editorTransforms.end())
+            auto it = m_editorSnapshots.find(name.name);
+            if (it == m_editorSnapshots.end()) continue;
+            const auto& snap = it->second;
+
+            // Transform
+            transform.position      = snap.position;
+            transform.rotation      = snap.rotation;
+            transform.scale         = snap.scale;
+            transform.quaternion    = snap.quaternion;
+            transform.useQuaternion = snap.useQuaternion;
+
+            // Physics: エディタの状態に戻す
+            if (!snap.hasRigidBody)
             {
-                transform.position      = it->second.position;
-                transform.rotation      = it->second.rotation;
-                transform.scale         = it->second.scale;
-                transform.quaternion    = it->second.quaternion;
-                transform.useQuaternion = it->second.useQuaternion;
+                reg.remove<RigidBody>(entity);
+                reg.remove<ConvexHullCollider>(entity);
+                reg.remove<BoxCollider>(entity);
+                reg.remove<SphereCollider>(entity);
+                reg.remove<CapsuleCollider>(entity);
+            }
+            else
+            {
+                auto rb = snap.rigidBodyData;
+                rb.bodyId = kInvalidBodyId;
+                reg.emplace_or_replace<RigidBody>(entity, rb);
             }
         }
     }
@@ -1504,6 +1601,74 @@ void Application::Render()
                         ImGui::DragFloat("Near", &cam.nearClip, 0.01f, 0.001f, 100.0f);
                         ImGui::DragFloat("Far", &cam.farClip, 10.0f, 1.0f, 100000.0f);
                         ImGui::Checkbox("Active", &cam.isActive);
+                    }
+                }
+
+                // --- Physics ---
+                {
+                    bool hasRb = reg.all_of<RigidBody>(m_selectedEntity);
+                    if (ImGui::Checkbox("Physics", &hasRb))
+                    {
+                        if (hasRb)
+                        {
+                            // 物理を追加: autoCollider + RigidBody
+                            if (reg.all_of<MeshRenderer>(m_selectedEntity))
+                            {
+                                auto* mr = &reg.get<MeshRenderer>(m_selectedEntity);
+                                auto* tf = &reg.get<Transform>(m_selectedEntity);
+                                // Convex Hull 自動生成
+                                std::vector<DirectX::XMFLOAT3> allPoints;
+                                for (const auto* mesh : mr->meshes)
+                                {
+                                    if (!mesh) continue;
+                                    for (const auto& p : mesh->GetPositions())
+                                        allPoints.push_back({
+                                            p.x * tf->scale.x,
+                                            p.y * tf->scale.y,
+                                            p.z * tf->scale.z });
+                                }
+                                constexpr size_t kMax = 256;
+                                if (allPoints.size() > kMax)
+                                {
+                                    size_t step = allPoints.size() / kMax;
+                                    std::vector<DirectX::XMFLOAT3> sampled;
+                                    for (size_t i = 0; i < allPoints.size() && sampled.size() < kMax; i += step)
+                                        sampled.push_back(allPoints[i]);
+                                    allPoints = std::move(sampled);
+                                }
+                                if (!allPoints.empty())
+                                {
+                                    ConvexHullCollider col;
+                                    col.points = std::move(allPoints);
+                                    reg.emplace_or_replace<ConvexHullCollider>(m_selectedEntity, std::move(col));
+                                }
+                            }
+                            reg.emplace_or_replace<RigidBody>(m_selectedEntity);
+                        }
+                        else
+                        {
+                            // 物理を削除
+                            reg.remove<RigidBody>(m_selectedEntity);
+                            reg.remove<ConvexHullCollider>(m_selectedEntity);
+                            reg.remove<BoxCollider>(m_selectedEntity);
+                            reg.remove<SphereCollider>(m_selectedEntity);
+                            reg.remove<CapsuleCollider>(m_selectedEntity);
+                        }
+                    }
+
+                    if (reg.all_of<RigidBody>(m_selectedEntity))
+                    {
+                        auto& rb = reg.get<RigidBody>(m_selectedEntity);
+
+                        const char* motionTypes[] = { "Static", "Kinematic", "Dynamic" };
+                        int motionIdx = static_cast<int>(rb.motionType);
+                        if (ImGui::Combo("Motion", &motionIdx, motionTypes, 3))
+                            rb.motionType = static_cast<MotionType>(motionIdx);
+
+                        ImGui::DragFloat("Mass", &rb.mass, 0.5f, 0.0f, 10000.0f);
+                        ImGui::DragFloat("Friction", &rb.friction, 0.01f, 0.0f, 2.0f);
+                        ImGui::DragFloat("Bounce", &rb.restitution, 0.01f, 0.0f, 1.0f);
+                        ImGui::Checkbox("Gravity", &rb.useGravity);
                     }
                 }
             }

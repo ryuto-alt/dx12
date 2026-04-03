@@ -48,6 +48,13 @@ public:
         const std::string& filePath,
         ID3D12GraphicsCommandList* cmdList);
 
+    // 埋め込みテクスチャ用
+    Texture* GetOrLoadEmbeddedTexture(
+        const std::string& key,
+        const uint8_t* data, size_t dataSize,
+        const char* formatHint,
+        ID3D12GraphicsCommandList* cmdList);
+
     Texture* GetDefaultWhiteTexture() const { return m_defaultWhite.get(); }
     GraphicsDevice* GetDevice() const { return m_device; }
     DescriptorHeap* GetSrvHeap() const { return m_srvHeap; }

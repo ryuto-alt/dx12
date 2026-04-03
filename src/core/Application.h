@@ -13,6 +13,7 @@
 #include <directx/d3d12.h>
 #include <DirectXMath.h>
 #include <entt/entt.hpp>
+#include "ecs/Components.h"
 
 // Forward declarations for graphics module
 namespace dx12e
@@ -120,15 +121,24 @@ private:
         f32 pitch;
     } m_cameraSnapshot{};
 
-    // エディタ上のTransformスナップショット（Play開始時に保存→復元）
-    struct TransformSnapshot {
+    // エディタ上のエンティティ状態スナップショット（Play開始時に保存→復元）
+    struct EntitySnapshot {
+        // Transform
         DirectX::XMFLOAT3 position;
         DirectX::XMFLOAT3 rotation;
         DirectX::XMFLOAT3 scale;
         DirectX::XMFLOAT4 quaternion;
         bool useQuaternion;
+
+        // Physics（エディタで変更した状態を保持）
+        bool hasRigidBody = false;
+        RigidBody rigidBodyData;
+        bool hasBoxCollider = false;
+        bool hasSphereCollider = false;
+        bool hasCapsuleCollider = false;
+        bool hasConvexHullCollider = false;
     };
-    std::unordered_map<std::string, TransformSnapshot> m_editorTransforms;
+    std::unordered_map<std::string, EntitySnapshot> m_editorSnapshots;
 
     // Luaホットリロード
     std::filesystem::file_time_type m_scriptLastWriteTime{};

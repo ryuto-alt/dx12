@@ -20,12 +20,15 @@ void Mesh::Initialize(GraphicsDevice& device,
                       const std::vector<Vertex>& vertices,
                       const std::vector<u32>& indices)
 {
-    // AABB を頂点から計算
+    // AABB + 頂点データキャッシュ
+    m_verticesCache = vertices;  // UV スケール用に全頂点を保持
     if (!vertices.empty())
     {
         m_aabbMin = m_aabbMax = vertices[0].position;
+        m_positions.reserve(vertices.size());
         for (const auto& v : vertices)
         {
+            m_positions.push_back(v.position);
             m_aabbMin.x = (std::min)(m_aabbMin.x, v.position.x);
             m_aabbMin.y = (std::min)(m_aabbMin.y, v.position.y);
             m_aabbMin.z = (std::min)(m_aabbMin.z, v.position.z);
@@ -215,6 +218,23 @@ const D3D12_INPUT_ELEMENT_DESC* Mesh::GetInputLayout()
 u32 Mesh::GetInputLayoutCount()
 {
     return static_cast<u32>(std::size(kInputLayout));
+}
+
+void Mesh::ApplyUVScale(GraphicsDevice& device, float scaleU, float scaleV)
+{
+    if (m_verticesCache.empty()) return;
+
+    for (auto& v : m_verticesCache)
+    {
+        v.texCoord.x *= scaleU;
+        v.texCoord.y *= scaleV;
+    }
+
+    // VertexBuffer を再作成
+    m_vertexBuffer.Initialize(device,
+                              m_verticesCache.data(),
+                              static_cast<u32>(m_verticesCache.size() * sizeof(Vertex)),
+                              static_cast<u32>(sizeof(Vertex)));
 }
 
 } // namespace dx12e

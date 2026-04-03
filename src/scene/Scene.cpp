@@ -1,5 +1,6 @@
 #include "scene/Scene.h"
 
+#include <Windows.h>
 #include "core/Logger.h"
 #include "resource/ResourceManager.h"
 #include "resource/ModelLoader.h"
@@ -60,7 +61,24 @@ Entity Scene::Spawn(const std::string& name,
     if (!cached)
     {
         Logger::Warn("Failed to load model: {}", modelPath);
+        OutputDebugStringA(("[Spawn FAILED] " + modelPath + "\n").c_str());
         return Entity();
+    }
+    {
+        char buf[512];
+        snprintf(buf, sizeof(buf), "[Spawn OK] %s -> %s (meshes=%zu, mats=%zu)\n",
+            name.c_str(), modelPath.c_str(),
+            cached->meshes.size(), cached->materials.size());
+        OutputDebugStringA(buf);
+        for (size_t i = 0; i < cached->meshes.size(); ++i)
+        {
+            auto& m = cached->meshes[i];
+            auto mn = m->GetAABBMin();
+            auto mx = m->GetAABBMax();
+            snprintf(buf, sizeof(buf), "  mesh[%zu] indices=%u aabb=(%.1f,%.1f,%.1f)-(%.1f,%.1f,%.1f)\n",
+                i, m->GetIndexCount(), mn.x, mn.y, mn.z, mx.x, mx.y, mx.z);
+            OutputDebugStringA(buf);
+        }
     }
 
     Entity entity = CreateEntityWithTransform(name, position, rotation, scale);

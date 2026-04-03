@@ -42,6 +42,10 @@ public:
 
     DirectX::XMFLOAT3 GetAABBMin() const { return m_aabbMin; }
     DirectX::XMFLOAT3 GetAABBMax() const { return m_aabbMax; }
+    const std::vector<DirectX::XMFLOAT3>& GetPositions() const { return m_positions; }
+
+    // UV スケール適用（頂点の texCoord を乗算して VertexBuffer を再作成）
+    void ApplyUVScale(GraphicsDevice& device, float scaleU, float scaleV);
 
     static const D3D12_INPUT_ELEMENT_DESC* GetInputLayout();
     static u32 GetInputLayoutCount();
@@ -52,6 +56,8 @@ private:
     Material*    m_material = nullptr;
     DirectX::XMFLOAT3 m_aabbMin = { 0, 0, 0 };
     DirectX::XMFLOAT3 m_aabbMax = { 0, 0, 0 };
+    std::vector<DirectX::XMFLOAT3> m_positions; // Convex Hull 用の頂点座標キャッシュ
+    std::vector<Vertex> m_verticesCache;         // UV スケール用の頂点データキャッシュ
 };
 
 } // namespace dx12e

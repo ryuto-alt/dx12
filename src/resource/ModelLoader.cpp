@@ -6,6 +6,7 @@
 #include "graphics/Texture.h"
 #include "resource/ResourceManager.h"
 
+#include <cstdlib>
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
@@ -647,12 +648,81 @@ ModelData ModelLoader::LoadFromFile(
         {
             const aiMaterial* aiMat = scene->mMaterials[aiMeshPtr->mMaterialIndex];
 
+            // UV Transform（タイリング/オフセット）を取得して頂点 UV に適用
+            aiUVTransform uvTransform;
+            if (aiMat->Get(AI_MATKEY_UVTRANSFORM(aiTextureType_DIFFUSE, 0), uvTransform) == AI_SUCCESS)
+            {
+                float sx = uvTransform.mScaling.x;
+                float sy = uvTransform.mScaling.y;
+                float ox = uvTransform.mTranslation.x;
+                float oy = uvTransform.mTranslation.y;
+                if (sx != 1.0f || sy != 1.0f || ox != 0.0f || oy != 0.0f)
+                {
+                    for (auto& v : vertices)
+                    {
+                        v.texCoord.x = v.texCoord.x * sx + ox;
+                        v.texCoord.y = v.texCoord.y * sy + oy;
+                    }
+                    char dbg[256];
+                    snprintf(dbg, sizeof(dbg), "[UV] scale=(%.2f,%.2f) offset=(%.2f,%.2f)\n",
+                        sx, sy, ox, oy);
+                    OutputDebugStringA(dbg);
+                }
+            }
+
             if (aiMat->GetTextureCount(aiTextureType_DIFFUSE) > 0)
             {
                 aiString texPath;
                 if (aiMat->GetTexture(aiTextureType_DIFFUSE, 0, &texPath) == AI_SUCCESS)
                 {
-                    if (texPath.C_Str()[0] != '*')
+                    {
+                        char dbg[512];
+                        snprintf(dbg, sizeof(dbg), "[Texture] mat=%u path='%s' embedded=%u\n",
+                            aiMeshPtr->mMaterialIndex, texPath.C_Str(), scene->mNumTextures);
+                        OutputDebugStringA(dbg);
+                    }
+
+                    // Assimp: 埋め込みテクスチャは "*N" か GetEmbeddedTexture で取得
+                    const aiTexture* embTex = scene->GetEmbeddedTexture(texPath.C_Str());
+                    if (embTex)
+                    {
+                        // 埋め込みテクスチャ（パスが "*N" でなくても GetEmbeddedTexture で見つかる）
+                        std::string key = filePath.string() + "_emb_" + texPath.C_Str();
+                        if (embTex->mHeight == 0)
+                        {
+                            Texture* texture = resourceManager.GetOrLoadEmbeddedTexture(
+                                key,
+                                reinterpret_cast<const uint8_t*>(embTex->pcData),
+                                embTex->mWidth,
+                                embTex->achFormatHint,
+                                cmdList);
+                            if (texture)
+                                material->albedoTexture = texture;
+                        }
+                    }
+                    else if (texPath.C_Str()[0] == '*')
+                    {
+                        // 埋め込みテクスチャ: "*0", "*1" → インデックス
+                        int embIdx = std::atoi(texPath.C_Str() + 1);
+                        if (embIdx >= 0 && static_cast<unsigned>(embIdx) < scene->mNumTextures)
+                        {
+                            const aiTexture* aiTex = scene->mTextures[embIdx];
+                            if (aiTex->mHeight == 0)
+                            {
+                                // 圧縮形式（jpg/png等）: mWidth = バイトサイズ
+                                std::string key = filePath.string() + "_emb_" + std::to_string(embIdx);
+                                Texture* texture = resourceManager.GetOrLoadEmbeddedTexture(
+                                    key,
+                                    reinterpret_cast<const uint8_t*>(aiTex->pcData),
+                                    aiTex->mWidth,
+                                    aiTex->achFormatHint,
+                                    cmdList);
+                                if (texture)
+                                    material->albedoTexture = texture;
+                            }
+                        }
+                    }
+                    else
                     {
                         auto resolvedPath = ResolveTexturePath(texPath.C_Str(), parentDir);
                         if (!resolvedPath.empty())

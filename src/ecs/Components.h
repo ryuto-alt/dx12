@@ -111,10 +111,10 @@ struct RigidBody
 {
     MotionType motionType    = MotionType::Dynamic;
     f32        mass          = 1.0f;
-    f32        restitution   = 0.3f;
-    f32        friction      = 0.5f;
-    f32        linearDamping  = 0.05f;
-    f32        angularDamping = 0.05f;
+    f32        restitution   = 0.4f;   // 適度に弾む
+    f32        friction      = 0.3f;   // 低め → 滑りやすく不安定に
+    f32        linearDamping  = 0.02f;  // 移動減衰を弱く
+    f32        angularDamping = 0.01f;  // 回転減衰を弱く → 倒れやすい
     bool       useGravity    = true;
 
     // PhysicsSystem が管理（ユーザーは触らない）
@@ -138,6 +138,12 @@ struct CapsuleCollider
     f32               radius     = 0.5f;
     f32               halfHeight = 1.0f;
     DirectX::XMFLOAT3 offset     = {0.0f, 0.0f, 0.0f};
+};
+
+struct ConvexHullCollider
+{
+    std::vector<DirectX::XMFLOAT3> points; // スケール適用済みワールド頂点
+    DirectX::XMFLOAT3 offset = {0.0f, 0.0f, 0.0f};
 };
 
 } // namespace dx12e

@@ -67,6 +67,7 @@ public:
     Entity FindEntity(const std::string& name);
     size_t GetEntityCount() const;
 
+    GraphicsDevice* GetDevice() const { return m_device; }
     entt::registry&       GetRegistry()       { return m_registry; }
     const entt::registry& GetRegistry() const { return m_registry; }
 

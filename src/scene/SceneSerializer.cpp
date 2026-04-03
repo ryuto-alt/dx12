@@ -1,6 +1,7 @@
 #include "scene/SceneSerializer.h"
 #include "scene/Scene.h"
 #include "ecs/Components.h"
+#include "renderer/Mesh.h"
 #include "core/Logger.h"
 
 #pragma warning(push)
@@ -8,6 +9,7 @@
 #include <nlohmann/json.hpp>
 #pragma warning(pop)
 
+#include <Windows.h>
 #include <fstream>
 #include <filesystem>
 
@@ -74,9 +76,18 @@ bool SceneSerializer::Save(const Scene& scene, const std::string& filePath,
         if (reg.all_of<MeshRenderer>(entity))
         {
             const auto& mr = reg.get<MeshRenderer>(entity);
-            ej["meshRenderer"] = {
-                {"modelPath", MakeRelative(mr.modelPath, assetsDir)}
-            };
+            std::string relPath = MakeRelative(mr.modelPath, assetsDir);
+            if (!relPath.empty())
+            {
+                ej["meshRenderer"] = {
+                    {"modelPath", relPath}
+                };
+            }
+            else
+            {
+                // SpawnBox/SpawnSphere（modelPath が空のプリミティブ）
+                ej["primitive"] = "box"; // TODO: sphere 判定
+            }
         }
 
         if (reg.all_of<GridPlane>(entity))
@@ -113,6 +124,55 @@ bool SceneSerializer::Save(const Scene& scene, const std::string& filePath,
                 {"farClip",    cam.farClip},
                 {"isActive",   cam.isActive}
             };
+        }
+
+        // --- Physics ---
+        if (reg.all_of<RigidBody>(entity))
+        {
+            const auto& rb = reg.get<RigidBody>(entity);
+            ej["rigidBody"] = {
+                {"motionType",    static_cast<int>(rb.motionType)},
+                {"mass",          rb.mass},
+                {"restitution",   rb.restitution},
+                {"friction",      rb.friction},
+                {"linearDamping", rb.linearDamping},
+                {"angularDamping",rb.angularDamping},
+                {"useGravity",    rb.useGravity}
+            };
+        }
+
+        if (reg.all_of<BoxCollider>(entity))
+        {
+            const auto& col = reg.get<BoxCollider>(entity);
+            ej["boxCollider"] = {
+                {"halfExtents", SerializeFloat3(col.halfExtents)},
+                {"offset",      SerializeFloat3(col.offset)}
+            };
+        }
+
+        if (reg.all_of<SphereCollider>(entity))
+        {
+            const auto& col = reg.get<SphereCollider>(entity);
+            ej["sphereCollider"] = {
+                {"radius", col.radius},
+                {"offset", SerializeFloat3(col.offset)}
+            };
+        }
+
+        if (reg.all_of<CapsuleCollider>(entity))
+        {
+            const auto& col = reg.get<CapsuleCollider>(entity);
+            ej["capsuleCollider"] = {
+                {"radius",     col.radius},
+                {"halfHeight", col.halfHeight},
+                {"offset",     SerializeFloat3(col.offset)}
+            };
+        }
+
+        // ConvexHullCollider: autoCollider フラグだけ保存（頂点は起動時にメッシュから再生成）
+        if (reg.all_of<ConvexHullCollider>(entity))
+        {
+            ej["convexHullCollider"] = true;
         }
 
         root["entities"].push_back(ej);
@@ -182,12 +242,26 @@ bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
         {
             f32 size = ej["gridPlane"].value("size", 50.0f);
             scene.SpawnPlane(name, pos, size, true);
+            OutputDebugStringA(("[Load] SpawnPlane: " + name + "\n").c_str());
         }
         else if (ej.contains("meshRenderer"))
         {
             std::string relPath = ej["meshRenderer"].value("modelPath", "");
             std::string absPath = assetsDir + relPath;
-            scene.Spawn(name, absPath, pos, rot, scale);
+            auto entity = scene.Spawn(name, absPath, pos, rot, scale);
+            if (!entity.IsValid())
+                OutputDebugStringA(("[Load] FAILED Spawn: " + name + " path=" + absPath + "\n").c_str());
+            else
+                OutputDebugStringA(("[Load] Spawn: " + name + "\n").c_str());
+        }
+        else if (ej.contains("primitive"))
+        {
+            std::string prim = ej["primitive"].get<std::string>();
+            if (prim == "sphere")
+                scene.SpawnSphere(name, pos, 0.5f);
+            else
+                scene.SpawnBox(name, pos, rot, scale);
+            OutputDebugStringA(("[Load] SpawnPrimitive: " + name + " type=" + prim + "\n").c_str());
         }
         else
         {
@@ -196,6 +270,7 @@ bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
             auto e = reg.create();
             reg.emplace<NameTag>(e, NameTag{name});
             reg.emplace<Transform>(e, Transform{pos, rot, scale});
+            OutputDebugStringA(("[Load] CreateBasic: " + name + "\n").c_str());
         }
 
         // 追加コンポーネント（最後に追加されたエンティティに付与）
@@ -238,6 +313,84 @@ bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
                 if (cj.contains("isActive"))   cam.isActive   = cj["isActive"].get<bool>();
                 if (!reg.all_of<CameraComponent>(e))
                     reg.emplace<CameraComponent>(e, cam);
+            }
+
+            // --- Physics ---
+            if (ej.contains("rigidBody"))
+            {
+                const auto& rbj = ej["rigidBody"];
+                RigidBody rb;
+                if (rbj.contains("motionType"))    rb.motionType    = static_cast<MotionType>(rbj["motionType"].get<int>());
+                if (rbj.contains("mass"))          rb.mass          = rbj["mass"].get<f32>();
+                if (rbj.contains("restitution"))   rb.restitution   = rbj["restitution"].get<f32>();
+                if (rbj.contains("friction"))      rb.friction      = rbj["friction"].get<f32>();
+                if (rbj.contains("linearDamping")) rb.linearDamping = rbj["linearDamping"].get<f32>();
+                if (rbj.contains("angularDamping"))rb.angularDamping= rbj["angularDamping"].get<f32>();
+                if (rbj.contains("useGravity"))    rb.useGravity    = rbj["useGravity"].get<bool>();
+                reg.emplace_or_replace<RigidBody>(e, rb);
+            }
+
+            if (ej.contains("boxCollider"))
+            {
+                const auto& cj = ej["boxCollider"];
+                BoxCollider col;
+                if (cj.contains("halfExtents")) col.halfExtents = DeserializeFloat3(cj["halfExtents"], {0.5f, 0.5f, 0.5f});
+                if (cj.contains("offset"))      col.offset      = DeserializeFloat3(cj["offset"]);
+                reg.emplace_or_replace<BoxCollider>(e, col);
+            }
+
+            if (ej.contains("sphereCollider"))
+            {
+                const auto& cj = ej["sphereCollider"];
+                SphereCollider col;
+                if (cj.contains("radius")) col.radius = cj["radius"].get<f32>();
+                if (cj.contains("offset")) col.offset = DeserializeFloat3(cj["offset"]);
+                reg.emplace_or_replace<SphereCollider>(e, col);
+            }
+
+            if (ej.contains("capsuleCollider"))
+            {
+                const auto& cj = ej["capsuleCollider"];
+                CapsuleCollider col;
+                if (cj.contains("radius"))     col.radius     = cj["radius"].get<f32>();
+                if (cj.contains("halfHeight")) col.halfHeight = cj["halfHeight"].get<f32>();
+                if (cj.contains("offset"))     col.offset     = DeserializeFloat3(cj["offset"]);
+                reg.emplace_or_replace<CapsuleCollider>(e, col);
+            }
+
+            // ConvexHullCollider: メッシュ頂点から再生成（MeshRendererが必要）
+            if (ej.contains("convexHullCollider") && ej["convexHullCollider"].get<bool>())
+            {
+                if (reg.all_of<MeshRenderer>(e) && reg.all_of<Transform>(e))
+                {
+                    const auto& mr = reg.get<MeshRenderer>(e);
+                    const auto& tf = reg.get<Transform>(e);
+                    std::vector<XMFLOAT3> allPoints;
+                    for (const auto* mesh : mr.meshes)
+                    {
+                        if (!mesh) continue;
+                        for (const auto& p : mesh->GetPositions())
+                            allPoints.push_back({
+                                p.x * tf.scale.x,
+                                p.y * tf.scale.y,
+                                p.z * tf.scale.z });
+                    }
+                    constexpr size_t kMax = 256;
+                    if (allPoints.size() > kMax)
+                    {
+                        size_t step = allPoints.size() / kMax;
+                        std::vector<XMFLOAT3> sampled;
+                        for (size_t i = 0; i < allPoints.size() && sampled.size() < kMax; i += step)
+                            sampled.push_back(allPoints[i]);
+                        allPoints = std::move(sampled);
+                    }
+                    if (!allPoints.empty())
+                    {
+                        ConvexHullCollider col;
+                        col.points = std::move(allPoints);
+                        reg.emplace_or_replace<ConvexHullCollider>(e, std::move(col));
+                    }
+                }
             }
         }
     }
