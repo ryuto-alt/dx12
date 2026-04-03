@@ -4,6 +4,7 @@
 #include "core/Logger.h"
 #include "graphics/GraphicsDevice.h"
 #include "graphics/Texture.h"
+#include "graphics/DescriptorHeap.h"
 #include "resource/ResourceManager.h"
 
 #include <cstdlib>
@@ -12,6 +13,8 @@
 #include <assimp/postprocess.h>
 
 #include <Windows.h>
+
+using namespace DirectX;
 
 namespace dx12e
 {
@@ -443,6 +446,7 @@ ModelData ModelLoader::LoadFromFile(
         aiProcess_Triangulate |
         aiProcess_FlipUVs |
         aiProcess_GenNormals |
+        aiProcess_CalcTangentSpace |
         aiProcess_JoinIdenticalVertices |
         aiProcess_LimitBoneWeights |
         aiProcess_PopulateArmatureData;
@@ -588,6 +592,28 @@ ModelData ModelLoader::LoadFromFile(
             {
                 vertex.texCoord.x = aiMeshPtr->mTextureCoords[0][v].x;
                 vertex.texCoord.y = aiMeshPtr->mTextureCoords[0][v].y;
+            }
+
+            // Tangent (PBR normal mapping用)
+            if (aiMeshPtr->mTangents)
+            {
+                vertex.tangent.x = aiMeshPtr->mTangents[v].x;
+                vertex.tangent.y = aiMeshPtr->mTangents[v].y;
+                vertex.tangent.z = aiMeshPtr->mTangents[v].z;
+                vertex.tangent.w = 1.0f;
+                if (aiMeshPtr->mBitangents)
+                {
+                    // handedness 判定
+                    XMVECTOR N = XMLoadFloat3(&vertex.normal);
+                    XMVECTOR T = XMVectorSet(vertex.tangent.x, vertex.tangent.y, vertex.tangent.z, 0);
+                    XMVECTOR B_expected = XMVectorSet(
+                        aiMeshPtr->mBitangents[v].x,
+                        aiMeshPtr->mBitangents[v].y,
+                        aiMeshPtr->mBitangents[v].z, 0);
+                    XMVECTOR B_computed = XMVector3Cross(N, T);
+                    float dot = XMVectorGetX(XMVector3Dot(B_computed, B_expected));
+                    vertex.tangent.w = (dot < 0.0f) ? -1.0f : 1.0f;
+                }
             }
 
             // boneIndices / boneWeights are zero-initialized by default
@@ -741,6 +767,65 @@ ModelData ModelLoader::LoadFromFile(
                     }
                 }
             }
+
+            // --- PBR: Normal Map ---
+            auto loadPBRTexture = [&](aiTextureType type, bool srgb) -> Texture* {
+                if (aiMat->GetTextureCount(type) == 0) return nullptr;
+                aiString tp;
+                if (aiMat->GetTexture(type, 0, &tp) != AI_SUCCESS) return nullptr;
+
+                const aiTexture* emb = scene->GetEmbeddedTexture(tp.C_Str());
+                if (emb && emb->mHeight == 0)
+                {
+                    std::string key = filePath.string() + "_emb_" + tp.C_Str();
+                    return resourceManager.GetOrLoadEmbeddedTexture(
+                        key, reinterpret_cast<const uint8_t*>(emb->pcData),
+                        emb->mWidth, emb->achFormatHint, cmdList);
+                }
+                if (tp.C_Str()[0] != '*')
+                {
+                    auto resolved = ResolveTexturePath(tp.C_Str(), parentDir);
+                    if (!resolved.empty())
+                        return resourceManager.GetOrLoadTexture(resolved.wstring(), cmdList, srgb);
+                }
+                return nullptr;
+            };
+
+            // Normal map (linear)
+            material->normalMapTexture = loadPBRTexture(aiTextureType_NORMALS, false);
+            if (!material->normalMapTexture)
+                material->normalMapTexture = loadPBRTexture(aiTextureType_HEIGHT, false);
+
+            // Metalness (linear)
+            material->metalRoughnessTexture = loadPBRTexture(aiTextureType_METALNESS, false);
+            if (!material->metalRoughnessTexture)
+                material->metalRoughnessTexture = loadPBRTexture(aiTextureType_DIFFUSE_ROUGHNESS, false);
+
+            // PBR scalar factors
+            float metallic = 0.0f, roughness = 0.5f;
+            aiMat->Get(AI_MATKEY_METALLIC_FACTOR, metallic);
+            aiMat->Get(AI_MATKEY_ROUGHNESS_FACTOR, roughness);
+            material->defaultMetallic = metallic;
+            material->defaultRoughness = roughness;
+        }
+
+        // PBR SRVブロック確保（albedo, normal, metalRoughness の3連続SRV）
+        {
+            auto* srvHeap = resourceManager.GetSrvHeap();
+            auto* dev = resourceManager.GetDevice();
+            Texture* albedo = material->albedoTexture ? material->albedoTexture : resourceManager.GetDefaultWhiteTexture();
+            Texture* normal = material->normalMapTexture ? material->normalMapTexture : resourceManager.GetDefaultNormalTexture();
+            Texture* mr     = material->metalRoughnessTexture ? material->metalRoughnessTexture : resourceManager.GetDefaultMetalRoughnessTexture();
+
+            u32 blockStart = srvHeap->AllocateIndex();
+            u32 idx1 = srvHeap->AllocateIndex(); (void)idx1;
+            u32 idx2 = srvHeap->AllocateIndex(); (void)idx2;
+
+            albedo->CreateSRV(*dev, srvHeap->GetCpuHandle(blockStart));
+            normal->CreateSRV(*dev, srvHeap->GetCpuHandle(blockStart + 1));
+            mr->CreateSRV(*dev, srvHeap->GetCpuHandle(blockStart + 2));
+
+            material->srvBlockIndex = blockStart;
         }
 
         mesh->SetMaterial(material.get());

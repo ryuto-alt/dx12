@@ -5,7 +5,7 @@ Texture2D    g_albedo  : register(t0);
 SamplerState g_sampler : register(s0);
 
 // Shadow map
-Texture2D              g_shadowMap      : register(t2);
+Texture2D              g_shadowMap      : register(t4);
 SamplerComparisonState g_shadowSampler  : register(s1);
 
 // PerObject constants (b0) - MVP + Model matrix as RootConstants (32 DWORD)
@@ -33,6 +33,7 @@ struct VSInput
     float3 normal      : NORMAL;
     float4 color       : COLOR;
     float2 texCoord    : TEXCOORD0;
+    float4 tangent     : TANGENT;
     uint4  boneIndices : BLENDINDICES;
     float4 boneWeights : BLENDWEIGHT;
 };

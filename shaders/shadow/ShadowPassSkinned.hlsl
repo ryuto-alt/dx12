@@ -1,6 +1,6 @@
 // ShadowPassSkinned.hlsl - Depth-only pass for shadow map (skeletal meshes)
 
-StructuredBuffer<float4x4> g_bones : register(t1);
+StructuredBuffer<float4x4> g_bones : register(t3);
 
 cbuffer PerObjectConstants : register(b0)
 {
@@ -14,6 +14,7 @@ struct VSInput
     float3 normal      : NORMAL;
     float4 color       : COLOR;
     float2 texCoord    : TEXCOORD0;
+    float4 tangent     : TANGENT;
     uint4  boneIndices : BLENDINDICES;
     float4 boneWeights : BLENDWEIGHT;
 };

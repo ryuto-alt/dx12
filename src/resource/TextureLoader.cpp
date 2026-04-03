@@ -13,7 +13,8 @@ namespace dx12e
 std::unique_ptr<Texture> TextureLoader::LoadFromFile(
     GraphicsDevice& device,
     ID3D12GraphicsCommandList* cmdList,
-    const std::wstring& filePath)
+    const std::wstring& filePath,
+    bool srgb)
 {
     DirectX::ScratchImage scratchImage;
 
@@ -50,7 +51,7 @@ std::unique_ptr<Texture> TextureLoader::LoadFromFile(
 
     // メタデータ取得・SRGB変換
     DirectX::TexMetadata meta = scratchImage.GetMetadata();
-    DXGI_FORMAT format = DirectX::MakeSRGB(meta.format);
+    DXGI_FORMAT format = srgb ? DirectX::MakeSRGB(meta.format) : meta.format;
 
     // D3D12_RESOURCE_DESC 構築
     D3D12_RESOURCE_DESC resourceDesc = {};
@@ -91,7 +92,8 @@ std::unique_ptr<Texture> TextureLoader::LoadFromMemory(
     GraphicsDevice& device,
     ID3D12GraphicsCommandList* cmdList,
     const uint8_t* data, size_t dataSize,
-    const char* formatHint)
+    const char* formatHint,
+    bool srgb)
 {
     DirectX::ScratchImage scratchImage;
 
@@ -117,7 +119,7 @@ std::unique_ptr<Texture> TextureLoader::LoadFromMemory(
     }
 
     DirectX::TexMetadata meta = scratchImage.GetMetadata();
-    DXGI_FORMAT format = DirectX::MakeSRGB(meta.format);
+    DXGI_FORMAT format = srgb ? DirectX::MakeSRGB(meta.format) : meta.format;
 
     D3D12_RESOURCE_DESC resourceDesc = {};
     resourceDesc.Dimension          = D3D12_RESOURCE_DIMENSION_TEXTURE2D;

@@ -41,7 +41,8 @@ public:
 
     Texture* GetOrLoadTexture(
         const std::wstring& filePath,
-        ID3D12GraphicsCommandList* cmdList);
+        ID3D12GraphicsCommandList* cmdList,
+        bool srgb = true);
 
     // モデル読み込み（キャッシュ付き）
     const CachedModel* GetOrLoadModel(
@@ -56,6 +57,8 @@ public:
         ID3D12GraphicsCommandList* cmdList);
 
     Texture* GetDefaultWhiteTexture() const { return m_defaultWhite.get(); }
+    Texture* GetDefaultNormalTexture() const { return m_defaultNormal.get(); }
+    Texture* GetDefaultMetalRoughnessTexture() const { return m_defaultMetalRoughness.get(); }
     GraphicsDevice* GetDevice() const { return m_device; }
     DescriptorHeap* GetSrvHeap() const { return m_srvHeap; }
 
@@ -66,6 +69,8 @@ private:
     DescriptorHeap*  m_srvHeap = nullptr;
     std::unordered_map<std::wstring, std::unique_ptr<Texture>> m_textureCache;
     std::unique_ptr<Texture> m_defaultWhite;
+    std::unique_ptr<Texture> m_defaultNormal;         // (128,128,255,255) = flat normal
+    std::unique_ptr<Texture> m_defaultMetalRoughness; // (0,128,0,255) = non-metal, mid-rough
     std::unordered_map<std::string, std::unique_ptr<CachedModel>> m_modelCache;
 };
 

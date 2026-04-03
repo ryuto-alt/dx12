@@ -16,6 +16,7 @@ struct Vertex
     DirectX::XMFLOAT3 normal;                          // NORMAL
     DirectX::XMFLOAT4 color;                           // COLOR
     DirectX::XMFLOAT2 texCoord;                        // TEXCOORD
+    DirectX::XMFLOAT4 tangent  = {0, 0, 0, 1};        // TANGENT (xyz=tangent, w=handedness)
     DirectX::XMUINT4  boneIndices = {0, 0, 0, 0};     // BLENDINDICES
     DirectX::XMFLOAT4 boneWeights = {0, 0, 0, 0};     // BLENDWEIGHT
 };

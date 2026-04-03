@@ -47,11 +47,50 @@ void ResourceManager::Initialize(GraphicsDevice* device, DescriptorHeap* srvHeap
 
         Logger::Info("Default white texture created (srvIndex={})", srvIdx);
     }
+
+    // 1x1 デフォルト Normal テクスチャ (128,128,255,255 = flat normal pointing up)
+    {
+        u32 normalColor = 0xFFFF8080; // RGBA: R=128, G=128, B=255, A=255
+        D3D12_RESOURCE_DESC desc{};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        desc.Width = 1; desc.Height = 1; desc.DepthOrArraySize = 1; desc.MipLevels = 1;
+        desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; // linear (not sRGB)
+        desc.SampleDesc = {1, 0};
+
+        D3D12_SUBRESOURCE_DATA subData{};
+        subData.pData = &normalColor; subData.RowPitch = 4; subData.SlicePitch = 4;
+
+        m_defaultNormal = std::make_unique<Texture>();
+        m_defaultNormal->Initialize(*device, cmdList, desc, &subData, 1);
+        u32 nIdx = m_srvHeap->AllocateIndex();
+        m_defaultNormal->SetSrvIndex(nIdx);
+        m_defaultNormal->CreateSRV(*device, m_srvHeap->GetCpuHandle(nIdx));
+    }
+
+    // 1x1 デフォルト MetalRoughness テクスチャ (0,128,0,255 = metallic=0, roughness=0.5)
+    {
+        u32 mrColor = 0xFF008000; // RGBA: R=0, G=128, B=0, A=255
+        D3D12_RESOURCE_DESC desc{};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        desc.Width = 1; desc.Height = 1; desc.DepthOrArraySize = 1; desc.MipLevels = 1;
+        desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; // linear
+        desc.SampleDesc = {1, 0};
+
+        D3D12_SUBRESOURCE_DATA subData{};
+        subData.pData = &mrColor; subData.RowPitch = 4; subData.SlicePitch = 4;
+
+        m_defaultMetalRoughness = std::make_unique<Texture>();
+        m_defaultMetalRoughness->Initialize(*device, cmdList, desc, &subData, 1);
+        u32 mIdx = m_srvHeap->AllocateIndex();
+        m_defaultMetalRoughness->SetSrvIndex(mIdx);
+        m_defaultMetalRoughness->CreateSRV(*device, m_srvHeap->GetCpuHandle(mIdx));
+    }
 }
 
 Texture* ResourceManager::GetOrLoadTexture(
     const std::wstring& filePath,
-    ID3D12GraphicsCommandList* cmdList)
+    ID3D12GraphicsCommandList* cmdList,
+    bool srgb)
 {
     // キャッシュチェック
     auto it = m_textureCache.find(filePath);
@@ -61,7 +100,7 @@ Texture* ResourceManager::GetOrLoadTexture(
     }
 
     // テクスチャ読み込み
-    auto texture = TextureLoader::LoadFromFile(*m_device, cmdList, filePath);
+    auto texture = TextureLoader::LoadFromFile(*m_device, cmdList, filePath, srgb);
     if (!texture)
     {
         Logger::Warn("Failed to load texture, returning nullptr");
@@ -136,6 +175,8 @@ Texture* ResourceManager::GetOrLoadEmbeddedTexture(
 void ResourceManager::FinishUploads()
 {
     if (m_defaultWhite) m_defaultWhite->FinishUpload();
+    if (m_defaultNormal) m_defaultNormal->FinishUpload();
+    if (m_defaultMetalRoughness) m_defaultMetalRoughness->FinishUpload();
     for (auto& [path, texture] : m_textureCache)
     {
         texture->FinishUpload();

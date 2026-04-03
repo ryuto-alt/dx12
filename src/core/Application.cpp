@@ -406,6 +406,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode)
         DirectX::XMFLOAT3   lightColor;
         float                ambientStrength;
         DirectX::XMFLOAT4X4 lightViewProj;
+        DirectX::XMFLOAT3   cameraPos;
+        float                _pad;
     };
     m_perFrameCB = std::make_unique<ConstantBuffer>();
     m_perFrameCB->Initialize(*m_graphicsDevice, sizeof(FrameConstants), FrameResources::kFrameCount);
@@ -1191,6 +1193,8 @@ void Application::Render()
         XMFLOAT3   lightColor;
         float      ambientStrength;
         XMFLOAT4X4 lightVP;
+        XMFLOAT3   cameraPos;
+        float      _pad;
     };
 
     FrameConstants fc{};
@@ -1201,6 +1205,7 @@ void Application::Render()
     fc.lightColor = { 1.0f, 0.95f, 0.9f };
     fc.ambientStrength = 0.25f;
     XMStoreFloat4x4(&fc.lightVP, XMMatrixTranspose(lightViewProj));
+    fc.cameraPos = m_camera->GetPosition();
 
     m_perFrameCB->Update(&fc, sizeof(fc), frameIndex);
     m_commandList->SetPerFrameCBV(RootSignature::kSlotPerFrame, m_perFrameCB->GetGpuAddress(frameIndex));
@@ -1256,8 +1261,29 @@ void Application::Render()
                 m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
 
                 const Material* mat = mesh->GetMaterial();
-                Texture* tex = (mat && mat->albedoTexture) ? mat->albedoTexture : m_resourceManager->GetDefaultWhiteTexture();
-                m_commandList->SetSRVTable(RootSignature::kSlotSRVTable, m_srvHeap->GetGpuHandle(tex->GetSrvIndex()));
+
+                // PBR テクスチャ SRV ブロックをバインド
+                if (mat && mat->srvBlockIndex != 0xFFFFFFFF)
+                {
+                    m_commandList->SetSRVTable(RootSignature::kSlotSRVTable,
+                        m_srvHeap->GetGpuHandle(mat->srvBlockIndex));
+                }
+                else
+                {
+                    Texture* tex = (mat && mat->albedoTexture) ? mat->albedoTexture : m_resourceManager->GetDefaultWhiteTexture();
+                    m_commandList->SetSRVTable(RootSignature::kSlotSRVTable,
+                        m_srvHeap->GetGpuHandle(tex->GetSrvIndex()));
+                }
+
+                // PBR Material Constants (Slot 5)
+                struct { float metallic; float roughness; u32 flags; float pad; } pbrParams;
+                pbrParams.metallic  = mat ? mat->defaultMetallic : 0.0f;
+                pbrParams.roughness = mat ? mat->defaultRoughness : 0.5f;
+                pbrParams.flags     = 0;
+                if (mat && mat->normalMapTexture)      pbrParams.flags |= 1u;
+                if (mat && mat->metalRoughnessTexture) pbrParams.flags |= 2u;
+                pbrParams.pad = 0;
+                nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPBRMaterial, 4, &pbrParams, 0);
 
                 m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
                 m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
