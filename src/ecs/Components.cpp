@@ -16,11 +16,20 @@ XMMATRIX Transform::GetWorldMatrix() const
 {
     XMMATRIX s = XMMatrixScaling(scale.x, scale.y, scale.z);
 
-    // Euler degrees -> radians, YXZ order (Yaw -> Pitch -> Roll)
-    XMMATRIX r = XMMatrixRotationRollPitchYaw(
-        XMConvertToRadians(rotation.x),   // pitch
-        XMConvertToRadians(rotation.y),    // yaw
-        XMConvertToRadians(rotation.z));   // roll
+    XMMATRIX r;
+    if (useQuaternion)
+    {
+        XMVECTOR q = XMLoadFloat4(&quaternion);
+        r = XMMatrixRotationQuaternion(q);
+    }
+    else
+    {
+        // Euler degrees -> radians, YXZ order (Yaw -> Pitch -> Roll)
+        r = XMMatrixRotationRollPitchYaw(
+            XMConvertToRadians(rotation.x),   // pitch
+            XMConvertToRadians(rotation.y),    // yaw
+            XMConvertToRadians(rotation.z));   // roll
+    }
 
     XMMATRIX t = XMMatrixTranslation(position.x, position.y, position.z);
 

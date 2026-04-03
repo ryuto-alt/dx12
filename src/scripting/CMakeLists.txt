@@ -16,6 +16,7 @@ target_link_libraries(Scripting PUBLIC
     Renderer
     Animation
     Audio
+    Physics
     ${LUA_LIBRARIES}
     sol2::sol2
     Microsoft::DirectXMath
@@ -23,5 +24,5 @@ target_link_libraries(Scripting PUBLIC
 
 target_include_directories(Scripting PRIVATE ${LUA_INCLUDE_DIR})
 
-target_compile_options(Scripting PRIVATE ${DX12_COMPILE_OPTIONS})
+target_compile_options(Scripting PRIVATE ${DX12_COMPILE_OPTIONS} /bigobj)
 target_compile_definitions(Scripting PRIVATE ${DX12_COMPILE_DEFS})

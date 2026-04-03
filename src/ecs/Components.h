@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <cstdint>
 #include <DirectXMath.h>
 #include "core/Types.h"
 
@@ -27,8 +28,10 @@ struct NameTag
 struct Transform
 {
     DirectX::XMFLOAT3 position = {0.0f, 0.0f, 0.0f};
-    DirectX::XMFLOAT3 rotation = {0.0f, 0.0f, 0.0f};
+    DirectX::XMFLOAT3 rotation = {0.0f, 0.0f, 0.0f};  // Euler degrees（エディタ表示用）
     DirectX::XMFLOAT3 scale    = {1.0f, 1.0f, 1.0f};
+    DirectX::XMFLOAT4 quaternion = {0.0f, 0.0f, 0.0f, 1.0f}; // (x,y,z,w) 物理同期用
+    bool useQuaternion = false; // true なら quaternion から行列を生成
 
     DirectX::XMMATRIX GetWorldMatrix() const;
 };
@@ -91,6 +94,50 @@ struct CameraComponent
     f32  nearClip   = 0.1f;
     f32  farClip    = 1000.0f;
     bool isActive   = false;
+};
+
+// --- Physics Components ---
+
+static constexpr uint32_t kInvalidBodyId = 0xFFFFFFFF;
+
+enum class MotionType : uint8_t
+{
+    Static    = 0,
+    Kinematic = 1,
+    Dynamic   = 2,
+};
+
+struct RigidBody
+{
+    MotionType motionType    = MotionType::Dynamic;
+    f32        mass          = 1.0f;
+    f32        restitution   = 0.3f;
+    f32        friction      = 0.5f;
+    f32        linearDamping  = 0.05f;
+    f32        angularDamping = 0.05f;
+    bool       useGravity    = true;
+
+    // PhysicsSystem が管理（ユーザーは触らない）
+    uint32_t   bodyId = kInvalidBodyId;
+};
+
+struct BoxCollider
+{
+    DirectX::XMFLOAT3 halfExtents = {0.5f, 0.5f, 0.5f};
+    DirectX::XMFLOAT3 offset      = {0.0f, 0.0f, 0.0f};
+};
+
+struct SphereCollider
+{
+    f32               radius = 0.5f;
+    DirectX::XMFLOAT3 offset = {0.0f, 0.0f, 0.0f};
+};
+
+struct CapsuleCollider
+{
+    f32               radius     = 0.5f;
+    f32               halfHeight = 1.0f;
+    DirectX::XMFLOAT3 offset     = {0.0f, 0.0f, 0.0f};
 };
 
 } // namespace dx12e

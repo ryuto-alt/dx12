@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <vector>
+#include <unordered_map>
 #include <chrono>
 #include <filesystem>
 #include <wrl/client.h>
@@ -32,6 +33,8 @@ namespace dx12e
     class Scene;
     class ScriptEngine;
     class AudioSystem;
+    class PhysicsSystem;
+    class PhysicsDebugRenderer;
 }
 
 namespace dx12e
@@ -100,6 +103,9 @@ private:
     std::unique_ptr<Scene>             m_scene;
     std::unique_ptr<ScriptEngine>      m_scriptEngine;
     std::unique_ptr<AudioSystem>       m_audioSystem;
+    std::unique_ptr<PhysicsSystem>     m_physicsSystem;
+    std::unique_ptr<PhysicsDebugRenderer> m_physicsDebugRenderer;
+    bool                               m_physicsDebugDraw = false;
     GameClock                          m_gameClock;
     bool                               m_isRunning = false;
     u32                                m_framesSinceStart = 0;
@@ -113,6 +119,16 @@ private:
         f32 yaw;
         f32 pitch;
     } m_cameraSnapshot{};
+
+    // エディタ上のTransformスナップショット（Play開始時に保存→復元）
+    struct TransformSnapshot {
+        DirectX::XMFLOAT3 position;
+        DirectX::XMFLOAT3 rotation;
+        DirectX::XMFLOAT3 scale;
+        DirectX::XMFLOAT4 quaternion;
+        bool useQuaternion;
+    };
+    std::unordered_map<std::string, TransformSnapshot> m_editorTransforms;
 
     // Luaホットリロード
     std::filesystem::file_time_type m_scriptLastWriteTime{};

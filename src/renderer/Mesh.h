@@ -40,6 +40,9 @@ public:
     void SetMaterial(Material* mat) { m_material = mat; }
     const Material* GetMaterial() const { return m_material; }
 
+    DirectX::XMFLOAT3 GetAABBMin() const { return m_aabbMin; }
+    DirectX::XMFLOAT3 GetAABBMax() const { return m_aabbMax; }
+
     static const D3D12_INPUT_ELEMENT_DESC* GetInputLayout();
     static u32 GetInputLayoutCount();
 
@@ -47,6 +50,8 @@ private:
     VertexBuffer m_vertexBuffer;
     IndexBuffer  m_indexBuffer;
     Material*    m_material = nullptr;
+    DirectX::XMFLOAT3 m_aabbMin = { 0, 0, 0 };
+    DirectX::XMFLOAT3 m_aabbMax = { 0, 0, 0 };
 };
 
 } // namespace dx12e

@@ -22,6 +22,7 @@ add_subdirectory(src/input)
 add_subdirectory(src/audio)
 add_subdirectory(src/scene)
 add_subdirectory(src/scripting)
+add_subdirectory(src/physics)
 add_subdirectory(src/gui)
 
 # Main executable
@@ -39,6 +40,7 @@ target_link_libraries(DX12Engine
         Input
         Scene
         Scripting
+        Physics
         Gui
 )
 
@@ -70,6 +72,7 @@ if(DXC_EXECUTABLE)
     set(SHADER_GRID          "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardGrid.hlsl")
     set(SHADER_SHADOW        "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPass.hlsl")
     set(SHADER_SHADOW_SKIN   "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPassSkinned.hlsl")
+    set(SHADER_DEBUG_LINE    "${CMAKE_SOURCE_DIR}/shaders/debug/DebugLine.hlsl")
 
     set(SHADER_OUTPUTS
         "${SHADER_OUTPUT_DIR}/Forward_VS.cso"
@@ -80,6 +83,8 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/ForwardGrid_PS.cso"
         "${SHADER_OUTPUT_DIR}/ShadowPass_VS.cso"
         "${SHADER_OUTPUT_DIR}/ShadowPassSkinned_VS.cso"
+        "${SHADER_OUTPUT_DIR}/DebugLine_VS.cso"
+        "${SHADER_OUTPUT_DIR}/DebugLine_PS.cso"
     )
 
     add_custom_command(
@@ -136,6 +141,20 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/ShadowPassSkinned_VS.cso" "${SHADER_SHADOW_SKIN}"
         DEPENDS "${SHADER_SHADOW_SKIN}"
         COMMENT "Compiling ShadowPassSkinned.hlsl -> ShadowPassSkinned_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/DebugLine_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/DebugLine_VS.cso" "${SHADER_DEBUG_LINE}"
+        DEPENDS "${SHADER_DEBUG_LINE}"
+        COMMENT "Compiling DebugLine.hlsl -> DebugLine_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/DebugLine_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/DebugLine_PS.cso" "${SHADER_DEBUG_LINE}"
+        DEPENDS "${SHADER_DEBUG_LINE}"
+        COMMENT "Compiling DebugLine.hlsl -> DebugLine_PS.cso (ps_6_0)"
     )
 
     add_custom_target(Shaders ALL DEPENDS ${SHADER_OUTPUTS})

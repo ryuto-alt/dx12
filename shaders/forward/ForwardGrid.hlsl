@@ -109,9 +109,9 @@ float4 PSMain(PSInput input) : SV_TARGET
     float axisX = 1.0f - smoothstep(lineWidthMajor - dGrid.y, lineWidthMajor + dGrid.y, abs(worldPos.z));
     float axisZ = 1.0f - smoothstep(lineWidthMajor - dGrid.x, lineWidthMajor + dGrid.x, abs(worldPos.x));
 
-    float3 groundColor = float3(0.25f, 0.25f, 0.25f);
-    float3 minorColor  = float3(0.4f, 0.4f, 0.4f);
-    float3 majorColor  = float3(0.55f, 0.55f, 0.55f);
+    float3 groundColor = float3(0.15f, 0.15f, 0.15f);
+    float3 minorColor  = float3(0.3f, 0.3f, 0.3f);
+    float3 majorColor  = float3(0.45f, 0.45f, 0.45f);
     float3 axisXColor  = float3(0.8f, 0.2f, 0.2f);
     float3 axisZColor  = float3(0.2f, 0.2f, 0.8f);
 
@@ -125,7 +125,7 @@ float4 PSMain(PSInput input) : SV_TARGET
     float fade = 1.0f - saturate((dist - 20.0f) / 30.0f);
 
     float gridMask = max(max(minor, major), max(axisX, axisZ));
-    float alpha = lerp(0.3f, 1.0f, gridMask) * fade;
+    float alpha = lerp(0.05f, 0.7f, gridMask) * fade;
 
     // シャドウ
     float shadow = CalcShadow(input.shadowCoord);

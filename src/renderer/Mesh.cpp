@@ -1,4 +1,5 @@
 #include "renderer/Mesh.h"
+#include <algorithm>
 
 using namespace DirectX;
 
@@ -19,6 +20,21 @@ void Mesh::Initialize(GraphicsDevice& device,
                       const std::vector<Vertex>& vertices,
                       const std::vector<u32>& indices)
 {
+    // AABB を頂点から計算
+    if (!vertices.empty())
+    {
+        m_aabbMin = m_aabbMax = vertices[0].position;
+        for (const auto& v : vertices)
+        {
+            m_aabbMin.x = (std::min)(m_aabbMin.x, v.position.x);
+            m_aabbMin.y = (std::min)(m_aabbMin.y, v.position.y);
+            m_aabbMin.z = (std::min)(m_aabbMin.z, v.position.z);
+            m_aabbMax.x = (std::max)(m_aabbMax.x, v.position.x);
+            m_aabbMax.y = (std::max)(m_aabbMax.y, v.position.y);
+            m_aabbMax.z = (std::max)(m_aabbMax.z, v.position.z);
+        }
+    }
+
     m_vertexBuffer.Initialize(device,
                               vertices.data(),
                               static_cast<u32>(vertices.size() * sizeof(Vertex)),

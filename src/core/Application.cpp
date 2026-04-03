@@ -32,6 +32,8 @@
 #include "ecs/Components.h"
 #include "scripting/ScriptEngine.h"
 #include "audio/AudioSystem.h"
+#include "physics/PhysicsSystem.h"
+#include "physics/PhysicsDebugRenderer.h"
 #include "gui/ImGuiManager.h"
 #include "scene/SceneSerializer.h"
 #include <commdlg.h>
@@ -108,6 +110,10 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode)
     // Audio System
     m_audioSystem = std::make_unique<AudioSystem>();
     m_audioSystem->Initialize(std::string(ASSETS_DIR));
+
+    // Physics System
+    m_physicsSystem = std::make_unique<PhysicsSystem>();
+    m_physicsSystem->Initialize();
 
     // Shader Visible SRV ヒープ
     m_srvHeap = std::make_unique<DescriptorHeap>();
@@ -206,7 +212,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode)
         // ScriptEngine 初期化 + ゲームスクリプト実行
         m_scriptEngine = std::make_unique<ScriptEngine>();
         m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
-                                   m_camera.get(), m_audioSystem.get(), std::string(ASSETS_DIR));
+                                   m_camera.get(), m_audioSystem.get(),
+                                   m_physicsSystem.get(), std::string(ASSETS_DIR));
 
         // ゲームスクリプト読み込み
         {
@@ -268,7 +275,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode)
                    .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
                    .SetDepthEnabled(true)
                    .SetAlphaBlendEnabled(true)
-                   .SetCullMode(D3D12_CULL_MODE_NONE);
+                   .SetCullMode(D3D12_CULL_MODE_NONE)
+                   .SetDepthBias(-100, -1.0f);  // グリッドを少し奥に → Z-fighting 回避
 
             m_gridPipelineState = std::make_unique<PipelineState>();
             m_gridPipelineState->Initialize(*m_graphicsDevice, builder);
@@ -396,6 +404,11 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode)
     m_imguiManager->Initialize(
         m_window->GetHwnd(), *m_graphicsDevice, m_commandQueue->GetQueue(),
         *m_srvHeap, m_swapChain->GetFormat(), FrameResources::kFrameCount);
+
+    // Physics Debug Renderer
+    m_physicsDebugRenderer = std::make_unique<PhysicsDebugRenderer>();
+    m_physicsDebugRenderer->Initialize(*m_graphicsDevice,
+        m_swapChain->GetFormat(), DXGI_FORMAT_D32_FLOAT, SHADER_DIR);
 
     m_isRunning = true;
 
@@ -565,6 +578,12 @@ void Application::Shutdown()
     }
 
     // リソース解放（逆順）
+    m_physicsDebugRenderer.reset();
+    if (m_physicsSystem)
+    {
+        m_physicsSystem->Shutdown();
+        m_physicsSystem.reset();
+    }
     m_inputSystem.reset();
     m_scriptEngine.reset();
     m_audioSystem.reset();
@@ -662,6 +681,12 @@ void Application::Update()
 
     // シーン更新（全EntityのAnimator）
     m_scene->Update(dt);
+
+    // 物理更新（プレイモードのみ）
+    if (m_engineMode == EngineMode::Playing && m_physicsSystem->IsInitialized())
+    {
+        m_physicsSystem->Update(dt, m_scene->GetRegistry());
+    }
 }
 
 void Application::RebuildScene()
@@ -674,7 +699,8 @@ void Application::RebuildScene()
 
     m_scriptEngine->Shutdown();
     m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
-                               m_camera.get(), m_audioSystem.get(), std::string(ASSETS_DIR));
+                               m_camera.get(), m_audioSystem.get(),
+                               m_physicsSystem.get(), std::string(ASSETS_DIR));
 
     std::string scriptPath = std::string(SCRIPTS_DIR) + "game.lua";
     if (std::filesystem::exists(scriptPath))
@@ -721,15 +747,59 @@ void Application::EnterPlayMode()
     m_cameraSnapshot.yaw = m_camera->GetYaw();
     m_cameraSnapshot.pitch = m_camera->GetPitch();
 
+    // エディタ上の全エンティティの Transform をスナップショット保存
+    m_editorTransforms.clear();
+    {
+        auto& reg = m_scene->GetRegistry();
+        auto view = reg.view<NameTag, Transform>();
+        for (auto [entity, name, transform] : view.each())
+        {
+            m_editorTransforms[name.name] = {
+                transform.position, transform.rotation, transform.scale,
+                transform.quaternion, transform.useQuaternion
+            };
+        }
+    }
+
     m_inputSystem->SetMouseCapture(false);
 
-    // シーン再構築（Luaスクリプト再読み込み）
-    RebuildScene();
+    // スクリプトをリロード（シーンは再構築しない＝エディタのEntityをそのまま使う）
+    m_scriptEngine->Shutdown();
+    m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
+                               m_camera.get(), m_audioSystem.get(),
+                               m_physicsSystem.get(), std::string(ASSETS_DIR));
+
+    std::string scriptPath = std::string(SCRIPTS_DIR) + "game.lua";
+    if (std::filesystem::exists(scriptPath))
+    {
+        m_scriptEngine->LoadScript(scriptPath);
+    }
+    m_scriptEngine->CallOnStart();
 
     // Playモード: サイドバーなし全画面幅でアスペクト比再計算
     m_camera->SetPerspective(DirectX::XM_PIDIV4,
         static_cast<f32>(m_window->GetWidth()) / static_cast<f32>(m_window->GetHeight()),
         0.1f, 1000.0f);
+
+    // 物理のタイムステップ蓄積をリセット（前回の残りで初回に余計な更新が走るのを防ぐ）
+    m_physicsSystem->ResetAccumulator();
+
+    // 全 RigidBody を物理エンジンに登録（現在の Transform 位置で）
+    {
+        auto& reg = m_scene->GetRegistry();
+        auto view = reg.view<RigidBody>();
+        for (auto [entity, rb] : view.each())
+        {
+            // 既に登録済みのゴーストボディがあれば先に削除
+            if (rb.bodyId != kInvalidBodyId)
+                m_physicsSystem->UnregisterBody(reg, entity);
+            m_physicsSystem->RegisterBody(reg, entity);
+        }
+    }
+
+    // ホットリロード用タイムスタンプ更新
+    if (std::filesystem::exists(scriptPath))
+        m_scriptLastWriteTime = std::filesystem::last_write_time(scriptPath);
 
     m_engineMode = EngineMode::Playing;
     Logger::Info("Entered PLAY mode");
@@ -737,6 +807,11 @@ void Application::EnterPlayMode()
 
 void Application::EnterEditorMode()
 {
+    // 物理リセット
+    m_physicsSystem->UnregisterAllBodies(m_scene->GetRegistry());
+    m_physicsSystem->Shutdown();
+    m_physicsSystem->Initialize();
+
     m_inputSystem->SetMouseCapture(false);
 
     // カメラ復元
@@ -744,8 +819,26 @@ void Application::EnterEditorMode()
     m_camera->SetYaw(m_cameraSnapshot.yaw);
     m_camera->SetPitch(m_cameraSnapshot.pitch);
 
-    // シーン再構築
+    // RebuildScene で Lua の OnStart から全エンティティを再生成
     RebuildScene();
+
+    // Play開始前に保存していた Transform を復元
+    {
+        auto& reg = m_scene->GetRegistry();
+        auto view = reg.view<NameTag, Transform>();
+        for (auto [entity, name, transform] : view.each())
+        {
+            auto it = m_editorTransforms.find(name.name);
+            if (it != m_editorTransforms.end())
+            {
+                transform.position      = it->second.position;
+                transform.rotation      = it->second.rotation;
+                transform.scale         = it->second.scale;
+                transform.quaternion    = it->second.quaternion;
+                transform.useQuaternion = it->second.useQuaternion;
+            }
+        }
+    }
 
     // Editorモード: サイドバー分を引いたアスペクト比に再計算
     f32 viewW = static_cast<f32>(m_window->GetWidth());
@@ -1075,6 +1168,17 @@ void Application::Render()
                 m_commandList->DrawIndexedInstanced(mesh->GetIndexCount());
             }
         }
+    }
+
+    // ---- Physics Debug Draw ----
+    if (m_physicsDebugDraw && m_physicsDebugRenderer->IsEnabled())
+    {
+        m_physicsDebugRenderer->BeginFrame();
+        m_physicsDebugRenderer->CollectFromRegistry(m_scene->GetRegistry());
+
+        XMFLOAT4X4 vp;
+        XMStoreFloat4x4(&vp, XMMatrixTranspose(m_camera->GetViewProjMatrix()));
+        m_physicsDebugRenderer->Render(nativeCmdList, vp);
     }
 
     // ---- ImGui フレーム ----
@@ -1472,6 +1576,13 @@ void Application::Render()
         if (ImGui::CollapsingHeader("\xe8\xa8\xad\xe5\xae\x9a"))  // 設定
         {
             ImGui::Checkbox("VSync", &m_useVsync);
+
+            bool debugDraw = m_physicsDebugRenderer->IsEnabled();
+            if (ImGui::Checkbox("Physics Debug", &debugDraw))
+            {
+                m_physicsDebugRenderer->SetEnabled(debugDraw);
+                m_physicsDebugDraw = debugDraw;
+            }
         }
 
         // --- ビルド ---
@@ -1544,26 +1655,62 @@ void Application::Render()
             {
                 if (reg.all_of<GridPlane>(e)) continue;
 
-                // メッシュのバウンディングスフィア（位置 + 推定半径）
-                XMVECTOR entityPos = XMLoadFloat3(&transform.position);
-                f32 maxScale = (std::max)({
-                    std::abs(transform.scale.x),
-                    std::abs(transform.scale.y),
-                    std::abs(transform.scale.z)
-                });
-                // メッシュサイズを考慮した半径（スケールが小さいFBXモデルはメッシュ自体が大きい）
-                f32 radius = (std::max)(maxScale * 50.0f, 1.0f);
-
-                // レイ-スフィア交差テスト
-                XMVECTOR oc = XMVectorSubtract(rayOrigin, entityPos);
-                f32 b = XMVectorGetX(XMVector3Dot(oc, rayDir));
-                f32 c = XMVectorGetX(XMVector3Dot(oc, oc)) - radius * radius;
-                f32 discriminant = b * b - c;
-
-                if (discriminant > 0.0f)
+                // 全メッシュの AABB を結合してワールド空間 AABB を作る
+                XMFLOAT3 aabbMin = {  FLT_MAX,  FLT_MAX,  FLT_MAX };
+                XMFLOAT3 aabbMax = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+                for (const auto* mesh : renderer.meshes)
                 {
-                    f32 t = -b - std::sqrt(discriminant);
-                    if (t < 0.0f) t = -b + std::sqrt(discriminant);
+                    if (!mesh) continue;
+                    auto meshMin = mesh->GetAABBMin();
+                    auto meshMax = mesh->GetAABBMax();
+                    aabbMin.x = (std::min)(aabbMin.x, meshMin.x);
+                    aabbMin.y = (std::min)(aabbMin.y, meshMin.y);
+                    aabbMin.z = (std::min)(aabbMin.z, meshMin.z);
+                    aabbMax.x = (std::max)(aabbMax.x, meshMax.x);
+                    aabbMax.y = (std::max)(aabbMax.y, meshMax.y);
+                    aabbMax.z = (std::max)(aabbMax.z, meshMax.z);
+                }
+
+                // スケール適用したワールド AABB
+                XMFLOAT3 worldMin = {
+                    transform.position.x + aabbMin.x * transform.scale.x,
+                    transform.position.y + aabbMin.y * transform.scale.y,
+                    transform.position.z + aabbMin.z * transform.scale.z
+                };
+                XMFLOAT3 worldMax = {
+                    transform.position.x + aabbMax.x * transform.scale.x,
+                    transform.position.y + aabbMax.y * transform.scale.y,
+                    transform.position.z + aabbMax.z * transform.scale.z
+                };
+
+                // min/max を正規化（負スケール対策）
+                if (worldMin.x > worldMax.x) std::swap(worldMin.x, worldMax.x);
+                if (worldMin.y > worldMax.y) std::swap(worldMin.y, worldMax.y);
+                if (worldMin.z > worldMax.z) std::swap(worldMin.z, worldMax.z);
+
+                // レイ-AABB 交差テスト (slab method)
+                XMFLOAT3 orig, dir;
+                XMStoreFloat3(&orig, rayOrigin);
+                XMStoreFloat3(&dir, rayDir);
+
+                f32 tmin = -FLT_MAX, tmax = FLT_MAX;
+                auto slabTest = [&](f32 o, f32 d, f32 bmin, f32 bmax) -> bool {
+                    if (std::abs(d) < 1e-8f)
+                        return (o >= bmin && o <= bmax);
+                    f32 t1 = (bmin - o) / d;
+                    f32 t2 = (bmax - o) / d;
+                    if (t1 > t2) std::swap(t1, t2);
+                    tmin = (std::max)(tmin, t1);
+                    tmax = (std::min)(tmax, t2);
+                    return tmin <= tmax;
+                };
+
+                if (slabTest(orig.x, dir.x, worldMin.x, worldMax.x)
+                    && slabTest(orig.y, dir.y, worldMin.y, worldMax.y)
+                    && slabTest(orig.z, dir.z, worldMin.z, worldMax.z)
+                    && tmax > 0.0f)
+                {
+                    f32 t = tmin > 0.0f ? tmin : tmax;
                     if (t > 0.0f && t < closestDist)
                     {
                         closestDist = t;

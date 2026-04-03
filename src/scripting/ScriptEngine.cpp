@@ -14,6 +14,7 @@
 #include "input/InputSystem.h"
 #include "renderer/Camera.h"
 #include "audio/AudioSystem.h"
+#include "physics/PhysicsSystem.h"
 #include "animation/Skeleton.h"
 #include "animation/Animator.h"
 #include "animation/AnimationClip.h"
@@ -32,12 +33,14 @@ ScriptEngine::ScriptEngine() = default;
 ScriptEngine::~ScriptEngine() { Shutdown(); }
 
 void ScriptEngine::Initialize(Scene* scene, InputSystem* input, Camera* camera,
-                               AudioSystem* audio, const std::string& assetsDir)
+                               AudioSystem* audio, PhysicsSystem* physics,
+                               const std::string& assetsDir)
 {
     m_scene     = scene;
     m_input     = input;
     m_camera    = camera;
     m_audio     = audio;
+    m_physics   = physics;
     m_assetsDir = assetsDir;
 
     m_lua = std::make_unique<sol::state>();
@@ -70,6 +73,8 @@ void ScriptEngine::RegisterBindings()
 
     // --- Entity ---
     lua.new_usertype<Entity>("Entity",
+        "isValid", &Entity::IsValid,
+
         // Name access
         "name", sol::property(
             [](const Entity& e) -> std::string {
@@ -235,7 +240,96 @@ void ScriptEngine::RegisterBindings()
     // --- ユーティリティ ---
     lua["log"] = [](const std::string& msg) { Logger::Info("[Lua] {}", msg); };
 
+    RegisterPhysicsBindings();
+
     Logger::Info("Lua bindings registered");
+}
+
+void ScriptEngine::RegisterPhysicsBindings()
+{
+    using namespace DirectX;
+    auto& lua = *m_lua;
+
+    // --- RaycastHit ---
+    lua.new_usertype<RaycastHit>("RaycastHit",
+        "hit",      &RaycastHit::hit,
+        "distance", &RaycastHit::distance,
+        "point",    &RaycastHit::point,
+        "normal",   &RaycastHit::normal
+    );
+
+    // --- MotionType constants ---
+    lua["MOTION_STATIC"]    = static_cast<int>(MotionType::Static);
+    lua["MOTION_KINEMATIC"] = static_cast<int>(MotionType::Kinematic);
+    lua["MOTION_DYNAMIC"]   = static_cast<int>(MotionType::Dynamic);
+
+    // --- PhysicsSystem ---
+    lua.new_usertype<PhysicsSystem>("PhysicsSystem",
+        "addBoxCollider", [this](PhysicsSystem& /*ps*/, Entity& e,
+                                 float hx, float hy, float hz) {
+            auto& reg = m_scene->GetRegistry();
+            BoxCollider col;
+            col.halfExtents = { hx, hy, hz };
+            reg.emplace_or_replace<BoxCollider>(e.GetHandle(), col);
+        },
+        "addSphereCollider", [this](PhysicsSystem& /*ps*/, Entity& e, float radius) {
+            auto& reg = m_scene->GetRegistry();
+            SphereCollider col;
+            col.radius = radius;
+            reg.emplace_or_replace<SphereCollider>(e.GetHandle(), col);
+        },
+        "addCapsuleCollider", [this](PhysicsSystem& /*ps*/, Entity& e,
+                                     float radius, float halfHeight) {
+            auto& reg = m_scene->GetRegistry();
+            CapsuleCollider col;
+            col.radius = radius;
+            col.halfHeight = halfHeight;
+            reg.emplace_or_replace<CapsuleCollider>(e.GetHandle(), col);
+        },
+        "addRigidBody", [this](PhysicsSystem& /*ps*/, Entity& e,
+                               int motionTypeInt, float mass) {
+            auto& reg = m_scene->GetRegistry();
+            // 既存のボディがあれば何もしない（二重登録防止）
+            auto* existing = reg.try_get<RigidBody>(e.GetHandle());
+            if (existing && existing->bodyId != kInvalidBodyId) return;
+            RigidBody rb;
+            rb.motionType = static_cast<MotionType>(motionTypeInt);
+            rb.mass = mass;
+            reg.emplace_or_replace<RigidBody>(e.GetHandle(), rb);
+            // ボディ登録は EnterPlayMode で一括実行（ここでは登録しない）
+        },
+        "removeRigidBody", [this](PhysicsSystem& ps, Entity& e) {
+            auto& reg = m_scene->GetRegistry();
+            ps.UnregisterBody(reg, e.GetHandle());
+            reg.remove<RigidBody>(e.GetHandle());
+        },
+        "applyForce", [](PhysicsSystem& ps, Entity& e, XMFLOAT3 force) {
+            if (!e.HasComponent<RigidBody>()) return;
+            ps.ApplyForce(e.GetComponent<RigidBody>().bodyId, force);
+        },
+        "applyImpulse", [](PhysicsSystem& ps, Entity& e, XMFLOAT3 impulse) {
+            if (!e.HasComponent<RigidBody>()) return;
+            ps.ApplyImpulse(e.GetComponent<RigidBody>().bodyId, impulse);
+        },
+        "setVelocity", [](PhysicsSystem& ps, Entity& e, XMFLOAT3 vel) {
+            if (!e.HasComponent<RigidBody>()) return;
+            ps.SetLinearVelocity(e.GetComponent<RigidBody>().bodyId, vel);
+        },
+        "getVelocity", [](PhysicsSystem& ps, Entity& e) -> XMFLOAT3 {
+            if (!e.HasComponent<RigidBody>()) return {};
+            return ps.GetLinearVelocity(e.GetComponent<RigidBody>().bodyId);
+        },
+        "setPosition", [](PhysicsSystem& ps, Entity& e, XMFLOAT3 pos) {
+            if (!e.HasComponent<RigidBody>()) return;
+            ps.SetPosition(e.GetComponent<RigidBody>().bodyId, pos);
+        },
+        "raycast", [](PhysicsSystem& ps, XMFLOAT3 origin, XMFLOAT3 dir,
+                       float maxDist) -> RaycastHit {
+            return ps.Raycast(origin, dir, maxDist);
+        }
+    );
+
+    lua["physics"] = m_physics;
 }
 
 void ScriptEngine::LoadScript(const std::string& filePath)
