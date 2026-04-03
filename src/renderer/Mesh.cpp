@@ -1,4 +1,5 @@
 #include "renderer/Mesh.h"
+#include <algorithm>
 
 using namespace DirectX;
 
@@ -11,6 +12,7 @@ static const D3D12_INPUT_ELEMENT_DESC kInputLayout[] =
     { "NORMAL",       0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
     { "COLOR",        0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
     { "TEXCOORD",     0, DXGI_FORMAT_R32G32_FLOAT,       0, 40, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    { "TANGENT",      0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 48, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
     { "BLENDINDICES", 0, DXGI_FORMAT_R32G32B32A32_UINT,  0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
     { "BLENDWEIGHT",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
 };
@@ -19,6 +21,24 @@ void Mesh::Initialize(GraphicsDevice& device,
                       const std::vector<Vertex>& vertices,
                       const std::vector<u32>& indices)
 {
+    // AABB + 頂点データキャッシュ
+    m_verticesCache = vertices;  // UV スケール用に全頂点を保持
+    if (!vertices.empty())
+    {
+        m_aabbMin = m_aabbMax = vertices[0].position;
+        m_positions.reserve(vertices.size());
+        for (const auto& v : vertices)
+        {
+            m_positions.push_back(v.position);
+            m_aabbMin.x = (std::min)(m_aabbMin.x, v.position.x);
+            m_aabbMin.y = (std::min)(m_aabbMin.y, v.position.y);
+            m_aabbMin.z = (std::min)(m_aabbMin.z, v.position.z);
+            m_aabbMax.x = (std::max)(m_aabbMax.x, v.position.x);
+            m_aabbMax.y = (std::max)(m_aabbMax.y, v.position.y);
+            m_aabbMax.z = (std::max)(m_aabbMax.z, v.position.z);
+        }
+    }
+
     m_vertexBuffer.Initialize(device,
                               vertices.data(),
                               static_cast<u32>(vertices.size() * sizeof(Vertex)),
@@ -107,6 +127,90 @@ void Mesh::InitializeAsBox(GraphicsDevice& device)
     Initialize(device, vertices, indices);
 }
 
+void Mesh::InitializeAsPlane(GraphicsDevice& device, f32 size, u32 subdivisions)
+{
+    const f32 half = size * 0.5f;
+    const XMFLOAT3 normal = {0, 1, 0};
+    const XMFLOAT4 white = {1, 1, 1, 1};
+    const f32 uvScale = size;  // 1m = 1UV unit（グリッドシェーダー用）
+
+    std::vector<Vertex> vertices;
+    std::vector<u32> indices;
+
+    u32 vertsPerSide = subdivisions + 1;
+    f32 step = size / static_cast<f32>(subdivisions);
+
+    for (u32 z = 0; z < vertsPerSide; ++z)
+    {
+        for (u32 x = 0; x < vertsPerSide; ++x)
+        {
+            f32 px = -half + static_cast<f32>(x) * step;
+            f32 pz = -half + static_cast<f32>(z) * step;
+            f32 u = static_cast<f32>(x) / static_cast<f32>(subdivisions) * uvScale;
+            f32 v = static_cast<f32>(z) / static_cast<f32>(subdivisions) * uvScale;
+            vertices.push_back({{px, 0, pz}, normal, white, {u, v}});
+        }
+    }
+
+    for (u32 z = 0; z < subdivisions; ++z)
+    {
+        for (u32 x = 0; x < subdivisions; ++x)
+        {
+            u32 i0 = z * vertsPerSide + x;
+            u32 i1 = i0 + 1;
+            u32 i2 = i0 + vertsPerSide;
+            u32 i3 = i2 + 1;
+            indices.insert(indices.end(), {i0, i2, i1, i1, i2, i3});
+        }
+    }
+
+    Initialize(device, vertices, indices);
+}
+
+void Mesh::InitializeAsSphere(GraphicsDevice& device, f32 radius, u32 slices, u32 stacks)
+{
+    const XMFLOAT4 white = {1, 1, 1, 1};
+
+    std::vector<Vertex> vertices;
+    std::vector<u32> indices;
+
+    for (u32 stack = 0; stack <= stacks; ++stack)
+    {
+        f32 phi = XM_PI * static_cast<f32>(stack) / static_cast<f32>(stacks);
+        f32 sinPhi = sinf(phi);
+        f32 cosPhi = cosf(phi);
+
+        for (u32 slice = 0; slice <= slices; ++slice)
+        {
+            f32 theta = XM_2PI * static_cast<f32>(slice) / static_cast<f32>(slices);
+            f32 sinTheta = sinf(theta);
+            f32 cosTheta = cosf(theta);
+
+            XMFLOAT3 normal = {sinPhi * cosTheta, cosPhi, sinPhi * sinTheta};
+            XMFLOAT3 pos = {normal.x * radius, normal.y * radius, normal.z * radius};
+            XMFLOAT2 uv = {
+                static_cast<f32>(slice) / static_cast<f32>(slices),
+                static_cast<f32>(stack) / static_cast<f32>(stacks)
+            };
+            vertices.push_back({pos, normal, white, uv});
+        }
+    }
+
+    for (u32 stack = 0; stack < stacks; ++stack)
+    {
+        for (u32 slice = 0; slice < slices; ++slice)
+        {
+            u32 i0 = stack * (slices + 1) + slice;
+            u32 i1 = i0 + 1;
+            u32 i2 = i0 + (slices + 1);
+            u32 i3 = i2 + 1;
+            indices.insert(indices.end(), {i0, i2, i1, i1, i2, i3});
+        }
+    }
+
+    Initialize(device, vertices, indices);
+}
+
 const D3D12_INPUT_ELEMENT_DESC* Mesh::GetInputLayout()
 {
     return kInputLayout;
@@ -115,6 +219,24 @@ const D3D12_INPUT_ELEMENT_DESC* Mesh::GetInputLayout()
 u32 Mesh::GetInputLayoutCount()
 {
     return static_cast<u32>(std::size(kInputLayout));
+}
+
+void Mesh::ApplyUVScale(GraphicsDevice& device, float scaleU, float scaleV)
+{
+    if (m_verticesCache.empty()) return;
+
+    // オリジナル UV からスケール（累積しない）
+    auto scaled = m_verticesCache;
+    for (auto& v : scaled)
+    {
+        v.texCoord.x *= scaleU;
+        v.texCoord.y *= scaleV;
+    }
+
+    m_vertexBuffer.Initialize(device,
+                              scaled.data(),
+                              static_cast<u32>(scaled.size() * sizeof(Vertex)),
+                              static_cast<u32>(sizeof(Vertex)));
 }
 
 } // namespace dx12e

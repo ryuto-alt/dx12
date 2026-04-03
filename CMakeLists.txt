@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # MSVC compile options (not global - applied per-target to avoid conflicts with FetchContent deps)
-set(DX12_COMPILE_OPTIONS /W4 /WX /MP /permissive- /utf-8)
+set(DX12_COMPILE_OPTIONS /W4 /WX /MP /permissive- /utf-8 /external:anglebrackets /external:W0)
 set(DX12_COMPILE_DEFS UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 
 # Dependencies
@@ -17,7 +17,12 @@ add_subdirectory(src/graphics)
 add_subdirectory(src/renderer)
 add_subdirectory(src/resource)
 add_subdirectory(src/animation)
+add_subdirectory(src/ecs)
 add_subdirectory(src/input)
+add_subdirectory(src/audio)
+add_subdirectory(src/scene)
+add_subdirectory(src/scripting)
+add_subdirectory(src/physics)
 add_subdirectory(src/gui)
 
 # Main executable
@@ -30,7 +35,12 @@ target_link_libraries(DX12Engine
         Renderer
         Resource
         Animation
+        ECS
+        Audio
         Input
+        Scene
+        Scripting
+        Physics
         Gui
 )
 
@@ -59,12 +69,22 @@ if(DXC_EXECUTABLE)
 
     set(SHADER_FORWARD "${CMAKE_SOURCE_DIR}/shaders/forward/Forward.hlsl")
     set(SHADER_SKINNED "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardSkinned.hlsl")
+    set(SHADER_GRID          "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardGrid.hlsl")
+    set(SHADER_SHADOW        "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPass.hlsl")
+    set(SHADER_SHADOW_SKIN   "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPassSkinned.hlsl")
+    set(SHADER_DEBUG_LINE    "${CMAKE_SOURCE_DIR}/shaders/debug/DebugLine.hlsl")
 
     set(SHADER_OUTPUTS
         "${SHADER_OUTPUT_DIR}/Forward_VS.cso"
         "${SHADER_OUTPUT_DIR}/Forward_PS.cso"
         "${SHADER_OUTPUT_DIR}/ForwardSkinned_VS.cso"
         "${SHADER_OUTPUT_DIR}/ForwardSkinned_PS.cso"
+        "${SHADER_OUTPUT_DIR}/ForwardGrid_VS.cso"
+        "${SHADER_OUTPUT_DIR}/ForwardGrid_PS.cso"
+        "${SHADER_OUTPUT_DIR}/ShadowPass_VS.cso"
+        "${SHADER_OUTPUT_DIR}/ShadowPassSkinned_VS.cso"
+        "${SHADER_OUTPUT_DIR}/DebugLine_VS.cso"
+        "${SHADER_OUTPUT_DIR}/DebugLine_PS.cso"
     )
 
     add_custom_command(
@@ -95,6 +115,48 @@ if(DXC_EXECUTABLE)
         COMMENT "Compiling ForwardSkinned.hlsl -> ForwardSkinned_PS.cso (ps_6_0)"
     )
 
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ForwardGrid_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/ForwardGrid_VS.cso" "${SHADER_GRID}"
+        DEPENDS "${SHADER_GRID}"
+        COMMENT "Compiling ForwardGrid.hlsl -> ForwardGrid_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ForwardGrid_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/ForwardGrid_PS.cso" "${SHADER_GRID}"
+        DEPENDS "${SHADER_GRID}"
+        COMMENT "Compiling ForwardGrid.hlsl -> ForwardGrid_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ShadowPass_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/ShadowPass_VS.cso" "${SHADER_SHADOW}"
+        DEPENDS "${SHADER_SHADOW}"
+        COMMENT "Compiling ShadowPass.hlsl -> ShadowPass_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ShadowPassSkinned_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/ShadowPassSkinned_VS.cso" "${SHADER_SHADOW_SKIN}"
+        DEPENDS "${SHADER_SHADOW_SKIN}"
+        COMMENT "Compiling ShadowPassSkinned.hlsl -> ShadowPassSkinned_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/DebugLine_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/DebugLine_VS.cso" "${SHADER_DEBUG_LINE}"
+        DEPENDS "${SHADER_DEBUG_LINE}"
+        COMMENT "Compiling DebugLine.hlsl -> DebugLine_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/DebugLine_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/DebugLine_PS.cso" "${SHADER_DEBUG_LINE}"
+        DEPENDS "${SHADER_DEBUG_LINE}"
+        COMMENT "Compiling DebugLine.hlsl -> DebugLine_PS.cso (ps_6_0)"
+    )
+
     add_custom_target(Shaders ALL DEPENDS ${SHADER_OUTPUTS})
     add_dependencies(DX12Engine Shaders)
 else()
@@ -105,4 +167,5 @@ endif()
 target_compile_definitions(Core PRIVATE
     SHADER_DIR=L"${CMAKE_BINARY_DIR}/shaders/"
     ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets/"
+    SCRIPTS_DIR="${CMAKE_SOURCE_DIR}/scripts/"
 )

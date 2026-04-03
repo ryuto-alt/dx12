@@ -6,9 +6,14 @@
 
 #include <memory>
 #include <vector>
+#include <unordered_map>
 #include <chrono>
+#include <filesystem>
 #include <wrl/client.h>
 #include <directx/d3d12.h>
+#include <DirectXMath.h>
+#include <entt/entt.hpp>
+#include "ecs/Components.h"
 
 // Forward declarations for graphics module
 namespace dx12e
@@ -22,17 +27,16 @@ namespace dx12e
     class PipelineState;
     class CommandList;
     class ConstantBuffer;
-    class Mesh;
     class Camera;
     class ResourceManager;
-    struct Material;
-    struct ModelData;
-    class Skeleton;
-    class AnimationClip;
-    class Animator;
-    class SkinningBuffer;
     class InputSystem;
     class ImGuiManager;
+    class Scene;
+    class ScriptEngine;
+    class AudioSystem;
+    class PhysicsSystem;
+    class PhysicsDebugRenderer;
+    struct Material;
 }
 
 namespace dx12e
@@ -47,13 +51,20 @@ public:
     Application(const Application&) = delete;
     Application& operator=(const Application&) = delete;
 
-    void Initialize(HINSTANCE hInstance, int nCmdShow);
+    void Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode = false);
     void Run();
     void Shutdown();
+
+    enum class EngineMode { Editor, Playing };
+    enum class GizmoMode { Translate, Rotate, Scale };
 
 private:
     void Update();
     void Render();
+    void RebuildScene();
+    void EnterPlayMode();
+    void EnterEditorMode();
+    void BuildGame();
 
     std::unique_ptr<Window>         m_window;
     std::unique_ptr<GraphicsDevice> m_graphicsDevice;
@@ -66,24 +77,83 @@ private:
     std::unique_ptr<PipelineState>     m_pipelineState;
     std::unique_ptr<DescriptorHeap>    m_srvHeap;
     std::unique_ptr<ResourceManager>   m_resourceManager;
-    std::vector<std::unique_ptr<Mesh>>     m_modelMeshes;
-    std::vector<std::unique_ptr<Material>> m_modelMaterials;
-    std::unique_ptr<Skeleton>          m_skeleton;
-    std::vector<std::unique_ptr<AnimationClip>> m_animClips;
-    std::unique_ptr<Animator>          m_animator;
     std::unique_ptr<ImGuiManager>      m_imguiManager;
-    i32                                m_currentAnimIndex = 0;
-    float                              m_blendSpeed = 0.3f;
-    std::unique_ptr<SkinningBuffer>    m_skinningBuffer;
     std::unique_ptr<PipelineState>     m_skinnedPipelineState;
+    std::unique_ptr<PipelineState>     m_gridPipelineState;
+    std::unique_ptr<PipelineState>     m_shadowPipelineState;
+    std::unique_ptr<PipelineState>     m_shadowSkinnedPipelineState;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_shadowMap;
+    std::unique_ptr<DescriptorHeap>    m_shadowDsvHeap;
+    D3D12_CPU_DESCRIPTOR_HANDLE        m_shadowDsvHandle{};
+    u32                                m_shadowSrvIndex = 0;
+    u32                                m_shadowMapSize = 4096;
+    i32                                m_shadowQualityIndex = 2;  // 0:1024, 1:2048, 2:4096, 3:8192
+    bool                               m_shadowMapDirty = false;
+    // エディタレイアウト
+    static constexpr f32 kLeftPanelWidth  = 280.0f;
+    static constexpr f32 kToolbarHeight   = 36.0f;
+    entt::entity m_selectedEntity = entt::null;
+    GizmoMode m_gizmoMode = GizmoMode::Translate;
+    bool m_gizmoLocalSpace = false;
+    bool m_isGameMode = false;
     std::unique_ptr<Camera>            m_camera;
     std::unique_ptr<ConstantBuffer>    m_perFrameCB;
     std::unique_ptr<CommandList>       m_commandList;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_depthBuffer;
     D3D12_CPU_DESCRIPTOR_HANDLE        m_dsvHandle{};
     std::unique_ptr<InputSystem>       m_inputSystem;
+    std::unique_ptr<Scene>             m_scene;
+    std::unique_ptr<ScriptEngine>      m_scriptEngine;
+    std::unique_ptr<AudioSystem>       m_audioSystem;
+    std::unique_ptr<PhysicsSystem>     m_physicsSystem;
+    std::unique_ptr<PhysicsDebugRenderer> m_physicsDebugRenderer;
+    bool                               m_physicsDebugDraw = false;
     GameClock                          m_gameClock;
     bool                               m_isRunning = false;
+    u32                                m_framesSinceStart = 0;
+
+    // エディタ/プレイモード
+    EngineMode m_engineMode = EngineMode::Editor;
+    EngineMode m_pendingMode = EngineMode::Editor;
+    bool m_modeChangeRequested = false;
+    struct CameraSnapshot {
+        DirectX::XMFLOAT3 position;
+        f32 yaw;
+        f32 pitch;
+    } m_cameraSnapshot{};
+
+    // エディタ上のエンティティ状態スナップショット（Play開始時に保存→復元）
+    struct EntitySnapshot {
+        // Transform
+        DirectX::XMFLOAT3 position;
+        DirectX::XMFLOAT3 rotation;
+        DirectX::XMFLOAT3 scale;
+        DirectX::XMFLOAT4 quaternion;
+        bool useQuaternion;
+
+        // Physics（エディタで変更した状態を保持）
+        bool hasRigidBody = false;
+        RigidBody rigidBodyData;
+        bool hasBoxCollider = false;
+        bool hasSphereCollider = false;
+        bool hasCapsuleCollider = false;
+        bool hasConvexHullCollider = false;
+
+        // Material PBR
+        float materialMetallic  = 1.0f;
+        float materialRoughness = 1.0f;
+    };
+    std::unordered_map<std::string, EntitySnapshot> m_editorSnapshots;
+
+    // Luaホットリロード
+    std::filesystem::file_time_type m_scriptLastWriteTime{};
+    f32 m_scriptPollTimer = 0.0f;
+    f32 m_hotReloadFlash = 0.0f;
+    f32 m_buildCompleteFlash = 0.0f;
+    static constexpr f32 kScriptPollInterval = 0.5f;
+
+    // シーン保存パス
+    std::string m_currentScenePath;
 
     // フレームレートリミッター
     static constexpr f32 kTargetFps = 144.0f;

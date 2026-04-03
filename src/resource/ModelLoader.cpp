@@ -4,13 +4,17 @@
 #include "core/Logger.h"
 #include "graphics/GraphicsDevice.h"
 #include "graphics/Texture.h"
+#include "graphics/DescriptorHeap.h"
 #include "resource/ResourceManager.h"
 
+#include <cstdlib>
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 
 #include <Windows.h>
+
+using namespace DirectX;
 
 namespace dx12e
 {
@@ -34,6 +38,36 @@ std::wstring ToWideString(const char* str)
     std::wstring result(static_cast<size_t>(len) - 1, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, str, -1, result.data(), len);
     return result;
+}
+
+std::filesystem::path ResolveTexturePath(
+    const char* rawPath,
+    const std::filesystem::path& modelDir)
+{
+    std::wstring wide = ToWideString(rawPath);
+    std::filesystem::path p(wide);
+    std::error_code ec;
+
+    // 1. 絶対パスがそのまま存在する
+    if (p.is_absolute() && std::filesystem::exists(p, ec))
+        return p;
+
+    // 2. モデルと同じディレクトリにファイル名だけで探す
+    auto byFilename = modelDir / p.filename();
+    if (std::filesystem::exists(byFilename, ec))
+        return byFilename;
+
+    // 3. モデルディレクトリからの相対パス
+    auto relative = modelDir / p;
+    if (std::filesystem::exists(relative, ec))
+        return relative;
+
+    // 4. textures/ サブフォルダ
+    auto inTextures = modelDir / "textures" / p.filename();
+    if (std::filesystem::exists(inTextures, ec))
+        return inTextures;
+
+    return {}; // 見つからない
 }
 
 DirectX::XMFLOAT4X4 ToXMFLOAT4X4(const aiMatrix4x4& m)
@@ -250,6 +284,154 @@ void WriteBoneWeightsToVertices(
     }
 }
 
+// ---------------------------------------------------------------
+// Node Animation: ノード階層の構築
+// ---------------------------------------------------------------
+void BuildNodeGraphRecursive(
+    const aiNode* node,
+    i32 parentIndex,
+    NodeGraph& graph)
+{
+    SceneNode sn;
+    sn.name = node->mName.C_Str();
+    sn.parentIndex = parentIndex;
+
+    sn.localDefault = ToXMFLOAT4X4(node->mTransformation);
+
+    for (unsigned int m = 0; m < node->mNumMeshes; ++m)
+    {
+        sn.meshIndices.push_back(node->mMeshes[m]);
+    }
+
+    i32 myIndex = static_cast<i32>(graph.GetNodeCount());
+    graph.AddNode(std::move(sn));
+
+    for (unsigned int c = 0; c < node->mNumChildren; ++c)
+    {
+        BuildNodeGraphRecursive(node->mChildren[c], myIndex, graph);
+    }
+}
+
+std::unique_ptr<NodeGraph> BuildNodeGraph(const aiScene* scene)
+{
+    if (!scene->mRootNode)
+    {
+        return nullptr;
+    }
+
+    auto graph = std::make_unique<NodeGraph>();
+    BuildNodeGraphRecursive(scene->mRootNode, -1, *graph);
+
+    // 初期グローバル行列の逆行列を計算（inverseBindPose相当）
+    graph->ComputeInverseDefaultGlobals();
+
+    Logger::Info("NodeGraph built: {} nodes (root='{}')",
+                 graph->GetNodeCount(), scene->mRootNode->mName.C_Str());
+
+    // デバッグ: メッシュ→ノード マッピング状況
+    u32 mappedMeshCount = 0;
+    for (u32 ni = 0; ni < graph->GetNodeCount(); ++ni)
+    {
+        const auto& node = graph->GetNode(ni);
+        mappedMeshCount += static_cast<u32>(node.meshIndices.size());
+        if (!node.meshIndices.empty())
+        {
+            Logger::Info("  Node[{}] '{}': {} meshes, parent={}",
+                         ni, node.name, node.meshIndices.size(), node.parentIndex);
+        }
+    }
+    Logger::Info("  Total mesh-node mappings: {}/{}", mappedMeshCount, scene->mNumMeshes);
+    return graph;
+}
+
+std::unique_ptr<NodeAnimationClip> BuildNodeAnimClipFromAnim(
+    const aiAnimation* anim, const NodeGraph& graph)
+{
+    auto clip = std::make_unique<NodeAnimationClip>();
+    clip->SetDuration(static_cast<float>(anim->mDuration));
+    clip->SetTicksPerSecond(anim->mTicksPerSecond > 0.0
+        ? static_cast<float>(anim->mTicksPerSecond)
+        : 25.0f);
+    clip->SetName(anim->mName.C_Str());
+
+    for (unsigned int ci = 0; ci < anim->mNumChannels; ++ci)
+    {
+        const aiNodeAnim* channel = anim->mChannels[ci];
+        std::string nodeName(channel->mNodeName.C_Str());
+
+        i32 nodeIndex = graph.FindNodeIndex(nodeName);
+        if (nodeIndex < 0)
+        {
+            Logger::Warn("  NodeAnim channel '{}' has no matching node - skipped", nodeName);
+            continue;
+        }
+
+        NodeTrack track;
+        track.nodeIndex = static_cast<u32>(nodeIndex);
+
+        // Position keys
+        track.positionKeys.reserve(channel->mNumPositionKeys);
+        for (unsigned int k = 0; k < channel->mNumPositionKeys; ++k)
+        {
+            const aiVectorKey& key = channel->mPositionKeys[k];
+            track.positionKeys.push_back({
+                static_cast<float>(key.mTime),
+                { key.mValue.x, key.mValue.y, key.mValue.z }
+            });
+        }
+
+        // Rotation keys: aiQuaternion (w,x,y,z) -> XMFLOAT4 (x,y,z,w)
+        track.rotationKeys.reserve(channel->mNumRotationKeys);
+        for (unsigned int k = 0; k < channel->mNumRotationKeys; ++k)
+        {
+            const aiQuatKey& key = channel->mRotationKeys[k];
+            track.rotationKeys.push_back({
+                static_cast<float>(key.mTime),
+                { key.mValue.x, key.mValue.y, key.mValue.z, key.mValue.w }
+            });
+        }
+
+        // Scale keys
+        track.scaleKeys.reserve(channel->mNumScalingKeys);
+        for (unsigned int k = 0; k < channel->mNumScalingKeys; ++k)
+        {
+            const aiVectorKey& key = channel->mScalingKeys[k];
+            track.scaleKeys.push_back({
+                static_cast<float>(key.mTime),
+                { key.mValue.x, key.mValue.y, key.mValue.z }
+            });
+        }
+
+        clip->AddTrack(std::move(track));
+    }
+
+    Logger::Info("NodeAnimClip built: '{}' {} tracks, duration={:.2f}",
+                 clip->GetName(), clip->GetTrackCount(), clip->GetDuration());
+    return clip;
+}
+
+std::vector<std::unique_ptr<NodeAnimationClip>> BuildAllNodeAnimClips(
+    const aiScene* scene, const NodeGraph& graph)
+{
+    std::vector<std::unique_ptr<NodeAnimationClip>> clips;
+
+    if (!scene->mAnimations || scene->mNumAnimations == 0)
+    {
+        return clips;
+    }
+
+    for (unsigned int ai = 0; ai < scene->mNumAnimations; ++ai)
+    {
+        auto clip = BuildNodeAnimClipFromAnim(scene->mAnimations[ai], graph);
+        if (clip && clip->GetTrackCount() > 0)
+        {
+            clips.push_back(std::move(clip));
+        }
+    }
+
+    return clips;
+}
+
 } // anonymous namespace
 
 ModelData ModelLoader::LoadFromFile(
@@ -264,8 +446,10 @@ ModelData ModelLoader::LoadFromFile(
         aiProcess_Triangulate |
         aiProcess_FlipUVs |
         aiProcess_GenNormals |
+        aiProcess_CalcTangentSpace |
         aiProcess_JoinIdenticalVertices |
-        aiProcess_LimitBoneWeights;
+        aiProcess_LimitBoneWeights |
+        aiProcess_PopulateArmatureData;
 
     const aiScene* scene = importer.ReadFile(filePath.string(), flags);
 
@@ -282,6 +466,89 @@ ModelData ModelLoader::LoadFromFile(
 
     ModelData result;
 
+    // ---------------------------------------------------------------
+    // Build nodeGraph + nodeAnimClips BEFORE mesh creation
+    // (needed for vertex baking with static animation pose)
+    // ---------------------------------------------------------------
+    std::unique_ptr<NodeGraph> nodeGraph;
+    std::vector<std::unique_ptr<NodeAnimationClip>> nodeAnimClips;
+    std::vector<DirectX::XMMATRIX> bakeGlobalMatrices; // per-node bake matrices (empty if not applicable)
+
+    if (!skeleton && scene->mNumAnimations > 0)
+    {
+        nodeGraph = BuildNodeGraph(scene);
+        if (nodeGraph)
+        {
+            nodeAnimClips = BuildAllNodeAnimClips(scene, *nodeGraph);
+
+            // ---------------------------------------------------------------
+            // Compute bake matrices: static clip (first clip) at time=0
+            // Uses the same S*R*T pipeline as NodeAnimator::ComputeRawNodeMatrices
+            // to avoid mismatch with FBX's complex node transforms (Pivot, PreRotation, etc.)
+            // ---------------------------------------------------------------
+            if (!nodeAnimClips.empty())
+            {
+                const NodeAnimationClip* staticClip = nodeAnimClips[0].get();
+                u32 nodeCount = nodeGraph->GetNodeCount();
+                bakeGlobalMatrices.resize(nodeCount, DirectX::XMMatrixIdentity());
+
+                for (u32 i = 0; i < nodeCount; ++i)
+                {
+                    const SceneNode& sceneNode = nodeGraph->GetNode(i);
+                    const NodeTrack* track = staticClip->FindTrackForNode(i);
+
+                    DirectX::XMMATRIX localMatrix;
+
+                    if (track)
+                    {
+                        // Use time=0 keyframe values (first key or interpolated at 0)
+                        DirectX::XMFLOAT3 pos = { 0.0f, 0.0f, 0.0f };
+                        DirectX::XMFLOAT4 rot = { 0.0f, 0.0f, 0.0f, 1.0f };
+                        DirectX::XMFLOAT3 scale = { 1.0f, 1.0f, 1.0f };
+
+                        if (!track->positionKeys.empty())
+                        {
+                            pos = track->positionKeys.front().value;
+                        }
+                        if (!track->rotationKeys.empty())
+                        {
+                            rot = track->rotationKeys.front().value;
+                        }
+                        if (!track->scaleKeys.empty())
+                        {
+                            scale = track->scaleKeys.front().value;
+                        }
+
+                        DirectX::XMMATRIX S = DirectX::XMMatrixScalingFromVector(DirectX::XMLoadFloat3(&scale));
+                        DirectX::XMMATRIX R = DirectX::XMMatrixRotationQuaternion(DirectX::XMLoadFloat4(&rot));
+                        DirectX::XMMATRIX T = DirectX::XMMatrixTranslationFromVector(DirectX::XMLoadFloat3(&pos));
+
+                        localMatrix = S * R * T;
+                    }
+                    else
+                    {
+                        localMatrix = DirectX::XMLoadFloat4x4(&sceneNode.localDefault);
+                    }
+
+                    if (sceneNode.parentIndex >= 0)
+                    {
+                        bakeGlobalMatrices[i] = localMatrix * bakeGlobalMatrices[static_cast<u32>(sceneNode.parentIndex)];
+                    }
+                    else
+                    {
+                        bakeGlobalMatrices[i] = localMatrix;
+                    }
+                }
+
+                Logger::Info("Bake matrices computed from static clip '{}' for {} nodes",
+                             staticClip->GetName(), nodeCount);
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Create meshes (with vertex baking for node animation)
+    // ---------------------------------------------------------------
     for (unsigned int meshIdx = 0; meshIdx < scene->mNumMeshes; ++meshIdx)
     {
         const aiMesh* aiMeshPtr = scene->mMeshes[meshIdx];
@@ -327,6 +594,28 @@ ModelData ModelLoader::LoadFromFile(
                 vertex.texCoord.y = aiMeshPtr->mTextureCoords[0][v].y;
             }
 
+            // Tangent (PBR normal mapping用)
+            if (aiMeshPtr->mTangents)
+            {
+                vertex.tangent.x = aiMeshPtr->mTangents[v].x;
+                vertex.tangent.y = aiMeshPtr->mTangents[v].y;
+                vertex.tangent.z = aiMeshPtr->mTangents[v].z;
+                vertex.tangent.w = 1.0f;
+                if (aiMeshPtr->mBitangents)
+                {
+                    // handedness 判定
+                    XMVECTOR N = XMLoadFloat3(&vertex.normal);
+                    XMVECTOR T = XMVectorSet(vertex.tangent.x, vertex.tangent.y, vertex.tangent.z, 0);
+                    XMVECTOR B_expected = XMVectorSet(
+                        aiMeshPtr->mBitangents[v].x,
+                        aiMeshPtr->mBitangents[v].y,
+                        aiMeshPtr->mBitangents[v].z, 0);
+                    XMVECTOR B_computed = XMVector3Cross(N, T);
+                    float dot = XMVectorGetX(XMVector3Dot(B_computed, B_expected));
+                    vertex.tangent.w = (dot < 0.0f) ? -1.0f : 1.0f;
+                }
+            }
+
             // boneIndices / boneWeights are zero-initialized by default
             vertices.push_back(vertex);
         }
@@ -335,6 +624,32 @@ ModelData ModelLoader::LoadFromFile(
         if (skeleton && aiMeshPtr->mNumBones > 0)
         {
             WriteBoneWeightsToVertices(aiMeshPtr, vertices, *skeleton);
+        }
+
+        // --- Bake vertices with static animation's global matrix ---
+        // Transform mesh vertices into model space using the rest pose (time=0)
+        // so that inv(rest) * current at render time produces correct results
+        if (nodeGraph && !bakeGlobalMatrices.empty())
+        {
+            i32 nodeIdx = nodeGraph->FindNodeForMesh(meshIdx);
+            if (nodeIdx >= 0)
+            {
+                DirectX::XMMATRIX bakeMatrix = bakeGlobalMatrices[static_cast<u32>(nodeIdx)];
+
+                for (auto& vert : vertices)
+                {
+                    // Transform position
+                    DirectX::XMVECTOR pos = DirectX::XMLoadFloat3(&vert.position);
+                    pos = DirectX::XMVector3TransformCoord(pos, bakeMatrix);
+                    DirectX::XMStoreFloat3(&vert.position, pos);
+
+                    // Transform normal
+                    DirectX::XMVECTOR norm = DirectX::XMLoadFloat3(&vert.normal);
+                    norm = DirectX::XMVector3TransformNormal(norm, bakeMatrix);
+                    norm = DirectX::XMVector3Normalize(norm);
+                    DirectX::XMStoreFloat3(&vert.normal, norm);
+                }
+            }
         }
 
         // --- Build index data ---
@@ -359,31 +674,158 @@ ModelData ModelLoader::LoadFromFile(
         {
             const aiMaterial* aiMat = scene->mMaterials[aiMeshPtr->mMaterialIndex];
 
+            // UV Transform（タイリング/オフセット）を取得して頂点 UV に適用
+            aiUVTransform uvTransform;
+            if (aiMat->Get(AI_MATKEY_UVTRANSFORM(aiTextureType_DIFFUSE, 0), uvTransform) == AI_SUCCESS)
+            {
+                float sx = uvTransform.mScaling.x;
+                float sy = uvTransform.mScaling.y;
+                float ox = uvTransform.mTranslation.x;
+                float oy = uvTransform.mTranslation.y;
+                if (sx != 1.0f || sy != 1.0f || ox != 0.0f || oy != 0.0f)
+                {
+                    for (auto& v : vertices)
+                    {
+                        v.texCoord.x = v.texCoord.x * sx + ox;
+                        v.texCoord.y = v.texCoord.y * sy + oy;
+                    }
+                    char dbg[256];
+                    snprintf(dbg, sizeof(dbg), "[UV] scale=(%.2f,%.2f) offset=(%.2f,%.2f)\n",
+                        sx, sy, ox, oy);
+                    OutputDebugStringA(dbg);
+                }
+            }
+
             if (aiMat->GetTextureCount(aiTextureType_DIFFUSE) > 0)
             {
                 aiString texPath;
                 if (aiMat->GetTexture(aiTextureType_DIFFUSE, 0, &texPath) == AI_SUCCESS)
                 {
-                    if (texPath.C_Str()[0] != '*')
                     {
-                        std::wstring wideTexPath = ToWideString(texPath.C_Str());
+                        char dbg[512];
+                        snprintf(dbg, sizeof(dbg), "[Texture] mat=%u path='%s' embedded=%u\n",
+                            aiMeshPtr->mMaterialIndex, texPath.C_Str(), scene->mNumTextures);
+                        OutputDebugStringA(dbg);
+                    }
 
-                        std::filesystem::path fullTexPath(wideTexPath);
-                        if (fullTexPath.is_relative())
+                    // Assimp: 埋め込みテクスチャは "*N" か GetEmbeddedTexture で取得
+                    const aiTexture* embTex = scene->GetEmbeddedTexture(texPath.C_Str());
+                    if (embTex)
+                    {
+                        // 埋め込みテクスチャ（パスが "*N" でなくても GetEmbeddedTexture で見つかる）
+                        std::string key = filePath.string() + "_emb_" + texPath.C_Str();
+                        if (embTex->mHeight == 0)
                         {
-                            fullTexPath = parentDir / fullTexPath;
+                            Texture* texture = resourceManager.GetOrLoadEmbeddedTexture(
+                                key,
+                                reinterpret_cast<const uint8_t*>(embTex->pcData),
+                                embTex->mWidth,
+                                embTex->achFormatHint,
+                                cmdList);
+                            if (texture)
+                                material->albedoTexture = texture;
                         }
-
-                        Texture* texture = resourceManager.GetOrLoadTexture(
-                            fullTexPath.wstring(), cmdList);
-
-                        if (texture)
+                    }
+                    else if (texPath.C_Str()[0] == '*')
+                    {
+                        // 埋め込みテクスチャ: "*0", "*1" → インデックス
+                        int embIdx = std::atoi(texPath.C_Str() + 1);
+                        if (embIdx >= 0 && static_cast<unsigned>(embIdx) < scene->mNumTextures)
                         {
-                            material->albedoTexture = texture;
+                            const aiTexture* aiTex = scene->mTextures[embIdx];
+                            if (aiTex->mHeight == 0)
+                            {
+                                // 圧縮形式（jpg/png等）: mWidth = バイトサイズ
+                                std::string key = filePath.string() + "_emb_" + std::to_string(embIdx);
+                                Texture* texture = resourceManager.GetOrLoadEmbeddedTexture(
+                                    key,
+                                    reinterpret_cast<const uint8_t*>(aiTex->pcData),
+                                    aiTex->mWidth,
+                                    aiTex->achFormatHint,
+                                    cmdList);
+                                if (texture)
+                                    material->albedoTexture = texture;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        auto resolvedPath = ResolveTexturePath(texPath.C_Str(), parentDir);
+                        if (!resolvedPath.empty())
+                        {
+                            Texture* texture = resourceManager.GetOrLoadTexture(
+                                resolvedPath.wstring(), cmdList);
+                            if (texture)
+                            {
+                                material->albedoTexture = texture;
+                            }
+                        }
+                        else
+                        {
+                            Logger::Warn("Texture not found: {}", texPath.C_Str());
                         }
                     }
                 }
             }
+
+            // --- PBR: Normal Map ---
+            auto loadPBRTexture = [&](aiTextureType type, bool srgb) -> Texture* {
+                if (aiMat->GetTextureCount(type) == 0) return nullptr;
+                aiString tp;
+                if (aiMat->GetTexture(type, 0, &tp) != AI_SUCCESS) return nullptr;
+
+                const aiTexture* emb = scene->GetEmbeddedTexture(tp.C_Str());
+                if (emb && emb->mHeight == 0)
+                {
+                    std::string key = filePath.string() + "_emb_" + tp.C_Str();
+                    return resourceManager.GetOrLoadEmbeddedTexture(
+                        key, reinterpret_cast<const uint8_t*>(emb->pcData),
+                        emb->mWidth, emb->achFormatHint, cmdList);
+                }
+                if (tp.C_Str()[0] != '*')
+                {
+                    auto resolved = ResolveTexturePath(tp.C_Str(), parentDir);
+                    if (!resolved.empty())
+                        return resourceManager.GetOrLoadTexture(resolved.wstring(), cmdList, srgb);
+                }
+                return nullptr;
+            };
+
+            // Normal map (linear)
+            material->normalMapTexture = loadPBRTexture(aiTextureType_NORMALS, false);
+            if (!material->normalMapTexture)
+                material->normalMapTexture = loadPBRTexture(aiTextureType_HEIGHT, false);
+
+            // Metalness (linear)
+            material->metalRoughnessTexture = loadPBRTexture(aiTextureType_METALNESS, false);
+            if (!material->metalRoughnessTexture)
+                material->metalRoughnessTexture = loadPBRTexture(aiTextureType_DIFFUSE_ROUGHNESS, false);
+
+            // PBR scalar factors
+            float metallic = 0.0f, roughness = 0.5f;
+            aiMat->Get(AI_MATKEY_METALLIC_FACTOR, metallic);
+            aiMat->Get(AI_MATKEY_ROUGHNESS_FACTOR, roughness);
+            material->defaultMetallic = metallic;
+            material->defaultRoughness = roughness;
+        }
+
+        // PBR SRVブロック確保（albedo, normal, metalRoughness の3連続SRV）
+        {
+            auto* srvHeap = resourceManager.GetSrvHeap();
+            auto* dev = resourceManager.GetDevice();
+            Texture* albedo = material->albedoTexture ? material->albedoTexture : resourceManager.GetDefaultWhiteTexture();
+            Texture* normal = material->normalMapTexture ? material->normalMapTexture : resourceManager.GetDefaultNormalTexture();
+            Texture* mr     = material->metalRoughnessTexture ? material->metalRoughnessTexture : resourceManager.GetDefaultMetalRoughnessTexture();
+
+            u32 blockStart = srvHeap->AllocateIndex();
+            u32 idx1 = srvHeap->AllocateIndex(); (void)idx1;
+            u32 idx2 = srvHeap->AllocateIndex(); (void)idx2;
+
+            albedo->CreateSRV(*dev, srvHeap->GetCpuHandle(blockStart));
+            normal->CreateSRV(*dev, srvHeap->GetCpuHandle(blockStart + 1));
+            mr->CreateSRV(*dev, srvHeap->GetCpuHandle(blockStart + 2));
+
+            material->srvBlockIndex = blockStart;
         }
 
         mesh->SetMaterial(material.get());
@@ -392,11 +834,15 @@ ModelData ModelLoader::LoadFromFile(
         result.materials.push_back(std::move(material));
     }
 
-    // Build animation clips if skeleton and animations exist
+    // Build animation clips if skeleton exists
     if (skeleton)
     {
         result.animClips = BuildAllAnimationClips(scene, *skeleton);
     }
+
+    // Move nodeGraph + nodeAnimClips into result
+    result.nodeGraph = std::move(nodeGraph);
+    result.nodeAnimClips = std::move(nodeAnimClips);
 
     result.skeleton = std::move(skeleton);
 
@@ -414,7 +860,8 @@ std::vector<std::unique_ptr<AnimationClip>> ModelLoader::LoadAnimationsFromFile(
 
     const unsigned int flags =
         aiProcess_Triangulate |
-        aiProcess_LimitBoneWeights;
+        aiProcess_LimitBoneWeights |
+        aiProcess_PopulateArmatureData;
 
     const aiScene* scene = importer.ReadFile(filePath.string(), flags);
 

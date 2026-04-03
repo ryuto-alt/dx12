@@ -95,6 +95,7 @@ PipelineStateBuilder& PipelineStateBuilder::SetInputLayout(const D3D12_INPUT_ELE
 PipelineStateBuilder& PipelineStateBuilder::SetRenderTargetFormat(DXGI_FORMAT format)
 {
     m_desc.RTVFormats[0] = format;
+    m_desc.NumRenderTargets = (format == DXGI_FORMAT_UNKNOWN) ? 0 : 1;
     return *this;
 }
 
@@ -107,6 +108,33 @@ PipelineStateBuilder& PipelineStateBuilder::SetDepthStencilFormat(DXGI_FORMAT fo
 PipelineStateBuilder& PipelineStateBuilder::SetDepthEnabled(bool enabled)
 {
     m_desc.DepthStencilState.DepthEnable = enabled ? TRUE : FALSE;
+    return *this;
+}
+
+PipelineStateBuilder& PipelineStateBuilder::SetAlphaBlendEnabled(bool enabled)
+{
+    auto& rt = m_desc.BlendState.RenderTarget[0];
+    rt.BlendEnable    = enabled ? TRUE : FALSE;
+    rt.SrcBlend       = D3D12_BLEND_SRC_ALPHA;
+    rt.DestBlend      = D3D12_BLEND_INV_SRC_ALPHA;
+    rt.BlendOp        = D3D12_BLEND_OP_ADD;
+    rt.SrcBlendAlpha  = D3D12_BLEND_ONE;
+    rt.DestBlendAlpha = D3D12_BLEND_ZERO;
+    rt.BlendOpAlpha   = D3D12_BLEND_OP_ADD;
+    return *this;
+}
+
+PipelineStateBuilder& PipelineStateBuilder::SetCullMode(D3D12_CULL_MODE mode)
+{
+    m_desc.RasterizerState.CullMode = mode;
+    return *this;
+}
+
+PipelineStateBuilder& PipelineStateBuilder::SetDepthBias(i32 bias, f32 slopeScaledBias)
+{
+    m_desc.RasterizerState.DepthBias = bias;
+    m_desc.RasterizerState.SlopeScaledDepthBias = slopeScaledBias;
+    m_desc.RasterizerState.DepthBiasClamp = 0.0f;
     return *this;
 }
 

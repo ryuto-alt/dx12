@@ -1,0 +1,362 @@
+{
+  "entities": [
+    {
+      "convexHullCollider": true,
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "meshRenderer": {
+        "modelPath": "models/kennenyfbxmodel/animal-lion.fbx"
+      },
+      "name": "lion",
+      "rigidBody": {
+        "angularDamping": 0.009999999776482582,
+        "friction": 0.30000001192092896,
+        "linearDamping": 0.019999999552965164,
+        "mass": 30,
+        "motionType": 2,
+        "restitution": 0.4000000059604645,
+        "useGravity": true
+      },
+      "transform": {
+        "position": [
+          6,
+          0,
+          4
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.009999999776482582,
+          0.009999999776482582,
+          0.009999999776482582
+        ]
+      }
+    },
+    {
+      "convexHullCollider": true,
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "meshRenderer": {
+        "modelPath": "models/kennenyfbxmodel/animal-bunny.fbx"
+      },
+      "name": "bunny",
+      "rigidBody": {
+        "angularDamping": 0.009999999776482582,
+        "friction": 0.30000001192092896,
+        "linearDamping": 0.019999999552965164,
+        "mass": 2,
+        "motionType": 2,
+        "restitution": 0.4000000059604645,
+        "useGravity": true
+      },
+      "transform": {
+        "position": [
+          3,
+          0,
+          4
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.009999999776482582,
+          0.009999999776482582,
+          0.009999999776482582
+        ]
+      }
+    },
+    {
+      "convexHullCollider": true,
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "meshRenderer": {
+        "modelPath": "models/kennenyfbxmodel/animal-cat.fbx"
+      },
+      "name": "cat",
+      "rigidBody": {
+        "angularDamping": 0.009999999776482582,
+        "friction": 0.30000001192092896,
+        "linearDamping": 0.019999999552965164,
+        "mass": 4,
+        "motionType": 2,
+        "restitution": 0.4000000059604645,
+        "useGravity": true
+      },
+      "transform": {
+        "position": [
+          0,
+          0,
+          4
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.009999999776482582,
+          0.009999999776482582,
+          0.009999999776482582
+        ]
+      }
+    },
+    {
+      "convexHullCollider": true,
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "meshRenderer": {
+        "modelPath": "models/kennenyfbxmodel/animal-penguin.fbx"
+      },
+      "name": "penguin",
+      "rigidBody": {
+        "angularDamping": 0.009999999776482582,
+        "friction": 0.30000001192092896,
+        "linearDamping": 0.019999999552965164,
+        "mass": 3,
+        "motionType": 2,
+        "restitution": 0.4000000059604645,
+        "useGravity": true
+      },
+      "transform": {
+        "position": [
+          -3,
+          0,
+          4
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.009999999776482582,
+          0.009999999776482582,
+          0.009999999776482582
+        ]
+      }
+    },
+    {
+      "convexHullCollider": true,
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "meshRenderer": {
+        "modelPath": "models/kennenyfbxmodel/animal-fox.fbx"
+      },
+      "name": "fox",
+      "rigidBody": {
+        "angularDamping": 0.009999999776482582,
+        "friction": 0.30000001192092896,
+        "linearDamping": 0.019999999552965164,
+        "mass": 5,
+        "motionType": 2,
+        "restitution": 0.4000000059604645,
+        "useGravity": true
+      },
+      "transform": {
+        "position": [
+          -6,
+          0,
+          4
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.009999999776482582,
+          0.009999999776482582,
+          0.009999999776482582
+        ]
+      }
+    },
+    {
+      "convexHullCollider": true,
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8082915544509888
+      },
+      "meshRenderer": {
+        "modelPath": "models/fbxmodel/Climbing To Top.fbx"
+      },
+      "name": "climbing",
+      "rigidBody": {
+        "angularDamping": 0.009999999776482582,
+        "friction": 0.30000001192092896,
+        "linearDamping": 0.019999999552965164,
+        "mass": 60,
+        "motionType": 2,
+        "restitution": 0.4000000059604645,
+        "useGravity": true
+      },
+      "transform": {
+        "position": [
+          3,
+          -1,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.009999999776482582,
+          0.009999999776482582,
+          0.009999999776482582
+        ]
+      }
+    },
+    {
+      "convexHullCollider": true,
+      "material": {
+        "metallic": 0,
+        "roughness": 0.2928932309150696
+      },
+      "meshRenderer": {
+        "modelPath": "models/human/walk.gltf"
+      },
+      "name": "human1",
+      "rigidBody": {
+        "angularDamping": 0.009999999776482582,
+        "friction": 0.30000001192092896,
+        "linearDamping": 0.019999999552965164,
+        "mass": 60,
+        "motionType": 2,
+        "restitution": 0.4000000059604645,
+        "useGravity": true
+      },
+      "transform": {
+        "position": [
+          0,
+          -1,
+          0
+        ],
+        "rotation": [
+          90,
+          0,
+          0
+        ],
+        "scale": [
+          0.019999999552965164,
+          0.019999999552965164,
+          0.019999999552965164
+        ]
+      }
+    },
+    {
+      "convexHullCollider": true,
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8082915544509888
+      },
+      "meshRenderer": {
+        "modelPath": "models/fbxmodel/Strut Walking.fbx"
+      },
+      "name": "strut_walker",
+      "rigidBody": {
+        "angularDamping": 0.009999999776482582,
+        "friction": 0.30000001192092896,
+        "linearDamping": 0.019999999552965164,
+        "mass": 60,
+        "motionType": 2,
+        "restitution": 0.4000000059604645,
+        "useGravity": true
+      },
+      "transform": {
+        "position": [
+          -3,
+          -1,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.009999999776482582,
+          0.009999999776482582,
+          0.009999999776482582
+        ]
+      }
+    },
+    {
+      "convexHullCollider": true,
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "meshRenderer": {
+        "modelPath": "models/fbxmodel/ground.fbx"
+      },
+      "name": "ground",
+      "rigidBody": {
+        "angularDamping": 0.009999999776482582,
+        "friction": 0.30000001192092896,
+        "linearDamping": 0.019999999552965164,
+        "mass": 0,
+        "motionType": 0,
+        "restitution": 0.4000000059604645,
+        "useGravity": true
+      },
+      "transform": {
+        "position": [
+          0,
+          -1,
+          0
+        ],
+        "rotation": [
+          -90,
+          0,
+          0
+        ],
+        "scale": [
+          5,
+          5,
+          5
+        ]
+      }
+    },
+    {
+      "gridPlane": {
+        "size": 50
+      },
+      "name": "grid_floor",
+      "primitive": "box",
+      "transform": {
+        "position": [
+          0,
+          -1,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    }
+  ],
+  "version": 1
+}

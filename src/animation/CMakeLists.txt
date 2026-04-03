@@ -3,6 +3,9 @@ add_library(Animation STATIC
     AnimationClip.cpp
     Animator.cpp
     SkinningBuffer.cpp
+    NodeGraph.cpp
+    NodeAnimationClip.cpp
+    NodeAnimator.cpp
 )
 
 target_include_directories(Animation PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
