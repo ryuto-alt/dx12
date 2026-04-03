@@ -607,13 +607,14 @@ void Application::Update()
     if (m_engineMode == EngineMode::Editor)
     {
         // エディタモード: C++カメラ操作
-        if (m_inputSystem->IsKeyPressed(VK_TAB))
-        {
-            m_inputSystem->SetMouseCapture(false);
-        }
-        if (m_framesSinceStart > 5 && !m_inputSystem->IsMouseCaptured() && (GetAsyncKeyState(VK_RBUTTON) & 0x8000))
+        bool rightMouseHeld = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
+        if (m_framesSinceStart > 5 && rightMouseHeld && !m_inputSystem->IsMouseCaptured())
         {
             m_inputSystem->SetMouseCapture(true);
+        }
+        else if (!rightMouseHeld && m_inputSystem->IsMouseCaptured())
+        {
+            m_inputSystem->SetMouseCapture(false);
         }
         if (m_inputSystem->IsMouseCaptured() && !ImGuizmo::IsUsing())
         {
