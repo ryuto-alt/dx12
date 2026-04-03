@@ -225,16 +225,17 @@ void Mesh::ApplyUVScale(GraphicsDevice& device, float scaleU, float scaleV)
 {
     if (m_verticesCache.empty()) return;
 
-    for (auto& v : m_verticesCache)
+    // オリジナル UV からスケール（累積しない）
+    auto scaled = m_verticesCache;
+    for (auto& v : scaled)
     {
         v.texCoord.x *= scaleU;
         v.texCoord.y *= scaleV;
     }
 
-    // VertexBuffer を再作成
     m_vertexBuffer.Initialize(device,
-                              m_verticesCache.data(),
-                              static_cast<u32>(m_verticesCache.size() * sizeof(Vertex)),
+                              scaled.data(),
+                              static_cast<u32>(scaled.size() * sizeof(Vertex)),
                               static_cast<u32>(sizeof(Vertex)));
 }
 

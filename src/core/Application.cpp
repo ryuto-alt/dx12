@@ -232,16 +232,23 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode)
         // 保存シーンがあればロード（OnStart は呼ばない＝保存データが完全に優先）
         // 保存シーンがなければ Lua OnStart でエンティティ生成
         {
+            // 常に Lua OnStart でエンティティ生成 → 保存シーンがあればオーバーライド適用
+            m_scriptEngine->CallOnStart();
+
             std::string savedScene = std::string(ASSETS_DIR) + "scenes/default.json";
             if (std::filesystem::exists(savedScene))
             {
-                SceneSerializer::Load(*m_scene, savedScene, std::string(ASSETS_DIR));
+                // 保存済みの Transform / Material を上書き復元
+                SceneSerializer::ApplyOverrides(*m_scene, savedScene, std::string(ASSETS_DIR));
                 m_currentScenePath = savedScene;
             }
-            else
-            {
-                m_scriptEngine->CallOnStart();
-            }
+        }
+
+        // ホットリロード用タイムスタンプ初期化（初回の誤発火を防止）
+        {
+            std::string scriptPath = std::string(SCRIPTS_DIR) + "game.lua";
+            if (std::filesystem::exists(scriptPath))
+                m_scriptLastWriteTime = std::filesystem::last_write_time(scriptPath);
         }
 
         // エディタモード初期化時はキャプチャ解除（Luaが OnStart で capture する場合があるため）
@@ -804,6 +811,20 @@ void Application::EnterPlayMode()
             snap.hasCapsuleCollider    = reg.all_of<CapsuleCollider>(entity);
             snap.hasConvexHullCollider = reg.all_of<ConvexHullCollider>(entity);
 
+            // Material PBR
+            if (reg.all_of<MeshRenderer>(entity))
+            {
+                const auto& mr = reg.get<MeshRenderer>(entity);
+                if (!mr.meshes.empty() && mr.meshes[0] && mr.meshes[0]->GetMaterial())
+                {
+                    // オーバーライド値があればそちらを保存
+                    snap.materialMetallic  = (mr.overrideMetallic  >= 0.0f) ? mr.overrideMetallic
+                                           : mr.meshes[0]->GetMaterial()->defaultMetallic;
+                    snap.materialRoughness = (mr.overrideRoughness >= 0.0f) ? mr.overrideRoughness
+                                           : mr.meshes[0]->GetMaterial()->defaultRoughness;
+                }
+            }
+
             m_editorSnapshots[name.name] = snap;
         }
     }
@@ -853,8 +874,16 @@ void Application::EnterPlayMode()
             {
                 // エディタのパラメータで上書き（Luaのデフォルト値ではなくエディタの設定値を使う）
                 auto rb = snap.rigidBodyData;
-                rb.bodyId = kInvalidBodyId; // 新規登録用にリセット
+                rb.bodyId = kInvalidBodyId;
                 reg.emplace_or_replace<RigidBody>(entity, rb);
+            }
+
+            // Material PBR 復元（オーバーライド値に設定）
+            if (reg.all_of<MeshRenderer>(entity))
+            {
+                auto& mr = reg.get<MeshRenderer>(entity);
+                mr.overrideMetallic  = snap.materialMetallic;
+                mr.overrideRoughness = snap.materialRoughness;
             }
         }
     }
@@ -936,15 +965,28 @@ void Application::EnterEditorMode()
                 rb.bodyId = kInvalidBodyId;
                 reg.emplace_or_replace<RigidBody>(entity, rb);
             }
+
+            // Material PBR 復元（オーバーライド値に設定）
+            if (reg.all_of<MeshRenderer>(entity))
+            {
+                auto& mr = reg.get<MeshRenderer>(entity);
+                mr.overrideMetallic  = snap.materialMetallic;
+                mr.overrideRoughness = snap.materialRoughness;
+            }
         }
     }
 
-    // Editorモード: サイドバー分を引いたアスペクト比に再計算
-    f32 viewW = static_cast<f32>(m_window->GetWidth());
-    if (!m_isGameMode) viewW = (std::max)(viewW - kLeftPanelWidth, 1.0f);
-    m_camera->SetPerspective(DirectX::XM_PIDIV4,
-        viewW / static_cast<f32>(m_window->GetHeight()),
-        0.1f, 1000.0f);
+    // Editorモード: サイドバー+ツールバー分を引いたアスペクト比に再計算
+    {
+        f32 viewW = static_cast<f32>(m_window->GetWidth());
+        f32 viewH = static_cast<f32>(m_window->GetHeight());
+        if (!m_isGameMode)
+        {
+            viewW = (std::max)(viewW - kLeftPanelWidth, 1.0f);
+            viewH = (std::max)(viewH - kToolbarHeight, 1.0f);
+        }
+        m_camera->SetPerspective(DirectX::XM_PIDIV4, viewW / viewH, 0.1f, 1000.0f);
+    }
 
     m_inputSystem->SetMouseCapture(false);
     m_engineMode = EngineMode::Editor;
@@ -1277,8 +1319,11 @@ void Application::Render()
 
                 // PBR Material Constants (Slot 5)
                 struct { float metallic; float roughness; u32 flags; float pad; } pbrParams;
-                pbrParams.metallic  = mat ? mat->defaultMetallic : 0.0f;
-                pbrParams.roughness = mat ? mat->defaultRoughness : 0.5f;
+                // MeshRenderer のオーバーライド値を優先、なければ Material の値
+                pbrParams.metallic  = (renderer.overrideMetallic  >= 0.0f) ? renderer.overrideMetallic
+                                    : (mat ? mat->defaultMetallic : 0.0f);
+                pbrParams.roughness = (renderer.overrideRoughness >= 0.0f) ? renderer.overrideRoughness
+                                    : (mat ? mat->defaultRoughness : 0.5f);
                 pbrParams.flags     = 0;
                 if (mat && mat->normalMapTexture)      pbrParams.flags |= 1u;
                 if (mat && mat->metalRoughnessTexture) pbrParams.flags |= 2u;
@@ -1695,6 +1740,33 @@ void Application::Render()
                         ImGui::DragFloat("Friction", &rb.friction, 0.01f, 0.0f, 2.0f);
                         ImGui::DragFloat("Bounce", &rb.restitution, 0.01f, 0.0f, 1.0f);
                         ImGui::Checkbox("Gravity", &rb.useGravity);
+                    }
+                }
+
+                // --- Material (PBR) ---
+                if (reg.all_of<MeshRenderer>(m_selectedEntity))
+                {
+                    auto& mr = reg.get<MeshRenderer>(m_selectedEntity);
+                    if (!mr.meshes.empty() && mr.meshes[0] && mr.meshes[0]->GetMaterial())
+                    {
+                        const auto* mat = mr.meshes[0]->GetMaterial();
+                        if (ImGui::CollapsingHeader("Material"))
+                        {
+                            // 初回: Material の値で初期化
+                            if (mr.overrideMetallic < 0.0f)
+                                mr.overrideMetallic = mat->defaultMetallic;
+                            if (mr.overrideRoughness < 0.0f)
+                                mr.overrideRoughness = mat->defaultRoughness;
+
+                            // MeshRenderer に直接書き込む（Material ポインタを経由しない）
+                            ImGui::SliderFloat("Metallic", &mr.overrideMetallic, 0.0f, 1.0f);
+                            ImGui::SliderFloat("Roughness", &mr.overrideRoughness, 0.0f, 1.0f);
+
+                            bool hasNormal = mat->normalMapTexture != nullptr;
+                            bool hasMR = mat->metalRoughnessTexture != nullptr;
+                            ImGui::Text("Normal Map: %s", hasNormal ? "Yes" : "No");
+                            ImGui::Text("MetalRough Map: %s", hasMR ? "Yes" : "No");
+                        }
                     }
                 }
             }

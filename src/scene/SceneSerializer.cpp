@@ -2,6 +2,7 @@
 #include "scene/Scene.h"
 #include "ecs/Components.h"
 #include "renderer/Mesh.h"
+#include "renderer/Material.h"
 #include "core/Logger.h"
 
 #pragma warning(push)
@@ -85,8 +86,19 @@ bool SceneSerializer::Save(const Scene& scene, const std::string& filePath,
             }
             else
             {
-                // SpawnBox/SpawnSphere（modelPath が空のプリミティブ）
-                ej["primitive"] = "box"; // TODO: sphere 判定
+                ej["primitive"] = "box";
+            }
+
+            // PBR Material パラメータ保存（オーバーライド値優先）
+            if (!mr.meshes.empty() && mr.meshes[0] && mr.meshes[0]->GetMaterial())
+            {
+                const auto* mat = mr.meshes[0]->GetMaterial();
+                f32 metallic  = (mr.overrideMetallic  >= 0.0f) ? mr.overrideMetallic  : mat->defaultMetallic;
+                f32 roughness = (mr.overrideRoughness >= 0.0f) ? mr.overrideRoughness : mat->defaultRoughness;
+                ej["material"] = {
+                    {"metallic",  metallic},
+                    {"roughness", roughness}
+                };
             }
         }
 
@@ -392,11 +404,87 @@ bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
                     }
                 }
             }
+
+            // Material PBR パラメータ復元（MeshRenderer のオーバーライド値に設定）
+            if (ej.contains("material"))
+            {
+                const auto& mj = ej["material"];
+                if (reg.all_of<MeshRenderer>(e))
+                {
+                    auto& mr = reg.get<MeshRenderer>(e);
+                    if (mj.contains("metallic"))  mr.overrideMetallic  = mj["metallic"].get<f32>();
+                    if (mj.contains("roughness")) mr.overrideRoughness = mj["roughness"].get<f32>();
+                }
+            }
         }
     }
 
     Logger::Info("Scene loaded ({} entities): {}",
                  root["entities"].size(), filePath);
+    return true;
+}
+
+bool SceneSerializer::ApplyOverrides(Scene& scene, const std::string& filePath,
+                                     const std::string& /*assetsDir*/)
+{
+    std::ifstream ifs(filePath);
+    if (!ifs.is_open()) return false;
+
+    json root;
+    try { root = json::parse(ifs); }
+    catch (...) { return false; }
+    ifs.close();
+
+    if (!root.contains("entities") || !root["entities"].is_array())
+        return false;
+
+    auto& reg = scene.GetRegistry();
+
+    for (const auto& ej : root["entities"])
+    {
+        std::string name = ej.value("name", "");
+        if (name.empty()) continue;
+
+        // 名前でエンティティを検索
+        Entity entity = scene.FindEntity(name);
+        if (!entity.IsValid()) continue;
+        auto e = entity.GetHandle();
+
+        // Transform 上書き
+        if (ej.contains("transform") && reg.all_of<Transform>(e))
+        {
+            auto& t = reg.get<Transform>(e);
+            const auto& tj = ej["transform"];
+            t.position = DeserializeFloat3(tj["position"], t.position);
+            t.rotation = DeserializeFloat3(tj["rotation"], t.rotation);
+            t.scale    = DeserializeFloat3(tj["scale"],    t.scale);
+        }
+
+        // Material PBR オーバーライド
+        if (ej.contains("material") && reg.all_of<MeshRenderer>(e))
+        {
+            const auto& mj = ej["material"];
+            auto& mr = reg.get<MeshRenderer>(e);
+            if (mj.contains("metallic"))  mr.overrideMetallic  = mj["metallic"].get<f32>();
+            if (mj.contains("roughness")) mr.overrideRoughness = mj["roughness"].get<f32>();
+        }
+
+        // RigidBody
+        if (ej.contains("rigidBody") && reg.all_of<RigidBody>(e))
+        {
+            auto& rb = reg.get<RigidBody>(e);
+            const auto& rj = ej["rigidBody"];
+            rb.motionType     = static_cast<MotionType>(rj.value("motionType", 2));
+            rb.mass           = rj.value("mass", 1.0f);
+            rb.friction       = rj.value("friction", 0.3f);
+            rb.restitution    = rj.value("restitution", 0.4f);
+            rb.linearDamping  = rj.value("linearDamping", 0.02f);
+            rb.angularDamping = rj.value("angularDamping", 0.01f);
+            rb.useGravity     = rj.value("useGravity", true);
+        }
+    }
+
+    Logger::Info("Scene overrides applied: {}", filePath);
     return true;
 }
 

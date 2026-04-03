@@ -36,6 +36,7 @@ namespace dx12e
     class AudioSystem;
     class PhysicsSystem;
     class PhysicsDebugRenderer;
+    struct Material;
 }
 
 namespace dx12e
@@ -137,6 +138,10 @@ private:
         bool hasSphereCollider = false;
         bool hasCapsuleCollider = false;
         bool hasConvexHullCollider = false;
+
+        // Material PBR
+        float materialMetallic  = 1.0f;
+        float materialRoughness = 1.0f;
     };
     std::unordered_map<std::string, EntitySnapshot> m_editorSnapshots;
 

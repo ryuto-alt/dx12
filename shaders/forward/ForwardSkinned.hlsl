@@ -141,8 +141,8 @@ float4 PSMain(PSInput input) : SV_TARGET
     if (pbrFlags & 2u)
     {
         float4 mr = g_metalRoughness.Sample(g_sampler, input.texCoord);
-        roughness = mr.g;
-        metallic  = mr.b;
+        roughness = mr.g * defaultRoughness;
+        metallic  = mr.b * defaultMetallic;
     }
     else
     {
@@ -172,7 +172,13 @@ float4 PSMain(PSInput input) : SV_TARGET
     float shadow = CalcShadow(input.shadowCoord);
 
     float3 Lo = (kD * albedo / PI + specular) * lightColor * NdotL * shadow;
-    float3 ambient = ambientStrength * albedo;
+
+    // Ambient: metallic は拡散反射を持たない → (1-metallic) でスケール
+    // F0 項は環境反射の簡易近似（IBL 未実装のため F0 をそのまま使用）
+    float3 ambientDiffuse  = albedo * (1.0 - metallic);
+    float3 ambientSpecular = F0;
+    float3 ambient = ambientStrength * (ambientDiffuse + ambientSpecular);
+
     float3 color = ambient + Lo;
 
     color = ACESFilm(color);

@@ -42,6 +42,10 @@ struct MeshRenderer
     std::vector<Mesh*>     meshes;
     std::vector<Material*> materials;
     std::vector<DirectX::XMFLOAT4X4> meshNodeTransforms;
+
+    // エディタ用 PBR オーバーライド（Material ポインタに依存しない直接値）
+    float overrideMetallic  = -1.0f;  // < 0 = Material の値を使う
+    float overrideRoughness = -1.0f;
 };
 
 struct SkeletalAnimation

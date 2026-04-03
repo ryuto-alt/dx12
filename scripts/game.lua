@@ -38,7 +38,7 @@ function OnStart()
         return scene:spawn("ground", groundModel,
             Vec3.new(0, -1, 0), Vec3.new(-90, 0, 0), Vec3.new(5, 5, 5))
     end)
-    scene:setUVScale(ground, 10, 10)  -- Blender のタイリングに合わせる
+    scene:setUVScale(ground, 30, 30)  -- Blender のタイリングに合わせる
     physics:autoCollider(ground)
     physics:addRigidBody(ground, MOTION_STATIC, 0)
 

@@ -40,6 +40,7 @@ public:
 
     void SetMaterial(Material* mat) { m_material = mat; }
     const Material* GetMaterial() const { return m_material; }
+    Material* GetMaterialMutable() { return m_material; }
 
     DirectX::XMFLOAT3 GetAABBMin() const { return m_aabbMin; }
     DirectX::XMFLOAT3 GetAABBMax() const { return m_aabbMax; }
