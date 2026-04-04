@@ -31,6 +31,7 @@ namespace dx12e
     class ResourceManager;
     class InputSystem;
     class ImGuiManager;
+    class RmlUIManager;
     class Scene;
     class ScriptEngine;
     class AudioSystem;
@@ -78,6 +79,7 @@ private:
     std::unique_ptr<DescriptorHeap>    m_srvHeap;
     std::unique_ptr<ResourceManager>   m_resourceManager;
     std::unique_ptr<ImGuiManager>      m_imguiManager;
+    std::unique_ptr<RmlUIManager>      m_rmlManager;
     std::unique_ptr<PipelineState>     m_skinnedPipelineState;
     std::unique_ptr<PipelineState>     m_gridPipelineState;
     std::unique_ptr<PipelineState>     m_shadowPipelineState;

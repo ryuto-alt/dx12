@@ -16,6 +16,7 @@ class InputSystem;
 class Camera;
 class AudioSystem;
 class PhysicsSystem;
+class RmlUIManager;
 
 class ScriptEngine
 {
@@ -28,6 +29,7 @@ public:
 
     void Initialize(Scene* scene, InputSystem* input, Camera* camera,
                     AudioSystem* audio, PhysicsSystem* physics,
+                    RmlUIManager* rmlManager,
                     const std::string& assetsDir);
 
     void LoadScript(const std::string& filePath);
@@ -50,7 +52,8 @@ private:
     InputSystem*   m_input   = nullptr;
     Camera*        m_camera  = nullptr;
     AudioSystem*   m_audio   = nullptr;
-    PhysicsSystem* m_physics = nullptr;
+    PhysicsSystem*  m_physics    = nullptr;
+    RmlUIManager*   m_rmlManager = nullptr;
     std::string  m_assetsDir;
     std::string  m_lastError;
 };

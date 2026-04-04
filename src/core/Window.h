@@ -9,6 +9,7 @@ namespace dx12e
 {
 
 class InputSystem;
+class RmlUIManager;
 
 class Window
 {
@@ -34,6 +35,7 @@ public:
     void         ResetResizedFlag() { m_resized = false; }
     bool         IsFullscreen() const { return m_fullscreen; }
     void         SetInputSystem(InputSystem* input) { m_inputSystem = input; }
+    void         SetRmlManager(RmlUIManager* mgr) { m_rmlManager = mgr; }
 
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -47,6 +49,7 @@ private:
     bool         m_fullscreen = false;
     RECT         m_windowedRect = {};
     InputSystem* m_inputSystem = nullptr;
+    RmlUIManager* m_rmlManager = nullptr;
 };
 
 } // namespace dx12e

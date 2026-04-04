@@ -73,6 +73,7 @@ if(DXC_EXECUTABLE)
     set(SHADER_SHADOW        "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPass.hlsl")
     set(SHADER_SHADOW_SKIN   "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPassSkinned.hlsl")
     set(SHADER_DEBUG_LINE    "${CMAKE_SOURCE_DIR}/shaders/debug/DebugLine.hlsl")
+    set(SHADER_UI            "${CMAKE_SOURCE_DIR}/shaders/ui/UI.hlsl")
 
     set(SHADER_OUTPUTS
         "${SHADER_OUTPUT_DIR}/Forward_VS.cso"
@@ -85,6 +86,8 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/ShadowPassSkinned_VS.cso"
         "${SHADER_OUTPUT_DIR}/DebugLine_VS.cso"
         "${SHADER_OUTPUT_DIR}/DebugLine_PS.cso"
+        "${SHADER_OUTPUT_DIR}/UI_VS.cso"
+        "${SHADER_OUTPUT_DIR}/UI_PS.cso"
     )
 
     add_custom_command(
@@ -155,6 +158,20 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/DebugLine_PS.cso" "${SHADER_DEBUG_LINE}"
         DEPENDS "${SHADER_DEBUG_LINE}"
         COMMENT "Compiling DebugLine.hlsl -> DebugLine_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/UI_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/UI_VS.cso" "${SHADER_UI}"
+        DEPENDS "${SHADER_UI}"
+        COMMENT "Compiling UI.hlsl -> UI_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/UI_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/UI_PS.cso" "${SHADER_UI}"
+        DEPENDS "${SHADER_UI}"
+        COMMENT "Compiling UI.hlsl -> UI_PS.cso (ps_6_0)"
     )
 
     add_custom_target(Shaders ALL DEPENDS ${SHADER_OUTPUTS})

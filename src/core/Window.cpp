@@ -1,6 +1,7 @@
 #include "Window.h"
 #include "Logger.h"
 #include "input/InputSystem.h"
+#include "gui/RmlUIManager.h"
 
 // ImGui Win32 WndProc handler (forward declaration)
 extern LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -160,6 +161,38 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
     // ImGui にイベントを渡す（結果は無視して InputSystem にも常に通知する）
     ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam);
+
+    // RmlUi input forwarding
+    if (window && window->m_rmlManager)
+    {
+        switch (msg)
+        {
+        case WM_MOUSEMOVE:
+            window->m_rmlManager->ProcessMouseMove(
+                static_cast<int>(LOWORD(lParam)),
+                static_cast<int>(HIWORD(lParam)));
+            break;
+        case WM_LBUTTONDOWN:
+            window->m_rmlManager->ProcessMouseButton(0, true);
+            break;
+        case WM_LBUTTONUP:
+            window->m_rmlManager->ProcessMouseButton(0, false);
+            break;
+        case WM_RBUTTONDOWN:
+            window->m_rmlManager->ProcessMouseButton(1, true);
+            break;
+        case WM_RBUTTONUP:
+            window->m_rmlManager->ProcessMouseButton(1, false);
+            break;
+        case WM_MOUSEWHEEL:
+            window->m_rmlManager->ProcessMouseWheel(
+                static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA);
+            break;
+        case WM_CHAR:
+            window->m_rmlManager->ProcessTextInput(static_cast<wchar_t>(wParam));
+            break;
+        }
+    }
 
     if (window)
     {

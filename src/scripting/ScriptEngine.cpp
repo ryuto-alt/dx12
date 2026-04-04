@@ -15,6 +15,7 @@
 #include "renderer/Camera.h"
 #include "audio/AudioSystem.h"
 #include "physics/PhysicsSystem.h"
+#include "gui/RmlUIManager.h"
 #include "animation/Skeleton.h"
 #include "animation/Animator.h"
 #include "animation/AnimationClip.h"
@@ -36,14 +37,16 @@ ScriptEngine::~ScriptEngine() { Shutdown(); }
 
 void ScriptEngine::Initialize(Scene* scene, InputSystem* input, Camera* camera,
                                AudioSystem* audio, PhysicsSystem* physics,
+                               RmlUIManager* rmlManager,
                                const std::string& assetsDir)
 {
-    m_scene     = scene;
-    m_input     = input;
-    m_camera    = camera;
-    m_audio     = audio;
-    m_physics   = physics;
-    m_assetsDir = assetsDir;
+    m_scene      = scene;
+    m_input      = input;
+    m_camera     = camera;
+    m_audio      = audio;
+    m_physics    = physics;
+    m_rmlManager = rmlManager;
+    m_assetsDir  = assetsDir;
 
     m_lua = std::make_unique<sol::state>();
     m_lua->open_libraries(sol::lib::base, sol::lib::math, sol::lib::string,
@@ -252,6 +255,18 @@ void ScriptEngine::RegisterBindings()
 
     // --- ユーティリティ ---
     lua["log"] = [](const std::string& msg) { Logger::Info("[Lua] {}", msg); };
+
+    // --- UI System (RmlUi) ---
+    lua.new_usertype<RmlUIManager>("RmlUIManager",
+        "loadDocument",  &RmlUIManager::LoadDocument,
+        "closeDocument", &RmlUIManager::CloseDocument,
+        "setText",       &RmlUIManager::SetText,
+        "setProperty",   &RmlUIManager::SetProperty,
+        "show",          &RmlUIManager::ShowElement,
+        "hide",          &RmlUIManager::HideElement
+    );
+
+    lua["ui"] = m_rmlManager;
 
     RegisterPhysicsBindings();
 

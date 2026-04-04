@@ -35,6 +35,7 @@
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsDebugRenderer.h"
 #include "gui/ImGuiManager.h"
+#include "gui/RmlUIManager.h"
 #include "scene/SceneSerializer.h"
 #include <commdlg.h>
 
@@ -214,7 +215,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode)
         m_scriptEngine = std::make_unique<ScriptEngine>();
         m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
                                    m_camera.get(), m_audioSystem.get(),
-                                   m_physicsSystem.get(), std::string(ASSETS_DIR));
+                                   m_physicsSystem.get(), m_rmlManager.get(),
+                                   std::string(ASSETS_DIR));
 
         // ゲームスクリプト読み込み
         {
@@ -428,6 +430,24 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode)
         m_window->GetHwnd(), *m_graphicsDevice, m_commandQueue->GetQueue(),
         *m_srvHeap, m_swapChain->GetFormat(), FrameResources::kFrameCount);
 
+    // RmlUi game HUD
+    m_rmlManager = std::make_unique<RmlUIManager>();
+    m_rmlManager->Initialize(
+        *m_graphicsDevice,
+        m_commandQueue->GetQueue(),
+        *m_srvHeap,
+        m_gameClock,
+        m_swapChain->GetFormat(),
+        std::wstring(SHADER_DIR),
+        m_window->GetWidth(), m_window->GetHeight());
+    m_window->SetRmlManager(m_rmlManager.get());
+
+    // Load default game HUD
+    {
+        std::string assetsPath = ASSETS_DIR;
+        m_rmlManager->LoadDocument(assetsPath + "ui/hud.rml");
+    }
+
     // Physics Debug Renderer
     m_physicsDebugRenderer = std::make_unique<PhysicsDebugRenderer>();
     m_physicsDebugRenderer->Initialize(*m_graphicsDevice,
@@ -527,6 +547,9 @@ void Application::Run()
                     m_camera->SetPerspective(DirectX::XM_PIDIV4, viewW / viewH, 0.1f, 1000.0f);
                 }
 
+                if (m_rmlManager)
+                    m_rmlManager->OnResize(w, h);
+
                 Logger::Info("Resized to {}x{}", w, h);
             }
         }
@@ -591,6 +614,14 @@ void Application::Shutdown()
     if (m_commandQueue)
     {
         m_commandQueue->WaitIdle();
+    }
+
+    // RmlUi 解放
+    if (m_rmlManager)
+    {
+        m_window->SetRmlManager(nullptr);
+        m_rmlManager->Shutdown();
+        m_rmlManager.reset();
     }
 
     // ImGui 解放
@@ -737,7 +768,8 @@ void Application::RebuildScene()
     m_scriptEngine->Shutdown();
     m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
                                m_camera.get(), m_audioSystem.get(),
-                               m_physicsSystem.get(), std::string(ASSETS_DIR));
+                               m_physicsSystem.get(), m_rmlManager.get(),
+                               std::string(ASSETS_DIR));
 
     std::string scriptPath = std::string(SCRIPTS_DIR) + "game.lua";
     if (std::filesystem::exists(scriptPath))
@@ -838,7 +870,8 @@ void Application::EnterPlayMode()
     m_scriptEngine->Shutdown();
     m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
                                m_camera.get(), m_audioSystem.get(),
-                               m_physicsSystem.get(), std::string(ASSETS_DIR));
+                               m_physicsSystem.get(), m_rmlManager.get(),
+                               std::string(ASSETS_DIR));
 
     std::string scriptPath = std::string(SCRIPTS_DIR) + "game.lua";
     if (std::filesystem::exists(scriptPath))
@@ -1353,6 +1386,14 @@ void Application::Render()
         XMFLOAT4X4 vp;
         XMStoreFloat4x4(&vp, XMMatrixTranspose(m_camera->GetViewProjMatrix()));
         m_physicsDebugRenderer->Render(nativeCmdList, vp);
+    }
+
+    // ---- RmlUi game HUD ----
+    if (m_rmlManager)
+    {
+        m_rmlManager->Update();
+        m_rmlManager->Render(nativeCmdList, m_srvHeap->GetHeap(),
+                             m_window->GetWidth(), m_window->GetHeight());
     }
 
     // ---- ImGui フレーム ----
