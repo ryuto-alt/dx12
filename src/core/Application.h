@@ -36,7 +36,10 @@ namespace dx12e
     class AudioSystem;
     class PhysicsSystem;
     class PhysicsDebugRenderer;
+    class EditorContext;
+    class EditorLayer;
     struct Material;
+    struct ProjectInfo;
 }
 
 namespace dx12e
@@ -51,12 +54,12 @@ public:
     Application(const Application&) = delete;
     Application& operator=(const Application&) = delete;
 
-    void Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode = false);
+    void Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode = false,
+                    const ProjectInfo* projectInfo = nullptr);
     void Run();
     void Shutdown();
 
     enum class EngineMode { Editor, Playing };
-    enum class GizmoMode { Translate, Rotate, Scale };
 
 private:
     void Update();
@@ -92,10 +95,10 @@ private:
     // エディタレイアウト
     static constexpr f32 kLeftPanelWidth  = 280.0f;
     static constexpr f32 kToolbarHeight   = 36.0f;
-    entt::entity m_selectedEntity = entt::null;
-    GizmoMode m_gizmoMode = GizmoMode::Translate;
-    bool m_gizmoLocalSpace = false;
     bool m_isGameMode = false;
+    std::unique_ptr<EditorContext> m_editorCtx;
+    std::unique_ptr<EditorLayer>   m_editorLayer;
+    bool m_showLauncher = true;  // プロジェクトランチャー表示フラグ
     std::unique_ptr<Camera>            m_camera;
     std::unique_ptr<ConstantBuffer>    m_perFrameCB;
     std::unique_ptr<CommandList>       m_commandList;
@@ -148,12 +151,7 @@ private:
     // Luaホットリロード
     std::filesystem::file_time_type m_scriptLastWriteTime{};
     f32 m_scriptPollTimer = 0.0f;
-    f32 m_hotReloadFlash = 0.0f;
-    f32 m_buildCompleteFlash = 0.0f;
     static constexpr f32 kScriptPollInterval = 0.5f;
-
-    // シーン保存パス
-    std::string m_currentScenePath;
 
     // フレームレートリミッター
     static constexpr f32 kTargetFps = 144.0f;

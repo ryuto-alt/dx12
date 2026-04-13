@@ -28,6 +28,7 @@ void ImGuiManager::Initialize(
 
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
     // 日本語フォント読み込み
     {

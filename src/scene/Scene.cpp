@@ -171,6 +171,35 @@ Entity Scene::Spawn(const std::string& name,
         renderer.meshNodeTransforms.assign(renderer.meshes.size(), identity);
     }
 
+    // Spawn直後に初期ポーズを計算（ノードアニメーション付きモデルのmeshNodeTransforms初期化）
+    if (entity.HasComponent<SkeletalAnimation>())
+    {
+        auto& skelAnim = entity.GetComponent<SkeletalAnimation>();
+        if (skelAnim.animator)
+            skelAnim.animator->Update(0.0f);
+    }
+    if (entity.HasComponent<NodeAnimationComp>())
+    {
+        auto& nodeAnim = entity.GetComponent<NodeAnimationComp>();
+        auto& meshRend = entity.GetComponent<MeshRenderer>();
+        if (nodeAnim.nodeAnimator)
+        {
+            nodeAnim.nodeAnimator->Update(0.0f);
+
+            const auto& globalMats = nodeAnim.nodeAnimator->GetNodeGlobalMatrices();
+            const NodeGraph* graph = nodeAnim.nodeGraph.get();
+            for (u32 ni = 0; ni < graph->GetNodeCount(); ++ni)
+            {
+                const SceneNode& node = graph->GetNode(ni);
+                for (u32 meshIdx : node.meshIndices)
+                {
+                    if (meshIdx < static_cast<u32>(meshRend.meshNodeTransforms.size()))
+                        meshRend.meshNodeTransforms[meshIdx] = globalMats[ni];
+                }
+            }
+        }
+    }
+
     Logger::Info("Spawned entity '{}' at ({:.1f}, {:.1f}, {:.1f})",
                  name, position.x, position.y, position.z);
     return entity;

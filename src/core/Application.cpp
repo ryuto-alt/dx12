@@ -29,6 +29,7 @@
 #include "animation/NodeAnimator.h"
 #include "input/InputSystem.h"
 #include "scene/Scene.h"
+#include "scene/Entity.h"
 #include "ecs/Components.h"
 #include "scripting/ScriptEngine.h"
 #include "audio/AudioSystem.h"
@@ -36,6 +37,10 @@
 #include "physics/PhysicsDebugRenderer.h"
 #include "gui/ImGuiManager.h"
 #include "scene/SceneSerializer.h"
+#include "editor/EditorContext.h"
+#include "editor/EditorLayer.h"
+#include "project/Project.h"
+#include "project/ProjectManager.h"
 #include <commdlg.h>
 
 #pragma warning(push)
@@ -68,12 +73,17 @@ Application::~Application()
     }
 }
 
-void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode)
+void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
+                             const ProjectInfo* /*projectInfo*/)
 {
     // ロガー初期化
     Logger::Init();
     m_isGameMode = gameMode;
+    m_showLauncher = !gameMode;  // ゲームモードではランチャーを表示しない
     Logger::Info("Application initializing... (mode: {})", gameMode ? "game" : "editor");
+
+    // エディタコンテキスト初期化
+    m_editorCtx = std::make_unique<EditorContext>();
 
     // ウィンドウ作成
     m_window = std::make_unique<Window>();
@@ -188,10 +198,6 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode)
     {
         f32 viewW = static_cast<f32>(m_window->GetWidth());
         f32 viewH = static_cast<f32>(m_window->GetHeight());
-        if (!m_isGameMode) {
-            viewW = (std::max)(viewW - kLeftPanelWidth, 1.0f);
-            viewH = (std::max)(viewH - kToolbarHeight, 1.0f);
-        }
         m_camera->SetPerspective(DirectX::XM_PIDIV4, viewW / viewH, 0.1f, 1000.0f);
     }
     m_camera->LookAt({-14.7f, 9.6f, -9.0f}, {0.0f, 0.0f, 0.0f});
@@ -240,7 +246,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode)
             {
                 // 保存済みの Transform / Material を上書き復元
                 SceneSerializer::ApplyOverrides(*m_scene, savedScene, std::string(ASSETS_DIR));
-                m_currentScenePath = savedScene;
+                m_editorCtx->currentScenePath = savedScene;
             }
         }
 
@@ -428,6 +434,11 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode)
         m_window->GetHwnd(), *m_graphicsDevice, m_commandQueue->GetQueue(),
         *m_srvHeap, m_swapChain->GetFormat(), FrameResources::kFrameCount);
 
+    // EditorLayer 初期化
+    m_editorLayer = std::make_unique<EditorLayer>();
+    m_editorLayer->Initialize(m_editorCtx.get(), std::string(ASSETS_DIR),
+                              m_resourceManager.get(), m_srvHeap.get());
+
     // Physics Debug Renderer
     m_physicsDebugRenderer = std::make_unique<PhysicsDebugRenderer>();
     m_physicsDebugRenderer->Initialize(*m_graphicsDevice,
@@ -517,15 +528,8 @@ void Application::Run()
                     m_depthBuffer.Get(), &dsvDesc, m_dsvHandle);
 
                 // カメラアスペクト比更新（エディタモードではサイドバー分引く）
-                {
-                    f32 viewW = static_cast<f32>(w);
-                    f32 viewH = static_cast<f32>(h);
-                    if (!m_isGameMode && m_engineMode == EngineMode::Editor) {
-                        viewW = (std::max)(viewW - kLeftPanelWidth, 1.0f);
-                        viewH = (std::max)(viewH - kToolbarHeight, 1.0f);
-                    }
-                    m_camera->SetPerspective(DirectX::XM_PIDIV4, viewW / viewH, 0.1f, 1000.0f);
-                }
+                m_camera->SetPerspective(DirectX::XM_PIDIV4,
+                    static_cast<f32>(w) / static_cast<f32>(h), 0.1f, 1000.0f);
 
                 Logger::Info("Resized to {}x{}", w, h);
             }
@@ -547,7 +551,7 @@ void Application::Run()
                     Logger::Info("Hot-reload: game.lua changed, reloading...");
                     m_commandQueue->WaitIdle();
                     RebuildScene();
-                    m_hotReloadFlash = 2.0f;
+                    m_editorCtx->hotReloadFlash = 2.0f;
                     Logger::Info("Hot-reload complete");
                 }
             }
@@ -601,6 +605,8 @@ void Application::Shutdown()
     }
 
     // リソース解放（逆順）
+    m_editorLayer.reset();
+    m_editorCtx.reset();
     m_physicsDebugRenderer.reset();
     if (m_physicsSystem)
     {
@@ -658,7 +664,7 @@ void Application::Update()
         {
             m_inputSystem->SetMouseCapture(false);
         }
-        if (m_inputSystem->IsMouseCaptured() && !ImGuizmo::IsUsing())
+        if (m_inputSystem->IsMouseCaptured())
         {
             f32 sensitivity = m_camera->GetMouseSensitivity();
             m_camera->Rotate(
@@ -678,35 +684,22 @@ void Application::Update()
         // Ctrl+S でクイック保存（常に効く）
         if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState('S') & 1))
         {
-            if (m_currentScenePath.empty())
+            if (m_editorCtx->currentScenePath.empty())
             {
                 std::filesystem::create_directories(std::string(ASSETS_DIR) + "scenes");
-                m_currentScenePath = std::string(ASSETS_DIR) + "scenes/default.json";
+                m_editorCtx->currentScenePath = std::string(ASSETS_DIR) + "scenes/default.json";
             }
-            // デバッグ: 保存前に全エンティティの位置をVS出力ウィンドウに出力
-            {
-                auto& dbgReg = m_scene->GetRegistry();
-                auto dbgView = dbgReg.view<NameTag, Transform>();
-                for (auto [dbgE, dbgName, dbgT] : dbgView.each())
-                {
-                    char buf[256];
-                    snprintf(buf, sizeof(buf), "[Save] %s pos=(%.2f, %.2f, %.2f)\n",
-                        dbgName.name.c_str(), dbgT.position.x, dbgT.position.y, dbgT.position.z);
-                    OutputDebugStringA(buf);
-                }
-            }
-            SceneSerializer::Save(*m_scene, m_currentScenePath, std::string(ASSETS_DIR));
-            m_hotReloadFlash = 1.5f;
-            OutputDebugStringA("[Save] Scene saved!\n");
+            SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, std::string(ASSETS_DIR));
+            m_editorCtx->hotReloadFlash = 1.5f;
         }
 
         // ギズモモード切替（右クリック中・ImGuiフォーカス中は無効）
         if (!ImGui::GetIO().WantCaptureKeyboard && !m_inputSystem->IsMouseCaptured())
         {
-            if (GetAsyncKeyState('W') & 1) m_gizmoMode = GizmoMode::Translate;
-            if (GetAsyncKeyState('E') & 1) m_gizmoMode = GizmoMode::Rotate;
-            if (GetAsyncKeyState('R') & 1) m_gizmoMode = GizmoMode::Scale;
-            if (GetAsyncKeyState('T') & 1) m_gizmoLocalSpace = !m_gizmoLocalSpace;
+            if (GetAsyncKeyState('W') & 1) m_editorCtx->gizmoMode = GizmoMode::Translate;
+            if (GetAsyncKeyState('E') & 1) m_editorCtx->gizmoMode = GizmoMode::Rotate;
+            if (GetAsyncKeyState('R') & 1) m_editorCtx->gizmoMode = GizmoMode::Scale;
+            if (GetAsyncKeyState('T') & 1) m_editorCtx->gizmoLocalSpace = !m_editorCtx->gizmoLocalSpace;
         }
 
     }
@@ -728,7 +721,7 @@ void Application::Update()
 
 void Application::RebuildScene()
 {
-    m_selectedEntity = entt::null;
+    m_editorCtx->selectedEntity = entt::null;
     m_scene->Clear();
     auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
     m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
@@ -979,17 +972,10 @@ void Application::EnterEditorMode()
         }
     }
 
-    // Editorモード: サイドバー+ツールバー分を引いたアスペクト比に再計算
-    {
-        f32 viewW = static_cast<f32>(m_window->GetWidth());
-        f32 viewH = static_cast<f32>(m_window->GetHeight());
-        if (!m_isGameMode)
-        {
-            viewW = (std::max)(viewW - kLeftPanelWidth, 1.0f);
-            viewH = (std::max)(viewH - kToolbarHeight, 1.0f);
-        }
-        m_camera->SetPerspective(DirectX::XM_PIDIV4, viewW / viewH, 0.1f, 1000.0f);
-    }
+    // カメラアスペクト比再計算
+    m_camera->SetPerspective(DirectX::XM_PIDIV4,
+        static_cast<f32>(m_window->GetWidth()) / static_cast<f32>(m_window->GetHeight()),
+        0.1f, 1000.0f);
 
     m_inputSystem->SetMouseCapture(false);
     m_engineMode = EngineMode::Editor;
@@ -1068,6 +1054,88 @@ void Application::Render()
 
     auto* nativeCmdList = m_frameResources->BeginFrame(*m_commandQueue);
     m_commandList->Wrap(nativeCmdList);
+
+    // エンティティ生成（前フレームのドラッグ&ドロップ等から遅延実行）
+    if (!m_editorCtx->pendingSpawns.empty())
+    {
+        char dbgBuf[128];
+        snprintf(dbgBuf, sizeof(dbgBuf), "[PendingSpawns] count=%zu mode=%s\n",
+            m_editorCtx->pendingSpawns.size(),
+            m_engineMode == EngineMode::Editor ? "Editor" : "Playing");
+        OutputDebugStringA(dbgBuf);
+    }
+    if (!m_editorCtx->pendingSpawns.empty() && m_engineMode == EngineMode::Editor)
+    {
+        auto spawns = std::move(m_editorCtx->pendingSpawns);
+        m_editorCtx->pendingSpawns.clear();
+
+        // Scene の内部 cmdList を今フレームのものに更新
+        m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
+                            m_srvHeap.get(), nativeCmdList);
+
+        for (auto& req : spawns)
+        {
+            std::string name = std::filesystem::path(req.modelPath).stem().string();
+            if (req.modelPath == "__primitive_box__")
+                m_scene->SpawnBox(name, req.position);
+            else if (req.modelPath == "__primitive_sphere__")
+                m_scene->SpawnSphere(name, req.position);
+            else if (req.modelPath == "__primitive_plane__")
+                m_scene->SpawnPlane(name, req.position);
+            else if (req.modelPath == "__empty__")
+            {
+                auto& reg = m_scene->GetRegistry();
+                auto e = reg.create();
+                reg.emplace<NameTag>(e, NameTag{"Empty"});
+                reg.emplace<Transform>(e);
+            }
+            else
+            {
+                auto entity = m_scene->Spawn(name, req.modelPath, req.position);
+
+                // D&D時のみ: AABBから自動スケーリング
+                bool valid = entity.IsValid();
+                bool hasMR = valid && entity.HasComponent<MeshRenderer>();
+                {
+                    char buf[128];
+                    snprintf(buf, sizeof(buf), "[D&D Scale] valid=%d hasMR=%d\n", valid, hasMR);
+                    OutputDebugStringA(buf);
+                }
+
+                if (hasMR)
+                {
+                    auto& mr = entity.GetComponent<MeshRenderer>();
+                    f32 maxExtent = 0.0f;
+                    for (const auto* mesh : mr.meshes)
+                    {
+                        if (!mesh) continue;
+                        auto mn = mesh->GetAABBMin();
+                        auto mx = mesh->GetAABBMax();
+                        f32 dx = mx.x - mn.x;
+                        f32 dy = mx.y - mn.y;
+                        f32 dz = mx.z - mn.z;
+                        if (dx > maxExtent) maxExtent = dx;
+                        if (dy > maxExtent) maxExtent = dy;
+                        if (dz > maxExtent) maxExtent = dz;
+                    }
+                    // 既存Luaモデルと同じ見た目サイズにスケーリング
+                    // Luaでは全モデルをscale=0.01で配置してるので合わせる
+                    constexpr f32 kDefaultScale = 0.01f;
+                    auto& t = entity.GetComponent<Transform>();
+                    t.scale = {kDefaultScale, kDefaultScale, kDefaultScale};
+
+                    // glTF/glb はZ-upなのでX軸90度回転で立たせる
+                    std::string ext = std::filesystem::path(req.modelPath).extension().string();
+                    if (ext == ".gltf" || ext == ".glb")
+                        t.rotation.x = 90.0f;
+                }
+            }
+            Logger::Info("Spawned: {}", name);
+        }
+    }
+
+    // サムネイルテクスチャのロード（描画コマンドの前に実行）
+    m_editorLayer->LoadPendingThumbnails(nativeCmdList);
 
     u32 frameIndex = m_swapChain->GetCurrentBackBufferIndex();
     f32 totalTime = m_gameClock.GetTotalTime();
@@ -1211,20 +1279,26 @@ void Application::Render()
     m_commandList->ClearDepthStencil(m_dsvHandle);
     m_commandList->SetRenderTarget(rtv, m_dsvHandle);
 
-    // エディタモード: パネル分3Dビューをオフセット
-    if (!m_isGameMode && m_engineMode == EngineMode::Editor)
+    // 3Dビューポート: EditorLayerの中央ノード領域に合わせる
     {
-        u32 left = static_cast<u32>(kLeftPanelWidth);
-        u32 top = static_cast<u32>(kToolbarHeight);
-        u32 ww = m_window->GetWidth();
-        u32 wh = m_window->GetHeight();
-        u32 viewW = (ww > left) ? ww - left : 1;
-        u32 viewH = (wh > top) ? wh - top : 1;
-        m_commandList->SetViewportAndScissor(left, top, viewW, viewH);
-    }
-    else
-    {
-        m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
+        auto vp = m_editorLayer->GetViewportPos();
+        auto vs = m_editorLayer->GetViewportSize();
+        u32 vpLeft = static_cast<u32>(vp.x);
+        u32 vpTop  = static_cast<u32>(vp.y);
+        u32 vpW    = static_cast<u32>(vs.x);
+        u32 vpH    = static_cast<u32>(vs.y);
+        if (vpW < 1) vpW = 1;
+        if (vpH < 1) vpH = 1;
+
+        if (!m_isGameMode && m_engineMode == EngineMode::Editor)
+            m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+        else
+            m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
+
+        // カメラのアスペクト比を中央ノードに合わせる
+        if (!m_isGameMode && m_engineMode == EngineMode::Editor)
+            m_camera->SetPerspective(DirectX::XM_PIDIV4,
+                static_cast<f32>(vpW) / static_cast<f32>(vpH), 0.1f, 1000.0f);
     }
 
     m_commandList->SetPipelineState(*m_pipelineState);
@@ -1361,689 +1435,37 @@ void Application::Render()
 
     if (!m_isGameMode)
     {
-    f32 displayW = ImGui::GetIO().DisplaySize.x;
-    f32 displayH = ImGui::GetIO().DisplaySize.y;
+        bool pendingPlayMode = false;
+        m_editorLayer->Render(
+            m_engineMode == EngineMode::Playing,
+            m_scene.get(), m_camera.get(), m_window.get(),
+            m_scriptEngine.get(), m_audioSystem.get(),
+            m_physicsDebugRenderer.get(), m_physicsDebugDraw,
+            m_useVsync, m_shadowQualityIndex, m_shadowMapSize,
+            m_shadowMapDirty, &m_gameClock,
+            m_modeChangeRequested, pendingPlayMode,
+            std::string(ASSETS_DIR), kLeftPanelWidth, kToolbarHeight);
 
-    // ===== ツールバー（上部全幅） =====
-    {
-        ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(displayW, kToolbarHeight), ImGuiCond_Always);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 6));
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.140f, 0.140f, 0.140f, 1.0f));
-        ImGui::Begin("##Toolbar", nullptr,
-            ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollWithMouse);
+        if (m_modeChangeRequested)
+            m_pendingMode = pendingPlayMode ? EngineMode::Playing : EngineMode::Editor;
 
-        // Play/Stop
-        if (m_engineMode == EngineMode::Editor)
+        // Deferred: game build
+        if (m_editorCtx->pendingBuildGame)
         {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.55f, 0.20f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.65f, 0.25f, 1.0f));
-            if (ImGui::Button("\xe2\x96\xb6 \xe5\x86\x8d\xe7\x94\x9f"))  // ▶ 再生
+            m_editorCtx->pendingBuildGame = false;
+            BuildGame();
+            m_editorCtx->buildCompleteFlash = 3.0f;
+        }
+
+        // Deferred: entity deletion
+        if (!m_editorCtx->pendingDeletions.empty())
+        {
+            auto deletions = std::move(m_editorCtx->pendingDeletions);
+            m_editorCtx->pendingDeletions.clear();
+            for (auto e : deletions)
             {
-                m_pendingMode = EngineMode::Playing;
-                m_modeChangeRequested = true;
-            }
-            ImGui::PopStyleColor(2);
-        }
-        else
-        {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.65f, 0.20f, 0.20f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.75f, 0.25f, 0.25f, 1.0f));
-            if (ImGui::Button("\xe2\x96\xa0 \xe5\x81\x9c\xe6\xad\xa2"))  // ■ 停止
-            {
-                m_pendingMode = EngineMode::Editor;
-                m_modeChangeRequested = true;
-            }
-            ImGui::PopStyleColor(2);
-        }
-
-        ImGui::SameLine(0, 12);
-        if (m_engineMode == EngineMode::Playing)
-        {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 0.4f, 1.0f));
-            ImGui::Text("\xe2\x97\x8f \xe3\x83\x97\xe3\x83\xac\xe3\x82\xa4\xe4\xb8\xad");  // ● プレイ中
-            ImGui::PopStyleColor();
-        }
-        else
-        {
-            ImGui::TextDisabled("\xe3\x82\xa8\xe3\x83\x87\xe3\x82\xa3\xe3\x82\xbf");  // エディタ
-        }
-
-        // Luaエラー
-        if (!m_scriptEngine->GetLastError().empty())
-        {
-            ImGui::SameLine(0, 16);
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
-            ImGui::Text("\xe2\x9a\xa0 Lua Error");  // ⚠ Lua Error
-            ImGui::PopStyleColor();
-        }
-
-        // ホットリロード通知
-        if (m_hotReloadFlash > 0.0f)
-        {
-            ImGui::SameLine(0, 12);
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.5f, m_hotReloadFlash));
-            ImGui::Text("\xe2\x9c\x93 Reloaded");  // ✓ Reloaded
-            ImGui::PopStyleColor();
-            m_hotReloadFlash -= m_gameClock.GetDeltaTime();
-        }
-
-        // ギズモモードボタン
-        ImGui::SameLine(0, 12);
-        ImGui::TextDisabled("|");
-        ImGui::SameLine(0, 8);
-
-        bool isTrans = (m_gizmoMode == GizmoMode::Translate);
-        bool isRot   = (m_gizmoMode == GizmoMode::Rotate);
-        bool isScl   = (m_gizmoMode == GizmoMode::Scale);
-
-        if (isTrans) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.5f, 0.8f, 1.0f));
-        if (ImGui::Button("W Move")) m_gizmoMode = GizmoMode::Translate;
-        if (isTrans) ImGui::PopStyleColor();
-
-        ImGui::SameLine();
-        if (isRot) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.5f, 0.8f, 1.0f));
-        if (ImGui::Button("E Rot")) m_gizmoMode = GizmoMode::Rotate;
-        if (isRot) ImGui::PopStyleColor();
-
-        ImGui::SameLine();
-        if (isScl) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.5f, 0.8f, 1.0f));
-        if (ImGui::Button("R Scl")) m_gizmoMode = GizmoMode::Scale;
-        if (isScl) ImGui::PopStyleColor();
-
-        ImGui::SameLine();
-        if (ImGui::Button(m_gizmoLocalSpace ? "Local" : "World"))
-            m_gizmoLocalSpace = !m_gizmoLocalSpace;
-
-        // Save/Load
-        ImGui::SameLine(0, 16);
-        ImGui::TextDisabled("|");
-        ImGui::SameLine(0, 8);
-
-        if (ImGui::Button("Save"))
-        {
-            if (m_currentScenePath.empty())
-            {
-                char savePath[MAX_PATH] = "";
-                OPENFILENAMEA ofn = {};
-                ofn.lStructSize = sizeof(ofn);
-                ofn.hwndOwner = m_window->GetHwnd();
-                ofn.lpstrFilter = "Scene Files (*.json)\0*.json\0All Files\0*.*\0";
-                ofn.lpstrFile = savePath;
-                ofn.nMaxFile = MAX_PATH;
-                ofn.lpstrDefExt = "json";
-                ofn.Flags = OFN_OVERWRITEPROMPT;
-                std::string initDir = std::string(ASSETS_DIR) + "scenes";
-                std::filesystem::create_directories(initDir);
-                ofn.lpstrInitialDir = initDir.c_str();
-                if (GetSaveFileNameA(&ofn))
-                    m_currentScenePath = savePath;
-            }
-            if (!m_currentScenePath.empty())
-            {
-                SceneSerializer::Save(*m_scene, m_currentScenePath, std::string(ASSETS_DIR));
-                Logger::Info("Scene saved: {}", m_currentScenePath);
-            }
-        }
-
-        ImGui::SameLine();
-        if (ImGui::Button("Load"))
-        {
-            char loadPath[MAX_PATH] = "";
-            OPENFILENAMEA ofn = {};
-            ofn.lStructSize = sizeof(ofn);
-            ofn.hwndOwner = m_window->GetHwnd();
-            ofn.lpstrFilter = "Scene Files (*.json)\0*.json\0All Files\0*.*\0";
-            ofn.lpstrFile = loadPath;
-            ofn.nMaxFile = MAX_PATH;
-            ofn.Flags = OFN_FILEMUSTEXIST;
-            std::string initDir = std::string(ASSETS_DIR) + "scenes";
-            std::filesystem::create_directories(initDir);
-            ofn.lpstrInitialDir = initDir.c_str();
-            if (GetOpenFileNameA(&ofn))
-            {
-                m_selectedEntity = entt::null;
-                auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
-                m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
-                                    m_srvHeap.get(), cmdList);
-                SceneSerializer::Load(*m_scene, loadPath, std::string(ASSETS_DIR));
-                ThrowIfFailed(cmdList->Close());
-                m_commandQueue->ExecuteCommandList(cmdList);
-                m_commandQueue->WaitIdle();
-                m_resourceManager->FinishUploads();
-                m_currentScenePath = loadPath;
-                Logger::Info("Scene loaded: {}", m_currentScenePath);
-            }
-        }
-
-        // FPS（右寄せ）
-        ImGui::SameLine(displayW - 100);
-        ImGui::Text("%.0f FPS", m_gameClock.GetFPS());
-
-        ImGui::End();
-        ImGui::PopStyleColor();
-        ImGui::PopStyleVar();
-    }
-
-    // ===== ヒエラルキー（左パネル） =====
-    {
-        ImGui::SetNextWindowPos(ImVec2(0, kToolbarHeight), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(kLeftPanelWidth, displayH - kToolbarHeight), ImGuiCond_Always);
-        ImGui::Begin("\xe3\x83\x92\xe3\x82\xa8\xe3\x83\xa9\xe3\x83\xab\xe3\x82\xad\xe3\x83\xbc", nullptr,  // ヒエラルキー
-            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
-
-        // --- ヒエラルキー ---
-        ImGui::TextDisabled("\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3  (%zu)", m_scene->GetEntityCount());  // シーン
-        ImGui::Separator();
-        {
-            auto& reg = m_scene->GetRegistry();
-            auto nameView = reg.view<const NameTag>();
-            for (auto [e, tag] : nameView.each())
-            {
-                bool selected = (e == m_selectedEntity);
-
-                ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_SpanAvailWidth;
-                if (selected) flags |= ImGuiTreeNodeFlags_Selected;
-
-                bool open = ImGui::TreeNodeEx(tag.name.c_str(), flags);
-                if (ImGui::IsItemClicked())
-                    m_selectedEntity = selected ? entt::null : e;
-                if (open) ImGui::TreePop();
-            }
-        }
-
-        ImGui::Separator();
-
-        // --- 選択Entity プロパティ ---
-        {
-            auto& reg = m_scene->GetRegistry();
-            if (m_selectedEntity != entt::null && reg.valid(m_selectedEntity))
-            {
-                // NameTag
-                if (reg.all_of<NameTag>(m_selectedEntity))
-                {
-                    auto& tag = reg.get<NameTag>(m_selectedEntity);
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.39f, 0.58f, 0.93f, 1.0f));
-                    ImGui::Text("%s", tag.name.c_str());
-                    ImGui::PopStyleColor();
-                }
-
-                ImGui::Separator();
-
-                // Transform
-                if (reg.all_of<Transform>(m_selectedEntity))
-                {
-                    if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen))
-                    {
-                        auto& t = reg.get<Transform>(m_selectedEntity);
-                        ImGui::DragFloat3("Position", &t.position.x, 0.1f);
-                        ImGui::DragFloat3("Rotation", &t.rotation.x, 1.0f);
-                        ImGui::DragFloat3("Scale",    &t.scale.x,    0.01f);
-                    }
-                }
-
-                // MeshRenderer
-                if (reg.all_of<MeshRenderer>(m_selectedEntity))
-                {
-                    if (ImGui::CollapsingHeader("MeshRenderer"))
-                    {
-                        auto& r = reg.get<MeshRenderer>(m_selectedEntity);
-                        ImGui::Text("Meshes: %d", static_cast<int>(r.meshes.size()));
-                        ImGui::Text("Materials: %d", static_cast<int>(r.materials.size()));
-                    }
-                }
-
-                // SkeletalAnimation
-                if (reg.all_of<SkeletalAnimation>(m_selectedEntity))
-                {
-                    auto& skelAnim = reg.get<SkeletalAnimation>(m_selectedEntity);
-                    if (skelAnim.animator && ImGui::CollapsingHeader("SkeletalAnimation"))
-                    {
-                        ImGui::Text("Bones: %d",
-                            static_cast<int>(skelAnim.skeleton ? skelAnim.skeleton->GetBoneCount() : 0));
-                        ImGui::Text("Clips: %d", static_cast<int>(skelAnim.clips.size()));
-
-                        for (i32 i = 0; i < static_cast<i32>(skelAnim.clips.size()); ++i)
-                        {
-                            const auto& clip = skelAnim.clips[i];
-                            std::string label = clip->GetName().empty()
-                                ? ("Clip " + std::to_string(i))
-                                : clip->GetName();
-                            if (ImGui::Selectable(label.c_str()))
-                                skelAnim.animator->CrossFadeTo(clip.get(), 0.3f);
-                        }
-                    }
-                }
-
-                // NodeAnimation
-                if (reg.all_of<NodeAnimationComp>(m_selectedEntity))
-                {
-                    auto& nodeAnim = reg.get<NodeAnimationComp>(m_selectedEntity);
-                    if (nodeAnim.nodeAnimator && ImGui::CollapsingHeader("NodeAnimation"))
-                    {
-                        ImGui::Text("Clips: %d", static_cast<int>(nodeAnim.clips.size()));
-                        for (i32 i = 0; i < static_cast<i32>(nodeAnim.clips.size()); ++i)
-                        {
-                            const auto& clip = nodeAnim.clips[i];
-                            std::string label = clip->GetName().empty()
-                                ? ("Clip " + std::to_string(i))
-                                : clip->GetName();
-                            if (ImGui::Selectable(label.c_str()))
-                                nodeAnim.nodeAnimator->CrossFadeTo(clip.get(), 0.3f);
-                        }
-                    }
-                }
-
-                // GridPlane
-                if (reg.all_of<GridPlane>(m_selectedEntity))
-                {
-                    if (ImGui::CollapsingHeader("GridPlane"))
-                    {
-                        auto& gp = reg.get<GridPlane>(m_selectedEntity);
-                        ImGui::Checkbox("Enabled", &gp.enabled);
-                    }
-                }
-
-                // PointLight
-                if (reg.all_of<PointLight>(m_selectedEntity))
-                {
-                    if (ImGui::CollapsingHeader("PointLight"))
-                    {
-                        auto& pl = reg.get<PointLight>(m_selectedEntity);
-                        ImGui::ColorEdit3("Color", &pl.color.x);
-                        ImGui::DragFloat("Intensity", &pl.intensity, 0.1f, 0.0f, 100.0f);
-                        ImGui::DragFloat("Range", &pl.range, 0.5f, 0.0f, 500.0f);
-                    }
-                }
-
-                // DirectionalLight
-                if (reg.all_of<DirectionalLight>(m_selectedEntity))
-                {
-                    if (ImGui::CollapsingHeader("DirectionalLight"))
-                    {
-                        auto& dl = reg.get<DirectionalLight>(m_selectedEntity);
-                        ImGui::DragFloat3("Direction", &dl.direction.x, 0.01f);
-                        ImGui::ColorEdit3("Color", &dl.color.x);
-                        ImGui::DragFloat("Intensity", &dl.intensity, 0.1f, 0.0f, 100.0f);
-                    }
-                }
-
-                // CameraComponent
-                if (reg.all_of<CameraComponent>(m_selectedEntity))
-                {
-                    if (ImGui::CollapsingHeader("Camera"))
-                    {
-                        auto& cam = reg.get<CameraComponent>(m_selectedEntity);
-                        ImGui::DragFloat("FOV", &cam.fovDegrees, 1.0f, 1.0f, 179.0f);
-                        ImGui::DragFloat("Near", &cam.nearClip, 0.01f, 0.001f, 100.0f);
-                        ImGui::DragFloat("Far", &cam.farClip, 10.0f, 1.0f, 100000.0f);
-                        ImGui::Checkbox("Active", &cam.isActive);
-                    }
-                }
-
-                // --- Physics ---
-                {
-                    bool hasRb = reg.all_of<RigidBody>(m_selectedEntity);
-                    if (ImGui::Checkbox("Physics", &hasRb))
-                    {
-                        if (hasRb)
-                        {
-                            // 物理を追加: autoCollider + RigidBody
-                            if (reg.all_of<MeshRenderer>(m_selectedEntity))
-                            {
-                                auto* mr = &reg.get<MeshRenderer>(m_selectedEntity);
-                                auto* tf = &reg.get<Transform>(m_selectedEntity);
-                                // Convex Hull 自動生成
-                                std::vector<DirectX::XMFLOAT3> allPoints;
-                                for (const auto* mesh : mr->meshes)
-                                {
-                                    if (!mesh) continue;
-                                    for (const auto& p : mesh->GetPositions())
-                                        allPoints.push_back({
-                                            p.x * tf->scale.x,
-                                            p.y * tf->scale.y,
-                                            p.z * tf->scale.z });
-                                }
-                                constexpr size_t kMax = 256;
-                                if (allPoints.size() > kMax)
-                                {
-                                    size_t step = allPoints.size() / kMax;
-                                    std::vector<DirectX::XMFLOAT3> sampled;
-                                    for (size_t i = 0; i < allPoints.size() && sampled.size() < kMax; i += step)
-                                        sampled.push_back(allPoints[i]);
-                                    allPoints = std::move(sampled);
-                                }
-                                if (!allPoints.empty())
-                                {
-                                    ConvexHullCollider col;
-                                    col.points = std::move(allPoints);
-                                    reg.emplace_or_replace<ConvexHullCollider>(m_selectedEntity, std::move(col));
-                                }
-                            }
-                            reg.emplace_or_replace<RigidBody>(m_selectedEntity);
-                        }
-                        else
-                        {
-                            // 物理を削除
-                            reg.remove<RigidBody>(m_selectedEntity);
-                            reg.remove<ConvexHullCollider>(m_selectedEntity);
-                            reg.remove<BoxCollider>(m_selectedEntity);
-                            reg.remove<SphereCollider>(m_selectedEntity);
-                            reg.remove<CapsuleCollider>(m_selectedEntity);
-                        }
-                    }
-
-                    if (reg.all_of<RigidBody>(m_selectedEntity))
-                    {
-                        auto& rb = reg.get<RigidBody>(m_selectedEntity);
-
-                        const char* motionTypes[] = { "Static", "Kinematic", "Dynamic" };
-                        int motionIdx = static_cast<int>(rb.motionType);
-                        if (ImGui::Combo("Motion", &motionIdx, motionTypes, 3))
-                            rb.motionType = static_cast<MotionType>(motionIdx);
-
-                        ImGui::DragFloat("Mass", &rb.mass, 0.5f, 0.0f, 10000.0f);
-                        ImGui::DragFloat("Friction", &rb.friction, 0.01f, 0.0f, 2.0f);
-                        ImGui::DragFloat("Bounce", &rb.restitution, 0.01f, 0.0f, 1.0f);
-                        ImGui::Checkbox("Gravity", &rb.useGravity);
-                    }
-                }
-
-                // --- Material (PBR) ---
-                if (reg.all_of<MeshRenderer>(m_selectedEntity))
-                {
-                    auto& mr = reg.get<MeshRenderer>(m_selectedEntity);
-                    if (!mr.meshes.empty() && mr.meshes[0] && mr.meshes[0]->GetMaterial())
-                    {
-                        const auto* mat = mr.meshes[0]->GetMaterial();
-                        if (ImGui::CollapsingHeader("Material"))
-                        {
-                            // 初回: Material の値で初期化
-                            if (mr.overrideMetallic < 0.0f)
-                                mr.overrideMetallic = mat->defaultMetallic;
-                            if (mr.overrideRoughness < 0.0f)
-                                mr.overrideRoughness = mat->defaultRoughness;
-
-                            // MeshRenderer に直接書き込む（Material ポインタを経由しない）
-                            ImGui::SliderFloat("Metallic", &mr.overrideMetallic, 0.0f, 1.0f);
-                            ImGui::SliderFloat("Roughness", &mr.overrideRoughness, 0.0f, 1.0f);
-
-                            bool hasNormal = mat->normalMapTexture != nullptr;
-                            bool hasMR = mat->metalRoughnessTexture != nullptr;
-                            ImGui::Text("Normal Map: %s", hasNormal ? "Yes" : "No");
-                            ImGui::Text("MetalRough Map: %s", hasMR ? "Yes" : "No");
-                        }
-                    }
-                }
-            }
-        }
-
-        ImGui::Separator();
-
-        // --- カメラ ---
-        if (ImGui::CollapsingHeader("\xe3\x82\xab\xe3\x83\xa1\xe3\x83\xa9", ImGuiTreeNodeFlags_DefaultOpen))  // カメラ
-        {
-            auto camPos = m_camera->GetPosition();
-            ImGui::Text("%.1f, %.1f, %.1f", camPos.x, camPos.y, camPos.z);
-            f32 moveSpeed = m_camera->GetMoveSpeed();
-            if (ImGui::SliderFloat("\xe9\x80\x9f\xe5\xba\xa6", &moveSpeed, 1.0f, 50.0f))  // 速度
-                m_camera->SetMoveSpeed(moveSpeed);
-        }
-
-        // --- シャドウ品質 ---
-        if (ImGui::CollapsingHeader("\xe3\x82\xb7\xe3\x83\xa3\xe3\x83\x89\xe3\x82\xa6"))  // シャドウ
-        {
-            const char* qualities[] = {"1024 (Low)", "2048 (Medium)", "4096 (High)", "8192 (Ultra)"};
-            const u32 sizes[] = {1024, 2048, 4096, 8192};
-            if (ImGui::Combo("\xe8\xa7\xa3\xe5\x83\x8f\xe5\xba\xa6", &m_shadowQualityIndex, qualities, 4))  // 解像度
-            {
-                m_shadowMapSize = sizes[m_shadowQualityIndex];
-                m_shadowMapDirty = true;  // 次フレームで再作成
-            }
-            ImGui::Text("%ux%u", m_shadowMapSize, m_shadowMapSize);
-        }
-
-        // --- オーディオ ---
-        if (ImGui::CollapsingHeader("\xe3\x82\xaa\xe3\x83\xbc\xe3\x83\x87\xe3\x82\xa3\xe3\x82\xaa"))  // オーディオ
-        {
-            f32 masterVol = m_audioSystem->GetMasterVolume();
-            f32 bgmVol    = m_audioSystem->GetBGMVolume();
-            f32 sfxVol    = m_audioSystem->GetSFXVolume();
-            if (ImGui::SliderFloat("\xe3\x83\x9e\xe3\x82\xb9\xe3\x82\xbf\xe3\x83\xbc", &masterVol, 0.0f, 1.0f))  // マスター
-                m_audioSystem->SetMasterVolume(masterVol);
-            if (ImGui::SliderFloat("BGM", &bgmVol, 0.0f, 1.0f))
-                m_audioSystem->SetBGMVolume(bgmVol);
-            if (ImGui::SliderFloat("SE", &sfxVol, 0.0f, 1.0f))
-                m_audioSystem->SetSFXVolume(sfxVol);
-
-            const auto& bgmList = m_audioSystem->GetBGMList();
-            for (const auto& bgm : bgmList)
-            {
-                std::string fn = std::filesystem::path(bgm).filename().string();
-                ImGui::PushID(bgm.c_str());
-                if (ImGui::Button("\xe2\x96\xb6")) m_audioSystem->PlayBGM(bgm);
-                ImGui::SameLine(); ImGui::Text("%s", fn.c_str());
-                ImGui::PopID();
-            }
-            if (!bgmList.empty() && ImGui::Button("BGM \xe5\x81\x9c\xe6\xad\xa2"))
-                m_audioSystem->StopBGM();
-
-            const auto& sfxList = m_audioSystem->GetSFXList();
-            for (const auto& sfx : sfxList)
-            {
-                std::string fn = std::filesystem::path(sfx).filename().string();
-                ImGui::PushID(sfx.c_str());
-                if (ImGui::Button("\xe2\x96\xb6")) m_audioSystem->PlaySFX(sfx);
-                ImGui::SameLine(); ImGui::Text("%s", fn.c_str());
-                ImGui::PopID();
-            }
-            if (!sfxList.empty() && ImGui::Button("SE \xe5\x85\xa8\xe5\x81\x9c\xe6\xad\xa2"))
-                m_audioSystem->StopAllSFX();
-        }
-
-        // --- 設定 ---
-        if (ImGui::CollapsingHeader("\xe8\xa8\xad\xe5\xae\x9a"))  // 設定
-        {
-            ImGui::Checkbox("VSync", &m_useVsync);
-
-            bool debugDraw = m_physicsDebugRenderer->IsEnabled();
-            if (ImGui::Checkbox("Physics Debug", &debugDraw))
-            {
-                m_physicsDebugRenderer->SetEnabled(debugDraw);
-                m_physicsDebugDraw = debugDraw;
-            }
-        }
-
-        // --- ビルド ---
-        if (ImGui::CollapsingHeader("\xe3\x83\x93\xe3\x83\xab\xe3\x83\x89"))  // ビルド
-        {
-            if (ImGui::Button("\xe3\x82\xb2\xe3\x83\xbc\xe3\x83\xa0\xe3\x83\x93\xe3\x83\xab\xe3\x83\x89"))  // ゲームビルド
-            {
-                BuildGame();
-                m_buildCompleteFlash = 3.0f;
-            }
-            if (m_buildCompleteFlash > 0.0f)
-            {
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.5f, 1.0f));
-                ImGui::Text("\xe3\x83\x93\xe3\x83\xab\xe3\x83\x89\xe5\xae\x8c\xe4\xba\x86!");  // ビルド完了!
-                ImGui::PopStyleColor();
-                m_buildCompleteFlash -= m_gameClock.GetDeltaTime();
-            }
-        }
-
-        // Luaエラー
-        if (!m_scriptEngine->GetLastError().empty())
-        {
-            ImGui::Separator();
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
-            ImGui::TextWrapped("%s", m_scriptEngine->GetLastError().c_str());
-            ImGui::PopStyleColor();
-        }
-
-        ImGui::End();
-    }
-    } // !m_isGameMode
-
-    // ===== 3Dビュークリック選択 =====
-    if (!m_isGameMode && m_engineMode == EngineMode::Editor
-        && !ImGui::GetIO().WantCaptureMouse
-        && !ImGuizmo::IsUsing() && !ImGuizmo::IsOver()
-        && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-    {
-        ImVec2 mousePos = ImGui::GetIO().MousePos;
-        f32 vpX = kLeftPanelWidth;
-        f32 vpY = kToolbarHeight;
-        f32 vpW = static_cast<f32>(m_window->GetWidth()) - vpX;
-        f32 vpH = static_cast<f32>(m_window->GetHeight()) - vpY;
-
-        if (mousePos.x >= vpX && mousePos.x < vpX + vpW
-            && mousePos.y >= vpY && mousePos.y < vpY + vpH)
-        {
-            // NDC座標に変換
-            f32 ndcX = ((mousePos.x - vpX) / vpW) * 2.0f - 1.0f;
-            f32 ndcY = 1.0f - ((mousePos.y - vpY) / vpH) * 2.0f;
-
-            XMMATRIX invProj = XMMatrixInverse(nullptr, m_camera->GetProjectionMatrix());
-            XMMATRIX invView = XMMatrixInverse(nullptr, m_camera->GetViewMatrix());
-
-            // レイ生成
-            XMVECTOR rayClip = XMVectorSet(ndcX, ndcY, 1.0f, 1.0f);
-            XMVECTOR rayEye = XMVector4Transform(rayClip, invProj);
-            rayEye = XMVectorSetZ(rayEye, 1.0f);
-            rayEye = XMVectorSetW(rayEye, 0.0f);
-            XMVECTOR rayDir = XMVector3Normalize(XMVector4Transform(rayEye, invView));
-            XMFLOAT3 camPosF = m_camera->GetPosition();
-            XMVECTOR rayOrigin = XMLoadFloat3(&camPosF);
-
-            f32 closestDist = FLT_MAX;
-            entt::entity closestEntity = entt::null;
-
-            auto& reg = m_scene->GetRegistry();
-            auto pickView = reg.view<const Transform, const MeshRenderer>();
-            for (auto [e, transform, renderer] : pickView.each())
-            {
-                if (reg.all_of<GridPlane>(e)) continue;
-
-                // 全メッシュの AABB を結合してワールド空間 AABB を作る
-                XMFLOAT3 aabbMin = {  FLT_MAX,  FLT_MAX,  FLT_MAX };
-                XMFLOAT3 aabbMax = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
-                for (const auto* mesh : renderer.meshes)
-                {
-                    if (!mesh) continue;
-                    auto meshMin = mesh->GetAABBMin();
-                    auto meshMax = mesh->GetAABBMax();
-                    aabbMin.x = (std::min)(aabbMin.x, meshMin.x);
-                    aabbMin.y = (std::min)(aabbMin.y, meshMin.y);
-                    aabbMin.z = (std::min)(aabbMin.z, meshMin.z);
-                    aabbMax.x = (std::max)(aabbMax.x, meshMax.x);
-                    aabbMax.y = (std::max)(aabbMax.y, meshMax.y);
-                    aabbMax.z = (std::max)(aabbMax.z, meshMax.z);
-                }
-
-                // スケール適用したワールド AABB
-                XMFLOAT3 worldMin = {
-                    transform.position.x + aabbMin.x * transform.scale.x,
-                    transform.position.y + aabbMin.y * transform.scale.y,
-                    transform.position.z + aabbMin.z * transform.scale.z
-                };
-                XMFLOAT3 worldMax = {
-                    transform.position.x + aabbMax.x * transform.scale.x,
-                    transform.position.y + aabbMax.y * transform.scale.y,
-                    transform.position.z + aabbMax.z * transform.scale.z
-                };
-
-                // min/max を正規化（負スケール対策）
-                if (worldMin.x > worldMax.x) std::swap(worldMin.x, worldMax.x);
-                if (worldMin.y > worldMax.y) std::swap(worldMin.y, worldMax.y);
-                if (worldMin.z > worldMax.z) std::swap(worldMin.z, worldMax.z);
-
-                // レイ-AABB 交差テスト (slab method)
-                XMFLOAT3 orig, dir;
-                XMStoreFloat3(&orig, rayOrigin);
-                XMStoreFloat3(&dir, rayDir);
-
-                f32 tmin = -FLT_MAX, tmax = FLT_MAX;
-                auto slabTest = [&](f32 o, f32 d, f32 bmin, f32 bmax) -> bool {
-                    if (std::abs(d) < 1e-8f)
-                        return (o >= bmin && o <= bmax);
-                    f32 t1 = (bmin - o) / d;
-                    f32 t2 = (bmax - o) / d;
-                    if (t1 > t2) std::swap(t1, t2);
-                    tmin = (std::max)(tmin, t1);
-                    tmax = (std::min)(tmax, t2);
-                    return tmin <= tmax;
-                };
-
-                if (slabTest(orig.x, dir.x, worldMin.x, worldMax.x)
-                    && slabTest(orig.y, dir.y, worldMin.y, worldMax.y)
-                    && slabTest(orig.z, dir.z, worldMin.z, worldMax.z)
-                    && tmax > 0.0f)
-                {
-                    f32 t = tmin > 0.0f ? tmin : tmax;
-                    if (t > 0.0f && t < closestDist)
-                    {
-                        closestDist = t;
-                        closestEntity = e;
-                    }
-                }
-            }
-
-            m_selectedEntity = closestEntity;
-        }
-    }
-
-    // ===== ImGuizmo ギズモ描画 =====
-    if (!m_isGameMode && m_engineMode == EngineMode::Editor
-        && m_selectedEntity != entt::null)
-    {
-        auto& reg = m_scene->GetRegistry();
-        if (reg.valid(m_selectedEntity) && reg.all_of<Transform>(m_selectedEntity))
-        {
-            auto& transform = reg.get<Transform>(m_selectedEntity);
-
-            XMFLOAT4X4 viewF, projF;
-            XMStoreFloat4x4(&viewF, m_camera->GetViewMatrix());
-            XMStoreFloat4x4(&projF, m_camera->GetProjectionMatrix());
-
-            XMFLOAT4X4 worldF;
-            XMStoreFloat4x4(&worldF, transform.GetWorldMatrix());
-
-            // 3Dビューポート領域
-            u32 vpX = static_cast<u32>(kLeftPanelWidth);
-            u32 vpY = static_cast<u32>(kToolbarHeight);
-            u32 vpW = (m_window->GetWidth() > vpX) ? m_window->GetWidth() - vpX : 1;
-            u32 vpH = (m_window->GetHeight() > vpY) ? m_window->GetHeight() - vpY : 1;
-
-            ImGuizmo::SetOrthographic(false);
-            ImGuizmo::SetDrawlist(ImGui::GetBackgroundDrawList());
-            ImGuizmo::SetRect(static_cast<float>(vpX), static_cast<float>(vpY),
-                              static_cast<float>(vpW), static_cast<float>(vpH));
-
-            ImGuizmo::OPERATION op = ImGuizmo::TRANSLATE;
-            if (m_gizmoMode == GizmoMode::Rotate) op = ImGuizmo::ROTATE;
-            if (m_gizmoMode == GizmoMode::Scale)  op = ImGuizmo::SCALE;
-
-            ImGuizmo::MODE mode = m_gizmoLocalSpace ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
-
-            float snapValues[3] = {1.0f, 1.0f, 1.0f};
-            if (m_gizmoMode == GizmoMode::Rotate)
-                snapValues[0] = snapValues[1] = snapValues[2] = 15.0f;
-            else if (m_gizmoMode == GizmoMode::Scale)
-                snapValues[0] = snapValues[1] = snapValues[2] = 0.1f;
-            bool useSnap = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-
-            if (ImGuizmo::Manipulate(
-                    &viewF._11, &projF._11,
-                    op, mode,
-                    &worldF._11, nullptr,
-                    useSnap ? snapValues : nullptr))
-            {
-                float translation[3], rotation[3], scale[3];
-                ImGuizmo::DecomposeMatrixToComponents(
-                    &worldF._11, translation, rotation, scale);
-                transform.position = {translation[0], translation[1], translation[2]};
-                transform.rotation = {rotation[0], rotation[1], rotation[2]};
-                transform.scale    = {scale[0], scale[1], scale[2]};
+                if (m_scene->GetRegistry().valid(e))
+                    m_scene->Remove(Entity(e, &m_scene->GetRegistry()));
             }
         }
     }
@@ -2056,6 +1478,9 @@ void Application::Render()
     m_commandQueue->ExecuteCommandList(nativeCmdList);
     m_swapChain->Present(m_useVsync);
     m_frameResources->EndFrame(*m_commandQueue);
+
+    // テクスチャプレビュー等のアップロードバッファを解放
+    m_resourceManager->FinishUploads();
 }
 
 } // namespace dx12e

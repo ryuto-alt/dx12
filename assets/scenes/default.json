@@ -3,7 +3,7 @@
     {
       "convexHullCollider": true,
       "material": {
-        "metallic": 0,
+        "metallic": 0.0,
         "roughness": 0.5
       },
       "meshRenderer": {
@@ -14,21 +14,21 @@
         "angularDamping": 0.009999999776482582,
         "friction": 0.30000001192092896,
         "linearDamping": 0.019999999552965164,
-        "mass": 30,
+        "mass": 30.0,
         "motionType": 2,
         "restitution": 0.4000000059604645,
         "useGravity": true
       },
       "transform": {
         "position": [
-          6,
-          0,
-          4
+          6.0,
+          0.0,
+          4.0
         ],
         "rotation": [
-          0,
-          0,
-          0
+          0.0,
+          0.0,
+          0.0
         ],
         "scale": [
           0.009999999776482582,
@@ -40,7 +40,7 @@
     {
       "convexHullCollider": true,
       "material": {
-        "metallic": 0,
+        "metallic": 0.0,
         "roughness": 0.5
       },
       "meshRenderer": {
@@ -51,21 +51,21 @@
         "angularDamping": 0.009999999776482582,
         "friction": 0.30000001192092896,
         "linearDamping": 0.019999999552965164,
-        "mass": 2,
+        "mass": 2.0,
         "motionType": 2,
         "restitution": 0.4000000059604645,
         "useGravity": true
       },
       "transform": {
         "position": [
-          3,
-          0,
-          4
+          3.0,
+          0.0,
+          4.0
         ],
         "rotation": [
-          0,
-          0,
-          0
+          0.0,
+          0.0,
+          0.0
         ],
         "scale": [
           0.009999999776482582,
@@ -77,7 +77,7 @@
     {
       "convexHullCollider": true,
       "material": {
-        "metallic": 0,
+        "metallic": 0.0,
         "roughness": 0.5
       },
       "meshRenderer": {
@@ -88,21 +88,21 @@
         "angularDamping": 0.009999999776482582,
         "friction": 0.30000001192092896,
         "linearDamping": 0.019999999552965164,
-        "mass": 4,
+        "mass": 4.0,
         "motionType": 2,
         "restitution": 0.4000000059604645,
         "useGravity": true
       },
       "transform": {
         "position": [
-          0,
-          0,
-          4
+          0.0,
+          0.0,
+          4.0
         ],
         "rotation": [
-          0,
-          0,
-          0
+          0.0,
+          0.0,
+          0.0
         ],
         "scale": [
           0.009999999776482582,
@@ -114,7 +114,7 @@
     {
       "convexHullCollider": true,
       "material": {
-        "metallic": 0,
+        "metallic": 0.0,
         "roughness": 0.5
       },
       "meshRenderer": {
@@ -125,21 +125,21 @@
         "angularDamping": 0.009999999776482582,
         "friction": 0.30000001192092896,
         "linearDamping": 0.019999999552965164,
-        "mass": 3,
+        "mass": 3.0,
         "motionType": 2,
         "restitution": 0.4000000059604645,
         "useGravity": true
       },
       "transform": {
         "position": [
-          -3,
-          0,
-          4
+          -3.0,
+          0.0,
+          4.0
         ],
         "rotation": [
-          0,
-          0,
-          0
+          0.0,
+          0.0,
+          0.0
         ],
         "scale": [
           0.009999999776482582,
@@ -151,7 +151,7 @@
     {
       "convexHullCollider": true,
       "material": {
-        "metallic": 0,
+        "metallic": 0.0,
         "roughness": 0.5
       },
       "meshRenderer": {
@@ -162,21 +162,21 @@
         "angularDamping": 0.009999999776482582,
         "friction": 0.30000001192092896,
         "linearDamping": 0.019999999552965164,
-        "mass": 5,
+        "mass": 5.0,
         "motionType": 2,
         "restitution": 0.4000000059604645,
         "useGravity": true
       },
       "transform": {
         "position": [
-          -6,
-          0,
-          4
+          -6.0,
+          0.0,
+          4.0
         ],
         "rotation": [
-          0,
-          0,
-          0
+          0.0,
+          0.0,
+          0.0
         ],
         "scale": [
           0.009999999776482582,
@@ -188,7 +188,7 @@
     {
       "convexHullCollider": true,
       "material": {
-        "metallic": 0,
+        "metallic": 0.0,
         "roughness": 0.8082915544509888
       },
       "meshRenderer": {
@@ -199,21 +199,21 @@
         "angularDamping": 0.009999999776482582,
         "friction": 0.30000001192092896,
         "linearDamping": 0.019999999552965164,
-        "mass": 60,
+        "mass": 60.0,
         "motionType": 2,
         "restitution": 0.4000000059604645,
         "useGravity": true
       },
       "transform": {
         "position": [
-          3,
-          -1,
-          0
+          3.0,
+          -1.0,
+          0.0
         ],
         "rotation": [
-          0,
-          0,
-          0
+          0.0,
+          0.0,
+          0.0
         ],
         "scale": [
           0.009999999776482582,
@@ -225,7 +225,7 @@
     {
       "convexHullCollider": true,
       "material": {
-        "metallic": 0,
+        "metallic": 0.0,
         "roughness": 0.2928932309150696
       },
       "meshRenderer": {
@@ -236,21 +236,21 @@
         "angularDamping": 0.009999999776482582,
         "friction": 0.30000001192092896,
         "linearDamping": 0.019999999552965164,
-        "mass": 60,
+        "mass": 60.0,
         "motionType": 2,
         "restitution": 0.4000000059604645,
         "useGravity": true
       },
       "transform": {
         "position": [
-          0,
-          -1,
-          0
+          0.0,
+          -1.0,
+          0.0
         ],
         "rotation": [
-          90,
-          0,
-          0
+          90.0,
+          0.0,
+          0.0
         ],
         "scale": [
           0.019999999552965164,
@@ -262,7 +262,7 @@
     {
       "convexHullCollider": true,
       "material": {
-        "metallic": 0,
+        "metallic": 0.0,
         "roughness": 0.8082915544509888
       },
       "meshRenderer": {
@@ -273,21 +273,21 @@
         "angularDamping": 0.009999999776482582,
         "friction": 0.30000001192092896,
         "linearDamping": 0.019999999552965164,
-        "mass": 60,
+        "mass": 60.0,
         "motionType": 2,
         "restitution": 0.4000000059604645,
         "useGravity": true
       },
       "transform": {
         "position": [
-          -3,
-          -1,
-          0
+          -3.0,
+          -1.0,
+          0.0
         ],
         "rotation": [
-          0,
-          0,
-          0
+          0.0,
+          0.0,
+          0.0
         ],
         "scale": [
           0.009999999776482582,
@@ -299,7 +299,7 @@
     {
       "convexHullCollider": true,
       "material": {
-        "metallic": 0,
+        "metallic": 0.0,
         "roughness": 0.5
       },
       "meshRenderer": {
@@ -310,50 +310,50 @@
         "angularDamping": 0.009999999776482582,
         "friction": 0.30000001192092896,
         "linearDamping": 0.019999999552965164,
-        "mass": 0,
+        "mass": 1.0,
         "motionType": 0,
         "restitution": 0.4000000059604645,
-        "useGravity": true
+        "useGravity": false
       },
       "transform": {
         "position": [
-          0,
-          -1,
-          0
+          0.0,
+          -1.0,
+          0.0
         ],
         "rotation": [
-          -90,
-          0,
-          0
+          -90.0,
+          0.0,
+          0.0
         ],
         "scale": [
-          5,
-          5,
-          5
+          5.0,
+          5.0,
+          5.0
         ]
       }
     },
     {
       "gridPlane": {
-        "size": 50
+        "size": 50.0
       },
       "name": "grid_floor",
       "primitive": "box",
       "transform": {
         "position": [
-          0,
-          -1,
-          0
+          0.0,
+          -1.0,
+          0.0
         ],
         "rotation": [
-          0,
-          0,
-          0
+          0.0,
+          0.0,
+          0.0
         ],
         "scale": [
-          1,
-          1,
-          1
+          1.0,
+          1.0,
+          1.0
         ]
       }
     }
