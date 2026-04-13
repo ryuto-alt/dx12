@@ -468,92 +468,81 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_modeChangeRequested = true;
     }
 
-    // 全モデルのサムネイルを起動時にレンダリング（ローディング画面付き）
+    // 全モデルのサムネイルを起動時にレンダリング
     {
         size_t total = m_thumbRenderer->ScanAllModels(std::string(ASSETS_DIR));
-        size_t done = 0;
 
-        while (m_thumbRenderer->GetPendingCount() > 0)
+        if (total > 0)
         {
-            // Windows メッセージポンプ（フリーズ防止）
-            MSG msg;
-            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+            // ローディング画面を1フレーム表示
             {
-                TranslateMessage(&msg);
-                DispatchMessageW(&msg);
+                auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
+                m_commandList->Wrap(cmdList);
+
+                u32 frameIdx = m_swapChain->GetCurrentBackBufferIndex();
+                auto* backBuffer = m_swapChain->GetCurrentBackBuffer();
+                auto rtvHandle = m_descriptorHeap->GetCpuHandle(frameIdx);
+
+                m_commandList->TransitionResource(backBuffer,
+                    D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+                float clearColor[4] = {0.08f, 0.08f, 0.10f, 1.0f};
+                cmdList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
+                cmdList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+
+                D3D12_VIEWPORT vp = {0, 0,
+                    static_cast<f32>(m_window->GetWidth()),
+                    static_cast<f32>(m_window->GetHeight()), 0, 1};
+                D3D12_RECT scissor = {0, 0,
+                    static_cast<LONG>(m_window->GetWidth()),
+                    static_cast<LONG>(m_window->GetHeight())};
+                cmdList->RSSetViewports(1, &vp);
+                cmdList->RSSetScissorRects(1, &scissor);
+
+                m_imguiManager->BeginFrame();
+                float dispW = static_cast<float>(m_window->GetWidth());
+                float dispH = static_cast<float>(m_window->GetHeight());
+                ImGui::SetNextWindowPos(ImVec2(dispW * 0.5f, dispH * 0.5f),
+                    ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+                ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Always);
+                ImGui::Begin("##Loading", nullptr,
+                    ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                    ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize);
+                ImGui::Text("DX12 Engine");
+                ImGui::Separator();
+                ImGui::Text("Loading %zu models...", total);
+                ImGui::ProgressBar(0.0f, ImVec2(-1, 24));
+                ImGui::End();
+                m_imguiManager->EndFrame(cmdList);
+
+                m_commandList->TransitionResource(backBuffer,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+                m_commandList->Close();
+                m_commandQueue->ExecuteCommandList(cmdList);
+                m_swapChain->Present(false);
+                m_frameResources->EndFrame(*m_commandQueue);
+
+                // 画面が確実に表示されるまで待つ
+                m_commandQueue->WaitIdle();
+                MSG msg;
+                while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+                {
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
             }
 
-            // フレーム開始
-            auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
-            m_commandList->Wrap(cmdList);
-
-            // サムネイル1つレンダリング
-            m_thumbRenderer->RenderNext(cmdList);
-            done++;
-
-            // バックバッファにローディング画面を描画
-            u32 frameIdx = m_swapChain->GetCurrentBackBufferIndex();
-            auto* backBuffer = m_swapChain->GetCurrentBackBuffer();
-            auto rtvHandle = m_descriptorHeap->GetCpuHandle(frameIdx);
-
-            // バリア PRESENT → RENDER_TARGET
-            m_commandList->TransitionResource(backBuffer,
-                D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-            float clearColor[4] = {0.08f, 0.08f, 0.10f, 1.0f};
-            cmdList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
-            cmdList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
-
-            D3D12_VIEWPORT vp = {0, 0,
-                static_cast<f32>(m_window->GetWidth()),
-                static_cast<f32>(m_window->GetHeight()), 0, 1};
-            D3D12_RECT scissor = {0, 0,
-                static_cast<LONG>(m_window->GetWidth()),
-                static_cast<LONG>(m_window->GetHeight())};
-            cmdList->RSSetViewports(1, &vp);
-            cmdList->RSSetScissorRects(1, &scissor);
-
-            // ImGui でプログレスバー描画
-            m_imguiManager->BeginFrame();
-
-            float progress = total > 0 ? static_cast<float>(done) / static_cast<float>(total) : 1.0f;
-            float dispW = static_cast<float>(m_window->GetWidth());
-            float dispH = static_cast<float>(m_window->GetHeight());
-
-            // 中央にローディングウィンドウ
-            ImGui::SetNextWindowPos(ImVec2(dispW * 0.5f, dispH * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-            ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Always);
-            ImGui::Begin("##Loading", nullptr,
-                ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize);
-
-            ImGui::Text("DX12 Engine");
-            ImGui::Separator();
-            ImGui::Text("Loading assets...");
-            ImGui::Spacing();
-
-            // プログレスバー
-            ImGui::ProgressBar(progress, ImVec2(-1, 24));
-            ImGui::Text("%zu / %zu models", done, total);
-
-            // 回転インジケータ
-            const char* spinner[] = {"|", "/", "-", "\\"};
-            ImGui::SameLine(380);
-            ImGui::Text("%s", spinner[done % 4]);
-
-            ImGui::End();
-
-            m_imguiManager->EndFrame(cmdList);
-
-            // バリア RENDER_TARGET → PRESENT
-            m_commandList->TransitionResource(backBuffer,
-                D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
-
-            m_commandList->Close();
-            m_commandQueue->ExecuteCommandList(cmdList);
-            m_swapChain->Present(false);
-            m_frameResources->EndFrame(*m_commandQueue);
-            m_resourceManager->FinishUploads();
+            // 全サムネイルを1コマンドリストでバッチレンダリング
+            {
+                auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
+                while (m_thumbRenderer->GetPendingCount() > 0)
+                    m_thumbRenderer->RenderNext(cmdList);
+                ThrowIfFailed(cmdList->Close());
+                m_commandQueue->ExecuteCommandList(cmdList);
+                m_commandQueue->WaitIdle();
+                m_resourceManager->FinishUploads();
+                m_frameResources->EndFrame(*m_commandQueue);
+            }
         }
     }
 
