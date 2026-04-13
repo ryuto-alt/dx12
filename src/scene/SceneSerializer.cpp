@@ -100,6 +100,12 @@ bool SceneSerializer::Save(const Scene& scene, const std::string& filePath,
                     {"roughness", roughness}
                 };
             }
+
+            // UV タイリング
+            if (mr.uvScaleU != 1.0f || mr.uvScaleV != 1.0f)
+            {
+                ej["uvTiling"] = {{"u", mr.uvScaleU}, {"v", mr.uvScaleV}};
+            }
         }
 
         if (reg.all_of<GridPlane>(entity))
@@ -414,6 +420,23 @@ bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
                     auto& mr = reg.get<MeshRenderer>(e);
                     if (mj.contains("metallic"))  mr.overrideMetallic  = mj["metallic"].get<f32>();
                     if (mj.contains("roughness")) mr.overrideRoughness = mj["roughness"].get<f32>();
+                }
+            }
+
+            // UV タイリング復元
+            if (ej.contains("uvTiling") && reg.all_of<MeshRenderer>(e))
+            {
+                const auto& uvj = ej["uvTiling"];
+                auto& mr = reg.get<MeshRenderer>(e);
+                mr.uvScaleU = uvj.value("u", 1.0f);
+                mr.uvScaleV = uvj.value("v", 1.0f);
+                if (mr.uvScaleU != 1.0f || mr.uvScaleV != 1.0f)
+                {
+                    for (auto* mesh : mr.meshes)
+                    {
+                        if (mesh)
+                            mesh->ApplyUVScale(*scene.GetDevice(), mr.uvScaleU, mr.uvScaleV);
+                    }
                 }
             }
         }

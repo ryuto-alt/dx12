@@ -2,6 +2,7 @@
 
 #include <entt/entt.hpp>
 #include "core/Types.h"
+#include "ecs/Components.h"
 
 namespace dx12e
 {
@@ -28,6 +29,15 @@ public:
                 bool& shadowMapDirty,
                 GameClock* clock,
                 Scene* scene);
+
+private:
+    // Undo 用: ウィジェット操作開始時のスナップショット
+    bool      m_transformEditing = false;
+    Transform m_transformSnapshot{};
+
+    bool  m_pbrEditing = false;
+    float m_pbrMetallicSnapshot  = -1.0f;
+    float m_pbrRoughnessSnapshot = -1.0f;
 };
 
 } // namespace dx12e

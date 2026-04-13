@@ -64,6 +64,12 @@ public:
     // フレーム先頭でcmdListが有効な間に呼ぶ（テクスチャサムネイルのアップロード）
     void LoadPendingThumbnails(ID3D12GraphicsCommandList* cmdList);
 
+    // アセットブラウザの即時更新
+    void RefreshAssetBrowser();
+
+    // サムネイルレンダラー設定
+    void SetThumbnailRenderer(class ModelThumbnailRenderer* renderer);
+
     // ビューポート領域（3D描画のオフセット計算用）
     ImVec2 GetViewportPos()  const { return m_viewportPos; }
     ImVec2 GetViewportSize() const { return m_viewportSize; }
@@ -82,6 +88,7 @@ private:
     std::unique_ptr<InspectorPanel>    m_inspector;
     std::unique_ptr<SceneViewPanel>    m_sceneView;
     std::unique_ptr<AssetBrowserPanel> m_assetBrowser;
+    class ModelThumbnailRenderer* m_thumbRenderer = nullptr;
 };
 
 } // namespace dx12e

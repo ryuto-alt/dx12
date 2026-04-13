@@ -1,5 +1,6 @@
 #include "editor/panels/InspectorPanel.h"
 #include "editor/EditorContext.h"
+#include "editor/UndoSystem.h"
 #include "ecs/Components.h"
 #include "renderer/Camera.h"
 #include "renderer/Material.h"
@@ -39,7 +40,7 @@ void InspectorPanel::Render(entt::registry& reg,
                             u32& shadowMapSize,
                             bool& shadowMapDirty,
                             GameClock* clock,
-                            Scene* /*scene*/)
+                            Scene* scene)
 {
     ImGui::Begin("\xe3\x82\xa4\xe3\x83\xb3\xe3\x82\xb9\xe3\x83\x9a\xe3\x82\xaf\xe3\x82\xbf\xe3\x83\xbc");  // Inspector
 
@@ -63,9 +64,43 @@ void InspectorPanel::Render(entt::registry& reg,
             if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen))
             {
                 auto& t = reg.get<Transform>(ctx.selectedEntity);
+
+                // 編集開始前にスナップショットを取る（毎フレーム、非編集中のみ）
+                if (!m_transformEditing)
+                    m_transformSnapshot = t;
+
                 ImGui::DragFloat3("Position", &t.position.x, 0.1f);
+                bool posActive = ImGui::IsItemActive();
                 ImGui::DragFloat3("Rotation", &t.rotation.x, 1.0f);
+                bool rotActive = ImGui::IsItemActive();
                 ImGui::DragFloat3("Scale",    &t.scale.x,    0.01f);
+                bool sclActive = ImGui::IsItemActive();
+
+                bool anyActive = posActive || rotActive || sclActive;
+                if (anyActive)
+                    m_transformEditing = true;
+            }
+
+            // Transform 編集中 → 全ウィジェットが非アクティブになったら Undo に積む
+            if (m_transformEditing && !ImGui::IsAnyItemActive())
+            {
+                auto& t = reg.get<Transform>(ctx.selectedEntity);
+                bool changed =
+                    m_transformSnapshot.position.x != t.position.x ||
+                    m_transformSnapshot.position.y != t.position.y ||
+                    m_transformSnapshot.position.z != t.position.z ||
+                    m_transformSnapshot.rotation.x != t.rotation.x ||
+                    m_transformSnapshot.rotation.y != t.rotation.y ||
+                    m_transformSnapshot.rotation.z != t.rotation.z ||
+                    m_transformSnapshot.scale.x    != t.scale.x ||
+                    m_transformSnapshot.scale.y    != t.scale.y ||
+                    m_transformSnapshot.scale.z    != t.scale.z;
+                if (changed)
+                {
+                    ctx.undoSystem.PushCommand(std::make_unique<TransformCommand>(
+                        &reg, ctx.selectedEntity, m_transformSnapshot, t));
+                }
+                m_transformEditing = false;
             }
         }
 
@@ -248,13 +283,69 @@ void InspectorPanel::Render(entt::registry& reg,
                     if (mr.overrideRoughness < 0.0f)
                         mr.overrideRoughness = mat->defaultRoughness;
 
+                    // PBR 編集前スナップショット
+                    if (!m_pbrEditing)
+                    {
+                        m_pbrMetallicSnapshot = mr.overrideMetallic;
+                        m_pbrRoughnessSnapshot = mr.overrideRoughness;
+                    }
+
                     ImGui::SliderFloat("Metallic", &mr.overrideMetallic, 0.0f, 1.0f);
+                    bool metalActive = ImGui::IsItemActive();
                     ImGui::SliderFloat("Roughness", &mr.overrideRoughness, 0.0f, 1.0f);
+                    bool roughActive = ImGui::IsItemActive();
+
+                    if (metalActive || roughActive)
+                        m_pbrEditing = true;
+
+                    if (m_pbrEditing && !metalActive && !roughActive && !ImGui::IsAnyItemActive())
+                    {
+                        bool changed = m_pbrMetallicSnapshot != mr.overrideMetallic
+                                    || m_pbrRoughnessSnapshot != mr.overrideRoughness;
+                        if (changed)
+                        {
+                            ctx.undoSystem.PushCommand(std::make_unique<PBRCommand>(
+                                &reg, ctx.selectedEntity,
+                                m_pbrMetallicSnapshot, m_pbrRoughnessSnapshot,
+                                mr.overrideMetallic, mr.overrideRoughness));
+                        }
+                        m_pbrEditing = false;
+                    }
 
                     bool hasNormal = mat->normalMapTexture != nullptr;
-                    bool hasMR = mat->metalRoughnessTexture != nullptr;
+                    bool hasMR2 = mat->metalRoughnessTexture != nullptr;
                     ImGui::Text("Normal Map: %s", hasNormal ? "Yes" : "No");
-                    ImGui::Text("MetalRough Map: %s", hasMR ? "Yes" : "No");
+                    ImGui::Text("MetalRough Map: %s", hasMR2 ? "Yes" : "No");
+                }
+            }
+
+            // UV タイリング
+            if (ImGui::CollapsingHeader("UV Tiling"))
+            {
+                bool uvChanged = false;
+                uvChanged |= ImGui::DragFloat("U Scale", &mr.uvScaleU, 0.1f, 0.01f, 100.0f);
+                uvChanged |= ImGui::DragFloat("V Scale", &mr.uvScaleV, 0.1f, 0.01f, 100.0f);
+                // U,V を連動させるボタン
+                if (ImGui::Button("U=V"))
+                {
+                    mr.uvScaleV = mr.uvScaleU;
+                    uvChanged = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Reset 1x"))
+                {
+                    mr.uvScaleU = 1.0f;
+                    mr.uvScaleV = 1.0f;
+                    uvChanged = true;
+                }
+                if (uvChanged)
+                {
+                    // 全メッシュに UV スケールを適用
+                    for (auto* mesh : mr.meshes)
+                    {
+                        if (mesh)
+                            mesh->ApplyUVScale(*scene->GetDevice(), mr.uvScaleU, mr.uvScaleV);
+                    }
                 }
             }
         }

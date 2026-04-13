@@ -38,6 +38,7 @@ namespace dx12e
     class PhysicsDebugRenderer;
     class EditorContext;
     class EditorLayer;
+    class ModelThumbnailRenderer;
     struct Material;
     struct ProjectInfo;
 }
@@ -98,6 +99,7 @@ private:
     bool m_isGameMode = false;
     std::unique_ptr<EditorContext> m_editorCtx;
     std::unique_ptr<EditorLayer>   m_editorLayer;
+    std::unique_ptr<ModelThumbnailRenderer> m_thumbRenderer;
     bool m_showLauncher = true;  // プロジェクトランチャー表示フラグ
     std::unique_ptr<Camera>            m_camera;
     std::unique_ptr<ConstantBuffer>    m_perFrameCB;
@@ -145,6 +147,10 @@ private:
         // Material PBR
         float materialMetallic  = 1.0f;
         float materialRoughness = 1.0f;
+
+        // エディタ追加モデルの再スポーン用
+        std::string modelPath;       // MeshRenderer.modelPath（空 = Luaスポーン）
+        bool editorSpawned = false;  // エディタで手動追加されたか
     };
     std::unordered_map<std::string, EntitySnapshot> m_editorSnapshots;
 

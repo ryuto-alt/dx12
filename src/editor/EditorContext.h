@@ -2,9 +2,12 @@
 
 #include <string>
 #include <vector>
+#include <algorithm>
+#include <memory>
 #include <entt/entt.hpp>
 #include <DirectXMath.h>
 #include "core/Types.h"
+#include "editor/UndoSystem.h"
 
 namespace dx12e
 {
@@ -17,11 +20,70 @@ struct PendingSpawnRequest
     DirectX::XMFLOAT3 position{};
 };
 
+// コピー&ペースト用
+struct ClipboardEntry
+{
+    std::string name;
+    DirectX::XMFLOAT3 position{};
+    DirectX::XMFLOAT3 rotation{};
+    DirectX::XMFLOAT3 scale{1,1,1};
+    std::string modelPath;
+    float overrideMetallic  = -1.0f;
+    float overrideRoughness = -1.0f;
+};
+
 class EditorContext
 {
 public:
-    // 選択エンティティ
-    entt::entity selectedEntity = entt::null;
+    // ---- マルチ選択 ----
+    entt::entity selectedEntity = entt::null;   // プライマリ（後方互換）
+    std::vector<entt::entity> selectedEntities; // 全選択リスト
+
+    bool IsSelected(entt::entity e) const
+    {
+        return std::find(selectedEntities.begin(), selectedEntities.end(), e)
+               != selectedEntities.end();
+    }
+
+    void Select(entt::entity e)
+    {
+        selectedEntities.clear();
+        selectedEntity = e;
+        if (e != entt::null)
+            selectedEntities.push_back(e);
+    }
+
+    void AddToSelection(entt::entity e)
+    {
+        if (e == entt::null) return;
+        if (!IsSelected(e))
+            selectedEntities.push_back(e);
+        selectedEntity = e;
+    }
+
+    void ToggleSelection(entt::entity e)
+    {
+        if (e == entt::null) return;
+        auto it = std::find(selectedEntities.begin(), selectedEntities.end(), e);
+        if (it != selectedEntities.end())
+        {
+            selectedEntities.erase(it);
+            selectedEntity = selectedEntities.empty() ? entt::null : selectedEntities.back();
+        }
+        else
+        {
+            selectedEntities.push_back(e);
+            selectedEntity = e;
+        }
+    }
+
+    void ClearSelection()
+    {
+        selectedEntity = entt::null;
+        selectedEntities.clear();
+    }
+
+    bool HasSelection() const { return !selectedEntities.empty(); }
 
     // ギズモ
     GizmoMode gizmoMode      = GizmoMode::Translate;
@@ -37,11 +99,18 @@ public:
     // 遅延処理キュー
     std::vector<PendingSpawnRequest> pendingSpawns;
     std::vector<entt::entity>        pendingDeletions;
-    std::string pendingLoadPath;  // Load ボタンで選択されたシーンパス
-    bool pendingBuildGame = false; // Build ボタンが押された
+    std::string pendingLoadPath;
+    bool pendingBuildGame = false;
+    bool pendingNewScene  = false;
+    bool showNewSceneDialog = false;
+    bool newSceneDialogIsCreate = true;  // true=新規作成, false=名前を付けて保存
+    char newSceneNameBuf[128] = {};
 
-    // 選択解除
-    void ClearSelection() { selectedEntity = entt::null; }
+    // Undo/Redo
+    UndoSystem undoSystem;
+
+    // クリップボード（Ctrl+C/V/D 用）
+    std::vector<ClipboardEntry> clipboard;
 };
 
 } // namespace dx12e

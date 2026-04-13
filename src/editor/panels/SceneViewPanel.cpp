@@ -1,8 +1,10 @@
 #include "editor/panels/SceneViewPanel.h"
 #include "editor/EditorContext.h"
+#include "editor/UndoSystem.h"
 #include "ecs/Components.h"
 #include "renderer/Camera.h"
 #include "renderer/Mesh.h"
+#include "scene/Scene.h"
 
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4201 4244 4267 4996)
@@ -55,6 +57,14 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
         snapValues[0] = snapValues[1] = snapValues[2] = 0.1f;
     bool useSnap = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
 
+    // ギズモ操作開始を検出して Transform をスナップショット
+    bool isUsing = ImGuizmo::IsUsing();
+    if (isUsing && !m_gizmoWasUsing)
+    {
+        // ドラッグ開始: 変更前の Transform を保存
+        m_gizmoStartTransform = transform;
+    }
+
     if (ImGuizmo::Manipulate(
             &viewF._11, &projF._11,
             op, mode,
@@ -66,8 +76,37 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
             &worldF._11, translation, rotation, scale);
         transform.position = {translation[0], translation[1], translation[2]};
         transform.rotation = {rotation[0], rotation[1], rotation[2]};
-        transform.scale    = {scale[0], scale[1], scale[2]};
+
+        // Scale が 0 以下になると行列が壊れてギズモが消えるので最小値でクランプ
+        constexpr float kMinScale = 0.001f;
+        scale[0] = (std::max)(scale[0], kMinScale);
+        scale[1] = (std::max)(scale[1], kMinScale);
+        scale[2] = (std::max)(scale[2], kMinScale);
+        transform.scale = {scale[0], scale[1], scale[2]};
     }
+
+    // ギズモ操作終了を検出して Undo コマンドを push
+    if (!isUsing && m_gizmoWasUsing)
+    {
+        // ドラッグ終了: 変更後の Transform と比較して差分があれば Undo に積む
+        auto& after = transform;
+        bool changed =
+            m_gizmoStartTransform.position.x != after.position.x ||
+            m_gizmoStartTransform.position.y != after.position.y ||
+            m_gizmoStartTransform.position.z != after.position.z ||
+            m_gizmoStartTransform.rotation.x != after.rotation.x ||
+            m_gizmoStartTransform.rotation.y != after.rotation.y ||
+            m_gizmoStartTransform.rotation.z != after.rotation.z ||
+            m_gizmoStartTransform.scale.x    != after.scale.x ||
+            m_gizmoStartTransform.scale.y    != after.scale.y ||
+            m_gizmoStartTransform.scale.z    != after.scale.z;
+        if (changed)
+        {
+            ctx.undoSystem.PushCommand(std::make_unique<TransformCommand>(
+                &reg, ctx.selectedEntity, m_gizmoStartTransform, after));
+        }
+    }
+    m_gizmoWasUsing = isUsing;
 }
 
 void SceneViewPanel::HandlePicking(entt::registry& reg,
@@ -169,7 +208,73 @@ void SceneViewPanel::HandlePicking(entt::registry& reg,
         }
     }
 
-    ctx.selectedEntity = closestEntity;
+    // Ctrl+クリックでマルチ選択
+    bool ctrl = ImGui::GetIO().KeyCtrl;
+    if (ctrl)
+    {
+        if (closestEntity != entt::null)
+            ctx.ToggleSelection(closestEntity);
+    }
+    else
+    {
+        ctx.Select(closestEntity);
+    }
+}
+
+void SceneViewPanel::HandleDeleteKey(entt::registry& reg,
+                                     EditorContext& ctx,
+                                     Scene* scene,
+                                     f32 vpX, f32 vpY, f32 vpW, f32 vpH)
+{
+    if (!ctx.HasSelection()) return;
+    if (ImGui::GetIO().WantCaptureKeyboard) return;
+
+    bool deletePressed = (GetAsyncKeyState(VK_DELETE) & 1) != 0;
+
+    // 右クリックコンテキストメニュー（ビューポート内のみ）
+    ImVec2 mousePos = ImGui::GetIO().MousePos;
+    bool inViewport = mousePos.x >= vpX && mousePos.x < vpX + vpW
+                   && mousePos.y >= vpY && mousePos.y < vpY + vpH;
+
+    if (inViewport && ImGui::IsMouseClicked(ImGuiMouseButton_Right)
+        && !ImGui::GetIO().WantCaptureMouse)
+    {
+        ImGui::OpenPopup("##SceneContextMenu");
+    }
+
+    if (ImGui::BeginPopup("##SceneContextMenu"))
+    {
+        if (ImGui::MenuItem("\xe5\x89\x8a\xe9\x99\xa4 (Del)"))
+            deletePressed = true;
+        ImGui::EndPopup();
+    }
+
+    if (deletePressed)
+    {
+        // マルチ選択の全エンティティを削除
+        for (auto e : ctx.selectedEntities)
+        {
+            if (!reg.valid(e)) continue;
+
+            DeletedEntityData data;
+            if (reg.all_of<NameTag>(e))
+                data.name = reg.get<NameTag>(e).name;
+            if (reg.all_of<Transform>(e))
+                data.transform = reg.get<Transform>(e);
+            if (reg.all_of<MeshRenderer>(e))
+            {
+                auto& mr = reg.get<MeshRenderer>(e);
+                data.modelPath = mr.modelPath;
+                data.overrideMetallic = mr.overrideMetallic;
+                data.overrideRoughness = mr.overrideRoughness;
+            }
+
+            ctx.undoSystem.PushCommand(std::make_unique<DeleteEntityCommand>(
+                scene, &reg, e, data));
+            ctx.pendingDeletions.push_back(e);
+        }
+        ctx.ClearSelection();
+    }
 }
 
 } // namespace dx12e

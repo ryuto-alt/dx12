@@ -5,6 +5,7 @@
 #include <memory>
 #include <cstdint>
 #include <DirectXMath.h>
+#include <entt/entt.hpp>
 #include "core/Types.h"
 
 namespace dx12e
@@ -33,7 +34,10 @@ struct Transform
     DirectX::XMFLOAT4 quaternion = {0.0f, 0.0f, 0.0f, 1.0f}; // (x,y,z,w) 物理同期用
     bool useQuaternion = false; // true なら quaternion から行列を生成
 
-    DirectX::XMMATRIX GetWorldMatrix() const;
+    // 親子階層
+    entt::entity parent = entt::null;
+
+    DirectX::XMMATRIX GetWorldMatrix() const;  // ローカル行列（親は考慮しない）
 };
 
 struct MeshRenderer
@@ -46,6 +50,10 @@ struct MeshRenderer
     // エディタ用 PBR オーバーライド（Material ポインタに依存しない直接値）
     float overrideMetallic  = -1.0f;  // < 0 = Material の値を使う
     float overrideRoughness = -1.0f;
+
+    // UV タイリング
+    float uvScaleU = 1.0f;
+    float uvScaleV = 1.0f;
 };
 
 struct SkeletalAnimation

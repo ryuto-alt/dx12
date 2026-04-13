@@ -5,7 +5,9 @@
 #include "editor/panels/InspectorPanel.h"
 #include "editor/panels/SceneViewPanel.h"
 #include "editor/panels/AssetBrowserPanel.h"
+#include "editor/ModelThumbnailRenderer.h"
 #include "scene/Scene.h"
+#include "renderer/Camera.h"
 #include "core/GameClock.h"
 #include "core/Logger.h"
 
@@ -15,8 +17,56 @@
 #include <imgui_internal.h>
 #pragma warning(pop)
 
+#include <DirectXMath.h>
+#include <cmath>
+
 namespace dx12e
 {
+
+// マウス座標から Y=0 平面上のワールド座標を計算
+static DirectX::XMFLOAT3 ScreenToWorldOnGroundPlane(
+    Camera* camera, ImVec2 mousePos, ImVec2 vpPos, ImVec2 vpSize)
+{
+    using namespace DirectX;
+
+    // NDC
+    float ndcX = ((mousePos.x - vpPos.x) / vpSize.x) * 2.0f - 1.0f;
+    float ndcY = 1.0f - ((mousePos.y - vpPos.y) / vpSize.y) * 2.0f;
+
+    XMMATRIX invProj = XMMatrixInverse(nullptr, camera->GetProjectionMatrix());
+    XMMATRIX invView = XMMatrixInverse(nullptr, camera->GetViewMatrix());
+
+    XMVECTOR rayClip = XMVectorSet(ndcX, ndcY, 1.0f, 1.0f);
+    XMVECTOR rayEye = XMVector4Transform(rayClip, invProj);
+    rayEye = XMVectorSetZ(rayEye, 1.0f);
+    rayEye = XMVectorSetW(rayEye, 0.0f);
+    XMVECTOR rayDir = XMVector3Normalize(XMVector4Transform(rayEye, invView));
+
+    XMFLOAT3 camPosF = camera->GetPosition();
+    XMVECTOR rayOrigin = XMLoadFloat3(&camPosF);
+
+    // Y=0 平面との交点: t = -origin.y / dir.y
+    XMFLOAT3 dir;
+    XMStoreFloat3(&dir, rayDir);
+
+    if (std::abs(dir.y) > 1e-6f)
+    {
+        float t = -camPosF.y / dir.y;
+        if (t > 0.0f)
+        {
+            // 交点を計算
+            XMFLOAT3 result;
+            XMStoreFloat3(&result, XMVectorAdd(rayOrigin, XMVectorScale(rayDir, t)));
+            result.y = 0.0f;  // 浮動小数誤差防止
+            return result;
+        }
+    }
+
+    // Y=0 に交差しない場合（カメラが上を向いてる等）→ カメラの前方 10m に配置
+    XMFLOAT3 result;
+    XMStoreFloat3(&result, XMVectorAdd(rayOrigin, XMVectorScale(rayDir, 10.0f)));
+    return result;
+}
 
 EditorLayer::EditorLayer() = default;
 EditorLayer::~EditorLayer() = default;
@@ -185,9 +235,15 @@ void EditorLayer::Render(bool isPlaying,
                 const char* droppedPath = static_cast<const char*>(payload->Data);
                 PendingSpawnRequest req;
                 req.modelPath = droppedPath;
-                req.position = {0.0f, 0.0f, 0.0f};
+
+                // マウス座標からワールド座標を計算（Y=0 平面との交点）
+                req.position = ScreenToWorldOnGroundPlane(
+                    camera, ImGui::GetIO().MousePos,
+                    m_viewportPos, m_viewportSize);
+
                 m_ctx->pendingSpawns.push_back(req);
-                Logger::Info("Dropped to scene: {}", droppedPath);
+                Logger::Info("Dropped to scene at ({:.1f}, {:.1f}, {:.1f}): {}",
+                    req.position.x, req.position.y, req.position.z, droppedPath);
             }
             ImGui::EndDragDropTarget();
         }
@@ -197,7 +253,7 @@ void EditorLayer::Render(bool isPlaying,
         ImGui::PopStyleVar();
     }
 
-    // ===== 3D ピッキング + ギズモ =====
+    // ===== 3D ピッキング + ギズモ + 削除 =====
     if (!isPlaying)
     {
         m_sceneView->HandlePicking(reg, *m_ctx, camera,
@@ -206,12 +262,26 @@ void EditorLayer::Render(bool isPlaying,
         m_sceneView->RenderGizmo(reg, *m_ctx, camera,
                                  m_viewportPos.x, m_viewportPos.y,
                                  m_viewportSize.x, m_viewportSize.y);
+        m_sceneView->HandleDeleteKey(reg, *m_ctx, scene,
+                                     m_viewportPos.x, m_viewportPos.y,
+                                     m_viewportSize.x, m_viewportSize.y);
     }
 }
 
 void EditorLayer::LoadPendingThumbnails(ID3D12GraphicsCommandList* cmdList)
 {
     m_assetBrowser->LoadPendingThumbnails(cmdList);
+}
+
+void EditorLayer::RefreshAssetBrowser()
+{
+    m_assetBrowser->ForceRefresh();
+}
+
+void EditorLayer::SetThumbnailRenderer(ModelThumbnailRenderer* renderer)
+{
+    m_thumbRenderer = renderer;
+    m_assetBrowser->SetThumbnailRenderer(renderer);
 }
 
 } // namespace dx12e

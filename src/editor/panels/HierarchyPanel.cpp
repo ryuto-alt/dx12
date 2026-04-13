@@ -1,59 +1,215 @@
 #include "editor/panels/HierarchyPanel.h"
 #include "editor/EditorContext.h"
+#include "editor/UndoSystem.h"
 #include "ecs/Components.h"
+#include "scene/Scene.h"
 
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4201 4244 4267 4996)
 #include <imgui.h>
 #pragma warning(pop)
 
+#include <vector>
+
 namespace dx12e
 {
+
+// 子エンティティ列挙ヘルパー
+static std::vector<entt::entity> GetChildren(entt::registry& reg, entt::entity parent)
+{
+    std::vector<entt::entity> children;
+    auto view = reg.view<const Transform>();
+    for (auto [e, t] : view.each())
+    {
+        if (t.parent == parent)
+            children.push_back(e);
+    }
+    return children;
+}
+
+void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, entt::entity e)
+{
+    if (!reg.all_of<NameTag>(e)) return;
+    auto& tag = reg.get<NameTag>(e);
+
+    auto children = GetChildren(reg, e);
+    bool hasChildren = !children.empty();
+    bool selected = ctx.IsSelected(e);
+
+    // リネーム中はインライン入力を表示
+    if (m_renamingEntity == e)
+    {
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::InputText("##Rename", m_renameBuf, sizeof(m_renameBuf),
+                             ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll))
+        {
+            if (std::strlen(m_renameBuf) > 0)
+                tag.name = m_renameBuf;
+            m_renamingEntity = entt::null;
+        }
+        // フォーカスが外れたら確定
+        if (!ImGui::IsItemActive() && m_renamingEntity == e)
+        {
+            if (std::strlen(m_renameBuf) > 0)
+                tag.name = m_renameBuf;
+            m_renamingEntity = entt::null;
+        }
+        return;  // リネーム中はツリーノード描画しない
+    }
+
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnArrow;
+    if (!hasChildren) flags |= ImGuiTreeNodeFlags_Leaf;
+    if (selected) flags |= ImGuiTreeNodeFlags_Selected;
+
+    bool open = ImGui::TreeNodeEx(
+        reinterpret_cast<void*>(static_cast<uintptr_t>(static_cast<u32>(e))),
+        flags, "%s", tag.name.c_str());
+
+    // ダブルクリックでリネーム開始
+    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+    {
+        m_renamingEntity = e;
+        std::memset(m_renameBuf, 0, sizeof(m_renameBuf));
+        strncpy_s(m_renameBuf, tag.name.c_str(), _TRUNCATE);
+    }
+    // シングルクリック選択（Ctrl でマルチ選択）
+    else if (ImGui::IsItemClicked(ImGuiMouseButton_Left))
+    {
+        bool ctrl = ImGui::GetIO().KeyCtrl;
+        if (ctrl)
+            ctx.ToggleSelection(e);
+        else
+            ctx.Select(selected ? entt::null : e);
+    }
+
+    // D&D ソース（親子設定用）
+    if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
+    {
+        ImGui::SetDragDropPayload("HIERARCHY_ENTITY", &e, sizeof(entt::entity));
+        ImGui::Text("%s", tag.name.c_str());
+        ImGui::EndDragDropSource();
+    }
+
+    // D&D ターゲット（ドロップされたら子にする）
+    if (ImGui::BeginDragDropTarget())
+    {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("HIERARCHY_ENTITY"))
+        {
+            entt::entity droppedEntity = *static_cast<const entt::entity*>(payload->Data);
+            if (droppedEntity != e && reg.valid(droppedEntity) && reg.all_of<Transform>(droppedEntity))
+            {
+                // 循環防止: e が droppedEntity の子孫でないかチェック
+                bool isCyclic = false;
+                entt::entity check = e;
+                while (check != entt::null && reg.valid(check) && reg.all_of<Transform>(check))
+                {
+                    if (check == droppedEntity) { isCyclic = true; break; }
+                    check = reg.get<Transform>(check).parent;
+                }
+                if (!isCyclic)
+                    reg.get<Transform>(droppedEntity).parent = e;
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+
+    // 右クリックコンテキストメニュー
+    if (ImGui::BeginPopupContextItem())
+    {
+        if (ImGui::MenuItem("\xe5\x90\x8d\xe5\x89\x8d\xe5\xa4\x89\xe6\x9b\xb4"))  // 名前変更
+        {
+            m_renamingEntity = e;
+            std::memset(m_renameBuf, 0, sizeof(m_renameBuf));
+            strncpy_s(m_renameBuf, tag.name.c_str(), _TRUNCATE);
+        }
+        if (ImGui::MenuItem("\xe5\x89\x8a\xe9\x99\xa4"))  // 削除
+        {
+            // Undo 用にデータを保存
+            DeletedEntityData data;
+            if (reg.all_of<NameTag>(e))
+                data.name = reg.get<NameTag>(e).name;
+            if (reg.all_of<Transform>(e))
+                data.transform = reg.get<Transform>(e);
+            if (reg.all_of<MeshRenderer>(e))
+            {
+                auto& mr = reg.get<MeshRenderer>(e);
+                data.modelPath = mr.modelPath;
+                data.overrideMetallic = mr.overrideMetallic;
+                data.overrideRoughness = mr.overrideRoughness;
+            }
+
+            ctx.undoSystem.PushCommand(std::make_unique<DeleteEntityCommand>(
+                nullptr, &reg, e, data));
+
+            ctx.pendingDeletions.push_back(e);
+            if (ctx.IsSelected(e))
+            {
+                auto& sel = ctx.selectedEntities;
+                sel.erase(std::remove(sel.begin(), sel.end(), e), sel.end());
+                ctx.selectedEntity = sel.empty() ? entt::null : sel.back();
+            }
+        }
+
+        // 親子解除
+        if (reg.all_of<Transform>(e) && reg.get<Transform>(e).parent != entt::null)
+        {
+            if (ImGui::MenuItem("\xe8\xa6\xaa\xe3\x81\x8b\xe3\x82\x89\xe5\xa4\x96\xe3\x81\x99"))  // 親から外す
+                reg.get<Transform>(e).parent = entt::null;
+        }
+
+        ImGui::EndPopup();
+    }
+
+    // 子ノード描画
+    if (open)
+    {
+        for (auto child : children)
+            DrawEntityNode(reg, ctx, child);
+        ImGui::TreePop();
+    }
+}
 
 void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
 {
     ImGui::Begin("\xe3\x83\x92\xe3\x82\xa8\xe3\x83\xa9\xe3\x83\xab\xe3\x82\xad\xe3\x83\xbc");  // Hierarchy
 
-    // Entity count
     auto nameView = reg.view<const NameTag>();
     ImGui::TextDisabled("\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3  (%zu)",
-        static_cast<size_t>(nameView.size()));  // Scene
+        static_cast<size_t>(nameView.size()));
     ImGui::Separator();
 
-    // Entity list
+    // ルートノードのみ列挙（parent が null、GridPlane は非表示）
     for (auto [e, tag] : nameView.each())
     {
-        bool selected = (e == ctx.selectedEntity);
+        if (reg.all_of<GridPlane>(e)) continue;
 
-        ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_SpanAvailWidth;
-        if (selected) flags |= ImGuiTreeNodeFlags_Selected;
-
-        bool open = ImGui::TreeNodeEx(
-            reinterpret_cast<void*>(static_cast<uintptr_t>(static_cast<u32>(e))),
-            flags, "%s", tag.name.c_str());
-
-        if (ImGui::IsItemClicked())
-            ctx.selectedEntity = selected ? entt::null : e;
-
-        // Right-click context menu
-        if (ImGui::BeginPopupContextItem())
+        bool isRoot = true;
+        if (reg.all_of<Transform>(e))
         {
-            if (ImGui::MenuItem("\xe5\x89\x8a\xe9\x99\xa4"))  // Delete
-            {
-                ctx.pendingDeletions.push_back(e);
-                if (ctx.selectedEntity == e)
-                    ctx.ClearSelection();
-            }
-            ImGui::EndPopup();
+            auto& t = reg.get<Transform>(e);
+            if (t.parent != entt::null && reg.valid(t.parent))
+                isRoot = false;
         }
+        if (isRoot)
+            DrawEntityNode(reg, ctx, e);
+    }
 
-        if (open) ImGui::TreePop();
+    // ヒエラルキーの空白部分への D&D（親子解除）
+    if (ImGui::BeginDragDropTarget())
+    {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("HIERARCHY_ENTITY"))
+        {
+            entt::entity droppedEntity = *static_cast<const entt::entity*>(payload->Data);
+            if (reg.valid(droppedEntity) && reg.all_of<Transform>(droppedEntity))
+                reg.get<Transform>(droppedEntity).parent = entt::null;
+        }
+        ImGui::EndDragDropTarget();
     }
 
     ImGui::Separator();
 
     // Add entity menu
-    if (ImGui::Button("\xe2\x9c\x9a \xe3\x82\xa8\xe3\x83\xb3\xe3\x83\x86\xe3\x82\xa3\xe3\x83\x86\xe3\x82\xa3\xe8\xbf\xbd\xe5\x8a\xa0"))  // Add Entity
+    if (ImGui::Button("\xe2\x9c\x9a \xe3\x82\xa8\xe3\x83\xb3\xe3\x83\x86\xe3\x82\xa3\xe3\x83\x86\xe3\x82\xa3\xe8\xbf\xbd\xe5\x8a\xa0"))
         ImGui::OpenPopup("AddEntityPopup");
 
     if (ImGui::BeginPopup("AddEntityPopup"))

@@ -39,6 +39,8 @@
 #include "scene/SceneSerializer.h"
 #include "editor/EditorContext.h"
 #include "editor/EditorLayer.h"
+#include "editor/UndoSystem.h"
+#include "editor/ModelThumbnailRenderer.h"
 #include "project/Project.h"
 #include "project/ProjectManager.h"
 #include <commdlg.h>
@@ -56,6 +58,7 @@
 #include <thread>
 #include <fstream>
 #include <algorithm>
+#include <unordered_set>
 #include <immintrin.h>
 #include <mmsystem.h>
 #pragma comment(lib, "winmm.lib")
@@ -235,18 +238,23 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             }
         }
 
-        // 保存シーンがあればロード（OnStart は呼ばない＝保存データが完全に優先）
-        // 保存シーンがなければ Lua OnStart でエンティティ生成
+        // 初期シーン: 保存済みシーンがあればフルロード、なければクリーン状態
         {
-            // 常に Lua OnStart でエンティティ生成 → 保存シーンがあればオーバーライド適用
-            m_scriptEngine->CallOnStart();
-
             std::string savedScene = std::string(ASSETS_DIR) + "scenes/default.json";
             if (std::filesystem::exists(savedScene))
             {
-                // 保存済みの Transform / Material を上書き復元
-                SceneSerializer::ApplyOverrides(*m_scene, savedScene, std::string(ASSETS_DIR));
+                SceneSerializer::Load(*m_scene, savedScene, std::string(ASSETS_DIR));
                 m_editorCtx->currentScenePath = savedScene;
+            }
+            else
+            {
+                // クリーン初期状態: Grid + DirectionalLight
+                m_scene->SpawnPlane("Grid", {0, 0, 0}, 50.0f, true);
+                auto& reg = m_scene->GetRegistry();
+                auto lightE = reg.create();
+                reg.emplace<NameTag>(lightE, NameTag{"DirectionalLight"});
+                reg.emplace<Transform>(lightE, Transform{{0, 10, 0}, {-45, -30, 0}, {1,1,1}});
+                reg.emplace<DirectionalLight>(lightE);
             }
         }
 
@@ -439,6 +447,13 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     m_editorLayer->Initialize(m_editorCtx.get(), std::string(ASSETS_DIR),
                               m_resourceManager.get(), m_srvHeap.get());
 
+    // ModelThumbnailRenderer 初期化
+    m_thumbRenderer = std::make_unique<ModelThumbnailRenderer>();
+    m_thumbRenderer->Initialize(m_graphicsDevice.get(), m_srvHeap.get(),
+                                m_resourceManager.get(), m_rootSignature.get(),
+                                m_pipelineState.get());
+    m_editorLayer->SetThumbnailRenderer(m_thumbRenderer.get());
+
     // Physics Debug Renderer
     m_physicsDebugRenderer = std::make_unique<PhysicsDebugRenderer>();
     m_physicsDebugRenderer->Initialize(*m_graphicsDevice,
@@ -451,6 +466,95 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     {
         m_pendingMode = EngineMode::Playing;
         m_modeChangeRequested = true;
+    }
+
+    // 全モデルのサムネイルを起動時にレンダリング（ローディング画面付き）
+    {
+        size_t total = m_thumbRenderer->ScanAllModels(std::string(ASSETS_DIR));
+        size_t done = 0;
+
+        while (m_thumbRenderer->GetPendingCount() > 0)
+        {
+            // Windows メッセージポンプ（フリーズ防止）
+            MSG msg;
+            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+            {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+
+            // フレーム開始
+            auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
+            m_commandList->Wrap(cmdList);
+
+            // サムネイル1つレンダリング
+            m_thumbRenderer->RenderNext(cmdList);
+            done++;
+
+            // バックバッファにローディング画面を描画
+            u32 frameIdx = m_swapChain->GetCurrentBackBufferIndex();
+            auto* backBuffer = m_swapChain->GetCurrentBackBuffer();
+            auto rtvHandle = m_descriptorHeap->GetCpuHandle(frameIdx);
+
+            // バリア PRESENT → RENDER_TARGET
+            m_commandList->TransitionResource(backBuffer,
+                D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+            float clearColor[4] = {0.08f, 0.08f, 0.10f, 1.0f};
+            cmdList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
+            cmdList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+
+            D3D12_VIEWPORT vp = {0, 0,
+                static_cast<f32>(m_window->GetWidth()),
+                static_cast<f32>(m_window->GetHeight()), 0, 1};
+            D3D12_RECT scissor = {0, 0,
+                static_cast<LONG>(m_window->GetWidth()),
+                static_cast<LONG>(m_window->GetHeight())};
+            cmdList->RSSetViewports(1, &vp);
+            cmdList->RSSetScissorRects(1, &scissor);
+
+            // ImGui でプログレスバー描画
+            m_imguiManager->BeginFrame();
+
+            float progress = total > 0 ? static_cast<float>(done) / static_cast<float>(total) : 1.0f;
+            float dispW = static_cast<float>(m_window->GetWidth());
+            float dispH = static_cast<float>(m_window->GetHeight());
+
+            // 中央にローディングウィンドウ
+            ImGui::SetNextWindowPos(ImVec2(dispW * 0.5f, dispH * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+            ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Always);
+            ImGui::Begin("##Loading", nullptr,
+                ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize);
+
+            ImGui::Text("DX12 Engine");
+            ImGui::Separator();
+            ImGui::Text("Loading assets...");
+            ImGui::Spacing();
+
+            // プログレスバー
+            ImGui::ProgressBar(progress, ImVec2(-1, 24));
+            ImGui::Text("%zu / %zu models", done, total);
+
+            // 回転インジケータ
+            const char* spinner[] = {"|", "/", "-", "\\"};
+            ImGui::SameLine(380);
+            ImGui::Text("%s", spinner[done % 4]);
+
+            ImGui::End();
+
+            m_imguiManager->EndFrame(cmdList);
+
+            // バリア RENDER_TARGET → PRESENT
+            m_commandList->TransitionResource(backBuffer,
+                D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+
+            m_commandList->Close();
+            m_commandQueue->ExecuteCommandList(cmdList);
+            m_swapChain->Present(false);
+            m_frameResources->EndFrame(*m_commandQueue);
+            m_resourceManager->FinishUploads();
+        }
     }
 
     Logger::Info("Application initialized successfully");
@@ -656,11 +760,22 @@ void Application::Update()
     {
         // エディタモード: C++カメラ操作
         bool rightMouseHeld = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
-        if (m_framesSinceStart > 5 && rightMouseHeld && !m_inputSystem->IsMouseCaptured())
+
+        // ウィンドウが非フォーカス or ImGuiがマウスをキャプチャ中 → カメラ操作しない
+        bool isForeground = (GetForegroundWindow() == m_window->GetHwnd());
+        bool imguiWantsMouse = ImGui::GetIO().WantCaptureMouse;
+
+        if (m_framesSinceStart > 5 && rightMouseHeld && !m_inputSystem->IsMouseCaptured()
+            && isForeground && !imguiWantsMouse)
         {
             m_inputSystem->SetMouseCapture(true);
         }
         else if (!rightMouseHeld && m_inputSystem->IsMouseCaptured())
+        {
+            m_inputSystem->SetMouseCapture(false);
+        }
+        // ウィンドウが裏に行ったら強制解除
+        if (!isForeground && m_inputSystem->IsMouseCaptured())
         {
             m_inputSystem->SetMouseCapture(false);
         }
@@ -680,17 +795,108 @@ void Application::Update()
             if (GetAsyncKeyState(VK_SHIFT) & 0x8000) m_camera->MoveUp(-speed);
         }
 
-        // ギズモモード切替（エディタモード時、右クリック中でない時のみ）
-        // Ctrl+S でクイック保存（常に効く）
+        // Ctrl+S でクイック保存
         if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState('S') & 1))
         {
             if (m_editorCtx->currentScenePath.empty())
             {
-                std::filesystem::create_directories(std::string(ASSETS_DIR) + "scenes");
-                m_editorCtx->currentScenePath = std::string(ASSETS_DIR) + "scenes/default.json";
+                // パス未設定 → 名前入力ダイアログを開く（保存モード）
+                m_editorCtx->showNewSceneDialog = true;
+                m_editorCtx->newSceneDialogIsCreate = false;
+                std::memset(m_editorCtx->newSceneNameBuf, 0, sizeof(m_editorCtx->newSceneNameBuf));
+                strncpy_s(m_editorCtx->newSceneNameBuf, "Untitled", _TRUNCATE);
             }
-            SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, std::string(ASSETS_DIR));
-            m_editorCtx->hotReloadFlash = 1.5f;
+            else
+            {
+                SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, std::string(ASSETS_DIR));
+                m_editorCtx->hotReloadFlash = 1.5f;
+                m_editorLayer->RefreshAssetBrowser();
+            }
+        }
+
+        // Ctrl+N で新規シーン名入力ダイアログを開く
+        if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState('N') & 1))
+        {
+            m_editorCtx->showNewSceneDialog = true;
+            m_editorCtx->newSceneDialogIsCreate = true;
+            std::memset(m_editorCtx->newSceneNameBuf, 0, sizeof(m_editorCtx->newSceneNameBuf));
+            strncpy_s(m_editorCtx->newSceneNameBuf, "NewScene", _TRUNCATE);
+        }
+
+        // Undo/Redo (Ctrl+Z / Ctrl+Y) + Copy/Paste/Duplicate (Ctrl+C/V/D)
+        // ImGui のテキスト入力にフォーカスがある時はエンティティ操作を抑制
+        if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) && !ImGui::GetIO().WantCaptureKeyboard)
+        {
+            if (GetAsyncKeyState('Z') & 1)
+                m_editorCtx->undoSystem.Undo();
+            if (GetAsyncKeyState('Y') & 1)
+                m_editorCtx->undoSystem.Redo();
+
+            // コピー (Ctrl+C)
+            if (GetAsyncKeyState('C') & 1)
+            {
+                m_editorCtx->clipboard.clear();
+                auto& reg = m_scene->GetRegistry();
+                for (auto e : m_editorCtx->selectedEntities)
+                {
+                    if (!reg.valid(e)) continue;
+                    ClipboardEntry entry;
+                    if (reg.all_of<NameTag>(e))
+                        entry.name = reg.get<NameTag>(e).name;
+                    if (reg.all_of<Transform>(e))
+                    {
+                        auto& t = reg.get<Transform>(e);
+                        entry.position = t.position;
+                        entry.rotation = t.rotation;
+                        entry.scale    = t.scale;
+                    }
+                    if (reg.all_of<MeshRenderer>(e))
+                    {
+                        auto& mr = reg.get<MeshRenderer>(e);
+                        entry.modelPath = mr.modelPath;
+                        entry.overrideMetallic = mr.overrideMetallic;
+                        entry.overrideRoughness = mr.overrideRoughness;
+                    }
+                    m_editorCtx->clipboard.push_back(entry);
+                }
+            }
+
+            // ペースト (Ctrl+V) / 複製 (Ctrl+D)
+            bool paste = (GetAsyncKeyState('V') & 1) != 0;
+            bool duplicate = (GetAsyncKeyState('D') & 1) != 0;
+
+            if (paste && !m_editorCtx->clipboard.empty())
+            {
+                for (auto& entry : m_editorCtx->clipboard)
+                {
+                    PendingSpawnRequest req;
+                    req.modelPath = entry.modelPath.empty() ? "__empty__" : entry.modelPath;
+                    req.position = {entry.position.x + 1.0f, entry.position.y, entry.position.z};
+                    m_editorCtx->pendingSpawns.push_back(req);
+                }
+            }
+
+            if (duplicate && m_editorCtx->HasSelection())
+            {
+                // 即座にクリップボードに入れてペースト
+                auto& reg = m_scene->GetRegistry();
+                for (auto e : m_editorCtx->selectedEntities)
+                {
+                    if (!reg.valid(e)) continue;
+                    PendingSpawnRequest req;
+                    if (reg.all_of<MeshRenderer>(e))
+                        req.modelPath = reg.get<MeshRenderer>(e).modelPath;
+                    else
+                        req.modelPath = "__empty__";
+                    if (req.modelPath.empty()) req.modelPath = "__empty__";
+                    if (reg.all_of<Transform>(e))
+                    {
+                        auto& t = reg.get<Transform>(e);
+                        req.position = {t.position.x + 1.0f, t.position.y, t.position.z};
+                    }
+                    m_editorCtx->pendingSpawns.push_back(req);
+                }
+            }
         }
 
         // ギズモモード切替（右クリック中・ImGuiフォーカス中は無効）
@@ -721,7 +927,7 @@ void Application::Update()
 
 void Application::RebuildScene()
 {
-    m_editorCtx->selectedEntity = entt::null;
+    m_editorCtx->ClearSelection();
     m_scene->Clear();
     auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
     m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
@@ -807,10 +1013,11 @@ void Application::EnterPlayMode()
             snap.hasCapsuleCollider    = reg.all_of<CapsuleCollider>(entity);
             snap.hasConvexHullCollider = reg.all_of<ConvexHullCollider>(entity);
 
-            // Material PBR
+            // Material PBR + modelPath
             if (reg.all_of<MeshRenderer>(entity))
             {
                 const auto& mr = reg.get<MeshRenderer>(entity);
+                snap.modelPath = mr.modelPath;
                 if (!mr.meshes.empty() && mr.meshes[0] && mr.meshes[0]->GetMaterial())
                 {
                     // オーバーライド値があればそちらを保存
@@ -820,6 +1027,9 @@ void Application::EnterPlayMode()
                                            : mr.meshes[0]->GetMaterial()->defaultRoughness;
                 }
             }
+
+            // エディタ追加モデルかどうかのマーキング（後で判定）
+            snap.editorSpawned = true;  // 一旦全部 true にして、RebuildScene 後に Lua 由来を除外
 
             m_editorSnapshots[name.name] = snap;
         }
@@ -932,6 +1142,42 @@ void Application::EnterEditorMode()
     // Play開始前のエディタ状態を復元
     {
         auto& reg = m_scene->GetRegistry();
+
+        // RebuildScene で再生成されたエンティティ名を収集
+        std::unordered_set<std::string> existingNames;
+        {
+            auto nameView = reg.view<const NameTag>();
+            for (auto [entity, name] : nameView.each())
+                existingNames.insert(name.name);
+        }
+
+        // スナップショットに存在するがシーンに無いエンティティを再スポーン
+        for (const auto& [snapName, snap] : m_editorSnapshots)
+        {
+            if (existingNames.count(snapName)) continue;
+            if (snap.modelPath.empty()) continue;  // modelPath 無し = 復元不可
+
+            // エディタ追加モデルの再スポーン
+            if (snap.modelPath == "__primitive_box__")
+                m_scene->SpawnBox(snapName, snap.position);
+            else if (snap.modelPath == "__primitive_sphere__")
+                m_scene->SpawnSphere(snapName, snap.position);
+            else if (snap.modelPath == "__primitive_plane__")
+                m_scene->SpawnPlane(snapName, snap.position);
+            else if (snap.modelPath == "__empty__")
+            {
+                auto e = reg.create();
+                reg.emplace<NameTag>(e, NameTag{snapName});
+                reg.emplace<Transform>(e);
+            }
+            else
+            {
+                m_scene->Spawn(snapName, snap.modelPath, snap.position);
+            }
+            Logger::Info("Re-spawned editor entity: {}", snapName);
+        }
+
+        // 全エンティティのスナップショット復元
         auto view = reg.view<NameTag, Transform>();
         for (auto [entity, name, transform] : view.each())
         {
@@ -1055,6 +1301,53 @@ void Application::Render()
     auto* nativeCmdList = m_frameResources->BeginFrame(*m_commandQueue);
     m_commandList->Wrap(nativeCmdList);
 
+    // Deferred: new scene（描画前に処理しないと GPU リソース解放でクラッシュする）
+    if (m_editorCtx->pendingNewScene && m_engineMode == EngineMode::Editor)
+    {
+        m_editorCtx->pendingNewScene = false;
+        m_editorCtx->ClearSelection();
+        m_editorCtx->undoSystem.Clear();
+        m_editorCtx->currentScenePath.clear();
+        m_scene->Clear();
+        m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
+                            m_srvHeap.get(), nativeCmdList);
+        m_scene->SpawnPlane("Grid", {0, 0, 0}, 50.0f, true);
+        {
+            auto& reg = m_scene->GetRegistry();
+            auto lightE = reg.create();
+            reg.emplace<NameTag>(lightE, NameTag{"DirectionalLight"});
+            reg.emplace<Transform>(lightE, Transform{{0, 10, 0}, {-45, -30, 0}, {1,1,1}});
+            reg.emplace<DirectionalLight>(lightE);
+        }
+        // 作成と同時にシーンファイルを保存
+        if (!m_editorCtx->currentScenePath.empty())
+        {
+            SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, std::string(ASSETS_DIR));
+            m_editorCtx->hotReloadFlash = 1.5f;
+        }
+        m_editorLayer->RefreshAssetBrowser();
+        Logger::Info("New scene created");
+    }
+
+    // Deferred: scene load（描画前に処理）
+    if (!m_editorCtx->pendingLoadPath.empty() && m_engineMode == EngineMode::Editor)
+    {
+        std::string loadPath = std::move(m_editorCtx->pendingLoadPath);
+        m_editorCtx->pendingLoadPath.clear();
+        m_editorCtx->ClearSelection();
+        m_editorCtx->undoSystem.Clear();
+
+        m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
+                            m_srvHeap.get(), nativeCmdList);
+        if (SceneSerializer::Load(*m_scene, loadPath, std::string(ASSETS_DIR)))
+        {
+            m_editorCtx->currentScenePath = loadPath;
+            m_editorCtx->hotReloadFlash = 1.5f;
+            m_editorLayer->RefreshAssetBrowser();
+            Logger::Info("Scene loaded: {}", loadPath);
+        }
+    }
+
     // エンティティ生成（前フレームのドラッグ&ドロップ等から遅延実行）
     if (!m_editorCtx->pendingSpawns.empty())
     {
@@ -1076,18 +1369,30 @@ void Application::Render()
         for (auto& req : spawns)
         {
             std::string name = std::filesystem::path(req.modelPath).stem().string();
+            entt::entity spawnedEntity = entt::null;
+
             if (req.modelPath == "__primitive_box__")
-                m_scene->SpawnBox(name, req.position);
+            {
+                auto e = m_scene->SpawnBox(name, req.position);
+                spawnedEntity = e.GetHandle();
+            }
             else if (req.modelPath == "__primitive_sphere__")
-                m_scene->SpawnSphere(name, req.position);
+            {
+                auto e = m_scene->SpawnSphere(name, req.position);
+                spawnedEntity = e.GetHandle();
+            }
             else if (req.modelPath == "__primitive_plane__")
-                m_scene->SpawnPlane(name, req.position);
+            {
+                auto e = m_scene->SpawnPlane(name, req.position);
+                spawnedEntity = e.GetHandle();
+            }
             else if (req.modelPath == "__empty__")
             {
                 auto& reg = m_scene->GetRegistry();
                 auto e = reg.create();
                 reg.emplace<NameTag>(e, NameTag{"Empty"});
                 reg.emplace<Transform>(e);
+                spawnedEntity = e;
             }
             else
             {
@@ -1119,7 +1424,6 @@ void Application::Render()
                         if (dz > maxExtent) maxExtent = dz;
                     }
                     // 既存Luaモデルと同じ見た目サイズにスケーリング
-                    // Luaでは全モデルをscale=0.01で配置してるので合わせる
                     constexpr f32 kDefaultScale = 0.01f;
                     auto& t = entity.GetComponent<Transform>();
                     t.scale = {kDefaultScale, kDefaultScale, kDefaultScale};
@@ -1129,6 +1433,15 @@ void Application::Render()
                     if (ext == ".gltf" || ext == ".glb")
                         t.rotation.x = 90.0f;
                 }
+                spawnedEntity = entity.GetHandle();
+            }
+
+            // Undo に Spawn コマンドを積む
+            if (spawnedEntity != entt::null)
+            {
+                m_editorCtx->undoSystem.PushCommand(
+                    std::make_unique<SpawnEntityCommand>(
+                        m_scene.get(), &m_scene->GetRegistry(), spawnedEntity));
             }
             Logger::Info("Spawned: {}", name);
         }
@@ -1136,6 +1449,9 @@ void Application::Render()
 
     // サムネイルテクスチャのロード（描画コマンドの前に実行）
     m_editorLayer->LoadPendingThumbnails(nativeCmdList);
+
+    // モデルサムネイルのオフスクリーンレンダリング
+    m_thumbRenderer->RenderPending(nativeCmdList, m_swapChain->GetCurrentBackBufferIndex());
 
     u32 frameIndex = m_swapChain->GetCurrentBackBufferIndex();
     f32 totalTime = m_gameClock.GetTotalTime();
