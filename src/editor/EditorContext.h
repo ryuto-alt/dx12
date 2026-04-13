@@ -106,6 +106,10 @@ public:
     bool newSceneDialogIsCreate = true;  // true=新規作成, false=名前を付けて保存
     char newSceneNameBuf[128] = {};
 
+    // スクリプト作成ダイアログ
+    bool showNewScriptDialog = false;
+    char newScriptNameBuf[128] = {};
+
     // Undo/Redo
     UndoSystem undoSystem;
 

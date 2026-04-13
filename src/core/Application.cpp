@@ -238,15 +238,25 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             }
         }
 
-        // 初期シーン: 保存済みシーンがあればフルロード、なければクリーン状態
+        // 初期シーン: 最後に開いたシーン → default.json → クリーン状態
         {
-            std::string savedScene = std::string(ASSETS_DIR) + "scenes/default.json";
-            if (std::filesystem::exists(savedScene))
+            std::string lastScene = ProjectManager::LoadLastOpenedScene();
+            std::string defaultScene = std::string(ASSETS_DIR) + "scenes/default.json";
+
+            bool loaded = false;
+            if (!lastScene.empty() && std::filesystem::exists(lastScene))
             {
-                SceneSerializer::Load(*m_scene, savedScene, std::string(ASSETS_DIR));
-                m_editorCtx->currentScenePath = savedScene;
+                loaded = SceneSerializer::Load(*m_scene, lastScene, std::string(ASSETS_DIR));
+                if (loaded)
+                    m_editorCtx->currentScenePath = lastScene;
             }
-            else
+            if (!loaded && std::filesystem::exists(defaultScene))
+            {
+                loaded = SceneSerializer::Load(*m_scene, defaultScene, std::string(ASSETS_DIR));
+                if (loaded)
+                    m_editorCtx->currentScenePath = defaultScene;
+            }
+            if (!loaded)
             {
                 // クリーン初期状態: Grid + DirectionalLight
                 m_scene->SpawnPlane("Grid", {0, 0, 0}, 50.0f, true);
@@ -445,6 +455,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     // EditorLayer 初期化
     m_editorLayer = std::make_unique<EditorLayer>();
     m_editorLayer->Initialize(m_editorCtx.get(), std::string(ASSETS_DIR),
+                              std::string(SCRIPTS_DIR),
                               m_resourceManager.get(), m_srvHeap.get());
 
     // ModelThumbnailRenderer 初期化
@@ -468,81 +479,99 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_modeChangeRequested = true;
     }
 
-    // 全モデルのサムネイルを起動時にレンダリング
+    // 全モデルのサムネイルを起動時にロード/レンダリング
     {
-        size_t total = m_thumbRenderer->ScanAllModels(std::string(ASSETS_DIR));
+        size_t uncachedCount = m_thumbRenderer->ScanAllModels(std::string(ASSETS_DIR));
+        size_t cachedCount   = m_thumbRenderer->GetCachedCount();
+        size_t totalModels   = uncachedCount + cachedCount;
 
-        if (total > 0)
+        if (totalModels > 0)
         {
-            // ローディング画面を1フレーム表示
+            // Phase 1: ディスクキャッシュから一括ロード（高速）
+            if (cachedCount > 0)
             {
                 auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
-                m_commandList->Wrap(cmdList);
-
-                u32 frameIdx = m_swapChain->GetCurrentBackBufferIndex();
-                auto* backBuffer = m_swapChain->GetCurrentBackBuffer();
-                auto rtvHandle = m_descriptorHeap->GetCpuHandle(frameIdx);
-
-                m_commandList->TransitionResource(backBuffer,
-                    D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-                float clearColor[4] = {0.08f, 0.08f, 0.10f, 1.0f};
-                cmdList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
-                cmdList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
-
-                D3D12_VIEWPORT vp = {0, 0,
-                    static_cast<f32>(m_window->GetWidth()),
-                    static_cast<f32>(m_window->GetHeight()), 0, 1};
-                D3D12_RECT scissor = {0, 0,
-                    static_cast<LONG>(m_window->GetWidth()),
-                    static_cast<LONG>(m_window->GetHeight())};
-                cmdList->RSSetViewports(1, &vp);
-                cmdList->RSSetScissorRects(1, &scissor);
-
-                m_imguiManager->BeginFrame();
-                float dispW = static_cast<float>(m_window->GetWidth());
-                float dispH = static_cast<float>(m_window->GetHeight());
-                ImGui::SetNextWindowPos(ImVec2(dispW * 0.5f, dispH * 0.5f),
-                    ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-                ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Always);
-                ImGui::Begin("##Loading", nullptr,
-                    ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                    ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize);
-                ImGui::Text("DX12 Engine");
-                ImGui::Separator();
-                ImGui::Text("Loading %zu models...", total);
-                ImGui::ProgressBar(0.0f, ImVec2(-1, 24));
-                ImGui::End();
-                m_imguiManager->EndFrame(cmdList);
-
-                m_commandList->TransitionResource(backBuffer,
-                    D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
-                m_commandList->Close();
-                m_commandQueue->ExecuteCommandList(cmdList);
-                m_swapChain->Present(false);
-                m_frameResources->EndFrame(*m_commandQueue);
-
-                // 画面が確実に表示されるまで待つ
-                m_commandQueue->WaitIdle();
-                MSG msg;
-                while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
-                {
-                    TranslateMessage(&msg);
-                    DispatchMessageW(&msg);
-                }
-            }
-
-            // 全サムネイルを1コマンドリストでバッチレンダリング
-            {
-                auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
-                while (m_thumbRenderer->GetPendingCount() > 0)
-                    m_thumbRenderer->RenderNext(cmdList);
+                m_thumbRenderer->LoadCachedThumbnails(cmdList);
                 ThrowIfFailed(cmdList->Close());
                 m_commandQueue->ExecuteCommandList(cmdList);
                 m_commandQueue->WaitIdle();
-                m_resourceManager->FinishUploads();
                 m_frameResources->EndFrame(*m_commandQueue);
+                Logger::Info("[Thumbnail] Cache loaded: {} models", cachedCount);
             }
+
+            // Phase 2: 未キャッシュのみレンダリング（進捗表示付き）
+            if (uncachedCount > 0)
+            {
+                size_t completed = 0;
+
+                while (m_thumbRenderer->GetPendingCount() > 0)
+                {
+                    auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
+                    m_commandList->Wrap(cmdList);
+
+                    m_thumbRenderer->RenderNext(cmdList);
+                    ++completed;
+
+                    // ローディング画面をバックバッファに描画
+                    auto* backBuffer = m_swapChain->GetCurrentBackBuffer();
+                    auto rtvHandle = m_descriptorHeap->GetCpuHandle(
+                        m_swapChain->GetCurrentBackBufferIndex());
+
+                    m_commandList->TransitionResource(backBuffer,
+                        D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+                    float clearColor[4] = {0.08f, 0.08f, 0.10f, 1.0f};
+                    cmdList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
+                    cmdList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+
+                    D3D12_VIEWPORT vp = {0, 0,
+                        static_cast<f32>(m_window->GetWidth()),
+                        static_cast<f32>(m_window->GetHeight()), 0, 1};
+                    D3D12_RECT scissor = {0, 0,
+                        static_cast<LONG>(m_window->GetWidth()),
+                        static_cast<LONG>(m_window->GetHeight())};
+                    cmdList->RSSetViewports(1, &vp);
+                    cmdList->RSSetScissorRects(1, &scissor);
+
+                    float progress = static_cast<float>(completed) / static_cast<float>(uncachedCount);
+                    m_imguiManager->BeginFrame();
+                    float dispW = static_cast<float>(m_window->GetWidth());
+                    float dispH = static_cast<float>(m_window->GetHeight());
+                    ImGui::SetNextWindowPos(ImVec2(dispW * 0.5f, dispH * 0.5f),
+                        ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+                    ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Always);
+                    ImGui::Begin("##Loading", nullptr,
+                        ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize);
+                    ImGui::Text("DX12 Engine");
+                    ImGui::Separator();
+                    ImGui::Text("Rendering thumbnails... (%zu / %zu)", completed, uncachedCount);
+                    ImGui::ProgressBar(progress, ImVec2(-1, 24));
+                    ImGui::End();
+                    m_imguiManager->EndFrame(cmdList);
+
+                    m_commandList->TransitionResource(backBuffer,
+                        D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+                    m_commandList->Close();
+                    m_commandQueue->ExecuteCommandList(cmdList);
+                    m_swapChain->Present(false);
+                    m_frameResources->EndFrame(*m_commandQueue);
+
+                    m_commandQueue->WaitIdle();
+
+                    // レンダリング結果をディスクキャッシュに保存
+                    m_thumbRenderer->SavePendingCache();
+
+                    MSG msg;
+                    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+                    {
+                        TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                }
+            }
+
+            m_resourceManager->FinishUploads();
         }
     }
 
@@ -822,6 +851,7 @@ void Application::Update()
             else
             {
                 SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, std::string(ASSETS_DIR));
+                ProjectManager::SaveLastOpenedScene(m_editorCtx->currentScenePath);
                 m_editorCtx->hotReloadFlash = 1.5f;
                 m_editorLayer->RefreshAssetBrowser();
             }
@@ -982,6 +1012,7 @@ void Application::RebuildScene()
     m_commandQueue->ExecuteCommandList(cmdList);
     m_commandQueue->WaitIdle();
     m_resourceManager->FinishUploads();
+    m_frameResources->EndFrame(*m_commandQueue);
 
     // ホットリロード用タイムスタンプ更新
     {
@@ -1170,6 +1201,25 @@ void Application::EnterEditorMode()
                 existingNames.insert(name.name);
         }
 
+        // エディタ追加モデルの再スポーンが必要か確認
+        bool needRespawn = false;
+        for (const auto& [snapName, snap] : m_editorSnapshots)
+        {
+            if (existingNames.count(snapName)) continue;
+            if (snap.modelPath.empty()) continue;
+            needRespawn = true;
+            break;
+        }
+
+        // 再スポーンが必要なら新しいコマンドリストを開く
+        ID3D12GraphicsCommandList* respawnCmdList = nullptr;
+        if (needRespawn)
+        {
+            respawnCmdList = m_frameResources->BeginFrame(*m_commandQueue);
+            m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
+                                m_srvHeap.get(), respawnCmdList);
+        }
+
         // スナップショットに存在するがシーンに無いエンティティを再スポーン
         for (const auto& [snapName, snap] : m_editorSnapshots)
         {
@@ -1194,6 +1244,16 @@ void Application::EnterEditorMode()
                 m_scene->Spawn(snapName, snap.modelPath, snap.position);
             }
             Logger::Info("Re-spawned editor entity: {}", snapName);
+        }
+
+        // コマンドリストを閉じて実行
+        if (respawnCmdList)
+        {
+            ThrowIfFailed(respawnCmdList->Close());
+            m_commandQueue->ExecuteCommandList(respawnCmdList);
+            m_commandQueue->WaitIdle();
+            m_resourceManager->FinishUploads();
+            m_frameResources->EndFrame(*m_commandQueue);
         }
 
         // 全エンティティのスナップショット復元
@@ -1342,6 +1402,7 @@ void Application::Render()
         if (!m_editorCtx->currentScenePath.empty())
         {
             SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, std::string(ASSETS_DIR));
+            ProjectManager::SaveLastOpenedScene(m_editorCtx->currentScenePath);
             m_editorCtx->hotReloadFlash = 1.5f;
         }
         m_editorLayer->RefreshAssetBrowser();
@@ -1361,6 +1422,7 @@ void Application::Render()
         if (SceneSerializer::Load(*m_scene, loadPath, std::string(ASSETS_DIR)))
         {
             m_editorCtx->currentScenePath = loadPath;
+            ProjectManager::SaveLastOpenedScene(loadPath);
             m_editorCtx->hotReloadFlash = 1.5f;
             m_editorLayer->RefreshAssetBrowser();
             Logger::Info("Scene loaded: {}", loadPath);

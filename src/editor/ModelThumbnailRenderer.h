@@ -47,8 +47,17 @@ public:
     // キャッシュから取得 (0 = まだない)
     u64 GetCachedHandle(const std::string& modelPath) const;
 
+    // ディスクキャッシュからサムネイルを一括ロード（コマンドリストに積む）
+    void LoadCachedThumbnails(ID3D12GraphicsCommandList* cmdList);
+    size_t GetCachedCount() const { return m_cachedPaths.size(); }
+
+    // 直前にレンダリングしたサムネイルをディスクに保存（WaitIdle後に呼ぶ）
+    void SavePendingCache();
+
 private:
-    static constexpr u32 kThumbSize = 128;
+    static constexpr u32 kThumbSize     = 128;
+    static constexpr u32 kThumbRowPitch = kThumbSize * 4; // 512, aligned to 256
+    static constexpr u32 kThumbDataSize = kThumbRowPitch * kThumbSize; // 65536
 
     struct ThumbEntry
     {
@@ -59,6 +68,7 @@ private:
 
     void CreateSharedResources();
     void RenderOne(const std::string& modelPath, ID3D12GraphicsCommandList* cmdList);
+    std::string GetCacheFilePath(const std::string& modelPath) const;
 
     GraphicsDevice*   m_device        = nullptr;
     DescriptorHeap*   m_srvHeap       = nullptr;
@@ -71,12 +81,18 @@ private:
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>   m_rtvHeap;   // 1 descriptor
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>   m_dsvHeap;   // 1 descriptor
     Microsoft::WRL::ComPtr<ID3D12Resource>         m_perFrameUpload; // 256B upload heap
+    Microsoft::WRL::ComPtr<ID3D12Resource>         m_readbackBuffer; // for cache save
     D3D12_CPU_DESCRIPTOR_HANDLE m_rtvHandle{};
     D3D12_CPU_DESCRIPTOR_HANDLE m_dsvHandle{};
 
     // キャッシュ
     std::unordered_map<std::string, ThumbEntry> m_cache;
-    std::vector<std::string> m_pendingQueue;
+    std::vector<std::string> m_pendingQueue;   // レンダリングが必要
+    std::vector<std::string> m_cachedPaths;    // ディスクキャッシュあり
+    // アップロードバッファ保持（コマンド実行完了まで生存させる）
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> m_uploadBuffers;
+    std::string m_cacheDir;
+    std::string m_lastRenderedPath; // SavePendingCache 用
     size_t m_totalScanned = 0;
 };
 

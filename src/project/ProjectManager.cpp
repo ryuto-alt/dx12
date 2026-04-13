@@ -223,4 +223,56 @@ bool ProjectManager::RenderLauncher(ProjectInfo& outInfo, HWND hwnd)
     return projectSelected;
 }
 
+std::string ProjectManager::GetEditorStatePath()
+{
+    char appDataPath[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_APPDATA, nullptr, 0, appDataPath)))
+    {
+        std::filesystem::path dir = std::filesystem::path(appDataPath) / "DX12Engine";
+        std::filesystem::create_directories(dir);
+        return (dir / "editor_state.json").string();
+    }
+    return "editor_state.json";
+}
+
+void ProjectManager::SaveLastOpenedScene(const std::string& scenePath)
+{
+    std::string filePath = GetEditorStatePath();
+
+    // 既存の state を読み込んでマージ
+    nlohmann::json j;
+    {
+        std::ifstream ifs(filePath);
+        if (ifs.is_open())
+        {
+            try { ifs >> j; }
+            catch (...) { j = nlohmann::json::object(); }
+        }
+    }
+
+    j["lastOpenedScene"] = scenePath;
+
+    std::ofstream ofs(filePath);
+    if (ofs.is_open())
+        ofs << j.dump(2);
+}
+
+std::string ProjectManager::LoadLastOpenedScene()
+{
+    std::string filePath = GetEditorStatePath();
+    std::ifstream ifs(filePath);
+    if (!ifs.is_open()) return "";
+
+    try
+    {
+        nlohmann::json j;
+        ifs >> j;
+        return j.value("lastOpenedScene", "");
+    }
+    catch (...)
+    {
+        return "";
+    }
+}
+
 } // namespace dx12e

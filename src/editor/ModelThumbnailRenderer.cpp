@@ -13,7 +13,10 @@
 #include <DirectXMath.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <functional>
 
 using namespace DirectX;
 using Microsoft::WRL::ComPtr;
@@ -105,6 +108,25 @@ void ModelThumbnailRenderer::CreateSharedResources()
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
             IID_PPV_ARGS(&m_perFrameUpload)));
     }
+
+    // ===== Readback バッファ（キャッシュ保存用） =====
+    {
+        D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_READBACK};
+        D3D12_RESOURCE_DESC desc{};
+        desc.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+        desc.Width            = kThumbDataSize;
+        desc.Height           = 1;
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels        = 1;
+        desc.Format           = DXGI_FORMAT_UNKNOWN;
+        desc.SampleDesc.Count = 1;
+        desc.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+        ThrowIfFailed(dev->CreateCommittedResource(
+            &heap, D3D12_HEAP_FLAG_NONE, &desc,
+            D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+            IID_PPV_ARGS(&m_readbackBuffer)));
+    }
 }
 
 void ModelThumbnailRenderer::Request(const std::string& modelPath)
@@ -123,10 +145,23 @@ u64 ModelThumbnailRenderer::GetCachedHandle(const std::string& modelPath) const
     return 0;
 }
 
+std::string ModelThumbnailRenderer::GetCacheFilePath(const std::string& modelPath) const
+{
+    size_t h = std::hash<std::string>{}(modelPath);
+    char filename[32];
+    snprintf(filename, sizeof(filename), "%016zx.raw", h);
+    return m_cacheDir + filename;
+}
+
 size_t ModelThumbnailRenderer::ScanAllModels(const std::string& assetsDir)
 {
     namespace fs = std::filesystem;
     m_pendingQueue.clear();
+    m_cachedPaths.clear();
+
+    // キャッシュディレクトリ設定
+    m_cacheDir = assetsDir + ".thumbcache/";
+    fs::create_directories(m_cacheDir);
 
     std::error_code ec;
     for (const auto& entry : fs::recursive_directory_iterator(assetsDir, ec))
@@ -134,13 +169,31 @@ size_t ModelThumbnailRenderer::ScanAllModels(const std::string& assetsDir)
         if (ec) break;
         if (!entry.is_regular_file(ec)) continue;
         auto ext = entry.path().extension().string();
-        if (ext == ".gltf" || ext == ".glb" || ext == ".fbx" || ext == ".obj")
-            m_pendingQueue.push_back(entry.path().string());
+        if (ext != ".gltf" && ext != ".glb" && ext != ".fbx" && ext != ".obj")
+            continue;
+
+        std::string modelPath = entry.path().string();
+        std::string cachePath = GetCacheFilePath(modelPath);
+
+        // キャッシュが存在し、モデルファイルより新しければスキップ
+        if (fs::exists(cachePath))
+        {
+            auto cacheTime = fs::last_write_time(cachePath);
+            auto modelTime = fs::last_write_time(entry.path());
+            if (cacheTime >= modelTime)
+            {
+                m_cachedPaths.push_back(modelPath);
+                continue;
+            }
+        }
+
+        m_pendingQueue.push_back(modelPath);
     }
 
-    m_totalScanned = m_pendingQueue.size();
-    Logger::Info("[Thumbnail] Found {} models to render", m_totalScanned);
-    return m_totalScanned;
+    m_totalScanned = m_pendingQueue.size() + m_cachedPaths.size();
+    Logger::Info("[Thumbnail] {} models: {} cached, {} to render",
+        m_totalScanned, m_cachedPaths.size(), m_pendingQueue.size());
+    return m_pendingQueue.size(); // レンダリングが必要な数を返す
 }
 
 size_t ModelThumbnailRenderer::RenderNext(ID3D12GraphicsCommandList* cmdList)
@@ -361,12 +414,44 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
         cmdList->DrawIndexedInstanced(mesh->GetIndexCount(), 1, 0, 0, 0);
     }
 
-    // ===== RT → SRV に遷移 =====
+    // ===== RT → COPY_SOURCE（リードバック用） =====
     {
         D3D12_RESOURCE_BARRIER barrier{};
         barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         barrier.Transition.pResource   = entry.texture.Get();
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        cmdList->ResourceBarrier(1, &barrier);
+    }
+
+    // リードバックバッファへコピー（キャッシュ保存用）
+    {
+        D3D12_TEXTURE_COPY_LOCATION src{};
+        src.pResource        = entry.texture.Get();
+        src.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        src.SubresourceIndex = 0;
+
+        D3D12_TEXTURE_COPY_LOCATION dst{};
+        dst.pResource = m_readbackBuffer.Get();
+        dst.Type      = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        dst.PlacedFootprint.Offset             = 0;
+        dst.PlacedFootprint.Footprint.Format   = DXGI_FORMAT_R8G8B8A8_UNORM;
+        dst.PlacedFootprint.Footprint.Width    = kThumbSize;
+        dst.PlacedFootprint.Footprint.Height   = kThumbSize;
+        dst.PlacedFootprint.Footprint.Depth    = 1;
+        dst.PlacedFootprint.Footprint.RowPitch = kThumbRowPitch;
+
+        cmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    }
+    m_lastRenderedPath = modelPath;
+
+    // ===== COPY_SOURCE → SRV =====
+    {
+        D3D12_RESOURCE_BARRIER barrier{};
+        barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition.pResource   = entry.texture.Get();
+        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
         barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
         barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         cmdList->ResourceBarrier(1, &barrier);
@@ -388,6 +473,146 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
 
     m_cache[modelPath] = std::move(entry);
     Logger::Info("[Thumbnail] Rendered: {}", modelPath);
+}
+
+void ModelThumbnailRenderer::SavePendingCache()
+{
+    if (m_lastRenderedPath.empty()) return;
+
+    std::string cachePath = GetCacheFilePath(m_lastRenderedPath);
+
+    void* mapped = nullptr;
+    D3D12_RANGE readRange = {0, kThumbDataSize};
+    if (SUCCEEDED(m_readbackBuffer->Map(0, &readRange, &mapped)))
+    {
+        std::ofstream ofs(cachePath, std::ios::binary);
+        if (ofs.is_open())
+            ofs.write(static_cast<const char*>(mapped), kThumbDataSize);
+        D3D12_RANGE writeRange = {0, 0};
+        m_readbackBuffer->Unmap(0, &writeRange);
+    }
+
+    m_lastRenderedPath.clear();
+}
+
+void ModelThumbnailRenderer::LoadCachedThumbnails(ID3D12GraphicsCommandList* cmdList)
+{
+    if (m_cachedPaths.empty()) return;
+
+    auto* dev = m_device->GetDevice();
+    m_uploadBuffers.clear();
+
+    for (const auto& modelPath : m_cachedPaths)
+    {
+        if (m_cache.count(modelPath)) continue;
+
+        std::string cachePath = GetCacheFilePath(modelPath);
+        std::ifstream ifs(cachePath, std::ios::binary);
+        if (!ifs.is_open()) continue;
+
+        std::vector<char> data(kThumbDataSize);
+        ifs.read(data.data(), kThumbDataSize);
+        if (ifs.gcount() != kThumbDataSize) continue;
+
+        // GPU テクスチャ作成
+        ThumbEntry entry;
+        {
+            D3D12_RESOURCE_DESC texDesc{};
+            texDesc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+            texDesc.Width            = kThumbSize;
+            texDesc.Height           = kThumbSize;
+            texDesc.DepthOrArraySize = 1;
+            texDesc.MipLevels        = 1;
+            texDesc.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;
+            texDesc.SampleDesc.Count = 1;
+            texDesc.Flags            = D3D12_RESOURCE_FLAG_NONE;
+
+            D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_DEFAULT};
+            ThrowIfFailed(dev->CreateCommittedResource(
+                &heap, D3D12_HEAP_FLAG_NONE, &texDesc,
+                D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                IID_PPV_ARGS(&entry.texture)));
+        }
+
+        // アップロードバッファ
+        ComPtr<ID3D12Resource> uploadBuf;
+        {
+            D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_UPLOAD};
+            D3D12_RESOURCE_DESC desc{};
+            desc.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+            desc.Width            = kThumbDataSize;
+            desc.Height           = 1;
+            desc.DepthOrArraySize = 1;
+            desc.MipLevels        = 1;
+            desc.Format           = DXGI_FORMAT_UNKNOWN;
+            desc.SampleDesc.Count = 1;
+            desc.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+            ThrowIfFailed(dev->CreateCommittedResource(
+                &heap, D3D12_HEAP_FLAG_NONE, &desc,
+                D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                IID_PPV_ARGS(&uploadBuf)));
+        }
+
+        // アップロードバッファにデータ書き込み
+        {
+            void* mapped = nullptr;
+            ThrowIfFailed(uploadBuf->Map(0, nullptr, &mapped));
+            std::memcpy(mapped, data.data(), kThumbDataSize);
+            uploadBuf->Unmap(0, nullptr);
+        }
+
+        // コピーコマンド: upload → texture
+        {
+            D3D12_TEXTURE_COPY_LOCATION src{};
+            src.pResource = uploadBuf.Get();
+            src.Type      = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+            src.PlacedFootprint.Offset             = 0;
+            src.PlacedFootprint.Footprint.Format   = DXGI_FORMAT_R8G8B8A8_UNORM;
+            src.PlacedFootprint.Footprint.Width    = kThumbSize;
+            src.PlacedFootprint.Footprint.Height   = kThumbSize;
+            src.PlacedFootprint.Footprint.Depth    = 1;
+            src.PlacedFootprint.Footprint.RowPitch = kThumbRowPitch;
+
+            D3D12_TEXTURE_COPY_LOCATION dst{};
+            dst.pResource        = entry.texture.Get();
+            dst.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            dst.SubresourceIndex = 0;
+
+            cmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        }
+
+        // COPY_DEST → SRV
+        {
+            D3D12_RESOURCE_BARRIER barrier{};
+            barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            barrier.Transition.pResource   = entry.texture.Get();
+            barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+            barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            cmdList->ResourceBarrier(1, &barrier);
+        }
+
+        // SRV 作成
+        entry.srvIndex = m_srvHeap->AllocateIndex();
+        {
+            D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+            srvDesc.Format                  = DXGI_FORMAT_R8G8B8A8_UNORM;
+            srvDesc.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srvDesc.Texture2D.MipLevels     = 1;
+            dev->CreateShaderResourceView(
+                entry.texture.Get(), &srvDesc,
+                m_srvHeap->GetCpuHandle(entry.srvIndex));
+        }
+        entry.gpuHandle = m_srvHeap->GetGpuHandle(entry.srvIndex).ptr;
+
+        m_cache[modelPath] = std::move(entry);
+        m_uploadBuffers.push_back(std::move(uploadBuf));
+    }
+
+    Logger::Info("[Thumbnail] Loaded {} cached thumbnails from disk", m_cachedPaths.size());
+    m_cachedPaths.clear();
 }
 
 } // namespace dx12e

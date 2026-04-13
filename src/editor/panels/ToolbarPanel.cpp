@@ -6,14 +6,64 @@
 #include "scene/SceneSerializer.h"
 #include "core/Window.h"
 #include "core/Logger.h"
+#include "project/ProjectManager.h"
 
 #include <commdlg.h>
+#include <ShlObj.h>
+#include <shellapi.h>
 #include <filesystem>
+#include <fstream>
 
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4201 4244 4267 4996)
 #include <imgui.h>
 #pragma warning(pop)
+
+namespace
+{
+void OpenInVSCode(const std::string& filePath)
+{
+    static std::string cachedExe;
+    static bool resolved = false;
+    if (!resolved)
+    {
+        resolved = true;
+        char appData[MAX_PATH];
+        if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, appData)))
+        {
+            namespace fs = std::filesystem;
+            fs::path candidate = fs::path(appData) / "Programs" / "Microsoft VS Code" / "Code.exe";
+            if (fs::exists(candidate))
+                cachedExe = candidate.string();
+        }
+        if (cachedExe.empty())
+        {
+            namespace fs = std::filesystem;
+            const char* dirs[] = {"C:\\Program Files\\Microsoft VS Code\\Code.exe",
+                                  "C:\\Program Files (x86)\\Microsoft VS Code\\Code.exe"};
+            for (const char* p : dirs)
+                if (fs::exists(p)) { cachedExe = p; break; }
+        }
+    }
+
+    if (!cachedExe.empty())
+    {
+        std::string cmdLine = "\"" + cachedExe + "\" \"" + filePath + "\"";
+        STARTUPINFOA si{};
+        si.cb = sizeof(si);
+        PROCESS_INFORMATION pi{};
+        if (CreateProcessA(nullptr, cmdLine.data(), nullptr, nullptr,
+                           FALSE, 0, nullptr, nullptr, &si, &pi))
+        {
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            return;
+        }
+    }
+
+    ShellExecuteA(nullptr, "open", filePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+} // anonymous namespace
 
 namespace dx12e
 {
@@ -77,6 +127,7 @@ void ToolbarPanel::Render(bool isPlaying,
             if (!ctx.currentScenePath.empty())
             {
                 SceneSerializer::Save(*scene, ctx.currentScenePath, assetsDir);
+                ProjectManager::SaveLastOpenedScene(ctx.currentScenePath);
                 ctx.hotReloadFlash = 1.5f;
             }
         }
@@ -100,9 +151,22 @@ void ToolbarPanel::Render(bool isPlaying,
             {
                 ctx.currentScenePath = savePath;
                 SceneSerializer::Save(*scene, ctx.currentScenePath, assetsDir);
+                ProjectManager::SaveLastOpenedScene(ctx.currentScenePath);
                 ctx.hotReloadFlash = 1.5f;
             }
         }
+
+        ImGui::Separator();
+
+        // 新規スクリプト
+        if (ImGui::MenuItem("\xe6\x96\xb0\xe8\xa6\x8f\xe3\x82\xb9\xe3\x82\xaf\xe3\x83\xaa\xe3\x83\x97\xe3\x83\x88", "Ctrl+L"))  // 新規スクリプト
+        {
+            ctx.showNewScriptDialog = true;
+            std::memset(ctx.newScriptNameBuf, 0, sizeof(ctx.newScriptNameBuf));
+            strncpy_s(ctx.newScriptNameBuf, "NewScript", _TRUNCATE);
+        }
+
+        ImGui::Separator();
 
         // 読み込み
         if (ImGui::MenuItem("\xe8\xaa\xad\xe3\x81\xbf\xe8\xbe\xbc\xe3\x81\xbf", "Ctrl+O"))  // 読み込み
@@ -300,6 +364,7 @@ void ToolbarPanel::Render(bool isPlaying,
             std::string scenesDir = assetsDir + "scenes/";
             std::filesystem::create_directories(scenesDir);
             ctx.currentScenePath = scenesDir + ctx.newSceneNameBuf + ".json";
+            ProjectManager::SaveLastOpenedScene(ctx.currentScenePath);
             if (ctx.newSceneDialogIsCreate)
             {
                 ctx.pendingNewScene = true;  // 新規シーン作成
@@ -310,6 +375,72 @@ void ToolbarPanel::Render(bool isPlaying,
                 SceneSerializer::Save(*scene, ctx.currentScenePath, assetsDir);
                 ctx.hotReloadFlash = 1.5f;
             }
+            ImGui::CloseCurrentPopup();
+        }
+        if (!nameValid) ImGui::EndDisabled();
+
+        ImGui::SameLine();
+        if (ImGui::Button("\xe3\x82\xad\xe3\x83\xa3\xe3\x83\xb3\xe3\x82\xbb\xe3\x83\xab", ImVec2(120, 0)))  // キャンセル
+            ImGui::CloseCurrentPopup();
+
+        ImGui::EndPopup();
+    }
+
+    // ===== 新規スクリプト名入力ダイアログ =====
+    if (ctx.showNewScriptDialog)
+    {
+        ImGui::OpenPopup("\xe6\x96\xb0\xe8\xa6\x8f\xe3\x82\xb9\xe3\x82\xaf\xe3\x83\xaa\xe3\x83\x97\xe3\x83\x88##NewScriptPopup");
+        ctx.showNewScriptDialog = false;
+    }
+
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(350, 0), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("\xe6\x96\xb0\xe8\xa6\x8f\xe3\x82\xb9\xe3\x82\xaf\xe3\x83\xaa\xe3\x83\x97\xe3\x83\x88##NewScriptPopup",
+                               nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::Text("\xe3\x82\xb9\xe3\x82\xaf\xe3\x83\xaa\xe3\x83\x97\xe3\x83\x88\xe5\x90\x8d:");  // スクリプト名:
+        ImGui::SetNextItemWidth(-1);
+        bool enterPressed = ImGui::InputText("##ScriptName", ctx.newScriptNameBuf,
+            sizeof(ctx.newScriptNameBuf), ImGuiInputTextFlags_EnterReturnsTrue);
+
+        if (ImGui::IsWindowAppearing())
+            ImGui::SetKeyboardFocusHere(-1);
+
+        ImGui::Separator();
+
+        bool nameValid = std::strlen(ctx.newScriptNameBuf) > 0;
+
+        if (!nameValid) ImGui::BeginDisabled();
+        if (ImGui::Button("\xe4\xbd\x9c\xe6\x88\x90", ImVec2(120, 0)) || (enterPressed && nameValid))  // 作成
+        {
+            // scripts/ ディレクトリにテンプレート生成
+            std::string scriptsDir = assetsDir + "../scripts/";
+            std::filesystem::create_directories(scriptsDir);
+            std::string scriptPath = scriptsDir + ctx.newScriptNameBuf + ".lua";
+
+            if (!std::filesystem::exists(scriptPath))
+            {
+                std::ofstream ofs(scriptPath);
+                ofs << "-- " << ctx.newScriptNameBuf << ".lua\n\n";
+                ofs << "function OnStart()\n";
+                ofs << "    -- Called once when play mode starts\n";
+                ofs << "end\n\n";
+                ofs << "function OnUpdate(dt)\n";
+                ofs << "    -- Called every frame\n";
+                ofs << "end\n";
+                ofs.close();
+
+                Logger::Info("Created script: {}", scriptPath);
+                ctx.hotReloadFlash = 1.5f;
+            }
+            else
+            {
+                Logger::Warn("Script already exists: {}", scriptPath);
+            }
+
+            // VS Code で開く
+            OpenInVSCode(scriptPath);
+
             ImGui::CloseCurrentPopup();
         }
         if (!nameValid) ImGui::EndDisabled();

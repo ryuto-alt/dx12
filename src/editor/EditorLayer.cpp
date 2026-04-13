@@ -73,6 +73,7 @@ EditorLayer::~EditorLayer() = default;
 
 void EditorLayer::Initialize(EditorContext* ctx,
                              const std::string& assetsDir,
+                             const std::string& scriptsDir,
                              ResourceManager* resourceManager,
                              DescriptorHeap* srvHeap)
 {
@@ -84,7 +85,7 @@ void EditorLayer::Initialize(EditorContext* ctx,
     m_sceneView    = std::make_unique<SceneViewPanel>();
     m_assetBrowser = std::make_unique<AssetBrowserPanel>();
 
-    m_assetBrowser->Initialize(assetsDir, resourceManager, srvHeap);
+    m_assetBrowser->Initialize(assetsDir, scriptsDir, resourceManager, srvHeap);
 }
 
 void EditorLayer::BuildDefaultLayout(ImGuiID dockspaceId, f32 /*toolbarHeight*/)

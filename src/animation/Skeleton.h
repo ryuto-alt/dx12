@@ -20,7 +20,7 @@ struct BoneNode
 class Skeleton
 {
 public:
-    static constexpr u32 kMaxBones = 128;
+    static constexpr u32 kMaxBones = 256;
 
     void AddBone(BoneNode bone);
     i32  FindBoneIndex(std::string_view name) const;

@@ -13,7 +13,8 @@ struct ProjectInfo
     std::string assetsDir;     // rootDir + "/assets"
     std::string scriptsDir;    // rootDir + "/scripts"
     std::string shadersDir;    // rootDir + "/shaders" or build shaders
-    std::string defaultScene;  // "scenes/main.json"
+    std::string defaultScene;      // "scenes/main.json"
+    std::string lastOpenedScene;   // 最後に開いたシーンのフルパス
     std::string engineVersion = "0.1.0";
 };
 

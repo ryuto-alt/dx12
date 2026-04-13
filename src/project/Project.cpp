@@ -11,11 +11,12 @@ namespace dx12e
 bool Project::Save(const ProjectInfo& info, const std::string& path)
 {
     nlohmann::json j;
-    j["name"]          = info.name;
-    j["version"]       = info.engineVersion;
-    j["defaultScene"]  = info.defaultScene;
-    j["assetsDir"]     = "assets";
-    j["scriptsDir"]    = "scripts";
+    j["name"]             = info.name;
+    j["version"]          = info.engineVersion;
+    j["defaultScene"]     = info.defaultScene;
+    j["lastOpenedScene"]  = info.lastOpenedScene;
+    j["assetsDir"]        = "assets";
+    j["scriptsDir"]       = "scripts";
 
     std::ofstream ofs(path);
     if (!ofs.is_open())
@@ -43,10 +44,11 @@ bool Project::Load(const std::string& path, ProjectInfo& outInfo)
     namespace fs = std::filesystem;
     fs::path projDir = fs::path(path).parent_path();
 
-    outInfo.name          = j.value("name", "Untitled");
-    outInfo.engineVersion = j.value("version", "0.1.0");
-    outInfo.defaultScene  = j.value("defaultScene", "scenes/default.json");
-    outInfo.rootDir       = projDir.string();
+    outInfo.name             = j.value("name", "Untitled");
+    outInfo.engineVersion    = j.value("version", "0.1.0");
+    outInfo.defaultScene     = j.value("defaultScene", "scenes/default.json");
+    outInfo.lastOpenedScene  = j.value("lastOpenedScene", "");
+    outInfo.rootDir          = projDir.string();
     outInfo.assetsDir     = (projDir / j.value("assetsDir", "assets")).string() + "/";
     outInfo.scriptsDir    = (projDir / j.value("scriptsDir", "scripts")).string() + "/";
 

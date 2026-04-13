@@ -39,6 +39,7 @@ public:
 
     void Initialize(EditorContext* ctx,
                     const std::string& assetsDir,
+                    const std::string& scriptsDir,
                     ResourceManager* resourceManager,
                     DescriptorHeap* srvHeap);
 

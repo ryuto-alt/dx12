@@ -24,8 +24,13 @@ public:
     // Render the launcher UI (ImGui modal). Returns true when a project is selected
     static bool RenderLauncher(ProjectInfo& outInfo, HWND hwnd);
 
+    // Editor state persistence (last opened scene etc.)
+    static void SaveLastOpenedScene(const std::string& scenePath);
+    static std::string LoadLastOpenedScene();
+
 private:
     static std::string GetRecentsFilePath();
+    static std::string GetEditorStatePath();
 };
 
 } // namespace dx12e

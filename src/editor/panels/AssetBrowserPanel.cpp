@@ -4,9 +4,65 @@
 #include "resource/ResourceManager.h"
 #include "graphics/Texture.h"
 #include "graphics/DescriptorHeap.h"
+#include "project/ProjectManager.h"
+#include "scene/SceneSerializer.h"
 #include "core/Logger.h"
 
 #include <algorithm>
+#include <fstream>
+#include <Windows.h>
+#include <ShlObj.h>
+#include <shellapi.h>
+
+namespace
+{
+void OpenInVSCode(const std::string& filePath)
+{
+    // Code.exe を SHGetFolderPathA (LOCALAPPDATA) 経由で探す
+    static std::string cachedExe;
+    static bool resolved = false;
+    if (!resolved)
+    {
+        resolved = true;
+        char appData[MAX_PATH];
+        if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, appData)))
+        {
+            namespace fs = std::filesystem;
+            fs::path candidate = fs::path(appData) / "Programs" / "Microsoft VS Code" / "Code.exe";
+            if (fs::exists(candidate))
+                cachedExe = candidate.string();
+        }
+        if (cachedExe.empty())
+        {
+            // Program Files もチェック
+            namespace fs = std::filesystem;
+            const char* dirs[] = {"C:\\Program Files\\Microsoft VS Code\\Code.exe",
+                                  "C:\\Program Files (x86)\\Microsoft VS Code\\Code.exe"};
+            for (const char* p : dirs)
+                if (fs::exists(p)) { cachedExe = p; break; }
+        }
+    }
+
+    if (!cachedExe.empty())
+    {
+        // Code.exe を直接起動（GUI アプリなので cmd 窓なし・即座に返る）
+        std::string cmdLine = "\"" + cachedExe + "\" \"" + filePath + "\"";
+        STARTUPINFOA si{};
+        si.cb = sizeof(si);
+        PROCESS_INFORMATION pi{};
+        if (CreateProcessA(nullptr, cmdLine.data(), nullptr, nullptr,
+                           FALSE, 0, nullptr, nullptr, &si, &pi))
+        {
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            return;
+        }
+    }
+
+    // フォールバック
+    ShellExecuteA(nullptr, "open", filePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+} // anonymous namespace
 
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4201 4244 4267 4996)
@@ -18,10 +74,12 @@ namespace dx12e
 {
 
 void AssetBrowserPanel::Initialize(const std::string& assetsDir,
+                                    const std::string& scriptsDir,
                                     ResourceManager* resourceManager,
                                     DescriptorHeap* srvHeap)
 {
     m_assetsRoot       = std::filesystem::path(assetsDir);
+    m_scriptsRoot      = std::filesystem::path(scriptsDir);
     m_currentDir       = m_assetsRoot;
     m_resourceManager  = resourceManager;
     m_srvHeap          = srvHeap;
@@ -110,6 +168,7 @@ void AssetBrowserPanel::DrawFolderTree(const std::filesystem::path& dir, bool& n
     for (const auto& subDir : subDirs)
     {
         std::string name = subDir.filename().string();
+        if (name[0] == '.') continue; // .thumbcache 等の隠しフォルダをスキップ
         bool isSelected = (m_currentDir == subDir);
 
         ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
@@ -185,19 +244,43 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
     float treeWidth = 160.0f;
     ImGui::BeginChild("##FolderTree", ImVec2(treeWidth, 0), true);
     {
-        // ルートボタン
-        bool rootSelected = (m_currentDir == m_assetsRoot);
-        if (rootSelected)
+        // assets ルート
+        bool assetsSelected = (m_currentDir == m_assetsRoot);
+        if (assetsSelected)
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.4f, 1.0f));
-        if (ImGui::Selectable("assets", rootSelected))
+        if (ImGui::Selectable("assets", assetsSelected))
         {
             m_currentDir = m_assetsRoot;
             needRefresh = true;
         }
-        if (rootSelected)
+        if (assetsSelected)
             ImGui::PopStyleColor();
 
         DrawFolderTree(m_assetsRoot, needRefresh);
+
+        ImGui::Separator();
+
+        // scripts ルート
+        bool scriptsSelected = false;
+        {
+            namespace fs = std::filesystem;
+            // m_currentDir が scripts 配下かチェック
+            std::error_code ec;
+            auto rel = fs::relative(m_currentDir, m_scriptsRoot, ec);
+            scriptsSelected = !ec && !rel.empty() && rel.native()[0] != '.';
+            if (m_currentDir == m_scriptsRoot) scriptsSelected = true;
+        }
+        ImGui::PushStyleColor(ImGuiCol_Text,
+            scriptsSelected ? ImVec4(1.0f, 1.0f, 0.4f, 1.0f) : ImVec4(0.4f, 0.55f, 1.0f, 1.0f));
+        if (ImGui::Selectable("scripts", scriptsSelected))
+        {
+            m_currentDir = m_scriptsRoot;
+            needRefresh = true;
+        }
+        ImGui::PopStyleColor();
+
+        if (std::filesystem::exists(m_scriptsRoot))
+            DrawFolderTree(m_scriptsRoot, needRefresh);
     }
     ImGui::EndChild();
 
@@ -208,19 +291,33 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
     {
         // Breadcrumb
         {
-            if (ImGui::SmallButton("assets"))
+            // 現在のディレクトリが assets 配下か scripts 配下か判定
+            namespace fs = std::filesystem;
+            bool inScripts = false;
             {
-                m_currentDir = m_assetsRoot;
+                std::error_code ec;
+                auto rel = fs::relative(m_currentDir, m_scriptsRoot, ec);
+                if (!ec && !rel.empty() && rel.native()[0] != '.')
+                    inScripts = true;
+                if (m_currentDir == m_scriptsRoot) inScripts = true;
+            }
+
+            fs::path rootDir = inScripts ? m_scriptsRoot : m_assetsRoot;
+            const char* rootLabel = inScripts ? "scripts" : "assets";
+
+            if (ImGui::SmallButton(rootLabel))
+            {
+                m_currentDir = rootDir;
                 needRefresh = true;
             }
 
-            if (std::filesystem::exists(m_currentDir) && std::filesystem::exists(m_assetsRoot))
+            if (fs::exists(m_currentDir) && fs::exists(rootDir))
             {
                 std::error_code ec;
-                auto relative = std::filesystem::relative(m_currentDir, m_assetsRoot, ec);
+                auto relative = fs::relative(m_currentDir, rootDir, ec);
                 if (!ec && relative != "." && !relative.empty())
                 {
-                    auto current = m_assetsRoot;
+                    auto current = rootDir;
                     for (const auto& part : relative)
                     {
                         current /= part;
@@ -360,29 +457,6 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                     ImGui::InvisibleButton("##card", ImVec2(thumbnailSize, thumbnailSize));
                 }
 
-                // --- クリック ---
-                if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0))
-                {
-                    if (entry.isDirectory)
-                    {
-                        m_currentDir = entry.path;
-                        needRefresh = true;
-                    }
-                    else if (entry.type == AssetType::Model)
-                    {
-                        PendingSpawnRequest req;
-                        req.modelPath = entry.path.string();
-                        req.position = {0.0f, 0.0f, 0.0f};
-                        ctx.pendingSpawns.push_back(req);
-                        Logger::Info("Queued spawn: {}", entry.path.string());
-                    }
-                    else if (entry.type == AssetType::Scene)
-                    {
-                        ctx.pendingLoadPath = entry.path.string();
-                        Logger::Info("Queued scene load: {}", entry.path.string());
-                    }
-                }
-
                 // --- ドラッグ&ドロップソース ---
                 if (!entry.isDirectory && (entry.type == AssetType::Model || entry.type == AssetType::Texture))
                 {
@@ -409,7 +483,6 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                             name.pop_back();
                         name += "..";
                     }
-                    // ファイル名を中央寄せ
                     float nameW = ImGui::CalcTextSize(name.c_str()).x;
                     float offset = (m_cellSize - nameW) * 0.5f;
                     if (offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
@@ -417,6 +490,63 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                 }
 
                 ImGui::EndGroup();
+
+                // --- ダブルクリック（EndGroup 後 = グループ全体のホバー判定）---
+                if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0))
+                {
+                    if (entry.isDirectory)
+                    {
+                        m_currentDir = entry.path;
+                        needRefresh = true;
+                    }
+                    else if (entry.type == AssetType::Model)
+                    {
+                        PendingSpawnRequest req;
+                        req.modelPath = entry.path.string();
+                        req.position = {0.0f, 0.0f, 0.0f};
+                        ctx.pendingSpawns.push_back(req);
+                    }
+                    else if (entry.type == AssetType::Scene)
+                    {
+                        ctx.pendingLoadPath = entry.path.string();
+                    }
+                    else if (entry.type == AssetType::Script)
+                    {
+                        OpenInVSCode(entry.path.string());
+                    }
+                }
+
+                // --- 右クリックコンテキストメニュー（アイテム単位）---
+                char ctxId[32];
+                snprintf(ctxId, sizeof(ctxId), "##ctx_%d", static_cast<int>(i));
+                if (ImGui::BeginPopupContextItem(ctxId))
+                {
+                    if (entry.type == AssetType::Script)
+                    {
+                        if (ImGui::MenuItem("VS Code \xe3\x81\xa7\xe9\x96\x8b\xe3\x81\x8f"))  // VS Code で開く
+                            OpenInVSCode(entry.path.string());
+                    }
+                    else if (entry.type == AssetType::Model)
+                    {
+                        if (ImGui::MenuItem("\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3\xe3\x81\xab\xe8\xbf\xbd\xe5\x8a\xa0"))  // シーンに追加
+                        {
+                            PendingSpawnRequest req;
+                            req.modelPath = entry.path.string();
+                            ctx.pendingSpawns.push_back(req);
+                        }
+                    }
+                    else if (entry.type == AssetType::Scene)
+                    {
+                        if (ImGui::MenuItem("\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3\xe3\x82\x92\xe8\xaa\xad\xe3\x81\xbf\xe8\xbe\xbc\xe3\x81\xbf"))  // シーンを読み込み
+                            ctx.pendingLoadPath = entry.path.string();
+                    }
+                    if (entry.isDirectory)
+                    {
+                        if (ImGui::MenuItem("\xe3\x82\xa8\xe3\x82\xaf\xe3\x82\xb9\xe3\x83\x97\xe3\x83\xad\xe3\x83\xbc\xe3\x83\xa9\xe3\x83\xbc\xe3\x81\xa7\xe9\x96\x8b\xe3\x81\x8f"))  // エクスプローラーで開く
+                            ShellExecuteA(nullptr, "explore", entry.path.string().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                    }
+                    ImGui::EndPopup();
+                }
 
                 // ツールチップ
                 if (ImGui::IsItemHovered())
@@ -431,12 +561,52 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                         ImGui::TextDisabled("Double-click: Spawn | Drag: D&D to scene");
                     else if (entry.type == AssetType::Scene)
                         ImGui::TextDisabled("Double-click: Load scene");
+                    else if (entry.type == AssetType::Script)
+                        ImGui::TextDisabled("Double-click: Open in VS Code");
                     ImGui::EndTooltip();
                 }
 
                 ImGui::PopID();
             }
             ImGui::EndTable();
+        }
+
+        // ===== 右クリックコンテキストメニュー =====
+        if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByPopup)
+            && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+        {
+            ImGui::OpenPopup("##AssetContextMenu");
+        }
+
+        if (ImGui::BeginPopup("##AssetContextMenu"))
+        {
+            // 新規シーン
+            if (ImGui::MenuItem("\xe6\x96\xb0\xe8\xa6\x8f\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3"))  // 新規シーン
+            {
+                ctx.showNewSceneDialog = true;
+                ctx.newSceneDialogIsCreate = true;
+                std::memset(ctx.newSceneNameBuf, 0, sizeof(ctx.newSceneNameBuf));
+                strncpy_s(ctx.newSceneNameBuf, "NewScene", _TRUNCATE);
+            }
+
+            // 新規スクリプト
+            if (ImGui::MenuItem("\xe6\x96\xb0\xe8\xa6\x8f\xe3\x82\xb9\xe3\x82\xaf\xe3\x83\xaa\xe3\x83\x97\xe3\x83\x88"))  // 新規スクリプト
+            {
+                ctx.showNewScriptDialog = true;
+                std::memset(ctx.newScriptNameBuf, 0, sizeof(ctx.newScriptNameBuf));
+                strncpy_s(ctx.newScriptNameBuf, "NewScript", _TRUNCATE);
+            }
+
+            ImGui::Separator();
+
+            // フォルダを開く
+            if (ImGui::MenuItem("\xe3\x82\xa8\xe3\x82\xaf\xe3\x82\xb9\xe3\x83\x97\xe3\x83\xad\xe3\x83\xbc\xe3\x83\xa9\xe3\x83\xbc\xe3\x81\xa7\xe9\x96\x8b\xe3\x81\x8f"))  // エクスプローラーで開く
+            {
+                ShellExecuteA(nullptr, "explore", m_currentDir.string().c_str(),
+                    nullptr, nullptr, SW_SHOWNORMAL);
+            }
+
+            ImGui::EndPopup();
         }
     }
     ImGui::EndChild();
@@ -458,7 +628,7 @@ void AssetBrowserPanel::Refresh()
             return;
     }
 
-    if (m_currentDir != m_assetsRoot)
+    if (m_currentDir != m_assetsRoot && m_currentDir != m_scriptsRoot)
     {
         AssetEntry parent;
         parent.path = m_currentDir.parent_path();
@@ -483,6 +653,7 @@ void AssetBrowserPanel::Refresh()
 
         if (entry.isDirectory)
         {
+            if (entry.displayName[0] == '.') continue; // 隠しフォルダ除外
             entry.type = AssetType::Folder;
             dirs.push_back(entry);
         }

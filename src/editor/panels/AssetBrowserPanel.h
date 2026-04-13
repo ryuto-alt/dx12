@@ -20,6 +20,7 @@ class AssetBrowserPanel
 {
 public:
     void Initialize(const std::string& assetsDir,
+                    const std::string& scriptsDir,
                     ResourceManager* resourceManager,
                     DescriptorHeap* srvHeap);
 
@@ -60,6 +61,7 @@ private:
                                        ID3D12GraphicsCommandList* cmdList);
 
     std::filesystem::path        m_assetsRoot;
+    std::filesystem::path        m_scriptsRoot;
     std::filesystem::path        m_currentDir;
     std::vector<AssetEntry>      m_entries;
     f32                          m_refreshTimer = 0.0f;
