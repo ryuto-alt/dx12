@@ -575,10 +575,19 @@ void Application::Run()
         if (m_modeChangeRequested)
         {
             m_modeChangeRequested = false;
-            if (m_pendingMode == EngineMode::Playing)
-                EnterPlayMode();
-            else
-                EnterEditorMode();
+            try
+            {
+                if (m_pendingMode == EngineMode::Playing)
+                    EnterPlayMode();
+                else
+                    EnterEditorMode();
+            }
+            catch (const std::exception& ex)
+            {
+                Logger::Error("Mode change failed: {}", ex.what());
+                m_engineMode = EngineMode::Editor;
+                m_inputSystem->SetMouseCapture(false);
+            }
         }
 
         // 入力状態リセット（前フレームのdeltaクリア + prevKeys保存）
@@ -661,8 +670,23 @@ void Application::Run()
             }
         }
 
-        Update();
-        Render();
+        try
+        {
+            Update();
+            Render();
+        }
+        catch (const std::exception& ex)
+        {
+            Logger::Error("Frame error: {}", ex.what());
+            // GPU 状態をリセットして次フレームで復帰を試みる
+            m_commandQueue->WaitIdle();
+            if (m_engineMode == EngineMode::Playing)
+            {
+                m_engineMode = EngineMode::Editor;
+                m_inputSystem->SetMouseCapture(false);
+                Logger::Error("Forced return to Editor mode");
+            }
+        }
 
         // フレームレートリミッター（VSync OFF時のCPU暴走を防止）
         if (!m_useVsync)
@@ -980,6 +1004,9 @@ void Application::RebuildScene()
 
 void Application::EnterPlayMode()
 {
+    // GPU を待機してコマンドリスト状態を安全にする
+    m_commandQueue->WaitIdle();
+
     // カメラ状態保存
     m_cameraSnapshot.position = m_camera->GetPosition();
     m_cameraSnapshot.yaw = m_camera->GetYaw();
@@ -1124,6 +1151,9 @@ void Application::EnterPlayMode()
 
 void Application::EnterEditorMode()
 {
+    // GPU を待機してコマンドリスト状態を安全にする
+    m_commandQueue->WaitIdle();
+
     // 物理リセット
     m_physicsSystem->UnregisterAllBodies(m_scene->GetRegistry());
     m_physicsSystem->Shutdown();

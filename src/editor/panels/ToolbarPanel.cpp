@@ -133,10 +133,42 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.65f, 0.25f, 1.0f));
         if (ImGui::Button("\xe2\x96\xb6 \xe5\x86\x8d\xe7\x94\x9f"))
         {
-            outPendingPlayMode = true;
-            outModeChangeRequested = true;
+            // Lua スクリプトの存在チェック
+            std::string scriptCheck = assetsDir + "../scripts/game.lua";
+            if (!std::filesystem::exists(scriptCheck))
+            {
+                ImGui::OpenPopup("##PlayWarning");
+            }
+            else
+            {
+                outPendingPlayMode = true;
+                outModeChangeRequested = true;
+            }
         }
         ImGui::PopStyleColor(2);
+
+        // 警告ポップアップ
+        if (ImGui::BeginPopupModal("##PlayWarning", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.2f, 1.0f));
+            ImGui::Text("\xe2\x9a\xa0 scripts/game.lua \xe3\x81\x8c\xe8\xa6\x8b\xe3\x81\xa4\xe3\x81\x8b\xe3\x82\x8a\xe3\x81\xbe\xe3\x81\x9b\xe3\x82\x93");
+            ImGui::PopStyleColor();
+            ImGui::TextWrapped(
+                "\xe3\x82\xb2\xe3\x83\xbc\xe3\x83\xa0\xe3\x82\xb9\xe3\x82\xaf\xe3\x83\xaa\xe3\x83\x97\xe3\x83\x88\xe3\x81\x8c\xe3\x81\xaa\xe3\x81\x84\xe3\x81\xa8\xe3\x80\x81"
+                "\xe3\x82\xab\xe3\x83\xa1\xe3\x83\xa9\xe3\x82\x84\xe3\x82\xb2\xe3\x83\xbc\xe3\x83\xa0\xe3\x83\xad\xe3\x82\xb8\xe3\x83\x83\xe3\x82\xaf\xe3\x81\x8c\xe5\x8b\x95\xe3\x81\x8d\xe3\x81\xbe\xe3\x81\x9b\xe3\x82\x93\xe3\x80\x82");
+            // ゲームスクリプトがないと、カメラやゲームロジックが動きません。
+            ImGui::Separator();
+            if (ImGui::Button("\xe3\x81\x9d\xe3\x82\x8c\xe3\x81\xa7\xe3\x82\x82\xe5\x86\x8d\xe7\x94\x9f", ImVec2(140, 0)))  // それでも再生
+            {
+                outPendingPlayMode = true;
+                outModeChangeRequested = true;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("\xe3\x82\xad\xe3\x83\xa3\xe3\x83\xb3\xe3\x82\xbb\xe3\x83\xab", ImVec2(140, 0)))  // キャンセル
+                ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
     }
     else
     {
