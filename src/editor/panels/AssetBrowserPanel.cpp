@@ -458,12 +458,14 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                 }
 
                 // --- ドラッグ&ドロップソース ---
-                if (!entry.isDirectory && (entry.type == AssetType::Model || entry.type == AssetType::Texture))
+                if (!entry.isDirectory &&
+                    (entry.type == AssetType::Model || entry.type == AssetType::Texture || entry.type == AssetType::Script))
                 {
                     if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
                     {
                         std::string pathStr = entry.path.string();
-                        ImGui::SetDragDropPayload(kDragDropPayloadType,
+                        const char* payloadId = (entry.type == AssetType::Script) ? "DND_SCRIPT" : kDragDropPayloadType;
+                        ImGui::SetDragDropPayload(payloadId,
                             pathStr.c_str(), pathStr.size() + 1);
                         ImGui::Text("%s", entry.displayName.c_str());
                         if (entry.type == AssetType::Model)
