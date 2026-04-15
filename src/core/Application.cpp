@@ -1084,6 +1084,14 @@ void Application::EnterPlayMode()
             // エディタ追加モデルかどうかのマーキング（後で判定）
             snap.editorSpawned = true;  // 一旦全部 true にして、RebuildScene 後に Lua 由来を除外
 
+            if (reg.all_of<LuaScript>(entity))
+            {
+                const auto& ls = reg.get<LuaScript>(entity);
+                snap.hasLuaScript  = true;
+                snap.luaScriptPath = ls.scriptPath;
+                snap.luaEnabled    = ls.enabled;
+            }
+
             m_editorSnapshots[name.name] = snap;
         }
     }
@@ -1300,6 +1308,15 @@ void Application::EnterEditorMode()
                 auto& mr = reg.get<MeshRenderer>(entity);
                 mr.overrideMetallic  = snap.materialMetallic;
                 mr.overrideRoughness = snap.materialRoughness;
+            }
+
+            // LuaScript 復元
+            if (snap.hasLuaScript && !reg.all_of<LuaScript>(entity))
+            {
+                LuaScript ls;
+                ls.scriptPath = snap.luaScriptPath;
+                ls.enabled    = snap.luaEnabled;
+                reg.emplace<LuaScript>(entity, std::move(ls));
             }
         }
     }

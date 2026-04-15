@@ -148,6 +148,11 @@ private:
         float materialMetallic  = 1.0f;
         float materialRoughness = 1.0f;
 
+        // Lua スクリプトアタッチ
+        std::string luaScriptPath;
+        bool        luaEnabled = true;
+        bool        hasLuaScript = false;
+
         // エディタ追加モデルの再スポーン用
         std::string modelPath;       // MeshRenderer.modelPath（空 = Luaスポーン）
         bool editorSpawned = false;  // エディタで手動追加されたか
