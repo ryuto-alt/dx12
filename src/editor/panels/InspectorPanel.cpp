@@ -16,8 +16,16 @@
 #include "animation/NodeAnimationClip.h"
 #include "animation/NodeAnimator.h"
 #include "animation/SkinningBuffer.h"
+#include "scripting/ScriptEngine.h"
 
 #include <filesystem>
+#include <algorithm>
+
+#pragma warning(push)
+#pragma warning(disable: 4100)
+#include <Windows.h>
+#include <shellapi.h>
+#pragma warning(pop)
 
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4201 4244 4267 4996)
@@ -25,6 +33,61 @@
 #pragma warning(pop)
 
 #include <DirectXMath.h>
+
+namespace
+{
+
+void DrawLuaScriptSection(entt::registry& reg,
+                          entt::entity e,
+                          dx12e::ScriptEngine* scriptEngine,
+                          const std::string& assetsDir)
+{
+    if (!reg.all_of<dx12e::LuaScript>(e)) return;
+    auto& ls = reg.get<dx12e::LuaScript>(e);
+
+    bool open = ImGui::CollapsingHeader("Lua Script",
+        ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_AllowOverlap);
+
+    // ヘッダ右に X ボタン
+    ImGui::SameLine(ImGui::GetWindowWidth() - 30.0f);
+    if (ImGui::SmallButton("X##LuaScriptDetach"))
+    {
+        if (scriptEngine) scriptEngine->DetachScriptFromEntity(e);
+        return;
+    }
+
+    if (!open) return;
+
+    // Script path (read-only)
+    char pathBuf[256];
+    std::memset(pathBuf, 0, sizeof(pathBuf));
+    strncpy_s(pathBuf, sizeof(pathBuf), ls.scriptPath.c_str(), _TRUNCATE);
+    ImGui::InputText("Script", pathBuf, sizeof(pathBuf),
+                     ImGuiInputTextFlags_ReadOnly);
+
+    ImGui::Checkbox("Enabled", &ls.enabled);
+
+    if (ImGui::Button("Reload"))
+    {
+        if (scriptEngine) scriptEngine->ReloadScript(e);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Open in Editor"))
+    {
+        namespace fs = std::filesystem;
+        fs::path abs = fs::path(assetsDir) / ls.scriptPath;
+        ShellExecuteA(nullptr, "open", abs.string().c_str(),
+                      nullptr, nullptr, SW_SHOWNORMAL);
+    }
+
+    if (ls.loadError)
+    {
+        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
+                           "Load error (see log)");
+    }
+}
+
+} // anonymous namespace
 
 namespace dx12e
 {
@@ -349,6 +412,9 @@ void InspectorPanel::Render(entt::registry& reg,
                 }
             }
         }
+
+        // LuaScript
+        DrawLuaScriptSection(reg, ctx.selectedEntity, m_scriptEngine, m_assetsDir);
     }
     else
     {
@@ -445,6 +511,27 @@ void InspectorPanel::Render(entt::registry& reg,
             ImGui::PopStyleColor();
             ctx.buildCompleteFlash -= clock->GetDeltaTime();
         }
+    }
+
+    // Inspector 全体を DND_SCRIPT ドロップターゲットに
+    if (ctx.HasSelection() && ImGui::BeginDragDropTarget())
+    {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("DND_SCRIPT"))
+        {
+            const char* pathCStr = static_cast<const char*>(payload->Data);
+            std::string absPath(pathCStr);
+
+            namespace fs = std::filesystem;
+            auto abs  = fs::path(absPath).lexically_normal().string();
+            auto base = fs::path(m_assetsDir).lexically_normal().string();
+            std::replace(abs.begin(),  abs.end(),  '\\', '/');
+            std::replace(base.begin(), base.end(), '\\', '/');
+            std::string rel = (abs.rfind(base, 0) == 0) ? abs.substr(base.size()) : abs;
+
+            for (auto ent : ctx.selectedEntities)
+                ctx.pendingScriptAttachments.push_back({ent, rel});
+        }
+        ImGui::EndDragDropTarget();
     }
 
     ImGui::End();

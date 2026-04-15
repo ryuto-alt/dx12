@@ -184,6 +184,8 @@ void EditorLayer::Render(bool isPlaying,
     // ===== 各パネル（ドッキング対応ウィンドウ） =====
     m_hierarchy->Render(reg, *m_ctx);
 
+    m_inspector->SetScriptEngine(scriptEngine);
+    m_inspector->SetAssetsDir(assetsDir);
     m_inspector->Render(reg, *m_ctx, camera, audioSystem, physicsDebugRenderer,
                         physicsDebugDraw, useVsync, shadowQualityIndex, shadowMapSize,
                         shadowMapDirty, clock, scene);
