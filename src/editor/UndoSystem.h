@@ -142,6 +142,88 @@ private:
     entt::entity    m_entity;
 };
 
+// ── LuaScript Attach コマンド ──
+class AttachScriptCommand : public IUndoCommand
+{
+public:
+    AttachScriptCommand(entt::registry* reg, entt::entity entity,
+                        bool hadBefore, std::string oldPath, bool oldEnabled,
+                        std::string newPath)
+        : m_reg(reg), m_entity(entity),
+          m_hadBefore(hadBefore), m_oldPath(std::move(oldPath)),
+          m_oldEnabled(oldEnabled), m_newPath(std::move(newPath)) {}
+
+    void Undo() override
+    {
+        if (!m_reg->valid(m_entity)) return;
+        if (m_hadBefore)
+        {
+            LuaScript ls;
+            ls.scriptPath = m_oldPath;
+            ls.enabled    = m_oldEnabled;
+            m_reg->emplace_or_replace<LuaScript>(m_entity, std::move(ls));
+        }
+        else
+        {
+            if (m_reg->all_of<LuaScript>(m_entity))
+                m_reg->remove<LuaScript>(m_entity);
+        }
+    }
+
+    void Redo() override
+    {
+        if (!m_reg->valid(m_entity)) return;
+        LuaScript ls;
+        ls.scriptPath = m_newPath;
+        ls.enabled    = true;
+        m_reg->emplace_or_replace<LuaScript>(m_entity, std::move(ls));
+    }
+
+    const char* GetName() const override { return "AttachScript"; }
+
+private:
+    entt::registry* m_reg;
+    entt::entity    m_entity;
+    bool            m_hadBefore;
+    std::string     m_oldPath;
+    bool            m_oldEnabled;
+    std::string     m_newPath;
+};
+
+// ── LuaScript Detach コマンド ──
+class DetachScriptCommand : public IUndoCommand
+{
+public:
+    DetachScriptCommand(entt::registry* reg, entt::entity entity,
+                        std::string oldPath, bool oldEnabled)
+        : m_reg(reg), m_entity(entity),
+          m_oldPath(std::move(oldPath)), m_oldEnabled(oldEnabled) {}
+
+    void Undo() override
+    {
+        if (!m_reg->valid(m_entity)) return;
+        LuaScript ls;
+        ls.scriptPath = m_oldPath;
+        ls.enabled    = m_oldEnabled;
+        m_reg->emplace_or_replace<LuaScript>(m_entity, std::move(ls));
+    }
+
+    void Redo() override
+    {
+        if (!m_reg->valid(m_entity)) return;
+        if (m_reg->all_of<LuaScript>(m_entity))
+            m_reg->remove<LuaScript>(m_entity);
+    }
+
+    const char* GetName() const override { return "DetachScript"; }
+
+private:
+    entt::registry* m_reg;
+    entt::entity    m_entity;
+    std::string     m_oldPath;
+    bool            m_oldEnabled;
+};
+
 // ── Undo/Redo スタック ──
 class UndoSystem
 {
