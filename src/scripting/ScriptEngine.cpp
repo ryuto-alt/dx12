@@ -31,6 +31,71 @@
 namespace dx12e
 {
 
+namespace {
+
+// LuaScript コンポーネントに env / self を構築し、OnStart を呼ぶ。
+// 失敗時は loadError を true に、Logger::Error を出す。
+// 戻り値: 成功 true
+bool InitializeLuaScriptInstance(sol::state& lua,
+                                  entt::registry& reg,
+                                  entt::entity e,
+                                  LuaScript& ls,
+                                  const std::string& assetsDir,
+                                  std::string& lastError)
+{
+    namespace fs = std::filesystem;
+    fs::path abs = fs::path(assetsDir) / ls.scriptPath;
+
+    auto env = std::make_shared<sol::environment>(lua, sol::create, lua.globals());
+
+    // self テーブルを作る
+    auto self = std::make_shared<sol::table>(lua.create_table());
+    (*self)["entity"]  = static_cast<u32>(e);
+    const auto* tag = reg.try_get<NameTag>(e);
+    (*self)["name"]   = tag ? tag->name : std::string{};
+    auto* tf = reg.try_get<Transform>(e);
+    if (tf) (*self)["transform"] = tf;
+    (*self)["enabled"] = ls.enabled;
+
+    (*env)["self"] = *self;
+
+    auto result = lua.safe_script_file(
+        abs.string(), *env, sol::script_pass_on_error);
+    if (!result.valid())
+    {
+        sol::error err = result;
+        lastError = err.what();
+        Logger::Error("Lua load error (entity={} path={}): {}",
+                      static_cast<u32>(e), ls.scriptPath, lastError);
+        ls.loadError = true;
+        return false;
+    }
+
+    ls.env       = env;
+    ls.self      = self;
+    ls.loadError = false;
+
+    // OnStart(self) を呼ぶ
+    sol::protected_function fn = (*env)["OnStart"];
+    if (fn.valid())
+    {
+        auto r = fn(*self);
+        if (!r.valid())
+        {
+            sol::error err = r;
+            lastError = err.what();
+            Logger::Error("Lua OnStart error (entity={}): {}",
+                          static_cast<u32>(e), lastError);
+            ls.loadError = true;
+            return false;
+        }
+    }
+    ls.started = true;
+    return true;
+}
+
+} // namespace
+
 ScriptEngine::ScriptEngine() = default;
 ScriptEngine::~ScriptEngine() { Shutdown(); }
 
@@ -493,6 +558,80 @@ void ScriptEngine::ReloadScript(entt::entity e)
     ls.loadError = false;
     Logger::Info("LuaScript reload queued: entity={}", static_cast<u32>(e));
     // 実際の再構築は UpdateAttachedScripts のループで行う
+}
+
+void ScriptEngine::OnPlayStart()
+{
+    auto& reg = m_scene->GetRegistry();
+    auto view = reg.view<LuaScript>();
+    for (auto e : view)
+    {
+        auto& ls = view.get<LuaScript>(e);
+        ls.env.reset();
+        ls.self.reset();
+        ls.started   = false;
+        ls.loadError = false;
+        if (ls.scriptPath.empty()) continue;
+        InitializeLuaScriptInstance(*m_lua, reg, e, ls, m_assetsDir, m_lastError);
+    }
+    Logger::Info("ScriptEngine: OnPlayStart done");
+}
+
+void ScriptEngine::OnPlayStop()
+{
+    auto& reg = m_scene->GetRegistry();
+    auto view = reg.view<LuaScript>();
+    for (auto e : view)
+    {
+        auto& ls = view.get<LuaScript>(e);
+        ls.env.reset();
+        ls.self.reset();
+        ls.started   = false;
+        // loadError は残して Inspector に見せる
+    }
+    Logger::Info("ScriptEngine: OnPlayStop done");
+}
+
+void ScriptEngine::UpdateAttachedScripts(f32 dt)
+{
+    auto& reg = m_scene->GetRegistry();
+    auto view = reg.view<LuaScript>();
+    for (auto e : view)
+    {
+        auto& ls = view.get<LuaScript>(e);
+        if (!reg.valid(e)) continue;
+        if (!ls.enabled) continue;
+        if (ls.loadError) continue;
+        if (ls.scriptPath.empty()) continue;
+
+        // env 未構築（Play 中に Attach された or Reload された） → 初期化
+        if (!ls.env || !ls.started)
+        {
+            if (!InitializeLuaScriptInstance(*m_lua, reg, e, ls, m_assetsDir, m_lastError))
+                continue;
+        }
+
+        auto* env  = static_cast<sol::environment*>(ls.env.get());
+        auto* self = static_cast<sol::table*>(ls.self.get());
+        if (!env || !self) continue;
+
+        // self.transform のポインタを最新化（コンポーネントが再配置される場合に備える）
+        if (auto* tf = reg.try_get<Transform>(e))
+            (*self)["transform"] = tf;
+        (*self)["enabled"] = ls.enabled;
+
+        sol::protected_function fn = (*env)["OnUpdate"];
+        if (!fn.valid()) continue;
+        auto result = fn(*self, dt);
+        if (!result.valid())
+        {
+            sol::error err = result;
+            m_lastError = err.what();
+            Logger::Error("Lua OnUpdate error (entity={}): {}",
+                          static_cast<u32>(e), m_lastError);
+            ls.loadError = true;
+        }
+    }
 }
 
 void ScriptEngine::Shutdown()
