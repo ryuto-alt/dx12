@@ -158,4 +158,18 @@ struct ConvexHullCollider
     DirectX::XMFLOAT3 offset = {0.0f, 0.0f, 0.0f};
 };
 
+struct LuaScript
+{
+    // シリアライズ対象
+    std::string scriptPath;   // assets 相対パス（例 "scripts/player.lua"）
+    bool        enabled = true;
+
+    // ランタイム専有（非シリアライズ）
+    // sol::environment / sol::table を直接持つとヘッダ依存が膨らむため void で隠蔽
+    std::shared_ptr<void> env;    // sol::environment
+    std::shared_ptr<void> self;   // sol::table
+    bool started   = false;
+    bool loadError = false;
+};
+
 } // namespace dx12e
