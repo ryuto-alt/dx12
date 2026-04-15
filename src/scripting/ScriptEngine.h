@@ -3,6 +3,7 @@
 #include <string>
 #include <memory>
 #include "core/Types.h"
+#include <entt/entt.hpp>
 
 // sol2 forward declaration
 struct lua_State;
@@ -35,6 +36,14 @@ public:
     // ゲームライフサイクル
     void CallOnStart();
     void CallOnUpdate(f32 dt);
+
+    // エンティティアタッチ版 API
+    void AttachScriptToEntity(entt::entity e, const std::string& scriptPath);
+    void DetachScriptFromEntity(entt::entity e);
+    void OnPlayStart();                   // 全 LuaScript 初期化 + OnStart
+    void OnPlayStop();                    // 全 env 破棄、started リセット
+    void UpdateAttachedScripts(f32 dt);   // 毎フレーム OnUpdate
+    void ReloadScript(entt::entity e);    // Inspector Reload ボタン用
 
     void Shutdown();
 
