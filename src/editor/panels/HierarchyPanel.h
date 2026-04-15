@@ -21,6 +21,7 @@ private:
     // リネーム
     entt::entity m_renamingEntity = entt::null;
     char m_renameBuf[128] = {};
+    bool m_renameJustStarted = false;
 
     std::string m_assetsDir;
 };

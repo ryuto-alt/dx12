@@ -46,16 +46,27 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
     // リネーム中はインライン入力を表示
     if (m_renamingEntity == e)
     {
+        // 開始フレームは強制フォーカスを当てる (これが無いと IsItemActive=false で
+        // 即 commit され入力が一瞬で消える)
+        if (m_renameJustStarted)
+        {
+            ImGui::SetKeyboardFocusHere();
+            m_renameJustStarted = false;
+        }
         ImGui::SetNextItemWidth(-1);
-        if (ImGui::InputText("##Rename", m_renameBuf, sizeof(m_renameBuf),
-                             ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll))
+        bool entered = ImGui::InputText("##Rename", m_renameBuf, sizeof(m_renameBuf),
+                             ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+        bool active   = ImGui::IsItemActive();
+        bool focused  = ImGui::IsItemFocused();
+
+        if (entered)
         {
             if (std::strlen(m_renameBuf) > 0)
                 tag.name = m_renameBuf;
             m_renamingEntity = entt::null;
         }
-        // フォーカスが外れたら確定
-        if (!ImGui::IsItemActive() && m_renamingEntity == e)
+        // フォーカスが外れたら確定 (アクティブでもフォーカスでもない場合のみ)
+        else if (!active && !focused)
         {
             if (std::strlen(m_renameBuf) > 0)
                 tag.name = m_renameBuf;
@@ -87,8 +98,10 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
     if (itemHov && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
     {
         m_renamingEntity = e;
+        m_renameJustStarted = true;
         std::memset(m_renameBuf, 0, sizeof(m_renameBuf));
         strncpy_s(m_renameBuf, tag.name.c_str(), _TRUNCATE);
+        OutputDebugStringA("[Hierarchy] rename started via double-click\n");
     }
     // シングルクリック選択（Ctrl でマルチ選択）
     else if (ImGui::IsItemClicked(ImGuiMouseButton_Left))
@@ -157,11 +170,14 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
     // PushID スコープ内なので ID は "EntityCtx" だけで十分 unique
     if (ImGui::BeginPopupContextItem("EntityCtx", ImGuiPopupFlags_MouseButtonRight))
     {
+        OutputDebugStringA("[Hierarchy] context popup opened\n");
         if (ImGui::MenuItem("\xe5\x90\x8d\xe5\x89\x8d\xe5\xa4\x89\xe6\x9b\xb4"))  // 名前変更
         {
             m_renamingEntity = e;
+            m_renameJustStarted = true;
             std::memset(m_renameBuf, 0, sizeof(m_renameBuf));
             strncpy_s(m_renameBuf, tag.name.c_str(), _TRUNCATE);
+            OutputDebugStringA("[Hierarchy] rename started via context menu\n");
         }
         if (ImGui::MenuItem("\xe5\x89\x8a\xe9\x99\xa4"))  // 削除
         {
