@@ -449,6 +449,52 @@ void ScriptEngine::CallOnUpdate(f32 dt)
     }
 }
 
+void ScriptEngine::AttachScriptToEntity(entt::entity e, const std::string& scriptPath)
+{
+    auto& reg = m_scene->GetRegistry();
+    if (!reg.valid(e)) return;
+
+    LuaScript* existing = reg.try_get<LuaScript>(e);
+    if (existing)
+    {
+        existing->scriptPath = scriptPath;
+        existing->enabled    = true;
+        existing->env.reset();
+        existing->self.reset();
+        existing->started    = false;
+        existing->loadError  = false;
+    }
+    else
+    {
+        LuaScript ls;
+        ls.scriptPath = scriptPath;
+        reg.emplace<LuaScript>(e, std::move(ls));
+    }
+    Logger::Info("LuaScript attached: entity={} path={}",
+                 static_cast<u32>(e), scriptPath);
+}
+
+void ScriptEngine::DetachScriptFromEntity(entt::entity e)
+{
+    auto& reg = m_scene->GetRegistry();
+    if (!reg.valid(e) || !reg.all_of<LuaScript>(e)) return;
+    reg.remove<LuaScript>(e);
+    Logger::Info("LuaScript detached: entity={}", static_cast<u32>(e));
+}
+
+void ScriptEngine::ReloadScript(entt::entity e)
+{
+    auto& reg = m_scene->GetRegistry();
+    if (!reg.valid(e) || !reg.all_of<LuaScript>(e)) return;
+    auto& ls = reg.get<LuaScript>(e);
+    ls.env.reset();
+    ls.self.reset();
+    ls.started   = false;
+    ls.loadError = false;
+    Logger::Info("LuaScript reload queued: entity={}", static_cast<u32>(e));
+    // 実際の再構築は UpdateAttachedScripts のループで行う
+}
+
 void ScriptEngine::Shutdown()
 {
     if (m_lua)
