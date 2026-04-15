@@ -248,7 +248,7 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
         bool assetsSelected = (m_currentDir == m_assetsRoot);
         if (assetsSelected)
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.4f, 1.0f));
-        if (ImGui::Selectable("assets", assetsSelected))
+        if (ImGui::Selectable("assets##ShortcutRoot", assetsSelected))
         {
             m_currentDir = m_assetsRoot;
             needRefresh = true;
@@ -272,7 +272,7 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
         }
         ImGui::PushStyleColor(ImGuiCol_Text,
             scriptsSelected ? ImVec4(1.0f, 1.0f, 0.4f, 1.0f) : ImVec4(0.4f, 0.55f, 1.0f, 1.0f));
-        if (ImGui::Selectable("scripts", scriptsSelected))
+        if (ImGui::Selectable("scripts##ShortcutScripts", scriptsSelected))
         {
             m_currentDir = m_scriptsRoot;
             needRefresh = true;
