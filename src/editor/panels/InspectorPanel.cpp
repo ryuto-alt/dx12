@@ -62,17 +62,17 @@ void DrawLuaScriptSection(entt::registry& reg,
     char pathBuf[256];
     std::memset(pathBuf, 0, sizeof(pathBuf));
     strncpy_s(pathBuf, sizeof(pathBuf), ls.scriptPath.c_str(), _TRUNCATE);
-    ImGui::InputText("Script", pathBuf, sizeof(pathBuf),
+    ImGui::InputText("Script##LuaScript", pathBuf, sizeof(pathBuf),
                      ImGuiInputTextFlags_ReadOnly);
 
-    ImGui::Checkbox("Enabled", &ls.enabled);
+    ImGui::Checkbox("Enabled##LuaScript", &ls.enabled);
 
-    if (ImGui::Button("Reload"))
+    if (ImGui::Button("Reload##LuaScript"))
     {
         if (scriptEngine) scriptEngine->ReloadScript(e);
     }
     ImGui::SameLine();
-    if (ImGui::Button("Open in Editor"))
+    if (ImGui::Button("Open in Editor##LuaScript"))
     {
         namespace fs = std::filesystem;
         fs::path abs = fs::path(assetsDir) / ls.scriptPath;
