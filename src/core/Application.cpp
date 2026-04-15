@@ -603,6 +603,8 @@ void Application::Run()
             catch (const std::exception& ex)
             {
                 Logger::Error("Mode change failed: {}", ex.what());
+                if (m_engineMode == EngineMode::Playing)
+                    m_scriptEngine->OnPlayStop();
                 m_engineMode = EngineMode::Editor;
                 m_inputSystem->SetMouseCapture(false);
             }
@@ -700,6 +702,8 @@ void Application::Run()
             m_commandQueue->WaitIdle();
             if (m_engineMode == EngineMode::Playing)
             {
+                if (m_engineMode == EngineMode::Playing)
+                    m_scriptEngine->OnPlayStop();
                 m_engineMode = EngineMode::Editor;
                 m_inputSystem->SetMouseCapture(false);
                 Logger::Error("Forced return to Editor mode");
@@ -956,6 +960,7 @@ void Application::Update()
     {
         // プレイモード: Luaがカメラ+ゲームロジックを制御
         m_scriptEngine->CallOnUpdate(dt);
+        m_scriptEngine->UpdateAttachedScripts(dt);
     }
 
     // シーン更新（Animator等）— エディタモードは時間を止める（ボーン行列は維持）
@@ -988,6 +993,7 @@ void Application::RebuildScene()
     }
 
     // RebuildScene は常に Lua OnStart（ホットリロード・EditorMode復帰用）
+    m_scriptEngine->OnPlayStart();
     m_scriptEngine->CallOnStart();
 
     // sneakWalk アニメーション追加
@@ -1095,6 +1101,7 @@ void Application::EnterPlayMode()
     {
         m_scriptEngine->LoadScript(scriptPath);
     }
+    m_scriptEngine->OnPlayStart();
     m_scriptEngine->CallOnStart();
 
     // エディタのスナップショットで上書き（Luaが勝手に変えた状態をエディタの状態に戻す）
@@ -1303,6 +1310,8 @@ void Application::EnterEditorMode()
         0.1f, 1000.0f);
 
     m_inputSystem->SetMouseCapture(false);
+    if (m_engineMode == EngineMode::Playing)
+        m_scriptEngine->OnPlayStop();
     m_engineMode = EngineMode::Editor;
     Logger::Info("Entered EDITOR mode");
 }
@@ -1525,6 +1534,38 @@ void Application::Render()
                         m_scene.get(), &m_scene->GetRegistry(), spawnedEntity));
             }
             Logger::Info("Spawned: {}", name);
+        }
+    }
+
+    // スクリプトアタッチ遅延処理
+    if (!m_editorCtx->pendingScriptAttachments.empty())
+    {
+        auto attachments = std::move(m_editorCtx->pendingScriptAttachments);
+        m_editorCtx->pendingScriptAttachments.clear();
+
+        auto& reg = m_scene->GetRegistry();
+        for (const auto& req : attachments)
+        {
+            if (!reg.valid(req.entity)) continue;
+
+            // Undo 用に現状を保存
+            bool        hadBefore  = reg.all_of<LuaScript>(req.entity);
+            std::string oldPath;
+            bool        oldEnabled = true;
+            if (hadBefore)
+            {
+                const auto& cur = reg.get<LuaScript>(req.entity);
+                oldPath    = cur.scriptPath;
+                oldEnabled = cur.enabled;
+            }
+
+            m_scriptEngine->AttachScriptToEntity(req.entity, req.scriptPath);
+
+            m_editorCtx->undoSystem.PushCommand(
+                std::make_unique<AttachScriptCommand>(
+                    &reg, req.entity,
+                    hadBefore, oldPath, oldEnabled,
+                    req.scriptPath));
         }
     }
 
