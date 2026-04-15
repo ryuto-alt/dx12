@@ -1876,7 +1876,10 @@ void Application::Render()
     m_swapChain->Present(m_useVsync);
     m_frameResources->EndFrame(*m_commandQueue);
 
-    // テクスチャプレビュー等のアップロードバッファを解放
+    // GPU がこのフレームのコピーを完了してからアップロードバッファを解放する
+    // (モデル/テクスチャスポーンで積んだ CopyResource が in-flight のうちに
+    //  Reset すると OBJECT_DELETED_WHILE_STILL_IN_USE で落ちるため)
+    m_commandQueue->WaitIdle();
     m_resourceManager->FinishUploads();
 }
 
