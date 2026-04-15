@@ -69,6 +69,13 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
         reinterpret_cast<void*>(static_cast<uintptr_t>(static_cast<u32>(e))),
         flags, "%s", tag.name.c_str());
 
+    // 右クリックポップアップの open トリガーは D&D より前に仕込む
+    // (D&D で last-item hover 状態が壊れる前に確定させる)
+    char popupId[32];
+    snprintf(popupId, sizeof(popupId), "##EntityCtx_%u", static_cast<u32>(e));
+    if (ImGui::IsItemHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Right))
+        ImGui::OpenPopup(popupId);
+
     // ダブルクリックでリネーム開始
     if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
     {
@@ -138,12 +145,8 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
         ImGui::EndDragDropTarget();
     }
 
-    // 右クリックコンテキストメニュー
-    // ImGui 1.92+ は BeginPopupContextItem(NULL) で last-item ID が D&D 後に
-    // 不安定になることがあるため、エンティティハンドルで明示的な ID を渡す
-    char popupId[32];
-    snprintf(popupId, sizeof(popupId), "##EntityCtx_%u", static_cast<u32>(e));
-    if (ImGui::BeginPopupContextItem(popupId))
+    // 右クリックポップアップ本体 (open トリガーは TreeNodeEx 直後で発火済み)
+    if (ImGui::BeginPopup(popupId))
     {
         if (ImGui::MenuItem("\xe5\x90\x8d\xe5\x89\x8d\xe5\xa4\x89\xe6\x9b\xb4"))  // 名前変更
         {
