@@ -29,6 +29,8 @@ void ImGuiManager::Initialize(
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    // ID 衝突警告のビジュアルオーバーレイを抑制（誤検出で popup が塞がれることがある）
+    io.ConfigDebugHighlightIdConflicts = false;
 
     // 日本語フォント読み込み
     {

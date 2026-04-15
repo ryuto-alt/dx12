@@ -36,6 +36,9 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
     if (!reg.all_of<NameTag>(e)) return;
     auto& tag = reg.get<NameTag>(e);
 
+    // ID スコープを明示分離 (ImGui 1.92 の TreeNode + D&D + popup 衝突対策)
+    ImGui::PushID(static_cast<int>(static_cast<u32>(e)));
+
     auto children = GetChildren(reg, e);
     bool hasChildren = !children.empty();
     bool selected = ctx.IsSelected(e);
@@ -58,6 +61,7 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
                 tag.name = m_renameBuf;
             m_renamingEntity = entt::null;
         }
+        ImGui::PopID();
         return;  // リネーム中はツリーノード描画しない
     }
 
@@ -65,19 +69,22 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
     if (!hasChildren) flags |= ImGuiTreeNodeFlags_Leaf;
     if (selected) flags |= ImGuiTreeNodeFlags_Selected;
 
-    bool open = ImGui::TreeNodeEx(
-        reinterpret_cast<void*>(static_cast<uintptr_t>(static_cast<u32>(e))),
-        flags, "%s", tag.name.c_str());
+    // ID は PushID で一意化済みなので TreeNodeEx は固定文字列でOK
+    bool open = ImGui::TreeNodeEx("##node", flags, "%s", tag.name.c_str());
 
-    // 右クリックポップアップの open トリガーは D&D より前に仕込む
-    // (D&D で last-item hover 状態が壊れる前に確定させる)
-    char popupId[32];
-    snprintf(popupId, sizeof(popupId), "##EntityCtx_%u", static_cast<u32>(e));
-    if (ImGui::IsItemHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Right))
-        ImGui::OpenPopup(popupId);
+    // デバッグ: 右クリック検出ログ
+    bool itemHov = ImGui::IsItemHovered();
+    bool rightReleased = ImGui::IsMouseReleased(ImGuiMouseButton_Right);
+    if (itemHov && rightReleased)
+    {
+        char dbg[128];
+        snprintf(dbg, sizeof(dbg), "[Hierarchy RightClick] entity=%u hovered=1 released=1\n",
+            static_cast<u32>(e));
+        OutputDebugStringA(dbg);
+    }
 
     // ダブルクリックでリネーム開始
-    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+    if (itemHov && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
     {
         m_renamingEntity = e;
         std::memset(m_renameBuf, 0, sizeof(m_renameBuf));
@@ -94,7 +101,8 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
     }
 
     // D&D ソース（親子設定用）
-    if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
+    // SourceNoHoldToOpenOthers: ドラッグ中に他ツリーの自動展開を抑制
+    if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceNoHoldToOpenOthers))
     {
         ImGui::SetDragDropPayload("HIERARCHY_ENTITY", &e, sizeof(entt::entity));
         ImGui::Text("%s", tag.name.c_str());
@@ -145,8 +153,9 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
         ImGui::EndDragDropTarget();
     }
 
-    // 右クリックポップアップ本体 (open トリガーは TreeNodeEx 直後で発火済み)
-    if (ImGui::BeginPopup(popupId))
+    // 右クリックコンテキストメニュー (明示 ID 必須 ・ D&D の後に置く)
+    // PushID スコープ内なので ID は "EntityCtx" だけで十分 unique
+    if (ImGui::BeginPopupContextItem("EntityCtx", ImGuiPopupFlags_MouseButtonRight))
     {
         if (ImGui::MenuItem("\xe5\x90\x8d\xe5\x89\x8d\xe5\xa4\x89\xe6\x9b\xb4"))  // 名前変更
         {
@@ -199,6 +208,8 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
             DrawEntityNode(reg, ctx, child);
         ImGui::TreePop();
     }
+
+    ImGui::PopID();
 }
 
 void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
