@@ -1560,10 +1560,19 @@ void Application::Render()
         auto attachments = std::move(m_editorCtx->pendingScriptAttachments);
         m_editorCtx->pendingScriptAttachments.clear();
 
+        char dbgBuf[128];
+        snprintf(dbgBuf, sizeof(dbgBuf),
+            "[PendingScriptAttachments] processing %zu\n", attachments.size());
+        OutputDebugStringA(dbgBuf);
+
         auto& reg = m_scene->GetRegistry();
         for (const auto& req : attachments)
         {
-            if (!reg.valid(req.entity)) continue;
+            if (!reg.valid(req.entity))
+            {
+                OutputDebugStringA("[PendingScriptAttachments] SKIP invalid entity\n");
+                continue;
+            }
 
             // Undo 用に現状を保存
             bool        hadBefore  = reg.all_of<LuaScript>(req.entity);

@@ -42,21 +42,28 @@ void DrawLuaScriptSection(entt::registry& reg,
                           dx12e::ScriptEngine* scriptEngine,
                           const std::string& assetsDir)
 {
-    if (!reg.all_of<dx12e::LuaScript>(e)) return;
-    auto& ls = reg.get<dx12e::LuaScript>(e);
+    const bool hasLua = reg.all_of<dx12e::LuaScript>(e);
 
     bool open = ImGui::CollapsingHeader("Lua Script",
         ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_AllowOverlap);
 
-    // ヘッダ右に X ボタン
-    ImGui::SameLine(ImGui::GetWindowWidth() - 30.0f);
-    if (ImGui::SmallButton("X##LuaScriptDetach"))
+    // ヘッダ右の状態アイコン: 付いてたら緑チェック、無ければグレー
+    ImGui::SameLine(ImGui::GetWindowWidth() - 50.0f);
+    if (hasLua)
+        ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "ATTACHED");
+    else
+        ImGui::TextDisabled("(none)");
+
+    if (!open) return;
+
+    if (!hasLua)
     {
-        if (scriptEngine) scriptEngine->DetachScriptFromEntity(e);
+        ImGui::TextDisabled("Drop a .lua file from AssetBrowser onto this entity");
+        ImGui::TextDisabled("(Hierarchy row or this Inspector panel)");
         return;
     }
 
-    if (!open) return;
+    auto& ls = reg.get<dx12e::LuaScript>(e);
 
     // Script path (read-only)
     char pathBuf[256];
@@ -66,6 +73,10 @@ void DrawLuaScriptSection(entt::registry& reg,
                      ImGuiInputTextFlags_ReadOnly);
 
     ImGui::Checkbox("Enabled##LuaScript", &ls.enabled);
+    ImGui::SameLine();
+    ImGui::TextColored(
+        ls.started ? ImVec4(0.4f, 1.0f, 0.4f, 1.0f) : ImVec4(0.7f, 0.7f, 0.7f, 1.0f),
+        ls.started ? "RUNNING" : "IDLE");
 
     if (ImGui::Button("Reload##LuaScript"))
     {
@@ -78,6 +89,12 @@ void DrawLuaScriptSection(entt::registry& reg,
         fs::path abs = fs::path(assetsDir) / ls.scriptPath;
         ShellExecuteA(nullptr, "open", abs.string().c_str(),
                       nullptr, nullptr, SW_SHOWNORMAL);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Detach##LuaScript"))
+    {
+        if (scriptEngine) scriptEngine->DetachScriptFromEntity(e);
+        return;
     }
 
     if (ls.loadError)

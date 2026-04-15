@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <filesystem>
 #include <vector>
+#include <cstdio>
+#include <Windows.h>
 
 namespace dx12e
 {
@@ -125,13 +127,23 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
             std::replace(base.begin(), base.end(), '\\', '/');
             std::string rel = (abs.rfind(base, 0) == 0) ? abs.substr(base.size()) : abs;
 
+            char dbgBuf[512];
+            snprintf(dbgBuf, sizeof(dbgBuf),
+                "[Hierarchy DND_SCRIPT] entity=%u abs=%s base=%s rel=%s\n",
+                static_cast<u32>(e), abs.c_str(), base.c_str(), rel.c_str());
+            OutputDebugStringA(dbgBuf);
+
             ctx.pendingScriptAttachments.push_back({e, rel});
         }
         ImGui::EndDragDropTarget();
     }
 
     // 右クリックコンテキストメニュー
-    if (ImGui::BeginPopupContextItem())
+    // ImGui 1.92+ は BeginPopupContextItem(NULL) で last-item ID が D&D 後に
+    // 不安定になることがあるため、エンティティハンドルで明示的な ID を渡す
+    char popupId[32];
+    snprintf(popupId, sizeof(popupId), "##EntityCtx_%u", static_cast<u32>(e));
+    if (ImGui::BeginPopupContextItem(popupId))
     {
         if (ImGui::MenuItem("\xe5\x90\x8d\xe5\x89\x8d\xe5\xa4\x89\xe6\x9b\xb4"))  // 名前変更
         {
