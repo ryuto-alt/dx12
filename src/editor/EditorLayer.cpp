@@ -85,6 +85,7 @@ void EditorLayer::Initialize(EditorContext* ctx,
     m_sceneView    = std::make_unique<SceneViewPanel>();
     m_assetBrowser = std::make_unique<AssetBrowserPanel>();
 
+    m_hierarchy->SetAssetsDir(assetsDir);
     m_assetBrowser->Initialize(assetsDir, scriptsDir, resourceManager, srvHeap);
 }
 

@@ -9,6 +9,8 @@
 #include <imgui.h>
 #pragma warning(pop)
 
+#include <algorithm>
+#include <filesystem>
 #include <vector>
 
 namespace dx12e
@@ -109,6 +111,21 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
                 if (!isCyclic)
                     reg.get<Transform>(droppedEntity).parent = e;
             }
+        }
+        if (const ImGuiPayload* scriptPayload = ImGui::AcceptDragDropPayload("DND_SCRIPT"))
+        {
+            const char* pathCStr = static_cast<const char*>(scriptPayload->Data);
+            std::string absPath(pathCStr);
+
+            // assets 相対パスに変換
+            namespace fs = std::filesystem;
+            auto abs = fs::path(absPath).lexically_normal().string();
+            auto base = fs::path(m_assetsDir).lexically_normal().string();
+            std::replace(abs.begin(), abs.end(), '\\', '/');
+            std::replace(base.begin(), base.end(), '\\', '/');
+            std::string rel = (abs.rfind(base, 0) == 0) ? abs.substr(base.size()) : abs;
+
+            ctx.pendingScriptAttachments.push_back({e, rel});
         }
         ImGui::EndDragDropTarget();
     }
