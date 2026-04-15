@@ -20,6 +20,12 @@ struct PendingSpawnRequest
     DirectX::XMFLOAT3 position{};
 };
 
+struct PendingScriptAttach
+{
+    entt::entity entity = entt::null;
+    std::string  scriptPath;   // assets 相対パス
+};
+
 // コピー&ペースト用
 struct ClipboardEntry
 {
@@ -99,6 +105,7 @@ public:
     // 遅延処理キュー
     std::vector<PendingSpawnRequest> pendingSpawns;
     std::vector<entt::entity>        pendingDeletions;
+    std::vector<PendingScriptAttach> pendingScriptAttachments;
     std::string pendingLoadPath;
     bool pendingBuildGame = false;
     bool pendingNewScene  = false;
