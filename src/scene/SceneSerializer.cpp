@@ -193,6 +193,19 @@ bool SceneSerializer::Save(const Scene& scene, const std::string& filePath,
             ej["convexHullCollider"] = true;
         }
 
+        // --- LuaScript ---
+        if (reg.all_of<LuaScript>(entity))
+        {
+            const auto& ls = reg.get<LuaScript>(entity);
+            if (!ls.scriptPath.empty())
+            {
+                ej["luaScript"] = {
+                    {"scriptPath", ls.scriptPath},
+                    {"enabled",    ls.enabled}
+                };
+            }
+        }
+
         root["entities"].push_back(ej);
     }
 
@@ -438,6 +451,17 @@ bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
                             mesh->ApplyUVScale(*scene.GetDevice(), mr.uvScaleU, mr.uvScaleV);
                     }
                 }
+            }
+
+            // LuaScript 復元（env は構築しない。Play 開始時に初期化される）
+            if (ej.contains("luaScript"))
+            {
+                const auto& lsj = ej["luaScript"];
+                LuaScript ls;
+                ls.scriptPath = lsj.value("scriptPath", "");
+                ls.enabled    = lsj.value("enabled", true);
+                if (!ls.scriptPath.empty() && !reg.all_of<LuaScript>(e))
+                    reg.emplace<LuaScript>(e, std::move(ls));
             }
         }
     }
