@@ -281,9 +281,17 @@ void ToolbarPanel::Render(bool isPlaying,
     // Error popup (中央モーダル)
     if (ctx.errorFlash > 0.0f)
     {
-        ctx.errorFlash -= clock->GetDeltaTime();
+        ctx.errorFlash = 0.0f;  // フラグをリセット（トリガー用のみ）
         ImGui::OpenPopup("##ErrorPopup");
     }
+
+    // ポップアップの最小サイズを設定
+    ImGui::SetNextWindowSizeConstraints(ImVec2(360, 0), ImVec2(500, 300));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24, 20));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.15f, 0.15f, 0.18f, 0.97f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 0.35f, 0.35f, 0.6f));
+
     if (ImGui::BeginPopupModal("##ErrorPopup", nullptr,
             ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoTitleBar))
     {
@@ -292,21 +300,78 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::SetWindowPos(ImVec2(center.x - ImGui::GetWindowWidth() * 0.5f,
                                     center.y - ImGui::GetWindowHeight() * 0.5f));
 
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+        // 警告アイコン（大）
+        ImGui::PushFont(nullptr);  // デフォルトフォント
+        ImGui::SetWindowFontScale(2.0f);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.35f, 0.35f, 1.0f));
         ImGui::Text("\xe2\x9a\xa0");
         ImGui::PopStyleColor();
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::PopFont();
+
         ImGui::SameLine();
-        ImGui::TextWrapped("%s", ctx.errorMessage.c_str());
+
+        // タイトル
+        ImGui::BeginGroup();
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
+        ImGui::SetWindowFontScale(1.3f);
+        ImGui::Text("Play \xe3\x81\xa7\xe3\x81\x8d\xe3\x81\xbe\xe3\x81\x9b\xe3\x82\x93");  // Playできません
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::PopStyleColor();
+        ImGui::EndGroup();
+
         ImGui::Spacing();
-        float buttonWidth = 80.0f;
-        ImGui::SetCursorPosX((ImGui::GetWindowWidth() - buttonWidth) * 0.5f);
-        if (ImGui::Button("OK", ImVec2(buttonWidth, 0)) || ctx.errorFlash <= 0.0f)
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // メッセージ本文（選択・コピー可能な InputText）
+        ImGui::SetWindowFontScale(1.1f);
+        static char errorBuf[512] = {};
+        strncpy_s(errorBuf, ctx.errorMessage.c_str(), _TRUNCATE);
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.1f, 0.1f, 0.12f, 1.0f));
+        ImGui::InputTextMultiline("##ErrorMsg", errorBuf, sizeof(errorBuf),
+            ImVec2(-1, ImGui::GetTextLineHeight() * 3.5f),
+            ImGuiInputTextFlags_ReadOnly);
+        ImGui::PopStyleColor();
+        ImGui::SetWindowFontScale(1.0f);
+
+        ImGui::Spacing();
+
+        // コピー + OK ボタン
+        float totalWidth = 120.0f + 8.0f + 120.0f;
+        ImGui::SetCursorPosX((ImGui::GetWindowWidth() - totalWidth) * 0.5f);
+
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+
+        // コピーボタン
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.3f, 0.35f, 0.8f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.4f, 0.4f, 0.45f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.25f, 0.25f, 0.3f, 1.0f));
+        if (ImGui::Button("\xf0\x9f\x93\x8b Copy", ImVec2(120.0f, 32.0f)))
         {
-            ctx.errorFlash = 0.0f;
+            ImGui::SetClipboardText(ctx.errorMessage.c_str());
+        }
+        ImGui::PopStyleColor(3);
+
+        ImGui::SameLine(0, 8.0f);
+
+        // OK ボタン
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.25f, 0.25f, 0.8f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.9f, 0.3f, 0.3f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.7f, 0.2f, 0.2f, 1.0f));
+        if (ImGui::Button("OK", ImVec2(120.0f, 32.0f)))
+        {
             ImGui::CloseCurrentPopup();
         }
+        ImGui::PopStyleColor(3);
+
+        ImGui::PopStyleVar();
+
         ImGui::EndPopup();
     }
+
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar(2);
 
     // ===== Gizmo mode =====
     ImGui::SameLine(0, 12);
