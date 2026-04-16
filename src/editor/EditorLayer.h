@@ -30,6 +30,7 @@ class HierarchyPanel;
 class InspectorPanel;
 class SceneViewPanel;
 class AssetBrowserPanel;
+class GameViewPanel;
 
 class EditorLayer
 {
@@ -60,7 +61,8 @@ public:
                 bool& outPendingPlayMode,
                 const std::string& assetsDir,
                 f32 leftPanelWidth,
-                f32 toolbarHeight);
+                f32 toolbarHeight,
+                u64 gameViewTextureId);
 
     // フレーム先頭でcmdListが有効な間に呼ぶ（テクスチャサムネイルのアップロード）
     void LoadPendingThumbnails(ID3D12GraphicsCommandList* cmdList);
@@ -71,9 +73,13 @@ public:
     // サムネイルレンダラー設定
     void SetThumbnailRenderer(class ModelThumbnailRenderer* renderer);
 
-    // ビューポート領域（3D描画のオフセット計算用）
+    // SceneView の中央ノード矩形（バックバッファに描く 3D 領域）
     ImVec2 GetViewportPos()  const { return m_viewportPos; }
     ImVec2 GetViewportSize() const { return m_viewportSize; }
+
+    // GameView パネルのコンテンツサイズ（Application が GameView RT のリサイズ判定に使用）
+    ImVec2 GetGameViewSize() const { return m_gameViewSize; }
+    bool   IsGameViewHovered() const { return m_gameViewHovered; }
 
 private:
     void BuildDefaultLayout(ImGuiID dockspaceId, f32 toolbarHeight);
@@ -89,7 +95,12 @@ private:
     std::unique_ptr<InspectorPanel>    m_inspector;
     std::unique_ptr<SceneViewPanel>    m_sceneView;
     std::unique_ptr<AssetBrowserPanel> m_assetBrowser;
+    std::unique_ptr<GameViewPanel>     m_gameView;
     class ModelThumbnailRenderer* m_thumbRenderer = nullptr;
+
+    // GameView 状態（Application から取得される）
+    ImVec2 m_gameViewSize = {1, 1};
+    bool   m_gameViewHovered = false;
 };
 
 } // namespace dx12e

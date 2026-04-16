@@ -5,6 +5,7 @@
 #include "editor/panels/InspectorPanel.h"
 #include "editor/panels/SceneViewPanel.h"
 #include "editor/panels/AssetBrowserPanel.h"
+#include "editor/panels/GameViewPanel.h"
 #include "editor/ModelThumbnailRenderer.h"
 #include "scene/Scene.h"
 #include "renderer/Camera.h"
@@ -84,6 +85,7 @@ void EditorLayer::Initialize(EditorContext* ctx,
     m_inspector    = std::make_unique<InspectorPanel>();
     m_sceneView    = std::make_unique<SceneViewPanel>();
     m_assetBrowser = std::make_unique<AssetBrowserPanel>();
+    m_gameView     = std::make_unique<GameViewPanel>();
 
     m_hierarchy->SetAssetsDir(assetsDir);
     m_assetBrowser->Initialize(assetsDir, scriptsDir, resourceManager, srvHeap);
@@ -117,6 +119,14 @@ void EditorLayer::BuildDefaultLayout(ImGuiID dockspaceId, f32 /*toolbarHeight*/)
     ImGui::DockBuilderDockWindow(
         "\xe3\x82\xa2\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88\xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6", dockBottom);
 
+    // ビューポート中央ノードに Scene と Game の両ウィンドウを並べる (タブ化)
+    // "シーン"
+    ImGui::DockBuilderDockWindow(
+        "\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3", dockViewport);
+    // "ゲーム"
+    ImGui::DockBuilderDockWindow(
+        "\xe3\x82\xb2\xe3\x83\xbc\xe3\x83\xa0", dockViewport);
+
     ImGui::DockBuilderFinish(dockspaceId);
 }
 
@@ -137,7 +147,8 @@ void EditorLayer::Render(bool isPlaying,
                          bool& outPendingPlayMode,
                          const std::string& assetsDir,
                          f32 /*leftPanelWidth*/,
-                         f32 toolbarHeight)
+                         f32 toolbarHeight,
+                         u64 gameViewTextureId)
 {
     auto& reg = scene->GetRegistry();
 
@@ -192,25 +203,46 @@ void EditorLayer::Render(bool isPlaying,
 
     m_assetBrowser->Render(*m_ctx, clock->GetDeltaTime());
 
-    // ===== 中央ノードの領域を取得（3Dビューポート座標） =====
+    // ===== シーンビュー (透過 ImGui ウィンドウ。タブとして中央ノードに並ぶ) =====
+    // NoBackground でウィンドウ自体は透明 → 下にあるバックバッファの 3D 描画が見える
     {
-        ImGuiDockNode* centralNode = ImGui::DockBuilderGetCentralNode(dockspaceId);
-        if (centralNode)
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+        bool sceneOpen = ImGui::Begin(
+            "\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3", nullptr,
+            ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar |
+            ImGuiWindowFlags_NoScrollWithMouse);
+        ImGui::PopStyleVar();
+        if (sceneOpen)
         {
-            m_viewportPos  = centralNode->Pos;
-            m_viewportSize = centralNode->Size;
+            m_viewportPos  = ImGui::GetCursorScreenPos();
+            m_viewportSize = ImGui::GetContentRegionAvail();
+            if (m_viewportSize.x < 1.0f) m_viewportSize.x = 1.0f;
+            if (m_viewportSize.y < 1.0f) m_viewportSize.y = 1.0f;
         }
-        else
-        {
-            // フォールバック
-            m_viewportPos  = ImVec2(0, toolbarHeight);
-            m_viewportSize = ImGui::GetIO().DisplaySize;
-            m_viewportSize.y -= toolbarHeight;
-        }
+        ImGui::End();
 
-        if (m_viewportSize.x < 1.0f) m_viewportSize.x = 1.0f;
-        if (m_viewportSize.y < 1.0f) m_viewportSize.y = 1.0f;
+        // 初回フレームのフォールバック (Scene ウィンドウがまだ位置決まってない)
+        if (m_viewportSize.x < 2.0f || m_viewportSize.y < 2.0f)
+        {
+            ImGuiDockNode* centralNode = ImGui::DockBuilderGetCentralNode(dockspaceId);
+            if (centralNode)
+            {
+                m_viewportPos  = centralNode->Pos;
+                m_viewportSize = centralNode->Size;
+            }
+            else
+            {
+                m_viewportPos  = ImVec2(0, toolbarHeight);
+                m_viewportSize = ImGui::GetIO().DisplaySize;
+                m_viewportSize.y -= toolbarHeight;
+            }
+        }
     }
+
+    // ===== ゲームビュー (オフスクリーン RT を ImGui::Image で表示) =====
+    m_gameView->Render(isPlaying, gameViewTextureId);
+    m_gameViewSize    = m_gameView->GetContentSize();
+    m_gameViewHovered = m_gameView->IsHovered();
 
     // ===== シーンビューポート ドロップターゲット =====
     // ドラッグ中のみ表示（通常時はマウスイベントをブロックしない）
