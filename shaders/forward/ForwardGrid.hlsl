@@ -25,6 +25,8 @@ cbuffer PerFrameConstants : register(b1)
     float3   lightColor;
     float    ambientStrength;
     float4x4 lightViewProj;
+    float3   cameraPos;
+    float    _pad;
 };
 
 struct VSInput
@@ -122,8 +124,13 @@ float4 PSMain(PSInput input) : SV_TARGET
     color = lerp(color, axisXColor, axisX);
     color = lerp(color, axisZColor, axisZ);
 
-    float dist = length(worldPos.xz);
-    float fade = 1.0f - saturate((dist - 20.0f) / 30.0f);
+    // カメラからの水平距離で fade (Unity 風の無限グリッド感)
+    float2 camDelta = worldPos.xz - cameraPos.xz;
+    float dist = length(camDelta);
+    // 近く (<fadeStart) は完全可視、遠く (>fadeEnd) は透明
+    float fadeStart = 30.0f;
+    float fadeEnd   = 120.0f;
+    float fade = 1.0f - saturate((dist - fadeStart) / (fadeEnd - fadeStart));
 
     float gridMask = max(max(minor, major), max(axisX, axisZ));
     // 線が無い場所は完全透明 (lerp の下端を 0.0 に) → 地面っぽい灰色塗りつぶしを除去

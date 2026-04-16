@@ -289,7 +289,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             if (!loaded)
             {
                 // クリーン初期状態: Grid + DirectionalLight
-                m_scene->SpawnPlane("Grid", {0, 0, 0}, 50.0f, true);
+                m_scene->SpawnPlane("Grid", {0, 0, 0}, 500.0f, true);
                 auto& reg = m_scene->GetRegistry();
                 auto lightE = reg.create();
                 reg.emplace<NameTag>(lightE, NameTag{"DirectionalLight"});
@@ -1108,7 +1108,10 @@ void Application::RenderSceneToTarget(ID3D12GraphicsCommandList* nativeCmdList,
 
     XMMATRIX viewProj = viewMat * projMat;
 
-    // 全 Entity 描画
+    // 全 Entity 描画（2 パス: 1) 不透明メッシュ → 2) グリッド（半透明）を最後に）
+    // 順序を固定することで、grid の depth bias -100 により grid ラインが ground の手前に載る
+    // 一方で ground の depth が先に確定してるから、grid の透明ピクセルで ground が消えへん
+    for (int pass = 0; pass < 2; ++pass)
     {
         auto& reg = m_scene->GetRegistry();
         auto renderView = reg.view<const Transform, const MeshRenderer>();
@@ -1116,6 +1119,8 @@ void Application::RenderSceneToTarget(ID3D12GraphicsCommandList* nativeCmdList,
         {
             bool isGrid = reg.all_of<GridPlane>(e);
             if (isGrid && !flags.drawGrid) continue;  // GameView ではグリッド非表示
+            if (pass == 0 && isGrid)  continue;        // Pass 0: 不透明のみ
+            if (pass == 1 && !isGrid) continue;        // Pass 1: grid のみ
 
             XMMATRIX world = transform.GetWorldMatrix();
             bool isSkinned = reg.all_of<SkeletalAnimation>(e);
@@ -1574,7 +1579,7 @@ void Application::Render()
         m_scene->Clear();
         m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
                             m_srvHeap.get(), nativeCmdList);
-        m_scene->SpawnPlane("Grid", {0, 0, 0}, 50.0f, true);
+        m_scene->SpawnPlane("Grid", {0, 0, 0}, 500.0f, true);
         {
             auto& reg = m_scene->GetRegistry();
             auto lightE = reg.create();
