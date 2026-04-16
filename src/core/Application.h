@@ -129,47 +129,25 @@ private:
         f32 pitch;
     } m_cameraSnapshot{};
 
-    // エディタ上のエンティティ状態スナップショット（Play開始時に保存→復元）
+    // OnPlayStart 直後に Lua が変更した値をエディタ配置値で打ち消すための即時上書き用スナップショット。
+    // Stop 時の完全復元には使わない（そちらは m_playSceneJson 経由）
     struct EntitySnapshot {
-        // Transform
         DirectX::XMFLOAT3 position;
         DirectX::XMFLOAT3 rotation;
         DirectX::XMFLOAT3 scale;
         DirectX::XMFLOAT4 quaternion;
         bool useQuaternion;
 
-        // Physics（エディタで変更した状態を保持）
-        bool hasRigidBody = false;
+        bool      hasRigidBody = false;
         RigidBody rigidBodyData;
-        bool hasBoxCollider = false;
-        bool hasSphereCollider = false;
-        bool hasCapsuleCollider = false;
-        bool hasConvexHullCollider = false;
 
-        // Material PBR
         float materialMetallic  = 1.0f;
         float materialRoughness = 1.0f;
-
-        // Lua スクリプトアタッチ
-        std::string luaScriptPath;
-        bool        luaEnabled = true;
-        bool        hasLuaScript = false;
-
-        // Camera
-        bool hasCameraComponent = false;
-        CameraComponent cameraData;
-
-        // Light
-        bool hasDirectionalLight = false;
-        DirectionalLight directionalLightData;
-        bool hasPointLight = false;
-        PointLight pointLightData;
-
-        // エディタ追加モデルの再スポーン用
-        std::string modelPath;       // MeshRenderer.modelPath（空 = Luaスポーン）
-        bool editorSpawned = false;  // エディタで手動追加されたか
     };
     std::unordered_map<std::string, EntitySnapshot> m_editorSnapshots;
+
+    // Play 開始時のシーン全体スナップショット（Stop 時の復元用）
+    std::string m_playSceneJson;
 
     // Luaホットリロード
     std::filesystem::file_time_type m_scriptLastWriteTime{};

@@ -47,16 +47,9 @@ static XMFLOAT3 DeserializeFloat3(const json& j,
     return {j[0].get<float>(), j[1].get<float>(), j[2].get<float>()};
 }
 
-bool SceneSerializer::Save(const Scene& scene, const std::string& filePath,
-                           const std::string& assetsDir)
+// シーン全エンティティを JSON ノードに直列化（共通処理）
+static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
 {
-    namespace fs = std::filesystem;
-
-    // ディレクトリが無ければ作成
-    fs::path dir = fs::path(filePath).parent_path();
-    if (!dir.empty())
-        fs::create_directories(dir);
-
     json root;
     root["version"] = 1;
     root["entities"] = json::array();
@@ -209,47 +202,17 @@ bool SceneSerializer::Save(const Scene& scene, const std::string& filePath,
         root["entities"].push_back(ej);
     }
 
-    std::ofstream ofs(filePath);
-    if (!ofs.is_open())
-    {
-        Logger::Error("Failed to open file for writing: {}", filePath);
-        return false;
-    }
-
-    ofs << root.dump(2);
-    ofs.close();
-    Logger::Info("Scene saved ({} entities): {}",
-                 root["entities"].size(), filePath);
-    return true;
+    return root;
 }
 
-bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
-                           const std::string& assetsDir)
+// JSON ノードを既存シーンに展開（共通処理）
+static bool ApplySceneJson(Scene& scene, const json& root, const std::string& assetsDir)
 {
-    std::ifstream ifs(filePath);
-    if (!ifs.is_open())
-    {
-        Logger::Error("Failed to open scene file: {}", filePath);
-        return false;
-    }
-
-    json root;
-    try
-    {
-        ifs >> root;
-    }
-    catch (const json::parse_error& e)
-    {
-        Logger::Error("JSON parse error: {}", e.what());
-        return false;
-    }
-    ifs.close();
-
     scene.Clear();
 
     if (!root.contains("entities") || !root["entities"].is_array())
     {
-        Logger::Warn("Scene file has no entities array");
+        Logger::Warn("Scene JSON has no entities array");
         return true;
     }
 
@@ -466,9 +429,88 @@ bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
         }
     }
 
-    Logger::Info("Scene loaded ({} entities): {}",
+    return true;
+}
+
+bool SceneSerializer::Save(const Scene& scene, const std::string& filePath,
+                           const std::string& assetsDir)
+{
+    namespace fs = std::filesystem;
+
+    fs::path dir = fs::path(filePath).parent_path();
+    if (!dir.empty())
+        fs::create_directories(dir);
+
+    json root = BuildSceneJson(scene, assetsDir);
+
+    std::ofstream ofs(filePath);
+    if (!ofs.is_open())
+    {
+        Logger::Error("Failed to open file for writing: {}", filePath);
+        return false;
+    }
+
+    ofs << root.dump(2);
+    ofs.close();
+    Logger::Info("Scene saved ({} entities): {}",
                  root["entities"].size(), filePath);
     return true;
+}
+
+bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
+                           const std::string& assetsDir)
+{
+    std::ifstream ifs(filePath);
+    if (!ifs.is_open())
+    {
+        Logger::Error("Failed to open scene file: {}", filePath);
+        return false;
+    }
+
+    json root;
+    try
+    {
+        ifs >> root;
+    }
+    catch (const json::parse_error& e)
+    {
+        Logger::Error("JSON parse error: {}", e.what());
+        return false;
+    }
+    ifs.close();
+
+    bool ok = ApplySceneJson(scene, root, assetsDir);
+    if (ok)
+        Logger::Info("Scene loaded ({} entities): {}",
+                     root.contains("entities") ? root["entities"].size() : 0, filePath);
+    return ok;
+}
+
+std::string SceneSerializer::SaveToString(const Scene& scene, const std::string& assetsDir)
+{
+    json root = BuildSceneJson(scene, assetsDir);
+    return root.dump();
+}
+
+bool SceneSerializer::LoadFromString(Scene& scene, const std::string& jsonStr,
+                                     const std::string& assetsDir)
+{
+    json root;
+    try
+    {
+        root = json::parse(jsonStr);
+    }
+    catch (const json::parse_error& e)
+    {
+        Logger::Error("JSON parse error (snapshot): {}", e.what());
+        return false;
+    }
+
+    bool ok = ApplySceneJson(scene, root, assetsDir);
+    if (ok)
+        Logger::Info("Scene restored from snapshot ({} entities)",
+                     root.contains("entities") ? root["entities"].size() : 0);
+    return ok;
 }
 
 bool SceneSerializer::ApplyOverrides(Scene& scene, const std::string& filePath,

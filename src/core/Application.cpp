@@ -1037,21 +1037,26 @@ void Application::RebuildScene()
 
 void Application::EnterPlayMode()
 {
-    // カメラ設置チェック: CameraComponent(isActive=true) が必要
+    // カメラ設置チェック
     {
         auto& reg = m_scene->GetRegistry();
-        bool hasActiveCamera = false;
         auto camCheck = reg.view<const CameraComponent>();
-        for (auto [e, cam] : camCheck.each())
+        if (camCheck.empty())
         {
-            if (cam.isActive) { hasActiveCamera = true; break; }
+            m_editorCtx->errorMessage = "シーンに Camera が配置されていません。\nHierarchy 右クリック → Camera で追加してください。";
+            m_editorCtx->errorFlash = 1.0f;
+            Logger::Warn("Play cancelled: no CameraComponent found");
+            return;
         }
-        if (!hasActiveCamera)
+        // isActive なカメラがなければ最初のカメラを自動で有効化
+        bool hasActive = false;
+        for (auto [e, cam] : camCheck.each())
+            if (cam.isActive) { hasActive = true; break; }
+        if (!hasActive)
         {
-            m_editorCtx->errorMessage = "Camera (isActive=ON) を配置してください";
-            m_editorCtx->errorFlash = 3.0f;
-            Logger::Warn("Play cancelled: no active CameraComponent found");
-            return;  // Play モードに入らない
+            auto first = *camCheck.begin();
+            reg.get<CameraComponent>(first).isActive = true;
+            Logger::Info("Auto-activated first CameraComponent for play mode");
         }
     }
 
@@ -1062,6 +1067,9 @@ void Application::EnterPlayMode()
     m_cameraSnapshot.position = m_camera->GetPosition();
     m_cameraSnapshot.yaw = m_camera->GetYaw();
     m_cameraSnapshot.pitch = m_camera->GetPitch();
+
+    // Lua が触る前のエディタ状態を Stop 時の完全復元用に保存
+    m_playSceneJson = SceneSerializer::SaveToString(*m_scene, std::string(ASSETS_DIR));
 
     // ゲーム用カメラ: CameraComponent(isActive=true)のTransformを使う
     {
@@ -1081,7 +1089,7 @@ void Application::EnterPlayMode()
         }
     }
 
-    // エディタ上の全エンティティの状態をスナップショット保存
+    // OnPlayStart 直後に Lua が変えた値を打ち消すため、Transform / RigidBody / Material PBR を覚えておく
     m_editorSnapshots.clear();
     {
         auto& reg = m_scene->GetRegistry();
@@ -1089,60 +1097,26 @@ void Application::EnterPlayMode()
         for (auto [entity, name, transform] : view.each())
         {
             EntitySnapshot snap;
-            // Transform
             snap.position      = transform.position;
             snap.rotation      = transform.rotation;
             snap.scale         = transform.scale;
             snap.quaternion    = transform.quaternion;
             snap.useQuaternion = transform.useQuaternion;
 
-            // Physics コンポーネントの有無とデータ
             snap.hasRigidBody = reg.all_of<RigidBody>(entity);
             if (snap.hasRigidBody)
                 snap.rigidBodyData = reg.get<RigidBody>(entity);
 
-            snap.hasBoxCollider        = reg.all_of<BoxCollider>(entity);
-            snap.hasSphereCollider     = reg.all_of<SphereCollider>(entity);
-            snap.hasCapsuleCollider    = reg.all_of<CapsuleCollider>(entity);
-            snap.hasConvexHullCollider = reg.all_of<ConvexHullCollider>(entity);
-
-            // Material PBR + modelPath
             if (reg.all_of<MeshRenderer>(entity))
             {
                 const auto& mr = reg.get<MeshRenderer>(entity);
-                snap.modelPath = mr.modelPath;
                 if (!mr.meshes.empty() && mr.meshes[0] && mr.meshes[0]->GetMaterial())
                 {
-                    // オーバーライド値があればそちらを保存
                     snap.materialMetallic  = (mr.overrideMetallic  >= 0.0f) ? mr.overrideMetallic
                                            : mr.meshes[0]->GetMaterial()->defaultMetallic;
                     snap.materialRoughness = (mr.overrideRoughness >= 0.0f) ? mr.overrideRoughness
                                            : mr.meshes[0]->GetMaterial()->defaultRoughness;
                 }
-            }
-
-            // エディタ追加モデルかどうかのマーキング（後で判定）
-            snap.editorSpawned = true;  // 一旦全部 true にして、RebuildScene 後に Lua 由来を除外
-
-            // Camera
-            snap.hasCameraComponent = reg.all_of<CameraComponent>(entity);
-            if (snap.hasCameraComponent)
-                snap.cameraData = reg.get<CameraComponent>(entity);
-
-            // Light
-            snap.hasDirectionalLight = reg.all_of<DirectionalLight>(entity);
-            if (snap.hasDirectionalLight)
-                snap.directionalLightData = reg.get<DirectionalLight>(entity);
-            snap.hasPointLight = reg.all_of<PointLight>(entity);
-            if (snap.hasPointLight)
-                snap.pointLightData = reg.get<PointLight>(entity);
-
-            if (reg.all_of<LuaScript>(entity))
-            {
-                const auto& ls = reg.get<LuaScript>(entity);
-                snap.hasLuaScript  = true;
-                snap.luaScriptPath = ls.scriptPath;
-                snap.luaEnabled    = ls.enabled;
             }
 
             m_editorSnapshots[name.name] = snap;
@@ -1239,149 +1213,59 @@ void Application::EnterPlayMode()
 
 void Application::EnterEditorMode()
 {
-    // GPU を待機してコマンドリスト状態を安全にする
+    DX_ASSERT(!m_playSceneJson.empty(),
+              "EnterEditorMode requires a prior EnterPlayMode snapshot");
+
     m_commandQueue->WaitIdle();
 
-    // 物理リセット
+    // OnPlayStop は ScriptEngine::Shutdown より前に呼ぶ（Shutdown で Lua state が消える）
+    if (m_engineMode == EngineMode::Playing)
+        m_scriptEngine->OnPlayStop();
+
     m_physicsSystem->UnregisterAllBodies(m_scene->GetRegistry());
     m_physicsSystem->Shutdown();
     m_physicsSystem->Initialize();
 
     m_inputSystem->SetMouseCapture(false);
 
-    // カメラ復元
     m_camera->SetPosition(m_cameraSnapshot.position);
     m_camera->SetYaw(m_cameraSnapshot.yaw);
     m_camera->SetPitch(m_cameraSnapshot.pitch);
 
-    // RebuildScene で Lua の OnStart から全エンティティを再生成
-    RebuildScene();
+    m_editorCtx->ClearSelection();
 
-    // Play開始前のエディタ状態を復元
+    // JSON スナップショットからシーン全体を完全復元
     {
-        auto& reg = m_scene->GetRegistry();
+        auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
 
-        // RebuildScene で再生成されたエンティティ名を収集
-        std::unordered_set<std::string> existingNames;
-        {
-            auto nameView = reg.view<const NameTag>();
-            for (auto [entity, name] : nameView.each())
-                existingNames.insert(name.name);
-        }
+        // Scene::Spawn は内部で m_cmdList を使うので最新の cmdList で更新する
+        m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
+                            m_srvHeap.get(), cmdList);
 
-        // エディタ追加モデルの再スポーンが必要か確認
-        bool needRespawn = false;
-        for (const auto& [snapName, snap] : m_editorSnapshots)
-        {
-            if (existingNames.count(snapName)) continue;
-            if (snap.modelPath.empty()) continue;
-            needRespawn = true;
-            break;
-        }
+        SceneSerializer::LoadFromString(*m_scene, m_playSceneJson, std::string(ASSETS_DIR));
 
-        // 再スポーンが必要なら新しいコマンドリストを開く
-        ID3D12GraphicsCommandList* respawnCmdList = nullptr;
-        if (needRespawn)
-        {
-            respawnCmdList = m_frameResources->BeginFrame(*m_commandQueue);
-            m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
-                                m_srvHeap.get(), respawnCmdList);
-        }
+        m_scriptEngine->Shutdown();
+        m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
+                                   m_camera.get(), m_audioSystem.get(),
+                                   m_physicsSystem.get(), std::string(ASSETS_DIR));
 
-        // スナップショットに存在するがシーンに無いエンティティを再スポーン
-        for (const auto& [snapName, snap] : m_editorSnapshots)
-        {
-            if (existingNames.count(snapName)) continue;
-            if (snap.modelPath.empty()) continue;  // modelPath 無し = 復元不可
-
-            // エディタ追加モデルの再スポーン
-            if (snap.modelPath == "__primitive_box__")
-                m_scene->SpawnBox(snapName, snap.position);
-            else if (snap.modelPath == "__primitive_sphere__")
-                m_scene->SpawnSphere(snapName, snap.position);
-            else if (snap.modelPath == "__primitive_plane__")
-                m_scene->SpawnPlane(snapName, snap.position);
-            else if (snap.modelPath == "__empty__")
-            {
-                auto e = reg.create();
-                reg.emplace<NameTag>(e, NameTag{snapName});
-                reg.emplace<Transform>(e);
-            }
-            else
-            {
-                m_scene->Spawn(snapName, snap.modelPath, snap.position);
-            }
-            Logger::Info("Re-spawned editor entity: {}", snapName);
-        }
-
-        // コマンドリストを閉じて実行
-        if (respawnCmdList)
-        {
-            ThrowIfFailed(respawnCmdList->Close());
-            m_commandQueue->ExecuteCommandList(respawnCmdList);
-            m_commandQueue->WaitIdle();
-            m_resourceManager->FinishUploads();
-            m_frameResources->EndFrame(*m_commandQueue);
-        }
-
-        // 全エンティティのスナップショット復元
-        auto view = reg.view<NameTag, Transform>();
-        for (auto [entity, name, transform] : view.each())
-        {
-            auto it = m_editorSnapshots.find(name.name);
-            if (it == m_editorSnapshots.end()) continue;
-            const auto& snap = it->second;
-
-            // Transform
-            transform.position      = snap.position;
-            transform.rotation      = snap.rotation;
-            transform.scale         = snap.scale;
-            transform.quaternion    = snap.quaternion;
-            transform.useQuaternion = snap.useQuaternion;
-
-            // Physics: エディタの状態に戻す
-            if (!snap.hasRigidBody)
-            {
-                reg.remove<RigidBody>(entity);
-                reg.remove<ConvexHullCollider>(entity);
-                reg.remove<BoxCollider>(entity);
-                reg.remove<SphereCollider>(entity);
-                reg.remove<CapsuleCollider>(entity);
-            }
-            else
-            {
-                auto rb = snap.rigidBodyData;
-                rb.bodyId = kInvalidBodyId;
-                reg.emplace_or_replace<RigidBody>(entity, rb);
-            }
-
-            // Material PBR 復元（オーバーライド値に設定）
-            if (reg.all_of<MeshRenderer>(entity))
-            {
-                auto& mr = reg.get<MeshRenderer>(entity);
-                mr.overrideMetallic  = snap.materialMetallic;
-                mr.overrideRoughness = snap.materialRoughness;
-            }
-
-            // LuaScript 復元
-            if (snap.hasLuaScript && !reg.all_of<LuaScript>(entity))
-            {
-                LuaScript ls;
-                ls.scriptPath = snap.luaScriptPath;
-                ls.enabled    = snap.luaEnabled;
-                reg.emplace<LuaScript>(entity, std::move(ls));
-            }
-        }
+        ThrowIfFailed(cmdList->Close());
+        m_commandQueue->ExecuteCommandList(cmdList);
+        m_commandQueue->WaitIdle();
+        m_resourceManager->FinishUploads();
+        m_frameResources->EndFrame(*m_commandQueue);
     }
 
-    // カメラアスペクト比再計算
+    // 古い JSON で誤復元しないよう、消費後はクリアする
+    m_playSceneJson.clear();
+    m_playSceneJson.shrink_to_fit();
+
+    // Play 中に CameraComponent の FOV を採用してた可能性があるためエディタ用に戻す
     m_camera->SetPerspective(DirectX::XM_PIDIV4,
         static_cast<f32>(m_window->GetWidth()) / static_cast<f32>(m_window->GetHeight()),
         0.1f, 1000.0f);
 
     m_inputSystem->SetMouseCapture(false);
-    if (m_engineMode == EngineMode::Playing)
-        m_scriptEngine->OnPlayStop();
     m_engineMode = EngineMode::Editor;
     Logger::Info("Entered EDITOR mode");
 }
@@ -1560,7 +1444,11 @@ void Application::Render()
                 auto e = reg.create();
                 reg.emplace<NameTag>(e, NameTag{"Camera"});
                 reg.emplace<Transform>(e, Transform{req.position, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
-                reg.emplace<CameraComponent>(e, CameraComponent{60.0f, 0.1f, 1000.0f, false});
+                // 他にアクティブカメラがなければ自動で isActive=true
+                bool hasActive = false;
+                for (auto [oe, oc] : reg.view<const CameraComponent>().each())
+                    if (oc.isActive) { hasActive = true; break; }
+                reg.emplace<CameraComponent>(e, CameraComponent{60.0f, 0.1f, 1000.0f, !hasActive});
                 spawnedEntity = e;
             }
             else if (req.modelPath == "__directional_light__")
