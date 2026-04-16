@@ -36,19 +36,7 @@ void GameViewPanel::Render(bool isPlaying, u64 gameViewTextureId)
         ImGui::Dummy(avail);
     }
 
-    // Play 前のオーバーレイ表示
-    if (!isPlaying)
-    {
-        ImVec2 winPos  = ImGui::GetWindowPos();
-        ImVec2 winSize = ImGui::GetWindowSize();
-        const char* msg = "\xe2\x96\xb6 Press Play to start";  // ▶ Press Play to start
-        ImVec2 textSize = ImGui::CalcTextSize(msg);
-        ImVec2 textPos = ImVec2(
-            winPos.x + (winSize.x - textSize.x) * 0.5f,
-            winPos.y + (winSize.y - textSize.y) * 0.5f);
-        ImGui::GetWindowDrawList()->AddText(textPos,
-            IM_COL32(200, 200, 200, 220), msg);
-    }
+    (void)isPlaying;  // Editor 中もカメラ視点を表示するため、overlay は出さない
 
     ImGui::End();
 }

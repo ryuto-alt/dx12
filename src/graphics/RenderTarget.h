@@ -12,6 +12,7 @@ namespace dx12e
 
 class GraphicsDevice;
 class DescriptorHeap;
+class CommandList;
 
 // オフスクリーンレンダーターゲット。color (RGBA8) + depth (D32_FLOAT) を一体管理する。
 // SRV は外部の shader-visible heap に登録し、RTV/DSV は専用ヒープを内部に持つ。
@@ -46,6 +47,10 @@ public:
     // ImGui::Image() に渡す GPU ハンドル（D3D12_GPU_DESCRIPTOR_HANDLE.ptr 値）
     u64 GetImGuiTextureId() const { return m_imguiTextureId; }
 
+    // 内部 state tracking: 現在の状態から newState へのバリアを発行 (no-op なら何もしない)
+    // 呼び出し側が before/after を間違える可能性を排除する
+    void TransitionColorTo(CommandList& cmd, D3D12_RESOURCE_STATES newState);
+
     // ClearRenderTarget で使うべきデフォルトカラー (内部の OptimizedClearValue と一致)
     static const float* GetClearColor();
 
@@ -68,6 +73,9 @@ private:
 
     u32 m_width  = 0;
     u32 m_height = 0;
+
+    // color resource の現在の状態 (Initialize/Resize 直後は PIXEL_SHADER_RESOURCE)
+    D3D12_RESOURCE_STATES m_colorState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 };
 
 } // namespace dx12e

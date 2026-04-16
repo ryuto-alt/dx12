@@ -1995,9 +1995,12 @@ void Application::Render()
     // ===== GameView パス: オフスクリーン RT に描画 =====
     if (!m_isGameMode && m_gameViewRT && m_gameViewRT->IsValid())
     {
-        m_commandList->TransitionResource(m_gameViewRT->GetColorResource(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_RENDER_TARGET);
+        // RenderTarget が内部 state を tracking するので before/after の取り違えが起きない
+        m_gameViewRT->TransitionColorTo(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+        // SceneView パス内の PhysicsDebug/EditorIcon が別 root sig を残してるので、ここで戻す
+        // (OMSetRenderTargets の前に呼ぶこと: SetRootSignature 後の RT 再 bind を保証するため)
+        m_commandList->SetRootSignature(*m_rootSignature);
 
         m_commandList->ClearRenderTarget(m_gameViewRT->GetRTV(), RenderTarget::GetClearColor());
         m_commandList->ClearDepthStencil(m_gameViewRT->GetDSV());
@@ -2032,9 +2035,11 @@ void Application::Render()
             lightViewProj, lightDirF3, lightColorF3, lightAmbient, totalTime,
             SceneRenderFlags{});
 
-        m_commandList->TransitionResource(m_gameViewRT->GetColorResource(),
-            D3D12_RESOURCE_STATE_RENDER_TARGET,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        m_gameViewRT->TransitionColorTo(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+        // ★ ImGui RenderDrawData は事前に bind された RT に Draw するため、backbuffer に戻す必要がある
+        // (これを忘れると GameViewRT に ImGui を描こうとして state mismatch エラー)
+        m_commandList->SetRenderTarget(rtv, m_dsvHandle);
     }
 
     // ---- ImGui フレーム ----

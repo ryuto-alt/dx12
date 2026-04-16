@@ -2,6 +2,7 @@
 
 #include "graphics/GraphicsDevice.h"
 #include "graphics/DescriptorHeap.h"
+#include "graphics/CommandList.h"
 #include "core/Assert.h"
 
 namespace dx12e
@@ -11,7 +12,7 @@ namespace
 {
 constexpr DXGI_FORMAT kColorFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr DXGI_FORMAT kDepthFormat = DXGI_FORMAT_D32_FLOAT;
-constexpr float       kClearColor[4] = {0.05f, 0.05f, 0.07f, 1.0f};
+constexpr float       kClearColor[4] = {0.392f, 0.584f, 0.929f, 1.0f};  // コーンフラワーブルー (SceneView と同じ)
 }
 
 const float* RenderTarget::GetClearColor()
@@ -61,9 +62,18 @@ void RenderTarget::Resize(GraphicsDevice& device, u32 width, u32 height)
     m_depth.Reset();
     m_width  = width;
     m_height = height;
+    // 新リソースの初期 state は CreateResources で PIXEL_SHADER_RESOURCE
+    m_colorState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
     CreateResources(device);
     CreateViews(device);  // RTV/DSV/SRV を同じハンドルに再作成
+}
+
+void RenderTarget::TransitionColorTo(CommandList& cmd, D3D12_RESOURCE_STATES newState)
+{
+    if (m_colorState == newState) return;
+    cmd.TransitionResource(m_color.Get(), m_colorState, newState);
+    m_colorState = newState;
 }
 
 void RenderTarget::Release()
@@ -79,6 +89,7 @@ void RenderTarget::Release()
     m_imguiTextureId  = 0;
     m_width = 0;
     m_height = 0;
+    m_colorState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 }
 
 void RenderTarget::CreateResources(GraphicsDevice& device)
