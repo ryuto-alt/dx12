@@ -47,8 +47,10 @@ public:
 
     void Shutdown();
 
-    const std::string& GetLastError() const { return m_lastError; }
-    void ClearError() { m_lastError.clear(); }
+    const std::string& GetLastError()       const { return m_lastError; }
+    void               ClearError()                { m_lastError.clear(); }
+    // Toolbar が表示する直近の Lua log() 出力 (動作確認用)
+    const std::string& GetLastLuaMessage()  const { return m_lastLuaMessage; }
 
 private:
     void RegisterBindings();
@@ -62,6 +64,7 @@ private:
     PhysicsSystem* m_physics = nullptr;
     std::string  m_assetsDir;
     std::string  m_lastError;
+    std::string  m_lastLuaMessage;
 };
 
 } // namespace dx12e

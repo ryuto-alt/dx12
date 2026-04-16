@@ -1317,16 +1317,33 @@ void Application::EnterPlayMode()
     // スクリプトエンジン初期化（エンティティにアタッチされた LuaScript 用）
     // ※ グローバルな game.lua の OnStart は呼ばない（エディタ配置のみで Play する）
     m_scriptEngine->Shutdown();
-    m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
-                               m_camera.get(), m_audioSystem.get(),
-                               m_physicsSystem.get(), std::string(ASSETS_DIR));
 
+    // ★ OnPlayStart の Lua から scene:spawn(...) 等が呼ばれた時、テクスチャ/モデルの
+    //    GPU アップロードに有効な (Open 状態の) コマンドリストが必要。
+    //    ここで BeginFrame → Scene::Initialize で m_scene->m_cmdList を更新しておく。
+    //    EnterEditorMode と同じパターン (D3D12 ERROR #547 COMMAND_LIST_CLOSED 防止)。
     std::string scriptPath = std::string(SCRIPTS_DIR) + "game.lua";
-    if (std::filesystem::exists(scriptPath))
     {
-        m_scriptEngine->LoadScript(scriptPath);
+        auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
+        m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
+                            m_srvHeap.get(), cmdList);
+
+        m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
+                                   m_camera.get(), m_audioSystem.get(),
+                                   m_physicsSystem.get(), std::string(ASSETS_DIR));
+
+        if (std::filesystem::exists(scriptPath))
+        {
+            m_scriptEngine->LoadScript(scriptPath);
+        }
+        m_scriptEngine->OnPlayStart();
+
+        ThrowIfFailed(cmdList->Close());
+        m_commandQueue->ExecuteCommandList(cmdList);
+        m_commandQueue->WaitIdle();
+        m_resourceManager->FinishUploads();
+        m_frameResources->EndFrame(*m_commandQueue);
     }
-    m_scriptEngine->OnPlayStart();
 
     // エディタのスナップショットで上書き（Luaが勝手に変えた状態をエディタの状態に戻す）
     {

@@ -113,13 +113,17 @@ PipelineStateBuilder& PipelineStateBuilder::SetDepthEnabled(bool enabled)
 
 PipelineStateBuilder& PipelineStateBuilder::SetAlphaBlendEnabled(bool enabled)
 {
+    // 重要: alpha チャンネルは dest を維持する (= 上書きしない)。
+    // SceneView/GameView は ImGui::Image でテクスチャ表示するため、RT alpha=0 になると
+    // ImGui の背景色が透けて grid 周辺が灰色っぽく見えてしまう。
+    // RGB は通常のアルファブレンディング、alpha は clear 時の 1.0 を維持する。
     auto& rt = m_desc.BlendState.RenderTarget[0];
     rt.BlendEnable    = enabled ? TRUE : FALSE;
     rt.SrcBlend       = D3D12_BLEND_SRC_ALPHA;
     rt.DestBlend      = D3D12_BLEND_INV_SRC_ALPHA;
     rt.BlendOp        = D3D12_BLEND_OP_ADD;
-    rt.SrcBlendAlpha  = D3D12_BLEND_ONE;
-    rt.DestBlendAlpha = D3D12_BLEND_ZERO;
+    rt.SrcBlendAlpha  = D3D12_BLEND_ZERO;   // 新しい src.alpha は使わない
+    rt.DestBlendAlpha = D3D12_BLEND_ONE;    // 既存の RT alpha (=clear の 1.0) を維持
     rt.BlendOpAlpha   = D3D12_BLEND_OP_ADD;
     return *this;
 }

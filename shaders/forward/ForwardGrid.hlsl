@@ -126,7 +126,8 @@ float4 PSMain(PSInput input) : SV_TARGET
     float fade = 1.0f - saturate((dist - 20.0f) / 30.0f);
 
     float gridMask = max(max(minor, major), max(axisX, axisZ));
-    float alpha = lerp(0.05f, 0.7f, gridMask) * fade;
+    // 線が無い場所は完全透明 (lerp の下端を 0.0 に) → 地面っぽい灰色塗りつぶしを除去
+    float alpha = lerp(0.0f, 0.7f, gridMask) * fade;
 
     // シャドウ
     float shadow = CalcShadow(input.shadowCoord);

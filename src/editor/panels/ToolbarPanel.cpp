@@ -197,42 +197,11 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.65f, 0.25f, 1.0f));
         if (ImGui::Button("\xe2\x96\xb6 \xe5\x86\x8d\xe7\x94\x9f"))
         {
-            // Lua スクリプトの存在チェック
-            std::string scriptCheck = assetsDir + "../scripts/game.lua";
-            if (!std::filesystem::exists(scriptCheck))
-            {
-                ImGui::OpenPopup("##PlayWarning");
-            }
-            else
-            {
-                outPendingPlayMode = true;
-                outModeChangeRequested = true;
-            }
+            // game.lua は廃止。Entity に LuaScript をアタッチする方式に統一。
+            outPendingPlayMode = true;
+            outModeChangeRequested = true;
         }
         ImGui::PopStyleColor(2);
-
-        // 警告ポップアップ
-        if (ImGui::BeginPopupModal("##PlayWarning", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-        {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.2f, 1.0f));
-            ImGui::Text("\xe2\x9a\xa0 scripts/game.lua \xe3\x81\x8c\xe8\xa6\x8b\xe3\x81\xa4\xe3\x81\x8b\xe3\x82\x8a\xe3\x81\xbe\xe3\x81\x9b\xe3\x82\x93");
-            ImGui::PopStyleColor();
-            ImGui::TextWrapped(
-                "\xe3\x82\xb2\xe3\x83\xbc\xe3\x83\xa0\xe3\x82\xb9\xe3\x82\xaf\xe3\x83\xaa\xe3\x83\x97\xe3\x83\x88\xe3\x81\x8c\xe3\x81\xaa\xe3\x81\x84\xe3\x81\xa8\xe3\x80\x81"
-                "\xe3\x82\xab\xe3\x83\xa1\xe3\x83\xa9\xe3\x82\x84\xe3\x82\xb2\xe3\x83\xbc\xe3\x83\xa0\xe3\x83\xad\xe3\x82\xb8\xe3\x83\x83\xe3\x82\xaf\xe3\x81\x8c\xe5\x8b\x95\xe3\x81\x8d\xe3\x81\xbe\xe3\x81\x9b\xe3\x82\x93\xe3\x80\x82");
-            // ゲームスクリプトがないと、カメラやゲームロジックが動きません。
-            ImGui::Separator();
-            if (ImGui::Button("\xe3\x81\x9d\xe3\x82\x8c\xe3\x81\xa7\xe3\x82\x82\xe5\x86\x8d\xe7\x94\x9f", ImVec2(140, 0)))  // それでも再生
-            {
-                outPendingPlayMode = true;
-                outModeChangeRequested = true;
-                ImGui::CloseCurrentPopup();
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("\xe3\x82\xad\xe3\x83\xa3\xe3\x83\xb3\xe3\x82\xbb\xe3\x83\xab", ImVec2(140, 0)))  // キャンセル
-                ImGui::CloseCurrentPopup();
-            ImGui::EndPopup();
-        }
     }
     else
     {
@@ -279,12 +248,29 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::TextDisabled("\xe3\x82\xa8\xe3\x83\x87\xe3\x82\xa3\xe3\x82\xbf");
     }
 
-    // Lua error
+    // Lua error (ホバーで詳細を表示)
     if (scriptEngine && !scriptEngine->GetLastError().empty())
     {
         ImGui::SameLine(0, 16);
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
         ImGui::Text("\xe2\x9a\xa0 Lua Error");
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::BeginTooltip();
+            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 50.0f);
+            ImGui::TextUnformatted(scriptEngine->GetLastError().c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::EndTooltip();
+        }
+    }
+
+    // Lua の log() 直近メッセージ (Play 中の動作確認用)
+    if (isPlaying && scriptEngine && !scriptEngine->GetLastLuaMessage().empty())
+    {
+        ImGui::SameLine(0, 16);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.85f, 1.0f, 1.0f));
+        ImGui::Text("[Lua] %s", scriptEngine->GetLastLuaMessage().c_str());
         ImGui::PopStyleColor();
     }
 
