@@ -72,6 +72,11 @@ static DirectX::XMFLOAT3 ScreenToWorldOnGroundPlane(
 EditorLayer::EditorLayer() = default;
 EditorLayer::~EditorLayer() = default;
 
+bool EditorLayer::IsSceneViewHovered() const
+{
+    return m_sceneView ? m_sceneView->IsHovered() : false;
+}
+
 void EditorLayer::Initialize(EditorContext* ctx,
                              const std::string& assetsDir,
                              const std::string& scriptsDir,
@@ -97,37 +102,35 @@ void EditorLayer::BuildDefaultLayout(ImGuiID dockspaceId, f32 /*toolbarHeight*/)
     ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
     ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->Size);
 
-    // 左(20%): ヒエラルキー | 残り
-    ImGuiID dockLeft = 0;
-    ImGuiID dockRemaining = 0;
-    ImGui::DockBuilderSplitNode(dockspaceId, ImGuiDir_Left, 0.18f, &dockLeft, &dockRemaining);
+    // Blender 流の上下構成:
+    // 上 (75%): Scene | Game の左右分割 (3D ビューポートを大きく)
+    // 下 (25%): Hierarchy | AssetBrowser | Inspector の3列
+    ImGuiID dockTop = 0, dockBottom = 0;
+    ImGui::DockBuilderSplitNode(dockspaceId, ImGuiDir_Down, 0.25f, &dockBottom, &dockTop);
 
-    // 残り → 右(22%): インスペクター | センター
-    ImGuiID dockRight = 0;
-    ImGuiID dockCenter = 0;
-    ImGui::DockBuilderSplitNode(dockRemaining, ImGuiDir_Right, 0.22f, &dockRight, &dockCenter);
+    // 上 → 左半分(シーンタブ) | 右半分(ゲームタブ)
+    ImGuiID dockSceneView = 0, dockGameView = 0;
+    ImGui::DockBuilderSplitNode(dockTop, ImGuiDir_Right, 0.50f,
+                                 &dockGameView, &dockSceneView);
 
-    // センター → 下(25%): アセットブラウザ | ビューポート(中央)
-    ImGuiID dockBottom = 0;
-    ImGuiID dockViewport = 0;
-    ImGui::DockBuilderSplitNode(dockCenter, ImGuiDir_Down, 0.25f, &dockBottom, &dockViewport);
+    // 下を3列に分割: ヒエラルキー(15%) | アセットブラウザ(中央) | インスペクター(20%)
+    ImGuiID dockBottomLeft = 0, dockBottomRest = 0;
+    ImGui::DockBuilderSplitNode(dockBottom, ImGuiDir_Left, 0.15f,
+                                 &dockBottomLeft, &dockBottomRest);
+    ImGuiID dockBottomCenter = 0, dockBottomRight = 0;
+    ImGui::DockBuilderSplitNode(dockBottomRest, ImGuiDir_Right, 0.235f,
+                                 &dockBottomRight, &dockBottomCenter);
 
     ImGui::DockBuilderDockWindow(
-        "\xe3\x83\x92\xe3\x82\xa8\xe3\x83\xa9\xe3\x83\xab\xe3\x82\xad\xe3\x83\xbc", dockLeft);
+        "\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3", dockSceneView);
     ImGui::DockBuilderDockWindow(
-        "\xe3\x82\xa4\xe3\x83\xb3\xe3\x82\xb9\xe3\x83\x9a\xe3\x82\xaf\xe3\x82\xbf\xe3\x83\xbc", dockRight);
-
-    // アセットブラウザの隣 (右側) に Game ウィンドウを置く
-    // SceneView は PassthruCentralNode の透過維持のため中央ノードにはドッキングしない
-    ImGuiID dockBottomLeft  = 0;
-    ImGuiID dockBottomRight = 0;
-    ImGui::DockBuilderSplitNode(dockBottom, ImGuiDir_Right, 0.40f,
-                                 &dockBottomRight, &dockBottomLeft);
+        "\xe3\x82\xb2\xe3\x83\xbc\xe3\x83\xa0", dockGameView);
     ImGui::DockBuilderDockWindow(
-        "\xe3\x82\xa2\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88\xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6", dockBottomLeft);
-    // "ゲーム"
+        "\xe3\x83\x92\xe3\x82\xa8\xe3\x83\xa9\xe3\x83\xab\xe3\x82\xad\xe3\x83\xbc", dockBottomLeft);
     ImGui::DockBuilderDockWindow(
-        "\xe3\x82\xb2\xe3\x83\xbc\xe3\x83\xa0", dockBottomRight);
+        "\xe3\x82\xa2\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88\xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6", dockBottomCenter);
+    ImGui::DockBuilderDockWindow(
+        "\xe3\x82\xa4\xe3\x83\xb3\xe3\x82\xb9\xe3\x83\x9a\xe3\x82\xaf\xe3\x82\xbf\xe3\x83\xbc", dockBottomRight);
 
     ImGui::DockBuilderFinish(dockspaceId);
 }
@@ -150,6 +153,7 @@ void EditorLayer::Render(bool isPlaying,
                          const std::string& assetsDir,
                          f32 /*leftPanelWidth*/,
                          f32 toolbarHeight,
+                         u64 sceneViewTextureId,
                          u64 gameViewTextureId)
 {
     auto& reg = scene->GetRegistry();
@@ -187,9 +191,8 @@ void EditorLayer::Render(bool isPlaying,
             BuildDefaultLayout(dockspaceId, toolbarHeight);
         }
 
-        // PassthruCentralNode: 中央ノードの背景を描画しない → 3Dが見える
-        ImGui::DockSpace(dockspaceId, ImVec2(0, 0),
-            ImGuiDockNodeFlags_PassthruCentralNode);
+        // SceneView も GameView も RT を Image 表示するパネルになったので透過は不要
+        ImGui::DockSpace(dockspaceId, ImVec2(0, 0), ImGuiDockNodeFlags_None);
 
         ImGui::End();
     }
@@ -205,86 +208,80 @@ void EditorLayer::Render(bool isPlaying,
 
     m_assetBrowser->Render(*m_ctx, clock->GetDeltaTime());
 
-    // ===== 中央ノードの領域を取得（3Dビューポート座標、PassthruCentralNode 透過用） =====
+    // ===== シーン / ゲームタブ: ViewMode に応じて表示制御 =====
+    // Both = 両方タブ表示 / Scene = シーンのみ / Game = ゲームのみ
+    const bool showScene = (m_ctx->viewMode != ViewMode::Game);
+    const bool showGame  = (m_ctx->viewMode != ViewMode::Scene);
+
+    if (showScene)
     {
-        ImGuiDockNode* centralNode = ImGui::DockBuilderGetCentralNode(dockspaceId);
-        if (centralNode)
-        {
-            m_viewportPos  = centralNode->Pos;
-            m_viewportSize = centralNode->Size;
-        }
-        else
-        {
-            m_viewportPos  = ImVec2(0, toolbarHeight);
-            m_viewportSize = ImGui::GetIO().DisplaySize;
-            m_viewportSize.y -= toolbarHeight;
-        }
-        if (m_viewportSize.x < 1.0f) m_viewportSize.x = 1.0f;
-        if (m_viewportSize.y < 1.0f) m_viewportSize.y = 1.0f;
+        m_sceneView->Render(isPlaying, sceneViewTextureId);
+        m_sceneViewSize = m_sceneView->GetContentSize();
+    }
+    if (showGame)
+    {
+        m_gameView->Render(isPlaying, gameViewTextureId);
+        m_gameViewSize    = m_gameView->GetContentSize();
+        m_gameViewHovered = m_gameView->IsHovered();
     }
 
-    // ===== ゲームビュー (オフスクリーン RT を ImGui::Image で表示、別ノードにドッキング) =====
-    m_gameView->Render(isPlaying, gameViewTextureId);
-    m_gameViewSize    = m_gameView->GetContentSize();
-    m_gameViewHovered = m_gameView->IsHovered();
-
-    // ===== シーンビューポート ドロップターゲット =====
+    // ===== シーンビューポートのドロップターゲット (シーンタブの Image 矩形上に重ねる) =====
     // ドラッグ中のみ表示（通常時はマウスイベントをブロックしない）
-    if (const ImGuiPayload* dragPayload = ImGui::GetDragDropPayload();
-        dragPayload && dragPayload->IsDataType(AssetBrowserPanel::kDragDropPayloadType))
+    if (showScene)
     {
-        ImGui::SetNextWindowPos(m_viewportPos, ImGuiCond_Always);
-        ImGui::SetNextWindowSize(m_viewportSize, ImGuiCond_Always);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.2f, 0.4f, 0.8f, 0.1f));
-        ImGui::Begin("##SceneDropTarget", nullptr,
-            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoDecoration |
-            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
-            ImGuiWindowFlags_NoScrollbar |
-            ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoFocusOnAppearing |
-            ImGuiWindowFlags_NoDocking);
-
-        ImGui::InvisibleButton("##SceneDrop", m_viewportSize,
-            ImGuiButtonFlags_None);
-
-        if (ImGui::BeginDragDropTarget())
+        const ImVec2 imgMin  = m_sceneView->GetImageMin();
+        const ImVec2 imgSize = m_sceneView->GetImageSize();
+        if (const ImGuiPayload* dragPayload = ImGui::GetDragDropPayload();
+            dragPayload && dragPayload->IsDataType(AssetBrowserPanel::kDragDropPayloadType))
         {
-            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(
-                    AssetBrowserPanel::kDragDropPayloadType))
+            ImGui::SetNextWindowPos(imgMin, ImGuiCond_Always);
+            ImGui::SetNextWindowSize(imgSize, ImGuiCond_Always);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.2f, 0.4f, 0.8f, 0.1f));
+            ImGui::Begin("##SceneDropTarget", nullptr,
+                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoDecoration |
+                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+                ImGuiWindowFlags_NoScrollbar |
+                ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoFocusOnAppearing |
+                ImGuiWindowFlags_NoDocking);
+
+            ImGui::InvisibleButton("##SceneDrop", imgSize, ImGuiButtonFlags_None);
+
+            if (ImGui::BeginDragDropTarget())
             {
-                const char* droppedPath = static_cast<const char*>(payload->Data);
-                PendingSpawnRequest req;
-                req.modelPath = droppedPath;
-
-                // マウス座標からワールド座標を計算（Y=0 平面との交点）
-                req.position = ScreenToWorldOnGroundPlane(
-                    camera, ImGui::GetIO().MousePos,
-                    m_viewportPos, m_viewportSize);
-
-                m_ctx->pendingSpawns.push_back(req);
-                Logger::Info("Dropped to scene at ({:.1f}, {:.1f}, {:.1f}): {}",
-                    req.position.x, req.position.y, req.position.z, droppedPath);
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(
+                        AssetBrowserPanel::kDragDropPayloadType))
+                {
+                    const char* droppedPath = static_cast<const char*>(payload->Data);
+                    PendingSpawnRequest req;
+                    req.modelPath = droppedPath;
+                    // マウス座標 → ワールド座標 (Y=0 平面との交点)。基準は Image 矩形 (16:9)
+                    req.position = ScreenToWorldOnGroundPlane(
+                        camera, ImGui::GetIO().MousePos, imgMin, imgSize);
+                    m_ctx->pendingSpawns.push_back(req);
+                    Logger::Info("Dropped to scene at ({:.1f}, {:.1f}, {:.1f}): {}",
+                        req.position.x, req.position.y, req.position.z, droppedPath);
+                }
+                ImGui::EndDragDropTarget();
             }
-            ImGui::EndDragDropTarget();
-        }
 
-        ImGui::End();
-        ImGui::PopStyleColor();
-        ImGui::PopStyleVar();
+            ImGui::End();
+            ImGui::PopStyleColor();
+            ImGui::PopStyleVar();
+        }
     }
 
-    // ===== 3D ピッキング + ギズモ + 削除 =====
-    if (!isPlaying)
+    // ===== 3D ピッキング + ギズモ + 削除 (シーンタブが表示されている時のみ) =====
+    if (!isPlaying && showScene)
     {
+        const ImVec2 imgMin  = m_sceneView->GetImageMin();
+        const ImVec2 imgSize = m_sceneView->GetImageSize();
         m_sceneView->HandlePicking(reg, *m_ctx, camera,
-                                   m_viewportPos.x, m_viewportPos.y,
-                                   m_viewportSize.x, m_viewportSize.y);
+                                   imgMin.x, imgMin.y, imgSize.x, imgSize.y);
         m_sceneView->RenderGizmo(reg, *m_ctx, camera,
-                                 m_viewportPos.x, m_viewportPos.y,
-                                 m_viewportSize.x, m_viewportSize.y);
+                                 imgMin.x, imgMin.y, imgSize.x, imgSize.y);
         m_sceneView->HandleDeleteKey(reg, *m_ctx, scene,
-                                     m_viewportPos.x, m_viewportPos.y,
-                                     m_viewportSize.x, m_viewportSize.y);
+                                     imgMin.x, imgMin.y, imgSize.x, imgSize.y);
     }
 }
 

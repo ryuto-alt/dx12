@@ -6,11 +6,6 @@
 #include "renderer/Mesh.h"
 #include "scene/Scene.h"
 
-#pragma warning(push)
-#pragma warning(disable: 4100 4189 4201 4244 4267 4996)
-#include <imgui.h>
-#pragma warning(pop)
-
 #include "gui/ImGuizmo.h"
 #include <DirectXMath.h>
 #include <algorithm>
@@ -19,6 +14,92 @@ namespace dx12e
 {
 
 using namespace DirectX;
+
+void SceneViewPanel::Render(bool isPlaying, u64 sceneViewTextureId)
+{
+    // タイトルは "シーン" (UTF-8 エスケープ)
+    constexpr const char* kTitle = "\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3";
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    bool open = ImGui::Begin(kTitle, nullptr,
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleVar();
+
+    if (!open)
+    {
+        m_isHovered = false;
+        ImGui::End();
+        return;
+    }
+
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    if (avail.x < 1.0f) avail.x = 1.0f;
+    if (avail.y < 1.0f) avail.y = 1.0f;
+    m_contentSize = avail;
+    m_isHovered   = ImGui::IsWindowHovered();
+
+    // ImGuizmo が SceneView パネルの Image 上に描画できるよう、ウィンドウの DrawList を捕捉
+    m_drawList = ImGui::GetWindowDrawList();
+
+    RenderLetterboxedImage(sceneViewTextureId, avail);
+
+    (void)isPlaying;
+    ImGui::End();
+}
+
+void SceneViewPanel::RenderLetterboxedImage(u64 sceneViewTextureId, ImVec2 avail)
+{
+    // GameViewPanel と同じ 16:9 レターボックスロジック (Unity の Scene/Game 統一感)
+    constexpr f32 kAspect = 16.0f / 9.0f;
+    f32 fitW, fitH;
+    if (avail.x / avail.y > kAspect)
+    {
+        fitH = avail.y;
+        fitW = fitH * kAspect;
+    }
+    else
+    {
+        fitW = avail.x;
+        fitH = fitW / kAspect;
+    }
+
+    const f32 padX = (avail.x - fitW) * 0.5f;
+    const f32 padY = (avail.y - fitH) * 0.5f;
+
+    auto* dl = ImGui::GetWindowDrawList();
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const ImU32 black = IM_COL32(0, 0, 0, 255);
+    if (padY > 0.0f)
+    {
+        dl->AddRectFilled(origin,
+            ImVec2(origin.x + avail.x, origin.y + padY), black);
+        dl->AddRectFilled(ImVec2(origin.x, origin.y + avail.y - padY),
+            ImVec2(origin.x + avail.x, origin.y + avail.y), black);
+    }
+    if (padX > 0.0f)
+    {
+        dl->AddRectFilled(ImVec2(origin.x, origin.y + padY),
+            ImVec2(origin.x + padX, origin.y + avail.y - padY), black);
+        dl->AddRectFilled(ImVec2(origin.x + avail.x - padX, origin.y + padY),
+            ImVec2(origin.x + avail.x, origin.y + avail.y - padY), black);
+    }
+
+    // Image の左上スクリーン座標とサイズを保存 (ピッキング/ギズモが座標変換に使う)
+    m_imageMin  = ImVec2(origin.x + padX, origin.y + padY);
+    m_imageSize = ImVec2(fitW, fitH);
+
+    const ImVec2 origCursor = ImGui::GetCursorPos();
+    ImGui::SetCursorPos(ImVec2(origCursor.x + padX, origCursor.y + padY));
+
+    if (sceneViewTextureId != 0)
+    {
+        ImGui::Image(static_cast<ImTextureID>(sceneViewTextureId), ImVec2(fitW, fitH));
+    }
+    else
+    {
+        ImGui::Dummy(ImVec2(fitW, fitH));
+    }
+}
 
 void SceneViewPanel::RenderGizmo(entt::registry& reg,
                                  EditorContext& ctx,
@@ -41,7 +122,8 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
     XMStoreFloat4x4(&worldF, transform.GetWorldMatrix());
 
     ImGuizmo::SetOrthographic(false);
-    ImGuizmo::SetDrawlist(ImGui::GetBackgroundDrawList());
+    // SceneView パネル自身の DrawList を使う (Background だと Image の下に隠れる)
+    ImGuizmo::SetDrawlist(m_drawList ? m_drawList : ImGui::GetBackgroundDrawList());
     ImGuizmo::SetRect(vpX, vpY, vpW, vpH);
 
     ImGuizmo::OPERATION op = ImGuizmo::TRANSLATE;
@@ -114,7 +196,9 @@ void SceneViewPanel::HandlePicking(entt::registry& reg,
                                    Camera* camera,
                                    f32 vpX, f32 vpY, f32 vpW, f32 vpH)
 {
-    if (ImGui::GetIO().WantCaptureMouse
+    // SceneView 自身が ImGui パネルなので、WantCaptureMouse は常に true。
+    // 代わりに「シーンタブがホバーされてる」+「Image 矩形内」のみで判定する。
+    if (!m_isHovered
         || ImGuizmo::IsUsing() || ImGuizmo::IsOver()
         || !ImGui::IsMouseClicked(ImGuiMouseButton_Left))
         return;
@@ -252,30 +336,14 @@ void SceneViewPanel::HandlePicking(entt::registry& reg,
 void SceneViewPanel::HandleDeleteKey(entt::registry& reg,
                                      EditorContext& ctx,
                                      Scene* scene,
-                                     f32 vpX, f32 vpY, f32 vpW, f32 vpH)
+                                     f32 /*vpX*/, f32 /*vpY*/, f32 /*vpW*/, f32 /*vpH*/)
 {
+    // 右クリックは Unity/Unreal と同じくカメラ視点操作専用。コンテキストメニューは出さない。
+    // 削除は Delete キーのみ。
     if (!ctx.HasSelection()) return;
     if (ImGui::GetIO().WantCaptureKeyboard) return;
 
     bool deletePressed = (GetAsyncKeyState(VK_DELETE) & 1) != 0;
-
-    // 右クリックコンテキストメニュー（ビューポート内のみ）
-    ImVec2 mousePos = ImGui::GetIO().MousePos;
-    bool inViewport = mousePos.x >= vpX && mousePos.x < vpX + vpW
-                   && mousePos.y >= vpY && mousePos.y < vpY + vpH;
-
-    if (inViewport && ImGui::IsMouseClicked(ImGuiMouseButton_Right)
-        && !ImGui::GetIO().WantCaptureMouse)
-    {
-        ImGui::OpenPopup("##SceneContextMenu");
-    }
-
-    if (ImGui::BeginPopup("##SceneContextMenu"))
-    {
-        if (ImGui::MenuItem("\xe5\x89\x8a\xe9\x99\xa4 (Del)"))
-            deletePressed = true;
-        ImGui::EndPopup();
-    }
 
     if (deletePressed)
     {

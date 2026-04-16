@@ -62,6 +62,7 @@ public:
                 const std::string& assetsDir,
                 f32 leftPanelWidth,
                 f32 toolbarHeight,
+                u64 sceneViewTextureId,
                 u64 gameViewTextureId);
 
     // フレーム先頭でcmdListが有効な間に呼ぶ（テクスチャサムネイルのアップロード）
@@ -73,9 +74,10 @@ public:
     // サムネイルレンダラー設定
     void SetThumbnailRenderer(class ModelThumbnailRenderer* renderer);
 
-    // SceneView の中央ノード矩形（バックバッファに描く 3D 領域）
-    ImVec2 GetViewportPos()  const { return m_viewportPos; }
-    ImVec2 GetViewportSize() const { return m_viewportSize; }
+    // SceneView パネルのコンテンツサイズ（Application が SceneView RT のリサイズ判定に使用）
+    ImVec2 GetSceneViewSize() const { return m_sceneViewSize; }
+    // SceneView タブがホバーされてるか (Application::Update がカメラ右ドラッグ判定で使う)
+    bool   IsSceneViewHovered() const;
 
     // GameView パネルのコンテンツサイズ（Application が GameView RT のリサイズ判定に使用）
     ImVec2 GetGameViewSize() const { return m_gameViewSize; }
@@ -87,9 +89,6 @@ private:
     EditorContext* m_ctx = nullptr;
     bool m_dockspaceBuilt = false;
 
-    ImVec2 m_viewportPos  = {0, 0};
-    ImVec2 m_viewportSize = {1, 1};
-
     std::unique_ptr<ToolbarPanel>      m_toolbar;
     std::unique_ptr<HierarchyPanel>    m_hierarchy;
     std::unique_ptr<InspectorPanel>    m_inspector;
@@ -98,8 +97,9 @@ private:
     std::unique_ptr<GameViewPanel>     m_gameView;
     class ModelThumbnailRenderer* m_thumbRenderer = nullptr;
 
-    // GameView 状態（Application から取得される）
-    ImVec2 m_gameViewSize = {1, 1};
+    // SceneView / GameView 状態（Application が RT リサイズ判定に使う）
+    ImVec2 m_sceneViewSize  = {1, 1};
+    ImVec2 m_gameViewSize   = {1, 1};
     bool   m_gameViewHovered = false;
 };
 

@@ -19,6 +19,10 @@ public:
     // 未準備時は 0 を渡せば暗いプレースホルダーが表示される。
     void Render(bool isPlaying, u64 gameViewTextureId);
 
+    // 既に Begin 済みの ImGui ウィンドウ内に「16:9 レターボックス + 中央 Image」だけ描画する。
+    // EditorLayer の Maximize on Play から呼ばれて、通常 Render() と全く同じ見た目を再現する。
+    void RenderLetterboxedImage(u64 gameViewTextureId, ImVec2 avail);
+
     // 前フレームのコンテンツ領域サイズ。Application が GameView RT のリサイズ判定に使う。
     ImVec2 GetContentSize() const { return m_contentSize; }
 

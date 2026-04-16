@@ -246,6 +246,26 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::PopStyleColor(2);
     }
 
+    // ===== ViewMode 切替 (Scene / Both / Game) =====
+    ImGui::SameLine(0, 12);
+    ImGui::TextDisabled("|");
+    ImGui::SameLine(0, 8);
+    {
+        const ImVec4 kActive{0.30f, 0.50f, 0.80f, 1.0f};
+        auto button = [&](const char* label, ViewMode mode) {
+            bool active = (ctx.viewMode == mode);
+            if (active) ImGui::PushStyleColor(ImGuiCol_Button, kActive);
+            if (ImGui::Button(label)) ctx.viewMode = mode;
+            if (active) ImGui::PopStyleColor();
+        };
+        // "シーン" / "両方" / "ゲーム"
+        button("\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3", ViewMode::Scene);
+        ImGui::SameLine(0, 2);
+        button("\xe4\xb8\xa1\xe6\x96\xb9", ViewMode::Both);
+        ImGui::SameLine(0, 2);
+        button("\xe3\x82\xb2\xe3\x83\xbc\xe3\x83\xa0", ViewMode::Game);
+    }
+
     // ===== Status =====
     ImGui::SameLine(0, 12);
     if (isPlaying)
