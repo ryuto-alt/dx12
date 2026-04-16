@@ -39,6 +39,7 @@
 #include "scene/SceneSerializer.h"
 #include "editor/EditorContext.h"
 #include "editor/EditorLayer.h"
+#include "editor/EditorIconRenderer.h"
 #include "editor/UndoSystem.h"
 #include "editor/ModelThumbnailRenderer.h"
 #include "project/Project.h"
@@ -428,18 +429,30 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         Logger::Info("Shadow map initialized ({}x{})", m_shadowMapSize, m_shadowMapSize);
     }
 
-    // PerFrame Constant Buffer
-    struct FrameConstants {
-        DirectX::XMFLOAT4X4 view;
-        DirectX::XMFLOAT4X4 proj;
-        DirectX::XMFLOAT3   lightDir;
-        float                time;
-        DirectX::XMFLOAT3   lightColor;
-        float                ambientStrength;
-        DirectX::XMFLOAT4X4 lightViewProj;
-        DirectX::XMFLOAT3   cameraPos;
-        float                _pad;
+    // PerFrame Constant Buffer（PointLight 最大8灯対応）
+    static constexpr u32 kMaxPointLights = 8;
+    struct PointLightGPU {
+        DirectX::XMFLOAT3 position;
+        float range;
+        DirectX::XMFLOAT3 color;  // color * intensity
+        float _pad;
     };
+    struct FrameConstants {
+        DirectX::XMFLOAT4X4 view;            // 64B
+        DirectX::XMFLOAT4X4 proj;            // 64B
+        DirectX::XMFLOAT3   lightDir;        // 12B
+        float                time;            // 4B
+        DirectX::XMFLOAT3   lightColor;      // 12B
+        float                ambientStrength; // 4B
+        DirectX::XMFLOAT4X4 lightViewProj;   // 64B
+        DirectX::XMFLOAT3   cameraPos;       // 12B
+        float                _pad;            // 4B
+        // --- 既存 240B ---
+        u32                  numPointLights;  // 4B
+        float                _pad2[3];        // 12B → 256B boundary
+        PointLightGPU        pointLights[kMaxPointLights]; // 256B
+    };  // total = 512B
+    static_assert(sizeof(FrameConstants) == 512, "FrameConstants must be 512 bytes");
     m_perFrameCB = std::make_unique<ConstantBuffer>();
     m_perFrameCB->Initialize(*m_graphicsDevice, sizeof(FrameConstants), FrameResources::kFrameCount);
 
@@ -469,6 +482,10 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     m_physicsDebugRenderer = std::make_unique<PhysicsDebugRenderer>();
     m_physicsDebugRenderer->Initialize(*m_graphicsDevice,
         m_swapChain->GetFormat(), DXGI_FORMAT_D32_FLOAT, SHADER_DIR);
+
+    m_editorIconRenderer = std::make_unique<EditorIconRenderer>();
+    m_editorIconRenderer->Initialize(*m_graphicsDevice,
+        m_swapChain->GetFormat(), DXGI_FORMAT_D32_FLOAT, std::wstring(SHADER_DIR));
 
     m_isRunning = true;
 
@@ -961,6 +978,18 @@ void Application::Update()
         // プレイモード: Luaがカメラ+ゲームロジックを制御
         m_scriptEngine->CallOnUpdate(dt);
         m_scriptEngine->UpdateAttachedScripts(dt);
+
+        // アクティブカメラの Transform をグローバル Camera に同期
+        auto& reg = m_scene->GetRegistry();
+        auto camSyncView = reg.view<const CameraComponent, const Transform>();
+        for (auto [e, cam, tf] : camSyncView.each())
+        {
+            if (!cam.isActive) continue;
+            m_camera->SetPosition(tf.position);
+            m_camera->SetYaw(DirectX::XMConvertToRadians(tf.rotation.y));
+            m_camera->SetPitch(DirectX::XMConvertToRadians(tf.rotation.x));
+            break;
+        }
     }
 
     // シーン更新（Animator等）— エディタモードは時間を止める（ボーン行列は維持）
@@ -992,28 +1021,6 @@ void Application::RebuildScene()
         m_scriptEngine->LoadScript(scriptPath);
     }
 
-    // RebuildScene は常に Lua OnStart（ホットリロード・EditorMode復帰用）
-    m_scriptEngine->OnPlayStart();
-    m_scriptEngine->CallOnStart();
-
-    // sneakWalk アニメーション追加
-    std::filesystem::path sneakPath = std::string(ASSETS_DIR) + "models/human/sneakWalk.gltf";
-    if (std::filesystem::exists(sneakPath))
-    {
-        auto& reg = m_scene->GetRegistry();
-        auto skelView = reg.view<SkeletalAnimation>();
-        for (auto [e, skelAnim] : skelView.each())
-        {
-            auto extraAnims = ModelLoader::LoadAnimationsFromFile(
-                sneakPath, *skelAnim.skeleton);
-            for (auto& a : extraAnims)
-            {
-                a->SetName("sneakWalk");
-                skelAnim.clips.push_back(std::move(a));
-            }
-        }
-    }
-
     ThrowIfFailed(cmdList->Close());
     m_commandQueue->ExecuteCommandList(cmdList);
     m_commandQueue->WaitIdle();
@@ -1030,6 +1037,24 @@ void Application::RebuildScene()
 
 void Application::EnterPlayMode()
 {
+    // カメラ設置チェック: CameraComponent(isActive=true) が必要
+    {
+        auto& reg = m_scene->GetRegistry();
+        bool hasActiveCamera = false;
+        auto camCheck = reg.view<const CameraComponent>();
+        for (auto [e, cam] : camCheck.each())
+        {
+            if (cam.isActive) { hasActiveCamera = true; break; }
+        }
+        if (!hasActiveCamera)
+        {
+            m_editorCtx->errorMessage = "Camera (isActive=ON) を配置してください";
+            m_editorCtx->errorFlash = 3.0f;
+            Logger::Warn("Play cancelled: no active CameraComponent found");
+            return;  // Play モードに入らない
+        }
+    }
+
     // GPU を待機してコマンドリスト状態を安全にする
     m_commandQueue->WaitIdle();
 
@@ -1038,8 +1063,23 @@ void Application::EnterPlayMode()
     m_cameraSnapshot.yaw = m_camera->GetYaw();
     m_cameraSnapshot.pitch = m_camera->GetPitch();
 
-    // ゲーム用カメラ初期位置
-    m_camera->LookAt({0.1f, 2.4f, 17.3f}, {0.0f, 0.0f, 0.0f});
+    // ゲーム用カメラ: CameraComponent(isActive=true)のTransformを使う
+    {
+        auto& reg = m_scene->GetRegistry();
+        auto camView = reg.view<const CameraComponent, const Transform>();
+        for (auto [e, cam, tf] : camView.each())
+        {
+            if (!cam.isActive) continue;
+            m_camera->SetPosition(tf.position);
+            m_camera->SetYaw(DirectX::XMConvertToRadians(tf.rotation.y));
+            m_camera->SetPitch(DirectX::XMConvertToRadians(tf.rotation.x));
+            m_camera->SetPerspective(
+                DirectX::XMConvertToRadians(cam.fovDegrees),
+                static_cast<f32>(m_window->GetWidth()) / static_cast<f32>(m_window->GetHeight()),
+                cam.nearClip, cam.farClip);
+            break;
+        }
+    }
 
     // エディタ上の全エンティティの状態をスナップショット保存
     m_editorSnapshots.clear();
@@ -1084,6 +1124,19 @@ void Application::EnterPlayMode()
             // エディタ追加モデルかどうかのマーキング（後で判定）
             snap.editorSpawned = true;  // 一旦全部 true にして、RebuildScene 後に Lua 由来を除外
 
+            // Camera
+            snap.hasCameraComponent = reg.all_of<CameraComponent>(entity);
+            if (snap.hasCameraComponent)
+                snap.cameraData = reg.get<CameraComponent>(entity);
+
+            // Light
+            snap.hasDirectionalLight = reg.all_of<DirectionalLight>(entity);
+            if (snap.hasDirectionalLight)
+                snap.directionalLightData = reg.get<DirectionalLight>(entity);
+            snap.hasPointLight = reg.all_of<PointLight>(entity);
+            if (snap.hasPointLight)
+                snap.pointLightData = reg.get<PointLight>(entity);
+
             if (reg.all_of<LuaScript>(entity))
             {
                 const auto& ls = reg.get<LuaScript>(entity);
@@ -1098,7 +1151,8 @@ void Application::EnterPlayMode()
 
     m_inputSystem->SetMouseCapture(false);
 
-    // スクリプトをリロード（シーンは再構築しない＝エディタのEntityをそのまま使う）
+    // スクリプトエンジン初期化（エンティティにアタッチされた LuaScript 用）
+    // ※ グローバルな game.lua の OnStart は呼ばない（エディタ配置のみで Play する）
     m_scriptEngine->Shutdown();
     m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
                                m_camera.get(), m_audioSystem.get(),
@@ -1110,7 +1164,6 @@ void Application::EnterPlayMode()
         m_scriptEngine->LoadScript(scriptPath);
     }
     m_scriptEngine->OnPlayStart();
-    m_scriptEngine->CallOnStart();
 
     // エディタのスナップショットで上書き（Luaが勝手に変えた状態をエディタの状態に戻す）
     {
@@ -1501,6 +1554,33 @@ void Application::Render()
                 reg.emplace<Transform>(e);
                 spawnedEntity = e;
             }
+            else if (req.modelPath == "__camera__")
+            {
+                auto& reg = m_scene->GetRegistry();
+                auto e = reg.create();
+                reg.emplace<NameTag>(e, NameTag{"Camera"});
+                reg.emplace<Transform>(e, Transform{req.position, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
+                reg.emplace<CameraComponent>(e, CameraComponent{60.0f, 0.1f, 1000.0f, false});
+                spawnedEntity = e;
+            }
+            else if (req.modelPath == "__directional_light__")
+            {
+                auto& reg = m_scene->GetRegistry();
+                auto e = reg.create();
+                reg.emplace<NameTag>(e, NameTag{"DirectionalLight"});
+                reg.emplace<Transform>(e, Transform{req.position, {-30.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
+                reg.emplace<DirectionalLight>(e, DirectionalLight{{0.0f, -1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, 1.0f});
+                spawnedEntity = e;
+            }
+            else if (req.modelPath == "__point_light__")
+            {
+                auto& reg = m_scene->GetRegistry();
+                auto e = reg.create();
+                reg.emplace<NameTag>(e, NameTag{"PointLight"});
+                reg.emplace<Transform>(e, Transform{req.position, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
+                reg.emplace<PointLight>(e, PointLight{{1.0f, 1.0f, 1.0f}, 1.0f, 10.0f});
+                spawnedEntity = e;
+            }
             else
             {
                 auto entity = m_scene->Spawn(name, req.modelPath, req.position);
@@ -1647,9 +1727,25 @@ void Application::Render()
             m_shadowMap.Get(), &srvDesc, m_srvHeap->GetCpuHandle(m_shadowSrvIndex));
     }
 
-    // ライト方向と View/Proj 行列
+    // ライト方向: ECS の DirectionalLight から取得（なければデフォルト値）
     XMFLOAT3 lightDirF3 = {-0.3f, -1.0f, -0.5f};
+    XMFLOAT3 lightColorF3 = {1.0f, 0.95f, 0.9f};
+    float    lightAmbient = 0.25f;
+    {
+        auto& reg = m_scene->GetRegistry();
+        auto dlView = reg.view<const dx12e::DirectionalLight>();
+        if (!dlView.empty())
+        {
+            auto first = *dlView.begin();
+            const auto& dl = dlView.get<const dx12e::DirectionalLight>(first);
+            lightDirF3 = dl.direction;
+            lightColorF3 = {dl.color.x * dl.intensity,
+                            dl.color.y * dl.intensity,
+                            dl.color.z * dl.intensity};
+        }
+    }
     XMVECTOR lightDir = XMVector3Normalize(XMLoadFloat3(&lightDirF3));
+    XMStoreFloat3(&lightDirF3, lightDir);  // 正規化した値を書き戻す
     XMVECTOR lightPos = XMVectorScale(lightDir, -30.0f);  // ライト位置（シーン中心から離す）
     XMMATRIX lightView = XMMatrixLookAtLH(lightPos, XMVectorZero(), XMVectorSet(0, 1, 0, 0));
     XMMATRIX lightProj = XMMatrixOrthographicLH(30.0f, 30.0f, 0.1f, 60.0f);
@@ -1767,7 +1863,14 @@ void Application::Render()
 
     m_commandList->SetPipelineState(*m_pipelineState);
 
-    // PerFrame CB（lightViewProj追加）
+    // PerFrame CB（PointLight 最大8灯対応）
+    static constexpr u32 kMaxPointLightsR = 8;
+    struct PointLightGPU {
+        XMFLOAT3 position;
+        float range;
+        XMFLOAT3 color;
+        float _pad;
+    };
     struct FrameConstants {
         XMFLOAT4X4 view;
         XMFLOAT4X4 proj;
@@ -1778,6 +1881,9 @@ void Application::Render()
         XMFLOAT4X4 lightVP;
         XMFLOAT3   cameraPos;
         float      _pad;
+        u32        numPointLights;
+        float      _pad2[3];
+        PointLightGPU pointLights[kMaxPointLightsR];
     };
 
     FrameConstants fc{};
@@ -1785,10 +1891,29 @@ void Application::Render()
     XMStoreFloat4x4(&fc.proj, XMMatrixTranspose(m_camera->GetProjectionMatrix()));
     fc.lightDir = lightDirF3;
     fc.time = totalTime;
-    fc.lightColor = { 1.0f, 0.95f, 0.9f };
-    fc.ambientStrength = 0.25f;
+    fc.lightColor = lightColorF3;
+    fc.ambientStrength = lightAmbient;
     XMStoreFloat4x4(&fc.lightVP, XMMatrixTranspose(lightViewProj));
     fc.cameraPos = m_camera->GetPosition();
+
+    // PointLight を ECS から収集
+    fc.numPointLights = 0;
+    {
+        auto& reg = m_scene->GetRegistry();
+        auto plView = reg.view<const dx12e::PointLight, const Transform>();
+        for (auto [e, pl, tf] : plView.each())
+        {
+            if (fc.numPointLights >= kMaxPointLightsR) break;
+            auto& pld = fc.pointLights[fc.numPointLights];
+            pld.position = tf.position;
+            pld.range = pl.range;
+            pld.color = {pl.color.x * pl.intensity,
+                         pl.color.y * pl.intensity,
+                         pl.color.z * pl.intensity};
+            pld._pad = 0.0f;
+            fc.numPointLights++;
+        }
+    }
 
     m_perFrameCB->Update(&fc, sizeof(fc), frameIndex);
     m_commandList->SetPerFrameCBV(RootSignature::kSlotPerFrame, m_perFrameCB->GetGpuAddress(frameIndex));
@@ -1891,6 +2016,17 @@ void Application::Render()
         XMFLOAT4X4 vp;
         XMStoreFloat4x4(&vp, XMMatrixTranspose(m_camera->GetViewProjMatrix()));
         m_physicsDebugRenderer->Render(nativeCmdList, vp);
+    }
+
+    // ---- Editor Icon Draw (カメラ/ライトアイコン, エディタモードのみ) ----
+    if (m_engineMode == EngineMode::Editor && !m_isGameMode)
+    {
+        m_editorIconRenderer->BeginFrame();
+        m_editorIconRenderer->CollectFromRegistry(m_scene->GetRegistry(), *m_editorCtx);
+
+        XMFLOAT4X4 vpIcon;
+        XMStoreFloat4x4(&vpIcon, XMMatrixTranspose(m_camera->GetViewProjMatrix()));
+        m_editorIconRenderer->Render(nativeCmdList, vpIcon);
     }
 
     // ---- ImGui フレーム ----

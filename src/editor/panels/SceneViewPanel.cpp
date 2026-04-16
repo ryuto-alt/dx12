@@ -143,44 +143,15 @@ void SceneViewPanel::HandlePicking(entt::registry& reg,
     f32 closestDist = FLT_MAX;
     entt::entity closestEntity = entt::null;
 
-    auto pickView = reg.view<const Transform, const MeshRenderer>();
-    for (auto [e, transform, renderer] : pickView.each())
-    {
-        if (reg.all_of<GridPlane>(e)) continue;
+    XMFLOAT3 orig, dir;
+    XMStoreFloat3(&orig, rayOrigin);
+    XMStoreFloat3(&dir, rayDir);
 
-        XMFLOAT3 aabbMin = {  FLT_MAX,  FLT_MAX,  FLT_MAX };
-        XMFLOAT3 aabbMax = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
-        for (const auto* mesh : renderer.meshes)
-        {
-            if (!mesh) continue;
-            auto meshMin = mesh->GetAABBMin();
-            auto meshMax = mesh->GetAABBMax();
-            aabbMin.x = (std::min)(aabbMin.x, meshMin.x);
-            aabbMin.y = (std::min)(aabbMin.y, meshMin.y);
-            aabbMin.z = (std::min)(aabbMin.z, meshMin.z);
-            aabbMax.x = (std::max)(aabbMax.x, meshMax.x);
-            aabbMax.y = (std::max)(aabbMax.y, meshMax.y);
-            aabbMax.z = (std::max)(aabbMax.z, meshMax.z);
-        }
-
-        XMFLOAT3 worldMin = {
-            transform.position.x + aabbMin.x * transform.scale.x,
-            transform.position.y + aabbMin.y * transform.scale.y,
-            transform.position.z + aabbMin.z * transform.scale.z
-        };
-        XMFLOAT3 worldMax = {
-            transform.position.x + aabbMax.x * transform.scale.x,
-            transform.position.y + aabbMax.y * transform.scale.y,
-            transform.position.z + aabbMax.z * transform.scale.z
-        };
-
+    // AABB レイキャスト関数
+    auto rayTestAABB = [&](XMFLOAT3 worldMin, XMFLOAT3 worldMax) -> f32 {
         if (worldMin.x > worldMax.x) std::swap(worldMin.x, worldMax.x);
         if (worldMin.y > worldMax.y) std::swap(worldMin.y, worldMax.y);
         if (worldMin.z > worldMax.z) std::swap(worldMin.z, worldMax.z);
-
-        XMFLOAT3 orig, dir;
-        XMStoreFloat3(&orig, rayOrigin);
-        XMStoreFloat3(&dir, rayDir);
 
         f32 tmin = -FLT_MAX, tmax = FLT_MAX;
         auto slabTest = [&](f32 o, f32 d, f32 bmin, f32 bmax) -> bool {
@@ -193,18 +164,75 @@ void SceneViewPanel::HandlePicking(entt::registry& reg,
             tmax = (std::min)(tmax, t2);
             return tmin <= tmax;
         };
-
         if (slabTest(orig.x, dir.x, worldMin.x, worldMax.x)
             && slabTest(orig.y, dir.y, worldMin.y, worldMax.y)
             && slabTest(orig.z, dir.z, worldMin.z, worldMax.z)
             && tmax > 0.0f)
         {
             f32 t = tmin > 0.0f ? tmin : tmax;
-            if (t > 0.0f && t < closestDist)
+            return t > 0.0f ? t : -1.0f;
+        }
+        return -1.0f;
+    };
+
+    // 全 Transform 持ちエンティティをピッキング対象にする
+    auto pickView = reg.view<const Transform>();
+    for (auto [e, transform] : pickView.each())
+    {
+        if (reg.all_of<GridPlane>(e)) continue;
+
+        XMFLOAT3 worldMin, worldMax;
+
+        if (reg.all_of<MeshRenderer>(e))
+        {
+            // MeshRenderer あり: メッシュ AABB を使う
+            const auto& renderer = reg.get<MeshRenderer>(e);
+            XMFLOAT3 aabbMin = {  FLT_MAX,  FLT_MAX,  FLT_MAX };
+            XMFLOAT3 aabbMax = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+            for (const auto* mesh : renderer.meshes)
             {
-                closestDist = t;
-                closestEntity = e;
+                if (!mesh) continue;
+                auto meshMin = mesh->GetAABBMin();
+                auto meshMax = mesh->GetAABBMax();
+                aabbMin.x = (std::min)(aabbMin.x, meshMin.x);
+                aabbMin.y = (std::min)(aabbMin.y, meshMin.y);
+                aabbMin.z = (std::min)(aabbMin.z, meshMin.z);
+                aabbMax.x = (std::max)(aabbMax.x, meshMax.x);
+                aabbMax.y = (std::max)(aabbMax.y, meshMax.y);
+                aabbMax.z = (std::max)(aabbMax.z, meshMax.z);
             }
+            worldMin = {
+                transform.position.x + aabbMin.x * transform.scale.x,
+                transform.position.y + aabbMin.y * transform.scale.y,
+                transform.position.z + aabbMin.z * transform.scale.z
+            };
+            worldMax = {
+                transform.position.x + aabbMax.x * transform.scale.x,
+                transform.position.y + aabbMax.y * transform.scale.y,
+                transform.position.z + aabbMax.z * transform.scale.z
+            };
+        }
+        else
+        {
+            // MeshRenderer なし (Camera/Light/Empty): 固定サイズ AABB
+            constexpr f32 kIconHalf = 0.5f;
+            worldMin = {
+                transform.position.x - kIconHalf,
+                transform.position.y - kIconHalf,
+                transform.position.z - kIconHalf
+            };
+            worldMax = {
+                transform.position.x + kIconHalf,
+                transform.position.y + kIconHalf,
+                transform.position.z + kIconHalf
+            };
+        }
+
+        f32 t = rayTestAABB(worldMin, worldMax);
+        if (t > 0.0f && t < closestDist)
+        {
+            closestDist = t;
+            closestEntity = e;
         }
     }
 

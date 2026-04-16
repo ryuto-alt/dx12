@@ -46,32 +46,49 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
     // リネーム中はインライン入力を表示
     if (m_renamingEntity == e)
     {
-        // 開始フレームは強制フォーカスを当てる (これが無いと IsItemActive=false で
-        // 即 commit され入力が一瞬で消える)
-        if (m_renameJustStarted)
+        // ウォームアップ中は SetKeyboardFocusHere を毎フレーム呼ぶ
+        // (初回フレームでフォーカスが安定しない問題の回避)
+        if (m_renameWarmup > 0)
         {
             ImGui::SetKeyboardFocusHere();
-            m_renameJustStarted = false;
+            --m_renameWarmup;
         }
+
         ImGui::SetNextItemWidth(-1);
         bool entered = ImGui::InputText("##Rename", m_renameBuf, sizeof(m_renameBuf),
                              ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
-        bool active   = ImGui::IsItemActive();
-        bool focused  = ImGui::IsItemFocused();
 
+        // Escape でキャンセル（元の名前に戻す）
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape))
+        {
+            m_renamingEntity = entt::null;
+            ImGui::PopID();
+            return;
+        }
+
+        // Enter で確定
         if (entered)
         {
             if (std::strlen(m_renameBuf) > 0)
                 tag.name = m_renameBuf;
             m_renamingEntity = entt::null;
+            ImGui::PopID();
+            return;
         }
-        // フォーカスが外れたら確定 (アクティブでもフォーカスでもない場合のみ)
-        else if (!active && !focused)
+
+        // ウォームアップ完了後のみフォーカスロスで確定判定
+        if (m_renameWarmup == 0)
         {
-            if (std::strlen(m_renameBuf) > 0)
-                tag.name = m_renameBuf;
-            m_renamingEntity = entt::null;
+            bool active  = ImGui::IsItemActive();
+            bool focused = ImGui::IsItemFocused();
+            if (!active && !focused)
+            {
+                if (std::strlen(m_renameBuf) > 0)
+                    tag.name = m_renameBuf;
+                m_renamingEntity = entt::null;
+            }
         }
+
         ImGui::PopID();
         return;  // リネーム中はツリーノード描画しない
     }
@@ -83,34 +100,24 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
     // ID は PushID で一意化済みなので TreeNodeEx は固定文字列でOK
     bool open = ImGui::TreeNodeEx("##node", flags, "%s", tag.name.c_str());
 
-    // デバッグ: 右クリック検出ログ
     bool itemHov = ImGui::IsItemHovered();
-    bool rightReleased = ImGui::IsMouseReleased(ImGuiMouseButton_Right);
-    if (itemHov && rightReleased)
-    {
-        char dbg[128];
-        snprintf(dbg, sizeof(dbg), "[Hierarchy RightClick] entity=%u hovered=1 released=1\n",
-            static_cast<u32>(e));
-        OutputDebugStringA(dbg);
-    }
 
     // ダブルクリックでリネーム開始
     if (itemHov && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
     {
         m_renamingEntity = e;
-        m_renameJustStarted = true;
+        m_renameWarmup = 3;  // 3フレーム分フォーカス安定を待つ
         std::memset(m_renameBuf, 0, sizeof(m_renameBuf));
         strncpy_s(m_renameBuf, tag.name.c_str(), _TRUNCATE);
-        OutputDebugStringA("[Hierarchy] rename started via double-click\n");
     }
-    // シングルクリック選択（Ctrl でマルチ選択）
-    else if (ImGui::IsItemClicked(ImGuiMouseButton_Left))
+    // シングルクリック選択（Ctrl でマルチ選択）— ダブルクリック時は選択処理をスキップ
+    else if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
     {
         bool ctrl = ImGui::GetIO().KeyCtrl;
         if (ctrl)
             ctx.ToggleSelection(e);
         else
-            ctx.Select(selected ? entt::null : e);
+            ctx.Select(e);
     }
 
     // D&D ソース（親子設定用）
@@ -170,14 +177,12 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
     // PushID スコープ内なので ID は "EntityCtx" だけで十分 unique
     if (ImGui::BeginPopupContextItem("EntityCtx", ImGuiPopupFlags_MouseButtonRight))
     {
-        OutputDebugStringA("[Hierarchy] context popup opened\n");
         if (ImGui::MenuItem("\xe5\x90\x8d\xe5\x89\x8d\xe5\xa4\x89\xe6\x9b\xb4"))  // 名前変更
         {
             m_renamingEntity = e;
-            m_renameJustStarted = true;
+            m_renameWarmup = 3;  // 3フレーム分フォーカス安定を待つ
             std::memset(m_renameBuf, 0, sizeof(m_renameBuf));
             strncpy_s(m_renameBuf, tag.name.c_str(), _TRUNCATE);
-            OutputDebugStringA("[Hierarchy] rename started via context menu\n");
         }
         if (ImGui::MenuItem("\xe5\x89\x8a\xe9\x99\xa4"))  // 削除
         {
@@ -299,6 +304,29 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
             PendingSpawnRequest req;
             req.modelPath = "__empty__";
             req.position = {0.0f, 0.0f, 0.0f};
+            ctx.pendingSpawns.push_back(req);
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Camera"))
+        {
+            PendingSpawnRequest req;
+            req.modelPath = "__camera__";
+            req.position = {0.0f, 2.0f, -5.0f};
+            ctx.pendingSpawns.push_back(req);
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Directional Light"))
+        {
+            PendingSpawnRequest req;
+            req.modelPath = "__directional_light__";
+            req.position = {0.0f, 5.0f, 0.0f};
+            ctx.pendingSpawns.push_back(req);
+        }
+        if (ImGui::MenuItem("Point Light"))
+        {
+            PendingSpawnRequest req;
+            req.modelPath = "__point_light__";
+            req.position = {0.0f, 3.0f, 0.0f};
             ctx.pendingSpawns.push_back(req);
         }
         ImGui::EndPopup();

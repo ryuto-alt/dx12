@@ -2,6 +2,7 @@ add_library(Editor STATIC
     EditorLayer.cpp
     UndoSystem.cpp
     ModelThumbnailRenderer.cpp
+    EditorIconRenderer.cpp
     panels/ToolbarPanel.cpp
     panels/HierarchyPanel.cpp
     panels/InspectorPanel.cpp

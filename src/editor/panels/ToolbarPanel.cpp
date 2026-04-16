@@ -278,6 +278,36 @@ void ToolbarPanel::Render(bool isPlaying,
         ctx.hotReloadFlash -= clock->GetDeltaTime();
     }
 
+    // Error popup (中央モーダル)
+    if (ctx.errorFlash > 0.0f)
+    {
+        ctx.errorFlash -= clock->GetDeltaTime();
+        ImGui::OpenPopup("##ErrorPopup");
+    }
+    if (ImGui::BeginPopupModal("##ErrorPopup", nullptr,
+            ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoTitleBar))
+    {
+        // ウィンドウ中央に配置
+        ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+        ImGui::SetWindowPos(ImVec2(center.x - ImGui::GetWindowWidth() * 0.5f,
+                                    center.y - ImGui::GetWindowHeight() * 0.5f));
+
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+        ImGui::Text("\xe2\x9a\xa0");
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+        ImGui::TextWrapped("%s", ctx.errorMessage.c_str());
+        ImGui::Spacing();
+        float buttonWidth = 80.0f;
+        ImGui::SetCursorPosX((ImGui::GetWindowWidth() - buttonWidth) * 0.5f);
+        if (ImGui::Button("OK", ImVec2(buttonWidth, 0)) || ctx.errorFlash <= 0.0f)
+        {
+            ctx.errorFlash = 0.0f;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
     // ===== Gizmo mode =====
     ImGui::SameLine(0, 12);
     ImGui::TextDisabled("|");

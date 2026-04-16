@@ -30,9 +30,10 @@ void InputSystem::Update()
     m_mouseDeltaX = 0.0f;
     m_mouseDeltaY = 0.0f;
 
-    // キャプチャ中はカーソルをウィンドウ中央に固定
+    // キャプチャ中はカーソルをウィンドウ中央に固定 + カーソル非表示を維持
     if (m_mouseCaptured && m_hwnd)
     {
+        SetCursor(NULL);  // ImGui がカーソルを復活させるのを毎フレーム防止
         RECT rect;
         GetClientRect(m_hwnd, &rect);
         POINT center = {(rect.right - rect.left) / 2, (rect.bottom - rect.top) / 2};
@@ -86,10 +87,11 @@ void InputSystem::SetMouseCapture(bool capture)
 
     if (capture)
     {
-        ShowCursor(FALSE);
+        // ShowCursor はカウンタベースなので確実に非表示にする
+        while (ShowCursor(FALSE) >= 0) {}
         SetCapture(m_hwnd);
 
-        // ウィンドウ内にカーソルを閉じ込める（SetCursorPos不要）
+        // ウィンドウ内にカーソルを閉じ込める
         RECT rect;
         GetClientRect(m_hwnd, &rect);
         POINT tl = {rect.left, rect.top};
@@ -101,9 +103,10 @@ void InputSystem::SetMouseCapture(bool capture)
     }
     else
     {
-        ShowCursor(TRUE);
+        // カウンタを確実に 0（表示）に戻す
+        while (ShowCursor(TRUE) < 0) {}
         ReleaseCapture();
-        ClipCursor(nullptr);  // カーソル制限解除
+        ClipCursor(nullptr);
     }
 }
 

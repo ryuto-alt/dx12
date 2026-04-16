@@ -102,6 +102,10 @@ public:
     f32 hotReloadFlash    = 0.0f;
     f32 buildCompleteFlash = 0.0f;
 
+    // エラー通知（Play 不可等）
+    std::string errorMessage;
+    f32 errorFlash = 0.0f;
+
     // 遅延処理キュー
     std::vector<PendingSpawnRequest> pendingSpawns;
     std::vector<entt::entity>        pendingDeletions;

@@ -36,6 +36,7 @@ namespace dx12e
     class AudioSystem;
     class PhysicsSystem;
     class PhysicsDebugRenderer;
+    class EditorIconRenderer;
     class EditorContext;
     class EditorLayer;
     class ModelThumbnailRenderer;
@@ -112,6 +113,7 @@ private:
     std::unique_ptr<AudioSystem>       m_audioSystem;
     std::unique_ptr<PhysicsSystem>     m_physicsSystem;
     std::unique_ptr<PhysicsDebugRenderer> m_physicsDebugRenderer;
+    std::unique_ptr<EditorIconRenderer>   m_editorIconRenderer;
     bool                               m_physicsDebugDraw = false;
     GameClock                          m_gameClock;
     bool                               m_isRunning = false;
@@ -152,6 +154,16 @@ private:
         std::string luaScriptPath;
         bool        luaEnabled = true;
         bool        hasLuaScript = false;
+
+        // Camera
+        bool hasCameraComponent = false;
+        CameraComponent cameraData;
+
+        // Light
+        bool hasDirectionalLight = false;
+        DirectionalLight directionalLightData;
+        bool hasPointLight = false;
+        PointLight pointLightData;
 
         // エディタ追加モデルの再スポーン用
         std::string modelPath;       // MeshRenderer.modelPath（空 = Luaスポーン）

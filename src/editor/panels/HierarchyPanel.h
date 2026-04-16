@@ -21,7 +21,7 @@ private:
     // リネーム
     entt::entity m_renamingEntity = entt::null;
     char m_renameBuf[128] = {};
-    bool m_renameJustStarted = false;
+    int  m_renameWarmup = 0;  // フォーカス安定まで数フレーム待つ
 
     std::string m_assetsDir;
 };
