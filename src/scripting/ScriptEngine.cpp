@@ -51,6 +51,8 @@ bool InitializeLuaScriptInstance(sol::state& lua,
     // self テーブルを作る
     auto self = std::make_shared<sol::table>(lua.create_table());
     (*self)["entity"]  = static_cast<u32>(e);
+    // self.this は physics:applyImpulse(self.this, ...) のように Entity 型 API に渡せる
+    (*self)["this"]    = Entity(e, &reg);
     const auto* tag = reg.try_get<NameTag>(e);
     (*self)["name"]   = tag ? tag->name : std::string{};
     auto* tf = reg.try_get<Transform>(e);
@@ -164,6 +166,11 @@ void ScriptEngine::RegisterBindings()
             if (type == "PointLight")         return e.HasComponent<PointLight>();
             if (type == "DirectionalLight")   return e.HasComponent<DirectionalLight>();
             if (type == "Camera")             return e.HasComponent<CameraComponent>();
+            if (type == "RigidBody")          return e.HasComponent<RigidBody>();
+            if (type == "BoxCollider")        return e.HasComponent<BoxCollider>();
+            if (type == "SphereCollider")     return e.HasComponent<SphereCollider>();
+            if (type == "CapsuleCollider")    return e.HasComponent<CapsuleCollider>();
+            if (type == "ConvexHullCollider") return e.HasComponent<ConvexHullCollider>();
             return false;
         },
 
@@ -316,7 +323,13 @@ void ScriptEngine::RegisterBindings()
     lua["KEY_RBUTTON"] = static_cast<int>(VK_RBUTTON);
 
     // --- ユーティリティ ---
-    lua["log"] = [](const std::string& msg) { Logger::Info("[Lua] {}", msg); };
+    // log() は 3 系統に出力: spdlog / OutputDebugString (Visual Studio 出力ウィンドウ) / Toolbar 表示
+    lua["log"] = [this](const std::string& msg) {
+        Logger::Info("[Lua] {}", msg);
+        std::string line = "[Lua] " + msg + "\n";
+        OutputDebugStringA(line.c_str());
+        m_lastLuaMessage = msg;
+    };
 
     RegisterPhysicsBindings();
 
@@ -444,8 +457,25 @@ void ScriptEngine::RegisterPhysicsBindings()
             ps.ApplyImpulse(e.GetComponent<RigidBody>().bodyId, impulse);
         },
         "setVelocity", [](PhysicsSystem& ps, Entity& e, XMFLOAT3 vel) {
-            if (!e.HasComponent<RigidBody>()) return;
-            ps.SetLinearVelocity(e.GetComponent<RigidBody>().bodyId, vel);
+            char buf[160];
+            if (!e.HasComponent<RigidBody>()) {
+                OutputDebugStringA("[setVelocity] FAIL: no RigidBody component\n");
+                return;
+            }
+            auto& rb = e.GetComponent<RigidBody>();
+            if (rb.bodyId == kInvalidBodyId) {
+                snprintf(buf, sizeof(buf),
+                    "[setVelocity] FAIL: invalid bodyId (motionType=%d, mass=%.2f) "
+                    "-> RigidBody がまだ Jolt に登録されていない. Collider が必要かも\n",
+                    (int)rb.motionType, rb.mass);
+                OutputDebugStringA(buf);
+                return;
+            }
+            if (rb.motionType == MotionType::Static) {
+                OutputDebugStringA("[setVelocity] FAIL: motionType=Static -> Dynamic に変更してや\n");
+                return;
+            }
+            ps.SetLinearVelocity(rb.bodyId, vel);
         },
         "getVelocity", [](PhysicsSystem& ps, Entity& e) -> XMFLOAT3 {
             if (!e.HasComponent<RigidBody>()) return {};
@@ -564,6 +594,7 @@ void ScriptEngine::OnPlayStart()
 {
     auto& reg = m_scene->GetRegistry();
     auto view = reg.view<LuaScript>();
+    int total = 0, ok = 0;
     for (auto e : view)
     {
         auto& ls = view.get<LuaScript>(e);
@@ -572,9 +603,20 @@ void ScriptEngine::OnPlayStart()
         ls.started   = false;
         ls.loadError = false;
         if (ls.scriptPath.empty()) continue;
-        InitializeLuaScriptInstance(*m_lua, reg, e, ls, m_assetsDir, m_lastError);
+        ++total;
+        const auto* tag = reg.try_get<NameTag>(e);
+        std::string entityName = tag ? tag->name : std::string("(no name)");
+        Logger::Info("ScriptEngine: initializing entity='{}' script='{}'",
+                     entityName, ls.scriptPath);
+        if (InitializeLuaScriptInstance(*m_lua, reg, e, ls, m_assetsDir, m_lastError))
+            ++ok;
     }
-    Logger::Info("ScriptEngine: OnPlayStart done");
+    Logger::Info("ScriptEngine: OnPlayStart done ({} / {} scripts initialized)", ok, total);
+    // OutputDebugString にも出して Visual Studio で確認できるように
+    char buf[128];
+    snprintf(buf, sizeof(buf),
+             "[ScriptEngine] OnPlayStart: %d/%d scripts initialized\n", ok, total);
+    OutputDebugStringA(buf);
 }
 
 void ScriptEngine::OnPlayStop()
@@ -615,9 +657,10 @@ void ScriptEngine::UpdateAttachedScripts(f32 dt)
         auto* self = static_cast<sol::table*>(ls.self.get());
         if (!env || !self) continue;
 
-        // self.transform のポインタを最新化（コンポーネントが再配置される場合に備える）
+        // self.transform / self.this を毎フレーム更新（コンポーネント再配置や registry 変更に備える）
         if (auto* tf = reg.try_get<Transform>(e))
             (*self)["transform"] = tf;
+        (*self)["this"]    = Entity(e, &reg);
         (*self)["enabled"] = ls.enabled;
 
         sol::protected_function fn = (*env)["OnUpdate"];

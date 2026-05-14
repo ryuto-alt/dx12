@@ -8,6 +8,7 @@ add_library(Editor STATIC
     panels/InspectorPanel.cpp
     panels/SceneViewPanel.cpp
     panels/AssetBrowserPanel.cpp
+    panels/GameViewPanel.cpp
 )
 
 target_include_directories(Editor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)

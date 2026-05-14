@@ -30,6 +30,7 @@ class HierarchyPanel;
 class InspectorPanel;
 class SceneViewPanel;
 class AssetBrowserPanel;
+class GameViewPanel;
 
 class EditorLayer
 {
@@ -60,7 +61,9 @@ public:
                 bool& outPendingPlayMode,
                 const std::string& assetsDir,
                 f32 leftPanelWidth,
-                f32 toolbarHeight);
+                f32 toolbarHeight,
+                u64 sceneViewTextureId,
+                u64 gameViewTextureId);
 
     // フレーム先頭でcmdListが有効な間に呼ぶ（テクスチャサムネイルのアップロード）
     void LoadPendingThumbnails(ID3D12GraphicsCommandList* cmdList);
@@ -71,9 +74,14 @@ public:
     // サムネイルレンダラー設定
     void SetThumbnailRenderer(class ModelThumbnailRenderer* renderer);
 
-    // ビューポート領域（3D描画のオフセット計算用）
-    ImVec2 GetViewportPos()  const { return m_viewportPos; }
-    ImVec2 GetViewportSize() const { return m_viewportSize; }
+    // SceneView パネルのコンテンツサイズ（Application が SceneView RT のリサイズ判定に使用）
+    ImVec2 GetSceneViewSize() const { return m_sceneViewSize; }
+    // SceneView タブがホバーされてるか (Application::Update がカメラ右ドラッグ判定で使う)
+    bool   IsSceneViewHovered() const;
+
+    // GameView パネルのコンテンツサイズ（Application が GameView RT のリサイズ判定に使用）
+    ImVec2 GetGameViewSize() const { return m_gameViewSize; }
+    bool   IsGameViewHovered() const { return m_gameViewHovered; }
 
 private:
     void BuildDefaultLayout(ImGuiID dockspaceId, f32 toolbarHeight);
@@ -81,15 +89,18 @@ private:
     EditorContext* m_ctx = nullptr;
     bool m_dockspaceBuilt = false;
 
-    ImVec2 m_viewportPos  = {0, 0};
-    ImVec2 m_viewportSize = {1, 1};
-
     std::unique_ptr<ToolbarPanel>      m_toolbar;
     std::unique_ptr<HierarchyPanel>    m_hierarchy;
     std::unique_ptr<InspectorPanel>    m_inspector;
     std::unique_ptr<SceneViewPanel>    m_sceneView;
     std::unique_ptr<AssetBrowserPanel> m_assetBrowser;
+    std::unique_ptr<GameViewPanel>     m_gameView;
     class ModelThumbnailRenderer* m_thumbRenderer = nullptr;
+
+    // SceneView / GameView 状態（Application が RT リサイズ判定に使う）
+    ImVec2 m_sceneViewSize  = {1, 1};
+    ImVec2 m_gameViewSize   = {1, 1};
+    bool   m_gameViewHovered = false;
 };
 
 } // namespace dx12e

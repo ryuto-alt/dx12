@@ -103,7 +103,7 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
 
         if (reg.all_of<GridPlane>(entity))
         {
-            ej["gridPlane"] = {{"size", 50.0f}};
+            ej["gridPlane"] = {{"size", 500.0f}};
         }
 
         if (reg.all_of<PointLight>(entity))
@@ -234,7 +234,7 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
 
         if (ej.contains("gridPlane"))
         {
-            f32 size = ej["gridPlane"].value("size", 50.0f);
+            f32 size = ej["gridPlane"].value("size", 500.0f);
             scene.SpawnPlane(name, pos, size, true);
             OutputDebugStringA(("[Load] SpawnPlane: " + name + "\n").c_str());
         }

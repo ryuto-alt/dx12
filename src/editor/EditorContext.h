@@ -14,6 +14,9 @@ namespace dx12e
 
 enum class GizmoMode { Translate, Rotate, Scale };
 
+// 中央エリアの表示モード (Unity 流: Scene タブ / Game タブ / 並列両方表示)
+enum class ViewMode { Scene, Game, Both };
+
 struct PendingSpawnRequest
 {
     std::string modelPath;
@@ -94,6 +97,9 @@ public:
     // ギズモ
     GizmoMode gizmoMode      = GizmoMode::Translate;
     bool      gizmoLocalSpace = false;
+
+    // 中央エリアの表示モード (Toolbar の Scene/Game/Both ボタンで切替)
+    ViewMode viewMode = ViewMode::Both;
 
     // シーンパス
     std::string currentScenePath;

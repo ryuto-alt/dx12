@@ -42,6 +42,8 @@
 #include "editor/EditorIconRenderer.h"
 #include "editor/UndoSystem.h"
 #include "editor/ModelThumbnailRenderer.h"
+#include "editor/panels/GameViewPanel.h"
+#include "graphics/RenderTarget.h"
 #include "project/Project.h"
 #include "project/ProjectManager.h"
 #include <commdlg.h>
@@ -66,6 +68,33 @@
 
 namespace dx12e
 {
+
+namespace
+{
+// PerFrame CB レイアウト (SceneView / GameView 共用)
+constexpr u32 kMaxPointLightsCB = 8;
+struct PointLightGPU {
+    DirectX::XMFLOAT3 position;
+    float             range;
+    DirectX::XMFLOAT3 color;
+    float             _pad;
+};
+struct FrameConstants {
+    DirectX::XMFLOAT4X4 view;
+    DirectX::XMFLOAT4X4 proj;
+    DirectX::XMFLOAT3   lightDir;
+    float                time;
+    DirectX::XMFLOAT3   lightColor;
+    float                ambientStrength;
+    DirectX::XMFLOAT4X4 lightViewProj;
+    DirectX::XMFLOAT3   cameraPos;
+    float                _pad;
+    u32                  numPointLights;
+    float                _pad2[3];
+    PointLightGPU        pointLights[kMaxPointLightsCB];
+};
+static_assert(sizeof(FrameConstants) == 512, "FrameConstants must be 512 bytes");
+}  // namespace
 
 Application::Application() = default;
 
@@ -202,7 +231,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     {
         f32 viewW = static_cast<f32>(m_window->GetWidth());
         f32 viewH = static_cast<f32>(m_window->GetHeight());
-        m_camera->SetPerspective(DirectX::XM_PIDIV4, viewW / viewH, 0.1f, 1000.0f);
+        m_camera->SetPerspective(kDefaultFovYRad, viewW / viewH, kDefaultNearZ, kDefaultFarZ);
     }
     m_camera->LookAt({-14.7f, 9.6f, -9.0f}, {0.0f, 0.0f, 0.0f});
 
@@ -260,7 +289,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             if (!loaded)
             {
                 // クリーン初期状態: Grid + DirectionalLight
-                m_scene->SpawnPlane("Grid", {0, 0, 0}, 50.0f, true);
+                m_scene->SpawnPlane("Grid", {0, 0, 0}, 500.0f, true);
                 auto& reg = m_scene->GetRegistry();
                 auto lightE = reg.create();
                 reg.emplace<NameTag>(lightE, NameTag{"DirectionalLight"});
@@ -429,32 +458,24 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         Logger::Info("Shadow map initialized ({}x{})", m_shadowMapSize, m_shadowMapSize);
     }
 
-    // PerFrame Constant Buffer（PointLight 最大8灯対応）
-    static constexpr u32 kMaxPointLights = 8;
-    struct PointLightGPU {
-        DirectX::XMFLOAT3 position;
-        float range;
-        DirectX::XMFLOAT3 color;  // color * intensity
-        float _pad;
-    };
-    struct FrameConstants {
-        DirectX::XMFLOAT4X4 view;            // 64B
-        DirectX::XMFLOAT4X4 proj;            // 64B
-        DirectX::XMFLOAT3   lightDir;        // 12B
-        float                time;            // 4B
-        DirectX::XMFLOAT3   lightColor;      // 12B
-        float                ambientStrength; // 4B
-        DirectX::XMFLOAT4X4 lightViewProj;   // 64B
-        DirectX::XMFLOAT3   cameraPos;       // 12B
-        float                _pad;            // 4B
-        // --- 既存 240B ---
-        u32                  numPointLights;  // 4B
-        float                _pad2[3];        // 12B → 256B boundary
-        PointLightGPU        pointLights[kMaxPointLights]; // 256B
-    };  // total = 512B
-    static_assert(sizeof(FrameConstants) == 512, "FrameConstants must be 512 bytes");
+    // PerFrame Constant Buffer (SceneView 用 + GameView 用 の 2 本)
     m_perFrameCB = std::make_unique<ConstantBuffer>();
     m_perFrameCB->Initialize(*m_graphicsDevice, sizeof(FrameConstants), FrameResources::kFrameCount);
+
+    m_sceneViewPerFrameCB = std::make_unique<ConstantBuffer>();
+    m_sceneViewPerFrameCB->Initialize(*m_graphicsDevice, sizeof(FrameConstants), FrameResources::kFrameCount);
+
+    m_gameViewPerFrameCB = std::make_unique<ConstantBuffer>();
+    m_gameViewPerFrameCB->Initialize(*m_graphicsDevice, sizeof(FrameConstants), FrameResources::kFrameCount);
+
+    // SceneView / GameView オフスクリーン RT (初期サイズはウィンドウサイズで作り、後でパネルサイズに追従)
+    m_sceneViewRT = std::make_unique<RenderTarget>();
+    m_sceneViewRT->Initialize(*m_graphicsDevice, *m_srvHeap,
+                              m_window->GetWidth(), m_window->GetHeight());
+
+    m_gameViewRT = std::make_unique<RenderTarget>();
+    m_gameViewRT->Initialize(*m_graphicsDevice, *m_srvHeap,
+                             m_window->GetWidth(), m_window->GetHeight());
 
     // CommandList ラッパー
     m_commandList = std::make_unique<CommandList>();
@@ -772,6 +793,10 @@ void Application::Shutdown()
     }
 
     // リソース解放（逆順）
+    m_gameViewRT.reset();
+    m_gameViewPerFrameCB.reset();
+    m_sceneViewRT.reset();
+    m_sceneViewPerFrameCB.reset();
     m_editorLayer.reset();
     m_editorCtx.reset();
     m_physicsDebugRenderer.reset();
@@ -825,8 +850,10 @@ void Application::Update()
         bool rightMouseHeld = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
 
         // ウィンドウが非フォーカス or ImGuiがマウスをキャプチャ中 → カメラ操作しない
+        // ただし SceneView 自身が ImGui パネルなので、シーンタブにホバーしてる時は許可する
         bool isForeground = (GetForegroundWindow() == m_window->GetHwnd());
-        bool imguiWantsMouse = ImGui::GetIO().WantCaptureMouse;
+        bool sceneViewHovered = m_editorLayer && m_editorLayer->IsSceneViewHovered();
+        bool imguiWantsMouse  = ImGui::GetIO().WantCaptureMouse && !sceneViewHovered;
 
         if (m_framesSinceStart > 5 && rightMouseHeld && !m_inputSystem->IsMouseCaptured()
             && isForeground && !imguiWantsMouse)
@@ -975,30 +1002,217 @@ void Application::Update()
     }
     else
     {
-        // プレイモード: Luaがカメラ+ゲームロジックを制御
+        // プレイモード: Lua がゲームロジックを制御
+        // (m_camera = エディタ視点。Play 中も SceneView はエディタ操作のままで、
+        //  ゲームカメラは m_gameCameraView 経由で GameView パネルに描画される)
         m_scriptEngine->CallOnUpdate(dt);
         m_scriptEngine->UpdateAttachedScripts(dt);
-
-        // アクティブカメラの Transform をグローバル Camera に同期
-        auto& reg = m_scene->GetRegistry();
-        auto camSyncView = reg.view<const CameraComponent, const Transform>();
-        for (auto [e, cam, tf] : camSyncView.each())
-        {
-            if (!cam.isActive) continue;
-            m_camera->SetPosition(tf.position);
-            m_camera->SetYaw(DirectX::XMConvertToRadians(tf.rotation.y));
-            m_camera->SetPitch(DirectX::XMConvertToRadians(tf.rotation.x));
-            break;
-        }
     }
 
     // シーン更新（Animator等）— エディタモードは時間を止める（ボーン行列は維持）
     m_scene->Update(m_engineMode == EngineMode::Playing ? dt : 0.0f);
 
+    // GameView 用: CameraComponent(isActive=true) から view/proj を毎フレーム算出
+    // (Editor モードでも算出する → Play 前に「Camera が何を見るか」をプレビュー可能)
+    {
+        m_gameCameraView.valid = false;
+        auto& reg = m_scene->GetRegistry();
+        auto camView = reg.view<const CameraComponent, const Transform>();
+        for (auto [e, cam, tf] : camView.each())
+        {
+            if (!cam.isActive) continue;
+
+            f32 yawRad   = DirectX::XMConvertToRadians(tf.rotation.y);
+            f32 pitchRad = DirectX::XMConvertToRadians(tf.rotation.x);
+            XMVECTOR forward = XMVectorSet(
+                std::sin(yawRad) * std::cos(pitchRad),
+                std::sin(pitchRad),
+                std::cos(yawRad) * std::cos(pitchRad), 0.0f);
+            XMVECTOR up    = XMVectorSet(0, 1, 0, 0);
+            XMVECTOR pos   = XMLoadFloat3(&tf.position);
+            XMMATRIX viewM = XMMatrixLookToLH(pos, forward, up);
+
+            // GameView は常に 16:9 固定 (Unity の Aspect Drop-down 相当)
+            // nearClip/farClip を安全な範囲に丸める (ユーザーが Inspector で 0 を入れると NaN になる)
+            f32 safeNear = (cam.nearClip > 0.0001f) ? cam.nearClip : 0.0001f;
+            f32 safeFar  = (cam.farClip  > safeNear + 0.01f) ? cam.farClip : safeNear + 0.01f;
+            XMMATRIX projM = XMMatrixPerspectiveFovLH(
+                DirectX::XMConvertToRadians(cam.fovDegrees),
+                kViewAspect, safeNear, safeFar);
+
+            XMStoreFloat4x4(&m_gameCameraView.view, viewM);
+            XMStoreFloat4x4(&m_gameCameraView.proj, projM);
+            m_gameCameraView.position = tf.position;
+            m_gameCameraView.valid    = true;
+            break;
+        }
+    }
+
     // 物理更新（プレイモードのみ）
     if (m_engineMode == EngineMode::Playing && m_physicsSystem->IsInitialized())
     {
         m_physicsSystem->Update(dt, m_scene->GetRegistry());
+    }
+}
+
+void Application::RenderSceneToTarget(ID3D12GraphicsCommandList* nativeCmdList,
+                                      const DirectX::XMMATRIX& viewMat,
+                                      const DirectX::XMMATRIX& projMat,
+                                      const DirectX::XMFLOAT3& cameraPos,
+                                      ConstantBuffer* perFrameCB,
+                                      u32 frameIndex,
+                                      const DirectX::XMMATRIX& lightViewProj,
+                                      const DirectX::XMFLOAT3& lightDir,
+                                      const DirectX::XMFLOAT3& lightColor,
+                                      f32 lightAmbient,
+                                      f32 totalTime,
+                                      SceneRenderFlags flags)
+{
+    using namespace DirectX;
+
+    // PerFrame CB を viewMat/projMat で更新
+    FrameConstants fc{};
+    XMStoreFloat4x4(&fc.view, XMMatrixTranspose(viewMat));
+    XMStoreFloat4x4(&fc.proj, XMMatrixTranspose(projMat));
+    fc.lightDir        = lightDir;
+    fc.time            = totalTime;
+    fc.lightColor      = lightColor;
+    fc.ambientStrength = lightAmbient;
+    XMStoreFloat4x4(&fc.lightViewProj, XMMatrixTranspose(lightViewProj));
+    fc.cameraPos = cameraPos;
+
+    fc.numPointLights = 0;
+    {
+        auto& reg = m_scene->GetRegistry();
+        auto plView = reg.view<const dx12e::PointLight, const Transform>();
+        for (auto [e, pl, tf] : plView.each())
+        {
+            if (fc.numPointLights >= kMaxPointLightsCB) break;
+            auto& pld = fc.pointLights[fc.numPointLights];
+            pld.position = tf.position;
+            pld.range    = pl.range;
+            pld.color    = {pl.color.x * pl.intensity,
+                            pl.color.y * pl.intensity,
+                            pl.color.z * pl.intensity};
+            pld._pad     = 0.0f;
+            fc.numPointLights++;
+        }
+    }
+
+    perFrameCB->Update(&fc, sizeof(fc), frameIndex);
+    m_commandList->SetPerFrameCBV(RootSignature::kSlotPerFrame, perFrameCB->GetGpuAddress(frameIndex));
+
+    // シャドウマップ SRV (両ビュー共通)
+    m_commandList->SetSRVTable(RootSignature::kSlotShadowSRV,
+        m_srvHeap->GetGpuHandle(m_shadowSrvIndex));
+
+    XMMATRIX viewProj = viewMat * projMat;
+
+    // 全 Entity 描画（2 パス: 1) 不透明メッシュ → 2) グリッド（半透明）を最後に）
+    // 順序を固定することで、grid の depth bias -100 により grid ラインが ground の手前に載る
+    // 一方で ground の depth が先に確定してるから、grid の透明ピクセルで ground が消えへん
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        auto& reg = m_scene->GetRegistry();
+        auto renderView = reg.view<const Transform, const MeshRenderer>();
+        for (auto [e, transform, renderer] : renderView.each())
+        {
+            bool isGrid = reg.all_of<GridPlane>(e);
+            if (isGrid && !flags.drawGrid) continue;  // GameView ではグリッド非表示
+            if (pass == 0 && isGrid)  continue;        // Pass 0: 不透明のみ
+            if (pass == 1 && !isGrid) continue;        // Pass 1: grid のみ
+
+            XMMATRIX world = transform.GetWorldMatrix();
+            bool isSkinned = reg.all_of<SkeletalAnimation>(e);
+
+            if (isGrid)
+            {
+                m_commandList->SetPipelineState(*m_gridPipelineState);
+            }
+            else if (isSkinned)
+            {
+                auto& skelAnim = reg.get<SkeletalAnimation>(e);
+                m_commandList->SetPipelineState(*m_skinnedPipelineState);
+                m_commandList->SetSRVTable(RootSignature::kSlotBonesSRV,
+                    m_srvHeap->GetGpuHandle(skelAnim.skinningBuffer->GetSrvIndex(frameIndex)));
+            }
+            else
+            {
+                m_commandList->SetPipelineState(*m_pipelineState);
+            }
+
+            bool hasNodeAnim = reg.all_of<NodeAnimationComp>(e);
+            for (u32 mi = 0; mi < static_cast<u32>(renderer.meshes.size()); ++mi)
+            {
+                const auto* mesh = renderer.meshes[mi];
+
+                XMMATRIX meshWorld = world;
+                if (hasNodeAnim && mi < static_cast<u32>(renderer.meshNodeTransforms.size()))
+                {
+                    XMMATRIX nodeMat = XMLoadFloat4x4(&renderer.meshNodeTransforms[mi]);
+                    meshWorld = nodeMat * world;
+                }
+
+                struct PerObjectData { XMMATRIX mvp; XMMATRIX mdl; } objData;
+                objData.mvp = XMMatrixTranspose(meshWorld * viewProj);
+                objData.mdl = XMMatrixTranspose(meshWorld);
+                m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
+
+                const Material* mat = mesh->GetMaterial();
+
+                if (mat && mat->srvBlockIndex != 0xFFFFFFFF)
+                {
+                    m_commandList->SetSRVTable(RootSignature::kSlotSRVTable,
+                        m_srvHeap->GetGpuHandle(mat->srvBlockIndex));
+                }
+                else
+                {
+                    Texture* tex = (mat && mat->albedoTexture) ? mat->albedoTexture
+                                                                : m_resourceManager->GetDefaultWhiteTexture();
+                    m_commandList->SetSRVTable(RootSignature::kSlotSRVTable,
+                        m_srvHeap->GetGpuHandle(tex->GetSrvIndex()));
+                }
+
+                struct { float metallic; float roughness; u32 flags; float pad; } pbrParams;
+                pbrParams.metallic  = (renderer.overrideMetallic  >= 0.0f) ? renderer.overrideMetallic
+                                    : (mat ? mat->defaultMetallic : 0.0f);
+                pbrParams.roughness = (renderer.overrideRoughness >= 0.0f) ? renderer.overrideRoughness
+                                    : (mat ? mat->defaultRoughness : 0.5f);
+                pbrParams.flags     = 0;
+                if (mat && mat->normalMapTexture) pbrParams.flags |= 1u;
+                bool hasOverride = (renderer.overrideMetallic >= 0.0f || renderer.overrideRoughness >= 0.0f);
+                if (!hasOverride && mat && mat->metalRoughnessTexture) pbrParams.flags |= 2u;
+                pbrParams.pad = 0;
+                nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPBRMaterial, 4, &pbrParams, 0);
+
+                m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
+                m_commandList->SetIndexBuffer(mesh->GetIndexBuffer().GetView());
+                m_commandList->DrawIndexedInstanced(mesh->GetIndexCount());
+            }
+        }
+    }
+
+    // Physics Debug Draw (フラグで制御)
+    if (flags.drawPhysicsDebug && m_physicsDebugRenderer->IsEnabled())
+    {
+        m_physicsDebugRenderer->BeginFrame();
+        m_physicsDebugRenderer->CollectFromRegistry(m_scene->GetRegistry());
+
+        XMFLOAT4X4 vp;
+        XMStoreFloat4x4(&vp, XMMatrixTranspose(viewProj));
+        m_physicsDebugRenderer->Render(nativeCmdList, vp);
+    }
+
+    // Editor Icon (フラグで制御: SceneView のみ表示)
+    if (flags.drawIcons)
+    {
+        m_editorIconRenderer->BeginFrame();
+        m_editorIconRenderer->CollectFromRegistry(m_scene->GetRegistry(), *m_editorCtx);
+
+        XMFLOAT4X4 vpIcon;
+        XMStoreFloat4x4(&vpIcon, XMMatrixTranspose(viewProj));
+        m_editorIconRenderer->Render(nativeCmdList, vpIcon);
     }
 }
 
@@ -1063,31 +1277,11 @@ void Application::EnterPlayMode()
     // GPU を待機してコマンドリスト状態を安全にする
     m_commandQueue->WaitIdle();
 
-    // カメラ状態保存
-    m_cameraSnapshot.position = m_camera->GetPosition();
-    m_cameraSnapshot.yaw = m_camera->GetYaw();
-    m_cameraSnapshot.pitch = m_camera->GetPitch();
-
     // Lua が触る前のエディタ状態を Stop 時の完全復元用に保存
     m_playSceneJson = SceneSerializer::SaveToString(*m_scene, std::string(ASSETS_DIR));
 
-    // ゲーム用カメラ: CameraComponent(isActive=true)のTransformを使う
-    {
-        auto& reg = m_scene->GetRegistry();
-        auto camView = reg.view<const CameraComponent, const Transform>();
-        for (auto [e, cam, tf] : camView.each())
-        {
-            if (!cam.isActive) continue;
-            m_camera->SetPosition(tf.position);
-            m_camera->SetYaw(DirectX::XMConvertToRadians(tf.rotation.y));
-            m_camera->SetPitch(DirectX::XMConvertToRadians(tf.rotation.x));
-            m_camera->SetPerspective(
-                DirectX::XMConvertToRadians(cam.fovDegrees),
-                static_cast<f32>(m_window->GetWidth()) / static_cast<f32>(m_window->GetHeight()),
-                cam.nearClip, cam.farClip);
-            break;
-        }
-    }
+    // ※ m_camera (= SceneView エディタ視点) は Play 中も触らない。
+    //    ゲームカメラは CameraComponent → m_gameCameraView 経由で GameView に描画される。
 
     // OnPlayStart 直後に Lua が変えた値を打ち消すため、Transform / RigidBody / Material PBR を覚えておく
     m_editorSnapshots.clear();
@@ -1128,16 +1322,33 @@ void Application::EnterPlayMode()
     // スクリプトエンジン初期化（エンティティにアタッチされた LuaScript 用）
     // ※ グローバルな game.lua の OnStart は呼ばない（エディタ配置のみで Play する）
     m_scriptEngine->Shutdown();
-    m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
-                               m_camera.get(), m_audioSystem.get(),
-                               m_physicsSystem.get(), std::string(ASSETS_DIR));
 
+    // ★ OnPlayStart の Lua から scene:spawn(...) 等が呼ばれた時、テクスチャ/モデルの
+    //    GPU アップロードに有効な (Open 状態の) コマンドリストが必要。
+    //    ここで BeginFrame → Scene::Initialize で m_scene->m_cmdList を更新しておく。
+    //    EnterEditorMode と同じパターン (D3D12 ERROR #547 COMMAND_LIST_CLOSED 防止)。
     std::string scriptPath = std::string(SCRIPTS_DIR) + "game.lua";
-    if (std::filesystem::exists(scriptPath))
     {
-        m_scriptEngine->LoadScript(scriptPath);
+        auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
+        m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
+                            m_srvHeap.get(), cmdList);
+
+        m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
+                                   m_camera.get(), m_audioSystem.get(),
+                                   m_physicsSystem.get(), std::string(ASSETS_DIR));
+
+        if (std::filesystem::exists(scriptPath))
+        {
+            m_scriptEngine->LoadScript(scriptPath);
+        }
+        m_scriptEngine->OnPlayStart();
+
+        ThrowIfFailed(cmdList->Close());
+        m_commandQueue->ExecuteCommandList(cmdList);
+        m_commandQueue->WaitIdle();
+        m_resourceManager->FinishUploads();
+        m_frameResources->EndFrame(*m_commandQueue);
     }
-    m_scriptEngine->OnPlayStart();
 
     // エディタのスナップショットで上書き（Luaが勝手に変えた状態をエディタの状態に戻す）
     {
@@ -1183,11 +1394,6 @@ void Application::EnterPlayMode()
         }
     }
 
-    // Playモード: サイドバーなし全画面幅でアスペクト比再計算
-    m_camera->SetPerspective(DirectX::XM_PIDIV4,
-        static_cast<f32>(m_window->GetWidth()) / static_cast<f32>(m_window->GetHeight()),
-        0.1f, 1000.0f);
-
     // 物理のタイムステップ蓄積をリセット
     m_physicsSystem->ResetAccumulator();
 
@@ -1228,10 +1434,7 @@ void Application::EnterEditorMode()
 
     m_inputSystem->SetMouseCapture(false);
 
-    m_camera->SetPosition(m_cameraSnapshot.position);
-    m_camera->SetYaw(m_cameraSnapshot.yaw);
-    m_camera->SetPitch(m_cameraSnapshot.pitch);
-
+    // m_camera (= SceneView エディタ視点) は Play 中も触ってないので復元不要
     m_editorCtx->ClearSelection();
 
     // JSON スナップショットからシーン全体を完全復元
@@ -1259,11 +1462,6 @@ void Application::EnterEditorMode()
     // 古い JSON で誤復元しないよう、消費後はクリアする
     m_playSceneJson.clear();
     m_playSceneJson.shrink_to_fit();
-
-    // Play 中に CameraComponent の FOV を採用してた可能性があるためエディタ用に戻す
-    m_camera->SetPerspective(DirectX::XM_PIDIV4,
-        static_cast<f32>(m_window->GetWidth()) / static_cast<f32>(m_window->GetHeight()),
-        0.1f, 1000.0f);
 
     m_inputSystem->SetMouseCapture(false);
     m_engineMode = EngineMode::Editor;
@@ -1340,6 +1538,34 @@ void Application::Render()
 {
     using namespace DirectX;
 
+    // SceneView / GameView パネルサイズが変わってたら RT を作り直す
+    // (BeginFrame の前 = GPU が触ってない状態で安全)
+    // 8px 閾値: ピクセル単位のドラッグ中に毎フレーム WaitIdle するとガクつくため
+    // パネルサイズ → 16:9 レターボックス矩形にスナップして RT を確保 (Unity の Aspect Drop-down 相当)
+    auto resizeRtToPanel = [&](RenderTarget* rt, ImVec2 desired) {
+        if (!rt) return;
+        u32 panelW = static_cast<u32>(desired.x);
+        u32 panelH = static_cast<u32>(desired.y);
+        u32 newW = 0, newH = 0;
+        Fit16x9(panelW, panelH, newW, newH);
+        constexpr u32 kResizeThreshold = 8;
+        u32 wDelta = (newW > rt->GetWidth())
+            ? (newW - rt->GetWidth()) : (rt->GetWidth() - newW);
+        u32 hDelta = (newH > rt->GetHeight())
+            ? (newH - rt->GetHeight()) : (rt->GetHeight() - newH);
+        if (newW > 0 && newH > 0 &&
+            (wDelta >= kResizeThreshold || hDelta >= kResizeThreshold))
+        {
+            m_commandQueue->WaitIdle();
+            rt->Resize(*m_graphicsDevice, newW, newH);
+        }
+    };
+    if (m_editorLayer)
+    {
+        resizeRtToPanel(m_sceneViewRT.get(), m_editorLayer->GetSceneViewSize());
+        resizeRtToPanel(m_gameViewRT.get(),  m_editorLayer->GetGameViewSize());
+    }
+
     auto* nativeCmdList = m_frameResources->BeginFrame(*m_commandQueue);
     m_commandList->Wrap(nativeCmdList);
 
@@ -1353,7 +1579,7 @@ void Application::Render()
         m_scene->Clear();
         m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
                             m_srvHeap.get(), nativeCmdList);
-        m_scene->SpawnPlane("Grid", {0, 0, 0}, 50.0f, true);
+        m_scene->SpawnPlane("Grid", {0, 0, 0}, 500.0f, true);
         {
             auto& reg = m_scene->GetRegistry();
             auto lightE = reg.create();
@@ -1716,205 +1942,112 @@ void Application::Render()
             D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     }
 
-    // ===== メインパス =====
+    // ===== SwapChain backbuffer の準備 (ImGui DockSpace の背景として使う、3D は描画しない) =====
     auto* backBuffer = m_swapChain->GetCurrentBackBuffer();
     auto rtv = m_swapChain->GetCurrentRTV();
 
     m_commandList->TransitionResource(backBuffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
 
-    constexpr float clearColor[4] = {0.392f, 0.584f, 0.929f, 1.0f};
+    // backbuffer は ImGui のドック背景色相当の暗灰でクリア (3D は SceneViewRT/GameViewRT に描画される)
+    constexpr float clearColor[4] = {0.07f, 0.07f, 0.07f, 1.0f};
     m_commandList->ClearRenderTarget(rtv, clearColor);
     m_commandList->ClearDepthStencil(m_dsvHandle);
     m_commandList->SetRenderTarget(rtv, m_dsvHandle);
 
-    // 3Dビューポート: EditorLayerの中央ノード領域に合わせる
+    // ===== SceneView パス: エディタ視点をオフスクリーン RT に描画 =====
+    if (!m_isGameMode && m_sceneViewRT && m_sceneViewRT->IsValid())
     {
-        auto vp = m_editorLayer->GetViewportPos();
-        auto vs = m_editorLayer->GetViewportSize();
-        u32 vpLeft = static_cast<u32>(vp.x);
-        u32 vpTop  = static_cast<u32>(vp.y);
-        u32 vpW    = static_cast<u32>(vs.x);
-        u32 vpH    = static_cast<u32>(vs.y);
-        if (vpW < 1) vpW = 1;
-        if (vpH < 1) vpH = 1;
+        m_sceneViewRT->TransitionColorTo(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        m_commandList->SetRootSignature(*m_rootSignature);
+        m_commandList->ClearRenderTarget(m_sceneViewRT->GetRTV(), RenderTarget::GetClearColor());
+        m_commandList->ClearDepthStencil(m_sceneViewRT->GetDSV());
+        m_commandList->SetRenderTarget(m_sceneViewRT->GetRTV(), m_sceneViewRT->GetDSV());
+        m_commandList->SetViewportAndScissor(m_sceneViewRT->GetWidth(), m_sceneViewRT->GetHeight());
 
-        if (!m_isGameMode && m_engineMode == EngineMode::Editor)
-            m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+        m_camera->SetPerspective(kDefaultFovYRad, kViewAspect, kDefaultNearZ, kDefaultFarZ);
+
+        SceneRenderFlags sceneFlags;
+        sceneFlags.drawGrid         = true;
+        sceneFlags.drawIcons        = (m_engineMode == EngineMode::Editor);
+        sceneFlags.drawPhysicsDebug = m_physicsDebugDraw;
+        RenderSceneToTarget(nativeCmdList,
+            m_camera->GetViewMatrix(), m_camera->GetProjectionMatrix(), m_camera->GetPosition(),
+            m_perFrameCB.get(), frameIndex,
+            lightViewProj, lightDirF3, lightColorF3, lightAmbient, totalTime,
+            sceneFlags);
+
+        m_sceneViewRT->TransitionColorTo(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        m_commandList->SetRenderTarget(rtv, m_dsvHandle);
+    }
+    else if (m_isGameMode)
+    {
+        // ゲーム単独起動: SceneView RT を使わず backbuffer 全体に直接描画 (16:9 レターボックス)
+        u32 winW = m_window->GetWidth();
+        u32 winH = m_window->GetHeight();
+        u32 fitW = 0, fitH = 0;
+        Fit16x9(winW, winH, fitW, fitH);
+        u32 offsetX = (winW - fitW) / 2;
+        u32 offsetY = (winH - fitH) / 2;
+        m_commandList->SetViewportAndScissor(offsetX, offsetY, fitW, fitH);
+        m_camera->SetPerspective(kDefaultFovYRad, kViewAspect, kDefaultNearZ, kDefaultFarZ);
+
+        SceneRenderFlags sceneFlags;
+        sceneFlags.drawGrid         = false;
+        sceneFlags.drawIcons        = false;
+        sceneFlags.drawPhysicsDebug = false;
+        RenderSceneToTarget(nativeCmdList,
+            m_camera->GetViewMatrix(), m_camera->GetProjectionMatrix(), m_camera->GetPosition(),
+            m_perFrameCB.get(), frameIndex,
+            lightViewProj, lightDirF3, lightColorF3, lightAmbient, totalTime,
+            sceneFlags);
+    }
+
+    // ===== GameView パス: オフスクリーン RT に描画 =====
+    if (!m_isGameMode && m_gameViewRT && m_gameViewRT->IsValid())
+    {
+        // RenderTarget が内部 state を tracking するので before/after の取り違えが起きない
+        m_gameViewRT->TransitionColorTo(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+        // SceneView パス内の PhysicsDebug/EditorIcon が別 root sig を残してるので、ここで戻す
+        // (OMSetRenderTargets の前に呼ぶこと: SetRootSignature 後の RT 再 bind を保証するため)
+        m_commandList->SetRootSignature(*m_rootSignature);
+
+        m_commandList->ClearRenderTarget(m_gameViewRT->GetRTV(), RenderTarget::GetClearColor());
+        m_commandList->ClearDepthStencil(m_gameViewRT->GetDSV());
+        m_commandList->SetRenderTarget(m_gameViewRT->GetRTV(), m_gameViewRT->GetDSV());
+        m_commandList->SetViewportAndScissor(m_gameViewRT->GetWidth(), m_gameViewRT->GetHeight());
+
+        // ゲームカメラの view/proj 決定
+        // Play 中: m_gameCameraView.valid なら CameraComponent 由来
+        // Editor 中もしくは未設定: m_camera にフォールバック (シーン配置確認用プレビュー)
+        XMMATRIX gvView, gvProj;
+        XMFLOAT3 gvPos;
+        if (m_gameCameraView.valid)
+        {
+            gvView = XMLoadFloat4x4(&m_gameCameraView.view);
+            gvProj = XMLoadFloat4x4(&m_gameCameraView.proj);
+            gvPos  = m_gameCameraView.position;
+        }
         else
-            m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
-
-        // カメラのアスペクト比を中央ノードに合わせる
-        if (!m_isGameMode && m_engineMode == EngineMode::Editor)
-            m_camera->SetPerspective(DirectX::XM_PIDIV4,
-                static_cast<f32>(vpW) / static_cast<f32>(vpH), 0.1f, 1000.0f);
-    }
-
-    m_commandList->SetPipelineState(*m_pipelineState);
-
-    // PerFrame CB（PointLight 最大8灯対応）
-    static constexpr u32 kMaxPointLightsR = 8;
-    struct PointLightGPU {
-        XMFLOAT3 position;
-        float range;
-        XMFLOAT3 color;
-        float _pad;
-    };
-    struct FrameConstants {
-        XMFLOAT4X4 view;
-        XMFLOAT4X4 proj;
-        XMFLOAT3   lightDir;
-        float      time;
-        XMFLOAT3   lightColor;
-        float      ambientStrength;
-        XMFLOAT4X4 lightVP;
-        XMFLOAT3   cameraPos;
-        float      _pad;
-        u32        numPointLights;
-        float      _pad2[3];
-        PointLightGPU pointLights[kMaxPointLightsR];
-    };
-
-    FrameConstants fc{};
-    XMStoreFloat4x4(&fc.view, XMMatrixTranspose(m_camera->GetViewMatrix()));
-    XMStoreFloat4x4(&fc.proj, XMMatrixTranspose(m_camera->GetProjectionMatrix()));
-    fc.lightDir = lightDirF3;
-    fc.time = totalTime;
-    fc.lightColor = lightColorF3;
-    fc.ambientStrength = lightAmbient;
-    XMStoreFloat4x4(&fc.lightVP, XMMatrixTranspose(lightViewProj));
-    fc.cameraPos = m_camera->GetPosition();
-
-    // PointLight を ECS から収集
-    fc.numPointLights = 0;
-    {
-        auto& reg = m_scene->GetRegistry();
-        auto plView = reg.view<const dx12e::PointLight, const Transform>();
-        for (auto [e, pl, tf] : plView.each())
         {
-            if (fc.numPointLights >= kMaxPointLightsR) break;
-            auto& pld = fc.pointLights[fc.numPointLights];
-            pld.position = tf.position;
-            pld.range = pl.range;
-            pld.color = {pl.color.x * pl.intensity,
-                         pl.color.y * pl.intensity,
-                         pl.color.z * pl.intensity};
-            pld._pad = 0.0f;
-            fc.numPointLights++;
+            // CameraComponent が無い場合のプレビュー: エディタ視点を 16:9 で投影
+            gvView = m_camera->GetViewMatrix();
+            gvProj = XMMatrixPerspectiveFovLH(kDefaultFovYRad, kViewAspect, kDefaultNearZ, kDefaultFarZ);
+            gvPos  = m_camera->GetPosition();
         }
-    }
 
-    m_perFrameCB->Update(&fc, sizeof(fc), frameIndex);
-    m_commandList->SetPerFrameCBV(RootSignature::kSlotPerFrame, m_perFrameCB->GetGpuAddress(frameIndex));
+        // SceneRenderFlags のデフォルトが GameView 仕様 (全 false) なのでそのまま使う
+        RenderSceneToTarget(nativeCmdList,
+            gvView, gvProj, gvPos,
+            m_gameViewPerFrameCB.get(), frameIndex,
+            lightViewProj, lightDirF3, lightColorF3, lightAmbient, totalTime,
+            SceneRenderFlags{});
 
-    // シャドウマップSRVをバインド
-    m_commandList->SetSRVTable(RootSignature::kSlotShadowSRV,
-        m_srvHeap->GetGpuHandle(m_shadowSrvIndex));
+        m_gameViewRT->TransitionColorTo(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
-    XMMATRIX viewProj = m_camera->GetViewProjMatrix();
-
-    // 全Entityを描画
-    {
-        auto& reg = m_scene->GetRegistry();
-        auto renderView = reg.view<const Transform, const MeshRenderer>();
-        for (auto [e, transform, renderer] : renderView.each())
-        {
-            XMMATRIX world = transform.GetWorldMatrix();
-
-            bool isGrid = reg.all_of<GridPlane>(e);
-            bool isSkinned = reg.all_of<SkeletalAnimation>(e);
-
-            if (isGrid)
-            {
-                m_commandList->SetPipelineState(*m_gridPipelineState);
-            }
-            else if (isSkinned)
-            {
-                auto& skelAnim = reg.get<SkeletalAnimation>(e);
-                m_commandList->SetPipelineState(*m_skinnedPipelineState);
-                m_commandList->SetSRVTable(RootSignature::kSlotBonesSRV,
-                    m_srvHeap->GetGpuHandle(skelAnim.skinningBuffer->GetSrvIndex(frameIndex)));
-            }
-            else
-            {
-                m_commandList->SetPipelineState(*m_pipelineState);
-            }
-
-            bool hasNodeAnim = reg.all_of<NodeAnimationComp>(e);
-            for (u32 mi = 0; mi < static_cast<u32>(renderer.meshes.size()); ++mi)
-            {
-                const auto* mesh = renderer.meshes[mi];
-
-                XMMATRIX meshWorld = world;
-                if (hasNodeAnim && mi < static_cast<u32>(renderer.meshNodeTransforms.size()))
-                {
-                    XMMATRIX nodeMat = XMLoadFloat4x4(&renderer.meshNodeTransforms[mi]);
-                    meshWorld = nodeMat * world;
-                }
-
-                struct PerObjectData { XMMATRIX mvp; XMMATRIX mdl; } objData;
-                objData.mvp = XMMatrixTranspose(meshWorld * viewProj);
-                objData.mdl = XMMatrixTranspose(meshWorld);
-                m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
-
-                const Material* mat = mesh->GetMaterial();
-
-                // PBR テクスチャ SRV ブロックをバインド
-                if (mat && mat->srvBlockIndex != 0xFFFFFFFF)
-                {
-                    m_commandList->SetSRVTable(RootSignature::kSlotSRVTable,
-                        m_srvHeap->GetGpuHandle(mat->srvBlockIndex));
-                }
-                else
-                {
-                    Texture* tex = (mat && mat->albedoTexture) ? mat->albedoTexture : m_resourceManager->GetDefaultWhiteTexture();
-                    m_commandList->SetSRVTable(RootSignature::kSlotSRVTable,
-                        m_srvHeap->GetGpuHandle(tex->GetSrvIndex()));
-                }
-
-                // PBR Material Constants (Slot 5)
-                struct { float metallic; float roughness; u32 flags; float pad; } pbrParams;
-                // MeshRenderer のオーバーライド値を優先、なければ Material の値
-                pbrParams.metallic  = (renderer.overrideMetallic  >= 0.0f) ? renderer.overrideMetallic
-                                    : (mat ? mat->defaultMetallic : 0.0f);
-                pbrParams.roughness = (renderer.overrideRoughness >= 0.0f) ? renderer.overrideRoughness
-                                    : (mat ? mat->defaultRoughness : 0.5f);
-                pbrParams.flags     = 0;
-                if (mat && mat->normalMapTexture) pbrParams.flags |= 1u;
-                // overrideが有効な場合、metalRoughnessテクスチャのスケーリングを無効化
-                // （テクスチャ値×スライダーではなく、スライダー値を直接使う）
-                bool hasOverride = (renderer.overrideMetallic >= 0.0f || renderer.overrideRoughness >= 0.0f);
-                if (!hasOverride && mat && mat->metalRoughnessTexture) pbrParams.flags |= 2u;
-                pbrParams.pad = 0;
-                nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPBRMaterial, 4, &pbrParams, 0);
-
-                m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-                m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
-                m_commandList->SetIndexBuffer(mesh->GetIndexBuffer().GetView());
-                m_commandList->DrawIndexedInstanced(mesh->GetIndexCount());
-            }
-        }
-    }
-
-    // ---- Physics Debug Draw ----
-    if (m_physicsDebugDraw && m_physicsDebugRenderer->IsEnabled())
-    {
-        m_physicsDebugRenderer->BeginFrame();
-        m_physicsDebugRenderer->CollectFromRegistry(m_scene->GetRegistry());
-
-        XMFLOAT4X4 vp;
-        XMStoreFloat4x4(&vp, XMMatrixTranspose(m_camera->GetViewProjMatrix()));
-        m_physicsDebugRenderer->Render(nativeCmdList, vp);
-    }
-
-    // ---- Editor Icon Draw (カメラ/ライトアイコン, エディタモードのみ) ----
-    if (m_engineMode == EngineMode::Editor && !m_isGameMode)
-    {
-        m_editorIconRenderer->BeginFrame();
-        m_editorIconRenderer->CollectFromRegistry(m_scene->GetRegistry(), *m_editorCtx);
-
-        XMFLOAT4X4 vpIcon;
-        XMStoreFloat4x4(&vpIcon, XMMatrixTranspose(m_camera->GetViewProjMatrix()));
-        m_editorIconRenderer->Render(nativeCmdList, vpIcon);
+        // ★ ImGui RenderDrawData は事前に bind された RT に Draw するため、backbuffer に戻す必要がある
+        // (これを忘れると GameViewRT に ImGui を描こうとして state mismatch エラー)
+        m_commandList->SetRenderTarget(rtv, m_dsvHandle);
     }
 
     // ---- ImGui フレーム ----
@@ -1924,6 +2057,8 @@ void Application::Render()
     if (!m_isGameMode)
     {
         bool pendingPlayMode = false;
+        u64 sceneViewTexId = m_sceneViewRT ? m_sceneViewRT->GetImGuiTextureId() : 0;
+        u64 gameViewTexId  = m_gameViewRT  ? m_gameViewRT->GetImGuiTextureId()  : 0;
         m_editorLayer->Render(
             m_engineMode == EngineMode::Playing,
             m_scene.get(), m_camera.get(), m_window.get(),
@@ -1932,7 +2067,8 @@ void Application::Render()
             m_useVsync, m_shadowQualityIndex, m_shadowMapSize,
             m_shadowMapDirty, &m_gameClock,
             m_modeChangeRequested, pendingPlayMode,
-            std::string(ASSETS_DIR), kLeftPanelWidth, kToolbarHeight);
+            std::string(ASSETS_DIR), kLeftPanelWidth, kToolbarHeight,
+            sceneViewTexId, gameViewTexId);
 
         if (m_modeChangeRequested)
             m_pendingMode = pendingPlayMode ? EngineMode::Playing : EngineMode::Editor;
