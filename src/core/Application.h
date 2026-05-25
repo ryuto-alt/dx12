@@ -5,8 +5,6 @@
 #include "GameClock.h"
 
 #include <memory>
-#include <vector>
-#include <unordered_map>
 #include <chrono>
 #include <filesystem>
 #include <wrl/client.h>
@@ -15,7 +13,6 @@
 #include <entt/entt.hpp>
 #include "ecs/Components.h"
 
-// Forward declarations for graphics module
 namespace dx12e
 {
     class GraphicsDevice;
@@ -36,14 +33,6 @@ namespace dx12e
     class AudioSystem;
     class PhysicsSystem;
     class PhysicsDebugRenderer;
-    class EditorIconRenderer;
-    class EditorContext;
-    class EditorLayer;
-    class ModelThumbnailRenderer;
-    class RenderTarget;
-    class GameViewPanel;
-    struct Material;
-    struct ProjectInfo;
 }
 
 namespace dx12e
@@ -58,165 +47,76 @@ public:
     Application(const Application&) = delete;
     Application& operator=(const Application&) = delete;
 
-    void Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode = false,
-                    const ProjectInfo* projectInfo = nullptr);
+    void Initialize(HINSTANCE hInstance, int nCmdShow);
     void Run();
     void Shutdown();
 
-    enum class EngineMode { Editor, Playing };
-
 private:
-    // 描画パスごとのオプションフラグ。
-    // デフォルトは「最終ゲーム画面」相当の最小描画 (GameView 用)。
-    // SceneView では各 true を明示的に有効化する。
-    struct SceneRenderFlags {
-        bool drawGrid          = false;
-        bool drawIcons         = false;
-        bool drawPhysicsDebug  = false;
-    };
-
-    // CameraComponent(isActive=true) から毎フレーム算出される視点情報
-    struct GameCameraView {
-        DirectX::XMFLOAT3   position{};
-        DirectX::XMFLOAT4X4 view{};       // row-major (転置前)
-        DirectX::XMFLOAT4X4 proj{};       // row-major (転置前)
-        bool valid = false;
-    };
-
     void Update();
     void Render();
-    void RebuildScene();
-    void EnterPlayMode();
-    void EnterEditorMode();
-    void BuildGame();
+    void RebuildScene();  // game.lua ホットリロード時にシーンを再構築
 
-    // SceneView と GameView の両方が呼ぶ共通描画メソッド
-    void RenderSceneToTarget(ID3D12GraphicsCommandList* nativeCmdList,
-                             const DirectX::XMMATRIX& viewMat,
-                             const DirectX::XMMATRIX& projMat,
-                             const DirectX::XMFLOAT3& cameraPos,
-                             ConstantBuffer* perFrameCB,
-                             u32 frameIndex,
-                             const DirectX::XMMATRIX& lightViewProj,
-                             const DirectX::XMFLOAT3& lightDir,
-                             const DirectX::XMFLOAT3& lightColor,
-                             f32 lightAmbient,
-                             f32 totalTime,
-                             SceneRenderFlags flags);
-
-    std::unique_ptr<Window>         m_window;
-    std::unique_ptr<GraphicsDevice> m_graphicsDevice;
-    std::unique_ptr<CommandQueue>   m_commandQueue;
-    std::unique_ptr<SwapChain>      m_swapChain;
-    std::unique_ptr<FrameResources> m_frameResources;
+    // Window / DX12 core
+    std::unique_ptr<Window>            m_window;
+    std::unique_ptr<GraphicsDevice>    m_graphicsDevice;
+    std::unique_ptr<CommandQueue>      m_commandQueue;
+    std::unique_ptr<SwapChain>         m_swapChain;
+    std::unique_ptr<FrameResources>    m_frameResources;
     std::unique_ptr<DescriptorHeap>    m_descriptorHeap;
     std::unique_ptr<DescriptorHeap>    m_dsvHeap;
+    std::unique_ptr<DescriptorHeap>    m_srvHeap;
+    std::unique_ptr<CommandList>       m_commandList;
+
+    // Pipeline
     std::unique_ptr<RootSignature>     m_rootSignature;
     std::unique_ptr<PipelineState>     m_pipelineState;
-    std::unique_ptr<DescriptorHeap>    m_srvHeap;
-    std::unique_ptr<ResourceManager>   m_resourceManager;
-    std::unique_ptr<ImGuiManager>      m_imguiManager;
     std::unique_ptr<PipelineState>     m_skinnedPipelineState;
     std::unique_ptr<PipelineState>     m_gridPipelineState;
     std::unique_ptr<PipelineState>     m_shadowPipelineState;
     std::unique_ptr<PipelineState>     m_shadowSkinnedPipelineState;
+
+    // Depth buffer (バックバッファ用)
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_depthBuffer;
+    D3D12_CPU_DESCRIPTOR_HANDLE        m_dsvHandle{};
+
+    // Shadow map
     Microsoft::WRL::ComPtr<ID3D12Resource> m_shadowMap;
     std::unique_ptr<DescriptorHeap>    m_shadowDsvHeap;
     D3D12_CPU_DESCRIPTOR_HANDLE        m_shadowDsvHandle{};
     u32                                m_shadowSrvIndex = 0;
-    u32                                m_shadowMapSize = 4096;
-    i32                                m_shadowQualityIndex = 2;  // 0:1024, 1:2048, 2:4096, 3:8192
-    bool                               m_shadowMapDirty = false;
-    // エディタレイアウト
-    static constexpr f32 kLeftPanelWidth  = 280.0f;
-    static constexpr f32 kToolbarHeight   = 36.0f;
+    static constexpr u32               kShadowMapSize = 4096;
 
-    // エディタ/フォールバック用カメラのデフォルトパラメータ
-    // (CameraComponent を持たない GameView は本値で投影行列を作る)
-    static constexpr f32 kDefaultFovYRad = DirectX::XM_PIDIV4;  // 45度
-    static constexpr f32 kDefaultNearZ   = 0.1f;
-    static constexpr f32 kDefaultFarZ    = 1000.0f;
-
-    // SceneView / GameView は Unity 流の 16:9 固定 (Aspect Drop-down 相当)。
-    // パネル内には 16:9 領域をレターボックスで配置する。
-    static constexpr f32 kViewAspect = 16.0f / 9.0f;
-    // 任意サイズの矩形 (w, h) に内接する 16:9 矩形のサイズを計算する。
-    static void Fit16x9(u32 panelW, u32 panelH, u32& outW, u32& outH)
-    {
-        if (panelW < 1) panelW = 1;
-        if (panelH < 1) panelH = 1;
-        // 高さで合わせると幅 = h * 16/9 が panelW を超えるか?
-        u32 widthFromH = static_cast<u32>(static_cast<f32>(panelH) * kViewAspect);
-        if (widthFromH <= panelW)
-        {
-            outW = widthFromH;
-            outH = panelH;
-        }
-        else
-        {
-            outW = panelW;
-            outH = static_cast<u32>(static_cast<f32>(panelW) / kViewAspect);
-        }
-        if (outW < 1) outW = 1;
-        if (outH < 1) outH = 1;
-    }
-    bool m_isGameMode = false;
-    std::unique_ptr<EditorContext> m_editorCtx;
-    std::unique_ptr<EditorLayer>   m_editorLayer;
-    std::unique_ptr<ModelThumbnailRenderer> m_thumbRenderer;
-
-    // SceneView: エディタ視点をオフスクリーン RT に描画 → ImGui タブで表示
-    std::unique_ptr<RenderTarget>   m_sceneViewRT;
-    std::unique_ptr<ConstantBuffer> m_sceneViewPerFrameCB;
-
-    // GameView: シーンに置かれた CameraComponent(isActive=true) の視点を描画する別 RT
-    std::unique_ptr<RenderTarget>   m_gameViewRT;
-    std::unique_ptr<ConstantBuffer> m_gameViewPerFrameCB;
-    GameCameraView                  m_gameCameraView{};
-    bool m_showLauncher = true;  // プロジェクトランチャー表示フラグ
-    std::unique_ptr<Camera>            m_camera;
+    // ConstantBuffers
     std::unique_ptr<ConstantBuffer>    m_perFrameCB;
-    std::unique_ptr<CommandList>       m_commandList;
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_depthBuffer;
-    D3D12_CPU_DESCRIPTOR_HANDLE        m_dsvHandle{};
+
+    // Resources
+    std::unique_ptr<ResourceManager>   m_resourceManager;
+
+    // Camera (free WASD/mouse cam, used as fallback when no CameraComponent(isActive=true))
+    std::unique_ptr<Camera>            m_camera;
+
+    // Game systems
     std::unique_ptr<InputSystem>       m_inputSystem;
     std::unique_ptr<Scene>             m_scene;
     std::unique_ptr<ScriptEngine>      m_scriptEngine;
     std::unique_ptr<AudioSystem>       m_audioSystem;
     std::unique_ptr<PhysicsSystem>     m_physicsSystem;
     std::unique_ptr<PhysicsDebugRenderer> m_physicsDebugRenderer;
-    std::unique_ptr<EditorIconRenderer>   m_editorIconRenderer;
-    bool                               m_physicsDebugDraw = false;
+
+    // ImGui (将来のデバッグオーバーレイ用に保持。現在は init/begin/end の薄いラッパー)
+    std::unique_ptr<ImGuiManager>      m_imguiManager;
+
+    // クロック・状態
     GameClock                          m_gameClock;
     bool                               m_isRunning = false;
     u32                                m_framesSinceStart = 0;
 
-    // エディタ/プレイモード
-    EngineMode m_engineMode = EngineMode::Editor;
-    EngineMode m_pendingMode = EngineMode::Editor;
-    bool m_modeChangeRequested = false;
+    // カメラのデフォルトパラメータ
+    static constexpr f32 kDefaultFovYRad = DirectX::XM_PIDIV4;
+    static constexpr f32 kDefaultNearZ   = 0.1f;
+    static constexpr f32 kDefaultFarZ    = 1000.0f;
 
-    // OnPlayStart 直後に Lua が変更した値をエディタ配置値で打ち消すための即時上書き用スナップショット。
-    // Stop 時の完全復元には使わない（そちらは m_playSceneJson 経由）
-    struct EntitySnapshot {
-        DirectX::XMFLOAT3 position;
-        DirectX::XMFLOAT3 rotation;
-        DirectX::XMFLOAT3 scale;
-        DirectX::XMFLOAT4 quaternion;
-        bool useQuaternion;
-
-        bool      hasRigidBody = false;
-        RigidBody rigidBodyData;
-
-        float materialMetallic  = 1.0f;
-        float materialRoughness = 1.0f;
-    };
-    std::unordered_map<std::string, EntitySnapshot> m_editorSnapshots;
-
-    // Play 開始時のシーン全体スナップショット（Stop 時の復元用）
-    std::string m_playSceneJson;
-
-    // Luaホットリロード
+    // Lua ホットリロード
     std::filesystem::file_time_type m_scriptLastWriteTime{};
     f32 m_scriptPollTimer = 0.0f;
     static constexpr f32 kScriptPollInterval = 0.5f;

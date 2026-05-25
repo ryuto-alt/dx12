@@ -24,8 +24,6 @@ add_subdirectory(src/scene)
 add_subdirectory(src/scripting)
 add_subdirectory(src/physics)
 add_subdirectory(src/gui)
-add_subdirectory(src/editor)
-add_subdirectory(src/project)
 
 # Main executable
 add_executable(DX12Engine WIN32 src/main.cpp)
@@ -44,8 +42,6 @@ target_link_libraries(DX12Engine
         Scripting
         Physics
         Gui
-        Editor
-        ProjectLib
 )
 
 if(MSVC)
