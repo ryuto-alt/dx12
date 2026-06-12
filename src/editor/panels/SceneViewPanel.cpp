@@ -37,8 +37,11 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
     XMStoreFloat4x4(&viewF, camera->GetViewMatrix());
     XMStoreFloat4x4(&projF, camera->GetProjectionMatrix());
 
+    // 親階層込みのワールド行列でギズモを表示
+    bool hasParent = (transform.parent != entt::null && reg.valid(transform.parent));
     XMFLOAT4X4 worldF;
-    XMStoreFloat4x4(&worldF, transform.GetWorldMatrix());
+    XMStoreFloat4x4(&worldF, hasParent ? ComputeWorldMatrix(reg, ctx.selectedEntity)
+                                       : transform.GetWorldMatrix());
 
     ImGuizmo::SetOrthographic(false);
     ImGuizmo::SetDrawlist(ImGui::GetBackgroundDrawList());
@@ -79,9 +82,19 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
     {
         XMFLOAT3 oldPos = transform.position;
 
+        // 親がいる場合: 操作後のワールド行列を親の逆行列でローカルに戻す
+        XMFLOAT4X4 localF = worldF;
+        if (hasParent)
+        {
+            XMMATRIX parentWorld = ComputeWorldMatrix(reg, transform.parent);
+            XMMATRIX local = XMLoadFloat4x4(&worldF)
+                           * XMMatrixInverse(nullptr, parentWorld);
+            XMStoreFloat4x4(&localF, local);
+        }
+
         float translation[3], rotation[3], scale[3];
         ImGuizmo::DecomposeMatrixToComponents(
-            &worldF._11, translation, rotation, scale);
+            &localF._11, translation, rotation, scale);
         transform.position = {translation[0], translation[1], translation[2]};
         transform.rotation = {rotation[0], rotation[1], rotation[2]};
 
@@ -210,6 +223,21 @@ void SceneViewPanel::HandlePicking(entt::registry& reg,
     {
         if (reg.all_of<GridPlane>(e)) continue;
 
+        // 親階層込みのワールド位置/スケールで判定
+        XMFLOAT3 wpos   = transform.position;
+        XMFLOAT3 wscale = transform.scale;
+        if (transform.parent != entt::null && reg.valid(transform.parent))
+        {
+            XMMATRIX wm = ComputeWorldMatrix(reg, e);
+            XMFLOAT4X4 wf;
+            XMStoreFloat4x4(&wf, wm);
+            wpos = {wf._41, wf._42, wf._43};
+            wscale = {
+                XMVectorGetX(XMVector3Length(wm.r[0])),
+                XMVectorGetX(XMVector3Length(wm.r[1])),
+                XMVectorGetX(XMVector3Length(wm.r[2]))};
+        }
+
         XMFLOAT3 worldMin, worldMax;
 
         if (reg.all_of<MeshRenderer>(e))
@@ -231,14 +259,14 @@ void SceneViewPanel::HandlePicking(entt::registry& reg,
                 aabbMax.z = (std::max)(aabbMax.z, meshMax.z);
             }
             worldMin = {
-                transform.position.x + aabbMin.x * transform.scale.x,
-                transform.position.y + aabbMin.y * transform.scale.y,
-                transform.position.z + aabbMin.z * transform.scale.z
+                wpos.x + aabbMin.x * wscale.x,
+                wpos.y + aabbMin.y * wscale.y,
+                wpos.z + aabbMin.z * wscale.z
             };
             worldMax = {
-                transform.position.x + aabbMax.x * transform.scale.x,
-                transform.position.y + aabbMax.y * transform.scale.y,
-                transform.position.z + aabbMax.z * transform.scale.z
+                wpos.x + aabbMax.x * wscale.x,
+                wpos.y + aabbMax.y * wscale.y,
+                wpos.z + aabbMax.z * wscale.z
             };
         }
         else
@@ -246,14 +274,14 @@ void SceneViewPanel::HandlePicking(entt::registry& reg,
             // MeshRenderer なし (Camera/Light/Empty): 固定サイズ AABB
             constexpr f32 kIconHalf = 0.5f;
             worldMin = {
-                transform.position.x - kIconHalf,
-                transform.position.y - kIconHalf,
-                transform.position.z - kIconHalf
+                wpos.x - kIconHalf,
+                wpos.y - kIconHalf,
+                wpos.z - kIconHalf
             };
             worldMax = {
-                transform.position.x + kIconHalf,
-                transform.position.y + kIconHalf,
-                transform.position.z + kIconHalf
+                wpos.x + kIconHalf,
+                wpos.y + kIconHalf,
+                wpos.z + kIconHalf
             };
         }
 

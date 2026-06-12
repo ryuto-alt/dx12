@@ -40,6 +40,9 @@ struct Transform
     DirectX::XMMATRIX GetWorldMatrix() const;  // ローカル行列（親は考慮しない）
 };
 
+// 親階層を遡って合成したワールド行列を返す（描画/ギズモ/ピッキング用）
+DirectX::XMMATRIX ComputeWorldMatrix(const entt::registry& reg, entt::entity e);
+
 struct MeshRenderer
 {
     std::string modelPath; // アセット相対パス（シーン保存/読み込み用）

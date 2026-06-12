@@ -1733,7 +1733,8 @@ void Application::Render()
             {
                 if (reg.all_of<GridPlane>(e)) continue;
 
-                XMMATRIX world = transform.GetWorldMatrix();
+                XMMATRIX world = (transform.parent != entt::null)
+                    ? ComputeWorldMatrix(reg, e) : transform.GetWorldMatrix();
 
                 bool isSkinned = reg.all_of<SkeletalAnimation>(e);
                 if (isSkinned)
@@ -1880,7 +1881,8 @@ void Application::Render()
         auto renderView = reg.view<const Transform, const MeshRenderer>();
         for (auto [e, transform, renderer] : renderView.each())
         {
-            XMMATRIX world = transform.GetWorldMatrix();
+            XMMATRIX world = (transform.parent != entt::null)
+                ? ComputeWorldMatrix(reg, e) : transform.GetWorldMatrix();
 
             bool isGrid = reg.all_of<GridPlane>(e);
             bool isSkinned = reg.all_of<SkeletalAnimation>(e);

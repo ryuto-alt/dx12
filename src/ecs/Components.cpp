@@ -36,6 +36,21 @@ XMMATRIX Transform::GetWorldMatrix() const
     return s * r * t;
 }
 
+XMMATRIX ComputeWorldMatrix(const entt::registry& reg, entt::entity e)
+{
+    XMMATRIX world = XMMatrixIdentity();
+    entt::entity cur = e;
+    int depth = 0;  // 循環ガード
+    while (cur != entt::null && reg.valid(cur) && reg.all_of<Transform>(cur)
+           && depth++ < 64)
+    {
+        const auto& t = reg.get<Transform>(cur);
+        world = world * t.GetWorldMatrix();
+        cur = t.parent;
+    }
+    return world;
+}
+
 SkeletalAnimation::~SkeletalAnimation() = default;
 SkeletalAnimation::SkeletalAnimation(SkeletalAnimation&&) noexcept = default;
 SkeletalAnimation& SkeletalAnimation::operator=(SkeletalAnimation&&) noexcept = default;
