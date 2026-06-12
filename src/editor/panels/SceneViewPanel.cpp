@@ -251,7 +251,7 @@ void SceneViewPanel::HandlePicking(entt::registry& reg,
 
 void SceneViewPanel::HandleDeleteKey(entt::registry& reg,
                                      EditorContext& ctx,
-                                     Scene* scene,
+                                     Scene* /*scene*/,
                                      f32 vpX, f32 vpY, f32 vpW, f32 vpH)
 {
     if (!ctx.HasSelection()) return;
@@ -280,25 +280,10 @@ void SceneViewPanel::HandleDeleteKey(entt::registry& reg,
     if (deletePressed)
     {
         // マルチ選択の全エンティティを削除
+        // Undo コマンドは Application の遅延削除処理で積まれる
         for (auto e : ctx.selectedEntities)
         {
             if (!reg.valid(e)) continue;
-
-            DeletedEntityData data;
-            if (reg.all_of<NameTag>(e))
-                data.name = reg.get<NameTag>(e).name;
-            if (reg.all_of<Transform>(e))
-                data.transform = reg.get<Transform>(e);
-            if (reg.all_of<MeshRenderer>(e))
-            {
-                auto& mr = reg.get<MeshRenderer>(e);
-                data.modelPath = mr.modelPath;
-                data.overrideMetallic = mr.overrideMetallic;
-                data.overrideRoughness = mr.overrideRoughness;
-            }
-
-            ctx.undoSystem.PushCommand(std::make_unique<DeleteEntityCommand>(
-                scene, &reg, e, data));
             ctx.pendingDeletions.push_back(e);
         }
         ctx.ClearSelection();

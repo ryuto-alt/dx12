@@ -892,9 +892,9 @@ void Application::Update()
         if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) && !ImGui::GetIO().WantCaptureKeyboard)
         {
             if (GetAsyncKeyState('Z') & 1)
-                m_editorCtx->undoSystem.Undo();
+                m_editorCtx->pendingUndo = true;
             if (GetAsyncKeyState('Y') & 1)
-                m_editorCtx->undoSystem.Redo();
+                m_editorCtx->pendingRedo = true;
 
             // コピー (Ctrl+C) — 全コンポーネントを JSON スナップショットで保持
             if (GetAsyncKeyState('C') & 1)
@@ -1482,6 +1482,18 @@ void Application::Render()
         }
     }
 
+    // Undo/Redo（エンティティ復元がモデル再ロードを伴うため cmdList 有効時に実行）
+    if ((m_editorCtx->pendingUndo || m_editorCtx->pendingRedo)
+        && m_engineMode == EngineMode::Editor)
+    {
+        m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
+                            m_srvHeap.get(), nativeCmdList);
+        if (m_editorCtx->pendingUndo) m_editorCtx->undoSystem.Undo();
+        if (m_editorCtx->pendingRedo) m_editorCtx->undoSystem.Redo();
+        m_editorCtx->pendingUndo = false;
+        m_editorCtx->pendingRedo = false;
+    }
+
     // エンティティ複製（Ctrl+D / 右クリック複製。全コンポーネントのディープコピー）
     if (!m_editorCtx->pendingDuplications.empty() && m_engineMode == EngineMode::Editor)
     {
@@ -1966,8 +1978,24 @@ void Application::Render()
             m_editorCtx->pendingDeletions.clear();
             for (auto e : deletions)
             {
-                if (m_scene->GetRegistry().valid(e))
-                    m_scene->Remove(Entity(e, &m_scene->GetRegistry()));
+                auto& reg = m_scene->GetRegistry();
+                if (!reg.valid(e)) continue;
+
+                // Undo 用スナップショット（全コンポーネント）を取ってから削除
+                std::string snapshot = SceneSerializer::SerializeEntity(
+                    *m_scene, e, std::string(ASSETS_DIR));
+                entt::entity parent = reg.all_of<Transform>(e)
+                    ? reg.get<Transform>(e).parent : entt::null;
+
+                if (!snapshot.empty())
+                {
+                    m_editorCtx->undoSystem.PushCommand(
+                        std::make_unique<DeleteEntityCommand>(
+                            m_scene.get(), e,
+                            std::move(snapshot), std::string(ASSETS_DIR), parent));
+                }
+
+                m_scene->Remove(Entity(e, &reg));
             }
         }
     }

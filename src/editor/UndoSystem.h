@@ -93,24 +93,23 @@ private:
     float m_metalAfter, m_roughAfter;
 };
 
-// ── エンティティ削除コマンド（Undo で復元） ──
-struct DeletedEntityData
-{
-    std::string name;
-    Transform   transform;
-    std::string modelPath;
-    float       overrideMetallic  = -1.0f;
-    float       overrideRoughness = -1.0f;
-};
-
+// ── エンティティ削除コマンド（Undo で全コンポーネント復元） ──
+// 削除前に SceneSerializer::SerializeEntity で取った JSON スナップショットを保持し、
+// Undo で InstantiateEntity により復元する。
+// 注意: 復元処理はモデル再ロードを伴うため、cmdList が有効なフレーム境界で実行すること
+// （Application は pendingUndo/pendingRedo 経由で遅延実行する）。
 class DeleteEntityCommand : public IUndoCommand
 {
 public:
-    DeleteEntityCommand(Scene* scene, entt::registry* reg,
-                        entt::entity entity, const DeletedEntityData& data)
-        : m_scene(scene), m_reg(reg), m_entity(entity), m_data(data) {}
+    DeleteEntityCommand(Scene* scene, entt::entity entity,
+                        std::string snapshotJson, std::string assetsDir,
+                        entt::entity parent)
+        : m_scene(scene), m_entity(entity),
+          m_snapshot(std::move(snapshotJson)),
+          m_assetsDir(std::move(assetsDir)),
+          m_parent(parent) {}
 
-    void Undo() override;   // Scene::Spawn で復元
+    void Undo() override;   // スナップショットから復元
     void Redo() override;   // Scene::Remove で再削除
 
     const char* GetName() const override { return "Delete"; }
@@ -118,10 +117,11 @@ public:
     entt::entity GetRestoredEntity() const { return m_entity; }
 
 private:
-    Scene*            m_scene;
-    entt::registry*   m_reg;
-    entt::entity      m_entity;
-    DeletedEntityData m_data;
+    Scene*       m_scene;
+    entt::entity m_entity;
+    std::string  m_snapshot;
+    std::string  m_assetsDir;
+    entt::entity m_parent;
 };
 
 // ── エンティティ生成コマンド（Undo で削除） ──

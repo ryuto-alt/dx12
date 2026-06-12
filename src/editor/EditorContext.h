@@ -100,6 +100,10 @@ public:
     std::vector<entt::entity>        pendingDuplications;  // Ctrl+D / 右クリック複製
     std::vector<std::string>         pendingPastes;        // Ctrl+V (エンティティJSON)
     std::vector<entt::entity>        pendingDeletions;
+    // Undo/Redo はエンティティ復元（モデル再ロード）を伴う場合があるため
+    // cmdList が有効なフレーム境界まで遅延する
+    bool pendingUndo = false;
+    bool pendingRedo = false;
     std::vector<PendingScriptAttach> pendingScriptAttachments;
     std::string pendingLoadPath;
     bool pendingBuildGame = false;

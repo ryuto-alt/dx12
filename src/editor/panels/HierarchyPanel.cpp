@@ -190,23 +190,7 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
         }
         if (ImGui::MenuItem("\xe5\x89\x8a\xe9\x99\xa4"))  // 削除
         {
-            // Undo 用にデータを保存
-            DeletedEntityData data;
-            if (reg.all_of<NameTag>(e))
-                data.name = reg.get<NameTag>(e).name;
-            if (reg.all_of<Transform>(e))
-                data.transform = reg.get<Transform>(e);
-            if (reg.all_of<MeshRenderer>(e))
-            {
-                auto& mr = reg.get<MeshRenderer>(e);
-                data.modelPath = mr.modelPath;
-                data.overrideMetallic = mr.overrideMetallic;
-                data.overrideRoughness = mr.overrideRoughness;
-            }
-
-            ctx.undoSystem.PushCommand(std::make_unique<DeleteEntityCommand>(
-                nullptr, &reg, e, data));
-
+            // Undo コマンドは Application の遅延削除処理で積まれる
             ctx.pendingDeletions.push_back(e);
             if (ctx.IsSelected(e))
             {
