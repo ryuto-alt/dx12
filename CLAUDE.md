@@ -34,8 +34,8 @@
 ---
 
 ## プロジェクト概要
-- **AI駆動型 DirectX 12 ゲームエンジン**（C++20）
-- AIがC++コードを直接生成してゲームを作る仕組み。エディターは不要（コンポーネント・プレハブも不要）
+- **DirectX 12 ゲームエンジン + Unity ライクなエディタ**（C++20）
+- ECS (entt) ベース。エディタでシーン構築 → Lua スクリプトでゲームロジック → Play/Stop で即実行
 - ターゲット: 3Dアクション/FPS
 - 最終目標: PBR + DXR レイトレーシング
 - GitHub: https://github.com/ryuto-alt/dx12
@@ -198,6 +198,8 @@ Application::Render()
 | 5 | Blend+ImGui | アニメーションブレンド(CrossFade) + ImGui UI | `f6b3d62` |
 | 6 | Fullscreen | F11ボーダレスフルスクリーン + リサイズ対応 | `67c120e` |
 | 7 | FPSCamera | WASD+マウスFPSカメラ + Raw Input + InputSystem | `902b7cd` |
+| 8 | Editor基盤 | Hierarchy/Inspector/AssetBrowser/ギズモ/Play-Stop/Lua アタッチ | (多数) |
+| 9 | Editor実用化 | ディープ複製/削除Undo完全復元/コライダー編集/Add Component/親子階層のワールド変換反映/マルチ選択移動 | `0889516`〜`ebfc50f` |
 
 ## 次のステップ候補（優先度順）
 
@@ -228,9 +230,29 @@ Application::Render()
 - **unique_ptr + 前方宣言**: コンストラクタ/デストラクタを `.cpp` で定義しないと incomplete type エラー
 
 ### 操作方法
-- **右クリック**: カメラ操作開始（マウスカーソル非表示）
-- **WASD**: 前後左右移動
-- **Space/Shift**: 上下移動
-- **TAB**: カメラ操作解除
+
+#### カメラ
+- **右クリック + WASD**: フライスルーカメラ（Space/Shift で上下、右クリック中はカーソル非表示）
+- **F**: 選択エンティティにフォーカス（AABB から距離自動算出）
 - **F11**: ボーダレスフルスクリーン切り替え
-- **ImGui**: アニメーション切り替え（walk/sneakWalk）、ブレンド速度、移動速度調整
+
+#### エディタ
+- **W / E / R**: ギズモモード切替（移動 / 回転 / スケール）
+- **T**: ギズモのローカル/ワールド空間切替、**Ctrl ドラッグ**: スナップ
+- **左クリック**: ピッキング選択（**Ctrl+クリック**: マルチ選択）
+- **Ctrl+Z / Ctrl+Y**: Undo / Redo（Transform・コンポーネント編集・追加/削除・複製・リネーム・親子変更を網羅）
+- **Ctrl+D**: 複製、**Ctrl+C / Ctrl+V**: コピー / ペースト（全コンポーネントのディープコピー）
+- **Del**: 削除（子も一括削除。Undo でサブツリー丸ごと復元）
+- **Ctrl+S**: シーン保存、**Ctrl+N**: 新規シーン
+- **Hierarchy D&D**: 親子付け（空白へドロップで解除）、**.lua D&D**: スクリプトアタッチ
+- **ダブルクリック**: リネーム
+- **Inspector「✚ コンポーネント追加」**: ライト/カメラ/RigidBody/コライダーを後付け
+- **コンポーネントヘッダ右クリック**: コンポーネント削除
+
+#### エディタ実装メモ
+- エンティティの生成/複製/ペースト/削除 Undo/Redo は **フレーム境界で遅延実行**
+  （モデルロードに有効な cmdList が必要なため）。EditorContext の pending* キュー経由
+- シーン保存は JSON（SceneSerializer）。親子関係は配列インデックス参照で保存
+- プリミティブは MeshRenderer.modelPath のマーカー（`__primitive_box__` 等）で種別判定
+- 親子階層のワールド行列は `ComputeWorldMatrix(reg, e)`（描画/ギズモ/ピッキングで使用）
+- 削除 Undo は SerializeEntity の JSON スナップショットから全コンポーネント復元

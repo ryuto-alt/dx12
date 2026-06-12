@@ -1265,6 +1265,10 @@ void Application::EnterEditorMode()
     m_playSceneJson.clear();
     m_playSceneJson.shrink_to_fit();
 
+    // シーン再構築でエンティティ ID が変わり Undo スタックの参照が無効になるためクリア
+    m_editorCtx->undoSystem.Clear();
+    m_editorCtx->ClearSelection();
+
     // Play 中に CameraComponent の FOV を採用してた可能性があるためエディタ用に戻す
     m_camera->SetPerspective(DirectX::XM_PIDIV4,
         static_cast<f32>(m_window->GetWidth()) / static_cast<f32>(m_window->GetHeight()),
