@@ -960,10 +960,19 @@ void Application::Update()
                             dist = std::clamp(maxExtent * 2.0f, 2.0f, 100.0f);
                     }
 
+                    // 親階層込みのワールド位置にフォーカス
+                    DirectX::XMFLOAT3 wpos = t.position;
+                    if (t.parent != entt::null && reg.valid(t.parent))
+                    {
+                        DirectX::XMFLOAT4X4 wf;
+                        XMStoreFloat4x4(&wf, ComputeWorldMatrix(reg, sel));
+                        wpos = {wf._41, wf._42, wf._43};
+                    }
+
                     auto fwd = m_camera->GetForward();
-                    m_camera->SetPosition({t.position.x - fwd.x * dist,
-                                           t.position.y - fwd.y * dist,
-                                           t.position.z - fwd.z * dist});
+                    m_camera->SetPosition({wpos.x - fwd.x * dist,
+                                           wpos.y - fwd.y * dist,
+                                           wpos.z - fwd.z * dist});
                 }
             }
         }
