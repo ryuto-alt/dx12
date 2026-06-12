@@ -148,6 +148,35 @@ private:
     entt::entity    m_entity;
 };
 
+// ── 複合コマンド（複数コマンドを 1 回の Undo/Redo で実行） ──
+class CompositeCommand : public IUndoCommand
+{
+public:
+    explicit CompositeCommand(const char* name) : m_name(name) {}
+
+    void Add(std::unique_ptr<IUndoCommand> cmd) { m_commands.push_back(std::move(cmd)); }
+    bool Empty() const { return m_commands.empty(); }
+    size_t Size() const { return m_commands.size(); }
+
+    void Undo() override
+    {
+        for (auto it = m_commands.rbegin(); it != m_commands.rend(); ++it)
+            (*it)->Undo();
+    }
+
+    void Redo() override
+    {
+        for (auto& cmd : m_commands)
+            cmd->Redo();
+    }
+
+    const char* GetName() const override { return m_name; }
+
+private:
+    std::vector<std::unique_ptr<IUndoCommand>> m_commands;
+    const char* m_name;
+};
+
 // ── 汎用コンポーネント編集コマンド（値のコピーで before/after を保持） ──
 template<typename T>
 class ComponentEditCommand : public IUndoCommand

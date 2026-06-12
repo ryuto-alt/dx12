@@ -1,6 +1,8 @@
 #pragma once
 
 #include <entt/entt.hpp>
+#include <vector>
+#include <utility>
 #include "core/Types.h"
 #include "ecs/Components.h"
 
@@ -34,6 +36,8 @@ private:
     // ギズモ操作中の開始時 Transform（Undo用）
     bool      m_gizmoWasUsing = false;
     Transform m_gizmoStartTransform{};
+    // マルチ選択時: 全選択エンティティの開始時 Transform
+    std::vector<std::pair<entt::entity, Transform>> m_gizmoStartGroup;
 };
 
 } // namespace dx12e

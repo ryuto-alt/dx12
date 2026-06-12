@@ -61,8 +61,14 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
     bool isUsing = ImGuizmo::IsUsing();
     if (isUsing && !m_gizmoWasUsing)
     {
-        // ドラッグ開始: 変更前の Transform を保存
+        // ドラッグ開始: 全選択エンティティの変更前 Transform を保存
         m_gizmoStartTransform = transform;
+        m_gizmoStartGroup.clear();
+        for (auto e : ctx.selectedEntities)
+        {
+            if (reg.valid(e) && reg.all_of<Transform>(e))
+                m_gizmoStartGroup.push_back({e, reg.get<Transform>(e)});
+        }
     }
 
     if (ImGuizmo::Manipulate(
@@ -71,6 +77,8 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
             &worldF._11, nullptr,
             useSnap ? snapValues : nullptr))
     {
+        XMFLOAT3 oldPos = transform.position;
+
         float translation[3], rotation[3], scale[3];
         ImGuizmo::DecomposeMatrixToComponents(
             &worldF._11, translation, rotation, scale);
@@ -83,28 +91,49 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
         scale[1] = (std::max)(scale[1], kMinScale);
         scale[2] = (std::max)(scale[2], kMinScale);
         transform.scale = {scale[0], scale[1], scale[2]};
+
+        // マルチ選択時: 移動デルタを他の選択エンティティにも適用
+        if (ctx.gizmoMode == GizmoMode::Translate && ctx.selectedEntities.size() > 1)
+        {
+            XMFLOAT3 delta = {transform.position.x - oldPos.x,
+                              transform.position.y - oldPos.y,
+                              transform.position.z - oldPos.z};
+            for (auto e : ctx.selectedEntities)
+            {
+                if (e == ctx.selectedEntity) continue;
+                if (!reg.valid(e) || !reg.all_of<Transform>(e)) continue;
+                auto& t = reg.get<Transform>(e);
+                t.position.x += delta.x;
+                t.position.y += delta.y;
+                t.position.z += delta.z;
+            }
+        }
     }
 
-    // ギズモ操作終了を検出して Undo コマンドを push
+    // ギズモ操作終了を検出して Undo コマンドを push（全選択を 1 コマンドに集約）
     if (!isUsing && m_gizmoWasUsing)
     {
-        // ドラッグ終了: 変更後の Transform と比較して差分があれば Undo に積む
-        auto& after = transform;
-        bool changed =
-            m_gizmoStartTransform.position.x != after.position.x ||
-            m_gizmoStartTransform.position.y != after.position.y ||
-            m_gizmoStartTransform.position.z != after.position.z ||
-            m_gizmoStartTransform.rotation.x != after.rotation.x ||
-            m_gizmoStartTransform.rotation.y != after.rotation.y ||
-            m_gizmoStartTransform.rotation.z != after.rotation.z ||
-            m_gizmoStartTransform.scale.x    != after.scale.x ||
-            m_gizmoStartTransform.scale.y    != after.scale.y ||
-            m_gizmoStartTransform.scale.z    != after.scale.z;
-        if (changed)
+        auto composite = std::make_unique<CompositeCommand>("Transform");
+        for (auto& [e, before] : m_gizmoStartGroup)
         {
-            ctx.undoSystem.PushCommand(std::make_unique<TransformCommand>(
-                &reg, ctx.selectedEntity, m_gizmoStartTransform, after));
+            if (!reg.valid(e) || !reg.all_of<Transform>(e)) continue;
+            const auto& after = reg.get<Transform>(e);
+            bool changed =
+                before.position.x != after.position.x ||
+                before.position.y != after.position.y ||
+                before.position.z != after.position.z ||
+                before.rotation.x != after.rotation.x ||
+                before.rotation.y != after.rotation.y ||
+                before.rotation.z != after.rotation.z ||
+                before.scale.x    != after.scale.x ||
+                before.scale.y    != after.scale.y ||
+                before.scale.z    != after.scale.z;
+            if (changed)
+                composite->Add(std::make_unique<TransformCommand>(&reg, e, before, after));
         }
+        if (!composite->Empty())
+            ctx.undoSystem.PushCommand(std::move(composite));
+        m_gizmoStartGroup.clear();
     }
     m_gizmoWasUsing = isUsing;
 }

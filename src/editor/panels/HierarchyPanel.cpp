@@ -69,8 +69,13 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
         // Enter で確定
         if (entered)
         {
-            if (std::strlen(m_renameBuf) > 0)
+            if (std::strlen(m_renameBuf) > 0 && tag.name != m_renameBuf)
+            {
+                NameTag before = tag;
                 tag.name = m_renameBuf;
+                ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<NameTag>>(
+                    &reg, e, before, tag, "Rename"));
+            }
             m_renamingEntity = entt::null;
             ImGui::PopID();
             return;
@@ -83,8 +88,13 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
             bool focused = ImGui::IsItemFocused();
             if (!active && !focused)
             {
-                if (std::strlen(m_renameBuf) > 0)
+                if (std::strlen(m_renameBuf) > 0 && tag.name != m_renameBuf)
+                {
+                    NameTag before = tag;
                     tag.name = m_renameBuf;
+                    ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<NameTag>>(
+                        &reg, e, before, tag, "Rename"));
+                }
                 m_renamingEntity = entt::null;
             }
         }
@@ -146,7 +156,13 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
                     check = reg.get<Transform>(check).parent;
                 }
                 if (!isCyclic)
-                    reg.get<Transform>(droppedEntity).parent = e;
+                {
+                    auto& dt = reg.get<Transform>(droppedEntity);
+                    Transform before = dt;
+                    dt.parent = e;
+                    ctx.undoSystem.PushCommand(std::make_unique<TransformCommand>(
+                        &reg, droppedEntity, before, dt));
+                }
             }
         }
         if (const ImGuiPayload* scriptPayload = ImGui::AcceptDragDropPayload("DND_SCRIPT"))
@@ -204,7 +220,13 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
         if (reg.all_of<Transform>(e) && reg.get<Transform>(e).parent != entt::null)
         {
             if (ImGui::MenuItem("\xe8\xa6\xaa\xe3\x81\x8b\xe3\x82\x89\xe5\xa4\x96\xe3\x81\x99"))  // 親から外す
-                reg.get<Transform>(e).parent = entt::null;
+            {
+                auto& t = reg.get<Transform>(e);
+                Transform before = t;
+                t.parent = entt::null;
+                ctx.undoSystem.PushCommand(std::make_unique<TransformCommand>(
+                    &reg, e, before, t));
+            }
         }
 
         ImGui::EndPopup();
@@ -252,8 +274,15 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("HIERARCHY_ENTITY"))
         {
             entt::entity droppedEntity = *static_cast<const entt::entity*>(payload->Data);
-            if (reg.valid(droppedEntity) && reg.all_of<Transform>(droppedEntity))
-                reg.get<Transform>(droppedEntity).parent = entt::null;
+            if (reg.valid(droppedEntity) && reg.all_of<Transform>(droppedEntity)
+                && reg.get<Transform>(droppedEntity).parent != entt::null)
+            {
+                auto& t = reg.get<Transform>(droppedEntity);
+                Transform before = t;
+                t.parent = entt::null;
+                ctx.undoSystem.PushCommand(std::make_unique<TransformCommand>(
+                    &reg, droppedEntity, before, t));
+            }
         }
         ImGui::EndDragDropTarget();
     }
