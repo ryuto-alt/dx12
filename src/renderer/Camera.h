@@ -25,6 +25,7 @@ public:
     DirectX::XMMATRIX GetProjectionMatrix() const;
     DirectX::XMMATRIX GetViewProjMatrix() const;
     DirectX::XMFLOAT3 GetPosition() const { return m_position; }
+    DirectX::XMFLOAT3 GetForward()  const { return m_forward; }
     f32 GetYaw() const { return m_yaw; }
     f32 GetPitch() const { return m_pitch; }
 

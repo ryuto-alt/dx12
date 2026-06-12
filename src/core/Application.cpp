@@ -930,6 +930,42 @@ void Application::Update()
             if (GetAsyncKeyState('E') & 1) m_editorCtx->gizmoMode = GizmoMode::Rotate;
             if (GetAsyncKeyState('R') & 1) m_editorCtx->gizmoMode = GizmoMode::Scale;
             if (GetAsyncKeyState('T') & 1) m_editorCtx->gizmoLocalSpace = !m_editorCtx->gizmoLocalSpace;
+
+            // F: 選択エンティティにフォーカス（Unity 風）
+            if ((GetAsyncKeyState('F') & 1) && m_editorCtx->HasSelection())
+            {
+                auto& reg = m_scene->GetRegistry();
+                auto sel = m_editorCtx->selectedEntity;
+                if (reg.valid(sel) && reg.all_of<Transform>(sel))
+                {
+                    const auto& t = reg.get<Transform>(sel);
+
+                    // 対象サイズからフォーカス距離を決める
+                    f32 dist = 5.0f;
+                    if (reg.all_of<MeshRenderer>(sel))
+                    {
+                        const auto& mr = reg.get<MeshRenderer>(sel);
+                        f32 maxExtent = 0.0f;
+                        for (const auto* mesh : mr.meshes)
+                        {
+                            if (!mesh) continue;
+                            auto mn = mesh->GetAABBMin();
+                            auto mx = mesh->GetAABBMax();
+                            maxExtent = std::max({maxExtent,
+                                (mx.x - mn.x) * t.scale.x,
+                                (mx.y - mn.y) * t.scale.y,
+                                (mx.z - mn.z) * t.scale.z});
+                        }
+                        if (maxExtent > 0.0f)
+                            dist = std::clamp(maxExtent * 2.0f, 2.0f, 100.0f);
+                    }
+
+                    auto fwd = m_camera->GetForward();
+                    m_camera->SetPosition({t.position.x - fwd.x * dist,
+                                           t.position.y - fwd.y * dist,
+                                           t.position.z - fwd.z * dist});
+                }
+            }
         }
 
     }
