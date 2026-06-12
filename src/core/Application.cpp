@@ -1976,26 +1976,68 @@ void Application::Render()
         {
             auto deletions = std::move(m_editorCtx->pendingDeletions);
             m_editorCtx->pendingDeletions.clear();
-            for (auto e : deletions)
+            for (auto root : deletions)
             {
                 auto& reg = m_scene->GetRegistry();
-                if (!reg.valid(e)) continue;
+                if (!reg.valid(root)) continue;  // 先行削除のサブツリーに含まれていた場合
 
-                // Undo 用スナップショット（全コンポーネント）を取ってから削除
-                std::string snapshot = SceneSerializer::SerializeEntity(
-                    *m_scene, e, std::string(ASSETS_DIR));
-                entt::entity parent = reg.all_of<Transform>(e)
-                    ? reg.get<Transform>(e).parent : entt::null;
-
-                if (!snapshot.empty())
+                // サブツリー収集（親→子の順。BFS）
+                std::vector<entt::entity> subtree{root};
+                for (size_t i = 0; i < subtree.size(); ++i)
                 {
-                    m_editorCtx->undoSystem.PushCommand(
-                        std::make_unique<DeleteEntityCommand>(
-                            m_scene.get(), e,
-                            std::move(snapshot), std::string(ASSETS_DIR), parent));
+                    for (auto [c, t] : reg.view<const Transform>().each())
+                    {
+                        if (t.parent == subtree[i])
+                            subtree.push_back(c);
+                    }
                 }
 
-                m_scene->Remove(Entity(e, &reg));
+                // Undo 用スナップショット（全コンポーネント + ローカル親インデックス）
+                std::vector<DeletedEntityRecord> records;
+                records.reserve(subtree.size());
+                entt::entity externalParent = reg.all_of<Transform>(root)
+                    ? reg.get<Transform>(root).parent : entt::null;
+                for (auto e : subtree)
+                {
+                    DeletedEntityRecord rec;
+                    rec.snapshot = SceneSerializer::SerializeEntity(
+                        *m_scene, e, std::string(ASSETS_DIR));
+                    if (reg.all_of<Transform>(e))
+                    {
+                        auto parent = reg.get<Transform>(e).parent;
+                        auto it = std::find(subtree.begin(), subtree.end(), parent);
+                        if (it != subtree.end())
+                            rec.parentLocalIndex = static_cast<int>(it - subtree.begin());
+                    }
+                    records.push_back(std::move(rec));
+                }
+
+                m_editorCtx->undoSystem.PushCommand(
+                    std::make_unique<DeleteEntityCommand>(
+                        m_scene.get(), std::string(ASSETS_DIR),
+                        std::move(records), subtree, externalParent));
+
+                // 子から順に削除
+                for (auto it = subtree.rbegin(); it != subtree.rend(); ++it)
+                {
+                    if (reg.valid(*it))
+                        m_scene->Remove(Entity(*it, &reg));
+                }
+            }
+
+            // 削除で無効になった選択をクリーンアップ
+            {
+                auto& reg = m_scene->GetRegistry();
+                auto& sel = m_editorCtx->selectedEntities;
+                sel.erase(std::remove_if(sel.begin(), sel.end(),
+                          [&](entt::entity e) { return !reg.valid(e); }),
+                          sel.end());
+                if (m_editorCtx->selectedEntity != entt::null
+                    && !reg.valid(m_editorCtx->selectedEntity))
+                {
+                    m_editorCtx->selectedEntity =
+                        sel.empty() ? entt::null : sel.back();
+                }
             }
         }
     }

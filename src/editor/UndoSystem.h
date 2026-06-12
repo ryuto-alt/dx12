@@ -93,35 +93,41 @@ private:
     float m_metalAfter, m_roughAfter;
 };
 
-// ── エンティティ削除コマンド（Undo で全コンポーネント復元） ──
-// 削除前に SceneSerializer::SerializeEntity で取った JSON スナップショットを保持し、
-// Undo で InstantiateEntity により復元する。
+// ── エンティティ削除コマンド（サブツリー対応。Undo で全コンポーネント復元） ──
+// 削除前に SceneSerializer::SerializeEntity で取った JSON スナップショットを
+// 親→子の順で保持し、Undo で InstantiateEntity により親子関係ごと復元する。
 // 注意: 復元処理はモデル再ロードを伴うため、cmdList が有効なフレーム境界で実行すること
 // （Application は pendingUndo/pendingRedo 経由で遅延実行する）。
+struct DeletedEntityRecord
+{
+    std::string snapshot;          // SerializeEntity の JSON
+    int         parentLocalIndex = -1;  // records 配列内の親 (-1 = サブツリー外)
+};
+
 class DeleteEntityCommand : public IUndoCommand
 {
 public:
-    DeleteEntityCommand(Scene* scene, entt::entity entity,
-                        std::string snapshotJson, std::string assetsDir,
-                        entt::entity parent)
-        : m_scene(scene), m_entity(entity),
-          m_snapshot(std::move(snapshotJson)),
+    DeleteEntityCommand(Scene* scene, std::string assetsDir,
+                        std::vector<DeletedEntityRecord> records,
+                        std::vector<entt::entity> entities,
+                        entt::entity externalParent)
+        : m_scene(scene),
           m_assetsDir(std::move(assetsDir)),
-          m_parent(parent) {}
+          m_records(std::move(records)),
+          m_entities(std::move(entities)),
+          m_externalParent(externalParent) {}
 
-    void Undo() override;   // スナップショットから復元
-    void Redo() override;   // Scene::Remove で再削除
+    void Undo() override;   // スナップショットからサブツリー復元
+    void Redo() override;   // 再削除
 
     const char* GetName() const override { return "Delete"; }
 
-    entt::entity GetRestoredEntity() const { return m_entity; }
-
 private:
-    Scene*       m_scene;
-    entt::entity m_entity;
-    std::string  m_snapshot;
-    std::string  m_assetsDir;
-    entt::entity m_parent;
+    Scene*                           m_scene;
+    std::string                      m_assetsDir;
+    std::vector<DeletedEntityRecord> m_records;
+    std::vector<entt::entity>        m_entities;       // 現在の entity ID (Redo 用)
+    entt::entity                     m_externalParent; // ルートの親（サブツリー外）
 };
 
 // ── エンティティ生成コマンド（Undo で削除） ──
