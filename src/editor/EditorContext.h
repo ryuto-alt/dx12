@@ -26,17 +26,6 @@ struct PendingScriptAttach
     std::string  scriptPath;   // assets 相対パス
 };
 
-// コピー&ペースト用
-struct ClipboardEntry
-{
-    std::string name;
-    DirectX::XMFLOAT3 position{};
-    DirectX::XMFLOAT3 rotation{};
-    DirectX::XMFLOAT3 scale{1,1,1};
-    std::string modelPath;
-    float overrideMetallic  = -1.0f;
-    float overrideRoughness = -1.0f;
-};
 
 class EditorContext
 {
@@ -108,6 +97,8 @@ public:
 
     // 遅延処理キュー
     std::vector<PendingSpawnRequest> pendingSpawns;
+    std::vector<entt::entity>        pendingDuplications;  // Ctrl+D / 右クリック複製
+    std::vector<std::string>         pendingPastes;        // Ctrl+V (エンティティJSON)
     std::vector<entt::entity>        pendingDeletions;
     std::vector<PendingScriptAttach> pendingScriptAttachments;
     std::string pendingLoadPath;
@@ -124,8 +115,8 @@ public:
     // Undo/Redo
     UndoSystem undoSystem;
 
-    // クリップボード（Ctrl+C/V/D 用）
-    std::vector<ClipboardEntry> clipboard;
+    // クリップボード（Ctrl+C/V 用。エンティティの JSON スナップショット）
+    std::vector<std::string> clipboard;
 };
 
 } // namespace dx12e

@@ -184,6 +184,10 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
             std::memset(m_renameBuf, 0, sizeof(m_renameBuf));
             strncpy_s(m_renameBuf, tag.name.c_str(), _TRUNCATE);
         }
+        if (ImGui::MenuItem("\xe8\xa4\x87\xe8\xa3\xbd"))  // 複製
+        {
+            ctx.pendingDuplications.push_back(e);
+        }
         if (ImGui::MenuItem("\xe5\x89\x8a\xe9\x99\xa4"))  // 削除
         {
             // Undo 用にデータを保存

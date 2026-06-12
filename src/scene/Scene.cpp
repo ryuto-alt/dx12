@@ -214,6 +214,7 @@ Entity Scene::SpawnPlane(const std::string& name,
 
     // MeshRenderer
     MeshRenderer& renderer = entity.AddComponent<MeshRenderer>();
+    renderer.modelPath = "__primitive_plane__";
     auto planeMesh = std::make_unique<Mesh>();
     planeMesh->InitializeAsPlane(*m_device, size);
     renderer.meshes.push_back(planeMesh.get());
@@ -236,6 +237,7 @@ Entity Scene::SpawnBox(const std::string& name,
     Entity entity = CreateEntityWithTransform(name, position, rotation, scale);
 
     MeshRenderer& renderer = entity.AddComponent<MeshRenderer>();
+    renderer.modelPath = "__primitive_box__";
     auto boxMesh = std::make_unique<Mesh>();
     boxMesh->InitializeAsBox(*m_device);
     renderer.meshes.push_back(boxMesh.get());
@@ -252,6 +254,7 @@ Entity Scene::SpawnSphere(const std::string& name,
     Entity entity = CreateEntityWithTransform(name, position, {0, 0, 0}, {1, 1, 1});
 
     MeshRenderer& renderer = entity.AddComponent<MeshRenderer>();
+    renderer.modelPath = "__primitive_sphere__";
     auto sphereMesh = std::make_unique<Mesh>();
     sphereMesh->InitializeAsSphere(*m_device, radius);
     renderer.meshes.push_back(sphereMesh.get());

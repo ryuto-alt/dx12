@@ -896,7 +896,7 @@ void Application::Update()
             if (GetAsyncKeyState('Y') & 1)
                 m_editorCtx->undoSystem.Redo();
 
-            // コピー (Ctrl+C)
+            // コピー (Ctrl+C) — 全コンポーネントを JSON スナップショットで保持
             if (GetAsyncKeyState('C') & 1)
             {
                 m_editorCtx->clipboard.clear();
@@ -904,62 +904,22 @@ void Application::Update()
                 for (auto e : m_editorCtx->selectedEntities)
                 {
                     if (!reg.valid(e)) continue;
-                    ClipboardEntry entry;
-                    if (reg.all_of<NameTag>(e))
-                        entry.name = reg.get<NameTag>(e).name;
-                    if (reg.all_of<Transform>(e))
-                    {
-                        auto& t = reg.get<Transform>(e);
-                        entry.position = t.position;
-                        entry.rotation = t.rotation;
-                        entry.scale    = t.scale;
-                    }
-                    if (reg.all_of<MeshRenderer>(e))
-                    {
-                        auto& mr = reg.get<MeshRenderer>(e);
-                        entry.modelPath = mr.modelPath;
-                        entry.overrideMetallic = mr.overrideMetallic;
-                        entry.overrideRoughness = mr.overrideRoughness;
-                    }
-                    m_editorCtx->clipboard.push_back(entry);
+                    std::string snap = SceneSerializer::SerializeEntity(
+                        *m_scene, e, std::string(ASSETS_DIR));
+                    if (!snap.empty())
+                        m_editorCtx->clipboard.push_back(std::move(snap));
                 }
             }
 
-            // ペースト (Ctrl+V) / 複製 (Ctrl+D)
-            bool paste = (GetAsyncKeyState('V') & 1) != 0;
-            bool duplicate = (GetAsyncKeyState('D') & 1) != 0;
+            // ペースト (Ctrl+V) — フレーム境界（cmdList 有効時）で生成
+            if ((GetAsyncKeyState('V') & 1) && !m_editorCtx->clipboard.empty())
+                m_editorCtx->pendingPastes = m_editorCtx->clipboard;
 
-            if (paste && !m_editorCtx->clipboard.empty())
+            // 複製 (Ctrl+D) — 全コンポーネントのディープコピー
+            if ((GetAsyncKeyState('D') & 1) && m_editorCtx->HasSelection())
             {
-                for (auto& entry : m_editorCtx->clipboard)
-                {
-                    PendingSpawnRequest req;
-                    req.modelPath = entry.modelPath.empty() ? "__empty__" : entry.modelPath;
-                    req.position = {entry.position.x + 1.0f, entry.position.y, entry.position.z};
-                    m_editorCtx->pendingSpawns.push_back(req);
-                }
-            }
-
-            if (duplicate && m_editorCtx->HasSelection())
-            {
-                // 即座にクリップボードに入れてペースト
-                auto& reg = m_scene->GetRegistry();
                 for (auto e : m_editorCtx->selectedEntities)
-                {
-                    if (!reg.valid(e)) continue;
-                    PendingSpawnRequest req;
-                    if (reg.all_of<MeshRenderer>(e))
-                        req.modelPath = reg.get<MeshRenderer>(e).modelPath;
-                    else
-                        req.modelPath = "__empty__";
-                    if (req.modelPath.empty()) req.modelPath = "__empty__";
-                    if (reg.all_of<Transform>(e))
-                    {
-                        auto& t = reg.get<Transform>(e);
-                        req.position = {t.position.x + 1.0f, t.position.y, t.position.z};
-                    }
-                    m_editorCtx->pendingSpawns.push_back(req);
-                }
+                    m_editorCtx->pendingDuplications.push_back(e);
             }
         }
 
@@ -1519,6 +1479,60 @@ void Application::Render()
                         m_scene.get(), &m_scene->GetRegistry(), spawnedEntity));
             }
             Logger::Info("Spawned: {}", name);
+        }
+    }
+
+    // エンティティ複製（Ctrl+D / 右クリック複製。全コンポーネントのディープコピー）
+    if (!m_editorCtx->pendingDuplications.empty() && m_engineMode == EngineMode::Editor)
+    {
+        auto sources = std::move(m_editorCtx->pendingDuplications);
+        m_editorCtx->pendingDuplications.clear();
+
+        m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
+                            m_srvHeap.get(), nativeCmdList);
+
+        m_editorCtx->ClearSelection();
+        for (auto src : sources)
+        {
+            entt::entity copy = SceneSerializer::DuplicateEntity(
+                *m_scene, src, std::string(ASSETS_DIR));
+            if (copy == entt::null) continue;
+
+            m_editorCtx->AddToSelection(copy);
+            m_editorCtx->undoSystem.PushCommand(
+                std::make_unique<SpawnEntityCommand>(
+                    m_scene.get(), &m_scene->GetRegistry(), copy));
+            Logger::Info("Duplicated entity: {}",
+                         m_scene->GetRegistry().get<NameTag>(copy).name);
+        }
+    }
+
+    // エンティティペースト（Ctrl+V。コピー時の JSON スナップショットから生成）
+    if (!m_editorCtx->pendingPastes.empty() && m_engineMode == EngineMode::Editor)
+    {
+        auto pastes = std::move(m_editorCtx->pendingPastes);
+        m_editorCtx->pendingPastes.clear();
+
+        m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
+                            m_srvHeap.get(), nativeCmdList);
+
+        m_editorCtx->ClearSelection();
+        for (const auto& snap : pastes)
+        {
+            entt::entity e = SceneSerializer::InstantiateEntity(
+                *m_scene, snap, std::string(ASSETS_DIR));
+            if (e == entt::null) continue;
+
+            auto& reg = m_scene->GetRegistry();
+            // 元と重ならないよう少しずらして配置
+            if (reg.all_of<Transform>(e))
+                reg.get<Transform>(e).position.x += 1.0f;
+
+            m_editorCtx->AddToSelection(e);
+            m_editorCtx->undoSystem.PushCommand(
+                std::make_unique<SpawnEntityCommand>(
+                    m_scene.get(), &m_scene->GetRegistry(), e));
+            Logger::Info("Pasted entity: {}", reg.get<NameTag>(e).name);
         }
     }
 

@@ -13,6 +13,7 @@
 #include <Windows.h>
 #include <fstream>
 #include <filesystem>
+#include <unordered_map>
 
 using json = nlohmann::json;
 using namespace DirectX;
@@ -47,19 +48,15 @@ static XMFLOAT3 DeserializeFloat3(const json& j,
     return {j[0].get<float>(), j[1].get<float>(), j[2].get<float>()};
 }
 
-// シーン全エンティティを JSON ノードに直列化（共通処理）
-static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
+// 単一エンティティを JSON ノードに直列化（parent は含まない）
+static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
+                                const std::string& assetsDir)
 {
-    json root;
-    root["version"] = 1;
-    root["entities"] = json::array();
+    const auto& tag       = reg.get<NameTag>(entity);
+    const auto& transform = reg.get<Transform>(entity);
 
-    const auto& reg = scene.GetRegistry();
-
-    auto view = reg.view<const NameTag, const Transform>();
-    for (auto [entity, tag, transform] : view.each())
+    json ej;
     {
-        json ej;
         ej["name"] = tag.name;
         ej["transform"] = {
             {"position", SerializeFloat3(transform.position)},
@@ -70,16 +67,26 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
         if (reg.all_of<MeshRenderer>(entity))
         {
             const auto& mr = reg.get<MeshRenderer>(entity);
-            std::string relPath = MakeRelative(mr.modelPath, assetsDir);
-            if (!relPath.empty())
+            // プリミティブマーカー（"__primitive_box__" 等）は種別として保存
+            if (mr.modelPath.rfind("__primitive_", 0) == 0)
             {
-                ej["meshRenderer"] = {
-                    {"modelPath", relPath}
-                };
+                if      (mr.modelPath == "__primitive_sphere__") ej["primitive"] = "sphere";
+                else if (mr.modelPath == "__primitive_plane__")  ej["primitive"] = "plane";
+                else                                              ej["primitive"] = "box";
             }
             else
             {
-                ej["primitive"] = "box";
+                std::string relPath = MakeRelative(mr.modelPath, assetsDir);
+                if (!relPath.empty())
+                {
+                    ej["meshRenderer"] = {
+                        {"modelPath", relPath}
+                    };
+                }
+                else
+                {
+                    ej["primitive"] = "box";
+                }
             }
 
             // PBR Material パラメータ保存（オーバーライド値優先）
@@ -198,6 +205,43 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
                 };
             }
         }
+    }
+
+    return ej;
+}
+
+// シーン全エンティティを JSON ノードに直列化（共通処理）
+static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
+{
+    json root;
+    root["version"] = 1;
+    root["entities"] = json::array();
+
+    const auto& reg = scene.GetRegistry();
+
+    // 1パス目: 保存順を確定して entity → 配列インデックスの対応を作る
+    std::vector<entt::entity> order;
+    std::unordered_map<entt::entity, int> indexOf;
+    auto view = reg.view<const NameTag, const Transform>();
+    for (auto [entity, tag, transform] : view.each())
+    {
+        (void)tag; (void)transform;
+        indexOf[entity] = static_cast<int>(order.size());
+        order.push_back(entity);
+    }
+
+    // 2パス目: 直列化 + 親子関係をインデックス参照で保存
+    for (auto entity : order)
+    {
+        json ej = SerializeEntityJson(reg, entity, assetsDir);
+
+        const auto& transform = reg.get<Transform>(entity);
+        if (transform.parent != entt::null && reg.valid(transform.parent))
+        {
+            auto it = indexOf.find(transform.parent);
+            if (it != indexOf.end())
+                ej["parent"] = it->second;
+        }
 
         root["entities"].push_back(ej);
     }
@@ -205,76 +249,79 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
     return root;
 }
 
-// JSON ノードを既存シーンに展開（共通処理）
-static bool ApplySceneJson(Scene& scene, const json& root, const std::string& assetsDir)
+// JSON ノードから 1 エンティティを既存シーンに追加生成（Clear しない）
+// 失敗時は entt::null
+static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
+                                          const std::string& assetsDir)
 {
-    scene.Clear();
+    std::string name = ej.value("name", "Unnamed");
 
-    if (!root.contains("entities") || !root["entities"].is_array())
+    XMFLOAT3 pos   = {0, 0, 0};
+    XMFLOAT3 rot   = {0, 0, 0};
+    XMFLOAT3 scale = {1, 1, 1};
+
+    if (ej.contains("transform"))
     {
-        Logger::Warn("Scene JSON has no entities array");
-        return true;
+        const auto& tj = ej["transform"];
+        if (tj.contains("position")) pos   = DeserializeFloat3(tj["position"]);
+        if (tj.contains("rotation")) rot   = DeserializeFloat3(tj["rotation"]);
+        if (tj.contains("scale"))    scale = DeserializeFloat3(tj["scale"], {1, 1, 1});
     }
 
-    for (const auto& ej : root["entities"])
+    entt::entity e = entt::null;
+
+    if (ej.contains("gridPlane"))
     {
-        std::string name = ej.value("name", "Unnamed");
-
-        XMFLOAT3 pos   = {0, 0, 0};
-        XMFLOAT3 rot   = {0, 0, 0};
-        XMFLOAT3 scale = {1, 1, 1};
-
-        if (ej.contains("transform"))
+        f32 size = ej["gridPlane"].value("size", 50.0f);
+        e = scene.SpawnPlane(name, pos, size, true).GetHandle();
+        OutputDebugStringA(("[Load] SpawnPlane: " + name + "\n").c_str());
+    }
+    else if (ej.contains("meshRenderer"))
+    {
+        std::string relPath = ej["meshRenderer"].value("modelPath", "");
+        std::string absPath = assetsDir + relPath;
+        auto entity = scene.Spawn(name, absPath, pos, rot, scale);
+        if (!entity.IsValid())
         {
-            const auto& tj = ej["transform"];
-            if (tj.contains("position")) pos   = DeserializeFloat3(tj["position"]);
-            if (tj.contains("rotation")) rot   = DeserializeFloat3(tj["rotation"]);
-            if (tj.contains("scale"))    scale = DeserializeFloat3(tj["scale"]);
+            OutputDebugStringA(("[Load] FAILED Spawn: " + name + " path=" + absPath + "\n").c_str());
+            return entt::null;
         }
-
-        if (ej.contains("gridPlane"))
-        {
-            f32 size = ej["gridPlane"].value("size", 50.0f);
-            scene.SpawnPlane(name, pos, size, true);
-            OutputDebugStringA(("[Load] SpawnPlane: " + name + "\n").c_str());
-        }
-        else if (ej.contains("meshRenderer"))
-        {
-            std::string relPath = ej["meshRenderer"].value("modelPath", "");
-            std::string absPath = assetsDir + relPath;
-            auto entity = scene.Spawn(name, absPath, pos, rot, scale);
-            if (!entity.IsValid())
-                OutputDebugStringA(("[Load] FAILED Spawn: " + name + " path=" + absPath + "\n").c_str());
-            else
-                OutputDebugStringA(("[Load] Spawn: " + name + "\n").c_str());
-        }
-        else if (ej.contains("primitive"))
-        {
-            std::string prim = ej["primitive"].get<std::string>();
-            if (prim == "sphere")
-                scene.SpawnSphere(name, pos, 0.5f);
-            else
-                scene.SpawnBox(name, pos, rot, scale);
-            OutputDebugStringA(("[Load] SpawnPrimitive: " + name + " type=" + prim + "\n").c_str());
-        }
+        e = entity.GetHandle();
+        OutputDebugStringA(("[Load] Spawn: " + name + "\n").c_str());
+    }
+    else if (ej.contains("primitive"))
+    {
+        std::string prim = ej["primitive"].get<std::string>();
+        if (prim == "sphere")
+            e = scene.SpawnSphere(name, pos, 0.5f).GetHandle();
+        else if (prim == "plane")
+            e = scene.SpawnPlane(name, pos, 50.0f, false).GetHandle();
         else
-        {
-            // ライトやカメラのみのエンティティ
-            auto& reg = scene.GetRegistry();
-            auto e = reg.create();
-            reg.emplace<NameTag>(e, NameTag{name});
-            reg.emplace<Transform>(e, Transform{pos, rot, scale});
-            OutputDebugStringA(("[Load] CreateBasic: " + name + "\n").c_str());
-        }
+            e = scene.SpawnBox(name, pos, rot, scale).GetHandle();
+        OutputDebugStringA(("[Load] SpawnPrimitive: " + name + " type=" + prim + "\n").c_str());
+    }
+    else
+    {
+        // ライトやカメラのみのエンティティ
+        auto& reg = scene.GetRegistry();
+        e = reg.create();
+        reg.emplace<NameTag>(e, NameTag{name});
+        OutputDebugStringA(("[Load] CreateBasic: " + name + "\n").c_str());
+    }
 
-        // 追加コンポーネント（最後に追加されたエンティティに付与）
-        // FindEntity で名前検索して取得
-        auto found = scene.FindEntity(name);
-        if (found.IsValid())
-        {
-            auto& reg = scene.GetRegistry();
-            auto e = found.GetHandle();
+    if (e != entt::null)
+    {
+        auto& reg = scene.GetRegistry();
 
+        // Spawn 系が引数を反映しないケースもあるため Transform を確定値で統一
+        if (!reg.all_of<Transform>(e))
+            reg.emplace<Transform>(e);
+        auto& t = reg.get<Transform>(e);
+        t.position = pos;
+        t.rotation = rot;
+        t.scale    = scale;
+
+        {
             if (ej.contains("pointLight"))
             {
                 const auto& plj = ej["pointLight"];
@@ -305,6 +352,14 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
                 if (cj.contains("nearClip"))   cam.nearClip   = cj["nearClip"].get<f32>();
                 if (cj.contains("farClip"))    cam.farClip    = cj["farClip"].get<f32>();
                 if (cj.contains("isActive"))   cam.isActive   = cj["isActive"].get<bool>();
+                // アクティブカメラの重複防止（複製時など）
+                if (cam.isActive)
+                {
+                    for (auto [oe, oc] : reg.view<const CameraComponent>().each())
+                    {
+                        if (oe != e && oc.isActive) { cam.isActive = false; break; }
+                    }
+                }
                 if (!reg.all_of<CameraComponent>(e))
                     reg.emplace<CameraComponent>(e, cam);
             }
@@ -427,6 +482,44 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
                     reg.emplace<LuaScript>(e, std::move(ls));
             }
         }
+    }
+
+    return e;
+}
+
+// JSON ノードを既存シーンに展開（共通処理）
+static bool ApplySceneJson(Scene& scene, const json& root, const std::string& assetsDir)
+{
+    scene.Clear();
+
+    if (!root.contains("entities") || !root["entities"].is_array())
+    {
+        Logger::Warn("Scene JSON has no entities array");
+        return true;
+    }
+
+    // 1パス目: 生成（配列インデックス → entity の対応を保持）
+    std::vector<entt::entity> created;
+    created.reserve(root["entities"].size());
+    for (const auto& ej : root["entities"])
+        created.push_back(InstantiateEntityJson(scene, ej, assetsDir));
+
+    // 2パス目: 親子関係の復元
+    auto& reg = scene.GetRegistry();
+    size_t idx = 0;
+    for (const auto& ej : root["entities"])
+    {
+        entt::entity e = created[idx++];
+        if (e == entt::null || !ej.contains("parent")) continue;
+
+        int parentIdx = ej["parent"].get<int>();
+        if (parentIdx < 0 || parentIdx >= static_cast<int>(created.size())) continue;
+
+        entt::entity parent = created[static_cast<size_t>(parentIdx)];
+        if (parent == entt::null || parent == e) continue;
+
+        if (reg.all_of<Transform>(e))
+            reg.get<Transform>(e).parent = parent;
     }
 
     return true;
@@ -575,6 +668,76 @@ bool SceneSerializer::ApplyOverrides(Scene& scene, const std::string& filePath,
 
     Logger::Info("Scene overrides applied: {}", filePath);
     return true;
+}
+
+std::string SceneSerializer::SerializeEntity(const Scene& scene, entt::entity e,
+                                             const std::string& assetsDir)
+{
+    const auto& reg = scene.GetRegistry();
+    if (!reg.valid(e) || !reg.all_of<NameTag>(e) || !reg.all_of<Transform>(e))
+        return {};
+    return SerializeEntityJson(reg, e, assetsDir).dump();
+}
+
+static std::string MakeUniqueName(const Scene& scene, const std::string& base);
+
+entt::entity SceneSerializer::InstantiateEntity(Scene& scene, const std::string& jsonStr,
+                                                const std::string& assetsDir)
+{
+    json ej;
+    try { ej = json::parse(jsonStr); }
+    catch (const json::parse_error& e)
+    {
+        Logger::Error("JSON parse error (entity): {}", e.what());
+        return entt::null;
+    }
+    ej["name"] = MakeUniqueName(scene, ej.value("name", "Unnamed"));
+    return InstantiateEntityJson(scene, ej, assetsDir);
+}
+
+// "Box" → "Box (1)" → "Box (2)" のように重複しない名前を作る
+static std::string MakeUniqueName(const Scene& scene, const std::string& base)
+{
+    const auto& reg = scene.GetRegistry();
+    auto exists = [&](const std::string& n)
+    {
+        for (auto [e, tag] : reg.view<const NameTag>().each())
+            if (tag.name == n) return true;
+        return false;
+    };
+
+    if (!exists(base)) return base;
+
+    // 末尾の " (N)" を除去してベース名にする
+    std::string stem = base;
+    auto p = stem.rfind(" (");
+    if (p != std::string::npos && stem.back() == ')')
+        stem = stem.substr(0, p);
+
+    for (int i = 1; i < 1000; ++i)
+    {
+        std::string candidate = stem + " (" + std::to_string(i) + ")";
+        if (!exists(candidate)) return candidate;
+    }
+    return base;
+}
+
+entt::entity SceneSerializer::DuplicateEntity(Scene& scene, entt::entity src,
+                                              const std::string& assetsDir)
+{
+    auto& reg = scene.GetRegistry();
+    if (!reg.valid(src) || !reg.all_of<NameTag>(src) || !reg.all_of<Transform>(src))
+        return entt::null;
+
+    json ej = SerializeEntityJson(reg, src, assetsDir);
+    ej["name"] = MakeUniqueName(scene, reg.get<NameTag>(src).name);
+
+    entt::entity copy = InstantiateEntityJson(scene, ej, assetsDir);
+    if (copy == entt::null) return entt::null;
+
+    // 親は元エンティティと同じにする
+    reg.get<Transform>(copy).parent = reg.get<Transform>(src).parent;
+    return copy;
 }
 
 } // namespace dx12e
