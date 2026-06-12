@@ -20,6 +20,7 @@
 
 #include <filesystem>
 #include <algorithm>
+#include <cstring>
 
 #pragma warning(push)
 #pragma warning(disable: 4100)
@@ -108,6 +109,89 @@ void DrawLuaScriptSection(entt::registry& reg,
 
 namespace dx12e
 {
+
+namespace
+{
+
+// ── コンポーネント編集 Undo 追跡ヘルパー ──
+// 描画前に BeginEdit でスナップショットを取り、描画後に EndEdit で
+// 「即時変更 (checkbox/combo)」または「ドラッグ終了」を検出して Undo に積む
+template<typename T>
+void BeginEdit(entt::registry& reg, entt::entity e, InspectorPanel::EditState<T>& state)
+{
+    if (!state.editing)
+        state.snapshot = reg.get<T>(e);
+}
+
+template<typename T>
+void EndEdit(entt::registry& reg, EditorContext& ctx, entt::entity e,
+             InspectorPanel::EditState<T>& state,
+             bool changed, bool active, const char* name)
+{
+    auto push = [&]()
+    {
+        const T& cur = reg.get<T>(e);
+        if (std::memcmp(&state.snapshot, &cur, sizeof(T)) != 0)
+        {
+            ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<T>>(
+                &reg, e, state.snapshot, cur, name));
+        }
+    };
+
+    if (active)
+    {
+        state.editing = true;          // ドラッグ継続中
+    }
+    else if (changed)
+    {
+        push();                        // 即時変更 (checkbox/combo/単発編集)
+        state.editing = false;
+    }
+    else if (state.editing && !ImGui::IsAnyItemActive())
+    {
+        push();                        // ドラッグ終了
+        state.editing = false;
+    }
+}
+
+// ── ヘッダ右クリックでコンポーネント削除（Undo 対応）。削除したら true ──
+template<typename T>
+bool ComponentRemoveMenu(entt::registry& reg, EditorContext& ctx,
+                         entt::entity e, const char* name)
+{
+    bool removed = false;
+    ImGui::PushID(name);
+    if (ImGui::BeginPopupContextItem("##RemoveComponent"))
+    {
+        // コンポーネント削除
+        if (ImGui::MenuItem("\xe3\x82\xb3\xe3\x83\xb3\xe3\x83\x9d\xe3\x83\xbc\xe3\x83\x8d\xe3\x83\xb3\xe3\x83\x88\xe5\x89\x8a\xe9\x99\xa4"))
+        {
+            ctx.undoSystem.PushCommand(std::make_unique<RemoveComponentCommand<T>>(
+                &reg, e, reg.get<T>(e), name));
+            reg.remove<T>(e);
+            removed = true;
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::PopID();
+    return removed;
+}
+
+// ── Add Component メニュー項目（未所持のものだけ表示、Undo 対応） ──
+template<typename T>
+void AddComponentMenuItem(entt::registry& reg, EditorContext& ctx,
+                          entt::entity e, const char* label, const T& initial = T{})
+{
+    if (reg.all_of<T>(e)) return;
+    if (ImGui::MenuItem(label))
+    {
+        reg.emplace<T>(e, initial);
+        ctx.undoSystem.PushCommand(std::make_unique<AddComponentCommand<T>>(
+            &reg, e, initial, label));
+    }
+}
+
+} // anonymous namespace
 
 void InspectorPanel::Render(entt::registry& reg,
                             EditorContext& ctx,
@@ -249,37 +333,70 @@ void InspectorPanel::Render(entt::registry& reg,
         // PointLight
         if (reg.all_of<PointLight>(ctx.selectedEntity))
         {
-            if (ImGui::CollapsingHeader("PointLight"))
+            bool open = ImGui::CollapsingHeader("PointLight");
+            bool removed = ComponentRemoveMenu<PointLight>(reg, ctx, ctx.selectedEntity, "PointLight");
+            if (open && !removed)
             {
+                BeginEdit(reg, ctx.selectedEntity, m_plEdit);
                 auto& pl = reg.get<PointLight>(ctx.selectedEntity);
-                ImGui::ColorEdit3("Color", &pl.color.x);
-                ImGui::DragFloat("Intensity", &pl.intensity, 0.1f, 0.0f, 100.0f);
-                ImGui::DragFloat("Range", &pl.range, 0.5f, 0.0f, 500.0f);
+                bool changed = false, active = false;
+                changed |= ImGui::ColorEdit3("Color", &pl.color.x);
+                active  |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat("Intensity", &pl.intensity, 0.1f, 0.0f, 100.0f);
+                active  |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat("Range", &pl.range, 0.5f, 0.0f, 500.0f);
+                active  |= ImGui::IsItemActive();
+                EndEdit(reg, ctx, ctx.selectedEntity, m_plEdit, changed, active, "PointLight");
             }
         }
 
         // DirectionalLight
         if (reg.all_of<DirectionalLight>(ctx.selectedEntity))
         {
-            if (ImGui::CollapsingHeader("DirectionalLight"))
+            bool open = ImGui::CollapsingHeader("DirectionalLight");
+            bool removed = ComponentRemoveMenu<DirectionalLight>(reg, ctx, ctx.selectedEntity, "DirectionalLight");
+            if (open && !removed)
             {
+                BeginEdit(reg, ctx.selectedEntity, m_dlEdit);
                 auto& dl = reg.get<DirectionalLight>(ctx.selectedEntity);
-                ImGui::DragFloat3("Direction", &dl.direction.x, 0.01f);
-                ImGui::ColorEdit3("Color", &dl.color.x);
-                ImGui::DragFloat("Intensity", &dl.intensity, 0.1f, 0.0f, 100.0f);
+                bool changed = false, active = false;
+                changed |= ImGui::DragFloat3("Direction", &dl.direction.x, 0.01f);
+                active  |= ImGui::IsItemActive();
+                changed |= ImGui::ColorEdit3("Color", &dl.color.x);
+                active  |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat("Intensity", &dl.intensity, 0.1f, 0.0f, 100.0f);
+                active  |= ImGui::IsItemActive();
+                EndEdit(reg, ctx, ctx.selectedEntity, m_dlEdit, changed, active, "DirectionalLight");
             }
         }
 
         // CameraComponent
         if (reg.all_of<CameraComponent>(ctx.selectedEntity))
         {
-            if (ImGui::CollapsingHeader("Camera"))
+            bool open = ImGui::CollapsingHeader("Camera");
+            bool removed = ComponentRemoveMenu<CameraComponent>(reg, ctx, ctx.selectedEntity, "Camera");
+            if (open && !removed)
             {
+                BeginEdit(reg, ctx.selectedEntity, m_camEdit);
                 auto& cam = reg.get<CameraComponent>(ctx.selectedEntity);
-                ImGui::DragFloat("FOV", &cam.fovDegrees, 1.0f, 1.0f, 179.0f);
-                ImGui::DragFloat("Near", &cam.nearClip, 0.01f, 0.001f, 100.0f);
-                ImGui::DragFloat("Far", &cam.farClip, 10.0f, 1.0f, 100000.0f);
-                ImGui::Checkbox("Active", &cam.isActive);
+                bool changed = false, active = false;
+                changed |= ImGui::DragFloat("FOV", &cam.fovDegrees, 1.0f, 1.0f, 179.0f);
+                active  |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat("Near", &cam.nearClip, 0.01f, 0.001f, 100.0f);
+                active  |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat("Far", &cam.farClip, 10.0f, 1.0f, 100000.0f);
+                active  |= ImGui::IsItemActive();
+                if (ImGui::Checkbox("Active", &cam.isActive))
+                {
+                    changed = true;
+                    // アクティブカメラは常に1つだけ
+                    if (cam.isActive)
+                    {
+                        for (auto [oe, oc] : reg.view<CameraComponent>().each())
+                            if (oe != ctx.selectedEntity) oc.isActive = false;
+                    }
+                }
+                EndEdit(reg, ctx, ctx.selectedEntity, m_camEdit, changed, active, "Camera");
             }
         }
 
@@ -318,34 +435,122 @@ void InspectorPanel::Render(entt::registry& reg,
                         {
                             ConvexHullCollider col;
                             col.points = std::move(allPoints);
-                            reg.emplace_or_replace<ConvexHullCollider>(ctx.selectedEntity, std::move(col));
+                            reg.emplace_or_replace<ConvexHullCollider>(ctx.selectedEntity, col);
+                            ctx.undoSystem.PushCommand(std::make_unique<AddComponentCommand<ConvexHullCollider>>(
+                                &reg, ctx.selectedEntity, std::move(col), "Convex Hull Collider"));
                         }
                     }
                     reg.emplace_or_replace<RigidBody>(ctx.selectedEntity);
+                    ctx.undoSystem.PushCommand(std::make_unique<AddComponentCommand<RigidBody>>(
+                        &reg, ctx.selectedEntity, reg.get<RigidBody>(ctx.selectedEntity), "RigidBody"));
                 }
                 else
                 {
-                    reg.remove<RigidBody>(ctx.selectedEntity);
-                    reg.remove<ConvexHullCollider>(ctx.selectedEntity);
-                    reg.remove<BoxCollider>(ctx.selectedEntity);
-                    reg.remove<SphereCollider>(ctx.selectedEntity);
-                    reg.remove<CapsuleCollider>(ctx.selectedEntity);
+                    auto pushRemove = [&]<typename T>(const char* name)
+                    {
+                        if (reg.all_of<T>(ctx.selectedEntity))
+                        {
+                            ctx.undoSystem.PushCommand(std::make_unique<RemoveComponentCommand<T>>(
+                                &reg, ctx.selectedEntity, reg.get<T>(ctx.selectedEntity), name));
+                            reg.remove<T>(ctx.selectedEntity);
+                        }
+                    };
+                    pushRemove.template operator()<RigidBody>("RigidBody");
+                    pushRemove.template operator()<ConvexHullCollider>("Convex Hull Collider");
+                    pushRemove.template operator()<BoxCollider>("Box Collider");
+                    pushRemove.template operator()<SphereCollider>("Sphere Collider");
+                    pushRemove.template operator()<CapsuleCollider>("Capsule Collider");
                 }
             }
 
             if (reg.all_of<RigidBody>(ctx.selectedEntity))
             {
+                BeginEdit(reg, ctx.selectedEntity, m_rbEdit);
                 auto& rb = reg.get<RigidBody>(ctx.selectedEntity);
+                bool changed = false, active = false;
 
                 const char* motionTypes[] = { "Static", "Kinematic", "Dynamic" };
                 int motionIdx = static_cast<int>(rb.motionType);
                 if (ImGui::Combo("Motion", &motionIdx, motionTypes, 3))
+                {
                     rb.motionType = static_cast<MotionType>(motionIdx);
+                    changed = true;
+                }
 
-                ImGui::DragFloat("Mass", &rb.mass, 0.5f, 0.0f, 10000.0f);
-                ImGui::DragFloat("Friction", &rb.friction, 0.01f, 0.0f, 2.0f);
-                ImGui::DragFloat("Bounce", &rb.restitution, 0.01f, 0.0f, 1.0f);
-                ImGui::Checkbox("Gravity", &rb.useGravity);
+                changed |= ImGui::DragFloat("Mass", &rb.mass, 0.5f, 0.0f, 10000.0f);
+                active  |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat("Friction", &rb.friction, 0.01f, 0.0f, 2.0f);
+                active  |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat("Bounce", &rb.restitution, 0.01f, 0.0f, 1.0f);
+                active  |= ImGui::IsItemActive();
+                changed |= ImGui::Checkbox("Gravity", &rb.useGravity);
+                EndEdit(reg, ctx, ctx.selectedEntity, m_rbEdit, changed, active, "RigidBody");
+            }
+        }
+
+        // --- Colliders ---
+        if (reg.all_of<BoxCollider>(ctx.selectedEntity))
+        {
+            bool open = ImGui::CollapsingHeader("Box Collider");
+            bool removed = ComponentRemoveMenu<BoxCollider>(reg, ctx, ctx.selectedEntity, "Box Collider");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_boxColEdit);
+                auto& col = reg.get<BoxCollider>(ctx.selectedEntity);
+                bool changed = false, active = false;
+                changed |= ImGui::DragFloat3("Half Extents", &col.halfExtents.x, 0.05f, 0.01f, 1000.0f);
+                active  |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat3("Offset##Box", &col.offset.x, 0.05f);
+                active  |= ImGui::IsItemActive();
+                EndEdit(reg, ctx, ctx.selectedEntity, m_boxColEdit, changed, active, "Box Collider");
+            }
+        }
+
+        if (reg.all_of<SphereCollider>(ctx.selectedEntity))
+        {
+            bool open = ImGui::CollapsingHeader("Sphere Collider");
+            bool removed = ComponentRemoveMenu<SphereCollider>(reg, ctx, ctx.selectedEntity, "Sphere Collider");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_sphereColEdit);
+                auto& col = reg.get<SphereCollider>(ctx.selectedEntity);
+                bool changed = false, active = false;
+                changed |= ImGui::DragFloat("Radius##Sphere", &col.radius, 0.05f, 0.01f, 1000.0f);
+                active  |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat3("Offset##Sphere", &col.offset.x, 0.05f);
+                active  |= ImGui::IsItemActive();
+                EndEdit(reg, ctx, ctx.selectedEntity, m_sphereColEdit, changed, active, "Sphere Collider");
+            }
+        }
+
+        if (reg.all_of<CapsuleCollider>(ctx.selectedEntity))
+        {
+            bool open = ImGui::CollapsingHeader("Capsule Collider");
+            bool removed = ComponentRemoveMenu<CapsuleCollider>(reg, ctx, ctx.selectedEntity, "Capsule Collider");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_capsuleColEdit);
+                auto& col = reg.get<CapsuleCollider>(ctx.selectedEntity);
+                bool changed = false, active = false;
+                changed |= ImGui::DragFloat("Radius##Capsule", &col.radius, 0.05f, 0.01f, 1000.0f);
+                active  |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat("Half Height", &col.halfHeight, 0.05f, 0.01f, 1000.0f);
+                active  |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat3("Offset##Capsule", &col.offset.x, 0.05f);
+                active  |= ImGui::IsItemActive();
+                EndEdit(reg, ctx, ctx.selectedEntity, m_capsuleColEdit, changed, active, "Capsule Collider");
+            }
+        }
+
+        if (reg.all_of<ConvexHullCollider>(ctx.selectedEntity))
+        {
+            bool open = ImGui::CollapsingHeader("Convex Hull Collider");
+            bool removed = ComponentRemoveMenu<ConvexHullCollider>(reg, ctx, ctx.selectedEntity, "Convex Hull Collider");
+            if (open && !removed)
+            {
+                const auto& col = reg.get<ConvexHullCollider>(ctx.selectedEntity);
+                ImGui::Text("Points: %d", static_cast<int>(col.points.size()));
+                ImGui::TextDisabled("(auto-generated from mesh)");
             }
         }
 
@@ -432,6 +637,25 @@ void InspectorPanel::Render(entt::registry& reg,
 
         // LuaScript
         DrawLuaScriptSection(reg, ctx.selectedEntity, m_scriptEngine, m_assetsDir);
+
+        // --- Add Component ---
+        ImGui::Separator();
+        // ✚ コンポーネント追加
+        if (ImGui::Button("\xe2\x9c\x9a \xe3\x82\xb3\xe3\x83\xb3\xe3\x83\x9d\xe3\x83\xbc\xe3\x83\x8d\xe3\x83\xb3\xe3\x83\x88\xe8\xbf\xbd\xe5\x8a\xa0", ImVec2(-1, 0)))
+            ImGui::OpenPopup("AddComponentPopup");
+
+        if (ImGui::BeginPopup("AddComponentPopup"))
+        {
+            AddComponentMenuItem<PointLight>(reg, ctx, ctx.selectedEntity, "Point Light");
+            AddComponentMenuItem<DirectionalLight>(reg, ctx, ctx.selectedEntity, "Directional Light");
+            AddComponentMenuItem<CameraComponent>(reg, ctx, ctx.selectedEntity, "Camera");
+            ImGui::Separator();
+            AddComponentMenuItem<RigidBody>(reg, ctx, ctx.selectedEntity, "RigidBody");
+            AddComponentMenuItem<BoxCollider>(reg, ctx, ctx.selectedEntity, "Box Collider");
+            AddComponentMenuItem<SphereCollider>(reg, ctx, ctx.selectedEntity, "Sphere Collider");
+            AddComponentMenuItem<CapsuleCollider>(reg, ctx, ctx.selectedEntity, "Capsule Collider");
+            ImGui::EndPopup();
+        }
     }
     else
     {

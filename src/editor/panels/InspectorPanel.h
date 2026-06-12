@@ -35,6 +35,14 @@ public:
     void SetScriptEngine(ScriptEngine* e) { m_scriptEngine = e; }
     void SetAssetsDir(const std::string& d) { m_assetsDir = d; }
 
+    // Undo 用: コンポーネント編集の追跡状態
+    template<typename T>
+    struct EditState
+    {
+        bool editing = false;
+        T    snapshot{};
+    };
+
 private:
     // Undo 用: ウィジェット操作開始時のスナップショット
     bool      m_transformEditing = false;
@@ -43,6 +51,14 @@ private:
     bool  m_pbrEditing = false;
     float m_pbrMetallicSnapshot  = -1.0f;
     float m_pbrRoughnessSnapshot = -1.0f;
+
+    EditState<PointLight>       m_plEdit;
+    EditState<DirectionalLight> m_dlEdit;
+    EditState<CameraComponent>  m_camEdit;
+    EditState<RigidBody>        m_rbEdit;
+    EditState<BoxCollider>      m_boxColEdit;
+    EditState<SphereCollider>   m_sphereColEdit;
+    EditState<CapsuleCollider>  m_capsuleColEdit;
 
     ScriptEngine* m_scriptEngine = nullptr;
     std::string   m_assetsDir;

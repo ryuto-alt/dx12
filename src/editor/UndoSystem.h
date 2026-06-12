@@ -142,6 +142,97 @@ private:
     entt::entity    m_entity;
 };
 
+// ── 汎用コンポーネント編集コマンド（値のコピーで before/after を保持） ──
+template<typename T>
+class ComponentEditCommand : public IUndoCommand
+{
+public:
+    ComponentEditCommand(entt::registry* reg, entt::entity entity,
+                         const T& before, const T& after, const char* name)
+        : m_reg(reg), m_entity(entity), m_before(before), m_after(after), m_name(name) {}
+
+    void Undo() override
+    {
+        if (m_reg->valid(m_entity) && m_reg->all_of<T>(m_entity))
+            m_reg->get<T>(m_entity) = m_before;
+    }
+
+    void Redo() override
+    {
+        if (m_reg->valid(m_entity) && m_reg->all_of<T>(m_entity))
+            m_reg->get<T>(m_entity) = m_after;
+    }
+
+    const char* GetName() const override { return m_name; }
+
+private:
+    entt::registry* m_reg;
+    entt::entity    m_entity;
+    T               m_before;
+    T               m_after;
+    const char*     m_name;
+};
+
+// ── 汎用コンポーネント追加コマンド ──
+template<typename T>
+class AddComponentCommand : public IUndoCommand
+{
+public:
+    AddComponentCommand(entt::registry* reg, entt::entity entity,
+                        const T& value, const char* name)
+        : m_reg(reg), m_entity(entity), m_value(value), m_name(name) {}
+
+    void Undo() override
+    {
+        if (m_reg->valid(m_entity) && m_reg->all_of<T>(m_entity))
+            m_reg->remove<T>(m_entity);
+    }
+
+    void Redo() override
+    {
+        if (m_reg->valid(m_entity))
+            m_reg->emplace_or_replace<T>(m_entity, m_value);
+    }
+
+    const char* GetName() const override { return m_name; }
+
+private:
+    entt::registry* m_reg;
+    entt::entity    m_entity;
+    T               m_value;
+    const char*     m_name;
+};
+
+// ── 汎用コンポーネント削除コマンド ──
+template<typename T>
+class RemoveComponentCommand : public IUndoCommand
+{
+public:
+    RemoveComponentCommand(entt::registry* reg, entt::entity entity,
+                           const T& removedValue, const char* name)
+        : m_reg(reg), m_entity(entity), m_value(removedValue), m_name(name) {}
+
+    void Undo() override
+    {
+        if (m_reg->valid(m_entity))
+            m_reg->emplace_or_replace<T>(m_entity, m_value);
+    }
+
+    void Redo() override
+    {
+        if (m_reg->valid(m_entity) && m_reg->all_of<T>(m_entity))
+            m_reg->remove<T>(m_entity);
+    }
+
+    const char* GetName() const override { return m_name; }
+
+private:
+    entt::registry* m_reg;
+    entt::entity    m_entity;
+    T               m_value;
+    const char*     m_name;
+};
+
 // ── LuaScript Attach コマンド ──
 class AttachScriptCommand : public IUndoCommand
 {
