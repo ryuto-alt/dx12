@@ -4,6 +4,8 @@ project(DX12Engine VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+option(DX12_BUILD_TESTS "Build unit tests" ON)
+
 # MSVC compile options (not global - applied per-target to avoid conflicts with FetchContent deps)
 set(DX12_COMPILE_OPTIONS /W4 /WX /MP /permissive- /utf-8 /external:anglebrackets /external:W0)
 set(DX12_COMPILE_DEFS UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -26,6 +28,12 @@ add_subdirectory(src/physics)
 add_subdirectory(src/gui)
 add_subdirectory(src/editor)
 add_subdirectory(src/project)
+
+# Unit tests (GPU 非依存。ctest で実行可能)
+if(DX12_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
 
 # Main executable
 add_executable(DX12Engine WIN32 src/main.cpp)

@@ -819,9 +819,10 @@ ModelData ModelLoader::LoadFromFile(
             Texture* normal = material->normalMapTexture ? material->normalMapTexture : resourceManager.GetDefaultNormalTexture();
             Texture* mr     = material->metalRoughnessTexture ? material->metalRoughnessTexture : resourceManager.GetDefaultMetalRoughnessTexture();
 
-            u32 blockStart = srvHeap->AllocateIndex();
-            u32 idx1 = srvHeap->AllocateIndex(); (void)idx1;
-            u32 idx2 = srvHeap->AllocateIndex(); (void)idx2;
+            // albedo/normal/metalRoughness は連続3スロットでなければならない
+            // (描画側が srvBlockIndex 起点のテーブルとして1回でバインドするため)。
+            // free-list 化後は個別確保だと連続性が保証されないので必ずブロック確保する。
+            u32 blockStart = srvHeap->AllocateBlock(3);
 
             albedo->CreateSRV(*dev, srvHeap->GetCpuHandle(blockStart));
             normal->CreateSRV(*dev, srvHeap->GetCpuHandle(blockStart + 1));

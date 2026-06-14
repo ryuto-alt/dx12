@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unit-tests:
+    name: Unit tests (GPU-independent)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # tests/ は依存ゼロ(vcpkg も VS2026 も不要)なので、エンジン本体ではなく
+      # テストツリーだけを構成・ビルド・実行する。これで CI が安定して緑になる。
+      - name: Configure
+        run: cmake -S tests -B build-tests
+
+      - name: Build
+        run: cmake --build build-tests --config Release
+
+      - name: Test
+        run: ctest --test-dir build-tests --build-config Release --output-on-failure

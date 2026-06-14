@@ -12,7 +12,7 @@ void DescriptorHeap::Initialize(GraphicsDevice& device, D3D12_DESCRIPTOR_HEAP_TY
 {
     m_type           = type;
     m_numDescriptors = numDescriptors;
-    m_numAllocated   = 0;
+    m_allocator.Initialize(numDescriptors);
     m_shaderVisible  = shaderVisible;
 
     D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
@@ -40,20 +40,59 @@ void DescriptorHeap::Initialize(GraphicsDevice& device, D3D12_DESCRIPTOR_HEAP_TY
 
 D3D12_CPU_DESCRIPTOR_HANDLE DescriptorHeap::Allocate()
 {
-    DX_ASSERT(m_numAllocated < m_numDescriptors, "DescriptorHeap is full");
-
-    D3D12_CPU_DESCRIPTOR_HANDLE handle = m_cpuStart;
-    handle.ptr += static_cast<SIZE_T>(m_descriptorSize) * m_numAllocated;
-    ++m_numAllocated;
-    return handle;
+    u32 index = m_allocator.Allocate();
+    if (index == kInvalidIndex)
+    {
+        Logger::Error("DescriptorHeap is full (type: {}, capacity: {})",
+            static_cast<int>(m_type), m_numDescriptors);
+        DX_ASSERT(false, "DescriptorHeap is full");
+        return D3D12_CPU_DESCRIPTOR_HANDLE{ 0 };
+    }
+    return GetCpuHandle(index);
 }
 
 u32 DescriptorHeap::AllocateIndex()
 {
-    DX_ASSERT(m_numAllocated < m_numDescriptors, "DescriptorHeap is full");
-    u32 index = m_numAllocated;
-    ++m_numAllocated;
+    u32 index = m_allocator.Allocate();
+    if (index == kInvalidIndex)
+    {
+        Logger::Error("DescriptorHeap is full (type: {}, capacity: {})",
+            static_cast<int>(m_type), m_numDescriptors);
+        DX_ASSERT(false, "DescriptorHeap is full");
+    }
     return index;
+}
+
+u32 DescriptorHeap::AllocateBlock(u32 count)
+{
+    u32 start = m_allocator.AllocateBlock(count);
+    if (start == kInvalidIndex)
+    {
+        Logger::Error("DescriptorHeap has no contiguous block of {} (type: {}, free: {}/{})",
+            count, static_cast<int>(m_type), m_allocator.FreeCount(), m_numDescriptors);
+        DX_ASSERT(false, "DescriptorHeap block allocation failed");
+    }
+    return start;
+}
+
+void DescriptorHeap::Free(u32 index)
+{
+    if (index == kInvalidIndex)
+    {
+        return;
+    }
+    DX_ASSERT(index < m_numDescriptors, "DescriptorHeap::Free index out of range");
+    m_allocator.Free(index);
+}
+
+void DescriptorHeap::FreeBlock(u32 start, u32 count)
+{
+    if (start == kInvalidIndex || count == 0)
+    {
+        return;
+    }
+    DX_ASSERT(start + count <= m_numDescriptors, "DescriptorHeap::FreeBlock range out of bounds");
+    m_allocator.FreeBlock(start, count);
 }
 
 D3D12_CPU_DESCRIPTOR_HANDLE DescriptorHeap::GetCpuHandle(u32 index) const
