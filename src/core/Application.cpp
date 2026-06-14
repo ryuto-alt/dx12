@@ -824,12 +824,17 @@ void Application::Update()
         // エディタモード: C++カメラ操作
         bool rightMouseHeld = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
 
-        // ウィンドウが非フォーカス or ImGuiがマウスをキャプチャ中 → カメラ操作しない
+        // ウィンドウが非フォーカスならカメラ操作しない
         bool isForeground = (GetForegroundWindow() == m_window->GetHwnd());
-        bool imguiWantsMouse = ImGui::GetIO().WantCaptureMouse;
+
+        // カーソルが 3D ビューポート上にあるか（ImGui の PassthruCentralNode の
+        // WantCaptureMouse 挙動に依存せず、中央ノード矩形で直接判定）。
+        // ※ パネル上で右ドラッグしてもフライが暴発しないようにするためのゲート。
+        ImVec2 mousePos = ImGui::GetIO().MousePos;
+        bool cursorInViewport = m_editorCtx->IsCursorInViewport(mousePos.x, mousePos.y);
 
         if (m_framesSinceStart > 5 && rightMouseHeld && !m_inputSystem->IsMouseCaptured()
-            && isForeground && !imguiWantsMouse)
+            && isForeground && cursorInViewport)
         {
             m_inputSystem->SetMouseCapture(true);
         }

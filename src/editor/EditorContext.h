@@ -84,6 +84,22 @@ public:
     GizmoMode gizmoMode      = GizmoMode::Translate;
     bool      gizmoLocalSpace = false;
 
+    // 3D ビューポート（ドックスペース中央ノード）の矩形（ImGui 座標）。
+    // EditorLayer が毎フレーム更新。Application のフライカメラ発動判定
+    // （カーソルが 3D ビュー上にあるか）に使う。ImGui の PassthruCentralNode の
+    // WantCaptureMouse 挙動に依存せず確実にビュー上判定するための値。
+    f32 viewportX = 0.0f;
+    f32 viewportY = 0.0f;
+    f32 viewportW = 0.0f;
+    f32 viewportH = 0.0f;
+
+    bool IsCursorInViewport(f32 mx, f32 my) const
+    {
+        return viewportW > 0.0f && viewportH > 0.0f
+            && mx >= viewportX && mx < viewportX + viewportW
+            && my >= viewportY && my < viewportY + viewportH;
+    }
+
     // シーンパス
     std::string currentScenePath;
 

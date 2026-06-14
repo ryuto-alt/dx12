@@ -210,6 +210,12 @@ void EditorLayer::Render(bool isPlaying,
 
         if (m_viewportSize.x < 1.0f) m_viewportSize.x = 1.0f;
         if (m_viewportSize.y < 1.0f) m_viewportSize.y = 1.0f;
+
+        // Application のフライカメラ発動判定で使うため EditorContext に矩形を共有
+        m_ctx->viewportX = m_viewportPos.x;
+        m_ctx->viewportY = m_viewportPos.y;
+        m_ctx->viewportW = m_viewportSize.x;
+        m_ctx->viewportH = m_viewportSize.y;
     }
 
     // ===== シーンビューポート ドロップターゲット =====
@@ -257,9 +263,12 @@ void EditorLayer::Render(bool isPlaying,
         ImGui::PopStyleVar();
     }
 
-    // ===== 3D ピッキング + ギズモ + 削除 =====
+    // ===== 3D ビューポート操作（カメラナビ + ピッキング + ギズモ + 削除）=====
     if (!isPlaying)
     {
+        m_sceneView->HandleCameraNavigation(reg, *m_ctx, camera,
+                                            m_viewportPos.x, m_viewportPos.y,
+                                            m_viewportSize.x, m_viewportSize.y);
         m_sceneView->HandlePicking(reg, *m_ctx, camera,
                                    m_viewportPos.x, m_viewportPos.y,
                                    m_viewportSize.x, m_viewportSize.y);

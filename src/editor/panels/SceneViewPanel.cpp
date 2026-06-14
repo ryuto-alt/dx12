@@ -156,7 +156,9 @@ void SceneViewPanel::HandlePicking(entt::registry& reg,
                                    Camera* camera,
                                    f32 vpX, f32 vpY, f32 vpW, f32 vpH)
 {
-    if (ImGui::GetIO().WantCaptureMouse
+    // ※ WantCaptureMouse には依存しない（PassthruCentralNode の挙動次第で
+    //   中央ノード上でも true になり得るため）。クリックがビュー矩形内かは下で判定。
+    if (ImGui::GetIO().KeyAlt                 // Alt+左ドラッグはオービット操作なのでピッキングしない
         || ImGuizmo::IsUsing() || ImGuizmo::IsOver()
         || !ImGui::IsMouseClicked(ImGuiMouseButton_Left))
         return;
@@ -306,33 +308,114 @@ void SceneViewPanel::HandlePicking(entt::registry& reg,
     }
 }
 
+void SceneViewPanel::HandleCameraNavigation(entt::registry& reg,
+                                            EditorContext& ctx,
+                                            Camera* camera,
+                                            f32 vpX, f32 vpY, f32 vpW, f32 vpH)
+{
+    ImGuiIO& io = ImGui::GetIO();
+
+    ImVec2 m = io.MousePos;
+    bool inViewport = m.x >= vpX && m.x < vpX + vpW
+                   && m.y >= vpY && m.y < vpY + vpH;
+
+    // 操作ヒントをビュー左下に薄く表示（発見性のため）。/utf-8 でビルドするので
+    // 日本語リテラルはそのまま UTF-8 として ImGui に渡せる。
+    ImGui::GetForegroundDrawList()->AddText(
+        ImVec2(vpX + 12.0f, vpY + vpH - 26.0f),
+        IM_COL32(235, 235, 235, 160),
+        "\xe5\x8f\xb3\xe3\x83\x89\xe3\x83\xa9\xe3\x83\x83\xe3\x82\xb0:\xe8\xa6\x96\xe7\x82\xb9  "
+        "WASD/Space/Shift:\xe7\xa7\xbb\xe5\x8b\x95  "
+        "\xe3\x83\x9b\xe3\x82\xa4\xe3\x83\xbc\xe3\x83\xab:\xe3\x82\xba\xe3\x83\xbc\xe3\x83\xa0  "
+        "\xe4\xb8\xad\xe3\x83\x89\xe3\x83\xa9\xe3\x83\x83\xe3\x82\xb0:\xe3\x83\x91\xe3\x83\xb3  "
+        "Alt+\xe5\xb7\xa6:\xe5\x91\xa8\xe5\x9b\x9e  F:\xe3\x83\x95\xe3\x82\xa9\xe3\x83\xbc\xe3\x82\xab\xe3\x82\xb9");
+
+    // ギズモ操作中、またはカーソルがビュー外なら以降のカメラ操作はしない
+    if (ImGuizmo::IsUsing() || !inViewport)
+        return;
+
+    // --- スクロール: 右クリック中はフライ移動速度を増減 / それ以外はドリーズーム ---
+    if (inViewport && io.MouseWheel != 0.0f)
+    {
+        if (io.MouseDown[ImGuiMouseButton_Right])
+        {
+            f32 speed = camera->GetMoveSpeed();
+            speed *= (io.MouseWheel > 0.0f) ? 1.15f : (1.0f / 1.15f);
+            camera->SetMoveSpeed(std::clamp(speed, 0.2f, 200.0f));
+        }
+        else
+        {
+            f32 step = (std::max)(0.5f, m_orbitDistance * 0.15f);
+            camera->MoveForward(io.MouseWheel * step);
+        }
+    }
+
+    // --- 中ボタンドラッグ: パン ---
+    if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0.0f))
+    {
+        f32 panScale = 0.0015f * (std::max)(1.0f, m_orbitDistance);
+        camera->MoveRight(-io.MouseDelta.x * panScale);
+        camera->MoveUp(io.MouseDelta.y * panScale);
+    }
+
+    // --- Alt + 左ドラッグ: 選択物（無ければ前方点）を中心にオービット ---
+    if (io.KeyAlt && io.MouseDown[ImGuiMouseButton_Left])
+    {
+        // ドラッグ開始フレームで pivot と距離を確定
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+        {
+            XMFLOAT3 camPos = camera->GetPosition();
+            XMFLOAT3 fwd    = camera->GetForward();
+            XMFLOAT3 pivot  = {camPos.x + fwd.x * 10.0f,
+                               camPos.y + fwd.y * 10.0f,
+                               camPos.z + fwd.z * 10.0f};
+
+            if (ctx.HasSelection() && reg.valid(ctx.selectedEntity)
+                && reg.all_of<Transform>(ctx.selectedEntity))
+            {
+                const auto& t = reg.get<Transform>(ctx.selectedEntity);
+                pivot = t.position;
+                if (t.parent != entt::null && reg.valid(t.parent))
+                {
+                    XMFLOAT4X4 wf;
+                    XMStoreFloat4x4(&wf, ComputeWorldMatrix(reg, ctx.selectedEntity));
+                    pivot = {wf._41, wf._42, wf._43};
+                }
+            }
+
+            m_orbitPivot = pivot;
+            XMVECTOR p = XMLoadFloat3(&pivot);
+            XMVECTOR c = XMLoadFloat3(&camPos);
+            m_orbitDistance = (std::max)(0.001f, XMVectorGetX(XMVector3Length(c - p)));
+        }
+
+        if (ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f))
+        {
+            f32 sens = camera->GetMouseSensitivity();
+            camera->Rotate(io.MouseDelta.x * sens, -io.MouseDelta.y * sens);
+
+            // pivot から距離を保って再配置（forward は Rotate で更新済み）
+            XMFLOAT3 fwd = camera->GetForward();
+            XMVECTOR p = XMLoadFloat3(&m_orbitPivot);
+            XMVECTOR f = XMLoadFloat3(&fwd);
+            XMFLOAT3 np;
+            XMStoreFloat3(&np, p - f * m_orbitDistance);
+            camera->SetPosition(np);
+        }
+    }
+}
+
 void SceneViewPanel::HandleDeleteKey(entt::registry& reg,
                                      EditorContext& ctx,
                                      Scene* /*scene*/,
-                                     f32 vpX, f32 vpY, f32 vpW, f32 vpH)
+                                     f32 /*vpX*/, f32 /*vpY*/, f32 /*vpW*/, f32 /*vpH*/)
 {
     if (!ctx.HasSelection()) return;
     if (ImGui::GetIO().WantCaptureKeyboard) return;
 
+    // ビューポートの右クリックはフライカメラ専用にしたので、削除は Del キーで行う
+    // （右クリック削除は Hierarchy パネルのコンテキストメニューで担保）。
     bool deletePressed = (GetAsyncKeyState(VK_DELETE) & 1) != 0;
-
-    // 右クリックコンテキストメニュー（ビューポート内のみ）
-    ImVec2 mousePos = ImGui::GetIO().MousePos;
-    bool inViewport = mousePos.x >= vpX && mousePos.x < vpX + vpW
-                   && mousePos.y >= vpY && mousePos.y < vpY + vpH;
-
-    if (inViewport && ImGui::IsMouseClicked(ImGuiMouseButton_Right)
-        && !ImGui::GetIO().WantCaptureMouse)
-    {
-        ImGui::OpenPopup("##SceneContextMenu");
-    }
-
-    if (ImGui::BeginPopup("##SceneContextMenu"))
-    {
-        if (ImGui::MenuItem("\xe5\x89\x8a\xe9\x99\xa4 (Del)"))
-            deletePressed = true;
-        ImGui::EndPopup();
-    }
 
     if (deletePressed)
     {
