@@ -130,6 +130,9 @@ public:
     std::string pendingGameLoadPath;  // Play 中の loadScene()（assets 相対）。フレーム境界で安全にロード
     bool pendingBuildGame = false;
     bool pendingNewScene  = false;
+    // 空でなければ pendingNewScene 実行時にこのパスへスターターシーンを保存する
+    // （プロジェクト新規作成の初期シーン用。通常の「新規シーン」は空のまま）
+    std::string pendingNewScenePath;
     bool showNewSceneDialog = false;
     bool newSceneDialogIsCreate = true;  // true=新規作成, false=名前を付けて保存
     char newSceneNameBuf[128] = {};

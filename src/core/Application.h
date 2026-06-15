@@ -15,7 +15,11 @@
 #include <directx/d3d12.h>
 #include <DirectXMath.h>
 #include <entt/entt.hpp>
+#include <array>
+#include <thread>
+#include <atomic>
 #include "ecs/Components.h"
+#include "project/Project.h"
 
 // Forward declarations for graphics module
 namespace dx12e
@@ -48,7 +52,6 @@ namespace dx12e
     class EditorLayer;
     class ModelThumbnailRenderer;
     struct Material;
-    struct ProjectInfo;
 }
 
 namespace dx12e
@@ -77,6 +80,19 @@ private:
     void Update();
     void Render();
     void RebuildScene();
+    // ランチャーで選んだ/作成したプロジェクトを実行時に読み込む（パス再ポイント + シーンロード）
+    void LoadProject(const ProjectInfo& info);
+    // エディタUIアイコン(PNG)をSRVへ読み込む（起動時に1度。エンジン側assets基準）
+    void LoadEditorIcons(ID3D12GraphicsCommandList* cmdList);
+    // 非同期プロジェクトロード: 作成/読込のCPU処理をワーカーで回しローディング表示
+    void BeginProjectLoad(const ProjectInfo& info, bool isNew);
+    void UpdateProjectLoad(f32 dt);   // 毎フレーム状態機械を進める（!m_loading なら何もしない）
+    void RenderLoadingOverlay();      // ローディングオーバーレイ描画
+    // エディタの「Project」「Version Control」ウィンドウ描画（ランチャー閉後）
+    void RenderProjectWindow();
+    void RenderVersionControlWindow();
+    // 現在のプロジェクトを保存（.dx12proj + 現在シーン）
+    void SaveCurrentProject();
     void EnterPlayMode();
     void EnterEditorMode();
     void BuildGame();
@@ -119,6 +135,38 @@ private:
     std::unique_ptr<EditorLayer>   m_editorLayer;
     std::unique_ptr<ModelThumbnailRenderer> m_thumbRenderer;
     bool m_showLauncher = true;  // プロジェクトランチャー表示フラグ
+
+    // ---- プロジェクト管理 / バージョン管理(Git) ----
+    ProjectInfo m_projectInfo;            // 現在開いているプロジェクト（rootDir 空 = 組み込みパス）
+    bool        m_gitChecked   = false;   // git/gh の存在チェック済みか
+    bool        m_gitAvailable = false;
+    bool        m_ghAvailable  = false;
+    std::array<char, 512>  m_gitRemoteBuf{};    // リモート URL 入力
+    std::array<char, 256>  m_gitCommitMsgBuf{}; // コミットメッセージ入力
+    std::string m_gitOutput;              // 直近コマンドの出力ログ
+    bool        m_gitRepoCache = false;   // IsRepo の簡易キャッシュ
+    std::string m_gitBranchCache;         // ブランチ名キャッシュ
+    std::string m_gitRemoteCache;         // origin URL キャッシュ
+    f32         m_gitRefreshTimer = 0.0f; // 状態の定期再取得用（毎フレームgit起動を避ける）
+
+    // ---- エディタUIアイコン（ImTextureID=ImU64。0=未読込）----
+    struct EditorIconHandles
+    {
+        u64 logo = 0, newProject = 0, openProject = 0, recent = 0,
+            save = 0, git = 0, github = 0, commit = 0, push = 0;
+    } m_icons;
+
+    // ---- 非同期プロジェクトロード ----
+    std::thread        m_loadThread;
+    std::atomic<bool>  m_loadThreadDone{false};
+    bool               m_loadThreadRunning = false;
+    bool               m_loading           = false;  // ローディングオーバーレイ表示中
+    bool               m_loadProjectStarted = false; // LoadProject 発火済みか
+    bool               m_loadIsNew         = false;
+    int                m_loadSceneWaitFrames = 0;
+    f32                m_loadSpinTime      = 0.0f;
+    std::string        m_loadStatus;
+    ProjectInfo        m_loadInfo;
     std::unique_ptr<Camera>            m_camera;
     std::unique_ptr<ConstantBuffer>    m_perFrameCB;
     std::unique_ptr<CommandList>       m_commandList;

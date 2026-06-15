@@ -400,6 +400,24 @@ void ToolbarPanel::Render(bool isPlaying,
     if (ImGui::Button(ctx.gizmoLocalSpace ? "Local" : "World"))
         ctx.gizmoLocalSpace = !ctx.gizmoLocalSpace;
 
+    // ===== ゲームビルド =====
+    ImGui::SameLine(0, 12);
+    ImGui::TextDisabled("|");
+    ImGui::SameLine(0, 8);
+    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.20f, 0.42f, 0.68f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.26f, 0.52f, 0.82f, 1.0f));
+    if (ImGui::Button("\xe3\x83\x93\xe3\x83\xab\xe3\x83\x89"))  // ビルド
+        ctx.pendingBuildGame = true;
+    ImGui::PopStyleColor(2);
+    if (ctx.buildCompleteFlash > 0.0f)
+    {
+        ImGui::SameLine(0, 8);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.5f, 1.0f));
+        ImGui::Text("\xe2\x9c\x93 \xe3\x83\x93\xe3\x83\xab\xe3\x83\x89\xe5\xae\x8c\xe4\xba\x86");  // ✓ ビルド完了
+        ImGui::PopStyleColor();
+        ctx.buildCompleteFlash -= clock->GetDeltaTime();
+    }
+
     // ===== シーン名表示 =====
     ImGui::SameLine(0, 16);
     ImGui::TextDisabled("|");

@@ -34,6 +34,7 @@ public:
     void         ResetResizedFlag() { m_resized = false; }
     bool         IsFullscreen() const { return m_fullscreen; }
     void         SetInputSystem(InputSystem* input) { m_inputSystem = input; }
+    void         SetTitle(const std::wstring& title);
 
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);

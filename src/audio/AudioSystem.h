@@ -26,6 +26,9 @@ public:
     void Initialize(const std::string& assetsDir);
     void Shutdown();
 
+    // プロジェクト切替時に assets ベースを再設定して音声ファイルを再スキャン
+    void SetAssetsDir(const std::string& assetsDir) { m_assetsDir = assetsDir; ScanAudioFiles(); }
+
     // BGM
     void PlayBGM(const std::string& filePath, bool loop = true);
     void StopBGM();

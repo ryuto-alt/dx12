@@ -68,6 +68,9 @@ public:
     // アセットブラウザの即時更新
     void RefreshAssetBrowser();
 
+    // プロジェクト切替時にアセット/スクリプトのルートを差し替える
+    void SetAssetRoots(const std::string& assetsDir, const std::string& scriptsDir);
+
     // サムネイルレンダラー設定
     void SetThumbnailRenderer(class ModelThumbnailRenderer* renderer);
 

@@ -117,9 +117,14 @@ void EditorLayer::BuildDefaultLayout(ImGuiID dockspaceId, f32 /*toolbarHeight*/)
     ImGui::DockBuilderDockWindow(
         "\xe3\x82\xa2\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88\xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6", dockBottom);
 
-    // 追加ウィンドウ（ポスト/シーンフロー）はインスペクター横にタブで固定
-    ImGui::DockBuilderDockWindow("Post Process", dockRight);
-    ImGui::DockBuilderDockWindow("Scene Flow",   dockRight);
+    // 追加ウィンドウ（ポスト/シーンフロー）は下パネル（アセットブラウザ横）にタブで固定。
+    // インスペクター（右）を隠さないようにするため右ではなく下へ。
+    ImGui::DockBuilderDockWindow("Post Process", dockBottom);
+    ImGui::DockBuilderDockWindow("Scene Flow",   dockBottom);
+
+    // プロジェクト / バージョン管理は右パネル（インスペクター横）にタブで固定。
+    ImGui::DockBuilderDockWindow("Project",                dockRight);
+    ImGui::DockBuilderDockWindow("Version Control (Git)",  dockRight);
 
     ImGui::DockBuilderFinish(dockspaceId);
 }
@@ -178,9 +183,16 @@ void EditorLayer::Render(bool isPlaying,
             BuildDefaultLayout(dockspaceId, toolbarHeight);
         }
 
-        // PassthruCentralNode: 中央ノードの背景を描画しない → 3Dが見える
+        // エディタUIとしてレイアウトを固定する:
+        //   PassthruCentralNode … 中央ノードの背景を描かず3Dを見せる
+        //   NoResize            … スプリッタでのサイズ変更を禁止
+        //   NoDockingSplit      … ノードの分割（再ドッキング）を禁止
+        //   NoUndocking         … タブを引き剥がして浮かせるのを禁止
         ImGui::DockSpace(dockspaceId, ImVec2(0, 0),
-            ImGuiDockNodeFlags_PassthruCentralNode);
+            ImGuiDockNodeFlags_PassthruCentralNode |
+            ImGuiDockNodeFlags_NoResize |
+            ImGuiDockNodeFlags_NoDockingSplit |
+            ImGuiDockNodeFlags_NoUndocking);
 
         ImGui::End();
     }
@@ -293,6 +305,11 @@ void EditorLayer::LoadPendingThumbnails(ID3D12GraphicsCommandList* cmdList)
 void EditorLayer::RefreshAssetBrowser()
 {
     m_assetBrowser->ForceRefresh();
+}
+
+void EditorLayer::SetAssetRoots(const std::string& assetsDir, const std::string& scriptsDir)
+{
+    m_assetBrowser->SetRoots(assetsDir, scriptsDir);
 }
 
 void EditorLayer::SetThumbnailRenderer(ModelThumbnailRenderer* renderer)

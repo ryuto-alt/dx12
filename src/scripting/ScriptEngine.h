@@ -32,6 +32,9 @@ public:
                     AudioSystem* audio, PhysicsSystem* physics,
                     const std::string& assetsDir);
 
+    // プロジェクト切替時に assets ベースを再設定（スクリプトの相対パス解決用）
+    void SetAssetsDir(const std::string& assetsDir) { m_assetsDir = assetsDir; }
+
     void LoadScript(const std::string& filePath);
 
     // ゲームライフサイクル

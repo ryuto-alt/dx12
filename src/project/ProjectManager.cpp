@@ -5,8 +5,10 @@
 #include <fstream>
 #include <filesystem>
 #include <algorithm>
+#include <thread>
 #include <commdlg.h>
 #include <ShlObj.h>
+#include <shobjidl.h>
 #include <nlohmann/json.hpp>
 
 #pragma warning(push)
@@ -107,120 +109,232 @@ bool ProjectManager::OpenProjectDialog(ProjectInfo& outInfo, HWND hwnd)
     return false;
 }
 
+bool ProjectManager::PickFolder(HWND /*hwnd*/, std::string& outPath, const wchar_t* title)
+{
+    // ★メインスレッドは XAudio2 が COINIT_MULTITHREADED(MTA) で COM 初期化済み。
+    //   IFileOpenDialog は STA を要求するため、MTA スレッドで Show() すると固まる。
+    //   → 専用の STA スレッドで開く。オーナー window は渡さない（メインスレッドが
+    //     join() でブロック中なので、クロススレッド SendMessage によるデッドロックを避ける）。
+    std::string picked;
+    bool ok = false;
+
+    std::thread worker([&]()
+    {
+        HRESULT hrInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        if (FAILED(hrInit))
+            return;
+
+        IFileOpenDialog* dlg = nullptr;
+        if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                       IID_PPV_ARGS(&dlg))))
+        {
+            DWORD opts = 0;
+            dlg->GetOptions(&opts);
+            dlg->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+            if (title) dlg->SetTitle(title);
+
+            if (SUCCEEDED(dlg->Show(nullptr)))
+            {
+                IShellItem* item = nullptr;
+                if (SUCCEEDED(dlg->GetResult(&item)))
+                {
+                    PWSTR pathW = nullptr;
+                    if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &pathW)) && pathW)
+                    {
+                        int len = WideCharToMultiByte(CP_UTF8, 0, pathW, -1, nullptr, 0, nullptr, nullptr);
+                        if (len > 0)
+                        {
+                            std::string s(static_cast<size_t>(len - 1), '\0');
+                            WideCharToMultiByte(CP_UTF8, 0, pathW, -1, s.data(), len, nullptr, nullptr);
+                            picked = s;
+                            ok = true;
+                        }
+                        CoTaskMemFree(pathW);
+                    }
+                    item->Release();
+                }
+            }
+            dlg->Release();
+        }
+        CoUninitialize();
+    });
+    worker.join();
+
+    if (ok) outPath = picked;
+    return ok;
+}
+
 bool ProjectManager::NewProjectDialog(ProjectInfo& outInfo, HWND hwnd)
 {
-    // Use folder browser dialog
-    BROWSEINFOA bi = {};
-    bi.hwndOwner = hwnd;
-    bi.lpszTitle = "Select folder for new project";
-    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    // 作成先フォルダを選ぶだけ。ディスク作成は呼び出し側が非同期で行う。
+    std::string folder;
+    if (!PickFolder(hwnd, folder, L"新規プロジェクトの作成先フォルダを選択"))
+        return false;
 
-    LPITEMIDLIST pidl = SHBrowseForFolderA(&bi);
-    if (!pidl) return false;
-
-    char folderPath[MAX_PATH];
-    SHGetPathFromIDListA(pidl, folderPath);
-    CoTaskMemFree(pidl);
-
-    std::filesystem::path projDir(folderPath);
+    std::filesystem::path projDir(folder);
     outInfo.name         = projDir.filename().string();
+    if (outInfo.name.empty()) outInfo.name = "MyGame";
     outInfo.rootDir      = projDir.string();
     outInfo.assetsDir    = (projDir / "assets").string() + "/";
     outInfo.scriptsDir   = (projDir / "scripts").string() + "/";
     outInfo.defaultScene = "scenes/default.json";
-
-    Project::CreateDefaultStructure(outInfo);
-    Project::Save(outInfo, (projDir / (outInfo.name + ".dx12proj")).string());
-    AddToRecents(outInfo);
-
     return true;
 }
 
-bool ProjectManager::RenderLauncher(ProjectInfo& outInfo, HWND hwnd)
+// アイコン付きの大きなアクションボタン（アイコン無しなら絵文字フォールバック）
+static bool IconActionButton(unsigned long long icon, const char* fallback,
+                             const char* label, const char* sub, const ImVec2& size)
 {
-    bool projectSelected = false;
+    ImGui::PushID(label);
+    ImVec2 cursor = ImGui::GetCursorScreenPos();
+    bool clicked = ImGui::Button("##btn", size);
 
-    // Center modal
-    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-    ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(500, 400), ImGuiCond_Always);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    float pad = 14.0f;
+    float iconSz = size.y - pad * 2.0f;
+    float textX = cursor.x + pad;
+    if (icon != 0)
+    {
+        dl->AddImage(static_cast<ImTextureID>(icon),
+                     ImVec2(cursor.x + pad, cursor.y + pad),
+                     ImVec2(cursor.x + pad + iconSz, cursor.y + pad + iconSz));
+        textX = cursor.x + pad + iconSz + 12.0f;
+    }
+    else
+    {
+        dl->AddText(ImVec2(cursor.x + pad, cursor.y + size.y * 0.5f - 8.0f),
+                    ImGui::GetColorU32(ImGuiCol_Text), fallback);
+        textX = cursor.x + pad + 24.0f;
+    }
+    float titleY = sub ? cursor.y + size.y * 0.5f - 14.0f : cursor.y + size.y * 0.5f - 8.0f;
+    dl->AddText(ImVec2(textX, titleY), ImGui::GetColorU32(ImGuiCol_Text), label);
+    if (sub)
+        dl->AddText(ImVec2(textX, cursor.y + size.y * 0.5f + 2.0f),
+                    ImGui::GetColorU32(ImGuiCol_TextDisabled), sub);
+    ImGui::PopID();
+    return clicked;
+}
 
-    ImGui::Begin("DX12 Engine - Project Launcher", nullptr,
-        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse);
+LauncherAction ProjectManager::RenderLauncher(ProjectInfo& outInfo, HWND hwnd,
+                                              const LauncherIcons& icons)
+{
+    LauncherAction action = LauncherAction::None;
 
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.39f, 0.58f, 0.93f, 1.0f));
-    ImGui::Text("DX12 Engine v0.1");
-    ImGui::PopStyleColor();
+    // 画面全体を覆う背景（モーダル感）
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->Pos);
+    ImGui::SetNextWindowSize(vp->Size);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.07f, 0.09f, 0.12f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::Begin("##LauncherBG", nullptr,
+        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse
+        | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBringToFrontOnFocus
+        | ImGuiWindowFlags_NoScrollbar);
+
+    // 中央パネル
+    ImVec2 panelSize(560, 520);
+    ImVec2 panelPos(vp->Pos.x + (vp->Size.x - panelSize.x) * 0.5f,
+                    vp->Pos.y + (vp->Size.y - panelSize.y) * 0.5f);
+    ImGui::SetCursorScreenPos(panelPos);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.11f, 0.13f, 0.17f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12.0f);
+    ImGui::BeginChild("##LauncherPanel", panelSize, ImGuiChildFlags_None);
+
+    ImGui::Dummy(ImVec2(0, 8));
+    // ロゴ + タイトル
+    {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        ImVec2 c = ImGui::GetCursorScreenPos();
+        float logoSz = 56.0f;
+        if (icons.logo != 0)
+            dl->AddImage(static_cast<ImTextureID>(icons.logo),
+                         ImVec2(c.x + 24, c.y), ImVec2(c.x + 24 + logoSz, c.y + logoSz));
+        dl->AddText(ImGui::GetFont(), 28.0f, ImVec2(c.x + 24 + logoSz + 16, c.y + 4),
+                    IM_COL32(255, 255, 255, 255), "DX12 Engine");
+        dl->AddText(ImVec2(c.x + 24 + logoSz + 16, c.y + 36),
+                    ImGui::GetColorU32(ImGuiCol_TextDisabled), "Game Engine v0.1");
+        ImGui::Dummy(ImVec2(0, logoSz + 8));
+    }
     ImGui::Separator();
+    ImGui::Dummy(ImVec2(0, 6));
 
-    // New / Open buttons
-    if (ImGui::Button("\xe2\x9c\x9a \xe6\x96\xb0\xe8\xa6\x8f\xe3\x83\x97\xe3\x83\xad\xe3\x82\xb8\xe3\x82\xa7\xe3\x82\xaf\xe3\x83\x88", ImVec2(230, 35)))  // New Project
+    float btnW = panelSize.x - 48.0f;
+    ImGui::SetCursorPosX(24);
+    if (IconActionButton(icons.newProject, "[N]", "新規プロジェクト",
+                         "新しいゲームプロジェクトを作成", ImVec2(btnW, 64)))
     {
         if (NewProjectDialog(outInfo, hwnd))
-            projectSelected = true;
+            action = LauncherAction::CreateNew;
     }
-
-    ImGui::SameLine();
-    if (ImGui::Button("\xf0\x9f\x93\x82 \xe3\x83\x97\xe3\x83\xad\xe3\x82\xb8\xe3\x82\xa7\xe3\x82\xaf\xe3\x83\x88\xe3\x82\x92\xe9\x96\x8b\xe3\x81\x8f", ImVec2(230, 35)))  // Open Project
+    ImGui::SetCursorPosX(24);
+    if (IconActionButton(icons.openProject, "[O]", "プロジェクトを開く",
+                         "既存の .dx12proj を開く", ImVec2(btnW, 64)))
     {
         if (OpenProjectDialog(outInfo, hwnd))
-            projectSelected = true;
+            action = LauncherAction::OpenExisting;
     }
 
-    ImGui::Separator();
-    ImGui::Text("\xe6\x9c\x80\xe8\xbf\x91\xe3\x81\xae\xe3\x83\x97\xe3\x83\xad\xe3\x82\xb8\xe3\x82\xa7\xe3\x82\xaf\xe3\x83\x88:");  // Recent Projects:
+    ImGui::Dummy(ImVec2(0, 8));
+    ImGui::SetCursorPosX(24);
+    ImGui::TextDisabled("最近のプロジェクト");
+    ImGui::SetCursorPosX(24);
+    ImGui::BeginChild("##recents", ImVec2(btnW, 210), ImGuiChildFlags_Borders);
 
     auto recents = GetRecents();
     if (recents.empty())
     {
-        ImGui::TextDisabled("\xe3\x81\xbe\xe3\x81\xa0\xe3\x83\x97\xe3\x83\xad\xe3\x82\xb8\xe3\x82\xa7\xe3\x82\xaf\xe3\x83\x88\xe3\x81\x8c\xe3\x81\x82\xe3\x82\x8a\xe3\x81\xbe\xe3\x81\x9b\xe3\x82\x93");  // No projects yet
+        ImGui::TextDisabled("まだプロジェクトがありません");
     }
     else
     {
         for (const auto& recent : recents)
         {
             ImGui::PushID(recent.rootDir.c_str());
-
-            // Check if project file still exists
-            std::filesystem::path projFile = std::filesystem::path(recent.rootDir) / (recent.name + ".dx12proj");
+            std::filesystem::path projFile =
+                std::filesystem::path(recent.rootDir) / (recent.name + ".dx12proj");
             bool exists = std::filesystem::exists(projFile);
 
-            if (!exists)
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
+            ImVec2 c = ImGui::GetCursorScreenPos();
+            bool sel = ImGui::Selectable("##rec", false, ImGuiSelectableFlags_None, ImVec2(0, 40));
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            float ic = 28.0f;
+            if (icons.recent != 0)
+                dl->AddImage(static_cast<ImTextureID>(icons.recent),
+                             ImVec2(c.x + 4, c.y + 6), ImVec2(c.x + 4 + ic, c.y + 6 + ic));
+            ImU32 nameCol = exists ? IM_COL32(235, 235, 235, 255) : IM_COL32(130, 130, 130, 255);
+            dl->AddText(ImVec2(c.x + 4 + ic + 8, c.y + 4), nameCol, recent.name.c_str());
+            dl->AddText(ImVec2(c.x + 4 + ic + 8, c.y + 22),
+                        ImGui::GetColorU32(ImGuiCol_TextDisabled), recent.rootDir.c_str());
 
-            if (ImGui::Selectable(recent.name.c_str(), false, ImGuiSelectableFlags_None, ImVec2(0, 30)))
+            if (sel && exists && Project::Load(projFile.string(), outInfo))
             {
-                if (exists && Project::Load(projFile.string(), outInfo))
-                {
-                    AddToRecents(outInfo);
-                    projectSelected = true;
-                }
+                AddToRecents(outInfo);
+                action = LauncherAction::OpenExisting;
             }
-
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", recent.rootDir.c_str());
-
-            if (!exists)
-                ImGui::PopStyleColor();
-
             ImGui::PopID();
         }
     }
+    ImGui::EndChild();
 
-    ImGui::Separator();
-
-    // Skip button (use default project for development)
-    if (ImGui::Button("\xe3\x82\xb9\xe3\x82\xad\xe3\x83\x83\xe3\x83\x97 (\xe3\x83\x87\xe3\x83\x95\xe3\x82\xa9\xe3\x83\xab\xe3\x83\x88)", ImVec2(-1, 30)))  // Skip (Default)
+    ImGui::Dummy(ImVec2(0, 6));
+    ImGui::SetCursorPosX(24);
+    if (ImGui::Button("スキップ（組み込みデフォルトで開く）", ImVec2(btnW, 28)))
     {
-        // Use current working directory as project
-        outInfo.name       = "Default";
-        outInfo.rootDir    = "";  // Signal to use built-in paths
-        projectSelected = true;
+        outInfo = ProjectInfo{};
+        outInfo.name    = "Default";
+        outInfo.rootDir = "";  // 組み込みパスを使う合図
+        action = LauncherAction::Skip;
     }
 
-    ImGui::End();
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
 
-    return projectSelected;
+    ImGui::End();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+
+    return action;
 }
 
 std::string ProjectManager::GetEditorStatePath()

@@ -19,6 +19,11 @@ class PathResolver
 public:
     static void Initialize(bool gameMode);
 
+    // 実行時にプロジェクトを切り替える（エディタのランチャーから呼ぶ）。
+    // assets/scripts/base を rootDir 配下へ再ポイントする。
+    // shaders はエンジンがビルドした .cso を使い続けるので変更しない。
+    static void SetProjectRoot(const std::string& rootDir);
+
     static const std::string&  AssetsDir();   // 末尾 "/" 付き
     static const std::wstring& ShaderDirW();  // 末尾 L"/" 付き（.cso の置き場）
     static const std::string&  ScriptsDir();  // 末尾 "/" 付き

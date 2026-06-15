@@ -26,6 +26,16 @@ public:
 
     void Render(EditorContext& ctx, f32 dt);
     void ForceRefresh() { Refresh(); }
+
+    // プロジェクト切替時にルートを差し替える
+    void SetRoots(const std::string& assetsDir, const std::string& scriptsDir)
+    {
+        m_assetsRoot  = std::filesystem::path(assetsDir);
+        m_scriptsRoot = std::filesystem::path(scriptsDir);
+        m_currentDir  = m_assetsRoot;
+        m_thumbnailCache.clear();
+        Refresh();
+    }
     void SetThumbnailRenderer(ModelThumbnailRenderer* r) { m_thumbRenderer = r; }
 
     // フレーム先頭でcmdListが有効な間に呼ぶ（テクスチャアップロード用）

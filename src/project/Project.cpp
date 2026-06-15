@@ -82,16 +82,9 @@ void Project::CreateDefaultStructure(const ProjectInfo& info)
         ofs << "end\n";
     }
 
-    // Default scene
-    std::string scenePath = info.assetsDir + info.defaultScene;
-    if (!fs::exists(scenePath))
-    {
-        nlohmann::json sceneJ;
-        sceneJ["version"] = 1;
-        sceneJ["entities"] = nlohmann::json::array();
-        std::ofstream ofs(scenePath);
-        ofs << sceneJ.dump(2);
-    }
+    // 開始シーンは敢えて生成しない。
+    // 初回ロード時に Application が Grid + 平行光源のスターターシーンを作って保存する。
+    fs::create_directories(info.assetsDir + "scenes");
 
     Logger::Info("Created project structure: {}", info.rootDir);
 }

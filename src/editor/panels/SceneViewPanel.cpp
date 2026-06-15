@@ -322,6 +322,11 @@ void SceneViewPanel::HandleCameraNavigation(entt::registry& reg,
     // 操作ヒントをビュー左下に薄く表示（発見性のため）。/utf-8 でビルドするので
     // 日本語リテラルはそのまま UTF-8 として ImGui に渡せる。
     ImGui::GetForegroundDrawList()->AddText(
+        ImVec2(vpX + 12.0f, vpY + vpH - 44.0f),
+        IM_COL32(235, 235, 235, 140),
+        "Touchpad 2-finger: vert=fwd/back  horiz=left/right  SHIFT=up/down  Ctrl/pinch=zoom");
+
+    ImGui::GetForegroundDrawList()->AddText(
         ImVec2(vpX + 12.0f, vpY + vpH - 26.0f),
         IM_COL32(235, 235, 235, 160),
         "\xe5\x8f\xb3\xe3\x83\x89\xe3\x83\xa9\xe3\x83\x83\xe3\x82\xb0:\xe8\xa6\x96\xe7\x82\xb9  "
@@ -344,19 +349,41 @@ void SceneViewPanel::HandleCameraNavigation(entt::registry& reg,
     if (ImGuizmo::IsUsing() || !inViewport)
         return;
 
-    // --- スクロール: 右クリック中はフライ移動速度を増減 / それ以外はドリーズーム ---
-    if (inViewport && io.MouseWheel != 0.0f)
+    // --- タッチパッド/ホイール ナビゲーション ---
+    //   縦スワイプ(二本指)        : 前後
+    //   SHIFT + 縦スワイプ          : 上下
+    //   Ctrl + 縦スワイプ / ピンチ  : ズーム
+    //   横スワイプ(二本指)        : 左右ストレイフ
+    //   右ドラッグ中の縦スワイプ    : フライ移動速度の増減
     {
-        if (io.MouseDown[ImGuiMouseButton_Right])
+        const f32 step = (std::max)(0.5f, m_orbitDistance * 0.15f);
+
+        if (io.MouseWheel != 0.0f)
         {
-            f32 speed = camera->GetMoveSpeed();
-            speed *= (io.MouseWheel > 0.0f) ? 1.15f : (1.0f / 1.15f);
-            camera->SetMoveSpeed(std::clamp(speed, 0.2f, 200.0f));
+            if (io.MouseDown[ImGuiMouseButton_Right])
+            {
+                f32 speed = camera->GetMoveSpeed();
+                speed *= (io.MouseWheel > 0.0f) ? 1.15f : (1.0f / 1.15f);
+                camera->SetMoveSpeed(std::clamp(speed, 0.2f, 200.0f));
+            }
+            else if (io.KeyShift)
+            {
+                camera->MoveUp(io.MouseWheel * step);              // 上下
+            }
+            else if (io.KeyCtrl)
+            {
+                camera->MoveForward(io.MouseWheel * step * 1.6f);  // ズーム（ピンチ）
+            }
+            else
+            {
+                camera->MoveForward(io.MouseWheel * step);         // 前後
+            }
         }
-        else
+
+        // 横スワイプ（二本指 左右）: ストレイフ。右ドラッグ中は速度調整を優先して無効。
+        if (io.MouseWheelH != 0.0f && !io.MouseDown[ImGuiMouseButton_Right])
         {
-            f32 step = (std::max)(0.5f, m_orbitDistance * 0.15f);
-            camera->MoveForward(io.MouseWheel * step);
+            camera->MoveRight(-io.MouseWheelH * step);             // 左右（符号反転）
         }
     }
 

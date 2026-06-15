@@ -50,6 +50,7 @@
 #include "editor/ModelThumbnailRenderer.h"
 #include "project/Project.h"
 #include "project/ProjectManager.h"
+#include "project/GitIntegration.h"
 #include <commdlg.h>
 
 #pragma warning(push)
@@ -232,6 +233,10 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_resourceManager = std::make_unique<ResourceManager>();
         m_resourceManager->Initialize(m_graphicsDevice.get(), m_srvHeap.get(), cmdList);
 
+        // エディタUIアイコンを読み込み（エンジン側assets基準。プロジェクト切替前に1度）
+        if (!m_isGameMode)
+            LoadEditorIcons(cmdList);
+
         // Scene 初期化
         m_scene = std::make_unique<Scene>();
         m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
@@ -298,13 +303,20 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             }
             if (!loaded)
             {
-                // クリーン初期状態: Grid + DirectionalLight
+                // クリーン初期状態: Grid + DirectionalLight + MainCamera（再生に必要な最低限）
                 m_scene->SpawnPlane("Grid", {0, 0, 0}, 50.0f, true);
                 auto& reg = m_scene->GetRegistry();
                 auto lightE = reg.create();
                 reg.emplace<NameTag>(lightE, NameTag{"DirectionalLight"});
                 reg.emplace<Transform>(lightE, Transform{{0, 10, 0}, {-45, -30, 0}, {1,1,1}});
                 reg.emplace<DirectionalLight>(lightE);
+
+                auto camE = reg.create();
+                reg.emplace<NameTag>(camE, NameTag{"MainCamera"});
+                reg.emplace<Transform>(camE, Transform{{0.0f, 6.0f, -12.0f}, {22.0f, 0.0f, 0.0f}, {1,1,1}});
+                CameraComponent cam;
+                cam.isActive = true;
+                reg.emplace<CameraComponent>(camE, cam);
             }
 
             // シーンフロー / loadScene 用に現在シーンの相対パスを記録
@@ -838,6 +850,10 @@ void Application::Shutdown()
 {
     Logger::Info("Application shutting down...");
 
+    // 非同期ロードスレッドの回収
+    if (m_loadThread.joinable())
+        m_loadThread.join();
+
     // GPU の処理完了を待機
     if (m_commandQueue)
     {
@@ -906,6 +922,9 @@ void Application::Update()
     f32 dt = m_gameClock.GetDeltaTime();
 
     m_framesSinceStart++;
+
+    // 非同期プロジェクトロードの状態機械を進める
+    UpdateProjectLoad(dt);
 
     if (m_engineMode == EngineMode::Editor)
     {
@@ -1118,7 +1137,8 @@ void Application::Update()
             if (!cam.isActive) continue;
             m_camera->SetPosition(tf.position);
             m_camera->SetYaw(DirectX::XMConvertToRadians(tf.rotation.y));
-            m_camera->SetPitch(DirectX::XMConvertToRadians(tf.rotation.x));
+            // ピッチ反転: エディタのギズモ/フラスタム(Euler)と Camera(forward.y=sin(pitch)) は符号が逆
+            m_camera->SetPitch(DirectX::XMConvertToRadians(-tf.rotation.x));
             break;
         }
     }
@@ -1196,6 +1216,442 @@ void Application::RebuildScene()
     }
 }
 
+void Application::LoadEditorIcons(ID3D12GraphicsCommandList* cmdList)
+{
+    auto load = [&](const char* name) -> u64
+    {
+        std::string p = PathResolver::AssetsDir() + "editor/icons/" + name + ".png";
+        if (!std::filesystem::exists(p)) return 0;
+        std::wstring wp(p.begin(), p.end());
+        Texture* t = m_resourceManager->GetOrLoadTexture(wp, cmdList, true);
+        if (!t) return 0;
+        return m_srvHeap->GetGpuHandle(t->GetSrvIndex()).ptr;
+    };
+    m_icons.logo        = load("logo");
+    m_icons.newProject  = load("new_project");
+    m_icons.openProject = load("open_project");
+    m_icons.recent      = load("recent");
+    m_icons.save        = load("save");
+    m_icons.git         = load("git");
+    m_icons.github      = load("github");
+    m_icons.commit      = load("commit");
+    m_icons.push        = load("push");
+    Logger::Info("Editor UI icons loaded");
+}
+
+void Application::BeginProjectLoad(const ProjectInfo& info, bool isNew)
+{
+    namespace fs = std::filesystem;
+    // 直前のスレッドが残っていれば回収
+    if (m_loadThread.joinable())
+        m_loadThread.join();
+
+    m_loadInfo            = info;
+    m_loadIsNew           = isNew;
+    m_loading             = true;
+    m_showLauncher        = false;
+    m_loadProjectStarted  = false;
+    m_loadSceneWaitFrames = 0;
+    m_loadSpinTime        = 0.0f;
+    m_loadThreadDone      = false;
+    m_loadStatus          = isNew ? "プロジェクトを作成中..." : "プロジェクトを読み込み中...";
+
+    if (isNew)
+    {
+        // ディスク作成（フォルダ生成・テンプレ書き出し）はワーカースレッドで
+        m_loadThreadRunning = true;
+        ProjectInfo copy = info;
+        m_loadThread = std::thread([this, copy]()
+        {
+            Project::CreateDefaultStructure(copy);
+            std::string projPath =
+                (std::filesystem::path(copy.rootDir) / (copy.name + ".dx12proj")).string();
+            Project::Save(copy, projPath);
+            ProjectManager::AddToRecents(copy);
+            m_loadThreadDone = true;
+        });
+    }
+    else
+    {
+        // 既存プロジェクト: 重い CPU 処理は無い（シーンの GPU ロードは本スレッドで）
+        m_loadThreadRunning = false;
+        m_loadThreadDone    = true;
+    }
+}
+
+void Application::UpdateProjectLoad(f32 dt)
+{
+    if (!m_loading) return;
+    m_loadSpinTime += dt;
+
+    // フェーズ1: 作成スレッドの完了待ち
+    if (m_loadThreadRunning)
+    {
+        if (!m_loadThreadDone.load()) return;  // まだ作成中（スピナー回し続ける）
+        if (m_loadThread.joinable()) m_loadThread.join();
+        m_loadThreadRunning = false;
+    }
+
+    // フェーズ2: LoadProject を一度だけ発火（次フレームの Render で実シーンロード）
+    if (!m_loadProjectStarted)
+    {
+        m_loadStatus = "シーンを読み込み中...";
+        LoadProject(m_loadInfo);
+        m_loadProjectStarted  = true;
+        m_loadSceneWaitFrames = 2;  // pending* が Render で消化されるまで猶予
+        return;
+    }
+
+    // フェーズ3: シーンロード（pending*）が消化されたら完了
+    bool pendingScene = !m_editorCtx->pendingLoadPath.empty() || m_editorCtx->pendingNewScene;
+    if (m_loadSceneWaitFrames > 0) --m_loadSceneWaitFrames;
+    if (m_loadSceneWaitFrames == 0 && !pendingScene)
+    {
+        m_loading            = false;
+        m_loadProjectStarted = false;
+        m_editorCtx->buildCompleteFlash = 1.5f;
+    }
+}
+
+void Application::RenderLoadingOverlay()
+{
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->Pos);
+    ImGui::SetNextWindowSize(vp->Size);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f, 0.06f, 0.09f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::Begin("##LoadingOverlay", nullptr,
+        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoTitleBar
+        | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar
+        | ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 c(vp->Pos.x + vp->Size.x * 0.5f, vp->Pos.y + vp->Size.y * 0.5f);
+
+    // 回転スピナー（円弧をぐるぐる）
+    const float r = 34.0f;
+    const int   segs = 28;
+    float t = m_loadSpinTime * 3.2f;
+    for (int i = 0; i < segs; ++i)
+    {
+        float a0 = t + (float)i / segs * 6.2831853f;
+        float a1 = t + (float)(i + 1) / segs * 6.2831853f;
+        float alpha = (float)i / segs;  // フェードする尾
+        ImU32 col = ImGui::ColorConvertFloat4ToU32(ImVec4(0.39f, 0.58f, 0.93f, alpha));
+        dl->AddLine(ImVec2(c.x + cosf(a0) * r, c.y + sinf(a0) * r),
+                    ImVec2(c.x + cosf(a1) * r, c.y + sinf(a1) * r), col, 5.0f);
+    }
+
+    // ステータステキスト（中央寄せ）
+    const char* msg = m_loadStatus.c_str();
+    ImVec2 ts = ImGui::CalcTextSize(msg);
+    dl->AddText(ImVec2(c.x - ts.x * 0.5f, c.y + r + 24.0f),
+                IM_COL32(235, 235, 235, 255), msg);
+
+    if (!m_loadInfo.name.empty())
+    {
+        ImVec2 ns = ImGui::CalcTextSize(m_loadInfo.name.c_str());
+        dl->AddText(ImVec2(c.x - ns.x * 0.5f, c.y + r + 48.0f),
+                    ImGui::GetColorU32(ImGuiCol_TextDisabled), m_loadInfo.name.c_str());
+    }
+
+    ImGui::End();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+}
+
+void Application::LoadProject(const ProjectInfo& info)
+{
+    namespace fs = std::filesystem;
+    m_projectInfo = info;
+
+    // git 状態をプロジェクトごとに再評価
+    m_gitChecked   = false;
+    m_gitOutput.clear();
+
+    // 「スキップ（デフォルト）」= 組み込みパスのまま。すでに既定シーンが読み込まれている。
+    if (info.rootDir.empty())
+    {
+        Logger::Info("Using built-in default project (no project root)");
+        if (m_window) m_window->SetTitle(L"DX12 Engine");
+        return;
+    }
+
+    // 1) パスをプロジェクト配下へ再ポイント（shaders はエンジン側を維持）
+    PathResolver::SetProjectRoot(info.rootDir);
+
+    // 2) パス依存サブシステムを更新
+    m_audioSystem->SetAssetsDir(PathResolver::AssetsDir());
+    m_scriptEngine->SetAssetsDir(PathResolver::AssetsDir());
+    if (m_editorLayer)
+        m_editorLayer->SetAssetRoots(PathResolver::AssetsDir(), PathResolver::ScriptsDir());
+
+    // 3) プロジェクトの game.lua を読み込み直す
+    {
+        std::string scriptPath = PathResolver::ScriptsDir() + "game.lua";
+        if (fs::exists(scriptPath))
+        {
+            m_scriptEngine->LoadScript(scriptPath);
+            m_scriptLastWriteTime = fs::last_write_time(scriptPath);
+        }
+    }
+
+    // 4) 開始シーンを決定してロード（フレーム境界で実行）
+    std::string sceneRel = info.defaultScene.empty() ? "scenes/default.json" : info.defaultScene;
+    std::string sceneFull = PathResolver::AssetsDir() + sceneRel;
+    m_currentSceneRel = sceneRel;
+
+    if (fs::exists(sceneFull))
+    {
+        // 既存シーンを次フレームで安全にロード
+        m_editorCtx->pendingLoadPath = sceneFull;
+    }
+    else
+    {
+        // 新規プロジェクト: グリッド + 平行光源のスターターシーンを生成して保存
+        fs::create_directories(fs::path(sceneFull).parent_path());
+        m_editorCtx->pendingNewScenePath = sceneFull;
+        m_editorCtx->pendingNewScene = true;
+    }
+
+    // 5) ウィンドウタイトルにプロジェクト名
+    if (m_window)
+    {
+        std::wstring title = L"DX12 Engine - ";
+        title += std::wstring(info.name.begin(), info.name.end());
+        m_window->SetTitle(title);
+    }
+
+    Logger::Info("Project loaded: {} ({})", info.name, info.rootDir);
+}
+
+void Application::SaveCurrentProject()
+{
+    namespace fs = std::filesystem;
+
+    // 現在シーンを保存
+    if (!m_editorCtx->currentScenePath.empty())
+    {
+        SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, PathResolver::AssetsDir());
+        ProjectManager::SaveLastOpenedScene(m_editorCtx->currentScenePath);
+    }
+
+    // .dx12proj を保存（プロジェクトを開いている場合のみ）
+    if (!m_projectInfo.rootDir.empty())
+    {
+        m_projectInfo.defaultScene    = m_currentSceneRel.empty() ? m_projectInfo.defaultScene : m_currentSceneRel;
+        m_projectInfo.lastOpenedScene = m_currentSceneRel;
+        std::string projPath = (fs::path(m_projectInfo.rootDir) / (m_projectInfo.name + ".dx12proj")).string();
+        Project::Save(m_projectInfo, projPath);
+    }
+    m_editorCtx->buildCompleteFlash = 2.0f;
+    Logger::Info("Project saved");
+}
+
+void Application::RenderProjectWindow()
+{
+    ImGui::Begin("Project");
+
+    if (m_projectInfo.rootDir.empty())
+    {
+        ImGui::TextDisabled("(組み込みデフォルトプロジェクト)");
+    }
+    else
+    {
+        ImGui::Text("名前: %s", m_projectInfo.name.c_str());
+        ImGui::TextWrapped("場所: %s", m_projectInfo.rootDir.c_str());
+        ImGui::TextWrapped("シーン: %s", m_currentSceneRel.c_str());
+    }
+    ImGui::Separator();
+
+    auto icon = [](u64 h, float s) { if (h) { ImGui::Image(static_cast<ImTextureID>(h), ImVec2(s, s)); ImGui::SameLine(); } };
+
+    icon(m_icons.save, 22);
+    if (ImGui::Button("プロジェクトを保存", ImVec2(-1, 30)))
+        SaveCurrentProject();
+
+    icon(m_icons.newProject, 22);
+    if (ImGui::Button("新規プロジェクト...", ImVec2(-1, 0)))
+    {
+        ProjectInfo created;
+        if (ProjectManager::NewProjectDialog(created, m_window->GetHwnd()))
+            BeginProjectLoad(created, /*isNew=*/true);
+    }
+    icon(m_icons.openProject, 22);
+    if (ImGui::Button("プロジェクトを開く...", ImVec2(-1, 0)))
+    {
+        ProjectInfo opened;
+        if (ProjectManager::OpenProjectDialog(opened, m_window->GetHwnd()))
+            BeginProjectLoad(opened, /*isNew=*/false);
+    }
+    icon(m_icons.recent, 22);
+    if (ImGui::Button("ランチャーに戻る", ImVec2(-1, 0)))
+        m_showLauncher = true;
+
+    ImGui::End();
+}
+
+void Application::RenderVersionControlWindow()
+{
+    ImGui::Begin("Version Control (Git)");
+
+    // git/gh の存在チェック（1 度だけ）
+    if (!m_gitChecked)
+    {
+        m_gitAvailable = GitIntegration::IsGitAvailable();
+        m_ghAvailable  = GitIntegration::IsGhAvailable();
+        m_gitChecked   = true;
+        if (m_gitCommitMsgBuf[0] == '\0')
+        {
+            const char* def = "Update";
+            std::copy(def, def + 7, m_gitCommitMsgBuf.begin());
+        }
+    }
+
+    if (m_projectInfo.rootDir.empty())
+    {
+        ImGui::TextWrapped("プロジェクトを開く/作成すると Git を使用できます。");
+        ImGui::End();
+        return;
+    }
+    if (!m_gitAvailable)
+    {
+        ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "git が見つかりません。インストールして PATH を通してください。");
+        ImGui::End();
+        return;
+    }
+
+    const std::string& root = m_projectInfo.rootDir;
+
+    // git 状態（repo/branch/remote）は重いので定期キャッシュ（毎フレーム git 起動を避ける）
+    m_gitRefreshTimer -= m_gameClock.GetDeltaTime();
+    if (m_gitRefreshTimer <= 0.0f)
+    {
+        m_gitRefreshTimer = 2.0f;
+        m_gitRepoCache = GitIntegration::IsRepo(root);
+        if (m_gitRepoCache)
+        {
+            m_gitBranchCache = GitIntegration::CurrentBranch(root);
+            m_gitRemoteCache = GitIntegration::RemoteUrl(root);
+        }
+        else { m_gitBranchCache.clear(); m_gitRemoteCache.clear(); }
+    }
+
+    auto icon = [](u64 h, float s) { if (h) { ImGui::Image(static_cast<ImTextureID>(h), ImVec2(s, s)); ImGui::SameLine(); } };
+
+    if (!m_gitRepoCache)
+    {
+        ImGui::TextWrapped("このプロジェクトはまだ Git リポジトリではありません。");
+        icon(m_icons.git, 22);
+        if (ImGui::Button("Git リポジトリを初期化", ImVec2(-1, 30)))
+        {
+            auto r = GitIntegration::Init(root);
+            m_gitOutput = r.output.empty() ? "git init 完了" : r.output;
+            m_gitRefreshTimer = 0.0f;  // 即再取得
+        }
+        ImGui::End();
+        return;
+    }
+
+    // ---- リポジトリ操作 ----
+    const std::string& branch = m_gitBranchCache;
+    const std::string& remote = m_gitRemoteCache;
+    icon(m_icons.git, 18);
+    ImGui::Text("ブランチ: %s", branch.empty() ? "(未コミット)" : branch.c_str());
+    ImGui::TextWrapped("リモート: %s", remote.empty() ? "(未設定)" : remote.c_str());
+    ImGui::Separator();
+
+    ImGui::InputText("リモート URL", m_gitRemoteBuf.data(), m_gitRemoteBuf.size());
+    ImGui::SameLine();
+    if (ImGui::Button("設定"))
+    {
+        if (m_gitRemoteBuf[0] != '\0')
+        {
+            auto r = GitIntegration::AddRemote(root, m_gitRemoteBuf.data());
+            m_gitOutput = r.ok() ? "リモートを設定しました" : r.output;
+            m_gitRefreshTimer = 0.0f;
+        }
+    }
+
+    ImGui::Separator();
+    ImGui::InputText("コミットメッセージ", m_gitCommitMsgBuf.data(), m_gitCommitMsgBuf.size());
+
+    icon(m_icons.commit, 22);
+    if (ImGui::Button("コミット", ImVec2(130, 30)))
+    {
+        // シーン/プロジェクトを保存してからコミット
+        SaveCurrentProject();
+        auto r = GitIntegration::CommitAll(root, m_gitCommitMsgBuf.data());
+        m_gitOutput = r.output.empty() ? "コミット完了" : r.output;
+    }
+    ImGui::SameLine();
+    icon(m_icons.push, 22);
+    if (ImGui::Button("プッシュ", ImVec2(130, 30)))
+    {
+        auto r = GitIntegration::Push(root, true);
+        m_gitOutput = r.output.empty() ? "プッシュ完了" : r.output;
+    }
+
+    if (ImGui::Button("コミット & プッシュ", ImVec2(-1, 30)))
+    {
+        SaveCurrentProject();
+        auto c = GitIntegration::CommitAll(root, m_gitCommitMsgBuf.data());
+        auto p = GitIntegration::Push(root, true);
+        m_gitOutput = c.output + "\n" + p.output;
+        m_gitRefreshTimer = 0.0f;
+    }
+
+    // ---- GitHub 連携（gh CLI）----
+    ImGui::SeparatorText("GitHub");
+    if (m_ghAvailable)
+    {
+        if (remote.empty())
+        {
+            icon(m_icons.github, 22);
+            ImGui::TextWrapped("gh で GitHub リポジトリを作成して公開できます。");
+            if (ImGui::Button("GitHub リポジトリ作成 (private) & push", ImVec2(-1, 0)))
+            {
+                SaveCurrentProject();
+                GitIntegration::CommitAll(root, m_gitCommitMsgBuf.data());
+                auto r = GitIntegration::CreateGitHubRepo(root, m_projectInfo.name, true);
+                m_gitOutput = r.output;
+            }
+            if (ImGui::Button("GitHub リポジトリ作成 (public) & push", ImVec2(-1, 0)))
+            {
+                SaveCurrentProject();
+                GitIntegration::CommitAll(root, m_gitCommitMsgBuf.data());
+                auto r = GitIntegration::CreateGitHubRepo(root, m_projectInfo.name, false);
+                m_gitOutput = r.output;
+            }
+        }
+        else
+        {
+            ImGui::TextDisabled("リモート設定済み。コミット & プッシュを使用してください。");
+        }
+    }
+    else
+    {
+        ImGui::TextDisabled("gh CLI が無いため、リモート URL を手動設定してプッシュしてください。");
+    }
+
+    // ---- 出力ログ ----
+    if (ImGui::Button("状態を取得 (git status)"))
+    {
+        auto r = GitIntegration::Status(root);
+        m_gitOutput = r.output;
+    }
+    if (!m_gitOutput.empty())
+    {
+        ImGui::SeparatorText("出力");
+        ImGui::BeginChild("##gitout", ImVec2(0, 120), true,
+                          ImGuiWindowFlags_HorizontalScrollbar);
+        ImGui::TextUnformatted(m_gitOutput.c_str());
+        ImGui::EndChild();
+    }
+
+    ImGui::End();
+}
+
 void Application::WireScriptCallbacks()
 {
     if (!m_scriptEngine) return;
@@ -1253,7 +1709,8 @@ void Application::SyncActiveCameraToGlobal()
         if (!cam.isActive) continue;
         m_camera->SetPosition(tf.position);
         m_camera->SetYaw(DirectX::XMConvertToRadians(tf.rotation.y));
-        m_camera->SetPitch(DirectX::XMConvertToRadians(tf.rotation.x));
+        // ピッチ反転: エディタのギズモ/フラスタム(Euler)と Camera(forward.y=sin(pitch)) は符号が逆
+        m_camera->SetPitch(DirectX::XMConvertToRadians(-tf.rotation.x));
         m_camera->SetPerspective(
             DirectX::XMConvertToRadians(cam.fovDegrees),
             static_cast<f32>(m_window->GetWidth()) / static_cast<f32>(m_window->GetHeight()),
@@ -1681,20 +2138,37 @@ void Application::Render()
     if (m_editorCtx->pendingNewScene && m_engineMode == EngineMode::Editor)
     {
         m_editorCtx->pendingNewScene = false;
+        // プロジェクト新規作成の初期シーンなら保存先が指定されている
+        std::string starterPath = std::move(m_editorCtx->pendingNewScenePath);
+        m_editorCtx->pendingNewScenePath.clear();
         m_editorCtx->ClearSelection();
         m_editorCtx->undoSystem.Clear();
-        m_editorCtx->currentScenePath.clear();
+        m_editorCtx->currentScenePath = starterPath;  // 空なら未保存の新規シーン
         m_scene->Clear();
         m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
                             m_srvHeap.get(), nativeCmdList);
-        m_scene->SpawnPlane("Grid", {0, 0, 0}, 50.0f, true);
+        // ---- 再生に必要な最低限のデフォルト配置 ----
+        m_scene->SpawnPlane("Grid", {0, 0, 0}, 50.0f, true);   // エディタ用グリッド
+        m_scene->SpawnPlane("Ground", {0, 0, 0}, 20.0f, false); // 実体のある床
+        m_scene->SpawnBox("Cube", {0, 0.5f, 0}, {0, 0, 0}, {1, 1, 1}); // サンプルオブジェクト
         {
             auto& reg = m_scene->GetRegistry();
+            // 平行光源
             auto lightE = reg.create();
             reg.emplace<NameTag>(lightE, NameTag{"DirectionalLight"});
             reg.emplace<Transform>(lightE, Transform{{0, 10, 0}, {-45, -30, 0}, {1,1,1}});
             reg.emplace<DirectionalLight>(lightE);
+
+            // メインカメラ（CameraComponent が無いと Play で映らないため必須）
+            auto camE = reg.create();
+            reg.emplace<NameTag>(camE, NameTag{"MainCamera"});
+            reg.emplace<Transform>(camE, Transform{{0.0f, 6.0f, -12.0f}, {22.0f, 0.0f, 0.0f}, {1,1,1}});
+            CameraComponent cam;
+            cam.isActive = true;
+            reg.emplace<CameraComponent>(camE, cam);
         }
+        if (!starterPath.empty())
+            m_currentSceneRel = ToAssetRel(starterPath);
         // 作成と同時にシーンファイルを保存
         if (!m_editorCtx->currentScenePath.empty())
         {
@@ -2401,7 +2875,33 @@ void Application::Render()
     m_imguiManager->BeginFrame();
     ImGuizmo::BeginFrame();
 
-    if (!m_isGameMode)
+    if (!m_isGameMode && m_loading)
+    {
+        // ---- ローディングオーバーレイ（プロジェクト作成/読込中）----
+        RenderLoadingOverlay();
+    }
+    else if (!m_isGameMode && m_showLauncher)
+    {
+        // ---- プロジェクトランチャー（起動直後 / 「ランチャーに戻る」選択時）----
+        LauncherIcons li;
+        li.logo        = m_icons.logo;
+        li.newProject  = m_icons.newProject;
+        li.openProject = m_icons.openProject;
+        li.recent      = m_icons.recent;
+
+        ProjectInfo selected;
+        LauncherAction action = ProjectManager::RenderLauncher(selected, m_window->GetHwnd(), li);
+        if (action == LauncherAction::CreateNew)
+            BeginProjectLoad(selected, /*isNew=*/true);
+        else if (action == LauncherAction::OpenExisting)
+            BeginProjectLoad(selected, /*isNew=*/false);
+        else if (action == LauncherAction::Skip)
+        {
+            LoadProject(selected);
+            m_showLauncher = false;
+        }
+    }
+    else if (!m_isGameMode)
     {
         bool pendingPlayMode = false;
         m_editorLayer->Render(
@@ -2559,6 +3059,10 @@ void Application::Render()
                 }
             }
         }
+
+        // ---- プロジェクト / バージョン管理(Git) ウィンドウ ----
+        RenderProjectWindow();
+        RenderVersionControlWindow();
     }
 
     // ---- ゲーム内 UI: テキスト/ボタン（ImGui オーバーレイ・ゲーム/Play 中のみ）----

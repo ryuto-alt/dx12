@@ -42,6 +42,18 @@ void PathResolver::Initialize(bool gameMode)
     s_initialized = true;
 }
 
+void PathResolver::SetProjectRoot(const std::string& rootDir)
+{
+    if (rootDir.empty())
+        return;  // 空 = 組み込みパスを維持（ランチャーの「スキップ」用）
+
+    fs::path root(rootDir);
+    s_base    = root.generic_string() + "/";
+    s_assets  = (root / "assets").generic_string()  + "/";
+    s_scripts = (root / "scripts").generic_string() + "/";
+    // shaders はエンジン側の .cso をそのまま使う（s_shaderW は変更しない）
+}
+
 const std::string&  PathResolver::AssetsDir()  { return s_assets;  }
 const std::wstring& PathResolver::ShaderDirW() { return s_shaderW; }
 const std::string&  PathResolver::ScriptsDir() { return s_scripts; }

@@ -74,6 +74,12 @@ void Window::Initialize(HINSTANCE hInstance, int /*nCmdShow*/,
     Logger::Info("Window created: {}x{}", m_width, m_height);
 }
 
+void Window::SetTitle(const std::wstring& title)
+{
+    if (m_hwnd)
+        SetWindowTextW(m_hwnd, title.c_str());
+}
+
 void Window::ToggleFullscreen()
 {
     if (!m_fullscreen)
