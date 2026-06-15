@@ -25,7 +25,8 @@ public:
                const PostProcessSettings& s,
                float uvOffsetX, float uvOffsetY,
                float uvScaleX, float uvScaleY,
-               float texelW, float texelH);
+               float texelW, float texelH,
+               float timeSeconds = 0.0f);
 
     bool IsReady() const { return m_pso != nullptr; }
 

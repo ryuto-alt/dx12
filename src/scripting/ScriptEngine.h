@@ -73,6 +73,9 @@ public:
 
 private:
     void RegisterBindings();
+    // 高レベルヘルパー(actor/keyDown/cameraFollow 等)をグローバルへ定義する
+    // Lua prelude を実行する。全アタッチスクリプトから参照可能になる。
+    void LoadPrelude();
     void RegisterPhysicsBindings();
 
     std::unique_ptr<sol::state> m_lua;

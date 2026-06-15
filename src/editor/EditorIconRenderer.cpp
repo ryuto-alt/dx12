@@ -441,6 +441,7 @@ void EditorIconRenderer::CollectFromRegistry(entt::registry& registry,
     const XMFLOAT3 colorSelected  = { 1.0f, 0.9f, 0.0f };
     const XMFLOAT3 colorDirLight  = { 1.0f, 0.9f, 0.2f };
     const XMFLOAT3 colorPointLight = { 1.0f, 0.6f, 0.1f };
+    const XMFLOAT3 colorSpotLight = { 0.5f, 0.85f, 1.0f };
     const XMFLOAT3 colorCamActive = { 0.2f, 0.8f, 1.0f };
 
     // --- Camera ---
@@ -506,6 +507,26 @@ void EditorIconRenderer::CollectFromRegistry(entt::registry& registry,
             {
                 f32 radius = (std::min)(pl.range, 20.0f);
                 AddPointLightSphere(tf.position, radius, 16, colorSelected);
+            }
+        }
+    }
+
+    // --- SpotLight ---
+    {
+        auto view = registry.view<const Transform, const SpotLight>();
+        for (auto [entity, tf, sl] : view.each())
+        {
+            bool selected = ctx.IsSelected(entity);
+
+            // 常時: アイコン
+            AddPointLightIcon(tf.position, selected ? colorSelected : colorSpotLight);
+
+            // 選択時のみ: コーン軸方向の矢印（照らす向きを可視化）
+            if (selected)
+            {
+                f32 len = (std::min)(sl.range, 20.0f);
+                AddDirectionalArrow(tf.position, sl.direction, len,
+                                    selected ? colorSelected : colorSpotLight);
             }
         }
     }

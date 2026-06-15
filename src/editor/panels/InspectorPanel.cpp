@@ -38,6 +38,45 @@
 namespace
 {
 
+// CollapsingHeader の頭に種別アイコンを重ね描きするヘルパ。
+// tex==0 または icons==null なら通常のヘッダ。アイコン分だけラベル先頭に空白を入れて重ねる。
+bool IconHeader(const dx12e::EditorUiIcons* ic, dx12e::u64 tex, const char* label,
+                ImGuiTreeNodeFlags flags = 0)
+{
+    if (!ic || !tex)
+        return ImGui::CollapsingHeader(label, flags);
+
+    const float h = ImGui::GetTextLineHeight();
+    const float spaceW = ImGui::CalcTextSize(" ").x;
+    const int pad = (spaceW > 0.0f) ? static_cast<int>((h + 6.0f) / spaceW) + 1 : 3;
+    std::string padded(static_cast<size_t>(pad), ' ');
+    padded += label;
+
+    const bool open = ImGui::CollapsingHeader(padded.c_str(), flags);
+
+    const ImVec2 mn = ImGui::GetItemRectMin();
+    const ImVec2 mx = ImGui::GetItemRectMax();
+    const float cy = (mn.y + mx.y) * 0.5f;
+    const float x  = mn.x + ImGui::GetTreeNodeToLabelSpacing();
+    ImGui::GetWindowDrawList()->AddImage(static_cast<ImTextureID>(tex),
+        ImVec2(x, cy - h * 0.5f), ImVec2(x + h, cy + h * 0.5f));
+    return open;
+}
+
+// エンティティの構成から代表アイコンを選ぶ（Inspector 上部の見出し用）
+dx12e::u64 PickEntityIcon(entt::registry& reg, entt::entity e, const dx12e::EditorUiIcons& ic)
+{
+    using namespace dx12e;
+    if (reg.all_of<CameraComponent>(e))                       return ic.entCamera;
+    if (reg.any_of<PointLight, DirectionalLight, SpotLight>(e)) return ic.entLight;
+    if (reg.all_of<MeshRenderer>(e))                          return ic.entMesh;
+    if (reg.all_of<AudioSource>(e))                           return ic.entAudio;
+    if (reg.any_of<RigidBody, BoxCollider, SphereCollider,
+                   CapsuleCollider, ConvexHullCollider>(e))   return ic.entPhysics;
+    if (reg.all_of<LuaScript>(e))                             return ic.entScript;
+    return ic.entEmpty;
+}
+
 void DrawLuaScriptSection(entt::registry& reg,
                           entt::entity e,
                           dx12e::ScriptEngine* scriptEngine,
@@ -177,6 +216,43 @@ bool ComponentRemoveMenu(entt::registry& reg, EditorContext& ctx,
     return removed;
 }
 
+// ── 光の照らす方向を編集する UI（DragFloat3 + プリセット + 正規化） ──
+// changed を返し、ドラッグ中は active を立てる（Undo 追跡用）。
+bool DirectionEditor(const char* id, DirectX::XMFLOAT3& dir, bool& active)
+{
+    bool changed = false;
+    ImGui::PushID(id);
+    ImGui::TextUnformatted("照らす方向 Direction");
+    changed |= ImGui::DragFloat3("##dir", &dir.x, 0.01f, -1.0f, 1.0f, "%.2f");
+    active  |= ImGui::IsItemActive();
+
+    struct Preset { const char* label; float x, y, z; };
+    static const Preset presets[] = {
+        {"真下", 0.0f, -1.0f,  0.0f},
+        {"斜め", -0.4f, -1.0f, -0.4f},
+        {"横",   1.0f,  0.0f,  0.0f},
+        {"前",   0.0f,  0.0f,  1.0f},
+    };
+    for (int i = 0; i < 4; ++i)
+    {
+        if (i > 0) ImGui::SameLine();
+        if (ImGui::SmallButton(presets[i].label))
+        {
+            dir = {presets[i].x, presets[i].y, presets[i].z};
+            changed = true;
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("正規化"))
+    {
+        DirectX::XMVECTOR v = DirectX::XMVector3Normalize(DirectX::XMLoadFloat3(&dir));
+        DirectX::XMStoreFloat3(&dir, v);
+        changed = true;
+    }
+    ImGui::PopID();
+    return changed;
+}
+
 // ── Add Component メニュー項目（未所持のものだけ表示、Undo 対応） ──
 template<typename T>
 void AddComponentMenuItem(entt::registry& reg, EditorContext& ctx,
@@ -211,10 +287,23 @@ void InspectorPanel::Render(entt::registry& reg,
     // --- Selected Entity properties ---
     if (ctx.selectedEntity != entt::null && reg.valid(ctx.selectedEntity))
     {
-        // NameTag
+        const EditorUiIcons* ic = ctx.icons;
+
+        // NameTag（種別アイコン + 名前）
         if (reg.all_of<NameTag>(ctx.selectedEntity))
         {
             auto& tag = reg.get<NameTag>(ctx.selectedEntity);
+            if (ic)
+            {
+                u64 tex = PickEntityIcon(reg, ctx.selectedEntity, *ic);
+                if (tex)
+                {
+                    float s = ImGui::GetTextLineHeight() * 1.3f;
+                    ImGui::Image(static_cast<ImTextureID>(tex), ImVec2(s, s));
+                    ImGui::SameLine(0.0f, 6.0f);
+                    ImGui::AlignTextToFramePadding();
+                }
+            }
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.39f, 0.58f, 0.93f, 1.0f));
             ImGui::Text("%s", tag.name.c_str());
             ImGui::PopStyleColor();
@@ -225,7 +314,7 @@ void InspectorPanel::Render(entt::registry& reg,
         // Transform
         if (reg.all_of<Transform>(ctx.selectedEntity))
         {
-            if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen))
+            if (IconHeader(ic, ic ? ic->entEmpty : 0, "Transform", ImGuiTreeNodeFlags_DefaultOpen))
             {
                 auto& t = reg.get<Transform>(ctx.selectedEntity);
 
@@ -271,7 +360,7 @@ void InspectorPanel::Render(entt::registry& reg,
         // MeshRenderer
         if (reg.all_of<MeshRenderer>(ctx.selectedEntity))
         {
-            if (ImGui::CollapsingHeader("MeshRenderer"))
+            if (IconHeader(ic, ic ? ic->entMesh : 0, "MeshRenderer"))
             {
                 auto& r = reg.get<MeshRenderer>(ctx.selectedEntity);
                 ImGui::Text("Meshes: %d", static_cast<int>(r.meshes.size()));
@@ -283,7 +372,7 @@ void InspectorPanel::Render(entt::registry& reg,
         if (reg.all_of<SkeletalAnimation>(ctx.selectedEntity))
         {
             auto& skelAnim = reg.get<SkeletalAnimation>(ctx.selectedEntity);
-            if (skelAnim.animator && ImGui::CollapsingHeader("SkeletalAnimation"))
+            if (skelAnim.animator && IconHeader(ic, ic ? ic->entMesh : 0, "SkeletalAnimation"))
             {
                 ImGui::Text("Bones: %d",
                     static_cast<int>(skelAnim.skeleton ? skelAnim.skeleton->GetBoneCount() : 0));
@@ -305,7 +394,7 @@ void InspectorPanel::Render(entt::registry& reg,
         if (reg.all_of<NodeAnimationComp>(ctx.selectedEntity))
         {
             auto& nodeAnim = reg.get<NodeAnimationComp>(ctx.selectedEntity);
-            if (nodeAnim.nodeAnimator && ImGui::CollapsingHeader("NodeAnimation"))
+            if (nodeAnim.nodeAnimator && IconHeader(ic, ic ? ic->entMesh : 0, "NodeAnimation"))
             {
                 ImGui::Text("Clips: %d", static_cast<int>(nodeAnim.clips.size()));
                 for (i32 i = 0; i < static_cast<i32>(nodeAnim.clips.size()); ++i)
@@ -323,57 +412,87 @@ void InspectorPanel::Render(entt::registry& reg,
         // GridPlane
         if (reg.all_of<GridPlane>(ctx.selectedEntity))
         {
-            if (ImGui::CollapsingHeader("GridPlane"))
+            if (IconHeader(ic, ic ? ic->entEmpty : 0, "GridPlane"))
             {
                 auto& gp = reg.get<GridPlane>(ctx.selectedEntity);
                 ImGui::Checkbox("Enabled", &gp.enabled);
             }
         }
 
-        // PointLight
+        // PointLight（点光源: 全方向に減衰しながら照らす）
         if (reg.all_of<PointLight>(ctx.selectedEntity))
         {
-            bool open = ImGui::CollapsingHeader("PointLight");
+            bool open = IconHeader(ic, ic ? ic->entLight : 0, "Point Light");
             bool removed = ComponentRemoveMenu<PointLight>(reg, ctx, ctx.selectedEntity, "PointLight");
             if (open && !removed)
             {
                 BeginEdit(reg, ctx.selectedEntity, m_plEdit);
                 auto& pl = reg.get<PointLight>(ctx.selectedEntity);
                 bool changed = false, active = false;
-                changed |= ImGui::ColorEdit3("Color", &pl.color.x);
+                changed |= ImGui::ColorEdit3("色 Color", &pl.color.x);
                 active  |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat("Intensity", &pl.intensity, 0.1f, 0.0f, 100.0f);
+                changed |= ImGui::SliderFloat("強度 Intensity", &pl.intensity, 0.0f, 20.0f, "%.2f");
                 active  |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat("Range", &pl.range, 0.5f, 0.0f, 500.0f);
+                changed |= ImGui::SliderFloat("距離 Range", &pl.range, 0.1f, 100.0f, "%.1f");
                 active  |= ImGui::IsItemActive();
+                ImGui::TextDisabled("位置は Transform で決まります");
                 EndEdit(reg, ctx, ctx.selectedEntity, m_plEdit, changed, active, "PointLight");
             }
         }
 
-        // DirectionalLight
+        // DirectionalLight（平行光源: 太陽。影の向きにもなる）
         if (reg.all_of<DirectionalLight>(ctx.selectedEntity))
         {
-            bool open = ImGui::CollapsingHeader("DirectionalLight");
+            bool open = IconHeader(ic, ic ? ic->entLight : 0, "Directional Light");
             bool removed = ComponentRemoveMenu<DirectionalLight>(reg, ctx, ctx.selectedEntity, "DirectionalLight");
             if (open && !removed)
             {
                 BeginEdit(reg, ctx.selectedEntity, m_dlEdit);
                 auto& dl = reg.get<DirectionalLight>(ctx.selectedEntity);
                 bool changed = false, active = false;
-                changed |= ImGui::DragFloat3("Direction", &dl.direction.x, 0.01f);
+                changed |= ImGui::ColorEdit3("色 Color", &dl.color.x);
                 active  |= ImGui::IsItemActive();
-                changed |= ImGui::ColorEdit3("Color", &dl.color.x);
+                changed |= ImGui::SliderFloat("強度 Intensity", &dl.intensity, 0.0f, 10.0f, "%.2f");
                 active  |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat("Intensity", &dl.intensity, 0.1f, 0.0f, 100.0f);
+                changed |= ImGui::SliderFloat("環境光 Ambient", &dl.ambient, 0.0f, 1.0f, "%.2f");
                 active  |= ImGui::IsItemActive();
+                changed |= DirectionEditor("dlDir", dl.direction, active);
+                ImGui::TextDisabled("このライトの向きが影の向きになります");
                 EndEdit(reg, ctx, ctx.selectedEntity, m_dlEdit, changed, active, "DirectionalLight");
+            }
+        }
+
+        // SpotLight（スポット: 円錐状に照らす。懐中電灯/車のライト等）
+        if (reg.all_of<SpotLight>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entLight : 0, "Spot Light");
+            bool removed = ComponentRemoveMenu<SpotLight>(reg, ctx, ctx.selectedEntity, "SpotLight");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_slEdit);
+                auto& sl = reg.get<SpotLight>(ctx.selectedEntity);
+                bool changed = false, active = false;
+                changed |= ImGui::ColorEdit3("色 Color", &sl.color.x);
+                active  |= ImGui::IsItemActive();
+                changed |= ImGui::SliderFloat("強度 Intensity", &sl.intensity, 0.0f, 30.0f, "%.2f");
+                active  |= ImGui::IsItemActive();
+                changed |= ImGui::SliderFloat("距離 Range", &sl.range, 0.1f, 100.0f, "%.1f");
+                active  |= ImGui::IsItemActive();
+                changed |= ImGui::SliderFloat("内側コーン", &sl.innerConeDeg, 1.0f, 80.0f, "%.0f°");
+                active  |= ImGui::IsItemActive();
+                changed |= ImGui::SliderFloat("外側コーン", &sl.outerConeDeg, 1.0f, 89.0f, "%.0f°");
+                active  |= ImGui::IsItemActive();
+                if (sl.innerConeDeg > sl.outerConeDeg) sl.innerConeDeg = sl.outerConeDeg;
+                changed |= DirectionEditor("slDir", sl.direction, active);
+                ImGui::TextDisabled("位置は Transform、向きは上の方向で決まります");
+                EndEdit(reg, ctx, ctx.selectedEntity, m_slEdit, changed, active, "SpotLight");
             }
         }
 
         // CameraComponent
         if (reg.all_of<CameraComponent>(ctx.selectedEntity))
         {
-            bool open = ImGui::CollapsingHeader("Camera");
+            bool open = IconHeader(ic, ic ? ic->entCamera : 0, "Camera");
             bool removed = ComponentRemoveMenu<CameraComponent>(reg, ctx, ctx.selectedEntity, "Camera");
             if (open && !removed)
             {
@@ -403,7 +522,7 @@ void InspectorPanel::Render(entt::registry& reg,
         // --- Audio Source ---
         if (reg.all_of<AudioSource>(ctx.selectedEntity))
         {
-            bool open = ImGui::CollapsingHeader("Audio Source");
+            bool open = IconHeader(ic, ic ? ic->entAudio : 0, "Audio Source");
             bool removed = ComponentRemoveMenu<AudioSource>(reg, ctx, ctx.selectedEntity, "Audio Source");
             if (open && !removed)
             {
@@ -515,7 +634,7 @@ void InspectorPanel::Render(entt::registry& reg,
         // --- Colliders ---
         if (reg.all_of<BoxCollider>(ctx.selectedEntity))
         {
-            bool open = ImGui::CollapsingHeader("Box Collider");
+            bool open = IconHeader(ic, ic ? ic->entCollider : 0, "Box Collider");
             bool removed = ComponentRemoveMenu<BoxCollider>(reg, ctx, ctx.selectedEntity, "Box Collider");
             if (open && !removed)
             {
@@ -532,7 +651,7 @@ void InspectorPanel::Render(entt::registry& reg,
 
         if (reg.all_of<SphereCollider>(ctx.selectedEntity))
         {
-            bool open = ImGui::CollapsingHeader("Sphere Collider");
+            bool open = IconHeader(ic, ic ? ic->entCollider : 0, "Sphere Collider");
             bool removed = ComponentRemoveMenu<SphereCollider>(reg, ctx, ctx.selectedEntity, "Sphere Collider");
             if (open && !removed)
             {
@@ -549,7 +668,7 @@ void InspectorPanel::Render(entt::registry& reg,
 
         if (reg.all_of<CapsuleCollider>(ctx.selectedEntity))
         {
-            bool open = ImGui::CollapsingHeader("Capsule Collider");
+            bool open = IconHeader(ic, ic ? ic->entCollider : 0, "Capsule Collider");
             bool removed = ComponentRemoveMenu<CapsuleCollider>(reg, ctx, ctx.selectedEntity, "Capsule Collider");
             if (open && !removed)
             {
@@ -568,7 +687,7 @@ void InspectorPanel::Render(entt::registry& reg,
 
         if (reg.all_of<ConvexHullCollider>(ctx.selectedEntity))
         {
-            bool open = ImGui::CollapsingHeader("Convex Hull Collider");
+            bool open = IconHeader(ic, ic ? ic->entCollider : 0, "Convex Hull Collider");
             bool removed = ComponentRemoveMenu<ConvexHullCollider>(reg, ctx, ctx.selectedEntity, "Convex Hull Collider");
             if (open && !removed)
             {
@@ -585,7 +704,7 @@ void InspectorPanel::Render(entt::registry& reg,
             if (!mr.meshes.empty() && mr.meshes[0] && mr.meshes[0]->GetMaterial())
             {
                 const auto* mat = mr.meshes[0]->GetMaterial();
-                if (ImGui::CollapsingHeader("Material"))
+                if (IconHeader(ic, ic ? ic->entMesh : 0, "Material"))
                 {
                     if (mr.overrideMetallic < 0.0f)
                         mr.overrideMetallic = mat->defaultMetallic;
@@ -672,6 +791,7 @@ void InspectorPanel::Render(entt::registry& reg,
         {
             AddComponentMenuItem<PointLight>(reg, ctx, ctx.selectedEntity, "Point Light");
             AddComponentMenuItem<DirectionalLight>(reg, ctx, ctx.selectedEntity, "Directional Light");
+            AddComponentMenuItem<SpotLight>(reg, ctx, ctx.selectedEntity, "Spot Light");
             AddComponentMenuItem<CameraComponent>(reg, ctx, ctx.selectedEntity, "Camera");
             AddComponentMenuItem<AudioSource>(reg, ctx, ctx.selectedEntity, "Audio Source");
             ImGui::Separator();
@@ -690,7 +810,8 @@ void InspectorPanel::Render(entt::registry& reg,
     ImGui::Separator();
 
     // --- Camera ---
-    if (ImGui::CollapsingHeader("\xe3\x82\xab\xe3\x83\xa1\xe3\x83\xa9", ImGuiTreeNodeFlags_DefaultOpen))  // Camera
+    if (IconHeader(ctx.icons, ctx.icons ? ctx.icons->entCamera : 0,
+                   "\xe3\x82\xab\xe3\x83\xa1\xe3\x83\xa9", ImGuiTreeNodeFlags_DefaultOpen))  // Camera
     {
         auto camPos = camera->GetPosition();
         ImGui::Text("%.1f, %.1f, %.1f", camPos.x, camPos.y, camPos.z);
@@ -713,7 +834,8 @@ void InspectorPanel::Render(entt::registry& reg,
     }
 
     // --- Audio ---
-    if (ImGui::CollapsingHeader("\xe3\x82\xaa\xe3\x83\xbc\xe3\x83\x87\xe3\x82\xa3\xe3\x82\xaa"))  // Audio
+    if (IconHeader(ctx.icons, ctx.icons ? ctx.icons->entAudio : 0,
+                   "\xe3\x82\xaa\xe3\x83\xbc\xe3\x83\x87\xe3\x82\xa3\xe3\x82\xaa"))  // Audio
     {
         f32 masterVol = audioSystem->GetMasterVolume();
         f32 bgmVol    = audioSystem->GetBGMVolume();
@@ -764,7 +886,8 @@ void InspectorPanel::Render(entt::registry& reg,
     }
 
     // --- Build ---
-    if (ImGui::CollapsingHeader("\xe3\x83\x93\xe3\x83\xab\xe3\x83\x89"))  // Build
+    if (IconHeader(ctx.icons, ctx.icons ? ctx.icons->build : 0,
+                   "\xe3\x83\x93\xe3\x83\xab\xe3\x83\x89"))  // Build
     {
         if (ImGui::Button("\xe3\x82\xb2\xe3\x83\xbc\xe3\x83\xa0\xe3\x83\x93\xe3\x83\xab\xe3\x83\x89"))  // Game Build
         {

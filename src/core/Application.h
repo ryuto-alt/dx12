@@ -20,6 +20,7 @@
 #include <atomic>
 #include "ecs/Components.h"
 #include "project/Project.h"
+#include "editor/EditorIcons.h"
 
 // Forward declarations for graphics module
 namespace dx12e
@@ -149,12 +150,8 @@ private:
     std::string m_gitRemoteCache;         // origin URL キャッシュ
     f32         m_gitRefreshTimer = 0.0f; // 状態の定期再取得用（毎フレームgit起動を避ける）
 
-    // ---- エディタUIアイコン（ImTextureID=ImU64。0=未読込）----
-    struct EditorIconHandles
-    {
-        u64 logo = 0, newProject = 0, openProject = 0, recent = 0,
-            save = 0, git = 0, github = 0, commit = 0, push = 0;
-    } m_icons;
+    // ---- エディタUIアイコン（ImTextureID=ImU64。0=未読込。EditorContext::icons から参照される）----
+    EditorUiIcons m_icons;
 
     // ---- 非同期プロジェクトロード ----
     std::thread        m_loadThread;

@@ -18,6 +18,19 @@
 namespace dx12e
 {
 
+// エンティティの構成コンポーネントから代表アイコンを選ぶ（Hierarchy のノード頭に表示）
+static u64 PickEntityIcon(entt::registry& reg, entt::entity e, const EditorUiIcons& ic)
+{
+    if (reg.all_of<CameraComponent>(e))                            return ic.entCamera;
+    if (reg.any_of<PointLight, DirectionalLight, SpotLight>(e))   return ic.entLight;
+    if (reg.all_of<MeshRenderer>(e))                              return ic.entMesh;
+    if (reg.all_of<AudioSource>(e))                              return ic.entAudio;
+    if (reg.any_of<RigidBody, BoxCollider, SphereCollider,
+                   CapsuleCollider, ConvexHullCollider>(e))      return ic.entPhysics;
+    if (reg.all_of<LuaScript>(e))                                 return ic.entScript;
+    return ic.entEmpty;
+}
+
 // 子エンティティ列挙ヘルパー
 static std::vector<entt::entity> GetChildren(entt::registry& reg, entt::entity parent)
 {
@@ -106,6 +119,18 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnArrow;
     if (!hasChildren) flags |= ImGuiTreeNodeFlags_Leaf;
     if (selected) flags |= ImGuiTreeNodeFlags_Selected;
+
+    // 種別アイコンをノード頭に表示（クリック判定は直後の TreeNodeEx が担う）
+    if (ctx.icons)
+    {
+        u64 typeIcon = PickEntityIcon(reg, e, *ctx.icons);
+        if (typeIcon)
+        {
+            float h = ImGui::GetTextLineHeight();
+            ImGui::Image(static_cast<ImTextureID>(typeIcon), ImVec2(h, h));
+            ImGui::SameLine(0.0f, 4.0f);
+        }
+    }
 
     // ID は PushID で一意化済みなので TreeNodeEx は固定文字列でOK
     bool open = ImGui::TreeNodeEx("##node", flags, "%s", tag.name.c_str());
@@ -344,6 +369,13 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
             PendingSpawnRequest req;
             req.modelPath = "__point_light__";
             req.position = {0.0f, 3.0f, 0.0f};
+            ctx.pendingSpawns.push_back(req);
+        }
+        if (ImGui::MenuItem("Spot Light"))
+        {
+            PendingSpawnRequest req;
+            req.modelPath = "__spot_light__";
+            req.position = {0.0f, 5.0f, 0.0f};
             ctx.pendingSpawns.push_back(req);
         }
         ImGui::EndPopup();

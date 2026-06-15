@@ -121,6 +121,9 @@ void EditorLayer::BuildDefaultLayout(ImGuiID dockspaceId, f32 /*toolbarHeight*/)
     // インスペクター（右）を隠さないようにするため右ではなく下へ。
     ImGui::DockBuilderDockWindow("Post Process", dockBottom);
     ImGui::DockBuilderDockWindow("Scene Flow",   dockBottom);
+    // ポストのパラメータ調整は右パネル（インスペクター横タブ）に置き、
+    // 下のトグルと同時に見られるようにする。
+    ImGui::DockBuilderDockWindow("Post Process パラメータ", dockRight);
 
     // プロジェクト / バージョン管理は右パネル（インスペクター横）にタブで固定。
     ImGui::DockBuilderDockWindow("Project",                dockRight);

@@ -89,8 +89,24 @@ void ToolbarPanel::Render(bool isPlaying,
     ImGui::Begin("##Toolbar", nullptr,
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollWithMouse);
 
+    // アイコンボタン用ヘルパ（アイコン未読込なら従来のテキストボタンにフォールバック）。
+    const EditorUiIcons* ic = ctx.icons;
+    const float kIconSz = 20.0f;
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 4));
+    auto iconBtn = [&](u64 tex, const char* id, const char* fallback, const char* tip) -> bool
+    {
+        bool clicked = tex
+            ? ImGui::ImageButton(id, static_cast<ImTextureID>(tex), ImVec2(kIconSz, kIconSz))
+            : ImGui::Button(fallback);
+        if (tip && *tip && ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", tip);
+        return clicked;
+    };
+
     // ===== File メニュー =====
-    if (ImGui::Button("\xe3\x83\x95\xe3\x82\xa1\xe3\x82\xa4\xe3\x83\xab"))  // ファイル
+    if (iconBtn(ic ? ic->file : 0, "##file",
+                "\xe3\x83\x95\xe3\x82\xa1\xe3\x82\xa4\xe3\x83\xab",  // ファイル
+                "File  (New / Save / Load)"))
         ImGui::OpenPopup("FileMenu");
 
     if (ImGui::BeginPopup("FileMenu"))
@@ -195,7 +211,8 @@ void ToolbarPanel::Render(bool isPlaying,
     {
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.55f, 0.20f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.65f, 0.25f, 1.0f));
-        if (ImGui::Button("\xe2\x96\xb6 \xe5\x86\x8d\xe7\x94\x9f"))
+        if (iconBtn(ic ? ic->play : 0, "##play",
+                    "\xe2\x96\xb6 \xe5\x86\x8d\xe7\x94\x9f", "Play  (enter play mode)"))
         {
             // Lua スクリプトの存在チェック
             std::string scriptCheck = assetsDir + "../scripts/game.lua";
@@ -238,7 +255,8 @@ void ToolbarPanel::Render(bool isPlaying,
     {
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.65f, 0.20f, 0.20f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.75f, 0.25f, 0.25f, 1.0f));
-        if (ImGui::Button("\xe2\x96\xa0 \xe5\x81\x9c\xe6\xad\xa2"))
+        if (iconBtn(ic ? ic->stop : 0, "##stop",
+                    "\xe2\x96\xa0 \xe5\x81\x9c\xe6\xad\xa2", "Stop  (back to editor)"))
         {
             outPendingPlayMode = false;
             outModeChangeRequested = true;
@@ -248,6 +266,7 @@ void ToolbarPanel::Render(bool isPlaying,
 
     // ===== Status =====
     ImGui::SameLine(0, 12);
+    ImGui::AlignTextToFramePadding();
     if (isPlaying)
     {
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 0.4f, 1.0f));
@@ -375,6 +394,7 @@ void ToolbarPanel::Render(bool isPlaying,
 
     // ===== Gizmo mode =====
     ImGui::SameLine(0, 12);
+    ImGui::AlignTextToFramePadding();
     ImGui::TextDisabled("|");
     ImGui::SameLine(0, 8);
 
@@ -382,36 +402,49 @@ void ToolbarPanel::Render(bool isPlaying,
     bool isRot   = (ctx.gizmoMode == GizmoMode::Rotate);
     bool isScl   = (ctx.gizmoMode == GizmoMode::Scale);
 
-    if (isTrans) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.5f, 0.8f, 1.0f));
-    if (ImGui::Button("W Move")) ctx.gizmoMode = GizmoMode::Translate;
+    const ImVec4 kActiveCol(0.3f, 0.5f, 0.8f, 1.0f);
+
+    if (isTrans) ImGui::PushStyleColor(ImGuiCol_Button, kActiveCol);
+    if (iconBtn(ic ? ic->gizmoMove : 0, "##gMove", "W Move", "Move  (W)"))
+        ctx.gizmoMode = GizmoMode::Translate;
     if (isTrans) ImGui::PopStyleColor();
 
     ImGui::SameLine();
-    if (isRot) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.5f, 0.8f, 1.0f));
-    if (ImGui::Button("E Rot")) ctx.gizmoMode = GizmoMode::Rotate;
+    if (isRot) ImGui::PushStyleColor(ImGuiCol_Button, kActiveCol);
+    if (iconBtn(ic ? ic->gizmoRotate : 0, "##gRot", "E Rot", "Rotate  (E)"))
+        ctx.gizmoMode = GizmoMode::Rotate;
     if (isRot) ImGui::PopStyleColor();
 
     ImGui::SameLine();
-    if (isScl) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.5f, 0.8f, 1.0f));
-    if (ImGui::Button("R Scl")) ctx.gizmoMode = GizmoMode::Scale;
+    if (isScl) ImGui::PushStyleColor(ImGuiCol_Button, kActiveCol);
+    if (iconBtn(ic ? ic->gizmoScale : 0, "##gScl", "R Scl", "Scale  (R)"))
+        ctx.gizmoMode = GizmoMode::Scale;
     if (isScl) ImGui::PopStyleColor();
 
     ImGui::SameLine();
-    if (ImGui::Button(ctx.gizmoLocalSpace ? "Local" : "World"))
+    u64 spaceTex = ctx.gizmoLocalSpace ? (ic ? ic->spaceLocal : 0)
+                                       : (ic ? ic->spaceWorld : 0);
+    if (iconBtn(spaceTex, "##space",
+                ctx.gizmoLocalSpace ? "Local" : "World",
+                ctx.gizmoLocalSpace ? "Local space  (click: World)"
+                                    : "World space  (click: Local)"))
         ctx.gizmoLocalSpace = !ctx.gizmoLocalSpace;
 
     // ===== ゲームビルド =====
     ImGui::SameLine(0, 12);
+    ImGui::AlignTextToFramePadding();
     ImGui::TextDisabled("|");
     ImGui::SameLine(0, 8);
     ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.20f, 0.42f, 0.68f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.26f, 0.52f, 0.82f, 1.0f));
-    if (ImGui::Button("\xe3\x83\x93\xe3\x83\xab\xe3\x83\x89"))  // ビルド
+    if (iconBtn(ic ? ic->build : 0, "##build",
+                "\xe3\x83\x93\xe3\x83\xab\xe3\x83\x89", "Build game  (export)"))  // ビルド
         ctx.pendingBuildGame = true;
     ImGui::PopStyleColor(2);
     if (ctx.buildCompleteFlash > 0.0f)
     {
         ImGui::SameLine(0, 8);
+        ImGui::AlignTextToFramePadding();
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.5f, 1.0f));
         ImGui::Text("\xe2\x9c\x93 \xe3\x83\x93\xe3\x83\xab\xe3\x83\x89\xe5\xae\x8c\xe4\xba\x86");  // ✓ ビルド完了
         ImGui::PopStyleColor();
@@ -420,6 +453,7 @@ void ToolbarPanel::Render(bool isPlaying,
 
     // ===== シーン名表示 =====
     ImGui::SameLine(0, 16);
+    ImGui::AlignTextToFramePadding();
     ImGui::TextDisabled("|");
     ImGui::SameLine(0, 8);
     if (!ctx.currentScenePath.empty())
@@ -436,8 +470,10 @@ void ToolbarPanel::Render(bool isPlaying,
 
     // ===== FPS =====
     ImGui::SameLine(displayW - 100);
+    ImGui::AlignTextToFramePadding();
     ImGui::Text("%.0f FPS", clock->GetFPS());
 
+    ImGui::PopStyleVar();  // FramePadding
     ImGui::End();
     ImGui::PopStyleColor();
     ImGui::PopStyleVar();

@@ -66,6 +66,9 @@
 #include <thread>
 #include <fstream>
 #include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <functional>
 #include <unordered_set>
 #include <immintrin.h>
 #include <mmsystem.h>
@@ -484,13 +487,20 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         Logger::Info("Shadow map initialized ({}x{})", m_shadowMapSize, m_shadowMapSize);
     }
 
-    // PerFrame Constant Buffer（PointLight 最大8灯対応）
+    // PerFrame Constant Buffer（PointLight / SpotLight 各最大8灯対応）
+    // レイアウトは shaders/forward/Lighting.hlsli の PerFrameConstants と完全一致させること。
     static constexpr u32 kMaxPointLights = 8;
+    static constexpr u32 kMaxSpotLights  = 8;
     struct PointLightGPU {
         DirectX::XMFLOAT3 position;
         float range;
         DirectX::XMFLOAT3 color;  // color * intensity
         float _pad;
+    };
+    struct SpotLightGPU {
+        DirectX::XMFLOAT3 position;   float range;
+        DirectX::XMFLOAT3 direction;  float cosInner;
+        DirectX::XMFLOAT3 color;      float cosOuter;  // color * intensity
     };
     struct FrameConstants {
         DirectX::XMFLOAT4X4 view;            // 64B
@@ -502,12 +512,13 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         DirectX::XMFLOAT4X4 lightViewProj;   // 64B
         DirectX::XMFLOAT3   cameraPos;       // 12B
         float                _pad;            // 4B
-        // --- 既存 240B ---
         u32                  numPointLights;  // 4B
-        float                _pad2[3];        // 12B → 256B boundary
+        u32                  numSpotLights;   // 4B
+        float                _pad2[2];        // 8B → 16B boundary
         PointLightGPU        pointLights[kMaxPointLights]; // 256B
-    };  // total = 512B
-    static_assert(sizeof(FrameConstants) == 512, "FrameConstants must be 512 bytes");
+        SpotLightGPU         spotLights[kMaxSpotLights];   // 384B
+    };  // total = 896B
+    static_assert(sizeof(FrameConstants) == 896, "FrameConstants must be 896 bytes");
     m_perFrameCB = std::make_unique<ConstantBuffer>();
     m_perFrameCB->Initialize(*m_graphicsDevice, sizeof(FrameConstants), FrameResources::kFrameCount);
 
@@ -1236,6 +1247,32 @@ void Application::LoadEditorIcons(ID3D12GraphicsCommandList* cmdList)
     m_icons.github      = load("github");
     m_icons.commit      = load("commit");
     m_icons.push        = load("push");
+
+    // ツールバー
+    m_icons.file        = load("file");
+    m_icons.play        = load("play");
+    m_icons.stop        = load("stop");
+    m_icons.build       = load("build");
+    m_icons.gizmoMove   = load("gizmo_move");
+    m_icons.gizmoRotate = load("gizmo_rotate");
+    m_icons.gizmoScale  = load("gizmo_scale");
+    m_icons.spaceWorld  = load("space_world");
+    m_icons.spaceLocal  = load("space_local");
+
+    // エンティティ / コンポーネント種別
+    m_icons.entMesh     = load("ent_mesh");
+    m_icons.entLight    = load("ent_light");
+    m_icons.entCamera   = load("ent_camera");
+    m_icons.entAudio    = load("ent_audio");
+    m_icons.entScript   = load("ent_script");
+    m_icons.entPhysics  = load("ent_physics");
+    m_icons.entCollider = load("ent_collider");
+    m_icons.entEmpty    = load("ent_empty");
+
+    // 各パネルが EditorContext 経由で参照できるようにポインタを配る
+    if (m_editorCtx)
+        m_editorCtx->icons = &m_icons;
+
     Logger::Info("Editor UI icons loaded");
 }
 
@@ -2300,6 +2337,15 @@ void Application::Render()
                 reg.emplace<PointLight>(e, PointLight{{1.0f, 1.0f, 1.0f}, 1.0f, 10.0f});
                 spawnedEntity = e;
             }
+            else if (req.modelPath == "__spot_light__")
+            {
+                auto& reg = m_scene->GetRegistry();
+                auto e = reg.create();
+                reg.emplace<NameTag>(e, NameTag{"SpotLight"});
+                reg.emplace<Transform>(e, Transform{req.position, {-60.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
+                reg.emplace<SpotLight>(e, SpotLight{});
+                spawnedEntity = e;
+            }
             else
             {
                 auto entity = m_scene->Spawn(name, req.modelPath, req.position);
@@ -2527,6 +2573,7 @@ void Application::Render()
             lightColorF3 = {dl.color.x * dl.intensity,
                             dl.color.y * dl.intensity,
                             dl.color.z * dl.intensity};
+            lightAmbient = dl.ambient;
         }
     }
     XMVECTOR lightDir = XMVector3Normalize(XMLoadFloat3(&lightDirF3));
@@ -2649,13 +2696,20 @@ void Application::Render()
 
     m_commandList->SetPipelineState(*m_pipelineState);
 
-    // PerFrame CB（PointLight 最大8灯対応）
+    // PerFrame CB（PointLight / SpotLight 各最大8灯対応）
+    // レイアウトは shaders/forward/Lighting.hlsli の PerFrameConstants と完全一致させること。
     static constexpr u32 kMaxPointLightsR = 8;
+    static constexpr u32 kMaxSpotLightsR  = 8;
     struct PointLightGPU {
         XMFLOAT3 position;
         float range;
         XMFLOAT3 color;
         float _pad;
+    };
+    struct SpotLightGPU {
+        XMFLOAT3 position;   float range;
+        XMFLOAT3 direction;  float cosInner;
+        XMFLOAT3 color;      float cosOuter;
     };
     struct FrameConstants {
         XMFLOAT4X4 view;
@@ -2668,8 +2722,10 @@ void Application::Render()
         XMFLOAT3   cameraPos;
         float      _pad;
         u32        numPointLights;
-        float      _pad2[3];
+        u32        numSpotLights;
+        float      _pad2[2];
         PointLightGPU pointLights[kMaxPointLightsR];
+        SpotLightGPU  spotLights[kMaxSpotLightsR];
     };
 
     FrameConstants fc{};
@@ -2698,6 +2754,33 @@ void Application::Render()
                          pl.color.z * pl.intensity};
             pld._pad = 0.0f;
             fc.numPointLights++;
+        }
+    }
+
+    // SpotLight を ECS から収集（位置=Transform、軸=direction、内外コーン角を cos へ）
+    fc.numSpotLights = 0;
+    {
+        auto& reg = m_scene->GetRegistry();
+        auto slView = reg.view<const dx12e::SpotLight, const Transform>();
+        for (auto [e, sl, tf] : slView.each())
+        {
+            if (fc.numSpotLights >= kMaxSpotLightsR) break;
+            auto& sld = fc.spotLights[fc.numSpotLights];
+            sld.position = tf.position;
+            sld.range    = sl.range;
+
+            XMVECTOR dir = XMVector3Normalize(XMLoadFloat3(&sl.direction));
+            XMStoreFloat3(&sld.direction, dir);
+
+            // outer >= inner を保証してから cos 化（cos は単調減少なので inner の cos の方が大きい）
+            float outerDeg = (std::max)(sl.outerConeDeg, sl.innerConeDeg);
+            sld.cosInner = std::cos(XMConvertToRadians(sl.innerConeDeg));
+            sld.cosOuter = std::cos(XMConvertToRadians(outerDeg));
+
+            sld.color = {sl.color.x * sl.intensity,
+                         sl.color.y * sl.intensity,
+                         sl.color.z * sl.intensity};
+            fc.numSpotLights++;
         }
     }
 
@@ -2822,12 +2905,21 @@ void Application::Render()
 
         const f32 fullW = static_cast<f32>(m_sceneRT->GetWidth());
         const f32 fullH = static_cast<f32>(m_sceneRT->GetHeight());
+
+        // ポストエフェクトはゲームビュー（ゲームモード or Play 中）のみに適用する。
+        // エディタのシーンビューでは素通し（enabled=false）にして編集中の見た目を素のままにする。
+        // ただし Post Process ウィンドウの "Preview in Scene View" を ON にすればプレビュー可。
+        PostProcessSettings ppApplied = m_scene->GetPostSettings();
+        const bool isGameView = (m_isGameMode || m_engineMode == EngineMode::Playing);
+        if (!isGameView && !ppApplied.previewInEditor)
+            ppApplied.enabled = false;
+
         m_postProcess->Apply(nativeCmdList,
             m_srvHeap->GetGpuHandle(m_sceneRT->GetSrvIndex()),
-            m_scene->GetPostSettings(),
+            ppApplied,
             static_cast<f32>(vpLeft) / fullW, static_cast<f32>(vpTop) / fullH,
             static_cast<f32>(vpW)    / fullW, static_cast<f32>(vpH)   / fullH,
-            1.0f / fullW, 1.0f / fullH);
+            1.0f / fullW, 1.0f / fullH, totalTime);
     }
 
     // ---- Editor Icon Draw（ポスト後のバックバッファへ, エディタモードのみ）----
@@ -2917,21 +3009,140 @@ void Application::Render()
         if (m_modeChangeRequested)
             m_pendingMode = pendingPlayMode ? EngineMode::Playing : EngineMode::Editor;
 
-        // ---- Post Process 設定ウィンドウ（シーンごとに保存される）----
+        // ---- ポストプロセス: ON/OFF ウィンドウ と パラメータ ウィンドウ ----
         {
             auto& pp = m_scene->GetPostSettings();
+
+            // 全エフェクトのメタ情報（トグルとパラメータ描画を一元定義）
+            struct PostFx {
+                const char* cat;                 // カテゴリ見出し
+                const char* label;               // 表示名
+                const char* help;                // 説明（null可）
+                bool*       on;                  // 有効フラグ
+                std::function<void()> params;    // パラメータ描画
+            };
+            const std::vector<PostFx> fx = {
+                {"カラー", "露出 Exposure", "明るさを乗算で調整", &pp.exposureOn,
+                    [&]{ ImGui::SliderFloat("値##exposure", &pp.exposure, 0.1f, 4.0f, "%.2f"); }},
+                {"カラー", "コントラスト Contrast", nullptr, &pp.contrastOn,
+                    [&]{ ImGui::SliderFloat("値##contrast", &pp.contrast, 0.0f, 2.0f, "%.2f"); }},
+                {"カラー", "明るさ Brightness", "加算で明暗を調整", &pp.brightnessOn,
+                    [&]{ ImGui::SliderFloat("値##brightness", &pp.brightness, -0.5f, 0.5f, "%.2f"); }},
+                {"カラー", "彩度 Saturation", nullptr, &pp.saturationOn,
+                    [&]{ ImGui::SliderFloat("値##saturation", &pp.saturation, 0.0f, 2.0f, "%.2f"); }},
+                {"カラー", "色温度 Warmth", "+で暖色、-で寒色", &pp.warmthOn,
+                    [&]{ ImGui::SliderFloat("値##warmth", &pp.warmth, -1.0f, 1.0f, "%.2f"); }},
+                {"カラー", "色相回転 Hue", "色相を回す（度）", &pp.hueOn,
+                    [&]{ ImGui::SliderFloat("角度##hue", &pp.hueShift, 0.0f, 360.0f, "%.0f°"); }},
+                {"カラー", "色味 Tint", "RGB を乗算", &pp.tintOn,
+                    [&]{ ImGui::ColorEdit3("色##tint", &pp.tint.x); }},
+
+                {"ブルーム/ビネット", "ブルーム Bloom", "明部がにじむ", &pp.bloomOn,
+                    [&]{ ImGui::SliderFloat("強度##bloom", &pp.bloom, 0.0f, 1.0f, "%.2f");
+                         ImGui::SliderFloat("しきい値##bloomth", &pp.bloomThreshold, 0.0f, 1.0f, "%.2f"); }},
+                {"ブルーム/ビネット", "ビネット Vignette", "周辺減光", &pp.vignetteOn,
+                    [&]{ ImGui::SliderFloat("強度##vig", &pp.vignette, 0.0f, 1.0f, "%.2f"); }},
+
+                {"スタイライズ", "色収差 Chromatic", "画面端でRGBがズレる", &pp.chromaticOn,
+                    [&]{ ImGui::SliderFloat("強度##chroma", &pp.chromatic, 0.0f, 1.0f, "%.2f"); }},
+                {"スタイライズ", "ピクセル化 Pixelize", "ブロック状にモザイク", &pp.pixelizeOn,
+                    [&]{ ImGui::SliderFloat("ブロックpx##pix", &pp.pixelSize, 1.0f, 64.0f, "%.0f"); }},
+                {"スタイライズ", "ポスタライズ Posterize", "色数を段階化", &pp.posterizeOn,
+                    [&]{ ImGui::SliderInt("階調##post", &pp.posterize, 2, 16); }},
+                {"スタイライズ", "ディザ Dither", "順序ディザで階調化", &pp.ditherOn,
+                    [&]{ ImGui::SliderInt("階調##dither", &pp.ditherLevels, 2, 8); }},
+                {"スタイライズ", "CRT走査線 Scanline", "走査線＋画面湾曲", &pp.scanlineOn,
+                    [&]{ ImGui::SliderFloat("強度##scan", &pp.scanline, 0.0f, 1.0f, "%.2f"); }},
+                {"スタイライズ", "シャープ Sharpen", "輪郭を強調", &pp.sharpenOn,
+                    [&]{ ImGui::SliderFloat("強度##sharp", &pp.sharpen, 0.0f, 1.0f, "%.2f"); }},
+                {"スタイライズ", "フィルムグレイン Grain", "ザラつきノイズ", &pp.grainOn,
+                    [&]{ ImGui::SliderFloat("強度##grain", &pp.grain, 0.0f, 1.0f, "%.2f"); }},
+
+                {"カラー操作", "色反転 Invert", nullptr, &pp.invertOn,
+                    [&]{ ImGui::SliderFloat("強度##inv", &pp.invert, 0.0f, 1.0f, "%.2f"); }},
+                {"カラー操作", "セピア Sepia", nullptr, &pp.sepiaOn,
+                    [&]{ ImGui::SliderFloat("強度##sepia", &pp.sepia, 0.0f, 1.0f, "%.2f"); }},
+                {"カラー操作", "グレースケール Grayscale", nullptr, &pp.grayscaleOn,
+                    [&]{ ImGui::SliderFloat("強度##gray", &pp.grayscale, 0.0f, 1.0f, "%.2f"); }},
+
+                {"歪み", "レンズ歪み Lens", "バレル/魚眼", &pp.lensOn,
+                    [&]{ ImGui::SliderFloat("強度##lens", &pp.lens, -1.0f, 1.0f, "%.2f"); }},
+                {"歪み", "波ゆらぎ Wave", "水中/陽炎のゆれ", &pp.waveOn,
+                    [&]{ ImGui::SliderFloat("振幅##wamp", &pp.waveAmp, 0.0f, 0.05f, "%.3f");
+                         ImGui::SliderFloat("周波数##wfreq", &pp.waveFreq, 1.0f, 40.0f, "%.1f");
+                         ImGui::SliderFloat("速度##wspd", &pp.waveSpeed, 0.0f, 8.0f, "%.1f"); }},
+                {"歪み", "放射ブラー Radial", "中心へズームブラー", &pp.radialOn,
+                    [&]{ ImGui::SliderFloat("強度##rad", &pp.radial, 0.0f, 1.0f, "%.2f"); }},
+                {"歪み", "グリッチ Glitch", "デジタル乱れ", &pp.glitchOn,
+                    [&]{ ImGui::SliderFloat("強度##glitch", &pp.glitch, 0.0f, 1.0f, "%.2f"); }},
+
+                {"輪郭", "輪郭線 Outline", "Sobelエッジ検出", &pp.outlineOn,
+                    [&]{ ImGui::SliderFloat("強度##outl", &pp.outline, 0.0f, 4.0f, "%.2f");
+                         ImGui::ColorEdit3("線の色##outlc", &pp.outlineColor.x); }},
+
+                {"アンチエイリアス", "FXAA", "簡易アンチエイリアス", &pp.fxaaOn, {}},
+            };
+
+            // ===== ウィンドウ1: ON/OFF チェックリスト =====
             ImGui::Begin("Post Process");
-            ImGui::Checkbox("Enabled", &pp.enabled);
-            ImGui::SliderFloat("Exposure",   &pp.exposure,   0.1f, 4.0f);
-            ImGui::SliderFloat("Contrast",   &pp.contrast,   0.5f, 2.0f);
-            ImGui::SliderFloat("Saturation", &pp.saturation, 0.0f, 2.0f);
-            ImGui::ColorEdit3("Tint", &pp.tint.x);
-            ImGui::SliderFloat("Vignette",        &pp.vignette,       0.0f, 1.0f);
-            ImGui::SliderFloat("Bloom",           &pp.bloom,          0.0f, 1.0f);
-            ImGui::SliderFloat("Bloom Threshold", &pp.bloomThreshold, 0.0f, 1.0f);
-            ImGui::Checkbox("FXAA", &pp.fxaa);
+            ImGui::Checkbox("有効（マスター）", &pp.enabled);
+            ImGui::SameLine(0.0f, 16.0f);
+            ImGui::Checkbox("シーンビューでもプレビュー", &pp.previewInEditor);
+            ImGui::TextDisabled("通常はゲームビューのみ適用 / 各効果のパラメータは「Post Process パラメータ」窓で");
+            ImGui::Separator();
+
+            ImGui::BeginDisabled(!pp.enabled);
+            const char* curCat = nullptr;
+            int enabledCount = 0;
+            for (const auto& f : fx)
+            {
+                if (curCat == nullptr || std::strcmp(curCat, f.cat) != 0)
+                {
+                    curCat = f.cat;
+                    ImGui::SeparatorText(curCat);
+                }
+                ImGui::Checkbox(f.label, f.on);
+                if (f.help)
+                {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(?)");
+                    if (ImGui::BeginItemTooltip())
+                    { ImGui::TextUnformatted(f.help); ImGui::EndTooltip(); }
+                }
+                if (*f.on) ++enabledCount;
+            }
+            ImGui::EndDisabled();
+
+            ImGui::Separator();
+            if (ImGui::Button("すべてOFF"))
+                for (const auto& f : fx) *f.on = false;
             ImGui::SameLine();
-            ImGui::Checkbox("Grayscale", &pp.grayscale);
+            if (ImGui::Button("初期値に戻す"))
+            { bool prev = pp.previewInEditor; pp = PostProcessSettings{}; pp.previewInEditor = prev; }
+            ImGui::SameLine();
+            ImGui::TextDisabled("有効中: %d", enabledCount);
+            ImGui::End();
+
+            // ===== ウィンドウ2: 有効なエフェクトのパラメータ =====
+            ImGui::Begin("Post Process パラメータ");
+            if (!pp.enabled)
+                ImGui::TextDisabled("マスターが OFF です（Post Process 窓で有効化）");
+            else if (enabledCount == 0)
+                ImGui::TextDisabled("エフェクトを有効にすると、ここに調整項目が出ます");
+            else
+            {
+                ImGui::PushItemWidth(-120.0f);
+                curCat = nullptr;
+                for (const auto& f : fx)
+                {
+                    if (!*f.on || !f.params) continue;
+                    ImGui::SeparatorText(f.label);
+                    ImGui::PushID(f.label);
+                    f.params();
+                    ImGui::PopID();
+                }
+                ImGui::PopItemWidth();
+            }
             ImGui::End();
         }
 
@@ -3104,13 +3315,30 @@ void Application::Render()
 
     m_imguiManager->EndFrame(nativeCmdList);
 
-    // ---- シーントランジション オーバーレイ（全画面・ImGui の上にも被せる）----
+    // ---- シーントランジション オーバーレイ（ImGui の上に被せる）----
+    // フェードは 3D ビューにだけ適用する:
+    //   エディタ/Play 中 … 中央ビューポート矩形だけにスシザーを絞り、周りの
+    //                      エディタUI（パネル/ツールバー）には掛からないようにする。
+    //   ゲーム単体       … ウィンドウ全体。
     if (m_sceneTransition && m_sceneTransition->IsActive())
     {
+        u32 tLeft = 0, tTop = 0;
+        u32 tW = m_window->GetWidth(), tH = m_window->GetHeight();
+        if (!m_isGameMode && m_editorLayer)
+        {
+            auto vpos  = m_editorLayer->GetViewportPos();
+            auto vsize = m_editorLayer->GetViewportSize();
+            tLeft = static_cast<u32>(vpos.x);
+            tTop  = static_cast<u32>(vpos.y);
+            tW    = static_cast<u32>(vsize.x);
+            tH    = static_cast<u32>(vsize.y);
+            if (tW < 1) tW = 1;
+            if (tH < 1) tH = 1;
+        }
+
         nativeCmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-        m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
-        float aspect = (m_window->GetHeight() > 0)
-            ? static_cast<f32>(m_window->GetWidth()) / static_cast<f32>(m_window->GetHeight()) : 1.0f;
+        m_commandList->SetViewportAndScissor(tLeft, tTop, tW, tH);
+        float aspect = (tH > 0) ? static_cast<f32>(tW) / static_cast<f32>(tH) : 1.0f;
         m_sceneTransition->Render(nativeCmdList, aspect);
     }
 

@@ -115,6 +115,7 @@ void ScriptEngine::Initialize(Scene* scene, InputSystem* input, Camera* camera,
                           sol::lib::table, sol::lib::io);
 
     RegisterBindings();
+    LoadPrelude();
 
     Logger::Info("ScriptEngine initialized");
 }
@@ -163,6 +164,7 @@ void ScriptEngine::RegisterBindings()
             if (type == "GridPlane")          return e.HasComponent<GridPlane>();
             if (type == "PointLight")         return e.HasComponent<PointLight>();
             if (type == "DirectionalLight")   return e.HasComponent<DirectionalLight>();
+            if (type == "SpotLight")          return e.HasComponent<SpotLight>();
             if (type == "Camera")             return e.HasComponent<CameraComponent>();
             if (type == "AudioSource")        return e.HasComponent<AudioSource>();
             return false;
@@ -320,6 +322,11 @@ void ScriptEngine::RegisterBindings()
     lua["KEY_F2"]    = static_cast<int>(VK_F2);
     lua["KEY_F3"]    = static_cast<int>(VK_F3);
     lua["KEY_RBUTTON"] = static_cast<int>(VK_RBUTTON);
+    lua["KEY_UP"]    = static_cast<int>(VK_UP);
+    lua["KEY_DOWN"]  = static_cast<int>(VK_DOWN);
+    lua["KEY_LEFT"]  = static_cast<int>(VK_LEFT);
+    lua["KEY_RIGHT"] = static_cast<int>(VK_RIGHT);
+    lua["KEY_ENTER"] = static_cast<int>(VK_RETURN);
 
     // --- ユーティリティ ---
     lua["log"] = [](const std::string& msg) { Logger::Info("[Lua] {}", msg); };
@@ -505,6 +512,134 @@ void ScriptEngine::RegisterPhysicsBindings()
     );
 
     lua["physics"] = m_physics;
+}
+
+void ScriptEngine::LoadPrelude()
+{
+    // 高レベルゲームスクリプトAPI（プランナー/AI 向け）。
+    // ここで定義した関数/テーブルはグローバルなので、各アタッチスクリプトの
+    // 環境フォールバック(lua.globals())経由で参照できる。
+    // 詳細リファレンス: docs/SCRIPTING.md
+    static const char* kPrelude = R"LUA(
+-- ============================================================
+--  DX12 Engine - High-level scripting helpers (auto-loaded)
+--  低レベルAPI(scene/input/transform...)を包んだ簡単API。
+-- ============================================================
+
+-- キー名 -> エンジンのキー定数
+local KEYS = {
+  W=KEY_W, A=KEY_A, S=KEY_S, D=KEY_D, E=KEY_E, Q=KEY_Q,
+  UP=KEY_UP, DOWN=KEY_DOWN, LEFT=KEY_LEFT, RIGHT=KEY_RIGHT,
+  SPACE=KEY_SPACE, SHIFT=KEY_SHIFT, TAB=KEY_TAB,
+  ENTER=KEY_ENTER, ESC=KEY_ESCAPE, ESCAPE=KEY_ESCAPE,
+}
+function keyDown(name)    local k = KEYS[name]; return k ~= nil and input:isKeyDown(k)    end
+function keyPressed(name) local k = KEYS[name]; return k ~= nil and input:isKeyPressed(k) end
+
+local function d2xz(ax, az, bx, bz) local dx, dz = ax-bx, az-bz; return dx*dx + dz*dz end
+
+-- ===== Actor: 名前付きエンティティの薄いラッパー =====
+Actor = {}
+Actor.__index = Actor
+
+-- actor(name, { speed=, solid="Wall1" or {"Wall1","Wall2"}, half=0.5 })
+function actor(name, opts)
+  opts = opts or {}
+  local a = setmetatable({}, Actor)
+  a.name   = name
+  a.speed  = opts.speed or 5
+  a.half   = opts.half  or 0.5
+  a.solids = opts.solid or {}
+  if type(a.solids) == "string" then a.solids = { a.solids } end
+  local p = a:pos()
+  a.x, a.y, a.z = p.x, p.y, p.z
+  return a
+end
+
+function Actor:entity()
+  local e = scene:findEntity(self.name)
+  if e and e:isValid() then return e end
+  return nil
+end
+function Actor:valid() return self:entity() ~= nil end
+
+function Actor:pos()
+  local e = self:entity()
+  if e then return e.transform.position end
+  return Vec3.new(0, 0, 0)
+end
+
+function Actor:setPos(x, y, z)
+  self.x, self.y, self.z = x, y, z
+  local e = self:entity()
+  if e then e.transform.position = Vec3.new(x, y, z) end
+end
+
+-- (nx,nz) が solid 相手の箱と重なるか（AABB, XZ平面。box=半径0.5×scale）
+function Actor:_blocked(nx, nz)
+  for _, sname in ipairs(self.solids) do
+    local s = scene:findEntity(sname)
+    if s and s:isValid() then
+      local sp, ss = s.transform.position, s.transform.scale
+      if math.abs(nx - sp.x) < (self.half + 0.5*ss.x)
+         and math.abs(nz - sp.z) < (self.half + 0.5*ss.z) then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+-- WASD(既定) / "Arrows" で見下ろし移動。solid に当たったら軸ごと停止(=壁沿いスライド)
+function Actor:moveTopDown(dt, scheme)
+  scheme = scheme or "WASD"
+  local mv = self.speed * dt
+  local dx, dz = 0, 0
+  if scheme == "Arrows" then
+    if keyDown("UP")   then dz = dz + mv end
+    if keyDown("DOWN") then dz = dz - mv end
+    if keyDown("LEFT") then dx = dx - mv end
+    if keyDown("RIGHT")then dx = dx + mv end
+  else
+    if keyDown("W") then dz = dz + mv end
+    if keyDown("S") then dz = dz - mv end
+    if keyDown("A") then dx = dx - mv end
+    if keyDown("D") then dx = dx + mv end
+  end
+  if dx ~= 0 and not self:_blocked(self.x + dx, self.z) then self.x = self.x + dx end
+  if dz ~= 0 and not self:_blocked(self.x, self.z + dz) then self.z = self.z + dz end
+  self:setPos(self.x, self.y, self.z)
+end
+
+-- 相手(Actor)に届いたか（XZ距離 < radius）
+function Actor:reached(other, radius)
+  radius = radius or 1.0
+  local a, b = self:pos(), other:pos()
+  return d2xz(a.x, a.z, b.x, b.z) < radius * radius
+end
+
+-- ===== カメラ追従（見下ろし）=====
+-- cameraFollow(target, { name="GameCamera", height=13, back=8, pitch=55 })
+function cameraFollow(target, opts)
+  opts = opts or {}
+  local cam = scene:findEntity(opts.name or "GameCamera")
+  if not (cam and cam:isValid()) then return end
+  local p = target:pos()
+  cam.transform.position = Vec3.new(p.x, opts.height or 13, p.z - (opts.back or 8))
+  cam.transform.rotation = Vec3.new(opts.pitch or 55, 0, 0)
+end
+
+-- ===== シーン遷移（フェード付きの分かりやすい別名）=====
+function goToScene(path, dur) fadeToScene(path, dur or 0.6) end
+function win(dur)  nextScene() end
+)LUA";
+
+    auto r = m_lua->safe_script(kPrelude, sol::script_pass_on_error);
+    if (!r.valid())
+    {
+        sol::error err = r;
+        Logger::Error("ScriptEngine prelude error: {}", err.what());
+    }
 }
 
 void ScriptEngine::LoadScript(const std::string& filePath)

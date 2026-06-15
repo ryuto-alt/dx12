@@ -324,7 +324,7 @@ void SceneViewPanel::HandleCameraNavigation(entt::registry& reg,
     ImGui::GetForegroundDrawList()->AddText(
         ImVec2(vpX + 12.0f, vpY + vpH - 44.0f),
         IM_COL32(235, 235, 235, 140),
-        "Touchpad 2-finger: vert=fwd/back  horiz=left/right  SHIFT=up/down  Ctrl/pinch=zoom");
+        "Touchpad 2-finger: vert=fwd/back  horiz=left/right  SHIFT=up/down  Ctrl/pinch=zoom(to cursor)");
 
     ImGui::GetForegroundDrawList()->AddText(
         ImVec2(vpX + 12.0f, vpY + vpH - 26.0f),
@@ -358,6 +358,29 @@ void SceneViewPanel::HandleCameraNavigation(entt::registry& reg,
     {
         const f32 step = (std::max)(0.5f, m_orbitDistance * 0.15f);
 
+        // マウスカーソルを通るレイ方向へカメラをドリーする＝カーソル位置を中心にズーム。
+        // ピッキングと同じ NDC→ワールドのレイ計算を流用。amount 正でズームイン（カーソルへ前進）。
+        auto zoomTowardCursor = [&](f32 amount)
+        {
+            f32 ndcX = ((m.x - vpX) / vpW) * 2.0f - 1.0f;
+            f32 ndcY = 1.0f - ((m.y - vpY) / vpH) * 2.0f;
+
+            XMMATRIX invProj = XMMatrixInverse(nullptr, camera->GetProjectionMatrix());
+            XMMATRIX invView = XMMatrixInverse(nullptr, camera->GetViewMatrix());
+
+            XMVECTOR rayClip = XMVectorSet(ndcX, ndcY, 1.0f, 1.0f);
+            XMVECTOR rayEye  = XMVector4Transform(rayClip, invProj);
+            rayEye = XMVectorSetZ(rayEye, 1.0f);
+            rayEye = XMVectorSetW(rayEye, 0.0f);
+            XMVECTOR rayDir  = XMVector3Normalize(XMVector4Transform(rayEye, invView));
+
+            XMFLOAT3 camPosF = camera->GetPosition();
+            XMVECTOR pos = XMVectorAdd(XMLoadFloat3(&camPosF), XMVectorScale(rayDir, amount));
+            XMFLOAT3 outPos;
+            XMStoreFloat3(&outPos, pos);
+            camera->SetPosition(outPos);
+        };
+
         if (io.MouseWheel != 0.0f)
         {
             if (io.MouseDown[ImGuiMouseButton_Right])
@@ -372,11 +395,11 @@ void SceneViewPanel::HandleCameraNavigation(entt::registry& reg,
             }
             else if (io.KeyCtrl)
             {
-                camera->MoveForward(io.MouseWheel * step * 1.6f);  // ズーム（ピンチ）
+                zoomTowardCursor(io.MouseWheel * step * 1.6f);     // ズーム（ピンチ・カーソル中心）
             }
             else
             {
-                camera->MoveForward(io.MouseWheel * step);         // 前後
+                camera->MoveForward(io.MouseWheel * step);         // 前後（移動）
             }
         }
 

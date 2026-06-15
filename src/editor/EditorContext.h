@@ -8,6 +8,7 @@
 #include <DirectXMath.h>
 #include "core/Types.h"
 #include "editor/UndoSystem.h"
+#include "editor/EditorIcons.h"
 
 namespace dx12e
 {
@@ -146,6 +147,9 @@ public:
 
     // クリップボード（Ctrl+C/V 用。エンティティの JSON スナップショット）
     std::vector<std::string> clipboard;
+
+    // エディタ UI アイコン（Application が所有・populate。null/0 ならテキスト表示にフォールバック）
+    const EditorUiIcons* icons = nullptr;
 };
 
 } // namespace dx12e

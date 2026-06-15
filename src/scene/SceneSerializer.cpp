@@ -129,7 +129,21 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
             ej["directionalLight"] = {
                 {"direction", SerializeFloat3(dl.direction)},
                 {"color",     SerializeFloat3(dl.color)},
-                {"intensity", dl.intensity}
+                {"intensity", dl.intensity},
+                {"ambient",   dl.ambient}
+            };
+        }
+
+        if (reg.all_of<SpotLight>(entity))
+        {
+            const auto& sl = reg.get<SpotLight>(entity);
+            ej["spotLight"] = {
+                {"color",        SerializeFloat3(sl.color)},
+                {"intensity",    sl.intensity},
+                {"range",        sl.range},
+                {"direction",    SerializeFloat3(sl.direction)},
+                {"innerConeDeg", sl.innerConeDeg},
+                {"outerConeDeg", sl.outerConeDeg}
             };
         }
 
@@ -265,15 +279,33 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
         const auto& pp = scene.GetPostSettings();
         root["postProcess"] = {
             {"enabled",        pp.enabled},
-            {"exposure",       pp.exposure},
-            {"contrast",       pp.contrast},
-            {"saturation",     pp.saturation},
-            {"tint",           {pp.tint.x, pp.tint.y, pp.tint.z}},
-            {"vignette",       pp.vignette},
-            {"bloom",          pp.bloom},
-            {"bloomThreshold", pp.bloomThreshold},
-            {"fxaa",           pp.fxaa},
-            {"grayscale",      pp.grayscale},
+            {"exposureOn",   pp.exposureOn},   {"exposure",   pp.exposure},
+            {"contrastOn",   pp.contrastOn},   {"contrast",   pp.contrast},
+            {"brightnessOn", pp.brightnessOn}, {"brightness", pp.brightness},
+            {"saturationOn", pp.saturationOn}, {"saturation", pp.saturation},
+            {"warmthOn",     pp.warmthOn},     {"warmth",     pp.warmth},
+            {"hueOn",        pp.hueOn},        {"hueShift",   pp.hueShift},
+            {"tintOn",       pp.tintOn},       {"tint",       {pp.tint.x, pp.tint.y, pp.tint.z}},
+            {"bloomOn",      pp.bloomOn},      {"bloom",      pp.bloom}, {"bloomThreshold", pp.bloomThreshold},
+            {"vignetteOn",   pp.vignetteOn},   {"vignette",   pp.vignette},
+            {"chromaticOn",  pp.chromaticOn},  {"chromatic",  pp.chromatic},
+            {"pixelizeOn",   pp.pixelizeOn},   {"pixelSize",  pp.pixelSize},
+            {"posterizeOn",  pp.posterizeOn},  {"posterize",  pp.posterize},
+            {"ditherOn",     pp.ditherOn},     {"ditherLevels", pp.ditherLevels},
+            {"scanlineOn",   pp.scanlineOn},   {"scanline",   pp.scanline},
+            {"sharpenOn",    pp.sharpenOn},    {"sharpen",    pp.sharpen},
+            {"grainOn",      pp.grainOn},      {"grain",      pp.grain},
+            {"invertOn",     pp.invertOn},     {"invert",     pp.invert},
+            {"sepiaOn",      pp.sepiaOn},      {"sepia",      pp.sepia},
+            {"grayscaleOn",  pp.grayscaleOn},  {"grayscale",  pp.grayscale},
+            {"lensOn",       pp.lensOn},       {"lens",       pp.lens},
+            {"waveOn",       pp.waveOn},       {"waveAmp",    pp.waveAmp},
+            {"waveFreq",     pp.waveFreq},     {"waveSpeed",  pp.waveSpeed},
+            {"radialOn",     pp.radialOn},     {"radial",     pp.radial},
+            {"glitchOn",     pp.glitchOn},     {"glitch",     pp.glitch},
+            {"outlineOn",    pp.outlineOn},    {"outline",    pp.outline},
+            {"outlineColor", {pp.outlineColor.x, pp.outlineColor.y, pp.outlineColor.z}},
+            {"fxaaOn",       pp.fxaaOn},
         };
     }
 
@@ -283,20 +315,40 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
 // JSON から ポストプロセス設定を復元（postProcess が無ければデフォルト）
 static void LoadPostSettings(Scene& scene, const json& root)
 {
-    PostProcessSettings pp;  // デフォルト
+    PostProcessSettings pp;  // デフォルト（未指定キーは既定値を維持）
     if (root.contains("postProcess"))
     {
         const auto& pj = root["postProcess"];
-        pp.enabled        = pj.value("enabled", true);
-        pp.exposure       = pj.value("exposure", 1.0f);
-        pp.contrast       = pj.value("contrast", 1.0f);
-        pp.saturation     = pj.value("saturation", 1.0f);
+        pp.enabled      = pj.value("enabled", pp.enabled);
+        pp.exposureOn   = pj.value("exposureOn",   pp.exposureOn);   pp.exposure   = pj.value("exposure",   pp.exposure);
+        pp.contrastOn   = pj.value("contrastOn",   pp.contrastOn);   pp.contrast   = pj.value("contrast",   pp.contrast);
+        pp.brightnessOn = pj.value("brightnessOn", pp.brightnessOn); pp.brightness = pj.value("brightness", pp.brightness);
+        pp.saturationOn = pj.value("saturationOn", pp.saturationOn); pp.saturation = pj.value("saturation", pp.saturation);
+        pp.warmthOn     = pj.value("warmthOn",     pp.warmthOn);     pp.warmth     = pj.value("warmth",     pp.warmth);
+        pp.hueOn        = pj.value("hueOn",        pp.hueOn);        pp.hueShift   = pj.value("hueShift",   pp.hueShift);
+        pp.tintOn       = pj.value("tintOn",       pp.tintOn);
         if (pj.contains("tint")) pp.tint = DeserializeFloat3(pj["tint"], {1, 1, 1});
-        pp.vignette       = pj.value("vignette", 0.0f);
-        pp.bloom          = pj.value("bloom", 0.0f);
-        pp.bloomThreshold = pj.value("bloomThreshold", 0.75f);
-        pp.fxaa           = pj.value("fxaa", false);
-        pp.grayscale      = pj.value("grayscale", false);
+        pp.bloomOn      = pj.value("bloomOn",      pp.bloomOn);      pp.bloom      = pj.value("bloom",      pp.bloom);
+        pp.bloomThreshold = pj.value("bloomThreshold", pp.bloomThreshold);
+        pp.vignetteOn   = pj.value("vignetteOn",   pp.vignetteOn);   pp.vignette   = pj.value("vignette",   pp.vignette);
+        pp.chromaticOn  = pj.value("chromaticOn",  pp.chromaticOn);  pp.chromatic  = pj.value("chromatic",  pp.chromatic);
+        pp.pixelizeOn   = pj.value("pixelizeOn",   pp.pixelizeOn);   pp.pixelSize  = pj.value("pixelSize",  pp.pixelSize);
+        pp.posterizeOn  = pj.value("posterizeOn",  pp.posterizeOn);  pp.posterize  = pj.value("posterize",  pp.posterize);
+        pp.ditherOn     = pj.value("ditherOn",     pp.ditherOn);     pp.ditherLevels = pj.value("ditherLevels", pp.ditherLevels);
+        pp.scanlineOn   = pj.value("scanlineOn",   pp.scanlineOn);   pp.scanline   = pj.value("scanline",   pp.scanline);
+        pp.sharpenOn    = pj.value("sharpenOn",    pp.sharpenOn);    pp.sharpen    = pj.value("sharpen",    pp.sharpen);
+        pp.grainOn      = pj.value("grainOn",      pp.grainOn);      pp.grain      = pj.value("grain",      pp.grain);
+        pp.invertOn     = pj.value("invertOn",     pp.invertOn);     pp.invert     = pj.value("invert",     pp.invert);
+        pp.sepiaOn      = pj.value("sepiaOn",      pp.sepiaOn);      pp.sepia      = pj.value("sepia",      pp.sepia);
+        pp.grayscaleOn  = pj.value("grayscaleOn",  pp.grayscaleOn);  pp.grayscale  = pj.value("grayscale",  pp.grayscale);
+        pp.lensOn       = pj.value("lensOn",       pp.lensOn);       pp.lens       = pj.value("lens",       pp.lens);
+        pp.waveOn       = pj.value("waveOn",       pp.waveOn);       pp.waveAmp    = pj.value("waveAmp",    pp.waveAmp);
+        pp.waveFreq     = pj.value("waveFreq",     pp.waveFreq);     pp.waveSpeed  = pj.value("waveSpeed",  pp.waveSpeed);
+        pp.radialOn     = pj.value("radialOn",     pp.radialOn);     pp.radial     = pj.value("radial",     pp.radial);
+        pp.glitchOn     = pj.value("glitchOn",     pp.glitchOn);     pp.glitch     = pj.value("glitch",     pp.glitch);
+        pp.outlineOn    = pj.value("outlineOn",    pp.outlineOn);    pp.outline    = pj.value("outline",    pp.outline);
+        if (pj.contains("outlineColor")) pp.outlineColor = DeserializeFloat3(pj["outlineColor"], {0, 0, 0});
+        pp.fxaaOn       = pj.value("fxaaOn",       pp.fxaaOn);
     }
     scene.GetPostSettings() = pp;
 }
@@ -392,8 +444,23 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                 if (dlj.contains("direction")) dl.direction = DeserializeFloat3(dlj["direction"], {0,-1,0});
                 if (dlj.contains("color"))     dl.color     = DeserializeFloat3(dlj["color"], {1,1,1});
                 if (dlj.contains("intensity")) dl.intensity = dlj["intensity"].get<f32>();
+                dl.ambient = dlj.value("ambient", 0.25f);
                 if (!reg.all_of<DirectionalLight>(e))
                     reg.emplace<DirectionalLight>(e, dl);
+            }
+
+            if (ej.contains("spotLight"))
+            {
+                const auto& slj = ej["spotLight"];
+                SpotLight sl;
+                if (slj.contains("color"))     sl.color     = DeserializeFloat3(slj["color"], {1,1,1});
+                sl.intensity    = slj.value("intensity", 3.0f);
+                sl.range        = slj.value("range", 15.0f);
+                if (slj.contains("direction")) sl.direction = DeserializeFloat3(slj["direction"], {0,-1,0});
+                sl.innerConeDeg = slj.value("innerConeDeg", 18.0f);
+                sl.outerConeDeg = slj.value("outerConeDeg", 28.0f);
+                if (!reg.all_of<SpotLight>(e))
+                    reg.emplace<SpotLight>(e, sl);
             }
 
             if (ej.contains("camera"))

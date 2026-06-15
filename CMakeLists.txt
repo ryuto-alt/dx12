@@ -81,6 +81,10 @@ if(DXC_EXECUTABLE)
 
     set(SHADER_FORWARD "${CMAKE_SOURCE_DIR}/shaders/forward/Forward.hlsl")
     set(SHADER_SKINNED "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardSkinned.hlsl")
+    # Forward/Skinned が include する共有ヘッダ（編集時に再コンパイルさせる）
+    set(SHADER_FWD_INC
+        "${CMAKE_SOURCE_DIR}/shaders/forward/PBR.hlsli"
+        "${CMAKE_SOURCE_DIR}/shaders/forward/Lighting.hlsli")
     set(SHADER_GRID          "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardGrid.hlsl")
     set(SHADER_SHADOW        "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPass.hlsl")
     set(SHADER_SHADOW_SKIN   "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPassSkinned.hlsl")
@@ -115,28 +119,28 @@ if(DXC_EXECUTABLE)
     add_custom_command(
         OUTPUT "${SHADER_OUTPUT_DIR}/Forward_VS.cso"
         COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/Forward_VS.cso" "${SHADER_FORWARD}"
-        DEPENDS "${SHADER_FORWARD}"
+        DEPENDS "${SHADER_FORWARD}" ${SHADER_FWD_INC}
         COMMENT "Compiling Forward.hlsl -> Forward_VS.cso (vs_6_0)"
     )
 
     add_custom_command(
         OUTPUT "${SHADER_OUTPUT_DIR}/Forward_PS.cso"
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/Forward_PS.cso" "${SHADER_FORWARD}"
-        DEPENDS "${SHADER_FORWARD}"
+        DEPENDS "${SHADER_FORWARD}" ${SHADER_FWD_INC}
         COMMENT "Compiling Forward.hlsl -> Forward_PS.cso (ps_6_0)"
     )
 
     add_custom_command(
         OUTPUT "${SHADER_OUTPUT_DIR}/ForwardSkinned_VS.cso"
         COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/ForwardSkinned_VS.cso" "${SHADER_SKINNED}"
-        DEPENDS "${SHADER_SKINNED}"
+        DEPENDS "${SHADER_SKINNED}" ${SHADER_FWD_INC}
         COMMENT "Compiling ForwardSkinned.hlsl -> ForwardSkinned_VS.cso (vs_6_0)"
     )
 
     add_custom_command(
         OUTPUT "${SHADER_OUTPUT_DIR}/ForwardSkinned_PS.cso"
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/ForwardSkinned_PS.cso" "${SHADER_SKINNED}"
-        DEPENDS "${SHADER_SKINNED}"
+        DEPENDS "${SHADER_SKINNED}" ${SHADER_FWD_INC}
         COMMENT "Compiling ForwardSkinned.hlsl -> ForwardSkinned_PS.cso (ps_6_0)"
     )
 

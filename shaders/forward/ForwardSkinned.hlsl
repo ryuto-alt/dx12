@@ -1,5 +1,5 @@
 // ForwardSkinned.hlsl - PBR Forward Rendering with Skeletal Animation
-#include "PBR.hlsli"
+#include "Lighting.hlsli"
 
 // Textures
 Texture2D    g_albedo         : register(t0);
@@ -19,32 +19,6 @@ cbuffer PerObjectConstants : register(b0)
 {
     float4x4 mvp;
     float4x4 model;
-};
-
-// PointLight data
-struct PointLightData
-{
-    float3 position;
-    float  range;
-    float3 color;
-    float  _pad;
-};
-
-// PerFrame constants (b1)
-cbuffer PerFrameConstants : register(b1)
-{
-    float4x4 view;
-    float4x4 proj;
-    float3   lightDir;
-    float    time;
-    float3   lightColor;
-    float    ambientStrength;
-    float4x4 lightViewProj;
-    float3   cameraPos;
-    float    _pad;
-    uint     numPointLights;
-    float3   _pad2;
-    PointLightData pointLights[8];
 };
 
 // PBR Material constants (b2)
@@ -165,53 +139,16 @@ float4 PSMain(PSInput input) : SV_TARGET
 
     float3 V = normalize(cameraPos - input.worldPos);
     float3 L = normalize(-lightDir);
-    float3 H = normalize(V + L);
 
     float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
 
-    float  NDF = DistributionGGX(N, H, roughness);
-    float  G   = GeometrySmith(N, V, L, roughness);
-    float3 F   = FresnelSchlick(max(dot(H, V), 0.0), F0);
-
-    float3 kS = F;
-    float3 kD = (1.0 - kS) * (1.0 - metallic);
-
-    float NdotL = max(dot(N, L), 0.0);
-    float NdotV = max(dot(N, V), 0.001);
-
-    float3 specular = (NDF * G * F) / (4.0 * NdotV * NdotL + 0.0001);
-
     float shadow = CalcShadow(input.shadowCoord);
 
-    // Directional Light
-    float3 Lo = (kD * albedo / PI + specular) * lightColor * NdotL * shadow;
+    // Directional Light（影付き）
+    float3 Lo = ShadePunctual(N, V, L, lightColor * shadow, albedo, F0, metallic, roughness);
 
-    // Point Lights
-    [loop]
-    for (uint i = 0; i < min(numPointLights, 8u); i++)
-    {
-        float3 plDir = pointLights[i].position - input.worldPos;
-        float  dist  = length(plDir);
-        float3 L_pl  = plDir / max(dist, 0.0001);
-
-        // Quadratic attenuation with range cutoff
-        float attenuation = saturate(1.0 - (dist / pointLights[i].range));
-        attenuation *= attenuation;
-
-        float3 H_pl = normalize(V + L_pl);
-        float NdotL_pl = max(dot(N, L_pl), 0.0);
-
-        float  NDF_pl = DistributionGGX(N, H_pl, roughness);
-        float  G_pl   = GeometrySmith(N, V, L_pl, roughness);
-        float3 F_pl   = FresnelSchlick(max(dot(H_pl, V), 0.0), F0);
-
-        float3 kS_pl = F_pl;
-        float3 kD_pl = (1.0 - kS_pl) * (1.0 - metallic);
-
-        float3 specular_pl = (NDF_pl * G_pl * F_pl) / (4.0 * NdotV * NdotL_pl + 0.0001);
-
-        Lo += (kD_pl * albedo / PI + specular_pl) * pointLights[i].color * NdotL_pl * attenuation;
-    }
+    // Point Lights + Spot Lights
+    Lo += AccumulatePunctualLights(N, V, input.worldPos, albedo, F0, metallic, roughness);
 
     // Ambient: metallic は拡散反射を持たない → (1-metallic) でスケール
     // F0 項は環境反射の簡易近似（IBL 未実装のため F0 をそのまま使用）
