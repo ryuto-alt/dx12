@@ -2,6 +2,7 @@ add_library(Scene STATIC
     Entity.cpp
     Scene.cpp
     SceneSerializer.cpp
+    SceneFlow.cpp
 )
 
 target_include_directories(Scene PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)

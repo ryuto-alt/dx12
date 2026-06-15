@@ -144,6 +144,20 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
             };
         }
 
+        if (reg.all_of<AudioSource>(entity))
+        {
+            const auto& as = reg.get<AudioSource>(entity);
+            ej["audioSource"] = {
+                {"clipPath",    as.clipPath},
+                {"volume",      as.volume},
+                {"loop",        as.loop},
+                {"spatial",     as.spatial},
+                {"playOnStart", as.playOnStart},
+                {"minDistance", as.minDistance},
+                {"maxDistance", as.maxDistance}
+            };
+        }
+
         // --- Physics ---
         if (reg.all_of<RigidBody>(entity))
         {
@@ -246,7 +260,45 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
         root["entities"].push_back(ej);
     }
 
+    // ポストプロセス設定（シーン単位）
+    {
+        const auto& pp = scene.GetPostSettings();
+        root["postProcess"] = {
+            {"enabled",        pp.enabled},
+            {"exposure",       pp.exposure},
+            {"contrast",       pp.contrast},
+            {"saturation",     pp.saturation},
+            {"tint",           {pp.tint.x, pp.tint.y, pp.tint.z}},
+            {"vignette",       pp.vignette},
+            {"bloom",          pp.bloom},
+            {"bloomThreshold", pp.bloomThreshold},
+            {"fxaa",           pp.fxaa},
+            {"grayscale",      pp.grayscale},
+        };
+    }
+
     return root;
+}
+
+// JSON から ポストプロセス設定を復元（postProcess が無ければデフォルト）
+static void LoadPostSettings(Scene& scene, const json& root)
+{
+    PostProcessSettings pp;  // デフォルト
+    if (root.contains("postProcess"))
+    {
+        const auto& pj = root["postProcess"];
+        pp.enabled        = pj.value("enabled", true);
+        pp.exposure       = pj.value("exposure", 1.0f);
+        pp.contrast       = pj.value("contrast", 1.0f);
+        pp.saturation     = pj.value("saturation", 1.0f);
+        if (pj.contains("tint")) pp.tint = DeserializeFloat3(pj["tint"], {1, 1, 1});
+        pp.vignette       = pj.value("vignette", 0.0f);
+        pp.bloom          = pj.value("bloom", 0.0f);
+        pp.bloomThreshold = pj.value("bloomThreshold", 0.75f);
+        pp.fxaa           = pj.value("fxaa", false);
+        pp.grayscale      = pj.value("grayscale", false);
+    }
+    scene.GetPostSettings() = pp;
 }
 
 // JSON ノードから 1 エンティティを既存シーンに追加生成（Clear しない）
@@ -481,6 +533,21 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                 if (!ls.scriptPath.empty() && !reg.all_of<LuaScript>(e))
                     reg.emplace<LuaScript>(e, std::move(ls));
             }
+
+            // AudioSource 復元
+            if (ej.contains("audioSource"))
+            {
+                const auto& aj = ej["audioSource"];
+                AudioSource as;
+                as.clipPath    = aj.value("clipPath", "");
+                as.volume      = aj.value("volume", 1.0f);
+                as.loop        = aj.value("loop", false);
+                as.spatial     = aj.value("spatial", true);
+                as.playOnStart = aj.value("playOnStart", true);
+                as.minDistance = aj.value("minDistance", 1.0f);
+                as.maxDistance = aj.value("maxDistance", 30.0f);
+                reg.emplace_or_replace<AudioSource>(e, std::move(as));
+            }
         }
     }
 
@@ -491,6 +558,9 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
 static bool ApplySceneJson(Scene& scene, const json& root, const std::string& assetsDir)
 {
     scene.Clear();
+
+    // ポストプロセス設定（entities が無くても復元する）
+    LoadPostSettings(scene, root);
 
     if (!root.contains("entities") || !root["entities"].is_array())
     {

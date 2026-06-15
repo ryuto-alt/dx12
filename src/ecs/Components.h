@@ -111,6 +111,22 @@ struct CameraComponent
     bool isActive   = false;
 };
 
+// 3D 空間オーディオ音源。Transform のワールド位置がエミッタになる。
+struct AudioSource
+{
+    std::string clipPath;             // assets 相対（例 "audio/sfx/foot.wav"）
+    f32  volume      = 1.0f;
+    bool loop        = false;
+    bool spatial     = true;          // false なら 2D SE
+    bool playOnStart = true;          // Play 開始時に自動再生
+    f32  minDistance = 1.0f;
+    f32  maxDistance = 30.0f;
+
+    // ランタイム専有（非シリアライズ）
+    i32  runtimeSlot     = -1;
+    bool startedThisPlay = false;
+};
+
 // --- Physics Components ---
 
 static constexpr uint32_t kInvalidBodyId = 0xFFFFFFFF;

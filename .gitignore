@@ -46,6 +46,10 @@ vcpkg_installed/
 # Claude Code
 .claude/
 
+# Editor / runtime cache
+imgui.ini
+assets/.thumbcache/
+
 # OS
 Thumbs.db
 Desktop.ini

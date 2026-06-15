@@ -280,6 +280,7 @@ void Scene::Clear()
 {
     m_registry.clear();
     m_ownedMeshes.clear();
+    m_postSettings = PostProcessSettings{};  // ポスト設定もデフォルトへ
 }
 
 void Scene::Update(f32 dt)

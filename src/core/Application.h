@@ -6,7 +6,9 @@
 
 #include <memory>
 #include <vector>
+#include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <chrono>
 #include <filesystem>
 #include <wrl/client.h>
@@ -26,6 +28,11 @@ namespace dx12e
     class RootSignature;
     class PipelineState;
     class CommandList;
+    class RenderTarget;
+    class PostProcess;
+    class SpriteRenderer;
+    class SceneTransition;
+    class SceneFlow;
     class ConstantBuffer;
     class Camera;
     class ResourceManager;
@@ -61,6 +68,9 @@ public:
     void Run();
     void Shutdown();
 
+    // ヘッドレスでゲームをビルド（--build CLI 用）。開始シーンは title.json があればそれ。
+    void BuildGameStandalone();
+
     enum class EngineMode { Editor, Playing };
 
 private:
@@ -70,6 +80,13 @@ private:
     void EnterPlayMode();
     void EnterEditorMode();
     void BuildGame();
+
+    // Lua の loadScene/nextScene/quit/ui コールバックを ScriptEngine に注入（再生成のたび呼ぶ）
+    void WireScriptCallbacks();
+    // アクティブな CameraComponent をグローバル Camera に同期（Play 開始 / loadScene 後）
+    void SyncActiveCameraToGlobal();
+    // Play 中のシーン切替（フレーム境界で安全に実行）
+    void DoRuntimeSceneLoad(const std::string& assetsRelPath, ID3D12GraphicsCommandList* cmdList);
 
     std::unique_ptr<Window>         m_window;
     std::unique_ptr<GraphicsDevice> m_graphicsDevice;
@@ -115,6 +132,32 @@ private:
     std::unique_ptr<PhysicsDebugRenderer> m_physicsDebugRenderer;
     std::unique_ptr<EditorIconRenderer>   m_editorIconRenderer;
     bool                               m_physicsDebugDraw = false;
+
+    // オフスクリーン描画 + ポストプロセス（WP3）
+    std::unique_ptr<DescriptorHeap> m_offscreenRtvHeap;
+    std::unique_ptr<RenderTarget>   m_sceneRT;
+    std::unique_ptr<PostProcess>    m_postProcess;
+
+    // 2D スプライト / ゲーム内 UI 描画（WP4 / WP7）
+    std::unique_ptr<SpriteRenderer> m_spriteRenderer;
+
+    // ゲーム内 UI（Lua 即時モード）コマンドバッファ（WP7）
+    struct UICommand
+    {
+        enum class Type { Text, Button, Image } type = Type::Text;
+        float x = 0, y = 0, w = 0, h = 0, size = 24.0f;
+        float r = 1, g = 1, b = 1, a = 1;
+        std::string text;  // text 内容 / button ラベル / image パス
+    };
+    std::vector<UICommand>          m_uiCommands;     // 今フレームの UI 描画要求
+    std::unordered_set<std::string> m_pressedButtons; // 前フレームに押されたボタンのラベル
+
+    // シーントランジション（WP9）
+    std::unique_ptr<SceneTransition> m_sceneTransition;
+    std::string                      m_transitionTargetScene;  // 中間点でロードする assets 相対パス（空=ロード無し）
+
+    // シーンフロー（WP6）
+    std::unique_ptr<SceneFlow> m_sceneFlow;
     GameClock                          m_gameClock;
     bool                               m_isRunning = false;
     u32                                m_framesSinceStart = 0;
@@ -148,6 +191,9 @@ private:
 
     // Play 開始時のシーン全体スナップショット（Stop 時の復元用）
     std::string m_playSceneJson;
+
+    // 現在ロード中シーンの assets 相対パス（シーンフロー / loadScene 用）
+    std::string m_currentSceneRel;
 
     // Luaホットリロード
     std::filesystem::file_time_type m_scriptLastWriteTime{};

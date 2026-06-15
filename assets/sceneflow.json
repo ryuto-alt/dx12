@@ -1,0 +1,8 @@
+{
+  "start": "scenes/title.json",
+  "flow": {
+    "scenes/title.json":  { "next": "scenes/level1.json", "onFail": "" },
+    "scenes/level1.json": { "next": "scenes/clear.json",  "onFail": "scenes/title.json" },
+    "scenes/clear.json":  { "next": "scenes/title.json",  "onFail": "" }
+  }
+}

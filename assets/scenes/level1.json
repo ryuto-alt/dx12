@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "entities": [
+    {
+      "name": "GameCamera",
+      "transform": { "position": [0, 13, -8], "rotation": [55, 0, 0], "scale": [1, 1, 1] },
+      "camera": { "fovDegrees": 60, "nearClip": 0.1, "farClip": 1000, "isActive": true }
+    },
+    {
+      "name": "Sun",
+      "transform": { "position": [0, 10, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1] },
+      "directionalLight": { "direction": [-0.4, -1.0, -0.3], "color": [1.0, 0.97, 0.9], "intensity": 1.3 }
+    },
+    {
+      "name": "Floor",
+      "transform": { "position": [0, 0, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1] },
+      "gridPlane": { "size": 50 }
+    },
+    {
+      "name": "Player",
+      "transform": { "position": [0, 0.5, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1] },
+      "primitive": "box",
+      "material": { "metallic": 0.1, "roughness": 0.5 }
+    },
+    {
+      "name": "Goal",
+      "transform": { "position": [12, 0.5, 12], "rotation": [0, 0, 0], "scale": [1.2, 1.2, 1.2] },
+      "primitive": "sphere",
+      "material": { "metallic": 0.6, "roughness": 0.2 }
+    },
+    {
+      "name": "Wall1",
+      "transform": { "position": [4, 0.5, 5], "rotation": [0, 0, 0], "scale": [1, 1, 4] },
+      "primitive": "box"
+    },
+    {
+      "name": "Wall2",
+      "transform": { "position": [9, 0.5, 8], "rotation": [0, 0, 0], "scale": [4, 1, 1] },
+      "primitive": "box"
+    },
+    {
+      "name": "GameController",
+      "transform": { "position": [0, 0, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1] },
+      "luaScript": { "scriptPath": "scripts/level1.lua", "enabled": true }
+    }
+  ],
+  "postProcess": {
+    "enabled": true, "exposure": 1.0, "contrast": 1.05, "saturation": 1.1,
+    "tint": [1.0, 1.0, 1.0], "vignette": 0.25, "bloom": 0.0, "bloomThreshold": 0.8,
+    "fxaa": true, "grayscale": false
+  }
+}

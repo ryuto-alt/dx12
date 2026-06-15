@@ -120,7 +120,84 @@ void EditorIconRenderer::Initialize(GraphicsDevice& device,
         m_vbView.SizeInBytes    = bufferSize;
     }
 
+    // --- Billboard Root Signature (b0: viewProj 16 + invScreen 2 + pad 2 = 20 DWORD) ---
+    {
+        D3D12_ROOT_PARAMETER rootParam{};
+        rootParam.ParameterType            = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        rootParam.Constants.ShaderRegister = 0;
+        rootParam.Constants.Num32BitValues = 20;
+        rootParam.ShaderVisibility         = D3D12_SHADER_VISIBILITY_VERTEX;
+
+        D3D12_ROOT_SIGNATURE_DESC desc{};
+        desc.NumParameters = 1;
+        desc.pParameters   = &rootParam;
+        desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+                   | D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS
+                   | D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS
+                   | D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS
+                   | D3D12_ROOT_SIGNATURE_FLAG_DENY_PIXEL_SHADER_ROOT_ACCESS;
+
+        Microsoft::WRL::ComPtr<ID3DBlob> serialized, error;
+        ThrowIfFailed(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &serialized, &error));
+        ThrowIfFailed(dev->CreateRootSignature(0, serialized->GetBufferPointer(),
+            serialized->GetBufferSize(), IID_PPV_ARGS(&m_billboardRootSig)));
+    }
+
+    // --- Billboard PSO (LineList, Depth OFF) ---
+    {
+        auto vsData = ShaderCompiler::LoadFromFile(shaderDir + L"IconBillboard_VS.cso");
+        auto psData = ShaderCompiler::LoadFromFile(shaderDir + L"IconBillboard_PS.cso");
+
+        D3D12_INPUT_ELEMENT_DESC layout[] = {
+            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+            {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+            {"COLOR",    0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        };
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};
+        psoDesc.pRootSignature = m_billboardRootSig.Get();
+        psoDesc.VS = { vsData.GetData(), vsData.GetSize() };
+        psoDesc.PS = { psData.GetData(), psData.GetSize() };
+        psoDesc.InputLayout = { layout, _countof(layout) };
+        psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+        psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+        psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        psoDesc.RasterizerState.DepthClipEnable = TRUE;
+        psoDesc.RasterizerState.AntialiasedLineEnable = TRUE;
+        psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        psoDesc.DepthStencilState.DepthEnable    = FALSE;
+        psoDesc.DepthStencilState.StencilEnable  = FALSE;
+        psoDesc.SampleMask = UINT_MAX;
+        psoDesc.NumRenderTargets = 1;
+        psoDesc.RTVFormats[0] = rtvFormat;
+        psoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
+        psoDesc.SampleDesc = { 1, 0 };
+        ThrowIfFailed(dev->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_billboardPSO)));
+    }
+
+    // --- Billboard Dynamic Vertex Buffer ---
+    {
+        const UINT bufferSize = kMaxVertices * sizeof(IconBillboardVertex);
+        D3D12_HEAP_PROPERTIES heapProps{};
+        heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+        D3D12_RESOURCE_DESC resDesc{};
+        resDesc.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+        resDesc.Width            = bufferSize;
+        resDesc.Height           = 1;
+        resDesc.DepthOrArraySize = 1;
+        resDesc.MipLevels        = 1;
+        resDesc.SampleDesc       = { 1, 0 };
+        resDesc.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        ThrowIfFailed(dev->CreateCommittedResource(
+            &heapProps, D3D12_HEAP_FLAG_NONE, &resDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_billboardVB)));
+        m_billboardVBView.BufferLocation = m_billboardVB->GetGPUVirtualAddress();
+        m_billboardVBView.StrideInBytes  = sizeof(IconBillboardVertex);
+        m_billboardVBView.SizeInBytes    = bufferSize;
+    }
+
     m_vertices.reserve(2048);
+    m_billboardVerts.reserve(2048);
     m_initialized = true;
     Logger::Info("EditorIconRenderer initialized");
 }
@@ -130,6 +207,7 @@ void EditorIconRenderer::Initialize(GraphicsDevice& device,
 void EditorIconRenderer::BeginFrame()
 {
     m_vertices.clear();
+    m_billboardVerts.clear();
 }
 
 // ========== Primitives ==========
@@ -141,113 +219,76 @@ void EditorIconRenderer::AddLine(XMFLOAT3 a, XMFLOAT3 b, XMFLOAT3 color)
     m_vertices.push_back({ b, color });
 }
 
+void EditorIconRenderer::AddBillboardLine(const XMFLOAT3& center,
+                                          XMFLOAT2 a, XMFLOAT2 b,
+                                          const XMFLOAT3& color)
+{
+    if (m_billboardVerts.size() + 2 > kMaxVertices) return;
+    m_billboardVerts.push_back({ center, a, color });
+    m_billboardVerts.push_back({ center, b, color });
+}
+
 // ========== 常時表示アイコン ==========
 
 void EditorIconRenderer::AddCameraIcon(const XMFLOAT3& pos,
-                                       const XMFLOAT4& quat,
                                        const XMFLOAT3& color)
 {
-    // カメラ形状: ボディ(箱) + レンズ(台形)
-    const f32 w = 0.3f, h = 0.22f, d = 0.2f;   // ボディ半サイズ
-    const f32 lw = 0.12f, lh = 0.10f, ld = 0.15f; // レンズ半サイズ
-
-    XMMATRIX rot = XMMatrixRotationQuaternion(XMLoadFloat4(&quat));
-    XMVECTOR R = rot.r[0], U = rot.r[1], F = rot.r[2];
-    XMVECTOR P = XMLoadFloat3(&pos);
-
-    // ボディ 8頂点
-    XMFLOAT3 c[8];
-    const float signs[8][3] = {
-        {-1,-1,-1},{+1,-1,-1},{+1,+1,-1},{-1,+1,-1},
-        {-1,-1,+1},{+1,-1,+1},{+1,+1,+1},{-1,+1,+1},
-    };
-    for (int i = 0; i < 8; ++i)
-    {
-        XMVECTOR local = R * (signs[i][0] * w) + U * (signs[i][1] * h) + F * (signs[i][2] * d);
-        XMStoreFloat3(&c[i], P + local);
-    }
-    // ボディ 12辺
-    const int edges[12][2] = {
-        {0,1},{1,2},{2,3},{3,0}, {4,5},{5,6},{6,7},{7,4},
-        {0,4},{1,5},{2,6},{3,7},
-    };
-    for (auto& e : edges) AddLine(c[e[0]], c[e[1]], color);
-
-    // レンズ（前面にちょっと飛び出た台形）
-    XMFLOAT3 lens[4];
-    XMStoreFloat3(&lens[0], P + F * (d + ld) + U * lh - R * lw);
-    XMStoreFloat3(&lens[1], P + F * (d + ld) + U * lh + R * lw);
-    XMStoreFloat3(&lens[2], P + F * (d + ld) - U * lh + R * lw);
-    XMStoreFloat3(&lens[3], P + F * (d + ld) - U * lh - R * lw);
-    // レンズ面 4辺
-    AddLine(lens[0], lens[1], color);
-    AddLine(lens[1], lens[2], color);
-    AddLine(lens[2], lens[3], color);
-    AddLine(lens[3], lens[0], color);
-    // ボディ前面 → レンズ 4本
-    AddLine(c[4], lens[0], color);
-    AddLine(c[5], lens[1], color);
-    AddLine(c[6], lens[2], color);
-    AddLine(c[7], lens[3], color);
+    // 2D カメラグリフ（ビルボード・常にカメラを向く）
+    const f32 bw = 13.0f, bh = 9.0f;   // ボディ半サイズ(px)
+    // ボディ矩形
+    AddBillboardLine(pos, {-bw, -bh}, { bw, -bh}, color);
+    AddBillboardLine(pos, { bw, -bh}, { bw,  bh}, color);
+    AddBillboardLine(pos, { bw,  bh}, {-bw,  bh}, color);
+    AddBillboardLine(pos, {-bw,  bh}, {-bw, -bh}, color);
+    // レンズ（右側の台形）
+    AddBillboardLine(pos, { bw, -5.0f}, { bw + 8.0f, -8.0f}, color);
+    AddBillboardLine(pos, { bw + 8.0f, -8.0f}, { bw + 8.0f, 8.0f}, color);
+    AddBillboardLine(pos, { bw + 8.0f, 8.0f}, { bw, 5.0f}, color);
 }
 
 void EditorIconRenderer::AddDirLightIcon(const XMFLOAT3& pos,
                                          const XMFLOAT3& color)
 {
-    // 太陽マーク: 中心の円 + 放射線8本
-    const f32 r = 0.25f;      // 中心円の半径
-    const f32 rayIn = 0.35f;  // 放射線の内径
-    const f32 rayOut = 0.55f; // 放射線の外径
+    // 太陽マーク（ビルボード）: 中心円 + 放射線8本。どの角度からも常に見える。
+    const f32 r = 8.0f;        // 中心円(px)
+    const f32 rayIn = 12.0f;
+    const f32 rayOut = 18.0f;
 
-    // 水平の円（XZ平面）
-    const u32 seg = 12;
+    const u32 seg = 16;
     const float step = XM_2PI / static_cast<float>(seg);
     for (u32 i = 0; i < seg; ++i)
     {
         float a0 = step * static_cast<float>(i);
         float a1 = step * static_cast<float>(i + 1);
-        AddLine({ pos.x + cosf(a0) * r, pos.y, pos.z + sinf(a0) * r },
-                { pos.x + cosf(a1) * r, pos.y, pos.z + sinf(a1) * r }, color);
+        AddBillboardLine(pos, { cosf(a0) * r, sinf(a0) * r },
+                              { cosf(a1) * r, sinf(a1) * r }, color);
     }
-
-    // 放射線 8本
     for (int i = 0; i < 8; ++i)
     {
         float a = XM_2PI * static_cast<float>(i) / 8.0f;
-        float cx = cosf(a), sz = sinf(a);
-        AddLine({ pos.x + cx * rayIn,  pos.y, pos.z + sz * rayIn },
-                { pos.x + cx * rayOut, pos.y, pos.z + sz * rayOut }, color);
+        float cx = cosf(a), sy = sinf(a);
+        AddBillboardLine(pos, { cx * rayIn, sy * rayIn },
+                              { cx * rayOut, sy * rayOut }, color);
     }
 }
 
 void EditorIconRenderer::AddPointLightIcon(const XMFLOAT3& pos,
                                            const XMFLOAT3& color)
 {
-    // 電球マーク: 小さな十字 + ダイヤモンド形
-    const f32 s = 0.25f;
-
-    // 3D 十字
-    AddLine({ pos.x - s, pos.y, pos.z }, { pos.x + s, pos.y, pos.z }, color);
-    AddLine({ pos.x, pos.y - s, pos.z }, { pos.x, pos.y + s, pos.z }, color);
-    AddLine({ pos.x, pos.y, pos.z - s }, { pos.x, pos.y, pos.z + s }, color);
-
-    // ダイヤモンド (XY, XZ, YZ 各4辺 = 12辺)
-    const f32 d = 0.35f;
-    // XY 平面
-    AddLine({ pos.x + d, pos.y, pos.z }, { pos.x, pos.y + d, pos.z }, color);
-    AddLine({ pos.x, pos.y + d, pos.z }, { pos.x - d, pos.y, pos.z }, color);
-    AddLine({ pos.x - d, pos.y, pos.z }, { pos.x, pos.y - d, pos.z }, color);
-    AddLine({ pos.x, pos.y - d, pos.z }, { pos.x + d, pos.y, pos.z }, color);
-    // XZ 平面
-    AddLine({ pos.x + d, pos.y, pos.z }, { pos.x, pos.y, pos.z + d }, color);
-    AddLine({ pos.x, pos.y, pos.z + d }, { pos.x - d, pos.y, pos.z }, color);
-    AddLine({ pos.x - d, pos.y, pos.z }, { pos.x, pos.y, pos.z - d }, color);
-    AddLine({ pos.x, pos.y, pos.z - d }, { pos.x + d, pos.y, pos.z }, color);
-    // YZ 平面
-    AddLine({ pos.x, pos.y + d, pos.z }, { pos.x, pos.y, pos.z + d }, color);
-    AddLine({ pos.x, pos.y, pos.z + d }, { pos.x, pos.y - d, pos.z }, color);
-    AddLine({ pos.x, pos.y - d, pos.z }, { pos.x, pos.y, pos.z - d }, color);
-    AddLine({ pos.x, pos.y, pos.z - d }, { pos.x, pos.y + d, pos.z }, color);
+    // 電球マーク（ビルボード）: 円 + 下のソケット線。
+    const f32 r = 8.0f;
+    const u32 seg = 14;
+    const float step = XM_2PI / static_cast<float>(seg);
+    for (u32 i = 0; i < seg; ++i)
+    {
+        float a0 = step * static_cast<float>(i);
+        float a1 = step * static_cast<float>(i + 1);
+        AddBillboardLine(pos, { cosf(a0) * r, sinf(a0) * r - 3.0f },
+                              { cosf(a1) * r, sinf(a1) * r - 3.0f }, color);
+    }
+    // ソケット
+    AddBillboardLine(pos, {-4.0f, -11.0f}, { 4.0f, -11.0f}, color);
+    AddBillboardLine(pos, {-3.0f, -14.0f}, { 3.0f, -14.0f}, color);
 }
 
 // ========== 選択時のみ表示 ==========
@@ -425,10 +466,10 @@ void EditorIconRenderer::CollectFromRegistry(entt::registry& registry,
                 XMStoreFloat4(&quat, q);
             }
 
-            // 常時: カメラアイコン（箱+レンズ形状）
-            AddCameraIcon(tf.position, quat, selected ? colorSelected : iconColor);
+            // 常時: カメラアイコン（ビルボード・常にカメラを向く）
+            AddCameraIcon(tf.position, selected ? colorSelected : iconColor);
 
-            // 選択時のみ: フラスタム線画
+            // 選択時のみ: フラスタム線画（3D）
             if (selected)
                 AddCameraFrustum(tf.position, quat, cam.fovDegrees, cam.nearClip, cam.farClip, colorSelected);
         }
@@ -473,26 +514,59 @@ void EditorIconRenderer::CollectFromRegistry(entt::registry& registry,
 // ========== Render ==========
 
 void EditorIconRenderer::Render(ID3D12GraphicsCommandList* cmdList,
-                                const XMFLOAT4X4& viewProj)
+                                const XMFLOAT4X4& viewProj,
+                                u32 screenW, u32 screenH)
 {
-    if (!m_initialized || m_vertices.empty()) return;
+    if (!m_initialized) return;
 
-    u32 vertexCount = static_cast<u32>(m_vertices.size());
-    if (vertexCount > kMaxVertices)
-        vertexCount = kMaxVertices;
+    // --- 3D 選択補助線（フラスタム/範囲球/矢印）---
+    if (!m_vertices.empty())
+    {
+        u32 vertexCount = static_cast<u32>(m_vertices.size());
+        if (vertexCount > kMaxVertices) vertexCount = kMaxVertices;
 
-    void* mapped = nullptr;
-    D3D12_RANGE readRange = { 0, 0 };
-    ThrowIfFailed(m_vertexBuffer->Map(0, &readRange, &mapped));
-    memcpy(mapped, m_vertices.data(), vertexCount * sizeof(IconLineVertex));
-    m_vertexBuffer->Unmap(0, nullptr);
+        void* mapped = nullptr;
+        D3D12_RANGE readRange = { 0, 0 };
+        ThrowIfFailed(m_vertexBuffer->Map(0, &readRange, &mapped));
+        memcpy(mapped, m_vertices.data(), vertexCount * sizeof(IconLineVertex));
+        m_vertexBuffer->Unmap(0, nullptr);
 
-    cmdList->SetPipelineState(m_pso.Get());
-    cmdList->SetGraphicsRootSignature(m_rootSignature.Get());
-    cmdList->SetGraphicsRoot32BitConstants(0, 16, &viewProj, 0);
-    cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
-    cmdList->IASetVertexBuffers(0, 1, &m_vbView);
-    cmdList->DrawInstanced(vertexCount, 1, 0, 0);
+        cmdList->SetPipelineState(m_pso.Get());
+        cmdList->SetGraphicsRootSignature(m_rootSignature.Get());
+        cmdList->SetGraphicsRoot32BitConstants(0, 16, &viewProj, 0);
+        cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+        cmdList->IASetVertexBuffers(0, 1, &m_vbView);
+        cmdList->DrawInstanced(vertexCount, 1, 0, 0);
+    }
+
+    // --- ビルボードアイコン（常にカメラを向く・一定サイズ）---
+    if (!m_billboardVerts.empty())
+    {
+        u32 vertexCount = static_cast<u32>(m_billboardVerts.size());
+        if (vertexCount > kMaxVertices) vertexCount = kMaxVertices;
+
+        void* mapped = nullptr;
+        D3D12_RANGE readRange = { 0, 0 };
+        ThrowIfFailed(m_billboardVB->Map(0, &readRange, &mapped));
+        memcpy(mapped, m_billboardVerts.data(), vertexCount * sizeof(IconBillboardVertex));
+        m_billboardVB->Unmap(0, nullptr);
+
+        struct IconCB {
+            XMFLOAT4X4 viewProj;
+            float invScreen[2];
+            float pad[2];
+        } cb{};
+        cb.viewProj = viewProj;
+        cb.invScreen[0] = (screenW > 0) ? 1.0f / static_cast<float>(screenW) : 0.0f;
+        cb.invScreen[1] = (screenH > 0) ? 1.0f / static_cast<float>(screenH) : 0.0f;
+
+        cmdList->SetPipelineState(m_billboardPSO.Get());
+        cmdList->SetGraphicsRootSignature(m_billboardRootSig.Get());
+        cmdList->SetGraphicsRoot32BitConstants(0, 20, &cb, 0);
+        cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+        cmdList->IASetVertexBuffers(0, 1, &m_billboardVBView);
+        cmdList->DrawInstanced(vertexCount, 1, 0, 0);
+    }
 }
 
 } // namespace dx12e

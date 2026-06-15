@@ -9,6 +9,7 @@
 #include "core/Types.h"
 #include "ecs/Components.h"
 #include "scene/Entity.h"
+#include "renderer/PostProcessSettings.h"
 
 struct ID3D12GraphicsCommandList;
 
@@ -71,6 +72,9 @@ public:
     entt::registry&       GetRegistry()       { return m_registry; }
     const entt::registry& GetRegistry() const { return m_registry; }
 
+    PostProcessSettings&       GetPostSettings()       { return m_postSettings; }
+    const PostProcessSettings& GetPostSettings() const { return m_postSettings; }
+
 private:
     Entity CreateEntityWithTransform(const std::string& name,
                                      DirectX::XMFLOAT3 position,
@@ -79,6 +83,7 @@ private:
 
     entt::registry m_registry;
     std::vector<std::unique_ptr<Mesh>> m_ownedMeshes;
+    PostProcessSettings m_postSettings;
 
     ResourceManager*  m_resourceManager = nullptr;
     GraphicsDevice*   m_device          = nullptr;

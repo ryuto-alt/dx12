@@ -44,9 +44,10 @@ bool Project::Load(const std::string& path, ProjectInfo& outInfo)
     namespace fs = std::filesystem;
     fs::path projDir = fs::path(path).parent_path();
 
-    outInfo.name             = j.value("name", "Untitled");
+    outInfo.name             = j.value("name", j.value("title", "Untitled"));
     outInfo.engineVersion    = j.value("version", "0.1.0");
-    outInfo.defaultScene     = j.value("defaultScene", "scenes/default.json");
+    // game.json は "startScene"、プロジェクトファイルは "defaultScene" を使う（両対応）
+    outInfo.defaultScene     = j.value("startScene", j.value("defaultScene", "scenes/default.json"));
     outInfo.lastOpenedScene  = j.value("lastOpenedScene", "");
     outInfo.rootDir          = projDir.string();
     outInfo.assetsDir     = (projDir / j.value("assetsDir", "assets")).string() + "/";

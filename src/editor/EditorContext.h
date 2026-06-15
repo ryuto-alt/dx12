@@ -84,6 +84,11 @@ public:
     GizmoMode gizmoMode      = GizmoMode::Translate;
     bool      gizmoLocalSpace = false;
 
+    // タッチパッド向けキーボードフライモード（` キーでトグル）。
+    // ON 中は WASD 移動 / Q・E 上下 / 矢印キーで視点回転（マウス・ボタン長押し不要）。
+    // ON 中はギズモの W/E/R 切替ショートカットを抑制する。
+    bool flyMode = false;
+
     // 3D ビューポート（ドックスペース中央ノード）の矩形（ImGui 座標）。
     // EditorLayer が毎フレーム更新。Application のフライカメラ発動判定
     // （カーソルが 3D ビュー上にあるか）に使う。ImGui の PassthruCentralNode の
@@ -122,6 +127,7 @@ public:
     bool pendingRedo = false;
     std::vector<PendingScriptAttach> pendingScriptAttachments;
     std::string pendingLoadPath;
+    std::string pendingGameLoadPath;  // Play 中の loadScene()（assets 相対）。フレーム境界で安全にロード
     bool pendingBuildGame = false;
     bool pendingNewScene  = false;
     bool showNewSceneDialog = false;

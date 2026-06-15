@@ -330,6 +330,16 @@ void SceneViewPanel::HandleCameraNavigation(entt::registry& reg,
         "\xe4\xb8\xad\xe3\x83\x89\xe3\x83\xa9\xe3\x83\x83\xe3\x82\xb0:\xe3\x83\x91\xe3\x83\xb3  "
         "Alt+\xe5\xb7\xa6:\xe5\x91\xa8\xe5\x9b\x9e  F:\xe3\x83\x95\xe3\x82\xa9\xe3\x83\xbc\xe3\x82\xab\xe3\x82\xb9");
 
+    // タッチパッド向け: キーボードフライモードの状態表示（ASCII で確実に出す）
+    if (ctx.flyMode)
+        ImGui::GetForegroundDrawList()->AddText(
+            ImVec2(vpX + 12.0f, vpY + 12.0f), IM_COL32(120, 230, 120, 255),
+            "FLY MODE  |  WASD: move   Q/E: down/up   Arrows: look   [ ` ] or ESC: exit");
+    else
+        ImGui::GetForegroundDrawList()->AddText(
+            ImVec2(vpX + 12.0f, vpY + 12.0f), IM_COL32(210, 210, 210, 130),
+            "[ ` ] keyboard fly mode (no mouse needed)");
+
     // ギズモ操作中、またはカーソルがビュー外なら以降のカメラ操作はしない
     if (ImGuizmo::IsUsing() || !inViewport)
         return;

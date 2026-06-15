@@ -164,6 +164,7 @@ void ScriptEngine::RegisterBindings()
             if (type == "PointLight")         return e.HasComponent<PointLight>();
             if (type == "DirectionalLight")   return e.HasComponent<DirectionalLight>();
             if (type == "Camera")             return e.HasComponent<CameraComponent>();
+            if (type == "AudioSource")        return e.HasComponent<AudioSource>();
             return false;
         },
 
@@ -280,6 +281,11 @@ void ScriptEngine::RegisterBindings()
         "pauseBGM",        &AudioSystem::PauseBGM,
         "resumeBGM",       &AudioSystem::ResumeBGM,
         "playSFX",         &AudioSystem::PlaySFX,
+        "playSpatial",     [](AudioSystem& a, const std::string& path, float x, float y, float z,
+                              float minD, float maxD, sol::optional<float> vol, sol::optional<bool> loop) {
+                               a.PlaySFXSpatial(path, x, y, z, minD, maxD,
+                                                vol.value_or(1.0f), loop.value_or(false));
+                           },
         "stopAllSFX",      &AudioSystem::StopAllSFX,
         "setMasterVolume",  &AudioSystem::SetMasterVolume,
         "setBGMVolume",     &AudioSystem::SetBGMVolume,
@@ -317,6 +323,43 @@ void ScriptEngine::RegisterBindings()
 
     // --- ユーティリティ ---
     lua["log"] = [](const std::string& msg) { Logger::Info("[Lua] {}", msg); };
+
+    // --- ゲーム制御（Application が注入したコールバック経由）---
+    lua["loadScene"] = [this](const std::string& rel) { if (m_loadSceneCb) m_loadSceneCb(rel); };
+    lua["nextScene"] = [this]() { if (m_nextSceneCb) m_nextSceneCb(); };
+    lua["quit"]      = [this]() { if (m_quitCb) m_quitCb(); };
+    // フェード等のトランジション付きシーン切替（type: 0=Fade,1=Wipe,2=Circle,3=縦Wipe）
+    lua["fadeToScene"] = [this](const std::string& rel, sol::optional<float> dur) {
+        if (m_transitionCb) m_transitionCb(rel, 0, dur.value_or(0.6f));
+    };
+    lua["transitionToScene"] = [this](const std::string& rel, int type, sol::optional<float> dur) {
+        if (m_transitionCb) m_transitionCb(rel, type, dur.value_or(0.6f));
+    };
+
+    // --- ゲーム内 UI（即時モード）---
+    // ui:text(x,y,text,[size,r,g,b,a]) / ui:button(x,y,w,h,label)->bool / ui:image(x,y,w,h,path)
+    {
+        auto ui = lua.create_named_table("ui");
+        ui.set_function("text",
+            [this](sol::object, float x, float y, const std::string& text,
+                   sol::optional<float> size, sol::optional<float> r,
+                   sol::optional<float> g, sol::optional<float> b, sol::optional<float> a)
+            {
+                if (m_uiTextCb)
+                    m_uiTextCb(x, y, text, size.value_or(24.0f),
+                               r.value_or(1.0f), g.value_or(1.0f), b.value_or(1.0f), a.value_or(1.0f));
+            });
+        ui.set_function("button",
+            [this](sol::object, float x, float y, float w, float h, const std::string& label) -> bool
+            {
+                return m_uiButtonCb ? m_uiButtonCb(x, y, w, h, label) : false;
+            });
+        ui.set_function("image",
+            [this](sol::object, float x, float y, float w, float h, const std::string& path)
+            {
+                if (m_uiImageCb) m_uiImageCb(x, y, w, h, path);
+            });
+    }
 
     RegisterPhysicsBindings();
 

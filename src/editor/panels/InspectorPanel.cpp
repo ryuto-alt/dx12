@@ -400,6 +400,30 @@ void InspectorPanel::Render(entt::registry& reg,
             }
         }
 
+        // --- Audio Source ---
+        if (reg.all_of<AudioSource>(ctx.selectedEntity))
+        {
+            bool open = ImGui::CollapsingHeader("Audio Source");
+            bool removed = ComponentRemoveMenu<AudioSource>(reg, ctx, ctx.selectedEntity, "Audio Source");
+            if (open && !removed)
+            {
+                auto& as = reg.get<AudioSource>(ctx.selectedEntity);
+                char buf[256] = {};
+                size_t n = as.clipPath.copy(buf, sizeof(buf) - 1);
+                buf[n] = '\0';
+                if (ImGui::InputText("Clip (rel)", buf, sizeof(buf)))
+                    as.clipPath = buf;
+                ImGui::SliderFloat("Volume", &as.volume, 0.0f, 1.0f);
+                ImGui::Checkbox("Spatial", &as.spatial);
+                ImGui::SameLine();
+                ImGui::Checkbox("Loop", &as.loop);
+                ImGui::Checkbox("Play On Start", &as.playOnStart);
+                ImGui::DragFloat("Min Distance", &as.minDistance, 0.1f, 0.0f, 1000.0f);
+                ImGui::DragFloat("Max Distance", &as.maxDistance, 0.5f, 0.1f, 5000.0f);
+                ImGui::TextDisabled("空間化はモノラル wav のみ");
+            }
+        }
+
         // --- Physics ---
         {
             bool hasRb = reg.all_of<RigidBody>(ctx.selectedEntity);
@@ -649,6 +673,7 @@ void InspectorPanel::Render(entt::registry& reg,
             AddComponentMenuItem<PointLight>(reg, ctx, ctx.selectedEntity, "Point Light");
             AddComponentMenuItem<DirectionalLight>(reg, ctx, ctx.selectedEntity, "Directional Light");
             AddComponentMenuItem<CameraComponent>(reg, ctx, ctx.selectedEntity, "Camera");
+            AddComponentMenuItem<AudioSource>(reg, ctx, ctx.selectedEntity, "Audio Source");
             ImGui::Separator();
             AddComponentMenuItem<RigidBody>(reg, ctx, ctx.selectedEntity, "RigidBody");
             AddComponentMenuItem<BoxCollider>(reg, ctx, ctx.selectedEntity, "Box Collider");

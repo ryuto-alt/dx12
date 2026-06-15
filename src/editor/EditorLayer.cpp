@@ -117,6 +117,10 @@ void EditorLayer::BuildDefaultLayout(ImGuiID dockspaceId, f32 /*toolbarHeight*/)
     ImGui::DockBuilderDockWindow(
         "\xe3\x82\xa2\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88\xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6", dockBottom);
 
+    // 追加ウィンドウ（ポスト/シーンフロー）はインスペクター横にタブで固定
+    ImGui::DockBuilderDockWindow("Post Process", dockRight);
+    ImGui::DockBuilderDockWindow("Scene Flow",   dockRight);
+
     ImGui::DockBuilderFinish(dockspaceId);
 }
 

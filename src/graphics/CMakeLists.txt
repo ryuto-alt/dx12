@@ -10,6 +10,7 @@ add_library(Graphics STATIC
     PipelineState.cpp
     CommandList.cpp
     Texture.cpp
+    RenderTarget.cpp
 )
 
 target_include_directories(Graphics

@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <wrl/client.h>
 #include <xaudio2.h>
+#include <x3daudio.h>
 #include "core/Types.h"
 
 namespace dx12e
@@ -35,6 +36,17 @@ public:
     void PlaySFX(const std::string& filePath, bool loop = false);
     void StopAllSFX();
 
+    // 3D 空間オーディオ（SFX のみ・モノ前提。リスナーは通常カメラ）
+    void SetListener(float px, float py, float pz,
+                     float fx, float fy, float fz,
+                     float ux, float uy, float uz);
+    // 空間 SFX をワンショット再生。戻り値スロット ID（追従用）、失敗/非対応は -1。
+    i32  PlaySFXSpatial(const std::string& filePath, float x, float y, float z,
+                        float minDistance, float maxDistance,
+                        float volume = 1.0f, bool loop = false);
+    void UpdateSpatialEmitter(i32 slotId, float x, float y, float z);
+    void Update();  // 毎フレーム: 空間ボイスの定位を再計算
+
     // Volume (0.0 - 1.0)
     void SetMasterVolume(f32 volume);
     void SetBGMVolume(f32 volume);
@@ -62,8 +74,19 @@ private:
     static constexpr u32 kMaxSFXVoices = 16;
     struct SFXSlot {
         IXAudio2SourceVoice* voice = nullptr;
+        bool  spatial = false;
+        float minDist = 1.0f;
+        float maxDist = 30.0f;
+        float emitterPos[3] = {0, 0, 0};
     };
     std::array<SFXSlot, kMaxSFXVoices> m_sfxSlots{};
+
+    // X3DAudio
+    X3DAUDIO_HANDLE   m_x3d{};
+    X3DAUDIO_LISTENER m_listener{};
+    u32  m_outChannels = 2;
+    bool m_x3dReady = false;
+    void ComputeAndApply(SFXSlot& slot);
 
     // Clip cache
     std::unordered_map<std::string, std::unique_ptr<AudioClip>> m_clipCache;

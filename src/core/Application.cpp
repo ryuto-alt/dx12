@@ -1,6 +1,7 @@
 #include "Application.h"
 #include "Logger.h"
 #include "Assert.h"
+#include "PathResolver.h"
 
 // Graphics module headers
 #include "graphics/GraphicsDevice.h"
@@ -14,9 +15,13 @@
 #include "graphics/PipelineState.h"
 #include "graphics/CommandList.h"
 #include "graphics/Texture.h"
+#include "graphics/RenderTarget.h"
 #include "renderer/Mesh.h"
 #include "renderer/Material.h"
 #include "renderer/Camera.h"
+#include "renderer/PostProcess.h"
+#include "renderer/SpriteRenderer.h"
+#include "renderer/SceneTransition.h"
 #include "resource/ShaderCompiler.h"
 #include "resource/ModelLoader.h"
 #include "resource/ResourceManager.h"
@@ -37,6 +42,7 @@
 #include "physics/PhysicsDebugRenderer.h"
 #include "gui/ImGuiManager.h"
 #include "scene/SceneSerializer.h"
+#include "scene/SceneFlow.h"
 #include "editor/EditorContext.h"
 #include "editor/EditorLayer.h"
 #include "editor/EditorIconRenderer.h"
@@ -66,6 +72,17 @@
 
 namespace dx12e
 {
+
+// フルパスを assets ディレクトリ相対へ（シーンフロー / loadScene 用）
+static std::string ToAssetRel(const std::string& full)
+{
+    auto norm = [](std::string s) { for (auto& c : s) if (c == '\\') c = '/'; return s; };
+    std::string f = norm(full);
+    std::string base = norm(PathResolver::AssetsDir());
+    if (!base.empty() && f.rfind(base, 0) == 0)
+        return f.substr(base.size());
+    return f;
+}
 
 Application::Application() = default;
 
@@ -123,7 +140,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
     // Audio System
     m_audioSystem = std::make_unique<AudioSystem>();
-    m_audioSystem->Initialize(std::string(ASSETS_DIR));
+    m_audioSystem->Initialize(PathResolver::AssetsDir());
 
     // Physics System
     m_physicsSystem = std::make_unique<PhysicsSystem>();
@@ -180,8 +197,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
     // シェーダー読み込み & PipelineState
     {
-        auto vs = ShaderCompiler::LoadFromFile(std::wstring(SHADER_DIR) + L"Forward_VS.cso");
-        auto ps = ShaderCompiler::LoadFromFile(std::wstring(SHADER_DIR) + L"Forward_PS.cso");
+        auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Forward_VS.cso");
+        auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Forward_PS.cso");
 
         PipelineStateBuilder builder;
         builder.SetRootSignature(m_rootSignature->Get())
@@ -224,11 +241,12 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_scriptEngine = std::make_unique<ScriptEngine>();
         m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
                                    m_camera.get(), m_audioSystem.get(),
-                                   m_physicsSystem.get(), std::string(ASSETS_DIR));
+                                   m_physicsSystem.get(), PathResolver::AssetsDir());
+        WireScriptCallbacks();
 
         // ゲームスクリプト読み込み
         {
-            std::string scriptPath = std::string(SCRIPTS_DIR) + "game.lua";
+            std::string scriptPath = PathResolver::ScriptsDir() + "game.lua";
             if (std::filesystem::exists(scriptPath))
             {
                 m_scriptEngine->LoadScript(scriptPath);
@@ -239,21 +257,42 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             }
         }
 
-        // 初期シーン: 最後に開いたシーン → default.json → クリーン状態
+        // 初期シーン: (配布) game.json の startScene → (エディタ) 最後に開いたシーン → default.json → クリーン状態
         {
-            std::string lastScene = ProjectManager::LoadLastOpenedScene();
-            std::string defaultScene = std::string(ASSETS_DIR) + "scenes/default.json";
-
             bool loaded = false;
-            if (!lastScene.empty() && std::filesystem::exists(lastScene))
+
+            // 配布モード: exe 隣の game.json で開始シーンを指定（最優先）
+            if (m_isGameMode)
             {
-                loaded = SceneSerializer::Load(*m_scene, lastScene, std::string(ASSETS_DIR));
+                ProjectInfo gi;
+                if (Project::Load(PathResolver::BaseDir() + "game.json", gi) && !gi.defaultScene.empty())
+                {
+                    std::string startScene = PathResolver::AssetsDir() + gi.defaultScene;
+                    if (std::filesystem::exists(startScene))
+                    {
+                        loaded = SceneSerializer::Load(*m_scene, startScene, PathResolver::AssetsDir());
+                        if (loaded)
+                        {
+                            m_editorCtx->currentScenePath = startScene;
+                            m_currentSceneRel = gi.defaultScene;
+                            Logger::Info("Loaded start scene from game.json: {}", gi.defaultScene);
+                        }
+                    }
+                }
+            }
+
+            std::string lastScene = ProjectManager::LoadLastOpenedScene();
+            std::string defaultScene = PathResolver::AssetsDir() + "scenes/default.json";
+
+            if (!loaded && !m_isGameMode && !lastScene.empty() && std::filesystem::exists(lastScene))
+            {
+                loaded = SceneSerializer::Load(*m_scene, lastScene, PathResolver::AssetsDir());
                 if (loaded)
                     m_editorCtx->currentScenePath = lastScene;
             }
             if (!loaded && std::filesystem::exists(defaultScene))
             {
-                loaded = SceneSerializer::Load(*m_scene, defaultScene, std::string(ASSETS_DIR));
+                loaded = SceneSerializer::Load(*m_scene, defaultScene, PathResolver::AssetsDir());
                 if (loaded)
                     m_editorCtx->currentScenePath = defaultScene;
             }
@@ -267,11 +306,15 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                 reg.emplace<Transform>(lightE, Transform{{0, 10, 0}, {-45, -30, 0}, {1,1,1}});
                 reg.emplace<DirectionalLight>(lightE);
             }
+
+            // シーンフロー / loadScene 用に現在シーンの相対パスを記録
+            if (m_currentSceneRel.empty() && !m_editorCtx->currentScenePath.empty())
+                m_currentSceneRel = ToAssetRel(m_editorCtx->currentScenePath);
         }
 
         // ホットリロード用タイムスタンプ初期化（初回の誤発火を防止）
         {
-            std::string scriptPath = std::string(SCRIPTS_DIR) + "game.lua";
+            std::string scriptPath = PathResolver::ScriptsDir() + "game.lua";
             if (std::filesystem::exists(scriptPath))
                 m_scriptLastWriteTime = std::filesystem::last_write_time(scriptPath);
         }
@@ -290,8 +333,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
         // スキニング PSO 作成
         {
-            auto vs = ShaderCompiler::LoadFromFile(std::wstring(SHADER_DIR) + L"ForwardSkinned_VS.cso");
-            auto ps = ShaderCompiler::LoadFromFile(std::wstring(SHADER_DIR) + L"Forward_PS.cso");
+            auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ForwardSkinned_VS.cso");
+            auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Forward_PS.cso");
 
             PipelineStateBuilder builder;
             builder.SetRootSignature(m_rootSignature->Get())
@@ -309,8 +352,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
         // グリッド PSO 作成（アルファブレンド + 両面描画）
         {
-            auto vs = ShaderCompiler::LoadFromFile(std::wstring(SHADER_DIR) + L"ForwardGrid_VS.cso");
-            auto ps = ShaderCompiler::LoadFromFile(std::wstring(SHADER_DIR) + L"ForwardGrid_PS.cso");
+            auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ForwardGrid_VS.cso");
+            auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ForwardGrid_PS.cso");
 
             PipelineStateBuilder builder;
             builder.SetRootSignature(m_rootSignature->Get())
@@ -330,7 +373,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
         // sneakWalk アニメーションを全スケルタルEntityに追加
         {
-            std::filesystem::path sneakPath = std::string(ASSETS_DIR) + "models/human/sneakWalk.gltf";
+            std::filesystem::path sneakPath = PathResolver::AssetsDir() + "models/human/sneakWalk.gltf";
             if (std::filesystem::exists(sneakPath))
             {
                 auto& reg = m_scene->GetRegistry();
@@ -396,7 +439,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
         // Shadow PSO (depth-only, no pixel shader, with depth bias)
         {
-            auto vs = ShaderCompiler::LoadFromFile(std::wstring(SHADER_DIR) + L"ShadowPass_VS.cso");
+            auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ShadowPass_VS.cso");
             PipelineStateBuilder builder;
             builder.SetRootSignature(m_rootSignature->Get())
                    .SetVertexShader(vs.GetData(), vs.GetSize())
@@ -412,7 +455,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
         // Shadow Skinned PSO
         {
-            auto vs = ShaderCompiler::LoadFromFile(std::wstring(SHADER_DIR) + L"ShadowPassSkinned_VS.cso");
+            auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ShadowPassSkinned_VS.cso");
             PipelineStateBuilder builder;
             builder.SetRootSignature(m_rootSignature->Get())
                    .SetVertexShader(vs.GetData(), vs.GetSize())
@@ -467,8 +510,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
     // EditorLayer 初期化
     m_editorLayer = std::make_unique<EditorLayer>();
-    m_editorLayer->Initialize(m_editorCtx.get(), std::string(ASSETS_DIR),
-                              std::string(SCRIPTS_DIR),
+    m_editorLayer->Initialize(m_editorCtx.get(), PathResolver::AssetsDir(),
+                              PathResolver::ScriptsDir(),
                               m_resourceManager.get(), m_srvHeap.get());
 
     // ModelThumbnailRenderer 初期化
@@ -481,11 +524,40 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     // Physics Debug Renderer
     m_physicsDebugRenderer = std::make_unique<PhysicsDebugRenderer>();
     m_physicsDebugRenderer->Initialize(*m_graphicsDevice,
-        m_swapChain->GetFormat(), DXGI_FORMAT_D32_FLOAT, SHADER_DIR);
+        m_swapChain->GetFormat(), DXGI_FORMAT_D32_FLOAT, PathResolver::ShaderDirW());
 
     m_editorIconRenderer = std::make_unique<EditorIconRenderer>();
     m_editorIconRenderer->Initialize(*m_graphicsDevice,
-        m_swapChain->GetFormat(), DXGI_FORMAT_D32_FLOAT, std::wstring(SHADER_DIR));
+        m_swapChain->GetFormat(), DXGI_FORMAT_D32_FLOAT, PathResolver::ShaderDirW());
+
+    // オフスクリーン描画用 RT + ポストプロセス（WP3）
+    {
+        m_offscreenRtvHeap = std::make_unique<DescriptorHeap>();
+        m_offscreenRtvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 8, false);
+
+        // シーンはスワップチェインと同一フォーマットへ描く（既存 3D PSO をそのまま使える）
+        const float sceneClear[4] = {0.392f, 0.584f, 0.929f, 1.0f};
+        m_sceneRT = std::make_unique<RenderTarget>();
+        m_sceneRT->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
+                              m_window->GetWidth(), m_window->GetHeight(),
+                              m_swapChain->GetFormat(), sceneClear);
+
+        m_postProcess = std::make_unique<PostProcess>();
+        m_postProcess->Initialize(*m_graphicsDevice, m_swapChain->GetFormat(), PathResolver::ShaderDirW());
+
+        // 2D スプライト（バックバッファ＝スワップチェイン形式へ描く）
+        m_spriteRenderer = std::make_unique<SpriteRenderer>();
+        m_spriteRenderer->Initialize(*m_graphicsDevice, m_srvHeap.get(),
+                                     m_swapChain->GetFormat(), PathResolver::ShaderDirW());
+
+        // シーントランジション
+        m_sceneTransition = std::make_unique<SceneTransition>();
+        m_sceneTransition->Initialize(*m_graphicsDevice, m_swapChain->GetFormat(), PathResolver::ShaderDirW());
+    }
+
+    // シーンフロー（assets/sceneflow.json があれば）
+    m_sceneFlow = std::make_unique<SceneFlow>();
+    m_sceneFlow->Load(PathResolver::AssetsDir() + "sceneflow.json");
 
     m_isRunning = true;
 
@@ -498,7 +570,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
     // 全モデルのサムネイルを起動時にロード/レンダリング
     {
-        size_t uncachedCount = m_thumbRenderer->ScanAllModels(std::string(ASSETS_DIR));
+        size_t uncachedCount = m_thumbRenderer->ScanAllModels(PathResolver::AssetsDir());
         size_t cachedCount   = m_thumbRenderer->GetCachedCount();
         size_t totalModels   = uncachedCount + cachedCount;
 
@@ -677,6 +749,10 @@ void Application::Run()
                 m_graphicsDevice->GetDevice()->CreateDepthStencilView(
                     m_depthBuffer.Get(), &dsvDesc, m_dsvHandle);
 
+                // オフスクリーン RT もウィンドウサイズへ作り直す
+                if (m_sceneRT)
+                    m_sceneRT->Resize(*m_graphicsDevice, w, h);
+
                 // カメラアスペクト比更新（エディタモードではサイドバー分引く）
                 m_camera->SetPerspective(DirectX::XM_PIDIV4,
                     static_cast<f32>(w) / static_cast<f32>(h), 0.1f, 1000.0f);
@@ -687,12 +763,16 @@ void Application::Run()
 
         m_gameClock.Tick();
 
+        // シーントランジション更新（WP9）
+        if (m_sceneTransition)
+            m_sceneTransition->Update(m_gameClock.GetDeltaTime());
+
         // Luaホットリロード（0.5秒ごとにファイル変更チェック）
         m_scriptPollTimer += m_gameClock.GetDeltaTime();
         if (m_scriptPollTimer >= kScriptPollInterval)
         {
             m_scriptPollTimer = 0.0f;
-            std::string scriptPath = std::string(SCRIPTS_DIR) + "game.lua";
+            std::string scriptPath = PathResolver::ScriptsDir() + "game.lua";
             if (std::filesystem::exists(scriptPath))
             {
                 auto currentTime = std::filesystem::last_write_time(scriptPath);
@@ -775,6 +855,14 @@ void Application::Shutdown()
     m_editorLayer.reset();
     m_editorCtx.reset();
     m_physicsDebugRenderer.reset();
+    // 新規レンダラ群（GPU リソース）をデバイス解放より前に明示破棄
+    m_editorIconRenderer.reset();
+    m_sceneTransition.reset();
+    m_spriteRenderer.reset();
+    m_postProcess.reset();
+    m_sceneRT.reset();
+    m_offscreenRtvHeap.reset();
+    m_sceneFlow.reset();
     if (m_physicsSystem)
     {
         m_physicsSystem->Shutdown();
@@ -863,6 +951,35 @@ void Application::Update()
             if (GetAsyncKeyState(VK_SHIFT) & 0x8000) m_camera->MoveUp(-speed);
         }
 
+        // --- タッチパッド向け: キーボードフライモード（マウス/ボタン長押し不要）---
+        bool kbActive = !ImGui::GetIO().WantCaptureKeyboard;  // テキスト入力中は無効
+        if (kbActive && (GetAsyncKeyState(VK_OEM_3) & 1))     // ` キーでトグル
+            m_editorCtx->flyMode = !m_editorCtx->flyMode;
+        if (m_editorCtx->flyMode && (GetAsyncKeyState(VK_ESCAPE) & 1))
+            m_editorCtx->flyMode = false;
+
+        if (m_editorCtx->flyMode && kbActive && !m_inputSystem->IsMouseCaptured())
+        {
+            f32 speed = m_camera->GetMoveSpeed() * dt;
+            if (GetAsyncKeyState('W') & 0x8000) m_camera->MoveForward(speed);
+            if (GetAsyncKeyState('S') & 0x8000) m_camera->MoveForward(-speed);
+            if (GetAsyncKeyState('D') & 0x8000) m_camera->MoveRight(speed);
+            if (GetAsyncKeyState('A') & 0x8000) m_camera->MoveRight(-speed);
+            if (GetAsyncKeyState('E') & 0x8000) m_camera->MoveUp(speed);
+            if (GetAsyncKeyState('Q') & 0x8000) m_camera->MoveUp(-speed);
+            if (GetAsyncKeyState(VK_SPACE) & 0x8000) m_camera->MoveUp(speed);
+            if (GetAsyncKeyState(VK_SHIFT) & 0x8000) m_camera->MoveUp(-speed);
+
+            // 矢印キーで視点回転（マウス不要）
+            f32 rot = 1.5f * dt;  // rad/sec
+            f32 yawD = 0.0f, pitchD = 0.0f;
+            if (GetAsyncKeyState(VK_LEFT)  & 0x8000) yawD   -= rot;
+            if (GetAsyncKeyState(VK_RIGHT) & 0x8000) yawD   += rot;
+            if (GetAsyncKeyState(VK_UP)    & 0x8000) pitchD += rot;
+            if (GetAsyncKeyState(VK_DOWN)  & 0x8000) pitchD -= rot;
+            if (yawD != 0.0f || pitchD != 0.0f) m_camera->Rotate(yawD, pitchD);
+        }
+
         // Ctrl+S でクイック保存
         if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState('S') & 1))
         {
@@ -876,7 +993,7 @@ void Application::Update()
             }
             else
             {
-                SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, std::string(ASSETS_DIR));
+                SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, PathResolver::AssetsDir());
                 ProjectManager::SaveLastOpenedScene(m_editorCtx->currentScenePath);
                 m_editorCtx->hotReloadFlash = 1.5f;
                 m_editorLayer->RefreshAssetBrowser();
@@ -910,7 +1027,7 @@ void Application::Update()
                 {
                     if (!reg.valid(e)) continue;
                     std::string snap = SceneSerializer::SerializeEntity(
-                        *m_scene, e, std::string(ASSETS_DIR));
+                        *m_scene, e, PathResolver::AssetsDir());
                     if (!snap.empty())
                         m_editorCtx->clipboard.push_back(std::move(snap));
                 }
@@ -931,10 +1048,14 @@ void Application::Update()
         // ギズモモード切替（右クリック中・ImGuiフォーカス中は無効）
         if (!ImGui::GetIO().WantCaptureKeyboard && !m_inputSystem->IsMouseCaptured())
         {
-            if (GetAsyncKeyState('W') & 1) m_editorCtx->gizmoMode = GizmoMode::Translate;
-            if (GetAsyncKeyState('E') & 1) m_editorCtx->gizmoMode = GizmoMode::Rotate;
-            if (GetAsyncKeyState('R') & 1) m_editorCtx->gizmoMode = GizmoMode::Scale;
-            if (GetAsyncKeyState('T') & 1) m_editorCtx->gizmoLocalSpace = !m_editorCtx->gizmoLocalSpace;
+            // フライモード中は W/E/R/T をカメラ移動に使うのでギズモ切替は抑制
+            if (!m_editorCtx->flyMode)
+            {
+                if (GetAsyncKeyState('W') & 1) m_editorCtx->gizmoMode = GizmoMode::Translate;
+                if (GetAsyncKeyState('E') & 1) m_editorCtx->gizmoMode = GizmoMode::Rotate;
+                if (GetAsyncKeyState('R') & 1) m_editorCtx->gizmoMode = GizmoMode::Scale;
+                if (GetAsyncKeyState('T') & 1) m_editorCtx->gizmoLocalSpace = !m_editorCtx->gizmoLocalSpace;
+            }
 
             // F: 選択エンティティにフォーカス（Unity 風）
             if ((GetAsyncKeyState('F') & 1) && m_editorCtx->HasSelection())
@@ -1010,6 +1131,35 @@ void Application::Update()
     {
         m_physicsSystem->Update(dt, m_scene->GetRegistry());
     }
+
+    // 3D 空間オーディオ: リスナー＝カメラ、AudioSource を駆動（Playing のみ）
+    if (m_engineMode == EngineMode::Playing && m_audioSystem)
+    {
+        auto pos = m_camera->GetPosition();
+        auto fwd = m_camera->GetForward();
+        m_audioSystem->SetListener(pos.x, pos.y, pos.z, fwd.x, fwd.y, fwd.z, 0.0f, 1.0f, 0.0f);
+
+        auto& reg = m_scene->GetRegistry();
+        for (auto [e, src] : reg.view<AudioSource>().each())
+        {
+            DirectX::XMFLOAT4X4 wf;
+            DirectX::XMStoreFloat4x4(&wf, ComputeWorldMatrix(reg, e));
+            const float wx = wf._41, wy = wf._42, wz = wf._43;
+
+            if (src.playOnStart && !src.startedThisPlay && !src.clipPath.empty())
+            {
+                if (src.spatial)
+                    src.runtimeSlot = m_audioSystem->PlaySFXSpatial(
+                        src.clipPath, wx, wy, wz, src.minDistance, src.maxDistance, src.volume, src.loop);
+                else
+                    m_audioSystem->PlaySFX(src.clipPath, src.loop);
+                src.startedThisPlay = true;
+            }
+            if (src.runtimeSlot >= 0 && src.spatial)
+                m_audioSystem->UpdateSpatialEmitter(src.runtimeSlot, wx, wy, wz);
+        }
+        m_audioSystem->Update();
+    }
 }
 
 void Application::RebuildScene()
@@ -1023,9 +1173,10 @@ void Application::RebuildScene()
     m_scriptEngine->Shutdown();
     m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
                                m_camera.get(), m_audioSystem.get(),
-                               m_physicsSystem.get(), std::string(ASSETS_DIR));
+                               m_physicsSystem.get(), PathResolver::AssetsDir());
+    WireScriptCallbacks();
 
-    std::string scriptPath = std::string(SCRIPTS_DIR) + "game.lua";
+    std::string scriptPath = PathResolver::ScriptsDir() + "game.lua";
     if (std::filesystem::exists(scriptPath))
     {
         m_scriptEngine->LoadScript(scriptPath);
@@ -1039,10 +1190,135 @@ void Application::RebuildScene()
 
     // ホットリロード用タイムスタンプ更新
     {
-        std::string reloadPath = std::string(SCRIPTS_DIR) + "game.lua";
+        std::string reloadPath = PathResolver::ScriptsDir() + "game.lua";
         if (std::filesystem::exists(reloadPath))
             m_scriptLastWriteTime = std::filesystem::last_write_time(reloadPath);
     }
+}
+
+void Application::WireScriptCallbacks()
+{
+    if (!m_scriptEngine) return;
+
+    m_scriptEngine->SetLoadSceneCallback(
+        [this](const std::string& rel) { m_editorCtx->pendingGameLoadPath = rel; });
+
+    m_scriptEngine->SetNextSceneCallback(
+        [this]() {
+            if (m_sceneFlow)
+            {
+                std::string n = m_sceneFlow->Next(m_currentSceneRel);
+                if (!n.empty()) m_editorCtx->pendingGameLoadPath = n;
+            }
+        });
+
+    m_scriptEngine->SetQuitCallback(
+        [this]() { if (m_window) PostMessageW(m_window->GetHwnd(), WM_CLOSE, 0, 0); });
+
+    m_scriptEngine->SetTransitionCallback(
+        [this](const std::string& rel, int type, float dur) {
+            if (!m_sceneTransition) return;
+            m_transitionTargetScene = rel;
+            m_sceneTransition->Start(static_cast<TransitionType>(type), dur);
+        });
+
+    // ゲーム内 UI（即時モード）コールバック
+    m_scriptEngine->SetUiCallbacks(
+        [this](float x, float y, const std::string& text, float size, float r, float g, float b, float a) {
+            UICommand c; c.type = UICommand::Type::Text;
+            c.x = x; c.y = y; c.size = size; c.text = text;
+            c.r = r; c.g = g; c.b = b; c.a = a;
+            m_uiCommands.push_back(std::move(c));
+        },
+        [this](float x, float y, float w, float h, const std::string& label) -> bool {
+            UICommand c; c.type = UICommand::Type::Button;
+            c.x = x; c.y = y; c.w = w; c.h = h; c.text = label;
+            m_uiCommands.push_back(std::move(c));
+            // 前フレームに押されたか
+            return m_pressedButtons.count(label) > 0;
+        },
+        [this](float x, float y, float w, float h, const std::string& path) {
+            UICommand c; c.type = UICommand::Type::Image;
+            c.x = x; c.y = y; c.w = w; c.h = h; c.text = path;
+            m_uiCommands.push_back(std::move(c));
+        });
+}
+
+void Application::SyncActiveCameraToGlobal()
+{
+    auto& reg = m_scene->GetRegistry();
+    auto camView = reg.view<const CameraComponent, const Transform>();
+    for (auto [e, cam, tf] : camView.each())
+    {
+        if (!cam.isActive) continue;
+        m_camera->SetPosition(tf.position);
+        m_camera->SetYaw(DirectX::XMConvertToRadians(tf.rotation.y));
+        m_camera->SetPitch(DirectX::XMConvertToRadians(tf.rotation.x));
+        m_camera->SetPerspective(
+            DirectX::XMConvertToRadians(cam.fovDegrees),
+            static_cast<f32>(m_window->GetWidth()) / static_cast<f32>(m_window->GetHeight()),
+            cam.nearClip, cam.farClip);
+        break;
+    }
+}
+
+void Application::DoRuntimeSceneLoad(const std::string& rel, ID3D12GraphicsCommandList* cmdList)
+{
+    std::string full = PathResolver::AssetsDir() + rel;
+    if (!std::filesystem::exists(full))
+    {
+        Logger::Warn("loadScene: scene not found: {}", full);
+        return;
+    }
+
+    // 物理リセット
+    m_physicsSystem->UnregisterAllBodies(m_scene->GetRegistry());
+    m_physicsSystem->Shutdown();
+    m_physicsSystem->Initialize();
+
+    // シーン再構築
+    m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(), m_srvHeap.get(), cmdList);
+    if (!SceneSerializer::Load(*m_scene, full, PathResolver::AssetsDir()))
+    {
+        Logger::Warn("loadScene: failed to load {}", full);
+        return;
+    }
+    m_editorCtx->currentScenePath = full;
+    m_currentSceneRel = rel;
+
+    // ScriptEngine 作り直し（コールバック再注入）
+    m_scriptEngine->Shutdown();
+    m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(), m_camera.get(),
+                               m_audioSystem.get(), m_physicsSystem.get(), PathResolver::AssetsDir());
+    WireScriptCallbacks();
+    std::string gs = PathResolver::ScriptsDir() + "game.lua";
+    if (std::filesystem::exists(gs)) m_scriptEngine->LoadScript(gs);
+
+    // アクティブカメラがなければ最初のものを有効化
+    {
+        auto& reg = m_scene->GetRegistry();
+        auto camView = reg.view<CameraComponent>();
+        bool hasActive = false;
+        for (auto [e, c] : camView.each()) if (c.isActive) { hasActive = true; break; }
+        if (!hasActive && !camView.empty())
+            reg.get<CameraComponent>(*camView.begin()).isActive = true;
+    }
+
+    m_scriptEngine->OnPlayStart();
+    SyncActiveCameraToGlobal();
+
+    // 新シーンの RigidBody を物理登録
+    {
+        auto& reg = m_scene->GetRegistry();
+        for (auto [e, rb] : reg.view<RigidBody>().each())
+        {
+            if (rb.bodyId != kInvalidBodyId) m_physicsSystem->UnregisterBody(reg, e);
+            m_physicsSystem->RegisterBody(reg, e);
+        }
+    }
+    m_physicsSystem->ResetAccumulator();
+
+    Logger::Info("Runtime scene loaded: {}", rel);
 }
 
 void Application::EnterPlayMode()
@@ -1079,25 +1355,10 @@ void Application::EnterPlayMode()
     m_cameraSnapshot.pitch = m_camera->GetPitch();
 
     // Lua が触る前のエディタ状態を Stop 時の完全復元用に保存
-    m_playSceneJson = SceneSerializer::SaveToString(*m_scene, std::string(ASSETS_DIR));
+    m_playSceneJson = SceneSerializer::SaveToString(*m_scene, PathResolver::AssetsDir());
 
-    // ゲーム用カメラ: CameraComponent(isActive=true)のTransformを使う
-    {
-        auto& reg = m_scene->GetRegistry();
-        auto camView = reg.view<const CameraComponent, const Transform>();
-        for (auto [e, cam, tf] : camView.each())
-        {
-            if (!cam.isActive) continue;
-            m_camera->SetPosition(tf.position);
-            m_camera->SetYaw(DirectX::XMConvertToRadians(tf.rotation.y));
-            m_camera->SetPitch(DirectX::XMConvertToRadians(tf.rotation.x));
-            m_camera->SetPerspective(
-                DirectX::XMConvertToRadians(cam.fovDegrees),
-                static_cast<f32>(m_window->GetWidth()) / static_cast<f32>(m_window->GetHeight()),
-                cam.nearClip, cam.farClip);
-            break;
-        }
-    }
+    // ゲーム用カメラ: アクティブな CameraComponent をグローバル Camera に同期
+    SyncActiveCameraToGlobal();
 
     // OnPlayStart 直後に Lua が変えた値を打ち消すため、Transform / RigidBody / Material PBR を覚えておく
     m_editorSnapshots.clear();
@@ -1140,9 +1401,10 @@ void Application::EnterPlayMode()
     m_scriptEngine->Shutdown();
     m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
                                m_camera.get(), m_audioSystem.get(),
-                               m_physicsSystem.get(), std::string(ASSETS_DIR));
+                               m_physicsSystem.get(), PathResolver::AssetsDir());
+    WireScriptCallbacks();
 
-    std::string scriptPath = std::string(SCRIPTS_DIR) + "game.lua";
+    std::string scriptPath = PathResolver::ScriptsDir() + "game.lua";
     if (std::filesystem::exists(scriptPath))
     {
         m_scriptEngine->LoadScript(scriptPath);
@@ -1228,6 +1490,9 @@ void Application::EnterEditorMode()
 
     m_commandQueue->WaitIdle();
 
+    // Play 中に鳴っていた SE（空間含む）を停止
+    if (m_audioSystem) m_audioSystem->StopAllSFX();
+
     // OnPlayStop は ScriptEngine::Shutdown より前に呼ぶ（Shutdown で Lua state が消える）
     if (m_engineMode == EngineMode::Playing)
         m_scriptEngine->OnPlayStop();
@@ -1252,12 +1517,13 @@ void Application::EnterEditorMode()
         m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
                             m_srvHeap.get(), cmdList);
 
-        SceneSerializer::LoadFromString(*m_scene, m_playSceneJson, std::string(ASSETS_DIR));
+        SceneSerializer::LoadFromString(*m_scene, m_playSceneJson, PathResolver::AssetsDir());
 
         m_scriptEngine->Shutdown();
         m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
                                    m_camera.get(), m_audioSystem.get(),
-                                   m_physicsSystem.get(), std::string(ASSETS_DIR));
+                                   m_physicsSystem.get(), PathResolver::AssetsDir());
+        WireScriptCallbacks();
 
         ThrowIfFailed(cmdList->Close());
         m_commandQueue->ExecuteCommandList(cmdList);
@@ -1284,19 +1550,28 @@ void Application::EnterEditorMode()
     Logger::Info("Entered EDITOR mode");
 }
 
+void Application::BuildGameStandalone()
+{
+    // 開始シーンを title.json に（あれば）。無ければ現在の currentScenePath を使う。
+    std::string title = PathResolver::AssetsDir() + "scenes/title.json";
+    if (std::filesystem::exists(title))
+        m_editorCtx->currentScenePath = title;
+    BuildGame();
+}
+
 void Application::BuildGame()
 {
     namespace fs = std::filesystem;
 
     // ビルド出力先
-    fs::path outputDir = fs::path(ASSETS_DIR).parent_path().parent_path() / "build" / "game";
+    fs::path outputDir = fs::path(PathResolver::BaseDir()) / "build" / "game";
 
     // クリーンアップ
     if (fs::exists(outputDir))
         fs::remove_all(outputDir);
     fs::create_directories(outputDir);
 
-    // 1. exe をコピー
+    // 1. exe をコピー（+ exe 隣の DLL も全部コピー: D3D12MA.dll / DirectXTex.dll 等）
     {
         wchar_t exePath[MAX_PATH];
         GetModuleFileNameW(nullptr, exePath, MAX_PATH);
@@ -1304,11 +1579,25 @@ void Application::BuildGame()
         fs::path exeDst = outputDir / "Game.exe";
         fs::copy_file(exeSrc, exeDst, fs::copy_options::overwrite_existing);
         Logger::Info("Copied exe -> {}", exeDst.string());
+
+        // 同じフォルダの .dll をすべて配布フォルダへ
+        std::error_code ec;
+        for (auto& entry : fs::directory_iterator(exeSrc.parent_path(), ec))
+        {
+            if (!entry.is_regular_file()) continue;
+            auto ext = entry.path().extension().string();
+            if (ext == ".dll" || ext == ".DLL")
+            {
+                fs::copy_file(entry.path(), outputDir / entry.path().filename(),
+                              fs::copy_options::overwrite_existing, ec);
+                Logger::Info("Copied dll -> {}", entry.path().filename().string());
+            }
+        }
     }
 
     // 2. scripts/ をコピー
     {
-        fs::path scriptsSrc = fs::path(SCRIPTS_DIR);
+        fs::path scriptsSrc = fs::path(PathResolver::ScriptsDir());
         fs::path scriptsDst = outputDir / "scripts";
         if (fs::exists(scriptsSrc))
         {
@@ -1319,7 +1608,7 @@ void Application::BuildGame()
 
     // 3. assets/ をコピー
     {
-        fs::path assetsSrc = fs::path(ASSETS_DIR);
+        fs::path assetsSrc = fs::path(PathResolver::AssetsDir());
         fs::path assetsDst = outputDir / "assets";
         if (fs::exists(assetsSrc))
         {
@@ -1330,7 +1619,7 @@ void Application::BuildGame()
 
     // 4. shaders/ をコピー
     {
-        fs::path shadersSrc = fs::path(SHADER_DIR);
+        fs::path shadersSrc = fs::path(PathResolver::ShaderDirW());
         fs::path shadersDst = outputDir / "shaders";
         if (fs::exists(shadersSrc))
         {
@@ -1345,6 +1634,37 @@ void Application::BuildGame()
         bat << "@echo off\n";
         bat << "Game.exe --game\n";
         bat << "pause\n";
+    }
+
+    // 6. 配布設定 game.json（開始シーン = 現在編集中シーンの assets 相対パス）
+    {
+        std::string startSceneRel = "scenes/default.json";
+        if (!m_editorCtx->currentScenePath.empty())
+        {
+            auto norm = [](std::string s) { for (auto& c : s) if (c == '\\') c = '/'; return s; };
+            std::string full = norm(m_editorCtx->currentScenePath);
+            std::string base = norm(PathResolver::AssetsDir());
+            if (!base.empty() && full.rfind(base, 0) == 0)
+                startSceneRel = full.substr(base.size());
+            else
+                startSceneRel = fs::path(full).lexically_relative(fs::path(base)).generic_string();
+
+            if (startSceneRel.empty() || startSceneRel.rfind("..", 0) == 0)
+            {
+                Logger::Warn("Current scene is outside assets/; start scene may not be bundled: {}",
+                             m_editorCtx->currentScenePath);
+                startSceneRel = "scenes/default.json";
+            }
+        }
+
+        std::ofstream gj(outputDir / "game.json");
+        gj << "{\n";
+        gj << "  \"title\": \"Game\",\n";
+        gj << "  \"startScene\": \"" << startSceneRel << "\",\n";
+        gj << "  \"windowWidth\": 1280,\n";
+        gj << "  \"windowHeight\": 720\n";
+        gj << "}\n";
+        Logger::Info("Wrote game.json (startScene = {})", startSceneRel);
     }
 
     Logger::Info("Game build complete: {}", outputDir.string());
@@ -1378,7 +1698,7 @@ void Application::Render()
         // 作成と同時にシーンファイルを保存
         if (!m_editorCtx->currentScenePath.empty())
         {
-            SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, std::string(ASSETS_DIR));
+            SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, PathResolver::AssetsDir());
             ProjectManager::SaveLastOpenedScene(m_editorCtx->currentScenePath);
             m_editorCtx->hotReloadFlash = 1.5f;
         }
@@ -1396,13 +1716,36 @@ void Application::Render()
 
         m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
                             m_srvHeap.get(), nativeCmdList);
-        if (SceneSerializer::Load(*m_scene, loadPath, std::string(ASSETS_DIR)))
+        if (SceneSerializer::Load(*m_scene, loadPath, PathResolver::AssetsDir()))
         {
             m_editorCtx->currentScenePath = loadPath;
+            m_currentSceneRel = ToAssetRel(loadPath);
             ProjectManager::SaveLastOpenedScene(loadPath);
             m_editorCtx->hotReloadFlash = 1.5f;
             m_editorLayer->RefreshAssetBrowser();
             Logger::Info("Scene loaded: {}", loadPath);
+        }
+    }
+
+    // Play 中のシーン切替（Lua loadScene/nextScene、またはトランジション中間点）
+    {
+        // トランジションが中間点に達したら、保留中のターゲットをロード対象にする
+        if (m_sceneTransition && m_sceneTransition->ConsumeHalfway() && !m_transitionTargetScene.empty())
+        {
+            m_editorCtx->pendingGameLoadPath = m_transitionTargetScene;
+            m_transitionTargetScene.clear();
+        }
+
+        if (!m_editorCtx->pendingGameLoadPath.empty() && m_engineMode == EngineMode::Playing)
+        {
+            std::string rel = std::move(m_editorCtx->pendingGameLoadPath);
+            m_editorCtx->pendingGameLoadPath.clear();
+            DoRuntimeSceneLoad(rel, nativeCmdList);
+        }
+        else if (!m_editorCtx->pendingGameLoadPath.empty())
+        {
+            // Play 中でなければ無視（誤発火防止）
+            m_editorCtx->pendingGameLoadPath.clear();
         }
     }
 
@@ -1561,7 +1904,7 @@ void Application::Render()
         for (auto src : sources)
         {
             entt::entity copy = SceneSerializer::DuplicateEntity(
-                *m_scene, src, std::string(ASSETS_DIR));
+                *m_scene, src, PathResolver::AssetsDir());
             if (copy == entt::null) continue;
 
             m_editorCtx->AddToSelection(copy);
@@ -1586,7 +1929,7 @@ void Application::Render()
         for (const auto& snap : pastes)
         {
             entt::entity e = SceneSerializer::InstantiateEntity(
-                *m_scene, snap, std::string(ASSETS_DIR));
+                *m_scene, snap, PathResolver::AssetsDir());
             if (e == entt::null) continue;
 
             auto& reg = m_scene->GetRegistry();
@@ -1797,38 +2140,38 @@ void Application::Render()
             D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     }
 
-    // ===== メインパス =====
-    auto* backBuffer = m_swapChain->GetCurrentBackBuffer();
-    auto rtv = m_swapChain->GetCurrentRTV();
-
-    m_commandList->TransitionResource(backBuffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-    constexpr float clearColor[4] = {0.392f, 0.584f, 0.929f, 1.0f};
-    m_commandList->ClearRenderTarget(rtv, clearColor);
-    m_commandList->ClearDepthStencil(m_dsvHandle);
-    m_commandList->SetRenderTarget(rtv, m_dsvHandle);
-
-    // 3Dビューポート: EditorLayerの中央ノード領域に合わせる
+    // ===== メインパス（オフスクリーン RT へ描画）=====
+    // 3D ビューポート矩形（エディタは中央ノード、ゲーム/Play全画面は全体）
+    u32 vpLeft, vpTop, vpW, vpH;
     {
         auto vp = m_editorLayer->GetViewportPos();
         auto vs = m_editorLayer->GetViewportSize();
-        u32 vpLeft = static_cast<u32>(vp.x);
-        u32 vpTop  = static_cast<u32>(vp.y);
-        u32 vpW    = static_cast<u32>(vs.x);
-        u32 vpH    = static_cast<u32>(vs.y);
+        vpLeft = static_cast<u32>(vp.x);
+        vpTop  = static_cast<u32>(vp.y);
+        vpW    = static_cast<u32>(vs.x);
+        vpH    = static_cast<u32>(vs.y);
         if (vpW < 1) vpW = 1;
         if (vpH < 1) vpH = 1;
-
-        if (!m_isGameMode && m_engineMode == EngineMode::Editor)
-            m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
-        else
-            m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
-
-        // カメラのアスペクト比を中央ノードに合わせる
-        if (!m_isGameMode && m_engineMode == EngineMode::Editor)
-            m_camera->SetPerspective(DirectX::XM_PIDIV4,
-                static_cast<f32>(vpW) / static_cast<f32>(vpH), 0.1f, 1000.0f);
+        if (m_isGameMode || m_engineMode != EngineMode::Editor)
+        {
+            vpLeft = 0; vpTop = 0;
+            vpW = m_window->GetWidth();
+            vpH = m_window->GetHeight();
+        }
     }
+
+    m_sceneRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+    constexpr float clearColor[4] = {0.392f, 0.584f, 0.929f, 1.0f};
+    m_commandList->ClearRenderTarget(m_sceneRT->GetRtv(), clearColor);
+    m_commandList->ClearDepthStencil(m_dsvHandle);
+    m_commandList->SetRenderTarget(m_sceneRT->GetRtv(), m_dsvHandle);
+    m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+
+    // カメラのアスペクト比をビューポートに合わせる
+    if (!m_isGameMode && m_engineMode == EngineMode::Editor)
+        m_camera->SetPerspective(DirectX::XM_PIDIV4,
+            static_cast<f32>(vpW) / static_cast<f32>(vpH), 0.1f, 1000.0f);
 
     m_commandList->SetPipelineState(*m_pipelineState);
 
@@ -1977,7 +2320,7 @@ void Application::Render()
         }
     }
 
-    // ---- Physics Debug Draw ----
+    // ---- Physics Debug Draw（オフスクリーン RT へ）----
     if (m_physicsDebugDraw && m_physicsDebugRenderer->IsEnabled())
     {
         m_physicsDebugRenderer->BeginFrame();
@@ -1988,15 +2331,70 @@ void Application::Render()
         m_physicsDebugRenderer->Render(nativeCmdList, vp);
     }
 
-    // ---- Editor Icon Draw (カメラ/ライトアイコン, エディタモードのみ) ----
+    // ===== ポストプロセス: オフスクリーン RT → バックバッファ =====
+    auto* backBuffer = m_swapChain->GetCurrentBackBuffer();
+    auto  rtv        = m_swapChain->GetCurrentRTV();
+
+    m_sceneRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    m_commandList->TransitionResource(backBuffer,
+        D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+    {
+        constexpr float bbClear[4] = {0.05f, 0.05f, 0.06f, 1.0f};
+        m_commandList->ClearRenderTarget(rtv, bbClear);
+        nativeCmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);  // 深度なし
+        m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+        m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+
+        const f32 fullW = static_cast<f32>(m_sceneRT->GetWidth());
+        const f32 fullH = static_cast<f32>(m_sceneRT->GetHeight());
+        m_postProcess->Apply(nativeCmdList,
+            m_srvHeap->GetGpuHandle(m_sceneRT->GetSrvIndex()),
+            m_scene->GetPostSettings(),
+            static_cast<f32>(vpLeft) / fullW, static_cast<f32>(vpTop) / fullH,
+            static_cast<f32>(vpW)    / fullW, static_cast<f32>(vpH)   / fullH,
+            1.0f / fullW, 1.0f / fullH);
+    }
+
+    // ---- Editor Icon Draw（ポスト後のバックバッファへ, エディタモードのみ）----
     if (m_engineMode == EngineMode::Editor && !m_isGameMode)
     {
+        m_commandList->SetRenderTarget(rtv, m_dsvHandle);
+        m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+
         m_editorIconRenderer->BeginFrame();
         m_editorIconRenderer->CollectFromRegistry(m_scene->GetRegistry(), *m_editorCtx);
 
         XMFLOAT4X4 vpIcon;
         XMStoreFloat4x4(&vpIcon, XMMatrixTranspose(m_camera->GetViewProjMatrix()));
-        m_editorIconRenderer->Render(nativeCmdList, vpIcon);
+        m_editorIconRenderer->Render(nativeCmdList, vpIcon, vpW, vpH);
+    }
+
+    // ---- 2D スプライト / ゲーム内 UI 画像（バックバッファ全面へ）----
+    if (m_spriteRenderer && (m_isGameMode || m_engineMode == EngineMode::Playing))
+    {
+        m_spriteRenderer->BeginFrame();
+        // Lua の ui:image() コマンドをテクスチャ読み込み＋サブミット
+        for (const auto& c : m_uiCommands)
+        {
+            if (c.type != UICommand::Type::Image || c.text.empty()) continue;
+            std::wstring wpath(c.text.begin(), c.text.end());  // ASCII パス想定
+            Texture* tex = m_resourceManager->GetOrLoadTexture(wpath, nativeCmdList);
+            if (!tex) continue;
+            SpriteDesc s;
+            s.pos      = {c.x, c.y};
+            s.size     = {c.w, c.h};
+            s.color    = {c.r, c.g, c.b, c.a};
+            s.srvIndex = tex->GetSrvIndex();
+            m_spriteRenderer->Submit(s);
+        }
+
+        if (m_spriteRenderer->HasAny())
+        {
+            nativeCmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+            m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
+            m_spriteRenderer->Render(nativeCmdList, m_window->GetWidth(), m_window->GetHeight());
+        }
     }
 
     // ---- ImGui フレーム ----
@@ -2014,10 +2412,75 @@ void Application::Render()
             m_useVsync, m_shadowQualityIndex, m_shadowMapSize,
             m_shadowMapDirty, &m_gameClock,
             m_modeChangeRequested, pendingPlayMode,
-            std::string(ASSETS_DIR), kLeftPanelWidth, kToolbarHeight);
+            PathResolver::AssetsDir(), kLeftPanelWidth, kToolbarHeight);
 
         if (m_modeChangeRequested)
             m_pendingMode = pendingPlayMode ? EngineMode::Playing : EngineMode::Editor;
+
+        // ---- Post Process 設定ウィンドウ（シーンごとに保存される）----
+        {
+            auto& pp = m_scene->GetPostSettings();
+            ImGui::Begin("Post Process");
+            ImGui::Checkbox("Enabled", &pp.enabled);
+            ImGui::SliderFloat("Exposure",   &pp.exposure,   0.1f, 4.0f);
+            ImGui::SliderFloat("Contrast",   &pp.contrast,   0.5f, 2.0f);
+            ImGui::SliderFloat("Saturation", &pp.saturation, 0.0f, 2.0f);
+            ImGui::ColorEdit3("Tint", &pp.tint.x);
+            ImGui::SliderFloat("Vignette",        &pp.vignette,       0.0f, 1.0f);
+            ImGui::SliderFloat("Bloom",           &pp.bloom,          0.0f, 1.0f);
+            ImGui::SliderFloat("Bloom Threshold", &pp.bloomThreshold, 0.0f, 1.0f);
+            ImGui::Checkbox("FXAA", &pp.fxaa);
+            ImGui::SameLine();
+            ImGui::Checkbox("Grayscale", &pp.grayscale);
+            ImGui::End();
+        }
+
+        // ---- Scene Flow 設定ウィンドウ（シーンの流れ）----
+        if (m_sceneFlow)
+        {
+            namespace fs = std::filesystem;
+            std::vector<std::string> scenes;
+            std::string scenesDir = PathResolver::AssetsDir() + "scenes";
+            if (fs::exists(scenesDir))
+            {
+                for (auto& e : fs::directory_iterator(scenesDir))
+                    if (e.is_regular_file() && e.path().extension() == ".json")
+                        scenes.push_back("scenes/" + e.path().filename().string());
+            }
+
+            ImGui::Begin("Scene Flow");
+            ImGui::TextWrapped("ゲーム開始シーンと、各シーンの次シーンを設定する。");
+
+            std::string start = m_sceneFlow->Start();
+            if (ImGui::BeginCombo("Start Scene", start.empty() ? "(none)" : start.c_str()))
+            {
+                for (auto& s : scenes)
+                    if (ImGui::Selectable(s.c_str(), s == start))
+                        m_sceneFlow->SetStart(s);
+                ImGui::EndCombo();
+            }
+
+            ImGui::SeparatorText("Next scene");
+            for (auto& s : scenes)
+            {
+                std::string nx = m_sceneFlow->Next(s);
+                ImGui::PushID(s.c_str());
+                if (ImGui::BeginCombo(s.c_str(), nx.empty() ? "(none)" : nx.c_str()))
+                {
+                    if (ImGui::Selectable("(none)", nx.empty()))
+                        m_sceneFlow->SetNext(s, "");
+                    for (auto& t : scenes)
+                        if (ImGui::Selectable(t.c_str(), t == nx))
+                            m_sceneFlow->SetNext(s, t);
+                    ImGui::EndCombo();
+                }
+                ImGui::PopID();
+            }
+
+            if (ImGui::Button("Save sceneflow.json"))
+                m_sceneFlow->Save(PathResolver::AssetsDir() + "sceneflow.json");
+            ImGui::End();
+        }
 
         // Deferred: game build
         if (m_editorCtx->pendingBuildGame)
@@ -2057,7 +2520,7 @@ void Application::Render()
                 {
                     DeletedEntityRecord rec;
                     rec.snapshot = SceneSerializer::SerializeEntity(
-                        *m_scene, e, std::string(ASSETS_DIR));
+                        *m_scene, e, PathResolver::AssetsDir());
                     if (reg.all_of<Transform>(e))
                     {
                         auto parent = reg.get<Transform>(e).parent;
@@ -2070,7 +2533,7 @@ void Application::Render()
 
                 m_editorCtx->undoSystem.PushCommand(
                     std::make_unique<DeleteEntityCommand>(
-                        m_scene.get(), std::string(ASSETS_DIR),
+                        m_scene.get(), PathResolver::AssetsDir(),
                         std::move(records), subtree, externalParent));
 
                 // 子から順に削除
@@ -2098,7 +2561,54 @@ void Application::Render()
         }
     }
 
+    // ---- ゲーム内 UI: テキスト/ボタン（ImGui オーバーレイ・ゲーム/Play 中のみ）----
+    if (m_isGameMode || m_engineMode == EngineMode::Playing)
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        ImGui::SetNextWindowPos({0, 0});
+        ImGui::SetNextWindowSize(io.DisplaySize);
+        ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize
+            | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar
+            | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBackground
+            | ImGuiWindowFlags_NoBringToFrontOnFocus;
+        ImGui::Begin("##GameUI", nullptr, flags);
+
+        auto* dl = ImGui::GetWindowDrawList();
+        std::unordered_set<std::string> nowPressed;
+        for (const auto& c : m_uiCommands)
+        {
+            if (c.type == UICommand::Type::Text)
+            {
+                ImU32 col = ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, c.a));
+                dl->AddText(ImGui::GetFont(), c.size, ImVec2(c.x, c.y), col, c.text.c_str());
+            }
+            else if (c.type == UICommand::Type::Button)
+            {
+                ImGui::SetCursorPos(ImVec2(c.x, c.y));
+                if (ImGui::Button(c.text.c_str(), ImVec2(c.w, c.h)))
+                    nowPressed.insert(c.text);
+            }
+        }
+        ImGui::End();
+        m_pressedButtons = std::move(nowPressed);
+    }
+    else
+    {
+        m_pressedButtons.clear();
+    }
+    m_uiCommands.clear();
+
     m_imguiManager->EndFrame(nativeCmdList);
+
+    // ---- シーントランジション オーバーレイ（全画面・ImGui の上にも被せる）----
+    if (m_sceneTransition && m_sceneTransition->IsActive())
+    {
+        nativeCmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+        m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
+        float aspect = (m_window->GetHeight() > 0)
+            ? static_cast<f32>(m_window->GetWidth()) / static_cast<f32>(m_window->GetHeight()) : 1.0f;
+        m_sceneTransition->Render(nativeCmdList, aspect);
+    }
 
     m_commandList->TransitionResource(backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
     m_commandList->Close();

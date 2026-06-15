@@ -85,6 +85,11 @@ if(DXC_EXECUTABLE)
     set(SHADER_SHADOW        "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPass.hlsl")
     set(SHADER_SHADOW_SKIN   "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPassSkinned.hlsl")
     set(SHADER_DEBUG_LINE    "${CMAKE_SOURCE_DIR}/shaders/debug/DebugLine.hlsl")
+    set(SHADER_POST          "${CMAKE_SOURCE_DIR}/shaders/post/PostProcess.hlsl")
+    set(SHADER_POST_INC      "${CMAKE_SOURCE_DIR}/shaders/post/FullscreenTri.hlsli")
+    set(SHADER_SPRITE        "${CMAKE_SOURCE_DIR}/shaders/sprite/Sprite.hlsl")
+    set(SHADER_ICON_BB       "${CMAKE_SOURCE_DIR}/shaders/editor/IconBillboard.hlsl")
+    set(SHADER_TRANSITION    "${CMAKE_SOURCE_DIR}/shaders/post/Transition.hlsl")
 
     set(SHADER_OUTPUTS
         "${SHADER_OUTPUT_DIR}/Forward_VS.cso"
@@ -97,6 +102,14 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/ShadowPassSkinned_VS.cso"
         "${SHADER_OUTPUT_DIR}/DebugLine_VS.cso"
         "${SHADER_OUTPUT_DIR}/DebugLine_PS.cso"
+        "${SHADER_OUTPUT_DIR}/PostProcess_VS.cso"
+        "${SHADER_OUTPUT_DIR}/PostProcess_PS.cso"
+        "${SHADER_OUTPUT_DIR}/Sprite_VS.cso"
+        "${SHADER_OUTPUT_DIR}/Sprite_PS.cso"
+        "${SHADER_OUTPUT_DIR}/IconBillboard_VS.cso"
+        "${SHADER_OUTPUT_DIR}/IconBillboard_PS.cso"
+        "${SHADER_OUTPUT_DIR}/Transition_VS.cso"
+        "${SHADER_OUTPUT_DIR}/Transition_PS.cso"
     )
 
     add_custom_command(
@@ -167,6 +180,62 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/DebugLine_PS.cso" "${SHADER_DEBUG_LINE}"
         DEPENDS "${SHADER_DEBUG_LINE}"
         COMMENT "Compiling DebugLine.hlsl -> DebugLine_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/PostProcess_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E FSTriVS -Fo "${SHADER_OUTPUT_DIR}/PostProcess_VS.cso" "${SHADER_POST}"
+        DEPENDS "${SHADER_POST}" "${SHADER_POST_INC}"
+        COMMENT "Compiling PostProcess.hlsl -> PostProcess_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/PostProcess_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PostPS -Fo "${SHADER_OUTPUT_DIR}/PostProcess_PS.cso" "${SHADER_POST}"
+        DEPENDS "${SHADER_POST}" "${SHADER_POST_INC}"
+        COMMENT "Compiling PostProcess.hlsl -> PostProcess_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/Sprite_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/Sprite_VS.cso" "${SHADER_SPRITE}"
+        DEPENDS "${SHADER_SPRITE}"
+        COMMENT "Compiling Sprite.hlsl -> Sprite_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/Sprite_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/Sprite_PS.cso" "${SHADER_SPRITE}"
+        DEPENDS "${SHADER_SPRITE}"
+        COMMENT "Compiling Sprite.hlsl -> Sprite_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/IconBillboard_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/IconBillboard_VS.cso" "${SHADER_ICON_BB}"
+        DEPENDS "${SHADER_ICON_BB}"
+        COMMENT "Compiling IconBillboard.hlsl -> IconBillboard_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/IconBillboard_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/IconBillboard_PS.cso" "${SHADER_ICON_BB}"
+        DEPENDS "${SHADER_ICON_BB}"
+        COMMENT "Compiling IconBillboard.hlsl -> IconBillboard_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/Transition_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E FSTriVS -Fo "${SHADER_OUTPUT_DIR}/Transition_VS.cso" "${SHADER_TRANSITION}"
+        DEPENDS "${SHADER_TRANSITION}" "${SHADER_POST_INC}"
+        COMMENT "Compiling Transition.hlsl -> Transition_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/Transition_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E TransPS -Fo "${SHADER_OUTPUT_DIR}/Transition_PS.cso" "${SHADER_TRANSITION}"
+        DEPENDS "${SHADER_TRANSITION}" "${SHADER_POST_INC}"
+        COMMENT "Compiling Transition.hlsl -> Transition_PS.cso (ps_6_0)"
     )
 
     add_custom_target(Shaders ALL DEPENDS ${SHADER_OUTPUTS})
