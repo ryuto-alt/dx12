@@ -95,39 +95,48 @@ void EditorLayer::BuildDefaultLayout(ImGuiID dockspaceId, f32 /*toolbarHeight*/)
     ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
     ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->Size);
 
-    // 左(20%): ヒエラルキー | 残り
-    ImGuiID dockLeft = 0;
-    ImGuiID dockRemaining = 0;
+    // ── レイアウト方針（散らかり対策で役割ごとに領域を分離）──
+    //  左            : ヒエラルキー（全高）
+    //  右上          : インスペクター（最重要・常時表示）
+    //  右下          : 設定/ツール系タブ（Post Process / パラメータ / Scene Flow / Project / VC）
+    //  中央下        : アセットブラウザ（横長・単独）
+    //  中央          : ビューポート
+
+    // 左(18%): ヒエラルキー | 残り
+    ImGuiID dockLeft = 0, dockRemaining = 0;
     ImGui::DockBuilderSplitNode(dockspaceId, ImGuiDir_Left, 0.18f, &dockLeft, &dockRemaining);
 
-    // 残り → 右(22%): インスペクター | センター
-    ImGuiID dockRight = 0;
-    ImGuiID dockCenter = 0;
-    ImGui::DockBuilderSplitNode(dockRemaining, ImGuiDir_Right, 0.22f, &dockRight, &dockCenter);
+    // 残り → 右(24%): 右カラム | センター
+    ImGuiID dockRightCol = 0, dockCenter = 0;
+    ImGui::DockBuilderSplitNode(dockRemaining, ImGuiDir_Right, 0.24f, &dockRightCol, &dockCenter);
 
-    // センター → 下(25%): アセットブラウザ | ビューポート(中央)
-    ImGuiID dockBottom = 0;
-    ImGuiID dockViewport = 0;
-    ImGui::DockBuilderSplitNode(dockCenter, ImGuiDir_Down, 0.25f, &dockBottom, &dockViewport);
+    // 右カラム → 上=インスペクター / 下=ツール系タブ（下 42%）
+    ImGuiID dockRightTop = 0, dockRightBottom = 0;
+    ImGui::DockBuilderSplitNode(dockRightCol, ImGuiDir_Down, 0.42f, &dockRightBottom, &dockRightTop);
 
+    // センター → 下(24%): アセットブラウザ | ビューポート(中央)
+    ImGuiID dockBottom = 0, dockViewport = 0;
+    ImGui::DockBuilderSplitNode(dockCenter, ImGuiDir_Down, 0.24f, &dockBottom, &dockViewport);
+
+    // 左: ヒエラルキー
     ImGui::DockBuilderDockWindow(
         "\xe3\x83\x92\xe3\x82\xa8\xe3\x83\xa9\xe3\x83\xab\xe3\x82\xad\xe3\x83\xbc", dockLeft);
+    // 右上: インスペクター（単独で常時見える）
     ImGui::DockBuilderDockWindow(
-        "\xe3\x82\xa4\xe3\x83\xb3\xe3\x82\xb9\xe3\x83\x9a\xe3\x82\xaf\xe3\x82\xbf\xe3\x83\xbc", dockRight);
+        "\xe3\x82\xa4\xe3\x83\xb3\xe3\x82\xb9\xe3\x83\x9a\xe3\x82\xaf\xe3\x82\xbf\xe3\x83\xbc", dockRightTop);
+    // 中央下: アセットブラウザ（単独で横長に使う）
     ImGui::DockBuilderDockWindow(
         "\xe3\x82\xa2\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88\xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6", dockBottom);
 
-    // 追加ウィンドウ（ポスト/シーンフロー）は下パネル（アセットブラウザ横）にタブで固定。
-    // インスペクター（右）を隠さないようにするため右ではなく下へ。
-    ImGui::DockBuilderDockWindow("Post Process", dockBottom);
-    ImGui::DockBuilderDockWindow("Scene Flow",   dockBottom);
-    // ポストのパラメータ調整は右パネル（インスペクター横タブ）に置き、
-    // 下のトグルと同時に見られるようにする。
-    ImGui::DockBuilderDockWindow("Post Process パラメータ", dockRight);
-
-    // プロジェクト / バージョン管理は右パネル（インスペクター横）にタブで固定。
-    ImGui::DockBuilderDockWindow("Project",                dockRight);
-    ImGui::DockBuilderDockWindow("Version Control (Git)",  dockRight);
+    // 右下: 設定/ツール系をまとめてタブ化（インスペクターを隠さない）。
+    // Version Control(Git) は表示中だけ git/gh の外部プロセスを叩くので、
+    // 起動直後のデフォルトでアクティブにならないよう "中央" に置く
+    // （先頭/末尾のどちらがアクティブでも軽い窓になるようにする）。
+    ImGui::DockBuilderDockWindow("Post Process",            dockRightBottom);
+    ImGui::DockBuilderDockWindow("Post Process パラメータ", dockRightBottom);
+    ImGui::DockBuilderDockWindow("Version Control (Git)",   dockRightBottom);
+    ImGui::DockBuilderDockWindow("Project",                 dockRightBottom);
+    ImGui::DockBuilderDockWindow("Scene Flow",              dockRightBottom);
 
     ImGui::DockBuilderFinish(dockspaceId);
 }

@@ -102,6 +102,10 @@ struct DirectionalLight
     DirectX::XMFLOAT3 color     = {1.0f, 1.0f, 1.0f};
     f32 intensity = 1.0f;
     f32 ambient   = 0.25f;   // このライトが供給するシーン全体の環境光（影部分の明るさ）
+
+    // Transform 回転の変化分を direction に反映するための前フレーム回転（非シリアライズ）
+    DirectX::XMFLOAT3 _prevRot{0.0f, 0.0f, 0.0f};
+    bool              _prevRotInit = false;
 };
 
 // スポットライト。位置は Transform、円錐の軸方向は direction。
@@ -114,6 +118,10 @@ struct SpotLight
     DirectX::XMFLOAT3 direction    = {0.0f, -1.0f, 0.0f};
     f32               innerConeDeg = 18.0f;  // この角度内は最大輝度
     f32               outerConeDeg = 28.0f;  // この角度でゼロまで減衰
+
+    // Transform 回転の変化分を direction に反映するための前フレーム回転（非シリアライズ）
+    DirectX::XMFLOAT3 _prevRot{0.0f, 0.0f, 0.0f};
+    bool              _prevRotInit = false;
 };
 
 struct CameraComponent

@@ -55,6 +55,7 @@ private:
     EditState<PointLight>       m_plEdit;
     EditState<DirectionalLight> m_dlEdit;
     EditState<SpotLight>        m_slEdit;
+    EditState<AudioSource>      m_audioEdit;
     EditState<CameraComponent>  m_camEdit;
     EditState<RigidBody>        m_rbEdit;
     EditState<BoxCollider>      m_boxColEdit;

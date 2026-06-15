@@ -130,22 +130,25 @@ private:
     entt::entity                     m_externalParent; // ルートの親（サブツリー外）
 };
 
-// ── エンティティ生成コマンド（Undo で削除） ──
+// ── エンティティ生成コマンド（Undo で削除 / Redo で再生成） ──
+// Undo 時に JSON スナップショットを取って削除し、Redo でそのスナップショットから
+// 再生成する。これで生成 → Undo → Redo が往復できる。
 class SpawnEntityCommand : public IUndoCommand
 {
 public:
-    SpawnEntityCommand(Scene* scene, entt::registry* reg, entt::entity entity)
-        : m_scene(scene), m_reg(reg), m_entity(entity) {}
+    SpawnEntityCommand(Scene* scene, std::string assetsDir, entt::entity entity)
+        : m_scene(scene), m_assetsDir(std::move(assetsDir)), m_entity(entity) {}
 
-    void Undo() override;   // 削除
-    void Redo() override {} // 再生成は困難なので no-op（生成時点で確定）
+    void Undo() override;   // スナップショットを取って削除
+    void Redo() override;   // スナップショットから再生成
 
     const char* GetName() const override { return "Spawn"; }
 
 private:
-    Scene*          m_scene;
-    entt::registry* m_reg;
-    entt::entity    m_entity;
+    Scene*       m_scene;
+    std::string  m_assetsDir;
+    entt::entity m_entity;
+    std::string  m_snapshot;  // Undo 時に確定（Redo 用の JSON）
 };
 
 // ── 複合コマンド（複数コマンドを 1 回の Undo/Redo で実行） ──

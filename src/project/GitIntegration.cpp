@@ -6,6 +6,8 @@
 #include <fstream>
 #include <array>
 #include <vector>
+#include <sstream>
+#include <string>
 
 namespace fs = std::filesystem;
 
@@ -160,6 +162,16 @@ GitResult GitIntegration::Push(const std::string& workDir, bool setUpstream)
     return RunGit(workDir, "push");
 }
 
+GitResult GitIntegration::Pull(const std::string& workDir)
+{
+    return RunGit(workDir, "pull");
+}
+
+GitResult GitIntegration::Fetch(const std::string& workDir)
+{
+    return RunGit(workDir, "fetch --all --prune");
+}
+
 GitResult GitIntegration::Status(const std::string& workDir)
 {
     return RunGit(workDir, "status --short --branch");
@@ -195,6 +207,105 @@ GitResult GitIntegration::CreateGitHubRepo(const std::string& workDir,
     std::string vis = isPrivate ? "--private" : "--public";
     std::string args = "repo create \"" + repoName + "\" --source=. --remote=origin --push " + vis;
     return RunGh(workDir, args);
+}
+
+std::string GitIntegration::GitHubUser()
+{
+    // gh の認証ユーザー名を取得（未ログインなら失敗）
+    auto r = RunGh("", "api user --jq .login");
+    if (!r.ok()) return "";
+    std::string u = r.output;
+    // 前後の空白/改行を除去
+    size_t b = u.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos) return "";
+    size_t e = u.find_last_not_of(" \t\r\n");
+    return u.substr(b, e - b + 1);
+}
+
+bool GitIntegration::LaunchLogin()
+{
+    // gh auth login は対話式（ブラウザでのデバイス認証）。別コンソールを開いて
+    // ユーザーが操作できるようにする。完了後に git の資格情報ヘルパも gh に設定。
+    // /k で完了後もウィンドウを残す（ワンタイムコード等の確認用）。
+    std::string cmd =
+        "cmd.exe /k \"gh auth login --hostname github.com --git-protocol https --web "
+        "&& gh auth setup-git && echo. && echo [ログイン処理が完了したらこのウィンドウは閉じてOK]\"";
+
+    std::vector<char> buf(cmd.begin(), cmd.end());
+    buf.push_back('\0');
+
+    STARTUPINFOA si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    BOOL ok = CreateProcessA(nullptr, buf.data(), nullptr, nullptr, FALSE,
+                             CREATE_NEW_CONSOLE, nullptr, nullptr, &si, &pi);
+    if (ok)
+    {
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+    }
+    return ok == TRUE;
+}
+
+std::string GitIntegration::RepoNameFromUrl(const std::string& url)
+{
+    std::string u = url;
+    // 末尾の空白/改行/スラッシュを除去
+    while (!u.empty() && (u.back() == '\n' || u.back() == '\r' || u.back() == ' ' || u.back() == '/'))
+        u.pop_back();
+    // ".git" を除去
+    if (u.size() > 4 && u.compare(u.size() - 4, 4, ".git") == 0)
+        u.erase(u.size() - 4);
+    // 最後の '/' か ':' 以降を名前とする（https と scp 形式 git@host:owner/repo の両対応）
+    size_t slash = u.find_last_of("/:");
+    std::string name = (slash == std::string::npos) ? u : u.substr(slash + 1);
+    return name;
+}
+
+GitResult GitIntegration::Clone(const std::string& url, const std::string& destParentDir,
+                                std::string& outRepoDir)
+{
+    std::string repoName = RepoNameFromUrl(url);
+    if (repoName.empty())
+    {
+        GitResult r; r.exitCode = -1; r.output = "URL からリポジトリ名を取得できませんでした"; return r;
+    }
+    fs::path target = fs::path(destParentDir) / repoName;
+    outRepoDir = target.string();
+
+    // git clone <url> "<target>"
+    std::string args = "clone \"" + url + "\" \"" + target.string() + "\"";
+    return RunGit(destParentDir, args);
+}
+
+std::vector<std::string> GitIntegration::ListBranches(const std::string& workDir)
+{
+    std::vector<std::string> branches;
+    auto r = RunGit(workDir, "branch --format=%(refname:short)");
+    if (!r.ok()) return branches;
+
+    std::istringstream iss(r.output);
+    std::string line;
+    while (std::getline(iss, line))
+    {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        size_t b = line.find_first_not_of(" \t*");  // 先頭の "* " や空白を除去
+        if (b == std::string::npos) continue;
+        size_t e = line.find_last_not_of(" \t");
+        std::string name = line.substr(b, e - b + 1);
+        if (!name.empty()) branches.push_back(name);
+    }
+    return branches;
+}
+
+GitResult GitIntegration::CheckoutBranch(const std::string& workDir, const std::string& name)
+{
+    return RunGit(workDir, "checkout \"" + name + "\"");
+}
+
+GitResult GitIntegration::CreateBranch(const std::string& workDir, const std::string& name)
+{
+    return RunGit(workDir, "checkout -b \"" + name + "\"");
 }
 
 void GitIntegration::WriteGitignore(const std::string& workDir)

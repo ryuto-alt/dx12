@@ -148,7 +148,15 @@ private:
     bool        m_gitRepoCache = false;   // IsRepo の簡易キャッシュ
     std::string m_gitBranchCache;         // ブランチ名キャッシュ
     std::string m_gitRemoteCache;         // origin URL キャッシュ
-    f32         m_gitRefreshTimer = 0.0f; // 状態の定期再取得用（毎フレームgit起動を避ける）
+    bool        m_gitForceRefresh = false; // 操作直後に git 状態を再取得するワンショットフラグ
+
+    // GitHub ログイン状態（gh）
+    std::string m_ghUser;                 // gh ログインユーザー（空=未ログイン）
+    bool        m_ghUserChecked = false;  // ログイン状態を取得済みか（重いので一度だけ）
+
+    // ブランチ操作
+    std::vector<std::string> m_gitBranches;     // ローカルブランチ一覧
+    std::array<char, 128>    m_gitNewBranchBuf{}; // 新規ブランチ名入力
 
     // ---- エディタUIアイコン（ImTextureID=ImU64。0=未読込。EditorContext::icons から参照される）----
     EditorUiIcons m_icons;

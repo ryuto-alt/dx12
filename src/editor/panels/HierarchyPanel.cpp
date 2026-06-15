@@ -312,6 +312,18 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
         ImGui::EndDragDropTarget();
     }
 
+    // ヒエラルキーにフォーカスがある状態で Del キー → 選択エンティティを削除。
+    // 実際の削除は pendingDeletions 経由でフレーム境界に行われ、Undo も積まれる。
+    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)
+        && m_renamingEntity == entt::null
+        && ctx.HasSelection()
+        && ImGui::IsKeyPressed(ImGuiKey_Delete, false))
+    {
+        for (auto e : ctx.selectedEntities)
+            if (reg.valid(e)) ctx.pendingDeletions.push_back(e);
+        ctx.ClearSelection();
+    }
+
     ImGui::Separator();
 
     // Add entity menu

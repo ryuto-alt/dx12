@@ -526,20 +526,27 @@ void InspectorPanel::Render(entt::registry& reg,
             bool removed = ComponentRemoveMenu<AudioSource>(reg, ctx, ctx.selectedEntity, "Audio Source");
             if (open && !removed)
             {
+                BeginEdit(reg, ctx.selectedEntity, m_audioEdit);
                 auto& as = reg.get<AudioSource>(ctx.selectedEntity);
+                bool changed = false, active = false;
                 char buf[256] = {};
                 size_t n = as.clipPath.copy(buf, sizeof(buf) - 1);
                 buf[n] = '\0';
                 if (ImGui::InputText("Clip (rel)", buf, sizeof(buf)))
-                    as.clipPath = buf;
-                ImGui::SliderFloat("Volume", &as.volume, 0.0f, 1.0f);
-                ImGui::Checkbox("Spatial", &as.spatial);
+                { as.clipPath = buf; changed = true; }
+                active |= ImGui::IsItemActive();
+                changed |= ImGui::SliderFloat("Volume", &as.volume, 0.0f, 1.0f);
+                active  |= ImGui::IsItemActive();
+                changed |= ImGui::Checkbox("Spatial", &as.spatial);
                 ImGui::SameLine();
-                ImGui::Checkbox("Loop", &as.loop);
-                ImGui::Checkbox("Play On Start", &as.playOnStart);
-                ImGui::DragFloat("Min Distance", &as.minDistance, 0.1f, 0.0f, 1000.0f);
-                ImGui::DragFloat("Max Distance", &as.maxDistance, 0.5f, 0.1f, 5000.0f);
+                changed |= ImGui::Checkbox("Loop", &as.loop);
+                changed |= ImGui::Checkbox("Play On Start", &as.playOnStart);
+                changed |= ImGui::DragFloat("Min Distance", &as.minDistance, 0.1f, 0.0f, 1000.0f);
+                active  |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat("Max Distance", &as.maxDistance, 0.5f, 0.1f, 5000.0f);
+                active  |= ImGui::IsItemActive();
                 ImGui::TextDisabled("空間化はモノラル wav のみ");
+                EndEdit(reg, ctx, ctx.selectedEntity, m_audioEdit, changed, active, "Audio Source");
             }
         }
 

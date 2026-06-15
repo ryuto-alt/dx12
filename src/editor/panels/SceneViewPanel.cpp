@@ -14,6 +14,7 @@
 #include "gui/ImGuizmo.h"
 #include <DirectXMath.h>
 #include <algorithm>
+#include <cstring>
 
 namespace dx12e
 {
@@ -105,6 +106,9 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
         scale[2] = (std::max)(scale[2], kMinScale);
         transform.scale = {scale[0], scale[1], scale[2]};
 
+        // ライトの向きは Transform 回転に追従（Application 側で direction に反映）するので
+        // ここでは特別扱い不要。回転ギズモを回せば光の向きも変わる。
+
         // マルチ選択時: 移動デルタを他の選択エンティティにも適用
         if (ctx.gizmoMode == GizmoMode::Translate && ctx.selectedEntities.size() > 1)
         {
@@ -144,6 +148,7 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
             if (changed)
                 composite->Add(std::make_unique<TransformCommand>(&reg, e, before, after));
         }
+
         if (!composite->Empty())
             ctx.undoSystem.PushCommand(std::move(composite));
         m_gizmoStartGroup.clear();
@@ -158,8 +163,14 @@ void SceneViewPanel::HandlePicking(entt::registry& reg,
 {
     // ※ WantCaptureMouse には依存しない（PassthruCentralNode の挙動次第で
     //   中央ノード上でも true になり得るため）。クリックがビュー矩形内かは下で判定。
+    //
+    // ギズモによるブロックは「選択がある＝ギズモが実際に描画されている」ときだけ有効にする。
+    // 選択が無いと RenderGizmo が Manipulate を呼ばず、ImGuizmo::IsOver() が直前に選択して
+    // いたエンティティ位置の当たり判定を保持（ステイル）するため、同じ場所を再クリックしても
+    // IsOver()==true で弾かれて再選択できない不具合になる（選択→解除→同じ物を再選択できない）。
+    bool gizmoBlocking = ctx.HasSelection() && (ImGuizmo::IsUsing() || ImGuizmo::IsOver());
     if (ImGui::GetIO().KeyAlt                 // Alt+左ドラッグはオービット操作なのでピッキングしない
-        || ImGuizmo::IsUsing() || ImGuizmo::IsOver()
+        || gizmoBlocking
         || !ImGui::IsMouseClicked(ImGuiMouseButton_Left))
         return;
 

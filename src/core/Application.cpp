@@ -1530,7 +1530,14 @@ void Application::RenderProjectWindow()
 
 void Application::RenderVersionControlWindow()
 {
-    ImGui::Begin("Version Control (Git)");
+    // 非表示タブ/折りたたみ時は中身を一切実行しない。
+    // ここでは git/gh の外部プロセスを起動するため、毎フレーム走ると
+    // メインスレッドがブロックされてエディタ全体がもたつく原因になる。
+    if (!ImGui::Begin("Version Control (Git)"))
+    {
+        ImGui::End();
+        return;
+    }
 
     // git/gh の存在チェック（1 度だけ）
     if (!m_gitChecked)
@@ -1560,18 +1567,20 @@ void Application::RenderVersionControlWindow()
 
     const std::string& root = m_projectInfo.rootDir;
 
-    // git 状態（repo/branch/remote）は重いので定期キャッシュ（毎フレーム git 起動を避ける）
-    m_gitRefreshTimer -= m_gameClock.GetDeltaTime();
-    if (m_gitRefreshTimer <= 0.0f)
+    // git 状態（repo/branch/remote/branches）は外部プロセスで重い。
+    // タブが開かれた瞬間(IsWindowAppearing)と、操作直後(m_gitForceRefresh)だけ取得する。
+    // → VC タブを表示したまま見てるだけの間は一切 git を叩かないので、定期ヒッチが出ない。
+    if (ImGui::IsWindowAppearing() || m_gitForceRefresh)
     {
-        m_gitRefreshTimer = 2.0f;
+        m_gitForceRefresh = false;
         m_gitRepoCache = GitIntegration::IsRepo(root);
         if (m_gitRepoCache)
         {
             m_gitBranchCache = GitIntegration::CurrentBranch(root);
             m_gitRemoteCache = GitIntegration::RemoteUrl(root);
+            m_gitBranches    = GitIntegration::ListBranches(root);
         }
-        else { m_gitBranchCache.clear(); m_gitRemoteCache.clear(); }
+        else { m_gitBranchCache.clear(); m_gitRemoteCache.clear(); m_gitBranches.clear(); }
     }
 
     auto icon = [](u64 h, float s) { if (h) { ImGui::Image(static_cast<ImTextureID>(h), ImVec2(s, s)); ImGui::SameLine(); } };
@@ -1584,7 +1593,7 @@ void Application::RenderVersionControlWindow()
         {
             auto r = GitIntegration::Init(root);
             m_gitOutput = r.output.empty() ? "git init 完了" : r.output;
-            m_gitRefreshTimer = 0.0f;  // 即再取得
+            m_gitForceRefresh = true;  // 即再取得
         }
         ImGui::End();
         return;
@@ -1596,22 +1605,90 @@ void Application::RenderVersionControlWindow()
     icon(m_icons.git, 18);
     ImGui::Text("ブランチ: %s", branch.empty() ? "(未コミット)" : branch.c_str());
     ImGui::TextWrapped("リモート: %s", remote.empty() ? "(未設定)" : remote.c_str());
+    if (m_ghAvailable && !m_ghUser.empty())
+    { ImGui::SameLine(); ImGui::TextDisabled("(@%s)", m_ghUser.c_str()); }
     ImGui::Separator();
 
-    ImGui::InputText("リモート URL", m_gitRemoteBuf.data(), m_gitRemoteBuf.size());
-    ImGui::SameLine();
-    if (ImGui::Button("設定"))
+    // ---- GitHub ログイン状態 ----
+    if (m_ghAvailable)
     {
-        if (m_gitRemoteBuf[0] != '\0')
+        if (!m_ghUserChecked)
         {
-            auto r = GitIntegration::AddRemote(root, m_gitRemoteBuf.data());
-            m_gitOutput = r.ok() ? "リモートを設定しました" : r.output;
-            m_gitRefreshTimer = 0.0f;
+            m_ghUser = GitIntegration::GitHubUser();
+            m_ghUserChecked = true;
+        }
+        icon(m_icons.github, 18);
+        if (m_ghUser.empty())
+        {
+            ImGui::Text("GitHub: 未ログイン");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("ログイン"))
+            {
+                GitIntegration::LaunchLogin();
+                m_gitOutput = "別ウィンドウでログインを進めてください。完了後「再確認」を押してや。";
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("再確認")) m_ghUserChecked = false;
+        }
+        else
+        {
+            ImGui::Text("GitHub: @%s", m_ghUser.c_str());
+            ImGui::SameLine();
+            if (ImGui::SmallButton("再確認")) m_ghUserChecked = false;
         }
     }
 
-    ImGui::Separator();
-    ImGui::InputText("コミットメッセージ", m_gitCommitMsgBuf.data(), m_gitCommitMsgBuf.size());
+    // ---- ブランチ ----
+    ImGui::SeparatorText("ブランチ");
+    {
+        const char* curBr = branch.empty() ? "(未コミット)" : branch.c_str();
+        ImGui::SetNextItemWidth(-80);
+        if (ImGui::BeginCombo("切替##branch", curBr))
+        {
+            for (const auto& b : m_gitBranches)
+                if (ImGui::Selectable(b.c_str(), b == branch) && b != branch)
+                {
+                    auto r = GitIntegration::CheckoutBranch(root, b);
+                    m_gitOutput = r.ok() ? ("ブランチを " + b + " に切替") : r.output;
+                    m_gitForceRefresh = true;
+                }
+            ImGui::EndCombo();
+        }
+
+        ImGui::SetNextItemWidth(-80);
+        ImGui::InputTextWithHint("##newbranch", "新しいブランチ名",
+                                 m_gitNewBranchBuf.data(), m_gitNewBranchBuf.size());
+        ImGui::SameLine();
+        if (ImGui::Button("作成切替") && m_gitNewBranchBuf[0] != '\0')
+        {
+            auto r = GitIntegration::CreateBranch(root, m_gitNewBranchBuf.data());
+            m_gitOutput = r.ok() ? (std::string("ブランチ ") + m_gitNewBranchBuf.data() + " を作成") : r.output;
+            m_gitNewBranchBuf.fill('\0');
+            m_gitForceRefresh = true;
+        }
+    }
+
+    // ---- リモート（origin 未設定時のみ手動 URL を出す）----
+    if (remote.empty())
+    {
+        ImGui::SeparatorText("リモート (origin 未設定)");
+        ImGui::SetNextItemWidth(-60);
+        ImGui::InputTextWithHint("##remote", "https://github.com/owner/repo.git",
+                                 m_gitRemoteBuf.data(), m_gitRemoteBuf.size());
+        ImGui::SameLine();
+        if (ImGui::Button("設定") && m_gitRemoteBuf[0] != '\0')
+        {
+            auto r = GitIntegration::AddRemote(root, m_gitRemoteBuf.data());
+            m_gitOutput = r.ok() ? "リモートを設定しました" : r.output;
+            m_gitForceRefresh = true;
+        }
+        ImGui::TextDisabled("クローンした場合は自動設定済みです");
+    }
+
+    ImGui::SeparatorText("コミット");
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputTextWithHint("##commitmsg", "コミットメッセージ",
+                             m_gitCommitMsgBuf.data(), m_gitCommitMsgBuf.size());
 
     icon(m_icons.commit, 22);
     if (ImGui::Button("コミット", ImVec2(130, 30)))
@@ -1635,7 +1712,22 @@ void Application::RenderVersionControlWindow()
         auto c = GitIntegration::CommitAll(root, m_gitCommitMsgBuf.data());
         auto p = GitIntegration::Push(root, true);
         m_gitOutput = c.output + "\n" + p.output;
-        m_gitRefreshTimer = 0.0f;
+        m_gitForceRefresh = true;
+    }
+
+    // ---- プル / フェッチ（リモートの変更を取り込む）----
+    if (ImGui::Button("プル (pull)", ImVec2(130, 26)))
+    {
+        auto r = GitIntegration::Pull(root);
+        m_gitOutput = r.output.empty() ? "プル完了" : r.output;
+        m_gitForceRefresh = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("フェッチ (fetch)", ImVec2(150, 26)))
+    {
+        auto r = GitIntegration::Fetch(root);
+        m_gitOutput = r.output.empty() ? "フェッチ完了" : r.output;
+        m_gitForceRefresh = true;
     }
 
     // ---- GitHub 連携（gh CLI）----
@@ -2393,7 +2485,7 @@ void Application::Render()
             {
                 m_editorCtx->undoSystem.PushCommand(
                     std::make_unique<SpawnEntityCommand>(
-                        m_scene.get(), &m_scene->GetRegistry(), spawnedEntity));
+                        m_scene.get(), PathResolver::AssetsDir(), spawnedEntity));
             }
             Logger::Info("Spawned: {}", name);
         }
@@ -2430,7 +2522,7 @@ void Application::Render()
             m_editorCtx->AddToSelection(copy);
             m_editorCtx->undoSystem.PushCommand(
                 std::make_unique<SpawnEntityCommand>(
-                    m_scene.get(), &m_scene->GetRegistry(), copy));
+                    m_scene.get(), PathResolver::AssetsDir(), copy));
             Logger::Info("Duplicated entity: {}",
                          m_scene->GetRegistry().get<NameTag>(copy).name);
         }
@@ -2460,7 +2552,7 @@ void Application::Render()
             m_editorCtx->AddToSelection(e);
             m_editorCtx->undoSystem.PushCommand(
                 std::make_unique<SpawnEntityCommand>(
-                    m_scene.get(), &m_scene->GetRegistry(), e));
+                    m_scene.get(), PathResolver::AssetsDir(), e));
             Logger::Info("Pasted entity: {}", reg.get<NameTag>(e).name);
         }
     }
@@ -2556,6 +2648,29 @@ void Application::Render()
         srvDesc.Texture2D.MipLevels = 1;
         m_graphicsDevice->GetDevice()->CreateShaderResourceView(
             m_shadowMap.Get(), &srvDesc, m_srvHeap->GetCpuHandle(m_shadowSrvIndex));
+    }
+
+    // ライトの向きを Transform 回転に追従させる（回転の変化分=デルタを direction に適用）。
+    // これでインスペクターの Transform 回転でもギズモ回転でも光の向きが変わる。
+    // direction を真実とし回転はデルタのみ与えるので、Direction 欄の直接編集とも共存できる。
+    {
+        auto& reg = m_scene->GetRegistry();
+        auto eq = [](const XMFLOAT3& r) {
+            return XMQuaternionRotationRollPitchYaw(
+                XMConvertToRadians(r.x), XMConvertToRadians(r.y), XMConvertToRadians(r.z));
+        };
+        auto applyDelta = [&](XMFLOAT3& dir, XMFLOAT3& prevRot, bool& init, const XMFLOAT3& rot) {
+            if (!init) { prevRot = rot; init = true; return; }
+            if (rot.x == prevRot.x && rot.y == prevRot.y && rot.z == prevRot.z) return;
+            XMVECTOR delta = XMQuaternionMultiply(XMQuaternionInverse(eq(prevRot)), eq(rot));
+            XMVECTOR nd = XMVector3Normalize(XMVector3Rotate(XMLoadFloat3(&dir), delta));
+            XMStoreFloat3(&dir, nd);
+            prevRot = rot;
+        };
+        for (auto [e, dl, tf] : reg.view<dx12e::DirectionalLight, const Transform>().each())
+            applyDelta(dl.direction, dl._prevRot, dl._prevRotInit, tf.rotation);
+        for (auto [e, sl, tf] : reg.view<dx12e::SpotLight, const Transform>().each())
+            applyDelta(sl.direction, sl._prevRot, sl._prevRotInit, tf.rotation);
     }
 
     // ライト方向: ECS の DirectionalLight から取得（なければデフォルト値）
@@ -2804,6 +2919,11 @@ void Application::Render()
 
             bool isGrid = reg.all_of<GridPlane>(e);
             bool isSkinned = reg.all_of<SkeletalAnimation>(e);
+
+            // エディタ補助のグリッドはゲームビュー（ゲーム/Play中）では描かない
+            const bool isGameView = (m_isGameMode || m_engineMode == EngineMode::Playing);
+            if (isGrid && isGameView)
+                continue;
 
             if (isGrid)
             {

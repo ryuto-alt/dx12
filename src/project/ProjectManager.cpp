@@ -1,10 +1,12 @@
 #include "project/ProjectManager.h"
+#include "project/GitIntegration.h"
 #include "core/Logger.h"
 
 #include <Windows.h>
 #include <fstream>
 #include <filesystem>
 #include <algorithm>
+#include <array>
 #include <thread>
 #include <commdlg.h>
 #include <ShlObj.h>
@@ -181,6 +183,36 @@ bool ProjectManager::NewProjectDialog(ProjectInfo& outInfo, HWND hwnd)
     return true;
 }
 
+// クローンしたフォルダから ProjectInfo を組み立てる。
+// .dx12proj があれば読み込み、無ければフォルダをプロジェクトルートとして合成する。
+static bool MakeProjectFromFolder(const std::string& repoDir, ProjectInfo& out)
+{
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!fs::exists(repoDir, ec)) return false;
+
+    // .dx12proj を探す
+    for (auto& e : fs::directory_iterator(repoDir, ec))
+    {
+        if (e.is_regular_file() && e.path().extension() == ".dx12proj")
+        {
+            if (Project::Load(e.path().string(), out))
+                return true;
+        }
+    }
+
+    // 無ければフォルダをそのままプロジェクトとして扱う
+    fs::path dir(repoDir);
+    out = ProjectInfo{};
+    out.name         = dir.filename().string();
+    if (out.name.empty()) out.name = "ClonedProject";
+    out.rootDir      = dir.string();
+    out.assetsDir    = (dir / "assets").string() + "/";
+    out.scriptsDir   = (dir / "scripts").string() + "/";
+    out.defaultScene = "scenes/default.json";
+    return true;
+}
+
 // アイコン付きの大きなアクションボタン（アイコン無しなら絵文字フォールバック）
 static bool IconActionButton(unsigned long long icon, const char* fallback,
                              const char* label, const char* sub, const ImVec2& size)
@@ -272,6 +304,97 @@ LauncherAction ProjectManager::RenderLauncher(ProjectInfo& outInfo, HWND hwnd,
     {
         if (OpenProjectDialog(outInfo, hwnd))
             action = LauncherAction::OpenExisting;
+    }
+
+    // --- Git からクローンして開く ---
+    static std::array<char, 512> s_cloneUrl{};
+    static std::string s_cloneStatus;
+    ImGui::SetCursorPosX(24);
+    if (IconActionButton(icons.openProject, "[G]", "Git からクローン",
+                         "URL を貼り付けてリポジトリを取得", ImVec2(btnW, 64)))
+    {
+        s_cloneStatus.clear();
+        ImGui::OpenPopup("Clone from Git");
+    }
+
+    // クローン用ポップアップ
+    ImGui::SetNextWindowSize(ImVec2(520, 0), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("Clone from Git", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::TextWrapped("リポジトリの URL を貼り付けて「クローン」を押すと、保存先フォルダを選んで取得します。");
+        ImGui::TextDisabled("例: https://github.com/owner/repo.git");
+        ImGui::Dummy(ImVec2(0, 4));
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputTextWithHint("##cloneurl", "https://github.com/owner/repo.git",
+                                 s_cloneUrl.data(), s_cloneUrl.size());
+
+        if (!GitIntegration::IsGitAvailable())
+            ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "git が見つかりません（PATH を通してください）");
+
+        if (!s_cloneStatus.empty())
+            ImGui::TextWrapped("%s", s_cloneStatus.c_str());
+
+        ImGui::Dummy(ImVec2(0, 4));
+        bool hasUrl = s_cloneUrl[0] != '\0';
+        ImGui::BeginDisabled(!hasUrl || !GitIntegration::IsGitAvailable());
+        if (ImGui::Button("クローン", ImVec2(160, 30)))
+        {
+            std::string parent;
+            if (PickFolder(hwnd, parent, L"クローン先の親フォルダを選択"))
+            {
+                s_cloneStatus = "クローン中...";
+                std::string repoDir;
+                auto r = GitIntegration::Clone(s_cloneUrl.data(), parent, repoDir);
+                if (r.ok() && MakeProjectFromFolder(repoDir, outInfo))
+                {
+                    AddToRecents(outInfo);
+                    action = LauncherAction::OpenExisting;
+                    s_cloneUrl.fill('\0');
+                    ImGui::CloseCurrentPopup();
+                }
+                else
+                {
+                    s_cloneStatus = r.output.empty() ? "クローンに失敗しました" : r.output;
+                }
+            }
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("閉じる", ImVec2(120, 30)))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+
+    // --- GitHub ログイン状態 ---
+    {
+        static bool s_loginChecked = false;
+        static std::string s_loginUser;
+        if (!s_loginChecked)
+        {
+            s_loginChecked = true;
+            if (GitIntegration::IsGhAvailable())
+                s_loginUser = GitIntegration::GitHubUser();
+        }
+        ImGui::SetCursorPosX(24);
+        if (!GitIntegration::IsGhAvailable())
+            ImGui::TextDisabled("GitHub CLI (gh) が無いため、ログインは使えません");
+        else if (s_loginUser.empty())
+        {
+            ImGui::TextDisabled("GitHub: 未ログイン");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("ログイン"))
+            {
+                GitIntegration::LaunchLogin();
+                s_loginChecked = false;  // 完了後の再表示で更新
+            }
+        }
+        else
+        {
+            ImGui::TextDisabled("GitHub: @%s でログイン中", s_loginUser.c_str());
+            ImGui::SameLine();
+            if (ImGui::SmallButton("再確認"))
+                s_loginChecked = false;
+        }
     }
 
     ImGui::Dummy(ImVec2(0, 8));

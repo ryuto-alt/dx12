@@ -59,10 +59,22 @@ void DeleteEntityCommand::Redo()
 // ── SpawnEntityCommand ──
 void SpawnEntityCommand::Undo()
 {
-    if (m_reg->valid(m_entity))
+    auto& reg = m_scene->GetRegistry();
+    if (reg.valid(m_entity))
     {
-        m_scene->Remove(Entity(m_entity, m_reg));
+        // Redo 用にスナップショットを取ってから削除する
+        m_snapshot = SceneSerializer::SerializeEntity(*m_scene, m_entity, m_assetsDir);
+        m_scene->Remove(Entity(m_entity, &reg));
     }
+}
+
+void SpawnEntityCommand::Redo()
+{
+    // 生成直後（まだ一度も Undo していない）はスナップショットが無いので何もしない
+    if (m_snapshot.empty()) return;
+    entt::entity e = SceneSerializer::InstantiateEntity(*m_scene, m_snapshot, m_assetsDir);
+    if (e != entt::null)
+        m_entity = e;  // 新しい ID に更新
 }
 
 } // namespace dx12e
