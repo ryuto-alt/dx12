@@ -81,6 +81,7 @@ if(DXC_EXECUTABLE)
 
     set(SHADER_FORWARD "${CMAKE_SOURCE_DIR}/shaders/forward/Forward.hlsl")
     set(SHADER_SKINNED "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardSkinned.hlsl")
+    set(SHADER_EMISSIVE "${CMAKE_SOURCE_DIR}/shaders/forward/Emissive.hlsl")
     # Forward/Skinned が include する共有ヘッダ（編集時に再コンパイルさせる）
     set(SHADER_FWD_INC
         "${CMAKE_SOURCE_DIR}/shaders/forward/PBR.hlsli"
@@ -94,6 +95,7 @@ if(DXC_EXECUTABLE)
     set(SHADER_SPRITE        "${CMAKE_SOURCE_DIR}/shaders/sprite/Sprite.hlsl")
     set(SHADER_ICON_BB       "${CMAKE_SOURCE_DIR}/shaders/editor/IconBillboard.hlsl")
     set(SHADER_TRANSITION    "${CMAKE_SOURCE_DIR}/shaders/post/Transition.hlsl")
+    set(SHADER_PARTICLE      "${CMAKE_SOURCE_DIR}/shaders/particle/Particle.hlsl")
 
     set(SHADER_OUTPUTS
         "${SHADER_OUTPUT_DIR}/Forward_VS.cso"
@@ -114,6 +116,10 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/IconBillboard_PS.cso"
         "${SHADER_OUTPUT_DIR}/Transition_VS.cso"
         "${SHADER_OUTPUT_DIR}/Transition_PS.cso"
+        "${SHADER_OUTPUT_DIR}/Emissive_VS.cso"
+        "${SHADER_OUTPUT_DIR}/Emissive_PS.cso"
+        "${SHADER_OUTPUT_DIR}/Particle_VS.cso"
+        "${SHADER_OUTPUT_DIR}/Particle_PS.cso"
     )
 
     add_custom_command(
@@ -240,6 +246,34 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E TransPS -Fo "${SHADER_OUTPUT_DIR}/Transition_PS.cso" "${SHADER_TRANSITION}"
         DEPENDS "${SHADER_TRANSITION}" "${SHADER_POST_INC}"
         COMMENT "Compiling Transition.hlsl -> Transition_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/Emissive_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/Emissive_VS.cso" "${SHADER_EMISSIVE}"
+        DEPENDS "${SHADER_EMISSIVE}"
+        COMMENT "Compiling Emissive.hlsl -> Emissive_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/Emissive_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/Emissive_PS.cso" "${SHADER_EMISSIVE}"
+        DEPENDS "${SHADER_EMISSIVE}"
+        COMMENT "Compiling Emissive.hlsl -> Emissive_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/Particle_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/Particle_VS.cso" "${SHADER_PARTICLE}"
+        DEPENDS "${SHADER_PARTICLE}"
+        COMMENT "Compiling Particle.hlsl -> Particle_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/Particle_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/Particle_PS.cso" "${SHADER_PARTICLE}"
+        DEPENDS "${SHADER_PARTICLE}"
+        COMMENT "Compiling Particle.hlsl -> Particle_PS.cso (ps_6_0)"
     )
 
     add_custom_target(Shaders ALL DEPENDS ${SHADER_OUTPUTS})

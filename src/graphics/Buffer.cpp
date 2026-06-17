@@ -46,83 +46,23 @@ void VertexBuffer::Initialize(GraphicsDevice& device, const void* data, u32 size
     DX_ASSERT(data, "Vertex data must not be null");
     DX_ASSERT(sizeInBytes > 0, "Vertex buffer size must be > 0");
 
-    auto* d3dDevice  = device.GetDevice();
-    auto* allocator  = device.GetAllocator();
+    // UPLOAD ヒープに直接作成して map+memcpy するだけ。
+    // 旧実装は DEFAULT へコピーするため毎回 一時CommandQueue＋フェンス待ち(GPUフルストール)を
+    // していた → メッシュ生成のたびにメインスレッドが固まる原因。これを撤廃して即時生成にする。
+    // （アイコン/デバッグ描画も UPLOAD ヒープの頂点バッファを使用＝実績あり。
+    //   小〜中サイズのメッシュなら GPU 読み出しコストは無視できる）
+    CreateBuffer(device.GetAllocator(), sizeInBytes,
+                 D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_HEAP_TYPE_UPLOAD);
 
-    // DEFAULT ヒープにバッファ作成
-    CreateBuffer(allocator, sizeInBytes, D3D12_RESOURCE_STATE_COMMON, D3D12_HEAP_TYPE_DEFAULT);
-
-    // UPLOAD ヒープに一時バッファ作成
-    D3D12_RESOURCE_DESC uploadDesc{};
-    uploadDesc.Dimension          = D3D12_RESOURCE_DIMENSION_BUFFER;
-    uploadDesc.Alignment          = 0;
-    uploadDesc.Width              = sizeInBytes;
-    uploadDesc.Height             = 1;
-    uploadDesc.DepthOrArraySize   = 1;
-    uploadDesc.MipLevels          = 1;
-    uploadDesc.Format             = DXGI_FORMAT_UNKNOWN;
-    uploadDesc.SampleDesc.Count   = 1;
-    uploadDesc.SampleDesc.Quality = 0;
-    uploadDesc.Layout             = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    uploadDesc.Flags              = D3D12_RESOURCE_FLAG_NONE;
-
-    D3D12_HEAP_PROPERTIES uploadHeapProps{};
-    uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
-
-    ThrowIfFailed(d3dDevice->CreateCommittedResource(
-        &uploadHeapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &uploadDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr,
-        IID_PPV_ARGS(&m_uploadBuffer)));
-
-    // Upload バッファにデータをコピー
     void* mapped = nullptr;
     D3D12_RANGE readRange{0, 0};
-    ThrowIfFailed(m_uploadBuffer->Map(0, &readRange, &mapped));
+    ThrowIfFailed(m_resource->Map(0, &readRange, &mapped));
     std::memcpy(mapped, data, sizeInBytes);
-    m_uploadBuffer->Unmap(0, nullptr);
+    m_resource->Unmap(0, nullptr);
 
-    // 一時的な CommandQueue + Allocator + List を作成してコピー
-    Microsoft::WRL::ComPtr<ID3D12CommandQueue>     tempQueue;
-    Microsoft::WRL::ComPtr<ID3D12CommandAllocator>  tempAllocator;
-    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> tempCmdList;
-    Microsoft::WRL::ComPtr<ID3D12Fence>             tempFence;
-
-    D3D12_COMMAND_QUEUE_DESC queueDesc{};
-    queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-    ThrowIfFailed(d3dDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&tempQueue)));
-    ThrowIfFailed(d3dDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&tempAllocator)));
-    ThrowIfFailed(d3dDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, tempAllocator.Get(), nullptr, IID_PPV_ARGS(&tempCmdList)));
-
-    tempCmdList->CopyBufferRegion(m_resource.Get(), 0, m_uploadBuffer.Get(), 0, sizeInBytes);
-    ThrowIfFailed(tempCmdList->Close());
-
-    ID3D12CommandList* lists[] = { tempCmdList.Get() };
-    tempQueue->ExecuteCommandLists(1, lists);
-
-    // フェンスで完了待ち
-    ThrowIfFailed(d3dDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&tempFence)));
-    ThrowIfFailed(tempQueue->Signal(tempFence.Get(), 1));
-
-    if (tempFence->GetCompletedValue() < 1)
-    {
-        HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-        DX_ASSERT(event != nullptr, "Failed to create fence event");
-        ThrowIfFailed(tempFence->SetEventOnCompletion(1, event));
-        WaitForSingleObject(event, INFINITE);
-        CloseHandle(event);
-    }
-
-    m_currentState = D3D12_RESOURCE_STATE_COMMON;
-
-    // VBV 設定
     m_view.BufferLocation = m_resource->GetGPUVirtualAddress();
     m_view.SizeInBytes    = sizeInBytes;
     m_view.StrideInBytes  = strideInBytes;
-
-    Logger::Info("VertexBuffer created: {} bytes, stride {}", sizeInBytes, strideInBytes);
 }
 
 void VertexBuffer::FinishUpload()
@@ -138,86 +78,22 @@ void IndexBuffer::Initialize(GraphicsDevice& device, const u32* indices, u32 ind
     DX_ASSERT(indices, "Index data must not be null");
     DX_ASSERT(indexCount > 0, "Index count must be > 0");
 
-    auto* d3dDevice = device.GetDevice();
-    auto* allocator = device.GetAllocator();
-
     u32 sizeInBytes = indexCount * sizeof(u32);
     m_indexCount    = indexCount;
 
-    // DEFAULT ヒープにバッファ作成
-    CreateBuffer(allocator, sizeInBytes, D3D12_RESOURCE_STATE_COMMON, D3D12_HEAP_TYPE_DEFAULT);
+    // UPLOAD ヒープに直接作成（VertexBuffer と同じく即時・GPUストールなし）
+    CreateBuffer(device.GetAllocator(), sizeInBytes,
+                 D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_HEAP_TYPE_UPLOAD);
 
-    // UPLOAD ヒープに一時バッファ作成
-    D3D12_RESOURCE_DESC uploadDesc{};
-    uploadDesc.Dimension          = D3D12_RESOURCE_DIMENSION_BUFFER;
-    uploadDesc.Alignment          = 0;
-    uploadDesc.Width              = sizeInBytes;
-    uploadDesc.Height             = 1;
-    uploadDesc.DepthOrArraySize   = 1;
-    uploadDesc.MipLevels          = 1;
-    uploadDesc.Format             = DXGI_FORMAT_UNKNOWN;
-    uploadDesc.SampleDesc.Count   = 1;
-    uploadDesc.SampleDesc.Quality = 0;
-    uploadDesc.Layout             = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    uploadDesc.Flags              = D3D12_RESOURCE_FLAG_NONE;
-
-    D3D12_HEAP_PROPERTIES uploadHeapProps{};
-    uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
-
-    ThrowIfFailed(d3dDevice->CreateCommittedResource(
-        &uploadHeapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &uploadDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr,
-        IID_PPV_ARGS(&m_uploadBuffer)));
-
-    // Upload バッファにデータをコピー
     void* mapped = nullptr;
     D3D12_RANGE readRange{0, 0};
-    ThrowIfFailed(m_uploadBuffer->Map(0, &readRange, &mapped));
+    ThrowIfFailed(m_resource->Map(0, &readRange, &mapped));
     std::memcpy(mapped, indices, sizeInBytes);
-    m_uploadBuffer->Unmap(0, nullptr);
+    m_resource->Unmap(0, nullptr);
 
-    // 一時的な CommandQueue + Allocator + List を作成してコピー
-    Microsoft::WRL::ComPtr<ID3D12CommandQueue>        tempQueue;
-    Microsoft::WRL::ComPtr<ID3D12CommandAllocator>     tempAllocator;
-    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList>  tempCmdList;
-    Microsoft::WRL::ComPtr<ID3D12Fence>                tempFence;
-
-    D3D12_COMMAND_QUEUE_DESC queueDesc{};
-    queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-    ThrowIfFailed(d3dDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&tempQueue)));
-    ThrowIfFailed(d3dDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&tempAllocator)));
-    ThrowIfFailed(d3dDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, tempAllocator.Get(), nullptr, IID_PPV_ARGS(&tempCmdList)));
-
-    tempCmdList->CopyBufferRegion(m_resource.Get(), 0, m_uploadBuffer.Get(), 0, sizeInBytes);
-    ThrowIfFailed(tempCmdList->Close());
-
-    ID3D12CommandList* lists[] = { tempCmdList.Get() };
-    tempQueue->ExecuteCommandLists(1, lists);
-
-    // フェンスで完了待ち
-    ThrowIfFailed(d3dDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&tempFence)));
-    ThrowIfFailed(tempQueue->Signal(tempFence.Get(), 1));
-
-    if (tempFence->GetCompletedValue() < 1)
-    {
-        HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-        DX_ASSERT(event != nullptr, "Failed to create fence event");
-        ThrowIfFailed(tempFence->SetEventOnCompletion(1, event));
-        WaitForSingleObject(event, INFINITE);
-        CloseHandle(event);
-    }
-
-    m_currentState = D3D12_RESOURCE_STATE_COMMON;
-
-    // IBV 設定
     m_view.BufferLocation = m_resource->GetGPUVirtualAddress();
     m_view.SizeInBytes    = sizeInBytes;
     m_view.Format         = DXGI_FORMAT_R32_UINT;
-
-    Logger::Info("IndexBuffer created: {} indices ({} bytes)", indexCount, sizeInBytes);
 }
 
 void IndexBuffer::FinishUpload()

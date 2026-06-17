@@ -239,4 +239,18 @@ void Mesh::ApplyUVScale(GraphicsDevice& device, float scaleU, float scaleV)
                               static_cast<u32>(sizeof(Vertex)));
 }
 
+void Mesh::SetVertexColor(GraphicsDevice& device, float r, float g, float b, float a)
+{
+    if (m_verticesCache.empty()) return;
+
+    // キャッシュごと色を確定（以後の ApplyUVScale でも色が保たれる）
+    for (auto& v : m_verticesCache)
+        v.color = { r, g, b, a };
+
+    m_vertexBuffer.Initialize(device,
+                              m_verticesCache.data(),
+                              static_cast<u32>(m_verticesCache.size() * sizeof(Vertex)),
+                              static_cast<u32>(sizeof(Vertex)));
+}
+
 } // namespace dx12e

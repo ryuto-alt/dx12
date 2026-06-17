@@ -89,6 +89,14 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                 }
             }
 
+            // 頂点カラー保存（プリミティブのみ。モデルは頂点ごとの色を壊さないよう除外）
+            if (mr.modelPath.rfind("__primitive_", 0) == 0 && !mr.meshes.empty() && mr.meshes[0])
+            {
+                auto c = mr.meshes[0]->GetVertexColor();
+                if (c.x < 0.999f || c.y < 0.999f || c.z < 0.999f)
+                    ej["color"] = json::array({ c.x, c.y, c.z });
+            }
+
             // PBR Material パラメータ保存（オーバーライド値優先）
             if (!mr.meshes.empty() && mr.meshes[0] && mr.meshes[0]->GetMaterial())
             {
@@ -571,6 +579,16 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                     if (mj.contains("metallic"))  mr.overrideMetallic  = mj["metallic"].get<f32>();
                     if (mj.contains("roughness")) mr.overrideRoughness = mj["roughness"].get<f32>();
                 }
+            }
+
+            // 頂点カラー復元（uvTiling より先に。色は m_verticesCache に焼くため）
+            if (ej.contains("color") && reg.all_of<MeshRenderer>(e))
+            {
+                auto c = DeserializeFloat3(ej["color"], {1, 1, 1});
+                auto& mr = reg.get<MeshRenderer>(e);
+                if (auto* dev = scene.GetDevice())
+                    for (auto* mesh : mr.meshes)
+                        if (mesh) mesh->SetVertexColor(*dev, c.x, c.y, c.z, 1.0f);
             }
 
             // UV タイリング復元

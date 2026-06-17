@@ -11,6 +11,7 @@
 #include "scene/Entity.h"
 #include "ecs/Components.h"
 #include "renderer/Mesh.h"
+#include "renderer/ParticleSystem.h"
 #include "input/InputSystem.h"
 #include "renderer/Camera.h"
 #include "audio/AudioSystem.h"
@@ -243,6 +244,18 @@ void ScriptEngine::RegisterBindings()
             {
                 if (mesh) mesh->ApplyUVScale(*device, u, v);
             }
+        },
+        // 頂点カラーで色付け（生成時に1度だけ。GPU 同期を伴うため毎フレーム禁止）
+        "setColor", [](Scene& s, Entity& e, float r, float g, float b) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<MeshRenderer>(e.GetHandle())) return;
+            auto& mr = reg.get<MeshRenderer>(e.GetHandle());
+            auto* device = s.GetDevice();
+            if (!device) return;
+            for (auto* mesh : mr.meshes)
+            {
+                if (mesh) mesh->SetVertexColor(*device, r, g, b, 1.0f);
+            }
         }
     );
 
@@ -331,6 +344,13 @@ void ScriptEngine::RegisterBindings()
     // --- ユーティリティ ---
     lua["log"] = [](const std::string& msg) { Logger::Info("[Lua] {}", msg); };
 
+    // --- シーンをまたいで残る数値ストレージ（スコア受け渡し等）---
+    lua["saveNum"] = [this](const std::string& key, double v) { m_blackboard[key] = v; };
+    lua["loadNum"] = [this](const std::string& key, sol::optional<double> def) -> double {
+        auto it = m_blackboard.find(key);
+        return (it != m_blackboard.end()) ? it->second : def.value_or(0.0);
+    };
+
     // --- ゲーム制御（Application が注入したコールバック経由）---
     lua["loadScene"] = [this](const std::string& rel) { if (m_loadSceneCb) m_loadSceneCb(rel); };
     lua["nextScene"] = [this]() { if (m_nextSceneCb) m_nextSceneCb(); };
@@ -366,6 +386,55 @@ void ScriptEngine::RegisterBindings()
             {
                 if (m_uiImageCb) m_uiImageCb(x, y, w, h, path);
             });
+    }
+
+    // --- パーティクル / VFX（fx テーブル）---
+    // fx:burst{...} 飛散, fx:ring{...} 衝撃波リング, fx:pulse(amt) 画面パルス, fx:clear()
+    // テーブルのキー: x,y,z,count,spread,speed,speedVar,size,sizeEnd,life,lifeVar,
+    //                r,g,b, rEnd,gEnd,bEnd, intensity,gravity,drag,up,dx,dy,dz
+    {
+        auto buildParams = [](sol::table t) -> ParticleSystem::EmitParams {
+            ParticleSystem::EmitParams p;
+            p.pos      = { t.get_or("x", 0.0f), t.get_or("y", 0.6f), t.get_or("z", 0.0f) };
+            p.count    = t.get_or("count", 16);
+            p.dir      = { t.get_or("dx", 0.0f), t.get_or("dy", 1.0f), t.get_or("dz", 0.0f) };
+            p.spread   = t.get_or("spread", 1.0f);
+            p.speed    = t.get_or("speed", 6.0f);
+            p.speedVar = t.get_or("speedVar", 0.5f);
+            p.size     = t.get_or("size", 0.4f);
+            p.sizeEnd  = t.get_or("sizeEnd", 0.0f);
+            p.life     = t.get_or("life", 0.6f);
+            p.lifeVar  = t.get_or("lifeVar", 0.3f);
+            p.color    = { t.get_or("r", 1.0f), t.get_or("g", 1.0f), t.get_or("b", 1.0f) };
+            sol::optional<float> re = t["rEnd"], ge = t["gEnd"], be = t["bEnd"];
+            if (re || ge || be) {
+                p.hasColorEnd = true;
+                p.colorEnd = { re.value_or(p.color.x), ge.value_or(p.color.y), be.value_or(p.color.z) };
+            }
+            p.intensity = t.get_or("intensity", 3.0f);
+            p.gravity   = t.get_or("gravity", 0.0f);
+            p.drag      = t.get_or("drag", 1.0f);
+            p.up        = t.get_or("up", 0.0f);
+            return p;
+        };
+
+        auto fx = lua.create_named_table("fx");
+        fx.set_function("burst", [this, buildParams](sol::object, sol::table t) {
+            if (!m_particleSystem) return;
+            auto p = buildParams(t); p.ring = false;
+            m_particleSystem->Emit(p);
+        });
+        fx.set_function("ring", [this, buildParams](sol::object, sol::table t) {
+            if (!m_particleSystem) return;
+            auto p = buildParams(t); p.ring = true;
+            m_particleSystem->Emit(p);
+        });
+        fx.set_function("pulse", [this](sol::object, sol::optional<float> amt) {
+            if (m_particleSystem) m_particleSystem->AddPulse(amt.value_or(0.5f));
+        });
+        fx.set_function("clear", [this](sol::object) {
+            if (m_particleSystem) m_particleSystem->Clear();
+        });
     }
 
     RegisterPhysicsBindings();
@@ -632,6 +701,62 @@ end
 -- ===== シーン遷移（フェード付きの分かりやすい別名）=====
 function goToScene(path, dur) fadeToScene(path, dur or 0.6) end
 function win(dur)  nextScene() end
+
+-- ============================================================
+--  FX: ド派手パーティクルプリセット（fx:burst / fx:ring を包む）
+--  どのゲームスクリプトからも FX.explosion(...) 等で呼べる。
+--  色は 0..1、intensity>1 で HDR 白熱 → ブルームで光る。
+-- ============================================================
+FX = {}
+
+-- 爆発（撃破など）: 火球コア + 白い飛散火花
+function FX.explosion(x, y, z, scale, r, g, b)
+  scale = scale or 1.0
+  r = r or 1.0; g = g or 0.45; b = b or 0.12
+  fx:burst{ x=x, y=y, z=z, count=math.floor(20*scale), spread=1, speed=7*scale, speedVar=0.5,
+            size=0.55*scale, sizeEnd=0.02, life=0.5, lifeVar=0.35,
+            r=r, g=g, b=b, rEnd=r*0.6, gEnd=g*0.4, bEnd=b*0.2,
+            intensity=5, gravity=-5, drag=2.5, up=0.6 }
+  fx:burst{ x=x, y=y, z=z, count=math.floor(10*scale), spread=1, speed=13*scale, speedVar=0.4,
+            size=0.18*scale, sizeEnd=0.0, life=0.4, lifeVar=0.3,
+            r=1, g=0.95, b=0.7, intensity=8, drag=1.5 }
+end
+
+-- 衝撃波リング（ノヴァ等）: XZ平面に等間隔で外へ
+function FX.shockwave(x, y, z, count, speed, r, g, b)
+  fx:ring{ x=x, y=y, z=z, count=count or 28, speed=speed or 16, speedVar=0.0,
+           size=0.6, sizeEnd=0.05, life=0.55, lifeVar=0.0,
+           r=r or 0.6, g=g or 1.0, b=b or 1.0, intensity=6, drag=1.2 }
+end
+
+-- 着弾火花（小さく速い）
+function FX.spark(x, y, z, count, r, g, b)
+  fx:burst{ x=x, y=y, z=z, count=count or 6, spread=1, speed=9, speedVar=0.5,
+            size=0.16, sizeEnd=0.0, life=0.3, lifeVar=0.3,
+            r=r or 0.6, g=g or 0.95, b=b or 1.0, intensity=7, drag=2 }
+end
+
+-- 立ち上る軌跡/オーラ点（1粒ずつ毎フレーム呼ぶ用）
+function FX.trail(x, y, z, r, g, b)
+  fx:burst{ x=x, y=y, z=z, count=1, spread=0.4, dy=1, speed=1.5, speedVar=0.5,
+            size=0.22, sizeEnd=0.0, life=0.45, lifeVar=0.3,
+            r=r or 1, g=g or 0.9, b=b or 0.4, intensity=4, gravity=2, drag=1 }
+end
+
+-- レベルアップ超新星: 金リング + 大量火花 + 画面パルス
+function FX.supernova(x, y, z, scale)
+  scale = scale or 1.0
+  fx:ring{ x=x, y=y, z=z, count=40, speed=20*scale, size=0.7, sizeEnd=0.05, life=0.7,
+           r=1, g=0.85, b=0.3, intensity=8, drag=1 }
+  fx:burst{ x=x, y=y, z=z, count=60, spread=1, speed=10*scale, speedVar=0.5,
+            size=0.5, sizeEnd=0.0, life=0.8, lifeVar=0.4,
+            r=1, g=0.95, b=0.6, rEnd=1, gEnd=0.5, bEnd=0.1,
+            intensity=7, gravity=-4, drag=1.5, up=0.5 }
+  fx:pulse(0.8)
+end
+
+-- ヒット時の画面パルス（クロマ + 放射ブラー）
+function FX.hit(amount) fx:pulse(amount or 0.5) end
 )LUA";
 
     auto r = m_lua->safe_script(kPrelude, sol::script_pass_on_error);
@@ -640,6 +765,13 @@ function win(dur)  nextScene() end
         sol::error err = r;
         Logger::Error("ScriptEngine prelude error: {}", err.what());
     }
+}
+
+void ScriptEngine::SetScreenSize(int w, int h)
+{
+    if (!m_lua) return;
+    (*m_lua)["SCREEN_W"] = w;
+    (*m_lua)["SCREEN_H"] = h;
 }
 
 void ScriptEngine::LoadScript(const std::string& filePath)

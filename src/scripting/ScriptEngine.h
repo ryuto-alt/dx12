@@ -3,6 +3,7 @@
 #include <string>
 #include <memory>
 #include <functional>
+#include <unordered_map>
 #include "core/Types.h"
 #include <entt/entt.hpp>
 
@@ -18,6 +19,7 @@ class InputSystem;
 class Camera;
 class AudioSystem;
 class PhysicsSystem;
+class ParticleSystem;
 
 class ScriptEngine
 {
@@ -35,7 +37,14 @@ public:
     // プロジェクト切替時に assets ベースを再設定（スクリプトの相対パス解決用）
     void SetAssetsDir(const std::string& assetsDir) { m_assetsDir = assetsDir; }
 
+    // パーティクルシステムを Lua fx API へ公開（Application が一度だけ注入）。
+    // ポインタはメンバに保持され、Initialize 再実行（シーン切替）後の fx バインドも参照する。
+    void SetParticleSystem(ParticleSystem* p) { m_particleSystem = p; }
+
     void LoadScript(const std::string& filePath);
+
+    // 画面サイズを Lua グローバル SCREEN_W / SCREEN_H に公開（UI レイアウト用）
+    void SetScreenSize(int w, int h);
 
     // ゲームライフサイクル
     void CallOnStart();
@@ -84,8 +93,14 @@ private:
     Camera*        m_camera  = nullptr;
     AudioSystem*   m_audio   = nullptr;
     PhysicsSystem* m_physics = nullptr;
+    ParticleSystem* m_particleSystem = nullptr;
     std::string  m_assetsDir;
     std::string  m_lastError;
+
+    // シーン切替（Shutdown→Initialize で lua state は作り直される）をまたいで
+    // 残す数値ストレージ。Lua: saveNum(key,val) / loadNum(key,default)。
+    // 例: ゲームシーンでスコアを保存 → リザルトシーンで読み出す。
+    std::unordered_map<std::string, double> m_blackboard;
 
     LoadSceneCb  m_loadSceneCb;
     VoidCb       m_nextSceneCb;

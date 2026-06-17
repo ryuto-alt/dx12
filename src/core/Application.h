@@ -35,6 +35,7 @@ namespace dx12e
     class CommandList;
     class RenderTarget;
     class PostProcess;
+    class ParticleSystem;
     class SpriteRenderer;
     class SceneTransition;
     class SceneFlow;
@@ -124,6 +125,7 @@ private:
     std::unique_ptr<ImGuiManager>      m_imguiManager;
     std::unique_ptr<PipelineState>     m_skinnedPipelineState;
     std::unique_ptr<PipelineState>     m_gridPipelineState;
+    std::unique_ptr<PipelineState>     m_emissivePipelineState;  // 加算発光パーティクル用
     std::unique_ptr<PipelineState>     m_shadowPipelineState;
     std::unique_ptr<PipelineState>     m_shadowSkinnedPipelineState;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_shadowMap;
@@ -195,6 +197,7 @@ private:
     std::unique_ptr<DescriptorHeap> m_offscreenRtvHeap;
     std::unique_ptr<RenderTarget>   m_sceneRT;
     std::unique_ptr<PostProcess>    m_postProcess;
+    std::unique_ptr<ParticleSystem> m_particleSystem;  // 加算ビルボードパーティクル（Lua fx API）
 
     // カメラプレビュー（選択カメラ視点を小窓表示）。専用 RT + 専用 per-frame CB。
     std::unique_ptr<RenderTarget>   m_cameraPreviewRT;

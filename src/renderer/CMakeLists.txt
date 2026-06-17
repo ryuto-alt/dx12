@@ -5,6 +5,7 @@ add_library(Renderer STATIC
     PostProcess.cpp
     SpriteRenderer.cpp
     SceneTransition.cpp
+    ParticleSystem.cpp
 )
 target_include_directories(Renderer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 

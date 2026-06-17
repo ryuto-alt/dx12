@@ -44,10 +44,20 @@ public:
 
     DirectX::XMFLOAT3 GetAABBMin() const { return m_aabbMin; }
     DirectX::XMFLOAT3 GetAABBMax() const { return m_aabbMax; }
+
+    // 現在の頂点カラー（シーン保存用。キャッシュの先頭頂点を代表値とする）
+    DirectX::XMFLOAT4 GetVertexColor() const {
+        return m_verticesCache.empty() ? DirectX::XMFLOAT4{1.0f, 1.0f, 1.0f, 1.0f}
+                                       : m_verticesCache[0].color;
+    }
     const std::vector<DirectX::XMFLOAT3>& GetPositions() const { return m_positions; }
 
     // UV スケール適用（頂点の texCoord を乗算して VertexBuffer を再作成）
     void ApplyUVScale(GraphicsDevice& device, float scaleU, float scaleV);
+
+    // 頂点カラーを一括設定して VertexBuffer を再作成（Forward.hlsl が albedo に乗算）。
+    // GPU アップロード同期を伴うので毎フレームではなく生成時に1度だけ呼ぶこと。
+    void SetVertexColor(GraphicsDevice& device, float r, float g, float b, float a = 1.0f);
 
     static const D3D12_INPUT_ELEMENT_DESC* GetInputLayout();
     static u32 GetInputLayoutCount();

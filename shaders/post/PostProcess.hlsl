@@ -67,6 +67,13 @@ static float3 HueRotate(float3 col, float angle)
 
 static float Rand(float2 p) { return frac(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453); }
 
+// ACES フィルミックトーンマップ（Narkowicz 近似）。HDR(RGBA16F)→表示用にロールオフ。
+static float3 ACESFilm(float3 x)
+{
+    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
+}
+
 // 4x4 Bayer 順序ディザ閾値（godotshaders の ordered dithering 由来）
 static float Bayer4(float2 px)
 {
@@ -88,9 +95,9 @@ float4 PostPS(FSQuadVSOut i) : SV_TARGET
     float  time  = texelTime.z;
     uint   mask  = (uint)masks.x;
 
-    // マスター無効（全ビット 0）は素通し
+    // マスター無効（全ビット 0）でも HDR バッファなのでトーンマップは通す
     if (mask == 0u)
-        return float4(SampleScene(i.uv * scale + ofs), 1.0);
+        return float4(ACESFilm(SampleScene(i.uv * scale + ofs)), 1.0);
 
     float2 luv    = i.uv;          // ビューポートローカル 0..1
     bool   crtOut = false;
@@ -191,18 +198,27 @@ float4 PostPS(FSQuadVSOut i) : SV_TARGET
     if (mask & E_EXPOSURE)   col *= cg0.x;                       // 露出
     if (mask & E_BRIGHTNESS) col += cg0.z;                       // 明るさ（加算）
 
-    // --- ブルーム ---
+    // --- ブルーム（HDR上で3スケールの広く柔らかいハロー）---
     if (mask & E_BLOOM)
     {
         float th = cg1.w;
         float3 b = 0.0;
-        [unroll] for (int x = -2; x <= 2; ++x)
-        [unroll] for (int y = -2; y <= 2; ++y)
+        float wsum = 0.0;
+        [unroll] for (int s = 0; s < 3; ++s)
         {
-            float3 sc = SampleScene(uv + float2(x, y) * texel * 1.5);
-            b += max(sc - th, 0.0);
+            float rad = (s + 1.0) * 2.5;     // 2.5 / 5 / 7.5 px
+            float w   = 1.0 / (s + 1.0);     // 内側ほど強い
+            [unroll] for (int k = 0; k < 8; ++k)
+            {
+                float ang = (k / 8.0) * 6.2831853;
+                float2 o  = float2(cos(ang), sin(ang)) * rad * texel;
+                b += max(SampleScene(uv + o) - th, 0.0) * w;
+                wsum += w;
+            }
+            b += max(SampleScene(uv) - th, 0.0) * w;
+            wsum += w;
         }
-        col += (b / 25.0) * cg1.z * 3.0;
+        col += (b / max(wsum, 1.0)) * cg1.z * 4.0;
     }
 
     if (mask & E_CONTRAST)   col = (col - 0.5) * cg0.y + 0.5;    // コントラスト
@@ -292,5 +308,5 @@ float4 PostPS(FSQuadVSOut i) : SV_TARGET
         col *= saturate(1.0 - dot(d, d) * 2.0 * tintVig.w);
     }
 
-    return float4(saturate(col), 1.0);
+    return float4(ACESFilm(col), 1.0);
 }

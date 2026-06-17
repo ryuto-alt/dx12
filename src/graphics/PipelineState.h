@@ -27,6 +27,7 @@ public:
     PipelineStateBuilder& SetDepthEnabled(bool enabled);
     PipelineStateBuilder& SetDepthWrite(bool enabled);  // 深度テストは残しつつ書き込みのみ制御（半透明オーバーレイ用）
     PipelineStateBuilder& SetAlphaBlendEnabled(bool enabled);
+    PipelineStateBuilder& SetAdditiveBlendEnabled(bool enabled);  // 加算合成（発光パーティクル用）
     PipelineStateBuilder& SetCullMode(D3D12_CULL_MODE mode);
     PipelineStateBuilder& SetDepthBias(i32 bias, f32 slopeScaledBias);
 

@@ -20,6 +20,7 @@
 #include "renderer/Material.h"
 #include "renderer/Camera.h"
 #include "renderer/PostProcess.h"
+#include "renderer/ParticleSystem.h"
 #include "renderer/SpriteRenderer.h"
 #include "renderer/SceneTransition.h"
 #include "resource/ShaderCompiler.h"
@@ -76,6 +77,12 @@
 
 namespace dx12e
 {
+
+// オフスクリーンのシーンカラーは HDR(FP16) で描く。発光が 1.0 を超えられるので
+// ブルームとトーンマップで「白熱して光る」パーティクル/エフェクトが出せる。
+// scene RT / cameraPreview RT、およびそこへ描く 3D PSO 群はこの形式で揃える。
+// （バックバッファ＝スワップチェインは従来どおりスワップ形式のまま）
+static constexpr DXGI_FORMAT kSceneColorFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
 // フルパスを assets ディレクトリ相対へ（シーンフロー / loadScene 用）
 static std::string ToAssetRel(const std::string& full)
@@ -356,7 +363,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                    .SetVertexShader(vs.GetData(), vs.GetSize())
                    .SetPixelShader(ps.GetData(), ps.GetSize())
                    .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
-                   .SetRenderTargetFormat(m_swapChain->GetFormat())
+                   .SetRenderTargetFormat(kSceneColorFormat)
                    .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
                    .SetDepthEnabled(true)
                    .SetCullMode(D3D12_CULL_MODE_NONE);
@@ -375,7 +382,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                    .SetVertexShader(vs.GetData(), vs.GetSize())
                    .SetPixelShader(ps.GetData(), ps.GetSize())
                    .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
-                   .SetRenderTargetFormat(m_swapChain->GetFormat())
+                   .SetRenderTargetFormat(kSceneColorFormat)
                    .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
                    .SetDepthEnabled(true)
                    .SetDepthWrite(false)        // 深度を書かない＝床など同一平面の不透明物を隠さない
@@ -385,6 +392,27 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
             m_gridPipelineState = std::make_unique<PipelineState>();
             m_gridPipelineState->Initialize(*m_graphicsDevice, builder);
+        }
+
+        // 加算発光 PSO（パーティクル用）：ライティング無視・加算合成・深度書き込みOFF
+        {
+            auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Emissive_VS.cso");
+            auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Emissive_PS.cso");
+
+            PipelineStateBuilder builder;
+            builder.SetRootSignature(m_rootSignature->Get())
+                   .SetVertexShader(vs.GetData(), vs.GetSize())
+                   .SetPixelShader(ps.GetData(), ps.GetSize())
+                   .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
+                   .SetRenderTargetFormat(kSceneColorFormat)
+                   .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+                   .SetDepthEnabled(true)
+                   .SetDepthWrite(false)
+                   .SetAdditiveBlendEnabled(true)
+                   .SetCullMode(D3D12_CULL_MODE_NONE);
+
+            m_emissivePipelineState = std::make_unique<PipelineState>();
+            m_emissivePipelineState->Initialize(*m_graphicsDevice, builder);
         }
 
         // sneakWalk アニメーションを全スケルタルEntityに追加
@@ -553,7 +581,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     // Physics Debug Renderer
     m_physicsDebugRenderer = std::make_unique<PhysicsDebugRenderer>();
     m_physicsDebugRenderer->Initialize(*m_graphicsDevice,
-        m_swapChain->GetFormat(), DXGI_FORMAT_D32_FLOAT, PathResolver::ShaderDirW());
+        kSceneColorFormat, DXGI_FORMAT_D32_FLOAT, PathResolver::ShaderDirW());
 
     m_editorIconRenderer = std::make_unique<EditorIconRenderer>();
     m_editorIconRenderer->Initialize(*m_graphicsDevice,
@@ -569,12 +597,12 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_sceneRT = std::make_unique<RenderTarget>();
         m_sceneRT->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
                               m_window->GetWidth(), m_window->GetHeight(),
-                              m_swapChain->GetFormat(), sceneClear);
+                              kSceneColorFormat, sceneClear);
 
         // カメラプレビュー RT（固定 16:9・小サイズ。選択カメラ視点をここへ描いて小窓表示）
         m_cameraPreviewRT = std::make_unique<RenderTarget>();
         m_cameraPreviewRT->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
-                                      480, 270, m_swapChain->GetFormat(), sceneClear);
+                                      480, 270, kSceneColorFormat, sceneClear);
 
         m_postProcess = std::make_unique<PostProcess>();
         m_postProcess->Initialize(*m_graphicsDevice, m_swapChain->GetFormat(), PathResolver::ShaderDirW());
@@ -583,6 +611,12 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_spriteRenderer = std::make_unique<SpriteRenderer>();
         m_spriteRenderer->Initialize(*m_graphicsDevice, m_srvHeap.get(),
                                      m_swapChain->GetFormat(), PathResolver::ShaderDirW());
+
+        // 加算ビルボードパーティクル（HDR scene RT + 深度へ描く / Lua fx API）
+        m_particleSystem = std::make_unique<ParticleSystem>();
+        m_particleSystem->Initialize(*m_graphicsDevice, kSceneColorFormat,
+                                     DXGI_FORMAT_D32_FLOAT, PathResolver::ShaderDirW());
+        if (m_scriptEngine) m_scriptEngine->SetParticleSystem(m_particleSystem.get());
 
         // シーントランジション
         m_sceneTransition = std::make_unique<SceneTransition>();
@@ -1150,6 +1184,8 @@ void Application::Update()
     else
     {
         // プレイモード: Luaがカメラ+ゲームロジックを制御
+        m_scriptEngine->SetScreenSize(static_cast<int>(m_window->GetWidth()),
+                                      static_cast<int>(m_window->GetHeight()));
         m_scriptEngine->CallOnUpdate(dt);
         m_scriptEngine->UpdateAttachedScripts(dt);
 
@@ -1169,6 +1205,10 @@ void Application::Update()
 
     // シーン更新（Animator等）— エディタモードは時間を止める（ボーン行列は維持）
     m_scene->Update(m_engineMode == EngineMode::Playing ? dt : 0.0f);
+
+    // パーティクル更新（プレイモードのみ進める）
+    if (m_particleSystem)
+        m_particleSystem->Update(m_engineMode == EngineMode::Playing ? dt : 0.0f);
 
     // 物理更新（プレイモードのみ）
     if (m_engineMode == EngineMode::Playing && m_physicsSystem->IsInitialized())
@@ -1904,6 +1944,7 @@ void Application::DoRuntimeSceneLoad(const std::string& rel, ID3D12GraphicsComma
     }
 
     m_scriptEngine->OnPlayStart();
+    if (m_particleSystem) m_particleSystem->Clear();  // シーン切替時に前シーンの粒子を消す
     SyncActiveCameraToGlobal();
 
     // 新シーンの RigidBody を物理登録
@@ -2009,6 +2050,7 @@ void Application::EnterPlayMode()
         m_scriptEngine->LoadScript(scriptPath);
     }
     m_scriptEngine->OnPlayStart();
+    if (m_particleSystem) m_particleSystem->Clear();  // Play 開始時に粒子をリセット
 
     // エディタのスナップショットで上書き（Luaが勝手に変えた状態をエディタの状態に戻す）
     {
@@ -2276,6 +2318,12 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
     auto& reg = m_scene->GetRegistry();
     auto renderView = reg.view<const Transform, const MeshRenderer>();
 
+    // パーティクル判定（名前が "Pfx" で始まる＝加算発光で描く）
+    auto isPfx = [&](entt::entity e) -> bool {
+        const auto* nt = reg.try_get<NameTag>(e);
+        return nt && nt->name.rfind("Pfx", 0) == 0;
+    };
+
     // 1エンティティ分の描画（パイプライン選択 + メッシュ描画）
     auto drawEntity = [&](entt::entity e, const Transform& transform, const MeshRenderer& renderer)
     {
@@ -2285,7 +2333,11 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
         bool isGrid = reg.all_of<GridPlane>(e);
         bool isSkinned = reg.all_of<SkeletalAnimation>(e);
 
-        if (isGrid)
+        if (isPfx(e))
+        {
+            m_commandList->SetPipelineState(*m_emissivePipelineState);
+        }
+        else if (isGrid)
         {
             m_commandList->SetPipelineState(*m_gridPipelineState);
         }
@@ -2355,16 +2407,15 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
         }
     };
 
-    // パス1: グリッド以外（不透明）を先に描く＝深度を書いて確定させる
+    // パス1: 不透明（グリッド・パーティクル以外）を先に描く＝深度を確定
     for (auto [e, transform, renderer] : renderView.each())
     {
         if (reg.all_of<GridPlane>(e)) continue;
+        if (isPfx(e)) continue;
         drawEntity(e, transform, renderer);
     }
 
-    // パス2: エディタ用グリッド（半透明・深度書き込みOFF）を最後に描く。
-    //        順序を固定することで床を隠さず線だけ上に乗る。
-    //        ゲームビュー/カメラプレビューでは描かない。
+    // パス2: エディタ用グリッド（半透明・深度書き込みOFF）。ゲームビューでは描かない。
     if (!isGameView)
     {
         for (auto [e, transform, renderer] : renderView.each())
@@ -2372,6 +2423,12 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             if (!reg.all_of<GridPlane>(e)) continue;
             drawEntity(e, transform, renderer);
         }
+    }
+
+    // パス3: 発光パーティクル（加算合成）を最後に重ねる＝不透明物に隠れず光る
+    for (auto [e, transform, renderer] : renderView.each())
+    {
+        if (isPfx(e)) drawEntity(e, transform, renderer);
     }
 }
 
@@ -2792,9 +2849,13 @@ void Application::Render()
             applyDelta(sl.direction, sl._prevRot, sl._prevRotInit, tf.rotation);
     }
 
-    // ライト方向: ECS の DirectionalLight から取得（なければデフォルト値）
-    XMFLOAT3 lightDirF3 = {-0.3f, -1.0f, -0.5f};
-    XMFLOAT3 lightColorF3 = {1.0f, 0.95f, 0.9f};
+    // ライト方向/色: ECS の DirectionalLight から取得。
+    // ★ DirectionalLight が無い場合は「太陽光なし」(色=黒) にする。
+    //   以前はフル強度の既定太陽にフォールバックしていたため、ライトを消しても
+    //   明るいまま＆既定方向の影が出る、という分かりにくい挙動だった。
+    //   ambient だけ残すので真っ暗にはならない。
+    XMFLOAT3 lightDirF3   = {-0.3f, -1.0f, -0.5f};  // 影の方向（色が黒なら影は出ない）
+    XMFLOAT3 lightColorF3 = {0.0f, 0.0f, 0.0f};      // 既定=太陽なし
     float    lightAmbient = 0.25f;
     {
         auto& reg = m_scene->GetRegistry();
@@ -2812,9 +2873,11 @@ void Application::Render()
     }
     XMVECTOR lightDir = XMVector3Normalize(XMLoadFloat3(&lightDirF3));
     XMStoreFloat3(&lightDirF3, lightDir);  // 正規化した値を書き戻す
-    XMVECTOR lightPos = XMVectorScale(lightDir, -30.0f);  // ライト位置（シーン中心から離す）
+    // シャドウ投影はシーン全体（広めのアリーナ）を覆うサイズに。
+    // 以前は 30×30(±15) しかなく、±19 の壁などが範囲外でクリップされ影が崩れていた。
+    XMVECTOR lightPos = XMVectorScale(lightDir, -45.0f);
     XMMATRIX lightView = XMMatrixLookAtLH(lightPos, XMVectorZero(), XMVectorSet(0, 1, 0, 0));
-    XMMATRIX lightProj = XMMatrixOrthographicLH(30.0f, 30.0f, 0.1f, 60.0f);
+    XMMATRIX lightProj = XMMatrixOrthographicLH(56.0f, 56.0f, 0.1f, 90.0f);
     XMMATRIX lightViewProj = lightView * lightProj;
 
     // SRV ヒープをバインド（シャドウパスでもボーンSRVが必要）
@@ -3042,6 +3105,18 @@ void Application::Render()
         m_physicsDebugRenderer->Render(nativeCmdList, vp);
     }
 
+    // ---- パーティクル（加算ビルボード）: ゲームビューのみ、HDR scene RT + 深度へ ----
+    if (m_particleSystem && (m_isGameMode || m_engineMode == EngineMode::Playing))
+    {
+        m_commandList->SetRenderTarget(m_sceneRT->GetRtv(), m_dsvHandle);
+        m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+        XMMATRIX invView = XMMatrixInverse(nullptr, m_camera->GetViewMatrix());
+        XMFLOAT3 camRight, camUp;
+        XMStoreFloat3(&camRight, invView.r[0]);
+        XMStoreFloat3(&camUp,    invView.r[1]);
+        m_particleSystem->Render(nativeCmdList, m_camera->GetViewProjMatrix(), camRight, camUp);
+    }
+
     // ===== ポストプロセス: オフスクリーン RT → バックバッファ =====
     auto* backBuffer = m_swapChain->GetCurrentBackBuffer();
     auto  rtv        = m_swapChain->GetCurrentRTV();
@@ -3067,6 +3142,19 @@ void Application::Render()
         const bool isGameView = (m_isGameMode || m_engineMode == EngineMode::Playing);
         if (!isGameView && !ppApplied.previewInEditor)
             ppApplied.enabled = false;
+
+        // ヒット時の画面インパクト（fx:pulse）: クロマ + 放射ブラーを瞬間的に上乗せ
+        if (isGameView && m_particleSystem)
+        {
+            float pulse = m_particleSystem->GetPulse();
+            if (pulse > 0.001f)
+            {
+                ppApplied.chromaticOn = true;
+                ppApplied.chromatic   = (std::max)(ppApplied.chromatic, pulse * 1.2f);
+                ppApplied.radialOn    = true;
+                ppApplied.radial      = (std::max)(ppApplied.radial, pulse * 0.8f);
+            }
+        }
 
         m_postProcess->Apply(nativeCmdList,
             m_srvHeap->GetGpuHandle(m_sceneRT->GetSrvIndex()),

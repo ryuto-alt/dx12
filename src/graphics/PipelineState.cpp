@@ -131,6 +131,19 @@ PipelineStateBuilder& PipelineStateBuilder::SetAlphaBlendEnabled(bool enabled)
     return *this;
 }
 
+PipelineStateBuilder& PipelineStateBuilder::SetAdditiveBlendEnabled(bool enabled)
+{
+    auto& rt = m_desc.BlendState.RenderTarget[0];
+    rt.BlendEnable    = enabled ? TRUE : FALSE;
+    rt.SrcBlend       = D3D12_BLEND_ONE;
+    rt.DestBlend      = D3D12_BLEND_ONE;       // 加算: src + dst
+    rt.BlendOp        = D3D12_BLEND_OP_ADD;
+    rt.SrcBlendAlpha  = D3D12_BLEND_ONE;
+    rt.DestBlendAlpha = D3D12_BLEND_ONE;
+    rt.BlendOpAlpha   = D3D12_BLEND_OP_ADD;
+    return *this;
+}
+
 PipelineStateBuilder& PipelineStateBuilder::SetCullMode(D3D12_CULL_MODE mode)
 {
     m_desc.RasterizerState.CullMode = mode;
