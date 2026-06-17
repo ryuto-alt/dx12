@@ -111,6 +111,13 @@ PipelineStateBuilder& PipelineStateBuilder::SetDepthEnabled(bool enabled)
     return *this;
 }
 
+PipelineStateBuilder& PipelineStateBuilder::SetDepthWrite(bool enabled)
+{
+    m_desc.DepthStencilState.DepthWriteMask =
+        enabled ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
+    return *this;
+}
+
 PipelineStateBuilder& PipelineStateBuilder::SetAlphaBlendEnabled(bool enabled)
 {
     auto& rt = m_desc.BlendState.RenderTarget[0];

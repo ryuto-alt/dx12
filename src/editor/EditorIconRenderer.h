@@ -56,10 +56,12 @@ private:
                           DirectX::XMFLOAT2 a, DirectX::XMFLOAT2 b,
                           const DirectX::XMFLOAT3& color);
 
-    // 常時表示: 小さなビルボードアイコン（どの角度からも見える）
+    // 常時表示: カメラの向きに追従する 3D カメラアイコン（本体＋前方レンズ）
     void AddCameraIcon(const DirectX::XMFLOAT3& pos,
+                       const DirectX::XMFLOAT4& quat,
                        const DirectX::XMFLOAT3& color);
 
+    // 常時表示: 小さなビルボードアイコン（どの角度からも見える）
     void AddDirLightIcon(const DirectX::XMFLOAT3& pos,
                          const DirectX::XMFLOAT3& color);
 

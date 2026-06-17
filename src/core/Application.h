@@ -80,6 +80,11 @@ public:
 private:
     void Update();
     void Render();
+    // シーン内の全メッシュを指定 viewProj で描画（メインパスとカメラプレビューで共用）。
+    // isGameView=true でエディタ用グリッドを除外。per-frame CB / シャドウSRV /
+    // ルートシグネチャ / RT / ビューポートは呼び出し側で設定済みとする。
+    void RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u32 frameIndex,
+                           DirectX::XMMATRIX viewProj, bool isGameView);
     void RebuildScene();
     // ランチャーで選んだ/作成したプロジェクトを実行時に読み込む（パス再ポイント + シーンロード）
     void LoadProject(const ProjectInfo& info);
@@ -190,6 +195,10 @@ private:
     std::unique_ptr<DescriptorHeap> m_offscreenRtvHeap;
     std::unique_ptr<RenderTarget>   m_sceneRT;
     std::unique_ptr<PostProcess>    m_postProcess;
+
+    // カメラプレビュー（選択カメラ視点を小窓表示）。専用 RT + 専用 per-frame CB。
+    std::unique_ptr<RenderTarget>   m_cameraPreviewRT;
+    std::unique_ptr<ConstantBuffer> m_previewFrameCB;
 
     // 2D スプライト / ゲーム内 UI 描画（WP4 / WP7）
     std::unique_ptr<SpriteRenderer> m_spriteRenderer;

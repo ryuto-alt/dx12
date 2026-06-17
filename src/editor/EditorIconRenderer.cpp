@@ -231,19 +231,49 @@ void EditorIconRenderer::AddBillboardLine(const XMFLOAT3& center,
 // ========== 常時表示アイコン ==========
 
 void EditorIconRenderer::AddCameraIcon(const XMFLOAT3& pos,
+                                       const XMFLOAT4& quat,
                                        const XMFLOAT3& color)
 {
-    // 2D カメラグリフ（ビルボード・常にカメラを向く）
-    const f32 bw = 13.0f, bh = 9.0f;   // ボディ半サイズ(px)
-    // ボディ矩形
-    AddBillboardLine(pos, {-bw, -bh}, { bw, -bh}, color);
-    AddBillboardLine(pos, { bw, -bh}, { bw,  bh}, color);
-    AddBillboardLine(pos, { bw,  bh}, {-bw,  bh}, color);
-    AddBillboardLine(pos, {-bw,  bh}, {-bw, -bh}, color);
-    // レンズ（右側の台形）
-    AddBillboardLine(pos, { bw, -5.0f}, { bw + 8.0f, -8.0f}, color);
-    AddBillboardLine(pos, { bw + 8.0f, -8.0f}, { bw + 8.0f, 8.0f}, color);
-    AddBillboardLine(pos, { bw + 8.0f, 8.0f}, { bw, 5.0f}, color);
+    // カメラの向き（quat）に追従する 3D カメラアイコン。
+    // ローカル軸: x=Right, y=Up, z=Forward。レンズは +Forward に伸びる。
+    // → カメラが斜め下を向けばアイコンも斜め下を向く。
+    XMMATRIX rot = XMMatrixRotationQuaternion(XMLoadFloat4(&quat));
+    XMVECTOR R = rot.r[0];
+    XMVECTOR U = rot.r[1];
+    XMVECTOR F = rot.r[2];
+    XMVECTOR P = XMLoadFloat3(&pos);
+
+    // ローカル座標(r,u,f)をワールド点へ
+    auto W = [&](f32 r, f32 u, f32 f) {
+        XMFLOAT3 o;
+        XMStoreFloat3(&o, P + R * r + U * u + F * f);
+        return o;
+    };
+    auto box = [&](const XMFLOAT3 v[8], const int e[12][2], int n) {
+        for (int i = 0; i < n; ++i) AddLine(v[e[i][0]], v[e[i][1]], color);
+    };
+
+    // 本体ボックス（背面 f=-0.30 〜 前面 f=0）
+    const f32 bw = 0.18f, bh = 0.13f, bBack = -0.30f, bFront = 0.0f;
+    const XMFLOAT3 body[8] = {
+        W(-bw, -bh, bBack), W(bw, -bh, bBack), W(bw, bh, bBack), W(-bw, bh, bBack),     // 背面 0-3
+        W(-bw, -bh, bFront), W(bw, -bh, bFront), W(bw, bh, bFront), W(-bw, bh, bFront), // 前面 4-7
+    };
+    const int bodyEdges[12][2] = {
+        {0,1},{1,2},{2,3},{3,0}, {4,5},{5,6},{6,7},{7,4}, {0,4},{1,5},{2,6},{3,7},
+    };
+    box(body, bodyEdges, 12);
+
+    // レンズ（前面から +Forward へ広がる台形錐）
+    const f32 ln0 = 0.08f, ln1 = 0.12f, lf1 = 0.26f;
+    const XMFLOAT3 lens[8] = {
+        W(-ln0, -ln0, bFront), W(ln0, -ln0, bFront), W(ln0, ln0, bFront), W(-ln0, ln0, bFront), // 根元 0-3
+        W(-ln1, -ln1, lf1),    W(ln1, -ln1, lf1),    W(ln1, ln1, lf1),    W(-ln1, ln1, lf1),    // 先端 4-7
+    };
+    const int lensEdges[8][2] = {
+        {4,5},{5,6},{6,7},{7,4}, {0,4},{1,5},{2,6},{3,7}, // 先端の四角 + 側面4本（根元は本体前面と重複なので省略）
+    };
+    box(lens, lensEdges, 8);
 }
 
 void EditorIconRenderer::AddDirLightIcon(const XMFLOAT3& pos,
@@ -467,10 +497,10 @@ void EditorIconRenderer::CollectFromRegistry(entt::registry& registry,
                 XMStoreFloat4(&quat, q);
             }
 
-            // 常時: カメラアイコン（ビルボード・常にカメラを向く）
-            AddCameraIcon(tf.position, selected ? colorSelected : iconColor);
+            // 常時: カメラの向きに追従する 3D カメラアイコン（斜め下を向けばアイコンも斜め下）
+            AddCameraIcon(tf.position, quat, selected ? colorSelected : iconColor);
 
-            // 選択時のみ: フラスタム線画（3D）
+            // 選択時のみ: FOV フラスタム線画（3D）
             if (selected)
                 AddCameraFrustum(tf.position, quat, cam.fovDegrees, cam.nearClip, cam.farClip, colorSelected);
         }

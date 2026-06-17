@@ -378,9 +378,10 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                    .SetRenderTargetFormat(m_swapChain->GetFormat())
                    .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
                    .SetDepthEnabled(true)
+                   .SetDepthWrite(false)        // 深度を書かない＝床など同一平面の不透明物を隠さない
                    .SetAlphaBlendEnabled(true)
                    .SetCullMode(D3D12_CULL_MODE_NONE)
-                   .SetDepthBias(-100, -1.0f);  // グリッドを少し奥に → Z-fighting 回避
+                   .SetDepthBias(-100, -1.0f);  // 深度テストではカメラ側に寄せて床の上に線を乗せる
 
             m_gridPipelineState = std::make_unique<PipelineState>();
             m_gridPipelineState->Initialize(*m_graphicsDevice, builder);
@@ -522,6 +523,11 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     m_perFrameCB = std::make_unique<ConstantBuffer>();
     m_perFrameCB->Initialize(*m_graphicsDevice, sizeof(FrameConstants), FrameResources::kFrameCount);
 
+    // カメラプレビュー用の per-frame CB（メインパスと別バッファ。同一フレーム内で
+    // 別視点を描くため m_perFrameCB を上書きできない）
+    m_previewFrameCB = std::make_unique<ConstantBuffer>();
+    m_previewFrameCB->Initialize(*m_graphicsDevice, sizeof(FrameConstants), FrameResources::kFrameCount);
+
     // CommandList ラッパー
     m_commandList = std::make_unique<CommandList>();
 
@@ -564,6 +570,11 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_sceneRT->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
                               m_window->GetWidth(), m_window->GetHeight(),
                               m_swapChain->GetFormat(), sceneClear);
+
+        // カメラプレビュー RT（固定 16:9・小サイズ。選択カメラ視点をここへ描いて小窓表示）
+        m_cameraPreviewRT = std::make_unique<RenderTarget>();
+        m_cameraPreviewRT->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
+                                      480, 270, m_swapChain->GetFormat(), sceneClear);
 
         m_postProcess = std::make_unique<PostProcess>();
         m_postProcess->Initialize(*m_graphicsDevice, m_swapChain->GetFormat(), PathResolver::ShaderDirW());
@@ -887,6 +898,7 @@ void Application::Shutdown()
     m_sceneTransition.reset();
     m_spriteRenderer.reset();
     m_postProcess.reset();
+    m_cameraPreviewRT.reset();
     m_sceneRT.reset();
     m_offscreenRtvHeap.reset();
     m_sceneFlow.reset();
@@ -907,6 +919,7 @@ void Application::Shutdown()
     m_scene.reset();
     m_commandList.reset();
     m_perFrameCB.reset();
+    m_previewFrameCB.reset();
     m_resourceManager.reset();
     m_srvHeap.reset();
     m_camera.reset();
@@ -2256,6 +2269,112 @@ void Application::BuildGame()
     Logger::Info("Game build complete: {}", outputDir.string());
 }
 
+void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u32 frameIndex,
+                                   DirectX::XMMATRIX viewProj, bool isGameView)
+{
+    using namespace DirectX;
+    auto& reg = m_scene->GetRegistry();
+    auto renderView = reg.view<const Transform, const MeshRenderer>();
+
+    // 1エンティティ分の描画（パイプライン選択 + メッシュ描画）
+    auto drawEntity = [&](entt::entity e, const Transform& transform, const MeshRenderer& renderer)
+    {
+        XMMATRIX world = (transform.parent != entt::null)
+            ? ComputeWorldMatrix(reg, e) : transform.GetWorldMatrix();
+
+        bool isGrid = reg.all_of<GridPlane>(e);
+        bool isSkinned = reg.all_of<SkeletalAnimation>(e);
+
+        if (isGrid)
+        {
+            m_commandList->SetPipelineState(*m_gridPipelineState);
+        }
+        else if (isSkinned)
+        {
+            auto& skelAnim = reg.get<SkeletalAnimation>(e);
+            m_commandList->SetPipelineState(*m_skinnedPipelineState);
+            m_commandList->SetSRVTable(RootSignature::kSlotBonesSRV,
+                m_srvHeap->GetGpuHandle(skelAnim.skinningBuffer->GetSrvIndex(frameIndex)));
+        }
+        else
+        {
+            m_commandList->SetPipelineState(*m_pipelineState);
+        }
+
+        bool hasNodeAnim = reg.all_of<NodeAnimationComp>(e);
+        for (u32 mi = 0; mi < static_cast<u32>(renderer.meshes.size()); ++mi)
+        {
+            const auto* mesh = renderer.meshes[mi];
+
+            XMMATRIX meshWorld = world;
+            if (hasNodeAnim && mi < static_cast<u32>(renderer.meshNodeTransforms.size()))
+            {
+                XMMATRIX nodeMat = XMLoadFloat4x4(&renderer.meshNodeTransforms[mi]);
+                meshWorld = nodeMat * world;
+            }
+
+            struct PerObjectData { XMMATRIX mvp; XMMATRIX mdl; } objData;
+            objData.mvp = XMMatrixTranspose(meshWorld * viewProj);
+            objData.mdl = XMMatrixTranspose(meshWorld);
+            m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
+
+            const Material* mat = mesh->GetMaterial();
+
+            // PBR テクスチャ SRV ブロックをバインド
+            if (mat && mat->srvBlockIndex != 0xFFFFFFFF)
+            {
+                m_commandList->SetSRVTable(RootSignature::kSlotSRVTable,
+                    m_srvHeap->GetGpuHandle(mat->srvBlockIndex));
+            }
+            else
+            {
+                Texture* tex = (mat && mat->albedoTexture) ? mat->albedoTexture : m_resourceManager->GetDefaultWhiteTexture();
+                m_commandList->SetSRVTable(RootSignature::kSlotSRVTable,
+                    m_srvHeap->GetGpuHandle(tex->GetSrvIndex()));
+            }
+
+            // PBR Material Constants (Slot 5)
+            struct { float metallic; float roughness; u32 flags; float pad; } pbrParams;
+            // MeshRenderer のオーバーライド値を優先、なければ Material の値
+            pbrParams.metallic  = (renderer.overrideMetallic  >= 0.0f) ? renderer.overrideMetallic
+                                : (mat ? mat->defaultMetallic : 0.0f);
+            pbrParams.roughness = (renderer.overrideRoughness >= 0.0f) ? renderer.overrideRoughness
+                                : (mat ? mat->defaultRoughness : 0.5f);
+            pbrParams.flags     = 0;
+            if (mat && mat->normalMapTexture) pbrParams.flags |= 1u;
+            // overrideが有効な場合、metalRoughnessテクスチャのスケーリングを無効化
+            bool hasOverride = (renderer.overrideMetallic >= 0.0f || renderer.overrideRoughness >= 0.0f);
+            if (!hasOverride && mat && mat->metalRoughnessTexture) pbrParams.flags |= 2u;
+            pbrParams.pad = 0;
+            nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPBRMaterial, 4, &pbrParams, 0);
+
+            m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
+            m_commandList->SetIndexBuffer(mesh->GetIndexBuffer().GetView());
+            m_commandList->DrawIndexedInstanced(mesh->GetIndexCount());
+        }
+    };
+
+    // パス1: グリッド以外（不透明）を先に描く＝深度を書いて確定させる
+    for (auto [e, transform, renderer] : renderView.each())
+    {
+        if (reg.all_of<GridPlane>(e)) continue;
+        drawEntity(e, transform, renderer);
+    }
+
+    // パス2: エディタ用グリッド（半透明・深度書き込みOFF）を最後に描く。
+    //        順序を固定することで床を隠さず線だけ上に乗る。
+    //        ゲームビュー/カメラプレビューでは描かない。
+    if (!isGameView)
+    {
+        for (auto [e, transform, renderer] : renderView.each())
+        {
+            if (!reg.all_of<GridPlane>(e)) continue;
+            drawEntity(e, transform, renderer);
+        }
+    }
+}
+
 void Application::Render()
 {
     using namespace DirectX;
@@ -2908,94 +3027,9 @@ void Application::Render()
 
     XMMATRIX viewProj = m_camera->GetViewProjMatrix();
 
-    // 全Entityを描画
-    {
-        auto& reg = m_scene->GetRegistry();
-        auto renderView = reg.view<const Transform, const MeshRenderer>();
-        for (auto [e, transform, renderer] : renderView.each())
-        {
-            XMMATRIX world = (transform.parent != entt::null)
-                ? ComputeWorldMatrix(reg, e) : transform.GetWorldMatrix();
-
-            bool isGrid = reg.all_of<GridPlane>(e);
-            bool isSkinned = reg.all_of<SkeletalAnimation>(e);
-
-            // エディタ補助のグリッドはゲームビュー（ゲーム/Play中）では描かない
-            const bool isGameView = (m_isGameMode || m_engineMode == EngineMode::Playing);
-            if (isGrid && isGameView)
-                continue;
-
-            if (isGrid)
-            {
-                m_commandList->SetPipelineState(*m_gridPipelineState);
-            }
-            else if (isSkinned)
-            {
-                auto& skelAnim = reg.get<SkeletalAnimation>(e);
-                m_commandList->SetPipelineState(*m_skinnedPipelineState);
-                m_commandList->SetSRVTable(RootSignature::kSlotBonesSRV,
-                    m_srvHeap->GetGpuHandle(skelAnim.skinningBuffer->GetSrvIndex(frameIndex)));
-            }
-            else
-            {
-                m_commandList->SetPipelineState(*m_pipelineState);
-            }
-
-            bool hasNodeAnim = reg.all_of<NodeAnimationComp>(e);
-            for (u32 mi = 0; mi < static_cast<u32>(renderer.meshes.size()); ++mi)
-            {
-                const auto* mesh = renderer.meshes[mi];
-
-                XMMATRIX meshWorld = world;
-                if (hasNodeAnim && mi < static_cast<u32>(renderer.meshNodeTransforms.size()))
-                {
-                    XMMATRIX nodeMat = XMLoadFloat4x4(&renderer.meshNodeTransforms[mi]);
-                    meshWorld = nodeMat * world;
-                }
-
-                struct PerObjectData { XMMATRIX mvp; XMMATRIX mdl; } objData;
-                objData.mvp = XMMatrixTranspose(meshWorld * viewProj);
-                objData.mdl = XMMatrixTranspose(meshWorld);
-                m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
-
-                const Material* mat = mesh->GetMaterial();
-
-                // PBR テクスチャ SRV ブロックをバインド
-                if (mat && mat->srvBlockIndex != 0xFFFFFFFF)
-                {
-                    m_commandList->SetSRVTable(RootSignature::kSlotSRVTable,
-                        m_srvHeap->GetGpuHandle(mat->srvBlockIndex));
-                }
-                else
-                {
-                    Texture* tex = (mat && mat->albedoTexture) ? mat->albedoTexture : m_resourceManager->GetDefaultWhiteTexture();
-                    m_commandList->SetSRVTable(RootSignature::kSlotSRVTable,
-                        m_srvHeap->GetGpuHandle(tex->GetSrvIndex()));
-                }
-
-                // PBR Material Constants (Slot 5)
-                struct { float metallic; float roughness; u32 flags; float pad; } pbrParams;
-                // MeshRenderer のオーバーライド値を優先、なければ Material の値
-                pbrParams.metallic  = (renderer.overrideMetallic  >= 0.0f) ? renderer.overrideMetallic
-                                    : (mat ? mat->defaultMetallic : 0.0f);
-                pbrParams.roughness = (renderer.overrideRoughness >= 0.0f) ? renderer.overrideRoughness
-                                    : (mat ? mat->defaultRoughness : 0.5f);
-                pbrParams.flags     = 0;
-                if (mat && mat->normalMapTexture) pbrParams.flags |= 1u;
-                // overrideが有効な場合、metalRoughnessテクスチャのスケーリングを無効化
-                // （テクスチャ値×スライダーではなく、スライダー値を直接使う）
-                bool hasOverride = (renderer.overrideMetallic >= 0.0f || renderer.overrideRoughness >= 0.0f);
-                if (!hasOverride && mat && mat->metalRoughnessTexture) pbrParams.flags |= 2u;
-                pbrParams.pad = 0;
-                nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPBRMaterial, 4, &pbrParams, 0);
-
-                m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-                m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
-                m_commandList->SetIndexBuffer(mesh->GetIndexBuffer().GetView());
-                m_commandList->DrawIndexedInstanced(mesh->GetIndexCount());
-            }
-        }
-    }
+    // 全Entityを描画（メインパス: 編集カメラ視点）
+    RenderSceneMeshes(nativeCmdList, frameIndex, viewProj,
+                      (m_isGameMode || m_engineMode == EngineMode::Playing));
 
     // ---- Physics Debug Draw（オフスクリーン RT へ）----
     if (m_physicsDebugDraw && m_physicsDebugRenderer->IsEnabled())
@@ -3080,6 +3114,76 @@ void Application::Render()
             nativeCmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
             m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
             m_spriteRenderer->Render(nativeCmdList, m_window->GetWidth(), m_window->GetHeight());
+        }
+    }
+
+    // ===== カメラプレビュー（選択カメラ視点を小窓へ）=====
+    // 選択中エンティティにカメラがあれば、その視点でシーンを専用 RT に再描画。
+    // EditorLayer がシーンビュー隅に小窓表示する（Play を押さずに見える）。
+    m_editorCtx->cameraPreviewTexHandle = 0;
+    if (m_engineMode == EngineMode::Editor && !m_isGameMode && m_cameraPreviewRT)
+    {
+        auto& reg = m_scene->GetRegistry();
+        entt::entity camEnt = entt::null;
+        for (auto e : m_editorCtx->selectedEntities)
+            if (reg.valid(e) && reg.all_of<CameraComponent, Transform>(e)) { camEnt = e; break; }
+
+        if (camEnt != entt::null)
+        {
+            const auto& tf  = reg.get<Transform>(camEnt);
+            const auto& cam = reg.get<CameraComponent>(camEnt);
+
+            // 回転（quat）からビュー行列を構築（カメラアイコン/フラスタムと同じ向き）
+            XMFLOAT4 q;
+            if (tf.useQuaternion)
+                q = tf.quaternion;
+            else
+                XMStoreFloat4(&q, XMQuaternionRotationRollPitchYaw(
+                    XMConvertToRadians(tf.rotation.x),
+                    XMConvertToRadians(tf.rotation.y),
+                    XMConvertToRadians(tf.rotation.z)));
+            XMMATRIX rot  = XMMatrixRotationQuaternion(XMLoadFloat4(&q));
+            XMVECTOR eye  = XMLoadFloat3(&tf.position);
+            XMMATRIX view = XMMatrixLookToLH(eye, rot.r[2], rot.r[1]);
+
+            const u32 pw = m_cameraPreviewRT->GetWidth();
+            const u32 ph = m_cameraPreviewRT->GetHeight();
+            XMMATRIX proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(cam.fovDegrees),
+                static_cast<f32>(pw) / static_cast<f32>(ph), cam.nearClip, cam.farClip);
+            XMMATRIX camViewProj = view * proj;
+
+            // メインパスの fc（ライト等）を流用し、視点だけ差し替えて専用 CB へ
+            FrameConstants fcp = fc;
+            XMStoreFloat4x4(&fcp.view, XMMatrixTranspose(view));
+            XMStoreFloat4x4(&fcp.proj, XMMatrixTranspose(proj));
+            fcp.cameraPos = tf.position;
+            m_previewFrameCB->Update(&fcp, sizeof(fcp), frameIndex);
+
+            m_cameraPreviewRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            constexpr float pvClear[4] = {0.392f, 0.584f, 0.929f, 1.0f};
+            m_commandList->ClearRenderTarget(m_cameraPreviewRT->GetRtv(), pvClear);
+            m_commandList->ClearDepthStencil(m_dsvHandle);
+            m_commandList->SetRenderTarget(m_cameraPreviewRT->GetRtv(), m_dsvHandle);
+            m_commandList->SetViewportAndScissor(pw, ph);
+
+            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+            m_commandList->SetRootSignature(*m_rootSignature);
+            m_commandList->SetPerFrameCBV(RootSignature::kSlotPerFrame,
+                m_previewFrameCB->GetGpuAddress(frameIndex));
+            m_commandList->SetSRVTable(RootSignature::kSlotShadowSRV,
+                m_srvHeap->GetGpuHandle(m_shadowSrvIndex));
+
+            // グリッドは出さない＝isGameView=true
+            RenderSceneMeshes(nativeCmdList, frameIndex, camViewProj, true);
+
+            m_cameraPreviewRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            m_editorCtx->cameraPreviewTexHandle =
+                m_srvHeap->GetGpuHandle(m_cameraPreviewRT->GetSrvIndex()).ptr;
+
+            // プレビュー描画でRT/ビューポートを切り替えたので、バックバッファへ戻す。
+            // これをしないと直後の ImGui がプレビューRTへ描かれ、画面に出なくなる。
+            m_commandList->SetRenderTarget(rtv, m_dsvHandle);
+            m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
         }
     }
 

@@ -124,13 +124,13 @@ const char* AssetBrowserPanel::GetTypeIcon(AssetType type)
 {
     switch (type)
     {
-    case AssetType::Folder:  return "DIR";
-    case AssetType::Model:   return "3D";
-    case AssetType::Texture: return "TEX";
-    case AssetType::Scene:   return "SCN";
-    case AssetType::Script:  return "LUA";
-    case AssetType::Audio:   return "SND";
-    default:                 return "?";
+    case AssetType::Folder:  return "Folder";
+    case AssetType::Model:   return "Model";
+    case AssetType::Texture: return "Texture";
+    case AssetType::Scene:   return "Scene";
+    case AssetType::Script:  return "Script";
+    case AssetType::Audio:   return "Audio";
+    default:                 return "File";
     }
 }
 
@@ -147,6 +147,134 @@ static ImVec4 AssetTypeColor(int type)
     case 5: return ImVec4(0.85f, 0.35f, 0.85f, 1.0f);  // Audio
     default: return ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
     }
+}
+
+// AssetType → ベクターアイコン描画（アイコンフォント不要・任意サイズで鮮明）
+static void DrawAssetGlyph(ImDrawList* dl, ImVec2 cardMin, float sz, int type,
+                           const ImVec4& color, bool isUp)
+{
+    const float u  = sz;
+    const float cx = cardMin.x + sz * 0.5f;
+    const float cy = cardMin.y + sz * 0.5f;
+
+    auto cl = [](float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); };
+    auto shade = [&](float m, float a) -> ImU32 {
+        return IM_COL32(int(cl(color.x * m) * 255), int(cl(color.y * m) * 255),
+                        int(cl(color.z * m) * 255), int(cl(a) * 255));
+    };
+    const ImU32 base  = shade(1.0f, 1.0f);
+    const ImU32 light = shade(1.4f, 1.0f);
+    const ImU32 dark  = shade(0.55f, 1.0f);
+
+    auto V = [](float x, float y) { return ImVec2(x, y); };
+
+    // 親フォルダ（..）は上矢印
+    if (isUp)
+    {
+        dl->AddTriangleFilled(V(cx, cy - u * 0.24f), V(cx - u * 0.24f, cy + u * 0.02f),
+                              V(cx + u * 0.24f, cy + u * 0.02f), base);
+        dl->AddRectFilled(V(cx - u * 0.09f, cy), V(cx + u * 0.09f, cy + u * 0.24f), base, u * 0.03f);
+        return;
+    }
+
+    switch (type)
+    {
+    case 0: // Folder
+    {
+        float x0 = cx - u * 0.30f, x1 = cx + u * 0.30f;
+        float y0 = cy - u * 0.20f, y1 = cy + u * 0.22f;
+        dl->AddRectFilled(V(x0, y0), V(x0 + u * 0.26f, y0 + u * 0.13f), dark, u * 0.04f,
+                          ImDrawFlags_RoundCornersTop);
+        dl->AddRectFilled(V(x0, y0 + u * 0.07f), V(x1, y1), base, u * 0.06f);
+        dl->AddRectFilled(V(x0, y0 + u * 0.07f), V(x1, y0 + u * 0.12f), light, 0.0f); // 上端ハイライト
+        break;
+    }
+    case 1: // Model（アイソメトリックキューブ）
+    {
+        float R = u * 0.30f, H = R * 0.58f;
+        ImVec2 top = V(cx, cy - 2 * H), upR = V(cx + R, cy - H), loR = V(cx + R, cy + H);
+        ImVec2 bot = V(cx, cy + 2 * H), loL = V(cx - R, cy + H), upL = V(cx - R, cy - H);
+        ImVec2 mid = V(cx, cy);
+        dl->AddQuadFilled(top, upR, mid, upL, light); // 上面
+        dl->AddQuadFilled(upL, mid, bot, loL, base);  // 左面
+        dl->AddQuadFilled(upR, loR, bot, mid, dark);  // 右面
+        break;
+    }
+    case 2: // Texture（画像フレーム）
+    {
+        float x0 = cx - u * 0.30f, y0 = cy - u * 0.26f, x1 = cx + u * 0.30f, y1 = cy + u * 0.26f;
+        dl->AddRectFilled(V(x0, y0), V(x1, y1), shade(0.30f, 1.0f), u * 0.05f);
+        dl->AddCircleFilled(V(x0 + u * 0.16f, y0 + u * 0.15f), u * 0.07f, light);             // 太陽
+        dl->AddTriangleFilled(V(x0, y1), V(x0 + u * 0.22f, cy), V(x0 + u * 0.44f, y1), base);  // 山
+        dl->AddTriangleFilled(V(cx - u * 0.02f, y1), V(cx + u * 0.18f, cy + u * 0.04f), V(x1, y1), light);
+        dl->AddRect(V(x0, y0), V(x1, y1), base, u * 0.05f, 0, 2.0f);                           // フレーム
+        break;
+    }
+    case 3: // Scene（レイヤースタック）
+    {
+        float lw = u * 0.30f, lh = u * 0.11f;
+        for (int k = 2; k >= 0; --k) // 背面から描画して上のレイヤーを前面に
+        {
+            float oy = cy + (k - 1) * lh * 1.6f;
+            ImVec2 p0 = V(cx, oy - lh), p1 = V(cx + lw, oy), p2 = V(cx, oy + lh), p3 = V(cx - lw, oy);
+            ImU32 lc = (k == 0) ? light : (k == 1) ? base : dark;
+            dl->AddQuadFilled(p0, p1, p2, p3, lc);
+            dl->AddQuad(p0, p1, p2, p3, shade(0.35f, 1.0f), 1.0f);
+        }
+        break;
+    }
+    case 4: // Script（コードページ </>）
+    {
+        float x0 = cx - u * 0.26f, y0 = cy - u * 0.28f, x1 = cx + u * 0.26f, y1 = cy + u * 0.28f;
+        dl->AddRectFilled(V(x0, y0), V(x1, y1), IM_COL32(236, 239, 245, 255), u * 0.05f);
+        dl->AddRect(V(x0, y0), V(x1, y1), base, u * 0.05f, 0, 1.5f);
+        float th = sz * 0.045f; if (th < 1.8f) th = 1.8f;
+        dl->AddLine(V(cx - u * 0.04f, cy - u * 0.11f), V(cx - u * 0.15f, cy), base, th); // <
+        dl->AddLine(V(cx - u * 0.15f, cy), V(cx - u * 0.04f, cy + u * 0.11f), base, th);
+        dl->AddLine(V(cx + u * 0.04f, cy - u * 0.11f), V(cx + u * 0.15f, cy), base, th); // >
+        dl->AddLine(V(cx + u * 0.15f, cy), V(cx + u * 0.04f, cy + u * 0.11f), base, th);
+        break;
+    }
+    case 5: // Audio（8分音符）
+    {
+        float th = sz * 0.05f; if (th < 2.0f) th = 2.0f;
+        ImVec2 head = V(cx - u * 0.12f, cy + u * 0.20f);
+        float hr = u * 0.11f;
+        dl->AddCircleFilled(head, hr, base);
+        ImVec2 stemTop = V(cx + u * 0.14f, cy - u * 0.26f);
+        dl->AddLine(V(head.x + hr - 1.0f, head.y), stemTop, base, th);
+        dl->AddLine(stemTop, V(cx + u * 0.26f, cy - u * 0.12f), base, th); // 旗
+        break;
+    }
+    default: // Other（書類）
+    {
+        float x0 = cx - u * 0.24f, y0 = cy - u * 0.28f, x1 = cx + u * 0.24f, y1 = cy + u * 0.28f;
+        float fold = u * 0.13f;
+        dl->AddRectFilled(V(x0, y0), V(x1, y1), IM_COL32(226, 229, 236, 255), u * 0.04f);
+        dl->AddTriangleFilled(V(x1 - fold, y0), V(x1, y0), V(x1, y0 + fold), IM_COL32(170, 175, 185, 255));
+        dl->AddRect(V(x0, y0), V(x1, y1), base, u * 0.04f, 0, 1.5f);
+        for (int i = 0; i < 3; ++i)
+        {
+            float ly = cy - u * 0.05f + i * u * 0.10f;
+            dl->AddLine(V(x0 + u * 0.06f, ly), V(x1 - u * 0.06f, ly), IM_COL32(150, 153, 163, 255), 1.5f);
+        }
+        break;
+    }
+    }
+}
+
+// プレビュー画像にボーダー＋タイプ色のコーナーバッジを重ねる（直前の Image アイテム基準）
+static void DecoratePreview(ImVec2 mn, float sz, const ImVec4& typeColor)
+{
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 mx = ImVec2(mn.x + sz, mn.y + sz);
+    bool hov = ImGui::IsItemHovered();
+    ImU32 border = hov ? ImGui::GetColorU32(ImVec4(typeColor.x, typeColor.y, typeColor.z, 1.0f))
+                       : IM_COL32(0, 0, 0, 140);
+    dl->AddRect(mn, mx, border, 4.0f, 0, hov ? 2.5f : 1.0f);
+    float t = sz * 0.28f;
+    dl->AddTriangleFilled(mn, ImVec2(mn.x + t, mn.y), ImVec2(mn.x, mn.y + t),
+                          ImGui::GetColorU32(typeColor));
 }
 
 // ===== フォルダツリー（再帰描画）=====
@@ -388,7 +516,9 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                     if (it != m_thumbnailCache.end() && it->second.loaded && it->second.gpuHandle != 0)
                     {
                         ImTextureID texId = static_cast<ImTextureID>(it->second.gpuHandle);
+                        ImVec2 pv = ImGui::GetCursorScreenPos();
                         ImGui::Image(texId, ImVec2(thumbnailSize, thumbnailSize));
+                        DecoratePreview(pv, thumbnailSize, AssetTypeColor(static_cast<int>(entry.type)));
                         hasPreview = true;
                     }
                     else if (it == m_thumbnailCache.end())
@@ -406,7 +536,9 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                     if (handle != 0)
                     {
                         ImTextureID texId = static_cast<ImTextureID>(handle);
+                        ImVec2 pv = ImGui::GetCursorScreenPos();
                         ImGui::Image(texId, ImVec2(thumbnailSize, thumbnailSize));
+                        DecoratePreview(pv, thumbnailSize, AssetTypeColor(static_cast<int>(entry.type)));
                         hasPreview = true;
                     }
                     else
@@ -418,39 +550,42 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                 if (!hasPreview)
                 {
                     ImVec4 typeColor = AssetTypeColor(static_cast<int>(entry.type));
-                    const char* icon = GetTypeIcon(entry.type);
-
-                    // カード背景 + 色付きアクセントバー
                     ImVec2 pos = ImGui::GetCursorScreenPos();
                     ImDrawList* dl = ImGui::GetWindowDrawList();
-
-                    // 背景
                     ImVec2 cardMin = pos;
                     ImVec2 cardMax = ImVec2(pos.x + thumbnailSize, pos.y + thumbnailSize);
+
+                    bool hovered = ImGui::IsMouseHoveringRect(cardMin, cardMax);
+
+                    // カード背景（ホバーで明るく）
                     dl->AddRectFilled(cardMin, cardMax,
-                        IM_COL32(40, 40, 45, 255), 4.0f);
+                        hovered ? IM_COL32(60, 62, 72, 255) : IM_COL32(38, 40, 46, 255), 6.0f);
 
-                    // 上部アクセントバー
-                    ImVec2 barMax = ImVec2(pos.x + thumbnailSize, pos.y + 3.0f);
-                    dl->AddRectFilled(cardMin, barMax,
-                        ImGui::GetColorU32(typeColor), 4.0f, ImDrawFlags_RoundCornersTop);
+                    // タイプ色ボーダー（視認性アップ・ホバーで強調）
+                    ImU32 borderCol = ImGui::GetColorU32(
+                        ImVec4(typeColor.x, typeColor.y, typeColor.z, hovered ? 1.0f : 0.55f));
+                    dl->AddRect(cardMin, cardMax, borderCol, 6.0f, 0, hovered ? 2.5f : 1.5f);
 
-                    // アイコンテキスト（中央）
-                    ImVec2 textSize = ImGui::CalcTextSize(icon);
-                    ImVec2 textPos = ImVec2(
-                        pos.x + (thumbnailSize - textSize.x) * 0.5f,
-                        pos.y + (thumbnailSize - textSize.y) * 0.5f);
-                    dl->AddText(textPos, ImGui::GetColorU32(typeColor), icon);
+                    // ベクターアイコン（中央）
+                    bool isUp = (entry.displayName == "..");
+                    DrawAssetGlyph(dl, cardMin, thumbnailSize, static_cast<int>(entry.type), typeColor, isUp);
 
-                    // 拡張子を下部に小さく表示
+                    // 拡張子バッジ（下部・タイプ色）
                     if (!entry.isDirectory)
                     {
                         std::string ext = entry.path.extension().string();
-                        ImVec2 extSize = ImGui::CalcTextSize(ext.c_str());
-                        ImVec2 extPos = ImVec2(
-                            pos.x + (thumbnailSize - extSize.x) * 0.5f,
-                            pos.y + thumbnailSize - extSize.y - 4.0f);
-                        dl->AddText(extPos, IM_COL32(160, 160, 160, 200), ext.c_str());
+                        if (!ext.empty())
+                        {
+                            ImVec2 ts = ImGui::CalcTextSize(ext.c_str());
+                            ImVec2 bMin = ImVec2(cardMin.x + (thumbnailSize - ts.x) * 0.5f - 4.0f,
+                                                 cardMax.y - ts.y - 5.0f);
+                            ImVec2 bMax = ImVec2(bMin.x + ts.x + 8.0f, bMin.y + ts.y + 2.0f);
+                            dl->AddRectFilled(bMin, bMax,
+                                ImGui::GetColorU32(ImVec4(typeColor.x * 0.5f, typeColor.y * 0.5f,
+                                                          typeColor.z * 0.5f, 0.9f)), 3.0f);
+                            dl->AddText(ImVec2(bMin.x + 4.0f, bMin.y + 1.0f),
+                                IM_COL32(235, 235, 235, 255), ext.c_str());
+                        }
                     }
 
                     // InvisibleButton でクリック判定

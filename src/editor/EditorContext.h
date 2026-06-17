@@ -106,6 +106,11 @@ public:
             && my >= viewportY && my < viewportY + viewportH;
     }
 
+    // カメラプレビュー用テクスチャの GPU ハンドル（ImTextureID）。
+    // Application が選択カメラ視点を描画してセット。0 ならプレビュー非表示。
+    // EditorLayer がシーンビュー隅に ImGui::Image でオーバーレイ表示する。
+    u64 cameraPreviewTexHandle = 0;
+
     // シーンパス
     std::string currentScenePath;
 

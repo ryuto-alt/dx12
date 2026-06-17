@@ -114,9 +114,9 @@ void EditorLayer::BuildDefaultLayout(ImGuiID dockspaceId, f32 /*toolbarHeight*/)
     ImGuiID dockRightTop = 0, dockRightBottom = 0;
     ImGui::DockBuilderSplitNode(dockRightCol, ImGuiDir_Down, 0.42f, &dockRightBottom, &dockRightTop);
 
-    // センター → 下(24%): アセットブラウザ | ビューポート(中央)
+    // センター → 下(33%): アセットブラウザ | ビューポート(中央)
     ImGuiID dockBottom = 0, dockViewport = 0;
-    ImGui::DockBuilderSplitNode(dockCenter, ImGuiDir_Down, 0.24f, &dockBottom, &dockViewport);
+    ImGui::DockBuilderSplitNode(dockCenter, ImGuiDir_Down, 0.33f, &dockBottom, &dockViewport);
 
     // 左: ヒエラルキー
     ImGui::DockBuilderDockWindow(
@@ -197,12 +197,12 @@ void EditorLayer::Render(bool isPlaying,
 
         // エディタUIとしてレイアウトを固定する:
         //   PassthruCentralNode … 中央ノードの背景を描かず3Dを見せる
-        //   NoResize            … スプリッタでのサイズ変更を禁止
         //   NoDockingSplit      … ノードの分割（再ドッキング）を禁止
         //   NoUndocking         … タブを引き剥がして浮かせるのを禁止
+        // ※ NoResize は付けない＝スプリッタでパネル（アセットブラウザ等）の
+        //   上下/左右サイズをドラッグ調整できる。構造は固定のまま大きさだけ可変。
         ImGui::DockSpace(dockspaceId, ImVec2(0, 0),
             ImGuiDockNodeFlags_PassthruCentralNode |
-            ImGuiDockNodeFlags_NoResize |
             ImGuiDockNodeFlags_NoDockingSplit |
             ImGuiDockNodeFlags_NoUndocking);
 
@@ -220,30 +220,67 @@ void EditorLayer::Render(bool isPlaying,
 
     m_assetBrowser->Render(*m_ctx, clock->GetDeltaTime());
 
-    // ===== 中央ノードの領域を取得（3Dビューポート座標） =====
+    // ===== 中央ノードの領域を取得し、シーンビューを 16:9 にレターボックス =====
     {
-        ImGuiDockNode* centralNode = ImGui::DockBuilderGetCentralNode(dockspaceId);
-        if (centralNode)
+        ImVec2 nodePos, nodeSize;
+        if (ImGuiDockNode* centralNode = ImGui::DockBuilderGetCentralNode(dockspaceId))
         {
-            m_viewportPos  = centralNode->Pos;
-            m_viewportSize = centralNode->Size;
+            nodePos  = centralNode->Pos;
+            nodeSize = centralNode->Size;
         }
         else
         {
-            // フォールバック
-            m_viewportPos  = ImVec2(0, toolbarHeight);
-            m_viewportSize = ImGui::GetIO().DisplaySize;
-            m_viewportSize.y -= toolbarHeight;
+            // フォールバック（全画面）
+            nodePos  = ImVec2(0, toolbarHeight);
+            nodeSize = ImGui::GetIO().DisplaySize;
+            nodeSize.y -= toolbarHeight;
         }
+        if (nodeSize.x < 1.0f) nodeSize.x = 1.0f;
+        if (nodeSize.y < 1.0f) nodeSize.y = 1.0f;
 
-        if (m_viewportSize.x < 1.0f) m_viewportSize.x = 1.0f;
-        if (m_viewportSize.y < 1.0f) m_viewportSize.y = 1.0f;
+        // 16:9 固定。中央ノードに収まる最大の 16:9 矩形を中央寄せにする。
+        // 余白部分はバックバッファのクリア色（暗色）がそのまま見えてレターボックスになる。
+        const float kTargetAspect = 16.0f / 9.0f;
+        ImVec2 vpSize = nodeSize;
+        if (nodeSize.x / nodeSize.y > kTargetAspect)
+            vpSize.x = nodeSize.y * kTargetAspect;   // 横が余る → 左右に帯
+        else
+            vpSize.y = nodeSize.x / kTargetAspect;   // 縦が余る → 上下に帯
+
+        m_viewportPos  = ImVec2(nodePos.x + (nodeSize.x - vpSize.x) * 0.5f,
+                                nodePos.y + (nodeSize.y - vpSize.y) * 0.5f);
+        m_viewportSize = vpSize;
 
         // Application のフライカメラ発動判定で使うため EditorContext に矩形を共有
         m_ctx->viewportX = m_viewportPos.x;
         m_ctx->viewportY = m_viewportPos.y;
         m_ctx->viewportW = m_viewportSize.x;
         m_ctx->viewportH = m_viewportSize.y;
+    }
+
+    // ===== カメラプレビュー小窓（選択カメラ視点。Application が描画してハンドル共有）=====
+    // カメラを選択すると、その視点の映像をシーンビュー右下に表示（Play 不要）。
+    if (m_ctx->cameraPreviewTexHandle != 0)
+    {
+        const float pw  = 320.0f;
+        const float ph  = pw * 9.0f / 16.0f;   // 16:9
+        const float pad = 12.0f;
+        ImGui::SetNextWindowPos(
+            ImVec2(m_viewportPos.x + m_viewportSize.x - pw - pad,
+                   m_viewportPos.y + m_viewportSize.y - ph - pad - 26.0f),  // タイトルバー分
+            ImGuiCond_Always);
+        ImGui::SetNextWindowBgAlpha(0.9f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6, 6));
+        if (ImGui::Begin("Camera Preview", nullptr,
+                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+                ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse |
+                ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing |
+                ImGuiWindowFlags_NoNav))
+        {
+            ImGui::Image(static_cast<ImTextureID>(m_ctx->cameraPreviewTexHandle), ImVec2(pw, ph));
+        }
+        ImGui::End();
+        ImGui::PopStyleVar();
     }
 
     // ===== シーンビューポート ドロップターゲット =====
