@@ -209,8 +209,8 @@ private:
     // ゲーム内 UI（Lua 即時モード）コマンドバッファ（WP7）
     struct UICommand
     {
-        enum class Type { Text, Button, Image } type = Type::Text;
-        float x = 0, y = 0, w = 0, h = 0, size = 24.0f;
+        enum class Type { Text, Button, Image, Rect } type = Type::Text;
+        float x = 0, y = 0, w = 0, h = 0, size = 24.0f;  // Rect では size=角丸半径
         float r = 1, g = 1, b = 1, a = 1;
         std::string text;  // text 内容 / button ラベル / image パス
     };

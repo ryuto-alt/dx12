@@ -70,6 +70,7 @@ public:
     using UiTextCb   = std::function<void(float x, float y, const std::string& text, float size, float r, float g, float b, float a)>;
     using UiButtonCb = std::function<bool(float x, float y, float w, float h, const std::string& label)>;
     using UiImageCb  = std::function<void(float x, float y, float w, float h, const std::string& path)>;
+    using UiRectCb   = std::function<void(float x, float y, float w, float h, float r, float g, float b, float a, float rounding)>;
 
     using TransitionCb = std::function<void(const std::string& rel, int type, float dur)>;
 
@@ -79,6 +80,7 @@ public:
     void SetTransitionCallback(TransitionCb cb) { m_transitionCb = std::move(cb); }
     void SetUiCallbacks(UiTextCb t, UiButtonCb b, UiImageCb i)
     { m_uiTextCb = std::move(t); m_uiButtonCb = std::move(b); m_uiImageCb = std::move(i); }
+    void SetUiRectCallback(UiRectCb r) { m_uiRectCb = std::move(r); }
 
 private:
     void RegisterBindings();
@@ -109,6 +111,7 @@ private:
     UiTextCb    m_uiTextCb;
     UiButtonCb  m_uiButtonCb;
     UiImageCb   m_uiImageCb;
+    UiRectCb    m_uiRectCb;
 };
 
 } // namespace dx12e

@@ -386,6 +386,16 @@ void ScriptEngine::RegisterBindings()
             {
                 if (m_uiImageCb) m_uiImageCb(x, y, w, h, path);
             });
+        // ui:rect(x,y,w,h,[r,g,b,a,rounding]) 塗りつぶし矩形（バー/パネル背景に）
+        ui.set_function("rect",
+            [this](sol::object, float x, float y, float w, float h,
+                   sol::optional<float> r, sol::optional<float> g, sol::optional<float> b,
+                   sol::optional<float> a, sol::optional<float> rounding)
+            {
+                if (m_uiRectCb)
+                    m_uiRectCb(x, y, w, h, r.value_or(1.0f), g.value_or(1.0f), b.value_or(1.0f),
+                               a.value_or(1.0f), rounding.value_or(0.0f));
+            });
     }
 
     // --- パーティクル / VFX（fx テーブル）---

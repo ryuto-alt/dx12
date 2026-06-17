@@ -1184,8 +1184,20 @@ void Application::Update()
     else
     {
         // プレイモード: Luaがカメラ+ゲームロジックを制御
-        m_scriptEngine->SetScreenSize(static_cast<int>(m_window->GetWidth()),
-                                      static_cast<int>(m_window->GetHeight()));
+        // HUD は実際のゲームビューポート基準でレイアウトさせる。
+        // 単体ゲーム=全画面、エディタ Play=中央 16:9 矩形（前フレームの値で1フレーム遅延だが無視できる）。
+        if (m_isGameMode)
+        {
+            m_scriptEngine->SetScreenSize(static_cast<int>(m_window->GetWidth()),
+                                          static_cast<int>(m_window->GetHeight()));
+        }
+        else
+        {
+            auto vs = m_editorLayer->GetViewportSize();
+            int sw = (vs.x >= 1.0f) ? static_cast<int>(vs.x) : static_cast<int>(m_window->GetWidth());
+            int sh = (vs.y >= 1.0f) ? static_cast<int>(vs.y) : static_cast<int>(m_window->GetHeight());
+            m_scriptEngine->SetScreenSize(sw, sh);
+        }
         m_scriptEngine->CallOnUpdate(dt);
         m_scriptEngine->UpdateAttachedScripts(dt);
 
@@ -1878,6 +1890,14 @@ void Application::WireScriptCallbacks()
         [this](float x, float y, float w, float h, const std::string& path) {
             UICommand c; c.type = UICommand::Type::Image;
             c.x = x; c.y = y; c.w = w; c.h = h; c.text = path;
+            m_uiCommands.push_back(std::move(c));
+        });
+
+    m_scriptEngine->SetUiRectCallback(
+        [this](float x, float y, float w, float h, float r, float g, float b, float a, float rounding) {
+            UICommand c; c.type = UICommand::Type::Rect;
+            c.x = x; c.y = y; c.w = w; c.h = h; c.size = rounding;
+            c.r = r; c.g = g; c.b = b; c.a = a;
             m_uiCommands.push_back(std::move(c));
         });
 }
@@ -2970,7 +2990,9 @@ void Application::Render()
         vpH    = static_cast<u32>(vs.y);
         if (vpW < 1) vpW = 1;
         if (vpH < 1) vpH = 1;
-        if (m_isGameMode || m_engineMode != EngineMode::Editor)
+        // 全画面は「単体ゲーム（エディタUIなし）」のみ。エディタは編集中も Play 中も
+        // 中央の 16:9 ビューポート矩形に描く（パネル下に潜り込ませない）。
+        if (m_isGameMode)
         {
             vpLeft = 0; vpTop = 0;
             vpW = m_window->GetWidth();
@@ -2990,6 +3012,9 @@ void Application::Render()
     if (!m_isGameMode && m_engineMode == EngineMode::Editor)
         m_camera->SetPerspective(DirectX::XM_PIDIV4,
             static_cast<f32>(vpW) / static_cast<f32>(vpH), 0.1f, 1000.0f);
+    else
+        // Play / 単体ゲーム: ゲームカメラの fov は維持し、アスペクトだけ実ビューポートに合わせる
+        m_camera->SetAspect(static_cast<f32>(vpW) / static_cast<f32>(vpH));
 
     m_commandList->SetPipelineState(*m_pipelineState);
 
@@ -3601,21 +3626,33 @@ void Application::Render()
         ImGui::Begin("##GameUI", nullptr, flags);
 
         auto* dl = ImGui::GetWindowDrawList();
+        // ゲーム UI はビューポート原点へオフセットし、矩形でクリップ＝パネル下に潜らない
+        const float ox = static_cast<float>(vpLeft);
+        const float oy = static_cast<float>(vpTop);
+        dl->PushClipRect(ImVec2(ox, oy),
+                         ImVec2(ox + static_cast<float>(vpW), oy + static_cast<float>(vpH)), true);
         std::unordered_set<std::string> nowPressed;
         for (const auto& c : m_uiCommands)
         {
-            if (c.type == UICommand::Type::Text)
+            if (c.type == UICommand::Type::Rect)
             {
                 ImU32 col = ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, c.a));
-                dl->AddText(ImGui::GetFont(), c.size, ImVec2(c.x, c.y), col, c.text.c_str());
+                dl->AddRectFilled(ImVec2(ox + c.x, oy + c.y),
+                                  ImVec2(ox + c.x + c.w, oy + c.y + c.h), col, c.size);
+            }
+            else if (c.type == UICommand::Type::Text)
+            {
+                ImU32 col = ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, c.a));
+                dl->AddText(ImGui::GetFont(), c.size, ImVec2(ox + c.x, oy + c.y), col, c.text.c_str());
             }
             else if (c.type == UICommand::Type::Button)
             {
-                ImGui::SetCursorPos(ImVec2(c.x, c.y));
+                ImGui::SetCursorPos(ImVec2(ox + c.x, oy + c.y));
                 if (ImGui::Button(c.text.c_str(), ImVec2(c.w, c.h)))
                     nowPressed.insert(c.text);
             }
         }
+        dl->PopClipRect();
         ImGui::End();
         m_pressedButtons = std::move(nowPressed);
     }

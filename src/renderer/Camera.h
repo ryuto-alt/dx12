@@ -10,6 +10,7 @@ class Camera
 {
 public:
     void SetPerspective(f32 fovYRad, f32 aspect, f32 nearZ, f32 farZ);
+    void SetAspect(f32 aspect) { m_aspect = aspect; }  // fov を変えずアスペクト比だけ更新
 
     // LookAt (legacy - 固定カメラ用)
     void LookAt(DirectX::XMFLOAT3 eye, DirectX::XMFLOAT3 target, DirectX::XMFLOAT3 up = {0, 1, 0});
