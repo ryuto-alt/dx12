@@ -712,6 +712,47 @@ end
 function goToScene(path, dur) fadeToScene(path, dur or 0.6) end
 function win(dur)  nextScene() end
 
+-- ===== 汎用ユーティリティ =====
+function clamp(v, lo, hi) if v < lo then return lo elseif v > hi then return hi else return v end end
+function lerp(a, b, t)    return a + (b - a) * t end
+-- 角度の最短差（度）。-180..180 を返す。カメラ/向きの補間に使う。
+function angleDelta(from, to)
+  local d = (to - from) % 360
+  if d > 180 then d = d - 360 end
+  return d
+end
+
+-- ===== 三人称トレイルカメラ（キーボードTPS向け・マウス不要）=====
+-- cameraTPS(target, { name="MainCamera", dist=10, height=6, pitch=26, yaw=<度>, follow=0.1 })
+--   target: Actor（:pos() を持つ）または {x=,y=,z=} のテーブル。
+--   yaw   : カメラを置きたい方位（度）。プレイヤーの向きを毎フレーム渡すと背後に回り込む。
+--   follow: yaw 追従の補間率 0..1（小さいほどゆっくり背後に回る＝トレイル感）。1=即時。
+--   カメラ方位の状態は target._camYaw に保持する（target はテーブルである必要あり）。
+function cameraTPS(target, opts)
+  opts = opts or {}
+  local cam = scene:findEntity(opts.name or "MainCamera")
+  if not (cam and cam:isValid()) then return end
+  local p = (type(target) == "table" and target.pos) and target:pos() or target
+  local px, py, pz = p.x, (p.y or 0), p.z
+  local dist   = opts.dist   or 10
+  local height = opts.height or 6
+  local pitch  = opts.pitch  or 26
+  local goal   = opts.yaw    or 0
+  local follow = opts.follow or 1.0
+  local cy = target._camYaw or goal
+  -- 大きな方向転換ほど速く背後へ回り込み、小さな調整はゆっくり（滑らか＋素早い狙い直し）
+  local delta = angleDelta(cy, goal)
+  local t = clamp(follow + (math.abs(delta) / 180) * 0.35, follow, 1)
+  cy = cy + delta * t
+  if type(target) == "table" then target._camYaw = cy end
+  local ry = math.rad(cy)
+  local fx, fz = math.sin(ry), math.cos(ry)
+  -- プレイヤーの背後 dist、上 height に置き、向き(yaw)＋見下ろし(pitch)でプレイヤーを捉える。
+  -- エンジンは rotation.y を yaw、-rotation.x を pitch として描画カメラへ同期する。
+  cam.transform.position = Vec3.new(px - fx * dist, py + height, pz - fz * dist)
+  cam.transform.rotation = Vec3.new(pitch, cy, 0)
+end
+
 -- ============================================================
 --  FX: ド派手パーティクルプリセット（fx:burst / fx:ring を包む）
 --  どのゲームスクリプトからも FX.explosion(...) 等で呼べる。
