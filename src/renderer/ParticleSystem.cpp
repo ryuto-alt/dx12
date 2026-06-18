@@ -12,23 +12,113 @@ using namespace DirectX;
 namespace dx12e
 {
 
+// ====================================================================
+//  CPU 側プロシージャルノイズ（カールノイズ＝divergence-free 乱流用）
+// ====================================================================
+namespace
+{
+inline u32 pcgu(u32 v)
+{
+    v = v * 747796405u + 2891336453u;
+    u32 w = ((v >> ((v >> 28u) + 4u)) ^ v) * 277803737u;
+    return (w >> 22u) ^ w;
+}
+inline float u2f01(u32 h) { return static_cast<float>(h) * (1.0f / 4294967296.0f); }
+
+inline void grad3(int x, int y, int z, float& gx, float& gy, float& gz)
+{
+    u32 h = pcgu(static_cast<u32>(x) ^ pcgu(static_cast<u32>(y) ^ pcgu(static_cast<u32>(z))));
+    float a  = u2f01(h) * 6.2831853f;
+    float zz = u2f01(pcgu(h)) * 2.0f - 1.0f;          // [-1,1]
+    float r  = std::sqrt((std::max)(0.0f, 1.0f - zz * zz));
+    gx = r * std::cos(a); gy = r * std::sin(a); gz = zz;
+}
+
+// 勾配ノイズ 3D（quintic 補間 → C1 連続。curl が滑らかになる）
+float gnoise3(float px, float py, float pz)
+{
+    float fx = std::floor(px), fy = std::floor(py), fz = std::floor(pz);
+    int ix = static_cast<int>(fx), iy = static_cast<int>(fy), iz = static_cast<int>(fz);
+    float tx = px - fx, ty = py - fy, tz = pz - fz;
+    auto q = [](float t) { return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f); };
+    float ux = q(tx), uy = q(ty), uz = q(tz);
+    auto corner = [&](int cx, int cy, int cz) -> float {
+        float gx, gy, gz; grad3(ix + cx, iy + cy, iz + cz, gx, gy, gz);
+        return gx * (tx - cx) + gy * (ty - cy) + gz * (tz - cz);
+    };
+    float c000 = corner(0,0,0), c100 = corner(1,0,0), c010 = corner(0,1,0), c110 = corner(1,1,0);
+    float c001 = corner(0,0,1), c101 = corner(1,0,1), c011 = corner(0,1,1), c111 = corner(1,1,1);
+    float x00 = std::lerp(c000, c100, ux), x10 = std::lerp(c010, c110, ux);
+    float x01 = std::lerp(c001, c101, ux), x11 = std::lerp(c011, c111, ux);
+    float y0 = std::lerp(x00, x10, uy), y1 = std::lerp(x01, x11, uy);
+    return std::lerp(y0, y1, uz);
+}
+
+// ノイズ・ポテンシャル ψ の curl（中心差分）。∇×ψ は divergence-free。
+XMFLOAT3 curlNoise(float x, float y, float z)
+{
+    const float e = 0.6f;
+    auto psi = [](float a, float b, float c) -> XMFLOAT3 {
+        return { gnoise3(a, b, c),
+                 gnoise3(a + 31.4f, b - 17.2f, c + 9.1f),
+                 gnoise3(a - 7.7f, b + 23.3f, c - 11.9f) };
+    };
+    XMFLOAT3 px0 = psi(x - e, y, z), px1 = psi(x + e, y, z);
+    XMFLOAT3 py0 = psi(x, y - e, z), py1 = psi(x, y + e, z);
+    XMFLOAT3 pz0 = psi(x, y, z - e), pz1 = psi(x, y, z + e);
+    float cx = (py1.z - py0.z) - (pz1.y - pz0.y);
+    float cy = (pz1.x - pz0.x) - (px1.z - px0.z);
+    float cz = (px1.y - px0.y) - (py1.x - py0.x);
+    float inv = 1.0f / (2.0f * e);
+    return { cx * inv, cy * inv, cz * inv };
+}
+
+inline XMFLOAT3 lerp3(const XMFLOAT3& a, const XMFLOAT3& b, float t)
+{
+    return { std::lerp(a.x, b.x, t), std::lerp(a.y, b.y, t), std::lerp(a.z, b.z, t) };
+}
+} // namespace
+
 void ParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
                                 DXGI_FORMAT dsvFormat, const std::wstring& shaderDir)
 {
-    static_assert(sizeof(GpuParticle) == 56, "GpuParticle stride must match shader instance layout (56)");
+    static_assert(sizeof(GpuParticle) == 64, "GpuParticle stride must match shader instance layout (64)");
+    (void)dsvFormat; // 粒子パスは DSV をバインドせず深度 SRV で手動オクルージョン
     auto* dev = device.GetDevice();
 
-    // --- Root Signature: b0(28 DWORD constants, ALL可視) のみ。SRV/サンプラー無し ---
+    // --- Root Signature: b0(32 DWORD constants) + t0(深度SRVテーブル,PS) + s0(LINEAR CLAMP) ---
     {
-        D3D12_ROOT_PARAMETER param{};
-        param.ParameterType            = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        param.Constants.ShaderRegister = 0;   // b0
-        param.Constants.Num32BitValues = 28;  // float4x4 + float4*3
-        param.ShaderVisibility         = D3D12_SHADER_VISIBILITY_ALL;
+        D3D12_DESCRIPTOR_RANGE srvRange{};
+        srvRange.RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        srvRange.NumDescriptors     = 1;
+        srvRange.BaseShaderRegister = 0;   // t0
+        srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+        D3D12_ROOT_PARAMETER params[2]{};
+        params[0].ParameterType            = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        params[0].Constants.ShaderRegister = 0;   // b0
+        params[0].Constants.Num32BitValues = 32;  // float4x4 + float4*4
+        params[0].ShaderVisibility         = D3D12_SHADER_VISIBILITY_ALL;
+        params[1].ParameterType            = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[1].DescriptorTable.NumDescriptorRanges = 1;
+        params[1].DescriptorTable.pDescriptorRanges   = &srvRange;
+        params[1].ShaderVisibility         = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        D3D12_STATIC_SAMPLER_DESC samp{};
+        samp.Filter         = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+        samp.AddressU       = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        samp.AddressV       = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        samp.AddressW       = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        samp.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+        samp.MaxLOD         = D3D12_FLOAT32_MAX;
+        samp.ShaderRegister = 0;   // s0
+        samp.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         D3D12_ROOT_SIGNATURE_DESC desc{};
-        desc.NumParameters = 1;
-        desc.pParameters   = &param;
+        desc.NumParameters     = 2;
+        desc.pParameters       = params;
+        desc.NumStaticSamplers = 1;
+        desc.pStaticSamplers   = &samp;
         desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
                    | D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS
                    | D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS
@@ -40,7 +130,7 @@ void ParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
             serialized->GetBufferSize(), IID_PPV_ARGS(&m_rootSig)));
     }
 
-    // --- PSO: インスタンスストリーム / 加算ブレンド / 深度テストON・書込OFF ---
+    // --- PSO: インスタンスストリーム / 深度テスト無し（PSで手動オクルージョン） ---
     {
         auto vs = ShaderCompiler::LoadFromFile(shaderDir + L"Particle_VS.cso");
         auto ps = ShaderCompiler::LoadFromFile(shaderDir + L"Particle_PS.cso");
@@ -52,6 +142,9 @@ void ParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
             {"TEXCOORD", 1, DXGI_FORMAT_R32_FLOAT,          0, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},
             {"TEXCOORD", 2, DXGI_FORMAT_R32_FLOAT,          0, 36, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // stretch
             {"NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 40, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // vel
+            {"TEXCOORD", 3, DXGI_FORMAT_R32_FLOAT,          0, 52, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // age01
+            {"TEXCOORD", 4, DXGI_FORMAT_R32_UINT,           0, 56, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // kind
+            {"TEXCOORD", 5, DXGI_FORMAT_R32_FLOAT,          0, 60, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // seed
         };
 
         D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
@@ -67,26 +160,29 @@ void ParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
 
         auto& rt = pso.BlendState.RenderTarget[0];
         rt.BlendEnable           = TRUE;
-        rt.SrcBlend              = D3D12_BLEND_ONE;   // 加算合成
-        rt.DestBlend             = D3D12_BLEND_ONE;
+        rt.SrcBlend              = D3D12_BLEND_ONE;   // 前乗算
+        rt.DestBlend             = D3D12_BLEND_ONE;   // 加算（DestBlend は下で alpha 用に差し替え）
         rt.BlendOp               = D3D12_BLEND_OP_ADD;
         rt.SrcBlendAlpha         = D3D12_BLEND_ONE;
         rt.DestBlendAlpha        = D3D12_BLEND_ONE;
         rt.BlendOpAlpha          = D3D12_BLEND_OP_ADD;
         rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 
-        pso.DepthStencilState.DepthEnable    = TRUE;                          // 壁/床に遮蔽される
-        pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;   // 粒子同士は重なる
-        pso.DepthStencilState.DepthFunc      = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-        pso.DepthStencilState.StencilEnable  = FALSE;
+        pso.DepthStencilState.DepthEnable   = FALSE;  // DSV 無し。PSで深度SRVから手動オクルージョン
+        pso.DepthStencilState.StencilEnable = FALSE;
 
         pso.SampleMask            = UINT_MAX;
         pso.NumRenderTargets      = 1;
         pso.RTVFormats[0]         = rtvFormat;
-        pso.DSVFormat             = dsvFormat;
+        pso.DSVFormat             = DXGI_FORMAT_UNKNOWN;
         pso.SampleDesc            = { 1, 0 };
 
-        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_pso)));
+        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoAdd)));
+
+        // 前乗算アルファ（煙）: Src=ONE, Dest=INV_SRC_ALPHA
+        rt.DestBlend      = D3D12_BLEND_INV_SRC_ALPHA;
+        rt.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoAlpha)));
     }
 
     // --- インスタンスバッファ（UPLOADヒープ。SpriteRenderer と同じ運用）---
@@ -115,7 +211,7 @@ void ParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
     m_particles.assign(kMaxParticles, Particle{});
     m_gpu.reserve(kMaxParticles);
     m_initialized = true;
-    Logger::Info("ParticleSystem initialized (max {} particles)", kMaxParticles);
+    Logger::Info("ParticleSystem initialized (max {} particles, procedural kinds + curl + soft)", kMaxParticles);
 }
 
 float ParticleSystem::Rand(float a, float b)
@@ -171,6 +267,11 @@ void ParticleSystem::Emit(const EmitParams& p)
         pt.pos = p.pos;
         pt.vel = { vdir.x * spd, vdir.y * spd + p.up * p.speed * 0.5f, vdir.z * spd };
         pt.col0 = { p.color.x * p.intensity, p.color.y * p.intensity, p.color.z * p.intensity };
+        pt.hasMid = p.hasColorMid;
+        if (p.hasColorMid)
+            pt.colM = { p.colorMid.x * p.intensity, p.colorMid.y * p.intensity, p.colorMid.z * p.intensity };
+        else
+            pt.colM = pt.col0;
         if (p.hasColorEnd)
             pt.col1 = { p.colorEnd.x * p.intensity, p.colorEnd.y * p.intensity, p.colorEnd.z * p.intensity };
         else
@@ -187,6 +288,11 @@ void ParticleSystem::Emit(const EmitParams& p)
         pt.stretch = p.stretch;
         pt.turbStrength = p.turbStrength;
         pt.turbFreq = p.turbFreq;
+        pt.seed = Rand(0.0f, 1000.0f);
+        pt.flicker = p.flicker;
+        pt.flickerFreq = p.flickerFreq;
+        pt.kind  = p.kind;
+        pt.blend = p.blend;
         pt.alive = true;
     }
 }
@@ -203,17 +309,15 @@ void ParticleSystem::Update(f32 dt)
         pt.age += dt;
         if (pt.age >= pt.life) { pt.alive = false; continue; }
 
-        // 乱流（value-noise 風ハッシュ）：有機的な揺らぎ。turbStrength=0 で無効。
+        // カールノイズ乱流（divergence-free）：流体的な揺らぎ。turbStrength=0 で無効。
         if (pt.turbStrength > 0.0f)
         {
-            float f = pt.turbFreq;
-            auto frac = [](float v) { return v - std::floor(v); };
-            float nx = frac(std::sin(pt.pos.x * 127.1f * f + pt.pos.y * 311.7f + pt.age * 0.7f) * 43758.5453f);
-            float ny = frac(std::sin(pt.pos.y * 269.5f * f + pt.pos.z * 183.3f) * 43758.5453f);
-            float nz = frac(std::sin(pt.pos.z * 419.2f * f + pt.pos.x * 371.9f + pt.age * 0.3f) * 43758.5453f);
-            pt.vel.x += (nx * 2.0f - 1.0f) * pt.turbStrength * dt;
-            pt.vel.y += (ny * 2.0f - 1.0f) * pt.turbStrength * dt;
-            pt.vel.z += (nz * 2.0f - 1.0f) * pt.turbStrength * dt;
+            float f = pt.turbFreq * 0.35f;
+            XMFLOAT3 c = curlNoise(pt.pos.x * f + pt.age * 0.25f, pt.pos.y * f, pt.pos.z * f);
+            float g = pt.turbStrength * 2.5f;
+            pt.vel.x += c.x * g * dt;
+            pt.vel.y += c.y * g * dt;
+            pt.vel.z += c.z * g * dt;
         }
 
         pt.vel.y += pt.gravity * dt;
@@ -245,29 +349,52 @@ void ParticleSystem::Render(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj,
 {
     if (!m_initialized) return;
 
-    // 生きてる粒子を GPU バッファへ詰める（寿命でフェード）
-    m_gpu.clear();
-    for (const auto& pt : m_particles)
-    {
-        if (!pt.alive) continue;
+    // 1粒子 → GpuParticle 変換（寿命でフェード、3キー色カーブ、明滅）
+    auto makeGpu = [](const Particle& pt) -> GpuParticle {
         float t = pt.age / pt.life;           // 0..1
         float fade = 1.0f - t;                // 末尾でフェードアウト
         fade = fade * fade;
+
+        XMFLOAT3 col = pt.hasMid
+            ? (t < 0.5f ? lerp3(pt.col0, pt.colM, t * 2.0f)
+                        : lerp3(pt.colM, pt.col1, (t - 0.5f) * 2.0f))
+            : lerp3(pt.col0, pt.col1, t);
+
+        if (pt.flicker > 0.0f)
+        {
+            float ph = pt.seed * 53.0f + pt.age * pt.flickerFreq;
+            float fl = 1.0f + pt.flicker * (0.6f * std::sin(ph) + 0.4f * std::sin(ph * 2.137f));
+            fl = (std::max)(0.0f, fl);
+            col.x *= fl; col.y *= fl; col.z *= fl;
+        }
+
         GpuParticle g;
-        g.center = pt.pos;
-        g.size   = pt.size0 + (pt.size1 - pt.size0) * t;
-        g.color  = {
-            pt.col0.x + (pt.col1.x - pt.col0.x) * t,
-            pt.col0.y + (pt.col1.y - pt.col0.y) * t,
-            pt.col0.z + (pt.col1.z - pt.col0.z) * t,
-            pt.alpha * fade
-        };
+        g.center  = pt.pos;
+        g.size    = pt.size0 + (pt.size1 - pt.size0) * t;
+        g.color   = { col.x, col.y, col.z, pt.alpha * fade };
         g.rot     = pt.rot;
         g.stretch = pt.stretch;
         g.vel     = pt.vel;
-        g._pad    = 0.0f;
-        m_gpu.push_back(g);
+        g.age01   = t;
+        g.kind    = static_cast<u32>(pt.kind);
+        g.seed    = pt.seed;
+        return g;
+    };
+
+    // 加算 → α の順に詰める（PSO 切替を1回に）
+    m_gpu.clear();
+    for (const auto& pt : m_particles)
+    {
+        if (!pt.alive || pt.blend != 0) continue;
+        m_gpu.push_back(makeGpu(pt));
         if (m_gpu.size() >= kMaxParticles) break;
+    }
+    m_additiveCount = static_cast<u32>(m_gpu.size());
+    for (const auto& pt : m_particles)
+    {
+        if (!pt.alive || pt.blend == 0) continue;
+        if (m_gpu.size() >= kMaxParticles) break;
+        m_gpu.push_back(makeGpu(pt));
     }
     m_aliveCount = static_cast<int>(m_gpu.size());
     if (m_gpu.empty()) return;
@@ -284,18 +411,33 @@ void ParticleSystem::Render(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj,
         XMFLOAT4   camRight;
         XMFLOAT4   camUp;
         XMFLOAT4   params;
+        XMFLOAT4   params2;
     } cb;
     XMStoreFloat4x4(&cb.viewProj, XMMatrixTranspose(viewProj));
     cb.camRight = { camRight.x, camRight.y, camRight.z, 0.0f };
     cb.camUp    = { camUp.x,    camUp.y,    camUp.z,    0.0f };
-    cb.params   = { 1.0f, 2.2f, 0.0f, 0.0f }; // x=intensity, y=softness
+    cb.params   = { 1.0f, 2.2f, m_time, 0.5f }; // x=intensity, y=glowSoftness, z=time, w=softFadeDist
+    cb.params2  = { m_projA, m_projB, m_hasDepth ? m_invRTW : 0.0f, m_invRTH };
 
-    cmd->SetPipelineState(m_pso.Get());
     cmd->SetGraphicsRootSignature(m_rootSig.Get());
-    cmd->SetGraphicsRoot32BitConstants(0, 28, &cb, 0);
+    cmd->SetGraphicsRoot32BitConstants(0, 32, &cb, 0);
+    if (m_hasDepth) cmd->SetGraphicsRootDescriptorTable(1, m_depthSrv);
     cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cmd->IASetVertexBuffers(0, 1, &m_vbView);
-    cmd->DrawInstanced(6, static_cast<UINT>(m_gpu.size()), 0, 0);
+
+    // 加算パス
+    if (m_additiveCount > 0)
+    {
+        cmd->SetPipelineState(m_psoAdd.Get());
+        cmd->DrawInstanced(6, m_additiveCount, 0, 0);
+    }
+    // 前乗算アルファ（煙）パス
+    u32 alphaCount = static_cast<u32>(m_gpu.size()) - m_additiveCount;
+    if (alphaCount > 0)
+    {
+        cmd->SetPipelineState(m_psoAlpha.Get());
+        cmd->DrawInstanced(6, alphaCount, 0, m_additiveCount);
+    }
 }
 
 } // namespace dx12e

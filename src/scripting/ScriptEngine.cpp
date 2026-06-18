@@ -426,8 +426,42 @@ void ScriptEngine::RegisterBindings()
             p.drag      = t.get_or("drag", 1.0f);
             p.up        = t.get_or("up", 0.0f);
             p.stretch      = t.get_or("stretch", 0.0f);       // 速度方向ストレッチ（火花/筋）
-            p.turbStrength = t.get_or("turbStrength", 0.0f);  // 乱流（煙/炎の有機的揺らぎ）
+            p.turbStrength = t.get_or("turbStrength", 0.0f);  // カールノイズ乱流（煙/炎の有機的揺らぎ）
             p.turbFreq     = t.get_or("turbFreq", 1.0f);
+
+            // --- プロシージャル質感(kind) / ブレンド / 3キー色 / 明滅（全て任意・後方互換）---
+            //  kind は数値 or 文字列: glow/fire/smoke/spark/magic/electric(lightning)/ring(shockwave)/star(flare)
+            int kind = 0;
+            sol::object ko = t["kind"];
+            if (ko.valid())
+            {
+                if (ko.is<std::string>())
+                {
+                    std::string s = ko.as<std::string>();
+                    if      (s == "glow")     kind = 0;
+                    else if (s == "fire")     kind = 1;
+                    else if (s == "smoke")    kind = 2;
+                    else if (s == "spark")    kind = 3;
+                    else if (s == "magic")    kind = 4;
+                    else if (s == "electric" || s == "lightning") kind = 5;
+                    else if (s == "ring"     || s == "shockwave") kind = 6;
+                    else if (s == "star"     || s == "flare")     kind = 7;
+                }
+                else if (ko.is<double>())
+                {
+                    kind = static_cast<int>(ko.as<double>());
+                }
+            }
+            p.kind  = kind;
+            p.blend = t.get_or("blend", kind == 2 ? 1 : 0);   // 煙は既定で α 前乗算（遮蔽）、他は加算
+            sol::optional<float> rm = t["rMid"], gm = t["gMid"], bm = t["bMid"];
+            if (rm || gm || bm)
+            {
+                p.hasColorMid = true;
+                p.colorMid = { rm.value_or(p.color.x), gm.value_or(p.color.y), bm.value_or(p.color.z) };
+            }
+            p.flicker     = t.get_or("flicker", 0.0f);
+            p.flickerFreq = t.get_or("flickerFreq", 18.0f);
             return p;
         };
 
@@ -806,58 +840,70 @@ end
 -- ============================================================
 FX = {}
 
--- 爆発（撃破など）: 火球コア + 白い飛散火花
+-- 爆発（撃破など）: 白熱フラッシュ + fbm火球 + 光筋火花 + 拡大リング + 遮蔽煙
 function FX.explosion(x, y, z, scale, r, g, b)
   scale = scale or 1.0
   r = r or 1.0; g = g or 0.45; b = b or 0.12
-  -- 火球コア（白熱→色フェード）
-  fx:burst{ x=x, y=y, z=z, count=math.floor(20*scale), spread=1, speed=7*scale, speedVar=0.5,
-            size=0.55*scale, sizeEnd=0.02, life=0.5, lifeVar=0.4,
-            r=r*1.4, g=g*1.3, b=b*1.2, rEnd=r*0.6, gEnd=g*0.4, bEnd=b*0.2,
-            intensity=5, gravity=-5, drag=2.5, up=0.6 }
-  -- 飛び散る火花（速度ストレッチ＝光の筋になる）
-  fx:burst{ x=x, y=y, z=z, count=math.floor(14*scale), spread=1, speed=15*scale, speedVar=0.5,
-            size=0.10*scale, sizeEnd=0.0, life=0.4, lifeVar=0.4,
-            r=1, g=0.95, b=0.7, intensity=9, drag=1.5, stretch=5, gravity=-7 }
-  -- 暗い乱流煙（HDR<1＝光らず接地感を出す。turbで有機的にうねる）
-  fx:burst{ x=x, y=y, z=z, count=math.floor(8*scale), spread=0.7, speed=2.5*scale, speedVar=0.4,
-            size=0.5*scale, sizeEnd=1.6*scale, life=1.0, lifeVar=0.4,
-            r=0.22, g=0.20, b=0.22, intensity=1, drag=1.2, turbStrength=3.0, turbFreq=0.7 }
+  -- 白熱フラッシュ（スター閃光・一瞬）
+  fx:burst{ x=x, y=y, z=z, count=1, kind="star", size=1.6*scale, sizeEnd=0.0, life=0.12,
+            r=1, g=0.95, b=0.85, intensity=16 }
+  -- 火球（fbm炎・温度ランプ・カール乱流・明滅）
+  fx:burst{ x=x, y=y, z=z, count=math.floor(16*scale), spread=1, speed=6*scale, speedVar=0.5,
+            kind="fire", size=0.7*scale, sizeEnd=0.1, life=0.55, lifeVar=0.35,
+            r=r*1.3, g=g*1.2, b=b, rEnd=r*0.6, gEnd=g*0.3, bEnd=b*0.15,
+            intensity=5, gravity=-4, drag=2.2, up=0.6, turbStrength=2.5, turbFreq=1.2, flicker=0.5 }
+  -- 飛び散る火花（速度ストレッチ＝光の筋）
+  fx:burst{ x=x, y=y, z=z, count=math.floor(16*scale), spread=1, speed=16*scale, speedVar=0.5,
+            kind="spark", size=0.12*scale, sizeEnd=0.0, life=0.4, lifeVar=0.4,
+            r=1, g=0.95, b=0.7, intensity=10, drag=1.5, stretch=5, gravity=-7 }
+  -- 衝撃波リング（単一粒子で拡大）
+  fx:burst{ x=x, y=y, z=z, count=1, kind="ring", size=3.2*scale, sizeEnd=3.2*scale, life=0.45,
+            r=1, g=0.8, b=0.5, intensity=5 }
+  -- 乱流煙（α前乗算＝遮蔽でボリューム感。カールでうねる）
+  fx:burst{ x=x, y=y, z=z, count=math.floor(10*scale), spread=0.7, speed=2.2*scale, speedVar=0.4,
+            kind="smoke", size=0.6*scale, sizeEnd=1.8*scale, life=1.1, lifeVar=0.4,
+            r=0.16, g=0.15, b=0.17, intensity=1, drag=1.2, turbStrength=2.5, turbFreq=0.7, up=0.3 }
 end
 
--- 衝撃波リング（ノヴァ等）: XZ平面に等間隔で外へ
+-- 衝撃波リング（ノヴァ等）: 単一粒子の拡大リング + 放射状の光筋
 function FX.shockwave(x, y, z, count, speed, r, g, b)
-  fx:ring{ x=x, y=y, z=z, count=count or 28, speed=speed or 16, speedVar=0.0,
-           size=0.6, sizeEnd=0.05, life=0.55, lifeVar=0.0,
-           r=r or 0.6, g=g or 1.0, b=b or 1.0, intensity=6, drag=1.2 }
+  r = r or 0.6; g = g or 1.0; b = b or 1.0
+  local rad = (speed or 16) * 0.3
+  fx:burst{ x=x, y=y, z=z, count=1, kind="ring", size=rad, sizeEnd=rad, life=0.5,
+            r=r, g=g, b=b, intensity=7 }
+  fx:ring{ x=x, y=y, z=z, count=count or 24, speed=speed or 16, speedVar=0.0,
+           kind="spark", size=0.3, sizeEnd=0.0, life=0.4, lifeVar=0.1,
+           r=r, g=g, b=b, intensity=6, drag=1.2, stretch=3 }
 end
 
 -- 着弾火花（小さく速い・速度ストレッチで筋に）
 function FX.spark(x, y, z, count, r, g, b)
   fx:burst{ x=x, y=y, z=z, count=count or 6, spread=1, speed=11, speedVar=0.5,
-            size=0.12, sizeEnd=0.0, life=0.3, lifeVar=0.4,
-            r=r or 0.6, g=g or 0.95, b=b or 1.0, intensity=8, drag=2, stretch=4 }
+            kind="spark", size=0.13, sizeEnd=0.0, life=0.3, lifeVar=0.4,
+            r=r or 0.6, g=g or 0.95, b=b or 1.0, intensity=9, drag=2, stretch=4 }
 end
 
 -- 立ち上る軌跡/オーラ点（1粒ずつ毎フレーム呼ぶ用）
 function FX.trail(x, y, z, r, g, b)
   fx:burst{ x=x, y=y, z=z, count=1, spread=0.4, dy=1, speed=1.5, speedVar=0.5,
-            size=0.22, sizeEnd=0.0, life=0.45, lifeVar=0.3,
-            r=r or 1, g=g or 0.9, b=b or 0.4, intensity=4, gravity=2, drag=1 }
+            kind="spark", size=0.2, sizeEnd=0.0, life=0.45, lifeVar=0.3,
+            r=r or 1, g=g or 0.9, b=b or 0.4, intensity=5, gravity=2, drag=1, stretch=1.5 }
 end
 
--- レベルアップ超新星: 金リング + 大量火花 + 画面パルス
+-- レベルアップ超新星: 白熱フラッシュ + 金リング + 火球 + 金火花 + 画面パルス
 function FX.supernova(x, y, z, scale)
   scale = scale or 1.0
-  fx:ring{ x=x, y=y, z=z, count=40, speed=20*scale, size=0.7, sizeEnd=0.05, life=0.7,
-           r=1, g=0.85, b=0.3, intensity=8, drag=1 }
-  fx:burst{ x=x, y=y, z=z, count=60, spread=1, speed=10*scale, speedVar=0.5,
-            size=0.5, sizeEnd=0.0, life=0.8, lifeVar=0.4,
-            r=1, g=0.95, b=0.6, rEnd=1, gEnd=0.5, bEnd=0.1,
-            intensity=7, gravity=-4, drag=1.5, up=0.5 }
+  fx:burst{ x=x, y=y, z=z, count=1, kind="star", size=2.4*scale, sizeEnd=0.0, life=0.16,
+            r=1, g=0.95, b=0.8, intensity=20 }
+  fx:burst{ x=x, y=y, z=z, count=1, kind="ring", size=5.0*scale, sizeEnd=5.0*scale, life=0.7,
+            r=1, g=0.85, b=0.35, intensity=8 }
+  fx:burst{ x=x, y=y, z=z, count=math.floor(40*scale), spread=1, speed=9*scale, speedVar=0.5,
+            kind="fire", size=0.55*scale, sizeEnd=0.08, life=0.8, lifeVar=0.4,
+            r=1, g=0.9, b=0.5, rEnd=1, gEnd=0.45, bEnd=0.12,
+            intensity=7, gravity=-3, drag=1.5, up=0.5, turbStrength=2.0, flicker=0.4 }
   -- 伸びる金の火花
-  fx:burst{ x=x, y=y, z=z, count=30, spread=1, speed=18*scale, speedVar=0.5,
-            size=0.12, sizeEnd=0.0, life=0.6, lifeVar=0.4,
+  fx:burst{ x=x, y=y, z=z, count=math.floor(30*scale), spread=1, speed=18*scale, speedVar=0.5,
+            kind="spark", size=0.12, sizeEnd=0.0, life=0.6, lifeVar=0.4,
             r=1, g=0.9, b=0.4, intensity=9, drag=1.2, stretch=5, gravity=-6 }
   fx:pulse(0.8)
 end

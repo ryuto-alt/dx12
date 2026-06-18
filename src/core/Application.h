@@ -184,6 +184,7 @@ private:
     std::unique_ptr<CommandList>       m_commandList;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_depthBuffer;
     D3D12_CPU_DESCRIPTOR_HANDLE        m_dsvHandle{};
+    u32                                m_depthSrvIndex = 0xFFFFFFFFu;  // soft particles 用シーン深度SRV
     std::unique_ptr<InputSystem>       m_inputSystem;
     std::unique_ptr<Scene>             m_scene;
     std::unique_ptr<ScriptEngine>      m_scriptEngine;

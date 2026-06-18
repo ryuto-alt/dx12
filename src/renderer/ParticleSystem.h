@@ -13,9 +13,24 @@ namespace dx12e
 {
 class GraphicsDevice;
 
-// CPUシミュレーション + GPUインスタンシングの加算ビルボードパーティクル。
-// Lua の fx:burst / fx:ring から放出され、scene の HDR RT へ加算で描かれる。
-// グローはシェーダ解析（テクスチャ無し）。粒子は全部「光る点」になる。
+// 見た目の種別（Particle.hlsl の KIND_* と一致必須）。
+enum class ParticleKind : int
+{
+    Glow = 0,   // 既定: 発光ソフト円（後方互換）
+    Fire = 1,   // fbm 炎（温度ランプ）
+    Smoke = 2,  // fbm 煙（α前乗算で遮蔽）
+    Spark = 3,  // 明るいエネルギーコア（ストレッチで筋）
+    Magic = 4,  // 極座標うず巻きリング
+    Electric = 5, // ジッタ稲妻フィラメント（ストロボ）
+    Ring = 6,   // 単一粒子で拡大する衝撃波リング
+    Star = 7,   // アナモルフィック十字＋花弁フレア
+};
+
+enum class ParticleBlend : int { Additive = 0, AlphaPremul = 1 };
+
+// CPUシミュレーション + GPUインスタンシングのプロシージャル質感パーティクル。
+// Lua の fx:burst / fx:ring から放出され、scene の HDR RT へ描かれる。
+// 質感はシェーダの数式（テクスチャ無し）。動きはカールノイズ（divergence-free）。
 class ParticleSystem
 {
 public:
@@ -33,17 +48,23 @@ public:
         float life       = 0.6f;
         float lifeVar    = 0.3f;
         DirectX::XMFLOAT3 color{1, 1, 1};
+        DirectX::XMFLOAT3 colorMid{1, 1, 1};
         DirectX::XMFLOAT3 colorEnd{1, 1, 1};
+        bool  hasColorMid = false;      // 3キー色カーブ（start→mid→end）
         bool  hasColorEnd = false;
         float intensity  = 3.0f;        // HDR増幅（>1 で白熱→ブルーム）
         float gravity    = 0.0f;        // y方向加速（負で落下）
         float drag       = 1.0f;        // 速度減衰/秒
         float up         = 0.0f;        // 初速の上向きバイアス
-        bool  ring       = false;       // true=XZ平面に等間隔リング（衝撃波）
+        bool  ring       = false;       // true=XZ平面に等間隔リング（衝撃波の配置）
         // --- 高品質化（コードのみ）---
         float stretch     = 0.0f;       // >0 で速度方向へ伸びる（火花/筋/弾道）
-        float turbStrength = 0.0f;      // >0 で乱流（有機的な揺らぎ：煙/炎/塵）
+        float turbStrength = 0.0f;      // >0 でカールノイズ乱流（有機的な揺らぎ：煙/炎）
         float turbFreq     = 1.0f;      // 乱流の空間周波数
+        int   kind         = 0;         // ParticleKind
+        int   blend        = 0;         // ParticleBlend（既定は加算、煙はα）
+        float flicker      = 0.0f;      // 発光明滅の強さ（0..1）
+        float flickerFreq  = 18.0f;     // 明滅の速さ
     };
 
     void Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
@@ -53,7 +74,15 @@ public:
     void Update(f32 dt);
     void Clear();
 
-    // scene パス内（HDR RT + 深度バインド済み）で呼ぶ。
+    // シーン深度 SRV（R32_FLOAT）と線形化パラメータを供給（soft particles 用）。
+    // projA=_33, projB=_43, invRTW=1/RTwidth, invRTH=1/RTheight。invRTW<=0 で soft 無効。
+    void SetSceneDepth(D3D12_GPU_DESCRIPTOR_HANDLE srv, float projA, float projB,
+                       float invRTW, float invRTH)
+    { m_depthSrv = srv; m_projA = projA; m_projB = projB; m_invRTW = invRTW; m_invRTH = invRTH; m_hasDepth = true; }
+    void DisableSceneDepth() { m_hasDepth = false; }
+    void SetTime(float t) { m_time = t; }
+
+    // scene パス内（HDR RT バインド済み・深度は SRV としてバインド済み）で呼ぶ。
     void Render(ID3D12GraphicsCommandList* cmd, DirectX::XMMATRIX viewProj,
                 DirectX::XMFLOAT3 camRight, DirectX::XMFLOAT3 camUp);
 
@@ -69,6 +98,7 @@ private:
         DirectX::XMFLOAT3 pos;
         DirectX::XMFLOAT3 vel;
         DirectX::XMFLOAT3 col0;
+        DirectX::XMFLOAT3 colM;
         DirectX::XMFLOAT3 col1;
         float size0, size1;
         float age, life;
@@ -76,10 +106,15 @@ private:
         float gravity, drag, alpha;
         float stretch = 0.0f;
         float turbStrength = 0.0f, turbFreq = 1.0f;
+        float seed = 0.0f;
+        float flicker = 0.0f, flickerFreq = 18.0f;
+        int   kind = 0;
+        int   blend = 0;
+        bool  hasMid = false;
         bool  alive = false;
     };
 
-    // シェーダのインスタンス入力レイアウトと一致（stride 56）。
+    // シェーダのインスタンス入力レイアウトと一致（stride 64）。
     struct GpuParticle
     {
         DirectX::XMFLOAT3 center;   // 0  POSITION
@@ -88,25 +123,35 @@ private:
         float             rot;      // 32 TEXCOORD1
         float             stretch;  // 36 TEXCOORD2
         DirectX::XMFLOAT3 vel;      // 40 NORMAL0（速度ストレッチ用）
-        float             _pad;     // 52
+        float             age01;    // 52 TEXCOORD3
+        u32               kind;     // 56 TEXCOORD4
+        float             seed;     // 60 TEXCOORD5
     };
 
     float Rand(float a, float b);
 
-    static constexpr u32 kMaxParticles = 6000;
+    static constexpr u32 kMaxParticles = 8000;
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSig;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pso;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoAdd;    // 加算
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoAlpha;  // 前乗算アルファ（煙）
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_instanceBuffer; // UPLOAD
     D3D12_VERTEX_BUFFER_VIEW                     m_vbView{};
 
     std::vector<Particle>   m_particles;
-    std::vector<GpuParticle> m_gpu;     // 毎フレーム再構築
+    std::vector<GpuParticle> m_gpu;     // 毎フレーム再構築（加算→α の順に詰める）
+    u32   m_additiveCount = 0;          // m_gpu 内の加算粒子数（先頭から）
     u32   m_cursor     = 0;             // 空きスロット探索の起点
     int   m_aliveCount = 0;
     float m_pulse      = 0.0f;
+    float m_time       = 0.0f;
     std::mt19937 m_rng{1337u};
     bool  m_initialized = false;
+
+    // soft particles 用
+    D3D12_GPU_DESCRIPTOR_HANDLE m_depthSrv{};
+    float m_projA = 0.0f, m_projB = 0.0f, m_invRTW = 0.0f, m_invRTH = 0.0f;
+    bool  m_hasDepth = false;
 };
 
 } // namespace dx12e

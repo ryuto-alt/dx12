@@ -172,13 +172,15 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
     // デプスバッファ作成
     {
+        // R32_TYPELESS で確保し、DSV(D32_FLOAT) と SRV(R32_FLOAT) の両ビューを張る。
+        // SRV はパーティクルの soft particles（接地フェード＋手動オクルージョン）で読む。
         D3D12_RESOURCE_DESC depthDesc{};
         depthDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
         depthDesc.Width = m_window->GetWidth();
         depthDesc.Height = m_window->GetHeight();
         depthDesc.DepthOrArraySize = 1;
         depthDesc.MipLevels = 1;
-        depthDesc.Format = DXGI_FORMAT_D32_FLOAT;
+        depthDesc.Format = DXGI_FORMAT_R32_TYPELESS;
         depthDesc.SampleDesc = {1, 0};
         depthDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
 
@@ -200,6 +202,15 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
         m_graphicsDevice->GetDevice()->CreateDepthStencilView(
             m_depthBuffer.Get(), &dsvDesc, m_dsvHandle);
+
+        m_depthSrvIndex = m_srvHeap->AllocateIndex();
+        D3D12_SHADER_RESOURCE_VIEW_DESC depthSrvDesc{};
+        depthSrvDesc.Format                  = DXGI_FORMAT_R32_FLOAT;
+        depthSrvDesc.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
+        depthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        depthSrvDesc.Texture2D.MipLevels     = 1;
+        m_graphicsDevice->GetDevice()->CreateShaderResourceView(
+            m_depthBuffer.Get(), &depthSrvDesc, m_srvHeap->GetCpuHandle(m_depthSrvIndex));
     }
 
     // RootSignature
@@ -795,7 +806,7 @@ void Application::Run()
                 depthDesc.Height = h;
                 depthDesc.DepthOrArraySize = 1;
                 depthDesc.MipLevels = 1;
-                depthDesc.Format = DXGI_FORMAT_D32_FLOAT;
+                depthDesc.Format = DXGI_FORMAT_R32_TYPELESS;
                 depthDesc.SampleDesc = {1, 0};
                 depthDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
 
@@ -816,6 +827,17 @@ void Application::Run()
                 dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
                 m_graphicsDevice->GetDevice()->CreateDepthStencilView(
                     m_depthBuffer.Get(), &dsvDesc, m_dsvHandle);
+
+                if (m_depthSrvIndex != 0xFFFFFFFFu)
+                {
+                    D3D12_SHADER_RESOURCE_VIEW_DESC depthSrvDesc{};
+                    depthSrvDesc.Format                  = DXGI_FORMAT_R32_FLOAT;
+                    depthSrvDesc.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
+                    depthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                    depthSrvDesc.Texture2D.MipLevels     = 1;
+                    m_graphicsDevice->GetDevice()->CreateShaderResourceView(
+                        m_depthBuffer.Get(), &depthSrvDesc, m_srvHeap->GetCpuHandle(m_depthSrvIndex));
+                }
 
                 // オフスクリーン RT もウィンドウサイズへ作り直す
                 if (m_sceneRT)
@@ -3148,16 +3170,36 @@ void Application::Render()
         m_physicsDebugRenderer->Render(nativeCmdList, vp);
     }
 
-    // ---- パーティクル（加算ビルボード）: ゲームビューのみ、HDR scene RT + 深度へ ----
+    // ---- パーティクル（プロシージャル質感ビルボード）: ゲームビューのみ、HDR scene RT へ ----
     if (m_particleSystem && (m_isGameMode || m_engineMode == EngineMode::Playing))
     {
-        m_commandList->SetRenderTarget(m_sceneRT->GetRtv(), m_dsvHandle);
+        // 深度を読み取り可能へ遷移し soft particles 用 SRV を供給。DSV はバインドせず PS で手動オクルージョン。
+        m_commandList->TransitionResource(m_depthBuffer.Get(),
+            D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+        auto srtv = m_sceneRT->GetRtv();
+        nativeCmdList->OMSetRenderTargets(1, &srtv, FALSE, nullptr);
         m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+        m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+
         XMMATRIX invView = XMMatrixInverse(nullptr, m_camera->GetViewMatrix());
         XMFLOAT3 camRight, camUp;
         XMStoreFloat3(&camRight, invView.r[0]);
         XMStoreFloat3(&camUp,    invView.r[1]);
+
+        XMFLOAT4X4 proj; XMStoreFloat4x4(&proj, m_camera->GetProjectionMatrix());
+        const float rtw = static_cast<float>(m_sceneRT->GetWidth());
+        const float rth = static_cast<float>(m_sceneRT->GetHeight());
+        if (m_depthSrvIndex != DescriptorHeap::kInvalidIndex)
+            m_particleSystem->SetSceneDepth(m_srvHeap->GetGpuHandle(m_depthSrvIndex),
+                proj._33, proj._43, 1.0f / rtw, 1.0f / rth);
+        else
+            m_particleSystem->DisableSceneDepth();
+        m_particleSystem->SetTime(totalTime);
         m_particleSystem->Render(nativeCmdList, m_camera->GetViewProjMatrix(), camRight, camUp);
+
+        m_commandList->TransitionResource(m_depthBuffer.Get(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
     }
 
     // ===== ポストプロセス: オフスクリーン RT → バックバッファ =====
