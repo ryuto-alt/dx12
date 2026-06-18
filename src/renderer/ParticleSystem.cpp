@@ -15,7 +15,7 @@ namespace dx12e
 void ParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
                                 DXGI_FORMAT dsvFormat, const std::wstring& shaderDir)
 {
-    static_assert(sizeof(GpuParticle) == 48, "GpuParticle stride must match shader instance layout (48)");
+    static_assert(sizeof(GpuParticle) == 56, "GpuParticle stride must match shader instance layout (56)");
     auto* dev = device.GetDevice();
 
     // --- Root Signature: b0(28 DWORD constants, ALL可視) のみ。SRV/サンプラー無し ---
@@ -50,6 +50,8 @@ void ParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
             {"TEXCOORD", 0, DXGI_FORMAT_R32_FLOAT,          0, 12, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},
             {"COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},
             {"TEXCOORD", 1, DXGI_FORMAT_R32_FLOAT,          0, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},
+            {"TEXCOORD", 2, DXGI_FORMAT_R32_FLOAT,          0, 36, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // stretch
+            {"NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 40, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // vel
         };
 
         D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
@@ -182,6 +184,9 @@ void ParticleSystem::Emit(const EmitParams& p)
         pt.gravity = p.gravity;
         pt.drag  = p.drag;
         pt.alpha = 1.0f;
+        pt.stretch = p.stretch;
+        pt.turbStrength = p.turbStrength;
+        pt.turbFreq = p.turbFreq;
         pt.alive = true;
     }
 }
@@ -197,6 +202,19 @@ void ParticleSystem::Update(f32 dt)
         if (!pt.alive) continue;
         pt.age += dt;
         if (pt.age >= pt.life) { pt.alive = false; continue; }
+
+        // 乱流（value-noise 風ハッシュ）：有機的な揺らぎ。turbStrength=0 で無効。
+        if (pt.turbStrength > 0.0f)
+        {
+            float f = pt.turbFreq;
+            auto frac = [](float v) { return v - std::floor(v); };
+            float nx = frac(std::sin(pt.pos.x * 127.1f * f + pt.pos.y * 311.7f + pt.age * 0.7f) * 43758.5453f);
+            float ny = frac(std::sin(pt.pos.y * 269.5f * f + pt.pos.z * 183.3f) * 43758.5453f);
+            float nz = frac(std::sin(pt.pos.z * 419.2f * f + pt.pos.x * 371.9f + pt.age * 0.3f) * 43758.5453f);
+            pt.vel.x += (nx * 2.0f - 1.0f) * pt.turbStrength * dt;
+            pt.vel.y += (ny * 2.0f - 1.0f) * pt.turbStrength * dt;
+            pt.vel.z += (nz * 2.0f - 1.0f) * pt.turbStrength * dt;
+        }
 
         pt.vel.y += pt.gravity * dt;
         float damp = (std::max)(0.0f, 1.0f - pt.drag * dt);
@@ -244,8 +262,10 @@ void ParticleSystem::Render(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj,
             pt.col0.z + (pt.col1.z - pt.col0.z) * t,
             pt.alpha * fade
         };
-        g.rot    = pt.rot;
-        g._pad[0] = g._pad[1] = g._pad[2] = 0.0f;
+        g.rot     = pt.rot;
+        g.stretch = pt.stretch;
+        g.vel     = pt.vel;
+        g._pad    = 0.0f;
         m_gpu.push_back(g);
         if (m_gpu.size() >= kMaxParticles) break;
     }

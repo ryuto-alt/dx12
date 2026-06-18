@@ -13,11 +13,13 @@ cbuffer CamCB : register(b0)
 
 struct VSInput
 {
-    float3 center : POSITION;    // ワールド中心
-    float  size   : TEXCOORD0;   // 半径(ワールド)
-    float4 color  : COLOR0;      // rgb=HDR色, a=アルファ
-    float  rot    : TEXCOORD1;   // 回転(ラジアン)
-    uint   vid    : SV_VertexID;
+    float3 center  : POSITION;    // ワールド中心
+    float  size    : TEXCOORD0;   // 半径(ワールド)
+    float4 color   : COLOR0;      // rgb=HDR色, a=アルファ
+    float  rot     : TEXCOORD1;   // 回転(ラジアン)
+    float  stretch : TEXCOORD2;   // >0 で速度方向へ伸ばす
+    float3 vel     : NORMAL0;     // ワールド速度（ストレッチ用）
+    uint   vid     : SV_VertexID;
 };
 
 struct VSOutput
@@ -36,14 +38,29 @@ static const float2 kCorners[6] = {
 VSOutput VSMain(VSInput i)
 {
     float2 c = kCorners[i.vid];
+    float3 worldPos;
 
-    // 回転（火花の向きなどに使う。丸い粒では見た目に影響しない）
-    float s = sin(i.rot), co = cos(i.rot);
-    float2 r = float2(c.x * co - c.y * s, c.x * s + c.y * co);
-
-    float3 worldPos = i.center
-                    + camRight.xyz * (r.x * i.size)
-                    + camUp.xyz    * (r.y * i.size);
+    if (i.stretch > 0.0 && dot(i.vel, i.vel) > 1e-4)
+    {
+        // 速度方向に伸びるストレッチビルボード（火花/筋/弾道）。
+        float3 vd = normalize(i.vel);
+        float3 axisX = cross(vd, camRight.xyz);
+        if (dot(axisX, axisX) < 1e-5) axisX = camUp.xyz;
+        axisX = normalize(axisX);
+        float speedMag = length(i.vel);
+        float halfW = i.size * 0.55;
+        float halfH = i.size * (1.0 + i.stretch * min(speedMag, 30.0) * 0.06);
+        worldPos = i.center + axisX * (c.x * halfW) + vd * (c.y * halfH);
+    }
+    else
+    {
+        // 通常の丸ビルボード（回転は火花の向き等に使用）
+        float s = sin(i.rot), co = cos(i.rot);
+        float2 r = float2(c.x * co - c.y * s, c.x * s + c.y * co);
+        worldPos = i.center
+                 + camRight.xyz * (r.x * i.size)
+                 + camUp.xyz    * (r.y * i.size);
+    }
 
     VSOutput o;
     o.pos   = mul(float4(worldPos, 1.0), viewProj);

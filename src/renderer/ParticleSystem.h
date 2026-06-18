@@ -40,6 +40,10 @@ public:
         float drag       = 1.0f;        // 速度減衰/秒
         float up         = 0.0f;        // 初速の上向きバイアス
         bool  ring       = false;       // true=XZ平面に等間隔リング（衝撃波）
+        // --- 高品質化（コードのみ）---
+        float stretch     = 0.0f;       // >0 で速度方向へ伸びる（火花/筋/弾道）
+        float turbStrength = 0.0f;      // >0 で乱流（有機的な揺らぎ：煙/炎/塵）
+        float turbFreq     = 1.0f;      // 乱流の空間周波数
     };
 
     void Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
@@ -70,17 +74,21 @@ private:
         float age, life;
         float rot, rotVel;
         float gravity, drag, alpha;
+        float stretch = 0.0f;
+        float turbStrength = 0.0f, turbFreq = 1.0f;
         bool  alive = false;
     };
 
-    // シェーダのインスタンス入力レイアウトと一致（stride 48）。
+    // シェーダのインスタンス入力レイアウトと一致（stride 56）。
     struct GpuParticle
     {
-        DirectX::XMFLOAT3 center;
-        float             size;
-        DirectX::XMFLOAT4 color;
-        float             rot;
-        float             _pad[3];
+        DirectX::XMFLOAT3 center;   // 0  POSITION
+        float             size;     // 12 TEXCOORD0
+        DirectX::XMFLOAT4 color;    // 16 COLOR0
+        float             rot;      // 32 TEXCOORD1
+        float             stretch;  // 36 TEXCOORD2
+        DirectX::XMFLOAT3 vel;      // 40 NORMAL0（速度ストレッチ用）
+        float             _pad;     // 52
     };
 
     float Rand(float a, float b);

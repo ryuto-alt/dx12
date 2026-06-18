@@ -425,6 +425,9 @@ void ScriptEngine::RegisterBindings()
             p.gravity   = t.get_or("gravity", 0.0f);
             p.drag      = t.get_or("drag", 1.0f);
             p.up        = t.get_or("up", 0.0f);
+            p.stretch      = t.get_or("stretch", 0.0f);       // 速度方向ストレッチ（火花/筋）
+            p.turbStrength = t.get_or("turbStrength", 0.0f);  // 乱流（煙/炎の有機的揺らぎ）
+            p.turbFreq     = t.get_or("turbFreq", 1.0f);
             return p;
         };
 
@@ -753,6 +756,49 @@ function cameraTPS(target, opts)
   cam.transform.rotation = Vec3.new(pitch, cy, 0)
 end
 
+-- ===== ロックオン三人称カメラ（ボス戦/デュエル向け・マウス不要）=====
+-- カメラを「プレイヤー → ターゲット」軸に固定し、プレイヤーの背後からターゲットを捉える。
+-- これにより WASD をこのカメラ基準にすれば「向きが変わっても操作が狂わない」。
+-- cameraLockOn(playerPos, targetPos, { name="MainCamera", dist=9, height=5, pitch=18, smooth })
+--   playerPos / targetPos: {x=,y=,z=}（Vec3 でも可）。
+--   smooth: 角度補間率 0..1（省略=即時）。近接時のジッタ抑制に 0.2〜0.5 程度。
+--   state : smooth を使うなら yaw 状態を持つテーブルを渡す（state._lockYaw に保持）。
+-- 戻り値: カメラ方位 yaw（度）。WASD のワールド方向はこの yaw から作る。
+function cameraLockOn(playerPos, targetPos, opts, state)
+  opts = opts or {}
+  local dx = targetPos.x - playerPos.x
+  local dz = targetPos.z - playerPos.z
+  local yaw
+  if math.abs(dx) < 1e-4 and math.abs(dz) < 1e-4 then
+    yaw = (state and state._lockYaw) or 0   -- 重なった時は前回の向きを維持
+  else
+    yaw = math.deg(math.atan(dx, dz))        -- player→target 方位（forward=+Z で yaw0）
+  end
+  if state then
+    local prev = state._lockYaw or yaw
+    local s = opts.smooth or 1.0
+    local step = angleDelta(prev, yaw) * clamp(s, 0, 1)
+    local maxStep = opts.maxStep or 9      -- 度/フレーム上限（近接時の急回転を抑える保険）
+    if step >  maxStep then step =  maxStep end
+    if step < -maxStep then step = -maxStep end
+    yaw = prev + step
+    state._lockYaw = yaw
+  end
+  local cam = scene:findEntity(opts.name or "MainCamera")
+  if cam and cam:isValid() then
+    local dist   = opts.dist   or 9
+    local height = opts.height or 5
+    local pitch  = opts.pitch  or 18
+    local ry = math.rad(yaw)
+    local fx, fz = math.sin(ry), math.cos(ry)
+    cam.transform.position = Vec3.new(playerPos.x - fx * dist,
+                                      (playerPos.y or 0) + height,
+                                      playerPos.z - fz * dist)
+    cam.transform.rotation = Vec3.new(pitch, yaw, 0)
+  end
+  return yaw
+end
+
 -- ============================================================
 --  FX: ド派手パーティクルプリセット（fx:burst / fx:ring を包む）
 --  どのゲームスクリプトからも FX.explosion(...) 等で呼べる。
@@ -764,13 +810,19 @@ FX = {}
 function FX.explosion(x, y, z, scale, r, g, b)
   scale = scale or 1.0
   r = r or 1.0; g = g or 0.45; b = b or 0.12
+  -- 火球コア（白熱→色フェード）
   fx:burst{ x=x, y=y, z=z, count=math.floor(20*scale), spread=1, speed=7*scale, speedVar=0.5,
-            size=0.55*scale, sizeEnd=0.02, life=0.5, lifeVar=0.35,
-            r=r, g=g, b=b, rEnd=r*0.6, gEnd=g*0.4, bEnd=b*0.2,
+            size=0.55*scale, sizeEnd=0.02, life=0.5, lifeVar=0.4,
+            r=r*1.4, g=g*1.3, b=b*1.2, rEnd=r*0.6, gEnd=g*0.4, bEnd=b*0.2,
             intensity=5, gravity=-5, drag=2.5, up=0.6 }
-  fx:burst{ x=x, y=y, z=z, count=math.floor(10*scale), spread=1, speed=13*scale, speedVar=0.4,
-            size=0.18*scale, sizeEnd=0.0, life=0.4, lifeVar=0.3,
-            r=1, g=0.95, b=0.7, intensity=8, drag=1.5 }
+  -- 飛び散る火花（速度ストレッチ＝光の筋になる）
+  fx:burst{ x=x, y=y, z=z, count=math.floor(14*scale), spread=1, speed=15*scale, speedVar=0.5,
+            size=0.10*scale, sizeEnd=0.0, life=0.4, lifeVar=0.4,
+            r=1, g=0.95, b=0.7, intensity=9, drag=1.5, stretch=5, gravity=-7 }
+  -- 暗い乱流煙（HDR<1＝光らず接地感を出す。turbで有機的にうねる）
+  fx:burst{ x=x, y=y, z=z, count=math.floor(8*scale), spread=0.7, speed=2.5*scale, speedVar=0.4,
+            size=0.5*scale, sizeEnd=1.6*scale, life=1.0, lifeVar=0.4,
+            r=0.22, g=0.20, b=0.22, intensity=1, drag=1.2, turbStrength=3.0, turbFreq=0.7 }
 end
 
 -- 衝撃波リング（ノヴァ等）: XZ平面に等間隔で外へ
@@ -780,11 +832,11 @@ function FX.shockwave(x, y, z, count, speed, r, g, b)
            r=r or 0.6, g=g or 1.0, b=b or 1.0, intensity=6, drag=1.2 }
 end
 
--- 着弾火花（小さく速い）
+-- 着弾火花（小さく速い・速度ストレッチで筋に）
 function FX.spark(x, y, z, count, r, g, b)
-  fx:burst{ x=x, y=y, z=z, count=count or 6, spread=1, speed=9, speedVar=0.5,
-            size=0.16, sizeEnd=0.0, life=0.3, lifeVar=0.3,
-            r=r or 0.6, g=g or 0.95, b=b or 1.0, intensity=7, drag=2 }
+  fx:burst{ x=x, y=y, z=z, count=count or 6, spread=1, speed=11, speedVar=0.5,
+            size=0.12, sizeEnd=0.0, life=0.3, lifeVar=0.4,
+            r=r or 0.6, g=g or 0.95, b=b or 1.0, intensity=8, drag=2, stretch=4 }
 end
 
 -- 立ち上る軌跡/オーラ点（1粒ずつ毎フレーム呼ぶ用）
@@ -803,11 +855,39 @@ function FX.supernova(x, y, z, scale)
             size=0.5, sizeEnd=0.0, life=0.8, lifeVar=0.4,
             r=1, g=0.95, b=0.6, rEnd=1, gEnd=0.5, bEnd=0.1,
             intensity=7, gravity=-4, drag=1.5, up=0.5 }
+  -- 伸びる金の火花
+  fx:burst{ x=x, y=y, z=z, count=30, spread=1, speed=18*scale, speedVar=0.5,
+            size=0.12, sizeEnd=0.0, life=0.6, lifeVar=0.4,
+            r=1, g=0.9, b=0.4, intensity=9, drag=1.2, stretch=5, gravity=-6 }
   fx:pulse(0.8)
 end
 
 -- ヒット時の画面パルス（クロマ + 放射ブラー）
 function FX.hit(amount) fx:pulse(amount or 0.5) end
+
+-- ============================================================
+--  統一 VFX API（コード自前 と Effekseer を両立させる窓口）
+--  ゲームは vfx.play("name", x,y,z[,scale]) を呼ぶだけ。
+--  既定は下のコードプリセット（エディタ不要＝Claude/コードのみで完結）。
+--  将来 Effekseer 実体（.efkefc）が登録されれば、同じ名前でそちらを再生する。
+--  エンジン(C++)側は vfx._efk[name] に再生関数を差し込むだけで上書きできる。
+-- ============================================================
+vfx = vfx or {}
+vfx._code = {}   -- name -> function(x,y,z,scale)  （コード自前プリセット）
+vfx._efk  = {}   -- name -> function(x,y,z,scale)  （Effekseer 実体。engine が hook）
+function vfx.register(name, fn) vfx._code[name] = fn end
+function vfx.play(name, x, y, z, scale)
+  scale = scale or 1.0
+  local e = vfx._efk[name]          -- Effekseer 実体があれば最優先
+  if e then return e(x, y, z, scale) end
+  local c = vfx._code[name]         -- 無ければコードプリセット
+  if c then return c(x, y, z, scale) end
+end
+-- 既定コードプリセット（FX.* を名前で引けるように）
+vfx.register("explosion", function(x,y,z,s) FX.explosion(x,y,z,s) end)
+vfx.register("supernova", function(x,y,z,s) FX.supernova(x,y,z,s) end)
+vfx.register("spark",     function(x,y,z,s) FX.spark(x,y,z, math.floor(8*(s or 1))) end)
+vfx.register("hit",       function(x,y,z,s) FX.hit(0.6) end)
 )LUA";
 
     auto r = m_lua->safe_script(kPrelude, sol::script_pass_on_error);
