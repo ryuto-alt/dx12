@@ -87,7 +87,175 @@ void ToolbarPanel::Render(bool isPlaying,
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 6));
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.140f, 0.140f, 0.140f, 1.0f));
     ImGui::Begin("##Toolbar", nullptr,
-        ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollWithMouse);
+        ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_MenuBar);
+
+    // ===== メニューバー（左上から横並び: ファイル / 編集 / 表示 / ツール / ヘルプ）=====
+    bool openShortcutsPopup = false;
+    bool openAboutPopup     = false;
+    if (ImGui::BeginMenuBar())
+    {
+        // ---- ファイル ----
+        if (ImGui::BeginMenu("ファイル"))
+        {
+            if (ImGui::MenuItem("新規シーン", "Ctrl+N"))
+            {
+                ctx.showNewSceneDialog = true;
+                ctx.newSceneDialogIsCreate = true;
+                std::memset(ctx.newSceneNameBuf, 0, sizeof(ctx.newSceneNameBuf));
+                strncpy_s(ctx.newSceneNameBuf, "NewScene", _TRUNCATE);
+            }
+
+            if (ImGui::MenuItem("シーンを開く", "Ctrl+O"))
+            {
+                char loadPath[MAX_PATH] = "";
+                OPENFILENAMEA ofn = {};
+                ofn.lStructSize = sizeof(ofn);
+                ofn.hwndOwner = window->GetHwnd();
+                ofn.lpstrFilter = "Scene Files (*.json)\0*.json\0All Files\0*.*\0";
+                ofn.lpstrFile = loadPath;
+                ofn.nMaxFile = MAX_PATH;
+                ofn.Flags = OFN_FILEMUSTEXIST;
+                std::string initDir = assetsDir + "scenes";
+                std::filesystem::create_directories(initDir);
+                ofn.lpstrInitialDir = initDir.c_str();
+                if (GetOpenFileNameA(&ofn))
+                    ctx.pendingLoadPath = loadPath;
+            }
+
+            ImGui::Separator();
+
+            if (ImGui::MenuItem("保存", "Ctrl+S"))
+            {
+                if (ctx.currentScenePath.empty())
+                {
+                    char savePath[MAX_PATH] = "";
+                    OPENFILENAMEA ofn = {};
+                    ofn.lStructSize = sizeof(ofn);
+                    ofn.hwndOwner = window->GetHwnd();
+                    ofn.lpstrFilter = "Scene Files (*.json)\0*.json\0All Files\0*.*\0";
+                    ofn.lpstrFile = savePath;
+                    ofn.nMaxFile = MAX_PATH;
+                    ofn.lpstrDefExt = "json";
+                    ofn.Flags = OFN_OVERWRITEPROMPT;
+                    std::string initDir = assetsDir + "scenes";
+                    std::filesystem::create_directories(initDir);
+                    ofn.lpstrInitialDir = initDir.c_str();
+                    if (GetSaveFileNameA(&ofn))
+                        ctx.currentScenePath = savePath;
+                }
+                if (!ctx.currentScenePath.empty())
+                {
+                    SceneSerializer::Save(*scene, ctx.currentScenePath, assetsDir);
+                    ProjectManager::SaveLastOpenedScene(ctx.currentScenePath);
+                    ctx.hotReloadFlash = 1.5f;
+                }
+            }
+
+            if (ImGui::MenuItem("名前を付けて保存"))
+            {
+                char savePath[MAX_PATH] = "";
+                OPENFILENAMEA ofn = {};
+                ofn.lStructSize = sizeof(ofn);
+                ofn.hwndOwner = window->GetHwnd();
+                ofn.lpstrFilter = "Scene Files (*.json)\0*.json\0All Files\0*.*\0";
+                ofn.lpstrFile = savePath;
+                ofn.nMaxFile = MAX_PATH;
+                ofn.lpstrDefExt = "json";
+                ofn.Flags = OFN_OVERWRITEPROMPT;
+                std::string initDir = assetsDir + "scenes";
+                std::filesystem::create_directories(initDir);
+                ofn.lpstrInitialDir = initDir.c_str();
+                if (GetSaveFileNameA(&ofn))
+                {
+                    ctx.currentScenePath = savePath;
+                    SceneSerializer::Save(*scene, ctx.currentScenePath, assetsDir);
+                    ProjectManager::SaveLastOpenedScene(ctx.currentScenePath);
+                    ctx.hotReloadFlash = 1.5f;
+                }
+            }
+
+            ImGui::Separator();
+
+            if (ImGui::MenuItem("新規スクリプト", "Ctrl+L"))
+            {
+                ctx.showNewScriptDialog = true;
+                std::memset(ctx.newScriptNameBuf, 0, sizeof(ctx.newScriptNameBuf));
+                strncpy_s(ctx.newScriptNameBuf, "NewScript", _TRUNCATE);
+            }
+
+            ImGui::EndMenu();
+        }
+
+        // ---- 編集 ----
+        if (ImGui::BeginMenu("編集"))
+        {
+            if (ImGui::MenuItem("元に戻す", "Ctrl+Z", false, ctx.undoSystem.CanUndo()))
+                ctx.pendingUndo = true;
+            if (ImGui::MenuItem("やり直す", "Ctrl+Y", false, ctx.undoSystem.CanRedo()))
+                ctx.pendingRedo = true;
+
+            ImGui::Separator();
+
+            const bool hasSel = ctx.HasSelection();
+            if (ImGui::MenuItem("コピー", "Ctrl+C", false, hasSel))
+            {
+                ctx.clipboard.clear();
+                auto& reg = scene->GetRegistry();
+                for (auto e : ctx.selectedEntities)
+                {
+                    if (!reg.valid(e)) continue;
+                    std::string snap = SceneSerializer::SerializeEntity(*scene, e, assetsDir);
+                    if (!snap.empty())
+                        ctx.clipboard.push_back(std::move(snap));
+                }
+            }
+            if (ImGui::MenuItem("貼り付け", "Ctrl+V", false, !ctx.clipboard.empty()))
+                ctx.pendingPastes = ctx.clipboard;
+            if (ImGui::MenuItem("複製", "Ctrl+D", false, hasSel))
+            {
+                for (auto e : ctx.selectedEntities)
+                    ctx.pendingDuplications.push_back(e);
+            }
+            if (ImGui::MenuItem("削除", "Del", false, hasSel))
+            {
+                for (auto e : ctx.selectedEntities)
+                    ctx.pendingDeletions.push_back(e);
+            }
+
+            ImGui::EndMenu();
+        }
+
+        // ---- 表示 ----
+        if (ImGui::BeginMenu("表示"))
+        {
+            if (ImGui::MenuItem("レイアウトをリセット"))
+                ctx.resetLayout = true;
+            ImGui::EndMenu();
+        }
+
+        // ---- ツール ----
+        if (ImGui::BeginMenu("ツール"))
+        {
+            if (ImGui::MenuItem("ゲームをビルド"))
+                ctx.pendingBuildGame = true;
+            ImGui::EndMenu();
+        }
+
+        // ---- ヘルプ ----
+        if (ImGui::BeginMenu("ヘルプ"))
+        {
+            if (ImGui::MenuItem("ショートカット一覧"))
+                openShortcutsPopup = true;
+            if (ImGui::MenuItem("バージョン情報"))
+                openAboutPopup = true;
+            ImGui::EndMenu();
+        }
+
+        ImGui::EndMenuBar();
+    }
+    if (openShortcutsPopup) ImGui::OpenPopup("ショートカット一覧##ShortcutsPopup");
+    if (openAboutPopup)     ImGui::OpenPopup("バージョン情報##AboutPopup");
 
     // アイコンボタン用ヘルパ（アイコン未読込なら従来のテキストボタンにフォールバック）。
     const EditorUiIcons* ic = ctx.icons;
@@ -103,110 +271,7 @@ void ToolbarPanel::Render(bool isPlaying,
         return clicked;
     };
 
-    // ===== File メニュー =====
-    if (iconBtn(ic ? ic->file : 0, "##file",
-                "\xe3\x83\x95\xe3\x82\xa1\xe3\x82\xa4\xe3\x83\xab",  // ファイル
-                "File  (New / Save / Load)"))
-        ImGui::OpenPopup("FileMenu");
-
-    if (ImGui::BeginPopup("FileMenu"))
-    {
-        // 新規シーン
-        if (ImGui::MenuItem("\xe6\x96\xb0\xe8\xa6\x8f\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3", "Ctrl+N"))  // 新規シーン
-        {
-            ctx.showNewSceneDialog = true;
-            ctx.newSceneDialogIsCreate = true;
-            std::memset(ctx.newSceneNameBuf, 0, sizeof(ctx.newSceneNameBuf));
-            strncpy_s(ctx.newSceneNameBuf, "NewScene", _TRUNCATE);
-        }
-
-        // 保存
-        if (ImGui::MenuItem("\xe4\xbf\x9d\xe5\xad\x98", "Ctrl+S"))  // 保存
-        {
-            if (ctx.currentScenePath.empty())
-            {
-                char savePath[MAX_PATH] = "";
-                OPENFILENAMEA ofn = {};
-                ofn.lStructSize = sizeof(ofn);
-                ofn.hwndOwner = window->GetHwnd();
-                ofn.lpstrFilter = "Scene Files (*.json)\0*.json\0All Files\0*.*\0";
-                ofn.lpstrFile = savePath;
-                ofn.nMaxFile = MAX_PATH;
-                ofn.lpstrDefExt = "json";
-                ofn.Flags = OFN_OVERWRITEPROMPT;
-                std::string initDir = assetsDir + "scenes";
-                std::filesystem::create_directories(initDir);
-                ofn.lpstrInitialDir = initDir.c_str();
-                if (GetSaveFileNameA(&ofn))
-                    ctx.currentScenePath = savePath;
-            }
-            if (!ctx.currentScenePath.empty())
-            {
-                SceneSerializer::Save(*scene, ctx.currentScenePath, assetsDir);
-                ProjectManager::SaveLastOpenedScene(ctx.currentScenePath);
-                ctx.hotReloadFlash = 1.5f;
-            }
-        }
-
-        // 名前を付けて保存
-        if (ImGui::MenuItem("\xe5\x90\x8d\xe5\x89\x8d\xe3\x82\x92\xe4\xbb\x98\xe3\x81\x91\xe3\x81\xa6\xe4\xbf\x9d\xe5\xad\x98"))  // 名前を付けて保存
-        {
-            char savePath[MAX_PATH] = "";
-            OPENFILENAMEA ofn = {};
-            ofn.lStructSize = sizeof(ofn);
-            ofn.hwndOwner = window->GetHwnd();
-            ofn.lpstrFilter = "Scene Files (*.json)\0*.json\0All Files\0*.*\0";
-            ofn.lpstrFile = savePath;
-            ofn.nMaxFile = MAX_PATH;
-            ofn.lpstrDefExt = "json";
-            ofn.Flags = OFN_OVERWRITEPROMPT;
-            std::string initDir = assetsDir + "scenes";
-            std::filesystem::create_directories(initDir);
-            ofn.lpstrInitialDir = initDir.c_str();
-            if (GetSaveFileNameA(&ofn))
-            {
-                ctx.currentScenePath = savePath;
-                SceneSerializer::Save(*scene, ctx.currentScenePath, assetsDir);
-                ProjectManager::SaveLastOpenedScene(ctx.currentScenePath);
-                ctx.hotReloadFlash = 1.5f;
-            }
-        }
-
-        ImGui::Separator();
-
-        // 新規スクリプト
-        if (ImGui::MenuItem("\xe6\x96\xb0\xe8\xa6\x8f\xe3\x82\xb9\xe3\x82\xaf\xe3\x83\xaa\xe3\x83\x97\xe3\x83\x88", "Ctrl+L"))  // 新規スクリプト
-        {
-            ctx.showNewScriptDialog = true;
-            std::memset(ctx.newScriptNameBuf, 0, sizeof(ctx.newScriptNameBuf));
-            strncpy_s(ctx.newScriptNameBuf, "NewScript", _TRUNCATE);
-        }
-
-        ImGui::Separator();
-
-        // 読み込み
-        if (ImGui::MenuItem("\xe8\xaa\xad\xe3\x81\xbf\xe8\xbe\xbc\xe3\x81\xbf", "Ctrl+O"))  // 読み込み
-        {
-            char loadPath[MAX_PATH] = "";
-            OPENFILENAMEA ofn = {};
-            ofn.lStructSize = sizeof(ofn);
-            ofn.hwndOwner = window->GetHwnd();
-            ofn.lpstrFilter = "Scene Files (*.json)\0*.json\0All Files\0*.*\0";
-            ofn.lpstrFile = loadPath;
-            ofn.nMaxFile = MAX_PATH;
-            ofn.Flags = OFN_FILEMUSTEXIST;
-            std::string initDir = assetsDir + "scenes";
-            std::filesystem::create_directories(initDir);
-            ofn.lpstrInitialDir = initDir.c_str();
-            if (GetOpenFileNameA(&ofn))
-                ctx.pendingLoadPath = loadPath;
-        }
-
-        ImGui::EndPopup();
-    }
-
-    // ===== Play/Stop =====
-    ImGui::SameLine(0, 12);
+    // ===== Play/Stop =====（メニューバー下のアイコン列・先頭）
     if (!isPlaying)
     {
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.55f, 0.20f, 1.0f));
@@ -477,6 +542,71 @@ void ToolbarPanel::Render(bool isPlaying,
     ImGui::End();
     ImGui::PopStyleColor();
     ImGui::PopStyleVar();
+
+    // ===== ヘルプ: ショートカット一覧モーダル =====
+    {
+        ImVec2 c = ImGui::GetMainViewport()->GetCenter();
+        ImGui::SetNextWindowPos(c, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Appearing);
+        if (ImGui::BeginPopupModal("ショートカット一覧##ShortcutsPopup", nullptr,
+                                   ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            struct KeyRow { const char* key; const char* desc; };
+            static const KeyRow rows[] = {
+                {"W / E / R",     "ギズモ切替（移動 / 回転 / スケール）"},
+                {"T",             "ローカル / ワールド空間の切替"},
+                {"左クリック",    "エンティティ選択（Ctrl+クリックで複数選択）"},
+                {"右クリック+WASD","フライカメラ移動（Space/Shift で上下）"},
+                {"F",             "選択エンティティにフォーカス"},
+                {"F11",           "ボーダレスフルスクリーン切替"},
+                {"Ctrl+Z / Y",   "元に戻す / やり直す"},
+                {"Ctrl+C / V",   "コピー / 貼り付け"},
+                {"Ctrl+D",        "複製"},
+                {"Del",           "削除"},
+                {"Ctrl+S / N",   "シーン保存 / 新規シーン"},
+                {"Ctrl+O / L",   "シーンを開く / 新規スクリプト"},
+            };
+            if (ImGui::BeginTable("##shortcuts", 2,
+                    ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg))
+            {
+                ImGui::TableSetupColumn("キー", ImGuiTableColumnFlags_WidthFixed, 150.0f);
+                ImGui::TableSetupColumn("動作", ImGuiTableColumnFlags_WidthStretch);
+                for (const auto& r : rows)
+                {
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.85f, 1.0f, 1.0f));
+                    ImGui::TextUnformatted(r.key);
+                    ImGui::PopStyleColor();
+                    ImGui::TableSetColumnIndex(1);
+                    ImGui::TextUnformatted(r.desc);
+                }
+                ImGui::EndTable();
+            }
+            ImGui::Separator();
+            if (ImGui::Button("閉じる", ImVec2(120, 0)))
+                ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+    }
+
+    // ===== ヘルプ: バージョン情報モーダル =====
+    {
+        ImVec2 c = ImGui::GetMainViewport()->GetCenter();
+        ImGui::SetNextWindowPos(c, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        if (ImGui::BeginPopupModal("バージョン情報##AboutPopup", nullptr,
+                                   ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            ImGui::Text("DX12 Engine");
+            ImGui::TextDisabled("DirectX 12 ゲームエンジン + エディタ");
+            ImGui::Separator();
+            ImGui::TextUnformatted("https://github.com/ryuto-alt/dx12");
+            ImGui::Spacing();
+            if (ImGui::Button("閉じる", ImVec2(120, 0)))
+                ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+    }
 
     // ===== 新規シーン名入力ダイアログ =====
     if (ctx.showNewSceneDialog)

@@ -189,6 +189,13 @@ void EditorLayer::Render(bool isPlaying,
 
         dockspaceId = ImGui::GetID("EditorDockSpace");
 
+        // メニュー「表示 > レイアウトをリセット」要求でデフォルト配置を作り直す
+        if (m_ctx->resetLayout)
+        {
+            m_dockspaceBuilt = false;
+            m_ctx->resetLayout = false;
+        }
+
         if (!m_dockspaceBuilt)
         {
             m_dockspaceBuilt = true;

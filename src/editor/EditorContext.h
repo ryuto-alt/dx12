@@ -85,6 +85,10 @@ public:
     GizmoMode gizmoMode      = GizmoMode::Translate;
     bool      gizmoLocalSpace = false;
 
+    // メニュー「表示 > レイアウトをリセット」で立てるフラグ。
+    // EditorLayer が検知してデフォルトドックレイアウトを再構築する。
+    bool resetLayout = false;
+
     // タッチパッド向けキーボードフライモード（` キーでトグル）。
     // ON 中は WASD 移動 / Q・E 上下 / 矢印キーで視点回転（マウス・ボタン長押し不要）。
     // ON 中はギズモの W/E/R 切替ショートカットを抑制する。

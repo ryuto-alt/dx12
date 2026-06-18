@@ -23,6 +23,9 @@ struct EditorUiIcons
     // ---- エンティティ / コンポーネント種別（Hierarchy / Inspector） ----
     u64 entMesh = 0, entLight = 0, entCamera = 0, entAudio = 0,
         entScript = 0, entPhysics = 0, entCollider = 0, entEmpty = 0;
+
+    // ---- プロジェクトテンプレート（ランチャー） ----
+    u64 tmplFps = 0, tmplTps = 0, tmplEmpty = 0;
 };
 
 } // namespace dx12e

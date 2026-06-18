@@ -1334,6 +1334,11 @@ void Application::LoadEditorIcons(ID3D12GraphicsCommandList* cmdList)
     m_icons.entCollider = load("ent_collider");
     m_icons.entEmpty    = load("ent_empty");
 
+    // プロジェクトテンプレート
+    m_icons.tmplFps     = load("tmpl_fps");
+    m_icons.tmplTps     = load("tmpl_tps");
+    m_icons.tmplEmpty   = load("tmpl_empty");
+
     // 各パネルが EditorContext 経由で参照できるようにポインタを配る
     if (m_editorCtx)
         m_editorCtx->icons = &m_icons;
@@ -1517,10 +1522,23 @@ void Application::LoadProject(const ProjectInfo& info)
     }
 
     // 5) ウィンドウタイトルにプロジェクト名
+    //    info.name は UTF-8。byte 単位の widen（std::wstring(begin,end)）だと
+    //    日本語等のマルチバイトが文字化けするので CP_UTF8 で正しく変換する。
     if (m_window)
     {
         std::wstring title = L"DX12 Engine - ";
-        title += std::wstring(info.name.begin(), info.name.end());
+        if (!info.name.empty())
+        {
+            int wlen = MultiByteToWideChar(CP_UTF8, 0, info.name.c_str(),
+                                           static_cast<int>(info.name.size()), nullptr, 0);
+            if (wlen > 0)
+            {
+                std::wstring wname(static_cast<size_t>(wlen), L'\0');
+                MultiByteToWideChar(CP_UTF8, 0, info.name.c_str(),
+                                    static_cast<int>(info.name.size()), wname.data(), wlen);
+                title += wname;
+            }
+        }
         m_window->SetTitle(title);
     }
 
@@ -3317,6 +3335,9 @@ void Application::Render()
         li.newProject  = m_icons.newProject;
         li.openProject = m_icons.openProject;
         li.recent      = m_icons.recent;
+        li.tmplFps     = m_icons.tmplFps;
+        li.tmplTps     = m_icons.tmplTps;
+        li.tmplEmpty   = m_icons.tmplEmpty;
 
         ProjectInfo selected;
         LauncherAction action = ProjectManager::RenderLauncher(selected, m_window->GetHwnd(), li);
