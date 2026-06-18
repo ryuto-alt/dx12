@@ -1,5 +1,6 @@
 #include "editor/panels/HierarchyPanel.h"
 #include "editor/EditorContext.h"
+#include "editor/EditorTheme.h"
 #include "editor/UndoSystem.h"
 #include "ecs/Components.h"
 #include "scene/Scene.h"
@@ -13,6 +14,7 @@
 #include <filesystem>
 #include <vector>
 #include <cstdio>
+#include <cctype>
 #include <Windows.h>
 
 namespace dx12e
@@ -29,6 +31,30 @@ static u64 PickEntityIcon(entt::registry& reg, entt::entity e, const EditorUiIco
                    CapsuleCollider, ConvexHullCollider>(e))      return ic.entPhysics;
     if (reg.all_of<LuaScript>(e))                                 return ic.entScript;
     return ic.entEmpty;
+}
+
+// 種別ごとの tint（Nebula のカラフルなアイコンを単色 PNG に着色して再現）
+static ImVec4 PickEntityTint(entt::registry& reg, entt::entity e)
+{
+    using namespace dx12e::theme;
+    if (reg.all_of<CameraComponent>(e))                            return TypeCamera;
+    if (reg.any_of<PointLight, DirectionalLight, SpotLight>(e))   return TypeLight;
+    if (reg.all_of<MeshRenderer>(e))                              return TypeMesh;
+    if (reg.all_of<AudioSource>(e))                              return TypeAudio;
+    if (reg.any_of<RigidBody, BoxCollider, SphereCollider,
+                   CapsuleCollider, ConvexHullCollider>(e))      return TypePhysics;
+    if (reg.all_of<LuaScript>(e))                                 return TypeScript;
+    return TypeEmpty;
+}
+
+// 大文字小文字を無視した部分一致（Hierarchy フィルタ用）
+static bool ContainsCI(const std::string& haystack, const char* needle)
+{
+    if (!needle || !*needle) return true;
+    std::string h = haystack, n = needle;
+    auto lower = [](std::string& s){ for (char& ch : s) ch = static_cast<char>(::tolower(static_cast<unsigned char>(ch))); };
+    lower(h); lower(n);
+    return h.find(n) != std::string::npos;
 }
 
 // 子エンティティ列挙ヘルパー
@@ -121,14 +147,17 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
     if (selected) flags |= ImGuiTreeNodeFlags_Selected;
 
     // 種別アイコンをノード頭に表示（クリック判定は直後の TreeNodeEx が担う）
+    // 単色 PNG を種別カラーで tint して Nebula のカラフルなアイコンを再現。
     if (ctx.icons)
     {
         u64 typeIcon = PickEntityIcon(reg, e, *ctx.icons);
         if (typeIcon)
         {
             float h = ImGui::GetTextLineHeight();
-            ImGui::Image(static_cast<ImTextureID>(typeIcon), ImVec2(h, h));
-            ImGui::SameLine(0.0f, 4.0f);
+            ImGui::ImageWithBg(static_cast<ImTextureID>(typeIcon), ImVec2(h, h),
+                ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0),
+                PickEntityTint(reg, e));
+            ImGui::SameLine(0.0f, 6.0f);
         }
     }
 
@@ -273,24 +302,70 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
     ImGui::Begin("\xe3\x83\x92\xe3\x82\xa8\xe3\x83\xa9\xe3\x83\xab\xe3\x82\xad\xe3\x83\xbc");  // Hierarchy
 
     auto nameView = reg.view<const NameTag>();
-    ImGui::TextDisabled("\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3  (%zu)",
-        static_cast<size_t>(nameView.size()));
-    ImGui::Separator();
 
-    // ルートノードのみ列挙（parent が null、GridPlane は非表示）
+    // オブジェクト数（GridPlane は内部用なので除外）
+    size_t objCount = 0;
     for (auto [e, tag] : nameView.each())
-    {
-        if (reg.all_of<GridPlane>(e)) continue;
+        if (!reg.all_of<GridPlane>(e)) ++objCount;
 
-        bool isRoot = true;
-        if (reg.all_of<Transform>(e))
+    // ---- ヘッダ（件数 + フィルタ。Nebula のヒエラルキー上部に倣う）----
+    static char s_filterBuf[64] = {};
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, dx12e::theme::TextFaint);
+        ImGui::Text("%zu objects", objCount);
+        ImGui::PopStyleColor();
+
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputTextWithHint("##HierFilter", "Filter", s_filterBuf, sizeof(s_filterBuf));
+    }
+    ImGui::Spacing();
+
+    if (s_filterBuf[0] != '\0')
+    {
+        // フィルタ中はツリーを畳んで、名前一致のフラットリストを表示
+        for (auto [e, tag] : nameView.each())
         {
-            auto& t = reg.get<Transform>(e);
-            if (t.parent != entt::null && reg.valid(t.parent))
-                isRoot = false;
+            if (reg.all_of<GridPlane>(e)) continue;
+            if (!ContainsCI(tag.name, s_filterBuf)) continue;
+
+            ImGui::PushID(static_cast<int>(static_cast<u32>(e)));
+            if (ctx.icons)
+            {
+                u64 ico = PickEntityIcon(reg, e, *ctx.icons);
+                if (ico)
+                {
+                    float h = ImGui::GetTextLineHeight();
+                    ImGui::ImageWithBg(static_cast<ImTextureID>(ico), ImVec2(h, h),
+                        ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0),
+                        PickEntityTint(reg, e));
+                    ImGui::SameLine(0.0f, 6.0f);
+                }
+            }
+            if (ImGui::Selectable(tag.name.c_str(), ctx.IsSelected(e)))
+            {
+                if (ImGui::GetIO().KeyCtrl) ctx.ToggleSelection(e);
+                else                        ctx.Select(e);
+            }
+            ImGui::PopID();
         }
-        if (isRoot)
-            DrawEntityNode(reg, ctx, e);
+    }
+    else
+    {
+        // ルートノードのみ列挙（parent が null、GridPlane は非表示）
+        for (auto [e, tag] : nameView.each())
+        {
+            if (reg.all_of<GridPlane>(e)) continue;
+
+            bool isRoot = true;
+            if (reg.all_of<Transform>(e))
+            {
+                auto& t = reg.get<Transform>(e);
+                if (t.parent != entt::null && reg.valid(t.parent))
+                    isRoot = false;
+            }
+            if (isRoot)
+                DrawEntityNode(reg, ctx, e);
+        }
     }
 
     // ヒエラルキーの空白部分への D&D（親子解除）

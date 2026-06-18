@@ -1,5 +1,7 @@
 #include "editor/EditorLayer.h"
 #include "editor/EditorContext.h"
+#include "editor/EditorTheme.h"
+#include "ecs/Components.h"
 #include "editor/panels/ToolbarPanel.h"
 #include "editor/panels/HierarchyPanel.h"
 #include "editor/panels/InspectorPanel.h"
@@ -19,6 +21,7 @@
 
 #include <DirectXMath.h>
 #include <cmath>
+#include <string>
 
 namespace dx12e
 {
@@ -263,6 +266,75 @@ void EditorLayer::Render(bool isPlaying,
         m_ctx->viewportY = m_viewportPos.y;
         m_ctx->viewportW = m_viewportSize.x;
         m_ctx->viewportH = m_viewportSize.y;
+    }
+
+    // ===== ビューポート HUD オーバーレイ（Nebula 風の半透明ピル）=====
+    // 左下に FPS / オブジェクト数、下中央に選択オブジェクトのラベルを重ねる。
+    // NoInputs でカメラ操作・ピッキングを一切ブロックしない。
+    if (!isPlaying && m_viewportSize.x > 1.0f)
+    {
+        const ImGuiWindowFlags ovFlags =
+            ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoNav |
+            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDocking |
+            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+            ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs;
+
+        // ---- 左下: 統計（FPS + オブジェクト数）----
+        size_t objCount = 0;
+        for (auto [e, tag] : reg.view<const NameTag>().each())
+        {
+            (void)tag;
+            if (!reg.all_of<GridPlane>(e)) ++objCount;
+        }
+
+        // 右上に配置（左下/中央/右下は既存のカメラヒント・プレビュー・選択ラベルで使用済み）
+        ImGui::SetNextWindowPos(
+            ImVec2(m_viewportPos.x + m_viewportSize.x - 10.0f, m_viewportPos.y + 10.0f),
+            ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+        ImGui::SetNextWindowBgAlpha(0.78f);
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::AppBg);
+        ImGui::PushStyleColor(ImGuiCol_Border,   theme::Border);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(11, 6));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 7.0f);
+        if (ImGui::Begin("##VPStats", nullptr, ovFlags))
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, theme::Good);
+            ImGui::Text("%.0f", clock->GetFPS());
+            ImGui::PopStyleColor();
+            ImGui::SameLine(0, 4); ImGui::TextDisabled("FPS");
+            ImGui::SameLine(0, 14); ImGui::TextUnformatted(std::to_string(objCount).c_str());
+            ImGui::SameLine(0, 4); ImGui::TextDisabled("objects");
+        }
+        ImGui::End();
+        ImGui::PopStyleVar(2);
+        ImGui::PopStyleColor(2);
+
+        // ---- 下中央: 選択オブジェクトのラベル ----
+        if (m_ctx->HasSelection() && reg.valid(m_ctx->selectedEntity)
+            && reg.all_of<NameTag>(m_ctx->selectedEntity))
+        {
+            const std::string& selName = reg.get<NameTag>(m_ctx->selectedEntity).name;
+            ImGui::SetNextWindowPos(
+                ImVec2(m_viewportPos.x + m_viewportSize.x * 0.5f,
+                       m_viewportPos.y + 10.0f),
+                ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+            ImGui::SetNextWindowBgAlpha(0.82f);
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::AppBg);
+            ImGui::PushStyleColor(ImGuiCol_Border,   theme::AccentDim2);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12, 5));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 13.0f);
+            if (ImGui::Begin("##VPSelLabel", nullptr, ovFlags))
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text, theme::AccentLight);
+                ImGui::TextUnformatted(selName.c_str());
+                ImGui::PopStyleColor();
+                ImGui::SameLine(0, 6);
+                ImGui::TextDisabled("selected");
+            }
+            ImGui::End();
+            ImGui::PopStyleVar(2);
+            ImGui::PopStyleColor(2);
+        }
     }
 
     // ===== カメラプレビュー小窓（選択カメラ視点。Application が描画してハンドル共有）=====

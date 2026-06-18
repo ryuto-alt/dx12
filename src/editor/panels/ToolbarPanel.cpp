@@ -1,5 +1,6 @@
 #include "editor/panels/ToolbarPanel.h"
 #include "editor/EditorContext.h"
+#include "editor/EditorTheme.h"
 #include "scripting/ScriptEngine.h"
 #include "core/GameClock.h"
 #include "scene/Scene.h"
@@ -85,7 +86,7 @@ void ToolbarPanel::Render(bool isPlaying,
     ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(displayW, toolbarHeight), ImGuiCond_Always);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 6));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.140f, 0.140f, 0.140f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, dx12e::theme::Chrome);  // Nebula のクロム色
     ImGui::Begin("##Toolbar", nullptr,
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
         ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_MenuBar);
@@ -270,6 +271,30 @@ void ToolbarPanel::Render(bool isPlaying,
             ImGui::SetTooltip("%s", tip);
         return clicked;
     };
+
+    // ===== ブランド（ロゴ + ワードマーク + バージョンチップ。Nebula の左上に倣う）=====
+    {
+        if (ic && ic->logo)
+        {
+            const float kLogoSz = 22.0f;
+            ImGui::Image(static_cast<ImTextureID>(ic->logo), ImVec2(kLogoSz, kLogoSz));
+            ImGui::SameLine(0, 8);
+        }
+        ImGui::AlignTextToFramePadding();
+        ImGui::PushStyleColor(ImGuiCol_Text, dx12e::theme::TextHi);
+        ImGui::TextUnformatted("DX12 Engine");
+        ImGui::PopStyleColor();
+        ImGui::SameLine(0, 8);
+        ImGui::PushStyleColor(ImGuiCol_Button,        dx12e::theme::GroupBg);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, dx12e::theme::GroupBg);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  dx12e::theme::GroupBg);
+        ImGui::PushStyleColor(ImGuiCol_Text,          dx12e::theme::TextDim);
+        ImGui::SmallButton("v0.9");
+        ImGui::PopStyleColor(4);
+        ImGui::SameLine(0, 12);
+        ImGui::TextDisabled("|");
+        ImGui::SameLine(0, 12);
+    }
 
     // ===== Play/Stop =====（メニューバー下のアイコン列・先頭）
     if (!isPlaying)
