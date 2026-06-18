@@ -179,7 +179,8 @@ bool ProjectManager::NewProjectDialog(ProjectInfo& outInfo, HWND hwnd)
     outInfo.rootDir      = projDir.string();
     outInfo.assetsDir    = (projDir / "assets").string() + "/";
     outInfo.scriptsDir   = (projDir / "scripts").string() + "/";
-    outInfo.defaultScene = "scenes/default.json";
+    outInfo.defaultScene = "scenes/main.json";
+    // templateId は呼び出し側(ランチャーのテンプレ選択)が設定する
     return true;
 }
 
@@ -263,6 +264,23 @@ LauncherAction ProjectManager::RenderLauncher(ProjectInfo& outInfo, HWND hwnd,
         | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBringToFrontOnFocus
         | ImGuiWindowFlags_NoScrollbar);
 
+    // ── 重い外部チェックはフレーム毎に実行しない ──────────────────
+    // ランチャーはカーソルを動かすたび毎フレーム再描画される。git/gh の存在確認は
+    // 内部で CreateProcess（git/gh --version 起動）、GetRecents は recent.json の
+    // ディスク読込なので、毎フレームやると重くてカクつく（＝点滅して見える）。
+    // ウィンドウ出現時にだけ評価してキャッシュする。
+    const bool launcherAppearing = ImGui::IsWindowAppearing();
+    static int  s_gitAvail = -1, s_ghAvail = -1;
+    static std::vector<ProjectInfo> s_recents;
+    static bool s_cacheReady = false;
+    if (launcherAppearing || !s_cacheReady)
+    {
+        s_cacheReady = true;
+        s_gitAvail = GitIntegration::IsGitAvailable() ? 1 : 0;
+        s_ghAvail  = GitIntegration::IsGhAvailable()  ? 1 : 0;
+        s_recents  = GetRecents();
+    }
+
     // 中央パネル
     ImVec2 panelSize(560, 520);
     ImVec2 panelPos(vp->Pos.x + (vp->Size.x - panelSize.x) * 0.5f,
@@ -293,10 +311,47 @@ LauncherAction ProjectManager::RenderLauncher(ProjectInfo& outInfo, HWND hwnd,
     float btnW = panelSize.x - 48.0f;
     ImGui::SetCursorPosX(24);
     if (IconActionButton(icons.newProject, "[N]", "新規プロジェクト",
-                         "新しいゲームプロジェクトを作成", ImVec2(btnW, 64)))
+                         "テンプレートを選んで作成 (FPS / TPS / 空)", ImVec2(btnW, 64)))
     {
-        if (NewProjectDialog(outInfo, hwnd))
-            action = LauncherAction::CreateNew;
+        ImGui::OpenPopup("テンプレートを選択");
+    }
+
+    // --- テンプレート選択ポップアップ ---
+    ImGui::SetNextWindowSize(ImVec2(520, 0), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("テンプレートを選択", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::TextWrapped("作りたいゲームのテンプレートを選んでください。"
+                           "選ぶと作成先フォルダを聞かれ、そのテンプレートで初期化されます。");
+        ImGui::Dummy(ImVec2(0, 6));
+
+        // テンプレ選択 → フォルダ選択 → info 構築 → CreateNew
+        auto pick = [&](const char* tmpl)
+        {
+            ProjectInfo tmp;
+            if (NewProjectDialog(tmp, hwnd))
+            {
+                tmp.templateId = tmpl;
+                outInfo = tmp;
+                action  = LauncherAction::CreateNew;
+                ImGui::CloseCurrentPopup();
+            }
+        };
+
+        float tW = 472.0f;
+        if (IconActionButton(icons.tmplFps, "[F]", "FPS  (一人称シューター)",
+                             "マウスルック + WASD。囲い壁アリーナ + クロスヘア", ImVec2(tW, 60)))
+            pick("fps");
+        if (IconActionButton(icons.tmplTps, "[T]", "TPS  (三人称アクション)",
+                             "追従カメラ + キャラ移動。マウスで周回", ImVec2(tW, 60)))
+            pick("tps");
+        if (IconActionButton(icons.tmplEmpty, "[E]", "空  (最小構成)",
+                             "グリッド + 床 + ライト + カメラだけ", ImVec2(tW, 60)))
+            pick("empty");
+
+        ImGui::Dummy(ImVec2(0, 4));
+        if (ImGui::Button("キャンセル", ImVec2(120, 30)))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
     }
     ImGui::SetCursorPosX(24);
     if (IconActionButton(icons.openProject, "[O]", "プロジェクトを開く",
@@ -328,7 +383,7 @@ LauncherAction ProjectManager::RenderLauncher(ProjectInfo& outInfo, HWND hwnd,
         ImGui::InputTextWithHint("##cloneurl", "https://github.com/owner/repo.git",
                                  s_cloneUrl.data(), s_cloneUrl.size());
 
-        if (!GitIntegration::IsGitAvailable())
+        if (s_gitAvail == 0)
             ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "git が見つかりません（PATH を通してください）");
 
         if (!s_cloneStatus.empty())
@@ -336,7 +391,7 @@ LauncherAction ProjectManager::RenderLauncher(ProjectInfo& outInfo, HWND hwnd,
 
         ImGui::Dummy(ImVec2(0, 4));
         bool hasUrl = s_cloneUrl[0] != '\0';
-        ImGui::BeginDisabled(!hasUrl || !GitIntegration::IsGitAvailable());
+        ImGui::BeginDisabled(!hasUrl || s_gitAvail != 1);
         if (ImGui::Button("クローン", ImVec2(160, 30)))
         {
             std::string parent;
@@ -369,14 +424,14 @@ LauncherAction ProjectManager::RenderLauncher(ProjectInfo& outInfo, HWND hwnd,
     {
         static bool s_loginChecked = false;
         static std::string s_loginUser;
+        if (launcherAppearing) s_loginChecked = false;  // ランチャー再入時だけ再確認
         if (!s_loginChecked)
         {
             s_loginChecked = true;
-            if (GitIntegration::IsGhAvailable())
-                s_loginUser = GitIntegration::GitHubUser();
+            s_loginUser = (s_ghAvail == 1) ? GitIntegration::GitHubUser() : std::string();
         }
         ImGui::SetCursorPosX(24);
-        if (!GitIntegration::IsGhAvailable())
+        if (s_ghAvail == 0)
             ImGui::TextDisabled("GitHub CLI (gh) が無いため、ログインは使えません");
         else if (s_loginUser.empty())
         {
@@ -403,7 +458,7 @@ LauncherAction ProjectManager::RenderLauncher(ProjectInfo& outInfo, HWND hwnd,
     ImGui::SetCursorPosX(24);
     ImGui::BeginChild("##recents", ImVec2(btnW, 210), ImGuiChildFlags_Borders);
 
-    auto recents = GetRecents();
+    auto& recents = s_recents;
     if (recents.empty())
     {
         ImGui::TextDisabled("まだプロジェクトがありません");

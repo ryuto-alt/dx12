@@ -406,4 +406,43 @@ Save-Icon "ent_empty" "#64748B" {
     $g.FillEllipse($white, 59, 59, 10, 10)  # 中心ノード
 }
 
+# =====================================================================
+#  プロジェクトテンプレート アイコン（ランチャーのテンプレ選択）
+# =====================================================================
+
+# --- tmpl_fps: 赤背景 + 白いクロスヘア（一人称の照準）---
+Save-Icon "tmpl_fps" "#DC2626" {
+    param($g)
+    $ring = New-WhitePen 6
+    $g.DrawEllipse($ring, 42, 42, 44, 44)        # 外周リング
+    $tick = New-WhitePen 6
+    $g.DrawLine($tick, 64, 30, 64, 44)           # 上
+    $g.DrawLine($tick, 64, 84, 64, 98)           # 下
+    $g.DrawLine($tick, 30, 64, 44, 64)           # 左
+    $g.DrawLine($tick, 84, 64, 98, 64)           # 右
+    $g.FillEllipse($white, 60, 60, 8, 8)         # 中心ドット
+}
+
+# --- tmpl_tps: 紫背景 + 白い人物 + 背後カメラ弧（三人称）---
+Save-Icon "tmpl_tps" "#7C3AED" {
+    param($g)
+    $g.FillEllipse($white, 54, 36, 20, 20)       # 頭
+    Fill-Poly $g $white @((PF 64 58),(PF 80 92),(PF 48 92))  # 胴(三角)
+    # 背後の追従カメラ弧
+    $arc = New-WhitePen 5
+    $g.DrawArc($arc, 30, 64, 68, 50, 200, 140)
+    $g.FillRectangle($white, 86, 78, 12, 10)     # カメラ本体
+}
+
+# --- tmpl_empty: スレート背景 + 白い破線スクエア + 中央プラス（空のキャンバス）---
+Save-Icon "tmpl_empty" "#64748B" {
+    param($g)
+    $dash = New-WhitePen 5
+    $dash.DashStyle = [System.Drawing.Drawing2D.DashStyle]::Dash
+    $g.DrawRectangle($dash, 40, 40, 48, 48)
+    $plus = New-WhitePen 6
+    $g.DrawLine($plus, 64, 52, 64, 76)
+    $g.DrawLine($plus, 52, 64, 76, 64)
+}
+
 Write-Host "DONE"

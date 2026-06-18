@@ -16,6 +16,9 @@ struct ProjectInfo
     std::string defaultScene;      // "scenes/main.json"
     std::string lastOpenedScene;   // 最後に開いたシーンのフルパス
     std::string engineVersion = "0.1.0";
+    // 新規作成時のテンプレート: "empty" / "fps" / "tps"
+    // CreateDefaultStructure が この値で開始シーン + game.lua を生成する。
+    std::string templateId = "empty";
 };
 
 class Project

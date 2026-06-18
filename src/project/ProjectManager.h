@@ -16,6 +16,10 @@ struct LauncherIcons
     unsigned long long newProject  = 0;
     unsigned long long openProject = 0;
     unsigned long long recent      = 0;
+    // プロジェクトテンプレート選択用
+    unsigned long long tmplFps     = 0;
+    unsigned long long tmplTps     = 0;
+    unsigned long long tmplEmpty   = 0;
 };
 
 // ランチャーの結果。どのアクションが選ばれたか + 選ばれたプロジェクト情報。
