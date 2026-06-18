@@ -3183,9 +3183,10 @@ void Application::Render()
         m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
 
         XMMATRIX invView = XMMatrixInverse(nullptr, m_camera->GetViewMatrix());
-        XMFLOAT3 camRight, camUp;
+        XMFLOAT3 camRight, camUp, camPos;
         XMStoreFloat3(&camRight, invView.r[0]);
         XMStoreFloat3(&camUp,    invView.r[1]);
+        XMStoreFloat3(&camPos,   invView.r[3]);
 
         XMFLOAT4X4 proj; XMStoreFloat4x4(&proj, m_camera->GetProjectionMatrix());
         const float rtw = static_cast<float>(m_sceneRT->GetWidth());
@@ -3196,7 +3197,7 @@ void Application::Render()
         else
             m_particleSystem->DisableSceneDepth();
         m_particleSystem->SetTime(totalTime);
-        m_particleSystem->Render(nativeCmdList, m_camera->GetViewProjMatrix(), camRight, camUp);
+        m_particleSystem->Render(nativeCmdList, m_camera->GetViewProjMatrix(), camRight, camUp, camPos);
 
         m_commandList->TransitionResource(m_depthBuffer.Get(),
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);

@@ -28,6 +28,9 @@ enum class ParticleKind : int
 
 enum class ParticleBlend : int { Additive = 0, AlphaPremul = 1 };
 
+// ビームの見た目（Beam.hlsl の BEAM_* と一致）。
+enum class BeamKind : int { Energy = 0, Electric = 1, Fire = 2 };
+
 // CPUシミュレーション + GPUインスタンシングのプロシージャル質感パーティクル。
 // Lua の fx:burst / fx:ring から放出され、scene の HDR RT へ描かれる。
 // 質感はシェーダの数式（テクスチャ無し）。動きはカールノイズ（divergence-free）。
@@ -67,10 +70,23 @@ public:
         float flickerFreq  = 18.0f;     // 明滅の速さ
     };
 
+    // 連続ビーム（2点間カメラ向きquad）。レーザー/エネルギー線/火柱/稲妻。
+    struct BeamParams
+    {
+        DirectX::XMFLOAT3 p0{0, 0, 0};
+        DirectX::XMFLOAT3 p1{0, 1, 0};
+        float width      = 0.3f;
+        DirectX::XMFLOAT3 color{1, 1, 1};
+        float intensity  = 6.0f;
+        float life       = 0.06f;   // 既定は毎フレーム再放出向け
+        int   kind       = 0;       // BeamKind
+    };
+
     void Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
                     DXGI_FORMAT dsvFormat, const std::wstring& shaderDir);
 
     void Emit(const EmitParams& p);
+    void EmitBeam(const BeamParams& b);
     void Update(f32 dt);
     void Clear();
 
@@ -84,7 +100,8 @@ public:
 
     // scene パス内（HDR RT バインド済み・深度は SRV としてバインド済み）で呼ぶ。
     void Render(ID3D12GraphicsCommandList* cmd, DirectX::XMMATRIX viewProj,
-                DirectX::XMFLOAT3 camRight, DirectX::XMFLOAT3 camUp);
+                DirectX::XMFLOAT3 camRight, DirectX::XMFLOAT3 camUp,
+                DirectX::XMFLOAT3 camPos);
 
     // 画面インパクト（ヒット時にクロマ/放射ブラーを瞬間的に上げる用）。
     void  AddPulse(float amount) { if (amount > m_pulse) m_pulse = amount; }
@@ -128,20 +145,50 @@ private:
         float             seed;     // 60 TEXCOORD5
     };
 
+    struct Beam
+    {
+        DirectX::XMFLOAT3 p0, p1;
+        DirectX::XMFLOAT3 col;   // intensity 乗算済み
+        float width;
+        float age, life;
+        float seed;
+        int   kind;
+        bool  alive = false;
+    };
+
+    // Beam.hlsl のインスタンスレイアウトと一致（stride 56）。
+    struct GpuBeam
+    {
+        DirectX::XMFLOAT3 p0;     // 0  POSITION
+        DirectX::XMFLOAT3 p1;     // 12 NORMAL
+        DirectX::XMFLOAT4 color;  // 24 COLOR0
+        float             halfW;  // 40 TEXCOORD0
+        float             age01;  // 44 TEXCOORD1
+        u32               kind;   // 48 TEXCOORD2
+        float             seed;   // 52 TEXCOORD3
+    };
+
     float Rand(float a, float b);
 
     static constexpr u32 kMaxParticles = 8000;
+    static constexpr u32 kMaxBeams     = 512;
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSig;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoAdd;    // 加算
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoAlpha;  // 前乗算アルファ（煙）
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoBeam;   // 加算ビーム
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_instanceBuffer; // UPLOAD
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_beamBuffer;     // UPLOAD
     D3D12_VERTEX_BUFFER_VIEW                     m_vbView{};
+    D3D12_VERTEX_BUFFER_VIEW                     m_beamVbView{};
 
     std::vector<Particle>   m_particles;
     std::vector<GpuParticle> m_gpu;     // 毎フレーム再構築（加算→α の順に詰める）
+    std::vector<Beam>        m_beamPool;
+    std::vector<GpuBeam>     m_gpuBeams;
     u32   m_additiveCount = 0;          // m_gpu 内の加算粒子数（先頭から）
     u32   m_cursor     = 0;             // 空きスロット探索の起点
+    u32   m_beamCursor = 0;
     int   m_aliveCount = 0;
     float m_pulse      = 0.0f;
     float m_time       = 0.0f;

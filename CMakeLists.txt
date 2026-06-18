@@ -96,6 +96,7 @@ if(DXC_EXECUTABLE)
     set(SHADER_ICON_BB       "${CMAKE_SOURCE_DIR}/shaders/editor/IconBillboard.hlsl")
     set(SHADER_TRANSITION    "${CMAKE_SOURCE_DIR}/shaders/post/Transition.hlsl")
     set(SHADER_PARTICLE      "${CMAKE_SOURCE_DIR}/shaders/particle/Particle.hlsl")
+    set(SHADER_BEAM          "${CMAKE_SOURCE_DIR}/shaders/particle/Beam.hlsl")
     set(SHADER_PARTICLE_INC  "${CMAKE_SOURCE_DIR}/shaders/particle/ParticleCommon.hlsli")
 
     set(SHADER_OUTPUTS
@@ -121,6 +122,8 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/Emissive_PS.cso"
         "${SHADER_OUTPUT_DIR}/Particle_VS.cso"
         "${SHADER_OUTPUT_DIR}/Particle_PS.cso"
+        "${SHADER_OUTPUT_DIR}/Beam_VS.cso"
+        "${SHADER_OUTPUT_DIR}/Beam_PS.cso"
     )
 
     add_custom_command(
@@ -275,6 +278,20 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/Particle_PS.cso" "${SHADER_PARTICLE}"
         DEPENDS "${SHADER_PARTICLE}" "${SHADER_PARTICLE_INC}"
         COMMENT "Compiling Particle.hlsl -> Particle_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/Beam_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/Beam_VS.cso" "${SHADER_BEAM}"
+        DEPENDS "${SHADER_BEAM}" "${SHADER_PARTICLE_INC}"
+        COMMENT "Compiling Beam.hlsl -> Beam_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/Beam_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/Beam_PS.cso" "${SHADER_BEAM}"
+        DEPENDS "${SHADER_BEAM}" "${SHADER_PARTICLE_INC}"
+        COMMENT "Compiling Beam.hlsl -> Beam_PS.cso (ps_6_0)"
     )
 
     add_custom_target(Shaders ALL DEPENDS ${SHADER_OUTPUTS})

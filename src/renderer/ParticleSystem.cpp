@@ -83,6 +83,7 @@ void ParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
                                 DXGI_FORMAT dsvFormat, const std::wstring& shaderDir)
 {
     static_assert(sizeof(GpuParticle) == 64, "GpuParticle stride must match shader instance layout (64)");
+    static_assert(sizeof(GpuBeam) == 56, "GpuBeam stride must match Beam.hlsl instance layout (56)");
     (void)dsvFormat; // 粒子パスは DSV をバインドせず深度 SRV で手動オクルージョン
     auto* dev = device.GetDevice();
 
@@ -185,6 +186,49 @@ void ParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
         ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoAlpha)));
     }
 
+    // --- ビーム PSO（加算・root sig 流用：b0 32定数 + t0深度SRV + s0）---
+    {
+        auto vs = ShaderCompiler::LoadFromFile(shaderDir + L"Beam_VS.cso");
+        auto ps = ShaderCompiler::LoadFromFile(shaderDir + L"Beam_PS.cso");
+
+        D3D12_INPUT_ELEMENT_DESC layout[] = {
+            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 0,  D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},
+            {"NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // p1
+            {"COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},
+            {"TEXCOORD", 0, DXGI_FORMAT_R32_FLOAT,          0, 40, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // halfW
+            {"TEXCOORD", 1, DXGI_FORMAT_R32_FLOAT,          0, 44, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // age01
+            {"TEXCOORD", 2, DXGI_FORMAT_R32_UINT,           0, 48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // kind
+            {"TEXCOORD", 3, DXGI_FORMAT_R32_FLOAT,          0, 52, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // seed
+        };
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC bp{};
+        bp.pRootSignature        = m_rootSig.Get();
+        bp.VS                    = { vs.GetData(), vs.GetSize() };
+        bp.PS                    = { ps.GetData(), ps.GetSize() };
+        bp.InputLayout           = { layout, _countof(layout) };
+        bp.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        bp.RasterizerState.FillMode        = D3D12_FILL_MODE_SOLID;
+        bp.RasterizerState.CullMode        = D3D12_CULL_MODE_NONE;
+        bp.RasterizerState.DepthClipEnable = TRUE;
+        auto& brt = bp.BlendState.RenderTarget[0];
+        brt.BlendEnable    = TRUE;
+        brt.SrcBlend       = D3D12_BLEND_ONE;
+        brt.DestBlend      = D3D12_BLEND_ONE;
+        brt.BlendOp        = D3D12_BLEND_OP_ADD;
+        brt.SrcBlendAlpha  = D3D12_BLEND_ONE;
+        brt.DestBlendAlpha = D3D12_BLEND_ONE;
+        brt.BlendOpAlpha   = D3D12_BLEND_OP_ADD;
+        brt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        bp.DepthStencilState.DepthEnable   = FALSE;
+        bp.DepthStencilState.StencilEnable = FALSE;
+        bp.SampleMask       = UINT_MAX;
+        bp.NumRenderTargets = 1;
+        bp.RTVFormats[0]    = rtvFormat;
+        bp.DSVFormat        = DXGI_FORMAT_UNKNOWN;
+        bp.SampleDesc       = { 1, 0 };
+        ThrowIfFailed(dev->CreateGraphicsPipelineState(&bp, IID_PPV_ARGS(&m_psoBeam)));
+    }
+
     // --- インスタンスバッファ（UPLOADヒープ。SpriteRenderer と同じ運用）---
     {
         const UINT bufferSize = kMaxParticles * sizeof(GpuParticle);
@@ -208,10 +252,34 @@ void ParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
         m_vbView.SizeInBytes    = bufferSize;
     }
 
+    // --- ビーム用インスタンスバッファ ---
+    {
+        const UINT bufferSize = kMaxBeams * sizeof(GpuBeam);
+        D3D12_HEAP_PROPERTIES heapProps{};
+        heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+        D3D12_RESOURCE_DESC res{};
+        res.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+        res.Width            = bufferSize;
+        res.Height           = 1;
+        res.DepthOrArraySize = 1;
+        res.MipLevels        = 1;
+        res.SampleDesc       = {1, 0};
+        res.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        ThrowIfFailed(dev->CreateCommittedResource(
+            &heapProps, D3D12_HEAP_FLAG_NONE, &res,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_beamBuffer)));
+        m_beamVbView.BufferLocation = m_beamBuffer->GetGPUVirtualAddress();
+        m_beamVbView.StrideInBytes  = sizeof(GpuBeam);
+        m_beamVbView.SizeInBytes    = bufferSize;
+    }
+
     m_particles.assign(kMaxParticles, Particle{});
     m_gpu.reserve(kMaxParticles);
+    m_beamPool.assign(kMaxBeams, Beam{});
+    m_gpuBeams.reserve(kMaxBeams);
     m_initialized = true;
-    Logger::Info("ParticleSystem initialized (max {} particles, procedural kinds + curl + soft)", kMaxParticles);
+    Logger::Info("ParticleSystem initialized (max {} particles + {} beams, procedural kinds + curl + soft)",
+                 kMaxParticles, kMaxBeams);
 }
 
 float ParticleSystem::Rand(float a, float b)
@@ -297,6 +365,28 @@ void ParticleSystem::Emit(const EmitParams& p)
     }
 }
 
+void ParticleSystem::EmitBeam(const BeamParams& bp)
+{
+    if (!m_initialized) return;
+    u32 idx = kMaxBeams;
+    for (u32 s = 0; s < kMaxBeams; ++s)
+    {
+        u32 c = (m_beamCursor + s) % kMaxBeams;
+        if (!m_beamPool[c].alive) { idx = c; m_beamCursor = (c + 1) % kMaxBeams; break; }
+    }
+    if (idx == kMaxBeams) return;
+    Beam& b = m_beamPool[idx];
+    b.p0    = bp.p0;
+    b.p1    = bp.p1;
+    b.width = bp.width;
+    b.col   = { bp.color.x * bp.intensity, bp.color.y * bp.intensity, bp.color.z * bp.intensity };
+    b.life  = (std::max)(0.02f, bp.life);
+    b.age   = 0.0f;
+    b.seed  = Rand(0.0f, 1000.0f);
+    b.kind  = bp.kind;
+    b.alive = true;
+}
+
 void ParticleSystem::Update(f32 dt)
 {
     // 画面パルス減衰
@@ -335,17 +425,26 @@ void ParticleSystem::Update(f32 dt)
             pt.vel.x *= 0.7f; pt.vel.z *= 0.7f;
         }
     }
+
+    // ビーム寿命（移動せず減衰のみ）
+    for (auto& b : m_beamPool)
+    {
+        if (!b.alive) continue;
+        b.age += dt;
+        if (b.age >= b.life) b.alive = false;
+    }
 }
 
 void ParticleSystem::Clear()
 {
     for (auto& pt : m_particles) pt.alive = false;
+    for (auto& b : m_beamPool) b.alive = false;
     m_aliveCount = 0;
     m_pulse = 0.0f;
 }
 
 void ParticleSystem::Render(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj,
-                            XMFLOAT3 camRight, XMFLOAT3 camUp)
+                            XMFLOAT3 camRight, XMFLOAT3 camUp, XMFLOAT3 camPos)
 {
     if (!m_initialized) return;
 
@@ -397,46 +496,101 @@ void ParticleSystem::Render(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj,
         m_gpu.push_back(makeGpu(pt));
     }
     m_aliveCount = static_cast<int>(m_gpu.size());
-    if (m_gpu.empty()) return;
 
-    void* mapped = nullptr;
-    D3D12_RANGE readRange = {0, 0};
-    ThrowIfFailed(m_instanceBuffer->Map(0, &readRange, &mapped));
-    memcpy(mapped, m_gpu.data(), m_gpu.size() * sizeof(GpuParticle));
-    m_instanceBuffer->Unmap(0, nullptr);
-
-    struct CamCB
+    // 生きてるビーム → GpuBeam 変換
+    m_gpuBeams.clear();
+    for (const auto& b : m_beamPool)
     {
-        XMFLOAT4X4 viewProj;
-        XMFLOAT4   camRight;
-        XMFLOAT4   camUp;
-        XMFLOAT4   params;
-        XMFLOAT4   params2;
-    } cb;
-    XMStoreFloat4x4(&cb.viewProj, XMMatrixTranspose(viewProj));
-    cb.camRight = { camRight.x, camRight.y, camRight.z, 0.0f };
-    cb.camUp    = { camUp.x,    camUp.y,    camUp.z,    0.0f };
-    cb.params   = { 1.0f, 2.2f, m_time, 0.5f }; // x=intensity, y=glowSoftness, z=time, w=softFadeDist
-    cb.params2  = { m_projA, m_projB, m_hasDepth ? m_invRTW : 0.0f, m_invRTH };
+        if (!b.alive) continue;
+        float t = b.age / b.life;
+        // 火柱は噴出→崩れをシェーダ(age01)が制御するので寿命フェードを掛けない。
+        float fade = (b.kind == static_cast<int>(BeamKind::Fire)) ? 1.0f : (1.0f - t) * (1.0f - t);
+        GpuBeam g;
+        g.p0    = b.p0;
+        g.p1    = b.p1;
+        g.color = { b.col.x, b.col.y, b.col.z, fade };
+        g.halfW = b.width * 0.5f;
+        g.age01 = t;
+        g.kind  = static_cast<u32>(b.kind);
+        g.seed  = b.seed;
+        m_gpuBeams.push_back(g);
+        if (m_gpuBeams.size() >= kMaxBeams) break;
+    }
+
+    if (m_gpu.empty() && m_gpuBeams.empty()) return;
 
     cmd->SetGraphicsRootSignature(m_rootSig.Get());
-    cmd->SetGraphicsRoot32BitConstants(0, 32, &cb, 0);
     if (m_hasDepth) cmd->SetGraphicsRootDescriptorTable(1, m_depthSrv);
     cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    cmd->IASetVertexBuffers(0, 1, &m_vbView);
 
-    // 加算パス
-    if (m_additiveCount > 0)
+    const float softFadeDist = 0.5f;
+    const XMFLOAT4 params2 = { m_projA, m_projB, m_hasDepth ? m_invRTW : 0.0f, m_invRTH };
+
+    // ===== パーティクル =====
+    if (!m_gpu.empty())
     {
-        cmd->SetPipelineState(m_psoAdd.Get());
-        cmd->DrawInstanced(6, m_additiveCount, 0, 0);
+        void* mapped = nullptr;
+        D3D12_RANGE readRange = {0, 0};
+        ThrowIfFailed(m_instanceBuffer->Map(0, &readRange, &mapped));
+        memcpy(mapped, m_gpu.data(), m_gpu.size() * sizeof(GpuParticle));
+        m_instanceBuffer->Unmap(0, nullptr);
+
+        struct CamCB
+        {
+            XMFLOAT4X4 viewProj;
+            XMFLOAT4   camRight;
+            XMFLOAT4   camUp;
+            XMFLOAT4   params;
+            XMFLOAT4   params2;
+        } cb;
+        XMStoreFloat4x4(&cb.viewProj, XMMatrixTranspose(viewProj));
+        cb.camRight = { camRight.x, camRight.y, camRight.z, 0.0f };
+        cb.camUp    = { camUp.x,    camUp.y,    camUp.z,    0.0f };
+        cb.params   = { 1.0f, 2.2f, m_time, softFadeDist };
+        cb.params2  = params2;
+
+        cmd->SetGraphicsRoot32BitConstants(0, 32, &cb, 0);
+        cmd->IASetVertexBuffers(0, 1, &m_vbView);
+        if (m_additiveCount > 0)
+        {
+            cmd->SetPipelineState(m_psoAdd.Get());
+            cmd->DrawInstanced(6, m_additiveCount, 0, 0);
+        }
+        u32 alphaCount = static_cast<u32>(m_gpu.size()) - m_additiveCount;
+        if (alphaCount > 0)
+        {
+            cmd->SetPipelineState(m_psoAlpha.Get());
+            cmd->DrawInstanced(6, alphaCount, 0, m_additiveCount);
+        }
     }
-    // 前乗算アルファ（煙）パス
-    u32 alphaCount = static_cast<u32>(m_gpu.size()) - m_additiveCount;
-    if (alphaCount > 0)
+
+    // ===== ビーム =====
+    if (!m_gpuBeams.empty())
     {
-        cmd->SetPipelineState(m_psoAlpha.Get());
-        cmd->DrawInstanced(6, alphaCount, 0, m_additiveCount);
+        void* mapped = nullptr;
+        D3D12_RANGE readRange = {0, 0};
+        ThrowIfFailed(m_beamBuffer->Map(0, &readRange, &mapped));
+        memcpy(mapped, m_gpuBeams.data(), m_gpuBeams.size() * sizeof(GpuBeam));
+        m_beamBuffer->Unmap(0, nullptr);
+
+        struct BeamCB
+        {
+            XMFLOAT4X4 viewProj;
+            XMFLOAT4   camPos;
+            XMFLOAT4   params;
+            XMFLOAT4   params2;
+            XMFLOAT4   pad0;
+        } bcb;
+        XMStoreFloat4x4(&bcb.viewProj, XMMatrixTranspose(viewProj));
+        bcb.camPos  = { camPos.x, camPos.y, camPos.z, 0.0f };
+        bcb.params  = { 1.0f, m_time, softFadeDist, 0.0f };
+        bcb.params2 = params2;
+        bcb.pad0    = { 0, 0, 0, 0 };
+
+        cmd->SetGraphicsRoot32BitConstants(0, 32, &bcb, 0);
+        cmd->IASetVertexBuffers(0, 1, &m_beamVbView);
+        cmd->SetPipelineState(m_psoBeam.Get());
+        cmd->DrawInstanced(6, static_cast<u32>(m_gpuBeams.size()), 0, 0);
     }
 }
 

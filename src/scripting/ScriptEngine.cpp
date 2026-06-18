@@ -482,6 +482,32 @@ void ScriptEngine::RegisterBindings()
         fx.set_function("clear", [this](sol::object) {
             if (m_particleSystem) m_particleSystem->Clear();
         });
+        // fx:beam{ x0,y0,z0, x1,y1,z1, width, r,g,b, intensity, life, kind } 連続ビーム/火柱/稲妻
+        fx.set_function("beam", [this](sol::object, sol::table t) {
+            if (!m_particleSystem) return;
+            ParticleSystem::BeamParams b;
+            b.p0 = { t.get_or("x0", 0.0f), t.get_or("y0", 0.0f), t.get_or("z0", 0.0f) };
+            b.p1 = { t.get_or("x1", 0.0f), t.get_or("y1", 1.0f), t.get_or("z1", 0.0f) };
+            b.width     = t.get_or("width", 0.3f);
+            b.color     = { t.get_or("r", 1.0f), t.get_or("g", 1.0f), t.get_or("b", 1.0f) };
+            b.intensity = t.get_or("intensity", 6.0f);
+            b.life      = t.get_or("life", 0.06f);
+            int kind = 0;
+            sol::object ko = t["kind"];
+            if (ko.valid())
+            {
+                if (ko.is<std::string>())
+                {
+                    std::string s = ko.as<std::string>();
+                    if      (s == "electric" || s == "lightning") kind = 1;
+                    else if (s == "fire")                          kind = 2;
+                    else                                           kind = 0;  // energy
+                }
+                else if (ko.is<double>()) kind = static_cast<int>(ko.as<double>());
+            }
+            b.kind = kind;
+            m_particleSystem->EmitBeam(b);
+        });
     }
 
     RegisterPhysicsBindings();
@@ -832,6 +858,8 @@ function cameraLockOn(playerPos, targetPos, opts, state)
   end
   return yaw
 end
+)LUA"
+R"LUA(
 
 -- ============================================================
 --  FX: ド派手パーティクルプリセット（fx:burst / fx:ring を包む）
@@ -910,6 +938,40 @@ end
 
 -- ヒット時の画面パルス（クロマ + 放射ブラー）
 function FX.hit(amount) fx:pulse(amount or 0.5) end
+
+-- 連続ビーム（レーザー/エネルギー線）。毎フレーム呼ぶ用（点線にならない一本線）
+function FX.beam(x0, y0, z0, x1, y1, z1, r, g, b, width, kind, intensity)
+  fx:beam{ x0=x0, y0=y0, z0=z0, x1=x1, y1=y1, z1=z1,
+           width=width or 0.4, kind=kind or "energy",
+           r=r or 0.4, g=g or 0.9, b=b or 1.0, intensity=intensity or 7, life=0.06 }
+end
+
+-- 稲妻ビーム（始点→終点をギザギザの放電で繋ぐ）
+function FX.lightning(x0, y0, z0, x1, y1, z1, r, g, b, width)
+  fx:beam{ x0=x0, y0=y0, z0=z0, x1=x1, y1=y1, z1=z1,
+           width=width or 0.6, kind="electric",
+           r=r or 0.6, g=g or 0.8, b=b or 1.0, intensity=8, life=0.06 }
+end
+
+-- 動的火柱（噴き上がり→うねり→崩れをシェーダがアニメ。火の粉/閃光/地面リング/煙つき）
+function FX.pillar(x, y, z, height, radius, r, g, b)
+  height = height or 6.0; radius = radius or 1.2
+  r = r or 1.0; g = g or 0.5; b = b or 0.15
+  fx:beam{ x0=x, y0=y, z0=z, x1=x, y1=y+height, z1=z, width=radius, kind="fire",
+           r=r, g=g, b=b, intensity=7, life=0.7 }
+  fx:burst{ x=x, y=y+0.3, z=z, count=24, spread=0.45, dy=1, speed=height*1.1, speedVar=0.5,
+            kind="spark", size=0.16, sizeEnd=0.0, life=0.8, lifeVar=0.4,
+            r=1, g=0.85, b=0.45, intensity=9, gravity=-2.5, drag=0.5, turbStrength=3.0, stretch=2.5 }
+  fx:burst{ x=x, y=y+0.4, z=z, count=1, kind="star", size=radius*1.7, sizeEnd=0.0, life=0.12,
+            r=1, g=0.9, b=0.7, intensity=14 }
+  fx:burst{ x=x, y=0.1, z=z, count=1, kind="ring", size=radius*3.2, sizeEnd=radius*3.2, life=0.45,
+            r=r, g=g*0.7, b=b*0.4, intensity=5 }
+  fx:burst{ x=x, y=0.1, z=z, count=1, kind="glow", size=radius*2.6, sizeEnd=radius*2.6, life=0.3,
+            r=r, g=g*0.7, b=b*0.5, intensity=4 }
+  fx:burst{ x=x, y=y+height*0.6, z=z, count=6, spread=0.4, speed=2, kind="smoke",
+            size=radius*0.9, sizeEnd=radius*2.4, life=1.2, r=0.2, g=0.18, b=0.18,
+            intensity=1, turbStrength=2.5, up=0.5 }
+end
 
 -- ============================================================
 --  統一 VFX API（コード自前 と Effekseer を両立させる窓口）
