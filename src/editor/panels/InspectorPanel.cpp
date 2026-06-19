@@ -18,6 +18,7 @@
 #include "animation/SkinningBuffer.h"
 #include "scripting/ScriptEngine.h"
 
+#include <imgui_internal.h>   // BeginDragDropTargetCustom（ウィンドウ全体をドロップ先に）
 #include <filesystem>
 #include <algorithm>
 #include <cstring>
@@ -77,8 +78,78 @@ dx12e::u64 PickEntityIcon(entt::registry& reg, entt::entity e, const dx12e::Edit
     return ic.entEmpty;
 }
 
+// assets 配下の .lua（= スクリプトコンポーネント候補）を列挙する。
+// game.lua は除外。戻り値は assets 相対パス（スラッシュ区切り、例 "components/Spike.lua"）。
+// メニュー/ポップアップが開いている間だけ呼ばれる想定（開いてる時しか走らないので軽い）。
+std::vector<std::string> ScanScriptComponents(const std::string& assetsDir)
+{
+    namespace fs = std::filesystem;
+    std::vector<std::string> out;
+    std::error_code ec;
+    fs::path base(assetsDir);
+    if (base.empty() || !fs::exists(base, ec)) return out;
+    for (auto it = fs::recursive_directory_iterator(base, ec);
+         it != fs::recursive_directory_iterator(); it.increment(ec))
+    {
+        if (ec) break;
+        const auto& p = it->path();
+        if (!fs::is_regular_file(p, ec)) continue;
+        if (p.extension() != ".lua") continue;
+        if (p.filename() == "game.lua") continue;
+        std::string rel = fs::relative(p, base, ec).generic_string();
+        if (!rel.empty()) out.push_back(rel);
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+// スクリプト選択 UI。assets の .lua を列挙し、クリックで pendingScriptAttachments に積む
+// （フレーム境界で Undo 付きアタッチ）。選んだら true。
+bool ScriptPicker(dx12e::EditorContext& ctx, entt::entity e, const std::string& assetsDir)
+{
+    bool picked = false;
+    auto scripts = ScanScriptComponents(assetsDir);
+    if (scripts.empty())
+    {
+        ImGui::TextDisabled("assets/components に .lua がありません");
+        ImGui::TextDisabled("（AssetBrowser の「新規スクリプト」で作成）");
+        return false;
+    }
+    for (const auto& rel : scripts)
+    {
+        if (ImGui::Selectable(rel.c_str()))
+        {
+            ctx.pendingScriptAttachments.push_back({ e, rel });
+            picked = true;
+        }
+    }
+    return picked;
+}
+
+// スキーマに合わせて ls.props を並べ替え/補完する（既存値は名前で引き継ぎ、
+// 宣言から消えたプロパティは捨てる）。これで Inspector は常にスキーマ通りに描ける。
+void SyncScriptProps(dx12e::LuaScript& ls, const std::vector<dx12e::ScriptPropDef>& schema)
+{
+    std::vector<dx12e::ScriptProp> next;
+    next.reserve(schema.size());
+    for (const auto& d : schema)
+    {
+        dx12e::ScriptProp p;
+        p.name = d.name;
+        p.type = d.type;
+        const dx12e::ScriptProp* old = nullptr;
+        for (auto& ex : ls.props)
+            if (ex.name == d.name && ex.type == d.type) { old = &ex; break; }
+        if (old) { p.num = old->num; p.b = old->b; p.str = old->str; p.vec = old->vec; }
+        else     { p.num = d.def.num; p.b = d.def.b; p.str = d.def.str; p.vec = d.def.vec; }
+        next.push_back(std::move(p));
+    }
+    ls.props = std::move(next);
+}
+
 void DrawLuaScriptSection(entt::registry& reg,
                           entt::entity e,
+                          dx12e::EditorContext& ctx,
                           dx12e::ScriptEngine* scriptEngine,
                           const std::string& assetsDir)
 {
@@ -98,8 +169,16 @@ void DrawLuaScriptSection(entt::registry& reg,
 
     if (!hasLua)
     {
-        ImGui::TextDisabled("Drop a .lua file from AssetBrowser onto this entity");
-        ImGui::TextDisabled("(Hierarchy row or this Inspector panel)");
+        if (ImGui::Button("＋ スクリプトを付ける", ImVec2(-1, 0)))
+            ImGui::OpenPopup("PickScriptPopup");
+        ImGui::TextDisabled("または AssetBrowser から .lua をドラッグ");
+        if (ImGui::BeginPopup("PickScriptPopup"))
+        {
+            ImGui::TextDisabled("付けるスクリプトを選ぶ:");
+            ImGui::Separator();
+            if (ScriptPicker(ctx, e, assetsDir)) ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
         return;
     }
 
@@ -131,6 +210,16 @@ void DrawLuaScriptSection(entt::registry& reg,
                       nullptr, nullptr, SW_SHOWNORMAL);
     }
     ImGui::SameLine();
+    if (ImGui::Button("\xe5\xa4\x89\xe6\x9b\xb4##LuaScript"))  // 変更（別スクリプトへ差し替え）
+        ImGui::OpenPopup("ChangeScriptPopup");
+    if (ImGui::BeginPopup("ChangeScriptPopup"))
+    {
+        ImGui::TextDisabled("\xe5\x88\xa5\xe3\x81\xae\xe3\x82\xb9\xe3\x82\xaf\xe3\x83\xaa\xe3\x83\x97\xe3\x83\x88\xe3\x81\xb8\xe5\xa4\x89\xe6\x9b\xb4:");  // 別のスクリプトへ変更:
+        ImGui::Separator();
+        if (ScriptPicker(ctx, e, assetsDir)) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    ImGui::SameLine();
     if (ImGui::Button("Detach##LuaScript"))
     {
         if (scriptEngine) scriptEngine->DetachScriptFromEntity(e);
@@ -141,6 +230,78 @@ void DrawLuaScriptSection(entt::registry& reg,
     {
         ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
                            "Load error (see log)");
+    }
+
+    // --- 公開プロパティ（.lua の properties 宣言からスキーマ駆動で自動生成）---
+    // ここを編集すると各エンティティ個別の値としてシーンに保存され、Play 時に
+    // self.<name> としてスクリプトへ注入される（巨大コントローラ不要の部品化）。
+    if (scriptEngine)
+    {
+        const auto& schema = scriptEngine->GetPropertySchema(ls.scriptPath);
+        if (!schema.empty())
+        {
+            SyncScriptProps(ls, schema);
+            ImGui::SeparatorText("プロパティ");
+            ImGui::PushItemWidth(-140.0f);
+            for (size_t i = 0; i < schema.size(); ++i)
+            {
+                const auto& d = schema[i];
+                auto& p = ls.props[i];
+                const char* lbl = d.label.empty() ? d.name.c_str() : d.label.c_str();
+                ImGui::PushID(static_cast<int>(i));
+                switch (d.type)
+                {
+                case dx12e::ScriptPropType::Float:
+                {
+                    float v = static_cast<float>(p.num);
+                    bool ch = d.hasRange ? ImGui::SliderFloat(lbl, &v, d.minVal, d.maxVal)
+                                         : ImGui::DragFloat(lbl, &v, 0.01f);
+                    if (ch) p.num = v;
+                    break;
+                }
+                case dx12e::ScriptPropType::Int:
+                {
+                    int v = static_cast<int>(p.num);
+                    bool ch = d.hasRange ? ImGui::SliderInt(lbl, &v, static_cast<int>(d.minVal), static_cast<int>(d.maxVal))
+                                         : ImGui::DragInt(lbl, &v);
+                    if (ch) p.num = v;
+                    break;
+                }
+                case dx12e::ScriptPropType::Bool:
+                    ImGui::Checkbox(lbl, &p.b);
+                    break;
+                case dx12e::ScriptPropType::String:
+                {
+                    char buf[256];
+                    std::memset(buf, 0, sizeof(buf));
+                    strncpy_s(buf, sizeof(buf), p.str.c_str(), _TRUNCATE);
+                    if (ImGui::InputText(lbl, buf, sizeof(buf)))
+                        p.str = buf;
+                    break;
+                }
+                case dx12e::ScriptPropType::Vec3:
+                    ImGui::DragFloat3(lbl, &p.vec.x, 0.01f);
+                    break;
+                case dx12e::ScriptPropType::Color:
+                    ImGui::ColorEdit3(lbl, &p.vec.x);
+                    break;
+                }
+                ImGui::PopID();
+            }
+            ImGui::PopItemWidth();
+            if (ImGui::SmallButton("規定値に戻す"))
+            {
+                for (size_t i = 0; i < schema.size(); ++i)
+                {
+                    auto& p = ls.props[i]; const auto& d = schema[i];
+                    p.num = d.def.num; p.b = d.def.b; p.str = d.def.str; p.vec = d.def.vec;
+                }
+            }
+        }
+        else
+        {
+            ImGui::TextDisabled("properties = {...} を書くとここに編集欄が出ます");
+        }
     }
 }
 
@@ -271,15 +432,6 @@ void AddComponentMenuItem(entt::registry& reg, EditorContext& ctx,
 
 void InspectorPanel::Render(entt::registry& reg,
                             EditorContext& ctx,
-                            Camera* camera,
-                            AudioSystem* audioSystem,
-                            PhysicsDebugRenderer* physicsDebugRenderer,
-                            bool& physicsDebugDraw,
-                            bool& useVsync,
-                            i32& shadowQualityIndex,
-                            u32& shadowMapSize,
-                            bool& shadowMapDirty,
-                            GameClock* clock,
                             Scene* scene)
 {
     ImGui::Begin("\xe3\x82\xa4\xe3\x83\xb3\xe3\x82\xb9\xe3\x83\x9a\xe3\x82\xaf\xe3\x82\xbf\xe3\x83\xbc");  // Inspector
@@ -486,6 +638,41 @@ void InspectorPanel::Render(entt::registry& reg,
                 changed |= DirectionEditor("slDir", sl.direction, active);
                 ImGui::TextDisabled("位置は Transform、向きは上の方向で決まります");
                 EndEdit(reg, ctx, ctx.selectedEntity, m_slEdit, changed, active, "SpotLight");
+            }
+        }
+
+        // Gimmick（ステージギミック: 時間で動く/塞ぐ部品。動きは Lua が駆動）
+        if (reg.all_of<Gimmick>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entMesh : 0, "Gimmick");
+            bool removed = ComponentRemoveMenu<Gimmick>(reg, ctx, ctx.selectedEntity, "Gimmick");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_gimmickEdit);
+                auto& gm = reg.get<Gimmick>(ctx.selectedEntity);
+                bool changed = false, active = false;
+                const char* kinds[] = { "Static Wall（動かない壁）", "Spike Pulse（上下するトゲ）",
+                                        "Slide X（左右に動く）", "Slide Z（前後に動く）" };
+                changed |= ImGui::Combo("種類 Kind", &gm.kind, kinds, IM_ARRAYSIZE(kinds));
+                if (gm.kind < 0) gm.kind = 0; if (gm.kind > 3) gm.kind = 3;
+                if (gm.kind != 0)  // Static 以外は動きパラメータを表示
+                {
+                    changed |= ImGui::DragFloat("周期 Period(s)", &gm.period, 0.05f, 0.2f, 30.0f, "%.2f");
+                    active  |= ImGui::IsItemActive();
+                    changed |= ImGui::SliderFloat("位相 Phase", &gm.phase, 0.0f, 1.0f, "%.2f");
+                    active  |= ImGui::IsItemActive();
+                    changed |= ImGui::DragFloat("振幅 Amplitude", &gm.amplitude, 0.05f, 0.0f, 30.0f, "%.2f");
+                    active  |= ImGui::IsItemActive();
+                }
+                if (gm.kind == 1)  // SpikePulse 固有
+                {
+                    changed |= ImGui::SliderFloat("塞ぐ閾値 Threshold", &gm.threshold, 0.0f, 1.0f, "%.2f");
+                    active  |= ImGui::IsItemActive();
+                    changed |= ImGui::Checkbox("直撃死 Deadly", &gm.deadly);
+                }
+                changed |= ImGui::Checkbox("当たり判定 Solid", &gm.solid);
+                ImGui::TextDisabled("基準位置=Transform。動き/早送りはゲーム側が駆動します");
+                EndEdit(reg, ctx, ctx.selectedEntity, m_gimmickEdit, changed, active, "Gimmick");
             }
         }
 
@@ -786,7 +973,7 @@ void InspectorPanel::Render(entt::registry& reg,
         }
 
         // LuaScript
-        DrawLuaScriptSection(reg, ctx.selectedEntity, m_scriptEngine, m_assetsDir);
+        DrawLuaScriptSection(reg, ctx.selectedEntity, ctx, m_scriptEngine, m_assetsDir);
 
         // --- Add Component ---
         ImGui::Separator();
@@ -801,11 +988,19 @@ void InspectorPanel::Render(entt::registry& reg,
             AddComponentMenuItem<SpotLight>(reg, ctx, ctx.selectedEntity, "Spot Light");
             AddComponentMenuItem<CameraComponent>(reg, ctx, ctx.selectedEntity, "Camera");
             AddComponentMenuItem<AudioSource>(reg, ctx, ctx.selectedEntity, "Audio Source");
+            AddComponentMenuItem<Gimmick>(reg, ctx, ctx.selectedEntity, "Gimmick");
             ImGui::Separator();
             AddComponentMenuItem<RigidBody>(reg, ctx, ctx.selectedEntity, "RigidBody");
             AddComponentMenuItem<BoxCollider>(reg, ctx, ctx.selectedEntity, "Box Collider");
             AddComponentMenuItem<SphereCollider>(reg, ctx, ctx.selectedEntity, "Sphere Collider");
             AddComponentMenuItem<CapsuleCollider>(reg, ctx, ctx.selectedEntity, "Capsule Collider");
+            ImGui::Separator();
+            // スクリプト（.lua）をクリックでアタッチ — ドラッグ不要
+            if (ImGui::BeginMenu("\xe3\x82\xb9\xe3\x82\xaf\xe3\x83\xaa\xe3\x83\x97\xe3\x83\x88"))  // スクリプト
+            {
+                ScriptPicker(ctx, ctx.selectedEntity, m_assetsDir);
+                ImGui::EndMenu();
+            }
             ImGui::EndPopup();
         }
     }
@@ -814,7 +1009,46 @@ void InspectorPanel::Render(entt::registry& reg,
         ImGui::TextDisabled("\xe3\x82\xa8\xe3\x83\xb3\xe3\x83\x86\xe3\x82\xa3\xe3\x83\x86\xe3\x82\xa3\xe3\x82\x92\xe9\x81\xb8\xe6\x8a\x9e\xe3\x81\x97\xe3\x81\xa6\xe3\x81\x8f\xe3\x81\xa0\xe3\x81\x95\xe3\x81\x84");  // Select an entity
     }
 
-    ImGui::Separator();
+    // Inspector ウィンドウ全体を .lua のドロップ先にする（どこにドロップしても付く）
+    if (ctx.HasSelection())
+    {
+        ImGuiWindow* win = ImGui::GetCurrentWindow();
+        if (win && ImGui::BeginDragDropTargetCustom(win->Rect(), win->ID))
+        {
+            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("DND_SCRIPT"))
+            {
+                const char* pathCStr = static_cast<const char*>(payload->Data);
+                std::string absPath(pathCStr);
+                namespace fs = std::filesystem;
+                auto abs  = fs::path(absPath).lexically_normal().string();
+                auto base = fs::path(m_assetsDir).lexically_normal().string();
+                std::replace(abs.begin(),  abs.end(),  '\\', '/');
+                std::replace(base.begin(), base.end(), '\\', '/');
+                std::string rel = (abs.rfind(base, 0) == 0) ? abs.substr(base.size()) : abs;
+                for (auto ent : ctx.selectedEntities)
+                    ctx.pendingScriptAttachments.push_back({ent, rel});
+            }
+            ImGui::EndDragDropTarget();
+        }
+    }
+
+    ImGui::End();
+}
+
+// グローバルなエンジン設定（カメラ速度/シャドウ/オーディオ/VSync/ビルド）。
+// Inspector から分離して独立ウィンドウ「エンジン設定」に描く（下ドックに置く）。
+void InspectorPanel::RenderEngineSettings(EditorContext& ctx,
+                                          Camera* camera,
+                                          AudioSystem* audioSystem,
+                                          PhysicsDebugRenderer* physicsDebugRenderer,
+                                          bool& physicsDebugDraw,
+                                          bool& useVsync,
+                                          i32& shadowQualityIndex,
+                                          u32& shadowMapSize,
+                                          bool& shadowMapDirty,
+                                          GameClock* clock)
+{
+    ImGui::Begin("\xe3\x82\xa8\xe3\x83\xb3\xe3\x82\xb8\xe3\x83\xb3\xe8\xa8\xad\xe5\xae\x9a");  // エンジン設定
 
     // --- Camera ---
     if (IconHeader(ctx.icons, ctx.icons ? ctx.icons->entCamera : 0,
@@ -907,27 +1141,6 @@ void InspectorPanel::Render(entt::registry& reg,
             ImGui::PopStyleColor();
             ctx.buildCompleteFlash -= clock->GetDeltaTime();
         }
-    }
-
-    // Inspector 全体を DND_SCRIPT ドロップターゲットに
-    if (ctx.HasSelection() && ImGui::BeginDragDropTarget())
-    {
-        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("DND_SCRIPT"))
-        {
-            const char* pathCStr = static_cast<const char*>(payload->Data);
-            std::string absPath(pathCStr);
-
-            namespace fs = std::filesystem;
-            auto abs  = fs::path(absPath).lexically_normal().string();
-            auto base = fs::path(m_assetsDir).lexically_normal().string();
-            std::replace(abs.begin(),  abs.end(),  '\\', '/');
-            std::replace(base.begin(), base.end(), '\\', '/');
-            std::string rel = (abs.rfind(base, 0) == 0) ? abs.substr(base.size()) : abs;
-
-            for (auto ent : ctx.selectedEntities)
-                ctx.pendingScriptAttachments.push_back({ent, rel});
-        }
-        ImGui::EndDragDropTarget();
     }
 
     ImGui::End();

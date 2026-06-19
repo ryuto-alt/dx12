@@ -29,6 +29,12 @@ public:
     static const std::string&  ScriptsDir();  // 末尾 "/" 付き
     static const std::string&  BaseDir();     // 末尾 "/" 付き（配布=exeフォルダ / 開発=プロジェクトルート）
 
+    // グローバル game.lua の場所を解決する。
+    // scripts/game.lua 優先。無ければ assets/game.lua にフォールバック
+    // （= プロジェクトの Lua を全部 assets/ 配下に置く単一ルート構成を許す）。
+    // どちらも無ければ scripts/game.lua を返す（存在チェックは呼び出し側）。
+    static std::string GameLuaPath();
+
 private:
     static bool         s_initialized;
     static std::string  s_assets;

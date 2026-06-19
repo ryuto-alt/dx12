@@ -136,6 +136,8 @@ public:
     bool pendingUndo = false;
     bool pendingRedo = false;
     std::vector<PendingScriptAttach> pendingScriptAttachments;
+    // 選択エンティティ（+子孫）を .prefab として書き出す要求。Application がフレーム境界で処理。
+    entt::entity pendingCreatePrefab = entt::null;
     std::string pendingLoadPath;
     std::string pendingGameLoadPath;  // Play 中の loadScene()（assets 相対）。フレーム境界で安全にロード
     bool pendingBuildGame = false;

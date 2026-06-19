@@ -27,12 +27,47 @@
 #include <DirectXMath.h>
 #include <cfloat>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 
 namespace dx12e
 {
 
 namespace {
+
+// 宣言スキーマ + インスタンス値を self テーブルへ注入する。
+// インスタンスに override が無いプロパティは既定値を使う。これで
+// スクリプト側は self.<name> でプロパティを読める（Unity の serialized field 相当）。
+void InjectScriptProps(sol::table& self,
+                       const std::vector<ScriptPropDef>* schema,
+                       const LuaScript& ls)
+{
+    if (!schema) return;
+    for (const auto& def : *schema)
+    {
+        // インスタンスの override を名前で探す
+        const ScriptProp* ov = nullptr;
+        for (const auto& p : ls.props)
+            if (p.name == def.name) { ov = &p; break; }
+
+        switch (def.type)
+        {
+        case ScriptPropType::Float:
+            self[def.name] = ov ? ov->num : def.def.num; break;
+        case ScriptPropType::Int:
+            self[def.name] = static_cast<int>(ov ? ov->num : def.def.num); break;
+        case ScriptPropType::Bool:
+            self[def.name] = ov ? ov->b : def.def.b; break;
+        case ScriptPropType::String:
+            self[def.name] = ov ? ov->str : def.def.str; break;
+        case ScriptPropType::Vec3:
+        case ScriptPropType::Color:
+            self[def.name] = ov ? ov->vec : def.def.vec; break;
+        }
+    }
+}
 
 // LuaScript コンポーネントに env / self を構築し、OnStart を呼ぶ。
 // 失敗時は loadError を true に、Logger::Error を出す。
@@ -42,7 +77,8 @@ bool InitializeLuaScriptInstance(sol::state& lua,
                                   entt::entity e,
                                   LuaScript& ls,
                                   const std::string& assetsDir,
-                                  std::string& lastError)
+                                  std::string& lastError,
+                                  const std::vector<ScriptPropDef>* schema)
 {
     namespace fs = std::filesystem;
     fs::path abs = fs::path(assetsDir) / ls.scriptPath;
@@ -57,6 +93,9 @@ bool InitializeLuaScriptInstance(sol::state& lua,
     auto* tf = reg.try_get<Transform>(e);
     if (tf) (*self)["transform"] = tf;
     (*self)["enabled"] = ls.enabled;
+
+    // 公開プロパティを注入（スクリプト本体実行前 → OnStart/トップレベルから参照可）
+    InjectScriptProps(*self, schema, ls);
 
     (*env)["self"] = *self;
 
@@ -168,6 +207,7 @@ void ScriptEngine::RegisterBindings()
             if (type == "SpotLight")          return e.HasComponent<SpotLight>();
             if (type == "Camera")             return e.HasComponent<CameraComponent>();
             if (type == "AudioSource")        return e.HasComponent<AudioSource>();
+            if (type == "Gimmick")            return e.HasComponent<Gimmick>();
             return false;
         },
 
@@ -256,6 +296,32 @@ void ScriptEngine::RegisterBindings()
             {
                 if (mesh) mesh->SetVertexColor(*device, r, g, b, 1.0f);
             }
+        },
+        // 配置済み Gimmick コンポーネントを持つ全エンティティを列挙し、
+        // パラメータ付きの配列(1始まり)で返す。ゲームスクリプトが動き/当たり判定を駆動する。
+        // 各要素: { e=Entity, name=, kind=, period=, phase=, amplitude=, threshold=, solid=, deadly= }
+        "gimmicks", [this](Scene& s) -> sol::table {
+            auto& reg = s.GetRegistry();
+            sol::table arr = m_lua->create_table();
+            int idx = 1;
+            auto view = reg.view<Gimmick, Transform, NameTag>();
+            for (auto e : view)
+            {
+                const auto& g  = view.get<Gimmick>(e);
+                const auto& nm = view.get<NameTag>(e);
+                sol::table t = m_lua->create_table();
+                t["e"]         = Entity(e, &reg);
+                t["name"]      = nm.name;
+                t["kind"]      = g.kind;
+                t["period"]    = g.period;
+                t["phase"]     = g.phase;
+                t["amplitude"] = g.amplitude;
+                t["threshold"] = g.threshold;
+                t["solid"]     = g.solid;
+                t["deadly"]    = g.deadly;
+                arr[idx++] = t;
+            }
+            return arr;
         }
     );
 
@@ -340,6 +406,19 @@ void ScriptEngine::RegisterBindings()
     lua["KEY_LEFT"]  = static_cast<int>(VK_LEFT);
     lua["KEY_RIGHT"] = static_cast<int>(VK_RIGHT);
     lua["KEY_ENTER"] = static_cast<int>(VK_RETURN);
+
+    // 全英字 KEY_A..KEY_Z / 数字 KEY_0..KEY_9 を公開（Win32 VK は ASCII 大文字/数字と一致）。
+    // これで Lua から任意のキーを KEY_X のように参照できる（W/A/S/D/E/Q は上書きだが同値）。
+    for (char ch = 'A'; ch <= 'Z'; ++ch)
+    {
+        char name[8]; std::snprintf(name, sizeof(name), "KEY_%c", ch);
+        lua[name] = static_cast<int>(ch);
+    }
+    for (char ch = '0'; ch <= '9'; ++ch)
+    {
+        char name[8]; std::snprintf(name, sizeof(name), "KEY_%c", ch);
+        lua[name] = static_cast<int>(ch);
+    }
 
     // --- ユーティリティ ---
     lua["log"] = [](const std::string& msg) { Logger::Info("[Lua] {}", msg); };
@@ -1096,6 +1175,117 @@ void ScriptEngine::DetachScriptFromEntity(entt::entity e)
     Logger::Info("LuaScript detached: entity={}", static_cast<u32>(e));
 }
 
+const std::vector<ScriptPropDef>& ScriptEngine::GetPropertySchema(const std::string& scriptPath)
+{
+    auto it = m_propSchemaCache.find(scriptPath);
+    if (it != m_propSchemaCache.end()) return it->second;
+
+    std::vector<ScriptPropDef> defs;
+    ParsePropertySchema(scriptPath, defs);
+    auto res = m_propSchemaCache.emplace(scriptPath, std::move(defs));
+    return res.first->second;
+}
+
+void ScriptEngine::InvalidatePropertySchema(const std::string& scriptPath)
+{
+    m_propSchemaCache.erase(scriptPath);
+}
+
+void ScriptEngine::ParsePropertySchema(const std::string& scriptPath,
+                                       std::vector<ScriptPropDef>& out)
+{
+    out.clear();
+    if (!m_lua || scriptPath.empty()) return;
+
+    namespace fs = std::filesystem;
+    fs::path abs = fs::path(m_assetsDir) / scriptPath;
+
+    std::ifstream ifs(abs.string(), std::ios::binary);
+    if (!ifs) return;
+    std::stringstream ss; ss << ifs.rdbuf();
+    std::string code = ss.str();
+
+    // "properties" を含まないスクリプト（旧来のコントローラ等）は実行しない＝副作用ゼロ。
+    if (code.find("properties") == std::string::npos) return;
+
+    // 独立した環境で実行し properties テーブルだけ読む（グローバルへフォールバックするが書込は env 内）。
+    sol::environment env(*m_lua, sol::create, m_lua->globals());
+    auto r = m_lua->safe_script(code, env, sol::script_pass_on_error);
+    if (!r.valid())
+    {
+        sol::error err = r;
+        Logger::Warn("Script schema parse error ({}): {}", scriptPath, err.what());
+        return;
+    }
+
+    sol::object propsObj = env["properties"];
+    if (!propsObj.is<sol::table>()) return;
+    sol::table props = propsObj.as<sol::table>();
+
+    auto getStr = [](sol::table& t, const char* key, const std::string& dflt) -> std::string {
+        sol::object o = t[key];
+        return o.is<std::string>() ? o.as<std::string>() : dflt;
+    };
+    auto typeFromStr = [](const std::string& s) -> ScriptPropType {
+        if (s == "int")    return ScriptPropType::Int;
+        if (s == "bool")   return ScriptPropType::Bool;
+        if (s == "string") return ScriptPropType::String;
+        if (s == "vec3")   return ScriptPropType::Vec3;
+        if (s == "color")  return ScriptPropType::Color;
+        return ScriptPropType::Float;
+    };
+    auto readVec = [](const sol::object& o, DirectX::XMFLOAT3 dflt) -> DirectX::XMFLOAT3 {
+        if (o.is<sol::table>())
+        {
+            sol::table a = o.as<sol::table>();
+            return { a.get_or(1, dflt.x), a.get_or(2, dflt.y), a.get_or(3, dflt.z) };
+        }
+        return dflt;
+    };
+
+    for (std::size_t i = 1; ; ++i)
+    {
+        sol::object item = props[i];
+        if (!item.valid()) break;
+        if (!item.is<sol::table>()) continue;
+        sol::table t = item.as<sol::table>();
+
+        ScriptPropDef d;
+        d.name = getStr(t, "name", std::string{});
+        if (d.name.empty()) continue;
+        d.type  = typeFromStr(getStr(t, "type", "float"));
+        d.label = getStr(t, "label", d.name);
+        d.def.name = d.name;
+        d.def.type = d.type;
+
+        sol::object dv = t["default"];
+        switch (d.type)
+        {
+        case ScriptPropType::Float:
+        case ScriptPropType::Int:
+            d.def.num = dv.is<double>() ? dv.as<double>() : 0.0; break;
+        case ScriptPropType::Bool:
+            d.def.b = dv.is<bool>() ? dv.as<bool>() : false; break;
+        case ScriptPropType::String:
+            d.def.str = dv.is<std::string>() ? dv.as<std::string>() : std::string{}; break;
+        case ScriptPropType::Vec3:
+            d.def.vec = readVec(dv, {0.0f, 0.0f, 0.0f}); break;
+        case ScriptPropType::Color:
+            d.def.vec = readVec(dv, {1.0f, 1.0f, 1.0f}); break;
+        }
+
+        sol::object mn = t["min"], mx = t["max"];
+        if (mn.is<double>() && mx.is<double>())
+        {
+            d.hasRange = true;
+            d.minVal = static_cast<float>(mn.as<double>());
+            d.maxVal = static_cast<float>(mx.as<double>());
+        }
+
+        out.push_back(std::move(d));
+    }
+}
+
 void ScriptEngine::ReloadScript(entt::entity e)
 {
     auto& reg = m_scene->GetRegistry();
@@ -1105,6 +1295,7 @@ void ScriptEngine::ReloadScript(entt::entity e)
     ls.self.reset();
     ls.started   = false;
     ls.loadError = false;
+    InvalidatePropertySchema(ls.scriptPath);   // ファイルが書き換わった可能性 → 再解析
     Logger::Info("LuaScript reload queued: entity={}", static_cast<u32>(e));
     // 実際の再構築は UpdateAttachedScripts のループで行う
 }
@@ -1121,7 +1312,8 @@ void ScriptEngine::OnPlayStart()
         ls.started   = false;
         ls.loadError = false;
         if (ls.scriptPath.empty()) continue;
-        InitializeLuaScriptInstance(*m_lua, reg, e, ls, m_assetsDir, m_lastError);
+        const auto& schema = GetPropertySchema(ls.scriptPath);
+        InitializeLuaScriptInstance(*m_lua, reg, e, ls, m_assetsDir, m_lastError, &schema);
     }
     Logger::Info("ScriptEngine: OnPlayStart done");
 }
@@ -1156,7 +1348,8 @@ void ScriptEngine::UpdateAttachedScripts(f32 dt)
         // env 未構築（Play 中に Attach された or Reload された） → 初期化
         if (!ls.env || !ls.started)
         {
-            if (!InitializeLuaScriptInstance(*m_lua, reg, e, ls, m_assetsDir, m_lastError))
+            const auto& schema = GetPropertySchema(ls.scriptPath);
+            if (!InitializeLuaScriptInstance(*m_lua, reg, e, ls, m_assetsDir, m_lastError, &schema))
                 continue;
         }
 
@@ -1185,6 +1378,7 @@ void ScriptEngine::UpdateAttachedScripts(f32 dt)
 
 void ScriptEngine::Shutdown()
 {
+    m_propSchemaCache.clear();
     if (m_lua)
     {
         m_lua.reset();

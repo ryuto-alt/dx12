@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 #include <entt/entt.hpp>
 
 namespace dx12e
@@ -34,6 +35,23 @@ public:
     // エンティティを全コンポーネント込みで複製（名前は重複しないよう連番付与）
     static entt::entity DuplicateEntity(Scene& scene, entt::entity src,
                                         const std::string& assetsDir);
+
+    // --- Prefab / サブツリー（再利用テンプレート）---
+    // root + 全子孫を 1 つの自己完結 JSON（parent はローカル index 参照）に直列化
+    static std::string SerializeSubtree(const Scene& scene, entt::entity root,
+                                        const std::string& assetsDir);
+    // サブツリー JSON を既存シーンへ展開（Clear しない）。戻り値 = root。
+    // outAll に生成した全エンティティ（root 先頭）を返す。
+    static entt::entity InstantiateSubtree(Scene& scene, const std::string& jsonStr,
+                                           const std::string& assetsDir,
+                                           std::vector<entt::entity>* outAll = nullptr);
+    // root + 子孫を .prefab ファイルへ保存
+    static bool SavePrefab(const Scene& scene, entt::entity root,
+                           const std::string& filePath, const std::string& assetsDir);
+    // .prefab ファイルを既存シーンへ生成。戻り値 = root（失敗時 entt::null）。
+    static entt::entity InstantiatePrefab(Scene& scene, const std::string& filePath,
+                                          const std::string& assetsDir,
+                                          std::vector<entt::entity>* outAll = nullptr);
 };
 
 } // namespace dx12e

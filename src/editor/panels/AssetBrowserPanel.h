@@ -45,7 +45,7 @@ public:
     static constexpr const char* kDragDropPayloadType = "ASSET_PATH";
 
 private:
-    enum class AssetType { Folder, Model, Texture, Scene, Script, Audio, Other };
+    enum class AssetType { Folder, Model, Texture, Scene, Script, Audio, Prefab, Other };
 
     struct AssetEntry
     {

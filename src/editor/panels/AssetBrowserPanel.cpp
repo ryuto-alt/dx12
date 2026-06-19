@@ -130,6 +130,7 @@ const char* AssetBrowserPanel::GetTypeIcon(AssetType type)
     case AssetType::Scene:   return "Scene";
     case AssetType::Script:  return "Script";
     case AssetType::Audio:   return "Audio";
+    case AssetType::Prefab:  return "Prefab";
     default:                 return "File";
     }
 }
@@ -145,6 +146,7 @@ static ImVec4 AssetTypeColor(int type)
     case 3: return ImVec4(1.0f, 0.55f, 0.25f, 1.0f);  // Scene
     case 4: return ImVec4(0.4f, 0.55f, 1.0f, 1.0f);   // Script
     case 5: return ImVec4(0.85f, 0.35f, 0.85f, 1.0f);  // Audio
+    case 6: return ImVec4(0.55f, 0.85f, 0.95f, 1.0f);  // Prefab
     default: return ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
     }
 }
@@ -594,7 +596,8 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
 
                 // --- ドラッグ&ドロップソース ---
                 if (!entry.isDirectory &&
-                    (entry.type == AssetType::Model || entry.type == AssetType::Texture || entry.type == AssetType::Script))
+                    (entry.type == AssetType::Model || entry.type == AssetType::Texture ||
+                     entry.type == AssetType::Script || entry.type == AssetType::Prefab))
                 {
                     if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
                     {
@@ -603,7 +606,7 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                         ImGui::SetDragDropPayload(payloadId,
                             pathStr.c_str(), pathStr.size() + 1);
                         ImGui::Text("%s", entry.displayName.c_str());
-                        if (entry.type == AssetType::Model)
+                        if (entry.type == AssetType::Model || entry.type == AssetType::Prefab)
                             ImGui::TextDisabled("Drop to Scene");
                         ImGui::EndDragDropSource();
                     }
@@ -647,6 +650,13 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                     {
                         ctx.pendingLoadPath = entry.path.string();
                     }
+                    else if (entry.type == AssetType::Prefab)
+                    {
+                        PendingSpawnRequest req;
+                        req.modelPath = entry.path.string();
+                        req.position = {0.0f, 0.0f, 0.0f};
+                        ctx.pendingSpawns.push_back(req);
+                    }
                     else if (entry.type == AssetType::Script)
                     {
                         OpenInVSCode(entry.path.string());
@@ -676,6 +686,15 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                     {
                         if (ImGui::MenuItem("\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3\xe3\x82\x92\xe8\xaa\xad\xe3\x81\xbf\xe8\xbe\xbc\xe3\x81\xbf"))  // シーンを読み込み
                             ctx.pendingLoadPath = entry.path.string();
+                    }
+                    else if (entry.type == AssetType::Prefab)
+                    {
+                        if (ImGui::MenuItem("\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3\xe3\x81\xab\xe8\xbf\xbd\xe5\x8a\xa0"))  // シーンに追加
+                        {
+                            PendingSpawnRequest req;
+                            req.modelPath = entry.path.string();
+                            ctx.pendingSpawns.push_back(req);
+                        }
                     }
                     if (entry.isDirectory)
                     {
@@ -823,6 +842,8 @@ AssetBrowserPanel::AssetType AssetBrowserPanel::ClassifyExtension(const std::str
         return AssetType::Script;
     if (ext == ".wav" || ext == ".mp3" || ext == ".ogg")
         return AssetType::Audio;
+    if (ext == ".prefab")
+        return AssetType::Prefab;
     return AssetType::Other;
 }
 

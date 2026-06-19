@@ -77,4 +77,27 @@ void SpawnEntityCommand::Redo()
         m_entity = e;  // 新しい ID に更新
 }
 
+// ── SpawnPrefabCommand ──
+void SpawnPrefabCommand::Undo()
+{
+    auto& reg = m_scene->GetRegistry();
+    // Redo 用にサブツリー全体をスナップショット（root から子孫を辿って自己完結 JSON 化）
+    if (!m_entities.empty() && reg.valid(m_entities[0]))
+        m_snapshot = SceneSerializer::SerializeSubtree(*m_scene, m_entities[0], m_assetsDir);
+
+    // 子 → 親 の順で削除（Scene::Remove はカスケードしないので全要素を明示削除）
+    for (auto it = m_entities.rbegin(); it != m_entities.rend(); ++it)
+        if (reg.valid(*it))
+            m_scene->Remove(Entity(*it, &reg));
+    m_entities.clear();
+}
+
+void SpawnPrefabCommand::Redo()
+{
+    if (m_snapshot.empty()) return;
+    std::vector<entt::entity> all;
+    SceneSerializer::InstantiateSubtree(*m_scene, m_snapshot, m_assetsDir, &all);
+    m_entities = std::move(all);  // 新しい ID 群に更新
+}
+
 } // namespace dx12e

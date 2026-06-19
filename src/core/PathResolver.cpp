@@ -58,4 +58,13 @@ const std::string&  PathResolver::AssetsDir()  { return s_assets;  }
 const std::wstring& PathResolver::ShaderDirW() { return s_shaderW; }
 const std::string&  PathResolver::ScriptsDir() { return s_scripts; }
 const std::string&  PathResolver::BaseDir()    { return s_base;    }
+
+std::string PathResolver::GameLuaPath()
+{
+    std::string s = s_scripts + "game.lua";
+    if (fs::exists(s)) return s;
+    std::string a = s_assets + "game.lua";
+    if (fs::exists(a)) return a;
+    return s;  // 既定（存在チェックは呼び出し側）
+}
 }

@@ -137,6 +137,7 @@ void EditorLayer::BuildDefaultLayout(ImGuiID dockspaceId, f32 /*toolbarHeight*/)
     // （先頭/末尾のどちらがアクティブでも軽い窓になるようにする）。
     ImGui::DockBuilderDockWindow("Post Process",            dockRightBottom);
     ImGui::DockBuilderDockWindow("Post Process パラメータ", dockRightBottom);
+    ImGui::DockBuilderDockWindow("エンジン設定",            dockRightBottom);
     ImGui::DockBuilderDockWindow("Version Control (Git)",   dockRightBottom);
     ImGui::DockBuilderDockWindow("Project",                 dockRightBottom);
     ImGui::DockBuilderDockWindow("Scene Flow",              dockRightBottom);
@@ -224,9 +225,11 @@ void EditorLayer::Render(bool isPlaying,
 
     m_inspector->SetScriptEngine(scriptEngine);
     m_inspector->SetAssetsDir(assetsDir);
-    m_inspector->Render(reg, *m_ctx, camera, audioSystem, physicsDebugRenderer,
+    m_inspector->Render(reg, *m_ctx, scene);
+    // グローバルなエンジン設定は Inspector から分離した独立ウィンドウ（下ドック）に描く
+    m_inspector->RenderEngineSettings(*m_ctx, camera, audioSystem, physicsDebugRenderer,
                         physicsDebugDraw, useVsync, shadowQualityIndex, shadowMapSize,
-                        shadowMapDirty, clock, scene);
+                        shadowMapDirty, clock);
 
     m_assetBrowser->Render(*m_ctx, clock->GetDeltaTime());
 

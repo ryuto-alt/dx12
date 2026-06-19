@@ -272,7 +272,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
         // ゲームスクリプト読み込み
         {
-            std::string scriptPath = PathResolver::ScriptsDir() + "game.lua";
+            std::string scriptPath = PathResolver::GameLuaPath();
             if (std::filesystem::exists(scriptPath))
             {
                 m_scriptEngine->LoadScript(scriptPath);
@@ -347,7 +347,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
         // ホットリロード用タイムスタンプ初期化（初回の誤発火を防止）
         {
-            std::string scriptPath = PathResolver::ScriptsDir() + "game.lua";
+            std::string scriptPath = PathResolver::GameLuaPath();
             if (std::filesystem::exists(scriptPath))
                 m_scriptLastWriteTime = std::filesystem::last_write_time(scriptPath);
         }
@@ -862,7 +862,7 @@ void Application::Run()
         if (m_scriptPollTimer >= kScriptPollInterval)
         {
             m_scriptPollTimer = 0.0f;
-            std::string scriptPath = PathResolver::ScriptsDir() + "game.lua";
+            std::string scriptPath = PathResolver::GameLuaPath();
             if (std::filesystem::exists(scriptPath))
             {
                 auto currentTime = std::filesystem::last_write_time(scriptPath);
@@ -1294,7 +1294,7 @@ void Application::RebuildScene()
                                m_physicsSystem.get(), PathResolver::AssetsDir());
     WireScriptCallbacks();
 
-    std::string scriptPath = PathResolver::ScriptsDir() + "game.lua";
+    std::string scriptPath = PathResolver::GameLuaPath();
     if (std::filesystem::exists(scriptPath))
     {
         m_scriptEngine->LoadScript(scriptPath);
@@ -1308,7 +1308,7 @@ void Application::RebuildScene()
 
     // ホットリロード用タイムスタンプ更新
     {
-        std::string reloadPath = PathResolver::ScriptsDir() + "game.lua";
+        std::string reloadPath = PathResolver::GameLuaPath();
         if (std::filesystem::exists(reloadPath))
             m_scriptLastWriteTime = std::filesystem::last_write_time(reloadPath);
     }
@@ -1517,7 +1517,7 @@ void Application::LoadProject(const ProjectInfo& info)
 
     // 3) プロジェクトの game.lua を読み込み直す
     {
-        std::string scriptPath = PathResolver::ScriptsDir() + "game.lua";
+        std::string scriptPath = PathResolver::GameLuaPath();
         if (fs::exists(scriptPath))
         {
             m_scriptEngine->LoadScript(scriptPath);
@@ -1990,7 +1990,7 @@ void Application::DoRuntimeSceneLoad(const std::string& rel, ID3D12GraphicsComma
     m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(), m_camera.get(),
                                m_audioSystem.get(), m_physicsSystem.get(), PathResolver::AssetsDir());
     WireScriptCallbacks();
-    std::string gs = PathResolver::ScriptsDir() + "game.lua";
+    std::string gs = PathResolver::GameLuaPath();
     if (std::filesystem::exists(gs)) m_scriptEngine->LoadScript(gs);
 
     // アクティブカメラがなければ最初のものを有効化
@@ -2104,7 +2104,7 @@ void Application::EnterPlayMode()
                                m_physicsSystem.get(), PathResolver::AssetsDir());
     WireScriptCallbacks();
 
-    std::string scriptPath = PathResolver::ScriptsDir() + "game.lua";
+    std::string scriptPath = PathResolver::GameLuaPath();
     if (std::filesystem::exists(scriptPath))
     {
         m_scriptEngine->LoadScript(scriptPath);
@@ -2674,6 +2674,59 @@ void Application::Render()
                 reg.emplace<SpotLight>(e, SpotLight{});
                 spawnedEntity = e;
             }
+            else if (req.modelPath == "__gimmick_spike__" || req.modelPath == "__gimmick_slide__" ||
+                     req.modelPath == "__gimmick_wall__")
+            {
+                // ステージギミックのプリセット: 着色ボックス + Gimmick コンポーネント
+                auto& reg = m_scene->GetRegistry();
+                Gimmick g;
+                const char* nm = "Gimmick";
+                float sx = 2.0f, sy = 1.4f, sz = 1.2f, cr = 0.86f, cg = 0.16f, cb = 0.12f;
+                if (req.modelPath == "__gimmick_spike__")
+                {
+                    nm = "Spike"; g.kind = 1; g.period = 3.6f; g.amplitude = 1.6f;
+                    g.threshold = 0.5f; g.deadly = true;
+                    sx = 2.0f; sy = 1.4f; sz = 1.2f; cr = 0.86f; cg = 0.16f; cb = 0.12f;
+                }
+                else if (req.modelPath == "__gimmick_slide__")
+                {
+                    nm = "SlideWall"; g.kind = 2; g.period = 5.0f; g.amplitude = 3.8f;
+                    sx = 5.2f; sy = 1.5f; sz = 1.1f; cr = 0.72f; cg = 0.40f; cb = 0.14f;
+                }
+                else
+                {
+                    nm = "Wall"; g.kind = 0;
+                    sx = 4.0f; sy = 1.6f; sz = 1.0f; cr = 0.30f; cg = 0.32f; cb = 0.40f;
+                }
+                auto e = m_scene->SpawnBox(nm, req.position);
+                auto h = e.GetHandle();
+                reg.get<Transform>(h).scale = {sx, sy, sz};
+                if (auto* dev = m_scene->GetDevice())
+                    if (auto* mr = reg.try_get<MeshRenderer>(h))
+                        for (auto* mesh : mr->meshes)
+                            if (mesh) mesh->SetVertexColor(*dev, cr, cg, cb, 1.0f);
+                reg.emplace<Gimmick>(h, g);
+                spawnedEntity = h;
+            }
+            else if (std::filesystem::path(req.modelPath).extension().string() == ".prefab")
+            {
+                // プレハブ（再利用テンプレート）を展開。子も含めてサブツリーごと生成する。
+                std::vector<entt::entity> all;
+                entt::entity root = SceneSerializer::InstantiatePrefab(
+                    *m_scene, req.modelPath, PathResolver::AssetsDir(), &all);
+                if (root != entt::null)
+                {
+                    auto& reg = m_scene->GetRegistry();
+                    if (reg.all_of<Transform>(root))
+                        reg.get<Transform>(root).position = req.position;
+                    m_editorCtx->Select(root);
+                    m_editorCtx->undoSystem.PushCommand(
+                        std::make_unique<SpawnPrefabCommand>(
+                            m_scene.get(), PathResolver::AssetsDir(), all));
+                    Logger::Info("Prefab instantiated ({} entities): {}", all.size(), req.modelPath);
+                }
+                // spawnedEntity は null のまま（独自に Undo を積んだので下の汎用 SpawnEntityCommand はスキップ）
+            }
             else
             {
                 auto entity = m_scene->Spawn(name, req.modelPath, req.position);
@@ -2724,6 +2777,32 @@ void Application::Render()
                         m_scene.get(), PathResolver::AssetsDir(), spawnedEntity));
             }
             Logger::Info("Spawned: {}", name);
+        }
+    }
+
+    // プレハブ書き出し（選択エンティティ + 子孫を assets/prefabs/<name>.prefab へ保存）
+    if (m_editorCtx->pendingCreatePrefab != entt::null && m_engineMode == EngineMode::Editor)
+    {
+        entt::entity root = m_editorCtx->pendingCreatePrefab;
+        m_editorCtx->pendingCreatePrefab = entt::null;
+
+        auto& reg = m_scene->GetRegistry();
+        if (reg.valid(root) && reg.all_of<NameTag>(root))
+        {
+            namespace fs = std::filesystem;
+            std::string base = reg.get<NameTag>(root).name;
+            if (base.empty()) base = "Prefab";
+            fs::path dir = fs::path(PathResolver::AssetsDir()) / "prefabs";
+            std::error_code ec; fs::create_directories(dir, ec);
+            fs::path file = dir / (base + ".prefab");
+            for (int n = 1; fs::exists(file); ++n)
+                file = dir / (base + " (" + std::to_string(n) + ").prefab");
+
+            if (SceneSerializer::SavePrefab(*m_scene, root, file.string(), PathResolver::AssetsDir()))
+            {
+                m_editorCtx->hotReloadFlash = 1.0f;   // 保存通知のフラッシュを流用
+                Logger::Info("Prefab created: {}", file.string());
+            }
         }
     }
 

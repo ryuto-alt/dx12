@@ -19,18 +19,23 @@ class ScriptEngine;
 class InspectorPanel
 {
 public:
+    // 選択エンティティのコンポーネントを描く（グローバル設定は RenderEngineSettings へ分離）。
     void Render(entt::registry& reg,
                 EditorContext& ctx,
-                Camera* camera,
-                AudioSystem* audioSystem,
-                PhysicsDebugRenderer* physicsDebugRenderer,
-                bool& physicsDebugDraw,
-                bool& useVsync,
-                i32& shadowQualityIndex,
-                u32& shadowMapSize,
-                bool& shadowMapDirty,
-                GameClock* clock,
                 Scene* scene);
+
+    // グローバルなエンジン設定（カメラ速度/シャドウ/オーディオ/VSync/ビルド）を
+    // 独立した「エンジン設定」ウィンドウに描く。Inspector からは分離し、下ドックに置く。
+    void RenderEngineSettings(EditorContext& ctx,
+                              Camera* camera,
+                              AudioSystem* audioSystem,
+                              PhysicsDebugRenderer* physicsDebugRenderer,
+                              bool& physicsDebugDraw,
+                              bool& useVsync,
+                              i32& shadowQualityIndex,
+                              u32& shadowMapSize,
+                              bool& shadowMapDirty,
+                              GameClock* clock);
 
     void SetScriptEngine(ScriptEngine* e) { m_scriptEngine = e; }
     void SetAssetsDir(const std::string& d) { m_assetsDir = d; }
@@ -57,6 +62,7 @@ private:
     EditState<SpotLight>        m_slEdit;
     EditState<AudioSource>      m_audioEdit;
     EditState<CameraComponent>  m_camEdit;
+    EditState<Gimmick>          m_gimmickEdit;
     EditState<RigidBody>        m_rbEdit;
     EditState<BoxCollider>      m_boxColEdit;
     EditState<SphereCollider>   m_sphereColEdit;

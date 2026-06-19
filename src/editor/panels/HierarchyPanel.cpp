@@ -258,6 +258,10 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
         {
             ctx.pendingDuplications.push_back(e);
         }
+        if (ImGui::MenuItem("プレハブにする"))  // Prefab 化（assets/prefabs へ保存）
+        {
+            ctx.pendingCreatePrefab = e;
+        }
         if (ImGui::MenuItem("\xe5\x89\x8a\xe9\x99\xa4"))  // 削除
         {
             // Undo コマンドは Application の遅延削除処理で積まれる
@@ -464,6 +468,21 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
             req.modelPath = "__spot_light__";
             req.position = {0.0f, 5.0f, 0.0f};
             ctx.pendingSpawns.push_back(req);
+        }
+        ImGui::Separator();
+        if (ImGui::BeginMenu("Gimmick（ステージ部品）"))
+        {
+            auto spawnGimmick = [&](const char* marker, float y)
+            {
+                PendingSpawnRequest req;
+                req.modelPath = marker;
+                req.position = {0.0f, y, 0.0f};
+                ctx.pendingSpawns.push_back(req);
+            };
+            if (ImGui::MenuItem("Spike Pulse（上下するトゲ）")) spawnGimmick("__gimmick_spike__", 0.7f);
+            if (ImGui::MenuItem("Slide Wall（左右に動く壁）")) spawnGimmick("__gimmick_slide__", 0.75f);
+            if (ImGui::MenuItem("Static Wall（動かない壁）"))   spawnGimmick("__gimmick_wall__", 0.7f);
+            ImGui::EndMenu();
         }
         ImGui::EndPopup();
     }

@@ -12,8 +12,10 @@
 
 #include <Windows.h>
 #include <fstream>
+#include <sstream>
 #include <filesystem>
 #include <unordered_map>
+#include <vector>
 
 using json = nlohmann::json;
 using namespace DirectX;
@@ -46,6 +48,31 @@ static XMFLOAT3 DeserializeFloat3(const json& j,
 {
     if (!j.is_array() || j.size() < 3) return defaultVal;
     return {j[0].get<float>(), j[1].get<float>(), j[2].get<float>()};
+}
+
+// --- スクリプトプロパティ型 ↔ 文字列（自己記述的に保存するため）---
+static const char* ScriptPropTypeStr(ScriptPropType t)
+{
+    switch (t)
+    {
+    case ScriptPropType::Int:    return "int";
+    case ScriptPropType::Bool:   return "bool";
+    case ScriptPropType::String: return "string";
+    case ScriptPropType::Vec3:   return "vec3";
+    case ScriptPropType::Color:  return "color";
+    case ScriptPropType::Float:
+    default:                     return "float";
+    }
+}
+
+static ScriptPropType ScriptPropTypeFromStr(const std::string& s)
+{
+    if (s == "int")    return ScriptPropType::Int;
+    if (s == "bool")   return ScriptPropType::Bool;
+    if (s == "string") return ScriptPropType::String;
+    if (s == "vec3")   return ScriptPropType::Vec3;
+    if (s == "color")  return ScriptPropType::Color;
+    return ScriptPropType::Float;
 }
 
 // 単一エンティティを JSON ノードに直列化（parent は含まない）
@@ -166,6 +193,20 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
             };
         }
 
+        if (reg.all_of<Gimmick>(entity))
+        {
+            const auto& gm = reg.get<Gimmick>(entity);
+            ej["gimmick"] = {
+                {"kind",      gm.kind},
+                {"period",    gm.period},
+                {"phase",     gm.phase},
+                {"amplitude", gm.amplitude},
+                {"threshold", gm.threshold},
+                {"solid",     gm.solid},
+                {"deadly",    gm.deadly}
+            };
+        }
+
         if (reg.all_of<AudioSource>(entity))
         {
             const auto& as = reg.get<AudioSource>(entity);
@@ -239,6 +280,30 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                     {"scriptPath", ls.scriptPath},
                     {"enabled",    ls.enabled}
                 };
+
+                // 公開プロパティのインスタンス値（型込みで自己記述的に保存）
+                if (!ls.props.empty())
+                {
+                    json pa = json::array();
+                    for (const auto& p : ls.props)
+                    {
+                        json pj;
+                        pj["name"] = p.name;
+                        pj["type"] = ScriptPropTypeStr(p.type);
+                        switch (p.type)
+                        {
+                        case ScriptPropType::Float:  pj["value"] = p.num; break;
+                        case ScriptPropType::Int:    pj["value"] = static_cast<long long>(p.num); break;
+                        case ScriptPropType::Bool:   pj["value"] = p.b; break;
+                        case ScriptPropType::String: pj["value"] = p.str; break;
+                        case ScriptPropType::Vec3:
+                        case ScriptPropType::Color:
+                            pj["value"] = json::array({p.vec.x, p.vec.y, p.vec.z}); break;
+                        }
+                        pa.push_back(std::move(pj));
+                    }
+                    ej["luaScript"]["props"] = std::move(pa);
+                }
             }
         }
     }
@@ -491,6 +556,20 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                     reg.emplace<CameraComponent>(e, cam);
             }
 
+            if (ej.contains("gimmick"))
+            {
+                const auto& gj = ej["gimmick"];
+                Gimmick gm;
+                gm.kind      = gj.value("kind", 0);
+                gm.period    = gj.value("period", 4.0f);
+                gm.phase     = gj.value("phase", 0.0f);
+                gm.amplitude = gj.value("amplitude", 1.6f);
+                gm.threshold = gj.value("threshold", 0.5f);
+                gm.solid     = gj.value("solid", true);
+                gm.deadly    = gj.value("deadly", false);
+                reg.emplace_or_replace<Gimmick>(e, gm);
+            }
+
             // --- Physics ---
             if (ej.contains("rigidBody"))
             {
@@ -615,6 +694,35 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                 LuaScript ls;
                 ls.scriptPath = lsj.value("scriptPath", "");
                 ls.enabled    = lsj.value("enabled", true);
+
+                // 公開プロパティのインスタンス値（型は JSON に書いてあるのでスキーマ不要で復元できる）
+                if (lsj.contains("props") && lsj["props"].is_array())
+                {
+                    for (const auto& pj : lsj["props"])
+                    {
+                        ScriptProp p;
+                        p.name = pj.value("name", "");
+                        if (p.name.empty()) continue;
+                        p.type = ScriptPropTypeFromStr(pj.value("type", "float"));
+                        const json& v = pj.contains("value") ? pj["value"] : json();
+                        switch (p.type)
+                        {
+                        case ScriptPropType::Float:
+                        case ScriptPropType::Int:
+                            p.num = v.is_number() ? v.get<double>() : 0.0; break;
+                        case ScriptPropType::Bool:
+                            p.b = v.is_boolean() ? v.get<bool>() : false; break;
+                        case ScriptPropType::String:
+                            p.str = v.is_string() ? v.get<std::string>() : std::string{}; break;
+                        case ScriptPropType::Vec3:
+                            p.vec = DeserializeFloat3(v, {0.0f, 0.0f, 0.0f}); break;
+                        case ScriptPropType::Color:
+                            p.vec = DeserializeFloat3(v, {1.0f, 1.0f, 1.0f}); break;
+                        }
+                        ls.props.push_back(std::move(p));
+                    }
+                }
+
                 if (!ls.scriptPath.empty() && !reg.all_of<LuaScript>(e))
                     reg.emplace<LuaScript>(e, std::move(ls));
             }
@@ -893,6 +1001,133 @@ entt::entity SceneSerializer::DuplicateEntity(Scene& scene, entt::entity src,
     // 親は元エンティティと同じにする
     reg.get<Transform>(copy).parent = reg.get<Transform>(src).parent;
     return copy;
+}
+
+// ── Prefab / サブツリー ──
+// root とその全子孫を 1 つの JSON（シーンと同形式 + parent をローカル index 参照）に直列化する。
+// root の親（サブツリー外）は含めない＝プレハブは自己完結する。
+std::string SceneSerializer::SerializeSubtree(const Scene& scene, entt::entity root,
+                                              const std::string& assetsDir)
+{
+    const auto& reg = scene.GetRegistry();
+    if (!reg.valid(root) || !reg.all_of<NameTag>(root) || !reg.all_of<Transform>(root))
+        return {};
+
+    // root を先頭に、BFS で root + 子孫を列挙
+    std::vector<entt::entity> order;
+    std::unordered_map<entt::entity, int> indexOf;
+    order.push_back(root);
+    indexOf[root] = 0;
+    for (size_t head = 0; head < order.size(); ++head)
+    {
+        entt::entity cur = order[head];
+        for (auto [child, tf] : reg.view<const Transform>().each())
+        {
+            if (tf.parent == cur && indexOf.find(child) == indexOf.end())
+            {
+                indexOf[child] = static_cast<int>(order.size());
+                order.push_back(child);
+            }
+        }
+    }
+
+    json root_j;
+    root_j["version"] = 1;
+    root_j["prefab"]  = true;
+    root_j["entities"] = json::array();
+    for (auto e : order)
+    {
+        json ej = SerializeEntityJson(reg, e, assetsDir);
+        const auto& tf = reg.get<Transform>(e);
+        if (e != root && tf.parent != entt::null)
+        {
+            auto it = indexOf.find(tf.parent);
+            if (it != indexOf.end())
+                ej["parent"] = it->second;
+        }
+        root_j["entities"].push_back(std::move(ej));
+    }
+    return root_j.dump(2);
+}
+
+// サブツリー JSON を既存シーンへ展開（Clear しない）。戻り値 = root エンティティ。
+// outAll に生成した全エンティティ（root 先頭）を返す（Undo 用）。
+entt::entity SceneSerializer::InstantiateSubtree(Scene& scene, const std::string& jsonStr,
+                                                 const std::string& assetsDir,
+                                                 std::vector<entt::entity>* outAll)
+{
+    json root;
+    try { root = json::parse(jsonStr); }
+    catch (const json::parse_error& e)
+    {
+        Logger::Error("JSON parse error (subtree): {}", e.what());
+        return entt::null;
+    }
+    if (!root.contains("entities") || !root["entities"].is_array() || root["entities"].empty())
+        return entt::null;
+
+    auto& reg = scene.GetRegistry();
+
+    // 1パス目: 生成（名前は重複しないよう連番付与）
+    std::vector<entt::entity> created;
+    created.reserve(root["entities"].size());
+    for (const auto& ej : root["entities"])
+    {
+        json copy = ej;
+        copy["name"] = MakeUniqueName(scene, ej.value("name", std::string("Unnamed")));
+        created.push_back(InstantiateEntityJson(scene, copy, assetsDir));
+    }
+
+    // 2パス目: 親子関係の復元（root はサブツリー外の親を持たない）
+    size_t idx = 0;
+    for (const auto& ej : root["entities"])
+    {
+        entt::entity e = created[idx++];
+        if (e == entt::null || !ej.contains("parent")) continue;
+        int p = ej["parent"].get<int>();
+        if (p < 0 || p >= static_cast<int>(created.size())) continue;
+        entt::entity parent = created[static_cast<size_t>(p)];
+        if (parent != entt::null && parent != e && reg.all_of<Transform>(e))
+            reg.get<Transform>(e).parent = parent;
+    }
+
+    if (outAll) *outAll = created;
+    return created.empty() ? entt::null : created[0];
+}
+
+bool SceneSerializer::SavePrefab(const Scene& scene, entt::entity root,
+                                 const std::string& filePath, const std::string& assetsDir)
+{
+    namespace fs = std::filesystem;
+    std::string s = SerializeSubtree(scene, root, assetsDir);
+    if (s.empty()) return false;
+
+    fs::path dir = fs::path(filePath).parent_path();
+    if (!dir.empty()) fs::create_directories(dir);
+
+    std::ofstream ofs(filePath);
+    if (!ofs.is_open())
+    {
+        Logger::Error("Failed to write prefab: {}", filePath);
+        return false;
+    }
+    ofs << s;
+    Logger::Info("Prefab saved: {}", filePath);
+    return true;
+}
+
+entt::entity SceneSerializer::InstantiatePrefab(Scene& scene, const std::string& filePath,
+                                                const std::string& assetsDir,
+                                                std::vector<entt::entity>* outAll)
+{
+    std::ifstream ifs(filePath, std::ios::binary);
+    if (!ifs.is_open())
+    {
+        Logger::Error("Failed to open prefab: {}", filePath);
+        return entt::null;
+    }
+    std::stringstream ss; ss << ifs.rdbuf();
+    return InstantiateSubtree(scene, ss.str(), assetsDir, outAll);
 }
 
 } // namespace dx12e

@@ -4,7 +4,9 @@
 #include <memory>
 #include <functional>
 #include <unordered_map>
+#include <vector>
 #include "core/Types.h"
+#include "ecs/Components.h"   // ScriptProp / ScriptPropType
 #include <entt/entt.hpp>
 
 // sol2 forward declaration
@@ -21,6 +23,19 @@ class AudioSystem;
 class PhysicsSystem;
 class ParticleSystem;
 
+// スクリプトコンポーネントのプロパティ宣言（.lua の properties から解析）。
+// 型 / 既定値 / 範囲 / 表示名を持ち、Inspector の自動 UI 生成と Play 時の注入に使う。
+struct ScriptPropDef
+{
+    std::string    name;
+    ScriptPropType type = ScriptPropType::Float;
+    ScriptProp     def;                 // 既定値
+    bool           hasRange = false;
+    float          minVal   = 0.0f;
+    float          maxVal   = 0.0f;
+    std::string    label;               // 表示名（省略時は name）
+};
+
 class ScriptEngine
 {
 public:
@@ -34,8 +49,13 @@ public:
                     AudioSystem* audio, PhysicsSystem* physics,
                     const std::string& assetsDir);
 
-    // プロジェクト切替時に assets ベースを再設定（スクリプトの相対パス解決用）
-    void SetAssetsDir(const std::string& assetsDir) { m_assetsDir = assetsDir; }
+    // プロジェクト切替時に assets ベースを再設定（スクリプトの相対パス解決用）。
+    // 同じ相対パスが別ファイルを指す可能性があるためスキーマキャッシュも破棄する。
+    void SetAssetsDir(const std::string& assetsDir)
+    {
+        m_assetsDir = assetsDir;
+        m_propSchemaCache.clear();
+    }
 
     // パーティクルシステムを Lua fx API へ公開（Application が一度だけ注入）。
     // ポインタはメンバに保持され、Initialize 再実行（シーン切替）後の fx バインドも参照する。
@@ -53,6 +73,13 @@ public:
     // エンティティアタッチ版 API
     void AttachScriptToEntity(entt::entity e, const std::string& scriptPath);
     void DetachScriptFromEntity(entt::entity e);
+
+    // スクリプトが公開するプロパティ宣言を取得（.lua の `properties = {...}` を解析）。
+    // 結果は scriptPath ごとにキャッシュ。Inspector が自動 UI 生成に使う。
+    // 宣言が無い / 解析失敗時は空配列を返す（プロパティ無しコンポーネントとして扱う）。
+    const std::vector<ScriptPropDef>& GetPropertySchema(const std::string& scriptPath);
+    // ファイルを編集した後などにスキーマ再解析を促す（次回 GetPropertySchema で解析しなおす）。
+    void InvalidatePropertySchema(const std::string& scriptPath);
     void OnPlayStart();                   // 全 LuaScript 初期化 + OnStart
     void OnPlayStop();                    // 全 env 破棄、started リセット
     void UpdateAttachedScripts(f32 dt);   // 毎フレーム OnUpdate
@@ -88,6 +115,8 @@ private:
     // Lua prelude を実行する。全アタッチスクリプトから参照可能になる。
     void LoadPrelude();
     void RegisterPhysicsBindings();
+    // .lua の properties テーブルを解析して out へ詰める（失敗時は out 空のまま）。
+    void ParsePropertySchema(const std::string& scriptPath, std::vector<ScriptPropDef>& out);
 
     std::unique_ptr<sol::state> m_lua;
     Scene*         m_scene   = nullptr;
@@ -103,6 +132,9 @@ private:
     // 残す数値ストレージ。Lua: saveNum(key,val) / loadNum(key,default)。
     // 例: ゲームシーンでスコアを保存 → リザルトシーンで読み出す。
     std::unordered_map<std::string, double> m_blackboard;
+
+    // scriptPath → プロパティ宣言スキーマのキャッシュ。
+    std::unordered_map<std::string, std::vector<ScriptPropDef>> m_propSchemaCache;
 
     LoadSceneCb  m_loadSceneCb;
     VoidCb       m_nextSceneCb;

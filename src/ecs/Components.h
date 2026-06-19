@@ -148,6 +148,28 @@ struct AudioSource
     bool startedThisPlay = false;
 };
 
+// ステージギミック。Transform を基準位置として、時間で動く/塞ぐ「ステージ部品」を表す。
+// 実際の動き（周期・早送り・ワールドクロック）はゲームスクリプト(Lua)が解釈して駆動する＝データのみ。
+// エディタで配置・パラメータ設定して、scene:gimmicks() で Lua から読む。
+enum class GimmickKind : uint8_t
+{
+    StaticWall = 0,  // 動かない。常に塞ぐ（外周の壁など）
+    SpikePulse = 1,  // Y方向に上下（サイン波）。せり上がってる時だけ塞ぐ。deadly なら直撃死
+    SlideX     = 2,  // X方向に往復スライド。常に塞ぐ（動く壁）
+    SlideZ     = 3,  // Z方向に往復スライド。常に塞ぐ（動く床/トロッコ）
+};
+
+struct Gimmick
+{
+    int  kind      = 0;      // GimmickKind（0=StaticWall,1=SpikePulse,2=SlideX,3=SlideZ）
+    f32  period    = 4.0f;   // 1周期の秒数
+    f32  phase     = 0.0f;   // 位相オフセット（0..1）
+    f32  amplitude = 1.6f;   // 動く量（SpikePulse=せり上がり高 / Slide=振幅）
+    f32  threshold = 0.5f;   // SpikePulse: この正規化高さ(0..1)以上で塞ぐ
+    bool solid     = true;   // 当たり判定を持つか
+    bool deadly    = false;  // SpikePulse: せり上がりで直撃死するか
+};
+
 // --- Physics Components ---
 
 static constexpr uint32_t kInvalidBodyId = 0xFFFFFFFF;
@@ -198,11 +220,40 @@ struct ConvexHullCollider
     DirectX::XMFLOAT3 offset = {0.0f, 0.0f, 0.0f};
 };
 
+// スクリプトコンポーネントが公開するプロパティの値。
+// .lua の `properties = {...}` 宣言ごとに 1 つ。エディタの Inspector で編集でき、
+// シーン/プレハブに保存され、Play 時に Lua スクリプトへ self.<name> として注入される。
+// これにより「巨大な 1 個のコントローラ」ではなく「パラメータ付きの再利用部品」を
+// エンティティに貼って数値だけ調整する Unity ライクな作り方ができる。
+enum class ScriptPropType : uint8_t
+{
+    Float  = 0,
+    Int    = 1,
+    Bool   = 2,
+    String = 3,
+    Vec3   = 4,
+    Color  = 5,
+};
+
+struct ScriptProp
+{
+    std::string       name;
+    ScriptPropType    type = ScriptPropType::Float;
+    double            num  = 0.0;                // Float / Int
+    bool              b    = false;              // Bool
+    std::string       str;                       // String
+    DirectX::XMFLOAT3 vec{0.0f, 0.0f, 0.0f};     // Vec3 / Color
+};
+
 struct LuaScript
 {
     // シリアライズ対象
     std::string scriptPath;   // assets 相対パス（例 "scripts/player.lua"）
     bool        enabled = true;
+
+    // スクリプトが公開するプロパティのインスタンス値（.lua の properties 宣言と対応）。
+    // シリアライズ対象。スキーマ（型/既定値/範囲）は ScriptEngine が .lua から解析して保持する。
+    std::vector<ScriptProp> props;
 
     // ランタイム専有（非シリアライズ）
     // sol::environment / sol::table を直接持つとヘッダ依存が膨らむため void で隠蔽

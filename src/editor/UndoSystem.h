@@ -151,6 +151,30 @@ private:
     std::string  m_snapshot;  // Undo 時に確定（Redo 用の JSON）
 };
 
+// ── プレハブ生成コマンド（サブツリー対応。Undo で全エンティティ削除 / Redo で再生成） ──
+// プレハブは複数エンティティ（親 + 子）を生成しうるため SpawnEntityCommand では
+// 子が復元されない。Undo 時にサブツリー全体を JSON 化して保持し、root + 子孫を
+// まとめて削除する。Redo はその JSON から再生成する。
+class SpawnPrefabCommand : public IUndoCommand
+{
+public:
+    SpawnPrefabCommand(Scene* scene, std::string assetsDir,
+                       std::vector<entt::entity> entities)
+        : m_scene(scene), m_assetsDir(std::move(assetsDir)),
+          m_entities(std::move(entities)) {}
+
+    void Undo() override;   // サブツリーを JSON 化して全削除
+    void Redo() override;   // JSON から再生成
+
+    const char* GetName() const override { return "Spawn Prefab"; }
+
+private:
+    Scene*                    m_scene;
+    std::string               m_assetsDir;
+    std::vector<entt::entity> m_entities;   // 生成した全エンティティ（root 先頭）
+    std::string               m_snapshot;   // Undo 時に確定（Redo 用のサブツリー JSON）
+};
+
 // ── 複合コマンド（複数コマンドを 1 回の Undo/Redo で実行） ──
 class CompositeCommand : public IUndoCommand
 {
