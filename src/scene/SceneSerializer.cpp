@@ -60,6 +60,7 @@ static const char* ScriptPropTypeStr(ScriptPropType t)
     case ScriptPropType::String: return "string";
     case ScriptPropType::Vec3:   return "vec3";
     case ScriptPropType::Color:  return "color";
+    case ScriptPropType::Entity: return "entity";
     case ScriptPropType::Float:
     default:                     return "float";
     }
@@ -72,6 +73,7 @@ static ScriptPropType ScriptPropTypeFromStr(const std::string& s)
     if (s == "string") return ScriptPropType::String;
     if (s == "vec3")   return ScriptPropType::Vec3;
     if (s == "color")  return ScriptPropType::Color;
+    if (s == "entity") return ScriptPropType::Entity;
     return ScriptPropType::Float;
 }
 
@@ -221,6 +223,40 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
             };
         }
 
+        if (reg.all_of<ParticleEmitter>(entity))
+        {
+            const auto& pe = reg.get<ParticleEmitter>(entity);
+            ej["particleEmitter"] = {
+                {"kind", pe.kind}, {"blend", pe.blend}, {"rate", pe.rate},
+                {"playOnStart", pe.playOnStart}, {"looping", pe.looping}, {"duration", pe.duration},
+                {"dir", SerializeFloat3(pe.dir)}, {"spread", pe.spread},
+                {"speed", pe.speed}, {"speedVar", pe.speedVar},
+                {"size", pe.size}, {"sizeEnd", pe.sizeEnd},
+                {"life", pe.life}, {"lifeVar", pe.lifeVar},
+                {"color", SerializeFloat3(pe.color)}, {"colorEnd", SerializeFloat3(pe.colorEnd)},
+                {"intensity", pe.intensity}, {"gravity", pe.gravity},
+                {"drag", pe.drag}, {"up", pe.up}, {"stretch", pe.stretch}
+            };
+        }
+
+        if (reg.all_of<Trigger>(entity))
+        {
+            const auto& tr = reg.get<Trigger>(entity);
+            json acts = json::array();
+            for (const auto& a : tr.actions)
+            {
+                acts.push_back({
+                    {"when", a.when}, {"type", a.type}, {"target", a.target},
+                    {"str", a.str}, {"num", a.num}, {"vec", SerializeFloat3(a.vec)}
+                });
+            }
+            ej["trigger"] = {
+                {"shape", tr.shape}, {"halfExtents", SerializeFloat3(tr.halfExtents)},
+                {"radius", tr.radius}, {"offset", SerializeFloat3(tr.offset)},
+                {"filter", tr.filter}, {"once", tr.once}, {"actions", acts}
+            };
+        }
+
         // --- Physics ---
         if (reg.all_of<RigidBody>(entity))
         {
@@ -295,7 +331,8 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                         case ScriptPropType::Float:  pj["value"] = p.num; break;
                         case ScriptPropType::Int:    pj["value"] = static_cast<long long>(p.num); break;
                         case ScriptPropType::Bool:   pj["value"] = p.b; break;
-                        case ScriptPropType::String: pj["value"] = p.str; break;
+                        case ScriptPropType::String:
+                        case ScriptPropType::Entity: pj["value"] = p.str; break;
                         case ScriptPropType::Vec3:
                         case ScriptPropType::Color:
                             pj["value"] = json::array({p.vec.x, p.vec.y, p.vec.z}); break;
@@ -570,6 +607,61 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                 reg.emplace_or_replace<Gimmick>(e, gm);
             }
 
+            if (ej.contains("particleEmitter"))
+            {
+                const auto& pj = ej["particleEmitter"];
+                ParticleEmitter pe;
+                pe.kind        = pj.value("kind", 0);
+                pe.blend       = pj.value("blend", 0);
+                pe.rate        = pj.value("rate", 30.0f);
+                pe.playOnStart = pj.value("playOnStart", true);
+                pe.looping     = pj.value("looping", true);
+                pe.duration    = pj.value("duration", 1.0f);
+                if (pj.contains("dir")) pe.dir = DeserializeFloat3(pj["dir"], {0.0f, 1.0f, 0.0f});
+                pe.spread   = pj.value("spread", 0.4f);
+                pe.speed    = pj.value("speed", 3.0f);
+                pe.speedVar = pj.value("speedVar", 0.4f);
+                pe.size     = pj.value("size", 0.3f);
+                pe.sizeEnd  = pj.value("sizeEnd", 0.0f);
+                pe.life     = pj.value("life", 0.8f);
+                pe.lifeVar  = pj.value("lifeVar", 0.3f);
+                if (pj.contains("color"))    pe.color    = DeserializeFloat3(pj["color"], {1.0f, 0.6f, 0.2f});
+                if (pj.contains("colorEnd")) pe.colorEnd = DeserializeFloat3(pj["colorEnd"], {1.0f, 0.12f, 0.05f});
+                pe.intensity = pj.value("intensity", 3.0f);
+                pe.gravity   = pj.value("gravity", 0.0f);
+                pe.drag      = pj.value("drag", 1.0f);
+                pe.up        = pj.value("up", 0.0f);
+                pe.stretch   = pj.value("stretch", 0.0f);
+                reg.emplace_or_replace<ParticleEmitter>(e, pe);
+            }
+
+            if (ej.contains("trigger"))
+            {
+                const auto& tj = ej["trigger"];
+                Trigger tr;
+                tr.shape = tj.value("shape", 0);
+                if (tj.contains("halfExtents")) tr.halfExtents = DeserializeFloat3(tj["halfExtents"], {1.0f, 1.0f, 1.0f});
+                tr.radius = tj.value("radius", 1.0f);
+                if (tj.contains("offset")) tr.offset = DeserializeFloat3(tj["offset"]);
+                tr.filter = tj.value("filter", std::string{});
+                tr.once   = tj.value("once", false);
+                if (tj.contains("actions") && tj["actions"].is_array())
+                {
+                    for (const auto& aj : tj["actions"])
+                    {
+                        TriggerAction a;
+                        a.when   = aj.value("when", 0);
+                        a.type   = aj.value("type", 0);
+                        a.target = aj.value("target", std::string{});
+                        a.str    = aj.value("str", std::string{});
+                        a.num    = aj.value("num", 0.0);
+                        if (aj.contains("vec")) a.vec = DeserializeFloat3(aj["vec"]);
+                        tr.actions.push_back(std::move(a));
+                    }
+                }
+                reg.emplace_or_replace<Trigger>(e, std::move(tr));
+            }
+
             // --- Physics ---
             if (ej.contains("rigidBody"))
             {
@@ -713,6 +805,7 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                         case ScriptPropType::Bool:
                             p.b = v.is_boolean() ? v.get<bool>() : false; break;
                         case ScriptPropType::String:
+                        case ScriptPropType::Entity:
                             p.str = v.is_string() ? v.get<std::string>() : std::string{}; break;
                         case ScriptPropType::Vec3:
                             p.vec = DeserializeFloat3(v, {0.0f, 0.0f, 0.0f}); break;

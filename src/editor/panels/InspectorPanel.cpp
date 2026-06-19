@@ -285,6 +285,26 @@ void DrawLuaScriptSection(entt::registry& reg,
                 case dx12e::ScriptPropType::Color:
                     ImGui::ColorEdit3(lbl, &p.vec.x);
                     break;
+                case dx12e::ScriptPropType::Entity:
+                {
+                    // シーン内のエンティティ名から選ぶコンボ（参照先を名前で保持）。
+                    const char* cur = p.str.empty() ? "(\xe3\x81\xaa\xe3\x81\x97)" : p.str.c_str();  // (なし)
+                    if (ImGui::BeginCombo(lbl, cur))
+                    {
+                        if (ImGui::Selectable("(\xe3\x81\xaa\xe3\x81\x97)", p.str.empty()))  // (なし)
+                            p.str.clear();
+                        auto nameView = reg.view<dx12e::NameTag>();
+                        for (auto ne : nameView)
+                        {
+                            const auto& nm = nameView.get<dx12e::NameTag>(ne).name;
+                            if (nm.empty()) continue;
+                            if (ImGui::Selectable(nm.c_str(), nm == p.str))
+                                p.str = nm;
+                        }
+                        ImGui::EndCombo();
+                    }
+                    break;
+                }
                 }
                 ImGui::PopID();
             }
@@ -676,6 +696,119 @@ void InspectorPanel::Render(entt::registry& reg,
             }
         }
 
+        // ParticleEmitter（配置できるエフェクト部品）
+        if (reg.all_of<ParticleEmitter>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entMesh : 0, "Particle Emitter");
+            bool removed = ComponentRemoveMenu<ParticleEmitter>(reg, ctx, ctx.selectedEntity, "Particle Emitter");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_emitterEdit);
+                auto& pe = reg.get<ParticleEmitter>(ctx.selectedEntity);
+                bool changed = false, active = false;
+                const char* kinds[] = { "Glow", "Fire", "Smoke", "Spark", "Magic", "Electric", "Ring", "Star" };
+                changed |= ImGui::Combo("見た目 Kind", &pe.kind, kinds, IM_ARRAYSIZE(kinds));
+                const char* blends[] = { "加算 Additive", "アルファ Alpha" };
+                changed |= ImGui::Combo("合成 Blend", &pe.blend, blends, IM_ARRAYSIZE(blends));
+                changed |= ImGui::DragFloat("放出レート Rate(/s)", &pe.rate, 0.5f, 0.0f, 500.0f); active |= ImGui::IsItemActive();
+                changed |= ImGui::Checkbox("Play開始で放出 playOnStart", &pe.playOnStart);
+                changed |= ImGui::Checkbox("ループ Looping", &pe.looping);
+                if (!pe.looping)
+                { changed |= ImGui::DragFloat("継続秒 Duration", &pe.duration, 0.05f, 0.0f, 60.0f); active |= ImGui::IsItemActive(); }
+                ImGui::SeparatorText("見た目");
+                changed |= ImGui::ColorEdit3("開始色 Color", &pe.color.x);
+                changed |= ImGui::ColorEdit3("終了色 ColorEnd", &pe.colorEnd.x);
+                changed |= ImGui::DragFloat("輝度 Intensity", &pe.intensity, 0.05f, 0.0f, 30.0f); active |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat("サイズ Size", &pe.size, 0.01f, 0.0f, 10.0f); active |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat("終了サイズ SizeEnd", &pe.sizeEnd, 0.01f, 0.0f, 10.0f); active |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat("寿命 Life(s)", &pe.life, 0.01f, 0.01f, 30.0f); active |= ImGui::IsItemActive();
+                changed |= ImGui::SliderFloat("寿命ばらつき LifeVar", &pe.lifeVar, 0.0f, 1.0f); active |= ImGui::IsItemActive();
+                ImGui::SeparatorText("動き");
+                changed |= ImGui::DragFloat3("方向 Dir", &pe.dir.x, 0.01f); active |= ImGui::IsItemActive();
+                changed |= ImGui::SliderFloat("拡がり Spread", &pe.spread, 0.0f, 1.0f); active |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat("速度 Speed", &pe.speed, 0.02f, 0.0f, 50.0f); active |= ImGui::IsItemActive();
+                changed |= ImGui::SliderFloat("速度ばらつき SpeedVar", &pe.speedVar, 0.0f, 1.0f); active |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat("重力 Gravity", &pe.gravity, 0.02f, -50.0f, 50.0f); active |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat("抵抗 Drag", &pe.drag, 0.02f, 0.0f, 10.0f); active |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat("上向き Up", &pe.up, 0.02f, 0.0f, 10.0f); active |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat("ストレッチ Stretch", &pe.stretch, 0.02f, 0.0f, 10.0f); active |= ImGui::IsItemActive();
+                ImGui::TextDisabled("エディタでもプレビュー表示されます");
+                EndEdit(reg, ctx, ctx.selectedEntity, m_emitterEdit, changed, active, "Particle Emitter");
+            }
+        }
+
+        // Trigger（イベント: 範囲に入る/出る/居る で宣言アクションを実行）
+        if (reg.all_of<Trigger>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entEmpty : 0, "Trigger");
+            bool removed = ComponentRemoveMenu<Trigger>(reg, ctx, ctx.selectedEntity, "Trigger");
+            if (open && !removed)
+            {
+                auto& tr = reg.get<Trigger>(ctx.selectedEntity);
+                const char* shapes[] = { "Box", "Sphere" };
+                ImGui::Combo("形 Shape", &tr.shape, shapes, IM_ARRAYSIZE(shapes));
+                if (tr.shape == 0) ImGui::DragFloat3("半径 HalfExtents", &tr.halfExtents.x, 0.05f, 0.0f, 1000.0f);
+                else               ImGui::DragFloat("半径 Radius", &tr.radius, 0.05f, 0.0f, 1000.0f);
+                ImGui::DragFloat3("オフセット Offset", &tr.offset.x, 0.05f);
+                {
+                    const char* cur = tr.filter.empty() ? "Player（既定）" : tr.filter.c_str();
+                    if (ImGui::BeginCombo("対象 Filter", cur))
+                    {
+                        if (ImGui::Selectable("Player（既定）", tr.filter.empty())) tr.filter.clear();
+                        auto nv = reg.view<dx12e::NameTag>();
+                        for (auto ne : nv)
+                        { const auto& nm = nv.get<dx12e::NameTag>(ne).name; if (nm.empty()) continue;
+                          if (ImGui::Selectable(nm.c_str(), nm == tr.filter)) tr.filter = nm; }
+                        ImGui::EndCombo();
+                    }
+                }
+                ImGui::Checkbox("一度だけ Once", &tr.once);
+                ImGui::SeparatorText("アクション");
+                int removeIdx = -1;
+                for (size_t i = 0; i < tr.actions.size(); ++i)
+                {
+                    ImGui::PushID(static_cast<int>(i));
+                    auto& a = tr.actions[i];
+                    const char* whens[] = { "入った時 Enter", "出た時 Exit", "居る間 Stay" };
+                    ImGui::Combo("いつ When", &a.when, whens, IM_ARRAYSIZE(whens));
+                    const char* types[] = { "Enable", "Disable", "Destroy", "Move", "PlayEffect",
+                                            "StopEffect", "PlaySound", "LoadScene", "FadeToScene",
+                                            "SetProperty", "EmitEvent" };
+                    ImGui::Combo("何を Type", &a.type, types, IM_ARRAYSIZE(types));
+                    {
+                        const char* cur = a.target.empty() ? "(なし=Filter対象)" : a.target.c_str();
+                        if (ImGui::BeginCombo("対象 Target", cur))
+                        {
+                            if (ImGui::Selectable("(なし=Filter対象)", a.target.empty())) a.target.clear();
+                            auto nv = reg.view<dx12e::NameTag>();
+                            for (auto ne : nv)
+                            { const auto& nm = nv.get<dx12e::NameTag>(ne).name; if (nm.empty()) continue;
+                              if (ImGui::Selectable(nm.c_str(), nm == a.target)) a.target = nm; }
+                            ImGui::EndCombo();
+                        }
+                    }
+                    char buf[256];
+                    if (a.type == 3) ImGui::DragFloat3("移動量 Vec", &a.vec.x, 0.05f);
+                    if (a.type == 7 || a.type == 8)
+                    { std::memset(buf, 0, sizeof(buf)); strncpy_s(buf, sizeof(buf), a.str.c_str(), _TRUNCATE);
+                      if (ImGui::InputText("シーン Path", buf, sizeof(buf))) a.str = buf; }
+                    if (a.type == 8)
+                    { float d = static_cast<float>(a.num); if (ImGui::DragFloat("秒 Dur", &d, 0.05f, 0.0f, 10.0f)) a.num = d; }
+                    if (a.type == 9 || a.type == 10)
+                    { std::memset(buf, 0, sizeof(buf)); strncpy_s(buf, sizeof(buf), a.str.c_str(), _TRUNCATE);
+                      const char* hint = a.type == 9 ? "プロパティ名 Prop" : "イベント名 Event";
+                      if (ImGui::InputText(hint, buf, sizeof(buf))) a.str = buf;
+                      float v = static_cast<float>(a.num); if (ImGui::DragFloat("値 Value", &v, 0.05f)) a.num = v; }
+                    if (ImGui::SmallButton("このアクションを削除")) removeIdx = static_cast<int>(i);
+                    ImGui::Separator();
+                    ImGui::PopID();
+                }
+                if (removeIdx >= 0) tr.actions.erase(tr.actions.begin() + removeIdx);
+                if (ImGui::Button("＋ アクション追加")) tr.actions.push_back(dx12e::TriggerAction{});
+                ImGui::TextDisabled("Play 中に評価。Target 空のアクションは Filter 対象に作用");
+            }
+        }
+
         // CameraComponent
         if (reg.all_of<CameraComponent>(ctx.selectedEntity))
         {
@@ -989,6 +1122,8 @@ void InspectorPanel::Render(entt::registry& reg,
             AddComponentMenuItem<CameraComponent>(reg, ctx, ctx.selectedEntity, "Camera");
             AddComponentMenuItem<AudioSource>(reg, ctx, ctx.selectedEntity, "Audio Source");
             AddComponentMenuItem<Gimmick>(reg, ctx, ctx.selectedEntity, "Gimmick");
+            AddComponentMenuItem<ParticleEmitter>(reg, ctx, ctx.selectedEntity, "Particle Emitter");
+            AddComponentMenuItem<Trigger>(reg, ctx, ctx.selectedEntity, "Trigger");
             ImGui::Separator();
             AddComponentMenuItem<RigidBody>(reg, ctx, ctx.selectedEntity, "RigidBody");
             AddComponentMenuItem<BoxCollider>(reg, ctx, ctx.selectedEntity, "Box Collider");

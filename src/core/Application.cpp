@@ -1222,6 +1222,7 @@ void Application::Update()
         }
         m_scriptEngine->CallOnUpdate(dt);
         m_scriptEngine->UpdateAttachedScripts(dt);
+        m_scriptEngine->UpdateTriggers(dt);   // Trigger（イベント）評価
 
         // アクティブカメラの Transform をグローバル Camera に同期
         auto& reg = m_scene->GetRegistry();
@@ -1240,9 +1241,50 @@ void Application::Update()
     // シーン更新（Animator等）— エディタモードは時間を止める（ボーン行列は維持）
     m_scene->Update(m_engineMode == EngineMode::Playing ? dt : 0.0f);
 
-    // パーティクル更新（プレイモードのみ進める）
+    // 配置パーティクル放出器（ParticleEmitter）を駆動。
+    // エディタでも常時プレビュー（実 dt で放出/前進）し、Play では _active に従う。
     if (m_particleSystem)
-        m_particleSystem->Update(m_engineMode == EngineMode::Playing ? dt : 0.0f);
+    {
+        auto& peReg = m_scene->GetRegistry();
+        const bool pedPlaying = (m_engineMode == EngineMode::Playing);
+        auto peView = peReg.view<ParticleEmitter, Transform>();
+        for (auto pe_e : peView)
+        {
+            auto& pe = peView.get<ParticleEmitter>(pe_e);
+            const bool live = pedPlaying ? pe._active : true;  // エディタは常時プレビュー
+            if (!live) continue;
+            if (!pe.looping && pedPlaying)
+            {
+                pe._age += dt;
+                if (pe._age >= pe.duration) pe._active = false;
+            }
+            if (pe.rate <= 0.0f) continue;
+            pe._emitAccum += pe.rate * dt;
+            int n = static_cast<int>(pe._emitAccum);
+            if (n <= 0) continue;
+            pe._emitAccum -= static_cast<f32>(n);
+            if (n > 64) n = 64;
+
+            DirectX::XMMATRIX w = ComputeWorldMatrix(peReg, pe_e);
+            DirectX::XMFLOAT3 pos; DirectX::XMStoreFloat3(&pos, w.r[3]);
+
+            ParticleSystem::EmitParams p;
+            p.pos = pos;            p.count = n;
+            p.dir = pe.dir;         p.spread = pe.spread;
+            p.speed = pe.speed;     p.speedVar = pe.speedVar;
+            p.size = pe.size;       p.sizeEnd = pe.sizeEnd;
+            p.life = pe.life;       p.lifeVar = pe.lifeVar;
+            p.color = pe.color;     p.colorEnd = pe.colorEnd; p.hasColorEnd = true;
+            p.intensity = pe.intensity;
+            p.gravity = pe.gravity; p.drag = pe.drag; p.up = pe.up;
+            p.stretch = pe.stretch; p.kind = pe.kind; p.blend = pe.blend;
+            m_particleSystem->Emit(p);
+        }
+    }
+
+    // パーティクル更新（配置エミッタのプレビューのため、エディタでも実 dt で前進）
+    if (m_particleSystem)
+        m_particleSystem->Update(dt);
 
     // 物理更新（プレイモードのみ）
     if (m_engineMode == EngineMode::Playing && m_physicsSystem->IsInitialized())
@@ -2707,6 +2749,26 @@ void Application::Render()
                             if (mesh) mesh->SetVertexColor(*dev, cr, cg, cb, 1.0f);
                 reg.emplace<Gimmick>(h, g);
                 spawnedEntity = h;
+            }
+            else if (req.modelPath == "__particle_emitter__")
+            {
+                // 配置エフェクト: 空エンティティ + ParticleEmitter（エディタで即プレビュー表示）
+                auto& reg = m_scene->GetRegistry();
+                auto e = reg.create();
+                reg.emplace<NameTag>(e, NameTag{"ParticleEmitter"});
+                reg.emplace<Transform>(e, Transform{req.position, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
+                reg.emplace<ParticleEmitter>(e, ParticleEmitter{});
+                spawnedEntity = e;
+            }
+            else if (req.modelPath == "__trigger__")
+            {
+                // イベント範囲: 空エンティティ + Trigger（Inspector でアクションを組む）
+                auto& reg = m_scene->GetRegistry();
+                auto e = reg.create();
+                reg.emplace<NameTag>(e, NameTag{"Trigger"});
+                reg.emplace<Transform>(e, Transform{req.position, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
+                reg.emplace<Trigger>(e, Trigger{});
+                spawnedEntity = e;
             }
             else if (std::filesystem::path(req.modelPath).extension().string() == ".prefab")
             {

@@ -63,6 +63,7 @@ private:
     EditState<AudioSource>      m_audioEdit;
     EditState<CameraComponent>  m_camEdit;
     EditState<Gimmick>          m_gimmickEdit;
+    EditState<ParticleEmitter>  m_emitterEdit;
     EditState<RigidBody>        m_rbEdit;
     EditState<BoxCollider>      m_boxColEdit;
     EditState<SphereCollider>   m_sphereColEdit;

@@ -560,6 +560,54 @@ void EditorIconRenderer::CollectFromRegistry(entt::registry& registry,
             }
         }
     }
+
+    // --- ParticleEmitter（配置エフェクト）---
+    {
+        const XMFLOAT3 colorEmitter = { 1.0f, 0.55f, 0.15f };
+        auto view = registry.view<const Transform, const ParticleEmitter>();
+        for (auto [entity, tf, pe] : view.each())
+        {
+            bool selected = ctx.IsSelected(entity);
+            AddPointLightIcon(tf.position, selected ? colorSelected : colorEmitter);
+        }
+    }
+
+    // --- Trigger（イベント範囲）: アイコン + 選択時に範囲ワイヤーフレーム ---
+    {
+        const XMFLOAT3 colorTrigger = { 0.3f, 1.0f, 0.55f };
+        auto view = registry.view<const Transform, const Trigger>();
+        for (auto [entity, tf, tr] : view.each())
+        {
+            bool selected = ctx.IsSelected(entity);
+            XMFLOAT3 col = selected ? colorSelected : colorTrigger;
+            XMFLOAT3 c = { tf.position.x + tr.offset.x,
+                           tf.position.y + tr.offset.y,
+                           tf.position.z + tr.offset.z };
+            AddPointLightIcon(c, col);
+
+            if (tr.shape == static_cast<int>(TriggerShape::Sphere))
+            {
+                f32 sc = (std::max)((std::max)(tf.scale.x, tf.scale.y), tf.scale.z);
+                AddPointLightSphere(c, tr.radius * sc, 16, col);
+            }
+            else
+            {
+                f32 hx = tr.halfExtents.x * tf.scale.x;
+                f32 hy = tr.halfExtents.y * tf.scale.y;
+                f32 hz = tr.halfExtents.z * tf.scale.z;
+                XMFLOAT3 p[8] = {
+                    { c.x-hx, c.y-hy, c.z-hz }, { c.x+hx, c.y-hy, c.z-hz },
+                    { c.x+hx, c.y-hy, c.z+hz }, { c.x-hx, c.y-hy, c.z+hz },
+                    { c.x-hx, c.y+hy, c.z-hz }, { c.x+hx, c.y+hy, c.z-hz },
+                    { c.x+hx, c.y+hy, c.z+hz }, { c.x-hx, c.y+hy, c.z+hz },
+                };
+                const int edges[12][2] = {
+                    {0,1},{1,2},{2,3},{3,0},{4,5},{5,6},{6,7},{7,4},{0,4},{1,5},{2,6},{3,7}
+                };
+                for (const auto& ed : edges) AddLine(p[ed[0]], p[ed[1]], col);
+            }
+        }
+    }
 }
 
 // ========== Render ==========

@@ -37,10 +37,21 @@ namespace dx12e
 
 namespace {
 
+// 名前からエンティティを引く（NameTag 一致。先頭一致を返す）。見つからなければ entt::null。
+entt::entity FindEntityByName(entt::registry& reg, const std::string& name)
+{
+    if (name.empty()) return entt::null;
+    auto view = reg.view<NameTag>();
+    for (auto e : view)
+        if (view.get<NameTag>(e).name == name) return e;
+    return entt::null;
+}
+
 // 宣言スキーマ + インスタンス値を self テーブルへ注入する。
 // インスタンスに override が無いプロパティは既定値を使う。これで
 // スクリプト側は self.<name> でプロパティを読める（Unity の serialized field 相当）。
 void InjectScriptProps(sol::table& self,
+                       entt::registry& reg,
                        const std::vector<ScriptPropDef>* schema,
                        const LuaScript& ls)
 {
@@ -65,6 +76,14 @@ void InjectScriptProps(sol::table& self,
         case ScriptPropType::Vec3:
         case ScriptPropType::Color:
             self[def.name] = ov ? ov->vec : def.def.vec; break;
+        case ScriptPropType::Entity:
+        {
+            // 参照先エンティティ名を解決して Entity を注入（self.<name>:isValid() で確認できる）。
+            const std::string& refName = ov ? ov->str : def.def.str;
+            entt::entity re = FindEntityByName(reg, refName);
+            self[def.name] = Entity(re, &reg);   // 未解決でも invalid な Entity を入れる
+            break;
+        }
         }
     }
 }
@@ -95,7 +114,7 @@ bool InitializeLuaScriptInstance(sol::state& lua,
     (*self)["enabled"] = ls.enabled;
 
     // 公開プロパティを注入（スクリプト本体実行前 → OnStart/トップレベルから参照可）
-    InjectScriptProps(*self, schema, ls);
+    InjectScriptProps(*self, reg, schema, ls);
 
     (*env)["self"] = *self;
 
@@ -208,6 +227,8 @@ void ScriptEngine::RegisterBindings()
             if (type == "Camera")             return e.HasComponent<CameraComponent>();
             if (type == "AudioSource")        return e.HasComponent<AudioSource>();
             if (type == "Gimmick")            return e.HasComponent<Gimmick>();
+            if (type == "ParticleEmitter")    return e.HasComponent<ParticleEmitter>();
+            if (type == "Trigger")            return e.HasComponent<Trigger>();
             return false;
         },
 
@@ -757,6 +778,20 @@ local KEYS = {
 function keyDown(name)    local k = KEYS[name]; return k ~= nil and input:isKeyDown(k)    end
 function keyPressed(name) local k = KEYS[name]; return k ~= nil and input:isKeyPressed(k) end
 
+-- ===== events: 疎結合のイベントバス =====
+-- どのコンポーネントからでも events:on("name", fn) で購読、events:emit("name", data) で発火。
+-- Trigger の EmitEvent アクション（C++ 側）もこの emit を呼ぶ。Play 開始時に clear される。
+events = { _h = {} }
+function events:on(name, fn)
+  local t = self._h[name]; if not t then t = {}; self._h[name] = t end
+  t[#t+1] = fn
+end
+function events:emit(name, data)
+  local t = self._h[name]
+  if t then for _, fn in ipairs(t) do fn(data) end end
+end
+function events:clear() self._h = {} end
+
 local function d2xz(ax, az, bx, bz) local dx, dz = ax-bx, az-bz; return dx*dx + dz*dz end
 
 -- ===== Actor: 名前付きエンティティの薄いラッパー =====
@@ -1232,6 +1267,7 @@ void ScriptEngine::ParsePropertySchema(const std::string& scriptPath,
         if (s == "string") return ScriptPropType::String;
         if (s == "vec3")   return ScriptPropType::Vec3;
         if (s == "color")  return ScriptPropType::Color;
+        if (s == "entity") return ScriptPropType::Entity;
         return ScriptPropType::Float;
     };
     auto readVec = [](const sol::object& o, DirectX::XMFLOAT3 dflt) -> DirectX::XMFLOAT3 {
@@ -1272,6 +1308,8 @@ void ScriptEngine::ParsePropertySchema(const std::string& scriptPath,
             d.def.vec = readVec(dv, {0.0f, 0.0f, 0.0f}); break;
         case ScriptPropType::Color:
             d.def.vec = readVec(dv, {1.0f, 1.0f, 1.0f}); break;
+        case ScriptPropType::Entity:
+            d.def.str = dv.is<std::string>() ? dv.as<std::string>() : std::string{}; break;
         }
 
         sol::object mn = t["min"], mx = t["max"];
@@ -1303,6 +1341,41 @@ void ScriptEngine::ReloadScript(entt::entity e)
 void ScriptEngine::OnPlayStart()
 {
     auto& reg = m_scene->GetRegistry();
+
+    // イベントバスの購読をクリア（前回 Play のリスナーが残らないように）
+    if (m_lua)
+    {
+        sol::object evObj = (*m_lua)["events"];
+        if (evObj.is<sol::table>())
+        {
+            sol::table ev = evObj.as<sol::table>();
+            sol::protected_function clr = ev["clear"];
+            if (clr.valid()) clr(ev);
+        }
+    }
+
+    // パーティクル放出器のランタイム状態を初期化（playOnStart で放出 ON/OFF を決める）
+    {
+        auto peView = reg.view<ParticleEmitter>();
+        for (auto e : peView)
+        {
+            auto& pe = peView.get<ParticleEmitter>(e);
+            pe._active    = pe.playOnStart;
+            pe._age       = 0.0f;
+            pe._emitAccum = 0.0f;
+        }
+    }
+    // Trigger のランタイム状態を初期化
+    {
+        auto trView = reg.view<Trigger>();
+        for (auto e : trView)
+        {
+            auto& tr = trView.get<Trigger>(e);
+            tr._wasInside = false;
+            tr._firedOnce = false;
+        }
+    }
+
     auto view = reg.view<LuaScript>();
     for (auto e : view)
     {
@@ -1374,6 +1447,150 @@ void ScriptEngine::UpdateAttachedScripts(f32 dt)
             ls.loadError = true;
         }
     }
+}
+
+void ScriptEngine::UpdateTriggers(f32 /*dt*/)
+{
+    if (!m_scene || !m_lua) return;
+    auto& reg = m_scene->GetRegistry();
+
+    std::vector<entt::entity> toDestroy;
+
+    // 1 アクションを実行する
+    auto exec = [&](entt::entity self, entt::entity defaultTarget, const TriggerAction& a)
+    {
+        (void)self;
+        entt::entity at = a.target.empty() ? defaultTarget : FindEntityByName(reg, a.target);
+
+        switch (static_cast<TriggerActionType>(a.type))
+        {
+        case TriggerActionType::Enable:
+            if (at != entt::null) if (auto* ls = reg.try_get<LuaScript>(at)) ls->enabled = true;
+            break;
+        case TriggerActionType::Disable:
+            if (at != entt::null) if (auto* ls = reg.try_get<LuaScript>(at)) ls->enabled = false;
+            break;
+        case TriggerActionType::Destroy:
+            if (at != entt::null) toDestroy.push_back(at);
+            break;
+        case TriggerActionType::Move:
+            if (at != entt::null) if (auto* tf = reg.try_get<Transform>(at))
+            { tf->position.x += a.vec.x; tf->position.y += a.vec.y; tf->position.z += a.vec.z; }
+            break;
+        case TriggerActionType::PlayEffect:
+            if (at != entt::null) if (auto* pe = reg.try_get<ParticleEmitter>(at))
+            { pe->_active = true; pe->_age = 0.0f; pe->_emitAccum = 0.0f; }
+            break;
+        case TriggerActionType::StopEffect:
+            if (at != entt::null) if (auto* pe = reg.try_get<ParticleEmitter>(at)) pe->_active = false;
+            break;
+        case TriggerActionType::PlaySound:
+            if (at != entt::null) if (auto* as = reg.try_get<AudioSource>(at))
+            { if (m_audio && !as->clipPath.empty()) m_audio->PlaySFX(as->clipPath, as->loop); }
+            break;
+        case TriggerActionType::LoadScene:
+            if (!a.str.empty() && m_loadSceneCb) m_loadSceneCb(a.str);
+            break;
+        case TriggerActionType::FadeToScene:
+            if (!a.str.empty() && m_transitionCb)
+                m_transitionCb(a.str, 0, a.num > 0.0 ? static_cast<float>(a.num) : 0.6f);
+            break;
+        case TriggerActionType::SetProperty:
+            if (at != entt::null && !a.str.empty()) if (auto* ls = reg.try_get<LuaScript>(at))
+            {
+                if (ls->self)
+                {
+                    auto* tbl = static_cast<sol::table*>(ls->self.get());
+                    (*tbl)[a.str] = a.num;
+                }
+            }
+            break;
+        case TriggerActionType::EmitEvent:
+            if (!a.str.empty())
+            {
+                sol::object evObj = (*m_lua)["events"];
+                if (evObj.is<sol::table>())
+                {
+                    sol::table ev = evObj.as<sol::table>();
+                    sol::protected_function emit = ev["emit"];
+                    if (emit.valid())
+                    {
+                        sol::table data = m_lua->create_table();
+                        data["value"]  = a.num;
+                        data["target"] = a.target;
+                        auto r = emit(ev, a.str, data);
+                        if (!r.valid())
+                        {
+                            sol::error err = r;
+                            Logger::Warn("Trigger EmitEvent error ({}): {}", a.str, err.what());
+                        }
+                    }
+                }
+            }
+            break;
+        }
+    };
+
+    auto view = reg.view<Trigger, Transform>();
+    for (auto e : view)
+    {
+        auto& tr = view.get<Trigger>(e);
+        if (tr._firedOnce) continue;
+
+        const auto& tf = view.get<Transform>(e);
+        DirectX::XMMATRIX w = ComputeWorldMatrix(reg, e);
+        DirectX::XMFLOAT3 center;
+        DirectX::XMStoreFloat3(&center, w.r[3]);
+        center.x += tr.offset.x; center.y += tr.offset.y; center.z += tr.offset.z;
+
+        // 反応対象（filter 空なら "Player"）
+        const std::string targetName = tr.filter.empty() ? std::string("Player") : tr.filter;
+        entt::entity te = FindEntityByName(reg, targetName);
+
+        bool inside = false;
+        if (te != entt::null && reg.all_of<Transform>(te))
+        {
+            DirectX::XMMATRIX tw = ComputeWorldMatrix(reg, te);
+            DirectX::XMFLOAT3 tp;
+            DirectX::XMStoreFloat3(&tp, tw.r[3]);
+            if (tr.shape == static_cast<int>(TriggerShape::Sphere))
+            {
+                float sc = tf.scale.x;
+                if (tf.scale.y > sc) sc = tf.scale.y;
+                if (tf.scale.z > sc) sc = tf.scale.z;
+                float r  = tr.radius * sc;
+                float dx = tp.x - center.x, dy = tp.y - center.y, dz = tp.z - center.z;
+                inside = (dx*dx + dy*dy + dz*dz) <= r*r;
+            }
+            else
+            {
+                float hx = tr.halfExtents.x * tf.scale.x;
+                float hy = tr.halfExtents.y * tf.scale.y;
+                float hz = tr.halfExtents.z * tf.scale.z;
+                inside = std::fabs(tp.x - center.x) <= hx
+                      && std::fabs(tp.y - center.y) <= hy
+                      && std::fabs(tp.z - center.z) <= hz;
+            }
+        }
+
+        const bool enter = inside && !tr._wasInside;
+        const bool exit  = !inside && tr._wasInside;
+        tr._wasInside = inside;
+
+        for (const auto& a : tr.actions)
+        {
+            const bool fire =
+                (a.when == static_cast<int>(TriggerWhen::Enter) && enter) ||
+                (a.when == static_cast<int>(TriggerWhen::Exit)  && exit)  ||
+                (a.when == static_cast<int>(TriggerWhen::Stay)  && inside);
+            if (fire) exec(e, te, a);
+        }
+
+        if (tr.once && enter) tr._firedOnce = true;
+    }
+
+    for (auto d : toDestroy)
+        if (reg.valid(d)) m_scene->Remove(Entity(d, &reg));
 }
 
 void ScriptEngine::Shutdown()

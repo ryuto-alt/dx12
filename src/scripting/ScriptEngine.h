@@ -83,6 +83,7 @@ public:
     void OnPlayStart();                   // 全 LuaScript 初期化 + OnStart
     void OnPlayStop();                    // 全 env 破棄、started リセット
     void UpdateAttachedScripts(f32 dt);   // 毎フレーム OnUpdate
+    void UpdateTriggers(f32 dt);          // 毎フレーム Trigger（イベント）評価（Play 中）
     void ReloadScript(entt::entity e);    // Inspector Reload ボタン用
 
     void Shutdown();

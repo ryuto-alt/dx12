@@ -484,6 +484,21 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
             if (ImGui::MenuItem("Static Wall（動かない壁）"))   spawnGimmick("__gimmick_wall__", 0.7f);
             ImGui::EndMenu();
         }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Particle Emitter（配置エフェクト）"))
+        {
+            PendingSpawnRequest req;
+            req.modelPath = "__particle_emitter__";
+            req.position = {0.0f, 1.0f, 0.0f};
+            ctx.pendingSpawns.push_back(req);
+        }
+        if (ImGui::MenuItem("Trigger（イベント範囲）"))
+        {
+            PendingSpawnRequest req;
+            req.modelPath = "__trigger__";
+            req.position = {0.0f, 1.0f, 0.0f};
+            ctx.pendingSpawns.push_back(req);
+        }
         ImGui::EndPopup();
     }
 
