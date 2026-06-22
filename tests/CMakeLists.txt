@@ -28,3 +28,24 @@ else()
 endif()
 
 add_test(NAME IndexAllocatorTests COMMAND IndexAllocatorTests)
+
+# シリアライズ往復テスト（安全網）。Scene ライブラリ（+ 推移依存）をリンクするため、
+# エンジン本体と一緒にビルドする構成でのみ有効。
+# tests を単体（cmake -S tests, vcpkg/VS不要）で構成したときは Scene が無いのでスキップし、
+# 依存ゼロの CI を壊さない。
+if(TARGET Scene)
+    add_executable(SerializeRoundtripTests serialize_roundtrip_test.cpp)
+
+    # Scene が PUBLIC で src/ インクルードと全依存（entt/nlohmann/DirectXMath/...）を伝播する。
+    target_link_libraries(SerializeRoundtripTests PRIVATE Scene)
+    # 封印ランタイムの中立公開ヘッダ（include/engine/...）。
+    target_include_directories(SerializeRoundtripTests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
+    if(MSVC)
+        # エンジン本体と同一のフラグ（/external:W0 で外部ヘッダ警告を /WX から除外）。
+        target_compile_options(SerializeRoundtripTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(SerializeRoundtripTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+
+    add_test(NAME SerializeRoundtripTests COMMAND SerializeRoundtripTests)
+endif()

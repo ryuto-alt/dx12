@@ -1,0 +1,519 @@
+// シリアライズ往復（round-trip）テスト — big-bang リファクタの「安全網」。
+//
+// なに:
+//   SceneSerializer::SerializeEntity → InstantiateEntity を通し、
+//   データ系コアコンポーネントの「保存される全フィールド」が保存→復元で一致することを検証する。
+//
+// なぜ:
+//   エンジン/ゲーム境界の再設計では、コンポーネント直列化を if(all_of<T>) 連鎖から
+//   レジストリ駆動へ移していく。その過程で「あるフィールドが黙って保存されなくなる」
+//   サイレント欠落が最も怖い。これを機械検出する基準線をフェーズ0で先に張る。
+//
+// 制約:
+//   GPU/D3D12 デバイス不要にするため、device 依存（meshRenderer / primitive / gridPlane /
+//   convexHullCollider / material / color / uvTiling）は対象外。ライト・カメラ・物理・
+//   オーディオ・トリガ・パーティクル・LuaScript などのデータ系のみを扱う。
+//
+// 注意:
+//   Gimmick / Trigger(actions) / ParticleEmitter.kind は Phase 3 で「ゲーム側 Lua / データ」へ
+//   移設される予定。その移行時に本テストが赤くなったら、それは「移行で挙動が変わった」シグナル。
+//   テストを移行と同時に更新すること（黙って消さない）。
+//
+// 実行: ctest --output-on-failure  （失敗があれば終了コード 1）
+
+#include "scene/Scene.h"
+#include "scene/SceneSerializer.h"
+#include "scene/Entity.h"
+#include "ecs/Components.h"
+// Scene は `std::vector<std::unique_ptr<Mesh>>` をメンバに持つ。Scene をスタックに置くと
+// デストラクタで Mesh の完全型が要る（エンジン内 .cpp は Mesh.h 取り込み済みなので顕在化しない）。
+#include "renderer/Mesh.h"
+
+// Phase 1 土台ヘッダの compile/link チェックを兼ねる（中立ヘッダが /WX で通ることを保証）。
+#include "engine/ecs/ComponentRegistry.h"
+
+#include <entt/entt.hpp>
+
+#include <cmath>
+#include <cstddef>
+#include <cstdio>
+#include <functional>
+#include <string>
+
+using namespace dx12e;
+
+namespace
+{
+int g_failures = 0;
+int g_checks   = 0;
+
+bool feq(float a, float b)
+{
+    return std::fabs(a - b) <= 1e-4f * (1.0f + std::fabs(a) + std::fabs(b));
+}
+bool deq(double a, double b)
+{
+    return std::fabs(a - b) <= 1e-9 * (1.0 + std::fabs(a) + std::fabs(b));
+}
+} // namespace
+
+#define CHECK(cond)                                                          \
+    do {                                                                     \
+        ++g_checks;                                                          \
+        if (!(cond)) {                                                       \
+            std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);      \
+            ++g_failures;                                                    \
+        }                                                                    \
+    } while (0)
+
+#define CHECK_F(a, b)  CHECK(feq((a), (b)))
+#define CHECK_D(a, b)  CHECK(deq((a), (b)))
+#define CHECK_V3(v, X, Y, Z)                                                  \
+    do { CHECK_F((v).x, (X)); CHECK_F((v).y, (Y)); CHECK_F((v).z, (Z)); } while (0)
+
+// src に NameTag + Transform 付きエンティティを作り、build で部品を盛り、
+// JSON 直列化 → 別 Scene(dst) へ復元して dst 側 entity を返す。
+static entt::entity RoundTrip(Scene& src, Scene& dst,
+                              const std::function<void(entt::registry&, entt::entity)>& build)
+{
+    auto& reg = src.GetRegistry();
+    entt::entity e = reg.create();
+    reg.emplace<NameTag>(e, NameTag{"E"});
+    reg.emplace<Transform>(e);
+    build(reg, e);
+
+    const std::string js = SceneSerializer::SerializeEntity(src, e, "");
+    if (js.empty())
+    {
+        std::printf("FAIL: SerializeEntity returned empty\n");
+        ++g_failures;
+        return entt::null;
+    }
+    entt::entity e2 = SceneSerializer::InstantiateEntity(dst, js, "");
+    if (e2 == entt::null)
+    {
+        std::printf("FAIL: InstantiateEntity returned null\n");
+        ++g_failures;
+    }
+    return e2;
+}
+
+// build を満たす entity を往復させ、dst 側で T を取り verify(component) を呼ぶ。
+template <typename T, typename Build, typename Verify>
+static void Case(Build&& build, Verify&& verify)
+{
+    Scene src, dst;
+    entt::entity e2 = RoundTrip(src, dst, std::forward<Build>(build));
+    auto& d = dst.GetRegistry();
+    const bool ok = (e2 != entt::null) && d.all_of<T>(e2);
+    CHECK(ok);
+    if (ok) verify(d.get<T>(e2));
+}
+
+static void Test_Transform()
+{
+    Scene src, dst;
+    entt::entity e2 = RoundTrip(src, dst, [](entt::registry& r, entt::entity e) {
+        auto& t = r.get<Transform>(e);
+        t.position = {1.5f, -2.0f, 3.25f};
+        t.rotation = {10.0f, 20.0f, 30.0f};
+        t.scale    = {2.0f, 3.0f, 4.0f};
+    });
+    auto& d = dst.GetRegistry();
+    const bool ok = (e2 != entt::null) && d.all_of<Transform>(e2) && d.all_of<NameTag>(e2);
+    CHECK(ok);
+    if (ok)
+    {
+        const auto& t = d.get<Transform>(e2);
+        CHECK_V3(t.position, 1.5f, -2.0f, 3.25f);
+        CHECK_V3(t.rotation, 10.0f, 20.0f, 30.0f);
+        CHECK_V3(t.scale,    2.0f, 3.0f, 4.0f);
+    }
+}
+
+static void Test_PointLight()
+{
+    Case<PointLight>(
+        [](entt::registry& r, entt::entity e) {
+            PointLight pl;
+            pl.color = {0.1f, 0.2f, 0.3f};
+            pl.intensity = 5.0f;
+            pl.range = 12.0f;
+            r.emplace<PointLight>(e, pl);
+        },
+        [](const PointLight& pl) {
+            CHECK_V3(pl.color, 0.1f, 0.2f, 0.3f);
+            CHECK_F(pl.intensity, 5.0f);
+            CHECK_F(pl.range, 12.0f);
+        });
+}
+
+static void Test_DirectionalLight()
+{
+    Case<DirectionalLight>(
+        [](entt::registry& r, entt::entity e) {
+            DirectionalLight dl;
+            dl.direction = {0.0f, -0.5f, 0.5f};
+            dl.color = {0.4f, 0.5f, 0.6f};
+            dl.intensity = 2.0f;
+            dl.ambient = 0.7f;
+            r.emplace<DirectionalLight>(e, dl);
+        },
+        [](const DirectionalLight& dl) {
+            CHECK_V3(dl.direction, 0.0f, -0.5f, 0.5f);
+            CHECK_V3(dl.color, 0.4f, 0.5f, 0.6f);
+            CHECK_F(dl.intensity, 2.0f);
+            CHECK_F(dl.ambient, 0.7f);
+        });
+}
+
+static void Test_SpotLight()
+{
+    Case<SpotLight>(
+        [](entt::registry& r, entt::entity e) {
+            SpotLight sl;
+            sl.color = {0.7f, 0.8f, 0.9f};
+            sl.intensity = 4.5f;
+            sl.range = 20.0f;
+            sl.direction = {0.0f, -1.0f, 0.2f};
+            sl.innerConeDeg = 15.0f;
+            sl.outerConeDeg = 35.0f;
+            r.emplace<SpotLight>(e, sl);
+        },
+        [](const SpotLight& sl) {
+            CHECK_V3(sl.color, 0.7f, 0.8f, 0.9f);
+            CHECK_F(sl.intensity, 4.5f);
+            CHECK_F(sl.range, 20.0f);
+            CHECK_V3(sl.direction, 0.0f, -1.0f, 0.2f);
+            CHECK_F(sl.innerConeDeg, 15.0f);
+            CHECK_F(sl.outerConeDeg, 35.0f);
+        });
+}
+
+static void Test_Camera()
+{
+    // dst は専用の Scene なので、他にアクティブカメラが居らず isActive=true が往復する。
+    Case<CameraComponent>(
+        [](entt::registry& r, entt::entity e) {
+            CameraComponent cam;
+            cam.fovDegrees = 70.0f;
+            cam.nearClip = 0.2f;
+            cam.farClip = 500.0f;
+            cam.isActive = true;
+            r.emplace<CameraComponent>(e, cam);
+        },
+        [](const CameraComponent& cam) {
+            CHECK_F(cam.fovDegrees, 70.0f);
+            CHECK_F(cam.nearClip, 0.2f);
+            CHECK_F(cam.farClip, 500.0f);
+            CHECK(cam.isActive == true);
+        });
+}
+
+static void Test_Gimmick()
+{
+    Case<Gimmick>(
+        [](entt::registry& r, entt::entity e) {
+            Gimmick gm;
+            gm.kind = 2;
+            gm.period = 3.0f;
+            gm.phase = 0.25f;
+            gm.amplitude = 2.5f;
+            gm.threshold = 0.7f;
+            gm.solid = true;
+            gm.deadly = true;
+            r.emplace<Gimmick>(e, gm);
+        },
+        [](const Gimmick& gm) {
+            CHECK(gm.kind == 2);
+            CHECK_F(gm.period, 3.0f);
+            CHECK_F(gm.phase, 0.25f);
+            CHECK_F(gm.amplitude, 2.5f);
+            CHECK_F(gm.threshold, 0.7f);
+            CHECK(gm.solid == true);
+            CHECK(gm.deadly == true);
+        });
+}
+
+static void Test_AudioSource()
+{
+    Case<AudioSource>(
+        [](entt::registry& r, entt::entity e) {
+            AudioSource as;
+            as.clipPath = "audio/sfx/foot.wav";
+            as.volume = 0.5f;
+            as.loop = true;
+            as.spatial = false;
+            as.playOnStart = false;
+            as.minDistance = 2.0f;
+            as.maxDistance = 40.0f;
+            r.emplace<AudioSource>(e, as);
+        },
+        [](const AudioSource& as) {
+            CHECK(as.clipPath == "audio/sfx/foot.wav");
+            CHECK_F(as.volume, 0.5f);
+            CHECK(as.loop == true);
+            CHECK(as.spatial == false);
+            CHECK(as.playOnStart == false);
+            CHECK_F(as.minDistance, 2.0f);
+            CHECK_F(as.maxDistance, 40.0f);
+        });
+}
+
+static void Test_ParticleEmitter()
+{
+    Case<ParticleEmitter>(
+        [](entt::registry& r, entt::entity e) {
+            ParticleEmitter pe;
+            pe.kind = 3;
+            pe.blend = 1;
+            pe.rate = 50.0f;
+            pe.playOnStart = false;
+            pe.looping = false;
+            pe.duration = 2.0f;
+            pe.dir = {0.0f, 0.5f, 1.0f};
+            pe.spread = 0.6f;
+            pe.speed = 4.0f;
+            pe.speedVar = 0.7f;
+            pe.size = 0.9f;
+            pe.sizeEnd = 0.1f;
+            pe.life = 1.2f;
+            pe.lifeVar = 0.4f;
+            pe.color = {0.9f, 0.3f, 0.1f};
+            pe.colorEnd = {0.2f, 0.1f, 0.05f};
+            pe.intensity = 2.5f;
+            pe.gravity = -0.5f;
+            pe.drag = 0.8f;
+            pe.up = 0.3f;
+            pe.stretch = 0.6f;
+            r.emplace<ParticleEmitter>(e, pe);
+        },
+        [](const ParticleEmitter& pe) {
+            CHECK(pe.kind == 3);
+            CHECK(pe.blend == 1);
+            CHECK_F(pe.rate, 50.0f);
+            CHECK(pe.playOnStart == false);
+            CHECK(pe.looping == false);
+            CHECK_F(pe.duration, 2.0f);
+            CHECK_V3(pe.dir, 0.0f, 0.5f, 1.0f);
+            CHECK_F(pe.spread, 0.6f);
+            CHECK_F(pe.speed, 4.0f);
+            CHECK_F(pe.speedVar, 0.7f);
+            CHECK_F(pe.size, 0.9f);
+            CHECK_F(pe.sizeEnd, 0.1f);
+            CHECK_F(pe.life, 1.2f);
+            CHECK_F(pe.lifeVar, 0.4f);
+            CHECK_V3(pe.color, 0.9f, 0.3f, 0.1f);
+            CHECK_V3(pe.colorEnd, 0.2f, 0.1f, 0.05f);
+            CHECK_F(pe.intensity, 2.5f);
+            CHECK_F(pe.gravity, -0.5f);
+            CHECK_F(pe.drag, 0.8f);
+            CHECK_F(pe.up, 0.3f);
+            CHECK_F(pe.stretch, 0.6f);
+        });
+}
+
+static void Test_Trigger()
+{
+    Case<Trigger>(
+        [](entt::registry& r, entt::entity e) {
+            Trigger tr;
+            tr.shape = 1;
+            tr.halfExtents = {2.0f, 2.0f, 2.0f};
+            tr.radius = 3.0f;
+            tr.offset = {0.0f, 1.0f, 0.0f};
+            tr.filter = "Enemy";
+            tr.once = true;
+            TriggerAction a;
+            a.when = 1;
+            a.type = 5;
+            a.target = "Door";
+            a.str = "open";
+            a.num = 2.5;
+            a.vec = {1.0f, 0.0f, -1.0f};
+            tr.actions.push_back(a);
+            r.emplace<Trigger>(e, tr);
+        },
+        [](const Trigger& tr) {
+            CHECK(tr.shape == 1);
+            CHECK_V3(tr.halfExtents, 2.0f, 2.0f, 2.0f);
+            CHECK_F(tr.radius, 3.0f);
+            CHECK_V3(tr.offset, 0.0f, 1.0f, 0.0f);
+            CHECK(tr.filter == "Enemy");
+            CHECK(tr.once == true);
+            CHECK(tr.actions.size() == 1);
+            if (tr.actions.size() == 1)
+            {
+                const auto& a = tr.actions[0];
+                CHECK(a.when == 1);
+                CHECK(a.type == 5);
+                CHECK(a.target == "Door");
+                CHECK(a.str == "open");
+                CHECK_D(a.num, 2.5);
+                CHECK_V3(a.vec, 1.0f, 0.0f, -1.0f);
+            }
+        });
+}
+
+static void Test_RigidBody()
+{
+    Case<RigidBody>(
+        [](entt::registry& r, entt::entity e) {
+            RigidBody rb;
+            rb.motionType = MotionType::Kinematic;
+            rb.mass = 7.0f;
+            rb.restitution = 0.6f;
+            rb.friction = 0.5f;
+            rb.linearDamping = 0.1f;
+            rb.angularDamping = 0.2f;
+            rb.useGravity = false;
+            r.emplace<RigidBody>(e, rb);
+        },
+        [](const RigidBody& rb) {
+            CHECK(rb.motionType == MotionType::Kinematic);
+            CHECK_F(rb.mass, 7.0f);
+            CHECK_F(rb.restitution, 0.6f);
+            CHECK_F(rb.friction, 0.5f);
+            CHECK_F(rb.linearDamping, 0.1f);
+            CHECK_F(rb.angularDamping, 0.2f);
+            CHECK(rb.useGravity == false);
+        });
+}
+
+static void Test_BoxCollider()
+{
+    Case<BoxCollider>(
+        [](entt::registry& r, entt::entity e) {
+            BoxCollider col;
+            col.halfExtents = {1.0f, 2.0f, 3.0f};
+            col.offset = {0.1f, 0.2f, 0.3f};
+            r.emplace<BoxCollider>(e, col);
+        },
+        [](const BoxCollider& col) {
+            CHECK_V3(col.halfExtents, 1.0f, 2.0f, 3.0f);
+            CHECK_V3(col.offset, 0.1f, 0.2f, 0.3f);
+        });
+}
+
+static void Test_SphereCollider()
+{
+    Case<SphereCollider>(
+        [](entt::registry& r, entt::entity e) {
+            SphereCollider col;
+            col.radius = 2.5f;
+            col.offset = {1.0f, 1.0f, 1.0f};
+            r.emplace<SphereCollider>(e, col);
+        },
+        [](const SphereCollider& col) {
+            CHECK_F(col.radius, 2.5f);
+            CHECK_V3(col.offset, 1.0f, 1.0f, 1.0f);
+        });
+}
+
+static void Test_CapsuleCollider()
+{
+    Case<CapsuleCollider>(
+        [](entt::registry& r, entt::entity e) {
+            CapsuleCollider col;
+            col.radius = 0.7f;
+            col.halfHeight = 1.5f;
+            col.offset = {0.0f, 0.5f, 0.0f};
+            r.emplace<CapsuleCollider>(e, col);
+        },
+        [](const CapsuleCollider& col) {
+            CHECK_F(col.radius, 0.7f);
+            CHECK_F(col.halfHeight, 1.5f);
+            CHECK_V3(col.offset, 0.0f, 0.5f, 0.0f);
+        });
+}
+
+static void Test_LuaScript()
+{
+    Case<LuaScript>(
+        [](entt::registry& r, entt::entity e) {
+            LuaScript ls;
+            ls.scriptPath = "scripts/player.lua";
+            ls.enabled = false;
+
+            ScriptProp pf; pf.name = "speed";  pf.type = ScriptPropType::Float;  pf.num = 9.5;            ls.props.push_back(pf);
+            ScriptProp pi; pi.name = "hp";     pi.type = ScriptPropType::Int;    pi.num = 42.0;           ls.props.push_back(pi);
+            ScriptProp pb; pb.name = "solid";  pb.type = ScriptPropType::Bool;   pb.b   = true;           ls.props.push_back(pb);
+            ScriptProp ps; ps.name = "tag";    ps.type = ScriptPropType::String; ps.str = "hero";         ls.props.push_back(ps);
+            ScriptProp pv; pv.name = "tint";   pv.type = ScriptPropType::Vec3;   pv.vec = {0.2f, 0.4f, 0.6f}; ls.props.push_back(pv);
+
+            r.emplace<LuaScript>(e, ls);
+        },
+        [](const LuaScript& ls) {
+            CHECK(ls.scriptPath == "scripts/player.lua");
+            CHECK(ls.enabled == false);
+            CHECK(ls.props.size() == 5);
+            if (ls.props.size() == 5)
+            {
+                CHECK(ls.props[0].name == "speed"); CHECK(ls.props[0].type == ScriptPropType::Float);  CHECK_D(ls.props[0].num, 9.5);
+                CHECK(ls.props[1].name == "hp");    CHECK(ls.props[1].type == ScriptPropType::Int);    CHECK_D(ls.props[1].num, 42.0);
+                CHECK(ls.props[2].name == "solid"); CHECK(ls.props[2].type == ScriptPropType::Bool);   CHECK(ls.props[2].b == true);
+                CHECK(ls.props[3].name == "tag");   CHECK(ls.props[3].type == ScriptPropType::String); CHECK(ls.props[3].str == "hero");
+                CHECK(ls.props[4].name == "tint");  CHECK(ls.props[4].type == ScriptPropType::Vec3);   CHECK_V3(ls.props[4].vec, 0.2f, 0.4f, 0.6f);
+            }
+        });
+}
+
+// 複数部品を同一エンティティに載せても相互干渉せず往復することを確認する。
+static void Test_Combined()
+{
+    Scene src, dst;
+    entt::entity e2 = RoundTrip(src, dst, [](entt::registry& r, entt::entity e) {
+        PointLight pl; pl.color = {0.3f, 0.6f, 0.9f}; pl.intensity = 3.0f; pl.range = 8.0f;
+        r.emplace<PointLight>(e, pl);
+        RigidBody rb; rb.motionType = MotionType::Dynamic; rb.mass = 2.0f; rb.useGravity = true;
+        r.emplace<RigidBody>(e, rb);
+        BoxCollider bc; bc.halfExtents = {0.5f, 0.5f, 0.5f};
+        r.emplace<BoxCollider>(e, bc);
+    });
+    auto& d = dst.GetRegistry();
+    const bool ok = (e2 != entt::null) && d.all_of<PointLight>(e2) && d.all_of<RigidBody>(e2) && d.all_of<BoxCollider>(e2);
+    CHECK(ok);
+    if (ok)
+    {
+        const auto& pl = d.get<PointLight>(e2);
+        CHECK_V3(pl.color, 0.3f, 0.6f, 0.9f);
+        CHECK_F(pl.intensity, 3.0f);
+        const auto& rb = d.get<RigidBody>(e2);
+        CHECK(rb.motionType == MotionType::Dynamic);
+        CHECK_F(rb.mass, 2.0f);
+        const auto& bc = d.get<BoxCollider>(e2);
+        CHECK_V3(bc.halfExtents, 0.5f, 0.5f, 0.5f);
+    }
+}
+
+// 中立ヘッダ(ComponentRegistry.h)が /WX で通り、型が使えることの最小確認。
+static void Test_RegistryHeaderCompiles()
+{
+    RuntimeComponentInfo info;
+    info.typeName = "Probe";
+    CHECK(info.source == ComponentSource::Core);
+    CHECK(info.typeName == "Probe");
+}
+
+int main()
+{
+    Test_Transform();
+    Test_PointLight();
+    Test_DirectionalLight();
+    Test_SpotLight();
+    Test_Camera();
+    Test_Gimmick();
+    Test_AudioSource();
+    Test_ParticleEmitter();
+    Test_Trigger();
+    Test_RigidBody();
+    Test_BoxCollider();
+    Test_SphereCollider();
+    Test_CapsuleCollider();
+    Test_LuaScript();
+    Test_Combined();
+    Test_RegistryHeaderCompiles();
+
+    std::printf("serialize_roundtrip: %d checks, %d failures\n", g_checks, g_failures);
+    return g_failures == 0 ? 0 : 1;
+}
