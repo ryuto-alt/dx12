@@ -45,21 +45,20 @@ void OpenInVSCode(const std::string& filePath)
 
     if (!cachedExe.empty())
     {
-        // Code.exe を直接起動（GUI アプリなので cmd 窓なし・即座に返る）
-        std::string cmdLine = "\"" + cachedExe + "\" \"" + filePath + "\"";
-        STARTUPINFOA si{};
-        si.cb = sizeof(si);
-        PROCESS_INFORMATION pi{};
-        if (CreateProcessA(nullptr, cmdLine.data(), nullptr, nullptr,
-                           FALSE, 0, nullptr, nullptr, &si, &pi))
-        {
-            CloseHandle(pi.hProcess);
-            CloseHandle(pi.hThread);
-            return;
-        }
+        // ShellExecute の "open" で Code.exe にファイルを渡して起動する。
+        // CreateProcess で「エディタの子プロセス」として直接起動すると、VSCode を閉じた後に
+        // 単一インスタンス（ロックファイル＋名前付きパイプ）の後始末が正しく行われず、
+        // 再度ダブルクリックしてもロックに転送されて窓が出ない、という症状が起きやすい。
+        // ShellExecute はシェル経由でエディタから独立して起動するため、VSCode が自分の
+        // ライフサイクルを正しく管理でき、閉じた後でも開き直せる。
+        std::string args = "\"" + filePath + "\"";
+        HINSTANCE r = ShellExecuteA(nullptr, "open", cachedExe.c_str(), args.c_str(),
+                                    nullptr, SW_SHOWNORMAL);
+        if (reinterpret_cast<INT_PTR>(r) > 32)
+            return;  // 起動成功（> 32 が成功の規約）
     }
 
-    // フォールバック
+    // フォールバック: 拡張子の関連付けで開く
     ShellExecuteA(nullptr, "open", filePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 } // anonymous namespace

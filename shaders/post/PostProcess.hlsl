@@ -67,12 +67,9 @@ static float3 HueRotate(float3 col, float angle)
 
 static float Rand(float2 p) { return frac(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453); }
 
-// ACES フィルミックトーンマップ（Narkowicz 近似）。HDR(RGBA16F)→表示用にロールオフ。
-static float3 ACESFilm(float3 x)
-{
-    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
-    return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
-}
+// ※ トーンマップ（ACES）+ ガンマは forward 側（Forward.hlsl / ForwardSkinned.hlsl）で
+//    既に適用済み。シーンRT には「表示用に仕上がったカラー」が入っているので、ここでは
+//    再トーンマップしない（二重がけすると色補正・グレースケール・輪郭線などが潰れる）。
 
 // 4x4 Bayer 順序ディザ閾値（godotshaders の ordered dithering 由来）
 static float Bayer4(float2 px)
@@ -95,9 +92,10 @@ float4 PostPS(FSQuadVSOut i) : SV_TARGET
     float  time  = texelTime.z;
     uint   mask  = (uint)masks.x;
 
-    // マスター無効（全ビット 0）でも HDR バッファなのでトーンマップは通す
+    // マスター無効（全ビット 0）= 完全素通し。forward で仕上げた表示用カラーをそのまま出す。
+    // （ここで再トーンマップすると二重がけになり、効果 OFF 時の見た目も眠くなる）
     if (mask == 0u)
-        return float4(ACESFilm(SampleScene(i.uv * scale + ofs)), 1.0);
+        return float4(SampleScene(i.uv * scale + ofs), 1.0);
 
     float2 luv    = i.uv;          // ビューポートローカル 0..1
     bool   crtOut = false;
@@ -282,7 +280,8 @@ float4 PostPS(FSQuadVSOut i) : SV_TARGET
         float l22 = Luma(SampleScene(uv + float2( texel.x,  texel.y)));
         float gx = -l00 - 2.0*l01 - l02 + l20 + 2.0*l21 + l22;
         float gy = -l00 - 2.0*l10 - l20 + l02 + 2.0*l12 + l22;
-        float edge = saturate(sqrt(gx*gx + gy*gy) * outlineP.w);
+        // forward で既にガンマ済み = エッジのルマ勾配が小さめ。ゲインを掛けて線を明瞭にする。
+        float edge = saturate(sqrt(gx*gx + gy*gy) * outlineP.w * 4.0);
         col = lerp(col, outlineP.rgb, edge);
     }
 
@@ -308,5 +307,7 @@ float4 PostPS(FSQuadVSOut i) : SV_TARGET
         col *= saturate(1.0 - dot(d, d) * 2.0 * tintVig.w);
     }
 
-    return float4(ACESFilm(col), 1.0);
+    // forward で適用済みのトーンマップを二重がけしない。効果適用後のカラーを直接出力。
+    // R8G8B8A8_UNORM へ書くので、効果でレンジ外へ出た値は saturate で [0,1] にクランプ。
+    return float4(saturate(col), 1.0);
 }
