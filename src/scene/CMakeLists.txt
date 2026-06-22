@@ -3,9 +3,13 @@ add_library(Scene STATIC
     Scene.cpp
     SceneSerializer.cpp
     SceneFlow.cpp
+    ComponentRegistry.cpp
 )
 
-target_include_directories(Scene PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
+target_include_directories(Scene PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+    ${CMAKE_SOURCE_DIR}/include   # 封印ランタイムの中立公開ヘッダ（engine/...）
+)
 
 find_package(directxmath CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
