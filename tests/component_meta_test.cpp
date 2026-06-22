@@ -76,6 +76,7 @@ int main()
     Expect<SphereCollider>({ "radius", "offset" });
     Expect<CapsuleCollider>({ "radius", "halfHeight", "offset" });
     Expect<AudioSource>({ "clipPath", "volume", "loop", "spatial", "playOnStart", "minDistance", "maxDistance" });
+    Expect<Tag>({ "tags" });
 
     // 反映は冪等（2回呼んでも壊れない）
     RegisterCoreComponentMeta();

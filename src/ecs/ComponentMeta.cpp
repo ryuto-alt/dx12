@@ -104,6 +104,10 @@ void RegisterCoreComponentMeta()
         .data<&AudioSource::playOnStart>("playOnStart")
         .data<&AudioSource::minDistance>("minDistance")
         .data<&AudioSource::maxDistance>("maxDistance");
+
+    entt::meta_factory<Tag>{}
+        .type("Tag")
+        .data<&Tag::tags>("tags");
 }
 
 } // namespace dx12e

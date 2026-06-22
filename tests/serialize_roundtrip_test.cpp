@@ -490,6 +490,47 @@ static void Test_Combined()
     }
 }
 
+static void Test_Tag()
+{
+    Case<Tag>(
+        [](entt::registry& r, entt::entity e) {
+            Tag t;
+            t.tags = { "enemy", "flying", "boss" };
+            r.emplace<Tag>(e, t);
+        },
+        [](const Tag& t) {
+            CHECK(t.tags.size() == 3);
+            if (t.tags.size() == 3) {
+                CHECK(t.tags[0] == "enemy");
+                CHECK(t.tags[1] == "flying");
+                CHECK(t.tags[2] == "boss");
+            }
+        });
+}
+
+// Scene::QueryByTag のヘッドレス検証（device 不要、registry のみ）。
+static void Test_TagQuery()
+{
+    Scene s;
+    auto& reg = s.GetRegistry();
+    entt::entity a = reg.create();
+    reg.emplace<NameTag>(a, NameTag{"A"});
+    { Tag t; t.tags = { "enemy", "red" };  reg.emplace<Tag>(a, t); }
+    entt::entity b = reg.create();
+    reg.emplace<NameTag>(b, NameTag{"B"});
+    { Tag t; t.tags = { "enemy", "blue" }; reg.emplace<Tag>(b, t); }
+    entt::entity c = reg.create();
+    reg.emplace<NameTag>(c, NameTag{"C"});
+    { Tag t; t.tags = { "ally" };          reg.emplace<Tag>(c, t); }
+    (void)b; (void)c;
+
+    CHECK(s.QueryByTag("enemy").size() == 2);
+    const auto reds = s.QueryByTag("red");
+    CHECK(reds.size() == 1);
+    if (reds.size() == 1) CHECK(reds[0] == a);
+    CHECK(s.QueryByTag("nonexistent").empty());
+}
+
 // 中立ヘッダ(ComponentRegistry.h)が /WX で通り、型が使えることの最小確認。
 static void Test_RegistryHeaderCompiles()
 {
@@ -516,6 +557,8 @@ int main()
     Test_CapsuleCollider();
     Test_LuaScript();
     Test_Combined();
+    Test_Tag();
+    Test_TagQuery();
     Test_RegistryHeaderCompiles();
 
     std::printf("serialize_roundtrip: %d checks, %d failures\n", g_checks, g_failures);

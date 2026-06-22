@@ -26,6 +26,13 @@ struct NameTag
     std::string name;
 };
 
+// タグ集合。固定命名(filter="Player" 等)を一般化する汎用ラベル。
+// 群(RTS)管理・対象指定・クエリに使う。scene.QueryByTag("enemy") で列挙。データのみ。
+struct Tag
+{
+    std::vector<std::string> tags;
+};
+
 struct Transform
 {
     DirectX::XMFLOAT3 position = {0.0f, 0.0f, 0.0f};

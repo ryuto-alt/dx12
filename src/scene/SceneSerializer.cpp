@@ -294,6 +294,28 @@ static void RegisterCoreComponentSerializers()
                 reg.emplace_or_replace<CapsuleCollider>(e, col);
             }
         }, {}, {} });
+
+    R.Register({ "Tag", ComponentSource::Core,
+        [](const entt::registry& reg, entt::entity entity, json& ej) {
+            if (reg.all_of<Tag>(entity)) {
+                const auto& t = reg.get<Tag>(entity);
+                if (!t.tags.empty()) {
+                    json arr = json::array();
+                    for (const auto& s : t.tags) arr.push_back(s);
+                    ej["tags"] = std::move(arr);
+                }
+            }
+        },
+        [](entt::registry& reg, entt::entity e, const json& ej) {
+            if (ej.contains("tags") && ej["tags"].is_array()) {
+                Tag t;
+                for (const auto& s : ej["tags"]) {
+                    if (s.is_string()) t.tags.push_back(s.get<std::string>());
+                }
+                if (!t.tags.empty())
+                    reg.emplace_or_replace<Tag>(e, std::move(t));
+            }
+        }, {}, {} });
 }
 
 // 単一エンティティを JSON ノードに直列化（parent は含まない）

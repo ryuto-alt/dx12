@@ -351,4 +351,18 @@ size_t Scene::GetEntityCount() const
     return count;
 }
 
+std::vector<entt::entity> Scene::QueryByTag(const std::string& tag) const
+{
+    std::vector<entt::entity> result;
+    auto view = m_registry.view<const Tag>();
+    for (auto [handle, t] : view.each())
+    {
+        for (const auto& s : t.tags)
+        {
+            if (s == tag) { result.push_back(handle); break; }
+        }
+    }
+    return result;
+}
+
 } // namespace dx12e
