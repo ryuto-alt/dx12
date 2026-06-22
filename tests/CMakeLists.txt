@@ -90,3 +90,18 @@ if(TARGET ECS)
     endif()
     add_test(NAME SpatialIndexTests COMMAND SpatialIndexTests)
 endif()
+
+# EventBus（汎用イベントバス）テスト（Phase 3 中核）。ヘッダオンリー、entt のみ依存。
+if(TARGET ECS)
+    find_package(EnTT CONFIG REQUIRED)
+    add_executable(EventBusTests event_bus_test.cpp)
+    target_include_directories(EventBusTests PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(EventBusTests PRIVATE EnTT::EnTT)
+    if(MSVC)
+        target_compile_options(EventBusTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(EventBusTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME EventBusTests COMMAND EventBusTests)
+endif()
