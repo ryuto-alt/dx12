@@ -622,6 +622,9 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_spriteRenderer = std::make_unique<SpriteRenderer>();
         m_spriteRenderer->Initialize(*m_graphicsDevice, m_srvHeap.get(),
                                      m_swapChain->GetFormat(), PathResolver::ShaderDirW());
+        // ワールド空間 2D（Sprite2D, worldSpace=true）: HDR scene RT へ描く別経路（HUD と隔離）
+        m_spriteRenderer->InitializeWorld(*m_graphicsDevice, kSceneColorFormat,
+                                          PathResolver::ShaderDirW());
 
         // 加算ビルボードパーティクル（HDR scene RT + 深度へ描く / Lua fx API）
         m_particleSystem = std::make_unique<ParticleSystem>();
@@ -3347,6 +3350,42 @@ void Application::Render()
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
     }
 
+    // ---- ワールド空間 2D スプライト（Sprite2D, worldSpace=true）: ゲームビューのみ、HDR scene RT へ ----
+    // 正射カメラ(CameraComponent.projection=Orthographic)と組み合わせ 2D/2.5D を成立させる。
+    // Depth OFF・layer 昇順ソート・アルファブレンド。PostProcess 前なのでブルーム等の対象にもなる。
+    if (m_spriteRenderer && m_scene && (m_isGameMode || m_engineMode == EngineMode::Playing))
+    {
+        auto& sreg = m_scene->GetRegistry();
+        m_spriteRenderer->BeginWorldFrame();
+        for (auto [e, sp] : sreg.view<const Sprite2D>().each())
+        {
+            if (!sp.worldSpace || sp.texturePath.empty()) continue;
+            if (!sreg.all_of<Transform>(e)) continue;
+            const std::string absPath = PathResolver::AssetsDir() + sp.texturePath;
+            std::wstring wpath(absPath.begin(), absPath.end());   // ASCII パス想定
+            Texture* tex = m_resourceManager->GetOrLoadTexture(wpath, nativeCmdList);
+            if (!tex) continue;
+            XMFLOAT3 wp; XMStoreFloat3(&wp, ComputeWorldMatrix(sreg, e).r[3]);
+            WorldSpriteDesc d;
+            d.center   = {wp.x, wp.y};
+            d.size     = sp.size;
+            d.uvMin    = sp.uvMin;
+            d.uvMax    = sp.uvMax;
+            d.color    = sp.color;
+            d.srvIndex = tex->GetSrvIndex();
+            d.layer    = static_cast<float>(sp.layer);
+            m_spriteRenderer->SubmitWorld(d);
+        }
+        if (m_spriteRenderer->HasAnyWorld())
+        {
+            auto wsrtv = m_sceneRT->GetRtv();
+            nativeCmdList->OMSetRenderTargets(1, &wsrtv, FALSE, nullptr);
+            m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+            m_spriteRenderer->RenderWorld(nativeCmdList, m_camera->GetViewProjMatrix());
+        }
+    }
+
     // ===== ポストプロセス: オフスクリーン RT → バックバッファ =====
     auto* backBuffer = m_swapChain->GetCurrentBackBuffer();
     auto  rtv        = m_swapChain->GetCurrentRTV();
@@ -3425,6 +3464,37 @@ void Application::Render()
             s.color    = {c.r, c.g, c.b, c.a};
             s.srvIndex = tex->GetSrvIndex();
             m_spriteRenderer->Submit(s);
+        }
+
+        // Sprite2D(worldSpace=false): HUD として画面ピクセル座標で描く。
+        // 位置は Transform の並進 x/y を「画面ピクセル中心」とみなす（ワールド側と同じく中心基準で
+        // size を展開）。Transform が無ければ画面左上(0,0)中心。layer 昇順は Render 内でソート。
+        if (m_scene)
+        {
+            auto& sreg = m_scene->GetRegistry();
+            for (auto [e, sp] : sreg.view<const Sprite2D>().each())
+            {
+                if (sp.worldSpace || sp.texturePath.empty()) continue;
+                const std::string absPath = PathResolver::AssetsDir() + sp.texturePath;
+                std::wstring wpath(absPath.begin(), absPath.end());   // ASCII パス想定
+                Texture* tex = m_resourceManager->GetOrLoadTexture(wpath, nativeCmdList);
+                if (!tex) continue;
+                float cx = 0.0f, cy = 0.0f;
+                if (sreg.all_of<Transform>(e))
+                {
+                    XMFLOAT3 wp; XMStoreFloat3(&wp, ComputeWorldMatrix(sreg, e).r[3]);
+                    cx = wp.x; cy = wp.y;
+                }
+                SpriteDesc s;
+                s.pos      = {cx - sp.size.x * 0.5f, cy - sp.size.y * 0.5f};
+                s.size     = sp.size;
+                s.uvMin    = sp.uvMin;
+                s.uvMax    = sp.uvMax;
+                s.color    = sp.color;
+                s.srvIndex = tex->GetSrvIndex();
+                s.layer    = static_cast<float>(sp.layer);
+                m_spriteRenderer->Submit(s);
+            }
         }
 
         if (m_spriteRenderer->HasAny())
