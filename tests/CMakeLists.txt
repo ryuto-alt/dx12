@@ -49,3 +49,14 @@ if(TARGET Scene)
 
     add_test(NAME SerializeRoundtripTests COMMAND SerializeRoundtripTests)
 endif()
+
+# entt::meta コア部品フィールド反映テスト（Phase 2 土台）。ECS（+ entt/DirectXMath）をリンク。
+if(TARGET ECS)
+    add_executable(ComponentMetaTests component_meta_test.cpp)
+    target_link_libraries(ComponentMetaTests PRIVATE ECS)
+    if(MSVC)
+        target_compile_options(ComponentMetaTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(ComponentMetaTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME ComponentMetaTests COMMAND ComponentMetaTests)
+endif()

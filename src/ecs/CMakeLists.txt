@@ -1,5 +1,6 @@
 add_library(ECS STATIC
     Components.cpp
+    ComponentMeta.cpp
 )
 
 target_include_directories(ECS PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
