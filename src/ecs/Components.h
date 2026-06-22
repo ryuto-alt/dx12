@@ -181,6 +181,7 @@ struct Sprite2D
     DirectX::XMFLOAT2 uvMax{1.0f, 1.0f};
     DirectX::XMFLOAT4 color{1.0f, 1.0f, 1.0f, 1.0f}; // 乗算色(a=不透明度)
     bool              worldSpace = true;    // true=カメラ連動ワールド / false=HUD
+    bool              billboard  = false;   // worldSpace時: true=常にカメラ正対(3D内マーカー等)
 };
 
 // 3D 空間オーディオ音源。Transform のワールド位置がエミッタになる。

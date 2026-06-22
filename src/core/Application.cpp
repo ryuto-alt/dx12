@@ -623,8 +623,9 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_spriteRenderer->Initialize(*m_graphicsDevice, m_srvHeap.get(),
                                      m_swapChain->GetFormat(), PathResolver::ShaderDirW());
         // ワールド空間 2D（Sprite2D, worldSpace=true）: HDR scene RT へ描く別経路（HUD と隔離）
+        // 深度バッファ(D32_FLOAT)に対して深度テスト＝3D形状に正しく遮蔽される。
         m_spriteRenderer->InitializeWorld(*m_graphicsDevice, kSceneColorFormat,
-                                          PathResolver::ShaderDirW());
+                                          DXGI_FORMAT_D32_FLOAT, PathResolver::ShaderDirW());
 
         // 加算ビルボードパーティクル（HDR scene RT + 深度へ描く / Lua fx API）
         m_particleSystem = std::make_unique<ParticleSystem>();
@@ -1037,7 +1038,7 @@ void Application::Update()
         {
             m_inputSystem->SetMouseCapture(false);
         }
-        if (m_inputSystem->IsMouseCaptured())
+        if (m_inputSystem->IsMouseCaptured() && !m_editorCtx->view2D)   // 2D中は視点回転/フライ無効
         {
             f32 sensitivity = m_camera->GetMouseSensitivity();
             m_camera->Rotate(
@@ -1060,7 +1061,8 @@ void Application::Update()
         if (m_editorCtx->flyMode && (GetAsyncKeyState(VK_ESCAPE) & 1))
             m_editorCtx->flyMode = false;
 
-        if (m_editorCtx->flyMode && kbActive && !m_inputSystem->IsMouseCaptured())
+        if (m_editorCtx->flyMode && kbActive && !m_inputSystem->IsMouseCaptured()
+            && !m_editorCtx->view2D)   // 2D中はフライ無効（パン/ズームのみ）
         {
             f32 speed = m_camera->GetMoveSpeed() * dt;
             if (GetAsyncKeyState('W') & 0x8000) m_camera->MoveForward(speed);
@@ -2540,6 +2542,46 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
     }
 }
 
+void Application::DrawWorldSprites(ID3D12GraphicsCommandList* cmd, DirectX::XMMATRIX viewProj,
+                                  DirectX::XMFLOAT3 camRight, DirectX::XMFLOAT3 camUp,
+                                  D3D12_CPU_DESCRIPTOR_HANDLE rtv, D3D12_CPU_DESCRIPTOR_HANDLE dsv,
+                                  u32 vpX, u32 vpY, u32 vpW, u32 vpH)
+{
+    using namespace DirectX;
+    if (!m_spriteRenderer || !m_scene) return;
+
+    auto& sreg = m_scene->GetRegistry();
+    m_spriteRenderer->BeginWorldFrame();
+    for (auto [e, sp] : sreg.view<const Sprite2D>().each())
+    {
+        if (!sp.worldSpace || sp.texturePath.empty()) continue;
+        if (!sreg.all_of<Transform>(e)) continue;
+        const std::string absPath = PathResolver::AssetsDir() + sp.texturePath;
+        std::wstring wpath(absPath.begin(), absPath.end());   // ASCII パス想定
+        Texture* tex = m_resourceManager->GetOrLoadTexture(wpath, cmd);
+        if (!tex) continue;
+
+        WorldSpriteDesc d;
+        XMStoreFloat4x4(&d.world, ComputeWorldMatrix(sreg, e));
+        d.size      = sp.size;
+        d.uvMin     = sp.uvMin;
+        d.uvMax     = sp.uvMax;
+        d.color     = sp.color;
+        d.srvIndex  = tex->GetSrvIndex();
+        d.layer     = static_cast<float>(sp.layer);
+        d.billboard = sp.billboard;
+        m_spriteRenderer->SubmitWorld(d);
+    }
+
+    if (m_spriteRenderer->HasAnyWorld())
+    {
+        cmd->OMSetRenderTargets(1, &rtv, FALSE, &dsv);   // 深度テストのため DSV もバインド
+        m_commandList->SetViewportAndScissor(vpX, vpY, vpW, vpH);
+        m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+        m_spriteRenderer->RenderWorld(cmd, viewProj, camRight, camUp);
+    }
+}
+
 void Application::Render()
 {
     using namespace DirectX;
@@ -3187,6 +3229,29 @@ void Application::Render()
         }
     }
 
+    // ===== 2D ビューモード: エディタカメラを正射＋XY平面正対(forward +Z)へ固定 =====
+    // 回転/ドリーは入力側で無効化済み。ここで毎フレーム投影と向き・Z位置を確定し（パンの x/y は維持）、
+    // OFF へ戻した瞬間だけ透視へ復帰する。Play 中は CameraComponent 同期が優先するので編集中のみ。
+    if (!m_isGameMode && m_engineMode == EngineMode::Editor)
+    {
+        if (m_editorCtx->view2D)
+        {
+            const f32 aspect = static_cast<f32>(vpW) / static_cast<f32>(vpH);
+            m_camera->SetYaw(0.0f);
+            m_camera->SetPitch(0.0f);
+            XMFLOAT3 p = m_camera->GetPosition();
+            p.z = -100.0f;                                   // XY 平面(z=0)を十分手前から見る
+            m_camera->SetPosition(p);
+            m_camera->SetOrthographic(2.0f * m_editorCtx->view2DZoom, aspect, 0.1f, 2000.0f);
+        }
+        else if (m_editorWas2D)                              // 2D→3D に戻した瞬間だけ透視へ
+        {
+            const f32 aspect = static_cast<f32>(vpW) / static_cast<f32>(vpH);
+            m_camera->SetPerspective(DirectX::XM_PIDIV4, aspect, 0.1f, 1000.0f);
+        }
+        m_editorWas2D = m_editorCtx->view2D;
+    }
+
     m_sceneRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
 
     constexpr float clearColor[4] = {0.392f, 0.584f, 0.929f, 1.0f};
@@ -3350,40 +3415,18 @@ void Application::Render()
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
     }
 
-    // ---- ワールド空間 2D スプライト（Sprite2D, worldSpace=true）: ゲームビューのみ、HDR scene RT へ ----
-    // 正射カメラ(CameraComponent.projection=Orthographic)と組み合わせ 2D/2.5D を成立させる。
-    // Depth OFF・layer 昇順ソート・アルファブレンド。PostProcess 前なのでブルーム等の対象にもなる。
-    if (m_spriteRenderer && m_scene && (m_isGameMode || m_engineMode == EngineMode::Playing))
+    // ---- ワールド空間 2D スプライト（Sprite2D, worldSpace=true）: HDR scene RT へ ----
+    // 各スプライトをエンティティのワールド行列で配置（3D 空間の任意位置/向き/スケール、billboard 可）。
+    // layer 昇順ソート・アルファブレンド・深度テスト(書込みOFF)。PostProcess 前なのでブルーム等の対象。
+    // ゲームビュー/Play に加え、エディタのシーンビュー(編集中)でも描画して配置を可視化する。
+    if (m_spriteRenderer) m_spriteRenderer->BeginWorldVertexFrame();  // 本フレームの頂点書込みを先頭へ
     {
-        auto& sreg = m_scene->GetRegistry();
-        m_spriteRenderer->BeginWorldFrame();
-        for (auto [e, sp] : sreg.view<const Sprite2D>().each())
-        {
-            if (!sp.worldSpace || sp.texturePath.empty()) continue;
-            if (!sreg.all_of<Transform>(e)) continue;
-            const std::string absPath = PathResolver::AssetsDir() + sp.texturePath;
-            std::wstring wpath(absPath.begin(), absPath.end());   // ASCII パス想定
-            Texture* tex = m_resourceManager->GetOrLoadTexture(wpath, nativeCmdList);
-            if (!tex) continue;
-            XMFLOAT3 wp; XMStoreFloat3(&wp, ComputeWorldMatrix(sreg, e).r[3]);
-            WorldSpriteDesc d;
-            d.center   = {wp.x, wp.y};
-            d.size     = sp.size;
-            d.uvMin    = sp.uvMin;
-            d.uvMax    = sp.uvMax;
-            d.color    = sp.color;
-            d.srvIndex = tex->GetSrvIndex();
-            d.layer    = static_cast<float>(sp.layer);
-            m_spriteRenderer->SubmitWorld(d);
-        }
-        if (m_spriteRenderer->HasAnyWorld())
-        {
-            auto wsrtv = m_sceneRT->GetRtv();
-            nativeCmdList->OMSetRenderTargets(1, &wsrtv, FALSE, nullptr);
-            m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
-            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-            m_spriteRenderer->RenderWorld(nativeCmdList, m_camera->GetViewProjMatrix());
-        }
+        XMMATRIX invView = XMMatrixInverse(nullptr, m_camera->GetViewMatrix());
+        XMFLOAT3 camRight, camUp;
+        XMStoreFloat3(&camRight, invView.r[0]);
+        XMStoreFloat3(&camUp,    invView.r[1]);
+        DrawWorldSprites(nativeCmdList, m_camera->GetViewProjMatrix(), camRight, camUp,
+                         m_sceneRT->GetRtv(), m_dsvHandle, vpLeft, vpTop, vpW, vpH);
     }
 
     // ===== ポストプロセス: オフスクリーン RT → バックバッファ =====
@@ -3536,8 +3579,13 @@ void Application::Render()
 
             const u32 pw = m_cameraPreviewRT->GetWidth();
             const u32 ph = m_cameraPreviewRT->GetHeight();
-            XMMATRIX proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(cam.fovDegrees),
-                static_cast<f32>(pw) / static_cast<f32>(ph), cam.nearClip, cam.farClip);
+            const f32 paspect = static_cast<f32>(pw) / static_cast<f32>(ph);
+            // 正射カメラはプレビューも正射投影に（ゲームの SetOrthographic と同じ: 縦=2*orthoSize）。
+            XMMATRIX proj = (cam.projection == CameraProjection::Orthographic)
+                ? XMMatrixOrthographicLH(2.0f * cam.orthoSize * paspect, 2.0f * cam.orthoSize,
+                                         cam.nearClip, cam.farClip)
+                : XMMatrixPerspectiveFovLH(XMConvertToRadians(cam.fovDegrees), paspect,
+                                           cam.nearClip, cam.farClip);
             XMMATRIX camViewProj = view * proj;
 
             // メインパスの fc（ライト等）を流用し、視点だけ差し替えて専用 CB へ
@@ -3563,6 +3611,13 @@ void Application::Render()
 
             // グリッドは出さない＝isGameView=true
             RenderSceneMeshes(nativeCmdList, frameIndex, camViewProj, true);
+
+            // ワールド空間スプライトもプレビューへ（このカメラ視点で。ビルボードは行列の右/上ベクトル）。
+            XMFLOAT3 pvRight, pvUp;
+            XMStoreFloat3(&pvRight, rot.r[0]);
+            XMStoreFloat3(&pvUp,    rot.r[1]);
+            DrawWorldSprites(nativeCmdList, camViewProj, pvRight, pvUp,
+                             m_cameraPreviewRT->GetRtv(), m_dsvHandle, 0u, 0u, pw, ph);
 
             m_cameraPreviewRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
             m_editorCtx->cameraPreviewTexHandle =

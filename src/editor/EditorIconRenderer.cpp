@@ -326,18 +326,29 @@ void EditorIconRenderer::AddPointLightIcon(const XMFLOAT3& pos,
 void EditorIconRenderer::AddCameraFrustum(const XMFLOAT3& pos,
                                           const XMFLOAT4& quat,
                                           f32 fovDegrees, f32 /*nearClip*/, f32 farClip,
-                                          const XMFLOAT3& color)
+                                          const XMFLOAT3& color,
+                                          bool ortho, f32 orthoSize)
 {
     // エディタ表示用の near/far（実際の値だと大きすぎるのでクランプ）
     const f32 nearDraw = 0.3f;
     const f32 farDraw  = (std::min)(farClip, 6.0f);
     const f32 aspect   = 16.0f / 9.0f;
 
-    f32 fovRad = XMConvertToRadians(fovDegrees);
-    f32 halfH_n = tanf(fovRad * 0.5f) * nearDraw;
-    f32 halfW_n = halfH_n * aspect;
-    f32 halfH_f = tanf(fovRad * 0.5f) * farDraw;
-    f32 halfW_f = halfH_f * aspect;
+    // 透視: near/far で台形に広がる。正射: near/far 同サイズ＝箱（2D カメラと一目で分かる）。
+    f32 halfH_n, halfW_n, halfH_f, halfW_f;
+    if (ortho)
+    {
+        const f32 hh = orthoSize;            // 縦の半分（CameraComponent.orthoSize 相当）
+        const f32 hw = orthoSize * aspect;
+        halfH_n = halfH_f = hh;
+        halfW_n = halfW_f = hw;
+    }
+    else
+    {
+        const f32 t = tanf(XMConvertToRadians(fovDegrees) * 0.5f);
+        halfH_n = t * nearDraw; halfW_n = halfH_n * aspect;
+        halfH_f = t * farDraw;  halfW_f = halfH_f * aspect;
+    }
 
     // カメラの座標系を quaternion から構築
     XMMATRIX rot = XMMatrixRotationQuaternion(XMLoadFloat4(&quat));
@@ -500,9 +511,11 @@ void EditorIconRenderer::CollectFromRegistry(entt::registry& registry,
             // 常時: カメラの向きに追従する 3D カメラアイコン（斜め下を向けばアイコンも斜め下）
             AddCameraIcon(tf.position, quat, selected ? colorSelected : iconColor);
 
-            // 選択時のみ: FOV フラスタム線画（3D）
+            // 選択時のみ: フラスタム線画（3D）。正射は箱、透視は台形。
             if (selected)
-                AddCameraFrustum(tf.position, quat, cam.fovDegrees, cam.nearClip, cam.farClip, colorSelected);
+                AddCameraFrustum(tf.position, quat, cam.fovDegrees, cam.nearClip, cam.farClip,
+                                 colorSelected,
+                                 cam.projection == CameraProjection::Orthographic, cam.orthoSize);
         }
     }
 

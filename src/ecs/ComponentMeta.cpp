@@ -117,7 +117,8 @@ void RegisterCoreComponentMeta()
         .data<&Sprite2D::uvMin>("uvMin")
         .data<&Sprite2D::uvMax>("uvMax")
         .data<&Sprite2D::color>("color")
-        .data<&Sprite2D::worldSpace>("worldSpace");
+        .data<&Sprite2D::worldSpace>("worldSpace")
+        .data<&Sprite2D::billboard>("billboard");
 }
 
 } // namespace dx12e

@@ -819,8 +819,32 @@ void InspectorPanel::Render(entt::registry& reg,
                 BeginEdit(reg, ctx.selectedEntity, m_camEdit);
                 auto& cam = reg.get<CameraComponent>(ctx.selectedEntity);
                 bool changed = false, active = false;
-                changed |= ImGui::DragFloat("FOV", &cam.fovDegrees, 1.0f, 1.0f, 179.0f);
-                active  |= ImGui::IsItemActive();
+
+                // 投影方式（透視 / 正射）。正射＝平行投影は距離で大きさが変わらない（2D/見下ろし向け）。
+                // 近づくとスプライト/メッシュを大きく見せたいなら「透視」を選ぶ。
+                int projIdx = (cam.projection == CameraProjection::Orthographic) ? 1 : 0;
+                const char* projItems[] = { "Perspective (透視)", "Orthographic (正射)" };
+                if (ImGui::Combo("Projection", &projIdx, projItems, 2))
+                {
+                    cam.projection = (projIdx == 1) ? CameraProjection::Orthographic
+                                                    : CameraProjection::Perspective;
+                    changed = true;
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("正射は距離で大きさが変わりません（2D/見下ろし向け）。\n"
+                                      "近づくと大きくしたいなら透視を選びます。");
+
+                // 透視は FOV、正射は Ortho Size（ビュー縦の半分の世界単位）を出す。
+                if (cam.projection == CameraProjection::Perspective)
+                {
+                    changed |= ImGui::DragFloat("FOV", &cam.fovDegrees, 1.0f, 1.0f, 179.0f);
+                    active  |= ImGui::IsItemActive();
+                }
+                else
+                {
+                    changed |= ImGui::DragFloat("Ortho Size", &cam.orthoSize, 0.1f, 0.01f, 1000.0f);
+                    active  |= ImGui::IsItemActive();
+                }
                 changed |= ImGui::DragFloat("Near", &cam.nearClip, 0.01f, 0.001f, 100.0f);
                 active  |= ImGui::IsItemActive();
                 changed |= ImGui::DragFloat("Far", &cam.farClip, 10.0f, 1.0f, 100000.0f);

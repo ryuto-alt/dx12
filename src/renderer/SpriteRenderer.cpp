@@ -65,9 +65,9 @@ void SpriteRenderer::Initialize(GraphicsDevice& device, DescriptorHeap* srvHeap,
         auto ps = ShaderCompiler::LoadFromFile(shaderDir + L"Sprite_PS.cso");
 
         D3D12_INPUT_ELEMENT_DESC layout[] = {
-            {"POSITION", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-            {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 8,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-            {"COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+            {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+            {"COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         };
 
         D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
@@ -159,12 +159,12 @@ void SpriteRenderer::Render(ID3D12GraphicsCommandList* cmd, u32 screenW, u32 scr
         XMFLOAT2 uv0 = s.uvMin, uv1 = s.uvMax;
         XMFLOAT4 c = s.color;
 
-        verts.push_back({{x0, y0}, {uv0.x, uv0.y}, c});
-        verts.push_back({{x1, y0}, {uv1.x, uv0.y}, c});
-        verts.push_back({{x1, y1}, {uv1.x, uv1.y}, c});
-        verts.push_back({{x0, y0}, {uv0.x, uv0.y}, c});
-        verts.push_back({{x1, y1}, {uv1.x, uv1.y}, c});
-        verts.push_back({{x0, y1}, {uv0.x, uv1.y}, c});
+        verts.push_back({{x0, y0, 0.0f}, {uv0.x, uv0.y}, c});
+        verts.push_back({{x1, y0, 0.0f}, {uv1.x, uv0.y}, c});
+        verts.push_back({{x1, y1, 0.0f}, {uv1.x, uv1.y}, c});
+        verts.push_back({{x0, y0, 0.0f}, {uv0.x, uv0.y}, c});
+        verts.push_back({{x1, y1, 0.0f}, {uv1.x, uv1.y}, c});
+        verts.push_back({{x0, y1, 0.0f}, {uv0.x, uv1.y}, c});
     }
     u32 vertexCount = static_cast<u32>(verts.size());
     if (vertexCount > kMaxVertices) vertexCount = kMaxVertices;
@@ -209,20 +209,22 @@ void SpriteRenderer::Render(ID3D12GraphicsCommandList* cmd, u32 screenW, u32 scr
 // ===== ワールド空間 2D（カメラ連動。HUD 経路と PSO/VB/list を隔離）=====
 
 void SpriteRenderer::InitializeWorld(GraphicsDevice& device, DXGI_FORMAT sceneRtvFormat,
-                                     const std::wstring& shaderDir)
+                                     DXGI_FORMAT depthFormat, const std::wstring& shaderDir)
 {
     auto* dev = device.GetDevice();
 
-    // PSO: HUD と同設定（Sprite_VS/PS, AlphaBlend, Depth OFF, CullNone）。RTV のみ sceneRtvFormat。
+    // PSO: Sprite_VS/PS, AlphaBlend, CullNone。RTV=sceneRtvFormat。
+    // 深度テストは有効・書き込みは無効（LESS_EQUAL）→ 不透明シーン形状に正しく遮蔽されつつ、
+    // 半透明スプライト同士は layer 昇順の CPU ソート順で重ねられる（深度書き込みで順序が壊れない）。
     // RootSignature は Initialize で作った m_rootSig を共有する。
     {
         auto vs = ShaderCompiler::LoadFromFile(shaderDir + L"Sprite_VS.cso");
         auto ps = ShaderCompiler::LoadFromFile(shaderDir + L"Sprite_PS.cso");
 
         D3D12_INPUT_ELEMENT_DESC layout[] = {
-            {"POSITION", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-            {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 8,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-            {"COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+            {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+            {"COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         };
 
         D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
@@ -246,20 +248,22 @@ void SpriteRenderer::InitializeWorld(GraphicsDevice& device, DXGI_FORMAT sceneRt
         rt.BlendOpAlpha          = D3D12_BLEND_OP_ADD;
         rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 
-        pso.DepthStencilState.DepthEnable   = FALSE;
-        pso.DepthStencilState.StencilEnable = FALSE;
+        pso.DepthStencilState.DepthEnable    = TRUE;
+        pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;   // テストのみ・書き込まない
+        pso.DepthStencilState.DepthFunc      = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+        pso.DepthStencilState.StencilEnable  = FALSE;
         pso.SampleMask       = UINT_MAX;
         pso.NumRenderTargets = 1;
         pso.RTVFormats[0]    = sceneRtvFormat;
-        pso.DSVFormat        = DXGI_FORMAT_UNKNOWN;
+        pso.DSVFormat        = depthFormat;
         pso.SampleDesc       = { 1, 0 };
 
         ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_worldPso)));
     }
 
-    // world 用 動的頂点バッファ（Upload Heap）
+    // world 用 動的頂点バッファ（Upload Heap）。1 フレーム複数パス分の容量。
     {
-        const UINT bufferSize = kMaxVertices * sizeof(Vertex);
+        const UINT bufferSize = kWorldMaxVerts * sizeof(Vertex);
         D3D12_HEAP_PROPERTIES heapProps{};
         heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
         D3D12_RESOURCE_DESC res{};
@@ -285,6 +289,11 @@ void SpriteRenderer::InitializeWorld(GraphicsDevice& device, DXGI_FORMAT sceneRt
     Logger::Info("SpriteRenderer world path initialized");
 }
 
+void SpriteRenderer::BeginWorldVertexFrame()
+{
+    m_worldVbCursor = 0;
+}
+
 void SpriteRenderer::BeginWorldFrame()
 {
     m_worldSprites.clear();
@@ -296,39 +305,78 @@ void SpriteRenderer::SubmitWorld(const WorldSpriteDesc& s)
     m_worldSprites.push_back(s);
 }
 
-void SpriteRenderer::RenderWorld(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj)
+void SpriteRenderer::RenderWorld(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj,
+                                 XMFLOAT3 camRight, XMFLOAT3 camUp)
 {
     if (!m_worldInitialized || m_worldSprites.empty()) return;
 
-    // 描画順: layer 昇順（安定ソート）。Depth OFF なので前後は layer で確定。
+    // 描画順: layer 昇順（安定ソート）。深度書き込みOFFなので半透明の重なりは layer で確定。
     std::stable_sort(m_worldSprites.begin(), m_worldSprites.end(),
                      [](const WorldSpriteDesc& a, const WorldSpriteDesc& b) { return a.layer < b.layer; });
 
-    // ワールド XY 平面に「中心 ± size/2」でクアッド展開（Y 上向き → V を反転して上下正立）
+    const XMVECTOR camR = XMLoadFloat3(&camRight);
+    const XMVECTOR camU = XMLoadFloat3(&camUp);
+
+    // 各スプライトを 4 隅 → 2 三角形に展開。3D ワールド座標で出力（シェーダで ViewProj 適用）。
+    // 通常: ローカル XY 平面のクアッドをエンティティのワールド行列で変換（任意位置/向き/スケール）。
+    // billboard: 向きを無視し、ワールド位置を中心にカメラ右/上ベクトルで常に正対展開。
     std::vector<Vertex> verts;
     verts.reserve(m_worldSprites.size() * 6);
     for (const auto& s : m_worldSprites)
     {
+        const XMMATRIX world = XMLoadFloat4x4(&s.world);
         const float hx = s.size.x * 0.5f, hy = s.size.y * 0.5f;
-        const float x0 = s.center.x - hx, y0 = s.center.y - hy; // 左/下
-        const float x1 = s.center.x + hx, y1 = s.center.y + hy; // 右/上
         const XMFLOAT2 uvmin = s.uvMin, uvmax = s.uvMax;
         const XMFLOAT4 c = s.color;
-        // 上端(y1)→テクスチャ上(uvmin.y), 下端(y0)→テクスチャ下(uvmax.y)
-        verts.push_back({{x0, y1}, {uvmin.x, uvmin.y}, c});
-        verts.push_back({{x1, y1}, {uvmax.x, uvmin.y}, c});
-        verts.push_back({{x1, y0}, {uvmax.x, uvmax.y}, c});
-        verts.push_back({{x0, y1}, {uvmin.x, uvmin.y}, c});
-        verts.push_back({{x1, y0}, {uvmax.x, uvmax.y}, c});
-        verts.push_back({{x0, y0}, {uvmin.x, uvmax.y}, c});
+
+        XMVECTOR tl, tr, br, bl;   // top-left, top-right, bottom-right, bottom-left
+        if (s.billboard)
+        {
+            // ワールド位置（行3 = 並進）。スケールは各基底ベクトル長から取得。
+            const XMVECTOR center = world.r[3];
+            const float sx = XMVectorGetX(XMVector3Length(world.r[0]));
+            const float sy = XMVectorGetX(XMVector3Length(world.r[1]));
+            const XMVECTOR right = XMVectorScale(camR, hx * sx);   // カメラ右 × 半幅
+            const XMVECTOR up    = XMVectorScale(camU, hy * sy);   // カメラ上 × 半高
+            const XMVECTOR top   = XMVectorAdd(center, up);
+            const XMVECTOR bot   = XMVectorSubtract(center, up);
+            tl = XMVectorSubtract(top, right);
+            tr = XMVectorAdd(top, right);
+            br = XMVectorAdd(bot, right);
+            bl = XMVectorSubtract(bot, right);
+        }
+        else
+        {
+            // ローカル隅（XY 平面, z=0, +Y が上）をワールド変換
+            tl = XMVector3Transform(XMVectorSet(-hx,  hy, 0.0f, 1.0f), world);
+            tr = XMVector3Transform(XMVectorSet( hx,  hy, 0.0f, 1.0f), world);
+            br = XMVector3Transform(XMVectorSet( hx, -hy, 0.0f, 1.0f), world);
+            bl = XMVector3Transform(XMVectorSet(-hx, -hy, 0.0f, 1.0f), world);
+        }
+
+        XMFLOAT3 pTL, pTR, pBR, pBL;
+        XMStoreFloat3(&pTL, tl); XMStoreFloat3(&pTR, tr);
+        XMStoreFloat3(&pBR, br); XMStoreFloat3(&pBL, bl);
+
+        // 上端→テクスチャ上(uvmin.y), 下端→テクスチャ下(uvmax.y)
+        verts.push_back({pTL, {uvmin.x, uvmin.y}, c});
+        verts.push_back({pTR, {uvmax.x, uvmin.y}, c});
+        verts.push_back({pBR, {uvmax.x, uvmax.y}, c});
+        verts.push_back({pTL, {uvmin.x, uvmin.y}, c});
+        verts.push_back({pBR, {uvmax.x, uvmax.y}, c});
+        verts.push_back({pBL, {uvmin.x, uvmax.y}, c});
     }
     u32 vertexCount = static_cast<u32>(verts.size());
-    if (vertexCount > kMaxVertices) vertexCount = kMaxVertices;
+    // フレーム内の残り容量にクランプ（メイン＋プレビュー等の複数パスを線形に詰める）
+    const u32 base = m_worldVbCursor;
+    if (base >= kWorldMaxVerts) return;
+    if (base + vertexCount > kWorldMaxVerts) vertexCount = kWorldMaxVerts - base;
 
     void* mapped = nullptr;
     D3D12_RANGE readRange = {0, 0};
     ThrowIfFailed(m_worldVertexBuffer->Map(0, &readRange, &mapped));
-    memcpy(mapped, verts.data(), vertexCount * sizeof(Vertex));
+    memcpy(static_cast<char*>(mapped) + static_cast<size_t>(base) * sizeof(Vertex),
+           verts.data(), vertexCount * sizeof(Vertex));
     m_worldVertexBuffer->Unmap(0, nullptr);
 
     // viewProj を転置して b0 へ（HLSL は mul(rowvec, M)）。正射カメラ時も同じ経路で正しく射影される。
@@ -355,9 +403,11 @@ void SpriteRenderer::RenderWorld(ID3D12GraphicsCommandList* cmd, XMMATRIX viewPr
         if (vtx + count > vertexCount) count = vertexCount - vtx;
 
         cmd->SetGraphicsRootDescriptorTable(1, m_srvHeap->GetGpuHandle(srv));
-        cmd->DrawInstanced(count, 1, vtx, 0);
+        cmd->DrawInstanced(count, 1, base + vtx, 0);   // フレーム内オフセットを加味
         vtx += count;
     }
+
+    m_worldVbCursor = base + vertexCount;   // 次パスはこの後ろへ書く
 }
 
 } // namespace dx12e

@@ -86,6 +86,12 @@ private:
     // ルートシグネチャ / RT / ビューポートは呼び出し側で設定済みとする。
     void RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u32 frameIndex,
                            DirectX::XMMATRIX viewProj, bool isGameView);
+    // Sprite2D(worldSpace=true) を指定 viewProj/RT/DSV へ描画（メインパスとカメラプレビューで共用）。
+    // camRight/camUp はビルボード展開用。billboard でないものはエンティティのワールド行列で配置。
+    void DrawWorldSprites(ID3D12GraphicsCommandList* cmd, DirectX::XMMATRIX viewProj,
+                          DirectX::XMFLOAT3 camRight, DirectX::XMFLOAT3 camUp,
+                          D3D12_CPU_DESCRIPTOR_HANDLE rtv, D3D12_CPU_DESCRIPTOR_HANDLE dsv,
+                          u32 vpX, u32 vpY, u32 vpW, u32 vpH);
     void RebuildScene();
     // ランチャーで選んだ/作成したプロジェクトを実行時に読み込む（パス再ポイント + シーンロード）
     void LoadProject(const ProjectInfo& info);
@@ -232,6 +238,7 @@ private:
     EngineMode m_engineMode = EngineMode::Editor;
     EngineMode m_pendingMode = EngineMode::Editor;
     bool m_modeChangeRequested = false;
+    bool m_editorWas2D = false;  // 2Dビューモードのトグル検出（OFF復帰で透視へ戻す）
     struct CameraSnapshot {
         DirectX::XMFLOAT3 position;
         f32 yaw;

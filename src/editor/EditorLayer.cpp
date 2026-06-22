@@ -360,6 +360,31 @@ void EditorLayer::Render(bool isPlaying,
                 ImGuiWindowFlags_NoNav))
         {
             ImGui::Image(static_cast<ImTextureID>(m_ctx->cameraPreviewTexHandle), ImVec2(pw, ph));
+
+            // カメラ視点の「中央」を示すガイド: 中心十字＋枠＋三分割線。
+            // どこが画面中央に来ているか（=センタリングできているか）を確認しやすくする。
+            const ImVec2 imgMin = ImGui::GetItemRectMin();
+            const ImVec2 imgMax = ImGui::GetItemRectMax();
+            const ImVec2 ctr((imgMin.x + imgMax.x) * 0.5f, (imgMin.y + imgMax.y) * 0.5f);
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            const ImU32 cFrame  = IM_COL32(255, 255, 255, 70);
+            const ImU32 cThird  = IM_COL32(255, 255, 255, 45);
+            const ImU32 cCross  = IM_COL32(255, 220, 60, 200);
+            // 枠
+            dl->AddRect(imgMin, imgMax, cFrame);
+            // 三分割線
+            for (int i = 1; i <= 2; ++i)
+            {
+                float fx = imgMin.x + (imgMax.x - imgMin.x) * (i / 3.0f);
+                float fy = imgMin.y + (imgMax.y - imgMin.y) * (i / 3.0f);
+                dl->AddLine(ImVec2(fx, imgMin.y), ImVec2(fx, imgMax.y), cThird);
+                dl->AddLine(ImVec2(imgMin.x, fy), ImVec2(imgMax.x, fy), cThird);
+            }
+            // 中心十字（中央が一目で分かる）
+            const float r = 9.0f;
+            dl->AddLine(ImVec2(ctr.x - r, ctr.y), ImVec2(ctr.x + r, ctr.y), cCross, 1.5f);
+            dl->AddLine(ImVec2(ctr.x, ctr.y - r), ImVec2(ctr.x, ctr.y + r), cCross, 1.5f);
+            dl->AddCircle(ctr, 2.5f, cCross);
         }
         ImGui::End();
         ImGui::PopStyleVar();

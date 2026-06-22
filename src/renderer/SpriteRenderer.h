@@ -27,17 +27,19 @@ struct SpriteDesc
     float layer    = 0.0f;                 // 小さいほど奥（描画順）
 };
 
-// ワールド空間 2D スプライト（カメラ連動）。center/size は世界単位（XY 平面, z=0）。
-// 純2D（見下ろし＝カメラ-Z正対 / 横スク）向け。前後は layer（小さいほど奥）で CPU ソート。
+// ワールド空間 2D スプライト（カメラ連動）。エンティティのワールド行列で 4 隅を変換するため
+// 3D 空間の任意位置・向き・スケールに置ける（純2D＝正射カメラ正対 / 3D ゲーム内の板やマーカー）。
+// billboard=true なら向きを無視し常にカメラへ正対。前後は layer（小さいほど奥）で CPU 安定ソート。
 struct WorldSpriteDesc
 {
-    DirectX::XMFLOAT2 center{0, 0};       // ワールド中心 (X, Y)
-    DirectX::XMFLOAT2 size{1, 1};         // ワールドサイズ
-    DirectX::XMFLOAT2 uvMin{0, 0};
-    DirectX::XMFLOAT2 uvMax{1, 1};
-    DirectX::XMFLOAT4 color{1, 1, 1, 1};
-    u32   srvIndex = 0;
-    float layer    = 0.0f;
+    DirectX::XMFLOAT4X4 world;            // エンティティのワールド行列（位置/回転/スケール）
+    DirectX::XMFLOAT2   size{1, 1};       // ローカルのクアッド寸法（world のスケールが乗る）
+    DirectX::XMFLOAT2   uvMin{0, 0};
+    DirectX::XMFLOAT2   uvMax{1, 1};
+    DirectX::XMFLOAT4   color{1, 1, 1, 1};
+    u32   srvIndex  = 0;
+    float layer     = 0.0f;
+    bool  billboard = false;             // true: 常にカメラへ正対（向きを無視）
 };
 
 class SpriteRenderer
@@ -53,22 +55,30 @@ public:
     // 呼び出し側で対象 RTV を先にバインドしておくこと。
     void Render(ID3D12GraphicsCommandList* cmd, u32 screenW, u32 screenH);
 
-    // --- ワールド空間 2D（カメラ連動・layer ソート・アルファブレンド）---
+    // --- ワールド空間 2D（カメラ連動・layer ソート・アルファブレンド・深度テスト）---
     // HUD 経路（上）とは別の PSO/頂点バッファ/リストで隔離。Initialize の後に呼ぶ。
-    // sceneRtvFormat はシーン RT のフォーマット（HDR の kSceneColorFormat）。
+    // sceneRtvFormat はシーン RT のフォーマット（HDR の kSceneColorFormat）、
+    // depthFormat はシーン深度バッファのフォーマット（D32_FLOAT 等）。
     void InitializeWorld(GraphicsDevice& device, DXGI_FORMAT sceneRtvFormat,
-                         const std::wstring& shaderDir);
+                         DXGI_FORMAT depthFormat, const std::wstring& shaderDir);
+    // フレーム先頭で 1 回呼ぶ。同一フレーム内で RenderWorld を複数回（メイン＋カメラプレビュー等）
+    // 呼んでも頂点バッファが衝突しないよう、書き込みカーソルをリセットする。
+    void BeginWorldVertexFrame();
     void BeginWorldFrame();
     void SubmitWorld(const WorldSpriteDesc& s);
     bool HasAnyWorld() const { return !m_worldSprites.empty(); }
-    // viewProj = アクティブカメラの ViewProj。呼び出し側で対象 RTV(sceneRT) をバインド済みのこと。
-    void RenderWorld(ID3D12GraphicsCommandList* cmd, DirectX::XMMATRIX viewProj);
+    // viewProj=アクティブカメラの ViewProj。camRight/camUp=ビルボード展開用のカメラ右/上ベクトル。
+    // 呼び出し側で対象 RTV(sceneRT/preview)＋深度 DSV をバインド済みのこと（PSO は深度テスト有効）。
+    void RenderWorld(ID3D12GraphicsCommandList* cmd, DirectX::XMMATRIX viewProj,
+                     DirectX::XMFLOAT3 camRight, DirectX::XMFLOAT3 camUp);
 
 private:
-    struct Vertex { DirectX::XMFLOAT2 pos; DirectX::XMFLOAT2 uv; DirectX::XMFLOAT4 col; };
+    struct Vertex { DirectX::XMFLOAT3 pos; DirectX::XMFLOAT2 uv; DirectX::XMFLOAT4 col; };
 
     static constexpr u32 kMaxSprites  = 4096;
     static constexpr u32 kMaxVertices = kMaxSprites * 6;
+    // world 頂点バッファは 1 フレームに複数パス（メイン＋プレビュー）書き込むため余裕を持たせる。
+    static constexpr u32 kWorldMaxVerts = kMaxVertices * 2;
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSig;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pso;
@@ -84,6 +94,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_worldVertexBuffer;
     D3D12_VERTEX_BUFFER_VIEW                     m_worldVbView{};
     std::vector<WorldSpriteDesc>                m_worldSprites;
+    u32  m_worldVbCursor   = 0;        // フレーム内の頂点書き込み位置（BeginWorldVertexFrame で 0）
     bool m_worldInitialized = false;
 };
 

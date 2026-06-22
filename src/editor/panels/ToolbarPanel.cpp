@@ -490,6 +490,20 @@ void ToolbarPanel::Render(bool isPlaying,
                                     : "World space  (click: Local)"))
         ctx.gizmoLocalSpace = !ctx.gizmoLocalSpace;
 
+    // ===== 2D / 3D ビュー切替（Unity の 2D ボタン相当）=====
+    ImGui::SameLine(0, 12);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine(0, 8);
+    if (ctx.view2D) ImGui::PushStyleColor(ImGuiCol_Button, kActiveCol);
+    if (ImGui::Button(ctx.view2D ? "2D" : "3D", ImVec2(38.0f, 0.0f)))
+        ctx.view2D = !ctx.view2D;
+    if (ctx.view2D) ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(ctx.view2D
+            ? "2D view (click for 3D): orthographic, front-locked. Middle-drag: pan, Wheel: zoom"
+            : "3D view (click for 2D)");
+
     // ===== ゲームビルド =====
     ImGui::SameLine(0, 12);
     ImGui::AlignTextToFramePadding();

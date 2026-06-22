@@ -72,7 +72,8 @@ private:
     void AddCameraFrustum(const DirectX::XMFLOAT3& pos,
                           const DirectX::XMFLOAT4& quat,
                           f32 fovDegrees, f32 nearClip, f32 farClip,
-                          const DirectX::XMFLOAT3& color);
+                          const DirectX::XMFLOAT3& color,
+                          bool ortho = false, f32 orthoSize = 10.0f);
 
     void AddDirectionalArrow(const DirectX::XMFLOAT3& origin,
                              const DirectX::XMFLOAT3& direction,

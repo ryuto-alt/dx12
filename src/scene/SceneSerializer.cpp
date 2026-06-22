@@ -366,7 +366,8 @@ static void RegisterCoreComponentSerializers()
                     {"uvMin",       json::array({sp.uvMin.x, sp.uvMin.y})},
                     {"uvMax",       json::array({sp.uvMax.x, sp.uvMax.y})},
                     {"color",       json::array({sp.color.x, sp.color.y, sp.color.z, sp.color.w})},
-                    {"worldSpace",  sp.worldSpace}
+                    {"worldSpace",  sp.worldSpace},
+                    {"billboard",   sp.billboard}
                 };
             }
         },
@@ -386,6 +387,7 @@ static void RegisterCoreComponentSerializers()
                     sp.color = { sj["color"][0].get<float>(), sj["color"][1].get<float>(),
                                  sj["color"][2].get<float>(), sj["color"][3].get<float>() };
                 sp.worldSpace = sj.value("worldSpace", true);
+                sp.billboard  = sj.value("billboard", false);
                 reg.emplace_or_replace<Sprite2D>(e, sp);
             }
         }, {}, {} });

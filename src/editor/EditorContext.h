@@ -85,6 +85,11 @@ public:
     GizmoMode gizmoMode      = GizmoMode::Translate;
     bool      gizmoLocalSpace = false;
 
+    // 2D ビューモード（Unity の 2D ボタン相当）。ON 中はエディタカメラを正射＋XY平面正対に固定し、
+    // 回転/ドリーを禁止（中ドラッグでパン、ホイールでズーム）。ギズモも正射モードで表示する。
+    bool  view2D     = false;
+    float view2DZoom = 6.0f;   // 正射の縦半分（世界単位）。小さいほどズームイン。
+
     // メニュー「表示 > レイアウトをリセット」で立てるフラグ。
     // EditorLayer が検知してデフォルトドックレイアウトを再構築する。
     bool resetLayout = false;

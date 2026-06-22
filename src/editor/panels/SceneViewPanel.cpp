@@ -44,7 +44,7 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
     XMStoreFloat4x4(&worldF, hasParent ? ComputeWorldMatrix(reg, ctx.selectedEntity)
                                        : transform.GetWorldMatrix());
 
-    ImGuizmo::SetOrthographic(false);
+    ImGuizmo::SetOrthographic(ctx.view2D);   // 2D ビューモードは正射ギズモ
     ImGuizmo::SetDrawlist(ImGui::GetBackgroundDrawList());
     ImGuizmo::SetRect(vpX, vpY, vpW, vpH);
 
@@ -184,16 +184,21 @@ void SceneViewPanel::HandlePicking(entt::registry& reg,
     f32 ndcX = ((mousePos.x - vpX) / vpW) * 2.0f - 1.0f;
     f32 ndcY = 1.0f - ((mousePos.y - vpY) / vpH) * 2.0f;
 
-    XMMATRIX invProj = XMMatrixInverse(nullptr, camera->GetProjectionMatrix());
-    XMMATRIX invView = XMMatrixInverse(nullptr, camera->GetViewMatrix());
+    XMMATRIX view = camera->GetViewMatrix();
+    XMMATRIX proj = camera->GetProjectionMatrix();
+    XMMATRIX invView     = XMMatrixInverse(nullptr, view);
+    XMMATRIX invViewProj = XMMatrixInverse(nullptr, view * proj);
+    const XMVECTOR camRightV = invView.r[0];   // ビルボードスプライトのピッキング展開用
+    const XMVECTOR camUpV    = invView.r[1];
 
-    XMVECTOR rayClip = XMVectorSet(ndcX, ndcY, 1.0f, 1.0f);
-    XMVECTOR rayEye = XMVector4Transform(rayClip, invProj);
-    rayEye = XMVectorSetZ(rayEye, 1.0f);
-    rayEye = XMVectorSetW(rayEye, 0.0f);
-    XMVECTOR rayDir = XMVector3Normalize(XMVector4Transform(rayEye, invView));
-    XMFLOAT3 camPosF = camera->GetPosition();
-    XMVECTOR rayOrigin = XMLoadFloat3(&camPosF);
+    // クリップ空間の near/far をワールドへアンプロジェクトしてレイを作る。
+    // 透視でも正射でも正しい（正射はカメラ位置基準だと平行レイにならず破綻する）。
+    XMVECTOR pNear = XMVector4Transform(XMVectorSet(ndcX, ndcY, 0.0f, 1.0f), invViewProj);
+    XMVECTOR pFar  = XMVector4Transform(XMVectorSet(ndcX, ndcY, 1.0f, 1.0f), invViewProj);
+    pNear = XMVectorScale(pNear, 1.0f / XMVectorGetW(pNear));
+    pFar  = XMVectorScale(pFar,  1.0f / XMVectorGetW(pFar));
+    XMVECTOR rayOrigin = pNear;
+    XMVECTOR rayDir    = XMVector3Normalize(XMVectorSubtract(pFar, pNear));
 
     f32 closestDist = FLT_MAX;
     entt::entity closestEntity = entt::null;
@@ -230,11 +235,75 @@ void SceneViewPanel::HandlePicking(entt::registry& reg,
         return -1.0f;
     };
 
+    // レイ vs 三角形（Möller–Trumbore, 両面）。ヒットで t(>0)、外れ/背面平行で -1。
+    auto rayTestTri = [&](XMVECTOR v0, XMVECTOR v1, XMVECTOR v2) -> f32 {
+        XMVECTOR e1 = XMVectorSubtract(v1, v0);
+        XMVECTOR e2 = XMVectorSubtract(v2, v0);
+        XMVECTOR p  = XMVector3Cross(rayDir, e2);
+        f32 det = XMVectorGetX(XMVector3Dot(e1, p));
+        if (std::abs(det) < 1e-8f) return -1.0f;          // レイが三角形と平行
+        f32 inv = 1.0f / det;
+        XMVECTOR tv = XMVectorSubtract(rayOrigin, v0);
+        f32 u = XMVectorGetX(XMVector3Dot(tv, p)) * inv;
+        if (u < 0.0f || u > 1.0f) return -1.0f;
+        XMVECTOR q = XMVector3Cross(tv, e1);
+        f32 v = XMVectorGetX(XMVector3Dot(rayDir, q)) * inv;
+        if (v < 0.0f || u + v > 1.0f) return -1.0f;
+        f32 t = XMVectorGetX(XMVector3Dot(e2, q)) * inv;
+        return t > 0.0f ? t : -1.0f;
+    };
+    // ワールド空間スプライトのクアッド（描画と同じ 4 隅）でレイ判定。絵の全面がクリック対象になる。
+    auto rayTestSprite = [&](const Sprite2D& sp, const XMMATRIX& world) -> f32 {
+        const f32 hx = sp.size.x * 0.5f, hy = sp.size.y * 0.5f;
+        XMVECTOR tl, tr, br, bl;
+        if (sp.billboard)
+        {
+            const XMVECTOR ctr = world.r[3];
+            const f32 sx = XMVectorGetX(XMVector3Length(world.r[0]));
+            const f32 sy = XMVectorGetX(XMVector3Length(world.r[1]));
+            const XMVECTOR R = XMVectorScale(camRightV, hx * sx);
+            const XMVECTOR U = XMVectorScale(camUpV,    hy * sy);
+            tl = XMVectorSubtract(XMVectorAdd(ctr, U), R);
+            tr = XMVectorAdd(XMVectorAdd(ctr, U), R);
+            br = XMVectorAdd(XMVectorSubtract(ctr, U), R);
+            bl = XMVectorSubtract(XMVectorSubtract(ctr, U), R);
+        }
+        else
+        {
+            tl = XMVector3Transform(XMVectorSet(-hx,  hy, 0.0f, 1.0f), world);
+            tr = XMVector3Transform(XMVectorSet( hx,  hy, 0.0f, 1.0f), world);
+            br = XMVector3Transform(XMVectorSet( hx, -hy, 0.0f, 1.0f), world);
+            bl = XMVector3Transform(XMVectorSet(-hx, -hy, 0.0f, 1.0f), world);
+        }
+        f32 t0 = rayTestTri(tl, tr, br);
+        f32 t1 = rayTestTri(tl, br, bl);
+        if (t0 < 0.0f) return t1;
+        if (t1 < 0.0f) return t0;
+        return (std::min)(t0, t1);
+    };
+
     // 全 Transform 持ちエンティティをピッキング対象にする
     auto pickView = reg.view<const Transform>();
     for (auto [e, transform] : pickView.each())
     {
         if (reg.all_of<GridPlane>(e)) continue;
+
+        // ワールド空間スプライト: 実際のクアッド全面でレイ判定（固定 AABB だと中央しか反応しない）
+        if (reg.all_of<Sprite2D>(e))
+        {
+            const auto& sp = reg.get<Sprite2D>(e);
+            if (sp.worldSpace && !sp.texturePath.empty())
+            {
+                XMMATRIX world = ComputeWorldMatrix(reg, e);
+                f32 t = rayTestSprite(sp, world);
+                if (t > 0.0f && t < closestDist)
+                {
+                    closestDist = t;
+                    closestEntity = e;
+                }
+                continue;   // AABB 判定はスキップ
+            }
+        }
 
         // 親階層込みのワールド位置/スケールで判定
         XMFLOAT3 wpos   = transform.position;
@@ -359,6 +428,27 @@ void SceneViewPanel::HandleCameraNavigation(entt::registry& reg,
     // ギズモ操作中、またはカーソルがビュー外なら以降のカメラ操作はしない
     if (ImGuizmo::IsUsing() || !inViewport)
         return;
+
+    // --- 2D ビューモード: パン（中ドラッグ）＋ズーム（ホイール）のみ。回転/ドリーなし ---
+    // カメラの正射化・向き固定は Application 側で毎フレーム適用。ここでは x/y パンとズーム量だけ動かす。
+    if (ctx.view2D)
+    {
+        // ホイール: 正射サイズを増減（上スクロールでズームイン）。
+        if (io.MouseWheel != 0.0f)
+        {
+            f32 factor = (io.MouseWheel > 0.0f) ? 0.9f : (1.0f / 0.9f);
+            ctx.view2DZoom = std::clamp(ctx.view2DZoom * factor, 0.2f, 1000.0f);
+        }
+        // 中ドラッグ: パン。回転は 0 固定なので MoveRight/MoveUp はワールド X/Y 平行移動になる。
+        // 画面ピクセル → 世界量は「ビュー縦 = 2*zoom」をビュー高で割って換算。
+        if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0.0f))
+        {
+            f32 worldPerPixel = (2.0f * ctx.view2DZoom) / (std::max)(1.0f, vpH);
+            camera->MoveRight(-io.MouseDelta.x * worldPerPixel);
+            camera->MoveUp(io.MouseDelta.y * worldPerPixel);
+        }
+        return;
+    }
 
     // --- タッチパッド/ホイール ナビゲーション ---
     //   縦スワイプ(二本指)        : 前後
