@@ -71,6 +71,11 @@ public:
     // 指定タグを持つ全エンティティのハンドルを返す（filter汎用化・RTS群管理・対象クエリ）。
     std::vector<entt::entity> QueryByTag(const std::string& tag) const;
 
+    // XZ矩形 [minX,maxX]×[minZ,maxZ] 内のエンティティを返す。tag 非空ならそのタグ持ちに絞る。
+    // RTS の矩形選択・範囲判定をゲーム側からエンジン無改造で使うための汎用クエリ。
+    std::vector<entt::entity> QueryInBox(float minX, float minZ, float maxX, float maxZ,
+                                         const std::string& tag = "") const;
+
     GraphicsDevice* GetDevice() const { return m_device; }
     entt::registry&       GetRegistry()       { return m_registry; }
     const entt::registry& GetRegistry() const { return m_registry; }

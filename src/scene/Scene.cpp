@@ -365,4 +365,27 @@ std::vector<entt::entity> Scene::QueryByTag(const std::string& tag) const
     return result;
 }
 
+std::vector<entt::entity> Scene::QueryInBox(float minX, float minZ, float maxX, float maxZ,
+                                            const std::string& tag) const
+{
+    std::vector<entt::entity> result;
+    auto view = m_registry.view<const Transform>();
+    for (auto [handle, tf] : view.each())
+    {
+        const auto& p = tf.position;
+        if (p.x < minX || p.x > maxX || p.z < minZ || p.z > maxZ) continue;
+        if (!tag.empty())
+        {
+            if (!m_registry.all_of<Tag>(handle)) continue;
+            const auto& t = m_registry.get<Tag>(handle);
+            bool found = false;
+            for (const auto& s : t.tags)
+                if (s == tag) { found = true; break; }
+            if (!found) continue;
+        }
+        result.push_back(handle);
+    }
+    return result;
+}
+
 } // namespace dx12e

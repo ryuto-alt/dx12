@@ -557,6 +557,32 @@ static void Test_TagQuery()
     CHECK(s.QueryByTag("nonexistent").empty());
 }
 
+// Scene::QueryInBox（矩形＋任意タグ）のヘッドレス検証。
+static void Test_QueryInBox()
+{
+    Scene s;
+    auto& reg = s.GetRegistry();
+    auto mk = [&](const char* name, float x, float z, const char* tag) -> entt::entity {
+        entt::entity e = reg.create();
+        reg.emplace<NameTag>(e, NameTag{name});
+        auto& tf = reg.emplace<Transform>(e);
+        tf.position = { x, 0.0f, z };
+        if (tag) { Tag t; t.tags = { tag }; reg.emplace<Tag>(e, t); }
+        return e;
+    };
+    entt::entity a = mk("A", 1.0f, 1.0f, "unit");
+    entt::entity b = mk("B", 5.0f, 5.0f, "unit");
+    mk("C", 1.0f, 1.0f, "tree");   // 矩形内だが別タグ
+    (void)b;
+
+    CHECK(s.QueryInBox(0.0f, 0.0f, 2.0f, 2.0f).size() == 2);          // A, C
+    const auto units = s.QueryInBox(0.0f, 0.0f, 2.0f, 2.0f, "unit");
+    CHECK(units.size() == 1);
+    if (units.size() == 1) CHECK(units[0] == a);
+    CHECK(s.QueryInBox(0.0f, 0.0f, 6.0f, 6.0f, "unit").size() == 2);  // A, B
+    CHECK(s.QueryInBox(10.0f, 10.0f, 20.0f, 20.0f).empty());
+}
+
 // 中立ヘッダ(ComponentRegistry.h)が /WX で通り、型が使えることの最小確認。
 static void Test_RegistryHeaderCompiles()
 {
@@ -585,6 +611,7 @@ int main()
     Test_Combined();
     Test_Tag();
     Test_TagQuery();
+    Test_QueryInBox();
     Test_DataComponent();
     Test_RegistryHeaderCompiles();
 
