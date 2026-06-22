@@ -343,6 +343,29 @@ void ScriptEngine::RegisterBindings()
                 arr[idx++] = t;
             }
             return arr;
+        },
+        // タグで列挙（filter汎用化・RTS群選択）。エンティティ名(string)の配列(1始まり)を返す。
+        // 例: for _, name in ipairs(scene:queryByTag("enemy")) do local a = actor(name) ... end
+        "queryByTag", [this](Scene& s, const std::string& tag) -> sol::table {
+            auto& reg = s.GetRegistry();
+            sol::table arr = m_lua->create_table();
+            int idx = 1;
+            for (auto e : s.QueryByTag(tag))
+                if (reg.all_of<NameTag>(e))
+                    arr[idx++] = reg.get<NameTag>(e).name;
+            return arr;
+        },
+        // XZ矩形(+任意タグ)で列挙。エンティティ名(string)の配列を返す。RTS の矩形選択向け。
+        // 例: scene:queryInBox(minX,minZ,maxX,maxZ) / scene:queryInBox(...,"unit")
+        "queryInBox", [this](Scene& s, float minX, float minZ, float maxX, float maxZ,
+                             sol::optional<std::string> tag) -> sol::table {
+            auto& reg = s.GetRegistry();
+            sol::table arr = m_lua->create_table();
+            int idx = 1;
+            for (auto e : s.QueryInBox(minX, minZ, maxX, maxZ, tag.value_or(std::string{})))
+                if (reg.all_of<NameTag>(e))
+                    arr[idx++] = reg.get<NameTag>(e).name;
+            return arr;
         }
     );
 
