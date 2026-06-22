@@ -10,7 +10,10 @@ class Camera
 {
 public:
     void SetPerspective(f32 fovYRad, f32 aspect, f32 nearZ, f32 farZ);
+    // 正射投影（2D/見下ろし/ボード/RTS俯瞰）。viewHeight=ビュー縦の世界単位（全高）。
+    void SetOrthographic(f32 viewHeight, f32 aspect, f32 nearZ, f32 farZ);
     void SetAspect(f32 aspect) { m_aspect = aspect; }  // fov を変えずアスペクト比だけ更新
+    bool IsOrthographic() const { return m_orthographic; }
 
     // LookAt (legacy - 固定カメラ用)
     void LookAt(DirectX::XMFLOAT3 eye, DirectX::XMFLOAT3 target, DirectX::XMFLOAT3 up = {0, 1, 0});
@@ -52,6 +55,9 @@ private:
     f32 m_aspect = 1280.0f / 720.0f;
     f32 m_nearZ  = 0.1f;
     f32 m_farZ   = 1000.0f;
+
+    bool m_orthographic = false;   // true なら GetProjectionMatrix が正射を返す
+    f32  m_orthoHeight  = 20.0f;   // 正射のビュー縦（全高）の世界単位
 
     f32 m_moveSpeed        = 5.0f;
     f32 m_mouseSensitivity = 0.003f;

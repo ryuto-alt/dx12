@@ -1995,10 +1995,13 @@ void Application::SyncActiveCameraToGlobal()
         m_camera->SetYaw(DirectX::XMConvertToRadians(tf.rotation.y));
         // ピッチ反転: エディタのギズモ/フラスタム(Euler)と Camera(forward.y=sin(pitch)) は符号が逆
         m_camera->SetPitch(DirectX::XMConvertToRadians(-tf.rotation.x));
-        m_camera->SetPerspective(
-            DirectX::XMConvertToRadians(cam.fovDegrees),
-            static_cast<f32>(m_window->GetWidth()) / static_cast<f32>(m_window->GetHeight()),
-            cam.nearClip, cam.farClip);
+        const f32 camAspect =
+            static_cast<f32>(m_window->GetWidth()) / static_cast<f32>(m_window->GetHeight());
+        if (cam.projection == CameraProjection::Orthographic)
+            m_camera->SetOrthographic(2.0f * cam.orthoSize, camAspect, cam.nearClip, cam.farClip);
+        else
+            m_camera->SetPerspective(
+                DirectX::XMConvertToRadians(cam.fovDegrees), camAspect, cam.nearClip, cam.farClip);
         break;
     }
 }

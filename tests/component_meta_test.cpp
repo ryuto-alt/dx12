@@ -70,7 +70,7 @@ int main()
     Expect<PointLight>({ "color", "intensity", "range" });
     Expect<DirectionalLight>({ "direction", "color", "intensity", "ambient" });
     Expect<SpotLight>({ "color", "intensity", "range", "direction", "innerConeDeg", "outerConeDeg" });
-    Expect<CameraComponent>({ "fovDegrees", "nearClip", "farClip", "isActive" });
+    Expect<CameraComponent>({ "fovDegrees", "nearClip", "farClip", "isActive", "projection", "orthoSize" });
     Expect<RigidBody>({ "motionType", "mass", "restitution", "friction", "linearDamping", "angularDamping", "useGravity" });
     Expect<BoxCollider>({ "halfExtents", "offset" });
     Expect<SphereCollider>({ "radius", "offset" });

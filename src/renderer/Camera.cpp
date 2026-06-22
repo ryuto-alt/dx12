@@ -10,10 +10,20 @@ namespace dx12e
 
 void Camera::SetPerspective(f32 fovYRad, f32 aspect, f32 nearZ, f32 farZ)
 {
+    m_orthographic = false;
     m_fovY   = fovYRad;
     m_aspect = aspect;
     m_nearZ  = nearZ;
     m_farZ   = farZ;
+}
+
+void Camera::SetOrthographic(f32 viewHeight, f32 aspect, f32 nearZ, f32 farZ)
+{
+    m_orthographic = true;
+    m_orthoHeight  = viewHeight;
+    m_aspect       = aspect;
+    m_nearZ        = nearZ;
+    m_farZ         = farZ;
 }
 
 void Camera::LookAt(XMFLOAT3 eye, XMFLOAT3 target, XMFLOAT3 up)
@@ -103,6 +113,8 @@ XMMATRIX Camera::GetViewMatrix() const
 
 XMMATRIX Camera::GetProjectionMatrix() const
 {
+    if (m_orthographic)
+        return XMMatrixOrthographicLH(m_orthoHeight * m_aspect, m_orthoHeight, m_nearZ, m_farZ);
     return XMMatrixPerspectiveFovLH(m_fovY, m_aspect, m_nearZ, m_farZ);
 }
 

@@ -60,3 +60,20 @@ if(TARGET ECS)
     endif()
     add_test(NAME ComponentMetaTests COMMAND ComponentMetaTests)
 endif()
+
+# Camera 投影行列（透視/正射）テスト（Phase 4: ortho 能力）。
+# Camera.cpp は純 DirectXMath（GPU非依存）なので直接ビルドして検証する。
+# 完全ビルド時のみ（directxmath が要るため Renderer ターゲットの有無で判定）。
+if(TARGET Renderer)
+    find_package(directxmath CONFIG REQUIRED)
+    add_executable(CameraProjectionTests
+        camera_projection_test.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/renderer/Camera.cpp)
+    target_include_directories(CameraProjectionTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(CameraProjectionTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(CameraProjectionTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(CameraProjectionTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME CameraProjectionTests COMMAND CameraProjectionTests)
+endif()

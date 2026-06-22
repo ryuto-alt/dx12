@@ -124,12 +124,22 @@ struct SpotLight
     bool              _prevRotInit = false;
 };
 
+// 投影方式。Perspective=透視(3D)、Orthographic=正射(2D/見下ろし/ボード/RTS俯瞰)。
+enum class CameraProjection : uint8_t
+{
+    Perspective  = 0,
+    Orthographic = 1,
+};
+
 struct CameraComponent
 {
-    f32  fovDegrees = 60.0f;
+    f32  fovDegrees = 60.0f;   // Perspective: 垂直FOV(度)
     f32  nearClip   = 0.1f;
     f32  farClip    = 1000.0f;
     bool isActive   = false;
+    // 能力カタログ(Phase4): 正射投影。2D/2.5D・ボード・RTS俯瞰をエンジン無改造で成立させる。
+    CameraProjection projection = CameraProjection::Perspective;
+    f32  orthoSize  = 10.0f;    // Orthographic: ビュー縦の半分の世界単位(Unity orthographicSize 相当)
 };
 
 // 3D 空間オーディオ音源。Transform のワールド位置がエミッタになる。

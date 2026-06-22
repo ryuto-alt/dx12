@@ -65,7 +65,9 @@ void RegisterCoreComponentMeta()
         .data<&CameraComponent::fovDegrees>("fovDegrees")
         .data<&CameraComponent::nearClip>("nearClip")
         .data<&CameraComponent::farClip>("farClip")
-        .data<&CameraComponent::isActive>("isActive");
+        .data<&CameraComponent::isActive>("isActive")
+        .data<&CameraComponent::projection>("projection")
+        .data<&CameraComponent::orthoSize>("orthoSize");
 
     entt::meta_factory<RigidBody>{}
         .type("RigidBody")

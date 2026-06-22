@@ -176,7 +176,9 @@ static void RegisterCoreComponentSerializers()
                     {"fovDegrees", cam.fovDegrees},
                     {"nearClip",   cam.nearClip},
                     {"farClip",    cam.farClip},
-                    {"isActive",   cam.isActive}
+                    {"isActive",   cam.isActive},
+                    {"projection", static_cast<int>(cam.projection)},
+                    {"orthoSize",  cam.orthoSize}
                 };
             }
         },
@@ -188,6 +190,8 @@ static void RegisterCoreComponentSerializers()
                 if (cj.contains("nearClip"))   cam.nearClip   = cj["nearClip"].get<f32>();
                 if (cj.contains("farClip"))    cam.farClip    = cj["farClip"].get<f32>();
                 if (cj.contains("isActive"))   cam.isActive   = cj["isActive"].get<bool>();
+                if (cj.contains("projection")) cam.projection = static_cast<CameraProjection>(cj["projection"].get<int>());
+                if (cj.contains("orthoSize"))  cam.orthoSize  = cj["orthoSize"].get<f32>();
                 // アクティブカメラの重複防止（複製時など）
                 if (cam.isActive) {
                     for (auto [oe, oc] : reg.view<const CameraComponent>().each()) {

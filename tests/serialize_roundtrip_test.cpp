@@ -200,6 +200,8 @@ static void Test_Camera()
             cam.nearClip = 0.2f;
             cam.farClip = 500.0f;
             cam.isActive = true;
+            cam.projection = CameraProjection::Orthographic;
+            cam.orthoSize = 8.5f;
             r.emplace<CameraComponent>(e, cam);
         },
         [](const CameraComponent& cam) {
@@ -207,6 +209,8 @@ static void Test_Camera()
             CHECK_F(cam.nearClip, 0.2f);
             CHECK_F(cam.farClip, 500.0f);
             CHECK(cam.isActive == true);
+            CHECK(cam.projection == CameraProjection::Orthographic);
+            CHECK_F(cam.orthoSize, 8.5f);
         });
 }
 
