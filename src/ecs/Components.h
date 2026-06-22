@@ -2,6 +2,7 @@
 
 #include <string>
 #include <vector>
+#include <unordered_map>
 #include <memory>
 #include <cstdint>
 #include <DirectXMath.h>
@@ -31,6 +32,24 @@ struct NameTag
 struct Tag
 {
     std::vector<std::string> tags;
+};
+
+// 汎用データ値。数値/真偽/文字列/Vec3 を1つ持つ（Lua定義のゲーム状態の単位）。
+struct DataValue
+{
+    enum class Type : uint8_t { Number = 0, Bool = 1, String = 2, Vec3 = 3 };
+    Type              type = Type::Number;
+    double            num  = 0.0;
+    bool              b    = false;
+    std::string       str;
+    DirectX::XMFLOAT3 vec{0.0f, 0.0f, 0.0f};
+};
+
+// 自由形式のキー値ストア。盤面セル/HP/陣営/手札 などゲーム状態をエンジン無改造で持つ器。
+// 固定フィールドではなく動的キーなので Inspector 自動UI(entt::meta)の対象外。Lua から読み書きする。
+struct DataComponent
+{
+    std::unordered_map<std::string, DataValue> values;
 };
 
 struct Transform

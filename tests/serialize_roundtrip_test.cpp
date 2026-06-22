@@ -490,6 +490,32 @@ static void Test_Combined()
     }
 }
 
+static void Test_DataComponent()
+{
+    Case<DataComponent>(
+        [](entt::registry& r, entt::entity e) {
+            DataComponent dc;
+            DataValue n; n.type = DataValue::Type::Number; n.num = 42.5;              dc.values["hp"]    = n;
+            DataValue b; b.type = DataValue::Type::Bool;   b.b   = true;              dc.values["alive"] = b;
+            DataValue s; s.type = DataValue::Type::String; s.str = "red";             dc.values["team"]  = s;
+            DataValue v; v.type = DataValue::Type::Vec3;   v.vec = {1.0f, 2.0f, 3.0f};dc.values["spawn"] = v;
+            r.emplace<DataComponent>(e, dc);
+        },
+        [](const DataComponent& dc) {
+            CHECK(dc.values.size() == 4);
+            auto hp = dc.values.find("hp");
+            CHECK(hp != dc.values.end());
+            if (hp != dc.values.end()) { CHECK(hp->second.type == DataValue::Type::Number); CHECK_D(hp->second.num, 42.5); }
+            auto al = dc.values.find("alive");
+            CHECK(al != dc.values.end() && al->second.type == DataValue::Type::Bool && al->second.b == true);
+            auto tm = dc.values.find("team");
+            CHECK(tm != dc.values.end() && tm->second.type == DataValue::Type::String && tm->second.str == "red");
+            auto sp = dc.values.find("spawn");
+            CHECK(sp != dc.values.end());
+            if (sp != dc.values.end()) { CHECK(sp->second.type == DataValue::Type::Vec3); CHECK_V3(sp->second.vec, 1.0f, 2.0f, 3.0f); }
+        });
+}
+
 static void Test_Tag()
 {
     Case<Tag>(
@@ -559,6 +585,7 @@ int main()
     Test_Combined();
     Test_Tag();
     Test_TagQuery();
+    Test_DataComponent();
     Test_RegistryHeaderCompiles();
 
     std::printf("serialize_roundtrip: %d checks, %d failures\n", g_checks, g_failures);

@@ -316,6 +316,44 @@ static void RegisterCoreComponentSerializers()
                     reg.emplace_or_replace<Tag>(e, std::move(t));
             }
         }, {}, {} });
+
+    R.Register({ "DataComponent", ComponentSource::Core,
+        [](const entt::registry& reg, entt::entity entity, json& ej) {
+            if (reg.all_of<DataComponent>(entity)) {
+                const auto& dc = reg.get<DataComponent>(entity);
+                if (!dc.values.empty()) {
+                    json obj = json::object();
+                    for (const auto& [k, v] : dc.values) {
+                        json vj;
+                        switch (v.type) {
+                        case DataValue::Type::Number: vj = {{"t", "number"}, {"v", v.num}}; break;
+                        case DataValue::Type::Bool:   vj = {{"t", "bool"},   {"v", v.b}};   break;
+                        case DataValue::Type::String: vj = {{"t", "string"}, {"v", v.str}}; break;
+                        case DataValue::Type::Vec3:   vj = {{"t", "vec3"},   {"v", SerializeFloat3(v.vec)}}; break;
+                        }
+                        obj[k] = std::move(vj);
+                    }
+                    ej["data"] = std::move(obj);
+                }
+            }
+        },
+        [](entt::registry& reg, entt::entity e, const json& ej) {
+            if (ej.contains("data") && ej["data"].is_object()) {
+                DataComponent dc;
+                for (auto it = ej["data"].begin(); it != ej["data"].end(); ++it) {
+                    const json& vj = it.value();
+                    DataValue dv;
+                    const std::string t = vj.value("t", "number");
+                    if (t == "bool")        { dv.type = DataValue::Type::Bool;   dv.b   = vj.value("v", false); }
+                    else if (t == "string") { dv.type = DataValue::Type::String; dv.str = vj.value("v", std::string{}); }
+                    else if (t == "vec3")   { dv.type = DataValue::Type::Vec3;   if (vj.contains("v")) dv.vec = DeserializeFloat3(vj["v"]); }
+                    else                    { dv.type = DataValue::Type::Number; dv.num = vj.value("v", 0.0); }
+                    dc.values[it.key()] = std::move(dv);
+                }
+                if (!dc.values.empty())
+                    reg.emplace_or_replace<DataComponent>(e, std::move(dc));
+            }
+        }, {}, {} });
 }
 
 // 単一エンティティを JSON ノードに直列化（parent は含まない）
