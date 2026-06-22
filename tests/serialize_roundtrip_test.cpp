@@ -516,6 +516,32 @@ static void Test_DataComponent()
         });
 }
 
+static void Test_Sprite2D()
+{
+    Case<Sprite2D>(
+        [](entt::registry& r, entt::entity e) {
+            Sprite2D sp;
+            sp.texturePath = "textures/hero.png";
+            sp.layer = 5;
+            sp.size  = { 2.0f, 3.0f };
+            sp.uvMin = { 0.1f, 0.2f };
+            sp.uvMax = { 0.7f, 0.9f };
+            sp.color = { 0.5f, 0.6f, 0.7f, 0.8f };
+            sp.worldSpace = false;
+            r.emplace<Sprite2D>(e, sp);
+        },
+        [](const Sprite2D& sp) {
+            CHECK(sp.texturePath == "textures/hero.png");
+            CHECK(sp.layer == 5);
+            CHECK_F(sp.size.x, 2.0f);  CHECK_F(sp.size.y, 3.0f);
+            CHECK_F(sp.uvMin.x, 0.1f); CHECK_F(sp.uvMin.y, 0.2f);
+            CHECK_F(sp.uvMax.x, 0.7f); CHECK_F(sp.uvMax.y, 0.9f);
+            CHECK_F(sp.color.x, 0.5f); CHECK_F(sp.color.y, 0.6f);
+            CHECK_F(sp.color.z, 0.7f); CHECK_F(sp.color.w, 0.8f);
+            CHECK(sp.worldSpace == false);
+        });
+}
+
 static void Test_Tag()
 {
     Case<Tag>(
@@ -613,6 +639,7 @@ int main()
     Test_TagQuery();
     Test_QueryInBox();
     Test_DataComponent();
+    Test_Sprite2D();
     Test_RegistryHeaderCompiles();
 
     std::printf("serialize_roundtrip: %d checks, %d failures\n", g_checks, g_failures);

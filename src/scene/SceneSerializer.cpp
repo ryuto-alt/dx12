@@ -354,6 +354,41 @@ static void RegisterCoreComponentSerializers()
                     reg.emplace_or_replace<DataComponent>(e, std::move(dc));
             }
         }, {}, {} });
+
+    R.Register({ "Sprite2D", ComponentSource::Core,
+        [](const entt::registry& reg, entt::entity entity, json& ej) {
+            if (reg.all_of<Sprite2D>(entity)) {
+                const auto& sp = reg.get<Sprite2D>(entity);
+                ej["sprite2d"] = {
+                    {"texturePath", sp.texturePath},
+                    {"layer",       sp.layer},
+                    {"size",        json::array({sp.size.x, sp.size.y})},
+                    {"uvMin",       json::array({sp.uvMin.x, sp.uvMin.y})},
+                    {"uvMax",       json::array({sp.uvMax.x, sp.uvMax.y})},
+                    {"color",       json::array({sp.color.x, sp.color.y, sp.color.z, sp.color.w})},
+                    {"worldSpace",  sp.worldSpace}
+                };
+            }
+        },
+        [](entt::registry& reg, entt::entity e, const json& ej) {
+            if (ej.contains("sprite2d")) {
+                const auto& sj = ej["sprite2d"];
+                Sprite2D sp;
+                sp.texturePath = sj.value("texturePath", "");
+                sp.layer       = sj.value("layer", 0);
+                if (sj.contains("size")  && sj["size"].is_array()  && sj["size"].size()  >= 2)
+                    sp.size  = { sj["size"][0].get<float>(),  sj["size"][1].get<float>() };
+                if (sj.contains("uvMin") && sj["uvMin"].is_array() && sj["uvMin"].size() >= 2)
+                    sp.uvMin = { sj["uvMin"][0].get<float>(), sj["uvMin"][1].get<float>() };
+                if (sj.contains("uvMax") && sj["uvMax"].is_array() && sj["uvMax"].size() >= 2)
+                    sp.uvMax = { sj["uvMax"][0].get<float>(), sj["uvMax"][1].get<float>() };
+                if (sj.contains("color") && sj["color"].is_array() && sj["color"].size() >= 4)
+                    sp.color = { sj["color"][0].get<float>(), sj["color"][1].get<float>(),
+                                 sj["color"][2].get<float>(), sj["color"][3].get<float>() };
+                sp.worldSpace = sj.value("worldSpace", true);
+                reg.emplace_or_replace<Sprite2D>(e, sp);
+            }
+        }, {}, {} });
 }
 
 // 単一エンティティを JSON ノードに直列化（parent は含まない）

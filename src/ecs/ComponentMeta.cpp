@@ -108,6 +108,16 @@ void RegisterCoreComponentMeta()
     entt::meta_factory<Tag>{}
         .type("Tag")
         .data<&Tag::tags>("tags");
+
+    entt::meta_factory<Sprite2D>{}
+        .type("Sprite2D")
+        .data<&Sprite2D::texturePath>("texturePath")
+        .data<&Sprite2D::layer>("layer")
+        .data<&Sprite2D::size>("size")
+        .data<&Sprite2D::uvMin>("uvMin")
+        .data<&Sprite2D::uvMax>("uvMax")
+        .data<&Sprite2D::color>("color")
+        .data<&Sprite2D::worldSpace>("worldSpace");
 }
 
 } // namespace dx12e

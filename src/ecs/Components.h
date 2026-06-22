@@ -168,6 +168,21 @@ struct CameraComponent
     f32  orthoSize  = 10.0f;    // Orthographic: ビュー縦の半分の世界単位(Unity orthographicSize 相当)
 };
 
+// 2Dスプライト(能力カタログ Phase4)。texturePath のテクスチャを、worldSpace=true なら
+// アクティブカメラ連動のワールド座標で(2D/2.5D)、false なら画面HUDとして描く。
+// layer は描画順(小さいほど奥)。uvMin/uvMax でアトラス切り出し、color は乗算色。
+// データのみ。描画は SpriteRenderer が Sprite2D を走査して供給する。
+struct Sprite2D
+{
+    std::string       texturePath;          // assets 相対パス
+    int               layer    = 0;         // 描画順(昇順)
+    DirectX::XMFLOAT2 size{1.0f, 1.0f};     // 世界/画面サイズ
+    DirectX::XMFLOAT2 uvMin{0.0f, 0.0f};    // アトラス切り出し
+    DirectX::XMFLOAT2 uvMax{1.0f, 1.0f};
+    DirectX::XMFLOAT4 color{1.0f, 1.0f, 1.0f, 1.0f}; // 乗算色(a=不透明度)
+    bool              worldSpace = true;    // true=カメラ連動ワールド / false=HUD
+};
+
 // 3D 空間オーディオ音源。Transform のワールド位置がエミッタになる。
 struct AudioSource
 {
