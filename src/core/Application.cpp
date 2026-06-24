@@ -2758,8 +2758,8 @@ void Application::EnterEditorMode()
 
     m_commandQueue->WaitIdle();
 
-    // Play 中に鳴っていた SE（空間含む）を停止
-    if (m_audioSystem) m_audioSystem->StopAllSFX();
+    // Play 中に鳴っていた SE（空間含む）と BGM を停止（Stop で鳴り続けるのを防ぐ）
+    if (m_audioSystem) { m_audioSystem->StopAllSFX(); m_audioSystem->StopBGM(); }
 
     // OnPlayStop は ScriptEngine::Shutdown より前に呼ぶ（Shutdown で Lua state が消える）
     if (m_engineMode == EngineMode::Playing)
@@ -4411,8 +4411,10 @@ void Application::Render()
         if (m_spriteRenderer->HasAny())
         {
             nativeCmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-            m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
-            m_spriteRenderer->Render(nativeCmdList, m_window->GetWidth(), m_window->GetHeight());
+            // ゲームビューポート矩形に合わせる（エディタ Play の 16:9 中央矩形でも UI 画像が
+            // テキスト/矩形と同じ座標系になり、ずれない）。
+            m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+            m_spriteRenderer->Render(nativeCmdList, vpW, vpH);
         }
     }
 
