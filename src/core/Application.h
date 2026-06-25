@@ -36,6 +36,7 @@ namespace dx12e
     class CommandList;
     class RenderTarget;
     class PostProcess;
+    class SSAOPass;
     class ParticleSystem;
     class SpriteRenderer;
     class SceneTransition;
@@ -89,7 +90,7 @@ private:
     // isGameView=true でエディタ用グリッドを除外。per-frame CB / シャドウSRV /
     // ルートシグネチャ / RT / ビューポートは呼び出し側で設定済みとする。
     void RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u32 frameIndex,
-                           DirectX::XMMATRIX viewProj, bool isGameView);
+                           DirectX::XMMATRIX viewProj, bool isGameView, u32 aoSrvIndex);
     // Sprite2D(worldSpace=true) を指定 viewProj/RT/DSV へ描画（メインパスとカメラプレビューで共用）。
     // camRight/camUp はビルボード展開用。billboard でないものはエンティティのワールド行列で配置。
     void DrawWorldSprites(ID3D12GraphicsCommandList* cmd, DirectX::XMMATRIX viewProj,
@@ -226,6 +227,13 @@ private:
     std::unique_ptr<RenderTarget>   m_sceneRT;
     std::unique_ptr<PostProcess>    m_postProcess;
     std::unique_ptr<ParticleSystem> m_particleSystem;  // 加算ビルボードパーティクル（Lua fx API）
+
+    // ---- SSAO（深度プリパス + 深度再構築法線 半球カーネルAO + ブラー）----
+    std::unique_ptr<SSAOPass>      m_ssaoPass;                       // AO 生成器
+    std::unique_ptr<Texture>      m_ssaoWhiteTex;                   // 1x1 白 R8_UNORM（AO=1.0 ダミー）
+    u32                           m_ssaoWhiteSrvIndex = 0xFFFFFFFFu; // 白AOダミー SRV index
+    std::unique_ptr<PipelineState> m_depthPrepassPSO;               // 深度プリパス（static, bias なし）
+    std::unique_ptr<PipelineState> m_depthPrepassSkinnedPSO;        // 深度プリパス（skinned）
 
     // IBL 環境マップ（irradiance/prefiltered/BRDF LUT）+ 任意スカイボックス
     std::unique_ptr<IBLBaker>       m_iblBaker;

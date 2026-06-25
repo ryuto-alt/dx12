@@ -158,6 +158,12 @@ PipelineStateBuilder& PipelineStateBuilder::SetDepthBias(i32 bias, f32 slopeScal
     return *this;
 }
 
+PipelineStateBuilder& PipelineStateBuilder::SetDepthFunc(D3D12_COMPARISON_FUNC func)
+{
+    m_desc.DepthStencilState.DepthFunc = func;
+    return *this;
+}
+
 Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateBuilder::Build(GraphicsDevice& device)
 {
     DX_ASSERT(m_desc.pRootSignature, "Root signature must be set before building PSO");

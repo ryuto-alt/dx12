@@ -367,6 +367,14 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
             m_srvHeap->GetGpuHandle(defTex->GetSrvIndex()));
     }
 
+    // SSAO AO SRV (t8): forward PS が無条件で Load するので白ダミー(R8_UNORM)を必ずバインド。
+    if (m_aoWhiteSrvIndex != 0xFFFFFFFFu)
+    {
+        cmdList->SetGraphicsRootDescriptorTable(
+            RootSignature::kSlotAOSRV,
+            m_srvHeap->GetGpuHandle(m_aoWhiteSrvIndex));
+    }
+
     // 各メッシュを描画
     XMMATRIX worldMat = XMMatrixIdentity();
     XMMATRIX viewProj = viewMat * projMat;

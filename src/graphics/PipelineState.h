@@ -30,6 +30,7 @@ public:
     PipelineStateBuilder& SetAdditiveBlendEnabled(bool enabled);  // 加算合成（発光パーティクル用）
     PipelineStateBuilder& SetCullMode(D3D12_CULL_MODE mode);
     PipelineStateBuilder& SetDepthBias(i32 bias, f32 slopeScaledBias);
+    PipelineStateBuilder& SetDepthFunc(D3D12_COMPARISON_FUNC func);  // 深度比較関数（プリパス併用で LESS_EQUAL 等）
 
     Microsoft::WRL::ComPtr<ID3D12PipelineState> Build(GraphicsDevice& device);
 

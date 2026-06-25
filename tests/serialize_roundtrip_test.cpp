@@ -678,6 +678,54 @@ static void Test_SkyboxSettings()
     }
 }
 
+// シーン単位の SSAOSettings の往復。device 不要の SaveToString/LoadFromString 経路で検証。
+static void Test_SSAOSettings()
+{
+    Scene src;
+    auto& ss = src.GetSSAOSettings();
+    ss.enabled     = true;
+    ss.radius      = 0.8f;
+    ss.bias        = 0.04f;
+    ss.intensity   = 1.3f;
+    ss.power       = 2.0f;
+    ss.sampleCount = 8;
+    ss.blur        = false;
+
+    const std::string js = SceneSerializer::SaveToString(src, "");
+    CHECK(!js.empty());
+
+    Scene dst;
+    const bool ok = SceneSerializer::LoadFromString(dst, js, "");
+    CHECK(ok);
+    if (ok)
+    {
+        const auto& d = dst.GetSSAOSettings();
+        CHECK(d.enabled == true);
+        CHECK_F(d.radius, 0.8f);
+        CHECK_F(d.bias, 0.04f);
+        CHECK_F(d.intensity, 1.3f);
+        CHECK_F(d.power, 2.0f);
+        CHECK(d.sampleCount == 8);
+        CHECK(d.blur == false);
+    }
+
+    // ssao キーが無い JSON でもデフォルトへ復元（後方互換）
+    Scene dst2;
+    const bool ok2 = SceneSerializer::LoadFromString(dst2, "{\"entities\":[]}", "");
+    CHECK(ok2);
+    if (ok2)
+    {
+        const auto& d2 = dst2.GetSSAOSettings();
+        CHECK(d2.enabled == false);     // 既定 OFF
+        CHECK_F(d2.radius, 0.5f);
+        CHECK_F(d2.bias, 0.025f);
+        CHECK_F(d2.intensity, 1.0f);
+        CHECK_F(d2.power, 1.5f);
+        CHECK(d2.sampleCount == 16);
+        CHECK(d2.blur == true);
+    }
+}
+
 // 中立ヘッダ(ComponentRegistry.h)が /WX で通り、型が使えることの最小確認。
 static void Test_RegistryHeaderCompiles()
 {
@@ -711,6 +759,7 @@ int main()
     Test_DataComponent();
     Test_Sprite2D();
     Test_SkyboxSettings();
+    Test_SSAOSettings();
     Test_RegistryHeaderCompiles();
 
     std::printf("serialize_roundtrip: %d checks, %d failures\n", g_checks, g_failures);

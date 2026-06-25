@@ -20,6 +20,7 @@
 #include "renderer/Material.h"
 #include "renderer/Camera.h"
 #include "renderer/PostProcess.h"
+#include "renderer/SSAOPass.h"
 #include "renderer/ParticleSystem.h"
 #include "renderer/SpriteRenderer.h"
 #include "renderer/SceneTransition.h"
@@ -238,6 +239,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                .SetRenderTargetFormat(m_swapChain->GetFormat())
                .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
                .SetDepthEnabled(true)
+               .SetDepthFunc(D3D12_COMPARISON_FUNC_LESS_EQUAL)  // 深度プリパスと同一深度を通す
                .SetCullMode(D3D12_CULL_MODE_NONE);  // 両面描画（片面メッシュ対応）
 
         m_pipelineState = std::make_unique<PipelineState>();
@@ -261,6 +263,25 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         // ResourceManager 初期化（デフォルト白テクスチャ作成にcmdListが必要）
         m_resourceManager = std::make_unique<ResourceManager>();
         m_resourceManager->Initialize(m_graphicsDevice.get(), m_srvHeap.get(), cmdList);
+
+        // SSAO 無効/編集ビュー用の 1x1 白 R8_UNORM ダミー（forward の g_ssao が常に 1.0 を返す）。
+        {
+            u8 white = 0xFF;
+            D3D12_RESOURCE_DESC desc{};
+            desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+            desc.Width = 1; desc.Height = 1; desc.DepthOrArraySize = 1; desc.MipLevels = 1;
+            desc.Format = DXGI_FORMAT_R8_UNORM;
+            desc.SampleDesc = {1, 0};
+
+            D3D12_SUBRESOURCE_DATA subData{};
+            subData.pData = &white; subData.RowPitch = 1; subData.SlicePitch = 1;
+
+            m_ssaoWhiteTex = std::make_unique<Texture>();
+            m_ssaoWhiteTex->Initialize(*m_graphicsDevice, cmdList, desc, &subData, 1);
+            m_ssaoWhiteSrvIndex = m_srvHeap->AllocateIndex();
+            m_ssaoWhiteTex->SetSrvIndex(m_ssaoWhiteSrvIndex);
+            m_ssaoWhiteTex->CreateSRV(*m_graphicsDevice, m_srvHeap->GetCpuHandle(m_ssaoWhiteSrvIndex));
+        }
 
         // エディタUIアイコンを読み込み（エンジン側assets基準。プロジェクト切替前に1度）
         if (!m_isGameMode)
@@ -371,6 +392,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
         // アップロードバッファ解放
         m_resourceManager->FinishUploads();
+        if (m_ssaoWhiteTex) m_ssaoWhiteTex->FinishUpload();
 
         // スキニング PSO 作成
         {
@@ -385,6 +407,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                    .SetRenderTargetFormat(kSceneColorFormat)
                    .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
                    .SetDepthEnabled(true)
+                   .SetDepthFunc(D3D12_COMPARISON_FUNC_LESS_EQUAL)  // 深度プリパスと同一深度を通す
                    .SetCullMode(D3D12_CULL_MODE_NONE);
 
             m_skinnedPipelineState = std::make_unique<PipelineState>();
@@ -540,6 +563,35 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             m_shadowSkinnedPipelineState->Initialize(*m_graphicsDevice, builder);
         }
 
+        // 深度プリパス PSO（SSAO 用カメラ深度。bias なし・カメラ視点・D32・RTVなし）。
+        // ShadowPass_VS は b0 の mvp で頂点変換するだけなので、b0 に world*cameraVP を渡せば流用できる。
+        {
+            auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ShadowPass_VS.cso");
+            PipelineStateBuilder builder;
+            builder.SetRootSignature(m_rootSignature->Get())
+                   .SetVertexShader(vs.GetData(), vs.GetSize())
+                   .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
+                   .SetRenderTargetFormat(DXGI_FORMAT_UNKNOWN)
+                   .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+                   .SetDepthEnabled(true)
+                   .SetCullMode(D3D12_CULL_MODE_NONE);  // bias なし（カメラ深度をそのまま使う）
+            m_depthPrepassPSO = std::make_unique<PipelineState>();
+            m_depthPrepassPSO->Initialize(*m_graphicsDevice, builder);
+        }
+        {
+            auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ShadowPassSkinned_VS.cso");
+            PipelineStateBuilder builder;
+            builder.SetRootSignature(m_rootSignature->Get())
+                   .SetVertexShader(vs.GetData(), vs.GetSize())
+                   .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
+                   .SetRenderTargetFormat(DXGI_FORMAT_UNKNOWN)
+                   .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+                   .SetDepthEnabled(true)
+                   .SetCullMode(D3D12_CULL_MODE_NONE);
+            m_depthPrepassSkinnedPSO = std::make_unique<PipelineState>();
+            m_depthPrepassSkinnedPSO->Initialize(*m_graphicsDevice, builder);
+        }
+
         Logger::Info("Shadow map initialized ({}x{})", m_shadowMapSize, m_shadowMapSize);
     }
 
@@ -610,6 +662,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     m_thumbRenderer->Initialize(m_graphicsDevice.get(), m_srvHeap.get(),
                                 m_resourceManager.get(), m_rootSignature.get(),
                                 m_pipelineState.get());
+    m_thumbRenderer->SetAOWhiteSrv(m_ssaoWhiteSrvIndex);  // forward PS の t8 を白ダミーで満たす
     m_editorLayer->SetThumbnailRenderer(m_thumbRenderer.get());
 
     // Physics Debug Renderer
@@ -640,6 +693,12 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
         m_postProcess = std::make_unique<PostProcess>();
         m_postProcess->Initialize(*m_graphicsDevice, m_swapChain->GetFormat(), PathResolver::ShaderDirW());
+
+        // SSAO（深度プリパス → 半球カーネル AO → ブラー）。AO/Blur RT は offscreenRtvHeap(容量8)から確保。
+        // 現状 sceneRT(1)+cameraPreviewRT(1)=2使用 → SSAO で +2 → 計4（容量内）。
+        m_ssaoPass = std::make_unique<SSAOPass>();
+        m_ssaoPass->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
+                               m_window->GetWidth(), m_window->GetHeight(), PathResolver::ShaderDirW());
 
         // 2D スプライト（バックバッファ＝スワップチェイン形式へ描く）
         m_spriteRenderer = std::make_unique<SpriteRenderer>();
@@ -887,6 +946,9 @@ void Application::Run()
                 // オフスクリーン RT もウィンドウサイズへ作り直す
                 if (m_sceneRT)
                     m_sceneRT->Resize(*m_graphicsDevice, w, h);
+                // SSAO の AO/Blur RT も同寸へ（深度と同じフル解像度）
+                if (m_ssaoPass)
+                    m_ssaoPass->Resize(*m_graphicsDevice, w, h);
 
                 // カメラアスペクト比更新（エディタモードではサイドバー分引く）
                 m_camera->SetPerspective(DirectX::XM_PIDIV4,
@@ -999,6 +1061,11 @@ void Application::Shutdown()
     m_sceneTransition.reset();
     m_spriteRenderer.reset();
     m_postProcess.reset();
+    // SSAO（GPU リソース）をデバイス解放より前に明示破棄
+    m_ssaoPass.reset();
+    m_ssaoWhiteTex.reset();
+    m_depthPrepassPSO.reset();
+    m_depthPrepassSkinnedPSO.reset();
     // IBL / Skybox（GPU リソース）をデバイス解放より前に明示破棄。SRV index も srvHeap 生存中に返却。
     m_skyboxRenderer.reset();
     if (m_iblBaker)
@@ -2598,11 +2665,17 @@ void Application::BuildGame()
 }
 
 void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u32 frameIndex,
-                                   DirectX::XMMATRIX viewProj, bool isGameView)
+                                   DirectX::XMMATRIX viewProj, bool isGameView, u32 aoSrvIndex)
 {
     using namespace DirectX;
     auto& reg = m_scene->GetRegistry();
     auto renderView = reg.view<const Transform, const MeshRenderer>();
+
+    // SSAO AO テーブル(t8)を1回バインド（無効/編集ビューは白=1.0 ダミー）。
+    // 全 forward 系 PSO が同一 RootSig を共有するため、ここで一括バインドして hazard を防ぐ。
+    if (aoSrvIndex != DescriptorHeap::kInvalidIndex)
+        m_commandList->SetSRVTable(RootSignature::kSlotAOSRV,
+            m_srvHeap->GetGpuHandle(aoSrvIndex));
 
     // パーティクル判定（名前が "Pfx" で始まる＝加算発光で描く）
     auto isPfx = [&](entt::entity e) -> bool {
@@ -3547,21 +3620,100 @@ void Application::Render()
         m_editorWas2D = m_editorCtx->view2D;
     }
 
-    m_sceneRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-    constexpr float clearColor[4] = {0.392f, 0.584f, 0.929f, 1.0f};
-    m_commandList->ClearRenderTarget(m_sceneRT->GetRtv(), clearColor);
-    m_commandList->ClearDepthStencil(m_dsvHandle);
-    m_commandList->SetRenderTarget(m_sceneRT->GetRtv(), m_dsvHandle);
-    m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
-
-    // カメラのアスペクト比をビューポートに合わせる
+    // カメラのアスペクト比をビューポートに合わせる（プリパス/SSAO で確定済みの投影が要るので前倒し）
     if (!m_isGameMode && m_engineMode == EngineMode::Editor)
         m_camera->SetPerspective(DirectX::XM_PIDIV4,
             static_cast<f32>(vpW) / static_cast<f32>(vpH), 0.1f, 1000.0f);
     else
         // Play / 単体ゲーム: ゲームカメラの fov は維持し、アスペクトだけ実ビューポートに合わせる
         m_camera->SetAspect(static_cast<f32>(vpW) / static_cast<f32>(vpH));
+
+    // ===== 深度プリパス → SSAO（透視のみ。2D 正射ビューや無効時は素通し）=====
+    // SSAO 有効時はカメラ視点の深度を m_depthBuffer へ先に完成させ、深度から法線を再構築して AO を作る。
+    const SSAOSettings& ssaoCfg = m_scene->GetSSAOSettings();
+    const bool useSSAO = ssaoCfg.enabled && m_ssaoPass && m_ssaoPass->IsReady()
+                       && !(m_editorCtx && m_editorCtx->view2D);
+    u32 aoSrv = m_ssaoWhiteSrvIndex;  // 既定 = 白（AO=1.0 素通し）
+
+    if (useSSAO)
+    {
+        XMMATRIX camVP = m_camera->GetViewProjMatrix();
+
+        // --- 深度プリパス（カメラ視点で m_depthBuffer/m_dsvHandle へ深度のみ書く）---
+        m_commandList->ClearDepthStencil(m_dsvHandle);
+        nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_dsvHandle);
+        m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+
+        auto& reg = m_scene->GetRegistry();
+        auto prepassView = reg.view<const Transform, const MeshRenderer>();
+        auto isPfxName = [&](entt::entity e) -> bool {
+            const auto* nt = reg.try_get<NameTag>(e);
+            return nt && nt->name.rfind("Pfx", 0) == 0;
+        };
+        for (auto [e, transform, renderer] : prepassView.each())
+        {
+            if (reg.all_of<GridPlane>(e)) continue;   // グリッド/パーティクルはプリパス対象外
+            if (isPfxName(e)) continue;
+
+            XMMATRIX world = (transform.parent != entt::null)
+                ? ComputeWorldMatrix(reg, e) : transform.GetWorldMatrix();
+
+            bool isSkinned = reg.all_of<SkeletalAnimation>(e);
+            if (isSkinned)
+            {
+                auto& skelAnim = reg.get<SkeletalAnimation>(e);
+                m_commandList->SetPipelineState(*m_depthPrepassSkinnedPSO);
+                m_commandList->SetSRVTable(RootSignature::kSlotBonesSRV,
+                    m_srvHeap->GetGpuHandle(skelAnim.skinningBuffer->GetSrvIndex(frameIndex)));
+            }
+            else
+            {
+                m_commandList->SetPipelineState(*m_depthPrepassPSO);
+            }
+
+            bool hasNodeAnim = reg.all_of<NodeAnimationComp>(e);
+            for (u32 mi = 0; mi < static_cast<u32>(renderer.meshes.size()); ++mi)
+            {
+                const auto* mesh = renderer.meshes[mi];
+                XMMATRIX meshWorld = world;
+                if (hasNodeAnim && mi < static_cast<u32>(renderer.meshNodeTransforms.size()))
+                    meshWorld = XMLoadFloat4x4(&renderer.meshNodeTransforms[mi]) * world;
+
+                struct PerObjectData { XMMATRIX mvp; XMMATRIX mdl; } objData;
+                objData.mvp = XMMatrixTranspose(meshWorld * camVP);
+                objData.mdl = XMMatrixTranspose(meshWorld);
+                m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
+
+                m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
+                m_commandList->SetIndexBuffer(mesh->GetIndexBuffer().GetView());
+                m_commandList->DrawIndexedInstanced(mesh->GetIndexCount());
+            }
+        }
+
+        // --- SSAO 生成（depth SRV を読み AO→Blur）---
+        m_commandList->TransitionResource(m_depthBuffer.Get(),
+            D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        aoSrv = m_ssaoPass->Generate(nativeCmdList, m_srvHeap.get(),
+            m_srvHeap->GetGpuHandle(m_depthSrvIndex), ssaoCfg,
+            m_camera->GetProjectionMatrix(), m_camera->GetNearZ(), m_camera->GetFarZ(), frameIndex);
+        m_commandList->TransitionResource(m_depthBuffer.Get(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+
+        // SSAO/プリパスで RootSig/PSO/RT/ヒープを切り替えたので forward 用に再設定
+        m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+        m_commandList->SetRootSignature(*m_rootSignature);
+    }
+
+    m_sceneRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+    constexpr float clearColor[4] = {0.392f, 0.584f, 0.929f, 1.0f};
+    m_commandList->ClearRenderTarget(m_sceneRT->GetRtv(), clearColor);
+    // プリパス有効時は深度が完成済みなので forward では clear しない（再利用）。
+    if (!useSSAO)
+        m_commandList->ClearDepthStencil(m_dsvHandle);
+    m_commandList->SetRenderTarget(m_sceneRT->GetRtv(), m_dsvHandle);
+    m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
 
     m_commandList->SetPipelineState(*m_pipelineState);
 
@@ -3706,9 +3858,9 @@ void Application::Render()
 
     XMMATRIX viewProj = m_camera->GetViewProjMatrix();
 
-    // 全Entityを描画（メインパス: 編集カメラ視点）
+    // 全Entityを描画（メインパス: 編集カメラ視点）。AO は SSAO 有効時のみ実テクスチャ、無効時は白。
     RenderSceneMeshes(nativeCmdList, frameIndex, viewProj,
-                      (m_isGameMode || m_engineMode == EngineMode::Playing));
+                      (m_isGameMode || m_engineMode == EngineMode::Playing), aoSrv);
 
     // ---- Physics Debug Draw（オフスクリーン RT へ）----
     if (m_physicsDebugDraw && m_physicsDebugRenderer->IsEnabled())
@@ -3951,8 +4103,8 @@ void Application::Render()
                 m_commandList->SetSRVTable(RootSignature::kSlotIBLTable,
                     m_srvHeap->GetGpuHandle(m_iblBaker->GetIrradianceSrv()));
 
-            // グリッドは出さない＝isGameView=true
-            RenderSceneMeshes(nativeCmdList, frameIndex, camViewProj, true);
+            // グリッドは出さない＝isGameView=true。プレビューは SSAO 非対応＝白ダミー。
+            RenderSceneMeshes(nativeCmdList, frameIndex, camViewProj, true, m_ssaoWhiteSrvIndex);
 
             // ワールド空間スプライトもプレビューへ（このカメラ視点で。ビルボードは行列の右/上ベクトル）。
             XMFLOAT3 pvRight, pvUp;
@@ -4189,6 +4341,30 @@ void Application::Render()
             ImGui::SameLine();
             ImGui::TextDisabled(m_iblReady && m_iblBaker && m_iblBaker->HasEnvironment()
                                 ? "IBL: 有効" : "IBL: フォールバック(ambient)");
+            ImGui::End();
+        }
+
+        // ---- SSAO 設定ウィンドウ（シーン単位・グローバルレンダ設定）----
+        if (m_scene)
+        {
+            auto& ss = m_scene->GetSSAOSettings();
+            ImGui::Begin("SSAO");
+            ImGui::TextWrapped("深度プリパス + 深度から法線再構築の半球カーネル AO。"
+                               "ambient/IBL へ ao を乗算する。透視ビューのみ（2D 正射では無効）。");
+            ImGui::Separator();
+            ImGui::Checkbox("SSAO 有効", &ss.enabled);
+            ImGui::BeginDisabled(!ss.enabled);
+            ImGui::SliderFloat("半径 Radius",  &ss.radius,    0.05f, 2.0f, "%.2f");
+            ImGui::SliderFloat("バイアス Bias", &ss.bias,     0.0f,  0.1f, "%.3f");
+            ImGui::SliderFloat("強度 Intensity", &ss.intensity, 0.0f, 2.0f, "%.2f");
+            ImGui::SliderFloat("べき Power",    &ss.power,     0.5f,  4.0f, "%.2f");
+            {
+                int s16 = (ss.sampleCount >= 16) ? 1 : 0;
+                if (ImGui::Combo("サンプル数", &s16, "8\0" "16\0"))
+                    ss.sampleCount = s16 ? 16 : 8;
+            }
+            ImGui::Checkbox("ブラー Blur", &ss.blur);
+            ImGui::EndDisabled();
             ImGui::End();
         }
 

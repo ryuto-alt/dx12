@@ -18,6 +18,10 @@ Texture2D    g_brdfLUT        : register(t7);
 SamplerState g_iblSampler     : register(s2);  // LINEAR CLAMP（mip有, irradiance/prefiltered 用）
 SamplerState g_brdfSampler    : register(s3);  // LINEAR CLAMP（mipなし, LUT 用）
 
+// SSAO（スクリーン空間 AO。フル解像度・同一ビューポート前提でピクセル直読み）
+Texture2D<float> g_ssao        : register(t8);
+SamplerState     g_ssaoSampler : register(s4);  // POINT CLAMP（未使用だが RootSig 整合のため宣言）
+
 // PerObject constants (b0)
 cbuffer PerObjectConstants : register(b0)
 {
@@ -173,6 +177,10 @@ float4 PSMain(PSInput input) : SV_TARGET
     // Point Lights + Spot Lights
     Lo += AccumulatePunctualLights(N, V, input.worldPos, albedo, F0, metallic, roughness);
 
+    // SSAO（スクリーン空間 AO）: フル解像度・同一ビューポートなのでピクセル直読み。
+    // SSAO 無効/編集ビューでは白(1.0)がバインドされ素通し。
+    float ao = g_ssao.Load(int3(input.positionSV.xy, 0));
+
     // ===== Ambient / IBL =====
     float3 ambient;
     if (hasIBL != 0u)
@@ -202,6 +210,9 @@ float4 PSMain(PSInput input) : SV_TARGET
         float3 ambientSpecular = F0;
         ambient = ambientStrength * (ambientDiffuse + ambientSpecular);
     }
+
+    // 環境光(IBL/ambient)へ AO を乗算（直接光は遮蔽しない）。
+    ambient *= ao;
 
     float3 color = ambient + Lo;
 

@@ -103,6 +103,8 @@ if(DXC_EXECUTABLE)
     set(SHADER_IBL_BRDF      "${CMAKE_SOURCE_DIR}/shaders/ibl/IntegrateBRDF.hlsl")
     set(SHADER_SKYBOX        "${CMAKE_SOURCE_DIR}/shaders/ibl/Skybox.hlsl")
     set(SHADER_IBL_INC       "${CMAKE_SOURCE_DIR}/shaders/ibl/IBLCommon.hlsli")
+    set(SHADER_SSAO          "${CMAKE_SOURCE_DIR}/shaders/ssao/SSAO.hlsl")
+    set(SHADER_SSAO_BLUR     "${CMAKE_SOURCE_DIR}/shaders/ssao/SSAOBlur.hlsl")
 
     set(SHADER_OUTPUTS
         "${SHADER_OUTPUT_DIR}/Forward_VS.cso"
@@ -134,6 +136,9 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/IntegrateBRDF_CS.cso"
         "${SHADER_OUTPUT_DIR}/Skybox_VS.cso"
         "${SHADER_OUTPUT_DIR}/Skybox_PS.cso"
+        "${SHADER_OUTPUT_DIR}/SSAO_VS.cso"
+        "${SHADER_OUTPUT_DIR}/SSAO_PS.cso"
+        "${SHADER_OUTPUT_DIR}/SSAOBlur_PS.cso"
     )
 
     add_custom_command(
@@ -338,6 +343,28 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/Skybox_PS.cso" "${SHADER_SKYBOX}"
         DEPENDS "${SHADER_SKYBOX}"
         COMMENT "Compiling Skybox.hlsl -> Skybox_PS.cso (ps_6_0)"
+    )
+
+    # --- SSAO（VS は FSTriVS 流用 / Blur は SSAO_VS.cso を共有）---
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/SSAO_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E FSTriVS -Fo "${SHADER_OUTPUT_DIR}/SSAO_VS.cso" "${SHADER_SSAO}"
+        DEPENDS "${SHADER_SSAO}" "${SHADER_POST_INC}"
+        COMMENT "Compiling SSAO.hlsl -> SSAO_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/SSAO_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/SSAO_PS.cso" "${SHADER_SSAO}"
+        DEPENDS "${SHADER_SSAO}" "${SHADER_POST_INC}"
+        COMMENT "Compiling SSAO.hlsl -> SSAO_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/SSAOBlur_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/SSAOBlur_PS.cso" "${SHADER_SSAO_BLUR}"
+        DEPENDS "${SHADER_SSAO_BLUR}" "${SHADER_POST_INC}"
+        COMMENT "Compiling SSAOBlur.hlsl -> SSAOBlur_PS.cso (ps_6_0)"
     )
 
     add_custom_target(Shaders ALL DEPENDS ${SHADER_OUTPUTS})

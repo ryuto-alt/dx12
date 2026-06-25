@@ -699,6 +699,20 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
         };
     }
 
+    // SSAO 設定（シーン単位）
+    {
+        const auto& ss = scene.GetSSAOSettings();
+        root["ssao"] = {
+            {"enabled",     ss.enabled},
+            {"radius",      ss.radius},
+            {"bias",        ss.bias},
+            {"intensity",   ss.intensity},
+            {"power",       ss.power},
+            {"sampleCount", ss.sampleCount},
+            {"blur",        ss.blur},
+        };
+    }
+
     return root;
 }
 
@@ -756,6 +770,24 @@ static void LoadSkyboxSettings(Scene& scene, const json& root)
         sk.drawSkybox      = sj.value("drawSkybox", sk.drawSkybox);
     }
     scene.GetSkyboxSettings() = sk;
+}
+
+// JSON から SSAO 設定を復元（ssao が無ければデフォルト = 後方互換）
+static void LoadSSAOSettings(Scene& scene, const json& root)
+{
+    SSAOSettings ss;  // デフォルト（未指定キーは既定値を維持）
+    if (root.contains("ssao"))
+    {
+        const auto& sj = root["ssao"];
+        ss.enabled     = sj.value("enabled",     ss.enabled);
+        ss.radius      = sj.value("radius",      ss.radius);
+        ss.bias        = sj.value("bias",        ss.bias);
+        ss.intensity   = sj.value("intensity",   ss.intensity);
+        ss.power       = sj.value("power",       ss.power);
+        ss.sampleCount = sj.value("sampleCount", ss.sampleCount);
+        ss.blur        = sj.value("blur",        ss.blur);
+    }
+    scene.GetSSAOSettings() = ss;
 }
 
 // JSON ノードから 1 エンティティを既存シーンに追加生成（Clear しない）
@@ -1053,6 +1085,8 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
     LoadPostSettings(scene, root);
     // スカイボックス / IBL 設定
     LoadSkyboxSettings(scene, root);
+    // SSAO 設定
+    LoadSSAOSettings(scene, root);
 
     if (!root.contains("entities") || !root["entities"].is_array())
     {

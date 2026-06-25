@@ -8,8 +8,8 @@ namespace dx12e
 
 void RootSignature::Initialize(GraphicsDevice& device)
 {
-    // Root parameters: 7
-    D3D12_ROOT_PARAMETER1 rootParams[7]{};
+    // Root parameters: 8
+    D3D12_ROOT_PARAMETER1 rootParams[8]{};
 
     // [0] Per-Object: 32bit constants (32 DWORDs = MVP(16) + Model(16))
     rootParams[0].ParameterType             = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
@@ -88,8 +88,23 @@ void RootSignature::Initialize(GraphicsDevice& device)
     rootParams[6].DescriptorTable.pDescriptorRanges   = &iblRange;
     rootParams[6].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    // Static Samplers (s0=albedo wrap, s1=shadow PCF, s2=IBL linear-clamp mip有, s3=BRDF linear-clamp mipなし)
-    D3D12_STATIC_SAMPLER_DESC staticSamplers[4]{};
+    // [7] SSAO AO SRV DescriptorTable (t8) — スクリーン空間 AO（ambient へ乗算）
+    D3D12_DESCRIPTOR_RANGE1 aoRange{};
+    aoRange.RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    aoRange.NumDescriptors                    = 1;
+    aoRange.BaseShaderRegister                = 8;   // t8
+    aoRange.RegisterSpace                     = 0;
+    aoRange.Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    aoRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    rootParams[7].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParams[7].DescriptorTable.NumDescriptorRanges = 1;
+    rootParams[7].DescriptorTable.pDescriptorRanges   = &aoRange;
+    rootParams[7].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // Static Samplers (s0=albedo wrap, s1=shadow PCF, s2=IBL linear-clamp mip有,
+    //                  s3=BRDF linear-clamp mipなし, s4=AO point-clamp スクリーンサンプル)
+    D3D12_STATIC_SAMPLER_DESC staticSamplers[5]{};
 
     // s0 - Linear Wrap (albedo, normal, metalRoughness)
     staticSamplers[0].Filter           = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -129,6 +144,17 @@ void RootSignature::Initialize(GraphicsDevice& device)
     staticSamplers[3].MaxLOD           = 0.0f;
     staticSamplers[3].ShaderRegister   = 3;
 
+    // s4 - SSAO AO: POINT CLAMP（スクリーン空間 AO の素直なサンプル）
+    staticSamplers[4].Filter           = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    staticSamplers[4].AddressU         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    staticSamplers[4].AddressV         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    staticSamplers[4].AddressW         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    staticSamplers[4].ComparisonFunc   = D3D12_COMPARISON_FUNC_NEVER;
+    staticSamplers[4].BorderColor      = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
+    staticSamplers[4].MaxLOD           = D3D12_FLOAT32_MAX;
+    staticSamplers[4].ShaderRegister   = 4;  // s4
+    staticSamplers[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
     // Root Signature (Version 1.1)
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC versionedDesc{};
     versionedDesc.Version                     = D3D_ROOT_SIGNATURE_VERSION_1_1;
@@ -159,7 +185,7 @@ void RootSignature::Initialize(GraphicsDevice& device)
         serializedBlob->GetBufferSize(),
         IID_PPV_ARGS(&m_rootSignature)));
 
-    Logger::Info("RootSignature created (PBR: 7 slots)");
+    Logger::Info("RootSignature created (PBR: 8 slots)");
 }
 
 } // namespace dx12e

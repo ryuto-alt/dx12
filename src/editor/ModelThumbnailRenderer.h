@@ -54,6 +54,9 @@ public:
     // 直前にレンダリングしたサムネイルをディスクに保存（WaitIdle後に呼ぶ）
     void SavePendingCache();
 
+    // SSAO 白ダミー(R8_UNORM, AO=1.0)の SRV index。forward PS が t8 を無条件読みするので必ずバインドする。
+    void SetAOWhiteSrv(u32 srvIndex) { m_aoWhiteSrvIndex = srvIndex; }
+
 private:
     static constexpr u32 kThumbSize     = 128;
     static constexpr u32 kThumbRowPitch = kThumbSize * 4; // 512, aligned to 256
@@ -75,6 +78,7 @@ private:
     ResourceManager*  m_resourceMgr   = nullptr;
     RootSignature*    m_rootSig       = nullptr;
     PipelineState*    m_pso           = nullptr;
+    u32               m_aoWhiteSrvIndex = 0xFFFFFFFFu;  // SSAO 白ダミー(t8) SRV index
 
     // 共有リソース
     Microsoft::WRL::ComPtr<ID3D12Resource>         m_depthBuffer;

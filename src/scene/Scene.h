@@ -10,6 +10,7 @@
 #include "ecs/Components.h"
 #include "scene/Entity.h"
 #include "renderer/PostProcessSettings.h"
+#include "renderer/SSAOSettings.h"
 
 struct ID3D12GraphicsCommandList;
 
@@ -95,6 +96,9 @@ public:
     SkyboxSettings&       GetSkyboxSettings()       { return m_skybox; }
     const SkyboxSettings& GetSkyboxSettings() const { return m_skybox; }
 
+    SSAOSettings&       GetSSAOSettings()       { return m_ssao; }
+    const SSAOSettings& GetSSAOSettings() const { return m_ssao; }
+
 private:
     Entity CreateEntityWithTransform(const std::string& name,
                                      DirectX::XMFLOAT3 position,
@@ -105,6 +109,7 @@ private:
     std::vector<std::unique_ptr<Mesh>> m_ownedMeshes;
     PostProcessSettings m_postSettings;
     SkyboxSettings      m_skybox;
+    SSAOSettings        m_ssao;
 
     ResourceManager*  m_resourceManager = nullptr;
     GraphicsDevice*   m_device          = nullptr;

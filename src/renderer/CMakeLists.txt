@@ -3,6 +3,7 @@ add_library(Renderer STATIC
     Camera.cpp
     Material.cpp
     PostProcess.cpp
+    SSAOPass.cpp
     SpriteRenderer.cpp
     SceneTransition.cpp
     ParticleSystem.cpp
