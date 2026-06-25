@@ -620,10 +620,13 @@ void PhysicsSystem::RegisterCharacter(entt::registry& registry, entt::entity ent
     // 足元の支持面: カプセル下端を少し上にした平面（接地安定化）
     settings->mSupportingVolume = JPH::Plane(JPH::Vec3(0, 1, 0), -cc->radius);
 
-    // 初期位置（Transform + offset）。キャラは Y 軸回転を物理に渡さない（接地判定簡素化）
-    JPH::RVec3 pos(transform->position.x + cc->offset.x,
-                   transform->position.y + cc->offset.y,
-                   transform->position.z + cc->offset.z);
+    // 初期位置は Transform 原点そのまま。形状ローカルオフセットは mShapeOffset に一本化する
+    // （mShapeOffset は mPosition に加算され衝突カプセル中心 = transform.position + offset となる）。
+    // ここで + offset するとオフセットが二重適用されるので加算しない。
+    // キャラは Y 軸回転を物理に渡さない（接地判定簡素化）。
+    JPH::RVec3 pos(transform->position.x,
+                   transform->position.y,
+                   transform->position.z);
     JPH::Quat rot = JPH::Quat::sIdentity();
 
     JPH::Ref<JPH::CharacterVirtual> ch = new JPH::CharacterVirtual(
@@ -634,6 +637,11 @@ void PhysicsSystem::RegisterCharacter(entt::registry& registry, entt::entity ent
     cc->_registered  = true;
     cc->_verticalVel = 0.0f;
     cc->_grounded    = false;
+    // Play→Stop→Play でコンポーネントは破棄されないため、前回終了時のランタイム入力状態
+    // （_desiredVel / _jumpQueued）が残ると最初の接地ステップで余分なジャンプや移動を誘発する。
+    // 形状生成と同時に明示リセットする。
+    cc->_desiredVel  = { 0.0f, 0.0f, 0.0f };
+    cc->_jumpQueued  = false;
 }
 
 void PhysicsSystem::UnregisterCharacter(entt::registry& registry, entt::entity entity)
@@ -697,6 +705,11 @@ void PhysicsSystem::StepCharacters(f32 fixedDt, entt::registry& registry)
             *m_impl->tempAllocator);
 
         cc->_grounded = ch->GetGroundState() == JPH::CharacterVirtual::EGroundState::OnGround;
+
+        // move しなければ止まる: 水平入力はこのステップで消費したのでゼロ化する。
+        // 実際に消費したステップ末でゼロ化することで、0 サブステップのフレームでも
+        // 直前の move() 入力を次ステップまで取りこぼさない。
+        cc->_desiredVel = { 0.0f, 0.0f, 0.0f };
     }
 }
 
@@ -708,14 +721,16 @@ void PhysicsSystem::SyncCharactersToTransforms(entt::registry& registry)
         auto* tf = registry.try_get<Transform>(entity);
         auto* cc = registry.try_get<CharacterController>(entity);
         if (!tf || !cc) continue;
+        // GetPosition() = mPosition（mShapeOffset は含まない）。オフセットは mShapeOffset に
+        // 一本化したので、Transform へはそのまま書き戻す（- offset しない）。
         JPH::RVec3 p = ch->GetPosition();
-        tf->position = { static_cast<f32>(p.GetX()) - cc->offset.x,
-                         static_cast<f32>(p.GetY()) - cc->offset.y,
-                         static_cast<f32>(p.GetZ()) - cc->offset.z };
+        tf->position = { static_cast<f32>(p.GetX()),
+                         static_cast<f32>(p.GetY()),
+                         static_cast<f32>(p.GetZ()) };
         // 回転は CC からは書き戻さない（Yaw は Lua/ゲーム側が Transform.rotation で管理）
-
-        // move しなければ止まる: 次フレーム Lua が再設定するまで水平入力を消す。
-        cc->_desiredVel = { 0.0f, 0.0f, 0.0f };
+        // _desiredVel のゼロ化はここでは行わない。固定dtループで 0 サブステップのフレームでも
+        // 無条件にゼロ化すると、その直前の move() 入力が ExtendedUpdate に渡らず取りこぼす。
+        // 実際に入力を消費した StepCharacters の末尾でゼロ化する。
     }
 }
 
