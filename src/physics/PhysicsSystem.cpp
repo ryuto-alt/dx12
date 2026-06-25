@@ -119,11 +119,17 @@ namespace
 class EngineContactListener final : public JPH::ContactListener
 {
 public:
+    // 接触点は plain float×3 で保持する（XMFLOAT3 にしない）。
+    // OnContactAdded は Jolt の物理スレッドから（DirectX ヘッダを意識せず）呼ばれるので、
+    // ここで Jolt 値 → plain float に落とし、XMFLOAT3 への変換は drain 側（メインスレッド）に
+    // 任せて Jolt/DirectX ヘッダの結合を切る。
     struct PendingContact
     {
         uint32_t bodyId1 = 0;
         uint32_t bodyId2 = 0;
-        DirectX::XMFLOAT3 point{};
+        float px = 0.0f;
+        float py = 0.0f;
+        float pz = 0.0f;
         bool isEnter = true; // true=OnContactAdded, false=OnContactRemoved
     };
 
@@ -138,19 +144,19 @@ public:
                         const JPH::ContactManifold& manifold,
                         JPH::ContactSettings& /*settings*/) override
     {
-        DirectX::XMFLOAT3 pt{ 0.0f, 0.0f, 0.0f };
+        float px = 0.0f, py = 0.0f, pz = 0.0f;
         if (!manifold.mRelativeContactPointsOn1.empty())
         {
             JPH::RVec3 cp = manifold.GetWorldSpaceContactPointOn1(0);
-            pt = { static_cast<float>(cp.GetX()),
-                   static_cast<float>(cp.GetY()),
-                   static_cast<float>(cp.GetZ()) };
+            px = static_cast<float>(cp.GetX());
+            py = static_cast<float>(cp.GetY());
+            pz = static_cast<float>(cp.GetZ());
         }
         std::lock_guard<std::mutex> lk(m_mtx);
         m_pending.push_back({
             b1.GetID().GetIndexAndSequenceNumber(),
             b2.GetID().GetIndexAndSequenceNumber(),
-            pt,
+            px, py, pz,
             true });
     }
 
@@ -160,7 +166,7 @@ public:
         m_pending.push_back({
             pair.GetBody1ID().GetIndexAndSequenceNumber(),
             pair.GetBody2ID().GetIndexAndSequenceNumber(),
-            { 0.0f, 0.0f, 0.0f },
+            0.0f, 0.0f, 0.0f,
             false });
     }
 
@@ -278,8 +284,11 @@ void PhysicsSystem::Shutdown()
 
     m_bodyToEntity.clear();
     m_paused = false;
-    // m_eventBus は外部所有（Application の安定メンバ）なので null 化しない。
-    // 物理を Shutdown→Initialize で再構築しても購読先は同じバスを使い続ける。
+    // m_eventBus は外部所有（Application の安定メンバ）。EventBus 破棄より前に
+    // 呼び出し側が SetEventBus(nullptr) して参照を切る責務を負う
+    // （Application::Shutdown / EnterEditorMode がその流儀）。
+    // ここで m_eventBus を保持したままにするのは Shutdown→Initialize の再利用のため
+    // （物理を作り直しても購読先は同じバスを使い続けられる）。null 化はしない。
 
     m_impl.reset();   // contactListener も physicsSystem も破棄
     m_initialized = false;
@@ -334,13 +343,17 @@ void PhysicsSystem::FlushPendingContacts()
         auto it2 = m_bodyToEntity.find(c.bodyId2);
         if (it1 == m_bodyToEntity.end() || it2 == m_bodyToEntity.end()) continue;
 
+        // drain 側（メインスレッド）で plain float×3 → XMFLOAT3 へ変換し、
+        // DirectX ヘッダに依存する側へ橋渡しする（Jolt コールバック側とは結合を切る）。
+        const DirectX::XMFLOAT3 point{ c.px, c.py, c.pz };
+
         EngineEvent ev;
         ev.name   = c.isEnter ? "engine.contact.enter" : "engine.contact.exit";
         ev.source = it1->second;
         ev.other  = it2->second;
-        ev.set("px", static_cast<double>(c.point.x));
-        ev.set("py", static_cast<double>(c.point.y));
-        ev.set("pz", static_cast<double>(c.point.z));
+        ev.set("px", static_cast<double>(point.x));
+        ev.set("py", static_cast<double>(point.y));
+        ev.set("pz", static_cast<double>(point.z));
         m_eventBus->Post(std::move(ev));
     }
 }
