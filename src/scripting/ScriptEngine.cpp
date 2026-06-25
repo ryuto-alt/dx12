@@ -876,7 +876,20 @@ void ScriptEngine::RegisterEventsBinding()
     ev.set_function("on", [this, evToTable](sol::object /*self*/,
                                             const std::string& name,
                                             sol::function fn) -> std::uint32_t {
-        if (!m_eventBus) return 0;
+        if (!m_eventBus)
+        {
+            // EventBus は Play 中のみ有効（WireScriptCallbacks 後に注入される）。
+            // エディタ停止中に events:on を呼んでも購読は登録されない。
+            // OnStart() 内で登録すること。この警告は実行中に1回だけ出る。
+            static bool s_warned = false;
+            if (!s_warned)
+            {
+                s_warned = true;
+                Logger::Warn("events:on called but EventBus is not available "
+                             "(events:on/emit は Playing 中のみ有効。OnStart() 内で登録してください)");
+            }
+            return 0;
+        }
         sol::main_function mfn = fn;   // GC 寿命を確実に保持
         return m_eventBus->On(name, [this, mfn, evToTable](const EngineEvent& e) mutable {
             sol::protected_function pf = mfn;
@@ -1552,6 +1565,10 @@ void ScriptEngine::OnPlayStop()
         ls.started   = false;
         // loadError は残して Inspector に見せる
     }
+    // Play 中に登録された Lua ハンドラ（sol::function を保持）を EventBus から除去する。
+    // Lua state がここで無効化されるため、残留ハンドラが後続 Flush/Emit で呼ばれると UAF になる。
+    // Application::EnterEditorMode でも Clear を呼ぶが、OnPlayStop 経路を一本化して確実に除去する。
+    if (m_eventBus) m_eventBus->Clear();
     Logger::Info("ScriptEngine: OnPlayStop done");
 }
 

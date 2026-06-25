@@ -169,12 +169,18 @@ end
 
 疎結合の発火/購読。どのコンポーネントからでも使える（グローバル）。Play 開始時に購読はクリアされる。
 
-```lua
--- 購読する側（例: 司令塔スクリプトの OnStart で）
-events:on("addTime", function(d) ST.remaining = ST.remaining + (d.value or 0) end)
-events:on("reachedGoal", function() ST.state = "clear" end)
+> **重要**: `events:on` / `events:emit` は **Playing 中のみ有効**。
+> エディタ停止中（OnStart の前）に `events:on` を呼んでも購読は登録されず、警告が出る。
+> 購読は必ずスクリプトの **`OnStart(self)` 内**で登録すること。
 
--- 発火する側（Lua から）
+```lua
+-- 購読する側（司令塔スクリプトの OnStart 内で登録する）
+function OnStart(self)
+    events:on("addTime", function(d) ST.remaining = ST.remaining + (d.value or 0) end)
+    events:on("reachedGoal", function() ST.state = "clear" end)
+end
+
+-- 発火する側（OnUpdate 等から）
 events:emit("addTime", { value = 5 })
 ```
 Trigger の **EmitEvent アクション**（type 10）も C++ 側からこの `emit` を呼ぶ。

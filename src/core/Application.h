@@ -213,11 +213,15 @@ private:
     u32                                m_depthSrvIndex = 0xFFFFFFFFu;  // soft particles 用シーン深度SRV
     std::unique_ptr<InputSystem>       m_inputSystem;
     std::unique_ptr<Scene>             m_scene;
+    // ゲームプレイ中のエンジン汎用イベントバス。Play 開始時 Clear、Update 末尾 Flush。
+    // 宣言順注意: m_scriptEngine / m_physicsSystem より前に置く。
+    // ~Application() が Shutdown() を経由せず自動デストラクタを走らせる場合、
+    // C++ は逆宣言順にデストラクトするため m_eventBus が後に置かれていると
+    // ~ScriptEngine()/~PhysicsSystem() が m_eventBus.Clear() を踏んで UAF になる。
+    EventBus                           m_eventBus;
     std::unique_ptr<ScriptEngine>      m_scriptEngine;
     std::unique_ptr<AudioSystem>       m_audioSystem;
     std::unique_ptr<PhysicsSystem>     m_physicsSystem;
-    // ゲームプレイ中のエンジン汎用イベントバス。Play 開始時 Clear、Update 末尾 Flush。
-    EventBus                           m_eventBus;
     std::unique_ptr<PhysicsDebugRenderer> m_physicsDebugRenderer;
     std::unique_ptr<EditorIconRenderer>   m_editorIconRenderer;
     bool                               m_physicsDebugDraw = false;
