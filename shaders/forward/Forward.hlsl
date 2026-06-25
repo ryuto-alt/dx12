@@ -100,7 +100,9 @@ float SampleCascade(int cascade, float3 worldPos)
     uv.y = 1.0f - uv.y;
     if (uv.x < 0 || uv.x > 1 || uv.y < 0 || uv.y > 1) return 1.0f;
 
-    float current = proj.z;
+    // 受光面のシャドウアクネ/ピーターパン調整用の深度バイアス（shadowParams.y）。
+    // 比較深度を手前へずらして自己遮蔽を抑える。
+    float current = proj.z - shadowParams.y;
     float texel = shadowParams.x;  // 1/shadowMapSize
     float s = 0.0f;
     [unroll]

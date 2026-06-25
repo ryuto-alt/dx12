@@ -2838,6 +2838,22 @@ void Application::ComputeCascades(const DirectX::XMVECTOR& lightDir, f32 camNear
     using namespace DirectX;
     const u32 N = kNumCascades;
 
+    // CSM は透視前提（スライス錐台を XMMatrixPerspectiveFovLH で復元する）。
+    // 編集2Dビュー等でカメラが正射になると錐台復元が破綻し影が崩れるため、
+    // 正射時は CSM を無効化（無影フォールバック）する。
+    // cascadeViewProj=identity + cascadeSplitsView=巨大正値 で、PS の SelectCascade は
+    // 必ず cascade0 を返し、identity 変換で UV が [0,1] 外へ出て SampleCascade が 1.0(無影)。
+    if (m_camera->IsOrthographic())
+    {
+        XMMATRIX id = XMMatrixIdentity();
+        for (u32 i = 0; i < N; ++i)
+        {
+            XMStoreFloat4x4(&m_cascadeViewProj[i], id);
+            m_cascadeSplitsView[i] = 1e9f;  // 全成分を遠端 → cascade0 固定
+        }
+        return;
+    }
+
     const f32 camFovY   = m_camera->GetFovY();
     const f32 camAspect = m_camera->GetAspect();
 
@@ -3770,7 +3786,7 @@ void Application::Render()
             XMMatrixTranspose(XMLoadFloat4x4(&m_cascadeViewProj[i])));
     fc.cascadeSplitsView = {m_cascadeSplitsView[0], m_cascadeSplitsView[1],
                             m_cascadeSplitsView[2], m_cascadeSplitsView[3]};
-    fc.shadowParams = {1.0f / static_cast<f32>(m_shadowMapSize), 0.0f,
+    fc.shadowParams = {1.0f / static_cast<f32>(m_shadowMapSize), m_shadowDepthBias,
                        m_cascadeBlendBand, m_showCascadeDebug ? 1.0f : 0.0f};
     fc.cameraPos = m_camera->GetPosition();
 

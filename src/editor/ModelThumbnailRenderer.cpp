@@ -90,12 +90,15 @@ void ModelThumbnailRenderer::CreateSharedResources()
         dev->CreateDepthStencilView(m_depthBuffer.Get(), &dsvDesc, m_dsvHandle);
     }
 
-    // ===== PerFrame アップロードバッファ (256B) =====
+    // ===== PerFrame アップロードバッファ =====
+    // main の Forward PSO を流用するため b1 のレイアウトは Application.cpp の FrameConstants(1136B)
+    // と一致させる。256B アラインで 1152B 確保（CSM の cascadeViewProj[4]/cascadeSplitsView/
+    // shadowParams/IBL まで含めて書けるサイズ）。
     {
         D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_UPLOAD};
         D3D12_RESOURCE_DESC desc{};
         desc.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
-        desc.Width            = 256;
+        desc.Width            = 1152;  // >= 1136、256B アライン
         desc.Height           = 1;
         desc.DepthOrArraySize = 1;
         desc.MipLevels        = 1;
@@ -301,17 +304,40 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
         XM_PIDIV4, 1.0f, maxExtent * 0.01f, maxExtent * 10.0f);
 
     // ===== PerFrame CB 書き込み =====
-    struct FrameConstants {
-        XMFLOAT4X4 view;
-        XMFLOAT4X4 proj;
-        XMFLOAT3   lightDir;
-        float      time;
-        XMFLOAT3   lightColor;
-        float      ambientStrength;
-        XMFLOAT4X4 lightViewProj;
-        XMFLOAT3   cameraPos;
-        float      _pad;
+    // main の Forward PSO(Forward.hlsl)を流用するので b1 のレイアウトは
+    // Application.cpp の FrameConstants(1136B) / Lighting.hlsli の PerFrameConstants と
+    // バイト単位で一致させること。サムネには影を出さないため CSM 領域は
+    // 「cascade0 を必ず選ばせて UV クリップ → CalcShadow が 1.0(無影) を返す」値に倒す。
+    static constexpr u32 kMaxPointLights = 8;  // = MAX_POINT_LIGHTS (Lighting.hlsli)
+    static constexpr u32 kMaxSpotLights  = 8;  // = MAX_SPOT_LIGHTS  (Lighting.hlsli)
+    struct PointLightGPU {
+        XMFLOAT3 position;   float range;
+        XMFLOAT3 color;      float _pad;
     };
+    struct SpotLightGPU {
+        XMFLOAT3 position;   float range;
+        XMFLOAT3 direction;  float cosInner;
+        XMFLOAT3 color;      float cosOuter;
+    };
+    struct FrameConstants {
+        XMFLOAT4X4 view;                          // 64B  (offset   0)
+        XMFLOAT4X4 proj;                          // 64B  (offset  64)
+        XMFLOAT3   lightDir;        float time;   // 16B  (offset 128)
+        XMFLOAT3   lightColor;      float ambientStrength; // 16B (offset 144)
+        XMFLOAT4X4 cascadeViewProj[4];            // 256B (offset 160)
+        XMFLOAT4   cascadeSplitsView;             // 16B  (offset 416)
+        XMFLOAT4   shadowParams;                  // 16B  (offset 432)
+        XMFLOAT3   cameraPos;       float _pad;   // 16B  (offset 448)
+        u32        numPointLights;  u32 numSpotLights; float _pad2[2]; // 16B (offset 464)
+        PointLightGPU pointLights[kMaxPointLights]; // 256B (offset 480)
+        SpotLightGPU  spotLights[kMaxSpotLights];   // 384B (offset 736)
+        // ▼ IBL 制御 16B (offset 1120)
+        float iblIntensity;
+        float maxPrefilterMip;
+        u32   hasIBL;
+        float skyboxIntensity;
+    };  // total = 1136B
+    static_assert(sizeof(FrameConstants) == 1136, "FrameConstants must be 1136 bytes (match Application.cpp / Lighting.hlsli)");
     {
         FrameConstants fc{};
         XMStoreFloat4x4(&fc.view, XMMatrixTranspose(viewMat));
@@ -321,8 +347,26 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
         fc.time = 0;
         fc.lightColor = {1.0f, 0.95f, 0.9f};
         fc.ambientStrength = 0.35f;
-        XMStoreFloat4x4(&fc.lightViewProj, XMMatrixIdentity());
+
+        // CSM 無影化: cascade0=identity(残りも identity)。cascadeSplitsView は全成分を
+        // 巨大正値にして SelectCascade が必ず cascade0 を返すようにする。identity 変換だと
+        // worldPos がほぼそのまま UV になり大半が [0,1] 外 → SampleCascade が 1.0(無影) を返す。
+        // 万一クリップ内に入っても shadowParams.x=1/size で破綻せず、band=0/debug=0 のため無害。
+        XMMATRIX id = XMMatrixIdentity();
+        for (int i = 0; i < 4; ++i)
+            XMStoreFloat4x4(&fc.cascadeViewProj[i], id);
+        fc.cascadeSplitsView = {1e9f, 1e9f, 1e9f, 1e9f};
+        fc.shadowParams = {1.0f / 4096.0f, 0.0f, 0.0f, 0.0f}; // x=1/size, y=bias, z=band(0), w=debug(0)
+
         fc.cameraPos = camPos;
+
+        // ライト/IBL なし: numPointLights/numSpotLights=0、hasIBL=0(ambient フォールバック)。
+        fc.numPointLights  = 0;
+        fc.numSpotLights   = 0;
+        fc.iblIntensity    = 0.0f;
+        fc.maxPrefilterMip = 4.0f;
+        fc.hasIBL          = 0u;
+        fc.skyboxIntensity = 0.0f;
 
         void* mapped = nullptr;
         m_perFrameUpload->Map(0, nullptr, &mapped);

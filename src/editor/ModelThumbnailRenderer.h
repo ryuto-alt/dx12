@@ -84,7 +84,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource>         m_depthBuffer;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>   m_rtvHeap;   // 1 descriptor
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>   m_dsvHeap;   // 1 descriptor
-    Microsoft::WRL::ComPtr<ID3D12Resource>         m_perFrameUpload; // 256B upload heap
+    Microsoft::WRL::ComPtr<ID3D12Resource>         m_perFrameUpload; // 1152B upload heap (FrameConstants 1136B)
     Microsoft::WRL::ComPtr<ID3D12Resource>         m_readbackBuffer; // for cache save
     D3D12_CPU_DESCRIPTOR_HANDLE m_rtvHandle{};
     D3D12_CPU_DESCRIPTOR_HANDLE m_dsvHandle{};

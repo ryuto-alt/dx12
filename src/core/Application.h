@@ -157,6 +157,7 @@ private:
     // CSM パラメータ（ImGui 編集用）
     f32                                m_cascadeSplitLambda = 0.5f;  // 0=一様, 1=対数
     f32                                m_cascadeBlendBand   = 1.5f;  // 境界ブレンド幅(view深度)
+    f32                                m_shadowDepthBias    = 0.0015f; // shadowParams.y: 受光面アクネ/ピーターパン調整
     bool                               m_showCascadeDebug   = false;
     // フレーム毎に計算した結果（描画パス間で共有）
     DirectX::XMFLOAT4X4                m_cascadeViewProj[kNumCascades]{};  // 行優先(world*VP用、非転置)
