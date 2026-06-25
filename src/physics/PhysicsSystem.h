@@ -38,6 +38,19 @@ public:
     void UnregisterBody(entt::registry& registry, entt::entity entity);
     void UnregisterAllBodies(entt::registry& registry);
 
+    // CharacterController（CharacterVirtual）の生成/破棄。RegisterBody と同じライフサイクル
+    // （Play 開始/シーンロードで生成、Stop/Shutdown で破棄）。
+    void RegisterCharacter(entt::registry& registry, entt::entity entity);
+    void UnregisterCharacter(entt::registry& registry, entt::entity entity);
+    void UnregisterAllCharacters(entt::registry& registry);
+
+    // CharacterVirtual を 1 ステップ進める（固定 dt ループ内から呼ぶ）。
+    // 入力（_desiredVel/_jumpQueued）→ 速度合成 → ExtendedUpdate → _grounded/_verticalVel 更新。
+    void StepCharacters(f32 fixedDt, entt::registry& registry);
+
+    // CharacterVirtual の位置を Transform に書き戻す（accumulator ループ後に 1 回）。
+    void SyncCharactersToTransforms(entt::registry& registry);
+
     // 物理操作 API
     void ApplyForce(uint32_t bodyId, DirectX::XMFLOAT3 force);
     void ApplyImpulse(uint32_t bodyId, DirectX::XMFLOAT3 impulse);

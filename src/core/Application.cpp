@@ -2036,6 +2036,7 @@ void Application::DoRuntimeSceneLoad(const std::string& rel, ID3D12GraphicsComma
 
     // 物理リセット
     m_physicsSystem->UnregisterAllBodies(m_scene->GetRegistry());
+    m_physicsSystem->UnregisterAllCharacters(m_scene->GetRegistry());
     m_physicsSystem->Shutdown();
     m_physicsSystem->Initialize();
 
@@ -2079,6 +2080,16 @@ void Application::DoRuntimeSceneLoad(const std::string& rel, ID3D12GraphicsComma
         {
             if (rb.bodyId != kInvalidBodyId) m_physicsSystem->UnregisterBody(reg, e);
             m_physicsSystem->RegisterBody(reg, e);
+        }
+    }
+
+    // 新シーンの CharacterController を CharacterVirtual として生成
+    {
+        auto& reg = m_scene->GetRegistry();
+        for (auto [e, cc] : reg.view<CharacterController>().each())
+        {
+            if (cc._registered) m_physicsSystem->UnregisterCharacter(reg, e);
+            m_physicsSystem->RegisterCharacter(reg, e);
         }
     }
     m_physicsSystem->ResetAccumulator();
@@ -2242,6 +2253,16 @@ void Application::EnterPlayMode()
         }
     }
 
+    // 全 CharacterController を CharacterVirtual として生成
+    {
+        auto& reg = m_scene->GetRegistry();
+        for (auto [entity, cc] : reg.view<CharacterController>().each())
+        {
+            if (cc._registered) m_physicsSystem->UnregisterCharacter(reg, entity);
+            m_physicsSystem->RegisterCharacter(reg, entity);
+        }
+    }
+
     // ホットリロード用タイムスタンプ更新
     if (std::filesystem::exists(scriptPath))
         m_scriptLastWriteTime = std::filesystem::last_write_time(scriptPath);
@@ -2272,6 +2293,7 @@ void Application::EnterEditorMode()
     m_physicsSystem->SetEventBus(nullptr);
 
     m_physicsSystem->UnregisterAllBodies(m_scene->GetRegistry());
+    m_physicsSystem->UnregisterAllCharacters(m_scene->GetRegistry());
     m_physicsSystem->Shutdown();
     m_physicsSystem->Initialize();
     // 新しい物理システムに同じ EventBus を再注入（接触イベントの配信先を復帰）。

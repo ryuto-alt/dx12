@@ -327,6 +327,20 @@ void PhysicsDebugRenderer::CollectFromRegistry(entt::registry& registry)
             AddBox(transform.position, he, quat, color);
         }
     }
+
+    // CharacterController（RigidBody とは排他）のカプセルを可視化。
+    // 接地中=緑、空中=オレンジ。回転は物理に渡していないので軸はそのまま。
+    const XMFLOAT4 ccQuat(0, 0, 0, 1);
+    auto ccView = registry.view<Transform, CharacterController>();
+    for (auto [entity, transform, cc] : ccView.each())
+    {
+        XMFLOAT3 center = { transform.position.x + cc.offset.x,
+                            transform.position.y + cc.offset.y,
+                            transform.position.z + cc.offset.z };
+        XMFLOAT3 color = cc._grounded ? XMFLOAT3{ 0.0f, 1.0f, 0.0f }
+                                      : XMFLOAT3{ 1.0f, 0.6f, 0.0f };
+        AddCapsule(center, cc.radius, cc.halfHeight, ccQuat, color);
+    }
 }
 
 // ========== Render ==========

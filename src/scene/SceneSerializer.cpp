@@ -295,6 +295,38 @@ static void RegisterCoreComponentSerializers()
             }
         }, {}, {} });
 
+    R.Register({ "CharacterController", ComponentSource::Core,
+        [](const entt::registry& reg, entt::entity entity, json& ej) {
+            if (reg.all_of<CharacterController>(entity)) {
+                const auto& cc = reg.get<CharacterController>(entity);
+                ej["characterController"] = {
+                    {"radius",       cc.radius},
+                    {"halfHeight",   cc.halfHeight},
+                    {"offset",       SerializeFloat3(cc.offset)},
+                    {"mass",         cc.mass},
+                    {"maxSlopeDeg",  cc.maxSlopeDeg},
+                    {"stepHeight",   cc.stepHeight},
+                    {"jumpSpeed",    cc.jumpSpeed},
+                    {"gravityScale", cc.gravityScale}
+                };
+            }
+        },
+        [](entt::registry& reg, entt::entity e, const json& ej) {
+            if (ej.contains("characterController")) {
+                const auto& cj = ej["characterController"];
+                CharacterController cc;
+                cc.radius       = cj.value("radius",       0.4f);
+                cc.halfHeight   = cj.value("halfHeight",   0.6f);
+                if (cj.contains("offset")) cc.offset = DeserializeFloat3(cj["offset"]);
+                cc.mass         = cj.value("mass",         70.0f);
+                cc.maxSlopeDeg  = cj.value("maxSlopeDeg",  50.0f);
+                cc.stepHeight   = cj.value("stepHeight",   0.3f);
+                cc.jumpSpeed    = cj.value("jumpSpeed",    6.0f);
+                cc.gravityScale = cj.value("gravityScale", 1.0f);
+                reg.emplace_or_replace<CharacterController>(e, cc);
+            }
+        }, {}, {} });
+
     R.Register({ "Tag", ComponentSource::Core,
         [](const entt::registry& reg, entt::entity entity, json& ej) {
             if (reg.all_of<Tag>(entity)) {

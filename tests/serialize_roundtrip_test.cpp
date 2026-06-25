@@ -431,6 +431,36 @@ static void Test_CapsuleCollider()
         });
 }
 
+static void Test_CharacterController()
+{
+    Case<CharacterController>(
+        [](entt::registry& r, entt::entity e) {
+            CharacterController cc;
+            cc.radius       = 0.55f;
+            cc.halfHeight   = 0.8f;
+            cc.offset       = {0.0f, 0.1f, 0.0f};
+            cc.mass         = 65.0f;
+            cc.maxSlopeDeg  = 45.0f;
+            cc.stepHeight   = 0.4f;
+            cc.jumpSpeed    = 7.5f;
+            cc.gravityScale = 1.5f;
+            r.emplace<CharacterController>(e, cc);
+        },
+        [](const CharacterController& cc) {
+            CHECK_F(cc.radius, 0.55f);
+            CHECK_F(cc.halfHeight, 0.8f);
+            CHECK_V3(cc.offset, 0.0f, 0.1f, 0.0f);
+            CHECK_F(cc.mass, 65.0f);
+            CHECK_F(cc.maxSlopeDeg, 45.0f);
+            CHECK_F(cc.stepHeight, 0.4f);
+            CHECK_F(cc.jumpSpeed, 7.5f);
+            CHECK_F(cc.gravityScale, 1.5f);
+            // ランタイム専有はシリアライズされず既定値のまま
+            CHECK(cc._registered == false);
+            CHECK(cc._grounded == false);
+        });
+}
+
 static void Test_LuaScript()
 {
     Case<LuaScript>(
@@ -633,6 +663,7 @@ int main()
     Test_BoxCollider();
     Test_SphereCollider();
     Test_CapsuleCollider();
+    Test_CharacterController();
     Test_LuaScript();
     Test_Combined();
     Test_Tag();

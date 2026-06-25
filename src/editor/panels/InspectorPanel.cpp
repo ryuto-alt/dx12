@@ -73,7 +73,7 @@ dx12e::u64 PickEntityIcon(entt::registry& reg, entt::entity e, const dx12e::Edit
     if (reg.all_of<MeshRenderer>(e))                          return ic.entMesh;
     if (reg.all_of<AudioSource>(e))                           return ic.entAudio;
     if (reg.any_of<RigidBody, BoxCollider, SphereCollider,
-                   CapsuleCollider, ConvexHullCollider>(e))   return ic.entPhysics;
+                   CapsuleCollider, ConvexHullCollider, CharacterController>(e))   return ic.entPhysics;
     if (reg.all_of<LuaScript>(e))                             return ic.entScript;
     return ic.entEmpty;
 }
@@ -1036,6 +1036,27 @@ void InspectorPanel::Render(entt::registry& reg,
             }
         }
 
+        if (reg.all_of<CharacterController>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entPhysics : 0, "Character Controller");
+            bool removed = ComponentRemoveMenu<CharacterController>(reg, ctx, ctx.selectedEntity, "Character Controller");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_ccEdit);
+                auto& cc = reg.get<CharacterController>(ctx.selectedEntity);
+                bool changed = false, active = false;
+                changed |= ImGui::DragFloat("Radius##CC",     &cc.radius,      0.02f, 0.05f, 5.0f);   active |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat("Half Height##CC",&cc.halfHeight,  0.02f, 0.05f, 5.0f);   active |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat3("Offset##CC",    &cc.offset.x,    0.02f);                active |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat("Mass##CC",       &cc.mass,        1.0f,  1.0f, 1000.0f); active |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat("Max Slope(deg)", &cc.maxSlopeDeg, 0.5f,  0.0f, 89.0f);   active |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat("Step Height",    &cc.stepHeight,  0.01f, 0.0f, 2.0f);    active |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat("Jump Speed",     &cc.jumpSpeed,   0.1f,  0.0f, 50.0f);   active |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat("Gravity Scale",  &cc.gravityScale,0.05f, 0.0f, 5.0f);    active |= ImGui::IsItemActive();
+                EndEdit(reg, ctx, ctx.selectedEntity, m_ccEdit, changed, active, "Character Controller");
+            }
+        }
+
         if (reg.all_of<ConvexHullCollider>(ctx.selectedEntity))
         {
             bool open = IconHeader(ic, ic ? ic->entCollider : 0, "Convex Hull Collider");
@@ -1153,6 +1174,7 @@ void InspectorPanel::Render(entt::registry& reg,
             AddComponentMenuItem<BoxCollider>(reg, ctx, ctx.selectedEntity, "Box Collider");
             AddComponentMenuItem<SphereCollider>(reg, ctx, ctx.selectedEntity, "Sphere Collider");
             AddComponentMenuItem<CapsuleCollider>(reg, ctx, ctx.selectedEntity, "Capsule Collider");
+            AddComponentMenuItem<CharacterController>(reg, ctx, ctx.selectedEntity, "Character Controller");
             ImGui::Separator();
             // スクリプト（.lua）をクリックでアタッチ — ドラッグ不要
             if (ImGui::BeginMenu("\xe3\x82\xb9\xe3\x82\xaf\xe3\x83\xaa\xe3\x83\x97\xe3\x83\x88"))  // スクリプト

@@ -28,7 +28,7 @@ static u64 PickEntityIcon(entt::registry& reg, entt::entity e, const EditorUiIco
     if (reg.all_of<MeshRenderer>(e))                              return ic.entMesh;
     if (reg.all_of<AudioSource>(e))                              return ic.entAudio;
     if (reg.any_of<RigidBody, BoxCollider, SphereCollider,
-                   CapsuleCollider, ConvexHullCollider>(e))      return ic.entPhysics;
+                   CapsuleCollider, ConvexHullCollider, CharacterController>(e))      return ic.entPhysics;
     if (reg.all_of<LuaScript>(e))                                 return ic.entScript;
     return ic.entEmpty;
 }
@@ -42,7 +42,7 @@ static ImVec4 PickEntityTint(entt::registry& reg, entt::entity e)
     if (reg.all_of<MeshRenderer>(e))                              return TypeMesh;
     if (reg.all_of<AudioSource>(e))                              return TypeAudio;
     if (reg.any_of<RigidBody, BoxCollider, SphereCollider,
-                   CapsuleCollider, ConvexHullCollider>(e))      return TypePhysics;
+                   CapsuleCollider, ConvexHullCollider, CharacterController>(e))      return TypePhysics;
     if (reg.all_of<LuaScript>(e))                                 return TypeScript;
     return TypeEmpty;
 }

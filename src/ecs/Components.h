@@ -272,6 +272,34 @@ struct ConvexHullCollider
     DirectX::XMFLOAT3 offset = {0.0f, 0.0f, 0.0f};
 };
 
+// --- Character Controller（Jolt CharacterVirtual ベースのキャラ移動部品）---
+// カプセル形状で collide-and-slide / 接地判定 / 段差 / 斜面登坂を行う、
+// プレイヤー/敵キャラ用の移動コンポーネント。RigidBody とは排他（同時付与禁止）。
+// 実体（JPH::CharacterVirtual）は PhysicsSystem が Play 中だけ生成・保持する。
+// Lua から physics:move(e,x,z) / physics:jump(e,v) / physics:isGrounded(e) で駆動する。
+struct CharacterController
+{
+    // ---- 形状（カプセル）----
+    f32 radius      = 0.4f;   // カプセル半径
+    f32 halfHeight  = 0.6f;   // カプセル円柱部の半分の高さ（全高 = 2*(halfHeight+radius)）
+    DirectX::XMFLOAT3 offset = {0.0f, 0.0f, 0.0f}; // Transform 原点に対する形状ローカルオフセット
+
+    // ---- 移動パラメータ ----
+    f32  mass          = 70.0f;  // 質量(kg)。乗っている剛体を押す力に使う
+    f32  maxSlopeDeg   = 50.0f;  // これ以上の傾斜は歩いて登れない（度。Joltへはradian変換）
+    f32  stepHeight    = 0.3f;   // 登れる段差の高さ（ExtendedUpdateSettings.mWalkStairsStepUp に反映）
+    f32  jumpSpeed     = 6.0f;   // jump() 既定の初速（Lua から上書き可）
+    f32  gravityScale  = 1.0f;   // このキャラに掛かる重力倍率（PhysicsSystemの重力×scale）
+
+    // ---- ランタイム専有（非シリアライズ・複製時に必ず無効化）----
+    DirectX::XMFLOAT3 _desiredVel = {0.0f, 0.0f, 0.0f}; // move() が積む目標水平速度(world XZ)
+    f32   _verticalVel = 0.0f;  // jump/落下の鉛直速度（接地でリセット）
+    bool  _jumpQueued  = false; // このフレーム jump 要求があったか
+    bool  _grounded    = false; // 直近 ExtendedUpdate 後の接地状態（isGrounded() が読む）
+    bool  _registered  = false; // PhysicsSystem に CharacterVirtual が生成済みか
+    // CharacterVirtual* はヘッダに出さない。PhysicsSystem 内 map<entity,Ref<CharacterVirtual>> で持つ。
+};
+
 // スクリプトコンポーネントが公開するプロパティの値。
 // .lua の `properties = {...}` 宣言ごとに 1 つ。エディタの Inspector で編集でき、
 // シーン/プレハブに保存され、Play 時に Lua スクリプトへ self.<name> として注入される。

@@ -5,6 +5,7 @@
 #include <cstdarg>
 #include <mutex>
 #include <vector>
+#include <unordered_map>
 
 // Jolt includes — warnings suppressed via /external:anglebrackets /external:W0
 #pragma warning(push)
@@ -20,6 +21,7 @@
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
+#include <Jolt/Physics/Character/CharacterVirtual.h>
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/CastResult.h>
 #include <Jolt/Physics/Collision/NarrowPhaseQuery.h>
@@ -189,6 +191,11 @@ struct PhysicsSystem::JoltImpl
     ObjLayerPairFilter                         objLayerPairFilter;
     std::unique_ptr<JPH::PhysicsSystem>        physicsSystem;
     std::unique_ptr<JPH::ContactListener>      contactListener; // EngineContactListener
+
+    // entity → CharacterVirtual（Play 中のみ）。Ref で寿命管理。
+    // メンバ宣言順では characters が physicsSystem の後ろ＝デストラクト時に先に破棄される
+    // ので、CharacterVirtual が生きている PhysicsSystem を参照する破棄順は安全。
+    std::unordered_map<entt::entity, JPH::Ref<JPH::CharacterVirtual>> characters;
 };
 
 // ========== Trace/Assert callbacks ==========
@@ -304,10 +311,12 @@ void PhysicsSystem::Update(f32 dt, entt::registry& registry)
         m_impl->physicsSystem->Update(
             kFixedTimeStep, kCollisionSteps,
             m_impl->tempAllocator.get(), m_impl->jobSystem.get());
+        StepCharacters(kFixedTimeStep, registry);   // 剛体ステップ後にキャラを進める
         m_accumulator -= kFixedTimeStep;
     }
 
     SyncPhysicsToTransforms(registry);
+    SyncCharactersToTransforms(registry);
 
     // ContactListener の pending をメインスレッドで EventBus へ流す。
     FlushPendingContacts();
@@ -570,6 +579,131 @@ void PhysicsSystem::UnregisterAllBodies(entt::registry& registry)
         rb.bodyId = kInvalidBodyId;
     }
     m_bodyToEntity.clear();   // 念のため全消去
+}
+
+// ========== Character Controller（CharacterVirtual）==========
+
+void PhysicsSystem::RegisterCharacter(entt::registry& registry, entt::entity entity)
+{
+    if (!m_initialized) return;
+    auto* cc = registry.try_get<CharacterController>(entity);
+    if (!cc) return;
+    if (cc->_registered) return;
+    auto* transform = registry.try_get<Transform>(entity);
+    if (!transform) return;
+
+    // カプセル形状（RegisterBody と同じ引数順: halfHeight, radius）
+    JPH::CapsuleShapeSettings shapeSettings(cc->halfHeight, cc->radius);
+    auto shapeResult = shapeSettings.Create();
+    if (!shapeResult.IsValid()) return;
+    JPH::ShapeRefC shape = shapeResult.Get();
+
+    JPH::Ref<JPH::CharacterVirtualSettings> settings = new JPH::CharacterVirtualSettings();
+    settings->mShape         = shape;                 // base CharacterBaseSettings::mShape
+    settings->mMass          = cc->mass;
+    settings->mMaxSlopeAngle = DirectX::XMConvertToRadians(cc->maxSlopeDeg); // 度→ラジアン必須
+    settings->mShapeOffset   = JPH::Vec3(cc->offset.x, cc->offset.y, cc->offset.z);
+    settings->mUp            = JPH::Vec3(0, 1, 0);    // base
+    // 足元の支持面: カプセル下端を少し上にした平面（接地安定化）
+    settings->mSupportingVolume = JPH::Plane(JPH::Vec3(0, 1, 0), -cc->radius);
+
+    // 初期位置（Transform + offset）。キャラは Y 軸回転を物理に渡さない（接地判定簡素化）
+    JPH::RVec3 pos(transform->position.x + cc->offset.x,
+                   transform->position.y + cc->offset.y,
+                   transform->position.z + cc->offset.z);
+    JPH::Quat rot = JPH::Quat::sIdentity();
+
+    JPH::Ref<JPH::CharacterVirtual> ch = new JPH::CharacterVirtual(
+        settings, pos, rot, static_cast<JPH::uint64>(entt::to_integral(entity)),
+        m_impl->physicsSystem.get());
+
+    m_impl->characters[entity] = ch;
+    cc->_registered  = true;
+    cc->_verticalVel = 0.0f;
+    cc->_grounded    = false;
+}
+
+void PhysicsSystem::UnregisterCharacter(entt::registry& registry, entt::entity entity)
+{
+    if (!m_initialized) return;
+    m_impl->characters.erase(entity);   // Ref 解放
+    if (auto* cc = registry.try_get<CharacterController>(entity)) cc->_registered = false;
+}
+
+void PhysicsSystem::UnregisterAllCharacters(entt::registry& registry)
+{
+    if (!m_initialized) return;
+    m_impl->characters.clear();
+    for (auto [e, cc] : registry.view<CharacterController>().each())
+        cc._registered = false;
+}
+
+void PhysicsSystem::StepCharacters(f32 fixedDt, entt::registry& registry)
+{
+    if (!m_initialized || m_impl->characters.empty()) return;
+
+    const JPH::Vec3 baseGravity = m_impl->physicsSystem->GetGravity(); // (0,-14,0)
+
+    JPH::CharacterVirtual::ExtendedUpdateSettings updateSettings; // 既定 + stepHeight 反映
+    // フィルタ: MOVING レイヤとして全衝突（既存 ObjLayerPairFilter と整合）
+    JPH::DefaultBroadPhaseLayerFilter bpFilter(m_impl->objVsBpFilter, Layers::MOVING);
+    JPH::DefaultObjectLayerFilter     objFilter(m_impl->objLayerPairFilter, Layers::MOVING);
+
+    for (auto& [entity, ch] : m_impl->characters)
+    {
+        auto* cc = registry.try_get<CharacterController>(entity);
+        if (!cc) continue;
+
+        // 接地状態更新（前ステップ結果）
+        bool grounded = ch->GetGroundState() == JPH::CharacterVirtual::EGroundState::OnGround;
+
+        // 鉛直速度: 接地中はリセット、空中は重力積分
+        if (grounded && cc->_verticalVel < 0.0f) cc->_verticalVel = 0.0f;
+        cc->_verticalVel += baseGravity.GetY() * cc->gravityScale * fixedDt;
+
+        // ジャンプ要求（接地中のみ受け付け）
+        if (cc->_jumpQueued && grounded) { cc->_verticalVel = cc->jumpSpeed; }
+        cc->_jumpQueued = false;
+
+        // 目標速度合成: 水平=move()入力 + 接地面速度、鉛直=積分結果
+        JPH::Vec3 ground = ch->GetGroundVelocity();
+        JPH::Vec3 vel(cc->_desiredVel.x + (grounded ? ground.GetX() : 0.0f),
+                      cc->_verticalVel,
+                      cc->_desiredVel.z + (grounded ? ground.GetZ() : 0.0f));
+        ch->SetLinearVelocity(vel);
+
+        // step height（段差登り）
+        updateSettings.mWalkStairsStepUp = JPH::Vec3(0, cc->stepHeight, 0);
+
+        ch->ExtendedUpdate(
+            fixedDt,
+            baseGravity * cc->gravityScale,
+            updateSettings,
+            bpFilter, objFilter,
+            JPH::BodyFilter{}, JPH::ShapeFilter{},
+            *m_impl->tempAllocator);
+
+        cc->_grounded = ch->GetGroundState() == JPH::CharacterVirtual::EGroundState::OnGround;
+    }
+}
+
+void PhysicsSystem::SyncCharactersToTransforms(entt::registry& registry)
+{
+    if (!m_initialized || m_impl->characters.empty()) return;
+    for (auto& [entity, ch] : m_impl->characters)
+    {
+        auto* tf = registry.try_get<Transform>(entity);
+        auto* cc = registry.try_get<CharacterController>(entity);
+        if (!tf || !cc) continue;
+        JPH::RVec3 p = ch->GetPosition();
+        tf->position = { static_cast<f32>(p.GetX()) - cc->offset.x,
+                         static_cast<f32>(p.GetY()) - cc->offset.y,
+                         static_cast<f32>(p.GetZ()) - cc->offset.z };
+        // 回転は CC からは書き戻さない（Yaw は Lua/ゲーム側が Transform.rotation で管理）
+
+        // move しなければ止まる: 次フレーム Lua が再設定するまで水平入力を消す。
+        cc->_desiredVel = { 0.0f, 0.0f, 0.0f };
+    }
 }
 
 // ========== Physics Operations ==========

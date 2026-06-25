@@ -229,6 +229,7 @@ void ScriptEngine::RegisterBindings()
             if (type == "Gimmick")            return e.HasComponent<Gimmick>();
             if (type == "ParticleEmitter")    return e.HasComponent<ParticleEmitter>();
             if (type == "Trigger")            return e.HasComponent<Trigger>();
+            if (type == "CharacterController") return e.HasComponent<CharacterController>();
             return false;
         },
 
@@ -809,7 +810,36 @@ void ScriptEngine::RegisterPhysicsBindings()
         // step(dt) — 手動で 1 ステップ進める（pause 中の駒送り用）
         "step", [](PhysicsSystem& ps, float dt) { ps.Step(dt); },
         // setGravity(vec3)
-        "setGravity", [](PhysicsSystem& ps, XMFLOAT3 g) { ps.SetGravity(g); }
+        "setGravity", [](PhysicsSystem& ps, XMFLOAT3 g) { ps.SetGravity(g); },
+
+        // --- CharacterController（Jolt CharacterVirtual）---
+        // CharacterController を付与（既にあればスキップ）。data 駆動と同じく既存優先。
+        "addCharacterController", [this](PhysicsSystem& /*ps*/, Entity& e,
+                                         float radius, float halfHeight) {
+            auto& reg = m_scene->GetRegistry();
+            if (reg.all_of<CharacterController>(e.GetHandle())) return;
+            if (reg.all_of<RigidBody>(e.GetHandle())) return; // RigidBody と排他
+            CharacterController cc;
+            cc.radius = radius; cc.halfHeight = halfHeight;
+            reg.emplace_or_replace<CharacterController>(e.GetHandle(), cc);
+        },
+        // 水平移動入力（world XZ の目標速度）。毎フレーム呼ぶ。呼ばないフレームは停止。
+        "move", [](PhysicsSystem& /*ps*/, Entity& e, float vx, float vz) {
+            if (!e.HasComponent<CharacterController>()) return;
+            auto& cc = e.GetComponent<CharacterController>();
+            cc._desiredVel.x = vx; cc._desiredVel.z = vz;
+        },
+        // ジャンプ要求（接地中のみ有効。amount<=0 なら既定 jumpSpeed）
+        "jump", [](PhysicsSystem& /*ps*/, Entity& e, sol::optional<float> amount) {
+            if (!e.HasComponent<CharacterController>()) return;
+            auto& cc = e.GetComponent<CharacterController>();
+            if (amount && *amount > 0.0f) cc.jumpSpeed = *amount;
+            cc._jumpQueued = true;
+        },
+        "isGrounded", [](PhysicsSystem& /*ps*/, Entity& e) -> bool {
+            if (!e.HasComponent<CharacterController>()) return false;
+            return e.GetComponent<CharacterController>()._grounded;
+        }
     );
 
     lua["physics"] = m_physics;
