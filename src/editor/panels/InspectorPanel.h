@@ -35,6 +35,9 @@ public:
                               i32& shadowQualityIndex,
                               u32& shadowMapSize,
                               bool& shadowMapDirty,
+                              f32& cascadeSplitLambda,
+                              f32& cascadeBlendBand,
+                              bool& showCascadeDebug,
                               GameClock* clock);
 
     void SetScriptEngine(ScriptEngine* e) { m_scriptEngine = e; }

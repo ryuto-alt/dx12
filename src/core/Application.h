@@ -93,6 +93,9 @@ private:
                           DirectX::XMFLOAT3 camRight, DirectX::XMFLOAT3 camUp,
                           D3D12_CPU_DESCRIPTOR_HANDLE rtv, D3D12_CPU_DESCRIPTOR_HANDLE dsv,
                           u32 vpX, u32 vpY, u32 vpW, u32 vpH);
+    // CSM: カメラ視錐台を near→far で kNumCascades 分割し、各カスケードをライト視点へタイトフィット。
+    // 結果は m_cascadeViewProj[] / m_cascadeSplitsView[] に格納する。
+    void ComputeCascades(const DirectX::XMVECTOR& lightDir, f32 camNear, f32 camFar);
     void RebuildScene();
     // ランチャーで選んだ/作成したプロジェクトを実行時に読み込む（パス再ポイント + シーンロード）
     void LoadProject(const ProjectInfo& info);
@@ -135,13 +138,22 @@ private:
     std::unique_ptr<PipelineState>     m_emissivePipelineState;  // 加算発光パーティクル用
     std::unique_ptr<PipelineState>     m_shadowPipelineState;
     std::unique_ptr<PipelineState>     m_shadowSkinnedPipelineState;
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_shadowMap;
-    std::unique_ptr<DescriptorHeap>    m_shadowDsvHeap;
-    D3D12_CPU_DESCRIPTOR_HANDLE        m_shadowDsvHandle{};
-    u32                                m_shadowSrvIndex = 0;
+    // ---- CSM (Cascaded Shadow Maps, 4分割) ----
+    static constexpr u32 kNumCascades = 4;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_shadowMap;        // Texture2DArray(ArraySize=kNumCascades)
+    std::unique_ptr<DescriptorHeap>    m_shadowDsvHeap;        // 容量 kNumCascades
+    D3D12_CPU_DESCRIPTOR_HANDLE        m_shadowDsvHandles[kNumCascades]{}; // スライス毎の DSV
+    u32                                m_shadowSrvIndex = 0;    // 配列SRV(1個)
     u32                                m_shadowMapSize = 4096;
     i32                                m_shadowQualityIndex = 2;  // 0:1024, 1:2048, 2:4096, 3:8192
     bool                               m_shadowMapDirty = false;
+    // CSM パラメータ（ImGui 編集用）
+    f32                                m_cascadeSplitLambda = 0.5f;  // 0=一様, 1=対数
+    f32                                m_cascadeBlendBand   = 1.5f;  // 境界ブレンド幅(view深度)
+    bool                               m_showCascadeDebug   = false;
+    // フレーム毎に計算した結果（描画パス間で共有）
+    DirectX::XMFLOAT4X4                m_cascadeViewProj[kNumCascades]{};  // 行優先(world*VP用、非転置)
+    f32                                m_cascadeSplitsView[kNumCascades]{}; // 各カスケード遠端 view深度(正値)
     // エディタレイアウト
     static constexpr f32 kLeftPanelWidth  = 280.0f;
     static constexpr f32 kToolbarHeight   = 60.0f;  // メニューバー + アイコン列の2段

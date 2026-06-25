@@ -1227,6 +1227,9 @@ void InspectorPanel::RenderEngineSettings(EditorContext& ctx,
                                           i32& shadowQualityIndex,
                                           u32& shadowMapSize,
                                           bool& shadowMapDirty,
+                                          f32& cascadeSplitLambda,
+                                          f32& cascadeBlendBand,
+                                          bool& showCascadeDebug,
                                           GameClock* clock)
 {
     ImGui::Begin("\xe3\x82\xa8\xe3\x83\xb3\xe3\x82\xb8\xe3\x83\xb3\xe8\xa8\xad\xe5\xae\x9a");  // エンジン設定
@@ -1253,6 +1256,13 @@ void InspectorPanel::RenderEngineSettings(EditorContext& ctx,
             shadowMapDirty = true;
         }
         ImGui::Text("%ux%u", shadowMapSize, shadowMapSize);
+
+        // --- CSM (Cascaded Shadow Maps) ---
+        ImGui::Separator();
+        ImGui::TextUnformatted("CSM (4\xe5\x88\x86\xe5\x89\xb2)");  // CSM (4分割)
+        ImGui::SliderFloat("\xe5\x88\x86\xe5\x89\xb2\xce\xbb", &cascadeSplitLambda, 0.0f, 1.0f);  // 分割λ
+        ImGui::SliderFloat("\xe5\xa2\x83\xe7\x95\x8c\xe3\x83\x96\xe3\x83\xac\xe3\x83\xb3\xe3\x83\x89", &cascadeBlendBand, 0.0f, 5.0f);  // 境界ブレンド
+        ImGui::Checkbox("\xe3\x82\xab\xe3\x82\xb9\xe3\x82\xb1\xe3\x83\xbc\xe3\x83\x89\xe5\x8f\xaf\xe8\xa6\x96\xe5\x8c\x96", &showCascadeDebug);  // カスケード可視化
     }
 
     // --- Audio ---

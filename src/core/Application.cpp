@@ -451,16 +451,16 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         }
     }
 
-    // シャドウマップ作成
+    // シャドウマップ作成（CSM: Texture2DArray, ArraySize=kNumCascades）
     {
         m_shadowDsvHeap = std::make_unique<DescriptorHeap>();
-        m_shadowDsvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1, false);
+        m_shadowDsvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, kNumCascades, false);
 
         D3D12_RESOURCE_DESC shadowDesc{};
         shadowDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
         shadowDesc.Width = m_shadowMapSize;
         shadowDesc.Height = m_shadowMapSize;
-        shadowDesc.DepthOrArraySize = 1;
+        shadowDesc.DepthOrArraySize = static_cast<u16>(kNumCascades);
         shadowDesc.MipLevels = 1;
         shadowDesc.Format = DXGI_FORMAT_R32_TYPELESS;
         shadowDesc.SampleDesc = {1, 0};
@@ -478,21 +478,29 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             &shadowDesc, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             &clearValue, IID_PPV_ARGS(&m_shadowMap)));
 
-        // DSV
-        m_shadowDsvHandle = m_shadowDsvHeap->Allocate();
-        D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc{};
-        dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
-        dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
-        m_graphicsDevice->GetDevice()->CreateDepthStencilView(
-            m_shadowMap.Get(), &dsvDesc, m_shadowDsvHandle);
+        // DSV: 配列スライス毎に kNumCascades 個
+        for (u32 i = 0; i < kNumCascades; ++i)
+        {
+            m_shadowDsvHandles[i] = m_shadowDsvHeap->Allocate();
+            D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc{};
+            dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
+            dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
+            dsvDesc.Texture2DArray.FirstArraySlice = i;
+            dsvDesc.Texture2DArray.ArraySize = 1;
+            dsvDesc.Texture2DArray.MipSlice = 0;
+            m_graphicsDevice->GetDevice()->CreateDepthStencilView(
+                m_shadowMap.Get(), &dsvDesc, m_shadowDsvHandles[i]);
+        }
 
-        // SRV
+        // SRV: 配列SRV(1個)
         m_shadowSrvIndex = m_srvHeap->AllocateIndex();
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
         srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
-        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
         srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.Texture2D.MipLevels = 1;
+        srvDesc.Texture2DArray.MipLevels = 1;
+        srvDesc.Texture2DArray.FirstArraySlice = 0;
+        srvDesc.Texture2DArray.ArraySize = kNumCascades;
         m_graphicsDevice->GetDevice()->CreateShaderResourceView(
             m_shadowMap.Get(), &srvDesc, m_srvHeap->GetCpuHandle(m_shadowSrvIndex));
 
@@ -547,22 +555,24 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         DirectX::XMFLOAT3 color;      float cosOuter;  // color * intensity
     };
     struct FrameConstants {
-        DirectX::XMFLOAT4X4 view;            // 64B
-        DirectX::XMFLOAT4X4 proj;            // 64B
+        DirectX::XMFLOAT4X4 view;            // 64B  (offset   0)
+        DirectX::XMFLOAT4X4 proj;            // 64B  (offset  64)
         DirectX::XMFLOAT3   lightDir;        // 12B
-        float                time;            // 4B
+        float                time;            // 4B  → 16B (offset 128)
         DirectX::XMFLOAT3   lightColor;      // 12B
-        float                ambientStrength; // 4B
-        DirectX::XMFLOAT4X4 lightViewProj;   // 64B
+        float                ambientStrength; // 4B  → 16B (offset 144)
+        DirectX::XMFLOAT4X4 cascadeViewProj[kNumCascades]; // 256B (offset 160)
+        DirectX::XMFLOAT4   cascadeSplitsView; // 16B (offset 416)
+        DirectX::XMFLOAT4   shadowParams;      // 16B (offset 432)
         DirectX::XMFLOAT3   cameraPos;       // 12B
-        float                _pad;            // 4B
+        float                _pad;            // 4B  → 16B (offset 448)
         u32                  numPointLights;  // 4B
         u32                  numSpotLights;   // 4B
-        float                _pad2[2];        // 8B → 16B boundary
-        PointLightGPU        pointLights[kMaxPointLights]; // 256B
-        SpotLightGPU         spotLights[kMaxSpotLights];   // 384B
-    };  // total = 896B
-    static_assert(sizeof(FrameConstants) == 896, "FrameConstants must be 896 bytes");
+        float                _pad2[2];        // 8B  → 16B (offset 464)
+        PointLightGPU        pointLights[kMaxPointLights]; // 256B (offset 480)
+        SpotLightGPU         spotLights[kMaxSpotLights];   // 384B (offset 736)
+    };  // total = 1120B
+    static_assert(sizeof(FrameConstants) == 1120, "FrameConstants must be 1120 bytes");
     m_perFrameCB = std::make_unique<ConstantBuffer>();
     m_perFrameCB->Initialize(*m_graphicsDevice, sizeof(FrameConstants), FrameResources::kFrameCount);
 
@@ -2629,6 +2639,91 @@ void Application::DrawWorldSprites(ID3D12GraphicsCommandList* cmd, DirectX::XMMA
     }
 }
 
+// CSM: カメラ視錐台を near→far で kNumCascades 分割し、各カスケードをライト視点へタイトフィット。
+// 結果は m_cascadeViewProj[]（行優先 world*VP 用、非転置）と m_cascadeSplitsView[]（各遠端 view 深度）に格納。
+void Application::ComputeCascades(const DirectX::XMVECTOR& lightDir, f32 camNear, f32 camFar)
+{
+    using namespace DirectX;
+    const u32 N = kNumCascades;
+
+    const f32 camFovY   = m_camera->GetFovY();
+    const f32 camAspect = m_camera->GetAspect();
+
+    // 1) 分割距離（対数 × 一様の混合, lambda）
+    f32 splits[kNumCascades];
+    f32 range = camFar - camNear;
+    f32 ratio = camFar / (std::max)(camNear, 1e-4f);
+    for (u32 i = 0; i < N; ++i)
+    {
+        f32 p    = (i + 1) / static_cast<f32>(N);
+        f32 logS = camNear * std::pow(ratio, p);
+        f32 uniS = camNear + range * p;
+        splits[i] = m_cascadeSplitLambda * logS + (1.0f - m_cascadeSplitLambda) * uniS;
+        m_cascadeSplitsView[i] = splits[i];  // PS のカスケード選択に渡す view 深度（正値）
+    }
+
+    // 2) カメラビュー（スライス錐台の隅を world へ戻すのに使用）
+    XMMATRIX camView = m_camera->GetViewMatrix();
+
+    XMVECTOR up = XMVectorSet(0, 1, 0, 0);
+    // 退化回避: lightDir が up とほぼ平行なら up を Z 軸へ
+    if (fabsf(XMVectorGetX(XMVector3Dot(lightDir, up))) > 0.99f)
+        up = XMVectorSet(0, 0, 1, 0);
+
+    f32 prevSplit = camNear;
+    for (u32 ci = 0; ci < N; ++ci)
+    {
+        f32 n = prevSplit, f = splits[ci];
+
+        // スライス専用の透視投影で NDC 隅 → world
+        XMMATRIX sliceProj = XMMatrixPerspectiveFovLH(camFovY, camAspect, n, f);
+        XMMATRIX invVP     = XMMatrixInverse(nullptr, camView * sliceProj);
+
+        const XMVECTOR ndc[8] = {
+            {-1, -1, 0, 1}, {1, -1, 0, 1}, {-1, 1, 0, 1}, {1, 1, 0, 1},
+            {-1, -1, 1, 1}, {1, -1, 1, 1}, {-1, 1, 1, 1}, {1, 1, 1, 1}};
+        XMVECTOR corners[8];
+        XMVECTOR center = XMVectorZero();
+        for (int k = 0; k < 8; ++k)
+        {
+            XMVECTOR w = XMVector4Transform(ndc[k], invVP);
+            w = XMVectorScale(w, 1.0f / XMVectorGetW(w));
+            corners[k] = w;
+            center = XMVectorAdd(center, w);
+        }
+        center = XMVectorScale(center, 1.0f / 8.0f);
+
+        // 包む球半径（回転不変＝テクセルスイム抑制）
+        f32 radius = 0.0f;
+        for (int k = 0; k < 8; ++k)
+            radius = (std::max)(radius,
+                XMVectorGetX(XMVector3Length(XMVectorSubtract(corners[k], center))));
+        radius = std::ceil(radius * 16.0f) / 16.0f;
+
+        // ライトビュー: 球中心から -lightDir 方向へ後退
+        XMVECTOR eye = XMVectorSubtract(center, XMVectorScale(lightDir, radius));
+        XMMATRIX lightView = XMMatrixLookAtLH(eye, center, up);
+
+        // タイトフィット正射（球で対称）
+        XMMATRIX lightProj = XMMatrixOrthographicOffCenterLH(
+            -radius, radius, -radius, radius, 0.0f, radius * 2.0f);
+
+        // テクセルスナップ（シャドウのちらつき防止）
+        XMMATRIX shadowVP = lightView * lightProj;
+        XMVECTOR origin   = XMVector4Transform(XMVectorSet(0, 0, 0, 1), shadowVP);
+        origin = XMVectorScale(origin, static_cast<f32>(m_shadowMapSize) / 2.0f);
+        XMVECTOR rounded = XMVectorRound(origin);
+        XMVECTOR offset  = XMVectorScale(XMVectorSubtract(rounded, origin),
+                                         2.0f / static_cast<f32>(m_shadowMapSize));
+        offset = XMVectorSetZ(XMVectorSetW(offset, 0.0f), 0.0f);
+        XMMATRIX snap = XMMatrixTranslationFromVector(offset);
+        shadowVP = shadowVP * snap;
+
+        XMStoreFloat4x4(&m_cascadeViewProj[ci], shadowVP);  // 行優先（world*VP 用、非転置）
+        prevSplit = f;
+    }
+}
+
 void Application::Render()
 {
     using namespace DirectX;
@@ -3089,7 +3184,7 @@ void Application::Render()
         shadowDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
         shadowDesc.Width = m_shadowMapSize;
         shadowDesc.Height = m_shadowMapSize;
-        shadowDesc.DepthOrArraySize = 1;
+        shadowDesc.DepthOrArraySize = static_cast<u16>(kNumCascades);
         shadowDesc.MipLevels = 1;
         shadowDesc.Format = DXGI_FORMAT_R32_TYPELESS;
         shadowDesc.SampleDesc = {1, 0};
@@ -3107,17 +3202,26 @@ void Application::Render()
             &shadowDesc, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             &clearValue, IID_PPV_ARGS(&m_shadowMap)));
 
-        D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc{};
-        dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
-        dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
-        m_graphicsDevice->GetDevice()->CreateDepthStencilView(
-            m_shadowMap.Get(), &dsvDesc, m_shadowDsvHandle);
+        // DSV はハンドル再利用（初回 Allocate 済み）。スライス毎に再作成。
+        for (u32 i = 0; i < kNumCascades; ++i)
+        {
+            D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc{};
+            dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
+            dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
+            dsvDesc.Texture2DArray.FirstArraySlice = i;
+            dsvDesc.Texture2DArray.ArraySize = 1;
+            dsvDesc.Texture2DArray.MipSlice = 0;
+            m_graphicsDevice->GetDevice()->CreateDepthStencilView(
+                m_shadowMap.Get(), &dsvDesc, m_shadowDsvHandles[i]);
+        }
 
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
         srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
-        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
         srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.Texture2D.MipLevels = 1;
+        srvDesc.Texture2DArray.MipLevels = 1;
+        srvDesc.Texture2DArray.FirstArraySlice = 0;
+        srvDesc.Texture2DArray.ArraySize = kNumCascades;
         m_graphicsDevice->GetDevice()->CreateShaderResourceView(
             m_shadowMap.Get(), &srvDesc, m_srvHeap->GetCpuHandle(m_shadowSrvIndex));
     }
@@ -3169,28 +3273,28 @@ void Application::Render()
     }
     XMVECTOR lightDir = XMVector3Normalize(XMLoadFloat3(&lightDirF3));
     XMStoreFloat3(&lightDirF3, lightDir);  // 正規化した値を書き戻す
-    // シャドウ投影はシーン全体（広めのアリーナ）を覆うサイズに。
-    // 以前は 30×30(±15) しかなく、±19 の壁などが範囲外でクリップされ影が崩れていた。
-    XMVECTOR lightPos = XMVectorScale(lightDir, -45.0f);
-    XMMATRIX lightView = XMMatrixLookAtLH(lightPos, XMVectorZero(), XMVectorSet(0, 1, 0, 0));
-    XMMATRIX lightProj = XMMatrixOrthographicLH(56.0f, 56.0f, 0.1f, 90.0f);
-    XMMATRIX lightViewProj = lightView * lightProj;
+    // CSM: カメラ視錐台を 4 分割し、各カスケードをライト視点へタイトフィット。
+    // 結果は m_cascadeViewProj[] / m_cascadeSplitsView[] に格納される。
+    // CSM は透視前提。near/far は編集カメラ既定と一致させる。
+    {
+        f32 camNear = m_camera->GetNearZ();
+        f32 camFar  = m_camera->GetFarZ();
+        // 影が無限遠まで必要なわけではないので、現実的な距離にクランプ（タイトに保つ）。
+        camFar = (std::min)(camFar, 200.0f);
+        ComputeCascades(lightDir, camNear, camFar);
+    }
 
     // SRV ヒープをバインド（シャドウパスでもボーンSRVが必要）
     m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
     m_commandList->SetRootSignature(*m_rootSignature);
 
-    // ===== シャドウパス =====
+    // ===== シャドウパス（CSM: カスケード毎に kNumCascades 回描画）=====
     {
+        // 配列リソース全体を一括で DEPTH_WRITE へ遷移（カスケードループの外で1回）
         m_commandList->TransitionResource(m_shadowMap.Get(),
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
 
-        m_commandList->ClearDepthStencil(m_shadowDsvHandle);
-
-        // RTVなし、DSVのみ
-        nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_shadowDsvHandle);
-
-        // シャドウマップ用ビューポート
+        // シャドウマップ用ビューポート（全カスケード共通＝各スライス同サイズ正方）
         D3D12_VIEWPORT shadowVp{};
         shadowVp.Width    = static_cast<f32>(m_shadowMapSize);
         shadowVp.Height   = static_cast<f32>(m_shadowMapSize);
@@ -3200,8 +3304,15 @@ void Application::Render()
         nativeCmdList->RSSetViewports(1, &shadowVp);
         nativeCmdList->RSSetScissorRects(1, &shadowScissor);
 
-        // シャドウパスで全Entity（グリッドは除外）を描画
+        for (u32 ci = 0; ci < kNumCascades; ++ci)
         {
+            XMMATRIX cascadeVP = XMLoadFloat4x4(&m_cascadeViewProj[ci]);
+
+            m_commandList->ClearDepthStencil(m_shadowDsvHandles[ci]);
+            // RTVなし、DSVのみ（該当カスケードのスライス）
+            nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_shadowDsvHandles[ci]);
+
+            // シャドウパスで全Entity（グリッドは除外）を描画
             auto& reg = m_scene->GetRegistry();
             auto renderView = reg.view<const Transform, const MeshRenderer>();
             for (auto [e, transform, renderer] : renderView.each())
@@ -3215,7 +3326,10 @@ void Application::Render()
                 if (isSkinned)
                 {
                     auto& skelAnim = reg.get<SkeletalAnimation>(e);
-                    skelAnim.skinningBuffer->Update(skelAnim.animator->GetSkinningMatrices(), frameIndex);
+                    // skinningBuffer の Update はフレーム内1回で良い（最初のカスケードのみ）。
+                    // SRV バインドは各カスケードで必要。
+                    if (ci == 0)
+                        skelAnim.skinningBuffer->Update(skelAnim.animator->GetSkinningMatrices(), frameIndex);
                     m_commandList->SetPipelineState(*m_shadowSkinnedPipelineState);
                     m_commandList->SetSRVTable(RootSignature::kSlotBonesSRV,
                         m_srvHeap->GetGpuHandle(skelAnim.skinningBuffer->GetSrvIndex(frameIndex)));
@@ -3238,7 +3352,7 @@ void Application::Render()
                     }
 
                     struct PerObjectData { XMMATRIX mvp; XMMATRIX mdl; } objData;
-                    objData.mvp = XMMatrixTranspose(meshWorld * lightViewProj);
+                    objData.mvp = XMMatrixTranspose(meshWorld * cascadeVP);
                     objData.mdl = XMMatrixTranspose(meshWorld);
                     m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
 
@@ -3339,7 +3453,9 @@ void Application::Render()
         float      time;
         XMFLOAT3   lightColor;
         float      ambientStrength;
-        XMFLOAT4X4 lightVP;
+        XMFLOAT4X4 cascadeViewProj[kNumCascades]; // 256B
+        XMFLOAT4   cascadeSplitsView;             // 16B
+        XMFLOAT4   shadowParams;                  // 16B
         XMFLOAT3   cameraPos;
         float      _pad;
         u32        numPointLights;
@@ -3348,6 +3464,7 @@ void Application::Render()
         PointLightGPU pointLights[kMaxPointLightsR];
         SpotLightGPU  spotLights[kMaxSpotLightsR];
     };
+    static_assert(sizeof(FrameConstants) == 1120, "FrameConstants must be 1120 bytes");
 
     FrameConstants fc{};
     XMStoreFloat4x4(&fc.view, XMMatrixTranspose(m_camera->GetViewMatrix()));
@@ -3356,7 +3473,14 @@ void Application::Render()
     fc.time = totalTime;
     fc.lightColor = lightColorF3;
     fc.ambientStrength = lightAmbient;
-    XMStoreFloat4x4(&fc.lightVP, XMMatrixTranspose(lightViewProj));
+    // CSM: カスケード行列（HLSL は列優先 mul(row,mat) なので転置して格納）
+    for (u32 i = 0; i < kNumCascades; ++i)
+        XMStoreFloat4x4(&fc.cascadeViewProj[i],
+            XMMatrixTranspose(XMLoadFloat4x4(&m_cascadeViewProj[i])));
+    fc.cascadeSplitsView = {m_cascadeSplitsView[0], m_cascadeSplitsView[1],
+                            m_cascadeSplitsView[2], m_cascadeSplitsView[3]};
+    fc.shadowParams = {1.0f / static_cast<f32>(m_shadowMapSize), 0.0f,
+                       m_cascadeBlendBand, m_showCascadeDebug ? 1.0f : 0.0f};
     fc.cameraPos = m_camera->GetPosition();
 
     // PointLight を ECS から収集
@@ -3719,7 +3843,8 @@ void Application::Render()
             m_scriptEngine.get(), m_audioSystem.get(),
             m_physicsDebugRenderer.get(), m_physicsDebugDraw,
             m_useVsync, m_shadowQualityIndex, m_shadowMapSize,
-            m_shadowMapDirty, &m_gameClock,
+            m_shadowMapDirty, m_cascadeSplitLambda, m_cascadeBlendBand,
+            m_showCascadeDebug, &m_gameClock,
             m_modeChangeRequested, pendingPlayMode,
             PathResolver::AssetsDir(), kLeftPanelWidth, kToolbarHeight);
 

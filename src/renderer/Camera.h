@@ -33,6 +33,12 @@ public:
     f32 GetYaw() const { return m_yaw; }
     f32 GetPitch() const { return m_pitch; }
 
+    // CSM のカスケード分割で視錐台を再構築するためのゲッター
+    f32 GetFovY()   const { return m_fovY; }
+    f32 GetAspect() const { return m_aspect; }
+    f32 GetNearZ()  const { return m_nearZ; }
+    f32 GetFarZ()   const { return m_farZ; }
+
     void SetYaw(f32 yaw) { m_yaw = yaw; UpdateVectors(); }
     void SetPitch(f32 pitch) { m_pitch = pitch; UpdateVectors(); }
     void SetMoveSpeed(f32 speed) { m_moveSpeed = speed; }

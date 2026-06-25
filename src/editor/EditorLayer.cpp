@@ -157,6 +157,9 @@ void EditorLayer::Render(bool isPlaying,
                          i32& shadowQualityIndex,
                          u32& shadowMapSize,
                          bool& shadowMapDirty,
+                         f32& cascadeSplitLambda,
+                         f32& cascadeBlendBand,
+                         bool& showCascadeDebug,
                          GameClock* clock,
                          bool& outModeChangeRequested,
                          bool& outPendingPlayMode,
@@ -229,7 +232,8 @@ void EditorLayer::Render(bool isPlaying,
     // グローバルなエンジン設定は Inspector から分離した独立ウィンドウ（下ドック）に描く
     m_inspector->RenderEngineSettings(*m_ctx, camera, audioSystem, physicsDebugRenderer,
                         physicsDebugDraw, useVsync, shadowQualityIndex, shadowMapSize,
-                        shadowMapDirty, clock);
+                        shadowMapDirty, cascadeSplitLambda, cascadeBlendBand, showCascadeDebug,
+                        clock);
 
     m_assetBrowser->Render(*m_ctx, clock->GetDeltaTime());
 

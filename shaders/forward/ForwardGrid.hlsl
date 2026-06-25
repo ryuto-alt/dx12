@@ -4,9 +4,11 @@
 Texture2D    g_albedo  : register(t0);
 SamplerState g_sampler : register(s0);
 
-// Shadow map
-Texture2D              g_shadowMap      : register(t4);
+// Shadow map (CSM: Texture2DArray, 1スライス=1カスケード)
+Texture2DArray         g_shadowMap      : register(t4);
 SamplerComparisonState g_shadowSampler  : register(s1);
+
+#define NUM_CASCADES 4
 
 // PerObject constants (b0) - MVP + Model matrix as RootConstants (32 DWORD)
 cbuffer PerObjectConstants : register(b0)
@@ -15,7 +17,7 @@ cbuffer PerObjectConstants : register(b0)
     float4x4 model;
 };
 
-// PerFrame constants (b1)
+// PerFrame constants (b1) — Lighting.hlsli / C++ FrameConstants(1120B) とバイト一致させること
 cbuffer PerFrameConstants : register(b1)
 {
     float4x4 view;
@@ -24,7 +26,9 @@ cbuffer PerFrameConstants : register(b1)
     float    time;
     float3   lightColor;
     float    ambientStrength;
-    float4x4 lightViewProj;
+    float4x4 cascadeViewProj[NUM_CASCADES];  // 256B
+    float4   cascadeSplitsView;              // 各カスケード遠端 view 深度(正値)
+    float4   shadowParams;                   // .x=1/shadowMapSize .z=blendBand .w=debug
 };
 
 struct VSInput
@@ -43,7 +47,7 @@ struct PSInput
     float4 positionSV  : SV_POSITION;
     float3 worldPos    : TEXCOORD0;
     float3 worldNormal : NORMAL;
-    float4 shadowCoord : TEXCOORD1;
+    float  viewDepth   : TEXCOORD1;  // view 空間深度(正値) → カスケード選択
 };
 
 PSInput VSMain(VSInput input)
@@ -53,33 +57,46 @@ PSInput VSMain(VSInput input)
     float4 worldPos4   = mul(float4(input.position, 1.0f), model);
     output.worldPos    = worldPos4.xyz;
     output.worldNormal = normalize(mul(input.normal, (float3x3)model));
-    output.shadowCoord = mul(worldPos4, lightViewProj);
+    float4 viewPos4    = mul(worldPos4, view);
+    output.viewDepth   = viewPos4.z;
     return output;
 }
 
-float CalcShadow(float4 shadowCoord)
+int SelectCascade(float viewDepth)
 {
-    float3 projCoords = shadowCoord.xyz / shadowCoord.w;
-    float2 shadowUV = projCoords.xy * 0.5f + 0.5f;
-    shadowUV.y = 1.0f - shadowUV.y;
-
-    if (shadowUV.x < 0 || shadowUV.x > 1 || shadowUV.y < 0 || shadowUV.y > 1)
-        return 1.0f;
-
-    float currentDepth = projCoords.z;
-    float shadow = 0.0f;
-    float texelSize = 1.0f / 2048.0f;
-
+    int c = NUM_CASCADES - 1;
     [unroll]
-    for (int y = -1; y <= 1; y++)
+    for (int i = 0; i < NUM_CASCADES; ++i)
     {
-        [unroll]
-        for (int x = -1; x <= 1; x++)
-        {
-            shadow += g_shadowMap.SampleCmpLevelZero(g_shadowSampler, shadowUV + float2(x, y) * texelSize, currentDepth);
-        }
+        if (viewDepth <= cascadeSplitsView[i]) { c = i; break; }
     }
-    return shadow / 9.0f;
+    return c;
+}
+
+float SampleCascade(int cascade, float3 worldPos)
+{
+    float4 lc = mul(float4(worldPos, 1.0f), cascadeViewProj[cascade]);
+    float3 proj = lc.xyz / lc.w;
+    float2 uv = proj.xy * 0.5f + 0.5f;
+    uv.y = 1.0f - uv.y;
+    if (uv.x < 0 || uv.x > 1 || uv.y < 0 || uv.y > 1) return 1.0f;
+
+    float current = proj.z;
+    float texel = shadowParams.x;
+    float s = 0.0f;
+    [unroll]
+    for (int y = -1; y <= 1; ++y)
+    [unroll]
+    for (int x = -1; x <= 1; ++x)
+        s += g_shadowMap.SampleCmpLevelZero(g_shadowSampler,
+                 float3(uv + float2(x, y) * texel, (float)cascade), current);
+    return s / 9.0f;
+}
+
+float CalcShadow(float3 worldPos, float viewDepth)
+{
+    int c = SelectCascade(viewDepth);
+    return SampleCascade(c, worldPos);
 }
 
 float4 PSMain(PSInput input) : SV_TARGET
@@ -128,8 +145,8 @@ float4 PSMain(PSInput input) : SV_TARGET
     float gridMask = max(max(minor, major), max(axisX, axisZ));
     float alpha = lerp(0.05f, 0.7f, gridMask) * fade;
 
-    // シャドウ
-    float shadow = CalcShadow(input.shadowCoord);
+    // シャドウ（CSM カスケード選択）
+    float shadow = CalcShadow(input.worldPos, input.viewDepth);
 
     // ライティング
     float3 N = normalize(input.worldNormal);

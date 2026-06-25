@@ -10,6 +10,7 @@
 
 #define MAX_POINT_LIGHTS 8
 #define MAX_SPOT_LIGHTS  8
+#define NUM_CASCADES     4
 
 struct PointLightData
 {
@@ -25,18 +26,22 @@ struct SpotLightData
 };
 
 // PerFrame constants (b1)
+// CSM 対応で lightViewProj(64B) を cascadeViewProj[4](256B) + cascadeSplitsView(16B) + shadowParams(16B) へ拡張。
+// C++ Application.cpp の FrameConstants(1120B) とバイト単位で一致させること。
 cbuffer PerFrameConstants : register(b1)
 {
-    float4x4 view;
-    float4x4 proj;
-    float3   lightDir;        float time;
-    float3   lightColor;      float ambientStrength;
-    float4x4 lightViewProj;
-    float3   cameraPos;       float _pfpad0;
-    uint     numPointLights;  uint  numSpotLights;  float2 _pfpad1;
-    PointLightData pointLights[MAX_POINT_LIGHTS];
-    SpotLightData  spotLights[MAX_SPOT_LIGHTS];
-};
+    float4x4 view;                               // 64B  (offset   0)
+    float4x4 proj;                               // 64B  (offset  64)
+    float3   lightDir;        float time;        // 16B  (offset 128)
+    float3   lightColor;      float ambientStrength; // 16B (offset 144)
+    float4x4 cascadeViewProj[NUM_CASCADES];      // 256B (offset 160)
+    float4   cascadeSplitsView;                  // 16B  (offset 416)  各カスケード遠端の view 空間深度(正値) .x..w
+    float4   shadowParams;                       // 16B  (offset 432)  .x=1/shadowMapSize .y=depthBias .z=blendBand .w=showCascadeDebug
+    float3   cameraPos;       float _pfpad0;     // 16B  (offset 448)
+    uint     numPointLights;  uint  numSpotLights;  float2 _pfpad1; // 16B (offset 464)
+    PointLightData pointLights[MAX_POINT_LIGHTS]; // 256B (offset 480)
+    SpotLightData  spotLights[MAX_SPOT_LIGHTS];   // 384B (offset 736)
+};                                               // total = 1120B
 
 // 1 灯ぶんの Cook-Torrance 寄与。L は正規化済みでライトへ向かうベクトル、
 // radiance はライト色（減衰・コーン・影を乗じたもの）。

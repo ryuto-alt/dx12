@@ -10,8 +10,8 @@ SamplerState g_sampler        : register(s0);
 // Bones (t3 - moved from t1)
 StructuredBuffer<float4x4> g_bones : register(t3);
 
-// Shadow
-Texture2D              g_shadowMap     : register(t4);
+// Shadow (CSM: Texture2DArray, 1スライス=1カスケード)
+Texture2DArray         g_shadowMap     : register(t4);
 SamplerComparisonState g_shadowSampler : register(s1);
 
 // PerObject constants (b0)
@@ -50,7 +50,7 @@ struct PSInput
     float  tangentW     : TEXCOORD3;
     float4 color        : COLOR;
     float2 texCoord     : TEXCOORD0;
-    float4 shadowCoord  : TEXCOORD1;
+    float  viewDepth    : TEXCOORD4;  // view 空間深度(正値) → カスケード選択用
 };
 
 PSInput VSMain(VSInput input)
@@ -76,35 +76,59 @@ PSInput VSMain(VSInput input)
     output.tangentW     = input.tangent.w;
     output.color        = input.color;
     output.texCoord     = input.texCoord;
-    output.shadowCoord  = mul(worldPos4, lightViewProj);
+
+    float4 viewPos4     = mul(worldPos4, view);  // LH: 前方 +z
+    output.viewDepth    = viewPos4.z;
 
     return output;
 }
 
-float CalcShadow(float4 shadowCoord)
+// view 空間深度から該当カスケードを選ぶ（cascadeSplitsView.x<y<z<w に遠端深度）
+int SelectCascade(float viewDepth)
 {
-    float3 projCoords = shadowCoord.xyz / shadowCoord.w;
-    float2 shadowUV = projCoords.xy * 0.5f + 0.5f;
-    shadowUV.y = 1.0f - shadowUV.y;
-
-    if (shadowUV.x < 0 || shadowUV.x > 1 || shadowUV.y < 0 || shadowUV.y > 1)
-        return 1.0f;
-
-    float currentDepth = projCoords.z;
-    float shadow = 0.0f;
-    float texelSize = 1.0f / 4096.0f;
-
+    int c = NUM_CASCADES - 1;
     [unroll]
-    for (int y = -2; y <= 2; y++)
+    for (int i = 0; i < NUM_CASCADES; ++i)
     {
-        [unroll]
-        for (int x = -2; x <= 2; x++)
-        {
-            shadow += g_shadowMap.SampleCmpLevelZero(g_shadowSampler,
-                shadowUV + float2(x, y) * texelSize, currentDepth);
-        }
+        if (viewDepth <= cascadeSplitsView[i]) { c = i; break; }
     }
-    return shadow / 25.0f;
+    return c;
+}
+
+float SampleCascade(int cascade, float3 worldPos)
+{
+    float4 lc = mul(float4(worldPos, 1.0f), cascadeViewProj[cascade]);
+    float3 proj = lc.xyz / lc.w;
+    float2 uv = proj.xy * 0.5f + 0.5f;
+    uv.y = 1.0f - uv.y;
+    if (uv.x < 0 || uv.x > 1 || uv.y < 0 || uv.y > 1) return 1.0f;
+
+    float current = proj.z;
+    float texel = shadowParams.x;  // 1/shadowMapSize
+    float s = 0.0f;
+    [unroll]
+    for (int y = -2; y <= 2; ++y)
+    [unroll]
+    for (int x = -2; x <= 2; ++x)
+        s += g_shadowMap.SampleCmpLevelZero(g_shadowSampler,
+                 float3(uv + float2(x, y) * texel, (float)cascade), current);
+    return s / 25.0f;
+}
+
+float CalcShadow(float3 worldPos, float viewDepth)
+{
+    int c = SelectCascade(viewDepth);
+    float shadow = SampleCascade(c, worldPos);
+    // カスケード境界ブレンド(任意): 次カスケードと線形混合
+    float band = shadowParams.z;
+    if (band > 0.0f && c < NUM_CASCADES - 1)
+    {
+        float edge = cascadeSplitsView[c];
+        float t = saturate((edge - viewDepth) / max(band, 1e-4));
+        if (t < 1.0f)
+            shadow = lerp(SampleCascade(c + 1, worldPos), shadow, t);
+    }
+    return shadow;
 }
 
 float4 PSMain(PSInput input) : SV_TARGET
@@ -142,7 +166,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 
     float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
 
-    float shadow = CalcShadow(input.shadowCoord);
+    float shadow = CalcShadow(input.worldPos, input.viewDepth);
 
     // Directional Light（影付き）
     float3 Lo = ShadePunctual(N, V, L, lightColor * shadow, albedo, F0, metallic, roughness);
@@ -157,6 +181,13 @@ float4 PSMain(PSInput input) : SV_TARGET
     float3 ambient = ambientStrength * (ambientDiffuse + ambientSpecular);
 
     float3 color = ambient + Lo;
+
+    // カスケード可視化デバッグ（shadowParams.w>0.5）
+    if (shadowParams.w > 0.5f)
+    {
+        float3 tint[4] = { float3(1,0.4,0.4), float3(0.4,1,0.4), float3(0.4,0.4,1), float3(1,1,0.4) };
+        color *= tint[SelectCascade(input.viewDepth)];
+    }
 
     color = ACESFilm(color);
     color = pow(color, 1.0 / 2.2);
