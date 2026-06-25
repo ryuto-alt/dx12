@@ -3,6 +3,8 @@
 #include "core/Logger.h"
 
 #include <cstdarg>
+#include <mutex>
+#include <vector>
 
 // Jolt includes — warnings suppressed via /external:anglebrackets /external:W0
 #pragma warning(push)
@@ -21,6 +23,10 @@
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/CastResult.h>
 #include <Jolt/Physics/Collision/NarrowPhaseQuery.h>
+#include <Jolt/Physics/Collision/ContactListener.h>
+#include <Jolt/Physics/Collision/Shape/SubShapeIDPair.h>
+#include <Jolt/Physics/Collision/BroadPhase/BroadPhaseQuery.h>
+#include <Jolt/Geometry/AABox.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Body/BodyInterface.h>
 #pragma warning(pop)
@@ -98,6 +104,80 @@ public:
     }
 };
 
+// ========== ContactListener ==========
+//
+// Jolt の物理ステップスレッドから OnContactAdded/Removed が呼ばれる（全 Body ロック中）。
+// この時点で BodyInterface や m_bodyToEntity に触るのは禁止（デッドロック/データレース）。
+// そこで mutex 保護の pending バッファへ最小限の値だけ積み、メインスレッド（Update）で
+// Drain → EventBus::Post する。これで /W4 /WX 下でも警告なし。
+//
+namespace
+{
+
+class EngineContactListener final : public JPH::ContactListener
+{
+public:
+    struct PendingContact
+    {
+        uint32_t bodyId1 = 0;
+        uint32_t bodyId2 = 0;
+        DirectX::XMFLOAT3 point{};
+        bool isEnter = true; // true=OnContactAdded, false=OnContactRemoved
+    };
+
+    JPH::ValidateResult OnContactValidate(const JPH::Body& /*b1*/, const JPH::Body& /*b2*/,
+                                          JPH::RVec3Arg /*baseOffset*/,
+                                          const JPH::CollideShapeResult& /*collisionResult*/) override
+    {
+        return JPH::ValidateResult::AcceptAllContactsForThisBodyPair;
+    }
+
+    void OnContactAdded(const JPH::Body& b1, const JPH::Body& b2,
+                        const JPH::ContactManifold& manifold,
+                        JPH::ContactSettings& /*settings*/) override
+    {
+        DirectX::XMFLOAT3 pt{ 0.0f, 0.0f, 0.0f };
+        if (!manifold.mRelativeContactPointsOn1.empty())
+        {
+            JPH::RVec3 cp = manifold.GetWorldSpaceContactPointOn1(0);
+            pt = { static_cast<float>(cp.GetX()),
+                   static_cast<float>(cp.GetY()),
+                   static_cast<float>(cp.GetZ()) };
+        }
+        std::lock_guard<std::mutex> lk(m_mtx);
+        m_pending.push_back({
+            b1.GetID().GetIndexAndSequenceNumber(),
+            b2.GetID().GetIndexAndSequenceNumber(),
+            pt,
+            true });
+    }
+
+    void OnContactRemoved(const JPH::SubShapeIDPair& pair) override
+    {
+        std::lock_guard<std::mutex> lk(m_mtx);
+        m_pending.push_back({
+            pair.GetBody1ID().GetIndexAndSequenceNumber(),
+            pair.GetBody2ID().GetIndexAndSequenceNumber(),
+            { 0.0f, 0.0f, 0.0f },
+            false });
+    }
+
+    // メインスレッドから呼ぶ。pending を swap して返す。
+    std::vector<PendingContact> Drain()
+    {
+        std::lock_guard<std::mutex> lk(m_mtx);
+        std::vector<PendingContact> out;
+        out.swap(m_pending);
+        return out;
+    }
+
+private:
+    std::mutex m_mtx;
+    std::vector<PendingContact> m_pending;
+};
+
+} // anonymous namespace
+
 // ========== JoltImpl ==========
 
 struct PhysicsSystem::JoltImpl
@@ -108,6 +188,7 @@ struct PhysicsSystem::JoltImpl
     ObjVsBPLayerFilter                         objVsBpFilter;
     ObjLayerPairFilter                         objLayerPairFilter;
     std::unique_ptr<JPH::PhysicsSystem>        physicsSystem;
+    std::unique_ptr<JPH::ContactListener>      contactListener; // EngineContactListener
 };
 
 // ========== Trace/Assert callbacks ==========
@@ -174,6 +255,11 @@ void PhysicsSystem::Initialize()
     // Gravity: Y-up, ゲーム向けにやや強め（リアル=9.81、ゲーム=14.0）
     m_impl->physicsSystem->SetGravity(JPH::Vec3(0.0f, -14.0f, 0.0f));
 
+    // ContactListener 登録（接触イベントを pending バッファへ積む）
+    auto listener = std::make_unique<EngineContactListener>();
+    m_impl->physicsSystem->SetContactListener(listener.get());
+    m_impl->contactListener = std::move(listener);
+
     m_accumulator = 0.0f;
     m_initialized = true;
     Logger::Info("PhysicsSystem initialized (Jolt Physics)");
@@ -183,7 +269,12 @@ void PhysicsSystem::Shutdown()
 {
     if (!m_initialized) return;
 
-    m_impl.reset();
+    m_bodyToEntity.clear();
+    m_paused = false;
+    // m_eventBus は外部所有（Application の安定メンバ）なので null 化しない。
+    // 物理を Shutdown→Initialize で再構築しても購読先は同じバスを使い続ける。
+
+    m_impl.reset();   // contactListener も physicsSystem も破棄
     m_initialized = false;
     m_accumulator = 0.0f;
     Logger::Info("PhysicsSystem shutdown");
@@ -192,6 +283,14 @@ void PhysicsSystem::Shutdown()
 void PhysicsSystem::Update(f32 dt, entt::registry& registry)
 {
     if (!m_initialized) return;
+
+    // 一時停止中はタイムステップを進めない。
+    // 直前フレームで生じた接触の pending だけはフラッシュして届ける。
+    if (m_paused)
+    {
+        FlushPendingContacts();
+        return;
+    }
 
     SyncTransformsToPhysics(registry);
 
@@ -209,6 +308,32 @@ void PhysicsSystem::Update(f32 dt, entt::registry& registry)
     }
 
     SyncPhysicsToTransforms(registry);
+
+    // ContactListener の pending をメインスレッドで EventBus へ流す。
+    FlushPendingContacts();
+}
+
+void PhysicsSystem::FlushPendingContacts()
+{
+    if (!m_eventBus || !m_impl || !m_impl->contactListener) return;
+
+    auto* listener = static_cast<EngineContactListener*>(m_impl->contactListener.get());
+    auto contacts = listener->Drain();
+    for (const auto& c : contacts)
+    {
+        auto it1 = m_bodyToEntity.find(c.bodyId1);
+        auto it2 = m_bodyToEntity.find(c.bodyId2);
+        if (it1 == m_bodyToEntity.end() || it2 == m_bodyToEntity.end()) continue;
+
+        EngineEvent ev;
+        ev.name   = c.isEnter ? "engine.contact.enter" : "engine.contact.exit";
+        ev.source = it1->second;
+        ev.other  = it2->second;
+        ev.set("px", static_cast<double>(c.point.x));
+        ev.set("py", static_cast<double>(c.point.y));
+        ev.set("pz", static_cast<double>(c.point.z));
+        m_eventBus->Post(std::move(ev));
+    }
 }
 
 void PhysicsSystem::SyncTransformsToPhysics(entt::registry& registry)
@@ -410,6 +535,7 @@ void PhysicsSystem::RegisterBody(entt::registry& registry, entt::entity entity)
 
     JPH::BodyID id = bodyInterface.CreateAndAddBody(bodySettings, JPH::EActivation::Activate);
     rb->bodyId = id.GetIndexAndSequenceNumber();
+    m_bodyToEntity[rb->bodyId] = entity;   // bodyId→entity 逆引きを登録
 }
 
 void PhysicsSystem::UnregisterBody(entt::registry& registry, entt::entity entity)
@@ -423,6 +549,7 @@ void PhysicsSystem::UnregisterBody(entt::registry& registry, entt::entity entity
     JPH::BodyID joltId(rb->bodyId);
     bodyInterface.RemoveBody(joltId);
     bodyInterface.DestroyBody(joltId);
+    m_bodyToEntity.erase(rb->bodyId);
     rb->bodyId = kInvalidBodyId;
 }
 
@@ -439,8 +566,10 @@ void PhysicsSystem::UnregisterAllBodies(entt::registry& registry)
         JPH::BodyID joltId(rb.bodyId);
         bodyInterface.RemoveBody(joltId);
         bodyInterface.DestroyBody(joltId);
+        m_bodyToEntity.erase(rb.bodyId);
         rb.bodyId = kInvalidBodyId;
     }
+    m_bodyToEntity.clear();   // 念のため全消去
 }
 
 // ========== Physics Operations ==========
@@ -517,6 +646,75 @@ RaycastHit PhysicsSystem::Raycast(XMFLOAT3 origin, XMFLOAT3 direction, f32 maxDi
     }
 
     return result;
+}
+
+// ========== Overlap Queries（Broadphase）==========
+
+namespace
+{
+// Broadphase の AABB/Sphere ヒットを bodyId→entity マップで解決して out へ詰める Collector。
+// cap に達したら以降は無視（早期終了せず単に切り捨て、Broadphase の安全な反復を維持）。
+struct OverlapCollector final : public JPH::CollideShapeBodyCollector
+{
+    entt::entity* out = nullptr;
+    size_t cap = 0;
+    size_t count = 0;
+    const std::unordered_map<uint32_t, entt::entity>* map = nullptr;
+
+    void AddHit(const JPH::BodyID& id) override
+    {
+        if (count >= cap) return;
+        auto it = map->find(id.GetIndexAndSequenceNumber());
+        if (it != map->end()) out[count++] = it->second;
+    }
+};
+} // anonymous namespace
+
+size_t PhysicsSystem::OverlapBox(const XMFLOAT3& center,
+                                 const XMFLOAT3& half,
+                                 entt::entity* out, size_t cap) const
+{
+    if (!m_initialized || !m_impl || cap == 0 || !out || m_bodyToEntity.empty()) return 0;
+
+    JPH::AABox box(
+        JPH::Vec3(center.x - half.x, center.y - half.y, center.z - half.z),
+        JPH::Vec3(center.x + half.x, center.y + half.y, center.z + half.z));
+
+    OverlapCollector col;
+    col.out = out; col.cap = cap; col.map = &m_bodyToEntity;
+
+    m_impl->physicsSystem->GetBroadPhaseQuery().CollideAABox(box, col);
+    return col.count;
+}
+
+size_t PhysicsSystem::OverlapSphere(const XMFLOAT3& center,
+                                    float radius,
+                                    entt::entity* out, size_t cap) const
+{
+    if (!m_initialized || !m_impl || cap == 0 || !out || m_bodyToEntity.empty()) return 0;
+
+    OverlapCollector col;
+    col.out = out; col.cap = cap; col.map = &m_bodyToEntity;
+
+    m_impl->physicsSystem->GetBroadPhaseQuery().CollideSphere(
+        JPH::Vec3(center.x, center.y, center.z), radius, col);
+    return col.count;
+}
+
+// ========== Time Model（pause / manual step / gravity）==========
+
+void PhysicsSystem::Step(float dt)
+{
+    if (!m_initialized || !m_impl) return;
+    m_impl->physicsSystem->Update(
+        dt, kCollisionSteps,
+        m_impl->tempAllocator.get(), m_impl->jobSystem.get());
+}
+
+void PhysicsSystem::SetGravity(XMFLOAT3 g)
+{
+    if (!m_initialized || !m_impl) return;
+    m_impl->physicsSystem->SetGravity(JPH::Vec3(g.x, g.y, g.z));
 }
 
 } // namespace dx12e

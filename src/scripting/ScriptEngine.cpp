@@ -774,7 +774,38 @@ void ScriptEngine::RegisterPhysicsBindings()
         "raycast", [](PhysicsSystem& ps, XMFLOAT3 origin, XMFLOAT3 dir,
                        float maxDist) -> RaycastHit {
             return ps.Raycast(origin, dir, maxDist);
-        }
+        },
+
+        // overlapBox(center, halfExtents, maxResults=32) -> { Entity, ... }
+        "overlapBox", [this](PhysicsSystem& ps, XMFLOAT3 center, XMFLOAT3 half,
+                             sol::optional<int> maxN) -> sol::table {
+            const size_t cap = static_cast<size_t>(maxN.value_or(32));
+            std::vector<entt::entity> buf(cap);
+            size_t n = ps.OverlapBox(center, half, buf.data(), cap);
+            sol::table t = m_lua->create_table();
+            auto& reg = m_scene->GetRegistry();
+            for (size_t i = 0; i < n; ++i)
+                t[static_cast<int>(i) + 1] = Entity(buf[i], &reg);
+            return t;
+        },
+        // overlapSphere(center, radius, maxResults=32) -> { Entity, ... }
+        "overlapSphere", [this](PhysicsSystem& ps, XMFLOAT3 center, float radius,
+                                sol::optional<int> maxN) -> sol::table {
+            const size_t cap = static_cast<size_t>(maxN.value_or(32));
+            std::vector<entt::entity> buf(cap);
+            size_t n = ps.OverlapSphere(center, radius, buf.data(), cap);
+            sol::table t = m_lua->create_table();
+            auto& reg = m_scene->GetRegistry();
+            for (size_t i = 0; i < n; ++i)
+                t[static_cast<int>(i) + 1] = Entity(buf[i], &reg);
+            return t;
+        },
+        // setPaused(bool) — 物理タイムステップを止める/再開する
+        "setPaused", [](PhysicsSystem& ps, bool p) { ps.SetPaused(p); },
+        // step(dt) — 手動で 1 ステップ進める（pause 中の駒送り用）
+        "step", [](PhysicsSystem& ps, float dt) { ps.Step(dt); },
+        // setGravity(vec3)
+        "setGravity", [](PhysicsSystem& ps, XMFLOAT3 g) { ps.SetGravity(g); }
     );
 
     lua["physics"] = m_physics;

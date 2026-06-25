@@ -156,6 +156,10 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     // Physics System
     m_physicsSystem = std::make_unique<PhysicsSystem>();
     m_physicsSystem->Initialize();
+    // 接触イベント（engine.contact.enter/exit）を C++ EventBus へ配信させる。
+    // m_eventBus は Application の安定メンバ。物理を Shutdown→Initialize で再構築しても
+    // PhysicsSystem 側はこのポインタを保持し続ける（Shutdown では null 化しない）。
+    m_physicsSystem->SetEventBus(&m_eventBus);
 
     // Shader Visible SRV ヒープ
     m_srvHeap = std::make_unique<DescriptorHeap>();
@@ -964,6 +968,7 @@ void Application::Shutdown()
     m_sceneFlow.reset();
     if (m_physicsSystem)
     {
+        m_physicsSystem->SetEventBus(nullptr);  // EventBus 破棄より前に参照を切る
         m_physicsSystem->Shutdown();
         m_physicsSystem.reset();
     }

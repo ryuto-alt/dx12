@@ -9,6 +9,8 @@
 #include <cstdio>
 #include <string>
 
+#include <entt/entity/entity.hpp>
+
 using namespace dx12e;
 
 namespace
@@ -101,6 +103,53 @@ int main()
         bus.Emit(e);   // 既存1つだけ呼ばれる（追加分は次回から）
     }
     CHECK(reentrant == 1);
+
+    // --- entity スコープ購読（接触イベント連携で使う）---
+    // scope エンティティに束ねた購読は、OnEntityDestroyed で一括解除される。
+    {
+        EventBus sbus;
+        const auto eA = static_cast<entt::entity>(100);
+        const auto eB = static_cast<entt::entity>(200);
+
+        int aHits = 0, bHits = 0, globalHits = 0;
+        sbus.On("contact", eA, [&](const EngineEvent&) { ++aHits; });
+        sbus.On("contact", eB, [&](const EngineEvent&) { ++bHits; });
+        std::uint32_t gid = sbus.On("contact", [&](const EngineEvent&) { ++globalHits; });
+
+        // HandlerCount は通常 + scoped の合算
+        CHECK(sbus.HandlerCount("contact") == 3);
+
+        // Emit は通常 + scoped の両方を呼ぶ
+        { EngineEvent e; e.name = "contact"; sbus.Emit(e); }
+        CHECK(aHits == 1);
+        CHECK(bHits == 1);
+        CHECK(globalHits == 1);
+
+        // eA を破棄 → eA の scoped 購読だけ消える
+        sbus.OnEntityDestroyed(eA);
+        CHECK(sbus.HandlerCount("contact") == 2);
+        { EngineEvent e; e.name = "contact"; sbus.Emit(e); }
+        CHECK(aHits == 1);   // 解除済み
+        CHECK(bHits == 2);
+        CHECK(globalHits == 2);
+
+        // 通常購読も Off で消える（scoped と独立）
+        sbus.Off(gid);
+        CHECK(sbus.HandlerCount("contact") == 1);
+        { EngineEvent e; e.name = "contact"; sbus.Emit(e); }
+        CHECK(bHits == 3);
+        CHECK(globalHits == 2);
+
+        // Post→Flush は scoped にも届く
+        { EngineEvent e; e.name = "contact"; sbus.Post(e); }
+        CHECK(bHits == 3);   // Flush 前
+        sbus.Flush();
+        CHECK(bHits == 4);
+
+        // Clear は scoped も全消去
+        sbus.Clear();
+        CHECK(sbus.HandlerCount("contact") == 0);
+    }
 
     // Clear で全消去
     bus.Clear();
