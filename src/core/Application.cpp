@@ -2264,9 +2264,18 @@ void Application::EnterEditorMode()
     if (m_engineMode == EngineMode::Playing)
         m_scriptEngine->OnPlayStop();
 
+    // EventBus には Play 中に登録された Lua ハンドラのラムダが残っている。
+    // 物理を Shutdown→Initialize で作り直す前に購読を消し、物理側の EventBus 参照も外す。
+    // こうしておくと Initialize と ScriptEngine::Shutdown の間に万一 Flush が走っても
+    // 半壊状態の古いハンドラが発火しない（呼び順が将来変わっても安全）。
+    m_eventBus.Clear();
+    m_physicsSystem->SetEventBus(nullptr);
+
     m_physicsSystem->UnregisterAllBodies(m_scene->GetRegistry());
     m_physicsSystem->Shutdown();
     m_physicsSystem->Initialize();
+    // 新しい物理システムに同じ EventBus を再注入（接触イベントの配信先を復帰）。
+    m_physicsSystem->SetEventBus(&m_eventBus);
 
     m_inputSystem->SetMouseCapture(false);
 

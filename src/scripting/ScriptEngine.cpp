@@ -779,7 +779,9 @@ void ScriptEngine::RegisterPhysicsBindings()
         // overlapBox(center, halfExtents, maxResults=32) -> { Entity, ... }
         "overlapBox", [this](PhysicsSystem& ps, XMFLOAT3 center, XMFLOAT3 half,
                              sol::optional<int> maxN) -> sol::table {
-            const size_t cap = static_cast<size_t>(maxN.value_or(32));
+            // 負値/0 を size_t にキャストすると SIZE_MAX になり vector 確保でクラッシュするのでクランプ。
+            const int rawCap = maxN.value_or(32);
+            const size_t cap = rawCap > 0 ? static_cast<size_t>(rawCap) : 32;
             std::vector<entt::entity> buf(cap);
             size_t n = ps.OverlapBox(center, half, buf.data(), cap);
             sol::table t = m_lua->create_table();
@@ -791,7 +793,9 @@ void ScriptEngine::RegisterPhysicsBindings()
         // overlapSphere(center, radius, maxResults=32) -> { Entity, ... }
         "overlapSphere", [this](PhysicsSystem& ps, XMFLOAT3 center, float radius,
                                 sol::optional<int> maxN) -> sol::table {
-            const size_t cap = static_cast<size_t>(maxN.value_or(32));
+            // 負値/0 を size_t にキャストすると SIZE_MAX になり vector 確保でクラッシュするのでクランプ。
+            const int rawCap = maxN.value_or(32);
+            const size_t cap = rawCap > 0 ? static_cast<size_t>(rawCap) : 32;
             std::vector<entt::entity> buf(cap);
             size_t n = ps.OverlapSphere(center, radius, buf.data(), cap);
             sol::table t = m_lua->create_table();
@@ -814,6 +818,8 @@ void ScriptEngine::RegisterPhysicsBindings()
 // events グローバルを C++ EventBus への薄いバインドとして登録する。
 //   events:on(name, fn)     → EventBus::On で購読。fn は EngineEvent を Lua テーブルへ
 //                              変換した data を 1 引数で受け取る（旧 events:emit(name, data) 互換）。
+//                              戻り値は購読ID。events:off(id) で個別解除に使う。
+//   events:off(id)          → EventBus::Off。on が返したIDの購読だけを解除（clear と違い全消去しない）。
 //   events:emit(name, data) → EventBus::Emit で即時発火。data は { key=val,... }（num/str/bool）。
 //   events:clear()          → EventBus::Clear。
 // m_eventBus は実行時に参照する（バインド登録時は null でも安全。WireScriptCallbacks 後に有効化）。
@@ -836,11 +842,13 @@ void ScriptEngine::RegisterEventsBinding()
         return t;
     };
 
+    // on(name, fn) → 購読IDを返す。events:off(id) で個別解除できる（0 は無効ID）。
     ev.set_function("on", [this, evToTable](sol::object /*self*/,
-                                            const std::string& name, sol::function fn) {
-        if (!m_eventBus) return;
+                                            const std::string& name,
+                                            sol::function fn) -> std::uint32_t {
+        if (!m_eventBus) return 0;
         sol::main_function mfn = fn;   // GC 寿命を確実に保持
-        m_eventBus->On(name, [this, mfn, evToTable](const EngineEvent& e) mutable {
+        return m_eventBus->On(name, [this, mfn, evToTable](const EngineEvent& e) mutable {
             sol::protected_function pf = mfn;
             if (!pf.valid()) return;
             auto r = pf(evToTable(sol::state_view(*m_lua), e));
@@ -850,6 +858,11 @@ void ScriptEngine::RegisterEventsBinding()
                 Logger::Warn("events handler error ({}): {}", e.name, err.what());
             }
         });
+    });
+
+    // off(id) → on が返した購読IDを個別解除（clear と違い全消去しない）。
+    ev.set_function("off", [this](sol::object /*self*/, std::uint32_t id) {
+        if (m_eventBus) m_eventBus->Off(id);
     });
 
     ev.set_function("emit", [this](sol::object /*self*/, const std::string& name,
@@ -901,6 +914,7 @@ function keyPressed(name) local k = KEYS[name]; return k ~= nil and input:isKeyP
 
 -- ===== events: 疎結合のイベントバス =====
 -- どのコンポーネントからでも events:on("name", fn) で購読、events:emit("name", data) で発火。
+-- events:on は購読IDを返す。個別解除は events:off(id)、全消去は events:clear()。
 -- Trigger の EmitEvent アクション（C++ 側）もこの emit を呼ぶ。Play 開始時に clear される。
 -- 実体は C++ EventBus への薄いバインド（RegisterEventsBinding で登録済み）。
 -- 旧・純 Lua 実装（events = { _h = {} } ...）はここから削除した。

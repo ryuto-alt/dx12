@@ -709,6 +709,11 @@ void PhysicsSystem::Step(float dt)
     m_impl->physicsSystem->Update(
         dt, kCollisionSteps,
         m_impl->tempAllocator.get(), m_impl->jobSystem.get());
+
+    // 手動ステップ（physics:step）で生じた接触も同フレームで配信する。
+    // これを呼ばないと pause 中の駒送り時に接触イベントが1フレーム遅延、または
+    // pause が続くと永久に届かない。
+    FlushPendingContacts();
 }
 
 void PhysicsSystem::SetGravity(XMFLOAT3 g)

@@ -11,6 +11,7 @@
 //
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <string>
 #include <unordered_map>
@@ -134,10 +135,24 @@ public:
     void Post(EngineEvent e) { m_queue.push_back(std::move(e)); }
 
     // 遅延キューを発火。Flush 中の Post も同フレームで処理する。
+    // ハンドラが Post→Post→... の循環を作ると無限ループになるため、反復回数に上限を設ける。
+    // 上限到達時は残りキューを破棄し（無限ハングを防ぐ）、stderr に警告を出す。
+    // この中立ヘッダは spdlog 非依存にしておきたいので Logger ではなく fprintf を使う。
     void Flush()
     {
+        constexpr int kMaxFlushIterations = 64;
+        int iterations = 0;
         while (!m_queue.empty())
         {
+            if (iterations++ >= kMaxFlushIterations)
+            {
+                std::fprintf(stderr,
+                    "[EventBus] Flush hit iteration limit (%d) — possible event cycle; "
+                    "dropping %zu queued event(s).\n",
+                    kMaxFlushIterations, m_queue.size());
+                m_queue.clear();
+                break;
+            }
             std::vector<EngineEvent> batch;
             batch.swap(m_queue);
             for (const auto& e : batch) Emit(e);
