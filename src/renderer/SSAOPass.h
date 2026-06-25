@@ -31,10 +31,14 @@ public:
     // 深度SRV(depthSrvGpu)を読み AO→Blur を実行し、最終 AO の SRV index を返す。
     // 呼び出し側は事前に depth を PIXEL_SHADER_RESOURCE へ遷移しておくこと。
     // 戻り時、AO/Blur RT は PIXEL_SHADER_RESOURCE 状態。RT/ビューポートは呼び出し側で再設定すること。
+    // vpLeft/vpTop/vpW/vpH: ジオメトリが深度バッファへ描かれているサブ矩形（px）。
+    //   フル RT(m_width×m_height) の UV↔NDC をこの矩形基準で計算してエディタ視点でも歪まないようにする。
+    // 未準備（PSO/RT 未生成）時は DescriptorHeap::kInvalidIndex を返す（呼び出し側で白ダミーへフォールバック）。
     u32  Generate(ID3D12GraphicsCommandList* cmd, DescriptorHeap* srvHeap,
                   D3D12_GPU_DESCRIPTOR_HANDLE depthSrvGpu,
                   const SSAOSettings& s, const DirectX::XMMATRIX& proj,
-                  float nearZ, float farZ, u32 frameIndex);
+                  float nearZ, float farZ,
+                  u32 vpLeft, u32 vpTop, u32 vpW, u32 vpH, u32 frameIndex);
 
     bool IsReady() const { return m_psoAO != nullptr; }
 

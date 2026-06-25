@@ -231,6 +231,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Forward_VS.cso");
         auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Forward_PS.cso");
 
+        // 通常 forward は DepthFunc=LESS（既定）。毎フレーム深度を 1.0 へクリアして描くため、
+        // 同深度フラグメントは先勝ち（従来の z-fight 解決を維持）。
         PipelineStateBuilder builder;
         builder.SetRootSignature(m_rootSignature->Get())
                .SetVertexShader(vs.GetData(), vs.GetSize())
@@ -239,11 +241,16 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                .SetRenderTargetFormat(m_swapChain->GetFormat())
                .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
                .SetDepthEnabled(true)
-               .SetDepthFunc(D3D12_COMPARISON_FUNC_LESS_EQUAL)  // 深度プリパスと同一深度を通す
                .SetCullMode(D3D12_CULL_MODE_NONE);  // 両面描画（片面メッシュ対応）
 
         m_pipelineState = std::make_unique<PipelineState>();
         m_pipelineState->Initialize(*m_graphicsDevice, builder);
+
+        // 深度プリパス併用(SSAO)時専用の LESS_EQUAL バリアント。プリパスが書いた深度を
+        // forward で再利用するため、同一深度を通す必要がある（通常経路の z-fight 解決は変えない）。
+        builder.SetDepthFunc(D3D12_COMPARISON_FUNC_LESS_EQUAL);
+        m_pipelineStateLEqual = std::make_unique<PipelineState>();
+        m_pipelineStateLEqual->Initialize(*m_graphicsDevice, builder);
     }
 
     // Camera
@@ -399,6 +406,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ForwardSkinned_VS.cso");
             auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Forward_PS.cso");
 
+            // 通常 forward(skinned) は DepthFunc=LESS（既定）。SSAO 無効時の z-fight 解決を維持。
             PipelineStateBuilder builder;
             builder.SetRootSignature(m_rootSignature->Get())
                    .SetVertexShader(vs.GetData(), vs.GetSize())
@@ -407,11 +415,15 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                    .SetRenderTargetFormat(kSceneColorFormat)
                    .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
                    .SetDepthEnabled(true)
-                   .SetDepthFunc(D3D12_COMPARISON_FUNC_LESS_EQUAL)  // 深度プリパスと同一深度を通す
                    .SetCullMode(D3D12_CULL_MODE_NONE);
 
             m_skinnedPipelineState = std::make_unique<PipelineState>();
             m_skinnedPipelineState->Initialize(*m_graphicsDevice, builder);
+
+            // 深度プリパス併用(SSAO)時専用の LESS_EQUAL バリアント。
+            builder.SetDepthFunc(D3D12_COMPARISON_FUNC_LESS_EQUAL);
+            m_skinnedPipelineStateLEqual = std::make_unique<PipelineState>();
+            m_skinnedPipelineStateLEqual->Initialize(*m_graphicsDevice, builder);
         }
 
         // グリッド PSO 作成（アルファブレンド + 両面描画）
@@ -579,7 +591,10 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             m_depthPrepassPSO->Initialize(*m_graphicsDevice, builder);
         }
         {
-            auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ShadowPassSkinned_VS.cso");
+            // forward(ForwardSkinned) とクリップ Z をビット一致させる専用スキンド深度プリパス。
+            // ShadowPassSkinned はスキニング演算順(sum(w*mul(pos,B))) と totalWeight==0 フォールバックが
+            // forward(mul(pos,sum(w*B)) / フォールバック無し) と違い、SSAO の深度再利用で z-fight/欠落を招く。
+            auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"DepthPrepassSkinned_VS.cso");
             PipelineStateBuilder builder;
             builder.SetRootSignature(m_rootSignature->Get())
                    .SetVertexShader(vs.GetData(), vs.GetSize())
@@ -1099,6 +1114,7 @@ void Application::Shutdown()
     m_shadowMap.Reset();
     m_shadowDsvHeap.reset();
     m_gridPipelineState.reset();
+    m_skinnedPipelineStateLEqual.reset();
     m_skinnedPipelineState.reset();
     m_scene.reset();
     m_commandList.reset();
@@ -1107,6 +1123,7 @@ void Application::Shutdown()
     m_resourceManager.reset();
     m_srvHeap.reset();
     m_camera.reset();
+    m_pipelineStateLEqual.reset();
     m_pipelineState.reset();
     m_rootSignature.reset();
     m_depthBuffer.Reset();
@@ -2675,7 +2692,8 @@ void Application::BuildGame()
 }
 
 void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u32 frameIndex,
-                                   DirectX::XMMATRIX viewProj, bool isGameView, u32 aoSrvIndex)
+                                   DirectX::XMMATRIX viewProj, bool isGameView, u32 aoSrvIndex,
+                                   bool depthPrepassActive)
 {
     using namespace DirectX;
     auto& reg = m_scene->GetRegistry();
@@ -2713,13 +2731,16 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
         else if (isSkinned)
         {
             auto& skelAnim = reg.get<SkeletalAnimation>(e);
-            m_commandList->SetPipelineState(*m_skinnedPipelineState);
+            // 深度プリパス併用時は LESS_EQUAL バリアントで同一深度を通す。
+            m_commandList->SetPipelineState(depthPrepassActive
+                ? *m_skinnedPipelineStateLEqual : *m_skinnedPipelineState);
             m_commandList->SetSRVTable(RootSignature::kSlotBonesSRV,
                 m_srvHeap->GetGpuHandle(skelAnim.skinningBuffer->GetSrvIndex(frameIndex)));
         }
         else
         {
-            m_commandList->SetPipelineState(*m_pipelineState);
+            m_commandList->SetPipelineState(depthPrepassActive
+                ? *m_pipelineStateLEqual : *m_pipelineState);
         }
 
         bool hasNodeAnim = reg.all_of<NodeAnimationComp>(e);
@@ -3731,7 +3752,11 @@ void Application::Render()
             D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         aoSrv = m_ssaoPass->Generate(nativeCmdList, m_srvHeap.get(),
             m_srvHeap->GetGpuHandle(m_depthSrvIndex), ssaoCfg,
-            m_camera->GetProjectionMatrix(), m_camera->GetNearZ(), m_camera->GetFarZ(), frameIndex);
+            m_camera->GetProjectionMatrix(), m_camera->GetNearZ(), m_camera->GetFarZ(),
+            vpLeft, vpTop, vpW, vpH, frameIndex);
+        // 生成失敗（未準備）時は白ダミー(AO=1.0)へフォールバック。誤テクスチャの読み出しを防ぐ。
+        if (aoSrv == DescriptorHeap::kInvalidIndex)
+            aoSrv = m_ssaoWhiteSrvIndex;
         m_commandList->TransitionResource(m_depthBuffer.Get(),
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
 
@@ -3894,8 +3919,9 @@ void Application::Render()
     XMMATRIX viewProj = m_camera->GetViewProjMatrix();
 
     // 全Entityを描画（メインパス: 編集カメラ視点）。AO は SSAO 有効時のみ実テクスチャ、無効時は白。
+    // useSSAO=true のときだけ深度プリパスで深度が完成済み → LESS_EQUAL forward PSO で再利用する。
     RenderSceneMeshes(nativeCmdList, frameIndex, viewProj,
-                      (m_isGameMode || m_engineMode == EngineMode::Playing), aoSrv);
+                      (m_isGameMode || m_engineMode == EngineMode::Playing), aoSrv, useSSAO);
 
     // ---- Physics Debug Draw（オフスクリーン RT へ）----
     if (m_physicsDebugDraw && m_physicsDebugRenderer->IsEnabled())

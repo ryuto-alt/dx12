@@ -89,8 +89,11 @@ private:
     // シーン内の全メッシュを指定 viewProj で描画（メインパスとカメラプレビューで共用）。
     // isGameView=true でエディタ用グリッドを除外。per-frame CB / シャドウSRV /
     // ルートシグネチャ / RT / ビューポートは呼び出し側で設定済みとする。
+    // depthPrepassActive=true のときだけ深度プリパス併用用の LESS_EQUAL forward PSO を使う
+    // （プリパスが書いた深度を再利用するため）。false の通常経路は LESS PSO（既存 z-fight 挙動を維持）。
     void RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u32 frameIndex,
-                           DirectX::XMMATRIX viewProj, bool isGameView, u32 aoSrvIndex);
+                           DirectX::XMMATRIX viewProj, bool isGameView, u32 aoSrvIndex,
+                           bool depthPrepassActive = false);
     // Sprite2D(worldSpace=true) を指定 viewProj/RT/DSV へ描画（メインパスとカメラプレビューで共用）。
     // camRight/camUp はビルボード展開用。billboard でないものはエンティティのワールド行列で配置。
     void DrawWorldSprites(ID3D12GraphicsCommandList* cmd, DirectX::XMMATRIX viewProj,
@@ -136,11 +139,13 @@ private:
     std::unique_ptr<DescriptorHeap>    m_descriptorHeap;
     std::unique_ptr<DescriptorHeap>    m_dsvHeap;
     std::unique_ptr<RootSignature>     m_rootSignature;
-    std::unique_ptr<PipelineState>     m_pipelineState;
+    std::unique_ptr<PipelineState>     m_pipelineState;        // 通常 forward(static, DepthFunc=LESS)
+    std::unique_ptr<PipelineState>     m_pipelineStateLEqual;  // SSAO 深度プリパス併用時(static, LESS_EQUAL)
     std::unique_ptr<DescriptorHeap>    m_srvHeap;
     std::unique_ptr<ResourceManager>   m_resourceManager;
     std::unique_ptr<ImGuiManager>      m_imguiManager;
-    std::unique_ptr<PipelineState>     m_skinnedPipelineState;
+    std::unique_ptr<PipelineState>     m_skinnedPipelineState;        // 通常 forward(skinned, LESS)
+    std::unique_ptr<PipelineState>     m_skinnedPipelineStateLEqual;  // SSAO 深度プリパス併用時(skinned, LESS_EQUAL)
     std::unique_ptr<PipelineState>     m_gridPipelineState;
     std::unique_ptr<PipelineState>     m_emissivePipelineState;  // 加算発光パーティクル用
     std::unique_ptr<PipelineState>     m_shadowPipelineState;

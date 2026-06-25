@@ -21,15 +21,32 @@ cbuffer SSAOParams : register(b0)
     float    farZ;       // カメラ遠方面
     int      sampleCount;// 有効サンプル数（<=16）
     float    _pad0;
-    float2   _pad1;
+    float4   viewport;   // xy=ビューポート原点(px), zw=ビューポートサイズ(px)
     float4   kernel[16]; // 半球カーネル(xyz)。w は未使用
 };
+
+// フル RT の UV(0..1) → サブビューポート基準の NDC(-1..1, y上向き)。
+// ジオメトリは深度バッファの矩形 viewport.xy/.zw にしか描かれていないため、
+// 全面 UV をそのまま NDC へ等価マップせず、サブ矩形基準で変換する（エディタ視点で歪み回避）。
+float2 UVToNDC(float2 uv)
+{
+    float2 px = uv / max(invRTSize, 1e-6);              // フル RT のピクセル座標
+    float2 vpUV = (px - viewport.xy) / viewport.zw;     // サブ矩形内 0..1
+    return float2(vpUV.x * 2.0 - 1.0, 1.0 - vpUV.y * 2.0);
+}
+
+// サブビューポート基準の NDC(-1..1, y上向き) → 深度テクスチャをサンプルするフル RT UV(0..1)。
+float2 NDCToUV(float2 ndc)
+{
+    float2 vpUV = float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);  // サブ矩形内 0..1
+    float2 px = viewport.xy + vpUV * viewport.zw;       // フル RT のピクセル座標
+    return px * invRTSize;
+}
 
 // ビュー空間位置を深度とスクリーン UV から復元（透視/正射いずれも invProj で復元）。
 float3 ViewPosFromDepth(float2 uv, float depth)
 {
-    // UV(0..1, y下向き) → NDC(-1..1, y上向き)
-    float2 ndc = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    float2 ndc = UVToNDC(uv);
     float4 clip = float4(ndc, depth, 1.0);
     float4 view = mul(clip, invProj);   // 転置済み invProj に行ベクトルを掛ける
     return view.xyz / view.w;
@@ -37,6 +54,12 @@ float3 ViewPosFromDepth(float2 uv, float depth)
 
 float PSMain(FSQuadVSOut i) : SV_TARGET
 {
+    // ビューポート矩形の外（エディタのパネル下に潜る領域）は AO なしで素通し。
+    float2 px = i.uv / max(invRTSize, 1e-6);
+    if (px.x < viewport.x || px.x > viewport.x + viewport.z ||
+        px.y < viewport.y || px.y > viewport.y + viewport.w)
+        return 1.0;
+
     float d = g_depth.Sample(g_pointClamp, i.uv);
     if (d >= 1.0)
         return 1.0;   // 背景（クリア値）は AO なし
@@ -49,8 +72,7 @@ float PSMain(FSQuadVSOut i) : SV_TARGET
     if (dot(N, -P) < 0.0) N = -N;
 
     // 回転ノイズ（手続き生成）で TBN を回し、少ないサンプルでもバンディングを散らす。
-    float2 noiseSeed = i.uv / max(invRTSize, 1e-6);  // ピクセル座標
-    float  rnd = frac(sin(dot(noiseSeed, float2(12.9898, 78.233))) * 43758.5453);
+    float  rnd = frac(sin(dot(px, float2(12.9898, 78.233))) * 43758.5453);  // px=ピクセル座標
     float  ang = rnd * 6.2831853;
     float3 randVec = float3(cos(ang), sin(ang), 0.0);
 
@@ -66,12 +88,12 @@ float PSMain(FSQuadVSOut i) : SV_TARGET
         // 半球カーネルをビュー空間へ展開
         float3 smp = P + mul(kernel[k].xyz, TBN) * radius;
 
-        // サンプル位置をクリップ→スクリーン UV へ
+        // サンプル位置をクリップ→サブビューポート基準の NDC→フル RT UV へ
         float4 clip = mul(float4(smp, 1.0), proj);
         if (clip.w <= 0.0) continue;
-        float2 suv = clip.xy / clip.w;
-        suv = float2(suv.x * 0.5 + 0.5, 0.5 - suv.y * 0.5);
-        if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0) continue;
+        float2 sndc = clip.xy / clip.w;
+        if (sndc.x < -1.0 || sndc.x > 1.0 || sndc.y < -1.0 || sndc.y > 1.0) continue;
+        float2 suv = NDCToUV(sndc);
 
         // その UV の実深度からビュー Z を復元して遮蔽判定
         float sd = g_depth.Sample(g_pointClamp, suv);

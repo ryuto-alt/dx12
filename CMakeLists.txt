@@ -89,6 +89,7 @@ if(DXC_EXECUTABLE)
     set(SHADER_GRID          "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardGrid.hlsl")
     set(SHADER_SHADOW        "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPass.hlsl")
     set(SHADER_SHADOW_SKIN   "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPassSkinned.hlsl")
+    set(SHADER_DEPTHPRE_SKIN "${CMAKE_SOURCE_DIR}/shaders/shadow/DepthPrepassSkinned.hlsl")
     set(SHADER_DEBUG_LINE    "${CMAKE_SOURCE_DIR}/shaders/debug/DebugLine.hlsl")
     set(SHADER_POST          "${CMAKE_SOURCE_DIR}/shaders/post/PostProcess.hlsl")
     set(SHADER_POST_INC      "${CMAKE_SOURCE_DIR}/shaders/post/FullscreenTri.hlsli")
@@ -115,6 +116,7 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/ForwardGrid_PS.cso"
         "${SHADER_OUTPUT_DIR}/ShadowPass_VS.cso"
         "${SHADER_OUTPUT_DIR}/ShadowPassSkinned_VS.cso"
+        "${SHADER_OUTPUT_DIR}/DepthPrepassSkinned_VS.cso"
         "${SHADER_OUTPUT_DIR}/DebugLine_VS.cso"
         "${SHADER_OUTPUT_DIR}/DebugLine_PS.cso"
         "${SHADER_OUTPUT_DIR}/PostProcess_VS.cso"
@@ -195,6 +197,13 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/ShadowPassSkinned_VS.cso" "${SHADER_SHADOW_SKIN}"
         DEPENDS "${SHADER_SHADOW_SKIN}"
         COMMENT "Compiling ShadowPassSkinned.hlsl -> ShadowPassSkinned_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/DepthPrepassSkinned_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/DepthPrepassSkinned_VS.cso" "${SHADER_DEPTHPRE_SKIN}"
+        DEPENDS "${SHADER_DEPTHPRE_SKIN}"
+        COMMENT "Compiling DepthPrepassSkinned.hlsl -> DepthPrepassSkinned_VS.cso (vs_6_0)"
     )
 
     add_custom_command(

@@ -30,10 +30,11 @@ struct SSAOParamsCB
     int        sampleCount; // 4B
     float      _pad0;       // 4B
     XMFLOAT2   _pad1;       // 8B  → 16B
+    XMFLOAT4   viewport;    // 16B  xy=原点(px), zw=サイズ(px)
     XMFLOAT4   kernel[16];  // 256B
 };
 static_assert(sizeof(SSAOParamsCB) % 16 == 0, "SSAOParamsCB must be 16B aligned");
-static_assert(sizeof(SSAOParamsCB) == 432, "SSAOParamsCB layout mismatch with SSAO.hlsl");
+static_assert(sizeof(SSAOParamsCB) == 448, "SSAOParamsCB layout mismatch with SSAO.hlsl");
 
 // HLSL の cbuffer BlurCB(b0) と一致。
 struct SSAOBlurCB
@@ -179,9 +180,12 @@ void SSAOPass::Resize(GraphicsDevice& device, u32 width, u32 height)
 u32 SSAOPass::Generate(ID3D12GraphicsCommandList* cmd, DescriptorHeap* srvHeap,
                        D3D12_GPU_DESCRIPTOR_HANDLE depthSrvGpu,
                        const SSAOSettings& s, const DirectX::XMMATRIX& proj,
-                       float nearZ, float farZ, u32 frameIndex)
+                       float nearZ, float farZ,
+                       u32 vpLeft, u32 vpTop, u32 vpW, u32 vpH, u32 frameIndex)
 {
-    if (!m_psoAO || !m_aoRT) return 0;
+    // 未準備（PSO/RT 未生成）時は無効 index を返し、呼び出し側で白ダミー(AO=1.0)へフォールバックさせる。
+    // SRV index 0 は誤テクスチャを AO として読みうるため返してはならない。
+    if (!m_psoAO || !m_aoRT) return DescriptorHeap::kInvalidIndex;
 
     const float invW = 1.0f / static_cast<float>(m_width);
     const float invH = 1.0f / static_cast<float>(m_height);
@@ -199,6 +203,9 @@ u32 SSAOPass::Generate(ID3D12GraphicsCommandList* cmd, DescriptorHeap* srvHeap,
     cb.nearZ       = nearZ;
     cb.farZ        = farZ;
     cb.sampleCount = (s.sampleCount >= 16) ? 16 : ((s.sampleCount <= 8) ? 8 : s.sampleCount);
+    // ジオメトリが描かれているサブ矩形（UV↔NDC をこの矩形基準で計算）。
+    cb.viewport = {static_cast<float>(vpLeft), static_cast<float>(vpTop),
+                   static_cast<float>(vpW), static_cast<float>(vpH)};
     for (int i = 0; i < 16; ++i) cb.kernel[i] = m_kernel[i];
     m_paramCB->Update(&cb, sizeof(cb), frameIndex);
 
