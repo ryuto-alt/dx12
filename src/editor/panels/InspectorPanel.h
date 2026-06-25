@@ -73,6 +73,10 @@ private:
     EditState<CapsuleCollider>  m_capsuleColEdit;
     EditState<CharacterController> m_ccEdit;
 
+    // 種別専用インスペクター（ライト/オーディオは専用UIを最前面に出す。共通部品はこの下に並ぶ）。
+    void RenderLightHero(entt::registry& reg, EditorContext& ctx, entt::entity e);
+    void RenderAudioHero(entt::registry& reg, EditorContext& ctx, entt::entity e);
+
     ScriptEngine* m_scriptEngine = nullptr;
     std::string   m_assetsDir;
 };

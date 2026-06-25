@@ -7,11 +7,12 @@ namespace dx12e
 // ポストプロセスのパラメータ。Scene が保持し、シーン JSON に保存される。
 // 各エフェクトは「有効/無効の bool」と「パラメータ」を持つ。
 // エディタでは ON/OFF（チェックボックス）とパラメータ調整を別ウィンドウに分けている。
-// エフェクトはゲームビュー（ゲーム/Play）でのみ適用される（previewInEditor で例外）。
+// エフェクトは既定でシーンビュー・ゲームビュー両方に適用される（previewInEditor=true 既定）。
+// シーンとゲームで見た目を一致させるため。previewInEditor を OFF にするとゲームビュー限定になる。
 struct PostProcessSettings
 {
     bool enabled         = true;   // マスタースイッチ（false なら全エフェクト素通し）
-    bool previewInEditor = false;  // 非シリアライズ。ON ならシーンビューでもプレビュー
+    bool previewInEditor = true;   // 非シリアライズ。既定ON=シーンビューにもポスト適用（ゲームと一致）。OFFでゲーム限定
 
     // ── カラーグレーディング ──
     bool  exposureOn   = false;  float exposure   = 1.0f;   // 露出（乗算）

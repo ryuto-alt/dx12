@@ -94,6 +94,23 @@ public:
     // EditorLayer が検知してデフォルトドックレイアウトを再構築する。
     bool resetLayout = false;
 
+    // ---- ツール窓の表示トグル（既定OFF=スッキリ中核4窓。ツールバー「窓」/メニュー「ウィンドウ」から開閉）----
+    // ON の窓だけ Inspector の下（右カラム下部）にタブで現れる。全OFFなら Inspector が右カラム全高。
+    bool showPostProcess    = false;
+    bool showPostParams     = false;
+    bool showSkybox         = false;   // Skybox / IBL
+    bool showSSAO           = false;
+    bool showEngineSettings = false;
+    bool showSceneFlow      = false;
+    bool showProject        = false;
+    bool showVersionControl = false;
+
+    bool AnyToolWindowOpen() const
+    {
+        return showPostProcess || showPostParams || showSkybox || showSSAO
+            || showEngineSettings || showSceneFlow || showProject || showVersionControl;
+    }
+
     // タッチパッド向けキーボードフライモード（` キーでトグル）。
     // ON 中は WASD 移動 / Q・E 上下 / 矢印キーで視点回転（マウス・ボタン長押し不要）。
     // ON 中はギズモの W/E/R 切替ショートカットを抑制する。

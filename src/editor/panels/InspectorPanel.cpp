@@ -483,6 +483,12 @@ void InspectorPanel::Render(entt::registry& reg,
 
         ImGui::Separator();
 
+        // 種別専用インスペクター（ライト/オーディオは専用UIを最前面に。共通部品はこの下）
+        if (reg.any_of<PointLight, DirectionalLight, SpotLight>(ctx.selectedEntity))
+            RenderLightHero(reg, ctx, ctx.selectedEntity);
+        if (reg.all_of<AudioSource>(ctx.selectedEntity))
+            RenderAudioHero(reg, ctx, ctx.selectedEntity);
+
         // Transform
         if (reg.all_of<Transform>(ctx.selectedEntity))
         {
@@ -591,75 +597,7 @@ void InspectorPanel::Render(entt::registry& reg,
             }
         }
 
-        // PointLight（点光源: 全方向に減衰しながら照らす）
-        if (reg.all_of<PointLight>(ctx.selectedEntity))
-        {
-            bool open = IconHeader(ic, ic ? ic->entLight : 0, "Point Light");
-            bool removed = ComponentRemoveMenu<PointLight>(reg, ctx, ctx.selectedEntity, "PointLight");
-            if (open && !removed)
-            {
-                BeginEdit(reg, ctx.selectedEntity, m_plEdit);
-                auto& pl = reg.get<PointLight>(ctx.selectedEntity);
-                bool changed = false, active = false;
-                changed |= ImGui::ColorEdit3("色 Color", &pl.color.x);
-                active  |= ImGui::IsItemActive();
-                changed |= ImGui::SliderFloat("強度 Intensity", &pl.intensity, 0.0f, 20.0f, "%.2f");
-                active  |= ImGui::IsItemActive();
-                changed |= ImGui::SliderFloat("距離 Range", &pl.range, 0.1f, 100.0f, "%.1f");
-                active  |= ImGui::IsItemActive();
-                ImGui::TextDisabled("位置は Transform で決まります");
-                EndEdit(reg, ctx, ctx.selectedEntity, m_plEdit, changed, active, "PointLight");
-            }
-        }
-
-        // DirectionalLight（平行光源: 太陽。影の向きにもなる）
-        if (reg.all_of<DirectionalLight>(ctx.selectedEntity))
-        {
-            bool open = IconHeader(ic, ic ? ic->entLight : 0, "Directional Light");
-            bool removed = ComponentRemoveMenu<DirectionalLight>(reg, ctx, ctx.selectedEntity, "DirectionalLight");
-            if (open && !removed)
-            {
-                BeginEdit(reg, ctx.selectedEntity, m_dlEdit);
-                auto& dl = reg.get<DirectionalLight>(ctx.selectedEntity);
-                bool changed = false, active = false;
-                changed |= ImGui::ColorEdit3("色 Color", &dl.color.x);
-                active  |= ImGui::IsItemActive();
-                changed |= ImGui::SliderFloat("強度 Intensity", &dl.intensity, 0.0f, 10.0f, "%.2f");
-                active  |= ImGui::IsItemActive();
-                changed |= ImGui::SliderFloat("環境光 Ambient", &dl.ambient, 0.0f, 1.0f, "%.2f");
-                active  |= ImGui::IsItemActive();
-                changed |= DirectionEditor("dlDir", dl.direction, active);
-                ImGui::TextDisabled("このライトの向きが影の向きになります");
-                EndEdit(reg, ctx, ctx.selectedEntity, m_dlEdit, changed, active, "DirectionalLight");
-            }
-        }
-
-        // SpotLight（スポット: 円錐状に照らす。懐中電灯/車のライト等）
-        if (reg.all_of<SpotLight>(ctx.selectedEntity))
-        {
-            bool open = IconHeader(ic, ic ? ic->entLight : 0, "Spot Light");
-            bool removed = ComponentRemoveMenu<SpotLight>(reg, ctx, ctx.selectedEntity, "SpotLight");
-            if (open && !removed)
-            {
-                BeginEdit(reg, ctx.selectedEntity, m_slEdit);
-                auto& sl = reg.get<SpotLight>(ctx.selectedEntity);
-                bool changed = false, active = false;
-                changed |= ImGui::ColorEdit3("色 Color", &sl.color.x);
-                active  |= ImGui::IsItemActive();
-                changed |= ImGui::SliderFloat("強度 Intensity", &sl.intensity, 0.0f, 30.0f, "%.2f");
-                active  |= ImGui::IsItemActive();
-                changed |= ImGui::SliderFloat("距離 Range", &sl.range, 0.1f, 100.0f, "%.1f");
-                active  |= ImGui::IsItemActive();
-                changed |= ImGui::SliderFloat("内側コーン", &sl.innerConeDeg, 1.0f, 80.0f, "%.0f°");
-                active  |= ImGui::IsItemActive();
-                changed |= ImGui::SliderFloat("外側コーン", &sl.outerConeDeg, 1.0f, 89.0f, "%.0f°");
-                active  |= ImGui::IsItemActive();
-                if (sl.innerConeDeg > sl.outerConeDeg) sl.innerConeDeg = sl.outerConeDeg;
-                changed |= DirectionEditor("slDir", sl.direction, active);
-                ImGui::TextDisabled("位置は Transform、向きは上の方向で決まります");
-                EndEdit(reg, ctx, ctx.selectedEntity, m_slEdit, changed, active, "SpotLight");
-            }
-        }
+        // ライト（Point / Directional / Spot）は上部の専用ヒーローカード（RenderLightHero）で編集する。
 
         // Gimmick（ステージギミック: 時間で動く/塞ぐ部品。動きは Lua が駆動）
         if (reg.all_of<Gimmick>(ctx.selectedEntity))
@@ -863,36 +801,7 @@ void InspectorPanel::Render(entt::registry& reg,
             }
         }
 
-        // --- Audio Source ---
-        if (reg.all_of<AudioSource>(ctx.selectedEntity))
-        {
-            bool open = IconHeader(ic, ic ? ic->entAudio : 0, "Audio Source");
-            bool removed = ComponentRemoveMenu<AudioSource>(reg, ctx, ctx.selectedEntity, "Audio Source");
-            if (open && !removed)
-            {
-                BeginEdit(reg, ctx.selectedEntity, m_audioEdit);
-                auto& as = reg.get<AudioSource>(ctx.selectedEntity);
-                bool changed = false, active = false;
-                char buf[256] = {};
-                size_t n = as.clipPath.copy(buf, sizeof(buf) - 1);
-                buf[n] = '\0';
-                if (ImGui::InputText("Clip (rel)", buf, sizeof(buf)))
-                { as.clipPath = buf; changed = true; }
-                active |= ImGui::IsItemActive();
-                changed |= ImGui::SliderFloat("Volume", &as.volume, 0.0f, 1.0f);
-                active  |= ImGui::IsItemActive();
-                changed |= ImGui::Checkbox("Spatial", &as.spatial);
-                ImGui::SameLine();
-                changed |= ImGui::Checkbox("Loop", &as.loop);
-                changed |= ImGui::Checkbox("Play On Start", &as.playOnStart);
-                changed |= ImGui::DragFloat("Min Distance", &as.minDistance, 0.1f, 0.0f, 1000.0f);
-                active  |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat("Max Distance", &as.maxDistance, 0.5f, 0.1f, 5000.0f);
-                active  |= ImGui::IsItemActive();
-                ImGui::TextDisabled("空間化はモノラル wav のみ");
-                EndEdit(reg, ctx, ctx.selectedEntity, m_audioEdit, changed, active, "Audio Source");
-            }
-        }
+        // オーディオ（AudioSource）は上部の専用ヒーローカード（RenderAudioHero）で編集する。
 
         // --- Physics ---
         {
@@ -1218,6 +1127,159 @@ void InspectorPanel::Render(entt::registry& reg,
 
 // グローバルなエンジン設定（カメラ速度/シャドウ/オーディオ/VSync/ビルド）。
 // Inspector から分離して独立ウィンドウ「エンジン設定」に描く（下ドックに置く）。
+// ── ライト専用インスペクター（明るさ/色/距離/コーン/方向）。種別を判定して該当UIを出す ──
+void InspectorPanel::RenderLightHero(entt::registry& reg, EditorContext& ctx, entt::entity e)
+{
+    const EditorUiIcons* ic = ctx.icons;
+    const ImVec4 amber(0.96f, 0.72f, 0.25f, 1.0f);
+
+    // ヘッダ（アイコン + 「ライト」 + 種別名）
+    if (ic && ic->entLight)
+    {
+        float s = ImGui::GetTextLineHeight() * 1.3f;
+        ImGui::Image(static_cast<ImTextureID>(ic->entLight), ImVec2(s, s));
+        ImGui::SameLine(0.0f, 6.0f);
+        ImGui::AlignTextToFramePadding();
+    }
+    ImGui::PushStyleColor(ImGuiCol_Text, amber);
+    ImGui::TextUnformatted("ライト");
+    ImGui::PopStyleColor();
+    ImGui::SameLine(0.0f, 8.0f);
+    ImGui::TextDisabled("%s",
+        reg.all_of<DirectionalLight>(e) ? "Directional — 太陽光（全体を照らす）" :
+        reg.all_of<SpotLight>(e)        ? "Spot — スポット（円錐状）"          :
+                                          "Point — 点光源（全方向）");
+
+    ImGui::Spacing();
+    ImGui::PushItemWidth(-110.0f);
+
+    // 色 × 明るさ の結果を帯でプレビュー（実際の光の見え方の目安）
+    auto previewSwatch = [&](const DirectX::XMFLOAT3& col, float intensity)
+    {
+        float k = intensity > 1.0f ? 1.0f : intensity;
+        ImVec4 c(col.x * k, col.y * k, col.z * k, 1.0f);
+        ImGui::ColorButton("##lightpreview", c,
+            ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker,
+            ImVec2(ImGui::GetContentRegionAvail().x, 14.0f));
+        ImGui::Spacing();
+    };
+
+    if (reg.all_of<PointLight>(e))
+    {
+        BeginEdit(reg, e, m_plEdit);
+        auto& pl = reg.get<PointLight>(e);
+        bool changed = false, active = false;
+        previewSwatch(pl.color, pl.intensity);
+        changed |= ImGui::ColorEdit3("色 Color", &pl.color.x, ImGuiColorEditFlags_NoInputs);
+        active  |= ImGui::IsItemActive();
+        changed |= ImGui::SliderFloat("明るさ Brightness", &pl.intensity, 0.0f, 20.0f, "%.2f");
+        active  |= ImGui::IsItemActive();
+        changed |= ImGui::SliderFloat("距離 Range", &pl.range, 0.1f, 100.0f, "%.1f");
+        active  |= ImGui::IsItemActive();
+        ImGui::TextDisabled("位置は Transform で決まります");
+        EndEdit(reg, ctx, e, m_plEdit, changed, active, "PointLight");
+    }
+    if (reg.all_of<DirectionalLight>(e))
+    {
+        BeginEdit(reg, e, m_dlEdit);
+        auto& dl = reg.get<DirectionalLight>(e);
+        bool changed = false, active = false;
+        previewSwatch(dl.color, dl.intensity);
+        changed |= ImGui::ColorEdit3("色 Color", &dl.color.x, ImGuiColorEditFlags_NoInputs);
+        active  |= ImGui::IsItemActive();
+        changed |= ImGui::SliderFloat("明るさ Brightness", &dl.intensity, 0.0f, 10.0f, "%.2f");
+        active  |= ImGui::IsItemActive();
+        changed |= ImGui::SliderFloat("環境光 Ambient", &dl.ambient, 0.0f, 1.0f, "%.2f");
+        active  |= ImGui::IsItemActive();
+        changed |= DirectionEditor("dlDir", dl.direction, active);
+        ImGui::TextDisabled("このライトの向きが影の向きになります");
+        EndEdit(reg, ctx, e, m_dlEdit, changed, active, "DirectionalLight");
+    }
+    if (reg.all_of<SpotLight>(e))
+    {
+        BeginEdit(reg, e, m_slEdit);
+        auto& sl = reg.get<SpotLight>(e);
+        bool changed = false, active = false;
+        previewSwatch(sl.color, sl.intensity);
+        changed |= ImGui::ColorEdit3("色 Color", &sl.color.x, ImGuiColorEditFlags_NoInputs);
+        active  |= ImGui::IsItemActive();
+        changed |= ImGui::SliderFloat("明るさ Brightness", &sl.intensity, 0.0f, 30.0f, "%.2f");
+        active  |= ImGui::IsItemActive();
+        changed |= ImGui::SliderFloat("距離 Range", &sl.range, 0.1f, 100.0f, "%.1f");
+        active  |= ImGui::IsItemActive();
+        changed |= ImGui::SliderFloat("内側コーン Inner", &sl.innerConeDeg, 1.0f, 80.0f, "%.0f°");
+        active  |= ImGui::IsItemActive();
+        changed |= ImGui::SliderFloat("外側コーン Outer", &sl.outerConeDeg, 1.0f, 89.0f, "%.0f°");
+        active  |= ImGui::IsItemActive();
+        if (sl.innerConeDeg > sl.outerConeDeg) sl.innerConeDeg = sl.outerConeDeg;
+        changed |= DirectionEditor("slDir", sl.direction, active);
+        ImGui::TextDisabled("位置は Transform、向きは上の方向で決まります");
+        EndEdit(reg, ctx, e, m_slEdit, changed, active, "SpotLight");
+    }
+
+    ImGui::PopItemWidth();
+    ImGui::Separator();
+}
+
+// ── オーディオ専用インスペクター（クリップ/音量/再生/空間化） ──
+void InspectorPanel::RenderAudioHero(entt::registry& reg, EditorContext& ctx, entt::entity e)
+{
+    const EditorUiIcons* ic = ctx.icons;
+    const ImVec4 green(0.37f, 0.78f, 0.49f, 1.0f);
+
+    auto& as = reg.get<AudioSource>(e);
+
+    // ヘッダ（アイコン + 「オーディオ」 + 2D/3D 種別）
+    if (ic && ic->entAudio)
+    {
+        float s = ImGui::GetTextLineHeight() * 1.3f;
+        ImGui::Image(static_cast<ImTextureID>(ic->entAudio), ImVec2(s, s));
+        ImGui::SameLine(0.0f, 6.0f);
+        ImGui::AlignTextToFramePadding();
+    }
+    ImGui::PushStyleColor(ImGuiCol_Text, green);
+    ImGui::TextUnformatted("オーディオ");
+    ImGui::PopStyleColor();
+    ImGui::SameLine(0.0f, 8.0f);
+    ImGui::TextDisabled("%s", as.spatial ? "3D 空間音" : "2D サウンド");
+
+    ImGui::Spacing();
+    ImGui::PushItemWidth(-110.0f);
+
+    BeginEdit(reg, e, m_audioEdit);
+    bool changed = false, active = false;
+
+    char buf[256] = {};
+    size_t n = as.clipPath.copy(buf, sizeof(buf) - 1);
+    buf[n] = '\0';
+    if (ImGui::InputText("クリップ Clip", buf, sizeof(buf)))
+    { as.clipPath = buf; changed = true; }
+    active |= ImGui::IsItemActive();
+
+    changed |= ImGui::SliderFloat("音量 Volume", &as.volume, 0.0f, 1.0f, "%.2f");
+    active  |= ImGui::IsItemActive();
+
+    ImGui::SeparatorText("再生");
+    changed |= ImGui::Checkbox("開始時に再生 Play On Start", &as.playOnStart);
+    ImGui::SameLine(0.0f, 16.0f);
+    changed |= ImGui::Checkbox("ループ Loop", &as.loop);
+
+    ImGui::SeparatorText("空間化");
+    changed |= ImGui::Checkbox("3D 空間音にする Spatial", &as.spatial);
+    if (as.spatial)
+    {
+        changed |= ImGui::DragFloat("最小距離 Min", &as.minDistance, 0.1f, 0.0f, 1000.0f, "%.1f");
+        active  |= ImGui::IsItemActive();
+        changed |= ImGui::DragFloat("最大距離 Max", &as.maxDistance, 0.5f, 0.1f, 5000.0f, "%.1f");
+        active  |= ImGui::IsItemActive();
+        ImGui::TextDisabled("空間化はモノラル wav のみ。位置は Transform。");
+    }
+
+    EndEdit(reg, ctx, e, m_audioEdit, changed, active, "Audio Source");
+    ImGui::PopItemWidth();
+    ImGui::Separator();
+}
+
 void InspectorPanel::RenderEngineSettings(EditorContext& ctx,
                                           Camera* camera,
                                           AudioSystem* audioSystem,

@@ -130,6 +130,9 @@ float SampleCascade(int cascade, float3 worldPos)
 
 float CalcShadow(float3 worldPos, float viewDepth)
 {
+    // 正射カメラでは CSM 無効（cascadeSplitsView=1e9 センチネル）。identity フォールバックが
+    // 原点付近でゴミ影を落とすため、明示的に無影(1.0)を返す。
+    if (cascadeSplitsView.x > 1.0e8) return 1.0f;
     int c = SelectCascade(viewDepth);
     float shadow = SampleCascade(c, worldPos);
     // カスケード境界ブレンド(任意): 次カスケードと線形混合
@@ -188,7 +191,8 @@ float4 PSMain(PSInput input) : SV_TARGET
     Lo += AccumulatePunctualLights(N, V, input.worldPos, albedo, F0, metallic, roughness);
 
     // SSAO（スクリーン空間 AO）: フル解像度・同一ビューポートなのでピクセル直読み。
-    float ao = g_ssao.Load(int3(input.positionSV.xy, 0));
+    // aoEnabled=0（SSAO無効/正射カメラ/編集2Dビュー）のときは AO を読まず 1.0（白ダミー1x1の範囲外Load=0対策）。
+    float ao = (aoEnabled > 0.5) ? g_ssao.Load(int3(input.positionSV.xy, 0)) : 1.0;
 
     // ===== Ambient / IBL =====
     float3 ambient;

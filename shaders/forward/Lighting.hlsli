@@ -38,7 +38,7 @@ cbuffer PerFrameConstants : register(b1)
     float4x4 cascadeViewProj[NUM_CASCADES];      // 256B (offset 160)
     float4   cascadeSplitsView;                  // 16B  (offset 416)  各カスケード遠端の view 空間深度(正値) .x..w
     float4   shadowParams;                       // 16B  (offset 432)  .x=1/shadowMapSize .y=depthBias .z=blendBand .w=showCascadeDebug
-    float3   cameraPos;       float _pfpad0;     // 16B  (offset 448)
+    float3   cameraPos;       float aoEnabled;   // 16B  (offset 448)  aoEnabled: 1=実AOを読む, 0=AO読まず ao=1
     uint     numPointLights;  uint  numSpotLights;  float2 _pfpad1; // 16B (offset 464)
     PointLightData pointLights[MAX_POINT_LIGHTS]; // 256B (offset 480)
     SpotLightData  spotLights[MAX_SPOT_LIGHTS];   // 384B (offset 736)

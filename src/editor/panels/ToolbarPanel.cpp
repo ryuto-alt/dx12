@@ -232,6 +232,16 @@ void ToolbarPanel::Render(bool isPlaying,
         {
             if (ImGui::MenuItem("レイアウトをリセット"))
                 ctx.resetLayout = true;
+            ImGui::Separator();
+            ImGui::TextDisabled("ツール窓（右下に開く）");
+            ImGui::MenuItem("Post Process",            nullptr, &ctx.showPostProcess);
+            ImGui::MenuItem("Post Process パラメータ",  nullptr, &ctx.showPostParams);
+            ImGui::MenuItem("Skybox / IBL",            nullptr, &ctx.showSkybox);
+            ImGui::MenuItem("SSAO",                    nullptr, &ctx.showSSAO);
+            ImGui::MenuItem("エンジン設定",            nullptr, &ctx.showEngineSettings);
+            ImGui::MenuItem("Scene Flow",              nullptr, &ctx.showSceneFlow);
+            ImGui::MenuItem("Project",                 nullptr, &ctx.showProject);
+            ImGui::MenuItem("Version Control (Git)",   nullptr, &ctx.showVersionControl);
             ImGui::EndMenu();
         }
 
@@ -524,6 +534,33 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::PopStyleColor();
         ctx.buildCompleteFlash -= clock->GetDeltaTime();
     }
+
+    // ===== ツール窓トグル（窓: …。既定OFF=中核4窓だけ。押すと右下に出る/もう一度で閉じる）=====
+    ImGui::SameLine(0, 12);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine(0, 8);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("\xe7\xaa\x93:");  // 窓:
+    ImGui::SameLine(0, 6);
+    auto toggleBtn = [&](const char* label, bool& flag, const char* tip)
+    {
+        if (flag) ImGui::PushStyleColor(ImGuiCol_Button, kActiveCol);
+        const bool clicked = ImGui::Button(label);
+        if (flag) ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", tip);
+        if (clicked) flag = !flag;
+        ImGui::SameLine(0, 4);
+    };
+    toggleBtn("Post",  ctx.showPostProcess,    "Post Process (ON/OFF \xe4\xb8\x80\xe8\xa6\xa7)");  // 一覧
+    toggleBtn("Param", ctx.showPostParams,     "Post Process \xe3\x83\x91\xe3\x83\xa9\xe3\x83\xa1\xe3\x83\xbc\xe3\x82\xbf");  // パラメータ
+    toggleBtn("Sky",   ctx.showSkybox,         "Skybox / IBL");
+    toggleBtn("AO",    ctx.showSSAO,           "SSAO");
+    toggleBtn("\xe8\xa8\xad\xe5\xae\x9a", ctx.showEngineSettings, "\xe3\x82\xa8\xe3\x83\xb3\xe3\x82\xb8\xe3\x83\xb3\xe8\xa8\xad\xe5\xae\x9a");  // 設定 / エンジン設定
+    toggleBtn("Flow",  ctx.showSceneFlow,      "Scene Flow");
+    toggleBtn("Proj",  ctx.showProject,        "Project");
+    toggleBtn("Git",   ctx.showVersionControl, "Version Control (Git)");
 
     // ===== シーン名表示 =====
     ImGui::SameLine(0, 16);

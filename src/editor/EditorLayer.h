@@ -86,6 +86,9 @@ private:
 
     EditorContext* m_ctx = nullptr;
     bool m_dockspaceBuilt = false;
+    // ツール窓が「1個でも開いているか」の前フレーム状態。空⇔非空に変わった時だけ
+    // レイアウトを作り直す（右下タブ領域を出す/畳んで Inspector を全高に戻す）。
+    bool m_prevAnyToolShown = false;
 
     ImVec2 m_viewportPos  = {0, 0};
     ImVec2 m_viewportSize = {1, 1};

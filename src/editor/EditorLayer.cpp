@@ -98,12 +98,12 @@ void EditorLayer::BuildDefaultLayout(ImGuiID dockspaceId, f32 /*toolbarHeight*/)
     ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
     ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->Size);
 
-    // ── レイアウト方針（散らかり対策で役割ごとに領域を分離）──
+    // ── レイアウト方針（中核4窓は常時固定。ツール窓は開いた時だけ右下に出す）──
     //  左            : ヒエラルキー（全高）
-    //  右上          : インスペクター（最重要・常時表示）
-    //  右下          : 設定/ツール系タブ（Post Process / パラメータ / Scene Flow / Project / VC）
+    //  中央上        : ビューポート（3D）
     //  中央下        : アセットブラウザ（横長・単独）
-    //  中央          : ビューポート
+    //  右            : インスペクター（全高）。ツール窓が1個でも開くと上半分に縮み、
+    //                  下半分にツール系タブ（Post Process / IBL / SSAO / 設定 / Flow / Project / VC）が出る。
 
     // 左(18%): ヒエラルキー | 残り
     ImGuiID dockLeft = 0, dockRemaining = 0;
@@ -113,10 +113,6 @@ void EditorLayer::BuildDefaultLayout(ImGuiID dockspaceId, f32 /*toolbarHeight*/)
     ImGuiID dockRightCol = 0, dockCenter = 0;
     ImGui::DockBuilderSplitNode(dockRemaining, ImGuiDir_Right, 0.24f, &dockRightCol, &dockCenter);
 
-    // 右カラム → 上=インスペクター / 下=ツール系タブ（下 42%）
-    ImGuiID dockRightTop = 0, dockRightBottom = 0;
-    ImGui::DockBuilderSplitNode(dockRightCol, ImGuiDir_Down, 0.42f, &dockRightBottom, &dockRightTop);
-
     // センター → 下(33%): アセットブラウザ | ビューポート(中央)
     ImGuiID dockBottom = 0, dockViewport = 0;
     ImGui::DockBuilderSplitNode(dockCenter, ImGuiDir_Down, 0.33f, &dockBottom, &dockViewport);
@@ -124,23 +120,35 @@ void EditorLayer::BuildDefaultLayout(ImGuiID dockspaceId, f32 /*toolbarHeight*/)
     // 左: ヒエラルキー
     ImGui::DockBuilderDockWindow(
         "\xe3\x83\x92\xe3\x82\xa8\xe3\x83\xa9\xe3\x83\xab\xe3\x82\xad\xe3\x83\xbc", dockLeft);
-    // 右上: インスペクター（単独で常時見える）
-    ImGui::DockBuilderDockWindow(
-        "\xe3\x82\xa4\xe3\x83\xb3\xe3\x82\xb9\xe3\x83\x9a\xe3\x82\xaf\xe3\x82\xbf\xe3\x83\xbc", dockRightTop);
     // 中央下: アセットブラウザ（単独で横長に使う）
     ImGui::DockBuilderDockWindow(
         "\xe3\x82\xa2\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88\xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6", dockBottom);
 
-    // 右下: 設定/ツール系をまとめてタブ化（インスペクターを隠さない）。
-    // Version Control(Git) は表示中だけ git/gh の外部プロセスを叩くので、
-    // 起動直後のデフォルトでアクティブにならないよう "中央" に置く
-    // （先頭/末尾のどちらがアクティブでも軽い窓になるようにする）。
-    ImGui::DockBuilderDockWindow("Post Process",            dockRightBottom);
-    ImGui::DockBuilderDockWindow("Post Process パラメータ", dockRightBottom);
-    ImGui::DockBuilderDockWindow("エンジン設定",            dockRightBottom);
-    ImGui::DockBuilderDockWindow("Version Control (Git)",   dockRightBottom);
-    ImGui::DockBuilderDockWindow("Project",                 dockRightBottom);
-    ImGui::DockBuilderDockWindow("Scene Flow",              dockRightBottom);
+    const char* kInspector =
+        "\xe3\x82\xa4\xe3\x83\xb3\xe3\x82\xb9\xe3\x83\x9a\xe3\x82\xaf\xe3\x82\xbf\xe3\x83\xbc";
+    const bool anyTool = (m_ctx && m_ctx->AnyToolWindowOpen());
+    if (anyTool)
+    {
+        // 右カラム → 上=インスペクター / 下=ツール系タブ（下 42%）
+        ImGuiID dockRightTop = 0, dockRightBottom = 0;
+        ImGui::DockBuilderSplitNode(dockRightCol, ImGuiDir_Down, 0.42f, &dockRightBottom, &dockRightTop);
+        ImGui::DockBuilderDockWindow(kInspector, dockRightTop);
+
+        // 開いているかに関わらず全ツール窓をここへドック付け（後で開いた窓も同じタブ群に入る）。
+        ImGui::DockBuilderDockWindow("Post Process",            dockRightBottom);
+        ImGui::DockBuilderDockWindow("Post Process パラメータ", dockRightBottom);
+        ImGui::DockBuilderDockWindow("Skybox / IBL",            dockRightBottom);
+        ImGui::DockBuilderDockWindow("SSAO",                    dockRightBottom);
+        ImGui::DockBuilderDockWindow("エンジン設定",            dockRightBottom);
+        ImGui::DockBuilderDockWindow("Scene Flow",              dockRightBottom);
+        ImGui::DockBuilderDockWindow("Project",                 dockRightBottom);
+        ImGui::DockBuilderDockWindow("Version Control (Git)",   dockRightBottom);
+    }
+    else
+    {
+        // ツール窓が全部OFF: インスペクターが右カラム全高（スッキリ4窓）。
+        ImGui::DockBuilderDockWindow(kInspector, dockRightCol);
+    }
 
     ImGui::DockBuilderFinish(dockspaceId);
 }
@@ -196,9 +204,23 @@ void EditorLayer::Render(bool isPlaying,
 
         dockspaceId = ImGui::GetID("EditorDockSpace");
 
+        // ツール窓の開閉が「空 ⇔ 非空」を跨いだらレイアウトを作り直す。
+        // （右下タブ領域を出す / 畳んで Inspector を右カラム全高へ戻す）
+        const bool anyToolNow = m_ctx->AnyToolWindowOpen();
+        if (anyToolNow != m_prevAnyToolShown)
+        {
+            m_prevAnyToolShown = anyToolNow;
+            m_dockspaceBuilt = false;
+        }
+
         // メニュー「表示 > レイアウトをリセット」要求でデフォルト配置を作り直す
         if (m_ctx->resetLayout)
         {
+            // リセット時はツール窓を全部畳んでスッキリ中核4窓へ戻す
+            m_ctx->showPostProcess = m_ctx->showPostParams = m_ctx->showSkybox =
+                m_ctx->showSSAO = m_ctx->showEngineSettings = m_ctx->showSceneFlow =
+                m_ctx->showProject = m_ctx->showVersionControl = false;
+            m_prevAnyToolShown = false;
             m_dockspaceBuilt = false;
             m_ctx->resetLayout = false;
         }
@@ -229,11 +251,12 @@ void EditorLayer::Render(bool isPlaying,
     m_inspector->SetScriptEngine(scriptEngine);
     m_inspector->SetAssetsDir(assetsDir);
     m_inspector->Render(reg, *m_ctx, scene);
-    // グローバルなエンジン設定は Inspector から分離した独立ウィンドウ（下ドック）に描く
-    m_inspector->RenderEngineSettings(*m_ctx, camera, audioSystem, physicsDebugRenderer,
-                        physicsDebugDraw, useVsync, shadowQualityIndex, shadowMapSize,
-                        shadowMapDirty, cascadeSplitLambda, cascadeBlendBand, showCascadeDebug,
-                        clock);
+    // グローバルなエンジン設定は Inspector から分離した独立ウィンドウ（ツール窓・トグル式）。
+    if (m_ctx->showEngineSettings)
+        m_inspector->RenderEngineSettings(*m_ctx, camera, audioSystem, physicsDebugRenderer,
+                            physicsDebugDraw, useVsync, shadowQualityIndex, shadowMapSize,
+                            shadowMapDirty, cascadeSplitLambda, cascadeBlendBand, showCascadeDebug,
+                            clock);
 
     m_assetBrowser->Render(*m_ctx, clock->GetDeltaTime());
 

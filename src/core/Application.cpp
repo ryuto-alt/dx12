@@ -3687,8 +3687,11 @@ void Application::Render()
     // ===== 深度プリパス → SSAO（透視のみ。2D 正射ビューや無効時は素通し）=====
     // SSAO 有効時はカメラ視点の深度を m_depthBuffer へ先に完成させ、深度から法線を再構築して AO を作る。
     const SSAOSettings& ssaoCfg = m_scene->GetSSAOSettings();
+    // SSAO は透視前提（深度線形化が透視射影に依存）。正射カメラ（俯瞰ゲーム/2Dビュー）では
+    // AO 計算が壊れて全面 AO≈0 になり、ambient を黒く潰す（ゲームだけ真っ暗の原因）。→ 正射は無効化。
     const bool useSSAO = ssaoCfg.enabled && m_ssaoPass && m_ssaoPass->IsReady()
-                       && !(m_editorCtx && m_editorCtx->view2D);
+                       && !(m_editorCtx && m_editorCtx->view2D)
+                       && !m_camera->IsOrthographic();
     u32 aoSrv = m_ssaoWhiteSrvIndex;  // 既定 = 白（AO=1.0 素通し）
 
     if (useSSAO)
@@ -3803,7 +3806,7 @@ void Application::Render()
         XMFLOAT4   cascadeSplitsView;             // 16B
         XMFLOAT4   shadowParams;                  // 16B
         XMFLOAT3   cameraPos;
-        float      _pad;
+        float      aoEnabled;   // 1=実AOを読む / 0=AO読まず ao=1（白ダミー1x1の範囲外Load=0で環境光が消えるのを防ぐ）
         u32        numPointLights;
         u32        numSpotLights;
         float      _pad2[2];
@@ -3839,6 +3842,10 @@ void Application::Render()
     fc.maxPrefilterMip = m_iblBaker ? m_iblBaker->GetMaxPrefilterMip() : 4.0f;
     fc.hasIBL          = (m_iblReady && m_iblBaker && m_iblBaker->HasEnvironment()) ? 1u : 0u;
     fc.skyboxIntensity = m_skyboxIntensity;
+
+    // AO: 実 AO テクスチャがバインドされている時だけシェーダで読む。SSAO 無効/正射/フォールバック時は
+    // 白ダミー(1x1)で、Load は範囲外 0 を返して環境光を潰すため、シェーダ側で読まず ao=1 にする。
+    fc.aoEnabled = (aoSrv != m_ssaoWhiteSrvIndex) ? 1.0f : 0.0f;
 
     // PointLight を ECS から収集
     fc.numPointLights = 0;
@@ -4145,6 +4152,7 @@ void Application::Render()
             XMStoreFloat4x4(&fcp.view, XMMatrixTranspose(view));
             XMStoreFloat4x4(&fcp.proj, XMMatrixTranspose(proj));
             fcp.cameraPos = tf.position;
+            fcp.aoEnabled = 0.0f;   // プレビューは白ダミー AO（SSAO 非対応）なので AO を読まない
             m_previewFrameCB->Update(&fcp, sizeof(fcp), frameIndex);
 
             m_cameraPreviewRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
@@ -4309,17 +4317,23 @@ void Application::Render()
                 {"アンチエイリアス", "FXAA", "簡易アンチエイリアス", &pp.fxaaOn, {}},
             };
 
-            // ===== ウィンドウ1: ON/OFF チェックリスト =====
+            // 有効中エフェクト数（両窓で使うので、窓の表示有無に関わらず先に数える）
+            int enabledCount = 0;
+            for (const auto& fEff : fx)
+                if (*fEff.on) ++enabledCount;
+
+            // ===== ウィンドウ1: ON/OFF チェックリスト（ツール窓・トグル表示）=====
+            if (m_editorCtx->showPostProcess)
+            {
             ImGui::Begin("Post Process");
             ImGui::Checkbox("有効（マスター）", &pp.enabled);
             ImGui::SameLine(0.0f, 16.0f);
             ImGui::Checkbox("シーンビューでもプレビュー", &pp.previewInEditor);
-            ImGui::TextDisabled("通常はゲームビューのみ適用 / 各効果のパラメータは「Post Process パラメータ」窓で");
+            ImGui::TextDisabled("既定でシーン/ゲーム両方に適用（チェックを外すとゲームビュー限定） / パラメータは「Post Process パラメータ」窓で");
             ImGui::Separator();
 
             ImGui::BeginDisabled(!pp.enabled);
             const char* curCat = nullptr;
-            int enabledCount = 0;
             for (const auto& f : fx)
             {
                 if (curCat == nullptr || std::strcmp(curCat, f.cat) != 0)
@@ -4335,7 +4349,6 @@ void Application::Render()
                     if (ImGui::BeginItemTooltip())
                     { ImGui::TextUnformatted(f.help); ImGui::EndTooltip(); }
                 }
-                if (*f.on) ++enabledCount;
             }
             ImGui::EndDisabled();
 
@@ -4348,8 +4361,11 @@ void Application::Render()
             ImGui::SameLine();
             ImGui::TextDisabled("有効中: %d", enabledCount);
             ImGui::End();
+            } // if showPostProcess
 
-            // ===== ウィンドウ2: 有効なエフェクトのパラメータ =====
+            // ===== ウィンドウ2: 有効なエフェクトのパラメータ（ツール窓・トグル表示）=====
+            if (m_editorCtx->showPostParams)
+            {
             ImGui::Begin("Post Process パラメータ");
             if (!pp.enabled)
                 ImGui::TextDisabled("マスターが OFF です（Post Process 窓で有効化）");
@@ -4358,7 +4374,6 @@ void Application::Render()
             else
             {
                 ImGui::PushItemWidth(-120.0f);
-                curCat = nullptr;
                 for (const auto& f : fx)
                 {
                     if (!*f.on || !f.params) continue;
@@ -4370,10 +4385,11 @@ void Application::Render()
                 ImGui::PopItemWidth();
             }
             ImGui::End();
+            } // if showPostParams
         }
 
-        // ---- Skybox / IBL 設定ウィンドウ（シーン単位の環境マップ）----
-        if (m_scene)
+        // ---- Skybox / IBL 設定ウィンドウ（シーン単位の環境マップ・トグル表示）----
+        if (m_scene && m_editorCtx->showSkybox)
         {
             auto& sk = m_scene->GetSkyboxSettings();
             ImGui::Begin("Skybox / IBL");
@@ -4405,8 +4421,8 @@ void Application::Render()
             ImGui::End();
         }
 
-        // ---- SSAO 設定ウィンドウ（シーン単位・グローバルレンダ設定）----
-        if (m_scene)
+        // ---- SSAO 設定ウィンドウ（シーン単位・グローバルレンダ設定・トグル表示）----
+        if (m_scene && m_editorCtx->showSSAO)
         {
             auto& ss = m_scene->GetSSAOSettings();
             ImGui::Begin("SSAO");
@@ -4429,8 +4445,8 @@ void Application::Render()
             ImGui::End();
         }
 
-        // ---- Scene Flow 設定ウィンドウ（シーンの流れ）----
-        if (m_sceneFlow)
+        // ---- Scene Flow 設定ウィンドウ（シーンの流れ・トグル表示）----
+        if (m_sceneFlow && m_editorCtx->showSceneFlow)
         {
             namespace fs = std::filesystem;
             std::vector<std::string> scenes;
@@ -4554,9 +4570,9 @@ void Application::Render()
             }
         }
 
-        // ---- プロジェクト / バージョン管理(Git) ウィンドウ ----
-        RenderProjectWindow();
-        RenderVersionControlWindow();
+        // ---- プロジェクト / バージョン管理(Git) ウィンドウ（トグル表示）----
+        if (m_editorCtx->showProject)        RenderProjectWindow();
+        if (m_editorCtx->showVersionControl) RenderVersionControlWindow();
     }
 
     // ---- ゲーム内 UI: テキスト/ボタン（ImGui オーバーレイ・ゲーム/Play 中のみ）----
