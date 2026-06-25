@@ -16,7 +16,7 @@ struct IBLConstants
 {
     u32   faceSize;
     float roughness;
-    u32   _pad0;
+    u32   envSize;   // src env cube の 1 面サイズ(mip0)。PrefilterEnv の PDF mip 選択用
     u32   _pad1;
 };
 
@@ -260,23 +260,26 @@ void IBLBaker::Bake(GraphicsDevice& device, ID3D12GraphicsCommandList* cmdList,
             srvHeap.GetCpuHandle(tmpUavStart + 1 + kPrefilterMips));
     }
 
+    // src env cube の 1 面サイズ(mip0)。PrefilterEnv の PDF ベース mip 選択に渡す。
+    const u32 envFaceSize = static_cast<u32>(envCube->GetDesc().Width);
+
     // constants
     u8* cbBase = nullptr;
     ThrowIfFailed(m_cbUpload->Map(0, nullptr, reinterpret_cast<void**>(&cbBase)));
-    auto writeCB = [&](u32 slot, u32 faceSize, float roughness) -> D3D12_GPU_VIRTUAL_ADDRESS {
-        IBLConstants c{ faceSize, roughness, 0u, 0u };
+    auto writeCB = [&](u32 slot, u32 faceSize, float roughness, u32 envSize) -> D3D12_GPU_VIRTUAL_ADDRESS {
+        IBLConstants c{ faceSize, roughness, envSize, 0u };
         std::memcpy(cbBase + static_cast<size_t>(slot) * kCBSlotStride, &c, sizeof(c));
         return m_cbUpload->GetGPUVirtualAddress() + static_cast<UINT64>(slot) * kCBSlotStride;
     };
-    D3D12_GPU_VIRTUAL_ADDRESS cbIrr = writeCB(0, kIrradianceSize, 0.0f);
+    D3D12_GPU_VIRTUAL_ADDRESS cbIrr = writeCB(0, kIrradianceSize, 0.0f, envFaceSize);
     D3D12_GPU_VIRTUAL_ADDRESS cbPre[kPrefilterMips];
     for (u32 m = 0; m < kPrefilterMips; ++m)
     {
         u32 sz = kPrefilterSize >> m;
         float rough = static_cast<float>(m) / static_cast<float>(kPrefilterMips - 1);
-        cbPre[m] = writeCB(1 + m, sz, rough);
+        cbPre[m] = writeCB(1 + m, sz, rough, envFaceSize);
     }
-    D3D12_GPU_VIRTUAL_ADDRESS cbBrdf = writeCB(1 + kPrefilterMips, kBrdfSize, 0.0f);
+    D3D12_GPU_VIRTUAL_ADDRESS cbBrdf = writeCB(1 + kPrefilterMips, kBrdfSize, 0.0f, envFaceSize);
     m_cbUpload->Unmap(0, nullptr);
 
     cmdList->SetComputeRootSignature(m_computeRS.Get());

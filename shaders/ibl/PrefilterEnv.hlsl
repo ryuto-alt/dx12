@@ -11,7 +11,7 @@ cbuffer IBLConstants : register(b0)
 {
     uint  faceSize;   // 現 mip の 1 面のサイズ
     float roughness;  // 現 mip の roughness（mip/maxMip）
-    uint  _pad0;
+    uint  envSize;    // src env cube の 1 面のサイズ（mip0）— PDF mip 選択用
     uint  _pad1;
 };
 
@@ -33,6 +33,12 @@ void CSMain(uint3 dtid : SV_DispatchThreadID)
     float3 prefiltered = float3(0.0, 0.0, 0.0);
     float  totalWeight = 0.0;
 
+    // env キューブ 1 面のソリッドアングルを 1 テクセルあたりに割り当てた値。
+    // PDF ベースで適切な mip を選ぶことで高 roughness 時のアンダーサンプリング由来の
+    // ファイアフライ（輝点ちらつき）を抑える。env が単一 mip でも SampleLevel が
+    // 上限クランプするので安全。
+    float saTexel = 4.0 * PI_IBL / (6.0 * float(envSize) * float(envSize));
+
     for (uint i = 0u; i < NUM_SAMPLES; ++i)
     {
         float2 xi = Hammersley(i, NUM_SAMPLES);
@@ -42,7 +48,16 @@ void CSMain(uint3 dtid : SV_DispatchThreadID)
         float NoL = max(dot(N, L), 0.0);
         if (NoL > 0.0)
         {
-            prefiltered += g_env.SampleLevel(g_samp, L, 0).rgb * NoL;
+            // GGX PDF からこのサンプルが代表するソリッドアングルを推定し、mip を選ぶ。
+            float NoH = max(dot(N, H), 0.0);
+            float VoH = max(dot(V, H), 0.0);
+            float a   = roughness * roughness;
+            float D   = (a * a) / max(PI_IBL * pow(NoH * NoH * (a * a - 1.0) + 1.0, 2.0), 1e-6);
+            float pdf = (D * NoH) / max(4.0 * VoH, 1e-6) + 1e-4;
+            float saSample  = 1.0 / (float(NUM_SAMPLES) * pdf + 1e-6);
+            float sampleMip = (roughness <= 0.0) ? 0.0 : 0.5 * log2(saSample / saTexel);
+
+            prefiltered += g_env.SampleLevel(g_samp, L, max(sampleMip, 0.0)).rgb * NoL;
             totalWeight += NoL;
         }
     }

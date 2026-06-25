@@ -1,5 +1,11 @@
 // ForwardGrid.hlsl - Procedural grid floor shader + Shadow
 
+// PerFrame 定数バッファ(b1) は Lighting.hlsli を include して共有定義を使う。
+// これで C++ FrameConstants(現 1136B：末尾に IBL 制御 16B を追加) とのバイト一致が
+// 1 箇所で担保され、二重宣言のドリフトが起きない。grid は shadowParams までしか
+// 参照しないので、末尾に追加された cameraPos / 点光源 / IBL 系メンバの影響は受けない。
+#include "Lighting.hlsli"
+
 // Texture and sampler (unused, but RootSignature requires binding)
 Texture2D    g_albedo  : register(t0);
 SamplerState g_sampler : register(s0);
@@ -8,27 +14,11 @@ SamplerState g_sampler : register(s0);
 Texture2DArray         g_shadowMap      : register(t4);
 SamplerComparisonState g_shadowSampler  : register(s1);
 
-#define NUM_CASCADES 4
-
 // PerObject constants (b0) - MVP + Model matrix as RootConstants (32 DWORD)
 cbuffer PerObjectConstants : register(b0)
 {
     float4x4 mvp;
     float4x4 model;
-};
-
-// PerFrame constants (b1) — Lighting.hlsli / C++ FrameConstants(1120B) とバイト一致させること
-cbuffer PerFrameConstants : register(b1)
-{
-    float4x4 view;
-    float4x4 proj;
-    float3   lightDir;
-    float    time;
-    float3   lightColor;
-    float    ambientStrength;
-    float4x4 cascadeViewProj[NUM_CASCADES];  // 256B
-    float4   cascadeSplitsView;              // 各カスケード遠端 view 深度(正値)
-    float4   shadowParams;                   // .x=1/shadowMapSize .z=blendBand .w=debug
 };
 
 struct VSInput

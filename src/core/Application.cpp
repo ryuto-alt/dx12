@@ -1557,7 +1557,12 @@ void Application::LoadSkyboxIfNeeded(ID3D12GraphicsCommandList* cmd)
     // パス未指定: IBL 無し（ダミーを1度だけベイクしてテーブルは常に有効化）
     if (sky.envMapPath.empty())
     {
-        if (m_loadedSkyboxPath != "" || !m_iblReady)
+        // 「解放 + ダミー再ベイク」が要るのは、(a) まだ一度もベイクしていない
+        // (=!m_iblReady)か、(b) 実 env が読み込まれている(=直前は別シーンで envMap 有り)
+        // のいずれか。判定を m_loadedSkyboxPath 文字列ではなく実 env の有無で行うことで、
+        // シーンロード時に m_loadedSkyboxPath をクリアしても env→empty 切替を取りこぼさない。
+        const bool hasRealEnv = (m_envCubeTex != nullptr) || m_iblBaker->HasEnvironment();
+        if (hasRealEnv || !m_iblReady)
         {
             // 既存 env を解放
             if (m_envCubeSrvIndex != DescriptorHeap::kInvalidIndex && m_srvHeap)
@@ -2290,6 +2295,11 @@ void Application::DoRuntimeSceneLoad(const std::string& rel, ID3D12GraphicsComma
     }
     m_physicsSystem->ResetAccumulator();
 
+    // ランタイムでシーンが切り替わったので、新シーンの SkyboxSettings で IBL/skybox を
+    // 次フレーム冒頭に再ベイク。m_loadedSkyboxPath はクリアして旧パス一致のスキップを防ぐ。
+    m_loadedSkyboxPath.clear();
+    m_skyboxDirty = true;
+
     Logger::Info("Runtime scene loaded: {}", rel);
 }
 
@@ -2997,6 +3007,10 @@ void Application::Render()
             m_editorCtx->hotReloadFlash = 1.5f;
         }
         m_editorLayer->RefreshAssetBrowser();
+        // 新シーンの SkyboxSettings で IBL/skybox を次フレーム冒頭に再ベイク。
+        // m_loadedSkyboxPath をクリアして「偶然旧パス一致でスキップ」の取りこぼしを防ぐ。
+        m_loadedSkyboxPath.clear();
+        m_skyboxDirty = true;
         Logger::Info("New scene created");
     }
 
@@ -3017,6 +3031,11 @@ void Application::Render()
             ProjectManager::SaveLastOpenedScene(loadPath);
             m_editorCtx->hotReloadFlash = 1.5f;
             m_editorLayer->RefreshAssetBrowser();
+            // ロードしたシーンの SkyboxSettings(envMapPath/iblIntensity 等) を反映するため
+            // 次フレーム冒頭で再ベイクを要求。別 envMapPath のシーンを開いても自動追従する。
+            // 差分判定の取りこぼし防止に m_loadedSkyboxPath をクリア。
+            m_loadedSkyboxPath.clear();
+            m_skyboxDirty = true;
             Logger::Info("Scene loaded: {}", loadPath);
         }
     }
