@@ -20,6 +20,14 @@ public:
         const std::wstring& filePath,
         bool srgb = true);  // false = linear (normal/metalRoughness maps)
 
+    // IBL 環境キューブ用：.dds の TEXTURECUBE を 6 面×全 mip でロードする。
+    // SRV(TextureCube) は呼び出し側で Texture::CreateCubeSRV を使って張ること。
+    static std::unique_ptr<Texture> LoadCubeFromFile(
+        GraphicsDevice& device,
+        ID3D12GraphicsCommandList* cmdList,
+        const std::wstring& filePath,
+        bool srgb = false);
+
     // FBX 埋め込みテクスチャ用：メモリバッファから読み込み
     static std::unique_ptr<Texture> LoadFromMemory(
         GraphicsDevice& device,

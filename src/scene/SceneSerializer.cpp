@@ -688,6 +688,17 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
         };
     }
 
+    // スカイボックス / IBL 設定（シーン単位）
+    {
+        const auto& sk = scene.GetSkyboxSettings();
+        root["skybox"] = {
+            {"envMapPath",      sk.envMapPath},
+            {"iblIntensity",    sk.iblIntensity},
+            {"skyboxIntensity", sk.skyboxIntensity},
+            {"drawSkybox",      sk.drawSkybox},
+        };
+    }
+
     return root;
 }
 
@@ -730,6 +741,21 @@ static void LoadPostSettings(Scene& scene, const json& root)
         pp.fxaaOn       = pj.value("fxaaOn",       pp.fxaaOn);
     }
     scene.GetPostSettings() = pp;
+}
+
+// JSON から スカイボックス / IBL 設定を復元（skybox が無ければデフォルト）
+static void LoadSkyboxSettings(Scene& scene, const json& root)
+{
+    SkyboxSettings sk;  // デフォルト
+    if (root.contains("skybox"))
+    {
+        const auto& sj = root["skybox"];
+        sk.envMapPath      = sj.value("envMapPath", sk.envMapPath);
+        sk.iblIntensity    = sj.value("iblIntensity", sk.iblIntensity);
+        sk.skyboxIntensity = sj.value("skyboxIntensity", sk.skyboxIntensity);
+        sk.drawSkybox      = sj.value("drawSkybox", sk.drawSkybox);
+    }
+    scene.GetSkyboxSettings() = sk;
 }
 
 // JSON ノードから 1 エンティティを既存シーンに追加生成（Clear しない）
@@ -1025,6 +1051,8 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
 
     // ポストプロセス設定（entities が無くても復元する）
     LoadPostSettings(scene, root);
+    // スカイボックス / IBL 設定
+    LoadSkyboxSettings(scene, root);
 
     if (!root.contains("entities") || !root["entities"].is_array())
     {

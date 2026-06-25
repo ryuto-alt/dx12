@@ -21,6 +21,15 @@ class ResourceManager;
 class GraphicsDevice;
 class DescriptorHeap;
 
+// シーン単位のスカイボックス / IBL 設定（per-entity component ではなく scene-level）。
+struct SkyboxSettings
+{
+    std::string envMapPath;            // assets 相対 .dds（空=IBL/skybox 無効）
+    float       iblIntensity   = 1.0f;
+    float       skyboxIntensity = 1.0f;
+    bool        drawSkybox     = true; // false=IBL のみ（背景は塗らない）
+};
+
 class Scene
 {
 public:
@@ -83,6 +92,9 @@ public:
     PostProcessSettings&       GetPostSettings()       { return m_postSettings; }
     const PostProcessSettings& GetPostSettings() const { return m_postSettings; }
 
+    SkyboxSettings&       GetSkyboxSettings()       { return m_skybox; }
+    const SkyboxSettings& GetSkyboxSettings() const { return m_skybox; }
+
 private:
     Entity CreateEntityWithTransform(const std::string& name,
                                      DirectX::XMFLOAT3 position,
@@ -92,6 +104,7 @@ private:
     entt::registry m_registry;
     std::vector<std::unique_ptr<Mesh>> m_ownedMeshes;
     PostProcessSettings m_postSettings;
+    SkyboxSettings      m_skybox;
 
     ResourceManager*  m_resourceManager = nullptr;
     GraphicsDevice*   m_device          = nullptr;

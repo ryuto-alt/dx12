@@ -23,9 +23,13 @@
 #include "renderer/ParticleSystem.h"
 #include "renderer/SpriteRenderer.h"
 #include "renderer/SceneTransition.h"
+#include "renderer/IBLBaker.h"
+#include "renderer/SkyboxRenderer.h"
 #include "resource/ShaderCompiler.h"
 #include "resource/ModelLoader.h"
 #include "resource/ResourceManager.h"
+#include "resource/TextureLoader.h"
+#include "graphics/Texture.h"
 #include "animation/Skeleton.h"
 #include "animation/AnimationClip.h"
 #include "animation/Animator.h"
@@ -571,8 +575,13 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         float                _pad2[2];        // 8B  → 16B (offset 464)
         PointLightGPU        pointLights[kMaxPointLights]; // 256B (offset 480)
         SpotLightGPU         spotLights[kMaxSpotLights];   // 384B (offset 736)
-    };  // total = 1120B
-    static_assert(sizeof(FrameConstants) == 1120, "FrameConstants must be 1120 bytes");
+        // ▼ IBL 制御 16B (offset 1120)
+        float                iblIntensity;
+        float                maxPrefilterMip;
+        u32                  hasIBL;
+        float                skyboxIntensity;
+    };  // total = 1136B
+    static_assert(sizeof(FrameConstants) == 1136, "FrameConstants must be 1136 bytes");
     m_perFrameCB = std::make_unique<ConstantBuffer>();
     m_perFrameCB->Initialize(*m_graphicsDevice, sizeof(FrameConstants), FrameResources::kFrameCount);
 
@@ -650,6 +659,12 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         // シーントランジション
         m_sceneTransition = std::make_unique<SceneTransition>();
         m_sceneTransition->Initialize(*m_graphicsDevice, m_swapChain->GetFormat(), PathResolver::ShaderDirW());
+
+        // IBL 環境マップ（irradiance/prefiltered/BRDF LUT）+ 任意スカイボックス
+        m_iblBaker = std::make_unique<IBLBaker>();
+        m_iblBaker->Initialize(*m_graphicsDevice, PathResolver::ShaderDirW());
+        m_skyboxRenderer = std::make_unique<SkyboxRenderer>();
+        m_skyboxRenderer->Initialize(*m_graphicsDevice, kSceneColorFormat, PathResolver::ShaderDirW());
     }
 
     // シーンフロー（assets/sceneflow.json があれば）
@@ -759,6 +774,18 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
             m_resourceManager->FinishUploads();
         }
+    }
+
+    // IBL: シーンの skybox 設定に応じて環境キューブを読み込み派生をベイク（専用 cmdList）。
+    {
+        auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
+        LoadSkyboxIfNeeded(cmdList);
+        ThrowIfFailed(cmdList->Close());
+        m_commandQueue->ExecuteCommandList(cmdList);
+        m_commandQueue->WaitIdle();
+        m_frameResources->EndFrame(*m_commandQueue);
+        if (m_envCubeTex) m_envCubeTex->FinishUpload();
+        m_resourceManager->FinishUploads();
     }
 
     Logger::Info("Application initialized successfully");
@@ -972,6 +999,21 @@ void Application::Shutdown()
     m_sceneTransition.reset();
     m_spriteRenderer.reset();
     m_postProcess.reset();
+    // IBL / Skybox（GPU リソース）をデバイス解放より前に明示破棄。SRV index も srvHeap 生存中に返却。
+    m_skyboxRenderer.reset();
+    if (m_iblBaker)
+    {
+        if (m_iblReady && m_srvHeap)
+            m_srvHeap->FreeBlock(m_iblBaker->GetSrvBlockStart(), m_iblBaker->GetSrvBlockCount());
+        m_iblBaker->Reset();
+        m_iblBaker.reset();
+    }
+    if (m_envCubeSrvIndex != DescriptorHeap::kInvalidIndex && m_srvHeap)
+    {
+        m_srvHeap->Free(m_envCubeSrvIndex);
+        m_envCubeSrvIndex = DescriptorHeap::kInvalidIndex;
+    }
+    m_envCubeTex.reset();
     m_cameraPreviewRT.reset();
     m_sceneRT.reset();
     m_offscreenRtvHeap.reset();
@@ -1434,6 +1476,83 @@ void Application::LoadEditorIcons(ID3D12GraphicsCommandList* cmdList)
         m_editorCtx->icons = &m_icons;
 
     Logger::Info("Editor UI icons loaded");
+}
+
+void Application::LoadSkyboxIfNeeded(ID3D12GraphicsCommandList* cmd)
+{
+    if (!m_scene || !m_iblBaker) return;
+
+    const auto& sky = m_scene->GetSkyboxSettings();
+    m_iblIntensity    = sky.iblIntensity;
+    m_skyboxIntensity = sky.skyboxIntensity;
+    m_drawSkybox      = sky.drawSkybox;
+
+    // パス未指定: IBL 無し（ダミーを1度だけベイクしてテーブルは常に有効化）
+    if (sky.envMapPath.empty())
+    {
+        if (m_loadedSkyboxPath != "" || !m_iblReady)
+        {
+            // 既存 env を解放
+            if (m_envCubeSrvIndex != DescriptorHeap::kInvalidIndex && m_srvHeap)
+                m_srvHeap->Free(m_envCubeSrvIndex);
+            m_envCubeSrvIndex = DescriptorHeap::kInvalidIndex;
+            m_envCubeTex.reset();
+            if (m_iblReady && m_srvHeap)
+                m_srvHeap->FreeBlock(m_iblBaker->GetSrvBlockStart(), m_iblBaker->GetSrvBlockCount());
+            // ダミーベイク（env=null）
+            m_iblBaker->Bake(*m_graphicsDevice, cmd, *m_srvHeap, nullptr);
+            m_iblReady = m_iblBaker->IsValid();
+        }
+        m_loadedSkyboxPath = "";
+        return;
+    }
+
+    // 同一パスかつ既に有効ならスキップ
+    if (sky.envMapPath == m_loadedSkyboxPath && m_iblReady && m_iblBaker->HasEnvironment())
+        return;
+
+    // 既存 IBL/env を解放してから再ロード
+    if (m_iblReady && m_srvHeap)
+        m_srvHeap->FreeBlock(m_iblBaker->GetSrvBlockStart(), m_iblBaker->GetSrvBlockCount());
+    if (m_envCubeSrvIndex != DescriptorHeap::kInvalidIndex && m_srvHeap)
+        m_srvHeap->Free(m_envCubeSrvIndex);
+    m_envCubeSrvIndex = DescriptorHeap::kInvalidIndex;
+    m_envCubeTex.reset();
+    m_iblReady = false;
+
+    std::string fullPath = PathResolver::AssetsDir() + sky.envMapPath;
+    if (!std::filesystem::exists(fullPath))
+    {
+        Logger::Warn("Skybox env map not found: {}", fullPath);
+        // ダミーベイクしてフォールバック
+        m_iblBaker->Bake(*m_graphicsDevice, cmd, *m_srvHeap, nullptr);
+        m_iblReady = m_iblBaker->IsValid();
+        m_loadedSkyboxPath = sky.envMapPath;
+        return;
+    }
+
+    std::wstring wpath(fullPath.begin(), fullPath.end());
+    m_envCubeTex = TextureLoader::LoadCubeFromFile(*m_graphicsDevice, cmd, wpath, /*srgb=*/false);
+    if (!m_envCubeTex)
+    {
+        Logger::Warn("Failed to load skybox cube: {}", fullPath);
+        m_iblBaker->Bake(*m_graphicsDevice, cmd, *m_srvHeap, nullptr);
+        m_iblReady = m_iblBaker->IsValid();
+        m_loadedSkyboxPath = sky.envMapPath;
+        return;
+    }
+
+    // env cube の TextureCube SRV を shader-visible ヒープに作成
+    m_envCubeSrvIndex = m_srvHeap->AllocateIndex();
+    m_envCubeTex->CreateCubeSRV(*m_graphicsDevice,
+        m_srvHeap->GetCpuHandle(m_envCubeSrvIndex), m_envCubeTex->GetMipLevels());
+
+    // 派生をベイク
+    m_iblBaker->Bake(*m_graphicsDevice, cmd, *m_srvHeap, m_envCubeTex->GetResource());
+    m_iblReady = m_iblBaker->IsValid();
+    m_loadedSkyboxPath = sky.envMapPath;
+
+    Logger::Info("Skybox loaded: {} (ibl={}, sky={})", sky.envMapPath, m_iblIntensity, m_skyboxIntensity);
 }
 
 void Application::BeginProjectLoad(const ProjectInfo& info, bool isNew)
@@ -2728,6 +2847,21 @@ void Application::Render()
 {
     using namespace DirectX;
 
+    // Skybox 再ベイク要求（エディタでパス変更時）。専用 cmdList + WaitIdle で安全に処理。
+    if (m_skyboxDirty && m_iblBaker)
+    {
+        m_skyboxDirty = false;
+        m_commandQueue->WaitIdle();   // 前フレームの GPU 完了を待ってから SRV を入れ替える
+        auto* bakeCmd = m_frameResources->BeginFrame(*m_commandQueue);
+        LoadSkyboxIfNeeded(bakeCmd);
+        ThrowIfFailed(bakeCmd->Close());
+        m_commandQueue->ExecuteCommandList(bakeCmd);
+        m_commandQueue->WaitIdle();
+        m_frameResources->EndFrame(*m_commandQueue);
+        if (m_envCubeTex) m_envCubeTex->FinishUpload();
+        m_resourceManager->FinishUploads();
+    }
+
     auto* nativeCmdList = m_frameResources->BeginFrame(*m_commandQueue);
     m_commandList->Wrap(nativeCmdList);
 
@@ -3463,8 +3597,13 @@ void Application::Render()
         float      _pad2[2];
         PointLightGPU pointLights[kMaxPointLightsR];
         SpotLightGPU  spotLights[kMaxSpotLightsR];
+        // ▼ IBL 制御 16B
+        float iblIntensity;
+        float maxPrefilterMip;
+        u32   hasIBL;
+        float skyboxIntensity;
     };
-    static_assert(sizeof(FrameConstants) == 1120, "FrameConstants must be 1120 bytes");
+    static_assert(sizeof(FrameConstants) == 1136, "FrameConstants must be 1136 bytes");
 
     FrameConstants fc{};
     XMStoreFloat4x4(&fc.view, XMMatrixTranspose(m_camera->GetViewMatrix()));
@@ -3482,6 +3621,12 @@ void Application::Render()
     fc.shadowParams = {1.0f / static_cast<f32>(m_shadowMapSize), 0.0f,
                        m_cascadeBlendBand, m_showCascadeDebug ? 1.0f : 0.0f};
     fc.cameraPos = m_camera->GetPosition();
+
+    // IBL 制御
+    fc.iblIntensity    = m_iblReady ? m_iblIntensity : 0.0f;
+    fc.maxPrefilterMip = m_iblBaker ? m_iblBaker->GetMaxPrefilterMip() : 4.0f;
+    fc.hasIBL          = (m_iblReady && m_iblBaker && m_iblBaker->HasEnvironment()) ? 1u : 0u;
+    fc.skyboxIntensity = m_skyboxIntensity;
 
     // PointLight を ECS から収集
     fc.numPointLights = 0;
@@ -3530,11 +3675,34 @@ void Application::Render()
     }
 
     m_perFrameCB->Update(&fc, sizeof(fc), frameIndex);
+
+    // ===== Skybox（不透明描画の前に全画面塗り。深度テスト OFF なので後続不透明が上書き）=====
+    // skybox は自前 RootSig/PSO を bind するため、直後にメイン RootSig/PSO を再設定してから
+    // per-frame CBV / shadow / IBL を bind し直す。
+    if (m_iblReady && m_drawSkybox && m_skyboxIntensity > 0.0f && m_skyboxRenderer &&
+        m_iblBaker && m_iblBaker->HasEnvironment() &&
+        m_envCubeSrvIndex != DescriptorHeap::kInvalidIndex)
+    {
+        XMFLOAT4X4 invVP;
+        XMStoreFloat4x4(&invVP, XMMatrixTranspose(
+            XMMatrixInverse(nullptr, m_camera->GetViewProjMatrix())));
+        m_skyboxRenderer->Render(nativeCmdList, m_srvHeap->GetGpuHandle(m_envCubeSrvIndex),
+                                 invVP, m_skyboxIntensity);
+        // メイン RootSig / PSO を再設定
+        m_commandList->SetRootSignature(*m_rootSignature);
+        m_commandList->SetPipelineState(*m_pipelineState);
+    }
+
     m_commandList->SetPerFrameCBV(RootSignature::kSlotPerFrame, m_perFrameCB->GetGpuAddress(frameIndex));
 
     // シャドウマップSRVをバインド
     m_commandList->SetSRVTable(RootSignature::kSlotShadowSRV,
         m_srvHeap->GetGpuHandle(m_shadowSrvIndex));
+
+    // IBL テーブル(t5,t6,t7)をバインド（常に有効＝ダミー含む。hasIBL で読むか分岐）
+    if (m_iblReady && m_iblBaker)
+        m_commandList->SetSRVTable(RootSignature::kSlotIBLTable,
+            m_srvHeap->GetGpuHandle(m_iblBaker->GetIrradianceSrv()));
 
     XMMATRIX viewProj = m_camera->GetViewProjMatrix();
 
@@ -3779,6 +3947,9 @@ void Application::Render()
                 m_previewFrameCB->GetGpuAddress(frameIndex));
             m_commandList->SetSRVTable(RootSignature::kSlotShadowSRV,
                 m_srvHeap->GetGpuHandle(m_shadowSrvIndex));
+            if (m_iblReady && m_iblBaker)
+                m_commandList->SetSRVTable(RootSignature::kSlotIBLTable,
+                    m_srvHeap->GetGpuHandle(m_iblBaker->GetIrradianceSrv()));
 
             // グリッドは出さない＝isGameView=true
             RenderSceneMeshes(nativeCmdList, frameIndex, camViewProj, true);
@@ -3985,6 +4156,39 @@ void Application::Render()
                 }
                 ImGui::PopItemWidth();
             }
+            ImGui::End();
+        }
+
+        // ---- Skybox / IBL 設定ウィンドウ（シーン単位の環境マップ）----
+        if (m_scene)
+        {
+            auto& sk = m_scene->GetSkyboxSettings();
+            ImGui::Begin("Skybox / IBL");
+            ImGui::TextWrapped("環境キューブ(.dds, TEXTURECUBE) から irradiance / prefiltered / BRDF LUT を生成し、"
+                               "ambient を IBL 化する。空欄なら従来 ambient。");
+            ImGui::Separator();
+
+            // env map パス入力
+            static char pathBuf[260];
+            std::snprintf(pathBuf, sizeof(pathBuf), "%s", sk.envMapPath.c_str());
+            if (ImGui::InputText("Env Map (.dds, assets相対)", pathBuf, sizeof(pathBuf)))
+                sk.envMapPath = pathBuf;
+
+            ImGui::SliderFloat("IBL Intensity", &sk.iblIntensity, 0.0f, 3.0f, "%.2f");
+            ImGui::SliderFloat("Skybox Intensity", &sk.skyboxIntensity, 0.0f, 3.0f, "%.2f");
+            ImGui::Checkbox("Draw Skybox (背景を描く)", &sk.drawSkybox);
+
+            // ランタイム値へ即時反映（強度/描画フラグは再ベイク不要）
+            m_iblIntensity    = sk.iblIntensity;
+            m_skyboxIntensity = sk.skyboxIntensity;
+            m_drawSkybox      = sk.drawSkybox;
+
+            ImGui::Separator();
+            if (ImGui::Button("環境マップ適用 / 再ベイク"))
+                m_skyboxDirty = true;   // 次フレーム冒頭で再ベイク（WaitIdle 込み）
+            ImGui::SameLine();
+            ImGui::TextDisabled(m_iblReady && m_iblBaker && m_iblBaker->HasEnvironment()
+                                ? "IBL: 有効" : "IBL: フォールバック(ambient)");
             ImGui::End();
         }
 

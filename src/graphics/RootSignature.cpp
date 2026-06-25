@@ -8,8 +8,8 @@ namespace dx12e
 
 void RootSignature::Initialize(GraphicsDevice& device)
 {
-    // Root parameters: 6
-    D3D12_ROOT_PARAMETER1 rootParams[6]{};
+    // Root parameters: 7
+    D3D12_ROOT_PARAMETER1 rootParams[7]{};
 
     // [0] Per-Object: 32bit constants (32 DWORDs = MVP(16) + Model(16))
     rootParams[0].ParameterType             = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
@@ -74,8 +74,22 @@ void RootSignature::Initialize(GraphicsDevice& device)
     rootParams[5].Constants.RegisterSpace   = 0;
     rootParams[5].ShaderVisibility          = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    // Static Samplers (s0 + s1)
-    D3D12_STATIC_SAMPLER_DESC staticSamplers[2]{};
+    // [6] IBL SRV DescriptorTable (t5=irradiance, t6=prefiltered, t7=brdfLUT) 連続3枚
+    D3D12_DESCRIPTOR_RANGE1 iblRange{};
+    iblRange.RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    iblRange.NumDescriptors                    = 3;  // t5,t6,t7 連続
+    iblRange.BaseShaderRegister                = 5;
+    iblRange.RegisterSpace                     = 0;
+    iblRange.Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    iblRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    rootParams[6].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParams[6].DescriptorTable.NumDescriptorRanges = 1;
+    rootParams[6].DescriptorTable.pDescriptorRanges   = &iblRange;
+    rootParams[6].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // Static Samplers (s0=albedo wrap, s1=shadow PCF, s2=IBL linear-clamp mip有, s3=BRDF linear-clamp mipなし)
+    D3D12_STATIC_SAMPLER_DESC staticSamplers[4]{};
 
     // s0 - Linear Wrap (albedo, normal, metalRoughness)
     staticSamplers[0].Filter           = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -98,6 +112,22 @@ void RootSignature::Initialize(GraphicsDevice& device)
     staticSamplers[1].MaxLOD           = D3D12_FLOAT32_MAX;
     staticSamplers[1].ShaderRegister   = 1;
     staticSamplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // s2 - IBL: LINEAR CLAMP (mip有, MaxLOD=FLOAT32_MAX) — irradiance/prefiltered 用
+    staticSamplers[2].Filter           = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    staticSamplers[2].AddressU         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    staticSamplers[2].AddressV         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    staticSamplers[2].AddressW         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    staticSamplers[2].ComparisonFunc   = D3D12_COMPARISON_FUNC_NEVER;
+    staticSamplers[2].BorderColor      = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
+    staticSamplers[2].MaxLOD           = D3D12_FLOAT32_MAX;
+    staticSamplers[2].ShaderRegister   = 2;
+    staticSamplers[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // s3 - BRDF LUT: LINEAR CLAMP (mipなし, MaxLOD=0)
+    staticSamplers[3]                  = staticSamplers[2];
+    staticSamplers[3].MaxLOD           = 0.0f;
+    staticSamplers[3].ShaderRegister   = 3;
 
     // Root Signature (Version 1.1)
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC versionedDesc{};
@@ -129,7 +159,7 @@ void RootSignature::Initialize(GraphicsDevice& device)
         serializedBlob->GetBufferSize(),
         IID_PPV_ARGS(&m_rootSignature)));
 
-    Logger::Info("RootSignature created (PBR: 6 slots)");
+    Logger::Info("RootSignature created (PBR: 7 slots)");
 }
 
 } // namespace dx12e

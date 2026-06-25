@@ -98,6 +98,11 @@ if(DXC_EXECUTABLE)
     set(SHADER_PARTICLE      "${CMAKE_SOURCE_DIR}/shaders/particle/Particle.hlsl")
     set(SHADER_BEAM          "${CMAKE_SOURCE_DIR}/shaders/particle/Beam.hlsl")
     set(SHADER_PARTICLE_INC  "${CMAKE_SOURCE_DIR}/shaders/particle/ParticleCommon.hlsli")
+    set(SHADER_IBL_IRR       "${CMAKE_SOURCE_DIR}/shaders/ibl/IrradianceConvolution.hlsl")
+    set(SHADER_IBL_PRE       "${CMAKE_SOURCE_DIR}/shaders/ibl/PrefilterEnv.hlsl")
+    set(SHADER_IBL_BRDF      "${CMAKE_SOURCE_DIR}/shaders/ibl/IntegrateBRDF.hlsl")
+    set(SHADER_SKYBOX        "${CMAKE_SOURCE_DIR}/shaders/ibl/Skybox.hlsl")
+    set(SHADER_IBL_INC       "${CMAKE_SOURCE_DIR}/shaders/ibl/IBLCommon.hlsli")
 
     set(SHADER_OUTPUTS
         "${SHADER_OUTPUT_DIR}/Forward_VS.cso"
@@ -124,6 +129,11 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/Particle_PS.cso"
         "${SHADER_OUTPUT_DIR}/Beam_VS.cso"
         "${SHADER_OUTPUT_DIR}/Beam_PS.cso"
+        "${SHADER_OUTPUT_DIR}/IrradianceConvolution_CS.cso"
+        "${SHADER_OUTPUT_DIR}/PrefilterEnv_CS.cso"
+        "${SHADER_OUTPUT_DIR}/IntegrateBRDF_CS.cso"
+        "${SHADER_OUTPUT_DIR}/Skybox_VS.cso"
+        "${SHADER_OUTPUT_DIR}/Skybox_PS.cso"
     )
 
     add_custom_command(
@@ -292,6 +302,42 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/Beam_PS.cso" "${SHADER_BEAM}"
         DEPENDS "${SHADER_BEAM}" "${SHADER_PARTICLE_INC}"
         COMMENT "Compiling Beam.hlsl -> Beam_PS.cso (ps_6_0)"
+    )
+
+    # --- IBL compute shaders ---
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/IrradianceConvolution_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSMain -Fo "${SHADER_OUTPUT_DIR}/IrradianceConvolution_CS.cso" "${SHADER_IBL_IRR}"
+        DEPENDS "${SHADER_IBL_IRR}" "${SHADER_IBL_INC}"
+        COMMENT "Compiling IrradianceConvolution.hlsl -> IrradianceConvolution_CS.cso (cs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/PrefilterEnv_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSMain -Fo "${SHADER_OUTPUT_DIR}/PrefilterEnv_CS.cso" "${SHADER_IBL_PRE}"
+        DEPENDS "${SHADER_IBL_PRE}" "${SHADER_IBL_INC}"
+        COMMENT "Compiling PrefilterEnv.hlsl -> PrefilterEnv_CS.cso (cs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/IntegrateBRDF_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSMain -Fo "${SHADER_OUTPUT_DIR}/IntegrateBRDF_CS.cso" "${SHADER_IBL_BRDF}"
+        DEPENDS "${SHADER_IBL_BRDF}" "${SHADER_IBL_INC}"
+        COMMENT "Compiling IntegrateBRDF.hlsl -> IntegrateBRDF_CS.cso (cs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/Skybox_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/Skybox_VS.cso" "${SHADER_SKYBOX}"
+        DEPENDS "${SHADER_SKYBOX}"
+        COMMENT "Compiling Skybox.hlsl -> Skybox_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/Skybox_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/Skybox_PS.cso" "${SHADER_SKYBOX}"
+        DEPENDS "${SHADER_SKYBOX}"
+        COMMENT "Compiling Skybox.hlsl -> Skybox_PS.cso (ps_6_0)"
     )
 
     add_custom_target(Shaders ALL DEPENDS ${SHADER_OUTPUTS})

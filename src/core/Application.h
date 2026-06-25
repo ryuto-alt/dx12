@@ -39,6 +39,9 @@ namespace dx12e
     class ParticleSystem;
     class SpriteRenderer;
     class SceneTransition;
+    class IBLBaker;
+    class SkyboxRenderer;
+    class Texture;
     class SceneFlow;
     class ConstantBuffer;
     class Camera;
@@ -101,6 +104,9 @@ private:
     void LoadProject(const ProjectInfo& info);
     // エディタUIアイコン(PNG)をSRVへ読み込む（起動時に1度。エンジン側assets基準）
     void LoadEditorIcons(ID3D12GraphicsCommandList* cmdList);
+    // シーンの SkyboxSettings に応じて環境キューブを読み込み IBL をベイクする（path 差分で再ベイク）。
+    // cmd は記録用。呼び出し側で Execute+WaitIdle されている前提。
+    void LoadSkyboxIfNeeded(ID3D12GraphicsCommandList* cmd);
     // 非同期プロジェクトロード: 作成/読込のCPU処理をワーカーで回しローディング表示
     void BeginProjectLoad(const ProjectInfo& info, bool isNew);
     void UpdateProjectLoad(f32 dt);   // 毎フレーム状態機械を進める（!m_loading なら何もしない）
@@ -220,6 +226,18 @@ private:
     std::unique_ptr<RenderTarget>   m_sceneRT;
     std::unique_ptr<PostProcess>    m_postProcess;
     std::unique_ptr<ParticleSystem> m_particleSystem;  // 加算ビルボードパーティクル（Lua fx API）
+
+    // IBL 環境マップ（irradiance/prefiltered/BRDF LUT）+ 任意スカイボックス
+    std::unique_ptr<IBLBaker>       m_iblBaker;
+    std::unique_ptr<SkyboxRenderer> m_skyboxRenderer;
+    std::unique_ptr<Texture>        m_envCubeTex;      // 環境キューブ本体（リソース保持）
+    u32   m_envCubeSrvIndex   = 0xFFFFFFFFu;           // 環境キューブの TextureCube SRV index
+    bool  m_iblReady          = false;                 // baking 完了し SRV 有効
+    float m_iblIntensity      = 1.0f;
+    float m_skyboxIntensity   = 1.0f;
+    bool  m_drawSkybox        = true;
+    std::string m_loadedSkyboxPath;                    // 二重ロード防止
+    bool  m_skyboxDirty       = false;                 // エディタでパス変更時に再ベイク要求
 
     // カメラプレビュー（選択カメラ視点を小窓表示）。専用 RT + 専用 per-frame CB。
     std::unique_ptr<RenderTarget>   m_cameraPreviewRT;

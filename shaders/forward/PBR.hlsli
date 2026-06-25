@@ -40,6 +40,13 @@ float3 FresnelSchlick(float cosTheta, float3 F0)
     return F0 + (1.0 - F0) * pow(saturate(1.0 - cosTheta), 5.0);
 }
 
+// roughness を考慮した Fresnel（IBL 用。グレージング角の過剰反射を抑える）
+float3 FresnelSchlickRoughness(float cosTheta, float3 F0, float roughness)
+{
+    float3 r = max(float3(1.0 - roughness, 1.0 - roughness, 1.0 - roughness), F0);
+    return F0 + (r - F0) * pow(saturate(1.0 - cosTheta), 5.0);
+}
+
 // ACES tone mapping (filmic)
 float3 ACESFilm(float3 x)
 {

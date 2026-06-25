@@ -20,18 +20,22 @@ public:
         u32 subresourceCount);
 
     void CreateSRV(GraphicsDevice& device, D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle);
+    // TextureCube SRV を張る（IBL 環境キューブ用）。mipLevels はキューブの mip 数。
+    void CreateCubeSRV(GraphicsDevice& device, D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle, u32 mipLevels);
     void FinishUpload();
 
-    u32         GetWidth()    const { return m_width; }
-    u32         GetHeight()   const { return m_height; }
-    DXGI_FORMAT GetFormat()   const { return m_format; }
-    u32         GetSrvIndex() const { return m_srvIndex; }
+    u32         GetWidth()     const { return m_width; }
+    u32         GetHeight()    const { return m_height; }
+    DXGI_FORMAT GetFormat()    const { return m_format; }
+    u32         GetMipLevels() const { return m_mipLevels; }
+    u32         GetSrvIndex()  const { return m_srvIndex; }
     void        SetSrvIndex(u32 index) { m_srvIndex = index; }
 
 private:
     Microsoft::WRL::ComPtr<ID3D12Resource> m_uploadBuffer;
     u32         m_width    = 0;
     u32         m_height   = 0;
+    u32         m_mipLevels = 1;
     DXGI_FORMAT m_format   = DXGI_FORMAT_UNKNOWN;
     u32         m_srvIndex = UINT32_MAX;
 };

@@ -11,6 +11,13 @@ SamplerState g_sampler        : register(s0);
 Texture2DArray         g_shadowMap     : register(t4);
 SamplerComparisonState g_shadowSampler : register(s1);
 
+// IBL (t5,t6,t7 / s2=linear-clamp(mip有), s3=linear-clamp(mipなし))
+TextureCube  g_irradianceMap  : register(t5);
+TextureCube  g_prefilteredMap : register(t6);
+Texture2D    g_brdfLUT        : register(t7);
+SamplerState g_iblSampler     : register(s2);  // LINEAR CLAMP（mip有, irradiance/prefiltered 用）
+SamplerState g_brdfSampler    : register(s3);  // LINEAR CLAMP（mipなし, LUT 用）
+
 // PerObject constants (b0)
 cbuffer PerObjectConstants : register(b0)
 {
@@ -166,11 +173,35 @@ float4 PSMain(PSInput input) : SV_TARGET
     // Point Lights + Spot Lights
     Lo += AccumulatePunctualLights(N, V, input.worldPos, albedo, F0, metallic, roughness);
 
-    // Ambient: metallic は拡散反射を持たない → (1-metallic) でスケール
-    // F0 項は環境反射の簡易近似（IBL 未実装のため F0 をそのまま使用）
-    float3 ambientDiffuse  = albedo * (1.0 - metallic);
-    float3 ambientSpecular = F0;
-    float3 ambient = ambientStrength * (ambientDiffuse + ambientSpecular);
+    // ===== Ambient / IBL =====
+    float3 ambient;
+    if (hasIBL != 0u)
+    {
+        float3 R   = reflect(-V, N);
+        float  NoV = max(dot(N, V), 0.0);
+        float3 F   = FresnelSchlickRoughness(NoV, F0, roughness);
+        float3 kD  = (1.0 - F) * (1.0 - metallic);
+
+        // 拡散 IBL（irradiance）
+        float3 irradiance = g_irradianceMap.SampleLevel(g_iblSampler, N, 0).rgb;
+        float3 diffuseIBL = irradiance * albedo;
+
+        // 鏡面 IBL（split-sum: prefiltered * (F*scale + bias)）
+        float  mip = roughness * maxPrefilterMip;
+        float3 prefiltered = g_prefilteredMap.SampleLevel(g_iblSampler, R, mip).rgb;
+        float2 envBRDF = g_brdfLUT.SampleLevel(g_brdfSampler, float2(NoV, roughness), 0).rg;
+        float3 specularIBL = prefiltered * (F * envBRDF.x + envBRDF.y);
+
+        ambient = (kD * diffuseIBL + specularIBL) * iblIntensity;
+    }
+    else
+    {
+        // 従来フォールバック（ライト ambient のみ）
+        // metallic は拡散反射を持たない → (1-metallic) でスケール。F0 項は環境反射の簡易近似。
+        float3 ambientDiffuse  = albedo * (1.0 - metallic);
+        float3 ambientSpecular = F0;
+        ambient = ambientStrength * (ambientDiffuse + ambientSpecular);
+    }
 
     float3 color = ambient + Lo;
 

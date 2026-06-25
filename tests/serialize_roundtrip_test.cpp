@@ -639,6 +639,45 @@ static void Test_QueryInBox()
     CHECK(s.QueryInBox(10.0f, 10.0f, 20.0f, 20.0f).empty());
 }
 
+// シーン単位の SkyboxSettings（IBL/環境マップ）の往復。device 不要の SaveToString/LoadFromString 経路で検証。
+static void Test_SkyboxSettings()
+{
+    Scene src;
+    auto& sk = src.GetSkyboxSettings();
+    sk.envMapPath      = "skybox/studio.dds";
+    sk.iblIntensity    = 1.5f;
+    sk.skyboxIntensity = 0.8f;
+    sk.drawSkybox      = false;
+
+    const std::string js = SceneSerializer::SaveToString(src, "");
+    CHECK(!js.empty());
+
+    Scene dst;
+    const bool ok = SceneSerializer::LoadFromString(dst, js, "");
+    CHECK(ok);
+    if (ok)
+    {
+        const auto& d = dst.GetSkyboxSettings();
+        CHECK(d.envMapPath == "skybox/studio.dds");
+        CHECK_F(d.iblIntensity, 1.5f);
+        CHECK_F(d.skyboxIntensity, 0.8f);
+        CHECK(d.drawSkybox == false);
+    }
+
+    // skybox キーが無い JSON でもデフォルトへ復元（後方互換）
+    Scene dst2;
+    const bool ok2 = SceneSerializer::LoadFromString(dst2, "{\"entities\":[]}", "");
+    CHECK(ok2);
+    if (ok2)
+    {
+        const auto& d2 = dst2.GetSkyboxSettings();
+        CHECK(d2.envMapPath.empty());
+        CHECK_F(d2.iblIntensity, 1.0f);
+        CHECK_F(d2.skyboxIntensity, 1.0f);
+        CHECK(d2.drawSkybox == true);
+    }
+}
+
 // 中立ヘッダ(ComponentRegistry.h)が /WX で通り、型が使えることの最小確認。
 static void Test_RegistryHeaderCompiles()
 {
@@ -671,6 +710,7 @@ int main()
     Test_QueryInBox();
     Test_DataComponent();
     Test_Sprite2D();
+    Test_SkyboxSettings();
     Test_RegistryHeaderCompiles();
 
     std::printf("serialize_roundtrip: %d checks, %d failures\n", g_checks, g_failures);

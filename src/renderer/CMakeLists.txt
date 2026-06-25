@@ -6,6 +6,8 @@ add_library(Renderer STATIC
     SpriteRenderer.cpp
     SceneTransition.cpp
     ParticleSystem.cpp
+    IBLBaker.cpp
+    SkyboxRenderer.cpp
 )
 target_include_directories(Renderer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 

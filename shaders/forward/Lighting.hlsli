@@ -27,7 +27,8 @@ struct SpotLightData
 
 // PerFrame constants (b1)
 // CSM 対応で lightViewProj(64B) を cascadeViewProj[4](256B) + cascadeSplitsView(16B) + shadowParams(16B) へ拡張。
-// C++ Application.cpp の FrameConstants(1120B) とバイト単位で一致させること。
+// IBL 対応で末尾に iblParams(16B) を追加。
+// C++ Application.cpp の FrameConstants(1136B) とバイト単位で一致させること。
 cbuffer PerFrameConstants : register(b1)
 {
     float4x4 view;                               // 64B  (offset   0)
@@ -41,7 +42,12 @@ cbuffer PerFrameConstants : register(b1)
     uint     numPointLights;  uint  numSpotLights;  float2 _pfpad1; // 16B (offset 464)
     PointLightData pointLights[MAX_POINT_LIGHTS]; // 256B (offset 480)
     SpotLightData  spotLights[MAX_SPOT_LIGHTS];   // 384B (offset 736)
-};                                               // total = 1120B
+    // ▼ IBL 制御 16B (offset 1120)
+    float  iblIntensity;     // IBL 拡散/反射の全体スケール
+    float  maxPrefilterMip;  // prefiltered cube の最大 mip index（=4.0）
+    uint   hasIBL;           // 1=IBL テクスチャ有効, 0=従来 ambient フォールバック
+    float  skyboxIntensity;  // skybox 描画/反射の明るさ
+};                                               // total = 1136B
 
 // 1 灯ぶんの Cook-Torrance 寄与。L は正規化済みでライトへ向かうベクトル、
 // radiance はライト色（減衰・コーン・影を乗じたもの）。

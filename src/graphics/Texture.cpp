@@ -4,6 +4,7 @@
 #include "core/Logger.h"
 
 #include <cstring>
+#include <vector>
 
 namespace dx12e
 {
@@ -22,6 +23,7 @@ void Texture::Initialize(
     m_width  = static_cast<u32>(desc.Width);
     m_height = desc.Height;
     m_format = desc.Format;
+    m_mipLevels = desc.MipLevels;
 
     // 1. D3D12MA で DEFAULT ヒープにリソース確保 (COPY_DEST state)
     D3D12MA::ALLOCATION_DESC allocDesc{};
@@ -33,15 +35,16 @@ void Texture::Initialize(
         D3D12_RESOURCE_STATE_COPY_DEST,
         allocDesc);
 
-    // 2. フットプリント取得でアップロードバッファサイズ計算
-    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
-    UINT numRows = 0;
-    UINT64 rowSizeInBytes = 0;
+    // 2. 全 subresource のフットプリント取得でアップロードバッファサイズ計算
+    //    （cube/mip 等の多 subresource に対応。2D 単枚は count=1 で従来同様）
+    std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> footprints(subresourceCount);
+    std::vector<UINT>   numRowsArr(subresourceCount);
+    std::vector<UINT64> rowSizeArr(subresourceCount);
     UINT64 totalBytes = 0;
 
     device.GetDevice()->GetCopyableFootprints(
         &desc, 0, subresourceCount, 0,
-        &footprint, &numRows, &rowSizeInBytes, &totalBytes);
+        footprints.data(), numRowsArr.data(), rowSizeArr.data(), &totalBytes);
 
     // 3. UPLOAD ヒープにアップロードバッファ作成（D3D12MAは使わず直接作成）
     D3D12_RESOURCE_DESC uploadDesc{};
@@ -71,35 +74,51 @@ void Texture::Initialize(
         nullptr,
         IID_PPV_ARGS(&m_uploadBuffer)));
 
-    // 4. Upload buffer に Map → row-by-row コピー → Unmap
+    // 4. Upload buffer に Map → 各 subresource を row-by-row コピー → Unmap
     void* mapped = nullptr;
     ThrowIfFailed(m_uploadBuffer->Map(0, nullptr, &mapped));
 
-    auto* dstBase = static_cast<u8*>(mapped) + footprint.Offset;
-    const auto& srcData = subresources[0];
-
-    for (UINT row = 0; row < numRows; ++row)
+    for (u32 sub = 0; sub < subresourceCount; ++sub)
     {
-        auto* dstRow = dstBase + static_cast<size_t>(row) * footprint.Footprint.RowPitch;
-        auto* srcRow = static_cast<const u8*>(srcData.pData)
-                       + static_cast<size_t>(row) * srcData.RowPitch;
-        std::memcpy(dstRow, srcRow, static_cast<size_t>(rowSizeInBytes));
+        const auto& fp      = footprints[sub];
+        const UINT  numRows = numRowsArr[sub];
+        const UINT64 rowSz  = rowSizeArr[sub];
+        const auto& srcData = subresources[sub];
+
+        // depth/array slice ごとに行コピー（2D テクスチャは slices=1）
+        const UINT slices = fp.Footprint.Depth;
+        for (UINT slice = 0; slice < slices; ++slice)
+        {
+            auto* dstSlice = static_cast<u8*>(mapped) + fp.Offset
+                + static_cast<size_t>(slice) * fp.Footprint.RowPitch * numRows;
+            const auto* srcSlice = static_cast<const u8*>(srcData.pData)
+                + static_cast<size_t>(slice) * srcData.SlicePitch;
+            for (UINT row = 0; row < numRows; ++row)
+            {
+                auto* dstRow = dstSlice + static_cast<size_t>(row) * fp.Footprint.RowPitch;
+                const auto* srcRow = srcSlice + static_cast<size_t>(row) * srcData.RowPitch;
+                std::memcpy(dstRow, srcRow, static_cast<size_t>(rowSz));
+            }
+        }
     }
 
     m_uploadBuffer->Unmap(0, nullptr);
 
-    // 5. CopyTextureRegion でテクスチャへコピー
-    D3D12_TEXTURE_COPY_LOCATION dst{};
-    dst.pResource        = m_resource.Get();
-    dst.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-    dst.SubresourceIndex = 0;
+    // 5. CopyTextureRegion で各 subresource をテクスチャへコピー
+    for (u32 sub = 0; sub < subresourceCount; ++sub)
+    {
+        D3D12_TEXTURE_COPY_LOCATION dst{};
+        dst.pResource        = m_resource.Get();
+        dst.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        dst.SubresourceIndex = sub;
 
-    D3D12_TEXTURE_COPY_LOCATION src{};
-    src.pResource       = m_uploadBuffer.Get();
-    src.Type            = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-    src.PlacedFootprint = footprint;
+        D3D12_TEXTURE_COPY_LOCATION src{};
+        src.pResource       = m_uploadBuffer.Get();
+        src.Type            = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        src.PlacedFootprint = footprints[sub];
 
-    cmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        cmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    }
 
     // 6. バリア遷移: COPY_DEST → SHADER_RESOURCE
     D3D12_RESOURCE_BARRIER barrier{};
@@ -128,6 +147,21 @@ void Texture::CreateSRV(GraphicsDevice& device, D3D12_CPU_DESCRIPTOR_HANDLE cpuH
     srvDesc.Texture2D.MipLevels           = 1;
     srvDesc.Texture2D.PlaneSlice          = 0;
     srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+
+    device.GetDevice()->CreateShaderResourceView(m_resource.Get(), &srvDesc, cpuHandle);
+}
+
+void Texture::CreateCubeSRV(GraphicsDevice& device, D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle, u32 mipLevels)
+{
+    DX_ASSERT(m_resource.Get(), "Resource must be initialized before creating cube SRV");
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+    srvDesc.Format                          = m_format;
+    srvDesc.ViewDimension                   = D3D12_SRV_DIMENSION_TEXTURECUBE;
+    srvDesc.Shader4ComponentMapping         = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.TextureCube.MostDetailedMip     = 0;
+    srvDesc.TextureCube.MipLevels           = mipLevels;
+    srvDesc.TextureCube.ResourceMinLODClamp = 0.0f;
 
     device.GetDevice()->CreateShaderResourceView(m_resource.Get(), &srvDesc, cpuHandle);
 }
