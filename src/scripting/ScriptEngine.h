@@ -8,6 +8,7 @@
 #include "core/Types.h"
 #include "ecs/Components.h"   // ScriptProp / ScriptPropType
 #include <entt/entt.hpp>
+#include "engine/core/EventBus.h"   // C++ 汎用イベントバス（events バインドの実体）
 
 // sol2 forward declaration
 struct lua_State;
@@ -60,6 +61,10 @@ public:
     // パーティクルシステムを Lua fx API へ公開（Application が一度だけ注入）。
     // ポインタはメンバに保持され、Initialize 再実行（シーン切替）後の fx バインドも参照する。
     void SetParticleSystem(ParticleSystem* p) { m_particleSystem = p; }
+
+    // EventBus 注入（WireScriptCallbacks から Application が呼ぶ）。
+    // events:on/emit/clear バインドはこのポインタを実行時に参照する（null 許容）。
+    void SetEventBus(EventBus* bus) { m_eventBus = bus; }
 
     void LoadScript(const std::string& filePath);
 
@@ -116,6 +121,8 @@ private:
     // Lua prelude を実行する。全アタッチスクリプトから参照可能になる。
     void LoadPrelude();
     void RegisterPhysicsBindings();
+    // events グローバルを C++ EventBus への薄いバインドとして登録する。
+    void RegisterEventsBinding();
     // .lua の properties テーブルを解析して out へ詰める（失敗時は out 空のまま）。
     void ParsePropertySchema(const std::string& scriptPath, std::vector<ScriptPropDef>& out);
 
@@ -126,6 +133,7 @@ private:
     AudioSystem*   m_audio   = nullptr;
     PhysicsSystem* m_physics = nullptr;
     ParticleSystem* m_particleSystem = nullptr;
+    EventBus*    m_eventBus = nullptr;   // Application が所有、null 許容（エディタ中は非使用）
     std::string  m_assetsDir;
     std::string  m_lastError;
 

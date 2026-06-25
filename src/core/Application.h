@@ -21,6 +21,7 @@
 #include "ecs/Components.h"
 #include "project/Project.h"
 #include "editor/EditorIcons.h"
+#include "engine/core/EventBus.h"   // ヘッダオンリー、GPU 非依存。entt の後に置く
 
 // Forward declarations for graphics module
 namespace dx12e
@@ -196,6 +197,8 @@ private:
     std::unique_ptr<ScriptEngine>      m_scriptEngine;
     std::unique_ptr<AudioSystem>       m_audioSystem;
     std::unique_ptr<PhysicsSystem>     m_physicsSystem;
+    // ゲームプレイ中のエンジン汎用イベントバス。Play 開始時 Clear、Update 末尾 Flush。
+    EventBus                           m_eventBus;
     std::unique_ptr<PhysicsDebugRenderer> m_physicsDebugRenderer;
     std::unique_ptr<EditorIconRenderer>   m_editorIconRenderer;
     bool                               m_physicsDebugDraw = false;

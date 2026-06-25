@@ -634,6 +634,7 @@ void ScriptEngine::RegisterBindings()
     }
 
     RegisterPhysicsBindings();
+    RegisterEventsBinding();
 
     Logger::Info("Lua bindings registered");
 }
@@ -779,6 +780,72 @@ void ScriptEngine::RegisterPhysicsBindings()
     lua["physics"] = m_physics;
 }
 
+// events グローバルを C++ EventBus への薄いバインドとして登録する。
+//   events:on(name, fn)     → EventBus::On で購読。fn は EngineEvent を Lua テーブルへ
+//                              変換した data を 1 引数で受け取る（旧 events:emit(name, data) 互換）。
+//   events:emit(name, data) → EventBus::Emit で即時発火。data は { key=val,... }（num/str/bool）。
+//   events:clear()          → EventBus::Clear。
+// m_eventBus は実行時に参照する（バインド登録時は null でも安全。WireScriptCallbacks 後に有効化）。
+// ラムダは this をキャプチャ。ScriptEngine は lua_State より長命なので lifetime 安全。
+void ScriptEngine::RegisterEventsBinding()
+{
+    auto& lua = *m_lua;
+
+    sol::table ev = lua.create_named_table("events");
+
+    // EngineEvent → Lua table 変換（source/other と data の各キー値を詰める）。
+    auto evToTable = [](sol::state_view L, const EngineEvent& e) -> sol::table {
+        sol::table t = L.create_table();
+        for (const auto& kv : e.data)
+            std::visit([&](const auto& val) { t.set(kv.key, val); }, kv.val);
+        if (e.source != entt::null)
+            t["source"] = static_cast<std::uint32_t>(entt::to_integral(e.source));
+        if (e.other != entt::null)
+            t["other"] = static_cast<std::uint32_t>(entt::to_integral(e.other));
+        return t;
+    };
+
+    ev.set_function("on", [this, evToTable](sol::object /*self*/,
+                                            const std::string& name, sol::function fn) {
+        if (!m_eventBus) return;
+        sol::main_function mfn = fn;   // GC 寿命を確実に保持
+        m_eventBus->On(name, [this, mfn, evToTable](const EngineEvent& e) mutable {
+            sol::protected_function pf = mfn;
+            if (!pf.valid()) return;
+            auto r = pf(evToTable(sol::state_view(*m_lua), e));
+            if (!r.valid())
+            {
+                sol::error err = r;
+                Logger::Warn("events handler error ({}): {}", e.name, err.what());
+            }
+        });
+    });
+
+    ev.set_function("emit", [this](sol::object /*self*/, const std::string& name,
+                                   sol::optional<sol::table> data) {
+        if (!m_eventBus) return;
+        EngineEvent e;
+        e.name = name;
+        if (data.has_value())
+        {
+            for (const auto& kv : *data)
+            {
+                if (!kv.first.is<std::string>()) continue;
+                std::string key = kv.first.as<std::string>();
+                const sol::object& v = kv.second;
+                if      (v.is<bool>())        e.set(key, v.as<bool>());
+                else if (v.is<double>())      e.set(key, v.as<double>());
+                else if (v.is<std::string>()) e.set(key, v.as<std::string>());
+            }
+        }
+        m_eventBus->Emit(e);
+    });
+
+    ev.set_function("clear", [this](sol::object /*self*/) {
+        if (m_eventBus) m_eventBus->Clear();
+    });
+}
+
 void ScriptEngine::LoadPrelude()
 {
     // 高レベルゲームスクリプトAPI（プランナー/AI 向け）。
@@ -804,16 +871,8 @@ function keyPressed(name) local k = KEYS[name]; return k ~= nil and input:isKeyP
 -- ===== events: 疎結合のイベントバス =====
 -- どのコンポーネントからでも events:on("name", fn) で購読、events:emit("name", data) で発火。
 -- Trigger の EmitEvent アクション（C++ 側）もこの emit を呼ぶ。Play 開始時に clear される。
-events = { _h = {} }
-function events:on(name, fn)
-  local t = self._h[name]; if not t then t = {}; self._h[name] = t end
-  t[#t+1] = fn
-end
-function events:emit(name, data)
-  local t = self._h[name]
-  if t then for _, fn in ipairs(t) do fn(data) end end
-end
-function events:clear() self._h = {} end
+-- 実体は C++ EventBus への薄いバインド（RegisterEventsBinding で登録済み）。
+-- 旧・純 Lua 実装（events = { _h = {} } ...）はここから削除した。
 
 local function d2xz(ax, az, bx, bz) local dx, dz = ax-bx, az-bz; return dx*dx + dz*dz end
 
@@ -1365,17 +1424,9 @@ void ScriptEngine::OnPlayStart()
 {
     auto& reg = m_scene->GetRegistry();
 
-    // イベントバスの購読をクリア（前回 Play のリスナーが残らないように）
-    if (m_lua)
-    {
-        sol::object evObj = (*m_lua)["events"];
-        if (evObj.is<sol::table>())
-        {
-            sol::table ev = evObj.as<sol::table>();
-            sol::protected_function clr = ev["clear"];
-            if (clr.valid()) clr(ev);
-        }
-    }
+    // イベントバスの購読をクリア（前回 Play のリスナーが残らないように）。
+    // 通常は Application が OnPlayStart 直前に m_eventBus.Clear() を呼ぶが、念のため。
+    if (m_eventBus) m_eventBus->Clear();
 
     // パーティクル放出器のランタイム状態を初期化（playOnStart で放出 ON/OFF を決める）
     {
@@ -1482,7 +1533,6 @@ void ScriptEngine::UpdateTriggers(f32 /*dt*/)
     // 1 アクションを実行する
     auto exec = [&](entt::entity self, entt::entity defaultTarget, const TriggerAction& a)
     {
-        (void)self;
         entt::entity at = a.target.empty() ? defaultTarget : FindEntityByName(reg, a.target);
 
         switch (static_cast<TriggerActionType>(a.type))
@@ -1529,26 +1579,16 @@ void ScriptEngine::UpdateTriggers(f32 /*dt*/)
             }
             break;
         case TriggerActionType::EmitEvent:
-            if (!a.str.empty())
+            if (!a.str.empty() && m_eventBus)
             {
-                sol::object evObj = (*m_lua)["events"];
-                if (evObj.is<sol::table>())
-                {
-                    sol::table ev = evObj.as<sol::table>();
-                    sol::protected_function emit = ev["emit"];
-                    if (emit.valid())
-                    {
-                        sol::table data = m_lua->create_table();
-                        data["value"]  = a.num;
-                        data["target"] = a.target;
-                        auto r = emit(ev, a.str, data);
-                        if (!r.valid())
-                        {
-                            sol::error err = r;
-                            Logger::Warn("Trigger EmitEvent error ({}): {}", a.str, err.what());
-                        }
-                    }
-                }
+                // フレーム末の Flush で配信（列挙中の再入を避けるため Post）。
+                EngineEvent ev;
+                ev.name   = a.str;
+                ev.source = self;            // Trigger を持つエンティティ
+                ev.other  = defaultTarget;   // 反応した対象エンティティ
+                ev.set("value", a.num);
+                if (!a.target.empty()) ev.set("target", a.target);
+                m_eventBus->Post(std::move(ev));
             }
             break;
         }
@@ -1618,6 +1658,10 @@ void ScriptEngine::UpdateTriggers(f32 /*dt*/)
 
 void ScriptEngine::Shutdown()
 {
+    // Lua state リセット前に EventBus を Clear して、Lua ラムダ（sol::function を
+    // キャプチャした購読ハンドラ）の dangling 参照を防ぐ。
+    if (m_eventBus) m_eventBus->Clear();
+
     m_propSchemaCache.clear();
     if (m_lua)
     {

@@ -1325,6 +1325,12 @@ void Application::Update()
         }
         m_audioSystem->Update();
     }
+
+    // Trigger の Post や接触 Post を同フレーム内で配信（Playing のみ）。
+    if (m_engineMode == EngineMode::Playing)
+    {
+        m_eventBus.Flush();
+    }
 }
 
 void Application::RebuildScene()
@@ -1987,6 +1993,9 @@ void Application::WireScriptCallbacks()
             c.r = r; c.g = g; c.b = b; c.a = a;
             m_uiCommands.push_back(std::move(c));
         });
+
+    // C++ EventBus を ScriptEngine へ注入（events:on/emit/clear が薄いバインドになる）。
+    m_scriptEngine->SetEventBus(&m_eventBus);
 }
 
 void Application::SyncActiveCameraToGlobal()
@@ -2053,6 +2062,7 @@ void Application::DoRuntimeSceneLoad(const std::string& rel, ID3D12GraphicsComma
             reg.get<CameraComponent>(*camView.begin()).isActive = true;
     }
 
+    m_eventBus.Clear();   // 前シーンの購読を消去（ランタイムシーン切替）
     m_scriptEngine->OnPlayStart();
     if (m_particleSystem) m_particleSystem->Clear();  // シーン切替時に前シーンの粒子を消す
     SyncActiveCameraToGlobal();
@@ -2159,6 +2169,7 @@ void Application::EnterPlayMode()
     {
         m_scriptEngine->LoadScript(scriptPath);
     }
+    m_eventBus.Clear();   // Play 開始時に前 Play の購読を完全消去
     m_scriptEngine->OnPlayStart();
     if (m_particleSystem) m_particleSystem->Clear();  // Play 開始時に粒子をリセット
 

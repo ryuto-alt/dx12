@@ -9,7 +9,9 @@ add_library(Core STATIC
 )
 
 target_include_directories(Core
-    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_SOURCE_DIR}/include   # 封印ランタイムの中立公開ヘッダ（engine/...）EventBus 等
 )
 
 find_package(spdlog CONFIG REQUIRED)
