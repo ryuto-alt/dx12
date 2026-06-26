@@ -4,15 +4,20 @@
 
 #include <windows.h>
 #include <winhttp.h>
+#include <commctrl.h>
 
 #include <string>
 #include <vector>
 #include <fstream>
 #include <filesystem>
+#include <functional>
+#include <cstdint>
 #include <cstdlib>
+#include <cwchar>
 
-// MSVC のみ運用（VS2022）。WinHTTP を自動リンク（CMake 変更不要）。
+// MSVC のみ運用（VS2022）。WinHTTP / コモンコントロール(プログレスバー)を自動リンク（CMake 変更不要）。
 #pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "comctl32.lib")
 
 namespace fs = std::filesystem;
 
@@ -89,8 +94,131 @@ bool IsNewer(const std::string& latest, const std::string& current)
     return false;
 }
 
+// 進捗メーター窓（Win32 ネイティブ）。エンジンのウィンドウ/ImGui 生成より前に動くため、
+// ImGui ではなく comctl32 のプログレスバーで「ダウンロード/展開/適用」の進捗を表示する。
+struct ProgressUI
+{
+    HWND hwnd = nullptr, bar = nullptr, label = nullptr, pct = nullptr;
+
+    static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l)
+    {
+        return DefWindowProcW(h, m, w, l);
+    }
+
+    bool Create()
+    {
+        INITCOMMONCONTROLSEX icc{ sizeof(icc), ICC_PROGRESS_CLASS };
+        InitCommonControlsEx(&icc);
+
+        const wchar_t* cls = L"DX12EngineUpdaterProgress";
+        static bool registered = false;
+        if (!registered)
+        {
+            WNDCLASSW wc{};
+            wc.lpfnWndProc   = Proc;
+            wc.hInstance     = GetModuleHandleW(nullptr);
+            wc.lpszClassName = cls;
+            wc.hCursor       = LoadCursorW(nullptr, IDC_ARROW);
+            wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+            RegisterClassW(&wc);
+            registered = true;
+        }
+
+        const int w = 460, h = 168;
+        const int x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
+        const int y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
+        // WS_SYSMENU を付けない＝閉じる×無し（ダウンロード中の誤操作防止）
+        hwnd = CreateWindowExW(WS_EX_TOPMOST, cls, L"DX12 Engine \xe3\x82\xa2\xe3\x83\x83\xe3\x83\x97\xe3\x83\x87\xe3\x83\xbc\xe3\x83\x88",
+            WS_POPUP | WS_CAPTION | WS_BORDER, x, y, w, h,
+            nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        if (!hwnd) return false;
+
+        HFONT font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+        label = CreateWindowExW(0, L"STATIC",
+            L"\xe3\x82\xa2\xe3\x83\x83\xe3\x83\x97\xe3\x83\x87\xe3\x83\xbc\xe3\x83\x88\xe3\x82\x92\xe6\xba\x96\xe5\x82\x99\xe3\x81\x97\xe3\x81\xa6\xe3\x81\x84\xe3\x81\xbe\xe3\x81\x99...",  // アップデートを準備しています...
+            WS_CHILD | WS_VISIBLE, 20, 18, 410, 22, hwnd, nullptr, nullptr, nullptr);
+        bar = CreateWindowExW(0, PROGRESS_CLASSW, nullptr,
+            WS_CHILD | WS_VISIBLE, 20, 52, 418, 26, hwnd, nullptr, nullptr, nullptr);
+        pct = CreateWindowExW(0, L"STATIC", L"",
+            WS_CHILD | WS_VISIBLE, 20, 88, 410, 22, hwnd, nullptr, nullptr, nullptr);
+        SendMessageW(label, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        SendMessageW(pct,   WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        SendMessageW(bar, PBM_SETRANGE32, 0, 100);
+
+        ShowWindow(hwnd, SW_SHOW);
+        SetForegroundWindow(hwnd);
+        Pump();
+        return true;
+    }
+
+    void SetLabel(const wchar_t* s) { if (label) SetWindowTextW(label, s); }
+
+    // percent<0 で不確定（マーキー）。done/total はバイト数（pct テキスト表示用）。
+    void SetProgress(int percent, uint64_t done, uint64_t total)
+    {
+        if (bar)
+        {
+            LONG style = GetWindowLongW(bar, GWL_STYLE);
+            if (percent < 0)
+            {
+                if (!(style & PBS_MARQUEE))
+                {
+                    SetWindowLongW(bar, GWL_STYLE, style | PBS_MARQUEE);
+                    SendMessageW(bar, PBM_SETMARQUEE, TRUE, 30);
+                }
+            }
+            else
+            {
+                if (style & PBS_MARQUEE)
+                {
+                    SendMessageW(bar, PBM_SETMARQUEE, FALSE, 0);
+                    SetWindowLongW(bar, GWL_STYLE, style & ~PBS_MARQUEE);
+                }
+                SendMessageW(bar, PBM_SETPOS, static_cast<WPARAM>(percent), 0);
+            }
+        }
+        if (pct)
+        {
+            wchar_t buf[160];
+            if (percent < 0)
+            {
+                if (done > 0) swprintf(buf, 160, L"%.1f MB", done / 1048576.0);
+                else          buf[0] = L'\0';
+            }
+            else if (total > 0)
+            {
+                swprintf(buf, 160, L"%d%%   ( %.1f / %.1f MB )",
+                         percent, done / 1048576.0, total / 1048576.0);
+            }
+            else
+            {
+                swprintf(buf, 160, L"%d%%", percent);
+            }
+            SetWindowTextW(pct, buf);
+        }
+    }
+
+    void Pump()
+    {
+        MSG msg;
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+        {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+
+    void Destroy()
+    {
+        if (hwnd) { DestroyWindow(hwnd); hwnd = nullptr; }
+        Pump();
+    }
+};
+
 // HTTPS GET（リダイレクト追従）。outFile 指定時はファイルへ、未指定時は outBytes へ。status 200 のみ成功。
-bool HttpsFetch(const std::wstring& url, std::vector<char>* outBytes, const std::wstring* outFile)
+// progress 指定時は受信バイト数/総バイト数を逐次コールバック（ダウンロードメーター用）。
+bool HttpsFetch(const std::wstring& url, std::vector<char>* outBytes, const std::wstring* outFile,
+                const std::function<void(uint64_t, uint64_t)>* progress = nullptr)
 {
     URL_COMPONENTS uc{};
     uc.dwStructSize = sizeof(uc);
@@ -136,6 +264,18 @@ bool HttpsFetch(const std::wstring& url, std::vector<char>* outBytes, const std:
                 }
                 if (fileOk)
                 {
+                    // 総バイト数（Content-Length）。チャンク転送等で不明なら 0。
+                    uint64_t total = 0;
+                    {
+                        DWORD cl = 0, clSz = sizeof(cl);
+                        if (WinHttpQueryHeaders(hReq,
+                                WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
+                                WINHTTP_HEADER_NAME_BY_INDEX, &cl, &clSz, WINHTTP_NO_HEADER_INDEX))
+                            total = cl;
+                    }
+                    uint64_t done = 0;
+                    if (progress && *progress) (*progress)(0, total);
+
                     good = true;
                     for (;;)
                     {
@@ -148,6 +288,8 @@ bool HttpsFetch(const std::wstring& url, std::vector<char>* outBytes, const std:
                         if (read == 0) break;
                         if (outFile) fout.write(buf.data(), (std::streamsize)read);
                         else         outBytes->insert(outBytes->end(), buf.data(), buf.data() + read);
+                        done += read;
+                        if (progress && *progress) (*progress)(done, total);
                     }
                 }
             }
@@ -299,18 +441,35 @@ bool Updater::RunStartupCheck()
     fs::path extract = tmpRoot / "extract";
     fs::create_directories(extract, ec);
 
+    // 進捗メーター窓を表示（ダウンロード→展開→適用の各段階を可視化）
+    ProgressUI ui;
+    ui.Create();
+    ui.SetLabel(L"\xe3\x82\xa2\xe3\x83\x83\xe3\x83\x97\xe3\x83\x87\xe3\x83\xbc\xe3\x83\x88\xe3\x82\x92\xe3\x83\x80\xe3\x82\xa6\xe3\x83\xb3\xe3\x83\xad\xe3\x83\xbc\xe3\x83\x89\xe3\x81\x97\xe3\x81\xa6\xe3\x81\x84\xe3\x81\xbe\xe3\x81\x99...");  // アップデートをダウンロードしています...
+
     std::wstring zipW = zip.wstring();
     Logger::Info("Updater: downloading {} ...", assetUrl);
-    if (!HttpsFetch(Widen(assetUrl), nullptr, &zipW) || !fs::exists(zip, ec))
+    std::function<void(uint64_t, uint64_t)> onProgress =
+        [&ui](uint64_t done, uint64_t total)
+        {
+            int pct = (total > 0) ? static_cast<int>((done * 100) / total) : -1;
+            ui.SetProgress(pct, done, total);
+            ui.Pump();
+        };
+    if (!HttpsFetch(Widen(assetUrl), nullptr, &zipW, &onProgress) || !fs::exists(zip, ec))
     {
+        ui.Destroy();
         MessageBoxW(nullptr, L"アップデートのダウンロードに失敗しました。\n通常起動します。",
             L"DX12 Engine アップデート", MB_OK | MB_ICONWARNING | MB_TOPMOST);
         return false;
     }
 
-    // 4) 展開
+    // 4) 展開（時間が読めないのでマーキー表示）
+    ui.SetLabel(L"\xe3\x83\x95\xe3\x82\xa1\xe3\x82\xa4\xe3\x83\xab\xe3\x82\x92\xe5\xb1\x95\xe9\x96\x8b\xe3\x81\x97\xe3\x81\xa6\xe3\x81\x84\xe3\x81\xbe\xe3\x81\x99...");  // ファイルを展開しています...
+    ui.SetProgress(-1, 0, 0);
+    ui.Pump();
     if (!ExtractZip(zip, extract))
     {
+        ui.Destroy();
         MessageBoxW(nullptr, L"アップデートの展開に失敗しました。\n通常起動します。",
             L"DX12 Engine アップデート", MB_OK | MB_ICONWARNING | MB_TOPMOST);
         return false;
@@ -318,19 +477,25 @@ bool Updater::RunStartupCheck()
     fs::path srcDir = FindEngineDir(extract);
     if (srcDir.empty())
     {
+        ui.Destroy();
         MessageBoxW(nullptr, L"ダウンロードした更新に DX12Engine.exe が見つかりません。\n通常起動します。",
             L"DX12 Engine アップデート", MB_OK | MB_ICONWARNING | MB_TOPMOST);
         return false;
     }
 
     // 5) 更新バッチを起動して本体を終了（バッチが上書き→再起動する）
+    ui.SetLabel(L"\xe6\x9b\xb4\xe6\x96\xb0\xe3\x82\x92\xe9\x81\xa9\xe7\x94\xa8\xe3\x81\x97\xe3\x81\xa6\xe5\x86\x8d\xe8\xb5\xb7\xe5\x8b\x95\xe3\x81\x97\xe3\x81\xbe\xe3\x81\x99...");  // 更新を適用して再起動します...
+    ui.SetProgress(100, 0, 0);
+    ui.Pump();
     if (!LaunchUpdaterBatch(srcDir, installDir, tmpRoot))
     {
+        ui.Destroy();
         MessageBoxW(nullptr, L"アップデータの起動に失敗しました。\n通常起動します。",
             L"DX12 Engine アップデート", MB_OK | MB_ICONWARNING | MB_TOPMOST);
         return false;
     }
 
+    ui.Destroy();
     Logger::Info("Updater: applying update to {}. exiting for restart.", tag);
     return true;  // 呼び出し側（main）は即終了する
 }
