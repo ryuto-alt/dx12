@@ -2359,7 +2359,8 @@ void Application::EnterPlayMode()
     // ゲーム用カメラ: アクティブな CameraComponent をグローバル Camera に同期
     SyncActiveCameraToGlobal();
 
-    // OnPlayStart 直後に Lua が変えた値を打ち消すため、Transform / RigidBody / Material PBR を覚えておく
+    // OnPlayStart 直後に Lua が変えた値を打ち消すため、
+    // Transform / RigidBody / Light / Material PBR を覚えておく
     m_editorSnapshots.clear();
     {
         auto& reg = m_scene->GetRegistry();
@@ -2377,16 +2378,24 @@ void Application::EnterPlayMode()
             if (snap.hasRigidBody)
                 snap.rigidBodyData = reg.get<RigidBody>(entity);
 
-            if (reg.all_of<MeshRenderer>(entity))
+            snap.hasPointLight = reg.all_of<PointLight>(entity);
+            if (snap.hasPointLight)
+                snap.pointLightData = reg.get<PointLight>(entity);
+
+            snap.hasDirectionalLight = reg.all_of<DirectionalLight>(entity);
+            if (snap.hasDirectionalLight)
+                snap.directionalLightData = reg.get<DirectionalLight>(entity);
+
+            snap.hasSpotLight = reg.all_of<SpotLight>(entity);
+            if (snap.hasSpotLight)
+                snap.spotLightData = reg.get<SpotLight>(entity);
+
+            snap.hasMeshRenderer = reg.all_of<MeshRenderer>(entity);
+            if (snap.hasMeshRenderer)
             {
                 const auto& mr = reg.get<MeshRenderer>(entity);
-                if (!mr.meshes.empty() && mr.meshes[0] && mr.meshes[0]->GetMaterial())
-                {
-                    snap.materialMetallic  = (mr.overrideMetallic  >= 0.0f) ? mr.overrideMetallic
-                                           : mr.meshes[0]->GetMaterial()->defaultMetallic;
-                    snap.materialRoughness = (mr.overrideRoughness >= 0.0f) ? mr.overrideRoughness
-                                           : mr.meshes[0]->GetMaterial()->defaultRoughness;
-                }
+                snap.materialMetallicOverride  = mr.overrideMetallic;
+                snap.materialRoughnessOverride = mr.overrideRoughness;
             }
 
             m_editorSnapshots[name.name] = snap;
@@ -2446,20 +2455,48 @@ void Application::EnterPlayMode()
                 reg.emplace_or_replace<RigidBody>(entity, rb);
             }
 
-            // Material PBR 復元（オーバーライド値に設定）
-            if (reg.all_of<MeshRenderer>(entity))
+            // Lighting: エディタで設定したライトを Play 初期化後も維持する。
+            // LuaScript の OnStart が同じエンティティへ既定ライト値を入れても、配置値を優先する。
+            if (snap.hasPointLight)
+                reg.emplace_or_replace<PointLight>(entity, snap.pointLightData);
+            else
+                reg.remove<PointLight>(entity);
+
+            if (snap.hasDirectionalLight)
+            {
+                auto dl = snap.directionalLightData;
+                dl._prevRot = transform.rotation;
+                dl._prevRotInit = true;
+                reg.emplace_or_replace<DirectionalLight>(entity, dl);
+            }
+            else
+            {
+                reg.remove<DirectionalLight>(entity);
+            }
+
+            if (snap.hasSpotLight)
+            {
+                auto sl = snap.spotLightData;
+                sl._prevRot = transform.rotation;
+                sl._prevRotInit = true;
+                reg.emplace_or_replace<SpotLight>(entity, sl);
+            }
+            else
+            {
+                reg.remove<SpotLight>(entity);
+            }
+
+            // Material PBR 復元（エディタで持っていた override 状態をそのまま戻す）。
+            // Material を持たないプリミティブ床へ有効 override を捏造すると metallic=1 になり、
+            // 床だけ拡散光が消えて暗くなるので、-1(=Material/既定値を使う) も保持する。
+            if (snap.hasMeshRenderer && reg.all_of<MeshRenderer>(entity))
             {
                 auto& mr = reg.get<MeshRenderer>(entity);
-                mr.overrideMetallic  = snap.materialMetallic;
-                mr.overrideRoughness = snap.materialRoughness;
+                mr.overrideMetallic  = snap.materialMetallicOverride;
+                mr.overrideRoughness = snap.materialRoughnessOverride;
             }
         }
     }
-
-    // Playモード: サイドバーなし全画面幅でアスペクト比再計算
-    m_camera->SetPerspective(DirectX::XM_PIDIV4,
-        static_cast<f32>(m_window->GetWidth()) / static_cast<f32>(m_window->GetHeight()),
-        0.1f, 1000.0f);
 
     // 物理のタイムステップ蓄積をリセット
     m_physicsSystem->ResetAccumulator();
@@ -2797,7 +2834,7 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
         }
     };
 
-    // パス1: 不透明（グリッド・パーティクル以外）を先に描く＝深度を確定
+    // パス1: 不透明（グリッド・パーティクル以外）を描く＝深度を確定
     for (auto [e, transform, renderer] : renderView.each())
     {
         if (reg.all_of<GridPlane>(e)) continue;
@@ -2805,12 +2842,14 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
         drawEntity(e, transform, renderer);
     }
 
-    // パス2: エディタ用グリッド（半透明・深度書き込みOFF）。ゲームビューでは描かない。
+    // パス2: エディタ用グリッド。線だけを後描きする（ForwardGrid 側で線以外 alpha=0）。
+    // 床全体へ半透明の膜を被せず、グリッド表示だけ維持する。
     if (!isGameView)
     {
         for (auto [e, transform, renderer] : renderView.each())
         {
-            if (!reg.all_of<GridPlane>(e)) continue;
+            const auto* gp = reg.try_get<GridPlane>(e);
+            if (!gp || !gp->enabled) continue;
             drawEntity(e, transform, renderer);
         }
     }
@@ -3489,6 +3528,73 @@ void Application::Render()
             m_shadowMap.Get(), &srvDesc, m_srvHeap->GetCpuHandle(m_shadowSrvIndex));
     }
 
+    // ===== メインパスのビューポートとカメラ投影を先に確定 =====
+    // 以降の CSM / SSAO / forward はすべてこの同じカメラ状態を前提にする。
+    // ここがシャドウ計算より後だと、Scene カメラの投影で影を作って GameCamera で描くなどの
+    // 経路差が起き、Scene/Game で光の強さが違って見える。
+    u32 vpLeft, vpTop, vpW, vpH;
+    {
+        auto vp = m_editorLayer->GetViewportPos();
+        auto vs = m_editorLayer->GetViewportSize();
+        vpLeft = static_cast<u32>(vp.x);
+        vpTop  = static_cast<u32>(vp.y);
+        vpW    = static_cast<u32>(vs.x);
+        vpH    = static_cast<u32>(vs.y);
+        if (vpW < 1) vpW = 1;
+        if (vpH < 1) vpH = 1;
+        // 全画面は「単体ゲーム（エディタUIなし）」のみ。エディタは編集中も Play 中も
+        // 中央の 16:9 ビューポート矩形に描く（パネル下に潜り込ませない）。
+        if (m_isGameMode)
+        {
+            vpLeft = 0; vpTop = 0;
+            vpW = m_window->GetWidth();
+            vpH = m_window->GetHeight();
+        }
+    }
+
+    const f32 renderAspect = static_cast<f32>(vpW) / static_cast<f32>(vpH);
+
+    // ===== 2D ビューモード: エディタカメラを正射＋XY平面正対(forward +Z)へ固定 =====
+    // 回転/ドリーは入力側で無効化済み。Play 中は CameraComponent 同期が優先する。
+    if (!m_isGameMode && m_engineMode == EngineMode::Editor)
+    {
+        if (m_editorCtx->view2D)
+        {
+            m_camera->SetYaw(0.0f);
+            m_camera->SetPitch(0.0f);
+            XMFLOAT3 p = m_camera->GetPosition();
+            p.z = -100.0f;                                   // XY 平面(z=0)を十分手前から見る
+            m_camera->SetPosition(p);
+            m_camera->SetOrthographic(2.0f * m_editorCtx->view2DZoom,
+                                      renderAspect, 0.1f, 2000.0f);
+        }
+        else
+        {
+            m_camera->SetPerspective(DirectX::XM_PIDIV4, renderAspect, 0.1f, 1000.0f);
+        }
+        m_editorWas2D = m_editorCtx->view2D;
+    }
+    else
+    {
+        // Play / 単体ゲーム: アクティブな CameraComponent の投影（透視/正射・FOV・orthoSize・near/far）を
+        // 実ビューポートのアスペクトで m_camera に毎フレーム反映する。
+        bool applied = false;
+        auto& reg = m_scene->GetRegistry();
+        for (auto [e, cam] : reg.view<const CameraComponent>().each())
+        {
+            if (!cam.isActive) continue;
+            if (cam.projection == CameraProjection::Orthographic)
+                m_camera->SetOrthographic(2.0f * cam.orthoSize, renderAspect, cam.nearClip, cam.farClip);
+            else
+                m_camera->SetPerspective(DirectX::XMConvertToRadians(cam.fovDegrees),
+                                         renderAspect, cam.nearClip, cam.farClip);
+            applied = true;
+            break;
+        }
+        if (!applied)
+            m_camera->SetAspect(renderAspect);  // アクティブカメラが無ければアスペクトのみ更新
+    }
+
     // ライトの向きを Transform 回転に追従させる（回転の変化分=デルタを direction に適用）。
     // これでインスペクターの Transform 回転でもギズモ回転でも光の向きが変わる。
     // direction を真実とし回転はデルタのみ与えるので、Direction 欄の直接編集とも共存できる。
@@ -3536,9 +3642,9 @@ void Application::Render()
     }
     XMVECTOR lightDir = XMVector3Normalize(XMLoadFloat3(&lightDirF3));
     XMStoreFloat3(&lightDirF3, lightDir);  // 正規化した値を書き戻す
-    // CSM: カメラ視錐台を 4 分割し、各カスケードをライト視点へタイトフィット。
+    // CSM: 確定済みの描画カメラ視錐台を 4 分割し、各カスケードをライト視点へタイトフィット。
     // 結果は m_cascadeViewProj[] / m_cascadeSplitsView[] に格納される。
-    // CSM は透視前提。near/far は編集カメラ既定と一致させる。
+    // CSM は透視前提。正射カメラでは ComputeCascades 側が無影センチネルへ切り替える。
     {
         f32 camNear = m_camera->GetNearZ();
         f32 camFar  = m_camera->GetFarZ();
@@ -3632,80 +3738,6 @@ void Application::Render()
     }
 
     // ===== メインパス（オフスクリーン RT へ描画）=====
-    // 3D ビューポート矩形（エディタは中央ノード、ゲーム/Play全画面は全体）
-    u32 vpLeft, vpTop, vpW, vpH;
-    {
-        auto vp = m_editorLayer->GetViewportPos();
-        auto vs = m_editorLayer->GetViewportSize();
-        vpLeft = static_cast<u32>(vp.x);
-        vpTop  = static_cast<u32>(vp.y);
-        vpW    = static_cast<u32>(vs.x);
-        vpH    = static_cast<u32>(vs.y);
-        if (vpW < 1) vpW = 1;
-        if (vpH < 1) vpH = 1;
-        // 全画面は「単体ゲーム（エディタUIなし）」のみ。エディタは編集中も Play 中も
-        // 中央の 16:9 ビューポート矩形に描く（パネル下に潜り込ませない）。
-        if (m_isGameMode)
-        {
-            vpLeft = 0; vpTop = 0;
-            vpW = m_window->GetWidth();
-            vpH = m_window->GetHeight();
-        }
-    }
-
-    // ===== 2D ビューモード: エディタカメラを正射＋XY平面正対(forward +Z)へ固定 =====
-    // 回転/ドリーは入力側で無効化済み。ここで毎フレーム投影と向き・Z位置を確定し（パンの x/y は維持）、
-    // OFF へ戻した瞬間だけ透視へ復帰する。Play 中は CameraComponent 同期が優先するので編集中のみ。
-    if (!m_isGameMode && m_engineMode == EngineMode::Editor)
-    {
-        if (m_editorCtx->view2D)
-        {
-            const f32 aspect = static_cast<f32>(vpW) / static_cast<f32>(vpH);
-            m_camera->SetYaw(0.0f);
-            m_camera->SetPitch(0.0f);
-            XMFLOAT3 p = m_camera->GetPosition();
-            p.z = -100.0f;                                   // XY 平面(z=0)を十分手前から見る
-            m_camera->SetPosition(p);
-            m_camera->SetOrthographic(2.0f * m_editorCtx->view2DZoom, aspect, 0.1f, 2000.0f);
-        }
-        else if (m_editorWas2D)                              // 2D→3D に戻した瞬間だけ透視へ
-        {
-            const f32 aspect = static_cast<f32>(vpW) / static_cast<f32>(vpH);
-            m_camera->SetPerspective(DirectX::XM_PIDIV4, aspect, 0.1f, 1000.0f);
-        }
-        m_editorWas2D = m_editorCtx->view2D;
-    }
-
-    // カメラのアスペクト比をビューポートに合わせる（プリパス/SSAO で確定済みの投影が要るので前倒し）
-    if (!m_isGameMode && m_engineMode == EngineMode::Editor)
-        m_camera->SetPerspective(DirectX::XM_PIDIV4,
-            static_cast<f32>(vpW) / static_cast<f32>(vpH), 0.1f, 1000.0f);
-    else
-    {
-        // Play / 単体ゲーム: アクティブな CameraComponent の投影（透視/正射・FOV・orthoSize・near/far）を
-        // 実ビューポートのアスペクトで m_camera に毎フレーム反映する。
-        // ★ これが無いと、EnterPlayMode が FOV を 45 にハードコードしたまま直Playが描画され
-        //   （ゲームカメラの実 FOV=60 が反映されない）、真上カメラ＋FOV45 の組み合わせで CSM の
-        //   カスケード当てはめが変わり影の自己遮蔽で画面全体が暗くなる不具合があった
-        //   （title 経由のシーンロードは同期されFOV60＝明るい、という経路差として表面化）。
-        //   投影をカメラ実体に揃えることで直Play / 遷移どちらでも一貫して正しい見た目になる。
-        const f32 aspect = static_cast<f32>(vpW) / static_cast<f32>(vpH);
-        bool applied = false;
-        auto& reg = m_scene->GetRegistry();
-        for (auto [e, cam] : reg.view<const CameraComponent>().each())
-        {
-            if (!cam.isActive) continue;
-            if (cam.projection == CameraProjection::Orthographic)
-                m_camera->SetOrthographic(2.0f * cam.orthoSize, aspect, cam.nearClip, cam.farClip);
-            else
-                m_camera->SetPerspective(DirectX::XMConvertToRadians(cam.fovDegrees),
-                                         aspect, cam.nearClip, cam.farClip);
-            applied = true;
-            break;
-        }
-        if (!applied)
-            m_camera->SetAspect(aspect);  // アクティブカメラが無ければアスペクトのみ更新
-    }
 
     // ===== 深度プリパス → SSAO（透視のみ。2D 正射ビューや無効時は素通し）=====
     // SSAO 有効時はカメラ視点の深度を m_depthBuffer へ先に完成させ、深度から法線を再構築して AO を作る。
@@ -3879,7 +3911,9 @@ void Application::Render()
         {
             if (fc.numPointLights >= kMaxPointLightsR) break;
             auto& pld = fc.pointLights[fc.numPointLights];
-            pld.position = tf.position;
+            XMMATRIX world = (tf.parent != entt::null)
+                ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
+            XMStoreFloat3(&pld.position, world.r[3]);
             pld.range = pl.range;
             pld.color = {pl.color.x * pl.intensity,
                          pl.color.y * pl.intensity,
@@ -3898,7 +3932,9 @@ void Application::Render()
         {
             if (fc.numSpotLights >= kMaxSpotLightsR) break;
             auto& sld = fc.spotLights[fc.numSpotLights];
-            sld.position = tf.position;
+            XMMATRIX world = (tf.parent != entt::null)
+                ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
+            XMStoreFloat3(&sld.position, world.r[3]);
             sld.range    = sl.range;
 
             XMVECTOR dir = XMVector3Normalize(XMLoadFloat3(&sl.direction));
@@ -4029,13 +4065,10 @@ void Application::Render()
         const f32 fullW = static_cast<f32>(m_sceneRT->GetWidth());
         const f32 fullH = static_cast<f32>(m_sceneRT->GetHeight());
 
-        // ポストエフェクトはゲームビュー（ゲームモード or Play 中）のみに適用する。
-        // エディタのシーンビューでは素通し（enabled=false）にして編集中の見た目を素のままにする。
-        // ただし Post Process ウィンドウの "Preview in Scene View" を ON にすればプレビュー可。
+        // ポストエフェクトも Scene/Game で同じ設定を適用する。
+        // ここを分けると「Scene では明るいのに Play すると暗い」など、ライティング調整が破綻する。
         PostProcessSettings ppApplied = m_scene->GetPostSettings();
         const bool isGameView = (m_isGameMode || m_engineMode == EngineMode::Playing);
-        if (!isGameView && !ppApplied.previewInEditor)
-            ppApplied.enabled = false;
 
         // ヒット時の画面インパクト（fx:pulse）: クロマ + 放射ブラーを瞬間的に上乗せ
         if (isGameView && m_particleSystem)
@@ -4350,9 +4383,7 @@ void Application::Render()
             {
             ImGui::Begin("Post Process");
             ImGui::Checkbox("有効（マスター）", &pp.enabled);
-            ImGui::SameLine(0.0f, 16.0f);
-            ImGui::Checkbox("シーンビューでもプレビュー", &pp.previewInEditor);
-            ImGui::TextDisabled("既定でシーン/ゲーム両方に適用（チェックを外すとゲームビュー限定） / パラメータは「Post Process パラメータ」窓で");
+            ImGui::TextDisabled("SceneビューとGameビューへ同じ見た目を適用します / パラメータは「Post Process パラメータ」窓で");
             ImGui::Separator();
 
             ImGui::BeginDisabled(!pp.enabled);
@@ -4380,7 +4411,7 @@ void Application::Render()
                 for (const auto& f : fx) *f.on = false;
             ImGui::SameLine();
             if (ImGui::Button("初期値に戻す"))
-            { bool prev = pp.previewInEditor; pp = PostProcessSettings{}; pp.previewInEditor = prev; }
+                pp = PostProcessSettings{};
             ImGui::SameLine();
             ImGui::TextDisabled("有効中: %d", enabledCount);
             ImGui::End();

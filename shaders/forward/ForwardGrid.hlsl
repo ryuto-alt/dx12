@@ -133,7 +133,8 @@ float4 PSMain(PSInput input) : SV_TARGET
     float fade = 1.0f - saturate((dist - 20.0f) / 30.0f);
 
     float gridMask = max(max(minor, major), max(axisX, axisZ));
-    float alpha = lerp(0.05f, 0.7f, gridMask) * fade;
+    // 線以外を透明にする。床全体へ薄い色を重ねると Scene ビューだけ明るさが変わって見える。
+    float alpha = gridMask * 0.7f * fade;
 
     // シャドウ（CSM カスケード選択）
     float shadow = CalcShadow(input.worldPos, input.viewDepth);

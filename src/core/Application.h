@@ -308,8 +308,16 @@ private:
         bool      hasRigidBody = false;
         RigidBody rigidBodyData;
 
-        float materialMetallic  = 1.0f;
-        float materialRoughness = 1.0f;
+        bool             hasPointLight = false;
+        PointLight       pointLightData;
+        bool             hasDirectionalLight = false;
+        DirectionalLight directionalLightData;
+        bool             hasSpotLight = false;
+        SpotLight        spotLightData;
+
+        bool  hasMeshRenderer = false;
+        float materialMetallicOverride  = -1.0f;
+        float materialRoughnessOverride = -1.0f;
     };
     std::unordered_map<std::string, EntitySnapshot> m_editorSnapshots;
 
