@@ -2,6 +2,7 @@
 #include "Logger.h"
 #include "Assert.h"
 #include "PathResolver.h"
+#include "Version.h"
 
 // Graphics module headers
 #include "graphics/GraphicsDevice.h"
@@ -122,9 +123,12 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     // エディタコンテキスト初期化
     m_editorCtx = std::make_unique<EditorContext>();
 
-    // ウィンドウ作成
+    // ウィンドウ作成（タイトルにエンジンのバージョンを表記＝更新の確認にも使える）
     m_window = std::make_unique<Window>();
-    m_window->Initialize(hInstance, nCmdShow, 1280, 720, L"DX12 Engine");
+    std::wstring windowTitle = L"DX12 Engine v";
+    for (const char* vp = kEngineVersion; *vp; ++vp)
+        windowTitle += static_cast<wchar_t>(*vp);  // kEngineVersion は ASCII
+    m_window->Initialize(hInstance, nCmdShow, 1280, 720, windowTitle.c_str());
 
     // グラフィックスデバイス初期化
     m_graphicsDevice = std::make_unique<GraphicsDevice>();
