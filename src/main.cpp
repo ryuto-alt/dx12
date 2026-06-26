@@ -1,5 +1,6 @@
 #include "core/Application.h"
 #include "core/PathResolver.h"
+#include "core/Updater.h"
 
 #include <Windows.h>
 #include <string>
@@ -210,6 +211,12 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
 
         // exe の場所を基準に assets/shaders/scripts のパスを確定（配布 exe を別フォルダで動かすため）
         dx12e::PathResolver::Initialize(gameMode);
+
+        // 配布版のみ: 起動時に GitHub の最新リリースを確認し、新しければ DL→更新して再起動する。
+        // 更新を開始したら本体は即終了（更新バッチが上書き→再起動を担う）。開発ビルド・
+        // オフライン・リリース無しの場合は何もせず通常起動する。
+        if (!buildMode && dx12e::Updater::RunStartupCheck())
+            return EXIT_SUCCESS;
 
         dx12e::Application app;
         app.Initialize(hInstance, nCmdShow, gameMode);

@@ -6,6 +6,7 @@ add_library(Core STATIC
     Logger.cpp
     GameClock.cpp
     PathResolver.cpp
+    Updater.cpp
 )
 
 target_include_directories(Core

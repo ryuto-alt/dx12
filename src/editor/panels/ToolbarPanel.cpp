@@ -738,8 +738,9 @@ void ToolbarPanel::Render(bool isPlaying,
         if (!nameValid) ImGui::BeginDisabled();
         if (ImGui::Button("\xe4\xbd\x9c\xe6\x88\x90", ImVec2(120, 0)) || (enterPressed && nameValid))  // 作成
         {
-            // scripts/ ディレクトリにテンプレート生成
-            std::string scriptsDir = assetsDir + "../scripts/";
+            // assets/scripts/ にテンプレート生成（プロジェクト内＝アセットブラウザに表示され、
+            // scriptPath="scripts/<name>.lua" で添付できる。旧 assets/../scripts はブラウザ外だった）
+            std::string scriptsDir = assetsDir + "scripts/";
             std::filesystem::create_directories(scriptsDir);
             std::string scriptPath = scriptsDir + ctx.newScriptNameBuf + ".lua";
 

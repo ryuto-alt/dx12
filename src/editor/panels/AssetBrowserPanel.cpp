@@ -630,6 +630,15 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
 
                 ImGui::EndGroup();
 
+                // --- 単一クリックで選択（Del キー削除の対象になる）---
+                if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                    m_selectedPath = entry.path;
+                // 選択中はアクセント枠でハイライト
+                if (!m_selectedPath.empty() && m_selectedPath == entry.path)
+                    ImGui::GetWindowDrawList()->AddRect(
+                        ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+                        IM_COL32(76, 141, 255, 255), 4.0f, 0, 2.0f);
+
                 // --- ダブルクリック（EndGroup 後 = グループ全体のホバー判定）---
                 if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0))
                 {
@@ -700,6 +709,13 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                         if (ImGui::MenuItem("\xe3\x82\xa8\xe3\x82\xaf\xe3\x82\xb9\xe3\x83\x97\xe3\x83\xad\xe3\x83\xbc\xe3\x83\xa9\xe3\x83\xbc\xe3\x81\xa7\xe9\x96\x8b\xe3\x81\x8f"))  // エクスプローラーで開く
                             ShellExecuteA(nullptr, "explore", entry.path.string().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                     }
+                    // 削除（シーン/スクリプト含む全アセット・フォルダ。確認ダイアログ経由）
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("\xe5\x89\x8a\xe9\x99\xa4"))  // 削除
+                    {
+                        m_selectedPath     = entry.path;
+                        m_pendingDeletePath = entry.path;
+                    }
                     ImGui::EndPopup();
                 }
 
@@ -724,6 +740,15 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                 ImGui::PopID();
             }
             ImGui::EndTable();
+        }
+
+        // Del キー: このパネルにフォーカスがあり選択中のアセットがあれば削除確認へ
+        if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)
+            && !m_selectedPath.empty()
+            && std::filesystem::exists(m_selectedPath)
+            && ImGui::IsKeyPressed(ImGuiKey_Delete))
+        {
+            m_pendingDeletePath = m_selectedPath;
         }
 
         // ===== 右クリックコンテキストメニュー =====
@@ -765,6 +790,61 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
         }
     }
     ImGui::EndChild();
+
+    // ===== 削除確認モーダル（Del キー / 右クリック「削除」から）=====
+    if (!m_pendingDeletePath.empty() && !m_deletePopupOpen)
+    {
+        ImGui::OpenPopup("##DeleteAssetConfirm");
+        m_deletePopupOpen = true;
+    }
+    ImGui::SetNextWindowSize(ImVec2(380, 0), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("##DeleteAssetConfirm", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        const bool isDir = std::filesystem::is_directory(m_pendingDeletePath);
+        ImGui::Text("\xe3\x80\x8c%s\xe3\x80\x8d\xe3\x82\x92\xe5\x89\x8a\xe9\x99\xa4\xe3\x81\x97\xe3\x81\xbe\xe3\x81\x99\xe3\x81\x8b\xef\xbc\x9f",  // 「%s」を削除しますか？
+                    m_pendingDeletePath.filename().string().c_str());
+
+        // 現在開いているシーンかどうか
+        bool isCurrentScene = false;
+        {
+            std::error_code ec;
+            if (!ctx.currentScenePath.empty())
+                isCurrentScene =
+                    std::filesystem::weakly_canonical(std::filesystem::path(ctx.currentScenePath), ec) ==
+                    std::filesystem::weakly_canonical(m_pendingDeletePath, ec);
+        }
+        if (isDir)
+            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
+                "\xe3\x83\x95\xe3\x82\xa9\xe3\x83\xab\xe3\x83\x80\xe5\x86\x85\xe3\x81\xae\xe3\x81\x99\xe3\x81\xb9\xe3\x81\xa6\xe3\x81\x8c\xe5\x89\x8a\xe9\x99\xa4\xe3\x81\x95\xe3\x82\x8c\xe3\x81\xbe\xe3\x81\x99\xe3\x80\x82");  // フォルダ内のすべてが削除されます。
+        if (isCurrentScene)
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f),
+                "\xe2\x80\xbb\xe7\x8f\xbe\xe5\x9c\xa8\xe9\x96\x8b\xe3\x81\x84\xe3\x81\xa6\xe3\x81\x84\xe3\x82\x8b\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3\xe3\x81\xa7\xe3\x81\x99\xe3\x80\x82");  // ※現在開いているシーンです。
+        ImGui::TextDisabled("\xe3\x81\x93\xe3\x81\xae\xe6\x93\x8d\xe4\xbd\x9c\xe3\x81\xaf\xe5\x85\x83\xe3\x81\xab\xe6\x88\xbb\xe3\x81\x9b\xe3\x81\xbe\xe3\x81\x9b\xe3\x82\x93\xe3\x80\x82");  // この操作は元に戻せません。
+        ImGui::Separator();
+
+        if (ImGui::Button("\xe5\x89\x8a\xe9\x99\xa4", ImVec2(120, 0)))  // 削除
+        {
+            std::error_code ec;
+            if (isDir) std::filesystem::remove_all(m_pendingDeletePath, ec);
+            else       std::filesystem::remove(m_pendingDeletePath, ec);
+            if (ec) Logger::Warn("Asset delete failed: {} ({})", m_pendingDeletePath.string(), ec.message());
+            else    Logger::Info("Asset deleted: {}", m_pendingDeletePath.string());
+            if (isCurrentScene) ctx.currentScenePath.clear();
+            if (m_selectedPath == m_pendingDeletePath) m_selectedPath.clear();
+            m_pendingDeletePath.clear();
+            m_deletePopupOpen = false;
+            needRefresh = true;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("\xe3\x82\xad\xe3\x83\xa3\xe3\x83\xb3\xe3\x82\xbb\xe3\x83\xab", ImVec2(120, 0)))  // キャンセル
+        {
+            m_pendingDeletePath.clear();
+            m_deletePopupOpen = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
 
     ImGui::End();
 

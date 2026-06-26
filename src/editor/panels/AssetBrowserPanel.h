@@ -89,6 +89,11 @@ private:
     // セルサイズ
     f32 m_cellSize = 96.0f;
 
+    // 選択・削除（Del キー / 右クリック「削除」）
+    std::filesystem::path m_selectedPath;       // 単一クリックで選択中のアセット
+    std::filesystem::path m_pendingDeletePath;  // 削除確認中のアセット（確定で remove）
+    bool                  m_deletePopupOpen = false;
+
     // モデルサムネイルレンダラー
     ModelThumbnailRenderer* m_thumbRenderer = nullptr;
 };
