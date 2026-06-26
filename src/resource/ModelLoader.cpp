@@ -6,6 +6,7 @@
 #include "graphics/Texture.h"
 #include "graphics/DescriptorHeap.h"
 #include "resource/ResourceManager.h"
+#include "resource/VfsIOSystem.h"
 
 #include <cstdlib>
 #include <assimp/Importer.hpp>
@@ -443,6 +444,7 @@ ModelData ModelLoader::LoadFromFile(
     ResourceManager& resourceManager)
 {
     Assimp::Importer importer;
+    importer.SetIOHandler(new VfsIOSystem()); // importer が所有権を持ち dtor で delete する
 
     const unsigned int flags =
         aiProcess_Triangulate |
@@ -860,6 +862,7 @@ std::vector<std::unique_ptr<AnimationClip>> ModelLoader::LoadAnimationsFromFile(
     const Skeleton& skeleton)
 {
     Assimp::Importer importer;
+    importer.SetIOHandler(new VfsIOSystem()); // importer が所有権を持ち dtor で delete する
 
     const unsigned int flags =
         aiProcess_Triangulate |

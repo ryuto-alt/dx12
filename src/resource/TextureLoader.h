@@ -35,6 +35,14 @@ public:
         const uint8_t* data, size_t dataSize,
         const char* formatHint,
         bool srgb = true);
+
+    // VFS / pak 経由キューブマップ用：メモリバッファから .dds キューブマップを読み込む。
+    // IsCubemap() && arraySize==6 でなければ nullptr を返す。
+    static std::unique_ptr<Texture> LoadCubeFromMemory(
+        GraphicsDevice& device,
+        ID3D12GraphicsCommandList* cmdList,
+        const uint8_t* data, size_t dataSize,
+        bool srgb = false);
 };
 
 } // namespace dx12e

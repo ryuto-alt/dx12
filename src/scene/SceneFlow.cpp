@@ -1,25 +1,19 @@
 #include "scene/SceneFlow.h"
 #include "core/Logger.h"
+#include "core/vfs/Vfs.h"
 
 #include <fstream>
+#include <sstream>
 #include <nlohmann/json.hpp>
 
 namespace dx12e
 {
 using json = nlohmann::json;
 
-bool SceneFlow::Load(const std::string& path)
+bool SceneFlow::LoadFromString(const std::string& jsonStr)
 {
-    m_loaded = false;
-    m_start.clear();
-    m_flow.clear();
-
-    std::ifstream ifs(path);
-    if (!ifs.is_open())
-        return false;
-
     json j;
-    try { ifs >> j; }
+    try { j = json::parse(jsonStr); }
     catch (const std::exception& e)
     {
         Logger::Warn("SceneFlow parse error: {}", e.what());
@@ -40,6 +34,25 @@ bool SceneFlow::Load(const std::string& path)
     m_loaded = true;
     Logger::Info("SceneFlow loaded: start={}, {} nodes", m_start, m_flow.size());
     return true;
+}
+
+bool SceneFlow::Load(const std::string& path)
+{
+    m_loaded = false;
+    m_start.clear();
+    m_flow.clear();
+
+    // VFS 経由で読む（ゲームモード: pak 復号。エディタ: ディスク）。
+    auto bytes = vfs::ReadAsset("sceneflow.json");
+    if (!bytes.empty())
+        return LoadFromString(std::string(bytes.begin(), bytes.end()));
+
+    // ディスクフォールバック
+    std::ifstream ifs(path);
+    if (!ifs.is_open())
+        return false;
+    std::stringstream ss; ss << ifs.rdbuf();
+    return LoadFromString(ss.str());
 }
 
 bool SceneFlow::Save(const std::string& path) const

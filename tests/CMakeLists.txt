@@ -118,3 +118,16 @@ if(TARGET Renderer)
     endif()
     add_test(NAME ActionMapTests COMMAND ActionMapTests)
 endif()
+
+# VFS（Crypto / Compression / Pak）往復テスト（GPU 非依存）。Core（+ bcrypt/cabinet）をリンク。
+# Core は STATIC なので PRIVATE 依存（bcrypt.lib/Cabinet.lib）も実行ファイルへ伝播する。
+if(TARGET Core)
+    add_executable(VfsTests vfs_test.cpp)
+    target_link_libraries(VfsTests PRIVATE Core)
+    target_include_directories(VfsTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(VfsTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(VfsTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME VfsTests COMMAND VfsTests)
+endif()

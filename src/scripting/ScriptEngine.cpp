@@ -1,5 +1,6 @@
 #include "scripting/ScriptEngine.h"
 #include "core/Logger.h"
+#include "core/vfs/Vfs.h"
 
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4244 4267 4996)
@@ -118,8 +119,13 @@ bool InitializeLuaScriptInstance(sol::state& lua,
 
     (*env)["self"] = *self;
 
-    auto result = lua.safe_script_file(
-        abs.string(), *env, sol::script_pass_on_error);
+    // VFS 経由で読む（ゲームモード: pak から復号。エディタ: ディスクから読む）。
+    // 空のときはディスクの safe_script_file にフォールバック。
+    auto vfsBytes = vfs::ReadAsset(ls.scriptPath);
+    auto result = vfsBytes.empty()
+        ? lua.safe_script_file(abs.string(), *env, sol::script_pass_on_error)
+        : lua.safe_script(std::string(vfsBytes.begin(), vfsBytes.end()),
+                          *env, sol::script_pass_on_error);
     if (!result.valid())
     {
         sol::error err = result;
@@ -1299,7 +1305,11 @@ void ScriptEngine::SetScreenSize(int w, int h)
 
 void ScriptEngine::LoadScript(const std::string& filePath)
 {
-    auto result = m_lua->safe_script_file(filePath, sol::script_pass_on_error);
+    // VFS 経由で読む（ゲームモード: pak 復号。エディタ/disk: ルーズファイル）。
+    auto b = vfs::ReadAssetAbs(filePath);
+    auto result = b.empty()
+        ? m_lua->safe_script_file(filePath, sol::script_pass_on_error)
+        : m_lua->safe_script(std::string(b.begin(), b.end()), sol::script_pass_on_error);
     if (!result.valid())
     {
         sol::error err = result;
@@ -1310,6 +1320,21 @@ void ScriptEngine::LoadScript(const std::string& filePath)
     {
         m_lastError.clear();
         Logger::Info("Lua script loaded: {}", filePath);
+    }
+}
+
+void ScriptEngine::LoadScriptFromString(const std::string& code, const std::string& /*chunkName*/)
+{
+    auto result = m_lua->safe_script(code, sol::script_pass_on_error);
+    if (!result.valid())
+    {
+        sol::error err = result;
+        m_lastError = err.what();
+        Logger::Error("Lua load error (from string): {}", m_lastError);
+    }
+    else
+    {
+        m_lastError.clear();
     }
 }
 
@@ -1405,10 +1430,20 @@ void ScriptEngine::ParsePropertySchema(const std::string& scriptPath,
     namespace fs = std::filesystem;
     fs::path abs = fs::path(m_assetsDir) / scriptPath;
 
-    std::ifstream ifs(abs.string(), std::ios::binary);
-    if (!ifs) return;
-    std::stringstream ss; ss << ifs.rdbuf();
-    std::string code = ss.str();
+    // VFS 経由でスクリプトを読む。空ならディスクにフォールバック。
+    auto vfsCode = vfs::ReadAsset(scriptPath);
+    std::string code;
+    if (!vfsCode.empty())
+    {
+        code.assign(vfsCode.begin(), vfsCode.end());
+    }
+    else
+    {
+        std::ifstream ifs(abs.string(), std::ios::binary);
+        if (!ifs) return;
+        std::stringstream ss; ss << ifs.rdbuf();
+        code = ss.str();
+    }
 
     // "properties" を含まないスクリプト（旧来のコントローラ等）は実行しない＝副作用ゼロ。
     if (code.find("properties") == std::string::npos) return;

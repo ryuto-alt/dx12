@@ -20,6 +20,7 @@ add_library(Resource STATIC
     TextureLoader.cpp
     ModelLoader.cpp
     ResourceManager.cpp
+    VfsIOSystem.cpp
 )
 target_include_directories(Resource PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries(Resource PUBLIC

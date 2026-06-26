@@ -1,6 +1,7 @@
 #include "audio/AudioSystem.h"
 #include "audio/AudioClip.h"
 #include "core/Logger.h"
+#include "core/vfs/Vfs.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -149,14 +150,37 @@ AudioClip* AudioSystem::GetOrLoadClip(const std::string& filePath)
         return it->second.get();
 
     // フルパス構築（相対パスならassetsDir基準）
+    const bool isRelative = (filePath.size() < 2 || filePath[1] != ':');
     std::string fullPath = filePath;
-    if (filePath.size() < 2 || filePath[1] != ':')  // 絶対パスでなければ
+    if (isRelative)
     {
         fullPath = m_assetsDir + filePath;
     }
 
+    // 拡張子抽出（VFS 経由ロード時に LoadFromMemory へ渡す）
+    std::string ext = std::filesystem::path(filePath).extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+
     auto clip = std::make_unique<AudioClip>();
-    if (!clip->LoadFromFile(fullPath))
+
+    // VFS 経由でロード試行（ゲームモードは pak から復号展開、ディスクモードは空を返す）
+    bool loaded = false;
+    {
+        std::vector<uint8_t> bytes;
+        if (isRelative)
+            bytes = vfs::ReadAsset(filePath);
+        else
+            bytes = vfs::ReadAssetAbs(fullPath);
+
+        if (!bytes.empty())
+            loaded = clip->LoadFromMemory(bytes.data(), bytes.size(), ext);
+    }
+
+    // VFS が空（エディタ / ディスクモード）→ ファイルから直接ロード
+    if (!loaded)
+        loaded = clip->LoadFromFile(fullPath);
+
+    if (!loaded)
         return nullptr;
 
     AudioClip* rawPtr = clip.get();

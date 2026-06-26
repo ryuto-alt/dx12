@@ -1,6 +1,7 @@
 #include "core/Application.h"
 #include "core/PathResolver.h"
 #include "core/Updater.h"
+#include "core/vfs/Vfs.h"
 
 #include <Windows.h>
 #include <string>
@@ -11,6 +12,7 @@
 #include <filesystem>
 #include <nlohmann/json.hpp>
 
+#ifndef DX12_GAME_RUNTIME
 namespace {
 namespace fs = std::filesystem;
 using json = nlohmann::json;
@@ -163,6 +165,7 @@ int RunValidate(const std::string& scenePathStr)
 }
 
 } // namespace
+#endif // !DX12_GAME_RUNTIME
 
 int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCmdLine, _In_ int nCmdShow)
 {
@@ -170,6 +173,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
     {
         bool gameMode  = false;
         bool buildMode = false;
+#ifndef DX12_GAME_RUNTIME
         if (lpCmdLine)
         {
             std::string args(lpCmdLine);
@@ -208,15 +212,38 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
             if (std::filesystem::exists(exeDir / "game.json", ec))
                 gameMode = true;
         }
+#endif // !DX12_GAME_RUNTIME
+
+#ifdef DX12_GAME_RUNTIME
+        // コンパイル時確約: GameRuntime は常にゲームモード。引数・設定ファイルで変化しない。
+        (void)lpCmdLine;  // ゲームランタイムはコマンド引数を処理しない（C4100 回避）
+        gameMode  = true;
+        buildMode = false;
+#endif
 
         // exe の場所を基準に assets/shaders/scripts のパスを確定（配布 exe を別フォルダで動かすため）
         dx12e::PathResolver::Initialize(gameMode);
 
-        // 配布版のみ: 起動時に GitHub の最新リリースを確認し、新しければ DL→更新して再起動する。
+#ifdef DX12_GAME_RUNTIME
+        // game.pak をマウント（GameRuntime ブート時の必須手順）。失敗したら致命的エラー。
+        {
+            wchar_t _exeBuf[MAX_PATH] = {};
+            GetModuleFileNameW(nullptr, _exeBuf, MAX_PATH);
+            std::filesystem::path _exeDir = std::filesystem::path(_exeBuf).parent_path();
+            if (!dx12e::vfs::MountPak((_exeDir / "game.pak").string()))
+                throw std::runtime_error("game.pak not found or corrupt");
+        }
+#endif
+
+        // 配布版（エディタ）のみ: 起動時に GitHub の最新リリースを確認し、新しければ DL→更新して再起動する。
         // 更新を開始したら本体は即終了（更新バッチが上書き→再起動を担う）。開発ビルド・
         // オフライン・リリース無しの場合は何もせず通常起動する。
+        // GameRuntime（配布ゲーム）はエンジンの自動更新を行わない（エンジンのリリースで
+        // ゲームの exe が置き換わってしまうのを防ぐ）。
+#ifndef DX12_GAME_RUNTIME
         if (!buildMode && dx12e::Updater::RunStartupCheck())
             return EXIT_SUCCESS;
+#endif
 
         dx12e::Application app;
         app.Initialize(hInstance, nCmdShow, gameMode);

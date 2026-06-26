@@ -61,6 +61,30 @@ if(MSVC)
     target_compile_definitions(DX12Engine PRIVATE ${DX12_COMPILE_DEFS})
 endif()
 
+# --- GameRuntime: ゲーム専用実行ファイル（DX12_GAME_RUNTIME で常にゲームモード固定）---
+add_executable(GameRuntime WIN32 src/main.cpp)
+target_link_libraries(GameRuntime
+    PRIVATE
+        Core
+        Graphics
+        Renderer
+        Resource
+        Animation
+        ECS
+        Audio
+        Input
+        Scene
+        Scripting
+        Physics
+        Gui
+        Editor
+        ProjectLib
+)
+if(MSVC)
+    target_compile_options(GameRuntime PRIVATE ${DX12_COMPILE_OPTIONS})
+    target_compile_definitions(GameRuntime PRIVATE ${DX12_COMPILE_DEFS} DX12_GAME_RUNTIME)
+endif()
+
 # --- DXC Shader Compilation ---
 find_program(DXC_EXECUTABLE dxc
     PATHS
@@ -378,6 +402,7 @@ if(DXC_EXECUTABLE)
 
     add_custom_target(Shaders ALL DEPENDS ${SHADER_OUTPUTS})
     add_dependencies(DX12Engine Shaders)
+    add_dependencies(GameRuntime Shaders)
 else()
     message(WARNING "DXC not found -- shader compilation skipped")
 endif()

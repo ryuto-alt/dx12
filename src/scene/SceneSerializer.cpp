@@ -4,6 +4,7 @@
 #include "renderer/Mesh.h"
 #include "renderer/Material.h"
 #include "core/Logger.h"
+#include "core/vfs/Vfs.h"
 #include "engine/ecs/ComponentRegistry.h"  // Phase 1: コア部品の直列化をレジストリ走査へ
 
 #pragma warning(push)
@@ -1157,6 +1158,12 @@ bool SceneSerializer::Save(const Scene& scene, const std::string& filePath,
 bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
                            const std::string& assetsDir)
 {
+    // VFS 経由で読む（ゲームモード: pak 復号。エディタ: ディスク）。
+    auto b = vfs::ReadAssetAbs(filePath);
+    if (!b.empty())
+        return LoadFromString(scene, std::string(b.begin(), b.end()), assetsDir);
+
+    // ディスクフォールバック
     std::ifstream ifs(filePath);
     if (!ifs.is_open())
     {
@@ -1461,6 +1468,12 @@ entt::entity SceneSerializer::InstantiatePrefab(Scene& scene, const std::string&
                                                 const std::string& assetsDir,
                                                 std::vector<entt::entity>* outAll)
 {
+    // VFS 経由で読む（ゲームモード: pak 復号。エディタ: ディスク）。
+    auto b = vfs::ReadAssetAbs(filePath);
+    if (!b.empty())
+        return InstantiateSubtree(scene, std::string(b.begin(), b.end()), assetsDir, outAll);
+
+    // ディスクフォールバック
     std::ifstream ifs(filePath, std::ios::binary);
     if (!ifs.is_open())
     {

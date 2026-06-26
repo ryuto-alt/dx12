@@ -18,6 +18,7 @@ public:
     struct Node { std::string next; std::string onFail; };
 
     bool Load(const std::string& path);
+    bool LoadFromString(const std::string& json);
     bool Save(const std::string& path) const;
     bool IsLoaded() const { return m_loaded; }
 

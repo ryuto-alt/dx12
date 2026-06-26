@@ -58,6 +58,8 @@
 #include "project/Project.h"
 #include "project/ProjectManager.h"
 #include "project/GitIntegration.h"
+#include "vfs/Vfs.h"
+#include "vfs/PakWriter.h"
 #include <commdlg.h>
 
 #pragma warning(push)
@@ -327,21 +329,41 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         {
             bool loaded = false;
 
-            // 配布モード: exe 隣の game.json で開始シーンを指定（最優先）
+            // 配布モード: pak __manifest__ または game.json で開始シーンを指定（最優先）
             if (m_isGameMode)
             {
-                ProjectInfo gi;
-                if (Project::Load(PathResolver::BaseDir() + "game.json", gi) && !gi.defaultScene.empty())
+                if (vfs::InGameMode())
                 {
-                    std::string startScene = PathResolver::AssetsDir() + gi.defaultScene;
-                    if (std::filesystem::exists(startScene))
+                    // ゲームモード: pak 内 __manifest__ からブート設定を読む（game.json 不要）
+                    vfs::BootConfig bc;
+                    if (vfs::ReadBootConfig(bc) && !bc.startScene.empty())
                     {
+                        std::string startScene = PathResolver::AssetsDir() + bc.startScene;
                         loaded = SceneSerializer::Load(*m_scene, startScene, PathResolver::AssetsDir());
                         if (loaded)
                         {
                             m_editorCtx->currentScenePath = startScene;
-                            m_currentSceneRel = gi.defaultScene;
-                            Logger::Info("Loaded start scene from game.json: {}", gi.defaultScene);
+                            m_currentSceneRel = bc.startScene;
+                            Logger::Info("Loaded start scene from manifest: {}", bc.startScene);
+                        }
+                    }
+                }
+                else
+                {
+                    // ディスクモード（--game フラグ + game.json 配置の旧形式）
+                    ProjectInfo gi;
+                    if (Project::Load(PathResolver::BaseDir() + "game.json", gi) && !gi.defaultScene.empty())
+                    {
+                        std::string startScene = PathResolver::AssetsDir() + gi.defaultScene;
+                        if (std::filesystem::exists(startScene))
+                        {
+                            loaded = SceneSerializer::Load(*m_scene, startScene, PathResolver::AssetsDir());
+                            if (loaded)
+                            {
+                                m_editorCtx->currentScenePath = startScene;
+                                m_currentSceneRel = gi.defaultScene;
+                                Logger::Info("Loaded start scene from game.json: {}", gi.defaultScene);
+                            }
                         }
                     }
                 }
@@ -1613,22 +1635,34 @@ void Application::LoadSkyboxIfNeeded(ID3D12GraphicsCommandList* cmd)
     m_envCubeTex.reset();
     m_iblReady = false;
 
-    std::string fullPath = PathResolver::AssetsDir() + sky.envMapPath;
-    if (!std::filesystem::exists(fullPath))
+    // VFS 経由でまず試みる（ゲームモード = pak から復号、ディスクモード = loose file）
     {
-        Logger::Warn("Skybox env map not found: {}", fullPath);
-        // ダミーベイクしてフォールバック
-        m_iblBaker->Bake(*m_graphicsDevice, cmd, *m_srvHeap, nullptr);
-        m_iblReady = m_iblBaker->IsValid();
-        m_loadedSkyboxPath = sky.envMapPath;
-        return;
+        auto envBytes = vfs::ReadAsset(sky.envMapPath);
+        if (!envBytes.empty())
+        {
+            m_envCubeTex = TextureLoader::LoadCubeFromMemory(*m_graphicsDevice, cmd,
+                               envBytes.data(), envBytes.size(), /*srgb=*/false);
+        }
+        else
+        {
+            // disk fallback（ディスクモードかつファイルが存在する場合）
+            std::string fullPath = PathResolver::AssetsDir() + sky.envMapPath;
+            if (!std::filesystem::exists(fullPath))
+            {
+                Logger::Warn("Skybox env map not found: {}", fullPath);
+                // ダミーベイクしてフォールバック
+                m_iblBaker->Bake(*m_graphicsDevice, cmd, *m_srvHeap, nullptr);
+                m_iblReady = m_iblBaker->IsValid();
+                m_loadedSkyboxPath = sky.envMapPath;
+                return;
+            }
+            std::wstring wpath(fullPath.begin(), fullPath.end());
+            m_envCubeTex = TextureLoader::LoadCubeFromFile(*m_graphicsDevice, cmd, wpath, /*srgb=*/false);
+        }
     }
-
-    std::wstring wpath(fullPath.begin(), fullPath.end());
-    m_envCubeTex = TextureLoader::LoadCubeFromFile(*m_graphicsDevice, cmd, wpath, /*srgb=*/false);
     if (!m_envCubeTex)
     {
-        Logger::Warn("Failed to load skybox cube: {}", fullPath);
+        Logger::Warn("Failed to load skybox cube: {}", sky.envMapPath);
         m_iblBaker->Bake(*m_graphicsDevice, cmd, *m_srvHeap, nullptr);
         m_iblReady = m_iblBaker->IsValid();
         m_loadedSkyboxPath = sky.envMapPath;
@@ -2633,18 +2667,25 @@ void Application::BuildGame()
         fs::remove_all(outputDir);
     fs::create_directories(outputDir);
 
-    // 1. exe をコピー（+ exe 隣の DLL も全部コピー: D3D12MA.dll / DirectXTex.dll 等）
+    // 1. GameRuntime.exe を Game.exe としてコピー（+ exe 隣の DLL も全部コピー）
     {
         wchar_t exePath[MAX_PATH];
         GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-        fs::path exeSrc(exePath);
-        fs::path exeDst = outputDir / "Game.exe";
-        fs::copy_file(exeSrc, exeDst, fs::copy_options::overwrite_existing);
-        Logger::Info("Copied exe -> {}", exeDst.string());
+        fs::path exeDir = fs::path(exePath).parent_path();
+        fs::path runtimeSrc = exeDir / "GameRuntime.exe";
+
+        if (!fs::exists(runtimeSrc))
+        {
+            Logger::Error("GameRuntime.exe not found at {}; build it first", runtimeSrc.string());
+            return;
+        }
+
+        fs::copy_file(runtimeSrc, outputDir / "Game.exe", fs::copy_options::overwrite_existing);
+        Logger::Info("Copied GameRuntime.exe -> Game.exe");
 
         // 同じフォルダの .dll をすべて配布フォルダへ
         std::error_code ec;
-        for (auto& entry : fs::directory_iterator(exeSrc.parent_path(), ec))
+        for (auto& entry : fs::directory_iterator(exeDir, ec))
         {
             if (!entry.is_regular_file()) continue;
             auto ext = entry.path().extension().string();
@@ -2657,49 +2698,9 @@ void Application::BuildGame()
         }
     }
 
-    // 2. scripts/ をコピー
+    // 2+3. assets/ と scripts/ を game.pak にパック（コピーではなく暗号化アーカイブ化）
     {
-        fs::path scriptsSrc = fs::path(PathResolver::ScriptsDir());
-        fs::path scriptsDst = outputDir / "scripts";
-        if (fs::exists(scriptsSrc))
-        {
-            fs::copy(scriptsSrc, scriptsDst, fs::copy_options::recursive | fs::copy_options::overwrite_existing);
-            Logger::Info("Copied scripts/");
-        }
-    }
-
-    // 3. assets/ をコピー
-    {
-        fs::path assetsSrc = fs::path(PathResolver::AssetsDir());
-        fs::path assetsDst = outputDir / "assets";
-        if (fs::exists(assetsSrc))
-        {
-            fs::copy(assetsSrc, assetsDst, fs::copy_options::recursive | fs::copy_options::overwrite_existing);
-            Logger::Info("Copied assets/");
-        }
-    }
-
-    // 4. shaders/ をコピー
-    {
-        fs::path shadersSrc = fs::path(PathResolver::ShaderDirW());
-        fs::path shadersDst = outputDir / "shaders";
-        if (fs::exists(shadersSrc))
-        {
-            fs::copy(shadersSrc, shadersDst, fs::copy_options::recursive | fs::copy_options::overwrite_existing);
-            Logger::Info("Copied shaders/");
-        }
-    }
-
-    // 5. --game フラグ付き起動用バッチファイル
-    {
-        std::ofstream bat(outputDir / "Game.bat");
-        bat << "@echo off\n";
-        bat << "Game.exe --game\n";
-        bat << "pause\n";
-    }
-
-    // 6. 配布設定 game.json（開始シーン = 現在編集中シーンの assets 相対パス）
-    {
+        // 開始シーンの相対パスを計算（既存ロジックと同じ）
         std::string startSceneRel = "scenes/default.json";
         if (!m_editorCtx->currentScenePath.empty())
         {
@@ -2713,20 +2714,85 @@ void Application::BuildGame()
 
             if (startSceneRel.empty() || startSceneRel.rfind("..", 0) == 0)
             {
-                Logger::Warn("Current scene is outside assets/; start scene may not be bundled: {}",
+                Logger::Warn("Current scene is outside assets/; using default start scene: {}",
                              m_editorCtx->currentScenePath);
                 startSceneRel = "scenes/default.json";
             }
         }
 
-        std::ofstream gj(outputDir / "game.json");
-        gj << "{\n";
-        gj << "  \"title\": \"Game\",\n";
-        gj << "  \"startScene\": \"" << startSceneRel << "\",\n";
-        gj << "  \"windowWidth\": 1280,\n";
-        gj << "  \"windowHeight\": 720\n";
-        gj << "}\n";
-        Logger::Info("Wrote game.json (startScene = {})", startSceneRel);
+        vfs::PakWriter pak;
+        if (!pak.Open((outputDir / "game.pak").string()))
+        {
+            Logger::Error("Failed to open game.pak for writing");
+            return;
+        }
+
+        // assets/ 配下を全パック（Normalize が "assets/" プレフィックスを剥がす）
+        {
+            fs::path assetsDir = fs::path(PathResolver::AssetsDir());
+            std::error_code ec;
+            for (auto& entry : fs::recursive_directory_iterator(assetsDir, ec))
+            {
+                if (!entry.is_regular_file()) continue;
+                std::string relPath = entry.path().lexically_relative(assetsDir).generic_string();
+                pak.AddFile(entry.path().string(), relPath);
+            }
+        }
+
+        // scripts/ 配下を全パック（"scripts/" プレフィックスを付けて格納）
+        {
+            fs::path scriptsDir = fs::path(PathResolver::ScriptsDir());
+            if (fs::exists(scriptsDir))
+            {
+                std::error_code ec;
+                for (auto& entry : fs::recursive_directory_iterator(scriptsDir, ec))
+                {
+                    if (!entry.is_regular_file()) continue;
+                    std::string relPath = "scripts/" +
+                        entry.path().lexically_relative(scriptsDir).generic_string();
+                    pak.AddFile(entry.path().string(), relPath);
+                }
+            }
+        }
+
+        // ブートマニフェスト（game.json の代替。GameRuntime は pak からこれを読む）
+        {
+            std::string manifest =
+                std::string("{\n") +
+                "  \"title\": \"Game\",\n" +
+                "  \"startScene\": \"" + startSceneRel + "\",\n" +
+                "  \"windowWidth\": 1280,\n" +
+                "  \"windowHeight\": 720\n" +
+                "}\n";
+            pak.AddBlob("__manifest__",
+                reinterpret_cast<const uint8_t*>(manifest.data()), manifest.size());
+        }
+
+        if (!pak.Finish(/*stripStrings=*/true))
+        {
+            Logger::Error("Failed to finalize game.pak");
+            return;
+        }
+        Logger::Info("Packed game.pak (startScene = {})", startSceneRel);
+    }
+
+    // 4. shaders/ をコピー（.cso は暗号化しない: エンジン所有 DXBC/DXIL）
+    {
+        fs::path shadersSrc = fs::path(PathResolver::ShaderDirW());
+        fs::path shadersDst = outputDir / "shaders";
+        if (fs::exists(shadersSrc))
+        {
+            fs::copy(shadersSrc, shadersDst, fs::copy_options::recursive | fs::copy_options::overwrite_existing);
+            Logger::Info("Copied shaders/");
+        }
+    }
+
+    // 5. 起動用バッチ（GameRuntime は --game 不要: 常にゲームモード）
+    {
+        std::ofstream bat(outputDir / "Game.bat");
+        bat << "@echo off\n";
+        bat << "Game.exe\n";
+        bat << "pause\n";
     }
 
     Logger::Info("Game build complete: {}", outputDir.string());

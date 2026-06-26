@@ -1,5 +1,13 @@
 find_package(imgui CONFIG REQUIRED)
 
+# 配布アセット暗号鍵（ビルド毎にランダム生成、gitignore）。無ければ即エラー。
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/AssetKey.h")
+    message(FATAL_ERROR
+        "src/core/generated/AssetKey.h is missing. "
+        "Run: powershell -ExecutionPolicy Bypass -File tools/gen_asset_key.ps1 "
+        "(build_debug.bat / build_release.bat do this automatically).")
+endif()
+
 add_library(Core STATIC
     Application.cpp
     Window.cpp
@@ -7,6 +15,11 @@ add_library(Core STATIC
     GameClock.cpp
     PathResolver.cpp
     Updater.cpp
+    vfs/Crypto.cpp
+    vfs/Compression.cpp
+    vfs/PakWriter.cpp
+    vfs/PakArchive.cpp
+    vfs/Vfs.cpp
 )
 
 target_include_directories(Core
@@ -19,7 +32,7 @@ find_package(spdlog CONFIG REQUIRED)
 
 target_link_libraries(Core
     PUBLIC spdlog::spdlog
-    PRIVATE imgui::imgui
+    PRIVATE imgui::imgui bcrypt.lib Cabinet.lib
 )
 
 target_compile_options(Core PRIVATE ${DX12_COMPILE_OPTIONS})

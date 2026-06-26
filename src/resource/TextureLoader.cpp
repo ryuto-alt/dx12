@@ -235,4 +235,75 @@ std::unique_ptr<Texture> TextureLoader::LoadFromMemory(
     return texture;
 }
 
+std::unique_ptr<Texture> TextureLoader::LoadCubeFromMemory(
+    GraphicsDevice& device,
+    ID3D12GraphicsCommandList* cmdList,
+    const uint8_t* data, size_t dataSize,
+    bool srgb)
+{
+    DirectX::ScratchImage scratchImage;
+    HRESULT hr = DirectX::LoadFromDDSMemory(data, dataSize,
+        DirectX::DDS_FLAGS_NONE, nullptr, scratchImage);
+    if (FAILED(hr))
+    {
+        Logger::Error("LoadCubeFromMemory: failed to decode DDS buffer");
+        return nullptr;
+    }
+
+    DirectX::TexMetadata meta = scratchImage.GetMetadata();
+    if (!meta.IsCubemap() || meta.arraySize != 6)
+    {
+        Logger::Error("LoadCubeFromMemory: not a 6-face cubemap (arraySize={})",
+                      static_cast<u32>(meta.arraySize));
+        return nullptr;
+    }
+
+    DXGI_FORMAT format = srgb ? DirectX::MakeSRGB(meta.format) : meta.format;
+
+    D3D12_RESOURCE_DESC resourceDesc = {};
+    resourceDesc.Dimension          = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    resourceDesc.Alignment          = 0;
+    resourceDesc.Width              = static_cast<UINT64>(meta.width);
+    resourceDesc.Height             = static_cast<UINT>(meta.height);
+    resourceDesc.DepthOrArraySize   = 6;
+    resourceDesc.MipLevels          = static_cast<UINT16>(meta.mipLevels);
+    resourceDesc.Format             = format;
+    resourceDesc.SampleDesc.Count   = 1;
+    resourceDesc.SampleDesc.Quality = 0;
+    resourceDesc.Layout             = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    resourceDesc.Flags              = D3D12_RESOURCE_FLAG_NONE;
+
+    // 6 面 × 全 mip ぶんの subresource を ScratchImage から手動で組む。
+    // D3D12 のサブリソース順序は item(face) major, mip minor:
+    //   subresource = face * mipLevels + mip
+    const size_t mipLevels = meta.mipLevels;
+    std::vector<D3D12_SUBRESOURCE_DATA> subs(6 * mipLevels);
+    for (size_t face = 0; face < 6; ++face)
+    {
+        for (size_t mip = 0; mip < mipLevels; ++mip)
+        {
+            const DirectX::Image* img = scratchImage.GetImage(mip, face, 0);
+            if (!img)
+            {
+                Logger::Error("LoadCubeFromMemory: missing image (face={}, mip={})",
+                              static_cast<u32>(face), static_cast<u32>(mip));
+                return nullptr;
+            }
+            auto& sd      = subs[face * mipLevels + mip];
+            sd.pData      = img->pixels;
+            sd.RowPitch   = static_cast<LONG_PTR>(img->rowPitch);
+            sd.SlicePitch = static_cast<LONG_PTR>(img->slicePitch);
+        }
+    }
+
+    auto texture = std::make_unique<Texture>();
+    texture->Initialize(device, cmdList, resourceDesc, subs.data(), static_cast<u32>(subs.size()));
+
+    Logger::Info("Cube texture (memory) loaded: {}x{}, mips={}, format={}",
+                 static_cast<u32>(meta.width), static_cast<u32>(meta.height),
+                 static_cast<u32>(meta.mipLevels), static_cast<u32>(format));
+
+    return texture;
+}
+
 } // namespace dx12e

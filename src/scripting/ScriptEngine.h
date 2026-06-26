@@ -67,6 +67,7 @@ public:
     void SetEventBus(EventBus* bus) { m_eventBus = bus; }
 
     void LoadScript(const std::string& filePath);
+    void LoadScriptFromString(const std::string& code, const std::string& chunkName);
 
     // 画面サイズを Lua グローバル SCREEN_W / SCREEN_H に公開（UI レイアウト用）
     void SetScreenSize(int w, int h);

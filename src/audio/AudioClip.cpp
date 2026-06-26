@@ -106,4 +106,94 @@ bool AudioClip::LoadMp3(const std::string& filePath)
     return true;
 }
 
+bool AudioClip::LoadFromMemory(const uint8_t* data, size_t size, const std::string& extHint)
+{
+    std::string ext = extHint;
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+
+    if (ext == ".wav")
+        return LoadWavFromMemory(data, size);
+    else if (ext == ".mp3")
+        return LoadMp3FromMemory(data, size);
+
+    Logger::Error("Unsupported audio format for memory load: {}", ext);
+    return false;
+}
+
+bool AudioClip::LoadWavFromMemory(const uint8_t* data, size_t size)
+{
+    drwav wav;
+    if (!drwav_init_memory(&wav, data, size, nullptr))
+    {
+        Logger::Error("Failed to open WAV from memory ({} bytes)", size);
+        return false;
+    }
+
+    // 16bit PCM に変換して読み込み
+    u64 totalFrames = wav.totalPCMFrameCount;
+    u32 channels    = wav.channels;
+    u32 sampleRate  = wav.sampleRate;
+
+    std::vector<drwav_int16> samples(static_cast<size_t>(totalFrames * channels));
+    drwav_read_pcm_frames_s16(&wav, totalFrames, samples.data());
+    drwav_uninit(&wav);
+
+    // WAVEFORMATEX 設定
+    m_format.wFormatTag      = WAVE_FORMAT_PCM;
+    m_format.nChannels       = static_cast<WORD>(channels);
+    m_format.nSamplesPerSec  = sampleRate;
+    m_format.wBitsPerSample  = 16;
+    m_format.nBlockAlign     = static_cast<WORD>(channels * 2);
+    m_format.nAvgBytesPerSec = sampleRate * m_format.nBlockAlign;
+    m_format.cbSize          = 0;
+
+    // PCMデータをバイト配列にコピー
+    m_pcmData.resize(samples.size() * sizeof(drwav_int16));
+    std::memcpy(m_pcmData.data(), samples.data(), m_pcmData.size());
+
+    Logger::Info("WAV loaded from memory ({}Hz, {}ch, {:.1f}s)",
+                 sampleRate, channels,
+                 static_cast<f32>(totalFrames) / static_cast<f32>(sampleRate));
+    return true;
+}
+
+bool AudioClip::LoadMp3FromMemory(const uint8_t* data, size_t size)
+{
+    drmp3_config config{};
+    drmp3_uint64 totalFrames = 0;
+
+    drmp3_int16* samples = drmp3_open_memory_and_read_pcm_frames_s16(
+        data, size, &config, &totalFrames, nullptr);
+
+    if (!samples)
+    {
+        Logger::Error("Failed to open MP3 from memory ({} bytes)", size);
+        return false;
+    }
+
+    u32 channels   = config.channels;
+    u32 sampleRate = config.sampleRate;
+
+    // WAVEFORMATEX 設定
+    m_format.wFormatTag      = WAVE_FORMAT_PCM;
+    m_format.nChannels       = static_cast<WORD>(channels);
+    m_format.nSamplesPerSec  = sampleRate;
+    m_format.wBitsPerSample  = 16;
+    m_format.nBlockAlign     = static_cast<WORD>(channels * 2);
+    m_format.nAvgBytesPerSec = sampleRate * m_format.nBlockAlign;
+    m_format.cbSize          = 0;
+
+    // PCMデータをバイト配列にコピー
+    size_t dataSize = static_cast<size_t>(totalFrames) * channels * sizeof(drmp3_int16);
+    m_pcmData.resize(dataSize);
+    std::memcpy(m_pcmData.data(), samples, dataSize);
+
+    drmp3_free(samples, nullptr);
+
+    Logger::Info("MP3 loaded from memory ({}Hz, {}ch, {:.1f}s)",
+                 sampleRate, channels,
+                 static_cast<f32>(totalFrames) / static_cast<f32>(sampleRate));
+    return true;
+}
+
 } // namespace dx12e

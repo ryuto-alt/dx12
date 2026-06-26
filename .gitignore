@@ -46,6 +46,9 @@ vcpkg_installed/
 # Claude Code
 .claude/
 
+# Generated per-build asset key (never commit)
+src/core/generated/
+
 # Editor / runtime cache
 imgui.ini
 assets/.thumbcache/

@@ -2,6 +2,7 @@
 
 #include "core/Assert.h"
 #include "core/Logger.h"
+#include "core/vfs/Vfs.h"
 #include "graphics/Texture.h"
 #include "graphics/DescriptorHeap.h"
 #include "graphics/GraphicsDevice.h"
@@ -99,8 +100,33 @@ Texture* ResourceManager::GetOrLoadTexture(
         return it->second.get();
     }
 
-    // テクスチャ読み込み
-    auto texture = TextureLoader::LoadFromFile(*m_device, cmdList, filePath, srgb);
+    // VFS 経由で読み込みを試みる（ゲームモード: pak から復号+展開、ディスクモード: ルーズファイル）
+    // 拡張子から formatHint を決定 (.dds → "dds"、それ以外 → "")
+    std::unique_ptr<Texture> texture;
+    {
+        const auto dotPos = filePath.rfind(L'.');
+        const std::string formatHint =
+            (dotPos != std::wstring::npos &&
+             (filePath.substr(dotPos) == L".dds" || filePath.substr(dotPos) == L".DDS"))
+            ? "dds" : "";
+
+        auto bytes = vfs::ReadAssetAbs(filePath);
+        if (!bytes.empty())
+        {
+            texture = TextureLoader::LoadFromMemory(
+                *m_device, cmdList,
+                bytes.data(), bytes.size(),
+                formatHint.c_str(),
+                srgb);
+        }
+    }
+
+    // VFS が空（ディスクモード / マウント前 / ファイル不在）なら元のファイル読み込みにフォールバック
+    if (!texture)
+    {
+        texture = TextureLoader::LoadFromFile(*m_device, cmdList, filePath, srgb);
+    }
+
     if (!texture)
     {
         Logger::Warn("Failed to load texture, returning nullptr");
