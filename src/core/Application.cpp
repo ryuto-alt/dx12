@@ -3681,8 +3681,31 @@ void Application::Render()
         m_camera->SetPerspective(DirectX::XM_PIDIV4,
             static_cast<f32>(vpW) / static_cast<f32>(vpH), 0.1f, 1000.0f);
     else
-        // Play / 単体ゲーム: ゲームカメラの fov は維持し、アスペクトだけ実ビューポートに合わせる
-        m_camera->SetAspect(static_cast<f32>(vpW) / static_cast<f32>(vpH));
+    {
+        // Play / 単体ゲーム: アクティブな CameraComponent の投影（透視/正射・FOV・orthoSize・near/far）を
+        // 実ビューポートのアスペクトで m_camera に毎フレーム反映する。
+        // ★ これが無いと、EnterPlayMode が FOV を 45 にハードコードしたまま直Playが描画され
+        //   （ゲームカメラの実 FOV=60 が反映されない）、真上カメラ＋FOV45 の組み合わせで CSM の
+        //   カスケード当てはめが変わり影の自己遮蔽で画面全体が暗くなる不具合があった
+        //   （title 経由のシーンロードは同期されFOV60＝明るい、という経路差として表面化）。
+        //   投影をカメラ実体に揃えることで直Play / 遷移どちらでも一貫して正しい見た目になる。
+        const f32 aspect = static_cast<f32>(vpW) / static_cast<f32>(vpH);
+        bool applied = false;
+        auto& reg = m_scene->GetRegistry();
+        for (auto [e, cam] : reg.view<const CameraComponent>().each())
+        {
+            if (!cam.isActive) continue;
+            if (cam.projection == CameraProjection::Orthographic)
+                m_camera->SetOrthographic(2.0f * cam.orthoSize, aspect, cam.nearClip, cam.farClip);
+            else
+                m_camera->SetPerspective(DirectX::XMConvertToRadians(cam.fovDegrees),
+                                         aspect, cam.nearClip, cam.farClip);
+            applied = true;
+            break;
+        }
+        if (!applied)
+            m_camera->SetAspect(aspect);  // アクティブカメラが無ければアスペクトのみ更新
+    }
 
     // ===== 深度プリパス → SSAO（透視のみ。2D 正射ビューや無効時は素通し）=====
     // SSAO 有効時はカメラ視点の深度を m_depthBuffer へ先に完成させ、深度から法線を再構築して AO を作る。

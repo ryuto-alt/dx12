@@ -48,6 +48,11 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
     ImGuizmo::SetDrawlist(ImGui::GetBackgroundDrawList());
     ImGuizmo::SetRect(vpX, vpY, vpW, vpH);
 
+    // 軸が奥を向くと ImGuizmo は軸を反転(flip)させ、その印として黒い破線(ハッチング)を
+    // 矢印上に重ねて描く。これが X/Z 矢印に黒い線が走るように見える原因なので、太さ 0 にして
+    // 描画を抑止する（反転自体は掴みやすさのため残す）。GetStyle はグローバル状態なので毎フレーム設定で良い。
+    ImGuizmo::GetStyle().HatchedAxisLineThickness = 0.0f;
+
     ImGuizmo::OPERATION op = ImGuizmo::TRANSLATE;
     if (ctx.gizmoMode == GizmoMode::Rotate) op = ImGuizmo::ROTATE;
     if (ctx.gizmoMode == GizmoMode::Scale)  op = ImGuizmo::SCALE;
