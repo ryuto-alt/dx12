@@ -39,6 +39,7 @@
 #include <cstdio>
 #include <functional>
 #include <string>
+#include <vector>
 
 using namespace dx12e;
 
@@ -726,6 +727,54 @@ static void Test_SSAOSettings()
     }
 }
 
+// エンティティ並び順の往復安定性（Play→Stop で Hierarchy が逆転しないこと）。
+// Hierarchy 表示順は registry の view<NameTag>().each()（プール順）で決まる。Play→Stop は
+// SaveToString→Clear→LoadFromString で再生成するため、保存順が往復ごとに反転すると
+// 停止のたびに並びが逆転する（実バグ）。SaveToString が「プール挿入順」で保存することで
+// 往復が同一順序になる。ここでは 2 回の往復で view 列挙順が不変であることを検証する。
+static std::vector<std::string> NameOrder(Scene& s)
+{
+    std::vector<std::string> names;
+    auto& reg = s.GetRegistry();
+    for (auto [e, tag] : reg.view<const NameTag>().each())
+    {
+        (void)e;
+        names.push_back(tag.name);
+    }
+    return names;
+}
+
+static void Test_EntityOrderStable()
+{
+    Scene src;
+    {
+        auto& reg = src.GetRegistry();
+        for (int i = 0; i < 6; ++i)
+        {
+            entt::entity e = reg.create();
+            reg.emplace<NameTag>(e, NameTag{"E" + std::to_string(i)});
+            reg.emplace<Transform>(e);
+        }
+    }
+
+    // 1 回目の Play→Stop 相当: src を保存 → dst1 へ復元
+    const std::string js1 = SceneSerializer::SaveToString(src, "");
+    CHECK(!js1.empty());
+    Scene dst1;
+    CHECK(SceneSerializer::LoadFromString(dst1, js1, ""));
+    const std::vector<std::string> order1 = NameOrder(dst1);
+
+    // 2 回目の Play→Stop 相当: dst1 を保存 → dst2 へ復元
+    const std::string js2 = SceneSerializer::SaveToString(dst1, "");
+    Scene dst2;
+    CHECK(SceneSerializer::LoadFromString(dst2, js2, ""));
+    const std::vector<std::string> order2 = NameOrder(dst2);
+
+    // 6 体そろっていて、表示順が往復で不変（停止のたびに逆転しない）。
+    CHECK(order1.size() == 6);
+    CHECK(order1 == order2);
+}
+
 // 中立ヘッダ(ComponentRegistry.h)が /WX で通り、型が使えることの最小確認。
 static void Test_RegistryHeaderCompiles()
 {
@@ -760,6 +809,7 @@ int main()
     Test_Sprite2D();
     Test_SkyboxSettings();
     Test_SSAOSettings();
+    Test_EntityOrderStable();
     Test_RegistryHeaderCompiles();
 
     std::printf("serialize_roundtrip: %d checks, %d failures\n", g_checks, g_failures);

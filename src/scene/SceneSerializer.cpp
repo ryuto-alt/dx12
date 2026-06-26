@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <unordered_map>
 #include <vector>
+#include <algorithm>
 
 using json = nlohmann::json;
 using namespace DirectX;
@@ -626,16 +627,23 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
 
     const auto& reg = scene.GetRegistry();
 
-    // 1パス目: 保存順を確定して entity → 配列インデックスの対応を作る
+    // 1パス目: 保存順を確定して entity → 配列インデックスの対応を作る。
+    // ★ entt の view.each() はプール末尾→先頭（逆挿入順）で列挙する。そのまま保存すると
+    //   Play→Stop（SaveToString→Clear→LoadFromString で再生成）の往復ごとに生成順が反転し、
+    //   Hierarchy の並びが停止のたびに逆転していた。view.each() の結果を reverse して
+    //   「プール挿入順＝再生成時に再現される順」で保存することで、往復が同一順序になり安定する。
     std::vector<entt::entity> order;
-    std::unordered_map<entt::entity, int> indexOf;
     auto view = reg.view<const NameTag, const Transform>();
     for (auto [entity, tag, transform] : view.each())
     {
         (void)tag; (void)transform;
-        indexOf[entity] = static_cast<int>(order.size());
         order.push_back(entity);
     }
+    std::reverse(order.begin(), order.end());
+
+    std::unordered_map<entt::entity, int> indexOf;
+    for (int i = 0; i < static_cast<int>(order.size()); ++i)
+        indexOf[order[i]] = i;
 
     // 2パス目: 直列化 + 親子関係をインデックス参照で保存
     for (auto entity : order)
