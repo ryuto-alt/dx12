@@ -181,7 +181,12 @@ AudioClip* AudioSystem::GetOrLoadClip(const std::string& filePath)
         loaded = clip->LoadFromFile(fullPath);
 
     if (!loaded)
+    {
+        // 無言で消える音を可視化（pak ミス / 形式不明 / ファイル欠落）。
+        Logger::Warn("Audio load failed: '{}' (vfs+disk both failed; gameMode={})",
+                     filePath, vfs::InGameMode());
         return nullptr;
+    }
 
     AudioClip* rawPtr = clip.get();
     m_clipCache[filePath] = std::move(clip);

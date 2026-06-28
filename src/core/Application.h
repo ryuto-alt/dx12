@@ -80,7 +80,8 @@ public:
     void Shutdown();
 
     // ヘッドレスでゲームをビルド（--build CLI 用）。開始シーンは title.json があればそれ。
-    void BuildGameStandalone();
+    // 成否を返す（CLI の終了コード / GUI の完了表示に使う）。
+    bool BuildGameStandalone();
 
     enum class EngineMode { Editor, Playing };
 
@@ -126,7 +127,10 @@ private:
     void SaveCurrentProject();
     void EnterPlayMode();
     void EnterEditorMode();
-    void BuildGame();
+    bool BuildGame();  // 成否を返す（早期 return = 失敗）
+    // グローバル game.lua をロード（ScriptEngine 再初期化のたびに呼ぶ）。
+    // ゲームモードは pak から読むのでディスク存在チェックを迂回する。
+    void LoadGameScript();
 
     // Lua の loadScene/nextScene/quit/ui コールバックを ScriptEngine に注入（再生成のたび呼ぶ）
     void WireScriptCallbacks();

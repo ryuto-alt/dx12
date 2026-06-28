@@ -173,6 +173,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
     {
         bool gameMode  = false;
         bool buildMode = false;
+        std::string buildProjectDir;  // --build <dir> で指定したプロジェクト（空=組み込み）
 #ifndef DX12_GAME_RUNTIME
         if (lpCmdLine)
         {
@@ -195,8 +196,20 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
 
             if (args.find("--game") != std::string::npos)
                 gameMode = true;
-            if (args.find("--build") != std::string::npos)
+            // --build [<projectDir>]: ヘッドレスでゲームをビルド。プロジェクトパスを
+            // 渡すとそのプロジェクトを対象にする（GUI なしでビルド可能 = CLI から検証できる）。
+            size_t bpos = args.find("--build");
+            if (bpos != std::string::npos)
+            {
                 buildMode = true;
+                std::string rest = args.substr(bpos + 7);  // "--build" の後ろ
+                size_t b = rest.find_first_not_of(" \t\"");
+                if (b != std::string::npos && rest[b] != '-')
+                {
+                    size_t e = rest.find_last_not_of(" \t\"");
+                    buildProjectDir = rest.substr(b, e - b + 1);
+                }
+            }
             if (args.find("--editor") != std::string::npos)
                 gameMode = false;  // 明示的にエディタ起動
         }
@@ -251,9 +264,13 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         if (buildMode)
         {
             // ヘッドレスでゲームをビルドして終了
-            app.BuildGameStandalone();
+#ifndef DX12_GAME_RUNTIME
+            if (!buildProjectDir.empty())
+                dx12e::PathResolver::SetProjectRoot(buildProjectDir);
+#endif
+            const bool ok = app.BuildGameStandalone();
             app.Shutdown();
-            return EXIT_SUCCESS;
+            return ok ? EXIT_SUCCESS : EXIT_FAILURE;
         }
 
         app.Run();

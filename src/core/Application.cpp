@@ -316,18 +316,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                                    m_physicsSystem.get(), PathResolver::AssetsDir());
         WireScriptCallbacks();
 
-        // ゲームスクリプト読み込み
-        {
-            std::string scriptPath = PathResolver::GameLuaPath();
-            if (std::filesystem::exists(scriptPath))
-            {
-                m_scriptEngine->LoadScript(scriptPath);
-            }
-            else
-            {
-                Logger::Warn("Game script not found: {}", scriptPath);
-            }
-        }
+        // ゲームスクリプト読み込み（グローバル game.lua）
+        LoadGameScript();
 
         // 初期シーン: (配布) game.json の startScene → (エディタ) 最後に開いたシーン → default.json → クリーン状態
         {
@@ -784,7 +774,9 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_modeChangeRequested = true;
     }
 
-    // 全モデルのサムネイルを起動時にロード/レンダリング
+    // 全モデルのサムネイルを起動時にロード/レンダリング（エディタ専用機能）。
+    // ゲーム(封印ランタイム)では実行しない＝起動時に exe 隣へ assets/.thumbcache/ を作らない。
+    if (!m_isGameMode)
     {
         size_t uncachedCount = m_thumbRenderer->ScanAllModels(PathResolver::AssetsDir());
         size_t cachedCount   = m_thumbRenderer->GetCachedCount();
@@ -1696,11 +1688,7 @@ void Application::RebuildScene()
                                m_physicsSystem.get(), PathResolver::AssetsDir());
     WireScriptCallbacks();
 
-    std::string scriptPath = PathResolver::GameLuaPath();
-    if (std::filesystem::exists(scriptPath))
-    {
-        m_scriptEngine->LoadScript(scriptPath);
-    }
+    LoadGameScript();
 
     ThrowIfFailed(cmdList->Close());
     m_commandQueue->ExecuteCommandList(cmdList);
@@ -2012,13 +2000,11 @@ void Application::LoadProject(const ProjectInfo& info)
         m_editorLayer->SetAssetRoots(PathResolver::AssetsDir(), PathResolver::ScriptsDir());
 
     // 3) プロジェクトの game.lua を読み込み直す
+    LoadGameScript();
     {
         std::string scriptPath = PathResolver::GameLuaPath();
         if (fs::exists(scriptPath))
-        {
-            m_scriptEngine->LoadScript(scriptPath);
-            m_scriptLastWriteTime = fs::last_write_time(scriptPath);
-        }
+            m_scriptLastWriteTime = fs::last_write_time(scriptPath);  // ホットリロード用（エディタ）
     }
 
     // 4) 開始シーンを決定してロード（フレーム境界で実行）
@@ -2466,9 +2452,10 @@ void Application::SyncActiveCameraToGlobal()
 void Application::DoRuntimeSceneLoad(const std::string& rel, ID3D12GraphicsCommandList* cmdList)
 {
     std::string full = PathResolver::AssetsDir() + rel;
-    if (!std::filesystem::exists(full))
+    // ゲームモードはシーンが pak 内＝ディスクに無いので vfs::Exists で確認（エディタはディスク）。
+    if (!dx12e::vfs::Exists(rel))
     {
-        Logger::Warn("loadScene: scene not found: {}", full);
+        Logger::Warn("loadScene: scene not found: {}", rel);
         return;
     }
 
@@ -2493,8 +2480,7 @@ void Application::DoRuntimeSceneLoad(const std::string& rel, ID3D12GraphicsComma
     m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(), m_camera.get(),
                                m_audioSystem.get(), m_physicsSystem.get(), PathResolver::AssetsDir());
     WireScriptCallbacks();
-    std::string gs = PathResolver::GameLuaPath();
-    if (std::filesystem::exists(gs)) m_scriptEngine->LoadScript(gs);
+    LoadGameScript();
 
     // アクティブカメラがなければ最初のものを有効化
     {
@@ -2632,11 +2618,7 @@ void Application::EnterPlayMode()
                                m_physicsSystem.get(), PathResolver::AssetsDir());
     WireScriptCallbacks();
 
-    std::string scriptPath = PathResolver::GameLuaPath();
-    if (std::filesystem::exists(scriptPath))
-    {
-        m_scriptEngine->LoadScript(scriptPath);
-    }
+    LoadGameScript();
     m_eventBus.Clear();   // Play 開始時に前 Play の購読を完全消去
     m_scriptEngine->OnPlayStart();
     if (m_particleSystem) m_particleSystem->Clear();  // Play 開始時に粒子をリセット
@@ -2743,9 +2725,12 @@ void Application::EnterPlayMode()
         }
     }
 
-    // ホットリロード用タイムスタンプ更新
-    if (std::filesystem::exists(scriptPath))
-        m_scriptLastWriteTime = std::filesystem::last_write_time(scriptPath);
+    // ホットリロード用タイムスタンプ更新（エディタ）
+    {
+        std::string scriptPath = PathResolver::GameLuaPath();
+        if (std::filesystem::exists(scriptPath))
+            m_scriptLastWriteTime = std::filesystem::last_write_time(scriptPath);
+    }
 
     m_engineMode = EngineMode::Playing;
     Logger::Info("Entered PLAY mode");
@@ -2828,16 +2813,29 @@ void Application::EnterEditorMode()
     Logger::Info("Entered EDITOR mode");
 }
 
-void Application::BuildGameStandalone()
+void Application::LoadGameScript()
+{
+    // ゲームモードでは game.lua はディスクに無く game.pak 内に在る（exists() は false）。
+    // LoadScript は VFS 経由で pak から読むので、InGameMode 時は存在チェックを迂回する。
+    // ※ ScriptEngine を作り直すたび（EnterPlayMode / シーン切替 / プロジェクト読込）に
+    //   グローバル OnUpdate も作り直されるので、その都度ここを呼ぶ必要がある。
+    std::string scriptPath = PathResolver::GameLuaPath();
+    if (dx12e::vfs::InGameMode() || std::filesystem::exists(scriptPath))
+        m_scriptEngine->LoadScript(scriptPath);
+    else
+        Logger::Warn("Game script not found: {}", scriptPath);
+}
+
+bool Application::BuildGameStandalone()
 {
     // 開始シーンを title.json に（あれば）。無ければ現在の currentScenePath を使う。
     std::string title = PathResolver::AssetsDir() + "scenes/title.json";
     if (std::filesystem::exists(title))
         m_editorCtx->currentScenePath = title;
-    BuildGame();
+    return BuildGame();
 }
 
-void Application::BuildGame()
+bool Application::BuildGame()
 {
     namespace fs = std::filesystem;
 
@@ -2859,7 +2857,7 @@ void Application::BuildGame()
         if (!fs::exists(runtimeSrc))
         {
             Logger::Error("GameRuntime.exe not found at {}; build it first", runtimeSrc.string());
-            return;
+            return false;
         }
 
         fs::copy_file(runtimeSrc, outputDir / "Game.exe", fs::copy_options::overwrite_existing);
@@ -2906,7 +2904,7 @@ void Application::BuildGame()
         if (!pak.Open((outputDir / "game.pak").string()))
         {
             Logger::Error("Failed to open game.pak for writing");
-            return;
+            return false;
         }
 
         // assets/ 配下を全パック（Normalize が "assets/" プレフィックスを剥がす）
@@ -2937,6 +2935,24 @@ void Application::BuildGame()
             }
         }
 
+        // shaders/ 配下の .cso を全パック（"shaders/" プレフィックス付き）。
+        // → 出荷フォルダにプレーンな shaders/ を置かず、暗号化して pak に封入する。
+        //   実行時は ShaderCompiler::LoadFromFile が VFS 経由で pak から復号する。
+        {
+            fs::path shadersDir = fs::path(PathResolver::ShaderDirW());
+            if (fs::exists(shadersDir))
+            {
+                std::error_code ec;
+                for (auto& entry : fs::recursive_directory_iterator(shadersDir, ec))
+                {
+                    if (!entry.is_regular_file()) continue;
+                    std::string relPath = "shaders/" +
+                        entry.path().lexically_relative(shadersDir).generic_string();
+                    pak.AddFile(entry.path().string(), relPath);
+                }
+            }
+        }
+
         // ブートマニフェスト（game.json の代替。GameRuntime は pak からこれを読む）
         {
             std::string manifest =
@@ -2953,21 +2969,12 @@ void Application::BuildGame()
         if (!pak.Finish(/*stripStrings=*/true))
         {
             Logger::Error("Failed to finalize game.pak");
-            return;
+            return false;
         }
         Logger::Info("Packed game.pak (startScene = {})", startSceneRel);
     }
 
-    // 4. shaders/ をコピー（.cso は暗号化しない: エンジン所有 DXBC/DXIL）
-    {
-        fs::path shadersSrc = fs::path(PathResolver::ShaderDirW());
-        fs::path shadersDst = outputDir / "shaders";
-        if (fs::exists(shadersSrc))
-        {
-            fs::copy(shadersSrc, shadersDst, fs::copy_options::recursive | fs::copy_options::overwrite_existing);
-            Logger::Info("Copied shaders/");
-        }
-    }
+    // 4. （shaders は手順 2+3 の game.pak に暗号化封入済み＝プレーンな shaders/ は出力しない）
 
     // 5. 起動用バッチ（GameRuntime は --game 不要: 常にゲームモード）
     {
@@ -2978,6 +2985,7 @@ void Application::BuildGame()
     }
 
     Logger::Info("Game build complete: {}", outputDir.string());
+    return true;
 }
 
 void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u32 frameIndex,
@@ -4805,8 +4813,10 @@ void Application::Render()
         if (m_editorCtx->pendingBuildGame)
         {
             m_editorCtx->pendingBuildGame = false;
-            BuildGame();
-            m_editorCtx->buildCompleteFlash = 3.0f;
+            if (BuildGame())
+                m_editorCtx->buildCompleteFlash = 3.0f;
+            else
+                m_editorCtx->buildErrorFlash = 6.0f;  // 失敗時は赤で長めに表示（詳細は dx12_engine.log）
         }
 
         // Deferred: entity deletion

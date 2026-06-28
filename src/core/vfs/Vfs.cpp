@@ -168,9 +168,17 @@ std::vector<uint8_t> ReadAssetAbs(const std::string& absPath)
         return ReadAsset(a.substr(base.size()));
     }
 
-    // プレフィックスが無い（assets/ 外の絶対パス）。
+    // assets/ の外の絶対パス。
     if (g_pak)
-        return {}; // ゲームモードでは空
+    {
+        // ゲームモード: BaseDir(=exe フォルダ) 相対のキーで pak を引く。
+        // scripts/game.lua や shaders/Foo.cso は assets/ の外に在るが、pak には
+        // "scripts/"・"shaders/" プレフィックス付きで封入されている（BuildGame 参照）。
+        const std::string root = ToLowerSlash(PathResolver::BaseDir());
+        if (!root.empty() && a.size() >= root.size() && a.compare(0, root.size(), root) == 0)
+            return ReadAsset(a.substr(root.size()));
+        return {}; // ゲームモードで未知のパス
+    }
     return ReadFileBytes(absPath); // ディスクモードは生読み（エディタ挙動維持）
 }
 

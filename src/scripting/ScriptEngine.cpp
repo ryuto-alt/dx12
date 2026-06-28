@@ -26,6 +26,7 @@
 #include "animation/NodeGraph.h"
 
 #include <DirectXMath.h>
+#include <tuple>
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
@@ -403,7 +404,19 @@ void ScriptEngine::RegisterBindings()
         "getMoveSpeed",  &Camera::GetMoveSpeed,
         "setMoveSpeed",  &Camera::SetMoveSpeed,
         "getMouseSensitivity", &Camera::GetMouseSensitivity,
-        "setMouseSensitivity", &Camera::SetMouseSensitivity
+        "setMouseSensitivity", &Camera::SetMouseSensitivity,
+        // ワールド座標→正規化スクリーン座標(u,v∈[0,1], 左上原点)。戻り: u, v, visible
+        // スクリプトの頭上ダメージ数値などが使う。w<=0(背面)や画面外は visible=false。
+        "project", [](Camera& cam, f32 x, f32 y, f32 z) {
+            using namespace DirectX;
+            XMVECTOR clip = XMVector4Transform(XMVectorSet(x, y, z, 1.0f), cam.GetViewProjMatrix());
+            f32 w = XMVectorGetW(clip);
+            if (w <= 1e-5f) return std::make_tuple(0.0f, 0.0f, false);
+            f32 u = XMVectorGetX(clip) / w * 0.5f + 0.5f;
+            f32 v = 0.5f - XMVectorGetY(clip) / w * 0.5f;
+            bool vis = (u > -0.2f && u < 1.2f && v > -0.2f && v < 1.2f);
+            return std::make_tuple(u, v, vis);
+        }
     );
 
     // --- Audio ---

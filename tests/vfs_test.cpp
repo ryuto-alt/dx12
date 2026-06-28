@@ -12,6 +12,8 @@
 #include "core/vfs/PakWriter.h"
 #include "core/vfs/PakArchive.h"
 #include "core/vfs/PakFormat.h"
+#include "core/vfs/Vfs.h"
+#include "core/PathResolver.h"
 
 #include <array>
 #include <cstdio>
@@ -194,12 +196,81 @@ static void Test_PakRoundTrip()
     fs::remove_all(dir, ec);
 }
 
+// 実行時の VFS ファサード（pak マウント時）が、ローダの渡す絶対パスを正しく
+// pak キーへ解決することを検証する。特に assets/ の外に在る scripts/・shaders/ を
+// BaseDir 相対で引けること（= ビルドしたゲームで game.lua とシェーダが読めること）。
+static void Test_ReadAssetAbs_GameMode()
+{
+    fs::path dir = fs::temp_directory_path() / "dx12_vfs_abs_test";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir / "src", ec);
+
+    // PathResolver を testDir に向ける: BaseDir=dir/, AssetsDir=dir/assets/, ScriptsDir=dir/scripts/。
+    PathResolver::Initialize(false);
+    PathResolver::SetProjectRoot(dir.generic_string());
+
+    struct Item { std::string rel; std::vector<uint8_t> bytes; };
+    std::vector<Item> items = {
+        { "scripts/game.lua",       MakeBytes("function OnUpdate(dt) end") },
+        { "shaders/Forward_VS.cso", MakeBytes("DXBC fake bytecode 0123456789") },
+        { "textures/foo.png",       MakeBytes("\x89PNG fake texture bytes") },
+    };
+
+    int n = 0;
+    for (auto& it : items)
+    {
+        fs::path p = dir / "src" / ("f" + std::to_string(n++) + ".dat");
+        std::ofstream o(p, std::ios::binary);
+        o.write(reinterpret_cast<const char*>(it.bytes.data()),
+                static_cast<std::streamsize>(it.bytes.size()));
+    }
+
+    fs::path pakPath = dir / "game.pak";
+    {
+        vfs::PakWriter w;
+        CHECK(w.Open(pakPath.string()));
+        int k = 0;
+        for (auto& it : items)
+        {
+            fs::path p = dir / "src" / ("f" + std::to_string(k++) + ".dat");
+            CHECK(w.AddFile(p.string(), it.rel));
+        }
+        CHECK(w.Finish(/*stripStrings=*/true));
+    }
+
+    CHECK(vfs::MountPak(pakPath.string()));
+    CHECK(vfs::InGameMode());
+
+    const std::string base   = PathResolver::BaseDir();    // dir/
+    const std::string assets = PathResolver::AssetsDir();  // dir/assets/
+
+    // 相対キー（既存パス）。
+    CHECK(vfs::ReadAsset("scripts/game.lua") == items[0].bytes);
+
+    // 絶対パス -> BaseDir 相対キー解決（バグ#1: game.lua、目標#3: shaders の実行時経路）。
+    CHECK(vfs::ReadAssetAbs(base + "scripts/game.lua")       == items[0].bytes);
+    CHECK(vfs::ReadAssetAbs(base + "shaders/Forward_VS.cso") == items[1].bytes);
+
+    // 絶対パス -> AssetsDir 相対キー解決（テクスチャ等の既存経路が壊れていない）。
+    CHECK(vfs::ReadAssetAbs(assets + "textures/foo.png")     == items[2].bytes);
+
+    // pak に無いものは空（ゲームモードでディスクへフォールバックして漏れない）。
+    CHECK(vfs::ReadAssetAbs(base + "scripts/missing.lua").empty());
+
+    vfs::Unmount();
+    CHECK(!vfs::InGameMode());
+
+    fs::remove_all(dir, ec);
+}
+
 int main()
 {
     Test_AesRoundTrip();
     Test_AesTamperFails();
     Test_XpressRoundTrip();
     Test_PakRoundTrip();
+    Test_ReadAssetAbs_GameMode();
 
     std::printf("Vfs: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

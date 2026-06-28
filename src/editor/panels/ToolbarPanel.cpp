@@ -534,6 +534,16 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::PopStyleColor();
         ctx.buildCompleteFlash -= clock->GetDeltaTime();
     }
+    else if (ctx.buildErrorFlash > 0.0f)
+    {
+        ImGui::SameLine(0, 8);
+        ImGui::AlignTextToFramePadding();
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.35f, 0.35f, 1.0f));
+        // ✗ ビルド失敗 (dx12_engine.log)
+        ImGui::Text("\xe2\x9c\x97 \xe3\x83\x93\xe3\x83\xab\xe3\x83\x89\xe5\xa4\xb1\xe6\x95\x97 (dx12_engine.log)");
+        ImGui::PopStyleColor();
+        ctx.buildErrorFlash -= clock->GetDeltaTime();
+    }
 
     // ===== ツール窓トグル（窓: …。既定OFF=中核4窓だけ。押すと右下に出る/もう一度で閉じる）=====
     ImGui::SameLine(0, 12);

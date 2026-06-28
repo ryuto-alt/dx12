@@ -144,6 +144,7 @@ public:
     // 通知フラッシュ
     f32 hotReloadFlash    = 0.0f;
     f32 buildCompleteFlash = 0.0f;
+    f32 buildErrorFlash    = 0.0f;  // ビルド失敗表示（>0 の間 赤で「✗ ビルド失敗」）
 
     // エラー通知（Play 不可等）
     std::string errorMessage;
