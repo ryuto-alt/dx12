@@ -1,7 +1,7 @@
 @echo off
 setlocal
 set "VCPKG_ROOT=C:\Users\ryuto\vcpkg"
-call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
 cd /d "%~dp0"
 powershell -ExecutionPolicy Bypass -File tools/gen_asset_key.ps1 || exit /b 1
 cmake --preset windows-release || exit /b 1
