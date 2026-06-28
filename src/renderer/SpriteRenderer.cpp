@@ -103,8 +103,9 @@ void SpriteRenderer::Initialize(GraphicsDevice& device, DescriptorHeap* srvHeap,
     }
 
     // --- Dynamic Vertex Buffer (Upload Heap) ---
+    // kFrameCount 区画ぶん確保し、フレームごとに別区画へ書く（in-flight 競合＝チラつき防止）。
     {
-        const UINT bufferSize = kMaxVertices * sizeof(Vertex);
+        const UINT bufferSize = kFrameCount * kMaxVertices * sizeof(Vertex);
         D3D12_HEAP_PROPERTIES heapProps{};
         heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
         D3D12_RESOURCE_DESC res{};
@@ -132,6 +133,7 @@ void SpriteRenderer::Initialize(GraphicsDevice& device, DescriptorHeap* srvHeap,
 
 void SpriteRenderer::BeginFrame()
 {
+    m_frameIdx = (m_frameIdx + 1) % kFrameCount;   // フレーム間で区画を巡回(in-flight 競合＝チラつき防止)
     m_sprites.clear();
 }
 
@@ -169,11 +171,22 @@ void SpriteRenderer::Render(ID3D12GraphicsCommandList* cmd, u32 screenW, u32 scr
     u32 vertexCount = static_cast<u32>(verts.size());
     if (vertexCount > kMaxVertices) vertexCount = kMaxVertices;
 
+    // フレーム多重化: 前フレームが in-flight で読んでいる区画を上書きしないよう、BeginFrame で
+    // 進めた m_frameIdx の区画へ書く。単一区画だとトリプルバッファで GPU/CPU が競合し
+    // HUD がチラつく/途中で消える。
+    const UINT regionBytes  = kMaxVertices * sizeof(Vertex);
+    const UINT regionOffset = m_frameIdx * regionBytes;
+
     void* mapped = nullptr;
     D3D12_RANGE readRange = {0, 0};
     ThrowIfFailed(m_vertexBuffer->Map(0, &readRange, &mapped));
-    memcpy(mapped, verts.data(), vertexCount * sizeof(Vertex));
+    memcpy(static_cast<u8*>(mapped) + regionOffset, verts.data(), vertexCount * sizeof(Vertex));
     m_vertexBuffer->Unmap(0, nullptr);
+
+    // view を今フレームの区画へ向ける。
+    m_vbView.BufferLocation = m_vertexBuffer->GetGPUVirtualAddress() + regionOffset;
+    m_vbView.StrideInBytes  = sizeof(Vertex);
+    m_vbView.SizeInBytes    = vertexCount * sizeof(Vertex);
 
     // 正射影（左上原点）。転置して渡す（HLSL は mul(rowvec, M)）。
     XMMATRIX ortho = XMMatrixOrthographicOffCenterLH(
@@ -263,7 +276,7 @@ void SpriteRenderer::InitializeWorld(GraphicsDevice& device, DXGI_FORMAT sceneRt
 
     // world 用 動的頂点バッファ（Upload Heap）。1 フレーム複数パス分の容量。
     {
-        const UINT bufferSize = kWorldMaxVerts * sizeof(Vertex);
+        const UINT bufferSize = kFrameCount * kWorldMaxVerts * sizeof(Vertex);
         D3D12_HEAP_PROPERTIES heapProps{};
         heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
         D3D12_RESOURCE_DESC res{};
@@ -291,6 +304,7 @@ void SpriteRenderer::InitializeWorld(GraphicsDevice& device, DXGI_FORMAT sceneRt
 
 void SpriteRenderer::BeginWorldVertexFrame()
 {
+    m_worldFrameIdx = (m_worldFrameIdx + 1) % kFrameCount;   // フレーム間で区画を巡回(チラつき防止)
     m_worldVbCursor = 0;
 }
 
@@ -372,12 +386,21 @@ void SpriteRenderer::RenderWorld(ID3D12GraphicsCommandList* cmd, XMMATRIX viewPr
     if (base >= kWorldMaxVerts) return;
     if (base + vertexCount > kWorldMaxVerts) vertexCount = kWorldMaxVerts - base;
 
+    // フレーム間の区画オフセット（in-flight 競合＝チラつき防止）。フレーム内は base で線形に詰める。
+    const size_t regionVtx = static_cast<size_t>(m_worldFrameIdx) * kWorldMaxVerts;
+
     void* mapped = nullptr;
     D3D12_RANGE readRange = {0, 0};
     ThrowIfFailed(m_worldVertexBuffer->Map(0, &readRange, &mapped));
-    memcpy(static_cast<char*>(mapped) + static_cast<size_t>(base) * sizeof(Vertex),
+    memcpy(static_cast<char*>(mapped) + (regionVtx + base) * sizeof(Vertex),
            verts.data(), vertexCount * sizeof(Vertex));
     m_worldVertexBuffer->Unmap(0, nullptr);
+
+    // view を今フレームの区画先頭へ向ける（DrawInstanced の base+vtx は区画相対）。
+    m_worldVbView.BufferLocation = m_worldVertexBuffer->GetGPUVirtualAddress()
+                                 + regionVtx * sizeof(Vertex);
+    m_worldVbView.StrideInBytes  = sizeof(Vertex);
+    m_worldVbView.SizeInBytes    = kWorldMaxVerts * sizeof(Vertex);
 
     // viewProj を転置して b0 へ（HLSL は mul(rowvec, M)）。正射カメラ時も同じ経路で正しく射影される。
     XMFLOAT4X4 vpT;

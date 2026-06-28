@@ -77,6 +77,9 @@ private:
 
     static constexpr u32 kMaxSprites  = 4096;
     static constexpr u32 kMaxVertices = kMaxSprites * 6;
+    // in-flight 多重度（SwapChain::kFrameCount と一致）。頂点バッファをこの数の区画に
+    // 分割して巡回し、GPU が前フレームで読んでいる区画を CPU が上書きしない（チラつき防止）。
+    static constexpr u32 kFrameCount  = 3;
     // world 頂点バッファは 1 フレームに複数パス（メイン＋プレビュー）書き込むため余裕を持たせる。
     static constexpr u32 kWorldMaxVerts = kMaxVertices * 2;
 
@@ -87,6 +90,7 @@ private:
 
     DescriptorHeap* m_srvHeap = nullptr;
     std::vector<SpriteDesc> m_sprites;
+    u32  m_frameIdx = 0;   // HUD 頂点バッファの巡回区画インデックス
     bool m_initialized = false;
 
     // ワールド空間経路（HUD と隔離）。RootSig は m_rootSig を共有。
@@ -95,6 +99,7 @@ private:
     D3D12_VERTEX_BUFFER_VIEW                     m_worldVbView{};
     std::vector<WorldSpriteDesc>                m_worldSprites;
     u32  m_worldVbCursor   = 0;        // フレーム内の頂点書き込み位置（BeginWorldVertexFrame で 0）
+    u32  m_worldFrameIdx   = 0;        // world 頂点バッファの巡回区画インデックス（フレーム間）
     bool m_worldInitialized = false;
 };
 
