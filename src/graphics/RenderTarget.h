@@ -36,6 +36,7 @@ public:
     DXGI_FORMAT                 GetFormat()   const { return m_format; }
     u32                         GetWidth()    const { return m_width; }
     u32                         GetHeight()   const { return m_height; }
+    D3D12_RESOURCE_STATES       GetState()    const { return m_state; }  // 生バリア用の現状態
 
 private:
     void CreateResourceAndViews(GraphicsDevice& device, bool allocateViews);

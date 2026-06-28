@@ -16,6 +16,14 @@ struct GitResult
     bool        ok() const { return exitCode == 0; }
 };
 
+// 変更ファイル1件（git status の1行）。VS の「変更」リスト表示用。
+struct GitFileChange
+{
+    std::string path;     // リポジトリ相対パス（リネームは新名）。区切りは '/'。
+    char        status;   // 表示用1文字: 'A'追加/未追跡 'M'変更 'D'削除 'R'リネーム 'U'競合
+    bool        staged;   // index に乗っているか（今は表示用。コミットは add -A 一括）
+};
+
 class GitIntegration
 {
 public:
@@ -39,6 +47,7 @@ public:
     static GitResult Pull(const std::string& workDir);                       // git pull
     static GitResult Fetch(const std::string& workDir);                      // git fetch --all --prune
     static GitResult Status(const std::string& workDir);                     // git status --short --branch
+    static std::vector<GitFileChange> ChangedFiles(const std::string& workDir); // 変更ファイル一覧（porcelain 解析）
     static std::string CurrentBranch(const std::string& workDir);
     static std::string RemoteUrl(const std::string& workDir);               // origin の URL（無ければ空）
 

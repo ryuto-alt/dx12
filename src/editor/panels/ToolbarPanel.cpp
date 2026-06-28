@@ -241,7 +241,7 @@ void ToolbarPanel::Render(bool isPlaying,
             ImGui::MenuItem("エンジン設定",            nullptr, &ctx.showEngineSettings);
             ImGui::MenuItem("Scene Flow",              nullptr, &ctx.showSceneFlow);
             ImGui::MenuItem("Project",                 nullptr, &ctx.showProject);
-            ImGui::MenuItem("Version Control (Git)",   nullptr, &ctx.showVersionControl);
+            ImGui::MenuItem("Git 変更",                nullptr, &ctx.showVersionControl);
             ImGui::EndMenu();
         }
 
@@ -250,6 +250,7 @@ void ToolbarPanel::Render(bool isPlaying,
         {
             if (ImGui::MenuItem("ゲームをビルド"))
                 ctx.pendingBuildGame = true;
+            ImGui::MenuItem("MCP / AI Bridge",         nullptr, &ctx.showMcpBridge);
             ImGui::EndMenu();
         }
 
@@ -570,7 +571,7 @@ void ToolbarPanel::Render(bool isPlaying,
     toggleBtn("\xe8\xa8\xad\xe5\xae\x9a", ctx.showEngineSettings, "\xe3\x82\xa8\xe3\x83\xb3\xe3\x82\xb8\xe3\x83\xb3\xe8\xa8\xad\xe5\xae\x9a");  // 設定 / エンジン設定
     toggleBtn("Flow",  ctx.showSceneFlow,      "Scene Flow");
     toggleBtn("Proj",  ctx.showProject,        "Project");
-    toggleBtn("Git",   ctx.showVersionControl, "Version Control (Git)");
+    toggleBtn("Git",   ctx.showVersionControl, "Git 変更");
 
     // ===== シーン名表示 =====
     ImGui::SameLine(0, 16);

@@ -48,17 +48,22 @@
 #include <nlohmann/json.hpp>
 #include <filesystem>
 #include <fstream>
+#include <cstdio>     // sscanf_s（ahead/behind 解析）
+#include <map>        // 変更ファイルツリーの構築
 #include "audio/AudioSystem.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsDebugRenderer.h"
 #include "gui/ImGuiManager.h"
 #include "scene/SceneSerializer.h"
 #include "scene/SceneFlow.h"
+#include "engine/ecs/ComponentRegistry.h"   // MCP set_component の deserialize 走査用
 #include "editor/EditorContext.h"
 #include "editor/EditorLayer.h"
+#include "editor/EditorTheme.h"        // バージョン管理パネルのステータス配色
 #include "editor/EditorIconRenderer.h"
 #include "editor/UndoSystem.h"
 #include "editor/ModelThumbnailRenderer.h"
+#include "editor/panels/McpBridgePanel.h"
 #include "project/Project.h"
 #include "project/ProjectManager.h"
 #include "project/GitIntegration.h"
@@ -83,9 +88,13 @@
 #include <cstring>
 #include <functional>
 #include <unordered_set>
+#include <cctype>
 #include <immintrin.h>
 #include <mmsystem.h>
 #pragma comment(lib, "winmm.lib")
+#include <wincodec.h>                 // MCP screenshot: OS 標準 WIC で PNG 書き出し(外部依存なし)
+#include <DirectXPackedVector.h>      // XMConvertHalfToFloat(FP16 sceneRT → 8bit)
+#pragma comment(lib, "windowscodecs.lib")
 
 namespace dx12e
 {
@@ -894,6 +903,31 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     }
 }
 
+namespace
+{
+// MCP set_component / remove_component 共有の小スイッチ。
+// jsonKey(get_entity が返すキー = deserialize が見るキー) を対応する型へ写して reg.remove<T>(e)。
+// SceneSerializer の RegisterCoreComponentSerializers 登録済みコア部品に限定。
+// 未対応キーは false(呼び側が error を返す)。meshRenderer はメッシュ所有整合が要るため非対応。
+bool RemoveRegisteredComponent(entt::registry& reg, entt::entity e, const std::string& key)
+{
+    if      (key == "pointLight")          reg.remove<PointLight>(e);
+    else if (key == "directionalLight")    reg.remove<DirectionalLight>(e);
+    else if (key == "spotLight")           reg.remove<SpotLight>(e);
+    else if (key == "camera")              reg.remove<CameraComponent>(e);
+    else if (key == "rigidBody")           reg.remove<RigidBody>(e);
+    else if (key == "boxCollider")         reg.remove<BoxCollider>(e);
+    else if (key == "sphereCollider")      reg.remove<SphereCollider>(e);
+    else if (key == "capsuleCollider")     reg.remove<CapsuleCollider>(e);
+    else if (key == "characterController") reg.remove<CharacterController>(e);
+    else if (key == "tags")                reg.remove<Tag>(e);
+    else if (key == "data")                reg.remove<DataComponent>(e);
+    else if (key == "sprite2d")            reg.remove<Sprite2D>(e);
+    else return false;
+    return true;
+}
+} // namespace
+
 std::string Application::HandleMcpCommand(const std::string& line)
 {
     using json = nlohmann::json;
@@ -1042,6 +1076,281 @@ std::string Application::HandleMcpCommand(const std::string& line)
             resp["ok"] = true;
             resp["result"] = json::parse(js);
         }
+        else if (method == "save_scene")
+        {
+            std::string rel = params.value("path", std::string());
+            std::string full;
+            if (rel.empty())
+            {
+                if (m_editorCtx->currentScenePath.empty())
+                    throw std::runtime_error("no current scene; specify 'path'");
+                full = m_editorCtx->currentScenePath;          // 既存は絶対パス
+            }
+            else
+            {
+                if (rel.front() == '/' || rel.find('\\') != std::string::npos ||
+                    rel.find(':') != std::string::npos || rel.find("..") != std::string::npos)
+                    throw std::runtime_error("invalid path (assets 相対のみ)");
+                full = PathResolver::AssetsDir() + rel;        // 末尾 '/' 付き
+                fs::create_directories(fs::path(full).parent_path());
+            }
+            if (!SceneSerializer::Save(*m_scene, full, PathResolver::AssetsDir()))
+                throw std::runtime_error("save failed");
+            resp["ok"] = true;
+            resp["result"] = {{"path", rel.empty() ? m_editorCtx->currentScenePath : rel}};
+        }
+        else if (method == "open_scene")
+        {
+            std::string rel = params.value("path", std::string());
+            if (rel.empty()) throw std::runtime_error("missing 'path'");
+            if (rel.front() == '/' || rel.find('\\') != std::string::npos ||
+                rel.find(':') != std::string::npos || rel.find("..") != std::string::npos)
+                throw std::runtime_error("invalid path (assets 相対のみ)");
+            // 遅延ロード: 既存のシーン読込機構(フレーム境界)が pendingLoadPath を消費し
+            // SceneSerializer::Load + currentScenePath 更新を行う。即返し。
+            m_editorCtx->pendingLoadPath = PathResolver::AssetsDir() + rel;
+            resp["ok"] = true;
+            resp["result"] = {{"queued", true}};
+        }
+        else if (method == "list_scenes")
+        {
+            json arr = json::array();
+            const std::string root = PathResolver::AssetsDir();      // 末尾 '/'
+            const fs::path scenesDir = fs::path(root) / "scenes";    // scenes/ 配下のみシーン扱い
+            if (fs::exists(scenesDir))
+            {
+                for (const auto& de : fs::recursive_directory_iterator(scenesDir))
+                {
+                    if (!de.is_regular_file() || de.path().extension() != ".json") continue;
+                    std::string relPath = fs::relative(de.path(), fs::path(root)).generic_string();
+                    arr.push_back({{"path", relPath}, {"name", de.path().stem().string()}});
+                }
+            }
+            resp["ok"] = true;
+            resp["result"] = std::move(arr);
+        }
+        else if (method == "list_assets")
+        {
+            const std::string filter = params.value("type", std::string());
+            json arr = json::array();
+            const std::string root = PathResolver::AssetsDir();
+            auto classify = [](std::string ext) -> std::string {       // AssetBrowserPanel と同分類
+                std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+                if (ext == ".gltf" || ext == ".glb" || ext == ".fbx" || ext == ".obj") return "model";
+                if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".dds" ||
+                    ext == ".tga" || ext == ".bmp") return "texture";
+                if (ext == ".lua") return "script";
+                if (ext == ".wav" || ext == ".mp3" || ext == ".ogg") return "audio";
+                if (ext == ".json") return "scene";
+                if (ext == ".prefab") return "prefab";
+                return std::string();
+            };
+            if (fs::exists(fs::path(root)))
+            {
+                for (const auto& de : fs::recursive_directory_iterator(fs::path(root)))
+                {
+                    if (!de.is_regular_file()) continue;
+                    std::string type = classify(de.path().extension().string());
+                    if (type.empty()) continue;
+                    if (!filter.empty() && type != filter) continue;
+                    std::string relPath = fs::relative(de.path(), fs::path(root)).generic_string();
+                    arr.push_back({{"path", relPath}, {"type", type}, {"name", de.path().stem().string()}});
+                }
+            }
+            resp["ok"] = true;
+            resp["result"] = std::move(arr);
+        }
+        else if (method == "spawn_model")
+        {
+            std::string path = params.value("path", std::string());
+            if (path.empty()) throw std::runtime_error("missing 'path'");
+            if (path.front() == '/' || path.find('\\') != std::string::npos ||
+                path.find(':') != std::string::npos || path.find("..") != std::string::npos)
+                throw std::runtime_error("invalid path (assets 相対のみ)");
+            const auto pos = params.value("position", std::vector<float>{0.0f, 0.0f, 0.0f});
+            if (pos.size() != 3) throw std::runtime_error("position must be [x,y,z]");
+            std::string name = params.value("name", std::string());
+            if (name.empty()) name = fs::path(path).stem().string();
+            // 実モデルのロードは GPU を伴うため cmdList 有効なフレーム境界で遅延処理。
+            // create_entity と同じ pendingSpawns に積む(marker でなく実パスを入れる)。
+            PendingSpawnRequest sreq;
+            sreq.modelPath = path;
+            sreq.position  = { pos[0], pos[1], pos[2] };
+            sreq.name      = name;
+            m_editorCtx->pendingSpawns.push_back(std::move(sreq));
+            resp["ok"] = true;
+            resp["result"] = {{"queued", true}, {"name", name}};   // id は後で list_entities で引く
+        }
+        else if (method == "set_component")
+        {
+            const auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
+            auto& reg = m_scene->GetRegistry();
+            if (!reg.valid(e)) throw std::runtime_error("invalid entity id");
+            const std::string comp = params.value("component", std::string());
+            const json data = params.value("data", json::object());
+            if (comp.empty()) throw std::runtime_error("missing 'component'");
+            if (comp == "transform")
+            {
+                // コア不変: 専用処理(set_transform 相当)
+                auto& t = reg.get_or_emplace<Transform>(e);
+                if (data.contains("position"))
+                {
+                    auto p = data["position"].get<std::vector<float>>();
+                    if (p.size() != 3) throw std::runtime_error("position must be [x,y,z]");
+                    t.position = { p[0], p[1], p[2] };
+                }
+                if (data.contains("rotation"))
+                {
+                    auto r = data["rotation"].get<std::vector<float>>();
+                    if (r.size() != 3) throw std::runtime_error("rotation must be [x,y,z]");
+                    t.rotation = { r[0], r[1], r[2] };
+                    t.useQuaternion = false;
+                }
+                if (data.contains("scale"))
+                {
+                    auto s = data["scale"].get<std::vector<float>>();
+                    if (s.size() != 3) throw std::runtime_error("scale must be [x,y,z]");
+                    t.scale = { s[0], s[1], s[2] };
+                }
+            }
+            else
+            {
+                // deserialize に emplace-only の型があるため、"上書き(set)" 実現には
+                // 既存を remove してから登録済みデシリアライザで再生成する。
+                if (!RemoveRegisteredComponent(reg, e, comp))
+                    throw std::runtime_error("unknown/unsupported component: " + comp);
+                json ej;
+                ej[comp] = data;          // deserialize は ej.contains(jsonKey) を見る形
+                RuntimeComponentRegistry::Get().ForEach([&](const RuntimeComponentInfo& info) {
+                    if (info.deserialize) info.deserialize(reg, e, ej);
+                });
+            }
+            resp["ok"] = true;
+        }
+        else if (method == "remove_component")
+        {
+            const auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
+            auto& reg = m_scene->GetRegistry();
+            if (!reg.valid(e)) throw std::runtime_error("invalid entity id");
+            const std::string comp = params.value("component", std::string());
+            if (comp == "transform" || comp == "name")
+                throw std::runtime_error("cannot remove core component (transform/name)");
+            if (!RemoveRegisteredComponent(reg, e, comp))
+                throw std::runtime_error("unknown/unsupported component: " + comp);
+            resp["ok"] = true;
+        }
+        else if (method == "set_parent")
+        {
+            auto& reg = m_scene->GetRegistry();
+            const auto child = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
+            if (!reg.valid(child)) throw std::runtime_error("invalid entity id");
+            const u32 pid = params.value("parent", 0xFFFFFFFFu);
+            entt::entity parent = entt::null;
+            if (pid != 0xFFFFFFFFu)
+            {
+                parent = static_cast<entt::entity>(pid);
+                if (!reg.valid(parent)) throw std::runtime_error("invalid parent id");
+                // サイクル検出: parent の祖先鎖に child が現れたら拒否(O(N))。
+                for (entt::entity cur = parent; cur != entt::null; )
+                {
+                    if (cur == child) throw std::runtime_error("would create cycle");
+                    auto* t = reg.try_get<Transform>(cur);
+                    cur = t ? t->parent : entt::null;
+                }
+            }
+            auto& t = reg.get_or_emplace<Transform>(child);
+            t.parent = parent;   // 階層は Transform.parent が駆動。SerializeEntity に自動反映。
+            resp["ok"] = true;
+        }
+        else if (method == "rename_entity")
+        {
+            const auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
+            auto& reg = m_scene->GetRegistry();
+            if (!reg.valid(e) || !reg.all_of<NameTag>(e))
+                throw std::runtime_error("entity has no NameTag");
+            std::string base = params.value("name", std::string());
+            if (base.empty()) throw std::runtime_error("missing 'name'");
+            auto taken = [&](const std::string& s) {
+                for (auto [oe, tag] : reg.view<NameTag>().each())
+                    if (oe != e && tag.name == s) return true;
+                return false;
+            };
+            std::string name = base;
+            int n = 2;            // 重複時は連番付与(MakeUniqueName 相当をインライン)
+            while (taken(name)) name = base + "_" + std::to_string(n++);
+            reg.get<NameTag>(e).name = name;
+            resp["ok"] = true;
+            resp["result"] = {{"name", name}};
+        }
+        else if (method == "play")
+        {
+            if (m_engineMode == EngineMode::Playing)
+            {
+                resp["ok"] = true;
+                resp["result"] = {{"mode", "Playing"}};
+            }
+            else
+            {
+                // 実切替は EnterPlayMode(snapshot/script init/GPU) を伴うためフレーム境界で遅延。
+                m_pendingMode = EngineMode::Playing;
+                m_modeChangeRequested = true;
+                resp["ok"] = true;
+                resp["result"] = {{"queued", true}};
+            }
+        }
+        else if (method == "stop")
+        {
+            if (m_engineMode == EngineMode::Editor)
+            {
+                resp["ok"] = true;
+                resp["result"] = {{"mode", "Editor"}};
+            }
+            else
+            {
+                m_pendingMode = EngineMode::Editor;
+                m_modeChangeRequested = true;     // 次フレームで EnterEditorMode()(snapshot 復元)
+                resp["ok"] = true;
+                resp["result"] = {{"queued", true}};
+            }
+        }
+        else if (method == "get_mode")
+        {
+            resp["ok"] = true;
+            resp["result"] = {{"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"}};
+        }
+        else if (method == "get_log")
+        {
+            int lines = params.value("lines", 50);
+            if (lines < 1) lines = 1;
+            // Logger は CWD の "dx12_engine.log" へ出力。末尾 N 行を返すだけ(リングは足さない)。
+            std::ifstream ifs("dx12_engine.log", std::ios::binary);
+            json arr = json::array();
+            if (ifs)
+            {
+                std::vector<std::string> all;
+                std::string ln;
+                while (std::getline(ifs, ln))
+                {
+                    if (!ln.empty() && ln.back() == '\r') ln.pop_back();
+                    all.push_back(ln);
+                }
+                size_t start = all.size() > static_cast<size_t>(lines) ? all.size() - static_cast<size_t>(lines) : 0;
+                for (size_t i = start; i < all.size(); ++i) arr.push_back(all[i]);
+            }
+            resp["ok"] = true;
+            resp["result"] = arr;   // ファイル無しは空配列(grace)
+        }
+        else if (method == "screenshot")
+        {
+            // 直近フレームのシーン描画を PNG にして絶対パスを返す。AI 側はそのパスを画像として読む。
+            std::string serr;
+            const std::string path = CaptureSceneScreenshot(serr);
+            if (path.empty()) throw std::runtime_error(serr.empty() ? "screenshot failed" : serr);
+            resp["ok"] = true;
+            resp["result"] = {{"path", path},
+                              {"width", m_sceneRT->GetWidth()},
+                              {"height", m_sceneRT->GetHeight()}};
+        }
         else
         {
             resp["ok"] = false;
@@ -1053,8 +1362,166 @@ std::string Application::HandleMcpCommand(const std::string& line)
         resp["ok"] = false;
         resp["error"] = e.what();
     }
+    // パネル(MCP / AI Bridge)用にコマンド結果を記録（メインスレッドからのみ）。
+    if (m_mcpBridge)
+        m_mcpBridge->RecordCommand(method, resp.value("ok", false), resp.value("error", std::string()));
     // 不正 UTF-8(例: CP932 のモデル名由来の NameTag)で dump() が例外を投げないよう置換。
     return resp.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
+// BGRA8(tightly packed, w*4 stride)を PNG ファイルへ。WIC(OS 標準)で書くので外部依存なし。
+static bool WriteBgraPng(const std::wstring& path, const uint8_t* bgra,
+                         uint32_t w, uint32_t h, std::string& err)
+{
+    using Microsoft::WRL::ComPtr;
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);   // 既初期化なら S_FALSE。Uninit はしない(常駐エディタで無害)。
+
+    ComPtr<IWICImagingFactory> factory;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(&factory))))
+    { err = "WIC factory failed"; return false; }
+
+    ComPtr<IWICStream> stream;
+    if (FAILED(factory->CreateStream(&stream)) ||
+        FAILED(stream->InitializeFromFilename(path.c_str(), GENERIC_WRITE)))
+    { err = "WIC stream open failed"; return false; }
+
+    ComPtr<IWICBitmapEncoder> encoder;
+    if (FAILED(factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder)) ||
+        FAILED(encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache)))
+    { err = "WIC encoder init failed"; return false; }
+
+    ComPtr<IWICBitmapFrameEncode> frame;
+    ComPtr<IPropertyBag2>         props;
+    if (FAILED(encoder->CreateNewFrame(&frame, &props)) ||
+        FAILED(frame->Initialize(props.Get())))
+    { err = "WIC frame init failed"; return false; }
+
+    WICPixelFormatGUID fmt = GUID_WICPixelFormat32bppBGRA;   // PNG エンコーダがネイティブ対応＝変換なし
+    if (FAILED(frame->SetSize(w, h)) || FAILED(frame->SetPixelFormat(&fmt)))
+    { err = "WIC frame setup failed"; return false; }
+
+    const UINT stride = w * 4;
+    if (FAILED(frame->WritePixels(h, stride, stride * h, const_cast<BYTE*>(bgra))) ||
+        FAILED(frame->Commit()) || FAILED(encoder->Commit()))
+    { err = "WIC write failed"; return false; }
+
+    return true;
+}
+
+std::string Application::CaptureSceneScreenshot(std::string& err)
+{
+    namespace fs = std::filesystem;
+    using Microsoft::WRL::ComPtr;
+
+    if (!m_sceneRT || !m_sceneRT->GetResource()) { err = "scene RT not ready"; return {}; }
+    if (!m_commandQueue || !m_frameResources)    { err = "gpu not ready";     return {}; }
+
+    auto* dev    = m_graphicsDevice->GetDevice();
+    auto* srcTex = m_sceneRT->GetResource();
+    const D3D12_RESOURCE_DESC texDesc = srcTex->GetDesc();
+    const UINT w = static_cast<UINT>(texDesc.Width);
+    const UINT h = texDesc.Height;
+    if (w == 0 || h == 0) { err = "scene size is 0"; return {}; }
+
+    // readback バッファのレイアウト(行ピッチは 256B アライン)を取得
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
+    UINT   rowCount   = 0;
+    UINT64 rowSize    = 0;
+    UINT64 totalBytes = 0;
+    dev->GetCopyableFootprints(&texDesc, 0, 1, 0, &fp, &rowCount, &rowSize, &totalBytes);
+
+    ComPtr<ID3D12Resource> readback;
+    {
+        D3D12_HEAP_PROPERTIES heap{ D3D12_HEAP_TYPE_READBACK };
+        D3D12_RESOURCE_DESC bd{};
+        bd.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+        bd.Width            = totalBytes;
+        bd.Height           = 1;
+        bd.DepthOrArraySize = 1;
+        bd.MipLevels        = 1;
+        bd.Format           = DXGI_FORMAT_UNKNOWN;
+        bd.SampleDesc.Count = 1;
+        bd.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        if (FAILED(dev->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &bd,
+                D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&readback))))
+        { err = "readback alloc failed"; return {}; }
+    }
+
+    // 前フレームの GPU 完了を待ってから sceneRT(単一リソース＝内容確定)をコピー
+    m_commandQueue->WaitIdle();
+    auto* cmd = m_frameResources->BeginFrame(*m_commandQueue);
+
+    const D3D12_RESOURCE_STATES prev = m_sceneRT->GetState();
+    auto barrier = [&](D3D12_RESOURCE_STATES a, D3D12_RESOURCE_STATES b)
+    {
+        D3D12_RESOURCE_BARRIER br{};
+        br.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        br.Transition.pResource   = srcTex;
+        br.Transition.StateBefore = a;
+        br.Transition.StateAfter  = b;
+        br.Transition.Subresource = 0;
+        cmd->ResourceBarrier(1, &br);
+    };
+    const bool needBarrier = (prev != D3D12_RESOURCE_STATE_COPY_SOURCE);
+    if (needBarrier) barrier(prev, D3D12_RESOURCE_STATE_COPY_SOURCE);
+
+    D3D12_TEXTURE_COPY_LOCATION src{};
+    src.pResource        = srcTex;
+    src.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    src.SubresourceIndex = 0;
+    D3D12_TEXTURE_COPY_LOCATION dst{};
+    dst.pResource       = readback.Get();
+    dst.Type            = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dst.PlacedFootprint = fp;
+    cmd->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+
+    if (needBarrier) barrier(D3D12_RESOURCE_STATE_COPY_SOURCE, prev);  // 元の状態へ戻す(エンジンの追跡と一致)
+
+    if (FAILED(cmd->Close())) { m_frameResources->EndFrame(*m_commandQueue); err = "cmd close failed"; return {}; }
+    m_commandQueue->ExecuteCommandList(cmd);
+    m_commandQueue->WaitIdle();
+    m_frameResources->EndFrame(*m_commandQueue);
+
+    // R16G16B16A16_FLOAT → BGRA8。sRGB OETF をかけて「ビューポートで見える絵」に寄せる。
+    // ponytail: トーンマップ未適用(sceneRT は HDR linear)。露出差は出得るが配置確認には十分。
+    //           完全一致が要るなら post 後のバックバッファ取得へ上げる。
+    void* mapped = nullptr;
+    D3D12_RANGE rr{ 0, static_cast<SIZE_T>(totalBytes) };
+    if (FAILED(readback->Map(0, &rr, &mapped))) { err = "readback map failed"; return {}; }
+
+    auto toSrgb = [](float c) -> uint8_t
+    {
+        if (c <= 0.0f) return 0;
+        if (c >= 1.0f) return 255;
+        c = c <= 0.0031308f ? c * 12.92f : 1.055f * std::pow(c, 1.0f / 2.4f) - 0.055f;
+        const int v = static_cast<int>(c * 255.0f + 0.5f);
+        return static_cast<uint8_t>(v < 0 ? 0 : (v > 255 ? 255 : v));
+    };
+
+    std::vector<uint8_t> bgra(static_cast<size_t>(w) * h * 4);
+    const auto* base = static_cast<const uint8_t*>(mapped);
+    for (UINT y = 0; y < h; ++y)
+    {
+        const auto* in  = reinterpret_cast<const uint16_t*>(base + static_cast<size_t>(fp.Footprint.RowPitch) * y);
+        uint8_t*    out = &bgra[static_cast<size_t>(w) * 4 * y];
+        for (UINT x = 0; x < w; ++x)
+        {
+            const float r = DirectX::PackedVector::XMConvertHalfToFloat(in[x * 4 + 0]);
+            const float g = DirectX::PackedVector::XMConvertHalfToFloat(in[x * 4 + 1]);
+            const float b = DirectX::PackedVector::XMConvertHalfToFloat(in[x * 4 + 2]);
+            out[x * 4 + 0] = toSrgb(b);   // BGRA 順
+            out[x * 4 + 1] = toSrgb(g);
+            out[x * 4 + 2] = toSrgb(r);
+            out[x * 4 + 3] = 255;
+        }
+    }
+    D3D12_RANGE wr{ 0, 0 };
+    readback->Unmap(0, &wr);
+
+    const fs::path outPath = fs::absolute("mcp_screenshot.png");   // CWD(= dx12_engine.log と同じ場所)へ上書き
+    if (!WriteBgraPng(outPath.wstring(), bgra.data(), w, h, err)) return {};
+    return outPath.string();
 }
 
 void Application::Run()
@@ -1254,6 +1721,12 @@ void Application::Shutdown()
     if (m_loadThread.joinable())
         m_loadThread.join();
 
+    // 非同期 git スレッドの回収（join 前に破棄すると std::terminate）。
+    // ログイン待ちポーリングは abort で即抜けさせ、git/gh の子プロセスは終わるまで待つ。
+    m_gitAbort.store(true);
+    if (m_gitThread.joinable())
+        m_gitThread.join();
+
     // GPU の処理完了を待機
     if (m_commandQueue)
     {
@@ -1350,6 +1823,8 @@ void Application::Update()
 
     // 非同期プロジェクトロードの状態機械を進める
     UpdateProjectLoad(dt);
+    // 非同期 git 操作の完了回収
+    UpdateGitOp();
 
     if (m_engineMode == EngineMode::Editor)
     {
@@ -1926,6 +2401,55 @@ void Application::UpdateProjectLoad(f32 dt)
     }
 }
 
+void Application::RunGitAsync(const std::string& label, std::function<GitResult()> task, bool isLogin)
+{
+    if (m_gitOpRunning) return;                         // 同時実行は1本だけ（ボタンも無効化済み）
+    if (m_gitThread.joinable()) m_gitThread.join();     // 前回スレッドを回収してから再利用
+
+    m_gitOpRunning = true;
+    m_gitOpIsLogin = isLogin;
+    m_gitOpLabel   = label;
+    m_gitOpStatus  = GitOpStatus::Running;
+    m_gitSpin      = 0.0f;
+    m_gitOpDone.store(false);
+
+    // task はワーカー上で git/gh の子プロセスのみ叩く（ImGui/シーン/GPU には触れない）。
+    // 結果を m_gitPending* に書いてから done を立てる＝メインは done 観測後にだけ読む。
+    m_gitThread = std::thread([this, task = std::move(task)]() {
+        GitResult r = task();
+        m_gitPendingOutput = std::move(r.output);
+        m_gitPendingOk     = r.ok();
+        m_gitOpDone.store(true);                         // RELEASE: 結果を最後に公開
+    });
+}
+
+void Application::UpdateGitOp()
+{
+    if (!m_gitOpRunning) return;
+    m_gitSpin += m_gameClock.GetDeltaTime();
+    if (!m_gitOpDone.load()) return;                     // ACQUIRE: まだワーカー実行中
+    if (m_gitThread.joinable()) m_gitThread.join();
+
+    if (m_gitOpIsLogin)
+    {
+        // ログイン/ユーザー確認: バナーは出さず GitHub 行(●/○)で表す。出力ログも汚さない。
+        m_ghUser        = m_gitPendingOutput;            // 空=未ログイン
+        m_ghUserChecked = true;
+        m_gitOpIsLogin  = false;
+        m_gitOpStatus   = GitOpStatus::None;
+    }
+    else
+    {
+        m_gitOpStatus = m_gitPendingOk ? GitOpStatus::Success : GitOpStatus::Failure;
+        m_gitOutput   = m_gitPendingOutput.empty()
+                      ? (m_gitPendingOk ? "完了" : "失敗（出力なし）")
+                      : m_gitPendingOutput;
+    }
+
+    m_gitForceRefresh = true;                            // ブランチ/リモート/ahead-behind を取り直す
+    m_gitOpRunning    = false;
+}
+
 void Application::RenderLoadingOverlay()
 {
     ImGuiViewport* vp = ImGui::GetMainViewport();
@@ -2117,10 +2641,9 @@ void Application::RenderProjectWindow()
 
 void Application::RenderVersionControlWindow()
 {
-    // 非表示タブ/折りたたみ時は中身を一切実行しない。
-    // ここでは git/gh の外部プロセスを起動するため、毎フレーム走ると
-    // メインスレッドがブロックされてエディタ全体がもたつく原因になる。
-    if (!ImGui::Begin("Version Control (Git)"))
+    // 非表示タブ/折りたたみ時は中身を一切実行しない（git の外部プロセス起動を毎フレーム回さない）。
+    // 表示名は "Git 変更" だが ImGui ID は従来通り（### 以降）にしてドッキング配置を維持する。
+    if (!ImGui::Begin("Git 変更###Version Control (Git)"))
     {
         ImGui::End();
         return;
@@ -2132,238 +2655,361 @@ void Application::RenderVersionControlWindow()
         m_gitAvailable = GitIntegration::IsGitAvailable();
         m_ghAvailable  = GitIntegration::IsGhAvailable();
         m_gitChecked   = true;
-        if (m_gitCommitMsgBuf[0] == '\0')
-        {
-            const char* def = "Update";
-            std::copy(def, def + 7, m_gitCommitMsgBuf.begin());
-        }
     }
+
+    namespace th = dx12e::theme;
+
+    // 実行中スピナー / 成功・失敗バナー。結果が出るまで残るので「押したのに反映されたか分からん」を無くす。
+    auto statusBanner = [&]()
+    {
+        if (m_gitOpStatus == GitOpStatus::Running)
+        {
+            const char frames[] = { '|', '/', '-', '\\' };
+            char sp = frames[(int)(m_gitSpin * 10.0f) & 3];
+            ImGui::PushStyleColor(ImGuiCol_Text, th::Accent);
+            ImGui::Text("%c %s 実行中...", sp, m_gitOpLabel.c_str());
+            ImGui::PopStyleColor();
+        }
+        else if (m_gitOpStatus == GitOpStatus::Success)
+            ImGui::TextColored(th::Good, "✓ %s 成功", m_gitOpLabel.c_str());
+        else if (m_gitOpStatus == GitOpStatus::Failure)
+            ImGui::TextColored(th::Bad, "✗ %s 失敗 (下の出力ログを確認してや)", m_gitOpLabel.c_str());
+    };
+
+    // 出力ログ（既定は畳む。エラー時だけ開いて確認）
+    auto outputLog = [&]()
+    {
+        if (m_gitOutput.empty()) return;
+        if (ImGui::CollapsingHeader("出力ログ"))
+        {
+            ImGui::BeginChild("##gitout", ImVec2(0, 120), true,
+                              ImGuiWindowFlags_HorizontalScrollbar);
+            ImGui::TextUnformatted(m_gitOutput.c_str());
+            ImGui::EndChild();
+        }
+    };
 
     if (m_projectInfo.rootDir.empty())
     {
-        ImGui::TextWrapped("プロジェクトを開く/作成すると Git を使用できます。");
+        ImGui::TextWrapped("プロジェクトを開く/作成すると Git を使えるで。");
         ImGui::End();
         return;
     }
     if (!m_gitAvailable)
     {
-        ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "git が見つかりません。インストールして PATH を通してください。");
+        ImGui::TextColored(th::Bad, "✗ git が見つからへん。インストールして PATH を通してや。");
         ImGui::End();
         return;
     }
 
     const std::string& root = m_projectInfo.rootDir;
+    const bool busy = m_gitOpRunning;
 
-    // git 状態（repo/branch/remote/branches）は外部プロセスで重い。
-    // タブが開かれた瞬間(IsWindowAppearing)と、操作直後(m_gitForceRefresh)だけ取得する。
-    // → VC タブを表示したまま見てるだけの間は一切 git を叩かないので、定期ヒッチが出ない。
+    // 状態の再取得（ローカル git のみで軽い。開いた瞬間と操作完了直後＋手動「更新」だけ＝定期ヒッチ無し）。
     if (ImGui::IsWindowAppearing() || m_gitForceRefresh)
     {
         m_gitForceRefresh = false;
         m_gitRepoCache = GitIntegration::IsRepo(root);
+        m_gitAhead = m_gitBehind = -1;
         if (m_gitRepoCache)
         {
             m_gitBranchCache = GitIntegration::CurrentBranch(root);
             m_gitRemoteCache = GitIntegration::RemoteUrl(root);
             m_gitBranches    = GitIntegration::ListBranches(root);
+            m_gitChanges     = GitIntegration::ChangedFiles(root);
+            // upstream に対する未取得/未送信コミット数（VS の ↓/↑）。upstream 無しは失敗→-1のまま。
+            auto rl = GitIntegration::RunGit(root, "rev-list --left-right --count @{upstream}...HEAD");
+            int behind = 0, ahead = 0;
+            if (rl.ok() && sscanf_s(rl.output.c_str(), "%d %d", &behind, &ahead) == 2)
+            { m_gitBehind = behind; m_gitAhead = ahead; }
         }
-        else { m_gitBranchCache.clear(); m_gitRemoteCache.clear(); m_gitBranches.clear(); }
+        else { m_gitBranchCache.clear(); m_gitRemoteCache.clear(); m_gitBranches.clear(); m_gitChanges.clear(); }
     }
 
     auto icon = [](u64 h, float s) { if (h) { ImGui::Image(static_cast<ImTextureID>(h), ImVec2(s, s)); ImGui::SameLine(); } };
 
+    // ================= リポジトリ未初期化 =================
     if (!m_gitRepoCache)
     {
-        ImGui::TextWrapped("このプロジェクトはまだ Git リポジトリではありません。");
+        ImGui::TextWrapped("このプロジェクトはまだ Git リポジトリやないで。");
+        ImGui::Spacing();
+        statusBanner();
+        ImGui::Spacing();
+
+        ImGui::BeginDisabled(busy);
         icon(m_icons.git, 22);
-        if (ImGui::Button("Git リポジトリを初期化", ImVec2(-1, 30)))
+        if (ImGui::Button("Git リポジトリを初期化", ImVec2(-1, 32)))
+            RunGitAsync("初期化", [root]{ return GitIntegration::Init(root); });
+        ImGui::EndDisabled();
+
+        ImGui::SeparatorText("クローン");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::InputTextWithHint("##cloneurl", "https://github.com/owner/repo.git",
+                                 m_gitCloneBuf.data(), m_gitCloneBuf.size());
+        ImGui::BeginDisabled(busy || m_gitCloneBuf[0] == '\0');
+        if (ImGui::Button("このプロジェクトの隣にクローン", ImVec2(-1, 0)))
         {
-            auto r = GitIntegration::Init(root);
-            m_gitOutput = r.output.empty() ? "git init 完了" : r.output;
-            m_gitForceRefresh = true;  // 即再取得
+            std::string url    = m_gitCloneBuf.data();
+            std::string parent = std::filesystem::path(root).parent_path().string();
+            RunGitAsync("クローン", [url, parent]{
+                std::string outDir;
+                return GitIntegration::Clone(url, parent, outDir);
+            });
         }
+        ImGui::EndDisabled();
+
+        ImGui::Spacing();
+        outputLog();
         ImGui::End();
         return;
     }
 
-    // ---- リポジトリ操作 ----
+    // ================= リポジトリあり（VS「Git 変更」風レイアウト）=================
     const std::string& branch = m_gitBranchCache;
     const std::string& remote = m_gitRemoteCache;
-    icon(m_icons.git, 18);
-    ImGui::Text("ブランチ: %s", branch.empty() ? "(未コミット)" : branch.c_str());
-    ImGui::TextWrapped("リモート: %s", remote.empty() ? "(未設定)" : remote.c_str());
-    if (m_ghAvailable && !m_ghUser.empty())
-    { ImGui::SameLine(); ImGui::TextDisabled("(@%s)", m_ghUser.c_str()); }
-    ImGui::Separator();
+    const float fh = ImGui::GetFrameHeight();
+    const float sp = ImGui::GetStyle().ItemSpacing.x;
 
-    // ---- GitHub ログイン状態 ----
-    if (m_ghAvailable)
+    // ---- 行1: ブランチ コンボ（全幅）。ドロップダウン内で新規ブランチも作れる ----
     {
-        if (!m_ghUserChecked)
-        {
-            m_ghUser = GitIntegration::GitHubUser();
-            m_ghUserChecked = true;
-        }
-        icon(m_icons.github, 18);
-        if (m_ghUser.empty())
-        {
-            ImGui::Text("GitHub: 未ログイン");
-            ImGui::SameLine();
-            if (ImGui::SmallButton("ログイン"))
-            {
-                GitIntegration::LaunchLogin();
-                m_gitOutput = "別ウィンドウでログインを進めてください。完了後「再確認」を押してや。";
-            }
-            ImGui::SameLine();
-            if (ImGui::SmallButton("再確認")) m_ghUserChecked = false;
-        }
-        else
-        {
-            ImGui::Text("GitHub: @%s", m_ghUser.c_str());
-            ImGui::SameLine();
-            if (ImGui::SmallButton("再確認")) m_ghUserChecked = false;
-        }
-    }
-
-    // ---- ブランチ ----
-    ImGui::SeparatorText("ブランチ");
-    {
+        ImGui::BeginDisabled(busy);
         const char* curBr = branch.empty() ? "(未コミット)" : branch.c_str();
-        ImGui::SetNextItemWidth(-80);
-        if (ImGui::BeginCombo("切替##branch", curBr))
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::BeginCombo("##branch", curBr))
         {
             for (const auto& b : m_gitBranches)
                 if (ImGui::Selectable(b.c_str(), b == branch) && b != branch)
                 {
-                    auto r = GitIntegration::CheckoutBranch(root, b);
-                    m_gitOutput = r.ok() ? ("ブランチを " + b + " に切替") : r.output;
-                    m_gitForceRefresh = true;
+                    std::string target = b;
+                    RunGitAsync("ブランチ切替", [root, target]{ return GitIntegration::CheckoutBranch(root, target); });
                 }
+            ImGui::Separator();
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::InputTextWithHint("##nb", "+ 新規ブランチ名 → Enter",
+                    m_gitNewBranchBuf.data(), m_gitNewBranchBuf.size(),
+                    ImGuiInputTextFlags_EnterReturnsTrue) && m_gitNewBranchBuf[0] != '\0')
+            {
+                std::string nb = m_gitNewBranchBuf.data();
+                RunGitAsync("ブランチ作成", [root, nb]{ return GitIntegration::CreateBranch(root, nb); });
+                m_gitNewBranchBuf.fill('\0');
+                ImGui::CloseCurrentPopup();
+            }
             ImGui::EndCombo();
         }
+        ImGui::EndDisabled();
+    }
 
-        ImGui::SetNextItemWidth(-80);
-        ImGui::InputTextWithHint("##newbranch", "新しいブランチ名",
-                                 m_gitNewBranchBuf.data(), m_gitNewBranchBuf.size());
-        ImGui::SameLine();
-        if (ImGui::Button("作成切替") && m_gitNewBranchBuf[0] != '\0')
+    // ---- 行2: GitHub アカウント ----
+    if (m_ghAvailable)
+    {
+        // 初回だけ非同期でログイン状態を取得（gh api user はネットワーク＝メインを固めないため）。
+        if (!m_ghUserChecked && !busy)
         {
-            auto r = GitIntegration::CreateBranch(root, m_gitNewBranchBuf.data());
-            m_gitOutput = r.ok() ? (std::string("ブランチ ") + m_gitNewBranchBuf.data() + " を作成") : r.output;
-            m_gitNewBranchBuf.fill('\0');
-            m_gitForceRefresh = true;
+            m_ghUserChecked = true;
+            RunGitAsync("GitHub確認", []{
+                GitResult r; r.output = GitIntegration::GitHubUser(); r.exitCode = 0; return r;
+            }, /*isLogin*/ true);
+        }
+        ImGui::AlignTextToFramePadding();
+        if (!m_ghUser.empty())
+            ImGui::TextColored(th::Good, "● @%s", m_ghUser.c_str());
+        else
+        {
+            ImGui::TextColored(th::Warn, "○ 未ログイン");
+            ImGui::SameLine();
+            ImGui::BeginDisabled(busy);
+            if (ImGui::SmallButton("GitHub にログイン"))
+            {
+                GitIntegration::LaunchLogin();   // 別窓でブラウザ認証
+                m_gitOutput = "別ウィンドウでブラウザ認証してや。完了したら自動で反映されるで。";
+                // 完了をポーリングで自動検知（最大 ~90 秒・手動再確認不要）。sleep は 500ms 刻みで
+                // m_gitAbort を見てアプリ終了時に即抜ける。
+                RunGitAsync("GitHubログイン待ち", [this]{
+                    for (int i = 0; i < 45 && !m_gitAbort.load(); ++i)
+                    {
+                        std::string u = GitIntegration::GitHubUser();
+                        if (!u.empty()) { GitResult r; r.output = u; r.exitCode = 0; return r; }
+                        for (int k = 0; k < 4 && !m_gitAbort.load(); ++k)
+                            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                    }
+                    GitResult r; r.exitCode = 1; return r;   // タイムアウト/中断=未ログインのまま
+                }, /*isLogin*/ true);
+            }
+            ImGui::EndDisabled();
         }
     }
 
-    // ---- リモート（origin 未設定時のみ手動 URL を出す）----
+    // ---- 行3: 同期ツールバー（更新 / ↑↓ / フェッチ / プル↓ / プッシュ↑）----
+    {
+        ImGui::BeginDisabled(busy);
+        if (ImGui::SmallButton("更新")) m_gitForceRefresh = true;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("変更とブランチ状態を取り直す");
+        if (!remote.empty())
+        {
+            ImGui::SameLine(0, sp * 2);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled("↑%d ↓%d", m_gitAhead < 0 ? 0 : m_gitAhead, m_gitBehind < 0 ? 0 : m_gitBehind);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("フェッチ"))
+                RunGitAsync("フェッチ", [root]{ return GitIntegration::Fetch(root); });
+            ImGui::SameLine();
+            if (ImGui::ArrowButton("##pull", ImGuiDir_Down))
+                RunGitAsync("プル", [root]{ return GitIntegration::Pull(root); });
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("プル（受信 ↓）");
+            ImGui::SameLine();
+            if (ImGui::ArrowButton("##push", ImGuiDir_Up))
+                RunGitAsync("プッシュ", [root]{ return GitIntegration::Push(root, true); });
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("プッシュ（送信 ↑）");
+        }
+        ImGui::EndDisabled();
+    }
+
+    ImGui::Spacing();
+    statusBanner();
+    ImGui::Separator();
+
+    // ---- コミットメッセージ（複数行・空ならプレースホルダを重ね描き）----
+    ImVec2 msgPos = ImGui::GetCursorScreenPos();
+    ImGui::InputTextMultiline("##commitmsg", m_gitCommitMsgBuf.data(), m_gitCommitMsgBuf.size(),
+                              ImVec2(-FLT_MIN, fh * 2.2f));
+    if (m_gitCommitMsgBuf[0] == '\0')
+        ImGui::GetWindowDrawList()->AddText(
+            ImVec2(msgPos.x + 6, msgPos.y + ImGui::GetStyle().FramePadding.y),
+            ImGui::GetColorU32(ImGuiCol_TextDisabled), "メッセージを入力してください <必須>");
+
+    // ---- コミット スプリットボタン（既定=コミット、▼=コミット&プッシュ）----
+    auto doCommit = [&](bool alsoPush)
+    {
+        SaveCurrentProject();                            // シーン保存はメインスレッドで
+        std::string msg = m_gitCommitMsgBuf.data();
+        if (alsoPush)
+            RunGitAsync("コミット&プッシュ", [root, msg]{
+                auto c = GitIntegration::CommitAll(root, msg);
+                // コミット失敗が「変更なし」(良性)か本当の失敗(hook却下/identity未設定)かを判定。
+                bool nothingStaged = GitIntegration::RunGit(root, "diff --cached --quiet").ok();
+                auto p = GitIntegration::Push(root, true);
+                p.output = c.output + "\n----\n" + p.output;
+                if (!c.ok() && !nothingStaged)
+                    p.exitCode = c.exitCode ? c.exitCode : 1;  // 本当のコミット失敗は全体失敗
+                return p;
+            });
+        else
+            RunGitAsync("コミット", [root, msg]{ return GitIntegration::CommitAll(root, msg); });
+    };
+    const bool canCommit = !m_gitChanges.empty() && m_gitCommitMsgBuf[0] != '\0';
+    ImGui::BeginDisabled(busy || !canCommit);
+    icon(m_icons.commit, 18);
+    if (ImGui::Button("すべてをコミット", ImVec2(ImGui::GetContentRegionAvail().x - fh - 1.0f, 0)))
+        doCommit(false);
+    ImGui::SameLine(0, 1);
+    if (ImGui::ArrowButton("##commitdrop", ImGuiDir_Down))
+        ImGui::OpenPopup("##commitopts");
+    ImGui::EndDisabled();
+    if (ImGui::BeginPopup("##commitopts"))
+    {
+        if (ImGui::Selectable("コミット"))                 doCommit(false);
+        if (!remote.empty() && ImGui::Selectable("コミット & プッシュ")) doCommit(true);
+        ImGui::EndPopup();
+    }
+
+    ImGui::Spacing();
+
+    // ---- 変更 (N) ツリー ----
+    std::string changesHdr = "変更 (" + std::to_string(m_gitChanges.size()) + ")###changes";
+    if (ImGui::CollapsingHeader(changesHdr.c_str(), ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        if (m_gitChanges.empty())
+            ImGui::TextDisabled("変更なし（クリーン）");
+        else
+        {
+            // パスを '/' で分割して階層ツリーを構築
+            struct TNode { std::map<std::string, TNode> dirs; std::vector<std::pair<std::string, char>> files; };
+            TNode rootNode;
+            for (const auto& ch : m_gitChanges)
+            {
+                TNode* cur = &rootNode;
+                size_t start = 0;
+                for (;;)
+                {
+                    size_t slash = ch.path.find('/', start);
+                    if (slash == std::string::npos)
+                    { cur->files.emplace_back(ch.path.substr(start), ch.status); break; }
+                    cur = &cur->dirs[ch.path.substr(start, slash - start)];
+                    start = slash + 1;
+                }
+            }
+            auto stColor = [&](char st) -> ImVec4 {
+                switch (st) {
+                    case 'A': return th::Good;
+                    case 'M': return th::Warn;
+                    case 'R': return th::Accent;
+                    case 'D': case 'U': return th::Bad;
+                    default:  return th::TextDim;
+                }
+            };
+            std::function<void(const TNode&)> draw = [&](const TNode& n)
+            {
+                for (const auto& kv : n.dirs)
+                    if (ImGui::TreeNodeEx(kv.first.c_str(), ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth))
+                    { draw(kv.second); ImGui::TreePop(); }
+                for (const auto& f : n.files)
+                {
+                    ImGui::TreeNodeEx(f.first.c_str(), ImGuiTreeNodeFlags_Leaf
+                        | ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_SpanAvailWidth);
+                    char s[2] = { f.second, 0 };
+                    ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize(s).x - 2.0f);
+                    ImGui::TextColored(stColor(f.second), "%s", s);
+                }
+            };
+            ImGui::BeginChild("##changes", ImVec2(0, 220), true);
+            draw(rootNode);
+            ImGui::EndChild();
+        }
+    }
+
+    // ---- リモート未設定: URL 手動設定 + GitHub 新規作成 ----
     if (remote.empty())
     {
-        ImGui::SeparatorText("リモート (origin 未設定)");
-        ImGui::SetNextItemWidth(-60);
+        ImGui::SeparatorText("リモート未設定");
+        ImGui::TextDisabled("プッシュ先がまだ無いで。URL 設定か GitHub 新規作成してや。");
+        ImGui::SetNextItemWidth(-70);
         ImGui::InputTextWithHint("##remote", "https://github.com/owner/repo.git",
                                  m_gitRemoteBuf.data(), m_gitRemoteBuf.size());
         ImGui::SameLine();
-        if (ImGui::Button("設定") && m_gitRemoteBuf[0] != '\0')
+        ImGui::BeginDisabled(busy || m_gitRemoteBuf[0] == '\0');
+        if (ImGui::Button("設定", ImVec2(-FLT_MIN, 0)))
         {
-            auto r = GitIntegration::AddRemote(root, m_gitRemoteBuf.data());
-            m_gitOutput = r.ok() ? "リモートを設定しました" : r.output;
-            m_gitForceRefresh = true;
+            std::string url = m_gitRemoteBuf.data();
+            RunGitAsync("リモート設定", [root, url]{ return GitIntegration::AddRemote(root, url); });
         }
-        ImGui::TextDisabled("クローンした場合は自動設定済みです");
-    }
+        ImGui::EndDisabled();
 
-    ImGui::SeparatorText("コミット");
-    ImGui::SetNextItemWidth(-1);
-    ImGui::InputTextWithHint("##commitmsg", "コミットメッセージ",
-                             m_gitCommitMsgBuf.data(), m_gitCommitMsgBuf.size());
-
-    icon(m_icons.commit, 22);
-    if (ImGui::Button("コミット", ImVec2(130, 30)))
-    {
-        // シーン/プロジェクトを保存してからコミット
-        SaveCurrentProject();
-        auto r = GitIntegration::CommitAll(root, m_gitCommitMsgBuf.data());
-        m_gitOutput = r.output.empty() ? "コミット完了" : r.output;
-    }
-    ImGui::SameLine();
-    icon(m_icons.push, 22);
-    if (ImGui::Button("プッシュ", ImVec2(130, 30)))
-    {
-        auto r = GitIntegration::Push(root, true);
-        m_gitOutput = r.output.empty() ? "プッシュ完了" : r.output;
-    }
-
-    if (ImGui::Button("コミット & プッシュ", ImVec2(-1, 30)))
-    {
-        SaveCurrentProject();
-        auto c = GitIntegration::CommitAll(root, m_gitCommitMsgBuf.data());
-        auto p = GitIntegration::Push(root, true);
-        m_gitOutput = c.output + "\n" + p.output;
-        m_gitForceRefresh = true;
-    }
-
-    // ---- プル / フェッチ（リモートの変更を取り込む）----
-    if (ImGui::Button("プル (pull)", ImVec2(130, 26)))
-    {
-        auto r = GitIntegration::Pull(root);
-        m_gitOutput = r.output.empty() ? "プル完了" : r.output;
-        m_gitForceRefresh = true;
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("フェッチ (fetch)", ImVec2(150, 26)))
-    {
-        auto r = GitIntegration::Fetch(root);
-        m_gitOutput = r.output.empty() ? "フェッチ完了" : r.output;
-        m_gitForceRefresh = true;
-    }
-
-    // ---- GitHub 連携（gh CLI）----
-    ImGui::SeparatorText("GitHub");
-    if (m_ghAvailable)
-    {
-        if (remote.empty())
+        if (m_ghAvailable)
         {
-            icon(m_icons.github, 22);
-            ImGui::TextWrapped("gh で GitHub リポジトリを作成して公開できます。");
-            if (ImGui::Button("GitHub リポジトリ作成 (private) & push", ImVec2(-1, 0)))
+            ImGui::BeginDisabled(busy);
+            std::string msg2 = m_gitCommitMsgBuf.data(), name = m_projectInfo.name;
+            auto createRepo = [&](bool isPrivate)
             {
                 SaveCurrentProject();
-                GitIntegration::CommitAll(root, m_gitCommitMsgBuf.data());
-                auto r = GitIntegration::CreateGitHubRepo(root, m_projectInfo.name, true);
-                m_gitOutput = r.output;
-            }
-            if (ImGui::Button("GitHub リポジトリ作成 (public) & push", ImVec2(-1, 0)))
-            {
-                SaveCurrentProject();
-                GitIntegration::CommitAll(root, m_gitCommitMsgBuf.data());
-                auto r = GitIntegration::CreateGitHubRepo(root, m_projectInfo.name, false);
-                m_gitOutput = r.output;
-            }
+                std::string m = msg2, n = name;
+                RunGitAsync(isPrivate ? "リポジトリ作成(private)" : "リポジトリ作成(public)",
+                    [root, m, n, isPrivate]{
+                        auto c = GitIntegration::CommitAll(root, m);
+                        bool nothingStaged = GitIntegration::RunGit(root, "diff --cached --quiet").ok();
+                        if (!c.ok() && !nothingStaged) return c;   // 本当のコミット失敗 → 作成せず失敗
+                        auto r = GitIntegration::CreateGitHubRepo(root, n, isPrivate);
+                        r.output = c.output + "\n----\n" + r.output;
+                        return r;
+                    });
+            };
+            if (ImGui::Button("GitHub に作成 (private) & push", ImVec2(-FLT_MIN, 0))) createRepo(true);
+            if (ImGui::Button("GitHub に作成 (public) & push",  ImVec2(-FLT_MIN, 0))) createRepo(false);
+            ImGui::EndDisabled();
         }
-        else
-        {
-            ImGui::TextDisabled("リモート設定済み。コミット & プッシュを使用してください。");
-        }
-    }
-    else
-    {
-        ImGui::TextDisabled("gh CLI が無いため、リモート URL を手動設定してプッシュしてください。");
     }
 
-    // ---- 出力ログ ----
-    if (ImGui::Button("状態を取得 (git status)"))
-    {
-        auto r = GitIntegration::Status(root);
-        m_gitOutput = r.output;
-    }
-    if (!m_gitOutput.empty())
-    {
-        ImGui::SeparatorText("出力");
-        ImGui::BeginChild("##gitout", ImVec2(0, 120), true,
-                          ImGuiWindowFlags_HorizontalScrollbar);
-        ImGui::TextUnformatted(m_gitOutput.c_str());
-        ImGui::EndChild();
-    }
+    ImGui::Spacing();
+    outputLog();
 
     ImGui::End();
 }
@@ -4892,6 +5538,8 @@ void Application::Render()
         // ---- プロジェクト / バージョン管理(Git) ウィンドウ（トグル表示）----
         if (m_editorCtx->showProject)        RenderProjectWindow();
         if (m_editorCtx->showVersionControl) RenderVersionControlWindow();
+        if (m_editorCtx->showMcpBridge && m_mcpBridge)
+            McpBridgePanel::Render(*m_mcpBridge, *m_editorCtx);
     }
 
     // ---- ゲーム内 UI: テキスト/ボタン（ImGui オーバーレイ・ゲーム/Play 中のみ）----

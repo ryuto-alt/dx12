@@ -105,11 +105,13 @@ public:
     bool showSceneFlow      = false;
     bool showProject        = false;
     bool showVersionControl = false;
+    bool showMcpBridge      = false;   // MCP / AI Bridge モニタ窓
 
     bool AnyToolWindowOpen() const
     {
         return showPostProcess || showPostParams || showSkybox || showSSAO
-            || showEngineSettings || showSceneFlow || showProject || showVersionControl;
+            || showEngineSettings || showSceneFlow || showProject || showVersionControl
+            || showMcpBridge;
     }
 
     // タッチパッド向けキーボードフライモード（` キーでトグル）。

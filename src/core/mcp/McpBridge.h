@@ -3,6 +3,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace dx12e {
 
@@ -24,6 +25,21 @@ public:
     // メインスレッドから毎フレーム呼ぶ。handler(requestLine) -> responseLine。
     // 溜まったリクエストを順に handler へ渡し、戻り値を同じクライアントへ送り返す。
     void Poll(const std::function<std::string(const std::string&)>& handler);
+
+    // ---- 状態の見える化（MCP / AI Bridge パネル用。すべてメインスレッドから呼ぶ）----
+    // 直近コマンド 1 件の記録。method=MCP メソッド名、ok=成否、error=失敗理由(空可)。
+    struct CommandLogEntry
+    {
+        std::string method;
+        bool        ok = false;
+        std::string error;
+    };
+
+    uint16_t Port() const;            // 待受ポート（未起動時は 0）
+    bool     IsConnected() const;     // クライアント接続中か（accept/切断は別スレッド＝atomic）
+    // HandleMcpCommand 末尾で 1 件記録する。履歴はメインスレッド限定アクセス＝ロック不要。
+    void     RecordCommand(const std::string& method, bool ok, const std::string& error = {});
+    std::vector<CommandLogEntry> RecentCommands() const;   // 直近リング（古い順）のコピー
 
 private:
     struct Impl;                  // Winsock を winsock2.h 込みで .cpp に隠す(pimpl)

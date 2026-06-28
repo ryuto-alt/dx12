@@ -18,8 +18,10 @@
 #include <array>
 #include <thread>
 #include <atomic>
+#include <functional>
 #include "ecs/Components.h"
 #include "project/Project.h"
+#include "project/GitIntegration.h"   // GitResult（非同期 git タスクの戻り値）
 #include "editor/EditorIcons.h"
 #include "engine/core/EventBus.h"   // ヘッダオンリー、GPU 非依存。entt の後に置く
 
@@ -91,6 +93,9 @@ private:
     // MCP ブリッジから来た 1 行(JSON リクエスト)を処理して応答 JSON 行を返す。
     // メインスレッドで呼ばれるので m_scene / m_scriptEngine を直接触ってよい。
     std::string HandleMcpCommand(const std::string& line);
+    // 直近フレームのシーン描画(m_sceneRT)を PNG に書き出す。成功=絶対パス / 失敗=空文字列+err。
+    // MCP の screenshot 用。同期 readback(WaitIdle×2)＝低頻度のエディタ操作として割り切る。
+    std::string CaptureSceneScreenshot(std::string& err);
     // シーン内の全メッシュを指定 viewProj で描画（メインパスとカメラプレビューで共用）。
     // isGameView=true でエディタ用グリッドを除外。per-frame CB / シャドウSRV /
     // ルートシグネチャ / RT / ビューポートは呼び出し側で設定済みとする。
@@ -123,6 +128,11 @@ private:
     // エディタの「Project」「Version Control」ウィンドウ描画（ランチャー閉後）
     void RenderProjectWindow();
     void RenderVersionControlWindow();
+    // git/gh 操作をワーカースレッドで実行（メインスレッドを固めない）。
+    // task はワーカー上で走り GitResult を返す。label はバナー表示名。
+    // isLogin=true のときは完了時に GitHub ユーザー名を取り込む（ログインポーリング用）。
+    void RunGitAsync(const std::string& label, std::function<GitResult()> task, bool isLogin = false);
+    void UpdateGitOp();   // 毎フレーム: ワーカー完了を回収して結果を反映
     // 現在のプロジェクトを保存（.dx12proj + 現在シーン）
     void SaveCurrentProject();
     void EnterPlayMode();
@@ -204,6 +214,25 @@ private:
     // ブランチ操作
     std::vector<std::string> m_gitBranches;     // ローカルブランチ一覧
     std::array<char, 128>    m_gitNewBranchBuf{}; // 新規ブランチ名入力
+
+    // upstream に対する未送信/未取得コミット数（VS の ↑/↓ 表示用。-1=upstream無し/未取得）
+    int         m_gitAhead  = -1;
+    int         m_gitBehind = -1;
+    std::array<char, 512> m_gitCloneBuf{};      // クローン元 URL 入力
+    std::vector<GitFileChange> m_gitChanges;    // 変更ファイル一覧（VS の「変更」ツリー用）
+
+    // ---- 非同期 git 操作（メインスレッドを固めないためのワーカー） ----
+    enum class GitOpStatus { None, Running, Success, Failure };
+    std::thread        m_gitThread;
+    std::atomic<bool>  m_gitOpDone{false};       // ワーカー→メインの完了フラグ（happens-before バリア）
+    std::atomic<bool>  m_gitAbort{false};        // シャットダウン要求（ログインポーリングを早期中断）
+    bool               m_gitOpRunning = false;   // メインスレッドのみが触る UI ゲート
+    bool               m_gitPendingOk = false;   // ワーカーが書く: 成否
+    bool               m_gitOpIsLogin = false;   // ログインポーリング中か（完了で m_ghUser 更新）
+    std::string        m_gitPendingOutput;       // ワーカーが書く: 出力（done 後にメインが読む）
+    GitOpStatus        m_gitOpStatus = GitOpStatus::None; // 直近操作の状態（バナー）
+    std::string        m_gitOpLabel;             // 直近操作名（"プッシュ" 等）
+    float              m_gitSpin = 0.0f;         // 実行中スピナーのアニメ時間
 
     // ---- エディタUIアイコン（ImTextureID=ImU64。0=未読込。EditorContext::icons から参照される）----
     EditorUiIcons m_icons;

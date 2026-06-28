@@ -177,6 +177,41 @@ GitResult GitIntegration::Status(const std::string& workDir)
     return RunGit(workDir, "status --short --branch");
 }
 
+std::vector<GitFileChange> GitIntegration::ChangedFiles(const std::string& workDir)
+{
+    std::vector<GitFileChange> out;
+    // core.quotepath=false で日本語パスを生 UTF-8 で受け取る（octal エスケープ回避）。
+    auto r = RunGit(workDir, "-c core.quotepath=false status --porcelain=v1 -uall");
+    if (!r.ok()) return out;
+
+    std::istringstream iss(r.output);
+    std::string line;
+    while (std::getline(iss, line))
+    {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.size() < 4) continue;           // "XY path"
+
+        char X = line[0], Y = line[1];           // index / worktree ステータス
+        std::string path = line.substr(3);
+
+        // リネーム "old -> new" は新名を採用
+        size_t arrow = path.find(" -> ");
+        if (arrow != std::string::npos) path = path.substr(arrow + 4);
+        // 空白等を含むパスは git が "..." で囲む → 外す
+        if (path.size() >= 2 && path.front() == '"' && path.back() == '"')
+            path = path.substr(1, path.size() - 2);
+
+        GitFileChange c;
+        c.path   = path;
+        c.staged = (X != ' ' && X != '?');
+        char raw = (X != ' ') ? X : Y;           // staged 優先、無ければ worktree
+        if (raw == '?') raw = 'A';               // 未追跡=追加扱い（VS と同じ）
+        c.status = raw;
+        out.push_back(std::move(c));
+    }
+    return out;
+}
+
 std::string GitIntegration::CurrentBranch(const std::string& workDir)
 {
     auto r = RunGit(workDir, "rev-parse --abbrev-ref HEAD");

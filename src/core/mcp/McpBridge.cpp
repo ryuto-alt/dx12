@@ -6,6 +6,7 @@
 #include "core/Logger.h"
 
 #include <atomic>
+#include <deque>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -24,6 +25,11 @@ struct McpBridge::Impl
     std::mutex mtx;
     std::vector<std::pair<SOCKET, std::string>> pending;  // (client, requestLine)
 
+    // ---- 状態の見える化（MCP / AI Bridge パネル用）----
+    uint16_t port = 0;                       // Start で一度だけ書く（以後は読み取り専用）
+    std::atomic<bool> connected{ false };    // accept/切断は worker スレッド＝atomic
+    std::deque<CommandLogEntry> history;     // 直近 64 件（メインスレッド限定＝ロック不要）
+
     void AcceptLoop()
     {
         while (running.load())
@@ -35,6 +41,7 @@ struct McpBridge::Impl
                 continue;
             }
             clientSock.store(client);
+            connected.store(true);
             Logger::Info("MCP bridge: client connected");
 
             std::string buf;
@@ -67,6 +74,7 @@ struct McpBridge::Impl
                 SOCKET c = clientSock.exchange(INVALID_SOCKET);
                 if (c != INVALID_SOCKET) ::closesocket(c);
             }
+            connected.store(false);
             Logger::Info("MCP bridge: client disconnected");
         }
     }
@@ -110,6 +118,7 @@ bool McpBridge::Start(uint16_t port)
         return false;
     }
 
+    s.port = port;          // 待受ポートを記録（パネル表示用）
     s.running.store(true);
     s.worker = std::thread([&s] { s.AcceptLoop(); });
     Logger::Info("MCP bridge listening on 127.0.0.1:{}", port);
@@ -133,6 +142,7 @@ void McpBridge::Stop()
     if (s.listenSock != INVALID_SOCKET) { ::closesocket(s.listenSock); s.listenSock = INVALID_SOCKET; }
 
     if (s.worker.joinable()) s.worker.join();
+    s.connected.store(false);
     if (s.wsaUp) { ::WSACleanup(); s.wsaUp = false; }
 }
 
@@ -154,6 +164,22 @@ void McpBridge::Poll(const std::function<std::string(const std::string&)>& handl
         // メインスレッドからの send と worker の recv は同一ソケットで並行可(Winsock)。
         ::send(sock, resp.data(), static_cast<int>(resp.size()), 0);
     }
+}
+
+uint16_t McpBridge::Port() const { return m_impl->port; }
+
+bool McpBridge::IsConnected() const { return m_impl->connected.load(); }
+
+void McpBridge::RecordCommand(const std::string& method, bool ok, const std::string& error)
+{
+    auto& h = m_impl->history;
+    h.push_back({ method, ok, error });   // CommandLogEntry{method, ok, error}
+    while (h.size() > 64) h.pop_front();   // 直近 64 件だけ保持（古いものから捨てる）
+}
+
+std::vector<McpBridge::CommandLogEntry> McpBridge::RecentCommands() const
+{
+    return { m_impl->history.begin(), m_impl->history.end() };   // 古い順のコピー
 }
 
 } // namespace dx12e
