@@ -25,7 +25,7 @@ struct EditorUiIcons
         entScript = 0, entPhysics = 0, entCollider = 0, entEmpty = 0;
 
     // ---- プロジェクトテンプレート（ランチャー） ----
-    u64 tmplFps = 0, tmplTps = 0, tmplEmpty = 0;
+    u64 tmplFps = 0, tmplTps = 0, tmpl2d = 0, tmplEmpty = 0;
 };
 
 } // namespace dx12e

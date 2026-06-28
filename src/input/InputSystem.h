@@ -31,6 +31,9 @@ public:
     void OnKeyUp(int vkCode);
     void OnRawInput(LPARAM lParam);
     void OnMouseButton(bool rightDown);
+    // フォーカス喪失時（他ウィンドウ/タブをクリック等）に呼ぶ。WM_KEYUP が
+    // 届かず押しっぱなし判定で動けなくなるのを防ぐため、全キー状態をクリアする。
+    void OnFocusLost();
 
 private:
     HWND m_hwnd = nullptr;

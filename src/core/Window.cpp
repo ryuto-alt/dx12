@@ -210,6 +210,15 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             }
             return 0;
 
+        case WM_KILLFOCUS:
+            // 他ウィンドウ/タブへフォーカスが移ると以降の WM_KEYUP が届かず、
+            // 最後に押したキーが押しっぱなし判定で残る → 全キー状態をクリア
+            if (window->m_inputSystem)
+            {
+                window->m_inputSystem->OnFocusLost();
+            }
+            break;
+
         case WM_DESTROY:
             PostQuitMessage(0);
             return 0;

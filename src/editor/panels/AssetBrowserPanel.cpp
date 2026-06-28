@@ -211,16 +211,30 @@ static void DrawAssetGlyph(ImDrawList* dl, ImVec2 cardMin, float sz, int type,
         dl->AddRect(V(x0, y0), V(x1, y1), base, u * 0.05f, 0, 2.0f);                           // フレーム
         break;
     }
-    case 3: // Scene（レイヤースタック）
+    case 3: // Scene（カチンコ / クラップボード）
     {
-        float lw = u * 0.30f, lh = u * 0.11f;
-        for (int k = 2; k >= 0; --k) // 背面から描画して上のレイヤーを前面に
+        float x0 = cx - u * 0.30f, x1 = cx + u * 0.30f;
+        float ty0 = cy - u * 0.28f, ty1 = cy - u * 0.10f;  // 上: クラッパー棒
+        float by1 = cy + u * 0.28f;                         // 下: スレート板
+
+        // スレート板（本体）
+        dl->AddRectFilled(V(x0, ty1), V(x1, by1), base, u * 0.04f);
+        dl->AddRect(V(x0, ty1), V(x1, by1), shade(0.35f, 1.0f), u * 0.04f, 0, 1.5f);
+        // 板の罫線（記入欄に見立て）
+        for (int i = 0; i < 2; ++i)
         {
-            float oy = cy + (k - 1) * lh * 1.6f;
-            ImVec2 p0 = V(cx, oy - lh), p1 = V(cx + lw, oy), p2 = V(cx, oy + lh), p3 = V(cx - lw, oy);
-            ImU32 lc = (k == 0) ? light : (k == 1) ? base : dark;
-            dl->AddQuadFilled(p0, p1, p2, p3, lc);
-            dl->AddQuad(p0, p1, p2, p3, shade(0.35f, 1.0f), 1.0f);
+            float ly = ty1 + u * 0.10f + i * u * 0.11f;
+            dl->AddLine(V(x0 + u * 0.05f, ly), V(x1 - u * 0.05f, ly), shade(0.4f, 0.85f), 1.5f);
+        }
+
+        // クラッパー棒（上）＋斜めストライプ
+        dl->AddRectFilled(V(x0, ty0), V(x1, ty1), dark, u * 0.03f);
+        float sw = (x1 - x0) / 5.0f, sk = u * 0.05f;
+        for (int k = 1; k < 5; k += 2)
+        {
+            float sx = x0 + k * sw;
+            dl->AddQuadFilled(V(sx, ty1), V(sx + sw, ty1),
+                              V(sx + sw + sk, ty0), V(sx + sk, ty0), light);
         }
         break;
     }
@@ -656,7 +670,8 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                     }
                     else if (entry.type == AssetType::Scene)
                     {
-                        ctx.pendingLoadPath = entry.path.string();
+                        // JSON は Lua と同様 VS Code で開く（読み込みは右クリックメニューから）
+                        OpenInVSCode(entry.path.string());
                     }
                     else if (entry.type == AssetType::Prefab)
                     {

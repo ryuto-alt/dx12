@@ -2224,6 +2224,7 @@ void Application::LoadEditorIcons(ID3D12GraphicsCommandList* cmdList)
     // プロジェクトテンプレート
     m_icons.tmplFps     = load("tmpl_fps");
     m_icons.tmplTps     = load("tmpl_tps");
+    m_icons.tmpl2d      = load("tmpl_2d");
     m_icons.tmplEmpty   = load("tmpl_empty");
 
     // 各パネルが EditorContext 経由で参照できるようにポインタを配る
@@ -5177,6 +5178,7 @@ void Application::Render()
         li.recent      = m_icons.recent;
         li.tmplFps     = m_icons.tmplFps;
         li.tmplTps     = m_icons.tmplTps;
+        li.tmpl2d      = m_icons.tmpl2d;
         li.tmplEmpty   = m_icons.tmplEmpty;
 
         ProjectInfo selected;

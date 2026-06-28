@@ -81,6 +81,16 @@ void InputSystem::OnMouseButton(bool /*rightDown*/)
     // 将来用
 }
 
+void InputSystem::OnFocusLost()
+{
+    // 押下中キーの WM_KEYUP がフォーカス先に飛んでしまうため、ここで全部離した
+    // ことにする。prevKeys も 0 にして再フォーカス後の誤 IsKeyPressed を防ぐ。
+    std::memset(m_keys, 0, sizeof(m_keys));
+    std::memset(m_prevKeys, 0, sizeof(m_prevKeys));
+    m_mouseDeltaX = 0.0f;
+    m_mouseDeltaY = 0.0f;
+}
+
 void InputSystem::SetMouseCapture(bool capture)
 {
     m_mouseCaptured = capture;

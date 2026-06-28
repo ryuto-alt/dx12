@@ -19,6 +19,7 @@ struct LauncherIcons
     // プロジェクトテンプレート選択用
     unsigned long long tmplFps     = 0;
     unsigned long long tmplTps     = 0;
+    unsigned long long tmpl2d      = 0;
     unsigned long long tmplEmpty   = 0;
 };
 
