@@ -434,6 +434,21 @@ Save-Icon "tmpl_tps" "#7C3AED" {
     $g.FillRectangle($white, 86, 78, 12, 10)     # カメラ本体
 }
 
+# --- tmpl_2d: エメラルド背景 + 白い太字「2D」（横スクロール）---
+Save-Icon "tmpl_2d" "#10B981" {
+    param($g)
+    $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAlias
+    $fam  = New-Object System.Drawing.FontFamily("Segoe UI")
+    $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $path.AddString("2D", $fam, [int][System.Drawing.FontStyle]::Bold, 56,
+        (New-Object System.Drawing.PointF(0,0)), [System.Drawing.StringFormat]::GenericDefault)
+    $rb = $path.GetBounds()
+    $mtx = New-Object System.Drawing.Drawing2D.Matrix
+    $mtx.Translate((($S - $rb.Width)/2 - $rb.X), (($S - $rb.Height)/2 - $rb.Y))
+    $path.Transform($mtx)
+    $g.FillPath($white, $path)
+}
+
 # --- tmpl_empty: スレート背景 + 白い破線スクエア + 中央プラス（空のキャンバス）---
 Save-Icon "tmpl_empty" "#64748B" {
     param($g)
