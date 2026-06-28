@@ -51,6 +51,7 @@ namespace dx12e
     class ImGuiManager;
     class Scene;
     class ScriptEngine;
+    class McpBridge;
     class AudioSystem;
     class PhysicsSystem;
     class PhysicsDebugRenderer;
@@ -86,6 +87,9 @@ public:
 private:
     void Update();
     void Render();
+    // MCP ブリッジから来た 1 行(JSON リクエスト)を処理して応答 JSON 行を返す。
+    // メインスレッドで呼ばれるので m_scene / m_scriptEngine を直接触ってよい。
+    std::string HandleMcpCommand(const std::string& line);
     // シーン内の全メッシュを指定 viewProj で描画（メインパスとカメラプレビューで共用）。
     // isGameView=true でエディタ用グリッドを除外。per-frame CB / シャドウSRV /
     // ルートシグネチャ / RT / ビューポートは呼び出し側で設定済みとする。
@@ -226,6 +230,7 @@ private:
     // ~ScriptEngine()/~PhysicsSystem() が m_eventBus.Clear() を踏んで UAF になる。
     EventBus                           m_eventBus;
     std::unique_ptr<ScriptEngine>      m_scriptEngine;
+    std::unique_ptr<McpBridge>         m_mcpBridge;   // エディタ専用 AI ブリッジ(TCP)。ゲームでは null。
     std::unique_ptr<AudioSystem>       m_audioSystem;
     std::unique_ptr<PhysicsSystem>     m_physicsSystem;
     std::unique_ptr<PhysicsDebugRenderer> m_physicsDebugRenderer;

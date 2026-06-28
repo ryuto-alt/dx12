@@ -44,6 +44,10 @@
 #include "scene/Entity.h"
 #include "ecs/Components.h"
 #include "scripting/ScriptEngine.h"
+#include "core/mcp/McpBridge.h"
+#include <nlohmann/json.hpp>
+#include <filesystem>
+#include <fstream>
 #include "audio/AudioSystem.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsDebugRenderer.h"
@@ -889,6 +893,101 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     }
 
     Logger::Info("Application initialized successfully");
+
+    // AI(MCP)ブリッジ。エディタ時のみ。ゲーム(封印ランタイム)では起動しない＝外部から触れない。
+    if (!m_isGameMode)
+    {
+        m_mcpBridge = std::make_unique<McpBridge>();
+        m_mcpBridge->Start(8787);   // ponytail: ポート固定。衝突したら env/引数化する。
+    }
+}
+
+std::string Application::HandleMcpCommand(const std::string& line)
+{
+    using json = nlohmann::json;
+    namespace fs = std::filesystem;
+
+    json req;
+    try { req = json::parse(line); }
+    catch (const std::exception& e)
+    {
+        return json{{"id", nullptr}, {"ok", false},
+                    {"error", std::string("parse error: ") + e.what()}}.dump();
+    }
+
+    json resp;
+    resp["id"] = req.value("id", json(nullptr));
+    const std::string method = req.value("method", std::string());
+    const json params = req.value("params", json::object());
+
+    try
+    {
+        if (!m_scene || !m_scriptEngine)
+            throw std::runtime_error("engine not ready");
+
+        if (method == "list_entities")
+        {
+            json arr = json::array();
+            auto& reg = m_scene->GetRegistry();
+            auto view = reg.view<const NameTag>();
+            for (auto e : view)
+                arr.push_back({{"id", static_cast<u32>(e)},
+                               {"name", view.get<const NameTag>(e).name}});
+            resp["ok"] = true;
+            resp["result"] = std::move(arr);
+        }
+        else if (method == "create_lua_component")
+        {
+            const std::string name = params.value("name", std::string());
+            const std::string code = params.value("code", std::string());
+            if (name.empty()) throw std::runtime_error("missing 'name'");
+            // ponytail: name はファイル名へ直結。パス区切り等を弾いて traversal を防ぐ。
+            if (name.find_first_of("/\\:*?\"<>|") != std::string::npos)
+                throw std::runtime_error("invalid component name");
+            // 構文チェック(コンパイルのみ・実行しない)。不正なら書かずに AI へエラーを返す。
+            std::string serr;
+            if (!m_scriptEngine->CheckLuaSyntax(code, serr))
+                throw std::runtime_error("Lua syntax error: " + serr);
+
+            const std::string rel = "components/" + name + ".lua";
+            const fs::path full = fs::path(PathResolver::AssetsDir()) / rel;
+            fs::create_directories(full.parent_path());
+            std::ofstream ofs(full, std::ios::binary | std::ios::trunc);
+            if (!ofs) throw std::runtime_error("cannot write " + full.string());
+            ofs.write(code.data(), static_cast<std::streamsize>(code.size()));
+            resp["ok"] = true;
+            resp["result"] = {{"path", rel}};
+        }
+        else if (method == "attach_lua_component")
+        {
+            const u32 id = params.value("entity", 0xFFFFFFFFu);
+            const std::string script = params.value("script", std::string());
+            if (script.empty()) throw std::runtime_error("missing 'script'");
+            // assets 配下限定。絶対パス/ドライブレター/バックスラッシュ/".." を弾いて
+            // assets ルート外の任意ファイルを Lua として読ませない(traversal 防止)。
+            if (script.front() == '/' || script.find('\\') != std::string::npos ||
+                script.find(':') != std::string::npos || script.find("..") != std::string::npos)
+                throw std::runtime_error("invalid script path (assets 相対のみ)");
+            const auto e = static_cast<entt::entity>(id);
+            if (!m_scene->GetRegistry().valid(e))
+                throw std::runtime_error("invalid entity id");
+            m_scriptEngine->AttachScriptToEntity(e, script);
+            m_scriptEngine->ReloadScript(e);
+            resp["ok"] = true;
+        }
+        else
+        {
+            resp["ok"] = false;
+            resp["error"] = "unknown method: " + method;
+        }
+    }
+    catch (const std::exception& e)
+    {
+        resp["ok"] = false;
+        resp["error"] = e.what();
+    }
+    // 不正 UTF-8(例: CP932 のモデル名由来の NameTag)で dump() が例外を投げないよう置換。
+    return resp.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 }
 
 void Application::Run()
@@ -901,6 +1000,10 @@ void Application::Run()
     while (!m_window->ShouldClose())
     {
         m_frameStart = std::chrono::high_resolution_clock::now();
+
+        // AI(MCP)から溜まったコマンドをメインスレッドで処理(scene/scriptengine を安全に触れる)。
+        if (m_mcpBridge)
+            m_mcpBridge->Poll([this](const std::string& line) { return HandleMcpCommand(line); });
 
         // モード切替（前フレームのImGuiボタンから遅延実行）
         if (m_modeChangeRequested)
@@ -1075,6 +1178,10 @@ void Application::Run()
 void Application::Shutdown()
 {
     Logger::Info("Application shutting down...");
+
+    // MCP ブリッジを最優先で停止(worker を join)。これより後で Logger/scene/scriptengine を
+    // 破棄するので、ここで止めないと worker がそれらを破棄後に触って data race/UAF になる。
+    if (m_mcpBridge) m_mcpBridge.reset();
 
     // 非同期ロードスレッドの回収
     if (m_loadThread.joinable())

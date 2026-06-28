@@ -1543,6 +1543,17 @@ void ScriptEngine::ReloadScript(entt::entity e)
     // 実際の再構築は UpdateAttachedScripts のループで行う
 }
 
+bool ScriptEngine::CheckLuaSyntax(const std::string& code, std::string& err)
+{
+    if (!m_lua) { err = "lua state not initialized"; return false; }
+    // load はコンパイルするだけで実行しない(副作用なし)。構文エラーだけ拾える。
+    sol::load_result lr = m_lua->load(code);
+    if (lr.valid()) return true;
+    sol::error e = lr;
+    err = e.what();
+    return false;
+}
+
 void ScriptEngine::OnPlayStart()
 {
     auto& reg = m_scene->GetRegistry();

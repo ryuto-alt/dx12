@@ -92,6 +92,10 @@ public:
     void UpdateTriggers(f32 dt);          // 毎フレーム Trigger（イベント）評価（Play 中）
     void ReloadScript(entt::entity e);    // Inspector Reload ボタン用
 
+    // Lua をコンパイルのみして構文を検証(実行しない・副作用なし)。OK なら true。
+    // 失敗時 err にエラー文を入れる。MCP の create で書き込み前チェックに使う。
+    bool CheckLuaSyntax(const std::string& code, std::string& err);
+
     void Shutdown();
 
     const std::string& GetLastError() const { return m_lastError; }

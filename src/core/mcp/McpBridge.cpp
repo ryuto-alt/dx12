@@ -1,0 +1,159 @@
+// winsock2.h は windows.h より前に include する必要がある。
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
+#include "core/mcp/McpBridge.h"
+#include "core/Logger.h"
+
+#include <atomic>
+#include <mutex>
+#include <thread>
+#include <utility>
+#include <vector>
+
+namespace dx12e {
+
+struct McpBridge::Impl
+{
+    SOCKET listenSock = INVALID_SOCKET;
+    std::atomic<SOCKET> clientSock{ INVALID_SOCKET };
+    std::thread worker;
+    std::atomic<bool> running{ false };
+    bool wsaUp = false;
+
+    std::mutex mtx;
+    std::vector<std::pair<SOCKET, std::string>> pending;  // (client, requestLine)
+
+    void AcceptLoop()
+    {
+        while (running.load())
+        {
+            SOCKET client = ::accept(listenSock, nullptr, nullptr);
+            if (client == INVALID_SOCKET)
+            {
+                if (!running.load()) break;   // Stop() が listenSock を閉じた
+                continue;
+            }
+            clientSock.store(client);
+            Logger::Info("MCP bridge: client connected");
+
+            std::string buf;
+            char tmp[4096];
+            bool firstLine = true;
+            bool drop = false;
+            while (running.load() && !drop)
+            {
+                int n = ::recv(client, tmp, static_cast<int>(sizeof(tmp)), 0);
+                if (n <= 0) break;   // 切断/エラー
+                buf.append(tmp, static_cast<size_t>(n));
+
+                size_t pos;
+                while ((pos = buf.find('\n')) != std::string::npos)
+                {
+                    std::string line = buf.substr(0, pos);
+                    buf.erase(0, pos + 1);
+                    if (!line.empty() && line.back() == '\r') line.pop_back();
+                    if (line.empty()) continue;
+                    // 正規クライアントの行は必ず JSON オブジェクト。最初の行が '{' で始まらなければ
+                    // ブラウザの HTTP/WebSocket ドライブバイ等とみなし接続を切る(無認証ポートの最低防御)。
+                    if (firstLine) { firstLine = false; if (line[0] != '{') { drop = true; break; } }
+                    std::lock_guard<std::mutex> lock(mtx);
+                    pending.emplace_back(client, std::move(line));
+                }
+            }
+
+            // close 所有を一本化(Stop() も同じ exchange を使う)。先に valid を取った側だけが閉じる。
+            {
+                SOCKET c = clientSock.exchange(INVALID_SOCKET);
+                if (c != INVALID_SOCKET) ::closesocket(c);
+            }
+            Logger::Info("MCP bridge: client disconnected");
+        }
+    }
+};
+
+McpBridge::McpBridge() : m_impl(std::make_unique<Impl>()) {}
+
+McpBridge::~McpBridge() { Stop(); }
+
+bool McpBridge::Start(uint16_t port)
+{
+    auto& s = *m_impl;
+    if (s.running.load()) return true;
+
+    WSADATA wsa{};
+    if (::WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
+    {
+        Logger::Error("MCP bridge: WSAStartup failed");
+        return false;
+    }
+    s.wsaUp = true;
+
+    s.listenSock = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s.listenSock == INVALID_SOCKET)
+    {
+        Logger::Error("MCP bridge: socket() failed");
+        Stop();
+        return false;
+    }
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = ::htons(port);
+    ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);   // ローカルのみ。外部から触れない。
+
+    if (::bind(s.listenSock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR ||
+        ::listen(s.listenSock, 1) == SOCKET_ERROR)
+    {
+        Logger::Error("MCP bridge: bind/listen failed on port {} (already in use?)", port);
+        Stop();
+        return false;
+    }
+
+    s.running.store(true);
+    s.worker = std::thread([&s] { s.AcceptLoop(); });
+    Logger::Info("MCP bridge listening on 127.0.0.1:{}", port);
+    return true;
+}
+
+void McpBridge::Stop()
+{
+    auto& s = *m_impl;
+    if (!s.running.exchange(false))
+    {
+        // 起動失敗の後始末でも WSA だけは畳む。
+        if (s.wsaUp) { ::WSACleanup(); s.wsaUp = false; }
+        if (s.listenSock != INVALID_SOCKET) { ::closesocket(s.listenSock); s.listenSock = INVALID_SOCKET; }
+        return;
+    }
+
+    // accept/recv を叩き起こすためソケットを閉じる。
+    SOCKET client = s.clientSock.exchange(INVALID_SOCKET);
+    if (client != INVALID_SOCKET) ::closesocket(client);
+    if (s.listenSock != INVALID_SOCKET) { ::closesocket(s.listenSock); s.listenSock = INVALID_SOCKET; }
+
+    if (s.worker.joinable()) s.worker.join();
+    if (s.wsaUp) { ::WSACleanup(); s.wsaUp = false; }
+}
+
+void McpBridge::Poll(const std::function<std::string(const std::string&)>& handler)
+{
+    auto& s = *m_impl;
+    std::vector<std::pair<SOCKET, std::string>> work;
+    {
+        std::lock_guard<std::mutex> lock(s.mtx);
+        work.swap(s.pending);
+    }
+    for (auto& [sock, line] : work)
+    {
+        std::string resp;
+        // ハンドラ例外がここを抜けると Run→main まで伝播してエディタが落ちるので握り潰す。
+        try { resp = handler(line); }
+        catch (...) { resp = "{\"ok\":false,\"error\":\"internal error\"}"; }
+        resp.push_back('\n');
+        // メインスレッドからの send と worker の recv は同一ソケットで並行可(Winsock)。
+        ::send(sock, resp.data(), static_cast<int>(resp.size()), 0);
+    }
+}
+
+} // namespace dx12e

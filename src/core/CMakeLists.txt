@@ -20,6 +20,7 @@ add_library(Core STATIC
     vfs/PakWriter.cpp
     vfs/PakArchive.cpp
     vfs/Vfs.cpp
+    mcp/McpBridge.cpp
 )
 
 target_include_directories(Core
@@ -32,7 +33,7 @@ find_package(spdlog CONFIG REQUIRED)
 
 target_link_libraries(Core
     PUBLIC spdlog::spdlog
-    PRIVATE imgui::imgui bcrypt.lib Cabinet.lib
+    PRIVATE imgui::imgui bcrypt.lib Cabinet.lib ws2_32.lib
 )
 
 target_compile_options(Core PRIVATE ${DX12_COMPILE_OPTIONS})
