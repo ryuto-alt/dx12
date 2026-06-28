@@ -9,12 +9,18 @@
 - `index.ts` … MCP サーバ本体(stdio)。ツール3個を公開
 - `test.ts` … mock エンジンで framing/相関/エラーを検証(`node test.ts`)
 
-## ツール(初回スライス)
+## ツール
 | ツール | 説明 |
 |---|---|
 | `dx12_list_entities` | 開いてるシーンのエンティティ一覧 (id, name) |
-| `dx12_create_lua_component` | `assets/components/<name>.lua` を作成。返り値 `path` を attach に使う |
-| `dx12_attach_lua_component` | エンティティに Lua 部品をアタッチして即リロード |
+| `dx12_get_entity` | エンティティの全コンポーネントと値を JSON で読む |
+| `dx12_create_entity` | エンティティ生成 (box/sphere/plane/empty, name, position)。遅延処理 |
+| `dx12_delete_entity` | エンティティ削除 (子ごと, Undo可)。遅延処理 |
+| `dx12_set_transform` | Transform 設定 (位置/回転/スケール、指定分のみ) |
+| `dx12_create_lua_component` | `assets/components/<name>.lua` を作成 (構文検証付き) |
+| `dx12_attach_lua_component` | エンティティに Lua 部品をアタッチ (実行は Play 時) |
+
+生成/削除はメッシュ構築に cmdList が要るためフレーム境界で遅延処理。`create_entity` は id を即返さないので、`name` を付けて `dx12_list_entities`/`dx12_get_entity` で引く。
 
 ## セットアップ
 ```bash

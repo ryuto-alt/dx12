@@ -19,6 +19,7 @@ struct PendingSpawnRequest
 {
     std::string modelPath;
     DirectX::XMFLOAT3 position{};
+    std::string name;   // 空ならデフォルト名。MCP の create_entity から任意名を付けるのに使う。
 };
 
 struct PendingScriptAttach

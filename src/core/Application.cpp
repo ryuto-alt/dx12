@@ -975,6 +975,81 @@ std::string Application::HandleMcpCommand(const std::string& line)
             m_scriptEngine->ReloadScript(e);
             resp["ok"] = true;
         }
+        else if (method == "create_entity")
+        {
+            // 生成はメッシュ構築に cmdList が要るためフレーム境界で遅延処理(エディタの既存機構を再利用)。
+            // よって id は即返せない。name で後から list_entities/get_entity で引く想定。
+            const std::string type = params.value("type", std::string("box"));
+            std::string name = params.value("name", std::string());
+            const auto pos = params.value("position", std::vector<float>{0.0f, 0.0f, 0.0f});
+            if (pos.size() != 3) throw std::runtime_error("position must be [x,y,z]");
+            std::string marker;
+            if      (type == "box")    marker = "__primitive_box__";
+            else if (type == "sphere") marker = "__primitive_sphere__";
+            else if (type == "plane")  marker = "__primitive_plane__";
+            else if (type == "empty")  marker = "__empty__";
+            else throw std::runtime_error("type must be box|sphere|plane|empty");
+            if (name.empty())   // 既定名: 種別名を先頭大文字に
+            {
+                name = type;
+                if (name[0] >= 'a' && name[0] <= 'z') name[0] = static_cast<char>(name[0] - 'a' + 'A');
+            }
+            PendingSpawnRequest sreq;
+            sreq.modelPath = marker;
+            sreq.position  = { pos[0], pos[1], pos[2] };
+            sreq.name      = name;
+            m_editorCtx->pendingSpawns.push_back(std::move(sreq));
+            resp["ok"] = true;
+            resp["result"] = {{"queued", true}, {"name", name}};
+        }
+        else if (method == "delete_entity")
+        {
+            const u32 id = params.value("entity", 0xFFFFFFFFu);
+            const auto e = static_cast<entt::entity>(id);
+            if (!m_scene->GetRegistry().valid(e)) throw std::runtime_error("invalid entity id");
+            m_editorCtx->pendingDeletions.push_back(e);   // 子ごと削除+Undo はエディタ機構が処理
+            resp["ok"] = true;
+            resp["result"] = {{"queued", true}};
+        }
+        else if (method == "set_transform")
+        {
+            const u32 id = params.value("entity", 0xFFFFFFFFu);
+            const auto e = static_cast<entt::entity>(id);
+            auto& reg = m_scene->GetRegistry();
+            if (!reg.valid(e) || !reg.all_of<Transform>(e))
+                throw std::runtime_error("entity has no Transform");
+            auto& t = reg.get<Transform>(e);
+            if (params.contains("position"))
+            {
+                const auto p = params["position"].get<std::vector<float>>();
+                if (p.size() != 3) throw std::runtime_error("position must be [x,y,z]");
+                t.position = { p[0], p[1], p[2] };
+            }
+            if (params.contains("rotation"))
+            {
+                const auto r = params["rotation"].get<std::vector<float>>();
+                if (r.size() != 3) throw std::runtime_error("rotation must be [x,y,z]");
+                t.rotation = { r[0], r[1], r[2] };
+                t.useQuaternion = false;   // Euler を反映(物理同期の quaternion に上書きされないように)
+            }
+            if (params.contains("scale"))
+            {
+                const auto s = params["scale"].get<std::vector<float>>();
+                if (s.size() != 3) throw std::runtime_error("scale must be [x,y,z]");
+                t.scale = { s[0], s[1], s[2] };
+            }
+            resp["ok"] = true;
+        }
+        else if (method == "get_entity")
+        {
+            const u32 id = params.value("entity", 0xFFFFFFFFu);
+            const auto e = static_cast<entt::entity>(id);
+            if (!m_scene->GetRegistry().valid(e)) throw std::runtime_error("invalid entity id");
+            // 既存シリアライザを流用(リフレクション的に全コンポーネントを JSON 化)。
+            std::string js = SceneSerializer::SerializeEntity(*m_scene, e, PathResolver::AssetsDir());
+            resp["ok"] = true;
+            resp["result"] = json::parse(js);
+        }
         else
         {
             resp["ok"] = false;
@@ -3320,6 +3395,7 @@ void Application::Render()
         for (auto& req : spawns)
         {
             std::string name = std::filesystem::path(req.modelPath).stem().string();
+            if (!req.name.empty()) name = req.name;   // MCP 等からの任意名で上書き
             entt::entity spawnedEntity = entt::null;
 
             if (req.modelPath == "__primitive_box__")
@@ -3341,7 +3417,7 @@ void Application::Render()
             {
                 auto& reg = m_scene->GetRegistry();
                 auto e = reg.create();
-                reg.emplace<NameTag>(e, NameTag{"Empty"});
+                reg.emplace<NameTag>(e, NameTag{name});
                 reg.emplace<Transform>(e);
                 spawnedEntity = e;
             }

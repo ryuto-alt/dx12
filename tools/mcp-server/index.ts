@@ -49,5 +49,44 @@ server.tool(
   ({ entity, script }) => run(() => engine.call("attach_lua_component", { entity, script })),
 );
 
+server.tool(
+  "dx12_create_entity",
+  "エンティティを生成する(エディタのみ)。生成はフレーム境界で遅延処理されるため id は即返らない。name を付けて後から dx12_list_entities / dx12_get_entity で引く。",
+  {
+    type: z.enum(["box", "sphere", "plane", "empty"]).describe("プリミティブ種別。emptyはTransformのみ。"),
+    name: z.string().optional().describe("エンティティ名(一意推奨)。省略時は種別名。"),
+    position: z.array(z.number()).length(3).optional().describe("[x,y,z]。省略時 [0,0,0]。"),
+  },
+  ({ type, name, position }) =>
+    run(() => engine.call("create_entity", { type, name, position })),
+);
+
+server.tool(
+  "dx12_delete_entity",
+  "エンティティを削除する(子ごと、Undo可)。フレーム境界で遅延処理。",
+  { entity: z.number().int().describe("エンティティ id") },
+  ({ entity }) => run(() => engine.call("delete_entity", { entity })),
+);
+
+server.tool(
+  "dx12_set_transform",
+  "エンティティの Transform を設定する。指定したフィールドだけ更新(位置/回転(Euler度)/スケール)。",
+  {
+    entity: z.number().int().describe("エンティティ id"),
+    position: z.array(z.number()).length(3).optional().describe("[x,y,z]"),
+    rotation: z.array(z.number()).length(3).optional().describe("[x,y,z] Euler度"),
+    scale: z.array(z.number()).length(3).optional().describe("[x,y,z]"),
+  },
+  ({ entity, position, rotation, scale }) =>
+    run(() => engine.call("set_transform", { entity, position, rotation, scale })),
+);
+
+server.tool(
+  "dx12_get_entity",
+  "エンティティの全コンポーネントと値を JSON で読む(編集前の状態確認に使う)。",
+  { entity: z.number().int().describe("エンティティ id") },
+  ({ entity }) => run(() => engine.call("get_entity", { entity })),
+);
+
 const transport = new StdioServerTransport();
 await server.connect(transport);
