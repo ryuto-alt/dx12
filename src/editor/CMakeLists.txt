@@ -14,8 +14,9 @@ add_library(Editor STATIC
 target_include_directories(Editor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries(Editor PUBLIC Core Scene ECS Renderer Gui Resource Audio Physics)
 
-# MCP / AI Bridge パネルが「接続コマンド」を絶対パス込みで表示するためのエンジン側パス。
-# game プロジェクトに再ポイントされる AssetsDir と違い、これは常にエンジン repo を指す。
+# MCP / AI Bridge パネルの接続コマンド表示用フォールバックパス。
+# 通常はパネルが exe を基準に tools/mcp-server を「実行時」解決する（別 PC・フォルダ移動でも有効）。
+# これはビルドしたマシンの絶対パスで、その実行時解決が失敗した場合の最終手段としてのみ使う。
 target_compile_definitions(Editor PRIVATE MCP_SERVER_DIR="${CMAKE_SOURCE_DIR}/tools/mcp-server")
 
 if(MSVC)
