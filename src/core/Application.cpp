@@ -61,6 +61,7 @@
 #include "editor/EditorContext.h"
 #include "editor/EditorLayer.h"
 #include "editor/EditorTheme.h"        // バージョン管理パネルのステータス配色
+#include "core/Version.h"              // kEngineVersion / 「更新内容」ポップアップの中身
 #include "editor/EditorIconRenderer.h"
 #include "editor/UndoSystem.h"
 #include "editor/ModelThumbnailRenderer.h"
@@ -128,6 +129,44 @@ Application::~Application()
     }
 }
 
+namespace
+{
+// 「更新内容」ポップアップを表示済みのバージョンを記録するファイル。
+// %LOCALAPPDATA%\DX12Engine\shown_version.txt（exe の場所に依存せず必ず書ける）。
+// Updater の last_update.txt と同じ場所に置く。
+std::filesystem::path WhatsNewStatePath()
+{
+    char* base = nullptr;
+    size_t len = 0;
+    if (_dupenv_s(&base, &len, "LOCALAPPDATA") != 0 || !base) return {};
+    std::filesystem::path dir = std::filesystem::path(base) / "DX12Engine";
+    free(base);
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    return dir / "shown_version.txt";
+}
+
+std::string ReadShownVersion()
+{
+    std::filesystem::path p = WhatsNewStatePath();
+    if (p.empty()) return {};
+    std::ifstream f(p);
+    if (!f) return {};
+    std::string s;
+    std::getline(f, s);
+    while (!s.empty() && (s.back() == '\r' || s.back() == '\n' || s.back() == ' ')) s.pop_back();
+    return s;
+}
+
+void WriteShownVersion(const std::string& v)
+{
+    std::filesystem::path p = WhatsNewStatePath();
+    if (p.empty()) return;
+    std::ofstream f(p, std::ios::trunc);
+    if (f) f << v;
+}
+} // namespace
+
 void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                              const ProjectInfo* /*projectInfo*/)
 {
@@ -135,6 +174,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     Logger::Init();
     m_isGameMode = gameMode;
     m_showLauncher = !gameMode;  // ゲームモードではランチャーを表示しない
+    // エディタで、前回表示した版と違う＝更新された/初回 のときだけ「更新内容」を出す。
+    m_showWhatsNew = !gameMode && (ReadShownVersion() != std::string(kEngineVersion));
     Logger::Info("Application initializing... (mode: {})", gameMode ? "game" : "editor");
 
     // エディタコンテキスト初期化
@@ -3161,6 +3202,38 @@ void Application::RenderLoadingOverlay()
     ImGui::PopStyleColor();
 }
 
+void Application::RenderWhatsNewPopup()
+{
+    if (!m_showWhatsNew) return;
+    namespace th = dx12e::theme;
+
+    const char* kId = "更新内容###whatsnew";
+    if (!m_whatsNewOpened) { ImGui::OpenPopup(kId); m_whatsNewOpened = true; }
+
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(560.0f, 0.0f), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal(kId, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, th::Accent);
+        ImGui::TextUnformatted(kWhatsNewTitle);
+        ImGui::PopStyleColor();
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::TextWrapped("%s", kWhatsNewBody);
+        ImGui::Spacing();
+        ImGui::Separator();
+        if (ImGui::Button("閉じる", ImVec2(140.0f, 0.0f)))
+        {
+            // この版は表示済みとして記録 → 次回以降は版が変わるまで出さない。
+            WriteShownVersion(kEngineVersion);
+            m_showWhatsNew = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+}
+
 void Application::LoadProject(const ProjectInfo& info)
 {
     namespace fs = std::filesystem;
@@ -6161,6 +6234,9 @@ void Application::Render()
     // ---- ImGui フレーム ----
     m_imguiManager->BeginFrame();
     ImGuizmo::BeginFrame();
+
+    // 版が変わった初回起動だけ「更新内容」モーダルを最前面に出す（ランチャー/エディタの上）。
+    RenderWhatsNewPopup();
 
     if (!m_isGameMode && m_loading)
     {

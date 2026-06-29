@@ -128,6 +128,7 @@ private:
     void BeginProjectLoad(const ProjectInfo& info, bool isNew);
     void UpdateProjectLoad(f32 dt);   // 毎フレーム状態機械を進める（!m_loading なら何もしない）
     void RenderLoadingOverlay();      // ローディングオーバーレイ描画
+    void RenderWhatsNewPopup();       // 版が変わった初回起動だけ「更新内容」モーダルを出す
     // エディタの「Project」「Version Control」ウィンドウ描画（ランチャー閉後）
     void RenderProjectWindow();
     void RenderVersionControlWindow();
@@ -201,6 +202,10 @@ private:
     std::unique_ptr<EditorLayer>   m_editorLayer;
     std::unique_ptr<ModelThumbnailRenderer> m_thumbRenderer;
     bool m_showLauncher = true;  // プロジェクトランチャー表示フラグ
+
+    // ---- 「更新内容」ポップアップ（版が変わった初回起動だけ表示）----
+    bool m_showWhatsNew   = false;  // この起動で出すべきか（Initialize で版マーカーと比較して決定）
+    bool m_whatsNewOpened = false;  // OpenPopup を1回だけ呼ぶためのラッチ
 
     // ---- プロジェクト管理 / バージョン管理(Git) ----
     ProjectInfo m_projectInfo;            // 現在開いているプロジェクト（rootDir 空 = 組み込みパス）
