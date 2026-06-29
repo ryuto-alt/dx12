@@ -2334,6 +2334,38 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             m_mcpStepReply = deferred;
             isDeferred = true;
         }
+        else if (method == "set_color")
+        {
+            // メッシュの頂点色(基本色の乗算)を設定する。scene:setColor(Lua) と同じ。
+            // 足場やコインの色付けに。色は [r,g,b](0..1)。
+            const auto e = ResolveMcpEntity(*m_scene, params);
+            auto& reg = m_scene->GetRegistry();
+            if (!reg.all_of<MeshRenderer>(e)) throw McpError(McpErr::NotFound, "entity has no MeshRenderer");
+            auto c = params.value("color", std::vector<float>{1.0f, 1.0f, 1.0f});
+            if (c.size() != 3) throw McpError(McpErr::InvalidParam, "color must be [r,g,b]");
+            auto* device = m_scene->GetDevice();
+            if (!device) throw McpError(McpErr::Internal, "no graphics device");
+            auto& mr = reg.get<MeshRenderer>(e);
+            for (auto* mesh : mr.meshes) if (mesh) mesh->SetVertexColor(*device, c[0], c[1], c[2], 1.0f);
+            resp["ok"] = true;
+            resp["result"] = {{"entityId", static_cast<u32>(e)}, {"color", {c[0], c[1], c[2]}}};
+        }
+        else if (method == "screenshot_game_view")
+        {
+            // アクティブな CameraComponent 視点でシーンを1フレーム描いて撮る(遅延応答)。
+            // Editor 中でもゲームカメラの画角を確認できる。Playing 中は通常 screenshot と同じ絵。
+            auto& reg = m_scene->GetRegistry();
+            bool hasActiveCam = false;
+            for (auto [e, cam] : reg.view<const CameraComponent>().each())
+                if (cam.isActive) { hasActiveCam = true; break; }
+            if (!hasActiveCam && m_engineMode != EngineMode::Playing)
+                throw McpError(McpErr::NotFound,
+                    "no active CameraComponent (camera.isActive=true にするか dx12_screenshot を使う)");
+            if (m_mcpGameViewReply.client != 0)
+                throw McpError(McpErr::ModeConflict, "a game-view screenshot is already pending; retry shortly");
+            m_mcpGameViewReply = deferred;   // フレーム境界で描画→撮影→応答(Run ループ側)
+            isDeferred = true;
+        }
         else
         {
             resp["ok"] = false;
@@ -2675,9 +2707,24 @@ void Application::Run()
             }
         }
 
+        // MCP screenshot_game_view: Editor 中は一時的にアクティブなゲームカメラへ切り替えて1フレーム描く。
+        // Playing 中は m_camera が既にゲームカメラなので上書き不要(通常 screenshot と同じ絵)。
+        const bool gvShot     = (m_mcpGameViewReply.client != 0);
+        const bool gvOverride = gvShot && (m_engineMode != EngineMode::Playing);
+        DirectX::XMFLOAT3 gvPos{}; f32 gvYaw=0, gvPitch=0, gvFov=0, gvAsp=0, gvNear=0, gvFar=0, gvOrthoH=0;
+        bool gvOrtho=false;
+        if (gvOverride)
+        {
+            gvPos=m_camera->GetPosition(); gvYaw=m_camera->GetYaw(); gvPitch=m_camera->GetPitch();
+            gvFov=m_camera->GetFovY(); gvAsp=m_camera->GetAspect();
+            gvNear=m_camera->GetNearZ(); gvFar=m_camera->GetFarZ();
+            gvOrtho=m_camera->IsOrthographic(); gvOrthoH=m_camera->GetOrthoHeight();
+        }
+
         try
         {
             Update();
+            if (gvOverride) SyncActiveCameraToGlobal();   // Update の後に上書き(編集カメラ操作に勝つ)
             Render();
         }
         catch (const std::exception& ex)
@@ -2692,6 +2739,28 @@ void Application::Run()
                 m_engineMode = EngineMode::Editor;
                 m_inputSystem->SetMouseCapture(false);
                 Logger::Error("Forced return to Editor mode");
+            }
+        }
+
+        // screenshot_game_view: このフレームの描画(ゲームカメラ視点)を撮って遅延応答 → 編集カメラ復元。
+        if (gvShot)
+        {
+            std::string serr;
+            const std::string p = CaptureSceneScreenshot(serr);
+            if (p.empty())
+                FailMcp(m_mcpBridge.get(), m_mcpGameViewReply, McpErr::Internal,
+                        serr.empty() ? "screenshot failed" : serr);
+            else
+                CompleteMcp(m_mcpBridge.get(), m_mcpGameViewReply,
+                    nlohmann::json{{"path", p}, {"width", m_sceneRT->GetWidth()},
+                                   {"height", m_sceneRT->GetHeight()},
+                                   {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"}});
+            m_mcpGameViewReply = {};
+            if (gvOverride)   // 編集カメラを完全に復元(位置/向き/投影)
+            {
+                m_camera->SetPosition(gvPos); m_camera->SetYaw(gvYaw); m_camera->SetPitch(gvPitch);
+                if (gvOrtho) m_camera->SetOrthographic(gvOrthoH, gvAsp, gvNear, gvFar);
+                else         m_camera->SetPerspective(gvFov, gvAsp, gvNear, gvFar);
             }
         }
 
@@ -4556,10 +4625,28 @@ void Application::EnterEditorMode()
         m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
                             m_srvHeap.get(), cmdList);
 
-        // 復元失敗(空/破損スナップショット)は ApplySceneJson が scene.Clear() 後に false を返すため
-        // 黙ってシーンが空になる(list_entities=0 の原因)。戻り値を見てログに残す。
-        if (!SceneSerializer::LoadFromString(*m_scene, m_playSceneJson, PathResolver::AssetsDir()))
-            Logger::Error("EnterEditorMode: scene restore failed; scene may be empty (check the Play snapshot)");
+        // スナップショットからシーンを完全復元する。失敗(空/破損 JSON、復元中の例外)すると
+        // ApplySceneJson が scene.Clear() 後に中断してシーンが空になる(= Stop 後に list_entities が
+        // count:0 になる原因)。失敗を握りつぶさず、ディスク上の現在シーンから読み直してフォールバックする
+        // (ユーザが手動で open_scene し直して復旧していた動作を自動化)。
+        bool restored = false;
+        try {
+            restored = SceneSerializer::LoadFromString(*m_scene, m_playSceneJson, PathResolver::AssetsDir());
+        } catch (const std::exception& ex) {
+            Logger::Error("EnterEditorMode: snapshot restore threw: {}", ex.what());
+        }
+        if (!restored && !m_editorCtx->currentScenePath.empty()) {
+            Logger::Error("EnterEditorMode: snapshot restore failed; reloading from disk: {}",
+                          ToAssetRel(m_editorCtx->currentScenePath));
+            try {
+                restored = SceneSerializer::Load(*m_scene, m_editorCtx->currentScenePath,
+                                                 PathResolver::AssetsDir());
+            } catch (const std::exception& ex) {
+                Logger::Error("EnterEditorMode: disk fallback also failed: {}", ex.what());
+            }
+        }
+        if (!restored)
+            Logger::Error("EnterEditorMode: scene is empty after Stop (no valid snapshot nor disk scene)");
 
         m_scriptEngine->Shutdown();
         m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),

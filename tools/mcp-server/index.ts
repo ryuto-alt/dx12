@@ -358,6 +358,18 @@ reg(
 );
 
 reg(
+  "dx12_set_color",
+  "基本色設定",
+  "メッシュの基本色(頂点色の乗算)を設定する。足場やコインの色付けに。color は [r,g,b](0..1)。entity(id) か name 指定。金属感は dx12_set_pbr の metallic/roughness と併用。",
+  {
+    ...entityRef,
+    color: vec3.describe("[r,g,b] 0..1。例: 金色=[1,0.84,0]"),
+  },
+  { idempotentHint: true },
+  ({ entity, name, color }) => run(() => engine.call("set_color", { entity, name, color })),
+);
+
+reg(
   "dx12_set_scene_settings",
   "シーン設定変更",
   "シーンのスカイボックス/IBL を設定する。skybox 内の指定フィールドだけ適用。envMapPath を変えると {applied, envMapRebake} を返し再ベイクが走ることがある。",
@@ -441,6 +453,77 @@ reg(
   {},
   ({ type, name, position, idempotency_key }) =>
     run(() => engine.call("create_entity", { type, name, position, idempotency_key })),
+);
+
+// プリミティブを1コールで生成＋整形する合成ヘルパ(create_entity → set_transform/set_pbr/set_color)。
+// create_entity は遅延同期で本物の entityId を返すので、それを使って後段を適用する。
+async function spawnPrimitive(
+  type: "box" | "sphere",
+  a: { name?: string; position?: number[]; scale?: number[]; rotation?: number[];
+       color?: number[]; metallic?: number; roughness?: number },
+) {
+  const r = await engine.call("create_entity", { type, name: a.name, position: a.position });
+  const entity = r.entityId;
+  if (a.scale || a.rotation)
+    await engine.call("set_transform", { entity, scale: a.scale, rotation: a.rotation });
+  if (a.metallic != null || a.roughness != null)
+    await engine.call("set_pbr", { entity, metallic: a.metallic, roughness: a.roughness });
+  if (a.color) await engine.call("set_color", { entity, color: a.color });
+  return r;
+}
+
+reg(
+  "dx12_spawn_box",
+  "ボックス生成(整形込み)",
+  "ボックス(立方体)を1コールで生成。足場/壁/床に最適。position/scale/rotation/color/metallic/roughness をまとめて指定でき、内部で create_entity→set_transform→set_pbr→set_color を順に実行する。{entityId, name, sceneGeneration} を返す。",
+  {
+    name: z.string().optional().describe("エンティティ名。省略時 'Box'。"),
+    position: vec3.optional().describe("[x,y,z]。省略時 [0,0,0]。"),
+    scale: vec3.optional().describe("[x,y,z]。足場なら例 [4,0.5,4]。"),
+    rotation: vec3.optional().describe("[x,y,z] Euler 度。"),
+    color: vec3.optional().describe("[r,g,b] 0..1 基本色。"),
+    metallic: z.number().optional().describe("金属度 0..1。"),
+    roughness: z.number().optional().describe("粗さ 0..1。"),
+  },
+  {},
+  (a) => run(() => spawnPrimitive("box", a)),
+);
+
+reg(
+  "dx12_spawn_sphere",
+  "スフィア生成(整形込み)",
+  "スフィア(球)を1コールで生成。position/scale/rotation/color/metallic/roughness をまとめて指定可。{entityId, name, sceneGeneration} を返す。",
+  {
+    name: z.string().optional().describe("エンティティ名。省略時 'Sphere'。"),
+    position: vec3.optional().describe("[x,y,z]。省略時 [0,0,0]。"),
+    scale: vec3.optional().describe("[x,y,z]。"),
+    rotation: vec3.optional().describe("[x,y,z] Euler 度。"),
+    color: vec3.optional().describe("[r,g,b] 0..1 基本色。"),
+    metallic: z.number().optional().describe("金属度 0..1。"),
+    roughness: z.number().optional().describe("粗さ 0..1。"),
+  },
+  {},
+  (a) => run(() => spawnPrimitive("sphere", a)),
+);
+
+reg(
+  "dx12_spawn_coin",
+  "コイン生成",
+  "コイン風の収集アイテムを1コールで生成(金色の薄い円盤状スフィア + tag 'coin' + 金属光沢)。足場ゲームの収集物置きに。position/name 指定可。回転やスコア加算は別途 Lua/trigger で付ける。{entityId, name, sceneGeneration} を返す。",
+  {
+    name: z.string().optional().describe("エンティティ名。省略時 'Coin'。"),
+    position: vec3.optional().describe("[x,y,z]。省略時 [0,0,0]。"),
+  },
+  {},
+  ({ name, position }) => run(async () => {
+    const r = await engine.call("create_entity", { type: "sphere", name: name ?? "Coin", position });
+    const entity = r.entityId;
+    await engine.call("set_transform", { entity, scale: [0.5, 0.5, 0.12] });   // 薄い円盤風
+    await engine.call("set_pbr", { entity, metallic: 1.0, roughness: 0.25 });  // 金属光沢
+    await engine.call("set_color", { entity, color: [1.0, 0.84, 0.0] });        // 金色
+    await engine.call("set_component", { entity, component: "tags", data: ["coin"] });
+    return { ...r, tag: "coin" };
+  }),
 );
 
 reg(
@@ -638,6 +721,27 @@ server.registerTool(
       const shot = await engine.call("screenshot", {});
       if (!shot || !shot.path) throw new Error("screenshot が path を返さんかった");
       return imageResult(shot.path, { width: shot.width, height: shot.height });
+    } catch (e: any) {
+      return errResult(e);
+    }
+  },
+);
+
+// ゲームカメラ視点のスクショ。アクティブな CameraComponent でシーンを1フレーム描いて撮る。
+// Editor 中でも Play せずにゲームカメラの画角を確認できる(Playing 中は通常 screenshot と同じ絵)。
+server.registerTool(
+  "dx12_screenshot_game_view",
+  {
+    title: "ゲーム画面スクショ",
+    description: "アクティブな CameraComponent(ゲームカメラ)視点でシーンを1フレーム描画して PNG で返す。★Editor 中でも Play せずにゲームカメラの見え方(画角・構図)を確認できる。アクティブなカメラが無いとエラー(camera.isActive=true にする)。image ブロック + text(path/サイズ/mode)を返す。",
+    inputSchema: {},
+    annotations: { title: "ゲーム画面スクショ", openWorldHint: false, readOnlyHint: true },
+  },
+  async () => {
+    try {
+      const shot = await engine.call("screenshot_game_view", {});
+      if (!shot || !shot.path) throw new Error("screenshot_game_view が path を返さんかった");
+      return imageResult(shot.path, { width: shot.width, height: shot.height, mode: shot.mode });
     } catch (e: any) {
       return errResult(e);
     }

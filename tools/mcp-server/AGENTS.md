@@ -70,9 +70,28 @@ dx12_set_transform(entity: 55, position:[2,0,0], scale:[1,2,1])
 # 色を付ける(PBR)
 dx12_set_pbr(entity: 55, metallic:0.0, roughness:0.8)
 
+# 基本色(頂点色)を付ける
+dx12_set_color(entity: 55, color:[0.9,0.2,0.2])
+
 # ライトを追加
 dx12_set_component(entity: 55, component:"pointLight", data:{color:[1,0,0], intensity:5.0, range:10.0})
 ```
+
+### 2b. 1コールで生成＋整形(おすすめ。足場・壁・コイン)
+
+`dx12_spawn_box` / `dx12_spawn_sphere` は create_entity→set_transform→set_pbr→set_color を内部でまとめて実行する。
+
+```
+# 足場(薄い箱)
+dx12_spawn_box(name:"Platform_1", position:[0,0,0], scale:[4,0.5,4], color:[0.6,0.6,0.7])
+
+# コイン(金色の薄い円盤 + tag 'coin')
+dx12_spawn_coin(name:"Coin_1", position:[0,2,0])
+
+# ボール
+dx12_spawn_sphere(name:"Ball", position:[0,5,0], color:[0.2,0.5,1.0], metallic:0.0, roughness:0.4)
+```
+※ Playing 中は生成系が MODE_CONFLICT。先に `dx12_stop()`。コインの回転/取得判定は Lua か trigger で付ける。
 
 ### 3. モデルをスポーン
 
@@ -162,10 +181,13 @@ dx12_set_lua_property(name:"MainCamera", key:"height", value:5.0)
 # Playing 中なら即再注入(OnStart 再実行)、Editor 中は保存して次 Play で反映。
 ```
 
-### ゲーム画面の確認(Playing 中)
+### ゲーム画面の確認
 
-- `dx12_screenshot` は **Playing 中はアクティブなゲームカメラの絵**(=実ゲーム画面)を返す。
-  Editor 中はエディタのフライカメラ。`dx12_focus_and_screenshot` は寄せて撮る用(エディタカメラ)。
+- `dx12_screenshot_game_view` は **Editor 中でも Play せずにアクティブなゲームカメラの絵**を返す
+  (内部で1フレームだけゲームカメラに切り替えて撮影→編集カメラに復元)。カメラ配置・構図の確認に最適。
+  アクティブな CameraComponent が無いとエラー(`camera` の `isActive=true` にする)。
+- `dx12_screenshot` は **Playing 中はゲームカメラの絵**、Editor 中はエディタのフライカメラ。
+  `dx12_focus_and_screenshot` は寄せて撮る用(エディタカメラ)。
 - `dx12_project_world_to_screen(name:"Player")` で player のワールド座標を画面ピクセルへ投影。
   `{x, y, visible, depth, width, height}`。`x≈width/2, y≈height/2` なら画面中央。`visible=false` は画面外。
 
@@ -265,9 +287,11 @@ dx12_set_transform(name:"Player", position:[0,1,0])
 「list し直すか name 指定で」というヒントが入る。
 
 ### Stop 後に list_entities が 0 件になったら
-スナップショット復元に失敗している可能性がある(壊れた/空のシーン)。`dx12_get_log` に
-`EnterEditorMode: scene restore failed` が出ていないか確認し、出ていれば
-`dx12_open_scene` でシーンを開き直す。
+スナップショット復元の失敗時は **自動でディスク上の現在シーンから読み直す**ようになった
+(以前は空のままだった)。それでも 0 件なら `dx12_get_log` を確認:
+`snapshot restore failed; reloading from disk` が出ていれば自動復旧済み、
+`scene is empty after Stop` が出ていればディスクにも有効なシーンが無い状態
+(未保存の新規シーンを Play→Stop した等)。その場合は `dx12_open_scene` で開き直す。
 
 ---
 

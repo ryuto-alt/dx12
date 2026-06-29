@@ -347,17 +347,23 @@ console.log("\n[16-18] per-method タイムアウト選択");
 // step_frames に長いタイムアウト(30000ms)が、key_down/project_world_to_screen に
 // 同期クラス(8000ms)が割り当たっていることを確認する。
 
-console.log("\n[19-22] 新ツール(name 透過 / 新 method タイムアウト)");
+console.log("\n[19-24] 新ツール(name 透過 / 新 method タイムアウト / 色・ゲーム画面)");
 {
-  // step_frames は 150ms 遅延、それ以外は即答(params をそのまま echo)。
+  // step_frames は 150ms 遅延、screenshot_game_view は path を返す、他は params を echo。
   function newToolsHandler(req: any, sock: net.Socket): void {
     if (req.method === "step_frames") {
       setTimeout(() => {
         sock.write(JSON.stringify({ id: req.id, ok: true,
           result: { stepped: true, mode: "Playing", sceneGeneration: 5 } }) + "\n");
       }, 150);
+    } else if (req.method === "screenshot_game_view") {
+      // 実機は1フレーム後に返す遅延応答。ここでは 120ms 遅延で path を返す。
+      setTimeout(() => {
+        sock.write(JSON.stringify({ id: req.id, ok: true,
+          result: { path: "C:/tmp/gv.png", width: 1280, height: 720, mode: "Editor" } }) + "\n");
+      }, 120);
     } else {
-      // set_transform / key_down / project_world_to_screen 等は params を echo
+      // set_transform / key_down / project_world_to_screen / set_color 等は params を echo
       sock.write(JSON.stringify({ id: req.id, ok: true, result: req.params }) + "\n");
     }
   }
@@ -388,6 +394,18 @@ console.log("\n[19-22] 新ツール(name 透過 / 新 method タイムアウト)
     { name: "Player" },
   );
   pass("project_world_to_screen — name 透過");
+
+  // 23. set_color — name + color 透過
+  assert.deepStrictEqual(
+    await c.call("set_color", { name: "Floor", color: [1, 0.84, 0] }),
+    { name: "Floor", color: [1, 0.84, 0] },
+  );
+  pass("set_color — name + color 透過");
+
+  // 24. screenshot_game_view — 遅延応答(120ms)が同期クラス(8000ms)で解決し path を返す
+  const gv = await c.call("screenshot_game_view", {});
+  assert.strictEqual(gv.path, "C:/tmp/gv.png", "screenshot_game_view が path を返すこと");
+  pass("screenshot_game_view — 遅延 path 解決");
 
   server.close();
 }
