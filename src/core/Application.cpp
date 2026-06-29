@@ -2490,10 +2490,12 @@ void Application::Update()
         }
 
         // --- タッチパッド向け: キーボードフライモード（マウス/ボタン長押し不要）---
-        bool kbActive = !ImGui::GetIO().WantCaptureKeyboard;  // テキスト入力中は無効
+        // GetAsyncKeyState はフォーカスに関係なく物理キー状態を読むため、ウィンドウが前面に
+        // いる時だけ有効化する（別アプリ作業中の ` / Ctrl+Z / WASD などがエディタに効くのを防ぐ）。
+        bool kbActive = isForeground && !ImGui::GetIO().WantCaptureKeyboard;  // 非フォーカス/テキスト入力中は無効
         if (kbActive && (GetAsyncKeyState(VK_OEM_3) & 1))     // ` キーでトグル
             m_editorCtx->flyMode = !m_editorCtx->flyMode;
-        if (m_editorCtx->flyMode && (GetAsyncKeyState(VK_ESCAPE) & 1))
+        if (m_editorCtx->flyMode && kbActive && (GetAsyncKeyState(VK_ESCAPE) & 1))
             m_editorCtx->flyMode = false;
 
         if (m_editorCtx->flyMode && kbActive && !m_inputSystem->IsMouseCaptured()
@@ -2519,8 +2521,20 @@ void Application::Update()
             if (yawD != 0.0f || pitchD != 0.0f) m_camera->Rotate(yawD, pitchD);
         }
 
+        // --- 2D ビューモード: WASD / 矢印キーでパン（3D の WASD 移動と同じ操作感で左右上下に動かせる）---
+        // 2D は回転 0 固定なので MoveRight/MoveUp はそのままワールド X/Y のパンになる。速度はズーム量に比例。
+        // ※ W/E/R のギズモ切替は 2D 中は下のブロックで抑止し、ここでは移動だけにする。
+        if (m_editorCtx->view2D && kbActive && !m_inputSystem->IsMouseCaptured())
+        {
+            f32 pan = (std::max)(0.5f, m_editorCtx->view2DZoom) * 1.5f * dt;
+            if ((GetAsyncKeyState('D') & 0x8000) || (GetAsyncKeyState(VK_RIGHT) & 0x8000)) m_camera->MoveRight(pan);
+            if ((GetAsyncKeyState('A') & 0x8000) || (GetAsyncKeyState(VK_LEFT)  & 0x8000)) m_camera->MoveRight(-pan);
+            if ((GetAsyncKeyState('W') & 0x8000) || (GetAsyncKeyState(VK_UP)    & 0x8000)) m_camera->MoveUp(pan);
+            if ((GetAsyncKeyState('S') & 0x8000) || (GetAsyncKeyState(VK_DOWN)  & 0x8000)) m_camera->MoveUp(-pan);
+        }
+
         // Ctrl+S でクイック保存
-        if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState('S') & 1))
+        if (isForeground && (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState('S') & 1))
         {
             if (m_editorCtx->currentScenePath.empty())
             {
@@ -2540,7 +2554,7 @@ void Application::Update()
         }
 
         // Ctrl+N で新規シーン名入力ダイアログを開く
-        if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState('N') & 1))
+        if (isForeground && (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState('N') & 1))
         {
             m_editorCtx->showNewSceneDialog = true;
             m_editorCtx->newSceneDialogIsCreate = true;
@@ -2549,8 +2563,8 @@ void Application::Update()
         }
 
         // Undo/Redo (Ctrl+Z / Ctrl+Y) + Copy/Paste/Duplicate (Ctrl+C/V/D)
-        // ImGui のテキスト入力にフォーカスがある時はエンティティ操作を抑制
-        if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) && !ImGui::GetIO().WantCaptureKeyboard)
+        // ImGui のテキスト入力にフォーカスがある時、ウィンドウが裏にある時はエンティティ操作を抑制
+        if (isForeground && (GetAsyncKeyState(VK_CONTROL) & 0x8000) && !ImGui::GetIO().WantCaptureKeyboard)
         {
             if (GetAsyncKeyState('Z') & 1)
                 m_editorCtx->pendingUndo = true;
@@ -2584,11 +2598,11 @@ void Application::Update()
             }
         }
 
-        // ギズモモード切替（右クリック中・ImGuiフォーカス中は無効）
-        if (!ImGui::GetIO().WantCaptureKeyboard && !m_inputSystem->IsMouseCaptured())
+        // ギズモモード切替（右クリック中・ImGuiフォーカス中・非フォーカス時は無効）
+        if (isForeground && !ImGui::GetIO().WantCaptureKeyboard && !m_inputSystem->IsMouseCaptured())
         {
-            // フライモード中は W/E/R/T をカメラ移動に使うのでギズモ切替は抑制
-            if (!m_editorCtx->flyMode)
+            // フライモード中・2Dビュー中は W/E/R/T をカメラ移動(パン)に使うのでギズモ切替は抑制
+            if (!m_editorCtx->flyMode && !m_editorCtx->view2D)
             {
                 if (GetAsyncKeyState('W') & 1) m_editorCtx->gizmoMode = GizmoMode::Translate;
                 if (GetAsyncKeyState('E') & 1) m_editorCtx->gizmoMode = GizmoMode::Rotate;
@@ -5180,6 +5194,14 @@ void Application::Render()
     {
         if (m_editorCtx->view2D)
         {
+            // 3D→2D に入った瞬間だけ、3Dカメラの位置/向きを退避（戻した時に復元する）。
+            if (!m_editorWas2D)
+            {
+                m_cam3DSnapshot.position = m_camera->GetPosition();
+                m_cam3DSnapshot.yaw      = m_camera->GetYaw();
+                m_cam3DSnapshot.pitch    = m_camera->GetPitch();
+                m_has3DSnapshot = true;
+            }
             m_camera->SetYaw(0.0f);
             m_camera->SetPitch(0.0f);
             XMFLOAT3 p = m_camera->GetPosition();
@@ -5190,6 +5212,13 @@ void Application::Render()
         }
         else
         {
+            // 2D→3D に戻った瞬間だけ、退避してあった 3Dカメラ状態を復元（視点が壊れないように）。
+            if (m_editorWas2D && m_has3DSnapshot)
+            {
+                m_camera->SetPosition(m_cam3DSnapshot.position);
+                m_camera->SetYaw(m_cam3DSnapshot.yaw);
+                m_camera->SetPitch(m_cam3DSnapshot.pitch);
+            }
             m_camera->SetPerspective(DirectX::XM_PIDIV4, renderAspect, 0.1f, 1000.0f);
         }
         m_editorWas2D = m_editorCtx->view2D;

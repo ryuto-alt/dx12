@@ -64,7 +64,7 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
         snapValues[0] = snapValues[1] = snapValues[2] = 15.0f;
     else if (ctx.gizmoMode == GizmoMode::Scale)
         snapValues[0] = snapValues[1] = snapValues[2] = 0.1f;
-    bool useSnap = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    bool useSnap = ImGui::GetIO().KeyCtrl;   // ImGui 経由＝ウィンドウがフォーカスされている時だけ
 
     // ギズモ操作開始を検出して Transform をスナップショット
     bool isUsing = ImGuizmo::IsUsing();
@@ -581,7 +581,9 @@ void SceneViewPanel::HandleDeleteKey(entt::registry& reg,
 
     // ビューポートの右クリックはフライカメラ専用にしたので、削除は Del キーで行う
     // （右クリック削除は Hierarchy パネルのコンテキストメニューで担保）。
-    bool deletePressed = (GetAsyncKeyState(VK_DELETE) & 1) != 0;
+    // ImGui::IsKeyPressed は WndProc 経由＝ウィンドウがフォーカスされている時だけ true になるので、
+    // 別アプリ作業中の Del がエンティティを消すのを防げる（GetAsyncKeyState はフォーカス無関係）。
+    bool deletePressed = ImGui::IsKeyPressed(ImGuiKey_Delete, false);
 
     if (deletePressed)
     {

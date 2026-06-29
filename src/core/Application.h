@@ -342,6 +342,11 @@ private:
         f32 pitch;
     } m_cameraSnapshot{};
 
+    // 2D⇆3D ビュー切替時の 3D カメラ退避。2D は正射＋正面固定で位置を強制するため、
+    // 退避しておかないと 3D に戻した時に視点が壊れる（位置/向きが 2D のまま残る）。
+    CameraSnapshot m_cam3DSnapshot{ { -14.7f, 9.6f, -9.0f }, 0.0f, 0.0f };
+    bool m_has3DSnapshot = false;
+
     // OnPlayStart 直後に Lua が変更した値をエディタ配置値で打ち消すための即時上書き用スナップショット。
     // Stop 時の完全復元には使わない（そちらは m_playSceneJson 経由）
     struct EntitySnapshot {
