@@ -470,12 +470,18 @@ void EditorLayer::Render(bool isPlaying,
         m_sceneView->HandleCameraNavigation(reg, *m_ctx, camera,
                                             m_viewportPos.x, m_viewportPos.y,
                                             m_viewportSize.x, m_viewportSize.y);
-        m_sceneView->HandlePicking(reg, *m_ctx, camera,
-                                   m_viewportPos.x, m_viewportPos.y,
-                                   m_viewportSize.x, m_viewportSize.y);
+        // ギズモ(Manipulate)を先に回す → ピッキングを後に回す。
+        // 理由: HandlePicking は「ギズモ上か」を ImGuizmo::IsOver()/IsUsing() で判定するが、
+        //   Manipulate を呼ぶ前だと ImGuizmo の内部当たり判定が「前フレームのマウス位置・行列」で
+        //   止まっている(ステイル)。回転ギズモは輪が細いので、このズレでクリックがピッキングに
+        //   横取りされ「見えてる輪とズレた所で反応する」状態になる。先に Manipulate を回せば
+        //   現在フレームのマウスで掴み判定が確定し、IsUsing() が立つので HandlePicking が正しく弾く。
         m_sceneView->RenderGizmo(reg, *m_ctx, camera,
                                  m_viewportPos.x, m_viewportPos.y,
                                  m_viewportSize.x, m_viewportSize.y);
+        m_sceneView->HandlePicking(reg, *m_ctx, camera,
+                                   m_viewportPos.x, m_viewportPos.y,
+                                   m_viewportSize.x, m_viewportSize.y);
         m_sceneView->HandleDeleteKey(reg, *m_ctx, scene,
                                      m_viewportPos.x, m_viewportPos.y,
                                      m_viewportSize.x, m_viewportSize.y);
