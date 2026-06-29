@@ -18,7 +18,7 @@ struct EditorUiIcons
     // ---- ツールバー ----
     u64 file = 0, play = 0, stop = 0, build = 0,
         gizmoMove = 0, gizmoRotate = 0, gizmoScale = 0,
-        spaceWorld = 0, spaceLocal = 0;
+        spaceWorld = 0, spaceLocal = 0, window = 0;
 
     // ---- エンティティ / コンポーネント種別（Hierarchy / Inspector） ----
     u64 entMesh = 0, entLight = 0, entCamera = 0, entAudio = 0,

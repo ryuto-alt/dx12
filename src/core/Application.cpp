@@ -2843,6 +2843,7 @@ void Application::LoadEditorIcons(ID3D12GraphicsCommandList* cmdList)
     m_icons.gizmoScale  = load("gizmo_scale");
     m_icons.spaceWorld  = load("space_world");
     m_icons.spaceLocal  = load("space_local");
+    m_icons.window      = load("window");
 
     // エンティティ / コンポーネント種別
     m_icons.entMesh     = load("ent_mesh");

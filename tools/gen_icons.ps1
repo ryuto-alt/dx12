@@ -256,6 +256,15 @@ Save-Icon "build" "#3B82F6" {
     $g.DrawLine($bgPen, 76, 40, 64, 50)
 }
 
+# --- window: ツール窓ドロップダウン用。2x2 のパネル（レイアウト/ウィンドウの象徴） ---
+Save-Icon "window" "#6366F1" {
+    param($g)
+    $g.FillPath($white, (Get-RoundRect 38 38 22 22 4))
+    $g.FillPath($white, (Get-RoundRect 68 38 22 22 4))
+    $g.FillPath($white, (Get-RoundRect 38 68 22 22 4))
+    $g.FillPath($white, (Get-RoundRect 68 68 22 22 4))
+}
+
 # --- gizmo_move: 青背景 + 白い4方向矢印 ---
 Save-Icon "gizmo_move" "#3B82F6" {
     param($g)
