@@ -19,6 +19,17 @@ GitResult GitIntegration::Run(const std::string& exe, const std::string& args,
 {
     GitResult result;
 
+    // 子プロセス(git/gh)が資格情報やパスフレーズを対話で要求すると、コンソール非表示
+    // (CREATE_NO_WINDOW)+stdin 無しのため固まる(WaitForSingleObject INFINITE)。
+    // これらを切って「即失敗→出力にエラー」に倒す。プロセス全体に一度だけ設定（子が継承する）。
+    // gh の資格情報ヘルパが効いていれば通常はそもそもプロンプトは出ない。
+    static const bool s_promptOff = []{
+        SetEnvironmentVariableA("GIT_TERMINAL_PROMPT", "0");   // git 自身のプロンプト抑止
+        SetEnvironmentVariableA("GCM_INTERACTIVE", "Never");   // Git Credential Manager の GUI 抑止
+        return true;
+    }();
+    (void)s_promptOff;
+
     SECURITY_ATTRIBUTES sa{};
     sa.nLength        = sizeof(sa);
     sa.bInheritHandle = TRUE;
@@ -123,6 +134,7 @@ GitResult GitIntegration::Init(const std::string& workDir)
             RunGit(workDir, "checkout -b main");
     }
     WriteGitignore(workDir);
+    EnsureIdentity(workDir);   // 初回コミットで identity 未設定で詰まないよう、作成時に補っておく
     return r;
 }
 
@@ -137,6 +149,9 @@ GitResult GitIntegration::AddRemote(const std::string& workDir, const std::strin
 
 GitResult GitIntegration::CommitAll(const std::string& workDir, const std::string& message)
 {
+    // commit が "Author identity unknown" で落ちないよう、未設定なら identity を補う。
+    EnsureIdentity(workDir);
+
     auto add = RunGit(workDir, "add -A");
     if (!add.ok()) return add;
 
@@ -341,6 +356,32 @@ GitResult GitIntegration::CheckoutBranch(const std::string& workDir, const std::
 GitResult GitIntegration::CreateBranch(const std::string& workDir, const std::string& name)
 {
     return RunGit(workDir, "checkout -b \"" + name + "\"");
+}
+
+void GitIntegration::EnsureIdentity(const std::string& workDir)
+{
+    if (workDir.empty()) return;
+
+    // 実効値(local→global→system)が空かどうかを見る。出力が空なら未設定。
+    auto isSet = [&](const char* key) -> bool {
+        auto r = RunGit(workDir, std::string("config ") + key);
+        return r.output.find_first_not_of(" \t\r\n") != std::string::npos;
+    };
+    const bool haveName  = isSet("user.name");
+    const bool haveEmail = isSet("user.email");
+    if (haveName && haveEmail) return;   // 既に設定済み（global 等）→ 触らない
+
+    // gh のログインユーザーから推定。取れなければ汎用の noreply に倒す。
+    std::string login = GitHubUser();   // 例: "ryuto-alt"（未ログインなら空）
+    std::string name  = login.empty() ? std::string("DX12 Engine User") : login;
+    std::string email = login.empty()
+        ? std::string("dx12-engine@users.noreply.github.com")
+        : login + "@users.noreply.github.com";
+
+    // global は汚さず、このリポジトリの local 設定だけ書く。
+    if (!haveName)  RunGit(workDir, "config user.name \""  + name  + "\"");
+    if (!haveEmail) RunGit(workDir, "config user.email \"" + email + "\"");
+    Logger::Info("Git: set local identity for {} ({} <{}>)", workDir, name, email);
 }
 
 void GitIntegration::WriteGitignore(const std::string& workDir)
