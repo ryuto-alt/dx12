@@ -29,6 +29,9 @@ public:
     // WndProc から呼ぶ
     void OnKeyDown(int vkCode);
     void OnKeyUp(int vkCode);
+    // MCP の合成入力用: 次の Update() 直後の1フレームだけ「押下→離す」を発生させる。
+    // フレーム先頭(Poll)で呼ばれても IsKeyPressed が立つよう、prevKeys スナップショット後に適用する。
+    void InjectKeyPress(int vkCode) { if (vkCode >= 0 && vkCode < 256) m_synthPress[vkCode] = 2; }
     void OnRawInput(LPARAM lParam);
     void OnMouseButton(bool rightDown);
     // フォーカス喪失時（他ウィンドウ/タブをクリック等）に呼ぶ。WM_KEYUP が
@@ -39,6 +42,8 @@ private:
     HWND m_hwnd = nullptr;
     bool m_keys[256] = {};
     bool m_prevKeys[256] = {};
+    // 合成キー押下の状態機械(MCP key_press 用)。2=今フレーム押す, 1=次フレーム離す, 0=非アクティブ。
+    u8 m_synthPress[256] = {};
 
     f32  m_mouseDeltaX = 0.0f;
     f32  m_mouseDeltaY = 0.0f;

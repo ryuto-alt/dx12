@@ -1100,6 +1100,65 @@ struct McpError : std::runtime_error
     McpError(int c, const std::string& m) : std::runtime_error(m), code(c) {}
 };
 
+// MCP のエンティティ指定を解決する。params["name"](完全一致 FindEntity) を優先し、
+// 無ければ params["entity"](数値 id) を検証して返す。どちらも解決できなければ NotFound を投げる。
+// ※ コンポーネント有無は見ない(呼び出し側で all_of を別に確認 → エラー文を分けるため)。
+entt::entity ResolveMcpEntity(Scene& scene, const nlohmann::json& params)
+{
+    auto it = params.find("name");
+    if (it != params.end() && it->is_string())
+    {
+        auto ent = scene.FindEntity(it->get<std::string>());
+        if (ent.IsValid()) return ent.GetHandle();
+        throw McpError(McpErr::NotFound, "no entity named '" + it->get<std::string>() + "'");
+    }
+    auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
+    if (scene.GetRegistry().valid(e)) return e;
+    // 数値 id が無効: Stop/open_scene で世代が変わると古い id はここに来る。再取得を促す。
+    throw McpError(McpErr::NotFound,
+        "invalid entity id (Stop/シーン再読込で id は変わる。dx12_list_entities で取り直すか name 指定で操作してくれ)");
+}
+
+// MCP key_* 用。params["key"] を Win32 VK コードに解決する。数値(VK そのもの)か、
+// 文字列(1文字 A-Z/0-9 or "SPACE"/"SHIFT"/"TAB"/"ESC"/"ENTER"/"UP"/"DOWN"/"LEFT"/"RIGHT"/"F1".."F12")。
+// Lua の KEY_* と同じ割り当て(ScriptEngine.cpp)。
+int ParseMcpVk(const nlohmann::json& params)
+{
+    auto it = params.find("key");
+    if (it == params.end()) throw McpError(McpErr::InvalidParam, "missing 'key'");
+    if (it->is_number_integer())
+    {
+        int vk = it->get<int>();
+        if (vk < 0 || vk > 255) throw McpError(McpErr::InvalidParam, "key (VK) must be 0..255");
+        return vk;
+    }
+    if (!it->is_string()) throw McpError(McpErr::InvalidParam, "key must be a VK int or a key name string");
+    std::string s = it->get<std::string>();
+    for (auto& c : s) c = static_cast<char>(::toupper(static_cast<unsigned char>(c)));
+    if (s.size() == 1)
+    {
+        char c = s[0];
+        if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) return static_cast<int>(c);
+    }
+    if (s == "SPACE")  return VK_SPACE;
+    if (s == "SHIFT")  return VK_SHIFT;
+    if (s == "CTRL" || s == "CONTROL") return VK_CONTROL;
+    if (s == "ALT")    return VK_MENU;
+    if (s == "TAB")    return VK_TAB;
+    if (s == "ESC" || s == "ESCAPE")   return VK_ESCAPE;
+    if (s == "ENTER" || s == "RETURN") return VK_RETURN;
+    if (s == "UP")     return VK_UP;
+    if (s == "DOWN")   return VK_DOWN;
+    if (s == "LEFT")   return VK_LEFT;
+    if (s == "RIGHT")  return VK_RIGHT;
+    if (s[0] == 'F' && (s.size() == 2 || s.size() == 3))   // F1..F12
+    {
+        int n = (s.size() == 2) ? (s[1] - '0') : (s[1] - '0') * 10 + (s[2] - '0');
+        if (n >= 1 && n <= 12) return VK_F1 + (n - 1);
+    }
+    throw McpError(McpErr::InvalidParam, "unknown key name: " + s);
+}
+
 // 遅延応答の送信ヘルパ。client==0(=MCP 由来でない) は何もしない。
 void SendMcp(McpBridge* bridge, const McpDeferred& d, nlohmann::json resp)
 {
@@ -1122,6 +1181,14 @@ void FailMcp(McpBridge* bridge, const McpDeferred& d, int code, const std::strin
 // AI がフィールド名/型/既定値を推測せず set_component を正しく呼べるようにする。
 // jsonKey は get_entity が返し set_component/remove_component が受けるキー。
 // settable=set_component 可 / removable=remove_component 可。
+// Lua コンポーネントスクリプトから entity プロパティとして直接読めるか。
+// Entity usertype が公開しているデータプロパティは transform だけ(ScriptEngine.cpp の new_usertype<Entity>)。
+// boxCollider/rigidBody など他は entity.<key> では nil になる(physics:getVelocity 等の別経路のみ)。
+bool LuaReadableComponent(const std::string& jsonKey)
+{
+    return jsonKey == "transform";
+}
+
 nlohmann::json McpComponentSchema()
 {
     using nlohmann::json;
@@ -1129,7 +1196,8 @@ nlohmann::json McpComponentSchema()
         return json{{"name", name}, {"type", type}, {"default", std::move(def)}};
     };
     auto C = [](const char* key, bool settable, bool removable, json fields, const char* note = "") {
-        json c{{"jsonKey", key}, {"settable", settable}, {"removable", removable}, {"fields", std::move(fields)}};
+        json c{{"jsonKey", key}, {"settable", settable}, {"removable", removable},
+               {"luaAccessible", LuaReadableComponent(key)}, {"fields", std::move(fields)}};
         if (note[0]) c["note"] = note;
         return c;
     };
@@ -1223,6 +1291,104 @@ nlohmann::json McpComponentSchema()
         F("scriptPath", "string (assets-relative)", ""), F("enabled", "bool", true),
     }), "attach via dx12_attach_lua_component (not set_component). Removable via MCP."));
     return json{{"components", std::move(comps)}};
+}
+
+// dx12_describe_lua_api 用。Lua コンポーネントスクリプトから使えるバインディングの静的辞書。
+// 実体は ScriptEngine.cpp の new_usertype/グローバル(ハンドコード)。ここは「何が呼べるか」を
+// バインディングオブジェクトごとに列挙するだけ(ランタイムリフレクションはしない)。MCP 上で見える
+// コンポーネントと Lua から読める API のズレ(例: entity.boxCollider は nil)を AI に明示するのが目的。
+nlohmann::json McpLuaApi()
+{
+    using nlohmann::json;
+    auto O = [](const char* name, const char* obtainedBy, json members) {
+        json o{{"name", name}, {"members", std::move(members)}};
+        if (obtainedBy[0]) o["obtainedBy"] = obtainedBy;
+        return o;
+    };
+    json objects = json::array();
+    objects.push_back(O("entity", "scene:findEntity(name) / scene:spawn* / physics:overlap*", json::array({
+        "isValid() -> bool",
+        "name  (string, read-only property)",
+        "transform  (Transform, read/write property) — 唯一直接読めるコンポーネントデータ",
+        "hasComponent(type:string) -> bool  (type: Transform,MeshRenderer,SkeletalAnimation,NodeAnimation,GridPlane,PointLight,DirectionalLight,SpotLight,Camera,AudioSource,Gimmick,ParticleEmitter,Trigger,CharacterController)",
+        "playAnim(clipIndex:int, blend:float)",
+        "playAnimByName(name:string, blend:float)",
+        "setLooping(loop:bool)",
+        "getAnimCount() -> int",
+        "getAnimName(index:int) -> string",
+    })));
+    objects.push_back(O("transform", "entity.transform / self.transform", json::array({
+        "position  (Vec3)", "rotation  (Vec3, euler degrees)", "scale  (Vec3)",
+    })));
+    objects.push_back(O("Vec3", "Vec3.new(x,y,z)", json::array({"x", "y", "z"})));
+    objects.push_back(O("self", "(各 Lua コンポーネントに自動で渡る)", json::array({
+        "entity  (u32 id NUMBER — Entity usertype ではない。callable が要るなら scene:findEntity(self.name))",
+        "name  (string)", "transform  (Transform)", "enabled  (bool)",
+        "<宣言した properties の各値>  (dx12_get_lua_component_state で確認)",
+    })));
+    objects.push_back(O("scene", "global", json::array({
+        "spawn(name,modelPath,pos,rot,scale) -> entity", "spawnBox(name,pos,rot,scale) -> entity",
+        "spawnSphere(name,pos,radius) -> entity", "spawnPlane(name,pos,size,grid) -> entity",
+        "remove(entity)", "getEntityCount() -> int", "findEntity(name) -> entity",
+        "setUVScale(entity,u,v)", "setColor(entity,r,g,b)", "gimmicks() -> table",
+        "queryByTag(tag) -> table(names)", "queryInBox(minX,minZ,maxX,maxZ,tag?) -> table(names)",
+    })));
+    objects.push_back(O("input", "global", json::array({
+        "isKeyDown(vk) -> bool", "isKeyPressed(vk) -> bool", "isAsyncKeyDown(vk) -> bool",
+        "isMouseCaptured() -> bool", "isRightMouseDown() -> bool",
+        "getMouseDeltaX() -> float", "getMouseDeltaY() -> float", "setMouseCapture(b)",
+    })));
+    objects.push_back(O("camera", "global", json::array({
+        "getPosition()/setPosition(v)", "getYaw()/setYaw(f)", "getPitch()/setPitch(f)",
+        "moveForward/moveRight/moveUp(amt)", "rotate(dx,dy)",
+        "getMoveSpeed/setMoveSpeed", "getMouseSensitivity/setMouseSensitivity",
+        "project(x,y,z) -> (u,v,visible)",
+    })));
+    objects.push_back(O("physics", "global", json::array({
+        "autoCollider(e)", "addBoxCollider(e,hx,hy,hz)", "addSphereCollider(e,radius)",
+        "addCapsuleCollider(e,radius,halfHeight)", "addRigidBody(e,motionType,mass)", "removeRigidBody(e)",
+        "applyForce(e,vec3)", "applyImpulse(e,vec3)", "setVelocity(e,vec3)", "getVelocity(e) -> vec3",
+        "setPosition(e,vec3)", "raycast(origin,dir,maxDist) -> RaycastHit",
+        "overlapBox(center,half,maxN?) -> {entity..}", "overlapSphere(center,radius,maxN?) -> {entity..}",
+        "setGravity(vec3)", "setPaused(b)", "step(dt)",
+        "addCharacterController(e,radius,halfHeight)", "move(e,vx,vz)", "jump(e,amount?)", "isGrounded(e) -> bool",
+    })));
+    objects.push_back(O("audio", "global", json::array({
+        "playBGM(path)/stopBGM()/pauseBGM()/resumeBGM()", "playSFX(path)",
+        "playSpatial(path,x,y,z,minD,maxD,vol?,loop?)", "stopAllSFX()",
+        "setMasterVolume/setBGMVolume/setSFXVolume(v)", "getBGMList()/getSFXList() -> table",
+    })));
+    objects.push_back(O("RaycastHit", "physics:raycast(...)", json::array({
+        "hit() -> bool", "distance() -> float", "point() -> vec3", "normal() -> vec3",
+    })));
+    objects.push_back(O("ui", "global (':' で呼ぶ)", json::array({
+        "ui:text(x,y,text,size?,r?,g?,b?,a?)", "ui:button(x,y,w,h,label) -> bool",
+        "ui:image(x,y,w,h,path)", "ui:rect(x,y,w,h,r?,g?,b?,a?,rounding?)",
+    })));
+    objects.push_back(O("fx", "global (':' で呼ぶ)", json::array({
+        "fx:burst{...}", "fx:ring{...}", "fx:pulse(amt?)", "fx:beam{...}", "fx:clear()",
+    })));
+    objects.push_back(O("events", "global (Play 中のみ)", json::array({
+        "events:on(name,fn) -> id", "events:off(id)", "events:emit(name,data?)", "events:clear()",
+    })));
+    objects.push_back(O("globals", "", json::array({
+        "log(msg)", "saveNum(key,val)", "loadNum(key,default?) -> double",
+        "loadScene(rel)", "nextScene()", "quit()", "fadeToScene(rel,dur?)", "transitionToScene(rel,type:int,dur?)",
+        "ASSETS, SCREEN_W, SCREEN_H, KEY_*(VK codes), MOTION_STATIC/KINEMATIC/DYNAMIC",
+    })));
+    objects.push_back(O("prelude", "global (高レベルヘルパ)", json::array({
+        "keyDown(name) -> bool / keyPressed(name) -> bool  (name: \"W\",\"SPACE\",\"ESC\" 等)",
+        "actor(name,opts?) -> Actor", "cameraFollow/cameraTPS/cameraLockOn(...)",
+        "goToScene(path,dur?)", "win(dur?)", "clamp(v,lo,hi)", "lerp(a,b,t)", "angleDelta(from,to)",
+        "FX.explosion/shockwave/spark/...", "vfx.register(name,fn) / vfx.play(name,x,y,z,scale?)",
+    })));
+    return json{
+        {"version", 1},
+        {"note", "Lua コンポーネントから使えるバインディング一覧。重要: コンポーネントは transform を除き "
+                 "entity.<key> では読めない(entity.boxCollider 等は nil)。collider/rigidBody の値は "
+                 "physics:getVelocity(e) など別 API 経由。self.entity は数値 id で Entity usertype ではない。"},
+        {"objects", std::move(objects)},
+    };
 }
 
 // entity が持つコンポーネントの jsonKey 一覧(list_entities verbose / get_entity 概況)。
@@ -1339,7 +1505,6 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         }
         else if (method == "attach_lua_component")
         {
-            const u32 id = params.value("entity", 0xFFFFFFFFu);
             const std::string script = params.value("script", std::string());
             if (script.empty()) throw std::runtime_error("missing 'script'");
             // assets 配下限定。絶対パス/ドライブレター/バックスラッシュ/".." を弾いて
@@ -1347,9 +1512,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             if (script.front() == '/' || script.find('\\') != std::string::npos ||
                 script.find(':') != std::string::npos || script.find("..") != std::string::npos)
                 throw std::runtime_error("invalid script path (assets 相対のみ)");
-            const auto e = static_cast<entt::entity>(id);
-            if (!m_scene->GetRegistry().valid(e))
-                throw std::runtime_error("invalid entity id");
+            const auto e = ResolveMcpEntity(*m_scene, params);
             m_scriptEngine->AttachScriptToEntity(e, script);
             m_scriptEngine->ReloadScript(e);
             resp["ok"] = true;
@@ -1403,19 +1566,16 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             // 削除ドレイン(Render)は Editor モード限定。Play 中に積むと drain されず未応答ハングするため弾く。
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot delete while Playing; call dx12_stop first");
-            const u32 id = params.value("entity", 0xFFFFFFFFu);
-            const auto e = static_cast<entt::entity>(id);
-            if (!m_scene->GetRegistry().valid(e)) throw McpError(McpErr::NotFound, "invalid entity id");
+            const auto e = ResolveMcpEntity(*m_scene, params);
             // 子ごと削除+Undo はフレーム境界で処理し、deletedCount を遅延応答で返す。
             m_editorCtx->mcpDeletions.push_back(McpPendingDelete{ e, deferred });
             isDeferred = true;
         }
         else if (method == "set_transform")
         {
-            const u32 id = params.value("entity", 0xFFFFFFFFu);
-            const auto e = static_cast<entt::entity>(id);
+            const auto e = ResolveMcpEntity(*m_scene, params);   // 無効 id は "invalid entity id" を投げる
             auto& reg = m_scene->GetRegistry();
-            if (!reg.valid(e) || !reg.all_of<Transform>(e))
+            if (!reg.all_of<Transform>(e))
                 throw McpError(McpErr::NotFound, "entity has no Transform");
             auto& t = reg.get<Transform>(e);
             if (params.contains("position"))
@@ -1449,15 +1609,19 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         }
         else if (method == "get_entity")
         {
-            const u32 id = params.value("entity", 0xFFFFFFFFu);
-            const auto e = static_cast<entt::entity>(id);
+            const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
-            if (!reg.valid(e)) throw McpError(McpErr::NotFound, "invalid entity id");
             // 既存シリアライザを流用(リフレクション的に全コンポーネントを JSON 化)。
             std::string js = SceneSerializer::SerializeEntity(*m_scene, e, PathResolver::AssetsDir());
             json result = json::parse(js);
             result["entityId"] = static_cast<u32>(e);
-            result["componentTypes"] = McpComponentTypesOf(reg, e);
+            json types = McpComponentTypesOf(reg, e);
+            // Lua スクリプトが entity.<key> で直接読めるコンポーネントだけを別出し(現状 transform のみ)。
+            // MCP で見えても Lua では nil になる boxCollider 等との取り違えを防ぐ。
+            json luaReadable = json::array();
+            for (auto& k : types) if (LuaReadableComponent(k.get<std::string>())) luaReadable.push_back(k);
+            result["luaReadable"] = std::move(luaReadable);
+            result["componentTypes"] = std::move(types);
             result["sceneGeneration"] = m_sceneGeneration;
             resp["ok"] = true;
             resp["result"] = std::move(result);
@@ -1599,9 +1763,8 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         }
         else if (method == "set_component")
         {
-            const auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
+            const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
-            if (!reg.valid(e)) throw McpError(McpErr::NotFound, "invalid entity id");
             const std::string comp = params.value("component", std::string());
             const json data = params.value("data", json::object());
             if (comp.empty()) throw McpError(McpErr::InvalidParam, "missing 'component'");
@@ -1659,9 +1822,8 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         }
         else if (method == "remove_component")
         {
-            const auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
+            const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
-            if (!reg.valid(e)) throw McpError(McpErr::NotFound, "invalid entity id");
             const std::string comp = params.value("component", std::string());
             if (comp == "transform" || comp == "name")
                 throw McpError(McpErr::InvalidParam, "cannot remove core component (transform/name)");
@@ -1691,11 +1853,17 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 resp["result"] = {{"components", std::move(filtered)}};
             }
         }
+        else if (method == "describe_lua_api")
+        {
+            // Lua スクリプトから使えるバインディング一覧(静的)。MCP のコンポーネントと
+            // Lua から読める API のズレ(entity.boxCollider は nil 等)を AI に伝えるため。
+            resp["ok"] = true;
+            resp["result"] = McpLuaApi();
+        }
         else if (method == "set_parent")
         {
             auto& reg = m_scene->GetRegistry();
-            const auto child = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
-            if (!reg.valid(child)) throw std::runtime_error("invalid entity id");
+            const auto child = ResolveMcpEntity(*m_scene, params);   // entity か name で子を指定
             const u32 pid = params.value("parent", 0xFFFFFFFFu);
             entt::entity parent = entt::null;
             if (pid != 0xFFFFFFFFu)
@@ -1716,10 +1884,11 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         }
         else if (method == "rename_entity")
         {
+            // ここの "name" は新しい名前。エンティティ指定は entity(id) のみ(name 引きは曖昧なので不可)。
             const auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
             auto& reg = m_scene->GetRegistry();
-            if (!reg.valid(e) || !reg.all_of<NameTag>(e))
-                throw std::runtime_error("entity has no NameTag");
+            if (!reg.valid(e)) throw McpError(McpErr::NotFound, "invalid entity id");
+            if (!reg.all_of<NameTag>(e)) throw McpError(McpErr::NotFound, "entity has no NameTag");
             std::string base = params.value("name", std::string());
             if (base.empty()) throw std::runtime_error("missing 'name'");
             auto taken = [&](const std::string& s) {
@@ -1789,17 +1958,16 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         }
         else if (method == "select_entity")
         {
-            const auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
-            if (!m_scene->GetRegistry().valid(e)) throw McpError(McpErr::NotFound, "invalid entity id");
+            const auto e = ResolveMcpEntity(*m_scene, params);
             m_editorCtx->Select(e);
             resp["ok"] = true;
             resp["result"] = {{"selected", static_cast<u32>(e)}};
         }
         else if (method == "focus_camera")
         {
-            const auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
+            const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
-            if (!reg.valid(e) || !reg.all_of<Transform>(e))
+            if (!reg.all_of<Transform>(e))
                 throw McpError(McpErr::NotFound, "entity has no Transform");
             const auto& t = reg.get<Transform>(e);
             float dist = 8.0f;
@@ -1833,9 +2001,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         }
         else if (method == "set_pbr")
         {
-            const auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
+            const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
-            if (!reg.valid(e) || !reg.all_of<MeshRenderer>(e))
+            if (!reg.all_of<MeshRenderer>(e))
                 throw McpError(McpErr::NotFound, "entity has no MeshRenderer");
             auto& mr = reg.get<MeshRenderer>(e);
             if (params.contains("metallic"))  mr.overrideMetallic  = params["metallic"].get<float>();
@@ -1851,8 +2019,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot duplicate while Playing; call dx12_stop first");
-            const auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
-            if (!m_scene->GetRegistry().valid(e)) throw McpError(McpErr::NotFound, "invalid entity id");
+            const auto e = ResolveMcpEntity(*m_scene, params);
             m_editorCtx->mcpDuplications.push_back(McpPendingDelete{ e, deferred });  // .entity=複製元
             isDeferred = true;
         }
@@ -2010,6 +2177,162 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["result"] = {{"path", path},
                               {"width", m_sceneRT->GetWidth()},
                               {"height", m_sceneRT->GetHeight()}};
+        }
+        else if (method == "project_world_to_screen")
+        {
+            // エンティティのワールド座標を、今シーンビューを描いているカメラ(m_camera)の
+            // ビュー*射影で画面ピクセルへ投影する。Playing 中は m_camera = アクティブなゲームカメラ
+            // なので「ゲーム画面で player が中央/画面内か」を数値で確認できる(screenshot と整合)。
+            using namespace DirectX;
+            const auto e = ResolveMcpEntity(*m_scene, params);
+            auto& reg = m_scene->GetRegistry();
+            XMVECTOR wpos = XMVectorSetW(ComputeWorldMatrix(reg, e).r[3], 1.0f);
+            XMVECTOR clip = XMVector4Transform(wpos, m_camera->GetViewProjMatrix());
+            const float w = XMVectorGetW(clip);
+            const float ndcX = (w != 0.0f) ? XMVectorGetX(clip) / w : 0.0f;
+            const float ndcY = (w != 0.0f) ? XMVectorGetY(clip) / w : 0.0f;
+            const float ndcZ = (w != 0.0f) ? XMVectorGetZ(clip) / w : 0.0f;
+            const float vw = static_cast<float>(m_sceneRT->GetWidth());
+            const float vh = static_cast<float>(m_sceneRT->GetHeight());
+            const float px = (ndcX * 0.5f + 0.5f) * vw;
+            const float py = (0.5f - ndcY * 0.5f) * vh;   // NDC +Y up → ピクセル +Y down
+            const bool visible = (w > 0.0f) && ndcX >= -1.0f && ndcX <= 1.0f &&
+                                 ndcY >= -1.0f && ndcY <= 1.0f && ndcZ >= 0.0f && ndcZ <= 1.0f;
+            resp["ok"] = true;
+            resp["result"] = {{"entityId", static_cast<u32>(e)}, {"x", px}, {"y", py},
+                              {"visible", visible}, {"depth", ndcZ}, {"w", w},
+                              {"width", m_sceneRT->GetWidth()}, {"height", m_sceneRT->GetHeight()},
+                              {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"}};
+        }
+        else if (method == "get_lua_component_state")
+        {
+            // LuaScript の現在のプロパティ値(オーバーライド+スキーマ既定)を全部返す。
+            // get_entity は保存済みオーバーライドしか出さないので、スキーマを基準に既定も含めて出す。
+            const auto e = ResolveMcpEntity(*m_scene, params);
+            auto& reg = m_scene->GetRegistry();
+            if (!reg.all_of<LuaScript>(e)) throw McpError(McpErr::NotFound, "entity has no LuaScript");
+            const auto& ls = reg.get<LuaScript>(e);
+            const auto& schema = m_scriptEngine->GetPropertySchema(ls.scriptPath);
+            auto typeStr = [](ScriptPropType t) -> const char* {
+                switch (t) {
+                    case ScriptPropType::Int:    return "int";
+                    case ScriptPropType::Bool:   return "bool";
+                    case ScriptPropType::String: return "string";
+                    case ScriptPropType::Vec3:   return "vec3";
+                    case ScriptPropType::Color:  return "color";
+                    case ScriptPropType::Entity: return "entity";
+                    default:                     return "float";
+                } };
+            auto emitVal = [](json& pj, const ScriptProp& v) {
+                switch (v.type) {
+                    case ScriptPropType::Int:    pj["value"] = static_cast<long long>(v.num); break;
+                    case ScriptPropType::Bool:   pj["value"] = v.b; break;
+                    case ScriptPropType::String:
+                    case ScriptPropType::Entity: pj["value"] = v.str; break;
+                    case ScriptPropType::Vec3:
+                    case ScriptPropType::Color:  pj["value"] = json::array({v.vec.x, v.vec.y, v.vec.z}); break;
+                    default:                     pj["value"] = v.num; break;
+                } };
+            json props = json::array();
+            for (const auto& d : schema)
+            {
+                const ScriptProp* ov = nullptr;
+                for (const auto& p : ls.props) if (p.name == d.name) { ov = &p; break; }
+                ScriptProp v = ov ? *ov : d.def;
+                v.type = d.type;   // オーバーライドの型がズレてても schema を正とする
+                json pj{{"name", d.name}, {"type", typeStr(d.type)}, {"isOverride", ov != nullptr}};
+                emitVal(pj, v);
+                props.push_back(std::move(pj));
+            }
+            resp["ok"] = true;
+            resp["result"] = {{"entityId", static_cast<u32>(e)}, {"scriptPath", ls.scriptPath},
+                              {"enabled", ls.enabled}, {"started", ls.started},
+                              {"loadError", ls.loadError}, {"properties", std::move(props)}};
+        }
+        else if (method == "set_lua_property")
+        {
+            // LuaScript のプロパティを1つ書き換える。スキーマで型を確認して検証。
+            // 実行中(Playing)なら ReloadScript で再注入、Editor では保存だけ(次 Play で反映)。
+            const auto e = ResolveMcpEntity(*m_scene, params);
+            auto& reg = m_scene->GetRegistry();
+            if (!reg.all_of<LuaScript>(e)) throw McpError(McpErr::NotFound, "entity has no LuaScript");
+            const std::string key = params.value("key", std::string());
+            if (key.empty()) throw McpError(McpErr::InvalidParam, "missing 'key'");
+            if (!params.contains("value")) throw McpError(McpErr::InvalidParam, "missing 'value'");
+            const json& value = params["value"];
+            auto& ls = reg.get<LuaScript>(e);
+            const auto& schema = m_scriptEngine->GetPropertySchema(ls.scriptPath);
+            const ScriptPropDef* def = nullptr;
+            for (const auto& d : schema) if (d.name == key) { def = &d; break; }
+            if (!def) throw McpError(McpErr::InvalidParam,
+                "unknown property '" + key + "' (script の properties に未宣言。dx12_get_lua_component_state で確認)");
+            ScriptProp* p = nullptr;
+            for (auto& ex : ls.props) if (ex.name == key) { p = &ex; break; }
+            if (!p) { ls.props.push_back(def->def); p = &ls.props.back(); }
+            p->type = def->type;
+            switch (def->type)
+            {
+            case ScriptPropType::Float:
+            case ScriptPropType::Int:
+                if (!value.is_number()) throw McpError(McpErr::InvalidParam, "value must be a number");
+                p->num = value.get<double>(); break;
+            case ScriptPropType::Bool:
+                if (!value.is_boolean()) throw McpError(McpErr::InvalidParam, "value must be a bool");
+                p->b = value.get<bool>(); break;
+            case ScriptPropType::String:
+            case ScriptPropType::Entity:
+                if (!value.is_string()) throw McpError(McpErr::InvalidParam, "value must be a string");
+                p->str = value.get<std::string>(); break;
+            case ScriptPropType::Vec3:
+            case ScriptPropType::Color:
+            {
+                if (!value.is_array() || value.size() != 3)
+                    throw McpError(McpErr::InvalidParam, "value must be [x,y,z]");
+                auto a = value.get<std::vector<float>>();
+                p->vec = { a[0], a[1], a[2] }; break;
+            }
+            }
+            if (ls.started) m_scriptEngine->ReloadScript(e);  // 実行中のみ再注入(Editor は保存のみ)
+            resp["ok"] = true;
+            resp["result"] = {{"entityId", static_cast<u32>(e)}, {"key", key}, {"reloaded", ls.started}};
+        }
+        else if (method == "key_down")
+        {
+            // 合成キー押下(押しっぱなし)。次フレーム以降の Lua input:isKeyDown / keyDown() が true になる。
+            // key_up を呼ぶまで保持。Playing 中の移動などの確認用(isAsyncKeyDown 系には効かない)。
+            const int vk = ParseMcpVk(params);
+            m_inputSystem->OnKeyDown(vk);
+            resp["ok"] = true;
+            resp["result"] = {{"key", vk}, {"down", true}};
+        }
+        else if (method == "key_up")
+        {
+            const int vk = ParseMcpVk(params);
+            m_inputSystem->OnKeyUp(vk);
+            resp["ok"] = true;
+            resp["result"] = {{"key", vk}, {"down", false}};
+        }
+        else if (method == "key_press")
+        {
+            // 1フレームだけ押す(isKeyPressed が立つ)。ジャンプ等のタップ操作の確認用。
+            const int vk = ParseMcpVk(params);
+            m_inputSystem->InjectKeyPress(vk);
+            resp["ok"] = true;
+            resp["result"] = {{"key", vk}, {"pressed", true}};
+        }
+        else if (method == "step_frames")
+        {
+            // N フレーム進めてから応答する同期バリア(遅延応答)。key_down/press の後に呼ぶと
+            // 入力がシミュレーションに効いてから get_entity/project_world_to_screen で結果を見られる。
+            // ※ 真の決定論ステッパではない(各フレーム dt は実時間)。エンジンは常時実時間で回る。
+            int n = params.value("frames", params.value("n", 1));
+            if (n < 1) n = 1;
+            if (n > 600) n = 600;   // ~10s 上限(クライアント timeout 対策)
+            if (m_mcpStepReply.client != 0)
+                throw McpError(McpErr::ModeConflict, "a step is already pending; retry shortly");
+            m_mcpStepFramesLeft = n;
+            m_mcpStepReply = deferred;
+            isDeferred = true;
         }
         else
         {
@@ -2372,6 +2695,16 @@ void Application::Run()
             }
         }
 
+        // MCP step_frames: 1フレーム回り切ったらカウントダウン。0 になったら遅延応答を返す。
+        if (m_mcpStepFramesLeft > 0 && --m_mcpStepFramesLeft == 0 && m_mcpStepReply.client != 0)
+        {
+            CompleteMcp(m_mcpBridge.get(), m_mcpStepReply,
+                nlohmann::json{{"stepped", true},
+                               {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"},
+                               {"sceneGeneration", m_sceneGeneration}});
+            m_mcpStepReply = {};
+        }
+
         // フレームレートリミッター（VSync OFF時のCPU暴走を防止）
         if (!m_useVsync)
         {
@@ -2560,6 +2893,16 @@ void Application::Update()
             if (GetAsyncKeyState(VK_SHIFT) & 0x8000) m_camera->MoveUp(-speed);
         }
 
+        // 2D中の右ドラッグ: 回転せずパン（マウスユーザー向け。中ドラッグと同じ操作感）。
+        // 回転は 0 固定なので MoveRight/MoveUp はワールド X/Y 平行移動になる。
+        if (m_inputSystem->IsMouseCaptured() && m_editorCtx->view2D)
+        {
+            f32 worldPerPixel = (2.0f * m_editorCtx->view2DZoom)
+                              / (std::max)(1.0f, m_editorCtx->viewportH);
+            m_camera->MoveRight(-m_inputSystem->GetMouseDeltaX() * worldPerPixel);
+            m_camera->MoveUp(m_inputSystem->GetMouseDeltaY() * worldPerPixel);
+        }
+
         // --- タッチパッド向け: キーボードフライモード（マウス/ボタン長押し不要）---
         // GetAsyncKeyState はフォーカスに関係なく物理キー状態を読むため、ウィンドウが前面に
         // いる時だけ有効化する（別アプリ作業中の ` / Ctrl+Z / WASD などがエディタに効くのを防ぐ）。
@@ -2595,7 +2938,8 @@ void Application::Update()
         // --- 2D ビューモード: WASD / 矢印キーでパン（3D の WASD 移動と同じ操作感で左右上下に動かせる）---
         // 2D は回転 0 固定なので MoveRight/MoveUp はそのままワールド X/Y のパンになる。速度はズーム量に比例。
         // ※ W/E/R のギズモ切替は 2D 中は下のブロックで抑止し、ここでは移動だけにする。
-        if (m_editorCtx->view2D && kbActive && !m_inputSystem->IsMouseCaptured())
+        // 右クリック保持中（マウスキャプチャ中）でも A/D・矢印で動かせるよう capture ゲートは付けない。
+        if (m_editorCtx->view2D && kbActive)
         {
             f32 pan = (std::max)(0.5f, m_editorCtx->view2DZoom) * 1.5f * dt;
             if ((GetAsyncKeyState('D') & 0x8000) || (GetAsyncKeyState(VK_RIGHT) & 0x8000)) m_camera->MoveRight(pan);
@@ -4212,7 +4556,10 @@ void Application::EnterEditorMode()
         m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
                             m_srvHeap.get(), cmdList);
 
-        SceneSerializer::LoadFromString(*m_scene, m_playSceneJson, PathResolver::AssetsDir());
+        // 復元失敗(空/破損スナップショット)は ApplySceneJson が scene.Clear() 後に false を返すため
+        // 黙ってシーンが空になる(list_entities=0 の原因)。戻り値を見てログに残す。
+        if (!SceneSerializer::LoadFromString(*m_scene, m_playSceneJson, PathResolver::AssetsDir()))
+            Logger::Error("EnterEditorMode: scene restore failed; scene may be empty (check the Play snapshot)");
 
         m_scriptEngine->Shutdown();
         m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
@@ -4234,6 +4581,11 @@ void Application::EnterEditorMode()
     // シーン再構築でエンティティ ID が変わり Undo スタックの参照が無効になるためクリア
     m_editorCtx->undoSystem.Clear();
     m_editorCtx->ClearSelection();
+
+    // Stop でもシーンを丸ごと作り直すため entity id が全部変わる。open_scene/new_scene と同様に
+    // 世代を進めて古い id を無効化する(これが無いと Stop 後に古い id が別 entity に化けて
+    // "invalid entity id" や誤動作になる)。dx12_stop の応答に新しい sceneGeneration が乗る。
+    ++m_sceneGeneration;
 
     // Play 中に CameraComponent の FOV を採用してた可能性があるためエディタ用に戻す
     m_camera->SetPerspective(DirectX::XM_PIDIV4,

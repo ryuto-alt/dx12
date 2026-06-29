@@ -19,13 +19,18 @@ for (const m of [
   // 読み取り
   "ping", "list_entities", "get_entity", "find_entity", "query_entities",
   "list_scenes", "list_assets", "get_mode", "get_log", "describe_components",
-  "get_scene_settings", "screenshot",
+  "describe_lua_api", "get_scene_settings", "get_lua_component_state",
+  "project_world_to_screen", "screenshot",
   // 同期編集
   "set_transform", "set_component", "remove_component", "set_parent",
-  "rename_entity", "select_entity", "focus_camera", "set_pbr",
+  "rename_entity", "select_entity", "focus_camera", "set_pbr", "set_lua_property",
   "set_scene_settings", "undo", "redo", "save_scene",
   "create_lua_component", "attach_lua_component",
+  // 入力シミュレーション(即時)
+  "key_down", "key_up", "key_press",
 ]) TIMEOUT_BY_METHOD[m] = 8000;
+// step_frames は最大 600 フレーム(~10s)回ってから返るので長めに。
+TIMEOUT_BY_METHOD["step_frames"] = 30000;
 // 遅延同期(エンティティ生成/削除/複製) = 15000ms
 for (const m of ["create_entity", "delete_entity", "duplicate_entity"]) TIMEOUT_BY_METHOD[m] = 15000;
 // 遅延同期(モデル/プレハブ読込・シーン遷移、GPU/IO が重い) = 45000ms

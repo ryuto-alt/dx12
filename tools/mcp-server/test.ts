@@ -342,6 +342,56 @@ console.log("\n[16-18] per-method タイムアウト選択");
   server.close();
 }
 
+// ─── [19-22] 新ツール: name 透過 / 新 method のタイムアウト配線 ──────────────
+// name 指定(entity の代わり)が params としてそのまま透過すること、
+// step_frames に長いタイムアウト(30000ms)が、key_down/project_world_to_screen に
+// 同期クラス(8000ms)が割り当たっていることを確認する。
+
+console.log("\n[19-22] 新ツール(name 透過 / 新 method タイムアウト)");
+{
+  // step_frames は 150ms 遅延、それ以外は即答(params をそのまま echo)。
+  function newToolsHandler(req: any, sock: net.Socket): void {
+    if (req.method === "step_frames") {
+      setTimeout(() => {
+        sock.write(JSON.stringify({ id: req.id, ok: true,
+          result: { stepped: true, mode: "Playing", sceneGeneration: 5 } }) + "\n");
+      }, 150);
+    } else {
+      // set_transform / key_down / project_world_to_screen 等は params を echo
+      sock.write(JSON.stringify({ id: req.id, ok: true, result: req.params }) + "\n");
+    }
+  }
+
+  const { server, port } = await startMock(newToolsHandler);
+  // defaultTimeoutMs=100ms。これより遅い step_frames が解決するなら専用タイムアウトが効いている証拠。
+  const c = new EngineClient("127.0.0.1", port, 100);
+
+  // 19. name 指定が params として透過する(id 無しで操作する経路)
+  assert.deepStrictEqual(
+    await c.call("set_transform", { name: "Player", position: [0, 1, 0] }),
+    { name: "Player", position: [0, 1, 0] },
+  );
+  pass("name 透過: set_transform({name:'Player'})");
+
+  // 20. step_frames — TIMEOUT_BY_METHOD=30000ms が選ばれ、150ms 遅延でも解決(default=100ms では落ちる)
+  const sf = await c.call("step_frames", { frames: 30 });
+  assert.strictEqual(sf.stepped, true, "step_frames が専用タイムアウト(30000ms)で解決すること");
+  pass("step_frames — TIMEOUT_BY_METHOD=30000ms > 150ms delay で解決");
+
+  // 21. key_down — 同期クラス。VK 名がそのまま透過する
+  assert.deepStrictEqual(await c.call("key_down", { key: "D" }), { key: "D" });
+  pass("key_down — 同期解決 / key 透過");
+
+  // 22. project_world_to_screen — name 透過(読み取り系)
+  assert.deepStrictEqual(
+    await c.call("project_world_to_screen", { name: "Player" }),
+    { name: "Player" },
+  );
+  pass("project_world_to_screen — name 透過");
+
+  server.close();
+}
+
 // ─── 結果サマリ ──────────────────────────────────────────────────────────────
 console.log(`\nOK: 全 ${passed} テスト通過`);
 process.exit(0);
