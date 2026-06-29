@@ -342,6 +342,40 @@ fs::path FindEngineDir(const fs::path& extractDir)
     return {};
 }
 
+// 「最後に適用を試みたリリースタグ」を記録するファイル。exe の場所に依存せず必ず書ける
+// %LOCALAPPDATA%\DX12Engine\ に置く（exe が書込不可フォルダにあっても無限ループ防止が効くように）。
+fs::path UpdateStatePath()
+{
+    char* base = nullptr;
+    size_t len = 0;
+    if (_dupenv_s(&base, &len, "LOCALAPPDATA") != 0 || !base) return {};
+    fs::path dir = fs::path(base) / "DX12Engine";
+    free(base);
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    return dir / "last_update.txt";
+}
+
+std::string ReadLastUpdateTag()
+{
+    fs::path p = UpdateStatePath();
+    if (p.empty()) return {};
+    std::ifstream f(p);
+    if (!f) return {};
+    std::string s;
+    std::getline(f, s);
+    while (!s.empty() && (s.back() == '\r' || s.back() == '\n' || s.back() == ' ')) s.pop_back();
+    return s;
+}
+
+void WriteLastUpdateTag(const std::string& tag)
+{
+    fs::path p = UpdateStatePath();
+    if (p.empty()) return;
+    std::ofstream f(p, std::ios::trunc);
+    if (f) f << tag;
+}
+
 // 本体終了を待って新ファイルを上書きし再起動する更新バッチを生成・起動する。
 bool LaunchUpdaterBatch(const fs::path& srcDir, const fs::path& installDir, const fs::path& tmpRoot)
 {
@@ -351,21 +385,28 @@ bool LaunchUpdaterBatch(const fs::path& srcDir, const fs::path& installDir, cons
 
     const DWORD pid = GetCurrentProcessId();
 
+    const std::string exePath = (installDir / "DX12Engine.exe").string();
+
     std::ofstream b(bat, std::ios::trunc);
     if (!b.is_open()) return false;
     b << "@echo off\r\n";
+    b << "setlocal enabledelayedexpansion\r\n";
+    // 本体プロセスの終了を待つ。万一 PID が消えなくても無限待ちにならないよう上限を設ける
+    // （上限到達でも robocopy /R で上書きを試みる）。"すぐ再起動" のため待ちは短い間隔でポーリング。
+    b << "set tries=0\r\n";
     b << ":wait\r\n";
-    b << "tasklist /FI \"PID eq " << pid << "\" 2>nul | findstr /I /C:\"" << pid << "\" >nul\r\n";
-    b << "if %errorlevel%==0 (\r\n";
-    b << "  ping -n 2 127.0.0.1 >nul\r\n";
-    b << "  goto wait\r\n";
-    b << ")\r\n";
+    b << "tasklist /FI \"PID eq " << pid << "\" 2>nul | findstr /I /C:\"" << pid << "\" >nul || goto apply\r\n";
+    b << "set /a tries+=1\r\n";
+    b << "if !tries! geq 50 goto apply\r\n";
+    b << "ping -n 2 127.0.0.1 >nul\r\n";
+    b << "goto wait\r\n";
+    b << ":apply\r\n";
     // /E=サブフォルダ込み /IS,/IT=既存/変更も上書き（ミラーはしない＝余分なファイルは消さない）
     b << "robocopy \"" << srcDir.string() << "\" \"" << installDir.string()
-      << "\" /E /IS /IT /R:3 /W:1 /NFL /NDL /NJH /NJS /NP >nul\r\n";
+      << "\" /E /IS /IT /R:5 /W:1 /NFL /NDL /NJH /NJS /NP >nul\r\n";
     // --updated 付きで再起動 → 直後の起動は更新チェック(同期ネットワーク)をスキップして
     // 即座にウィンドウを出す。これが無いと「更新後すぐ exe が開かない(数秒固まる)」の主因になる。
-    b << "start \"\" \"" << (installDir / "DX12Engine.exe").string() << "\" --updated\r\n";
+    b << "start \"\" \"" << exePath << "\" --updated\r\n";
     b << "rmdir /S /Q \"" << tmpRoot.string() << "\" >nul 2>&1\r\n";
     b << "del \"%~f0\" >nul 2>&1\r\n";
     b.close();
@@ -374,10 +415,12 @@ bool LaunchUpdaterBatch(const fs::path& srcDir, const fs::path& installDir, cons
     std::vector<wchar_t> buf(cmd.begin(), cmd.end());
     buf.push_back(L'\0');
 
+    // CREATE_NO_WINDOW のみ（DETACHED_PROCESS との併用は MSDN 上は無効な組み合わせで
+    // 環境次第で再起動に失敗し得る）。隠しコンソールで batch を実行し、本体終了後も生き残る。
     STARTUPINFOW si{}; si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
     if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE,
-        CREATE_NO_WINDOW | DETACHED_PROCESS, nullptr, nullptr, &si, &pi))
+        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
         return false;
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
@@ -417,6 +460,19 @@ bool Updater::RunStartupCheck()
         Logger::Info("Updater: up to date (current={}, latest={}).", kEngineVersion, tag);
         return false;
     }
+
+    // 無限アップデート防止: このタグへの適用を既に一度試みたのに、まだ古い版で動いている
+    // = リリース zip 内の exe が版を据え置き（公開時の版上げ忘れ等）か上書き失敗。
+    // ここで再プロンプトすると「更新→再起動→まだ古い→また更新」の無限ループになるのでスキップする。
+    // タグが進めば（version が上がれば）上の IsNewer で false になり、このマーカーは無視される。
+    if (ReadLastUpdateTag() == tag)
+    {
+        Logger::Warn("Updater: already attempted update to {} but still running {}. "
+                     "Skipping to avoid an update loop (release asset version mismatch?).",
+                     tag, kEngineVersion);
+        return false;
+    }
+
     std::string assetUrl = FirstZipAssetUrl(json);
     if (assetUrl.empty())
     {
@@ -491,6 +547,9 @@ bool Updater::RunStartupCheck()
     }
 
     // 5) 更新バッチを起動して本体を終了（バッチが上書き→再起動する）
+    // 適用を試みる前にタグを記録 → もし更新後も版が上がらなければ、次回起動時に
+    // 上の ReadLastUpdateTag ガードで再プロンプトを止めて無限ループを断つ。
+    WriteLastUpdateTag(tag);
     ui.SetLabel(L"更新を適用して再起動します...");
     ui.SetProgress(100, 0, 0);
     ui.Pump();
