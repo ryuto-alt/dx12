@@ -298,6 +298,7 @@ footer{position:relative; z-index:1; border-top:1px solid var(--border); margin-
       <h4>作る</h4>
       <a class="s" href="#editor"><span class="dot"></span>エディタの使い方</a>
       <a class="s" href="#scripting"><span class="dot"></span>Lua スクリプト</a>
+      <a class="s" href="#lua-api"><span class="dot"></span>Lua API リファレンス</a>
       <a class="s" href="#components"><span class="dot"></span>コンポーネント &amp; プレハブ</a>
       <a class="s" href="#authoring"><span class="dot"></span>データ駆動オーサリング</a>
     </div>
@@ -544,41 +545,247 @@ cmake --build build/release</code></pre>
           <span class="ic"><img src="img/ent_script.png" alt=""/></span>
           <h2>Lua スクリプト</h2>
         </div>
-        <p class="sec-sub">ゲームロジックは Lua で書く。エンティティに <code class="inl">.lua</code> をアタッチすると <code class="inl">OnStart(self)</code> が1回、<code class="inl">OnUpdate(self, dt)</code> が毎フレーム呼ばれる。まずは高レベルAPIだけ覚えればたいていのゲームは書ける。</p>
+        <p class="sec-sub">ゲームの「動き」は Lua で書く。エンティティに <code class="inl">.lua</code> をアタッチすると <code class="inl">OnStart(self)</code> が1回、<code class="inl">OnUpdate(self, dt)</code> が毎フレーム呼ばれる。この2つの関数の中に「入力を読む → 動かす → 勝敗を判定する」を書けば、それがゲームになる。</p>
 
-        <h3>高レベル API</h3>
-        <p><code class="inl">actor</code> はシーン内のエンティティを「名前」で掴むラッパー。<code class="inl">OnStart</code> で <code class="inl">local</code> を付けずに代入すれば <code class="inl">OnUpdate</code> でも使える。</p>
+        <h3>1. スクリプトはどこに置く・どう付ける</h3>
+        <ul class="clean">
+          <li><b>置く場所</b>: <code class="inl">assets/components/&lt;名前&gt;.lua</code>（<code class="inl">scriptPath</code> は <code class="inl">assets/</code> からの相対）。</li>
+          <li><b>付け方（人間）</b>: AssetBrowser の <code class="inl">.lua</code> を Hierarchy の行 or Inspector へドロップ。または Inspector「＋コンポーネント追加 → スクリプト」。</li>
+          <li><b>付け方（コード / AI）</b>: シーン JSON のエンティティに <code class="inl">luaScript</code> ブロックを書く（<a href="#components">コンポーネント &amp; プレハブ</a> 参照）。</li>
+          <li><b>2つの作り方</b>: ①<b>コントローラ型</b>＝1個のエンティティに貼った1スクリプトが <code class="inl">actor("Player")</code> 等で全体を回す（手早い）。②<b>部品型</b>＝各エンティティに小さな <code class="inl">.lua</code> を貼り <code class="inl">self</code> で自分を動かす（再利用しやすい）。混ぜてよい。</li>
+        </ul>
+
+        <h3>2. ライフサイクルと <code class="inl">self</code></h3>
+        <p>スクリプトの骨格はこれだけ。<code class="inl">self</code> は「この <code class="inl">.lua</code> を貼ったエンティティ自身」を指す。</p>
+<pre><code><span class="tok-c">-- (任意) Inspector に出る公開プロパティ。Play 時に self.&lt;name&gt; に注入される</span>
+properties = {
+  { name=<span class="tok-s">"speed"</span>, type=<span class="tok-s">"float"</span>, default=<span class="tok-n">6</span> },
+}
+
+<span class="tok-k">function</span> <span class="tok-fn">OnStart</span>(self)        <span class="tok-c">-- Play 開始時に1回</span>
+  self.t = <span class="tok-n">0</span>                  <span class="tok-c">-- 状態は self に持たせると安全</span>
+<span class="tok-k">end</span>
+
+<span class="tok-k">function</span> <span class="tok-fn">OnUpdate</span>(self, dt)   <span class="tok-c">-- 毎フレーム。dt = 前フレームからの経過秒</span>
+  self.t = self.t + dt
+  <span class="tok-k">local</span> tf = self.transform                 <span class="tok-c">-- 自分の Transform</span>
+  tf.position = Vec3.<span class="tok-fn">new</span>(tf.position.x, <span class="tok-n">1</span> + math.<span class="tok-fn">sin</span>(self.t)*<span class="tok-n">0.5</span>, tf.position.z)
+<span class="tok-k">end</span></code></pre>
+        <p><code class="inl">self</code> に最初から入っているもの:</p>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>キー</th><th>中身</th></tr></thead>
+            <tbody>
+              <tr><td><code>self.entity</code></td><td>エンティティ ID（u32）</td></tr>
+              <tr><td><code>self.name</code></td><td>エンティティ名（文字列）</td></tr>
+              <tr><td><code>self.transform</code></td><td>Transform。<code>.position</code> <code>.rotation</code>（オイラー度）<code>.scale</code> は <code>Vec3</code></td></tr>
+              <tr><td><code>self.enabled</code></td><td>この LuaScript が有効か</td></tr>
+              <tr><td><code>self.&lt;prop&gt;</code></td><td><code>properties</code> で宣言した各値</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="note">
+          <span class="ti">i</span>
+          <div><b>位置を変えるには</b> <code class="inl">Vec3</code> を丸ごと代入する: <code class="inl">tf.position = Vec3.new(x, y, z)</code>。<code class="inl">tf.position.x = 5</code> のような一部代入は反映されないことがあるので、必ず <code class="inl">Vec3.new(...)</code> で入れ直す。</div>
+        </div>
+
+        <h3>3. まず動かす: 最小のゲーム</h3>
+        <p>「プレイヤーを動かして、壁に当たり、ゴールに着いたらクリア画面へ」。これだけで1本のゲームになる。シーンには <b>4体</b>を置く（エディタ or JSON）: <code class="inl">Player</code>(box)・<code class="inl">Goal</code>・<code class="inl">Wall1</code>・<code class="inl">GameCamera</code>(CameraComponent)。そこに下の <code class="inl">.lua</code> を <code class="inl">Player</code> へ貼る。</p>
+        <div class="codecard">
+          <div class="bar"><span class="lights"><i></i><i></i><i></i></span><span class="fname">assets/components/game.lua</span></div>
+<pre><code><span class="tok-k">local</span> done = <span class="tok-k">false</span>
+
+<span class="tok-k">function</span> <span class="tok-fn">OnStart</span>(self)
+  player = <span class="tok-fn">actor</span>(<span class="tok-s">"Player"</span>, { speed = <span class="tok-n">9</span>, solid = { <span class="tok-s">"Wall1"</span> } })  <span class="tok-c">-- 名前で掴む。local 無し=OnUpdateでも使える</span>
+  goal   = <span class="tok-fn">actor</span>(<span class="tok-s">"Goal"</span>)
+  audio:<span class="tok-fn">playBGM</span>(<span class="tok-s">"audio/bgm.wav"</span>)                          <span class="tok-c">-- BGMを鳴らす(任意)</span>
+<span class="tok-k">end</span>
+
+<span class="tok-k">function</span> <span class="tok-fn">OnUpdate</span>(self, dt)
+  <span class="tok-k">if</span> done <span class="tok-k">then</span> <span class="tok-k">return</span> <span class="tok-k">end</span>                                   <span class="tok-c">-- クリア後は何もしない</span>
+  player:<span class="tok-fn">moveTopDown</span>(dt)                                    <span class="tok-c">-- WASDでXZ移動＋Wall1で停止(壁沿いスライド)</span>
+  <span class="tok-fn">cameraFollow</span>(player, { height = <span class="tok-n">13</span>, back = <span class="tok-n">8</span>, pitch = <span class="tok-n">55</span> }) <span class="tok-c">-- GameCameraを見下ろし追従</span>
+
+  <span class="tok-fn">ui</span>:<span class="tok-fn">text</span>(<span class="tok-n">24</span>, <span class="tok-n">24</span>, <span class="tok-s">"ゴールを目指せ"</span>, <span class="tok-n">28</span>)                  <span class="tok-c">-- 画面にHUD(再生中のみ)</span>
+
+  <span class="tok-k">if</span> player:<span class="tok-fn">reached</span>(goal, <span class="tok-n">1.4</span>) <span class="tok-k">then</span>                      <span class="tok-c">-- ゴールにXZ距離1.4まで近づいたら</span>
+    done = <span class="tok-k">true</span>
+    FX.<span class="tok-fn">supernova</span>(goal:<span class="tok-fn">pos</span>().x, <span class="tok-n">1</span>, goal:<span class="tok-fn">pos</span>().z)          <span class="tok-c">-- 派手なエフェクト</span>
+    <span class="tok-fn">saveNum</span>(<span class="tok-s">"clearTime"</span>, <span class="tok-fn">loadNum</span>(<span class="tok-s">"clearTime"</span>, <span class="tok-n">0</span>))         <span class="tok-c">-- シーンを越えて値を渡す</span>
+    <span class="tok-fn">goToScene</span>(<span class="tok-s">"scenes/clear.json"</span>, <span class="tok-n">0.7</span>)                  <span class="tok-c">-- フェードでクリア画面へ</span>
+  <span class="tok-k">end</span>
+<span class="tok-k">end</span></code></pre>
+        </div>
+        <p>これが「ゲームとして機能する」理由はシンプルで、<b>毎フレーム(OnUpdate)で「入力→移動→カメラ→勝敗チェック」を回し、勝ったらシーンを切り替える</b>から。やっていることは次の4つだけ:</p>
+        <ul class="clean">
+          <li><b>入力と移動</b>: <code class="inl">player:moveTopDown(dt)</code> が WASD を読んで XZ 平面で動かし、<code class="inl">solid</code> に指定した壁に当たると軸ごと止める。</li>
+          <li><b>カメラ</b>: <code class="inl">cameraFollow</code> が <code class="inl">GameCamera</code> をプレイヤーの上から追わせる。</li>
+          <li><b>勝敗</b>: <code class="inl">player:reached(goal, 1.4)</code> でゴール接近を判定し、<code class="inl">done</code> フラグで1回だけ発火。</li>
+          <li><b>進行</b>: <code class="inl">goToScene("scenes/clear.json")</code> で次のシーンへ。<code class="inl">saveNum/loadNum</code> でスコア等をシーン越しに持ち越す。</li>
+        </ul>
+        <div class="note good">
+          <span class="ti">+</span>
+          <div><b>命名のおすすめ:</b> プレイヤー=<code class="inl">Player</code>、ゴール=<code class="inl">Goal</code>、見下ろしカメラ=<code class="inl">GameCamera</code>、壁=<code class="inl">Wall1</code>,<code class="inl">Wall2</code>…。この命名にすると <code class="inl">actor</code> / <code class="inl">cameraFollow</code> の既定値とそのまま噛み合う。書けたら <code class="inl">DX12Engine.exe --validate scenes/level1.json</code> で参照切れを確認 → Play で実行。</div>
+        </div>
+
+        <h3>4. 高レベル API（まずこれだけで作れる）</h3>
+        <p><code class="inl">actor</code> はシーン内のエンティティを「名前」で掴むラッパー。<code class="inl">cameraFollow</code> / <code class="inl">cameraTPS</code> / <code class="inl">cameraLockOn</code> は <code class="inl">CameraComponent</code> を持つエンティティを動かす。</p>
         <div class="tbl-wrap">
           <table>
             <thead><tr><th>API</th><th>説明</th></tr></thead>
             <tbody>
-              <tr><td><code>actor(name, opts)</code></td><td>名前付きエンティティを操作。<code>opts</code> = <code>{ speed, solid, half }</code></td></tr>
-              <tr><td><code>a:moveTopDown(dt)</code></td><td>WASD で XZ 平面を移動。<code>solid</code> の相手に当たると壁沿いにスライド。矢印キーは <code>(dt, "Arrows")</code></td></tr>
+              <tr><td><code>actor(name, opts)</code></td><td>名前付きエンティティを操作。<code>opts</code> = <code>{ speed=5, solid="Wall" or {…}, half=0.5 }</code></td></tr>
+              <tr><td><code>a:moveTopDown(dt)</code></td><td>WASD で XZ 平面を移動。<code>solid</code> の箱に当たると壁沿いにスライド。矢印キーは <code>a:moveTopDown(dt, "Arrows")</code></td></tr>
               <tr><td><code>a:pos()</code> / <code>a:setPos(x,y,z)</code></td><td>現在位置 <code>Vec3</code> 取得 / 位置を直接セット</td></tr>
-              <tr><td><code>a:reached(other, r)</code></td><td>別の actor に近づいたか（XZ距離 &lt; r、既定 1.0）</td></tr>
-              <tr><td><code>cameraFollow(target, opts)</code></td><td>見下ろしカメラ追従。<code>opts</code> = <code>{ name, height, back, pitch }</code></td></tr>
+              <tr><td><code>a:reached(other, r)</code></td><td>別の actor に近づいたか（XZ距離 &lt; r、既定 1.0）。<code>a:valid()</code> で存在確認</td></tr>
+              <tr><td><code>cameraFollow(t, opts)</code></td><td>見下ろし追従。<code>opts</code> = <code>{ name="GameCamera", height=13, back=8, pitch=55 }</code></td></tr>
+              <tr><td><code>cameraTPS(t, opts)</code></td><td>三人称トレイル（キーボード向け）。<code>opts</code> = <code>{ name="MainCamera", dist, height, pitch, yaw, follow }</code></td></tr>
+              <tr><td><code>cameraLockOn(p, target, opts, st)</code></td><td>ロックオン（ボス戦）。プレイヤー→ターゲット軸にカメラ固定。yaw を返す</td></tr>
               <tr><td><code>keyDown("W")</code> / <code>keyPressed("ESC")</code></td><td>押している間 / 押した瞬間。<code>W A S D E Q UP DOWN LEFT RIGHT SPACE SHIFT TAB ENTER ESC</code></td></tr>
               <tr><td><code>goToScene(path, sec)</code> / <code>win()</code></td><td>フェード付きでシーン遷移 / sceneflow の「次のシーン」へ</td></tr>
-              <tr><td><code>log("msg")</code> / <code>ui:text(...)</code></td><td>ログ出力 / 画面に文字（再生中のみ）</td></tr>
             </tbody>
           </table>
         </div>
 
-        <h3>低レベル API</h3>
-        <p>細かい制御が要るときに直接使う。高レベルAPIは内部でこれらを呼んでいる。</p>
-<pre><code><span class="tok-k">local</span> e = scene:<span class="tok-fn">findEntity</span>(<span class="tok-s">"Player"</span>)        <span class="tok-c">-- 名前でエンティティ取得</span>
-<span class="tok-k">if</span> e <span class="tok-k">and</span> e:<span class="tok-fn">isValid</span>() <span class="tok-k">then</span>
-  e.transform.position = Vec3.<span class="tok-fn">new</span>(<span class="tok-n">0</span>, <span class="tok-n">0.5</span>, <span class="tok-n">0</span>)    <span class="tok-c">-- .rotation .scale も同様</span>
-<span class="tok-k">end</span>
+        <h3>5. ハマりどころ</h3>
+        <ul class="clean">
+          <li><b>状態は <code class="inl">self</code> かグローバルに</b>: 部品型は <code class="inl">self.t</code> に、コントローラ型は <code class="inl">OnStart</code> で <code class="inl">local</code> 無し代入（<code class="inl">player = actor(...)</code>）で <code class="inl">OnUpdate</code> でも使える。</li>
+          <li><b>必ず <code class="inl">dt</code> を掛ける</b>: 移動・回転は <code class="inl">速度 * dt</code>。掛けないとフレームレートで速さが変わる。</li>
+          <li><b><code class="inl">events:on</code> は <code class="inl">OnStart</code> 内で</b>: イベント購読は Play 中のみ有効。停止中に呼んでも登録されない。</li>
+          <li><b>当たり判定の2系統</b>: 軽い見下ろし当たりは <code class="inl">actor(..,{solid=})</code>＋<code class="inl">moveTopDown</code>。落下・反発・スタックが要るなら <code class="inl">RigidBody</code>＋コライダー（エディタで付与、スクリプト不要）。</li>
+          <li><b><code class="inl">scene:setColor</code> は生成時1回</b>: GPU 同期を伴うので毎フレーム呼ばない。色変えは生成直後だけ。</li>
+        </ul>
+      </section>
 
-input:<span class="tok-fn">isKeyDown</span>(KEY_W)                       <span class="tok-c">-- KEY_W / KEY_ESCAPE ... 定数</span>
-<span class="tok-k">local</span> hit = physics:<span class="tok-fn">raycast</span>(origin, dir, maxDist) <span class="tok-c">-- RaycastHit{hit,distance,point,normal}</span>
-physics:<span class="tok-fn">applyImpulse</span>(e, Vec3.<span class="tok-fn">new</span>(<span class="tok-n">0</span>, <span class="tok-n">5</span>, <span class="tok-n">0</span>))
-<span class="tok-fn">loadScene</span>(<span class="tok-s">"scenes/level1.json"</span>)             <span class="tok-c">-- 即ロード (フェード無し)</span></code></pre>
+      <!-- ===== LUA API REFERENCE ===== -->
+      <section class="doc reveal" id="lua-api">
+        <div class="sec-head">
+          <span class="ic"><img src="img/file.png" alt=""/></span>
+          <h2>Lua API リファレンス</h2>
+        </div>
+        <p class="sec-sub">全スクリプトから使えるグローバル一覧（<code class="inl">scene</code> / <code class="inl">input</code> / <code class="inl">camera</code> / <code class="inl">physics</code> / <code class="inl">audio</code> / <code class="inl">fx</code> / <code class="inl">ui</code> / <code class="inl">events</code> …）。座標・色は <code class="inl">Vec3</code> または数値。色は 0..1。</p>
 
-        <div class="note good">
-          <span class="ti">+</span>
-          <div><b>命名のおすすめ:</b> プレイヤー=<code class="inl">Player</code>、ゴール=<code class="inl">Goal</code>、見下ろしカメラ=<code class="inl">GameCamera</code>、壁=<code class="inl">Wall1</code>,<code class="inl">Wall2</code>…。この命名にすると高レベルAPIの既定値とそのまま噛み合う。</div>
+        <h3>型: Vec3 / Transform / Entity</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>API</th><th>説明</th></tr></thead>
+            <tbody>
+              <tr><td><code>Vec3.new(x,y,z)</code></td><td>3次元ベクトル。<code>.x</code> <code>.y</code> <code>.z</code> で読み書き</td></tr>
+              <tr><td><code>e.transform</code></td><td><code>.position</code> / <code>.rotation</code>（オイラー度）/ <code>.scale</code>（全て <code>Vec3</code>）</td></tr>
+              <tr><td><code>e:isValid()</code> / <code>e.name</code></td><td>存在確認 / 名前（読み取り）</td></tr>
+              <tr><td><code>e:hasComponent("T")</code></td><td>所持判定。T = <code>MeshRenderer / PointLight / DirectionalLight / SpotLight / Camera / AudioSource / ParticleEmitter / Trigger / CharacterController / SkeletalAnimation / RigidBody …</code></td></tr>
+              <tr><td><code>e:playAnim(i, blend)</code></td><td>スケルタルアニメ再生（<code>blend</code> 秒でクロスフェード）。<code>e:playAnimByName(name, blend)</code></td></tr>
+              <tr><td><code>e:setLooping(b)</code> / <code>e:getAnimCount()</code> / <code>e:getAnimName(i)</code></td><td>ループ設定 / クリップ数 / クリップ名</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3><code class="inl">scene</code>：エンティティの取得・生成・検索</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>API</th><th>説明</th></tr></thead>
+            <tbody>
+              <tr><td><code>scene:findEntity(name)</code></td><td>名前で <code>Entity</code> を取得（<code>:isValid()</code> で確認）</td></tr>
+              <tr><td><code>scene:spawnBox(name, pos, rot, scale)</code></td><td>箱を生成して <code>Entity</code> を返す（引数は <code>Vec3</code>）</td></tr>
+              <tr><td><code>scene:spawnSphere(name, pos, radius)</code></td><td>球を生成</td></tr>
+              <tr><td><code>scene:spawnPlane(name, pos, size, grid)</code></td><td>平面（床）を生成。<code>grid=true</code> でグリッド表示</td></tr>
+              <tr><td><code>scene:spawn(name, modelPath, pos, rot, scale)</code></td><td>モデル（gltf/fbx/obj）を生成</td></tr>
+              <tr><td><code>scene:remove(e)</code> / <code>scene:getEntityCount()</code></td><td>削除 / エンティティ数</td></tr>
+              <tr><td><code>scene:setColor(e, r,g,b)</code></td><td>頂点カラーで着色（<b>生成時1回だけ</b>。GPU 同期）</td></tr>
+              <tr><td><code>scene:queryByTag(tag)</code></td><td>タグ一致エンティティの<b>名前配列</b>（RTSの群選択など）</td></tr>
+              <tr><td><code>scene:queryInBox(minX,minZ,maxX,maxZ[,tag])</code></td><td>XZ矩形内の名前配列（矩形選択）</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3><code class="inl">input</code>：キーボード / マウス</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>API</th><th>説明</th></tr></thead>
+            <tbody>
+              <tr><td><code>input:isKeyDown(KEY_W)</code></td><td>押している間ずっと true</td></tr>
+              <tr><td><code>input:isKeyPressed(KEY_SPACE)</code></td><td>押した瞬間だけ true</td></tr>
+              <tr><td><code>input:isRightMouseDown()</code></td><td>右クリック中か</td></tr>
+              <tr><td><code>input:getMouseDeltaX()</code> / <code>...Y()</code></td><td>マウス移動量（視点操作）</td></tr>
+              <tr><td><code>input:setMouseCapture(b)</code> / <code>isMouseCaptured()</code></td><td>カーソル拘束のON/OFF・状態</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>キー定数: <code class="inl">KEY_A</code>..<code class="inl">KEY_Z</code> / <code class="inl">KEY_0</code>..<code class="inl">KEY_9</code> / <code class="inl">KEY_SPACE KEY_SHIFT KEY_TAB KEY_ENTER KEY_ESCAPE KEY_UP KEY_DOWN KEY_LEFT KEY_RIGHT KEY_F1..F3 KEY_RBUTTON</code>。文字列名で済ます <code class="inl">keyDown("W")</code> / <code class="inl">keyPressed("ESC")</code> もある。</p>
+
+        <h3><code class="inl">physics</code>：当たり判定・剛体・キャラ操作</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>API</th><th>説明</th></tr></thead>
+            <tbody>
+              <tr><td><code>physics:raycast(origin, dir, maxDist)</code></td><td>レイ判定 → <code>RaycastHit{ hit, distance, point, normal }</code></td></tr>
+              <tr><td><code>physics:overlapBox(center, half[, n])</code></td><td>範囲内の <code>Entity</code> 配列。<code>overlapSphere(center, r[, n])</code> も</td></tr>
+              <tr><td><code>physics:addRigidBody(e, type, mass)</code></td><td><code>type</code> = <code>MOTION_STATIC / MOTION_KINEMATIC / MOTION_DYNAMIC</code></td></tr>
+              <tr><td><code>physics:addBoxCollider(e, hx,hy,hz)</code></td><td><code>addSphereCollider(e, r)</code> / <code>addCapsuleCollider(e, r, halfH)</code> / <code>autoCollider(e)</code></td></tr>
+              <tr><td><code>physics:applyImpulse(e, vec)</code></td><td><code>applyForce</code> / <code>setVelocity</code> / <code>getVelocity</code> / <code>setPosition</code></td></tr>
+              <tr><td><code>physics:setGravity(vec)</code> / <code>setPaused(b)</code> / <code>step(dt)</code></td><td>重力変更 / 物理停止 / 手動1ステップ</td></tr>
+              <tr><td><code>physics:addCharacterController(e, r, halfH)</code></td><td>キャラ操作。毎フレーム <code>move(e, vx, vz)</code>、<code>jump(e[, amt])</code>、<code>isGrounded(e)</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3><code class="inl">camera</code> / <code class="inl">audio</code></h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>API</th><th>説明</th></tr></thead>
+            <tbody>
+              <tr><td><code>camera:project(x,y,z)</code></td><td>ワールド座標 → スクリーン <code>u, v, visible</code>（頭上ダメージ表示など）</td></tr>
+              <tr><td><code>camera:getPosition()</code> / <code>setPosition(v)</code></td><td>低レベルのフライカメラ操作（yaw/pitch/速度も）</td></tr>
+              <tr><td><code>audio:playBGM(path)</code> / <code>stopBGM()</code></td><td>BGM 再生 / 停止（<code>pauseBGM</code> / <code>resumeBGM</code>）</td></tr>
+              <tr><td><code>audio:playSFX(path)</code></td><td>効果音を鳴らす</td></tr>
+              <tr><td><code>audio:playSpatial(path,x,y,z,minD,maxD[,vol,loop])</code></td><td>3D空間オーディオ（距離減衰）</td></tr>
+              <tr><td><code>audio:setMasterVolume(v)</code></td><td><code>setBGMVolume</code> / <code>setSFXVolume</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3><code class="inl">fx</code> / <code class="inl">FX</code> / <code class="inl">vfx</code>：パーティクル</h3>
+        <p>その場で1発放つ即時パーティクル。座標はワールド、色は 0..1、<code class="inl">intensity&gt;1</code> で白熱（ブルームで光る）。</p>
+<pre><code><span class="tok-c">-- 低レベル: テーブルで細かく指定</span>
+fx:<span class="tok-fn">burst</span>{ x=px, y=<span class="tok-n">1</span>, z=pz, count=<span class="tok-n">20</span>, kind=<span class="tok-s">"fire"</span>, speed=<span class="tok-n">6</span>,
+          r=<span class="tok-n">1</span>, g=<span class="tok-n">0.5</span>, b=<span class="tok-n">0.1</span>, intensity=<span class="tok-n">5</span>, gravity=-<span class="tok-n">3</span> }   <span class="tok-c">-- kind: glow/fire/smoke/spark/magic/electric/ring/star</span>
+fx:<span class="tok-fn">beam</span>{ x0=ax,y0=ay,z0=az, x1=bx,y1=by,z1=bz, kind=<span class="tok-s">"electric"</span> } <span class="tok-c">-- 線(レーザー/稲妻)</span>
+fx:<span class="tok-fn">pulse</span>(<span class="tok-n">0.5</span>)                                          <span class="tok-c">-- 画面パルス(被弾演出)</span>
+
+<span class="tok-c">-- 高レベル: ワンライナーのプリセット</span>
+FX.<span class="tok-fn">explosion</span>(x, y, z, scale)    <span class="tok-c">-- 爆発(撃破)</span>
+FX.<span class="tok-fn">supernova</span>(x, y, z)           <span class="tok-c">-- レベルアップ超新星</span>
+FX.<span class="tok-fn">spark</span>(x, y, z)               <span class="tok-c">-- 着弾火花 / FX.lightning / FX.pillar / FX.hit</span>
+vfx.<span class="tok-fn">play</span>(<span class="tok-s">"explosion"</span>, x, y, z, scale) <span class="tok-c">-- 名前で再生する統一窓口</span></code></pre>
+
+        <h3><code class="inl">ui</code>：ゲーム内 HUD（即時モード）</h3>
+        <p><code class="inl">OnUpdate</code> 内で毎フレーム呼ぶと描画される（Play 中のみ）。位置は <code class="inl">SCREEN_W</code> / <code class="inl">SCREEN_H</code> で調整。</p>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>API</th><th>説明</th></tr></thead>
+            <tbody>
+              <tr><td><code>ui:text(x,y,text[,size,r,g,b,a])</code></td><td>文字。スコア・残機・メッセージ</td></tr>
+              <tr><td><code>ui:button(x,y,w,h,label)</code></td><td>ボタン。押された<b>フレームで true</b> を返す（タイトルメニュー等）</td></tr>
+              <tr><td><code>ui:rect(x,y,w,h[,r,g,b,a,rounding])</code></td><td>塗り矩形。HPバー・パネル背景</td></tr>
+              <tr><td><code>ui:image(x,y,w,h,path)</code></td><td>画像</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3><code class="inl">events</code> / シーン遷移 / 値の持ち越し</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>API</th><th>説明</th></tr></thead>
+            <tbody>
+              <tr><td><code>events:on(name, fn)</code></td><td>購読（<code>OnStart</code> 内で）。<code>fn(data)</code> が呼ばれる。戻り値の id を <code>events:off(id)</code> へ</td></tr>
+              <tr><td><code>events:emit(name[, data])</code></td><td>発火。<code>data</code> = <code>{ value=5 }</code>。Trigger の EmitEvent もここに届く</td></tr>
+              <tr><td><code>goToScene(path[, sec])</code> / <code>loadScene(path)</code></td><td>フェード遷移 / 即ロード</td></tr>
+              <tr><td><code>transitionToScene(path, type[, dur])</code></td><td><code>type</code>: 0=Fade 1=Wipe 2=Circle 3=縦Wipe</td></tr>
+              <tr><td><code>nextScene()</code> / <code>quit()</code></td><td>sceneflow の次へ / ゲーム終了</td></tr>
+              <tr><td><code>saveNum(key, v)</code> / <code>loadNum(key[, def])</code></td><td>シーンを越えて残る数値（スコア・タイム）</td></tr>
+              <tr><td><code>log(msg)</code> / <code>clamp(v,lo,hi)</code> / <code>lerp(a,b,t)</code></td><td>ログ / 各種ユーティリティ</td></tr>
+            </tbody>
+          </table>
         </div>
       </section>
 
