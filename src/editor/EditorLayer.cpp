@@ -140,6 +140,7 @@ void EditorLayer::BuildDefaultLayout(ImGuiID dockspaceId, f32 /*toolbarHeight*/)
         ImGui::DockBuilderDockWindow("Skybox / IBL",            dockRightBottom);
         ImGui::DockBuilderDockWindow("SSAO",                    dockRightBottom);
         ImGui::DockBuilderDockWindow("エンジン設定",            dockRightBottom);
+        ImGui::DockBuilderDockWindow("ビルド設定",              dockRightBottom);
         ImGui::DockBuilderDockWindow("Scene Flow",              dockRightBottom);
         ImGui::DockBuilderDockWindow("Project",                 dockRightBottom);
         ImGui::DockBuilderDockWindow("Version Control (Git)",   dockRightBottom);
@@ -220,7 +221,7 @@ void EditorLayer::Render(bool isPlaying,
             m_ctx->showPostProcess = m_ctx->showPostParams = m_ctx->showSkybox =
                 m_ctx->showSSAO = m_ctx->showEngineSettings = m_ctx->showSceneFlow =
                 m_ctx->showProject = m_ctx->showVersionControl =
-                m_ctx->showMcpBridge = false;
+                m_ctx->showMcpBridge = m_ctx->showBuildSettings = false;
             m_prevAnyToolShown = false;
             m_dockspaceBuilt = false;
             m_ctx->resetLayout = false;

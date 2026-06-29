@@ -116,12 +116,13 @@ public:
     bool showProject        = false;
     bool showVersionControl = false;
     bool showMcpBridge      = false;   // MCP / AI Bridge モニタ窓
+    bool showBuildSettings  = false;   // ビルド設定（Unity の Build Settings 相当）
 
     bool AnyToolWindowOpen() const
     {
         return showPostProcess || showPostParams || showSkybox || showSSAO
             || showEngineSettings || showSceneFlow || showProject || showVersionControl
-            || showMcpBridge;
+            || showMcpBridge || showBuildSettings;
     }
 
     // タッチパッド向けキーボードフライモード（` キーでトグル）。
@@ -178,12 +179,22 @@ public:
     entt::entity pendingCreatePrefab = entt::null;
     std::string pendingLoadPath;
     std::string pendingGameLoadPath;  // Play 中の loadScene()（assets 相対）。フレーム境界で安全にロード
-    bool pendingBuildGame = false;
-    // ビルド配置先（フォルダピッカーで選んだ親フォルダ。空=既定 build/game）。
-    // 使い切り: ビルド処理がこの値で出力先を決めたあとクリアする。
-    std::string buildOutputDir;
+    bool pendingBuildGame = false;     // ビルド設定パネルの「ビルド」で立つ＝実行要求
     // 直近ビルドの成果物フォルダ（完了後に Explorer で開くために保持）。
     std::string lastBuildDir;
+
+    // ===== ビルド設定（Unity の Build Settings / Unreal の Packaging に相当）=====
+    // ビルド設定ウィンドウ（showBuildSettings）で編集し、BuildGame() が参照する。
+    struct BuildConfig
+    {
+        char title[128] = "Game";           // 製品名（game.pak マニフェストの title・ゲーム窓のタイトル）
+        int  width  = 1280;                 // ゲームウィンドウ幅
+        int  height = 720;                  // ゲームウィンドウ高
+        std::string startScene;             // 開始シーン（assets 相対。空=現在開いているシーン）
+        std::string outputDir;              // 配置先の親フォルダ（空=ビルド時に選択）
+        bool openFolderAfterBuild = true;   // 完了後に成果物フォルダを開く
+    } buildConfig;
+
     bool pendingNewScene  = false;
     // 空でなければ pendingNewScene 実行時にこのパスへスターターシーンを保存する
     // （プロジェクト新規作成の初期シーン用。通常の「新規シーン」は空のまま）

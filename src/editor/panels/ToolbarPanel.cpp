@@ -239,6 +239,7 @@ void ToolbarPanel::Render(bool isPlaying,
             ImGui::MenuItem("Skybox / IBL",            nullptr, &ctx.showSkybox);
             ImGui::MenuItem("SSAO",                    nullptr, &ctx.showSSAO);
             ImGui::MenuItem("エンジン設定",            nullptr, &ctx.showEngineSettings);
+            ImGui::MenuItem("ビルド設定",              nullptr, &ctx.showBuildSettings);
             ImGui::MenuItem("Scene Flow",              nullptr, &ctx.showSceneFlow);
             ImGui::MenuItem("Project",                 nullptr, &ctx.showProject);
             ImGui::MenuItem("Git 変更",                nullptr, &ctx.showVersionControl);
@@ -248,9 +249,9 @@ void ToolbarPanel::Render(bool isPlaying,
         // ---- ツール ----
         if (ImGui::BeginMenu("ツール"))
         {
-            // 配置先フォルダをピッカーで選んでからビルドする（… はダイアログが開く合図）
-            if (ImGui::MenuItem("ゲームをビルド..."))
-                ctx.pendingBuildGame = true;
+            // 「ビルド」はまずビルド設定パネルを開く（構成・開始シーン・出力先を決めてから実行）
+            if (ImGui::MenuItem("ビルド"))
+                ctx.showBuildSettings = true;
             ImGui::MenuItem("MCP / AI Bridge",         nullptr, &ctx.showMcpBridge);
             ImGui::EndMenu();
         }
@@ -551,6 +552,7 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::MenuItem("Skybox / IBL",           nullptr, &ctx.showSkybox);
         ImGui::MenuItem("SSAO",                   nullptr, &ctx.showSSAO);
         ImGui::MenuItem("エンジン設定",           nullptr, &ctx.showEngineSettings);
+        ImGui::MenuItem("ビルド設定",             nullptr, &ctx.showBuildSettings);
         ImGui::MenuItem("Scene Flow",             nullptr, &ctx.showSceneFlow);
         ImGui::MenuItem("Project",                nullptr, &ctx.showProject);
         ImGui::MenuItem("Git 変更",               nullptr, &ctx.showVersionControl);
@@ -560,7 +562,7 @@ void ToolbarPanel::Render(bool isPlaying,
         {
             ctx.showPostProcess = ctx.showPostParams = ctx.showSkybox = ctx.showSSAO =
                 ctx.showEngineSettings = ctx.showSceneFlow = ctx.showProject =
-                ctx.showVersionControl = ctx.showMcpBridge = false;
+                ctx.showVersionControl = ctx.showMcpBridge = ctx.showBuildSettings = false;
         }
         ImGui::EndPopup();
     }

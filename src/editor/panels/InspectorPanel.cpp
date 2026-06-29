@@ -1292,7 +1292,7 @@ void InspectorPanel::RenderEngineSettings(EditorContext& ctx,
                                           f32& cascadeSplitLambda,
                                           f32& cascadeBlendBand,
                                           bool& showCascadeDebug,
-                                          GameClock* clock)
+                                          GameClock* /*clock*/)  // ビルド節を移設して未使用に
 {
     ImGui::Begin("\xe3\x82\xa8\xe3\x83\xb3\xe3\x82\xb8\xe3\x83\xb3\xe8\xa8\xad\xe5\xae\x9a");  // エンジン設定
 
@@ -1383,17 +1383,9 @@ void InspectorPanel::RenderEngineSettings(EditorContext& ctx,
     if (IconHeader(ctx.icons, ctx.icons ? ctx.icons->build : 0,
                    "\xe3\x83\x93\xe3\x83\xab\xe3\x83\x89"))  // Build
     {
-        if (ImGui::Button("ゲームをビルド..."))  // 配置先フォルダをピッカーで選んでからビルド
-        {
-            ctx.pendingBuildGame = true;
-        }
-        if (ctx.buildCompleteFlash > 0.0f)
-        {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.5f, 1.0f));
-            ImGui::Text("\xe3\x83\x93\xe3\x83\xab\xe3\x83\x89\xe5\xae\x8c\xe4\xba\x86!");  // Build complete!
-            ImGui::PopStyleColor();
-            ctx.buildCompleteFlash -= clock->GetDeltaTime();
-        }
+        // ビルドは専用の「ビルド設定」パネルで構成・開始シーン・出力先を決めてから実行する。
+        if (ImGui::Button("ビルド設定を開く"))
+            ctx.showBuildSettings = true;
     }
 
     ImGui::End();

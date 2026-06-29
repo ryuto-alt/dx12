@@ -131,6 +131,7 @@ private:
     // エディタの「Project」「Version Control」ウィンドウ描画（ランチャー閉後）
     void RenderProjectWindow();
     void RenderVersionControlWindow();
+    void RenderBuildSettingsWindow();   // 「ビルド設定」窓（構成/開始シーン/出力先 → ビルド実行）
     // git/gh 操作をワーカースレッドで実行（メインスレッドを固めない）。
     // task はワーカー上で走り GitResult を返す。label はバナー表示名。
     // isLogin=true のときは完了時に GitHub ユーザー名を取り込む（ログインポーリング用）。

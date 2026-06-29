@@ -49,6 +49,7 @@
 #include <filesystem>
 #include <fstream>
 #include <cstdio>     // sscanf_s（ahead/behind 解析）
+#include <cctype>     // std::isalnum（ビルド出力フォルダ名のサニタイズ）
 #include <map>        // 変更ファイルツリーの構築
 #include "audio/AudioSystem.h"
 #include "physics/PhysicsSystem.h"
@@ -144,7 +145,30 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     std::wstring windowTitle = L"DX12 Engine v";
     for (const char* vp = kEngineVersion; *vp; ++vp)
         windowTitle += static_cast<wchar_t>(*vp);  // kEngineVersion は ASCII
-    m_window->Initialize(hInstance, nCmdShow, 1280, 720, windowTitle.c_str());
+
+    u32 winW = 1280, winH = 720;
+    // ゲームモード: pak の __manifest__（ビルド設定で書き出した値）からタイトル/解像度を反映。
+    // main.cpp で pak は app.Initialize より前にマウント済みなので、ここで読める。
+    if (gameMode)
+    {
+        vfs::BootConfig bc;
+        if (vfs::ReadBootConfig(bc))
+        {
+            if (bc.windowWidth  > 0) winW = static_cast<u32>(bc.windowWidth);
+            if (bc.windowHeight > 0) winH = static_cast<u32>(bc.windowHeight);
+            if (!bc.title.empty())
+            {
+                int n = MultiByteToWideChar(CP_UTF8, 0, bc.title.c_str(), -1, nullptr, 0);
+                if (n > 0)
+                {
+                    std::wstring wt(static_cast<size_t>(n - 1), L'\0');
+                    MultiByteToWideChar(CP_UTF8, 0, bc.title.c_str(), -1, wt.data(), n);
+                    windowTitle = wt;   // 配布ゲームはエンジン名ではなく製品タイトルを表示
+                }
+            }
+        }
+    }
+    m_window->Initialize(hInstance, nCmdShow, winW, winH, windowTitle.c_str());
 
     // グラフィックスデバイス初期化
     m_graphicsDevice = std::make_unique<GraphicsDevice>();
@@ -4121,19 +4145,21 @@ bool Application::BuildGame()
 {
     namespace fs = std::filesystem;
 
-    // ビルド出力先。ユーザーがフォルダピッカーで選んだ場合は「選んだフォルダの中に専用サブフォルダ」を作る。
+    // ビルド出力先。ユーザーがビルド設定で選んだフォルダの中に「製品名_build」サブフォルダを作る。
     // 選んだフォルダ自体を出力先にして remove_all するとユーザーのデータを消す恐れがあるので必ずサブフォルダ化する。
     fs::path outputDir;
-    if (m_editorCtx && !m_editorCtx->buildOutputDir.empty())
+    if (m_editorCtx && !m_editorCtx->buildConfig.outputDir.empty())
     {
-        std::string sub = "Game";
-        if (!m_editorCtx->currentScenePath.empty())
-        {
-            std::string stem = fs::path(m_editorCtx->currentScenePath).stem().string();
-            if (!stem.empty()) sub = stem;
-        }
+        // フォルダ名 = タイトルをサニタイズ（英数・空白・_- のみ残す）。空なら "Game"
+        std::string sub;
+        for (char c : std::string(m_editorCtx->buildConfig.title))
+            if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == ' ')
+                sub += c;
+        while (!sub.empty() && sub.back()  == ' ') sub.pop_back();
+        while (!sub.empty() && sub.front() == ' ') sub.erase(sub.begin());
+        if (sub.empty()) sub = "Game";
         sub += "_build";
-        outputDir = fs::path(m_editorCtx->buildOutputDir) / sub;
+        outputDir = fs::path(m_editorCtx->buildConfig.outputDir) / sub;
     }
     else
     {
@@ -4194,9 +4220,14 @@ bool Application::BuildGame()
 
     // 2+3. assets/ と scripts/ を game.pak にパック（コピーではなく暗号化アーカイブ化）
     {
-        // 開始シーンの相対パスを計算（既存ロジックと同じ）
+        // 開始シーンの相対パスを計算。
+        // ビルド設定で明示指定があればそれを最優先。無ければ現在開いているシーンから求める。
         std::string startSceneRel = "scenes/default.json";
-        if (!m_editorCtx->currentScenePath.empty())
+        if (m_editorCtx && !m_editorCtx->buildConfig.startScene.empty())
+        {
+            startSceneRel = m_editorCtx->buildConfig.startScene;
+        }
+        else if (!m_editorCtx->currentScenePath.empty())
         {
             auto norm = [](std::string s) { for (auto& c : s) if (c == '\\') c = '/'; return s; };
             std::string full = norm(m_editorCtx->currentScenePath);
@@ -4267,14 +4298,32 @@ bool Application::BuildGame()
             }
         }
 
-        // ブートマニフェスト（game.json の代替。GameRuntime は pak からこれを読む）
+        // ブートマニフェスト（game.json の代替。GameRuntime は pak からこれを読む）。
+        // ビルド設定のタイトル/解像度を反映する。
         {
+            std::string title = "Game";
+            int winW = 1280, winH = 720;
+            if (m_editorCtx)
+            {
+                if (m_editorCtx->buildConfig.title[0] != '\0')
+                    title = m_editorCtx->buildConfig.title;
+                winW = m_editorCtx->buildConfig.width;
+                winH = m_editorCtx->buildConfig.height;
+            }
+            // JSON 文字列エスケープ（" と \ のみ。タイトルは UTF-8 のまま格納）
+            std::string titleEsc;
+            for (char c : title)
+            {
+                if (c == '\\' || c == '"') titleEsc += '\\';
+                titleEsc += c;
+            }
+
             std::string manifest =
                 std::string("{\n") +
-                "  \"title\": \"Game\",\n" +
+                "  \"title\": \"" + titleEsc + "\",\n" +
                 "  \"startScene\": \"" + startSceneRel + "\",\n" +
-                "  \"windowWidth\": 1280,\n" +
-                "  \"windowHeight\": 720\n" +
+                "  \"windowWidth\": " + std::to_string(winW) + ",\n" +
+                "  \"windowHeight\": " + std::to_string(winH) + "\n" +
                 "}\n";
             pak.AddBlob("__manifest__",
                 reinterpret_cast<const uint8_t*>(manifest.data()), manifest.size());
@@ -4300,6 +4349,155 @@ bool Application::BuildGame()
 
     Logger::Info("Game build complete: {}", outputDir.string());
     return true;
+}
+
+// 「ビルド設定」ウィンドウ（Unity の Build Settings / Unreal の Packaging 相当）。
+// 構成・開始シーン・出力先を決めてから「ビルド」で BuildGame を実行する。
+void Application::RenderBuildSettingsWindow()
+{
+    if (!m_editorCtx || !m_editorCtx->showBuildSettings)
+        return;
+
+    namespace fs = std::filesystem;
+    auto& cfg = m_editorCtx->buildConfig;
+
+    ImGui::SetNextWindowSize(ImVec2(380, 0), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("ビルド設定", &m_editorCtx->showBuildSettings))
+    {
+        ImGui::End();
+        return;
+    }
+
+    ImGui::TextDisabled("ゲームを単体 exe + 暗号化アセット(game.pak) に書き出す");
+    ImGui::Spacing();
+
+    // ===== シーン =====
+    if (ImGui::CollapsingHeader("シーン", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        std::vector<std::string> scenes;
+        std::string scenesDir = PathResolver::AssetsDir() + "scenes";
+        if (fs::exists(scenesDir))
+            for (auto& e : fs::directory_iterator(scenesDir))
+                if (e.is_regular_file() && e.path().extension() == ".json")
+                    scenes.push_back("scenes/" + e.path().filename().string());
+
+        ImGui::TextUnformatted("開始シーン");
+        const char* curLabel = cfg.startScene.empty()
+            ? "(\xe7\x8f\xbe\xe5\x9c\xa8\xe9\x96\x8b\xe3\x81\x84\xe3\x81\xa6\xe3\x81\x84\xe3\x82\x8b\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3)"  // (現在開いているシーン)
+            : cfg.startScene.c_str();
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::BeginCombo("##startScene", curLabel))
+        {
+            if (ImGui::Selectable("(\xe7\x8f\xbe\xe5\x9c\xa8\xe9\x96\x8b\xe3\x81\x84\xe3\x81\xa6\xe3\x81\x84\xe3\x82\x8b\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3)",
+                                  cfg.startScene.empty()))
+                cfg.startScene.clear();
+            for (auto& s : scenes)
+                if (ImGui::Selectable(s.c_str(), s == cfg.startScene))
+                    cfg.startScene = s;
+            ImGui::EndCombo();
+        }
+        ImGui::TextDisabled("\xe2\x80\xbb \xe5\x85\xa8\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3\xe3\x81\x8c game.pak \xe3\x81\xab\xe5\x90\xab\xe3\x81\xbe\xe3\x82\x8c\xe3\x81\xbe\xe3\x81\x99\xe3\x80\x82\xe8\xb5\xb7\xe5\x8b\x95\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3\xe3\x82\x92\xe9\x81\xb8\xe3\x81\xb3\xe3\x81\xbe\xe3\x81\x99\xe3\x80\x82");  // ※全シーンがgame.pakに含まれます。起動シーンを選びます。
+    }
+
+    // ===== 製品 =====
+    if (ImGui::CollapsingHeader("製品", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        ImGui::TextUnformatted("タイトル（ウィンドウ名）");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputText("##title", cfg.title, sizeof(cfg.title));
+
+        ImGui::TextUnformatted("解像度");
+        struct Res { const char* name; int w, h; };
+        static const Res presets[] = {
+            {"1280 x 720 (HD)",   1280, 720},
+            {"1600 x 900",        1600, 900},
+            {"1920 x 1080 (FHD)", 1920, 1080},
+            {"2560 x 1440 (QHD)", 2560, 1440},
+        };
+        std::string cur = std::to_string(cfg.width) + " x " + std::to_string(cfg.height);
+        ImGui::SetNextItemWidth(210.0f);
+        if (ImGui::BeginCombo("##respreset", cur.c_str()))
+        {
+            for (auto& p : presets)
+                if (ImGui::Selectable(p.name, p.w == cfg.width && p.h == cfg.height))
+                {
+                    cfg.width  = p.w;
+                    cfg.height = p.h;
+                }
+            ImGui::EndCombo();
+        }
+        ImGui::SetNextItemWidth(90.0f);
+        ImGui::InputInt("\xe5\xb9\x85##w", &cfg.width, 0);    // 幅
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(90.0f);
+        ImGui::InputInt("\xe9\xab\x98\xe3\x81\x95##h", &cfg.height, 0);  // 高さ
+        cfg.width  = std::clamp(cfg.width,  320, 7680);
+        cfg.height = std::clamp(cfg.height, 240, 4320);
+    }
+
+    // ===== 出力先 =====
+    if (ImGui::CollapsingHeader("出力先", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        ImGui::TextUnformatted("配置先フォルダ");
+        char pathBuf[1024];
+        strncpy_s(pathBuf,
+                  cfg.outputDir.empty()
+                    ? "(\xe6\x9c\xaa\xe9\x81\xb8\xe6\x8a\x9e \xe2\x80\x94 \xe3\x83\x93\xe3\x83\xab\xe3\x83\x89\xe6\x99\x82\xe3\x81\xab\xe9\x81\xb8\xe6\x8a\x9e)"  // (未選択 — ビルド時に選択)
+                    : cfg.outputDir.c_str(),
+                  _TRUNCATE);
+        ImGui::SetNextItemWidth(-92.0f);
+        ImGui::InputText("##outdir", pathBuf, sizeof(pathBuf), ImGuiInputTextFlags_ReadOnly);
+        ImGui::SameLine();
+        if (ImGui::Button("\xe5\x8f\x82\xe7\x85\xa7...", ImVec2(-1.0f, 0.0f)))  // 参照...
+        {
+            std::string dir;
+            if (ProjectManager::PickFolder(m_window->GetHwnd(), dir, L"ビルドの配置先フォルダを選択"))
+                cfg.outputDir = dir;
+        }
+        ImGui::Checkbox("ビルド後にフォルダを開く", &cfg.openFolderAfterBuild);
+        ImGui::TextDisabled("\xe2\x80\xbb \xe9\x81\xb8\xe3\x82\x93\xe3\x81\xa0\xe3\x83\x95\xe3\x82\xa9\xe3\x83\xab\xe3\x83\x80\xe7\x9b\xb4\xe4\xb8\x8b\xe3\x81\xab \"<\xe8\xa3\xbd\xe5\x93\x81\xe5\x90\x8d>_build\" \xe3\x82\x92\xe4\xbd\x9c\xe3\x81\xa3\xe3\x81\xa6\xe5\x87\xba\xe5\x8a\x9b\xe3\x81\x97\xe3\x81\xbe\xe3\x81\x99\xe3\x80\x82");  // ※選んだフォルダ直下に "<製品名>_build" を作って出力します。
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // ===== ビルド実行 =====
+    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.20f, 0.42f, 0.68f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.26f, 0.52f, 0.82f, 1.0f));
+    const bool doBuild = ImGui::Button("ビルド", ImVec2(-1.0f, 38.0f));
+    ImGui::PopStyleColor(2);
+    if (doBuild)
+    {
+        bool proceed = true;
+        if (cfg.outputDir.empty())   // 未選択なら今すぐフォルダを選ばせる
+        {
+            std::string dir;
+            if (ProjectManager::PickFolder(m_window->GetHwnd(), dir, L"ビルドの配置先フォルダを選択"))
+                cfg.outputDir = dir;
+            else
+                proceed = false;
+        }
+        if (proceed)
+            m_editorCtx->pendingBuildGame = true;   // フレーム境界で BuildGame 実行
+    }
+
+    if (m_editorCtx->buildCompleteFlash > 0.0f)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.5f, 1.0f));
+        ImGui::TextUnformatted("\xe2\x9c\x93 \xe3\x83\x93\xe3\x83\xab\xe3\x83\x89\xe5\xae\x8c\xe4\xba\x86");  // ✓ ビルド完了
+        ImGui::PopStyleColor();
+        m_editorCtx->buildCompleteFlash -= m_gameClock.GetDeltaTime();
+    }
+    else if (m_editorCtx->buildErrorFlash > 0.0f)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.35f, 0.35f, 1.0f));
+        ImGui::TextUnformatted("\xe2\x9c\x97 \xe3\x83\x93\xe3\x83\xab\xe3\x83\x89\xe5\xa4\xb1\xe6\x95\x97 (dx12_engine.log)");  // ✗ ビルド失敗
+        ImGui::PopStyleColor();
+        m_editorCtx->buildErrorFlash -= m_gameClock.GetDeltaTime();
+    }
+
+    ImGui::End();
 }
 
 void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u32 frameIndex,
@@ -6232,38 +6430,30 @@ void Application::Render()
             ImGui::End();
         }
 
+        // ---- ビルド設定ウィンドウ（構成/開始シーン/出力先 → ビルド実行・トグル表示）----
+        RenderBuildSettingsWindow();
+
         // Deferred: game build
-        // ツール／インスペクタから pendingBuildGame が立ったら、まず配置先フォルダをピッカーで選ばせ、
-        // 選んだフォルダの中にビルドする。完了したらそのフォルダを Explorer で開く。
+        // ビルド設定パネルの「ビルド」で pendingBuildGame が立つ。配置先などは buildConfig から読む。
+        // 完了したら（設定で有効なら）成果物フォルダを Explorer で開く。
         if (m_editorCtx->pendingBuildGame)
         {
             m_editorCtx->pendingBuildGame = false;
-
-            std::string dest;
-            if (ProjectManager::PickFolder(m_window->GetHwnd(), dest,
-                                           L"ビルドの配置先フォルダを選択"))
+            const bool ok = BuildGame();
+            if (ok)
             {
-                m_editorCtx->buildOutputDir = dest;
-                const bool ok = BuildGame();
-                m_editorCtx->buildOutputDir.clear();   // 使い切り（次回も必ず選ばせる）
-
-                if (ok)
-                {
-                    m_editorCtx->buildCompleteFlash = 3.0f;
-                    // 成果物フォルダを Explorer で開いてフィードバック
-                    if (!m_editorCtx->lastBuildDir.empty())
-                        ShellExecuteA(nullptr, "open", m_editorCtx->lastBuildDir.c_str(),
-                                      nullptr, nullptr, SW_SHOWNORMAL);
-                }
-                else
-                {
-                    // 中央モーダルで失敗を知らせる（詳細は dx12_engine.log）
-                    m_editorCtx->errorMessage =
-                        "ビルドに失敗しました。\n詳細は dx12_engine.log を確認してください。";
-                    m_editorCtx->errorFlash = 1.0f;
-                }
+                m_editorCtx->buildCompleteFlash = 3.0f;
+                if (m_editorCtx->buildConfig.openFolderAfterBuild && !m_editorCtx->lastBuildDir.empty())
+                    ShellExecuteA(nullptr, "open", m_editorCtx->lastBuildDir.c_str(),
+                                  nullptr, nullptr, SW_SHOWNORMAL);
             }
-            // キャンセル時は何もしない
+            else
+            {
+                m_editorCtx->buildErrorFlash = 6.0f;
+                m_editorCtx->errorMessage =
+                    "ビルドに失敗しました。\n詳細は dx12_engine.log を確認してください。";
+                m_editorCtx->errorFlash = 1.0f;   // 中央モーダルで通知
+            }
         }
 
         // Deferred: entity deletion
