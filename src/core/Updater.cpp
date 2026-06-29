@@ -128,14 +128,17 @@ struct ProgressUI
         const int x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
         const int y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
         // WS_SYSMENU を付けない＝閉じる×無し（ダウンロード中の誤操作防止）
-        hwnd = CreateWindowExW(WS_EX_TOPMOST, cls, L"DX12 Engine \xe3\x82\xa2\xe3\x83\x83\xe3\x83\x97\xe3\x83\x87\xe3\x83\xbc\xe3\x83\x88",
+        // ※ 文字列は生の日本語ワイド文字リテラル。CMake で Core ターゲットに /utf-8 を渡しているので
+        //   ソース(UTF-8)が正しく UTF-16 に変換される。以前は UTF-8 バイト列を \x で
+        //   ワイド文字リテラルに直書きしていて 1 バイト＝1 wchar になり文字化けしていた。
+        hwnd = CreateWindowExW(WS_EX_TOPMOST, cls, L"DX12 Engine アップデート",
             WS_POPUP | WS_CAPTION | WS_BORDER, x, y, w, h,
             nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
         if (!hwnd) return false;
 
         HFONT font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
         label = CreateWindowExW(0, L"STATIC",
-            L"\xe3\x82\xa2\xe3\x83\x83\xe3\x83\x97\xe3\x83\x87\xe3\x83\xbc\xe3\x83\x88\xe3\x82\x92\xe6\xba\x96\xe5\x82\x99\xe3\x81\x97\xe3\x81\xa6\xe3\x81\x84\xe3\x81\xbe\xe3\x81\x99...",  // アップデートを準備しています...
+            L"アップデートを準備しています...",
             WS_CHILD | WS_VISIBLE, 20, 18, 410, 22, hwnd, nullptr, nullptr, nullptr);
         bar = CreateWindowExW(0, PROGRESS_CLASSW, nullptr,
             WS_CHILD | WS_VISIBLE, 20, 52, 418, 26, hwnd, nullptr, nullptr, nullptr);
@@ -232,7 +235,9 @@ bool HttpsFetch(const std::wstring& url, std::vector<char>* outBytes, const std:
         WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
         WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession) return false;
-    WinHttpSetTimeouts(hSession, 8000, 8000, 15000, 30000);
+    // 起動時の同期チェックなので名前解決/接続のタイムアウトは短めにして、
+    // ネットワーク不調やプロキシ自動検出で起動が長く固まらないようにする。
+    WinHttpSetTimeouts(hSession, 4000, 4000, 15000, 30000);
 
     bool good = false;
     HINTERNET hConnect = WinHttpConnect(hSession, host, uc.nPort, 0);
@@ -358,7 +363,9 @@ bool LaunchUpdaterBatch(const fs::path& srcDir, const fs::path& installDir, cons
     // /E=サブフォルダ込み /IS,/IT=既存/変更も上書き（ミラーはしない＝余分なファイルは消さない）
     b << "robocopy \"" << srcDir.string() << "\" \"" << installDir.string()
       << "\" /E /IS /IT /R:3 /W:1 /NFL /NDL /NJH /NJS /NP >nul\r\n";
-    b << "start \"\" \"" << (installDir / "DX12Engine.exe").string() << "\"\r\n";
+    // --updated 付きで再起動 → 直後の起動は更新チェック(同期ネットワーク)をスキップして
+    // 即座にウィンドウを出す。これが無いと「更新後すぐ exe が開かない(数秒固まる)」の主因になる。
+    b << "start \"\" \"" << (installDir / "DX12Engine.exe").string() << "\" --updated\r\n";
     b << "rmdir /S /Q \"" << tmpRoot.string() << "\" >nul 2>&1\r\n";
     b << "del \"%~f0\" >nul 2>&1\r\n";
     b.close();
@@ -444,7 +451,7 @@ bool Updater::RunStartupCheck()
     // 進捗メーター窓を表示（ダウンロード→展開→適用の各段階を可視化）
     ProgressUI ui;
     ui.Create();
-    ui.SetLabel(L"\xe3\x82\xa2\xe3\x83\x83\xe3\x83\x97\xe3\x83\x87\xe3\x83\xbc\xe3\x83\x88\xe3\x82\x92\xe3\x83\x80\xe3\x82\xa6\xe3\x83\xb3\xe3\x83\xad\xe3\x83\xbc\xe3\x83\x89\xe3\x81\x97\xe3\x81\xa6\xe3\x81\x84\xe3\x81\xbe\xe3\x81\x99...");  // アップデートをダウンロードしています...
+    ui.SetLabel(L"アップデートをダウンロードしています...");
 
     std::wstring zipW = zip.wstring();
     Logger::Info("Updater: downloading {} ...", assetUrl);
@@ -464,7 +471,7 @@ bool Updater::RunStartupCheck()
     }
 
     // 4) 展開（時間が読めないのでマーキー表示）
-    ui.SetLabel(L"\xe3\x83\x95\xe3\x82\xa1\xe3\x82\xa4\xe3\x83\xab\xe3\x82\x92\xe5\xb1\x95\xe9\x96\x8b\xe3\x81\x97\xe3\x81\xa6\xe3\x81\x84\xe3\x81\xbe\xe3\x81\x99...");  // ファイルを展開しています...
+    ui.SetLabel(L"ファイルを展開しています...");
     ui.SetProgress(-1, 0, 0);
     ui.Pump();
     if (!ExtractZip(zip, extract))
@@ -484,7 +491,7 @@ bool Updater::RunStartupCheck()
     }
 
     // 5) 更新バッチを起動して本体を終了（バッチが上書き→再起動する）
-    ui.SetLabel(L"\xe6\x9b\xb4\xe6\x96\xb0\xe3\x82\x92\xe9\x81\xa9\xe7\x94\xa8\xe3\x81\x97\xe3\x81\xa6\xe5\x86\x8d\xe8\xb5\xb7\xe5\x8b\x95\xe3\x81\x97\xe3\x81\xbe\xe3\x81\x99...");  // 更新を適用して再起動します...
+    ui.SetLabel(L"更新を適用して再起動します...");
     ui.SetProgress(100, 0, 0);
     ui.Pump();
     if (!LaunchUpdaterBatch(srcDir, installDir, tmpRoot))
