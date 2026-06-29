@@ -670,8 +670,8 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                     }
                     else if (entry.type == AssetType::Scene)
                     {
-                        // JSON は Lua と同様 VS Code で開く（読み込みは右クリックメニューから）
-                        OpenInVSCode(entry.path.string());
+                        // ダブルクリックでシーン切り替え（VS Code で開くのは右クリック「開く」から）
+                        ctx.pendingLoadPath = entry.path.string();
                     }
                     else if (entry.type == AssetType::Prefab)
                     {
@@ -691,26 +691,13 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                 snprintf(ctxId, sizeof(ctxId), "##ctx_%d", static_cast<int>(i));
                 if (ImGui::BeginPopupContextItem(ctxId))
                 {
-                    if (entry.type == AssetType::Script)
-                    {
-                        if (ImGui::MenuItem("VS Code \xe3\x81\xa7\xe9\x96\x8b\xe3\x81\x8f"))  // VS Code で開く
-                            OpenInVSCode(entry.path.string());
-                    }
-                    else if (entry.type == AssetType::Model)
-                    {
-                        if (ImGui::MenuItem("\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3\xe3\x81\xab\xe8\xbf\xbd\xe5\x8a\xa0"))  // シーンに追加
-                        {
-                            PendingSpawnRequest req;
-                            req.modelPath = entry.path.string();
-                            ctx.pendingSpawns.push_back(req);
-                        }
-                    }
-                    else if (entry.type == AssetType::Scene)
+                    // 主操作（種別ごと）: シーン=読み込み、モデル/プレハブ=シーンに追加
+                    if (entry.type == AssetType::Scene)
                     {
                         if (ImGui::MenuItem("\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3\xe3\x82\x92\xe8\xaa\xad\xe3\x81\xbf\xe8\xbe\xbc\xe3\x81\xbf"))  // シーンを読み込み
                             ctx.pendingLoadPath = entry.path.string();
                     }
-                    else if (entry.type == AssetType::Prefab)
+                    else if (entry.type == AssetType::Model || entry.type == AssetType::Prefab)
                     {
                         if (ImGui::MenuItem("\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3\xe3\x81\xab\xe8\xbf\xbd\xe5\x8a\xa0"))  // シーンに追加
                         {
@@ -719,7 +706,20 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                             ctx.pendingSpawns.push_back(req);
                         }
                     }
-                    if (entry.isDirectory)
+
+                    // 開く（全ファイル共通。シーン/スクリプトは VS Code、その他は OS 既定アプリ）
+                    if (!entry.isDirectory)
+                    {
+                        if (ImGui::MenuItem("\xe9\x96\x8b\xe3\x81\x8f"))  // 開く
+                        {
+                            if (entry.type == AssetType::Scene || entry.type == AssetType::Script)
+                                OpenInVSCode(entry.path.string());
+                            else
+                                ShellExecuteA(nullptr, "open", entry.path.string().c_str(),
+                                              nullptr, nullptr, SW_SHOWNORMAL);
+                        }
+                    }
+                    else
                     {
                         if (ImGui::MenuItem("\xe3\x82\xa8\xe3\x82\xaf\xe3\x82\xb9\xe3\x83\x97\xe3\x83\xad\xe3\x83\xbc\xe3\x83\xa9\xe3\x83\xbc\xe3\x81\xa7\xe9\x96\x8b\xe3\x81\x8f"))  // エクスプローラーで開く
                             ShellExecuteA(nullptr, "explore", entry.path.string().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
