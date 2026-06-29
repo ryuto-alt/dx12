@@ -167,6 +167,7 @@ ul.clean li::before{content:""; position:absolute; left:4px; top:16px; width:7px
 .note.warn{border-left-color:var(--amber)}
 .note.good{border-left-color:var(--good)}
 .note b{color:var(--text)}
+.muted{color:var(--text-3,var(--text-2)); font-weight:400; font-size:.84em}
 
 /* ---------- Feature bento ---------- */
 .bento{display:grid; grid-template-columns:repeat(6,1fr); gap:14px; margin:8px 0 6px}
@@ -309,6 +310,7 @@ footer{position:relative; z-index:1; border-top:1px solid var(--border); margin-
     </div>
     <div class="nav-group">
       <h4>参照</h4>
+      <a class="s" href="#cpp-api"><span class="dot"></span>C++ モジュール API</a>
       <a class="s" href="#reference"><span class="dot"></span>リファレンス &amp; リンク</a>
     </div>
   </aside>
@@ -334,7 +336,7 @@ footer{position:relative; z-index:1; border-top:1px solid var(--border); margin-
             </div>
             <div class="hero-stats">
               <div class="st"><b>1 つ</b><span>のexeがエディタ兼ランタイム</span></div>
-              <div class="st"><b>20</b><span>MCPツールでAI操作</span></div>
+              <div class="st"><b>37</b><span>MCPツールでAI操作</span></div>
               <div class="st"><b>27</b><span>パーティクルプリセット</span></div>
             </div>
           </div>
@@ -960,19 +962,23 @@ claude mcp add dx12-engine -- node &lt;REPO&gt;/tools/mcp-server/index.ts</code>
           </div>
         </div>
 
-        <h3>全20ツール（抜粋）</h3>
-        <div class="bento" style="grid-template-columns:repeat(3,1fr)">
+        <h3>全37ツール（<code class="inl">dx12_</code> 接頭辞・エンジン35 + Node合成2）</h3>
+        <div class="bento" style="grid-template-columns:repeat(2,1fr)">
           <div class="card c-span1" style="grid-column:span 1">
-            <h3 style="font-size:.98rem;color:var(--teal)">読み取り（同期）</h3>
-            <p style="font-size:13px"><code class="inl">ping</code> <code class="inl">list_entities</code> <code class="inl">get_entity</code> <code class="inl">find_entity</code> <code class="inl">query_entities</code> <code class="inl">describe_components</code> <code class="inl">list_assets</code> <code class="inl">screenshot</code></p>
+            <h3 style="font-size:.98rem;color:var(--teal)">読み取り（同期・12）</h3>
+            <p style="font-size:13px"><code class="inl">ping</code> <code class="inl">list_entities</code> <code class="inl">get_entity</code> <code class="inl">find_entity</code> <code class="inl">query_entities</code> <code class="inl">list_scenes</code> <code class="inl">list_assets</code> <code class="inl">get_mode</code> <code class="inl">get_log</code> <code class="inl">describe_components</code> <code class="inl">get_scene_settings</code> <code class="inl">screenshot</code></p>
           </div>
           <div class="card c-span1" style="grid-column:span 1">
-            <h3 style="font-size:.98rem;color:var(--amber)">編集（同期）</h3>
-            <p style="font-size:13px"><code class="inl">set_transform</code> <code class="inl">set_component</code> <code class="inl">set_pbr</code> <code class="inl">set_parent</code> <code class="inl">rename_entity</code> <code class="inl">create_lua_component</code> <code class="inl">attach_lua_component</code> <code class="inl">save_scene</code> <code class="inl">undo</code></p>
+            <h3 style="font-size:.98rem;color:var(--amber)">編集（同期・14）</h3>
+            <p style="font-size:13px"><code class="inl">set_transform</code> <code class="inl">set_component</code> <code class="inl">remove_component</code> <code class="inl">set_parent</code> <code class="inl">rename_entity</code> <code class="inl">select_entity</code> <code class="inl">focus_camera</code> <code class="inl">set_pbr</code> <code class="inl">set_scene_settings</code> <code class="inl">undo</code> <code class="inl">redo</code> <code class="inl">save_scene</code> <code class="inl">create_lua_component</code> <code class="inl">attach_lua_component</code></p>
           </div>
           <div class="card c-span1" style="grid-column:span 1">
-            <h3 style="font-size:.98rem;color:var(--purple)">生成・モード（遅延同期）</h3>
-            <p style="font-size:13px"><code class="inl">create_entity</code> <code class="inl">spawn_model</code> <code class="inl">spawn_prefab</code> <code class="inl">duplicate_entity</code> <code class="inl">delete_entity</code> <code class="inl">open_scene</code> <code class="inl">play</code> <code class="inl">stop</code></p>
+            <h3 style="font-size:.98rem;color:var(--purple)">生成・モード（遅延同期・9）</h3>
+            <p style="font-size:13px"><code class="inl">create_entity</code> <code class="inl">spawn_model</code> <code class="inl">spawn_prefab</code> <code class="inl">duplicate_entity</code> <code class="inl">delete_entity</code> <code class="inl">open_scene</code> <code class="inl">new_scene</code> <code class="inl">play</code> <code class="inl">stop</code></p>
+          </div>
+          <div class="card c-span1" style="grid-column:span 1">
+            <h3 style="font-size:.98rem;color:var(--accent)">Node 合成（2）</h3>
+            <p style="font-size:13px"><code class="inl">batch</code>（複数callを順次実行）<code class="inl">focus_and_screenshot</code>（フォーカス→描画→撮影）</p>
           </div>
         </div>
 
@@ -1021,6 +1027,62 @@ claude mcp add dx12-engine -- node &lt;REPO&gt;/tools/mcp-server/index.ts</code>
         </div>
       </section>
 
+      <!-- ===== C++ MODULE API ===== -->
+      <section class="doc reveal" id="cpp-api">
+        <div class="sec-head">
+          <span class="ic"><img src="img/ent_script.png" alt=""/></span>
+          <h2>C++ モジュール API</h2>
+        </div>
+        <p class="sec-sub">エンジンを C++ から埋め込む / 拡張する場合の主要クラスの public API（抜粋）。全クラスは <code class="inl">namespace dx12e</code>。ゲーム作りは上の Lua / コンポーネントだけで完結する。ここはエンジン本体をいじる人向け。</p>
+
+        <h3>コア・シーン</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>クラス</th><th>主な API</th></tr></thead>
+            <tbody>
+              <tr><td><code>Application</code></td><td><code>Initialize(hInstance, nCmdShow, gameMode=false)</code> / <code>Run()</code> / <code>Shutdown()</code> / <code>BuildGameStandalone()</code>。埋め込みは基本この3つ。</td></tr>
+              <tr><td><code>Scene</code></td><td><code>Spawn / SpawnBox / SpawnSphere / SpawnPlane(...)</code> → <code>Entity</code> / <code>Remove</code> / <code>Clear</code> / <code>FindEntity</code> / <code>QueryByTag</code> / <code>QueryInBox</code> / <code>GetRegistry()</code>(entt) / <code>GetPostSettings / GetSkyboxSettings / GetSSAOSettings()</code></td></tr>
+              <tr><td><code>Entity</code></td><td><code>AddComponent&lt;T&gt;()</code> / <code>GetComponent&lt;T&gt;()</code> / <code>HasComponent&lt;T&gt;()</code> / <code>RemoveComponent&lt;T&gt;()</code> / <code>GetHandle()</code> / <code>IsValid()</code></td></tr>
+              <tr><td><code>SceneSerializer</code><span class="muted"> (static)</span></td><td><code>Save / Load / SaveToString / LoadFromString</code> / <code>SerializeEntity / InstantiateEntity / DuplicateEntity</code> / <code>SerializeSubtree / InstantiateSubtree</code> / <code>SavePrefab / InstantiatePrefab</code></td></tr>
+              <tr><td><code>SceneFlow</code></td><td><code>Load / Save / Start / SetStart</code> / <code>Next(rel) / OnFail(rel)</code> / <code>SetNext / SetOnFail</code>（<code>sceneflow.json</code> と対応）</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>描画・リソース</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>クラス</th><th>主な API</th></tr></thead>
+            <tbody>
+              <tr><td><code>Camera</code></td><td><code>SetPerspective / SetOrthographic(...)</code> / <code>IsOrthographic()</code> / <code>LookAt</code> / <code>MoveForward / MoveRight / MoveUp / Rotate</code> / <code>GetView/Projection/ViewProjMatrix()</code> / <code>Get/SetYaw・Pitch・MoveSpeed・MouseSensitivity</code></td></tr>
+              <tr><td><code>Mesh</code></td><td><code>Initialize(device, vertices, indices)</code> / <code>InitializeAsBox / AsPlane / AsSphere</code> / <code>SetMaterial / GetMaterial</code> / <code>GetAABBMin/Max</code> / <code>ApplyUVScale</code> / <code>SetVertexColor</code> / <code>static GetInputLayout()</code></td></tr>
+              <tr><td><code>Material</code><span class="muted"> (struct)</span></td><td><code>albedoTexture / normalMapTexture / metalRoughnessTexture</code> / <code>defaultMetallic=1 / defaultRoughness=1</code> / <code>srvBlockIndex</code></td></tr>
+              <tr><td><code>ParticleSystem</code></td><td><code>Initialize(device, rtv, dsv, shaderDir)</code> / <code>Emit(EmitParams) / EmitBeam(BeamParams)</code> / <code>Update / Clear / Render</code> / <code>SetSceneDepth / SetTime / AddPulse / AliveCount</code>（Lua <code class="inl">fx:*</code> の実体）</td></tr>
+              <tr><td><code>ResourceManager</code></td><td><code>Initialize(device, srvHeap, cmdList)</code> / <code>GetOrLoadTexture / GetOrLoadModel / GetOrLoadEmbeddedTexture</code> / <code>GetDefaultWhite/Normal/MetalRoughnessTexture</code> / <code>FinishUploads</code></td></tr>
+              <tr><td><code>ModelLoader</code><span class="muted"> (static)</span></td><td><code>LoadFromFile(device, cmdList, path, resourceManager)</code> → <code>ModelData</code> / <code>LoadAnimationsFromFile(path, skeleton)</code>（Assimp: glTF/OBJ/FBX）</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>入力・音・物理・スクリプト</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>クラス</th><th>主な API</th></tr></thead>
+            <tbody>
+              <tr><td><code>InputSystem</code></td><td><code>Initialize(hwnd) / Update()</code> / <code>IsKeyDown / IsKeyPressed / IsAsyncKeyDown</code> / <code>GetMouseDeltaX/Y</code> / <code>SetMouseCapture / ToggleMouseCapture</code> / <code>OnKeyDown / OnRawInput / OnFocusLost</code>（WndProc から）</td></tr>
+              <tr><td><code>AudioSystem</code></td><td>Lua <code class="inl">audio:*</code> の実体 + <code>SetListener(...)</code> / <code>PlaySFXSpatial(...)</code> → slotId / <code>UpdateSpatialEmitter / Update()</code> / <code>SetAssetsDir</code></td></tr>
+              <tr><td><code>PhysicsSystem</code></td><td>Lua <code class="inl">physics:*</code> の実体 + <code>RegisterBody / UnregisterBody</code> / <code>RegisterCharacter / StepCharacters / SyncCharactersToTransforms</code> / <code>Raycast / OverlapBox / OverlapSphere</code> / <code>SetEventBus(bus)</code>（接触 <code class="inl">engine.contact.enter/exit</code>）</td></tr>
+              <tr><td><code>ScriptEngine</code></td><td><code>Initialize(scene, input, camera, audio, physics, assetsDir)</code> / <code>LoadScript</code> / <code>AttachScriptToEntity / DetachScriptFromEntity</code> / <code>OnPlayStart / OnPlayStop / UpdateAttachedScripts / UpdateTriggers</code> / <code>GetPropertySchema</code> / <code>CheckLuaSyntax</code> / <code>Set*Callback(...)</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="note">
+          <span class="ti">i</span>
+          <div>graphics 低レベル層（<code class="inl">GraphicsDevice</code> / <code class="inl">SwapChain</code> / <code class="inl">DescriptorHeap</code> / <code class="inl">PipelineState</code> / <code class="inl">RootSignature</code> / <code class="inl">Buffer</code> / <code class="inl">Texture</code> ほか）、エディタ（<code class="inl">EditorLayer</code> / 各 Panel / <code class="inl">UndoSystem</code>）、VFS/pak、Project 系は内部実装寄りのため未収載。完全な一覧は <a href="https://github.com/ryuto-alt/dx12/blob/master/docs/API_REFERENCE.md" target="_blank" rel="noopener"><code>docs/API_REFERENCE.md</code></a> を参照。</div>
+        </div>
+      </section>
+
       <!-- ===== REFERENCE ===== -->
       <section class="doc reveal" id="reference">
         <div class="sec-head">
@@ -1032,10 +1094,11 @@ claude mcp add dx12-engine -- node &lt;REPO&gt;/tools/mcp-server/index.ts</code>
           <table>
             <thead><tr><th>ドキュメント</th><th>中身</th></tr></thead>
             <tbody>
+              <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/API_REFERENCE.md" target="_blank" rel="noopener"><code>docs/API_REFERENCE.md</code></a></td><td><b>API 完全リファレンス</b>（Lua 全API・コンポーネント・データ駆動・CLI・MCP・C++ モジュール）</td></tr>
               <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/SCRIPTING.md" target="_blank" rel="noopener"><code>docs/SCRIPTING.md</code></a></td><td>Lua スクリプトAPIガイド（高レベル / 低レベル）</td></tr>
               <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/SCRIPT_COMPONENTS.md" target="_blank" rel="noopener"><code>docs/SCRIPT_COMPONENTS.md</code></a></td><td>プロパティ付きコンポーネント / プレハブ</td></tr>
               <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/AUTHORING.md" target="_blank" rel="noopener"><code>docs/AUTHORING.md</code></a></td><td>ParticleEmitter / Trigger+Action / イベントバス / validate</td></tr>
-              <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/MCP.md" target="_blank" rel="noopener"><code>docs/MCP.md</code></a></td><td>MCP / AIブリッジ 完全リファレンス（全20ツール・error_code）</td></tr>
+              <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/MCP.md" target="_blank" rel="noopener"><code>docs/MCP.md</code></a></td><td>MCP / AIブリッジ 完全リファレンス（全37ツール・error_code）</td></tr>
               <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/ASSET_PROTECTION_DESIGN.md" target="_blank" rel="noopener"><code>docs/ASSET_PROTECTION_DESIGN.md</code></a></td><td>ゲーム専用ランタイム + 暗号化パックの設計</td></tr>
             </tbody>
           </table>
