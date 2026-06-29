@@ -6,11 +6,14 @@
 #include "core/Logger.h"
 
 #include <atomic>
+#include <cstdio>
 #include <deque>
 #include <mutex>
 #include <thread>
 #include <utility>
 #include <vector>
+
+#include <windows.h>   // GetTempPathA（ポートファイルの出力先）
 
 namespace dx12e {
 
@@ -84,7 +87,27 @@ McpBridge::McpBridge() : m_impl(std::make_unique<Impl>()) {}
 
 McpBridge::~McpBridge() { Stop(); }
 
-bool McpBridge::Start(uint16_t port)
+namespace {
+// 確定ポートを %TEMP%/dx12_mcp.port に書く。Node 側 engineClient が自動検出に使う
+// (DX12_MCP_PORT が無いとき os.tmpdir()/dx12_mcp.port を読む)。失敗しても致命ではない。
+void WritePortFile(uint16_t port)
+{
+    char tmp[MAX_PATH];
+    DWORD n = ::GetTempPathA(MAX_PATH, tmp);
+    if (n == 0 || n > MAX_PATH) return;
+    std::string path = std::string(tmp) + "dx12_mcp.port";
+    FILE* f = nullptr;
+    if (::fopen_s(&f, path.c_str(), "wb") == 0 && f)
+    {
+        char buf[16];
+        int len = std::snprintf(buf, sizeof(buf), "%u", static_cast<unsigned>(port));
+        if (len > 0) std::fwrite(buf, 1, static_cast<size_t>(len), f);
+        std::fclose(f);
+    }
+}
+} // namespace
+
+bool McpBridge::Start(uint16_t preferredPort)
 {
     auto& s = *m_impl;
     if (s.running.load()) return true;
@@ -105,23 +128,36 @@ bool McpBridge::Start(uint16_t port)
         return false;
     }
 
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = ::htons(port);
-    ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);   // ローカルのみ。外部から触れない。
-
-    if (::bind(s.listenSock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR ||
-        ::listen(s.listenSock, 1) == SOCKET_ERROR)
+    // preferredPort から +10 まで順に bind を試す。Windows は EADDRINUSE 後の同一ソケット
+    // 再 bind を許すので、socket を作り直さず次のポートへ進める。
+    uint16_t chosen = 0;
+    for (uint16_t i = 0; i < 11; ++i)
     {
-        Logger::Error("MCP bridge: bind/listen failed on port {} (already in use?)", port);
+        const uint16_t tryPort = static_cast<uint16_t>(preferredPort + i);
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = ::htons(tryPort);
+        ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);   // ローカルのみ。外部から触れない。
+        if (::bind(s.listenSock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0)
+        {
+            chosen = tryPort;
+            break;
+        }
+    }
+
+    if (chosen == 0 || ::listen(s.listenSock, 1) == SOCKET_ERROR)
+    {
+        Logger::Error("MCP bridge: bind/listen failed on ports {}..{} (all in use?)",
+                      preferredPort, static_cast<int>(preferredPort) + 10);
         Stop();
         return false;
     }
 
-    s.port = port;          // 待受ポートを記録（パネル表示用）
+    s.port = chosen;          // 待受ポートを記録（パネル表示用）
+    WritePortFile(chosen);    // Node 側の自動検出用
     s.running.store(true);
     s.worker = std::thread([&s] { s.AcceptLoop(); });
-    Logger::Info("MCP bridge listening on 127.0.0.1:{}", port);
+    Logger::Info("MCP bridge listening on 127.0.0.1:{}", chosen);
     return true;
 }
 
@@ -146,7 +182,7 @@ void McpBridge::Stop()
     if (s.wsaUp) { ::WSACleanup(); s.wsaUp = false; }
 }
 
-void McpBridge::Poll(const std::function<std::string(const std::string&)>& handler)
+void McpBridge::Poll(const std::function<std::string(uint64_t, const std::string&)>& handler)
 {
     auto& s = *m_impl;
     std::vector<std::pair<SOCKET, std::string>> work;
@@ -158,12 +194,25 @@ void McpBridge::Poll(const std::function<std::string(const std::string&)>& handl
     {
         std::string resp;
         // ハンドラ例外がここを抜けると Run→main まで伝播してエディタが落ちるので握り潰す。
-        try { resp = handler(line); }
+        try { resp = handler(static_cast<uint64_t>(sock), line); }
         catch (...) { resp = "{\"ok\":false,\"error\":\"internal error\"}"; }
+        if (resp.empty()) continue;   // 遅延応答: フレーム境界で結果確定後に SendToClient が送る
         resp.push_back('\n');
         // メインスレッドからの send と worker の recv は同一ソケットで並行可(Winsock)。
         ::send(sock, resp.data(), static_cast<int>(resp.size()), 0);
     }
+}
+
+void McpBridge::SendToClient(uint64_t client, const std::string& jsonLine)
+{
+    auto& s = *m_impl;
+    const SOCKET sock = static_cast<SOCKET>(client);
+    if (sock == INVALID_SOCKET) return;
+    // 受信時のクライアントが既に切断/別クライアントに置き換わっていたら捨てる。
+    if (s.clientSock.load() != sock) return;
+    std::string out = jsonLine;
+    out.push_back('\n');
+    ::send(sock, out.data(), static_cast<int>(out.size()), 0);
 }
 
 uint16_t McpBridge::Port() const { return m_impl->port; }

@@ -923,12 +923,266 @@ bool RemoveRegisteredComponent(entt::registry& reg, entt::entity e, const std::s
     else if (key == "tags")                reg.remove<Tag>(e);
     else if (key == "data")                reg.remove<DataComponent>(e);
     else if (key == "sprite2d")            reg.remove<Sprite2D>(e);
+    else if (key == "audioSource")         reg.remove<AudioSource>(e);
+    else if (key == "particleEmitter")     reg.remove<ParticleEmitter>(e);
+    else if (key == "trigger")             reg.remove<Trigger>(e);
+    else if (key == "gimmick")             reg.remove<Gimmick>(e);
+    else if (key == "convexHullCollider")  reg.remove<ConvexHullCollider>(e);
+    else if (key == "luaScript")           reg.remove<LuaScript>(e);
     else return false;
     return true;
 }
+
+// float3 を JSON 配列から読む小ヘルパ(SceneSerializer の DeserializeFloat3 相当・Application 内版)。
+DirectX::XMFLOAT3 McpF3(const nlohmann::json& j, DirectX::XMFLOAT3 def = {0.0f, 0.0f, 0.0f})
+{
+    if (j.is_array() && j.size() >= 3)
+        return { j[0].get<float>(), j[1].get<float>(), j[2].get<float>() };
+    return def;
+}
+
+// レジストリ未登録(orphan)コンポーネントを set_component から適用する。
+// SceneSerializer の instantiate 側 deserialize と同じキー/既定値で emplace_or_replace するので
+// save/load 経路には一切触れない(=シリアライズ回帰リスクゼロ)。対応外キーは false。
+bool ApplyOrphanComponent(entt::registry& reg, entt::entity e,
+                          const std::string& comp, const nlohmann::json& d)
+{
+    if (comp == "gimmick")
+    {
+        Gimmick gm;
+        gm.kind = d.value("kind", 0); gm.period = d.value("period", 4.0f);
+        gm.phase = d.value("phase", 0.0f); gm.amplitude = d.value("amplitude", 1.6f);
+        gm.threshold = d.value("threshold", 0.5f); gm.solid = d.value("solid", true);
+        gm.deadly = d.value("deadly", false);
+        reg.emplace_or_replace<Gimmick>(e, gm);
+        return true;
+    }
+    if (comp == "audioSource")
+    {
+        AudioSource as;
+        as.clipPath = d.value("clipPath", std::string{}); as.volume = d.value("volume", 1.0f);
+        as.loop = d.value("loop", false); as.spatial = d.value("spatial", true);
+        as.playOnStart = d.value("playOnStart", true);
+        as.minDistance = d.value("minDistance", 1.0f); as.maxDistance = d.value("maxDistance", 30.0f);
+        reg.emplace_or_replace<AudioSource>(e, std::move(as));
+        return true;
+    }
+    if (comp == "particleEmitter")
+    {
+        ParticleEmitter pe;
+        pe.kind = d.value("kind", 0); pe.blend = d.value("blend", 0); pe.rate = d.value("rate", 30.0f);
+        pe.playOnStart = d.value("playOnStart", true); pe.looping = d.value("looping", true);
+        pe.duration = d.value("duration", 1.0f);
+        if (d.contains("dir")) pe.dir = McpF3(d["dir"], {0.0f, 1.0f, 0.0f});
+        pe.spread = d.value("spread", 0.4f); pe.speed = d.value("speed", 3.0f);
+        pe.speedVar = d.value("speedVar", 0.4f); pe.size = d.value("size", 0.3f);
+        pe.sizeEnd = d.value("sizeEnd", 0.0f); pe.life = d.value("life", 0.8f);
+        pe.lifeVar = d.value("lifeVar", 0.3f);
+        if (d.contains("color"))    pe.color    = McpF3(d["color"], {1.0f, 0.6f, 0.2f});
+        if (d.contains("colorEnd")) pe.colorEnd = McpF3(d["colorEnd"], {1.0f, 0.12f, 0.05f});
+        pe.intensity = d.value("intensity", 3.0f); pe.gravity = d.value("gravity", 0.0f);
+        pe.drag = d.value("drag", 1.0f); pe.up = d.value("up", 0.0f); pe.stretch = d.value("stretch", 0.0f);
+        reg.emplace_or_replace<ParticleEmitter>(e, pe);
+        return true;
+    }
+    if (comp == "trigger")
+    {
+        Trigger tr;
+        tr.shape = d.value("shape", 0);
+        if (d.contains("halfExtents")) tr.halfExtents = McpF3(d["halfExtents"], {1.0f, 1.0f, 1.0f});
+        tr.radius = d.value("radius", 1.0f);
+        if (d.contains("offset")) tr.offset = McpF3(d["offset"]);
+        tr.filter = d.value("filter", std::string{}); tr.once = d.value("once", false);
+        if (d.contains("actions") && d["actions"].is_array())
+        {
+            for (const auto& aj : d["actions"])
+            {
+                TriggerAction a;
+                a.when = aj.value("when", 0); a.type = aj.value("type", 0);
+                a.target = aj.value("target", std::string{}); a.str = aj.value("str", std::string{});
+                a.num = aj.value("num", 0.0);
+                if (aj.contains("vec")) a.vec = McpF3(aj["vec"]);
+                tr.actions.push_back(std::move(a));
+            }
+        }
+        reg.emplace_or_replace<Trigger>(e, std::move(tr));
+        return true;
+    }
+    return false;
+}
+
+// MCP エラーコード（Node 側が JSON-RPC コードへ写像し、AI が分類/回復に使う）。
+namespace McpErr
+{
+    constexpr int InvalidParam     = 2;  // 引数不正（既定: 検証エラーはこれ）
+    constexpr int ModeConflict     = 3;  // Editor/Playing が要件と合わない
+    constexpr int StaleScene       = 4;  // sceneGeneration 不一致（再読込後の古い id）
+    constexpr int NotFound         = 1;  // entity / scene / asset が無い
+    constexpr int UnknownComponent = 6;  // 未対応コンポーネント jsonKey
+    constexpr int Internal         = 7;  // エンジン内部エラー
+}
+
+// error_code を運べる例外。HandleMcpCommand の catch で resp へ写す。
+struct McpError : std::runtime_error
+{
+    int code;
+    McpError(int c, const std::string& m) : std::runtime_error(m), code(c) {}
+};
+
+// 遅延応答の送信ヘルパ。client==0(=MCP 由来でない) は何もしない。
+void SendMcp(McpBridge* bridge, const McpDeferred& d, nlohmann::json resp)
+{
+    if (!bridge || d.client == 0) return;
+    resp["id"] = d.requestId;
+    // 不正 UTF-8(CP932 のモデル名由来 NameTag 等)で dump が投げないよう replace。
+    bridge->SendToClient(d.client,
+        resp.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+}
+void CompleteMcp(McpBridge* bridge, const McpDeferred& d, nlohmann::json result)
+{
+    SendMcp(bridge, d, nlohmann::json{{"ok", true}, {"result", std::move(result)}});
+}
+void FailMcp(McpBridge* bridge, const McpDeferred& d, int code, const std::string& msg)
+{
+    SendMcp(bridge, d, nlohmann::json{{"ok", false}, {"error", msg}, {"error_code", code}});
+}
+
+// dx12_describe_components 用のコンポーネントスキーマ表。
+// AI がフィールド名/型/既定値を推測せず set_component を正しく呼べるようにする。
+// jsonKey は get_entity が返し set_component/remove_component が受けるキー。
+// settable=set_component 可 / removable=remove_component 可。
+nlohmann::json McpComponentSchema()
+{
+    using nlohmann::json;
+    auto F = [](const char* name, const char* type, json def) {
+        return json{{"name", name}, {"type", type}, {"default", std::move(def)}};
+    };
+    auto C = [](const char* key, bool settable, bool removable, json fields, const char* note = "") {
+        json c{{"jsonKey", key}, {"settable", settable}, {"removable", removable}, {"fields", std::move(fields)}};
+        if (note[0]) c["note"] = note;
+        return c;
+    };
+    json comps = json::array();
+    comps.push_back(C("transform", true, false, json::array({
+        F("position", "float3", json::array({0, 0, 0})),
+        F("rotation", "float3 (euler degrees)", json::array({0, 0, 0})),
+        F("scale", "float3", json::array({1, 1, 1})),
+        F("quaternion", "float4 (x,y,z,w)", json::array({0, 0, 0, 1})),
+        F("useQuaternion", "bool", false),
+    }), "core; cannot be removed. Prefer dx12_set_transform for position/rotation/scale."));
+    comps.push_back(C("meshRenderer", false, false, json::array({
+        F("modelPath", "string (assets-relative)", ""),
+    }), "read-only via MCP; create with dx12_spawn_model/dx12_create_entity. Use dx12_set_pbr for material."));
+    comps.push_back(C("pointLight", true, true, json::array({
+        F("color", "float3", json::array({1, 1, 1})), F("intensity", "float", 1.0), F("range", "float", 10.0),
+    })));
+    comps.push_back(C("directionalLight", true, true, json::array({
+        F("direction", "float3", json::array({0, -1, 0})), F("color", "float3", json::array({1, 1, 1})),
+        F("intensity", "float", 1.0), F("ambient", "float", 0.25),
+    })));
+    comps.push_back(C("spotLight", true, true, json::array({
+        F("color", "float3", json::array({1, 1, 1})), F("intensity", "float", 3.0), F("range", "float", 15.0),
+        F("direction", "float3", json::array({0, -1, 0})),
+        F("innerConeDeg", "float", 18.0), F("outerConeDeg", "float", 28.0),
+    })));
+    comps.push_back(C("camera", true, true, json::array({
+        F("fovDegrees", "float", 60.0), F("nearClip", "float", 0.1), F("farClip", "float", 1000.0),
+        F("isActive", "bool", false), F("projection", "int (0=Perspective,1=Orthographic)", 0),
+        F("orthoSize", "float", 10.0),
+    })));
+    comps.push_back(C("rigidBody", true, true, json::array({
+        F("motionType", "int (0=Static,1=Kinematic,2=Dynamic)", 2), F("mass", "float", 1.0),
+        F("restitution", "float", 0.4), F("friction", "float", 0.3),
+        F("linearDamping", "float", 0.02), F("angularDamping", "float", 0.01), F("useGravity", "bool", true),
+    })));
+    comps.push_back(C("boxCollider", true, true, json::array({
+        F("halfExtents", "float3", json::array({0.5, 0.5, 0.5})), F("offset", "float3", json::array({0, 0, 0})),
+    })));
+    comps.push_back(C("sphereCollider", true, true, json::array({
+        F("radius", "float", 0.5), F("offset", "float3", json::array({0, 0, 0})),
+    })));
+    comps.push_back(C("capsuleCollider", true, true, json::array({
+        F("radius", "float", 0.5), F("halfHeight", "float", 1.0), F("offset", "float3", json::array({0, 0, 0})),
+    })));
+    comps.push_back(C("characterController", true, true, json::array({
+        F("radius", "float", 0.4), F("halfHeight", "float", 0.6), F("offset", "float3", json::array({0, 0, 0})),
+        F("mass", "float", 70.0), F("maxSlopeDeg", "float", 50.0), F("stepHeight", "float", 0.3),
+        F("jumpSpeed", "float", 6.0), F("gravityScale", "float", 1.0),
+    }), "mutually exclusive with rigidBody; do not add both."));
+    comps.push_back(C("convexHullCollider", false, true, json::array({}),
+        "auto-generated from mesh on load; not settable via MCP. Removable."));
+    comps.push_back(C("sprite2d", true, true, json::array({
+        F("texturePath", "string (assets-relative)", ""), F("layer", "int", 0),
+        F("size", "float2", json::array({1, 1})), F("uvMin", "float2", json::array({0, 0})),
+        F("uvMax", "float2", json::array({1, 1})), F("color", "float4 (rgba)", json::array({1, 1, 1, 1})),
+        F("worldSpace", "bool", true), F("billboard", "bool", false),
+    })));
+    comps.push_back(C("tags", true, true, json::array({}),
+        "data is a STRING ARRAY, e.g. set_component(component='tags', data=[\"enemy\",\"boss\"])."));
+    comps.push_back(C("data", true, true, json::array({}),
+        "key->{t,v} map. t in number|bool|string|vec3 (int は number 扱い・get_entity は number で返す). e.g. data={\"hp\":{\"t\":\"number\",\"v\":100}}."));
+    comps.push_back(C("audioSource", true, true, json::array({
+        F("clipPath", "string (assets-relative)", ""), F("volume", "float", 1.0), F("loop", "bool", false),
+        F("spatial", "bool", true), F("playOnStart", "bool", true),
+        F("minDistance", "float", 1.0), F("maxDistance", "float", 30.0),
+    })));
+    comps.push_back(C("particleEmitter", true, true, json::array({
+        F("kind", "int (0=Glow,1=Fire,2=Smoke,3=Spark,4=Magic,5=Electric,6=Ring,7=Star)", 0),
+        F("blend", "int (0=Additive,1=Alpha)", 0), F("rate", "float (per sec)", 30.0),
+        F("playOnStart", "bool", true), F("looping", "bool", true), F("duration", "float", 1.0),
+        F("dir", "float3", json::array({0, 1, 0})), F("spread", "float", 0.4), F("speed", "float", 3.0),
+        F("speedVar", "float", 0.4), F("size", "float", 0.3), F("sizeEnd", "float", 0.0),
+        F("life", "float", 0.8), F("lifeVar", "float", 0.3),
+        F("color", "float3", json::array({1, 0.6, 0.2})), F("colorEnd", "float3", json::array({1, 0.12, 0.05})),
+        F("intensity", "float", 3.0), F("gravity", "float", 0.0), F("drag", "float", 1.0),
+        F("up", "float", 0.0), F("stretch", "float", 0.0),
+    })));
+    comps.push_back(C("trigger", true, true, json::array({
+        F("shape", "int (0=Box,1=Sphere)", 0), F("halfExtents", "float3", json::array({1, 1, 1})),
+        F("radius", "float", 1.0), F("offset", "float3", json::array({0, 0, 0})),
+        F("filter", "string (entity name; empty=Player)", ""), F("once", "bool", false),
+        F("actions", "array of {when:int(0=Enter,1=Exit,2=Stay), type:int(0..10), target:string, str:string, num:number, vec:float3}", json::array()),
+    })));
+    comps.push_back(C("gimmick", true, true, json::array({
+        F("kind", "int (0=StaticWall,1=SpikePulse,2=SlideX,3=SlideZ)", 0), F("period", "float", 4.0),
+        F("phase", "float (0..1)", 0.0), F("amplitude", "float", 1.6), F("threshold", "float (0..1)", 0.5),
+        F("solid", "bool", true), F("deadly", "bool", false),
+    })));
+    comps.push_back(C("luaScript", false, true, json::array({
+        F("scriptPath", "string (assets-relative)", ""), F("enabled", "bool", true),
+    }), "attach via dx12_attach_lua_component (not set_component). Removable via MCP."));
+    return json{{"components", std::move(comps)}};
+}
+
+// entity が持つコンポーネントの jsonKey 一覧(list_entities verbose / get_entity 概況)。
+nlohmann::json McpComponentTypesOf(const entt::registry& reg, entt::entity e)
+{
+    nlohmann::json a = nlohmann::json::array();
+    if (reg.all_of<Transform>(e))           a.push_back("transform");
+    if (reg.all_of<MeshRenderer>(e))        a.push_back("meshRenderer");
+    if (reg.all_of<PointLight>(e))          a.push_back("pointLight");
+    if (reg.all_of<DirectionalLight>(e))    a.push_back("directionalLight");
+    if (reg.all_of<SpotLight>(e))           a.push_back("spotLight");
+    if (reg.all_of<CameraComponent>(e))     a.push_back("camera");
+    if (reg.all_of<RigidBody>(e))           a.push_back("rigidBody");
+    if (reg.all_of<BoxCollider>(e))         a.push_back("boxCollider");
+    if (reg.all_of<SphereCollider>(e))      a.push_back("sphereCollider");
+    if (reg.all_of<CapsuleCollider>(e))     a.push_back("capsuleCollider");
+    if (reg.all_of<CharacterController>(e))  a.push_back("characterController");
+    if (reg.all_of<ConvexHullCollider>(e))  a.push_back("convexHullCollider");
+    if (reg.all_of<Sprite2D>(e))            a.push_back("sprite2d");
+    if (reg.all_of<Tag>(e))                 a.push_back("tags");
+    if (reg.all_of<DataComponent>(e))       a.push_back("data");
+    if (reg.all_of<AudioSource>(e))         a.push_back("audioSource");
+    if (reg.all_of<ParticleEmitter>(e))     a.push_back("particleEmitter");
+    if (reg.all_of<Trigger>(e))             a.push_back("trigger");
+    if (reg.all_of<Gimmick>(e))             a.push_back("gimmick");
+    if (reg.all_of<LuaScript>(e))           a.push_back("luaScript");
+    return a;
+}
 } // namespace
 
-std::string Application::HandleMcpCommand(const std::string& line)
+std::string Application::HandleMcpCommand(uint64_t client, const std::string& line)
 {
     using json = nlohmann::json;
     namespace fs = std::filesystem;
@@ -937,7 +1191,7 @@ std::string Application::HandleMcpCommand(const std::string& line)
     try { req = json::parse(line); }
     catch (const std::exception& e)
     {
-        return json{{"id", nullptr}, {"ok", false},
+        return json{{"id", nullptr}, {"ok", false}, {"error_code", McpErr::InvalidParam},
                     {"error", std::string("parse error: ") + e.what()}}.dump();
     }
 
@@ -946,21 +1200,49 @@ std::string Application::HandleMcpCommand(const std::string& line)
     const std::string method = req.value("method", std::string());
     const json params = req.value("params", json::object());
 
+    // 遅延応答(create/spawn/delete/open_scene/play/stop)の相関情報。
+    // 該当ブランチで deferred=true にし、保留キューへ mcp を積んで空文字列を返す。
+    McpDeferred deferred{ client, req.value("id", 0LL), params.value("idempotency_key", std::string()) };
+    bool isDeferred = false;
+
     try
     {
         if (!m_scene || !m_scriptEngine)
             throw std::runtime_error("engine not ready");
 
+        // 生成/削除/シーン系を弾く判定。Playing 中はもちろん、同一 Poll バッチで先に play が
+        // 積まれた(モード遷移保留)場合も弾く＝そのフレームで spawn ドレインが skip されて
+        // 遅延応答が宙吊り(クライアント timeout)になるのを防ぐ。
+        const bool busyPlaying = (m_engineMode == EngineMode::Playing) ||
+                                 (m_modeChangeRequested && m_pendingMode == EngineMode::Playing);
+
         if (method == "list_entities")
         {
+            const bool verbose = params.value("verbose", false);
+            const std::string namePrefix = params.value("name_prefix", std::string());
+            std::string typeFilter = params.value("component_type", std::string());
             json arr = json::array();
             auto& reg = m_scene->GetRegistry();
             auto view = reg.view<const NameTag>();
             for (auto e : view)
-                arr.push_back({{"id", static_cast<u32>(e)},
-                               {"name", view.get<const NameTag>(e).name}});
+            {
+                const std::string& nm = view.get<const NameTag>(e).name;
+                if (!namePrefix.empty() && nm.rfind(namePrefix, 0) != 0) continue;
+                json types;   // verbose か component_type 指定時のみ計算
+                if (verbose || !typeFilter.empty()) types = McpComponentTypesOf(reg, e);
+                if (!typeFilter.empty())
+                {
+                    bool has = false;
+                    for (auto& t : types) if (t.get<std::string>() == typeFilter) { has = true; break; }
+                    if (!has) continue;
+                }
+                json item{{"entityId", static_cast<u32>(e)}, {"id", static_cast<u32>(e)}, {"name", nm}};
+                if (verbose) item["componentTypes"] = types;
+                arr.push_back(std::move(item));
+            }
             resp["ok"] = true;
-            resp["result"] = std::move(arr);
+            resp["result"] = {{"entities", arr}, {"count", arr.size()},
+                              {"sceneGeneration", m_sceneGeneration}};
         }
         else if (method == "create_lua_component")
         {
@@ -1003,39 +1285,59 @@ std::string Application::HandleMcpCommand(const std::string& line)
         }
         else if (method == "create_entity")
         {
-            // 生成はメッシュ構築に cmdList が要るためフレーム境界で遅延処理(エディタの既存機構を再利用)。
-            // よって id は即返せない。name で後から list_entities/get_entity で引く想定。
+            // 生成はメッシュ構築に cmdList が要るためフレーム境界で遅延処理。本物の entityId は
+            // 生成後に SendToClient で返す(遅延同期)。Play 中は spawn キューが drain されないため拒否。
+            if (busyPlaying)
+                throw McpError(McpErr::ModeConflict, "cannot create entities while Playing; call dx12_stop first");
             const std::string type = params.value("type", std::string("box"));
             std::string name = params.value("name", std::string());
             const auto pos = params.value("position", std::vector<float>{0.0f, 0.0f, 0.0f});
-            if (pos.size() != 3) throw std::runtime_error("position must be [x,y,z]");
+            if (pos.size() != 3) throw McpError(McpErr::InvalidParam, "position must be [x,y,z]");
             std::string marker;
             if      (type == "box")    marker = "__primitive_box__";
             else if (type == "sphere") marker = "__primitive_sphere__";
             else if (type == "plane")  marker = "__primitive_plane__";
             else if (type == "empty")  marker = "__empty__";
-            else throw std::runtime_error("type must be box|sphere|plane|empty");
+            else throw McpError(McpErr::InvalidParam, "type must be box|sphere|plane|empty");
             if (name.empty())   // 既定名: 種別名を先頭大文字に
             {
                 name = type;
                 if (name[0] >= 'a' && name[0] <= 'z') name[0] = static_cast<char>(name[0] - 'a' + 'A');
             }
-            PendingSpawnRequest sreq;
-            sreq.modelPath = marker;
-            sreq.position  = { pos[0], pos[1], pos[2] };
-            sreq.name      = name;
-            m_editorCtx->pendingSpawns.push_back(std::move(sreq));
-            resp["ok"] = true;
-            resp["result"] = {{"queued", true}, {"name", name}};
+            // idempotency: 同 key で既に生成済みかつ有効ならそれを即返す(再試行の重複生成防止)。
+            if (!deferred.idempotencyKey.empty())
+            {
+                auto it = m_mcpIdempotency.find(deferred.idempotencyKey);
+                if (it != m_mcpIdempotency.end() &&
+                    m_scene->GetRegistry().valid(static_cast<entt::entity>(it->second)))
+                {
+                    resp["ok"] = true;
+                    resp["result"] = {{"entityId", it->second}, {"name", name},
+                                      {"sceneGeneration", m_sceneGeneration}, {"idempotentReplay", true}};
+                }
+            }
+            if (!resp.contains("result"))
+            {
+                PendingSpawnRequest sreq;
+                sreq.modelPath = marker;
+                sreq.position  = { pos[0], pos[1], pos[2] };
+                sreq.name      = name;
+                sreq.mcp       = deferred;
+                m_editorCtx->pendingSpawns.push_back(std::move(sreq));
+                isDeferred = true;
+            }
         }
         else if (method == "delete_entity")
         {
+            // 削除ドレイン(Render)は Editor モード限定。Play 中に積むと drain されず未応答ハングするため弾く。
+            if (busyPlaying)
+                throw McpError(McpErr::ModeConflict, "cannot delete while Playing; call dx12_stop first");
             const u32 id = params.value("entity", 0xFFFFFFFFu);
             const auto e = static_cast<entt::entity>(id);
-            if (!m_scene->GetRegistry().valid(e)) throw std::runtime_error("invalid entity id");
-            m_editorCtx->pendingDeletions.push_back(e);   // 子ごと削除+Undo はエディタ機構が処理
-            resp["ok"] = true;
-            resp["result"] = {{"queued", true}};
+            if (!m_scene->GetRegistry().valid(e)) throw McpError(McpErr::NotFound, "invalid entity id");
+            // 子ごと削除+Undo はフレーム境界で処理し、deletedCount を遅延応答で返す。
+            m_editorCtx->mcpDeletions.push_back(McpPendingDelete{ e, deferred });
+            isDeferred = true;
         }
         else if (method == "set_transform")
         {
@@ -1043,38 +1345,51 @@ std::string Application::HandleMcpCommand(const std::string& line)
             const auto e = static_cast<entt::entity>(id);
             auto& reg = m_scene->GetRegistry();
             if (!reg.valid(e) || !reg.all_of<Transform>(e))
-                throw std::runtime_error("entity has no Transform");
+                throw McpError(McpErr::NotFound, "entity has no Transform");
             auto& t = reg.get<Transform>(e);
             if (params.contains("position"))
             {
                 const auto p = params["position"].get<std::vector<float>>();
-                if (p.size() != 3) throw std::runtime_error("position must be [x,y,z]");
+                if (p.size() != 3) throw McpError(McpErr::InvalidParam, "position must be [x,y,z]");
                 t.position = { p[0], p[1], p[2] };
             }
             if (params.contains("rotation"))
             {
                 const auto r = params["rotation"].get<std::vector<float>>();
-                if (r.size() != 3) throw std::runtime_error("rotation must be [x,y,z]");
+                if (r.size() != 3) throw McpError(McpErr::InvalidParam, "rotation must be [x,y,z]");
                 t.rotation = { r[0], r[1], r[2] };
                 t.useQuaternion = false;   // Euler を反映(物理同期の quaternion に上書きされないように)
+            }
+            if (params.contains("quaternion"))
+            {
+                const auto q = params["quaternion"].get<std::vector<float>>();
+                if (q.size() != 4) throw McpError(McpErr::InvalidParam, "quaternion must be [x,y,z,w]");
+                t.quaternion = { q[0], q[1], q[2], q[3] };
+                t.useQuaternion = true;   // set_component の transform 経路と同じ挙動に揃える
             }
             if (params.contains("scale"))
             {
                 const auto s = params["scale"].get<std::vector<float>>();
-                if (s.size() != 3) throw std::runtime_error("scale must be [x,y,z]");
+                if (s.size() != 3) throw McpError(McpErr::InvalidParam, "scale must be [x,y,z]");
                 t.scale = { s[0], s[1], s[2] };
             }
             resp["ok"] = true;
+            resp["result"] = {{"entityId", static_cast<u32>(e)}};
         }
         else if (method == "get_entity")
         {
             const u32 id = params.value("entity", 0xFFFFFFFFu);
             const auto e = static_cast<entt::entity>(id);
-            if (!m_scene->GetRegistry().valid(e)) throw std::runtime_error("invalid entity id");
+            auto& reg = m_scene->GetRegistry();
+            if (!reg.valid(e)) throw McpError(McpErr::NotFound, "invalid entity id");
             // 既存シリアライザを流用(リフレクション的に全コンポーネントを JSON 化)。
             std::string js = SceneSerializer::SerializeEntity(*m_scene, e, PathResolver::AssetsDir());
+            json result = json::parse(js);
+            result["entityId"] = static_cast<u32>(e);
+            result["componentTypes"] = McpComponentTypesOf(reg, e);
+            result["sceneGeneration"] = m_sceneGeneration;
             resp["ok"] = true;
-            resp["result"] = json::parse(js);
+            resp["result"] = std::move(result);
         }
         else if (method == "save_scene")
         {
@@ -1102,15 +1417,23 @@ std::string Application::HandleMcpCommand(const std::string& line)
         else if (method == "open_scene")
         {
             std::string rel = params.value("path", std::string());
-            if (rel.empty()) throw std::runtime_error("missing 'path'");
+            if (rel.empty()) throw McpError(McpErr::InvalidParam, "missing 'path'");
             if (rel.front() == '/' || rel.find('\\') != std::string::npos ||
                 rel.find(':') != std::string::npos || rel.find("..") != std::string::npos)
-                throw std::runtime_error("invalid path (assets 相対のみ)");
-            // 遅延ロード: 既存のシーン読込機構(フレーム境界)が pendingLoadPath を消費し
-            // SceneSerializer::Load + currentScenePath 更新を行う。即返し。
-            m_editorCtx->pendingLoadPath = PathResolver::AssetsDir() + rel;
-            resp["ok"] = true;
-            resp["result"] = {{"queued", true}};
+                throw McpError(McpErr::InvalidParam, "invalid path (assets 相対のみ)");
+            // pendingLoadPath は Editor モードでのみ drain される(Play 中はロードしない)。
+            if (busyPlaying)
+                throw McpError(McpErr::ModeConflict, "cannot open scene while Playing; call dx12_stop first");
+            // 単一スロット: 既に未処理の open_scene があれば 2件目を弾く(上書きで1件目が宙吊りになるのを防ぐ)。
+            if (m_mcpLoadReply.client != 0 || !m_editorCtx->pendingLoadPath.empty())
+                throw McpError(McpErr::ModeConflict, "a scene load is already in progress; retry after it completes");
+            const std::string full = PathResolver::AssetsDir() + rel;
+            if (!fs::exists(full)) throw McpError(McpErr::NotFound, "scene not found: " + rel);
+            // 遅延ロード: フレーム境界の機構が pendingLoadPath を消費し SceneSerializer::Load を行う。
+            // 完了後に m_mcpLoadReply 経由で sceneName/entityCount/sceneGeneration を返す(遅延同期)。
+            m_editorCtx->pendingLoadPath = full;
+            m_mcpLoadReply = deferred;
+            isDeferred = true;
         }
         else if (method == "list_scenes")
         {
@@ -1134,14 +1457,16 @@ std::string Application::HandleMcpCommand(const std::string& line)
             const std::string filter = params.value("type", std::string());
             json arr = json::array();
             const std::string root = PathResolver::AssetsDir();
-            auto classify = [](std::string ext) -> std::string {       // AssetBrowserPanel と同分類
+            // ext + 相対パスで分類。.json は scenes/ 配下だけ "scene"(game.json/sceneflow.json 等を除外)。
+            auto classify = [](std::string ext, const std::string& relPath) -> std::string {
                 std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
                 if (ext == ".gltf" || ext == ".glb" || ext == ".fbx" || ext == ".obj") return "model";
                 if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".dds" ||
                     ext == ".tga" || ext == ".bmp") return "texture";
                 if (ext == ".lua") return "script";
                 if (ext == ".wav" || ext == ".mp3" || ext == ".ogg") return "audio";
-                if (ext == ".json") return "scene";
+                if (ext == ".json")
+                    return (relPath.rfind("scenes/", 0) == 0) ? "scene" : std::string();
                 if (ext == ".prefab") return "prefab";
                 return std::string();
             };
@@ -1150,10 +1475,10 @@ std::string Application::HandleMcpCommand(const std::string& line)
                 for (const auto& de : fs::recursive_directory_iterator(fs::path(root)))
                 {
                     if (!de.is_regular_file()) continue;
-                    std::string type = classify(de.path().extension().string());
+                    std::string relPath = fs::relative(de.path(), fs::path(root)).generic_string();
+                    std::string type = classify(de.path().extension().string(), relPath);
                     if (type.empty()) continue;
                     if (!filter.empty() && type != filter) continue;
-                    std::string relPath = fs::relative(de.path(), fs::path(root)).generic_string();
                     arr.push_back({{"path", relPath}, {"type", type}, {"name", de.path().stem().string()}});
                 }
             }
@@ -1162,33 +1487,53 @@ std::string Application::HandleMcpCommand(const std::string& line)
         }
         else if (method == "spawn_model")
         {
+            if (busyPlaying)
+                throw McpError(McpErr::ModeConflict, "cannot spawn while Playing; call dx12_stop first");
             std::string path = params.value("path", std::string());
-            if (path.empty()) throw std::runtime_error("missing 'path'");
+            if (path.empty()) throw McpError(McpErr::InvalidParam, "missing 'path'");
             if (path.front() == '/' || path.find('\\') != std::string::npos ||
                 path.find(':') != std::string::npos || path.find("..") != std::string::npos)
-                throw std::runtime_error("invalid path (assets 相対のみ)");
+                throw McpError(McpErr::InvalidParam, "invalid path (assets 相対のみ)");
+            if (!fs::exists(PathResolver::AssetsDir() + path))
+                throw McpError(McpErr::NotFound, "model not found: " + path);
             const auto pos = params.value("position", std::vector<float>{0.0f, 0.0f, 0.0f});
-            if (pos.size() != 3) throw std::runtime_error("position must be [x,y,z]");
+            if (pos.size() != 3) throw McpError(McpErr::InvalidParam, "position must be [x,y,z]");
             std::string name = params.value("name", std::string());
             if (name.empty()) name = fs::path(path).stem().string();
-            // 実モデルのロードは GPU を伴うため cmdList 有効なフレーム境界で遅延処理。
-            // create_entity と同じ pendingSpawns に積む(marker でなく実パスを入れる)。
-            PendingSpawnRequest sreq;
-            sreq.modelPath = path;
-            sreq.position  = { pos[0], pos[1], pos[2] };
-            sreq.name      = name;
-            m_editorCtx->pendingSpawns.push_back(std::move(sreq));
-            resp["ok"] = true;
-            resp["result"] = {{"queued", true}, {"name", name}};   // id は後で list_entities で引く
+            // idempotency: 同 key で生成済みかつ有効ならそれを即返す。
+            if (!deferred.idempotencyKey.empty())
+            {
+                auto it = m_mcpIdempotency.find(deferred.idempotencyKey);
+                if (it != m_mcpIdempotency.end() &&
+                    m_scene->GetRegistry().valid(static_cast<entt::entity>(it->second)))
+                {
+                    resp["ok"] = true;
+                    resp["result"] = {{"entityId", it->second}, {"name", name},
+                                      {"meshPath", path}, {"sceneGeneration", m_sceneGeneration},
+                                      {"idempotentReplay", true}};
+                }
+            }
+            if (!resp.contains("result"))
+            {
+                // 実モデルのロードは GPU を伴うため cmdList 有効なフレーム境界で遅延処理。
+                // create_entity と同じ pendingSpawns に積む(marker でなく実パスを入れる)。
+                PendingSpawnRequest sreq;
+                sreq.modelPath = path;
+                sreq.position  = { pos[0], pos[1], pos[2] };
+                sreq.name      = name;
+                sreq.mcp       = deferred;
+                m_editorCtx->pendingSpawns.push_back(std::move(sreq));
+                isDeferred = true;
+            }
         }
         else if (method == "set_component")
         {
             const auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
             auto& reg = m_scene->GetRegistry();
-            if (!reg.valid(e)) throw std::runtime_error("invalid entity id");
+            if (!reg.valid(e)) throw McpError(McpErr::NotFound, "invalid entity id");
             const std::string comp = params.value("component", std::string());
             const json data = params.value("data", json::object());
-            if (comp.empty()) throw std::runtime_error("missing 'component'");
+            if (comp.empty()) throw McpError(McpErr::InvalidParam, "missing 'component'");
             if (comp == "transform")
             {
                 // コア不変: 専用処理(set_transform 相当)
@@ -1196,29 +1541,42 @@ std::string Application::HandleMcpCommand(const std::string& line)
                 if (data.contains("position"))
                 {
                     auto p = data["position"].get<std::vector<float>>();
-                    if (p.size() != 3) throw std::runtime_error("position must be [x,y,z]");
+                    if (p.size() != 3) throw McpError(McpErr::InvalidParam, "position must be [x,y,z]");
                     t.position = { p[0], p[1], p[2] };
                 }
                 if (data.contains("rotation"))
                 {
                     auto r = data["rotation"].get<std::vector<float>>();
-                    if (r.size() != 3) throw std::runtime_error("rotation must be [x,y,z]");
+                    if (r.size() != 3) throw McpError(McpErr::InvalidParam, "rotation must be [x,y,z]");
                     t.rotation = { r[0], r[1], r[2] };
                     t.useQuaternion = false;
+                }
+                if (data.contains("quaternion"))
+                {
+                    auto q = data["quaternion"].get<std::vector<float>>();
+                    if (q.size() != 4) throw McpError(McpErr::InvalidParam, "quaternion must be [x,y,z,w]");
+                    t.quaternion = { q[0], q[1], q[2], q[3] };
+                    t.useQuaternion = true;
                 }
                 if (data.contains("scale"))
                 {
                     auto s = data["scale"].get<std::vector<float>>();
-                    if (s.size() != 3) throw std::runtime_error("scale must be [x,y,z]");
+                    if (s.size() != 3) throw McpError(McpErr::InvalidParam, "scale must be [x,y,z]");
                     t.scale = { s[0], s[1], s[2] };
                 }
+            }
+            // orphan(レジストリ未登録)コンポーネントは専用適用(save/load 経路に触れない)。
+            else if (ApplyOrphanComponent(reg, e, comp, data))
+            {
+                // 適用済み(emplace_or_replace)。
             }
             else
             {
                 // deserialize に emplace-only の型があるため、"上書き(set)" 実現には
                 // 既存を remove してから登録済みデシリアライザで再生成する。
                 if (!RemoveRegisteredComponent(reg, e, comp))
-                    throw std::runtime_error("unknown/unsupported component: " + comp);
+                    throw McpError(McpErr::UnknownComponent,
+                        "unknown/unsupported component: " + comp + " (call dx12_describe_components)");
                 json ej;
                 ej[comp] = data;          // deserialize は ej.contains(jsonKey) を見る形
                 RuntimeComponentRegistry::Get().ForEach([&](const RuntimeComponentInfo& info) {
@@ -1226,18 +1584,41 @@ std::string Application::HandleMcpCommand(const std::string& line)
                 });
             }
             resp["ok"] = true;
+            resp["result"] = {{"entityId", static_cast<u32>(e)}, {"component", comp}};
         }
         else if (method == "remove_component")
         {
             const auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
             auto& reg = m_scene->GetRegistry();
-            if (!reg.valid(e)) throw std::runtime_error("invalid entity id");
+            if (!reg.valid(e)) throw McpError(McpErr::NotFound, "invalid entity id");
             const std::string comp = params.value("component", std::string());
             if (comp == "transform" || comp == "name")
-                throw std::runtime_error("cannot remove core component (transform/name)");
+                throw McpError(McpErr::InvalidParam, "cannot remove core component (transform/name)");
             if (!RemoveRegisteredComponent(reg, e, comp))
-                throw std::runtime_error("unknown/unsupported component: " + comp);
+                throw McpError(McpErr::UnknownComponent,
+                    "unknown/unsupported component: " + comp + " (call dx12_describe_components)");
             resp["ok"] = true;
+            resp["result"] = {{"entityId", static_cast<u32>(e)}, {"removed", comp}};
+        }
+        else if (method == "describe_components")
+        {
+            const std::string only = params.value("component", std::string());
+            json all = McpComponentSchema();
+            if (only.empty())
+            {
+                resp["ok"] = true;
+                resp["result"] = std::move(all);
+            }
+            else
+            {
+                json filtered = json::array();
+                for (auto& c : all["components"])
+                    if (c.value("jsonKey", std::string()) == only) filtered.push_back(c);
+                if (filtered.empty())
+                    throw McpError(McpErr::UnknownComponent, "unknown component: " + only);
+                resp["ok"] = true;
+                resp["result"] = {{"components", std::move(filtered)}};
+            }
         }
         else if (method == "set_parent")
         {
@@ -1282,20 +1663,226 @@ std::string Application::HandleMcpCommand(const std::string& line)
             resp["ok"] = true;
             resp["result"] = {{"name", name}};
         }
+        else if (method == "ping")
+        {
+            int entityCount = 0;
+            for (auto e : m_scene->GetRegistry().view<NameTag>()) { (void)e; ++entityCount; }
+            resp["ok"] = true;
+            resp["result"] = {
+                {"pong", true},
+                {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"},
+                {"entityCount", entityCount},
+                {"sceneGeneration", m_sceneGeneration},
+                {"currentScene", ToAssetRel(m_editorCtx->currentScenePath)},
+                {"protocolVersion", 2}
+            };
+        }
+        else if (method == "find_entity")
+        {
+            const std::string name = params.value("name", std::string());
+            if (name.empty()) throw McpError(McpErr::InvalidParam, "missing 'name'");
+            auto ent = m_scene->FindEntity(name);
+            resp["ok"] = true;
+            if (ent.IsValid())
+                resp["result"] = {{"entityId", static_cast<u32>(ent.GetHandle())}, {"name", name}};
+            else
+                resp["result"] = nullptr;
+        }
+        else if (method == "query_entities")
+        {
+            auto& reg = m_scene->GetRegistry();
+            const std::string tag = params.value("tag", std::string());
+            std::vector<entt::entity> hits;
+            if (params.contains("box") && params["box"].is_array() && params["box"].size() == 4)
+            {
+                auto b = params["box"].get<std::vector<float>>();
+                hits = m_scene->QueryInBox(b[0], b[1], b[2], b[3], tag);  // minX,minZ,maxX,maxZ
+            }
+            else if (!tag.empty())
+            {
+                hits = m_scene->QueryByTag(tag);
+            }
+            else
+            {
+                throw McpError(McpErr::InvalidParam, "provide 'tag' and/or 'box':[minX,minZ,maxX,maxZ]");
+            }
+            json arr = json::array();
+            for (auto e : hits)
+            {
+                if (!reg.valid(e)) continue;
+                std::string nm = reg.all_of<NameTag>(e) ? reg.get<NameTag>(e).name : std::string();
+                arr.push_back({{"entityId", static_cast<u32>(e)}, {"name", nm}});
+            }
+            resp["ok"] = true;
+            resp["result"] = {{"entities", arr}, {"count", arr.size()}};
+        }
+        else if (method == "select_entity")
+        {
+            const auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
+            if (!m_scene->GetRegistry().valid(e)) throw McpError(McpErr::NotFound, "invalid entity id");
+            m_editorCtx->Select(e);
+            resp["ok"] = true;
+            resp["result"] = {{"selected", static_cast<u32>(e)}};
+        }
+        else if (method == "focus_camera")
+        {
+            const auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
+            auto& reg = m_scene->GetRegistry();
+            if (!reg.valid(e) || !reg.all_of<Transform>(e))
+                throw McpError(McpErr::NotFound, "entity has no Transform");
+            const auto& t = reg.get<Transform>(e);
+            float dist = 8.0f;
+            if (reg.all_of<MeshRenderer>(e))
+            {
+                const auto& mr = reg.get<MeshRenderer>(e);
+                float maxExtent = 0.0f;
+                for (const auto* mesh : mr.meshes)
+                {
+                    if (!mesh) continue;
+                    auto mn = mesh->GetAABBMin();
+                    auto mx = mesh->GetAABBMax();
+                    maxExtent = std::max({maxExtent,
+                        (mx.x - mn.x) * t.scale.x, (mx.y - mn.y) * t.scale.y, (mx.z - mn.z) * t.scale.z});
+                }
+                if (maxExtent > 0.0f) dist = std::clamp(maxExtent * 2.0f, 2.0f, 100.0f);
+            }
+            DirectX::XMFLOAT3 wpos = t.position;
+            if (t.parent != entt::null && reg.valid(t.parent))
+            {
+                DirectX::XMFLOAT4X4 wf;
+                DirectX::XMStoreFloat4x4(&wf, ComputeWorldMatrix(reg, e));
+                wpos = { wf._41, wf._42, wf._43 };
+            }
+            auto fwd = m_camera->GetForward();
+            DirectX::XMFLOAT3 camPos{ wpos.x - fwd.x * dist, wpos.y - fwd.y * dist, wpos.z - fwd.z * dist };
+            m_camera->SetPosition(camPos);
+            resp["ok"] = true;
+            resp["result"] = {{"cameraPos", {camPos.x, camPos.y, camPos.z}},
+                              {"target", {wpos.x, wpos.y, wpos.z}}, {"distance", dist}};
+        }
+        else if (method == "set_pbr")
+        {
+            const auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
+            auto& reg = m_scene->GetRegistry();
+            if (!reg.valid(e) || !reg.all_of<MeshRenderer>(e))
+                throw McpError(McpErr::NotFound, "entity has no MeshRenderer");
+            auto& mr = reg.get<MeshRenderer>(e);
+            if (params.contains("metallic"))  mr.overrideMetallic  = params["metallic"].get<float>();
+            if (params.contains("roughness")) mr.overrideRoughness = params["roughness"].get<float>();
+            if (params.contains("uvScaleU"))  mr.uvScaleU = params["uvScaleU"].get<float>();
+            if (params.contains("uvScaleV"))  mr.uvScaleV = params["uvScaleV"].get<float>();
+            resp["ok"] = true;
+            resp["result"] = {{"entityId", static_cast<u32>(e)},
+                              {"metallic", mr.overrideMetallic}, {"roughness", mr.overrideRoughness},
+                              {"uvScaleU", mr.uvScaleU}, {"uvScaleV", mr.uvScaleV}};
+        }
+        else if (method == "duplicate_entity")
+        {
+            if (busyPlaying)
+                throw McpError(McpErr::ModeConflict, "cannot duplicate while Playing; call dx12_stop first");
+            const auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
+            if (!m_scene->GetRegistry().valid(e)) throw McpError(McpErr::NotFound, "invalid entity id");
+            m_editorCtx->mcpDuplications.push_back(McpPendingDelete{ e, deferred });  // .entity=複製元
+            isDeferred = true;
+        }
+        else if (method == "undo")
+        {
+            m_editorCtx->pendingUndo = true;   // フレーム境界で適用
+            resp["ok"] = true;
+            resp["result"] = {{"queuedUndo", true}};
+        }
+        else if (method == "redo")
+        {
+            m_editorCtx->pendingRedo = true;
+            resp["ok"] = true;
+            resp["result"] = {{"queuedRedo", true}};
+        }
+        else if (method == "new_scene")
+        {
+            if (busyPlaying)
+                throw McpError(McpErr::ModeConflict, "cannot create a new scene while Playing");
+            std::string rel = params.value("savePath", std::string());
+            if (!rel.empty())
+            {
+                if (rel.front() == '/' || rel.find('\\') != std::string::npos ||
+                    rel.find(':') != std::string::npos || rel.find("..") != std::string::npos)
+                    throw McpError(McpErr::InvalidParam, "invalid savePath (assets 相対のみ)");
+                m_editorCtx->pendingNewScenePath = PathResolver::AssetsDir() + rel;
+            }
+            m_editorCtx->pendingNewScene = true;   // フレーム境界で空シーン生成 + sceneGeneration++
+            resp["ok"] = true;
+            resp["result"] = {{"applied", "next frame"}};
+        }
+        else if (method == "spawn_prefab")
+        {
+            if (busyPlaying)
+                throw McpError(McpErr::ModeConflict, "cannot spawn while Playing; call dx12_stop first");
+            std::string path = params.value("path", std::string());
+            if (path.empty()) throw McpError(McpErr::InvalidParam, "missing 'path'");
+            if (path.front() == '/' || path.find('\\') != std::string::npos ||
+                path.find(':') != std::string::npos || path.find("..") != std::string::npos)
+                throw McpError(McpErr::InvalidParam, "invalid path (assets 相対のみ)");
+            if (fs::path(path).extension() != ".prefab")
+                throw McpError(McpErr::InvalidParam, "path must be a .prefab");
+            if (!fs::exists(PathResolver::AssetsDir() + path))
+                throw McpError(McpErr::NotFound, "prefab not found: " + path);
+            const auto pos = params.value("position", std::vector<float>{0.0f, 0.0f, 0.0f});
+            if (pos.size() != 3) throw McpError(McpErr::InvalidParam, "position must be [x,y,z]");
+            PendingSpawnRequest sreq;
+            sreq.modelPath = path;          // 拡張子 .prefab で spawn ループが展開し root+ids を返す
+            sreq.position  = { pos[0], pos[1], pos[2] };
+            sreq.name      = params.value("name", std::string());
+            sreq.mcp       = deferred;
+            m_editorCtx->pendingSpawns.push_back(std::move(sreq));
+            isDeferred = true;
+        }
+        else if (method == "get_scene_settings")
+        {
+            const auto& sky = m_scene->GetSkyboxSettings();
+            resp["ok"] = true;
+            resp["result"] = {{"skybox", {
+                                  {"envMapPath", sky.envMapPath}, {"iblIntensity", sky.iblIntensity},
+                                  {"skyboxIntensity", sky.skyboxIntensity}, {"drawSkybox", sky.drawSkybox}}},
+                              {"note", "post-process / SSAO settings not yet exposed via MCP"}};
+        }
+        else if (method == "set_scene_settings")
+        {
+            const json sky = params.value("skybox", json::object());
+            auto& s = m_scene->GetSkyboxSettings();
+            bool envChanged = false;
+            if (sky.contains("envMapPath"))
+            {
+                std::string p = sky["envMapPath"].get<std::string>();
+                if (!p.empty() && (p.front() == '/' || p.find('\\') != std::string::npos ||
+                    p.find(':') != std::string::npos || p.find("..") != std::string::npos))
+                    throw McpError(McpErr::InvalidParam, "invalid envMapPath (assets 相対のみ)");
+                if (p != s.envMapPath) { s.envMapPath = p; envChanged = true; }
+            }
+            if (sky.contains("iblIntensity"))    s.iblIntensity    = sky["iblIntensity"].get<float>();
+            if (sky.contains("skyboxIntensity")) s.skyboxIntensity = sky["skyboxIntensity"].get<float>();
+            if (sky.contains("drawSkybox"))      s.drawSkybox      = sky["drawSkybox"].get<bool>();
+            if (envChanged) { m_loadedSkyboxPath.clear(); m_skyboxDirty = true; }  // 環境マップ再ベイク要求
+            resp["ok"] = true;
+            resp["result"] = {{"applied", true}, {"envMapRebake", envChanged}};
+        }
         else if (method == "play")
         {
             if (m_engineMode == EngineMode::Playing)
             {
                 resp["ok"] = true;
-                resp["result"] = {{"mode", "Playing"}};
+                resp["result"] = {{"mode", "Playing"}, {"sceneGeneration", m_sceneGeneration}};
             }
             else
             {
+                // 単一スロット: 既にモード遷移待ちなら 2件目を弾く(上書きで1件目が宙吊りになるのを防ぐ)。
+                if (m_mcpModeReply.client != 0)
+                    throw McpError(McpErr::ModeConflict, "a mode change is already pending; retry shortly");
                 // 実切替は EnterPlayMode(snapshot/script init/GPU) を伴うためフレーム境界で遅延。
+                // 遷移確定後に Run() のモード応答ブロックが本物のモード(or 失敗)を返す。
                 m_pendingMode = EngineMode::Playing;
                 m_modeChangeRequested = true;
-                resp["ok"] = true;
-                resp["result"] = {{"queued", true}};
+                m_mcpModeReply = deferred;
+                isDeferred = true;
             }
         }
         else if (method == "stop")
@@ -1303,14 +1890,16 @@ std::string Application::HandleMcpCommand(const std::string& line)
             if (m_engineMode == EngineMode::Editor)
             {
                 resp["ok"] = true;
-                resp["result"] = {{"mode", "Editor"}};
+                resp["result"] = {{"mode", "Editor"}, {"sceneGeneration", m_sceneGeneration}};
             }
             else
             {
+                if (m_mcpModeReply.client != 0)
+                    throw McpError(McpErr::ModeConflict, "a mode change is already pending; retry shortly");
                 m_pendingMode = EngineMode::Editor;
                 m_modeChangeRequested = true;     // 次フレームで EnterEditorMode()(snapshot 復元)
-                resp["ok"] = true;
-                resp["result"] = {{"queued", true}};
+                m_mcpModeReply = deferred;
+                isDeferred = true;
             }
         }
         else if (method == "get_mode")
@@ -1355,16 +1944,29 @@ std::string Application::HandleMcpCommand(const std::string& line)
         {
             resp["ok"] = false;
             resp["error"] = "unknown method: " + method;
+            resp["error_code"] = McpErr::InvalidParam;
         }
+        if (isDeferred) resp["ok"] = true;   // パネル表示用: dispatch 成功(本応答は遅延)
+    }
+    catch (const McpError& e)
+    {
+        resp["ok"] = false;
+        resp["error"] = e.what();
+        resp["error_code"] = e.code;
+        isDeferred = false;
     }
     catch (const std::exception& e)
     {
         resp["ok"] = false;
         resp["error"] = e.what();
+        resp["error_code"] = McpErr::InvalidParam;   // 大半は引数検証エラー
+        isDeferred = false;
     }
     // パネル(MCP / AI Bridge)用にコマンド結果を記録（メインスレッドからのみ）。
     if (m_mcpBridge)
         m_mcpBridge->RecordCommand(method, resp.value("ok", false), resp.value("error", std::string()));
+    // 遅延応答は今は送らない(フレーム境界で SendToClient が送る)。Poll が空文字列をスキップ。
+    if (isDeferred) return std::string();
     // 不正 UTF-8(例: CP932 のモデル名由来の NameTag)で dump() が例外を投げないよう置換。
     return resp.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 }
@@ -1537,7 +2139,9 @@ void Application::Run()
 
         // AI(MCP)から溜まったコマンドをメインスレッドで処理(scene/scriptengine を安全に触れる)。
         if (m_mcpBridge)
-            m_mcpBridge->Poll([this](const std::string& line) { return HandleMcpCommand(line); });
+            m_mcpBridge->Poll([this](uint64_t client, const std::string& line) {
+                return HandleMcpCommand(client, line);
+            });
 
         // モード切替（前フレームのImGuiボタンから遅延実行）
         if (m_modeChangeRequested)
@@ -1557,6 +2161,21 @@ void Application::Run()
                     m_scriptEngine->OnPlayStop();
                 m_engineMode = EngineMode::Editor;
                 m_inputSystem->SetMouseCapture(false);
+            }
+
+            // MCP play/stop の遅延応答（モード遷移が確定した直後に本物のモードを返す）。
+            if (m_mcpModeReply.client != 0)
+            {
+                const bool wantPlaying = (m_pendingMode == EngineMode::Playing);
+                const bool nowPlaying  = (m_engineMode == EngineMode::Playing);
+                if (wantPlaying && !nowPlaying)
+                    FailMcp(m_mcpBridge.get(), m_mcpModeReply, McpErr::ModeConflict,
+                            "play failed (no active camera? check dx12_get_log)");
+                else
+                    CompleteMcp(m_mcpBridge.get(), m_mcpModeReply,
+                        nlohmann::json{{"mode", nowPlaying ? "Playing" : "Editor"},
+                                       {"sceneGeneration", m_sceneGeneration}});
+                m_mcpModeReply = {};
             }
         }
 
@@ -3978,6 +4597,8 @@ void Application::Render()
         // m_loadedSkyboxPath をクリアして「偶然旧パス一致でスキップ」の取りこぼしを防ぐ。
         m_loadedSkyboxPath.clear();
         m_skyboxDirty = true;
+        ++m_sceneGeneration;   // 古い entity id を無効化(MCP の STALE_SCENE 検出用)
+        m_mcpIdempotency.clear();   // 別シーンの entity を idempotentReplay で誤返却しないようクリア
         Logger::Info("New scene created");
     }
 
@@ -3991,7 +4612,8 @@ void Application::Render()
 
         m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
                             m_srvHeap.get(), nativeCmdList);
-        if (SceneSerializer::Load(*m_scene, loadPath, PathResolver::AssetsDir()))
+        const bool loaded = SceneSerializer::Load(*m_scene, loadPath, PathResolver::AssetsDir());
+        if (loaded)
         {
             m_editorCtx->currentScenePath = loadPath;
             m_currentSceneRel = ToAssetRel(loadPath);
@@ -4003,7 +4625,30 @@ void Application::Render()
             // 差分判定の取りこぼし防止に m_loadedSkyboxPath をクリア。
             m_loadedSkyboxPath.clear();
             m_skyboxDirty = true;
+            ++m_sceneGeneration;   // 古い entity id を無効化(MCP の STALE_SCENE 検出用)
+            m_mcpIdempotency.clear();   // 別シーンの entity を idempotentReplay で誤返却しないようクリア
             Logger::Info("Scene loaded: {}", loadPath);
+        }
+        // MCP open_scene の遅延応答。
+        if (m_mcpLoadReply.client != 0)
+        {
+            if (loaded)
+            {
+                auto& reg = m_scene->GetRegistry();
+                int entityCount = 0;
+                for (auto e : reg.view<NameTag>()) { (void)e; ++entityCount; }
+                CompleteMcp(m_mcpBridge.get(), m_mcpLoadReply,
+                    nlohmann::json{{"sceneName", std::filesystem::path(loadPath).stem().string()},
+                                   {"path", ToAssetRel(loadPath)},
+                                   {"entityCount", entityCount},
+                                   {"sceneGeneration", m_sceneGeneration}});
+            }
+            else
+            {
+                FailMcp(m_mcpBridge.get(), m_mcpLoadReply, McpErr::Internal,
+                        "scene load failed: " + loadPath);
+            }
+            m_mcpLoadReply = {};
         }
     }
 
@@ -4052,6 +4697,8 @@ void Application::Render()
             std::string name = std::filesystem::path(req.modelPath).stem().string();
             if (!req.name.empty()) name = req.name;   // MCP 等からの任意名で上書き
             entt::entity spawnedEntity = entt::null;
+            entt::entity mcpPrefabRoot = entt::null;          // prefab 経路の MCP 応答用ルート
+            std::vector<entt::entity> mcpPrefabAll;           // prefab 経路の全 entity
 
             if (req.modelPath == "__primitive_box__")
             {
@@ -4186,6 +4833,8 @@ void Application::Render()
                         std::make_unique<SpawnPrefabCommand>(
                             m_scene.get(), PathResolver::AssetsDir(), all));
                     Logger::Info("Prefab instantiated ({} entities): {}", all.size(), req.modelPath);
+                    mcpPrefabRoot = root;          // MCP 応答にルート + 全 id を返す
+                    mcpPrefabAll  = std::move(all);
                 }
                 // spawnedEntity は null のまま（独自に Undo を積んだので下の汎用 SpawnEntityCommand はスキップ）
             }
@@ -4239,6 +4888,37 @@ void Application::Render()
                         m_scene.get(), PathResolver::AssetsDir(), spawnedEntity));
             }
             Logger::Info("Spawned: {}", name);
+
+            // MCP create_entity / spawn_model / spawn_prefab の遅延応答(本物の entityId を返す)。
+            if (req.mcp.client != 0)
+            {
+                auto& reg = m_scene->GetRegistry();
+                if (mcpPrefabRoot != entt::null)
+                {
+                    nlohmann::json ids = nlohmann::json::array();
+                    for (auto a : mcpPrefabAll) ids.push_back(static_cast<u32>(a));
+                    CompleteMcp(m_mcpBridge.get(), req.mcp,
+                        nlohmann::json{{"entityId", static_cast<u32>(mcpPrefabRoot)},
+                                       {"rootEntityId", static_cast<u32>(mcpPrefabRoot)},
+                                       {"entityIds", ids}, {"name", name},
+                                       {"sceneGeneration", m_sceneGeneration}});
+                    if (!req.mcp.idempotencyKey.empty())
+                        m_mcpIdempotency[req.mcp.idempotencyKey] = static_cast<u32>(mcpPrefabRoot);
+                }
+                else if (spawnedEntity != entt::null && reg.valid(spawnedEntity))
+                {
+                    CompleteMcp(m_mcpBridge.get(), req.mcp,
+                        nlohmann::json{{"entityId", static_cast<u32>(spawnedEntity)},
+                                       {"name", name}, {"sceneGeneration", m_sceneGeneration}});
+                    if (!req.mcp.idempotencyKey.empty())
+                        m_mcpIdempotency[req.mcp.idempotencyKey] = static_cast<u32>(spawnedEntity);
+                }
+                else
+                {
+                    FailMcp(m_mcpBridge.get(), req.mcp, McpErr::Internal,
+                            "spawn failed (model load error? check dx12_get_log): " + req.modelPath);
+                }
+            }
         }
     }
 
@@ -4302,6 +4982,38 @@ void Application::Render()
                     m_scene.get(), PathResolver::AssetsDir(), copy));
             Logger::Info("Duplicated entity: {}",
                          m_scene->GetRegistry().get<NameTag>(copy).name);
+        }
+    }
+
+    // Deferred: MCP entity duplication（複製先 entityId を遅延応答で返す）
+    if (!m_editorCtx->mcpDuplications.empty() && m_engineMode == EngineMode::Editor)
+    {
+        auto dups = std::move(m_editorCtx->mcpDuplications);
+        m_editorCtx->mcpDuplications.clear();
+
+        m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
+                            m_srvHeap.get(), nativeCmdList);
+        auto& reg = m_scene->GetRegistry();
+        for (auto& d : dups)
+        {
+            if (!reg.valid(d.entity))
+            {
+                FailMcp(m_mcpBridge.get(), d.mcp, McpErr::NotFound, "source entity no longer valid");
+                continue;
+            }
+            entt::entity copy = SceneSerializer::DuplicateEntity(*m_scene, d.entity, PathResolver::AssetsDir());
+            if (copy == entt::null)
+            {
+                FailMcp(m_mcpBridge.get(), d.mcp, McpErr::Internal, "duplicate failed");
+                continue;
+            }
+            m_editorCtx->undoSystem.PushCommand(
+                std::make_unique<SpawnEntityCommand>(m_scene.get(), PathResolver::AssetsDir(), copy));
+            std::string nm = reg.all_of<NameTag>(copy) ? reg.get<NameTag>(copy).name : std::string();
+            Logger::Info("Duplicated entity (MCP): {}", nm);
+            CompleteMcp(m_mcpBridge.get(), d.mcp,
+                nlohmann::json{{"entityId", static_cast<u32>(copy)}, {"name", nm},
+                               {"sceneGeneration", m_sceneGeneration}});
         }
     }
 
@@ -5535,6 +6247,67 @@ void Application::Render()
                         sel.empty() ? entt::null : sel.back();
                 }
             }
+        }
+
+        // Deferred: MCP entity deletion（サブツリー削除後に deletedCount を遅延応答で返す）
+        if (!m_editorCtx->mcpDeletions.empty() && m_engineMode == EngineMode::Editor)
+        {
+            auto dels = std::move(m_editorCtx->mcpDeletions);
+            m_editorCtx->mcpDeletions.clear();
+            auto& reg = m_scene->GetRegistry();
+            for (auto& d : dels)
+            {
+                const entt::entity root = d.entity;
+                if (!reg.valid(root))
+                {
+                    // 既に(先行サブツリー等で)削除済み。冪等に成功扱い(deletedCount=0)。
+                    CompleteMcp(m_mcpBridge.get(), d.mcp,
+                        nlohmann::json{{"deletedEntityId", static_cast<u32>(root)},
+                                       {"deletedCount", 0}, {"sceneGeneration", m_sceneGeneration}});
+                    continue;
+                }
+                // サブツリー収集（親→子の順。BFS）— 既存削除ブロックと同手順。
+                std::vector<entt::entity> subtree{root};
+                for (size_t i = 0; i < subtree.size(); ++i)
+                    for (auto [c, t] : reg.view<const Transform>().each())
+                        if (t.parent == subtree[i]) subtree.push_back(c);
+
+                std::vector<DeletedEntityRecord> records;
+                records.reserve(subtree.size());
+                entt::entity externalParent = reg.all_of<Transform>(root)
+                    ? reg.get<Transform>(root).parent : entt::null;
+                for (auto e : subtree)
+                {
+                    DeletedEntityRecord rec;
+                    rec.snapshot = SceneSerializer::SerializeEntity(*m_scene, e, PathResolver::AssetsDir());
+                    if (reg.all_of<Transform>(e))
+                    {
+                        auto parent = reg.get<Transform>(e).parent;
+                        auto it = std::find(subtree.begin(), subtree.end(), parent);
+                        if (it != subtree.end())
+                            rec.parentLocalIndex = static_cast<int>(it - subtree.begin());
+                    }
+                    records.push_back(std::move(rec));
+                }
+                const int deletedCount = static_cast<int>(subtree.size());
+                m_editorCtx->undoSystem.PushCommand(
+                    std::make_unique<DeleteEntityCommand>(
+                        m_scene.get(), PathResolver::AssetsDir(),
+                        std::move(records), subtree, externalParent));
+                for (auto it = subtree.rbegin(); it != subtree.rend(); ++it)
+                    if (reg.valid(*it)) m_scene->Remove(Entity(*it, &reg));
+
+                CompleteMcp(m_mcpBridge.get(), d.mcp,
+                    nlohmann::json{{"deletedEntityId", static_cast<u32>(root)},
+                                   {"deletedCount", deletedCount},
+                                   {"sceneGeneration", m_sceneGeneration}});
+            }
+            // 削除で無効になった選択をクリーンアップ
+            auto& sel = m_editorCtx->selectedEntities;
+            sel.erase(std::remove_if(sel.begin(), sel.end(),
+                      [&](entt::entity e) { return !reg.valid(e); }), sel.end());
+            if (m_editorCtx->selectedEntity != entt::null && !reg.valid(m_editorCtx->selectedEntity))
+                m_editorCtx->selectedEntity = sel.empty() ? entt::null : sel.back();
         }
 
         // ---- プロジェクト / バージョン管理(Git) ウィンドウ（トグル表示）----

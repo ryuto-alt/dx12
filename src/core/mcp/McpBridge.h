@@ -18,13 +18,24 @@ public:
     McpBridge(const McpBridge&) = delete;
     McpBridge& operator=(const McpBridge&) = delete;
 
-    // 失敗(ポート占有など)は false。エディタ起動時に 1 回呼ぶ。
-    bool Start(uint16_t port);
+    // preferredPort から最大 10 個まで順に bind を試し、最初に空いたポートで待ち受ける
+    // (複数エンジン起動時の衝突を回避)。確定ポートは Port() と %TEMP%/dx12_mcp.port に記録。
+    // 全滅(11 個すべて使用中)なら false。エディタ起動時に 1 回呼ぶ。
+    bool Start(uint16_t preferredPort);
     void Stop();
 
-    // メインスレッドから毎フレーム呼ぶ。handler(requestLine) -> responseLine。
+    // メインスレッドから毎フレーム呼ぶ。handler(client, requestLine) -> responseLine。
     // 溜まったリクエストを順に handler へ渡し、戻り値を同じクライアントへ送り返す。
-    void Poll(const std::function<std::string(const std::string&)>& handler);
+    // handler が空文字列を返したリクエストは「遅延応答」とみなし、ここでは送らない
+    // (フレーム境界で結果が確定した後に SendToClient で送り返す)。
+    // client は SendToClient へ渡すためのクライアントトークン(= SOCKET の値)。
+    void Poll(const std::function<std::string(uint64_t client, const std::string&)>& handler);
+
+    // 遅延応答を送る。client は Poll の handler が受け取ったトークン。
+    // jsonLine は改行なしの 1 行 JSON(末尾に '\n' を付けて送る)。
+    // client が既に切断済み/別クライアントに置き換わっている場合は黙って捨てる。
+    // メインスレッドから呼ぶ前提(worker の recv と同一ソケットへの並行 send は Winsock 上 OK)。
+    void SendToClient(uint64_t client, const std::string& jsonLine);
 
     // ---- 状態の見える化（MCP / AI Bridge パネル用。すべてメインスレッドから呼ぶ）----
     // 直近コマンド 1 件の記録。method=MCP メソッド名、ok=成否、error=失敗理由(空可)。

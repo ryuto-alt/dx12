@@ -24,6 +24,7 @@
 #include "project/GitIntegration.h"   // GitResult（非同期 git タスクの戻り値）
 #include "editor/EditorIcons.h"
 #include "engine/core/EventBus.h"   // ヘッダオンリー、GPU 非依存。entt の後に置く
+#include "core/mcp/McpDeferred.h"   // MCP 遅延応答の相関情報（値メンバで持つので完全型が要る）
 
 // Forward declarations for graphics module
 namespace dx12e
@@ -92,7 +93,9 @@ private:
     void Render();
     // MCP ブリッジから来た 1 行(JSON リクエスト)を処理して応答 JSON 行を返す。
     // メインスレッドで呼ばれるので m_scene / m_scriptEngine を直接触ってよい。
-    std::string HandleMcpCommand(const std::string& line);
+    // 戻り値が空文字列なら「遅延応答」(フレーム境界で結果確定後に SendToClient で送る)。
+    // client は遅延応答を送り返すための McpBridge クライアントトークン。
+    std::string HandleMcpCommand(uint64_t client, const std::string& line);
     // 直近フレームのシーン描画(m_sceneRT)を PNG に書き出す。成功=絶対パス / 失敗=空文字列+err。
     // MCP の screenshot 用。同期 readback(WaitIdle×2)＝低頻度のエディタ操作として割り切る。
     std::string CaptureSceneScreenshot(std::string& err);
@@ -264,6 +267,11 @@ private:
     EventBus                           m_eventBus;
     std::unique_ptr<ScriptEngine>      m_scriptEngine;
     std::unique_ptr<McpBridge>         m_mcpBridge;   // エディタ専用 AI ブリッジ(TCP)。ゲームでは null。
+    // ---- MCP 状態（HandleMcpCommand とフレーム境界の遅延応答で共有）----
+    int         m_sceneGeneration = 0;   // open_scene/new_scene のたびに +1。古い entity id 検出用。
+    McpDeferred m_mcpModeReply;          // play/stop の遅延応答（モード遷移後に送る）。client=0 で無効。
+    McpDeferred m_mcpLoadReply;          // open_scene の遅延応答（ロード完了後に送る）。client=0 で無効。
+    std::unordered_map<std::string, uint32_t> m_mcpIdempotency;  // idempotency_key -> 生成済み entityId
     std::unique_ptr<AudioSystem>       m_audioSystem;
     std::unique_ptr<PhysicsSystem>     m_physicsSystem;
     std::unique_ptr<PhysicsDebugRenderer> m_physicsDebugRenderer;

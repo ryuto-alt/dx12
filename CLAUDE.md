@@ -264,3 +264,15 @@ Application::Render()
 - プリミティブは MeshRenderer.modelPath のマーカー（`__primitive_box__` 等）で種別判定
 - 親子階層のワールド行列は `ComputeWorldMatrix(reg, e)`（描画/ギズモ/ピッキングで使用）
 - 削除 Undo は SerializeEntity の JSON スナップショットから全コンポーネント復元
+
+---
+
+## MCP(AI ブリッジ)
+
+起動中のエディタ(`DX12Engine.exe`)を Claude Code / Codex から MCP 経由で直接操作できる。
+エンティティの生成・配置・コンポーネント設定・Lua アタッチ・Play/Stop・スクショ取得まで AI から実行可能。
+
+- **詳細リファレンス**: [`docs/MCP.md`](docs/MCP.md) — ツール全一覧・遅延同期の仕組み・error_code・セキュリティ
+- **AI エージェント運用ガイド**: [`tools/mcp-server/AGENTS.md`](tools/mcp-server/AGENTS.md) — 典型ワークフロー・禁止パターン・よくある間違い
+- **ポート**: 自動採番(8787〜8797)。確定値は `%TEMP%\dx12_mcp.port` に書かれる。`DX12_MCP_PORT` 環境変数で上書き可。
+- **認証**: なし(localhost 専用・開発機前提)。ゲーム(封印ランタイム)ではブリッジは起動しない。
