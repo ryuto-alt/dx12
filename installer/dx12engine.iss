@@ -4,7 +4,7 @@
 ; ビルド: ISCC.exe installer\dx12engine.iss  （/DMyAppVersion=0.5.1 で版を上書き可）
 
 #ifndef MyAppVersion
-  #define MyAppVersion "0.5.1"
+  #define MyAppVersion "0.5.2"
 #endif
 #define MyAppName "DX12 Engine"
 #define MyAppPublisher "ryuto-alt"
