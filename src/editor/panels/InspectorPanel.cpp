@@ -1383,7 +1383,7 @@ void InspectorPanel::RenderEngineSettings(EditorContext& ctx,
     if (IconHeader(ctx.icons, ctx.icons ? ctx.icons->build : 0,
                    "\xe3\x83\x93\xe3\x83\xab\xe3\x83\x89"))  // Build
     {
-        if (ImGui::Button("\xe3\x82\xb2\xe3\x83\xbc\xe3\x83\xa0\xe3\x83\x93\xe3\x83\xab\xe3\x83\x89"))  // Game Build
+        if (ImGui::Button("ゲームをビルド..."))  // 配置先フォルダをピッカーで選んでからビルド
         {
             ctx.pendingBuildGame = true;
         }

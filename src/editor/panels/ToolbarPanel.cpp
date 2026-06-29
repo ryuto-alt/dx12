@@ -248,7 +248,8 @@ void ToolbarPanel::Render(bool isPlaying,
         // ---- ツール ----
         if (ImGui::BeginMenu("ツール"))
         {
-            if (ImGui::MenuItem("ゲームをビルド"))
+            // 配置先フォルダをピッカーで選んでからビルドする（… はダイアログが開く合図）
+            if (ImGui::MenuItem("ゲームをビルド..."))
                 ctx.pendingBuildGame = true;
             ImGui::MenuItem("MCP / AI Bridge",         nullptr, &ctx.showMcpBridge);
             ImGui::EndMenu();
@@ -533,31 +534,8 @@ void ToolbarPanel::Render(bool isPlaying,
                    ctx.view2D))
         ctx.view2D = !ctx.view2D;
 
-    // ===== ゲームビルド =====
-    groupSep();
-    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.20f, 0.42f, 0.68f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.26f, 0.52f, 0.82f, 1.0f));
-    if (toolButton(ic ? ic->build : 0, "ビルド", "ゲームを書き出す（配布用 exe を生成）", false))
-        ctx.pendingBuildGame = true;
-    ImGui::PopStyleColor(2);
-    if (ctx.buildCompleteFlash > 0.0f)
-    {
-        ImGui::SameLine(0, 8);
-        ImGui::AlignTextToFramePadding();
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.5f, 1.0f));
-        ImGui::Text("\xe2\x9c\x93 ビルド完了");  // ✓
-        ImGui::PopStyleColor();
-        ctx.buildCompleteFlash -= clock->GetDeltaTime();
-    }
-    else if (ctx.buildErrorFlash > 0.0f)
-    {
-        ImGui::SameLine(0, 8);
-        ImGui::AlignTextToFramePadding();
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.35f, 0.35f, 1.0f));
-        ImGui::Text("\xe2\x9c\x97 ビルド失敗 (dx12_engine.log)");  // ✗
-        ImGui::PopStyleColor();
-        ctx.buildErrorFlash -= clock->GetDeltaTime();
-    }
+    // ※ ゲームビルドはツールバーに常駐させない。メニュー「ツール > ゲームをビルド…」から呼び出す。
+    //    （配置先フォルダを毎回ピッカーで選ぶ方式。ユーザー要望でツールバーのボタンは撤去）
 
     // ===== ツール窓（「窓 ▾」ドロップダウン1個に集約。以前は8個のボタンで詰め込んでた）=====
     groupSep();

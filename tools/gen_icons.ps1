@@ -242,18 +242,14 @@ Save-Icon "file" "#64748B" {
     $g.DrawLine($linePen, 52, 82, 70, 82)
 }
 
-# --- build: 青背景 + 白い梱包箱（テープ + フラップ）= ゲーム出力 ---
+# --- build: 青背景 + 白いハンマー（＝ビルド／組み立て）---
 Save-Icon "build" "#3B82F6" {
     param($g)
-    $box = Get-RoundRect 40 50 48 40 4
-    $g.FillPath($white, $box)
-    $bgPen = New-BgPen "#3B82F6" 5
-    # テープ（横 + 上半分の縦）
-    $g.DrawLine($bgPen, 40, 66, 88, 66)
-    $g.DrawLine($bgPen, 64, 50, 64, 66)
-    # 上フラップ
-    $g.DrawLine($bgPen, 52, 40, 64, 50)
-    $g.DrawLine($bgPen, 76, 40, 64, 50)
+    # ヘッド（上部の横長ブロック。左を少し下げて打面っぽく）
+    Fill-Poly $g $white @((PF 36 46),(PF 84 38),(PF 86 52),(PF 38 60))
+    # 柄（ヘッド中央から下へ伸びる）
+    $handle = New-WhitePen 12
+    $g.DrawLine($handle, 62, 54, 70, 92)
 }
 
 # --- window: ツール窓ドロップダウン用。2x2 のパネル（レイアウト/ウィンドウの象徴） ---

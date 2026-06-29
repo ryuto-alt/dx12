@@ -179,6 +179,11 @@ public:
     std::string pendingLoadPath;
     std::string pendingGameLoadPath;  // Play 中の loadScene()（assets 相対）。フレーム境界で安全にロード
     bool pendingBuildGame = false;
+    // ビルド配置先（フォルダピッカーで選んだ親フォルダ。空=既定 build/game）。
+    // 使い切り: ビルド処理がこの値で出力先を決めたあとクリアする。
+    std::string buildOutputDir;
+    // 直近ビルドの成果物フォルダ（完了後に Explorer で開くために保持）。
+    std::string lastBuildDir;
     bool pendingNewScene  = false;
     // 空でなければ pendingNewScene 実行時にこのパスへスターターシーンを保存する
     // （プロジェクト新規作成の初期シーン用。通常の「新規シーン」は空のまま）

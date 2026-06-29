@@ -70,6 +70,7 @@
 #include "vfs/Vfs.h"
 #include "vfs/PakWriter.h"
 #include <commdlg.h>
+#include <shellapi.h>   // ShellExecuteA（ビルド完了後にフォルダを開く）
 
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4201 4244 4267 4996)
@@ -4120,13 +4121,45 @@ bool Application::BuildGame()
 {
     namespace fs = std::filesystem;
 
-    // ビルド出力先
-    fs::path outputDir = fs::path(PathResolver::BaseDir()) / "build" / "game";
+    // ビルド出力先。ユーザーがフォルダピッカーで選んだ場合は「選んだフォルダの中に専用サブフォルダ」を作る。
+    // 選んだフォルダ自体を出力先にして remove_all するとユーザーのデータを消す恐れがあるので必ずサブフォルダ化する。
+    fs::path outputDir;
+    if (m_editorCtx && !m_editorCtx->buildOutputDir.empty())
+    {
+        std::string sub = "Game";
+        if (!m_editorCtx->currentScenePath.empty())
+        {
+            std::string stem = fs::path(m_editorCtx->currentScenePath).stem().string();
+            if (!stem.empty()) sub = stem;
+        }
+        sub += "_build";
+        outputDir = fs::path(m_editorCtx->buildOutputDir) / sub;
+    }
+    else
+    {
+        outputDir = fs::path(PathResolver::BaseDir()) / "build" / "game";
+    }
 
-    // クリーンアップ
+    // クリーンアップ（安全策: 既存が「前回ビルド or 空」でなければ消さずに中止＝ユーザーデータ保護）
     if (fs::exists(outputDir))
-        fs::remove_all(outputDir);
+    {
+        std::error_code ec;
+        bool looksLikeBuild = fs::exists(outputDir / "Game.exe")
+                           || fs::exists(outputDir / "game.pak")
+                           || fs::is_empty(outputDir, ec);
+        if (!looksLikeBuild)
+        {
+            Logger::Error("Build target exists and is not a previous build, aborting to protect data: {}",
+                          outputDir.string());
+            return false;
+        }
+        fs::remove_all(outputDir, ec);
+    }
     fs::create_directories(outputDir);
+
+    // 完了後に Explorer で開くため、最終的な出力先を控える
+    if (m_editorCtx)
+        m_editorCtx->lastBuildDir = outputDir.string();
 
     // 1. GameRuntime.exe を Game.exe としてコピー（+ exe 隣の DLL も全部コピー）
     {
@@ -6200,13 +6233,37 @@ void Application::Render()
         }
 
         // Deferred: game build
+        // ツール／インスペクタから pendingBuildGame が立ったら、まず配置先フォルダをピッカーで選ばせ、
+        // 選んだフォルダの中にビルドする。完了したらそのフォルダを Explorer で開く。
         if (m_editorCtx->pendingBuildGame)
         {
             m_editorCtx->pendingBuildGame = false;
-            if (BuildGame())
-                m_editorCtx->buildCompleteFlash = 3.0f;
-            else
-                m_editorCtx->buildErrorFlash = 6.0f;  // 失敗時は赤で長めに表示（詳細は dx12_engine.log）
+
+            std::string dest;
+            if (ProjectManager::PickFolder(m_window->GetHwnd(), dest,
+                                           L"ビルドの配置先フォルダを選択"))
+            {
+                m_editorCtx->buildOutputDir = dest;
+                const bool ok = BuildGame();
+                m_editorCtx->buildOutputDir.clear();   // 使い切り（次回も必ず選ばせる）
+
+                if (ok)
+                {
+                    m_editorCtx->buildCompleteFlash = 3.0f;
+                    // 成果物フォルダを Explorer で開いてフィードバック
+                    if (!m_editorCtx->lastBuildDir.empty())
+                        ShellExecuteA(nullptr, "open", m_editorCtx->lastBuildDir.c_str(),
+                                      nullptr, nullptr, SW_SHOWNORMAL);
+                }
+                else
+                {
+                    // 中央モーダルで失敗を知らせる（詳細は dx12_engine.log）
+                    m_editorCtx->errorMessage =
+                        "ビルドに失敗しました。\n詳細は dx12_engine.log を確認してください。";
+                    m_editorCtx->errorFlash = 1.0f;
+                }
+            }
+            // キャンセル時は何もしない
         }
 
         // Deferred: entity deletion
