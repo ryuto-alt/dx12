@@ -155,6 +155,9 @@ private:
     void WireScriptCallbacks();
     // アクティブな CameraComponent をグローバル Camera に同期（Play 開始 / loadScene 後）
     void SyncActiveCameraToGlobal();
+    // カメラエンティティの「親階層込みワールド変換」をグローバル Camera の
+    // 位置・yaw・pitch に反映する（親オブジェクトにアタッチしたカメラを追従させる）。
+    void ApplyCameraTransformToGlobal(entt::entity camEntity);
     // Play 中のシーン切替（フレーム境界で安全に実行）
     void DoRuntimeSceneLoad(const std::string& assetsRelPath, ID3D12GraphicsCommandList* cmdList);
 

@@ -50,6 +50,7 @@
 #include <fstream>
 #include <cstdio>     // sscanf_s（ahead/behind 解析）
 #include <cctype>     // std::isalnum（ビルド出力フォルダ名のサニタイズ）
+#include <cmath>      // sin/cos/atan2/asin（カメラのワールド変換→yaw/pitch 逆算）
 #include <map>        // 変更ファイルツリーの構築
 #include "audio/AudioSystem.h"
 #include "physics/PhysicsSystem.h"
@@ -2748,16 +2749,15 @@ void Application::Update()
         m_scriptEngine->UpdateAttachedScripts(dt);
         m_scriptEngine->UpdateTriggers(dt);   // Trigger（イベント）評価
 
-        // アクティブカメラの Transform をグローバル Camera に同期
+        // アクティブカメラの Transform をグローバル Camera に同期。
+        // 親階層込みのワールド変換で反映するので、親オブジェクトにアタッチした
+        // カメラが親の移動・回転に追従する。
         auto& reg = m_scene->GetRegistry();
-        auto camSyncView = reg.view<const CameraComponent, const Transform>();
-        for (auto [e, cam, tf] : camSyncView.each())
+        auto camSyncView = reg.view<const CameraComponent>();
+        for (auto [e, cam] : camSyncView.each())
         {
             if (!cam.isActive) continue;
-            m_camera->SetPosition(tf.position);
-            m_camera->SetYaw(DirectX::XMConvertToRadians(tf.rotation.y));
-            // ピッチ反転: エディタのギズモ/フラスタム(Euler)と Camera(forward.y=sin(pitch)) は符号が逆
-            m_camera->SetPitch(DirectX::XMConvertToRadians(-tf.rotation.x));
+            ApplyCameraTransformToGlobal(e);
             break;
         }
     }
@@ -3810,6 +3810,38 @@ void Application::WireScriptCallbacks()
     m_scriptEngine->SetEventBus(&m_eventBus);
 }
 
+void Application::ApplyCameraTransformToGlobal(entt::entity camEntity)
+{
+    using namespace DirectX;
+    auto& reg = m_scene->GetRegistry();
+    if (!reg.valid(camEntity) || !reg.all_of<Transform>(camEntity)) return;
+    const auto& tf = reg.get<Transform>(camEntity);
+
+    // ローカル euler からカメラ規約の forward を構築（pitch 反転は従来同様。
+    // エディタのギズモ/フラスタム(Euler)と Camera(forward.y=sin(pitch)) は符号が逆）。
+    // 親なしのときはこの forward がそのまま使われ、従来挙動と完全に一致する。
+    const f32 yawL   = XMConvertToRadians(tf.rotation.y);
+    const f32 pitchL = XMConvertToRadians(-tf.rotation.x);
+    const f32 cosP   = std::cos(pitchL);
+    XMVECTOR fwd = XMVectorSet(std::sin(yawL) * cosP, std::sin(pitchL), std::cos(yawL) * cosP, 0.0f);
+
+    // 親階層のワールド回転を forward に乗せる＝親オブジェクトの回転に追従する。
+    if (tf.parent != entt::null && reg.valid(tf.parent))
+        fwd = XMVector3TransformNormal(fwd, ComputeWorldMatrix(reg, tf.parent));
+    fwd = XMVector3Normalize(fwd);
+
+    XMFLOAT3 f; XMStoreFloat3(&f, fwd);
+    const f32 yaw   = std::atan2(f.x, f.z);
+    const f32 pitch = std::asin(std::clamp(f.y, -1.0f, 1.0f));
+
+    // 親階層込みのワールド位置を抽出（親オブジェクトの移動に追従する）。
+    XMFLOAT3 worldPos; XMStoreFloat3(&worldPos, ComputeWorldMatrix(reg, camEntity).r[3]);
+
+    m_camera->SetPosition(worldPos);
+    m_camera->SetYaw(yaw);
+    m_camera->SetPitch(pitch);
+}
+
 void Application::SyncActiveCameraToGlobal()
 {
     auto& reg = m_scene->GetRegistry();
@@ -3817,10 +3849,8 @@ void Application::SyncActiveCameraToGlobal()
     for (auto [e, cam, tf] : camView.each())
     {
         if (!cam.isActive) continue;
-        m_camera->SetPosition(tf.position);
-        m_camera->SetYaw(DirectX::XMConvertToRadians(tf.rotation.y));
-        // ピッチ反転: エディタのギズモ/フラスタム(Euler)と Camera(forward.y=sin(pitch)) は符号が逆
-        m_camera->SetPitch(DirectX::XMConvertToRadians(-tf.rotation.x));
+        // 位置・向きは親階層込みのワールド変換で同期（親にアタッチしたカメラの追従）。
+        ApplyCameraTransformToGlobal(e);
         const f32 camAspect =
             static_cast<f32>(m_window->GetWidth()) / static_cast<f32>(m_window->GetHeight());
         if (cam.projection == CameraProjection::Orthographic)
