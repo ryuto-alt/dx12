@@ -141,6 +141,10 @@ private:
     void SaveCurrentProject();
     void EnterPlayMode();
     void EnterEditorMode();
+    // エディタで開いたシーンに GridPlane が無ければ床グリッドを足す。
+    // 旧シーンや Grid 未配置のテンプレ(platformer 等)を開いてもグリッドが必ず出るようにする。
+    // ゲームモードでは何もしない。Scene に有効な cmdList が設定済みの状態で呼ぶこと。
+    void EnsureEditorGrid();
     bool BuildGame();  // 成否を返す（早期 return = 失敗）
     // グローバル game.lua をロード（ScriptEngine 再初期化のたびに呼ぶ）。
     // ゲームモードは pak から読むのでディスク存在チェックを迂回する。

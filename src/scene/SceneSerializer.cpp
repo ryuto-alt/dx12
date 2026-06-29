@@ -498,7 +498,7 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
 
         if (reg.all_of<GridPlane>(entity))
         {
-            ej["gridPlane"] = {{"size", 50.0f}};
+            ej["gridPlane"] = {{"size", kEditorGridSize}};
         }
 
         // レジストリ登録済みコア部品をまとめて直列化（脱 if(all_of<T>) 連鎖）。
@@ -823,8 +823,10 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
 
     if (ej.contains("gridPlane"))
     {
-        f32 size = ej["gridPlane"].value("size", 50.0f);
-        e = scene.SpawnPlane(name, pos, size, true).GetHandle();
+        // エディタグリッドは常に最新サイズで再生成する(保存値は無視)。
+        // 旧シーン(size=50 が焼かれてる)を開いても矩形に途切れず広く表示されるようにするため。
+        (void)ej["gridPlane"].value("size", kEditorGridSize);
+        e = scene.SpawnPlane(name, pos, kEditorGridSize, true).GetHandle();
         OutputDebugStringA(("[Load] SpawnPlane: " + name + "\n").c_str());
     }
     else if (ej.contains("meshRenderer"))

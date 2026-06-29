@@ -415,7 +415,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             if (!loaded)
             {
                 // クリーン初期状態: Grid + DirectionalLight + MainCamera（再生に必要な最低限）
-                m_scene->SpawnPlane("Grid", {0, 0, 0}, 50.0f, true);
+                m_scene->SpawnPlane("Grid", {0, 0, 0}, kEditorGridSize, true);
                 auto& reg = m_scene->GetRegistry();
                 auto lightE = reg.create();
                 reg.emplace<NameTag>(lightE, NameTag{"DirectionalLight"});
@@ -429,6 +429,10 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                 cam.isActive = true;
                 reg.emplace<CameraComponent>(camE, cam);
             }
+
+            // ロードしたシーン(最後に開いた/ default.json 等)に Grid が無ければ補う。
+            // 旧シーンや Grid 未配置データを開いてもエディタにグリッドが必ず出る。
+            EnsureEditorGrid();
 
             // シーンフロー / loadScene 用に現在シーンの相対パスを記録
             if (m_currentSceneRel.empty() && !m_editorCtx->currentScenePath.empty())
@@ -3832,6 +3836,25 @@ void Application::DoRuntimeSceneLoad(const std::string& rel, ID3D12GraphicsComma
     Logger::Info("Runtime scene loaded: {}", rel);
 }
 
+void Application::EnsureEditorGrid()
+{
+    // 封印ランタイム(ゲーム)では編集用グリッドは不要。
+    if (m_isGameMode)
+        return;
+
+    auto& reg = m_scene->GetRegistry();
+
+    // 既に GridPlane を持つエンティティがあれば何もしない（二重生成を防ぐ）。
+    auto gridView = reg.view<GridPlane>();
+    if (gridView.begin() != gridView.end())
+        return;
+
+    // グリッド未配置のシーン（旧データ / Grid 無しテンプレ）に編集用グリッドを追加。
+    // SpawnPlane はメッシュ生成に Scene の cmdList を使うので、呼び出し側で有効化済みであること。
+    m_scene->SpawnPlane("Grid", {0, 0, 0}, kEditorGridSize, true);
+    Logger::Info("EnsureEditorGrid: グリッド未配置のシーンへ編集用グリッドを追加");
+}
+
 void Application::EnterPlayMode()
 {
     // カメラ設置チェック
@@ -4810,7 +4833,7 @@ void Application::Render()
         m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
                             m_srvHeap.get(), nativeCmdList);
         // ---- 再生に必要な最低限のデフォルト配置 ----
-        m_scene->SpawnPlane("Grid", {0, 0, 0}, 50.0f, true);   // エディタ用グリッド
+        m_scene->SpawnPlane("Grid", {0, 0, 0}, kEditorGridSize, true);   // エディタ用グリッド
         m_scene->SpawnPlane("Ground", {0, 0, 0}, 20.0f, false); // 実体のある床
         m_scene->SpawnBox("Cube", {0, 0.5f, 0}, {0, 0, 0}, {1, 1, 1}); // サンプルオブジェクト
         {
@@ -4866,6 +4889,9 @@ void Application::Render()
             ProjectManager::SaveLastOpenedScene(loadPath);
             m_editorCtx->hotReloadFlash = 1.5f;
             m_editorLayer->RefreshAssetBrowser();
+            // 開いたシーン(既存ゲーム / プロジェクト / Grid 無しテンプレ)に Grid が無ければ補う。
+            // Scene::Initialize 済み(有効 cmdList)なのでここでメッシュ生成して安全。
+            EnsureEditorGrid();
             // ロードしたシーンの SkyboxSettings(envMapPath/iblIntensity 等) を反映するため
             // 次フレーム冒頭で再ベイクを要求。別 envMapPath のシーンを開いても自動追従する。
             // 差分判定の取りこぼし防止に m_loadedSkyboxPath をクリア。
