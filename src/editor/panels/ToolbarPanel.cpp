@@ -239,6 +239,7 @@ void ToolbarPanel::Render(bool isPlaying,
             ImGui::MenuItem("Skybox / IBL",            nullptr, &ctx.showSkybox);
             ImGui::MenuItem("SSAO",                    nullptr, &ctx.showSSAO);
             ImGui::MenuItem("エンジン設定",            nullptr, &ctx.showEngineSettings);
+            ImGui::MenuItem("ビルド設定",              nullptr, &ctx.showBuildSettings);
             ImGui::MenuItem("Scene Flow",              nullptr, &ctx.showSceneFlow);
             ImGui::MenuItem("Project",                 nullptr, &ctx.showProject);
             ImGui::MenuItem("Git 変更",                nullptr, &ctx.showVersionControl);
@@ -248,8 +249,9 @@ void ToolbarPanel::Render(bool isPlaying,
         // ---- ツール ----
         if (ImGui::BeginMenu("ツール"))
         {
-            if (ImGui::MenuItem("ゲームをビルド"))
-                ctx.pendingBuildGame = true;
+            // 「ビルド」はまずビルド設定パネルを開く（構成・開始シーン・出力先を決めてから実行）
+            if (ImGui::MenuItem("ビルド"))
+                ctx.showBuildSettings = true;
             ImGui::MenuItem("MCP / AI Bridge",         nullptr, &ctx.showMcpBridge);
             ImGui::EndMenu();
         }
@@ -269,18 +271,58 @@ void ToolbarPanel::Render(bool isPlaying,
     if (openShortcutsPopup) ImGui::OpenPopup("ショートカット一覧##ShortcutsPopup");
     if (openAboutPopup)     ImGui::OpenPopup("バージョン情報##AboutPopup");
 
-    // アイコンボタン用ヘルパ（アイコン未読込なら従来のテキストボタンにフォールバック）。
+    // ツールバー共通ヘルパ: 1つのボタンに「アイコン＋ラベル」をまとめて出す。
+    // これで「どれがどれか分からない」を解消する（絵と言葉の両方で示す）。
+    // tex=0 でアイコン省略、label=nullptr/"" でラベル省略。active=true で青ハイライト。
     const EditorUiIcons* ic = ctx.icons;
-    const float kIconSz = 20.0f;
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 4));
-    auto iconBtn = [&](u64 tex, const char* id, const char* fallback, const char* tip) -> bool
+    const float kIconSz = 18.0f;
+    const ImVec4 kActiveCol(0.26f, 0.42f, 0.78f, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(9, 5));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 5.0f);
+    auto toolButton = [&](u64 tex, const char* label, const char* tip, bool active) -> bool
     {
-        bool clicked = tex
-            ? ImGui::ImageButton(id, static_cast<ImTextureID>(tex), ImVec2(kIconSz, kIconSz))
-            : ImGui::Button(fallback);
+        ImGui::PushID(tip ? tip : label);
+        const ImGuiStyle& st = ImGui::GetStyle();
+        ImVec2 labelSz = (label && *label) ? ImGui::CalcTextSize(label) : ImVec2(0, 0);
+        float gap      = (tex && label && *label) ? 6.0f : 0.0f;
+        float contentW = (tex ? kIconSz : 0.0f) + gap + labelSz.x;
+        float contentH = (std::max)(tex ? kIconSz : 0.0f, labelSz.y);
+        ImVec2 sz(contentW + st.FramePadding.x * 2.0f, contentH + st.FramePadding.y * 2.0f);
+
+        if (active)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Button,        kActiveCol);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.32f, 0.50f, 0.88f, 1.0f));
+        }
+        ImVec2 p0 = ImGui::GetCursorScreenPos();
+        bool clicked = ImGui::Button("##tb", sz);
+        if (active) ImGui::PopStyleColor(2);
         if (tip && *tip && ImGui::IsItemHovered())
             ImGui::SetTooltip("%s", tip);
+
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        float cx = p0.x + st.FramePadding.x;
+        float cy = p0.y + sz.y * 0.5f;
+        if (tex)
+        {
+            dl->AddImage(static_cast<ImTextureID>(tex),
+                         ImVec2(cx, cy - kIconSz * 0.5f),
+                         ImVec2(cx + kIconSz, cy + kIconSz * 0.5f));
+            cx += kIconSz + gap;
+        }
+        if (label && *label)
+            dl->AddText(ImVec2(cx, cy - labelSz.y * 0.5f),
+                        ImGui::GetColorU32(ImGuiCol_Text), label);
+        ImGui::PopID();
         return clicked;
+    };
+    // グループ間の縦区切り（詰め込み感を無くすため各ツール群の間に入れる）。
+    auto groupSep = [&]()
+    {
+        ImGui::SameLine(0, 12);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(ImVec4(1, 1, 1, 0.16f), "|");
+        ImGui::SameLine(0, 12);
     };
 
     // ===== ブランド（ロゴ + ワードマーク + バージョンチップ。Nebula の左上に倣う）=====
@@ -307,13 +349,12 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::SameLine(0, 12);
     }
 
-    // ===== Play/Stop =====（メニューバー下のアイコン列・先頭）
+    // ===== Play/Stop =====（メニューバー下の先頭。緑=再生 / 赤=停止で色分け）
     if (!isPlaying)
     {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.55f, 0.20f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.65f, 0.25f, 1.0f));
-        if (iconBtn(ic ? ic->play : 0, "##play",
-                    "\xe2\x96\xb6 \xe5\x86\x8d\xe7\x94\x9f", "Play  (enter play mode)"))
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.18f, 0.55f, 0.28f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.66f, 0.34f, 1.0f));
+        if (toolButton(ic ? ic->play : 0, "再生", "Play  再生（プレイモードへ）", false))
         {
             // game.lua は任意（各エンティティのスクリプトコンポーネントが動くため）。
             // 旧来の「scripts/game.lua が無いと再生不可」警告は廃止し、そのまま再生する。
@@ -324,10 +365,9 @@ void ToolbarPanel::Render(bool isPlaying,
     }
     else
     {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.65f, 0.20f, 0.20f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.75f, 0.25f, 0.25f, 1.0f));
-        if (iconBtn(ic ? ic->stop : 0, "##stop",
-                    "\xe2\x96\xa0 \xe5\x81\x9c\xe6\xad\xa2", "Stop  (back to editor)"))
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.70f, 0.24f, 0.24f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.82f, 0.30f, 0.30f, 1.0f));
+        if (toolButton(ic ? ic->stop : 0, "停止", "Stop  停止（エディタへ戻る）", false))
         {
             outPendingPlayMode = false;
             outModeChangeRequested = true;
@@ -463,115 +503,69 @@ void ToolbarPanel::Render(bool isPlaying,
     ImGui::PopStyleColor(2);
     ImGui::PopStyleVar(2);
 
-    // ===== Gizmo mode =====
-    ImGui::SameLine(0, 12);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextDisabled("|");
-    ImGui::SameLine(0, 8);
-
-    bool isTrans = (ctx.gizmoMode == GizmoMode::Translate);
-    bool isRot   = (ctx.gizmoMode == GizmoMode::Rotate);
-    bool isScl   = (ctx.gizmoMode == GizmoMode::Scale);
-
-    const ImVec4 kActiveCol(0.3f, 0.5f, 0.8f, 1.0f);
-
-    if (isTrans) ImGui::PushStyleColor(ImGuiCol_Button, kActiveCol);
-    if (iconBtn(ic ? ic->gizmoMove : 0, "##gMove", "W Move", "Move  (W)"))
+    // ===== ギズモ（移動 / 回転 / 拡縮 / 空間）=====
+    groupSep();
+    if (toolButton(ic ? ic->gizmoMove : 0, "移動",
+                   "移動ギズモ  (W)", ctx.gizmoMode == GizmoMode::Translate))
         ctx.gizmoMode = GizmoMode::Translate;
-    if (isTrans) ImGui::PopStyleColor();
-
     ImGui::SameLine();
-    if (isRot) ImGui::PushStyleColor(ImGuiCol_Button, kActiveCol);
-    if (iconBtn(ic ? ic->gizmoRotate : 0, "##gRot", "E Rot", "Rotate  (E)"))
+    if (toolButton(ic ? ic->gizmoRotate : 0, "回転",
+                   "回転ギズモ  (E)", ctx.gizmoMode == GizmoMode::Rotate))
         ctx.gizmoMode = GizmoMode::Rotate;
-    if (isRot) ImGui::PopStyleColor();
-
     ImGui::SameLine();
-    if (isScl) ImGui::PushStyleColor(ImGuiCol_Button, kActiveCol);
-    if (iconBtn(ic ? ic->gizmoScale : 0, "##gScl", "R Scl", "Scale  (R)"))
+    if (toolButton(ic ? ic->gizmoScale : 0, "拡縮",
+                   "拡大縮小ギズモ  (R)", ctx.gizmoMode == GizmoMode::Scale))
         ctx.gizmoMode = GizmoMode::Scale;
-    if (isScl) ImGui::PopStyleColor();
-
     ImGui::SameLine();
-    u64 spaceTex = ctx.gizmoLocalSpace ? (ic ? ic->spaceLocal : 0)
-                                       : (ic ? ic->spaceWorld : 0);
-    if (iconBtn(spaceTex, "##space",
-                ctx.gizmoLocalSpace ? "Local" : "World",
-                ctx.gizmoLocalSpace ? "Local space  (click: World)"
-                                    : "World space  (click: Local)"))
-        ctx.gizmoLocalSpace = !ctx.gizmoLocalSpace;
+    {
+        u64 spaceTex = ctx.gizmoLocalSpace ? (ic ? ic->spaceLocal : 0)
+                                           : (ic ? ic->spaceWorld : 0);
+        if (toolButton(spaceTex, ctx.gizmoLocalSpace ? "ローカル" : "ワールド",
+                       ctx.gizmoLocalSpace ? "ローカル空間  (T で切替)"
+                                           : "ワールド空間  (T で切替)", false))
+            ctx.gizmoLocalSpace = !ctx.gizmoLocalSpace;
+    }
 
     // ===== 2D / 3D ビュー切替（Unity の 2D ボタン相当）=====
-    ImGui::SameLine(0, 12);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextDisabled("|");
-    ImGui::SameLine(0, 8);
-    if (ctx.view2D) ImGui::PushStyleColor(ImGuiCol_Button, kActiveCol);
-    if (ImGui::Button(ctx.view2D ? "2D" : "3D", ImVec2(38.0f, 0.0f)))
+    groupSep();
+    if (toolButton(0, ctx.view2D ? "2D" : "3D",
+                   ctx.view2D
+                     ? "2Dビュー（クリックで3D）: 正射・正面固定。WASD/矢印=パン, ホイール=ズーム, 中ドラッグ=パン"
+                     : "3Dビュー（クリックで2D）",
+                   ctx.view2D))
         ctx.view2D = !ctx.view2D;
-    if (ctx.view2D) ImGui::PopStyleColor();
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip(ctx.view2D
-            ? "2D view (click for 3D): orthographic, front-locked. Middle-drag: pan, Wheel: zoom"
-            : "3D view (click for 2D)");
 
-    // ===== ゲームビルド =====
-    ImGui::SameLine(0, 12);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextDisabled("|");
-    ImGui::SameLine(0, 8);
-    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.20f, 0.42f, 0.68f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.26f, 0.52f, 0.82f, 1.0f));
-    if (iconBtn(ic ? ic->build : 0, "##build",
-                "\xe3\x83\x93\xe3\x83\xab\xe3\x83\x89", "Build game  (export)"))  // ビルド
-        ctx.pendingBuildGame = true;
-    ImGui::PopStyleColor(2);
-    if (ctx.buildCompleteFlash > 0.0f)
-    {
-        ImGui::SameLine(0, 8);
-        ImGui::AlignTextToFramePadding();
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.5f, 1.0f));
-        ImGui::Text("\xe2\x9c\x93 \xe3\x83\x93\xe3\x83\xab\xe3\x83\x89\xe5\xae\x8c\xe4\xba\x86");  // ✓ ビルド完了
-        ImGui::PopStyleColor();
-        ctx.buildCompleteFlash -= clock->GetDeltaTime();
-    }
-    else if (ctx.buildErrorFlash > 0.0f)
-    {
-        ImGui::SameLine(0, 8);
-        ImGui::AlignTextToFramePadding();
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.35f, 0.35f, 1.0f));
-        // ✗ ビルド失敗 (dx12_engine.log)
-        ImGui::Text("\xe2\x9c\x97 \xe3\x83\x93\xe3\x83\xab\xe3\x83\x89\xe5\xa4\xb1\xe6\x95\x97 (dx12_engine.log)");
-        ImGui::PopStyleColor();
-        ctx.buildErrorFlash -= clock->GetDeltaTime();
-    }
+    // ※ ゲームビルドはツールバーに常駐させない。メニュー「ツール > ゲームをビルド…」から呼び出す。
+    //    （配置先フォルダを毎回ピッカーで選ぶ方式。ユーザー要望でツールバーのボタンは撤去）
 
-    // ===== ツール窓トグル（窓: …。既定OFF=中核4窓だけ。押すと右下に出る/もう一度で閉じる）=====
-    ImGui::SameLine(0, 12);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextDisabled("|");
-    ImGui::SameLine(0, 8);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextDisabled("\xe7\xaa\x93:");  // 窓:
-    ImGui::SameLine(0, 6);
-    auto toggleBtn = [&](const char* label, bool& flag, const char* tip)
+    // ===== ツール窓（「窓 ▾」ドロップダウン1個に集約。以前は8個のボタンで詰め込んでた）=====
+    groupSep();
+    if (toolButton(ic ? ic->window : 0, "窓 \xe2\x96\xbe",   // ▾
+                   "ツール窓の表示/非表示", ctx.AnyToolWindowOpen()))
+        ImGui::OpenPopup("##ToolWindowsMenu");
+    if (ImGui::BeginPopup("##ToolWindowsMenu"))
     {
-        if (flag) ImGui::PushStyleColor(ImGuiCol_Button, kActiveCol);
-        const bool clicked = ImGui::Button(label);
-        if (flag) ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", tip);
-        if (clicked) flag = !flag;
-        ImGui::SameLine(0, 4);
-    };
-    toggleBtn("Post",  ctx.showPostProcess,    "Post Process (ON/OFF \xe4\xb8\x80\xe8\xa6\xa7)");  // 一覧
-    toggleBtn("Param", ctx.showPostParams,     "Post Process \xe3\x83\x91\xe3\x83\xa9\xe3\x83\xa1\xe3\x83\xbc\xe3\x82\xbf");  // パラメータ
-    toggleBtn("Sky",   ctx.showSkybox,         "Skybox / IBL");
-    toggleBtn("AO",    ctx.showSSAO,           "SSAO");
-    toggleBtn("\xe8\xa8\xad\xe5\xae\x9a", ctx.showEngineSettings, "\xe3\x82\xa8\xe3\x83\xb3\xe3\x82\xb8\xe3\x83\xb3\xe8\xa8\xad\xe5\xae\x9a");  // 設定 / エンジン設定
-    toggleBtn("Flow",  ctx.showSceneFlow,      "Scene Flow");
-    toggleBtn("Proj",  ctx.showProject,        "Project");
-    toggleBtn("Git",   ctx.showVersionControl, "Git 変更");
+        ImGui::TextDisabled("ツール窓（右下にタブで開く）");
+        ImGui::Separator();
+        ImGui::MenuItem("Post Process",           nullptr, &ctx.showPostProcess);
+        ImGui::MenuItem("Post Process パラメータ", nullptr, &ctx.showPostParams);
+        ImGui::MenuItem("Skybox / IBL",           nullptr, &ctx.showSkybox);
+        ImGui::MenuItem("SSAO",                   nullptr, &ctx.showSSAO);
+        ImGui::MenuItem("エンジン設定",           nullptr, &ctx.showEngineSettings);
+        ImGui::MenuItem("ビルド設定",             nullptr, &ctx.showBuildSettings);
+        ImGui::MenuItem("Scene Flow",             nullptr, &ctx.showSceneFlow);
+        ImGui::MenuItem("Project",                nullptr, &ctx.showProject);
+        ImGui::MenuItem("Git 変更",               nullptr, &ctx.showVersionControl);
+        ImGui::MenuItem("MCP / AI Bridge",        nullptr, &ctx.showMcpBridge);
+        ImGui::Separator();
+        if (ImGui::MenuItem("すべて閉じる"))
+        {
+            ctx.showPostProcess = ctx.showPostParams = ctx.showSkybox = ctx.showSSAO =
+                ctx.showEngineSettings = ctx.showSceneFlow = ctx.showProject =
+                ctx.showVersionControl = ctx.showMcpBridge = ctx.showBuildSettings = false;
+        }
+        ImGui::EndPopup();
+    }
 
     // ===== シーン名表示 =====
     ImGui::SameLine(0, 16);
@@ -595,7 +589,7 @@ void ToolbarPanel::Render(bool isPlaying,
     ImGui::AlignTextToFramePadding();
     ImGui::Text("%.0f FPS", clock->GetFPS());
 
-    ImGui::PopStyleVar();  // FramePadding
+    ImGui::PopStyleVar(2);  // FramePadding + FrameRounding
     ImGui::End();
     ImGui::PopStyleColor();
     ImGui::PopStyleVar();

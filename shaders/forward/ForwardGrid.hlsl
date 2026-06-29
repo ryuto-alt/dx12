@@ -105,8 +105,8 @@ float4 PSMain(PSInput input) : SV_TARGET
     float2 majorGridPos = frac(abs(worldPos.xz) / 5.0f);
     majorGridPos = min(majorGridPos, 1.0f - majorGridPos) * 5.0f;
 
-    // アンチエイリアス
-    float2 dGrid = fwidth(worldPos.xz);
+    // アンチエイリアス。低角度/遠距離で fwidth が肥大化し線が完全に消える(描画抜け)のを防ぐため上限を設ける。
+    float2 dGrid = min(fwidth(worldPos.xz), 0.5f);
 
     float2 minorLine = smoothstep(lineWidth - dGrid, lineWidth + dGrid, gridPos);
     float minor = 1.0f - min(minorLine.x, minorLine.y);
@@ -129,12 +129,15 @@ float4 PSMain(PSInput input) : SV_TARGET
     color = lerp(color, axisXColor, axisX);
     color = lerp(color, axisZColor, axisZ);
 
+    // 距離フェード: グリッド平面(±250m, kEditorGridSize/2)のフチに達する前(=230m)に滑らかに 0 へ落とす。
+    // これで平面の矩形エッジが見えず、無限グリッド風に広く表示される(以前は 50m で途切れて抜けて見えた)。
     float dist = length(worldPos.xz);
-    float fade = 1.0f - saturate((dist - 20.0f) / 30.0f);
+    float fade = 1.0f - saturate((dist - 120.0f) / 110.0f);
 
     float gridMask = max(max(minor, major), max(axisX, axisZ));
     // 線以外を透明にする。床全体へ薄い色を重ねると Scene ビューだけ明るさが変わって見える。
-    float alpha = gridMask * 0.7f * fade;
+    // 0.4 = グリッドを薄めにして配置オブジェクトを見やすくする(以前は 0.7 で濃かった)。
+    float alpha = gridMask * 0.4f * fade;
 
     // シャドウ（CSM カスケード選択）
     float shadow = CalcShadow(input.worldPos, input.viewDepth);

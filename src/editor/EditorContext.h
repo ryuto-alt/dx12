@@ -7,6 +7,7 @@
 #include <entt/entt.hpp>
 #include <DirectXMath.h>
 #include "core/Types.h"
+#include "core/mcp/McpDeferred.h"
 #include "editor/UndoSystem.h"
 #include "editor/EditorIcons.h"
 
@@ -20,6 +21,15 @@ struct PendingSpawnRequest
     std::string modelPath;
     DirectX::XMFLOAT3 position{};
     std::string name;   // 空ならデフォルト名。MCP の create_entity から任意名を付けるのに使う。
+    McpDeferred mcp;    // MCP 由来なら相関情報。生成後に本物の entityId を送り返す。client=0 で無効。
+};
+
+// MCP 由来のエンティティ削除要求。フレーム境界でサブツリー削除後に deletedCount を送り返す。
+// エディタ UI からの削除は従来どおり pendingDeletions(下) を使い、応答は送らない。
+struct McpPendingDelete
+{
+    entt::entity entity = entt::null;
+    McpDeferred  mcp;
 };
 
 struct PendingScriptAttach
@@ -106,12 +116,13 @@ public:
     bool showProject        = false;
     bool showVersionControl = false;
     bool showMcpBridge      = false;   // MCP / AI Bridge モニタ窓
+    bool showBuildSettings  = false;   // ビルド設定（Unity の Build Settings 相当）
 
     bool AnyToolWindowOpen() const
     {
         return showPostProcess || showPostParams || showSkybox || showSSAO
             || showEngineSettings || showSceneFlow || showProject || showVersionControl
-            || showMcpBridge;
+            || showMcpBridge || showBuildSettings;
     }
 
     // タッチパッド向けキーボードフライモード（` キーでトグル）。
@@ -157,6 +168,8 @@ public:
     std::vector<entt::entity>        pendingDuplications;  // Ctrl+D / 右クリック複製
     std::vector<std::string>         pendingPastes;        // Ctrl+V (エンティティJSON)
     std::vector<entt::entity>        pendingDeletions;
+    std::vector<McpPendingDelete>    mcpDeletions;         // MCP 由来削除（応答に deletedCount を返す）
+    std::vector<McpPendingDelete>    mcpDuplications;      // MCP 由来複製（.entity=複製元。応答に複製先 id を返す）
     // Undo/Redo はエンティティ復元（モデル再ロード）を伴う場合があるため
     // cmdList が有効なフレーム境界まで遅延する
     bool pendingUndo = false;
@@ -166,7 +179,22 @@ public:
     entt::entity pendingCreatePrefab = entt::null;
     std::string pendingLoadPath;
     std::string pendingGameLoadPath;  // Play 中の loadScene()（assets 相対）。フレーム境界で安全にロード
-    bool pendingBuildGame = false;
+    bool pendingBuildGame = false;     // ビルド設定パネルの「ビルド」で立つ＝実行要求
+    // 直近ビルドの成果物フォルダ（完了後に Explorer で開くために保持）。
+    std::string lastBuildDir;
+
+    // ===== ビルド設定（Unity の Build Settings / Unreal の Packaging に相当）=====
+    // ビルド設定ウィンドウ（showBuildSettings）で編集し、BuildGame() が参照する。
+    struct BuildConfig
+    {
+        char title[128] = "Game";           // 製品名（game.pak マニフェストの title・ゲーム窓のタイトル）
+        int  width  = 1280;                 // ゲームウィンドウ幅
+        int  height = 720;                  // ゲームウィンドウ高
+        std::string startScene;             // 開始シーン（assets 相対。空=現在開いているシーン）
+        std::string outputDir;              // 配置先の親フォルダ（空=ビルド時に選択）
+        bool openFolderAfterBuild = true;   // 完了後に成果物フォルダを開く
+    } buildConfig;
+
     bool pendingNewScene  = false;
     // 空でなければ pendingNewScene 実行時にこのパスへスターターシーンを保存する
     // （プロジェクト新規作成の初期シーン用。通常の「新規シーン」は空のまま）

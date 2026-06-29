@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
-project(DX12Engine VERSION 0.1.0 LANGUAGES CXX)
+project(DX12Engine VERSION 0.1.0 LANGUAGES CXX RC)  # RC = .rc リソース（アプリアイコン）
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -35,8 +35,11 @@ if(DX12_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
+# アプリアイコン（exe 埋め込み + ウィンドウアイコン）。両 exe に同じリソースを付ける。
+set(DX12_APP_ICON_RC "${CMAKE_SOURCE_DIR}/resources/app.rc")
+
 # Main executable
-add_executable(DX12Engine WIN32 src/main.cpp)
+add_executable(DX12Engine WIN32 src/main.cpp ${DX12_APP_ICON_RC})
 
 target_link_libraries(DX12Engine
     PRIVATE
@@ -62,7 +65,7 @@ if(MSVC)
 endif()
 
 # --- GameRuntime: ゲーム専用実行ファイル（DX12_GAME_RUNTIME で常にゲームモード固定）---
-add_executable(GameRuntime WIN32 src/main.cpp)
+add_executable(GameRuntime WIN32 src/main.cpp ${DX12_APP_ICON_RC})
 target_link_libraries(GameRuntime
     PRIVATE
         Core

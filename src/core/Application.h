@@ -24,6 +24,7 @@
 #include "project/GitIntegration.h"   // GitResult（非同期 git タスクの戻り値）
 #include "editor/EditorIcons.h"
 #include "engine/core/EventBus.h"   // ヘッダオンリー、GPU 非依存。entt の後に置く
+#include "core/mcp/McpDeferred.h"   // MCP 遅延応答の相関情報（値メンバで持つので完全型が要る）
 
 // Forward declarations for graphics module
 namespace dx12e
@@ -92,7 +93,9 @@ private:
     void Render();
     // MCP ブリッジから来た 1 行(JSON リクエスト)を処理して応答 JSON 行を返す。
     // メインスレッドで呼ばれるので m_scene / m_scriptEngine を直接触ってよい。
-    std::string HandleMcpCommand(const std::string& line);
+    // 戻り値が空文字列なら「遅延応答」(フレーム境界で結果確定後に SendToClient で送る)。
+    // client は遅延応答を送り返すための McpBridge クライアントトークン。
+    std::string HandleMcpCommand(uint64_t client, const std::string& line);
     // 直近フレームのシーン描画(m_sceneRT)を PNG に書き出す。成功=絶対パス / 失敗=空文字列+err。
     // MCP の screenshot 用。同期 readback(WaitIdle×2)＝低頻度のエディタ操作として割り切る。
     std::string CaptureSceneScreenshot(std::string& err);
@@ -125,9 +128,11 @@ private:
     void BeginProjectLoad(const ProjectInfo& info, bool isNew);
     void UpdateProjectLoad(f32 dt);   // 毎フレーム状態機械を進める（!m_loading なら何もしない）
     void RenderLoadingOverlay();      // ローディングオーバーレイ描画
+    void RenderWhatsNewPopup();       // 版が変わった初回起動だけ「更新内容」モーダルを出す
     // エディタの「Project」「Version Control」ウィンドウ描画（ランチャー閉後）
     void RenderProjectWindow();
     void RenderVersionControlWindow();
+    void RenderBuildSettingsWindow();   // 「ビルド設定」窓（構成/開始シーン/出力先 → ビルド実行）
     // git/gh 操作をワーカースレッドで実行（メインスレッドを固めない）。
     // task はワーカー上で走り GitResult を返す。label はバナー表示名。
     // isLogin=true のときは完了時に GitHub ユーザー名を取り込む（ログインポーリング用）。
@@ -137,6 +142,10 @@ private:
     void SaveCurrentProject();
     void EnterPlayMode();
     void EnterEditorMode();
+    // エディタで開いたシーンに GridPlane が無ければ床グリッドを足す。
+    // 旧シーンや Grid 未配置のテンプレ(platformer 等)を開いてもグリッドが必ず出るようにする。
+    // ゲームモードでは何もしない。Scene に有効な cmdList が設定済みの状態で呼ぶこと。
+    void EnsureEditorGrid();
     bool BuildGame();  // 成否を返す（早期 return = 失敗）
     // グローバル game.lua をロード（ScriptEngine 再初期化のたびに呼ぶ）。
     // ゲームモードは pak から読むのでディスク存在チェックを迂回する。
@@ -146,6 +155,9 @@ private:
     void WireScriptCallbacks();
     // アクティブな CameraComponent をグローバル Camera に同期（Play 開始 / loadScene 後）
     void SyncActiveCameraToGlobal();
+    // カメラエンティティの「親階層込みワールド変換」をグローバル Camera の
+    // 位置・yaw・pitch に反映する（親オブジェクトにアタッチしたカメラを追従させる）。
+    void ApplyCameraTransformToGlobal(entt::entity camEntity);
     // Play 中のシーン切替（フレーム境界で安全に実行）
     void DoRuntimeSceneLoad(const std::string& assetsRelPath, ID3D12GraphicsCommandList* cmdList);
 
@@ -193,6 +205,10 @@ private:
     std::unique_ptr<EditorLayer>   m_editorLayer;
     std::unique_ptr<ModelThumbnailRenderer> m_thumbRenderer;
     bool m_showLauncher = true;  // プロジェクトランチャー表示フラグ
+
+    // ---- 「更新内容」ポップアップ（版が変わった初回起動だけ表示）----
+    bool m_showWhatsNew   = false;  // この起動で出すべきか（Initialize で版マーカーと比較して決定）
+    bool m_whatsNewOpened = false;  // OpenPopup を1回だけ呼ぶためのラッチ
 
     // ---- プロジェクト管理 / バージョン管理(Git) ----
     ProjectInfo m_projectInfo;            // 現在開いているプロジェクト（rootDir 空 = 組み込みパス）
@@ -264,6 +280,14 @@ private:
     EventBus                           m_eventBus;
     std::unique_ptr<ScriptEngine>      m_scriptEngine;
     std::unique_ptr<McpBridge>         m_mcpBridge;   // エディタ専用 AI ブリッジ(TCP)。ゲームでは null。
+    // ---- MCP 状態（HandleMcpCommand とフレーム境界の遅延応答で共有）----
+    int         m_sceneGeneration = 0;   // open_scene/new_scene のたびに +1。古い entity id 検出用。
+    McpDeferred m_mcpModeReply;          // play/stop の遅延応答（モード遷移後に送る）。client=0 で無効。
+    McpDeferred m_mcpLoadReply;          // open_scene の遅延応答（ロード完了後に送る）。client=0 で無効。
+    McpDeferred m_mcpStepReply;          // step_frames の遅延応答（N フレーム経過後に送る）。client=0 で無効。
+    int         m_mcpStepFramesLeft = 0; // step_frames で残り何フレーム回すか。0 で非アクティブ。
+    McpDeferred m_mcpGameViewReply;      // screenshot_game_view の遅延応答（1フレーム描画後に送る）。client=0 で無効。
+    std::unordered_map<std::string, uint32_t> m_mcpIdempotency;  // idempotency_key -> 生成済み entityId
     std::unique_ptr<AudioSystem>       m_audioSystem;
     std::unique_ptr<PhysicsSystem>     m_physicsSystem;
     std::unique_ptr<PhysicsDebugRenderer> m_physicsDebugRenderer;
@@ -333,6 +357,11 @@ private:
         f32 yaw;
         f32 pitch;
     } m_cameraSnapshot{};
+
+    // 2D⇆3D ビュー切替時の 3D カメラ退避。2D は正射＋正面固定で位置を強制するため、
+    // 退避しておかないと 3D に戻した時に視点が壊れる（位置/向きが 2D のまま残る）。
+    CameraSnapshot m_cam3DSnapshot{ { -14.7f, 9.6f, -9.0f }, 0.0f, 0.0f };
+    bool m_has3DSnapshot = false;
 
     // OnPlayStart 直後に Lua が変更した値をエディタ配置値で打ち消すための即時上書き用スナップショット。
     // Stop 時の完全復元には使わない（そちらは m_playSceneJson 経由）

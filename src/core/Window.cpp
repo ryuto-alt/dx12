@@ -24,6 +24,13 @@ void Window::Initialize(HINSTANCE hInstance, int /*nCmdShow*/,
     m_height = height;
     m_title = title;
 
+    // exe に埋め込んだアプリアイコン（resources/app.ico, IDI_APPICON=101）を読む。
+    // 大（タスクバー/Alt+Tab）と小（タイトルバー）を別サイズで読み、失敗時は既定にフォールバック。
+    HICON appIcon = static_cast<HICON>(LoadImageW(hInstance, MAKEINTRESOURCEW(101 /*IDI_APPICON*/),
+        IMAGE_ICON, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_DEFAULTCOLOR));
+    HICON appIconSm = static_cast<HICON>(LoadImageW(hInstance, MAKEINTRESOURCEW(101 /*IDI_APPICON*/),
+        IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
+
     WNDCLASSEXW wc = {};
     wc.cbSize        = sizeof(WNDCLASSEXW);
     wc.style         = CS_HREDRAW | CS_VREDRAW;
@@ -31,12 +38,12 @@ void Window::Initialize(HINSTANCE hInstance, int /*nCmdShow*/,
     wc.cbClsExtra    = 0;
     wc.cbWndExtra    = sizeof(Window*);
     wc.hInstance     = hInstance;
-    wc.hIcon         = LoadIconW(nullptr, IDI_APPLICATION);
+    wc.hIcon         = appIcon ? appIcon : LoadIconW(nullptr, IDI_APPLICATION);
     wc.hCursor       = LoadCursorW(nullptr, IDC_ARROW);
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     wc.lpszMenuName  = nullptr;
     wc.lpszClassName = L"DX12EngineWindowClass";
-    wc.hIconSm       = LoadIconW(nullptr, IDI_APPLICATION);
+    wc.hIconSm       = appIconSm ? appIconSm : LoadIconW(nullptr, IDI_APPLICATION);
 
     if (!RegisterClassExW(&wc))
     {
@@ -209,6 +216,15 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 window->m_inputSystem->OnRawInput(lParam);
             }
             return 0;
+
+        case WM_KILLFOCUS:
+            // 他ウィンドウ/タブへフォーカスが移ると以降の WM_KEYUP が届かず、
+            // 最後に押したキーが押しっぱなし判定で残る → 全キー状態をクリア
+            if (window->m_inputSystem)
+            {
+                window->m_inputSystem->OnFocusLost();
+            }
+            break;
 
         case WM_DESTROY:
             PostQuitMessage(0);

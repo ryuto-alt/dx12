@@ -79,6 +79,12 @@ public:
     // 標準的な .gitignore を workDir に書き出す（既存なら何もしない）
     static void WriteGitignore(const std::string& workDir);
 
+    // コミット用の author 情報（user.name / user.email）が解決できなければ、
+    // このリポジトリ(ローカル設定)に既定値を書き込む。新規マシンでは global 未設定が普通で、
+    // その場合 git commit が "Author identity unknown" で失敗する＝コミットできない原因になる。
+    // 値は gh のログインユーザーから推定（無ければ汎用の noreply）。global は触らない。
+    static void EnsureIdentity(const std::string& workDir);
+
 private:
     // exe を引数付きで workDir 実行（コンソールウィンドウを出さない）。-1=起動失敗
     static GitResult Run(const std::string& exe, const std::string& args,

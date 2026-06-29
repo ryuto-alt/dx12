@@ -175,9 +175,15 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         bool buildMode = false;
         std::string buildProjectDir;  // --build <dir> で指定したプロジェクト（空=組み込み）
 #ifndef DX12_GAME_RUNTIME
+        bool justUpdated = false;     // --updated: 更新バッチからの再起動。今回は更新チェックをスキップ
         if (lpCmdLine)
         {
             std::string args(lpCmdLine);
+
+            // 更新適用後の再起動。直後の起動で再び同期ネットワークチェックを走らせると
+            // ウィンドウが出るまで数秒固まるので、この起動だけチェックを飛ばす。
+            if (args.find("--updated") != std::string::npos)
+                justUpdated = true;
 
             // --validate <scene.json>: ヘッドレスでシーンの参照グラフを検証して終了（GUI 起動しない）。
             size_t vp = args.find("--validate");
@@ -254,7 +260,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         // GameRuntime（配布ゲーム）はエンジンの自動更新を行わない（エンジンのリリースで
         // ゲームの exe が置き換わってしまうのを防ぐ）。
 #ifndef DX12_GAME_RUNTIME
-        if (!buildMode && dx12e::Updater::RunStartupCheck())
+        if (!buildMode && !justUpdated && dx12e::Updater::RunStartupCheck())
             return EXIT_SUCCESS;
 #endif
 

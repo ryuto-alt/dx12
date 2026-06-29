@@ -311,7 +311,7 @@ LauncherAction ProjectManager::RenderLauncher(ProjectInfo& outInfo, HWND hwnd,
     float btnW = panelSize.x - 48.0f;
     ImGui::SetCursorPosX(24);
     if (IconActionButton(icons.newProject, "[N]", "新規プロジェクト",
-                         "テンプレートを選んで作成 (FPS / TPS / 空)", ImVec2(btnW, 64)))
+                         "テンプレートを選んで作成 (FPS / TPS / 2D / 空)", ImVec2(btnW, 64)))
     {
         ImGui::OpenPopup("テンプレートを選択");
     }
@@ -344,6 +344,9 @@ LauncherAction ProjectManager::RenderLauncher(ProjectInfo& outInfo, HWND hwnd,
         if (IconActionButton(icons.tmplTps, "[T]", "TPS  (三人称アクション)",
                              "追従カメラ + キャラ移動。マウスで周回", ImVec2(tW, 60)))
             pick("tps");
+        if (IconActionButton(icons.tmpl2d, "[2]", "2D  (横スクロール)",
+                             "正射投影 + 重力ジャンプ。A/D 移動・Space ジャンプ", ImVec2(tW, 60)))
+            pick("2d");
         if (IconActionButton(icons.tmplEmpty, "[E]", "空  (最小構成)",
                              "グリッド + 床 + ライト + カメラだけ", ImVec2(tW, 60)))
             pick("empty");

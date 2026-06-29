@@ -26,6 +26,14 @@ void InputSystem::Update()
     // 前フレームのキー状態を保存
     std::memcpy(m_prevKeys, m_keys, sizeof(m_keys));
 
+    // 合成キー押下(MCP key_press)を prevKeys スナップショット後に適用。
+    // 2→今フレームだけ押す(prev=false,cur=true なので IsKeyPressed が立つ)、1→次フレームで離す。
+    for (int vk = 0; vk < 256; ++vk)
+    {
+        if (m_synthPress[vk] == 2)      { m_keys[vk] = true;  m_synthPress[vk] = 1; }
+        else if (m_synthPress[vk] == 1) { m_keys[vk] = false; m_synthPress[vk] = 0; }
+    }
+
     // マウス差分リセット
     m_mouseDeltaX = 0.0f;
     m_mouseDeltaY = 0.0f;
@@ -79,6 +87,16 @@ void InputSystem::OnRawInput(LPARAM lParam)
 void InputSystem::OnMouseButton(bool /*rightDown*/)
 {
     // 将来用
+}
+
+void InputSystem::OnFocusLost()
+{
+    // 押下中キーの WM_KEYUP がフォーカス先に飛んでしまうため、ここで全部離した
+    // ことにする。prevKeys も 0 にして再フォーカス後の誤 IsKeyPressed を防ぐ。
+    std::memset(m_keys, 0, sizeof(m_keys));
+    std::memset(m_prevKeys, 0, sizeof(m_prevKeys));
+    m_mouseDeltaX = 0.0f;
+    m_mouseDeltaY = 0.0f;
 }
 
 void InputSystem::SetMouseCapture(bool capture)

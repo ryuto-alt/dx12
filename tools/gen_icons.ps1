@@ -242,18 +242,23 @@ Save-Icon "file" "#64748B" {
     $g.DrawLine($linePen, 52, 82, 70, 82)
 }
 
-# --- build: 青背景 + 白い梱包箱（テープ + フラップ）= ゲーム出力 ---
+# --- build: 青背景 + 白いハンマー（＝ビルド／組み立て）---
 Save-Icon "build" "#3B82F6" {
     param($g)
-    $box = Get-RoundRect 40 50 48 40 4
-    $g.FillPath($white, $box)
-    $bgPen = New-BgPen "#3B82F6" 5
-    # テープ（横 + 上半分の縦）
-    $g.DrawLine($bgPen, 40, 66, 88, 66)
-    $g.DrawLine($bgPen, 64, 50, 64, 66)
-    # 上フラップ
-    $g.DrawLine($bgPen, 52, 40, 64, 50)
-    $g.DrawLine($bgPen, 76, 40, 64, 50)
+    # ヘッド（上部の横長ブロック。左を少し下げて打面っぽく）
+    Fill-Poly $g $white @((PF 36 46),(PF 84 38),(PF 86 52),(PF 38 60))
+    # 柄（ヘッド中央から下へ伸びる）
+    $handle = New-WhitePen 12
+    $g.DrawLine($handle, 62, 54, 70, 92)
+}
+
+# --- window: ツール窓ドロップダウン用。2x2 のパネル（レイアウト/ウィンドウの象徴） ---
+Save-Icon "window" "#6366F1" {
+    param($g)
+    $g.FillPath($white, (Get-RoundRect 38 38 22 22 4))
+    $g.FillPath($white, (Get-RoundRect 68 38 22 22 4))
+    $g.FillPath($white, (Get-RoundRect 38 68 22 22 4))
+    $g.FillPath($white, (Get-RoundRect 68 68 22 22 4))
 }
 
 # --- gizmo_move: 青背景 + 白い4方向矢印 ---
@@ -432,6 +437,21 @@ Save-Icon "tmpl_tps" "#7C3AED" {
     $arc = New-WhitePen 5
     $g.DrawArc($arc, 30, 64, 68, 50, 200, 140)
     $g.FillRectangle($white, 86, 78, 12, 10)     # カメラ本体
+}
+
+# --- tmpl_2d: エメラルド背景 + 白い太字「2D」（横スクロール）---
+Save-Icon "tmpl_2d" "#10B981" {
+    param($g)
+    $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAlias
+    $fam  = New-Object System.Drawing.FontFamily("Segoe UI")
+    $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $path.AddString("2D", $fam, [int][System.Drawing.FontStyle]::Bold, 56,
+        (New-Object System.Drawing.PointF(0,0)), [System.Drawing.StringFormat]::GenericDefault)
+    $rb = $path.GetBounds()
+    $mtx = New-Object System.Drawing.Drawing2D.Matrix
+    $mtx.Translate((($S - $rb.Width)/2 - $rb.X), (($S - $rb.Height)/2 - $rb.Y))
+    $path.Transform($mtx)
+    $g.FillPath($white, $path)
 }
 
 # --- tmpl_empty: スレート背景 + 白い破線スクエア + 中央プラス（空のキャンバス）---

@@ -1,11 +1,26 @@
-# MCP / AI Bridge
+# MCP / AI Bridge — 完全リファレンス
 
 起動中の DX12 エディタを Claude Code / Codex から操作するための MCP(Model Context Protocol)連携ガイド。
-AI がシーンを読み・エンティティを足し・コンポーネントを設定し・Lua を貼り・Play/Stop まで回せる。
+AI がシーンを読み・エンティティを生成し・コンポーネントを設定し・Lua を貼り・Play/Stop まで回せる。
 
-- エディタ(C++)が `127.0.0.1:8787` で TCP ブリッジを待ち受ける(改行区切り JSON、単一クライアント)。
-- MCP サーバ(`tools/mcp-server/`)は純 Node(v24+)製で C++ 非依存。Windows / macOS / Linux で動く。
-- ゲーム(封印ランタイム)ではブリッジは起動しない=外から触れない。
+---
+
+## ★ 最重要: 遅延同期の仕組み(旧 `queued:true` は廃止)
+
+`create_entity` / `spawn_model` / `spawn_prefab` / `duplicate_entity` / `delete_entity` /
+`open_scene` / `new_scene` / `play` / `stop` は **「遅延同期」** で動く。
+
+- エンジン内部ではフレーム境界(GPU cmdList が使える瞬間)で実処理する。
+- **ただし Node 側は id で待つだけでよい。** エンジンは処理完了後に【同じ id】で本物の result を返す。
+- 旧仕様の `{queued:true}` は**もう返ってこない**。`entityId` / `sceneGeneration` 等の本物の値が直接返る。
+- **「名前で list して探す」旧パターンは完全廃止。** 返ってきた `entityId` を使い続ける。
+
+```
+AI → dx12_create_entity(type:"box", name:"Floor")
+        ↓ (フレーム境界まで待機)
+エンジン → {entityId: 42, name: "Floor", sceneGeneration: 7}
+AI → dx12_set_transform(entity: 42, ...)   ← そのまま entityId を使う
+```
 
 ---
 
@@ -13,28 +28,30 @@ AI がシーンを読み・エンティティを足し・コンポーネント�
 
 ```bash
 cd tools/mcp-server
+
 # Windows:
 ./install.ps1
+
 # Linux / macOS:
 ./install.sh
 ```
 
-スクリプトは Node v24+ を確認し、`npm install` と自己テスト(`npm test`、エンジン不要)を実行したあと、
-絶対パス解決済みの登録コマンドを表示する。手動でやる場合:
+スクリプトは Node v24+ を確認し `npm install` と自己テスト(`npm test`、エンジン不要)を実行したあと
+絶対パス解決済みの登録コマンドを表示する。手動の場合:
 
 ```bash
 cd tools/mcp-server
 npm install
-node test.ts        # 自己テスト(framing/相関/エラー)
+node test.ts        # 自己テスト(フレーミング/相関/エラー)
 ```
 
-Node v24+ が `.ts` を直接実行する(型ストリップ)ので `tsc` ビルドは不要。
+Node v24+ が `.ts` を直接実行するため `tsc` ビルドは不要。
 
 ---
 
 ## 2. 接続
 
-`<REPO>` は clone した絶対パスに置換する(Windows でもパスは `/` 区切りで可。Node が解釈する)。
+`<REPO>` は clone した絶対パスに置換する(Windows でもパスは `/` 区切りで可)。
 
 ### Claude Code(CLI)
 ```bash
@@ -42,16 +59,18 @@ claude mcp add dx12-engine -- node <REPO>/tools/mcp-server/index.ts
 ```
 
 ### Claude Code(`.mcp.json`)
-`tools/mcp-server/.mcp.json.example` をコピーして `.mcp.json` を作り、`<REPO>` を置換する。
-`.mcp.json` は API トークンが入りうるため `.gitignore` 済み=各自で生成する。
+`tools/mcp-server/.mcp.json.example` をコピーして `.mcp.json` を作り `<REPO>` を置換する。
+`.mcp.json` は `.gitignore` 済み=各自で生成すること。
+
+> 注意: 既定では `env` に `DX12_MCP_PORT` を書かないこと。書くとポート自動探索(`%TEMP%/dx12_mcp.port`)が
+> 無効化され、エディタが 8787 を取れず 8788 等に回った時に繋がらなくなる。ポートを固定したい時だけ書く。
 
 ```json
 {
   "mcpServers": {
     "dx12-engine": {
       "command": "node",
-      "args": ["<REPO>/tools/mcp-server/index.ts"],
-      "env": { "DX12_MCP_HOST": "127.0.0.1", "DX12_MCP_PORT": "8787" }
+      "args": ["<REPO>/tools/mcp-server/index.ts"]
     }
   }
 }
@@ -64,121 +83,211 @@ command = "node"
 args = ["<REPO>/tools/mcp-server/index.ts"]
 ```
 
-### 環境変数
-| 変数 | 既定 | 用途 |
-|---|---|---|
-| `DX12_MCP_HOST` | `127.0.0.1` | エディタのホスト。別マシンの Windows エディタを叩くならその IP |
-| `DX12_MCP_PORT` | `8787` | ブリッジのポート。変える場合はエディタ側 `Application.cpp` の `Start()` と合わせる |
+---
+
+## 3. ポート自動探索
+
+エンジンは起動時に空きポートを **8787〜8797** の範囲で自動採番し、確定したポート番号を
+`%TEMP%\dx12_mcp.port`(Windows)または `$TMPDIR/dx12_mcp.port` に書き込む。
+
+Node(engineClient)はポートを以下の順で解決する:
+
+| 優先度 | 手段 |
+|--------|------|
+| 1 | 環境変数 `DX12_MCP_PORT` |
+| 2 | ファイル `<os.tmpdir()>/dx12_mcp.port` |
+| 3 | 既定値 `8787` |
+
+ホストは `DX12_MCP_HOST`(既定: `127.0.0.1`)で変更可。別マシンのエディタを叩く場合は
+SSH ポートフォワード推奨(エンジン側は `127.0.0.1` のみ待受)。
 
 ---
 
-## 3. 使い方(基本フロー)
+## 4. ツール一覧
 
-1. エディタ(`DX12Engine.exe`)を起動してシーンを開く(ブリッジが 8787 で待受)。
-2. AI から `dx12_list_entities` で対象 id を確認。
-3. `dx12_create_entity` / `dx12_spawn_model` で物を足す(遅延処理。`name` を付けて後追い)。
-4. `dx12_set_transform` / `dx12_set_component` で配置・部品を設定。
-5. `dx12_create_lua_component` → `dx12_attach_lua_component` でロジックを貼る。
-6. `dx12_play` で実行、`dx12_stop` で編集に戻す。`dx12_save_scene` で保存。
+MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り、**遅延同期** = フレーム境界後に本物の値が返る。
 
-> 遅延処理: 生成・モデルロード・モード遷移は GPU/cmdList を伴うためフレーム境界で実行される。
-> `dx12_create_entity` / `dx12_spawn_model` は id を即返さない(`queued`)ので、`name` で `dx12_list_entities` から引く。
+### 4-1. 読み取り系(全て同期)
+
+| ツール | params | 返り値 |
+|--------|--------|--------|
+| `dx12_ping` | `{}` | `{pong, mode, entityCount, sceneGeneration, currentScene, protocolVersion}` |
+| `dx12_list_entities` | `{verbose?:bool, name_prefix?:string, component_type?:string}` | `{entities:[{entityId,id,name,componentTypes?}], count, sceneGeneration}` |
+| `dx12_get_entity` | `{entity:int}` | `{entityId, componentTypes:[...], sceneGeneration, ...(全コンポーネント値)...}` |
+| `dx12_find_entity` | `{name:string}` | `{entityId, name}` または `null` |
+| `dx12_query_entities` | `{tag?:string, box?:[minX,minZ,maxX,maxZ]}` | `{entities:[{entityId,name}], count}` ※tag か box のどちらか必須 |
+| `dx12_list_scenes` | `{}` | `[{path, name}]` |
+| `dx12_list_assets` | `{type?:"model"\|"texture"\|"script"\|"audio"\|"scene"\|"prefab"}` | `[{path, type, name}]` |
+| `dx12_get_mode` | `{}` | `{mode:"Editor"\|"Playing"}` |
+| `dx12_get_log` | `{lines?:int=50}` | `["ログ行", ...]`(末尾N行) |
+| `dx12_describe_components` | `{component?:string}` | `{components:[{jsonKey, settable, removable, fields:[{name,type,default}], note?}]}` |
+| `dx12_get_scene_settings` | `{}` | `{skybox:{envMapPath, iblIntensity, skyboxIntensity, drawSkybox}, note}` |
+| `dx12_screenshot` | `{}` | PNG 画像ブロック + text(`{path(絶対パス), width, height}`) |
+
+### 4-2. 編集系(同期)
+
+| ツール | params | 返り値 |
+|--------|--------|--------|
+| `dx12_set_transform` | `{entity:int, position?:[x,y,z], rotation?:[x,y,z](Euler度), quaternion?:[x,y,z,w], scale?:[x,y,z]}` | `ok` |
+| `dx12_set_component` | `{entity:int, component:string(jsonKey), data:object\|array}` | `{entityId, component}` |
+| `dx12_remove_component` | `{entity:int, component:string}` | `{entityId, removed}` |
+| `dx12_set_parent` | `{entity:int, parent?:int}` | `ok` ※parent 省略で親解除 |
+| `dx12_rename_entity` | `{entity:int, name:string}` | `{name}` ※重複は連番付与 |
+| `dx12_select_entity` | `{entity:int}` | `{selected}` |
+| `dx12_focus_camera` | `{entity:int}` | `{cameraPos:[x,y,z], target, distance}` |
+| `dx12_set_pbr` | `{entity:int, metallic?:f, roughness?:f, uvScaleU?:f, uvScaleV?:f}` | `{entityId, metallic, roughness, uvScaleU, uvScaleV}` |
+| `dx12_set_scene_settings` | `{skybox:{envMapPath?, iblIntensity?, skyboxIntensity?, drawSkybox?}}` | `{applied, envMapRebake}` |
+| `dx12_undo` | `{}` | `{queuedUndo}` |
+| `dx12_redo` | `{}` | `{queuedRedo}` |
+| `dx12_save_scene` | `{path?:string}` | `{path}` ※省略で現在シーンへ上書き |
+| `dx12_create_lua_component` | `{name:string, code:string}` | `{path}` ※書込前に構文検証 |
+| `dx12_attach_lua_component` | `{entity:int, script:string(assets相対)}` | `ok` |
+
+### 4-3. 生成・削除・モード遷移(遅延同期 — 本物の値が返る)
+
+| ツール | params | 返り値 |
+|--------|--------|--------|
+| `dx12_create_entity` | `{type:"box"\|"sphere"\|"plane"\|"empty", name?, position?:[x,y,z], idempotency_key?:string}` | `{entityId, name, sceneGeneration}` |
+| `dx12_spawn_model` | `{path:string(.gltf/.glb/.fbx/.obj), position?:[x,y,z], name?, idempotency_key?:string}` | `{entityId, name, sceneGeneration}` |
+| `dx12_spawn_prefab` | `{path:string(.prefab), position?, name?}` | `{entityId, rootEntityId, entityIds:[...], name, sceneGeneration}` |
+| `dx12_duplicate_entity` | `{entity:int}` | `{entityId, name, sceneGeneration}` |
+| `dx12_delete_entity` | `{entity:int}` | `{deletedEntityId, deletedCount, sceneGeneration}` |
+| `dx12_open_scene` | `{path:string(assets相対)}` | `{sceneName, path, entityCount, sceneGeneration}` |
+| `dx12_new_scene` | `{savePath?:string}` | `{applied}` |
+| `dx12_play` | `{}` | `{mode:"Playing", sceneGeneration}` |
+| `dx12_stop` | `{}` | `{mode:"Editor", sceneGeneration}` |
+
+### 4-4. Node 合成ツール(エンジン非依存。Node が複数 call を順に実行)
+
+| ツール | params | 返り値 |
+|--------|--------|--------|
+| `dx12_batch` | `{ops:[{method:string, params:object}], stopOnError?:bool}` | `{results:[{index, ok, result?, error?, error_code?}]}` |
+| `dx12_focus_and_screenshot` | `{entity:int}` | 画像コンテンツ(PNG) |
+
+**`dx12_batch` 実装**: 各 op を順に await。`stopOnError=true` なら最初の失敗以降を skip 記録。往復削減用。
+**`dx12_focus_and_screenshot` 実装**: `focus_camera` → (1フレーム描画) → `screenshot` → 画像読み込み → 画像コンテンツ返却。
 
 ---
 
-## 4. ツール一覧(全20)
+## 5. describe_components → set_component の流れ
 
-MCP ツール名は `dx12_` 接頭辞付き。応答は `result`(下表)か、失敗時は `エラー: <message>`。
+`set_component` を使う前に `dx12_describe_components` でフィールド定義を確認する。
 
-### シーン / エンティティ読み取り
-| ツール | params | 返り値 |
-|---|---|---|
-| `dx12_list_entities` | `{}` | `[{ id, name }]` |
-| `dx12_get_entity` | `{ entity:int }` | 全コンポーネントと値の JSON |
-| `dx12_list_scenes` | `{}` | `[{ path, name }]`(`assets/scenes/` 配下の `.json`) |
-| `dx12_list_assets` | `{ type?: "model"\|"texture"\|"script"\|"audio"\|"scene"\|"prefab" }` | `[{ path, type, name }]`(省略で全種別) |
-| `dx12_get_mode` | `{}` | `{ mode: "Editor"\|"Playing" }` |
-| `dx12_get_log` | `{ lines?:int=50 }` | `[ "ログ行", ... ]`(末尾 N 行。ファイル無しは空配列) |
+```
+# 1. 使えるコンポーネント一覧を取得
+dx12_describe_components({})
 
-### エンティティ生成 / 削除
-| ツール | params | 返り値 |
-|---|---|---|
-| `dx12_create_entity` | `{ type:"box"\|"sphere"\|"plane"\|"empty", name?, position?:[x,y,z] }` | `{ queued:true }`(遅延) |
-| `dx12_spawn_model` | `{ path:string(assets相対 .gltf/.glb/.fbx/.obj), position?:[x,y,z], name? }` | `{ queued:true, name }`(遅延) |
-| `dx12_delete_entity` | `{ entity:int }` | `ok`(子ごと、Undo可。遅延) |
-| `dx12_rename_entity` | `{ entity:int, name:string }` | `{ name }`(重複時は連番付与) |
+# 2. 特定コンポーネントのフィールドを確認
+dx12_describe_components({component: "pointLight"})
+# → {fields: [{name:"color", type:"vec3", default:[1,1,1]}, {name:"intensity", type:"float", default:1.0}, ...]}
 
-### Transform / コンポーネント / 階層
-| ツール | params | 返り値 |
-|---|---|---|
-| `dx12_set_transform` | `{ entity:int, position?, rotation?(Euler度), scale? }` | `ok`(指定分のみ更新) |
-| `dx12_set_component` | `{ entity:int, component:string, data:object }` | `ok`(無ければ追加・有れば上書き) |
-| `dx12_remove_component` | `{ entity:int, component:string }` | `ok`(core 部品は不可) |
-| `dx12_set_parent` | `{ entity:int(child), parent?:int }` | `ok`(parent 省略で親解除。サイクルは拒否) |
+# 3. フィールドに合わせて set_component を実行
+dx12_set_component({entity: 42, component: "pointLight", data: {color:[1,0.8,0.6], intensity:3.0, range:10.0}})
+```
 
-### Lua スクリプト
-| ツール | params | 返り値 |
-|---|---|---|
-| `dx12_create_lua_component` | `{ name:string, code:string }` | `{ path }`(構文検証付。`assets/components/<name>.lua`) |
-| `dx12_attach_lua_component` | `{ entity:int, script:string(assets相対) }` | `ok`(実行は Play 時) |
-
-### シーン I/O / 実行制御
-| ツール | params | 返り値 |
-|---|---|---|
-| `dx12_save_scene` | `{ path?:string(assets相対 例 "scenes/title.json") }` | `{ path }`(省略時は現在のシーンへ上書き) |
-| `dx12_open_scene` | `{ path:string(assets相対) }` | `{ queued:true }`(遅延ロード) |
-| `dx12_play` | `{}` | `{ mode:"Playing" }` or `{ queued:true }` |
-| `dx12_stop` | `{}` | `{ mode:"Editor" }` or `{ queued:true }` |
-
-### `component` で使える jsonKey(set/remove 共通)
-`pointLight` / `directionalLight` / `spotLight` / `camera` / `rigidBody` /
-`boxCollider` / `sphereCollider` / `capsuleCollider` / `characterController` /
-`tag` / `dataComponent` / `sprite2D`
-
-- `transform` は `dx12_set_component` で設定可(`position` / `rotation` / `scale`)。ただし削除は不可。
-- `data` の形は `dx12_get_entity` が返す jsonKey と同じ(例 `component:"pointLight", data:{color,intensity,range}`)。
-- `meshRenderer` は所有メッシュとの整合が要るため set/remove 非対応。`name` / `transform` は core 不変で remove 不可。
+**tags コンポーネントの例外**: `data` は文字列配列(`["enemy","dynamic"]`)。
+**dataComponent**: `data` は `{key: {t:"string", v:"値"}}` 形式のオブジェクト。
 
 ---
 
-## 5. MCP / AI Bridge パネル(エディタ内モニタ)
+## 6. idempotency_key
 
-エディタの `MCP / AI Bridge` ウィンドウ(ツールメニューから開閉)で接続状態を監視できる。送信はしない読み取り専用モニタ。
+`create_entity` と `spawn_model` は `idempotency_key` を受け付ける。
+同じキーで2回送った場合、2回目は処理をスキップして1回目の `entityId` を返す。
+AI がリトライしたときに重複エンティティを防ぐ用途。
 
-- **ヘッダ**: 待受 `127.0.0.1:<Port>` と接続インジケータ(接続中=緑●、未接続=灰○)。ゲームモードでは「無効」表示。
-- **使い方**: 接続中の MCP サーバ名 / 公開ツール数(新規13+既存7=20)を表示。
-- **直近コマンド履歴**: 受けた `method` と成否(✓ / ✗)を新しい順に最大64件。AI が何を叩いたか追える。
+```json
+{"method":"create_entity", "params":{"type":"box","idempotency_key":"floor-001"}}
+```
 
 ---
 
-## 6. セキュリティモデル
+## 7. sceneGeneration（古い entityId の検出）
+
+`sceneGeneration` は `open_scene` / `new_scene` のたびに +1 される整数で、ほぼ全レスポンスに含まれる。
+シーンを開き直すと entt レジストリが作り直され、以前の `entityId` は無効になる。
+
+- 無効な `entityId` を使うと `error_code=1(NOT_FOUND)` が返る。
+- 解決策: レスポンスの `sceneGeneration` が変わったら、`dx12_ping` で現世代を確認し
+  `dx12_list_entities` でエンティティを引き直す。
+- `error_code=4(STALE_SCENE)` は将来用に予約済みだが**現状は未送出**（今は `NOT_FOUND` + `sceneGeneration` の変化で判断）。
+
+---
+
+## 8. error_code 一覧
+
+| コード | 定数 | 意味と対処 |
+|--------|------|-----------|
+| 1 | `NOT_FOUND` | 指定エンティティ/アセット/コンポーネントが存在しない。ID や path を確認。 |
+| 2 | `INVALID_PARAM` | パラメータ型・値が不正。`describe_components` でフィールド型を確認。 |
+| 3 | `MODE_CONFLICT` | Playing 中に生成系を呼んだ、またはカメラ無しで Play しようとした。先に `dx12_stop` → 再試行。 |
+| 4 | `STALE_SCENE` | （予約・現状未送出）シーン再読込での entityId 失効。実際は `NOT_FOUND(1)` が返るので `sceneGeneration` 変化で判断。 |
+| 6 | `UNKNOWN_COMPONENT` | `component` の jsonKey が不明。`dx12_describe_components` で有効な jsonKey を確認。 |
+| 7 | `INTERNAL` | エンジン内部エラー。`dx12_get_log` でエンジンログを確認。 |
+
+---
+
+## 9. 検証ループ
+
+変更をかけた後は以下のループで目視確認できる:
+
+```
+1. dx12_set_transform / dx12_set_component で変更
+2. dx12_focus_and_screenshot(entity: <entityId>) → PNG で確認
+3. dx12_get_log(lines: 30) → エンジンのエラー/警告を確認
+4. 問題があれば dx12_undo で戻す
+```
+
+Play/Stop テスト:
+```
+dx12_play → (ゲームロジック動作) → dx12_stop
+→ dx12_focus_and_screenshot でシーン確認
+→ dx12_get_log でランタイムエラー確認
+```
+
+---
+
+## 10. セキュリティモデル
 
 ブリッジは **エディタ専用**(ゲーム=封印ランタイムでは起動しない)。
 
-- 受けるのは **`127.0.0.1` のみ**。外部ホストからは到達不可。
-- 最初の1行が JSON オブジェクト(`{`)で始まらない接続は即切断 → ブラウザの HTTP/WebSocket ドライブバイ(localhost CSRF)を遮断。
-- パス系ツール(`attach_lua_component` / `spawn_model` / `save_scene` / `open_scene`)は **assets 相対のみ**。
-  絶対パス・`..`・`\`・`:` を拒否し、assets 外のファイルに触らせない。
+- 受けるのは **`127.0.0.1`** のみ。外部ホストからは到達不可。
+- 最初の1行が JSON オブジェクト(`{`)で始まらない接続は即切断
+  → ブラウザの HTTP/WebSocket ドライブバイ(localhost CSRF)を遮断。
+- パス系ツールは **assets 相対のみ**。絶対パス・`..`・`\`・`:` を拒否。
 - `create_lua_component` の Lua は書き込み前に構文チェック(コンパイルのみ・非実行)。
-
-### 残存リスク
-ポートは無認証。同一マシンの別ローカルプロセス(=既にユーザ権限を持つ)は接続でき、貼った Lua は `io` 有効の state で走る。
-**エディタ=信頼された開発機**という前提で許容。アップグレード経路: ポートのトークン認証、MCP 実行用に `io`/`os` を外した別 sol::state。
+- **認証なし(localhost 開発機前提)**。同一マシンの別ユーザプロセスは接続可能なため、
+  共有開発機では注意。アップグレード経路: ポートのトークン認証。
 
 ---
 
-## 7. トラブルシュート
+## 11. トラブルシュート
 
 | 症状 | 対処 |
-|---|---|
-| `エディタに繋がらへん (127.0.0.1:8787)` | エディタが起動してるか・シーンを開いてるか確認。ゲームモードではブリッジは起動しない。 |
-| `engine timeout` | 重い遅延処理待ち、またはエディタがフレームを回してない(別モーダル等)。エディタを前面にしてリトライ。 |
-| ポート競合 | クライアント側 `DX12_MCP_PORT` とエディタ側 `Application.cpp` の `Start()` を同じ値に。 |
-| `node が見つからへん` / `.ts` が実行できない | Node **v24+** を入れる(型ストリップに必要)。`node --version` で確認。 |
-| ツールが AI 側に出ない | `claude mcp add` 済みか、`.mcp.json` の `args` パスが正しいか確認。MCP サーバ登録後はクライアント再起動。 |
-| `queued:true` のまま id が分からない | 遅延処理。少し待って `dx12_list_entities` を `name` で引く。 |
-| 別マシンから繋ぎたい | `DX12_MCP_HOST` をエディタ機の IP に。エディタは `127.0.0.1` 待受なので、リモート時は SSH ポートフォワード等で localhost に橋渡しする。 |
+|------|------|
+| `エディタに繋がらない` | エディタが起動しているか・シーンを開いているか確認。ゲームモードではブリッジ起動しない。 |
+| `engine timeout` | エディタがフレームを回していない(別モーダル等)。エディタを前面にしてリトライ。 |
+| ポート競合 | `%TEMP%\dx12_mcp.port` を読む、または `DX12_MCP_PORT` 環境変数を合わせる。 |
+| `node が見つからない` / `.ts` 実行不可 | Node **v24+** を入れる(`node --version` で確認)。 |
+| ツールが AI 側に出ない | `claude mcp add` 済みか、`.mcp.json` の `args` パスが正しいか確認。登録後はクライアント再起動。 |
+| 古い entityId で `NOT_FOUND(1)` | シーンを開き直した。`dx12_ping` で `sceneGeneration` 確認 → `dx12_list_entities` で引き直す。 |
+| `MODE_CONFLICT(3)` | Playing 中に生成系ツールを呼んだ。`dx12_stop` してから再試行。 |
+| 生成したのに entityId が見つからない | `entityId` をそのまま使う。`name` で検索し直す必要はない(遅延同期で本物の id が返る)。 |
+| 別マシンから繋ぎたい | SSH ポートフォワードで localhost に橋渡しし、`DX12_MCP_HOST` + `DX12_MCP_PORT` を合わせる。 |
 
 ---
 
-関連: `tools/mcp-server/README.md`(サーバ構成)、`docs/SCRIPTING.md` / `docs/SCRIPT_COMPONENTS.md`(Lua)。
+## 12. エンジン内部プロトコル(Node↔エンジン間。参考)
+
+改行区切り JSON、単一 TCP クライアント。
+
+- **リクエスト**: `{"id":<正整数>, "method":<string>, "params":<object>}\n`
+- **レスポンス(成功)**: `{"id":<同id>, "ok":true, "result":<any>}\n`
+- **レスポンス(失敗)**: `{"id":<同id>, "ok":false, "error":<string>, "error_code":<int>}\n`
+
+遅延同期 method は受信時は何も返さず、フレーム境界で実処理後に同じ id でレスポンスを送る。
+
+---
+
+関連: `tools/mcp-server/AGENTS.md`(AI エージェント運用ガイド)、`tools/mcp-server/README.md`(サーバ構成)、
+`docs/AUTHORING.md`、`docs/SCRIPT_COMPONENTS.md`(Lua)。

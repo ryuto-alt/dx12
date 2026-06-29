@@ -57,7 +57,7 @@ MCP / AI Bridge」パネルで接続状態とコマンド履歴を確認でき�
 |---|---|
 | `src/` | エンジン本体（core / renderer / ecs / physics / scripting / editor …） |
 | `tools/mcp-server/` | MCP サーバ（Node v24+、`index.ts`）と接続スクリプト |
-| `docs/` | 設計ドキュメント（MCP 連携・アセット保護など） |
+| `docs/` | 設計ドキュメント（MCP 連携・アセット保護など）。[`docs/WORKLOG.md`](docs/WORKLOG.md) = 実装履歴 + 別マシン再開手順 |
 | `tests/` | 単体テスト |
 
 ---

@@ -137,6 +137,38 @@ static const char* TemplateSceneJson(const std::string& tmpl)
   }
 })JSON";
     }
+    if (tmpl == "2d")
+    {
+        // 横スクロール 2D（正射投影 projection=1）。カメラは -Z から +Z を素直に見る
+        // ので回転ゼロ。アクションは XY 平面（X=横, Y=縦）、Z は 0 固定で進める。
+        return R"JSON({
+  "entities": [
+    { "name": "MainCamera",
+      "camera": { "fovDegrees": 60.0, "nearClip": 0.1, "farClip": 1000.0, "isActive": true, "projection": 1, "orthoSize": 6.0 },
+      "transform": { "position": [0.0, 3.0, -12.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0] } },
+    { "name": "Sun",
+      "directionalLight": { "direction": [-0.3, -0.7, -0.6], "color": [1.0, 0.97, 0.9], "intensity": 1.15, "ambient": 0.55 },
+      "transform": { "position": [0.0, 12.0, -6.0], "rotation": [45.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0] } },
+    { "name": "Ground", "primitive": "box", "color": [0.18, 0.22, 0.3],
+      "transform": { "position": [0.0, -0.5, 0.0], "rotation": [0,0,0], "scale": [40.0, 1.0, 1.0] } },
+    { "name": "Player", "primitive": "box", "color": [0.3, 0.85, 0.5],
+      "transform": { "position": [0.0, 1.0, 0.0], "rotation": [0,0,0], "scale": [0.9, 1.6, 0.9] } },
+    { "name": "Platform_1", "primitive": "box", "color": [0.55, 0.45, 0.7],
+      "transform": { "position": [-5.0, 2.0, 0.0], "rotation": [0,0,0], "scale": [3.0, 0.5, 1.0] } },
+    { "name": "Platform_2", "primitive": "box", "color": [0.55, 0.45, 0.7],
+      "transform": { "position": [4.5, 3.2, 0.0], "rotation": [0,0,0], "scale": [3.0, 0.5, 1.0] } },
+    { "name": "Coin_1", "primitive": "sphere", "color": [1.0, 0.85, 0.2],
+      "transform": { "position": [-5.0, 3.0, 0.0], "rotation": [0,0,0], "scale": [0.5, 0.5, 0.5] } },
+    { "name": "Coin_2", "primitive": "sphere", "color": [1.0, 0.85, 0.2],
+      "transform": { "position": [4.5, 4.2, 0.0], "rotation": [0,0,0], "scale": [0.5, 0.5, 0.5] } }
+  ],
+  "postProcess": {
+    "enabled": true,
+    "bloomOn": true, "bloom": 0.5, "bloomThreshold": 0.65,
+    "saturationOn": true, "saturation": 1.18
+  }
+})JSON";
+    }
     // empty（最小構成: グリッド + 床 + 立方体 + 光源 + カメラ）
     return R"JSON({
   "entities": [
@@ -274,6 +306,43 @@ function OnUpdate(dt)
   cam.transform.rotation = Vec3.new(pitch, yaw, 0)
 
   ui:text(24, 24, "WASD: move   Mouse: orbit   ESC: release mouse", 20, 0.85, 0.9, 1.0, 1.0)
+end
+)LUA";
+    }
+    if (tmpl == "2d")
+    {
+        return R"LUA(-- 2D テンプレート: 横スクロール プラットフォーマー
+-- 操作: A/D or ←/→=移動 / Space=ジャンプ。アクションは XY 平面、Z は固定。
+local SPEED   = 7.0     -- 横移動速度(m/s)
+local JUMP    = 9.0     -- ジャンプ初速
+local GRAVITY = 22.0    -- 重力加速度
+local GROUND  = 1.0     -- 接地時のプレイヤー中心Y
+
+local vy = 0
+local onGround = true
+
+function OnUpdate(dt)
+  local player = scene:findEntity("Player")
+  if not (player and player:isValid()) then return end
+
+  local p = player.transform.position
+  local x, y = p.x, p.y
+
+  -- 横移動(X のみ)
+  local dir = 0
+  if keyDown("D") or keyDown("RIGHT") then dir = dir + 1 end
+  if keyDown("A") or keyDown("LEFT")  then dir = dir - 1 end
+  x = x + dir * SPEED * dt
+
+  -- ジャンプ + 重力(Y)
+  if onGround and keyPressed("SPACE") then vy = JUMP; onGround = false end
+  vy = vy - GRAVITY * dt
+  y = y + vy * dt
+  if y <= GROUND then y = GROUND; vy = 0; onGround = true end
+
+  player.transform.position = Vec3.new(x, y, 0)
+
+  ui:text(24, 24, "A/D or Arrows: move   Space: jump", 20, 0.85, 0.9, 1.0, 1.0)
 end
 )LUA";
     }

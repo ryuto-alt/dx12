@@ -115,6 +115,11 @@ struct GridPlane
     bool enabled = true;
 };
 
+// エディタ用グリッド床の一辺の長さ(m)。原点中心に ±kEditorGridSize/2(=250m) をカバーする。
+// シェーダ(ForwardGrid.hlsl)の距離フェードはこの半分より内側で 0 になるよう調整してあるので、
+// 平面のフチが矩形に途切れて見えない(無限グリッド風)。spawn/save/load で必ず同じ値を使うこと。
+inline constexpr f32 kEditorGridSize = 500.0f;
+
 struct PointLight
 {
     DirectX::XMFLOAT3 color = {1.0f, 1.0f, 1.0f};

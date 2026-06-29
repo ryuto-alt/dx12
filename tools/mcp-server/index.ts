@@ -1,240 +1,751 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import fs from "node:fs";
 import { EngineClient } from "./engineClient.ts";
 
 // DX12 ゲームエンジン用 MCP サーバ。Codex / Claude Code から接続し、
-// 起動中のエディタ(TCP 127.0.0.1:8787)を叩いてゲームを作っていくための入口。
-// v1: エンティティ/コンポーネント/シーン/アセット/再生制御の計20メソッドを公開。
+// 起動中のエディタ(TCP 127.0.0.1:<port>)を叩いてゲームを作っていくための入口。
+//
+// ★遅延同期: create/spawn/delete/duplicate/open_scene/new_scene/play/stop は
+//   エンジンがフレーム境界で実処理してから【同じ id】で本物の result を返す。
+//   このサーバは id で待つだけなので、ツールは本物の entityId 等を【同期で】返す。
+//   旧来の「{queued} が返るので後で name で list して探す」パターンは完全廃止。
+//
+// ツール名は dx12_ 接頭辞。entity パラメータ(int)はエンジンに合わせてそのまま渡す(変換しない)。
+// result のフィールド名(entityId 等)もエンジンの返り値をそのまま通す。
 
 const engine = new EngineClient();
-const server = new McpServer({ name: "dx12-engine", version: "0.2.0" });
+const server = new McpServer({ name: "dx12-engine", version: "0.3.0" });
 
-type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
+type ToolResult = {
+  content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[];
+  structuredContent?: Record<string, unknown>;
+  isError?: boolean;
+};
 
+// 全 JSON ツール共通の outputSchema。エンジンの result は method ごとに形が違い、
+// 配列や null も返る(list_scenes 等)。structuredContent は JSON オブジェクト必須なので
+// { result: <生の結果> } で一様にラップする(z.any() なので必ず検証を通る)。
+// ※Claude Code / Codex は structuredContent を読まないため、本体は content[0].text の JSON 文字列。
+const OUT = {
+  result: z.any().describe("エンジンからの生の結果。実際の形は各ツールの説明 / dx12_describe_components を参照。text にも同内容を JSON 文字列で格納。"),
+};
+
+// エラーを日本語整形(error_code があれば付ける)。isError:true なら outputSchema 検証はスキップされる。
+function errResult(e: any): ToolResult {
+  const code = e?.code;
+  const msg = code != null ? `エラー(code=${code}): ${e.message}` : `エラー: ${e.message}`;
+  return { content: [{ type: "text", text: msg }], isError: true };
+}
+
+// JSON 結果ツール用ラッパ。result を text(JSON 文字列) + structuredContent({result}) の両方に入れる。
 async function run(fn: () => Promise<unknown>): Promise<ToolResult> {
   try {
     const data = await fn();
     const text = typeof data === "string" ? data : JSON.stringify(data, null, 2);
-    return { content: [{ type: "text", text }] };
+    return {
+      content: [{ type: "text", text }],
+      structuredContent: { result: data ?? null },
+    };
   } catch (e: any) {
-    return { content: [{ type: "text", text: `エラー: ${e.message}` }], isError: true };
+    return errResult(e);
   }
 }
 
-// ── 既存7ツール(エンティティ基本操作) ─────────────────────────────
+// 画像結果(PNG)を image ブロック + text(path/サイズ) で返す。
+function imageResult(pngPath: string, extra: Record<string, unknown>): ToolResult {
+  const data = fs.readFileSync(pngPath).toString("base64");
+  return {
+    content: [
+      { type: "image", data, mimeType: "image/png" },
+      { type: "text", text: JSON.stringify({ path: pngPath, ...extra }) },
+    ],
+  };
+}
 
-server.tool(
-  "dx12_list_entities",
-  "起動中エディタで今開いているシーンのエンティティ一覧(id, name)を返す。アタッチ先を知るのに使う。",
+type Ann = { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean };
+
+// JSON ツール登録ヘルパ。openWorldHint は常に false(外部世界とやり取りしない閉じたツール群)。
+function reg(
+  name: string,
+  title: string,
+  description: string,
+  inputSchema: Record<string, z.ZodTypeAny>,
+  ann: Ann,
+  handler: (args: any) => Promise<ToolResult>,
+) {
+  server.registerTool(
+    name,
+    {
+      title,
+      description,
+      inputSchema,
+      outputSchema: OUT,
+      annotations: { title, openWorldHint: false, ...ann },
+    },
+    handler,
+  );
+}
+
+// ── 共通 zod 部品 ────────────────────────────────────────────────
+const vec3 = z.array(z.number()).length(3);
+const entityId = z.number().int().describe("エンティティ id(int)。dx12_list_entities / dx12_find_entity で取得。");
+// エンティティ指定(id か name のどちらか)。name は完全一致。Stop / open_scene 後は id が変わる
+// (sceneGeneration も変わる)ので、安定して操作したいときは name 指定が便利。両方省略は不可。
+const entityRef = {
+  entity: z.number().int().optional().describe("エンティティ id(int)。name と排他。"),
+  name: z.string().optional().describe("エンティティ名(完全一致)。id の代わりに使える。Stop 後など id が変わる場面で安定。"),
+};
+
+// ════════════════════════════════════════════════════════════════
+//  読み取り系(同期・readOnly)
+// ════════════════════════════════════════════════════════════════
+
+reg(
+  "dx12_ping",
+  "疎通確認",
+  "エディタとの疎通確認。mode(Editor/Playing)・entityCount・sceneGeneration・currentScene・protocolVersion を返す。まず最初に叩いて生きてるか確認するのに使う。",
   {},
-  () => run(() => engine.call("list_entities", {})),
+  { readOnlyHint: true },
+  () => run(() => engine.call("ping", {})),
 );
 
-server.tool(
+reg(
+  "dx12_list_entities",
+  "エンティティ一覧",
+  "今開いてるシーンのエンティティ一覧(entityId, name)を返す。verbose で componentTypes も付く。name_prefix / component_type で絞り込み可。{entities, count, sceneGeneration} が返る。",
+  {
+    verbose: z.boolean().optional().describe("true で各エンティティの componentTypes も含める。"),
+    name_prefix: z.string().optional().describe("名前の前方一致フィルタ。"),
+    component_type: z.string().optional().describe("指定 jsonKey を持つものだけに絞る(例 pointLight)。"),
+  },
+  { readOnlyHint: true },
+  ({ verbose, name_prefix, component_type }) =>
+    run(() => engine.call("list_entities", { verbose, name_prefix, component_type })),
+);
+
+reg(
+  "dx12_get_entity",
+  "エンティティ詳細",
+  "エンティティの全コンポーネントと値を JSON で読む(編集前の状態確認に使う)。entity(id) か name(完全一致)で指定。返り値は entityId, componentTypes, luaReadable(Lua から entity.<key> で直接読めるコンポーネント=現状 transform のみ), sceneGeneration と、各コンポーネントの jsonKey をキーにした値。",
+  { ...entityRef },
+  { readOnlyHint: true },
+  ({ entity, name }) => run(() => engine.call("get_entity", { entity, name })),
+);
+
+reg(
+  "dx12_find_entity",
+  "名前でエンティティ検索",
+  "名前の完全一致でエンティティを1件探す。見つかれば {entityId, name}、無ければ null。",
+  { name: z.string().describe("探すエンティティ名(完全一致)。") },
+  { readOnlyHint: true },
+  ({ name }) => run(() => engine.call("find_entity", { name })),
+);
+
+reg(
+  "dx12_query_entities",
+  "タグ/領域でエンティティ検索",
+  "tag か box のどちらかで複数エンティティを探す(どちらか必須)。box は XZ 平面の矩形 [minX,minZ,maxX,maxZ]。{entities:[{entityId,name}], count} を返す。",
+  {
+    tag: z.string().optional().describe("このタグを持つエンティティを列挙。"),
+    box: z.array(z.number()).length(4).optional().describe("[minX,minZ,maxX,maxZ]。この XZ 矩形に入るエンティティを列挙。"),
+  },
+  { readOnlyHint: true },
+  ({ tag, box }) => run(() => engine.call("query_entities", { tag, box })),
+);
+
+reg(
+  "dx12_list_scenes",
+  "シーン一覧",
+  "assets/scenes 配下のシーン(.json)一覧 [{path, name}] を返す。dx12_open_scene の path を選ぶのに使う。",
+  {},
+  { readOnlyHint: true },
+  () => run(() => engine.call("list_scenes", {})),
+);
+
+reg(
+  "dx12_list_assets",
+  "アセット一覧",
+  "assets 配下のアセット一覧 [{path, type, name}] を返す。type で種別フィルタ(省略で全種別)。spawn_model / spawn_prefab / attach の path 探索に使う。",
+  {
+    type: z.enum(["model", "texture", "script", "audio", "scene", "prefab"]).optional().describe("種別フィルタ。省略で全種別。"),
+  },
+  { readOnlyHint: true },
+  ({ type }) => run(() => engine.call("list_assets", { type })),
+);
+
+reg(
+  "dx12_get_mode",
+  "モード取得",
+  "現在のエンジンモード(Editor / Playing)を返す。",
+  {},
+  { readOnlyHint: true },
+  () => run(() => engine.call("get_mode", {})),
+);
+
+reg(
+  "dx12_get_log",
+  "ログ取得",
+  "エンジンログの末尾 N 行を配列で返す。エラーや print() の確認に使う。",
+  { lines: z.number().int().optional().describe("取得行数(既定 50)。") },
+  { readOnlyHint: true },
+  ({ lines }) => run(() => engine.call("get_log", { lines })),
+);
+
+reg(
+  "dx12_describe_components",
+  "コンポーネント辞書",
+  "set_component する前にフィールドを知るための辞書。component 省略で全コンポーネント、指定でそれだけ。返り値 components:[{jsonKey, settable, removable, fields:[{name,type,default}], note?}]。dx12_set_component の data を組み立てる前に必ず参照すると確実。",
+  { component: z.string().optional().describe("特定 jsonKey の定義だけ欲しい時に指定(例 pointLight)。省略で全件。") },
+  { readOnlyHint: true },
+  ({ component }) => run(() => engine.call("describe_components", { component })),
+);
+
+reg(
+  "dx12_describe_lua_api",
+  "Lua API 辞書",
+  "Lua コンポーネントスクリプトから使えるバインディング一覧を binding ごと(entity/transform/Vec3/self/scene/input/camera/physics/audio/ui/fx/events/globals/prelude)に返す静的辞書。★重要: MCP で見えるコンポーネントと Lua から読める API は違う。entity から直接読めるデータは transform だけで、entity.boxCollider 等は nil(collider/rigidBody の値は physics:getVelocity(e) 等の別 API 経由)。Lua を書く前にこれで実際に読める API を確認すると取り違えを防げる。",
+  {},
+  { readOnlyHint: true },
+  () => run(() => engine.call("describe_lua_api", {})),
+);
+
+reg(
+  "dx12_get_lua_component_state",
+  "Luaプロパティ状態取得",
+  "エンティティの LuaScript の現在のプロパティ値を全部返す(スキーマ基準なので未上書きの既定値も含む。get_entity は保存済みの上書きしか出さない)。{scriptPath, enabled, started, loadError, properties:[{name,type,value,isOverride}]}。dx12_set_lua_property で変える前の確認に。entity(id) か name 指定。",
+  { ...entityRef },
+  { readOnlyHint: true },
+  ({ entity, name }) => run(() => engine.call("get_lua_component_state", { entity, name })),
+);
+
+reg(
+  "dx12_set_lua_property",
+  "Luaプロパティ設定",
+  "LuaScript のプロパティを1つ書き換える(スクリプトの properties 宣言にあるものだけ)。type に応じて value は number/bool/string/[x,y,z]。Playing 中なら即再注入(スクリプト再ロード=OnStart 再実行)、Editor 中は保存だけで次 Play から反映。entity(id) か name 指定。型が不安なら先に dx12_get_lua_component_state で確認。",
+  {
+    ...entityRef,
+    key: z.string().describe("プロパティ名(スクリプトの properties に宣言済みのもの)。"),
+    value: z.any().describe("値。型はプロパティに合わせる: number / bool / string / [x,y,z](vec3,color)。"),
+  },
+  { idempotentHint: true },
+  ({ entity, name, key, value }) =>
+    run(() => engine.call("set_lua_property", { entity, name, key, value })),
+);
+
+reg(
+  "dx12_project_world_to_screen",
+  "ワールド→画面投影",
+  "エンティティのワールド座標を、今シーンビューを描いているカメラで画面ピクセルへ投影する。{x, y, visible, depth, w, width, height, mode}。★Playing 中は m_camera=アクティブなゲームカメラなので「ゲーム画面で player が中央(x≈width/2, y≈height/2)か」「画面内(visible)か」を数値で検証できる(dx12_screenshot と同じカメラ)。w<=0 はカメラ背面。entity(id) か name 指定。",
+  { ...entityRef },
+  { readOnlyHint: true },
+  ({ entity, name }) => run(() => engine.call("project_world_to_screen", { entity, name })),
+);
+
+reg(
+  "dx12_get_scene_settings",
+  "シーン設定取得",
+  "シーンのスカイボックス/IBL 設定を返す。{skybox:{envMapPath,iblIntensity,skyboxIntensity,drawSkybox}, note}。dx12_set_scene_settings で変える前の確認に使う。",
+  {},
+  { readOnlyHint: true },
+  () => run(() => engine.call("get_scene_settings", {})),
+);
+
+// ════════════════════════════════════════════════════════════════
+//  編集系(同期)
+// ════════════════════════════════════════════════════════════════
+
+reg(
+  "dx12_set_transform",
+  "Transform 設定",
+  "エンティティの Transform を設定する。指定したフィールドだけ更新。回転は rotation(Euler 度) か quaternion([x,y,z,w]) のどちらか。即時反映で ok を返す。",
+  {
+    ...entityRef,
+    position: vec3.optional().describe("[x,y,z]"),
+    rotation: vec3.optional().describe("[x,y,z] Euler 度。quaternion と併用しない。"),
+    quaternion: z.array(z.number()).length(4).optional().describe("[x,y,z,w] クォータニオン。rotation と併用しない。"),
+    scale: vec3.optional().describe("[x,y,z]"),
+  },
+  { idempotentHint: true },
+  ({ entity, name, position, rotation, quaternion, scale }) =>
+    run(() => engine.call("set_transform", { entity, name, position, rotation, quaternion, scale })),
+);
+
+reg(
+  "dx12_set_component",
+  "コンポーネント設定",
+  "コンポーネントを設定(無ければ追加・あれば置換)。component は jsonKey、data は dx12_describe_components の形。tags は data=文字列配列、DataComponent(data) は {key:{t,v}} オブジェクト。即時反映で {entityId, component} を返す。形が不安なら先に dx12_describe_components を見るとええ。",
+  {
+    ...entityRef,
+    component: z.string().describe("jsonKey。例: pointLight, directionalLight, spotLight, camera, rigidBody, boxCollider, transform, tags, data"),
+    data: z.union([z.record(z.any()), z.array(z.any())]).describe("コンポーネントの値。オブジェクト or 配列(tags は文字列配列)。dx12_describe_components の fields に合わせる。"),
+  },
+  { idempotentHint: true },
+  ({ entity, name, component, data }) =>
+    run(() => engine.call("set_component", { entity, name, component, data })),
+);
+
+reg(
+  "dx12_remove_component",
+  "コンポーネント除去",
+  "エンティティからコンポーネントを除去する。component は jsonKey。transform/name などコア不変のものは除去不可。即時反映で {entityId, removed} を返す。",
+  {
+    ...entityRef,
+    component: z.string().describe("除去する jsonKey。例: pointLight, rigidBody, boxCollider, sphereCollider, camera, tags"),
+  },
+  { idempotentHint: true },
+  ({ entity, name, component }) =>
+    run(() => engine.call("remove_component", { entity, name, component })),
+);
+
+reg(
+  "dx12_set_parent",
+  "親子設定",
+  "エンティティの親を設定する。parent 省略で親を解除。サイクルになる指定は拒否。即時反映で ok を返す。",
+  {
+    ...entityRef,
+    parent: z.number().int().optional().describe("親エンティティ id。省略で親解除。"),
+  },
+  { idempotentHint: true },
+  ({ entity, name, parent }) => run(() => engine.call("set_parent", { entity, name, parent })),
+);
+
+reg(
+  "dx12_rename_entity",
+  "リネーム",
+  "エンティティ名を変更する。重複名は連番(name_2 など)が付与され、確定した {name} を返す。",
+  {
+    entity: entityId,
+    name: z.string().describe("新しい名前。"),
+  },
+  { idempotentHint: true },
+  ({ entity, name }) => run(() => engine.call("rename_entity", { entity, name })),
+);
+
+reg(
+  "dx12_select_entity",
+  "選択",
+  "エディタ上で対象エンティティを選択状態にする(Inspector 表示が切り替わる)。entity(id) か name 指定。{selected} を返す。",
+  { ...entityRef },
+  { idempotentHint: true },
+  ({ entity, name }) => run(() => engine.call("select_entity", { entity, name })),
+);
+
+reg(
+  "dx12_focus_camera",
+  "カメラフォーカス",
+  "エディタのフライカメラを対象エンティティに寄せる。entity(id) か name 指定。{cameraPos, target, distance} を返す。撮影前に画角を合わせるのに使う(dx12_focus_and_screenshot もある)。",
+  { ...entityRef },
+  { idempotentHint: true },
+  ({ entity, name }) => run(() => engine.call("focus_camera", { entity, name })),
+);
+
+reg(
+  "dx12_set_pbr",
+  "PBR マテリアル設定",
+  "エンティティの PBR パラメータ(metallic/roughness/UV スケール)を設定する。指定分のみ更新。即時反映で {entityId, metallic, roughness, uvScaleU, uvScaleV} を返す。",
+  {
+    ...entityRef,
+    metallic: z.number().optional().describe("金属度 0..1"),
+    roughness: z.number().optional().describe("粗さ 0..1"),
+    uvScaleU: z.number().optional().describe("UV の U 方向スケール(タイリング)"),
+    uvScaleV: z.number().optional().describe("UV の V 方向スケール(タイリング)"),
+  },
+  { idempotentHint: true },
+  ({ entity, name, metallic, roughness, uvScaleU, uvScaleV }) =>
+    run(() => engine.call("set_pbr", { entity, name, metallic, roughness, uvScaleU, uvScaleV })),
+);
+
+reg(
+  "dx12_set_color",
+  "基本色設定",
+  "メッシュの基本色(頂点色の乗算)を設定する。足場やコインの色付けに。color は [r,g,b](0..1)。entity(id) か name 指定。金属感は dx12_set_pbr の metallic/roughness と併用。",
+  {
+    ...entityRef,
+    color: vec3.describe("[r,g,b] 0..1。例: 金色=[1,0.84,0]"),
+  },
+  { idempotentHint: true },
+  ({ entity, name, color }) => run(() => engine.call("set_color", { entity, name, color })),
+);
+
+reg(
+  "dx12_set_scene_settings",
+  "シーン設定変更",
+  "シーンのスカイボックス/IBL を設定する。skybox 内の指定フィールドだけ適用。envMapPath を変えると {applied, envMapRebake} を返し再ベイクが走ることがある。",
+  {
+    skybox: z.object({
+      envMapPath: z.string().optional().describe("環境マップ(HDR/EXR 等)の assets 相対パス。"),
+      iblIntensity: z.number().optional().describe("IBL(間接光)の強さ。"),
+      skyboxIntensity: z.number().optional().describe("スカイボックス描画の明るさ。"),
+      drawSkybox: z.boolean().optional().describe("スカイボックスを描画するか。"),
+    }).describe("スカイボックス設定。指定したフィールドのみ適用。"),
+  },
+  { idempotentHint: true },
+  ({ skybox }) => run(() => engine.call("set_scene_settings", { skybox })),
+);
+
+reg(
+  "dx12_undo",
+  "Undo",
+  "直前の編集操作を取り消す。フレーム境界で適用され {queuedUndo} を返す(取り消し自体は次フレームで反映)。",
+  {},
+  {},
+  () => run(() => engine.call("undo", {})),
+);
+
+reg(
+  "dx12_redo",
+  "Redo",
+  "取り消した操作をやり直す。フレーム境界で適用され {queuedRedo} を返す。",
+  {},
+  {},
+  () => run(() => engine.call("redo", {})),
+);
+
+reg(
+  "dx12_save_scene",
+  "シーン保存",
+  "現在のシーンを保存する。path は assets 相対(例 scenes/title.json)。省略時は現在開いてるシーンへ上書き。{path} を返す。",
+  { path: z.string().optional().describe("assets 相対パス。例: scenes/title.json。省略で上書き保存。") },
+  { idempotentHint: true },
+  ({ path }) => run(() => engine.call("save_scene", { path })),
+);
+
+reg(
   "dx12_create_lua_component",
-  "Lua コンポーネント(.lua)を assets/components/ に作成する。構文は作成時に検証され、エラーなら書き込まず error を返す。返り値 path を attach の script に渡す。",
+  "Luaコンポーネント作成",
+  "Lua コンポーネント(.lua)を assets/components/ に作成する。書き込み前に構文検証され、エラーなら書かず error を返す。返り値 {path} を dx12_attach_lua_component の script に渡す。",
   {
     name: z.string().describe("コンポーネント名(拡張子・パス区切りなし)。例: Health"),
     code: z.string().describe("Lua コード全体。properties / OnStart / OnUpdate を含められる。"),
   },
+  {},
   ({ name, code }) => run(() => engine.call("create_lua_component", { name, code })),
 );
 
-server.tool(
+reg(
   "dx12_attach_lua_component",
-  "Lua コンポーネントをエンティティにアタッチする。エディタ上では貼るだけで、実際の初期化/実行は Play 時(OnStart/OnUpdate)。script は create が返した assets 相対パス(assets 配下限定)。",
+  "Luaコンポーネントアタッチ",
+  "Lua コンポーネントをエンティティにアタッチする。エディタ上では貼るだけで、実際の初期化/実行は Play 時(OnStart/OnUpdate)。script は assets 相対(assets 配下限定)。即時反映で ok を返す。",
   {
-    entity: z.number().int().describe("エンティティ id(dx12_list_entities の id)"),
+    ...entityRef,
     script: z.string().describe("assets 相対パス。例: components/Health.lua"),
   },
-  ({ entity, script }) => run(() => engine.call("attach_lua_component", { entity, script })),
+  {},
+  ({ entity, name, script }) => run(() => engine.call("attach_lua_component", { entity, name, script })),
 );
 
-server.tool(
+// ════════════════════════════════════════════════════════════════
+//  編集系(遅延同期)— 本物の結果が【同期で】返る。{queued} は返らへん。
+// ════════════════════════════════════════════════════════════════
+
+reg(
   "dx12_create_entity",
-  "エンティティを生成する(エディタのみ)。生成はフレーム境界で遅延処理されるため id は即返らない。name を付けて後から dx12_list_entities / dx12_get_entity で引く。",
+  "エンティティ生成",
+  "エンティティを生成する(エディタ専用)。フレーム境界で実処理されるが、Node が完了を待って【本物の {entityId, name, sceneGeneration} を同期で返す】({queued} は返らへん)。idempotency_key を付けると、再試行で同じキーが来ても二重生成されず同じ結果が返る。",
   {
-    type: z.enum(["box", "sphere", "plane", "empty"]).describe("プリミティブ種別。emptyはTransformのみ。"),
+    type: z.enum(["box", "sphere", "plane", "empty"]).describe("プリミティブ種別。empty は Transform のみ。"),
     name: z.string().optional().describe("エンティティ名(一意推奨)。省略時は種別名。"),
-    position: z.array(z.number()).length(3).optional().describe("[x,y,z]。省略時 [0,0,0]。"),
+    position: vec3.optional().describe("[x,y,z]。省略時 [0,0,0]。"),
+    idempotency_key: z.string().optional().describe("再試行の重複防止キー。同じキーの再送は二重生成されない。"),
   },
-  ({ type, name, position }) =>
-    run(() => engine.call("create_entity", { type, name, position })),
+  {},
+  ({ type, name, position, idempotency_key }) =>
+    run(() => engine.call("create_entity", { type, name, position, idempotency_key })),
 );
 
-server.tool(
+// プリミティブを1コールで生成＋整形する合成ヘルパ(create_entity → set_transform/set_pbr/set_color)。
+// create_entity は遅延同期で本物の entityId を返すので、それを使って後段を適用する。
+async function spawnPrimitive(
+  type: "box" | "sphere",
+  a: { name?: string; position?: number[]; scale?: number[]; rotation?: number[];
+       color?: number[]; metallic?: number; roughness?: number },
+) {
+  const r = await engine.call("create_entity", { type, name: a.name, position: a.position });
+  const entity = r.entityId;
+  if (a.scale || a.rotation)
+    await engine.call("set_transform", { entity, scale: a.scale, rotation: a.rotation });
+  if (a.metallic != null || a.roughness != null)
+    await engine.call("set_pbr", { entity, metallic: a.metallic, roughness: a.roughness });
+  if (a.color) await engine.call("set_color", { entity, color: a.color });
+  return r;
+}
+
+reg(
+  "dx12_spawn_box",
+  "ボックス生成(整形込み)",
+  "ボックス(立方体)を1コールで生成。足場/壁/床に最適。position/scale/rotation/color/metallic/roughness をまとめて指定でき、内部で create_entity→set_transform→set_pbr→set_color を順に実行する。{entityId, name, sceneGeneration} を返す。",
+  {
+    name: z.string().optional().describe("エンティティ名。省略時 'Box'。"),
+    position: vec3.optional().describe("[x,y,z]。省略時 [0,0,0]。"),
+    scale: vec3.optional().describe("[x,y,z]。足場なら例 [4,0.5,4]。"),
+    rotation: vec3.optional().describe("[x,y,z] Euler 度。"),
+    color: vec3.optional().describe("[r,g,b] 0..1 基本色。"),
+    metallic: z.number().optional().describe("金属度 0..1。"),
+    roughness: z.number().optional().describe("粗さ 0..1。"),
+  },
+  {},
+  (a) => run(() => spawnPrimitive("box", a)),
+);
+
+reg(
+  "dx12_spawn_sphere",
+  "スフィア生成(整形込み)",
+  "スフィア(球)を1コールで生成。position/scale/rotation/color/metallic/roughness をまとめて指定可。{entityId, name, sceneGeneration} を返す。",
+  {
+    name: z.string().optional().describe("エンティティ名。省略時 'Sphere'。"),
+    position: vec3.optional().describe("[x,y,z]。省略時 [0,0,0]。"),
+    scale: vec3.optional().describe("[x,y,z]。"),
+    rotation: vec3.optional().describe("[x,y,z] Euler 度。"),
+    color: vec3.optional().describe("[r,g,b] 0..1 基本色。"),
+    metallic: z.number().optional().describe("金属度 0..1。"),
+    roughness: z.number().optional().describe("粗さ 0..1。"),
+  },
+  {},
+  (a) => run(() => spawnPrimitive("sphere", a)),
+);
+
+reg(
+  "dx12_spawn_coin",
+  "コイン生成",
+  "コイン風の収集アイテムを1コールで生成(金色の薄い円盤状スフィア + tag 'coin' + 金属光沢)。足場ゲームの収集物置きに。position/name 指定可。回転やスコア加算は別途 Lua/trigger で付ける。{entityId, name, sceneGeneration} を返す。",
+  {
+    name: z.string().optional().describe("エンティティ名。省略時 'Coin'。"),
+    position: vec3.optional().describe("[x,y,z]。省略時 [0,0,0]。"),
+  },
+  {},
+  ({ name, position }) => run(async () => {
+    const r = await engine.call("create_entity", { type: "sphere", name: name ?? "Coin", position });
+    const entity = r.entityId;
+    await engine.call("set_transform", { entity, scale: [0.5, 0.5, 0.12] });   // 薄い円盤風
+    await engine.call("set_pbr", { entity, metallic: 1.0, roughness: 0.25 });  // 金属光沢
+    await engine.call("set_color", { entity, color: [1.0, 0.84, 0.0] });        // 金色
+    await engine.call("set_component", { entity, component: "tags", data: ["coin"] });
+    return { ...r, tag: "coin" };
+  }),
+);
+
+reg(
+  "dx12_spawn_model",
+  "モデル生成",
+  "モデル(.gltf/.glb/.fbx/.obj)を assets 相対パスから生成する。GPU ロードを伴いフレーム境界で実処理されるが、Node が完了を待って【本物の {entityId, name, sceneGeneration} を同期で返す】。idempotency_key で再試行の二重生成を防げる。",
+  {
+    path: z.string().describe("assets 相対パス。例: models/player.glb"),
+    position: vec3.optional().describe("[x,y,z]。省略時 [0,0,0]。"),
+    name: z.string().optional().describe("エンティティ名。省略時はファイル名(拡張子なし)。"),
+    idempotency_key: z.string().optional().describe("再試行の重複防止キー。同じキーの再送は二重生成されない。"),
+  },
+  {},
+  ({ path, position, name, idempotency_key }) =>
+    run(() => engine.call("spawn_model", { path, position, name, idempotency_key })),
+);
+
+reg(
+  "dx12_spawn_prefab",
+  "プレハブ生成",
+  "プレハブ(.prefab)を assets 相対パスから生成する。フレーム境界で実処理され、Node が完了を待って【本物の {entityId, rootEntityId, entityIds:[...], name, sceneGeneration} を同期で返す】。",
+  {
+    path: z.string().describe("assets 相対パス。例: prefabs/enemy.prefab"),
+    position: vec3.optional().describe("[x,y,z]。省略時 [0,0,0]。"),
+    name: z.string().optional().describe("ルートエンティティ名。省略時はプレハブ名。"),
+  },
+  {},
+  ({ path, position, name }) =>
+    run(() => engine.call("spawn_prefab", { path, position, name })),
+);
+
+reg(
+  "dx12_duplicate_entity",
+  "複製",
+  "エンティティを子ごとディープ複製する。entity(id) か name 指定。フレーム境界で実処理され、Node が完了を待って【本物の {entityId, name, sceneGeneration} を同期で返す】。",
+  { ...entityRef },
+  {},
+  ({ entity, name }) => run(() => engine.call("duplicate_entity", { entity, name })),
+);
+
+reg(
   "dx12_delete_entity",
-  "エンティティを削除する(子ごと、Undo可)。フレーム境界で遅延処理。",
-  { entity: z.number().int().describe("エンティティ id") },
-  ({ entity }) => run(() => engine.call("delete_entity", { entity })),
+  "削除",
+  "エンティティを子ごと削除する(Undo 可)。entity(id) か name 指定。フレーム境界で実処理され、Node が完了を待って【本物の {deletedEntityId, deletedCount, sceneGeneration} を同期で返す】。",
+  { ...entityRef },
+  { destructiveHint: true },
+  ({ entity, name }) => run(() => engine.call("delete_entity", { entity, name })),
 );
 
-server.tool(
-  "dx12_set_transform",
-  "エンティティの Transform を設定する。指定したフィールドだけ更新(位置/回転(Euler度)/スケール)。",
-  {
-    entity: z.number().int().describe("エンティティ id"),
-    position: z.array(z.number()).length(3).optional().describe("[x,y,z]"),
-    rotation: z.array(z.number()).length(3).optional().describe("[x,y,z] Euler度"),
-    scale: z.array(z.number()).length(3).optional().describe("[x,y,z]"),
-  },
-  ({ entity, position, rotation, scale }) =>
-    run(() => engine.call("set_transform", { entity, position, rotation, scale })),
-);
-
-server.tool(
-  "dx12_get_entity",
-  "エンティティの全コンポーネントと値を JSON で読む(編集前の状態確認に使う)。",
-  { entity: z.number().int().describe("エンティティ id") },
-  ({ entity }) => run(() => engine.call("get_entity", { entity })),
-);
-
-// ── 新規13ツール ────────────────────────────────────────────────
-
-// シーン入出力 ----------------------------------------------------
-
-server.tool(
-  "dx12_save_scene",
-  "現在のシーンを保存する。path は assets 相対(例 scenes/title.json)。省略時は現在開いているシーン(currentScenePath)へ上書き。",
-  {
-    path: z.string().optional().describe("assets 相対パス。例: scenes/title.json。省略で上書き保存。"),
-  },
-  ({ path }) => run(() => engine.call("save_scene", { path })),
-);
-
-server.tool(
+reg(
   "dx12_open_scene",
-  "シーンを開く(現在のシーンを置換)。path は assets 相対。読込はフレーム境界で遅延処理され queued を即返す。",
-  {
-    path: z.string().describe("assets 相対パス。例: scenes/title.json"),
-  },
+  "シーンを開く",
+  "シーンを開く(現在のシーンを置換)。path は assets 相対。重い遷移をフレーム境界で実処理し、Node が完了を待って【本物の {sceneName, path, entityCount, sceneGeneration} を同期で返す】。開いた後は古い entityId は無効になる(sceneGeneration が変わる)ので list し直すこと。",
+  { path: z.string().describe("assets 相対パス。例: scenes/title.json") },
+  {},
   ({ path }) => run(() => engine.call("open_scene", { path })),
 );
 
-server.tool(
-  "dx12_list_scenes",
-  "assets/scenes 配下のシーン(.json)一覧(path, name)を返す。dx12_open_scene の path を選ぶのに使う。",
-  {},
-  () => run(() => engine.call("list_scenes", {})),
+reg(
+  "dx12_new_scene",
+  "新規シーン",
+  "新規シーンを作る(現在のシーンを破棄)。savePath を渡すとそのパスに紐づけて作る。フレーム境界で実処理され {applied} を同期で返す。現在の編集内容は失われるので注意。",
+  { savePath: z.string().optional().describe("新シーンの保存先 assets 相対パス(任意)。") },
+  { destructiveHint: true },
+  ({ savePath }) => run(() => engine.call("new_scene", { savePath })),
 );
 
-// アセット --------------------------------------------------------
-
-server.tool(
-  "dx12_list_assets",
-  "assets 配下のアセット一覧(path, type, name)を返す。type で種別フィルタ(省略で全種別)。spawn_model の path 探索などに使う。",
-  {
-    type: z
-      .enum(["model", "texture", "script", "audio", "scene", "prefab"])
-      .optional()
-      .describe("種別フィルタ。省略で全種別。"),
-  },
-  ({ type }) => run(() => engine.call("list_assets", { type })),
-);
-
-server.tool(
-  "dx12_spawn_model",
-  "モデル(.gltf/.glb/.fbx/.obj)を assets 相対パスから生成する。GPU ロードを伴うためフレーム境界で遅延処理され id は即返らない。name を付けて後から dx12_list_entities で引く。",
-  {
-    path: z.string().describe("assets 相対パス。例: models/player.glb"),
-    position: z.array(z.number()).length(3).optional().describe("[x,y,z]。省略時 [0,0,0]。"),
-    name: z.string().optional().describe("エンティティ名。省略時はファイル名(拡張子なし)。"),
-  },
-  ({ path, position, name }) =>
-    run(() => engine.call("spawn_model", { path, position, name })),
-);
-
-// コンポーネント --------------------------------------------------
-
-server.tool(
-  "dx12_set_component",
-  "エンティティのコンポーネントを設定(上書き)する。component は jsonKey(例 pointLight/rigidBody/camera/transform)、data は dx12_get_entity が返すのと同じ形。既存があれば置換、無ければ追加。meshRenderer は非対応。",
-  {
-    entity: z.number().int().describe("エンティティ id"),
-    component: z
-      .string()
-      .describe("jsonKey。例: pointLight, directionalLight, spotLight, camera, rigidBody, boxCollider, transform"),
-    data: z.record(z.unknown()).describe("コンポーネントの値。dx12_get_entity の該当 jsonKey の中身と同形。"),
-  },
-  ({ entity, component, data }) =>
-    run(() => engine.call("set_component", { entity, component, data })),
-);
-
-server.tool(
-  "dx12_remove_component",
-  "エンティティからコンポーネントを除去する。component は jsonKey(例 pointLight/rigidBody/boxCollider)。transform/name はコア不変のため除去不可。",
-  {
-    entity: z.number().int().describe("エンティティ id"),
-    component: z
-      .string()
-      .describe("jsonKey。例: pointLight, rigidBody, boxCollider, sphereCollider, camera, tag"),
-  },
-  ({ entity, component }) =>
-    run(() => engine.call("remove_component", { entity, component })),
-);
-
-// 階層 / 命名 -----------------------------------------------------
-
-server.tool(
-  "dx12_set_parent",
-  "エンティティの親を設定する。parent 省略で親を解除。サイクルになる指定は拒否される。",
-  {
-    entity: z.number().int().describe("子エンティティ id"),
-    parent: z.number().int().optional().describe("親エンティティ id。省略で親解除。"),
-  },
-  ({ entity, parent }) => run(() => engine.call("set_parent", { entity, parent })),
-);
-
-server.tool(
-  "dx12_rename_entity",
-  "エンティティの名前を変更する。重複名は連番(name_2 など)が付与され、確定した name を返す。",
-  {
-    entity: z.number().int().describe("エンティティ id"),
-    name: z.string().describe("新しい名前"),
-  },
-  ({ entity, name }) => run(() => engine.call("rename_entity", { entity, name })),
-);
-
-// 再生制御 / 状態 -------------------------------------------------
-
-server.tool(
+reg(
   "dx12_play",
-  "Editor -> Playing へ切り替える。切替はフレーム境界で遅延実行(queued を返す)。既に Playing なら即 mode を返す。",
+  "再生開始",
+  "Editor → Playing へ切り替える。フレーム境界で実処理され {mode:'Playing', sceneGeneration} を同期で返す。カメラ無し等で再生不可なら error(code=3 MODE_CONFLICT)。",
+  {},
   {},
   () => run(() => engine.call("play", {})),
 );
 
-server.tool(
+reg(
   "dx12_stop",
-  "Playing -> Editor へ切り替える(再生前のスナップショットに復元)。フレーム境界で遅延実行。既に Editor なら即 mode を返す。",
+  "再生停止",
+  "Playing → Editor へ切り替える(再生前のスナップショットに復元)。フレーム境界で実処理され {mode:'Editor', sceneGeneration} を同期で返す。★Stop ではシーンを丸ごと作り直すため全 entity id が変わる(sceneGeneration も +1)。Stop 後は古い id を使わず、返ってきた sceneGeneration の変化を見て dx12_list_entities で取り直すか、各ツールに name 指定で操作する。",
+  {},
   {},
   () => run(() => engine.call("stop", {})),
 );
 
-server.tool(
-  "dx12_get_mode",
-  "現在のエンジンモード(Editor / Playing)を返す。",
+// ── 入力シミュレーション(Playing 中の挙動確認用)─────────────────
+// Lua の input:isKeyDown/isKeyPressed(prelude の keyDown/keyPressed)に効く。
+// GetAsyncKeyState を読む isAsyncKeyDown 系には効かない。エンジンウィンドウがフォーカスを
+// 失うと合成キーはクリアされる(WM_KILLFOCUS)。
+
+reg(
+  "dx12_key_down",
+  "キー押下(保持)",
+  "キーを押した状態にする(key_up を呼ぶまで保持)。次フレーム以降の Lua input:isKeyDown / keyDown() が true になる。横移動など「押しっぱなし」の挙動確認に。key は VK 整数 or 名前(\"W\",\"D\",\"SPACE\",\"UP\" 等)。Playing 中に使う(isAsyncKeyDown 系には効かない)。",
+  { key: z.union([z.number().int(), z.string()]).describe("VK コード(int)か キー名(\"W\",\"SPACE\",\"UP\",\"F1\" 等)") },
   {},
-  () => run(() => engine.call("get_mode", {})),
+  ({ key }) => run(() => engine.call("key_down", { key })),
 );
 
-server.tool(
-  "dx12_get_log",
-  "エンジンのログ(dx12_engine.log)の末尾 N 行を返す。エラーや print の確認に使う。",
+reg(
+  "dx12_key_up",
+  "キー離す",
+  "dx12_key_down で押したキーを離す。key は VK 整数 or 名前。",
+  { key: z.union([z.number().int(), z.string()]).describe("VK コード(int)か キー名") },
+  {},
+  ({ key }) => run(() => engine.call("key_up", { key })),
+);
+
+reg(
+  "dx12_key_press",
+  "キータップ(1フレーム)",
+  "キーを1フレームだけ押して離す(isKeyPressed / keyPressed() が1回立つ)。ジャンプ(SPACE)などのタップ操作の確認に。key は VK 整数 or 名前。押しっぱなしにはならない。",
+  { key: z.union([z.number().int(), z.string()]).describe("VK コード(int)か キー名(\"SPACE\" 等)") },
+  {},
+  ({ key }) => run(() => engine.call("key_press", { key })),
+);
+
+reg(
+  "dx12_step_frames",
+  "Nフレーム進める",
+  "N フレーム経過してから応答する同期バリア。key_down/key_press の後に呼ぶと、入力がシミュレーションに効いてから dx12_get_entity / dx12_project_world_to_screen / dx12_screenshot で結果を観測できる。例: key_down('D') → step_frames(30) → get_entity(name:'Player') で右に動いたか確認 → key_up('D')。frames は 1..600(~10s)。※決定論ステッパではない(各フレーム dt は実時間)。",
+  { frames: z.number().int().optional().describe("進めるフレーム数(既定 1, 最大 600)。") },
+  {},
+  ({ frames }) => run(() => engine.call("step_frames", { frames })),
+);
+
+// ════════════════════════════════════════════════════════════════
+//  合成ツール(エンジンには無い。Node 内で複数 call を順に行う)
+// ════════════════════════════════════════════════════════════════
+
+reg(
+  "dx12_batch",
+  "一括実行",
+  "複数のエンジン操作を順番に実行して往復を減らす。各 op は engine の method 名(dx12_ 接頭辞なし。例 create_entity)と params。結果は {results:[{index, ok, result?|error?, error_code?, skipped?}]}。stopOnError=true なら最初の失敗で打ち切り、残りは skipped 記録。各 op は同期結果なので確実(ただし1フレーム原子性は無い)。",
   {
-    lines: z.number().int().optional().describe("取得行数(既定 50)。"),
+    ops: z.array(z.object({
+      method: z.string().describe("エンジン method 名(dx12_ 接頭辞なし)。例: create_entity, set_component"),
+      params: z.record(z.any()).optional().describe("その method の params。省略で {}。"),
+    })).describe("順に実行する操作の配列。"),
+    stopOnError: z.boolean().optional().describe("true なら最初の失敗で打ち切り、残りを skipped 記録。"),
   },
-  ({ lines }) => run(() => engine.call("get_log", { lines })),
+  {},
+  ({ ops, stopOnError }) => run(async () => {
+    const results: any[] = [];
+    let aborted = false;
+    for (let i = 0; i < ops.length; i++) {
+      if (aborted) { results.push({ index: i, ok: false, skipped: true }); continue; }
+      const op = ops[i];
+      try {
+        const r = await engine.call(op.method, op.params ?? {});
+        results.push({ index: i, ok: true, result: r });
+      } catch (e: any) {
+        const entry: any = { index: i, ok: false, error: e.message };
+        if (e.code != null) entry.error_code = e.code;
+        results.push(entry);
+        if (stopOnError) aborted = true;
+      }
+    }
+    return { results };
+  }),
 );
 
-server.tool(
+// 画像を返す合成ツール(focus → 1フレーム描画 → 撮影)。outputSchema は宣言しない(構造化結果ではなく image)。
+server.registerTool(
+  "dx12_focus_and_screenshot",
+  {
+    title: "寄せて撮影",
+    description: "カメラを対象エンティティに寄せてから(1フレーム描画を挟んで)スクショを撮り、PNG 画像で返す。entity(id) か name 指定。配置や見た目を自分の目で確認するのに使う(エディタカメラ。Playing 中のゲーム画面は dx12_screenshot がアクティブなゲームカメラの絵を返す)。image ブロック + text(path/サイズ)を返す。",
+    inputSchema: { ...entityRef },
+    annotations: { title: "寄せて撮影", openWorldHint: false, idempotentHint: true },
+  },
+  async ({ entity, name }) => {
+    try {
+      await engine.call("focus_camera", { entity, name });
+      const shot = await engine.call("screenshot", {});
+      if (!shot || !shot.path) throw new Error("screenshot が path を返さんかった");
+      return imageResult(shot.path, { entity, width: shot.width, height: shot.height });
+    } catch (e: any) {
+      return errResult(e);
+    }
+  },
+);
+
+// スクショ単体も画像ブロックで返す。
+server.registerTool(
   "dx12_screenshot",
-  "今シーンビューに映っている絵を PNG に書き出し、その絶対パスを返す(result.path/width/height)。" +
-    "返ってきた path を画像として開けば、AI が自分の操作結果(配置・見た目)を目で確認して直せる。" +
-    "毎回同じファイル(<エンジンCWD>/mcp_screenshot.png)へ上書き。引数なし。",
-  {},
-  () => run(() => engine.call("screenshot", {})),
+  {
+    title: "スクリーンショット",
+    description: "今シーンビューに映ってる絵を PNG に書き出して画像で返す(+text に path/width/height)。AI が自分の操作結果(配置・見た目)を目で確認して直すのに使う。引数なし。★Playing 中はアクティブなゲームカメラの絵になる(=実際のゲーム画面)。Editor 中はエディタのフライカメラ。dx12_project_world_to_screen と同じカメラなので「player が画面中央/画面内か」を数値+絵の両方で確認できる。",
+    inputSchema: {},
+    annotations: { title: "スクリーンショット", openWorldHint: false, readOnlyHint: true },
+  },
+  async () => {
+    try {
+      const shot = await engine.call("screenshot", {});
+      if (!shot || !shot.path) throw new Error("screenshot が path を返さんかった");
+      return imageResult(shot.path, { width: shot.width, height: shot.height });
+    } catch (e: any) {
+      return errResult(e);
+    }
+  },
+);
+
+// ゲームカメラ視点のスクショ。アクティブな CameraComponent でシーンを1フレーム描いて撮る。
+// Editor 中でも Play せずにゲームカメラの画角を確認できる(Playing 中は通常 screenshot と同じ絵)。
+server.registerTool(
+  "dx12_screenshot_game_view",
+  {
+    title: "ゲーム画面スクショ",
+    description: "アクティブな CameraComponent(ゲームカメラ)視点でシーンを1フレーム描画して PNG で返す。★Editor 中でも Play せずにゲームカメラの見え方(画角・構図)を確認できる。アクティブなカメラが無いとエラー(camera.isActive=true にする)。image ブロック + text(path/サイズ/mode)を返す。",
+    inputSchema: {},
+    annotations: { title: "ゲーム画面スクショ", openWorldHint: false, readOnlyHint: true },
+  },
+  async () => {
+    try {
+      const shot = await engine.call("screenshot_game_view", {});
+      if (!shot || !shot.path) throw new Error("screenshot_game_view が path を返さんかった");
+      return imageResult(shot.path, { width: shot.width, height: shot.height, mode: shot.mode });
+    } catch (e: any) {
+      return errResult(e);
+    }
+  },
 );
 
 const transport = new StdioServerTransport();
