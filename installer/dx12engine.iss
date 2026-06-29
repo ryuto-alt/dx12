@@ -50,6 +50,11 @@ Source: "{#SrcDir}\GameRuntime.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\*.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\shaders\*"; DestDir: "{app}\shaders"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#RepoRoot}\assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion recursesubdirs createallsubdirs
+; MCP(AI ブリッジ)サーバを同梱。エンジンは exe の隣の tools\mcp-server\index.ts を実行時に探すので、
+; ここに入れておけば配布先でも「MCP / AI Bridge」窓のコマンドがそのまま繋がる（node_modules も含めて同梱＝npm install 不要）。
+; ※ node_modules は .gitignore 済みなので、ビルド前に tools\mcp-server で `npm install` を実行しておくこと。
+;    installer\build.ps1 を使えば自動で行う。
+Source: "{#RepoRoot}\tools\mcp-server\*"; DestDir: "{app}\tools\mcp-server"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: ".gitignore,*.log,*.tsbuildinfo"
 Source: "README.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
