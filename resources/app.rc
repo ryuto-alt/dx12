@@ -1,0 +1,5 @@
+#include "resource.h"
+
+// 実行ファイルに埋め込むアプリアイコン（Explorer のファイルアイコン＆既定ウィンドウアイコン）。
+// 多解像度 PNG 入り .ico。tools 側で再生成する場合は同名で上書きすること。
+IDI_APPICON ICON "app.ico"
