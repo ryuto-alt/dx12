@@ -306,14 +306,13 @@ bool HttpsFetch(const std::wstring& url, std::vector<char>* outBytes, const std:
     return good;
 }
 
-// PowerShell の Expand-Archive で zip を展開（標準機能・追加依存なし）。
-bool ExtractZip(const fs::path& zip, const fs::path& dest)
+// 隠しコンソールでコマンドを実行し、終了まで「UI のメッセージをポンプしながら」待つ。
+// WaitForSingleObject(INFINITE) で待つと展開中に進捗窓が固まって「(応答なし)」になるため、
+// MsgWaitForMultipleObjects + Pump で待受窓を生かしたまま待つ。code に終了コードを返す。
+bool RunHiddenPumped(const std::wstring& cmdLine, ProgressUI* ui, DWORD& code)
 {
-    std::wstring cmd = L"powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "
-        L"\"Expand-Archive -Force -LiteralPath '" + zip.wstring() +
-        L"' -DestinationPath '" + dest.wstring() + L"'\"";
-
-    std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+    code = 1;
+    std::vector<wchar_t> buf(cmdLine.begin(), cmdLine.end());
     buf.push_back(L'\0');
 
     STARTUPINFOW si{}; si.cb = sizeof(si);
@@ -321,12 +320,48 @@ bool ExtractZip(const fs::path& zip, const fs::path& dest)
     if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE,
         CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
         return false;
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    DWORD code = 1;
+
+    for (;;)
+    {
+        // 100ms ごとに起きて進捗窓のメッセージを処理（マーキー animation と応答性を維持）。
+        DWORD w = MsgWaitForMultipleObjects(1, &pi.hProcess, FALSE, 100, QS_ALLINPUT);
+        if (ui) ui->Pump();
+        if (w == WAIT_OBJECT_0) break;   // 子プロセス終了
+    }
+
     GetExitCodeProcess(pi.hProcess, &code);
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
-    return code == 0;
+    return true;
+}
+
+// zip を展開する。tar.exe(bsdtar, Windows 10 1803+ 標準) を最優先＝大量の小ファイル
+// (node_modules 同梱で 3000+ 個)でも数秒で済む。Expand-Archive は同条件で分単位かつ
+// UI を固めるため、tar が無い/失敗した時だけのフォールバックに降格。
+bool ExtractZip(const fs::path& zip, const fs::path& dest, ProgressUI* ui = nullptr)
+{
+    // 1) tar.exe（フルパス指定。PATH 上の別 tar=MSYS 等を避ける）
+    wchar_t sysDir[MAX_PATH] = {};
+    if (GetSystemDirectoryW(sysDir, MAX_PATH) > 0)
+    {
+        fs::path tarExe = fs::path(sysDir) / L"tar.exe";
+        std::error_code ec;
+        if (fs::exists(tarExe, ec))
+        {
+            std::wstring cmd = L"\"" + tarExe.wstring() + L"\" -xf \"" + zip.wstring() +
+                               L"\" -C \"" + dest.wstring() + L"\"";
+            DWORD code = 1;
+            if (RunHiddenPumped(cmd, ui, code) && code == 0)
+                return true;
+        }
+    }
+
+    // 2) フォールバック: PowerShell Expand-Archive（低速だが tar 不在環境向け）
+    std::wstring cmd = L"powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "
+        L"\"Expand-Archive -Force -LiteralPath '" + zip.wstring() +
+        L"' -DestinationPath '" + dest.wstring() + L"'\"";
+    DWORD code = 1;
+    return RunHiddenPumped(cmd, ui, code) && code == 0;
 }
 
 // 展開先から DX12Engine.exe があるディレクトリを探す（ルート → 直下サブフォルダ）。
@@ -530,7 +565,7 @@ bool Updater::RunStartupCheck()
     ui.SetLabel(L"ファイルを展開しています...");
     ui.SetProgress(-1, 0, 0);
     ui.Pump();
-    if (!ExtractZip(zip, extract))
+    if (!ExtractZip(zip, extract, &ui))
     {
         ui.Destroy();
         MessageBoxW(nullptr, L"アップデートの展開に失敗しました。\n通常起動します。",
