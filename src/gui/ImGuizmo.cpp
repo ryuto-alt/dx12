@@ -1309,6 +1309,9 @@ namespace IMGUIZMO_NAMESPACE
             continue;
          }
          const bool usingAxis = (gContext.mbUsing && type == MT_ROTATE_Z - axis);
+         // 手前側の半円だけ描く（Blender 風のスッキリした見た目）。当たり判定も
+         // 後段で手前半分だけに限定するので「見えてる弧＝掴める弧」になる。
+         // ドラッグ中の軸だけはフル円にして回転量を見せる。
          const int circleMul = (hasRSC && !usingAxis) ? 1 : 2;
 
          ImVec2* circlePos = (ImVec2*)alloca(sizeof(ImVec2) * (circleMul * halfCircleSegmentCount + 1));
@@ -2040,46 +2043,71 @@ namespace IMGUIZMO_NAMESPACE
          type = MT_ROTATE_SCREEN;
       }
 
-      const vec_t planNormals[] = { gContext.mModel.v.right, gContext.mModel.v.up, gContext.mModel.v.dir };
-
-      vec_t modelViewPos;
-      modelViewPos.TransformPoint(gContext.mModel.v.position, gContext.mViewMat);
-
-      for (int i = 0; i < 3 && type == MT_NONE; i++)
+      // 当たり判定は「実際に描いている手前半分の弧」そのものに対して行う。
+      // DrawRotationGizmo と同一の点列を画面投影し、マウスから各弧へのスクリーン距離が
+      // 最小の軸を選ぶ。これで「見えている弧＝掴める弧」が完全一致する。
+      // 旧方式(平面交点を求めて裏側を深度カリング)は、描いている弧の位置とカリングが残す
+      // 判定範囲がズレていて「赤い弧の上なのに緑が反応する」原因になっていた。
+      vec_t viewDirNormalized;
+      if (gContext.mIsOrthographic)
       {
-         if(!Intersects(op, static_cast<OPERATION>(ROTATE_X << i)))
+         matrix_t viewInverse;
+         viewInverse.Inverse(*(matrix_t*)&gContext.mViewMat);
+         viewDirNormalized = -viewInverse.v.dir;
+      }
+      else
+      {
+         viewDirNormalized = Normalized(gContext.mCameraDir);
+      }
+      viewDirNormalized.TransformVector(gContext.mModelInverse);
+
+      const vec_t mouseVec = makeVect(io.MousePos);
+      float bestDistance = 10.f; // pixel size（細い弧でも掴みやすいよう少し広め）
+      int bestType = MT_NONE;
+      for (int axis = 0; axis < 3; axis++)
+      {
+         // 描画ループと同じ軸対応: axis0→Z, axis1→Y, axis2→X
+         if (!Intersects(op, static_cast<OPERATION>(ROTATE_Z >> axis)))
          {
             continue;
          }
-         bool isAxisMasked = ((1 << i) & gContext.mAxisMask) != 0;
-         // pickup plan
-         vec_t pickupPlan = BuildPlan(gContext.mModel.v.position, planNormals[i]);
-
-         const float len = IntersectRayPlane(gContext.mRayOrigin, gContext.mRayVector, pickupPlan);
-         const vec_t intersectWorldPos = gContext.mRayOrigin + gContext.mRayVector * len;
-         vec_t intersectViewPos;
-         intersectViewPos.TransformPoint(intersectWorldPos, gContext.mViewMat);
-
-         if (ImAbs(modelViewPos.z) - ImAbs(intersectViewPos.z) < -FLT_EPSILON)
+         const bool isAxisMasked = ((1 << (2 - axis)) & gContext.mAxisMask) != 0;
+         if ((!isAxisMasked || isMultipleAxesMasked) && !isNoAxesMasked)
          {
             continue;
          }
 
-         const vec_t localPos = intersectWorldPos - gContext.mModel.v.position;
-         vec_t idealPosOnCircle = Normalized(localPos);
-         idealPosOnCircle.TransformVector(gContext.mModelInverse);
-         const ImVec2 idealPosOnCircleScreen = worldToPos(idealPosOnCircle * rotationDisplayFactor * gContext.mScreenFactor, gContext.mMVP);
+         const float angleStart = atan2f(viewDirNormalized[(4 - axis) % 3], viewDirNormalized[(3 - axis) % 3]) + (gContext.mIsOrthographic ? ZPI : -ZPI) * 0.5f;
 
-         //gContext.mDrawList->AddCircle(idealPosOnCircleScreen, 5.f, IM_COL32_WHITE);
-         const ImVec2 distanceOnScreen = idealPosOnCircleScreen - io.MousePos;
-
-         const float distance = makeVect(distanceOnScreen).Length();
-         if (distance < 8.f) // pixel size
+         // 描画と同じ手前半円(ZPI ぶん)をサンプリングし、各セグメントへの最短距離を取る
+         ImVec2 prevPt;
+         float axisDistance = FLT_MAX;
+         for (int s = 0; s <= halfCircleSegmentCount; s++)
          {
-            if ((!isAxisMasked || isMultipleAxesMasked) && !isNoAxesMasked)
-               break;
-            type = MT_ROTATE_X + i;
+            const float ng = angleStart + ZPI * ((float)s / (float)halfCircleSegmentCount);
+            const vec_t axisPos = makeVect(cosf(ng), sinf(ng), 0.f);
+            const vec_t pos = makeVect(axisPos[axis], axisPos[(axis + 1) % 3], axisPos[(axis + 2) % 3]) * gContext.mScreenFactor * rotationDisplayFactor;
+            const ImVec2 pt = worldToPos(pos, gContext.mMVP);
+            if (s > 0)
+            {
+               const vec_t cp = PointOnSegment(mouseVec, makeVect(prevPt), makeVect(pt));
+               const float d = (cp - mouseVec).Length();
+               if (d < axisDistance) axisDistance = d;
+            }
+            prevPt = pt;
          }
+
+         if (axisDistance < bestDistance)
+         {
+            bestDistance = axisDistance;
+            bestType = MT_ROTATE_Z - axis; // axis0→Z, axis1→Y, axis2→X
+         }
+      }
+
+      // スクリーン回転(白円)が既に当たっている場合はそちらを優先（type を上書きしない）
+      if (type == MT_NONE && bestType != MT_NONE)
+      {
+         type = bestType;
       }
 
       return type;
