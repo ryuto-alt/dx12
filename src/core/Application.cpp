@@ -20,6 +20,7 @@
 #include "renderer/Mesh.h"
 #include "renderer/Material.h"
 #include "renderer/Camera.h"
+#include "renderer/Frustum.h"
 #include "renderer/PostProcess.h"
 #include "renderer/SSAOPass.h"
 #include "renderer/ParticleSystem.h"
@@ -5135,6 +5136,13 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
     auto& reg = m_scene->GetRegistry();
     auto renderView = reg.view<const Transform, const MeshRenderer>();
 
+    // 視錐台カリング（ゲームビューのみ）。画面外エンティティの forward ドローを省く＝
+    // 敵がアリーナ全域に散るゲームで、画面外の敵を毎フレーム描かずに済む。
+    // 編集シーンビュー(isGameView=false)では従来通り全描画＝編集時の見え方は不変。
+    const bool cullEnabled = isGameView;
+    Frustum camFrustum;
+    if (cullEnabled) camFrustum = Frustum::FromViewProj(viewProj);
+
     // SSAO AO テーブル(t8)を1回バインド（無効/編集ビューは白=1.0 ダミー）。
     // 全 forward 系 PSO が同一 RootSig を共有するため、ここで一括バインドして hazard を防ぐ。
     if (aoSrvIndex != DescriptorHeap::kInvalidIndex)
@@ -5161,6 +5169,17 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
 
         bool isGrid = reg.all_of<GridPlane>(e);
         bool isSkinned = reg.all_of<SkeletalAnimation>(e);
+
+        // フラスタムカリング: グリッド以外で、ワールド球が視錐台の完全に外なら描画スキップ。
+        // 床/壁など大きい構造物は球半径も大きく必ず交差＝カリングされない（自然に残る）。
+        if (cullEnabled && !isGrid)
+        {
+            const float ms = (std::max)((std::max)(std::abs(sc.x), std::abs(sc.y)), std::abs(sc.z));
+            // ponytail: 球は meshes[0] 基準＋1.25x バイアスで保守的（game1 の敵は単一メッシュ）。
+            const float radius = (!renderer.meshes.empty() && renderer.meshes[0])
+                               ? renderer.meshes[0]->GetBoundingRadius() : 1.0f;
+            if (!camFrustum.SphereVisible(world.r[3], radius * ms * 1.25f)) return;
+        }
 
         if (isPfx(e))
         {
@@ -5369,7 +5388,9 @@ void Application::ComputeCascades(const DirectX::XMVECTOR& lightDir, f32 camNear
     // 正射時は CSM を無効化（無影フォールバック）する。
     // cascadeViewProj=identity + cascadeSplitsView=巨大正値 で、PS の SelectCascade は
     // 必ず cascade0 を返し、identity 変換で UV が [0,1] 外へ出て SampleCascade が 1.0(無影)。
-    if (m_camera->IsOrthographic())
+    // シーンで影を無効化した場合も同じ無影センチネルを書く＝シェーダは全面ライト(黒画面にならない)。
+    const bool shadowsOff = !(m_scene && m_scene->GetShadowsEnabled());
+    if (m_camera->IsOrthographic() || shadowsOff)
     {
         XMMATRIX id = XMMatrixIdentity();
         for (u32 i = 0; i < N; ++i)
@@ -6226,6 +6247,10 @@ void Application::Render()
     m_commandList->SetRootSignature(*m_rootSignature);
 
     // ===== シャドウパス（CSM: カスケード毎に kNumCascades 回描画）=====
+    // シーンで影 OFF / 正射カメラのときは丸ごとスキップ＝(全アクティブ敵 × 4カスケード)の
+    // ドローと 2048²×4 のデプスフィルを撤廃（lv35 の主因）。m_shadowMap は生成時 PSR のまま＝
+    // forward の t4 バインドは有効（センチネルで読まれないので未クリアでも安全）。
+    if (m_scene && m_scene->GetShadowsEnabled() && !m_camera->IsOrthographic())
     {
         // 配列リソース全体を一括で DEPTH_WRITE へ遷移（カスケードループの外で1回）
         m_commandList->TransitionResource(m_shadowMap.Get(),
@@ -7379,11 +7404,18 @@ void Application::Render()
     m_swapChain->Present(m_useVsync);
     m_frameResources->EndFrame(*m_commandQueue);
 
-    // GPU がこのフレームのコピーを完了してからアップロードバッファを解放する
-    // (モデル/テクスチャスポーンで積んだ CopyResource が in-flight のうちに
-    //  Reset すると OBJECT_DELETED_WHILE_STILL_IN_USE で落ちるため)
-    m_commandQueue->WaitIdle();
-    m_resourceManager->FinishUploads();
+    // アップロードを積んだフレームだけ GPU 完了待ち→ステージング解放する。
+    // (モデル/テクスチャスポーンで積んだ CopyResource が in-flight のうちに Reset すると
+    //  OBJECT_DELETED_WHILE_STILL_IN_USE で落ちるため、その時だけ WaitIdle が要る)
+    // 定常時(プール生成済みで新規アップロード無し)は毎フレーム全同期しない＝CPU/GPU が
+    // 重なり、フレーム時間が CPU+GPU から max(CPU,GPU) へ。フレームリングは BeginFrame の
+    // WaitForValue が担保（最大 kFrameCount-1 フレーム先行）。per-object 定数はルート定数
+    // (SetGraphicsRoot32BitConstants)でコマンドリストに焼かれるため重なっても競合しない。
+    if (m_resourceManager->HasPendingUploads())
+    {
+        m_commandQueue->WaitIdle();
+        m_resourceManager->FinishUploads();
+    }
 }
 
 } // namespace dx12e

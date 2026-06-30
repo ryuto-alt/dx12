@@ -86,6 +86,7 @@ void ResourceManager::Initialize(GraphicsDevice* device, DescriptorHeap* srvHeap
         m_defaultMetalRoughness->SetSrvIndex(mIdx);
         m_defaultMetalRoughness->CreateSRV(*device, m_srvHeap->GetCpuHandle(mIdx));
     }
+    m_uploadsPending = true;  // 既定テクスチャのアップロードを初回フレームで確定させる
 }
 
 Texture* ResourceManager::GetOrLoadTexture(
@@ -141,6 +142,7 @@ Texture* ResourceManager::GetOrLoadTexture(
     // キャッシュ登録
     Texture* rawPtr = texture.get();
     m_textureCache[filePath] = std::move(texture);
+    m_uploadsPending = true;
 
     Logger::Info("Texture cached (srvIndex={})", rawPtr->GetSrvIndex());
 
@@ -170,6 +172,7 @@ const CachedModel* ResourceManager::GetOrLoadModel(
 
     const CachedModel* rawPtr = cached.get();
     m_modelCache[filePath] = std::move(cached);
+    m_uploadsPending = true;
 
     Logger::Info("Model cached: {} ({} meshes)", filePath, rawPtr->meshes.size());
     return rawPtr;
@@ -195,6 +198,7 @@ Texture* ResourceManager::GetOrLoadEmbeddedTexture(
     texture->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(srvIdx));
     auto* rawPtr = texture.get();
     m_textureCache[wkey] = std::move(texture);
+    m_uploadsPending = true;
     return rawPtr;
 }
 
@@ -214,6 +218,7 @@ void ResourceManager::FinishUploads()
             mesh->FinishUpload();
         }
     }
+    m_uploadsPending = false;
 }
 
 } // namespace dx12e

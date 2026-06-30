@@ -708,6 +708,9 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
         };
     }
 
+    // リアルタイム影 ON/OFF（シーン単位）
+    root["shadows"] = scene.GetShadowsEnabled();
+
     // SSAO 設定（シーン単位）
     {
         const auto& ss = scene.GetSSAOSettings();
@@ -1098,6 +1101,9 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
     LoadSkyboxSettings(scene, root);
     // SSAO 設定
     LoadSSAOSettings(scene, root);
+
+    // リアルタイム影 ON/OFF（キーが無ければ既定 ON ＝後方互換）
+    scene.SetShadowsEnabled(root.value("shadows", true));
 
     if (!root.contains("entities") || !root["entities"].is_array())
     {

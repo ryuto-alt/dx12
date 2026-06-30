@@ -55,6 +55,14 @@ public:
     DirectX::XMFLOAT3 GetAABBMin() const { return m_aabbMin; }
     DirectX::XMFLOAT3 GetAABBMax() const { return m_aabbMax; }
 
+    // ローカル空間バウンディング球の半径（AABB 対角の半分）。視錐台カリング用。
+    float GetBoundingRadius() const
+    {
+        using namespace DirectX;
+        const XMVECTOR mn = XMLoadFloat3(&m_aabbMin), mx = XMLoadFloat3(&m_aabbMax);
+        return 0.5f * XMVectorGetX(XMVector3Length(XMVectorSubtract(mx, mn)));
+    }
+
     // 現在の頂点カラー（シーン保存用。キャッシュの先頭頂点を代表値とする）
     DirectX::XMFLOAT4 GetVertexColor() const {
         return m_verticesCache.empty() ? DirectX::XMFLOAT4{1.0f, 1.0f, 1.0f, 1.0f}

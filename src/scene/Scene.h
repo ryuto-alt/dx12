@@ -100,6 +100,11 @@ public:
     SSAOSettings&       GetSSAOSettings()       { return m_ssao; }
     const SSAOSettings& GetSSAOSettings() const { return m_ssao; }
 
+    // リアルタイム影(CSM)をこのシーンで描くか。false なら影パスを丸ごとスキップ
+    // （トップダウン等で影が要らないシーンの FPS 向上用。シェーダは無影センチネルで全面ライト）。
+    bool GetShadowsEnabled() const { return m_shadowsEnabled; }
+    void SetShadowsEnabled(bool v) { m_shadowsEnabled = v; }
+
 private:
     Entity CreateEntityWithTransform(const std::string& name,
                                      DirectX::XMFLOAT3 position,
@@ -116,6 +121,7 @@ private:
     PostProcessSettings m_postSettings;
     SkyboxSettings      m_skybox;
     SSAOSettings        m_ssao;
+    bool                m_shadowsEnabled = true;  // 既定 ON（エディタ/従来シーン互換）
 
     ResourceManager*  m_resourceManager = nullptr;
     GraphicsDevice*   m_device          = nullptr;
