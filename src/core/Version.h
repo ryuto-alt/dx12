@@ -7,7 +7,7 @@
 namespace dx12e
 {
 // セマンティックバージョン（"MAJOR.MINOR.PATCH"）。GitHub リリースのタグ（"v1.2.3" 等）と比較する。
-constexpr const char* kEngineVersion = "0.6.2";
+constexpr const char* kEngineVersion = "0.6.3";
 
 // 自動アップデートの取得元 GitHub リポジトリ。
 constexpr const char* kUpdateRepoOwner = "ryuto-alt";
@@ -16,17 +16,17 @@ constexpr const char* kUpdateRepoName  = "dx12";
 // 起動時に一度だけ表示する「更新内容」ポップアップ（この版で直したこと）。
 // 表示済み判定は %LOCALAPPDATA%\DX12Engine\shown_version.txt（版が変わった初回だけ出す）。
 // 新しい版を出すときは kEngineVersion を上げ、ここも書き換えること。
-constexpr const char* kWhatsNewTitle = "DX12 Engine v0.6.2 の更新内容";
+constexpr const char* kWhatsNewTitle = "DX12 Engine v0.6.3 の更新内容";
 constexpr const char* kWhatsNewBody =
-    "今回の更新（FPS の超安定化と MCP の不具合修正）:\n"
+    "今回の更新（GitHub 連携を Unity/Unreal 並みに使いやすく）:\n"
     "\n"
-    "・シーン単位で影(CSM)の ON/OFF を切替可能に。影が不要なトップダウン等で\n"
-    "  影パスを丸ごとスキップでき、敵が多いシーンの FPS が大きく改善。\n"
-    "・毎フレームの GPU 全同期(WaitIdle)を撤去し、CPU と GPU を並列化。\n"
-    "  フレーム時間が CPU+GPU から max(CPU,GPU) になり、高負荷時も安定。\n"
-    "・フォワード描画に視錐台カリングを追加。画面外のオブジェクトを\n"
-    "  描かずに省き、広いシーンほど効く。\n"
-    "・MCP の不具合修正: ヘッドレス --build がポートファイルを死にポートで\n"
-    "  上書きし、ライブの MCP ツールが切れる問題を解消（build はもうブリッジを\n"
-    "  起動しない＋クライアントは再接続時にポートを再探索して自己回復）。\n";
+    "・GitHub CLI(gh) をエディタに同梱。別途インストール不要で\n"
+    "  「Git 変更」パネルからリポジトリ作成・ログインがそのまま使える。\n"
+    "・空のプロジェクトでもログイン状態をすぐ表示。「初期化」の代わりに\n"
+    "  「GitHub にリポジトリを作成 (Public/Private)」ボタン一発で\n"
+    "  init→commit→作成→push まで完結。\n"
+    "・ログイン完了をポーリングではなく即検知するように変更し、反映が速くなった。\n"
+    "・作成するリポジトリ名を編集可能に（今までプロジェクト名固定だった）。\n"
+    "・リポジトリのURLをパネルに常時表示し、クリックでブラウザを開けるように。\n"
+    "・更新内容ポップアップを少し大きく見やすく。\n";
 } // namespace dx12e
