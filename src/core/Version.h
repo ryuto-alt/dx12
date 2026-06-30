@@ -7,7 +7,7 @@
 namespace dx12e
 {
 // セマンティックバージョン（"MAJOR.MINOR.PATCH"）。GitHub リリースのタグ（"v1.2.3" 等）と比較する。
-constexpr const char* kEngineVersion = "0.6.0";
+constexpr const char* kEngineVersion = "0.6.1";
 
 // 自動アップデートの取得元 GitHub リポジトリ。
 constexpr const char* kUpdateRepoOwner = "ryuto-alt";
@@ -16,16 +16,16 @@ constexpr const char* kUpdateRepoName  = "dx12";
 // 起動時に一度だけ表示する「更新内容」ポップアップ（この版で直したこと）。
 // 表示済み判定は %LOCALAPPDATA%\DX12Engine\shown_version.txt（版が変わった初回だけ出す）。
 // 新しい版を出すときは kEngineVersion を上げ、ここも書き換えること。
-constexpr const char* kWhatsNewTitle = "DX12 Engine v0.6.0 の更新内容";
+constexpr const char* kWhatsNewTitle = "DX12 Engine v0.6.1 の更新内容";
 constexpr const char* kWhatsNewBody =
-    "今回の更新（AI / MCP 連携の強化）:\n"
+    "今回の更新（描画パフォーマンスの大幅最適化）:\n"
     "\n"
-    "・AI(MCP)からエンティティを「名前」で操作できるように。Play/Stop やシーン再読込で\n"
-    "  id が変わっても name 指定なら安定して動かせる。\n"
-    "・足場やコインを1コールで作れる spawn_box / spawn_sphere / spawn_coin を追加。\n"
-    "  色付けの set_color も追加。\n"
-    "・Play を止めた後にシーンが空になることがある不具合を修正\n"
-    "  （復元に失敗してもディスクから自動で読み直す）。\n"
-    "・ゲームカメラ視点のスクショ、入力シミュレーション（キー入力/フレーム送り）、\n"
-    "  Lua から使える API の参照ツールなどを追加し、AI でのゲーム実装/検証が一段とやりやすく。\n";
+    "・発光弾/エフェクトを GPU インスタンシングで一括描画。弾幕で数百発出ても\n"
+    "  ドローコールが一定に保たれ、重くならない。\n"
+    "・画面外へ退避した（scale=0）エンティティを描画スキップ。プール方式のゲームで\n"
+    "  大量の非表示オブジェクトを毎フレーム描いていた無駄を解消。\n"
+    "・パーティクル計算を高速化（カールノイズの表引き化＋空きスロットの O(1) 管理）。\n"
+    "・シャドウを軽量化（マップ解像度の最適化、PCF タップ削減、発光体は影を落とさない）。\n"
+    "・出力先パスに日本語など非 ASCII 文字が含まれるとビルド時に明確なエラーで停止\n"
+    "  （原因不明のまま起動時クラッシュするのを防止）。\n";
 } // namespace dx12e

@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <functional>
+#include <unordered_map>
 #include <entt/entt.hpp>
 #include <DirectXMath.h>
 #include "core/Types.h"
@@ -105,8 +106,13 @@ private:
                                      DirectX::XMFLOAT3 rotation,
                                      DirectX::XMFLOAT3 scale);
 
+    // 発光弾(Pfx)など「同一形状を大量に出すプリミティブ」をサイズ別に共有して
+    // インスタンシング可能にするキャッシュ。値は m_ownedMeshes が所有する Mesh*。
+    Mesh* GetSharedGlowMesh(bool sphere, f32 radius);
+
     entt::registry m_registry;
     std::vector<std::unique_ptr<Mesh>> m_ownedMeshes;
+    std::unordered_map<uint64_t, Mesh*> m_glowMeshCache;
     PostProcessSettings m_postSettings;
     SkyboxSettings      m_skybox;
     SSAOSettings        m_ssao;

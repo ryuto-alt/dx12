@@ -177,7 +177,13 @@ private:
     std::unique_ptr<PipelineState>     m_skinnedPipelineState;        // 通常 forward(skinned, LESS)
     std::unique_ptr<PipelineState>     m_skinnedPipelineStateLEqual;  // SSAO 深度プリパス併用時(skinned, LESS_EQUAL)
     std::unique_ptr<PipelineState>     m_gridPipelineState;
-    std::unique_ptr<PipelineState>     m_emissivePipelineState;  // 加算発光パーティクル用
+    std::unique_ptr<PipelineState>     m_emissivePipelineState;  // 加算発光（Pfx）GPU instancing 用
+    // ---- 発光メッシュ instancing 用 per-instance バッファ（リング=FrameResources::kFrameCount=3）----
+    static constexpr u32 kMaxInstances = 4096;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_instanceBuffer[3];
+    uint8_t*                               m_instanceMapped[3] = {};
+    D3D12_VERTEX_BUFFER_VIEW               m_instanceVbView[3] = {};
+    u32                                    m_instanceCursor = 0;  // フレーム内 instance 連番（メイン＋プレビュー共有）
     std::unique_ptr<PipelineState>     m_shadowPipelineState;
     std::unique_ptr<PipelineState>     m_shadowSkinnedPipelineState;
     // ---- CSM (Cascaded Shadow Maps, 4分割) ----
@@ -186,7 +192,7 @@ private:
     std::unique_ptr<DescriptorHeap>    m_shadowDsvHeap;        // 容量 kNumCascades
     D3D12_CPU_DESCRIPTOR_HANDLE        m_shadowDsvHandles[kNumCascades]{}; // スライス毎の DSV
     u32                                m_shadowSrvIndex = 0;    // 配列SRV(1個)
-    u32                                m_shadowMapSize = 4096;
+    u32                                m_shadowMapSize = 2048;  // 4096→2048: トップダウンで影は小さく、1/4の帯域で十分
     i32                                m_shadowQualityIndex = 2;  // 0:1024, 1:2048, 2:4096, 3:8192
     bool                               m_shadowMapDirty = false;
     // CSM パラメータ（ImGui 編集用）

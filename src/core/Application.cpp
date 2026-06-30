@@ -93,6 +93,7 @@
 #include <functional>
 #include <unordered_set>
 #include <cctype>
+#include <unordered_map>
 #include <immintrin.h>
 #include <mmsystem.h>
 #pragma comment(lib, "winmm.lib")
@@ -132,6 +133,18 @@ Application::~Application()
 
 namespace
 {
+// UTF-8 の std::string を wstring へ。std::wstring(s.begin(),s.end()) のバイト拡幅は
+// 非 ASCII(日本語フォルダ等)で壊れる — テクスチャパスは AssetsDir()(UTF-8)由来なので
+// CP_UTF8 で正しく変換する。
+std::wstring Utf8ToWide(const std::string& s)
+{
+    if (s.empty()) return {};
+    const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    std::wstring w(static_cast<size_t>(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
+    return w;
+}
+
 // 「更新内容」ポップアップを表示済みのバージョンを記録するファイル。
 // %LOCALAPPDATA%\DX12Engine\shown_version.txt（exe の場所に依存せず必ず書ける）。
 // Updater の last_update.txt と同じ場所に置く。
@@ -553,11 +566,12 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Emissive_VS.cso");
             auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Emissive_PS.cso");
 
+            // インスタンシング版（slot1=MeshInstanceData）。Emissive.hlsl は instanced VS。
             PipelineStateBuilder builder;
             builder.SetRootSignature(m_rootSignature->Get())
                    .SetVertexShader(vs.GetData(), vs.GetSize())
                    .SetPixelShader(ps.GetData(), ps.GetSize())
-                   .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
+                   .SetInputLayout(Mesh::GetInstancedInputLayout(), Mesh::GetInstancedInputLayoutCount())
                    .SetRenderTargetFormat(kSceneColorFormat)
                    .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
                    .SetDepthEnabled(true)
@@ -567,6 +581,26 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
             m_emissivePipelineState = std::make_unique<PipelineState>();
             m_emissivePipelineState->Initialize(*m_graphicsDevice, builder);
+
+            // per-instance バッファ（kFrameCount でリング化＝インフライト安全）。永続Map。
+            for (u32 fi = 0; fi < FrameResources::kFrameCount; ++fi)
+            {
+                const UINT bytes = kMaxInstances * sizeof(MeshInstanceData);
+                D3D12_HEAP_PROPERTIES hp{}; hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+                D3D12_RESOURCE_DESC rd{};
+                rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+                rd.Width = bytes; rd.Height = 1; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
+                rd.SampleDesc = {1, 0}; rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+                ThrowIfFailed(m_graphicsDevice->GetDevice()->CreateCommittedResource(
+                    &hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_GENERIC_READ,
+                    nullptr, IID_PPV_ARGS(&m_instanceBuffer[fi])));
+                void* mapped = nullptr; D3D12_RANGE rr{0, 0};
+                ThrowIfFailed(m_instanceBuffer[fi]->Map(0, &rr, &mapped));
+                m_instanceMapped[fi] = static_cast<uint8_t*>(mapped);
+                m_instanceVbView[fi].BufferLocation = m_instanceBuffer[fi]->GetGPUVirtualAddress();
+                m_instanceVbView[fi].StrideInBytes  = sizeof(MeshInstanceData);
+                m_instanceVbView[fi].SizeInBytes    = bytes;
+            }
         }
 
         // sneakWalk アニメーションを全スケルタルEntityに追加
@@ -4710,6 +4744,34 @@ bool Application::BuildGame()
 {
     namespace fs = std::filesystem;
 
+    // --- 出力パスの非ASCII（日本語フォルダ名等）検出ガード（最優先）---
+    // 出力先に非ASCII文字が含まれると、配布した Game.exe が起動時に std::filesystem の
+    // UTF-8↔ANSI 誤変換で即クラッシュする（Windows error 1113 "No mapping for the Unicode
+    // character..."）。原因不明の「ビルド成功 → 実行時クラッシュ」を防ぐため、ここで明示的に
+    // 失敗させる。chosen は生の std::string（UTF-8でもACPでも日本語は >=0x80 を含む）なので
+    // fs::path を経由せず（=ここで例外を出さず）バイト走査で判定する。
+    {
+        const std::string chosen =
+            (m_editorCtx && !m_editorCtx->buildConfig.outputDir.empty())
+                ? m_editorCtx->buildConfig.outputDir
+                : PathResolver::BaseDir();
+        bool nonAscii = false;
+        for (unsigned char c : chosen) if (c >= 0x80) { nonAscii = true; break; }
+        if (nonAscii)
+        {
+            Logger::Error("Build aborted: output path contains non-ASCII characters "
+                          "(e.g. Japanese folder names). The built game would crash on startup "
+                          "with a Unicode->ANSI path error. Use an ASCII-only output folder. "
+                          "Path: {}", chosen);
+            if (m_editorCtx)
+                m_editorCtx->buildErrorMsg =
+                    "出力フォルダのパスに日本語など非ASCII文字が含まれています。\n"
+                    "このまま配布すると Game.exe が起動時にクラッシュします。\n"
+                    "出力先を半角英数字のみのパスにしてください。\n\n" + chosen;
+            return false;
+        }
+    }
+
     // ビルド出力先。ユーザーがビルド設定で選んだフォルダの中に「製品名_build」サブフォルダを作る。
     // 選んだフォルダ自体を出力先にして remove_all するとユーザーのデータを消す恐れがあるので必ずサブフォルダ化する。
     fs::path outputDir;
@@ -5088,6 +5150,12 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
     // 1エンティティ分の描画（パイプライン選択 + メッシュ描画）
     auto drawEntity = [&](entt::entity e, const Transform& transform, const MeshRenderer& renderer)
     {
+        // park 済み（scale≈0 で画面外へ退避したプール要素）は不可視なので描画スキップ。
+        // エンジンはフラスタムカリングしないため、これが無いと game1 の未使用プール(~700体)を
+        // 毎フレーム全部描いてしまい、空に見える画面でもGPUが張り付く。
+        const auto& sc = transform.scale;
+        if (sc.x * sc.x + sc.y * sc.y + sc.z * sc.z < 1e-8f) return;
+
         XMMATRIX world = (transform.parent != entt::null)
             ? ComputeWorldMatrix(reg, e) : transform.GetWorldMatrix();
 
@@ -5191,10 +5259,61 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
         }
     }
 
-    // パス3: 発光パーティクル（加算合成）を最後に重ねる＝不透明物に隠れず光る
-    for (auto [e, transform, renderer] : renderView.each())
+    // パス3: 発光弾(Pfx) を GPU instancing で加算合成。同一メッシュ(共有)を1ドローに集約。
+    // 弾が数百発でも「メッシュ種類ぶんのドロー」だけで済む（boss3 弾幕の draw 数を一定化）。
     {
-        if (isPfx(e)) drawEntity(e, transform, renderer);
+        std::unordered_map<const Mesh*, std::vector<MeshInstanceData>> byMesh;
+        for (auto [e, transform, renderer] : renderView.each())
+        {
+            if (!isPfx(e)) continue;
+            const auto& sc = transform.scale;
+            if (sc.x * sc.x + sc.y * sc.y + sc.z * sc.z < 1e-8f) continue;   // park スキップ
+            if (renderer.meshes.empty() || !renderer.meshes[0]) continue;
+
+            XMMATRIX world = (transform.parent != entt::null)
+                ? ComputeWorldMatrix(reg, e) : transform.GetWorldMatrix();
+            XMMATRIX t = XMMatrixTranspose(world);
+            MeshInstanceData inst;
+            XMStoreFloat4(&inst.r0, t.r[0]);
+            XMStoreFloat4(&inst.r1, t.r[1]);
+            XMStoreFloat4(&inst.r2, t.r[2]);
+            inst.color = renderer.instanceColor;
+            byMesh[renderer.meshes[0]].push_back(inst);
+        }
+
+        if (!byMesh.empty())
+        {
+            struct InstBucket { const Mesh* mesh; u32 base; u32 count; };
+            std::vector<InstBucket> buckets;
+            u32 cursor = m_instanceCursor;   // メイン/プレビューで同フレームバッファを連番共有
+            uint8_t* dst = m_instanceMapped[frameIndex];
+            for (auto& [mesh, vec] : byMesh)
+            {
+                if (cursor >= kMaxInstances) break;
+                u32 n = (std::min)(static_cast<u32>(vec.size()), kMaxInstances - cursor);
+                if (n == 0) continue;
+                memcpy(dst + static_cast<size_t>(cursor) * sizeof(MeshInstanceData),
+                       vec.data(), static_cast<size_t>(n) * sizeof(MeshInstanceData));
+                buckets.push_back({mesh, cursor, n});
+                cursor += n;
+            }
+            m_instanceCursor = cursor;   // 次の RenderSceneMeshes 呼び出し（プレビュー）へ連番を引き継ぐ
+
+            m_commandList->SetPipelineState(*m_emissivePipelineState);
+            XMMATRIX vpT = XMMatrixTranspose(viewProj);   // cbuffer 列優先再解釈で hlsl 上は VP
+            m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 16, &vpT);
+            m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            for (auto& b : buckets)
+            {
+                m_commandList->SetVertexBuffer(b.mesh->GetVertexBuffer().GetView());   // slot0
+                m_commandList->SetIndexBuffer(b.mesh->GetIndexBuffer().GetView());
+                D3D12_VERTEX_BUFFER_VIEW iv = m_instanceVbView[frameIndex];
+                iv.BufferLocation += static_cast<u64>(b.base) * sizeof(MeshInstanceData);
+                iv.SizeInBytes     = b.count * sizeof(MeshInstanceData);
+                nativeCmdList->IASetVertexBuffers(1, 1, &iv);                          // slot1
+                m_commandList->DrawIndexedInstanced(b.mesh->GetIndexCount(), b.count);
+            }
+        }
     }
 }
 
@@ -5213,7 +5332,7 @@ void Application::DrawWorldSprites(ID3D12GraphicsCommandList* cmd, DirectX::XMMA
         if (!sp.worldSpace || sp.texturePath.empty()) continue;
         if (!sreg.all_of<Transform>(e)) continue;
         const std::string absPath = PathResolver::AssetsDir() + sp.texturePath;
-        std::wstring wpath(absPath.begin(), absPath.end());   // ASCII パス想定
+        std::wstring wpath = Utf8ToWide(absPath);
         Texture* tex = m_resourceManager->GetOrLoadTexture(wpath, cmd);
         if (!tex) continue;
 
@@ -6136,6 +6255,12 @@ void Application::Render()
             for (auto [e, transform, renderer] : renderView.each())
             {
                 if (reg.all_of<GridPlane>(e)) continue;
+                // park 済み(scale≈0)は影も落とさない＝シャドウパスの大半(全プール×4カスケード)を削減。
+                const auto& sc = transform.scale;
+                if (sc.x * sc.x + sc.y * sc.y + sc.z * sc.z < 1e-8f) continue;
+                // 発光弾(Pfx*)は光源扱い＝影を落とさない。boss3 弾幕で「全弾×4カスケード」のシャドウ
+                // draw を丸ごと削減（加算発光なので影が無い方が自然・見た目も良い）。
+                if (auto* nt = reg.try_get<NameTag>(e); nt && nt->name.rfind("Pfx", 0) == 0) continue;
 
                 XMMATRIX world = (transform.parent != entt::null)
                     ? ComputeWorldMatrix(reg, e) : transform.GetWorldMatrix();
@@ -6433,6 +6558,8 @@ void Application::Render()
 
     XMMATRIX viewProj = m_camera->GetViewProjMatrix();
 
+    m_instanceCursor = 0;   // フレーム先頭で instancing バッファのカーソルをリセット（メイン→プレビューで連番追記）
+
     // 全Entityを描画（メインパス: 編集カメラ視点）。AO は SSAO 有効時のみ実テクスチャ、無効時は白。
     // useSSAO=true のときだけ深度プリパスで深度が完成済み → LESS_EQUAL forward PSO で再利用する。
     RenderSceneMeshes(nativeCmdList, frameIndex, viewProj,
@@ -6562,7 +6689,7 @@ void Application::Render()
         for (const auto& c : m_uiCommands)
         {
             if (c.type != UICommand::Type::Image || c.text.empty()) continue;
-            std::wstring wpath(c.text.begin(), c.text.end());  // ASCII パス想定
+            std::wstring wpath = Utf8ToWide(c.text);
             Texture* tex = m_resourceManager->GetOrLoadTexture(wpath, nativeCmdList);
             if (!tex) continue;
             SpriteDesc s;
@@ -6583,7 +6710,7 @@ void Application::Render()
             {
                 if (sp.worldSpace || sp.texturePath.empty()) continue;
                 const std::string absPath = PathResolver::AssetsDir() + sp.texturePath;
-                std::wstring wpath(absPath.begin(), absPath.end());   // ASCII パス想定
+                std::wstring wpath = Utf8ToWide(absPath);
                 Texture* tex = m_resourceManager->GetOrLoadTexture(wpath, nativeCmdList);
                 if (!tex) continue;
                 float cx = 0.0f, cy = 0.0f;
@@ -7021,8 +7148,10 @@ void Application::Render()
             else
             {
                 m_editorCtx->buildErrorFlash = 6.0f;
-                m_editorCtx->errorMessage =
-                    "ビルドに失敗しました。\n詳細は dx12_engine.log を確認してください。";
+                m_editorCtx->errorMessage = m_editorCtx->buildErrorMsg.empty()
+                    ? "ビルドに失敗しました。\n詳細は dx12_engine.log を確認してください。"
+                    : m_editorCtx->buildErrorMsg;
+                m_editorCtx->buildErrorMsg.clear();  // 次回ビルドへ持ち越さない
                 m_editorCtx->errorFlash = 1.0f;   // 中央モーダルで通知
             }
         }

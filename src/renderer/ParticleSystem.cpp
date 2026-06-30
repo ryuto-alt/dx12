@@ -23,15 +23,31 @@ inline u32 pcgu(u32 v)
     u32 w = ((v >> ((v >> 28u) + 4u)) ^ v) * 277803737u;
     return (w >> 22u) ^ w;
 }
-inline float u2f01(u32 h) { return static_cast<float>(h) * (1.0f / 4294967296.0f); }
+
+// 256方向の単位ベクトル表（フィボナッチ球で均一分布）。一度だけ構築し、grad3 の
+// 毎回の sqrt/cos/sin を表引きに置換する。curl ノイズの見た目は等価（チャオティックな乱流）。
+struct GradTable
+{
+    float g[256][3];
+    GradTable()
+    {
+        const float golden = 2.399963230f;             // 黄金角（ラジアン）
+        for (int i = 0; i < 256; ++i)
+        {
+            float zz = (2.0f * i + 1.0f) / 256.0f - 1.0f;            // [-1,1] 低不一致
+            float r  = std::sqrt((std::max)(0.0f, 1.0f - zz * zz));
+            float a  = i * golden;
+            g[i][0] = r * std::cos(a); g[i][1] = r * std::sin(a); g[i][2] = zz;
+        }
+    }
+};
+static const GradTable kGrad;
 
 inline void grad3(int x, int y, int z, float& gx, float& gy, float& gz)
 {
     u32 h = pcgu(static_cast<u32>(x) ^ pcgu(static_cast<u32>(y) ^ pcgu(static_cast<u32>(z))));
-    float a  = u2f01(h) * 6.2831853f;
-    float zz = u2f01(pcgu(h)) * 2.0f - 1.0f;          // [-1,1]
-    float r  = std::sqrt((std::max)(0.0f, 1.0f - zz * zz));
-    gx = r * std::cos(a); gy = r * std::sin(a); gz = zz;
+    const float* g = kGrad.g[h & 255u];   // 表引き（sqrt/cos/sin なし、pcgu(h) も不要）
+    gx = g[0]; gy = g[1]; gz = g[2];
 }
 
 // 勾配ノイズ 3D（quintic 補間 → C1 連続。curl が滑らかになる）
@@ -275,6 +291,9 @@ void ParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
 
     m_particles.assign(kMaxParticles, Particle{});
     m_gpu.reserve(kMaxParticles);
+    m_live.reserve(kMaxParticles);
+    m_freeList.reserve(kMaxParticles);
+    ResetPool();
     m_beamPool.assign(kMaxBeams, Beam{});
     m_gpuBeams.reserve(kMaxBeams);
     m_initialized = true;
@@ -286,6 +305,17 @@ float ParticleSystem::Rand(float a, float b)
 {
     std::uniform_real_distribution<float> d(a, b);
     return d(m_rng);
+}
+
+void ParticleSystem::ResetPool()
+{
+    m_freeList.resize(kMaxParticles);
+    for (u32 i = 0; i < kMaxParticles; ++i)
+    {
+        m_freeList[i] = kMaxParticles - 1 - i;   // pop_back → 0,1,2,... の順で配る
+        m_particles[i].alive = false;
+    }
+    m_live.clear();
 }
 
 void ParticleSystem::Emit(const EmitParams& p)
@@ -301,14 +331,10 @@ void ParticleSystem::Emit(const EmitParams& p)
 
     for (int n = 0; n < count; ++n)
     {
-        // 空きスロット探索（カーソルから一巡）
-        u32 idx = kMaxParticles;
-        for (u32 s = 0; s < kMaxParticles; ++s)
-        {
-            u32 c = (m_cursor + s) % kMaxParticles;
-            if (!m_particles[c].alive) { idx = c; m_cursor = (c + 1) % kMaxParticles; break; }
-        }
-        if (idx == kMaxParticles) break; // 満杯
+        if (m_freeList.empty()) break;            // 満杯（O(1)）
+        u32 idx = m_freeList.back();
+        m_freeList.pop_back();
+        m_live.push_back(idx);
         Particle& pt = m_particles[idx];
 
         // 方向：ring=XZ等間隔, それ以外は球/円錐ランダム
@@ -393,11 +419,19 @@ void ParticleSystem::Update(f32 dt)
     if (m_pulse > 0.0f) m_pulse = (std::max)(0.0f, m_pulse - dt * 3.0f);
     if (dt <= 0.0f) return;
 
-    for (auto& pt : m_particles)
+    for (size_t i = 0; i < m_live.size(); )
     {
-        if (!pt.alive) continue;
+        u32 idx = m_live[i];
+        Particle& pt = m_particles[idx];
         pt.age += dt;
-        if (pt.age >= pt.life) { pt.alive = false; continue; }
+        if (pt.age >= pt.life)
+        {
+            pt.alive = false;
+            m_freeList.push_back(idx);
+            m_live[i] = m_live.back();   // swap-remove（末尾を詰める）
+            m_live.pop_back();
+            continue;                    // i は据え置き（入れ替えた末尾を処理）
+        }
 
         // カールノイズ乱流（divergence-free）：流体的な揺らぎ。turbStrength=0 で無効。
         if (pt.turbStrength > 0.0f)
@@ -424,6 +458,7 @@ void ParticleSystem::Update(f32 dt)
             pt.vel.y = -pt.vel.y * 0.35f;
             pt.vel.x *= 0.7f; pt.vel.z *= 0.7f;
         }
+        ++i;
     }
 
     // ビーム寿命（移動せず減衰のみ）
@@ -437,7 +472,7 @@ void ParticleSystem::Update(f32 dt)
 
 void ParticleSystem::Clear()
 {
-    for (auto& pt : m_particles) pt.alive = false;
+    ResetPool();
     for (auto& b : m_beamPool) b.alive = false;
     m_aliveCount = 0;
     m_pulse = 0.0f;
@@ -480,20 +515,18 @@ void ParticleSystem::Render(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj,
         return g;
     };
 
-    // 加算 → α の順に詰める（PSO 切替を1回に）
+    // 加算 → α の順に詰める（PSO 切替を1回に）。生存リストのみ走査（O(alive)）。
     m_gpu.clear();
-    for (const auto& pt : m_particles)
+    for (u32 idx : m_live)
     {
-        if (!pt.alive || pt.blend != 0) continue;
-        m_gpu.push_back(makeGpu(pt));
-        if (m_gpu.size() >= kMaxParticles) break;
+        const Particle& pt = m_particles[idx];
+        if (pt.blend == 0) m_gpu.push_back(makeGpu(pt));
     }
     m_additiveCount = static_cast<u32>(m_gpu.size());
-    for (const auto& pt : m_particles)
+    for (u32 idx : m_live)
     {
-        if (!pt.alive || pt.blend == 0) continue;
-        if (m_gpu.size() >= kMaxParticles) break;
-        m_gpu.push_back(makeGpu(pt));
+        const Particle& pt = m_particles[idx];
+        if (pt.blend != 0) m_gpu.push_back(makeGpu(pt));
     }
     m_aliveCount = static_cast<int>(m_gpu.size());
 

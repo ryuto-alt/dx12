@@ -181,11 +181,9 @@ void ShadeKind(VSOutput i, out float shape, out float3 kindColor)
 
 float4 PSMain(VSOutput i) : SV_TARGET
 {
-    float shape;
-    float3 kindColor;
-    ShadeKind(i, shape, kindColor);
-
-    // ---- soft particles: シーン深度で手動オクルージョン＋接地フェード ----
+    // ---- soft particles を先に評価: シーン深度で手動オクルージョン＋接地フェード ----
+    // 隠れた／寿命末端でフェードした画素はここで clip し、高コストな fbm/ShadeKind と
+    // ROP 書き込みを丸ごとスキップする（加算は0加算・前乗算αは0書きで結果は同一）。
     float soft = 1.0;
     if (params2.z > 0.0)
     {
@@ -195,6 +193,11 @@ float4 PSMain(VSOutput i) : SV_TARGET
         float fadeDist = params.w * (i.kind == KIND_SMOKE ? 3.0 : 1.0);
         soft = saturate((sceneZ - i.viewZ) / max(fadeDist, 1e-3));
     }
+    clip(soft * i.color.a - 1e-3);
+
+    float shape;
+    float3 kindColor;
+    ShadeKind(i, shape, kindColor);
 
     float cov = shape * i.color.a * soft;
     float3 rgb = kindColor * cov * params.x;     // 前乗算（加算 / 前乗算アルファ 両PSO共用）

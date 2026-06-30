@@ -319,6 +319,13 @@ void ScriptEngine::RegisterBindings()
             auto& reg = s.GetRegistry();
             if (!reg.all_of<MeshRenderer>(e.GetHandle())) return;
             auto& mr = reg.get<MeshRenderer>(e.GetHandle());
+            // 共有メッシュ(instanced)は VB を焼かず per-instance 色へ。発光弾はこちら＝
+            // setColor が VB 再生成しない＝大量の弾でも GPU 同期ゼロ。
+            if (mr.instanced)
+            {
+                mr.instanceColor = {r, g, b, 1.0f};
+                return;
+            }
             auto* device = s.GetDevice();
             if (!device) return;
             for (auto* mesh : mr.meshes)

@@ -21,6 +21,16 @@ struct Vertex
     DirectX::XMFLOAT4 boneWeights = {0, 0, 0, 0};     // BLENDWEIGHT
 };
 
+// GPU インスタンス1個ぶん（slot1, PER_INSTANCE, stride=64）。
+// r0..r2 = XMMatrixTranspose(world) の先頭3行（4行目は (0,0,0,1) 固定なので省略）。
+struct MeshInstanceData
+{
+    DirectX::XMFLOAT4 r0;     // TEXCOORD8
+    DirectX::XMFLOAT4 r1;     // TEXCOORD9
+    DirectX::XMFLOAT4 r2;     // TEXCOORD10
+    DirectX::XMFLOAT4 color;  // TEXCOORD11
+};
+
 class Mesh
 {
 public:
@@ -61,6 +71,9 @@ public:
 
     static const D3D12_INPUT_ELEMENT_DESC* GetInputLayout();
     static u32 GetInputLayoutCount();
+    // slot0(頂点) + slot1(MeshInstanceData, PER_INSTANCE) のインスタンシング用レイアウト。
+    static const D3D12_INPUT_ELEMENT_DESC* GetInstancedInputLayout();
+    static u32 GetInstancedInputLayoutCount();
 
 private:
     VertexBuffer m_vertexBuffer;

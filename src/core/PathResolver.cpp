@@ -7,6 +7,18 @@ namespace fs = std::filesystem;
 
 namespace dx12e
 {
+namespace
+{
+// fs::path -> UTF-8 の std::string('/' 区切り)。VFS は UTF-8 前提(WideToUtf8/Utf8ToWide)なので
+// パスのプレフィックス文字列も UTF-8 に揃える。generic_string() は ACP を返し、非 ASCII
+// フォルダ("新しいフォルダー"等)で pak キーのプレフィックス剥がしが一致しなくなる。
+std::string Utf8Generic(const fs::path& p)
+{
+    const std::u8string u8 = p.generic_u8string();
+    return std::string(u8.begin(), u8.end());
+}
+} // namespace
+
 bool         PathResolver::s_initialized = false;
 std::string  PathResolver::s_assets;
 std::wstring PathResolver::s_shaderW;
@@ -24,9 +36,9 @@ void PathResolver::Initialize(bool gameMode)
 
     if (dist)
     {
-        s_base    = exeDir.generic_string() + "/";
-        s_assets  = (exeDir / "assets").generic_string()  + "/";
-        s_scripts = (exeDir / "scripts").generic_string() + "/";
+        s_base    = Utf8Generic(exeDir) + "/";
+        s_assets  = Utf8Generic(exeDir / "assets")  + "/";
+        s_scripts = Utf8Generic(exeDir / "scripts") + "/";
         s_shaderW = (exeDir / "shaders").generic_wstring() + L"/";
     }
     else
@@ -36,7 +48,7 @@ void PathResolver::Initialize(bool gameMode)
         s_scripts = SCRIPTS_DIR;
         s_shaderW = SHADER_DIR;
         // ASSETS_DIR = "<root>/assets/" なので 2 つ親を辿るとプロジェクトルート
-        s_base    = fs::path(ASSETS_DIR).parent_path().parent_path().generic_string() + "/";
+        s_base    = Utf8Generic(fs::path(ASSETS_DIR).parent_path().parent_path()) + "/";
     }
 
     s_initialized = true;
@@ -48,9 +60,9 @@ void PathResolver::SetProjectRoot(const std::string& rootDir)
         return;  // 空 = 組み込みパスを維持（ランチャーの「スキップ」用）
 
     fs::path root(rootDir);
-    s_base    = root.generic_string() + "/";
-    s_assets  = (root / "assets").generic_string()  + "/";
-    s_scripts = (root / "scripts").generic_string() + "/";
+    s_base    = Utf8Generic(root) + "/";
+    s_assets  = Utf8Generic(root / "assets")  + "/";
+    s_scripts = Utf8Generic(root / "scripts") + "/";
     // shaders はエンジン側の .cso をそのまま使う（s_shaderW は変更しない）
 }
 
@@ -61,10 +73,13 @@ const std::string&  PathResolver::BaseDir()    { return s_base;    }
 
 std::string PathResolver::GameLuaPath()
 {
+    // s_* は UTF-8。fs::exists(std::string) は ACP 解釈なので、非 ASCII / 壊れた
+    // フォルダ名だと例外を投げ得る -> error_code 版で握りつぶす(ゲームモードは pak 経由で読む)。
+    std::error_code ec;
     std::string s = s_scripts + "game.lua";
-    if (fs::exists(s)) return s;
+    if (fs::exists(s, ec)) return s;
     std::string a = s_assets + "game.lua";
-    if (fs::exists(a)) return a;
+    if (fs::exists(a, ec)) return a;
     return s;  // 既定（存在チェックは呼び出し側）
 }
 }

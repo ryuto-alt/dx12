@@ -169,6 +169,7 @@ private:
     };
 
     float Rand(float a, float b);
+    void  ResetPool();   // 空きリスト/生存リストを初期状態へ（Initialize/Clear 共用）
 
     static constexpr u32 kMaxParticles = 8000;
     static constexpr u32 kMaxBeams     = 512;
@@ -186,8 +187,9 @@ private:
     std::vector<GpuParticle> m_gpu;     // 毎フレーム再構築（加算→α の順に詰める）
     std::vector<Beam>        m_beamPool;
     std::vector<GpuBeam>     m_gpuBeams;
+    std::vector<u32>         m_freeList; // 空きスロットのスタック（O(1) 確保）
+    std::vector<u32>         m_live;     // 生存パーティクルの密なインデックス列
     u32   m_additiveCount = 0;          // m_gpu 内の加算粒子数（先頭から）
-    u32   m_cursor     = 0;             // 空きスロット探索の起点
     u32   m_beamCursor = 0;
     int   m_aliveCount = 0;
     float m_pulse      = 0.0f;
