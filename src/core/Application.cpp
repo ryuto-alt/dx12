@@ -183,7 +183,7 @@ void WriteShownVersion(const std::string& v)
 } // namespace
 
 void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
-                             const ProjectInfo* /*projectInfo*/)
+                             const ProjectInfo* /*projectInfo*/, bool buildMode)
 {
     // ロガー初期化
     Logger::Init();
@@ -1002,7 +1002,10 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     Logger::Info("Application initialized successfully");
 
     // AI(MCP)ブリッジ。エディタ時のみ。ゲーム(封印ランタイム)では起動しない＝外部から触れない。
-    if (!m_isGameMode)
+    // ヘッドレス --build でも起動しない: 起動中エディタが 8787 を握っている状態で build が
+    // 走ると 8788 に bind→WritePortFile が %TEMP%/dx12_mcp.port を 8788 で上書きし、build 終了で
+    // その port が死ぬ＝Node 側の自動検出が死にポートを掴みライブツールが切れる原因になる。
+    if (!m_isGameMode && !buildMode)
     {
         m_mcpBridge = std::make_unique<McpBridge>();
         m_mcpBridge->Start(8787);   // ponytail: ポート固定。衝突したら env/引数化する。

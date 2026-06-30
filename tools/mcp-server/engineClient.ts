@@ -67,12 +67,14 @@ export class EngineClient {
   private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
   private host: string;
   private port: number;
+  private explicitPort: boolean;   // 呼び出し側がポートを固定したか（test.ts 等）。固定時は再探索しない。
   private defaultTimeoutMs: number;
 
   // Node の型ストリップ実行はパラメータプロパティ非対応なので明示代入。
   // 引数省略時はポート自動探索。test.ts は (host, port, timeout) を明示指定してくる。
   constructor(host?: string, port?: number, timeoutMs?: number) {
     this.host = host ?? process.env.DX12_MCP_HOST ?? "127.0.0.1";
+    this.explicitPort = port != null;
     this.port = port ?? discoverPort();
     this.defaultTimeoutMs = timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
@@ -107,6 +109,9 @@ export class EngineClient {
     // single-flight: 接続確立中の Promise を共有。並行 call が複数ソケットを張るのを防ぐ
     // (engine は単一クライアントしか捌けないため2本目以降がハングする)。
     if (this.connecting) return this.connecting;
+    // 再接続のたびにポートを再探索する（固定指定が無い場合）。ビルド等で一時的に死にポートを
+    // 掴んでも、エディタの正しいポートが %TEMP%/dx12_mcp.port に戻れば再起動なしで自己回復する。
+    if (!this.explicitPort) this.port = discoverPort();
     this.connecting = new Promise((resolve, reject) => {
       const s = net.connect(this.port, this.host);
       s.setEncoding("utf8");

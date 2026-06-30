@@ -78,7 +78,7 @@ public:
     Application& operator=(const Application&) = delete;
 
     void Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode = false,
-                    const ProjectInfo* projectInfo = nullptr);
+                    const ProjectInfo* projectInfo = nullptr, bool buildMode = false);
     void Run();
     void Shutdown();
 
