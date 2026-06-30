@@ -1344,10 +1344,15 @@ nlohmann::json McpLuaApi()
         return o;
     };
     json objects = json::array();
+    objects.push_back(O("callbacks", "(各 Lua コンポーネントが任意で定義)", json::array({
+        "OnStart(self)       — Play開始/アタッチ時に1回。第1引数は self(table)",
+        "OnUpdate(self, dt)  — 毎フレーム。第1引数 self、第2引数 dt(秒)。コンポーネントは self が必須",
+        "注: グローバル(シーン)スクリプトは OnUpdate(dt)(self 無し)。コンポーネントは OnUpdate(self, dt)",
+    })));
     objects.push_back(O("entity", "scene:findEntity(name) / scene:spawn* / physics:overlap*", json::array({
         "isValid() -> bool",
         "name  (string, read-only property)",
-        "transform  (Transform, read/write property) — 唯一直接読めるコンポーネントデータ",
+        "transform  (Transform getter。フィールドは書込可: entity.transform.position = Vec3.new(x,y,z)。ただし entity.transform 自体の再代入は read-only) — 唯一直接読めるコンポーネントデータ",
         "hasComponent(type:string) -> bool  (type: Transform,MeshRenderer,SkeletalAnimation,NodeAnimation,GridPlane,PointLight,DirectionalLight,SpotLight,Camera,AudioSource,Gimmick,ParticleEmitter,Trigger,CharacterController)",
         "playAnim(clipIndex:int, blend:float)",
         "playAnimByName(name:string, blend:float)",
@@ -1356,7 +1361,8 @@ nlohmann::json McpLuaApi()
         "getAnimName(index:int) -> string",
     })));
     objects.push_back(O("transform", "entity.transform / self.transform", json::array({
-        "position  (Vec3)", "rotation  (Vec3, euler degrees)", "scale  (Vec3)",
+        "position  (Vec3, 読み書き)", "rotation  (Vec3, euler degrees, 読み書き)", "scale  (Vec3, 読み書き)",
+        "代入: tr.position = Vec3.new(x,y,z) も tr.position.x=… も可。tr 自体(entity.transform)の再代入は不可(read-only)",
     })));
     objects.push_back(O("Vec3", "Vec3.new(x,y,z)", json::array({"x", "y", "z"})));
     objects.push_back(O("self", "(各 Lua コンポーネントに自動で渡る)", json::array({
@@ -1386,7 +1392,8 @@ nlohmann::json McpLuaApi()
         "autoCollider(e)", "addBoxCollider(e,hx,hy,hz)", "addSphereCollider(e,radius)",
         "addCapsuleCollider(e,radius,halfHeight)", "addRigidBody(e,motionType,mass)", "removeRigidBody(e)",
         "applyForce(e,vec3)", "applyImpulse(e,vec3)", "setVelocity(e,vec3)", "getVelocity(e) -> vec3",
-        "setPosition(e,vec3)", "raycast(origin,dir,maxDist) -> RaycastHit",
+        "setPosition(e,vec3)  ※DYNAMIC ボディ向け。KINEMATIC/STATIC は Transform 駆動なので entity.transform.position を直接書く",
+        "raycast(origin,dir,maxDist) -> RaycastHit",
         "overlapBox(center,half,maxN?) -> {entity..}", "overlapSphere(center,radius,maxN?) -> {entity..}",
         "setGravity(vec3)", "setPaused(b)", "step(dt)",
         "addCharacterController(e,radius,halfHeight)", "move(e,vx,vz)", "jump(e,amount?)", "isGrounded(e) -> bool",
@@ -1403,8 +1410,13 @@ nlohmann::json McpLuaApi()
         "ui:text(x,y,text,size?,r?,g?,b?,a?)", "ui:button(x,y,w,h,label) -> bool",
         "ui:image(x,y,w,h,path)", "ui:rect(x,y,w,h,r?,g?,b?,a?,rounding?)",
     })));
-    objects.push_back(O("fx", "global (':' で呼ぶ)", json::array({
-        "fx:burst{...}", "fx:ring{...}", "fx:pulse(amt?)", "fx:beam{...}", "fx:clear()",
+    objects.push_back(O("fx", "global (':' で呼ぶ)。座標/色キーは省略可(既定値あり)", json::array({
+        "fx:burst{ x,y,z, count, size,sizeEnd, life,lifeVar, r,g,b, rEnd,gEnd,bEnd, rMid,gMid,bMid, intensity, kind, speed,spread, dx,dy,dz, gravity,drag,up, stretch, turbStrength,turbFreq, flicker } — 1発放出",
+        "fx:ring{ ...burst と同じキー... } — リング状放出。サイズは radius/scale ではなく size",
+        "kind: glow/fire/smoke/spark/magic/electric/ring/star（文字列 or 0..7）",
+        "fx:beam{ x0,y0,z0, x1,y1,z1, width, r,g,b, intensity, life, kind } — kind: energy/electric/fire。座標は ax/bz ではなく x0..z1",
+        "fx:pulse(amt?)  画面全体パルス  /  fx:clear()",
+        "例: fx:burst{ x=p.x, y=p.y, z=p.z, kind=\"spark\", count=18, size=0.5, r=1, g=0.78, b=0.18 }  ← scale/radius は無効キー(黙って無視される)",
     })));
     objects.push_back(O("events", "global (Play 中のみ)", json::array({
         "events:on(name,fn) -> id", "events:off(id)", "events:emit(name,data?)", "events:clear()",
@@ -1424,7 +1436,10 @@ nlohmann::json McpLuaApi()
         {"version", 1},
         {"note", "Lua コンポーネントから使えるバインディング一覧。重要: コンポーネントは transform を除き "
                  "entity.<key> では読めない(entity.boxCollider 等は nil)。collider/rigidBody の値は "
-                 "physics:getVelocity(e) など別 API 経由。self.entity は数値 id で Entity usertype ではない。"},
+                 "physics:getVelocity(e) など別 API 経由。self.entity は数値 id で Entity usertype ではない。"
+                 " コールバックは OnStart(self) / OnUpdate(self, dt)(コンポーネントは self 必須)。"
+                 " 位置更新は entity.transform.position = Vec3.new(x,y,z)（KINEMATIC も Transform 駆動）。"
+                 " スクリプトエラーは dx12_get_lua_component_state の errorMessage に出る(loadError=true のとき)。"},
         {"objects", std::move(objects)},
     };
 }
@@ -2285,7 +2300,8 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"scriptPath", ls.scriptPath},
                               {"enabled", ls.enabled}, {"started", ls.started},
-                              {"loadError", ls.loadError}, {"properties", std::move(props)}};
+                              {"loadError", ls.loadError}, {"errorMessage", ls.errorMessage},
+                              {"properties", std::move(props)}};
         }
         else if (method == "set_lua_property")
         {

@@ -352,6 +352,7 @@ struct LuaScript
     std::shared_ptr<void> self;   // sol::table
     bool started   = false;
     bool loadError = false;
+    std::string errorMessage;   // loadError=true のときの最後のエラー文字列（dx12_get_lua_component_state で返す）
 };
 
 // 配置できるパーティクル放出器（エディタで置く「エフェクト部品」）。

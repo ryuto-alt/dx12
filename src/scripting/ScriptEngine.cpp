@@ -133,13 +133,13 @@ bool InitializeLuaScriptInstance(sol::state& lua,
         lastError = err.what();
         Logger::Error("Lua load error (entity={} path={}): {}",
                       static_cast<u32>(e), ls.scriptPath, lastError);
-        ls.loadError = true;
+        ls.loadError = true; ls.errorMessage = lastError;
         return false;
     }
 
     ls.env       = env;
     ls.self      = self;
-    ls.loadError = false;
+    ls.loadError = false; ls.errorMessage.clear();
 
     // OnStart(self) を呼ぶ
     sol::protected_function fn = (*env)["OnStart"];
@@ -152,7 +152,7 @@ bool InitializeLuaScriptInstance(sol::state& lua,
             lastError = err.what();
             Logger::Error("Lua OnStart error (entity={}): {}",
                           static_cast<u32>(e), lastError);
-            ls.loadError = true;
+            ls.loadError = true; ls.errorMessage = lastError;
             return false;
         }
     }
@@ -1406,6 +1406,7 @@ void ScriptEngine::AttachScriptToEntity(entt::entity e, const std::string& scrip
         existing->self.reset();
         existing->started    = false;
         existing->loadError  = false;
+        existing->errorMessage.clear();
     }
     else
     {
@@ -1558,6 +1559,7 @@ void ScriptEngine::ReloadScript(entt::entity e)
     ls.self.reset();
     ls.started   = false;
     ls.loadError = false;
+    ls.errorMessage.clear();
     InvalidatePropertySchema(ls.scriptPath);   // ファイルが書き換わった可能性 → 再解析
     Logger::Info("LuaScript reload queued: entity={}", static_cast<u32>(e));
     // 実際の再構築は UpdateAttachedScripts のループで行う
@@ -1676,7 +1678,7 @@ void ScriptEngine::UpdateAttachedScripts(f32 dt)
             m_lastError = err.what();
             Logger::Error("Lua OnUpdate error (entity={}): {}",
                           static_cast<u32>(e), m_lastError);
-            ls.loadError = true;
+            ls.loadError = true; ls.errorMessage = m_lastError;
         }
     }
 }
