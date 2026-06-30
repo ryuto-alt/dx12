@@ -64,6 +64,43 @@ if(MSVC)
     target_compile_definitions(DX12Engine PRIVATE ${DX12_COMPILE_DEFS})
 endif()
 
+# --- GitHub CLI (gh) 同梱: エディタの GitHub 連携(リポジトリ作成/push/ログイン)は
+#     GitIntegration.cpp が gh.exe を CreateProcess するだけなので、ユーザーに別途インストール
+#     させなくて済むよう gh.exe を DX12Engine.exe の隣に置く。CreateProcess の exe 検索順位は
+#     1番目が「読み込んだ exe 自身のフォルダ」なので、隣に置くだけで PATH 未設定でも自動的に
+#     見つかる(GitIntegration.cpp は無改造)。初回 configure 時だけ公式リリースから取得しキャッシュ。
+set(DX12_GH_CLI_VERSION "2.95.0")
+set(DX12_GH_CLI_SHA256  "19a7154161ada9cfaa9e57edb752ecc679b75c391a62e4f7b586eea1df30b5bb")
+set(DX12_GH_CLI_DIR "${CMAKE_SOURCE_DIR}/third_party/gh-cli")
+set(DX12_GH_CLI_EXE "${DX12_GH_CLI_DIR}/gh.exe")
+if(NOT EXISTS "${DX12_GH_CLI_EXE}")
+    set(DX12_GH_CLI_ZIP "${CMAKE_BINARY_DIR}/gh-cli.zip")
+    message(STATUS "gh.exe (GitHub CLI v${DX12_GH_CLI_VERSION}) を取得中...")
+    file(DOWNLOAD
+        "https://github.com/cli/cli/releases/download/v${DX12_GH_CLI_VERSION}/gh_${DX12_GH_CLI_VERSION}_windows_amd64.zip"
+        "${DX12_GH_CLI_ZIP}"
+        TLS_VERIFY ON
+        EXPECTED_HASH SHA256=${DX12_GH_CLI_SHA256}
+        STATUS DX12_GH_CLI_DL_STATUS)
+    list(GET DX12_GH_CLI_DL_STATUS 0 DX12_GH_CLI_DL_CODE)
+    if(DX12_GH_CLI_DL_CODE EQUAL 0)
+        file(ARCHIVE_EXTRACT INPUT "${DX12_GH_CLI_ZIP}" DESTINATION "${CMAKE_BINARY_DIR}/gh-cli-extract")
+        if(EXISTS "${CMAKE_BINARY_DIR}/gh-cli-extract/bin/gh.exe")
+            file(MAKE_DIRECTORY "${DX12_GH_CLI_DIR}")
+            file(COPY "${CMAKE_BINARY_DIR}/gh-cli-extract/bin/gh.exe" DESTINATION "${DX12_GH_CLI_DIR}")
+        endif()
+    else()
+        message(WARNING "gh.exe の取得に失敗（オフライン？）。GitHub連携はPATH上のghにフォールバックするで。"
+                         "手動なら third_party/gh-cli/gh.exe に置いてもOK。")
+    endif()
+    file(REMOVE "${DX12_GH_CLI_ZIP}")
+endif()
+if(EXISTS "${DX12_GH_CLI_EXE}")
+    add_custom_command(TARGET DX12Engine POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${DX12_GH_CLI_EXE}" "$<TARGET_FILE_DIR:DX12Engine>/gh.exe"
+        COMMENT "Bundling gh.exe next to DX12Engine.exe")
+endif()
+
 # --- GameRuntime: ゲーム専用実行ファイル（DX12_GAME_RUNTIME で常にゲームモード固定）---
 add_executable(GameRuntime WIN32 src/main.cpp ${DX12_APP_ICON_RC})
 target_link_libraries(GameRuntime
