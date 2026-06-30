@@ -7,7 +7,7 @@
 namespace dx12e
 {
 // セマンティックバージョン（"MAJOR.MINOR.PATCH"）。GitHub リリースのタグ（"v1.2.3" 等）と比較する。
-constexpr const char* kEngineVersion = "0.6.1";
+constexpr const char* kEngineVersion = "0.6.2";
 
 // 自動アップデートの取得元 GitHub リポジトリ。
 constexpr const char* kUpdateRepoOwner = "ryuto-alt";
@@ -16,16 +16,17 @@ constexpr const char* kUpdateRepoName  = "dx12";
 // 起動時に一度だけ表示する「更新内容」ポップアップ（この版で直したこと）。
 // 表示済み判定は %LOCALAPPDATA%\DX12Engine\shown_version.txt（版が変わった初回だけ出す）。
 // 新しい版を出すときは kEngineVersion を上げ、ここも書き換えること。
-constexpr const char* kWhatsNewTitle = "DX12 Engine v0.6.1 の更新内容";
+constexpr const char* kWhatsNewTitle = "DX12 Engine v0.6.2 の更新内容";
 constexpr const char* kWhatsNewBody =
-    "今回の更新（描画パフォーマンスの大幅最適化）:\n"
+    "今回の更新（FPS の超安定化と MCP の不具合修正）:\n"
     "\n"
-    "・発光弾/エフェクトを GPU インスタンシングで一括描画。弾幕で数百発出ても\n"
-    "  ドローコールが一定に保たれ、重くならない。\n"
-    "・画面外へ退避した（scale=0）エンティティを描画スキップ。プール方式のゲームで\n"
-    "  大量の非表示オブジェクトを毎フレーム描いていた無駄を解消。\n"
-    "・パーティクル計算を高速化（カールノイズの表引き化＋空きスロットの O(1) 管理）。\n"
-    "・シャドウを軽量化（マップ解像度の最適化、PCF タップ削減、発光体は影を落とさない）。\n"
-    "・出力先パスに日本語など非 ASCII 文字が含まれるとビルド時に明確なエラーで停止\n"
-    "  （原因不明のまま起動時クラッシュするのを防止）。\n";
+    "・シーン単位で影(CSM)の ON/OFF を切替可能に。影が不要なトップダウン等で\n"
+    "  影パスを丸ごとスキップでき、敵が多いシーンの FPS が大きく改善。\n"
+    "・毎フレームの GPU 全同期(WaitIdle)を撤去し、CPU と GPU を並列化。\n"
+    "  フレーム時間が CPU+GPU から max(CPU,GPU) になり、高負荷時も安定。\n"
+    "・フォワード描画に視錐台カリングを追加。画面外のオブジェクトを\n"
+    "  描かずに省き、広いシーンほど効く。\n"
+    "・MCP の不具合修正: ヘッドレス --build がポートファイルを死にポートで\n"
+    "  上書きし、ライブの MCP ツールが切れる問題を解消（build はもうブリッジを\n"
+    "  起動しない＋クライアントは再接続時にポートを再探索して自己回復）。\n";
 } // namespace dx12e
