@@ -272,29 +272,51 @@ std::string GitIntegration::GitHubUser()
     return u.substr(b, e - b + 1);
 }
 
-bool GitIntegration::LaunchLogin()
+GitResult GitIntegration::LoginAndWait(const std::atomic<bool>& abortFlag)
 {
-    // gh auth login は対話式（ブラウザでのデバイス認証）。別コンソールを開いて
-    // ユーザーが操作できるようにする。完了後に git の資格情報ヘルパも gh に設定。
-    // /k で完了後もウィンドウを残す（ワンタイムコード等の確認用）。
-    std::string cmd =
-        "cmd.exe /k \"gh auth login --hostname github.com --git-protocol https --web "
-        "&& gh auth setup-git && echo. && echo [ログイン処理が完了したらこのウィンドウは閉じてOK]\"";
-
+    // gh auth login --web は gh 自身がブラウザ承認をポーリングして待ち、終わったらプロセスが
+    // 終了する。なので「子プロセスの終了をそのまま待つ」だけでイベント駆動の完了検知になる
+    // （こちらで gh api user を何度も叩いてポーリングする必要が無い＝検知が速い）。
+    // 別コンソールでワンタイムコード等の対話表示はそのまま見せる。
+    std::string cmd = "gh auth login --hostname github.com --git-protocol https --web";
     std::vector<char> buf(cmd.begin(), cmd.end());
     buf.push_back('\0');
 
     STARTUPINFOA si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
+    GitResult result;
     BOOL ok = CreateProcessA(nullptr, buf.data(), nullptr, nullptr, FALSE,
                              CREATE_NEW_CONSOLE, nullptr, nullptr, &si, &pi);
-    if (ok)
+    if (!ok)
     {
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
+        result.exitCode = -1;
+        result.output   = "ログイン画面の起動に失敗したで";
+        return result;
     }
-    return ok == TRUE;
+
+    // 500ms 刻みで「プロセス終了」か「abort 要求」だけ見る（gh api user の連打ポーリングより軽い）。
+    DWORD code = 1;
+    for (;;)
+    {
+        DWORD wr = WaitForSingleObject(pi.hProcess, 500);
+        if (wr == WAIT_OBJECT_0) { GetExitCodeProcess(pi.hProcess, &code); break; }
+        if (abortFlag.load()) break;   // シャットダウン中: 子は残しても無害（ユーザーは認証継続可）
+    }
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+
+    if (code == 0)
+    {
+        RunGh("", "auth setup-git");   // git の資格情報ヘルパも gh に統一（失敗しても致命的ではない）
+        result.exitCode = 0;
+        result.output   = GitHubUser();
+    }
+    else
+    {
+        result.exitCode = 1;
+    }
+    return result;
 }
 
 std::string GitIntegration::RepoNameFromUrl(const std::string& url)
@@ -310,6 +332,37 @@ std::string GitIntegration::RepoNameFromUrl(const std::string& url)
     size_t slash = u.find_last_of("/:");
     std::string name = (slash == std::string::npos) ? u : u.substr(slash + 1);
     return name;
+}
+
+std::string GitIntegration::ToWebUrl(const std::string& remoteUrl)
+{
+    std::string u = remoteUrl;
+    size_t b = u.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos) return "";
+    size_t e = u.find_last_not_of(" \t\r\n");
+    u = u.substr(b, e - b + 1);
+
+    // プレフィックス文字数は手計算せず size() で取る（オフバイワンを構造的に防ぐ）
+    static const std::string kPrefixes[] = {
+        "git@github.com:", "https://github.com/", "http://github.com/", "ssh://git@github.com/"
+    };
+    std::string path;   // "owner/repo"
+    for (const auto& prefix : kPrefixes)
+    {
+        if (u.compare(0, prefix.size(), prefix) == 0)
+        {
+            path = u.substr(prefix.size());
+            break;
+        }
+    }
+    if (path.empty()) return "";   // github.com 以外、またはパース不能
+
+    if (path.size() > 4 && path.compare(path.size() - 4, 4, ".git") == 0)
+        path.erase(path.size() - 4);
+    while (!path.empty() && path.back() == '/')
+        path.pop_back();
+    if (path.empty()) return "";
+    return "https://github.com/" + path;
 }
 
 GitResult GitIntegration::Clone(const std::string& url, const std::string& destParentDir,

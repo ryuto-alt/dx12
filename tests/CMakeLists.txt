@@ -141,3 +141,15 @@ if(TARGET Core)
     endif()
     add_test(NAME VfsTests COMMAND VfsTests)
 endif()
+
+# GitIntegration::ToWebUrl（remote URL → ブラウザ用 https URL）の文字列変換テスト。
+# プレフィックス文字数のオフバイワン再発防止（実際に "ryuto-alt" → "yuto-alt" になった事例）。
+if(TARGET ProjectLib)
+    add_executable(GitIntegrationTests git_integration_test.cpp)
+    target_link_libraries(GitIntegrationTests PRIVATE ProjectLib)
+    if(MSVC)
+        target_compile_options(GitIntegrationTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(GitIntegrationTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME GitIntegrationTests COMMAND GitIntegrationTests)
+endif()

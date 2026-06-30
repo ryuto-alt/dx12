@@ -3679,18 +3679,24 @@ void Application::RenderWhatsNewPopup()
 
     ImVec2 center = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(560.0f, 0.0f), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ImVec2(760.0f, 0.0f), ImGuiCond_Appearing);
     if (ImGui::BeginPopupModal(kId, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
     {
+        // 見づらい要望対応: 専用フォントは追加せず、既存フォントを SetWindowFontScale で拡大
+        // （ToolbarPanel.cpp のエラーモーダルと同じやり方）。
+        ImGui::SetWindowFontScale(1.35f);
         ImGui::PushStyleColor(ImGuiCol_Text, th::Accent);
         ImGui::TextUnformatted(kWhatsNewTitle);
         ImGui::PopStyleColor();
+        ImGui::SetWindowFontScale(1.0f);
         ImGui::Separator();
         ImGui::Spacing();
+        ImGui::SetWindowFontScale(1.18f);
         ImGui::TextWrapped("%s", kWhatsNewBody);
+        ImGui::SetWindowFontScale(1.0f);
         ImGui::Spacing();
         ImGui::Separator();
-        if (ImGui::Button("閉じる", ImVec2(140.0f, 0.0f)))
+        if (ImGui::Button("閉じる", ImVec2(160.0f, 0.0f)))
         {
             // この版は表示済みとして記録 → 次回以降は版が変わるまで出さない。
             WriteShownVersion(kEngineVersion);
@@ -3909,6 +3915,11 @@ void Application::RenderVersionControlWindow()
     const std::string& root = m_projectInfo.rootDir;
     const bool busy = m_gitOpRunning;
 
+    // 新規リポジトリ名の初期値（未入力なら一度だけプロジェクト名で埋める。以降は編集を尊重）
+    if (m_gitNewRepoNameBuf[0] == '\0' && !m_projectInfo.name.empty())
+        strncpy_s(m_gitNewRepoNameBuf.data(), m_gitNewRepoNameBuf.size(),
+                  m_projectInfo.name.c_str(), _TRUNCATE);
+
     // 状態の再取得（ローカル git のみで軽い。開いた瞬間と操作完了直後＋手動「更新」だけ＝定期ヒッチ無し）。
     if (ImGui::IsWindowAppearing() || m_gitForceRefresh)
     {
@@ -3932,6 +3943,61 @@ void Application::RenderVersionControlWindow()
 
     auto icon = [](u64 h, float s) { if (h) { ImGui::Image(static_cast<ImTextureID>(h), ImVec2(s, s)); ImGui::SameLine(); } };
 
+    // GitHub アカウント行（ログイン状態 + ログインボタン）。リポジトリの有無に関わらず使うので
+    // 共通化（未初期化の空状態でも、初回からログイン導線を出すため）。
+    auto renderGitHubAccountRow = [&]()
+    {
+        if (!m_ghUserChecked && !busy)
+        {
+            m_ghUserChecked = true;
+            RunGitAsync("GitHub確認", []{
+                GitResult r; r.output = GitIntegration::GitHubUser(); r.exitCode = 0; return r;
+            }, /*isLogin*/ true);
+        }
+        ImGui::AlignTextToFramePadding();
+        if (!m_ghUser.empty())
+            ImGui::TextColored(th::Good, "● @%s", m_ghUser.c_str());
+        else
+        {
+            ImGui::TextColored(th::Warn, "○ 未ログイン");
+            ImGui::SameLine();
+            ImGui::BeginDisabled(busy);
+            if (ImGui::SmallButton("GitHub にログイン"))
+            {
+                m_gitOutput = "別ウィンドウでブラウザ認証してや。完了したら自動で反映されるで。";
+                // gh auth login --web の子プロセス終了をそのまま待つ＝ブラウザ承認した瞬間に
+                // 検知できる（ポーリングより速い。詳細は GitIntegration::LoginAndWait 参照）。
+                RunGitAsync("GitHubログイン待ち",
+                    [this]{ return GitIntegration::LoginAndWait(m_gitAbort); }, /*isLogin*/ true);
+            }
+            ImGui::EndDisabled();
+        }
+    };
+
+    // GitHub に新規リポジトリ作成 → push。needInit=true ならローカル未初期化の状態から面倒見る
+    // （「初期化」という別操作を挟まず、「リポジトリ作成」一発で完結させるため）。
+    // repoName が空ならプロジェクト名にフォールバック。
+    auto createGitHubRepo = [&](bool isPrivate, bool needInit, const std::string& commitMsg,
+                                 const std::string& repoName)
+    {
+        SaveCurrentProject();
+        std::string n = repoName.empty() ? m_projectInfo.name : repoName, m = commitMsg;
+        RunGitAsync(isPrivate ? "リポジトリ作成(private)" : "リポジトリ作成(public)",
+            [root, n, m, isPrivate, needInit]{
+                if (needInit)
+                {
+                    auto i = GitIntegration::Init(root);
+                    if (!i.ok()) return i;
+                }
+                auto c = GitIntegration::CommitAll(root, m);
+                bool nothingStaged = GitIntegration::RunGit(root, "diff --cached --quiet").ok();
+                if (!c.ok() && !nothingStaged) return c;   // 本当のコミット失敗 → 作成せず失敗
+                auto r = GitIntegration::CreateGitHubRepo(root, n, isPrivate);
+                r.output = c.output + "\n----\n" + r.output;
+                return r;
+            });
+    };
+
     // ================= リポジトリ未初期化 =================
     if (!m_gitRepoCache)
     {
@@ -3940,11 +4006,42 @@ void Application::RenderVersionControlWindow()
         statusBanner();
         ImGui::Spacing();
 
-        ImGui::BeginDisabled(busy);
-        icon(m_icons.git, 22);
-        if (ImGui::Button("Git リポジトリを初期化", ImVec2(-1, 32)))
-            RunGitAsync("初期化", [root]{ return GitIntegration::Init(root); });
-        ImGui::EndDisabled();
+        if (m_ghAvailable)
+        {
+            renderGitHubAccountRow();
+            ImGui::Spacing();
+
+            ImGui::TextDisabled("リポジトリ名");
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            ImGui::InputText("##reponame", m_gitNewRepoNameBuf.data(), m_gitNewRepoNameBuf.size());
+
+            ImGui::BeginDisabled(busy || m_ghUser.empty() || m_gitNewRepoNameBuf[0] == '\0');
+            icon(m_icons.github, 22);
+            if (ImGui::Button("GitHub にリポジトリを作成 (Public)", ImVec2(-1, 32)))
+                createGitHubRepo(/*isPrivate=*/false, /*needInit=*/true, "Initial commit",
+                                  m_gitNewRepoNameBuf.data());
+            icon(m_icons.github, 22);
+            if (ImGui::Button("GitHub にリポジトリを作成 (Private)", ImVec2(-1, 32)))
+                createGitHubRepo(/*isPrivate=*/true, /*needInit=*/true, "Initial commit",
+                                  m_gitNewRepoNameBuf.data());
+            ImGui::EndDisabled();
+            if (m_ghUser.empty())
+                ImGui::TextDisabled("↑ 先に GitHub にログインしてや");
+
+            ImGui::Spacing();
+            ImGui::BeginDisabled(busy);
+            if (ImGui::SmallButton("ローカルだけで管理する（GitHub には後で公開）"))
+                RunGitAsync("初期化", [root]{ return GitIntegration::Init(root); });
+            ImGui::EndDisabled();
+        }
+        else
+        {
+            ImGui::BeginDisabled(busy);
+            icon(m_icons.git, 22);
+            if (ImGui::Button("Git リポジトリを初期化", ImVec2(-1, 32)))
+                RunGitAsync("初期化", [root]{ return GitIntegration::Init(root); });
+            ImGui::EndDisabled();
+        }
 
         ImGui::SeparatorText("クローン");
         ImGui::SetNextItemWidth(-FLT_MIN);
@@ -4005,42 +4102,14 @@ void Application::RenderVersionControlWindow()
 
     // ---- 行2: GitHub アカウント ----
     if (m_ghAvailable)
+        renderGitHubAccountRow();
+
+    // ---- リポジトリ URL（リモートがある間は常時表示。クリックでブラウザを開く）----
+    if (!remote.empty())
     {
-        // 初回だけ非同期でログイン状態を取得（gh api user はネットワーク＝メインを固めないため）。
-        if (!m_ghUserChecked && !busy)
-        {
-            m_ghUserChecked = true;
-            RunGitAsync("GitHub確認", []{
-                GitResult r; r.output = GitIntegration::GitHubUser(); r.exitCode = 0; return r;
-            }, /*isLogin*/ true);
-        }
-        ImGui::AlignTextToFramePadding();
-        if (!m_ghUser.empty())
-            ImGui::TextColored(th::Good, "● @%s", m_ghUser.c_str());
-        else
-        {
-            ImGui::TextColored(th::Warn, "○ 未ログイン");
-            ImGui::SameLine();
-            ImGui::BeginDisabled(busy);
-            if (ImGui::SmallButton("GitHub にログイン"))
-            {
-                GitIntegration::LaunchLogin();   // 別窓でブラウザ認証
-                m_gitOutput = "別ウィンドウでブラウザ認証してや。完了したら自動で反映されるで。";
-                // 完了をポーリングで自動検知（最大 ~90 秒・手動再確認不要）。sleep は 500ms 刻みで
-                // m_gitAbort を見てアプリ終了時に即抜ける。
-                RunGitAsync("GitHubログイン待ち", [this]{
-                    for (int i = 0; i < 45 && !m_gitAbort.load(); ++i)
-                    {
-                        std::string u = GitIntegration::GitHubUser();
-                        if (!u.empty()) { GitResult r; r.output = u; r.exitCode = 0; return r; }
-                        for (int k = 0; k < 4 && !m_gitAbort.load(); ++k)
-                            std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                    }
-                    GitResult r; r.exitCode = 1; return r;   // タイムアウト/中断=未ログインのまま
-                }, /*isLogin*/ true);
-            }
-            ImGui::EndDisabled();
-        }
+        std::string webUrl = GitIntegration::ToWebUrl(remote);
+        if (!webUrl.empty() && ImGui::SmallButton(("🔗 " + webUrl).c_str()))
+            ShellExecuteA(nullptr, "open", webUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     }
 
     // ---- 行3: 同期ツールバー（更新 / ↑↓ / フェッチ / プル↓ / プッシュ↑）----
@@ -4190,24 +4259,16 @@ void Application::RenderVersionControlWindow()
 
         if (m_ghAvailable)
         {
-            ImGui::BeginDisabled(busy);
-            std::string msg2 = m_gitCommitMsgBuf.data(), name = m_projectInfo.name;
-            auto createRepo = [&](bool isPrivate)
-            {
-                SaveCurrentProject();
-                std::string m = msg2, n = name;
-                RunGitAsync(isPrivate ? "リポジトリ作成(private)" : "リポジトリ作成(public)",
-                    [root, m, n, isPrivate]{
-                        auto c = GitIntegration::CommitAll(root, m);
-                        bool nothingStaged = GitIntegration::RunGit(root, "diff --cached --quiet").ok();
-                        if (!c.ok() && !nothingStaged) return c;   // 本当のコミット失敗 → 作成せず失敗
-                        auto r = GitIntegration::CreateGitHubRepo(root, n, isPrivate);
-                        r.output = c.output + "\n----\n" + r.output;
-                        return r;
-                    });
-            };
-            if (ImGui::Button("GitHub に作成 (private) & push", ImVec2(-FLT_MIN, 0))) createRepo(true);
-            if (ImGui::Button("GitHub に作成 (public) & push",  ImVec2(-FLT_MIN, 0))) createRepo(false);
+            ImGui::TextDisabled("リポジトリ名");
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            ImGui::InputText("##reponame2", m_gitNewRepoNameBuf.data(), m_gitNewRepoNameBuf.size());
+
+            ImGui::BeginDisabled(busy || m_gitNewRepoNameBuf[0] == '\0');
+            std::string msg2 = m_gitCommitMsgBuf.data();
+            if (ImGui::Button("GitHub に作成 (private) & push", ImVec2(-FLT_MIN, 0)))
+                createGitHubRepo(/*isPrivate=*/true, /*needInit=*/false, msg2, m_gitNewRepoNameBuf.data());
+            if (ImGui::Button("GitHub に作成 (public) & push",  ImVec2(-FLT_MIN, 0)))
+                createGitHubRepo(/*isPrivate=*/false, /*needInit=*/false, msg2, m_gitNewRepoNameBuf.data());
             ImGui::EndDisabled();
         }
     }

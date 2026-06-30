@@ -233,6 +233,9 @@ private:
     std::string m_ghUser;                 // gh ログインユーザー（空=未ログイン）
     bool        m_ghUserChecked = false;  // ログイン状態を取得済みか（重いので一度だけ）
 
+    // GitHub に新規作成するリポジトリ名（初回はプロジェクト名で事前入力、編集可）
+    std::array<char, 100> m_gitNewRepoNameBuf{};
+
     // ブランチ操作
     std::vector<std::string> m_gitBranches;     // ローカルブランチ一覧
     std::array<char, 128>    m_gitNewBranchBuf{}; // 新規ブランチ名入力
