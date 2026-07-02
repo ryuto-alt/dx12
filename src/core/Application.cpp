@@ -324,7 +324,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                .SetVertexShader(vs.GetData(), vs.GetSize())
                .SetPixelShader(ps.GetData(), ps.GetSize())
                .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
-               .SetRenderTargetFormat(m_swapChain->GetFormat())
+               .SetRenderTargetFormat(kSceneColorFormat)  // 描き込み先はシーンRT(HDR)。swapchain形式だとRTV不一致
                .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
                .SetDepthEnabled(true)
                .SetCullMode(D3D12_CULL_MODE_NONE);  // 両面描画（片面メッシュ対応）
@@ -337,6 +337,13 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         builder.SetDepthFunc(D3D12_COMPARISON_FUNC_LESS_EQUAL);
         m_pipelineStateLEqual = std::make_unique<PipelineState>();
         m_pipelineStateLEqual->Initialize(*m_graphicsDevice, builder);
+
+        // サムネイル描画用バリアント。ModelThumbnailRenderer の RT は R8G8B8A8 のため
+        // シーンRT(HDR)用 PSO とはフォーマットを分ける必要がある。
+        builder.SetDepthFunc(D3D12_COMPARISON_FUNC_LESS);
+        builder.SetRenderTargetFormat(DXGI_FORMAT_R8G8B8A8_UNORM);
+        m_pipelineStateThumb = std::make_unique<PipelineState>();
+        m_pipelineStateThumb->Initialize(*m_graphicsDevice, builder);
     }
 
     // Camera
@@ -776,7 +783,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     m_thumbRenderer = std::make_unique<ModelThumbnailRenderer>();
     m_thumbRenderer->Initialize(m_graphicsDevice.get(), m_srvHeap.get(),
                                 m_resourceManager.get(), m_rootSignature.get(),
-                                m_pipelineState.get());
+                                m_pipelineStateThumb.get());
     m_thumbRenderer->SetAOWhiteSrv(m_ssaoWhiteSrvIndex);  // forward PS の t8 を白ダミーで満たす
     m_editorLayer->SetThumbnailRenderer(m_thumbRenderer.get());
 
@@ -794,7 +801,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_offscreenRtvHeap = std::make_unique<DescriptorHeap>();
         m_offscreenRtvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 8, false);
 
-        // シーンはスワップチェインと同一フォーマットへ描く（既存 3D PSO をそのまま使える）
+        // シーンは HDR(kSceneColorFormat) の中間RTへ描き、ポストで backbuffer へ解決する
         const float sceneClear[4] = {0.392f, 0.584f, 0.929f, 1.0f};
         m_sceneRT = std::make_unique<RenderTarget>();
         m_sceneRT->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
@@ -2486,6 +2493,7 @@ void Application::Shutdown()
     m_resourceManager.reset();
     m_srvHeap.reset();
     m_camera.reset();
+    m_pipelineStateThumb.reset();
     m_pipelineStateLEqual.reset();
     m_pipelineState.reset();
     m_rootSignature.reset();
