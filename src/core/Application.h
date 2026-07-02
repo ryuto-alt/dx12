@@ -69,6 +69,7 @@ namespace dx12e
     class EditorContext;
     class EditorLayer;
     class ModelThumbnailRenderer;
+    class VfxEditorPanel;
     struct Material;
 }
 
@@ -297,6 +298,7 @@ private:
     EventBus                           m_eventBus;
     std::unique_ptr<ScriptEngine>      m_scriptEngine;
     std::unique_ptr<McpBridge>         m_mcpBridge;   // エディタ専用 AI ブリッジ(TCP)。ゲームでは null。
+    std::unique_ptr<VfxEditorPanel>    m_vfxEditorPanel;   // パーティクルエディタ（ツール窓）。ゲームでは null。
     // ---- MCP 状態（HandleMcpCommand とフレーム境界の遅延応答で共有）----
     int         m_sceneGeneration = 0;   // open_scene/new_scene のたびに +1。古い entity id 検出用。
     McpDeferred m_mcpModeReply;          // play/stop の遅延応答（モード遷移後に送る）。client=0 で無効。

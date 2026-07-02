@@ -659,6 +659,9 @@ void InspectorPanel::Render(entt::registry& reg,
                 { changed |= ImGui::DragFloat("継続秒 Duration", &pe.duration, 0.05f, 0.0f, 60.0f); active |= ImGui::IsItemActive(); }
                 ImGui::SeparatorText("見た目");
                 changed |= ImGui::ColorEdit3("開始色 Color", &pe.color.x);
+                changed |= ImGui::Checkbox("中間色を使う HasColorMid", &pe.hasColorMid);
+                if (pe.hasColorMid)
+                    changed |= ImGui::ColorEdit3("中間色 ColorMid", &pe.colorMid.x);
                 changed |= ImGui::ColorEdit3("終了色 ColorEnd", &pe.colorEnd.x);
                 changed |= ImGui::DragFloat("輝度 Intensity", &pe.intensity, 0.05f, 0.0f, 30.0f); active |= ImGui::IsItemActive();
                 changed |= ImGui::DragFloat("サイズ Size", &pe.size, 0.01f, 0.0f, 10.0f); active |= ImGui::IsItemActive();
@@ -678,6 +681,12 @@ void InspectorPanel::Render(entt::registry& reg,
                 changed |= ImGui::DragFloat("抵抗 Drag", &pe.drag, 0.02f, 0.0f, 10.0f); active |= ImGui::IsItemActive();
                 changed |= ImGui::DragFloat("上向き Up", &pe.up, 0.02f, 0.0f, 10.0f); active |= ImGui::IsItemActive();
                 changed |= ImGui::DragFloat("ストレッチ Stretch", &pe.stretch, 0.02f, 0.0f, 10.0f); active |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat("乱流 TurbStrength", &pe.turbStrength, 0.01f, 0.0f, 10.0f); active |= ImGui::IsItemActive();
+                ImGui::SameLine(); ImGui::TextDisabled("(?)");
+                if (ImGui::BeginItemTooltip())
+                { ImGui::TextUnformatted(">0 でカールノイズによる有機的な揺らぎ（煙/炎向け）"); ImGui::EndTooltip(); }
+                if (pe.turbStrength > 0.0f)
+                { changed |= ImGui::DragFloat("乱流の細かさ TurbFreq", &pe.turbFreq, 0.01f, 0.01f, 10.0f); active |= ImGui::IsItemActive(); }
                 ImGui::SeparatorText("特殊効果");
                 changed |= ImGui::SliderFloat("画面歪み Distort", &pe.distort, 0.0f, 3.0f); active |= ImGui::IsItemActive();
                 ImGui::SameLine(); ImGui::TextDisabled("(?)");
@@ -689,7 +698,10 @@ void InspectorPanel::Render(entt::registry& reg,
                 { ImGui::TextUnformatted("明るい粒子の上位数個が実ポイントライトになり周囲を照らす（炎/魔法）"); ImGui::EndTooltip(); }
                 if (pe.light)
                 { changed |= ImGui::DragFloat("光の距離 LightRange", &pe.lightRange, 0.05f, 0.1f, 50.0f); active |= ImGui::IsItemActive(); }
-                ImGui::TextDisabled("エディタでもプレビュー表示されます");
+                changed |= ImGui::SliderFloat("明滅 Flicker", &pe.flicker, 0.0f, 1.0f); active |= ImGui::IsItemActive();
+                if (pe.flicker > 0.0f)
+                { changed |= ImGui::DragFloat("明滅の速さ FlickerFreq", &pe.flickerFreq, 0.2f, 0.1f, 60.0f); active |= ImGui::IsItemActive(); }
+                ImGui::TextDisabled("エディタでもプレビュー表示されます。詳細な作成は ツール > パーティクルエディタ が便利です");
                 EndEdit(reg, ctx, ctx.selectedEntity, m_emitterEdit, changed, active, "Particle Emitter");
             }
         }

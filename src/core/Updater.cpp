@@ -561,21 +561,15 @@ bool LaunchUpdaterBatch(const fs::path& srcDir, const fs::path& installDir, cons
     b << "robocopy \"" << srcDir.string() << "\" \"" << installDir.string()
       << "\" /E /IS /IT /R:20 /W:1 /NFL /NDL /NJH /NJS /NP >nul\r\n";
     // robocopy の終了コードは 0-7 が成功系、8 以上はコピー失敗を含む（MSDNの仕様）。
-    b << "if !errorlevel! LSS 8 goto copyok\r\n";
+    b << "if !errorlevel! LSS 8 goto copydone\r\n";
     b << "set /a copytries+=1\r\n";
-    b << "if !copytries! geq 2 goto copyfail\r\n";
+    b << "if !copytries! geq 2 goto copydone\r\n";
     b << "ping -n 3 127.0.0.1 >nul\r\n";
     b << "goto copy\r\n";
-    b << ":copyfail\r\n";
-    // 上書きに失敗＝新バージョンが反映されていない可能性が高い。--updated を付けずに起動すると、
-    // 次の起動で更新チェックがスキップされず必ず再度走る＝再試行の機会をユーザーに残せる。
+    b << ":copydone\r\n";
+    // 起動時の更新チェックは常に毎回走る（コピーの成否に関わらずフラグ無しで起動）ので、
+    // ここでコピーが失敗していても次回起動時に必ず再度プロンプトが出て再試行できる。
     b << "start \"\" \"" << exePath << "\"\r\n";
-    b << "goto cleanup\r\n";
-    b << ":copyok\r\n";
-    // --updated 付きで再起動 → 直後の起動は更新チェック(同期ネットワーク)をスキップして
-    // 即座にウィンドウを出す。これが無いと「更新後すぐ exe が開かない(数秒固まる)」の主因になる。
-    b << "start \"\" \"" << exePath << "\" --updated\r\n";
-    b << ":cleanup\r\n";
     b << "rmdir /S /Q \"" << tmpRoot.string() << "\" >nul 2>&1\r\n";
     b << "del \"%~f0\" >nul 2>&1\r\n";
     b.close();

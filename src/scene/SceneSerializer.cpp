@@ -446,10 +446,13 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                 {"size", pe.size}, {"sizeEnd", pe.sizeEnd},
                 {"life", pe.life}, {"lifeVar", pe.lifeVar},
                 {"color", SerializeFloat3(pe.color)}, {"colorEnd", SerializeFloat3(pe.colorEnd)},
+                {"colorMid", SerializeFloat3(pe.colorMid)}, {"hasColorMid", pe.hasColorMid},
                 {"intensity", pe.intensity}, {"gravity", pe.gravity},
                 {"drag", pe.drag}, {"up", pe.up}, {"stretch", pe.stretch},
+                {"turbStrength", pe.turbStrength}, {"turbFreq", pe.turbFreq},
                 {"sizeMid", pe.sizeMid}, {"distort", pe.distort},
                 {"light", pe.light}, {"lightRange", pe.lightRange},
+                {"flicker", pe.flicker}, {"flickerFreq", pe.flickerFreq},
                 {"gpu", pe.gpu}
             };
         }
@@ -853,15 +856,21 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                 pe.lifeVar  = pj.value("lifeVar", 0.3f);
                 if (pj.contains("color"))    pe.color    = DeserializeFloat3(pj["color"], {1.0f, 0.6f, 0.2f});
                 if (pj.contains("colorEnd")) pe.colorEnd = DeserializeFloat3(pj["colorEnd"], {1.0f, 0.12f, 0.05f});
+                if (pj.contains("colorMid")) pe.colorMid = DeserializeFloat3(pj["colorMid"], {1.0f, 0.6f, 0.2f});
+                pe.hasColorMid = pj.value("hasColorMid", false);
                 pe.intensity = pj.value("intensity", 3.0f);
                 pe.gravity   = pj.value("gravity", 0.0f);
                 pe.drag      = pj.value("drag", 1.0f);
                 pe.up        = pj.value("up", 0.0f);
                 pe.stretch   = pj.value("stretch", 0.0f);
+                pe.turbStrength = pj.value("turbStrength", 0.0f);
+                pe.turbFreq     = pj.value("turbFreq", 1.0f);
                 pe.sizeMid   = pj.value("sizeMid", -1.0f);
                 pe.distort   = pj.value("distort", 0.0f);
                 pe.light     = pj.value("light", false);
                 pe.lightRange = pj.value("lightRange", 3.0f);
+                pe.flicker      = pj.value("flicker", 0.0f);
+                pe.flickerFreq  = pj.value("flickerFreq", 18.0f);
                 pe.gpu       = pj.value("gpu", false);
                 reg.emplace_or_replace<ParticleEmitter>(e, pe);
             }

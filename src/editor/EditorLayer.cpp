@@ -226,7 +226,8 @@ void EditorLayer::Render(bool isPlaying,
             m_ctx->showPostProcess = m_ctx->showPostParams = m_ctx->showSkybox =
                 m_ctx->showSSAO = m_ctx->showEngineSettings = m_ctx->showSceneFlow =
                 m_ctx->showProject = m_ctx->showVersionControl =
-                m_ctx->showMcpBridge = m_ctx->showBuildSettings = false;
+                m_ctx->showMcpBridge = m_ctx->showBuildSettings =
+                m_ctx->showVfxEditor = false;
             m_prevAnyToolShown = false;
             m_dockspaceBuilt = false;
             m_ctx->resetLayout = false;

@@ -78,6 +78,7 @@
 #include "editor/UndoSystem.h"
 #include "editor/ModelThumbnailRenderer.h"
 #include "editor/panels/McpBridgePanel.h"
+#include "editor/panels/VfxEditorPanel.h"
 #include "project/Project.h"
 #include "project/ProjectManager.h"
 #include "project/GitIntegration.h"
@@ -932,6 +933,14 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_gpuParticles = std::make_unique<GpuParticleSystem>();
         m_gpuParticles->Initialize(*m_graphicsDevice, kSceneColorFormat, PathResolver::ShaderDirW());
         if (m_scriptEngine) m_scriptEngine->SetGpuParticleSystem(m_gpuParticles.get());
+
+        // パーティクルエディタ（ツール窓）。専用のオフスクリーンプレビュー(独立した ParticleSystem
+        // インスタンス + RenderTarget)を持つ。ゲーム(封印ランタイム)では作らない。
+        if (!m_isGameMode)
+        {
+            m_vfxEditorPanel = std::make_unique<VfxEditorPanel>();
+            m_vfxEditorPanel->Initialize(*m_graphicsDevice, m_srvHeap.get(), PathResolver::ShaderDirW());
+        }
 
         // シーントランジション
         m_sceneTransition = std::make_unique<SceneTransition>();
@@ -3802,11 +3811,14 @@ void Application::Update()
             p.size = pe.size;       p.sizeEnd = pe.sizeEnd;
             p.life = pe.life;       p.lifeVar = pe.lifeVar;
             p.color = pe.color;     p.colorEnd = pe.colorEnd; p.hasColorEnd = true;
+            p.colorMid = pe.colorMid; p.hasColorMid = pe.hasColorMid;
             p.intensity = pe.intensity;
             p.gravity = pe.gravity; p.drag = pe.drag; p.up = pe.up;
             p.stretch = pe.stretch; p.kind = pe.kind; p.blend = pe.blend;
+            p.turbStrength = pe.turbStrength; p.turbFreq = pe.turbFreq;
             p.sizeMid = pe.sizeMid; p.distort = pe.distort;
             p.light = pe.light;     p.lightRange = pe.lightRange;
+            p.flicker = pe.flicker; p.flickerFreq = pe.flickerFreq;
             m_particleSystem->Emit(p);
         }
 
@@ -7793,6 +7805,15 @@ void Application::Render()
         }
     }
 
+    // ===== パーティクルエディタのプレビュー（専用オフスクリーンRT。UI本体は後段のImGuiパスで描く）=====
+    if (m_vfxEditorPanel && m_editorCtx->showVfxEditor)
+    {
+        m_vfxEditorPanel->RenderPreview3D(*m_editorCtx, *m_commandList, m_gameClock.GetDeltaTime());
+        // プレビュー描画でRT/ビューポートを切り替えたので、バックバッファへ戻す。
+        m_commandList->SetRenderTarget(rtv, m_dsvHandle);
+        m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
+    }
+
     // ---- ImGui フレーム ----
     m_imguiManager->BeginFrame();
     ImGuizmo::BeginFrame();
@@ -8305,6 +8326,8 @@ void Application::Render()
         if (m_editorCtx->showVersionControl) RenderVersionControlWindow();
         if (m_editorCtx->showMcpBridge && m_mcpBridge)
             McpBridgePanel::Render(*m_mcpBridge, *m_editorCtx);
+        if (m_vfxEditorPanel)
+            m_vfxEditorPanel->RenderWindow(m_scene->GetRegistry(), *m_editorCtx, PathResolver::AssetsDir());
     }
 
     // ---- ゲーム内 UI: テキスト/ボタン（ImGui オーバーレイ・ゲーム/Play 中のみ）----

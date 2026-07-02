@@ -252,6 +252,7 @@ void ToolbarPanel::Render(bool isPlaying,
             // 「ビルド」はまずビルド設定パネルを開く（構成・開始シーン・出力先を決めてから実行）
             if (ImGui::MenuItem("ビルド"))
                 ctx.showBuildSettings = true;
+            ImGui::MenuItem("パーティクルエディタ",     nullptr, &ctx.showVfxEditor);
             ImGui::MenuItem("MCP / AI Bridge",         nullptr, &ctx.showMcpBridge);
             ImGui::EndMenu();
         }
@@ -557,12 +558,14 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::MenuItem("Project",                nullptr, &ctx.showProject);
         ImGui::MenuItem("Git 変更",               nullptr, &ctx.showVersionControl);
         ImGui::MenuItem("MCP / AI Bridge",        nullptr, &ctx.showMcpBridge);
+        ImGui::MenuItem("パーティクルエディタ",    nullptr, &ctx.showVfxEditor);
         ImGui::Separator();
         if (ImGui::MenuItem("すべて閉じる"))
         {
             ctx.showPostProcess = ctx.showPostParams = ctx.showSkybox = ctx.showSSAO =
                 ctx.showEngineSettings = ctx.showSceneFlow = ctx.showProject =
-                ctx.showVersionControl = ctx.showMcpBridge = ctx.showBuildSettings = false;
+                ctx.showVersionControl = ctx.showMcpBridge = ctx.showBuildSettings =
+                ctx.showVfxEditor = false;
         }
         ImGui::EndPopup();
     }

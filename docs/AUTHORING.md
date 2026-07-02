@@ -42,6 +42,8 @@
 Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 
 エディタ: Hierarchy「＋追加 → Particle Emitter」 or Inspector「＋コンポーネント追加 → Particle Emitter」。
+見た目を確認しながら作りたい場合は **ツール > パーティクルエディタ**（専用プレビュー窓・色/サイズのグラデーション
+編集・`assets/vfx/*.json` への名前付き保存・選択エンティティへの適用・Lua `fx:burst{}` コード生成に対応）。
 
 シーン JSON（エンティティの `particleEmitter` ブロック）:
 ```json
@@ -70,11 +72,14 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 | `looping` / `duration` | false なら `duration` 秒だけ放出（ワンショット） | true / 1.0 |
 | `dir` `spread` | 放出方向 / 拡がり(0=集中,1=全球) | [0,1,0] / 0.4 |
 | `speed` `speedVar` | 初速 / ばらつき | 3 / 0.4 |
-| `size` `sizeEnd` | 開始/終了サイズ | 0.3 / 0 |
+| `size` `sizeMid` `sizeEnd` | 開始/中間/終了サイズ（`sizeMid`は-1で無効、0以上で3キーカーブ） | 0.3 / -1 / 0 |
 | `life` `lifeVar` | 寿命秒 / ばらつき | 0.8 / 0.3 |
-| `color` `colorEnd` | 開始色→終了色（RGB 0..1） | 炎色 |
+| `color` `colorMid` `colorEnd` `hasColorMid` | 開始/中間/終了色（RGB 0..1）。`hasColorMid`で中間色を使うか | 炎色 / false |
 | `intensity` | HDR 輝度（>1 で白熱→ブルーム） | 3 |
 | `gravity` `drag` `up` `stretch` | y加速 / 減衰 / 上向きバイアス / 速度方向の伸び | 0/1/0/0 |
+| `turbStrength` `turbFreq` | カールノイズ乱流の強さ / 空間周波数（煙・炎の有機的な揺らぎ） | 0 / 1 |
+| `flicker` `flickerFreq` | 発光明滅の強さ(0..1) / 速さ | 0 / 18 |
+| `distort` `light` `lightRange` | 画面歪み量 / ポイントライト化 / 光の到達距離 | 0 / false / 3 |
 
 **炎=** kind1 blend0 gravity+ / **煙=** kind2 blend1 size大 colorEnd暗 / **魔法=** kind4 blend0 / **火花=** kind3 stretch>0。
 

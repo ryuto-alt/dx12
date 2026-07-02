@@ -378,16 +378,22 @@ struct ParticleEmitter
     f32  life      = 0.8f;
     f32  lifeVar   = 0.3f;
     DirectX::XMFLOAT3 color{1.0f, 0.6f, 0.2f};     // 開始色
+    DirectX::XMFLOAT3 colorMid{1.0f, 0.6f, 0.2f};  // 中間色（hasColorMid=true の時のみ使用）
     DirectX::XMFLOAT3 colorEnd{1.0f, 0.12f, 0.05f}; // 終了色
+    bool hasColorMid = false;  // true で3キー色カーブ（start→mid→end）。false なら start→end のみ
     f32  intensity = 3.0f;     // HDR 増幅（>1 で白熱→ブルーム）
     f32  gravity   = 0.0f;     // y 加速（負で落下）
     f32  drag      = 1.0f;
     f32  up        = 0.0f;     // 初速の上向きバイアス
     f32  stretch   = 0.0f;     // >0 で速度方向へ伸びる（火花/筋）
+    f32  turbStrength = 0.0f;  // >0 でカールノイズ乱流（有機的な揺らぎ：煙/炎）
+    f32  turbFreq     = 1.0f;  // 乱流の空間周波数
     f32  sizeMid   = -1.0f;    // >=0 で3キーサイズカーブ（start→mid→end）
     f32  distort   = 0.0f;     // >0 で歪みパーティクル（熱ゆらぎ/衝撃波。画面を歪ませる）
     bool light     = false;    // 明るい粒子上位N個を実ポイントライト化（炎が周囲を照らす）
     f32  lightRange = 3.0f;    // ポイントライト化時の到達距離
+    f32  flicker      = 0.0f;  // 発光明滅の強さ（0..1）
+    f32  flickerFreq  = 18.0f; // 明滅の速さ
     bool gpu       = false;    // true で GPUパーティクル（compute・最大131072・加算専用。大量粒子向け。
                                // distort/light/sizeMid/blend=α は非対応）
 

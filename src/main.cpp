@@ -199,15 +199,9 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         bool buildMode = false;
         std::string buildProjectDir;  // --build <dir> で指定したプロジェクト（空=組み込み）
 #ifndef DX12_GAME_RUNTIME
-        bool justUpdated = false;     // --updated: 更新バッチからの再起動。今回は更新チェックをスキップ
         if (lpCmdLine)
         {
             std::string args(lpCmdLine);
-
-            // 更新適用後の再起動。直後の起動で再び同期ネットワークチェックを走らせると
-            // ウィンドウが出るまで数秒固まるので、この起動だけチェックを飛ばす。
-            if (args.find("--updated") != std::string::npos)
-                justUpdated = true;
 
             // --validate <scene.json>: ヘッドレスでシーンの参照グラフを検証して終了（GUI 起動しない）。
             size_t vp = args.find("--validate");
@@ -300,7 +294,10 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
             dx12e::SplashScreen::SetStatus("アップデートを確認中...");
         }
 
-        if (!buildMode && !justUpdated && dx12e::Updater::RunStartupCheck())
+        // justUpdated（--updated）による1回スキップは廃止した。「毎回絶対に確認してほしい」という
+        // 要求のため、更新直後の再起動を含め全ての起動で必ずチェックする（スプラッシュ画面が
+        // チェック中もアニメし続けるので、数秒の同期待ちでも固まって見えない）。
+        if (!buildMode && dx12e::Updater::RunStartupCheck())
         {
             dx12e::SplashScreen::Close();   // 更新適用へ（更新バッチが上書き→再起動する）
             return EXIT_SUCCESS;

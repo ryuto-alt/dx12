@@ -117,6 +117,11 @@ public:
     bool showVersionControl = false;
     bool showMcpBridge      = false;   // MCP / AI Bridge モニタ窓
     bool showBuildSettings  = false;   // ビルド設定（Unity の Build Settings 相当）
+    // パーティクルエディタ（VFXアセットの作成・編集）。プレビュー枠+アセット一覧+パラメータで
+    // 幅を食うため、右下タブ群（右カラム24%のさらに下42%）には収まらない。他の設定系ツール窓と
+    // 違い右下タブにはドックせず独立したフローティング窓として開く＝ AnyToolWindowOpen には含めない
+    // （含めると右下タブ領域だけ確保されて中身が無い＝Inspectorが無駄に縮む）。
+    bool showVfxEditor      = false;
 
     bool AnyToolWindowOpen() const
     {
