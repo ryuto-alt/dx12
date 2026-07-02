@@ -1092,12 +1092,17 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
 {
     scene.Clear();
 
-    // ポストプロセス設定（entities が無くても復元する）
-    LoadPostSettings(scene, root);
-    // スカイボックス / IBL 設定
-    LoadSkyboxSettings(scene, root);
-    // SSAO 設定
-    LoadSSAOSettings(scene, root);
+    // JSON として valid でも「型」が想定と違う値（例: intensity が文字列）は
+    // json::type_error を投げる。1 箇所のミスでシーン全体・アプリ全体を巻き込まず、
+    // 該当セクション/エンティティだけスキップして警告に倒す。
+
+    // ポストプロセス / スカイボックス / SSAO 設定（entities が無くても復元する）
+    try { LoadPostSettings(scene, root); }
+    catch (const json::exception& e) { Logger::Warn("postProcess settings skipped (bad type): {}", e.what()); }
+    try { LoadSkyboxSettings(scene, root); }
+    catch (const json::exception& e) { Logger::Warn("skybox settings skipped (bad type): {}", e.what()); }
+    try { LoadSSAOSettings(scene, root); }
+    catch (const json::exception& e) { Logger::Warn("ssao settings skipped (bad type): {}", e.what()); }
 
     if (!root.contains("entities") || !root["entities"].is_array())
     {
@@ -1109,7 +1114,20 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
     std::vector<entt::entity> created;
     created.reserve(root["entities"].size());
     for (const auto& ej : root["entities"])
-        created.push_back(InstantiateEntityJson(scene, ej, assetsDir));
+    {
+        entt::entity e = entt::null;
+        try
+        {
+            e = InstantiateEntityJson(scene, ej, assetsDir);
+        }
+        catch (const std::exception& ex)
+        {
+            const std::string nm = (ej.is_object() && ej.contains("name") && ej["name"].is_string())
+                ? ej["name"].get<std::string>() : "?";
+            Logger::Error("entity [{}] \"{}\" skipped (bad value): {}", created.size(), nm, ex.what());
+        }
+        created.push_back(e);
+    }
 
     // 2パス目: 親子関係の復元
     auto& reg = scene.GetRegistry();
@@ -1117,13 +1135,23 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
     for (const auto& ej : root["entities"])
     {
         entt::entity e = created[idx++];
-        if (e == entt::null || !ej.contains("parent")) continue;
+        if (e == entt::null || !ej.is_object() || !ej.contains("parent")) continue;
+        if (!ej["parent"].is_number_integer())
+        {
+            Logger::Warn("entity [{}] parent is not an integer; kept as root", idx - 1);
+            continue;
+        }
 
         int parentIdx = ej["parent"].get<int>();
         if (parentIdx < 0 || parentIdx >= static_cast<int>(created.size())) continue;
 
         entt::entity parent = created[static_cast<size_t>(parentIdx)];
-        if (parent == entt::null || parent == e) continue;
+        if (parent == entt::null || parent == e)
+        {
+            if (parent == entt::null)
+                Logger::Warn("entity [{}] parent index {} failed to load; kept as root", idx - 1, parentIdx);
+            continue;
+        }
 
         if (reg.all_of<Transform>(e))
             reg.get<Transform>(e).parent = parent;
@@ -1185,7 +1213,17 @@ bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
     }
     ifs.close();
 
-    bool ok = ApplySceneJson(scene, root, assetsDir);
+    bool ok = false;
+    try
+    {
+        ok = ApplySceneJson(scene, root, assetsDir);
+    }
+    catch (const json::exception& e)
+    {
+        // ApplySceneJson 内でセクション/エンティティ単位に捕捉しているが、最後の保険
+        Logger::Error("Scene load aborted (bad JSON value): {}", e.what());
+        return false;
+    }
     if (ok)
         Logger::Info("Scene loaded ({} entities): {}",
                      root.contains("entities") ? root["entities"].size() : 0, filePath);
@@ -1212,7 +1250,16 @@ bool SceneSerializer::LoadFromString(Scene& scene, const std::string& jsonStr,
         return false;
     }
 
-    bool ok = ApplySceneJson(scene, root, assetsDir);
+    bool ok = false;
+    try
+    {
+        ok = ApplySceneJson(scene, root, assetsDir);
+    }
+    catch (const json::exception& e)
+    {
+        Logger::Error("Scene restore aborted (bad JSON value): {}", e.what());
+        return false;
+    }
     if (ok)
         Logger::Info("Scene restored from snapshot ({} entities)",
                      root.contains("entities") ? root["entities"].size() : 0);

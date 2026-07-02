@@ -64,11 +64,23 @@ int RunValidate(const std::string& scenePathStr)
         else
         {
             std::set<std::string> names, dups;
-            for (const auto& ej : *entities)
             {
-                std::string nm = ej.value("name", std::string{});
-                if (nm.empty()) continue;
-                if (!names.insert(nm).second) dups.insert(nm);
+                size_t i = 0;
+                for (const auto& ej : *entities)
+                {
+                    // 型不一致(entities配列にobject以外が混ざる等)で検証ツール自体が
+                    // 落ちないように、1エンティティ単位でエラー化して続行する
+                    try
+                    {
+                        std::string nm = ej.value("name", std::string{});
+                        if (!nm.empty() && !names.insert(nm).second) dups.insert(nm);
+                    }
+                    catch (const std::exception& e)
+                    {
+                        errors.push_back("entities[" + std::to_string(i) + "]: bad value: " + e.what());
+                    }
+                    ++i;
+                }
             }
             for (const auto& d : dups)
                 warnings.push_back("duplicate entity name: " + d + " (references become ambiguous)");
@@ -88,8 +100,12 @@ int RunValidate(const std::string& scenePathStr)
             };
 
             int scripts = 0, triggers = 0, emitters = 0;
+            size_t entityIdx = 0;
             for (const auto& ej : *entities)
             {
+                ++entityIdx;
+                try
+                {
                 std::string nm = ej.value("name", std::string("?"));
 
                 if (ej.contains("luaScript"))
@@ -135,6 +151,12 @@ int RunValidate(const std::string& scenePathStr)
                 }
 
                 if (ej.contains("particleEmitter")) ++emitters;
+                }
+                catch (const std::exception& e)
+                {
+                    errors.push_back("entities[" + std::to_string(entityIdx - 1) +
+                                     "]: bad value: " + e.what());
+                }
             }
 
             infos.push_back("entities=" + std::to_string(entities->size()) +
