@@ -6403,44 +6403,100 @@ void Application::Render()
             }
             else
             {
-                auto entity = m_scene->Spawn(name, req.modelPath, req.position);
+                // 拡張子で振り分ける。画像を Assimp（モデルローダ）に食わせると
+                // インポータ総当たりでフリーズ→クラッシュするため、モデル拡張子のみ Spawn へ。
+                std::string ext = std::filesystem::path(req.modelPath).extension().string();
+                for (auto& ch : ext) if (ch >= 'A' && ch <= 'Z') ch += 32;   // 小文字化
+                auto extIs = [&ext](std::initializer_list<const char*> list) {
+                    for (const char* s : list) if (ext == s) return true;
+                    return false;
+                };
 
-                // D&D時のみ: AABBから自動スケーリング
-                bool valid = entity.IsValid();
-                bool hasMR = valid && entity.HasComponent<MeshRenderer>();
+                if (extIs({".png", ".jpg", ".jpeg", ".bmp", ".tga", ".dds", ".gif"}))
                 {
-                    char buf[128];
-                    snprintf(buf, sizeof(buf), "[D&D Scale] valid=%d hasMR=%d\n", valid, hasMR);
-                    OutputDebugStringA(buf);
-                }
-
-                if (hasMR)
-                {
-                    auto& mr = entity.GetComponent<MeshRenderer>();
-                    f32 maxExtent = 0.0f;
-                    for (const auto* mesh : mr.meshes)
+                    // 画像 → ワールド空間の 2D スプライトとして配置（texturePath は assets 相対の規約）。
+                    // D&D は絶対パス・MCP spawn_model は assets 相対で来るので両対応。
+                    std::string relStr;
+                    const std::filesystem::path inPath(req.modelPath);
+                    if (inPath.is_absolute())
                     {
-                        if (!mesh) continue;
-                        auto mn = mesh->GetAABBMin();
-                        auto mx = mesh->GetAABBMax();
-                        f32 dx = mx.x - mn.x;
-                        f32 dy = mx.y - mn.y;
-                        f32 dz = mx.z - mn.z;
-                        if (dx > maxExtent) maxExtent = dx;
-                        if (dy > maxExtent) maxExtent = dy;
-                        if (dz > maxExtent) maxExtent = dz;
+                        std::error_code rec;
+                        auto rel = std::filesystem::relative(inPath, PathResolver::AssetsDir(), rec);
+                        relStr = rec ? std::string() : rel.generic_string();
                     }
-                    // 既存Luaモデルと同じ見た目サイズにスケーリング
-                    constexpr f32 kDefaultScale = 0.01f;
-                    auto& t = entity.GetComponent<Transform>();
-                    t.scale = {kDefaultScale, kDefaultScale, kDefaultScale};
-
-                    // glTF/glb はZ-upなのでX軸90度回転で立たせる
-                    std::string ext = std::filesystem::path(req.modelPath).extension().string();
-                    if (ext == ".gltf" || ext == ".glb")
-                        t.rotation.x = 90.0f;
+                    else
+                    {
+                        relStr = inPath.generic_string();
+                    }
+                    if (relStr.empty() || relStr.rfind("..", 0) == 0)
+                    {
+                        Logger::Warn("Dropped image is outside assets/, cannot place as sprite: {}",
+                                     req.modelPath);
+                    }
+                    else
+                    {
+                        auto& reg = m_scene->GetRegistry();
+                        auto e = reg.create();
+                        reg.emplace<NameTag>(e, NameTag{name});
+                        // 床(Y=0)ドロップだと Z ファイトするので、既定サイズ(1)の半分だけ持ち上げる
+                        DirectX::XMFLOAT3 pos = req.position;
+                        pos.y += 0.5f;
+                        reg.emplace<Transform>(e, Transform{pos, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
+                        Sprite2D sp{};
+                        sp.texturePath = relStr;
+                        sp.worldSpace  = true;
+                        sp.billboard   = true;   // どのカメラ角度からも見えるように
+                        reg.emplace<Sprite2D>(e, sp);
+                        spawnedEntity = e;
+                        Logger::Info("Placed world sprite: {}", relStr);
+                    }
                 }
-                spawnedEntity = entity.GetHandle();
+                else if (extIs({".gltf", ".glb", ".obj", ".fbx", ".dae", ".stl", ".ply", ".3ds"}))
+                {
+                    auto entity = m_scene->Spawn(name, req.modelPath, req.position);
+
+                    // D&D時のみ: AABBから自動スケーリング
+                    bool valid = entity.IsValid();
+                    bool hasMR = valid && entity.HasComponent<MeshRenderer>();
+                    {
+                        char buf[128];
+                        snprintf(buf, sizeof(buf), "[D&D Scale] valid=%d hasMR=%d\n", valid, hasMR);
+                        OutputDebugStringA(buf);
+                    }
+
+                    if (hasMR)
+                    {
+                        auto& mr = entity.GetComponent<MeshRenderer>();
+                        f32 maxExtent = 0.0f;
+                        for (const auto* mesh : mr.meshes)
+                        {
+                            if (!mesh) continue;
+                            auto mn = mesh->GetAABBMin();
+                            auto mx = mesh->GetAABBMax();
+                            f32 dx = mx.x - mn.x;
+                            f32 dy = mx.y - mn.y;
+                            f32 dz = mx.z - mn.z;
+                            if (dx > maxExtent) maxExtent = dx;
+                            if (dy > maxExtent) maxExtent = dy;
+                            if (dz > maxExtent) maxExtent = dz;
+                        }
+                        // 既存Luaモデルと同じ見た目サイズにスケーリング
+                        constexpr f32 kDefaultScale = 0.01f;
+                        auto& t = entity.GetComponent<Transform>();
+                        t.scale = {kDefaultScale, kDefaultScale, kDefaultScale};
+
+                        // glTF/glb はZ-upなのでX軸90度回転で立たせる
+                        if (ext == ".gltf" || ext == ".glb")
+                            t.rotation.x = 90.0f;
+                    }
+                    spawnedEntity = entity.GetHandle();
+                }
+                else
+                {
+                    Logger::Warn("Unsupported file dropped to scene (skipped): {} "
+                                 "(model: gltf/glb/obj/fbx/dae/stl/ply/3ds, image: png/jpg/bmp/tga/dds)",
+                                 req.modelPath);
+                }
             }
 
             // Undo に Spawn コマンドを積む
