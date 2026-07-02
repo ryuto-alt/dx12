@@ -122,6 +122,12 @@ void BloomPass::Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap, Desc
     Logger::Info("BloomPass initialized ({} mips)", kMips);
 }
 
+u32 BloomPass::GetMipSrvIndex(u32 mip) const
+{
+    if (mip >= kMips || !m_mips[mip]) return DescriptorHeap::kInvalidIndex;
+    return m_mips[mip]->GetSrvIndex();
+}
+
 void BloomPass::Resize(GraphicsDevice& device, u32 width, u32 height)
 {
     if (width == 0 || height == 0) return;

@@ -5,6 +5,10 @@ add_library(Renderer STATIC
     PostProcess.cpp
     BloomPass.cpp
     AutoExposurePass.cpp
+    GodRaysPass.cpp
+    LensFlarePass.cpp
+    DofPass.cpp
+    MotionBlurPass.cpp
     SSAOPass.cpp
     SpriteRenderer.cpp
     SceneTransition.cpp

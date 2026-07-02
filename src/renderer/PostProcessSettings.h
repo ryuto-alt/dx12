@@ -76,6 +76,31 @@ struct PostProcessSettings
     // ── 輪郭 ──
     bool  outlineOn    = false;  float outline = 1.0f;  DirectX::XMFLOAT3 outlineColor{0.0f, 0.0f, 0.0f};  // 輪郭線
 
+    // ── ゴッドレイ（スクリーンスペース光条。平行光源(太陽)が画面内/近くにある時のみ）──
+    bool  godraysOn   = false;
+    float grIntensity = 0.6f;   // 光条の強さ
+    float grDensity   = 0.9f;   // 行進距離（大きいほど長い光条）
+    float grDecay     = 0.96f;  // タップ毎の減衰（1に近いほど遠くまで伸びる）
+
+    // ── レンズフレア（疑似・ブルームチェーン入力。ブルームと併用推奨）──
+    bool  lensflareOn  = false;
+    float lfIntensity  = 0.5f;   // 強度
+    int   lfGhosts     = 4;      // ゴースト数 1..8
+    float lfDispersal  = 0.35f;  // ゴースト間隔
+    float lfHalo       = 0.45f;  // ハロー半径
+    float lfChroma     = 0.01f;  // 色収差量
+
+    // ── 被写界深度 DoF（gather ボケ。透視カメラのみ）──
+    bool  dofOn        = false;
+    float dofFocusDist = 8.0f;   // フォーカス距離（カメラからのビュー距離）
+    float dofFocusRange = 5.0f;  // 完全にシャープな範囲の広さ
+    float dofBlurSize  = 12.0f;  // 最大ボケ半径（px）
+
+    // ── カメラモーションブラー（深度再構成方式・velocity buffer 不要）──
+    bool  motionBlurOn = false;
+    float mbStrength   = 0.5f;   // シャッター係数（速度に乗算）
+    int   mbSamples    = 10;     // タップ数 4..16
+
     // ── アンチエイリアス ──
     bool  fxaaOn       = false;  // 簡易 FXAA
 

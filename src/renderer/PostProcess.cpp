@@ -41,6 +41,8 @@ enum PostEffectBit : uint32_t
     PE_AUTOEXP    = 1u << 25,
     PE_LUT        = 1u << 26,
     PE_DEBAND     = 1u << 27,
+    PE_GODRAYS    = 1u << 28,
+    PE_LENSFLARE  = 1u << 29,
 };
 
 // HLSL の cbuffer PostCB と一致させる（12 個の float4 = 48 DWORD、CBV 経由）。
@@ -99,8 +101,8 @@ void PostProcess::Initialize(GraphicsDevice& device, DXGI_FORMAT outFormat,
     m_frameCount = (frameCount > 0) ? frameCount : 3;
 
     // --- Root Signature ---
-    //  p0: t0 シーン(SRV table) / p1: b0 PostCB(CBV) / p2: t1 ブルーム(SRV table)
-    //  p3: t2 LUT(SRV table)   / p4: t3 露出バッファ(root SRV) / s0 linear clamp
+    //  p0: t0 シーン(SRV table) / p1: b0 PostCB(CBV) / p2: t1 ブルーム / p3: t2 LUT
+    //  p4: t3 露出バッファ(root SRV) / p5: t4 ゴッドレイ / p6: t5 レンズフレア / s0 linear clamp
     {
         D3D12_DESCRIPTOR_RANGE sceneRange{};
         sceneRange.RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
@@ -113,7 +115,13 @@ void PostProcess::Initialize(GraphicsDevice& device, DXGI_FORMAT outFormat,
         D3D12_DESCRIPTOR_RANGE lutRange = sceneRange;
         lutRange.BaseShaderRegister = 2;    // t2
 
-        D3D12_ROOT_PARAMETER params[5]{};
+        D3D12_DESCRIPTOR_RANGE grRange = sceneRange;
+        grRange.BaseShaderRegister = 4;     // t4
+
+        D3D12_DESCRIPTOR_RANGE lfRange = sceneRange;
+        lfRange.BaseShaderRegister = 5;     // t5
+
+        D3D12_ROOT_PARAMETER params[7]{};
         params[0].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         params[0].DescriptorTable.NumDescriptorRanges = 1;
         params[0].DescriptorTable.pDescriptorRanges   = &sceneRange;
@@ -137,6 +145,16 @@ void PostProcess::Initialize(GraphicsDevice& device, DXGI_FORMAT outFormat,
         params[4].Descriptor.ShaderRegister = 3;
         params[4].ShaderVisibility          = D3D12_SHADER_VISIBILITY_PIXEL;
 
+        params[5].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[5].DescriptorTable.NumDescriptorRanges = 1;
+        params[5].DescriptorTable.pDescriptorRanges   = &grRange;
+        params[5].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        params[6].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[6].DescriptorTable.NumDescriptorRanges = 1;
+        params[6].DescriptorTable.pDescriptorRanges   = &lfRange;
+        params[6].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
+
         D3D12_STATIC_SAMPLER_DESC samp{};
         samp.Filter           = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
         samp.AddressU         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
@@ -146,7 +164,7 @@ void PostProcess::Initialize(GraphicsDevice& device, DXGI_FORMAT outFormat,
         samp.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         D3D12_ROOT_SIGNATURE_DESC desc{};
-        desc.NumParameters     = 5;
+        desc.NumParameters     = 7;
         desc.pParameters       = params;
         desc.NumStaticSamplers = 1;
         desc.pStaticSamplers   = &samp;
@@ -198,13 +216,8 @@ void PostProcess::Initialize(GraphicsDevice& device, DXGI_FORMAT outFormat,
 }
 
 void PostProcess::Apply(ID3D12GraphicsCommandList* cmd,
-                        D3D12_GPU_DESCRIPTOR_HANDLE sceneSrvGpu,
-                        D3D12_GPU_DESCRIPTOR_HANDLE bloomSrvGpu,
-                        D3D12_GPU_DESCRIPTOR_HANDLE lutSrvGpu,
-                        float lutSize,
-                        D3D12_GPU_VIRTUAL_ADDRESS exposureBufVA,
+                        const Inputs& in,
                         const PostProcessSettings& s,
-                        bool bloomReady,
                         float uvOffsetX, float uvOffsetY,
                         float uvScaleX, float uvScaleY,
                         float texelW, float texelH,
@@ -231,7 +244,7 @@ void PostProcess::Apply(ID3D12GraphicsCommandList* cmd,
         if (s.warmthOn)     mask |= PE_WARMTH;
         if (s.hueOn)        mask |= PE_HUE;
         if (s.tintOn)       mask |= PE_TINT;
-        if (s.bloomOn && bloomReady) mask |= PE_BLOOM;
+        if (s.bloomOn && in.bloomReady) mask |= PE_BLOOM;
         if (s.vignetteOn)   mask |= PE_VIGNETTE;
         if (s.chromaticOn)  mask |= PE_CHROMATIC;
         if (s.pixelizeOn)   mask |= PE_PIXELIZE;
@@ -249,9 +262,11 @@ void PostProcess::Apply(ID3D12GraphicsCommandList* cmd,
         if (s.glitchOn)     mask |= PE_GLITCH;
         if (s.outlineOn)    mask |= PE_OUTLINE;
         if (s.fxaaOn)       mask |= PE_FXAA;
-        if (s.autoExposureOn && exposureBufVA != 0) mask |= PE_AUTOEXP;
-        if (s.lutOn && lutSize >= 2.0f)             mask |= PE_LUT;
+        if (s.autoExposureOn && in.exposureVA != 0) mask |= PE_AUTOEXP;
+        if (s.lutOn && in.lutSize >= 2.0f)          mask |= PE_LUT;
         if (s.debandOn)     mask |= PE_DEBAND;
+        if (s.godraysOn && in.godraysReady)     mask |= PE_GODRAYS;
+        if (s.lensflareOn && in.flareReady)     mask |= PE_LENSFLARE;
     }
     cb.enableMask      = static_cast<int>(mask);
     cb.posterizeLevels = s.posterize;
@@ -285,7 +300,7 @@ void PostProcess::Apply(ID3D12GraphicsCommandList* cmd,
     cb.outlineColor[1] = s.outlineColor.y;
     cb.outlineColor[2] = s.outlineColor.z;
     cb.outline     = s.outline;
-    cb.lutSize     = lutSize;
+    cb.lutSize     = in.lutSize;
     cb.lutAmount   = s.lutAmount;
 
     // 同一フレーム内の複数 Apply（メイン + カメラプレビュー等）で CB スロットを分ける。
@@ -302,12 +317,14 @@ void PostProcess::Apply(ID3D12GraphicsCommandList* cmd,
 
     cmd->SetPipelineState(m_pso.Get());
     cmd->SetGraphicsRootSignature(m_rootSig.Get());
-    cmd->SetGraphicsRootDescriptorTable(0, sceneSrvGpu);
+    cmd->SetGraphicsRootDescriptorTable(0, in.sceneSrv);
     cmd->SetGraphicsRootConstantBufferView(1, m_cb->GetGpuAddress(slot));
-    cmd->SetGraphicsRootDescriptorTable(2, bloomSrvGpu);
-    cmd->SetGraphicsRootDescriptorTable(3, lutSrvGpu);
-    if (exposureBufVA != 0)
-        cmd->SetGraphicsRootShaderResourceView(4, exposureBufVA);
+    cmd->SetGraphicsRootDescriptorTable(2, in.bloomSrv);
+    cmd->SetGraphicsRootDescriptorTable(3, in.lutSrv);
+    if (in.exposureVA != 0)
+        cmd->SetGraphicsRootShaderResourceView(4, in.exposureVA);
+    cmd->SetGraphicsRootDescriptorTable(5, in.godraysSrv);
+    cmd->SetGraphicsRootDescriptorTable(6, in.flareSrv);
     cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cmd->IASetVertexBuffers(0, 0, nullptr);
     cmd->IASetIndexBuffer(nullptr);

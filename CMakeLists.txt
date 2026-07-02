@@ -159,6 +159,10 @@ if(DXC_EXECUTABLE)
     set(SHADER_POST_INC      "${CMAKE_SOURCE_DIR}/shaders/post/FullscreenTri.hlsli")
     set(SHADER_BLOOM         "${CMAKE_SOURCE_DIR}/shaders/post/Bloom.hlsl")
     set(SHADER_AUTOEXPOSURE  "${CMAKE_SOURCE_DIR}/shaders/post/AutoExposure.hlsl")
+    set(SHADER_GODRAYS       "${CMAKE_SOURCE_DIR}/shaders/post/GodRays.hlsl")
+    set(SHADER_LENSFLARE     "${CMAKE_SOURCE_DIR}/shaders/post/LensFlare.hlsl")
+    set(SHADER_DOF           "${CMAKE_SOURCE_DIR}/shaders/post/DoF.hlsl")
+    set(SHADER_MOTIONBLUR    "${CMAKE_SOURCE_DIR}/shaders/post/MotionBlur.hlsl")
     set(SHADER_SPRITE        "${CMAKE_SOURCE_DIR}/shaders/sprite/Sprite.hlsl")
     set(SHADER_ICON_BB       "${CMAKE_SOURCE_DIR}/shaders/editor/IconBillboard.hlsl")
     set(SHADER_TRANSITION    "${CMAKE_SOURCE_DIR}/shaders/post/Transition.hlsl")
@@ -193,6 +197,13 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/BloomUp_PS.cso"
         "${SHADER_OUTPUT_DIR}/ExposureHistogram_CS.cso"
         "${SHADER_OUTPUT_DIR}/ExposureAdapt_CS.cso"
+        "${SHADER_OUTPUT_DIR}/GodRaysMask_PS.cso"
+        "${SHADER_OUTPUT_DIR}/GodRaysBlur_PS.cso"
+        "${SHADER_OUTPUT_DIR}/LensFlare_PS.cso"
+        "${SHADER_OUTPUT_DIR}/DofCoc_PS.cso"
+        "${SHADER_OUTPUT_DIR}/DofGather_PS.cso"
+        "${SHADER_OUTPUT_DIR}/DofComposite_PS.cso"
+        "${SHADER_OUTPUT_DIR}/MotionBlur_PS.cso"
         "${SHADER_OUTPUT_DIR}/Sprite_VS.cso"
         "${SHADER_OUTPUT_DIR}/Sprite_PS.cso"
         "${SHADER_OUTPUT_DIR}/IconBillboard_VS.cso"
@@ -349,6 +360,59 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSAdapt -Fo "${SHADER_OUTPUT_DIR}/ExposureAdapt_CS.cso" "${SHADER_AUTOEXPOSURE}"
         DEPENDS "${SHADER_AUTOEXPOSURE}"
         COMMENT "Compiling AutoExposure.hlsl -> ExposureAdapt_CS.cso (cs_6_0)"
+    )
+
+    # --- ゴッドレイ（マスク + 放射ブラー）---
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/GodRaysMask_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E GodRaysMaskPS -Fo "${SHADER_OUTPUT_DIR}/GodRaysMask_PS.cso" "${SHADER_GODRAYS}"
+        DEPENDS "${SHADER_GODRAYS}" "${SHADER_POST_INC}"
+        COMMENT "Compiling GodRays.hlsl -> GodRaysMask_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/GodRaysBlur_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E GodRaysBlurPS -Fo "${SHADER_OUTPUT_DIR}/GodRaysBlur_PS.cso" "${SHADER_GODRAYS}"
+        DEPENDS "${SHADER_GODRAYS}" "${SHADER_POST_INC}"
+        COMMENT "Compiling GodRays.hlsl -> GodRaysBlur_PS.cso (ps_6_0)"
+    )
+
+    # --- レンズフレア ---
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/LensFlare_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E LensFlarePS -Fo "${SHADER_OUTPUT_DIR}/LensFlare_PS.cso" "${SHADER_LENSFLARE}"
+        DEPENDS "${SHADER_LENSFLARE}" "${SHADER_POST_INC}"
+        COMMENT "Compiling LensFlare.hlsl -> LensFlare_PS.cso (ps_6_0)"
+    )
+
+    # --- 被写界深度（CoC / gather / 合成）---
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/DofCoc_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E DofCocPS -Fo "${SHADER_OUTPUT_DIR}/DofCoc_PS.cso" "${SHADER_DOF}"
+        DEPENDS "${SHADER_DOF}" "${SHADER_POST_INC}"
+        COMMENT "Compiling DoF.hlsl -> DofCoc_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/DofGather_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E DofGatherPS -Fo "${SHADER_OUTPUT_DIR}/DofGather_PS.cso" "${SHADER_DOF}"
+        DEPENDS "${SHADER_DOF}" "${SHADER_POST_INC}"
+        COMMENT "Compiling DoF.hlsl -> DofGather_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/DofComposite_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E DofCompositePS -Fo "${SHADER_OUTPUT_DIR}/DofComposite_PS.cso" "${SHADER_DOF}"
+        DEPENDS "${SHADER_DOF}" "${SHADER_POST_INC}"
+        COMMENT "Compiling DoF.hlsl -> DofComposite_PS.cso (ps_6_0)"
+    )
+
+    # --- カメラモーションブラー ---
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/MotionBlur_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E MotionBlurPS -Fo "${SHADER_OUTPUT_DIR}/MotionBlur_PS.cso" "${SHADER_MOTIONBLUR}"
+        DEPENDS "${SHADER_MOTIONBLUR}" "${SHADER_POST_INC}"
+        COMMENT "Compiling MotionBlur.hlsl -> MotionBlur_PS.cso (ps_6_0)"
     )
 
     add_custom_command(

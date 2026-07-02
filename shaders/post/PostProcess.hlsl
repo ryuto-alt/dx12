@@ -35,6 +35,8 @@ static const float PI = 3.14159265;
 #define E_AUTOEXP    (1u<<25)
 #define E_LUT        (1u<<26)
 #define E_DEBAND     (1u<<27)
+#define E_GODRAYS    (1u<<28)
+#define E_LENSFLARE  (1u<<29)
 
 cbuffer PostCB : register(b0)
 {
@@ -56,6 +58,8 @@ Texture2D    gScene : register(t0);
 Texture2D    gBloom : register(t1);   // BloomPass の結果（ビューポートローカル 0..1）
 Texture2D    gLut   : register(t2);   // 3D LUT ストリップ（N*N x N）。無効時は白ダミー
 StructuredBuffer<float> gExposureBuf : register(t3);  // [0]=自動露出の倍率
+Texture2D    gGodrays : register(t4); // ゴッドレイ光条（シーンと同じ正規化UVレイアウト）
+Texture2D    gFlare   : register(t5); // レンズフレア（ビューポートローカル 0..1）
 SamplerState gSamp  : register(s0);
 
 static float3 SampleScene(float2 uv) { return gScene.Sample(gSamp, uv).rgb; }
@@ -254,6 +258,14 @@ float4 PostPS(FSQuadVSOut i) : SV_TARGET
     // gBloom はビューポートローカル 0..1（UVエフェクト後の luv でサンプルして歪みと整合させる）
     if (mask & E_BLOOM)
         col += gBloom.Sample(gSamp, saturate(luv)).rgb * cg1.z;
+
+    // --- ゴッドレイ（強度焼き込み済み・シーンと同レイアウトなので uv でサンプル）---
+    if (mask & E_GODRAYS)
+        col += gGodrays.Sample(gSamp, uv).rgb;
+
+    // --- レンズフレア（強度焼き込み済み・ローカル 0..1）---
+    if (mask & E_LENSFLARE)
+        col += gFlare.Sample(gSamp, saturate(luv)).rgb;
 
     // ===== トーンマップ（ACES）+ ガンマ =====
     // ここから先は表示基準(LDR, 0..1)の色として扱う

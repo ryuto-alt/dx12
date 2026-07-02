@@ -25,6 +25,10 @@
 #include "renderer/PostProcess.h"
 #include "renderer/BloomPass.h"
 #include "renderer/AutoExposurePass.h"
+#include "renderer/GodRaysPass.h"
+#include "renderer/LensFlarePass.h"
+#include "renderer/DofPass.h"
+#include "renderer/MotionBlurPass.h"
 #include "renderer/SSAOPass.h"
 #include "renderer/ParticleSystem.h"
 #include "renderer/SpriteRenderer.h"
@@ -867,6 +871,20 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         // 自動露出（compute ヒストグラム。露出値は GPU 内バッファで uber パスへ直結）
         m_autoExposure = std::make_unique<AutoExposurePass>();
         m_autoExposure->Initialize(*m_graphicsDevice, PathResolver::ShaderDirW());
+
+        // ゴッドレイ / レンズフレア / DoF / モーションブラー（全て設定でOFF時はゼロコスト）
+        m_godRaysPass = std::make_unique<GodRaysPass>();
+        m_godRaysPass->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
+                                  m_window->GetWidth(), m_window->GetHeight(), PathResolver::ShaderDirW());
+        m_lensFlarePass = std::make_unique<LensFlarePass>();
+        m_lensFlarePass->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
+                                    m_window->GetWidth(), m_window->GetHeight(), PathResolver::ShaderDirW());
+        m_dofPass = std::make_unique<DofPass>();
+        m_dofPass->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
+                              m_window->GetWidth(), m_window->GetHeight(), PathResolver::ShaderDirW());
+        m_motionBlurPass = std::make_unique<MotionBlurPass>();
+        m_motionBlurPass->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
+                                     m_window->GetWidth(), m_window->GetHeight(), PathResolver::ShaderDirW());
 
         // SSAO（深度プリパス → 半球カーネル AO → ブラー）。AO/Blur RT は offscreenRtvHeap から確保。
         m_ssaoPass = std::make_unique<SSAOPass>();
@@ -2666,6 +2684,15 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"aeLogMin", pp.aeLogMin}, {"aeLogMax", pp.aeLogMax},
                 {"lutOn", pp.lutOn}, {"lutPath", pp.lutPath}, {"lutAmount", pp.lutAmount},
                 {"debandOn", pp.debandOn},
+                {"godraysOn", pp.godraysOn}, {"grIntensity", pp.grIntensity},
+                {"grDensity", pp.grDensity}, {"grDecay", pp.grDecay},
+                {"lensflareOn", pp.lensflareOn}, {"lfIntensity", pp.lfIntensity},
+                {"lfGhosts", pp.lfGhosts}, {"lfDispersal", pp.lfDispersal},
+                {"lfHalo", pp.lfHalo}, {"lfChroma", pp.lfChroma},
+                {"dofOn", pp.dofOn}, {"dofFocusDist", pp.dofFocusDist},
+                {"dofFocusRange", pp.dofFocusRange}, {"dofBlurSize", pp.dofBlurSize},
+                {"motionBlurOn", pp.motionBlurOn}, {"mbStrength", pp.mbStrength},
+                {"mbSamples", pp.mbSamples},
             };
         }
         else if (method == "set_post_process")
@@ -2694,6 +2721,23 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             pp.lutOn = params.value("lutOn", pp.lutOn); pp.lutPath = params.value("lutPath", pp.lutPath);
             pp.lutAmount = params.value("lutAmount", pp.lutAmount);
             pp.debandOn = params.value("debandOn", pp.debandOn);
+            pp.godraysOn = params.value("godraysOn", pp.godraysOn);
+            pp.grIntensity = params.value("grIntensity", pp.grIntensity);
+            pp.grDensity = params.value("grDensity", pp.grDensity);
+            pp.grDecay = params.value("grDecay", pp.grDecay);
+            pp.lensflareOn = params.value("lensflareOn", pp.lensflareOn);
+            pp.lfIntensity = params.value("lfIntensity", pp.lfIntensity);
+            pp.lfGhosts = params.value("lfGhosts", pp.lfGhosts);
+            pp.lfDispersal = params.value("lfDispersal", pp.lfDispersal);
+            pp.lfHalo = params.value("lfHalo", pp.lfHalo);
+            pp.lfChroma = params.value("lfChroma", pp.lfChroma);
+            pp.dofOn = params.value("dofOn", pp.dofOn);
+            pp.dofFocusDist = params.value("dofFocusDist", pp.dofFocusDist);
+            pp.dofFocusRange = params.value("dofFocusRange", pp.dofFocusRange);
+            pp.dofBlurSize = params.value("dofBlurSize", pp.dofBlurSize);
+            pp.motionBlurOn = params.value("motionBlurOn", pp.motionBlurOn);
+            pp.mbStrength = params.value("mbStrength", pp.mbStrength);
+            pp.mbSamples = params.value("mbSamples", pp.mbSamples);
             pp.vignetteOn = params.value("vignetteOn", pp.vignetteOn); pp.vignette = params.value("vignette", pp.vignette);
             pp.chromaticOn = params.value("chromaticOn", pp.chromaticOn); pp.chromatic = params.value("chromatic", pp.chromatic);
             pp.pixelizeOn = params.value("pixelizeOn", pp.pixelizeOn); pp.pixelSize = params.value("pixelSize", pp.pixelSize);
@@ -3129,6 +3173,11 @@ void Application::Run()
                 // ブルームチェーン（1/2〜1/64）も追従
                 if (m_bloomPass)
                     m_bloomPass->Resize(*m_graphicsDevice, w, h);
+                if (m_godRaysPass)    m_godRaysPass->Resize(*m_graphicsDevice, w, h);
+                if (m_lensFlarePass)  m_lensFlarePass->Resize(*m_graphicsDevice, w, h);
+                if (m_dofPass)        m_dofPass->Resize(*m_graphicsDevice, w, h);
+                if (m_motionBlurPass) m_motionBlurPass->Resize(*m_graphicsDevice, w, h);
+                m_prevViewProjValid = false;  // リサイズ直後のMB速度スパイク防止
 
                 // カメラアスペクト比更新（エディタモードではサイドバー分引く）
                 m_camera->SetPerspective(DirectX::XM_PIDIV4,
@@ -3308,6 +3357,10 @@ void Application::Shutdown()
     m_postProcess.reset();
     m_bloomPass.reset();      // GPU リソース（チェーンRT/PSO）をデバイス解放より前に明示破棄
     m_autoExposure.reset();   // 同上（UAV バッファ/compute PSO）
+    m_godRaysPass.reset();
+    m_lensFlarePass.reset();
+    m_dofPass.reset();
+    m_motionBlurPass.reset();
     // SSAO（GPU リソース）をデバイス解放より前に明示破棄
     m_ssaoPass.reset();
     m_ssaoWhiteTex.reset();
@@ -7182,9 +7235,50 @@ void Application::Render()
             }
         }
 
+        // ---- 深度依存パス（DoF/モーションブラー/ゴッドレイ）の準備 ----
+        // 透視カメラのみ（正射は CoC/再投影/太陽投影が破綻するため無効）
+        const bool persp = !m_camera->IsOrthographic();
+        const bool wantDepthPost = ppApplied.enabled && persp &&
+            m_depthBuffer && m_depthSrvIndex != DescriptorHeap::kInvalidIndex &&
+            (ppApplied.dofOn || ppApplied.motionBlurOn || ppApplied.godraysOn);
+        D3D12_GPU_DESCRIPTOR_HANDLE depthSrvGpu{};
+        if (wantDepthPost)
+        {
+            m_commandList->TransitionResource(m_depthBuffer.Get(),
+                D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            depthSrvGpu = m_srvHeap->GetGpuHandle(m_depthSrvIndex);
+        }
+
+        // ---- シーン変換チェーン: DoF → モーションブラー（結果を以降の「シーン」として使う）----
+        D3D12_GPU_DESCRIPTOR_HANDLE curSceneSrv = sceneSrvGpu;
+        if (wantDepthPost && ppApplied.dofOn && m_dofPass)
+        {
+            XMFLOAT4X4 projF;
+            XMStoreFloat4x4(&projF, m_camera->GetProjectionMatrix());
+            const u32 o = m_dofPass->Apply(*m_commandList, m_srvHeap.get(),
+                curSceneSrv, depthSrvGpu,
+                uvOfsX, uvOfsY, uvSclX, uvSclY, vpLeft, vpTop, vpW, vpH,
+                projF._33, projF._43, ppApplied);
+            if (o != DescriptorHeap::kInvalidIndex)
+                curSceneSrv = m_srvHeap->GetGpuHandle(o);
+        }
+        if (wantDepthPost && ppApplied.motionBlurOn && m_motionBlurPass && m_prevViewProjValid)
+        {
+            const XMMATRIX vp  = m_camera->GetViewProjMatrix();
+            const XMMATRIX inv = XMMatrixInverse(nullptr, vp);
+            XMFLOAT4X4 invT, prevT;
+            XMStoreFloat4x4(&invT,  XMMatrixTranspose(inv));
+            XMStoreFloat4x4(&prevT, XMMatrixTranspose(XMLoadFloat4x4(&m_prevViewProj)));
+            const u32 o = m_motionBlurPass->Apply(*m_commandList, m_srvHeap.get(),
+                curSceneSrv, depthSrvGpu, invT, prevT,
+                uvOfsX, uvOfsY, uvSclX, uvSclY, vpLeft, vpTop, vpW, vpH, ppApplied);
+            if (o != DescriptorHeap::kInvalidIndex)
+                curSceneSrv = m_srvHeap->GetGpuHandle(o);
+        }
+
         // ---- 自動露出（compute。ビューポート矩形のヒストグラム→露出値を GPU 内バッファへ）----
         if (m_autoExposure && ppApplied.enabled && ppApplied.autoExposureOn)
-            m_autoExposure->Generate(nativeCmdList, sceneSrvGpu, vpLeft, vpTop, vpW, vpH,
+            m_autoExposure->Generate(nativeCmdList, curSceneSrv, vpLeft, vpTop, vpW, vpH,
                                      m_gameClock.GetDeltaTime(), ppApplied);
         D3D12_GPU_VIRTUAL_ADDRESS exposureVA = 0;
         if (m_autoExposure)
@@ -7193,14 +7287,73 @@ void Application::Render()
             exposureVA = m_autoExposure->GetExposureBufferVA();
         }
 
-        // ---- ブルーム（内部で RT/ビューポートを切り替えるので backbuffer 設定より前に実行）----
+        // ---- ブルーム（レンズフレアの入力も兼ねる。内部で RT/ビューポート切替）----
         u32 bloomSrv = DescriptorHeap::kInvalidIndex;
-        if (m_bloomPass && ppApplied.enabled && ppApplied.bloomOn)
-            bloomSrv = m_bloomPass->Generate(*m_commandList, m_srvHeap.get(), sceneSrvGpu,
+        if (m_bloomPass && ppApplied.enabled && (ppApplied.bloomOn || ppApplied.lensflareOn))
+            bloomSrv = m_bloomPass->Generate(*m_commandList, m_srvHeap.get(), curSceneSrv,
                                              uvOfsX, uvOfsY, uvSclX, uvSclY,
                                              1.0f / fullW, 1.0f / fullH, ppApplied);
         const bool bloomReady = (bloomSrv != DescriptorHeap::kInvalidIndex);
         const auto bloomSrvGpu = m_srvHeap->GetGpuHandle(bloomReady ? bloomSrv : m_ssaoWhiteSrvIndex);
+
+        // ---- ゴッドレイ（太陽=最初の平行光源をスクリーンへ投影）----
+        u32 godraysSrv = DescriptorHeap::kInvalidIndex;
+        if (wantDepthPost && ppApplied.godraysOn && m_godRaysPass)
+        {
+            XMFLOAT3 sunDir{}; XMFLOAT3 sunColI{}; bool hasSun = false;
+            auto& greg = m_scene->GetRegistry();
+            auto dlView = greg.view<DirectionalLight>();
+            if (dlView.begin() != dlView.end())
+            {
+                const auto& dl = dlView.get<DirectionalLight>(*dlView.begin());
+                sunDir  = dl.direction;
+                sunColI = XMFLOAT3(dl.color.x * dl.intensity,
+                                   dl.color.y * dl.intensity,
+                                   dl.color.z * dl.intensity);
+                hasSun = true;
+            }
+            if (hasSun)
+            {
+                // 太陽ワールド位置 ≒ カメラ位置 - 光方向×遠距離 → スクリーン投影
+                const XMFLOAT3 camPos = m_camera->GetPosition();
+                XMVECTOR d  = XMVector3Normalize(XMLoadFloat3(&sunDir));
+                XMVECTOR wp = XMVectorSubtract(XMLoadFloat3(&camPos), XMVectorScale(d, 5000.0f));
+                XMVECTOR clip = XMVector4Transform(XMVectorSetW(wp, 1.0f), m_camera->GetViewProjMatrix());
+                const f32 cw = XMVectorGetW(clip);
+                if (cw > 0.01f)
+                {
+                    const f32 lu = XMVectorGetX(clip) / cw * 0.5f + 0.5f;   // ローカルUV
+                    const f32 lv = 0.5f - XMVectorGetY(clip) / cw * 0.5f;
+                    // 画面中心からの距離でフェード（画面外に離れると消える）
+                    const f32 dc = std::sqrt((lu - 0.5f) * (lu - 0.5f) + (lv - 0.5f) * (lv - 0.5f));
+                    const f32 fade = (std::min)((std::max)((1.1f - dc) / 0.4f, 0.0f), 1.0f);
+                    if (fade > 0.001f)
+                    {
+                        godraysSrv = m_godRaysPass->Generate(*m_commandList, m_srvHeap.get(),
+                            depthSrvGpu,
+                            uvOfsX, uvOfsY, uvSclX, uvSclY, vpLeft, vpTop, vpW, vpH,
+                            lu * uvSclX + uvOfsX, lv * uvSclY + uvOfsY, fade, sunColI, ppApplied);
+                    }
+                }
+            }
+        }
+        const bool grReady = (godraysSrv != DescriptorHeap::kInvalidIndex);
+
+        // ---- レンズフレア（ブルームチェーンの縮小ミップから生成）----
+        u32 flareSrv = DescriptorHeap::kInvalidIndex;
+        if (m_lensFlarePass && ppApplied.enabled && ppApplied.lensflareOn && bloomReady)
+        {
+            const u32 mip = m_bloomPass->GetMipSrvIndex(1);
+            if (mip != DescriptorHeap::kInvalidIndex)
+                flareSrv = m_lensFlarePass->Generate(*m_commandList, m_srvHeap.get(),
+                    m_srvHeap->GetGpuHandle(mip), ppApplied);
+        }
+        const bool lfReady = (flareSrv != DescriptorHeap::kInvalidIndex);
+
+        // 深度を DSV 用途（エディタアイコン等）へ戻す
+        if (wantDepthPost)
+            m_commandList->TransitionResource(m_depthBuffer.Get(),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
 
         // ---- 3D LUT（assets 相対パス。sRGB 無効=バイト列そのままロード。ストリップ形式 N*N x N）----
         auto lutSrvGpu = m_srvHeap->GetGpuHandle(m_ssaoWhiteSrvIndex);
@@ -7226,11 +7379,26 @@ void Application::Render()
         nativeCmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);  // 深度なし
         m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
 
-        m_postProcess->Apply(nativeCmdList,
-            sceneSrvGpu, bloomSrvGpu, lutSrvGpu, lutSize, exposureVA,
-            ppApplied, bloomReady,
+        const auto whiteDummy = m_srvHeap->GetGpuHandle(m_ssaoWhiteSrvIndex);
+        PostProcess::Inputs pin{};
+        pin.sceneSrv     = curSceneSrv;
+        pin.bloomSrv     = bloomSrvGpu;
+        pin.lutSrv       = lutSrvGpu;
+        pin.godraysSrv   = grReady ? m_srvHeap->GetGpuHandle(godraysSrv) : whiteDummy;
+        pin.flareSrv     = lfReady ? m_srvHeap->GetGpuHandle(flareSrv)   : whiteDummy;
+        pin.lutSize      = lutSize;
+        pin.exposureVA   = exposureVA;
+        pin.bloomReady   = bloomReady;
+        pin.godraysReady = grReady;
+        pin.flareReady   = lfReady;
+
+        m_postProcess->Apply(nativeCmdList, pin, ppApplied,
             uvOfsX, uvOfsY, uvSclX, uvSclY,
             1.0f / fullW, 1.0f / fullH, totalTime, frameIndex);
+
+        // 次フレームのモーションブラー用に今フレームの viewProj を保存
+        XMStoreFloat4x4(&m_prevViewProj, m_camera->GetViewProjMatrix());
+        m_prevViewProjValid = true;
     }
 
     // ---- Editor Icon Draw（ポスト後のバックバッファへ, エディタモードのみ）----
@@ -7399,11 +7567,14 @@ void Application::Render()
                 // トーンマッパはシーン設定と揃える（プレビューと本画面の見た目一致）
                 pvPost.tonemapper = m_scene->GetPostSettings().tonemapper;
                 const auto pvDummy = m_srvHeap->GetGpuHandle(m_ssaoWhiteSrvIndex);
-                m_postProcess->Apply(nativeCmdList,
-                    m_srvHeap->GetGpuHandle(m_cameraPreviewRT->GetSrvIndex()),
-                    pvDummy, pvDummy, 0.0f,
-                    m_autoExposure ? m_autoExposure->GetExposureBufferVA() : 0,
-                    pvPost, /*bloomReady=*/false,
+                PostProcess::Inputs pvIn{};
+                pvIn.sceneSrv   = m_srvHeap->GetGpuHandle(m_cameraPreviewRT->GetSrvIndex());
+                pvIn.bloomSrv   = pvDummy;
+                pvIn.lutSrv     = pvDummy;
+                pvIn.godraysSrv = pvDummy;
+                pvIn.flareSrv   = pvDummy;
+                pvIn.exposureVA = m_autoExposure ? m_autoExposure->GetExposureBufferVA() : 0;
+                m_postProcess->Apply(nativeCmdList, pvIn, pvPost,
                     0.0f, 0.0f, 1.0f, 1.0f,
                     1.0f / static_cast<f32>(pw), 1.0f / static_cast<f32>(ph), totalTime, frameIndex);
 
@@ -7516,6 +7687,24 @@ void Application::Render()
                          ImGui::SliderFloat("広がり##bloomrad", &pp.bloomRadius, 0.05f, 0.95f, "%.2f"); }},
                 {"ブルーム/ビネット", "ビネット Vignette", "周辺減光", &pp.vignetteOn,
                     [&]{ ImGui::SliderFloat("強度##vig", &pp.vignette, 0.0f, 1.0f, "%.2f"); }},
+
+                {"ライト/カメラ", "ゴッドレイ God Rays", "太陽(平行光源)からの光条。太陽が画面内/近くにある時に見える(透視カメラのみ)", &pp.godraysOn,
+                    [&]{ ImGui::SliderFloat("強度##gri", &pp.grIntensity, 0.0f, 2.0f, "%.2f");
+                         ImGui::SliderFloat("長さ##grd", &pp.grDensity, 0.1f, 1.0f, "%.2f");
+                         ImGui::SliderFloat("減衰##grdc", &pp.grDecay, 0.8f, 0.999f, "%.3f"); }},
+                {"ライト/カメラ", "レンズフレア Lens Flare", "ゴースト+ハロー。強い光源があると出る(ブルームと入力共有)", &pp.lensflareOn,
+                    [&]{ ImGui::SliderFloat("強度##lfi", &pp.lfIntensity, 0.0f, 2.0f, "%.2f");
+                         ImGui::SliderInt("ゴースト数##lfg", &pp.lfGhosts, 1, 8);
+                         ImGui::SliderFloat("間隔##lfd", &pp.lfDispersal, 0.05f, 1.0f, "%.2f");
+                         ImGui::SliderFloat("ハロー##lfh", &pp.lfHalo, 0.0f, 1.0f, "%.2f");
+                         ImGui::SliderFloat("色収差##lfc", &pp.lfChroma, 0.0f, 0.05f, "%.3f"); }},
+                {"ライト/カメラ", "被写界深度 DoF", "フォーカス距離の前後がボケる(透視カメラのみ)", &pp.dofOn,
+                    [&]{ ImGui::SliderFloat("フォーカス距離##doff", &pp.dofFocusDist, 0.1f, 100.0f, "%.1f");
+                         ImGui::SliderFloat("シャープ範囲##dofr", &pp.dofFocusRange, 0.1f, 50.0f, "%.1f");
+                         ImGui::SliderFloat("最大ボケpx##dofb", &pp.dofBlurSize, 1.0f, 32.0f, "%.0f"); }},
+                {"ライト/カメラ", "モーションブラー Motion Blur", "カメラの動きで残像(深度再構成方式・透視カメラのみ)", &pp.motionBlurOn,
+                    [&]{ ImGui::SliderFloat("強度##mbs", &pp.mbStrength, 0.0f, 2.0f, "%.2f");
+                         ImGui::SliderInt("サンプル数##mbn", &pp.mbSamples, 4, 16); }},
 
                 {"スタイライズ", "色収差 Chromatic", "画面端でRGBがズレる", &pp.chromaticOn,
                     [&]{ ImGui::SliderFloat("強度##chroma", &pp.chromatic, 0.0f, 1.0f, "%.2f"); }},

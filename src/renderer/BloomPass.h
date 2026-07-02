@@ -43,6 +43,10 @@ public:
 
     bool IsReady() const { return m_psoDown != nullptr; }
 
+    // チェーンの任意ミップの SRV index（レンズフレア等の入力用）。
+    // Generate 直後、mip1..kMips-1 は PIXEL_SHADER_RESOURCE 状態。
+    u32 GetMipSrvIndex(u32 mip) const;
+
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSig;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoDown;

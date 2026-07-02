@@ -580,6 +580,15 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
             {"aeLogMin",     pp.aeLogMin},     {"aeLogMax",   pp.aeLogMax},
             {"lutOn",        pp.lutOn},        {"lutPath",    pp.lutPath}, {"lutAmount", pp.lutAmount},
             {"debandOn",     pp.debandOn},
+            {"godraysOn",    pp.godraysOn},    {"grIntensity", pp.grIntensity},
+            {"grDensity",    pp.grDensity},    {"grDecay",     pp.grDecay},
+            {"lensflareOn",  pp.lensflareOn},  {"lfIntensity", pp.lfIntensity},
+            {"lfGhosts",     pp.lfGhosts},     {"lfDispersal", pp.lfDispersal},
+            {"lfHalo",       pp.lfHalo},       {"lfChroma",    pp.lfChroma},
+            {"dofOn",        pp.dofOn},        {"dofFocusDist", pp.dofFocusDist},
+            {"dofFocusRange", pp.dofFocusRange}, {"dofBlurSize", pp.dofBlurSize},
+            {"motionBlurOn", pp.motionBlurOn}, {"mbStrength",  pp.mbStrength},
+            {"mbSamples",    pp.mbSamples},
             {"vignetteOn",   pp.vignetteOn},   {"vignette",   pp.vignette},
             {"chromaticOn",  pp.chromaticOn},  {"chromatic",  pp.chromatic},
             {"pixelizeOn",   pp.pixelizeOn},   {"pixelSize",  pp.pixelSize},
@@ -659,6 +668,15 @@ static void LoadPostSettings(Scene& scene, const json& root)
         pp.lutOn        = pj.value("lutOn",        pp.lutOn);        pp.lutPath    = pj.value("lutPath",    pp.lutPath);
         pp.lutAmount    = pj.value("lutAmount",    pp.lutAmount);
         pp.debandOn     = pj.value("debandOn",     pp.debandOn);
+        pp.godraysOn    = pj.value("godraysOn",    pp.godraysOn);    pp.grIntensity = pj.value("grIntensity", pp.grIntensity);
+        pp.grDensity    = pj.value("grDensity",    pp.grDensity);    pp.grDecay     = pj.value("grDecay",     pp.grDecay);
+        pp.lensflareOn  = pj.value("lensflareOn",  pp.lensflareOn);  pp.lfIntensity = pj.value("lfIntensity", pp.lfIntensity);
+        pp.lfGhosts     = pj.value("lfGhosts",     pp.lfGhosts);     pp.lfDispersal = pj.value("lfDispersal", pp.lfDispersal);
+        pp.lfHalo       = pj.value("lfHalo",       pp.lfHalo);       pp.lfChroma    = pj.value("lfChroma",    pp.lfChroma);
+        pp.dofOn        = pj.value("dofOn",        pp.dofOn);        pp.dofFocusDist = pj.value("dofFocusDist", pp.dofFocusDist);
+        pp.dofFocusRange = pj.value("dofFocusRange", pp.dofFocusRange); pp.dofBlurSize = pj.value("dofBlurSize", pp.dofBlurSize);
+        pp.motionBlurOn = pj.value("motionBlurOn", pp.motionBlurOn); pp.mbStrength  = pj.value("mbStrength",  pp.mbStrength);
+        pp.mbSamples    = pj.value("mbSamples",    pp.mbSamples);
         pp.vignetteOn   = pj.value("vignetteOn",   pp.vignetteOn);   pp.vignette   = pj.value("vignette",   pp.vignette);
         pp.chromaticOn  = pj.value("chromaticOn",  pp.chromaticOn);  pp.chromatic  = pj.value("chromatic",  pp.chromatic);
         pp.pixelizeOn   = pj.value("pixelizeOn",   pp.pixelizeOn);   pp.pixelSize  = pj.value("pixelSize",  pp.pixelSize);

@@ -41,6 +41,10 @@ namespace dx12e
     class PostProcess;
     class BloomPass;
     class AutoExposurePass;
+    class GodRaysPass;
+    class LensFlarePass;
+    class DofPass;
+    class MotionBlurPass;
     class SSAOPass;
     class ParticleSystem;
     class SpriteRenderer;
@@ -312,6 +316,12 @@ private:
     std::unique_ptr<PostProcess>    m_postProcess;
     std::unique_ptr<BloomPass>      m_bloomPass;     // 物理ベースブルーム（ダウン/アップチェーン）
     std::unique_ptr<AutoExposurePass> m_autoExposure; // 自動露出（compute ヒストグラム）
+    std::unique_ptr<GodRaysPass>    m_godRaysPass;    // スクリーンスペース ゴッドレイ
+    std::unique_ptr<LensFlarePass>  m_lensFlarePass;  // 疑似レンズフレア（ブルームチェーン入力）
+    std::unique_ptr<DofPass>        m_dofPass;        // 被写界深度（gather ボケ）
+    std::unique_ptr<MotionBlurPass> m_motionBlurPass; // カメラモーションブラー（深度再構成）
+    DirectX::XMFLOAT4X4             m_prevViewProj{};       // 前フレームの viewProj（モーションブラー用）
+    bool                            m_prevViewProjValid = false;
     std::unique_ptr<ParticleSystem> m_particleSystem;  // 加算ビルボードパーティクル（Lua fx API）
 
     // ---- SSAO（深度プリパス + 深度再構築法線 半球カーネルAO + ブラー）----

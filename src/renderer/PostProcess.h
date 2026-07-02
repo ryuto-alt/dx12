@@ -27,20 +27,28 @@ public:
     void Initialize(GraphicsDevice& device, DXGI_FORMAT outFormat,
                     const std::wstring& shaderDir, u32 frameCount);
 
+    // uber パスへの GPU 入力一式。無効な SRV スロットにも白ダミー等の有効なハンドルを
+    // 渡すこと（参照はマスクビットでゲートされる）。*Ready=false なら該当合成をスキップ。
+    struct Inputs
+    {
+        D3D12_GPU_DESCRIPTOR_HANDLE sceneSrv{};     // シーン（または DoF/MB 処理後のシーン）
+        D3D12_GPU_DESCRIPTOR_HANDLE bloomSrv{};     // ブルーム結果（ビューポートローカル 0..1）
+        D3D12_GPU_DESCRIPTOR_HANDLE lutSrv{};       // 3D LUT ストリップ
+        D3D12_GPU_DESCRIPTOR_HANDLE godraysSrv{};   // ゴッドレイ光条（シーンと同レイアウト）
+        D3D12_GPU_DESCRIPTOR_HANDLE flareSrv{};     // レンズフレア（ビューポートローカル 0..1）
+        float                       lutSize    = 0.0f;  // LUT の N（<2 で無効）
+        D3D12_GPU_VIRTUAL_ADDRESS   exposureVA = 0;     // 自動露出バッファ（0 で無効）
+        bool bloomReady   = false;
+        bool godraysReady = false;
+        bool flareReady   = false;
+    };
+
     // 呼び出し側で対象 RTV と descriptor heap(srv) を先にバインドしておくこと。
     // uvOffset/uvScale はエディタのビューポート矩形に合わせたシーンテクスチャの参照範囲。
-    // bloomSrvGpu/lutSrvGpu: 無効時は白ダミー等の有効なハンドルを渡す（マスクで参照ゲート）。
-    // bloomReady=false なら bloomOn でもブルーム合成しない（BloomPass 未実行フレーム対策）。
-    // lutSize < 2 なら LUT 無効。exposureBufVA=0 なら自動露出無効。
     // frameIndex はフレーム多重化 CB のスロット選択（同一フレーム内の複数 Apply も安全）。
     void Apply(ID3D12GraphicsCommandList* cmd,
-               D3D12_GPU_DESCRIPTOR_HANDLE sceneSrvGpu,
-               D3D12_GPU_DESCRIPTOR_HANDLE bloomSrvGpu,
-               D3D12_GPU_DESCRIPTOR_HANDLE lutSrvGpu,
-               float lutSize,
-               D3D12_GPU_VIRTUAL_ADDRESS exposureBufVA,
+               const Inputs& in,
                const PostProcessSettings& s,
-               bool bloomReady,
                float uvOffsetX, float uvOffsetY,
                float uvScaleX, float uvScaleY,
                float texelW, float texelH,
