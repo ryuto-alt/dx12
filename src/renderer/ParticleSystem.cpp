@@ -229,9 +229,9 @@ void ParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
         ThrowIfFailed(dev->CreateGraphicsPipelineState(&bp, IID_PPV_ARGS(&m_psoBeam)));
     }
 
-    // --- インスタンスバッファ（UPLOADヒープ。SpriteRenderer と同じ運用）---
+    // --- インスタンスバッファ（UPLOADヒープ。SpriteRenderer と同じ kFrames 区画リング運用）---
     {
-        const UINT bufferSize = kMaxParticles * sizeof(GpuParticle);
+        const UINT bufferSize = kFrames * kMaxParticles * sizeof(GpuParticle);
         D3D12_HEAP_PROPERTIES heapProps{};
         heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
         D3D12_RESOURCE_DESC res{};
@@ -252,9 +252,9 @@ void ParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
         m_vbView.SizeInBytes    = bufferSize;
     }
 
-    // --- ビーム用インスタンスバッファ ---
+    // --- ビーム用インスタンスバッファ（同じく kFrames 区画リング）---
     {
-        const UINT bufferSize = kMaxBeams * sizeof(GpuBeam);
+        const UINT bufferSize = kFrames * kMaxBeams * sizeof(GpuBeam);
         D3D12_HEAP_PROPERTIES heapProps{};
         heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
         D3D12_RESOURCE_DESC res{};
@@ -519,6 +519,10 @@ void ParticleSystem::Render(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj,
 
     if (m_gpu.empty() && m_gpuBeams.empty()) return;
 
+    // フレーム多重化: 前フレームが in-flight で読んでいる区画を上書きしないよう巡回
+    // （単一区画だとWaitIdle無しの多重フレームでGPU/CPUが競合しチラつく）
+    m_frameIdx = (m_frameIdx + 1) % kFrames;
+
     cmd->SetGraphicsRootSignature(m_rootSig.Get());
     if (m_hasDepth) cmd->SetGraphicsRootDescriptorTable(1, m_depthSrv);
     cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -529,11 +533,17 @@ void ParticleSystem::Render(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj,
     // ===== パーティクル =====
     if (!m_gpu.empty())
     {
+        const UINT regionBytes  = kMaxParticles * sizeof(GpuParticle);
+        const UINT regionOffset = m_frameIdx * regionBytes;
+
         void* mapped = nullptr;
         D3D12_RANGE readRange = {0, 0};
         ThrowIfFailed(m_instanceBuffer->Map(0, &readRange, &mapped));
-        memcpy(mapped, m_gpu.data(), m_gpu.size() * sizeof(GpuParticle));
+        memcpy(static_cast<u8*>(mapped) + regionOffset, m_gpu.data(), m_gpu.size() * sizeof(GpuParticle));
         m_instanceBuffer->Unmap(0, nullptr);
+
+        m_vbView.BufferLocation = m_instanceBuffer->GetGPUVirtualAddress() + regionOffset;
+        m_vbView.SizeInBytes    = regionBytes;
 
         struct CamCB
         {
@@ -567,11 +577,17 @@ void ParticleSystem::Render(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj,
     // ===== ビーム =====
     if (!m_gpuBeams.empty())
     {
+        const UINT regionBytes  = kMaxBeams * sizeof(GpuBeam);
+        const UINT regionOffset = m_frameIdx * regionBytes;
+
         void* mapped = nullptr;
         D3D12_RANGE readRange = {0, 0};
         ThrowIfFailed(m_beamBuffer->Map(0, &readRange, &mapped));
-        memcpy(mapped, m_gpuBeams.data(), m_gpuBeams.size() * sizeof(GpuBeam));
+        memcpy(static_cast<u8*>(mapped) + regionOffset, m_gpuBeams.data(), m_gpuBeams.size() * sizeof(GpuBeam));
         m_beamBuffer->Unmap(0, nullptr);
+
+        m_beamVbView.BufferLocation = m_beamBuffer->GetGPUVirtualAddress() + regionOffset;
+        m_beamVbView.SizeInBytes    = regionBytes;
 
         struct BeamCB
         {

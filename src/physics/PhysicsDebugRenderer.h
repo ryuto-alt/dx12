@@ -59,6 +59,8 @@ public:
 
 private:
     static constexpr u32 kMaxVertices = 131072; // 65536 lines * 2 vertices
+    // in-flight 多重度（SwapChain::kFrameCount と一致）。動的VBを区画リングで書き分ける
+    static constexpr u32 kFrames      = 3;
 
     std::vector<DebugLineVertex> m_vertices;
 
@@ -68,6 +70,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature>  m_rootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState>  m_pso;
 
+    u32  m_frameIdx    = 0;   // 動的VBの書き込み区画（Render毎に巡回）
     bool m_enabled     = false;
     bool m_initialized = false;
 };

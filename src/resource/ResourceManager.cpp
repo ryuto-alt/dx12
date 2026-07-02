@@ -142,6 +142,7 @@ Texture* ResourceManager::GetOrLoadTexture(
     // キャッシュ登録
     Texture* rawPtr = texture.get();
     m_textureCache[filePath] = std::move(texture);
+    m_pendingUploads.push_back(rawPtr);   // フレーム末尾にステージングを遅延解放
 
     Logger::Info("Texture cached (srvIndex={})", rawPtr->GetSrvIndex());
 
@@ -197,7 +198,16 @@ Texture* ResourceManager::GetOrLoadEmbeddedTexture(
     texture->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(srvIdx));
     auto* rawPtr = texture.get();
     m_textureCache[wkey] = std::move(texture);
+    m_pendingUploads.push_back(rawPtr);   // フレーム末尾にステージングを遅延解放
     return rawPtr;
+}
+
+void ResourceManager::DeferPendingUploads()
+{
+    // Texture::FinishUpload は DeferredRelease 有効時、フェンス連動の遅延解放になる
+    for (Texture* t : m_pendingUploads)
+        t->FinishUpload();
+    m_pendingUploads.clear();
 }
 
 void ResourceManager::FinishUploads()

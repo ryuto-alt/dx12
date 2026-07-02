@@ -172,6 +172,9 @@ private:
 
     static constexpr u32 kMaxParticles = 8000;
     static constexpr u32 kMaxBeams     = 512;
+    // in-flight 多重度（SwapChain::kFrameCount と一致）。動的バッファをこの数の区画に
+    // 分けてフレームごとに書き分ける（前フレームがGPUで読行中の区画を上書きしない）
+    static constexpr u32 kFrames       = 3;
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSig;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoAdd;    // 加算
@@ -187,6 +190,7 @@ private:
     std::vector<Beam>        m_beamPool;
     std::vector<GpuBeam>     m_gpuBeams;
     u32   m_additiveCount = 0;          // m_gpu 内の加算粒子数（先頭から）
+    u32   m_frameIdx   = 0;             // 動的バッファの書き込み区画（Render毎に巡回）
     u32   m_cursor     = 0;             // 空きスロット探索の起点
     u32   m_beamCursor = 0;
     int   m_aliveCount = 0;

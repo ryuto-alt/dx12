@@ -1,4 +1,5 @@
 #include "graphics/GpuResource.h"
+#include "graphics/DeferredRelease.h"
 #include "core/Assert.h"
 #include "core/Logger.h"
 
@@ -34,10 +35,12 @@ void GpuResource::CreateResource(
 
 void GpuResource::ReleaseResource()
 {
-    m_resource.Reset();
-    if (m_allocation)
+    // フレーム多重化中は前フレームのGPUがまだこのリソースを読んでいる可能性がある。
+    // DeferredRelease 経由で解放する（有効時はフェンス完了まで遅延、無効時は即時。
+    // メッシュ再生成/シーンClear/RT再作成など、全GpuResource派生の解放が対象）。
+    if (m_resource || m_allocation)
     {
-        m_allocation->Release();
+        DeferredRelease::Defer(std::move(m_resource), m_allocation);
         m_allocation = nullptr;
     }
 }

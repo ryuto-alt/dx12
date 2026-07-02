@@ -28,6 +28,10 @@ public:
     void WaitForValue(u64 value);
     void WaitIdle();
 
+    // 遅延解放(DeferredRelease)用: 最後に Signal した値 / GPU が完了した値
+    u64  GetLastSignaledValue() const { return m_fenceValue; }
+    u64  GetCompletedValue()    const { return m_fence->GetCompletedValue(); }
+
     ID3D12CommandQueue*    GetQueue() const { return m_queue.Get(); }
     D3D12_COMMAND_LIST_TYPE GetType()  const { return m_type; }
 

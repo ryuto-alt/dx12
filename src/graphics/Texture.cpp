@@ -1,4 +1,5 @@
 #include "graphics/Texture.h"
+#include "graphics/DeferredRelease.h"
 #include "graphics/GraphicsDevice.h"
 #include "core/Assert.h"
 #include "core/Logger.h"
@@ -168,7 +169,11 @@ void Texture::CreateCubeSRV(GraphicsDevice& device, D3D12_CPU_DESCRIPTOR_HANDLE 
 
 void Texture::FinishUpload()
 {
-    m_uploadBuffer.Reset();
+    // アップロードステージングはコピーコマンドが GPU で完了するまで生かす必要がある。
+    // DeferredRelease 経由で解放する（有効時はフェンス連動、無効時は即時 =
+    // 呼び出し側が WaitIdle 済み前提）。
+    if (m_uploadBuffer)
+        DeferredRelease::Defer(std::move(m_uploadBuffer), nullptr);
 }
 
 } // namespace dx12e

@@ -64,6 +64,10 @@ public:
 
     void FinishUploads();
 
+    // 毎フレーム末尾用: 今フレームで新規ロードされたテクスチャのステージングだけを
+    // 遅延解放キューへ回す。FinishUploads(全キャッシュ走査)と違い O(新規ロード数)。
+    void DeferPendingUploads();
+
 private:
     GraphicsDevice*  m_device  = nullptr;
     DescriptorHeap*  m_srvHeap = nullptr;
@@ -72,6 +76,10 @@ private:
     std::unique_ptr<Texture> m_defaultNormal;         // (128,128,255,255) = flat normal
     std::unique_ptr<Texture> m_defaultMetalRoughness; // (0,128,0,255) = non-metal, mid-rough
     std::unordered_map<std::string, std::unique_ptr<CachedModel>> m_modelCache;
+
+    // 今フレームでロードされ、アップロードステージングが未回収のテクスチャ
+    // (キャッシュは解放されないので生ポインタで安全)
+    std::vector<Texture*> m_pendingUploads;
 };
 
 } // namespace dx12e

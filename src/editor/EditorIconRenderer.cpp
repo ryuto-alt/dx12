@@ -94,9 +94,9 @@ void EditorIconRenderer::Initialize(GraphicsDevice& device,
         ThrowIfFailed(dev->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_pso)));
     }
 
-    // --- Dynamic Vertex Buffer (Upload Heap) ---
+    // --- Dynamic Vertex Buffer (Upload Heap, kFrames 区画リング) ---
     {
-        const UINT bufferSize = kMaxVertices * sizeof(IconLineVertex);
+        const UINT bufferSize = kFrames * kMaxVertices * sizeof(IconLineVertex);
 
         D3D12_HEAP_PROPERTIES heapProps{};
         heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
@@ -175,9 +175,9 @@ void EditorIconRenderer::Initialize(GraphicsDevice& device,
         ThrowIfFailed(dev->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_billboardPSO)));
     }
 
-    // --- Billboard Dynamic Vertex Buffer ---
+    // --- Billboard Dynamic Vertex Buffer (kFrames 区画リング) ---
     {
-        const UINT bufferSize = kMaxVertices * sizeof(IconBillboardVertex);
+        const UINT bufferSize = kFrames * kMaxVertices * sizeof(IconBillboardVertex);
         D3D12_HEAP_PROPERTIES heapProps{};
         heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
         D3D12_RESOURCE_DESC resDesc{};
@@ -631,17 +631,27 @@ void EditorIconRenderer::Render(ID3D12GraphicsCommandList* cmdList,
 {
     if (!m_initialized) return;
 
+    // フレーム多重化: 前フレームが in-flight で読んでいる区画を上書きしないよう巡回
+    m_frameIdx = (m_frameIdx + 1) % kFrames;
+
     // --- 3D 選択補助線（フラスタム/範囲球/矢印）---
     if (!m_vertices.empty())
     {
         u32 vertexCount = static_cast<u32>(m_vertices.size());
         if (vertexCount > kMaxVertices) vertexCount = kMaxVertices;
 
+        const UINT regionBytes  = kMaxVertices * sizeof(IconLineVertex);
+        const UINT regionOffset = m_frameIdx * regionBytes;
+
         void* mapped = nullptr;
         D3D12_RANGE readRange = { 0, 0 };
         ThrowIfFailed(m_vertexBuffer->Map(0, &readRange, &mapped));
-        memcpy(mapped, m_vertices.data(), vertexCount * sizeof(IconLineVertex));
+        memcpy(static_cast<u8*>(mapped) + regionOffset, m_vertices.data(),
+               vertexCount * sizeof(IconLineVertex));
         m_vertexBuffer->Unmap(0, nullptr);
+
+        m_vbView.BufferLocation = m_vertexBuffer->GetGPUVirtualAddress() + regionOffset;
+        m_vbView.SizeInBytes    = regionBytes;
 
         cmdList->SetPipelineState(m_pso.Get());
         cmdList->SetGraphicsRootSignature(m_rootSignature.Get());
@@ -657,11 +667,18 @@ void EditorIconRenderer::Render(ID3D12GraphicsCommandList* cmdList,
         u32 vertexCount = static_cast<u32>(m_billboardVerts.size());
         if (vertexCount > kMaxVertices) vertexCount = kMaxVertices;
 
+        const UINT regionBytes  = kMaxVertices * sizeof(IconBillboardVertex);
+        const UINT regionOffset = m_frameIdx * regionBytes;
+
         void* mapped = nullptr;
         D3D12_RANGE readRange = { 0, 0 };
         ThrowIfFailed(m_billboardVB->Map(0, &readRange, &mapped));
-        memcpy(mapped, m_billboardVerts.data(), vertexCount * sizeof(IconBillboardVertex));
+        memcpy(static_cast<u8*>(mapped) + regionOffset, m_billboardVerts.data(),
+               vertexCount * sizeof(IconBillboardVertex));
         m_billboardVB->Unmap(0, nullptr);
+
+        m_billboardVBView.BufferLocation = m_billboardVB->GetGPUVirtualAddress() + regionOffset;
+        m_billboardVBView.SizeInBytes    = regionBytes;
 
         struct IconCB {
             XMFLOAT4X4 viewProj;

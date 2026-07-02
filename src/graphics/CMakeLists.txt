@@ -5,6 +5,7 @@ add_library(Graphics STATIC
     DescriptorHeap.cpp
     FrameResources.cpp
     GpuResource.cpp
+    DeferredRelease.cpp
     Buffer.cpp
     RootSignature.cpp
     PipelineState.cpp

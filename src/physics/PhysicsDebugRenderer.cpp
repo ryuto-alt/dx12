@@ -97,9 +97,10 @@ void PhysicsDebugRenderer::Initialize(GraphicsDevice& device,
         ThrowIfFailed(dev->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_pso)));
     }
 
-    // --- Dynamic Vertex Buffer (Upload Heap) ---
+    // --- Dynamic Vertex Buffer (Upload Heap, kFrames 区画リング) ---
+    // 前フレームが in-flight で読んでいる区画を上書きしないようフレームごとに書き分ける
     {
-        const UINT bufferSize = kMaxVertices * sizeof(DebugLineVertex);
+        const UINT bufferSize = kFrames * kMaxVertices * sizeof(DebugLineVertex);
 
         D3D12_HEAP_PROPERTIES heapProps{};
         heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
@@ -354,12 +355,20 @@ void PhysicsDebugRenderer::Render(ID3D12GraphicsCommandList* cmdList,
     if (vertexCount > kMaxVertices)
         vertexCount = kMaxVertices;
 
-    // Upload vertices
+    // Upload vertices（フレーム多重化: 区画リングへ書き込み）
+    m_frameIdx = (m_frameIdx + 1) % kFrames;
+    const UINT regionBytes  = kMaxVertices * sizeof(DebugLineVertex);
+    const UINT regionOffset = m_frameIdx * regionBytes;
+
     void* mapped = nullptr;
     D3D12_RANGE readRange = { 0, 0 };
     ThrowIfFailed(m_vertexBuffer->Map(0, &readRange, &mapped));
-    memcpy(mapped, m_vertices.data(), vertexCount * sizeof(DebugLineVertex));
+    memcpy(static_cast<u8*>(mapped) + regionOffset, m_vertices.data(),
+           vertexCount * sizeof(DebugLineVertex));
     m_vertexBuffer->Unmap(0, nullptr);
+
+    m_vbView.BufferLocation = m_vertexBuffer->GetGPUVirtualAddress() + regionOffset;
+    m_vbView.SizeInBytes    = regionBytes;
 
     // Set pipeline
     cmdList->SetPipelineState(m_pso.Get());

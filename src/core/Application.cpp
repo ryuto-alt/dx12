@@ -7,6 +7,7 @@
 // Graphics module headers
 #include "graphics/GraphicsDevice.h"
 #include "graphics/CommandQueue.h"
+#include "graphics/DeferredRelease.h"
 #include "graphics/SwapChain.h"
 #include "graphics/FrameResources.h"
 #include "graphics/DescriptorHeap.h"
@@ -970,6 +971,10 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         if (m_envCubeTex) m_envCubeTex->FinishUpload();
         m_resourceManager->FinishUploads();
     }
+
+    // ここから先(メインループ)は WaitIdle 無しでフレームを多重化するため、
+    // GPUリソースの解放をフェンス連動の遅延解放に切り替える
+    DeferredRelease::Enable();
 
     Logger::Info("Application initialized successfully");
 
@@ -2432,6 +2437,11 @@ void Application::Shutdown()
     {
         m_commandQueue->WaitIdle();
     }
+
+    // 遅延解放を止めて溜まっている分を全解放（GPU完全停止済みなので安全）。
+    // 以後の reset() 群は即時解放に戻る（デバイス解放前に確実に消えるように）
+    DeferredRelease::Disable();
+    DeferredRelease::FlushAll();
 
     // ImGui 解放
     if (m_imguiManager)
@@ -6822,11 +6832,15 @@ void Application::Render()
     m_swapChain->Present(m_useVsync);
     m_frameResources->EndFrame(*m_commandQueue);
 
-    // GPU がこのフレームのコピーを完了してからアップロードバッファを解放する
-    // (モデル/テクスチャスポーンで積んだ CopyResource が in-flight のうちに
-    //  Reset すると OBJECT_DELETED_WHILE_STILL_IN_USE で落ちるため)
-    m_commandQueue->WaitIdle();
-    m_resourceManager->FinishUploads();
+    // フェンス連動の遅延解放（旧: 毎フレーム WaitIdle = GPU全停止でトリプルバッファが
+    // 実質無効化されていた。CPU/GPU を重ねるため全停止をやめ、
+    // 「使い終わったフレームの分だけ」解放する方式に変更）:
+    //   1. 今フレームでロードされたテクスチャのアップロードステージングを解放キューへ
+    //   2. キュー内の未確定分に今フレームの Signal 値を刻む
+    //   3. GPU が完了したフェンス値以下の分を実際に解放
+    m_resourceManager->DeferPendingUploads();
+    DeferredRelease::Stamp(m_commandQueue->GetLastSignaledValue());
+    DeferredRelease::Collect(m_commandQueue->GetCompletedValue());
 }
 
 } // namespace dx12e
