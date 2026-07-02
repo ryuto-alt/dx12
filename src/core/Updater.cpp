@@ -34,6 +34,15 @@ std::wstring Widen(const std::string& s)
     return w;
 }
 
+// ASCII 前提の wstring → string（タグ名や URL 等、非ASCII を含まないもの専用）。
+std::string NarrowAscii(const std::wstring& s)
+{
+    std::string out;
+    out.reserve(s.size());
+    for (wchar_t c : s) out.push_back(static_cast<char>(c));
+    return out;
+}
+
 // "key":"value" の value を取り出す簡易抽出（値にエスケープ無し前提＝tag/URL では十分）。
 std::string JsonString(const std::string& json, const std::string& key, size_t from = 0)
 {
@@ -63,6 +72,115 @@ std::string FirstZipAssetUrl(const std::string& json)
         if (url.size() >= 4 && url.compare(url.size() - 4, 4, ".zip") == 0)
             return url;
     }
+}
+
+// api.github.com は未認証だと 60 req/hour/IP の共有レート制限があり、同一ネットワーク上の
+// 他のツール（gh CLI・git・ブラウザ等）だけですぐ枯渇する。枯渇すると 403 が返り、このアプリの
+// 更新チェックは（オフライン時と区別できず）黙って諦めていた＝「自動更新が起動しなくなる」の主因。
+// github.com への通常の Web リクエストはこのレート制限を受けないため、まずこちらを優先して使う。
+
+// releases/latest の 302 リダイレクト先パス（.../releases/tag/vX.Y.Z）からタグ名だけを読む。
+// api.github.com を一切使わない。失敗時は空文字列を返す。
+std::string FetchLatestTagViaRedirect(const std::string& owner, const std::string& repo)
+{
+    std::wstring path = L"/" + Widen(owner) + L"/" + Widen(repo) + L"/releases/latest";
+
+    HINTERNET hSession = WinHttpOpen(L"DX12Engine-Updater/1.0",
+        WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+        WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!hSession) return {};
+    WinHttpSetTimeouts(hSession, 4000, 4000, 15000, 15000);
+
+    std::string tag;
+    HINTERNET hConnect = WinHttpConnect(hSession, L"github.com", INTERNET_DEFAULT_HTTPS_PORT, 0);
+    if (hConnect)
+    {
+        HINTERNET hReq = WinHttpOpenRequest(hConnect, L"GET", path.c_str(), nullptr,
+            WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+        if (hReq)
+        {
+            // 自動リダイレクト追従を止めて、Location ヘッダーからタグだけを読む（本文は取得しない）。
+            DWORD noRedirect = WINHTTP_DISABLE_REDIRECTS;
+            WinHttpSetOption(hReq, WINHTTP_OPTION_DISABLE_FEATURE, &noRedirect, sizeof(noRedirect));
+
+            BOOL ok = WinHttpSendRequest(hReq, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
+            if (ok) ok = WinHttpReceiveResponse(hReq, nullptr);
+
+            if (ok)
+            {
+                DWORD status = 0, sz = sizeof(status);
+                WinHttpQueryHeaders(hReq, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                    WINHTTP_HEADER_NAME_BY_INDEX, &status, &sz, WINHTTP_NO_HEADER_INDEX);
+
+                if (status >= 300 && status < 400)
+                {
+                    wchar_t loc[2048] = {};
+                    DWORD locSz = sizeof(loc);
+                    if (WinHttpQueryHeaders(hReq, WINHTTP_QUERY_LOCATION,
+                            WINHTTP_HEADER_NAME_BY_INDEX, loc, &locSz, WINHTTP_NO_HEADER_INDEX))
+                    {
+                        std::wstring locW(loc);
+                        size_t slash = locW.find_last_of(L'/');
+                        if (slash != std::wstring::npos && slash + 1 < locW.size())
+                        {
+                            std::wstring tagW = locW.substr(slash + 1);
+                            tag = NarrowAscii(tagW);  // タグは ASCII 前提（vX.Y.Z）
+                        }
+                    }
+                }
+            }
+            WinHttpCloseHandle(hReq);
+        }
+        WinHttpCloseHandle(hConnect);
+    }
+    WinHttpCloseHandle(hSession);
+    return tag;
+}
+
+// URL が実在するか（最終的に 200 か）を HEAD で確認する。本体は取得しない。
+// リダイレクト追従はデフォルト（有効）のまま＝ github.com → 署名付き Blob URL まで辿る。
+bool UrlExists(const std::wstring& url)
+{
+    URL_COMPONENTS uc{};
+    uc.dwStructSize = sizeof(uc);
+    wchar_t host[256] = {};
+    wchar_t path[4096] = {};
+    uc.lpszHostName = host;  uc.dwHostNameLength = _countof(host);
+    uc.lpszUrlPath  = path;  uc.dwUrlPathLength  = _countof(path);
+    if (!WinHttpCrackUrl(url.c_str(), 0, 0, &uc)) return false;
+
+    HINTERNET hSession = WinHttpOpen(L"DX12Engine-Updater/1.0",
+        WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+        WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!hSession) return false;
+    WinHttpSetTimeouts(hSession, 4000, 4000, 15000, 15000);
+
+    bool exists = false;
+    HINTERNET hConnect = WinHttpConnect(hSession, host, uc.nPort, 0);
+    if (hConnect)
+    {
+        DWORD flags = (uc.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0;
+        HINTERNET hReq = WinHttpOpenRequest(hConnect, L"HEAD", path, nullptr,
+            WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+        if (hReq)
+        {
+            BOOL ok = WinHttpSendRequest(hReq, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
+            if (ok) ok = WinHttpReceiveResponse(hReq, nullptr);
+            if (ok)
+            {
+                DWORD status = 0, sz = sizeof(status);
+                if (WinHttpQueryHeaders(hReq, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                        WINHTTP_HEADER_NAME_BY_INDEX, &status, &sz, WINHTTP_NO_HEADER_INDEX))
+                    exists = (status == 200);
+            }
+            WinHttpCloseHandle(hReq);
+        }
+        WinHttpCloseHandle(hConnect);
+    }
+    WinHttpCloseHandle(hSession);
+    return exists;
 }
 
 // "vX.Y.Z" / "X.Y.Z" → 数値 3 要素（足りない分は 0）。
@@ -474,21 +592,30 @@ bool Updater::RunStartupCheck()
     if (!fs::exists(installDir / "assets", ec))
         return false;  // 開発ビルド等。何もしない。
 
-    // 1) 最新リリース情報を取得
-    std::wstring apiUrl = L"https://api.github.com/repos/" +
-        Widen(kUpdateRepoOwner) + L"/" + Widen(kUpdateRepoName) + L"/releases/latest";
-    std::vector<char> body;
-    if (!HttpsFetch(apiUrl, &body, nullptr) || body.empty())
-    {
-        Logger::Info("Updater: no release info (offline / none / private). skip.");
-        return false;
-    }
-    std::string json(body.begin(), body.end());
-    std::string tag = JsonString(json, "tag_name");
+    // 1) 最新タグを取得。api.github.com はレート制限の共有枯渇で無言で使えなくなることがあるため、
+    //    まず github.com の releases/latest リダイレクトで確認する（レート制限を受けない）。
+    //    それが失敗した場合のみ REST API にフォールバックする。
+    std::string tag = FetchLatestTagViaRedirect(kUpdateRepoOwner, kUpdateRepoName);
+    std::string latestJson;  // フォールバック時のみ埋まる（後段のアセット探索でも再利用する）
+
     if (tag.empty())
     {
-        Logger::Info("Updater: latest release has no tag_name. skip.");
-        return false;
+        Logger::Info("Updater: redirect check failed. falling back to REST API.");
+        std::wstring apiUrl = L"https://api.github.com/repos/" +
+            Widen(kUpdateRepoOwner) + L"/" + Widen(kUpdateRepoName) + L"/releases/latest";
+        std::vector<char> body;
+        if (!HttpsFetch(apiUrl, &body, nullptr) || body.empty())
+        {
+            Logger::Info("Updater: no release info (offline / none / private / rate-limited). skip.");
+            return false;
+        }
+        latestJson.assign(body.begin(), body.end());
+        tag = JsonString(latestJson, "tag_name");
+        if (tag.empty())
+        {
+            Logger::Info("Updater: latest release has no tag_name. skip.");
+            return false;
+        }
     }
     if (!IsNewer(tag, kEngineVersion))
     {
@@ -508,7 +635,29 @@ bool Updater::RunStartupCheck()
         return false;
     }
 
-    std::string assetUrl = FirstZipAssetUrl(json);
+    // ダウンロード URL を解決。まず命名規約（installer/build.ps1 が必ずこの名前で zip を作る）
+    //    に沿った直リンクを試す。github.com の署名付きダウンロードなので api.github.com 不要。
+    //    命名が規約から外れた古い/手動リリースでは 404 になるので、その時だけ REST API で
+    //    アセット一覧を引く（latestJson が未取得ならここで初めて取得する）。
+    std::wstring directUrl = L"https://github.com/" + Widen(kUpdateRepoOwner) + L"/" +
+        Widen(kUpdateRepoName) + L"/releases/download/" + Widen(tag) + L"/dx12-engine-" + Widen(tag) + L".zip";
+    std::string assetUrl;
+    if (UrlExists(directUrl))
+    {
+        assetUrl = NarrowAscii(directUrl);  // タグ・パスは ASCII 前提
+    }
+    else
+    {
+        if (latestJson.empty())
+        {
+            std::wstring tagApiUrl = L"https://api.github.com/repos/" +
+                Widen(kUpdateRepoOwner) + L"/" + Widen(kUpdateRepoName) + L"/releases/tags/" + Widen(tag);
+            std::vector<char> body;
+            if (HttpsFetch(tagApiUrl, &body, nullptr) && !body.empty())
+                latestJson.assign(body.begin(), body.end());
+        }
+        assetUrl = FirstZipAssetUrl(latestJson);
+    }
     if (assetUrl.empty())
     {
         Logger::Warn("Updater: リリース {} に .zip がないためスキップします。", tag);

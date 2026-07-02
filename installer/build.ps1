@@ -95,3 +95,6 @@ Write-Host "=== 完了 ===" -ForegroundColor Green
 Write-Host "  zip: $zip"
 Write-Host "  リリース公開: gh release create v$version -R ryuto-alt/dx12 --target <branch> `"$zip`""
 Write-Host "  ※ MCP を繋ぐには配布先に Node v24+ が必要（index.ts を型ストリップ実行するため）。"
+Write-Host "  ※ zip はこのファイル名のままアップロードすること（#別名 で rename しない）。"
+Write-Host "     Updater.cpp が api.github.com 不要の直リンク "
+Write-Host "     (releases/download/vX.Y.Z/dx12-engine-vX.Y.Z.zip) をこの名前で決め打ちしている。"
