@@ -1,6 +1,8 @@
 #include "core/Application.h"
 #include "core/PathResolver.h"
 #include "core/Updater.h"
+#include "core/SplashScreen.h"
+#include "core/Version.h"
 #include "core/vfs/Vfs.h"
 
 #include <Windows.h>
@@ -286,8 +288,23 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         // GameRuntime（配布ゲーム）はエンジンの自動更新を行わない（エンジンのリリースで
         // ゲームの exe が置き換わってしまうのを防ぐ）。
 #ifndef DX12_GAME_RUNTIME
+        // エディタ起動: 初期化が終わるまで枠なしスプラッシュ（Unity 風）を出す。
+        // 専用スレッドで動くので、以降の同期処理（更新チェックの WinHTTP 数秒・
+        // D3D12/シェーダ/アセット初期化）中も固まらずアニメし続ける。
+        if (!gameMode && !buildMode)
+        {
+            dx12e::SplashScreen::Show(
+                "DX12 Engine",
+                std::string("v") + dx12e::kEngineVersion,
+                dx12e::PathResolver::AssetsDir() + "editor/icons/logo.png");
+            dx12e::SplashScreen::SetStatus("アップデートを確認中...");
+        }
+
         if (!buildMode && !justUpdated && dx12e::Updater::RunStartupCheck())
+        {
+            dx12e::SplashScreen::Close();   // 更新適用へ（更新バッチが上書き→再起動する）
             return EXIT_SUCCESS;
+        }
 #endif
 
         dx12e::Application app;
@@ -310,6 +327,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
     }
     catch (const std::exception& e)
     {
+        dx12e::SplashScreen::Close();   // 初期化中の例外でスプラッシュが残らないように
         // GUI アプリはコンソールが無いので、致命的エラーをファイルにも残す
         {
             std::ofstream f("dx12_crash.log", std::ios::trunc);

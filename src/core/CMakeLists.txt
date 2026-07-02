@@ -11,6 +11,7 @@ endif()
 add_library(Core STATIC
     Application.cpp
     Window.cpp
+    SplashScreen.cpp
     Logger.cpp
     GameClock.cpp
     PathResolver.cpp
@@ -33,7 +34,7 @@ find_package(spdlog CONFIG REQUIRED)
 
 target_link_libraries(Core
     PUBLIC spdlog::spdlog
-    PRIVATE imgui::imgui bcrypt.lib Cabinet.lib ws2_32.lib
+    PRIVATE imgui::imgui bcrypt.lib Cabinet.lib ws2_32.lib gdiplus.lib  # gdiplus はスプラッシュのPNGロゴ用
 )
 
 target_compile_options(Core PRIVATE ${DX12_COMPILE_OPTIONS})

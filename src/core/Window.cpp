@@ -18,7 +18,8 @@ Window::~Window()
 }
 
 void Window::Initialize(HINSTANCE hInstance, int /*nCmdShow*/,
-                         u32 width, u32 height, const wchar_t* title)
+                         u32 width, u32 height, const wchar_t* title,
+                         bool deferShow)
 {
     m_width = width;
     m_height = height;
@@ -75,10 +76,35 @@ void Window::Initialize(HINSTANCE hInstance, int /*nCmdShow*/,
         throw std::runtime_error("Failed to create window");
     }
 
+    // deferShow=true なら表示しない（重い初期化中に白い未応答ウィンドウを見せないため。
+    // 初回フレームの先行描画が済んでから Show() で表示する）
+    if (deferShow)
+    {
+        // 隠れたまま作業領域サイズへ広げておく。これで初期化〜先行描画が最初から
+        // ほぼ最終解像度で行われ、表示時（最大化）のリサイズ差分が最小になる。
+        // WM_SIZE は同期的に届き m_width/m_height を更新するので、この後に作られる
+        // スワップチェイン/RT は最初からこのサイズになる。
+        RECT wa{};
+        if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0))
+            SetWindowPos(m_hwnd, nullptr, wa.left, wa.top,
+                         wa.right - wa.left, wa.bottom - wa.top,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+        m_resized = false;   // 初期サイズ確定はリサイズ扱いにしない（初回フレームの全RT再生成を防ぐ）
+    }
+    else
+    {
+        Show();
+    }
+
+    Logger::Info("Window created: {}x{} (deferShow={})", m_width, m_height, deferShow);
+}
+
+void Window::Show()
+{
+    if (!m_hwnd || IsWindowVisible(m_hwnd)) return;
     ShowWindow(m_hwnd, SW_SHOWMAXIMIZED);
     UpdateWindow(m_hwnd);
-
-    Logger::Info("Window created: {}x{}", m_width, m_height);
+    SetForegroundWindow(m_hwnd);
 }
 
 void Window::SetTitle(const std::wstring& title)

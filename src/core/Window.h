@@ -19,9 +19,15 @@ public:
     Window(const Window&) = delete;
     Window& operator=(const Window&) = delete;
 
+    // deferShow=true でウィンドウを作るだけにして表示しない（初期化完了後に Show() を呼ぶ）。
+    // スプラッシュ表示中に白い未応答ウィンドウが出るのを防ぐ。
     void Initialize(HINSTANCE hInstance, int nCmdShow,
                     u32 width = 1280, u32 height = 720,
-                    const wchar_t* title = L"DX12 Engine");
+                    const wchar_t* title = L"DX12 Engine",
+                    bool deferShow = false);
+
+    // deferShow=true で作ったウィンドウを表示する（多重呼び出し安全）
+    void Show();
 
     bool ProcessMessages();
     void ToggleFullscreen();

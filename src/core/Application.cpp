@@ -10,6 +10,7 @@
 #include "graphics/DeferredRelease.h"
 #include "graphics/SwapChain.h"
 #include "graphics/FrameResources.h"
+#include "core/SplashScreen.h"
 #include "graphics/DescriptorHeap.h"
 #include "graphics/GpuResource.h"
 #include "graphics/Buffer.h"
@@ -224,9 +225,15 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             }
         }
     }
-    m_window->Initialize(hInstance, nCmdShow, winW, winH, windowTitle.c_str());
+    // エディタ起動時はメインウィンドウの表示を初期化完了まで遅延する
+    // （スプラッシュが進行状況を見せるので、白い未応答ウィンドウを出さない）。
+    // ゲーム/ヘッドレスビルドはスプラッシュを出さないので従来どおり即表示。
+    const bool deferMainWindow = !gameMode && !buildMode;
+    SplashScreen::SetStatus("ウィンドウを作成中...");
+    m_window->Initialize(hInstance, nCmdShow, winW, winH, windowTitle.c_str(), deferMainWindow);
 
     // グラフィックスデバイス初期化
+    SplashScreen::SetStatus("グラフィックスデバイスを初期化中...");
     m_graphicsDevice = std::make_unique<GraphicsDevice>();
     m_graphicsDevice->Initialize(*m_window);
 
@@ -255,10 +262,12 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     m_window->SetInputSystem(m_inputSystem.get());
 
     // Audio System
+    SplashScreen::SetStatus("オーディオを初期化中...");
     m_audioSystem = std::make_unique<AudioSystem>();
     m_audioSystem->Initialize(PathResolver::AssetsDir());
 
     // Physics System
+    SplashScreen::SetStatus("物理エンジンを初期化中...");
     m_physicsSystem = std::make_unique<PhysicsSystem>();
     m_physicsSystem->Initialize();
     // 接触イベント（engine.contact.enter/exit）を C++ EventBus へ配信させる。
@@ -378,6 +387,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
 
         // ResourceManager 初期化（デフォルト白テクスチャ作成にcmdListが必要）
+        SplashScreen::SetStatus("アセットを読み込み中...");
         m_resourceManager = std::make_unique<ResourceManager>();
         m_resourceManager->Initialize(m_graphicsDevice.get(), m_srvHeap.get(), cmdList);
 
@@ -410,6 +420,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                             m_srvHeap.get(), cmdList);
 
         // ScriptEngine 初期化 + ゲームスクリプト実行
+        SplashScreen::SetStatus("スクリプトエンジンを初期化中...");
         m_scriptEngine = std::make_unique<ScriptEngine>();
         m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
                                    m_camera.get(), m_audioSystem.get(),
@@ -806,6 +817,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     m_commandList = std::make_unique<CommandList>();
 
     // ImGui 初期化
+    SplashScreen::SetStatus("エディタUIを初期化中...");
     m_imguiManager = std::make_unique<ImGuiManager>();
     m_imguiManager->Initialize(
         m_window->GetHwnd(), *m_graphicsDevice, m_commandQueue->GetQueue(),
@@ -835,6 +847,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_swapChain->GetFormat(), DXGI_FORMAT_D32_FLOAT, PathResolver::ShaderDirW());
 
     // オフスクリーン描画用 RT + ポストプロセス（WP3）
+    SplashScreen::SetStatus("レンダラーを初期化中...");
     {
         // 容量 32: sceneRT(1)+cameraPreview(2)+SSAO(2)+ブルームチェーン(6) = 11 使用。
         // 今後のポスト追加パス（ゴッドレイ/DoF 等）用に余裕を持たせる（RTV は非シェーダ可視で安価）。
@@ -1057,6 +1070,14 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     // ここから先(メインループ)は WaitIdle 無しでフレームを多重化するため、
     // GPUリソースの解放をフェンス連動の遅延解放に切り替える
     DeferredRelease::Enable();
+
+    // メインウィンドウはここではまだ表示しない。Run() の先頭数フレームを隠れたまま描画し、
+    // ランチャーの初回描画・ImGuiフォント・ドライバのPSOウォームアップを済ませてから表示する
+    // （「白いウィンドウが出てから絵が出るまで」のフリーズ見えを根絶。表示タイミングが決定的になる）。
+    // deferMainWindow でない経路（ゲーム/ヘッドレスビルド）はウィンドウが既に表示済み。
+    m_deferredFirstShow = deferMainWindow;
+    if (deferMainWindow)
+        SplashScreen::SetStatus("画面を準備しています...");
 
     Logger::Info("Application initialized successfully");
 
@@ -3264,6 +3285,16 @@ void Application::Run()
                 m_inputSystem->SetMouseCapture(false);
                 Logger::Error("Forced return to Editor mode");
             }
+        }
+
+        // 遅延初回表示: 隠れたまま数フレーム描画して絵（ランチャー）が確定してから
+        // ウィンドウを出し、スプラッシュを閉じる。表示された瞬間には既に描画済み＝
+        // 「白いまま固まって見える/出るタイミングが不安定」が起きない。
+        if (m_deferredFirstShow && ++m_warmupFrames >= 3)
+        {
+            m_deferredFirstShow = false;
+            m_window->Show();       // 最大化。直後の微小リサイズは描画継続中に処理される
+            SplashScreen::Close();
         }
 
         // screenshot_game_view: このフレームの描画(ゲームカメラ視点)を撮って遅延応答 → 編集カメラ復元。

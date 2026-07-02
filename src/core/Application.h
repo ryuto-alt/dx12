@@ -324,6 +324,10 @@ private:
     std::unique_ptr<RenderTarget>   m_distortRT;      // パーティクル歪みバッファ（RG16F、熱ゆらぎ/衝撃波）
     DirectX::XMFLOAT4X4             m_prevViewProj{};       // 前フレームの viewProj（モーションブラー用）
     bool                            m_prevViewProjValid = false;
+
+    // 遅延初回表示: 隠れたまま数フレーム描画→絵が確定してから Show + スプラッシュ Close
+    bool m_deferredFirstShow = false;
+    int  m_warmupFrames      = 0;
     std::unique_ptr<ParticleSystem> m_particleSystem;  // 加算ビルボードパーティクル（Lua fx API）
     std::unique_ptr<GpuParticleSystem> m_gpuParticles; // GPUパーティクル（compute+indirect、大量粒子用）
 
