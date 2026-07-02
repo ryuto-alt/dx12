@@ -15,6 +15,7 @@
 #include "ecs/Components.h"
 #include "renderer/Mesh.h"
 #include "renderer/ParticleSystem.h"
+#include "renderer/GpuParticleSystem.h"
 #include "input/InputSystem.h"
 #include "renderer/Camera.h"
 #include "audio/AudioSystem.h"
@@ -645,7 +646,31 @@ void ScriptEngine::RegisterBindings()
 
         // onDeath = {…} で粒子の死亡位置に子バースト（サブエミッタ・1段のみ）。
         // 例: fx:burst{count=1, life=1.2, gravity=-9, onDeath={kind="spark", count=24, speed=5}}
+        // gpu = true で GPUパーティクル（compute シム・最大 131072・加算専用）へルーティング。
+        // 例: fx:burst{gpu=true, count=20000, kind="spark", speed=12, gravity=-9}
         auto emitWithChild = [this, buildParams](sol::table t, bool ring) {
+            if (t.get_or("gpu", false) && m_gpuParticleSystem)
+            {
+                auto p = buildParams(t);
+                GpuParticleSystem::EmitRequest r;
+                r.pos    = p.pos;
+                r.count  = static_cast<u32>((std::max)(p.count, 0));
+                r.dir    = p.dir;
+                r.spread = p.spread;
+                r.col0   = { p.color.x * p.intensity, p.color.y * p.intensity, p.color.z * p.intensity };
+                r.speed  = p.speed;
+                const auto& ce = p.hasColorEnd ? p.colorEnd : p.color;
+                r.col1   = { ce.x * p.intensity, ce.y * p.intensity, ce.z * p.intensity };
+                r.speedVar = p.speedVar;
+                r.size0 = p.size;    r.size1 = p.sizeEnd;
+                r.life  = p.life;    r.lifeVar = p.lifeVar;
+                r.gravity = p.gravity; r.drag = p.drag; r.up = p.up;
+                r.turb  = p.turbStrength;
+                r.kind  = p.kind;
+                r.stretch = p.stretch;
+                m_gpuParticleSystem->Emit(r);
+                return;
+            }
             if (!m_particleSystem) return;
             auto p = buildParams(t);
             p.ring = ring;

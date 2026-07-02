@@ -449,7 +449,8 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                 {"intensity", pe.intensity}, {"gravity", pe.gravity},
                 {"drag", pe.drag}, {"up", pe.up}, {"stretch", pe.stretch},
                 {"sizeMid", pe.sizeMid}, {"distort", pe.distort},
-                {"light", pe.light}, {"lightRange", pe.lightRange}
+                {"light", pe.light}, {"lightRange", pe.lightRange},
+                {"gpu", pe.gpu}
             };
         }
 
@@ -861,6 +862,7 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                 pe.distort   = pj.value("distort", 0.0f);
                 pe.light     = pj.value("light", false);
                 pe.lightRange = pj.value("lightRange", 3.0f);
+                pe.gpu       = pj.value("gpu", false);
                 reg.emplace_or_replace<ParticleEmitter>(e, pe);
             }
 

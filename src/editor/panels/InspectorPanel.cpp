@@ -648,7 +648,11 @@ void InspectorPanel::Render(entt::registry& reg,
                 changed |= ImGui::Combo("見た目 Kind", &pe.kind, kinds, IM_ARRAYSIZE(kinds));
                 const char* blends[] = { "加算 Additive", "アルファ Alpha" };
                 changed |= ImGui::Combo("合成 Blend", &pe.blend, blends, IM_ARRAYSIZE(blends));
-                changed |= ImGui::DragFloat("放出レート Rate(/s)", &pe.rate, 0.5f, 0.0f, 500.0f); active |= ImGui::IsItemActive();
+                changed |= ImGui::Checkbox("GPUパーティクル", &pe.gpu);
+                ImGui::SameLine(); ImGui::TextDisabled("(?)");
+                if (ImGui::BeginItemTooltip())
+                { ImGui::TextUnformatted("compute シムで最大 131072 粒子（加算専用・大量粒子向け）。\n歪み/ライト/中間サイズ/アルファ合成は CPU 専用のため無効"); ImGui::EndTooltip(); }
+                changed |= ImGui::DragFloat("放出レート Rate(/s)", &pe.rate, 0.5f, 0.0f, pe.gpu ? 100000.0f : 500.0f); active |= ImGui::IsItemActive();
                 changed |= ImGui::Checkbox("Play開始で放出 playOnStart", &pe.playOnStart);
                 changed |= ImGui::Checkbox("ループ Looping", &pe.looping);
                 if (!pe.looping)

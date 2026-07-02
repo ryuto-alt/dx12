@@ -29,6 +29,7 @@
 #include "renderer/LensFlarePass.h"
 #include "renderer/DofPass.h"
 #include "renderer/MotionBlurPass.h"
+#include "renderer/GpuParticleSystem.h"
 #include "renderer/SSAOPass.h"
 #include "renderer/ParticleSystem.h"
 #include "renderer/SpriteRenderer.h"
@@ -913,6 +914,11 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                                      DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R16G16_FLOAT,
                                      PathResolver::ShaderDirW());
         if (m_scriptEngine) m_scriptEngine->SetParticleSystem(m_particleSystem.get());
+
+        // GPUパーティクル（compute シム + ExecuteIndirect。最大 131072 粒子・加算専用）
+        m_gpuParticles = std::make_unique<GpuParticleSystem>();
+        m_gpuParticles->Initialize(*m_graphicsDevice, kSceneColorFormat, PathResolver::ShaderDirW());
+        if (m_scriptEngine) m_scriptEngine->SetGpuParticleSystem(m_gpuParticles.get());
 
         // シーントランジション
         m_sceneTransition = std::make_unique<SceneTransition>();
@@ -3371,6 +3377,7 @@ void Application::Shutdown()
     m_dofPass.reset();
     m_motionBlurPass.reset();
     m_distortRT.reset();
+    m_gpuParticles.reset();
     // SSAO（GPU リソース）をデバイス解放より前に明示破棄
     m_ssaoPass.reset();
     m_ssaoWhiteTex.reset();
@@ -3732,10 +3739,30 @@ void Application::Update()
             int n = static_cast<int>(pe._emitAccum);
             if (n <= 0) continue;
             pe._emitAccum -= static_cast<f32>(n);
-            if (n > 64) n = 64;
+            const int nCap = pe.gpu ? 8192 : 64;   // GPU は大量放出を許容
+            if (n > nCap) n = nCap;
 
             DirectX::XMMATRIX w = ComputeWorldMatrix(peReg, pe_e);
             DirectX::XMFLOAT3 pos; DirectX::XMStoreFloat3(&pos, w.r[3]);
+
+            // GPU パーティクル経路（compute シム。distort/light 等の CPU 専用機能は無視）
+            if (pe.gpu && m_gpuParticles)
+            {
+                GpuParticleSystem::EmitRequest r;
+                r.pos = pos;
+                r.count = static_cast<u32>(n);
+                r.dir = pe.dir;       r.spread = pe.spread;
+                r.col0 = { pe.color.x * pe.intensity, pe.color.y * pe.intensity, pe.color.z * pe.intensity };
+                r.speed = pe.speed;
+                r.col1 = { pe.colorEnd.x * pe.intensity, pe.colorEnd.y * pe.intensity, pe.colorEnd.z * pe.intensity };
+                r.speedVar = pe.speedVar;
+                r.size0 = pe.size;    r.size1 = pe.sizeEnd;
+                r.life = pe.life;     r.lifeVar = pe.lifeVar;
+                r.gravity = pe.gravity; r.drag = pe.drag; r.up = pe.up;
+                r.kind = pe.kind;     r.stretch = pe.stretch;
+                m_gpuParticles->Emit(r);
+                continue;
+            }
 
             ParticleSystem::EmitParams p;
             p.pos = pos;            p.count = n;
@@ -4936,6 +4963,7 @@ void Application::DoRuntimeSceneLoad(const std::string& rel, ID3D12GraphicsComma
     m_eventBus.Clear();   // 前シーンの購読を消去（ランタイムシーン切替）
     m_scriptEngine->OnPlayStart();
     if (m_particleSystem) m_particleSystem->Clear();  // シーン切替時に前シーンの粒子を消す
+    if (m_gpuParticles) m_gpuParticles->Clear();
     SyncActiveCameraToGlobal();
 
     // 新シーンの RigidBody を物理登録
@@ -5082,6 +5110,7 @@ void Application::EnterPlayMode()
     m_eventBus.Clear();   // Play 開始時に前 Play の購読を完全消去
     m_scriptEngine->OnPlayStart();
     if (m_particleSystem) m_particleSystem->Clear();  // Play 開始時に粒子をリセット
+    if (m_gpuParticles) m_gpuParticles->Clear();
 
     // エディタのスナップショットで上書き（Luaが勝手に変えた状態をエディタの状態に戻す）
     {
@@ -7228,6 +7257,18 @@ void Application::Render()
             m_particleSystem->DisableSceneDepth();
         m_particleSystem->SetTime(totalTime);
         m_particleSystem->Render(nativeCmdList, m_camera->GetViewProjMatrix(), camRight, camUp, camPos);
+
+        // ---- GPUパーティクル（compute シム + ExecuteIndirect）: 同じ HDR RT へ加算 ----
+        if (m_gpuParticles)
+        {
+            if (m_depthSrvIndex != DescriptorHeap::kInvalidIndex)
+                m_gpuParticles->SetSceneDepth(m_srvHeap->GetGpuHandle(m_depthSrvIndex),
+                    proj._33, proj._43, 1.0f / rtw, 1.0f / rth);
+            else
+                m_gpuParticles->DisableSceneDepth();
+            m_gpuParticles->SimulateAndRender(nativeCmdList, m_gameClock.GetDeltaTime(), totalTime,
+                                              m_camera->GetViewProjMatrix(), camRight, camUp);
+        }
 
         // ---- 歪みパーティクル（熱ゆらぎ/衝撃波）: 歪みバッファ(RG16F)へ ----
         // Render() と同一フレームのインスタンスバッファを共有するため直後に描く。

@@ -23,6 +23,7 @@ class Camera;
 class AudioSystem;
 class PhysicsSystem;
 class ParticleSystem;
+class GpuParticleSystem;
 
 // スクリプトコンポーネントのプロパティ宣言（.lua の properties から解析）。
 // 型 / 既定値 / 範囲 / 表示名を持ち、Inspector の自動 UI 生成と Play 時の注入に使う。
@@ -61,6 +62,7 @@ public:
     // パーティクルシステムを Lua fx API へ公開（Application が一度だけ注入）。
     // ポインタはメンバに保持され、Initialize 再実行（シーン切替）後の fx バインドも参照する。
     void SetParticleSystem(ParticleSystem* p) { m_particleSystem = p; }
+    void SetGpuParticleSystem(GpuParticleSystem* p) { m_gpuParticleSystem = p; }
 
     // EventBus 注入（WireScriptCallbacks から Application が呼ぶ）。
     // events:on/emit/clear バインドはこのポインタを実行時に参照する（null 許容）。
@@ -145,6 +147,7 @@ private:
     AudioSystem*   m_audio   = nullptr;
     PhysicsSystem* m_physics = nullptr;
     ParticleSystem* m_particleSystem = nullptr;
+    GpuParticleSystem* m_gpuParticleSystem = nullptr;   // 大量粒子用（fx の gpu=true で使用）
     EventBus*    m_eventBus = nullptr;   // Application が所有、null 許容（エディタ中は非使用）
     std::string  m_assetsDir;
     std::string  m_lastError;

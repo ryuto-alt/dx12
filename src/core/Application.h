@@ -47,6 +47,7 @@ namespace dx12e
     class MotionBlurPass;
     class SSAOPass;
     class ParticleSystem;
+    class GpuParticleSystem;
     class SpriteRenderer;
     class SceneTransition;
     class IBLBaker;
@@ -324,6 +325,7 @@ private:
     DirectX::XMFLOAT4X4             m_prevViewProj{};       // 前フレームの viewProj（モーションブラー用）
     bool                            m_prevViewProjValid = false;
     std::unique_ptr<ParticleSystem> m_particleSystem;  // 加算ビルボードパーティクル（Lua fx API）
+    std::unique_ptr<GpuParticleSystem> m_gpuParticles; // GPUパーティクル（compute+indirect、大量粒子用）
 
     // ---- SSAO（深度プリパス + 深度再構築法線 半球カーネルAO + ブラー）----
     std::unique_ptr<SSAOPass>      m_ssaoPass;                       // AO 生成器

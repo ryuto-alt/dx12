@@ -388,6 +388,8 @@ struct ParticleEmitter
     f32  distort   = 0.0f;     // >0 で歪みパーティクル（熱ゆらぎ/衝撃波。画面を歪ませる）
     bool light     = false;    // 明るい粒子上位N個を実ポイントライト化（炎が周囲を照らす）
     f32  lightRange = 3.0f;    // ポイントライト化時の到達距離
+    bool gpu       = false;    // true で GPUパーティクル（compute・最大131072・加算専用。大量粒子向け。
+                               // distort/light/sizeMid/blend=α は非対応）
 
     // ランタイム専有（非シリアライズ）
     bool _active    = true;    // 放出中か（Play 時は playOnStart で初期化。エディタは常時プレビュー）

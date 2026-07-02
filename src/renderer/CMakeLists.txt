@@ -13,6 +13,7 @@ add_library(Renderer STATIC
     SpriteRenderer.cpp
     SceneTransition.cpp
     ParticleSystem.cpp
+    GpuParticleSystem.cpp
     IBLBaker.cpp
     SkyboxRenderer.cpp
 )
