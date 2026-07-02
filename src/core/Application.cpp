@@ -2367,12 +2367,15 @@ void Application::Run()
         catch (const std::exception& ex)
         {
             Logger::Error("Frame error: {}", ex.what());
-            // GPU 状態をリセットして次フレームで復帰を試みる
+            // GPU 状態をリセットして次フレームで復帰を試みる。
+            // cmdList が open のまま残ると次の BeginFrame の Reset が失敗し続けて
+            // 復帰不能ループになるため、必ず AbortFrame で Close しておく。
             m_commandQueue->WaitIdle();
+            if (m_frameResources)
+                m_frameResources->AbortFrame();
             if (m_engineMode == EngineMode::Playing)
             {
-                if (m_engineMode == EngineMode::Playing)
-                    m_scriptEngine->OnPlayStop();
+                m_scriptEngine->OnPlayStop();
                 m_engineMode = EngineMode::Editor;
                 m_inputSystem->SetMouseCapture(false);
                 Logger::Error("Forced return to Editor mode");
