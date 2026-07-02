@@ -38,6 +38,10 @@ void DescriptorHeap::Initialize(GraphicsDevice& device, D3D12_DESCRIPTOR_HEAP_TY
         static_cast<int>(type), numDescriptors, shaderVisible);
 }
 
+// 枯渇はデバッグ/リリース問わず例外で fail-fast させる。
+// kInvalidIndex(0xFFFFFFFF) を黙って返すと、呼び出し側の GetCpuHandle で
+// オーバーフローしたポインタが CreateShaderResourceView に渡り、
+// Release ではヒープ破壊/GPUクラッシュとして離れた場所で発症する。
 D3D12_CPU_DESCRIPTOR_HANDLE DescriptorHeap::Allocate()
 {
     u32 index = m_allocator.Allocate();
@@ -45,8 +49,8 @@ D3D12_CPU_DESCRIPTOR_HANDLE DescriptorHeap::Allocate()
     {
         Logger::Error("DescriptorHeap is full (type: {}, capacity: {})",
             static_cast<int>(m_type), m_numDescriptors);
-        DX_ASSERT(false, "DescriptorHeap is full");
-        return D3D12_CPU_DESCRIPTOR_HANDLE{ 0 };
+        throw std::runtime_error("DescriptorHeap is full (capacity " +
+            std::to_string(m_numDescriptors) + ")");
     }
     return GetCpuHandle(index);
 }
@@ -58,7 +62,8 @@ u32 DescriptorHeap::AllocateIndex()
     {
         Logger::Error("DescriptorHeap is full (type: {}, capacity: {})",
             static_cast<int>(m_type), m_numDescriptors);
-        DX_ASSERT(false, "DescriptorHeap is full");
+        throw std::runtime_error("DescriptorHeap is full (capacity " +
+            std::to_string(m_numDescriptors) + ")");
     }
     return index;
 }
@@ -70,7 +75,9 @@ u32 DescriptorHeap::AllocateBlock(u32 count)
     {
         Logger::Error("DescriptorHeap has no contiguous block of {} (type: {}, free: {}/{})",
             count, static_cast<int>(m_type), m_allocator.FreeCount(), m_numDescriptors);
-        DX_ASSERT(false, "DescriptorHeap block allocation failed");
+        throw std::runtime_error("DescriptorHeap block allocation failed (need " +
+            std::to_string(count) + ", free " + std::to_string(m_allocator.FreeCount()) +
+            "/" + std::to_string(m_numDescriptors) + ")");
     }
     return start;
 }
