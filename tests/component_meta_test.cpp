@@ -75,6 +75,7 @@ int main()
     Expect<BoxCollider>({ "halfExtents", "offset" });
     Expect<SphereCollider>({ "radius", "offset" });
     Expect<CapsuleCollider>({ "radius", "halfHeight", "offset" });
+    Expect<CharacterController>({ "radius", "halfHeight", "offset", "mass", "maxSlopeDeg", "stepHeight", "jumpSpeed", "gravityScale" });
     Expect<AudioSource>({ "clipPath", "volume", "loop", "spatial", "playOnStart", "minDistance", "maxDistance" });
     Expect<Tag>({ "tags" });
     Expect<Sprite2D>({ "texturePath", "layer", "size", "uvMin", "uvMax", "color", "worldSpace" });

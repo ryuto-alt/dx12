@@ -95,6 +95,17 @@ void RegisterCoreComponentMeta()
         .data<&CapsuleCollider::halfHeight>("halfHeight")
         .data<&CapsuleCollider::offset>("offset");
 
+    entt::meta_factory<CharacterController>{}
+        .type("CharacterController")
+        .data<&CharacterController::radius>("radius")
+        .data<&CharacterController::halfHeight>("halfHeight")
+        .data<&CharacterController::offset>("offset")
+        .data<&CharacterController::mass>("mass")
+        .data<&CharacterController::maxSlopeDeg>("maxSlopeDeg")
+        .data<&CharacterController::stepHeight>("stepHeight")
+        .data<&CharacterController::jumpSpeed>("jumpSpeed")
+        .data<&CharacterController::gravityScale>("gravityScale");
+
     entt::meta_factory<AudioSource>{}
         .type("AudioSource")
         .data<&AudioSource::clipPath>("clipPath")
