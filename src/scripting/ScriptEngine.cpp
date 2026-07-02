@@ -2,6 +2,8 @@
 #include "core/Logger.h"
 #include "core/vfs/Vfs.h"
 
+#include <set>
+
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4244 4267 4996)
 #define SOL_ALL_SAFETIES_ON 1
@@ -141,10 +143,14 @@ bool InitializeLuaScriptInstance(sol::state& lua,
     ls.self      = self;
     ls.loadError = false;
 
-    // OnStart(self) を呼ぶ
-    sol::protected_function fn = (*env)["OnStart"];
-    if (fn.valid())
+    // OnStart(self) を呼ぶ。
+    // 必ず raw_get（フォールバック無し）で「このスクリプト自身が定義した関数」だけを見る。
+    // (*env)["OnStart"] だと env の __index フォールバック経由で lua.globals() まで辿り、
+    // game.lua のグローバル OnStart/OnUpdate を self 引数で誤呼び出ししてしまう。
+    sol::object fnObj = env->raw_get<sol::object>("OnStart");
+    if (fnObj.get_type() == sol::type::function)
     {
+        sol::protected_function fn = fnObj;
         auto r = fn(*self);
         if (!r.valid())
         {
@@ -221,9 +227,12 @@ void ScriptEngine::RegisterBindings()
             [](Entity& e) -> Transform& { return e.GetComponent<Transform>(); }
         ),
 
-        // Component query
+        // Component query（全コンポーネント型を網羅。未知の型名は黙って false にせず警告を出す）
         "hasComponent", [](const Entity& e, const std::string& type) -> bool {
             if (type == "Transform")          return e.HasComponent<Transform>();
+            if (type == "NameTag")            return e.HasComponent<NameTag>();
+            if (type == "Tag")                return e.HasComponent<Tag>();
+            if (type == "DataComponent")      return e.HasComponent<DataComponent>();
             if (type == "MeshRenderer")       return e.HasComponent<MeshRenderer>();
             if (type == "SkeletalAnimation")  return e.HasComponent<SkeletalAnimation>();
             if (type == "NodeAnimation")      return e.HasComponent<NodeAnimationComp>();
@@ -232,11 +241,25 @@ void ScriptEngine::RegisterBindings()
             if (type == "DirectionalLight")   return e.HasComponent<DirectionalLight>();
             if (type == "SpotLight")          return e.HasComponent<SpotLight>();
             if (type == "Camera")             return e.HasComponent<CameraComponent>();
+            if (type == "Sprite2D")           return e.HasComponent<Sprite2D>();
             if (type == "AudioSource")        return e.HasComponent<AudioSource>();
             if (type == "Gimmick")            return e.HasComponent<Gimmick>();
+            if (type == "RigidBody")          return e.HasComponent<RigidBody>();
+            if (type == "BoxCollider")        return e.HasComponent<BoxCollider>();
+            if (type == "SphereCollider")     return e.HasComponent<SphereCollider>();
+            if (type == "CapsuleCollider")    return e.HasComponent<CapsuleCollider>();
+            if (type == "ConvexHullCollider") return e.HasComponent<ConvexHullCollider>();
+            if (type == "CharacterController") return e.HasComponent<CharacterController>();
+            if (type == "LuaScript")          return e.HasComponent<LuaScript>();
             if (type == "ParticleEmitter")    return e.HasComponent<ParticleEmitter>();
             if (type == "Trigger")            return e.HasComponent<Trigger>();
-            if (type == "CharacterController") return e.HasComponent<CharacterController>();
+            // タイプミスや未対応型を「持ってない」と誤認させない（デバッグ困難の元）。
+            // 毎フレーム呼ばれてもスパムしないよう型名ごとに1回だけ警告する。
+            {
+                static std::set<std::string> warned;
+                if (warned.insert(type).second)
+                    Logger::Warn("hasComponent: unknown component type \"{}\"", type);
+            }
             return false;
         },
 
@@ -1660,8 +1683,10 @@ void ScriptEngine::UpdateAttachedScripts(f32 dt)
             (*self)["transform"] = tf;
         (*self)["enabled"] = ls.enabled;
 
-        sol::protected_function fn = (*env)["OnUpdate"];
-        if (!fn.valid()) continue;
+        // raw_get = フォールバック無し。globals の game.lua 製 OnUpdate を誤って拾わない
+        sol::object fnObj = env->raw_get<sol::object>("OnUpdate");
+        if (fnObj.get_type() != sol::type::function) continue;
+        sol::protected_function fn = fnObj;
         auto result = fn(*self, dt);
         if (!result.valid())
         {
