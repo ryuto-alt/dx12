@@ -48,8 +48,8 @@ void Window::Initialize(HINSTANCE hInstance, int /*nCmdShow*/,
 
     if (!RegisterClassExW(&wc))
     {
-        Logger::Critical("Failed to register window class");
-        throw std::runtime_error("Failed to register window class");
+        Logger::Critical("ウィンドウクラスの登録に失敗しました");
+        throw std::runtime_error("ウィンドウクラスの登録に失敗しました");
     }
 
     // クライアント領域が指定サイズになるよう調整
@@ -72,8 +72,8 @@ void Window::Initialize(HINSTANCE hInstance, int /*nCmdShow*/,
 
     if (!m_hwnd)
     {
-        Logger::Critical("Failed to create window");
-        throw std::runtime_error("Failed to create window");
+        Logger::Critical("ウィンドウの作成に失敗しました");
+        throw std::runtime_error("ウィンドウの作成に失敗しました");
     }
 
     // deferShow=true なら表示しない（重い初期化中に白い未応答ウィンドウを見せないため。

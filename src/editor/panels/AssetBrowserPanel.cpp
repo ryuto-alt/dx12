@@ -842,7 +842,7 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
             std::error_code ec;
             if (isDir) std::filesystem::remove_all(m_pendingDeletePath, ec);
             else       std::filesystem::remove(m_pendingDeletePath, ec);
-            if (ec) Logger::Warn("Asset delete failed: {} ({})", m_pendingDeletePath.string(), ec.message());
+            if (ec) Logger::Warn("アセットの削除に失敗しました: {}（{}）", m_pendingDeletePath.string(), ec.message());
             else    Logger::Info("Asset deleted: {}", m_pendingDeletePath.string());
             if (isCurrentScene) ctx.currentScenePath.clear();
             if (m_selectedPath == m_pendingDeletePath) m_selectedPath.clear();

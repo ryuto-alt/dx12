@@ -32,7 +32,7 @@ bool PakWriter::Open(const std::string& outPath)
     m_out.open(m_tmpPath, std::ios::binary | std::ios::out | std::ios::trunc);
     if (!m_out.is_open())
     {
-        Logger::Error("PakWriter::Open failed to create {}", m_tmpPath);
+        Logger::Error("PakWriter: {} を作成できません", m_tmpPath);
         return false;
     }
 
@@ -51,7 +51,7 @@ bool PakWriter::AddFile(const std::string& srcAbs, const std::string& relPath)
     std::ifstream in(srcAbs, std::ios::binary | std::ios::ate);
     if (!in.is_open())
     {
-        Logger::Error("PakWriter::AddFile cannot open {}", srcAbs);
+        Logger::Error("PakWriter: {} を開けません", srcAbs);
         return false;
     }
     const std::streamoff size = in.tellg();
@@ -78,7 +78,7 @@ bool PakWriter::addEntry(const std::string& relPath, const uint8_t* data, std::s
 
     if (len == 0)
     {
-        Logger::Warn("PakWriter: skipping zero-byte entry '{}'", relPath);
+        Logger::Warn("PakWriter: 0バイトのエントリをスキップしました: '{}'", relPath);
         return true; // skip（成功扱い）
     }
 
@@ -86,7 +86,7 @@ bool PakWriter::addEntry(const std::string& relPath, const uint8_t* data, std::s
     const uint64_t    hash = FnvHash(norm);
     if (!m_seenHashes.insert(hash).second)
     {
-        Logger::Error("PakWriter: hash collision / duplicate entry '{}' (skipped)", norm);
+        Logger::Error("PakWriter: ハッシュ衝突または重複エントリのためスキップしました: '{}'", norm);
         return false;
     }
 
@@ -102,7 +102,7 @@ bool PakWriter::addEntry(const std::string& relPath, const uint8_t* data, std::s
     std::vector<uint8_t> cipher;
     if (!AesGcmEncrypt(m_key.data(), payload, payLen, nonce, tag, cipher))
     {
-        Logger::Error("PakWriter: encrypt failed for '{}'", norm);
+        Logger::Error("PakWriter: '{}' の暗号化に失敗しました", norm);
         return false;
     }
 
@@ -202,7 +202,7 @@ bool PakWriter::Finish(bool stripStrings)
     std::filesystem::rename(m_tmpPath, m_finalPath, ec);
     if (ec)
     {
-        Logger::Error("PakWriter::Finish rename failed: {}", ec.message());
+        Logger::Error("PakWriter: 出力ファイルのリネームに失敗しました: {}", ec.message());
         return false;
     }
     return true;

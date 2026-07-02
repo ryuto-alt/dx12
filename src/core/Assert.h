@@ -32,7 +32,7 @@ inline void ThrowIfFailed(HRESULT hr)
     do {                                                        \
         if (!(condition))                                       \
         {                                                       \
-            dx12e::Logger::Error("Assertion failed: {}", message); \
+            dx12e::Logger::Error("アサーション失敗: {}", message); \
             __debugbreak();                                     \
         }                                                       \
     } while (false)

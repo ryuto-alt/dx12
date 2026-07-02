@@ -3115,7 +3115,7 @@ void Application::Run()
             }
             catch (const std::exception& ex)
             {
-                Logger::Error("Mode change failed: {}", ex.what());
+                Logger::Error("モード切替に失敗: {}", ex.what());
                 if (m_engineMode == EngineMode::Playing)
                     m_scriptEngine->OnPlayStop();
                 m_engineMode = EngineMode::Editor;
@@ -3271,7 +3271,7 @@ void Application::Run()
         }
         catch (const std::exception& ex)
         {
-            Logger::Error("Frame error: {}", ex.what());
+            Logger::Error("フレーム処理でエラー: {}", ex.what());
             // GPU 状態をリセットして次フレームで復帰を試みる。
             // cmdList が open のまま残ると次の BeginFrame の Reset が失敗し続けて
             // 復帰不能ループになるため、必ず AbortFrame で Close しておく。
@@ -3283,7 +3283,7 @@ void Application::Run()
                 m_scriptEngine->OnPlayStop();
                 m_engineMode = EngineMode::Editor;
                 m_inputSystem->SetMouseCapture(false);
-                Logger::Error("Forced return to Editor mode");
+                Logger::Error("エディタモードへ強制復帰しました");
             }
         }
 
@@ -4024,7 +4024,7 @@ void Application::LoadSkyboxIfNeeded(ID3D12GraphicsCommandList* cmd)
             std::string fullPath = PathResolver::AssetsDir() + sky.envMapPath;
             if (!std::filesystem::exists(fullPath))
             {
-                Logger::Warn("Skybox env map not found: {}", fullPath);
+                Logger::Warn("スカイボックスの環境マップが見つかりません: {}", fullPath);
                 // ダミーベイクしてフォールバック
                 m_iblBaker->Bake(*m_graphicsDevice, cmd, *m_srvHeap, nullptr);
                 m_iblReady = m_iblBaker->IsValid();
@@ -4037,7 +4037,7 @@ void Application::LoadSkyboxIfNeeded(ID3D12GraphicsCommandList* cmd)
     }
     if (!m_envCubeTex)
     {
-        Logger::Warn("Failed to load skybox cube: {}", sky.envMapPath);
+        Logger::Warn("スカイボックス（キューブマップ）の読み込みに失敗: {}", sky.envMapPath);
         m_iblBaker->Bake(*m_graphicsDevice, cmd, *m_srvHeap, nullptr);
         m_iblReady = m_iblBaker->IsValid();
         m_loadedSkyboxPath = sky.envMapPath;
@@ -4954,7 +4954,7 @@ void Application::DoRuntimeSceneLoad(const std::string& rel, ID3D12GraphicsComma
     // ゲームモードはシーンが pak 内＝ディスクに無いので vfs::Exists で確認（エディタはディスク）。
     if (!dx12e::vfs::Exists(rel))
     {
-        Logger::Warn("loadScene: scene not found: {}", rel);
+        Logger::Warn("loadScene: シーンが見つかりません: {}", rel);
         return;
     }
 
@@ -4968,7 +4968,7 @@ void Application::DoRuntimeSceneLoad(const std::string& rel, ID3D12GraphicsComma
     m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(), m_srvHeap.get(), cmdList);
     if (!SceneSerializer::Load(*m_scene, full, PathResolver::AssetsDir()))
     {
-        Logger::Warn("loadScene: failed to load {}", full);
+        Logger::Warn("loadScene: 読み込みに失敗しました: {}", full);
         return;
     }
     m_editorCtx->currentScenePath = full;
@@ -5055,7 +5055,7 @@ void Application::EnterPlayMode()
         {
             m_editorCtx->errorMessage = "シーンに Camera が配置されていません。\nHierarchy 右クリック → Camera で追加してください。";
             m_editorCtx->errorFlash = 1.0f;
-            Logger::Warn("Play cancelled: no CameraComponent found");
+            Logger::Warn("Play を中止しました: アクティブな CameraComponent がありません");
             return;
         }
         // isActive なカメラがなければ最初のカメラを自動で有効化
@@ -5308,20 +5308,20 @@ void Application::EnterEditorMode()
         try {
             restored = SceneSerializer::LoadFromString(*m_scene, m_playSceneJson, PathResolver::AssetsDir());
         } catch (const std::exception& ex) {
-            Logger::Error("EnterEditorMode: snapshot restore threw: {}", ex.what());
+            Logger::Error("EnterEditorMode: スナップショット復元で例外が発生: {}", ex.what());
         }
         if (!restored && !m_editorCtx->currentScenePath.empty()) {
-            Logger::Error("EnterEditorMode: snapshot restore failed; reloading from disk: {}",
+            Logger::Error("EnterEditorMode: スナップショット復元に失敗。ディスクから再読込します: {}",
                           ToAssetRel(m_editorCtx->currentScenePath));
             try {
                 restored = SceneSerializer::Load(*m_scene, m_editorCtx->currentScenePath,
                                                  PathResolver::AssetsDir());
             } catch (const std::exception& ex) {
-                Logger::Error("EnterEditorMode: disk fallback also failed: {}", ex.what());
+                Logger::Error("EnterEditorMode: ディスクからの再読込にも失敗: {}", ex.what());
             }
         }
         if (!restored)
-            Logger::Error("EnterEditorMode: scene is empty after Stop (no valid snapshot nor disk scene)");
+            Logger::Error("EnterEditorMode: Stop 後のシーンが空です（有効なスナップショットもディスクのシーンもありません）");
 
         m_scriptEngine->Shutdown();
         m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
@@ -5369,7 +5369,7 @@ void Application::LoadGameScript()
     if (dx12e::vfs::InGameMode() || std::filesystem::exists(scriptPath))
         m_scriptEngine->LoadScript(scriptPath);
     else
-        Logger::Warn("Game script not found: {}", scriptPath);
+        Logger::Warn("ゲームスクリプトが見つかりません: {}", scriptPath);
 }
 
 bool Application::BuildGameStandalone()
@@ -5400,10 +5400,9 @@ bool Application::BuildGame()
         for (unsigned char c : chosen) if (c >= 0x80) { nonAscii = true; break; }
         if (nonAscii)
         {
-            Logger::Error("Build aborted: output path contains non-ASCII characters "
-                          "(e.g. Japanese folder names). The built game would crash on startup "
-                          "with a Unicode->ANSI path error. Use an ASCII-only output folder. "
-                          "Path: {}", chosen);
+            Logger::Error("ビルドを中止しました: 出力先パスに非ASCII文字（日本語フォルダ名など）が"
+                          "含まれています。このままビルドすると起動時にパスエラーで落ちるため、"
+                          "半角英数のみのフォルダを指定してください。パス: {}", chosen);
             if (m_editorCtx)
                 m_editorCtx->buildErrorMsg =
                     "出力フォルダのパスに日本語など非ASCII文字が含まれています。\n"
@@ -5443,7 +5442,7 @@ bool Application::BuildGame()
                            || fs::is_empty(outputDir, ec);
         if (!looksLikeBuild)
         {
-            Logger::Error("Build target exists and is not a previous build, aborting to protect data: {}",
+            Logger::Error("ビルドを中止しました: 出力先に過去のビルド以外のデータが存在します（保護のため中断）: {}",
                           outputDir.string());
             return false;
         }
@@ -5464,7 +5463,7 @@ bool Application::BuildGame()
 
         if (!fs::exists(runtimeSrc))
         {
-            Logger::Error("GameRuntime.exe not found at {}; build it first", runtimeSrc.string());
+            Logger::Error("GameRuntime.exe が見つかりません（{}）。先にエンジンをビルドしてください", runtimeSrc.string());
             return false;
         }
 
@@ -5507,7 +5506,7 @@ bool Application::BuildGame()
 
             if (startSceneRel.empty() || startSceneRel.rfind("..", 0) == 0)
             {
-                Logger::Warn("Current scene is outside assets/; using default start scene: {}",
+                Logger::Warn("現在のシーンが assets/ の外にあるため、既定の開始シーンを使用します: {}",
                              m_editorCtx->currentScenePath);
                 startSceneRel = "scenes/default.json";
             }
@@ -5516,7 +5515,7 @@ bool Application::BuildGame()
         vfs::PakWriter pak;
         if (!pak.Open((outputDir / "game.pak").string()))
         {
-            Logger::Error("Failed to open game.pak for writing");
+            Logger::Error("game.pak を書き込み用に開けません");
             return false;
         }
 
@@ -5599,7 +5598,7 @@ bool Application::BuildGame()
 
         if (!pak.Finish(/*stripStrings=*/true))
         {
-            Logger::Error("Failed to finalize game.pak");
+            Logger::Error("game.pak の書き出しに失敗しました");
             return false;
         }
         Logger::Info("Packed game.pak (startScene = {})", startSceneRel);
@@ -6461,7 +6460,7 @@ void Application::Render()
                     }
                     if (relStr.empty() || relStr.rfind("..", 0) == 0)
                     {
-                        Logger::Warn("Dropped image is outside assets/, cannot place as sprite: {}",
+                        Logger::Warn("ドロップされた画像が assets/ の外にあるため、スプライトとして配置できません: {}",
                                      req.modelPath);
                     }
                     else
@@ -6524,8 +6523,8 @@ void Application::Render()
                 }
                 else
                 {
-                    Logger::Warn("Unsupported file dropped to scene (skipped): {} "
-                                 "(model: gltf/glb/obj/fbx/dae/stl/ply/3ds, image: png/jpg/bmp/tga/dds)",
+                    Logger::Warn("未対応のファイルがシーンにドロップされたためスキップしました: {} "
+                                 "（モデル: gltf/glb/obj/fbx/dae/stl/ply/3ds, 画像: png/jpg/bmp/tga/dds）",
                                  req.modelPath);
                 }
             }

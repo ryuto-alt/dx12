@@ -115,7 +115,7 @@ void GraphicsDevice::Initialize(Window& /*window*/)
         else
         {
             m_dxrSupported = false;
-            Logger::Warn("DXR not supported on this device");
+            Logger::Warn("この GPU は DXR（レイトレーシング）非対応です");
         }
     }
 }

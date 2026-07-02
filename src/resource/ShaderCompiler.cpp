@@ -25,15 +25,15 @@ ShaderCompiler::ShaderBytecode ShaderCompiler::LoadFromFile(const std::wstring& 
     std::ifstream file(csoPath, std::ios::binary | std::ios::ate);
     if (!file.is_open())
     {
-        Logger::Error("ShaderCompiler: Failed to open .cso file");
-        throw std::runtime_error("ShaderCompiler: Failed to open .cso file");
+        Logger::Error("ShaderCompiler: .cso ファイルを開けません");
+        throw std::runtime_error("ShaderCompiler: .cso ファイルを開けません");
     }
 
     auto fileSize = file.tellg();
     if (fileSize <= 0)
     {
-        Logger::Error("ShaderCompiler: .cso file is empty or unreadable");
-        throw std::runtime_error("ShaderCompiler: .cso file is empty or unreadable");
+        Logger::Error("ShaderCompiler: .cso ファイルが空か読み取れません");
+        throw std::runtime_error("ShaderCompiler: .cso ファイルが空か読み取れません");
     }
     
     ShaderBytecode bytecode;

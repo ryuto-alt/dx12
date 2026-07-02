@@ -181,7 +181,7 @@ static RuntimeComponentInfo MakeReflectedInfo(const char* typeName, const char* 
             json jv = MetaFieldToJson(data.get(handle));
             if (jv.is_null())
             {
-                Logger::Warn("MetaSerialize: unsupported field type ({}.{})", key, name);
+                Logger::Warn("MetaSerialize: 未対応のフィールド型です（{}.{}）", key, name);
                 continue;
             }
             out[name] = std::move(jv);
@@ -202,7 +202,7 @@ static RuntimeComponentInfo MakeReflectedInfo(const char* typeName, const char* 
             const char* name = data.name();
             if (!name || !cj.contains(name)) continue;
             if (!JsonToMetaField(handle, data, cj[name]))
-                Logger::Warn("MetaDeserialize: field skipped ({}.{})", key, name);
+                Logger::Warn("MetaDeserialize: フィールドをスキップしました（{}.{}）", key, name);
         }
 
         if (replaceExisting)
@@ -1041,18 +1041,18 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
 
     // ポストプロセス / スカイボックス / SSAO 設定（entities が無くても復元する）
     try { LoadPostSettings(scene, root); }
-    catch (const json::exception& e) { Logger::Warn("postProcess settings skipped (bad type): {}", e.what()); }
+    catch (const json::exception& e) { Logger::Warn("postProcess 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadSkyboxSettings(scene, root); }
-    catch (const json::exception& e) { Logger::Warn("skybox settings skipped (bad type): {}", e.what()); }
+    catch (const json::exception& e) { Logger::Warn("skybox 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadSSAOSettings(scene, root); }
-    catch (const json::exception& e) { Logger::Warn("ssao settings skipped (bad type): {}", e.what()); }
+    catch (const json::exception& e) { Logger::Warn("ssao 設定をスキップしました（型不正）: {}", e.what()); }
 
     // リアルタイム影 ON/OFF（キーが無ければ既定 ON ＝後方互換）
     scene.SetShadowsEnabled(root.value("shadows", true));
 
     if (!root.contains("entities") || !root["entities"].is_array())
     {
-        Logger::Warn("Scene JSON has no entities array");
+        Logger::Warn("シーン JSON に entities 配列がありません");
         return true;
     }
 
@@ -1070,7 +1070,7 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
         {
             const std::string nm = (ej.is_object() && ej.contains("name") && ej["name"].is_string())
                 ? ej["name"].get<std::string>() : "?";
-            Logger::Error("entity [{}] \"{}\" skipped (bad value): {}", created.size(), nm, ex.what());
+            Logger::Error("エンティティ [{}] \"{}\" をスキップしました（値不正）: {}", created.size(), nm, ex.what());
         }
         created.push_back(e);
     }
@@ -1084,7 +1084,7 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
         if (e == entt::null || !ej.is_object() || !ej.contains("parent")) continue;
         if (!ej["parent"].is_number_integer())
         {
-            Logger::Warn("entity [{}] parent is not an integer; kept as root", idx - 1);
+            Logger::Warn("エンティティ [{}] の parent が整数ではないため、ルートのままにします", idx - 1);
             continue;
         }
 
@@ -1095,7 +1095,7 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
         if (parent == entt::null || parent == e)
         {
             if (parent == entt::null)
-                Logger::Warn("entity [{}] parent index {} failed to load; kept as root", idx - 1, parentIdx);
+                Logger::Warn("エンティティ [{}] の親（index {}）が読み込めなかったため、ルートのままにします", idx - 1, parentIdx);
             continue;
         }
 
@@ -1120,7 +1120,7 @@ bool SceneSerializer::Save(const Scene& scene, const std::string& filePath,
     std::ofstream ofs(filePath);
     if (!ofs.is_open())
     {
-        Logger::Error("Failed to open file for writing: {}", filePath);
+        Logger::Error("ファイルを書き込み用に開けません: {}", filePath);
         return false;
     }
 
@@ -1143,7 +1143,7 @@ bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
     std::ifstream ifs(filePath);
     if (!ifs.is_open())
     {
-        Logger::Error("Failed to open scene file: {}", filePath);
+        Logger::Error("シーンファイルを開けません: {}", filePath);
         return false;
     }
 
@@ -1154,7 +1154,7 @@ bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
     }
     catch (const json::parse_error& e)
     {
-        Logger::Error("JSON parse error: {}", e.what());
+        Logger::Error("JSON の解析に失敗しました: {}", e.what());
         return false;
     }
     ifs.close();
@@ -1167,7 +1167,7 @@ bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
     catch (const json::exception& e)
     {
         // ApplySceneJson 内でセクション/エンティティ単位に捕捉しているが、最後の保険
-        Logger::Error("Scene load aborted (bad JSON value): {}", e.what());
+        Logger::Error("シーン読み込みを中断しました（JSON の値が不正）: {}", e.what());
         return false;
     }
     if (ok)
@@ -1192,7 +1192,7 @@ bool SceneSerializer::LoadFromString(Scene& scene, const std::string& jsonStr,
     }
     catch (const json::parse_error& e)
     {
-        Logger::Error("JSON parse error (snapshot): {}", e.what());
+        Logger::Error("JSON の解析に失敗しました（スナップショット）: {}", e.what());
         return false;
     }
 
@@ -1203,7 +1203,7 @@ bool SceneSerializer::LoadFromString(Scene& scene, const std::string& jsonStr,
     }
     catch (const json::exception& e)
     {
-        Logger::Error("Scene restore aborted (bad JSON value): {}", e.what());
+        Logger::Error("シーン復元を中断しました（JSON の値が不正）: {}", e.what());
         return false;
     }
     if (ok)
@@ -1294,7 +1294,7 @@ entt::entity SceneSerializer::InstantiateEntity(Scene& scene, const std::string&
     try { ej = json::parse(jsonStr); }
     catch (const json::parse_error& e)
     {
-        Logger::Error("JSON parse error (entity): {}", e.what());
+        Logger::Error("JSON の解析に失敗しました（エンティティ）: {}", e.what());
         return entt::null;
     }
     ej["name"] = MakeUniqueName(scene, ej.value("name", "Unnamed"));
@@ -1403,7 +1403,7 @@ entt::entity SceneSerializer::InstantiateSubtree(Scene& scene, const std::string
     try { root = json::parse(jsonStr); }
     catch (const json::parse_error& e)
     {
-        Logger::Error("JSON parse error (subtree): {}", e.what());
+        Logger::Error("JSON の解析に失敗しました（サブツリー）: {}", e.what());
         return entt::null;
     }
     if (!root.contains("entities") || !root["entities"].is_array() || root["entities"].empty())
@@ -1451,7 +1451,7 @@ bool SceneSerializer::SavePrefab(const Scene& scene, entt::entity root,
     std::ofstream ofs(filePath);
     if (!ofs.is_open())
     {
-        Logger::Error("Failed to write prefab: {}", filePath);
+        Logger::Error("プレハブの書き込みに失敗しました: {}", filePath);
         return false;
     }
     ofs << s;
@@ -1472,7 +1472,7 @@ entt::entity SceneSerializer::InstantiatePrefab(Scene& scene, const std::string&
     std::ifstream ifs(filePath, std::ios::binary);
     if (!ifs.is_open())
     {
-        Logger::Error("Failed to open prefab: {}", filePath);
+        Logger::Error("プレハブを開けません: {}", filePath);
         return entt::null;
     }
     std::stringstream ss; ss << ifs.rdbuf();

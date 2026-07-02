@@ -47,7 +47,7 @@ D3D12_CPU_DESCRIPTOR_HANDLE DescriptorHeap::Allocate()
     u32 index = m_allocator.Allocate();
     if (index == kInvalidIndex)
     {
-        Logger::Error("DescriptorHeap is full (type: {}, capacity: {})",
+        Logger::Error("DescriptorHeap が満杯です（type: {}, capacity: {}）",
             static_cast<int>(m_type), m_numDescriptors);
         throw std::runtime_error("DescriptorHeap is full (capacity " +
             std::to_string(m_numDescriptors) + ")");
@@ -60,7 +60,7 @@ u32 DescriptorHeap::AllocateIndex()
     u32 index = m_allocator.Allocate();
     if (index == kInvalidIndex)
     {
-        Logger::Error("DescriptorHeap is full (type: {}, capacity: {})",
+        Logger::Error("DescriptorHeap が満杯です（type: {}, capacity: {}）",
             static_cast<int>(m_type), m_numDescriptors);
         throw std::runtime_error("DescriptorHeap is full (capacity " +
             std::to_string(m_numDescriptors) + ")");
@@ -73,7 +73,7 @@ u32 DescriptorHeap::AllocateBlock(u32 count)
     u32 start = m_allocator.AllocateBlock(count);
     if (start == kInvalidIndex)
     {
-        Logger::Error("DescriptorHeap has no contiguous block of {} (type: {}, free: {}/{})",
+        Logger::Error("DescriptorHeap に {} 個の連続空きがありません（type: {}, free: {}/{}）",
             count, static_cast<int>(m_type), m_allocator.FreeCount(), m_numDescriptors);
         throw std::runtime_error("DescriptorHeap block allocation failed (need " +
             std::to_string(count) + ", free " + std::to_string(m_allocator.FreeCount()) +

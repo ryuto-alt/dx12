@@ -365,7 +365,7 @@ std::unique_ptr<NodeAnimationClip> BuildNodeAnimClipFromAnim(
         i32 nodeIndex = graph.FindNodeIndex(nodeName);
         if (nodeIndex < 0)
         {
-            Logger::Warn("  NodeAnim channel '{}' has no matching node - skipped", nodeName);
+            Logger::Warn("  NodeAnim チャンネル '{}' に対応するノードが無いためスキップしました", nodeName);
             continue;
         }
 
@@ -459,7 +459,7 @@ ModelData ModelLoader::LoadFromFile(
 
     if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || !scene->mRootNode)
     {
-        Logger::Error("Failed to load model: {}", filePath.string());
+        Logger::Error("モデルの読み込みに失敗しました: {}", filePath.string());
         return {};
     }
 
@@ -766,7 +766,7 @@ ModelData ModelLoader::LoadFromFile(
                         }
                         else
                         {
-                            Logger::Warn("Texture not found: {}", texPath.C_Str());
+                            Logger::Warn("テクスチャが見つかりません: {}", texPath.C_Str());
                         }
                     }
                 }
@@ -873,7 +873,7 @@ std::vector<std::unique_ptr<AnimationClip>> ModelLoader::LoadAnimationsFromFile(
 
     if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || !scene->mRootNode)
     {
-        Logger::Error("Failed to load animations: {}", filePath.string());
+        Logger::Error("アニメーションの読み込みに失敗しました: {}", filePath.string());
         return {};
     }
 

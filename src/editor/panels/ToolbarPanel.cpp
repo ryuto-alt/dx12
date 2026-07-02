@@ -766,7 +766,7 @@ void ToolbarPanel::Render(bool isPlaying,
             }
             else
             {
-                Logger::Warn("Script already exists: {}", scriptPath);
+                Logger::Warn("スクリプトは既に存在します: {}", scriptPath);
             }
 
             // VS Code で開く

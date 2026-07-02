@@ -16,7 +16,7 @@ bool SceneFlow::LoadFromString(const std::string& jsonStr)
     try { j = json::parse(jsonStr); }
     catch (const std::exception& e)
     {
-        Logger::Warn("SceneFlow parse error: {}", e.what());
+        Logger::Warn("SceneFlow の解析に失敗しました: {}", e.what());
         return false;
     }
 
@@ -67,7 +67,7 @@ bool SceneFlow::Save(const std::string& path) const
     std::ofstream ofs(path);
     if (!ofs.is_open())
     {
-        Logger::Error("Failed to save sceneflow: {}", path);
+        Logger::Error("sceneflow の保存に失敗しました: {}", path);
         return false;
     }
     ofs << j.dump(2);

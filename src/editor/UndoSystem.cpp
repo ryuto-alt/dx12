@@ -24,7 +24,7 @@ void DeleteEntityCommand::Undo()
         restored[i] = e;
         if (e == entt::null)
         {
-            Logger::Warn("[Undo] Failed to restore entity from snapshot");
+            Logger::Warn("[Undo] スナップショットからのエンティティ復元に失敗しました");
             continue;
         }
 

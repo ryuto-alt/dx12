@@ -21,7 +21,7 @@ bool Project::Save(const ProjectInfo& info, const std::string& path)
     std::ofstream ofs(path);
     if (!ofs.is_open())
     {
-        Logger::Error("Failed to save project: {}", path);
+        Logger::Error("プロジェクトの保存に失敗しました: {}", path);
         return false;
     }
     ofs << j.dump(2);
@@ -34,7 +34,7 @@ bool Project::Load(const std::string& path, ProjectInfo& outInfo)
     std::ifstream ifs(path);
     if (!ifs.is_open())
     {
-        Logger::Error("Failed to load project: {}", path);
+        Logger::Error("プロジェクトの読み込みに失敗しました: {}", path);
         return false;
     }
 

@@ -199,7 +199,7 @@ void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying)
         const float rowH   = ImGui::GetTextLineHeight() + 6.0f;
         ImDrawList* dl     = ImGui::GetWindowDrawList();
         const float timeW  = ImGui::CalcTextSize("00:00:00").x;
-        const float badgeW = ImGui::CalcTextSize("ERROR").x;
+        const float badgeW = ImGui::CalcTextSize("エラー").x;
 
         ImGuiListClipper clipper;
         clipper.Begin(static_cast<int>(m_view.size()), rowH);
@@ -229,7 +229,7 @@ void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying)
                     ImGui::ColorConvertFloat4ToU32(theme::TextFaint), e.time.c_str());
                 x += timeW + 12.0f;
 
-                static const char* kBadge[3] = { "INFO", "WARN", "ERROR" };
+                static const char* kBadge[3] = { "情報", "警告", "エラー" };
                 static const ImVec4* kBadgeCol[3] = { &theme::TextDim, &theme::Warn, &theme::Bad };
                 ImVec4 badgeCol = *kBadgeCol[sev];
                 if (sev == 0 && e.level <= 1) badgeCol = theme::TextFaint;   // debug/trace はさらに薄く
@@ -283,7 +283,7 @@ void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying)
         {
             ImGui::BeginChild("##consoledetail", ImVec2(0, detailH), ImGuiChildFlags_Borders);
             const int sev = SeverityOf(*sel);
-            static const char* kBadge[3] = { "INFO", "WARN", "ERROR" };
+            static const char* kBadge[3] = { "情報", "警告", "エラー" };
             static const ImVec4* kCol[3] = { &theme::TextDim, &theme::Warn, &theme::Bad };
             ImGui::TextColored(*kCol[sev], "%s", kBadge[sev]);
             ImGui::SameLine();

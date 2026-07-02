@@ -115,7 +115,7 @@ bool McpBridge::Start(uint16_t preferredPort)
     WSADATA wsa{};
     if (::WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
     {
-        Logger::Error("MCP bridge: WSAStartup failed");
+        Logger::Error("MCPブリッジ: WSAStartup に失敗しました");
         return false;
     }
     s.wsaUp = true;
@@ -123,7 +123,7 @@ bool McpBridge::Start(uint16_t preferredPort)
     s.listenSock = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (s.listenSock == INVALID_SOCKET)
     {
-        Logger::Error("MCP bridge: socket() failed");
+        Logger::Error("MCPブリッジ: socket() に失敗しました");
         Stop();
         return false;
     }
@@ -147,7 +147,7 @@ bool McpBridge::Start(uint16_t preferredPort)
 
     if (chosen == 0 || ::listen(s.listenSock, 1) == SOCKET_ERROR)
     {
-        Logger::Error("MCP bridge: bind/listen failed on ports {}..{} (all in use?)",
+        Logger::Error("MCPブリッジ: ポート {}..{} で bind/listen に失敗しました（すべて使用中？）",
                       preferredPort, static_cast<int>(preferredPort) + 10);
         Stop();
         return false;

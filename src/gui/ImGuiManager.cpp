@@ -44,7 +44,7 @@ void ImGuiManager::Initialize(
         }
         else
         {
-            Logger::Warn("Japanese font not found, using default");
+            Logger::Warn("日本語フォントが見つかりません (Japanese font not found)");
         }
     }
 

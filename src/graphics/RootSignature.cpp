@@ -173,7 +173,7 @@ void RootSignature::Initialize(GraphicsDevice& device)
     {
         if (errorBlob)
         {
-            Logger::Error("Root Signature serialization error: {}",
+            Logger::Error("ルートシグネチャのシリアライズに失敗しました: {}",
                 static_cast<const char*>(errorBlob->GetBufferPointer()));
         }
         ThrowIfFailed(hr);

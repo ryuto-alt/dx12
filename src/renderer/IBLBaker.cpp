@@ -75,7 +75,7 @@ void IBLBaker::Initialize(GraphicsDevice& device, const std::wstring& shaderDirW
         if (FAILED(hr))
         {
             if (error)
-                Logger::Error("IBLBaker compute RS error: {}",
+                Logger::Error("IBLBaker のルートシグネチャ作成に失敗しました: {}",
                     static_cast<const char*>(error->GetBufferPointer()));
             ThrowIfFailed(hr);
         }

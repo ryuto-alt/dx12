@@ -95,7 +95,7 @@ std::unique_ptr<Texture> TextureLoader::LoadFromFile(
         int sz = WideCharToMultiByte(CP_UTF8, 0, filePath.c_str(), -1, nullptr, 0, nullptr, nullptr);
         std::string pathStr(static_cast<size_t>(sz - 1), '\0');
         WideCharToMultiByte(CP_UTF8, 0, filePath.c_str(), -1, pathStr.data(), sz, nullptr, nullptr);
-        Logger::Error("Failed to load texture: {}", pathStr);
+        Logger::Error("テクスチャの読み込みに失敗しました: {}", pathStr);
         return nullptr;
     }
 
@@ -123,7 +123,7 @@ std::unique_ptr<Texture> TextureLoader::LoadFromFile(
     auto subs = BuildSubresources(scratchImage);
     if (subs.empty())
     {
-        Logger::Error("Failed to get image data from ScratchImage");
+        Logger::Error("ScratchImage から画像データを取得できません");
         return nullptr;
     }
 
@@ -156,7 +156,7 @@ std::unique_ptr<Texture> TextureLoader::LoadCubeFromFile(
     const std::wstring ext = filePath.substr(filePath.find_last_of(L'.'));
     if (!(ext == L".dds" || ext == L".DDS"))
     {
-        Logger::Error("LoadCubeFromFile: only .dds cubemaps are supported: {}", toUtf8(filePath));
+        Logger::Error("LoadCubeFromFile: キューブマップは .dds のみ対応です: {}", toUtf8(filePath));
         return nullptr;
     }
 
@@ -165,14 +165,14 @@ std::unique_ptr<Texture> TextureLoader::LoadCubeFromFile(
         DirectX::DDS_FLAGS_NONE, nullptr, scratchImage);
     if (FAILED(hr))
     {
-        Logger::Error("Failed to load cube DDS: {}", toUtf8(filePath));
+        Logger::Error("キューブマップ DDS の読み込みに失敗しました: {}", toUtf8(filePath));
         return nullptr;
     }
 
     DirectX::TexMetadata meta = scratchImage.GetMetadata();
     if (!meta.IsCubemap() || meta.arraySize != 6)
     {
-        Logger::Error("LoadCubeFromFile: not a 6-face cubemap: {}", toUtf8(filePath));
+        Logger::Error("LoadCubeFromFile: 6面キューブマップではありません: {}", toUtf8(filePath));
         return nullptr;
     }
 
@@ -203,7 +203,7 @@ std::unique_ptr<Texture> TextureLoader::LoadCubeFromFile(
             const DirectX::Image* img = scratchImage.GetImage(mip, face, 0);
             if (!img)
             {
-                Logger::Error("LoadCubeFromFile: missing image (face={}, mip={}): {}",
+                Logger::Error("LoadCubeFromFile: 画像がありません（face={}, mip={}）: {}",
                               static_cast<u32>(face), static_cast<u32>(mip), toUtf8(filePath));
                 return nullptr;
             }
@@ -250,7 +250,7 @@ std::unique_ptr<Texture> TextureLoader::LoadFromMemory(
 
     if (FAILED(hr))
     {
-        Logger::Error("Failed to load embedded texture (format={})", hint);
+        Logger::Error("埋め込みテクスチャの読み込みに失敗しました（format={}）", hint);
         return nullptr;
     }
 
@@ -293,14 +293,14 @@ std::unique_ptr<Texture> TextureLoader::LoadCubeFromMemory(
         DirectX::DDS_FLAGS_NONE, nullptr, scratchImage);
     if (FAILED(hr))
     {
-        Logger::Error("LoadCubeFromMemory: failed to decode DDS buffer");
+        Logger::Error("LoadCubeFromMemory: DDS バッファのデコードに失敗しました");
         return nullptr;
     }
 
     DirectX::TexMetadata meta = scratchImage.GetMetadata();
     if (!meta.IsCubemap() || meta.arraySize != 6)
     {
-        Logger::Error("LoadCubeFromMemory: not a 6-face cubemap (arraySize={})",
+        Logger::Error("LoadCubeFromMemory: 6面キューブマップではありません（arraySize={}）",
                       static_cast<u32>(meta.arraySize));
         return nullptr;
     }
@@ -332,7 +332,7 @@ std::unique_ptr<Texture> TextureLoader::LoadCubeFromMemory(
             const DirectX::Image* img = scratchImage.GetImage(mip, face, 0);
             if (!img)
             {
-                Logger::Error("LoadCubeFromMemory: missing image (face={}, mip={})",
+                Logger::Error("LoadCubeFromMemory: 画像がありません（face={}, mip={}）",
                               static_cast<u32>(face), static_cast<u32>(mip));
                 return nullptr;
             }

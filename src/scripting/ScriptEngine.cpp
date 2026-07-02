@@ -134,7 +134,7 @@ bool InitializeLuaScriptInstance(sol::state& lua,
     {
         sol::error err = result;
         lastError = err.what();
-        Logger::Error("Lua load error (entity={} path={}): {}",
+        Logger::Error("Luaエラー（スクリプト読み込み, entity={} path={}）: {}",
                       static_cast<u32>(e), ls.scriptPath, lastError);
         ls.loadError = true; ls.errorMessage = lastError;
         return false;
@@ -157,7 +157,7 @@ bool InitializeLuaScriptInstance(sol::state& lua,
         {
             sol::error err = r;
             lastError = err.what();
-            Logger::Error("Lua OnStart error (entity={}): {}",
+            Logger::Error("Luaエラー（OnStart, entity={}）: {}",
                           static_cast<u32>(e), lastError);
             ls.loadError = true; ls.errorMessage = lastError;
             return false;
@@ -260,7 +260,7 @@ void ScriptEngine::RegisterBindings()
             {
                 static std::set<std::string> warned;
                 if (warned.insert(type).second)
-                    Logger::Warn("hasComponent: unknown component type \"{}\"", type);
+                    Logger::Warn("hasComponent: 不明なコンポーネント型 \"{}\"", type);
             }
             return false;
         },
@@ -1005,8 +1005,8 @@ void ScriptEngine::RegisterEventsBinding()
             if (!s_warned)
             {
                 s_warned = true;
-                Logger::Warn("events:on called but EventBus is not available "
-                             "(events:on/emit は Playing 中のみ有効。OnStart() 内で登録してください)");
+                Logger::Warn("events:on を呼びましたが EventBus が利用できません"
+                             "（events:on/emit は Playing 中のみ有効。OnStart() 内で登録してください）");
             }
             return 0;
         }
@@ -1018,7 +1018,7 @@ void ScriptEngine::RegisterEventsBinding()
             if (!r.valid())
             {
                 sol::error err = r;
-                Logger::Warn("events handler error ({}): {}", e.name, err.what());
+                Logger::Warn("イベントハンドラでエラー（{}）: {}", e.name, err.what());
             }
         });
     });
@@ -1406,7 +1406,7 @@ vfx.register("hit",       function(x,y,z,s) FX.hit(0.6) end)
     if (!r.valid())
     {
         sol::error err = r;
-        Logger::Error("ScriptEngine prelude error: {}", err.what());
+        Logger::Error("ScriptEngine の初期化スクリプト（prelude）でエラー: {}", err.what());
     }
 }
 
@@ -1428,7 +1428,7 @@ void ScriptEngine::LoadScript(const std::string& filePath)
     {
         sol::error err = result;
         m_lastError = err.what();
-        Logger::Error("Lua load error: {}", m_lastError);
+        Logger::Error("Luaエラー（スクリプト読み込み）: {}", m_lastError);
     }
     else
     {
@@ -1444,7 +1444,7 @@ void ScriptEngine::LoadScriptFromString(const std::string& code, const std::stri
     {
         sol::error err = result;
         m_lastError = err.what();
-        Logger::Error("Lua load error (from string): {}", m_lastError);
+        Logger::Error("Luaエラー（文字列スクリプト読み込み）: {}", m_lastError);
     }
     else
     {
@@ -1462,7 +1462,7 @@ void ScriptEngine::CallOnStart()
         {
             sol::error err = result;
             m_lastError = err.what();
-            Logger::Error("Lua OnStart error: {}", m_lastError);
+            Logger::Error("Luaエラー（OnStart）: {}", m_lastError);
         }
         else
         {
@@ -1481,7 +1481,7 @@ void ScriptEngine::CallOnUpdate(f32 dt)
         {
             sol::error err = result;
             m_lastError = err.what();
-            Logger::Error("Lua OnUpdate error: {}", m_lastError);
+            Logger::Error("Luaエラー（OnUpdate）: {}", m_lastError);
         }
     }
 }
@@ -1569,7 +1569,7 @@ void ScriptEngine::ParsePropertySchema(const std::string& scriptPath,
     if (!r.valid())
     {
         sol::error err = r;
-        Logger::Warn("Script schema parse error ({}): {}", scriptPath, err.what());
+        Logger::Warn("スクリプトの properties 解析に失敗（{}）: {}", scriptPath, err.what());
         return;
     }
 
@@ -1797,7 +1797,7 @@ void ScriptEngine::UpdateAttachedScripts(f32 dt)
         {
             sol::error err = result;
             m_lastError = err.what();
-            Logger::Error("Lua OnUpdate error (entity={}): {}",
+            Logger::Error("Luaエラー（OnUpdate, entity={}）: {}",
                           static_cast<u32>(e), m_lastError);
             ls.loadError = true; ls.errorMessage = m_lastError;
         }

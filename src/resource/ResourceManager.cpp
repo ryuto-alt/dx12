@@ -131,7 +131,7 @@ Texture* ResourceManager::GetOrLoadTexture(
 
     if (!texture)
     {
-        Logger::Warn("Failed to load texture, returning nullptr");
+        Logger::Warn("テクスチャの読み込みに失敗しました（nullptr を返します）");
         return nullptr;
     }
 

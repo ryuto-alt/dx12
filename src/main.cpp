@@ -333,7 +333,14 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
             std::ofstream f("dx12_crash.log", std::ios::trunc);
             if (f) f << "Fatal Error: " << e.what() << "\n";
         }
-        MessageBoxA(nullptr, e.what(), "Fatal Error", MB_OK | MB_ICONERROR);
+        // エラーメッセージは UTF-8（日本語含む）なので W 版で出す（A 版だと文字化けする）
+        {
+            const char* msg = e.what();
+            int n = MultiByteToWideChar(CP_UTF8, 0, msg, -1, nullptr, 0);
+            std::wstring wmsg(n > 0 ? static_cast<size_t>(n - 1) : 0, L'\0');
+            if (n > 0) MultiByteToWideChar(CP_UTF8, 0, msg, -1, wmsg.data(), n);
+            MessageBoxW(nullptr, wmsg.c_str(), L"致命的なエラー", MB_OK | MB_ICONERROR);
+        }
         return EXIT_FAILURE;
     }
     return EXIT_SUCCESS;

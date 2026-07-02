@@ -502,8 +502,8 @@ bool Updater::RunStartupCheck()
     // タグが進めば（version が上がれば）上の IsNewer で false になり、このマーカーは無視される。
     if (ReadLastUpdateTag() == tag)
     {
-        Logger::Warn("Updater: already attempted update to {} but still running {}. "
-                     "Skipping to avoid an update loop (release asset version mismatch?).",
+        Logger::Warn("Updater: 更新 {} を適用済みですが、実行中の版が {} のままです。"
+                     "更新ループ回避のためスキップします（リリース zip 内の版ズレの可能性）。",
                      tag, kEngineVersion);
         return false;
     }
@@ -511,7 +511,7 @@ bool Updater::RunStartupCheck()
     std::string assetUrl = FirstZipAssetUrl(json);
     if (assetUrl.empty())
     {
-        Logger::Warn("Updater: release {} has no .zip asset. skip.", tag);
+        Logger::Warn("Updater: リリース {} に .zip がないためスキップします。", tag);
         return false;
     }
 

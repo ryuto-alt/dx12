@@ -60,7 +60,7 @@ Entity Scene::Spawn(const std::string& name,
     const CachedModel* cached = m_resourceManager->GetOrLoadModel(modelPath, m_cmdList);
     if (!cached)
     {
-        Logger::Warn("Failed to load model: {}", modelPath);
+        Logger::Warn("モデルの読み込みに失敗しました: {}", modelPath);
         OutputDebugStringA(("[Spawn FAILED] " + modelPath + "\n").c_str());
         return Entity();
     }

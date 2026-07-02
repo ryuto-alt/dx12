@@ -32,8 +32,8 @@ private:
     std::vector<int>      m_viewCount;  // 折りたたみ時の同文件数（m_view と対）
     uint64_t              m_cursor = 0; // Logger 読み取りカーソル
 
-    // 表示オプション
-    bool m_showInfo     = true;
+    // 表示オプション（既定は警告+エラーのみ。情報は右上のトグルでいつでも表示できる）
+    bool m_showInfo     = false;
     bool m_showWarn     = true;
     bool m_showError    = true;
     bool m_collapse     = false;

@@ -26,7 +26,7 @@ bool AudioClip::LoadFromFile(const std::string& filePath)
     else if (ext == ".mp3")
         return LoadMp3(filePath);
 
-    Logger::Error("Unsupported audio format: {}", ext);
+    Logger::Error("未対応のオーディオ形式です: {}", ext);
     return false;
 }
 
@@ -35,7 +35,7 @@ bool AudioClip::LoadWav(const std::string& filePath)
     drwav wav;
     if (!drwav_init_file(&wav, filePath.c_str(), nullptr))
     {
-        Logger::Error("Failed to open WAV: {}", filePath);
+        Logger::Error("WAV を開けません: {}", filePath);
         return false;
     }
 
@@ -77,7 +77,7 @@ bool AudioClip::LoadMp3(const std::string& filePath)
 
     if (!samples)
     {
-        Logger::Error("Failed to open MP3: {}", filePath);
+        Logger::Error("MP3 を開けません: {}", filePath);
         return false;
     }
 
@@ -116,7 +116,7 @@ bool AudioClip::LoadFromMemory(const uint8_t* data, size_t size, const std::stri
     else if (ext == ".mp3")
         return LoadMp3FromMemory(data, size);
 
-    Logger::Error("Unsupported audio format for memory load: {}", ext);
+    Logger::Error("未対応のオーディオ形式です（メモリ読み込み）: {}", ext);
     return false;
 }
 
@@ -125,7 +125,7 @@ bool AudioClip::LoadWavFromMemory(const uint8_t* data, size_t size)
     drwav wav;
     if (!drwav_init_memory(&wav, data, size, nullptr))
     {
-        Logger::Error("Failed to open WAV from memory ({} bytes)", size);
+        Logger::Error("WAV をメモリから開けません（{} バイト）", size);
         return false;
     }
 
@@ -167,7 +167,7 @@ bool AudioClip::LoadMp3FromMemory(const uint8_t* data, size_t size)
 
     if (!samples)
     {
-        Logger::Error("Failed to open MP3 from memory ({} bytes)", size);
+        Logger::Error("MP3 をメモリから開けません（{} バイト）", size);
         return false;
     }
 
