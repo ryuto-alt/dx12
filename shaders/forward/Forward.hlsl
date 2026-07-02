@@ -104,14 +104,16 @@ float SampleCascade(int cascade, float3 worldPos)
     // 比較深度を手前へずらして自己遮蔽を抑える。
     float current = proj.z - shadowParams.y;
     float texel = shadowParams.x;  // 1/shadowMapSize
+    // 3x3 PCF（9タップ）。床は全画面なのでタップ数が直接 fill コスト。5x5(25)→3x3(9)で約64%削減。
+    // 影の縁が僅かに硬くなるだけ（minimal画質方針で許容）。
     float s = 0.0f;
     [unroll]
-    for (int y = -2; y <= 2; ++y)
+    for (int y = -1; y <= 1; ++y)
     [unroll]
-    for (int x = -2; x <= 2; ++x)
+    for (int x = -1; x <= 1; ++x)
         s += g_shadowMap.SampleCmpLevelZero(g_shadowSampler,
                  float3(uv + float2(x, y) * texel, (float)cascade), current);
-    return s / 25.0f;
+    return s / 9.0f;
 }
 
 float CalcShadow(float3 worldPos, float viewDepth)

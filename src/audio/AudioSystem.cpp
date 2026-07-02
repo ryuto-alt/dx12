@@ -116,6 +116,12 @@ void AudioSystem::ScanAudioFiles()
     m_bgmList.clear();
     m_sfxList.clear();
 
+    // ゲームモードでは loose な assets/ はディスクに無く(全部 pak 内)、この一覧は
+    // エディタの音声ピッカ用。ディスク走査は無駄なうえ、AssetsDir(UTF-8)を
+    // std::filesystem::path(=ACP 解釈)に通すと非 ASCII フォルダ名で例外になり得る。
+    if (vfs::InGameMode())
+        return;
+
     auto scanDir = [&](const std::string& subDir, std::vector<std::string>& outList) {
         std::filesystem::path dir = std::filesystem::path(m_assetsDir) / subDir;
         if (!std::filesystem::exists(dir)) return;

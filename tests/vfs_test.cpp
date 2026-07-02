@@ -264,6 +264,59 @@ static void Test_ReadAssetAbs_GameMode()
     fs::remove_all(dir, ec);
 }
 
+// 非 ASCII(日本語)フォルダから game.pak を mount できること。
+// バグ: main.cpp が path::string()(=ACP/Shift-JIS) を UTF-8 前提の MountPak に渡し、
+// "新しいフォルダー" 等に置いた配布ゲームが起動時 CreateFileW 失敗 -> "game.pak not found
+// or corrupt" になっていた。修正は u8string() で UTF-8 バイトを保って渡すこと。
+static void Test_MountPak_NonAsciiPath()
+{
+    // 名前はコードポイントで組む(ソースファイルのエンコードに依存しない)。日本語 = U+65E5 672C 8A9E。
+    std::wstring name = L"dx12_nonascii_";
+    name += static_cast<wchar_t>(0x65E5);
+    name += static_cast<wchar_t>(0x672C);
+    name += static_cast<wchar_t>(0x8A9E);
+
+    std::error_code ec;
+    fs::path dir = fs::temp_directory_path() / name;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+
+    // ビルドは常に ASCII パスで pak を生成する -> ASCII temp に作る。
+    fs::path src = fs::temp_directory_path() / "dx12_nonascii_src.dat";
+    { std::ofstream o(src, std::ios::binary); o.put('x'); }
+    fs::path asciiPak = fs::temp_directory_path() / "dx12_nonascii.pak";
+    {
+        vfs::PakWriter w;
+        CHECK(w.Open(asciiPak.string()));
+        CHECK(w.AddFile(src.string(), "scenes/title.json"));
+        CHECK(w.Finish(/*stripStrings=*/true));
+    }
+
+    // ユーザが build/game を日本語フォルダへコピーして起動する状況を再現。
+    fs::path jpPak = dir / "game.pak";
+    fs::copy_file(asciiPak, jpPak, fs::copy_options::overwrite_existing, ec);
+    CHECK(!ec);
+
+    // 修正後の main.cpp と同じ渡し方(UTF-8)なら mount 成功。
+    const std::u8string u8 = jpPak.u8string();
+    CHECK(vfs::MountPak(std::string(u8.begin(), u8.end())));
+    vfs::Unmount();
+
+    // バグの正体: ACP バイト列(.string())は UTF-8 と解釈されて化け、mount に失敗する。
+    // ACP==UTF-8 の環境(純 ASCII 名や UTF-8 コードページ)では同一なので skip。
+    std::string acp;
+    try { acp = jpPak.string(); } catch (...) { acp.clear(); }
+    if (!acp.empty() && acp != std::string(u8.begin(), u8.end()))
+    {
+        CHECK(!vfs::MountPak(acp));
+        vfs::Unmount();
+    }
+
+    fs::remove_all(dir, ec);
+    fs::remove(asciiPak, ec);
+    fs::remove(src, ec);
+}
+
 int main()
 {
     Test_AesRoundTrip();
@@ -271,6 +324,7 @@ int main()
     Test_XpressRoundTrip();
     Test_PakRoundTrip();
     Test_ReadAssetAbs_GameMode();
+    Test_MountPak_NonAsciiPath();
 
     std::printf("Vfs: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

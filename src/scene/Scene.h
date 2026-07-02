@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <functional>
+#include <unordered_map>
 #include <entt/entt.hpp>
 #include <DirectXMath.h>
 #include "core/Types.h"
@@ -99,17 +100,28 @@ public:
     SSAOSettings&       GetSSAOSettings()       { return m_ssao; }
     const SSAOSettings& GetSSAOSettings() const { return m_ssao; }
 
+    // リアルタイム影(CSM)をこのシーンで描くか。false なら影パスを丸ごとスキップ
+    // （トップダウン等で影が要らないシーンの FPS 向上用。シェーダは無影センチネルで全面ライト）。
+    bool GetShadowsEnabled() const { return m_shadowsEnabled; }
+    void SetShadowsEnabled(bool v) { m_shadowsEnabled = v; }
+
 private:
     Entity CreateEntityWithTransform(const std::string& name,
                                      DirectX::XMFLOAT3 position,
                                      DirectX::XMFLOAT3 rotation,
                                      DirectX::XMFLOAT3 scale);
 
+    // 発光弾(Pfx)など「同一形状を大量に出すプリミティブ」をサイズ別に共有して
+    // インスタンシング可能にするキャッシュ。値は m_ownedMeshes が所有する Mesh*。
+    Mesh* GetSharedGlowMesh(bool sphere, f32 radius);
+
     entt::registry m_registry;
     std::vector<std::unique_ptr<Mesh>> m_ownedMeshes;
+    std::unordered_map<uint64_t, Mesh*> m_glowMeshCache;
     PostProcessSettings m_postSettings;
     SkyboxSettings      m_skybox;
     SSAOSettings        m_ssao;
+    bool                m_shadowsEnabled = true;  // 既定 ON（エディタ/従来シーン互換）
 
     ResourceManager*  m_resourceManager = nullptr;
     GraphicsDevice*   m_device          = nullptr;

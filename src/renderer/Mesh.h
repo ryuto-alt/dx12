@@ -21,6 +21,16 @@ struct Vertex
     DirectX::XMFLOAT4 boneWeights = {0, 0, 0, 0};     // BLENDWEIGHT
 };
 
+// GPU インスタンス1個ぶん（slot1, PER_INSTANCE, stride=64）。
+// r0..r2 = XMMatrixTranspose(world) の先頭3行（4行目は (0,0,0,1) 固定なので省略）。
+struct MeshInstanceData
+{
+    DirectX::XMFLOAT4 r0;     // TEXCOORD8
+    DirectX::XMFLOAT4 r1;     // TEXCOORD9
+    DirectX::XMFLOAT4 r2;     // TEXCOORD10
+    DirectX::XMFLOAT4 color;  // TEXCOORD11
+};
+
 class Mesh
 {
 public:
@@ -45,6 +55,14 @@ public:
     DirectX::XMFLOAT3 GetAABBMin() const { return m_aabbMin; }
     DirectX::XMFLOAT3 GetAABBMax() const { return m_aabbMax; }
 
+    // ローカル空間バウンディング球の半径（AABB 対角の半分）。視錐台カリング用。
+    float GetBoundingRadius() const
+    {
+        using namespace DirectX;
+        const XMVECTOR mn = XMLoadFloat3(&m_aabbMin), mx = XMLoadFloat3(&m_aabbMax);
+        return 0.5f * XMVectorGetX(XMVector3Length(XMVectorSubtract(mx, mn)));
+    }
+
     // 現在の頂点カラー（シーン保存用。キャッシュの先頭頂点を代表値とする）
     DirectX::XMFLOAT4 GetVertexColor() const {
         return m_verticesCache.empty() ? DirectX::XMFLOAT4{1.0f, 1.0f, 1.0f, 1.0f}
@@ -61,6 +79,9 @@ public:
 
     static const D3D12_INPUT_ELEMENT_DESC* GetInputLayout();
     static u32 GetInputLayoutCount();
+    // slot0(頂点) + slot1(MeshInstanceData, PER_INSTANCE) のインスタンシング用レイアウト。
+    static const D3D12_INPUT_ELEMENT_DESC* GetInstancedInputLayout();
+    static u32 GetInstancedInputLayoutCount();
 
 private:
     VertexBuffer m_vertexBuffer;

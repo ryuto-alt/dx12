@@ -83,6 +83,11 @@ struct MeshRenderer
     // UV タイリング
     float uvScaleU = 1.0f;
     float uvScaleV = 1.0f;
+
+    // インスタンシング: 共有メッシュを使う発光弾(Pfx)等は色を頂点バッファに焼かず
+    // ここに持つ（setColor が書き込む）。instanced=true の間 setColor は VB を再生成しない。
+    DirectX::XMFLOAT4 instanceColor = {1.0f, 1.0f, 1.0f, 1.0f};
+    bool instanced = false;
 };
 
 struct SkeletalAnimation
@@ -347,6 +352,7 @@ struct LuaScript
     std::shared_ptr<void> self;   // sol::table
     bool started   = false;
     bool loadError = false;
+    std::string errorMessage;   // loadError=true のときの最後のエラー文字列（dx12_get_lua_component_state で返す）
 };
 
 // 配置できるパーティクル放出器（エディタで置く「エフェクト部品」）。

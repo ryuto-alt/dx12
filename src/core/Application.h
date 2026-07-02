@@ -78,7 +78,7 @@ public:
     Application& operator=(const Application&) = delete;
 
     void Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode = false,
-                    const ProjectInfo* projectInfo = nullptr);
+                    const ProjectInfo* projectInfo = nullptr, bool buildMode = false);
     void Run();
     void Shutdown();
 
@@ -178,7 +178,13 @@ private:
     std::unique_ptr<PipelineState>     m_skinnedPipelineState;        // 通常 forward(skinned, LESS)
     std::unique_ptr<PipelineState>     m_skinnedPipelineStateLEqual;  // SSAO 深度プリパス併用時(skinned, LESS_EQUAL)
     std::unique_ptr<PipelineState>     m_gridPipelineState;
-    std::unique_ptr<PipelineState>     m_emissivePipelineState;  // 加算発光パーティクル用
+    std::unique_ptr<PipelineState>     m_emissivePipelineState;  // 加算発光（Pfx）GPU instancing 用
+    // ---- 発光メッシュ instancing 用 per-instance バッファ（リング=FrameResources::kFrameCount=3）----
+    static constexpr u32 kMaxInstances = 4096;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_instanceBuffer[3];
+    uint8_t*                               m_instanceMapped[3] = {};
+    D3D12_VERTEX_BUFFER_VIEW               m_instanceVbView[3] = {};
+    u32                                    m_instanceCursor = 0;  // フレーム内 instance 連番（メイン＋プレビュー共有）
     std::unique_ptr<PipelineState>     m_shadowPipelineState;
     std::unique_ptr<PipelineState>     m_shadowSkinnedPipelineState;
     // ---- CSM (Cascaded Shadow Maps, 4分割) ----
@@ -187,7 +193,7 @@ private:
     std::unique_ptr<DescriptorHeap>    m_shadowDsvHeap;        // 容量 kNumCascades
     D3D12_CPU_DESCRIPTOR_HANDLE        m_shadowDsvHandles[kNumCascades]{}; // スライス毎の DSV
     u32                                m_shadowSrvIndex = 0;    // 配列SRV(1個)
-    u32                                m_shadowMapSize = 4096;
+    u32                                m_shadowMapSize = 2048;  // 4096→2048: トップダウンで影は小さく、1/4の帯域で十分
     i32                                m_shadowQualityIndex = 2;  // 0:1024, 1:2048, 2:4096, 3:8192
     bool                               m_shadowMapDirty = false;
     // CSM パラメータ（ImGui 編集用）
@@ -227,6 +233,9 @@ private:
     // GitHub ログイン状態（gh）
     std::string m_ghUser;                 // gh ログインユーザー（空=未ログイン）
     bool        m_ghUserChecked = false;  // ログイン状態を取得済みか（重いので一度だけ）
+
+    // GitHub に新規作成するリポジトリ名（初回はプロジェクト名で事前入力、編集可）
+    std::array<char, 100> m_gitNewRepoNameBuf{};
 
     // ブランチ操作
     std::vector<std::string> m_gitBranches;     // ローカルブランチ一覧
@@ -285,6 +294,9 @@ private:
     int         m_sceneGeneration = 0;   // open_scene/new_scene のたびに +1。古い entity id 検出用。
     McpDeferred m_mcpModeReply;          // play/stop の遅延応答（モード遷移後に送る）。client=0 で無効。
     McpDeferred m_mcpLoadReply;          // open_scene の遅延応答（ロード完了後に送る）。client=0 で無効。
+    McpDeferred m_mcpStepReply;          // step_frames の遅延応答（N フレーム経過後に送る）。client=0 で無効。
+    int         m_mcpStepFramesLeft = 0; // step_frames で残り何フレーム回すか。0 で非アクティブ。
+    McpDeferred m_mcpGameViewReply;      // screenshot_game_view の遅延応答（1フレーム描画後に送る）。client=0 で無効。
     std::unordered_map<std::string, uint32_t> m_mcpIdempotency;  // idempotency_key -> 生成済み entityId
     std::unique_ptr<AudioSystem>       m_audioSystem;
     std::unique_ptr<PhysicsSystem>     m_physicsSystem;

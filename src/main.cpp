@@ -271,7 +271,11 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
             wchar_t _exeBuf[MAX_PATH] = {};
             GetModuleFileNameW(nullptr, _exeBuf, MAX_PATH);
             std::filesystem::path _exeDir = std::filesystem::path(_exeBuf).parent_path();
-            if (!dx12e::vfs::MountPak((_exeDir / "game.pak").string()))
+            // MountPak expects UTF-8。path::string() は ACP(日本語環境=Shift-JIS)を返すため、
+            // 非 ASCII フォルダ("新しいフォルダー"等)だと Utf8ToWide で化けて CreateFileW が失敗する。
+            // u8string() で UTF-8 バイト列を保ったまま渡す。
+            const std::u8string _pakU8 = (_exeDir / "game.pak").u8string();
+            if (!dx12e::vfs::MountPak(std::string(_pakU8.begin(), _pakU8.end())))
                 throw std::runtime_error("game.pak not found or corrupt");
         }
 #endif
@@ -287,7 +291,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
 #endif
 
         dx12e::Application app;
-        app.Initialize(hInstance, nCmdShow, gameMode);
+        app.Initialize(hInstance, nCmdShow, gameMode, nullptr, buildMode);
 
         if (buildMode)
         {

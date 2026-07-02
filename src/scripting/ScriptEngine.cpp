@@ -135,13 +135,13 @@ bool InitializeLuaScriptInstance(sol::state& lua,
         lastError = err.what();
         Logger::Error("Lua load error (entity={} path={}): {}",
                       static_cast<u32>(e), ls.scriptPath, lastError);
-        ls.loadError = true;
+        ls.loadError = true; ls.errorMessage = lastError;
         return false;
     }
 
     ls.env       = env;
     ls.self      = self;
-    ls.loadError = false;
+    ls.loadError = false; ls.errorMessage.clear();
 
     // OnStart(self) を呼ぶ。
     // 必ず raw_get（フォールバック無し）で「このスクリプト自身が定義した関数」だけを見る。
@@ -158,7 +158,7 @@ bool InitializeLuaScriptInstance(sol::state& lua,
             lastError = err.what();
             Logger::Error("Lua OnStart error (entity={}): {}",
                           static_cast<u32>(e), lastError);
-            ls.loadError = true;
+            ls.loadError = true; ls.errorMessage = lastError;
             return false;
         }
     }
@@ -342,6 +342,13 @@ void ScriptEngine::RegisterBindings()
             auto& reg = s.GetRegistry();
             if (!reg.all_of<MeshRenderer>(e.GetHandle())) return;
             auto& mr = reg.get<MeshRenderer>(e.GetHandle());
+            // 共有メッシュ(instanced)は VB を焼かず per-instance 色へ。発光弾はこちら＝
+            // setColor が VB 再生成しない＝大量の弾でも GPU 同期ゼロ。
+            if (mr.instanced)
+            {
+                mr.instanceColor = {r, g, b, 1.0f};
+                return;
+            }
             auto* device = s.GetDevice();
             if (!device) return;
             for (auto* mesh : mr.meshes)
@@ -1422,6 +1429,7 @@ void ScriptEngine::AttachScriptToEntity(entt::entity e, const std::string& scrip
         existing->self.reset();
         existing->started    = false;
         existing->loadError  = false;
+        existing->errorMessage.clear();
     }
     else
     {
@@ -1574,6 +1582,7 @@ void ScriptEngine::ReloadScript(entt::entity e)
     ls.self.reset();
     ls.started   = false;
     ls.loadError = false;
+    ls.errorMessage.clear();
     InvalidatePropertySchema(ls.scriptPath);   // ファイルが書き換わった可能性 → 再解析
     Logger::Info("LuaScript reload queued: entity={}", static_cast<u32>(e));
     // 実際の再構築は UpdateAttachedScripts のループで行う
@@ -1694,7 +1703,7 @@ void ScriptEngine::UpdateAttachedScripts(f32 dt)
             m_lastError = err.what();
             Logger::Error("Lua OnUpdate error (entity={}): {}",
                           static_cast<u32>(e), m_lastError);
-            ls.loadError = true;
+            ls.loadError = true; ls.errorMessage = m_lastError;
         }
     }
 }

@@ -21,6 +21,7 @@
 #include "renderer/Mesh.h"
 #include "renderer/Material.h"
 #include "renderer/Camera.h"
+#include "renderer/Frustum.h"
 #include "renderer/PostProcess.h"
 #include "renderer/SSAOPass.h"
 #include "renderer/ParticleSystem.h"
@@ -94,6 +95,7 @@
 #include <functional>
 #include <unordered_set>
 #include <cctype>
+#include <unordered_map>
 #include <immintrin.h>
 #include <mmsystem.h>
 #pragma comment(lib, "winmm.lib")
@@ -133,6 +135,9 @@ Application::~Application()
 
 namespace
 {
+// UTF-8 → wstring 変換は PathResolver::Utf8ToWide に一本化した
+// （マージ前は両ブランチが同じ修正を別実装で持っていた）。
+
 // 「更新内容」ポップアップを表示済みのバージョンを記録するファイル。
 // %LOCALAPPDATA%\DX12Engine\shown_version.txt（exe の場所に依存せず必ず書ける）。
 // Updater の last_update.txt と同じ場所に置く。
@@ -170,7 +175,7 @@ void WriteShownVersion(const std::string& v)
 } // namespace
 
 void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
-                             const ProjectInfo* /*projectInfo*/)
+                             const ProjectInfo* /*projectInfo*/, bool buildMode)
 {
     // ロガー初期化
     Logger::Init();
@@ -564,11 +569,12 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Emissive_VS.cso");
             auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Emissive_PS.cso");
 
+            // インスタンシング版（slot1=MeshInstanceData）。Emissive.hlsl は instanced VS。
             PipelineStateBuilder builder;
             builder.SetRootSignature(m_rootSignature->Get())
                    .SetVertexShader(vs.GetData(), vs.GetSize())
                    .SetPixelShader(ps.GetData(), ps.GetSize())
-                   .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
+                   .SetInputLayout(Mesh::GetInstancedInputLayout(), Mesh::GetInstancedInputLayoutCount())
                    .SetRenderTargetFormat(kSceneColorFormat)
                    .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
                    .SetDepthEnabled(true)
@@ -578,6 +584,26 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
             m_emissivePipelineState = std::make_unique<PipelineState>();
             m_emissivePipelineState->Initialize(*m_graphicsDevice, builder);
+
+            // per-instance バッファ（kFrameCount でリング化＝インフライト安全）。永続Map。
+            for (u32 fi = 0; fi < FrameResources::kFrameCount; ++fi)
+            {
+                const UINT bytes = kMaxInstances * sizeof(MeshInstanceData);
+                D3D12_HEAP_PROPERTIES hp{}; hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+                D3D12_RESOURCE_DESC rd{};
+                rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+                rd.Width = bytes; rd.Height = 1; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
+                rd.SampleDesc = {1, 0}; rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+                ThrowIfFailed(m_graphicsDevice->GetDevice()->CreateCommittedResource(
+                    &hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_GENERIC_READ,
+                    nullptr, IID_PPV_ARGS(&m_instanceBuffer[fi])));
+                void* mapped = nullptr; D3D12_RANGE rr{0, 0};
+                ThrowIfFailed(m_instanceBuffer[fi]->Map(0, &rr, &mapped));
+                m_instanceMapped[fi] = static_cast<uint8_t*>(mapped);
+                m_instanceVbView[fi].BufferLocation = m_instanceBuffer[fi]->GetGPUVirtualAddress();
+                m_instanceVbView[fi].StrideInBytes  = sizeof(MeshInstanceData);
+                m_instanceVbView[fi].SizeInBytes    = bytes;
+            }
         }
 
         // sneakWalk アニメーションを全スケルタルEntityに追加
@@ -989,7 +1015,10 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     Logger::Info("Application initialized successfully");
 
     // AI(MCP)ブリッジ。エディタ時のみ。ゲーム(封印ランタイム)では起動しない＝外部から触れない。
-    if (!m_isGameMode)
+    // ヘッドレス --build でも起動しない: 起動中エディタが 8787 を握っている状態で build が
+    // 走ると 8788 に bind→WritePortFile が %TEMP%/dx12_mcp.port を 8788 で上書きし、build 終了で
+    // その port が死ぬ＝Node 側の自動検出が死にポートを掴みライブツールが切れる原因になる。
+    if (!m_isGameMode && !buildMode)
     {
         m_mcpBridge = std::make_unique<McpBridge>();
         m_mcpBridge->Start(8787);   // ponytail: ポート固定。衝突したら env/引数化する。
@@ -1122,6 +1151,65 @@ struct McpError : std::runtime_error
     McpError(int c, const std::string& m) : std::runtime_error(m), code(c) {}
 };
 
+// MCP のエンティティ指定を解決する。params["name"](完全一致 FindEntity) を優先し、
+// 無ければ params["entity"](数値 id) を検証して返す。どちらも解決できなければ NotFound を投げる。
+// ※ コンポーネント有無は見ない(呼び出し側で all_of を別に確認 → エラー文を分けるため)。
+entt::entity ResolveMcpEntity(Scene& scene, const nlohmann::json& params)
+{
+    auto it = params.find("name");
+    if (it != params.end() && it->is_string())
+    {
+        auto ent = scene.FindEntity(it->get<std::string>());
+        if (ent.IsValid()) return ent.GetHandle();
+        throw McpError(McpErr::NotFound, "no entity named '" + it->get<std::string>() + "'");
+    }
+    auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
+    if (scene.GetRegistry().valid(e)) return e;
+    // 数値 id が無効: Stop/open_scene で世代が変わると古い id はここに来る。再取得を促す。
+    throw McpError(McpErr::NotFound,
+        "invalid entity id (Stop/シーン再読込で id は変わる。dx12_list_entities で取り直すか name 指定で操作してくれ)");
+}
+
+// MCP key_* 用。params["key"] を Win32 VK コードに解決する。数値(VK そのもの)か、
+// 文字列(1文字 A-Z/0-9 or "SPACE"/"SHIFT"/"TAB"/"ESC"/"ENTER"/"UP"/"DOWN"/"LEFT"/"RIGHT"/"F1".."F12")。
+// Lua の KEY_* と同じ割り当て(ScriptEngine.cpp)。
+int ParseMcpVk(const nlohmann::json& params)
+{
+    auto it = params.find("key");
+    if (it == params.end()) throw McpError(McpErr::InvalidParam, "missing 'key'");
+    if (it->is_number_integer())
+    {
+        int vk = it->get<int>();
+        if (vk < 0 || vk > 255) throw McpError(McpErr::InvalidParam, "key (VK) must be 0..255");
+        return vk;
+    }
+    if (!it->is_string()) throw McpError(McpErr::InvalidParam, "key must be a VK int or a key name string");
+    std::string s = it->get<std::string>();
+    for (auto& c : s) c = static_cast<char>(::toupper(static_cast<unsigned char>(c)));
+    if (s.size() == 1)
+    {
+        char c = s[0];
+        if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) return static_cast<int>(c);
+    }
+    if (s == "SPACE")  return VK_SPACE;
+    if (s == "SHIFT")  return VK_SHIFT;
+    if (s == "CTRL" || s == "CONTROL") return VK_CONTROL;
+    if (s == "ALT")    return VK_MENU;
+    if (s == "TAB")    return VK_TAB;
+    if (s == "ESC" || s == "ESCAPE")   return VK_ESCAPE;
+    if (s == "ENTER" || s == "RETURN") return VK_RETURN;
+    if (s == "UP")     return VK_UP;
+    if (s == "DOWN")   return VK_DOWN;
+    if (s == "LEFT")   return VK_LEFT;
+    if (s == "RIGHT")  return VK_RIGHT;
+    if (s[0] == 'F' && (s.size() == 2 || s.size() == 3))   // F1..F12
+    {
+        int n = (s.size() == 2) ? (s[1] - '0') : (s[1] - '0') * 10 + (s[2] - '0');
+        if (n >= 1 && n <= 12) return VK_F1 + (n - 1);
+    }
+    throw McpError(McpErr::InvalidParam, "unknown key name: " + s);
+}
+
 // 遅延応答の送信ヘルパ。client==0(=MCP 由来でない) は何もしない。
 void SendMcp(McpBridge* bridge, const McpDeferred& d, nlohmann::json resp)
 {
@@ -1144,6 +1232,14 @@ void FailMcp(McpBridge* bridge, const McpDeferred& d, int code, const std::strin
 // AI がフィールド名/型/既定値を推測せず set_component を正しく呼べるようにする。
 // jsonKey は get_entity が返し set_component/remove_component が受けるキー。
 // settable=set_component 可 / removable=remove_component 可。
+// Lua コンポーネントスクリプトから entity プロパティとして直接読めるか。
+// Entity usertype が公開しているデータプロパティは transform だけ(ScriptEngine.cpp の new_usertype<Entity>)。
+// boxCollider/rigidBody など他は entity.<key> では nil になる(physics:getVelocity 等の別経路のみ)。
+bool LuaReadableComponent(const std::string& jsonKey)
+{
+    return jsonKey == "transform";
+}
+
 nlohmann::json McpComponentSchema()
 {
     using nlohmann::json;
@@ -1151,7 +1247,8 @@ nlohmann::json McpComponentSchema()
         return json{{"name", name}, {"type", type}, {"default", std::move(def)}};
     };
     auto C = [](const char* key, bool settable, bool removable, json fields, const char* note = "") {
-        json c{{"jsonKey", key}, {"settable", settable}, {"removable", removable}, {"fields", std::move(fields)}};
+        json c{{"jsonKey", key}, {"settable", settable}, {"removable", removable},
+               {"luaAccessible", LuaReadableComponent(key)}, {"fields", std::move(fields)}};
         if (note[0]) c["note"] = note;
         return c;
     };
@@ -1245,6 +1342,119 @@ nlohmann::json McpComponentSchema()
         F("scriptPath", "string (assets-relative)", ""), F("enabled", "bool", true),
     }), "attach via dx12_attach_lua_component (not set_component). Removable via MCP."));
     return json{{"components", std::move(comps)}};
+}
+
+// dx12_describe_lua_api 用。Lua コンポーネントスクリプトから使えるバインディングの静的辞書。
+// 実体は ScriptEngine.cpp の new_usertype/グローバル(ハンドコード)。ここは「何が呼べるか」を
+// バインディングオブジェクトごとに列挙するだけ(ランタイムリフレクションはしない)。MCP 上で見える
+// コンポーネントと Lua から読める API のズレ(例: entity.boxCollider は nil)を AI に明示するのが目的。
+nlohmann::json McpLuaApi()
+{
+    using nlohmann::json;
+    auto O = [](const char* name, const char* obtainedBy, json members) {
+        json o{{"name", name}, {"members", std::move(members)}};
+        if (obtainedBy[0]) o["obtainedBy"] = obtainedBy;
+        return o;
+    };
+    json objects = json::array();
+    objects.push_back(O("callbacks", "(各 Lua コンポーネントが任意で定義)", json::array({
+        "OnStart(self)       — Play開始/アタッチ時に1回。第1引数は self(table)",
+        "OnUpdate(self, dt)  — 毎フレーム。第1引数 self、第2引数 dt(秒)。コンポーネントは self が必須",
+        "注: グローバル(シーン)スクリプトは OnUpdate(dt)(self 無し)。コンポーネントは OnUpdate(self, dt)",
+    })));
+    objects.push_back(O("entity", "scene:findEntity(name) / scene:spawn* / physics:overlap*", json::array({
+        "isValid() -> bool",
+        "name  (string, read-only property)",
+        "transform  (Transform getter。フィールドは書込可: entity.transform.position = Vec3.new(x,y,z)。ただし entity.transform 自体の再代入は read-only) — 唯一直接読めるコンポーネントデータ",
+        "hasComponent(type:string) -> bool  (type: Transform,MeshRenderer,SkeletalAnimation,NodeAnimation,GridPlane,PointLight,DirectionalLight,SpotLight,Camera,AudioSource,Gimmick,ParticleEmitter,Trigger,CharacterController)",
+        "playAnim(clipIndex:int, blend:float)",
+        "playAnimByName(name:string, blend:float)",
+        "setLooping(loop:bool)",
+        "getAnimCount() -> int",
+        "getAnimName(index:int) -> string",
+    })));
+    objects.push_back(O("transform", "entity.transform / self.transform", json::array({
+        "position  (Vec3, 読み書き)", "rotation  (Vec3, euler degrees, 読み書き)", "scale  (Vec3, 読み書き)",
+        "代入: tr.position = Vec3.new(x,y,z) も tr.position.x=… も可。tr 自体(entity.transform)の再代入は不可(read-only)",
+    })));
+    objects.push_back(O("Vec3", "Vec3.new(x,y,z)", json::array({"x", "y", "z"})));
+    objects.push_back(O("self", "(各 Lua コンポーネントに自動で渡る)", json::array({
+        "entity  (u32 id NUMBER — Entity usertype ではない。callable が要るなら scene:findEntity(self.name))",
+        "name  (string)", "transform  (Transform)", "enabled  (bool)",
+        "<宣言した properties の各値>  (dx12_get_lua_component_state で確認)",
+    })));
+    objects.push_back(O("scene", "global", json::array({
+        "spawn(name,modelPath,pos,rot,scale) -> entity", "spawnBox(name,pos,rot,scale) -> entity",
+        "spawnSphere(name,pos,radius) -> entity", "spawnPlane(name,pos,size,grid) -> entity",
+        "remove(entity)", "getEntityCount() -> int", "findEntity(name) -> entity",
+        "setUVScale(entity,u,v)", "setColor(entity,r,g,b)", "gimmicks() -> table",
+        "queryByTag(tag) -> table(names)", "queryInBox(minX,minZ,maxX,maxZ,tag?) -> table(names)",
+    })));
+    objects.push_back(O("input", "global", json::array({
+        "isKeyDown(vk) -> bool", "isKeyPressed(vk) -> bool", "isAsyncKeyDown(vk) -> bool",
+        "isMouseCaptured() -> bool", "isRightMouseDown() -> bool",
+        "getMouseDeltaX() -> float", "getMouseDeltaY() -> float", "setMouseCapture(b)",
+    })));
+    objects.push_back(O("camera", "global", json::array({
+        "getPosition()/setPosition(v)", "getYaw()/setYaw(f)", "getPitch()/setPitch(f)",
+        "moveForward/moveRight/moveUp(amt)", "rotate(dx,dy)",
+        "getMoveSpeed/setMoveSpeed", "getMouseSensitivity/setMouseSensitivity",
+        "project(x,y,z) -> (u,v,visible)",
+    })));
+    objects.push_back(O("physics", "global", json::array({
+        "autoCollider(e)", "addBoxCollider(e,hx,hy,hz)", "addSphereCollider(e,radius)",
+        "addCapsuleCollider(e,radius,halfHeight)", "addRigidBody(e,motionType,mass)", "removeRigidBody(e)",
+        "applyForce(e,vec3)", "applyImpulse(e,vec3)", "setVelocity(e,vec3)", "getVelocity(e) -> vec3",
+        "setPosition(e,vec3)  ※DYNAMIC ボディ向け。KINEMATIC/STATIC は Transform 駆動なので entity.transform.position を直接書く",
+        "raycast(origin,dir,maxDist) -> RaycastHit",
+        "overlapBox(center,half,maxN?) -> {entity..}", "overlapSphere(center,radius,maxN?) -> {entity..}",
+        "setGravity(vec3)", "setPaused(b)", "step(dt)",
+        "addCharacterController(e,radius,halfHeight)", "move(e,vx,vz)", "jump(e,amount?)", "isGrounded(e) -> bool",
+    })));
+    objects.push_back(O("audio", "global", json::array({
+        "playBGM(path)/stopBGM()/pauseBGM()/resumeBGM()", "playSFX(path)",
+        "playSpatial(path,x,y,z,minD,maxD,vol?,loop?)", "stopAllSFX()",
+        "setMasterVolume/setBGMVolume/setSFXVolume(v)", "getBGMList()/getSFXList() -> table",
+    })));
+    objects.push_back(O("RaycastHit", "physics:raycast(...)", json::array({
+        "hit() -> bool", "distance() -> float", "point() -> vec3", "normal() -> vec3",
+    })));
+    objects.push_back(O("ui", "global (':' で呼ぶ)", json::array({
+        "ui:text(x,y,text,size?,r?,g?,b?,a?)", "ui:button(x,y,w,h,label) -> bool",
+        "ui:image(x,y,w,h,path)", "ui:rect(x,y,w,h,r?,g?,b?,a?,rounding?)",
+    })));
+    objects.push_back(O("fx", "global (':' で呼ぶ)。座標/色キーは省略可(既定値あり)", json::array({
+        "fx:burst{ x,y,z, count, size,sizeEnd, life,lifeVar, r,g,b, rEnd,gEnd,bEnd, rMid,gMid,bMid, intensity, kind, speed,spread, dx,dy,dz, gravity,drag,up, stretch, turbStrength,turbFreq, flicker } — 1発放出",
+        "fx:ring{ ...burst と同じキー... } — リング状放出。サイズは radius/scale ではなく size",
+        "kind: glow/fire/smoke/spark/magic/electric/ring/star（文字列 or 0..7）",
+        "fx:beam{ x0,y0,z0, x1,y1,z1, width, r,g,b, intensity, life, kind } — kind: energy/electric/fire。座標は ax/bz ではなく x0..z1",
+        "fx:pulse(amt?)  画面全体パルス  /  fx:clear()",
+        "例: fx:burst{ x=p.x, y=p.y, z=p.z, kind=\"spark\", count=18, size=0.5, r=1, g=0.78, b=0.18 }  ← scale/radius は無効キー(黙って無視される)",
+    })));
+    objects.push_back(O("events", "global (Play 中のみ)", json::array({
+        "events:on(name,fn) -> id", "events:off(id)", "events:emit(name,data?)", "events:clear()",
+    })));
+    objects.push_back(O("globals", "", json::array({
+        "log(msg)", "saveNum(key,val)", "loadNum(key,default?) -> double",
+        "loadScene(rel)", "nextScene()", "quit()", "fadeToScene(rel,dur?)", "transitionToScene(rel,type:int,dur?)",
+        "ASSETS, SCREEN_W, SCREEN_H, KEY_*(VK codes), MOTION_STATIC/KINEMATIC/DYNAMIC",
+    })));
+    objects.push_back(O("prelude", "global (高レベルヘルパ)", json::array({
+        "keyDown(name) -> bool / keyPressed(name) -> bool  (name: \"W\",\"SPACE\",\"ESC\" 等)",
+        "actor(name,opts?) -> Actor", "cameraFollow/cameraTPS/cameraLockOn(...)",
+        "goToScene(path,dur?)", "win(dur?)", "clamp(v,lo,hi)", "lerp(a,b,t)", "angleDelta(from,to)",
+        "FX.explosion/shockwave/spark/...", "vfx.register(name,fn) / vfx.play(name,x,y,z,scale?)",
+    })));
+    return json{
+        {"version", 1},
+        {"note", "Lua コンポーネントから使えるバインディング一覧。重要: コンポーネントは transform を除き "
+                 "entity.<key> では読めない(entity.boxCollider 等は nil)。collider/rigidBody の値は "
+                 "physics:getVelocity(e) など別 API 経由。self.entity は数値 id で Entity usertype ではない。"
+                 " コールバックは OnStart(self) / OnUpdate(self, dt)(コンポーネントは self 必須)。"
+                 " 位置更新は entity.transform.position = Vec3.new(x,y,z)（KINEMATIC も Transform 駆動）。"
+                 " スクリプトエラーは dx12_get_lua_component_state の errorMessage に出る(loadError=true のとき)。"},
+        {"objects", std::move(objects)},
+    };
 }
 
 // entity が持つコンポーネントの jsonKey 一覧(list_entities verbose / get_entity 概況)。
@@ -1361,7 +1571,6 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         }
         else if (method == "attach_lua_component")
         {
-            const u32 id = params.value("entity", 0xFFFFFFFFu);
             const std::string script = params.value("script", std::string());
             if (script.empty()) throw std::runtime_error("missing 'script'");
             // assets 配下限定。絶対パス/ドライブレター/バックスラッシュ/".." を弾いて
@@ -1369,9 +1578,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             if (script.front() == '/' || script.find('\\') != std::string::npos ||
                 script.find(':') != std::string::npos || script.find("..") != std::string::npos)
                 throw std::runtime_error("invalid script path (assets 相対のみ)");
-            const auto e = static_cast<entt::entity>(id);
-            if (!m_scene->GetRegistry().valid(e))
-                throw std::runtime_error("invalid entity id");
+            const auto e = ResolveMcpEntity(*m_scene, params);
             m_scriptEngine->AttachScriptToEntity(e, script);
             m_scriptEngine->ReloadScript(e);
             resp["ok"] = true;
@@ -1425,19 +1632,16 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             // 削除ドレイン(Render)は Editor モード限定。Play 中に積むと drain されず未応答ハングするため弾く。
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot delete while Playing; call dx12_stop first");
-            const u32 id = params.value("entity", 0xFFFFFFFFu);
-            const auto e = static_cast<entt::entity>(id);
-            if (!m_scene->GetRegistry().valid(e)) throw McpError(McpErr::NotFound, "invalid entity id");
+            const auto e = ResolveMcpEntity(*m_scene, params);
             // 子ごと削除+Undo はフレーム境界で処理し、deletedCount を遅延応答で返す。
             m_editorCtx->mcpDeletions.push_back(McpPendingDelete{ e, deferred });
             isDeferred = true;
         }
         else if (method == "set_transform")
         {
-            const u32 id = params.value("entity", 0xFFFFFFFFu);
-            const auto e = static_cast<entt::entity>(id);
+            const auto e = ResolveMcpEntity(*m_scene, params);   // 無効 id は "invalid entity id" を投げる
             auto& reg = m_scene->GetRegistry();
-            if (!reg.valid(e) || !reg.all_of<Transform>(e))
+            if (!reg.all_of<Transform>(e))
                 throw McpError(McpErr::NotFound, "entity has no Transform");
             auto& t = reg.get<Transform>(e);
             if (params.contains("position"))
@@ -1471,15 +1675,19 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         }
         else if (method == "get_entity")
         {
-            const u32 id = params.value("entity", 0xFFFFFFFFu);
-            const auto e = static_cast<entt::entity>(id);
+            const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
-            if (!reg.valid(e)) throw McpError(McpErr::NotFound, "invalid entity id");
             // 既存シリアライザを流用(リフレクション的に全コンポーネントを JSON 化)。
             std::string js = SceneSerializer::SerializeEntity(*m_scene, e, PathResolver::AssetsDir());
             json result = json::parse(js);
             result["entityId"] = static_cast<u32>(e);
-            result["componentTypes"] = McpComponentTypesOf(reg, e);
+            json types = McpComponentTypesOf(reg, e);
+            // Lua スクリプトが entity.<key> で直接読めるコンポーネントだけを別出し(現状 transform のみ)。
+            // MCP で見えても Lua では nil になる boxCollider 等との取り違えを防ぐ。
+            json luaReadable = json::array();
+            for (auto& k : types) if (LuaReadableComponent(k.get<std::string>())) luaReadable.push_back(k);
+            result["luaReadable"] = std::move(luaReadable);
+            result["componentTypes"] = std::move(types);
             result["sceneGeneration"] = m_sceneGeneration;
             resp["ok"] = true;
             resp["result"] = std::move(result);
@@ -1621,9 +1829,8 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         }
         else if (method == "set_component")
         {
-            const auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
+            const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
-            if (!reg.valid(e)) throw McpError(McpErr::NotFound, "invalid entity id");
             const std::string comp = params.value("component", std::string());
             const json data = params.value("data", json::object());
             if (comp.empty()) throw McpError(McpErr::InvalidParam, "missing 'component'");
@@ -1681,9 +1888,8 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         }
         else if (method == "remove_component")
         {
-            const auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
+            const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
-            if (!reg.valid(e)) throw McpError(McpErr::NotFound, "invalid entity id");
             const std::string comp = params.value("component", std::string());
             if (comp == "transform" || comp == "name")
                 throw McpError(McpErr::InvalidParam, "cannot remove core component (transform/name)");
@@ -1713,11 +1919,17 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 resp["result"] = {{"components", std::move(filtered)}};
             }
         }
+        else if (method == "describe_lua_api")
+        {
+            // Lua スクリプトから使えるバインディング一覧(静的)。MCP のコンポーネントと
+            // Lua から読める API のズレ(entity.boxCollider は nil 等)を AI に伝えるため。
+            resp["ok"] = true;
+            resp["result"] = McpLuaApi();
+        }
         else if (method == "set_parent")
         {
             auto& reg = m_scene->GetRegistry();
-            const auto child = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
-            if (!reg.valid(child)) throw std::runtime_error("invalid entity id");
+            const auto child = ResolveMcpEntity(*m_scene, params);   // entity か name で子を指定
             const u32 pid = params.value("parent", 0xFFFFFFFFu);
             entt::entity parent = entt::null;
             if (pid != 0xFFFFFFFFu)
@@ -1738,10 +1950,11 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         }
         else if (method == "rename_entity")
         {
+            // ここの "name" は新しい名前。エンティティ指定は entity(id) のみ(name 引きは曖昧なので不可)。
             const auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
             auto& reg = m_scene->GetRegistry();
-            if (!reg.valid(e) || !reg.all_of<NameTag>(e))
-                throw std::runtime_error("entity has no NameTag");
+            if (!reg.valid(e)) throw McpError(McpErr::NotFound, "invalid entity id");
+            if (!reg.all_of<NameTag>(e)) throw McpError(McpErr::NotFound, "entity has no NameTag");
             std::string base = params.value("name", std::string());
             if (base.empty()) throw std::runtime_error("missing 'name'");
             auto taken = [&](const std::string& s) {
@@ -1811,17 +2024,16 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         }
         else if (method == "select_entity")
         {
-            const auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
-            if (!m_scene->GetRegistry().valid(e)) throw McpError(McpErr::NotFound, "invalid entity id");
+            const auto e = ResolveMcpEntity(*m_scene, params);
             m_editorCtx->Select(e);
             resp["ok"] = true;
             resp["result"] = {{"selected", static_cast<u32>(e)}};
         }
         else if (method == "focus_camera")
         {
-            const auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
+            const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
-            if (!reg.valid(e) || !reg.all_of<Transform>(e))
+            if (!reg.all_of<Transform>(e))
                 throw McpError(McpErr::NotFound, "entity has no Transform");
             const auto& t = reg.get<Transform>(e);
             float dist = 8.0f;
@@ -1855,9 +2067,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         }
         else if (method == "set_pbr")
         {
-            const auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
+            const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
-            if (!reg.valid(e) || !reg.all_of<MeshRenderer>(e))
+            if (!reg.all_of<MeshRenderer>(e))
                 throw McpError(McpErr::NotFound, "entity has no MeshRenderer");
             auto& mr = reg.get<MeshRenderer>(e);
             if (params.contains("metallic"))  mr.overrideMetallic  = params["metallic"].get<float>();
@@ -1873,8 +2085,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot duplicate while Playing; call dx12_stop first");
-            const auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
-            if (!m_scene->GetRegistry().valid(e)) throw McpError(McpErr::NotFound, "invalid entity id");
+            const auto e = ResolveMcpEntity(*m_scene, params);
             m_editorCtx->mcpDuplications.push_back(McpPendingDelete{ e, deferred });  // .entity=複製元
             isDeferred = true;
         }
@@ -2032,6 +2243,195 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["result"] = {{"path", path},
                               {"width", m_sceneRT->GetWidth()},
                               {"height", m_sceneRT->GetHeight()}};
+        }
+        else if (method == "project_world_to_screen")
+        {
+            // エンティティのワールド座標を、今シーンビューを描いているカメラ(m_camera)の
+            // ビュー*射影で画面ピクセルへ投影する。Playing 中は m_camera = アクティブなゲームカメラ
+            // なので「ゲーム画面で player が中央/画面内か」を数値で確認できる(screenshot と整合)。
+            using namespace DirectX;
+            const auto e = ResolveMcpEntity(*m_scene, params);
+            auto& reg = m_scene->GetRegistry();
+            XMVECTOR wpos = XMVectorSetW(ComputeWorldMatrix(reg, e).r[3], 1.0f);
+            XMVECTOR clip = XMVector4Transform(wpos, m_camera->GetViewProjMatrix());
+            const float w = XMVectorGetW(clip);
+            const float ndcX = (w != 0.0f) ? XMVectorGetX(clip) / w : 0.0f;
+            const float ndcY = (w != 0.0f) ? XMVectorGetY(clip) / w : 0.0f;
+            const float ndcZ = (w != 0.0f) ? XMVectorGetZ(clip) / w : 0.0f;
+            const float vw = static_cast<float>(m_sceneRT->GetWidth());
+            const float vh = static_cast<float>(m_sceneRT->GetHeight());
+            const float px = (ndcX * 0.5f + 0.5f) * vw;
+            const float py = (0.5f - ndcY * 0.5f) * vh;   // NDC +Y up → ピクセル +Y down
+            const bool visible = (w > 0.0f) && ndcX >= -1.0f && ndcX <= 1.0f &&
+                                 ndcY >= -1.0f && ndcY <= 1.0f && ndcZ >= 0.0f && ndcZ <= 1.0f;
+            resp["ok"] = true;
+            resp["result"] = {{"entityId", static_cast<u32>(e)}, {"x", px}, {"y", py},
+                              {"visible", visible}, {"depth", ndcZ}, {"w", w},
+                              {"width", m_sceneRT->GetWidth()}, {"height", m_sceneRT->GetHeight()},
+                              {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"}};
+        }
+        else if (method == "get_lua_component_state")
+        {
+            // LuaScript の現在のプロパティ値(オーバーライド+スキーマ既定)を全部返す。
+            // get_entity は保存済みオーバーライドしか出さないので、スキーマを基準に既定も含めて出す。
+            const auto e = ResolveMcpEntity(*m_scene, params);
+            auto& reg = m_scene->GetRegistry();
+            if (!reg.all_of<LuaScript>(e)) throw McpError(McpErr::NotFound, "entity has no LuaScript");
+            const auto& ls = reg.get<LuaScript>(e);
+            const auto& schema = m_scriptEngine->GetPropertySchema(ls.scriptPath);
+            auto typeStr = [](ScriptPropType t) -> const char* {
+                switch (t) {
+                    case ScriptPropType::Int:    return "int";
+                    case ScriptPropType::Bool:   return "bool";
+                    case ScriptPropType::String: return "string";
+                    case ScriptPropType::Vec3:   return "vec3";
+                    case ScriptPropType::Color:  return "color";
+                    case ScriptPropType::Entity: return "entity";
+                    default:                     return "float";
+                } };
+            auto emitVal = [](json& pj, const ScriptProp& v) {
+                switch (v.type) {
+                    case ScriptPropType::Int:    pj["value"] = static_cast<long long>(v.num); break;
+                    case ScriptPropType::Bool:   pj["value"] = v.b; break;
+                    case ScriptPropType::String:
+                    case ScriptPropType::Entity: pj["value"] = v.str; break;
+                    case ScriptPropType::Vec3:
+                    case ScriptPropType::Color:  pj["value"] = json::array({v.vec.x, v.vec.y, v.vec.z}); break;
+                    default:                     pj["value"] = v.num; break;
+                } };
+            json props = json::array();
+            for (const auto& d : schema)
+            {
+                const ScriptProp* ov = nullptr;
+                for (const auto& p : ls.props) if (p.name == d.name) { ov = &p; break; }
+                ScriptProp v = ov ? *ov : d.def;
+                v.type = d.type;   // オーバーライドの型がズレてても schema を正とする
+                json pj{{"name", d.name}, {"type", typeStr(d.type)}, {"isOverride", ov != nullptr}};
+                emitVal(pj, v);
+                props.push_back(std::move(pj));
+            }
+            resp["ok"] = true;
+            resp["result"] = {{"entityId", static_cast<u32>(e)}, {"scriptPath", ls.scriptPath},
+                              {"enabled", ls.enabled}, {"started", ls.started},
+                              {"loadError", ls.loadError}, {"errorMessage", ls.errorMessage},
+                              {"properties", std::move(props)}};
+        }
+        else if (method == "set_lua_property")
+        {
+            // LuaScript のプロパティを1つ書き換える。スキーマで型を確認して検証。
+            // 実行中(Playing)なら ReloadScript で再注入、Editor では保存だけ(次 Play で反映)。
+            const auto e = ResolveMcpEntity(*m_scene, params);
+            auto& reg = m_scene->GetRegistry();
+            if (!reg.all_of<LuaScript>(e)) throw McpError(McpErr::NotFound, "entity has no LuaScript");
+            const std::string key = params.value("key", std::string());
+            if (key.empty()) throw McpError(McpErr::InvalidParam, "missing 'key'");
+            if (!params.contains("value")) throw McpError(McpErr::InvalidParam, "missing 'value'");
+            const json& value = params["value"];
+            auto& ls = reg.get<LuaScript>(e);
+            const auto& schema = m_scriptEngine->GetPropertySchema(ls.scriptPath);
+            const ScriptPropDef* def = nullptr;
+            for (const auto& d : schema) if (d.name == key) { def = &d; break; }
+            if (!def) throw McpError(McpErr::InvalidParam,
+                "unknown property '" + key + "' (script の properties に未宣言。dx12_get_lua_component_state で確認)");
+            ScriptProp* p = nullptr;
+            for (auto& ex : ls.props) if (ex.name == key) { p = &ex; break; }
+            if (!p) { ls.props.push_back(def->def); p = &ls.props.back(); }
+            p->type = def->type;
+            switch (def->type)
+            {
+            case ScriptPropType::Float:
+            case ScriptPropType::Int:
+                if (!value.is_number()) throw McpError(McpErr::InvalidParam, "value must be a number");
+                p->num = value.get<double>(); break;
+            case ScriptPropType::Bool:
+                if (!value.is_boolean()) throw McpError(McpErr::InvalidParam, "value must be a bool");
+                p->b = value.get<bool>(); break;
+            case ScriptPropType::String:
+            case ScriptPropType::Entity:
+                if (!value.is_string()) throw McpError(McpErr::InvalidParam, "value must be a string");
+                p->str = value.get<std::string>(); break;
+            case ScriptPropType::Vec3:
+            case ScriptPropType::Color:
+            {
+                if (!value.is_array() || value.size() != 3)
+                    throw McpError(McpErr::InvalidParam, "value must be [x,y,z]");
+                auto a = value.get<std::vector<float>>();
+                p->vec = { a[0], a[1], a[2] }; break;
+            }
+            }
+            if (ls.started) m_scriptEngine->ReloadScript(e);  // 実行中のみ再注入(Editor は保存のみ)
+            resp["ok"] = true;
+            resp["result"] = {{"entityId", static_cast<u32>(e)}, {"key", key}, {"reloaded", ls.started}};
+        }
+        else if (method == "key_down")
+        {
+            // 合成キー押下(押しっぱなし)。次フレーム以降の Lua input:isKeyDown / keyDown() が true になる。
+            // key_up を呼ぶまで保持。Playing 中の移動などの確認用(isAsyncKeyDown 系には効かない)。
+            const int vk = ParseMcpVk(params);
+            m_inputSystem->OnKeyDown(vk);
+            resp["ok"] = true;
+            resp["result"] = {{"key", vk}, {"down", true}};
+        }
+        else if (method == "key_up")
+        {
+            const int vk = ParseMcpVk(params);
+            m_inputSystem->OnKeyUp(vk);
+            resp["ok"] = true;
+            resp["result"] = {{"key", vk}, {"down", false}};
+        }
+        else if (method == "key_press")
+        {
+            // 1フレームだけ押す(isKeyPressed が立つ)。ジャンプ等のタップ操作の確認用。
+            const int vk = ParseMcpVk(params);
+            m_inputSystem->InjectKeyPress(vk);
+            resp["ok"] = true;
+            resp["result"] = {{"key", vk}, {"pressed", true}};
+        }
+        else if (method == "step_frames")
+        {
+            // N フレーム進めてから応答する同期バリア(遅延応答)。key_down/press の後に呼ぶと
+            // 入力がシミュレーションに効いてから get_entity/project_world_to_screen で結果を見られる。
+            // ※ 真の決定論ステッパではない(各フレーム dt は実時間)。エンジンは常時実時間で回る。
+            int n = params.value("frames", params.value("n", 1));
+            if (n < 1) n = 1;
+            if (n > 600) n = 600;   // ~10s 上限(クライアント timeout 対策)
+            if (m_mcpStepReply.client != 0)
+                throw McpError(McpErr::ModeConflict, "a step is already pending; retry shortly");
+            m_mcpStepFramesLeft = n;
+            m_mcpStepReply = deferred;
+            isDeferred = true;
+        }
+        else if (method == "set_color")
+        {
+            // メッシュの頂点色(基本色の乗算)を設定する。scene:setColor(Lua) と同じ。
+            // 足場やコインの色付けに。色は [r,g,b](0..1)。
+            const auto e = ResolveMcpEntity(*m_scene, params);
+            auto& reg = m_scene->GetRegistry();
+            if (!reg.all_of<MeshRenderer>(e)) throw McpError(McpErr::NotFound, "entity has no MeshRenderer");
+            auto c = params.value("color", std::vector<float>{1.0f, 1.0f, 1.0f});
+            if (c.size() != 3) throw McpError(McpErr::InvalidParam, "color must be [r,g,b]");
+            auto* device = m_scene->GetDevice();
+            if (!device) throw McpError(McpErr::Internal, "no graphics device");
+            auto& mr = reg.get<MeshRenderer>(e);
+            for (auto* mesh : mr.meshes) if (mesh) mesh->SetVertexColor(*device, c[0], c[1], c[2], 1.0f);
+            resp["ok"] = true;
+            resp["result"] = {{"entityId", static_cast<u32>(e)}, {"color", {c[0], c[1], c[2]}}};
+        }
+        else if (method == "screenshot_game_view")
+        {
+            // アクティブな CameraComponent 視点でシーンを1フレーム描いて撮る(遅延応答)。
+            // Editor 中でもゲームカメラの画角を確認できる。Playing 中は通常 screenshot と同じ絵。
+            auto& reg = m_scene->GetRegistry();
+            bool hasActiveCam = false;
+            for (auto [e, cam] : reg.view<const CameraComponent>().each())
+                if (cam.isActive) { hasActiveCam = true; break; }
+            if (!hasActiveCam && m_engineMode != EngineMode::Playing)
+                throw McpError(McpErr::NotFound,
+                    "no active CameraComponent (camera.isActive=true にするか dx12_screenshot を使う)");
+            if (m_mcpGameViewReply.client != 0)
+                throw McpError(McpErr::ModeConflict, "a game-view screenshot is already pending; retry shortly");
+            m_mcpGameViewReply = deferred;   // フレーム境界で描画→撮影→応答(Run ループ側)
+            isDeferred = true;
         }
         else
         {
@@ -2380,9 +2780,24 @@ void Application::Run()
             }
         }
 
+        // MCP screenshot_game_view: Editor 中は一時的にアクティブなゲームカメラへ切り替えて1フレーム描く。
+        // Playing 中は m_camera が既にゲームカメラなので上書き不要(通常 screenshot と同じ絵)。
+        const bool gvShot     = (m_mcpGameViewReply.client != 0);
+        const bool gvOverride = gvShot && (m_engineMode != EngineMode::Playing);
+        DirectX::XMFLOAT3 gvPos{}; f32 gvYaw=0, gvPitch=0, gvFov=0, gvAsp=0, gvNear=0, gvFar=0, gvOrthoH=0;
+        bool gvOrtho=false;
+        if (gvOverride)
+        {
+            gvPos=m_camera->GetPosition(); gvYaw=m_camera->GetYaw(); gvPitch=m_camera->GetPitch();
+            gvFov=m_camera->GetFovY(); gvAsp=m_camera->GetAspect();
+            gvNear=m_camera->GetNearZ(); gvFar=m_camera->GetFarZ();
+            gvOrtho=m_camera->IsOrthographic(); gvOrthoH=m_camera->GetOrthoHeight();
+        }
+
         try
         {
             Update();
+            if (gvOverride) SyncActiveCameraToGlobal();   // Update の後に上書き(編集カメラ操作に勝つ)
             Render();
         }
         catch (const std::exception& ex)
@@ -2401,6 +2816,38 @@ void Application::Run()
                 m_inputSystem->SetMouseCapture(false);
                 Logger::Error("Forced return to Editor mode");
             }
+        }
+
+        // screenshot_game_view: このフレームの描画(ゲームカメラ視点)を撮って遅延応答 → 編集カメラ復元。
+        if (gvShot)
+        {
+            std::string serr;
+            const std::string p = CaptureSceneScreenshot(serr);
+            if (p.empty())
+                FailMcp(m_mcpBridge.get(), m_mcpGameViewReply, McpErr::Internal,
+                        serr.empty() ? "screenshot failed" : serr);
+            else
+                CompleteMcp(m_mcpBridge.get(), m_mcpGameViewReply,
+                    nlohmann::json{{"path", p}, {"width", m_sceneRT->GetWidth()},
+                                   {"height", m_sceneRT->GetHeight()},
+                                   {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"}});
+            m_mcpGameViewReply = {};
+            if (gvOverride)   // 編集カメラを完全に復元(位置/向き/投影)
+            {
+                m_camera->SetPosition(gvPos); m_camera->SetYaw(gvYaw); m_camera->SetPitch(gvPitch);
+                if (gvOrtho) m_camera->SetOrthographic(gvOrthoH, gvAsp, gvNear, gvFar);
+                else         m_camera->SetPerspective(gvFov, gvAsp, gvNear, gvFar);
+            }
+        }
+
+        // MCP step_frames: 1フレーム回り切ったらカウントダウン。0 になったら遅延応答を返す。
+        if (m_mcpStepFramesLeft > 0 && --m_mcpStepFramesLeft == 0 && m_mcpStepReply.client != 0)
+        {
+            CompleteMcp(m_mcpBridge.get(), m_mcpStepReply,
+                nlohmann::json{{"stepped", true},
+                               {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"},
+                               {"sceneGeneration", m_sceneGeneration}});
+            m_mcpStepReply = {};
         }
 
         // フレームレートリミッター（VSync OFF時のCPU暴走を防止）
@@ -2598,6 +3045,16 @@ void Application::Update()
             if (GetAsyncKeyState(VK_SHIFT) & 0x8000) m_camera->MoveUp(-speed);
         }
 
+        // 2D中の右ドラッグ: 回転せずパン（マウスユーザー向け。中ドラッグと同じ操作感）。
+        // 回転は 0 固定なので MoveRight/MoveUp はワールド X/Y 平行移動になる。
+        if (m_inputSystem->IsMouseCaptured() && m_editorCtx->view2D)
+        {
+            f32 worldPerPixel = (2.0f * m_editorCtx->view2DZoom)
+                              / (std::max)(1.0f, m_editorCtx->viewportH);
+            m_camera->MoveRight(-m_inputSystem->GetMouseDeltaX() * worldPerPixel);
+            m_camera->MoveUp(m_inputSystem->GetMouseDeltaY() * worldPerPixel);
+        }
+
         // --- タッチパッド向け: キーボードフライモード（マウス/ボタン長押し不要）---
         // GetAsyncKeyState はフォーカスに関係なく物理キー状態を読むため、ウィンドウが前面に
         // いる時だけ有効化する（別アプリ作業中の ` / Ctrl+Z / WASD などがエディタに効くのを防ぐ）。
@@ -2633,7 +3090,8 @@ void Application::Update()
         // --- 2D ビューモード: WASD / 矢印キーでパン（3D の WASD 移動と同じ操作感で左右上下に動かせる）---
         // 2D は回転 0 固定なので MoveRight/MoveUp はそのままワールド X/Y のパンになる。速度はズーム量に比例。
         // ※ W/E/R のギズモ切替は 2D 中は下のブロックで抑止し、ここでは移動だけにする。
-        if (m_editorCtx->view2D && kbActive && !m_inputSystem->IsMouseCaptured())
+        // 右クリック保持中（マウスキャプチャ中）でも A/D・矢印で動かせるよう capture ゲートは付けない。
+        if (m_editorCtx->view2D && kbActive)
         {
             f32 pan = (std::max)(0.5f, m_editorCtx->view2DZoom) * 1.5f * dt;
             if ((GetAsyncKeyState('D') & 0x8000) || (GetAsyncKeyState(VK_RIGHT) & 0x8000)) m_camera->MoveRight(pan);
@@ -3250,18 +3708,24 @@ void Application::RenderWhatsNewPopup()
 
     ImVec2 center = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(560.0f, 0.0f), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ImVec2(760.0f, 0.0f), ImGuiCond_Appearing);
     if (ImGui::BeginPopupModal(kId, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
     {
+        // 見づらい要望対応: 専用フォントは追加せず、既存フォントを SetWindowFontScale で拡大
+        // （ToolbarPanel.cpp のエラーモーダルと同じやり方）。
+        ImGui::SetWindowFontScale(1.35f);
         ImGui::PushStyleColor(ImGuiCol_Text, th::Accent);
         ImGui::TextUnformatted(kWhatsNewTitle);
         ImGui::PopStyleColor();
+        ImGui::SetWindowFontScale(1.0f);
         ImGui::Separator();
         ImGui::Spacing();
+        ImGui::SetWindowFontScale(1.18f);
         ImGui::TextWrapped("%s", kWhatsNewBody);
+        ImGui::SetWindowFontScale(1.0f);
         ImGui::Spacing();
         ImGui::Separator();
-        if (ImGui::Button("閉じる", ImVec2(140.0f, 0.0f)))
+        if (ImGui::Button("閉じる", ImVec2(160.0f, 0.0f)))
         {
             // この版は表示済みとして記録 → 次回以降は版が変わるまで出さない。
             WriteShownVersion(kEngineVersion);
@@ -3480,6 +3944,11 @@ void Application::RenderVersionControlWindow()
     const std::string& root = m_projectInfo.rootDir;
     const bool busy = m_gitOpRunning;
 
+    // 新規リポジトリ名の初期値（未入力なら一度だけプロジェクト名で埋める。以降は編集を尊重）
+    if (m_gitNewRepoNameBuf[0] == '\0' && !m_projectInfo.name.empty())
+        strncpy_s(m_gitNewRepoNameBuf.data(), m_gitNewRepoNameBuf.size(),
+                  m_projectInfo.name.c_str(), _TRUNCATE);
+
     // 状態の再取得（ローカル git のみで軽い。開いた瞬間と操作完了直後＋手動「更新」だけ＝定期ヒッチ無し）。
     if (ImGui::IsWindowAppearing() || m_gitForceRefresh)
     {
@@ -3503,6 +3972,61 @@ void Application::RenderVersionControlWindow()
 
     auto icon = [](u64 h, float s) { if (h) { ImGui::Image(static_cast<ImTextureID>(h), ImVec2(s, s)); ImGui::SameLine(); } };
 
+    // GitHub アカウント行（ログイン状態 + ログインボタン）。リポジトリの有無に関わらず使うので
+    // 共通化（未初期化の空状態でも、初回からログイン導線を出すため）。
+    auto renderGitHubAccountRow = [&]()
+    {
+        if (!m_ghUserChecked && !busy)
+        {
+            m_ghUserChecked = true;
+            RunGitAsync("GitHub確認", []{
+                GitResult r; r.output = GitIntegration::GitHubUser(); r.exitCode = 0; return r;
+            }, /*isLogin*/ true);
+        }
+        ImGui::AlignTextToFramePadding();
+        if (!m_ghUser.empty())
+            ImGui::TextColored(th::Good, "● @%s", m_ghUser.c_str());
+        else
+        {
+            ImGui::TextColored(th::Warn, "○ 未ログイン");
+            ImGui::SameLine();
+            ImGui::BeginDisabled(busy);
+            if (ImGui::SmallButton("GitHub にログイン"))
+            {
+                m_gitOutput = "別ウィンドウでブラウザ認証してや。完了したら自動で反映されるで。";
+                // gh auth login --web の子プロセス終了をそのまま待つ＝ブラウザ承認した瞬間に
+                // 検知できる（ポーリングより速い。詳細は GitIntegration::LoginAndWait 参照）。
+                RunGitAsync("GitHubログイン待ち",
+                    [this]{ return GitIntegration::LoginAndWait(m_gitAbort); }, /*isLogin*/ true);
+            }
+            ImGui::EndDisabled();
+        }
+    };
+
+    // GitHub に新規リポジトリ作成 → push。needInit=true ならローカル未初期化の状態から面倒見る
+    // （「初期化」という別操作を挟まず、「リポジトリ作成」一発で完結させるため）。
+    // repoName が空ならプロジェクト名にフォールバック。
+    auto createGitHubRepo = [&](bool isPrivate, bool needInit, const std::string& commitMsg,
+                                 const std::string& repoName)
+    {
+        SaveCurrentProject();
+        std::string n = repoName.empty() ? m_projectInfo.name : repoName, m = commitMsg;
+        RunGitAsync(isPrivate ? "リポジトリ作成(private)" : "リポジトリ作成(public)",
+            [root, n, m, isPrivate, needInit]{
+                if (needInit)
+                {
+                    auto i = GitIntegration::Init(root);
+                    if (!i.ok()) return i;
+                }
+                auto c = GitIntegration::CommitAll(root, m);
+                bool nothingStaged = GitIntegration::RunGit(root, "diff --cached --quiet").ok();
+                if (!c.ok() && !nothingStaged) return c;   // 本当のコミット失敗 → 作成せず失敗
+                auto r = GitIntegration::CreateGitHubRepo(root, n, isPrivate);
+                r.output = c.output + "\n----\n" + r.output;
+                return r;
+            });
+    };
+
     // ================= リポジトリ未初期化 =================
     if (!m_gitRepoCache)
     {
@@ -3511,11 +4035,42 @@ void Application::RenderVersionControlWindow()
         statusBanner();
         ImGui::Spacing();
 
-        ImGui::BeginDisabled(busy);
-        icon(m_icons.git, 22);
-        if (ImGui::Button("Git リポジトリを初期化", ImVec2(-1, 32)))
-            RunGitAsync("初期化", [root]{ return GitIntegration::Init(root); });
-        ImGui::EndDisabled();
+        if (m_ghAvailable)
+        {
+            renderGitHubAccountRow();
+            ImGui::Spacing();
+
+            ImGui::TextDisabled("リポジトリ名");
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            ImGui::InputText("##reponame", m_gitNewRepoNameBuf.data(), m_gitNewRepoNameBuf.size());
+
+            ImGui::BeginDisabled(busy || m_ghUser.empty() || m_gitNewRepoNameBuf[0] == '\0');
+            icon(m_icons.github, 22);
+            if (ImGui::Button("GitHub にリポジトリを作成 (Public)", ImVec2(-1, 32)))
+                createGitHubRepo(/*isPrivate=*/false, /*needInit=*/true, "Initial commit",
+                                  m_gitNewRepoNameBuf.data());
+            icon(m_icons.github, 22);
+            if (ImGui::Button("GitHub にリポジトリを作成 (Private)", ImVec2(-1, 32)))
+                createGitHubRepo(/*isPrivate=*/true, /*needInit=*/true, "Initial commit",
+                                  m_gitNewRepoNameBuf.data());
+            ImGui::EndDisabled();
+            if (m_ghUser.empty())
+                ImGui::TextDisabled("↑ 先に GitHub にログインしてや");
+
+            ImGui::Spacing();
+            ImGui::BeginDisabled(busy);
+            if (ImGui::SmallButton("ローカルだけで管理する（GitHub には後で公開）"))
+                RunGitAsync("初期化", [root]{ return GitIntegration::Init(root); });
+            ImGui::EndDisabled();
+        }
+        else
+        {
+            ImGui::BeginDisabled(busy);
+            icon(m_icons.git, 22);
+            if (ImGui::Button("Git リポジトリを初期化", ImVec2(-1, 32)))
+                RunGitAsync("初期化", [root]{ return GitIntegration::Init(root); });
+            ImGui::EndDisabled();
+        }
 
         ImGui::SeparatorText("クローン");
         ImGui::SetNextItemWidth(-FLT_MIN);
@@ -3576,42 +4131,14 @@ void Application::RenderVersionControlWindow()
 
     // ---- 行2: GitHub アカウント ----
     if (m_ghAvailable)
+        renderGitHubAccountRow();
+
+    // ---- リポジトリ URL（リモートがある間は常時表示。クリックでブラウザを開く）----
+    if (!remote.empty())
     {
-        // 初回だけ非同期でログイン状態を取得（gh api user はネットワーク＝メインを固めないため）。
-        if (!m_ghUserChecked && !busy)
-        {
-            m_ghUserChecked = true;
-            RunGitAsync("GitHub確認", []{
-                GitResult r; r.output = GitIntegration::GitHubUser(); r.exitCode = 0; return r;
-            }, /*isLogin*/ true);
-        }
-        ImGui::AlignTextToFramePadding();
-        if (!m_ghUser.empty())
-            ImGui::TextColored(th::Good, "● @%s", m_ghUser.c_str());
-        else
-        {
-            ImGui::TextColored(th::Warn, "○ 未ログイン");
-            ImGui::SameLine();
-            ImGui::BeginDisabled(busy);
-            if (ImGui::SmallButton("GitHub にログイン"))
-            {
-                GitIntegration::LaunchLogin();   // 別窓でブラウザ認証
-                m_gitOutput = "別ウィンドウでブラウザ認証してや。完了したら自動で反映されるで。";
-                // 完了をポーリングで自動検知（最大 ~90 秒・手動再確認不要）。sleep は 500ms 刻みで
-                // m_gitAbort を見てアプリ終了時に即抜ける。
-                RunGitAsync("GitHubログイン待ち", [this]{
-                    for (int i = 0; i < 45 && !m_gitAbort.load(); ++i)
-                    {
-                        std::string u = GitIntegration::GitHubUser();
-                        if (!u.empty()) { GitResult r; r.output = u; r.exitCode = 0; return r; }
-                        for (int k = 0; k < 4 && !m_gitAbort.load(); ++k)
-                            std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                    }
-                    GitResult r; r.exitCode = 1; return r;   // タイムアウト/中断=未ログインのまま
-                }, /*isLogin*/ true);
-            }
-            ImGui::EndDisabled();
-        }
+        std::string webUrl = GitIntegration::ToWebUrl(remote);
+        if (!webUrl.empty() && ImGui::SmallButton(("🔗 " + webUrl).c_str()))
+            ShellExecuteA(nullptr, "open", webUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     }
 
     // ---- 行3: 同期ツールバー（更新 / ↑↓ / フェッチ / プル↓ / プッシュ↑）----
@@ -3761,24 +4288,16 @@ void Application::RenderVersionControlWindow()
 
         if (m_ghAvailable)
         {
-            ImGui::BeginDisabled(busy);
-            std::string msg2 = m_gitCommitMsgBuf.data(), name = m_projectInfo.name;
-            auto createRepo = [&](bool isPrivate)
-            {
-                SaveCurrentProject();
-                std::string m = msg2, n = name;
-                RunGitAsync(isPrivate ? "リポジトリ作成(private)" : "リポジトリ作成(public)",
-                    [root, m, n, isPrivate]{
-                        auto c = GitIntegration::CommitAll(root, m);
-                        bool nothingStaged = GitIntegration::RunGit(root, "diff --cached --quiet").ok();
-                        if (!c.ok() && !nothingStaged) return c;   // 本当のコミット失敗 → 作成せず失敗
-                        auto r = GitIntegration::CreateGitHubRepo(root, n, isPrivate);
-                        r.output = c.output + "\n----\n" + r.output;
-                        return r;
-                    });
-            };
-            if (ImGui::Button("GitHub に作成 (private) & push", ImVec2(-FLT_MIN, 0))) createRepo(true);
-            if (ImGui::Button("GitHub に作成 (public) & push",  ImVec2(-FLT_MIN, 0))) createRepo(false);
+            ImGui::TextDisabled("リポジトリ名");
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            ImGui::InputText("##reponame2", m_gitNewRepoNameBuf.data(), m_gitNewRepoNameBuf.size());
+
+            ImGui::BeginDisabled(busy || m_gitNewRepoNameBuf[0] == '\0');
+            std::string msg2 = m_gitCommitMsgBuf.data();
+            if (ImGui::Button("GitHub に作成 (private) & push", ImVec2(-FLT_MIN, 0)))
+                createGitHubRepo(/*isPrivate=*/true, /*needInit=*/false, msg2, m_gitNewRepoNameBuf.data());
+            if (ImGui::Button("GitHub に作成 (public) & push",  ImVec2(-FLT_MIN, 0)))
+                createGitHubRepo(/*isPrivate=*/false, /*needInit=*/false, msg2, m_gitNewRepoNameBuf.data());
             ImGui::EndDisabled();
         }
     }
@@ -4250,7 +4769,28 @@ void Application::EnterEditorMode()
         m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
                             m_srvHeap.get(), cmdList);
 
-        SceneSerializer::LoadFromString(*m_scene, m_playSceneJson, PathResolver::AssetsDir());
+        // スナップショットからシーンを完全復元する。失敗(空/破損 JSON、復元中の例外)すると
+        // ApplySceneJson が scene.Clear() 後に中断してシーンが空になる(= Stop 後に list_entities が
+        // count:0 になる原因)。失敗を握りつぶさず、ディスク上の現在シーンから読み直してフォールバックする
+        // (ユーザが手動で open_scene し直して復旧していた動作を自動化)。
+        bool restored = false;
+        try {
+            restored = SceneSerializer::LoadFromString(*m_scene, m_playSceneJson, PathResolver::AssetsDir());
+        } catch (const std::exception& ex) {
+            Logger::Error("EnterEditorMode: snapshot restore threw: {}", ex.what());
+        }
+        if (!restored && !m_editorCtx->currentScenePath.empty()) {
+            Logger::Error("EnterEditorMode: snapshot restore failed; reloading from disk: {}",
+                          ToAssetRel(m_editorCtx->currentScenePath));
+            try {
+                restored = SceneSerializer::Load(*m_scene, m_editorCtx->currentScenePath,
+                                                 PathResolver::AssetsDir());
+            } catch (const std::exception& ex) {
+                Logger::Error("EnterEditorMode: disk fallback also failed: {}", ex.what());
+            }
+        }
+        if (!restored)
+            Logger::Error("EnterEditorMode: scene is empty after Stop (no valid snapshot nor disk scene)");
 
         m_scriptEngine->Shutdown();
         m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
@@ -4272,6 +4812,11 @@ void Application::EnterEditorMode()
     // シーン再構築でエンティティ ID が変わり Undo スタックの参照が無効になるためクリア
     m_editorCtx->undoSystem.Clear();
     m_editorCtx->ClearSelection();
+
+    // Stop でもシーンを丸ごと作り直すため entity id が全部変わる。open_scene/new_scene と同様に
+    // 世代を進めて古い id を無効化する(これが無いと Stop 後に古い id が別 entity に化けて
+    // "invalid entity id" や誤動作になる)。dx12_stop の応答に新しい sceneGeneration が乗る。
+    ++m_sceneGeneration;
 
     // Play 中に CameraComponent の FOV を採用してた可能性があるためエディタ用に戻す
     m_camera->SetPerspective(DirectX::XM_PIDIV4,
@@ -4308,6 +4853,34 @@ bool Application::BuildGameStandalone()
 bool Application::BuildGame()
 {
     namespace fs = std::filesystem;
+
+    // --- 出力パスの非ASCII（日本語フォルダ名等）検出ガード（最優先）---
+    // 出力先に非ASCII文字が含まれると、配布した Game.exe が起動時に std::filesystem の
+    // UTF-8↔ANSI 誤変換で即クラッシュする（Windows error 1113 "No mapping for the Unicode
+    // character..."）。原因不明の「ビルド成功 → 実行時クラッシュ」を防ぐため、ここで明示的に
+    // 失敗させる。chosen は生の std::string（UTF-8でもACPでも日本語は >=0x80 を含む）なので
+    // fs::path を経由せず（=ここで例外を出さず）バイト走査で判定する。
+    {
+        const std::string chosen =
+            (m_editorCtx && !m_editorCtx->buildConfig.outputDir.empty())
+                ? m_editorCtx->buildConfig.outputDir
+                : PathResolver::BaseDir();
+        bool nonAscii = false;
+        for (unsigned char c : chosen) if (c >= 0x80) { nonAscii = true; break; }
+        if (nonAscii)
+        {
+            Logger::Error("Build aborted: output path contains non-ASCII characters "
+                          "(e.g. Japanese folder names). The built game would crash on startup "
+                          "with a Unicode->ANSI path error. Use an ASCII-only output folder. "
+                          "Path: {}", chosen);
+            if (m_editorCtx)
+                m_editorCtx->buildErrorMsg =
+                    "出力フォルダのパスに日本語など非ASCII文字が含まれています。\n"
+                    "このまま配布すると Game.exe が起動時にクラッシュします。\n"
+                    "出力先を半角英数字のみのパスにしてください。\n\n" + chosen;
+            return false;
+        }
+    }
 
     // ビルド出力先。ユーザーがビルド設定で選んだフォルダの中に「製品名_build」サブフォルダを作る。
     // 選んだフォルダ自体を出力先にして remove_all するとユーザーのデータを消す恐れがあるので必ずサブフォルダ化する。
@@ -4672,6 +5245,13 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
     auto& reg = m_scene->GetRegistry();
     auto renderView = reg.view<const Transform, const MeshRenderer>();
 
+    // 視錐台カリング（ゲームビューのみ）。画面外エンティティの forward ドローを省く＝
+    // 敵がアリーナ全域に散るゲームで、画面外の敵を毎フレーム描かずに済む。
+    // 編集シーンビュー(isGameView=false)では従来通り全描画＝編集時の見え方は不変。
+    const bool cullEnabled = isGameView;
+    Frustum camFrustum;
+    if (cullEnabled) camFrustum = Frustum::FromViewProj(viewProj);
+
     // SSAO AO テーブル(t8)を1回バインド（無効/編集ビューは白=1.0 ダミー）。
     // 全 forward 系 PSO が同一 RootSig を共有するため、ここで一括バインドして hazard を防ぐ。
     if (aoSrvIndex != DescriptorHeap::kInvalidIndex)
@@ -4687,11 +5267,28 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
     // 1エンティティ分の描画（パイプライン選択 + メッシュ描画）
     auto drawEntity = [&](entt::entity e, const Transform& transform, const MeshRenderer& renderer)
     {
+        // park 済み（scale≈0 で画面外へ退避したプール要素）は不可視なので描画スキップ。
+        // エンジンはフラスタムカリングしないため、これが無いと game1 の未使用プール(~700体)を
+        // 毎フレーム全部描いてしまい、空に見える画面でもGPUが張り付く。
+        const auto& sc = transform.scale;
+        if (sc.x * sc.x + sc.y * sc.y + sc.z * sc.z < 1e-8f) return;
+
         XMMATRIX world = (transform.parent != entt::null)
             ? ComputeWorldMatrix(reg, e) : transform.GetWorldMatrix();
 
         bool isGrid = reg.all_of<GridPlane>(e);
         bool isSkinned = reg.all_of<SkeletalAnimation>(e);
+
+        // フラスタムカリング: グリッド以外で、ワールド球が視錐台の完全に外なら描画スキップ。
+        // 床/壁など大きい構造物は球半径も大きく必ず交差＝カリングされない（自然に残る）。
+        if (cullEnabled && !isGrid)
+        {
+            const float ms = (std::max)((std::max)(std::abs(sc.x), std::abs(sc.y)), std::abs(sc.z));
+            // ponytail: 球は meshes[0] 基準＋1.25x バイアスで保守的（game1 の敵は単一メッシュ）。
+            const float radius = (!renderer.meshes.empty() && renderer.meshes[0])
+                               ? renderer.meshes[0]->GetBoundingRadius() : 1.0f;
+            if (!camFrustum.SphereVisible(world.r[3], radius * ms * 1.25f)) return;
+        }
 
         if (isPfx(e))
         {
@@ -4790,10 +5387,61 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
         }
     }
 
-    // パス3: 発光パーティクル（加算合成）を最後に重ねる＝不透明物に隠れず光る
-    for (auto [e, transform, renderer] : renderView.each())
+    // パス3: 発光弾(Pfx) を GPU instancing で加算合成。同一メッシュ(共有)を1ドローに集約。
+    // 弾が数百発でも「メッシュ種類ぶんのドロー」だけで済む（boss3 弾幕の draw 数を一定化）。
     {
-        if (isPfx(e)) drawEntity(e, transform, renderer);
+        std::unordered_map<const Mesh*, std::vector<MeshInstanceData>> byMesh;
+        for (auto [e, transform, renderer] : renderView.each())
+        {
+            if (!isPfx(e)) continue;
+            const auto& sc = transform.scale;
+            if (sc.x * sc.x + sc.y * sc.y + sc.z * sc.z < 1e-8f) continue;   // park スキップ
+            if (renderer.meshes.empty() || !renderer.meshes[0]) continue;
+
+            XMMATRIX world = (transform.parent != entt::null)
+                ? ComputeWorldMatrix(reg, e) : transform.GetWorldMatrix();
+            XMMATRIX t = XMMatrixTranspose(world);
+            MeshInstanceData inst;
+            XMStoreFloat4(&inst.r0, t.r[0]);
+            XMStoreFloat4(&inst.r1, t.r[1]);
+            XMStoreFloat4(&inst.r2, t.r[2]);
+            inst.color = renderer.instanceColor;
+            byMesh[renderer.meshes[0]].push_back(inst);
+        }
+
+        if (!byMesh.empty())
+        {
+            struct InstBucket { const Mesh* mesh; u32 base; u32 count; };
+            std::vector<InstBucket> buckets;
+            u32 cursor = m_instanceCursor;   // メイン/プレビューで同フレームバッファを連番共有
+            uint8_t* dst = m_instanceMapped[frameIndex];
+            for (auto& [mesh, vec] : byMesh)
+            {
+                if (cursor >= kMaxInstances) break;
+                u32 n = (std::min)(static_cast<u32>(vec.size()), kMaxInstances - cursor);
+                if (n == 0) continue;
+                memcpy(dst + static_cast<size_t>(cursor) * sizeof(MeshInstanceData),
+                       vec.data(), static_cast<size_t>(n) * sizeof(MeshInstanceData));
+                buckets.push_back({mesh, cursor, n});
+                cursor += n;
+            }
+            m_instanceCursor = cursor;   // 次の RenderSceneMeshes 呼び出し（プレビュー）へ連番を引き継ぐ
+
+            m_commandList->SetPipelineState(*m_emissivePipelineState);
+            XMMATRIX vpT = XMMatrixTranspose(viewProj);   // cbuffer 列優先再解釈で hlsl 上は VP
+            m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 16, &vpT);
+            m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            for (auto& b : buckets)
+            {
+                m_commandList->SetVertexBuffer(b.mesh->GetVertexBuffer().GetView());   // slot0
+                m_commandList->SetIndexBuffer(b.mesh->GetIndexBuffer().GetView());
+                D3D12_VERTEX_BUFFER_VIEW iv = m_instanceVbView[frameIndex];
+                iv.BufferLocation += static_cast<u64>(b.base) * sizeof(MeshInstanceData);
+                iv.SizeInBytes     = b.count * sizeof(MeshInstanceData);
+                nativeCmdList->IASetVertexBuffers(1, 1, &iv);                          // slot1
+                m_commandList->DrawIndexedInstanced(b.mesh->GetIndexCount(), b.count);
+            }
+        }
     }
 }
 
@@ -4849,7 +5497,9 @@ void Application::ComputeCascades(const DirectX::XMVECTOR& lightDir, f32 camNear
     // 正射時は CSM を無効化（無影フォールバック）する。
     // cascadeViewProj=identity + cascadeSplitsView=巨大正値 で、PS の SelectCascade は
     // 必ず cascade0 を返し、identity 変換で UV が [0,1] 外へ出て SampleCascade が 1.0(無影)。
-    if (m_camera->IsOrthographic())
+    // シーンで影を無効化した場合も同じ無影センチネルを書く＝シェーダは全面ライト(黒画面にならない)。
+    const bool shadowsOff = !(m_scene && m_scene->GetShadowsEnabled());
+    if (m_camera->IsOrthographic() || shadowsOff)
     {
         XMMATRIX id = XMMatrixIdentity();
         for (u32 i = 0; i < N; ++i)
@@ -5706,6 +6356,10 @@ void Application::Render()
     m_commandList->SetRootSignature(*m_rootSignature);
 
     // ===== シャドウパス（CSM: カスケード毎に kNumCascades 回描画）=====
+    // シーンで影 OFF / 正射カメラのときは丸ごとスキップ＝(全アクティブ敵 × 4カスケード)の
+    // ドローと 2048²×4 のデプスフィルを撤廃（lv35 の主因）。m_shadowMap は生成時 PSR のまま＝
+    // forward の t4 バインドは有効（センチネルで読まれないので未クリアでも安全）。
+    if (m_scene && m_scene->GetShadowsEnabled() && !m_camera->IsOrthographic())
     {
         // 配列リソース全体を一括で DEPTH_WRITE へ遷移（カスケードループの外で1回）
         m_commandList->TransitionResource(m_shadowMap.Get(),
@@ -5735,6 +6389,12 @@ void Application::Render()
             for (auto [e, transform, renderer] : renderView.each())
             {
                 if (reg.all_of<GridPlane>(e)) continue;
+                // park 済み(scale≈0)は影も落とさない＝シャドウパスの大半(全プール×4カスケード)を削減。
+                const auto& sc = transform.scale;
+                if (sc.x * sc.x + sc.y * sc.y + sc.z * sc.z < 1e-8f) continue;
+                // 発光弾(Pfx*)は光源扱い＝影を落とさない。boss3 弾幕で「全弾×4カスケード」のシャドウ
+                // draw を丸ごと削減（加算発光なので影が無い方が自然・見た目も良い）。
+                if (auto* nt = reg.try_get<NameTag>(e); nt && nt->name.rfind("Pfx", 0) == 0) continue;
 
                 XMMATRIX world = (transform.parent != entt::null)
                     ? ComputeWorldMatrix(reg, e) : transform.GetWorldMatrix();
@@ -6031,6 +6691,8 @@ void Application::Render()
             m_srvHeap->GetGpuHandle(m_iblBaker->GetIrradianceSrv()));
 
     XMMATRIX viewProj = m_camera->GetViewProjMatrix();
+
+    m_instanceCursor = 0;   // フレーム先頭で instancing バッファのカーソルをリセット（メイン→プレビューで連番追記）
 
     // 全Entityを描画（メインパス: 編集カメラ視点）。AO は SSAO 有効時のみ実テクスチャ、無効時は白。
     // useSSAO=true のときだけ深度プリパスで深度が完成済み → LESS_EQUAL forward PSO で再利用する。
@@ -6645,8 +7307,10 @@ void Application::Render()
             else
             {
                 m_editorCtx->buildErrorFlash = 6.0f;
-                m_editorCtx->errorMessage =
-                    "ビルドに失敗しました。\n詳細は dx12_engine.log を確認してください。";
+                m_editorCtx->errorMessage = m_editorCtx->buildErrorMsg.empty()
+                    ? "ビルドに失敗しました。\n詳細は dx12_engine.log を確認してください。"
+                    : m_editorCtx->buildErrorMsg;
+                m_editorCtx->buildErrorMsg.clear();  // 次回ビルドへ持ち越さない
                 m_editorCtx->errorFlash = 1.0f;   // 中央モーダルで通知
             }
         }
@@ -6874,9 +7538,11 @@ void Application::Render()
     m_swapChain->Present(m_useVsync);
     m_frameResources->EndFrame(*m_commandQueue);
 
-    // フェンス連動の遅延解放（旧: 毎フレーム WaitIdle = GPU全停止でトリプルバッファが
-    // 実質無効化されていた。CPU/GPU を重ねるため全停止をやめ、
-    // 「使い終わったフレームの分だけ」解放する方式に変更）:
+    // フェンス連動の遅延解放（DeferredRelease）。リモート側の「アップロードを積んだ
+    // フレームだけ WaitIdle」方式より強い保証:
+    //   - アップロードのあるフレームでも GPU 全停止しない（スポーン時のヒッチ無し）
+    //   - メッシュ再生成/シーンClear/RT再作成など GpuResource 系の解放も
+    //     フェンス完了までキューで保護される
     //   1. 今フレームでロードされたテクスチャのアップロードステージングを解放キューへ
     //   2. キュー内の未確定分に今フレームの Signal 値を刻む
     //   3. GPU が完了したフェンス値以下の分を実際に解放

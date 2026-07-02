@@ -47,6 +47,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "{#SrcDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\GameRuntime.exe"; DestDir: "{app}"; Flags: ignoreversion
+; gh.exe(GitHub CLI、同梱): エディタの GitHub 連携(リポジトリ作成/push/ログイン)に必要。
+; CMake configure 時に third_party/gh-cli/ へ自動取得され、ビルド後に exe の隣へコピーされる。
+Source: "{#SrcDir}\gh.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "{#SrcDir}\*.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\shaders\*"; DestDir: "{app}\shaders"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#RepoRoot}\assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion recursesubdirs createallsubdirs

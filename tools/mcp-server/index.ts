@@ -91,6 +91,12 @@ function reg(
 // ── 共通 zod 部品 ────────────────────────────────────────────────
 const vec3 = z.array(z.number()).length(3);
 const entityId = z.number().int().describe("エンティティ id(int)。dx12_list_entities / dx12_find_entity で取得。");
+// エンティティ指定(id か name のどちらか)。name は完全一致。Stop / open_scene 後は id が変わる
+// (sceneGeneration も変わる)ので、安定して操作したいときは name 指定が便利。両方省略は不可。
+const entityRef = {
+  entity: z.number().int().optional().describe("エンティティ id(int)。name と排他。"),
+  name: z.string().optional().describe("エンティティ名(完全一致)。id の代わりに使える。Stop 後など id が変わる場面で安定。"),
+};
 
 // ════════════════════════════════════════════════════════════════
 //  読み取り系(同期・readOnly)
@@ -122,10 +128,10 @@ reg(
 reg(
   "dx12_get_entity",
   "エンティティ詳細",
-  "エンティティの全コンポーネントと値を JSON で読む(編集前の状態確認に使う)。返り値は entityId, componentTypes, sceneGeneration と、各コンポーネントの jsonKey をキーにした値。",
-  { entity: entityId },
+  "エンティティの全コンポーネントと値を JSON で読む(編集前の状態確認に使う)。entity(id) か name(完全一致)で指定。返り値は entityId, componentTypes, luaReadable(Lua から entity.<key> で直接読めるコンポーネント=現状 transform のみ), sceneGeneration と、各コンポーネントの jsonKey をキーにした値。",
+  { ...entityRef },
   { readOnlyHint: true },
-  ({ entity }) => run(() => engine.call("get_entity", { entity })),
+  ({ entity, name }) => run(() => engine.call("get_entity", { entity, name })),
 );
 
 reg(
@@ -197,6 +203,47 @@ reg(
 );
 
 reg(
+  "dx12_describe_lua_api",
+  "Lua API 辞書",
+  "Lua コンポーネントスクリプトから使えるバインディング一覧を binding ごと(entity/transform/Vec3/self/scene/input/camera/physics/audio/ui/fx/events/globals/prelude)に返す静的辞書。★重要: MCP で見えるコンポーネントと Lua から読める API は違う。entity から直接読めるデータは transform だけで、entity.boxCollider 等は nil(collider/rigidBody の値は physics:getVelocity(e) 等の別 API 経由)。Lua を書く前にこれで実際に読める API を確認すると取り違えを防げる。",
+  {},
+  { readOnlyHint: true },
+  () => run(() => engine.call("describe_lua_api", {})),
+);
+
+reg(
+  "dx12_get_lua_component_state",
+  "Luaプロパティ状態取得",
+  "エンティティの LuaScript の現在のプロパティ値を全部返す(スキーマ基準なので未上書きの既定値も含む。get_entity は保存済みの上書きしか出さない)。{scriptPath, enabled, started, loadError, properties:[{name,type,value,isOverride}]}。dx12_set_lua_property で変える前の確認に。entity(id) か name 指定。",
+  { ...entityRef },
+  { readOnlyHint: true },
+  ({ entity, name }) => run(() => engine.call("get_lua_component_state", { entity, name })),
+);
+
+reg(
+  "dx12_set_lua_property",
+  "Luaプロパティ設定",
+  "LuaScript のプロパティを1つ書き換える(スクリプトの properties 宣言にあるものだけ)。type に応じて value は number/bool/string/[x,y,z]。Playing 中なら即再注入(スクリプト再ロード=OnStart 再実行)、Editor 中は保存だけで次 Play から反映。entity(id) か name 指定。型が不安なら先に dx12_get_lua_component_state で確認。",
+  {
+    ...entityRef,
+    key: z.string().describe("プロパティ名(スクリプトの properties に宣言済みのもの)。"),
+    value: z.any().describe("値。型はプロパティに合わせる: number / bool / string / [x,y,z](vec3,color)。"),
+  },
+  { idempotentHint: true },
+  ({ entity, name, key, value }) =>
+    run(() => engine.call("set_lua_property", { entity, name, key, value })),
+);
+
+reg(
+  "dx12_project_world_to_screen",
+  "ワールド→画面投影",
+  "エンティティのワールド座標を、今シーンビューを描いているカメラで画面ピクセルへ投影する。{x, y, visible, depth, w, width, height, mode}。★Playing 中は m_camera=アクティブなゲームカメラなので「ゲーム画面で player が中央(x≈width/2, y≈height/2)か」「画面内(visible)か」を数値で検証できる(dx12_screenshot と同じカメラ)。w<=0 はカメラ背面。entity(id) か name 指定。",
+  { ...entityRef },
+  { readOnlyHint: true },
+  ({ entity, name }) => run(() => engine.call("project_world_to_screen", { entity, name })),
+);
+
+reg(
   "dx12_get_scene_settings",
   "シーン設定取得",
   "シーンのスカイボックス/IBL 設定を返す。{skybox:{envMapPath,iblIntensity,skyboxIntensity,drawSkybox}, note}。dx12_set_scene_settings で変える前の確認に使う。",
@@ -214,15 +261,15 @@ reg(
   "Transform 設定",
   "エンティティの Transform を設定する。指定したフィールドだけ更新。回転は rotation(Euler 度) か quaternion([x,y,z,w]) のどちらか。即時反映で ok を返す。",
   {
-    entity: entityId,
+    ...entityRef,
     position: vec3.optional().describe("[x,y,z]"),
     rotation: vec3.optional().describe("[x,y,z] Euler 度。quaternion と併用しない。"),
     quaternion: z.array(z.number()).length(4).optional().describe("[x,y,z,w] クォータニオン。rotation と併用しない。"),
     scale: vec3.optional().describe("[x,y,z]"),
   },
   { idempotentHint: true },
-  ({ entity, position, rotation, quaternion, scale }) =>
-    run(() => engine.call("set_transform", { entity, position, rotation, quaternion, scale })),
+  ({ entity, name, position, rotation, quaternion, scale }) =>
+    run(() => engine.call("set_transform", { entity, name, position, rotation, quaternion, scale })),
 );
 
 reg(
@@ -230,13 +277,13 @@ reg(
   "コンポーネント設定",
   "コンポーネントを設定(無ければ追加・あれば置換)。component は jsonKey、data は dx12_describe_components の形。tags は data=文字列配列、DataComponent(data) は {key:{t,v}} オブジェクト。即時反映で {entityId, component} を返す。形が不安なら先に dx12_describe_components を見るとええ。",
   {
-    entity: entityId,
+    ...entityRef,
     component: z.string().describe("jsonKey。例: pointLight, directionalLight, spotLight, camera, rigidBody, boxCollider, transform, tags, data"),
     data: z.union([z.record(z.any()), z.array(z.any())]).describe("コンポーネントの値。オブジェクト or 配列(tags は文字列配列)。dx12_describe_components の fields に合わせる。"),
   },
   { idempotentHint: true },
-  ({ entity, component, data }) =>
-    run(() => engine.call("set_component", { entity, component, data })),
+  ({ entity, name, component, data }) =>
+    run(() => engine.call("set_component", { entity, name, component, data })),
 );
 
 reg(
@@ -244,12 +291,12 @@ reg(
   "コンポーネント除去",
   "エンティティからコンポーネントを除去する。component は jsonKey。transform/name などコア不変のものは除去不可。即時反映で {entityId, removed} を返す。",
   {
-    entity: entityId,
+    ...entityRef,
     component: z.string().describe("除去する jsonKey。例: pointLight, rigidBody, boxCollider, sphereCollider, camera, tags"),
   },
   { idempotentHint: true },
-  ({ entity, component }) =>
-    run(() => engine.call("remove_component", { entity, component })),
+  ({ entity, name, component }) =>
+    run(() => engine.call("remove_component", { entity, name, component })),
 );
 
 reg(
@@ -257,11 +304,11 @@ reg(
   "親子設定",
   "エンティティの親を設定する。parent 省略で親を解除。サイクルになる指定は拒否。即時反映で ok を返す。",
   {
-    entity: entityId,
+    ...entityRef,
     parent: z.number().int().optional().describe("親エンティティ id。省略で親解除。"),
   },
   { idempotentHint: true },
-  ({ entity, parent }) => run(() => engine.call("set_parent", { entity, parent })),
+  ({ entity, name, parent }) => run(() => engine.call("set_parent", { entity, name, parent })),
 );
 
 reg(
@@ -279,19 +326,19 @@ reg(
 reg(
   "dx12_select_entity",
   "選択",
-  "エディタ上で対象エンティティを選択状態にする(Inspector 表示が切り替わる)。{selected} を返す。",
-  { entity: entityId },
+  "エディタ上で対象エンティティを選択状態にする(Inspector 表示が切り替わる)。entity(id) か name 指定。{selected} を返す。",
+  { ...entityRef },
   { idempotentHint: true },
-  ({ entity }) => run(() => engine.call("select_entity", { entity })),
+  ({ entity, name }) => run(() => engine.call("select_entity", { entity, name })),
 );
 
 reg(
   "dx12_focus_camera",
   "カメラフォーカス",
-  "エディタのフライカメラを対象エンティティに寄せる。{cameraPos, target, distance} を返す。撮影前に画角を合わせるのに使う(dx12_focus_and_screenshot もある)。",
-  { entity: entityId },
+  "エディタのフライカメラを対象エンティティに寄せる。entity(id) か name 指定。{cameraPos, target, distance} を返す。撮影前に画角を合わせるのに使う(dx12_focus_and_screenshot もある)。",
+  { ...entityRef },
   { idempotentHint: true },
-  ({ entity }) => run(() => engine.call("focus_camera", { entity })),
+  ({ entity, name }) => run(() => engine.call("focus_camera", { entity, name })),
 );
 
 reg(
@@ -299,15 +346,27 @@ reg(
   "PBR マテリアル設定",
   "エンティティの PBR パラメータ(metallic/roughness/UV スケール)を設定する。指定分のみ更新。即時反映で {entityId, metallic, roughness, uvScaleU, uvScaleV} を返す。",
   {
-    entity: entityId,
+    ...entityRef,
     metallic: z.number().optional().describe("金属度 0..1"),
     roughness: z.number().optional().describe("粗さ 0..1"),
     uvScaleU: z.number().optional().describe("UV の U 方向スケール(タイリング)"),
     uvScaleV: z.number().optional().describe("UV の V 方向スケール(タイリング)"),
   },
   { idempotentHint: true },
-  ({ entity, metallic, roughness, uvScaleU, uvScaleV }) =>
-    run(() => engine.call("set_pbr", { entity, metallic, roughness, uvScaleU, uvScaleV })),
+  ({ entity, name, metallic, roughness, uvScaleU, uvScaleV }) =>
+    run(() => engine.call("set_pbr", { entity, name, metallic, roughness, uvScaleU, uvScaleV })),
+);
+
+reg(
+  "dx12_set_color",
+  "基本色設定",
+  "メッシュの基本色(頂点色の乗算)を設定する。足場やコインの色付けに。color は [r,g,b](0..1)。entity(id) か name 指定。金属感は dx12_set_pbr の metallic/roughness と併用。",
+  {
+    ...entityRef,
+    color: vec3.describe("[r,g,b] 0..1。例: 金色=[1,0.84,0]"),
+  },
+  { idempotentHint: true },
+  ({ entity, name, color }) => run(() => engine.call("set_color", { entity, name, color })),
 );
 
 reg(
@@ -370,11 +429,11 @@ reg(
   "Luaコンポーネントアタッチ",
   "Lua コンポーネントをエンティティにアタッチする。エディタ上では貼るだけで、実際の初期化/実行は Play 時(OnStart/OnUpdate)。script は assets 相対(assets 配下限定)。即時反映で ok を返す。",
   {
-    entity: entityId,
+    ...entityRef,
     script: z.string().describe("assets 相対パス。例: components/Health.lua"),
   },
   {},
-  ({ entity, script }) => run(() => engine.call("attach_lua_component", { entity, script })),
+  ({ entity, name, script }) => run(() => engine.call("attach_lua_component", { entity, name, script })),
 );
 
 // ════════════════════════════════════════════════════════════════
@@ -394,6 +453,77 @@ reg(
   {},
   ({ type, name, position, idempotency_key }) =>
     run(() => engine.call("create_entity", { type, name, position, idempotency_key })),
+);
+
+// プリミティブを1コールで生成＋整形する合成ヘルパ(create_entity → set_transform/set_pbr/set_color)。
+// create_entity は遅延同期で本物の entityId を返すので、それを使って後段を適用する。
+async function spawnPrimitive(
+  type: "box" | "sphere",
+  a: { name?: string; position?: number[]; scale?: number[]; rotation?: number[];
+       color?: number[]; metallic?: number; roughness?: number },
+) {
+  const r = await engine.call("create_entity", { type, name: a.name, position: a.position });
+  const entity = r.entityId;
+  if (a.scale || a.rotation)
+    await engine.call("set_transform", { entity, scale: a.scale, rotation: a.rotation });
+  if (a.metallic != null || a.roughness != null)
+    await engine.call("set_pbr", { entity, metallic: a.metallic, roughness: a.roughness });
+  if (a.color) await engine.call("set_color", { entity, color: a.color });
+  return r;
+}
+
+reg(
+  "dx12_spawn_box",
+  "ボックス生成(整形込み)",
+  "ボックス(立方体)を1コールで生成。足場/壁/床に最適。position/scale/rotation/color/metallic/roughness をまとめて指定でき、内部で create_entity→set_transform→set_pbr→set_color を順に実行する。{entityId, name, sceneGeneration} を返す。",
+  {
+    name: z.string().optional().describe("エンティティ名。省略時 'Box'。"),
+    position: vec3.optional().describe("[x,y,z]。省略時 [0,0,0]。"),
+    scale: vec3.optional().describe("[x,y,z]。足場なら例 [4,0.5,4]。"),
+    rotation: vec3.optional().describe("[x,y,z] Euler 度。"),
+    color: vec3.optional().describe("[r,g,b] 0..1 基本色。"),
+    metallic: z.number().optional().describe("金属度 0..1。"),
+    roughness: z.number().optional().describe("粗さ 0..1。"),
+  },
+  {},
+  (a) => run(() => spawnPrimitive("box", a)),
+);
+
+reg(
+  "dx12_spawn_sphere",
+  "スフィア生成(整形込み)",
+  "スフィア(球)を1コールで生成。position/scale/rotation/color/metallic/roughness をまとめて指定可。{entityId, name, sceneGeneration} を返す。",
+  {
+    name: z.string().optional().describe("エンティティ名。省略時 'Sphere'。"),
+    position: vec3.optional().describe("[x,y,z]。省略時 [0,0,0]。"),
+    scale: vec3.optional().describe("[x,y,z]。"),
+    rotation: vec3.optional().describe("[x,y,z] Euler 度。"),
+    color: vec3.optional().describe("[r,g,b] 0..1 基本色。"),
+    metallic: z.number().optional().describe("金属度 0..1。"),
+    roughness: z.number().optional().describe("粗さ 0..1。"),
+  },
+  {},
+  (a) => run(() => spawnPrimitive("sphere", a)),
+);
+
+reg(
+  "dx12_spawn_coin",
+  "コイン生成",
+  "コイン風の収集アイテムを1コールで生成(金色の薄い円盤状スフィア + tag 'coin' + 金属光沢)。足場ゲームの収集物置きに。position/name 指定可。回転やスコア加算は別途 Lua/trigger で付ける。{entityId, name, sceneGeneration} を返す。",
+  {
+    name: z.string().optional().describe("エンティティ名。省略時 'Coin'。"),
+    position: vec3.optional().describe("[x,y,z]。省略時 [0,0,0]。"),
+  },
+  {},
+  ({ name, position }) => run(async () => {
+    const r = await engine.call("create_entity", { type: "sphere", name: name ?? "Coin", position });
+    const entity = r.entityId;
+    await engine.call("set_transform", { entity, scale: [0.5, 0.5, 0.12] });   // 薄い円盤風
+    await engine.call("set_pbr", { entity, metallic: 1.0, roughness: 0.25 });  // 金属光沢
+    await engine.call("set_color", { entity, color: [1.0, 0.84, 0.0] });        // 金色
+    await engine.call("set_component", { entity, component: "tags", data: ["coin"] });
+    return { ...r, tag: "coin" };
+  }),
 );
 
 reg(
@@ -428,19 +558,19 @@ reg(
 reg(
   "dx12_duplicate_entity",
   "複製",
-  "エンティティを子ごとディープ複製する。フレーム境界で実処理され、Node が完了を待って【本物の {entityId, name, sceneGeneration} を同期で返す】。",
-  { entity: entityId },
+  "エンティティを子ごとディープ複製する。entity(id) か name 指定。フレーム境界で実処理され、Node が完了を待って【本物の {entityId, name, sceneGeneration} を同期で返す】。",
+  { ...entityRef },
   {},
-  ({ entity }) => run(() => engine.call("duplicate_entity", { entity })),
+  ({ entity, name }) => run(() => engine.call("duplicate_entity", { entity, name })),
 );
 
 reg(
   "dx12_delete_entity",
   "削除",
-  "エンティティを子ごと削除する(Undo 可)。フレーム境界で実処理され、Node が完了を待って【本物の {deletedEntityId, deletedCount, sceneGeneration} を同期で返す】。",
-  { entity: entityId },
+  "エンティティを子ごと削除する(Undo 可)。entity(id) か name 指定。フレーム境界で実処理され、Node が完了を待って【本物の {deletedEntityId, deletedCount, sceneGeneration} を同期で返す】。",
+  { ...entityRef },
   { destructiveHint: true },
-  ({ entity }) => run(() => engine.call("delete_entity", { entity })),
+  ({ entity, name }) => run(() => engine.call("delete_entity", { entity, name })),
 );
 
 reg(
@@ -473,10 +603,51 @@ reg(
 reg(
   "dx12_stop",
   "再生停止",
-  "Playing → Editor へ切り替える(再生前のスナップショットに復元)。フレーム境界で実処理され {mode:'Editor', sceneGeneration} を同期で返す。",
+  "Playing → Editor へ切り替える(再生前のスナップショットに復元)。フレーム境界で実処理され {mode:'Editor', sceneGeneration} を同期で返す。★Stop ではシーンを丸ごと作り直すため全 entity id が変わる(sceneGeneration も +1)。Stop 後は古い id を使わず、返ってきた sceneGeneration の変化を見て dx12_list_entities で取り直すか、各ツールに name 指定で操作する。",
   {},
   {},
   () => run(() => engine.call("stop", {})),
+);
+
+// ── 入力シミュレーション(Playing 中の挙動確認用)─────────────────
+// Lua の input:isKeyDown/isKeyPressed(prelude の keyDown/keyPressed)に効く。
+// GetAsyncKeyState を読む isAsyncKeyDown 系には効かない。エンジンウィンドウがフォーカスを
+// 失うと合成キーはクリアされる(WM_KILLFOCUS)。
+
+reg(
+  "dx12_key_down",
+  "キー押下(保持)",
+  "キーを押した状態にする(key_up を呼ぶまで保持)。次フレーム以降の Lua input:isKeyDown / keyDown() が true になる。横移動など「押しっぱなし」の挙動確認に。key は VK 整数 or 名前(\"W\",\"D\",\"SPACE\",\"UP\" 等)。Playing 中に使う(isAsyncKeyDown 系には効かない)。",
+  { key: z.union([z.number().int(), z.string()]).describe("VK コード(int)か キー名(\"W\",\"SPACE\",\"UP\",\"F1\" 等)") },
+  {},
+  ({ key }) => run(() => engine.call("key_down", { key })),
+);
+
+reg(
+  "dx12_key_up",
+  "キー離す",
+  "dx12_key_down で押したキーを離す。key は VK 整数 or 名前。",
+  { key: z.union([z.number().int(), z.string()]).describe("VK コード(int)か キー名") },
+  {},
+  ({ key }) => run(() => engine.call("key_up", { key })),
+);
+
+reg(
+  "dx12_key_press",
+  "キータップ(1フレーム)",
+  "キーを1フレームだけ押して離す(isKeyPressed / keyPressed() が1回立つ)。ジャンプ(SPACE)などのタップ操作の確認に。key は VK 整数 or 名前。押しっぱなしにはならない。",
+  { key: z.union([z.number().int(), z.string()]).describe("VK コード(int)か キー名(\"SPACE\" 等)") },
+  {},
+  ({ key }) => run(() => engine.call("key_press", { key })),
+);
+
+reg(
+  "dx12_step_frames",
+  "Nフレーム進める",
+  "N フレーム経過してから応答する同期バリア。key_down/key_press の後に呼ぶと、入力がシミュレーションに効いてから dx12_get_entity / dx12_project_world_to_screen / dx12_screenshot で結果を観測できる。例: key_down('D') → step_frames(30) → get_entity(name:'Player') で右に動いたか確認 → key_up('D')。frames は 1..600(~10s)。※決定論ステッパではない(各フレーム dt は実時間)。",
+  { frames: z.number().int().optional().describe("進めるフレーム数(既定 1, 最大 600)。") },
+  {},
+  ({ frames }) => run(() => engine.call("step_frames", { frames })),
 );
 
 // ════════════════════════════════════════════════════════════════
@@ -520,13 +691,13 @@ server.registerTool(
   "dx12_focus_and_screenshot",
   {
     title: "寄せて撮影",
-    description: "カメラを対象エンティティに寄せてから(1フレーム描画を挟んで)スクショを撮り、PNG 画像で返す。配置や見た目を自分の目で確認するのに使う。image ブロック + text(path/サイズ)を返す。",
-    inputSchema: { entity: entityId },
+    description: "カメラを対象エンティティに寄せてから(1フレーム描画を挟んで)スクショを撮り、PNG 画像で返す。entity(id) か name 指定。配置や見た目を自分の目で確認するのに使う(エディタカメラ。Playing 中のゲーム画面は dx12_screenshot がアクティブなゲームカメラの絵を返す)。image ブロック + text(path/サイズ)を返す。",
+    inputSchema: { ...entityRef },
     annotations: { title: "寄せて撮影", openWorldHint: false, idempotentHint: true },
   },
-  async ({ entity }) => {
+  async ({ entity, name }) => {
     try {
-      await engine.call("focus_camera", { entity });
+      await engine.call("focus_camera", { entity, name });
       const shot = await engine.call("screenshot", {});
       if (!shot || !shot.path) throw new Error("screenshot が path を返さんかった");
       return imageResult(shot.path, { entity, width: shot.width, height: shot.height });
@@ -541,7 +712,7 @@ server.registerTool(
   "dx12_screenshot",
   {
     title: "スクリーンショット",
-    description: "今シーンビューに映ってる絵を PNG に書き出して画像で返す(+text に path/width/height)。AI が自分の操作結果(配置・見た目)を目で確認して直すのに使う。引数なし。",
+    description: "今シーンビューに映ってる絵を PNG に書き出して画像で返す(+text に path/width/height)。AI が自分の操作結果(配置・見た目)を目で確認して直すのに使う。引数なし。★Playing 中はアクティブなゲームカメラの絵になる(=実際のゲーム画面)。Editor 中はエディタのフライカメラ。dx12_project_world_to_screen と同じカメラなので「player が画面中央/画面内か」を数値+絵の両方で確認できる。",
     inputSchema: {},
     annotations: { title: "スクリーンショット", openWorldHint: false, readOnlyHint: true },
   },
@@ -550,6 +721,27 @@ server.registerTool(
       const shot = await engine.call("screenshot", {});
       if (!shot || !shot.path) throw new Error("screenshot が path を返さんかった");
       return imageResult(shot.path, { width: shot.width, height: shot.height });
+    } catch (e: any) {
+      return errResult(e);
+    }
+  },
+);
+
+// ゲームカメラ視点のスクショ。アクティブな CameraComponent でシーンを1フレーム描いて撮る。
+// Editor 中でも Play せずにゲームカメラの画角を確認できる(Playing 中は通常 screenshot と同じ絵)。
+server.registerTool(
+  "dx12_screenshot_game_view",
+  {
+    title: "ゲーム画面スクショ",
+    description: "アクティブな CameraComponent(ゲームカメラ)視点でシーンを1フレーム描画して PNG で返す。★Editor 中でも Play せずにゲームカメラの見え方(画角・構図)を確認できる。アクティブなカメラが無いとエラー(camera.isActive=true にする)。image ブロック + text(path/サイズ/mode)を返す。",
+    inputSchema: {},
+    annotations: { title: "ゲーム画面スクショ", openWorldHint: false, readOnlyHint: true },
+  },
+  async () => {
+    try {
+      const shot = await engine.call("screenshot_game_view", {});
+      if (!shot || !shot.path) throw new Error("screenshot_game_view が path を返さんかった");
+      return imageResult(shot.path, { width: shot.width, height: shot.height, mode: shot.mode });
     } catch (e: any) {
       return errResult(e);
     }

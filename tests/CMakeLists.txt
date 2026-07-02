@@ -76,6 +76,16 @@ if(TARGET Renderer)
         target_compile_definitions(CameraProjectionTests PRIVATE ${DX12_COMPILE_DEFS})
     endif()
     add_test(NAME CameraProjectionTests COMMAND CameraProjectionTests)
+
+    # Frustum（視錐台抽出＋球カリング）テスト。ヘッダオンリー・純 DirectXMath。
+    add_executable(FrustumTests frustum_test.cpp)
+    target_include_directories(FrustumTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(FrustumTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(FrustumTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(FrustumTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME FrustumTests COMMAND FrustumTests)
 endif()
 
 # SpatialIndex（一様グリッド）テスト（Phase 5: RTS 空間クエリ）。ヘッダオンリー、entt のみ依存。
@@ -130,4 +140,16 @@ if(TARGET Core)
         target_compile_definitions(VfsTests PRIVATE ${DX12_COMPILE_DEFS})
     endif()
     add_test(NAME VfsTests COMMAND VfsTests)
+endif()
+
+# GitIntegration::ToWebUrl（remote URL → ブラウザ用 https URL）の文字列変換テスト。
+# プレフィックス文字数のオフバイワン再発防止（実際に "ryuto-alt" → "yuto-alt" になった事例）。
+if(TARGET ProjectLib)
+    add_executable(GitIntegrationTests git_integration_test.cpp)
+    target_link_libraries(GitIntegrationTests PRIVATE ProjectLib)
+    if(MSVC)
+        target_compile_options(GitIntegrationTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(GitIntegrationTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME GitIntegrationTests COMMAND GitIntegrationTests)
 endif()

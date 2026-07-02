@@ -158,6 +158,7 @@ public:
     f32 hotReloadFlash    = 0.0f;
     f32 buildCompleteFlash = 0.0f;
     f32 buildErrorFlash    = 0.0f;  // ビルド失敗表示（>0 の間 赤で「✗ ビルド失敗」）
+    std::string buildErrorMsg;      // ビルド失敗の具体理由（空なら汎用メッセージ）
 
     // エラー通知（Play 不可等）
     std::string errorMessage;

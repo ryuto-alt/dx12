@@ -38,6 +38,7 @@ public:
     f32 GetAspect() const { return m_aspect; }
     f32 GetNearZ()  const { return m_nearZ; }
     f32 GetFarZ()   const { return m_farZ; }
+    f32 GetOrthoHeight() const { return m_orthoHeight; }  // 正射ビュー縦(全高)。保存/復元用。
 
     void SetYaw(f32 yaw) { m_yaw = yaw; UpdateVectors(); }
     void SetPitch(f32 pitch) { m_pitch = pitch; UpdateVectors(); }

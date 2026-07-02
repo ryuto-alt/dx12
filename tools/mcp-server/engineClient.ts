@@ -19,13 +19,18 @@ for (const m of [
   // 読み取り
   "ping", "list_entities", "get_entity", "find_entity", "query_entities",
   "list_scenes", "list_assets", "get_mode", "get_log", "describe_components",
-  "get_scene_settings", "screenshot",
+  "describe_lua_api", "get_scene_settings", "get_lua_component_state",
+  "project_world_to_screen", "screenshot", "screenshot_game_view",
   // 同期編集
   "set_transform", "set_component", "remove_component", "set_parent",
-  "rename_entity", "select_entity", "focus_camera", "set_pbr",
+  "rename_entity", "select_entity", "focus_camera", "set_pbr", "set_color", "set_lua_property",
   "set_scene_settings", "undo", "redo", "save_scene",
   "create_lua_component", "attach_lua_component",
+  // 入力シミュレーション(即時)
+  "key_down", "key_up", "key_press",
 ]) TIMEOUT_BY_METHOD[m] = 8000;
+// step_frames は最大 600 フレーム(~10s)回ってから返るので長めに。
+TIMEOUT_BY_METHOD["step_frames"] = 30000;
 // 遅延同期(エンティティ生成/削除/複製) = 15000ms
 for (const m of ["create_entity", "delete_entity", "duplicate_entity"]) TIMEOUT_BY_METHOD[m] = 15000;
 // 遅延同期(モデル/プレハブ読込・シーン遷移、GPU/IO が重い) = 45000ms
@@ -62,12 +67,14 @@ export class EngineClient {
   private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
   private host: string;
   private port: number;
+  private explicitPort: boolean;   // 呼び出し側がポートを固定したか（test.ts 等）。固定時は再探索しない。
   private defaultTimeoutMs: number;
 
   // Node の型ストリップ実行はパラメータプロパティ非対応なので明示代入。
   // 引数省略時はポート自動探索。test.ts は (host, port, timeout) を明示指定してくる。
   constructor(host?: string, port?: number, timeoutMs?: number) {
     this.host = host ?? process.env.DX12_MCP_HOST ?? "127.0.0.1";
+    this.explicitPort = port != null;
     this.port = port ?? discoverPort();
     this.defaultTimeoutMs = timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
@@ -102,6 +109,9 @@ export class EngineClient {
     // single-flight: 接続確立中の Promise を共有。並行 call が複数ソケットを張るのを防ぐ
     // (engine は単一クライアントしか捌けないため2本目以降がハングする)。
     if (this.connecting) return this.connecting;
+    // 再接続のたびにポートを再探索する（固定指定が無い場合）。ビルド等で一時的に死にポートを
+    // 掴んでも、エディタの正しいポートが %TEMP%/dx12_mcp.port に戻れば再起動なしで自己回復する。
+    if (!this.explicitPort) this.port = discoverPort();
     this.connecting = new Promise((resolve, reject) => {
       const s = net.connect(this.port, this.host);
       s.setEncoding("utf8");

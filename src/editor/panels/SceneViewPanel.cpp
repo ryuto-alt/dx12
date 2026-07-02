@@ -518,14 +518,25 @@ void SceneViewPanel::HandleCameraNavigation(entt::registry& reg,
     // カメラの正射化・向き固定は Application 側で毎フレーム適用。ここでは x/y パンとズーム量だけ動かす。
     if (ctx.view2D)
     {
-        // ホイール: 正射サイズを増減（上スクロールでズームイン）。
+        // 回転は 0 固定なので MoveRight/MoveUp はそのままワールド X/Y 平行移動になる。
+        // タッチパッド二本指（中ボタンの無い端末向け）: 横=左右パン, SHIFT+縦=上下パン, 縦=ズーム。
+        // 上のヒント表示と一致させる。パン量はズーム（=見えてる世界サイズ）に比例。
+        f32 panStep = (std::max)(0.5f, ctx.view2DZoom) * 0.2f;
+
         if (io.MouseWheel != 0.0f)
         {
-            f32 factor = (io.MouseWheel > 0.0f) ? 0.9f : (1.0f / 0.9f);
-            ctx.view2DZoom = std::clamp(ctx.view2DZoom * factor, 0.2f, 1000.0f);
+            if (io.KeyShift)
+                camera->MoveUp(io.MouseWheel * panStep);          // SHIFT+縦: 上下パン
+            else
+            {
+                f32 factor = (io.MouseWheel > 0.0f) ? 0.9f : (1.0f / 0.9f);
+                ctx.view2DZoom = std::clamp(ctx.view2DZoom * factor, 0.2f, 1000.0f);  // 縦: ズーム
+            }
         }
-        // 中ドラッグ: パン。回転は 0 固定なので MoveRight/MoveUp はワールド X/Y 平行移動になる。
-        // 画面ピクセル → 世界量は「ビュー縦 = 2*zoom」をビュー高で割って換算。
+        if (io.MouseWheelH != 0.0f)
+            camera->MoveRight(-io.MouseWheelH * panStep);         // 横: 左右パン（符号は 3D 側と統一）
+
+        // 中ドラッグ: パン（マウス用）。画面ピクセル → 世界量は「ビュー縦 = 2*zoom」をビュー高で割って換算。
         if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0.0f))
         {
             f32 worldPerPixel = (2.0f * ctx.view2DZoom) / (std::max)(1.0f, vpH);
