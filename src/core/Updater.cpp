@@ -554,12 +554,28 @@ bool LaunchUpdaterBatch(const fs::path& srcDir, const fs::path& installDir, cons
     b << "ping -n 2 127.0.0.1 >nul\r\n";
     b << "goto wait\r\n";
     b << ":apply\r\n";
+    b << "set copytries=0\r\n";
+    b << ":copy\r\n";
     // /E=サブフォルダ込み /IS,/IT=既存/変更も上書き（ミラーはしない＝余分なファイルは消さない）
+    // /R:20 /W:1=直後はまだ旧 exe がファイルロック解放中のことがあるため粘り強く再試行する。
     b << "robocopy \"" << srcDir.string() << "\" \"" << installDir.string()
-      << "\" /E /IS /IT /R:5 /W:1 /NFL /NDL /NJH /NJS /NP >nul\r\n";
+      << "\" /E /IS /IT /R:20 /W:1 /NFL /NDL /NJH /NJS /NP >nul\r\n";
+    // robocopy の終了コードは 0-7 が成功系、8 以上はコピー失敗を含む（MSDNの仕様）。
+    b << "if !errorlevel! LSS 8 goto copyok\r\n";
+    b << "set /a copytries+=1\r\n";
+    b << "if !copytries! geq 2 goto copyfail\r\n";
+    b << "ping -n 3 127.0.0.1 >nul\r\n";
+    b << "goto copy\r\n";
+    b << ":copyfail\r\n";
+    // 上書きに失敗＝新バージョンが反映されていない可能性が高い。--updated を付けずに起動すると、
+    // 次の起動で更新チェックがスキップされず必ず再度走る＝再試行の機会をユーザーに残せる。
+    b << "start \"\" \"" << exePath << "\"\r\n";
+    b << "goto cleanup\r\n";
+    b << ":copyok\r\n";
     // --updated 付きで再起動 → 直後の起動は更新チェック(同期ネットワーク)をスキップして
     // 即座にウィンドウを出す。これが無いと「更新後すぐ exe が開かない(数秒固まる)」の主因になる。
     b << "start \"\" \"" << exePath << "\" --updated\r\n";
+    b << ":cleanup\r\n";
     b << "rmdir /S /Q \"" << tmpRoot.string() << "\" >nul 2>&1\r\n";
     b << "del \"%~f0\" >nul 2>&1\r\n";
     b.close();
@@ -623,16 +639,16 @@ bool Updater::RunStartupCheck()
         return false;
     }
 
-    // 無限アップデート防止: このタグへの適用を既に一度試みたのに、まだ古い版で動いている
-    // = リリース zip 内の exe が版を据え置き（公開時の版上げ忘れ等）か上書き失敗。
-    // ここで再プロンプトすると「更新→再起動→まだ古い→また更新」の無限ループになるのでスキップする。
-    // タグが進めば（version が上がれば）上の IsNewer で false になり、このマーカーは無視される。
-    if (ReadLastUpdateTag() == tag)
+    // このタグへの適用を既に一度試みたのに、まだ古い版で動いている
+    // = リリース zip 内の exe が版を据え置き（公開時の版上げ忘れ等）か、上書き処理の失敗
+    //   （ファイルロック等でコピーしきれなかった）の可能性がある。
+    // 「毎回絶対に確認・通知してほしい」という要求のため、ここで黙ってスキップはしない。
+    // 下の確認ダイアログにその旨を追記した上で、再試行するかどうかは毎回ユーザーに委ねる。
+    bool retryingStuckUpdate = (ReadLastUpdateTag() == tag);
+    if (retryingStuckUpdate)
     {
-        Logger::Warn("Updater: 更新 {} を適用済みですが、実行中の版が {} のままです。"
-                     "更新ループ回避のためスキップします（リリース zip 内の版ズレの可能性）。",
-                     tag, kEngineVersion);
-        return false;
+        Logger::Warn("Updater: 更新 {} を適用済みのはずですが、実行中の版が {} のままです。"
+                     "通知は継続し、再試行するかユーザーに確認します。", tag, kEngineVersion);
     }
 
     // ダウンロード URL を解決。まず命名規約（installer/build.ps1 が必ずこの名前で zip を作る）
@@ -667,7 +683,13 @@ bool Updater::RunStartupCheck()
     // 2) ユーザーに確認
     std::wstring msg =
         L"新しいバージョン " + Widen(tag) + L" が公開されています（現在 " +
-        Widen(kEngineVersion) + L"）。\n\n"
+        Widen(kEngineVersion) + L"）。\n\n";
+    if (retryingStuckUpdate)
+    {
+        msg += L"※前回この更新の適用を試みましたが反映されていませんでした"
+               L"（ファイルが使用中で上書きに失敗した可能性があります）。\n\n";
+    }
+    msg +=
         L"今すぐダウンロードして更新しますか？\n"
         L"（更新後にエンジンが自動で再起動します）";
     int r = MessageBoxW(nullptr, msg.c_str(), L"DX12 Engine アップデート",
