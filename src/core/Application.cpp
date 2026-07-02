@@ -900,10 +900,18 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_spriteRenderer->InitializeWorld(*m_graphicsDevice, kSceneColorFormat,
                                           DXGI_FORMAT_D32_FLOAT, PathResolver::ShaderDirW());
 
+        // パーティクル歪みバッファ（熱ゆらぎ/衝撃波が画面を歪ませる。RG=UVオフセット）
+        const float distortClear[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        m_distortRT = std::make_unique<RenderTarget>();
+        m_distortRT->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
+                                m_window->GetWidth(), m_window->GetHeight(),
+                                DXGI_FORMAT_R16G16_FLOAT, distortClear);
+
         // 加算ビルボードパーティクル（HDR scene RT + 深度へ描く / Lua fx API）
         m_particleSystem = std::make_unique<ParticleSystem>();
         m_particleSystem->Initialize(*m_graphicsDevice, kSceneColorFormat,
-                                     DXGI_FORMAT_D32_FLOAT, PathResolver::ShaderDirW());
+                                     DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R16G16_FLOAT,
+                                     PathResolver::ShaderDirW());
         if (m_scriptEngine) m_scriptEngine->SetParticleSystem(m_particleSystem.get());
 
         // シーントランジション
@@ -3177,6 +3185,7 @@ void Application::Run()
                 if (m_lensFlarePass)  m_lensFlarePass->Resize(*m_graphicsDevice, w, h);
                 if (m_dofPass)        m_dofPass->Resize(*m_graphicsDevice, w, h);
                 if (m_motionBlurPass) m_motionBlurPass->Resize(*m_graphicsDevice, w, h);
+                if (m_distortRT)      m_distortRT->Resize(*m_graphicsDevice, w, h);
                 m_prevViewProjValid = false;  // リサイズ直後のMB速度スパイク防止
 
                 // カメラアスペクト比更新（エディタモードではサイドバー分引く）
@@ -3361,6 +3370,7 @@ void Application::Shutdown()
     m_lensFlarePass.reset();
     m_dofPass.reset();
     m_motionBlurPass.reset();
+    m_distortRT.reset();
     // SSAO（GPU リソース）をデバイス解放より前に明示破棄
     m_ssaoPass.reset();
     m_ssaoWhiteTex.reset();
@@ -3737,7 +3747,29 @@ void Application::Update()
             p.intensity = pe.intensity;
             p.gravity = pe.gravity; p.drag = pe.drag; p.up = pe.up;
             p.stretch = pe.stretch; p.kind = pe.kind; p.blend = pe.blend;
+            p.sizeMid = pe.sizeMid; p.distort = pe.distort;
+            p.light = pe.light;     p.lightRange = pe.lightRange;
             m_particleSystem->Emit(p);
+        }
+
+        // トレイル（軌跡リボン）: エンティティのワールド位置を毎フレーム記録
+        auto trView = peReg.view<TrailRenderer, Transform>();
+        for (auto tr_e : trView)
+        {
+            const auto& tr = trView.get<TrailRenderer>(tr_e);
+            if (!tr.emitting) continue;
+            DirectX::XMMATRIX w = ComputeWorldMatrix(peReg, tr_e);
+            DirectX::XMFLOAT3 pos; DirectX::XMStoreFloat3(&pos, w.r[3]);
+
+            ParticleSystem::TrailParams tp;
+            tp.width     = tr.width;
+            tp.color     = tr.color;
+            tp.colorEnd  = tr.colorEnd;
+            tp.intensity = tr.intensity;
+            tp.life      = tr.life;
+            tp.blend     = tr.blend;
+            tp.minDist   = tr.minDist;
+            m_particleSystem->TrailPoint(static_cast<u64>(tr_e), pos, tp);
         }
     }
 
@@ -7099,6 +7131,23 @@ void Application::Render()
         }
     }
 
+    // パーティクルライト: light=true の明るい粒子上位を、ポイントライトの空き枠へ注ぐ
+    // （炎や魔法が実際に周囲を照らす。シーン配置のライトが優先）
+    if (m_particleSystem && fc.numPointLights < kMaxPointLightsR)
+    {
+        ParticleSystem::LightInfo pls[kMaxPointLightsR];
+        const u32 got = m_particleSystem->CollectLights(kMaxPointLightsR - fc.numPointLights, pls);
+        for (u32 li = 0; li < got; ++li)
+        {
+            auto& pld = fc.pointLights[fc.numPointLights];
+            pld.position = pls[li].pos;
+            pld.range    = pls[li].range;
+            pld.color    = pls[li].color;
+            pld._pad     = 0.0f;
+            fc.numPointLights++;
+        }
+    }
+
     m_perFrameCB->Update(&fc, sizeof(fc), frameIndex);
 
     // ===== Skybox（不透明描画の前に全画面塗り。深度テスト OFF なので後続不透明が上書き）=====
@@ -7149,8 +7198,10 @@ void Application::Render()
         m_physicsDebugRenderer->Render(nativeCmdList, vp);
     }
 
-    // ---- パーティクル（プロシージャル質感ビルボード）: ゲームビューのみ、HDR scene RT へ ----
-    if (m_particleSystem && (m_isGameMode || m_engineMode == EngineMode::Playing))
+    // ---- パーティクル（プロシージャル質感ビルボード）: HDR scene RT へ ----
+    // エディタ編集中も描画する（配置エミッタ/トレイルの常時プレビュー。従来は Play/ゲームのみ）
+    bool particleDistortDrawn = false;
+    if (m_particleSystem)
     {
         // 深度を読み取り可能へ遷移し soft particles 用 SRV を供給。DSV はバインドせず PS で手動オクルージョン。
         m_commandList->TransitionResource(m_depthBuffer.Get(),
@@ -7177,6 +7228,22 @@ void Application::Render()
             m_particleSystem->DisableSceneDepth();
         m_particleSystem->SetTime(totalTime);
         m_particleSystem->Render(nativeCmdList, m_camera->GetViewProjMatrix(), camRight, camUp, camPos);
+
+        // ---- 歪みパーティクル（熱ゆらぎ/衝撃波）: 歪みバッファ(RG16F)へ ----
+        // Render() と同一フレームのインスタンスバッファを共有するため直後に描く。
+        if (m_particleSystem->HasDistortion() && m_distortRT)
+        {
+            m_distortRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            constexpr float distClear[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+            m_commandList->ClearRenderTarget(m_distortRT->GetRtv(), distClear);
+            auto drtv = m_distortRT->GetRtv();
+            nativeCmdList->OMSetRenderTargets(1, &drtv, FALSE, nullptr);
+            m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+            m_particleSystem->RenderDistortion(nativeCmdList, m_camera->GetViewProjMatrix(),
+                                               camRight, camUp);
+            m_distortRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            particleDistortDrawn = true;
+        }
 
         m_commandList->TransitionResource(m_depthBuffer.Get(),
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
@@ -7386,11 +7453,14 @@ void Application::Render()
         pin.lutSrv       = lutSrvGpu;
         pin.godraysSrv   = grReady ? m_srvHeap->GetGpuHandle(godraysSrv) : whiteDummy;
         pin.flareSrv     = lfReady ? m_srvHeap->GetGpuHandle(flareSrv)   : whiteDummy;
+        pin.distortSrv   = (particleDistortDrawn && m_distortRT)
+                         ? m_srvHeap->GetGpuHandle(m_distortRT->GetSrvIndex()) : whiteDummy;
         pin.lutSize      = lutSize;
         pin.exposureVA   = exposureVA;
         pin.bloomReady   = bloomReady;
         pin.godraysReady = grReady;
         pin.flareReady   = lfReady;
+        pin.distortReady = particleDistortDrawn;
 
         m_postProcess->Apply(nativeCmdList, pin, ppApplied,
             uvOfsX, uvOfsY, uvSclX, uvSclY,
@@ -7573,6 +7643,7 @@ void Application::Render()
                 pvIn.lutSrv     = pvDummy;
                 pvIn.godraysSrv = pvDummy;
                 pvIn.flareSrv   = pvDummy;
+                pvIn.distortSrv = pvDummy;
                 pvIn.exposureVA = m_autoExposure ? m_autoExposure->GetExposureBufferVA() : 0;
                 m_postProcess->Apply(nativeCmdList, pvIn, pvPost,
                     0.0f, 0.0f, 1.0f, 1.0f,

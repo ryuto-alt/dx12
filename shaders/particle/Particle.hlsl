@@ -179,6 +179,47 @@ void ShadeKind(VSOutput i, out float shape, out float3 kindColor)
     }
 }
 
+// ---- 歪みパーティクル PS（RG16F 歪みオフセットバッファへ加算）----
+// color.r = 歪み強度, color.a = 寿命フェード。出力 rg = ローカルUV単位のオフセット。
+// KIND_RING = 拡大する衝撃波（放射方向へ押し出す）/ その他 = 熱ゆらぎ（fbm ノイズベクトル）。
+float4 PSDistort(VSOutput i) : SV_TARGET
+{
+    // シーン深度による手動オクルージョン（壁の向こうを歪ませない）
+    float soft = 1.0;
+    if (params2.z > 0.0)
+    {
+        float2 suv = i.pos.xy * float2(params2.z, params2.w);
+        float sceneD = gSceneDepth.SampleLevel(sDepth, suv, 0).r;
+        float sceneZ = params2.y / (sceneD - params2.x);
+        soft = saturate((sceneZ - i.viewZ) / 0.5);
+    }
+    float strength = i.color.r * i.color.a * soft;
+    clip(strength - 1e-4);
+
+    float2 uv = i.uv;
+    float  r  = length(uv);
+    float2 dir = (r > 1e-4) ? uv / r : float2(0.0, 0.0);
+    float2 ofs;
+    if (i.kind == KIND_RING)
+    {
+        // 拡大リング: age01 で半径が広がる帯の内側→外側へ押し出す
+        float rad  = i.age01;
+        float band = exp(-pow((r - rad) * 7.0, 2.0));
+        ofs = dir * band;
+    }
+    else
+    {
+        // 熱ゆらぎ: 上昇スクロールする fbm のベクトル場（丸マスク）
+        float2 p = uv * 2.5 + float2(i.seed * 7.0, -params.z * 1.6 - i.seed * 3.0);
+        float n1 = fbm2(p, 3);
+        float n2 = fbm2(p + float2(9.7, 3.1), 3);
+        float mask = saturate(1.0 - r);
+        ofs = float2(n1, n2) * mask;
+    }
+    // 0.03 = 強度1.0 のときの最大オフセット（ローカルUVの約3%）
+    return float4(ofs * strength * 0.03, 0.0, 1.0);
+}
+
 float4 PSMain(VSOutput i) : SV_TARGET
 {
     // ---- soft particles を先に評価: シーン深度で手動オクルージョン＋接地フェード ----

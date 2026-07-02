@@ -168,6 +168,7 @@ if(DXC_EXECUTABLE)
     set(SHADER_TRANSITION    "${CMAKE_SOURCE_DIR}/shaders/post/Transition.hlsl")
     set(SHADER_PARTICLE      "${CMAKE_SOURCE_DIR}/shaders/particle/Particle.hlsl")
     set(SHADER_BEAM          "${CMAKE_SOURCE_DIR}/shaders/particle/Beam.hlsl")
+    set(SHADER_TRAIL         "${CMAKE_SOURCE_DIR}/shaders/particle/Trail.hlsl")
     set(SHADER_PARTICLE_INC  "${CMAKE_SOURCE_DIR}/shaders/particle/ParticleCommon.hlsli")
     set(SHADER_IBL_IRR       "${CMAKE_SOURCE_DIR}/shaders/ibl/IrradianceConvolution.hlsl")
     set(SHADER_IBL_PRE       "${CMAKE_SOURCE_DIR}/shaders/ibl/PrefilterEnv.hlsl")
@@ -214,6 +215,9 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/Emissive_PS.cso"
         "${SHADER_OUTPUT_DIR}/Particle_VS.cso"
         "${SHADER_OUTPUT_DIR}/Particle_PS.cso"
+        "${SHADER_OUTPUT_DIR}/ParticleDistort_PS.cso"
+        "${SHADER_OUTPUT_DIR}/Trail_VS.cso"
+        "${SHADER_OUTPUT_DIR}/Trail_PS.cso"
         "${SHADER_OUTPUT_DIR}/Beam_VS.cso"
         "${SHADER_OUTPUT_DIR}/Beam_PS.cso"
         "${SHADER_OUTPUT_DIR}/IrradianceConvolution_CS.cso"
@@ -483,6 +487,27 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/Particle_PS.cso" "${SHADER_PARTICLE}"
         DEPENDS "${SHADER_PARTICLE}" "${SHADER_PARTICLE_INC}"
         COMMENT "Compiling Particle.hlsl -> Particle_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ParticleDistort_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSDistort -Fo "${SHADER_OUTPUT_DIR}/ParticleDistort_PS.cso" "${SHADER_PARTICLE}"
+        DEPENDS "${SHADER_PARTICLE}" "${SHADER_PARTICLE_INC}"
+        COMMENT "Compiling Particle.hlsl -> ParticleDistort_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/Trail_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/Trail_VS.cso" "${SHADER_TRAIL}"
+        DEPENDS "${SHADER_TRAIL}" "${SHADER_PARTICLE_INC}"
+        COMMENT "Compiling Trail.hlsl -> Trail_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/Trail_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/Trail_PS.cso" "${SHADER_TRAIL}"
+        DEPENDS "${SHADER_TRAIL}" "${SHADER_PARTICLE_INC}"
+        COMMENT "Compiling Trail.hlsl -> Trail_PS.cso (ps_6_0)"
     )
 
     add_custom_command(

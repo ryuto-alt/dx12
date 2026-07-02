@@ -37,6 +37,7 @@ static const float PI = 3.14159265;
 #define E_DEBAND     (1u<<27)
 #define E_GODRAYS    (1u<<28)
 #define E_LENSFLARE  (1u<<29)
+#define E_DISTORT    (1u<<30)
 
 cbuffer PostCB : register(b0)
 {
@@ -60,6 +61,7 @@ Texture2D    gLut   : register(t2);   // 3D LUT ストリップ（N*N x N）。�
 StructuredBuffer<float> gExposureBuf : register(t3);  // [0]=自動露出の倍率
 Texture2D    gGodrays : register(t4); // ゴッドレイ光条（シーンと同じ正規化UVレイアウト）
 Texture2D    gFlare   : register(t5); // レンズフレア（ビューポートローカル 0..1）
+Texture2D    gDistort : register(t6); // パーティクル歪みバッファ（RG=UVオフセット、シーンと同レイアウト）
 SamplerState gSamp  : register(s0);
 
 static float3 SampleScene(float2 uv) { return gScene.Sample(gSamp, uv).rgb; }
@@ -158,6 +160,13 @@ float4 PostPS(FSQuadVSOut i) : SV_TARGET
     bool   crtOut = false;
 
     // ===== UV ステージ（サンプル前に UV を歪ませる） =====
+
+    // --- パーティクル歪み（熱ゆらぎ/衝撃波。歪みバッファの RG=オフセット）---
+    if (mask & E_DISTORT)
+    {
+        float2 dofs = gDistort.Sample(gSamp, i.uv * scale + ofs).rg;
+        luv += dofs;
+    }
 
     // --- レンズ歪み（バレル） ---
     if (mask & E_LENS)

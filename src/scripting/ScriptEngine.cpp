@@ -252,6 +252,7 @@ void ScriptEngine::RegisterBindings()
             if (type == "CharacterController") return e.HasComponent<CharacterController>();
             if (type == "LuaScript")          return e.HasComponent<LuaScript>();
             if (type == "ParticleEmitter")    return e.HasComponent<ParticleEmitter>();
+            if (type == "TrailRenderer")      return e.HasComponent<TrailRenderer>();
             if (type == "Trigger")            return e.HasComponent<Trigger>();
             // タイプミスや未対応型を「持ってない」と誤認させない（デバッグ困難の元）。
             // 毎フレーム呼ばれてもスパムしないよう型名ごとに1回だけ警告する。
@@ -635,19 +636,38 @@ void ScriptEngine::RegisterBindings()
             }
             p.flicker     = t.get_or("flicker", 0.0f);
             p.flickerFreq = t.get_or("flickerFreq", 18.0f);
+            p.sizeMid     = t.get_or("sizeMid", -1.0f);     // >=0 で3キーサイズ（start→mid→end）
+            p.distort     = t.get_or("distort", 0.0f);      // >0 で歪みパーティクル（熱ゆらぎ/衝撃波）
+            p.light       = t.get_or("light", false);       // 明るい粒子上位をポイントライト化
+            p.lightRange  = t.get_or("lightRange", 3.0f);
             return p;
         };
 
+        // onDeath = {…} で粒子の死亡位置に子バースト（サブエミッタ・1段のみ）。
+        // 例: fx:burst{count=1, life=1.2, gravity=-9, onDeath={kind="spark", count=24, speed=5}}
+        auto emitWithChild = [this, buildParams](sol::table t, bool ring) {
+            if (!m_particleSystem) return;
+            auto p = buildParams(t);
+            p.ring = ring;
+            sol::optional<sol::table> od = t["onDeath"];
+            if (od)
+            {
+                auto child = buildParams(*od);
+                child.ring = od->get_or("ring", false);
+                m_particleSystem->Emit(p, &child);
+            }
+            else
+            {
+                m_particleSystem->Emit(p);
+            }
+        };
+
         auto fx = lua.create_named_table("fx");
-        fx.set_function("burst", [this, buildParams](sol::object, sol::table t) {
-            if (!m_particleSystem) return;
-            auto p = buildParams(t); p.ring = false;
-            m_particleSystem->Emit(p);
+        fx.set_function("burst", [emitWithChild](sol::object, sol::table t) {
+            emitWithChild(t, false);
         });
-        fx.set_function("ring", [this, buildParams](sol::object, sol::table t) {
-            if (!m_particleSystem) return;
-            auto p = buildParams(t); p.ring = true;
-            m_particleSystem->Emit(p);
+        fx.set_function("ring", [emitWithChild](sol::object, sol::table t) {
+            emitWithChild(t, true);
         });
         fx.set_function("pulse", [this](sol::object, sol::optional<float> amt) {
             if (m_particleSystem) m_particleSystem->AddPulse(amt.value_or(0.5f));

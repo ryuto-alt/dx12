@@ -241,6 +241,7 @@ static void RegisterCoreComponentSerializers()
     R.Register(MakeReflectedInfo<CapsuleCollider>("CapsuleCollider", "capsuleCollider", true));
     R.Register(MakeReflectedInfo<CharacterController>("CharacterController", "characterController", true));
     R.Register(MakeReflectedInfo<Sprite2D>("Sprite2D", "sprite2d", true));
+    R.Register(MakeReflectedInfo<TrailRenderer>("TrailRenderer", "trailRenderer", true));
 
     // ---- カメラ: フィールドは反射で復元し、新規追加時だけアクティブカメラの重複防止を行う ----
     {
@@ -446,7 +447,9 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                 {"life", pe.life}, {"lifeVar", pe.lifeVar},
                 {"color", SerializeFloat3(pe.color)}, {"colorEnd", SerializeFloat3(pe.colorEnd)},
                 {"intensity", pe.intensity}, {"gravity", pe.gravity},
-                {"drag", pe.drag}, {"up", pe.up}, {"stretch", pe.stretch}
+                {"drag", pe.drag}, {"up", pe.up}, {"stretch", pe.stretch},
+                {"sizeMid", pe.sizeMid}, {"distort", pe.distort},
+                {"light", pe.light}, {"lightRange", pe.lightRange}
             };
         }
 
@@ -854,6 +857,10 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                 pe.drag      = pj.value("drag", 1.0f);
                 pe.up        = pj.value("up", 0.0f);
                 pe.stretch   = pj.value("stretch", 0.0f);
+                pe.sizeMid   = pj.value("sizeMid", -1.0f);
+                pe.distort   = pj.value("distort", 0.0f);
+                pe.light     = pj.value("light", false);
+                pe.lightRange = pj.value("lightRange", 3.0f);
                 reg.emplace_or_replace<ParticleEmitter>(e, pe);
             }
 

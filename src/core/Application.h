@@ -320,6 +320,7 @@ private:
     std::unique_ptr<LensFlarePass>  m_lensFlarePass;  // 疑似レンズフレア（ブルームチェーン入力）
     std::unique_ptr<DofPass>        m_dofPass;        // 被写界深度（gather ボケ）
     std::unique_ptr<MotionBlurPass> m_motionBlurPass; // カメラモーションブラー（深度再構成）
+    std::unique_ptr<RenderTarget>   m_distortRT;      // パーティクル歪みバッファ（RG16F、熱ゆらぎ/衝撃波）
     DirectX::XMFLOAT4X4             m_prevViewProj{};       // 前フレームの viewProj（モーションブラー用）
     bool                            m_prevViewProjValid = false;
     std::unique_ptr<ParticleSystem> m_particleSystem;  // 加算ビルボードパーティクル（Lua fx API）

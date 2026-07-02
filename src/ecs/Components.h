@@ -384,11 +384,29 @@ struct ParticleEmitter
     f32  drag      = 1.0f;
     f32  up        = 0.0f;     // 初速の上向きバイアス
     f32  stretch   = 0.0f;     // >0 で速度方向へ伸びる（火花/筋）
+    f32  sizeMid   = -1.0f;    // >=0 で3キーサイズカーブ（start→mid→end）
+    f32  distort   = 0.0f;     // >0 で歪みパーティクル（熱ゆらぎ/衝撃波。画面を歪ませる）
+    bool light     = false;    // 明るい粒子上位N個を実ポイントライト化（炎が周囲を照らす）
+    f32  lightRange = 3.0f;    // ポイントライト化時の到達距離
 
     // ランタイム専有（非シリアライズ）
     bool _active    = true;    // 放出中か（Play 時は playOnStart で初期化。エディタは常時プレビュー）
     f32  _emitAccum = 0.0f;    // 端数の放出量を溜める
     f32  _age       = 0.0f;    // ワンショット用の経過秒
+};
+
+// 軌跡リボン（剣の残像/弾道/魔法の尾）。エンティティのワールド位置を毎フレーム記録し、
+// ParticleSystem がカメラフェーシングの帯として描く。エディタでも常時プレビュー。
+struct TrailRenderer
+{
+    bool emitting  = true;     // 位置を記録するか（OFF で尾が自然に消えていく）
+    f32  width     = 0.25f;    // 帯の幅（ワールド）
+    f32  life      = 0.5f;     // 各点の寿命（秒）＝帯の長さ
+    DirectX::XMFLOAT3 color{0.4f, 0.8f, 1.0f};     // 先頭色
+    DirectX::XMFLOAT3 colorEnd{0.1f, 0.2f, 1.0f};  // 尾の色
+    f32  intensity = 2.0f;     // HDR 増幅（>1 でブルームに乗る）
+    int  blend     = 0;        // 0=加算（エネルギー）, 1=前乗算アルファ（煙）
+    f32  minDist   = 0.03f;    // この距離以上動いたら点を打つ
 };
 
 // --- Trigger（イベント）: 範囲に入った/出た/居る ときに宣言的なアクションを実行する部品 ---

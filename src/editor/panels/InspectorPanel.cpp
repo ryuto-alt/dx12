@@ -658,6 +658,10 @@ void InspectorPanel::Render(entt::registry& reg,
                 changed |= ImGui::ColorEdit3("終了色 ColorEnd", &pe.colorEnd.x);
                 changed |= ImGui::DragFloat("輝度 Intensity", &pe.intensity, 0.05f, 0.0f, 30.0f); active |= ImGui::IsItemActive();
                 changed |= ImGui::DragFloat("サイズ Size", &pe.size, 0.01f, 0.0f, 10.0f); active |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat("中間サイズ SizeMid", &pe.sizeMid, 0.01f, -1.0f, 10.0f); active |= ImGui::IsItemActive();
+                ImGui::SameLine(); ImGui::TextDisabled("(?)");
+                if (ImGui::BeginItemTooltip())
+                { ImGui::TextUnformatted("-1で無効。0以上で 開始→中間→終了 の3キーサイズカーブ"); ImGui::EndTooltip(); }
                 changed |= ImGui::DragFloat("終了サイズ SizeEnd", &pe.sizeEnd, 0.01f, 0.0f, 10.0f); active |= ImGui::IsItemActive();
                 changed |= ImGui::DragFloat("寿命 Life(s)", &pe.life, 0.01f, 0.01f, 30.0f); active |= ImGui::IsItemActive();
                 changed |= ImGui::SliderFloat("寿命ばらつき LifeVar", &pe.lifeVar, 0.0f, 1.0f); active |= ImGui::IsItemActive();
@@ -670,8 +674,43 @@ void InspectorPanel::Render(entt::registry& reg,
                 changed |= ImGui::DragFloat("抵抗 Drag", &pe.drag, 0.02f, 0.0f, 10.0f); active |= ImGui::IsItemActive();
                 changed |= ImGui::DragFloat("上向き Up", &pe.up, 0.02f, 0.0f, 10.0f); active |= ImGui::IsItemActive();
                 changed |= ImGui::DragFloat("ストレッチ Stretch", &pe.stretch, 0.02f, 0.0f, 10.0f); active |= ImGui::IsItemActive();
+                ImGui::SeparatorText("特殊効果");
+                changed |= ImGui::SliderFloat("画面歪み Distort", &pe.distort, 0.0f, 3.0f); active |= ImGui::IsItemActive();
+                ImGui::SameLine(); ImGui::TextDisabled("(?)");
+                if (ImGui::BeginItemTooltip())
+                { ImGui::TextUnformatted(">0 で色でなく画面の歪みを描く（熱ゆらぎ。Kind=Ring で衝撃波）"); ImGui::EndTooltip(); }
+                changed |= ImGui::Checkbox("ライト放出 Light", &pe.light);
+                ImGui::SameLine(); ImGui::TextDisabled("(?)");
+                if (ImGui::BeginItemTooltip())
+                { ImGui::TextUnformatted("明るい粒子の上位数個が実ポイントライトになり周囲を照らす（炎/魔法）"); ImGui::EndTooltip(); }
+                if (pe.light)
+                { changed |= ImGui::DragFloat("光の距離 LightRange", &pe.lightRange, 0.05f, 0.1f, 50.0f); active |= ImGui::IsItemActive(); }
                 ImGui::TextDisabled("エディタでもプレビュー表示されます");
                 EndEdit(reg, ctx, ctx.selectedEntity, m_emitterEdit, changed, active, "Particle Emitter");
+            }
+        }
+
+        // TrailRenderer（軌跡リボン: 剣の残像/弾道/魔法の尾）
+        if (reg.all_of<TrailRenderer>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entMesh : 0, "Trail Renderer");
+            bool removed = ComponentRemoveMenu<TrailRenderer>(reg, ctx, ctx.selectedEntity, "Trail Renderer");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_trailEdit);
+                auto& tr = reg.get<TrailRenderer>(ctx.selectedEntity);
+                bool changed = false, active = false;
+                changed |= ImGui::Checkbox("記録中 Emitting", &tr.emitting);
+                changed |= ImGui::DragFloat("幅 Width", &tr.width, 0.01f, 0.01f, 10.0f); active |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat("寿命 Life(s)", &tr.life, 0.02f, 0.05f, 10.0f); active |= ImGui::IsItemActive();
+                changed |= ImGui::ColorEdit3("先頭色 Color", &tr.color.x);
+                changed |= ImGui::ColorEdit3("尾の色 ColorEnd", &tr.colorEnd.x);
+                changed |= ImGui::DragFloat("輝度 Intensity", &tr.intensity, 0.05f, 0.0f, 30.0f); active |= ImGui::IsItemActive();
+                const char* tblends[] = { "加算 Additive", "アルファ Alpha" };
+                changed |= ImGui::Combo("合成 Blend", &tr.blend, tblends, IM_ARRAYSIZE(tblends));
+                changed |= ImGui::DragFloat("最小移動 MinDist", &tr.minDist, 0.005f, 0.001f, 2.0f); active |= ImGui::IsItemActive();
+                ImGui::TextDisabled("エンティティを動かすと軌跡の帯が出ます（エディタでもプレビュー）");
+                EndEdit(reg, ctx, ctx.selectedEntity, m_trailEdit, changed, active, "Trail Renderer");
             }
         }
 
@@ -1077,6 +1116,7 @@ void InspectorPanel::Render(entt::registry& reg,
             AddComponentMenuItem<AudioSource>(reg, ctx, ctx.selectedEntity, "Audio Source");
             AddComponentMenuItem<Gimmick>(reg, ctx, ctx.selectedEntity, "Gimmick");
             AddComponentMenuItem<ParticleEmitter>(reg, ctx, ctx.selectedEntity, "Particle Emitter");
+            AddComponentMenuItem<TrailRenderer>(reg, ctx, ctx.selectedEntity, "Trail Renderer");
             AddComponentMenuItem<Trigger>(reg, ctx, ctx.selectedEntity, "Trigger");
             ImGui::Separator();
             AddComponentMenuItem<RigidBody>(reg, ctx, ctx.selectedEntity, "RigidBody");

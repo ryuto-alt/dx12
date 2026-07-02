@@ -36,11 +36,13 @@ public:
         D3D12_GPU_DESCRIPTOR_HANDLE lutSrv{};       // 3D LUT ストリップ
         D3D12_GPU_DESCRIPTOR_HANDLE godraysSrv{};   // ゴッドレイ光条（シーンと同レイアウト）
         D3D12_GPU_DESCRIPTOR_HANDLE flareSrv{};     // レンズフレア（ビューポートローカル 0..1）
+        D3D12_GPU_DESCRIPTOR_HANDLE distortSrv{};   // パーティクル歪みバッファ（シーンと同レイアウト）
         float                       lutSize    = 0.0f;  // LUT の N（<2 で無効）
         D3D12_GPU_VIRTUAL_ADDRESS   exposureVA = 0;     // 自動露出バッファ（0 で無効）
         bool bloomReady   = false;
         bool godraysReady = false;
         bool flareReady   = false;
+        bool distortReady = false;   // 歪みパーティクルが存在するフレームのみ true
     };
 
     // 呼び出し側で対象 RTV と descriptor heap(srv) を先にバインドしておくこと。

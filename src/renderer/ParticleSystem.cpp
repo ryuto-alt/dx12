@@ -96,10 +96,12 @@ inline XMFLOAT3 lerp3(const XMFLOAT3& a, const XMFLOAT3& b, float t)
 } // namespace
 
 void ParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
-                                DXGI_FORMAT dsvFormat, const std::wstring& shaderDir)
+                                DXGI_FORMAT dsvFormat, DXGI_FORMAT distortFormat,
+                                const std::wstring& shaderDir)
 {
     static_assert(sizeof(GpuParticle) == 64, "GpuParticle stride must match shader instance layout (64)");
     static_assert(sizeof(GpuBeam) == 56, "GpuBeam stride must match Beam.hlsl instance layout (56)");
+    static_assert(sizeof(TrailVtx) == 36, "TrailVtx stride must match Trail.hlsl vertex layout (36)");
     (void)dsvFormat; // 粒子パスは DSV をバインドせず深度 SRV で手動オクルージョン
     auto* dev = device.GetDevice();
 
@@ -200,6 +202,57 @@ void ParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
         rt.DestBlend      = D3D12_BLEND_INV_SRC_ALPHA;
         rt.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
         ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoAlpha)));
+
+        // 歪みパーティクル: RG16F の歪みオフセットバッファへ加算（同じインスタンスレイアウト）
+        auto psD = ShaderCompiler::LoadFromFile(shaderDir + L"ParticleDistort_PS.cso");
+        pso.PS = { psD.GetData(), psD.GetSize() };
+        rt.DestBlend      = D3D12_BLEND_ONE;
+        rt.DestBlendAlpha = D3D12_BLEND_ONE;
+        pso.RTVFormats[0] = distortFormat;
+        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoDistort)));
+    }
+
+    // --- トレイル PSO（頂点ストリーム / 加算 と 前乗算α の2種）---
+    {
+        auto vs = ShaderCompiler::LoadFromFile(shaderDir + L"Trail_VS.cso");
+        auto ps = ShaderCompiler::LoadFromFile(shaderDir + L"Trail_PS.cso");
+
+        D3D12_INPUT_ELEMENT_DESC layout[] = {
+            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+            {"COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+            {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 28, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        };
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC tp{};
+        tp.pRootSignature        = m_rootSig.Get();
+        tp.VS                    = { vs.GetData(), vs.GetSize() };
+        tp.PS                    = { ps.GetData(), ps.GetSize() };
+        tp.InputLayout           = { layout, _countof(layout) };
+        tp.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        tp.RasterizerState.FillMode        = D3D12_FILL_MODE_SOLID;
+        tp.RasterizerState.CullMode        = D3D12_CULL_MODE_NONE;
+        tp.RasterizerState.DepthClipEnable = TRUE;
+        auto& trt = tp.BlendState.RenderTarget[0];
+        trt.BlendEnable    = TRUE;
+        trt.SrcBlend       = D3D12_BLEND_ONE;
+        trt.DestBlend      = D3D12_BLEND_ONE;
+        trt.BlendOp        = D3D12_BLEND_OP_ADD;
+        trt.SrcBlendAlpha  = D3D12_BLEND_ONE;
+        trt.DestBlendAlpha = D3D12_BLEND_ONE;
+        trt.BlendOpAlpha   = D3D12_BLEND_OP_ADD;
+        trt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        tp.DepthStencilState.DepthEnable   = FALSE;
+        tp.DepthStencilState.StencilEnable = FALSE;
+        tp.SampleMask       = UINT_MAX;
+        tp.NumRenderTargets = 1;
+        tp.RTVFormats[0]    = rtvFormat;
+        tp.DSVFormat        = DXGI_FORMAT_UNKNOWN;
+        tp.SampleDesc       = { 1, 0 };
+        ThrowIfFailed(dev->CreateGraphicsPipelineState(&tp, IID_PPV_ARGS(&m_psoTrailAdd)));
+
+        trt.DestBlend      = D3D12_BLEND_INV_SRC_ALPHA;
+        trt.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+        ThrowIfFailed(dev->CreateGraphicsPipelineState(&tp, IID_PPV_ARGS(&m_psoTrailAlpha)));
     }
 
     // --- ビーム PSO（加算・root sig 流用：b0 32定数 + t0深度SRV + s0）---
@@ -289,6 +342,27 @@ void ParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
         m_beamVbView.SizeInBytes    = bufferSize;
     }
 
+    // --- トレイル用頂点バッファ（UPLOAD・kFrames 区画リング）---
+    {
+        const UINT bufferSize = kFrames * kMaxTrailVerts * sizeof(TrailVtx);
+        D3D12_HEAP_PROPERTIES heapProps{};
+        heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+        D3D12_RESOURCE_DESC res{};
+        res.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+        res.Width            = bufferSize;
+        res.Height           = 1;
+        res.DepthOrArraySize = 1;
+        res.MipLevels        = 1;
+        res.SampleDesc       = {1, 0};
+        res.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        ThrowIfFailed(dev->CreateCommittedResource(
+            &heapProps, D3D12_HEAP_FLAG_NONE, &res,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_trailBuffer)));
+        m_trailVbView.BufferLocation = m_trailBuffer->GetGPUVirtualAddress();
+        m_trailVbView.StrideInBytes  = sizeof(TrailVtx);
+        m_trailVbView.SizeInBytes    = bufferSize;
+    }
+
     m_particles.assign(kMaxParticles, Particle{});
     m_gpu.reserve(kMaxParticles);
     m_live.reserve(kMaxParticles);
@@ -296,9 +370,12 @@ void ParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
     ResetPool();
     m_beamPool.assign(kMaxBeams, Beam{});
     m_gpuBeams.reserve(kMaxBeams);
+    m_childDefs.reserve(256);
+    m_trails.reserve(32);
+    m_trailVerts.reserve(4096);
     m_initialized = true;
-    Logger::Info("ParticleSystem initialized (max {} particles + {} beams, procedural kinds + curl + soft)",
-                 kMaxParticles, kMaxBeams);
+    Logger::Info("ParticleSystem initialized (max {} particles + {} beams + {} trails, procedural kinds + curl + soft + distort)",
+                 kMaxParticles, kMaxBeams, kMaxTrails);
 }
 
 float ParticleSystem::Rand(float a, float b)
@@ -318,10 +395,28 @@ void ParticleSystem::ResetPool()
     m_live.clear();
 }
 
-void ParticleSystem::Emit(const EmitParams& p)
+void ParticleSystem::Emit(const EmitParams& p, const EmitParams* onDeath)
 {
     if (!m_initialized) return;
     int count = (std::min)(p.count, static_cast<int>(kMaxParticles));
+
+    // サブエミッタ定義を登録（リング上書き。定義が生存粒子より先に上書きされるのは
+    // 60fps 連続放出でも kMaxChildDefs/60 ≒ 34 秒後なので実用上問題ない）
+    int childIdx = -1;
+    if (onDeath)
+    {
+        if (m_childDefs.size() < kMaxChildDefs)
+        {
+            m_childDefs.push_back(*onDeath);
+            childIdx = static_cast<int>(m_childDefs.size()) - 1;
+        }
+        else
+        {
+            m_childDefs[m_childCursor] = *onDeath;
+            childIdx = static_cast<int>(m_childCursor);
+            m_childCursor = (m_childCursor + 1) % kMaxChildDefs;
+        }
+    }
 
     // dir 正規化
     XMVECTOR dirV = XMLoadFloat3(&p.dir);
@@ -372,6 +467,7 @@ void ParticleSystem::Emit(const EmitParams& p)
             pt.col1 = pt.col0;
         pt.size0 = p.size  * Rand(0.7f, 1.0f);
         pt.size1 = p.sizeEnd;
+        pt.sizeM = p.sizeMid;
         pt.life  = (std::max)(0.05f, p.life * (1.0f - Rand(0.0f, p.lifeVar)));
         pt.age   = 0.0f;
         pt.rot   = Rand(0.0f, 6.2831853f);
@@ -385,10 +481,84 @@ void ParticleSystem::Emit(const EmitParams& p)
         pt.seed = Rand(0.0f, 1000.0f);
         pt.flicker = p.flicker;
         pt.flickerFreq = p.flickerFreq;
+        pt.distort = p.distort;
+        pt.light = p.light;
+        pt.lightRange = p.lightRange;
+        pt.childIdx = childIdx;
         pt.kind  = p.kind;
         pt.blend = p.blend;
         pt.alive = true;
     }
+}
+
+void ParticleSystem::TrailPoint(u64 id, const XMFLOAT3& pos, const TrailParams& tp)
+{
+    if (!m_initialized) return;
+
+    Trail* trail = nullptr;
+    for (auto& t : m_trails)
+        if (t.id == id) { trail = &t; break; }
+    if (!trail)
+    {
+        if (m_trails.size() >= kMaxTrails) return;
+        m_trails.push_back(Trail{});
+        trail = &m_trails.back();
+        trail->id = id;
+        trail->nodes.reserve(kMaxTrailNodes);
+    }
+    trail->p = tp;              // 生パラメータ編集を即反映
+    trail->sinceTouched = 0.0f;
+
+    if (trail->nodes.empty())
+    {
+        trail->nodes.push_back({pos, 0.0f});
+        return;
+    }
+    const XMFLOAT3& last = trail->nodes.back().pos;
+    const float dx = pos.x - last.x, dy = pos.y - last.y, dz = pos.z - last.z;
+    if (dx * dx + dy * dy + dz * dz < tp.minDist * tp.minDist) return;
+    if (trail->nodes.size() >= kMaxTrailNodes)
+        trail->nodes.erase(trail->nodes.begin());   // 最古を捨てる（点数は少ないので線形でOK）
+    trail->nodes.push_back({pos, 0.0f});
+}
+
+u32 ParticleSystem::CollectLights(u32 maxCount, LightInfo* out) const
+{
+    if (maxCount == 0) return 0;
+    // light 粒子から輝度上位 maxCount 個を選ぶ（挿入ソート・生存数は高々数千）
+    struct Cand { float score; LightInfo info; };
+    std::vector<Cand> top;
+    top.reserve(maxCount + 1);
+
+    for (u32 idx : m_live)
+    {
+        const Particle& pt = m_particles[idx];
+        if (!pt.light) continue;
+        const float t    = pt.age / pt.life;
+        const float fade = (1.0f - t) * (1.0f - t);
+        const XMFLOAT3 col = pt.hasMid
+            ? (t < 0.5f ? lerp3(pt.col0, pt.colM, t * 2.0f)
+                        : lerp3(pt.colM, pt.col1, (t - 0.5f) * 2.0f))
+            : lerp3(pt.col0, pt.col1, t);
+        const float score = (col.x * 0.2126f + col.y * 0.7152f + col.z * 0.0722f) * fade;
+        if (score < 0.01f) continue;
+
+        Cand c;
+        c.score = score;
+        c.info.pos   = pt.pos;
+        c.info.range = pt.lightRange;
+        // 粒子色は HDR に増幅済みなので、ライトとしては 0.5 倍で照らす（吹き飛び防止）
+        c.info.color = { col.x * fade * 0.5f, col.y * fade * 0.5f, col.z * fade * 0.5f };
+
+        auto it = top.begin();
+        while (it != top.end() && it->score >= score) ++it;
+        top.insert(it, c);
+        if (top.size() > maxCount) top.pop_back();
+    }
+
+    const u32 n = static_cast<u32>(top.size());
+    for (u32 i = 0; i < n; ++i) out[i] = top[i].info;
+    return n;
 }
 
 void ParticleSystem::EmitBeam(const BeamParams& bp)
@@ -426,6 +596,9 @@ void ParticleSystem::Update(f32 dt)
         pt.age += dt;
         if (pt.age >= pt.life)
         {
+            // サブエミッタ: 死亡位置で子バースト（ループ後にまとめて放出）
+            if (pt.childIdx >= 0 && pt.childIdx < static_cast<int>(m_childDefs.size()))
+                m_deathSpawns.emplace_back(pt.pos, pt.childIdx);
             pt.alive = false;
             m_freeList.push_back(idx);
             m_live[i] = m_live.back();   // swap-remove（末尾を詰める）
@@ -461,6 +634,19 @@ void ParticleSystem::Update(f32 dt)
         ++i;
     }
 
+    // サブエミッタの子バーストを放出（メインループの外＝m_live 変更が安全な地点）。
+    // 子の childIdx は付けない＝ネストは 1 段のみ（無限連鎖防止）。
+    if (!m_deathSpawns.empty())
+    {
+        for (const auto& [pos, ci] : m_deathSpawns)
+        {
+            EmitParams cp = m_childDefs[ci];
+            cp.pos = pos;
+            Emit(cp, nullptr);
+        }
+        m_deathSpawns.clear();
+    }
+
     // ビーム寿命（移動せず減衰のみ）
     for (auto& b : m_beamPool)
     {
@@ -468,13 +654,35 @@ void ParticleSystem::Update(f32 dt)
         b.age += dt;
         if (b.age >= b.life) b.alive = false;
     }
+
+    // トレイル: 各点を加齢して寿命切れを先頭から捨てる。触られなくなった空トレイルは削除。
+    for (size_t ti = 0; ti < m_trails.size(); )
+    {
+        Trail& tr = m_trails[ti];
+        tr.sinceTouched += dt;
+        for (auto& n : tr.nodes) n.age += dt;
+        while (!tr.nodes.empty() && tr.nodes.front().age >= tr.p.life)
+            tr.nodes.erase(tr.nodes.begin());
+        if (tr.nodes.empty() && tr.sinceTouched > 0.5f)
+        {
+            m_trails[ti] = m_trails.back();
+            m_trails.pop_back();
+            continue;
+        }
+        ++ti;
+    }
 }
 
 void ParticleSystem::Clear()
 {
     ResetPool();
     for (auto& b : m_beamPool) b.alive = false;
+    m_trails.clear();
+    m_deathSpawns.clear();
+    m_childDefs.clear();
+    m_childCursor = 0;
     m_aliveCount = 0;
+    m_distortCount = 0;
     m_pulse = 0.0f;
 }
 
@@ -502,9 +710,17 @@ void ParticleSystem::Render(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj,
             col.x *= fl; col.y *= fl; col.z *= fl;
         }
 
+        // サイズ: 3キー（start→mid→end）対応
+        float size;
+        if (pt.sizeM >= 0.0f)
+            size = (t < 0.5f) ? pt.size0 + (pt.sizeM - pt.size0) * (t * 2.0f)
+                              : pt.sizeM + (pt.size1 - pt.sizeM) * ((t - 0.5f) * 2.0f);
+        else
+            size = pt.size0 + (pt.size1 - pt.size0) * t;
+
         GpuParticle g;
         g.center  = pt.pos;
-        g.size    = pt.size0 + (pt.size1 - pt.size0) * t;
+        g.size    = size;
         g.color   = { col.x, col.y, col.z, pt.alpha * fade };
         g.rot     = pt.rot;
         g.stretch = pt.stretch;
@@ -515,19 +731,32 @@ void ParticleSystem::Render(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj,
         return g;
     };
 
-    // 加算 → α の順に詰める（PSO 切替を1回に）。生存リストのみ走査（O(alive)）。
+    // 加算 → α → 歪み の順に詰める（PSO 切替を最少に）。生存リストのみ走査（O(alive)）。
     m_gpu.clear();
     for (u32 idx : m_live)
     {
         const Particle& pt = m_particles[idx];
-        if (pt.blend == 0) m_gpu.push_back(makeGpu(pt));
+        if (pt.distort <= 0.0f && pt.blend == 0) m_gpu.push_back(makeGpu(pt));
     }
     m_additiveCount = static_cast<u32>(m_gpu.size());
     for (u32 idx : m_live)
     {
         const Particle& pt = m_particles[idx];
-        if (pt.blend != 0) m_gpu.push_back(makeGpu(pt));
+        if (pt.distort <= 0.0f && pt.blend != 0) m_gpu.push_back(makeGpu(pt));
     }
+    m_alphaCount = static_cast<u32>(m_gpu.size()) - m_additiveCount;
+    for (u32 idx : m_live)
+    {
+        const Particle& pt = m_particles[idx];
+        if (pt.distort <= 0.0f) continue;
+        GpuParticle g = makeGpu(pt);
+        // 歪みパーティクルは色不要 → r に歪み強度を載せる（a はフェード）
+        g.color.x = pt.distort;
+        g.color.y = 0.0f;
+        g.color.z = 0.0f;
+        m_gpu.push_back(g);
+    }
+    m_distortCount = static_cast<u32>(m_gpu.size()) - m_additiveCount - m_alphaCount;
     m_aliveCount = static_cast<int>(m_gpu.size());
 
     // 生きてるビーム → GpuBeam 変換
@@ -550,7 +779,69 @@ void ParticleSystem::Render(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj,
         if (m_gpuBeams.size() >= kMaxBeams) break;
     }
 
-    if (m_gpu.empty() && m_gpuBeams.empty()) return;
+    // ===== トレイル頂点構築（加算 → α の順）=====
+    m_trailVerts.clear();
+    m_trailAddVerts = 0;
+    {
+        const XMVECTOR camP = XMLoadFloat3(&camPos);
+        auto buildTrails = [&](int blend)
+        {
+            for (const auto& tr : m_trails)
+            {
+                if (tr.p.blend != blend) continue;
+                const auto& nd = tr.nodes;
+                const size_t n = nd.size();
+                if (n < 2) continue;
+
+                XMFLOAT3 prevL{}, prevR{}, prevCol{};
+                float prevU = 0.0f, prevA = 0.0f;
+                bool hasPrev = false;
+                for (size_t k = 0; k < n; ++k)
+                {
+                    const XMVECTOR p = XMLoadFloat3(&nd[k].pos);
+                    XMVECTOR dir;
+                    if (k == 0)          dir = XMVectorSubtract(XMLoadFloat3(&nd[1].pos), p);
+                    else if (k == n - 1) dir = XMVectorSubtract(p, XMLoadFloat3(&nd[k - 1].pos));
+                    else                 dir = XMVectorSubtract(XMLoadFloat3(&nd[k + 1].pos),
+                                                                XMLoadFloat3(&nd[k - 1].pos));
+                    // カメラフェーシング: 進行方向×視線 で帯の横ベクトルを出す
+                    XMVECTOR side = XMVector3Cross(dir, XMVectorSubtract(camP, p));
+                    if (XMVectorGetX(XMVector3LengthSq(side)) < 1e-8f)
+                        side = XMLoadFloat3(&camUp);
+                    side = XMVector3Normalize(side);
+
+                    float a = (std::max)(0.0f, 1.0f - nd[k].age / (std::max)(tr.p.life, 1e-3f));
+                    const float halfW = tr.p.width * 0.5f * (0.35f + 0.65f * a);
+                    XMFLOAT3 L, R;
+                    XMStoreFloat3(&L, XMVectorAdd(p, XMVectorScale(side,  halfW)));
+                    XMStoreFloat3(&R, XMVectorAdd(p, XMVectorScale(side, -halfW)));
+                    const float u = static_cast<float>(k) / static_cast<float>(n - 1);
+                    XMFLOAT3 col = lerp3(tr.p.colorEnd, tr.p.color, a);
+                    col = { col.x * tr.p.intensity, col.y * tr.p.intensity, col.z * tr.p.intensity };
+
+                    if (hasPrev && m_trailVerts.size() + 6 <= kMaxTrailVerts)
+                    {
+                        auto push = [&](const XMFLOAT3& pp, float uu, float vv,
+                                        const XMFLOAT3& cc, float aa)
+                        { m_trailVerts.push_back({pp, {cc.x, cc.y, cc.z, aa}, {uu, vv}}); };
+                        push(prevL, prevU,  1.0f, prevCol, prevA);
+                        push(prevR, prevU, -1.0f, prevCol, prevA);
+                        push(R,     u,     -1.0f, col,     a);
+                        push(prevL, prevU,  1.0f, prevCol, prevA);
+                        push(R,     u,     -1.0f, col,     a);
+                        push(L,     u,      1.0f, col,     a);
+                    }
+                    prevL = L; prevR = R; prevU = u; prevA = a; prevCol = col;
+                    hasPrev = true;
+                }
+            }
+        };
+        buildTrails(0);
+        m_trailAddVerts = static_cast<u32>(m_trailVerts.size());
+        buildTrails(1);
+    }
+
+    if (m_gpu.empty() && m_gpuBeams.empty() && m_trailVerts.empty()) return;
 
     // フレーム多重化: 前フレームが in-flight で読んでいる区画を上書きしないよう巡回
     // （単一区画だとWaitIdle無しの多重フレームでGPU/CPUが競合しチラつく）
@@ -599,12 +890,12 @@ void ParticleSystem::Render(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj,
             cmd->SetPipelineState(m_psoAdd.Get());
             cmd->DrawInstanced(6, m_additiveCount, 0, 0);
         }
-        u32 alphaCount = static_cast<u32>(m_gpu.size()) - m_additiveCount;
-        if (alphaCount > 0)
+        if (m_alphaCount > 0)
         {
             cmd->SetPipelineState(m_psoAlpha.Get());
-            cmd->DrawInstanced(6, alphaCount, 0, m_additiveCount);
+            cmd->DrawInstanced(6, m_alphaCount, 0, m_additiveCount);
         }
+        // 歪み粒子（末尾 m_distortCount 個）はここでは描かない → RenderDistortion で歪みRTへ
     }
 
     // ===== ビーム =====
@@ -641,6 +932,81 @@ void ParticleSystem::Render(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj,
         cmd->SetPipelineState(m_psoBeam.Get());
         cmd->DrawInstanced(6, static_cast<u32>(m_gpuBeams.size()), 0, 0);
     }
+
+    // ===== トレイル（軌跡リボン）=====
+    if (!m_trailVerts.empty())
+    {
+        const UINT regionBytes  = kMaxTrailVerts * sizeof(TrailVtx);
+        const UINT regionOffset = m_frameIdx * regionBytes;
+
+        void* mapped = nullptr;
+        D3D12_RANGE readRange = {0, 0};
+        ThrowIfFailed(m_trailBuffer->Map(0, &readRange, &mapped));
+        memcpy(static_cast<u8*>(mapped) + regionOffset, m_trailVerts.data(),
+               m_trailVerts.size() * sizeof(TrailVtx));
+        m_trailBuffer->Unmap(0, nullptr);
+
+        m_trailVbView.BufferLocation = m_trailBuffer->GetGPUVirtualAddress() + regionOffset;
+        m_trailVbView.SizeInBytes    = regionBytes;
+
+        struct TrailCB
+        {
+            XMFLOAT4X4 viewProj;
+            XMFLOAT4   camRight;
+            XMFLOAT4   camUp;
+            XMFLOAT4   params;
+            XMFLOAT4   params2;
+        } tcb;
+        XMStoreFloat4x4(&tcb.viewProj, XMMatrixTranspose(viewProj));
+        tcb.camRight = { camRight.x, camRight.y, camRight.z, 0.0f };
+        tcb.camUp    = { camUp.x,    camUp.y,    camUp.z,    0.0f };
+        tcb.params   = { 1.0f, 2.2f, m_time, softFadeDist };
+        tcb.params2  = params2;
+
+        cmd->SetGraphicsRoot32BitConstants(0, 32, &tcb, 0);
+        cmd->IASetVertexBuffers(0, 1, &m_trailVbView);
+        if (m_trailAddVerts > 0)
+        {
+            cmd->SetPipelineState(m_psoTrailAdd.Get());
+            cmd->DrawInstanced(m_trailAddVerts, 1, 0, 0);
+        }
+        const u32 alphaVerts = static_cast<u32>(m_trailVerts.size()) - m_trailAddVerts;
+        if (alphaVerts > 0)
+        {
+            cmd->SetPipelineState(m_psoTrailAlpha.Get());
+            cmd->DrawInstanced(alphaVerts, 1, m_trailAddVerts, 0);
+        }
+    }
+}
+
+void ParticleSystem::RenderDistortion(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj,
+                                      XMFLOAT3 camRight, XMFLOAT3 camUp)
+{
+    // Render() が同一フレームで m_gpu をアップロード済みであることが前提
+    // （歪み粒子は m_gpu の末尾 m_distortCount 個に詰まっている）。
+    if (!m_initialized || m_distortCount == 0) return;
+
+    struct CamCB
+    {
+        XMFLOAT4X4 viewProj;
+        XMFLOAT4   camRight;
+        XMFLOAT4   camUp;
+        XMFLOAT4   params;
+        XMFLOAT4   params2;
+    } cb;
+    XMStoreFloat4x4(&cb.viewProj, XMMatrixTranspose(viewProj));
+    cb.camRight = { camRight.x, camRight.y, camRight.z, 0.0f };
+    cb.camUp    = { camUp.x,    camUp.y,    camUp.z,    0.0f };
+    cb.params   = { 1.0f, 2.2f, m_time, 0.5f };
+    cb.params2  = { m_projA, m_projB, m_hasDepth ? m_invRTW : 0.0f, m_invRTH };
+
+    cmd->SetGraphicsRootSignature(m_rootSig.Get());
+    if (m_hasDepth) cmd->SetGraphicsRootDescriptorTable(1, m_depthSrv);
+    cmd->SetGraphicsRoot32BitConstants(0, 32, &cb, 0);
+    cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    cmd->IASetVertexBuffers(0, 1, &m_vbView);
+    cmd->SetPipelineState(m_psoDistort.Get());
+    cmd->DrawInstanced(6, m_distortCount, 0, m_additiveCount + m_alphaCount);
 }
 
 } // namespace dx12e

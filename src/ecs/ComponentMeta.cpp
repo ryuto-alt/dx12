@@ -130,6 +130,17 @@ void RegisterCoreComponentMeta()
         .data<&Sprite2D::color>("color")
         .data<&Sprite2D::worldSpace>("worldSpace")
         .data<&Sprite2D::billboard>("billboard");
+
+    entt::meta_factory<TrailRenderer>{}
+        .type("TrailRenderer")
+        .data<&TrailRenderer::emitting>("emitting")
+        .data<&TrailRenderer::width>("width")
+        .data<&TrailRenderer::life>("life")
+        .data<&TrailRenderer::color>("color")
+        .data<&TrailRenderer::colorEnd>("colorEnd")
+        .data<&TrailRenderer::intensity>("intensity")
+        .data<&TrailRenderer::blend>("blend")
+        .data<&TrailRenderer::minDist>("minDist");
 }
 
 } // namespace dx12e

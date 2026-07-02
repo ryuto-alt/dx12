@@ -67,6 +67,7 @@ private:
     EditState<CameraComponent>  m_camEdit;
     EditState<Gimmick>          m_gimmickEdit;
     EditState<ParticleEmitter>  m_emitterEdit;
+    EditState<TrailRenderer>    m_trailEdit;
     EditState<RigidBody>        m_rbEdit;
     EditState<BoxCollider>      m_boxColEdit;
     EditState<SphereCollider>   m_sphereColEdit;

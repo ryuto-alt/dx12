@@ -43,6 +43,7 @@ enum PostEffectBit : uint32_t
     PE_DEBAND     = 1u << 27,
     PE_GODRAYS    = 1u << 28,
     PE_LENSFLARE  = 1u << 29,
+    PE_DISTORT    = 1u << 30,
 };
 
 // HLSL の cbuffer PostCB と一致させる（12 個の float4 = 48 DWORD、CBV 経由）。
@@ -121,7 +122,10 @@ void PostProcess::Initialize(GraphicsDevice& device, DXGI_FORMAT outFormat,
         D3D12_DESCRIPTOR_RANGE lfRange = sceneRange;
         lfRange.BaseShaderRegister = 5;     // t5
 
-        D3D12_ROOT_PARAMETER params[7]{};
+        D3D12_DESCRIPTOR_RANGE distRange = sceneRange;
+        distRange.BaseShaderRegister = 6;   // t6
+
+        D3D12_ROOT_PARAMETER params[8]{};
         params[0].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         params[0].DescriptorTable.NumDescriptorRanges = 1;
         params[0].DescriptorTable.pDescriptorRanges   = &sceneRange;
@@ -155,6 +159,11 @@ void PostProcess::Initialize(GraphicsDevice& device, DXGI_FORMAT outFormat,
         params[6].DescriptorTable.pDescriptorRanges   = &lfRange;
         params[6].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
 
+        params[7].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[7].DescriptorTable.NumDescriptorRanges = 1;
+        params[7].DescriptorTable.pDescriptorRanges   = &distRange;
+        params[7].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
+
         D3D12_STATIC_SAMPLER_DESC samp{};
         samp.Filter           = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
         samp.AddressU         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
@@ -164,7 +173,7 @@ void PostProcess::Initialize(GraphicsDevice& device, DXGI_FORMAT outFormat,
         samp.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         D3D12_ROOT_SIGNATURE_DESC desc{};
-        desc.NumParameters     = 7;
+        desc.NumParameters     = 8;
         desc.pParameters       = params;
         desc.NumStaticSamplers = 1;
         desc.pStaticSamplers   = &samp;
@@ -267,6 +276,7 @@ void PostProcess::Apply(ID3D12GraphicsCommandList* cmd,
         if (s.debandOn)     mask |= PE_DEBAND;
         if (s.godraysOn && in.godraysReady)     mask |= PE_GODRAYS;
         if (s.lensflareOn && in.flareReady)     mask |= PE_LENSFLARE;
+        if (in.distortReady)                    mask |= PE_DISTORT;  // 粒子コンテンツ駆動（設定なし）
     }
     cb.enableMask      = static_cast<int>(mask);
     cb.posterizeLevels = s.posterize;
@@ -325,6 +335,7 @@ void PostProcess::Apply(ID3D12GraphicsCommandList* cmd,
         cmd->SetGraphicsRootShaderResourceView(4, in.exposureVA);
     cmd->SetGraphicsRootDescriptorTable(5, in.godraysSrv);
     cmd->SetGraphicsRootDescriptorTable(6, in.flareSrv);
+    cmd->SetGraphicsRootDescriptorTable(7, in.distortSrv);
     cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cmd->IASetVertexBuffers(0, 0, nullptr);
     cmd->IASetIndexBuffer(nullptr);
