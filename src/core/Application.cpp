@@ -50,6 +50,7 @@
 #include <nlohmann/json.hpp>
 #include <filesystem>
 #include <fstream>
+#include <sstream>    // MCP read_lua_component / validate_scene のレポート読み込み用
 #include <cstdio>     // sscanf_s（ahead/behind 解析）
 #include <cctype>     // std::isalnum（ビルド出力フォルダ名のサニタイズ）
 #include <cmath>      // sin/cos/atan2/asin（カメラのワールド変換→yaw/pitch 逆算）
@@ -1210,6 +1211,31 @@ int ParseMcpVk(const nlohmann::json& params)
     throw McpError(McpErr::InvalidParam, "unknown key name: " + s);
 }
 
+// エンジン自身(自 exe)を子プロセスとして起動し、終了(または timeoutMs)まで待つ。
+// dx12_validate_scene の --validate ヘッドレス実行に使う。--validate は main.cpp で
+// GPU/ウィンドウ初期化より前に return するため、エディタ実行中でも安全に並行起動できる。
+// 戻り値: 終了コード(起動失敗やタイムアウトは 1 = FAIL 扱い)。
+int RunEngineSubprocessAndWait(const std::string& exePath, const std::string& args,
+                               const std::string& workDir, DWORD timeoutMs)
+{
+    std::string cmd = "\"" + exePath + "\" " + args;
+    std::vector<char> cmdBuf(cmd.begin(), cmd.end());
+    cmdBuf.push_back('\0');
+    STARTUPINFOA si{}; si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    BOOL ok = CreateProcessA(nullptr, cmdBuf.data(), nullptr, nullptr, FALSE,
+                             CREATE_NO_WINDOW, nullptr,
+                             workDir.empty() ? nullptr : workDir.c_str(), &si, &pi);
+    if (!ok) return 1;
+    DWORD wait = WaitForSingleObject(pi.hProcess, timeoutMs);
+    DWORD code = 1;
+    if (wait == WAIT_TIMEOUT) TerminateProcess(pi.hProcess, 1);
+    else GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    return static_cast<int>(code);
+}
+
 // 遅延応答の送信ヘルパ。client==0(=MCP 由来でない) は何もしない。
 void SendMcp(McpBridge* bridge, const McpDeferred& d, nlohmann::json resp)
 {
@@ -1598,7 +1624,15 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             else if (type == "sphere") marker = "__primitive_sphere__";
             else if (type == "plane")  marker = "__primitive_plane__";
             else if (type == "empty")  marker = "__empty__";
-            else throw McpError(McpErr::InvalidParam, "type must be box|sphere|plane|empty");
+            else if (type == "camera")            marker = "__camera__";
+            else if (type == "light_directional") marker = "__directional_light__";
+            else if (type == "light_point")       marker = "__point_light__";
+            else if (type == "light_spot")        marker = "__spot_light__";
+            else if (type == "particle_emitter")  marker = "__particle_emitter__";
+            else if (type == "trigger")           marker = "__trigger__";
+            else throw McpError(McpErr::InvalidParam,
+                "type must be one of: box, sphere, plane, empty, camera, light_directional, "
+                "light_point, light_spot, particle_emitter, trigger");
             if (name.empty())   // 既定名: 種別名を先頭大文字に
             {
                 name = type;
@@ -2147,7 +2181,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["result"] = {{"skybox", {
                                   {"envMapPath", sky.envMapPath}, {"iblIntensity", sky.iblIntensity},
                                   {"skyboxIntensity", sky.skyboxIntensity}, {"drawSkybox", sky.drawSkybox}}},
-                              {"note", "post-process / SSAO settings not yet exposed via MCP"}};
+                              {"note", "post-process は dx12_get_post_process、SSAO は dx12_get_ssao を使う"}};
         }
         else if (method == "set_scene_settings")
         {
@@ -2432,6 +2466,326 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 throw McpError(McpErr::ModeConflict, "a game-view screenshot is already pending; retry shortly");
             m_mcpGameViewReply = deferred;   // フレーム境界で描画→撮影→応答(Run ループ側)
             isDeferred = true;
+        }
+        // ════════════════════════════════════════════════════════════
+        //  ランタイム物理検証(raycast/overlap/velocity) — 全て同期・読み取り系。
+        //  bodies は Play 中のみ登録される(RegisterBody は Play 開始/loadScene 時)。
+        //  Editor 中に呼んでもエラーにはせず hit=false / entities=[] / velocity=[0,0,0] を返す。
+        // ════════════════════════════════════════════════════════════
+        else if (method == "raycast")
+        {
+            auto originV = params.value("origin", std::vector<float>{});
+            auto dirV = params.value("direction", std::vector<float>{});
+            if (originV.size() != 3 || dirV.size() != 3)
+                throw McpError(McpErr::InvalidParam, "origin and direction must be [x,y,z]");
+            const float maxDist = params.value("maxDistance", 1000.0f);
+            RaycastHit hit = m_physicsSystem->Raycast(
+                {originV[0], originV[1], originV[2]}, {dirV[0], dirV[1], dirV[2]}, maxDist);
+            json result{{"hit", hit.hit}};
+            if (hit.hit)
+            {
+                result["distance"] = hit.distance;
+                result["point"]    = {hit.point.x, hit.point.y, hit.point.z};
+                // 法線は近似(常に up 向き。PhysicsSystem::Raycast の既知の制約)。厳密な面法線は未対応。
+                result["normal"]   = {hit.normal.x, hit.normal.y, hit.normal.z};
+                auto& reg = m_scene->GetRegistry();
+                entt::entity ent = m_physicsSystem->EntityForBody(hit.bodyId);
+                if (ent != entt::null && reg.valid(ent))
+                {
+                    result["entityId"] = static_cast<u32>(ent);
+                    if (reg.all_of<NameTag>(ent)) result["name"] = reg.get<NameTag>(ent).name;
+                }
+            }
+            resp["ok"] = true;
+            resp["result"] = std::move(result);
+        }
+        else if (method == "overlap_box" || method == "overlap_sphere")
+        {
+            int maxResults = params.value("maxResults", 32);
+            if (maxResults < 1) maxResults = 1;
+            if (maxResults > 256) maxResults = 256;
+            std::vector<entt::entity> buf(static_cast<size_t>(maxResults));
+            size_t n = 0;
+            if (method == "overlap_box")
+            {
+                auto centerV = params.value("center", std::vector<float>{});
+                auto halfV = params.value("halfExtents", std::vector<float>{});
+                if (centerV.size() != 3 || halfV.size() != 3)
+                    throw McpError(McpErr::InvalidParam, "center and halfExtents must be [x,y,z]");
+                n = m_physicsSystem->OverlapBox({centerV[0], centerV[1], centerV[2]},
+                                                 {halfV[0], halfV[1], halfV[2]}, buf.data(), buf.size());
+            }
+            else
+            {
+                auto centerV = params.value("center", std::vector<float>{});
+                if (centerV.size() != 3)
+                    throw McpError(McpErr::InvalidParam, "center must be [x,y,z]");
+                const float radius = params.value("radius", 1.0f);
+                n = m_physicsSystem->OverlapSphere({centerV[0], centerV[1], centerV[2]}, radius,
+                                                    buf.data(), buf.size());
+            }
+            json arr = json::array();
+            auto& reg = m_scene->GetRegistry();
+            for (size_t i = 0; i < n; ++i)
+            {
+                json item{{"entityId", static_cast<u32>(buf[i])}};
+                if (reg.valid(buf[i]) && reg.all_of<NameTag>(buf[i])) item["name"] = reg.get<NameTag>(buf[i]).name;
+                arr.push_back(std::move(item));
+            }
+            resp["ok"] = true;
+            resp["result"] = {{"entities", arr}, {"count", arr.size()}};
+        }
+        else if (method == "get_physics_state")
+        {
+            const auto e = ResolveMcpEntity(*m_scene, params);
+            auto& reg = m_scene->GetRegistry();
+            json result{{"entityId", static_cast<u32>(e)},
+                        {"hasRigidBody", false}, {"velocity", {0.0f, 0.0f, 0.0f}},
+                        {"hasCharacterController", false}, {"isGrounded", false}};
+            if (reg.all_of<RigidBody>(e))
+            {
+                const auto& rb = reg.get<RigidBody>(e);
+                result["hasRigidBody"] = true;
+                if (rb.bodyId != kInvalidBodyId)
+                {
+                    auto v = m_physicsSystem->GetLinearVelocity(rb.bodyId);
+                    result["velocity"] = {v.x, v.y, v.z};
+                }
+            }
+            if (reg.all_of<CharacterController>(e))
+            {
+                result["hasCharacterController"] = true;
+                result["isGrounded"] = reg.get<CharacterController>(e)._grounded;
+            }
+            resp["ok"] = true;
+            resp["result"] = std::move(result);
+        }
+        // ════════════════════════════════════════════════════════════
+        //  コンテンツ制作ヘルパー拡充
+        // ════════════════════════════════════════════════════════════
+        else if (method == "read_lua_component")
+        {
+            std::string rel = params.value("path", std::string());
+            if (rel.empty()) throw McpError(McpErr::InvalidParam, "missing 'path'");
+            if (rel.front() == '/' || rel.find('\\') != std::string::npos ||
+                rel.find(':') != std::string::npos || rel.find("..") != std::string::npos)
+                throw McpError(McpErr::InvalidParam, "invalid path (assets 相対のみ)");
+            const fs::path full = fs::path(PathResolver::AssetsDir()) / rel;
+            if (!fs::exists(full)) throw McpError(McpErr::NotFound, "script not found: " + rel);
+            std::ifstream ifs(full, std::ios::binary);
+            if (!ifs) throw McpError(McpErr::Internal, "cannot open " + full.string());
+            std::ostringstream ss; ss << ifs.rdbuf();
+            resp["ok"] = true;
+            resp["result"] = {{"path", rel}, {"code", ss.str()}};
+        }
+        else if (method == "create_prefab")
+        {
+            if (busyPlaying)
+                throw McpError(McpErr::ModeConflict, "cannot create a prefab while Playing; call dx12_stop first");
+            const auto e = ResolveMcpEntity(*m_scene, params);
+            auto& reg = m_scene->GetRegistry();
+            std::string rel = params.value("path", std::string());
+            fs::path file;
+            if (rel.empty())
+            {
+                std::string base = reg.all_of<NameTag>(e) ? reg.get<NameTag>(e).name : std::string("Prefab");
+                if (base.empty()) base = "Prefab";
+                fs::path dir = fs::path(PathResolver::AssetsDir()) / "prefabs";
+                fs::create_directories(dir);
+                file = dir / (base + ".prefab");
+                for (int n = 1; fs::exists(file); ++n)
+                    file = dir / (base + " (" + std::to_string(n) + ").prefab");
+                rel = "prefabs/" + file.filename().string();
+            }
+            else
+            {
+                if (rel.front() == '/' || rel.find('\\') != std::string::npos ||
+                    rel.find(':') != std::string::npos || rel.find("..") != std::string::npos)
+                    throw McpError(McpErr::InvalidParam, "invalid path (assets 相対のみ)");
+                if (fs::path(rel).extension() != ".prefab")
+                    throw McpError(McpErr::InvalidParam, "path must end with .prefab");
+                file = fs::path(PathResolver::AssetsDir()) / rel;
+                fs::create_directories(file.parent_path());
+            }
+            if (!SceneSerializer::SavePrefab(*m_scene, e, file.string(), PathResolver::AssetsDir()))
+                throw McpError(McpErr::Internal, "failed to save prefab");
+            resp["ok"] = true;
+            resp["result"] = {{"path", rel}, {"entityId", static_cast<u32>(e)}};
+        }
+        // ════════════════════════════════════════════════════════════
+        //  ビジュアル/ポスト設定の操作(ポストプロセス・SSAO)
+        // ════════════════════════════════════════════════════════════
+        else if (method == "get_post_process")
+        {
+            const auto& pp = m_scene->GetPostSettings();
+            resp["ok"] = true;
+            resp["result"] = {
+                {"enabled", pp.enabled},
+                {"exposureOn", pp.exposureOn}, {"exposure", pp.exposure},
+                {"contrastOn", pp.contrastOn}, {"contrast", pp.contrast},
+                {"brightnessOn", pp.brightnessOn}, {"brightness", pp.brightness},
+                {"saturationOn", pp.saturationOn}, {"saturation", pp.saturation},
+                {"warmthOn", pp.warmthOn}, {"warmth", pp.warmth},
+                {"hueOn", pp.hueOn}, {"hueShift", pp.hueShift},
+                {"tintOn", pp.tintOn}, {"tint", {pp.tint.x, pp.tint.y, pp.tint.z}},
+                {"bloomOn", pp.bloomOn}, {"bloom", pp.bloom}, {"bloomThreshold", pp.bloomThreshold},
+                {"vignetteOn", pp.vignetteOn}, {"vignette", pp.vignette},
+                {"chromaticOn", pp.chromaticOn}, {"chromatic", pp.chromatic},
+                {"pixelizeOn", pp.pixelizeOn}, {"pixelSize", pp.pixelSize},
+                {"posterizeOn", pp.posterizeOn}, {"posterize", pp.posterize},
+                {"ditherOn", pp.ditherOn}, {"ditherLevels", pp.ditherLevels},
+                {"scanlineOn", pp.scanlineOn}, {"scanline", pp.scanline},
+                {"sharpenOn", pp.sharpenOn}, {"sharpen", pp.sharpen},
+                {"grainOn", pp.grainOn}, {"grain", pp.grain},
+                {"invertOn", pp.invertOn}, {"invert", pp.invert},
+                {"sepiaOn", pp.sepiaOn}, {"sepia", pp.sepia},
+                {"grayscaleOn", pp.grayscaleOn}, {"grayscale", pp.grayscale},
+                {"lensOn", pp.lensOn}, {"lens", pp.lens},
+                {"waveOn", pp.waveOn}, {"waveAmp", pp.waveAmp}, {"waveFreq", pp.waveFreq}, {"waveSpeed", pp.waveSpeed},
+                {"radialOn", pp.radialOn}, {"radial", pp.radial},
+                {"glitchOn", pp.glitchOn}, {"glitch", pp.glitch},
+                {"outlineOn", pp.outlineOn}, {"outline", pp.outline},
+                {"outlineColor", {pp.outlineColor.x, pp.outlineColor.y, pp.outlineColor.z}},
+                {"fxaaOn", pp.fxaaOn},
+            };
+        }
+        else if (method == "set_post_process")
+        {
+            auto& pp = m_scene->GetPostSettings();
+            pp.enabled = params.value("enabled", pp.enabled);
+            pp.exposureOn = params.value("exposureOn", pp.exposureOn); pp.exposure = params.value("exposure", pp.exposure);
+            pp.contrastOn = params.value("contrastOn", pp.contrastOn); pp.contrast = params.value("contrast", pp.contrast);
+            pp.brightnessOn = params.value("brightnessOn", pp.brightnessOn); pp.brightness = params.value("brightness", pp.brightness);
+            pp.saturationOn = params.value("saturationOn", pp.saturationOn); pp.saturation = params.value("saturation", pp.saturation);
+            pp.warmthOn = params.value("warmthOn", pp.warmthOn); pp.warmth = params.value("warmth", pp.warmth);
+            pp.hueOn = params.value("hueOn", pp.hueOn); pp.hueShift = params.value("hueShift", pp.hueShift);
+            pp.tintOn = params.value("tintOn", pp.tintOn);
+            if (params.contains("tint"))
+            {
+                auto t = params["tint"].get<std::vector<float>>();
+                if (t.size() == 3) pp.tint = {t[0], t[1], t[2]};
+            }
+            pp.bloomOn = params.value("bloomOn", pp.bloomOn); pp.bloom = params.value("bloom", pp.bloom);
+            pp.bloomThreshold = params.value("bloomThreshold", pp.bloomThreshold);
+            pp.vignetteOn = params.value("vignetteOn", pp.vignetteOn); pp.vignette = params.value("vignette", pp.vignette);
+            pp.chromaticOn = params.value("chromaticOn", pp.chromaticOn); pp.chromatic = params.value("chromatic", pp.chromatic);
+            pp.pixelizeOn = params.value("pixelizeOn", pp.pixelizeOn); pp.pixelSize = params.value("pixelSize", pp.pixelSize);
+            pp.posterizeOn = params.value("posterizeOn", pp.posterizeOn); pp.posterize = params.value("posterize", pp.posterize);
+            pp.ditherOn = params.value("ditherOn", pp.ditherOn); pp.ditherLevels = params.value("ditherLevels", pp.ditherLevels);
+            pp.scanlineOn = params.value("scanlineOn", pp.scanlineOn); pp.scanline = params.value("scanline", pp.scanline);
+            pp.sharpenOn = params.value("sharpenOn", pp.sharpenOn); pp.sharpen = params.value("sharpen", pp.sharpen);
+            pp.grainOn = params.value("grainOn", pp.grainOn); pp.grain = params.value("grain", pp.grain);
+            pp.invertOn = params.value("invertOn", pp.invertOn); pp.invert = params.value("invert", pp.invert);
+            pp.sepiaOn = params.value("sepiaOn", pp.sepiaOn); pp.sepia = params.value("sepia", pp.sepia);
+            pp.grayscaleOn = params.value("grayscaleOn", pp.grayscaleOn); pp.grayscale = params.value("grayscale", pp.grayscale);
+            pp.lensOn = params.value("lensOn", pp.lensOn); pp.lens = params.value("lens", pp.lens);
+            pp.waveOn = params.value("waveOn", pp.waveOn); pp.waveAmp = params.value("waveAmp", pp.waveAmp);
+            pp.waveFreq = params.value("waveFreq", pp.waveFreq); pp.waveSpeed = params.value("waveSpeed", pp.waveSpeed);
+            pp.radialOn = params.value("radialOn", pp.radialOn); pp.radial = params.value("radial", pp.radial);
+            pp.glitchOn = params.value("glitchOn", pp.glitchOn); pp.glitch = params.value("glitch", pp.glitch);
+            pp.outlineOn = params.value("outlineOn", pp.outlineOn); pp.outline = params.value("outline", pp.outline);
+            if (params.contains("outlineColor"))
+            {
+                auto c = params["outlineColor"].get<std::vector<float>>();
+                if (c.size() == 3) pp.outlineColor = {c[0], c[1], c[2]};
+            }
+            pp.fxaaOn = params.value("fxaaOn", pp.fxaaOn);
+            resp["ok"] = true;
+            resp["result"] = {{"applied", true}};
+        }
+        else if (method == "get_ssao")
+        {
+            const auto& s = m_scene->GetSSAOSettings();
+            resp["ok"] = true;
+            resp["result"] = {{"enabled", s.enabled}, {"radius", s.radius}, {"bias", s.bias},
+                              {"intensity", s.intensity}, {"power", s.power},
+                              {"sampleCount", s.sampleCount}, {"blur", s.blur}};
+        }
+        else if (method == "set_ssao")
+        {
+            auto& s = m_scene->GetSSAOSettings();
+            s.enabled = params.value("enabled", s.enabled);
+            s.radius = params.value("radius", s.radius);
+            s.bias = params.value("bias", s.bias);
+            s.intensity = params.value("intensity", s.intensity);
+            s.power = params.value("power", s.power);
+            s.sampleCount = params.value("sampleCount", s.sampleCount);
+            s.blur = params.value("blur", s.blur);
+            resp["ok"] = true;
+            resp["result"] = {{"applied", true}};
+        }
+        // ════════════════════════════════════════════════════════════
+        //  ビルド/検証パイプライン連携
+        // ════════════════════════════════════════════════════════════
+        else if (method == "validate_scene")
+        {
+            std::string rel = params.value("path", std::string());
+            fs::path scenePath;
+            if (rel.empty())
+            {
+                if (m_editorCtx->currentScenePath.empty())
+                    throw McpError(McpErr::InvalidParam, "no scene currently open and 'path' not given");
+                scenePath = m_editorCtx->currentScenePath;
+            }
+            else
+            {
+                if (rel.front() == '/' || rel.find('\\') != std::string::npos ||
+                    rel.find(':') != std::string::npos || rel.find("..") != std::string::npos)
+                    throw McpError(McpErr::InvalidParam, "invalid path (assets 相対のみ)");
+                scenePath = fs::path(PathResolver::AssetsDir()) / rel;
+            }
+            if (!fs::exists(scenePath)) throw McpError(McpErr::NotFound, "scene not found: " + scenePath.string());
+
+            wchar_t exeBuf[MAX_PATH] = {};
+            GetModuleFileNameW(nullptr, exeBuf, MAX_PATH);
+            std::string exePath(fs::path(exeBuf).string());
+
+            // 呼び出しごとに専用の作業ディレクトリで実行(validate_report.txt の競合/汚染回避)。
+            static int s_validateSeq = 0;
+            fs::path workDir = fs::temp_directory_path() /
+                ("dx12_validate_" + std::to_string(GetCurrentProcessId()) + "_" + std::to_string(++s_validateSeq));
+            std::error_code ec;
+            fs::create_directories(workDir, ec);
+
+            const std::string args = "--validate \"" + scenePath.string() + "\"";
+            const int code = RunEngineSubprocessAndWait(exePath, args, workDir.string(), 30000);
+
+            std::string report;
+            std::ifstream rf(workDir / "validate_report.txt", std::ios::binary);
+            if (rf) { std::ostringstream ss; ss << rf.rdbuf(); report = ss.str(); }
+            fs::remove_all(workDir, ec);
+
+            resp["ok"] = true;
+            resp["result"] = {{"pass", code == 0}, {"exitCode", code}, {"report", report},
+                              {"scenePath", scenePath.string()}};
+        }
+        else if (method == "build_game")
+        {
+            const bool ok = BuildGame();
+            json result{{"success", ok}};
+            if (m_editorCtx)
+            {
+                result["outputDir"] = m_editorCtx->buildConfig.outputDir.empty()
+                    ? (PathResolver::BaseDir() + "build/game") : m_editorCtx->buildConfig.outputDir;
+                if (!ok) result["error"] = m_editorCtx->buildErrorMsg;
+            }
+            resp["ok"] = true;
+            resp["result"] = std::move(result);
+        }
+        // ════════════════════════════════════════════════════════════
+        //  Lua 即時実行(eval) — デバッグ用。globals フォールバック環境で実行するため
+        //  scene/physics/camera/audio 等の既存グローバルバインディングがそのまま使える。
+        //  print() は捕捉されない(log() を使うと dx12_get_log で見える)。
+        // ════════════════════════════════════════════════════════════
+        else if (method == "eval_lua")
+        {
+            const std::string code = params.value("code", std::string());
+            if (code.empty()) throw McpError(McpErr::InvalidParam, "missing 'code'");
+            std::string resultStr, err;
+            const bool ok = m_scriptEngine->EvalLua(code, resultStr, err);
+            if (!ok) throw McpError(McpErr::Internal, "Lua error: " + err);
+            resp["ok"] = true;
+            resp["result"] = {{"result", resultStr}};
         }
         else
         {
@@ -5790,7 +6144,7 @@ void Application::Render()
             {
                 auto& reg = m_scene->GetRegistry();
                 auto e = reg.create();
-                reg.emplace<NameTag>(e, NameTag{"Camera"});
+                reg.emplace<NameTag>(e, NameTag{req.name.empty() ? std::string("Camera") : req.name});
                 reg.emplace<Transform>(e, Transform{req.position, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
                 // 他にアクティブカメラがなければ自動で isActive=true
                 bool hasActive = false;
@@ -5803,7 +6157,7 @@ void Application::Render()
             {
                 auto& reg = m_scene->GetRegistry();
                 auto e = reg.create();
-                reg.emplace<NameTag>(e, NameTag{"DirectionalLight"});
+                reg.emplace<NameTag>(e, NameTag{req.name.empty() ? std::string("DirectionalLight") : req.name});
                 reg.emplace<Transform>(e, Transform{req.position, {-30.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
                 reg.emplace<DirectionalLight>(e, DirectionalLight{{0.0f, -1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, 1.0f});
                 spawnedEntity = e;
@@ -5812,7 +6166,7 @@ void Application::Render()
             {
                 auto& reg = m_scene->GetRegistry();
                 auto e = reg.create();
-                reg.emplace<NameTag>(e, NameTag{"PointLight"});
+                reg.emplace<NameTag>(e, NameTag{req.name.empty() ? std::string("PointLight") : req.name});
                 reg.emplace<Transform>(e, Transform{req.position, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
                 reg.emplace<PointLight>(e, PointLight{{1.0f, 1.0f, 1.0f}, 1.0f, 10.0f});
                 spawnedEntity = e;
@@ -5821,7 +6175,7 @@ void Application::Render()
             {
                 auto& reg = m_scene->GetRegistry();
                 auto e = reg.create();
-                reg.emplace<NameTag>(e, NameTag{"SpotLight"});
+                reg.emplace<NameTag>(e, NameTag{req.name.empty() ? std::string("SpotLight") : req.name});
                 reg.emplace<Transform>(e, Transform{req.position, {-60.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
                 reg.emplace<SpotLight>(e, SpotLight{});
                 spawnedEntity = e;
@@ -5865,7 +6219,7 @@ void Application::Render()
                 // 配置エフェクト: 空エンティティ + ParticleEmitter（エディタで即プレビュー表示）
                 auto& reg = m_scene->GetRegistry();
                 auto e = reg.create();
-                reg.emplace<NameTag>(e, NameTag{"ParticleEmitter"});
+                reg.emplace<NameTag>(e, NameTag{req.name.empty() ? std::string("ParticleEmitter") : req.name});
                 reg.emplace<Transform>(e, Transform{req.position, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
                 reg.emplace<ParticleEmitter>(e, ParticleEmitter{});
                 spawnedEntity = e;
@@ -5875,7 +6229,7 @@ void Application::Render()
                 // イベント範囲: 空エンティティ + Trigger（Inspector でアクションを組む）
                 auto& reg = m_scene->GetRegistry();
                 auto e = reg.create();
-                reg.emplace<NameTag>(e, NameTag{"Trigger"});
+                reg.emplace<NameTag>(e, NameTag{req.name.empty() ? std::string("Trigger") : req.name});
                 reg.emplace<Transform>(e, Transform{req.position, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
                 reg.emplace<Trigger>(e, Trigger{});
                 spawnedEntity = e;

@@ -73,6 +73,10 @@ public:
                          float radius,
                          entt::entity* out, size_t cap) const;
 
+    // bodyId → entity 逆引き（Raycast の結果を entity に紐付けるため。MCP/Lua 両方から使う）。
+    // 見つからなければ entt::null。
+    entt::entity EntityForBody(uint32_t bodyId) const;
+
     // --- 接触コールバック（EventBus 経由）---
     // EventBus を設定する。Initialize より前でも後でも可。
     // Null を渡すと以後のコールバック発火を停止する（PhysicsSystem は所有しない）。

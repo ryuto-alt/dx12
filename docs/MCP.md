@@ -122,6 +122,14 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_get_log` | `{lines?:int=50}` | `["ログ行", ...]`(末尾N行) |
 | `dx12_describe_components` | `{component?:string}` | `{components:[{jsonKey, settable, removable, fields:[{name,type,default}], note?}]}` |
 | `dx12_get_scene_settings` | `{}` | `{skybox:{envMapPath, iblIntensity, skyboxIntensity, drawSkybox}, note}` |
+| `dx12_get_post_process` | `{}` | ポストプロセス全フィールド(約25エフェクトの `<name>On`/パラメータ) |
+| `dx12_get_ssao` | `{}` | `{enabled, radius, bias, intensity, power, sampleCount, blur}` |
+| `dx12_read_lua_component` | `{path:string}` | `{path, code}` ※既存 .lua のソースをそのまま読む |
+| `dx12_raycast` | `{origin:[x,y,z], direction:[x,y,z], maxDistance?:f}` | `{hit, distance?, point?, normal?, entityId?, name?}` ※Playing 中のみ意味のある結果 |
+| `dx12_overlap_box` | `{center:[x,y,z], halfExtents:[x,y,z], maxResults?:int}` | `{entities:[{entityId,name}], count}` ※Playing 中のみ |
+| `dx12_overlap_sphere` | `{center:[x,y,z], radius:f, maxResults?:int}` | `{entities:[{entityId,name}], count}` ※Playing 中のみ |
+| `dx12_get_physics_state` | `{entity:int}` | `{entityId, hasRigidBody, velocity:[x,y,z], hasCharacterController, isGrounded}` ※Playing 中のみ |
+| `dx12_validate_scene` | `{path?:string}` | `{pass, exitCode, report, scenePath}` ※`--validate` をヘッドレス子プロセスで実行。省略時は現在のシーン |
 | `dx12_screenshot` | `{}` | PNG 画像ブロック + text(`{path(絶対パス), width, height}`) |
 
 ### 4-2. 編集系(同期)
@@ -137,17 +145,22 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_focus_camera` | `{entity:int}` | `{cameraPos:[x,y,z], target, distance}` |
 | `dx12_set_pbr` | `{entity:int, metallic?:f, roughness?:f, uvScaleU?:f, uvScaleV?:f}` | `{entityId, metallic, roughness, uvScaleU, uvScaleV}` |
 | `dx12_set_scene_settings` | `{skybox:{envMapPath?, iblIntensity?, skyboxIntensity?, drawSkybox?}}` | `{applied, envMapRebake}` |
+| `dx12_set_post_process` | 約25エフェクトの `<name>On`/パラメータ(指定分のみ適用) | `{applied}` |
+| `dx12_set_ssao` | `{enabled?, radius?, bias?, intensity?, power?, sampleCount?, blur?}` | `{applied}` |
 | `dx12_undo` | `{}` | `{queuedUndo}` |
 | `dx12_redo` | `{}` | `{queuedRedo}` |
 | `dx12_save_scene` | `{path?:string}` | `{path}` ※省略で現在シーンへ上書き |
-| `dx12_create_lua_component` | `{name:string, code:string}` | `{path}` ※書込前に構文検証 |
+| `dx12_create_lua_component` | `{name:string, code:string}` | `{path}` ※書込前に構文検証。既存パスなら上書き更新も兼ねる |
 | `dx12_attach_lua_component` | `{entity:int, script:string(assets相対)}` | `ok` |
+| `dx12_create_prefab` | `{entity:int, path?:string}` | `{path, entityId}` ※path省略で assets/prefabs/<name>.prefab |
+| `dx12_eval_lua` | `{code:string}` | `{result:string}` ※任意 Lua をその場実行(デバッグ用) |
+| `dx12_build_game` | `{}` | `{success, outputDir, error?}` ※ヘッドレスビルド(同期・数十秒かかることあり) |
 
 ### 4-3. 生成・削除・モード遷移(遅延同期 — 本物の値が返る)
 
 | ツール | params | 返り値 |
 |--------|--------|--------|
-| `dx12_create_entity` | `{type:"box"\|"sphere"\|"plane"\|"empty", name?, position?:[x,y,z], idempotency_key?:string}` | `{entityId, name, sceneGeneration}` |
+| `dx12_create_entity` | `{type:"box"\|"sphere"\|"plane"\|"empty"\|"camera"\|"light_directional"\|"light_point"\|"light_spot"\|"particle_emitter"\|"trigger", name?, position?:[x,y,z], idempotency_key?:string}` | `{entityId, name, sceneGeneration}` ※light_*/camera/particle_emitter/trigger は既定値で生成(dx12_set_component で調整) |
 | `dx12_spawn_model` | `{path:string(.gltf/.glb/.fbx/.obj), position?:[x,y,z], name?, idempotency_key?:string}` | `{entityId, name, sceneGeneration}` |
 | `dx12_spawn_prefab` | `{path:string(.prefab), position?, name?}` | `{entityId, rootEntityId, entityIds:[...], name, sceneGeneration}` |
 | `dx12_duplicate_entity` | `{entity:int}` | `{entityId, name, sceneGeneration}` |
@@ -258,6 +271,13 @@ dx12_play → (ゲームロジック動作) → dx12_stop
 - `create_lua_component` の Lua は書き込み前に構文チェック(コンパイルのみ・非実行)。
 - **認証なし(localhost 開発機前提)**。同一マシンの別ユーザプロセスは接続可能なため、
   共有開発機では注意。アップグレード経路: ポートのトークン認証。
+- **`dx12_eval_lua` は任意 Lua コードをその場実行する**(意図的な設計。デバッグ効率を優先)。
+  上記の認証なしモデルと同水準のリスク(localhost の他プロセスから叩かれれば任意 Lua 実行が可能)。
+  ファイルシステムへの直接アクセスは Lua 標準の `io`/`os` ライブラリを sol2 側で公開していない限り
+  できないが、エンジンが公開する全バインディング(scene/physics/audio 等)は呼べる。
+- `dx12_validate_scene` はエンジン自身を `--validate` 付きで子プロセス起動する。この経路は
+  main.cpp で GPU/ウィンドウ/MCP ブリッジの初期化より前に return するため、実行中のエディタと
+  ポート等が衝突することはない。
 
 ---
 

@@ -443,9 +443,13 @@ reg(
 reg(
   "dx12_create_entity",
   "エンティティ生成",
-  "エンティティを生成する(エディタ専用)。フレーム境界で実処理されるが、Node が完了を待って【本物の {entityId, name, sceneGeneration} を同期で返す】({queued} は返らへん)。idempotency_key を付けると、再試行で同じキーが来ても二重生成されず同じ結果が返る。",
+  "エンティティを生成する(エディタ専用)。フレーム境界で実処理されるが、Node が完了を待って【本物の {entityId, name, sceneGeneration} を同期で返す】({queued} は返らへん)。idempotency_key を付けると、再試行で同じキーが来ても二重生成されず同じ結果が返る。light_*/camera/particle_emitter/trigger は既定パラメータで生成される空エンティティ+コンポーネント(中身は dx12_describe_components 参照)。細かい値は生成後 dx12_set_component / dx12_set_transform で調整する。",
   {
-    type: z.enum(["box", "sphere", "plane", "empty"]).describe("プリミティブ種別。empty は Transform のみ。"),
+    type: z.enum([
+      "box", "sphere", "plane", "empty", "camera",
+      "light_directional", "light_point", "light_spot",
+      "particle_emitter", "trigger",
+    ]).describe("種別。empty は Transform のみ。light_*/camera/particle_emitter/trigger は該当コンポーネント付きで生成(値は既定。set_component で調整)。"),
     name: z.string().optional().describe("エンティティ名(一意推奨)。省略時は種別名。"),
     position: vec3.optional().describe("[x,y,z]。省略時 [0,0,0]。"),
     idempotency_key: z.string().optional().describe("再試行の重複防止キー。同じキーの再送は二重生成されない。"),
@@ -648,6 +652,198 @@ reg(
   { frames: z.number().int().optional().describe("進めるフレーム数(既定 1, 最大 600)。") },
   {},
   ({ frames }) => run(() => engine.call("step_frames", { frames })),
+);
+
+// ════════════════════════════════════════════════════════════════
+//  ランタイム物理検証(raycast/overlap/velocity) — 全て同期・読み取り系。
+//  bodies は Play 中のみ登録される(RegisterBody は Play 開始/loadScene 時)。
+//  Editor 中に呼んでもエラーにはならず hit=false / entities=[] / velocity=[0,0,0] が返る。
+// ════════════════════════════════════════════════════════════════
+
+reg(
+  "dx12_raycast",
+  "レイキャスト",
+  "origin から direction 方向へ物理レイを飛ばし、最初にヒットしたボディを調べる。★Playing 中のみ意味のある結果(Editor 中は body 未登録なので hit=false)。{hit, distance?, point?, normal?, entityId?, name?}。normal は現状 常に up 方向の近似値(エンジンの既知の制約)。当たり判定確認・地面/壁の検出・ラインオブサイトの確認に。",
+  {
+    origin: vec3.describe("[x,y,z] レイの始点。"),
+    direction: vec3.describe("[x,y,z] レイの方向(正規化不要。エンジン側で正規化される)。"),
+    maxDistance: z.number().optional().describe("最大距離(既定 1000)。"),
+  },
+  { readOnlyHint: true },
+  ({ origin, direction, maxDistance }) =>
+    run(() => engine.call("raycast", { origin, direction, maxDistance })),
+);
+
+reg(
+  "dx12_overlap_box",
+  "ボックス範囲の物理クエリ",
+  "center を中心とする AABB(半幅 halfExtents)と重なっている物理ボディのエンティティを列挙する。★Playing 中のみ意味のある結果。{entities:[{entityId,name}], count}。dx12_query_entities の box(Transform.position ベースの単純判定)とは違い、実際のコライダー形状で判定する。",
+  {
+    center: vec3.describe("[x,y,z]"),
+    halfExtents: vec3.describe("[x,y,z] AABB の半幅。"),
+    maxResults: z.number().int().optional().describe("最大取得数(既定 32、上限 256)。"),
+  },
+  { readOnlyHint: true },
+  ({ center, halfExtents, maxResults }) =>
+    run(() => engine.call("overlap_box", { center, halfExtents, maxResults })),
+);
+
+reg(
+  "dx12_overlap_sphere",
+  "球範囲の物理クエリ",
+  "center を中心とする半径 radius の球と重なっている物理ボディのエンティティを列挙する。★Playing 中のみ意味のある結果。{entities:[{entityId,name}], count}。爆発範囲・索敵範囲・トリガー代替の確認に。",
+  {
+    center: vec3.describe("[x,y,z]"),
+    radius: z.number().describe("半径。"),
+    maxResults: z.number().int().optional().describe("最大取得数(既定 32、上限 256)。"),
+  },
+  { readOnlyHint: true },
+  ({ center, radius, maxResults }) =>
+    run(() => engine.call("overlap_sphere", { center, radius, maxResults })),
+);
+
+reg(
+  "dx12_get_physics_state",
+  "物理ランタイム状態取得",
+  "エンティティの物理ランタイム状態(速度・接地判定)を読む。{entityId, hasRigidBody, velocity:[x,y,z], hasCharacterController, isGrounded}。★Playing 中のみ意味のある結果(Editor 中は velocity=[0,0,0]/isGrounded=false)。RigidBody が無ければ velocity は常に [0,0,0]。entity(id) か name 指定。",
+  { ...entityRef },
+  { readOnlyHint: true },
+  ({ entity, name }) => run(() => engine.call("get_physics_state", { entity, name })),
+);
+
+// ════════════════════════════════════════════════════════════════
+//  コンテンツ制作ヘルパー拡充
+// ════════════════════════════════════════════════════════════════
+
+reg(
+  "dx12_read_lua_component",
+  "Luaコンポーネント読み取り",
+  "既存の .lua コンポーネントのソースをそのまま読む。dx12_create_lua_component は新規/上書き書き込み専用で読み取りが無かったため追加。既存スクリプトを確認してから修正版を dx12_create_lua_component で書き戻す、という編集ループに使う。{path, code}。",
+  { path: z.string().describe("assets 相対パス。例: components/Health.lua") },
+  { readOnlyHint: true },
+  ({ path }) => run(() => engine.call("read_lua_component", { path })),
+);
+
+reg(
+  "dx12_create_prefab",
+  "プレハブ化",
+  "エンティティ(+子孫)を .prefab として保存する(Hierarchy 右クリック「プレハブにする」と同じ処理)。path 省略時は assets/prefabs/<エンティティ名>.prefab に保存(重複時は連番)。{path, entityId}。entity(id) か name 指定。",
+  {
+    ...entityRef,
+    path: z.string().optional().describe("assets 相対パス(.prefab 必須)。省略時は assets/prefabs/<name>.prefab。"),
+  },
+  {},
+  ({ entity, name, path }) => run(() => engine.call("create_prefab", { entity, name, path })),
+);
+
+// ════════════════════════════════════════════════════════════════
+//  ビジュアル/ポスト設定の操作(ポストプロセス・SSAO)
+// ════════════════════════════════════════════════════════════════
+
+reg(
+  "dx12_get_post_process",
+  "ポストプロセス設定取得",
+  "現在のシーンのポストプロセス設定(約25エフェクトの on/off とパラメータ)を全て返す。フィールド名は dx12_set_post_process と同じ(例 exposureOn/exposure, bloomOn/bloom/bloomThreshold, tintOn/tint, outlineOn/outline/outlineColor 等)。変更前の確認に。",
+  {},
+  { readOnlyHint: true },
+  () => run(() => engine.call("get_post_process", {})),
+);
+
+reg(
+  "dx12_set_post_process",
+  "ポストプロセス設定変更",
+  "ポストプロセスのフィールドを指定分だけ更新する(未指定フィールドは現状維持)。カラーグレーディング(exposure/contrast/brightness/saturation/warmth/hueShift/tint) / ブルーム・ビネット(bloom/bloomThreshold/vignette) / スタイライズ(chromatic/pixelSize/posterize/ditherLevels/scanline/sharpen/grain) / 色操作(invert/sepia/grayscale) / 歪み(lens/waveAmp・Freq・Speed/radial/glitch) / 輪郭(outline/outlineColor) / fxaaOn。各エフェクトは <name>On(bool) で有効化しないと数値を変えても見た目に効かない。先に dx12_get_post_process で現状値を確認するとよい。",
+  {
+    enabled: z.boolean().optional().describe("マスタースイッチ(false で全エフェクト素通し)。"),
+    exposureOn: z.boolean().optional(), exposure: z.number().optional(),
+    contrastOn: z.boolean().optional(), contrast: z.number().optional(),
+    brightnessOn: z.boolean().optional(), brightness: z.number().optional(),
+    saturationOn: z.boolean().optional(), saturation: z.number().optional(),
+    warmthOn: z.boolean().optional(), warmth: z.number().optional(),
+    hueOn: z.boolean().optional(), hueShift: z.number().optional(),
+    tintOn: z.boolean().optional(), tint: vec3.optional(),
+    bloomOn: z.boolean().optional(), bloom: z.number().optional(), bloomThreshold: z.number().optional(),
+    vignetteOn: z.boolean().optional(), vignette: z.number().optional(),
+    chromaticOn: z.boolean().optional(), chromatic: z.number().optional(),
+    pixelizeOn: z.boolean().optional(), pixelSize: z.number().optional(),
+    posterizeOn: z.boolean().optional(), posterize: z.number().int().optional(),
+    ditherOn: z.boolean().optional(), ditherLevels: z.number().int().optional(),
+    scanlineOn: z.boolean().optional(), scanline: z.number().optional(),
+    sharpenOn: z.boolean().optional(), sharpen: z.number().optional(),
+    grainOn: z.boolean().optional(), grain: z.number().optional(),
+    invertOn: z.boolean().optional(), invert: z.number().optional(),
+    sepiaOn: z.boolean().optional(), sepia: z.number().optional(),
+    grayscaleOn: z.boolean().optional(), grayscale: z.number().optional(),
+    lensOn: z.boolean().optional(), lens: z.number().optional(),
+    waveOn: z.boolean().optional(), waveAmp: z.number().optional(), waveFreq: z.number().optional(), waveSpeed: z.number().optional(),
+    radialOn: z.boolean().optional(), radial: z.number().optional(),
+    glitchOn: z.boolean().optional(), glitch: z.number().optional(),
+    outlineOn: z.boolean().optional(), outline: z.number().optional(), outlineColor: vec3.optional(),
+    fxaaOn: z.boolean().optional(),
+  },
+  { idempotentHint: true },
+  (a) => run(() => engine.call("set_post_process", a)),
+);
+
+reg(
+  "dx12_get_ssao",
+  "SSAO設定取得",
+  "現在のシーンの SSAO(スクリーンスペース環境遮蔽)設定を返す。{enabled, radius, bias, intensity, power, sampleCount, blur}。★正射カメラ(俯瞰パズル等)では SSAO は自動無効化される(エンジン側の既知の制約)。",
+  {},
+  { readOnlyHint: true },
+  () => run(() => engine.call("get_ssao", {})),
+);
+
+reg(
+  "dx12_set_ssao",
+  "SSAO設定変更",
+  "SSAO のフィールドを指定分だけ更新する(未指定は現状維持)。radius=ワールド空間半径, bias=自己遮蔽バイアス, intensity=遮蔽の強さ, power=コントラスト(pow指数), sampleCount=8か16, blur=4x4ボックスブラーの有無。",
+  {
+    enabled: z.boolean().optional(),
+    radius: z.number().optional(),
+    bias: z.number().optional(),
+    intensity: z.number().optional(),
+    power: z.number().optional(),
+    sampleCount: z.number().int().optional().describe("8 か 16。"),
+    blur: z.boolean().optional(),
+  },
+  { idempotentHint: true },
+  (a) => run(() => engine.call("set_ssao", a)),
+);
+
+// ════════════════════════════════════════════════════════════════
+//  ビルド/検証パイプライン連携
+// ════════════════════════════════════════════════════════════════
+
+reg(
+  "dx12_validate_scene",
+  "シーン検証",
+  "シーン JSON の参照グラフをヘッドレスで検証する(CLI `--validate` と同じロジックをエンジン自身の子プロセスとして実行)。スクリプトパス存在・entity参照プロパティ解決・Trigger の filter/action target 解決・LoadScene 等のシーンパス存在をチェック。path 省略時は現在開いているシーン。{pass, exitCode, report, scenePath}。report はテキストレポート全文(PASS/FAIL・[info]/[warn]/[ERROR] 行)。編集→検証→修正のループに使う。子プロセスとして起動する(GPU初期化前に終了するので実行中のエディタと並行しても安全)。",
+  { path: z.string().optional().describe("assets 相対パス。省略時は現在開いているシーン。") },
+  { readOnlyHint: true },
+  ({ path }) => run(() => engine.call("validate_scene", { path })),
+);
+
+reg(
+  "dx12_build_game",
+  "ゲームビルド",
+  "現在のプロジェクトをヘッドレスでビルドする(ツールバーの「ビルド」ボタンと同じ処理: exe+DLL+assets+shaders を出力フォルダへコピー)。{success, outputDir, error?}。出力先はビルド設定(エンジン設定窓)で指定した場所、未設定なら build/game。数十秒〜かかることがある(同期呼び出し)。",
+  {},
+  { destructiveHint: true },
+  () => run(() => engine.call("build_game", {})),
+);
+
+// ════════════════════════════════════════════════════════════════
+//  Lua 即時実行(eval) — デバッグ用。
+// ════════════════════════════════════════════════════════════════
+
+reg(
+  "dx12_eval_lua",
+  "Lua即時実行",
+  "任意の Lua コードをエンジンの Lua state でその場実行する(強力なデバッグ機能)。globals フォールバック環境なので scene/physics/camera/audio/events 等の既存グローバルバインディング(dx12_describe_lua_api 参照)がそのまま使える。例: `local e = scene:findEntity(\"Player\"); e.transform.position.y = e.transform.position.y + 1; return e.transform.position.y`。code が値を return していれば result にその tostring() 文字列が入る(無ければ空文字)。★print() は捕捉されない — デバッグ出力は log(msg) を使うと dx12_get_log に出る。副作用のある操作(位置変更・物理力印加等)は Editor/Playing 両方で実行できるが、bodies は Play 中のみ登録されているため物理系は Playing 中でないと効果が無い。localhost 限定・認証なしという既存のセキュリティモデルと同水準。",
+  { code: z.string().describe("実行する Lua コード(複数行可)。") },
+  {},
+  ({ code }) => run(() => engine.call("eval_lua", { code })),
 );
 
 // ════════════════════════════════════════════════════════════════

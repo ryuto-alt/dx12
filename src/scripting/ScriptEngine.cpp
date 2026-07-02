@@ -1599,6 +1599,31 @@ bool ScriptEngine::CheckLuaSyntax(const std::string& code, std::string& err)
     return false;
 }
 
+bool ScriptEngine::EvalLua(const std::string& code, std::string& resultStr, std::string& err)
+{
+    resultStr.clear();
+    err.clear();
+    if (!m_lua) { err = "lua state not initialized"; return false; }
+    // 関数で包んで実行する: code が文でも式(return 込み)でも受け付けたいのと、
+    // 戻り値を C++ 側では protected_function_result の多値インデックスに頼らず、
+    // Lua 自身の tostring() で文字列化してから受け取ることで sol2 の型変換を単純にする。
+    const std::string wrapped =
+        "local __eval_fn = function()\n" + code + "\nend\n"
+        "local __r = { __eval_fn() }\n"
+        "if #__r > 0 then return tostring(__r[1]) end\n"
+        "return nil\n";
+    sol::protected_function_result result = m_lua->safe_script(wrapped, sol::script_pass_on_error);
+    if (!result.valid())
+    {
+        sol::error e = result;
+        err = e.what();
+        return false;
+    }
+    sol::optional<std::string> s = result;
+    if (s) resultStr = *s;
+    return true;
+}
+
 void ScriptEngine::OnPlayStart()
 {
     auto& reg = m_scene->GetRegistry();

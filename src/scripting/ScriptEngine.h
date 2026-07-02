@@ -96,6 +96,13 @@ public:
     // 失敗時 err にエラー文を入れる。MCP の create で書き込み前チェックに使う。
     bool CheckLuaSyntax(const std::string& code, std::string& err);
 
+    // 任意 Lua コードをその場実行する(MCP eval / デバッグ用)。globals フォールバック環境で
+    // 実行するため scene/physics/camera/audio 等の既存グローバルバインディングがそのまま使える
+    // (例: `local e = scene:findEntity("Player"); e.transform.position.y = 5`)。
+    // 戻り値: 実行成功なら true。code が値を return していれば resultStr に tostring() 文字列。
+    // 失敗時は false を返し err にエラー文を入れる(resultStr は空のまま)。
+    bool EvalLua(const std::string& code, std::string& resultStr, std::string& err);
+
     void Shutdown();
 
     const std::string& GetLastError() const { return m_lastError; }

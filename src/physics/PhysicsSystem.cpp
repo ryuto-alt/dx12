@@ -863,6 +863,12 @@ size_t PhysicsSystem::OverlapSphere(const XMFLOAT3& center,
     return col.count;
 }
 
+entt::entity PhysicsSystem::EntityForBody(uint32_t bodyId) const
+{
+    auto it = m_bodyToEntity.find(bodyId);
+    return it != m_bodyToEntity.end() ? it->second : entt::null;
+}
+
 // ========== Time Model（pause / manual step / gravity）==========
 
 void PhysicsSystem::Step(float dt)

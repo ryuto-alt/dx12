@@ -211,6 +211,73 @@ key は VK 整数か名前(`"W"`,`"D"`,`"SPACE"`,`"UP"`,`"F1"` 等)。
 
 ---
 
+## 物理ランタイム検証(raycast/overlap/velocity)
+
+`dx12_raycast` / `dx12_overlap_box` / `dx12_overlap_sphere` / `dx12_get_physics_state` は
+**Playing 中のみ意味のある結果を返す**(RigidBody は Play 開始時にしか物理へ登録されない)。
+Editor 中に呼んでもエラーにはならず、hit=false / entities=[] / velocity=[0,0,0] が返るだけ。
+
+```
+dx12_play()
+dx12_key_down(key:"D")
+dx12_step_frames(frames:30)
+dx12_get_physics_state(name:"Player")          # {velocity, isGrounded, ...}
+dx12_raycast(origin:[0,5,0], direction:[0,-1,0], maxDistance:10)  # 足元の地面判定
+dx12_overlap_sphere(center:[0,1,0], radius:2)  # 索敵範囲に何がいるか
+dx12_key_up(key:"D")
+dx12_stop()
+```
+
+`dx12_query_entities(box:...)` は Transform.position ベースの単純判定、
+`dx12_overlap_box`/`dx12_overlap_sphere` は実際のコライダー形状での物理判定。用途で使い分ける。
+
+---
+
+## Lua 即時実行(eval) — デバッグの近道
+
+`dx12_eval_lua` は任意の Lua を Lua state でその場実行する。スクリプトを書いてアタッチせずに
+値を確認・書き換えできる。`dx12_describe_lua_api` にある全バインディングがそのまま使える。
+
+```
+dx12_eval_lua(code:"local e = scene:findEntity('Player'); return e.transform.position.y")
+# → {result: "3.5"}
+
+dx12_eval_lua(code:"local e = scene:findEntity('Player'); e.transform.position.y = 10")
+# → {result: ""}  (return してないので result は空)
+```
+
+★ `print()` は捕捉されない。デバッグ出力は `log(msg)` を使うと `dx12_get_log` に出る。
+物理系バインディング(`physics:*`)は Playing 中でないと効果が無い(bodies が未登録のため)。
+
+---
+
+## ポストプロセス/SSAO の調整
+
+```
+dx12_get_post_process()                                   # 現状値を確認
+dx12_set_post_process(vignetteOn:true, vignette:0.6,
+                       tintOn:true, tint:[1.0,0.95,0.85])  # 暖色ビネット
+dx12_focus_and_screenshot(name:"MainCamera")               # 見た目を確認
+```
+
+各エフェクトは `<name>On`(bool) を true にしないとパラメータを変えても反映されない。
+
+---
+
+## シーン検証パイプライン(validate)
+
+`dx12_validate_scene` はヘッドレスの `--validate` を子プロセスとして実行し、参照切れ
+(スクリプト不在・entity参照未解決・Trigger target 不明・LoadScene 先不在)を検出する。
+編集後は毎回これで確認してから Play するとよい。
+
+```
+dx12_save_scene()
+dx12_validate_scene()
+# → {pass:false, report:"...\n[ERROR] unresolved entity reference: \"Boss\" (trigger action target of WinZone)\n..."}
+```
+
+---
+
 ## MODE_CONFLICT(3): Playing 中は生成系が失敗する
 
 Playing 中に `create_entity` / `spawn_model` / `delete_entity` / `open_scene` 等を呼ぶと
