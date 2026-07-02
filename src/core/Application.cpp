@@ -2899,7 +2899,7 @@ void Application::LoadEditorIcons(ID3D12GraphicsCommandList* cmdList)
     {
         std::string p = PathResolver::AssetsDir() + "editor/icons/" + name + ".png";
         if (!std::filesystem::exists(p)) return 0;
-        std::wstring wp(p.begin(), p.end());
+        std::wstring wp = PathResolver::Utf8ToWide(p);
         Texture* t = m_resourceManager->GetOrLoadTexture(wp, cmdList, true);
         if (!t) return 0;
         return m_srvHeap->GetGpuHandle(t->GetSrvIndex()).ptr;
@@ -3017,7 +3017,7 @@ void Application::LoadSkyboxIfNeeded(ID3D12GraphicsCommandList* cmd)
                 m_loadedSkyboxPath = sky.envMapPath;
                 return;
             }
-            std::wstring wpath(fullPath.begin(), fullPath.end());
+            std::wstring wpath = PathResolver::Utf8ToWide(fullPath);
             m_envCubeTex = TextureLoader::LoadCubeFromFile(*m_graphicsDevice, cmd, wpath, /*srgb=*/false);
         }
     }
@@ -4785,7 +4785,7 @@ void Application::DrawWorldSprites(ID3D12GraphicsCommandList* cmd, DirectX::XMMA
         if (!sp.worldSpace || sp.texturePath.empty()) continue;
         if (!sreg.all_of<Transform>(e)) continue;
         const std::string absPath = PathResolver::AssetsDir() + sp.texturePath;
-        std::wstring wpath(absPath.begin(), absPath.end());   // ASCII パス想定
+        std::wstring wpath = PathResolver::Utf8ToWide(absPath);
         Texture* tex = m_resourceManager->GetOrLoadTexture(wpath, cmd);
         if (!tex) continue;
 
@@ -6134,7 +6134,7 @@ void Application::Render()
         for (const auto& c : m_uiCommands)
         {
             if (c.type != UICommand::Type::Image || c.text.empty()) continue;
-            std::wstring wpath(c.text.begin(), c.text.end());  // ASCII パス想定
+            std::wstring wpath = PathResolver::Utf8ToWide(c.text);
             Texture* tex = m_resourceManager->GetOrLoadTexture(wpath, nativeCmdList);
             if (!tex) continue;
             SpriteDesc s;
@@ -6155,7 +6155,7 @@ void Application::Render()
             {
                 if (sp.worldSpace || sp.texturePath.empty()) continue;
                 const std::string absPath = PathResolver::AssetsDir() + sp.texturePath;
-                std::wstring wpath(absPath.begin(), absPath.end());   // ASCII パス想定
+                std::wstring wpath = PathResolver::Utf8ToWide(absPath);
                 Texture* tex = m_resourceManager->GetOrLoadTexture(wpath, nativeCmdList);
                 if (!tex) continue;
                 float cx = 0.0f, cy = 0.0f;

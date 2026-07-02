@@ -42,6 +42,20 @@ void PathResolver::Initialize(bool gameMode)
     s_initialized = true;
 }
 
+std::wstring PathResolver::Utf8ToWide(const std::string& utf8)
+{
+    if (utf8.empty())
+        return {};
+    const int len = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(),
+                                        static_cast<int>(utf8.size()), nullptr, 0);
+    if (len <= 0)
+        return {};
+    std::wstring result(static_cast<size_t>(len), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(),
+                        static_cast<int>(utf8.size()), result.data(), len);
+    return result;
+}
+
 void PathResolver::SetProjectRoot(const std::string& rootDir)
 {
     if (rootDir.empty())

@@ -35,6 +35,11 @@ public:
     // どちらも無ければ scripts/game.lua を返す（存在チェックは呼び出し側）。
     static std::string GameLuaPath();
 
+    // UTF-8 → UTF-16。パスを Windows API / DirectXTex に渡すときは必ずこれを使う。
+    // std::wstring(s.begin(), s.end()) はバイト値の1対1コピーなので
+    // 日本語などマルチバイトのパスが壊れる（無言でロード失敗の原因になる）。
+    static std::wstring Utf8ToWide(const std::string& utf8);
+
 private:
     static bool         s_initialized;
     static std::string  s_assets;

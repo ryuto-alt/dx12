@@ -2,6 +2,7 @@
 
 #include "core/Assert.h"
 #include "core/Logger.h"
+#include "core/PathResolver.h"
 #include "core/vfs/Vfs.h"
 #include "graphics/Texture.h"
 #include "graphics/DescriptorHeap.h"
@@ -181,8 +182,9 @@ Texture* ResourceManager::GetOrLoadEmbeddedTexture(
     const char* formatHint,
     ID3D12GraphicsCommandList* cmdList)
 {
-    // wstring キーに変換してキャッシュ検索
-    std::wstring wkey(key.begin(), key.end());
+    // wstring キーに変換してキャッシュ検索（UTF-8正変換。バイトコピーだと
+    // 日本語キーが壊れて wstring パス経由のキャッシュと不一致になる）
+    std::wstring wkey = PathResolver::Utf8ToWide(key);
     auto it = m_textureCache.find(wkey);
     if (it != m_textureCache.end())
         return it->second.get();
