@@ -516,8 +516,34 @@ void ScriptEngine::RegisterBindings()
         lua[name] = static_cast<int>(ch);
     }
 
-    // --- ユーティリティ ---
-    lua["log"] = [](const std::string& msg) { Logger::Info("[Lua] {}", msg); };
+    // --- ユーティリティ / デバッグログ（エディタのコンソールパネルに出る）---
+    // 任意個・任意型の引数を tostring でつないで出す（Unity の Debug.Log 相当）。
+    //   log("hp:", hp)  /  logWarn("弾切れ")  /  logError("想定外:", state)
+    // print() も同じ経路へ差し替え（素の print は捕捉されずどこにも出ないため）。
+    auto joinArgs = [](sol::variadic_args va, sol::this_state ts) -> std::string {
+        sol::state_view L(ts);
+        sol::protected_function tostr = L["tostring"];
+        std::string line;
+        for (auto v : va)
+        {
+            if (!line.empty()) line += "\t";
+            auto r = tostr(v);
+            line += r.valid() ? r.get<std::string>() : std::string("?");
+        }
+        return line;
+    };
+    lua["log"] = [joinArgs](sol::variadic_args va, sol::this_state ts) {
+        Logger::Info("[Lua] {}", joinArgs(va, ts));
+    };
+    lua["logWarn"] = [joinArgs](sol::variadic_args va, sol::this_state ts) {
+        Logger::Warn("[Lua] {}", joinArgs(va, ts));
+    };
+    lua["logError"] = [joinArgs](sol::variadic_args va, sol::this_state ts) {
+        Logger::Error("[Lua] {}", joinArgs(va, ts));
+    };
+    lua["print"] = [joinArgs](sol::variadic_args va, sol::this_state ts) {
+        Logger::Info("[Lua] {}", joinArgs(va, ts));
+    };
 
     // --- シーンをまたいで残る数値ストレージ（スコア受け渡し等）---
     lua["saveNum"] = [this](const std::string& key, double v) { m_blackboard[key] = v; };

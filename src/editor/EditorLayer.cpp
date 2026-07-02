@@ -7,6 +7,7 @@
 #include "editor/panels/InspectorPanel.h"
 #include "editor/panels/SceneViewPanel.h"
 #include "editor/panels/AssetBrowserPanel.h"
+#include "editor/panels/ConsolePanel.h"
 #include "editor/ModelThumbnailRenderer.h"
 #include "scene/Scene.h"
 #include "renderer/Camera.h"
@@ -87,6 +88,7 @@ void EditorLayer::Initialize(EditorContext* ctx,
     m_inspector    = std::make_unique<InspectorPanel>();
     m_sceneView    = std::make_unique<SceneViewPanel>();
     m_assetBrowser = std::make_unique<AssetBrowserPanel>();
+    m_console      = std::make_unique<ConsolePanel>();
 
     m_hierarchy->SetAssetsDir(assetsDir);
     m_assetBrowser->Initialize(assetsDir, scriptsDir, resourceManager, srvHeap);
@@ -120,7 +122,10 @@ void EditorLayer::BuildDefaultLayout(ImGuiID dockspaceId, f32 /*toolbarHeight*/)
     // 左: ヒエラルキー
     ImGui::DockBuilderDockWindow(
         "\xe3\x83\x92\xe3\x82\xa8\xe3\x83\xa9\xe3\x83\xab\xe3\x82\xad\xe3\x83\xbc", dockLeft);
-    // 中央下: アセットブラウザ（単独で横長に使う）
+    // 中央下: コンソールを先にドック → アセットブラウザを後にドック
+    // （同ノードのタブ。アセットブラウザが既定のアクティブタブになる）
+    ImGui::DockBuilderDockWindow(
+        "\xe3\x82\xb3\xe3\x83\xb3\xe3\x82\xbd\xe3\x83\xbc\xe3\x83\xab", dockBottom);  // コンソール
     ImGui::DockBuilderDockWindow(
         "\xe3\x82\xa2\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88\xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6", dockBottom);
 
@@ -261,6 +266,9 @@ void EditorLayer::Render(bool isPlaying,
                             clock);
 
     m_assetBrowser->Render(*m_ctx, clock->GetDeltaTime());
+
+    // コンソール（アセットブラウザの隣タブに常設。全ログ + Lua 即時実行）
+    m_console->Render(scriptEngine, isPlaying);
 
     // ===== 中央ノードの領域を取得し、シーンビューを 16:9 にレターボックス =====
     {

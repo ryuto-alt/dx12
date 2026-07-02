@@ -30,6 +30,7 @@ class HierarchyPanel;
 class InspectorPanel;
 class SceneViewPanel;
 class AssetBrowserPanel;
+class ConsolePanel;
 
 class EditorLayer
 {
@@ -98,6 +99,7 @@ private:
     std::unique_ptr<InspectorPanel>    m_inspector;
     std::unique_ptr<SceneViewPanel>    m_sceneView;
     std::unique_ptr<AssetBrowserPanel> m_assetBrowser;
+    std::unique_ptr<ConsolePanel>      m_console;
     class ModelThumbnailRenderer* m_thumbRenderer = nullptr;
 };
 

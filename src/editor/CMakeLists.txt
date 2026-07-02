@@ -8,6 +8,7 @@ add_library(Editor STATIC
     panels/InspectorPanel.cpp
     panels/SceneViewPanel.cpp
     panels/AssetBrowserPanel.cpp
+    panels/ConsolePanel.cpp
     panels/McpBridgePanel.cpp
 )
 
