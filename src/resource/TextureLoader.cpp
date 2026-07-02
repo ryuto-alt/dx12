@@ -12,6 +12,54 @@
 namespace dx12e
 {
 
+namespace
+{
+
+// mip が 1 枚しか無い非圧縮画像はフルミップチェーンを生成する（遠景のシマー/
+// エイリアシング防止）。BC 圧縮はデコード無しで再生成できないためそのまま。
+// 生成失敗は品質低下のみなので mip1 のまま続行する。
+void EnsureMipChain(DirectX::ScratchImage& scratch, bool srgb)
+{
+    const DirectX::TexMetadata& meta = scratch.GetMetadata();
+    if (meta.mipLevels > 1) return;
+    if (DirectX::IsCompressed(meta.format)) return;
+    if (meta.width <= 1 && meta.height <= 1) return;
+
+    // sRGB コンテンツはガンマ考慮のフィルタで縮小しないと mip が暗くなる
+    const DirectX::TEX_FILTER_FLAGS filter =
+        srgb ? DirectX::TEX_FILTER_SRGB : DirectX::TEX_FILTER_DEFAULT;
+
+    DirectX::ScratchImage mipChain;
+    if (SUCCEEDED(DirectX::GenerateMipMaps(
+            scratch.GetImages(), scratch.GetImageCount(), meta, filter, 0, mipChain)))
+    {
+        scratch = std::move(mipChain);
+    }
+}
+
+// arraySize × mipLevels の全 subresource を組む（D3D12 の順序: item major, mip minor）
+std::vector<D3D12_SUBRESOURCE_DATA> BuildSubresources(const DirectX::ScratchImage& scratch)
+{
+    const DirectX::TexMetadata& meta = scratch.GetMetadata();
+    std::vector<D3D12_SUBRESOURCE_DATA> subs;
+    subs.reserve(meta.arraySize * meta.mipLevels);
+    for (size_t item = 0; item < meta.arraySize; ++item)
+    {
+        for (size_t mip = 0; mip < meta.mipLevels; ++mip)
+        {
+            const DirectX::Image* img = scratch.GetImage(mip, item, 0);
+            if (!img)
+                return {};
+            subs.push_back({img->pixels,
+                            static_cast<LONG_PTR>(img->rowPitch),
+                            static_cast<LONG_PTR>(img->slicePitch)});
+        }
+    }
+    return subs;
+}
+
+} // namespace
+
 std::unique_ptr<Texture> TextureLoader::LoadFromFile(
     GraphicsDevice& device,
     ID3D12GraphicsCommandList* cmdList,
@@ -51,7 +99,8 @@ std::unique_ptr<Texture> TextureLoader::LoadFromFile(
         return nullptr;
     }
 
-    // メタデータ取得・SRGB変換
+    // mip が無ければ生成（メタデータは生成後に取り直す）
+    EnsureMipChain(scratchImage, srgb);
     DirectX::TexMetadata meta = scratchImage.GetMetadata();
     DXGI_FORMAT format = srgb ? DirectX::MakeSRGB(meta.format) : meta.format;
 
@@ -69,22 +118,22 @@ std::unique_ptr<Texture> TextureLoader::LoadFromFile(
     resourceDesc.Layout             = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     resourceDesc.Flags              = D3D12_RESOURCE_FLAG_NONE;
 
-    // D3D12_SUBRESOURCE_DATA 構築 (mip 0 のみ)
-    const DirectX::Image* image = scratchImage.GetImage(0, 0, 0);
-    DX_ASSERT(image != nullptr, "Failed to get image data from ScratchImage");
+    // 全 subresource（arraySize×mip）をアップロード
+    // (旧: mip0 のみ = DDS のミップは VRAM を確保するだけの未初期化ゴミだった)
+    auto subs = BuildSubresources(scratchImage);
+    if (subs.empty())
+    {
+        Logger::Error("Failed to get image data from ScratchImage");
+        return nullptr;
+    }
 
-    D3D12_SUBRESOURCE_DATA subresourceData = {};
-    subresourceData.pData      = image->pixels;
-    subresourceData.RowPitch   = static_cast<LONG_PTR>(image->rowPitch);
-    subresourceData.SlicePitch = static_cast<LONG_PTR>(image->slicePitch);
-
-    // Texture 作成・GPU アップロード
     auto texture = std::make_unique<Texture>();
-    texture->Initialize(device, cmdList, resourceDesc, &subresourceData, 1);
+    texture->Initialize(device, cmdList, resourceDesc, subs.data(), static_cast<u32>(subs.size()));
 
-    Logger::Info("Texture loaded: {}x{}, format={}",
+    Logger::Info("Texture loaded: {}x{}, mips={}, format={}",
                  static_cast<u32>(meta.width),
                  static_cast<u32>(meta.height),
+                 static_cast<u32>(meta.mipLevels),
                  static_cast<u32>(format));
 
     return texture;
@@ -205,6 +254,8 @@ std::unique_ptr<Texture> TextureLoader::LoadFromMemory(
         return nullptr;
     }
 
+    // mip が無ければ生成（メタデータは生成後に取り直す）
+    EnsureMipChain(scratchImage, srgb);
     DirectX::TexMetadata meta = scratchImage.GetMetadata();
     DXGI_FORMAT format = srgb ? DirectX::MakeSRGB(meta.format) : meta.format;
 
@@ -218,19 +269,15 @@ std::unique_ptr<Texture> TextureLoader::LoadFromMemory(
     resourceDesc.SampleDesc.Count   = 1;
     resourceDesc.Layout             = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 
-    const DirectX::Image* image = scratchImage.GetImage(0, 0, 0);
-    if (!image) return nullptr;
-
-    D3D12_SUBRESOURCE_DATA subresourceData = {};
-    subresourceData.pData      = image->pixels;
-    subresourceData.RowPitch   = static_cast<LONG_PTR>(image->rowPitch);
-    subresourceData.SlicePitch = static_cast<LONG_PTR>(image->slicePitch);
+    auto subs = BuildSubresources(scratchImage);
+    if (subs.empty()) return nullptr;
 
     auto texture = std::make_unique<Texture>();
-    texture->Initialize(device, cmdList, resourceDesc, &subresourceData, 1);
+    texture->Initialize(device, cmdList, resourceDesc, subs.data(), static_cast<u32>(subs.size()));
 
-    Logger::Info("Embedded texture loaded: {}x{} (format={})",
-                 static_cast<u32>(meta.width), static_cast<u32>(meta.height), hint);
+    Logger::Info("Embedded texture loaded: {}x{}, mips={} (format={})",
+                 static_cast<u32>(meta.width), static_cast<u32>(meta.height),
+                 static_cast<u32>(meta.mipLevels), hint);
 
     return texture;
 }

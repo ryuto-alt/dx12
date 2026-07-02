@@ -145,7 +145,7 @@ void Texture::CreateSRV(GraphicsDevice& device, D3D12_CPU_DESCRIPTOR_HANDLE cpuH
     srvDesc.ViewDimension                 = D3D12_SRV_DIMENSION_TEXTURE2D;
     srvDesc.Shader4ComponentMapping       = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srvDesc.Texture2D.MostDetailedMip     = 0;
-    srvDesc.Texture2D.MipLevels           = 1;
+    srvDesc.Texture2D.MipLevels           = (m_mipLevels > 0) ? m_mipLevels : 1;  // 全ミップを公開(旧: 1固定でミップが死んでいた)
     srvDesc.Texture2D.PlaneSlice          = 0;
     srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
 
