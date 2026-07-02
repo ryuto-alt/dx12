@@ -58,6 +58,8 @@ Source: "{#RepoRoot}\assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion re
 ; ※ node_modules は .gitignore 済みなので、ビルド前に tools\mcp-server で `npm install` を実行しておくこと。
 ;    installer\build.ps1 を使えば自動で行う。
 Source: "{#RepoRoot}\tools\mcp-server\*"; DestDir: "{app}\tools\mcp-server"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: ".gitignore,*.log,*.tsbuildinfo"
+; VSCode 補完用の Lua API 型定義（導入手順は同フォルダの README.md）
+Source: "{#RepoRoot}\tools\lua-defs\*"; DestDir: "{app}\tools\lua-defs"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "README.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]

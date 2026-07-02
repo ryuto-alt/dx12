@@ -80,6 +80,11 @@ if (Test-Path (Join-Path $mcpDir "index.ts")) {
   # robocopy でミラーコピー（.git/ログ/tsbuildinfo は除外）。/NFL /NDL で静かに。
   & robocopy $mcpDir $mcpDst /E /XF ".gitignore" "*.log" "*.tsbuildinfo" /XD ".git" /NFL /NDL /NJH /NJS /NP | Out-Null
 }
+# tools\lua-defs（VSCode 補完用の Lua API 型定義）
+$luaDefs = Join-Path $repoRoot "tools\lua-defs"
+if (Test-Path $luaDefs) {
+  Copy-Item $luaDefs -Destination (Join-Path $stage "tools\lua-defs") -Recurse
+}
 # version.txt（更新後の確認用）
 Set-Content -Path (Join-Path $stage "version.txt") -Value $version -NoNewline
 # README
