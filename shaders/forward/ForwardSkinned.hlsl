@@ -235,8 +235,6 @@ float4 PSMain(PSInput input) : SV_TARGET
         color *= tint[SelectCascade(input.viewDepth)];
     }
 
-    color = ACESFilm(color);
-    color = pow(color, 1.0 / 2.2);
-
+    // リニア HDR のまま scene RT へ出力（トーンマップ+ガンマは PostProcess 最終段）
     return float4(color, albedo4.a);
 }

@@ -67,9 +67,18 @@ static float3 HueRotate(float3 col, float angle)
 
 static float Rand(float2 p) { return frac(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453); }
 
-// ※ トーンマップ（ACES）+ ガンマは forward 側（Forward.hlsl / ForwardSkinned.hlsl）で
-//    既に適用済み。シーンRT には「表示用に仕上がったカラー」が入っているので、ここでは
-//    再トーンマップしない（二重がけすると色補正・グレースケール・輪郭線などが潰れる）。
+// シーンRT にはリニア HDR が入っている（forward/skybox はトーンマップせず出力）。
+// HDR 空間で行うべき処理（露出・ブルーム抽出）の後、ここで ACES + ガンマを一括適用し、
+// 以降の色補正・スタイライズ系は表示基準(LDR)の色に対して行う。
+static float3 ACESFilm(float3 x)
+{
+    float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
+}
+static float3 ToneMapGamma(float3 c)
+{
+    return pow(ACESFilm(c), 1.0 / 2.2);
+}
 
 // 4x4 Bayer 順序ディザ閾値（godotshaders の ordered dithering 由来）
 static float Bayer4(float2 px)
@@ -92,10 +101,10 @@ float4 PostPS(FSQuadVSOut i) : SV_TARGET
     float  time  = texelTime.z;
     uint   mask  = (uint)masks.x;
 
-    // マスター無効（全ビット 0）= 完全素通し。forward で仕上げた表示用カラーをそのまま出す。
-    // （ここで再トーンマップすると二重がけになり、効果 OFF 時の見た目も眠くなる）
+    // マスター無効（全ビット 0）= エフェクト無し。ただしシーンRTはリニアHDRなので
+    // トーンマップ+ガンマだけは必ず適用して表示用カラーにする。
     if (mask == 0u)
-        return float4(SampleScene(i.uv * scale + ofs), 1.0);
+        return float4(ToneMapGamma(SampleScene(i.uv * scale + ofs)), 1.0);
 
     float2 luv    = i.uv;          // ビューポートローカル 0..1
     bool   crtOut = false;
@@ -191,12 +200,12 @@ float4 PostPS(FSQuadVSOut i) : SV_TARGET
         col += (col - blur) * stylize0.w * 2.0;
     }
 
-    // ===== カラー ステージ =====
+    // ===== HDR ステージ（トーンマップ前・リニア輝度に対して行う） =====
 
     if (mask & E_EXPOSURE)   col *= cg0.x;                       // 露出
-    if (mask & E_BRIGHTNESS) col += cg0.z;                       // 明るさ（加算）
 
-    // --- ブルーム（HDR上で3スケールの広く柔らかいハロー）---
+    // --- ブルーム（リニアHDRから抽出する3スケールの広く柔らかいハロー）---
+    // トーンマップ前なので光源・発光体の本来の輝度エネルギー(>1)を正しく拾える
     if (mask & E_BLOOM)
     {
         float th = cg1.w;
@@ -219,6 +228,13 @@ float4 PostPS(FSQuadVSOut i) : SV_TARGET
         col += (b / max(wsum, 1.0)) * cg1.z * 4.0;
     }
 
+    // ===== トーンマップ（ACES）+ ガンマ =====
+    // ここから先は表示基準(LDR, 0..1)の色として扱う
+    col = ToneMapGamma(col);
+
+    // ===== カラー ステージ（LDR） =====
+
+    if (mask & E_BRIGHTNESS) col += cg0.z;                       // 明るさ（加算）
     if (mask & E_CONTRAST)   col = (col - 0.5) * cg0.y + 0.5;    // コントラスト
     if (mask & E_SATURATION) col = lerp(Luma(col).xxx, col, cg0.w); // 彩度
 
@@ -280,7 +296,7 @@ float4 PostPS(FSQuadVSOut i) : SV_TARGET
         float l22 = Luma(SampleScene(uv + float2( texel.x,  texel.y)));
         float gx = -l00 - 2.0*l01 - l02 + l20 + 2.0*l21 + l22;
         float gy = -l00 - 2.0*l10 - l20 + l02 + 2.0*l12 + l22;
-        // forward で既にガンマ済み = エッジのルマ勾配が小さめ。ゲインを掛けて線を明瞭にする。
+        // ルマ勾配はリニアHDRのシーンから取る（暗部の勾配が小さいのでゲインで明瞭化）
         float edge = saturate(sqrt(gx*gx + gy*gy) * outlineP.w * 4.0);
         col = lerp(col, outlineP.rgb, edge);
     }
@@ -307,7 +323,7 @@ float4 PostPS(FSQuadVSOut i) : SV_TARGET
         col *= saturate(1.0 - dot(d, d) * 2.0 * tintVig.w);
     }
 
-    // forward で適用済みのトーンマップを二重がけしない。効果適用後のカラーを直接出力。
+    // トーンマップは上のカラーステージ冒頭で適用済み。
     // R8G8B8A8_UNORM へ書くので、効果でレンジ外へ出た値は saturate で [0,1] にクランプ。
     return float4(saturate(col), 1.0);
 }

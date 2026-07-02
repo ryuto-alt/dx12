@@ -137,6 +137,7 @@ if(DXC_EXECUTABLE)
     set(SHADER_OUTPUTS
         "${SHADER_OUTPUT_DIR}/Forward_VS.cso"
         "${SHADER_OUTPUT_DIR}/Forward_PS.cso"
+        "${SHADER_OUTPUT_DIR}/ForwardLdr_PS.cso"
         "${SHADER_OUTPUT_DIR}/ForwardSkinned_VS.cso"
         "${SHADER_OUTPUT_DIR}/ForwardSkinned_PS.cso"
         "${SHADER_OUTPUT_DIR}/ForwardGrid_VS.cso"
@@ -182,6 +183,14 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/Forward_PS.cso" "${SHADER_FORWARD}"
         DEPENDS "${SHADER_FORWARD}" ${SHADER_FWD_INC}
         COMMENT "Compiling Forward.hlsl -> Forward_PS.cso (ps_6_0)"
+    )
+
+    # LDR 直出力バリアント（サムネイル等、ポストプロセスを通らない R8G8B8A8 RT 用）
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ForwardLdr_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -D LDR_OUTPUT=1 -Fo "${SHADER_OUTPUT_DIR}/ForwardLdr_PS.cso" "${SHADER_FORWARD}"
+        DEPENDS "${SHADER_FORWARD}" ${SHADER_FWD_INC}
+        COMMENT "Compiling Forward.hlsl -> ForwardLdr_PS.cso (ps_6_0, LDR_OUTPUT)"
     )
 
     add_custom_command(

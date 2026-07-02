@@ -148,5 +148,7 @@ float4 PSMain(PSInput input) : SV_TARGET
     float NdotL = max(dot(N, L), 0.0f);
     float3 lighting = ambientStrength * lightColor + NdotL * lightColor * 0.3f * shadow;
 
-    return float4(color * lighting, alpha);
+    // グリッド色は表示基準(sRGB風)で調整されている。シーンRTはリニアHDRになった
+    // (最終段でACES+ガンマが掛かる)ため、リニアへ変換して見た目を従来と揃える。
+    return float4(pow(max(color * lighting, 0.0f), 2.2f), alpha);
 }

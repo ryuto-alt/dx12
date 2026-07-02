@@ -319,6 +319,7 @@ private:
 
     // カメラプレビュー（選択カメラ視点を小窓表示）。専用 RT + 専用 per-frame CB。
     std::unique_ptr<RenderTarget>   m_cameraPreviewRT;
+    std::unique_ptr<RenderTarget>   m_cameraPreviewLdrRT;  // プレビュー表示用(トーンマップ済みLDR)
     std::unique_ptr<ConstantBuffer> m_previewFrameCB;
 
     // 2D スプライト / ゲーム内 UI 描画（WP4 / WP7）

@@ -339,10 +339,13 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_pipelineStateLEqual = std::make_unique<PipelineState>();
         m_pipelineStateLEqual->Initialize(*m_graphicsDevice, builder);
 
-        // サムネイル描画用バリアント。ModelThumbnailRenderer の RT は R8G8B8A8 のため
-        // シーンRT(HDR)用 PSO とはフォーマットを分ける必要がある。
+        // サムネイル描画用バリアント。ModelThumbnailRenderer の RT は R8G8B8A8 で
+        // ポストプロセス(トーンマップ)を通らないため、シェーダー内で ACES+ガンマまで
+        // 済ませる LDR 直出力の PS を使う。
+        auto psLdr = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ForwardLdr_PS.cso");
         builder.SetDepthFunc(D3D12_COMPARISON_FUNC_LESS);
         builder.SetRenderTargetFormat(DXGI_FORMAT_R8G8B8A8_UNORM);
+        builder.SetPixelShader(psLdr.GetData(), psLdr.GetSize());
         m_pipelineStateThumb = std::make_unique<PipelineState>();
         m_pipelineStateThumb->Initialize(*m_graphicsDevice, builder);
     }
@@ -802,8 +805,9 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_offscreenRtvHeap = std::make_unique<DescriptorHeap>();
         m_offscreenRtvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 8, false);
 
-        // シーンは HDR(kSceneColorFormat) の中間RTへ描き、ポストで backbuffer へ解決する
-        const float sceneClear[4] = {0.392f, 0.584f, 0.929f, 1.0f};
+        // シーンは HDR(kSceneColorFormat) の中間RTへ描き、ポストで backbuffer へ解決する。
+        // クリア色はリニア空間の値（最終段のACES+ガンマ後にコーンフラワーブルーに見える値）
+        const float sceneClear[4] = {0.127f, 0.306f, 0.850f, 1.0f};
         m_sceneRT = std::make_unique<RenderTarget>();
         m_sceneRT->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
                               m_window->GetWidth(), m_window->GetHeight(),
@@ -814,11 +818,17 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_cameraPreviewRT->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
                                       480, 270, kSceneColorFormat, sceneClear);
 
+        // プレビュー表示用 LDR RT。プレビューRT(リニアHDR)をトーンマップして解決し、
+        // ImGui にはこちらの SRV を渡す（FP16 を直接表示すると暗く見えるため）
+        m_cameraPreviewLdrRT = std::make_unique<RenderTarget>();
+        m_cameraPreviewLdrRT->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
+                                         480, 270, DXGI_FORMAT_R8G8B8A8_UNORM, sceneClear);
+
         m_postProcess = std::make_unique<PostProcess>();
         m_postProcess->Initialize(*m_graphicsDevice, m_swapChain->GetFormat(), PathResolver::ShaderDirW());
 
         // SSAO（深度プリパス → 半球カーネル AO → ブラー）。AO/Blur RT は offscreenRtvHeap(容量8)から確保。
-        // 現状 sceneRT(1)+cameraPreviewRT(1)=2使用 → SSAO で +2 → 計4（容量内）。
+        // 現状 sceneRT(1)+cameraPreviewRT(1)+cameraPreviewLdrRT(1)=3使用 → SSAO で +2 → 計5（容量8内）。
         m_ssaoPass = std::make_unique<SSAOPass>();
         m_ssaoPass->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
                                m_window->GetWidth(), m_window->GetHeight(), PathResolver::ShaderDirW());
@@ -2168,13 +2178,19 @@ std::string Application::CaptureSceneScreenshot(std::string& err)
     m_commandQueue->WaitIdle();
     m_frameResources->EndFrame(*m_commandQueue);
 
-    // R16G16B16A16_FLOAT → BGRA8。sRGB OETF をかけて「ビューポートで見える絵」に寄せる。
-    // ponytail: トーンマップ未適用(sceneRT は HDR linear)。露出差は出得るが配置確認には十分。
-    //           完全一致が要るなら post 後のバックバッファ取得へ上げる。
+    // R16G16B16A16_FLOAT(リニアHDR) → ACES → sRGB OETF → BGRA8。
+    // PostProcess 最終段と同じトーンマップを CPU で適用し「ビューポートで見える絵」に寄せる。
     void* mapped = nullptr;
     D3D12_RANGE rr{ 0, static_cast<SIZE_T>(totalBytes) };
     if (FAILED(readback->Map(0, &rr, &mapped))) { err = "readback map failed"; return {}; }
 
+    auto aces = [](float x) -> float
+    {
+        const float a = 2.51f, b = 0.03f, c = 2.43f, d = 0.59f, e = 0.14f;
+        if (x <= 0.0f) return 0.0f;
+        const float v = (x * (a * x + b)) / (x * (c * x + d) + e);
+        return v > 1.0f ? 1.0f : v;
+    };
     auto toSrgb = [](float c) -> uint8_t
     {
         if (c <= 0.0f) return 0;
@@ -2195,9 +2211,9 @@ std::string Application::CaptureSceneScreenshot(std::string& err)
             const float r = DirectX::PackedVector::XMConvertHalfToFloat(in[x * 4 + 0]);
             const float g = DirectX::PackedVector::XMConvertHalfToFloat(in[x * 4 + 1]);
             const float b = DirectX::PackedVector::XMConvertHalfToFloat(in[x * 4 + 2]);
-            out[x * 4 + 0] = toSrgb(b);   // BGRA 順
-            out[x * 4 + 1] = toSrgb(g);
-            out[x * 4 + 2] = toSrgb(r);
+            out[x * 4 + 0] = toSrgb(aces(b));   // BGRA 順
+            out[x * 4 + 1] = toSrgb(aces(g));
+            out[x * 4 + 2] = toSrgb(aces(r));
             out[x * 4 + 3] = 255;
         }
     }
@@ -2479,6 +2495,7 @@ void Application::Shutdown()
         m_envCubeSrvIndex = DescriptorHeap::kInvalidIndex;
     }
     m_envCubeTex.reset();
+    m_cameraPreviewLdrRT.reset();
     m_cameraPreviewRT.reset();
     m_sceneRT.reset();
     m_offscreenRtvHeap.reset();
@@ -5856,7 +5873,7 @@ void Application::Render()
 
     m_sceneRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
 
-    constexpr float clearColor[4] = {0.392f, 0.584f, 0.929f, 1.0f};
+    constexpr float clearColor[4] = {0.127f, 0.306f, 0.850f, 1.0f};  // リニア空間のコーンフラワーブルー
     m_commandList->ClearRenderTarget(m_sceneRT->GetRtv(), clearColor);
     // プリパス有効時は深度が完成済みなので forward では clear しない（再利用）。
     if (!useSSAO)
@@ -6245,7 +6262,7 @@ void Application::Render()
             m_previewFrameCB->Update(&fcp, sizeof(fcp), frameIndex);
 
             m_cameraPreviewRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            constexpr float pvClear[4] = {0.392f, 0.584f, 0.929f, 1.0f};
+            constexpr float pvClear[4] = {0.127f, 0.306f, 0.850f, 1.0f};  // リニア空間のコーンフラワーブルー
             m_commandList->ClearRenderTarget(m_cameraPreviewRT->GetRtv(), pvClear);
             m_commandList->ClearDepthStencil(m_dsvHandle);
             m_commandList->SetRenderTarget(m_cameraPreviewRT->GetRtv(), m_dsvHandle);
@@ -6272,8 +6289,33 @@ void Application::Render()
                              m_cameraPreviewRT->GetRtv(), m_dsvHandle, 0u, 0u, pw, ph);
 
             m_cameraPreviewRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-            m_editorCtx->cameraPreviewTexHandle =
-                m_srvHeap->GetGpuHandle(m_cameraPreviewRT->GetSrvIndex()).ptr;
+
+            // プレビューRT(リニアHDR)をトーンマップして LDR RT へ解決する。
+            // ImGui へ FP16 の SRV を直接渡すとトーンマップ/ガンマ無しで暗く表示されるため。
+            // enabled=false → mask=0 = PostProcess はトーンマップ+ガンマのみ適用。
+            if (m_cameraPreviewLdrRT && m_postProcess && m_postProcess->IsReady())
+            {
+                m_cameraPreviewLdrRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
+                D3D12_CPU_DESCRIPTOR_HANDLE ldrRtv = m_cameraPreviewLdrRT->GetRtv();
+                nativeCmdList->OMSetRenderTargets(1, &ldrRtv, FALSE, nullptr);  // 深度なし
+                m_commandList->SetViewportAndScissor(pw, ph);
+
+                PostProcessSettings pvPost{};
+                pvPost.enabled = false;
+                m_postProcess->Apply(nativeCmdList,
+                    m_srvHeap->GetGpuHandle(m_cameraPreviewRT->GetSrvIndex()),
+                    pvPost, 0.0f, 0.0f, 1.0f, 1.0f,
+                    1.0f / static_cast<f32>(pw), 1.0f / static_cast<f32>(ph), totalTime);
+
+                m_cameraPreviewLdrRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                m_editorCtx->cameraPreviewTexHandle =
+                    m_srvHeap->GetGpuHandle(m_cameraPreviewLdrRT->GetSrvIndex()).ptr;
+            }
+            else
+            {
+                m_editorCtx->cameraPreviewTexHandle =
+                    m_srvHeap->GetGpuHandle(m_cameraPreviewRT->GetSrvIndex()).ptr;
+            }
 
             // プレビュー描画でRT/ビューポートを切り替えたので、バックバッファへ戻す。
             // これをしないと直後の ImGui がプレビューRTへ描かれ、画面に出なくなる。

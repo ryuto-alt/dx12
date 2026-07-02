@@ -230,9 +230,14 @@ float4 PSMain(PSInput input) : SV_TARGET
         color *= tint[SelectCascade(input.viewDepth)];
     }
 
-    // Tone mapping + gamma
+#ifdef LDR_OUTPUT
+    // LDR 直出力バリアント（サムネイル等、ポストプロセスを通らない R8G8B8A8 RT 用）
     color = ACESFilm(color);
     color = pow(color, 1.0 / 2.2);
+#endif
+    // 通常経路はリニア HDR のまま scene RT(R16G16B16A16_FLOAT) へ出力する。
+    // トーンマップ(ACES)+ガンマは PostProcess の最終段で一括適用（bloom が
+    // トーンマップ前の正しい輝度エネルギーを拾えるようにするため）。
 
     return float4(color, albedo4.a);
 }
