@@ -491,7 +491,7 @@ cmake --build build/release</code></pre>
           <span class="ic"><img src="img/gizmo_move.png" alt=""/></span>
           <h2>エディタの使い方</h2>
         </div>
-        <p class="sec-sub">Hierarchy（左）/ ビューポート（中央）/ アセットブラウザ（中央下）/ Inspector（右）の4窓が基本。ツール窓（ポスト処理・Skybox・物理など）はツールバーのトグルで開く。</p>
+        <p class="sec-sub">Hierarchy（左）/ ビューポート（中央）/ アセットブラウザ（中央下、隣にコンソールタブ）/ Inspector（右）の4窓が基本。ツール窓（ポスト処理・Skybox・物理など）はツールバーのトグルで開く。</p>
 
         <h3>ツールバー</h3>
         <div class="iconstrip">
@@ -539,6 +539,27 @@ cmake --build build/release</code></pre>
           <li><b>Inspector「＋コンポーネント追加」</b>でライト / カメラ / RigidBody / コライダー等を後付け。ヘッダ右クリックで削除。</li>
           <li><b>Play / Stop</b> で即実行・即停止。停止すると編集状態に戻る（配置したライトやマテリアルもスナップショット復元される）。</li>
         </ul>
+
+        <h3>コンソール</h3>
+        <p>アセットブラウザの隣タブに常設。エンジン / Lua / ビルド / MCP の全ログが1箇所に集まる（Unity・Unreal のコンソールと同じ位置づけ）。</p>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>機能</th><th>内容</th></tr></thead>
+            <tbody>
+              <tr><td>重大度フィルタ</td><td>情報 / 警告 / エラーを件数バッジ付きでトグル。既定は<b>警告+エラーのみ表示</b>（情報は右上のトグルで表示切替）</td></tr>
+              <tr><td>検索・折りたたみ</td><td>テキスト検索（大小無視）。同一メッセージは <code class="inl">xN</code> で集約表示</td></tr>
+              <tr><td>自動スクロール</td><td>末尾に追従。ログを見返すため上にスクロールした間は追従を止める</td></tr>
+              <tr><td>Play時クリア / エラーで前面</td><td>Play 開始でログをクリア。新着エラーが出るとタブを自動フォーカス</td></tr>
+              <tr><td>詳細ペイン</td><td>行クリックで全文表示。部分選択コピー・コピーボタン</td></tr>
+              <tr><td>色分け</td><td>ERROR=赤 / WARN=黄 / 情報=薄色、ゼブラ縞で行を判別しやすく</td></tr>
+              <tr><td>Lua 即時実行</td><td>下部の入力欄に1行 Lua を打つと即実行（Unreal のコンソール入力相当）。<code class="inl">scene</code> / <code class="inl">fx</code> / <code class="inl">camera</code> 等そのまま使える。<code class="inl">&gt; コード</code> のエコーと <code class="inl">= 結果</code> を表示、エラーは赤で出る</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="note">
+          <span class="ti">i</span>
+          <div>Lua 側からログを出すには <code class="inl">log(...)</code> / <code class="inl">logWarn(...)</code> / <code class="inl">logError(...)</code> を使う（<code class="inl">print(...)</code> も同じ経路に出る）。詳細は <a href="#lua-api">Lua API リファレンス</a> 参照。</div>
+        </div>
       </section>
 
       <!-- ===== SCRIPTING ===== -->
@@ -785,7 +806,8 @@ vfx.<span class="tok-fn">play</span>(<span class="tok-s">"explosion"</span>, x, 
               <tr><td><code>transitionToScene(path, type[, dur])</code></td><td><code>type</code>: 0=Fade 1=Wipe 2=Circle 3=縦Wipe</td></tr>
               <tr><td><code>nextScene()</code> / <code>quit()</code></td><td>sceneflow の次へ / ゲーム終了</td></tr>
               <tr><td><code>saveNum(key, v)</code> / <code>loadNum(key[, def])</code></td><td>シーンを越えて残る数値（スコア・タイム）</td></tr>
-              <tr><td><code>log(msg)</code> / <code>clamp(v,lo,hi)</code> / <code>lerp(a,b,t)</code></td><td>ログ / 各種ユーティリティ</td></tr>
+              <tr><td><code>log(...)</code> / <code>logWarn(...)</code> / <code>logError(...)</code></td><td>任意個・任意型の引数を <code>tostring</code> 連結してログ出力。エディタの<a href="#editor">コンソールパネル</a>に出る（<code>print(...)</code> も同じ経路）</td></tr>
+              <tr><td><code>clamp(v,lo,hi)</code> / <code>lerp(a,b,t)</code></td><td>各種ユーティリティ</td></tr>
             </tbody>
           </table>
         </div>
