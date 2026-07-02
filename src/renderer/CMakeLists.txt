@@ -3,6 +3,8 @@ add_library(Renderer STATIC
     Camera.cpp
     Material.cpp
     PostProcess.cpp
+    BloomPass.cpp
+    AutoExposurePass.cpp
     SSAOPass.cpp
     SpriteRenderer.cpp
     SceneTransition.cpp

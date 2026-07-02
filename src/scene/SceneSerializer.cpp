@@ -574,6 +574,12 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
             {"hueOn",        pp.hueOn},        {"hueShift",   pp.hueShift},
             {"tintOn",       pp.tintOn},       {"tint",       {pp.tint.x, pp.tint.y, pp.tint.z}},
             {"bloomOn",      pp.bloomOn},      {"bloom",      pp.bloom}, {"bloomThreshold", pp.bloomThreshold},
+            {"bloomKnee",    pp.bloomKnee},    {"bloomRadius", pp.bloomRadius},
+            {"tonemapper",   pp.tonemapper},
+            {"autoExposureOn", pp.autoExposureOn}, {"aeSpeed", pp.aeSpeed}, {"aeEvComp", pp.aeEvComp},
+            {"aeLogMin",     pp.aeLogMin},     {"aeLogMax",   pp.aeLogMax},
+            {"lutOn",        pp.lutOn},        {"lutPath",    pp.lutPath}, {"lutAmount", pp.lutAmount},
+            {"debandOn",     pp.debandOn},
             {"vignetteOn",   pp.vignetteOn},   {"vignette",   pp.vignette},
             {"chromaticOn",  pp.chromaticOn},  {"chromatic",  pp.chromatic},
             {"pixelizeOn",   pp.pixelizeOn},   {"pixelSize",  pp.pixelSize},
@@ -645,6 +651,14 @@ static void LoadPostSettings(Scene& scene, const json& root)
         if (pj.contains("tint")) pp.tint = DeserializeFloat3(pj["tint"], {1, 1, 1});
         pp.bloomOn      = pj.value("bloomOn",      pp.bloomOn);      pp.bloom      = pj.value("bloom",      pp.bloom);
         pp.bloomThreshold = pj.value("bloomThreshold", pp.bloomThreshold);
+        pp.bloomKnee    = pj.value("bloomKnee",    pp.bloomKnee);    pp.bloomRadius = pj.value("bloomRadius", pp.bloomRadius);
+        pp.tonemapper   = pj.value("tonemapper",   pp.tonemapper);
+        pp.autoExposureOn = pj.value("autoExposureOn", pp.autoExposureOn);
+        pp.aeSpeed      = pj.value("aeSpeed",      pp.aeSpeed);      pp.aeEvComp   = pj.value("aeEvComp",   pp.aeEvComp);
+        pp.aeLogMin     = pj.value("aeLogMin",     pp.aeLogMin);     pp.aeLogMax   = pj.value("aeLogMax",   pp.aeLogMax);
+        pp.lutOn        = pj.value("lutOn",        pp.lutOn);        pp.lutPath    = pj.value("lutPath",    pp.lutPath);
+        pp.lutAmount    = pj.value("lutAmount",    pp.lutAmount);
+        pp.debandOn     = pj.value("debandOn",     pp.debandOn);
         pp.vignetteOn   = pj.value("vignetteOn",   pp.vignetteOn);   pp.vignette   = pj.value("vignette",   pp.vignette);
         pp.chromaticOn  = pj.value("chromaticOn",  pp.chromaticOn);  pp.chromatic  = pj.value("chromatic",  pp.chromatic);
         pp.pixelizeOn   = pj.value("pixelizeOn",   pp.pixelizeOn);   pp.pixelSize  = pj.value("pixelSize",  pp.pixelSize);

@@ -39,6 +39,8 @@ namespace dx12e
     class CommandList;
     class RenderTarget;
     class PostProcess;
+    class BloomPass;
+    class AutoExposurePass;
     class SSAOPass;
     class ParticleSystem;
     class SpriteRenderer;
@@ -308,6 +310,8 @@ private:
     std::unique_ptr<DescriptorHeap> m_offscreenRtvHeap;
     std::unique_ptr<RenderTarget>   m_sceneRT;
     std::unique_ptr<PostProcess>    m_postProcess;
+    std::unique_ptr<BloomPass>      m_bloomPass;     // 物理ベースブルーム（ダウン/アップチェーン）
+    std::unique_ptr<AutoExposurePass> m_autoExposure; // 自動露出（compute ヒストグラム）
     std::unique_ptr<ParticleSystem> m_particleSystem;  // 加算ビルボードパーティクル（Lua fx API）
 
     // ---- SSAO（深度プリパス + 深度再構築法線 半球カーネルAO + ブラー）----

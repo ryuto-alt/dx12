@@ -23,6 +23,8 @@
 #include "renderer/Camera.h"
 #include "renderer/Frustum.h"
 #include "renderer/PostProcess.h"
+#include "renderer/BloomPass.h"
+#include "renderer/AutoExposurePass.h"
 #include "renderer/SSAOPass.h"
 #include "renderer/ParticleSystem.h"
 #include "renderer/SpriteRenderer.h"
@@ -829,8 +831,10 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
     // オフスクリーン描画用 RT + ポストプロセス（WP3）
     {
+        // 容量 32: sceneRT(1)+cameraPreview(2)+SSAO(2)+ブルームチェーン(6) = 11 使用。
+        // 今後のポスト追加パス（ゴッドレイ/DoF 等）用に余裕を持たせる（RTV は非シェーダ可視で安価）。
         m_offscreenRtvHeap = std::make_unique<DescriptorHeap>();
-        m_offscreenRtvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 8, false);
+        m_offscreenRtvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 32, false);
 
         // シーンは HDR(kSceneColorFormat) の中間RTへ描き、ポストで backbuffer へ解決する。
         // クリア色はリニア空間の値（最終段のACES+ガンマ後にコーンフラワーブルーに見える値）
@@ -852,10 +856,19 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                                          480, 270, DXGI_FORMAT_R8G8B8A8_UNORM, sceneClear);
 
         m_postProcess = std::make_unique<PostProcess>();
-        m_postProcess->Initialize(*m_graphicsDevice, m_swapChain->GetFormat(), PathResolver::ShaderDirW());
+        m_postProcess->Initialize(*m_graphicsDevice, m_swapChain->GetFormat(), PathResolver::ShaderDirW(),
+                                  FrameResources::kFrameCount);
 
-        // SSAO（深度プリパス → 半球カーネル AO → ブラー）。AO/Blur RT は offscreenRtvHeap(容量8)から確保。
-        // 現状 sceneRT(1)+cameraPreviewRT(1)+cameraPreviewLdrRT(1)=3使用 → SSAO で +2 → 計5（容量8内）。
+        // 物理ベースブルーム（シーンHDR → 半解像度 6 段のダウン/アップサンプルチェーン）
+        m_bloomPass = std::make_unique<BloomPass>();
+        m_bloomPass->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
+                                m_window->GetWidth(), m_window->GetHeight(), PathResolver::ShaderDirW());
+
+        // 自動露出（compute ヒストグラム。露出値は GPU 内バッファで uber パスへ直結）
+        m_autoExposure = std::make_unique<AutoExposurePass>();
+        m_autoExposure->Initialize(*m_graphicsDevice, PathResolver::ShaderDirW());
+
+        // SSAO（深度プリパス → 半球カーネル AO → ブラー）。AO/Blur RT は offscreenRtvHeap から確保。
         m_ssaoPass = std::make_unique<SSAOPass>();
         m_ssaoPass->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
                                m_window->GetWidth(), m_window->GetHeight(), PathResolver::ShaderDirW());
@@ -2647,6 +2660,12 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"outlineOn", pp.outlineOn}, {"outline", pp.outline},
                 {"outlineColor", {pp.outlineColor.x, pp.outlineColor.y, pp.outlineColor.z}},
                 {"fxaaOn", pp.fxaaOn},
+                {"tonemapper", pp.tonemapper},
+                {"bloomKnee", pp.bloomKnee}, {"bloomRadius", pp.bloomRadius},
+                {"autoExposureOn", pp.autoExposureOn}, {"aeSpeed", pp.aeSpeed}, {"aeEvComp", pp.aeEvComp},
+                {"aeLogMin", pp.aeLogMin}, {"aeLogMax", pp.aeLogMax},
+                {"lutOn", pp.lutOn}, {"lutPath", pp.lutPath}, {"lutAmount", pp.lutAmount},
+                {"debandOn", pp.debandOn},
             };
         }
         else if (method == "set_post_process")
@@ -2667,6 +2686,14 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             pp.bloomOn = params.value("bloomOn", pp.bloomOn); pp.bloom = params.value("bloom", pp.bloom);
             pp.bloomThreshold = params.value("bloomThreshold", pp.bloomThreshold);
+            pp.bloomKnee = params.value("bloomKnee", pp.bloomKnee); pp.bloomRadius = params.value("bloomRadius", pp.bloomRadius);
+            pp.tonemapper = params.value("tonemapper", pp.tonemapper);
+            pp.autoExposureOn = params.value("autoExposureOn", pp.autoExposureOn);
+            pp.aeSpeed = params.value("aeSpeed", pp.aeSpeed); pp.aeEvComp = params.value("aeEvComp", pp.aeEvComp);
+            pp.aeLogMin = params.value("aeLogMin", pp.aeLogMin); pp.aeLogMax = params.value("aeLogMax", pp.aeLogMax);
+            pp.lutOn = params.value("lutOn", pp.lutOn); pp.lutPath = params.value("lutPath", pp.lutPath);
+            pp.lutAmount = params.value("lutAmount", pp.lutAmount);
+            pp.debandOn = params.value("debandOn", pp.debandOn);
             pp.vignetteOn = params.value("vignetteOn", pp.vignetteOn); pp.vignette = params.value("vignette", pp.vignette);
             pp.chromaticOn = params.value("chromaticOn", pp.chromaticOn); pp.chromatic = params.value("chromatic", pp.chromatic);
             pp.pixelizeOn = params.value("pixelizeOn", pp.pixelizeOn); pp.pixelSize = params.value("pixelSize", pp.pixelSize);
@@ -3099,6 +3126,9 @@ void Application::Run()
                 // SSAO の AO/Blur RT も同寸へ（深度と同じフル解像度）
                 if (m_ssaoPass)
                     m_ssaoPass->Resize(*m_graphicsDevice, w, h);
+                // ブルームチェーン（1/2〜1/64）も追従
+                if (m_bloomPass)
+                    m_bloomPass->Resize(*m_graphicsDevice, w, h);
 
                 // カメラアスペクト比更新（エディタモードではサイドバー分引く）
                 m_camera->SetPerspective(DirectX::XM_PIDIV4,
@@ -3276,6 +3306,8 @@ void Application::Shutdown()
     m_sceneTransition.reset();
     m_spriteRenderer.reset();
     m_postProcess.reset();
+    m_bloomPass.reset();      // GPU リソース（チェーンRT/PSO）をデバイス解放より前に明示破棄
+    m_autoExposure.reset();   // 同上（UAV バッファ/compute PSO）
     // SSAO（GPU リソース）をデバイス解放より前に明示破棄
     m_ssaoPass.reset();
     m_ssaoWhiteTex.reset();
@@ -7115,19 +7147,22 @@ void Application::Render()
     auto* backBuffer = m_swapChain->GetCurrentBackBuffer();
     auto  rtv        = m_swapChain->GetCurrentRTV();
 
-    m_sceneRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    // シーンRT は PS（ブルーム/uber）と CS（自動露出）の両方から読むので複合読取状態へ遷移
+    m_sceneRT->Transition(*m_commandList,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     m_commandList->TransitionResource(backBuffer,
         D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
 
     {
-        constexpr float bbClear[4] = {0.05f, 0.05f, 0.06f, 1.0f};
-        m_commandList->ClearRenderTarget(rtv, bbClear);
-        nativeCmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);  // 深度なし
-        m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
         m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
 
         const f32 fullW = static_cast<f32>(m_sceneRT->GetWidth());
         const f32 fullH = static_cast<f32>(m_sceneRT->GetHeight());
+        const f32 uvOfsX = static_cast<f32>(vpLeft) / fullW;
+        const f32 uvOfsY = static_cast<f32>(vpTop)  / fullH;
+        const f32 uvSclX = static_cast<f32>(vpW)    / fullW;
+        const f32 uvSclY = static_cast<f32>(vpH)    / fullH;
+        const auto sceneSrvGpu = m_srvHeap->GetGpuHandle(m_sceneRT->GetSrvIndex());
 
         // ポストエフェクトも Scene/Game で同じ設定を適用する。
         // ここを分けると「Scene では明るいのに Play すると暗い」など、ライティング調整が破綻する。
@@ -7147,12 +7182,55 @@ void Application::Render()
             }
         }
 
+        // ---- 自動露出（compute。ビューポート矩形のヒストグラム→露出値を GPU 内バッファへ）----
+        if (m_autoExposure && ppApplied.enabled && ppApplied.autoExposureOn)
+            m_autoExposure->Generate(nativeCmdList, sceneSrvGpu, vpLeft, vpTop, vpW, vpH,
+                                     m_gameClock.GetDeltaTime(), ppApplied);
+        D3D12_GPU_VIRTUAL_ADDRESS exposureVA = 0;
+        if (m_autoExposure)
+        {
+            m_autoExposure->EnsureReadable(nativeCmdList);
+            exposureVA = m_autoExposure->GetExposureBufferVA();
+        }
+
+        // ---- ブルーム（内部で RT/ビューポートを切り替えるので backbuffer 設定より前に実行）----
+        u32 bloomSrv = DescriptorHeap::kInvalidIndex;
+        if (m_bloomPass && ppApplied.enabled && ppApplied.bloomOn)
+            bloomSrv = m_bloomPass->Generate(*m_commandList, m_srvHeap.get(), sceneSrvGpu,
+                                             uvOfsX, uvOfsY, uvSclX, uvSclY,
+                                             1.0f / fullW, 1.0f / fullH, ppApplied);
+        const bool bloomReady = (bloomSrv != DescriptorHeap::kInvalidIndex);
+        const auto bloomSrvGpu = m_srvHeap->GetGpuHandle(bloomReady ? bloomSrv : m_ssaoWhiteSrvIndex);
+
+        // ---- 3D LUT（assets 相対パス。sRGB 無効=バイト列そのままロード。ストリップ形式 N*N x N）----
+        auto lutSrvGpu = m_srvHeap->GetGpuHandle(m_ssaoWhiteSrvIndex);
+        f32  lutSize   = 0.0f;
+        if (ppApplied.enabled && ppApplied.lutOn && !ppApplied.lutPath.empty() && m_resourceManager)
+        {
+            const std::string lutAbs = PathResolver::AssetsDir() + ppApplied.lutPath;
+            if (Texture* lut = m_resourceManager->GetOrLoadTexture(
+                    PathResolver::Utf8ToWide(lutAbs), nativeCmdList, /*srgb=*/false))
+            {
+                if (lut->GetHeight() >= 2 &&
+                    lut->GetWidth() == lut->GetHeight() * lut->GetHeight())
+                {
+                    lutSrvGpu = m_srvHeap->GetGpuHandle(lut->GetSrvIndex());
+                    lutSize   = static_cast<f32>(lut->GetHeight());
+                }
+            }
+        }
+
+        // ---- 最終(uber)パス: バックバッファへ ----
+        constexpr float bbClear[4] = {0.05f, 0.05f, 0.06f, 1.0f};
+        m_commandList->ClearRenderTarget(rtv, bbClear);
+        nativeCmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);  // 深度なし
+        m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+
         m_postProcess->Apply(nativeCmdList,
-            m_srvHeap->GetGpuHandle(m_sceneRT->GetSrvIndex()),
-            ppApplied,
-            static_cast<f32>(vpLeft) / fullW, static_cast<f32>(vpTop) / fullH,
-            static_cast<f32>(vpW)    / fullW, static_cast<f32>(vpH)   / fullH,
-            1.0f / fullW, 1.0f / fullH, totalTime);
+            sceneSrvGpu, bloomSrvGpu, lutSrvGpu, lutSize, exposureVA,
+            ppApplied, bloomReady,
+            uvOfsX, uvOfsY, uvSclX, uvSclY,
+            1.0f / fullW, 1.0f / fullH, totalTime, frameIndex);
     }
 
     // ---- Editor Icon Draw（ポスト後のバックバッファへ, エディタモードのみ）----
@@ -7318,10 +7396,16 @@ void Application::Render()
 
                 PostProcessSettings pvPost{};
                 pvPost.enabled = false;
+                // トーンマッパはシーン設定と揃える（プレビューと本画面の見た目一致）
+                pvPost.tonemapper = m_scene->GetPostSettings().tonemapper;
+                const auto pvDummy = m_srvHeap->GetGpuHandle(m_ssaoWhiteSrvIndex);
                 m_postProcess->Apply(nativeCmdList,
                     m_srvHeap->GetGpuHandle(m_cameraPreviewRT->GetSrvIndex()),
-                    pvPost, 0.0f, 0.0f, 1.0f, 1.0f,
-                    1.0f / static_cast<f32>(pw), 1.0f / static_cast<f32>(ph), totalTime);
+                    pvDummy, pvDummy, 0.0f,
+                    m_autoExposure ? m_autoExposure->GetExposureBufferVA() : 0,
+                    pvPost, /*bloomReady=*/false,
+                    0.0f, 0.0f, 1.0f, 1.0f,
+                    1.0f / static_cast<f32>(pw), 1.0f / static_cast<f32>(ph), totalTime, frameIndex);
 
                 m_cameraPreviewLdrRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
                 m_editorCtx->cameraPreviewTexHandle =
@@ -7409,6 +7493,9 @@ void Application::Render()
             const std::vector<PostFx> fx = {
                 {"カラー", "露出 Exposure", "明るさを乗算で調整", &pp.exposureOn,
                     [&]{ ImGui::SliderFloat("値##exposure", &pp.exposure, 0.1f, 4.0f, "%.2f"); }},
+                {"カラー", "自動露出 Auto Exposure", "平均輝度に合わせて露出を自動追従（目の順応）", &pp.autoExposureOn,
+                    [&]{ ImGui::SliderFloat("適応速度##aespd", &pp.aeSpeed, 0.1f, 10.0f, "%.1f");
+                         ImGui::SliderFloat("EV補正##aeev", &pp.aeEvComp, -4.0f, 4.0f, "%.1f"); }},
                 {"カラー", "コントラスト Contrast", nullptr, &pp.contrastOn,
                     [&]{ ImGui::SliderFloat("値##contrast", &pp.contrast, 0.0f, 2.0f, "%.2f"); }},
                 {"カラー", "明るさ Brightness", "加算で明暗を調整", &pp.brightnessOn,
@@ -7422,9 +7509,11 @@ void Application::Render()
                 {"カラー", "色味 Tint", "RGB を乗算", &pp.tintOn,
                     [&]{ ImGui::ColorEdit3("色##tint", &pp.tint.x); }},
 
-                {"ブルーム/ビネット", "ブルーム Bloom", "明部がにじむ", &pp.bloomOn,
-                    [&]{ ImGui::SliderFloat("強度##bloom", &pp.bloom, 0.0f, 1.0f, "%.2f");
-                         ImGui::SliderFloat("しきい値##bloomth", &pp.bloomThreshold, 0.0f, 1.0f, "%.2f"); }},
+                {"ブルーム/ビネット", "ブルーム Bloom", "明部が咲く（物理ベース・ダウンサンプルチェーン）", &pp.bloomOn,
+                    [&]{ ImGui::SliderFloat("強度##bloom", &pp.bloom, 0.0f, 2.0f, "%.2f");
+                         ImGui::SliderFloat("しきい値##bloomth", &pp.bloomThreshold, 0.0f, 4.0f, "%.2f");
+                         ImGui::SliderFloat("ニー(肩)##bloomknee", &pp.bloomKnee, 0.0f, 1.0f, "%.2f");
+                         ImGui::SliderFloat("広がり##bloomrad", &pp.bloomRadius, 0.05f, 0.95f, "%.2f"); }},
                 {"ブルーム/ビネット", "ビネット Vignette", "周辺減光", &pp.vignetteOn,
                     [&]{ ImGui::SliderFloat("強度##vig", &pp.vignette, 0.0f, 1.0f, "%.2f"); }},
 
@@ -7449,6 +7538,18 @@ void Application::Render()
                     [&]{ ImGui::SliderFloat("強度##sepia", &pp.sepia, 0.0f, 1.0f, "%.2f"); }},
                 {"カラー操作", "グレースケール Grayscale", nullptr, &pp.grayscaleOn,
                     [&]{ ImGui::SliderFloat("強度##gray", &pp.grayscale, 0.0f, 1.0f, "%.2f"); }},
+                {"カラー操作", "LUT グレーディング", "ストリップ画像(N*N x N, 例:1024x32)で色変換。Photoshop等で作った LUT を適用", &pp.lutOn,
+                    [&]{ static char lutBuf[260] = "";
+                         ImGui::InputTextWithHint("##lutpath", "assets からの相対パス (例: luts/warm.png)", lutBuf, sizeof(lutBuf));
+                         if (ImGui::IsItemDeactivatedAfterEdit()) pp.lutPath = lutBuf;
+                         if (!ImGui::IsItemActive() && pp.lutPath != lutBuf)
+                         {
+                             size_t n = pp.lutPath.size();
+                             if (n >= sizeof(lutBuf)) n = sizeof(lutBuf) - 1;
+                             std::memcpy(lutBuf, pp.lutPath.c_str(), n);
+                             lutBuf[n] = '\0';
+                         }
+                         ImGui::SliderFloat("適用量##lutamt", &pp.lutAmount, 0.0f, 1.0f, "%.2f"); }},
 
                 {"歪み", "レンズ歪み Lens", "バレル/魚眼", &pp.lensOn,
                     [&]{ ImGui::SliderFloat("強度##lens", &pp.lens, -1.0f, 1.0f, "%.2f"); }},
@@ -7466,6 +7567,8 @@ void Application::Render()
                          ImGui::ColorEdit3("線の色##outlc", &pp.outlineColor.x); }},
 
                 {"アンチエイリアス", "FXAA", "簡易アンチエイリアス", &pp.fxaaOn, {}},
+
+                {"仕上げ", "デバンディング Deband", "TPDFディザで空/ビネットの縞(バンディング)を除去", &pp.debandOn, {}},
             };
 
             // 有効中エフェクト数（両窓で使うので、窓の表示有無に関わらず先に数える）
@@ -7478,6 +7581,16 @@ void Application::Render()
             {
             ImGui::Begin("Post Process");
             ImGui::Checkbox("有効（マスター）", &pp.enabled);
+            // トーンマップ（表示変換）はマスターOFF でも常に適用されるのでディセーブル外
+            ImGui::SetNextItemWidth(200.0f);
+            ImGui::Combo("トーンマップ", &pp.tonemapper, "ACES\0AgX\0なし(ガンマのみ)\0");
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::BeginItemTooltip())
+            {
+                ImGui::TextUnformatted("ACES: コントラスト強めの定番\nAgX: 高輝度・高彩度光源(ネオン/発光体)の色割れがない\nなし: ガンマのみ(デバッグ/2D向け)");
+                ImGui::EndTooltip();
+            }
             ImGui::TextDisabled("SceneビューとGameビューへ同じ見た目を適用します / パラメータは「Post Process パラメータ」窓で");
             ImGui::Separator();
 

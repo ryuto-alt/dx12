@@ -1,6 +1,7 @@
 #pragma once
 
 #include <DirectXMath.h>
+#include <string>
 
 namespace dx12e
 {
@@ -14,6 +15,12 @@ struct PostProcessSettings
     bool enabled         = true;   // マスタースイッチ（false なら全エフェクト素通し）
     bool previewInEditor = true;   // 旧設定との互換用。現在は常に Scene/Game へ同じポスト設定を適用する。
 
+    // ── 表示変換（トーンマップ）──
+    // マスターOFF でも常に適用される（シーンRT はリニアHDRなので表示変換は必須）。
+    // 0=ACES（コントラスト強め・定番） 1=AgX（高輝度・高彩度光源の色割れがない/Blender4採用）
+    // 2=なし（ガンマのみ。デバッグ/2D向け）
+    int tonemapper = 0;
+
     // ── カラーグレーディング ──
     bool  exposureOn   = false;  float exposure   = 1.0f;   // 露出（乗算）
     bool  contrastOn   = false;  float contrast   = 1.0f;   // コントラスト
@@ -24,8 +31,27 @@ struct PostProcessSettings
     bool  tintOn       = false;  DirectX::XMFLOAT3 tint{1.0f, 1.0f, 1.0f};  // 色味の乗算
 
     // ── ブルーム / ビネット ──
-    bool  bloomOn      = false;  float bloom = 0.5f;  float bloomThreshold = 0.75f;
+    // ブルームは CoD:AW 方式のダウンサンプル/アップサンプルチェーン（BloomPass）。
+    // bloom=合成強度 / bloomThreshold=抽出しきい値(リニアHDR輝度、1.0=白の輝度)
+    // bloomKnee=しきい値のソフト肩 / bloomRadius=アップサンプル合成率(大きいほど広く柔らかい)
+    bool  bloomOn      = false;  float bloom = 0.4f;  float bloomThreshold = 1.0f;
+    float bloomKnee    = 0.5f;   float bloomRadius = 0.65f;
     bool  vignetteOn   = false;  float vignette = 0.5f;
+
+    // ── 自動露出（eye adaptation）──
+    // compute のヒストグラムで平均輝度を測り、露出を時間適応で追従させる。
+    // aeSpeed=適応速度(1/秒) / aeEvComp=EV補正(+で明るく) / aeLogMin..Max=測光レンジ(log2輝度)
+    bool  autoExposureOn = false;
+    float aeSpeed   = 2.0f;
+    float aeEvComp  = 0.0f;
+    float aeLogMin  = -8.0f;
+    float aeLogMax  = 4.0f;
+
+    // ── 3D LUT カラーグレーディング（ストリップ形式 N*N x N、例: 1024x32）──
+    // トーンマップ後の LDR に適用。lutPath は assets 基準の相対パス。
+    bool        lutOn = false;
+    std::string lutPath;
+    float       lutAmount = 1.0f;
 
     // ── スタイライズ（godotshaders.com 由来） ──
     bool  chromaticOn  = false;  float chromatic = 0.5f;   // 色収差
@@ -52,5 +78,10 @@ struct PostProcessSettings
 
     // ── アンチエイリアス ──
     bool  fxaaOn       = false;  // 簡易 FXAA
+
+    // ── 仕上げ ──
+    // TPDF(三角分布)ノイズ ±0.5/255 のディザで 8bit 出力のバンディングを除去。
+    // 既定 ON（見た目の副作用なし・空やビネットの縞が消える）
+    bool  debandOn     = true;
 };
 }

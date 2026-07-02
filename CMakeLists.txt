@@ -157,6 +157,8 @@ if(DXC_EXECUTABLE)
     set(SHADER_DEBUG_LINE    "${CMAKE_SOURCE_DIR}/shaders/debug/DebugLine.hlsl")
     set(SHADER_POST          "${CMAKE_SOURCE_DIR}/shaders/post/PostProcess.hlsl")
     set(SHADER_POST_INC      "${CMAKE_SOURCE_DIR}/shaders/post/FullscreenTri.hlsli")
+    set(SHADER_BLOOM         "${CMAKE_SOURCE_DIR}/shaders/post/Bloom.hlsl")
+    set(SHADER_AUTOEXPOSURE  "${CMAKE_SOURCE_DIR}/shaders/post/AutoExposure.hlsl")
     set(SHADER_SPRITE        "${CMAKE_SOURCE_DIR}/shaders/sprite/Sprite.hlsl")
     set(SHADER_ICON_BB       "${CMAKE_SOURCE_DIR}/shaders/editor/IconBillboard.hlsl")
     set(SHADER_TRANSITION    "${CMAKE_SOURCE_DIR}/shaders/post/Transition.hlsl")
@@ -186,6 +188,11 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/DebugLine_PS.cso"
         "${SHADER_OUTPUT_DIR}/PostProcess_VS.cso"
         "${SHADER_OUTPUT_DIR}/PostProcess_PS.cso"
+        "${SHADER_OUTPUT_DIR}/Bloom_VS.cso"
+        "${SHADER_OUTPUT_DIR}/BloomDown_PS.cso"
+        "${SHADER_OUTPUT_DIR}/BloomUp_PS.cso"
+        "${SHADER_OUTPUT_DIR}/ExposureHistogram_CS.cso"
+        "${SHADER_OUTPUT_DIR}/ExposureAdapt_CS.cso"
         "${SHADER_OUTPUT_DIR}/Sprite_VS.cso"
         "${SHADER_OUTPUT_DIR}/Sprite_PS.cso"
         "${SHADER_OUTPUT_DIR}/IconBillboard_VS.cso"
@@ -305,6 +312,43 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PostPS -Fo "${SHADER_OUTPUT_DIR}/PostProcess_PS.cso" "${SHADER_POST}"
         DEPENDS "${SHADER_POST}" "${SHADER_POST_INC}"
         COMMENT "Compiling PostProcess.hlsl -> PostProcess_PS.cso (ps_6_0)"
+    )
+
+    # --- 物理ベースブルーム（VS は FSTriVS / ダウン・アップの 2 PS）---
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/Bloom_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E FSTriVS -Fo "${SHADER_OUTPUT_DIR}/Bloom_VS.cso" "${SHADER_BLOOM}"
+        DEPENDS "${SHADER_BLOOM}" "${SHADER_POST_INC}"
+        COMMENT "Compiling Bloom.hlsl -> Bloom_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/BloomDown_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E BloomDownPS -Fo "${SHADER_OUTPUT_DIR}/BloomDown_PS.cso" "${SHADER_BLOOM}"
+        DEPENDS "${SHADER_BLOOM}" "${SHADER_POST_INC}"
+        COMMENT "Compiling Bloom.hlsl -> BloomDown_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/BloomUp_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E BloomUpPS -Fo "${SHADER_OUTPUT_DIR}/BloomUp_PS.cso" "${SHADER_BLOOM}"
+        DEPENDS "${SHADER_BLOOM}" "${SHADER_POST_INC}"
+        COMMENT "Compiling Bloom.hlsl -> BloomUp_PS.cso (ps_6_0)"
+    )
+
+    # --- 自動露出（compute 2 パス）---
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ExposureHistogram_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSHistogram -Fo "${SHADER_OUTPUT_DIR}/ExposureHistogram_CS.cso" "${SHADER_AUTOEXPOSURE}"
+        DEPENDS "${SHADER_AUTOEXPOSURE}"
+        COMMENT "Compiling AutoExposure.hlsl -> ExposureHistogram_CS.cso (cs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ExposureAdapt_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSAdapt -Fo "${SHADER_OUTPUT_DIR}/ExposureAdapt_CS.cso" "${SHADER_AUTOEXPOSURE}"
+        DEPENDS "${SHADER_AUTOEXPOSURE}"
+        COMMENT "Compiling AutoExposure.hlsl -> ExposureAdapt_CS.cso (cs_6_0)"
     )
 
     add_custom_command(

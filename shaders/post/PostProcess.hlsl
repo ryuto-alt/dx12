@@ -32,12 +32,15 @@ static const float PI = 3.14159265;
 #define E_GLITCH     (1u<<22)
 #define E_OUTLINE    (1u<<23)
 #define E_FXAA       (1u<<24)
+#define E_AUTOEXP    (1u<<25)
+#define E_LUT        (1u<<26)
+#define E_DEBAND     (1u<<27)
 
 cbuffer PostCB : register(b0)
 {
     float4 uvOffsetScale;   // xy=UVオフセット, zw=UVスケール（ビューポート矩形対応）
     float4 texelTime;       // xy=テクセル(1/W,1/H), z=time
-    int4   masks;           // x=enableMask, y=posterizeLevels, z=ditherLevels
+    int4   masks;           // x=enableMask, y=posterizeLevels, z=ditherLevels, w=tonemapper(0=ACES,1=AgX,2=なし)
     float4 cg0;             // exposure, contrast, brightness, saturation
     float4 cg1;             // warmth, hueShift(度), bloom, bloomThreshold
     float4 tintVig;         // tint.rgb, vignette
@@ -46,9 +49,13 @@ cbuffer PostCB : register(b0)
     float4 dist0;           // lens, radial, glitch, _
     float4 wave;            // waveAmp, waveFreq, waveSpeed, _
     float4 outlineP;        // outlineColor.rgb, outlineStrength
+    float4 extra0;          // lutSize, lutAmount, _, _
 };
 
 Texture2D    gScene : register(t0);
+Texture2D    gBloom : register(t1);   // BloomPass の結果（ビューポートローカル 0..1）
+Texture2D    gLut   : register(t2);   // 3D LUT ストリップ（N*N x N）。無効時は白ダミー
+StructuredBuffer<float> gExposureBuf : register(t3);  // [0]=自動露出の倍率
 SamplerState gSamp  : register(s0);
 
 static float3 SampleScene(float2 uv) { return gScene.Sample(gSamp, uv).rgb; }
@@ -68,15 +75,52 @@ static float3 HueRotate(float3 col, float angle)
 static float Rand(float2 p) { return frac(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453); }
 
 // シーンRT にはリニア HDR が入っている（forward/skybox はトーンマップせず出力）。
-// HDR 空間で行うべき処理（露出・ブルーム抽出）の後、ここで ACES + ガンマを一括適用し、
-// 以降の色補正・スタイライズ系は表示基準(LDR)の色に対して行う。
+// HDR 空間で行うべき処理（露出・ブルーム合成）の後、ここで表示変換（トーンマップ+ガンマ）を
+// 一括適用し、以降の色補正・スタイライズ系は表示基準(LDR)の色に対して行う。
 static float3 ACESFilm(float3 x)
 {
     float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
     return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
 }
+
+// AgX（Troy Sobotka / Blender 4.0 採用。高輝度・高彩度光源の色相スキューがなく白へ滑らかに転がる）
+// Benjamin Wrensch "Minimal AgX Implementation" のフィット版。
+// 行列は GLSL(列優先) から転置済み。最終の pow(2.2)（EOTF）と本エンジンの pow(1/2.2) は
+// 相殺されるため両方省略し、ガンマ空間の値を直接返す。
+static float3 AgXContrast(float3 x)
+{
+    float3 x2 = x * x;
+    float3 x4 = x2 * x2;
+    return 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4
+         - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
+}
+static float3 TonemapAgX(float3 val)
+{
+    const float3x3 agxMat = float3x3(
+        0.842479062253094,  0.0784335999999992, 0.0792237451477643,
+        0.0423282422610123, 0.878468636469772,  0.0791661274605434,
+        0.0423756549057051, 0.0784336,          0.879142973793104);
+    const float3x3 agxMatInv = float3x3(
+         1.19687900512017,   -0.0980208811401368, -0.0990297440797205,
+        -0.0528968517574562,  1.15190312990417,   -0.0989611768448433,
+        -0.0529716355144438, -0.0980434501171241,  1.15107367264116);
+    const float minEv = -12.47393;
+    const float maxEv = 4.026069;
+
+    val = mul(agxMat, max(val, 0.0));
+    val = clamp(log2(val), minEv, maxEv);
+    val = (val - minEv) / (maxEv - minEv);
+    val = AgXContrast(val);
+    val = mul(agxMatInv, val);
+    return saturate(val);
+}
+
+// 表示変換（リニアHDR → ガンマ空間 LDR）。masks.w で切替。
 static float3 ToneMapGamma(float3 c)
 {
+    int tm = masks.w;
+    if (tm == 1) return TonemapAgX(c);
+    if (tm == 2) return pow(max(c, 0.0), 1.0 / 2.2);  // トーンマップなし（ガンマのみ）
     return pow(ACESFilm(c), 1.0 / 2.2);
 }
 
@@ -202,31 +246,14 @@ float4 PostPS(FSQuadVSOut i) : SV_TARGET
 
     // ===== HDR ステージ（トーンマップ前・リニア輝度に対して行う） =====
 
-    if (mask & E_EXPOSURE)   col *= cg0.x;                       // 露出
+    if (mask & E_AUTOEXP)    col *= gExposureBuf[0];             // 自動露出（GPU内で完結）
+    if (mask & E_EXPOSURE)   col *= cg0.x;                       // 露出（手動・自動の上乗せ可）
 
-    // --- ブルーム（リニアHDRから抽出する3スケールの広く柔らかいハロー）---
-    // トーンマップ前なので光源・発光体の本来の輝度エネルギー(>1)を正しく拾える
+    // --- ブルーム（BloomPass のダウン/アップサンプルチェーン結果を合成）---
+    // トーンマップ前のリニアHDRで合成するので、光源・発光体の輝度エネルギー(>1)が正しく咲く。
+    // gBloom はビューポートローカル 0..1（UVエフェクト後の luv でサンプルして歪みと整合させる）
     if (mask & E_BLOOM)
-    {
-        float th = cg1.w;
-        float3 b = 0.0;
-        float wsum = 0.0;
-        [unroll] for (int s = 0; s < 3; ++s)
-        {
-            float rad = (s + 1.0) * 2.5;     // 2.5 / 5 / 7.5 px
-            float w   = 1.0 / (s + 1.0);     // 内側ほど強い
-            [unroll] for (int k = 0; k < 8; ++k)
-            {
-                float ang = (k / 8.0) * 6.2831853;
-                float2 o  = float2(cos(ang), sin(ang)) * rad * texel;
-                b += max(SampleScene(uv + o) - th, 0.0) * w;
-                wsum += w;
-            }
-            b += max(SampleScene(uv) - th, 0.0) * w;
-            wsum += w;
-        }
-        col += (b / max(wsum, 1.0)) * cg1.z * 4.0;
-    }
+        col += gBloom.Sample(gSamp, saturate(luv)).rgb * cg1.z;
 
     // ===== トーンマップ（ACES）+ ガンマ =====
     // ここから先は表示基準(LDR, 0..1)の色として扱う
@@ -249,6 +276,25 @@ float4 PostPS(FSQuadVSOut i) : SV_TARGET
     if (mask & E_TINT) col *= tintVig.rgb;                       // 色味
 
     col = max(col, 0.0);
+
+    // --- 3D LUT カラーグレーディング（ストリップ形式 N*N x N）---
+    // トーンマップ後の LDR に適用。青チャンネルでスライスを選び、2 スライスを補間。
+    if (mask & E_LUT)
+    {
+        float  sz    = max(extra0.x, 2.0);
+        float3 base  = saturate(col);
+        float  scale = (sz - 1.0) / sz;
+        float  ofsL  = 0.5 / sz;
+        float  b      = base.b * (sz - 1.0);
+        float  slice0 = floor(b);
+        float  f      = b - slice0;
+        float  slice1 = min(slice0 + 1.0, sz - 1.0);
+        float  inX    = base.r * scale + ofsL;     // スライス内 0..1
+        float  y      = base.g * scale + ofsL;
+        float3 l0 = gLut.Sample(gSamp, float2((inX + slice0) / sz, y)).rgb;
+        float3 l1 = gLut.Sample(gSamp, float2((inX + slice1) / sz, y)).rgb;
+        col = lerp(col, lerp(l0, l1, f), extra0.y);
+    }
 
     // --- ポスタライズ ---
     if (mask & E_POSTERIZE)
@@ -321,6 +367,15 @@ float4 PostPS(FSQuadVSOut i) : SV_TARGET
     {
         float2 d = i.uv - 0.5;
         col *= saturate(1.0 - dot(d, d) * 2.0 * tintVig.w);
+    }
+
+    // --- デバンディング（TPDF ディザ）---
+    // 三角分布ノイズ ±0.5/255 を最終 8bit 量子化の直前に加え、空・ビネットの縞を消す。
+    if (mask & E_DEBAND)
+    {
+        float r1 = Rand(i.uv + frac(time * 0.1301));
+        float r2 = Rand(i.uv * 1.3719 + frac(time * 0.7177));
+        col += (r1 + r2 - 1.0) * (1.0 / 255.0);
     }
 
     // トーンマップは上のカラーステージ冒頭で適用済み。
