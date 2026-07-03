@@ -9,7 +9,7 @@
 
 ## 構成
 - `engineClient.ts` … TCP フレーミング + id 相関の薄いクライアント
-- `index.ts` … MCP サーバ本体(stdio)。ツール20個を公開
+- `index.ts` … MCP サーバ本体(stdio)。ツール多数を公開(全量は [../../docs/MCP.md](../../docs/MCP.md) 参照。このファイルの表は抜粋)
 - `test.ts` … mock エンジンで framing/相関/エラーを検証(`node test.ts`)
 
 ## ツール
@@ -31,6 +31,9 @@
 | `dx12_remove_component` | コンポーネント除去。transform/name は除去不可 |
 | `dx12_create_lua_component` | `assets/components/<name>.lua` を作成 (構文検証付き) |
 | `dx12_attach_lua_component` | エンティティに Lua 部品をアタッチ (実行は Play 時) |
+| `dx12_create_shader` | `assets/shaders/<name>.hlsl` を作成/上書き。書込直後にコンパイルを試し成否を返す |
+| `dx12_read_shader` | 既存カスタムシェーダーのソースを読む |
+| `dx12_set_mesh_shader` | エンティティの `MeshRenderer::shaderPath` を設定/解除 |
 
 ### シーン / アセット
 | ツール | 説明 |
@@ -38,7 +41,7 @@
 | `dx12_save_scene` | シーン保存 (assets 相対 path、省略で上書き) |
 | `dx12_open_scene` | シーンを開く (assets 相対 path)。遅延処理 |
 | `dx12_list_scenes` | `assets/scenes` 配下の .json 一覧 (path, name) |
-| `dx12_list_assets` | assets 配下のアセット一覧 (type フィルタ可: model/texture/script/audio/scene/prefab) |
+| `dx12_list_assets` | assets 配下のアセット一覧 (type フィルタ可: model/texture/script/audio/scene/prefab/shader) |
 | `dx12_spawn_model` | モデル (.gltf/.glb/.fbx/.obj) を生成。GPU ロードのため遅延処理 |
 
 ### 再生制御 / 状態

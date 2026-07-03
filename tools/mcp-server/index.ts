@@ -16,7 +16,7 @@ import { EngineClient } from "./engineClient.ts";
 // result のフィールド名(entityId 等)もエンジンの返り値をそのまま通す。
 
 const engine = new EngineClient();
-const server = new McpServer({ name: "dx12-engine", version: "0.3.0" });
+const server = new McpServer({ name: "dx12-engine", version: "0.4.0" });
 
 type ToolResult = {
   content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[];
@@ -169,7 +169,7 @@ reg(
   "アセット一覧",
   "assets 配下のアセット一覧 [{path, type, name}] を返す。type で種別フィルタ(省略で全種別)。spawn_model / spawn_prefab / attach の path 探索に使う。",
   {
-    type: z.enum(["model", "texture", "script", "audio", "scene", "prefab"]).optional().describe("種別フィルタ。省略で全種別。"),
+    type: z.enum(["model", "texture", "script", "audio", "scene", "prefab", "shader"]).optional().describe("種別フィルタ。省略で全種別。"),
   },
   { readOnlyHint: true },
   ({ type }) => run(() => engine.call("list_assets", { type })),
@@ -370,6 +370,18 @@ reg(
 );
 
 reg(
+  "dx12_set_mesh_shader",
+  "カスタムシェーダー割当",
+  "エンティティの MeshRenderer::shaderPath を設定/解除する(Inspector の「Shader」欄と同じ操作)。dx12_create_shader で作った .hlsl の assets/shaders 相対パスを渡す。shaderPath 省略/空文字で既定 Forward に戻す。modelPath と違いメッシュ再ロードを伴わないため即時反映。★スキンドメッシュ(SkeletalAnimation 持ち)は既定 Forward へ自動フォールバックする(返り値 skinnedFallbackWarning で判定可)。entity(id) か name 指定。",
+  {
+    ...entityRef,
+    shaderPath: z.string().optional().describe("assets/shaders 相対パス。例: ToonShade.hlsl。省略/空文字で既定 Forward に戻す。"),
+  },
+  { idempotentHint: true },
+  ({ entity, name, shaderPath }) => run(() => engine.call("set_mesh_shader", { entity, name, shaderPath })),
+);
+
+reg(
   "dx12_set_scene_settings",
   "シーン設定変更",
   "シーンのスカイボックス/IBL を設定する。skybox 内の指定フィールドだけ適用。envMapPath を変えると {applied, envMapRebake} を返し再ベイクが走ることがある。",
@@ -434,6 +446,27 @@ reg(
   },
   {},
   ({ entity, name, script }) => run(() => engine.call("attach_lua_component", { entity, name, script })),
+);
+
+reg(
+  "dx12_create_shader",
+  "カスタムシェーダー作成",
+  "カスタムシェーダー(.hlsl)を assets/shaders/ に作成/上書きする(MeshRenderer::shaderPath 割当用)。★Lua と違い書く前の静的検証はできない(DXC はファイルからしかコンパイルできない)ので、まず書き込んでから即コンパイルを試し、成否をそのまま返す(失敗しても書いたファイルは残る=直して dx12_create_shader を撃ち直す反復修正が前提)。エントリポイントは VSMain(vs_6_0)/PSMain(ps_6_0)固定、静的メッシュ用の共有 RootSignature(b0=PerObject mvp+model, b1=PerFrameの先頭部分, t0+s0=アルベド)に合わせて書く。返り値 {path, compiled, error?}。compiled=false なら error を読んで直し、再度このツールで書き戻す。エンティティへの割当は dx12_set_mesh_shader。",
+  {
+    name: z.string().describe("シェーダー名(拡張子・パス区切りなし)。例: ToonShade"),
+    code: z.string().describe("HLSL コード全体(VSMain/PSMain を含む)。dx12_read_shader で既存のテンプレ/ソースを読んでから書き換えるとよい。"),
+  },
+  {},
+  ({ name, code }) => run(() => engine.call("create_shader", { name, code })),
+);
+
+reg(
+  "dx12_read_shader",
+  "カスタムシェーダー読み取り",
+  "既存のカスタムシェーダー(.hlsl)のソースをそのまま読む。dx12_create_shader は新規/上書き書き込み専用で読み取りが無いため、既存シェーダーを確認してから修正版を書き戻す編集ループに使う。{path, code, compiled}(compiled は直近の既知のコンパイル成否)。",
+  { path: z.string().describe("assets/shaders 相対パス。例: ToonShade.hlsl") },
+  { readOnlyHint: true },
+  ({ path }) => run(() => engine.call("read_shader", { path })),
 );
 
 // ════════════════════════════════════════════════════════════════

@@ -117,7 +117,7 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_find_entity` | `{name:string}` | `{entityId, name}` または `null` |
 | `dx12_query_entities` | `{tag?:string, box?:[minX,minZ,maxX,maxZ]}` | `{entities:[{entityId,name}], count}` ※tag か box のどちらか必須 |
 | `dx12_list_scenes` | `{}` | `[{path, name}]` |
-| `dx12_list_assets` | `{type?:"model"\|"texture"\|"script"\|"audio"\|"scene"\|"prefab"}` | `[{path, type, name}]` |
+| `dx12_list_assets` | `{type?:"model"\|"texture"\|"script"\|"audio"\|"scene"\|"prefab"\|"shader"}` | `[{path, type, name}]` |
 | `dx12_get_mode` | `{}` | `{mode:"Editor"\|"Playing"}` |
 | `dx12_get_log` | `{lines?:int=50}` | `["ログ行", ...]`(末尾N行) |
 | `dx12_describe_components` | `{component?:string}` | `{components:[{jsonKey, settable, removable, fields:[{name,type,default}], note?}]}` |
@@ -125,6 +125,7 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_get_post_process` | `{}` | ポストプロセス全フィールド(約25エフェクトの `<name>On`/パラメータ) |
 | `dx12_get_ssao` | `{}` | `{enabled, radius, bias, intensity, power, sampleCount, blur}` |
 | `dx12_read_lua_component` | `{path:string}` | `{path, code}` ※既存 .lua のソースをそのまま読む |
+| `dx12_read_shader` | `{path:string(assets/shaders相対)}` | `{path, code, compiled}` ※既存カスタムシェーダーのソースをそのまま読む(compiled は直近の既知のコンパイル成否) |
 | `dx12_raycast` | `{origin:[x,y,z], direction:[x,y,z], maxDistance?:f}` | `{hit, distance?, point?, normal?, entityId?, name?}` ※Playing 中のみ意味のある結果 |
 | `dx12_overlap_box` | `{center:[x,y,z], halfExtents:[x,y,z], maxResults?:int}` | `{entities:[{entityId,name}], count}` ※Playing 中のみ |
 | `dx12_overlap_sphere` | `{center:[x,y,z], radius:f, maxResults?:int}` | `{entities:[{entityId,name}], count}` ※Playing 中のみ |
@@ -144,6 +145,7 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_select_entity` | `{entity:int}` | `{selected}` |
 | `dx12_focus_camera` | `{entity:int}` | `{cameraPos:[x,y,z], target, distance}` |
 | `dx12_set_pbr` | `{entity:int, metallic?:f, roughness?:f, uvScaleU?:f, uvScaleV?:f}` | `{entityId, metallic, roughness, uvScaleU, uvScaleV}` |
+| `dx12_set_mesh_shader` | `{entity:int, shaderPath?:string(assets/shaders相対)}` | `{entityId, shaderPath, skinnedFallbackWarning}` ※shaderPath省略/空文字で既定Forwardに戻す |
 | `dx12_set_scene_settings` | `{skybox:{envMapPath?, iblIntensity?, skyboxIntensity?, drawSkybox?}}` | `{applied, envMapRebake}` |
 | `dx12_set_post_process` | 約25エフェクトの `<name>On`/パラメータ(指定分のみ適用) | `{applied}` |
 | `dx12_set_ssao` | `{enabled?, radius?, bias?, intensity?, power?, sampleCount?, blur?}` | `{applied}` |
@@ -151,6 +153,7 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_redo` | `{}` | `{queuedRedo}` |
 | `dx12_save_scene` | `{path?:string}` | `{path}` ※省略で現在シーンへ上書き |
 | `dx12_create_lua_component` | `{name:string, code:string}` | `{path}` ※書込前に構文検証。既存パスなら上書き更新も兼ねる |
+| `dx12_create_shader` | `{name:string, code:string}` | `{path, compiled, error?}` ※assets/shaders/に作成/上書き後、即コンパイルを試す。Luaと違い失敗してもファイルは残る(反復修正前提) |
 | `dx12_attach_lua_component` | `{entity:int, script:string(assets相対)}` | `ok` |
 | `dx12_create_prefab` | `{entity:int, path?:string}` | `{path, entityId}` ※path省略で assets/prefabs/<name>.prefab |
 | `dx12_eval_lua` | `{code:string}` | `{result:string}` ※任意 Lua をその場実行(デバッグ用) |
@@ -269,6 +272,9 @@ dx12_play → (ゲームロジック動作) → dx12_stop
   → ブラウザの HTTP/WebSocket ドライブバイ(localhost CSRF)を遮断。
 - パス系ツールは **assets 相対のみ**。絶対パス・`..`・`\`・`:` を拒否。
 - `create_lua_component` の Lua は書き込み前に構文チェック(コンパイルのみ・非実行)。
+- `create_shader` は書き込み前の静的検証ができない(DXC はファイルからしかコンパイルできない)ため、
+  書いた後にコンパイルを試し成否を返す方式。失敗してもファイルは書き込まれたまま残る
+  (無効なカスタムシェーダーは既定 Forward へ安全にフォールバックするだけで実害は無い)。
 - **認証なし(localhost 開発機前提)**。同一マシンの別ユーザプロセスは接続可能なため、
   共有開発機では注意。アップグレード経路: ポートのトークン認証。
 - **`dx12_eval_lua` は任意 Lua コードをその場実行する**(意図的な設計。デバッグ効率を優先)。

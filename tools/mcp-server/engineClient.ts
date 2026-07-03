@@ -26,6 +26,7 @@ for (const m of [
   "rename_entity", "select_entity", "focus_camera", "set_pbr", "set_color", "set_lua_property",
   "set_scene_settings", "undo", "redo", "save_scene",
   "create_lua_component", "attach_lua_component",
+  "create_shader", "read_shader", "set_mesh_shader",
   // 入力シミュレーション(即時)
   "key_down", "key_up", "key_press",
 ]) TIMEOUT_BY_METHOD[m] = 8000;

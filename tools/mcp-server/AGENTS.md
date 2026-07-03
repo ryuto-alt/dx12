@@ -117,6 +117,51 @@ dx12_create_lua_component(name:"Rotate", code:[[
 dx12_attach_lua_component(entity: 88, script:"components/Rotate.lua")
 ```
 
+### 4b. カスタムシェーダーを作ってメッシュに割り当てる
+
+```
+dx12_create_shader(name:"ToonShade", code:[[
+Texture2D    g_albedo  : register(t0);
+SamplerState g_sampler : register(s0);
+
+cbuffer PerObjectConstants : register(b0) { float4x4 mvp; float4x4 model; };
+cbuffer PerFrameConstants  : register(b1) {
+    float4x4 view; float4x4 proj;
+    float3 lightDir; float time;
+    float3 lightColor; float ambientStrength;
+};
+
+struct VSInput { float3 position:POSITION; float3 normal:NORMAL; float4 color:COLOR;
+                 float2 texCoord:TEXCOORD0; float4 tangent:TANGENT;
+                 uint4 boneIndices:BLENDINDICES; float4 boneWeights:BLENDWEIGHT; };
+struct PSInput { float4 positionSV:SV_POSITION; float3 worldNormal:NORMAL;
+                 float4 color:COLOR; float2 texCoord:TEXCOORD0; };
+
+PSInput VSMain(VSInput input) {
+    PSInput o;
+    o.positionSV = mul(float4(input.position,1.0f), mvp);
+    o.worldNormal = normalize(mul(input.normal,(float3x3)model));
+    o.color = input.color; o.texCoord = input.texCoord;
+    return o;
+}
+float4 PSMain(PSInput input) : SV_TARGET {
+    float4 albedo = g_albedo.Sample(g_sampler, input.texCoord) * input.color;
+    float ndotl = max(dot(normalize(input.worldNormal), normalize(-lightDir)), 0.0f);
+    float band = ndotl > 0.5 ? 1.0 : (ndotl > 0.15 ? 0.5 : 0.15);   // トゥーン: 3段階に量子化
+    return float4(albedo.rgb * lightColor * band, albedo.a);
+}
+]])
+# → {path:"ToonShade.hlsl", compiled:true}
+# compiled:false なら error を読んで直し、dx12_create_shader を撃ち直す(ファイルは残るので反復修正できる)
+
+dx12_set_mesh_shader(entity: 88, shaderPath:"ToonShade.hlsl")
+# → {entityId:88, shaderPath:"ToonShade.hlsl", skinnedFallbackWarning:false}
+
+dx12_focus_and_screenshot(entity: 88)   # 見た目を確認
+```
+※ 静的メッシュのみ有効。スキンドメッシュ(SkeletalAnimation持ち)は `skinnedFallbackWarning:true` が返り既定Forwardへ自動フォールバックする。
+既存シェーダーの読み直しは `dx12_read_shader(path:"ToonShade.hlsl")`。詳細は [`docs/AUTHORING.md`](../../docs/AUTHORING.md) の「6. カスタムシェーダー」。
+
 ### 5. Play/Stop して確認
 
 ```

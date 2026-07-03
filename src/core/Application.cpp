@@ -1732,7 +1732,8 @@ nlohmann::json McpComponentSchema()
     }), "core; cannot be removed. Prefer dx12_set_transform for position/rotation/scale."));
     comps.push_back(C("meshRenderer", false, false, json::array({
         F("modelPath", "string (assets-relative)", ""),
-    }), "read-only via MCP; create with dx12_spawn_model/dx12_create_entity. Use dx12_set_pbr for material."));
+    }), "read-only via MCP; create with dx12_spawn_model/dx12_create_entity. Use dx12_set_pbr for material, "
+        "dx12_set_mesh_shader for shaderPath (custom HLSL from dx12_create_shader)."));
     comps.push_back(C("pointLight", true, true, json::array({
         F("color", "float3", json::array({1, 1, 1})), F("intensity", "float", 1.0), F("range", "float", 10.0),
         F("castShadows", "bool (max 2 simultaneous, nearest-to-camera wins)", false),
@@ -2041,6 +2042,80 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"path", rel}};
         }
+        else if (method == "create_shader")
+        {
+            // カスタムシェーダー(MeshRenderer::shaderPath 割当用)を assets/shaders/ に作成/上書きする。
+            // Lua と違い、書く前の静的検証ができない(DXC はファイルからしかコンパイルできない)ため、
+            // 先に書いてから即コンパイルを試み、成否をそのまま返す(失敗してもファイルは残す=
+            // 反復修正前提。エンジン側も無効なカスタムシェーダーは既定 Forward へ安全にフォールバックする)。
+            const std::string name = params.value("name", std::string());
+            const std::string code = params.value("code", std::string());
+            if (name.empty()) throw McpError(McpErr::InvalidParam, "missing 'name'");
+            if (name.find_first_of("/\\:*?\"<>|") != std::string::npos)
+                throw McpError(McpErr::InvalidParam, "invalid shader name");
+
+            const std::string rel = name + ".hlsl";
+            const fs::path full = fs::path(PathResolver::ProjectShaderDir()) / rel;
+            fs::create_directories(full.parent_path());
+            {
+                std::ofstream ofs(full, std::ios::binary | std::ios::trunc);
+                if (!ofs) throw McpError(McpErr::Internal, "cannot write " + full.string());
+                ofs.write(code.data(), static_cast<std::streamsize>(code.size()));
+            }
+
+            bool compiled = false;
+            std::string error;
+            if (m_shaderManager)
+            {
+                compiled = m_shaderManager->CompileCustomShader(rel);
+                if (!compiled) error = m_shaderManager->GetCustomShaderError(rel);
+            }
+            resp["ok"] = true;
+            resp["result"] = {{"path", rel}, {"compiled", compiled}};
+            if (!compiled) resp["result"]["error"] = error.empty() ? "shader manager unavailable" : error;
+        }
+        else if (method == "read_shader")
+        {
+            const std::string rel = params.value("path", std::string());
+            if (rel.empty()) throw McpError(McpErr::InvalidParam, "missing 'path'");
+            if (rel.front() == '/' || rel.find('\\') != std::string::npos ||
+                rel.find(':') != std::string::npos || rel.find("..") != std::string::npos)
+                throw McpError(McpErr::InvalidParam, "invalid path (assets/shaders 相対のみ)");
+
+            const fs::path full = fs::path(PathResolver::ProjectShaderDir()) / rel;
+            if (!fs::exists(full)) throw McpError(McpErr::NotFound, "shader not found: " + rel);
+            std::ifstream ifs(full, std::ios::binary);
+            if (!ifs) throw McpError(McpErr::Internal, "cannot open " + full.string());
+            std::ostringstream oss; oss << ifs.rdbuf();
+
+            resp["ok"] = true;
+            resp["result"] = {{"path", rel}, {"code", oss.str()},
+                               {"compiled", m_shaderManager && m_shaderManager->HasValidCustomShader(rel)}};
+        }
+        else if (method == "set_mesh_shader")
+        {
+            // MeshRenderer::shaderPath の割当/解除。Inspector の「Shader」コンボと同じ操作を MCP から。
+            // modelPath と違いメッシュ再ロードを伴わない(PSO 選択が変わるだけ)ので即時反映して安全。
+            const auto e = ResolveMcpEntity(*m_scene, params);
+            auto& reg = m_scene->GetRegistry();
+            if (!reg.all_of<MeshRenderer>(e)) throw McpError(McpErr::NotFound, "entity has no MeshRenderer");
+            auto& mr = reg.get<MeshRenderer>(e);
+
+            std::string rel = params.value("shaderPath", std::string());
+            if (!rel.empty())
+            {
+                if (rel.front() == '/' || rel.find('\\') != std::string::npos ||
+                    rel.find(':') != std::string::npos || rel.find("..") != std::string::npos)
+                    throw McpError(McpErr::InvalidParam, "invalid shaderPath (assets/shaders 相対のみ)");
+                if (!fs::exists(fs::path(PathResolver::ProjectShaderDir()) / rel))
+                    throw McpError(McpErr::NotFound, "shader not found: " + rel);
+            }
+            mr.shaderPath = rel;
+
+            resp["ok"] = true;
+            resp["result"] = {{"entityId", static_cast<u32>(e)}, {"shaderPath", mr.shaderPath},
+                               {"skinnedFallbackWarning", reg.all_of<SkeletalAnimation>(e) && !mr.shaderPath.empty()}};
+        }
         else if (method == "attach_lua_component")
         {
             const std::string script = params.value("script", std::string());
@@ -2245,6 +2320,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".dds" ||
                     ext == ".tga" || ext == ".bmp") return "texture";
                 if (ext == ".lua") return "script";
+                if (ext == ".hlsl") return "shader";
                 if (ext == ".wav" || ext == ".mp3" || ext == ".ogg") return "audio";
                 if (ext == ".json")
                     return (relPath.rfind("scenes/", 0) == 0) ? "scene" : std::string();
