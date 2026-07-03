@@ -450,81 +450,27 @@ void EditorLayer::Render(bool isPlaying,
         ImGui::InvisibleButton("##SceneDrop", m_viewportSize,
             ImGuiButtonFlags_None);
 
-        // テクスチャドラッグはドロップ先で動作が変わる:
-        //   メッシュ上 = Albedo として貼る(Unity/Unreal 風) / 何もない所 = スプライトとして配置。
-        //   Alt 押下 = メッシュ上でも常にスプライト配置(貼りたくない時の逃げ道)。
-        // どちらになるかをドラッグ中ずっとカーソル脇に表示して迷わないようにする。
-        const bool isTextureDrag = [&] {
-            namespace fs = std::filesystem;
-            std::string ext = fs::path(static_cast<const char*>(dragPayload->Data))
-                                  .extension().string();
-            for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            return AssetBrowserPanel::ClassifyExtension(ext) == AssetBrowserPanel::AssetType::Texture;
-        }();
-        const bool forceSprite = ImGui::GetIO().KeyAlt;
-        SubmeshPickResult hoverHit{};
-        bool paintMode = false;   // true = メッシュに貼る / false = スプライト配置
-        if (isTextureDrag)
-        {
-            hoverHit = m_sceneView->PickEntityAndSubmesh(
-                reg, camera, m_viewportPos.x, m_viewportPos.y,
-                m_viewportSize.x, m_viewportSize.y);
-            paintMode = !forceSprite && hoverHit.entity != entt::null &&
-                        reg.all_of<MeshRenderer>(hoverHit.entity);
-
-            std::string label;
-            if (paintMode)
-            {
-                const auto* tag = reg.try_get<NameTag>(hoverHit.entity);
-                label = "テクスチャを貼る: " + (tag ? tag->name : std::string("?")) +
-                        "  (Alt: スプライト配置)";
-            }
-            else
-            {
-                label = "スプライトとして配置";
-            }
-            const ImVec2 mp = ImGui::GetIO().MousePos;
-            const ImVec2 pos(mp.x + 18.0f, mp.y + 14.0f);
-            ImDrawList* fdl = ImGui::GetForegroundDrawList();
-            const ImVec2 sz = ImGui::CalcTextSize(label.c_str());
-            fdl->AddRectFilled(ImVec2(pos.x - 5, pos.y - 3), ImVec2(pos.x + sz.x + 5, pos.y + sz.y + 3),
-                               IM_COL32(20, 20, 26, 220), 4.0f);
-            fdl->AddText(pos, IM_COL32(235, 235, 240, 255), label.c_str());
-        }
-
         if (ImGui::BeginDragDropTarget())
         {
             if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(
                     AssetBrowserPanel::kDragDropPayloadType))
             {
+                // Unity 準拠: シーンビューへのドロップは常に「配置」
+                // (画像はスプライト、モデル/プレハブはそのまま生成。Application 側で振り分け)。
+                // メッシュへのテクスチャ貼り付けは Inspector のテクスチャスロット D&D が専用操作。
                 const char* droppedPath = static_cast<const char*>(payload->Data);
 
-                if (isTextureDrag && paintMode)
-                {
-                    // テクスチャをメッシュへ Albedo として割当(サブメッシュ単位)
-                    PendingMaterialTextureDrop req;
-                    req.entity = hoverHit.entity;
-                    req.submeshIndex = hoverHit.submeshIndex;
-                    req.slot = MaterialTextureSlot::Albedo;
-                    req.texturePath = droppedPath;
-                    m_ctx->pendingMaterialTextureDrops.push_back(req);
-                    Logger::Info("Dropped texture onto submesh {} of entity {}: {}",
-                        hoverHit.submeshIndex, static_cast<u32>(hoverHit.entity), droppedPath);
-                }
-                else
-                {
-                    PendingSpawnRequest req;
-                    req.modelPath = droppedPath;
+                PendingSpawnRequest req;
+                req.modelPath = droppedPath;
 
-                    // マウス座標からワールド座標を計算（Y=0 平面との交点）
-                    req.position = ScreenToWorldOnGroundPlane(
-                        camera, ImGui::GetIO().MousePos,
-                        m_viewportPos, m_viewportSize);
+                // マウス座標からワールド座標を計算（Y=0 平面との交点）
+                req.position = ScreenToWorldOnGroundPlane(
+                    camera, ImGui::GetIO().MousePos,
+                    m_viewportPos, m_viewportSize);
 
-                    m_ctx->pendingSpawns.push_back(req);
-                    Logger::Info("Dropped to scene at ({:.1f}, {:.1f}, {:.1f}): {}",
-                        req.position.x, req.position.y, req.position.z, droppedPath);
-                }
+                m_ctx->pendingSpawns.push_back(req);
+                Logger::Info("Dropped to scene at ({:.1f}, {:.1f}, {:.1f}): {}",
+                    req.position.x, req.position.y, req.position.z, droppedPath);
             }
             ImGui::EndDragDropTarget();
         }
