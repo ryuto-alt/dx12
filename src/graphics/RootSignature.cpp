@@ -8,8 +8,8 @@ namespace dx12e
 
 void RootSignature::Initialize(GraphicsDevice& device)
 {
-    // Root parameters: 8
-    D3D12_ROOT_PARAMETER1 rootParams[8]{};
+    // Root parameters: 9
+    D3D12_ROOT_PARAMETER1 rootParams[9]{};
 
     // [0] Per-Object: 32bit constants (32 DWORDs = MVP(16) + Model(16))
     rootParams[0].ParameterType             = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
@@ -102,6 +102,20 @@ void RootSignature::Initialize(GraphicsDevice& device)
     rootParams[7].DescriptorTable.pDescriptorRanges   = &aoRange;
     rootParams[7].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
 
+    // [8] スポット/ポイント影 SRV DescriptorTable (t9=スポットTexture2DArray, t10=ポイントTextureCubeArray) 連続2枚
+    D3D12_DESCRIPTOR_RANGE1 punctualShadowRange{};
+    punctualShadowRange.RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    punctualShadowRange.NumDescriptors                    = 2;  // t9, t10 連続
+    punctualShadowRange.BaseShaderRegister                = 9;
+    punctualShadowRange.RegisterSpace                     = 0;
+    punctualShadowRange.Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    punctualShadowRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    rootParams[8].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParams[8].DescriptorTable.NumDescriptorRanges = 1;
+    rootParams[8].DescriptorTable.pDescriptorRanges   = &punctualShadowRange;
+    rootParams[8].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
+
     // Static Samplers (s0=albedo wrap, s1=shadow PCF, s2=IBL linear-clamp mip有,
     //                  s3=BRDF linear-clamp mipなし, s4=AO point-clamp スクリーンサンプル)
     D3D12_STATIC_SAMPLER_DESC staticSamplers[5]{};
@@ -185,7 +199,7 @@ void RootSignature::Initialize(GraphicsDevice& device)
         serializedBlob->GetBufferSize(),
         IID_PPV_ARGS(&m_rootSignature)));
 
-    Logger::Info("RootSignature created (PBR: 8 slots)");
+    Logger::Info("RootSignature created (PBR: 9 slots)");
 }
 
 } // namespace dx12e

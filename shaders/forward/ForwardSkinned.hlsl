@@ -10,9 +10,8 @@ SamplerState g_sampler        : register(s0);
 // Bones (t3 - moved from t1)
 StructuredBuffer<float4x4> g_bones : register(t3);
 
-// Shadow (CSM: Texture2DArray, 1スライス=1カスケード)
+// Shadow (CSM: Texture2DArray, 1スライス=1カスケード)。g_shadowSampler(s1)は Lighting.hlsli で共有宣言。
 Texture2DArray         g_shadowMap     : register(t4);
-SamplerComparisonState g_shadowSampler : register(s1);
 
 // IBL (t5,t6,t7 / s2=linear-clamp(mip有), s3=linear-clamp(mipなし))
 TextureCube  g_irradianceMap  : register(t5);

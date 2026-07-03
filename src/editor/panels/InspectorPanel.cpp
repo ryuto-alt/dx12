@@ -1322,6 +1322,14 @@ void InspectorPanel::RenderLightHero(entt::registry& reg, EditorContext& ctx, en
         if (sl.innerConeDeg > sl.outerConeDeg) sl.innerConeDeg = sl.outerConeDeg;
         changed |= DirectionEditor("slDir", sl.direction, active);
         ImGui::TextDisabled("位置は Transform、向きは上の方向で決まります");
+        changed |= ImGui::Checkbox("影を落とす Cast Shadows", &sl.castShadows);
+        ImGui::SameLine(); ImGui::TextDisabled("(?)");
+        if (ImGui::BeginItemTooltip())
+        {
+            ImGui::TextUnformatted("同時に影を落とせるスポットライトは最大4灯（カメラに近い順で優先）。\n"
+                                   "超えた分は影なしにフォールバックします。");
+            ImGui::EndTooltip();
+        }
         EndEdit(reg, ctx, e, m_slEdit, changed, active, "SpotLight");
     }
 

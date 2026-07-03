@@ -91,14 +91,14 @@ void ModelThumbnailRenderer::CreateSharedResources()
     }
 
     // ===== PerFrame アップロードバッファ =====
-    // main の Forward PSO を流用するため b1 のレイアウトは Application.cpp の FrameConstants(1136B)
-    // と一致させる。256B アラインで 1152B 確保（CSM の cascadeViewProj[4]/cascadeSplitsView/
-    // shadowParams/IBL まで含めて書けるサイズ）。
+    // main の Forward PSO を流用するため b1 のレイアウトは Application.cpp の FrameConstants(1520B)
+    // と一致させる。256B アラインで 1536B 確保（CSM の cascadeViewProj[4]/cascadeSplitsView/
+    // shadowParams/スポット影行列/IBL まで含めて書けるサイズ）。
     {
         D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_UPLOAD};
         D3D12_RESOURCE_DESC desc{};
         desc.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
-        desc.Width            = 1152;  // >= 1136、256B アライン
+        desc.Width            = 1536;  // >= 1520、256B アライン
         desc.Height           = 1;
         desc.DepthOrArraySize = 1;
         desc.MipLevels        = 1;
@@ -305,19 +305,22 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
 
     // ===== PerFrame CB 書き込み =====
     // main の Forward PSO(Forward.hlsl)を流用するので b1 のレイアウトは
-    // Application.cpp の FrameConstants(1136B) / Lighting.hlsli の PerFrameConstants と
+    // Application.cpp の FrameConstants(1520B) / Lighting.hlsli の PerFrameConstants と
     // バイト単位で一致させること。サムネには影を出さないため CSM 領域は
     // 「cascade0 を必ず選ばせて UV クリップ → CalcShadow が 1.0(無影) を返す」値に倒す。
+    // スポット/ポイント影も numPointLights/numSpotLights=0 で未使用（shadowIndex 参照自体が発生しない）。
     static constexpr u32 kMaxPointLights = 8;  // = MAX_POINT_LIGHTS (Lighting.hlsli)
     static constexpr u32 kMaxSpotLights  = 8;  // = MAX_SPOT_LIGHTS  (Lighting.hlsli)
+    static constexpr u32 kMaxShadowSpotThumb = 4;  // = MAX_SHADOW_SPOT (Lighting.hlsli)
     struct PointLightGPU {
         XMFLOAT3 position;   float range;
-        XMFLOAT3 color;      float _pad;
+        XMFLOAT3 color;      float shadowIndex;
     };
     struct SpotLightGPU {
         XMFLOAT3 position;   float range;
         XMFLOAT3 direction;  float cosInner;
         XMFLOAT3 color;      float cosOuter;
+        float shadowIndex;   XMFLOAT3 _spad;
     };
     struct FrameConstants {
         XMFLOAT4X4 view;                          // 64B  (offset   0)
@@ -328,16 +331,18 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
         XMFLOAT4   cascadeSplitsView;             // 16B  (offset 416)
         XMFLOAT4   shadowParams;                  // 16B  (offset 432)
         XMFLOAT3   cameraPos;       float _pad;   // 16B  (offset 448)
-        u32        numPointLights;  u32 numSpotLights; float _pad2[2]; // 16B (offset 464)
+        u32        numPointLights;  u32 numSpotLights;
+        float      spotShadowTexel; float pointShadowNear;   // 16B (offset 464)
         PointLightGPU pointLights[kMaxPointLights]; // 256B (offset 480)
-        SpotLightGPU  spotLights[kMaxSpotLights];   // 384B (offset 736)
-        // ▼ IBL 制御 16B (offset 1120)
+        SpotLightGPU  spotLights[kMaxSpotLights];   // 512B (offset 736)
+        XMFLOAT4X4 spotShadowMatrix[kMaxShadowSpotThumb]; // 256B (offset 1248)
+        // ▼ IBL 制御 16B (offset 1504)
         float iblIntensity;
         float maxPrefilterMip;
         u32   hasIBL;
         float skyboxIntensity;
-    };  // total = 1136B
-    static_assert(sizeof(FrameConstants) == 1136, "FrameConstants must be 1136 bytes (match Application.cpp / Lighting.hlsli)");
+    };  // total = 1520B
+    static_assert(sizeof(FrameConstants) == 1520, "FrameConstants must be 1520 bytes (match Application.cpp / Lighting.hlsli)");
     {
         FrameConstants fc{};
         XMStoreFloat4x4(&fc.view, XMMatrixTranspose(viewMat));
@@ -408,6 +413,11 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
     {
         cmdList->SetGraphicsRootDescriptorTable(
             RootSignature::kSlotShadowSRV,
+            m_srvHeap->GetGpuHandle(defTex->GetSrvIndex()));
+        // スポット/ポイント影SRV(t9,t10)も同様にダミーで埋める（サムネイルは numPoint/SpotLights=0
+        // なのでシェーダ側では実際に読まれない。未セットのままだとルートシグネチャ検証に引っかかるため）。
+        cmdList->SetGraphicsRootDescriptorTable(
+            RootSignature::kSlotPunctualShadowSRV,
             m_srvHeap->GetGpuHandle(defTex->GetSrvIndex()));
     }
 

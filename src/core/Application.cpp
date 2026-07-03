@@ -770,6 +770,109 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         Logger::Info("Shadow map initialized ({}x{})", m_shadowMapSize, m_shadowMapSize);
     }
 
+    // スポット/ポイントライトの影マップ作成（CSMと同レシピ: R32_TYPELESS 配列 + スライス毎DSV + 1個のSRV）。
+    // PSO/サンプラーはCSM用を流用（ShadowPass_VS は b0.mvp で変換するだけ＝面/灯ごとの VP を渡せば足りる）。
+    {
+        const u32 kNumPointFaces = kMaxShadowPoint * 6;
+        m_punctualShadowDsvHeap = std::make_unique<DescriptorHeap>();
+        m_punctualShadowDsvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
+                                            kMaxShadowSpot + kNumPointFaces, false);
+
+        D3D12_CLEAR_VALUE clearValue{};
+        clearValue.Format = DXGI_FORMAT_D32_FLOAT;
+        clearValue.DepthStencil = {1.0f, 0};
+        D3D12_HEAP_PROPERTIES heapProps{};
+        heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+        // --- スポット: Texture2DArray(ArraySize=kMaxShadowSpot) ---
+        {
+            D3D12_RESOURCE_DESC desc{};
+            desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+            desc.Width = kSpotShadowMapSize;
+            desc.Height = kSpotShadowMapSize;
+            desc.DepthOrArraySize = static_cast<u16>(kMaxShadowSpot);
+            desc.MipLevels = 1;
+            desc.Format = DXGI_FORMAT_R32_TYPELESS;
+            desc.SampleDesc = {1, 0};
+            desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+            ThrowIfFailed(m_graphicsDevice->GetDevice()->CreateCommittedResource(
+                &heapProps, D3D12_HEAP_FLAG_NONE,
+                &desc, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                &clearValue, IID_PPV_ARGS(&m_spotShadowMap)));
+
+            for (u32 i = 0; i < kMaxShadowSpot; ++i)
+            {
+                m_spotShadowDsvHandles[i] = m_punctualShadowDsvHeap->Allocate();
+                D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc{};
+                dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
+                dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
+                dsvDesc.Texture2DArray.FirstArraySlice = i;
+                dsvDesc.Texture2DArray.ArraySize = 1;
+                m_graphicsDevice->GetDevice()->CreateDepthStencilView(
+                    m_spotShadowMap.Get(), &dsvDesc, m_spotShadowDsvHandles[i]);
+            }
+
+            m_spotShadowSrvIndex = m_srvHeap->AllocateIndex();
+            D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+            srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srvDesc.Texture2DArray.MipLevels = 1;
+            srvDesc.Texture2DArray.ArraySize = kMaxShadowSpot;
+            m_graphicsDevice->GetDevice()->CreateShaderResourceView(
+                m_spotShadowMap.Get(), &srvDesc, m_srvHeap->GetCpuHandle(m_spotShadowSrvIndex));
+        }
+
+        // --- ポイント: Texture2DArray(ArraySize=kMaxShadowPoint*6)。SRVはTextureCubeArrayとして参照 ---
+        {
+            D3D12_RESOURCE_DESC desc{};
+            desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+            desc.Width = kPointShadowMapSize;
+            desc.Height = kPointShadowMapSize;
+            desc.DepthOrArraySize = static_cast<u16>(kNumPointFaces);
+            desc.MipLevels = 1;
+            desc.Format = DXGI_FORMAT_R32_TYPELESS;
+            desc.SampleDesc = {1, 0};
+            desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+            ThrowIfFailed(m_graphicsDevice->GetDevice()->CreateCommittedResource(
+                &heapProps, D3D12_HEAP_FLAG_NONE,
+                &desc, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                &clearValue, IID_PPV_ARGS(&m_pointShadowMap)));
+
+            for (u32 i = 0; i < kNumPointFaces; ++i)
+            {
+                m_pointShadowDsvHandles[i] = m_punctualShadowDsvHeap->Allocate();
+                D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc{};
+                dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
+                dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
+                dsvDesc.Texture2DArray.FirstArraySlice = i;
+                dsvDesc.Texture2DArray.ArraySize = 1;
+                m_graphicsDevice->GetDevice()->CreateDepthStencilView(
+                    m_pointShadowMap.Get(), &dsvDesc, m_pointShadowDsvHandles[i]);
+            }
+
+            // t9(スポット)の直後の連番であることをシェーダ側テーブル(t9,t10連続レンジ)が前提にしている。
+            m_pointShadowSrvIndex = m_srvHeap->AllocateIndex();
+            DX_ASSERT(m_pointShadowSrvIndex == m_spotShadowSrvIndex + 1,
+                     "スポット/ポイント影SRVが連番でない（RootSigのt9-t10テーブル前提が崩れる）");
+            D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+            srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBEARRAY;
+            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srvDesc.TextureCubeArray.MipLevels = 1;
+            srvDesc.TextureCubeArray.First2DArrayFace = 0;
+            srvDesc.TextureCubeArray.NumCubes = kMaxShadowPoint;
+            m_graphicsDevice->GetDevice()->CreateShaderResourceView(
+                m_pointShadowMap.Get(), &srvDesc, m_srvHeap->GetCpuHandle(m_pointShadowSrvIndex));
+        }
+
+        Logger::Info("Punctual shadow maps initialized (spot {}x{}x{}, point {}x{}x{})",
+                    kSpotShadowMapSize, kSpotShadowMapSize, kMaxShadowSpot,
+                    kPointShadowMapSize, kPointShadowMapSize, kMaxShadowPoint);
+    }
+
     // PerFrame Constant Buffer（PointLight / SpotLight 各最大8灯対応）
     // レイアウトは shaders/forward/Lighting.hlsli の PerFrameConstants と完全一致させること。
     static constexpr u32 kMaxPointLights = 8;
@@ -778,12 +881,13 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         DirectX::XMFLOAT3 position;
         float range;
         DirectX::XMFLOAT3 color;  // color * intensity
-        float _pad;
+        float shadowIndex;        // -1=影なし、それ以外はポイント影キューブ配列のインデックス
     };
     struct SpotLightGPU {
         DirectX::XMFLOAT3 position;   float range;
         DirectX::XMFLOAT3 direction;  float cosInner;
         DirectX::XMFLOAT3 color;      float cosOuter;  // color * intensity
+        float shadowIndex; DirectX::XMFLOAT3 _spad;    // -1=影なし、それ以外は spotShadowMatrix[] のインデックス
     };
     struct FrameConstants {
         DirectX::XMFLOAT4X4 view;            // 64B  (offset   0)
@@ -799,16 +903,18 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         float                _pad;            // 4B  → 16B (offset 448)
         u32                  numPointLights;  // 4B
         u32                  numSpotLights;   // 4B
-        float                _pad2[2];        // 8B  → 16B (offset 464)
+        float                spotShadowTexel; // 4B
+        float                pointShadowNear; // 4B  → 16B (offset 464)
         PointLightGPU        pointLights[kMaxPointLights]; // 256B (offset 480)
-        SpotLightGPU         spotLights[kMaxSpotLights];   // 384B (offset 736)
-        // ▼ IBL 制御 16B (offset 1120)
+        SpotLightGPU         spotLights[kMaxSpotLights];   // 512B (offset 736)
+        DirectX::XMFLOAT4X4  spotShadowMatrix[kMaxShadowSpot]; // 256B (offset 1248)
+        // ▼ IBL 制御 16B (offset 1504)
         float                iblIntensity;
         float                maxPrefilterMip;
         u32                  hasIBL;
         float                skyboxIntensity;
-    };  // total = 1136B
-    static_assert(sizeof(FrameConstants) == 1136, "FrameConstants must be 1136 bytes");
+    };  // total = 1520B
+    static_assert(sizeof(FrameConstants) == 1520, "FrameConstants must be 1520 bytes");
     m_perFrameCB = std::make_unique<ConstantBuffer>();
     m_perFrameCB->Initialize(*m_graphicsDevice, sizeof(FrameConstants), FrameResources::kFrameCount);
 
@@ -7065,6 +7171,81 @@ void Application::Render()
     m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
     m_commandList->SetRootSignature(*m_rootSignature);
 
+    // ===== スポットライト影スロット割当（castShadows なライトをカメラに近い順で最大kMaxShadowSpot灯）=====
+    // 結果は m_spotShadowViewProj[] / m_spotShadowEntity[] に格納し、直後の影パス描画と
+    // 後段のライト収集(shadowIndex書き込み)の両方で使う。
+    m_numSpotShadowSlots = 0;
+    {
+        auto& reg = m_scene->GetRegistry();
+        struct SpotShadowCandidate { entt::entity e; f32 distSq; };
+        std::vector<SpotShadowCandidate> candidates;
+        XMFLOAT3 camPosF3 = m_camera->GetPosition();
+        XMVECTOR camPos = XMLoadFloat3(&camPosF3);
+        auto slView = reg.view<const dx12e::SpotLight, const Transform>();
+        for (auto [e, sl, tf] : slView.each())
+        {
+            if (!sl.castShadows) continue;
+            XMMATRIX world = (tf.parent != entt::null)
+                ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
+            XMVECTOR d = XMVectorSubtract(world.r[3], camPos);
+            candidates.push_back({e, XMVectorGetX(XMVector3LengthSq(d))});
+        }
+        std::sort(candidates.begin(), candidates.end(),
+                 [](const auto& a, const auto& b) { return a.distSq < b.distSq; });
+
+        const u32 n = (std::min)(static_cast<u32>(candidates.size()), kMaxShadowSpot);
+        for (u32 i = 0; i < n; ++i)
+        {
+            entt::entity e = candidates[i].e;
+            const auto& sl = reg.get<const dx12e::SpotLight>(e);
+            const auto& tf = reg.get<const Transform>(e);
+            XMMATRIX world = (tf.parent != entt::null)
+                ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
+            XMVECTOR pos = world.r[3];
+            XMVECTOR dir = XMVector3Normalize(XMLoadFloat3(&sl.direction));
+            // dir がワールドYにほぼ平行だと LookToLH の up ベクトルが縮退するので切り替える。
+            XMVECTOR up = (std::fabs(XMVectorGetY(dir)) > 0.99f)
+                ? XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f) : XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+
+            f32 outerDeg = (std::max)(sl.outerConeDeg, sl.innerConeDeg);
+            f32 fov = (std::min)(XMConvertToRadians(outerDeg) * 2.0f * 1.02f, XMConvertToRadians(170.0f));
+            f32 range = (std::max)(sl.range, 0.2f);
+
+            XMMATRIX lightView = XMMatrixLookToLH(pos, dir, up);
+            XMMATRIX lightProj = XMMatrixPerspectiveFovLH(fov, 1.0f, 0.1f, range);
+            XMStoreFloat4x4(&m_spotShadowViewProj[i], lightView * lightProj);
+            m_spotShadowEntity[i] = e;
+        }
+        m_numSpotShadowSlots = n;
+    }
+
+    // ===== スポットライト影パス =====
+    if (m_scene && m_scene->GetShadowsEnabled() && m_numSpotShadowSlots > 0)
+    {
+        m_commandList->TransitionResource(m_spotShadowMap.Get(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+
+        D3D12_VIEWPORT spotVp{};
+        spotVp.Width = spotVp.Height = static_cast<f32>(kSpotShadowMapSize);
+        spotVp.MinDepth = 0.0f;
+        spotVp.MaxDepth = 1.0f;
+        D3D12_RECT spotScissor = {0, 0, static_cast<LONG>(kSpotShadowMapSize), static_cast<LONG>(kSpotShadowMapSize)};
+        nativeCmdList->RSSetViewports(1, &spotVp);
+        nativeCmdList->RSSetScissorRects(1, &spotScissor);
+
+        for (u32 i = 0; i < m_numSpotShadowSlots; ++i)
+        {
+            XMMATRIX lvp = XMLoadFloat4x4(&m_spotShadowViewProj[i]);
+            m_commandList->ClearDepthStencil(m_spotShadowDsvHandles[i]);
+            nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_spotShadowDsvHandles[i]);
+            RenderDepthOnlyScene(lvp, *m_shadowPipelineState, *m_shadowSkinnedPipelineState,
+                                 /*updateSkinning*/ false, frameIndex);
+        }
+
+        m_commandList->TransitionResource(m_spotShadowMap.Get(),
+            D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    }
+
     // ===== シャドウパス（CSM: カスケード毎に kNumCascades 回描画）=====
     // シーンで影 OFF / 正射カメラのときは丸ごとスキップ＝(全アクティブ敵 × 4カスケード)の
     // ドローと 2048²×4 のデプスフィルを撤廃（lv35 の主因）。m_shadowMap は生成時 PSR のまま＝
@@ -7166,12 +7347,13 @@ void Application::Render()
         XMFLOAT3 position;
         float range;
         XMFLOAT3 color;
-        float _pad;
+        float shadowIndex;   // -1=影なし、それ以外はポイント影キューブ配列のインデックス
     };
     struct SpotLightGPU {
         XMFLOAT3 position;   float range;
         XMFLOAT3 direction;  float cosInner;
         XMFLOAT3 color;      float cosOuter;
+        float shadowIndex;   XMFLOAT3 _spad;  // -1=影なし、それ以外は spotShadowMatrix[] のインデックス
     };
     struct FrameConstants {
         XMFLOAT4X4 view;
@@ -7187,16 +7369,18 @@ void Application::Render()
         float      aoEnabled;   // 1=実AOを読む / 0=AO読まず ao=1（白ダミー1x1の範囲外Load=0で環境光が消えるのを防ぐ）
         u32        numPointLights;
         u32        numSpotLights;
-        float      _pad2[2];
+        float      spotShadowTexel;   // 1/kSpotShadowMapSize
+        float      pointShadowNear;
         PointLightGPU pointLights[kMaxPointLightsR];
         SpotLightGPU  spotLights[kMaxSpotLightsR];
+        XMFLOAT4X4 spotShadowMatrix[kMaxShadowSpot]; // 256B
         // ▼ IBL 制御 16B
         float iblIntensity;
         float maxPrefilterMip;
         u32   hasIBL;
         float skyboxIntensity;
     };
-    static_assert(sizeof(FrameConstants) == 1136, "FrameConstants must be 1136 bytes");
+    static_assert(sizeof(FrameConstants) == 1520, "FrameConstants must be 1520 bytes");
 
     FrameConstants fc{};
     XMStoreFloat4x4(&fc.view, XMMatrixTranspose(m_camera->GetViewMatrix()));
@@ -7214,6 +7398,12 @@ void Application::Render()
     fc.shadowParams = {1.0f / static_cast<f32>(m_shadowMapSize), m_shadowDepthBias,
                        m_cascadeBlendBand, m_showCascadeDebug ? 1.0f : 0.0f};
     fc.cameraPos = m_camera->GetPosition();
+    fc.spotShadowTexel = 1.0f / static_cast<f32>(kSpotShadowMapSize);
+    fc.pointShadowNear = 0.1f;
+    // スポット影行列（HLSL は列優先 mul(row,mat) なので転置して格納。上で割り当てたスロット分だけ埋める）
+    for (u32 i = 0; i < kMaxShadowSpot; ++i)
+        XMStoreFloat4x4(&fc.spotShadowMatrix[i],
+            i < m_numSpotShadowSlots ? XMMatrixTranspose(XMLoadFloat4x4(&m_spotShadowViewProj[i])) : XMMatrixIdentity());
 
     // IBL 制御
     fc.iblIntensity    = m_iblReady ? m_iblIntensity : 0.0f;
@@ -7241,7 +7431,7 @@ void Application::Render()
             pld.color = {pl.color.x * pl.intensity,
                          pl.color.y * pl.intensity,
                          pl.color.z * pl.intensity};
-            pld._pad = 0.0f;
+            pld.shadowIndex = -1.0f;  // ポイント影は未実装（次コミットで配線）
             fc.numPointLights++;
         }
     }
@@ -7271,6 +7461,14 @@ void Application::Render()
             sld.color = {sl.color.x * sl.intensity,
                          sl.color.y * sl.intensity,
                          sl.color.z * sl.intensity};
+
+            // 影スロット割当（上で計算済みの m_spotShadowEntity[]）と突合
+            sld.shadowIndex = -1.0f;
+            for (u32 si = 0; si < m_numSpotShadowSlots; ++si)
+            {
+                if (m_spotShadowEntity[si] == e) { sld.shadowIndex = static_cast<f32>(si); break; }
+            }
+
             fc.numSpotLights++;
         }
     }
@@ -7287,7 +7485,7 @@ void Application::Render()
             pld.position = pls[li].pos;
             pld.range    = pls[li].range;
             pld.color    = pls[li].color;
-            pld._pad     = 0.0f;
+            pld.shadowIndex = -1.0f;
             fc.numPointLights++;
         }
     }
@@ -7316,6 +7514,10 @@ void Application::Render()
     // シャドウマップSRVをバインド
     m_commandList->SetSRVTable(RootSignature::kSlotShadowSRV,
         m_srvHeap->GetGpuHandle(m_shadowSrvIndex));
+
+    // スポット/ポイント影SRV(t9,t10)をバインド（連番確保なのでスポット側の1個渡しで2枚とも有効になる）
+    m_commandList->SetSRVTable(RootSignature::kSlotPunctualShadowSRV,
+        m_srvHeap->GetGpuHandle(m_spotShadowSrvIndex));
 
     // IBL テーブル(t5,t6,t7)をバインド（常に有効＝ダミー含む。hasIBL で読むか分岐）
     if (m_iblReady && m_iblBaker)

@@ -154,6 +154,7 @@ struct SpotLight
     DirectX::XMFLOAT3 direction    = {0.0f, -1.0f, 0.0f};
     f32               innerConeDeg = 18.0f;  // この角度内は最大輝度
     f32               outerConeDeg = 28.0f;  // この角度でゼロまで減衰
+    bool              castShadows  = false;  // true でこのライトが影を落とす（同時上限あり、カメラ近い順で優先）
 
     // Transform 回転の変化分を direction に反映するための前フレーム回転（非シリアライズ）
     DirectX::XMFLOAT3 _prevRot{0.0f, 0.0f, 0.0f};

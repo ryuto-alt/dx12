@@ -58,7 +58,8 @@ void RegisterCoreComponentMeta()
         .data<&SpotLight::range>("range")
         .data<&SpotLight::direction>("direction")
         .data<&SpotLight::innerConeDeg>("innerConeDeg")
-        .data<&SpotLight::outerConeDeg>("outerConeDeg");
+        .data<&SpotLight::outerConeDeg>("outerConeDeg")
+        .data<&SpotLight::castShadows>("castShadows");
 
     entt::meta_factory<CameraComponent>{}
         .type("CameraComponent")

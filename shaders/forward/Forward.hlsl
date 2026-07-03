@@ -7,9 +7,8 @@ Texture2D    g_normalMap      : register(t1);
 Texture2D    g_metalRoughness : register(t2);
 SamplerState g_sampler        : register(s0);
 
-// Shadow (CSM: Texture2DArray, 1スライス=1カスケード)
+// Shadow (CSM: Texture2DArray, 1スライス=1カスケード)。g_shadowSampler(s1)は Lighting.hlsli で共有宣言。
 Texture2DArray         g_shadowMap     : register(t4);
-SamplerComparisonState g_shadowSampler : register(s1);
 
 // IBL (t5,t6,t7 / s2=linear-clamp(mip有), s3=linear-clamp(mipなし))
 TextureCube  g_irradianceMap  : register(t5);

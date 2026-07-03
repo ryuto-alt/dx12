@@ -220,6 +220,25 @@ private:
     // フレーム毎に計算した結果（描画パス間で共有）
     DirectX::XMFLOAT4X4                m_cascadeViewProj[kNumCascades]{};  // 行優先(world*VP用、非転置)
     f32                                m_cascadeSplitsView[kNumCascades]{}; // 各カスケード遠端 view深度(正値)
+
+    // ---- スポット/ポイントライトの影 ----
+    // castShadows=true のライトのうちカメラに近い順で固定スロットへ毎フレーム割当（多数灯があっても
+    // 上限を超えた分は影なしにフォールバック＝CSMと同じ「固定配列」方針）。
+    static constexpr u32 kMaxShadowSpot      = 4;   // スポット影の同時上限
+    static constexpr u32 kMaxShadowPoint     = 2;   // ポイント影の同時上限（6面/灯）
+    static constexpr u32 kSpotShadowMapSize  = 1024;
+    static constexpr u32 kPointShadowMapSize = 512;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_spotShadowMap;   // Texture2DArray(ArraySize=kMaxShadowSpot)
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_pointShadowMap;  // Texture2DArray(ArraySize=kMaxShadowPoint*6)。SRVはTextureCubeArrayとして参照
+    std::unique_ptr<DescriptorHeap>    m_punctualShadowDsvHeap;  // 容量 kMaxShadowSpot + kMaxShadowPoint*6
+    D3D12_CPU_DESCRIPTOR_HANDLE        m_spotShadowDsvHandles[kMaxShadowSpot]{};
+    D3D12_CPU_DESCRIPTOR_HANDLE        m_pointShadowDsvHandles[kMaxShadowPoint * 6]{};
+    u32                                m_spotShadowSrvIndex  = 0;
+    u32                                m_pointShadowSrvIndex = 0;  // 初期化時に spotIndex+1（連番）である前提でRootSig側テーブルを組む
+    // フレーム毎のスロット割当結果（影パス描画とCB書き込みの両方で参照）
+    DirectX::XMFLOAT4X4                m_spotShadowViewProj[kMaxShadowSpot]{};  // 行優先(world*VP用、非転置)
+    entt::entity                       m_spotShadowEntity[kMaxShadowSpot]{};
+    u32                                m_numSpotShadowSlots = 0;
     // エディタレイアウト
     static constexpr f32 kLeftPanelWidth  = 280.0f;
     static constexpr f32 kToolbarHeight   = 60.0f;  // メニューバー + アイコン列の2段
