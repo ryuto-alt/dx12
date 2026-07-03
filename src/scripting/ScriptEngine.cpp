@@ -1114,9 +1114,114 @@ function time.every(sec, fn)
   return id
 end
 function time.cancel(id) time._timers[id] = nil end
-function __time_reset() time._timers, time._nextId = {}, 1 end
+
+-- エンティティキー解決: self テーブル(.name) / 名前文字列 / 数値id を受け付ける。
+-- キーは名前を優先(イベントで target 名を渡す既存の流儀と噛み合う)。同名エンティティは同一時計になる点に注意。
+local function _timeKey(e)
+  if type(e) == "table" then return e.name or tostring(e.entity) end
+  return e
+end
+
+-- ===== time.video: 共有ビデオ時計 =====
+-- ステージ全体に1本流れる"動画時間"。ギミックは video.localTime(self) を t にして動きを t の
+-- 純関数で書く(決定論タイムライン)。矢が刺さったら video.skip(target, ±sec) でその対象の
+-- オフセットだけを動かす = 先送り/巻き戻し。skip は残り時間も自動で消費する(skipCost 倍率、
+-- 「先送りすると制限時間が減る」ルールの実装。0 でコスト無し)。
+time.video = { _active = false, _t = 0, _dur = 0, _consumed = 0, _skipCost = 1.0, _offsets = {} }
+function time.video.start(duration, opts)
+  local v = time.video
+  v._active, v._t, v._dur, v._consumed = true, 0, duration or 0, 0
+  v._skipCost = (opts and opts.skipCost) or 1.0
+  v._offsets = {}
+end
+function time.video.stop() time.video._active = false end
+function time.video.active() return time.video._active end
+function time.video.now() return time.video._t end
+function time.video.duration() return time.video._dur end
+function time.video.remaining()
+  local v = time.video
+  if not v._active then return math.huge end
+  local r = v._dur - v._t - v._consumed
+  return r > 0 and r or 0
+end
+function time.video.finished() return time.video._active and time.video.remaining() <= 0 end
+function time.video.setOffset(e, off) time.video._offsets[_timeKey(e)] = off end
+function time.video.getOffset(e) return time.video._offsets[_timeKey(e)] or 0 end
+function time.video.skip(e, amount)
+  local v = time.video
+  local k = _timeKey(e)
+  v._offsets[k] = (v._offsets[k] or 0) + amount
+  v._consumed = v._consumed + math.abs(amount) * v._skipCost
+  return v._offsets[k]
+end
+function time.video.localTime(e) return time.video._t + time.video.getOffset(e) end
+
+-- ===== 個別時計: エンティティ単位の独立クロック =====
+-- 共有ビデオ時計と無関係に、オブジェクトごとに進む・止まる・スキップできる時計。
+-- 初アクセスで t=0 から開始。scaleEntity(e, 0)=そのオブジェクトだけ停止、負値=逆再生。
+time._ent = {}
+local function _entClock(e)
+  local k = _timeKey(e)
+  local c = time._ent[k]
+  if not c then c = { t = 0, scale = 1 }; time._ent[k] = c end
+  return c
+end
+function time.localTime(e) return _entClock(e).t end
+function time.skipEntity(e, amount) local c = _entClock(e); c.t = c.t + amount; return c.t end
+function time.scaleEntity(e, s) _entClock(e).scale = s end
+function time.getEntityScale(e) return _entClock(e).scale end
+function time.resetEntity(e) time._ent[_timeKey(e)] = nil end
+
+-- ===== charge: 押しっぱなしチャージ計測（弓を引く等）=====
+-- local c = charge.new("E", { max = 2.0, rate = 1.0 })
+-- OnUpdate で c:update() を呼ぶ。c:charging()/c:ratio() でゲージ表示、
+-- 離した瞬間 c:released() がチャージ量を返す(それ以外は nil)。
+charge = {}
+charge.__index = charge
+function charge.new(key, opts)
+  opts = opts or {}
+  return setmetatable({
+    key = key, max = opts.max or 2.0, rate = opts.rate or 1.0,
+    realtime = opts.realtime or false,   -- true: ポーズ中も実時間で溜まる
+    v = 0, _charging = false, _released = false,
+  }, charge)
+end
+function charge:update()
+  local dt = self.realtime and time.realDt() or time.dt()
+  self._released = false
+  if keyDown(self.key) then
+    self._charging = true
+    self.v = math.min(self.v + dt * self.rate, self.max)
+  elseif self._charging then
+    self._charging = false
+    self._released = true
+  end
+end
+function charge:charging() return self._charging end
+function charge:value() return self.v end
+function charge:ratio() return self.max > 0 and (self.v / self.max) or 0 end
+function charge:released()
+  if not self._released then return nil end
+  self._released = false
+  local v = self.v
+  self.v = 0
+  return v
+end
+
+function __time_reset()
+  time._timers, time._nextId = {}, 1
+  -- time.video はメソッドも入っているテーブルなので丸ごと差し替えず状態フィールドだけ戻す
+  local v = time.video
+  v._active, v._t, v._dur, v._consumed, v._skipCost = false, 0, 0, 0, 1.0
+  v._offsets = {}
+  time._ent = {}
+end
 function __time_tick(dt)
-  -- スナップショットしてから回す(fn 内で after/cancel されても安全)
+  -- ビデオ時計・個別時計を進める
+  if time.video._active then time.video._t = time.video._t + dt end
+  for _, c in pairs(time._ent) do c.t = c.t + dt * c.scale end
+
+  -- タイマー: スナップショットしてから回す(fn 内で after/cancel されても安全)
   local ids = {}
   for id in pairs(time._timers) do ids[#ids + 1] = id end
   for _, id in ipairs(ids) do

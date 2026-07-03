@@ -1967,6 +1967,12 @@ nlohmann::json McpLuaApi()
         "time.after(sec, fn) -> id  — sec秒後に fn を1回実行(スケール済み時間で進む)",
         "time.every(sec, fn) -> id  — sec秒ごとに fn を繰り返し実行",
         "time.cancel(id)  — after/every の解除。タイマーは Play 開始でクリア",
+        "time.video.start(duration, {skipCost=1.0}?)/stop()/active()  — ステージ共有の\"ビデオ時計\"開始。ギミックは t=video.localTime(self) の純関数で動きを書く(決定論タイムライン)",
+        "time.video.now()/duration()/remaining()/finished()  — 動画時間・残り時間(未startなら remaining=math.huge)。skip の消費も残り時間に反映",
+        "time.video.skip(entOrName, ±sec) -> offset  — 対象だけ先送り/巻き戻し(オフセット±)。残り時間を |sec|*skipCost 自動消費",
+        "time.video.localTime(entOrName) -> t / setOffset/getOffset  — 動画時間+個別オフセット。キーは self テーブル/名前文字列/数値id(名前優先、同名は同一時計)",
+        "time.localTime(e)/skipEntity(e,±sec)/scaleEntity(e,s)/getEntityScale(e)/resetEntity(e)  — ビデオ時計と独立したエンティティ個別時計(0=停止、負=逆再生)",
+        "charge.new(key, {max=2,rate=1,realtime=false}?) -> c  — 押しっぱなしチャージ計測(弓を引く等)。OnUpdate で c:update()、c:charging()/c:ratio()/c:value()、離した瞬間 c:released() がチャージ量を返す(他は nil)",
     })));
     objects.push_back(O("RaycastHit", "physics:raycast(...)", json::array({
         "hit() -> bool", "distance() -> float", "point() -> vec3", "normal() -> vec3",
