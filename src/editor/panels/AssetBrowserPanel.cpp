@@ -119,6 +119,19 @@ void AssetBrowserPanel::LoadPendingThumbnails(ID3D12GraphicsCommandList* cmdList
         m_pendingThumbnailLoads.begin() + static_cast<ptrdiff_t>(count));
 }
 
+u64 AssetBrowserPanel::GetOrQueueThumbnail(const std::string& absPath)
+{
+    auto it = m_thumbnailCache.find(absPath);
+    if (it != m_thumbnailCache.end())
+        return (it->second.loaded && !it->second.failed) ? it->second.gpuHandle : 0;
+
+    // グリッド表示(Render内)と同じキュー+プレースホルダ方式。LoadPendingThumbnailsが
+    // 次フレーム以降に実ロードする(呼び出し側は0が返る間は「読み込み中」として扱うこと)。
+    m_pendingThumbnailLoads.push_back(absPath);
+    m_thumbnailCache[absPath] = ThumbnailInfo{};
+    return 0;
+}
+
 const char* AssetBrowserPanel::GetTypeIcon(AssetType type)
 {
     switch (type)

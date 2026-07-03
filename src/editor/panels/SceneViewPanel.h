@@ -58,6 +58,15 @@ public:
                          Scene* scene,
                          f32 vpX, f32 vpY, f32 vpW, f32 vpH);
 
+    // 右クリック(ドラッグでないただのクリック)でメッシュの上に乗っていたら「テクスチャを外す」
+    // コンテキストメニューを出す。右クリック長押し+ドラッグはフライカメラ操作
+    // (Application::Update が GetAsyncKeyState で独自に処理)なので、それと衝突しないよう
+    // 「押下位置からの移動量が小さいクリックだけ」をメニュー対象にする。
+    void HandleTextureContextMenu(entt::registry& reg,
+                                  EditorContext& ctx,
+                                  Camera* camera,
+                                  f32 vpX, f32 vpY, f32 vpW, f32 vpH);
+
 private:
     // ギズモ操作中の開始時 Transform（Undo用）
     bool      m_gizmoWasUsing = false;
@@ -68,6 +77,9 @@ private:
     // オービット/ドリーの基準点と距離（ドラッグ開始時に確定）
     DirectX::XMFLOAT3 m_orbitPivot    = {0.0f, 0.0f, 0.0f};
     f32               m_orbitDistance = 10.0f;
+
+    // 右クリックのコンテキストメニュー対象(押下時にピッキングして確定、Popup描画まで保持)
+    SubmeshPickResult m_textureCtxTarget{};
 };
 
 } // namespace dx12e

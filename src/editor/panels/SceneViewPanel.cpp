@@ -586,6 +586,66 @@ SubmeshPickResult SceneViewPanel::PickEntityAndSubmesh(entt::registry& reg,
     return result;
 }
 
+void SceneViewPanel::HandleTextureContextMenu(entt::registry& reg,
+                                              EditorContext& ctx,
+                                              Camera* camera,
+                                              f32 vpX, f32 vpY, f32 vpW, f32 vpH)
+{
+    ImGuiIO& io = ImGui::GetIO();
+
+    // 押下位置からの移動量がこれ未満なら「ドラッグでない普通のクリック」とみなす。
+    // フライカメラ(右クリック長押し+視点回転)は Application::Update が GetAsyncKeyState で
+    // 独自に処理しており、ここでの ImGui 側クリック/ドラッグ判定とは完全に独立(同じ物理入力を
+    // 両方が見ているだけなので、実際に視点を動かした操作はこの距離チェックで自然に弾かれる)。
+    constexpr float kClickDragThresholdSq = 6.0f * 6.0f;
+
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+    {
+        ImVec2 mp = io.MousePos;
+        bool inViewport = mp.x >= vpX && mp.x < vpX + vpW && mp.y >= vpY && mp.y < vpY + vpH;
+        m_textureCtxTarget = inViewport ? PickEntityAndSubmesh(reg, camera, vpX, vpY, vpW, vpH)
+                                        : SubmeshPickResult{};
+    }
+
+    if (ImGui::IsMouseReleased(ImGuiMouseButton_Right) && m_textureCtxTarget.entity != entt::null)
+    {
+        ImVec2 downPos = io.MouseClickedPos[ImGuiMouseButton_Right];
+        ImVec2 upPos = io.MousePos;
+        float dx = upPos.x - downPos.x, dy = upPos.y - downPos.y;
+        if (dx * dx + dy * dy <= kClickDragThresholdSq)
+            ImGui::OpenPopup("SceneViewTextureCtxMenu");
+    }
+
+    if (ImGui::BeginPopup("SceneViewTextureCtxMenu"))
+    {
+        entt::entity e = m_textureCtxTarget.entity;
+        u32 smi = m_textureCtxTarget.submeshIndex;
+        bool valid = e != entt::null && reg.valid(e) && reg.all_of<MeshRenderer>(e);
+        bool hasOverride = valid && reg.get<MeshRenderer>(e).HasAnyTextureOverride(smi);
+
+        if (!valid)
+        {
+            ImGui::TextDisabled("(no mesh)");
+        }
+        else
+        {
+            ImGui::BeginDisabled(!hasOverride);
+            if (ImGui::MenuItem("\xe3\x83\x86\xe3\x82\xaf\xe3\x82\xb9\xe3\x83\x81\xe3\x83\xa3\xe3\x82\x92\xe5\xa4\x96\xe3\x81\x99"))
+            {
+                auto& mr = reg.get<MeshRenderer>(e);
+                MeshRenderer before = mr;
+                MeshRenderer::SetOverride(mr.overrideAlbedoTexture, smi, "");
+                MeshRenderer::SetOverride(mr.overrideNormalTexture, smi, "");
+                MeshRenderer::SetOverride(mr.overrideMetalRoughnessTexture, smi, "");
+                ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<MeshRenderer>>(
+                    &reg, e, before, mr, "Material Texture"));
+            }
+            ImGui::EndDisabled();
+        }
+        ImGui::EndPopup();
+    }
+}
+
 void SceneViewPanel::HandleCameraNavigation(entt::registry& reg,
                                             EditorContext& ctx,
                                             Camera* camera,

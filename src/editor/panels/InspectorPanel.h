@@ -15,6 +15,7 @@ class PhysicsDebugRenderer;
 class GameClock;
 class Scene;
 class ScriptEngine;
+class AssetBrowserPanel;
 
 class InspectorPanel
 {
@@ -42,6 +43,8 @@ public:
 
     void SetScriptEngine(ScriptEngine* e) { m_scriptEngine = e; }
     void SetAssetsDir(const std::string& d) { m_assetsDir = d; }
+    // マテリアルテクスチャスロットのサムネイルプレビュー/選択ダイアログに使う
+    void SetAssetBrowser(AssetBrowserPanel* p) { m_assetBrowser = p; }
 
     // Undo 用: コンポーネント編集の追跡状態
     template<typename T>
@@ -81,6 +84,7 @@ private:
 
     ScriptEngine* m_scriptEngine = nullptr;
     std::string   m_assetsDir;
+    AssetBrowserPanel* m_assetBrowser = nullptr;
 };
 
 } // namespace dx12e

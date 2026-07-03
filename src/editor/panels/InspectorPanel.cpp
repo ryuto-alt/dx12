@@ -1156,17 +1156,48 @@ void InspectorPanel::Render(entt::registry& reg,
                     ImGui::TextDisabled("\xe3\x83\x86\xe3\x82\xaf\xe3\x82\xb9\xe3\x83\x81\xe3\x83\xa3\xe4\xb8\x8a\xe6\x9b\xb8\xe3\x81\x8d"
                         "(\xe3\x82\xa2\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88\xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6\xe3\x81\x8b\xe3\x82\x89 D&D)");
 
+                    // 割当/解除を1箇所にまとめる(ドラッグ&ドロップ・ピッカー・xボタンの全経路から呼ぶ)。
+                    auto applyOverride = [&](std::vector<std::string>& slotVec, u32 smi, const std::string& rel)
+                    {
+                        MeshRenderer before = mr;
+                        MeshRenderer::SetOverride(slotVec, smi, rel);
+                        ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<MeshRenderer>>(
+                            &reg, ctx.selectedEntity, before, mr, "Material Texture"));
+                    };
+
+                    constexpr float kThumbSize = 40.0f;
+
                     auto drawTextureOverrideSlot = [&](const char* label, std::vector<std::string>& slotVec, u32 smi)
                     {
                         ImGui::PushID(label);
                         ImGui::PushID(static_cast<int>(smi));
 
                         const std::string& cur = MeshRenderer::SafeGetOverride(slotVec, smi);
-                        std::string display = cur.empty() ? "(default)" : cur;
+                        bool hasTex = !cur.empty();
 
                         ImGui::TextUnformatted(label);
                         ImGui::SameLine(120.0f);
-                        ImGui::Button(display.c_str(), ImVec2(180.0f, 0.0f));
+
+                        // サムネイル(実テクスチャ画像)。AssetBrowserPanel と同じキャッシュを使い回す
+                        // (GetOrQueueThumbnail、無ければロードキューに積んで0=読込中を返す)。
+                        u64 gpuHandle = 0;
+                        if (hasTex && m_assetBrowser)
+                            gpuHandle = m_assetBrowser->GetOrQueueThumbnail(m_assetsDir + cur);
+
+                        bool clicked;
+                        if (gpuHandle != 0)
+                        {
+                            clicked = ImGui::ImageButton("##slotThumb", static_cast<ImTextureID>(gpuHandle),
+                                                          ImVec2(kThumbSize, kThumbSize));
+                        }
+                        else
+                        {
+                            clicked = ImGui::Button(hasTex ? "..." : "(default)", ImVec2(kThumbSize * 3.0f, kThumbSize));
+                        }
+                        if (clicked)
+                            ImGui::OpenPopup("TexturePicker");
+
+                        // ドラッグ&ドロップ(アセットブラウザから直接)
                         if (ImGui::BeginDragDropTarget())
                         {
                             if (const ImGuiPayload* payload =
@@ -1184,25 +1215,73 @@ void InspectorPanel::Render(entt::registry& reg,
                                     std::replace(abs.begin(), abs.end(), '\\', '/');
                                     std::replace(base.begin(), base.end(), '\\', '/');
                                     std::string rel = (abs.rfind(base, 0) == 0) ? abs.substr(base.size()) : abs;
-
-                                    MeshRenderer before = mr;
-                                    MeshRenderer::SetOverride(slotVec, smi, rel);
-                                    ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<MeshRenderer>>(
-                                        &reg, ctx.selectedEntity, before, mr, "Material Texture"));
+                                    applyOverride(slotVec, smi, rel);
                                 }
                             }
                             ImGui::EndDragDropTarget();
                         }
-                        if (!cur.empty())
+
+                        if (hasTex)
                         {
                             ImGui::SameLine();
+                            ImGui::BeginGroup();
+                            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 160.0f);
+                            ImGui::TextWrapped("%s", cur.c_str());
+                            ImGui::PopTextWrapPos();
                             if (ImGui::SmallButton("x"))
+                                applyOverride(slotVec, smi, "");
+                            ImGui::EndGroup();
+                        }
+
+                        // クリックで開く一覧ダイアログ(Unity風: プロジェクト内の全テクスチャから選択)
+                        if (ImGui::BeginPopup("TexturePicker"))
+                        {
+                            ImGui::TextDisabled("Select Texture");
+                            ImGui::Separator();
+                            if (ImGui::Selectable("(None)", !hasTex))
                             {
-                                MeshRenderer before = mr;
-                                MeshRenderer::SetOverride(slotVec, smi, "");
-                                ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<MeshRenderer>>(
-                                    &reg, ctx.selectedEntity, before, mr, "Material Texture"));
+                                applyOverride(slotVec, smi, "");
+                                ImGui::CloseCurrentPopup();
                             }
+
+                            namespace fs = std::filesystem;
+                            std::error_code ec;
+                            fs::path root(m_assetsDir);
+                            if (fs::exists(root, ec))
+                            {
+                                fs::recursive_directory_iterator dirIt(
+                                    root, fs::directory_options::skip_permission_denied, ec);
+                                fs::recursive_directory_iterator dirEnd;
+                                for (; !ec && dirIt != dirEnd; dirIt.increment(ec))
+                                {
+                                    std::error_code fec;
+                                    if (!dirIt->is_regular_file(fec) || fec) continue;
+                                    std::string rowExt = dirIt->path().extension().string();
+                                    for (char& c : rowExt) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                                    if (AssetBrowserPanel::ClassifyExtension(rowExt) != AssetBrowserPanel::AssetType::Texture)
+                                        continue;
+
+                                    fs::path relPath = fs::relative(dirIt->path(), root, fec);
+                                    if (fec) continue;
+                                    std::string relStr = relPath.generic_string();
+
+                                    ImGui::PushID(relStr.c_str());
+                                    u64 rowThumb = m_assetBrowser
+                                        ? m_assetBrowser->GetOrQueueThumbnail(dirIt->path().string()) : 0;
+                                    if (rowThumb != 0)
+                                    {
+                                        ImGui::Image(static_cast<ImTextureID>(rowThumb), ImVec2(20.0f, 20.0f));
+                                        ImGui::SameLine();
+                                    }
+                                    if (ImGui::Selectable(relStr.c_str(), cur == relStr))
+                                    {
+                                        applyOverride(slotVec, smi, relStr);
+                                        ImGui::CloseCurrentPopup();
+                                    }
+                                    ImGui::PopID();
+                                }
+                            }
+                            ImGui::EndPopup();
                         }
 
                         ImGui::PopID();

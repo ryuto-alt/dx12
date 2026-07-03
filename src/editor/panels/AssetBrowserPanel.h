@@ -48,6 +48,11 @@ public:
     enum class AssetType { Folder, Model, Texture, Scene, Script, Audio, Prefab, Shader, Other };
     static AssetType ClassifyExtension(const std::string& ext);
 
+    // 他パネル(InspectorPanelのマテリアルテクスチャプレビュー等)から、このパネルが持つ
+    // サムネイルキャッシュを使い回すための公開アクセサ。キャッシュ済みならGPUハンドルを即返す。
+    // 無ければロードキューに積んで 0 を返す(LoadPendingThumbnailsが数フレーム後に用意する)。
+    u64 GetOrQueueThumbnail(const std::string& absPath);
+
 private:
     struct AssetEntry
     {

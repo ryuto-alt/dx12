@@ -94,6 +94,7 @@ void EditorLayer::Initialize(EditorContext* ctx,
 
     m_hierarchy->SetAssetsDir(assetsDir);
     m_assetBrowser->Initialize(assetsDir, scriptsDir, resourceManager, srvHeap);
+    m_inspector->SetAssetBrowser(m_assetBrowser.get());
 }
 
 void EditorLayer::BuildDefaultLayout(ImGuiID dockspaceId, f32 /*toolbarHeight*/)
@@ -527,6 +528,9 @@ void EditorLayer::Render(bool isPlaying,
         m_sceneView->HandleDeleteKey(reg, *m_ctx, scene,
                                      m_viewportPos.x, m_viewportPos.y,
                                      m_viewportSize.x, m_viewportSize.y);
+        m_sceneView->HandleTextureContextMenu(reg, *m_ctx, camera,
+                                              m_viewportPos.x, m_viewportPos.y,
+                                              m_viewportSize.x, m_viewportSize.y);
     }
 }
 
