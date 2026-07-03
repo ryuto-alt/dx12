@@ -6071,6 +6071,68 @@ void Application::DrawWorldSprites(ID3D12GraphicsCommandList* cmd, DirectX::XMMA
 
 // CSM: カメラ視錐台を near→far で kNumCascades 分割し、各カスケードをライト視点へタイトフィット。
 // 結果は m_cascadeViewProj[]（行優先 world*VP 用、非転置）と m_cascadeSplitsView[]（各遠端 view 深度）に格納。
+// 深度専用シーン描画（CSM各カスケード/スポット影/ポイント影の各面/SSAOプリパスで共用）。
+// RTVなし/DSVのみを前提に、Transform+MeshRenderer を全走査して viewProj で変換し描画する。
+// GridPlane・park済み(scale≈0)・発光弾(Pfx*)は除外（元のシャドウパスのフィルタをそのまま踏襲）。
+void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState& staticPSO,
+                                       PipelineState& skinnedPSO, bool updateSkinning, u32 frameIndex)
+{
+    using namespace DirectX;
+
+    auto& reg = m_scene->GetRegistry();
+    auto renderView = reg.view<const Transform, const MeshRenderer>();
+    for (auto [e, transform, renderer] : renderView.each())
+    {
+        if (reg.all_of<GridPlane>(e)) continue;
+        // park 済み(scale≈0)は影/深度も不要＝該当ドローをまるごと削減。
+        const auto& sc = transform.scale;
+        if (sc.x * sc.x + sc.y * sc.y + sc.z * sc.z < 1e-8f) continue;
+        // 発光弾(Pfx*)は光源扱い＝影/深度を落とさない（加算発光なので影が無い方が自然）。
+        if (auto* nt = reg.try_get<NameTag>(e); nt && nt->name.rfind("Pfx", 0) == 0) continue;
+
+        XMMATRIX world = (transform.parent != entt::null)
+            ? ComputeWorldMatrix(reg, e) : transform.GetWorldMatrix();
+
+        bool isSkinned = reg.all_of<SkeletalAnimation>(e);
+        if (isSkinned)
+        {
+            auto& skelAnim = reg.get<SkeletalAnimation>(e);
+            if (updateSkinning)
+                skelAnim.skinningBuffer->Update(skelAnim.animator->GetSkinningMatrices(), frameIndex);
+            m_commandList->SetPipelineState(skinnedPSO);
+            m_commandList->SetSRVTable(RootSignature::kSlotBonesSRV,
+                m_srvHeap->GetGpuHandle(skelAnim.skinningBuffer->GetSrvIndex(frameIndex)));
+        }
+        else
+        {
+            m_commandList->SetPipelineState(staticPSO);
+        }
+
+        bool hasNodeAnim = reg.all_of<NodeAnimationComp>(e);
+        for (u32 mi = 0; mi < static_cast<u32>(renderer.meshes.size()); ++mi)
+        {
+            const auto* mesh = renderer.meshes[mi];
+
+            XMMATRIX meshWorld = world;
+            if (hasNodeAnim && mi < static_cast<u32>(renderer.meshNodeTransforms.size()))
+            {
+                XMMATRIX nodeMat = XMLoadFloat4x4(&renderer.meshNodeTransforms[mi]);
+                meshWorld = nodeMat * world;
+            }
+
+            struct PerObjectData { XMMATRIX mvp; XMMATRIX mdl; } objData;
+            objData.mvp = XMMatrixTranspose(meshWorld * viewProj);
+            objData.mdl = XMMatrixTranspose(meshWorld);
+            m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
+
+            m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
+            m_commandList->SetIndexBuffer(mesh->GetIndexBuffer().GetView());
+            m_commandList->DrawIndexedInstanced(mesh->GetIndexCount());
+        }
+    }
+}
+
 void Application::ComputeCascades(const DirectX::XMVECTOR& lightDir, f32 camNear, f32 camFar)
 {
     using namespace DirectX;
@@ -7031,62 +7093,9 @@ void Application::Render()
             // RTVなし、DSVのみ（該当カスケードのスライス）
             nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_shadowDsvHandles[ci]);
 
-            // シャドウパスで全Entity（グリッドは除外）を描画
-            auto& reg = m_scene->GetRegistry();
-            auto renderView = reg.view<const Transform, const MeshRenderer>();
-            for (auto [e, transform, renderer] : renderView.each())
-            {
-                if (reg.all_of<GridPlane>(e)) continue;
-                // park 済み(scale≈0)は影も落とさない＝シャドウパスの大半(全プール×4カスケード)を削減。
-                const auto& sc = transform.scale;
-                if (sc.x * sc.x + sc.y * sc.y + sc.z * sc.z < 1e-8f) continue;
-                // 発光弾(Pfx*)は光源扱い＝影を落とさない。boss3 弾幕で「全弾×4カスケード」のシャドウ
-                // draw を丸ごと削減（加算発光なので影が無い方が自然・見た目も良い）。
-                if (auto* nt = reg.try_get<NameTag>(e); nt && nt->name.rfind("Pfx", 0) == 0) continue;
-
-                XMMATRIX world = (transform.parent != entt::null)
-                    ? ComputeWorldMatrix(reg, e) : transform.GetWorldMatrix();
-
-                bool isSkinned = reg.all_of<SkeletalAnimation>(e);
-                if (isSkinned)
-                {
-                    auto& skelAnim = reg.get<SkeletalAnimation>(e);
-                    // skinningBuffer の Update はフレーム内1回で良い（最初のカスケードのみ）。
-                    // SRV バインドは各カスケードで必要。
-                    if (ci == 0)
-                        skelAnim.skinningBuffer->Update(skelAnim.animator->GetSkinningMatrices(), frameIndex);
-                    m_commandList->SetPipelineState(*m_shadowSkinnedPipelineState);
-                    m_commandList->SetSRVTable(RootSignature::kSlotBonesSRV,
-                        m_srvHeap->GetGpuHandle(skelAnim.skinningBuffer->GetSrvIndex(frameIndex)));
-                }
-                else
-                {
-                    m_commandList->SetPipelineState(*m_shadowPipelineState);
-                }
-
-                bool hasNodeAnim = reg.all_of<NodeAnimationComp>(e);
-                for (u32 mi = 0; mi < static_cast<u32>(renderer.meshes.size()); ++mi)
-                {
-                    const auto* mesh = renderer.meshes[mi];
-
-                    XMMATRIX meshWorld = world;
-                    if (hasNodeAnim && mi < static_cast<u32>(renderer.meshNodeTransforms.size()))
-                    {
-                        XMMATRIX nodeMat = XMLoadFloat4x4(&renderer.meshNodeTransforms[mi]);
-                        meshWorld = nodeMat * world;
-                    }
-
-                    struct PerObjectData { XMMATRIX mvp; XMMATRIX mdl; } objData;
-                    objData.mvp = XMMatrixTranspose(meshWorld * cascadeVP);
-                    objData.mdl = XMMatrixTranspose(meshWorld);
-                    m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
-
-                    m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-                    m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
-                    m_commandList->SetIndexBuffer(mesh->GetIndexBuffer().GetView());
-                    m_commandList->DrawIndexedInstanced(mesh->GetIndexCount());
-                }
-            }
+            // skinningBuffer の Update はフレーム内1回で良い（最初のカスケードのみ）。SRVバインドは各カスケードで必要。
+            RenderDepthOnlyScene(cascadeVP, *m_shadowPipelineState, *m_shadowSkinnedPipelineState,
+                                 /*updateSkinning*/ ci == 0, frameIndex);
         }
 
         m_commandList->TransitionResource(m_shadowMap.Get(),
@@ -7114,52 +7123,10 @@ void Application::Render()
         nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_dsvHandle);
         m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
 
-        auto& reg = m_scene->GetRegistry();
-        auto prepassView = reg.view<const Transform, const MeshRenderer>();
-        auto isPfxName = [&](entt::entity e) -> bool {
-            const auto* nt = reg.try_get<NameTag>(e);
-            return nt && nt->name.rfind("Pfx", 0) == 0;
-        };
-        for (auto [e, transform, renderer] : prepassView.each())
-        {
-            if (reg.all_of<GridPlane>(e)) continue;   // グリッド/パーティクルはプリパス対象外
-            if (isPfxName(e)) continue;
-
-            XMMATRIX world = (transform.parent != entt::null)
-                ? ComputeWorldMatrix(reg, e) : transform.GetWorldMatrix();
-
-            bool isSkinned = reg.all_of<SkeletalAnimation>(e);
-            if (isSkinned)
-            {
-                auto& skelAnim = reg.get<SkeletalAnimation>(e);
-                m_commandList->SetPipelineState(*m_depthPrepassSkinnedPSO);
-                m_commandList->SetSRVTable(RootSignature::kSlotBonesSRV,
-                    m_srvHeap->GetGpuHandle(skelAnim.skinningBuffer->GetSrvIndex(frameIndex)));
-            }
-            else
-            {
-                m_commandList->SetPipelineState(*m_depthPrepassPSO);
-            }
-
-            bool hasNodeAnim = reg.all_of<NodeAnimationComp>(e);
-            for (u32 mi = 0; mi < static_cast<u32>(renderer.meshes.size()); ++mi)
-            {
-                const auto* mesh = renderer.meshes[mi];
-                XMMATRIX meshWorld = world;
-                if (hasNodeAnim && mi < static_cast<u32>(renderer.meshNodeTransforms.size()))
-                    meshWorld = XMLoadFloat4x4(&renderer.meshNodeTransforms[mi]) * world;
-
-                struct PerObjectData { XMMATRIX mvp; XMMATRIX mdl; } objData;
-                objData.mvp = XMMatrixTranspose(meshWorld * camVP);
-                objData.mdl = XMMatrixTranspose(meshWorld);
-                m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
-
-                m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-                m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
-                m_commandList->SetIndexBuffer(mesh->GetIndexBuffer().GetView());
-                m_commandList->DrawIndexedInstanced(mesh->GetIndexCount());
-            }
-        }
+        // skinningBuffer は毎フレーム1回どこかで Update されていれば良い（このプリパスより前に
+        // シャドウパスの ci==0 で更新済み＝ここでは false）。
+        RenderDepthOnlyScene(camVP, *m_depthPrepassPSO, *m_depthPrepassSkinnedPSO,
+                             /*updateSkinning*/ false, frameIndex);
 
         // --- SSAO 生成（depth SRV を読み AO→Blur）---
         m_commandList->TransitionResource(m_depthBuffer.Get(),

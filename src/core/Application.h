@@ -124,6 +124,11 @@ private:
     // CSM: カメラ視錐台を near→far で kNumCascades 分割し、各カスケードをライト視点へタイトフィット。
     // 結果は m_cascadeViewProj[] / m_cascadeSplitsView[] に格納する。
     void ComputeCascades(const DirectX::XMVECTOR& lightDir, f32 camNear, f32 camFar);
+    // 深度専用シーン描画（CSM各カスケード/スポット影/ポイント影の各面/SSAOプリパスで共用）。
+    // RT/DSV・ビューポート・クリア・バリアは呼び出し側の責任。frameIndex はボーンSRV参照用。
+    // updateSkinning=true の時だけ skinningBuffer->Update を呼ぶ（1フレームに1回で十分なため）。
+    void RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState& staticPSO,
+                              PipelineState& skinnedPSO, bool updateSkinning, u32 frameIndex);
     void RebuildScene();
     // ランチャーで選んだ/作成したプロジェクトを実行時に読み込む（パス再ポイント + シーンロード）
     void LoadProject(const ProjectInfo& info);
