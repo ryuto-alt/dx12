@@ -345,9 +345,9 @@ vfx.play(name, x, y, z, scale?)   -- Effekseer 実体があれば優先、無け
 ### ライト
 | コンポーネント | フィールド（既定値） |
 |---|---|
-| `PointLight` | `color=(1,1,1)`, `intensity=1`, `range=10` |
-| `DirectionalLight` | `direction=(0,-1,0)`, `color=(1,1,1)`, `intensity=1`, `ambient=0.25` |
-| `SpotLight` | `color`, `intensity=3`, `range=15`, `direction=(0,-1,0)`, `innerConeDeg=18`, `outerConeDeg=28` |
+| `PointLight` | `color=(1,1,1)`, `intensity=1`, `range=10`, `castShadows=false`（同時最大2灯、カメラ近い順） |
+| `DirectionalLight` | `direction=(0,-1,0)`, `color=(1,1,1)`, `intensity=1`, `ambient=0.25`（CSM4分割で常時影あり） |
+| `SpotLight` | `color`, `intensity=3`, `range=15`, `direction=(0,-1,0)`, `innerConeDeg=18`, `outerConeDeg=28`, `castShadows=false`（同時最大4灯、カメラ近い順） |
 
 ### カメラ / 2D / 音
 | コンポーネント | フィールド（既定値） |
