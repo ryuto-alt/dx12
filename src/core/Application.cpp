@@ -1475,6 +1475,7 @@ nlohmann::json McpComponentSchema()
     }), "read-only via MCP; create with dx12_spawn_model/dx12_create_entity. Use dx12_set_pbr for material."));
     comps.push_back(C("pointLight", true, true, json::array({
         F("color", "float3", json::array({1, 1, 1})), F("intensity", "float", 1.0), F("range", "float", 10.0),
+        F("castShadows", "bool (max 2 simultaneous, nearest-to-camera wins)", false),
     })));
     comps.push_back(C("directionalLight", true, true, json::array({
         F("direction", "float3", json::array({0, -1, 0})), F("color", "float3", json::array({1, 1, 1})),
@@ -1484,6 +1485,7 @@ nlohmann::json McpComponentSchema()
         F("color", "float3", json::array({1, 1, 1})), F("intensity", "float", 3.0), F("range", "float", 15.0),
         F("direction", "float3", json::array({0, -1, 0})),
         F("innerConeDeg", "float", 18.0), F("outerConeDeg", "float", 28.0),
+        F("castShadows", "bool (max 4 simultaneous, nearest-to-camera wins)", false),
     })));
     comps.push_back(C("camera", true, true, json::array({
         F("fovDegrees", "float", 60.0), F("nearClip", "float", 0.1), F("farClip", "float", 1000.0),
