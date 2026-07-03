@@ -224,6 +224,68 @@ local id = time.every(1.0, spawnEnemy)      -- 毎秒スポーン
 time.cancel(id)
 ```
 
+#### time.video — 共有ビデオ時計（決定論タイムライン）
+ステージ全体に1本流れる"動画時間"。ギミックは `t = time.video.localTime(self)` を使って
+**動きを t の純関数**で書く（サイン往復・パス移動など）。対象ごとのオフセットを ± するだけで
+先送りも巻き戻しも正確に効く。エンティティのキーは self テーブル / 名前文字列 / 数値 id
+（名前優先。同名エンティティは同一時計になる）。
+
+| メソッド | 戻り値 | 説明 |
+|---|---|---|
+| `.start(duration, {skipCost=1.0}?)` | — | ビデオ開始（例: 10秒）。`skipCost` は skip 時の残り時間消費倍率（0=消費なし） |
+| `.stop()` / `.active()` | — / bool | 停止 / 動作中か |
+| `.now()` / `.duration()` | float | 動画時間 / 全長 |
+| `.remaining()` | float | 残り時間（skip の消費込み。未 start なら `math.huge`） |
+| `.finished()` | bool | 残り時間が尽きたか（ゲームオーバー判定） |
+| `.skip(ent, ±sec)` | offset | **対象だけ**先送り / 巻き戻し。残り時間を `|sec| * skipCost` 自動消費 |
+| `.localTime(ent)` | float | `now() + 対象のオフセット`。ギミックの t はこれ |
+| `.setOffset(ent, off)` / `.getOffset(ent)` | — / float | オフセットの直接操作 |
+
+```lua
+-- ステージ側
+time.video.start(10, { skipCost = 1.0 })     -- 10秒の動画。先送りすると制限時間が減る
+if time.video.finished() then gameOver() end
+ui:text(20, 20, ("残り %.1f"):format(time.video.remaining()))
+
+-- ギミック側（動きは t の純関数で書く）
+function OnUpdate(self, dt)
+  local t = time.video.localTime(self)
+  self.transform.position = Vec3.new(self.bx, self.by + math.sin(t) * 2, self.bz)
+end
+
+-- 矢が刺さったら
+time.video.skip("SpikeWall", 1.0)            -- 1秒先送り（巻き戻しは -1.0）
+```
+
+#### 個別時計 — エンティティ単位の独立クロック
+ビデオ時計と無関係に、オブジェクトごとに進む・止まる・スキップできる時計。初アクセスで t=0 から開始。
+
+| メソッド | 説明 |
+|---|---|
+| `time.localTime(ent)` | 対象の経過秒 |
+| `time.skipEntity(ent, ±sec)` | 対象の時計を ± |
+| `time.scaleEntity(ent, s)` / `time.getEntityScale(ent)` | 対象だけスロー / 停止(0) / 逆再生(負) |
+| `time.resetEntity(ent)` | 時計を破棄（次アクセスで t=0） |
+
+#### charge — 押しっぱなしチャージ計測（弓を引く等）
+| メソッド | 説明 |
+|---|---|
+| `charge.new(key, {max=2, rate=1, realtime=false}?)` | 生成。`key` は `"E"` 等のキー名。`realtime=true` でポーズ中も実時間で溜まる |
+| `c:update()` | `OnUpdate` で毎フレーム呼ぶ |
+| `c:charging()` / `c:value()` / `c:ratio()` | チャージ中か / 現在量 / 0..1（ゲージ表示用） |
+| `c:released()` | **離した瞬間だけ**チャージ量を返す（それ以外は nil）。返すと 0 にリセット |
+
+```lua
+local c
+function OnStart(self) c = charge.new("E", { max = 2.0 }) end
+function OnUpdate(self, dt)
+  c:update()
+  if c:charging() then ui:rect(20, 60, 200 * c:ratio(), 12, 1, 0.8, 0.2, 1) end
+  local v = c:released()
+  if v then shootArrow(self, v * self.skipPerCharge) end  -- 引いた量でスキップ量が変わる
+end
+```
+
 ### ui（`ui`）— 即時モード UI
 | メソッド | 戻り値 | 説明 |
 |---|---|---|
