@@ -140,6 +140,9 @@ private:
     // エディタの「Project」「Version Control」ウィンドウ描画（ランチャー閉後）
     void RenderProjectWindow();
     void RenderVersionControlWindow();
+    // タイトルバーの X（WM_CLOSE）横取りハンドラ。true=そのまま終了、false=横取りして呑み込んだ
+    // （ランチャーに戻した/Playを止めた等）。Window::SetCloseHandler に渡す。
+    bool HandleWindowCloseRequest();
     void RenderBuildSettingsWindow();   // 「ビルド設定」窓（構成/開始シーン/出力先 → ビルド実行）
     // git/gh 操作をワーカースレッドで実行（メインスレッドを固めない）。
     // task はワーカー上で走り GitResult を返す。label はバナー表示名。

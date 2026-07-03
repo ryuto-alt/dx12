@@ -3,6 +3,7 @@
 #include <Windows.h>
 
 #include "Types.h"
+#include <functional>
 #include <string>
 
 namespace dx12e
@@ -42,6 +43,11 @@ public:
     void         SetInputSystem(InputSystem* input) { m_inputSystem = input; }
     void         SetTitle(const std::wstring& title);
 
+    // タイトルバーの X（WM_CLOSE）を横取りするハンドラ。true を返すと通常通り閉じる（本当に終了）、
+    // false を返すとウィンドウは閉じない（呼び出し側が「ランチャーに戻る」等を自前で処理済みの意味）。
+    // 未設定なら従来通り常に閉じる。
+    void         SetCloseHandler(std::function<bool()> handler) { m_closeHandler = std::move(handler); }
+
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -54,6 +60,7 @@ private:
     bool         m_fullscreen = false;
     RECT         m_windowedRect = {};
     InputSystem* m_inputSystem = nullptr;
+    std::function<bool()> m_closeHandler;
 };
 
 } // namespace dx12e

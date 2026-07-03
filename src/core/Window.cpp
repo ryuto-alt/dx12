@@ -257,6 +257,8 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             return 0;
 
         case WM_CLOSE:
+            if (window->m_closeHandler && !window->m_closeHandler())
+                return 0;   // 呼び出し側が処理済み（例: ランチャーに戻った）＝ウィンドウは閉じない
             window->m_shouldClose = true;
             DestroyWindow(hwnd);
             return 0;

@@ -232,6 +232,9 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     const bool deferMainWindow = !gameMode && !buildMode;
     SplashScreen::SetStatus("ウィンドウを作成中...");
     m_window->Initialize(hInstance, nCmdShow, winW, winH, windowTitle.c_str(), deferMainWindow);
+    // タイトルバーの X を横取り。ゲーム(GameRuntime)は従来通り即終了、エディタでプロジェクトを
+    // 開いている時はいきなり終了せずランチャー（プロジェクト作成前の画面）に戻す。
+    m_window->SetCloseHandler([this]{ return HandleWindowCloseRequest(); });
 
     // グラフィックスデバイス初期化
     SplashScreen::SetStatus("グラフィックスデバイスを初期化中...");
@@ -4417,6 +4420,27 @@ void Application::RenderProjectWindow()
         m_showLauncher = true;
 
     ImGui::End();
+}
+
+bool Application::HandleWindowCloseRequest()
+{
+    if (m_isGameMode) return true;              // GameRuntime.exe: 従来通りそのまま終了
+
+    if (m_showLauncher || m_loading) return true; // ランチャー表示中/ロード中はそのまま終了して良い
+
+    if (m_engineMode == EngineMode::Playing)
+    {
+        // Play 中にいきなり閉じようとした→まず停止するだけに留める（誤操作で未保存の作業が消えるのを防ぐ）。
+        // もう一度 X を押せばプロジェクトを閉じてランチャーへ戻る（上の分岐に入る）。
+        m_pendingMode = EngineMode::Editor;
+        m_modeChangeRequested = true;
+        return false;
+    }
+
+    // プロジェクトを開いた状態で X → ファイルメニュー「プロジェクトを閉じる」と同じ扱い。
+    // ファイル削除等は不要＝ランチャーに戻すだけ。
+    m_showLauncher = true;
+    return false;
 }
 
 void Application::RenderVersionControlWindow()
