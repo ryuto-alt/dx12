@@ -44,7 +44,8 @@
 ゲームの中身は全部データ（シーン JSON + `.lua` コンポーネント）。同じものを人間はエディタで、
 Claude Code はテキストで作れる。新機能の作法はここを参照:
 - **[`docs/AUTHORING.md`](docs/AUTHORING.md)** … 配置エフェクト `ParticleEmitter` / イベント `Trigger`+Action /
-  エンティティ参照プロパティ(`type="entity"`) / イベントバス `events` / ヘッドレス検証 `--validate`
+  エンティティ参照プロパティ(`type="entity"`) / イベントバス `events` / ヘッドレス検証 `--validate` /
+  カスタムシェーダー(`assets/shaders/*.hlsl`、保存で自動ホットリロード)
 - [`docs/SCRIPT_COMPONENTS.md`](docs/SCRIPT_COMPONENTS.md) … プロパティ付き Lua コンポーネント / プレハブ
 - 検証: `DX12Engine.exe --validate <scene.json>`（参照切れ・スクリプト不在をヘッドレスで報告。終了コード 0/1）
 

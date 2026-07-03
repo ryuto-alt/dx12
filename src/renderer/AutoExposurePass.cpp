@@ -62,16 +62,8 @@ void AutoExposurePass::Initialize(GraphicsDevice& device, const std::wstring& sh
     }
 
     // --- Compute PSO ×2 ---
-    auto makeCS = [&](const std::wstring& cso, Microsoft::WRL::ComPtr<ID3D12PipelineState>& out)
-    {
-        auto bc = ShaderCompiler::LoadFromFile(shaderDir + cso);
-        D3D12_COMPUTE_PIPELINE_STATE_DESC pso{};
-        pso.pRootSignature = m_rootSig.Get();
-        pso.CS = { bc.GetData(), bc.GetSize() };
-        ThrowIfFailed(dev->CreateComputePipelineState(&pso, IID_PPV_ARGS(&out)));
-    };
-    makeCS(L"ExposureHistogram_CS.cso", m_psoHistogram);
-    makeCS(L"ExposureAdapt_CS.cso",     m_psoAdapt);
+    m_shaderDir = shaderDir;
+    RecreatePipelines(device);
 
     // --- バッファ（DEFAULT ヒープ・UAV）---
     auto makeBuf = [&](u64 size, Microsoft::WRL::ComPtr<ID3D12Resource>& out,
@@ -119,6 +111,21 @@ void AutoExposurePass::Initialize(GraphicsDevice& device, const std::wstring& sh
     }
 
     Logger::Info("AutoExposurePass initialized");
+}
+
+void AutoExposurePass::RecreatePipelines(GraphicsDevice& device)
+{
+    auto* dev = device.GetDevice();
+    auto makeCS = [&](const std::wstring& cso, Microsoft::WRL::ComPtr<ID3D12PipelineState>& out)
+    {
+        auto bc = ShaderCompiler::LoadFromFile(m_shaderDir + cso);
+        D3D12_COMPUTE_PIPELINE_STATE_DESC pso{};
+        pso.pRootSignature = m_rootSig.Get();
+        pso.CS = { bc.GetData(), bc.GetSize() };
+        ThrowIfFailed(dev->CreateComputePipelineState(&pso, IID_PPV_ARGS(&out)));
+    };
+    makeCS(L"ExposureHistogram_CS.cso", m_psoHistogram);
+    makeCS(L"ExposureAdapt_CS.cso",     m_psoAdapt);
 }
 
 void AutoExposurePass::Generate(ID3D12GraphicsCommandList* cmd,

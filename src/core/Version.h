@@ -7,7 +7,7 @@
 namespace dx12e
 {
 // セマンティックバージョン（"MAJOR.MINOR.PATCH"）。GitHub リリースのタグ（"v1.2.3" 等）と比較する。
-constexpr const char* kEngineVersion = "0.8.5";
+constexpr const char* kEngineVersion = "0.9.0";
 
 // 自動アップデートの取得元 GitHub リポジトリ。
 constexpr const char* kUpdateRepoOwner = "ryuto-alt";
@@ -16,17 +16,21 @@ constexpr const char* kUpdateRepoName  = "dx12";
 // 起動時に一度だけ表示する「更新内容」ポップアップ（この版で直したこと）。
 // 表示済み判定は %LOCALAPPDATA%\DX12Engine\shown_version.txt（版が変わった初回だけ出す）。
 // 新しい版を出すときは kEngineVersion を上げ、ここも書き換えること。
-constexpr const char* kWhatsNewTitle = "DX12 Engine v0.8.5 の更新内容";
+constexpr const char* kWhatsNewTitle = "DX12 Engine v0.9.0 の更新内容";
 constexpr const char* kWhatsNewBody =
-    "今回の更新:\n"
+    "今回の更新: プロジェクト独自シェーダー + 保存で即ホットリロード\n"
     "\n"
-    "・ワールドスプライトの回転がギズモで効かない不具合を修正しました。新規に\n"
-    "  配置したスプライトは既定でビルボード(常にカメラ正対)がOFFになり、\n"
-    "  Transformの回転がそのまま反映されます。Inspectorにスプライト専用の\n"
-    "  設定項目（テクスチャ/サイズ/UV/色/ビルボードON-OFF等）を追加しました。\n"
-    "・Gitが見つからない環境向けに、Gitパネルから「Gitをインストール」ボタンで\n"
-    "  導入できるようにしました（winget が使えれば自動、無ければ公式ダウンロード\n"
-    "  ページを開きます）。\n"
-    "・プロジェクトを削除しなくても、ファイルメニューまたはウィンドウの×から\n"
-    "  プロジェクト選択画面に戻れるようになりました。\n";
+    "・assets/shaders/ に .hlsl を置くと、保存した瞬間にゲーム/シーンビューへ\n"
+    "  自動反映されるようになりました（0.5秒ポーリング → 実行時コンパイル →\n"
+    "  差し替え。エディタの再起動もビルドも不要）。全35シェーダー(Forward/\n"
+    "  ポスト処理/パーティクル/IBL/SSAO等の全パス)が対象です。\n"
+    "・既存シェーダーと同じ相対パスに置けば「上書き」、別パスなら「自作」として\n"
+    "  扱われ、Inspectorの MeshRenderer「Shader」欄から個別メッシュに割り当て\n"
+    "  られます（静的メッシュ対応）。ツールバー「ファイル > 新規シェーダー」や\n"
+    "  アセットブラウザ右クリックからテンプレートを作成し、VS Code で編集できます。\n"
+    "・コンパイルエラー時は直前のシェーダーを保持したままコンソールに赤字で\n"
+    "  表示されるので、壊れた状態のまま止まりません。\n"
+    "・配布ビルド(--build)でもプロジェクトシェーダーがコンパイルされて\n"
+    "  ゲームパッケージに反映されます（壊れたシェーダーがあればビルド自体を\n"
+    "  中止し、古い版を誤って出荷しません）。\n";
 } // namespace dx12e

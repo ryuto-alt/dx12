@@ -61,6 +61,9 @@ public:
     // depthFormat はシーン深度バッファのフォーマット（D32_FLOAT 等）。
     void InitializeWorld(GraphicsDevice& device, DXGI_FORMAT sceneRtvFormat,
                          DXGI_FORMAT depthFormat, const std::wstring& shaderDir);
+
+    // シェーダーホットリロード用。HUD/world 両 PSO を作り直す(ルートシグネチャ/頂点バッファは不変)。
+    void RecreatePipelines(GraphicsDevice& device);
     // フレーム先頭で 1 回呼ぶ。同一フレーム内で RenderWorld を複数回（メイン＋カメラプレビュー等）
     // 呼んでも頂点バッファが衝突しないよう、書き込みカーソルをリセットする。
     void BeginWorldVertexFrame();
@@ -92,6 +95,12 @@ private:
     std::vector<SpriteDesc> m_sprites;
     u32  m_frameIdx = 0;   // HUD 頂点バッファの巡回区画インデックス
     bool m_initialized = false;
+
+    // RecreatePipelines 用に保持
+    std::wstring m_shaderDir;
+    DXGI_FORMAT  m_rtvFormat      = DXGI_FORMAT_UNKNOWN;  // HUD PSO の出力先
+    DXGI_FORMAT  m_sceneRtvFormat = DXGI_FORMAT_UNKNOWN;  // world PSO の出力先
+    DXGI_FORMAT  m_depthFormat    = DXGI_FORMAT_UNKNOWN;  // world PSO の深度
 
     // ワールド空間経路（HUD と隔離）。RootSig は m_rootSig を共有。
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_worldPso;

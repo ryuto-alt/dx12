@@ -27,6 +27,10 @@ public:
     void Initialize(GraphicsDevice& device, DXGI_FORMAT outFormat,
                     const std::wstring& shaderDir, u32 frameCount);
 
+    // シェーダーホットリロード用。PSO のみ作り直す(ルートシグネチャ/CBは不変のため触らない)。
+    // Initialize() が内部で1回呼ぶのに加え、ShaderManager の再生成コールバックからも呼ばれる。
+    void RecreatePipelines(GraphicsDevice& device);
+
     // uber パスへの GPU 入力一式。無効な SRV スロットにも白ダミー等の有効なハンドルを
     // 渡すこと（参照はマスクビットでゲートされる）。*Ready=false なら該当合成をスキップ。
     struct Inputs
@@ -66,6 +70,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSig;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pso;
     std::unique_ptr<ConstantBuffer> m_cb;   // frameCount × kMaxAppliesPerFrame スロット
+    DXGI_FORMAT  m_outFormat = DXGI_FORMAT_UNKNOWN;  // RecreatePipelines 用に保持
+    std::wstring m_shaderDir;                        // 同上
     u32 m_frameCount     = 3;
     u32 m_lastFrameIndex = 0xFFFFFFFFu;
     u32 m_applyIndex     = 0;

@@ -8,6 +8,7 @@
 #include "core/Window.h"
 #include "core/Logger.h"
 #include "project/ProjectManager.h"
+#include "editor/panels/ShaderTemplates.h"
 
 #include <commdlg.h>
 #include <ShlObj.h>
@@ -183,6 +184,13 @@ void ToolbarPanel::Render(bool isPlaying,
                 ctx.showNewScriptDialog = true;
                 std::memset(ctx.newScriptNameBuf, 0, sizeof(ctx.newScriptNameBuf));
                 strncpy_s(ctx.newScriptNameBuf, "NewScript", _TRUNCATE);
+            }
+
+            if (ImGui::MenuItem("新規シェーダー"))
+            {
+                ctx.showNewShaderDialog = true;
+                std::memset(ctx.newShaderNameBuf, 0, sizeof(ctx.newShaderNameBuf));
+                strncpy_s(ctx.newShaderNameBuf, "NewShader", _TRUNCATE);
             }
 
             ImGui::Separator();
@@ -781,6 +789,67 @@ void ToolbarPanel::Render(bool isPlaying,
 
             // VS Code で開く
             OpenInVSCode(scriptPath);
+
+            ImGui::CloseCurrentPopup();
+        }
+        if (!nameValid) ImGui::EndDisabled();
+
+        ImGui::SameLine();
+        if (ImGui::Button("\xe3\x82\xad\xe3\x83\xa3\xe3\x83\xb3\xe3\x82\xbb\xe3\x83\xab", ImVec2(120, 0)))  // キャンセル
+            ImGui::CloseCurrentPopup();
+
+        ImGui::EndPopup();
+    }
+
+    // ===== 新規カスタムシェーダー名入力ダイアログ =====
+    if (ctx.showNewShaderDialog)
+    {
+        ImGui::OpenPopup("\xe6\x96\xb0\xe8\xa6\x8f\xe3\x82\xb7\xe3\x82\xa7\xe3\x83\xbc\xe3\x83\x80\xe3\x83\xbc##NewShaderPopup");
+        ctx.showNewShaderDialog = false;
+    }
+
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(350, 0), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("\xe6\x96\xb0\xe8\xa6\x8f\xe3\x82\xb7\xe3\x82\xa7\xe3\x83\xbc\xe3\x83\x80\xe3\x83\xbc##NewShaderPopup",
+                               nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::Text("\xe3\x82\xb7\xe3\x82\xa7\xe3\x83\xbc\xe3\x83\x80\xe3\x83\xbc\xe5\x90\x8d:");  // シェーダー名:
+        ImGui::SetNextItemWidth(-1);
+        bool enterPressed = ImGui::InputText("##ShaderName", ctx.newShaderNameBuf,
+            sizeof(ctx.newShaderNameBuf), ImGuiInputTextFlags_EnterReturnsTrue);
+
+        if (ImGui::IsWindowAppearing())
+            ImGui::SetKeyboardFocusHere(-1);
+
+        ImGui::Separator();
+
+        bool nameValid = std::strlen(ctx.newShaderNameBuf) > 0;
+
+        if (!nameValid) ImGui::BeginDisabled();
+        if (ImGui::Button("\xe4\xbd\x9c\xe6\x88\x90", ImVec2(120, 0)) || (enterPressed && nameValid))  // 作成
+        {
+            // assets/shaders/ にテンプレート生成（プロジェクト独自シェーダーの置き場。
+            // ShaderManager がここを走査し、Registryに無いものはカスタムとしてホットリロード対象になる）。
+            std::string shadersDir = assetsDir + "shaders/";
+            std::filesystem::create_directories(shadersDir);
+            std::string shaderPath = shadersDir + ctx.newShaderNameBuf + ".hlsl";
+
+            if (!std::filesystem::exists(shaderPath))
+            {
+                std::ofstream ofs(shaderPath);
+                ofs << kNewShaderTemplate;
+                ofs.close();
+
+                Logger::Info("Created shader: {}", shaderPath);
+                ctx.hotReloadFlash = 1.5f;
+            }
+            else
+            {
+                Logger::Warn("シェーダーは既に存在します: {}", shaderPath);
+            }
+
+            // VS Code で開く
+            OpenInVSCode(shaderPath);
 
             ImGui::CloseCurrentPopup();
         }

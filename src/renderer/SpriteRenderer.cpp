@@ -14,7 +14,9 @@ namespace dx12e
 void SpriteRenderer::Initialize(GraphicsDevice& device, DescriptorHeap* srvHeap,
                                 DXGI_FORMAT rtvFormat, const std::wstring& shaderDir)
 {
-    m_srvHeap = srvHeap;
+    m_srvHeap   = srvHeap;
+    m_shaderDir = shaderDir;
+    m_rtvFormat = rtvFormat;
     auto* dev = device.GetDevice();
 
     // --- Root Signature: b0(ortho 16 DWORD, VERTEX) + t0(SRV table, PIXEL) + s0 ---
@@ -60,47 +62,7 @@ void SpriteRenderer::Initialize(GraphicsDevice& device, DescriptorHeap* srvHeap,
     }
 
     // --- PSO: TriangleList / AlphaBlend ON / Depth OFF ---
-    {
-        auto vs = ShaderCompiler::LoadFromFile(shaderDir + L"Sprite_VS.cso");
-        auto ps = ShaderCompiler::LoadFromFile(shaderDir + L"Sprite_PS.cso");
-
-        D3D12_INPUT_ELEMENT_DESC layout[] = {
-            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-            {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-            {"COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-        };
-
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
-        pso.pRootSignature = m_rootSig.Get();
-        pso.VS = { vs.GetData(), vs.GetSize() };
-        pso.PS = { ps.GetData(), ps.GetSize() };
-        pso.InputLayout = { layout, _countof(layout) };
-        pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-
-        pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-        pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-        pso.RasterizerState.DepthClipEnable = TRUE;
-
-        auto& rt = pso.BlendState.RenderTarget[0];
-        rt.BlendEnable           = TRUE;
-        rt.SrcBlend              = D3D12_BLEND_SRC_ALPHA;
-        rt.DestBlend             = D3D12_BLEND_INV_SRC_ALPHA;
-        rt.BlendOp               = D3D12_BLEND_OP_ADD;
-        rt.SrcBlendAlpha         = D3D12_BLEND_ONE;
-        rt.DestBlendAlpha        = D3D12_BLEND_INV_SRC_ALPHA;
-        rt.BlendOpAlpha          = D3D12_BLEND_OP_ADD;
-        rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-
-        pso.DepthStencilState.DepthEnable   = FALSE;
-        pso.DepthStencilState.StencilEnable = FALSE;
-        pso.SampleMask       = UINT_MAX;
-        pso.NumRenderTargets = 1;
-        pso.RTVFormats[0]    = rtvFormat;
-        pso.DSVFormat        = DXGI_FORMAT_UNKNOWN;
-        pso.SampleDesc       = { 1, 0 };
-
-        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_pso)));
-    }
+    RecreatePipelines(device);
 
     // --- Dynamic Vertex Buffer (Upload Heap) ---
     // kFrameCount 区画ぶん確保し、フレームごとに別区画へ書く（in-flight 競合＝チラつき防止）。
@@ -225,20 +187,97 @@ void SpriteRenderer::InitializeWorld(GraphicsDevice& device, DXGI_FORMAT sceneRt
                                      DXGI_FORMAT depthFormat, const std::wstring& shaderDir)
 {
     auto* dev = device.GetDevice();
+    m_shaderDir      = shaderDir;
+    m_sceneRtvFormat = sceneRtvFormat;
+    m_depthFormat    = depthFormat;
 
     // PSO: Sprite_VS/PS, AlphaBlend, CullNone。RTV=sceneRtvFormat。
     // 深度テストは有効・書き込みは無効（LESS_EQUAL）→ 不透明シーン形状に正しく遮蔽されつつ、
     // 半透明スプライト同士は layer 昇順の CPU ソート順で重ねられる（深度書き込みで順序が壊れない）。
     // RootSignature は Initialize で作った m_rootSig を共有する。
-    {
-        auto vs = ShaderCompiler::LoadFromFile(shaderDir + L"Sprite_VS.cso");
-        auto ps = ShaderCompiler::LoadFromFile(shaderDir + L"Sprite_PS.cso");
+    RecreatePipelines(device);
 
-        D3D12_INPUT_ELEMENT_DESC layout[] = {
-            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-            {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-            {"COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-        };
+    // world 用 動的頂点バッファ（Upload Heap）。1 フレーム複数パス分の容量。
+    {
+        const UINT bufferSize = kFrameCount * kWorldMaxVerts * sizeof(Vertex);
+        D3D12_HEAP_PROPERTIES heapProps{};
+        heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+        D3D12_RESOURCE_DESC res{};
+        res.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+        res.Width            = bufferSize;
+        res.Height           = 1;
+        res.DepthOrArraySize = 1;
+        res.MipLevels        = 1;
+        res.SampleDesc       = {1, 0};
+        res.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+        ThrowIfFailed(dev->CreateCommittedResource(
+            &heapProps, D3D12_HEAP_FLAG_NONE, &res,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_worldVertexBuffer)));
+
+        m_worldVbView.BufferLocation = m_worldVertexBuffer->GetGPUVirtualAddress();
+        m_worldVbView.StrideInBytes  = sizeof(Vertex);
+        m_worldVbView.SizeInBytes    = bufferSize;
+    }
+
+    m_worldSprites.reserve(256);
+    m_worldInitialized = true;
+    Logger::Info("SpriteRenderer world path initialized");
+}
+
+void SpriteRenderer::RecreatePipelines(GraphicsDevice& device)
+{
+    auto* dev = device.GetDevice();
+
+    D3D12_INPUT_ELEMENT_DESC layout[] = {
+        {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+    };
+
+    // --- HUD PSO: Depth OFF ---
+    if (m_rtvFormat != DXGI_FORMAT_UNKNOWN)
+    {
+        auto vs = ShaderCompiler::LoadFromFile(m_shaderDir + L"Sprite_VS.cso");
+        auto ps = ShaderCompiler::LoadFromFile(m_shaderDir + L"Sprite_PS.cso");
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
+        pso.pRootSignature = m_rootSig.Get();
+        pso.VS = { vs.GetData(), vs.GetSize() };
+        pso.PS = { ps.GetData(), ps.GetSize() };
+        pso.InputLayout = { layout, _countof(layout) };
+        pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+
+        pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+        pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        pso.RasterizerState.DepthClipEnable = TRUE;
+
+        auto& rt = pso.BlendState.RenderTarget[0];
+        rt.BlendEnable           = TRUE;
+        rt.SrcBlend              = D3D12_BLEND_SRC_ALPHA;
+        rt.DestBlend             = D3D12_BLEND_INV_SRC_ALPHA;
+        rt.BlendOp               = D3D12_BLEND_OP_ADD;
+        rt.SrcBlendAlpha         = D3D12_BLEND_ONE;
+        rt.DestBlendAlpha        = D3D12_BLEND_INV_SRC_ALPHA;
+        rt.BlendOpAlpha          = D3D12_BLEND_OP_ADD;
+        rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+        pso.DepthStencilState.DepthEnable   = FALSE;
+        pso.DepthStencilState.StencilEnable = FALSE;
+        pso.SampleMask       = UINT_MAX;
+        pso.NumRenderTargets = 1;
+        pso.RTVFormats[0]    = m_rtvFormat;
+        pso.DSVFormat        = DXGI_FORMAT_UNKNOWN;
+        pso.SampleDesc       = { 1, 0 };
+
+        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_pso)));
+    }
+
+    // --- world PSO: Depth テストのみ(LESS_EQUAL・書き込み無し) ---
+    if (m_sceneRtvFormat != DXGI_FORMAT_UNKNOWN)
+    {
+        auto vs = ShaderCompiler::LoadFromFile(m_shaderDir + L"Sprite_VS.cso");
+        auto ps = ShaderCompiler::LoadFromFile(m_shaderDir + L"Sprite_PS.cso");
 
         D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
         pso.pRootSignature = m_rootSig.Get();
@@ -267,39 +306,12 @@ void SpriteRenderer::InitializeWorld(GraphicsDevice& device, DXGI_FORMAT sceneRt
         pso.DepthStencilState.StencilEnable  = FALSE;
         pso.SampleMask       = UINT_MAX;
         pso.NumRenderTargets = 1;
-        pso.RTVFormats[0]    = sceneRtvFormat;
-        pso.DSVFormat        = depthFormat;
+        pso.RTVFormats[0]    = m_sceneRtvFormat;
+        pso.DSVFormat        = m_depthFormat;
         pso.SampleDesc       = { 1, 0 };
 
         ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_worldPso)));
     }
-
-    // world 用 動的頂点バッファ（Upload Heap）。1 フレーム複数パス分の容量。
-    {
-        const UINT bufferSize = kFrameCount * kWorldMaxVerts * sizeof(Vertex);
-        D3D12_HEAP_PROPERTIES heapProps{};
-        heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
-        D3D12_RESOURCE_DESC res{};
-        res.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
-        res.Width            = bufferSize;
-        res.Height           = 1;
-        res.DepthOrArraySize = 1;
-        res.MipLevels        = 1;
-        res.SampleDesc       = {1, 0};
-        res.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-        ThrowIfFailed(dev->CreateCommittedResource(
-            &heapProps, D3D12_HEAP_FLAG_NONE, &res,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_worldVertexBuffer)));
-
-        m_worldVbView.BufferLocation = m_worldVertexBuffer->GetGPUVirtualAddress();
-        m_worldVbView.StrideInBytes  = sizeof(Vertex);
-        m_worldVbView.SizeInBytes    = bufferSize;
-    }
-
-    m_worldSprites.reserve(256);
-    m_worldInitialized = true;
-    Logger::Info("SpriteRenderer world path initialized");
 }
 
 void SpriteRenderer::BeginWorldVertexFrame()

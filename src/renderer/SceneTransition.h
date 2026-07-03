@@ -24,6 +24,9 @@ class SceneTransition
 public:
     void Initialize(GraphicsDevice& device, DXGI_FORMAT outFormat, const std::wstring& shaderDir);
 
+    // シェーダーホットリロード用。PSO のみ作り直す(ルートシグネチャは不変のため触らない)。
+    void RecreatePipelines(GraphicsDevice& device);
+
     // 遷移開始。totalDuration 秒で「閉じる→（中間でロード）→開く」。
     void Start(TransitionType type, float totalDuration);
     void Update(float dt);
@@ -40,6 +43,10 @@ private:
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSig;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pso;
+
+    // RecreatePipelines 用に保持
+    std::wstring m_shaderDir;
+    DXGI_FORMAT  m_outFormat = DXGI_FORMAT_UNKNOWN;
 
     bool  m_active        = false;
     bool  m_halfwayPending = false;

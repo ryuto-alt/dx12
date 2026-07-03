@@ -166,155 +166,11 @@ void ParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
             serialized->GetBufferSize(), IID_PPV_ARGS(&m_rootSig)));
     }
 
-    // --- PSO: インスタンスストリーム / 深度テスト無し（PSで手動オクルージョン） ---
-    {
-        auto vs = ShaderCompiler::LoadFromFile(shaderDir + L"Particle_VS.cso");
-        auto ps = ShaderCompiler::LoadFromFile(shaderDir + L"Particle_PS.cso");
-
-        D3D12_INPUT_ELEMENT_DESC layout[] = {
-            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 0,  D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},
-            {"TEXCOORD", 0, DXGI_FORMAT_R32_FLOAT,          0, 12, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},
-            {"COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},
-            {"TEXCOORD", 1, DXGI_FORMAT_R32_FLOAT,          0, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},
-            {"TEXCOORD", 2, DXGI_FORMAT_R32_FLOAT,          0, 36, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // stretch
-            {"NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 40, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // vel
-            {"TEXCOORD", 3, DXGI_FORMAT_R32_FLOAT,          0, 52, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // age01
-            {"TEXCOORD", 4, DXGI_FORMAT_R32_UINT,           0, 56, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // kind
-            {"TEXCOORD", 5, DXGI_FORMAT_R32_FLOAT,          0, 60, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // seed
-            {"TEXCOORD", 6, DXGI_FORMAT_R32_UINT,           0, 64, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // texIndex
-        };
-
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
-        pso.pRootSignature        = m_rootSig.Get();
-        pso.VS                    = { vs.GetData(), vs.GetSize() };
-        pso.PS                    = { ps.GetData(), ps.GetSize() };
-        pso.InputLayout           = { layout, _countof(layout) };
-        pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-
-        pso.RasterizerState.FillMode        = D3D12_FILL_MODE_SOLID;
-        pso.RasterizerState.CullMode        = D3D12_CULL_MODE_NONE;
-        pso.RasterizerState.DepthClipEnable = TRUE;
-
-        auto& rt = pso.BlendState.RenderTarget[0];
-        rt.BlendEnable           = TRUE;
-        rt.SrcBlend              = D3D12_BLEND_ONE;   // 前乗算
-        rt.DestBlend             = D3D12_BLEND_ONE;   // 加算（DestBlend は下で alpha 用に差し替え）
-        rt.BlendOp               = D3D12_BLEND_OP_ADD;
-        rt.SrcBlendAlpha         = D3D12_BLEND_ONE;
-        rt.DestBlendAlpha        = D3D12_BLEND_ONE;
-        rt.BlendOpAlpha          = D3D12_BLEND_OP_ADD;
-        rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-
-        pso.DepthStencilState.DepthEnable   = FALSE;  // DSV 無し。PSで深度SRVから手動オクルージョン
-        pso.DepthStencilState.StencilEnable = FALSE;
-
-        pso.SampleMask            = UINT_MAX;
-        pso.NumRenderTargets      = 1;
-        pso.RTVFormats[0]         = rtvFormat;
-        pso.DSVFormat             = DXGI_FORMAT_UNKNOWN;
-        pso.SampleDesc            = { 1, 0 };
-
-        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoAdd)));
-
-        // 前乗算アルファ（煙）: Src=ONE, Dest=INV_SRC_ALPHA
-        rt.DestBlend      = D3D12_BLEND_INV_SRC_ALPHA;
-        rt.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
-        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoAlpha)));
-
-        // 歪みパーティクル: RG16F の歪みオフセットバッファへ加算（同じインスタンスレイアウト）
-        auto psD = ShaderCompiler::LoadFromFile(shaderDir + L"ParticleDistort_PS.cso");
-        pso.PS = { psD.GetData(), psD.GetSize() };
-        rt.DestBlend      = D3D12_BLEND_ONE;
-        rt.DestBlendAlpha = D3D12_BLEND_ONE;
-        pso.RTVFormats[0] = distortFormat;
-        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoDistort)));
-    }
-
-    // --- トレイル PSO（頂点ストリーム / 加算 と 前乗算α の2種）---
-    {
-        auto vs = ShaderCompiler::LoadFromFile(shaderDir + L"Trail_VS.cso");
-        auto ps = ShaderCompiler::LoadFromFile(shaderDir + L"Trail_PS.cso");
-
-        D3D12_INPUT_ELEMENT_DESC layout[] = {
-            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-            {"COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-            {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 28, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-        };
-
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC tp{};
-        tp.pRootSignature        = m_rootSig.Get();
-        tp.VS                    = { vs.GetData(), vs.GetSize() };
-        tp.PS                    = { ps.GetData(), ps.GetSize() };
-        tp.InputLayout           = { layout, _countof(layout) };
-        tp.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-        tp.RasterizerState.FillMode        = D3D12_FILL_MODE_SOLID;
-        tp.RasterizerState.CullMode        = D3D12_CULL_MODE_NONE;
-        tp.RasterizerState.DepthClipEnable = TRUE;
-        auto& trt = tp.BlendState.RenderTarget[0];
-        trt.BlendEnable    = TRUE;
-        trt.SrcBlend       = D3D12_BLEND_ONE;
-        trt.DestBlend      = D3D12_BLEND_ONE;
-        trt.BlendOp        = D3D12_BLEND_OP_ADD;
-        trt.SrcBlendAlpha  = D3D12_BLEND_ONE;
-        trt.DestBlendAlpha = D3D12_BLEND_ONE;
-        trt.BlendOpAlpha   = D3D12_BLEND_OP_ADD;
-        trt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-        tp.DepthStencilState.DepthEnable   = FALSE;
-        tp.DepthStencilState.StencilEnable = FALSE;
-        tp.SampleMask       = UINT_MAX;
-        tp.NumRenderTargets = 1;
-        tp.RTVFormats[0]    = rtvFormat;
-        tp.DSVFormat        = DXGI_FORMAT_UNKNOWN;
-        tp.SampleDesc       = { 1, 0 };
-        ThrowIfFailed(dev->CreateGraphicsPipelineState(&tp, IID_PPV_ARGS(&m_psoTrailAdd)));
-
-        trt.DestBlend      = D3D12_BLEND_INV_SRC_ALPHA;
-        trt.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
-        ThrowIfFailed(dev->CreateGraphicsPipelineState(&tp, IID_PPV_ARGS(&m_psoTrailAlpha)));
-    }
-
-    // --- ビーム PSO（加算・root sig 流用：b0 32定数 + t0深度SRV + s0）---
-    {
-        auto vs = ShaderCompiler::LoadFromFile(shaderDir + L"Beam_VS.cso");
-        auto ps = ShaderCompiler::LoadFromFile(shaderDir + L"Beam_PS.cso");
-
-        D3D12_INPUT_ELEMENT_DESC layout[] = {
-            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 0,  D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},
-            {"NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // p1
-            {"COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},
-            {"TEXCOORD", 0, DXGI_FORMAT_R32_FLOAT,          0, 40, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // halfW
-            {"TEXCOORD", 1, DXGI_FORMAT_R32_FLOAT,          0, 44, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // age01
-            {"TEXCOORD", 2, DXGI_FORMAT_R32_UINT,           0, 48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // kind
-            {"TEXCOORD", 3, DXGI_FORMAT_R32_FLOAT,          0, 52, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // seed
-        };
-
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC bp{};
-        bp.pRootSignature        = m_rootSig.Get();
-        bp.VS                    = { vs.GetData(), vs.GetSize() };
-        bp.PS                    = { ps.GetData(), ps.GetSize() };
-        bp.InputLayout           = { layout, _countof(layout) };
-        bp.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-        bp.RasterizerState.FillMode        = D3D12_FILL_MODE_SOLID;
-        bp.RasterizerState.CullMode        = D3D12_CULL_MODE_NONE;
-        bp.RasterizerState.DepthClipEnable = TRUE;
-        auto& brt = bp.BlendState.RenderTarget[0];
-        brt.BlendEnable    = TRUE;
-        brt.SrcBlend       = D3D12_BLEND_ONE;
-        brt.DestBlend      = D3D12_BLEND_ONE;
-        brt.BlendOp        = D3D12_BLEND_OP_ADD;
-        brt.SrcBlendAlpha  = D3D12_BLEND_ONE;
-        brt.DestBlendAlpha = D3D12_BLEND_ONE;
-        brt.BlendOpAlpha   = D3D12_BLEND_OP_ADD;
-        brt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-        bp.DepthStencilState.DepthEnable   = FALSE;
-        bp.DepthStencilState.StencilEnable = FALSE;
-        bp.SampleMask       = UINT_MAX;
-        bp.NumRenderTargets = 1;
-        bp.RTVFormats[0]    = rtvFormat;
-        bp.DSVFormat        = DXGI_FORMAT_UNKNOWN;
-        bp.SampleDesc       = { 1, 0 };
-        ThrowIfFailed(dev->CreateGraphicsPipelineState(&bp, IID_PPV_ARGS(&m_psoBeam)));
-    }
+    // --- PSO 生成（ホットリロード用に RecreatePipelines へ切り出し）---
+    m_shaderDir     = shaderDir;
+    m_rtvFormat     = rtvFormat;
+    m_distortFormat = distortFormat;
+    RecreatePipelines(device);
 
     // --- インスタンスバッファ（UPLOADヒープ。SpriteRenderer と同じ kFrames 区画リング運用）---
     {
@@ -394,6 +250,161 @@ void ParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
     m_initialized = true;
     Logger::Info("ParticleSystem initialized (max {} particles + {} beams + {} trails, procedural kinds + curl + soft + distort)",
                  kMaxParticles, kMaxBeams, kMaxTrails);
+}
+
+void ParticleSystem::RecreatePipelines(GraphicsDevice& device)
+{
+    auto* dev = device.GetDevice();
+
+    // --- PSO: インスタンスストリーム / 深度テスト無し（PSで手動オクルージョン） ---
+    {
+        auto vs = ShaderCompiler::LoadFromFile(m_shaderDir + L"Particle_VS.cso");
+        auto ps = ShaderCompiler::LoadFromFile(m_shaderDir + L"Particle_PS.cso");
+
+        D3D12_INPUT_ELEMENT_DESC layout[] = {
+            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 0,  D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},
+            {"TEXCOORD", 0, DXGI_FORMAT_R32_FLOAT,          0, 12, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},
+            {"COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},
+            {"TEXCOORD", 1, DXGI_FORMAT_R32_FLOAT,          0, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},
+            {"TEXCOORD", 2, DXGI_FORMAT_R32_FLOAT,          0, 36, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // stretch
+            {"NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 40, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // vel
+            {"TEXCOORD", 3, DXGI_FORMAT_R32_FLOAT,          0, 52, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // age01
+            {"TEXCOORD", 4, DXGI_FORMAT_R32_UINT,           0, 56, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // kind
+            {"TEXCOORD", 5, DXGI_FORMAT_R32_FLOAT,          0, 60, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // seed
+            {"TEXCOORD", 6, DXGI_FORMAT_R32_UINT,           0, 64, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // texIndex
+        };
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
+        pso.pRootSignature        = m_rootSig.Get();
+        pso.VS                    = { vs.GetData(), vs.GetSize() };
+        pso.PS                    = { ps.GetData(), ps.GetSize() };
+        pso.InputLayout           = { layout, _countof(layout) };
+        pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+
+        pso.RasterizerState.FillMode        = D3D12_FILL_MODE_SOLID;
+        pso.RasterizerState.CullMode        = D3D12_CULL_MODE_NONE;
+        pso.RasterizerState.DepthClipEnable = TRUE;
+
+        auto& rt = pso.BlendState.RenderTarget[0];
+        rt.BlendEnable           = TRUE;
+        rt.SrcBlend              = D3D12_BLEND_ONE;   // 前乗算
+        rt.DestBlend             = D3D12_BLEND_ONE;   // 加算（DestBlend は下で alpha 用に差し替え）
+        rt.BlendOp               = D3D12_BLEND_OP_ADD;
+        rt.SrcBlendAlpha         = D3D12_BLEND_ONE;
+        rt.DestBlendAlpha        = D3D12_BLEND_ONE;
+        rt.BlendOpAlpha          = D3D12_BLEND_OP_ADD;
+        rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+        pso.DepthStencilState.DepthEnable   = FALSE;  // DSV 無し。PSで深度SRVから手動オクルージョン
+        pso.DepthStencilState.StencilEnable = FALSE;
+
+        pso.SampleMask            = UINT_MAX;
+        pso.NumRenderTargets      = 1;
+        pso.RTVFormats[0]         = m_rtvFormat;
+        pso.DSVFormat             = DXGI_FORMAT_UNKNOWN;
+        pso.SampleDesc            = { 1, 0 };
+
+        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoAdd)));
+
+        // 前乗算アルファ（煙）: Src=ONE, Dest=INV_SRC_ALPHA
+        rt.DestBlend      = D3D12_BLEND_INV_SRC_ALPHA;
+        rt.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoAlpha)));
+
+        // 歪みパーティクル: RG16F の歪みオフセットバッファへ加算（同じインスタンスレイアウト）
+        auto psD = ShaderCompiler::LoadFromFile(m_shaderDir + L"ParticleDistort_PS.cso");
+        pso.PS = { psD.GetData(), psD.GetSize() };
+        rt.DestBlend      = D3D12_BLEND_ONE;
+        rt.DestBlendAlpha = D3D12_BLEND_ONE;
+        pso.RTVFormats[0] = m_distortFormat;
+        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoDistort)));
+    }
+
+    // --- トレイル PSO（頂点ストリーム / 加算 と 前乗算α の2種）---
+    {
+        auto vs = ShaderCompiler::LoadFromFile(m_shaderDir + L"Trail_VS.cso");
+        auto ps = ShaderCompiler::LoadFromFile(m_shaderDir + L"Trail_PS.cso");
+
+        D3D12_INPUT_ELEMENT_DESC layout[] = {
+            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+            {"COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+            {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 28, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        };
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC tp{};
+        tp.pRootSignature        = m_rootSig.Get();
+        tp.VS                    = { vs.GetData(), vs.GetSize() };
+        tp.PS                    = { ps.GetData(), ps.GetSize() };
+        tp.InputLayout           = { layout, _countof(layout) };
+        tp.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        tp.RasterizerState.FillMode        = D3D12_FILL_MODE_SOLID;
+        tp.RasterizerState.CullMode        = D3D12_CULL_MODE_NONE;
+        tp.RasterizerState.DepthClipEnable = TRUE;
+        auto& trt = tp.BlendState.RenderTarget[0];
+        trt.BlendEnable    = TRUE;
+        trt.SrcBlend       = D3D12_BLEND_ONE;
+        trt.DestBlend      = D3D12_BLEND_ONE;
+        trt.BlendOp        = D3D12_BLEND_OP_ADD;
+        trt.SrcBlendAlpha  = D3D12_BLEND_ONE;
+        trt.DestBlendAlpha = D3D12_BLEND_ONE;
+        trt.BlendOpAlpha   = D3D12_BLEND_OP_ADD;
+        trt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        tp.DepthStencilState.DepthEnable   = FALSE;
+        tp.DepthStencilState.StencilEnable = FALSE;
+        tp.SampleMask       = UINT_MAX;
+        tp.NumRenderTargets = 1;
+        tp.RTVFormats[0]    = m_rtvFormat;
+        tp.DSVFormat        = DXGI_FORMAT_UNKNOWN;
+        tp.SampleDesc       = { 1, 0 };
+        ThrowIfFailed(dev->CreateGraphicsPipelineState(&tp, IID_PPV_ARGS(&m_psoTrailAdd)));
+
+        trt.DestBlend      = D3D12_BLEND_INV_SRC_ALPHA;
+        trt.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+        ThrowIfFailed(dev->CreateGraphicsPipelineState(&tp, IID_PPV_ARGS(&m_psoTrailAlpha)));
+    }
+
+    // --- ビーム PSO（加算・root sig 流用：b0 32定数 + t0深度SRV + s0）---
+    {
+        auto vs = ShaderCompiler::LoadFromFile(m_shaderDir + L"Beam_VS.cso");
+        auto ps = ShaderCompiler::LoadFromFile(m_shaderDir + L"Beam_PS.cso");
+
+        D3D12_INPUT_ELEMENT_DESC layout[] = {
+            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 0,  D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},
+            {"NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // p1
+            {"COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},
+            {"TEXCOORD", 0, DXGI_FORMAT_R32_FLOAT,          0, 40, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // halfW
+            {"TEXCOORD", 1, DXGI_FORMAT_R32_FLOAT,          0, 44, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // age01
+            {"TEXCOORD", 2, DXGI_FORMAT_R32_UINT,           0, 48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // kind
+            {"TEXCOORD", 3, DXGI_FORMAT_R32_FLOAT,          0, 52, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // seed
+        };
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC bp{};
+        bp.pRootSignature        = m_rootSig.Get();
+        bp.VS                    = { vs.GetData(), vs.GetSize() };
+        bp.PS                    = { ps.GetData(), ps.GetSize() };
+        bp.InputLayout           = { layout, _countof(layout) };
+        bp.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        bp.RasterizerState.FillMode        = D3D12_FILL_MODE_SOLID;
+        bp.RasterizerState.CullMode        = D3D12_CULL_MODE_NONE;
+        bp.RasterizerState.DepthClipEnable = TRUE;
+        auto& brt = bp.BlendState.RenderTarget[0];
+        brt.BlendEnable    = TRUE;
+        brt.SrcBlend       = D3D12_BLEND_ONE;
+        brt.DestBlend      = D3D12_BLEND_ONE;
+        brt.BlendOp        = D3D12_BLEND_OP_ADD;
+        brt.SrcBlendAlpha  = D3D12_BLEND_ONE;
+        brt.DestBlendAlpha = D3D12_BLEND_ONE;
+        brt.BlendOpAlpha   = D3D12_BLEND_OP_ADD;
+        brt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        bp.DepthStencilState.DepthEnable   = FALSE;
+        bp.DepthStencilState.StencilEnable = FALSE;
+        bp.SampleMask       = UINT_MAX;
+        bp.NumRenderTargets = 1;
+        bp.RTVFormats[0]    = m_rtvFormat;
+        bp.DSVFormat        = DXGI_FORMAT_UNKNOWN;
+        bp.SampleDesc       = { 1, 0 };
+        ThrowIfFailed(dev->CreateGraphicsPipelineState(&bp, IID_PPV_ARGS(&m_psoBeam)));
+    }
 }
 
 float ParticleSystem::Rand(float a, float b)

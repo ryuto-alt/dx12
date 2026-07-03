@@ -73,33 +73,8 @@ void GodRaysPass::Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap, De
     }
 
     // --- PSO ×2（VS は PostProcess の FSTriVS を流用）---
-    {
-        auto vs     = ShaderCompiler::LoadFromFile(shaderDir + L"PostProcess_VS.cso");
-        auto psMask = ShaderCompiler::LoadFromFile(shaderDir + L"GodRaysMask_PS.cso");
-        auto psBlur = ShaderCompiler::LoadFromFile(shaderDir + L"GodRaysBlur_PS.cso");
-
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
-        pso.pRootSignature = m_rootSig.Get();
-        pso.VS = { vs.GetData(), vs.GetSize() };
-        pso.PS = { psMask.GetData(), psMask.GetSize() };
-        pso.InputLayout = { nullptr, 0 };
-        pso.RasterizerState.FillMode        = D3D12_FILL_MODE_SOLID;
-        pso.RasterizerState.CullMode        = D3D12_CULL_MODE_NONE;
-        pso.RasterizerState.DepthClipEnable = TRUE;
-        pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-        pso.DepthStencilState.DepthEnable   = FALSE;
-        pso.DepthStencilState.StencilEnable = FALSE;
-        pso.SampleMask            = UINT_MAX;
-        pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-        pso.NumRenderTargets      = 1;
-        pso.RTVFormats[0]         = kGRFormat;
-        pso.DSVFormat             = DXGI_FORMAT_UNKNOWN;
-        pso.SampleDesc            = { 1, 0 };
-        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoMask)));
-
-        pso.PS = { psBlur.GetData(), psBlur.GetSize() };
-        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoBlur)));
-    }
+    m_shaderDir = shaderDir;
+    RecreatePipelines(device);
 
     // --- 半解像度 RT ×2 ---
     const float clearBlack[4] = {0, 0, 0, 1};
@@ -110,6 +85,36 @@ void GodRaysPass::Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap, De
     m_shaftRT->Initialize(device, rtvHeap, srvHeap, hw, hh, kGRFormat, clearBlack);
 
     Logger::Info("GodRaysPass initialized");
+}
+
+void GodRaysPass::RecreatePipelines(GraphicsDevice& device)
+{
+    auto* dev = device.GetDevice();
+    auto vs     = ShaderCompiler::LoadFromFile(m_shaderDir + L"PostProcess_VS.cso");
+    auto psMask = ShaderCompiler::LoadFromFile(m_shaderDir + L"GodRaysMask_PS.cso");
+    auto psBlur = ShaderCompiler::LoadFromFile(m_shaderDir + L"GodRaysBlur_PS.cso");
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
+    pso.pRootSignature = m_rootSig.Get();
+    pso.VS = { vs.GetData(), vs.GetSize() };
+    pso.PS = { psMask.GetData(), psMask.GetSize() };
+    pso.InputLayout = { nullptr, 0 };
+    pso.RasterizerState.FillMode        = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode        = D3D12_CULL_MODE_NONE;
+    pso.RasterizerState.DepthClipEnable = TRUE;
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    pso.DepthStencilState.DepthEnable   = FALSE;
+    pso.DepthStencilState.StencilEnable = FALSE;
+    pso.SampleMask            = UINT_MAX;
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets      = 1;
+    pso.RTVFormats[0]         = kGRFormat;
+    pso.DSVFormat             = DXGI_FORMAT_UNKNOWN;
+    pso.SampleDesc            = { 1, 0 };
+    ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoMask)));
+
+    pso.PS = { psBlur.GetData(), psBlur.GetSize() };
+    ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoBlur)));
 }
 
 void GodRaysPass::Resize(GraphicsDevice& device, u32 width, u32 height)

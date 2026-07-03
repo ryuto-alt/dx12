@@ -20,6 +20,9 @@ class AutoExposurePass
 public:
     void Initialize(GraphicsDevice& device, const std::wstring& shaderDir);
 
+    // シェーダーホットリロード用。PSO のみ作り直す(ルートシグネチャ/バッファは不変のため触らない)。
+    void RecreatePipelines(GraphicsDevice& device);
+
     // シーンRT は NON_PIXEL_SHADER_RESOURCE を含む読み取り状態にしておくこと。
     // rect*: シーンRT内の測光サブ矩形（px）。dt: フレーム時間（初回は内部で即適応）。
     void Generate(ID3D12GraphicsCommandList* cmd,
@@ -47,6 +50,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_zeroUpload;   // 初回ゼロ初期化用
     D3D12_RESOURCE_STATES m_exposureState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     bool m_first = true;
+    std::wstring m_shaderDir;   // RecreatePipelines 用に保持
 };
 
 } // namespace dx12e

@@ -71,29 +71,8 @@ void LensFlarePass::Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap, 
     }
 
     // --- PSO（VS は FSTriVS 流用）---
-    {
-        auto vs = ShaderCompiler::LoadFromFile(shaderDir + L"PostProcess_VS.cso");
-        auto ps = ShaderCompiler::LoadFromFile(shaderDir + L"LensFlare_PS.cso");
-
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
-        pso.pRootSignature = m_rootSig.Get();
-        pso.VS = { vs.GetData(), vs.GetSize() };
-        pso.PS = { ps.GetData(), ps.GetSize() };
-        pso.InputLayout = { nullptr, 0 };
-        pso.RasterizerState.FillMode        = D3D12_FILL_MODE_SOLID;
-        pso.RasterizerState.CullMode        = D3D12_CULL_MODE_NONE;
-        pso.RasterizerState.DepthClipEnable = TRUE;
-        pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-        pso.DepthStencilState.DepthEnable   = FALSE;
-        pso.DepthStencilState.StencilEnable = FALSE;
-        pso.SampleMask            = UINT_MAX;
-        pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-        pso.NumRenderTargets      = 1;
-        pso.RTVFormats[0]         = kLFFormat;
-        pso.DSVFormat             = DXGI_FORMAT_UNKNOWN;
-        pso.SampleDesc            = { 1, 0 };
-        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_pso)));
-    }
+    m_shaderDir = shaderDir;
+    RecreatePipelines(device);
 
     const float clearBlack[4] = {0, 0, 0, 1};
     m_flareRT = std::make_unique<RenderTarget>();
@@ -101,6 +80,32 @@ void LensFlarePass::Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap, 
         (std::max)(1u, m_width / 4), (std::max)(1u, m_height / 4), kLFFormat, clearBlack);
 
     Logger::Info("LensFlarePass initialized");
+}
+
+void LensFlarePass::RecreatePipelines(GraphicsDevice& device)
+{
+    auto* dev = device.GetDevice();
+    auto vs = ShaderCompiler::LoadFromFile(m_shaderDir + L"PostProcess_VS.cso");
+    auto ps = ShaderCompiler::LoadFromFile(m_shaderDir + L"LensFlare_PS.cso");
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
+    pso.pRootSignature = m_rootSig.Get();
+    pso.VS = { vs.GetData(), vs.GetSize() };
+    pso.PS = { ps.GetData(), ps.GetSize() };
+    pso.InputLayout = { nullptr, 0 };
+    pso.RasterizerState.FillMode        = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode        = D3D12_CULL_MODE_NONE;
+    pso.RasterizerState.DepthClipEnable = TRUE;
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    pso.DepthStencilState.DepthEnable   = FALSE;
+    pso.DepthStencilState.StencilEnable = FALSE;
+    pso.SampleMask            = UINT_MAX;
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets      = 1;
+    pso.RTVFormats[0]         = kLFFormat;
+    pso.DSVFormat             = DXGI_FORMAT_UNKNOWN;
+    pso.SampleDesc            = { 1, 0 };
+    ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_pso)));
 }
 
 void LensFlarePass::Resize(GraphicsDevice& device, u32 width, u32 height)

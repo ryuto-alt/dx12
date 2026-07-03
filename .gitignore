@@ -63,3 +63,6 @@ installer/output/
 
 # 配布リリース zip（GitHub Release に添付済み。リポジトリには入れない）
 /DX12Engine-v*.zip
+
+# --validate CLI の出力（実行のたびに生成される）
+validate_report.txt

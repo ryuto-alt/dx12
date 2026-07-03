@@ -71,6 +71,9 @@ Get-ChildItem -Path $srcDir -File | Where-Object { $_.Extension -in ".exe", ".dl
   ForEach-Object { Copy-Item $_.FullName -Destination $stage }
 # shaders（.cso）
 Copy-Item (Join-Path $srcDir "shaders") -Destination (Join-Path $stage "shaders") -Recurse -ErrorAction SilentlyContinue
+# shaders-src（.hlsl/.hlsli ソース。配布エディタでのシェーダーホットリロード/エンジンシェーダー編集用。
+# PathResolver::ShaderSourceDirW() が配布時に exe 隣の shaders-src/ を見る）
+Copy-Item (Join-Path $repoRoot "shaders") -Destination (Join-Path $stage "shaders-src") -Recurse -ErrorAction SilentlyContinue
 # assets
 Copy-Item (Join-Path $repoRoot "assets") -Destination (Join-Path $stage "assets") -Recurse
 # tools\mcp-server（node_modules 込み・不要物は除外）

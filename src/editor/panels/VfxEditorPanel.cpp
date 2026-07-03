@@ -64,6 +64,11 @@ void VfxEditorPanel::Initialize(GraphicsDevice& device, DescriptorHeap* srvHeap,
     NewAsset();
 }
 
+void VfxEditorPanel::RecreatePipelines(GraphicsDevice& device)
+{
+    m_previewParticles.RecreatePipelines(device);
+}
+
 void VfxEditorPanel::RenderPreview3D(EditorContext& ctx, CommandList& cmd, f32 dt)
 {
     if (!ctx.showVfxEditor || !m_gfxInitialized) return;

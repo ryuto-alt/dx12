@@ -123,53 +123,10 @@ void GpuParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat
             serialized->GetBufferSize(), IID_PPV_ARGS(&m_drawRS)));
     }
 
-    // --- Compute PSO ×5 ---
-    auto makeCS = [&](const wchar_t* cso, Microsoft::WRL::ComPtr<ID3D12PipelineState>& out)
-    {
-        auto bc = ShaderCompiler::LoadFromFile(shaderDir + cso);
-        D3D12_COMPUTE_PIPELINE_STATE_DESC pso{};
-        pso.pRootSignature = m_computeRS.Get();
-        pso.CS = { bc.GetData(), bc.GetSize() };
-        ThrowIfFailed(dev->CreateComputePipelineState(&pso, IID_PPV_ARGS(&out)));
-    };
-    makeCS(L"GpuParticleInit_CS.cso",     m_psoInit);
-    makeCS(L"GpuParticlePrepare_CS.cso",  m_psoPrepare);
-    makeCS(L"GpuParticleEmit_CS.cso",     m_psoEmit);
-    makeCS(L"GpuParticleKickoff_CS.cso",  m_psoKickoff);
-    makeCS(L"GpuParticleSimulate_CS.cso", m_psoSim);
-
-    // --- Draw PSO（VS=GpuParticleDraw / PS=Particle_PS 流用・加算・深度なし）---
-    {
-        auto vs = ShaderCompiler::LoadFromFile(shaderDir + L"GpuParticleDraw_VS.cso");
-        auto ps = ShaderCompiler::LoadFromFile(shaderDir + L"Particle_PS.cso");
-
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
-        pso.pRootSignature        = m_drawRS.Get();
-        pso.VS                    = { vs.GetData(), vs.GetSize() };
-        pso.PS                    = { ps.GetData(), ps.GetSize() };
-        pso.InputLayout           = { nullptr, 0 };   // 頂点バッファ無し
-        pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-        pso.RasterizerState.FillMode        = D3D12_FILL_MODE_SOLID;
-        pso.RasterizerState.CullMode        = D3D12_CULL_MODE_NONE;
-        pso.RasterizerState.DepthClipEnable = TRUE;
-        auto& rt = pso.BlendState.RenderTarget[0];
-        rt.BlendEnable    = TRUE;
-        rt.SrcBlend       = D3D12_BLEND_ONE;
-        rt.DestBlend      = D3D12_BLEND_ONE;
-        rt.BlendOp        = D3D12_BLEND_OP_ADD;
-        rt.SrcBlendAlpha  = D3D12_BLEND_ONE;
-        rt.DestBlendAlpha = D3D12_BLEND_ONE;
-        rt.BlendOpAlpha   = D3D12_BLEND_OP_ADD;
-        rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-        pso.DepthStencilState.DepthEnable   = FALSE;
-        pso.DepthStencilState.StencilEnable = FALSE;
-        pso.SampleMask       = UINT_MAX;
-        pso.NumRenderTargets = 1;
-        pso.RTVFormats[0]    = rtvFormat;
-        pso.DSVFormat        = DXGI_FORMAT_UNKNOWN;
-        pso.SampleDesc       = { 1, 0 };
-        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoDraw)));
-    }
+    // --- PSO 生成（ホットリロード用に RecreatePipelines へ切り出し）---
+    m_shaderDir = shaderDir;
+    m_rtvFormat = rtvFormat;
+    RecreatePipelines(device);
 
     // --- コマンドシグネチャ（間接 Dispatch / Draw）---
     {
@@ -215,6 +172,59 @@ void GpuParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat
     m_requests.reserve(kMaxEmitsPerFrame);
     m_initialized = true;
     Logger::Info("GpuParticleSystem initialized (max {} particles, compute + indirect draw)", kMaxParticles);
+}
+
+void GpuParticleSystem::RecreatePipelines(GraphicsDevice& device)
+{
+    auto* dev = device.GetDevice();
+
+    // --- Compute PSO ×5 ---
+    auto makeCS = [&](const wchar_t* cso, Microsoft::WRL::ComPtr<ID3D12PipelineState>& out)
+    {
+        auto bc = ShaderCompiler::LoadFromFile(m_shaderDir + cso);
+        D3D12_COMPUTE_PIPELINE_STATE_DESC pso{};
+        pso.pRootSignature = m_computeRS.Get();
+        pso.CS = { bc.GetData(), bc.GetSize() };
+        ThrowIfFailed(dev->CreateComputePipelineState(&pso, IID_PPV_ARGS(&out)));
+    };
+    makeCS(L"GpuParticleInit_CS.cso",     m_psoInit);
+    makeCS(L"GpuParticlePrepare_CS.cso",  m_psoPrepare);
+    makeCS(L"GpuParticleEmit_CS.cso",     m_psoEmit);
+    makeCS(L"GpuParticleKickoff_CS.cso",  m_psoKickoff);
+    makeCS(L"GpuParticleSimulate_CS.cso", m_psoSim);
+
+    // --- Draw PSO（VS=GpuParticleDraw / PS=Particle_PS 流用・加算・深度なし）---
+    {
+        auto vs = ShaderCompiler::LoadFromFile(m_shaderDir + L"GpuParticleDraw_VS.cso");
+        auto ps = ShaderCompiler::LoadFromFile(m_shaderDir + L"Particle_PS.cso");
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
+        pso.pRootSignature        = m_drawRS.Get();
+        pso.VS                    = { vs.GetData(), vs.GetSize() };
+        pso.PS                    = { ps.GetData(), ps.GetSize() };
+        pso.InputLayout           = { nullptr, 0 };   // 頂点バッファ無し
+        pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        pso.RasterizerState.FillMode        = D3D12_FILL_MODE_SOLID;
+        pso.RasterizerState.CullMode        = D3D12_CULL_MODE_NONE;
+        pso.RasterizerState.DepthClipEnable = TRUE;
+        auto& rt = pso.BlendState.RenderTarget[0];
+        rt.BlendEnable    = TRUE;
+        rt.SrcBlend       = D3D12_BLEND_ONE;
+        rt.DestBlend      = D3D12_BLEND_ONE;
+        rt.BlendOp        = D3D12_BLEND_OP_ADD;
+        rt.SrcBlendAlpha  = D3D12_BLEND_ONE;
+        rt.DestBlendAlpha = D3D12_BLEND_ONE;
+        rt.BlendOpAlpha   = D3D12_BLEND_OP_ADD;
+        rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        pso.DepthStencilState.DepthEnable   = FALSE;
+        pso.DepthStencilState.StencilEnable = FALSE;
+        pso.SampleMask       = UINT_MAX;
+        pso.NumRenderTargets = 1;
+        pso.RTVFormats[0]    = m_rtvFormat;
+        pso.DSVFormat        = DXGI_FORMAT_UNKNOWN;
+        pso.SampleDesc       = { 1, 0 };
+        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoDraw)));
+    }
 }
 
 void GpuParticleSystem::Emit(const EmitRequest& r)

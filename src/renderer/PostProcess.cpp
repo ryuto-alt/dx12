@@ -188,40 +188,46 @@ void PostProcess::Initialize(GraphicsDevice& device, DXGI_FORMAT outFormat,
     }
 
     // --- PSO: VB なしフルスクリーン三角形 / Depth OFF / Cull NONE ---
-    {
-        auto vs = ShaderCompiler::LoadFromFile(shaderDir + L"PostProcess_VS.cso");
-        auto ps = ShaderCompiler::LoadFromFile(shaderDir + L"PostProcess_PS.cso");
-
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
-        pso.pRootSignature = m_rootSig.Get();
-        pso.VS = { vs.GetData(), vs.GetSize() };
-        pso.PS = { ps.GetData(), ps.GetSize() };
-        pso.InputLayout = { nullptr, 0 };  // SV_VertexID のみ
-
-        pso.RasterizerState.FillMode        = D3D12_FILL_MODE_SOLID;
-        pso.RasterizerState.CullMode        = D3D12_CULL_MODE_NONE;
-        pso.RasterizerState.DepthClipEnable = TRUE;
-
-        pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-
-        pso.DepthStencilState.DepthEnable   = FALSE;
-        pso.DepthStencilState.StencilEnable = FALSE;
-
-        pso.SampleMask            = UINT_MAX;
-        pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-        pso.NumRenderTargets      = 1;
-        pso.RTVFormats[0]         = outFormat;
-        pso.DSVFormat             = DXGI_FORMAT_UNKNOWN;
-        pso.SampleDesc            = { 1, 0 };
-
-        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_pso)));
-    }
+    m_outFormat = outFormat;
+    m_shaderDir = shaderDir;
+    RecreatePipelines(device);
 
     // --- パラメータ CB（フレーム × Apply 回数で多重化）---
     m_cb = std::make_unique<ConstantBuffer>();
     m_cb->Initialize(device, sizeof(PostCB), m_frameCount * kMaxAppliesPerFrame);
 
     Logger::Info("PostProcess initialized");
+}
+
+void PostProcess::RecreatePipelines(GraphicsDevice& device)
+{
+    auto* dev = device.GetDevice();
+    auto vs = ShaderCompiler::LoadFromFile(m_shaderDir + L"PostProcess_VS.cso");
+    auto ps = ShaderCompiler::LoadFromFile(m_shaderDir + L"PostProcess_PS.cso");
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
+    pso.pRootSignature = m_rootSig.Get();
+    pso.VS = { vs.GetData(), vs.GetSize() };
+    pso.PS = { ps.GetData(), ps.GetSize() };
+    pso.InputLayout = { nullptr, 0 };  // SV_VertexID のみ
+
+    pso.RasterizerState.FillMode        = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode        = D3D12_CULL_MODE_NONE;
+    pso.RasterizerState.DepthClipEnable = TRUE;
+
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    pso.DepthStencilState.DepthEnable   = FALSE;
+    pso.DepthStencilState.StencilEnable = FALSE;
+
+    pso.SampleMask            = UINT_MAX;
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets      = 1;
+    pso.RTVFormats[0]         = m_outFormat;
+    pso.DSVFormat             = DXGI_FORMAT_UNKNOWN;
+    pso.SampleDesc            = { 1, 0 };
+
+    ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_pso)));
 }
 
 void PostProcess::Apply(ID3D12GraphicsCommandList* cmd,

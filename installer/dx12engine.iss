@@ -52,6 +52,9 @@ Source: "{#SrcDir}\GameRuntime.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\gh.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "{#SrcDir}\*.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\shaders\*"; DestDir: "{app}\shaders"; Flags: ignoreversion recursesubdirs createallsubdirs
+; シェーダーソース(.hlsl/.hlsli)。配布エディタでのシェーダーホットリロード/エンジンシェーダー編集用
+; (PathResolver::ShaderSourceDirW() が配布時に exe 隣の shaders-src/ を見る)。
+Source: "{#RepoRoot}\shaders\*"; DestDir: "{app}\shaders-src"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#RepoRoot}\assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; MCP(AI ブリッジ)サーバを同梱。エンジンは exe の隣の tools\mcp-server\index.ts を実行時に探すので、
 ; ここに入れておけば配布先でも「MCP / AI Bridge」窓のコマンドがそのまま繋がる（node_modules も含めて同梱＝npm install 不要）。

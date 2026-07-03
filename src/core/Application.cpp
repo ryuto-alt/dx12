@@ -38,6 +38,7 @@
 #include "renderer/IBLBaker.h"
 #include "renderer/SkyboxRenderer.h"
 #include "resource/ShaderCompiler.h"
+#include "resource/ShaderManager.h"
 #include "resource/ModelLoader.h"
 #include "resource/ResourceManager.h"
 #include "resource/TextureLoader.h"
@@ -183,6 +184,397 @@ void WriteShownVersion(const std::string& v)
     if (f) f << v;
 }
 } // namespace
+
+// ---------------------------------------------------------------------------
+// シェーダーホットリロード用 PSO 再生成群
+// 初回(Initialize)・以降の再生成(ShaderManager 経由のホットリロード)の両方から呼ばれる。
+// 既存 unique_ptr が非 null ならオブジェクトを作り直さず Initialize() し直す(ComPtr 再代入のみ)。
+// ModelThumbnailRenderer 等が PipelineState* の生ポインタを保持しているため、住所を変えないことが必須。
+// ---------------------------------------------------------------------------
+void Application::RecreateForwardPsos()
+{
+    auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Forward_VS.cso");
+    auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Forward_PS.cso");
+
+    // 通常 forward は DepthFunc=LESS（既定）。毎フレーム深度を 1.0 へクリアして描くため、
+    // 同深度フラグメントは先勝ち（従来の z-fight 解決を維持）。
+    PipelineStateBuilder builder;
+    builder.SetRootSignature(m_rootSignature->Get())
+           .SetVertexShader(vs.GetData(), vs.GetSize())
+           .SetPixelShader(ps.GetData(), ps.GetSize())
+           .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
+           .SetRenderTargetFormat(kSceneColorFormat)  // 描き込み先はシーンRT(HDR)。swapchain形式だとRTV不一致
+           .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+           .SetDepthEnabled(true)
+           .SetCullMode(D3D12_CULL_MODE_NONE);  // 両面描画（片面メッシュ対応）
+
+    if (!m_pipelineState) m_pipelineState = std::make_unique<PipelineState>();
+    m_pipelineState->Initialize(*m_graphicsDevice, builder);
+
+    // 深度プリパス併用(SSAO)時専用の LESS_EQUAL バリアント。プリパスが書いた深度を
+    // forward で再利用するため、同一深度を通す必要がある（通常経路の z-fight 解決は変えない）。
+    builder.SetDepthFunc(D3D12_COMPARISON_FUNC_LESS_EQUAL);
+    if (!m_pipelineStateLEqual) m_pipelineStateLEqual = std::make_unique<PipelineState>();
+    m_pipelineStateLEqual->Initialize(*m_graphicsDevice, builder);
+
+    // サムネイル描画用バリアント。ModelThumbnailRenderer の RT は R8G8B8A8 で
+    // ポストプロセス(トーンマップ)を通らないため、シェーダー内で ACES+ガンマまで
+    // 済ませる LDR 直出力の PS を使う。
+    auto psLdr = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ForwardLdr_PS.cso");
+    builder.SetDepthFunc(D3D12_COMPARISON_FUNC_LESS);
+    builder.SetRenderTargetFormat(DXGI_FORMAT_R8G8B8A8_UNORM);
+    builder.SetPixelShader(psLdr.GetData(), psLdr.GetSize());
+    if (!m_pipelineStateThumb) m_pipelineStateThumb = std::make_unique<PipelineState>();
+    m_pipelineStateThumb->Initialize(*m_graphicsDevice, builder);
+}
+
+void Application::RecreateSkinnedPsos()
+{
+    auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ForwardSkinned_VS.cso");
+    auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Forward_PS.cso");
+
+    // 通常 forward(skinned) は DepthFunc=LESS（既定）。SSAO 無効時の z-fight 解決を維持。
+    PipelineStateBuilder builder;
+    builder.SetRootSignature(m_rootSignature->Get())
+           .SetVertexShader(vs.GetData(), vs.GetSize())
+           .SetPixelShader(ps.GetData(), ps.GetSize())
+           .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
+           .SetRenderTargetFormat(kSceneColorFormat)
+           .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+           .SetDepthEnabled(true)
+           .SetCullMode(D3D12_CULL_MODE_NONE);
+
+    if (!m_skinnedPipelineState) m_skinnedPipelineState = std::make_unique<PipelineState>();
+    m_skinnedPipelineState->Initialize(*m_graphicsDevice, builder);
+
+    // 深度プリパス併用(SSAO)時専用の LESS_EQUAL バリアント。
+    builder.SetDepthFunc(D3D12_COMPARISON_FUNC_LESS_EQUAL);
+    if (!m_skinnedPipelineStateLEqual) m_skinnedPipelineStateLEqual = std::make_unique<PipelineState>();
+    m_skinnedPipelineStateLEqual->Initialize(*m_graphicsDevice, builder);
+}
+
+void Application::RecreateGridPso()
+{
+    auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ForwardGrid_VS.cso");
+    auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ForwardGrid_PS.cso");
+
+    PipelineStateBuilder builder;
+    builder.SetRootSignature(m_rootSignature->Get())
+           .SetVertexShader(vs.GetData(), vs.GetSize())
+           .SetPixelShader(ps.GetData(), ps.GetSize())
+           .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
+           .SetRenderTargetFormat(kSceneColorFormat)
+           .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+           .SetDepthEnabled(true)
+           .SetDepthWrite(false)        // 深度を書かない＝床など同一平面の不透明物を隠さない
+           .SetAlphaBlendEnabled(true)
+           .SetCullMode(D3D12_CULL_MODE_NONE)
+           .SetDepthBias(-100, -1.0f);  // 深度テストではカメラ側に寄せて床の上に線を乗せる
+
+    if (!m_gridPipelineState) m_gridPipelineState = std::make_unique<PipelineState>();
+    m_gridPipelineState->Initialize(*m_graphicsDevice, builder);
+}
+
+void Application::RecreateEmissivePso()
+{
+    auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Emissive_VS.cso");
+    auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Emissive_PS.cso");
+
+    // インスタンシング版（slot1=MeshInstanceData）。Emissive.hlsl は instanced VS。
+    PipelineStateBuilder builder;
+    builder.SetRootSignature(m_rootSignature->Get())
+           .SetVertexShader(vs.GetData(), vs.GetSize())
+           .SetPixelShader(ps.GetData(), ps.GetSize())
+           .SetInputLayout(Mesh::GetInstancedInputLayout(), Mesh::GetInstancedInputLayoutCount())
+           .SetRenderTargetFormat(kSceneColorFormat)
+           .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+           .SetDepthEnabled(true)
+           .SetDepthWrite(false)
+           .SetAdditiveBlendEnabled(true)
+           .SetCullMode(D3D12_CULL_MODE_NONE);
+
+    if (!m_emissivePipelineState) m_emissivePipelineState = std::make_unique<PipelineState>();
+    m_emissivePipelineState->Initialize(*m_graphicsDevice, builder);
+}
+
+void Application::RecreateShadowPsos()
+{
+    // Shadow PSO (depth-only, no pixel shader, with depth bias)
+    {
+        auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ShadowPass_VS.cso");
+        PipelineStateBuilder builder;
+        builder.SetRootSignature(m_rootSignature->Get())
+               .SetVertexShader(vs.GetData(), vs.GetSize())
+               .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
+               .SetRenderTargetFormat(DXGI_FORMAT_UNKNOWN)
+               .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+               .SetDepthEnabled(true)
+               .SetDepthBias(8000, 2.0f);
+
+        if (!m_shadowPipelineState) m_shadowPipelineState = std::make_unique<PipelineState>();
+        m_shadowPipelineState->Initialize(*m_graphicsDevice, builder);
+    }
+
+    // Shadow Skinned PSO
+    {
+        auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ShadowPassSkinned_VS.cso");
+        PipelineStateBuilder builder;
+        builder.SetRootSignature(m_rootSignature->Get())
+               .SetVertexShader(vs.GetData(), vs.GetSize())
+               .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
+               .SetRenderTargetFormat(DXGI_FORMAT_UNKNOWN)
+               .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+               .SetDepthEnabled(true)
+               .SetDepthBias(8000, 2.0f);
+
+        if (!m_shadowSkinnedPipelineState) m_shadowSkinnedPipelineState = std::make_unique<PipelineState>();
+        m_shadowSkinnedPipelineState->Initialize(*m_graphicsDevice, builder);
+    }
+}
+
+void Application::RecreateDepthPrepassPsos()
+{
+    // 深度プリパス PSO（SSAO 用カメラ深度。bias なし・カメラ視点・D32・RTVなし）。
+    // ShadowPass_VS は b0 の mvp で頂点変換するだけなので、b0 に world*cameraVP を渡せば流用できる。
+    {
+        auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ShadowPass_VS.cso");
+        PipelineStateBuilder builder;
+        builder.SetRootSignature(m_rootSignature->Get())
+               .SetVertexShader(vs.GetData(), vs.GetSize())
+               .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
+               .SetRenderTargetFormat(DXGI_FORMAT_UNKNOWN)
+               .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+               .SetDepthEnabled(true)
+               .SetCullMode(D3D12_CULL_MODE_NONE);  // bias なし（カメラ深度をそのまま使う）
+        if (!m_depthPrepassPSO) m_depthPrepassPSO = std::make_unique<PipelineState>();
+        m_depthPrepassPSO->Initialize(*m_graphicsDevice, builder);
+    }
+    {
+        // forward(ForwardSkinned) とクリップ Z をビット一致させる専用スキンド深度プリパス。
+        // ShadowPassSkinned はスキニング演算順(sum(w*mul(pos,B))) と totalWeight==0 フォールバックが
+        // forward(mul(pos,sum(w*B)) / フォールバック無し) と違い、SSAO の深度再利用で z-fight/欠落を招く。
+        auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"DepthPrepassSkinned_VS.cso");
+        PipelineStateBuilder builder;
+        builder.SetRootSignature(m_rootSignature->Get())
+               .SetVertexShader(vs.GetData(), vs.GetSize())
+               .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
+               .SetRenderTargetFormat(DXGI_FORMAT_UNKNOWN)
+               .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+               .SetDepthEnabled(true)
+               .SetCullMode(D3D12_CULL_MODE_NONE);
+        if (!m_depthPrepassSkinnedPSO) m_depthPrepassSkinnedPSO = std::make_unique<PipelineState>();
+        m_depthPrepassSkinnedPSO->Initialize(*m_graphicsDevice, builder);
+    }
+}
+
+void Application::RegisterShaderReloadHandlers()
+{
+    if (!m_shaderManager)
+        return;
+
+    m_shaderManager->RegisterReloadHandler(
+        { L"Forward_VS.cso", L"Forward_PS.cso", L"ForwardLdr_PS.cso" },
+        [this]() { RecreateForwardPsos(); });
+    m_shaderManager->RegisterReloadHandler(
+        { L"ForwardSkinned_VS.cso", L"Forward_PS.cso" },
+        [this]() { RecreateSkinnedPsos(); });
+    m_shaderManager->RegisterReloadHandler(
+        { L"ForwardGrid_VS.cso", L"ForwardGrid_PS.cso" },
+        [this]() { RecreateGridPso(); });
+    m_shaderManager->RegisterReloadHandler(
+        { L"Emissive_VS.cso", L"Emissive_PS.cso" },
+        [this]() { RecreateEmissivePso(); });
+    m_shaderManager->RegisterReloadHandler(
+        { L"ShadowPass_VS.cso", L"ShadowPassSkinned_VS.cso" },
+        [this]() { RecreateShadowPsos(); RecreateDepthPrepassPsos(); });  // ShadowPass_VS は深度プリパスにも流用
+    m_shaderManager->RegisterReloadHandler(
+        { L"DepthPrepassSkinned_VS.cso" },
+        [this]() { RecreateDepthPrepassPsos(); });
+    if (m_postProcess)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"PostProcess_VS.cso", L"PostProcess_PS.cso" },
+            [this]() { m_postProcess->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_ssaoPass)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"SSAO_VS.cso", L"SSAO_PS.cso", L"SSAOBlur_PS.cso" },
+            [this]() { m_ssaoPass->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_bloomPass)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"Bloom_VS.cso", L"BloomDown_PS.cso", L"BloomUp_PS.cso" },
+            [this]() { m_bloomPass->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_dofPass)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"DofCoc_PS.cso", L"DofGather_PS.cso", L"DofComposite_PS.cso" },
+            [this]() { m_dofPass->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_motionBlurPass)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"MotionBlur_PS.cso" },
+            [this]() { m_motionBlurPass->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_lensFlarePass)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"LensFlare_PS.cso" },
+            [this]() { m_lensFlarePass->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_godRaysPass)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"GodRaysMask_PS.cso", L"GodRaysBlur_PS.cso" },
+            [this]() { m_godRaysPass->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_autoExposure)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"ExposureHistogram_CS.cso", L"ExposureAdapt_CS.cso" },
+            [this]() { m_autoExposure->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_skyboxRenderer)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"Skybox_VS.cso", L"Skybox_PS.cso" },
+            [this]() { m_skyboxRenderer->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_sceneTransition)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"Transition_VS.cso", L"Transition_PS.cso" },
+            [this]() { m_sceneTransition->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_iblBaker)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"IrradianceConvolution_CS.cso", L"PrefilterEnv_CS.cso", L"IntegrateBRDF_CS.cso" },
+            [this]() { m_iblBaker->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_physicsDebugRenderer)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"DebugLine_VS.cso", L"DebugLine_PS.cso" },
+            [this]() { m_physicsDebugRenderer->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_editorIconRenderer)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"IconBillboard_VS.cso", L"IconBillboard_PS.cso" },
+            [this]() { m_editorIconRenderer->RecreatePipelines(*m_graphicsDevice); });
+    }
+    // Particle.hlsl は ParticleSystem(m_particleSystem/VFXプレビュー) + GpuParticleSystem の
+    // 描画PSOがPS(Particle_PS.cso)を共有するクロス依存。3者まとめて再生成する。
+    {
+        std::vector<std::function<void()>> particleTargets;
+        if (m_particleSystem)
+            particleTargets.push_back([this]() { m_particleSystem->RecreatePipelines(*m_graphicsDevice); });
+        if (m_gpuParticles)
+            particleTargets.push_back([this]() { m_gpuParticles->RecreatePipelines(*m_graphicsDevice); });
+        if (m_vfxEditorPanel)
+            particleTargets.push_back([this]() { m_vfxEditorPanel->RecreatePipelines(*m_graphicsDevice); });
+        if (!particleTargets.empty())
+        {
+            m_shaderManager->RegisterReloadHandler(
+                { L"Particle_VS.cso", L"Particle_PS.cso", L"ParticleDistort_PS.cso",
+                  L"Trail_VS.cso", L"Trail_PS.cso", L"Beam_VS.cso", L"Beam_PS.cso",
+                  L"GpuParticleInit_CS.cso", L"GpuParticlePrepare_CS.cso", L"GpuParticleEmit_CS.cso",
+                  L"GpuParticleKickoff_CS.cso", L"GpuParticleSimulate_CS.cso", L"GpuParticleDraw_VS.cso" },
+                [particleTargets]() { for (auto& fn : particleTargets) fn(); });
+        }
+    }
+
+    // カスタムシェーダー(MeshRenderer::shaderPath)は Registry 外なので csoName 経路ではなく
+    // 専用のカスタムハンドラで扱う。キャッシュを捨てるだけで、次回描画時に EnsureCustomPso が
+    // 最新バイトコードから作り直す。
+    // 既知の制約: カスタムシェーダーが forward/Lighting.hlsli 等の共有 .hlsli を include していても、
+    // その .hlsli の変更だけでは再コンパイルされない(依存追跡は Registry ソースのみ対象)。
+    // カスタムシェーダー自身を保存し直せば最新の include 内容で再コンパイルされる。
+    m_shaderManager->RegisterCustomReloadHandler(
+        [this](const std::string& relKey) { m_customPsoCache.erase(relKey); });
+}
+
+Application::CustomForwardPsos* Application::EnsureCustomPso(const std::string& shaderRel)
+{
+    std::string key = shaderRel;
+    for (char& c : key)
+    {
+        if (c == '\\') c = '/';
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+
+    auto it = m_customPsoCache.find(key);
+    if (it != m_customPsoCache.end())
+        return it->second.valid ? &it->second : nullptr;
+
+    // バイトコードの取得元: エディタは ShaderManager(実行時コンパイル済みのメモリ内キャッシュ)。
+    // ゲームモード(ShaderManager 非生成)は BuildGame が game.pak に焼いた
+    // "shaders/custom/<relPath>_VS.cso" 等を ShaderCompiler::LoadFromFile 経由(VFS)で読む
+    // (キー生成規約は Application::BuildGame と一致させること)。
+    std::vector<u8> vsStorage, psStorage;
+    const std::vector<u8>* vsBytes = nullptr;
+    const std::vector<u8>* psBytes = nullptr;
+
+    if (m_shaderManager)
+    {
+        if (!m_shaderManager->HasValidCustomShader(shaderRel))
+            m_shaderManager->CompileCustomShader(shaderRel);  // 未スキャン分の遅延コンパイル救済
+        vsBytes = m_shaderManager->GetCustomVsBytecode(shaderRel);
+        psBytes = m_shaderManager->GetCustomPsBytecode(shaderRel);
+    }
+    else
+    {
+        try
+        {
+            const std::wstring base = PathResolver::ShaderDirW() + L"custom/" + PathResolver::Utf8ToWide(key);
+            vsStorage = ShaderCompiler::LoadFromFile(base + L"_VS.cso").data;
+            psStorage = ShaderCompiler::LoadFromFile(base + L"_PS.cso").data;
+            vsBytes = &vsStorage;
+            psBytes = &psStorage;
+        }
+        catch (const std::exception&)
+        {
+            // ビルドに含まれていない(未使用 or ビルド後に割当変更)。既定 Forward へフォールバック。
+        }
+    }
+
+    CustomForwardPsos entry;
+    if (vsBytes && psBytes && !vsBytes->empty() && !psBytes->empty())
+    {
+        try
+        {
+            PipelineStateBuilder builder;
+            builder.SetRootSignature(m_rootSignature->Get())
+                   .SetVertexShader(vsBytes->data(), vsBytes->size())
+                   .SetPixelShader(psBytes->data(), psBytes->size())
+                   .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
+                   .SetRenderTargetFormat(kSceneColorFormat)
+                   .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+                   .SetDepthEnabled(true)
+                   .SetCullMode(D3D12_CULL_MODE_NONE);
+            entry.less = std::make_unique<PipelineState>();
+            entry.less->Initialize(*m_graphicsDevice, builder);
+            builder.SetDepthFunc(D3D12_COMPARISON_FUNC_LESS_EQUAL);
+            entry.lequal = std::make_unique<PipelineState>();
+            entry.lequal->Initialize(*m_graphicsDevice, builder);
+            entry.valid = true;
+        }
+        catch (const std::exception& ex)
+        {
+            Logger::Error("カスタムシェーダーのPSO生成に失敗しました: {} - {}", shaderRel, ex.what());
+            entry.valid = false;
+        }
+    }
+
+    auto& stored = m_customPsoCache[key];
+    stored = std::move(entry);
+    return stored.valid ? &stored : nullptr;
+}
 
 void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                              const ProjectInfo* /*projectInfo*/, bool buildMode)
@@ -339,42 +731,20 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     m_rootSignature = std::make_unique<RootSignature>();
     m_rootSignature->Initialize(*m_graphicsDevice);
 
-    // シェーダー読み込み & PipelineState
+    // プロジェクト独自シェーダー(上書き/自作)の実行時コンパイル基盤。エディタモードのみ。
+    // 最初の ShaderCompiler::LoadFromFile(直後のブロック)より前に用意しておく必要がある
+    // (ShaderCompiler::LoadFromFile が ShaderManager::Instance() のオーバーライドを先に見るため)。
+    if (!m_isGameMode)
     {
-        auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Forward_VS.cso");
-        auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Forward_PS.cso");
-
-        // 通常 forward は DepthFunc=LESS（既定）。毎フレーム深度を 1.0 へクリアして描くため、
-        // 同深度フラグメントは先勝ち（従来の z-fight 解決を維持）。
-        PipelineStateBuilder builder;
-        builder.SetRootSignature(m_rootSignature->Get())
-               .SetVertexShader(vs.GetData(), vs.GetSize())
-               .SetPixelShader(ps.GetData(), ps.GetSize())
-               .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
-               .SetRenderTargetFormat(kSceneColorFormat)  // 描き込み先はシーンRT(HDR)。swapchain形式だとRTV不一致
-               .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
-               .SetDepthEnabled(true)
-               .SetCullMode(D3D12_CULL_MODE_NONE);  // 両面描画（片面メッシュ対応）
-
-        m_pipelineState = std::make_unique<PipelineState>();
-        m_pipelineState->Initialize(*m_graphicsDevice, builder);
-
-        // 深度プリパス併用(SSAO)時専用の LESS_EQUAL バリアント。プリパスが書いた深度を
-        // forward で再利用するため、同一深度を通す必要がある（通常経路の z-fight 解決は変えない）。
-        builder.SetDepthFunc(D3D12_COMPARISON_FUNC_LESS_EQUAL);
-        m_pipelineStateLEqual = std::make_unique<PipelineState>();
-        m_pipelineStateLEqual->Initialize(*m_graphicsDevice, builder);
-
-        // サムネイル描画用バリアント。ModelThumbnailRenderer の RT は R8G8B8A8 で
-        // ポストプロセス(トーンマップ)を通らないため、シェーダー内で ACES+ガンマまで
-        // 済ませる LDR 直出力の PS を使う。
-        auto psLdr = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ForwardLdr_PS.cso");
-        builder.SetDepthFunc(D3D12_COMPARISON_FUNC_LESS);
-        builder.SetRenderTargetFormat(DXGI_FORMAT_R8G8B8A8_UNORM);
-        builder.SetPixelShader(psLdr.GetData(), psLdr.GetSize());
-        m_pipelineStateThumb = std::make_unique<PipelineState>();
-        m_pipelineStateThumb->Initialize(*m_graphicsDevice, builder);
+        m_shaderManager = std::make_unique<ShaderManager>();
+        ShaderManager::SetInstance(m_shaderManager.get());
+        m_shaderManager->Initialize();
+        if (!m_shaderManager->IsRuntimeCompileAvailable())
+            Logger::Warn("シェーダーの実行時コンパイルが利用できません(ホットリロード無効、通常の.csoは読み込めます)");
     }
+
+    // シェーダー読み込み & PipelineState
+    RecreateForwardPsos();
 
     // Camera
     m_camera = std::make_unique<Camera>();
@@ -541,72 +911,14 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         if (m_ssaoWhiteTex) m_ssaoWhiteTex->FinishUpload();
 
         // スキニング PSO 作成
-        {
-            auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ForwardSkinned_VS.cso");
-            auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Forward_PS.cso");
-
-            // 通常 forward(skinned) は DepthFunc=LESS（既定）。SSAO 無効時の z-fight 解決を維持。
-            PipelineStateBuilder builder;
-            builder.SetRootSignature(m_rootSignature->Get())
-                   .SetVertexShader(vs.GetData(), vs.GetSize())
-                   .SetPixelShader(ps.GetData(), ps.GetSize())
-                   .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
-                   .SetRenderTargetFormat(kSceneColorFormat)
-                   .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
-                   .SetDepthEnabled(true)
-                   .SetCullMode(D3D12_CULL_MODE_NONE);
-
-            m_skinnedPipelineState = std::make_unique<PipelineState>();
-            m_skinnedPipelineState->Initialize(*m_graphicsDevice, builder);
-
-            // 深度プリパス併用(SSAO)時専用の LESS_EQUAL バリアント。
-            builder.SetDepthFunc(D3D12_COMPARISON_FUNC_LESS_EQUAL);
-            m_skinnedPipelineStateLEqual = std::make_unique<PipelineState>();
-            m_skinnedPipelineStateLEqual->Initialize(*m_graphicsDevice, builder);
-        }
+        RecreateSkinnedPsos();
 
         // グリッド PSO 作成（アルファブレンド + 両面描画）
-        {
-            auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ForwardGrid_VS.cso");
-            auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ForwardGrid_PS.cso");
-
-            PipelineStateBuilder builder;
-            builder.SetRootSignature(m_rootSignature->Get())
-                   .SetVertexShader(vs.GetData(), vs.GetSize())
-                   .SetPixelShader(ps.GetData(), ps.GetSize())
-                   .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
-                   .SetRenderTargetFormat(kSceneColorFormat)
-                   .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
-                   .SetDepthEnabled(true)
-                   .SetDepthWrite(false)        // 深度を書かない＝床など同一平面の不透明物を隠さない
-                   .SetAlphaBlendEnabled(true)
-                   .SetCullMode(D3D12_CULL_MODE_NONE)
-                   .SetDepthBias(-100, -1.0f);  // 深度テストではカメラ側に寄せて床の上に線を乗せる
-
-            m_gridPipelineState = std::make_unique<PipelineState>();
-            m_gridPipelineState->Initialize(*m_graphicsDevice, builder);
-        }
+        RecreateGridPso();
 
         // 加算発光 PSO（パーティクル用）：ライティング無視・加算合成・深度書き込みOFF
         {
-            auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Emissive_VS.cso");
-            auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Emissive_PS.cso");
-
-            // インスタンシング版（slot1=MeshInstanceData）。Emissive.hlsl は instanced VS。
-            PipelineStateBuilder builder;
-            builder.SetRootSignature(m_rootSignature->Get())
-                   .SetVertexShader(vs.GetData(), vs.GetSize())
-                   .SetPixelShader(ps.GetData(), ps.GetSize())
-                   .SetInputLayout(Mesh::GetInstancedInputLayout(), Mesh::GetInstancedInputLayoutCount())
-                   .SetRenderTargetFormat(kSceneColorFormat)
-                   .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
-                   .SetDepthEnabled(true)
-                   .SetDepthWrite(false)
-                   .SetAdditiveBlendEnabled(true)
-                   .SetCullMode(D3D12_CULL_MODE_NONE);
-
-            m_emissivePipelineState = std::make_unique<PipelineState>();
-            m_emissivePipelineState->Initialize(*m_graphicsDevice, builder);
+            RecreateEmissivePso();
 
             // per-instance バッファ（kFrameCount でリング化＝インフライト安全）。永続Map。
             for (u32 fi = 0; fi < FrameResources::kFrameCount; ++fi)
@@ -703,69 +1015,11 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_graphicsDevice->GetDevice()->CreateShaderResourceView(
             m_shadowMap.Get(), &srvDesc, m_srvHeap->GetCpuHandle(m_shadowSrvIndex));
 
-        // Shadow PSO (depth-only, no pixel shader, with depth bias)
-        {
-            auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ShadowPass_VS.cso");
-            PipelineStateBuilder builder;
-            builder.SetRootSignature(m_rootSignature->Get())
-                   .SetVertexShader(vs.GetData(), vs.GetSize())
-                   .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
-                   .SetRenderTargetFormat(DXGI_FORMAT_UNKNOWN)
-                   .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
-                   .SetDepthEnabled(true)
-                   .SetDepthBias(8000, 2.0f);
+        // Shadow PSO (depth-only, no pixel shader, with depth bias) + Skinned版
+        RecreateShadowPsos();
 
-            m_shadowPipelineState = std::make_unique<PipelineState>();
-            m_shadowPipelineState->Initialize(*m_graphicsDevice, builder);
-        }
-
-        // Shadow Skinned PSO
-        {
-            auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ShadowPassSkinned_VS.cso");
-            PipelineStateBuilder builder;
-            builder.SetRootSignature(m_rootSignature->Get())
-                   .SetVertexShader(vs.GetData(), vs.GetSize())
-                   .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
-                   .SetRenderTargetFormat(DXGI_FORMAT_UNKNOWN)
-                   .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
-                   .SetDepthEnabled(true)
-                   .SetDepthBias(8000, 2.0f);
-
-            m_shadowSkinnedPipelineState = std::make_unique<PipelineState>();
-            m_shadowSkinnedPipelineState->Initialize(*m_graphicsDevice, builder);
-        }
-
-        // 深度プリパス PSO（SSAO 用カメラ深度。bias なし・カメラ視点・D32・RTVなし）。
-        // ShadowPass_VS は b0 の mvp で頂点変換するだけなので、b0 に world*cameraVP を渡せば流用できる。
-        {
-            auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ShadowPass_VS.cso");
-            PipelineStateBuilder builder;
-            builder.SetRootSignature(m_rootSignature->Get())
-                   .SetVertexShader(vs.GetData(), vs.GetSize())
-                   .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
-                   .SetRenderTargetFormat(DXGI_FORMAT_UNKNOWN)
-                   .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
-                   .SetDepthEnabled(true)
-                   .SetCullMode(D3D12_CULL_MODE_NONE);  // bias なし（カメラ深度をそのまま使う）
-            m_depthPrepassPSO = std::make_unique<PipelineState>();
-            m_depthPrepassPSO->Initialize(*m_graphicsDevice, builder);
-        }
-        {
-            // forward(ForwardSkinned) とクリップ Z をビット一致させる専用スキンド深度プリパス。
-            // ShadowPassSkinned はスキニング演算順(sum(w*mul(pos,B))) と totalWeight==0 フォールバックが
-            // forward(mul(pos,sum(w*B)) / フォールバック無し) と違い、SSAO の深度再利用で z-fight/欠落を招く。
-            auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"DepthPrepassSkinned_VS.cso");
-            PipelineStateBuilder builder;
-            builder.SetRootSignature(m_rootSignature->Get())
-                   .SetVertexShader(vs.GetData(), vs.GetSize())
-                   .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
-                   .SetRenderTargetFormat(DXGI_FORMAT_UNKNOWN)
-                   .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
-                   .SetDepthEnabled(true)
-                   .SetCullMode(D3D12_CULL_MODE_NONE);
-            m_depthPrepassSkinnedPSO = std::make_unique<PipelineState>();
-            m_depthPrepassSkinnedPSO->Initialize(*m_graphicsDevice, builder);
-        }
+        // 深度プリパス PSO（SSAO 用カメラ深度）+ Skinned版
+        RecreateDepthPrepassPsos();
 
         Logger::Info("Shadow map initialized ({}x{})", m_shadowMapSize, m_shadowMapSize);
     }
@@ -1062,6 +1316,10 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_iblBaker->Initialize(*m_graphicsDevice, PathResolver::ShaderDirW());
         m_skyboxRenderer = std::make_unique<SkyboxRenderer>();
         m_skyboxRenderer->Initialize(*m_graphicsDevice, kSceneColorFormat, PathResolver::ShaderDirW());
+
+        // シェーダーホットリロードの再生成コールバックを束ねる。ここまでで全パスの初回 PSO が
+        // 揃っているので、この時点(Initialize 末尾付近)で一括登録する。
+        RegisterShaderReloadHandlers();
     }
 
     // シーンフロー（assets/sceneflow.json があれば）
@@ -3371,6 +3629,23 @@ void Application::Run()
             }
         }
 
+        // シェーダーホットリロード（0.5秒ごとに .hlsl/.hlsli 変更チェック）
+        if (m_shaderManager && m_shaderManager->IsRuntimeCompileAvailable())
+        {
+            m_shaderPollTimer += m_gameClock.GetDeltaTime();
+            if (m_shaderPollTimer >= kScriptPollInterval)
+            {
+                m_shaderPollTimer = 0.0f;
+                std::vector<std::wstring> changed = m_shaderManager->Poll();
+                if (!changed.empty())
+                {
+                    m_commandQueue->WaitIdle();
+                    m_shaderManager->DispatchReloadHandlers(changed);
+                    m_editorCtx->hotReloadFlash = 2.0f;
+                }
+            }
+        }
+
         // MCP screenshot_game_view: Editor 中は一時的にアクティブなゲームカメラへ切り替えて1フレーム描く。
         // Playing 中は m_camera が既にゲームカメラなので上書き不要(通常 screenshot と同じ絵)。
         const bool gvShot     = (m_mcpGameViewReply.client != 0);
@@ -3577,6 +3852,8 @@ void Application::Shutdown()
     m_perFrameCB.reset();
     m_previewFrameCB.reset();
     m_resourceManager.reset();
+    ShaderManager::SetInstance(nullptr);
+    m_shaderManager.reset();
     m_srvHeap.reset();
     m_camera.reset();
     m_pipelineStateThumb.reset();
@@ -4410,6 +4687,16 @@ void Application::LoadProject(const ProjectInfo& info)
 
     // 1) パスをプロジェクト配下へ再ポイント（shaders はエンジン側を維持）
     PathResolver::SetProjectRoot(info.rootDir);
+
+    // 1.5) プロジェクト独自シェーダー(上書き/自作)を再走査。切替前の PSO が残っている可能性があるので
+    //      WaitIdle 後に全リロードキーを差分無視で作り直す(Poll() の逐次差分検知とは別経路)。
+    if (m_shaderManager)
+    {
+        m_shaderManager->OnProjectRootChanged();
+        if (m_commandQueue)
+            m_commandQueue->WaitIdle();
+        m_shaderManager->DispatchReloadHandlers(m_shaderManager->AllKnownReloadKeys());
+    }
 
     // 2) パス依存サブシステムを更新
     m_audioSystem->SetAssetsDir(PathResolver::AssetsDir());
@@ -5635,18 +5922,23 @@ bool Application::BuildGame()
         fs::copy_file(runtimeSrc, outputDir / "Game.exe", fs::copy_options::overwrite_existing);
         Logger::Info("Copied GameRuntime.exe -> Game.exe");
 
-        // 同じフォルダの .dll をすべて配布フォルダへ
+        // 同じフォルダの .dll をすべて配布フォルダへ。
+        // dxcompiler.dll/dxil.dll(実行時シェーダーコンパイル用、エディタのみ必要)は除外する。
+        // ゲームは ShaderCompiler::LoadFromFile が game.pak から .cso を読むだけで実行時コンパイルは
+        // 不要なため、同梱すると無駄に容量が増えるだけ(~25MB)。
+        static const std::unordered_set<std::string> kDllExcludeList = { "dxcompiler.dll", "dxil.dll" };
         std::error_code ec;
         for (auto& entry : fs::directory_iterator(exeDir, ec))
         {
             if (!entry.is_regular_file()) continue;
             auto ext = entry.path().extension().string();
-            if (ext == ".dll" || ext == ".DLL")
-            {
-                fs::copy_file(entry.path(), outputDir / entry.path().filename(),
-                              fs::copy_options::overwrite_existing, ec);
-                Logger::Info("Copied dll -> {}", entry.path().filename().string());
-            }
+            if (ext != ".dll" && ext != ".DLL") continue;
+            std::string lowerName = entry.path().filename().string();
+            for (char& c : lowerName) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (kDllExcludeList.count(lowerName)) continue;
+            fs::copy_file(entry.path(), outputDir / entry.path().filename(),
+                          fs::copy_options::overwrite_existing, ec);
+            Logger::Info("Copied dll -> {}", entry.path().filename().string());
         }
     }
 
@@ -5715,7 +6007,19 @@ bool Application::BuildGame()
         // shaders/ 配下の .cso を全パック（"shaders/" プレフィックス付き）。
         // → 出荷フォルダにプレーンな shaders/ を置かず、暗号化して pak に封入する。
         //   実行時は ShaderCompiler::LoadFromFile が VFS 経由で pak から復号する。
+        // プロジェクト独自シェーダー(上書き/自作)がある場合は実行時再コンパイルして反映する。
+        // コンパイル失敗があれば古い .cso を出荷せずビルド自体を中止する。
         {
+            std::vector<std::string> shaderErrors;
+            if (m_shaderManager && !m_shaderManager->RecompileAllForBuild(&shaderErrors))
+            {
+                std::string msg = "プロジェクトのシェーダーのコンパイルに失敗しました。ビルドを中止しました:\n";
+                for (const auto& e : shaderErrors) msg += "  - " + e + "\n";
+                Logger::Error("{}", msg);
+                if (m_editorCtx) m_editorCtx->buildErrorMsg = msg;
+                return false;
+            }
+
             fs::path shadersDir = fs::path(PathResolver::ShaderDirW());
             if (fs::exists(shadersDir))
             {
@@ -5725,7 +6029,28 @@ bool Application::BuildGame()
                     if (!entry.is_regular_file()) continue;
                     std::string relPath = "shaders/" +
                         entry.path().lexically_relative(shadersDir).generic_string();
-                    pak.AddFile(entry.path().string(), relPath);
+                    // プロジェクトオーバーライドで再コンパイル済みなら baked .cso より優先する。
+                    const std::vector<u8>* overrideBytes = m_shaderManager
+                        ? m_shaderManager->TryGetOverride(entry.path().filename().wstring())
+                        : nullptr;
+                    if (overrideBytes)
+                        pak.AddBlob(relPath, overrideBytes->data(), overrideBytes->size());
+                    else
+                        pak.AddFile(entry.path().string(), relPath);
+                }
+            }
+
+            // カスタムシェーダー(Registry外、MeshRenderer::shaderPath 割当用)。
+            // キー規約は Application::EnsureCustomPso のゲームモード分岐と一致させること。
+            if (m_shaderManager)
+            {
+                for (const std::string& relPath : m_shaderManager->AllValidCustomRelPaths())
+                {
+                    const std::vector<u8>* vs = m_shaderManager->GetCustomVsBytecode(relPath);
+                    const std::vector<u8>* ps = m_shaderManager->GetCustomPsBytecode(relPath);
+                    if (!vs || !ps) continue;
+                    pak.AddBlob("shaders/custom/" + relPath + "_VS.cso", vs->data(), vs->size());
+                    pak.AddBlob("shaders/custom/" + relPath + "_PS.cso", ps->data(), ps->size());
                 }
             }
         }
@@ -6004,8 +6329,13 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
         }
         else
         {
-            m_commandList->SetPipelineState(depthPrepassActive
-                ? *m_pipelineStateLEqual : *m_pipelineState);
+            // カスタムシェーダー割当(静的メッシュのみ)。未コンパイル/生成失敗時は既定 Forward へフォールバック。
+            CustomForwardPsos* custom = renderer.shaderPath.empty() ? nullptr : EnsureCustomPso(renderer.shaderPath);
+            if (custom)
+                m_commandList->SetPipelineState(depthPrepassActive ? *custom->lequal : *custom->less);
+            else
+                m_commandList->SetPipelineState(depthPrepassActive
+                    ? *m_pipelineStateLEqual : *m_pipelineState);
         }
 
         bool hasNodeAnim = reg.all_of<NodeAnimationComp>(e);

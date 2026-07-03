@@ -28,6 +28,9 @@ public:
     void Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap, DescriptorHeap* srvHeap,
                     u32 width, u32 height, const std::wstring& shaderDir);
 
+    // シェーダーホットリロード用。PSO(ダウン/アップ)のみ作り直す(ルートシグネチャ/RTは不変のため触らない)。
+    void RecreatePipelines(GraphicsDevice& device);
+
     // sceneRT と同タイミングでチェーン RT を作り直す。
     void Resize(GraphicsDevice& device, u32 width, u32 height);
 
@@ -54,6 +57,7 @@ private:
     std::unique_ptr<RenderTarget> m_mips[kMips];
     u32 m_width  = 0;
     u32 m_height = 0;
+    std::wstring m_shaderDir;   // RecreatePipelines 用に保持
 };
 
 } // namespace dx12e

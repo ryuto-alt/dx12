@@ -84,6 +84,9 @@ public:
     void Initialize(GraphicsDevice& device, DescriptorHeap* srvHeap, ResourceManager* resourceManager,
                     const std::wstring& shaderDir);
 
+    // シェーダーホットリロード用。プレビュー用 ParticleSystem の PSO を作り直すだけの薄い委譲。
+    void RecreatePipelines(GraphicsDevice& device);
+
     // 3D プレビューのオフスクリーン描画。ImGui BeginFrame より前、メインフレームの
     // コマンドリストが開いている間に呼ぶこと。呼んだ後は呼び出し側でメインの
     // RTV/ビューポートを元に戻すこと（本パネルは自分の RT にしかバインドしない）。

@@ -12,6 +12,9 @@ set(DX12_COMPILE_DEFS UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 
 # Dependencies
 find_package(spdlog CONFIG REQUIRED)
+# ルートで find_package する（サブディレクトリで呼ぶと IMPORTED ターゲットがそのディレクトリ以下にしか
+# 見えず、後段の POST_BUILD DLL コピー(DX12Engine/GameRuntime、ルート scope)から参照できないため）。
+find_package(directx-dxc CONFIG REQUIRED)
 
 # Sub-projects
 add_subdirectory(src/core)
@@ -124,6 +127,28 @@ if(MSVC)
     target_compile_options(GameRuntime PRIVATE ${DX12_COMPILE_OPTIONS})
     target_compile_definitions(GameRuntime PRIVATE ${DX12_COMPILE_DEFS} DX12_GAME_RUNTIME)
 endif()
+
+# --- 実行時シェーダーコンパイル用 DLL 同梱 ---
+# dxcompiler.dll は vcpkg の applocal 自動コピーで運ばれるが、依存の dxil.dll(DXIL署名用)は
+# applocal が拾わないことがあるため明示コピーする(無いと開発者モード OFF 環境で
+# CreatePipelineState が DXIL 未署名エラーになる)。
+# 注意: vcpkg directx-dxc ポートの directx-dxc-config.cmake.in には
+# `IMPORTED_LOCATION_RELASE`(RELEASEのタイポ)というバグがあり、Microsoft::DXIL の
+# Release 構成の場所が正しく設定されない($<TARGET_FILE:Microsoft::DXIL> が Release で解決できない)。
+# DIRECTX_DXC_TOOL(ポートが設定する dxc.exe のパス、tools/directx-dxc/ 配下でconfig非依存)を
+# 基準に dxil.dll を直接指定することでこのポートのバグを回避する。
+get_filename_component(DX12_DXC_TOOL_DIR "${DIRECTX_DXC_TOOL}" DIRECTORY)
+set(DX12_DXIL_DLL "${DX12_DXC_TOOL_DIR}/dxil.dll")
+foreach(DX12_SHADERC_TARGET DX12Engine GameRuntime)
+    add_custom_command(TARGET ${DX12_SHADERC_TARGET} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:Microsoft::DirectXShaderCompiler>"
+            "$<TARGET_FILE_DIR:${DX12_SHADERC_TARGET}>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${DX12_DXIL_DLL}"
+            "$<TARGET_FILE_DIR:${DX12_SHADERC_TARGET}>"
+        COMMENT "Bundling dxcompiler.dll / dxil.dll next to ${DX12_SHADERC_TARGET}.exe")
+endforeach()
 
 # --- DXC Shader Compilation ---
 find_program(DXC_EXECUTABLE dxc
@@ -617,6 +642,7 @@ endif()
 # Shader directory and assets directory (Core needs it because Application.cpp loads shaders/assets)
 target_compile_definitions(Core PRIVATE
     SHADER_DIR=L"${CMAKE_BINARY_DIR}/shaders/"
+    SHADER_SRC_DIR=L"${CMAKE_SOURCE_DIR}/shaders/"
     ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets/"
     SCRIPTS_DIR="${CMAKE_SOURCE_DIR}/scripts/"
 )

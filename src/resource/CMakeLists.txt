@@ -17,6 +17,9 @@ FetchContent_MakeAvailable(assimp)
 
 add_library(Resource STATIC
     ShaderCompiler.cpp
+    ShaderRuntimeCompiler.cpp
+    ShaderRegistry.cpp
+    ShaderManager.cpp
     TextureLoader.cpp
     ModelLoader.cpp
     ResourceManager.cpp
@@ -29,6 +32,7 @@ target_link_libraries(Resource PUBLIC
     Animation
     assimp
     Microsoft::DirectXTex
+    Microsoft::DirectXShaderCompiler
 )
 
 target_compile_options(Resource PRIVATE ${DX12_COMPILE_OPTIONS})

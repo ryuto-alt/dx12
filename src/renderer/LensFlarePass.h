@@ -23,6 +23,10 @@ class LensFlarePass
 public:
     void Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap, DescriptorHeap* srvHeap,
                     u32 width, u32 height, const std::wstring& shaderDir);
+
+    // シェーダーホットリロード用。PSO のみ作り直す(ルートシグネチャ/RTは不変のため触らない)。
+    void RecreatePipelines(GraphicsDevice& device);
+
     void Resize(GraphicsDevice& device, u32 width, u32 height);
 
     // bloomMipSrvGpu: BloomPass の縮小ミップ（PIXEL_SHADER_RESOURCE 状態、ローカル 0..1）。
@@ -39,6 +43,7 @@ private:
     std::unique_ptr<RenderTarget> m_flareRT;   // 1/4 解像度 R11G11B10
     u32 m_width  = 0;
     u32 m_height = 0;
+    std::wstring m_shaderDir;   // RecreatePipelines 用に保持
 };
 
 } // namespace dx12e

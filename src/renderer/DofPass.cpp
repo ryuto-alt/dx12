@@ -77,37 +77,8 @@ void DofPass::Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap, Descri
     }
 
     // --- PSO ×3（VS は FSTriVS 流用）---
-    {
-        auto vs    = ShaderCompiler::LoadFromFile(shaderDir + L"PostProcess_VS.cso");
-        auto psCoc = ShaderCompiler::LoadFromFile(shaderDir + L"DofCoc_PS.cso");
-        auto psGat = ShaderCompiler::LoadFromFile(shaderDir + L"DofGather_PS.cso");
-        auto psCmp = ShaderCompiler::LoadFromFile(shaderDir + L"DofComposite_PS.cso");
-
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
-        pso.pRootSignature = m_rootSig.Get();
-        pso.VS = { vs.GetData(), vs.GetSize() };
-        pso.PS = { psCoc.GetData(), psCoc.GetSize() };
-        pso.InputLayout = { nullptr, 0 };
-        pso.RasterizerState.FillMode        = D3D12_FILL_MODE_SOLID;
-        pso.RasterizerState.CullMode        = D3D12_CULL_MODE_NONE;
-        pso.RasterizerState.DepthClipEnable = TRUE;
-        pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-        pso.DepthStencilState.DepthEnable   = FALSE;
-        pso.DepthStencilState.StencilEnable = FALSE;
-        pso.SampleMask            = UINT_MAX;
-        pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-        pso.NumRenderTargets      = 1;
-        pso.RTVFormats[0]         = kDofFormat;
-        pso.DSVFormat             = DXGI_FORMAT_UNKNOWN;
-        pso.SampleDesc            = { 1, 0 };
-        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoCoc)));
-
-        pso.PS = { psGat.GetData(), psGat.GetSize() };
-        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoGather)));
-
-        pso.PS = { psCmp.GetData(), psCmp.GetSize() };
-        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoComposite)));
-    }
+    m_shaderDir = shaderDir;
+    RecreatePipelines(device);
 
     const float clearBlack[4] = {0, 0, 0, 1};
     const u32 hw = (std::max)(1u, m_width / 2), hh = (std::max)(1u, m_height / 2);
@@ -119,6 +90,40 @@ void DofPass::Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap, Descri
     m_outRT->Initialize(device, rtvHeap, srvHeap, m_width, m_height, kDofFormat, clearBlack);
 
     Logger::Info("DofPass initialized");
+}
+
+void DofPass::RecreatePipelines(GraphicsDevice& device)
+{
+    auto* dev = device.GetDevice();
+    auto vs    = ShaderCompiler::LoadFromFile(m_shaderDir + L"PostProcess_VS.cso");
+    auto psCoc = ShaderCompiler::LoadFromFile(m_shaderDir + L"DofCoc_PS.cso");
+    auto psGat = ShaderCompiler::LoadFromFile(m_shaderDir + L"DofGather_PS.cso");
+    auto psCmp = ShaderCompiler::LoadFromFile(m_shaderDir + L"DofComposite_PS.cso");
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
+    pso.pRootSignature = m_rootSig.Get();
+    pso.VS = { vs.GetData(), vs.GetSize() };
+    pso.PS = { psCoc.GetData(), psCoc.GetSize() };
+    pso.InputLayout = { nullptr, 0 };
+    pso.RasterizerState.FillMode        = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode        = D3D12_CULL_MODE_NONE;
+    pso.RasterizerState.DepthClipEnable = TRUE;
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    pso.DepthStencilState.DepthEnable   = FALSE;
+    pso.DepthStencilState.StencilEnable = FALSE;
+    pso.SampleMask            = UINT_MAX;
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets      = 1;
+    pso.RTVFormats[0]         = kDofFormat;
+    pso.DSVFormat             = DXGI_FORMAT_UNKNOWN;
+    pso.SampleDesc            = { 1, 0 };
+    ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoCoc)));
+
+    pso.PS = { psGat.GetData(), psGat.GetSize() };
+    ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoGather)));
+
+    pso.PS = { psCmp.GetData(), psCmp.GetSize() };
+    ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoComposite)));
 }
 
 void DofPass::Resize(GraphicsDevice& device, u32 width, u32 height)

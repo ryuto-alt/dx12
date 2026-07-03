@@ -5,6 +5,7 @@
   "dependencies": [
     "spdlog",
     "directx-headers",
+    "directx-dxc",
     "d3d12-memory-allocator",
     "directxtex",
     "directxmath",

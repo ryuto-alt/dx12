@@ -84,6 +84,12 @@ struct MeshRenderer
     float uvScaleU = 1.0f;
     float uvScaleV = 1.0f;
 
+    // カスタムシェーダー割当（プロジェクト assets/shaders/ 相対パス、空 = 既定の Forward）。
+    // 静的メッシュのみ対応（スキンド/インスタンシングは既定へフォールバック）。ShaderManager 経由で
+    // 実行時コンパイル・ホットリロードされる。Registry(エンジン組み込みシェーダー)と一致するパスは
+    // 上書き扱いになり全体に効くため、個別割当の選択肢からは除外する(InspectorPanel側)。
+    std::string shaderPath;
+
     // インスタンシング: 共有メッシュを使う発光弾(Pfx)等は色を頂点バッファに焼かず
     // ここに持つ（setColor が書き込む）。instanced=true の間 setColor は VB を再生成しない。
     DirectX::XMFLOAT4 instanceColor = {1.0f, 1.0f, 1.0f, 1.0f};

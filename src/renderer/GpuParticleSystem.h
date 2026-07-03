@@ -43,6 +43,11 @@ public:
 
     void Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat, const std::wstring& shaderDir);
 
+    // シェーダーホットリロード用。compute 5本(Init/Prepare/Emit/Kickoff/Simulate) + 描画 PSO の
+    // みを作り直す(ルートシグネチャ/バッファ/コマンドシグネチャは不変のため触らない)。
+    // 描画 PS は Particle_PS.cso を ParticleSystem と共有しているため、そのまま再読み込みするだけでよい。
+    void RecreatePipelines(GraphicsDevice& device);
+
     void Emit(const EmitRequest& r);   // フレーム内キューへ（上限 kMaxEmitsPerFrame）
     void Clear() { m_needsInit = true; m_requests.clear(); }   // 次フレームで全消去
 
@@ -100,6 +105,10 @@ private:
     D3D12_GPU_DESCRIPTOR_HANDLE m_depthSrv{};
     float m_projA = 0.0f, m_projB = 0.0f, m_invRTW = 0.0f, m_invRTH = 0.0f;
     bool  m_hasDepth = false;
+
+    // RecreatePipelines 用に保持
+    std::wstring m_shaderDir;
+    DXGI_FORMAT  m_rtvFormat = DXGI_FORMAT_UNKNOWN;
 };
 
 } // namespace dx12e

@@ -130,6 +130,7 @@ const char* AssetBrowserPanel::GetTypeIcon(AssetType type)
     case AssetType::Script:  return "Script";
     case AssetType::Audio:   return "Audio";
     case AssetType::Prefab:  return "Prefab";
+    case AssetType::Shader:  return "Shader";
     default:                 return "File";
     }
 }
@@ -146,6 +147,7 @@ static ImVec4 AssetTypeColor(int type)
     case 4: return ImVec4(0.4f, 0.55f, 1.0f, 1.0f);   // Script
     case 5: return ImVec4(0.85f, 0.35f, 0.85f, 1.0f);  // Audio
     case 6: return ImVec4(0.55f, 0.85f, 0.95f, 1.0f);  // Prefab
+    case 7: return ImVec4(0.75f, 0.45f, 0.95f, 1.0f);  // Shader
     default: return ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
     }
 }
@@ -680,7 +682,7 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                         req.position = {0.0f, 0.0f, 0.0f};
                         ctx.pendingSpawns.push_back(req);
                     }
-                    else if (entry.type == AssetType::Script)
+                    else if (entry.type == AssetType::Script || entry.type == AssetType::Shader)
                     {
                         OpenInVSCode(entry.path.string());
                     }
@@ -712,7 +714,8 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                     {
                         if (ImGui::MenuItem("\xe9\x96\x8b\xe3\x81\x8f"))  // 開く
                         {
-                            if (entry.type == AssetType::Scene || entry.type == AssetType::Script)
+                            if (entry.type == AssetType::Scene || entry.type == AssetType::Script ||
+                                entry.type == AssetType::Shader)
                                 OpenInVSCode(entry.path.string());
                             else
                                 ShellExecuteA(nullptr, "open", entry.path.string().c_str(),
@@ -747,7 +750,7 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                         ImGui::TextDisabled("Double-click: Spawn | Drag: D&D to scene");
                     else if (entry.type == AssetType::Scene)
                         ImGui::TextDisabled("Double-click: Load scene");
-                    else if (entry.type == AssetType::Script)
+                    else if (entry.type == AssetType::Script || entry.type == AssetType::Shader)
                         ImGui::TextDisabled("Double-click: Open in VS Code");
                     ImGui::EndTooltip();
                 }
@@ -790,6 +793,14 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                 ctx.showNewScriptDialog = true;
                 std::memset(ctx.newScriptNameBuf, 0, sizeof(ctx.newScriptNameBuf));
                 strncpy_s(ctx.newScriptNameBuf, "NewScript", _TRUNCATE);
+            }
+
+            // 新規シェーダー
+            if (ImGui::MenuItem("\xe6\x96\xb0\xe8\xa6\x8f\xe3\x82\xb7\xe3\x82\xa7\xe3\x83\xbc\xe3\x83\x80\xe3\x83\xbc"))  // 新規シェーダー
+            {
+                ctx.showNewShaderDialog = true;
+                std::memset(ctx.newShaderNameBuf, 0, sizeof(ctx.newShaderNameBuf));
+                strncpy_s(ctx.newShaderNameBuf, "NewShader", _TRUNCATE);
             }
 
             ImGui::Separator();
@@ -934,6 +945,8 @@ AssetBrowserPanel::AssetType AssetBrowserPanel::ClassifyExtension(const std::str
         return AssetType::Scene;
     if (ext == ".lua")
         return AssetType::Script;
+    if (ext == ".hlsl" || ext == ".hlsli")
+        return AssetType::Shader;
     if (ext == ".wav" || ext == ".mp3" || ext == ".ogg")
         return AssetType::Audio;
     if (ext == ".prefab")

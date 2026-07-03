@@ -32,6 +32,9 @@ public:
     void Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat, DXGI_FORMAT dsvFormat,
                     const std::wstring& shaderDir);
 
+    // シェーダーホットリロード用。PSO のみ作り直す(ルートシグネチャ/頂点バッファは不変のため触らない)。
+    void RecreatePipelines(GraphicsDevice& device);
+
     void BeginFrame();
 
     void AddLine(DirectX::XMFLOAT3 a, DirectX::XMFLOAT3 b,
@@ -73,6 +76,11 @@ private:
     u32  m_frameIdx    = 0;   // 動的VBの書き込み区画（Render毎に巡回）
     bool m_enabled     = false;
     bool m_initialized = false;
+
+    // RecreatePipelines 用に保持
+    std::wstring m_shaderDir;
+    DXGI_FORMAT  m_rtvFormat = DXGI_FORMAT_UNKNOWN;
+    DXGI_FORMAT  m_dsvFormat = DXGI_FORMAT_UNKNOWN;
 };
 
 } // namespace dx12e

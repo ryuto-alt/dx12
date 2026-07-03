@@ -50,52 +50,10 @@ void PhysicsDebugRenderer::Initialize(GraphicsDevice& device,
     }
 
     // --- PSO (LineList, DepthTest OFF for always-visible) ---
-    {
-        auto vsData = ShaderCompiler::LoadFromFile(shaderDir + L"DebugLine_VS.cso");
-        auto psData = ShaderCompiler::LoadFromFile(shaderDir + L"DebugLine_PS.cso");
-
-        D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
-            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
-             D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-            {"COLOR",    0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12,
-             D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-        };
-
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};
-        psoDesc.pRootSignature = m_rootSignature.Get();
-        psoDesc.VS = { vsData.GetData(), vsData.GetSize() };
-        psoDesc.PS = { psData.GetData(), psData.GetSize() };
-        psoDesc.InputLayout = { inputLayout, _countof(inputLayout) };
-        psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
-
-        // Rasterizer state (manual, no CD3DX12 helper)
-        psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-        psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-        psoDesc.RasterizerState.FrontCounterClockwise = FALSE;
-        psoDesc.RasterizerState.DepthBias = 0;
-        psoDesc.RasterizerState.DepthBiasClamp = 0.0f;
-        psoDesc.RasterizerState.SlopeScaledDepthBias = 0.0f;
-        psoDesc.RasterizerState.DepthClipEnable = TRUE;
-        psoDesc.RasterizerState.MultisampleEnable = FALSE;
-        psoDesc.RasterizerState.AntialiasedLineEnable = TRUE;
-
-        // Blend state (default opaque)
-        psoDesc.BlendState.AlphaToCoverageEnable = FALSE;
-        psoDesc.BlendState.IndependentBlendEnable = FALSE;
-        psoDesc.BlendState.RenderTarget[0].BlendEnable = FALSE;
-        psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-
-        psoDesc.DepthStencilState.DepthEnable    = FALSE; // Always visible
-        psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
-        psoDesc.DepthStencilState.StencilEnable  = FALSE;
-        psoDesc.SampleMask = UINT_MAX;
-        psoDesc.NumRenderTargets = 1;
-        psoDesc.RTVFormats[0] = rtvFormat;
-        psoDesc.DSVFormat = dsvFormat;
-        psoDesc.SampleDesc = { 1, 0 };
-
-        ThrowIfFailed(dev->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_pso)));
-    }
+    m_shaderDir = shaderDir;
+    m_rtvFormat = rtvFormat;
+    m_dsvFormat = dsvFormat;
+    RecreatePipelines(device);
 
     // --- Dynamic Vertex Buffer (Upload Heap, kFrames 区画リング) ---
     // 前フレームが in-flight で読んでいる区画を上書きしないようフレームごとに書き分ける
@@ -127,6 +85,56 @@ void PhysicsDebugRenderer::Initialize(GraphicsDevice& device,
     m_vertices.reserve(4096);
     m_initialized = true;
     Logger::Info("PhysicsDebugRenderer initialized");
+}
+
+void PhysicsDebugRenderer::RecreatePipelines(GraphicsDevice& device)
+{
+    auto* dev = device.GetDevice();
+
+    auto vsData = ShaderCompiler::LoadFromFile(m_shaderDir + L"DebugLine_VS.cso");
+    auto psData = ShaderCompiler::LoadFromFile(m_shaderDir + L"DebugLine_PS.cso");
+
+    D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
+        {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
+         D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"COLOR",    0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12,
+         D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};
+    psoDesc.pRootSignature = m_rootSignature.Get();
+    psoDesc.VS = { vsData.GetData(), vsData.GetSize() };
+    psoDesc.PS = { psData.GetData(), psData.GetSize() };
+    psoDesc.InputLayout = { inputLayout, _countof(inputLayout) };
+    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+
+    // Rasterizer state (manual, no CD3DX12 helper)
+    psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    psoDesc.RasterizerState.FrontCounterClockwise = FALSE;
+    psoDesc.RasterizerState.DepthBias = 0;
+    psoDesc.RasterizerState.DepthBiasClamp = 0.0f;
+    psoDesc.RasterizerState.SlopeScaledDepthBias = 0.0f;
+    psoDesc.RasterizerState.DepthClipEnable = TRUE;
+    psoDesc.RasterizerState.MultisampleEnable = FALSE;
+    psoDesc.RasterizerState.AntialiasedLineEnable = TRUE;
+
+    // Blend state (default opaque)
+    psoDesc.BlendState.AlphaToCoverageEnable = FALSE;
+    psoDesc.BlendState.IndependentBlendEnable = FALSE;
+    psoDesc.BlendState.RenderTarget[0].BlendEnable = FALSE;
+    psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    psoDesc.DepthStencilState.DepthEnable    = FALSE; // Always visible
+    psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    psoDesc.DepthStencilState.StencilEnable  = FALSE;
+    psoDesc.SampleMask = UINT_MAX;
+    psoDesc.NumRenderTargets = 1;
+    psoDesc.RTVFormats[0] = m_rtvFormat;
+    psoDesc.DSVFormat = m_dsvFormat;
+    psoDesc.SampleDesc = { 1, 0 };
+
+    ThrowIfFailed(dev->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_pso)));
 }
 
 // ========== Frame management ==========

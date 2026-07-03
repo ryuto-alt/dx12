@@ -17,6 +17,7 @@
 #include "animation/NodeAnimator.h"
 #include "animation/SkinningBuffer.h"
 #include "scripting/ScriptEngine.h"
+#include "resource/ShaderRegistry.h"
 
 #include <imgui_internal.h>   // BeginDragDropTargetCustom（ウィンドウ全体をドロップ先に）
 #include <filesystem>
@@ -1176,6 +1177,52 @@ void InspectorPanel::Render(entt::registry& reg,
                             mesh->ApplyUVScale(*scene->GetDevice(), mr.uvScaleU, mr.uvScaleV);
                     }
                 }
+            }
+
+            // カスタムシェーダー割当（静的メッシュのみ有効。スキンド/インスタンシングは既定へフォールバック）。
+            // 一覧はプロジェクト assets/shaders/ 配下の .hlsl のうち、Registry(エンジン組み込み)と
+            // 一致しないもの＝自作シェーダーだけ(一致するものは全体に効く「上書き」用途なので個別割当から除外)。
+            if (ImGui::CollapsingHeader("Shader"))
+            {
+                namespace fs = std::filesystem;
+                std::string currentLabel = mr.shaderPath.empty() ? "\xe6\x97\xa2\xe5\xae\x9a (Forward)" : mr.shaderPath;
+                if (ImGui::BeginCombo("\xe3\x82\xb7\xe3\x82\xa7\xe3\x83\xbc\xe3\x83\x80\xe3\x83\xbc", currentLabel.c_str()))
+                {
+                    std::vector<std::string> options;
+                    std::error_code ec;
+                    fs::path root(m_assetsDir + "shaders/");
+                    if (fs::exists(root, ec))
+                    {
+                        fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec);
+                        fs::recursive_directory_iterator end;
+                        for (; !ec && it != end; it.increment(ec))
+                        {
+                            std::error_code fec;
+                            if (!it->is_regular_file(fec) || fec) continue;
+                            if (it->path().extension() != L".hlsl") continue;
+                            fs::path rel = fs::relative(it->path(), root, fec);
+                            if (fec) continue;
+                            std::string relStr = rel.generic_string();
+                            if (FindShaderSourceByRelPath(relStr) != nullptr)
+                                continue;  // Registry一致=上書き用途。個別割当の選択肢からは除外
+                            options.push_back(relStr);
+                        }
+                    }
+
+                    if (ImGui::Selectable("\xe6\x97\xa2\xe5\xae\x9a (Forward)", mr.shaderPath.empty()))
+                        mr.shaderPath.clear();
+                    for (const auto& opt : options)
+                    {
+                        if (ImGui::Selectable(opt.c_str(), mr.shaderPath == opt))
+                            mr.shaderPath = opt;
+                    }
+                    if (options.empty())
+                        ImGui::TextDisabled("(assets/shaders/ \xe3\x81\xab\xe8\x87\xaa\xe4\xbd\x9c\xe3\x82\xb7\xe3\x82\xa7\xe3\x83\xbc\xe3\x83\x80\xe3\x83\xbc\xe3\x81\xaa\xe3\x81\x97)");
+                    ImGui::EndCombo();
+                }
+                if (reg.all_of<SkeletalAnimation>(ctx.selectedEntity) && !mr.shaderPath.empty())
+                    ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
+                        "\xe3\x82\xb9\xe3\x82\xad\xe3\x83\xb3\xe3\x83\x89\xe3\x83\xa1\xe3\x83\x83\xe3\x82\xb7\xe3\x83\xa5\xe3\x81\xaf\xe6\x97\xa2\xe5\xae\x9a\xe3\x82\xb7\xe3\x82\xa7\xe3\x83\xbc\xe3\x83\x80\xe3\x83\xbc\xe3\x81\xb8\xe3\x83\x95\xe3\x82\xa9\xe3\x83\xbc\xe3\x83\xab\xe3\x83\x90\xe3\x83\x83\xe3\x82\xaf");
             }
         }
 

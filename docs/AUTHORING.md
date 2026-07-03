@@ -210,3 +210,32 @@ DX12Engine.exe --validate <project>/assets/scenes/<scene>.json
 
 結果は `validate_report.txt` と標準出力に `RESULT: PASS/FAIL`。終了コード 0/1。
 **Claude Code はこれを回して、参照切れを GUI 無しで自己修正できる。**
+
+---
+
+## 6. カスタムシェーダー（プロジェクト独自 HLSL）
+
+`assets/shaders/` にプロジェクト独自の `.hlsl` を置ける。**保存すると自動でホットリロード**される
+（0.5秒ポーリング → 実行時コンパイル → PSO 差し替え。GUI 無しで確認可能）。用途は2種類:
+
+1. **エンジン組み込みシェーダーの上書き**: `assets/shaders/forward/Forward.hlsl` のように
+   エンジン側 `shaders/` と同じ相対パスに置くと、そのシェーダーが**プロジェクト全体で**差し替わる。
+2. **自作シェーダー（メッシュ単位で割当）**: 上記以外のパスに置いた `.hlsl` は「カスタムシェーダー」
+   として扱われ、`MeshRenderer` の Inspector「Shader」欄で個別のメッシュに割り当てられる
+   （静的メッシュのみ対応。スキンド/インスタンシングは既定 Forward へフォールバック）。
+   エントリポイントは `VSMain`/`PSMain` 固定（`vs_6_0`/`ps_6_0`）。テンプレは
+   Toolbar「ファイル > 新規シェーダー」またはアセットブラウザ右クリックから生成できる。
+
+Claude Code から直接編集する場合:
+```
+<project>/assets/shaders/<name>.hlsl   # 新規 = 自作、既存パスと同名 = 上書き
+```
+を書く/直すだけでよい（コンパイル可否はエディタ起動中ならコンソールパネルに赤字で出る）。
+`MeshRenderer` への割当はシーン JSON の `"shader"` フィールド（アセット相対パス）で行う:
+```json
+"meshRenderer": { "modelPath": "models/foo.gltf" },
+"shader": "myfx/Glow.hlsl"
+```
+`DX12Engine.exe --build`（配布ビルド）でも、コンパイル済みバイトコードが `game.pak` に封入され
+プレイ時に反映される。プロジェクトシェーダーが壊れているとビルド自体が失敗する（黙って古い版を
+出荷しない設計）。

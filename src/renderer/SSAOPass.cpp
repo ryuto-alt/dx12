@@ -115,11 +115,35 @@ void SSAOPass::Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap, Descr
     }
 
     // --- PSO（共通: VB なしフルスクリーン三角形 / Depth OFF / Cull NONE / RT=R8_UNORM）---
+    m_shaderDir = shaderDir;
+    RecreatePipelines(device);
+
+    // --- AO / Blur RT（R8_UNORM, クリア=白=AOなし）---
+    const float aoClear[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    m_aoRT = std::make_unique<RenderTarget>();
+    m_aoRT->Initialize(device, rtvHeap, srvHeap, m_width, m_height, kAOFormat, aoClear);
+    m_blurRT = std::make_unique<RenderTarget>();
+    m_blurRT->Initialize(device, rtvHeap, srvHeap, m_width, m_height, kAOFormat, aoClear);
+    m_aoState   = D3D12_RESOURCE_STATE_RENDER_TARGET;  // 作成直後は RENDER_TARGET
+    m_blurState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+
+    // --- パラメータ CB（フレーム多重化）---
+    m_paramCB = std::make_unique<ConstantBuffer>();
+    m_paramCB->Initialize(device, sizeof(SSAOParamsCB), FrameResources::kFrameCount);
+    m_blurCB = std::make_unique<ConstantBuffer>();
+    m_blurCB->Initialize(device, sizeof(SSAOBlurCB), FrameResources::kFrameCount);
+
+    Logger::Info("SSAOPass initialized ({}x{})", m_width, m_height);
+}
+
+void SSAOPass::RecreatePipelines(GraphicsDevice& device)
+{
+    auto* dev = device.GetDevice();
     auto buildPso = [&](const std::wstring& vsFile, const std::wstring& psFile,
                         Microsoft::WRL::ComPtr<ID3D12PipelineState>& out)
     {
-        auto vs = ShaderCompiler::LoadFromFile(shaderDir + vsFile);
-        auto ps = ShaderCompiler::LoadFromFile(shaderDir + psFile);
+        auto vs = ShaderCompiler::LoadFromFile(m_shaderDir + vsFile);
+        auto ps = ShaderCompiler::LoadFromFile(m_shaderDir + psFile);
 
         D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
         pso.pRootSignature = m_rootSig.Get();
@@ -147,23 +171,6 @@ void SSAOPass::Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap, Descr
     };
     buildPso(L"SSAO_VS.cso", L"SSAO_PS.cso",     m_psoAO);
     buildPso(L"SSAO_VS.cso", L"SSAOBlur_PS.cso", m_psoBlur);
-
-    // --- AO / Blur RT（R8_UNORM, クリア=白=AOなし）---
-    const float aoClear[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-    m_aoRT = std::make_unique<RenderTarget>();
-    m_aoRT->Initialize(device, rtvHeap, srvHeap, m_width, m_height, kAOFormat, aoClear);
-    m_blurRT = std::make_unique<RenderTarget>();
-    m_blurRT->Initialize(device, rtvHeap, srvHeap, m_width, m_height, kAOFormat, aoClear);
-    m_aoState   = D3D12_RESOURCE_STATE_RENDER_TARGET;  // 作成直後は RENDER_TARGET
-    m_blurState = D3D12_RESOURCE_STATE_RENDER_TARGET;
-
-    // --- パラメータ CB（フレーム多重化）---
-    m_paramCB = std::make_unique<ConstantBuffer>();
-    m_paramCB->Initialize(device, sizeof(SSAOParamsCB), FrameResources::kFrameCount);
-    m_blurCB = std::make_unique<ConstantBuffer>();
-    m_blurCB->Initialize(device, sizeof(SSAOBlurCB), FrameResources::kFrameCount);
-
-    Logger::Info("SSAOPass initialized ({}x{})", m_width, m_height);
 }
 
 void SSAOPass::Resize(GraphicsDevice& device, u32 width, u32 height)

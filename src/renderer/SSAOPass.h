@@ -25,6 +25,9 @@ public:
     void Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap, DescriptorHeap* srvHeap,
                     u32 width, u32 height, const std::wstring& shaderDir);
 
+    // シェーダーホットリロード用。PSO(AO/Blur)のみ作り直す(ルートシグネチャ/RT/CBは不変のため触らない)。
+    void RecreatePipelines(GraphicsDevice& device);
+
     // sceneRT / depth と同タイミングで AO/Blur RT を作り直す（フル解像度）。
     void Resize(GraphicsDevice& device, u32 width, u32 height);
 
@@ -56,6 +59,7 @@ private:
     D3D12_RESOURCE_STATES m_blurState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     u32 m_width  = 0;
     u32 m_height = 0;
+    std::wstring m_shaderDir;   // RecreatePipelines 用に保持
 };
 
 } // namespace dx12e

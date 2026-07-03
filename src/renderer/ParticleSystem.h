@@ -116,6 +116,10 @@ public:
                     const std::wstring& shaderDir,
                     DescriptorHeap* srvHeap = nullptr, ResourceManager* resourceManager = nullptr);
 
+    // シェーダーホットリロード用。6 グラフィックス PSO(Add/Alpha/Beam/Distort/TrailAdd/TrailAlpha)
+    // のみ作り直す(ルートシグネチャ/各種バッファは不変のため触らない)。
+    void RecreatePipelines(GraphicsDevice& device);
+
     // onDeath: 粒子の死亡位置で子バーストを放出（サブエミッタ・1段のみ）。
     void Emit(const EmitParams& p, const EmitParams* onDeath = nullptr);
     void EmitBeam(const BeamParams& b);
@@ -302,6 +306,11 @@ private:
     DescriptorHeap*  m_srvHeap = nullptr;
     ResourceManager* m_resourceManager = nullptr;
     std::vector<std::string> m_texPaths;   // Particle::texSlot の添字→assetsパス（追記のみ、小規模想定）
+
+    // RecreatePipelines 用に保持
+    std::wstring m_shaderDir;
+    DXGI_FORMAT  m_rtvFormat     = DXGI_FORMAT_UNKNOWN;
+    DXGI_FORMAT  m_distortFormat = DXGI_FORMAT_UNKNOWN;
 };
 
 } // namespace dx12e

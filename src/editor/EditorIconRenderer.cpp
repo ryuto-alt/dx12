@@ -48,52 +48,6 @@ void EditorIconRenderer::Initialize(GraphicsDevice& device,
             IID_PPV_ARGS(&m_rootSignature)));
     }
 
-    // --- PSO (LineList, DepthTest OFF) ---
-    {
-        auto vsData = ShaderCompiler::LoadFromFile(shaderDir + L"DebugLine_VS.cso");
-        auto psData = ShaderCompiler::LoadFromFile(shaderDir + L"DebugLine_PS.cso");
-
-        D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
-            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
-             D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-            {"COLOR",    0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12,
-             D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-        };
-
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};
-        psoDesc.pRootSignature = m_rootSignature.Get();
-        psoDesc.VS = { vsData.GetData(), vsData.GetSize() };
-        psoDesc.PS = { psData.GetData(), psData.GetSize() };
-        psoDesc.InputLayout = { inputLayout, _countof(inputLayout) };
-        psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
-
-        psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-        psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-        psoDesc.RasterizerState.FrontCounterClockwise = FALSE;
-        psoDesc.RasterizerState.DepthBias = 0;
-        psoDesc.RasterizerState.DepthBiasClamp = 0.0f;
-        psoDesc.RasterizerState.SlopeScaledDepthBias = 0.0f;
-        psoDesc.RasterizerState.DepthClipEnable = TRUE;
-        psoDesc.RasterizerState.MultisampleEnable = FALSE;
-        psoDesc.RasterizerState.AntialiasedLineEnable = TRUE;
-
-        psoDesc.BlendState.AlphaToCoverageEnable = FALSE;
-        psoDesc.BlendState.IndependentBlendEnable = FALSE;
-        psoDesc.BlendState.RenderTarget[0].BlendEnable = FALSE;
-        psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-
-        psoDesc.DepthStencilState.DepthEnable    = FALSE;
-        psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
-        psoDesc.DepthStencilState.StencilEnable  = FALSE;
-        psoDesc.SampleMask = UINT_MAX;
-        psoDesc.NumRenderTargets = 1;
-        psoDesc.RTVFormats[0] = rtvFormat;
-        psoDesc.DSVFormat = dsvFormat;
-        psoDesc.SampleDesc = { 1, 0 };
-
-        ThrowIfFailed(dev->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_pso)));
-    }
-
     // --- Dynamic Vertex Buffer (Upload Heap, kFrames 区画リング) ---
     {
         const UINT bufferSize = kFrames * kMaxVertices * sizeof(IconLineVertex);
@@ -143,37 +97,11 @@ void EditorIconRenderer::Initialize(GraphicsDevice& device,
             serialized->GetBufferSize(), IID_PPV_ARGS(&m_billboardRootSig)));
     }
 
-    // --- Billboard PSO (LineList, Depth OFF) ---
-    {
-        auto vsData = ShaderCompiler::LoadFromFile(shaderDir + L"IconBillboard_VS.cso");
-        auto psData = ShaderCompiler::LoadFromFile(shaderDir + L"IconBillboard_PS.cso");
-
-        D3D12_INPUT_ELEMENT_DESC layout[] = {
-            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-            {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-            {"COLOR",    0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-        };
-
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};
-        psoDesc.pRootSignature = m_billboardRootSig.Get();
-        psoDesc.VS = { vsData.GetData(), vsData.GetSize() };
-        psoDesc.PS = { psData.GetData(), psData.GetSize() };
-        psoDesc.InputLayout = { layout, _countof(layout) };
-        psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
-        psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-        psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-        psoDesc.RasterizerState.DepthClipEnable = TRUE;
-        psoDesc.RasterizerState.AntialiasedLineEnable = TRUE;
-        psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-        psoDesc.DepthStencilState.DepthEnable    = FALSE;
-        psoDesc.DepthStencilState.StencilEnable  = FALSE;
-        psoDesc.SampleMask = UINT_MAX;
-        psoDesc.NumRenderTargets = 1;
-        psoDesc.RTVFormats[0] = rtvFormat;
-        psoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
-        psoDesc.SampleDesc = { 1, 0 };
-        ThrowIfFailed(dev->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_billboardPSO)));
-    }
+    // --- PSO (通常アイコン + ビルボード) ---
+    m_shaderDir = shaderDir;
+    m_rtvFormat = rtvFormat;
+    m_dsvFormat = dsvFormat;
+    RecreatePipelines(device);
 
     // --- Billboard Dynamic Vertex Buffer (kFrames 区画リング) ---
     {
@@ -200,6 +128,89 @@ void EditorIconRenderer::Initialize(GraphicsDevice& device,
     m_billboardVerts.reserve(2048);
     m_initialized = true;
     Logger::Info("EditorIconRenderer initialized");
+}
+
+void EditorIconRenderer::RecreatePipelines(GraphicsDevice& device)
+{
+    auto* dev = device.GetDevice();
+
+    // --- PSO (LineList, DepthTest OFF) ---
+    {
+        auto vsData = ShaderCompiler::LoadFromFile(m_shaderDir + L"DebugLine_VS.cso");
+        auto psData = ShaderCompiler::LoadFromFile(m_shaderDir + L"DebugLine_PS.cso");
+
+        D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
+            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
+             D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+            {"COLOR",    0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12,
+             D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        };
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};
+        psoDesc.pRootSignature = m_rootSignature.Get();
+        psoDesc.VS = { vsData.GetData(), vsData.GetSize() };
+        psoDesc.PS = { psData.GetData(), psData.GetSize() };
+        psoDesc.InputLayout = { inputLayout, _countof(inputLayout) };
+        psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+
+        psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+        psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        psoDesc.RasterizerState.FrontCounterClockwise = FALSE;
+        psoDesc.RasterizerState.DepthBias = 0;
+        psoDesc.RasterizerState.DepthBiasClamp = 0.0f;
+        psoDesc.RasterizerState.SlopeScaledDepthBias = 0.0f;
+        psoDesc.RasterizerState.DepthClipEnable = TRUE;
+        psoDesc.RasterizerState.MultisampleEnable = FALSE;
+        psoDesc.RasterizerState.AntialiasedLineEnable = TRUE;
+
+        psoDesc.BlendState.AlphaToCoverageEnable = FALSE;
+        psoDesc.BlendState.IndependentBlendEnable = FALSE;
+        psoDesc.BlendState.RenderTarget[0].BlendEnable = FALSE;
+        psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+        psoDesc.DepthStencilState.DepthEnable    = FALSE;
+        psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+        psoDesc.DepthStencilState.StencilEnable  = FALSE;
+        psoDesc.SampleMask = UINT_MAX;
+        psoDesc.NumRenderTargets = 1;
+        psoDesc.RTVFormats[0] = m_rtvFormat;
+        psoDesc.DSVFormat = m_dsvFormat;
+        psoDesc.SampleDesc = { 1, 0 };
+
+        ThrowIfFailed(dev->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_pso)));
+    }
+
+    // --- Billboard PSO (LineList, Depth OFF) ---
+    {
+        auto vsData = ShaderCompiler::LoadFromFile(m_shaderDir + L"IconBillboard_VS.cso");
+        auto psData = ShaderCompiler::LoadFromFile(m_shaderDir + L"IconBillboard_PS.cso");
+
+        D3D12_INPUT_ELEMENT_DESC layout[] = {
+            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+            {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+            {"COLOR",    0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        };
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};
+        psoDesc.pRootSignature = m_billboardRootSig.Get();
+        psoDesc.VS = { vsData.GetData(), vsData.GetSize() };
+        psoDesc.PS = { psData.GetData(), psData.GetSize() };
+        psoDesc.InputLayout = { layout, _countof(layout) };
+        psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+        psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+        psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        psoDesc.RasterizerState.DepthClipEnable = TRUE;
+        psoDesc.RasterizerState.AntialiasedLineEnable = TRUE;
+        psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        psoDesc.DepthStencilState.DepthEnable    = FALSE;
+        psoDesc.DepthStencilState.StencilEnable  = FALSE;
+        psoDesc.SampleMask = UINT_MAX;
+        psoDesc.NumRenderTargets = 1;
+        psoDesc.RTVFormats[0] = m_rtvFormat;
+        psoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
+        psoDesc.SampleDesc = { 1, 0 };
+        ThrowIfFailed(dev->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_billboardPSO)));
+    }
 }
 
 // ========== Frame ==========

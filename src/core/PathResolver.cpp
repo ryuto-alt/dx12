@@ -22,6 +22,7 @@ std::string Utf8Generic(const fs::path& p)
 bool         PathResolver::s_initialized = false;
 std::string  PathResolver::s_assets;
 std::wstring PathResolver::s_shaderW;
+std::wstring PathResolver::s_shaderSrcW;
 std::string  PathResolver::s_scripts;
 std::string  PathResolver::s_base;
 
@@ -36,17 +37,20 @@ void PathResolver::Initialize(bool gameMode)
 
     if (dist)
     {
-        s_base    = Utf8Generic(exeDir) + "/";
-        s_assets  = Utf8Generic(exeDir / "assets")  + "/";
-        s_scripts = Utf8Generic(exeDir / "scripts") + "/";
-        s_shaderW = (exeDir / "shaders").generic_wstring() + L"/";
+        s_base       = Utf8Generic(exeDir) + "/";
+        s_assets     = Utf8Generic(exeDir / "assets")  + "/";
+        s_scripts    = Utf8Generic(exeDir / "scripts") + "/";
+        s_shaderW    = (exeDir / "shaders").generic_wstring() + L"/";
+        // shaders-src/ は任意同梱（エンジンシェーダーのホットリロード用ソース）。無くても動く。
+        s_shaderSrcW = (exeDir / "shaders-src").generic_wstring() + L"/";
     }
     else
     {
         // 開発時: コンパイル時マクロ（ソース/ビルドツリーの絶対パス）にフォールバック
-        s_assets  = ASSETS_DIR;
-        s_scripts = SCRIPTS_DIR;
-        s_shaderW = SHADER_DIR;
+        s_assets     = ASSETS_DIR;
+        s_scripts    = SCRIPTS_DIR;
+        s_shaderW    = SHADER_DIR;
+        s_shaderSrcW = SHADER_SRC_DIR;
         // ASSETS_DIR = "<root>/assets/" なので 2 つ親を辿るとプロジェクトルート
         s_base    = Utf8Generic(fs::path(ASSETS_DIR).parent_path().parent_path()) + "/";
     }
@@ -80,10 +84,16 @@ void PathResolver::SetProjectRoot(const std::string& rootDir)
     // shaders はエンジン側の .cso をそのまま使う（s_shaderW は変更しない）
 }
 
-const std::string&  PathResolver::AssetsDir()  { return s_assets;  }
-const std::wstring& PathResolver::ShaderDirW() { return s_shaderW; }
-const std::string&  PathResolver::ScriptsDir() { return s_scripts; }
-const std::string&  PathResolver::BaseDir()    { return s_base;    }
+const std::string&  PathResolver::AssetsDir()        { return s_assets;     }
+const std::wstring& PathResolver::ShaderDirW()       { return s_shaderW;    }
+const std::string&  PathResolver::ScriptsDir()       { return s_scripts;    }
+const std::string&  PathResolver::BaseDir()          { return s_base;       }
+const std::wstring& PathResolver::ShaderSourceDirW() { return s_shaderSrcW; }
+
+std::string PathResolver::ProjectShaderDir()
+{
+    return s_assets + "shaders/";
+}
 
 std::string PathResolver::GameLuaPath()
 {

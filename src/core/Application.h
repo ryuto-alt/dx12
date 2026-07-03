@@ -70,6 +70,7 @@ namespace dx12e
     class EditorLayer;
     class ModelThumbnailRenderer;
     class VfxEditorPanel;
+    class ShaderManager;
     struct Material;
 }
 
@@ -130,6 +131,30 @@ private:
     void RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState& staticPSO,
                               PipelineState& skinnedPSO, bool updateSkinning, u32 frameIndex);
     void RebuildScene();
+    // シェーダーホットリロード用 PSO 再生成。初回(Initialize)と再生成(hot-reload)の両方から呼ぶ。
+    // 既存 unique_ptr が非 null ならその場で Initialize() し直す(オブジェクトの住所は変えない=
+    // ModelThumbnailRenderer 等が生ポインタを保持しているケースでのダングリングを避けるため)。
+    // ShaderManager::RegisterReloadHandler で csoName ごとに束ねて登録する。
+    void RecreateForwardPsos();          // m_pipelineState / LEqual / Thumb (Forward_VS/PS, ForwardLdr_PS)
+    void RecreateSkinnedPsos();          // m_skinnedPipelineState / LEqual (ForwardSkinned_VS, Forward_PS)
+    void RecreateGridPso();              // m_gridPipelineState (ForwardGrid_VS/PS)
+    void RecreateEmissivePso();          // m_emissivePipelineState (Emissive_VS/PS)
+    void RecreateShadowPsos();           // m_shadowPipelineState / m_shadowSkinnedPipelineState
+    void RecreateDepthPrepassPsos();     // m_depthPrepassPSO / m_depthPrepassSkinnedPSO
+    void RegisterShaderReloadHandlers(); // 上記全部+PostProcess等を ShaderManager に束ねて登録する(Initialize末尾で1回)
+
+    // カスタムシェーダー(MeshRenderer::shaderPath)割当用の遅延生成PSOキャッシュ。
+    // 静的メッシュのみ対応(スキンド/インスタンシングは m_pipelineState 等の既定へフォールバック)。
+    struct CustomForwardPsos
+    {
+        std::unique_ptr<PipelineState> less;    // DepthFunc=LESS
+        std::unique_ptr<PipelineState> lequal;  // 深度プリパス併用(SSAO)時
+        bool valid = false;
+    };
+    std::unordered_map<std::string, CustomForwardPsos> m_customPsoCache;  // key: shaderPath(小文字正規化)
+    // キャッシュに無ければ ShaderManager からバイトコードを取り PSO を生成する。
+    // コンパイル未完了/PSO生成失敗時は nullptr を返す(呼び出し側は既定 Forward へフォールバックすること)。
+    CustomForwardPsos* EnsureCustomPso(const std::string& shaderRel);
     // ランチャーで選んだ/作成したプロジェクトを実行時に読み込む（パス再ポイント + シーンロード）
     void LoadProject(const ProjectInfo& info);
     // エディタUIアイコン(PNG)をSRVへ読み込む（起動時に1度。エンジン側assets基準）
@@ -190,6 +215,9 @@ private:
     std::unique_ptr<PipelineState>     m_pipelineStateThumb;   // サムネイル用(static, LESS, R8G8B8A8)
     std::unique_ptr<DescriptorHeap>    m_srvHeap;
     std::unique_ptr<ResourceManager>   m_resourceManager;
+    // プロジェクト独自HLSL(上書き/自作)の実行時コンパイル+ホットリロード。エディタモードのみ生成。
+    std::unique_ptr<ShaderManager>     m_shaderManager;
+    f32                                m_shaderPollTimer = 0.0f;
     std::unique_ptr<ImGuiManager>      m_imguiManager;
     std::unique_ptr<PipelineState>     m_skinnedPipelineState;        // 通常 forward(skinned, LESS)
     std::unique_ptr<PipelineState>     m_skinnedPipelineStateLEqual;  // SSAO 深度プリパス併用時(skinned, LESS_EQUAL)

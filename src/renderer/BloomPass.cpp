@@ -73,41 +73,8 @@ void BloomPass::Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap, Desc
     }
 
     // --- PSO（ダウン: 上書き / アップ: dest=src*factor+dest*(1-factor) のブレンド合成）---
-    {
-        auto vs = ShaderCompiler::LoadFromFile(shaderDir + L"Bloom_VS.cso");
-        auto psDown = ShaderCompiler::LoadFromFile(shaderDir + L"BloomDown_PS.cso");
-        auto psUp   = ShaderCompiler::LoadFromFile(shaderDir + L"BloomUp_PS.cso");
-
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
-        pso.pRootSignature = m_rootSig.Get();
-        pso.VS = { vs.GetData(), vs.GetSize() };
-        pso.PS = { psDown.GetData(), psDown.GetSize() };
-        pso.InputLayout = { nullptr, 0 };
-        pso.RasterizerState.FillMode        = D3D12_FILL_MODE_SOLID;
-        pso.RasterizerState.CullMode        = D3D12_CULL_MODE_NONE;
-        pso.RasterizerState.DepthClipEnable = TRUE;
-        pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-        pso.DepthStencilState.DepthEnable   = FALSE;
-        pso.DepthStencilState.StencilEnable = FALSE;
-        pso.SampleMask            = UINT_MAX;
-        pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-        pso.NumRenderTargets      = 1;
-        pso.RTVFormats[0]         = kBloomFormat;
-        pso.DSVFormat             = DXGI_FORMAT_UNKNOWN;
-        pso.SampleDesc            = { 1, 0 };
-        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoDown)));
-
-        pso.PS = { psUp.GetData(), psUp.GetSize() };
-        auto& rt0 = pso.BlendState.RenderTarget[0];
-        rt0.BlendEnable    = TRUE;
-        rt0.SrcBlend       = D3D12_BLEND_BLEND_FACTOR;
-        rt0.DestBlend      = D3D12_BLEND_INV_BLEND_FACTOR;
-        rt0.BlendOp        = D3D12_BLEND_OP_ADD;
-        rt0.SrcBlendAlpha  = D3D12_BLEND_ONE;
-        rt0.DestBlendAlpha = D3D12_BLEND_ZERO;
-        rt0.BlendOpAlpha   = D3D12_BLEND_OP_ADD;
-        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoUp)));
-    }
+    m_shaderDir = shaderDir;
+    RecreatePipelines(device);
 
     // --- チェーン RT（1/2, 1/4, ... 1/64）---
     const float clearBlack[4] = {0, 0, 0, 1};
@@ -120,6 +87,44 @@ void BloomPass::Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap, Desc
     }
 
     Logger::Info("BloomPass initialized ({} mips)", kMips);
+}
+
+void BloomPass::RecreatePipelines(GraphicsDevice& device)
+{
+    auto* dev = device.GetDevice();
+    auto vs = ShaderCompiler::LoadFromFile(m_shaderDir + L"Bloom_VS.cso");
+    auto psDown = ShaderCompiler::LoadFromFile(m_shaderDir + L"BloomDown_PS.cso");
+    auto psUp   = ShaderCompiler::LoadFromFile(m_shaderDir + L"BloomUp_PS.cso");
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
+    pso.pRootSignature = m_rootSig.Get();
+    pso.VS = { vs.GetData(), vs.GetSize() };
+    pso.PS = { psDown.GetData(), psDown.GetSize() };
+    pso.InputLayout = { nullptr, 0 };
+    pso.RasterizerState.FillMode        = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode        = D3D12_CULL_MODE_NONE;
+    pso.RasterizerState.DepthClipEnable = TRUE;
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    pso.DepthStencilState.DepthEnable   = FALSE;
+    pso.DepthStencilState.StencilEnable = FALSE;
+    pso.SampleMask            = UINT_MAX;
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets      = 1;
+    pso.RTVFormats[0]         = kBloomFormat;
+    pso.DSVFormat             = DXGI_FORMAT_UNKNOWN;
+    pso.SampleDesc            = { 1, 0 };
+    ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoDown)));
+
+    pso.PS = { psUp.GetData(), psUp.GetSize() };
+    auto& rt0 = pso.BlendState.RenderTarget[0];
+    rt0.BlendEnable    = TRUE;
+    rt0.SrcBlend       = D3D12_BLEND_BLEND_FACTOR;
+    rt0.DestBlend      = D3D12_BLEND_INV_BLEND_FACTOR;
+    rt0.BlendOp        = D3D12_BLEND_OP_ADD;
+    rt0.SrcBlendAlpha  = D3D12_BLEND_ONE;
+    rt0.DestBlendAlpha = D3D12_BLEND_ZERO;
+    rt0.BlendOpAlpha   = D3D12_BLEND_OP_ADD;
+    ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoUp)));
 }
 
 u32 BloomPass::GetMipSrvIndex(u32 mip) const

@@ -21,6 +21,9 @@ public:
     // 初期化（compute RootSig / 3 PSO 生成）。1回だけ呼ぶ。
     void Initialize(GraphicsDevice& device, const std::wstring& shaderDirW);
 
+    // シェーダーホットリロード用。3 compute PSO のみ作り直す(ルートシグネチャ/リソースは不変のため触らない)。
+    void RecreatePipelines(GraphicsDevice& device);
+
     // 環境キューブ(envCube, SRV は不要・リソースから内部で SRV を作る)から派生を生成。
     // cmdList は記録のみ（Close/Execute/WaitIdle は呼び出し側）。
     // envCube が null の場合は黒ダミーを生成（hasIBL=false 運用）。
@@ -57,6 +60,9 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> m_brdfLut;
     // constants 用 upload バッファ（Dispatch ごとに別オフセット）
     Microsoft::WRL::ComPtr<ID3D12Resource> m_cbUpload;
+
+    // RecreatePipelines 用に保持
+    std::wstring m_shaderDir;
 
     u32  m_blockStart = 0xFFFFFFFFu;  // srvHeap 上の連続3枚先頭(=irradiance)
     bool m_valid  = false;

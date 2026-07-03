@@ -216,6 +216,10 @@ public:
     bool showNewScriptDialog = false;
     char newScriptNameBuf[128] = {};
 
+    // カスタムシェーダー作成ダイアログ
+    bool showNewShaderDialog = false;
+    char newShaderNameBuf[128] = {};
+
     // Undo/Redo
     UndoSystem undoSystem;
 

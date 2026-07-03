@@ -23,6 +23,10 @@ class DofPass
 public:
     void Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap, DescriptorHeap* srvHeap,
                     u32 width, u32 height, const std::wstring& shaderDir);
+
+    // シェーダーホットリロード用。PSO(CoC/Gather/Composite)のみ作り直す(ルートシグネチャ/RTは不変)。
+    void RecreatePipelines(GraphicsDevice& device);
+
     void Resize(GraphicsDevice& device, u32 width, u32 height);
 
     // sceneSrvGpu/depthSrvGpu は PIXEL_SHADER_RESOURCE 状態で渡すこと。
@@ -48,6 +52,7 @@ private:
     std::unique_ptr<RenderTarget> m_outRT;      // フル解像度 RGBA16F
     u32 m_width  = 0;
     u32 m_height = 0;
+    std::wstring m_shaderDir;   // RecreatePipelines 用に保持
 };
 
 } // namespace dx12e

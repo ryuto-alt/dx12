@@ -34,43 +34,49 @@ void SceneTransition::Initialize(GraphicsDevice& device, DXGI_FORMAT outFormat, 
     }
 
     // --- PSO: VB なしフルスクリーン三角形 / AlphaBlend ON / Depth OFF ---
-    {
-        auto vs = ShaderCompiler::LoadFromFile(shaderDir + L"Transition_VS.cso");
-        auto ps = ShaderCompiler::LoadFromFile(shaderDir + L"Transition_PS.cso");
-
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
-        pso.pRootSignature = m_rootSig.Get();
-        pso.VS = { vs.GetData(), vs.GetSize() };
-        pso.PS = { ps.GetData(), ps.GetSize() };
-        pso.InputLayout = { nullptr, 0 };
-        pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-
-        pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-        pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-        pso.RasterizerState.DepthClipEnable = TRUE;
-
-        auto& rt = pso.BlendState.RenderTarget[0];
-        rt.BlendEnable           = TRUE;
-        rt.SrcBlend              = D3D12_BLEND_SRC_ALPHA;
-        rt.DestBlend             = D3D12_BLEND_INV_SRC_ALPHA;
-        rt.BlendOp               = D3D12_BLEND_OP_ADD;
-        rt.SrcBlendAlpha         = D3D12_BLEND_ONE;
-        rt.DestBlendAlpha        = D3D12_BLEND_INV_SRC_ALPHA;
-        rt.BlendOpAlpha          = D3D12_BLEND_OP_ADD;
-        rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-
-        pso.DepthStencilState.DepthEnable   = FALSE;
-        pso.DepthStencilState.StencilEnable = FALSE;
-        pso.SampleMask       = UINT_MAX;
-        pso.NumRenderTargets = 1;
-        pso.RTVFormats[0]    = outFormat;
-        pso.DSVFormat        = DXGI_FORMAT_UNKNOWN;
-        pso.SampleDesc       = { 1, 0 };
-
-        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_pso)));
-    }
+    m_outFormat = outFormat;
+    m_shaderDir = shaderDir;
+    RecreatePipelines(device);
 
     Logger::Info("SceneTransition initialized");
+}
+
+void SceneTransition::RecreatePipelines(GraphicsDevice& device)
+{
+    auto* dev = device.GetDevice();
+    auto vs = ShaderCompiler::LoadFromFile(m_shaderDir + L"Transition_VS.cso");
+    auto ps = ShaderCompiler::LoadFromFile(m_shaderDir + L"Transition_PS.cso");
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
+    pso.pRootSignature = m_rootSig.Get();
+    pso.VS = { vs.GetData(), vs.GetSize() };
+    pso.PS = { ps.GetData(), ps.GetSize() };
+    pso.InputLayout = { nullptr, 0 };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    pso.RasterizerState.DepthClipEnable = TRUE;
+
+    auto& rt = pso.BlendState.RenderTarget[0];
+    rt.BlendEnable           = TRUE;
+    rt.SrcBlend              = D3D12_BLEND_SRC_ALPHA;
+    rt.DestBlend             = D3D12_BLEND_INV_SRC_ALPHA;
+    rt.BlendOp               = D3D12_BLEND_OP_ADD;
+    rt.SrcBlendAlpha         = D3D12_BLEND_ONE;
+    rt.DestBlendAlpha        = D3D12_BLEND_INV_SRC_ALPHA;
+    rt.BlendOpAlpha          = D3D12_BLEND_OP_ADD;
+    rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    pso.DepthStencilState.DepthEnable   = FALSE;
+    pso.DepthStencilState.StencilEnable = FALSE;
+    pso.SampleMask       = UINT_MAX;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0]    = m_outFormat;
+    pso.DSVFormat        = DXGI_FORMAT_UNKNOWN;
+    pso.SampleDesc       = { 1, 0 };
+
+    ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_pso)));
 }
 
 void SceneTransition::Start(TransitionType type, float totalDuration)
