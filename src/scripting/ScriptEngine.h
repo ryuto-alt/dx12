@@ -105,6 +105,11 @@ public:
     // 失敗時は false を返し err にエラー文を入れる(resultStr は空のまま)。
     bool EvalLua(const std::string& code, std::string& resultStr, std::string& err);
 
+    // Lua 入力行の末尾トークンに対する補完候補を返す(コンソールの予測変換用)。
+    // グローバル/テーブルは実際の lua state から動的列挙、usertype(scene: 等)は
+    // メタテーブルのメソッド名を列挙する。候補はソート済み・重複なし。
+    std::vector<std::string> GetCompletions(const std::string& line);
+
     void Shutdown();
 
     const std::string& GetLastError() const { return m_lastError; }

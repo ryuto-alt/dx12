@@ -43,6 +43,12 @@ private:
     char m_filter[128]  = "";
     char m_luaInput[512] = "";
 
+    // Lua 予測変換（コンソール入力行）。候補は ScriptEngine::GetCompletions から。
+    // Tab=確定 / ↑↓=候補選択 / クリック=挿入。m_lastQuery で入力変化を検知して再計算。
+    std::vector<std::string> m_completions;
+    int         m_completionSel = 0;
+    std::string m_lastQuery;
+
     uint64_t m_selectedId   = 0;     // 詳細ペインに出すエントリ（0=なし）
     bool     m_prevPlaying  = false;
     bool     m_viewDirty    = true;

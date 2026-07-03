@@ -8,6 +8,8 @@
 #pragma warning(pop)
 
 #include <algorithm>
+#include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <unordered_map>
 
@@ -309,12 +311,91 @@ void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying)
 
     // ============ Lua 即時実行行（Unreal のコンソール入力相当） ============
     {
+        // 予測変換: 入力が変わったら ScriptEngine から候補を再取得(lua state の実テーブルを列挙)
+        if (scriptEngine && m_lastQuery != m_luaInput)
+        {
+            m_lastQuery = m_luaInput;
+            m_completions = (m_luaInput[0] != '\0')
+                ? scriptEngine->GetCompletions(m_luaInput)
+                : std::vector<std::string>{};
+            if (m_completions.size() > 50) m_completions.resize(50);
+            m_completionSel = 0;
+        }
+
+        // Tab=候補確定 / ↑↓=候補選択(キャプチャ無しラムダ→関数ポインタ、UserData=this)
+        auto complCb = [](ImGuiInputTextCallbackData* data) -> int {
+            auto* self = static_cast<ConsolePanel*>(data->UserData);
+            const int n = static_cast<int>(self->m_completions.size());
+            if (n == 0) return 0;
+            if (data->EventFlag == ImGuiInputTextFlags_CallbackHistory)
+            {
+                if (data->EventKey == ImGuiKey_UpArrow)   self->m_completionSel = (self->m_completionSel + n - 1) % n;
+                if (data->EventKey == ImGuiKey_DownArrow) self->m_completionSel = (self->m_completionSel + 1) % n;
+            }
+            else if (data->EventFlag == ImGuiInputTextFlags_CallbackCompletion)
+            {
+                // カーソル直前の識別子(partial)を選択候補で置き換える
+                int end = data->CursorPos;
+                int st  = end;
+                while (st > 0)
+                {
+                    const char c = data->Buf[st - 1];
+                    if (std::isalnum(static_cast<unsigned char>(c)) || c == '_') --st;
+                    else break;
+                }
+                const std::string& pick = self->m_completions[self->m_completionSel];
+                data->DeleteChars(st, end - st);
+                data->InsertChars(st, pick.c_str());
+            }
+            return 0;
+        };
+
         ImGui::TextColored(theme::Accent, "＞");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(-1.0f);
         const bool entered = ImGui::InputTextWithHint("##luainput",
             "Lua を実行... (例: log(scene:findEntity(\"Player\"):getPosition().y))",
-            m_luaInput, sizeof(m_luaInput), ImGuiInputTextFlags_EnterReturnsTrue);
+            m_luaInput, sizeof(m_luaInput),
+            ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackCompletion |
+            ImGuiInputTextFlags_CallbackHistory,
+            complCb, this);
+
+        // 候補ポップアップ(入力欄の上に重ねる)。Tab:確定 ↑↓:選択 クリック:挿入
+        if (ImGui::IsItemActive() && !m_completions.empty() && m_luaInput[0] != '\0')
+        {
+            const int total = static_cast<int>(m_completions.size());
+            const int shown = total < 8 ? total : 8;
+            const int first = (m_completionSel >= shown) ? (m_completionSel - shown + 1) : 0;
+            const float rowH = ImGui::GetTextLineHeightWithSpacing();
+            const float popH = shown * rowH + rowH + 14.0f;   // +1行はヒント表示
+            const ImVec2 inputMin = ImGui::GetItemRectMin();
+            ImGui::SetNextWindowPos(ImVec2(inputMin.x, inputMin.y - popH - 4.0f));
+            ImGui::SetNextWindowSize(ImVec2(380.0f, popH));
+            ImGui::Begin("##luacompl", nullptr,
+                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav |
+                ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings);
+            for (int i = first; i < first + shown && i < total; ++i)
+            {
+                if (ImGui::Selectable(m_completions[i].c_str(), i == m_completionSel))
+                {
+                    // クリック挿入: 末尾の partial を候補で置き換え
+                    std::string s = m_luaInput;
+                    size_t st = s.size();
+                    while (st > 0)
+                    {
+                        const char c = s[st - 1];
+                        if (std::isalnum(static_cast<unsigned char>(c)) || c == '_') --st;
+                        else break;
+                    }
+                    s = s.substr(0, st) + m_completions[i];
+                    snprintf(m_luaInput, sizeof(m_luaInput), "%s", s.c_str());
+                    m_lastQuery.clear();   // 候補を再計算させる
+                }
+            }
+            ImGui::TextColored(theme::TextFaint, "Tab:確定  ↑↓:選択  (%d件)", total);
+            ImGui::End();
+        }
         if (entered && m_luaInput[0] != '\0')
         {
             const std::string code = m_luaInput;

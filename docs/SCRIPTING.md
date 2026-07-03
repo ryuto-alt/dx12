@@ -88,6 +88,22 @@ time.cancel(id)                      -- 解除
 `setScale` は `OnUpdate` の dt に掛かるので、既存の移動コードはそのままスローモ/ポーズに追従する。
 ポーズ中も動かしたい処理（メニュー等）は `time.realDt()` / `time.realtime()` を使う。
 
+```lua
+-- 共有ビデオ時計: ステージに1本流れる"動画時間"。ギミックは t の純関数で動きを書く
+time.video.start(10, { skipCost = 1.0 })   -- 10秒。skip すると残り時間も減る
+local t = time.video.localTime(self)        -- 動画時間 + 自分のオフセット
+time.video.skip("Wall1", 1.0)               -- Wall1 だけ1秒先送り(-1.0 で巻き戻し)
+time.video.remaining()                      -- 残り時間(HUD / time.video.finished() でゲームオーバー)
+
+-- 個別時計: オブジェクト単位で進む/止まる/スキップ
+time.localTime(self)                        -- 自分の経過秒
+time.scaleEntity("Enemy1", 0)               -- Enemy1 だけ停止(負で逆再生)
+
+-- チャージ計測(弓を引く等): c:update() を毎フレーム、離した瞬間 c:released() が量を返す
+local c = charge.new("E", { max = 2.0 })
+```
+詳細は API_REFERENCE.md の time セクションを参照。
+
 ### その他
 ```lua
 log("hp:", hp)                       -- ログ出力（任意個・任意型を tostring 連結、[Lua] 接頭辞）
@@ -99,6 +115,7 @@ ui:text(x, y, "HUD text", size, r, g, b, a)   -- 画面に文字（再生中の�
 `log`/`logWarn`/`logError`/`print` の出力はエディタの **コンソールパネル**（アセットブラウザの隣タブ）にリアルタイムで出る。
 重大度フィルタ（情報/警告/エラー、既定は警告+エラーのみ表示）・テキスト検索・同一メッセージの折りたたみ・行クリックで詳細ペインがある。
 下部の入力欄からは Lua を1行その場で実行できる（`scene`/`fx`/`camera` などそのまま使える簡易コンソール）。
+入力中は**予測変換**が出る: `time.` や `scene:fi` まで打つと候補がポップアップし、Tab で確定・↑↓ で選択・クリックで挿入できる（候補は実際の Lua 環境から動的に列挙されるので自作のグローバルも出る）。
 
 ---
 

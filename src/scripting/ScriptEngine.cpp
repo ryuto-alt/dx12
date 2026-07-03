@@ -29,6 +29,8 @@
 #include "animation/NodeGraph.h"
 
 #include <DirectXMath.h>
+#include <algorithm>
+#include <cctype>
 #include <tuple>
 #include <cfloat>
 #include <cmath>
@@ -1869,6 +1871,74 @@ bool ScriptEngine::EvalLua(const std::string& code, std::string& resultStr, std:
     sol::optional<std::string> s = result;
     if (s) resultStr = *s;
     return true;
+}
+
+std::vector<std::string> ScriptEngine::GetCompletions(const std::string& line)
+{
+    std::vector<std::string> out;
+    if (!m_lua) return out;
+
+    // 行末の補完対象トークンを切り出す(識別子と . : で構成される末尾部分)。
+    // 例: "log(time.vi" → token="time.vi" → base="time", partial="vi"
+    size_t start = line.size();
+    while (start > 0)
+    {
+        const char c = line[start - 1];
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '.' || c == ':') --start;
+        else break;
+    }
+    const std::string token = line.substr(start);
+    const size_t sepPos = token.find_last_of(".:");
+    const std::string basePath = (sepPos == std::string::npos) ? "" : token.substr(0, sepPos);
+    const std::string partial  = (sepPos == std::string::npos) ? token : token.substr(sepPos + 1);
+    if (basePath.empty() && partial.empty()) return out;
+
+    auto collect = [&](sol::table t) {
+        for (auto& kv : t)
+        {
+            if (!kv.first.is<std::string>()) continue;
+            std::string key = kv.first.as<std::string>();
+            if (key.rfind("__", 0) == 0) continue;                       // メタ/内部キー
+            if (basePath.empty() && key.rfind('_', 0) == 0) continue;    // 内部グローバル(_timers 等)
+            if (!partial.empty() && key.rfind(partial, 0) != 0) continue;
+            out.push_back(std::move(key));
+        }
+    };
+
+    if (basePath.empty())
+    {
+        collect(m_lua->globals());
+    }
+    else
+    {
+        // basePath を . : で分割して globals からテーブルを辿る(userdata は末端のみ対応)
+        sol::object cur = m_lua->globals();
+        size_t p = 0;
+        while (p <= basePath.size())
+        {
+            const size_t q = basePath.find_first_of(".:", p);
+            const std::string part = basePath.substr(p, (q == std::string::npos ? basePath.size() : q) - p);
+            if (part.empty()) return out;
+            if (cur.get_type() != sol::type::table) return out;   // 途中に userdata が挟まる形は非対応
+            cur = cur.as<sol::table>()[part];
+            if (q == std::string::npos) break;
+            p = q + 1;
+        }
+        if (cur.get_type() == sol::type::table)
+        {
+            collect(cur.as<sol::table>());
+        }
+        else if (cur.get_type() == sol::type::userdata)
+        {
+            // usertype(scene/input/physics 等)はメソッドがメタテーブルに入っている
+            sol::object mt = cur.as<sol::userdata>()[sol::metatable_key];
+            if (mt.get_type() == sol::type::table) collect(mt.as<sol::table>());
+        }
+    }
+
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
 }
 
 void ScriptEngine::OnPlayStart()

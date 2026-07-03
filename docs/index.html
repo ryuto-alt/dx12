@@ -553,6 +553,7 @@ cmake --build build/release</code></pre>
               <tr><td>詳細ペイン</td><td>行クリックで全文表示。部分選択コピー・コピーボタン</td></tr>
               <tr><td>色分け</td><td>ERROR=赤 / WARN=黄 / 情報=薄色、ゼブラ縞で行を判別しやすく</td></tr>
               <tr><td>Lua 即時実行</td><td>下部の入力欄に1行 Lua を打つと即実行（Unreal のコンソール入力相当）。<code class="inl">scene</code> / <code class="inl">fx</code> / <code class="inl">camera</code> 等そのまま使える。<code class="inl">&gt; コード</code> のエコーと <code class="inl">= 結果</code> を表示、エラーは赤で出る</td></tr>
+              <tr><td>Lua 予測変換</td><td><code class="inl">time.</code> や <code class="inl">scene:fi</code> まで打つと候補がポップアップ。<b>Tab で確定・↑↓ で選択・クリックで挿入</b>。候補は実際の Lua 環境から動的に列挙されるので、prelude のヘルパーも自作グローバルも出る</td></tr>
             </tbody>
           </table>
         </div>
@@ -807,6 +808,10 @@ vfx.<span class="tok-fn">play</span>(<span class="tok-s">"explosion"</span>, x, 
               <tr><td><code>time.setScale(s)</code> / <code>time.getScale()</code></td><td>タイムスケール。<code>0</code>=ポーズ、<code>0.5</code>=スローモ、<code>2</code>=早送り</td></tr>
               <tr><td><code>time.after(sec, fn)</code></td><td>sec 秒後に fn を1回実行（スケール済み時間で進む）。戻り値の id を <code>time.cancel(id)</code> へ</td></tr>
               <tr><td><code>time.every(sec, fn)</code></td><td>sec 秒ごとに fn を繰り返し実行</td></tr>
+              <tr><td><code>time.video.start(dur, {skipCost})</code></td><td>ステージ共有の<b>ビデオ時計</b>開始。ギミックは <code>t = time.video.localTime(self)</code> の純関数で動きを書く（決定論タイムライン）</td></tr>
+              <tr><td><code>time.video.skip(ent, ±sec)</code></td><td><b>対象だけ</b>先送り / 巻き戻し。残り時間を <code>|sec|×skipCost</code> 自動消費。<code>remaining()</code> / <code>finished()</code> で制限時間管理</td></tr>
+              <tr><td><code>time.localTime(e)</code> / <code>time.skipEntity(e, ±sec)</code> / <code>time.scaleEntity(e, s)</code></td><td>ビデオ時計と独立した<b>エンティティ個別時計</b>。0=そのオブジェクトだけ停止、負=逆再生</td></tr>
+              <tr><td><code>charge.new(key, {max, rate})</code></td><td>押しっぱなしチャージ計測（弓を引く等）。<code>c:update()</code> を毎フレーム、<code>c:ratio()</code> でゲージ、離した瞬間 <code>c:released()</code> が量を返す</td></tr>
             </tbody>
           </table>
         </div>
