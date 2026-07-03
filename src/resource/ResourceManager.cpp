@@ -131,7 +131,8 @@ Texture* ResourceManager::GetOrLoadTexture(
 
     if (!texture)
     {
-        Logger::Warn("テクスチャの読み込みに失敗しました（nullptr を返します）");
+        Logger::Warn("テクスチャの読み込みに失敗しました（nullptr をキャッシュし、以後は再試行しません）");
+        m_textureCache[filePath] = nullptr;   // 失敗もキャッシュ＝毎フレーム再ロード試行してログが埋まるのを防ぐ
         return nullptr;
     }
 
@@ -163,6 +164,13 @@ const CachedModel* ResourceManager::GetOrLoadModel(
 
     auto modelData = ModelLoader::LoadFromFile(*m_device, cmdList,
                                                std::filesystem::path(filePath), *this);
+
+    if (modelData.meshes.empty())
+    {
+        Logger::Warn("モデルの読み込みに失敗しました（nullptr をキャッシュし、以後は再試行しません）: {}", filePath);
+        m_modelCache[filePath] = nullptr;   // 失敗もキャッシュ＝毎フレーム再ロード試行してログが埋まるのを防ぐ
+        return nullptr;
+    }
 
     auto cached = std::make_unique<CachedModel>();
     cached->meshes        = std::move(modelData.meshes);
@@ -222,7 +230,7 @@ void ResourceManager::FinishUploads()
     if (m_defaultMetalRoughness) m_defaultMetalRoughness->FinishUpload();
     for (auto& [path, texture] : m_textureCache)
     {
-        texture->FinishUpload();
+        if (texture) texture->FinishUpload();   // 失敗キャッシュ(nullptr)はスキップ
     }
     for (auto& [path, model] : m_modelCache)
     {
