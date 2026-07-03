@@ -7,7 +7,7 @@
 namespace dx12e
 {
 // セマンティックバージョン（"MAJOR.MINOR.PATCH"）。GitHub リリースのタグ（"v1.2.3" 等）と比較する。
-constexpr const char* kEngineVersion = "0.9.1";
+constexpr const char* kEngineVersion = "0.9.2";
 
 // 自動アップデートの取得元 GitHub リポジトリ。
 constexpr const char* kUpdateRepoOwner = "ryuto-alt";
@@ -16,15 +16,17 @@ constexpr const char* kUpdateRepoName  = "dx12";
 // 起動時に一度だけ表示する「更新内容」ポップアップ（この版で直したこと）。
 // 表示済み判定は %LOCALAPPDATA%\DX12Engine\shown_version.txt（版が変わった初回だけ出す）。
 // 新しい版を出すときは kEngineVersion を上げ、ここも書き換えること。
-constexpr const char* kWhatsNewTitle = "DX12 Engine v0.9.1 の更新内容";
+constexpr const char* kWhatsNewTitle = "DX12 Engine v0.9.2 の更新内容";
 constexpr const char* kWhatsNewBody =
-    "今回の更新: Git マージコンフリクト解消UI + カスタムシェーダー作成MCP\n"
+    "今回の更新: マテリアルテクスチャのD&D割当 + 起動不具合修正\n"
     "\n"
-    "・Git パネルが pull 等でのマージコンフリクトを検知して赤枠で表示するように\n"
-    "  なりました。ファイルごとに「自分優先/相手優先/外部エディタで開く」で\n"
-    "  その場で解消できます。\n"
-    "・MCP(Claude Code/Codex 連携)から直接カスタムシェーダーを作れるように\n"
-    "  なりました: dx12_create_shader(作成+即コンパイル確認)、\n"
-    "  dx12_read_shader(既存ソース読取)、dx12_set_mesh_shader(メッシュへの\n"
-    "  割当/解除)。GUI 無しで HLSL の作成→検証→割当→スクショ確認まで回せます。\n";
+    "・アセットブラウザからテクスチャをドラッグ&ドロップしてメッシュのマテリアルへ\n"
+    "  割り当てられるようになりました(Unity/Unreal風)。SceneViewへドロップでAlbedo、\n"
+    "  Inspectorの専用スロットでAlbedo/Normal/MetalRoughnessを個別に割当。\n"
+    "  サムネイルプレビュー・クリックでの選択ダイアログ・SceneView右クリックでの\n"
+    "  解除にも対応。Ctrl+Z/Ctrl+YでUndo/Redoも可能です。\n"
+    "・カスタムシェーダーのアルファブレンドが効かない不具合を修正(Inspectorに\n"
+    "  「アルファブレンド有効」チェックボックスを追加)。\n"
+    "・配布ゲーム(Game.exe)が「dxcompiler.dllが見つからない」で起動できない\n"
+    "  不具合を修正。\n";
 } // namespace dx12e
