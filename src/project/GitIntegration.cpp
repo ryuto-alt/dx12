@@ -277,11 +277,16 @@ std::vector<GitFileChange> GitIntegration::ChangedFiles(const std::string& workD
         if (path.size() >= 2 && path.front() == '"' && path.back() == '"')
             path = path.substr(1, path.size() - 2);
 
+        // コンフリクト（未マージ）は X/Y の組み合わせで判定: UU/AA/DD/AU/UA/UD/DU。
+        // 単純に X を見るだけだと AA(両者追加) や DD(両者削除) が 'A'/'D' 扱いになって見逃す。
+        bool isConflict = (X == 'U' || Y == 'U' || (X == 'A' && Y == 'A') || (X == 'D' && Y == 'D'));
+
         GitFileChange c;
         c.path   = path;
         c.staged = (X != ' ' && X != '?');
         char raw = (X != ' ') ? X : Y;           // staged 優先、無ければ worktree
         if (raw == '?') raw = 'A';               // 未追跡=追加扱い（VS と同じ）
+        if (isConflict) raw = 'U';
         c.status = raw;
         out.push_back(std::move(c));
     }
@@ -308,6 +313,53 @@ std::string GitIntegration::RemoteUrl(const std::string& workDir)
     while (!url.empty() && (url.back() == '\n' || url.back() == '\r' || url.back() == ' '))
         url.pop_back();
     return url;
+}
+
+bool GitIntegration::IsMergeInProgress(const std::string& workDir)
+{
+    std::error_code ec;
+    return fs::exists(fs::path(workDir) / ".git" / "MERGE_HEAD", ec);
+}
+
+std::vector<std::string> GitIntegration::ConflictedFiles(const std::string& workDir)
+{
+    std::vector<std::string> out;
+    for (const auto& c : ChangedFiles(workDir))
+        if (c.status == 'U') out.push_back(c.path);
+    return out;
+}
+
+GitResult GitIntegration::ResolveOurs(const std::string& workDir, const std::string& path)
+{
+    // checkout --ours は削除系コンフリクト(DU/UD/DD)では対象が片側に無く失敗しうる。
+    // その場合の判定はエラー出力に委ねる（呼び出し側でログ表示）。
+    auto r = RunGit(workDir, "checkout --ours -- \"" + path + "\"");
+    if (!r.ok()) return r;
+    auto add = RunGit(workDir, "add -- \"" + path + "\"");
+    add.output = r.output + add.output;
+    return add;
+}
+
+GitResult GitIntegration::ResolveTheirs(const std::string& workDir, const std::string& path)
+{
+    auto r = RunGit(workDir, "checkout --theirs -- \"" + path + "\"");
+    if (!r.ok()) return r;
+    auto add = RunGit(workDir, "add -- \"" + path + "\"");
+    add.output = r.output + add.output;
+    return add;
+}
+
+void GitIntegration::OpenConflictFile(const std::string& workDir, const std::string& relPath)
+{
+    std::error_code ec;
+    fs::path full = fs::absolute(fs::path(workDir) / relPath, ec);
+    std::string fullStr = full.string();
+    // VSCode があればそれで開く（コンフリクトマーカーの色分け/マージエディタが効く）。
+    // ShellExecuteA の "open" は起動を待たない（フリーズ回避）。
+    HINSTANCE h = ShellExecuteA(nullptr, "open", "code", ("\"" + fullStr + "\"").c_str(),
+                                workDir.c_str(), SW_SHOWNORMAL);
+    if ((INT_PTR)h <= 32)   // code が PATH に無い等で起動失敗 → 既定アプリで開く
+        ShellExecuteA(nullptr, "open", fullStr.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
 GitResult GitIntegration::CreateGitHubRepo(const std::string& workDir,

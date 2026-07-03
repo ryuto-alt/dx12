@@ -4882,7 +4882,14 @@ void Application::RenderVersionControlWindow()
         else if (m_gitOpStatus == GitOpStatus::Success)
             ImGui::TextColored(th::Good, "✓ %s 成功", m_gitOpLabel.c_str());
         else if (m_gitOpStatus == GitOpStatus::Failure)
-            ImGui::TextColored(th::Bad, "✗ %s 失敗 (下の出力ログを確認してや)", m_gitOpLabel.c_str());
+        {
+            // pull 等がコンフリクトで止まっただけなら「失敗」ではなく専用の案内に倒す
+            // （下のコンフリクト一覧セクションで解消操作ができる）。
+            if (m_gitMergeInProgress && !m_gitConflicts.empty())
+                ImGui::TextColored(th::Warn, "⚠ %s でコンフリクトが発生したで。下の一覧から解消してや", m_gitOpLabel.c_str());
+            else
+                ImGui::TextColored(th::Bad, "✗ %s 失敗 (下の出力ログを確認してや)", m_gitOpLabel.c_str());
+        }
     };
 
     // 出力ログ（既定は畳む。エラー時だけ開いて確認）
@@ -4942,13 +4949,19 @@ void Application::RenderVersionControlWindow()
             m_gitRemoteCache = GitIntegration::RemoteUrl(root);
             m_gitBranches    = GitIntegration::ListBranches(root);
             m_gitChanges     = GitIntegration::ChangedFiles(root);
+            m_gitMergeInProgress = GitIntegration::IsMergeInProgress(root);
+            m_gitConflicts       = GitIntegration::ConflictedFiles(root);
             // upstream に対する未取得/未送信コミット数（VS の ↓/↑）。upstream 無しは失敗→-1のまま。
             auto rl = GitIntegration::RunGit(root, "rev-list --left-right --count @{upstream}...HEAD");
             int behind = 0, ahead = 0;
             if (rl.ok() && sscanf_s(rl.output.c_str(), "%d %d", &behind, &ahead) == 2)
             { m_gitBehind = behind; m_gitAhead = ahead; }
         }
-        else { m_gitBranchCache.clear(); m_gitRemoteCache.clear(); m_gitBranches.clear(); m_gitChanges.clear(); }
+        else
+        {
+            m_gitBranchCache.clear(); m_gitRemoteCache.clear(); m_gitBranches.clear(); m_gitChanges.clear();
+            m_gitMergeInProgress = false; m_gitConflicts.clear();
+        }
     }
 
     auto icon = [](u64 h, float s) { if (h) { ImGui::Image(static_cast<ImTextureID>(h), ImVec2(s, s)); ImGui::SameLine(); } };
@@ -5151,6 +5164,42 @@ void Application::RenderVersionControlWindow()
     statusBanner();
     ImGui::Separator();
 
+    // ---- コンフリクト一覧（pull/merge が競合で止まっている間だけ表示）----
+    if (!m_gitConflicts.empty())
+    {
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.35f, 0.12f, 0.12f, 0.35f));
+        ImGui::BeginChild("##conflicts", ImVec2(0, 0), true, ImGuiWindowFlags_AlwaysAutoResize);
+        ImGui::TextColored(th::Bad, "⚠ コンフリクト %zu 件（解消してからコミットしてや）", m_gitConflicts.size());
+        for (const auto& path : m_gitConflicts)
+        {
+            ImGui::PushID(path.c_str());
+            ImGui::TextUnformatted(path.c_str());
+            ImGui::BeginDisabled(busy);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("自分優先"))
+                RunGitAsync("コンフリクト解消", [root, path]{ return GitIntegration::ResolveOurs(root, path); });
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("HEAD（自分側）の内容で解消する");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("相手優先"))
+                RunGitAsync("コンフリクト解消", [root, path]{ return GitIntegration::ResolveTheirs(root, path); });
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("取り込んだ側（pull元/マージ元）の内容で解消する");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("開く"))
+                GitIntegration::OpenConflictFile(root, path);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("VSCode（無ければ既定アプリ）で開いて手動編集する");
+            ImGui::EndDisabled();
+            ImGui::PopID();
+        }
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
+        ImGui::Spacing();
+    }
+    else if (m_gitMergeInProgress)
+    {
+        ImGui::TextColored(th::Good, "✓ コンフリクトは全部解消したで。下でコミットしてマージを終わらせてや。");
+        ImGui::Spacing();
+    }
+
     // ---- コミットメッセージ（複数行・空ならプレースホルダを重ね描き）----
     ImVec2 msgPos = ImGui::GetCursorScreenPos();
     ImGui::InputTextMultiline("##commitmsg", m_gitCommitMsgBuf.data(), m_gitCommitMsgBuf.size(),
@@ -5179,7 +5228,9 @@ void Application::RenderVersionControlWindow()
         else
             RunGitAsync("コミット", [root, msg]{ return GitIntegration::CommitAll(root, msg); });
     };
-    const bool canCommit = !m_gitChanges.empty() && m_gitCommitMsgBuf[0] != '\0';
+    // マージ解消後、選んだ側が HEAD と同一内容だと通常の変更差分は0件になる（それでもマージコミットとして
+    // 成立する = git commit は成功する）ので、mid-merge のときは変更0件でもコミットボタンを塞がない。
+    const bool canCommit = (!m_gitChanges.empty() || m_gitMergeInProgress) && m_gitCommitMsgBuf[0] != '\0';
     ImGui::BeginDisabled(busy || !canCommit);
     icon(m_icons.commit, 18);
     if (ImGui::Button("すべてをコミット", ImVec2(ImGui::GetContentRegionAvail().x - fh - 1.0f, 0)))

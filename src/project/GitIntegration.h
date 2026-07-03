@@ -57,6 +57,18 @@ public:
     static std::string CurrentBranch(const std::string& workDir);
     static std::string RemoteUrl(const std::string& workDir);               // origin の URL（無ければ空）
 
+    // ---- マージコンフリクト ----
+    // pull/merge の途中か（.git/MERGE_HEAD の有無）。解消後 commit するまで true のまま。
+    static bool IsMergeInProgress(const std::string& workDir);
+    // 未解消（'U'）のファイルのリポジトリ相対パス一覧
+    static std::vector<std::string> ConflictedFiles(const std::string& workDir);
+    // 指定ファイルを自分側(HEAD)の内容で解消して add する
+    static GitResult ResolveOurs(const std::string& workDir, const std::string& path);
+    // 指定ファイルを相手側(取り込んだブランチ)の内容で解消して add する
+    static GitResult ResolveTheirs(const std::string& workDir, const std::string& path);
+    // コンフリクト中のファイルを外部アプリで開く（VSCode があればそれ、無ければ既定アプリ）
+    static void OpenConflictFile(const std::string& workDir, const std::string& relPath);
+
     // gh でリポジトリ作成してプッシュ（gh が必要）。private=true で非公開。
     static GitResult CreateGitHubRepo(const std::string& workDir,
                                       const std::string& repoName,

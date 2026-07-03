@@ -314,6 +314,10 @@ private:
     std::array<char, 512> m_gitCloneBuf{};      // クローン元 URL 入力
     std::vector<GitFileChange> m_gitChanges;    // 変更ファイル一覧（VS の「変更」ツリー用）
 
+    // マージコンフリクト（pull 等で発生）
+    bool                     m_gitMergeInProgress = false; // .git/MERGE_HEAD の有無
+    std::vector<std::string> m_gitConflicts;               // 未解消ファイルのパス一覧
+
     // ---- 非同期 git 操作（メインスレッドを固めないためのワーカー） ----
     enum class GitOpStatus { None, Running, Success, Failure };
     std::thread        m_gitThread;
