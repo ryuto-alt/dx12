@@ -1435,24 +1435,53 @@ void InspectorPanel::Render(entt::registry& reg,
         ImGui::TextDisabled("\xe3\x82\xa8\xe3\x83\xb3\xe3\x83\x86\xe3\x82\xa3\xe3\x83\x86\xe3\x82\xa3\xe3\x82\x92\xe9\x81\xb8\xe6\x8a\x9e\xe3\x81\x97\xe3\x81\xa6\xe3\x81\x8f\xe3\x81\xa0\xe3\x81\x95\xe3\x81\x84");  // Select an entity
     }
 
-    // Inspector ウィンドウ全体を .lua のドロップ先にする（どこにドロップしても付く）
+    // Inspector ウィンドウ全体を .lua とテクスチャのドロップ先にする（どこにドロップしても付く）。
+    // 個別スロット(テクスチャ上書きUI等)の上では小さいターゲットが優先される(ImGui は面積最小を採用)。
     if (ctx.HasSelection())
     {
         ImGuiWindow* win = ImGui::GetCurrentWindow();
         if (win && ImGui::BeginDragDropTargetCustom(win->Rect(), win->ID))
         {
-            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("DND_SCRIPT"))
-            {
-                const char* pathCStr = static_cast<const char*>(payload->Data);
-                std::string absPath(pathCStr);
-                namespace fs = std::filesystem;
-                auto abs  = fs::path(absPath).lexically_normal().string();
+            namespace fs = std::filesystem;
+            // ドロップパスを assets 相対へ（.lua/テクスチャ共通）
+            auto toAssetsRel = [this](const char* pathCStr) {
+                auto abs  = fs::path(pathCStr).lexically_normal().string();
                 auto base = fs::path(m_assetsDir).lexically_normal().string();
                 std::replace(abs.begin(),  abs.end(),  '\\', '/');
                 std::replace(base.begin(), base.end(), '\\', '/');
-                std::string rel = (abs.rfind(base, 0) == 0) ? abs.substr(base.size()) : abs;
+                return (abs.rfind(base, 0) == 0) ? abs.substr(base.size()) : abs;
+            };
+
+            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("DND_SCRIPT"))
+            {
+                std::string rel = toAssetsRel(static_cast<const char*>(payload->Data));
                 for (auto ent : ctx.selectedEntities)
                     ctx.pendingScriptAttachments.push_back({ent, rel});
+            }
+
+            // テクスチャ: 選択エンティティの Albedo に割当（全サブメッシュ、Undo対応）。
+            // スロットに正確に落とさなくても「オブジェクトを選んで Inspector に投げる」だけで貼れる。
+            if (const ImGuiPayload* payload =
+                    ImGui::AcceptDragDropPayload(AssetBrowserPanel::kDragDropPayloadType))
+            {
+                const char* pathCStr = static_cast<const char*>(payload->Data);
+                std::string ext = fs::path(pathCStr).extension().string();
+                for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                if (AssetBrowserPanel::ClassifyExtension(ext) == AssetBrowserPanel::AssetType::Texture)
+                {
+                    std::string rel = toAssetsRel(pathCStr);
+                    for (auto ent : ctx.selectedEntities)
+                    {
+                        auto* mr = reg.try_get<MeshRenderer>(ent);
+                        if (!mr) continue;
+                        MeshRenderer before = *mr;
+                        const u32 n = mr->meshes.empty() ? 1u : static_cast<u32>(mr->meshes.size());
+                        for (u32 smi = 0; smi < n; ++smi)
+                            MeshRenderer::SetOverride(mr->overrideAlbedoTexture, smi, rel);
+                        ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<MeshRenderer>>(
+                            &reg, ent, before, *mr, "Material Texture"));
+                    }
+                }
             }
             ImGui::EndDragDropTarget();
         }
