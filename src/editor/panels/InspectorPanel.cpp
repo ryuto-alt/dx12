@@ -1285,6 +1285,14 @@ void InspectorPanel::RenderLightHero(entt::registry& reg, EditorContext& ctx, en
         changed |= ImGui::SliderFloat("距離 Range", &pl.range, 0.1f, 100.0f, "%.1f");
         active  |= ImGui::IsItemActive();
         ImGui::TextDisabled("位置は Transform で決まります");
+        changed |= ImGui::Checkbox("影を落とす Cast Shadows", &pl.castShadows);
+        ImGui::SameLine(); ImGui::TextDisabled("(?)");
+        if (ImGui::BeginItemTooltip())
+        {
+            ImGui::TextUnformatted("同時に影を落とせるポイントライトは最大2灯（カメラに近い順で優先）。\n"
+                                   "超えた分は影なしにフォールバックします。");
+            ImGui::EndTooltip();
+        }
         EndEdit(reg, ctx, e, m_plEdit, changed, active, "PointLight");
     }
     if (reg.all_of<DirectionalLight>(e))

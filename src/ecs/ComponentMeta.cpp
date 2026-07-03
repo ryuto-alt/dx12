@@ -42,7 +42,8 @@ void RegisterCoreComponentMeta()
         .type("PointLight")
         .data<&PointLight::color>("color")
         .data<&PointLight::intensity>("intensity")
-        .data<&PointLight::range>("range");
+        .data<&PointLight::range>("range")
+        .data<&PointLight::castShadows>("castShadows");
 
     entt::meta_factory<DirectionalLight>{}
         .type("DirectionalLight")

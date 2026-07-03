@@ -7246,6 +7246,80 @@ void Application::Render()
             D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     }
 
+    // ===== ポイントライト影スロット割当（castShadows なライトをカメラに近い順で最大kMaxShadowPoint灯）=====
+    m_numPointShadowSlots = 0;
+    {
+        auto& reg = m_scene->GetRegistry();
+        struct PointShadowCandidate { entt::entity e; f32 distSq; };
+        std::vector<PointShadowCandidate> candidates;
+        XMFLOAT3 camPosF3 = m_camera->GetPosition();
+        XMVECTOR camPos = XMLoadFloat3(&camPosF3);
+        auto plShadowView = reg.view<const dx12e::PointLight, const Transform>();
+        for (auto [e, pl, tf] : plShadowView.each())
+        {
+            if (!pl.castShadows) continue;
+            XMMATRIX world = (tf.parent != entt::null)
+                ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
+            XMVECTOR d = XMVectorSubtract(world.r[3], camPos);
+            candidates.push_back({e, XMVectorGetX(XMVector3LengthSq(d))});
+        }
+        std::sort(candidates.begin(), candidates.end(),
+                 [](const auto& a, const auto& b) { return a.distSq < b.distSq; });
+
+        const u32 n = (std::min)(static_cast<u32>(candidates.size()), kMaxShadowPoint);
+        for (u32 i = 0; i < n; ++i)
+            m_pointShadowEntity[i] = candidates[i].e;
+        m_numPointShadowSlots = n;
+    }
+
+    // ===== ポイントライト影パス（灯ごとに6面。D3Dキューブ面順: +X,-X,+Y,-Y,+Z,-Z）=====
+    if (m_scene && m_scene->GetShadowsEnabled() && m_numPointShadowSlots > 0)
+    {
+        static const XMFLOAT3 kFaceDir[6] = {
+            { 1,  0,  0}, {-1,  0,  0}, { 0,  1,  0}, { 0, -1,  0}, { 0,  0,  1}, { 0,  0, -1},
+        };
+        static const XMFLOAT3 kFaceUp[6] = {
+            {0, 1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {0, 1, 0}, {0, 1, 0},
+        };
+
+        m_commandList->TransitionResource(m_pointShadowMap.Get(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+
+        D3D12_VIEWPORT pointVp{};
+        pointVp.Width = pointVp.Height = static_cast<f32>(kPointShadowMapSize);
+        pointVp.MinDepth = 0.0f;
+        pointVp.MaxDepth = 1.0f;
+        D3D12_RECT pointScissor = {0, 0, static_cast<LONG>(kPointShadowMapSize), static_cast<LONG>(kPointShadowMapSize)};
+        nativeCmdList->RSSetViewports(1, &pointVp);
+        nativeCmdList->RSSetScissorRects(1, &pointScissor);
+
+        auto& reg = m_scene->GetRegistry();
+        for (u32 i = 0; i < m_numPointShadowSlots; ++i)
+        {
+            entt::entity e = m_pointShadowEntity[i];
+            const auto& pl = reg.get<const dx12e::PointLight>(e);
+            const auto& tf = reg.get<const Transform>(e);
+            XMMATRIX world = (tf.parent != entt::null)
+                ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
+            XMVECTOR pos = world.r[3];
+            f32 range = (std::max)(pl.range, 0.2f);
+            XMMATRIX faceProj = XMMatrixPerspectiveFovLH(XM_PIDIV2, 1.0f, 0.1f, range);
+
+            for (u32 f = 0; f < 6; ++f)
+            {
+                XMMATRIX faceView = XMMatrixLookToLH(pos, XMLoadFloat3(&kFaceDir[f]), XMLoadFloat3(&kFaceUp[f]));
+                u32 slice = i * 6 + f;
+                m_commandList->ClearDepthStencil(m_pointShadowDsvHandles[slice]);
+                nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_pointShadowDsvHandles[slice]);
+                RenderDepthOnlyScene(faceView * faceProj, *m_shadowPipelineState, *m_shadowSkinnedPipelineState,
+                                     /*updateSkinning*/ false, frameIndex);
+            }
+        }
+
+        m_commandList->TransitionResource(m_pointShadowMap.Get(),
+            D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    }
+
     // ===== シャドウパス（CSM: カスケード毎に kNumCascades 回描画）=====
     // シーンで影 OFF / 正射カメラのときは丸ごとスキップ＝(全アクティブ敵 × 4カスケード)の
     // ドローと 2048²×4 のデプスフィルを撤廃（lv35 の主因）。m_shadowMap は生成時 PSR のまま＝
@@ -7431,7 +7505,14 @@ void Application::Render()
             pld.color = {pl.color.x * pl.intensity,
                          pl.color.y * pl.intensity,
                          pl.color.z * pl.intensity};
-            pld.shadowIndex = -1.0f;  // ポイント影は未実装（次コミットで配線）
+
+            // 影スロット割当（上で計算済みの m_pointShadowEntity[]）と突合
+            pld.shadowIndex = -1.0f;
+            for (u32 si = 0; si < m_numPointShadowSlots; ++si)
+            {
+                if (m_pointShadowEntity[si] == e) { pld.shadowIndex = static_cast<f32>(si); break; }
+            }
+
             fc.numPointLights++;
         }
     }

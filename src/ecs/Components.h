@@ -130,6 +130,7 @@ struct PointLight
     DirectX::XMFLOAT3 color = {1.0f, 1.0f, 1.0f};
     f32 intensity = 1.0f;
     f32 range     = 10.0f;
+    bool castShadows = false;  // true でこのライトが影を落とす（同時上限あり、カメラ近い順で優先）
 };
 
 struct DirectionalLight

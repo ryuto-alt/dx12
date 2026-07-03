@@ -239,6 +239,10 @@ private:
     DirectX::XMFLOAT4X4                m_spotShadowViewProj[kMaxShadowSpot]{};  // 行優先(world*VP用、非転置)
     entt::entity                       m_spotShadowEntity[kMaxShadowSpot]{};
     u32                                m_numSpotShadowSlots = 0;
+    // ポイント影: シェーダ側は距離ベースで比較深度を再構成するので面ごとのVPはCBへ渡さない
+    // （描画パス内のローカル変数で完結）。永続する必要があるのは「どの灯がどのキューブスロットか」のみ。
+    entt::entity                       m_pointShadowEntity[kMaxShadowPoint]{};
+    u32                                m_numPointShadowSlots = 0;
     // エディタレイアウト
     static constexpr f32 kLeftPanelWidth  = 280.0f;
     static constexpr f32 kToolbarHeight   = 60.0f;  // メニューバー + アイコン列の2段
