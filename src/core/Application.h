@@ -267,6 +267,7 @@ private:
     GitOpStatus        m_gitOpStatus = GitOpStatus::None; // 直近操作の状態（バナー）
     std::string        m_gitOpLabel;             // 直近操作名（"プッシュ" 等）
     float              m_gitSpin = 0.0f;         // 実行中スピナーのアニメ時間
+    bool               m_gitInstallPending = false; // Git インストール中→完了後に m_gitChecked を再評価
 
     // ---- エディタUIアイコン（ImTextureID=ImU64。0=未読込。EditorContext::icons から参照される）----
     EditorUiIcons m_icons;

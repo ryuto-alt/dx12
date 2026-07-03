@@ -546,6 +546,58 @@ void InspectorPanel::Render(entt::registry& reg,
             }
         }
 
+        // Sprite2D（ワールド/HUD スプライト）
+        if (reg.all_of<Sprite2D>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entMesh : 0, "Sprite2D");
+            bool removed = ComponentRemoveMenu<Sprite2D>(reg, ctx, ctx.selectedEntity, "Sprite2D");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_spriteEdit);
+                auto& sp = reg.get<Sprite2D>(ctx.selectedEntity);
+                bool changed = false, active = false;
+
+                char buf[256] = {};
+                size_t n = sp.texturePath.copy(buf, sizeof(buf) - 1);
+                buf[n] = '\0';
+                if (ImGui::InputText("テクスチャ Texture", buf, sizeof(buf)))
+                { sp.texturePath = buf; changed = true; }
+                active |= ImGui::IsItemActive();
+
+                changed |= ImGui::DragInt("描画順 Layer", &sp.layer, 1.0f, -1000, 1000);
+                active  |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat2("サイズ Size", &sp.size.x, 0.01f, 0.0f, 100.0f, "%.2f");
+                active  |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat2("UV Min", &sp.uvMin.x, 0.005f, 0.0f, 1.0f, "%.3f");
+                active  |= ImGui::IsItemActive();
+                changed |= ImGui::DragFloat2("UV Max", &sp.uvMax.x, 0.005f, 0.0f, 1.0f, "%.3f");
+                active  |= ImGui::IsItemActive();
+                changed |= ImGui::ColorEdit4("色 Color", &sp.color.x);
+
+                ImGui::SeparatorText("配置");
+                changed |= ImGui::Checkbox("ワールド空間 World Space", &sp.worldSpace);
+                if (sp.worldSpace)
+                {
+                    ImGui::SameLine(0.0f, 16.0f);
+                    changed |= ImGui::Checkbox("常にカメラを向く Billboard", &sp.billboard);
+                    ImGui::SameLine(); ImGui::TextDisabled("(?)");
+                    if (ImGui::BeginItemTooltip())
+                    {
+                        ImGui::TextUnformatted(
+                            "OFF: Transform の回転どおりに固定表示（ギズモの R で回転可）\n"
+                            "ON : 常にアクティブカメラの方を向く（回転は無視される）");
+                        ImGui::EndTooltip();
+                    }
+                }
+                else
+                {
+                    ImGui::TextDisabled("HUD 表示（画面固定）。位置は Transform の値をピクセル扱い");
+                }
+
+                EndEdit(reg, ctx, ctx.selectedEntity, m_spriteEdit, changed, active, "Sprite2D");
+            }
+        }
+
         // SkeletalAnimation
         if (reg.all_of<SkeletalAnimation>(ctx.selectedEntity))
         {

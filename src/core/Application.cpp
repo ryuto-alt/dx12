@@ -4429,7 +4429,14 @@ void Application::RenderVersionControlWindow()
         return;
     }
 
-    // git/gh の存在チェック（1 度だけ）
+    // インストール操作が完了していたら再チェックさせる（このパネルが表示されているフレームでのみ検出）
+    if (m_gitInstallPending && !m_gitOpRunning)
+    {
+        m_gitInstallPending = false;
+        m_gitChecked = false;
+    }
+
+    // git/gh の存在チェック（1 度だけ、インストール完了時は上で再度リセットされる）
     if (!m_gitChecked)
     {
         m_gitAvailable = GitIntegration::IsGitAvailable();
@@ -4477,7 +4484,18 @@ void Application::RenderVersionControlWindow()
     }
     if (!m_gitAvailable)
     {
-        ImGui::TextColored(th::Bad, "✗ git が見つからへん。インストールして PATH を通してや。");
+        ImGui::TextColored(th::Bad, "✗ git が見つからへん。");
+        ImGui::BeginDisabled(m_gitOpRunning);
+        if (ImGui::Button("Git をインストール"))
+        {
+            m_gitOutput = "Git をインストール中...（winget があれば自動、無ければブラウザでダウンロード"
+                          "ページを開くで。別ウィンドウが出たら指示に従ってや）";
+            m_gitInstallPending = true;
+            RunGitAsync("Git インストール", [this]{ return GitIntegration::InstallGit(m_gitAbort); });
+        }
+        ImGui::EndDisabled();
+        statusBanner();
+        outputLog();
         ImGui::End();
         return;
     }
@@ -6487,7 +6505,7 @@ void Application::Render()
                         Sprite2D sp{};
                         sp.texturePath = relStr;
                         sp.worldSpace  = true;
-                        sp.billboard   = true;   // どのカメラ角度からも見えるように
+                        sp.billboard   = false;   // 既定はTransformの回転に従う（ビルボードはInspectorでON可）
                         reg.emplace<Sprite2D>(e, sp);
                         spawnedEntity = e;
                         Logger::Info("Placed world sprite: {}", relStr);
@@ -6607,6 +6625,14 @@ void Application::Render()
                 Logger::Info("Prefab created: {}", file.string());
             }
         }
+    }
+
+    // ファイルメニュー「プロジェクトを閉じる」→ ランチャーに戻す。
+    // 「ランチャーに戻る」ボタン（RenderProjectWindow）と同じ遷移＝ファイル削除等は一切不要。
+    if (m_editorCtx->pendingCloseProject)
+    {
+        m_editorCtx->pendingCloseProject = false;
+        m_showLauncher = true;
     }
 
     // Undo/Redo（エンティティ復元がモデル再ロードを伴うため cmdList 有効時に実行）

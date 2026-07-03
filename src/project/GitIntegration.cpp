@@ -2,6 +2,7 @@
 #include "core/Logger.h"
 
 #include <Windows.h>
+#include <shellapi.h>
 #include <filesystem>
 #include <fstream>
 #include <array>
@@ -111,6 +112,66 @@ bool GitIntegration::IsGitAvailable()
 bool GitIntegration::IsGhAvailable()
 {
     return Run("gh", "--version", "").ok();
+}
+
+GitResult GitIntegration::InstallGit(const std::atomic<bool>& abortFlag)
+{
+    GitResult result;
+    static const char* kDownloadPage = "https://git-scm.com/download/win";
+
+    // winget（Win10 1809+/Win11 標準搭載）があればサイレントインストールを試す。
+    if (Run("winget", "--version", "").ok())
+    {
+        std::string cmd = "winget install --id Git.Git -e --source winget "
+                           "--accept-package-agreements --accept-source-agreements";
+        std::vector<char> buf(cmd.begin(), cmd.end());
+        buf.push_back('\0');
+
+        STARTUPINFOA si{};
+        si.cb = sizeof(si);
+        PROCESS_INFORMATION pi{};
+        // gh ログインと同じ流儀: 別コンソールで進捗/確認プロンプトをそのまま見せる。
+        BOOL ok = CreateProcessA(nullptr, buf.data(), nullptr, nullptr, FALSE,
+                                 CREATE_NEW_CONSOLE, nullptr, nullptr, &si, &pi);
+        if (!ok)
+        {
+            result.exitCode = -1;
+            result.output   = "winget の起動に失敗したで。手動でダウンロードページを開くで。";
+            ShellExecuteA(nullptr, "open", kDownloadPage, nullptr, nullptr, SW_SHOWNORMAL);
+            return result;
+        }
+
+        DWORD code = 1;
+        for (;;)
+        {
+            DWORD wr = WaitForSingleObject(pi.hProcess, 500);
+            if (wr == WAIT_OBJECT_0) { GetExitCodeProcess(pi.hProcess, &code); break; }
+            if (abortFlag.load()) break;   // シャットダウン中: 子は残しても無害
+        }
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+
+        result.exitCode = (int)code;
+        if (code == 0)
+        {
+            result.output = "Git をインストールしたで。このパネルを開き直すと反映されるで"
+                             "（反映されなければ一度エディタを再起動してや＝PATH の再読み込みのため）。";
+        }
+        else
+        {
+            result.output = "winget でのインストールに失敗した（コード " + std::to_string((int)code) +
+                             "）。手動でダウンロードページを開くで。";
+            ShellExecuteA(nullptr, "open", kDownloadPage, nullptr, nullptr, SW_SHOWNORMAL);
+        }
+        return result;
+    }
+
+    // winget が無い環境: 公式ダウンロードページを開いて手動インストールしてもらう
+    ShellExecuteA(nullptr, "open", kDownloadPage, nullptr, nullptr, SW_SHOWNORMAL);
+    result.exitCode = 0;
+    result.output = "winget が見つからへんかったから、ブラウザで公式ダウンロードページを開いたで。"
+                    "インストーラーを実行してから、このパネルを開き直してや。";
+    return result;
 }
 
 bool GitIntegration::IsRepo(const std::string& workDir)

@@ -186,6 +186,9 @@ public:
     std::string pendingLoadPath;
     std::string pendingGameLoadPath;  // Play 中の loadScene()（assets 相対）。フレーム境界で安全にロード
     bool pendingBuildGame = false;     // ビルド設定パネルの「ビルド」で立つ＝実行要求
+    // ファイルメニュー「プロジェクトを閉じる」で立つ。Application がフレーム境界で
+    // ランチャーへ戻す（削除等のファイル操作は一切不要＝現在の状態はそのままメモリに残す）。
+    bool pendingCloseProject = false;
     // 直近ビルドの成果物フォルダ（完了後に Explorer で開くために保持）。
     std::string lastBuildDir;
 

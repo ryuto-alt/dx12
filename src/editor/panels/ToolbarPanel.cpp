@@ -185,6 +185,13 @@ void ToolbarPanel::Render(bool isPlaying,
                 strncpy_s(ctx.newScriptNameBuf, "NewScript", _TRUNCATE);
             }
 
+            ImGui::Separator();
+
+            // プロジェクトを閉じてランチャー（プロジェクト選択/新規作成）に戻る。
+            // ファイル操作は一切不要＝現在のプロジェクトフォルダはそのまま残る。
+            if (ImGui::MenuItem("プロジェクトを閉じる（ランチャーに戻る）"))
+                ctx.pendingCloseProject = true;
+
             ImGui::EndMenu();
         }
 

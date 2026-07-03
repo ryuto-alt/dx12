@@ -32,6 +32,11 @@ public:
     static bool IsGitAvailable();
     static bool IsGhAvailable();
 
+    // git が未インストールの環境向け: winget があれば `winget install Git.Git` を別コンソールで実行し
+    // 終了を待つ（gh ログインと同じ待ち方）。winget が無ければ公式ダウンロードページをブラウザで開く。
+    // abortFlag はシャットダウン時の待機切り上げ用（LoginAndWait と同様、子プロセス自体は残る）。
+    static GitResult InstallGit(const std::atomic<bool>& abortFlag);
+
     // workDir が git リポジトリ（.git を持つ作業ツリー）か
     static bool IsRepo(const std::string& workDir);
 
