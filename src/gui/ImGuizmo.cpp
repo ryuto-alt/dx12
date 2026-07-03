@@ -1309,11 +1309,10 @@ namespace IMGUIZMO_NAMESPACE
             continue;
          }
          const bool usingAxis = (gContext.mbUsing && type == MT_ROTATE_Z - axis);
-         // 常にフル円で描画する。半円だけ描く方式だと開始角度をカメラ視線方向から
-         // 算出するため、カメラを動かすたびに見えている弧が回転して「ギズモが
-         // カメラに追従している」ように見えてしまっていた。フル円なら開始角度に
-         // よらず見た目が同一になり、カメラ位置に関係なく常に固定表示になる。
-         const int circleMul = 2;
+         // 手前側の半円だけ描く（Blender 風のスッキリした見た目）。当たり判定も
+         // 後段で手前半分だけに限定するので「見えてる弧＝掴める弧」になる。
+         // ドラッグ中の軸だけはフル円にして回転量を見せる。
+         const int circleMul = (hasRSC && !usingAxis) ? 1 : 2;
 
          ImVec2* circlePos = (ImVec2*)alloca(sizeof(ImVec2) * (circleMul * halfCircleSegmentCount + 1));
 
@@ -2044,9 +2043,9 @@ namespace IMGUIZMO_NAMESPACE
          type = MT_ROTATE_SCREEN;
       }
 
-      // 当たり判定は「実際に描いているフル円の弧」そのものに対して行う。
-      // DrawRotationGizmo と同一の点列(フル円)を画面投影し、マウスから各弧への
-      // スクリーン距離が最小の軸を選ぶ。これで「見えている弧＝掴める弧」が完全一致する。
+      // 当たり判定は「実際に描いている手前半分の弧」そのものに対して行う。
+      // DrawRotationGizmo と同一の点列を画面投影し、マウスから各弧へのスクリーン距離が
+      // 最小の軸を選ぶ。これで「見えている弧＝掴める弧」が完全一致する。
       // 旧方式(平面交点を求めて裏側を深度カリング)は、描いている弧の位置とカリングが残す
       // 判定範囲がズレていて「赤い弧の上なのに緑が反応する」原因になっていた。
       vec_t viewDirNormalized;
@@ -2080,13 +2079,12 @@ namespace IMGUIZMO_NAMESPACE
 
          const float angleStart = atan2f(viewDirNormalized[(4 - axis) % 3], viewDirNormalized[(3 - axis) % 3]) + (gContext.mIsOrthographic ? ZPI : -ZPI) * 0.5f;
 
-         // 描画と同じフル円(2*ZPI ぶん)をサンプリングし、各セグメントへの最短距離を取る
+         // 描画と同じ手前半円(ZPI ぶん)をサンプリングし、各セグメントへの最短距離を取る
          ImVec2 prevPt;
          float axisDistance = FLT_MAX;
-         const int fullCircleSegmentCount = 2 * halfCircleSegmentCount;
-         for (int s = 0; s <= fullCircleSegmentCount; s++)
+         for (int s = 0; s <= halfCircleSegmentCount; s++)
          {
-            const float ng = angleStart + 2.0f * ZPI * ((float)s / (float)fullCircleSegmentCount);
+            const float ng = angleStart + ZPI * ((float)s / (float)halfCircleSegmentCount);
             const vec_t axisPos = makeVect(cosf(ng), sinf(ng), 0.f);
             const vec_t pos = makeVect(axisPos[axis], axisPos[(axis + 1) % 3], axisPos[(axis + 2) % 3]) * gContext.mScreenFactor * rotationDisplayFactor;
             const ImVec2 pt = worldToPos(pos, gContext.mMVP);
