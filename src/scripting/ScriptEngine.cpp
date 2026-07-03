@@ -754,6 +754,21 @@ void ScriptEngine::RegisterBindings()
         });
     }
 
+    // --- time: 時間 API（'.' で呼ぶ）---
+    // now/dt はタイムスケール適用済み。setScale(0)=ポーズ、0.5=スローモ、2=早送り。
+    // スケールは OnUpdate に渡る dt 自体に掛かるので、既存スクリプトは無改修で追従する。
+    // after/every/cancel タイマーは prelude(純Lua)側で time テーブルに追加される。
+    {
+        sol::table tm = lua.create_named_table("time");
+        tm.set_function("now",      [this] { return m_timeElapsed; });
+        tm.set_function("realtime", [this] { return m_timeUnscaled; });
+        tm.set_function("dt",       [this] { return m_timeDt; });
+        tm.set_function("realDt",   [this] { return m_timeUnscaledDt; });
+        tm.set_function("frame",    [this] { return m_timeFrame; });
+        tm.set_function("getScale", [this] { return m_timeScale; });
+        tm.set_function("setScale", [this](float s) { m_timeScale = (s < 0.0f) ? 0.0f : s; });
+    }
+
     RegisterPhysicsBindings();
     RegisterEventsBinding();
 
@@ -1081,6 +1096,42 @@ function keyPressed(name) local k = KEYS[name]; return k ~= nil and input:isKeyP
 -- Trigger の EmitEvent アクション（C++ 側）もこの emit を呼ぶ。Play 開始時に clear される。
 -- 実体は C++ EventBus への薄いバインド（RegisterEventsBinding で登録済み）。
 -- 旧・純 Lua 実装（events = { _h = {} } ...）はここから削除した。
+
+-- ===== time: タイマー（C++ 側 time.now/dt/setScale 等に追加する純 Lua 部分）=====
+-- time.after(sec, fn) -> id   sec 秒後に fn を1回呼ぶ
+-- time.every(sec, fn) -> id   sec 秒ごとに fn を繰り返し呼ぶ
+-- time.cancel(id)             どちらも解除
+-- タイマーはスケール済み時間で進む(setScale(0) 中は止まる)。Play 開始でクリア。
+time._timers, time._nextId = {}, 1
+function time.after(sec, fn)
+  local id = time._nextId; time._nextId = id + 1
+  time._timers[id] = { left = sec, fn = fn }
+  return id
+end
+function time.every(sec, fn)
+  local id = time._nextId; time._nextId = id + 1
+  time._timers[id] = { left = sec, interval = sec, fn = fn }
+  return id
+end
+function time.cancel(id) time._timers[id] = nil end
+function __time_reset() time._timers, time._nextId = {}, 1 end
+function __time_tick(dt)
+  -- スナップショットしてから回す(fn 内で after/cancel されても安全)
+  local ids = {}
+  for id in pairs(time._timers) do ids[#ids + 1] = id end
+  for _, id in ipairs(ids) do
+    local t = time._timers[id]
+    if t then
+      t.left = t.left - dt
+      while t and t.left <= 0 do
+        local ok, err = pcall(t.fn)
+        if not ok then print("time timer error: " .. tostring(err)) end
+        if t.interval and t.interval > 0 then t.left = t.left + t.interval
+        else time._timers[id] = nil; t = nil end
+      end
+    end
+  end
+end
 
 local function d2xz(ax, az, bx, bz) local dx, dz = ax-bx, az-bz; return dx*dx + dz*dz end
 
@@ -1473,10 +1524,30 @@ void ScriptEngine::CallOnStart()
 
 void ScriptEngine::CallOnUpdate(f32 dt)
 {
+    // time API を進める(Play ループで毎フレーム1回、UpdateAttachedScripts より先に呼ばれる)。
+    // 以降スクリプトへ渡る dt は全てスケール済み(m_timeDt)になる。
+    m_timeUnscaledDt = dt;
+    m_timeDt         = dt * m_timeScale;
+    m_timeUnscaled  += dt;
+    m_timeElapsed   += m_timeDt;
+    ++m_timeFrame;
+    {
+        sol::protected_function tick = (*m_lua)["__time_tick"];
+        if (tick.valid())
+        {
+            auto r = tick(m_timeDt);
+            if (!r.valid())
+            {
+                sol::error err = r;
+                Logger::Error("Luaエラー（time timer）: {}", err.what());
+            }
+        }
+    }
+
     sol::protected_function fn = (*m_lua)["OnUpdate"];
     if (fn.valid())
     {
-        auto result = fn(dt);
+        auto result = fn(m_timeDt);
         if (!result.valid())
         {
             sol::error err = result;
@@ -1699,6 +1770,15 @@ void ScriptEngine::OnPlayStart()
 {
     auto& reg = m_scene->GetRegistry();
 
+    // time API リセット（経過時間/フレーム/スケール/Lua タイマー）
+    m_timeElapsed = 0.0; m_timeUnscaled = 0.0;
+    m_timeScale = 1.0f; m_timeDt = 0.0f; m_timeUnscaledDt = 0.0f; m_timeFrame = 0;
+    if (m_lua)
+    {
+        sol::protected_function reset = (*m_lua)["__time_reset"];
+        if (reset.valid()) reset();
+    }
+
     // イベントバスの購読をクリア（前回 Play のリスナーが残らないように）。
     // 通常は Application が OnPlayStart 直前に m_eventBus.Clear() を呼ぶが、念のため。
     if (m_eventBus) m_eventBus->Clear();
@@ -1792,7 +1872,7 @@ void ScriptEngine::UpdateAttachedScripts(f32 dt)
         sol::object fnObj = env->raw_get<sol::object>("OnUpdate");
         if (fnObj.get_type() != sol::type::function) continue;
         sol::protected_function fn = fnObj;
-        auto result = fn(*self, dt);
+        auto result = fn(*self, dt * m_timeScale);   // time.setScale がコンポーネントにも効く
         if (!result.valid())
         {
             sol::error err = result;

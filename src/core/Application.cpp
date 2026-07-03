@@ -1958,6 +1958,16 @@ nlohmann::json McpLuaApi()
         "playSpatial(path,x,y,z,minD,maxD,vol?,loop?)", "stopAllSFX()",
         "setMasterVolume/setBGMVolume/setSFXVolume(v)", "getBGMList()/getSFXList() -> table",
     })));
+    objects.push_back(O("time", "global ('.' で呼ぶ)", json::array({
+        "time.now() -> float  — Play開始からの経過秒(タイムスケール適用済み)",
+        "time.realtime() -> float  — 実時間の経過秒(スケール非適用)",
+        "time.dt() -> float / time.realDt() -> float  — 今フレームの dt(スケール済み/実時間)",
+        "time.frame() -> int  — フレームカウンタ",
+        "time.getScale()/time.setScale(s)  — タイムスケール。0=ポーズ, 0.5=スローモ, 2=早送り。OnUpdate の dt 自体に掛かるので既存スクリプトは無改修で追従(物理/パーティクルは対象外)",
+        "time.after(sec, fn) -> id  — sec秒後に fn を1回実行(スケール済み時間で進む)",
+        "time.every(sec, fn) -> id  — sec秒ごとに fn を繰り返し実行",
+        "time.cancel(id)  — after/every の解除。タイマーは Play 開始でクリア",
+    })));
     objects.push_back(O("RaycastHit", "physics:raycast(...)", json::array({
         "hit() -> bool", "distance() -> float", "point() -> vec3", "normal() -> vec3",
     })));

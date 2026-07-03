@@ -152,6 +152,16 @@ private:
     std::string  m_assetsDir;
     std::string  m_lastError;
 
+    // time API の状態（Lua グローバル time.*）。Play 開始でリセット。
+    // m_timeScale はスクリプトに渡る dt 自体を倍率する(0=ポーズ、0.5=スローモ)。
+    // 物理/パーティクルは対象外(スクリプト駆動のゲームロジックだけがスケールされる)。
+    double m_timeElapsed    = 0.0;   // スケール適用済み経過秒
+    double m_timeUnscaled   = 0.0;   // 実時間経過秒
+    float  m_timeScale      = 1.0f;
+    float  m_timeDt         = 0.0f;  // 今フレームのスケール済み dt
+    float  m_timeUnscaledDt = 0.0f;
+    u64    m_timeFrame      = 0;
+
     // シーン切替（Shutdown→Initialize で lua state は作り直される）をまたいで
     // 残す数値ストレージ。Lua: saveNum(key,val) / loadNum(key,default)。
     // 例: ゲームシーンでスコアを保存 → リザルトシーンで読み出す。
