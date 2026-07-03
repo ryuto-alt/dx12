@@ -77,6 +77,17 @@ goToScene("scenes/clear.json", 0.7)  -- フェード付きで指定シーンへ�
 win()                                -- sceneflow の「次のシーン」へ
 ```
 
+### 時間（time）
+```lua
+time.now()                           -- Play開始からの経過秒
+time.setScale(0)                     -- ポーズ（0.5=スローモ, 2=早送り, 1=通常）
+time.after(2.0, function() ... end)  -- 2秒後に1回実行
+local id = time.every(1.0, spawn)    -- 1秒ごとに繰り返し
+time.cancel(id)                      -- 解除
+```
+`setScale` は `OnUpdate` の dt に掛かるので、既存の移動コードはそのままスローモ/ポーズに追従する。
+ポーズ中も動かしたい処理（メニュー等）は `time.realDt()` / `time.realtime()` を使う。
+
 ### その他
 ```lua
 log("hp:", hp)                       -- ログ出力（任意個・任意型を tostring 連結、[Lua] 接頭辞）

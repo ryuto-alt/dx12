@@ -69,6 +69,7 @@ end
 | `audio` | AudioSystem | BGM / SE / 3D 空間オーディオ |
 | `physics` | PhysicsSystem | 剛体・コライダー・レイキャスト・キャラ移動 |
 | `events` | table | 疎結合イベントバス（C++ EventBus の薄バインド） |
+| `time` | table | 経過時間・タイムスケール（ポーズ/スローモ）・タイマー |
 | `ui` | table | 即時モード ゲーム内 UI |
 | `fx` | table | 即時パーティクル放出（burst/ring/beam/pulse） |
 | `vfx` | table | 統一 VFX 窓口（コード or Effekseer） |
@@ -199,6 +200,29 @@ hit.normal    -- Vec3
 | `:clear()` | — | 全購読解除（Play 開始時に自動 clear） |
 
 > Trigger の `EmitEvent` アクション（§8）も C++ からこの `emit` を呼ぶ。物理接触は `engine.contact.enter` / `engine.contact.exit` を Post する。
+
+### time（`time`）— 時間 API（v0.9.3+）
+`:` ではなく `.` で呼ぶ。状態は Play 開始でリセットされる。
+
+| メソッド | 戻り値 | 説明 |
+|---|---|---|
+| `.now()` | float | Play 開始からの経過秒（タイムスケール適用済み） |
+| `.realtime()` | float | 実時間の経過秒（スケール非適用） |
+| `.dt()` / `.realDt()` | float | 今フレームの dt（スケール済み / 実時間） |
+| `.frame()` | int | フレームカウンタ |
+| `.setScale(s)` / `.getScale()` | — / float | タイムスケール。0=ポーズ、0.5=スローモ、2=早送り |
+| `.after(sec, fn)` | id | sec 秒後に fn を1回実行（スケール済み時間で進む） |
+| `.every(sec, fn)` | id | sec 秒ごとに fn を繰り返し実行 |
+| `.cancel(id)` | — | `after` / `every` の解除 |
+
+> `setScale` は **`OnUpdate` に渡る dt 自体に掛かる**ので、既存スクリプトは無改修でスローモ/ポーズに追従する（物理・パーティクルは対象外）。ポーズ中も UI 操作を続けたい処理は `time.realDt()` を使う。
+
+```lua
+time.setScale(0.3)                          -- スローモーション
+time.after(2.0, function() boss:roar() end) -- 2秒後に1回
+local id = time.every(1.0, spawnEnemy)      -- 毎秒スポーン
+time.cancel(id)
+```
 
 ### ui（`ui`）— 即時モード UI
 | メソッド | 戻り値 | 説明 |
