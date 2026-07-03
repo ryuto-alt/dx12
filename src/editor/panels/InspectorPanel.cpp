@@ -700,6 +700,19 @@ void InspectorPanel::Render(entt::registry& reg,
                 changed |= ImGui::Combo("見た目 Kind", &pe.kind, kinds, IM_ARRAYSIZE(kinds));
                 const char* blends[] = { "加算 Additive", "アルファ Alpha" };
                 changed |= ImGui::Combo("合成 Blend", &pe.blend, blends, IM_ARRAYSIZE(blends));
+                {
+                    static char texBuf[260] = "";
+                    ImGui::InputTextWithHint("テクスチャ TexturePath", "assetsからの相対パス。空=プロシージャル質感",
+                                             texBuf, sizeof(texBuf));
+                    if (ImGui::IsItemDeactivatedAfterEdit()) { pe.texturePath = texBuf; changed = true; }
+                    if (!ImGui::IsItemActive() && pe.texturePath != texBuf)
+                    {
+                        size_t n = pe.texturePath.size();
+                        if (n >= sizeof(texBuf)) n = sizeof(texBuf) - 1;
+                        std::memcpy(texBuf, pe.texturePath.c_str(), n);
+                        texBuf[n] = '\0';
+                    }
+                }
                 changed |= ImGui::Checkbox("GPUパーティクル", &pe.gpu);
                 ImGui::SameLine(); ImGui::TextDisabled("(?)");
                 if (ImGui::BeginItemTooltip())

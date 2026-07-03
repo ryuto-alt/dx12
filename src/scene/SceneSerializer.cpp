@@ -453,7 +453,7 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                 {"sizeMid", pe.sizeMid}, {"distort", pe.distort},
                 {"light", pe.light}, {"lightRange", pe.lightRange},
                 {"flicker", pe.flicker}, {"flickerFreq", pe.flickerFreq},
-                {"gpu", pe.gpu}
+                {"gpu", pe.gpu}, {"texturePath", pe.texturePath}
             };
         }
 
@@ -872,6 +872,7 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                 pe.flicker      = pj.value("flicker", 0.0f);
                 pe.flickerFreq  = pj.value("flickerFreq", 18.0f);
                 pe.gpu       = pj.value("gpu", false);
+                pe.texturePath = pj.value("texturePath", std::string());
                 reg.emplace_or_replace<ParticleEmitter>(e, pe);
             }
 

@@ -1035,7 +1035,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_particleSystem = std::make_unique<ParticleSystem>();
         m_particleSystem->Initialize(*m_graphicsDevice, kSceneColorFormat,
                                      DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R16G16_FLOAT,
-                                     PathResolver::ShaderDirW());
+                                     PathResolver::ShaderDirW(),
+                                     m_srvHeap.get(), m_resourceManager.get());
         if (m_scriptEngine) m_scriptEngine->SetParticleSystem(m_particleSystem.get());
 
         // GPUパーティクル（compute シム + ExecuteIndirect。最大 131072 粒子・加算専用）
@@ -1048,7 +1049,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         if (!m_isGameMode)
         {
             m_vfxEditorPanel = std::make_unique<VfxEditorPanel>();
-            m_vfxEditorPanel->Initialize(*m_graphicsDevice, m_srvHeap.get(), PathResolver::ShaderDirW());
+            m_vfxEditorPanel->Initialize(*m_graphicsDevice, m_srvHeap.get(), m_resourceManager.get(),
+                                        PathResolver::ShaderDirW());
         }
 
         // シーントランジション
@@ -3930,6 +3932,7 @@ void Application::Update()
             p.sizeMid = pe.sizeMid; p.distort = pe.distort;
             p.light = pe.light;     p.lightRange = pe.lightRange;
             p.flicker = pe.flicker; p.flickerFreq = pe.flickerFreq;
+            p.texturePath = pe.texturePath;
             m_particleSystem->Emit(p);
         }
 

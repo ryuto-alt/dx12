@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -42,7 +43,8 @@ const char* kKindNames[] = { "Glow", "Fire", "Smoke", "Spark", "Magic", "Electri
 const char* kLuaKindNames[] = { "glow", "fire", "smoke", "spark", "magic", "electric", "ring", "star" };
 } // namespace
 
-void VfxEditorPanel::Initialize(GraphicsDevice& device, DescriptorHeap* srvHeap, const std::wstring& shaderDir)
+void VfxEditorPanel::Initialize(GraphicsDevice& device, DescriptorHeap* srvHeap, ResourceManager* resourceManager,
+                                const std::wstring& shaderDir)
 {
     m_device  = &device;
     m_srvHeap = srvHeap;
@@ -53,8 +55,10 @@ void VfxEditorPanel::Initialize(GraphicsDevice& device, DescriptorHeap* srvHeap,
                            DXGI_FORMAT_R8G8B8A8_UNORM, clearColor);
 
     // LDR ターゲット向け PSO を自前で構築する独立インスタンス（メインの m_particleSystem とは別物）。
+    // srvHeap/resourceManager を渡すことでプレビューでもテクスチャ貼り付けが確認できる。
     m_previewParticles.Initialize(device, DXGI_FORMAT_R8G8B8A8_UNORM,
-                                  DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R16G16_FLOAT, shaderDir);
+                                  DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R16G16_FLOAT, shaderDir,
+                                  srvHeap, resourceManager);
 
     m_gfxInitialized = true;
     NewAsset();
@@ -92,6 +96,7 @@ void VfxEditorPanel::RenderPreview3D(EditorContext& ctx, CommandList& cmd, f32 d
         p.stretch = m_current.stretch;       p.kind = m_current.kind; p.blend = m_current.blend;
         p.turbStrength = m_current.turbStrength; p.turbFreq = m_current.turbFreq;
         p.flicker = m_current.flicker;       p.flickerFreq = m_current.flickerFreq;
+        p.texturePath = m_current.texturePath;
         m_previewParticles.Emit(p);
     }
     m_previewParticles.Update(dt);
@@ -194,6 +199,7 @@ bool VfxEditorPanel::LoadAsset(const std::string& path)
     a.distort   = j.value("distort", 0.0f);
     a.light     = j.value("light", false);
     a.lightRange = j.value("lightRange", 3.0f);
+    a.texturePath = j.value("texturePath", std::string());
 
     m_current = a;
     m_currentPath = path;
@@ -224,6 +230,7 @@ bool VfxEditorPanel::SaveAsset(const std::string& path)
     j["turbStrength"] = m_current.turbStrength; j["turbFreq"] = m_current.turbFreq;
     j["flicker"] = m_current.flicker; j["flickerFreq"] = m_current.flickerFreq;
     j["distort"] = m_current.distort; j["light"] = m_current.light; j["lightRange"] = m_current.lightRange;
+    j["texturePath"] = m_current.texturePath;
 
     std::error_code ec;
     fs::create_directories(fs::path(path).parent_path(), ec);
@@ -256,6 +263,7 @@ void VfxEditorPanel::ApplyToSelected(entt::registry& reg, EditorContext& ctx)
     after.distort = m_current.distort;
     after.light = m_current.light; after.lightRange = m_current.lightRange;
     after.flicker = m_current.flicker; after.flickerFreq = m_current.flickerFreq;
+    after.texturePath = m_current.texturePath;
     // gpu はこのエディタの対象外（CPUパーティクルのまま据え置く）
 
     reg.get<ParticleEmitter>(e) = after;
@@ -284,6 +292,7 @@ void VfxEditorPanel::SpawnEntity(entt::registry& reg, EditorContext& ctx)
     pe.distort = m_current.distort;
     pe.light = m_current.light; pe.lightRange = m_current.lightRange;
     pe.flicker = m_current.flicker; pe.flickerFreq = m_current.flickerFreq;
+    pe.texturePath = m_current.texturePath;
 
     XMFLOAT3 spawnPos{0.0f, 0.0f, 0.0f};
     if (ctx.selectedEntity != entt::null && reg.valid(ctx.selectedEntity) &&
@@ -574,6 +583,29 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
     ImGui::Combo("見た目 Kind", &m_current.kind, kKindNames, IM_ARRAYSIZE(kKindNames));
     const char* blends[] = { "加算 Additive", "アルファ Alpha" };
     ImGui::Combo("合成 Blend", &m_current.blend, blends, IM_ARRAYSIZE(blends));
+
+    {
+        static char texBuf[260] = "";
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputTextWithHint("##vfxtex", "テクスチャ(assetsからの相対パス。空=プロシージャル質感)",
+                                 texBuf, sizeof(texBuf));
+        if (ImGui::IsItemDeactivatedAfterEdit()) m_current.texturePath = texBuf;
+        if (!ImGui::IsItemActive() && m_current.texturePath != texBuf)
+        {
+            size_t n = m_current.texturePath.size();
+            if (n >= sizeof(texBuf)) n = sizeof(texBuf) - 1;
+            std::memcpy(texBuf, m_current.texturePath.c_str(), n);
+            texBuf[n] = '\0';
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(?)");
+        if (ImGui::BeginItemTooltip())
+        {
+            ImGui::TextUnformatted("指定すると Kind の数式模様の代わりに画像をビルボード貼り付け表示する。\n"
+                                    "色は寿命カーブの頂点色で乗算、アルファは画像のアルファをそのまま使用。");
+            ImGui::EndTooltip();
+        }
+    }
     ImGui::SeparatorText("放出（配置エンティティ用）");
     ImGui::DragFloat("放出レート Rate(/s)", &m_current.rate, 0.5f, 0.0f, 500.0f);
     ImGui::Checkbox("Play開始で放出 PlayOnStart", &m_current.playOnStart);

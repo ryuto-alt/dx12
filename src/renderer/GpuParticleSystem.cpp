@@ -57,14 +57,24 @@ void GpuParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat
             serialized->GetBufferSize(), IID_PPV_ARGS(&m_computeRS)));
     }
 
-    // --- Draw Root Signature: b0(32定数,ALL) + t0(深度table,PS) + t1/t2(root SRV,VS) + s0 ---
+    // --- Draw Root Signature: b0(32定数,ALL) + t0(深度table,PS) + t1/t2(root SRV,VS) + t2(粒子アルベドtable,PS) + s0 ---
+    // t2 は VS の gAlive(root SRV) と PS の gAlbedo(table) で register 番号が重複するが、
+    // シェーダ可視性(VERTEX/PIXEL)が別なので D3D12 上は正当な別バインディングとして共存できる。
+    // Particle_PS.cso は ParticleSystem と共用しており gAlbedo(t2) を宣言済みのため、GPU パーティクル
+    // 側もこのテーブルを用意しないと PSO 作成が REGISTER 不足で失敗する（GpuParticleDraw.hlsl の
+    // VS 側は texIdx=kNoTexture 固定なので実際にはサンプルされない＝ダミー束縛で足りる）。
     {
         D3D12_DESCRIPTOR_RANGE depthRange{};
         depthRange.RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
         depthRange.NumDescriptors     = 1;
         depthRange.BaseShaderRegister = 0;   // t0
 
-        D3D12_ROOT_PARAMETER params[4]{};
+        D3D12_DESCRIPTOR_RANGE albedoRange{};
+        albedoRange.RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        albedoRange.NumDescriptors     = 1;
+        albedoRange.BaseShaderRegister = 2;   // t2（PIXEL可視。VSのgAlive t2とは可視性が別なので衝突しない）
+
+        D3D12_ROOT_PARAMETER params[5]{};
         params[0].ParameterType            = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         params[0].Constants.ShaderRegister = 0;
         params[0].Constants.Num32BitValues = 32;
@@ -83,6 +93,11 @@ void GpuParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat
         params[3].Descriptor.ShaderRegister = 2;
         params[3].ShaderVisibility          = D3D12_SHADER_VISIBILITY_VERTEX;
 
+        params[4].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[4].DescriptorTable.NumDescriptorRanges = 1;
+        params[4].DescriptorTable.pDescriptorRanges   = &albedoRange;
+        params[4].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
+
         D3D12_STATIC_SAMPLER_DESC samp{};
         samp.Filter           = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
         samp.AddressU         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
@@ -94,7 +109,7 @@ void GpuParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat
         samp.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         D3D12_ROOT_SIGNATURE_DESC desc{};
-        desc.NumParameters     = 4;
+        desc.NumParameters     = 5;
         desc.pParameters       = params;
         desc.NumStaticSamplers = 1;
         desc.pStaticSamplers   = &samp;
@@ -362,6 +377,9 @@ void GpuParticleSystem::SimulateAndRender(ID3D12GraphicsCommandList* cmd, float 
     cmd->SetGraphicsRootSignature(m_drawRS.Get());
     cmd->SetGraphicsRoot32BitConstants(0, 32, &ccb, 0);
     if (m_hasDepth) cmd->SetGraphicsRootDescriptorTable(1, m_depthSrv);
+    // gAlbedo(t2,PIXEL) は Particle_PS.cso 共用のためのダミー束縛（GpuParticleDraw.hlsl は
+    // texIdx=kNoTexture 固定で実際にはサンプルしない。深度SRVを使い回して有効な記述子にしておく）。
+    if (m_hasDepth) cmd->SetGraphicsRootDescriptorTable(4, m_depthSrv);
     cmd->SetGraphicsRootShaderResourceView(2, m_particleBuf->GetGPUVirtualAddress());
     cmd->SetGraphicsRootShaderResourceView(3, m_aliveBuf[next]->GetGPUVirtualAddress());
     cmd->SetPipelineState(m_psoDraw.Get());

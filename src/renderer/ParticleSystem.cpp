@@ -1,6 +1,10 @@
 #include "renderer/ParticleSystem.h"
 #include "graphics/GraphicsDevice.h"
+#include "graphics/DescriptorHeap.h"
+#include "graphics/Texture.h"
 #include "resource/ShaderCompiler.h"
+#include "resource/ResourceManager.h"
+#include "core/PathResolver.h"
 #include "core/Assert.h"
 #include "core/Logger.h"
 
@@ -97,31 +101,44 @@ inline XMFLOAT3 lerp3(const XMFLOAT3& a, const XMFLOAT3& b, float t)
 
 void ParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
                                 DXGI_FORMAT dsvFormat, DXGI_FORMAT distortFormat,
-                                const std::wstring& shaderDir)
+                                const std::wstring& shaderDir,
+                                DescriptorHeap* srvHeap, ResourceManager* resourceManager)
 {
-    static_assert(sizeof(GpuParticle) == 64, "GpuParticle stride must match shader instance layout (64)");
+    static_assert(sizeof(GpuParticle) == 68, "GpuParticle stride must match shader instance layout (68)");
     static_assert(sizeof(GpuBeam) == 56, "GpuBeam stride must match Beam.hlsl instance layout (56)");
     static_assert(sizeof(TrailVtx) == 36, "TrailVtx stride must match Trail.hlsl vertex layout (36)");
     (void)dsvFormat; // 粒子パスは DSV をバインドせず深度 SRV で手動オクルージョン
+    m_srvHeap = srvHeap;
+    m_resourceManager = resourceManager;
     auto* dev = device.GetDevice();
 
-    // --- Root Signature: b0(32 DWORD constants) + t0(深度SRVテーブル,PS) + s0(LINEAR CLAMP) ---
+    // --- Root Signature: b0(32 DWORD constants) + t0(深度SRVテーブル,PS) + t2(粒子アルベドSRVテーブル,PS) + s0(LINEAR CLAMP) ---
     {
-        D3D12_DESCRIPTOR_RANGE srvRange{};
-        srvRange.RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        srvRange.NumDescriptors     = 1;
-        srvRange.BaseShaderRegister = 0;   // t0
-        srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+        D3D12_DESCRIPTOR_RANGE depthRange{};
+        depthRange.RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        depthRange.NumDescriptors     = 1;
+        depthRange.BaseShaderRegister = 0;   // t0
+        depthRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-        D3D12_ROOT_PARAMETER params[2]{};
+        D3D12_DESCRIPTOR_RANGE albedoRange{};
+        albedoRange.RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        albedoRange.NumDescriptors     = 1;
+        albedoRange.BaseShaderRegister = 2;   // t2（t1はGpuParticleDraw.hlslのStructuredBufferと衝突するため回避）
+        albedoRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+        D3D12_ROOT_PARAMETER params[3]{};
         params[0].ParameterType            = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         params[0].Constants.ShaderRegister = 0;   // b0
         params[0].Constants.Num32BitValues = 32;  // float4x4 + float4*4
         params[0].ShaderVisibility         = D3D12_SHADER_VISIBILITY_ALL;
         params[1].ParameterType            = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         params[1].DescriptorTable.NumDescriptorRanges = 1;
-        params[1].DescriptorTable.pDescriptorRanges   = &srvRange;
+        params[1].DescriptorTable.pDescriptorRanges   = &depthRange;
         params[1].ShaderVisibility         = D3D12_SHADER_VISIBILITY_PIXEL;
+        params[2].ParameterType            = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[2].DescriptorTable.NumDescriptorRanges = 1;
+        params[2].DescriptorTable.pDescriptorRanges   = &albedoRange;
+        params[2].ShaderVisibility         = D3D12_SHADER_VISIBILITY_PIXEL;
 
         D3D12_STATIC_SAMPLER_DESC samp{};
         samp.Filter         = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -134,7 +151,7 @@ void ParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
         samp.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         D3D12_ROOT_SIGNATURE_DESC desc{};
-        desc.NumParameters     = 2;
+        desc.NumParameters     = 3;
         desc.pParameters       = params;
         desc.NumStaticSamplers = 1;
         desc.pStaticSamplers   = &samp;
@@ -164,6 +181,7 @@ void ParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
             {"TEXCOORD", 3, DXGI_FORMAT_R32_FLOAT,          0, 52, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // age01
             {"TEXCOORD", 4, DXGI_FORMAT_R32_UINT,           0, 56, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // kind
             {"TEXCOORD", 5, DXGI_FORMAT_R32_FLOAT,          0, 60, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // seed
+            {"TEXCOORD", 6, DXGI_FORMAT_R32_UINT,           0, 64, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // texIndex
         };
 
         D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
@@ -384,6 +402,15 @@ float ParticleSystem::Rand(float a, float b)
     return d(m_rng);
 }
 
+u32 ParticleSystem::InternTexPath(const std::string& path)
+{
+    if (path.empty()) return kNoTexture;
+    for (size_t i = 0; i < m_texPaths.size(); ++i)
+        if (m_texPaths[i] == path) return static_cast<u32>(i);
+    m_texPaths.push_back(path);
+    return static_cast<u32>(m_texPaths.size() - 1);
+}
+
 void ParticleSystem::ResetPool()
 {
     m_freeList.resize(kMaxParticles);
@@ -423,6 +450,8 @@ void ParticleSystem::Emit(const EmitParams& p, const EmitParams* onDeath)
     if (XMVectorGetX(XMVector3LengthSq(dirV)) < 1e-6f) dirV = XMVectorSet(0, 1, 0, 0);
     dirV = XMVector3Normalize(dirV);
     XMFLOAT3 dir; XMStoreFloat3(&dir, dirV);
+
+    const u32 texSlot = InternTexPath(p.texturePath);
 
     for (int n = 0; n < count; ++n)
     {
@@ -487,6 +516,7 @@ void ParticleSystem::Emit(const EmitParams& p, const EmitParams* onDeath)
         pt.childIdx = childIdx;
         pt.kind  = p.kind;
         pt.blend = p.blend;
+        pt.texSlot = texSlot;
         pt.alive = true;
     }
 }
@@ -691,8 +721,21 @@ void ParticleSystem::Render(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj,
 {
     if (!m_initialized) return;
 
+    // テクスチャスロット → SRVヒープの絶対インデックス（このフレームのみ有効。ResourceManager
+    // 側でキャッシュ済みなので毎フレーム呼んでも実ロードは初回のみ）。
+    std::vector<u32> slotSrv(m_texPaths.size(), kNoTexture);
+    if (m_resourceManager)
+    {
+        for (size_t i = 0; i < m_texPaths.size(); ++i)
+        {
+            const std::string abs = PathResolver::AssetsDir() + m_texPaths[i];
+            if (Texture* tex = m_resourceManager->GetOrLoadTexture(PathResolver::Utf8ToWide(abs), cmd))
+                slotSrv[i] = tex->GetSrvIndex();
+        }
+    }
+
     // 1粒子 → GpuParticle 変換（寿命でフェード、3キー色カーブ、明滅）
-    auto makeGpu = [](const Particle& pt) -> GpuParticle {
+    auto makeGpu = [&slotSrv](const Particle& pt) -> GpuParticle {
         float t = pt.age / pt.life;           // 0..1
         float fade = 1.0f - t;                // 末尾でフェードアウト
         fade = fade * fade;
@@ -728,6 +771,7 @@ void ParticleSystem::Render(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj,
         g.age01   = t;
         g.kind    = static_cast<u32>(pt.kind);
         g.seed    = pt.seed;
+        g.texIndex = (pt.texSlot < slotSrv.size()) ? slotSrv[pt.texSlot] : kNoTexture;
         return g;
     };
 
@@ -745,6 +789,15 @@ void ParticleSystem::Render(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj,
         if (pt.distort <= 0.0f && pt.blend != 0) m_gpu.push_back(makeGpu(pt));
     }
     m_alphaCount = static_cast<u32>(m_gpu.size()) - m_additiveCount;
+
+    // テクスチャ切替（SetGraphicsRootDescriptorTable）を最少にするため各ブレンド域内で texIndex 昇順に
+    // 安定ソート（同一テクスチャが連続する。加算は描画順が結果に影響しないので無害。α域も従来から
+    // 深度ソート無し=既存挙動を大きく崩さない）。
+    std::sort(m_gpu.begin(), m_gpu.begin() + m_additiveCount,
+              [](const GpuParticle& a, const GpuParticle& b) { return a.texIndex < b.texIndex; });
+    std::sort(m_gpu.begin() + m_additiveCount, m_gpu.begin() + m_additiveCount + m_alphaCount,
+              [](const GpuParticle& a, const GpuParticle& b) { return a.texIndex < b.texIndex; });
+
     for (u32 idx : m_live)
     {
         const Particle& pt = m_particles[idx];
@@ -849,6 +902,11 @@ void ParticleSystem::Render(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj,
 
     cmd->SetGraphicsRootSignature(m_rootSig.Get());
     if (m_hasDepth) cmd->SetGraphicsRootDescriptorTable(1, m_depthSrv);
+    // t1(粒子アルベド) は安全なデフォルト(白)で初期化しておく。プロシージャル粒子はシェーダ内で
+    // サンプル自体をスキップするので実際には読まれないが、GPU-Based Validation 対策で常に何か束縛しておく。
+    if (m_resourceManager && m_srvHeap)
+        cmd->SetGraphicsRootDescriptorTable(2,
+            m_srvHeap->GetGpuHandle(m_resourceManager->GetDefaultWhiteTexture()->GetSrvIndex()));
     cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
     const float softFadeDist = 0.5f;
@@ -885,15 +943,30 @@ void ParticleSystem::Render(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj,
 
         cmd->SetGraphicsRoot32BitConstants(0, 32, &cb, 0);
         cmd->IASetVertexBuffers(0, 1, &m_vbView);
+
+        // texIndex が連続する区間ごとに t1 を張り替えて DrawInstanced（Sprite/世界スプライトと同じ
+        // バッチ手法）。プロシージャル(kNoTexture)の連続区間は張り替えを省略する。
+        auto drawRange = [&](u32 start, u32 count) {
+            u32 i = 0;
+            while (i < count)
+            {
+                const u32 tex = m_gpu[start + i].texIndex;
+                const u32 runStart = i;
+                while (i < count && m_gpu[start + i].texIndex == tex) ++i;
+                if (tex != kNoTexture && m_srvHeap)
+                    cmd->SetGraphicsRootDescriptorTable(2, m_srvHeap->GetGpuHandle(tex));
+                cmd->DrawInstanced(6, i - runStart, 0, start + runStart);
+            }
+        };
         if (m_additiveCount > 0)
         {
             cmd->SetPipelineState(m_psoAdd.Get());
-            cmd->DrawInstanced(6, m_additiveCount, 0, 0);
+            drawRange(0, m_additiveCount);
         }
         if (m_alphaCount > 0)
         {
             cmd->SetPipelineState(m_psoAlpha.Get());
-            cmd->DrawInstanced(6, m_alphaCount, 0, m_additiveCount);
+            drawRange(m_additiveCount, m_alphaCount);
         }
         // 歪み粒子（末尾 m_distortCount 個）はここでは描かない → RenderDistortion で歪みRTへ
     }

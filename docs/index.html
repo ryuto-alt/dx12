@@ -1,0 +1,1238 @@
+<!DOCTYPE html>
+<html lang="ja" class="no-js">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>DX12 Engine ドキュメント | DirectX 12 ゲームエンジン + エディタ + AIブリッジ</title>
+<meta name="description" content="DirectX 12 製の自作ゲームエンジン+エディタの使い方ガイド。ビルド、エディタ操作、Luaスクリプト、データ駆動オーサリング、MCP/AIブリッジ、暗号化パック配布までを網羅。" />
+<link rel="canonical" href="https://ryuto-alt.github.io/dx12/" />
+<meta property="og:type" content="website" />
+<meta property="og:title" content="DX12 Engine ドキュメント" />
+<meta property="og:description" content="DirectX 12 製の自作ゲームエンジン+エディタの使い方ガイド。エディタ・Lua・データ駆動オーサリング・MCP/AIブリッジ・暗号化配布。" />
+<meta property="og:url" content="https://ryuto-alt.github.io/dx12/" />
+<meta property="og:image" content="https://ryuto-alt.github.io/dx12/img/logo.png" />
+<meta name="theme-color" content="#0e0f12" />
+<link rel="icon" type="image/png" href="img/logo.png" />
+<script>document.documentElement.classList.remove('no-js');document.documentElement.classList.add('js');</script>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root{
+  --bg:#0e0f12; --bg-2:#121317; --panel:#16171b; --panel-2:#1a1b20; --group:#202127;
+  --border:#25262c; --border-2:#30313a;
+  --text:#e9eaed; --text-2:#a9adb5; --text-3:#71757e;
+  --accent:#4c8dff; --accent-light:#6ba2ff; --accent-dim:rgba(76,141,255,.13); --accent-line:rgba(76,141,255,.4);
+  --amber:#f5b740; --teal:#3fb6b0; --green:#5fc77e; --purple:#a98cff; --orange:#e08a5b; --mesh:#9aa0ad; --good:#6fcf45;
+  --font-display:"Space Grotesk",-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","Hiragino Sans","Yu Gothic UI","Yu Gothic","Noto Sans JP","Meiryo",system-ui,sans-serif;
+  --font-body:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","Hiragino Sans","Yu Gothic UI","Yu Gothic","Noto Sans JP","Meiryo",system-ui,sans-serif;
+  --font-mono:"JetBrains Mono","Cascadia Code","SF Mono",ui-monospace,"Consolas","Yu Gothic",monospace;
+  --header-h:64px; --sidebar-w:264px; --content-max:1180px;
+  --radius:14px; --radius-sm:10px;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}}
+body{
+  margin:0; background:var(--bg); color:var(--text); font-family:var(--font-body);
+  font-size:16px; line-height:1.72; -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  overflow-x:hidden;
+}
+body::before{ /* faint top brand glow, single accent, no neon */
+  content:""; position:fixed; inset:0 0 auto 0; height:520px; z-index:0; pointer-events:none;
+  background:radial-gradient(820px 320px at 70% -120px, rgba(76,141,255,.10), transparent 70%);
+}
+a{color:var(--accent-light); text-decoration:none}
+a:hover{color:#8db6ff}
+::selection{background:rgba(76,141,255,.30); color:#fff}
+.skip{position:absolute; left:-9999px; top:0; background:var(--accent); color:#06122e; padding:10px 16px; border-radius:8px; z-index:200; font-weight:600}
+.skip:focus{left:12px; top:10px}
+
+/* ---------- Header ---------- */
+.topbar{
+  position:sticky; top:0; z-index:60; height:var(--header-h);
+  display:flex; align-items:center; gap:18px;
+  padding:0 22px; background:rgba(14,15,18,.82); backdrop-filter:saturate(160%) blur(14px);
+  border-bottom:1px solid var(--border);
+}
+.brand{display:flex; align-items:center; gap:11px; font-family:var(--font-display); font-weight:600; letter-spacing:-.01em; color:var(--text); white-space:nowrap}
+.brand img{width:28px; height:28px; border-radius:7px; display:block}
+.brand .wm{font-size:16px}
+.brand .chip{font-family:var(--font-mono); font-size:11px; color:var(--accent-light); background:var(--accent-dim); border:1px solid var(--accent-line); border-radius:999px; padding:2px 8px; font-weight:500}
+.topnav{display:flex; align-items:center; gap:6px; margin-left:auto}
+.topnav a.nl{color:var(--text-2); font-size:14px; padding:8px 12px; border-radius:8px; transition:color .18s, background .18s}
+.topnav a.nl:hover{color:var(--text); background:var(--panel-2)}
+.gh-btn{display:inline-flex; align-items:center; gap:8px; font-size:14px; font-weight:500; color:var(--text); background:var(--panel-2); border:1px solid var(--border-2); padding:8px 14px; border-radius:9px; transition:border-color .18s, transform .06s, background .18s}
+.gh-btn img{width:16px; height:16px; opacity:.92}
+.gh-btn:hover{border-color:var(--accent-line); color:var(--text); background:var(--group)}
+.gh-btn:active{transform:translateY(1px)}
+.menu-btn{display:none; margin-left:auto; background:var(--panel-2); border:1px solid var(--border-2); color:var(--text); width:40px; height:40px; border-radius:9px; cursor:pointer; align-items:center; justify-content:center}
+.menu-btn svg{width:20px;height:20px}
+
+/* ---------- Layout ---------- */
+.shell{position:relative; z-index:1; max-width:var(--content-max); margin:0 auto; display:grid; grid-template-columns:var(--sidebar-w) minmax(0,1fr); gap:0;}
+.sidebar{
+  position:sticky; top:var(--header-h); align-self:start; height:calc(100vh - var(--header-h));
+  overflow-y:auto; padding:26px 14px 60px 22px; border-right:1px solid var(--border);
+  scrollbar-width:thin; scrollbar-color:#33343c transparent;
+}
+.sidebar::-webkit-scrollbar{width:8px}
+.sidebar::-webkit-scrollbar-thumb{background:#2c2d34; border-radius:8px}
+.nav-group{margin-bottom:22px}
+.nav-group h4{font-family:var(--font-mono); text-transform:uppercase; letter-spacing:.13em; font-size:10.5px; color:var(--text-3); margin:0 0 8px 10px; font-weight:600}
+.sidebar a.s{
+  display:flex; align-items:center; gap:9px; color:var(--text-2); font-size:14px; padding:7px 10px;
+  border-radius:8px; border-left:2px solid transparent; transition:color .15s, background .15s, border-color .15s; line-height:1.3;
+}
+.sidebar a.s .dot{width:6px; height:6px; border-radius:2px; background:var(--border-2); flex:none; transition:background .15s}
+.sidebar a.s:hover{color:var(--text); background:var(--panel)}
+.sidebar a.s.active{color:var(--text); background:var(--accent-dim); border-left-color:var(--accent)}
+.sidebar a.s.active .dot{background:var(--accent)}
+
+.main{min-width:0; padding:0 40px 120px; }
+.wrap{max-width:840px; margin:0 auto}
+
+/* ---------- Hero ---------- */
+.hero{padding:60px 0 34px; }
+.hero .kick{display:inline-flex; align-items:center; gap:8px; font-family:var(--font-mono); font-size:12px; color:var(--text-2); background:var(--panel); border:1px solid var(--border); border-radius:999px; padding:5px 13px; margin-bottom:22px}
+.hero .kick b{color:var(--accent-light); font-weight:600}
+.hero-grid{display:grid; grid-template-columns:1.05fr .95fr; gap:38px; align-items:center}
+.hero h1{font-family:var(--font-display); font-weight:700; font-size:clamp(2.1rem,4.4vw,3.15rem); line-height:1.12; letter-spacing:-.02em; margin:0 0 18px}
+.hero h1 .g{color:var(--accent-light)}
+.hero p.lead{font-size:17px; color:var(--text-2); margin:0 0 26px; max-width:46ch}
+.cta-row{display:flex; flex-wrap:wrap; gap:12px}
+.btn{display:inline-flex; align-items:center; gap:9px; font-weight:600; font-size:15px; padding:12px 20px; border-radius:11px; cursor:pointer; transition:transform .07s, box-shadow .2s, background .2s, border-color .2s; border:1px solid transparent; font-family:var(--font-body)}
+.btn:active{transform:translateY(1px)}
+.btn-primary{background:var(--accent); color:#07142e; box-shadow:0 8px 22px -10px rgba(76,141,255,.7)}
+.btn-primary:hover{background:var(--accent-light); color:#07142e}
+.btn-ghost{background:var(--panel-2); color:var(--text); border-color:var(--border-2)}
+.btn-ghost:hover{border-color:var(--accent-line); background:var(--group)}
+.btn svg{width:17px;height:17px}
+.hero-stats{display:flex; gap:26px; margin-top:30px; flex-wrap:wrap}
+.hero-stats .st{display:flex; flex-direction:column}
+.hero-stats .st b{font-family:var(--font-display); font-size:21px; color:var(--text); font-weight:600}
+.hero-stats .st span{font-size:12.5px; color:var(--text-3)}
+
+/* ---------- Code ---------- */
+.codecard{background:linear-gradient(180deg,#16171b,#131418); border:1px solid var(--border-2); border-radius:var(--radius); overflow:hidden; box-shadow:0 26px 60px -34px rgba(0,0,0,.8)}
+.codecard .bar{display:flex; align-items:center; gap:8px; padding:11px 14px; border-bottom:1px solid var(--border); background:var(--panel)}
+.codecard .bar .lights{display:flex; gap:6px}
+.codecard .bar .lights i{width:11px; height:11px; border-radius:50%; display:block}
+.codecard .bar .lights i:nth-child(1){background:#e0625b}
+.codecard .bar .lights i:nth-child(2){background:#e3b34d}
+.codecard .bar .lights i:nth-child(3){background:#5fc77e}
+.codecard .bar .fname{font-family:var(--font-mono); font-size:12px; color:var(--text-3); margin-left:6px}
+.codecard pre{margin:0; border:0; border-radius:0}
+pre{
+  position:relative; background:#101115; border:1px solid var(--border); border-radius:var(--radius-sm);
+  padding:16px 18px; overflow-x:auto; margin:18px 0; font-family:var(--font-mono); font-size:13.4px; line-height:1.68;
+  scrollbar-width:thin; scrollbar-color:#33343c transparent;
+}
+pre::-webkit-scrollbar{height:9px}
+pre::-webkit-scrollbar-thumb{background:#2c2d34; border-radius:8px}
+pre code{font-family:inherit; color:#d6d8de; white-space:pre}
+.copy-btn{position:absolute; top:8px; right:8px; font-family:var(--font-body); font-size:11.5px; color:var(--text-2); background:var(--panel-2); border:1px solid var(--border-2); border-radius:7px; padding:4px 9px; cursor:pointer; opacity:0; transition:opacity .15s, color .15s, border-color .15s}
+pre:hover .copy-btn{opacity:1}
+.copy-btn:hover{color:var(--text); border-color:var(--accent-line)}
+.copy-btn.done{color:var(--good); border-color:rgba(111,207,69,.5)}
+code.inl{font-family:var(--font-mono); font-size:.88em; background:var(--group); border:1px solid var(--border); border-radius:6px; padding:1.5px 6px; color:#cdd0d8}
+.tok-c{color:#6a6f78; font-style:italic}
+.tok-k{color:var(--purple)}
+.tok-s{color:var(--green)}
+.tok-fn{color:var(--accent-light)}
+.tok-n{color:var(--teal)}
+.tok-y{color:var(--amber)}
+.tok-m{color:var(--text-3)}
+
+/* ---------- Sections ---------- */
+section.doc{padding:46px 0 8px; border-top:1px solid var(--border); margin-top:34px}
+section.doc:first-of-type{border-top:0; margin-top:0}
+.sec-head{display:flex; align-items:center; gap:13px; margin:0 0 8px}
+.sec-head .ic{width:34px; height:34px; border-radius:9px; display:grid; place-items:center; background:var(--panel); border:1px solid var(--border-2); flex:none}
+.sec-head .ic img{width:18px; height:18px; opacity:.92}
+h2{font-family:var(--font-display); font-weight:600; font-size:1.62rem; letter-spacing:-.01em; margin:0; line-height:1.2}
+.sec-sub{color:var(--text-2); font-size:15.5px; margin:2px 0 22px; max-width:65ch}
+h3{font-family:var(--font-display); font-weight:600; font-size:1.16rem; letter-spacing:-.005em; margin:34px 0 10px; color:var(--text)}
+h4.mh{font-size:.95rem; color:var(--text); margin:22px 0 8px; font-weight:600}
+p{margin:14px 0; color:var(--text-2)}
+.main p strong, li strong{color:var(--text); font-weight:600}
+ul.clean{list-style:none; padding:0; margin:16px 0}
+ul.clean li{position:relative; padding:7px 0 7px 24px; color:var(--text-2); border-bottom:1px solid rgba(37,38,44,.6)}
+ul.clean li:last-child{border-bottom:0}
+ul.clean li::before{content:""; position:absolute; left:4px; top:16px; width:7px; height:7px; border-radius:2px; background:var(--accent); transform:rotate(45deg)}
+
+/* ---------- Callouts ---------- */
+.note{display:flex; gap:13px; padding:14px 16px; border-radius:11px; background:var(--panel); border:1px solid var(--border-2); border-left:3px solid var(--accent); margin:18px 0; font-size:14.5px; color:var(--text-2)}
+.note .ti{flex:none; font-size:16px; line-height:1.5}
+.note.warn{border-left-color:var(--amber)}
+.note.good{border-left-color:var(--good)}
+.note b{color:var(--text)}
+.muted{color:var(--text-3,var(--text-2)); font-weight:400; font-size:.84em}
+
+/* ---------- Feature bento ---------- */
+.bento{display:grid; grid-template-columns:repeat(6,1fr); gap:14px; margin:8px 0 6px}
+.card{background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); padding:20px; transition:border-color .2s, transform .2s, background .2s}
+.card:hover{border-color:var(--border-2); transform:translateY(-2px)}
+.card .cic{width:40px; height:40px; border-radius:10px; display:grid; place-items:center; margin-bottom:14px; border:1px solid var(--border-2)}
+.card .cic img{width:21px; height:21px}
+.card h3{margin:0 0 6px; font-size:1.04rem}
+.card p{margin:0; font-size:14px; color:var(--text-2)}
+.c-span3{grid-column:span 3} .c-span2{grid-column:span 2} .c-span6{grid-column:span 6}
+.bigfeat{grid-column:span 6; display:grid; grid-template-columns:1.1fr 1fr; gap:0; overflow:hidden; padding:0; background:linear-gradient(120deg,#16171b,#15171d)}
+.bigfeat .txt{padding:24px 26px}
+.bigfeat .txt .tag{font-family:var(--font-mono); font-size:11px; color:var(--accent-light); letter-spacing:.05em}
+.bigfeat .txt h3{margin:8px 0 8px; font-size:1.22rem}
+.bigfeat .vis{border-left:1px solid var(--border); background:#101115; padding:18px; display:flex; align-items:center}
+.bigfeat .vis pre{margin:0; width:100%; background:transparent; border:0; font-size:12.5px}
+
+/* ---------- Steps ---------- */
+.steps{counter-reset:st; display:grid; gap:14px; margin:18px 0}
+.step{position:relative; background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); padding:18px 20px 18px 60px}
+.step::before{counter-increment:st; content:counter(st); position:absolute; left:16px; top:16px; width:30px; height:30px; border-radius:9px; display:grid; place-items:center; font-family:var(--font-display); font-weight:600; color:var(--accent-light); background:var(--accent-dim); border:1px solid var(--accent-line)}
+.step h4{margin:2px 0 4px; font-size:1rem; color:var(--text); font-weight:600}
+.step p{margin:0; font-size:14px}
+.step pre{margin:12px 0 2px}
+
+/* ---------- Tables ---------- */
+.tbl-wrap{overflow-x:auto; margin:18px 0; border:1px solid var(--border); border-radius:12px}
+table{width:100%; border-collapse:collapse; font-size:13.8px; min-width:480px}
+thead th{text-align:left; font-family:var(--font-mono); font-size:11.5px; text-transform:uppercase; letter-spacing:.06em; color:var(--text-3); font-weight:600; padding:11px 15px; background:var(--panel); border-bottom:1px solid var(--border-2)}
+tbody td{padding:10px 15px; border-bottom:1px solid rgba(37,38,44,.7); color:var(--text-2); vertical-align:top}
+tbody tr:last-child td{border-bottom:0}
+tbody tr:hover td{background:rgba(76,141,255,.045)}
+td code, th code{font-family:var(--font-mono); font-size:12.5px; color:var(--accent-light); white-space:nowrap}
+td b{color:var(--text)}
+.kbd{font-family:var(--font-mono); font-size:12px; background:var(--group); border:1px solid var(--border-2); border-bottom-width:2px; border-radius:6px; padding:2px 7px; color:var(--text); white-space:nowrap}
+
+/* two-col compare */
+.compare{display:grid; grid-template-columns:1fr 1fr; gap:14px; margin:18px 0}
+.compare .col{background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); padding:18px 20px}
+.compare .col .lab{display:inline-flex; align-items:center; gap:8px; font-weight:600; font-size:14px; margin-bottom:8px}
+.compare .col.human .lab{color:var(--green)} .compare .col.ai .lab{color:var(--purple)}
+.compare .col ul{margin:6px 0 0; padding-left:18px; font-size:14px; color:var(--text-2)}
+.compare .col li{margin:5px 0}
+
+.iconstrip{display:flex; flex-wrap:wrap; gap:8px; margin:14px 0}
+.iconstrip .it{display:inline-flex; align-items:center; gap:8px; background:var(--panel); border:1px solid var(--border); border-radius:9px; padding:7px 12px; font-size:13px; color:var(--text-2)}
+.iconstrip .it img{width:16px; height:16px; opacity:.9}
+
+.pillrow{display:flex; flex-wrap:wrap; gap:8px; margin:16px 0}
+.pill{font-size:12.5px; color:var(--text-2); background:var(--panel); border:1px solid var(--border); border-radius:999px; padding:5px 12px}
+.pill b{color:var(--text)}
+
+/* ---------- Footer ---------- */
+footer{position:relative; z-index:1; border-top:1px solid var(--border); margin-top:40px; padding:40px 22px 60px}
+.foot-in{max-width:var(--content-max); margin:0 auto; display:grid; grid-template-columns:1.4fr 1fr 1fr; gap:30px}
+.foot-in .brand{margin-bottom:12px}
+.foot-in p{font-size:13.5px; color:var(--text-3); margin:0; max-width:38ch}
+.foot-col h5{font-size:12px; font-family:var(--font-mono); text-transform:uppercase; letter-spacing:.1em; color:var(--text-3); margin:0 0 12px}
+.foot-col a{display:block; color:var(--text-2); font-size:14px; padding:4px 0; transition:color .15s}
+.foot-col a:hover{color:var(--accent-light)}
+.foot-bottom{max-width:var(--content-max); margin:30px auto 0; padding-top:20px; border-top:1px solid var(--border); font-size:12.5px; color:var(--text-3); display:flex; justify-content:space-between; flex-wrap:wrap; gap:10px}
+
+/* ---------- Reveal motion (MOTION_INTENSITY 4, reduced-motion safe) ---------- */
+.js .reveal{opacity:0; transform:translateY(14px); transition:opacity .45s cubic-bezier(.16,1,.3,1), transform .45s cubic-bezier(.16,1,.3,1)}
+.js .reveal.in{opacity:1; transform:none}
+@media (prefers-reduced-motion: reduce){ .js .reveal{opacity:1 !important; transform:none !important; transition:none} }
+
+.overlay{display:none}
+
+/* ---------- Responsive ---------- */
+@media (max-width:1080px){
+  .shell{grid-template-columns:1fr}
+  .sidebar{
+    position:fixed; top:var(--header-h); left:0; width:280px; height:calc(100vh - var(--header-h));
+    background:var(--bg-2); border-right:1px solid var(--border); transform:translateX(-100%);
+    transition:transform .25s ease; z-index:55;
+  }
+  .sidebar.open{transform:none}
+  .menu-btn{display:flex}
+  .topnav{display:none}
+  .main{padding:0 22px 100px}
+  .overlay.show{display:block; position:fixed; inset:var(--header-h) 0 0 0; background:rgba(0,0,0,.5); z-index:54}
+}
+@media (max-width:760px){
+  .hero-grid{grid-template-columns:1fr; gap:26px}
+  .hero{padding:40px 0 26px}
+  .bento{grid-template-columns:1fr}
+  .c-span3,.c-span2,.c-span6,.bigfeat{grid-column:span 1}
+  .bigfeat{grid-template-columns:1fr}
+  .bigfeat .vis{border-left:0; border-top:1px solid var(--border)}
+  .compare{grid-template-columns:1fr}
+  .foot-in{grid-template-columns:1fr; gap:24px}
+}
+</style>
+</head>
+<body>
+<a href="#features" class="skip">本文へスキップ</a>
+
+<header class="topbar">
+  <a href="#top" class="brand" aria-label="DX12 Engine">
+    <img src="img/logo.png" alt="" />
+    <span class="wm">DX12 Engine</span>
+    <span class="chip">v0.2</span>
+  </a>
+  <nav class="topnav" aria-label="主要セクション">
+    <a class="nl" href="#quickstart">クイックスタート</a>
+    <a class="nl" href="#scripting">スクリプト</a>
+    <a class="nl" href="#mcp">AIブリッジ</a>
+    <a class="gh-btn" href="https://github.com/ryuto-alt/dx12" target="_blank" rel="noopener">
+      <img src="img/github.png" alt="" /> GitHub
+    </a>
+  </nav>
+  <button class="menu-btn" id="menuBtn" aria-label="メニュー" aria-expanded="false">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+  </button>
+</header>
+
+<div class="overlay" id="overlay"></div>
+
+<div class="shell" id="top">
+  <aside class="sidebar" id="sidebar" aria-label="ドキュメント目次">
+    <div class="nav-group">
+      <h4>はじめに</h4>
+      <a class="s" href="#features"><span class="dot"></span>特徴</a>
+      <a class="s" href="#quickstart"><span class="dot"></span>クイックスタート</a>
+      <a class="s" href="#layout"><span class="dot"></span>プロジェクト構成</a>
+    </div>
+    <div class="nav-group">
+      <h4>作る</h4>
+      <a class="s" href="#editor"><span class="dot"></span>エディタの使い方</a>
+      <a class="s" href="#scripting"><span class="dot"></span>Lua スクリプト</a>
+      <a class="s" href="#lua-api"><span class="dot"></span>Lua API リファレンス</a>
+      <a class="s" href="#components"><span class="dot"></span>コンポーネント &amp; プレハブ</a>
+      <a class="s" href="#authoring"><span class="dot"></span>データ駆動オーサリング</a>
+    </div>
+    <div class="nav-group">
+      <h4>AI &amp; 配布</h4>
+      <a class="s" href="#mcp"><span class="dot"></span>MCP / AIブリッジ</a>
+      <a class="s" href="#distribution"><span class="dot"></span>配布とアセット保護</a>
+    </div>
+    <div class="nav-group">
+      <h4>参照</h4>
+      <a class="s" href="#cpp-api"><span class="dot"></span>C++ モジュール API</a>
+      <a class="s" href="#reference"><span class="dot"></span>リファレンス &amp; リンク</a>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="wrap">
+
+      <!-- ===== HERO ===== -->
+      <section class="hero" id="overview">
+        <span class="kick">DirectX 12 / C++20 ゲームエンジン <b>+ Unity風エディタ</b></span>
+        <div class="hero-grid">
+          <div>
+            <h1>ゲームを、<span class="g">エディタ</span>でも<br><span class="g">テキスト</span>でも<span class="g">AI</span>でも作る。</h1>
+            <p class="lead">ECS・物理・Lua スクリプト・暗号化配布まで揃った自作 DirectX 12 エンジン。シーンはエディタでもJSONでも組めて、起動中のエディタを Claude Code から直接操作できる。</p>
+            <div class="cta-row">
+              <a href="#quickstart" class="btn btn-primary">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+                クイックスタート
+              </a>
+              <a href="https://github.com/ryuto-alt/dx12" target="_blank" rel="noopener" class="btn btn-ghost">
+                <img src="img/github.png" alt="" style="width:17px;height:17px"/> リポジトリを見る
+              </a>
+            </div>
+            <div class="hero-stats">
+              <div class="st"><b>1 つ</b><span>のexeがエディタ兼ランタイム</span></div>
+              <div class="st"><b>37</b><span>MCPツールでAI操作</span></div>
+              <div class="st"><b>27</b><span>パーティクルプリセット</span></div>
+            </div>
+          </div>
+          <div class="codecard reveal">
+            <div class="bar"><span class="lights"><i></i><i></i><i></i></span><span class="fname">player.lua</span></div>
+<pre><code><span class="tok-k">function</span> <span class="tok-fn">OnStart</span>(self)
+  player = <span class="tok-fn">actor</span>(<span class="tok-s">"Player"</span>, { speed = <span class="tok-n">9</span>, solid = { <span class="tok-s">"Wall1"</span> } })
+  goal   = <span class="tok-fn">actor</span>(<span class="tok-s">"Goal"</span>)
+<span class="tok-k">end</span>
+
+<span class="tok-k">function</span> <span class="tok-fn">OnUpdate</span>(self, dt)
+  player:<span class="tok-fn">moveTopDown</span>(dt)                  <span class="tok-c">-- WASD移動＋壁判定</span>
+  <span class="tok-fn">cameraFollow</span>(player, { height=<span class="tok-n">13</span>, pitch=<span class="tok-n">55</span> })
+  <span class="tok-k">if</span> player:<span class="tok-fn">reached</span>(goal, <span class="tok-n">1.4</span>) <span class="tok-k">then</span>
+    <span class="tok-fn">goToScene</span>(<span class="tok-s">"scenes/clear.json"</span>, <span class="tok-n">0.7</span>)
+  <span class="tok-k">end</span>
+<span class="tok-k">end</span></code></pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== FEATURES ===== -->
+      <section class="doc reveal" id="features">
+        <div class="sec-head">
+          <span class="ic"><img src="img/ent_mesh.png" alt=""/></span>
+          <h2>特徴</h2>
+        </div>
+        <p class="sec-sub">「ゲームの中身は全部データ（シーンJSON + <code class="inl">.lua</code>）」が基本方針。だから同じものを人間はエディタで、Claude Code はテキストで作れる。エンジン本体（C++）を触らずに機能を足していける。</p>
+
+        <div class="bento">
+          <div class="bigfeat card">
+            <div class="txt">
+              <span class="tag">MCP / AI BRIDGE</span>
+              <h3>起動中のエディタを AI から操作</h3>
+              <p>Claude Code / Codex が、エンティティ生成・コンポーネント設定・Luaアタッチ・Play/Stop・スクショ取得まで全37ツールで実行できる。ゲームを「会話で」組み立てる。</p>
+            </div>
+            <div class="vis">
+<pre><code><span class="tok-m">AI →</span> <span class="tok-fn">dx12_create_entity</span>(type:<span class="tok-s">"box"</span>, name:<span class="tok-s">"Floor"</span>)
+<span class="tok-m">   ←</span> { entityId: <span class="tok-n">42</span>, sceneGeneration: <span class="tok-n">7</span> }
+<span class="tok-m">AI →</span> <span class="tok-fn">dx12_set_transform</span>(entity:<span class="tok-n">42</span>, …)
+<span class="tok-m">AI →</span> <span class="tok-fn">dx12_play</span>()  <span class="tok-c">// ゲーム実行</span></code></pre>
+            </div>
+          </div>
+
+          <div class="card c-span2">
+            <div class="cic" style="background:rgba(159,160,173,.12)"><img src="img/ent_mesh.png" alt=""/></div>
+            <h3>ECS + エディタ</h3>
+            <p>entt ベースのECS。Hierarchy / Inspector / ギズモ / Play-Stop を備えた Unity ライクなエディタでシーンを構築。</p>
+          </div>
+          <div class="card c-span2">
+            <div class="cic" style="background:rgba(169,140,255,.12)"><img src="img/ent_script.png" alt=""/></div>
+            <h3>Lua スクリプト</h3>
+            <p>エンティティに <code class="inl">.lua</code> を貼れば <code class="inl">OnStart</code> / <code class="inl">OnUpdate</code> が回る。高レベルAPIでたいていのゲームが書ける。</p>
+          </div>
+          <div class="card c-span2">
+            <div class="cic" style="background:rgba(224,138,91,.12)"><img src="img/ent_physics.png" alt=""/></div>
+            <h3>物理 (Jolt)</h3>
+            <p>剛体・コライダー・キャラクターコントローラ。接触イベントは EventBus / Lua へ届く。</p>
+          </div>
+
+          <div class="card c-span3">
+            <div class="cic" style="background:rgba(245,183,64,.12)"><img src="img/ent_light.png" alt=""/></div>
+            <h3>PBR + ライティング</h3>
+            <p>方向光 / 点光源 / スポット、カスケードシャドウ(CSM)に加え点光源(キューブ×2灯)・スポット(×4灯)も影を落とせる。IBL スカイボックス、SSAO、HDRポストプロセス。27種のパーティクルプリセット。</p>
+          </div>
+          <div class="card c-span3">
+            <div class="cic" style="background:rgba(95,199,126,.12)"><img src="img/github.png" alt=""/></div>
+            <h3>暗号化して配布</h3>
+            <p>専用ランタイム <code class="inl">Game.exe</code> + AES暗号化 <code class="inl">game.pak</code> を出力。平文アセットは出ない。GitHub Releases 経由の自動アップデートも内蔵。</p>
+          </div>
+        </div>
+
+        <div class="pillrow">
+          <span class="pill"><b>言語</b> C++20</span>
+          <span class="pill"><b>ECS</b> entt</span>
+          <span class="pill"><b>物理</b> Jolt</span>
+          <span class="pill"><b>スクリプト</b> Lua / sol2</span>
+          <span class="pill"><b>モデル</b> glTF / FBX / OBJ (Assimp)</span>
+          <span class="pill"><b>UI</b> Dear ImGui</span>
+          <span class="pill"><b>対応</b> Windows 専用</span>
+          <span class="pill"><b>ライセンス</b> MIT</span>
+        </div>
+      </section>
+
+      <!-- ===== QUICK START ===== -->
+      <section class="doc reveal" id="quickstart">
+        <div class="sec-head">
+          <span class="ic"><img src="img/play.png" alt=""/></span>
+          <h2>クイックスタート</h2>
+        </div>
+        <p class="sec-sub">Windows + Visual Studio (C++デスクトップ開発) + vcpkg があればビルドできる。クローンしてバッチを叩くだけ。</p>
+
+        <div class="steps">
+          <div class="step">
+            <h4>前提を用意する</h4>
+            <p><b>Visual Studio 2022 / 2026</b> の「C++ によるデスクトップ開発」ワークロード + Windows SDK、そして <b>vcpkg</b>（環境変数 <code class="inl">VCPKG_ROOT</code> を設定）。</p>
+<pre><code><span class="tok-c"># 初回だけ: vcpkg を入れる</span>
+git clone https://github.com/microsoft/vcpkg.git
+cd vcpkg && .\bootstrap-vcpkg.bat
+<span class="tok-c"># VCPKG_ROOT を上の vcpkg フォルダに設定しておく</span></code></pre>
+          </div>
+          <div class="step">
+            <h4>クローンしてビルド</h4>
+            <p>付属のバッチが <b>vcvars → アセット暗号鍵の生成 → CMake(Ninja) configure → ビルド</b> までやる。Debug は <code class="inl">build_debug.bat</code>。</p>
+<pre><code>git clone https://github.com/ryuto-alt/dx12.git
+cd dx12
+.\build_release.bat        <span class="tok-c">:: vcvars + 鍵生成 + cmake + build</span></code></pre>
+            <p style="margin-top:10px">手動で回すなら CMake プリセットを使う:</p>
+<pre><code>cmake --preset windows-release
+cmake --build build/release</code></pre>
+          </div>
+          <div class="step">
+            <h4>起動する</h4>
+            <p>成果物は <code class="inl">build/release/DX12Engine.exe</code>。このexeが <b>エディタ兼ランタイム</b>。起動するとランチャー（新規 / 開く / 最近）が出る。</p>
+<pre><code>.\build\release\DX12Engine.exe</code></pre>
+          </div>
+        </div>
+
+        <div class="note warn">
+          <span class="ti">!</span>
+          <div>初回ビルドでパック暗号鍵 <code class="inl">src/core/generated/AssetKey.h</code> が <code class="inl">tools/gen_asset_key.ps1</code> で自動生成される（<code class="inl">.gitignore</code> 対象。コミットしないこと）。同じツリーで editor と runtime をビルドすれば鍵は一致する。</div>
+        </div>
+        <div class="note">
+          <span class="ti">i</span>
+          <div>依存（spdlog / DirectXTex / D3D12MA / ImGui / Lua / sol2 / entt / nlohmann-json / Jolt）は vcpkg + マニフェストで解決。assimp だけは CMake の FetchContent で取り込む。</div>
+        </div>
+      </section>
+
+      <!-- ===== PROJECT LAYOUT ===== -->
+      <section class="doc reveal" id="layout">
+        <div class="sec-head">
+          <span class="ic"><img src="img/new_project.png" alt=""/></span>
+          <h2>プロジェクト構成</h2>
+        </div>
+        <p class="sec-sub">ゲーム1本 = 1 プロジェクト。中身は基本ぜんぶ <code class="inl">assets/</code> の下にまとめる。「assets = ゲームの中身全部、code も data も」と覚えればいい。</p>
+
+<pre><code>MyGame/
+├─ <span class="tok-y">MyGame.dx12proj</span>        <span class="tok-c"># プロジェクト定義 (defaultScene を指す)</span>
+└─ assets/
+   ├─ scenes/*.json        <span class="tok-c"># シーン (エンティティ配置)</span>
+   ├─ components/*.lua      <span class="tok-c"># 貼り付ける部品 (properties 付き)</span>
+   ├─ prefabs/*.prefab      <span class="tok-c"># 再利用テンプレート</span>
+   ├─ models/  textures/  audio/
+   └─ game.lua             <span class="tok-c"># (任意) 起動時に1度読まれるグローバル</span></code></pre>
+
+        <p><code class="inl">scriptPath</code> は <code class="inl">assets/</code> からの相対で解決される（<code class="inl">"components/Spinner.lua"</code> → <code class="inl">assets/components/Spinner.lua</code>）。エディタのランチャーから新規プロジェクトを作るとこの構成が生成される。Gitクローンからプロジェクトを開くこともできる。</p>
+      </section>
+
+      <!-- ===== EDITOR ===== -->
+      <section class="doc reveal" id="editor">
+        <div class="sec-head">
+          <span class="ic"><img src="img/gizmo_move.png" alt=""/></span>
+          <h2>エディタの使い方</h2>
+        </div>
+        <p class="sec-sub">Hierarchy（左）/ ビューポート（中央）/ アセットブラウザ（中央下、隣にコンソールタブ）/ Inspector（右）の4窓が基本。ツール窓（ポスト処理・Skybox・物理など）はツールバーのトグルで開く。</p>
+
+        <h3>ツールバー</h3>
+        <div class="iconstrip">
+          <span class="it"><img src="img/play.png" alt=""/>Play</span>
+          <span class="it"><img src="img/stop.png" alt=""/>Stop</span>
+          <span class="it"><img src="img/gizmo_move.png" alt=""/>移動</span>
+          <span class="it"><img src="img/gizmo_rotate.png" alt=""/>回転</span>
+          <span class="it"><img src="img/gizmo_scale.png" alt=""/>スケール</span>
+          <span class="it"><img src="img/save.png" alt=""/>保存</span>
+          <span class="it"><img src="img/build.png" alt=""/>ビルド</span>
+          <span class="it"><img src="img/git.png" alt=""/>バージョン管理</span>
+        </div>
+
+        <h3>カメラ操作</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>操作</th><th>動作</th></tr></thead>
+            <tbody>
+              <tr><td><span class="kbd">右クリック + WASD</span></td><td>フライスルーカメラ。<span class="kbd">Space</span>/<span class="kbd">Shift</span> で上下、右クリック中はカーソル非表示</td></tr>
+              <tr><td><span class="kbd">F</span></td><td>選択エンティティにフォーカス（AABBから距離を自動算出）</td></tr>
+              <tr><td><span class="kbd">F11</span></td><td>ボーダレスフルスクリーン切り替え</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>編集ショートカット</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>キー</th><th>動作</th></tr></thead>
+            <tbody>
+              <tr><td><span class="kbd">W</span> / <span class="kbd">E</span> / <span class="kbd">R</span></td><td>ギズモ切替（移動 / 回転 / スケール）</td></tr>
+              <tr><td><span class="kbd">T</span></td><td>ギズモのローカル / ワールド空間切替（<span class="kbd">Ctrl</span> ドラッグでスナップ）</td></tr>
+              <tr><td><span class="kbd">左クリック</span></td><td>ピッキング選択（<span class="kbd">Ctrl</span>+クリックでマルチ選択）</td></tr>
+              <tr><td><span class="kbd">Ctrl</span>+<span class="kbd">Z</span> / <span class="kbd">Ctrl</span>+<span class="kbd">Y</span></td><td>Undo / Redo（移動・編集・追加削除・複製・リネーム・親子変更を網羅）</td></tr>
+              <tr><td><span class="kbd">Ctrl</span>+<span class="kbd">D</span></td><td>複製（<span class="kbd">Ctrl</span>+<span class="kbd">C</span> / <span class="kbd">V</span> でコピー / ペースト、全コンポーネントをディープコピー）</td></tr>
+              <tr><td><span class="kbd">Del</span></td><td>削除（子も一括。Undoでサブツリーごと復元）</td></tr>
+              <tr><td><span class="kbd">Ctrl</span>+<span class="kbd">S</span> / <span class="kbd">Ctrl</span>+<span class="kbd">N</span></td><td>シーン保存 / 新規シーン</td></tr>
+              <tr><td><span class="kbd">ダブルクリック</span></td><td>リネーム</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <ul class="clean">
+          <li><b>Hierarchy へドラッグ&amp;ドロップ</b>で親子付け（空白へドロップで解除）。<code class="inl">.lua</code> をドロップでスクリプトをアタッチ。</li>
+          <li><b>Inspector「＋コンポーネント追加」</b>でライト / カメラ / RigidBody / コライダー等を後付け。ヘッダ右クリックで削除。</li>
+          <li><b>Play / Stop</b> で即実行・即停止。停止すると編集状態に戻る（配置したライトやマテリアルもスナップショット復元される）。</li>
+        </ul>
+
+        <h3>コンソール</h3>
+        <p>アセットブラウザの隣タブに常設。エンジン / Lua / ビルド / MCP の全ログが1箇所に集まる（Unity・Unreal のコンソールと同じ位置づけ）。</p>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>機能</th><th>内容</th></tr></thead>
+            <tbody>
+              <tr><td>重大度フィルタ</td><td>情報 / 警告 / エラーを件数バッジ付きでトグル。既定は<b>警告+エラーのみ表示</b>（情報は右上のトグルで表示切替）</td></tr>
+              <tr><td>検索・折りたたみ</td><td>テキスト検索（大小無視）。同一メッセージは <code class="inl">xN</code> で集約表示</td></tr>
+              <tr><td>自動スクロール</td><td>末尾に追従。ログを見返すため上にスクロールした間は追従を止める</td></tr>
+              <tr><td>Play時クリア / エラーで前面</td><td>Play 開始でログをクリア。新着エラーが出るとタブを自動フォーカス</td></tr>
+              <tr><td>詳細ペイン</td><td>行クリックで全文表示。部分選択コピー・コピーボタン</td></tr>
+              <tr><td>色分け</td><td>ERROR=赤 / WARN=黄 / 情報=薄色、ゼブラ縞で行を判別しやすく</td></tr>
+              <tr><td>Lua 即時実行</td><td>下部の入力欄に1行 Lua を打つと即実行（Unreal のコンソール入力相当）。<code class="inl">scene</code> / <code class="inl">fx</code> / <code class="inl">camera</code> 等そのまま使える。<code class="inl">&gt; コード</code> のエコーと <code class="inl">= 結果</code> を表示、エラーは赤で出る</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="note">
+          <span class="ti">i</span>
+          <div>Lua 側からログを出すには <code class="inl">log(...)</code> / <code class="inl">logWarn(...)</code> / <code class="inl">logError(...)</code> を使う（<code class="inl">print(...)</code> も同じ経路に出る）。詳細は <a href="#lua-api">Lua API リファレンス</a> 参照。</div>
+        </div>
+      </section>
+
+      <!-- ===== SCRIPTING ===== -->
+      <section class="doc reveal" id="scripting">
+        <div class="sec-head">
+          <span class="ic"><img src="img/ent_script.png" alt=""/></span>
+          <h2>Lua スクリプト</h2>
+        </div>
+        <p class="sec-sub">ゲームの「動き」は Lua で書く。エンティティに <code class="inl">.lua</code> をアタッチすると <code class="inl">OnStart(self)</code> が1回、<code class="inl">OnUpdate(self, dt)</code> が毎フレーム呼ばれる。この2つの関数の中に「入力を読む → 動かす → 勝敗を判定する」を書けば、それがゲームになる。</p>
+
+        <h3>1. スクリプトはどこに置く・どう付ける</h3>
+        <ul class="clean">
+          <li><b>置く場所</b>: <code class="inl">assets/components/&lt;名前&gt;.lua</code>（<code class="inl">scriptPath</code> は <code class="inl">assets/</code> からの相対）。</li>
+          <li><b>付け方（人間）</b>: AssetBrowser の <code class="inl">.lua</code> を Hierarchy の行 or Inspector へドロップ。または Inspector「＋コンポーネント追加 → スクリプト」。</li>
+          <li><b>付け方（コード / AI）</b>: シーン JSON のエンティティに <code class="inl">luaScript</code> ブロックを書く（<a href="#components">コンポーネント &amp; プレハブ</a> 参照）。</li>
+          <li><b>2つの作り方</b>: ①<b>コントローラ型</b>＝1個のエンティティに貼った1スクリプトが <code class="inl">actor("Player")</code> 等で全体を回す（手早い）。②<b>部品型</b>＝各エンティティに小さな <code class="inl">.lua</code> を貼り <code class="inl">self</code> で自分を動かす（再利用しやすい）。混ぜてよい。</li>
+        </ul>
+
+        <h3>2. ライフサイクルと <code class="inl">self</code></h3>
+        <p>スクリプトの骨格はこれだけ。<code class="inl">self</code> は「この <code class="inl">.lua</code> を貼ったエンティティ自身」を指す。</p>
+<pre><code><span class="tok-c">-- (任意) Inspector に出る公開プロパティ。Play 時に self.&lt;name&gt; に注入される</span>
+properties = {
+  { name=<span class="tok-s">"speed"</span>, type=<span class="tok-s">"float"</span>, default=<span class="tok-n">6</span> },
+}
+
+<span class="tok-k">function</span> <span class="tok-fn">OnStart</span>(self)        <span class="tok-c">-- Play 開始時に1回</span>
+  self.t = <span class="tok-n">0</span>                  <span class="tok-c">-- 状態は self に持たせると安全</span>
+<span class="tok-k">end</span>
+
+<span class="tok-k">function</span> <span class="tok-fn">OnUpdate</span>(self, dt)   <span class="tok-c">-- 毎フレーム。dt = 前フレームからの経過秒</span>
+  self.t = self.t + dt
+  <span class="tok-k">local</span> tf = self.transform                 <span class="tok-c">-- 自分の Transform</span>
+  tf.position = Vec3.<span class="tok-fn">new</span>(tf.position.x, <span class="tok-n">1</span> + math.<span class="tok-fn">sin</span>(self.t)*<span class="tok-n">0.5</span>, tf.position.z)
+<span class="tok-k">end</span></code></pre>
+        <p><code class="inl">self</code> に最初から入っているもの:</p>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>キー</th><th>中身</th></tr></thead>
+            <tbody>
+              <tr><td><code>self.entity</code></td><td>エンティティ ID（u32）</td></tr>
+              <tr><td><code>self.name</code></td><td>エンティティ名（文字列）</td></tr>
+              <tr><td><code>self.transform</code></td><td>Transform。<code>.position</code> <code>.rotation</code>（オイラー度）<code>.scale</code> は <code>Vec3</code></td></tr>
+              <tr><td><code>self.enabled</code></td><td>この LuaScript が有効か</td></tr>
+              <tr><td><code>self.&lt;prop&gt;</code></td><td><code>properties</code> で宣言した各値</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="note">
+          <span class="ti">i</span>
+          <div><b>位置を変えるには</b> <code class="inl">Vec3</code> を丸ごと代入する: <code class="inl">tf.position = Vec3.new(x, y, z)</code>。<code class="inl">tf.position.x = 5</code> のような一部代入は反映されないことがあるので、必ず <code class="inl">Vec3.new(...)</code> で入れ直す。</div>
+        </div>
+
+        <h3>3. まず動かす: 最小のゲーム</h3>
+        <p>「プレイヤーを動かして、壁に当たり、ゴールに着いたらクリア画面へ」。これだけで1本のゲームになる。シーンには <b>4体</b>を置く（エディタ or JSON）: <code class="inl">Player</code>(box)・<code class="inl">Goal</code>・<code class="inl">Wall1</code>・<code class="inl">GameCamera</code>(CameraComponent)。そこに下の <code class="inl">.lua</code> を <code class="inl">Player</code> へ貼る。</p>
+        <div class="codecard">
+          <div class="bar"><span class="lights"><i></i><i></i><i></i></span><span class="fname">assets/components/game.lua</span></div>
+<pre><code><span class="tok-k">local</span> done = <span class="tok-k">false</span>
+
+<span class="tok-k">function</span> <span class="tok-fn">OnStart</span>(self)
+  player = <span class="tok-fn">actor</span>(<span class="tok-s">"Player"</span>, { speed = <span class="tok-n">9</span>, solid = { <span class="tok-s">"Wall1"</span> } })  <span class="tok-c">-- 名前で掴む。local 無し=OnUpdateでも使える</span>
+  goal   = <span class="tok-fn">actor</span>(<span class="tok-s">"Goal"</span>)
+  audio:<span class="tok-fn">playBGM</span>(<span class="tok-s">"audio/bgm.wav"</span>)                          <span class="tok-c">-- BGMを鳴らす(任意)</span>
+<span class="tok-k">end</span>
+
+<span class="tok-k">function</span> <span class="tok-fn">OnUpdate</span>(self, dt)
+  <span class="tok-k">if</span> done <span class="tok-k">then</span> <span class="tok-k">return</span> <span class="tok-k">end</span>                                   <span class="tok-c">-- クリア後は何もしない</span>
+  player:<span class="tok-fn">moveTopDown</span>(dt)                                    <span class="tok-c">-- WASDでXZ移動＋Wall1で停止(壁沿いスライド)</span>
+  <span class="tok-fn">cameraFollow</span>(player, { height = <span class="tok-n">13</span>, back = <span class="tok-n">8</span>, pitch = <span class="tok-n">55</span> }) <span class="tok-c">-- GameCameraを見下ろし追従</span>
+
+  <span class="tok-fn">ui</span>:<span class="tok-fn">text</span>(<span class="tok-n">24</span>, <span class="tok-n">24</span>, <span class="tok-s">"ゴールを目指せ"</span>, <span class="tok-n">28</span>)                  <span class="tok-c">-- 画面にHUD(再生中のみ)</span>
+
+  <span class="tok-k">if</span> player:<span class="tok-fn">reached</span>(goal, <span class="tok-n">1.4</span>) <span class="tok-k">then</span>                      <span class="tok-c">-- ゴールにXZ距離1.4まで近づいたら</span>
+    done = <span class="tok-k">true</span>
+    FX.<span class="tok-fn">supernova</span>(goal:<span class="tok-fn">pos</span>().x, <span class="tok-n">1</span>, goal:<span class="tok-fn">pos</span>().z)          <span class="tok-c">-- 派手なエフェクト</span>
+    <span class="tok-fn">saveNum</span>(<span class="tok-s">"clearTime"</span>, <span class="tok-fn">loadNum</span>(<span class="tok-s">"clearTime"</span>, <span class="tok-n">0</span>))         <span class="tok-c">-- シーンを越えて値を渡す</span>
+    <span class="tok-fn">goToScene</span>(<span class="tok-s">"scenes/clear.json"</span>, <span class="tok-n">0.7</span>)                  <span class="tok-c">-- フェードでクリア画面へ</span>
+  <span class="tok-k">end</span>
+<span class="tok-k">end</span></code></pre>
+        </div>
+        <p>これが「ゲームとして機能する」理由はシンプルで、<b>毎フレーム(OnUpdate)で「入力→移動→カメラ→勝敗チェック」を回し、勝ったらシーンを切り替える</b>から。やっていることは次の4つだけ:</p>
+        <ul class="clean">
+          <li><b>入力と移動</b>: <code class="inl">player:moveTopDown(dt)</code> が WASD を読んで XZ 平面で動かし、<code class="inl">solid</code> に指定した壁に当たると軸ごと止める。</li>
+          <li><b>カメラ</b>: <code class="inl">cameraFollow</code> が <code class="inl">GameCamera</code> をプレイヤーの上から追わせる。</li>
+          <li><b>勝敗</b>: <code class="inl">player:reached(goal, 1.4)</code> でゴール接近を判定し、<code class="inl">done</code> フラグで1回だけ発火。</li>
+          <li><b>進行</b>: <code class="inl">goToScene("scenes/clear.json")</code> で次のシーンへ。<code class="inl">saveNum/loadNum</code> でスコア等をシーン越しに持ち越す。</li>
+        </ul>
+        <div class="note good">
+          <span class="ti">+</span>
+          <div><b>命名のおすすめ:</b> プレイヤー=<code class="inl">Player</code>、ゴール=<code class="inl">Goal</code>、見下ろしカメラ=<code class="inl">GameCamera</code>、壁=<code class="inl">Wall1</code>,<code class="inl">Wall2</code>…。この命名にすると <code class="inl">actor</code> / <code class="inl">cameraFollow</code> の既定値とそのまま噛み合う。書けたら <code class="inl">DX12Engine.exe --validate scenes/level1.json</code> で参照切れを確認 → Play で実行。</div>
+        </div>
+
+        <h3>4. 高レベル API（まずこれだけで作れる）</h3>
+        <p><code class="inl">actor</code> はシーン内のエンティティを「名前」で掴むラッパー。<code class="inl">cameraFollow</code> / <code class="inl">cameraTPS</code> / <code class="inl">cameraLockOn</code> は <code class="inl">CameraComponent</code> を持つエンティティを動かす。</p>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>API</th><th>説明</th></tr></thead>
+            <tbody>
+              <tr><td><code>actor(name, opts)</code></td><td>名前付きエンティティを操作。<code>opts</code> = <code>{ speed=5, solid="Wall" or {…}, half=0.5 }</code></td></tr>
+              <tr><td><code>a:moveTopDown(dt)</code></td><td>WASD で XZ 平面を移動。<code>solid</code> の箱に当たると壁沿いにスライド。矢印キーは <code>a:moveTopDown(dt, "Arrows")</code></td></tr>
+              <tr><td><code>a:pos()</code> / <code>a:setPos(x,y,z)</code></td><td>現在位置 <code>Vec3</code> 取得 / 位置を直接セット</td></tr>
+              <tr><td><code>a:reached(other, r)</code></td><td>別の actor に近づいたか（XZ距離 &lt; r、既定 1.0）。<code>a:valid()</code> で存在確認</td></tr>
+              <tr><td><code>cameraFollow(t, opts)</code></td><td>見下ろし追従。<code>opts</code> = <code>{ name="GameCamera", height=13, back=8, pitch=55 }</code></td></tr>
+              <tr><td><code>cameraTPS(t, opts)</code></td><td>三人称トレイル（キーボード向け）。<code>opts</code> = <code>{ name="MainCamera", dist, height, pitch, yaw, follow }</code></td></tr>
+              <tr><td><code>cameraLockOn(p, target, opts, st)</code></td><td>ロックオン（ボス戦）。プレイヤー→ターゲット軸にカメラ固定。yaw を返す</td></tr>
+              <tr><td><code>keyDown("W")</code> / <code>keyPressed("ESC")</code></td><td>押している間 / 押した瞬間。<code>W A S D E Q UP DOWN LEFT RIGHT SPACE SHIFT TAB ENTER ESC</code></td></tr>
+              <tr><td><code>goToScene(path, sec)</code> / <code>win()</code></td><td>フェード付きでシーン遷移 / sceneflow の「次のシーン」へ</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>5. ハマりどころ</h3>
+        <ul class="clean">
+          <li><b>状態は <code class="inl">self</code> かグローバルに</b>: 部品型は <code class="inl">self.t</code> に、コントローラ型は <code class="inl">OnStart</code> で <code class="inl">local</code> 無し代入（<code class="inl">player = actor(...)</code>）で <code class="inl">OnUpdate</code> でも使える。</li>
+          <li><b>必ず <code class="inl">dt</code> を掛ける</b>: 移動・回転は <code class="inl">速度 * dt</code>。掛けないとフレームレートで速さが変わる。</li>
+          <li><b><code class="inl">events:on</code> は <code class="inl">OnStart</code> 内で</b>: イベント購読は Play 中のみ有効。停止中に呼んでも登録されない。</li>
+          <li><b>当たり判定の2系統</b>: 軽い見下ろし当たりは <code class="inl">actor(..,{solid=})</code>＋<code class="inl">moveTopDown</code>。落下・反発・スタックが要るなら <code class="inl">RigidBody</code>＋コライダー（エディタで付与、スクリプト不要）。</li>
+          <li><b><code class="inl">scene:setColor</code> は生成時1回</b>: GPU 同期を伴うので毎フレーム呼ばない。色変えは生成直後だけ。</li>
+        </ul>
+      </section>
+
+      <!-- ===== LUA API REFERENCE ===== -->
+      <section class="doc reveal" id="lua-api">
+        <div class="sec-head">
+          <span class="ic"><img src="img/file.png" alt=""/></span>
+          <h2>Lua API リファレンス</h2>
+        </div>
+        <p class="sec-sub">全スクリプトから使えるグローバル一覧（<code class="inl">scene</code> / <code class="inl">input</code> / <code class="inl">camera</code> / <code class="inl">physics</code> / <code class="inl">audio</code> / <code class="inl">fx</code> / <code class="inl">ui</code> / <code class="inl">events</code> …）。座標・色は <code class="inl">Vec3</code> または数値。色は 0..1。</p>
+
+        <h3>型: Vec3 / Transform / Entity</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>API</th><th>説明</th></tr></thead>
+            <tbody>
+              <tr><td><code>Vec3.new(x,y,z)</code></td><td>3次元ベクトル。<code>.x</code> <code>.y</code> <code>.z</code> で読み書き</td></tr>
+              <tr><td><code>e.transform</code></td><td><code>.position</code> / <code>.rotation</code>（オイラー度）/ <code>.scale</code>（全て <code>Vec3</code>）</td></tr>
+              <tr><td><code>e:isValid()</code> / <code>e.name</code></td><td>存在確認 / 名前（読み取り）</td></tr>
+              <tr><td><code>e:hasComponent("T")</code></td><td>所持判定。T = <code>MeshRenderer / PointLight / DirectionalLight / SpotLight / Camera / AudioSource / ParticleEmitter / Trigger / CharacterController / SkeletalAnimation / RigidBody …</code></td></tr>
+              <tr><td><code>e:playAnim(i, blend)</code></td><td>スケルタルアニメ再生（<code>blend</code> 秒でクロスフェード）。<code>e:playAnimByName(name, blend)</code></td></tr>
+              <tr><td><code>e:setLooping(b)</code> / <code>e:getAnimCount()</code> / <code>e:getAnimName(i)</code></td><td>ループ設定 / クリップ数 / クリップ名</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3><code class="inl">scene</code>：エンティティの取得・生成・検索</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>API</th><th>説明</th></tr></thead>
+            <tbody>
+              <tr><td><code>scene:findEntity(name)</code></td><td>名前で <code>Entity</code> を取得（<code>:isValid()</code> で確認）</td></tr>
+              <tr><td><code>scene:spawnBox(name, pos, rot, scale)</code></td><td>箱を生成して <code>Entity</code> を返す（引数は <code>Vec3</code>）</td></tr>
+              <tr><td><code>scene:spawnSphere(name, pos, radius)</code></td><td>球を生成</td></tr>
+              <tr><td><code>scene:spawnPlane(name, pos, size, grid)</code></td><td>平面（床）を生成。<code>grid=true</code> でグリッド表示</td></tr>
+              <tr><td><code>scene:spawn(name, modelPath, pos, rot, scale)</code></td><td>モデル（gltf/fbx/obj）を生成</td></tr>
+              <tr><td><code>scene:remove(e)</code> / <code>scene:getEntityCount()</code></td><td>削除 / エンティティ数</td></tr>
+              <tr><td><code>scene:setColor(e, r,g,b)</code></td><td>頂点カラーで着色（<b>生成時1回だけ</b>。GPU 同期）</td></tr>
+              <tr><td><code>scene:queryByTag(tag)</code></td><td>タグ一致エンティティの<b>名前配列</b>（RTSの群選択など）</td></tr>
+              <tr><td><code>scene:queryInBox(minX,minZ,maxX,maxZ[,tag])</code></td><td>XZ矩形内の名前配列（矩形選択）</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3><code class="inl">input</code>：キーボード / マウス</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>API</th><th>説明</th></tr></thead>
+            <tbody>
+              <tr><td><code>input:isKeyDown(KEY_W)</code></td><td>押している間ずっと true</td></tr>
+              <tr><td><code>input:isKeyPressed(KEY_SPACE)</code></td><td>押した瞬間だけ true</td></tr>
+              <tr><td><code>input:isRightMouseDown()</code></td><td>右クリック中か</td></tr>
+              <tr><td><code>input:getMouseDeltaX()</code> / <code>...Y()</code></td><td>マウス移動量（視点操作）</td></tr>
+              <tr><td><code>input:setMouseCapture(b)</code> / <code>isMouseCaptured()</code></td><td>カーソル拘束のON/OFF・状態</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>キー定数: <code class="inl">KEY_A</code>..<code class="inl">KEY_Z</code> / <code class="inl">KEY_0</code>..<code class="inl">KEY_9</code> / <code class="inl">KEY_SPACE KEY_SHIFT KEY_TAB KEY_ENTER KEY_ESCAPE KEY_UP KEY_DOWN KEY_LEFT KEY_RIGHT KEY_F1..F3 KEY_RBUTTON</code>。文字列名で済ます <code class="inl">keyDown("W")</code> / <code class="inl">keyPressed("ESC")</code> もある。</p>
+
+        <h3><code class="inl">physics</code>：当たり判定・剛体・キャラ操作</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>API</th><th>説明</th></tr></thead>
+            <tbody>
+              <tr><td><code>physics:raycast(origin, dir, maxDist)</code></td><td>レイ判定 → <code>RaycastHit{ hit, distance, point, normal }</code></td></tr>
+              <tr><td><code>physics:overlapBox(center, half[, n])</code></td><td>範囲内の <code>Entity</code> 配列。<code>overlapSphere(center, r[, n])</code> も</td></tr>
+              <tr><td><code>physics:addRigidBody(e, type, mass)</code></td><td><code>type</code> = <code>MOTION_STATIC / MOTION_KINEMATIC / MOTION_DYNAMIC</code></td></tr>
+              <tr><td><code>physics:addBoxCollider(e, hx,hy,hz)</code></td><td><code>addSphereCollider(e, r)</code> / <code>addCapsuleCollider(e, r, halfH)</code> / <code>autoCollider(e)</code></td></tr>
+              <tr><td><code>physics:applyImpulse(e, vec)</code></td><td><code>applyForce</code> / <code>setVelocity</code> / <code>getVelocity</code> / <code>setPosition</code></td></tr>
+              <tr><td><code>physics:setGravity(vec)</code> / <code>setPaused(b)</code> / <code>step(dt)</code></td><td>重力変更 / 物理停止 / 手動1ステップ</td></tr>
+              <tr><td><code>physics:addCharacterController(e, r, halfH)</code></td><td>キャラ操作。毎フレーム <code>move(e, vx, vz)</code>、<code>jump(e[, amt])</code>、<code>isGrounded(e)</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3><code class="inl">camera</code> / <code class="inl">audio</code></h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>API</th><th>説明</th></tr></thead>
+            <tbody>
+              <tr><td><code>camera:project(x,y,z)</code></td><td>ワールド座標 → スクリーン <code>u, v, visible</code>（頭上ダメージ表示など）</td></tr>
+              <tr><td><code>camera:getPosition()</code> / <code>setPosition(v)</code></td><td>低レベルのフライカメラ操作（yaw/pitch/速度も）</td></tr>
+              <tr><td><code>audio:playBGM(path)</code> / <code>stopBGM()</code></td><td>BGM 再生 / 停止（<code>pauseBGM</code> / <code>resumeBGM</code>）</td></tr>
+              <tr><td><code>audio:playSFX(path)</code></td><td>効果音を鳴らす</td></tr>
+              <tr><td><code>audio:playSpatial(path,x,y,z,minD,maxD[,vol,loop])</code></td><td>3D空間オーディオ（距離減衰）</td></tr>
+              <tr><td><code>audio:setMasterVolume(v)</code></td><td><code>setBGMVolume</code> / <code>setSFXVolume</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3><code class="inl">fx</code> / <code class="inl">FX</code> / <code class="inl">vfx</code>：パーティクル</h3>
+        <p>その場で1発放つ即時パーティクル。座標はワールド、色は 0..1、<code class="inl">intensity&gt;1</code> で白熱（ブルームで光る）。</p>
+<pre><code><span class="tok-c">-- 低レベル: テーブルで細かく指定</span>
+fx:<span class="tok-fn">burst</span>{ x=px, y=<span class="tok-n">1</span>, z=pz, count=<span class="tok-n">20</span>, kind=<span class="tok-s">"fire"</span>, speed=<span class="tok-n">6</span>,
+          r=<span class="tok-n">1</span>, g=<span class="tok-n">0.5</span>, b=<span class="tok-n">0.1</span>, intensity=<span class="tok-n">5</span>, gravity=-<span class="tok-n">3</span> }   <span class="tok-c">-- kind: glow/fire/smoke/spark/magic/electric/ring/star</span>
+fx:<span class="tok-fn">beam</span>{ x0=ax,y0=ay,z0=az, x1=bx,y1=by,z1=bz, kind=<span class="tok-s">"electric"</span> } <span class="tok-c">-- 線(レーザー/稲妻)</span>
+fx:<span class="tok-fn">pulse</span>(<span class="tok-n">0.5</span>)                                          <span class="tok-c">-- 画面パルス(被弾演出)</span>
+
+<span class="tok-c">-- 高レベル: ワンライナーのプリセット</span>
+FX.<span class="tok-fn">explosion</span>(x, y, z, scale)    <span class="tok-c">-- 爆発(撃破)</span>
+FX.<span class="tok-fn">supernova</span>(x, y, z)           <span class="tok-c">-- レベルアップ超新星</span>
+FX.<span class="tok-fn">spark</span>(x, y, z)               <span class="tok-c">-- 着弾火花 / FX.lightning / FX.pillar / FX.hit</span>
+vfx.<span class="tok-fn">play</span>(<span class="tok-s">"explosion"</span>, x, y, z, scale) <span class="tok-c">-- 名前で再生する統一窓口</span></code></pre>
+
+        <h3><code class="inl">ui</code>：ゲーム内 HUD（即時モード）</h3>
+        <p><code class="inl">OnUpdate</code> 内で毎フレーム呼ぶと描画される（Play 中のみ）。位置は <code class="inl">SCREEN_W</code> / <code class="inl">SCREEN_H</code> で調整。</p>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>API</th><th>説明</th></tr></thead>
+            <tbody>
+              <tr><td><code>ui:text(x,y,text[,size,r,g,b,a])</code></td><td>文字。スコア・残機・メッセージ</td></tr>
+              <tr><td><code>ui:button(x,y,w,h,label)</code></td><td>ボタン。押された<b>フレームで true</b> を返す（タイトルメニュー等）</td></tr>
+              <tr><td><code>ui:rect(x,y,w,h[,r,g,b,a,rounding])</code></td><td>塗り矩形。HPバー・パネル背景</td></tr>
+              <tr><td><code>ui:image(x,y,w,h,path)</code></td><td>画像</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3><code class="inl">events</code> / シーン遷移 / 値の持ち越し</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>API</th><th>説明</th></tr></thead>
+            <tbody>
+              <tr><td><code>events:on(name, fn)</code></td><td>購読（<code>OnStart</code> 内で）。<code>fn(data)</code> が呼ばれる。戻り値の id を <code>events:off(id)</code> へ</td></tr>
+              <tr><td><code>events:emit(name[, data])</code></td><td>発火。<code>data</code> = <code>{ value=5 }</code>。Trigger の EmitEvent もここに届く</td></tr>
+              <tr><td><code>goToScene(path[, sec])</code> / <code>loadScene(path)</code></td><td>フェード遷移 / 即ロード</td></tr>
+              <tr><td><code>transitionToScene(path, type[, dur])</code></td><td><code>type</code>: 0=Fade 1=Wipe 2=Circle 3=縦Wipe</td></tr>
+              <tr><td><code>nextScene()</code> / <code>quit()</code></td><td>sceneflow の次へ / ゲーム終了</td></tr>
+              <tr><td><code>saveNum(key, v)</code> / <code>loadNum(key[, def])</code></td><td>シーンを越えて残る数値（スコア・タイム）</td></tr>
+              <tr><td><code>log(...)</code> / <code>logWarn(...)</code> / <code>logError(...)</code></td><td>任意個・任意型の引数を <code>tostring</code> 連結してログ出力。エディタの<a href="#editor">コンソールパネル</a>に出る（<code>print(...)</code> も同じ経路）</td></tr>
+              <tr><td><code>clamp(v,lo,hi)</code> / <code>lerp(a,b,t)</code></td><td>各種ユーティリティ</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ===== COMPONENTS & PREFABS ===== -->
+      <section class="doc reveal" id="components">
+        <div class="sec-head">
+          <span class="ic"><img src="img/ent_empty.png" alt=""/></span>
+          <h2>コンポーネント &amp; プレハブ</h2>
+        </div>
+        <p class="sec-sub">振る舞いを「プロパティ付きの再利用部品」にする仕組み。巨大な1個のコントローラに全部書くのをやめて、部品を貼って数値だけ変える Unity ライクな作り方ができる。</p>
+
+        <h3>プロパティ付き Lua コンポーネント</h3>
+        <p><code class="inl">.lua</code> の先頭で <code class="inl">properties</code> を宣言すると、その値は <b>Inspectorに自動で編集欄が出て / シーンに保存され / Play時に <code class="inl">self.&lt;name&gt;</code> として注入</b> される。</p>
+<pre><code>properties = {
+  { name=<span class="tok-s">"speed"</span>, type=<span class="tok-s">"float"</span>, default=<span class="tok-n">90</span>, min=-<span class="tok-n">720</span>, max=<span class="tok-n">720</span>, label=<span class="tok-s">"回転速度"</span> },
+  { name=<span class="tok-s">"axis"</span>,  type=<span class="tok-s">"vec3"</span>,  default={<span class="tok-n">0</span>,<span class="tok-n">1</span>,<span class="tok-n">0</span>} },
+  { name=<span class="tok-s">"on"</span>,    type=<span class="tok-s">"bool"</span>,  default=<span class="tok-k">true</span> },
+}
+
+<span class="tok-k">function</span> <span class="tok-fn">OnUpdate</span>(self, dt)
+  <span class="tok-k">if</span> <span class="tok-k">not</span> self.on <span class="tok-k">then</span> <span class="tok-k">return</span> <span class="tok-k">end</span>
+  <span class="tok-k">local</span> t = self.transform
+  t.rotation = Vec3.<span class="tok-fn">new</span>(t.rotation.x, t.rotation.y + self.speed*dt, t.rotation.z)
+<span class="tok-k">end</span></code></pre>
+
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>type</th><th>Inspector</th><th><code>self.&lt;name&gt;</code></th></tr></thead>
+            <tbody>
+              <tr><td><code>float</code> / <code>int</code></td><td>スライダー / ドラッグ</td><td>number</td></tr>
+              <tr><td><code>bool</code></td><td>チェックボックス</td><td>boolean</td></tr>
+              <tr><td><code>string</code></td><td>テキスト入力</td><td>string</td></tr>
+              <tr><td><code>vec3</code></td><td>XYZ ドラッグ</td><td><code>Vec3</code> (.x/.y/.z)</td></tr>
+              <tr><td><code>color</code></td><td>カラーピッカー</td><td><code>Vec3</code> (RGB 0..1)</td></tr>
+              <tr><td><code>entity</code></td><td>エンティティ名のコンボ</td><td><code>Entity</code> (:isValid())</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>シーンJSON側では <code class="inl">luaScript</code> ブロックに <code class="inl">props</code> を書く（<code class="inl">type</code> が自己記述的なのでスキーマ無しで復元できる）:</p>
+<pre><code>{
+  <span class="tok-y">"name"</span>: <span class="tok-s">"Coin"</span>,
+  <span class="tok-y">"primitive"</span>: <span class="tok-s">"box"</span>,
+  <span class="tok-y">"luaScript"</span>: {
+    <span class="tok-y">"scriptPath"</span>: <span class="tok-s">"components/Spinner.lua"</span>,
+    <span class="tok-y">"props"</span>: [
+      { <span class="tok-y">"name"</span>:<span class="tok-s">"speed"</span>, <span class="tok-y">"type"</span>:<span class="tok-s">"float"</span>, <span class="tok-y">"value"</span>:<span class="tok-n">180</span> },
+      { <span class="tok-y">"name"</span>:<span class="tok-s">"axis"</span>,  <span class="tok-y">"type"</span>:<span class="tok-s">"vec3"</span>,  <span class="tok-y">"value"</span>:[<span class="tok-n">0</span>,<span class="tok-n">1</span>,<span class="tok-n">0</span>] }
+    ]
+  }
+}</code></pre>
+
+        <h3>プレハブ</h3>
+        <p>エンティティ（+子）を1ファイルにまとめて何度でも配置できるテンプレート。Hierarchyで右クリック「プレハブにする」で <code class="inl">assets/prefabs/&lt;名前&gt;.prefab</code> に保存。アセットブラウザからシーンへドロップで配置（サブツリーごと生成、1回のUndoで戻せる）。形式はシーンと同形で、<code class="inl">parent</code> は配列内のローカル index 参照。</p>
+
+        <h3>人間でも、コードでも</h3>
+        <div class="compare">
+          <div class="col human">
+            <span class="lab"><img src="img/save.png" style="width:16px;height:16px" alt=""/>人間（エディタ）</span>
+            <ul>
+              <li><code>.lua</code> を書いて D&amp;D で貼る</li>
+              <li>Inspector のプロパティ欄で数値調整</li>
+              <li>右クリック「プレハブにする」→ D&amp;D で再利用</li>
+            </ul>
+          </div>
+          <div class="col ai">
+            <span class="lab"><img src="img/ent_script.png" style="width:16px;height:16px" alt=""/>Claude Code / コード</span>
+            <ul>
+              <li><code>assets/components/X.lua</code> を書く</li>
+              <li>シーンJSONの <code>luaScript.props</code> を書く</li>
+              <li><code>assets/prefabs/X.prefab</code> を書いて配置</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== AUTHORING ===== -->
+      <section class="doc reveal" id="authoring">
+        <div class="sec-head">
+          <span class="ic"><img src="img/ent_light.png" alt=""/></span>
+          <h2>データ駆動オーサリング</h2>
+        </div>
+        <p class="sec-sub">エフェクトもイベントも、コードを書かずにデータで配線する。エンジンは汎用のまま、ゲーム差分は Lua とJSONに閉じる。Claude Code はテキストを書いて <code class="inl">--validate</code> で自己検証できる。</p>
+
+        <h3>エフェクトを置く: ParticleEmitter</h3>
+        <p>Transform のワールド位置からパーティクルを放出する部品。エディタでも常時プレビューされる。Trigger の <code class="inl">PlayEffect</code> / <code class="inl">StopEffect</code> で発火・停止できる。</p>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>フィールド</th><th>意味</th><th>既定</th></tr></thead>
+            <tbody>
+              <tr><td><code>kind</code></td><td>見た目 0=Glow 1=Fire 2=Smoke 3=Spark 4=Magic 5=Electric 6=Ring 7=Star</td><td>0</td></tr>
+              <tr><td><code>blend</code></td><td>0=加算（光物）/ 1=アルファ（煙）</td><td>0</td></tr>
+              <tr><td><code>rate</code></td><td>連続放出レート（個/秒）</td><td>30</td></tr>
+              <tr><td><code>looping</code> / <code>duration</code></td><td>false なら duration 秒だけ放出（ワンショット）</td><td>true / 1.0</td></tr>
+              <tr><td><code>dir</code> / <code>spread</code></td><td>放出方向 / 拡がり(0=集中, 1=全球)</td><td>[0,1,0] / 0.4</td></tr>
+              <tr><td><code>color</code> / <code>colorEnd</code></td><td>開始色 → 終了色（RGB 0..1）</td><td>炎色</td></tr>
+              <tr><td><code>intensity</code></td><td>HDR輝度（&gt;1 で白熱 → ブルーム）</td><td>3</td></tr>
+              <tr><td><code>gravity</code> / <code>drag</code> / <code>stretch</code></td><td>y加速 / 減衰 / 速度方向の伸び</td><td>0 / 1 / 0</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>イベントを置く: Trigger + Action</h3>
+        <p>範囲（箱 / 球）に <b>入った / 出た / 居る</b> とき、宣言的なアクション列を実行する。「X したら Y する」をコードなしで配線できる。</p>
+<pre><code>{
+  <span class="tok-y">"name"</span>: <span class="tok-s">"GoalZone"</span>,
+  <span class="tok-y">"trigger"</span>: {
+    <span class="tok-y">"shape"</span>: <span class="tok-n">0</span>, <span class="tok-y">"halfExtents"</span>: [<span class="tok-n">1.5</span>,<span class="tok-n">1.5</span>,<span class="tok-n">1.5</span>],
+    <span class="tok-y">"filter"</span>: <span class="tok-s">"Player"</span>, <span class="tok-y">"once"</span>: <span class="tok-k">true</span>,
+    <span class="tok-y">"actions"</span>: [
+      { <span class="tok-y">"when"</span>:<span class="tok-n">0</span>, <span class="tok-y">"type"</span>:<span class="tok-n">4</span>,  <span class="tok-y">"target"</span>:<span class="tok-s">"GoalBurst"</span> },    <span class="tok-c">// PlayEffect</span>
+      { <span class="tok-y">"when"</span>:<span class="tok-n">0</span>, <span class="tok-y">"type"</span>:<span class="tok-n">10</span>, <span class="tok-y">"str"</span>:<span class="tok-s">"reachedGoal"</span> }, <span class="tok-c">// EmitEvent</span>
+      { <span class="tok-y">"when"</span>:<span class="tok-n">0</span>, <span class="tok-y">"type"</span>:<span class="tok-n">8</span>,  <span class="tok-y">"str"</span>:<span class="tok-s">"scenes/clear.json"</span>, <span class="tok-y">"num"</span>:<span class="tok-n">0.6</span> }
+    ]
+  }
+}</code></pre>
+        <p><code class="inl">when</code>: 0=Enter / 1=Exit / 2=Stay。アクション <code class="inl">type</code> は11種:</p>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>type</th><th>名前</th><th>効果</th></tr></thead>
+            <tbody>
+              <tr><td>0 / 1</td><td>Enable / Disable</td><td>target の LuaScript を有効 / 無効化</td></tr>
+              <tr><td>2</td><td>Destroy</td><td>target を削除</td></tr>
+              <tr><td>3</td><td>Move</td><td>target を <code>vec</code> だけ相対移動</td></tr>
+              <tr><td>4 / 5</td><td>PlayEffect / StopEffect</td><td>target の ParticleEmitter を放出開始 / 停止</td></tr>
+              <tr><td>6</td><td>PlaySound</td><td>target の AudioSource を再生</td></tr>
+              <tr><td>7 / 8</td><td>LoadScene / FadeToScene</td><td><code>str</code> のシーンへ即切替 / フェード切替</td></tr>
+              <tr><td>9</td><td>SetProperty</td><td>target の実行中スクリプトの <code>self[str] = num</code></td></tr>
+              <tr><td>10</td><td>EmitEvent</td><td>イベントバスへ <code>events:emit(str, {value=num})</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>イベントバスで疎結合に</h3>
+        <p>ゲーム固有の処理（残り時間+5、状態遷移など）は <b>EmitEvent</b> で投げて、ゲーム側 Lua が <code class="inl">events:on</code> で受ける。購読は必ず <code class="inl">OnStart</code> 内で登録する（Playing中のみ有効）。</p>
+<pre><code><span class="tok-k">function</span> <span class="tok-fn">OnStart</span>(self)
+  events:<span class="tok-fn">on</span>(<span class="tok-s">"reachedGoal"</span>, <span class="tok-k">function</span>() ST.state = <span class="tok-s">"clear"</span> <span class="tok-k">end</span>)
+  events:<span class="tok-fn">on</span>(<span class="tok-s">"addTime"</span>, <span class="tok-k">function</span>(d) ST.remaining = ST.remaining + (d.value <span class="tok-k">or</span> <span class="tok-n">0</span>) <span class="tok-k">end</span>)
+<span class="tok-k">end</span></code></pre>
+
+        <div class="note">
+          <span class="ti">i</span>
+          <div><b>ヘッドレス検証:</b> <code class="inl">DX12Engine.exe --validate &lt;scene.json&gt;</code> が JSON妥当性・スクリプト不在・エンティティ参照切れ・Trigger の target / filter 不正を <code class="inl">validate_report.txt</code> と標準出力に <code class="inl">RESULT: PASS / FAIL</code> で報告する（終了コード 0/1）。Claude Code はこれを回して GUI なしで参照切れを自己修正できる。</div>
+        </div>
+      </section>
+
+      <!-- ===== MCP ===== -->
+      <section class="doc reveal" id="mcp">
+        <div class="sec-head">
+          <span class="ic"><img src="img/ent_camera.png" alt=""/></span>
+          <h2>MCP / AIブリッジ</h2>
+        </div>
+        <p class="sec-sub">起動中のエディタが <code class="inl">127.0.0.1</code> で待ち受ける TCP ブリッジに、Node 製 MCP サーバが繋ぐ。AI がシーンを読み・エンティティを生成し・コンポーネントを設定し・Luaを貼り・Play/Stop まで回せる。</p>
+
+        <h3>セットアップ</h3>
+        <div class="steps">
+          <div class="step">
+            <h4>MCP サーバを入れる</h4>
+            <p>Node v24+ が必要（<code class="inl">.ts</code> を直接実行するので <code class="inl">tsc</code> ビルド不要）。スクリプトが <code class="inl">npm install</code> と自己テストまでやる。</p>
+<pre><code>cd tools/mcp-server
+.\install.ps1            <span class="tok-c"># Linux / macOS は ./install.sh</span></code></pre>
+          </div>
+          <div class="step">
+            <h4>Claude Code / Codex に登録</h4>
+            <p><code class="inl">&lt;REPO&gt;</code> はクローンした絶対パスに置換する。</p>
+<pre><code><span class="tok-c"># Claude Code</span>
+claude mcp add dx12-engine -- node &lt;REPO&gt;/tools/mcp-server/index.ts</code></pre>
+          </div>
+          <div class="step">
+            <h4>エディタを起動してシーンを開く</h4>
+            <p>あとは AI から <code class="inl">dx12_list_entities</code> などを呼ぶだけ。エディタの「ウィンドウ → MCP / AI Bridge」パネルで接続状態とコマンド履歴を確認できる。ポートは <code class="inl">8787-8797</code> で自動採番（確定値は <code class="inl">%TEMP%\dx12_mcp.port</code>）。</p>
+          </div>
+        </div>
+
+        <h3>全37ツール（<code class="inl">dx12_</code> 接頭辞・エンジン35 + Node合成2）</h3>
+        <div class="bento" style="grid-template-columns:repeat(2,1fr)">
+          <div class="card c-span1" style="grid-column:span 1">
+            <h3 style="font-size:.98rem;color:var(--teal)">読み取り（同期・12）</h3>
+            <p style="font-size:13px"><code class="inl">ping</code> <code class="inl">list_entities</code> <code class="inl">get_entity</code> <code class="inl">find_entity</code> <code class="inl">query_entities</code> <code class="inl">list_scenes</code> <code class="inl">list_assets</code> <code class="inl">get_mode</code> <code class="inl">get_log</code> <code class="inl">describe_components</code> <code class="inl">get_scene_settings</code> <code class="inl">screenshot</code></p>
+          </div>
+          <div class="card c-span1" style="grid-column:span 1">
+            <h3 style="font-size:.98rem;color:var(--amber)">編集（同期・14）</h3>
+            <p style="font-size:13px"><code class="inl">set_transform</code> <code class="inl">set_component</code> <code class="inl">remove_component</code> <code class="inl">set_parent</code> <code class="inl">rename_entity</code> <code class="inl">select_entity</code> <code class="inl">focus_camera</code> <code class="inl">set_pbr</code> <code class="inl">set_scene_settings</code> <code class="inl">undo</code> <code class="inl">redo</code> <code class="inl">save_scene</code> <code class="inl">create_lua_component</code> <code class="inl">attach_lua_component</code></p>
+          </div>
+          <div class="card c-span1" style="grid-column:span 1">
+            <h3 style="font-size:.98rem;color:var(--purple)">生成・モード（遅延同期・9）</h3>
+            <p style="font-size:13px"><code class="inl">create_entity</code> <code class="inl">spawn_model</code> <code class="inl">spawn_prefab</code> <code class="inl">duplicate_entity</code> <code class="inl">delete_entity</code> <code class="inl">open_scene</code> <code class="inl">new_scene</code> <code class="inl">play</code> <code class="inl">stop</code></p>
+          </div>
+          <div class="card c-span1" style="grid-column:span 1">
+            <h3 style="font-size:.98rem;color:var(--accent)">Node 合成（2）</h3>
+            <p style="font-size:13px"><code class="inl">batch</code>（複数callを順次実行）<code class="inl">focus_and_screenshot</code>（フォーカス→描画→撮影）</p>
+          </div>
+        </div>
+
+        <p><b>遅延同期</b>の生成系は、エンジン内部ではフレーム境界（GPU が使える瞬間）で実処理されるが、AI 側は id で待つだけでよい。処理完了後に同じ id で本物の <code class="inl">entityId</code> が返る。「名前で list して探す」旧パターンは不要、返ってきた id をそのまま使い続ける。</p>
+<pre><code><span class="tok-m">AI →</span> <span class="tok-fn">dx12_create_entity</span>(type:<span class="tok-s">"box"</span>, name:<span class="tok-s">"Floor"</span>)
+<span class="tok-m">       ↓ (フレーム境界まで待機)</span>
+<span class="tok-m">  ←</span> { entityId: <span class="tok-n">42</span>, name: <span class="tok-s">"Floor"</span>, sceneGeneration: <span class="tok-n">7</span> }
+<span class="tok-m">AI →</span> <span class="tok-fn">dx12_set_transform</span>(entity: <span class="tok-n">42</span>, …)   <span class="tok-c">// そのまま entityId を使う</span></code></pre>
+
+        <div class="note warn">
+          <span class="ti">!</span>
+          <div><b>セキュリティ:</b> ブリッジは<b>エディタ専用</b>で、受けるのは <code class="inl">127.0.0.1</code> のみ。最初の1行が JSON で始まらない接続は即切断（ブラウザのドライブバイを遮断）。パス系ツールは assets 相対のみ。<b>ゲーム（封印ランタイム）ではブリッジは起動しない</b>＝配布物は外から触れない。</div>
+        </div>
+      </section>
+
+      <!-- ===== DISTRIBUTION ===== -->
+      <section class="doc reveal" id="distribution">
+        <div class="sec-head">
+          <span class="ic"><img src="img/build.png" alt=""/></span>
+          <h2>配布とアセット保護</h2>
+        </div>
+        <p class="sec-sub">配布ゲームは「絶対にエディタにならないゲーム専用exe + 暗号化アセット」で出す。設定ファイルを消してもエディタになる経路はゼロ。</p>
+
+        <h3>ビルドして配る</h3>
+        <p>エディタでプロジェクトを開いて <b>Build</b>、または CLI でヘッドレスビルド:</p>
+<pre><code>DX12Engine.exe --build "&lt;projectDir&gt;"</code></pre>
+        <p><code class="inl">&lt;projectDir&gt;/build/game/</code> に次が出力される（平文アセットは出ない）:</p>
+        <ul class="clean">
+          <li><code class="inl">Game.exe</code> = ゲーム専用ランタイム（<code class="inl">GameRuntime</code>。コンパイル時にゲームモード固定でエディタ経路を除外）</li>
+          <li><code class="inl">game.pak</code> = 全アセットを <b>AES-256-GCM 暗号化</b> + 圧縮した単一パック（GCMタグで改ざん検知）</li>
+          <li><code class="inl">shaders/</code> と必要な DLL</li>
+        </ul>
+
+        <h3>アセットパックの仕組み</h3>
+        <ul class="clean">
+          <li>テクスチャ / モデル(glTFの外部bin含む) / 音源 / Lua / シーンJSON の全ローダが <b>VFS 経由</b>に統一。ゲームは pak を復号、エディタはルーズファイルを透過的に読む。</li>
+          <li>鍵はビルド毎にランダム生成して難読化保存（<code class="inl">.gitignore</code> 済み・コミットしない）。クライアント側暗号は「抑止」であって完全な秘匿ではない前提。</li>
+          <li>ブート設定（タイトル / 開始シーン / ウィンドウ）は pak 内の <code class="inl">__manifest__</code> に格納。</li>
+        </ul>
+
+        <h3>GitHub Releases で自動アップデート</h3>
+        <p>配布レイアウト（exe隣にassets/）でのみ、起動時に GitHub の <code class="inl">releases/latest</code> を見て、タグが新しければ確認ダイアログ → zip をダウンロード → 本体終了を待って上書き再起動する。リポジトリは <b>public 必須</b>（無認証API）。</p>
+        <div class="note good">
+          <span class="ti">+</span>
+          <div>つまり配布物は「エディタにならない・アセットが読めない・勝手に最新化される」ゲーム専用ビルドになる。開発は単一の <code class="inl">DX12Engine.exe</code>、配布は <code class="inl">Game.exe</code> + <code class="inl">game.pak</code>。</div>
+        </div>
+      </section>
+
+      <!-- ===== C++ MODULE API ===== -->
+      <section class="doc reveal" id="cpp-api">
+        <div class="sec-head">
+          <span class="ic"><img src="img/ent_script.png" alt=""/></span>
+          <h2>C++ モジュール API</h2>
+        </div>
+        <p class="sec-sub">エンジンを C++ から埋め込む / 拡張する場合の主要クラスの public API（抜粋）。全クラスは <code class="inl">namespace dx12e</code>。ゲーム作りは上の Lua / コンポーネントだけで完結する。ここはエンジン本体をいじる人向け。</p>
+
+        <h3>コア・シーン</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>クラス</th><th>主な API</th></tr></thead>
+            <tbody>
+              <tr><td><code>Application</code></td><td><code>Initialize(hInstance, nCmdShow, gameMode=false)</code> / <code>Run()</code> / <code>Shutdown()</code> / <code>BuildGameStandalone()</code>。埋め込みは基本この3つ。</td></tr>
+              <tr><td><code>Scene</code></td><td><code>Spawn / SpawnBox / SpawnSphere / SpawnPlane(...)</code> → <code>Entity</code> / <code>Remove</code> / <code>Clear</code> / <code>FindEntity</code> / <code>QueryByTag</code> / <code>QueryInBox</code> / <code>GetRegistry()</code>(entt) / <code>GetPostSettings / GetSkyboxSettings / GetSSAOSettings()</code></td></tr>
+              <tr><td><code>Entity</code></td><td><code>AddComponent&lt;T&gt;()</code> / <code>GetComponent&lt;T&gt;()</code> / <code>HasComponent&lt;T&gt;()</code> / <code>RemoveComponent&lt;T&gt;()</code> / <code>GetHandle()</code> / <code>IsValid()</code></td></tr>
+              <tr><td><code>SceneSerializer</code><span class="muted"> (static)</span></td><td><code>Save / Load / SaveToString / LoadFromString</code> / <code>SerializeEntity / InstantiateEntity / DuplicateEntity</code> / <code>SerializeSubtree / InstantiateSubtree</code> / <code>SavePrefab / InstantiatePrefab</code></td></tr>
+              <tr><td><code>SceneFlow</code></td><td><code>Load / Save / Start / SetStart</code> / <code>Next(rel) / OnFail(rel)</code> / <code>SetNext / SetOnFail</code>（<code>sceneflow.json</code> と対応）</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>描画・リソース</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>クラス</th><th>主な API</th></tr></thead>
+            <tbody>
+              <tr><td><code>Camera</code></td><td><code>SetPerspective / SetOrthographic(...)</code> / <code>IsOrthographic()</code> / <code>LookAt</code> / <code>MoveForward / MoveRight / MoveUp / Rotate</code> / <code>GetView/Projection/ViewProjMatrix()</code> / <code>Get/SetYaw・Pitch・MoveSpeed・MouseSensitivity</code></td></tr>
+              <tr><td><code>Mesh</code></td><td><code>Initialize(device, vertices, indices)</code> / <code>InitializeAsBox / AsPlane / AsSphere</code> / <code>SetMaterial / GetMaterial</code> / <code>GetAABBMin/Max</code> / <code>ApplyUVScale</code> / <code>SetVertexColor</code> / <code>static GetInputLayout()</code></td></tr>
+              <tr><td><code>Material</code><span class="muted"> (struct)</span></td><td><code>albedoTexture / normalMapTexture / metalRoughnessTexture</code> / <code>defaultMetallic=1 / defaultRoughness=1</code> / <code>srvBlockIndex</code></td></tr>
+              <tr><td><code>ParticleSystem</code></td><td><code>Initialize(device, rtv, dsv, shaderDir)</code> / <code>Emit(EmitParams) / EmitBeam(BeamParams)</code> / <code>Update / Clear / Render</code> / <code>SetSceneDepth / SetTime / AddPulse / AliveCount</code>（Lua <code class="inl">fx:*</code> の実体）</td></tr>
+              <tr><td><code>ResourceManager</code></td><td><code>Initialize(device, srvHeap, cmdList)</code> / <code>GetOrLoadTexture / GetOrLoadModel / GetOrLoadEmbeddedTexture</code> / <code>GetDefaultWhite/Normal/MetalRoughnessTexture</code> / <code>FinishUploads</code></td></tr>
+              <tr><td><code>ModelLoader</code><span class="muted"> (static)</span></td><td><code>LoadFromFile(device, cmdList, path, resourceManager)</code> → <code>ModelData</code> / <code>LoadAnimationsFromFile(path, skeleton)</code>（Assimp: glTF/OBJ/FBX）</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>入力・音・物理・スクリプト</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>クラス</th><th>主な API</th></tr></thead>
+            <tbody>
+              <tr><td><code>InputSystem</code></td><td><code>Initialize(hwnd) / Update()</code> / <code>IsKeyDown / IsKeyPressed / IsAsyncKeyDown</code> / <code>GetMouseDeltaX/Y</code> / <code>SetMouseCapture / ToggleMouseCapture</code> / <code>OnKeyDown / OnRawInput / OnFocusLost</code>（WndProc から）</td></tr>
+              <tr><td><code>AudioSystem</code></td><td>Lua <code class="inl">audio:*</code> の実体 + <code>SetListener(...)</code> / <code>PlaySFXSpatial(...)</code> → slotId / <code>UpdateSpatialEmitter / Update()</code> / <code>SetAssetsDir</code></td></tr>
+              <tr><td><code>PhysicsSystem</code></td><td>Lua <code class="inl">physics:*</code> の実体 + <code>RegisterBody / UnregisterBody</code> / <code>RegisterCharacter / StepCharacters / SyncCharactersToTransforms</code> / <code>Raycast / OverlapBox / OverlapSphere</code> / <code>SetEventBus(bus)</code>（接触 <code class="inl">engine.contact.enter/exit</code>）</td></tr>
+              <tr><td><code>ScriptEngine</code></td><td><code>Initialize(scene, input, camera, audio, physics, assetsDir)</code> / <code>LoadScript</code> / <code>AttachScriptToEntity / DetachScriptFromEntity</code> / <code>OnPlayStart / OnPlayStop / UpdateAttachedScripts / UpdateTriggers</code> / <code>GetPropertySchema</code> / <code>CheckLuaSyntax</code> / <code>Set*Callback(...)</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="note">
+          <span class="ti">i</span>
+          <div>graphics 低レベル層（<code class="inl">GraphicsDevice</code> / <code class="inl">SwapChain</code> / <code class="inl">DescriptorHeap</code> / <code class="inl">PipelineState</code> / <code class="inl">RootSignature</code> / <code class="inl">Buffer</code> / <code class="inl">Texture</code> ほか）、エディタ（<code class="inl">EditorLayer</code> / 各 Panel / <code class="inl">UndoSystem</code>）、VFS/pak、Project 系は内部実装寄りのため未収載。完全な一覧は <a href="https://github.com/ryuto-alt/dx12/blob/master/docs/API_REFERENCE.md" target="_blank" rel="noopener"><code>docs/API_REFERENCE.md</code></a> を参照。</div>
+        </div>
+      </section>
+
+      <!-- ===== REFERENCE ===== -->
+      <section class="doc reveal" id="reference">
+        <div class="sec-head">
+          <span class="ic"><img src="img/file.png" alt=""/></span>
+          <h2>リファレンス &amp; リンク</h2>
+        </div>
+        <p class="sec-sub">より詳しい一次ドキュメントはリポジトリの <code class="inl">docs/</code> にある。このページはそれらの要点をまとめた使い方ガイド。</p>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>ドキュメント</th><th>中身</th></tr></thead>
+            <tbody>
+              <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/API_REFERENCE.md" target="_blank" rel="noopener"><code>docs/API_REFERENCE.md</code></a></td><td><b>API 完全リファレンス</b>（Lua 全API・コンポーネント・データ駆動・CLI・MCP・C++ モジュール）</td></tr>
+              <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/SCRIPTING.md" target="_blank" rel="noopener"><code>docs/SCRIPTING.md</code></a></td><td>Lua スクリプトAPIガイド（高レベル / 低レベル）</td></tr>
+              <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/SCRIPT_COMPONENTS.md" target="_blank" rel="noopener"><code>docs/SCRIPT_COMPONENTS.md</code></a></td><td>プロパティ付きコンポーネント / プレハブ</td></tr>
+              <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/AUTHORING.md" target="_blank" rel="noopener"><code>docs/AUTHORING.md</code></a></td><td>ParticleEmitter / Trigger+Action / イベントバス / validate</td></tr>
+              <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/MCP.md" target="_blank" rel="noopener"><code>docs/MCP.md</code></a></td><td>MCP / AIブリッジ 完全リファレンス（全37ツール・error_code）</td></tr>
+              <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/ASSET_PROTECTION_DESIGN.md" target="_blank" rel="noopener"><code>docs/ASSET_PROTECTION_DESIGN.md</code></a></td><td>ゲーム専用ランタイム + 暗号化パックの設計</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="cta-row" style="margin-top:24px">
+          <a href="https://github.com/ryuto-alt/dx12" target="_blank" rel="noopener" class="btn btn-primary"><img src="img/github.png" alt="" style="width:17px;height:17px"/> GitHub で見る</a>
+          <a href="#top" class="btn btn-ghost">先頭に戻る</a>
+        </div>
+      </section>
+
+    </div><!-- /.wrap -->
+  </main>
+</div>
+
+<footer>
+  <div class="foot-in">
+    <div>
+      <a href="#top" class="brand"><img src="img/logo.png" alt=""/><span class="wm">DX12 Engine</span></a>
+      <p>DirectX 12 製の自作ゲームエンジン + Unity風エディタ。エディタでもテキストでもAIでもゲームを作る。MIT ライセンス。</p>
+    </div>
+    <div class="foot-col">
+      <h5>ドキュメント</h5>
+      <a href="#quickstart">クイックスタート</a>
+      <a href="#editor">エディタの使い方</a>
+      <a href="#scripting">Lua スクリプト</a>
+      <a href="#authoring">データ駆動オーサリング</a>
+    </div>
+    <div class="foot-col">
+      <h5>リンク</h5>
+      <a href="https://github.com/ryuto-alt/dx12" target="_blank" rel="noopener">GitHub リポジトリ</a>
+      <a href="https://github.com/ryuto-alt/dx12/blob/master/docs/MCP.md" target="_blank" rel="noopener">MCP リファレンス</a>
+      <a href="https://github.com/ryuto-alt/dx12/issues" target="_blank" rel="noopener">Issues</a>
+      <a href="https://github.com/ryuto-alt/dx12/blob/master/LICENSE" target="_blank" rel="noopener">ライセンス (MIT)</a>
+    </div>
+  </div>
+  <div class="foot-bottom">
+    <span>© 2026 DX12 Engine</span>
+    <span>Built for editors, scripts, and AI.</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var doc = document;
+
+  // ----- Mobile sidebar -----
+  var menuBtn = doc.getElementById('menuBtn');
+  var sidebar = doc.getElementById('sidebar');
+  var overlay = doc.getElementById('overlay');
+  function setMenu(open){
+    sidebar.classList.toggle('open', open);
+    overlay.classList.toggle('show', open);
+    menuBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  menuBtn.addEventListener('click', function(){ setMenu(!sidebar.classList.contains('open')); });
+  overlay.addEventListener('click', function(){ setMenu(false); });
+
+  // ----- Smooth-close sidebar on nav click (mobile) + close menu -----
+  var navLinks = Array.prototype.slice.call(doc.querySelectorAll('.sidebar a.s, .topnav a.nl'));
+  navLinks.forEach(function(a){
+    a.addEventListener('click', function(){ if(window.innerWidth <= 1080) setMenu(false); });
+  });
+
+  // ----- Copy buttons on code blocks -----
+  Array.prototype.slice.call(doc.querySelectorAll('pre')).forEach(function(pre){
+    var btn = doc.createElement('button');
+    btn.className = 'copy-btn';
+    btn.type = 'button';
+    btn.textContent = 'コピー';
+    btn.addEventListener('click', function(){
+      var code = pre.querySelector('code');
+      var text = (code ? code.innerText : pre.innerText);
+      navigator.clipboard.writeText(text).then(function(){
+        btn.textContent = 'コピー済み'; btn.classList.add('done');
+        setTimeout(function(){ btn.textContent = 'コピー'; btn.classList.remove('done'); }, 1600);
+      }).catch(function(){ btn.textContent = '失敗'; });
+    });
+    pre.appendChild(btn);
+  });
+
+  // ----- Reveal on scroll -----
+  var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var reveals = Array.prototype.slice.call(doc.querySelectorAll('.reveal'));
+  if(reduce || !('IntersectionObserver' in window)){
+    reveals.forEach(function(el){ el.classList.add('in'); });
+  } else {
+    var ro = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); ro.unobserve(e.target); } });
+    }, { rootMargin: '0px 0px 12% 0px', threshold: 0 });
+    reveals.forEach(function(el){ ro.observe(el); });
+  }
+
+  // ----- Scrollspy: highlight active sidebar link -----
+  var sections = Array.prototype.slice.call(doc.querySelectorAll('section[id]'));
+  var linkFor = {};
+  Array.prototype.slice.call(doc.querySelectorAll('.sidebar a.s')).forEach(function(a){
+    var id = a.getAttribute('href').slice(1); linkFor[id] = a;
+  });
+  function clearActive(){ for(var k in linkFor) linkFor[k].classList.remove('active'); }
+  if('IntersectionObserver' in window){
+    var spy = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if(e.isIntersecting){
+          var id = e.target.id;
+          if(linkFor[id]){ clearActive(); linkFor[id].classList.add('active'); }
+        }
+      });
+    }, { rootMargin: '-64px 0px -70% 0px', threshold: 0 });
+    sections.forEach(function(s){ if(linkFor[s.id]) spy.observe(s); });
+  }
+})();
+</script>
+</body>
+</html>

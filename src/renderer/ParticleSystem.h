@@ -12,6 +12,8 @@
 namespace dx12e
 {
 class GraphicsDevice;
+class DescriptorHeap;
+class ResourceManager;
 
 // 見た目の種別（Particle.hlsl の KIND_* と一致必須）。
 enum class ParticleKind : int
@@ -72,6 +74,7 @@ public:
         float distort      = 0.0f;      // >0 で歪みパーティクル（シーンでなく歪みバッファへ描く。熱ゆらぎ/衝撃波）
         bool  light        = false;     // true で「明るい粒子上位N個のポイントライト化」候補
         float lightRange   = 3.0f;      // ポイントライト化時の到達距離
+        std::string texturePath;        // 空=プロシージャル質感(kind依存)、指定時はテクスチャを貼る（assets絶対/相対いずれもResourceManagerに渡した値そのまま）
     };
 
     // 連続ビーム（2点間カメラ向きquad）。レーザー/エネルギー線/火柱/稲妻。
@@ -106,9 +109,12 @@ public:
         DirectX::XMFLOAT3 color;   // intensity 乗算済み
     };
 
+    // srvHeap/resourceManager: テクスチャ付きパーティクル用。null なら常にプロシージャル質感になる
+    // （テクスチャ指定があっても解決できずプロシージャルへフォールバック）。
     void Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
                     DXGI_FORMAT dsvFormat, DXGI_FORMAT distortFormat,
-                    const std::wstring& shaderDir);
+                    const std::wstring& shaderDir,
+                    DescriptorHeap* srvHeap = nullptr, ResourceManager* resourceManager = nullptr);
 
     // onDeath: 粒子の死亡位置で子バーストを放出（サブエミッタ・1段のみ）。
     void Emit(const EmitParams& p, const EmitParams* onDeath = nullptr);
@@ -172,9 +178,10 @@ private:
         bool  light = false;
         bool  hasMid = false;
         bool  alive = false;
+        u32   texSlot = kNoTexture;     // m_texPaths の添字。kNoTexture ならプロシージャル質感
     };
 
-    // シェーダのインスタンス入力レイアウトと一致（stride 64）。
+    // シェーダのインスタンス入力レイアウトと一致（stride 68）。
     struct GpuParticle
     {
         DirectX::XMFLOAT3 center;   // 0  POSITION
@@ -186,6 +193,7 @@ private:
         float             age01;    // 52 TEXCOORD3
         u32               kind;     // 56 TEXCOORD4
         float             seed;     // 60 TEXCOORD5
+        u32               texIndex; // 64 TEXCOORD6（SRVヒープの絶対インデックス。kNoTexture=プロシージャル）
     };
 
     struct Beam
@@ -235,7 +243,9 @@ private:
 
     float Rand(float a, float b);
     void  ResetPool();   // 空きリスト/生存リストを初期状態へ（Initialize/Clear 共用）
+    u32   InternTexPath(const std::string& path);   // 空文字は kNoTexture を返す。それ以外は m_texPaths に登録/検索
 
+    static constexpr u32 kNoTexture      = 0xFFFFFFFFu;  // プロシージャル質感（テクスチャ未指定）
     static constexpr u32 kMaxParticles   = 8000;
     static constexpr u32 kMaxBeams       = 512;
     static constexpr u32 kMaxChildDefs   = 2048;  // サブエミッタ定義リング（超過で古い定義を上書き）
@@ -287,6 +297,11 @@ private:
     D3D12_GPU_DESCRIPTOR_HANDLE m_depthSrv{};
     float m_projA = 0.0f, m_projB = 0.0f, m_invRTW = 0.0f, m_invRTH = 0.0f;
     bool  m_hasDepth = false;
+
+    // テクスチャ付きパーティクル用（null なら常にプロシージャル）
+    DescriptorHeap*  m_srvHeap = nullptr;
+    ResourceManager* m_resourceManager = nullptr;
+    std::vector<std::string> m_texPaths;   // Particle::texSlot の添字→assetsパス（追記のみ、小規模想定）
 };
 
 } // namespace dx12e

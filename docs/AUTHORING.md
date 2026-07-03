@@ -80,8 +80,11 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 | `turbStrength` `turbFreq` | カールノイズ乱流の強さ / 空間周波数（煙・炎の有機的な揺らぎ） | 0 / 1 |
 | `flicker` `flickerFreq` | 発光明滅の強さ(0..1) / 速さ | 0 / 18 |
 | `distort` `light` `lightRange` | 画面歪み量 / ポイントライト化 / 光の到達距離 | 0 / false / 3 |
+| `texturePath` | assets 相対パス。指定すると `kind` の数式模様の代わりに画像をビルボード貼り付け。空=プロシージャル | "" |
 
 **炎=** kind1 blend0 gravity+ / **煙=** kind2 blend1 size大 colorEnd暗 / **魔法=** kind4 blend0 / **火花=** kind3 stretch>0。
+**テクスチャ貼り付け=** `texturePath` に画像を指定（例 `"vfx/spark.png"`）。色は寿命カーブの頂点色で乗算、
+アルファは画像のアルファをそのまま使用（straight alpha、Sprite2D と同じ規約）。GPU パーティクル(`gpu:true`)は非対応。
 
 ---
 

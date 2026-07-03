@@ -15,7 +15,12 @@ cbuffer CamCB : register(b0)
 };
 
 Texture2D    gSceneDepth : register(t0);   // R32_FLOAT シーン深度（NDC z）
-SamplerState sDepth      : register(s0);   // LINEAR CLAMP
+// t1 は GpuParticleDraw.hlsl が StructuredBuffer<GPart>(VS,root SRV) として使用中のため、
+// このPS専用テクスチャは t2 に置く（同じ Particle_PS.cso を GPU パーティクル描画でも共用するため）。
+Texture2D    gAlbedo     : register(t2);   // 粒子アルベド（texIndex!=0xFFFFFFFF の時のみサンプル）
+SamplerState sDepth      : register(s0);   // LINEAR CLAMP（デプス/アルベド共用）
+
+#define kNoTexture 0xFFFFFFFFu
 
 // kind 定義（C++ 側 ParticleKind と一致必須）
 #define KIND_GLOW     0
@@ -38,6 +43,7 @@ struct VSInput
     float  age01   : TEXCOORD3;   // 寿命 0..1
     uint   kind    : TEXCOORD4;   // 見た目の種別
     float  seed    : TEXCOORD5;   // 個体差用シード
+    uint   texIdx  : TEXCOORD6;   // SRVヒープの絶対インデックス。kNoTexture ならプロシージャル
     uint   vid     : SV_VertexID;
 };
 
@@ -50,6 +56,7 @@ struct VSOutput
     nointerpolation uint kind : TEXCOORD2;
     float  seed  : TEXCOORD3;
     float  viewZ : TEXCOORD4;    // ビュー空間 Z（= clip.w）
+    nointerpolation uint texIdx : TEXCOORD5;
 };
 
 // 四角形2三角形分のコーナー
@@ -92,6 +99,7 @@ VSOutput VSMain(VSInput i)
     o.age01 = i.age01;
     o.kind  = i.kind;
     o.seed  = i.seed;
+    o.texIdx = i.texIdx;
     o.viewZ = o.pos.w;   // 標準射影では w = ビュー空間 Z
     return o;
 }
@@ -238,7 +246,20 @@ float4 PSMain(VSOutput i) : SV_TARGET
 
     float shape;
     float3 kindColor;
-    ShadeKind(i, shape, kindColor);
+    if (i.texIdx != kNoTexture)
+    {
+        // テクスチャ貼り付けモード: プロシージャル形状の代わりに実画像をビルボードへ。
+        // uv は [-1,1] 中心原点なので [0,1] へ写像。色は頂点色(寿命カーブ)で乗算し、
+        // アルファをそのままカバレッジに使う（straight alpha、Sprite と同じ規約）。
+        float2 tuv = i.uv * 0.5 + 0.5;
+        float4 tex = gAlbedo.Sample(sDepth, tuv);
+        shape = tex.a;
+        kindColor = tex.rgb * i.color.rgb;
+    }
+    else
+    {
+        ShadeKind(i, shape, kindColor);
+    }
 
     float cov = shape * i.color.a * soft;
     float3 rgb = kindColor * cov * params.x;     // 前乗算（加算 / 前乗算アルファ 両PSO共用）

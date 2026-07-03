@@ -18,6 +18,7 @@ namespace dx12e
 class GraphicsDevice;
 class CommandList;
 class EditorContext;
+class ResourceManager;
 
 // 名前付き VFX プリセット（assets/vfx/*.json）。ParticleEmitter コンポーネントの
 // フィールドをほぼそのまま保持しつつ、Lua fx:burst{} 生成用のフィールド（burstCount）も
@@ -68,6 +69,7 @@ struct VfxAsset
     f32  distort    = 0.0f;
     bool light      = false;
     f32  lightRange = 3.0f;
+    std::string texturePath;   // assets 相対パス。空ならプロシージャル質感(kind依存)
 };
 
 // パーティクルエフェクトを見ながら作れる専用ツール窓（ツール > パーティクルエディタ）。
@@ -77,8 +79,10 @@ struct VfxAsset
 class VfxEditorPanel
 {
 public:
-    // device/srvHeap は Application が所有するものをそのまま渡す（プレビューRTのSRVをここへ確保する）。
-    void Initialize(GraphicsDevice& device, DescriptorHeap* srvHeap, const std::wstring& shaderDir);
+    // device/srvHeap/resourceManager は Application が所有するものをそのまま渡す
+    // （プレビューRTのSRVをここへ確保する。resourceManager はテクスチャ貼り付けプレビュー用）。
+    void Initialize(GraphicsDevice& device, DescriptorHeap* srvHeap, ResourceManager* resourceManager,
+                    const std::wstring& shaderDir);
 
     // 3D プレビューのオフスクリーン描画。ImGui BeginFrame より前、メインフレームの
     // コマンドリストが開いている間に呼ぶこと。呼んだ後は呼び出し側でメインの

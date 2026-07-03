@@ -398,6 +398,7 @@ struct ParticleEmitter
     f32  flickerFreq  = 18.0f; // 明滅の速さ
     bool gpu       = false;    // true で GPUパーティクル（compute・最大131072・加算専用。大量粒子向け。
                                // distort/light/sizeMid/blend=α は非対応）
+    std::string texturePath;  // assets 相対パス。空ならプロシージャル質感(kind依存)、指定時はテクスチャを貼る
 
     // ランタイム専有（非シリアライズ）
     bool _active    = true;    // 放出中か（Play 時は playOnStart で初期化。エディタは常時プレビュー）

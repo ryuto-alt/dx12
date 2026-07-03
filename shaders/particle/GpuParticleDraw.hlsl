@@ -27,7 +27,8 @@ struct GPart
 StructuredBuffer<GPart> gParticles : register(t1);
 StructuredBuffer<uint>  gAlive     : register(t2);
 
-// Particle.hlsl の VSOutput と完全一致（PS 流用のため）
+// Particle.hlsl の VSOutput と完全一致（PS 流用のため）。GPU パーティクルはテクスチャ貼り付け
+// 非対応なので texIdx は常に kNoTexture(0xFFFFFFFF) を出力しプロシージャル質感に固定する。
 struct VSOutput
 {
     float4 pos   : SV_POSITION;
@@ -37,6 +38,7 @@ struct VSOutput
     nointerpolation uint kind : TEXCOORD2;
     float  seed  : TEXCOORD3;
     float  viewZ : TEXCOORD4;
+    nointerpolation uint texIdx : TEXCOORD5;
 };
 
 static const float2 kCorners[6] = {
@@ -78,5 +80,6 @@ VSOutput VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     o.kind  = p.kind;
     o.seed  = p.seed;
     o.viewZ = o.pos.w;
+    o.texIdx = 0xFFFFFFFFu;   // kNoTexture: 常にプロシージャル
     return o;
 }
