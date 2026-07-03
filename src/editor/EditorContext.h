@@ -38,6 +38,18 @@ struct PendingScriptAttach
     std::string  scriptPath;   // assets 相対パス
 };
 
+// アセットブラウザからテクスチャをドラッグ&ドロップしてマテリアルに割り当てる要求
+// (SceneView 上のメッシュへドロップ、または Inspector のマテリアルスロットへドロップ)。
+// テクスチャロード(GetOrLoadTexture)が cmdList を要するためフレーム境界で処理する。
+enum class MaterialTextureSlot { Albedo, Normal, MetalRoughness };
+struct PendingMaterialTextureDrop
+{
+    entt::entity entity = entt::null;
+    u32 submeshIndex = 0;              // MeshRenderer::meshes[] のインデックス
+    MaterialTextureSlot slot = MaterialTextureSlot::Albedo;
+    std::string texturePath;           // 絶対パス(処理側で assets 相対に正規化)
+};
+
 
 class EditorContext
 {
@@ -181,6 +193,7 @@ public:
     bool pendingUndo = false;
     bool pendingRedo = false;
     std::vector<PendingScriptAttach> pendingScriptAttachments;
+    std::vector<PendingMaterialTextureDrop> pendingMaterialTextureDrops;
     // 選択エンティティ（+子孫）を .prefab として書き出す要求。Application がフレーム境界で処理。
     entt::entity pendingCreatePrefab = entt::null;
     std::string pendingLoadPath;

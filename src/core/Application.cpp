@@ -588,6 +588,63 @@ Application::CustomForwardPsos* Application::EnsureCustomPso(const std::string& 
     return stored.valid ? &stored : nullptr;
 }
 
+u32 Application::EnsureMaterialOverrideSrv(entt::entity e, u32 submeshIndex, const MeshRenderer& renderer,
+                                            const Material* mat, ID3D12GraphicsCommandList* cmdList)
+{
+    if (!renderer.HasAnyTextureOverride(submeshIndex))
+        return 0xFFFFFFFF;
+
+    const std::string& albedoPath = MeshRenderer::SafeGetOverride(renderer.overrideAlbedoTexture, submeshIndex);
+    const std::string& normalPath = MeshRenderer::SafeGetOverride(renderer.overrideNormalTexture, submeshIndex);
+    const std::string& mrPath     = MeshRenderer::SafeGetOverride(renderer.overrideMetalRoughnessTexture, submeshIndex);
+
+    const u64 key = (static_cast<u64>(e) << 16) | submeshIndex;
+    auto it = m_materialOverrideSrvCache.find(key);
+    if (it != m_materialOverrideSrvCache.end() && it->second.blockStart != 0xFFFFFFFF
+        && it->second.albedoPath == albedoPath && it->second.normalPath == normalPath
+        && it->second.mrPath == mrPath)
+    {
+        return it->second.blockStart;
+    }
+
+    // 上書き指定があればロードして使い、無ければ Material 既定→ResourceManager デフォルトの順に
+    // フォールバック（ModelLoader が SRV ブロックを組む時と同じ解決順）。
+    auto resolve = [&](const std::string& overridePath, Texture* fallback, bool srgb) -> Texture* {
+        if (overridePath.empty())
+            return fallback;
+        std::string fullPath = PathResolver::AssetsDir() + overridePath;
+        if (!std::filesystem::exists(fullPath))
+        {
+            Logger::Warn("マテリアル上書きテクスチャが見つかりません: {}", fullPath);
+            return fallback;
+        }
+        return m_resourceManager->GetOrLoadTexture(PathResolver::Utf8ToWide(fullPath), cmdList, srgb);
+    };
+
+    Texture* albedoFallback = (mat && mat->albedoTexture) ? mat->albedoTexture : m_resourceManager->GetDefaultWhiteTexture();
+    Texture* normalFallback = (mat && mat->normalMapTexture) ? mat->normalMapTexture : m_resourceManager->GetDefaultNormalTexture();
+    Texture* mrFallback     = (mat && mat->metalRoughnessTexture) ? mat->metalRoughnessTexture : m_resourceManager->GetDefaultMetalRoughnessTexture();
+
+    Texture* albedo = resolve(albedoPath, albedoFallback, /*srgb=*/true);
+    Texture* normal = resolve(normalPath, normalFallback, /*srgb=*/false);
+    Texture* mr     = resolve(mrPath,     mrFallback,     /*srgb=*/false);
+    if (!albedo || !normal || !mr)
+        return 0xFFFFFFFF;
+
+    MaterialOverrideSrv& entry = m_materialOverrideSrvCache[key];
+    if (entry.blockStart == 0xFFFFFFFF)
+        entry.blockStart = m_srvHeap->AllocateBlock(3);
+
+    albedo->CreateSRV(*m_graphicsDevice, m_srvHeap->GetCpuHandle(entry.blockStart));
+    normal->CreateSRV(*m_graphicsDevice, m_srvHeap->GetCpuHandle(entry.blockStart + 1));
+    mr->CreateSRV(*m_graphicsDevice, m_srvHeap->GetCpuHandle(entry.blockStart + 2));
+
+    entry.albedoPath = albedoPath;
+    entry.normalPath = normalPath;
+    entry.mrPath = mrPath;
+    return entry.blockStart;
+}
+
 void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                              const ProjectInfo* /*projectInfo*/, bool buildMode)
 {
@@ -6504,8 +6561,16 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
 
             const Material* mat = mesh->GetMaterial();
 
-            // PBR テクスチャ SRV ブロックをバインド
-            if (mat && mat->srvBlockIndex != 0xFFFFFFFF)
+            // PBR テクスチャ SRV ブロックをバインド。インスタンス単位のテクスチャ上書き
+            // (D&Dでのマテリアル割当、MeshRenderer::overrideAlbedoTexture 等)があれば
+            // 専用ブロックを優先する(mat は同一モデルの全インスタンスで共有されるため直接は触らない)。
+            u32 overrideBlock = EnsureMaterialOverrideSrv(e, mi, renderer, mat, nativeCmdList);
+            if (overrideBlock != 0xFFFFFFFF)
+            {
+                m_commandList->SetSRVTable(RootSignature::kSlotSRVTable,
+                    m_srvHeap->GetGpuHandle(overrideBlock));
+            }
+            else if (mat && mat->srvBlockIndex != 0xFFFFFFFF)
             {
                 m_commandList->SetSRVTable(RootSignature::kSlotSRVTable,
                     m_srvHeap->GetGpuHandle(mat->srvBlockIndex));
@@ -7445,6 +7510,52 @@ void Application::Render()
                     &reg, req.entity,
                     hadBefore, oldPath, oldEnabled,
                     req.scriptPath));
+        }
+    }
+
+    // マテリアルテクスチャD&D割当 遅延処理（アセットブラウザ→SceneView/Inspector）
+    if (!m_editorCtx->pendingMaterialTextureDrops.empty())
+    {
+        auto drops = std::move(m_editorCtx->pendingMaterialTextureDrops);
+        m_editorCtx->pendingMaterialTextureDrops.clear();
+
+        auto& reg = m_scene->GetRegistry();
+        std::string base = std::filesystem::path(PathResolver::AssetsDir()).lexically_normal().string();
+        std::replace(base.begin(), base.end(), '\\', '/');
+
+        for (const auto& req : drops)
+        {
+            if (!reg.valid(req.entity) || !reg.all_of<MeshRenderer>(req.entity))
+                continue;
+
+            // 絶対パス → assets 相対パスへ正規化(HierarchyPanel のスクリプトD&Dと同じ手順)
+            std::string abs = std::filesystem::path(req.texturePath).lexically_normal().string();
+            std::replace(abs.begin(), abs.end(), '\\', '/');
+            std::string rel = (abs.rfind(base, 0) == 0) ? abs.substr(base.size()) : abs;
+
+            auto& mr = reg.get<MeshRenderer>(req.entity);
+            MeshRenderer before = mr;   // Undo 用スナップショット(値コピー、生ポインタは共有でOK)
+            switch (req.slot)
+            {
+                case MaterialTextureSlot::Albedo:
+                    MeshRenderer::SetOverride(mr.overrideAlbedoTexture, req.submeshIndex, rel);
+                    break;
+                case MaterialTextureSlot::Normal:
+                    MeshRenderer::SetOverride(mr.overrideNormalTexture, req.submeshIndex, rel);
+                    break;
+                case MaterialTextureSlot::MetalRoughness:
+                    MeshRenderer::SetOverride(mr.overrideMetalRoughnessTexture, req.submeshIndex, rel);
+                    break;
+            }
+            m_editorCtx->undoSystem.PushCommand(std::make_unique<ComponentEditCommand<MeshRenderer>>(
+                &reg, req.entity, before, mr, "Material Texture"));
+
+            // キャッシュは消さない（EnsureMaterialOverrideSrv がパス不一致を検知して同じ
+            // blockStart 上へ CreateSRV し直す。erase すると AllocateBlock が再度走り
+            // 前のブロックを解放しないまま SRV ヒープを浪費するので避ける）。
+
+            Logger::Info("マテリアルテクスチャ割当: entity={} submesh={} slot={} -> {}",
+                static_cast<u32>(req.entity), req.submeshIndex, static_cast<int>(req.slot), rel);
         }
     }
 

@@ -18,6 +18,7 @@
 #include "animation/SkinningBuffer.h"
 #include "scripting/ScriptEngine.h"
 #include "resource/ShaderRegistry.h"
+#include "editor/panels/AssetBrowserPanel.h"
 
 #include <imgui_internal.h>   // BeginDragDropTargetCustom（ウィンドウ全体をドロップ先に）
 #include <filesystem>
@@ -1146,6 +1147,77 @@ void InspectorPanel::Render(entt::registry& reg,
                     bool hasMR2 = mat->metalRoughnessTexture != nullptr;
                     ImGui::Text("Normal Map: %s", hasNormal ? "Yes" : "No");
                     ImGui::Text("MetalRough Map: %s", hasMR2 ? "Yes" : "No");
+
+                    // テクスチャ上書き（アセットブラウザからテクスチャをドラッグ&ドロップして割当。
+                    // Unity/Unreal 風）。サブメッシュ単位。Material 自体は同一モデルパスの全インスタンスで
+                    // 共有されているため直接書き換えず、MeshRenderer にインスタンス単位で保持する
+                    // (描画側 Application::EnsureMaterialOverrideSrv が専用SRVブロックを合成する)。
+                    ImGui::Separator();
+                    ImGui::TextDisabled("\xe3\x83\x86\xe3\x82\xaf\xe3\x82\xb9\xe3\x83\x81\xe3\x83\xa3\xe4\xb8\x8a\xe6\x9b\xb8\xe3\x81\x8d"
+                        "(\xe3\x82\xa2\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88\xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6\xe3\x81\x8b\xe3\x82\x89 D&D)");
+
+                    auto drawTextureOverrideSlot = [&](const char* label, std::vector<std::string>& slotVec, u32 smi)
+                    {
+                        ImGui::PushID(label);
+                        ImGui::PushID(static_cast<int>(smi));
+
+                        const std::string& cur = MeshRenderer::SafeGetOverride(slotVec, smi);
+                        std::string display = cur.empty() ? "(default)" : cur;
+
+                        ImGui::TextUnformatted(label);
+                        ImGui::SameLine(120.0f);
+                        ImGui::Button(display.c_str(), ImVec2(180.0f, 0.0f));
+                        if (ImGui::BeginDragDropTarget())
+                        {
+                            if (const ImGuiPayload* payload =
+                                    ImGui::AcceptDragDropPayload(AssetBrowserPanel::kDragDropPayloadType))
+                            {
+                                const char* droppedPath = static_cast<const char*>(payload->Data);
+                                namespace fs = std::filesystem;
+                                std::string ext = fs::path(droppedPath).extension().string();
+                                for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+                                if (AssetBrowserPanel::ClassifyExtension(ext) == AssetBrowserPanel::AssetType::Texture)
+                                {
+                                    std::string abs = fs::path(droppedPath).lexically_normal().string();
+                                    std::string base = fs::path(m_assetsDir).lexically_normal().string();
+                                    std::replace(abs.begin(), abs.end(), '\\', '/');
+                                    std::replace(base.begin(), base.end(), '\\', '/');
+                                    std::string rel = (abs.rfind(base, 0) == 0) ? abs.substr(base.size()) : abs;
+
+                                    MeshRenderer before = mr;
+                                    MeshRenderer::SetOverride(slotVec, smi, rel);
+                                    ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<MeshRenderer>>(
+                                        &reg, ctx.selectedEntity, before, mr, "Material Texture"));
+                                }
+                            }
+                            ImGui::EndDragDropTarget();
+                        }
+                        if (!cur.empty())
+                        {
+                            ImGui::SameLine();
+                            if (ImGui::SmallButton("x"))
+                            {
+                                MeshRenderer before = mr;
+                                MeshRenderer::SetOverride(slotVec, smi, "");
+                                ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<MeshRenderer>>(
+                                    &reg, ctx.selectedEntity, before, mr, "Material Texture"));
+                            }
+                        }
+
+                        ImGui::PopID();
+                        ImGui::PopID();
+                    };
+
+                    for (u32 smi = 0; smi < static_cast<u32>(mr.meshes.size()); ++smi)
+                    {
+                        if (!mr.meshes[smi]) continue;
+                        if (mr.meshes.size() > 1)
+                            ImGui::Text("Submesh %u", smi);
+                        drawTextureOverrideSlot("Albedo", mr.overrideAlbedoTexture, smi);
+                        drawTextureOverrideSlot("Normal", mr.overrideNormalTexture, smi);
+                        drawTextureOverrideSlot("MetalRoughness", mr.overrideMetalRoughnessTexture, smi);
+                    }
                 }
             }
 

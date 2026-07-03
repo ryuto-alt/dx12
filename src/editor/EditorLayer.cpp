@@ -22,7 +22,9 @@
 
 #include <DirectXMath.h>
 #include <cmath>
+#include <cctype>
 #include <string>
+#include <filesystem>
 
 namespace dx12e
 {
@@ -453,17 +455,48 @@ void EditorLayer::Render(bool isPlaying,
                     AssetBrowserPanel::kDragDropPayloadType))
             {
                 const char* droppedPath = static_cast<const char*>(payload->Data);
-                PendingSpawnRequest req;
-                req.modelPath = droppedPath;
 
-                // マウス座標からワールド座標を計算（Y=0 平面との交点）
-                req.position = ScreenToWorldOnGroundPlane(
-                    camera, ImGui::GetIO().MousePos,
-                    m_viewportPos, m_viewportSize);
+                namespace fs = std::filesystem;
+                std::string ext = fs::path(droppedPath).extension().string();
+                for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
-                m_ctx->pendingSpawns.push_back(req);
-                Logger::Info("Dropped to scene at ({:.1f}, {:.1f}, {:.1f}): {}",
-                    req.position.x, req.position.y, req.position.z, droppedPath);
+                if (AssetBrowserPanel::ClassifyExtension(ext) == AssetBrowserPanel::AssetType::Texture)
+                {
+                    // テクスチャ: モデルスポーンではなく、ドロップ位置のメッシュへ Albedo として割当
+                    // (Unity/Unreal 風)。ピッキングはサブメッシュ単位(SceneViewPanel::PickEntityAndSubmesh)。
+                    SubmeshPickResult hit = m_sceneView->PickEntityAndSubmesh(
+                        reg, camera, m_viewportPos.x, m_viewportPos.y,
+                        m_viewportSize.x, m_viewportSize.y);
+                    if (hit.entity != entt::null && reg.all_of<MeshRenderer>(hit.entity))
+                    {
+                        PendingMaterialTextureDrop req;
+                        req.entity = hit.entity;
+                        req.submeshIndex = hit.submeshIndex;
+                        req.slot = MaterialTextureSlot::Albedo;
+                        req.texturePath = droppedPath;
+                        m_ctx->pendingMaterialTextureDrops.push_back(req);
+                        Logger::Info("Dropped texture onto submesh {} of entity {}: {}",
+                            hit.submeshIndex, static_cast<u32>(hit.entity), droppedPath);
+                    }
+                    else
+                    {
+                        Logger::Info("Texture dropped but no mesh under cursor, ignored: {}", droppedPath);
+                    }
+                }
+                else
+                {
+                    PendingSpawnRequest req;
+                    req.modelPath = droppedPath;
+
+                    // マウス座標からワールド座標を計算（Y=0 平面との交点）
+                    req.position = ScreenToWorldOnGroundPlane(
+                        camera, ImGui::GetIO().MousePos,
+                        m_viewportPos, m_viewportSize);
+
+                    m_ctx->pendingSpawns.push_back(req);
+                    Logger::Info("Dropped to scene at ({:.1f}, {:.1f}, {:.1f}): {}",
+                        req.position.x, req.position.y, req.position.z, droppedPath);
+                }
             }
             ImGui::EndDragDropTarget();
         }

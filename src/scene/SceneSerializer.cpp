@@ -377,6 +377,30 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                     ej["shaderAlphaBlend"] = true;
             }
 
+            // マテリアルテクスチャ上書き（アセットブラウザからテクスチャをD&Dして割当、サブメッシュ単位）。
+            // Material 自体は同一モデルの全インスタンスで共有されるため、上書きは MeshRenderer 側に
+            // インスタンス単位で保持している(Application::EnsureMaterialOverrideSrv 参照)。
+            {
+                size_t maxLen = (std::max)({mr.overrideAlbedoTexture.size(),
+                                             mr.overrideNormalTexture.size(),
+                                             mr.overrideMetalRoughnessTexture.size()});
+                bool anyOverride = false;
+                json overridesJson = json::array();
+                for (size_t i = 0; i < maxLen; ++i)
+                {
+                    json entry = json::object();
+                    const std::string& a = MeshRenderer::SafeGetOverride(mr.overrideAlbedoTexture, static_cast<u32>(i));
+                    const std::string& n = MeshRenderer::SafeGetOverride(mr.overrideNormalTexture, static_cast<u32>(i));
+                    const std::string& m = MeshRenderer::SafeGetOverride(mr.overrideMetalRoughnessTexture, static_cast<u32>(i));
+                    if (!a.empty()) { entry["albedo"] = a; anyOverride = true; }
+                    if (!n.empty()) { entry["normal"] = n; anyOverride = true; }
+                    if (!m.empty()) { entry["metalRoughness"] = m; anyOverride = true; }
+                    overridesJson.push_back(entry);
+                }
+                if (anyOverride)
+                    ej["materialTextureOverrides"] = overridesJson;
+            }
+
             // 頂点カラー保存（プリミティブのみ。モデルは頂点ごとの色を壊さないよう除外）
             if (mr.modelPath.rfind("__primitive_", 0) == 0 && !mr.meshes.empty() && mr.meshes[0])
             {
@@ -993,6 +1017,24 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                 auto& mrRestore = reg.get<MeshRenderer>(e);
                 mrRestore.shaderPath = ej.value("shader", "");
                 mrRestore.shaderAlphaBlend = ej.value("shaderAlphaBlend", false);
+            }
+
+            // マテリアルテクスチャ上書き復元（サブメッシュ単位）
+            if (ej.contains("materialTextureOverrides") && reg.all_of<MeshRenderer>(e))
+            {
+                auto& mrOv = reg.get<MeshRenderer>(e);
+                const auto& arr = ej["materialTextureOverrides"];
+                for (size_t i = 0; i < arr.size(); ++i)
+                {
+                    const auto& entry = arr[i];
+                    u32 smi = static_cast<u32>(i);
+                    if (entry.contains("albedo"))
+                        MeshRenderer::SetOverride(mrOv.overrideAlbedoTexture, smi, entry.value("albedo", ""));
+                    if (entry.contains("normal"))
+                        MeshRenderer::SetOverride(mrOv.overrideNormalTexture, smi, entry.value("normal", ""));
+                    if (entry.contains("metalRoughness"))
+                        MeshRenderer::SetOverride(mrOv.overrideMetalRoughnessTexture, smi, entry.value("metalRoughness", ""));
+                }
             }
 
             // LuaScript 復元（env は構築しない。Play 開始時に初期化される）

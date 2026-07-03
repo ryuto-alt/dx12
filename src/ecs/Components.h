@@ -97,6 +97,35 @@ struct MeshRenderer
     // DepthWrite=OFF(半透明物の定石、ForwardGrid と同じ考え方)の専用 PSO を使う。
     bool shaderAlphaBlend = false;
 
+    // マテリアルのテクスチャ差し替え（アセットブラウザからテクスチャをドラッグ&ドロップして割当。
+    // Unity/Unreal 風）。サブメッシュ単位（meshes[]と同じインデックス）。空文字列 = Material 既定の
+    // テクスチャを使う。**Mesh::GetMaterial() は同一モデルパスの全インスタンスで共有される
+    // (ResourceManager のモデルキャッシュ由来）ため、ここを直接書き換えると他のインスタンスにも
+    // 波及してしまう。代わりにこの override をインスタンス単位で保持し、描画時に専用の SRV ブロックを
+    // 合成して差し替える(overrideMetallic/overrideRoughness と同じ「Material に触らず上書き」方針)。
+    // インデックスは自動で足りない分を空文字列で埋める(必要時に resize)。
+    std::vector<std::string> overrideAlbedoTexture;
+    std::vector<std::string> overrideNormalTexture;
+    std::vector<std::string> overrideMetalRoughnessTexture;
+
+    // 上記3ベクタの範囲外アクセスを避けるためのヘルパ(未設定インデックスは空文字列扱い)
+    static const std::string& SafeGetOverride(const std::vector<std::string>& v, u32 mi)
+    {
+        static const std::string kEmpty;
+        return (mi < v.size()) ? v[mi] : kEmpty;
+    }
+    static void SetOverride(std::vector<std::string>& v, u32 mi, const std::string& path)
+    {
+        if (v.size() <= mi) v.resize(mi + 1);
+        v[mi] = path;
+    }
+    bool HasAnyTextureOverride(u32 mi) const
+    {
+        return !SafeGetOverride(overrideAlbedoTexture, mi).empty()
+            || !SafeGetOverride(overrideNormalTexture, mi).empty()
+            || !SafeGetOverride(overrideMetalRoughnessTexture, mi).empty();
+    }
+
     // インスタンシング: 共有メッシュを使う発光弾(Pfx)等は色を頂点バッファに焼かず
     // ここに持つ（setColor が書き込む）。instanced=true の間 setColor は VB を再生成しない。
     DirectX::XMFLOAT4 instanceColor = {1.0f, 1.0f, 1.0f, 1.0f};

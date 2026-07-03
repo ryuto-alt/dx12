@@ -478,6 +478,114 @@ void SceneViewPanel::HandlePicking(entt::registry& reg,
     }
 }
 
+SubmeshPickResult SceneViewPanel::PickEntityAndSubmesh(entt::registry& reg,
+                                                       Camera* camera,
+                                                       f32 vpX, f32 vpY, f32 vpW, f32 vpH)
+{
+    SubmeshPickResult result;
+
+    ImVec2 mousePos = ImGui::GetIO().MousePos;
+    if (mousePos.x < vpX || mousePos.x >= vpX + vpW
+        || mousePos.y < vpY || mousePos.y >= vpY + vpH)
+        return result;
+
+    // NDC → ワールドレイ。HandlePicking と同じ組み立て方（透視/正射どちらでも正しい）。
+    f32 ndcX = ((mousePos.x - vpX) / vpW) * 2.0f - 1.0f;
+    f32 ndcY = 1.0f - ((mousePos.y - vpY) / vpH) * 2.0f;
+
+    XMMATRIX view = camera->GetViewMatrix();
+    XMMATRIX proj = camera->GetProjectionMatrix();
+    XMMATRIX invViewProj = XMMatrixInverse(nullptr, view * proj);
+
+    XMVECTOR pNear = XMVector4Transform(XMVectorSet(ndcX, ndcY, 0.0f, 1.0f), invViewProj);
+    XMVECTOR pFar  = XMVector4Transform(XMVectorSet(ndcX, ndcY, 1.0f, 1.0f), invViewProj);
+    pNear = XMVectorScale(pNear, 1.0f / XMVectorGetW(pNear));
+    pFar  = XMVectorScale(pFar,  1.0f / XMVectorGetW(pFar));
+    XMVECTOR rayOrigin = pNear;
+    XMVECTOR rayDir    = XMVector3Normalize(XMVectorSubtract(pFar, pNear));
+
+    XMFLOAT3 orig, dir;
+    XMStoreFloat3(&orig, rayOrigin);
+    XMStoreFloat3(&dir, rayDir);
+
+    auto rayTestAABB = [&](XMFLOAT3 worldMin, XMFLOAT3 worldMax) -> f32 {
+        if (worldMin.x > worldMax.x) std::swap(worldMin.x, worldMax.x);
+        if (worldMin.y > worldMax.y) std::swap(worldMin.y, worldMax.y);
+        if (worldMin.z > worldMax.z) std::swap(worldMin.z, worldMax.z);
+
+        f32 tmin = -FLT_MAX, tmax = FLT_MAX;
+        auto slabTest = [&](f32 o, f32 d, f32 bmin, f32 bmax) -> bool {
+            if (std::abs(d) < 1e-8f)
+                return (o >= bmin && o <= bmax);
+            f32 t1 = (bmin - o) / d;
+            f32 t2 = (bmax - o) / d;
+            if (t1 > t2) std::swap(t1, t2);
+            tmin = (std::max)(tmin, t1);
+            tmax = (std::min)(tmax, t2);
+            return tmin <= tmax;
+        };
+        if (slabTest(orig.x, dir.x, worldMin.x, worldMax.x)
+            && slabTest(orig.y, dir.y, worldMin.y, worldMax.y)
+            && slabTest(orig.z, dir.z, worldMin.z, worldMax.z)
+            && tmax > 0.0f)
+        {
+            f32 t = tmin > 0.0f ? tmin : tmax;
+            return t > 0.0f ? t : -1.0f;
+        }
+        return -1.0f;
+    };
+
+    f32 closestDist = FLT_MAX;
+
+    // MeshRenderer 持ちエンティティのみ対象。HandlePicking と違い、サブメッシュ単位で
+    // 個別に AABB を作りレイテストする(マージした全体AABBだと「どのサブメッシュか」が分からない)。
+    auto meshView = reg.view<const Transform, const MeshRenderer>();
+    for (auto [e, transform, renderer] : meshView.each())
+    {
+        XMFLOAT3 wpos   = transform.position;
+        XMFLOAT3 wscale = transform.scale;
+        if (transform.parent != entt::null && reg.valid(transform.parent))
+        {
+            XMMATRIX wm = ComputeWorldMatrix(reg, e);
+            XMFLOAT4X4 wf;
+            XMStoreFloat4x4(&wf, wm);
+            wpos = {wf._41, wf._42, wf._43};
+            wscale = {
+                XMVectorGetX(XMVector3Length(wm.r[0])),
+                XMVectorGetX(XMVector3Length(wm.r[1])),
+                XMVectorGetX(XMVector3Length(wm.r[2]))};
+        }
+
+        for (u32 mi = 0; mi < static_cast<u32>(renderer.meshes.size()); ++mi)
+        {
+            const auto* mesh = renderer.meshes[mi];
+            if (!mesh) continue;
+            auto meshMin = mesh->GetAABBMin();
+            auto meshMax = mesh->GetAABBMax();
+            XMFLOAT3 worldMin = {
+                wpos.x + meshMin.x * wscale.x,
+                wpos.y + meshMin.y * wscale.y,
+                wpos.z + meshMin.z * wscale.z
+            };
+            XMFLOAT3 worldMax = {
+                wpos.x + meshMax.x * wscale.x,
+                wpos.y + meshMax.y * wscale.y,
+                wpos.z + meshMax.z * wscale.z
+            };
+
+            f32 t = rayTestAABB(worldMin, worldMax);
+            if (t > 0.0f && t < closestDist)
+            {
+                closestDist = t;
+                result.entity = e;
+                result.submeshIndex = mi;
+            }
+        }
+    }
+
+    return result;
+}
+
 void SceneViewPanel::HandleCameraNavigation(entt::registry& reg,
                                             EditorContext& ctx,
                                             Camera* camera,

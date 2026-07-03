@@ -15,6 +15,15 @@ class Camera;
 class Scene;
 class Window;
 
+// メッシュ単位(サブメッシュ)のピッキング結果。テクスチャD&Dでどのメッシュに
+// マテリアルを割り当てるか特定するために使う（HandlePicking のエンティティ全体
+// AABBと違い、MeshRenderer::meshes[] の各サブメッシュAABBを個別にレイテストする）。
+struct SubmeshPickResult
+{
+    entt::entity entity = entt::null;
+    u32 submeshIndex = 0;
+};
+
 class SceneViewPanel
 {
 public:
@@ -27,6 +36,12 @@ public:
                        EditorContext& ctx,
                        Camera* camera,
                        f32 vpX, f32 vpY, f32 vpW, f32 vpH);
+
+    // 現在のマウス位置でレイキャストし、ヒットしたエンティティ+サブメッシュ番号を返す
+    // (選択状態は変更しない、副作用なしの問い合わせ)。ヒット無しは entity=entt::null。
+    SubmeshPickResult PickEntityAndSubmesh(entt::registry& reg,
+                                           Camera* camera,
+                                           f32 vpX, f32 vpY, f32 vpW, f32 vpH);
 
     // ビューポートカメラ操作（Unity 風）:
     //   スクロール    = ドリーズーム（右クリック中はフライ移動速度の増減）

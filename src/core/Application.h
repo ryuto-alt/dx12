@@ -157,6 +157,23 @@ private:
     // キャッシュに無ければ ShaderManager からバイトコードを取り PSO を生成する。
     // コンパイル未完了/PSO生成失敗時は nullptr を返す(呼び出し側は既定 Forward へフォールバックすること)。
     CustomForwardPsos* EnsureCustomPso(const std::string& shaderRel);
+
+    // MeshRenderer::overrideAlbedoTexture 等(インスタンス単位のマテリアルテクスチャ上書き、
+    // アセットブラウザからのテクスチャD&D用)の SRV ブロックキャッシュ。Mesh::GetMaterial() は
+    // 同一モデルパスの全インスタンスで共有されるため、上書き分だけこの専用ブロックへ
+    // albedo/normal/metalRoughness の3連続SRVを合成し、通常の mat->srvBlockIndex の代わりに使う。
+    struct MaterialOverrideSrv
+    {
+        u32 blockStart = 0xFFFFFFFF;   // srvHeap 上の3連続ブロックの先頭(未確保なら0xFFFFFFFF)
+        std::string albedoPath, normalPath, mrPath;  // 直近ビルド時の上書きパス(変化検知用)
+    };
+    // key = (entityID << 16) | submeshIndex。エンティティ削除時の明示破棄は行わない
+    // (ParticleSystem 同様、無効エンティティは次回描画されない=実害なし。SRVヒープを僅かに消費し続ける
+    // 既知の制約)。
+    std::unordered_map<u64, MaterialOverrideSrv> m_materialOverrideSrvCache;
+    // 上書きが無ければ 0xFFFFFFFF を返す(呼び出し側は mat->srvBlockIndex 等の既定経路へフォールバック)。
+    u32 EnsureMaterialOverrideSrv(entt::entity e, u32 submeshIndex, const MeshRenderer& renderer,
+                                  const Material* mat, ID3D12GraphicsCommandList* cmdList);
     // ランチャーで選んだ/作成したプロジェクトを実行時に読み込む（パス再ポイント + シーンロード）
     void LoadProject(const ProjectInfo& info);
     // エディタUIアイコン(PNG)をSRVへ読み込む（起動時に1度。エンジン側assets基準）

@@ -259,3 +259,24 @@ Inspector の「Shader」欄直下にある**「アルファブレンド有効�
 `DX12Engine.exe --build`（配布ビルド）でも、コンパイル済みバイトコードが `game.pak` に封入され
 プレイ時に反映される。プロジェクトシェーダーが壊れているとビルド自体が失敗する（黙って古い版を
 出荷しない設計）。
+
+## 7. マテリアルのテクスチャ割当（アセットブラウザから D&D）
+
+Unity/Unreal 風に、アセットブラウザのテクスチャをドラッグ&ドロップでメッシュのマテリアルへ割り当てられる。
+2通りの入口がある:
+
+1. **SceneView へドロップ**: ドロップした位置にあるメッシュ(サブメッシュ単位)の **Albedo** に自動割当。
+2. **Inspector の「Material」欄**: `Albedo`/`Normal`/`MetalRoughness` の3スロットへ個別にドロップ可能
+   （サブメッシュが複数ある場合はサブメッシュごとに3スロットが並ぶ）。割り当てたスロットの右の
+   「x」ボタンで解除できる。
+
+**重要な設計**: モデルは `ResourceManager` のキャッシュ経由で同一 `modelPath` の全インスタンスが
+同じ `Material` を共有している。そのため、テクスチャ割当は `Material` 自体を書き換えず、
+`MeshRenderer::overrideAlbedoTexture`/`overrideNormalTexture`/`overrideMetalRoughnessTexture`
+（サブメッシュ単位の `std::vector<std::string>`、値はアセット相対パス）に**インスタンス単位**で保持する。
+これにより、同じモデルを複製して置いた他のエンティティには影響しない。描画側
+(`Application::EnsureMaterialOverrideSrv`)が上書き分だけ専用の SRV ブロックを合成して差し替える。
+Metallic/Roughness の数値上書き(`overrideMetallic`/`overrideRoughness`)と同じ「Material に触らない」方針。
+
+シーン JSON には `"materialTextureOverrides"`（サブメッシュ数ぶんの配列、各要素は
+`{"albedo": "...", "normal": "...", "metalRoughness": "..."}` のうち設定されたキーのみ）として保存される。

@@ -44,9 +44,11 @@ public:
     // ドラッグ&ドロップ用ペイロード型名
     static constexpr const char* kDragDropPayloadType = "ASSET_PATH";
 
-private:
+    // テクスチャD&D(マテリアル割当)等、他パネルからも拡張子種別を判定したいので公開。
     enum class AssetType { Folder, Model, Texture, Scene, Script, Audio, Prefab, Shader, Other };
+    static AssetType ClassifyExtension(const std::string& ext);
 
+private:
     struct AssetEntry
     {
         std::filesystem::path path;
@@ -64,7 +66,6 @@ private:
 
     void Refresh();
     void DrawFolderTree(const std::filesystem::path& dir, bool& needRefresh);
-    static AssetType ClassifyExtension(const std::string& ext);
     static const char* GetTypeIcon(AssetType type);
     // GetTypeColor は .cpp 内のみで使用（ImVec4 は imgui.h 依存）
     ThumbnailInfo& GetOrLoadThumbnail(const std::filesystem::path& path,
