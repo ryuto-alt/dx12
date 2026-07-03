@@ -107,6 +107,11 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
     ImGuizmo::SetDrawlist(ImGui::GetBackgroundDrawList());
     ImGuizmo::SetRect(vpX, vpY, vpW, vpH);
 
+    // ImGuizmo は既定で「カメラに近い側」に軸を反転表示する(AllowAxisFlip)。
+    // カメラを動かすたびに軸の向きが入れ替わって見えて操作方向が分からなくなるため無効化し、
+    // 軸の向きをカメラ位置に関係なく常に固定する。
+    ImGuizmo::AllowAxisFlip(false);
+
     // 軸が奥を向くと ImGuizmo は軸を反転(flip)させ、その印として黒い破線(ハッチング)を
     // 矢印上に重ねて描く。これが X/Z 矢印に黒い線が走るように見える原因なので、太さ 0 にして
     // 描画を抑止する（反転自体は掴みやすさのため残す）。GetStyle はグローバル状態なので毎フレーム設定で良い。
@@ -483,32 +488,6 @@ void SceneViewPanel::HandleCameraNavigation(entt::registry& reg,
     ImVec2 m = io.MousePos;
     bool inViewport = m.x >= vpX && m.x < vpX + vpW
                    && m.y >= vpY && m.y < vpY + vpH;
-
-    // 操作ヒントをビュー左下に薄く表示（発見性のため）。/utf-8 でビルドするので
-    // 日本語リテラルはそのまま UTF-8 として ImGui に渡せる。
-    ImGui::GetForegroundDrawList()->AddText(
-        ImVec2(vpX + 12.0f, vpY + vpH - 44.0f),
-        IM_COL32(235, 235, 235, 140),
-        "Touchpad 2-finger: vert=fwd/back  horiz=left/right  SHIFT=up/down  Ctrl/pinch=zoom(to cursor)");
-
-    ImGui::GetForegroundDrawList()->AddText(
-        ImVec2(vpX + 12.0f, vpY + vpH - 26.0f),
-        IM_COL32(235, 235, 235, 160),
-        "\xe5\x8f\xb3\xe3\x83\x89\xe3\x83\xa9\xe3\x83\x83\xe3\x82\xb0:\xe8\xa6\x96\xe7\x82\xb9  "
-        "WASD/Space/Shift:\xe7\xa7\xbb\xe5\x8b\x95  "
-        "\xe3\x83\x9b\xe3\x82\xa4\xe3\x83\xbc\xe3\x83\xab:\xe3\x82\xba\xe3\x83\xbc\xe3\x83\xa0  "
-        "\xe4\xb8\xad\xe3\x83\x89\xe3\x83\xa9\xe3\x83\x83\xe3\x82\xb0:\xe3\x83\x91\xe3\x83\xb3  "
-        "Alt+\xe5\xb7\xa6:\xe5\x91\xa8\xe5\x9b\x9e  F:\xe3\x83\x95\xe3\x82\xa9\xe3\x83\xbc\xe3\x82\xab\xe3\x82\xb9");
-
-    // タッチパッド向け: キーボードフライモードの状態表示（ASCII で確実に出す）
-    if (ctx.flyMode)
-        ImGui::GetForegroundDrawList()->AddText(
-            ImVec2(vpX + 12.0f, vpY + 12.0f), IM_COL32(120, 230, 120, 255),
-            "FLY MODE  |  WASD: move   Q/E: down/up   Arrows: look   [ ` ] or ESC: exit");
-    else
-        ImGui::GetForegroundDrawList()->AddText(
-            ImVec2(vpX + 12.0f, vpY + 12.0f), IM_COL32(210, 210, 210, 130),
-            "[ ` ] keyboard fly mode (no mouse needed)");
 
     // ギズモ操作中、またはカーソルがビュー外なら以降のカメラ操作はしない
     if (ImGuizmo::IsUsing() || !inViewport)
