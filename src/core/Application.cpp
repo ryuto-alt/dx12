@@ -562,6 +562,18 @@ Application::CustomForwardPsos* Application::EnsureCustomPso(const std::string& 
             builder.SetDepthFunc(D3D12_COMPARISON_FUNC_LESS_EQUAL);
             entry.lequal = std::make_unique<PipelineState>();
             entry.lequal->Initialize(*m_graphicsDevice, builder);
+
+            // アルファブレンド版(MeshRenderer::shaderAlphaBlend=true 時に使う)。半透明の定石で
+            // DepthWrite は OFF(ForwardGrid と同じ考え方、背後が透けて見えるようにする)。
+            builder.SetDepthFunc(D3D12_COMPARISON_FUNC_LESS)
+                   .SetDepthWrite(false)
+                   .SetAlphaBlendEnabled(true);
+            entry.lessBlend = std::make_unique<PipelineState>();
+            entry.lessBlend->Initialize(*m_graphicsDevice, builder);
+            builder.SetDepthFunc(D3D12_COMPARISON_FUNC_LESS_EQUAL);
+            entry.lequalBlend = std::make_unique<PipelineState>();
+            entry.lequalBlend->Initialize(*m_graphicsDevice, builder);
+
             entry.valid = true;
         }
         catch (const std::exception& ex)
@@ -2111,9 +2123,12 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                     throw McpError(McpErr::NotFound, "shader not found: " + rel);
             }
             mr.shaderPath = rel;
+            if (params.contains("alphaBlend"))
+                mr.shaderAlphaBlend = params.value("alphaBlend", false);
 
             resp["ok"] = true;
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"shaderPath", mr.shaderPath},
+                               {"alphaBlend", mr.shaderAlphaBlend},
                                {"skinnedFallbackWarning", reg.all_of<SkeletalAnimation>(e) && !mr.shaderPath.empty()}};
         }
         else if (method == "attach_lua_component")
@@ -6459,7 +6474,12 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             // カスタムシェーダー割当(静的メッシュのみ)。未コンパイル/生成失敗時は既定 Forward へフォールバック。
             CustomForwardPsos* custom = renderer.shaderPath.empty() ? nullptr : EnsureCustomPso(renderer.shaderPath);
             if (custom)
-                m_commandList->SetPipelineState(depthPrepassActive ? *custom->lequal : *custom->less);
+            {
+                PipelineState* pso = renderer.shaderAlphaBlend
+                    ? (depthPrepassActive ? custom->lequalBlend.get() : custom->lessBlend.get())
+                    : (depthPrepassActive ? custom->lequal.get() : custom->less.get());
+                m_commandList->SetPipelineState(*pso);
+            }
             else
                 m_commandList->SetPipelineState(depthPrepassActive
                     ? *m_pipelineStateLEqual : *m_pipelineState);

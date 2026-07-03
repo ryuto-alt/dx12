@@ -90,6 +90,13 @@ struct MeshRenderer
     // 上書き扱いになり全体に効くため、個別割当の選択肢からは除外する(InspectorPanel側)。
     std::string shaderPath;
 
+    // カスタムシェーダーのアルファブレンド有効化(shaderPath 指定時のみ意味を持つ)。
+    // false(既定) = 不透明固定(BlendEnable=FALSE、DepthWrite=ON)。PSシェーダーが float4 の
+    // alpha を書いても Forward 既定 PSO と同様に無視される(これが「カスタムシェーダーでアルファが
+    // 効かない」不具合の原因やった)。true にすると SrcAlpha/InvSrcAlpha の通常アルファブレンドで
+    // DepthWrite=OFF(半透明物の定石、ForwardGrid と同じ考え方)の専用 PSO を使う。
+    bool shaderAlphaBlend = false;
+
     // インスタンシング: 共有メッシュを使う発光弾(Pfx)等は色を頂点バッファに焼かず
     // ここに持つ（setColor が書き込む）。instanced=true の間 setColor は VB を再生成しない。
     DirectX::XMFLOAT4 instanceColor = {1.0f, 1.0f, 1.0f, 1.0f};

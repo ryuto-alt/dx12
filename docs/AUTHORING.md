@@ -237,12 +237,23 @@ Claude Code から直接編集する場合:
 "shader": "myfx/Glow.hlsl"
 ```
 
+**半透明にしたい場合（アルファブレンド）**: PS が `float4` の alpha に 1 未満の値を書いても、
+既定では PSO が不透明固定（`BlendEnable=FALSE`）になっているため画面には反映されない。
+Inspector の「Shader」欄直下にある**「アルファブレンド有効」**チェックボックスを ON にするか、
+シーン JSON に `"shaderAlphaBlend": true` を追加する（`SrcAlpha`/`InvSrcAlpha` の通常アルファ
+ブレンド、`DepthWrite` は OFF になる＝半透明物の定石）。既定は `false`（不透明固定）。
+```json
+"shader": "myfx/Glass.hlsl",
+"shaderAlphaBlend": true
+```
+
 **MCP 経由（エディタ起動中、ファイル直書き不要）**: `dx12_create_shader({name, code})` で
 `assets/shaders/<name>.hlsl` を作成/上書きし、書き込み直後に実行時コンパイルを試して
 `{path, compiled, error?}` を返す（Lua の `dx12_create_lua_component` と違い書く前の静的検証は
 できないため、失敗しても書いたファイルは残る＝`error` を見て直し、再度 `dx12_create_shader` を
 撃ち直す反復修正が前提）。既存シェーダーの読み直しは `dx12_read_shader({path})`、メッシュへの割当は
-`dx12_set_mesh_shader({entity, shaderPath})`（空文字/省略で既定 Forward に戻す）。
+`dx12_set_mesh_shader({entity, shaderPath, alphaBlend})`（shaderPath 空文字/省略で既定 Forward に
+戻す。alphaBlend:true で上記の半透明ブレンドを有効化）。
 詳細は [`MCP.md`](MCP.md) 参照。
 
 `DX12Engine.exe --build`（配布ビルド）でも、コンパイル済みバイトコードが `game.pak` に封入され

@@ -147,8 +147,10 @@ private:
     // 静的メッシュのみ対応(スキンド/インスタンシングは m_pipelineState 等の既定へフォールバック)。
     struct CustomForwardPsos
     {
-        std::unique_ptr<PipelineState> less;    // DepthFunc=LESS
-        std::unique_ptr<PipelineState> lequal;  // 深度プリパス併用(SSAO)時
+        std::unique_ptr<PipelineState> less;       // DepthFunc=LESS、不透明
+        std::unique_ptr<PipelineState> lequal;     // 深度プリパス併用(SSAO)時、不透明
+        std::unique_ptr<PipelineState> lessBlend;   // DepthFunc=LESS、アルファブレンド(shaderAlphaBlend=true)
+        std::unique_ptr<PipelineState> lequalBlend; // 深度プリパス併用時、アルファブレンド
         bool valid = false;
     };
     std::unordered_map<std::string, CustomForwardPsos> m_customPsoCache;  // key: shaderPath(小文字正規化)

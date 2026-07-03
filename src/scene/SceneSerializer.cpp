@@ -371,7 +371,11 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
 
             // カスタムシェーダー割当（プリミティブ/モデル問わず。空なら既定 Forward）
             if (!mr.shaderPath.empty())
+            {
                 ej["shader"] = mr.shaderPath;
+                if (mr.shaderAlphaBlend)
+                    ej["shaderAlphaBlend"] = true;
+            }
 
             // 頂点カラー保存（プリミティブのみ。モデルは頂点ごとの色を壊さないよう除外）
             if (mr.modelPath.rfind("__primitive_", 0) == 0 && !mr.meshes.empty() && mr.meshes[0])
@@ -985,7 +989,11 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
 
             // カスタムシェーダー割当復元
             if (ej.contains("shader") && reg.all_of<MeshRenderer>(e))
-                reg.get<MeshRenderer>(e).shaderPath = ej.value("shader", "");
+            {
+                auto& mrRestore = reg.get<MeshRenderer>(e);
+                mrRestore.shaderPath = ej.value("shader", "");
+                mrRestore.shaderAlphaBlend = ej.value("shaderAlphaBlend", false);
+            }
 
             // LuaScript 復元（env は構築しない。Play 開始時に初期化される）
             if (ej.contains("luaScript"))
