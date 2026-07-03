@@ -234,6 +234,7 @@ void ResourceManager::FinishUploads()
     }
     for (auto& [path, model] : m_modelCache)
     {
+        if (!model) continue;   // 失敗キャッシュ(nullptr)はスキップ(テクスチャ側と同じ)
         for (auto& mesh : model->meshes)
         {
             mesh->FinishUpload();
