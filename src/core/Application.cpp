@@ -6122,10 +6122,15 @@ bool Application::BuildGame()
         Logger::Info("Copied GameRuntime.exe -> Game.exe");
 
         // 同じフォルダの .dll をすべて配布フォルダへ。
-        // dxcompiler.dll/dxil.dll(実行時シェーダーコンパイル用、エディタのみ必要)は除外する。
+        // dxcompiler.dll(実行時シェーダーコンパイル専用、エディタのみ必要)だけ除外する。
         // ゲームは ShaderCompiler::LoadFromFile が game.pak から .cso を読むだけで実行時コンパイルは
-        // 不要なため、同梱すると無駄に容量が増えるだけ(~25MB)。
-        static const std::unordered_set<std::string> kDllExcludeList = { "dxcompiler.dll", "dxil.dll" };
+        // 不要なため、同梱すると無駄に容量が増えるだけ(~25MB)。GameRuntime は dxcompiler.dll を
+        // delay-load にしてある(ルート CMakeLists.txt)ので、同梱しなくても exe は正常起動する。
+        // ※ dxil.dll は除外しない: これは D3D12 ランタイムが CreatePipelineState 時に
+        // (Developer Mode OFF の環境で)DXIL署名検証のため内部で LoadLibrary するもので、
+        // 我々のコードがリンクしているわけではない delay-load できない実行時依存。
+        // 除外するとユーザー環境次第で PSO 生成が失敗するため、常に同梱する。
+        static const std::unordered_set<std::string> kDllExcludeList = { "dxcompiler.dll" };
         std::error_code ec;
         for (auto& entry : fs::directory_iterator(exeDir, ec))
         {

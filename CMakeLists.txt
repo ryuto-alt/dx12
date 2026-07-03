@@ -126,6 +126,18 @@ target_link_libraries(GameRuntime
 if(MSVC)
     target_compile_options(GameRuntime PRIVATE ${DX12_COMPILE_OPTIONS})
     target_compile_definitions(GameRuntime PRIVATE ${DX12_COMPILE_DEFS} DX12_GAME_RUNTIME)
+
+    # dxcompiler.dll を delay-load にする。Resource が Microsoft::DirectXShaderCompiler を
+    # PUBLIC リンクしているため、素のリンクだと GameRuntime.exe の通常インポートテーブルに
+    # dxcompiler.dll が hard dependency として載る。BuildGame() は配布ゲームから
+    # dxcompiler.dll を除外する(エディタの実行時シェーダーコンパイル専用、ゲームは .cso を
+    # 読むだけで不要、~25MB削減)設計なので、除外すると exe が起動時に
+    # 「dxcompiler.dll が見つからないため、コードの実行を続行できません」で即死する。
+    # ゲームモードは ShaderManager(=DxcCreateInstance の唯一の呼び出し元)を生成しない
+    # (Application::Initialize、!m_isGameMode 時のみ生成)ため、delay-load にしておけば
+    # 実行時に一切ロードされず、同梱しなくても安全に起動できる。
+    target_link_options(GameRuntime PRIVATE "/DELAYLOAD:dxcompiler.dll")
+    target_link_libraries(GameRuntime PRIVATE delayimp.lib)
 endif()
 
 # --- 実行時シェーダーコンパイル用 DLL 同梱 ---
