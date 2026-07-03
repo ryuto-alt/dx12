@@ -7,7 +7,7 @@
 namespace dx12e
 {
 // セマンティックバージョン（"MAJOR.MINOR.PATCH"）。GitHub リリースのタグ（"v1.2.3" 等）と比較する。
-constexpr const char* kEngineVersion = "0.9.3";
+constexpr const char* kEngineVersion = "0.9.4";
 
 // 自動アップデートの取得元 GitHub リポジトリ。
 constexpr const char* kUpdateRepoOwner = "ryuto-alt";
@@ -16,17 +16,18 @@ constexpr const char* kUpdateRepoName  = "dx12";
 // 起動時に一度だけ表示する「更新内容」ポップアップ（この版で直したこと）。
 // 表示済み判定は %LOCALAPPDATA%\DX12Engine\shown_version.txt（版が変わった初回だけ出す）。
 // 新しい版を出すときは kEngineVersion を上げ、ここも書き換えること。
-constexpr const char* kWhatsNewTitle = "DX12 Engine v0.9.3 の更新内容";
+constexpr const char* kWhatsNewTitle = "DX12 Engine v0.9.4 の更新内容";
 constexpr const char* kWhatsNewBody =
-    "今回の更新: スプライト配置の復活(Unity準拠のD&D) + Lua time API + クラッシュ修正\n"
+    "今回の更新: time API 大幅拡張(ビデオ時計/個別時計/チャージ) + Lua 予測変換\n"
     "\n"
-    "・シーンビューへの画像ドロップが「常に配置」に戻りました(Unity準拠)。\n"
-    "  どこにでもワールドスプライトとして置けます。\n"
-    "・テクスチャ貼り付けは Inspector が専用操作に: オブジェクトを選択して\n"
-    "  Inspector ウィンドウのどこにテクスチャを落としても Albedo に割当されます\n"
-    "  (全サブメッシュ・Undo対応)。細かい貼り分けは従来のテクスチャスロットで。\n"
-    "・Lua に time API を追加: time.now()/dt()/frame()、time.setScale()で\n"
-    "  ポーズ/スローモ/早送り、time.after()/every()/cancel()のタイマー。\n"
-    "・読み込みに失敗したモデルを含むシーンを開くとエディタがクラッシュする\n"
-    "  不具合を修正。\n";
+    "・time.video: ステージ共有の\"ビデオ時計\"を追加。ギミックの動きを\n"
+    "  t = time.video.localTime(self) の純関数で書くと、video.skip(対象, ±秒) で\n"
+    "  対象だけ先送り/巻き戻しできます。skip は残り時間を自動消費(skipCost)。\n"
+    "・エンティティ個別時計: time.localTime/skipEntity/scaleEntity で\n"
+    "  オブジェクト単位の停止(0)/スロー/逆再生(負)/スキップ。\n"
+    "・charge: 押しっぱなしチャージ計測(弓を引く等)。ゲージ表示用の ratio()、\n"
+    "  離した瞬間に量を返す released()。\n"
+    "・コンソールの Lua 入力に予測変換を追加: time. や scene:fi まで打つと候補が\n"
+    "  ポップアップ。Tab で確定・↑↓で選択・クリックで挿入。候補は実際の Lua\n"
+    "  環境から動的列挙(自作グローバルも出ます)。\n";
 } // namespace dx12e
