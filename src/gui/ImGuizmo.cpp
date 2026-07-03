@@ -1278,6 +1278,12 @@ namespace IMGUIZMO_NAMESPACE
       ImU32 colors[7];
       ComputeColors(colors, type, ROTATE);
 
+      // 「手前半分」判定はカメラの向き(forward)ではなく、カメラ位置→ギズモ位置への
+      // ベクトルを使う。forward を使うと、カメラがギズモを画面中心から外れて見ている時
+      // (自由視点カメラで見回した時など)に判定がズレて、カメラを動かすたびに見えている
+      // 弧が不自然にスイングし「ギズモがカメラに追従している」ように見えるバグになる。
+      // (Perspective 時は cameraEye→object、Orthographic は投影が平行光線なので
+      // 従来通りカメラの向きそのもので良い)
       vec_t viewDirNormalized;
       if (gContext.mIsOrthographic)
       {
@@ -1287,7 +1293,7 @@ namespace IMGUIZMO_NAMESPACE
       }
       else
       {
-         viewDirNormalized = Normalized(gContext.mCameraDir);
+         viewDirNormalized = Normalized(gContext.mModel.v.position - gContext.mCameraEye);
       }
 
       viewDirNormalized.TransformVector(gContext.mModelInverse);
@@ -1295,6 +1301,13 @@ namespace IMGUIZMO_NAMESPACE
       gContext.mRadiusSquareCenter = screenRotateSize * gContext.mHeight;
 
       bool hasRSC = Intersects(op, ROTATE_SCREEN);
+      // 白い外周円(screen-space)のサイズは、3軸それぞれの弧の最大到達半径を求めた上で
+      // その「中央値」を採用する。弧の始点1点だけを見ると、パースの効いた角度で弧の
+      // 途中(腹の部分)が始点より外側に膨らみ外周円からはみ出すことがある一方、
+      // 3軸全体の最大値をそのまま使うと、1軸だけ極端に歪んだ場合にその値へ外周円全体が
+      // 引っ張られ、残り2軸との間に隙間ができる。中央値なら片方の極端な軸に引きずられない。
+      float axisMaxRadius[3] = { 0.0f, 0.0f, 0.0f };
+      int axisMaxRadiusCount = 0;
       for (int axis = 0; axis < 3; axis++)
       {
          if(!Intersects(op, static_cast<OPERATION>(ROTATE_Z >> axis)))
@@ -1316,7 +1329,10 @@ namespace IMGUIZMO_NAMESPACE
 
          ImVec2* circlePos = (ImVec2*)alloca(sizeof(ImVec2) * (circleMul * halfCircleSegmentCount + 1));
 
-         float angleStart = atan2f(viewDirNormalized[(4 - axis) % 3], viewDirNormalized[(3 - axis) % 3]) + (gContext.mIsOrthographic ? ZPI : -ZPI) * 0.5f;
+         // オフセット符号は ortho/perspective で変えない（本家 ImGuizmo と同じ +ZPI*0.5f 固定）。
+         // ここを ortho 時だけ符号反転させていたのが、パースモードで奥側の半円が
+         // 表示されてしまっていた原因。
+         float angleStart = atan2f(viewDirNormalized[(4 - axis) % 3], viewDirNormalized[(3 - axis) % 3]) + ZPI * 0.5f;
 
          for (int i = 0; i < circleMul * halfCircleSegmentCount + 1; i++)
          {
@@ -1330,11 +1346,36 @@ namespace IMGUIZMO_NAMESPACE
             drawList->AddPolyline(circlePos, circleMul* halfCircleSegmentCount + 1, colors[3 - axis], false, gContext.mStyle.RotationLineThickness);
          }
 
-         float radiusAxis = sqrtf((ImLengthSqr(worldToPos(gContext.mModel.v.position, gContext.mViewProjection) - circlePos[0])));
-         if (radiusAxis > gContext.mRadiusSquareCenter)
+         ImVec2 modelScreenPos = worldToPos(gContext.mModel.v.position, gContext.mViewProjection);
+         float radiusAxis = 0.0f;
+         for (int i = 0; i < circleMul * halfCircleSegmentCount + 1; i++)
          {
-            gContext.mRadiusSquareCenter = radiusAxis;
+            float r = sqrtf(ImLengthSqr(modelScreenPos - circlePos[i]));
+            if (r > radiusAxis) radiusAxis = r;
          }
+         if (axisMaxRadiusCount < 3)
+         {
+            axisMaxRadius[axisMaxRadiusCount++] = radiusAxis;
+         }
+      }
+      // 集めた軸ごとの最大半径から中央値を採用（1〜3個のケースいずれも中央の値でOK）。
+      if (axisMaxRadiusCount == 1)
+      {
+         if (axisMaxRadius[0] > gContext.mRadiusSquareCenter) gContext.mRadiusSquareCenter = axisMaxRadius[0];
+      }
+      else if (axisMaxRadiusCount == 2)
+      {
+         float med = (axisMaxRadius[0] + axisMaxRadius[1]) * 0.5f;
+         if (med > gContext.mRadiusSquareCenter) gContext.mRadiusSquareCenter = med;
+      }
+      else if (axisMaxRadiusCount == 3)
+      {
+         float a = axisMaxRadius[0], b = axisMaxRadius[1], c = axisMaxRadius[2];
+         // 3値の中央値（sort せず比較3回で求める）
+         float lo = a < b ? a : b;
+         float hi = a < b ? b : a;
+         float med = c < lo ? lo : (c > hi ? hi : c);
+         if (med > gContext.mRadiusSquareCenter) gContext.mRadiusSquareCenter = med;
       }
       if(hasRSC && (!gContext.mbUsing || type == MT_ROTATE_SCREEN) && (!isMultipleAxesMasked && isNoAxesMasked))
       {
@@ -2048,6 +2089,8 @@ namespace IMGUIZMO_NAMESPACE
       // 最小の軸を選ぶ。これで「見えている弧＝掴める弧」が完全一致する。
       // 旧方式(平面交点を求めて裏側を深度カリング)は、描いている弧の位置とカリングが残す
       // 判定範囲がズレていて「赤い弧の上なのに緑が反応する」原因になっていた。
+      // DrawRotationGizmo と同じ理由で、判定にはカメラの向きではなく
+      // カメラ位置→ギズモ位置のベクトルを使う(自由視点カメラでのズレ防止)。
       vec_t viewDirNormalized;
       if (gContext.mIsOrthographic)
       {
@@ -2057,7 +2100,7 @@ namespace IMGUIZMO_NAMESPACE
       }
       else
       {
-         viewDirNormalized = Normalized(gContext.mCameraDir);
+         viewDirNormalized = Normalized(gContext.mModel.v.position - gContext.mCameraEye);
       }
       viewDirNormalized.TransformVector(gContext.mModelInverse);
 
@@ -2077,7 +2120,8 @@ namespace IMGUIZMO_NAMESPACE
             continue;
          }
 
-         const float angleStart = atan2f(viewDirNormalized[(4 - axis) % 3], viewDirNormalized[(3 - axis) % 3]) + (gContext.mIsOrthographic ? ZPI : -ZPI) * 0.5f;
+         // DrawRotationGizmo と同じく、オフセット符号は ortho/perspective で変えない。
+         const float angleStart = atan2f(viewDirNormalized[(4 - axis) % 3], viewDirNormalized[(3 - axis) % 3]) + ZPI * 0.5f;
 
          // 描画と同じ手前半円(ZPI ぶん)をサンプリングし、各セグメントへの最短距離を取る
          ImVec2 prevPt;
