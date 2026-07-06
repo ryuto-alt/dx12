@@ -252,7 +252,77 @@ function Input:getMouseDeltaX() end
 ---@return number
 function Input:getMouseDeltaY() end
 
----キーボード / マウス入力
+---指定パッドが接続されているか
+---@param pad integer 0..3
+---@return boolean
+function Input:isPadConnected(pad) end
+
+---接続中のパッド台数
+---@return integer
+function Input:getConnectedPadCount() end
+
+---ゲームパッドボタンが押されている間ずっと true
+---@param pad integer 0..3
+---@param button integer PAD_* 定数
+---@return boolean
+function Input:isPadButtonDown(pad, button) end
+
+---ゲームパッドボタンを押した瞬間だけ true
+---@param pad integer 0..3
+---@param button integer PAD_* 定数
+---@return boolean
+function Input:isPadButtonPressed(pad, button) end
+
+---ゲームパッドボタンを離した瞬間だけ true
+---@param pad integer 0..3
+---@param button integer PAD_* 定数
+---@return boolean
+function Input:isPadButtonReleased(pad, button) end
+
+---左スティック X（デッドゾーン適用済み、-1..1）
+---@param pad integer 0..3
+---@return number
+function Input:getPadLeftStickX(pad) end
+
+---左スティック Y（デッドゾーン適用済み、-1..1）
+---@param pad integer 0..3
+---@return number
+function Input:getPadLeftStickY(pad) end
+
+---右スティック X（デッドゾーン適用済み、-1..1）
+---@param pad integer 0..3
+---@return number
+function Input:getPadRightStickX(pad) end
+
+---右スティック Y（デッドゾーン適用済み、-1..1）
+---@param pad integer 0..3
+---@return number
+function Input:getPadRightStickY(pad) end
+
+---左トリガー押し込み量（デッドゾーン適用済み、0..1）
+---@param pad integer 0..3
+---@return number
+function Input:getPadLeftTrigger(pad) end
+
+---右トリガー押し込み量（デッドゾーン適用済み、0..1）
+---@param pad integer 0..3
+---@return number
+function Input:getPadRightTrigger(pad) end
+
+---振動（motor は 0.0..1.0。left=低周波・強モーター、right=高周波・弱モーター）
+---@param pad integer 0..3
+---@param leftMotor number
+---@param rightMotor number
+function Input:setPadVibration(pad, leftMotor, rightMotor) end
+
+---seconds 秒後に自動で振動を止める振動（ワンショット/パルス向け）
+---@param pad integer 0..3
+---@param leftMotor number
+---@param rightMotor number
+---@param seconds number
+function Input:setPadVibrationTimed(pad, leftMotor, rightMotor, seconds) end
+
+---キーボード / マウス / ゲームパッド入力
 ---@type Input
 input = nil
 
@@ -840,6 +910,22 @@ KEY_F1 = 112
 KEY_F2 = 113
 KEY_F3 = 114
 KEY_RBUTTON = 2
+
+-- ゲームパッドボタン定数（isPadButtonDown/Pressed/Released に渡す。値は XINPUT_GAMEPAD_* と同一）
+PAD_DPAD_UP    = 0x0001
+PAD_DPAD_DOWN  = 0x0002
+PAD_DPAD_LEFT  = 0x0004
+PAD_DPAD_RIGHT = 0x0008
+PAD_START      = 0x0010
+PAD_BACK       = 0x0020
+PAD_LSTICK     = 0x0040
+PAD_RSTICK     = 0x0080
+PAD_LB         = 0x0100
+PAD_RB         = 0x0200
+PAD_A          = 0x1000
+PAD_B          = 0x2000
+PAD_X          = 0x4000
+PAD_Y          = 0x8000
 
 -- ============================================================
 -- アタッチスクリプトの規約（properties / OnStart / OnUpdate / self）

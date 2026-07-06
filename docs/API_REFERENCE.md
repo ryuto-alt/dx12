@@ -136,6 +136,23 @@ t.scale      -- Vec3
 
 > `vk` には `KEY_*` 定数（§4）を渡す。文字列で扱う `keyDown("W")`（§5）も用意。
 
+### Gamepad（`input`、Xbox コントローラー / XInput、`pad` = 0..3）
+| メソッド | 戻り値 | 説明 |
+|---|---|---|
+| `:isPadConnected(pad)` | bool | 接続中か |
+| `:getConnectedPadCount()` | int | 接続台数 |
+| `:isPadButtonDown(pad, btn)` | bool | 押されている間 true |
+| `:isPadButtonPressed(pad, btn)` | bool | 押した瞬間だけ true |
+| `:isPadButtonReleased(pad, btn)` | bool | 離した瞬間だけ true |
+| `:getPadLeftStickX/Y(pad)` / `:getPadRightStickX/Y(pad)` | float | スティック傾き（円形デッドゾーン適用済み、-1..1） |
+| `:getPadLeftTrigger(pad)` / `:getPadRightTrigger(pad)` | float | トリガー押し込み量（デッドゾーン適用済み、0..1） |
+| `:setPadVibration(pad, leftMotor, rightMotor)` | — | 振動（0.0..1.0。left=低周波・強、right=高周波・弱） |
+| `:setPadVibrationTimed(pad, leftMotor, rightMotor, sec)` | — | sec 秒後に自動停止する振動（ワンショット向け） |
+
+`btn` には `PAD_A PAD_B PAD_X PAD_Y PAD_LB PAD_RB PAD_BACK PAD_START PAD_LSTICK PAD_RSTICK PAD_DPAD_UP/DOWN/LEFT/RIGHT` 定数を渡す（値は `XINPUT_GAMEPAD_*` と同一）。
+文字列名で済ます `padDown("A")` / `padPressed("RB")` / `padStick("left")` / `padVibrate(low, high, sec?)`（§5）も用意。
+デッドゾーンは XInput 標準値（`XINPUT_GAMEPAD_{LEFT,RIGHT}_THUMB_DEADZONE` / `TRIGGER_THRESHOLD`）を使用し、スティックは軸別ではなく円形（radial）で処理（斜め入力が弱くならないよう）。
+
 ### Camera（`camera`）
 | メソッド | 戻り値 | 説明 |
 |---|---|---|
@@ -713,14 +730,22 @@ Lua の `fx:*`（§6）の C++ 実体。
 enum `ParticleKind`: Glow/Fire/Smoke/Spark/Magic/Electric/Ring/Star ／ `ParticleBlend`: Additive/AlphaPremul ／ `BeamKind`: Energy/Electric/Fire
 `EmitParams` / `BeamParams` のフィールドは §6 の fx テーブルキーと対応。
 
-### InputSystem（`input/InputSystem.h`）— Raw Input
+### InputSystem（`input/InputSystem.h`）— Raw Input + XInput
 | メソッド | 説明 |
 |---|---|
-| `Initialize(hwnd)` / `Update()` | 初期化 / フレーム開始時 |
+| `Initialize(hwnd)` / `Update(dt)` | 初期化 / フレーム開始時（dt はパッド振動タイマー消費用。既定 0） |
 | `IsKeyDown/IsKeyPressed/IsAsyncKeyDown(vk)` | キー判定 |
 | `GetMouseDeltaX/Y()` `IsMouseCaptured()` `IsRightMouseDown()` | マウス |
 | `SetMouseCapture(b)` / `ToggleMouseCapture()` | キャプチャ |
 | `OnKeyDown/OnKeyUp/OnRawInput/OnMouseButton/OnFocusLost` | WndProc から呼ぶ |
+| `IsPadConnected(pad)` / `GetConnectedPadCount()` | XInput 接続状態（pad=0..3、`kMaxGamepads`=4） |
+| `IsPadButtonDown/Pressed/Released(pad, button)` | ボタン判定（`button` は `XINPUT_GAMEPAD_*` ビット値） |
+| `GetPadLeftStickX/Y / GetPadRightStickX/Y(pad)` | スティック（`GamepadState` 内で円形デッドゾーン適用済み、-1..1） |
+| `GetPadLeftTrigger/RightTrigger(pad)` | トリガー（デッドゾーン適用済み、0..1） |
+| `SetPadVibration(pad, left, right)` | 振動（`XInputSetState` ラップ。0.0..1.0） |
+| `SetPadVibrationTimed(pad, left, right, sec)` | sec 秒後に `Update()` 内で自動停止する振動 |
+
+`Update()` 内 `UpdateGamepads(dt)` が毎フレーム4台分 `XInputGetState` をポーリングし、`GamepadState`（`buttons`/`prevButtons` でエッジ判定、`vibrationTimeLeft` でタイマー振動を管理）を更新する。`xinput.lib` は `src/input/CMakeLists.txt` で `PRIVATE` リンク。
 
 ### ScriptEngine（`scripting/ScriptEngine.h`）— Lua ランタイム
 | メソッド | 説明 |

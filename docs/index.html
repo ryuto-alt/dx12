@@ -737,6 +737,24 @@ properties = {
         </div>
         <p>キー定数: <code class="inl">KEY_A</code>..<code class="inl">KEY_Z</code> / <code class="inl">KEY_0</code>..<code class="inl">KEY_9</code> / <code class="inl">KEY_SPACE KEY_SHIFT KEY_TAB KEY_ENTER KEY_ESCAPE KEY_UP KEY_DOWN KEY_LEFT KEY_RIGHT KEY_F1..F3 KEY_RBUTTON</code>。文字列名で済ます <code class="inl">keyDown("W")</code> / <code class="inl">keyPressed("ESC")</code> もある。</p>
 
+        <h3><code class="inl">input</code>：ゲームパッド（Xbox コントローラー / XInput）</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>API</th><th>説明</th></tr></thead>
+            <tbody>
+              <tr><td><code>input:isPadConnected(pad)</code> / <code>getConnectedPadCount()</code></td><td>接続状態（<code>pad</code> = 0..3、最大4台）</td></tr>
+              <tr><td><code>input:isPadButtonDown(pad, PAD_A)</code></td><td>押している間ずっと true</td></tr>
+              <tr><td><code>input:isPadButtonPressed(pad, PAD_RB)</code></td><td>押した瞬間だけ true</td></tr>
+              <tr><td><code>input:isPadButtonReleased(pad, PAD_A)</code></td><td>離した瞬間だけ true（チャージ攻撃向け）</td></tr>
+              <tr><td><code>input:getPadLeftStickX/Y(pad)</code> / <code>getPadRightStickX/Y(pad)</code></td><td>スティック傾き（円形デッドゾーン適用済み、-1..1）</td></tr>
+              <tr><td><code>input:getPadLeftTrigger(pad)</code> / <code>getPadRightTrigger(pad)</code></td><td>トリガー押し込み量（デッドゾーン適用済み、0..1）</td></tr>
+              <tr><td><code>input:setPadVibration(pad, left, right)</code></td><td>振動（0.0..1.0。left=低周波・強、right=高周波・弱）</td></tr>
+              <tr><td><code>input:setPadVibrationTimed(pad, left, right, sec)</code></td><td>sec 秒後に自動停止する振動（ワンショット向け）</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>ボタン定数: <code class="inl">PAD_A PAD_B PAD_X PAD_Y PAD_LB PAD_RB PAD_BACK PAD_START PAD_LSTICK PAD_RSTICK PAD_DPAD_UP/DOWN/LEFT/RIGHT</code>。文字列名で済ます簡易API: <code class="inl">padDown("A")</code> / <code class="inl">padPressed("RB")</code> / <code class="inl">padReleased("A")</code> / <code class="inl">padStick("left")</code>（x,y を返す）/ <code class="inl">padTrigger("right")</code> / <code class="inl">padVibrate(low, high, sec?)</code>。2台目以降は各関数末尾に <code class="inl">pad</code>（0始まり）を渡す。</p>
+
         <h3><code class="inl">physics</code>：当たり判定・剛体・キャラ操作</h3>
         <div class="tbl-wrap">
           <table>

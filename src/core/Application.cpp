@@ -3682,8 +3682,8 @@ void Application::Run()
             }
         }
 
-        // 入力状態リセット（前フレームのdeltaクリア + prevKeys保存）
-        m_inputSystem->Update();
+        // 入力状態リセット（前フレームのdeltaクリア + prevKeys保存 + XInputポーリング）
+        m_inputSystem->Update(m_gameClock.GetDeltaTime());
 
         // メッセージ処理（ここで WM_KEYDOWN/WM_MOUSEMOVE → InputSystem に蓄積）
         m_window->ProcessMessages();

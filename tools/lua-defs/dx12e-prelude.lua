@@ -40,6 +40,71 @@ function keyDown(name) end
 function keyPressed(name) end
 
 -- ============================================================
+-- gamepad: Xbox コントローラー簡易API（pad 省略時は 0 = 1台目）
+-- ============================================================
+
+---`padDown` / `padPressed` / `padReleased` に渡せるボタン名
+---@alias PadButtonName
+---| "A"
+---| "B"
+---| "X"
+---| "Y"
+---| "LB"
+---| "RB"
+---| "BACK"
+---| "START"
+---| "LSTICK"
+---| "RSTICK"
+---| "DPAD_UP"
+---| "DPAD_DOWN"
+---| "DPAD_LEFT"
+---| "DPAD_RIGHT"
+
+---指定パッドが接続されているか
+---@param pad? integer 省略時 0（1台目）
+---@return boolean
+function padConnected(pad) end
+
+---ボタンが押されている間ずっと true
+---@param name PadButtonName
+---@param pad? integer 省略時 0（1台目）
+---@return boolean
+function padDown(name, pad) end
+
+---ボタンを押した瞬間だけ true
+---@param name PadButtonName
+---@param pad? integer 省略時 0（1台目）
+---@return boolean
+function padPressed(name, pad) end
+
+---ボタンを離した瞬間だけ true（チャージ攻撃の離し際判定などに）
+---@param name PadButtonName
+---@param pad? integer 省略時 0（1台目）
+---@return boolean
+function padReleased(name, pad) end
+
+---スティックの傾き（デッドゾーン適用済み、各軸 -1..1）
+---@param side "left"|"right"
+---@param pad? integer 省略時 0（1台目）
+---@return number x
+---@return number y
+function padStick(side, pad) end
+
+---トリガーの押し込み量（デッドゾーン適用済み、0..1）
+---@param side "left"|"right"
+---@param pad? integer 省略時 0（1台目）
+---@return number
+function padTrigger(side, pad) end
+
+---振動（low=低周波・強モーター、high=高周波・弱モーター、共に0..1）
+---seconds を渡すとその秒数後に自動停止。省略時は padVibrate(0, 0) するまで鳴り続ける。
+---@param low number
+---@param high number
+---@param seconds? number
+---@param pad? integer 省略時 0（1台目）
+function padVibrate(low, high, seconds, pad) end
+
+-- ============================================================
 -- Actor: 名前付きエンティティの薄いラッパー（高レベル API の中心）
 -- ============================================================
 

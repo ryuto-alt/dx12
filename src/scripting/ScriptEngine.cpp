@@ -420,7 +420,21 @@ void ScriptEngine::RegisterBindings()
         "setMouseCapture", &InputSystem::SetMouseCapture,
         "isRightMouseDown", &InputSystem::IsRightMouseDown,
         "getMouseDeltaX",  &InputSystem::GetMouseDeltaX,
-        "getMouseDeltaY",  &InputSystem::GetMouseDeltaY
+        "getMouseDeltaY",  &InputSystem::GetMouseDeltaY,
+        // --- ゲームパッド(XInput / Xbox コントローラー、pad = 0..3) ---
+        "isPadConnected",      &InputSystem::IsPadConnected,
+        "getConnectedPadCount", &InputSystem::GetConnectedPadCount,
+        "isPadButtonDown",     &InputSystem::IsPadButtonDown,
+        "isPadButtonPressed",  &InputSystem::IsPadButtonPressed,
+        "isPadButtonReleased", &InputSystem::IsPadButtonReleased,
+        "getPadLeftStickX",   &InputSystem::GetPadLeftStickX,
+        "getPadLeftStickY",   &InputSystem::GetPadLeftStickY,
+        "getPadRightStickX",  &InputSystem::GetPadRightStickX,
+        "getPadRightStickY",  &InputSystem::GetPadRightStickY,
+        "getPadLeftTrigger",  &InputSystem::GetPadLeftTrigger,
+        "getPadRightTrigger", &InputSystem::GetPadRightTrigger,
+        "setPadVibration",      &InputSystem::SetPadVibration,
+        "setPadVibrationTimed", &InputSystem::SetPadVibrationTimed
     );
 
     // --- Camera ---
@@ -517,6 +531,22 @@ void ScriptEngine::RegisterBindings()
         char name[8]; std::snprintf(name, sizeof(name), "KEY_%c", ch);
         lua[name] = static_cast<int>(ch);
     }
+
+    // --- ゲームパッドボタン定数（isPadButtonDown/Pressed/Released に渡す。値は XINPUT_GAMEPAD_* と同一）---
+    lua["PAD_DPAD_UP"]    = static_cast<int>(XINPUT_GAMEPAD_DPAD_UP);
+    lua["PAD_DPAD_DOWN"]  = static_cast<int>(XINPUT_GAMEPAD_DPAD_DOWN);
+    lua["PAD_DPAD_LEFT"]  = static_cast<int>(XINPUT_GAMEPAD_DPAD_LEFT);
+    lua["PAD_DPAD_RIGHT"] = static_cast<int>(XINPUT_GAMEPAD_DPAD_RIGHT);
+    lua["PAD_START"]      = static_cast<int>(XINPUT_GAMEPAD_START);
+    lua["PAD_BACK"]       = static_cast<int>(XINPUT_GAMEPAD_BACK);
+    lua["PAD_LSTICK"]     = static_cast<int>(XINPUT_GAMEPAD_LEFT_THUMB);
+    lua["PAD_RSTICK"]     = static_cast<int>(XINPUT_GAMEPAD_RIGHT_THUMB);
+    lua["PAD_LB"]         = static_cast<int>(XINPUT_GAMEPAD_LEFT_SHOULDER);
+    lua["PAD_RB"]         = static_cast<int>(XINPUT_GAMEPAD_RIGHT_SHOULDER);
+    lua["PAD_A"]          = static_cast<int>(XINPUT_GAMEPAD_A);
+    lua["PAD_B"]          = static_cast<int>(XINPUT_GAMEPAD_B);
+    lua["PAD_X"]          = static_cast<int>(XINPUT_GAMEPAD_X);
+    lua["PAD_Y"]          = static_cast<int>(XINPUT_GAMEPAD_Y);
 
     // --- ユーティリティ / デバッグログ（エディタのコンソールパネルに出る）---
     // 任意個・任意型の引数を tostring でつないで出す（Unity の Debug.Log 相当）。
@@ -1092,6 +1122,38 @@ local KEYS = {
 function keyDown(name)    local k = KEYS[name]; return k ~= nil and input:isKeyDown(k)    end
 function keyPressed(name) local k = KEYS[name]; return k ~= nil and input:isKeyPressed(k) end
 
+-- ===== gamepad: Xbox コントローラー簡易API（pad 省略時は 0 = 1台目）=====
+-- padDown("A")/padPressed("RB")/padReleased("LB") はボタン名文字列で判定。
+-- padStick("left"|"right", pad?) はスティックの (x, y) を2値で返す（デッドゾーン適用済み）。
+-- padTrigger("left"|"right", pad?) は 0..1 のアナログ値。
+-- padVibrate(low, high, seconds?, pad?) は振動（low=強モーター/high=弱モーター、共に0..1）。
+--   seconds を渡すとその秒数だけ鳴って自動停止、省略時は手動で padVibrate(0,0) するまで鳴り続ける。
+local PAD_BUTTONS = {
+  A=PAD_A, B=PAD_B, X=PAD_X, Y=PAD_Y,
+  LB=PAD_LB, RB=PAD_RB, BACK=PAD_BACK, START=PAD_START,
+  LSTICK=PAD_LSTICK, RSTICK=PAD_RSTICK,
+  DPAD_UP=PAD_DPAD_UP, DPAD_DOWN=PAD_DPAD_DOWN, DPAD_LEFT=PAD_DPAD_LEFT, DPAD_RIGHT=PAD_DPAD_RIGHT,
+}
+function padConnected(pad) return input:isPadConnected(pad or 0) end
+function padDown(name, pad)     local b = PAD_BUTTONS[name]; return b ~= nil and input:isPadButtonDown(pad or 0, b) end
+function padPressed(name, pad)  local b = PAD_BUTTONS[name]; return b ~= nil and input:isPadButtonPressed(pad or 0, b) end
+function padReleased(name, pad) local b = PAD_BUTTONS[name]; return b ~= nil and input:isPadButtonReleased(pad or 0, b) end
+function padStick(side, pad)
+  pad = pad or 0
+  if side == "right" then return input:getPadRightStickX(pad), input:getPadRightStickY(pad) end
+  return input:getPadLeftStickX(pad), input:getPadLeftStickY(pad)
+end
+function padTrigger(side, pad)
+  pad = pad or 0
+  if side == "right" then return input:getPadRightTrigger(pad) end
+  return input:getPadLeftTrigger(pad)
+end
+function padVibrate(low, high, seconds, pad)
+  pad = pad or 0
+  if seconds then input:setPadVibrationTimed(pad, low, high, seconds)
+  else input:setPadVibration(pad, low, high) end
+end
+)LUA" R"LUA(
 -- ===== events: 疎結合のイベントバス =====
 -- どのコンポーネントからでも events:on("name", fn) で購読、events:emit("name", data) で発火。
 -- events:on は購読IDを返す。個別解除は events:off(id)、全消去は events:clear()。

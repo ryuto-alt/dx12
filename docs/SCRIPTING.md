@@ -71,6 +71,21 @@ if keyPressed("ESC")then ... end   -- 押した瞬間だけ true
 ```
 使えるキー名: `W A S D E Q  UP DOWN LEFT RIGHT  SPACE SHIFT TAB ENTER ESC`
 
+### ゲームパッド（Xbox コントローラー）
+```lua
+if padDown("A")     then jump() end        -- 押している間ずっと true
+if padPressed("RB") then dash() end        -- 押した瞬間だけ true
+if padReleased("A") then release() end     -- 離した瞬間だけ true（チャージ攻撃向け）
+
+local lx, ly = padStick("left")            -- 左スティック(-1..1)。移動入力に使う
+local rt = padTrigger("right")             -- 右トリガー(0..1)。アクセル/ADS等
+
+padVibrate(0.6, 0.3, 0.2)                  -- 低周波0.6・高周波0.3の振動を0.2秒だけ
+```
+使えるボタン名: `A B X Y  LB RB  BACK START  LSTICK RSTICK  DPAD_UP DPAD_DOWN DPAD_LEFT DPAD_RIGHT`
+2台目以降は各関数の最後に `pad` 引数（0始まり）を渡す: `padDown("A", 1)`。`padConnected(pad?)` で接続確認。
+低レベルAPI（`input:isPadButtonDown` 等、`PAD_*` 定数）は下記§と API_REFERENCE.md の Gamepad セクション参照。
+
 ### シーン遷移
 ```lua
 goToScene("scenes/clear.json", 0.7)  -- フェード付きで指定シーンへ（秒数省略可）
@@ -131,6 +146,9 @@ end
 
 input:isKeyDown(KEY_W)                    -- KEY_W / KEY_ESCAPE ... 定数
 input:isKeyPressed(KEY_SPACE)
+
+input:isPadButtonDown(0, PAD_A)           -- pad=0(1台目), PAD_A / PAD_RB ... 定数
+input:getPadLeftStickX(0)                 -- スティックXY・トリガー・振動も input: 経由
 
 local hit = physics:raycast(origin, dir, maxDist)  -- RaycastHit{hit,distance,point,normal}
 physics:applyImpulse(e, Vec3.new(0, 5, 0))
