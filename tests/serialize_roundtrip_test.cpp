@@ -400,6 +400,31 @@ static void Test_NetworkIdentity()
         });
 }
 
+static void Test_NetworkTransform()
+{
+    Case<NetworkTransform>(
+        [](entt::registry& r, entt::entity e) {
+            NetworkTransform nt;
+            nt.syncMode = 1;
+            nt.sendRate = 30.0f;
+            nt.syncPosition = true;
+            nt.syncRotation = false;
+            nt.syncScale = true;
+            nt.interpDelayMs = 50.0f;
+            nt.snapDistance = 2.5f;
+            r.emplace<NetworkTransform>(e, nt);
+        },
+        [](const NetworkTransform& nt) {
+            CHECK(nt.syncMode == 1);
+            CHECK_F(nt.sendRate, 30.0f);
+            CHECK(nt.syncPosition == true);
+            CHECK(nt.syncRotation == false);
+            CHECK(nt.syncScale == true);
+            CHECK_F(nt.interpDelayMs, 50.0f);
+            CHECK_F(nt.snapDistance, 2.5f);
+        });
+}
+
 static void Test_BoxCollider()
 {
     Case<BoxCollider>(
@@ -812,6 +837,7 @@ int main()
     Test_Trigger();
     Test_RigidBody();
     Test_NetworkIdentity();
+    Test_NetworkTransform();
     Test_BoxCollider();
     Test_SphereCollider();
     Test_CapsuleCollider();

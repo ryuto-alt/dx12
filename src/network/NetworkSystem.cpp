@@ -4,6 +4,9 @@
 #include "core/Logger.h"
 #include "ecs/Components.h"
 
+#include <DirectXMath.h>
+#include <cmath>
+
 namespace dx12e {
 
 NetworkSystem::NetworkSystem() = default;
@@ -25,6 +28,10 @@ bool NetworkSystem::Host(u16 port, u32 maxPlayers, std::string& outError)
     m_readyClients.clear();
     m_netToEntity.clear();
     m_pendingSpawns.clear();
+    m_localTime = 0.0f;
+    m_snapshotAccum = 0.0f;
+    m_tick = 0;
+    m_interpBuffers.clear();
     Logger::Info("NetworkSystem: hosting on port {}", port);
 
     if (m_eventBus)
@@ -50,6 +57,10 @@ bool NetworkSystem::Join(const std::string& ip, u16 port, std::string& outError)
     m_readyClients.clear();
     m_netToEntity.clear();
     m_pendingSpawns.clear();
+    m_localTime = 0.0f;
+    m_snapshotAccum = 0.0f;
+    m_tick = 0;
+    m_interpBuffers.clear();
     Logger::Info("NetworkSystem: connecting to {}:{}...", ip, port);
     return true;
 }
@@ -77,6 +88,10 @@ void NetworkSystem::ResetState()
     m_readyClients.clear();
     m_netToEntity.clear();
     m_pendingSpawns.clear();
+    m_localTime = 0.0f;
+    m_snapshotAccum = 0.0f;
+    m_tick = 0;
+    m_interpBuffers.clear();
 }
 
 void NetworkSystem::PreSimUpdate(f32 /*dt*/, entt::registry& reg)
@@ -90,9 +105,27 @@ void NetworkSystem::PreSimUpdate(f32 /*dt*/, entt::registry& reg)
     for (auto& ev : m_transport->Poll(0)) HandleTransportEvent(ev, reg);
 }
 
-void NetworkSystem::PostSimUpdate(f32 /*dt*/, entt::registry& /*reg*/)
+void NetworkSystem::PostSimUpdate(f32 dt, entt::registry& reg)
 {
-    // フェーズ⑤でtick進行・スナップショット送受信・補間適用をここに追加する。
+    if (!m_transport) return;
+    m_localTime += dt;
+
+    if (IsServer())
+    {
+        m_snapshotAccum += dt;
+        const f32 interval = (m_config.snapshotRate > 0)
+            ? (1.0f / static_cast<f32>(m_config.snapshotRate)) : 0.0f;
+        if (interval <= 0.0f || m_snapshotAccum >= interval)
+        {
+            m_snapshotAccum = (interval > 0.0f) ? std::fmod(m_snapshotAccum, interval) : 0.0f;
+            ++m_tick;
+            SendSnapshots(reg);
+        }
+    }
+    else if (IsClient())
+    {
+        ApplyInterpolation(reg);
+    }
 }
 
 void NetworkSystem::AssignNetIds(entt::registry& reg)
@@ -114,7 +147,8 @@ void NetworkSystem::SendTo(PeerHandle peer, PacketType type, const std::vector<u
     packet.reserve(body.size() + 1);
     packet.push_back(static_cast<u8>(type));
     packet.insert(packet.end(), body.begin(), body.end());
-    m_transport->Send(peer, NetChannel::Reliable, reliable, packet.data(), packet.size());
+    const NetChannel ch = reliable ? NetChannel::Reliable : NetChannel::Unreliable;
+    m_transport->Send(peer, ch, reliable, packet.data(), packet.size());
 }
 
 void NetworkSystem::BroadcastPacket(PacketType type, const std::vector<u8>& body, bool reliable, PeerHandle exclude)
@@ -124,7 +158,8 @@ void NetworkSystem::BroadcastPacket(PacketType type, const std::vector<u8>& body
     packet.reserve(body.size() + 1);
     packet.push_back(static_cast<u8>(type));
     packet.insert(packet.end(), body.begin(), body.end());
-    m_transport->Broadcast(NetChannel::Reliable, reliable, packet.data(), packet.size(), exclude);
+    const NetChannel ch = reliable ? NetChannel::Reliable : NetChannel::Unreliable;
+    m_transport->Broadcast(ch, reliable, packet.data(), packet.size(), exclude);
 }
 
 void NetworkSystem::SendWelcomeAndBaseline(PeerHandle peer, entt::registry& reg)
@@ -345,6 +380,121 @@ entt::entity NetworkSystem::FindEntityByNetId(NetId netId) const
     return it != m_netToEntity.end() ? it->second : entt::entity{ entt::null };
 }
 
+void NetworkSystem::SendSnapshots(entt::registry& reg)
+{
+    if (m_readyClients.empty()) return;   // 誰も受け取れる状態でないなら送るだけ無駄
+
+    // NetWriterは追記専用で先に件数を書く必要があるため、対象を先に集めてから書く。
+    std::vector<entt::entity> entities;
+    for (auto [e, ni, nt, tf] : reg.view<NetworkIdentity, NetworkTransform, Transform>().each())
+    {
+        (void)nt; (void)tf;
+        if (ni._netId == kInvalidNetId) continue;
+        entities.push_back(e);
+    }
+    if (entities.empty()) return;
+
+    NetWriter w;
+    w.WriteU32(m_tick);
+    w.WriteU32(static_cast<u32>(entities.size()));
+    for (auto e : entities)
+    {
+        const auto& ni = reg.get<NetworkIdentity>(e);
+        const auto& nt = reg.get<NetworkTransform>(e);
+        const auto& tf = reg.get<Transform>(e);
+
+        u8 flags = 0;
+        if (nt.syncPosition) flags |= 0x1;
+        if (nt.syncRotation) flags |= 0x2;
+        if (nt.syncScale)    flags |= 0x4;
+
+        w.WriteU32(ni._netId);
+        w.WriteU8(flags);
+        if (nt.syncPosition)
+        {
+            w.WriteF32(tf.position.x); w.WriteF32(tf.position.y); w.WriteF32(tf.position.z);
+        }
+        if (nt.syncRotation)
+        {
+            using namespace DirectX;
+            XMFLOAT4 q = tf.quaternion;
+            if (!tf.useQuaternion)
+            {
+                XMStoreFloat4(&q, XMQuaternionRotationRollPitchYaw(
+                    XMConvertToRadians(tf.rotation.x),
+                    XMConvertToRadians(tf.rotation.y),
+                    XMConvertToRadians(tf.rotation.z)));
+            }
+            w.WriteF32(q.x); w.WriteF32(q.y); w.WriteF32(q.z); w.WriteF32(q.w);
+        }
+        if (nt.syncScale)
+        {
+            w.WriteF32(tf.scale.x); w.WriteF32(tf.scale.y); w.WriteF32(tf.scale.z);
+        }
+    }
+
+    // 未readyのpeer(Baseline適用待ち)には送らない(未知のnetIdを参照させないため)。
+    for (auto& [peer, clientId] : m_peerToClient)
+    {
+        if (m_readyClients.count(clientId) == 0) continue;
+        SendTo(peer, PacketType::Snapshot, w.Data(), false);
+    }
+}
+
+void NetworkSystem::HandleSnapshot(const std::vector<u8>& body)
+{
+    try
+    {
+        NetReader r(body);
+        const NetTick tick = r.ReadU32();
+        (void)tick;   // フェーズ⑦の予測補正で使う予定(受信tickとの突き合わせ)。
+        const u32 count = r.ReadU32();
+        for (u32 i = 0; i < count; ++i)
+        {
+            const NetId netId = r.ReadU32();
+            const u8 flags = r.ReadU8();
+
+            SnapshotBuffer::Sample s;
+            s.time = m_localTime;
+            if (flags & 0x1) { s.hasPosition = true; s.position = { r.ReadF32(), r.ReadF32(), r.ReadF32() }; }
+            if (flags & 0x2) { s.hasRotation = true; s.rotation = { r.ReadF32(), r.ReadF32(), r.ReadF32(), r.ReadF32() }; }
+            if (flags & 0x4) { s.hasScale    = true; s.scale    = { r.ReadF32(), r.ReadF32(), r.ReadF32() }; }
+
+            m_interpBuffers[netId].Push(s);
+        }
+    }
+    catch (const NetReadError&)
+    {
+        Logger::Warn("NetworkSystem: Snapshot パケットの解析に失敗しました");
+    }
+}
+
+void NetworkSystem::ApplyInterpolation(entt::registry& reg)
+{
+    if (m_interpBuffers.empty()) return;
+
+    for (auto& [netId, buf] : m_interpBuffers)
+    {
+        if (buf.Empty()) continue;
+        auto it = m_netToEntity.find(netId);
+        if (it == m_netToEntity.end() || !reg.valid(it->second)) continue;
+        const entt::entity e = it->second;
+        if (!reg.all_of<Transform, NetworkTransform>(e)) continue;
+
+        const auto& nt = reg.get<NetworkTransform>(e);
+        if (nt.syncMode != 0) continue;   // オーナー予測(フェーズ⑦)はここでは触らない
+
+        const f32 renderTime = m_localTime - (nt.interpDelayMs / 1000.0f);
+        SnapshotBuffer::Sample s;
+        if (!buf.TrySample(renderTime, s)) continue;
+
+        auto& tf = reg.get<Transform>(e);
+        if (s.hasPosition) tf.position = s.position;
+        if (s.hasRotation) { tf.quaternion = s.rotation; tf.useQuaternion = true; }
+        if (s.hasScale)    tf.scale = s.scale;
+    }
+}
+
 void NetworkSystem::HandleTransportEvent(const TransportEvent& ev, entt::registry& reg)
 {
     switch (ev.type)
@@ -418,7 +568,8 @@ void NetworkSystem::HandleTransportEvent(const TransportEvent& ev, entt::registr
             else if (type == PacketType::Baseline) HandleBaseline(body, reg);
             else if (type == PacketType::Spawn)    HandleSpawn(body);
             else if (type == PacketType::Despawn)  HandleDespawn(body, reg);
-            // Snapshot/RpcMessage は後続フェーズで処理する。
+            else if (type == PacketType::Snapshot) HandleSnapshot(body);
+            // RpcMessage は後続フェーズで処理する。
         }
         break;
     }

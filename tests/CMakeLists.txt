@@ -96,6 +96,16 @@ if(TARGET Renderer)
         target_compile_definitions(FrustumTests PRIVATE ${DX12_COMPILE_DEFS})
     endif()
     add_test(NAME FrustumTests COMMAND FrustumTests)
+
+    # SnapshotBuffer(ネットワーク補間バッファ)テスト。ヘッダオンリー・純DirectXMath。
+    add_executable(InterpolationTests interpolation_test.cpp)
+    target_include_directories(InterpolationTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(InterpolationTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(InterpolationTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(InterpolationTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME InterpolationTests COMMAND InterpolationTests)
 endif()
 
 # SpatialIndex（一様グリッド）テスト（Phase 5: RTS 空間クエリ）。ヘッダオンリー、entt のみ依存。

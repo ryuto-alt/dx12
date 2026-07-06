@@ -148,6 +148,16 @@ void RegisterCoreComponentMeta()
         .type("NetworkIdentity")
         .data<&NetworkIdentity::interestRadius>("interestRadius")
         .data<&NetworkIdentity::serverAuthority>("serverAuthority");
+
+    entt::meta_factory<NetworkTransform>{}
+        .type("NetworkTransform")
+        .data<&NetworkTransform::syncMode>("syncMode")
+        .data<&NetworkTransform::sendRate>("sendRate")
+        .data<&NetworkTransform::syncPosition>("syncPosition")
+        .data<&NetworkTransform::syncRotation>("syncRotation")
+        .data<&NetworkTransform::syncScale>("syncScale")
+        .data<&NetworkTransform::interpDelayMs>("interpDelayMs")
+        .data<&NetworkTransform::snapDistance>("snapDistance");
 }
 
 } // namespace dx12e

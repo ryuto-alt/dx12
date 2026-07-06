@@ -1,5 +1,6 @@
 #pragma once
 #include "engine/core/EventBus.h"
+#include "network/Interpolation.h"
 #include "network/NetworkConfig.h"
 #include "network/Transport.h"
 
@@ -94,6 +95,11 @@ private:
     void HandleBaseline(const std::vector<u8>& body, entt::registry& reg);
     void HandleSpawn(const std::vector<u8>& body);
     void HandleDespawn(const std::vector<u8>& body, entt::registry& reg);
+    void HandleSnapshot(const std::vector<u8>& body);
+    void ApplyInterpolation(entt::registry& reg);
+
+    // ---- サーバー専用(続き) ----
+    void SendSnapshots(entt::registry& reg);
 
     void SendTo(PeerHandle peer, PacketType type, const std::vector<u8>& body, bool reliable);
     void BroadcastPacket(PacketType type, const std::vector<u8>& body, bool reliable,
@@ -114,6 +120,12 @@ private:
     std::unordered_set<ClientId>              m_readyClients;   // SceneReady 済み(サーバー視点)
     std::unordered_map<NetId, entt::entity>   m_netToEntity;    // 動的スポーン+ベースライン両方を登録
     std::vector<PendingSpawn>                 m_pendingSpawns;  // フレーム境界で drain される
+
+    // ---- スナップショット複製(フェーズ⑤) ----
+    f32 m_localTime = 0.0f;         // PostSimUpdate の dt 累積(受信サンプルのタイムスタンプに使う)
+    f32 m_snapshotAccum = 0.0f;     // サーバー: 次スナップショット送信までの残り時間
+    NetTick m_tick = 0;             // サーバー: 送信したスナップショットの通し番号(参考値、厳密なfixed-tickではない)
+    std::unordered_map<NetId, SnapshotBuffer> m_interpBuffers;   // クライアント: netId毎の補間バッファ
 };
 
 } // namespace dx12e

@@ -80,6 +80,8 @@ int main()
     Expect<Tag>({ "tags" });
     Expect<Sprite2D>({ "texturePath", "layer", "size", "uvMin", "uvMax", "color", "worldSpace" });
     Expect<NetworkIdentity>({ "interestRadius", "serverAuthority" });
+    Expect<NetworkTransform>({ "syncMode", "sendRate", "syncPosition", "syncRotation", "syncScale",
+                                "interpDelayMs", "snapDistance" });
 
     // 反映は冪等（2回呼んでも壊れない）
     RegisterCoreComponentMeta();

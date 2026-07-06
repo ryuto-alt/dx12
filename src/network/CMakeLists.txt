@@ -9,11 +9,13 @@ target_include_directories(Network PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 find_package(unofficial-enet CONFIG REQUIRED)
 find_package(EnTT CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(directxmath CONFIG REQUIRED)
 
 target_link_libraries(Network
     PUBLIC
         Core
         EnTT::EnTT
+        Microsoft::DirectXMath
     PRIVATE
         unofficial::enet::enet
         nlohmann_json::nlohmann_json

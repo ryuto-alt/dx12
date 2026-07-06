@@ -823,6 +823,34 @@ void InspectorPanel::Render(entt::registry& reg,
             }
         }
 
+        // NetworkTransform（Transformのスナップショット複製設定。NetworkIdentityと併用）
+        if (reg.all_of<NetworkTransform>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entEmpty : 0, "Network Transform");
+            bool removed = ComponentRemoveMenu<NetworkTransform>(reg, ctx, ctx.selectedEntity, "Network Transform");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_netTfEdit);
+                auto& nt = reg.get<NetworkTransform>(ctx.selectedEntity);
+                bool changed = false, active = false;
+                const char* modes[] = { "補間 Interpolated", "オーナー予測 Predicted(未実装)" };
+                changed |= ImGui::Combo("同期モード SyncMode", &nt.syncMode, modes, IM_ARRAYSIZE(modes));
+                changed |= ImGui::Checkbox("位置 Position", &nt.syncPosition);
+                ImGui::SameLine();
+                changed |= ImGui::Checkbox("回転 Rotation", &nt.syncRotation);
+                ImGui::SameLine();
+                changed |= ImGui::Checkbox("スケール Scale", &nt.syncScale);
+                changed |= ImGui::DragFloat("補間遅延 InterpDelayMs", &nt.interpDelayMs, 1.0f, 0.0f, 1000.0f);
+                active |= ImGui::IsItemActive();
+                ImGui::SameLine(); ImGui::TextDisabled("(?)");
+                if (ImGui::BeginItemTooltip())
+                { ImGui::TextUnformatted("受信スナップショットをこの時間だけ遅らせて補間する(ジッター吸収)"); ImGui::EndTooltip(); }
+                changed |= ImGui::DragFloat("テレポート距離 SnapDistance", &nt.snapDistance, 0.1f, 0.0f, 100.0f);
+                active |= ImGui::IsItemActive();
+                EndEdit(reg, ctx, ctx.selectedEntity, m_netTfEdit, changed, active, "Network Transform");
+            }
+        }
+
         // Trigger（イベント: 範囲に入る/出る/居る で宣言アクションを実行）
         if (reg.all_of<Trigger>(ctx.selectedEntity))
         {
@@ -1448,6 +1476,7 @@ void InspectorPanel::Render(entt::registry& reg,
             AddComponentMenuItem<CharacterController>(reg, ctx, ctx.selectedEntity, "Character Controller");
             ImGui::Separator();
             AddComponentMenuItem<NetworkIdentity>(reg, ctx, ctx.selectedEntity, "Network Identity");
+            AddComponentMenuItem<NetworkTransform>(reg, ctx, ctx.selectedEntity, "Network Transform");
             ImGui::Separator();
             // スクリプト（.lua）をクリックでアタッチ — ドラッグ不要
             if (ImGui::BeginMenu("\xe3\x82\xb9\xe3\x82\xaf\xe3\x83\xaa\xe3\x83\x97\xe3\x83\x88"))  // スクリプト
