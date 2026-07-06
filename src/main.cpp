@@ -1,4 +1,5 @@
 #include "core/Application.h"
+#include "core/CrashHandler.h"
 #include "core/PathResolver.h"
 #include "core/Updater.h"
 #include "core/SplashScreen.h"
@@ -194,6 +195,10 @@ int RunValidate(const std::string& scenePathStr)
 
 int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCmdLine, _In_ int nCmdShow)
 {
+    // ネイティブクラッシュ(アクセス違反等)でも原因が追えるよう、最初にクラッシュハンドラを仕込む。
+    // クラッシュ時は CWD に dx12_crash.log(スタックトレース) + dx12_crash.dmp(ミニダンプ)が残る。
+    dx12e::CrashHandler::Install();
+
     try
     {
         bool gameMode  = false;

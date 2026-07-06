@@ -10,6 +10,13 @@ option(DX12_BUILD_TESTS "Build unit tests" ON)
 set(DX12_COMPILE_OPTIONS /W4 /WX /MP /permissive- /utf-8 /external:anglebrackets /external:W0)
 set(DX12_COMPILE_DEFS UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 
+# クラッシュレポート(core/CrashHandler)で関数名/行番号を解決できるよう、Release でも PDB を出す。
+# /Zi はデバッグ情報の生成のみで最適化(/O2)には影響しない。/OPT:REF,ICF で /DEBUG による肥大も抑える。
+if(MSVC)
+    add_compile_options("$<$<CONFIG:Release>:/Zi>")
+    add_link_options("$<$<CONFIG:Release>:/DEBUG>" "$<$<CONFIG:Release>:/OPT:REF>" "$<$<CONFIG:Release>:/OPT:ICF>")
+endif()
+
 # Dependencies
 find_package(spdlog CONFIG REQUIRED)
 # ルートで find_package する（サブディレクトリで呼ぶと IMPORTED ターゲットがそのディレクトリ以下にしか

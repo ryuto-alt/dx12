@@ -182,6 +182,19 @@ if(TARGET Core)
     add_test(NAME VfsTests COMMAND VfsTests)
 endif()
 
+# CrashHandler 統合テスト（子プロセスをわざとアクセス違反で落とし、
+# dx12_crash.log / dx12_crash.dmp の生成とレポート内容を確認）。
+if(TARGET Core)
+    add_executable(CrashHandlerTests crash_handler_test.cpp)
+    target_link_libraries(CrashHandlerTests PRIVATE Core)
+    target_include_directories(CrashHandlerTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(CrashHandlerTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(CrashHandlerTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME CrashHandlerTests COMMAND CrashHandlerTests)
+endif()
+
 # GitIntegration::ToWebUrl（remote URL → ブラウザ用 https URL）の文字列変換テスト。
 # プレフィックス文字数のオフバイワン再発防止（実際に "ryuto-alt" → "yuto-alt" になった事例）。
 if(TARGET ProjectLib)

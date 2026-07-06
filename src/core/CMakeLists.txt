@@ -13,6 +13,7 @@ add_library(Core STATIC
     Window.cpp
     SplashScreen.cpp
     Logger.cpp
+    CrashHandler.cpp
     GameClock.cpp
     PathResolver.cpp
     Updater.cpp
