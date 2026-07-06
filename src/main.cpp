@@ -6,6 +6,7 @@
 #include "core/vfs/Vfs.h"
 
 #include <Windows.h>
+#include <shellapi.h>   // CommandLineToArgvW（--net-client / --project の解析用）
 #include <string>
 #include <fstream>
 #include <sstream>
@@ -198,6 +199,8 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         bool gameMode  = false;
         bool buildMode = false;
         std::string buildProjectDir;  // --build <dir> で指定したプロジェクト（空=組み込み）
+        std::string netClientJoin;    // --net-client <ip[:port]>（マルチプレイのテストクライアント起動）
+        std::string netClientProject; // --project <dir>（--net-client と併用。開くプロジェクトルート）
 #ifndef DX12_GAME_RUNTIME
         if (lpCmdLine)
         {
@@ -236,6 +239,30 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
             }
             if (args.find("--editor") != std::string::npos)
                 gameMode = false;  // 明示的にエディタ起動
+        }
+
+        // --net-client <ip[:port]> / --project <dir>: マルチプレイのテストクライアント起動(フェーズ⑨)。
+        // プロジェクトパスに日本語/空白が入り得るため、lpCmdLine(ANSI)ではなく
+        // Wide argv で取って UTF-8 化する（エンジン内部のパスは全て UTF-8）。
+        {
+            int argc = 0;
+            if (LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc))
+            {
+                auto toUtf8 = [](const wchar_t* w) {
+                    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+                    std::string s(n > 0 ? static_cast<size_t>(n - 1) : 0, '\0');
+                    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w, -1, s.data(), n, nullptr, nullptr);
+                    return s;
+                };
+                for (int i = 1; i < argc; ++i)
+                {
+                    if (wcscmp(argv[i], L"--net-client") == 0 && i + 1 < argc)
+                        netClientJoin = toUtf8(argv[++i]);
+                    else if (wcscmp(argv[i], L"--project") == 0 && i + 1 < argc)
+                        netClientProject = toUtf8(argv[++i]);
+                }
+                LocalFree(argv);
+            }
         }
 
         // 配布レイアウト判定: exe の隣に game.json があれば（引数無しの直起動でも）ゲームモード。
@@ -305,6 +332,13 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
 #endif
 
         dx12e::Application app;
+#ifndef DX12_GAME_RUNTIME
+        if (!netClientJoin.empty())
+        {
+            app.SetNetTestClientJoin(netClientJoin);
+            app.SetNetTestProject(netClientProject);
+        }
+#endif
         app.Initialize(hInstance, nCmdShow, gameMode, nullptr, buildMode);
 
         if (buildMode)

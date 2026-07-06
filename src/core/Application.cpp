@@ -1022,7 +1022,15 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             {
                 loaded = SceneSerializer::Load(*m_scene, lastScene, PathResolver::AssetsDir());
                 if (loaded)
+                {
                     m_editorCtx->currentScenePath = lastScene;
+                    // マルチプレイの Welcome はシーンを assets 相対で送る(クライアントは自分の
+                    // assets 配下から読む)ため、絶対パスから "assets/" 以降を相対として控える。
+                    std::string norm = lastScene;
+                    std::replace(norm.begin(), norm.end(), '\\', '/');
+                    if (size_t p = norm.rfind("/assets/"); p != std::string::npos)
+                        m_currentSceneRel = norm.substr(p + 8);
+                }
             }
             if (!loaded && std::filesystem::exists(defaultScene))
             {
@@ -1501,6 +1509,36 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     {
         m_pendingMode = EngineMode::Playing;
         m_modeChangeRequested = true;
+    }
+
+    // マルチプレイ テストクライアント起動(フェーズ⑨、--net-client "ip[:port]")。
+    // ランチャーを飛ばして --project のプロジェクトを直接開き、ロード完了後(Update内)に
+    // クライアントとして自動Play=Joinする。ip/port は EnterPlayMode の自動接続が参照する。
+    if (!m_isGameMode && !m_pendingNetClientJoin.empty())
+    {
+        std::string ip = m_pendingNetClientJoin;
+        if (size_t c = ip.rfind(':'); c != std::string::npos)
+        {
+            m_editorCtx->netTestJoinPort = static_cast<u16>(std::atoi(ip.c_str() + c + 1));
+            ip.resize(c);
+        }
+        if (!ip.empty()) m_editorCtx->netTestJoinAddress = ip;
+        m_editorCtx->netTestRole = NetTestRole::Client;
+
+        if (!m_pendingNetClientProject.empty())
+        {
+            ProjectInfo info;
+            if (ProjectManager::ProjectFromFolder(m_pendingNetClientProject, info))
+                BeginProjectLoad(info, /*isNew=*/false);   // m_showLauncher=false もここで立つ
+            else
+                Logger::Warn("--project のプロジェクトが開けません: {}", m_pendingNetClientProject);
+        }
+        else
+        {
+            m_showLauncher = false;   // プロジェクト指定なし=既に読み込んだ最後のシーンのまま参加
+        }
+        m_netClientAutoPlayPending = true;
+        m_pendingNetClientJoin.clear();
     }
 
     // 全モデルのサムネイルを起動時にロード/レンダリング（エディタ専用機能）。
@@ -3775,6 +3813,18 @@ void Application::Run()
                 return HandleMcpCommand(client, line);
             });
 
+        // --net-client: プロジェクトロード完了後にクライアントとして自動Play=Join(フェーズ⑨)。
+        // ※ Update 内で立てると同フレームの EditorLayer::Render 後の
+        //    「m_pendingMode = pendingPlayMode ? ...」に Editor へ上書きされるので、
+        //    消費直前のここで立てて即座に消費させる。
+        if (m_netClientAutoPlayPending && !m_loading && !m_modeChangeRequested
+            && m_engineMode == EngineMode::Editor)
+        {
+            m_netClientAutoPlayPending = false;
+            m_pendingMode = EngineMode::Playing;
+            m_modeChangeRequested = true;
+        }
+
         // モード切替（前フレームのImGuiボタンから遅延実行）
         if (m_modeChangeRequested)
         {
@@ -4182,6 +4232,13 @@ void Application::Update()
     UpdateProjectLoad(dt);
     // 非同期 git 操作の完了回収
     UpdateGitOp();
+
+    // 「テストクライアント起動」ボタン(フェーズ⑨): フレーム境界で別プロセスを起動
+    if (m_editorCtx->netTestLaunchClientRequested)
+    {
+        m_editorCtx->netTestLaunchClientRequested = false;
+        LaunchNetTestClient();
+    }
 
     if (m_engineMode == EngineMode::Editor)
     {
@@ -5006,6 +5063,14 @@ void Application::LoadProject(const ProjectInfo& info)
     // 2) パス依存サブシステムを更新
     m_audioSystem->SetAssetsDir(PathResolver::AssetsDir());
     m_scriptEngine->SetAssetsDir(PathResolver::AssetsDir());
+    if (m_networkSystem)
+    {
+        // 起動時はエンジン側 assets の network.json を読んでいるので、
+        // プロジェクトの assets/network.json で読み直す(無ければ既定値)。
+        NetworkConfig cfg;
+        cfg.Load(PathResolver::AssetsDir() + "network.json");
+        m_networkSystem->SetConfig(cfg);
+    }
     if (m_editorLayer)
         m_editorLayer->SetAssetRoots(PathResolver::AssetsDir(), PathResolver::ScriptsDir());
 
@@ -5856,6 +5921,39 @@ void Application::EnsureEditorGrid()
     Logger::Info("EnsureEditorGrid: グリッド未配置のシーンへ編集用グリッドを追加");
 }
 
+void Application::LaunchNetTestClient()
+{
+    // ホスト(自分)の待ち受けポートへ 127.0.0.1 で自動接続する検証用の別ウィンドウを起動する。
+    wchar_t exe[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+
+    const u16 port = m_networkSystem ? m_networkSystem->Config().defaultPort : u16(7777);
+    std::wstring cmd = L"\"" + std::wstring(exe) + L"\" --editor --net-client 127.0.0.1:"
+                     + std::to_wstring(port);
+    if (!m_projectInfo.rootDir.empty())
+    {
+        // rootDir は UTF-8。日本語パスでも化けないように wide へ変換してから渡す。
+        int n = MultiByteToWideChar(CP_UTF8, 0, m_projectInfo.rootDir.c_str(), -1, nullptr, 0);
+        std::wstring wroot(n > 0 ? static_cast<size_t>(n - 1) : 0, L'\0');
+        if (n > 0) MultiByteToWideChar(CP_UTF8, 0, m_projectInfo.rootDir.c_str(), -1, wroot.data(), n);
+        cmd += L" --project \"" + wroot + L"\"";
+    }
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi))
+    {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        Logger::Info("テストクライアントを起動しました (127.0.0.1:{})", port);
+    }
+    else
+    {
+        Logger::Warn("テストクライアントの起動に失敗しました (GetLastError={})", GetLastError());
+    }
+}
+
 void Application::EnterPlayMode()
 {
     // カメラ設置チェック
@@ -5969,8 +6067,10 @@ void Application::EnterPlayMode()
         }
         else if (m_editorCtx->netTestRole == NetTestRole::Client)
         {
-            if (!m_networkSystem->Join(m_editorCtx->netTestJoinAddress,
-                                       m_networkSystem->Config().defaultPort, netErr))
+            const u16 port = m_editorCtx->netTestJoinPort != 0
+                           ? m_editorCtx->netTestJoinPort           // --net-client ip:port の明示指定
+                           : m_networkSystem->Config().defaultPort;
+            if (!m_networkSystem->Join(m_editorCtx->netTestJoinAddress, port, netErr))
                 Logger::Warn("テストロール: 接続開始に失敗しました: {}", netErr);
         }
     }

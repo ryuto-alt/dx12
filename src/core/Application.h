@@ -97,6 +97,9 @@ public:
     // Initialize() より前に呼ぶこと。"ip:port" 形式。空なら何もしない(通常起動)。
     // Initialize 内でゲームモードの自動 Play に載せて net:join 相当を実行する。
     void SetNetTestClientJoin(const std::string& ipPort) { m_pendingNetClientJoin = ipPort; }
+    // --net-client と併用する --project <dir>。ランチャーを飛ばしてこのプロジェクトを直接開く。
+    // 空なら最後に開いたシーンのまま参加する。Initialize() より前に呼ぶこと。
+    void SetNetTestProject(const std::string& dir) { m_pendingNetClientProject = dir; }
 
     // ヘッドレスでゲームをビルド（--build CLI 用）。開始シーンは title.json があればそれ。
     // 成否を返す（CLI の終了コード / GUI の完了表示に使う）。
@@ -224,6 +227,8 @@ private:
     // 現在のプロジェクトを保存（.dx12proj + 現在シーン）
     void SaveCurrentProject();
     void EnterPlayMode();
+    // 「テストクライアント起動」ボタン(フェーズ⑨): 同じ exe を --net-client 付きで別プロセス起動。
+    void LaunchNetTestClient();
     void EnterEditorMode();
     // エディタで開いたシーンに GridPlane が無ければ床グリッドを足す。
     // 旧シーンや Grid 未配置のテンプレ(platformer 等)を開いてもグリッドが必ず出るようにする。
@@ -417,7 +422,9 @@ private:
     std::unique_ptr<PhysicsSystem>     m_physicsSystem;
     std::unique_ptr<NetworkSystem>     m_networkSystem;   // マルチプレイ（GPU非依存、Play/Stopでも再構築しない）
     std::unique_ptr<NetworkPanel>      m_networkPanel;    // マルチプレイのエディタパネル（状態/設定窓）。ゲームでは null。
-    std::string m_pendingNetClientJoin;  // SetNetTestClientJoin で受けた "ip:port"。Initialize 内で1回消費。
+    std::string m_pendingNetClientJoin;     // SetNetTestClientJoin で受けた "ip:port"。Initialize 内で1回消費。
+    std::string m_pendingNetClientProject;  // SetNetTestProject で受けたプロジェクトルート。同上。
+    bool m_netClientAutoPlayPending = false; // --net-client: プロジェクトロード完了後にPlay(Join)する予約。
     std::unique_ptr<PhysicsDebugRenderer> m_physicsDebugRenderer;
     std::unique_ptr<EditorIconRenderer>   m_editorIconRenderer;
     bool                               m_physicsDebugDraw = false;

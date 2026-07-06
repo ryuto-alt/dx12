@@ -574,6 +574,11 @@ void ProjectManager::SaveLastOpenedScene(const std::string& scenePath)
         ofs << j.dump(2);
 }
 
+bool ProjectManager::ProjectFromFolder(const std::string& dir, ProjectInfo& out)
+{
+    return MakeProjectFromFolder(dir, out);
+}
+
 std::string ProjectManager::LoadLastOpenedScene()
 {
     std::string filePath = GetEditorStatePath();
