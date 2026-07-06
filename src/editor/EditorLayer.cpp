@@ -153,6 +153,7 @@ void EditorLayer::BuildDefaultLayout(ImGuiID dockspaceId, f32 /*toolbarHeight*/)
         ImGui::DockBuilderDockWindow("Project",                 dockRightBottom);
         ImGui::DockBuilderDockWindow("Version Control (Git)",   dockRightBottom);
         ImGui::DockBuilderDockWindow("Network",                 dockRightBottom);
+        ImGui::DockBuilderDockWindow("Network 設定",            dockRightBottom);
     }
     else
     {
@@ -231,7 +232,7 @@ void EditorLayer::Render(bool isPlaying,
                 m_ctx->showSSAO = m_ctx->showEngineSettings = m_ctx->showSceneFlow =
                 m_ctx->showProject = m_ctx->showVersionControl =
                 m_ctx->showMcpBridge = m_ctx->showBuildSettings =
-                m_ctx->showNetworkStatus =
+                m_ctx->showNetworkStatus = m_ctx->showNetworkSettings =
                 m_ctx->showVfxEditor = false;
             m_prevAnyToolShown = false;
             m_dockspaceBuilt = false;

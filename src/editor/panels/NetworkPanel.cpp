@@ -7,6 +7,7 @@
 #include <imgui.h>
 #pragma warning(pop)
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 
@@ -34,7 +35,7 @@ std::string FormatBytes(uint64_t b)
 
 } // namespace
 
-void NetworkPanel::Render(NetworkSystem& net, entt::registry& reg, EditorContext& ctx)
+void NetworkPanel::RenderStatus(NetworkSystem& net, entt::registry& reg, EditorContext& ctx)
 {
     if (!ImGui::Begin("Network", &ctx.showNetworkStatus))
     {
@@ -85,6 +86,62 @@ void NetworkPanel::Render(NetworkSystem& net, entt::registry& reg, EditorContext
 
     if (!connected)
         ImGui::TextDisabled("net:host() / net:join() で接続を開始するとここに情報が出ます。");
+
+    ImGui::End();
+}
+
+void NetworkPanel::RenderSettings(NetworkSystem& net, EditorContext& ctx, const std::string& assetsDir)
+{
+    if (!m_loaded)
+    {
+        m_staging = net.Config();
+        m_loaded = true;
+    }
+
+    if (!ImGui::Begin("Network 設定", &ctx.showNetworkSettings))
+    {
+        ImGui::End();
+        return;
+    }
+
+    ImGui::TextDisabled("保存すると assets/network.json に書き込まれます(次回起動時にも反映)。");
+    ImGui::Separator();
+
+    int tickRate = static_cast<int>(m_staging.tickRate);
+    if (ImGui::DragInt("シム更新Hz TickRate", &tickRate, 1.0f, 1, 240))
+        m_staging.tickRate = static_cast<u32>(std::max(1, tickRate));
+
+    int snapshotRate = static_cast<int>(m_staging.snapshotRate);
+    if (ImGui::DragInt("スナップショット送信Hz SnapshotRate", &snapshotRate, 1.0f, 1, 120))
+        m_staging.snapshotRate = static_cast<u32>(std::max(1, snapshotRate));
+    ImGui::SameLine(); ImGui::TextDisabled("(?)");
+    if (ImGui::BeginItemTooltip())
+    { ImGui::TextUnformatted("サーバーが複製Transformを送信する頻度。高いほど滑らかだが帯域を食う"); ImGui::EndTooltip(); }
+
+    int maxPlayers = static_cast<int>(m_staging.maxPlayers);
+    if (ImGui::DragInt("最大接続数 MaxPlayers", &maxPlayers, 1.0f, 1, 64))
+        m_staging.maxPlayers = static_cast<u32>(std::max(1, maxPlayers));
+
+    int port = static_cast<int>(m_staging.defaultPort);
+    if (ImGui::DragInt("既定ポート DefaultPort", &port, 1.0f, 1024, 65535))
+        m_staging.defaultPort = static_cast<u16>(std::clamp(port, 1, 65535));
+    ImGui::SameLine(); ImGui::TextDisabled("(?)");
+    if (ImGui::BeginItemTooltip())
+    { ImGui::TextUnformatted("net:host()/net:join() で省略した時に使われるポート番号(MCPの8787番台とは別)"); ImGui::EndTooltip(); }
+
+    ImGui::Separator();
+    if (net.IsConnected())
+        ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.35f, 1.0f),
+                           "接続中: 変更は保存しても現在のセッションには反映されません(次回接続から有効)。");
+
+    if (ImGui::Button("保存", ImVec2(120, 0)))
+    {
+        net.SetConfig(m_staging);
+        m_staging.Save(assetsDir + "network.json");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("既定値に戻す", ImVec2(120, 0)))
+        m_staging = NetworkConfig{};
 
     ImGui::End();
 }

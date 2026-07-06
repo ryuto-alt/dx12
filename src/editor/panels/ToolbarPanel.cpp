@@ -13,6 +13,7 @@
 #include <commdlg.h>
 #include <ShlObj.h>
 #include <shellapi.h>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 
@@ -270,6 +271,7 @@ void ToolbarPanel::Render(bool isPlaying,
             ImGui::MenuItem("パーティクルエディタ",     nullptr, &ctx.showVfxEditor);
             ImGui::MenuItem("MCP / AI Bridge",         nullptr, &ctx.showMcpBridge);
             ImGui::MenuItem("Network",                 nullptr, &ctx.showNetworkStatus);
+            ImGui::MenuItem("Network 設定",             nullptr, &ctx.showNetworkSettings);
             ImGui::EndMenu();
         }
 
@@ -390,6 +392,46 @@ void ToolbarPanel::Render(bool isPlaying,
             outModeChangeRequested = true;
         }
         ImGui::PopStyleColor(2);
+    }
+
+    // ===== マルチプレイ テストロール(フェーズ⑨) =====
+    // Play中はロール変更不可(Stopしてから変える)。EnterPlayModeがctx.netTestRoleを見て
+    // net:host()/net:join()相当を自動実行する(Luaを書かずに素早く2窓テストできるように)。
+    ImGui::SameLine(0, 8);
+    ImGui::BeginDisabled(isPlaying);
+    {
+        const char* roleLabels[] = { "オフライン", "ホストとしてPlay", "クライアント参加" };
+        int roleIdx = static_cast<int>(ctx.netTestRole);
+        ImGui::SetNextItemWidth(150);
+        if (ImGui::Combo("##net_test_role", &roleIdx, roleLabels, IM_ARRAYSIZE(roleLabels)))
+            ctx.netTestRole = static_cast<NetTestRole>(roleIdx);
+    }
+    ImGui::EndDisabled();
+
+    if (ctx.netTestRole == NetTestRole::Client)
+    {
+        ImGui::SameLine(0, 4);
+        ImGui::BeginDisabled(isPlaying);
+        char ipBuf[64];
+        strncpy_s(ipBuf, ctx.netTestJoinAddress.c_str(), _TRUNCATE);
+        ImGui::SetNextItemWidth(120);
+        if (ImGui::InputText("##net_test_ip", ipBuf, sizeof(ipBuf)))
+            ctx.netTestJoinAddress = ipBuf;
+        ImGui::EndDisabled();
+    }
+
+    if (isPlaying && ctx.netTestRole == NetTestRole::Host)
+    {
+        ImGui::SameLine(0, 8);
+        if (ImGui::Button("テストクライアント起動"))
+            ctx.netTestLaunchClientRequested = true;
+        ImGui::SameLine(0, 4); ImGui::TextDisabled("(?)");
+        if (ImGui::BeginItemTooltip())
+        {
+            ImGui::TextUnformatted("同じプロジェクトを --net-client 127.0.0.1:<port> でもう1つ起動して"
+                                   "\n自動でこのホストへ接続します(検証用の別ウィンドウ)。");
+            ImGui::EndTooltip();
+        }
     }
 
     // ===== Status =====
@@ -575,6 +617,7 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::MenuItem("Git 変更",               nullptr, &ctx.showVersionControl);
         ImGui::MenuItem("MCP / AI Bridge",        nullptr, &ctx.showMcpBridge);
         ImGui::MenuItem("Network",                nullptr, &ctx.showNetworkStatus);
+        ImGui::MenuItem("Network 設定",            nullptr, &ctx.showNetworkSettings);
         ImGui::MenuItem("パーティクルエディタ",    nullptr, &ctx.showVfxEditor);
         ImGui::Separator();
         if (ImGui::MenuItem("すべて閉じる"))
@@ -582,7 +625,7 @@ void ToolbarPanel::Render(bool isPlaying,
             ctx.showPostProcess = ctx.showPostParams = ctx.showSkybox = ctx.showSSAO =
                 ctx.showEngineSettings = ctx.showSceneFlow = ctx.showProject =
                 ctx.showVersionControl = ctx.showMcpBridge = ctx.showBuildSettings =
-                ctx.showNetworkStatus =
+                ctx.showNetworkStatus = ctx.showNetworkSettings =
                 ctx.showVfxEditor = false;
         }
         ImGui::EndPopup();

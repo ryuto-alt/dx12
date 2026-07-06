@@ -16,6 +16,10 @@ namespace dx12e
 
 enum class GizmoMode { Translate, Rotate, Scale };
 
+// ツールバーのPlayドロップダウンで選ぶマルチプレイのテストロール(フェーズ⑨)。
+// EnterPlayModeがこれを見てnet:host()/net:join()相当を自動実行する(Lua無しでの手早い動作確認用)。
+enum class NetTestRole { Offline, Host, Client };
+
 struct PendingSpawnRequest
 {
     std::string modelPath;
@@ -130,6 +134,13 @@ public:
     bool showMcpBridge      = false;   // MCP / AI Bridge モニタ窓
     bool showBuildSettings  = false;   // ビルド設定（Unity の Build Settings 相当）
     bool showNetworkStatus  = false;   // マルチプレイ状態モニタ窓（接続一覧/tick/帯域、フェーズ⑧）
+    bool showNetworkSettings = false;  // マルチプレイ設定窓（tickRate/port等、assets/network.json、フェーズ⑨）
+
+    // ---- マルチプレイのローカルテストループ（ツールバーPlayドロップダウン、フェーズ⑨）----
+    NetTestRole netTestRole = NetTestRole::Offline;   // 次にPlayした時に自動でHost/Joinするか
+    std::string netTestJoinAddress = "127.0.0.1";     // Client選択時の接続先IP
+    u16 netTestJoinPort = 0;                          // 0=NetworkConfig.defaultPortを使う。--net-client CLI 起動時のみ明示指定
+    bool netTestLaunchClientRequested = false;        // 「テストクライアント起動」ボタン押下(フレーム境界でCreateProcess)
     // パーティクルエディタ（VFXアセットの作成・編集）。プレビュー枠+アセット一覧+パラメータで
     // 幅を食うため、右下タブ群（右カラム24%のさらに下42%）には収まらない。他の設定系ツール窓と
     // 違い右下タブにはドックせず独立したフローティング窓として開く＝ AnyToolWindowOpen には含めない
@@ -140,7 +151,7 @@ public:
     {
         return showPostProcess || showPostParams || showSkybox || showSSAO
             || showEngineSettings || showSceneFlow || showProject || showVersionControl
-            || showMcpBridge || showBuildSettings || showNetworkStatus;
+            || showMcpBridge || showBuildSettings || showNetworkStatus || showNetworkSettings;
     }
 
     // タッチパッド向けキーボードフライモード（` キーでトグル）。
