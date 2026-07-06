@@ -746,6 +746,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     // assets/network.json が無い(初回起動等)場合は既定値のまま続行する。
     m_networkSystem = std::make_unique<NetworkSystem>();
     m_networkSystem->SetEventBus(&m_eventBus);
+    m_networkSystem->SetPhysicsSystem(m_physicsSystem.get());   // 予測リコンシリエーションのリプレイ用(フェーズ⑦b)
     {
         NetworkConfig cfg;
         cfg.Load(PathResolver::AssetsDir() + "network.json");

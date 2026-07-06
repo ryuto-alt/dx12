@@ -3,6 +3,7 @@
 #include "network/NetBuffer.h"
 #include "core/Logger.h"
 #include "ecs/Components.h"
+#include "physics/PhysicsSystem.h"   // 予測リコンシリエーションのリプレイ専用(フェーズ⑦b)
 
 #include <DirectXMath.h>
 #include <cmath>
@@ -34,6 +35,7 @@ bool NetworkSystem::Host(u16 port, u32 maxPlayers, std::string& outError)
     m_interpBuffers.clear();
     m_inputHistory.clear();
     m_latestInput.clear();
+    m_predictedHistory.clear();
     Logger::Info("NetworkSystem: hosting on port {}", port);
 
     if (m_eventBus)
@@ -65,6 +67,7 @@ bool NetworkSystem::Join(const std::string& ip, u16 port, std::string& outError)
     m_interpBuffers.clear();
     m_inputHistory.clear();
     m_latestInput.clear();
+    m_predictedHistory.clear();
     Logger::Info("NetworkSystem: connecting to {}:{}...", ip, port);
     return true;
 }
@@ -99,6 +102,7 @@ void NetworkSystem::ResetState()
     m_rpcHandlers.clear();   // Lua側のsol::functionを握ったままにしない(Play終了でLua stateごと消える)
     m_inputHistory.clear();
     m_latestInput.clear();
+    m_predictedHistory.clear();
 }
 
 void NetworkSystem::PreSimUpdate(f32 /*dt*/, entt::registry& reg)
@@ -131,6 +135,7 @@ void NetworkSystem::PostSimUpdate(f32 dt, entt::registry& reg)
     }
     else if (IsClient())
     {
+        RecordPredictedState(reg);
         ApplyInterpolation(reg);
         SendInput();
     }
@@ -416,8 +421,17 @@ void NetworkSystem::SendSnapshots(entt::registry& reg)
         if (nt.syncRotation) flags |= 0x2;
         if (nt.syncScale)    flags |= 0x4;
 
+        // オーナー予測(syncMode=1)のリコンシリエーションに使う: サーバーがこのエンティティの
+        // 所有者から最後に受理した入力のtick。非予測エンティティやowner未接続時は0(無視される)。
+        u32 lastProcessedInputTick = 0;
+        {
+            auto iit = m_latestInput.find(ni._owner);
+            if (iit != m_latestInput.end()) lastProcessedInputTick = iit->second.tick;
+        }
+
         w.WriteU32(ni._netId);
         w.WriteU8(flags);
+        w.WriteU32(lastProcessedInputTick);
         if (nt.syncPosition)
         {
             w.WriteF32(tf.position.x); w.WriteF32(tf.position.y); w.WriteF32(tf.position.z);
@@ -449,18 +463,19 @@ void NetworkSystem::SendSnapshots(entt::registry& reg)
     }
 }
 
-void NetworkSystem::HandleSnapshot(const std::vector<u8>& body)
+void NetworkSystem::HandleSnapshot(const std::vector<u8>& body, entt::registry& reg)
 {
     try
     {
         NetReader r(body);
         const NetTick tick = r.ReadU32();
-        (void)tick;   // フェーズ⑦の予測補正で使う予定(受信tickとの突き合わせ)。
+        (void)tick;   // 現状未使用(将来のデバッグ表示等向けに保持)。
         const u32 count = r.ReadU32();
         for (u32 i = 0; i < count; ++i)
         {
             const NetId netId = r.ReadU32();
             const u8 flags = r.ReadU8();
+            const NetTick lastProcessedInputTick = r.ReadU32();
 
             SnapshotBuffer::Sample s;
             s.time = m_localTime;
@@ -468,13 +483,84 @@ void NetworkSystem::HandleSnapshot(const std::vector<u8>& body)
             if (flags & 0x2) { s.hasRotation = true; s.rotation = { r.ReadF32(), r.ReadF32(), r.ReadF32(), r.ReadF32() }; }
             if (flags & 0x4) { s.hasScale    = true; s.scale    = { r.ReadF32(), r.ReadF32(), r.ReadF32() }; }
 
-            m_interpBuffers[netId].Push(s);
+            // 自分が所有する予測(syncMode=1)エンティティは補間バッファに積まず、
+            // リコンシリエーション(サーバー位置との突き合わせ+必要ならリプレイ)へ回す。
+            bool reconciled = false;
+            if (s.hasPosition)
+            {
+                entt::entity e = FindEntityByNetId(netId);
+                if (e != entt::null && reg.valid(e) && reg.all_of<NetworkIdentity, NetworkTransform>(e))
+                {
+                    const auto& ni = reg.get<NetworkIdentity>(e);
+                    const auto& nt = reg.get<NetworkTransform>(e);
+                    if (ni._isLocalOwner && nt.syncMode == 1)
+                    {
+                        ReconcilePredictedEntity(reg, e, netId, lastProcessedInputTick, s.position);
+                        reconciled = true;
+                    }
+                }
+            }
+            if (!reconciled) m_interpBuffers[netId].Push(s);
         }
     }
     catch (const NetReadError&)
     {
         Logger::Warn("NetworkSystem: Snapshot パケットの解析に失敗しました");
     }
+}
+
+void NetworkSystem::RecordPredictedState(entt::registry& reg)
+{
+    for (auto [e, ni, nt, tf] : reg.view<NetworkIdentity, NetworkTransform, Transform>().each())
+    {
+        if (!ni._isLocalOwner || nt.syncMode != 1 || ni._netId == kInvalidNetId) continue;
+        auto& hist = m_predictedHistory[ni._netId];
+        hist.push_back({ m_tick, tf.position });
+        while (hist.size() > kInputHistoryCap) hist.pop_front();
+    }
+}
+
+void NetworkSystem::ReconcilePredictedEntity(entt::registry& reg, entt::entity e, NetId netId,
+                                              NetTick lastProcessedInputTick, const DirectX::XMFLOAT3& serverPos)
+{
+    auto histIt = m_predictedHistory.find(netId);
+    if (histIt == m_predictedHistory.end()) return;
+
+    // 同tickで自分が予測していた位置を探す(履歴が短すぎて突き合わせできなければ何もしない)。
+    DirectX::XMFLOAT3 predictedPos{};
+    bool found = false;
+    for (auto& [t, p] : histIt->second) { if (t == lastProcessedInputTick) { predictedPos = p; found = true; break; } }
+    if (!found) return;
+
+    const auto& nt = reg.get<NetworkTransform>(e);
+    const f32 dx = predictedPos.x - serverPos.x;
+    const f32 dy = predictedPos.y - serverPos.y;
+    const f32 dz = predictedPos.z - serverPos.z;
+    if (dx * dx + dy * dy + dz * dz <= nt.snapDistance * nt.snapDistance)
+        return;   // 誤差許容範囲内: ローカル予測を信頼してそのまま(見た目のカクつき防止)
+
+    if (!m_physics)
+    {
+        // PhysicsSystem未注入ならTransformだけ補正する(リプレイはできない=誤差が残り得る)。
+        reg.get<Transform>(e).position = serverPos;
+        return;
+    }
+
+    // サーバー確定位置へテレポートしてから、サーバーがまだ処理していない(tickが新しい)
+    // 入力だけを CharacterController 経由で再適用し、現在フレームまで追いつく。
+    m_physics->SetCharacterPosition(e, serverPos);
+    auto* cc = reg.try_get<CharacterController>(e);
+    for (const auto& cmd : m_inputHistory)
+    {
+        if (cmd.tick <= lastProcessedInputTick) continue;
+        if (cc)
+        {
+            cc->_desiredVel = { cmd.moveVelX, 0.0f, cmd.moveVelZ };
+            if (cmd.jump) cc->_jumpQueued = true;
+        }
+        m_physics->StepSingleCharacter(e, 1.0f / 60.0f, reg);
+    }
+    m_physics->SyncCharactersToTransforms(reg);
 }
 
 void NetworkSystem::ApplyInterpolation(entt::registry& reg)
@@ -579,7 +665,9 @@ void NetworkSystem::SetLocalInput(const InputCommand& cmdIn)
     InputCommand cmd = cmdIn;
     cmd.tick = m_tick;
     m_inputHistory.push_back(cmd);
-    while (m_inputHistory.size() > 3) m_inputHistory.pop_front();
+    // SendInput が送るのは直近3件(冗長送信)だが、リプレイ(⑦b)には未確認分すべてが要るため
+    // 保持自体は kInputHistoryCap 件まで持つ。
+    while (m_inputHistory.size() > kInputHistoryCap) m_inputHistory.pop_front();
 }
 
 NetworkSystem::InputCommand NetworkSystem::GetLatestInput(ClientId owner) const
@@ -592,10 +680,14 @@ void NetworkSystem::SendInput()
 {
     if (m_inputHistory.empty() || m_serverPeer == kInvalidPeer) return;
 
+    // 送信は直近3件だけ(冗長送信でパケットロスを補う)。保持自体はもっと長い
+    // (kInputHistoryCap、⑦bのリプレイ用)がそれを毎回全部送るのは無駄。
+    const size_t sendCount = std::min<size_t>(m_inputHistory.size(), 3);
     NetWriter w;
-    w.WriteU8(static_cast<u8>(m_inputHistory.size()));
-    for (const auto& c : m_inputHistory)
+    w.WriteU8(static_cast<u8>(sendCount));
+    for (size_t i = m_inputHistory.size() - sendCount; i < m_inputHistory.size(); ++i)
     {
+        const auto& c = m_inputHistory[i];
         w.WriteU32(c.tick);
         w.WriteF32(c.moveVelX); w.WriteF32(c.moveVelZ);
         w.WriteF32(c.aimYaw);   w.WriteF32(c.aimPitch);
@@ -716,7 +808,7 @@ void NetworkSystem::HandleTransportEvent(const TransportEvent& ev, entt::registr
             else if (type == PacketType::Baseline)   HandleBaseline(body, reg);
             else if (type == PacketType::Spawn)      HandleSpawn(body);
             else if (type == PacketType::Despawn)    HandleDespawn(body, reg);
-            else if (type == PacketType::Snapshot)   HandleSnapshot(body);
+            else if (type == PacketType::Snapshot)   HandleSnapshot(body, reg);
             else if (type == PacketType::RpcMessage) HandleRpc(ev.peer, body);
         }
         break;

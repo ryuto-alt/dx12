@@ -17,6 +17,9 @@
 
 namespace dx12e {
 
+class PhysicsSystem;   // 予測リコンシリエーションのリプレイ専用(フェーズ⑦b)。前方宣言のみで
+                       // フル依存(Jolt等)を避け、実際のinclude/呼び出しは.cppに閉じ込める。
+
 enum class NetRole : u8 { Offline, Host, Client };
 
 // マルチプレイの中枢オーケストレーター。Scene/Graphics に非依存だが、NetworkIdentity の
@@ -36,6 +39,9 @@ public:
     void SetEventBus(EventBus* bus) { m_eventBus = bus; }
     void SetConfig(const NetworkConfig& cfg) { m_config = cfg; }
     const NetworkConfig& Config() const { return m_config; }
+
+    // 予測リコンシリエーション(フェーズ⑦b)専用。null許容(未注入なら位置補正のみでリプレイは省略)。
+    void SetPhysicsSystem(PhysicsSystem* p) { m_physics = p; }
 
     // Application がシーン操作を注入するためのフック。null な関数は「未対応」として無視される。
     struct Hooks
@@ -124,8 +130,13 @@ private:
     void HandleBaseline(const std::vector<u8>& body, entt::registry& reg);
     void HandleSpawn(const std::vector<u8>& body);
     void HandleDespawn(const std::vector<u8>& body, entt::registry& reg);
-    void HandleSnapshot(const std::vector<u8>& body);
+    void HandleSnapshot(const std::vector<u8>& body, entt::registry& reg);
     void ApplyInterpolation(entt::registry& reg);
+
+    // ---- クライアント予測(フェーズ⑦b) ----
+    void RecordPredictedState(entt::registry& reg);   // 自分が所有するsyncMode=1エンティティの現在位置を記録
+    void ReconcilePredictedEntity(entt::registry& reg, entt::entity e, NetId netId,
+                                   NetTick lastProcessedInputTick, const DirectX::XMFLOAT3& serverPos);
 
     // ---- RPC(双方向) ----
     void HandleRpc(PeerHandle fromPeer, const std::vector<u8>& body);
@@ -167,8 +178,16 @@ private:
     std::unordered_map<std::string, RpcHandler> m_rpcHandlers;
 
     // ---- 入力コマンド(フェーズ⑦a) ----
-    std::deque<InputCommand> m_inputHistory;                    // クライアント: 冗長送信用(直近3件)
+    // 送信は直近3件の冗長送信(パケットロス耐性)だが、リプレイ(⑦b)には未確認分すべてが
+    // 要るため保持自体は kInputHistoryCap 件まで持つ(SendInput が送る件数とは別)。
+    static constexpr size_t kInputHistoryCap = 64;
+    std::deque<InputCommand> m_inputHistory;                    // クライアント: 入力履歴
     std::unordered_map<ClientId, InputCommand> m_latestInput;   // サーバー: クライアント毎の最新入力
+
+    // ---- クライアント予測(フェーズ⑦b) ----
+    PhysicsSystem* m_physics = nullptr;
+    // netId毎の(tick, 予測位置)履歴。リコンシリエーション時にサーバー位置と突き合わせる。
+    std::unordered_map<NetId, std::deque<std::pair<NetTick, DirectX::XMFLOAT3>>> m_predictedHistory;
 };
 
 } // namespace dx12e
