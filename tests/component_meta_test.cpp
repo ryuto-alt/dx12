@@ -85,7 +85,7 @@ int main()
 
     // 反映は冪等（2回呼んでも壊れない）
     RegisterCoreComponentMeta();
-    CHECK(FieldNames<PointLight>().size() == 3);
+    CHECK(FieldNames<PointLight>().size() == 4);
 
     std::printf("component_meta: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
