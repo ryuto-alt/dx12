@@ -79,6 +79,7 @@ int main()
     Expect<AudioSource>({ "clipPath", "volume", "loop", "spatial", "playOnStart", "minDistance", "maxDistance" });
     Expect<Tag>({ "tags" });
     Expect<Sprite2D>({ "texturePath", "layer", "size", "uvMin", "uvMax", "color", "worldSpace" });
+    Expect<NetworkIdentity>({ "interestRadius", "serverAuthority" });
 
     // 反映は冪等（2回呼んでも壊れない）
     RegisterCoreComponentMeta();

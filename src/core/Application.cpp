@@ -751,6 +751,12 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         cfg.Load(PathResolver::AssetsDir() + "network.json");
         m_networkSystem->SetConfig(cfg);
     }
+    {
+        NetworkSystem::Hooks hooks;
+        hooks.currentScenePath = [this]() { return m_currentSceneRel; };
+        hooks.requestSceneLoad = [this](const std::string& rel) { m_editorCtx->pendingGameLoadPath = rel; };
+        m_networkSystem->SetHooks(std::move(hooks));
+    }
 
     // Shader Visible SRV ヒープ
     m_srvHeap = std::make_unique<DescriptorHeap>();
@@ -4292,7 +4298,7 @@ void Application::Update()
     else
     {
         // ネットワーク受信/接続処理（スクリプト実行より前 — このフレームのシムに反映するため）。
-        if (m_networkSystem) m_networkSystem->PreSimUpdate(dt);
+        if (m_networkSystem) m_networkSystem->PreSimUpdate(dt, m_scene->GetRegistry());
 
         // プレイモード: Luaがカメラ+ゲームロジックを制御
         // HUD は実際のゲームビューポート基準でレイアウトさせる。
@@ -4429,7 +4435,7 @@ void Application::Update()
     // ネットワーク送信処理（物理確定後の座標を使うため直後。フェーズ⑤でスナップショット送信を実装）。
     if (m_engineMode == EngineMode::Playing && m_networkSystem)
     {
-        m_networkSystem->PostSimUpdate(dt);
+        m_networkSystem->PostSimUpdate(dt, m_scene->GetRegistry());
     }
 
     // 3D 空間オーディオ: リスナー＝カメラ、AudioSource を駆動（Playing のみ）

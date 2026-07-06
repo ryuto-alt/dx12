@@ -385,6 +385,21 @@ static void Test_RigidBody()
         });
 }
 
+static void Test_NetworkIdentity()
+{
+    Case<NetworkIdentity>(
+        [](entt::registry& r, entt::entity e) {
+            NetworkIdentity ni;
+            ni.interestRadius = 25.0f;
+            ni.serverAuthority = false;
+            r.emplace<NetworkIdentity>(e, ni);
+        },
+        [](const NetworkIdentity& ni) {
+            CHECK_F(ni.interestRadius, 25.0f);
+            CHECK(ni.serverAuthority == false);
+        });
+}
+
 static void Test_BoxCollider()
 {
     Case<BoxCollider>(
@@ -796,6 +811,7 @@ int main()
     Test_ParticleEmitter();
     Test_Trigger();
     Test_RigidBody();
+    Test_NetworkIdentity();
     Test_BoxCollider();
     Test_SphereCollider();
     Test_CapsuleCollider();

@@ -509,4 +509,20 @@ struct Trigger
     bool _firedOnce = false;
 };
 
+// --- NetworkIdentity: エンティティをマルチプレイ複製対象にする印 ---
+// サーバー(ホスト)が netId を採番して全クライアントへ配る。entt::entity は
+// プロセスローカル(バージョン込み・join毎に変わり得る)なのでネットワークには一切流さず、
+// 代わりにこの netId を安定識別子として使う。
+struct NetworkIdentity
+{
+    f32  interestRadius  = 0.0f;   // 0 = 常に関連（距離カリングなし。フェーズ⑧で使用）
+    bool serverAuthority = true;   // 予約（将来のクライアント権威エンティティ用）
+
+    // ランタイム専有（非シリアライズ）
+    u32  _netId        = 0;
+    u16  _owner        = 0;        // 0 = サーバー/ホスト
+    bool _isLocalOwner = false;
+    bool _netSpawned   = false;    // 実行時スポーン品（Stop時に破棄する対象の目印）
+};
+
 } // namespace dx12e

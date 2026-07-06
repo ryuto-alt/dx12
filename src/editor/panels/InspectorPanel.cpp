@@ -797,6 +797,32 @@ void InspectorPanel::Render(entt::registry& reg,
             }
         }
 
+        // NetworkIdentity（マルチプレイ複製対象の印。netId/owner はランタイム表示のみ）
+        if (reg.all_of<NetworkIdentity>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entEmpty : 0, "Network Identity");
+            bool removed = ComponentRemoveMenu<NetworkIdentity>(reg, ctx, ctx.selectedEntity, "Network Identity");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_netIdEdit);
+                auto& ni = reg.get<NetworkIdentity>(ctx.selectedEntity);
+                bool changed = false, active = false;
+                changed |= ImGui::DragFloat("関連半径 InterestRadius", &ni.interestRadius, 0.5f, 0.0f, 1000.0f);
+                active |= ImGui::IsItemActive();
+                ImGui::SameLine(); ImGui::TextDisabled("(?)");
+                if (ImGui::BeginItemTooltip())
+                { ImGui::TextUnformatted("0 = 常に全クライアントへ複製（フェーズ⑧の興味管理で使用予定）"); ImGui::EndTooltip(); }
+                changed |= ImGui::Checkbox("サーバー権威 ServerAuthority", &ni.serverAuthority);
+                ImGui::BeginDisabled();
+                int netId = static_cast<int>(ni._netId);
+                int owner = static_cast<int>(ni._owner);
+                ImGui::DragInt("netId（実行時割当）", &netId);
+                ImGui::DragInt("owner clientId", &owner);
+                ImGui::EndDisabled();
+                EndEdit(reg, ctx, ctx.selectedEntity, m_netIdEdit, changed, active, "Network Identity");
+            }
+        }
+
         // Trigger（イベント: 範囲に入る/出る/居る で宣言アクションを実行）
         if (reg.all_of<Trigger>(ctx.selectedEntity))
         {
@@ -1420,6 +1446,8 @@ void InspectorPanel::Render(entt::registry& reg,
             AddComponentMenuItem<SphereCollider>(reg, ctx, ctx.selectedEntity, "Sphere Collider");
             AddComponentMenuItem<CapsuleCollider>(reg, ctx, ctx.selectedEntity, "Capsule Collider");
             AddComponentMenuItem<CharacterController>(reg, ctx, ctx.selectedEntity, "Character Controller");
+            ImGui::Separator();
+            AddComponentMenuItem<NetworkIdentity>(reg, ctx, ctx.selectedEntity, "Network Identity");
             ImGui::Separator();
             // スクリプト（.lua）をクリックでアタッチ — ドラッグ不要
             if (ImGui::BeginMenu("\xe3\x82\xb9\xe3\x82\xaf\xe3\x83\xaa\xe3\x83\x97\xe3\x83\x88"))  // スクリプト

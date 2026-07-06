@@ -228,8 +228,10 @@ hit.normal    -- Vec3
 | `:localClientId()` | int | 自分の clientId（ホストは常に0） |
 | `:players()` | `{id, rtt}[]` | 接続中プレイヤー一覧 |
 
-> イベント: `events:on("net.hostStarted"|"net.clientConnected"|"net.clientDisconnected"|"net.disconnected", fn)`。`net.clientConnected`/`net.clientDisconnected` の data に `client`(clientId) が入る。
-> 現状はフェーズ②(基盤)まで実装済み。エンティティ複製・RPC・予測補正は今後のフェーズで追加予定。
+> イベント: `events:on("net.hostStarted"|"net.clientConnected"|"net.clientDisconnected"|"net.connected"|"net.clientReady"|"net.disconnected", fn)`。
+> `net.clientConnected`(サーバー視点、低レベル接続) / `net.clientReady`(サーバー視点、Baseline適用済み=対戦準備完了) / `net.connected`(クライアント視点、Welcome受信=`localClientId()`確定) の data に `client`(clientId) が入る。
+> `NetworkIdentity` コンポーネント（Inspectorの「Network Identity」）を付けたエンティティが複製対象。サーバーが `_netId` を採番し、クライアント接続時に Welcome(clientId+シーンパス)→Baseline(netId対応表)→SceneReady のハンドシェイクで同期する。
+> 現状はフェーズ③(シーンベースライン同期)まで実装済み。エンティティのスポーン/デスポーン複製・RPC・予測補正は今後のフェーズで追加予定。
 
 ### time（`time`）— 時間 API（v0.9.3+）
 `:` ではなく `.` で呼ぶ。状態は Play 開始でリセットされる。

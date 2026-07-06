@@ -242,6 +242,7 @@ static void RegisterCoreComponentSerializers()
     R.Register(MakeReflectedInfo<CharacterController>("CharacterController", "characterController", true));
     R.Register(MakeReflectedInfo<Sprite2D>("Sprite2D", "sprite2d", true));
     R.Register(MakeReflectedInfo<TrailRenderer>("TrailRenderer", "trailRenderer", true));
+    R.Register(MakeReflectedInfo<NetworkIdentity>("NetworkIdentity", "networkIdentity", true));
 
     // ---- カメラ: フィールドは反射で復元し、新規追加時だけアクティブカメラの重複防止を行う ----
     {

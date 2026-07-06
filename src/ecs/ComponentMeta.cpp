@@ -143,6 +143,11 @@ void RegisterCoreComponentMeta()
         .data<&TrailRenderer::intensity>("intensity")
         .data<&TrailRenderer::blend>("blend")
         .data<&TrailRenderer::minDist>("minDist");
+
+    entt::meta_factory<NetworkIdentity>{}
+        .type("NetworkIdentity")
+        .data<&NetworkIdentity::interestRadius>("interestRadius")
+        .data<&NetworkIdentity::serverAuthority>("serverAuthority");
 }
 
 } // namespace dx12e
