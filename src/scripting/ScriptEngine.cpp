@@ -1149,6 +1149,35 @@ void ScriptEngine::RegisterNetworkBindings()
         }
         return out;
     });
+
+    // サーバー専用。実際の生成はフレーム境界(InstantiatePrefabがcmdListを要るため)。
+    // 戻り値: netId(int, 失敗時0), err(string)。生成完了は net.spawned イベントで分かる。
+    net.set_function("spawn", [this](sol::object /*self*/, const std::string& prefabPath,
+                                       f32 x, f32 y, f32 z, sol::optional<int> owner) -> std::tuple<int, std::string> {
+        if (!m_network) return { 0, "network system unavailable" };
+        const ClientId ownerId = owner.has_value() ? static_cast<ClientId>(*owner) : kServerClientId;
+        std::string err;
+        NetId id = m_network->RequestSpawn(prefabPath, x, y, z, ownerId, err);
+        return { static_cast<int>(id), err };
+    });
+
+    // サーバー専用。破棄は即時(cmdList不要)。
+    net.set_function("despawn", [this](sol::object /*self*/, Entity& e) -> std::string {
+        if (!m_network) return "network system unavailable";
+        if (!e.IsValid() || !e.HasComponent<NetworkIdentity>())
+            return "entity has no NetworkIdentity";
+        const NetId id = e.GetComponent<NetworkIdentity>()._netId;
+        std::string err;
+        m_network->RequestDespawn(id, m_scene->GetRegistry(), err);
+        return err;
+    });
+
+    // netId からエンティティを引く(スポーン完了後のnet.spawnedハンドラ等から使う想定)。
+    // 見つからなければ IsValid()==false の Entity を返す。
+    net.set_function("findByNetId", [this](sol::object /*self*/, int netId) -> Entity {
+        entt::entity e = m_network ? m_network->FindEntityByNetId(static_cast<NetId>(netId)) : entt::null;
+        return Entity(e, &m_scene->GetRegistry());
+    });
 }
 
 void ScriptEngine::LoadPrelude()

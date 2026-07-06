@@ -668,6 +668,27 @@ function Net:localClientId() end
 ---@return NetPlayerInfo[]
 function Net:players() end
 
+---エンティティをネットワーク複製する（**サーバー専用**）。prefabPath は assets 相対
+---（例 "prefabs/Player.prefab"）。実際の生成はフレーム境界(`net.spawned`イベントで分かる)。
+---@param prefabPath string
+---@param x number
+---@param y number
+---@param z number
+---@param owner? integer 所有者clientId（省略時ホスト=0）
+---@return integer netId 採番されたnetId（失敗時0）
+---@return string err
+function Net:spawn(prefabPath, x, y, z, owner) end
+
+---ネットワーク複製エンティティを破棄する（**サーバー専用**。即時実行）
+---@param entity Entity NetworkIdentityを持つエンティティ
+---@return string err 空文字列なら成功
+function Net:despawn(entity) end
+
+---netId からエンティティを引く（`net.spawned`ハンドラ等から使う）
+---@param netId integer
+---@return Entity entity 見つからなければ isValid()==false
+function Net:findByNetId(netId) end
+
 ---マルチプレイ（ENet, リッスンサーバー方式）
 ---@type Net
 net = nil

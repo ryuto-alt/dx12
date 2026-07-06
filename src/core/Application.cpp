@@ -7093,6 +7093,33 @@ void Application::Render()
         }
     }
 
+    // ネットワーク複製: サーバーが RequestSpawn した(またはクライアントが Spawn パケットを
+    // 受信した)エンティティをフレーム境界で実体化する。InstantiatePrefab はモデルロードに
+    // 現在フレームの cmdList が要るため net:spawn 呼び出しの場では即時実行できない。
+    if (m_networkSystem && m_engineMode == EngineMode::Playing)
+    {
+        auto netSpawns = m_networkSystem->ConsumePendingSpawns();
+        if (!netSpawns.empty())
+        {
+            m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
+                                m_srvHeap.get(), nativeCmdList);
+            auto& netReg = m_scene->GetRegistry();
+            for (auto& sp : netSpawns)
+            {
+                entt::entity root = SceneSerializer::InstantiatePrefab(
+                    *m_scene, PathResolver::AssetsDir() + sp.prefabPath, PathResolver::AssetsDir());
+                if (root == entt::null)
+                {
+                    Logger::Warn("ネットワークスポーン失敗(プレハブ読込エラー): {}", sp.prefabPath);
+                    continue;
+                }
+                if (netReg.all_of<Transform>(root))
+                    netReg.get<Transform>(root).position = { sp.x, sp.y, sp.z };
+                m_networkSystem->OnEntityInstantiated(sp.netId, sp.owner, root, netReg);
+            }
+        }
+    }
+
     // エンティティ生成（前フレームのドラッグ&ドロップ等から遅延実行）
     if (!m_editorCtx->pendingSpawns.empty())
     {

@@ -63,6 +63,23 @@ public:
     struct PlayerInfo { ClientId id; u32 rttMs; };
     std::vector<PlayerInfo> Players() const;
 
+    // ---- スポーン/デスポーン複製 ----
+    // InstantiatePrefab は cmdList(モデルロード)が要るため即時実行できない。
+    // RequestSpawn は netId 採番+ブロードキャストだけ行い、実際の生成は
+    // Application がフレーム境界で ConsumePendingSpawns() を drain して行う。
+    struct PendingSpawn { NetId netId; ClientId owner; std::string prefabPath; f32 x, y, z; };
+
+    // サーバー専用。戻り値は採番された netId(失敗時 kInvalidNetId)。
+    NetId RequestSpawn(const std::string& prefabPath, f32 x, f32 y, f32 z, ClientId owner, std::string& outError);
+    // サーバー専用。破棄は cmdList 不要なので即時実行(ブロードキャストのみフレームまたぎ)。
+    bool RequestDespawn(NetId netId, entt::registry& reg, std::string& outError);
+
+    std::vector<PendingSpawn> ConsumePendingSpawns();
+    // Application が InstantiatePrefab 成功後に呼ぶ。netId<->entity 登録 + NetworkIdentity 設定。
+    void OnEntityInstantiated(NetId netId, ClientId owner, entt::entity e, entt::registry& reg);
+
+    entt::entity FindEntityByNetId(NetId netId) const;
+
 private:
     void HandleTransportEvent(const TransportEvent& ev, entt::registry& reg);
     void ResetState();
@@ -75,8 +92,12 @@ private:
     // ---- クライアント専用 ----
     void HandleWelcome(const std::vector<u8>& body);
     void HandleBaseline(const std::vector<u8>& body, entt::registry& reg);
+    void HandleSpawn(const std::vector<u8>& body);
+    void HandleDespawn(const std::vector<u8>& body, entt::registry& reg);
 
     void SendTo(PeerHandle peer, PacketType type, const std::vector<u8>& body, bool reliable);
+    void BroadcastPacket(PacketType type, const std::vector<u8>& body, bool reliable,
+                          PeerHandle exclude = kInvalidPeer);
 
     std::unique_ptr<ITransport> m_transport;
     NetworkConfig m_config;
@@ -91,6 +112,8 @@ private:
 
     std::unordered_map<PeerHandle, ClientId>  m_peerToClient;
     std::unordered_set<ClientId>              m_readyClients;   // SceneReady 済み(サーバー視点)
+    std::unordered_map<NetId, entt::entity>   m_netToEntity;    // 動的スポーン+ベースライン両方を登録
+    std::vector<PendingSpawn>                 m_pendingSpawns;  // フレーム境界で drain される
 };
 
 } // namespace dx12e
