@@ -32,6 +32,8 @@ bool NetworkSystem::Host(u16 port, u32 maxPlayers, std::string& outError)
     m_snapshotAccum = 0.0f;
     m_tick = 0;
     m_interpBuffers.clear();
+    m_inputHistory.clear();
+    m_latestInput.clear();
     Logger::Info("NetworkSystem: hosting on port {}", port);
 
     if (m_eventBus)
@@ -61,6 +63,8 @@ bool NetworkSystem::Join(const std::string& ip, u16 port, std::string& outError)
     m_snapshotAccum = 0.0f;
     m_tick = 0;
     m_interpBuffers.clear();
+    m_inputHistory.clear();
+    m_latestInput.clear();
     Logger::Info("NetworkSystem: connecting to {}:{}...", ip, port);
     return true;
 }
@@ -93,6 +97,8 @@ void NetworkSystem::ResetState()
     m_tick = 0;
     m_interpBuffers.clear();
     m_rpcHandlers.clear();   // Lua側のsol::functionを握ったままにしない(Play終了でLua stateごと消える)
+    m_inputHistory.clear();
+    m_latestInput.clear();
 }
 
 void NetworkSystem::PreSimUpdate(f32 /*dt*/, entt::registry& reg)
@@ -110,6 +116,7 @@ void NetworkSystem::PostSimUpdate(f32 dt, entt::registry& reg)
 {
     if (!m_transport) return;
     m_localTime += dt;
+    ++m_tick;   // 自分側のローカルtick(参考値。厳密なfixed-tickではない)
 
     if (IsServer())
     {
@@ -119,13 +126,13 @@ void NetworkSystem::PostSimUpdate(f32 dt, entt::registry& reg)
         if (interval <= 0.0f || m_snapshotAccum >= interval)
         {
             m_snapshotAccum = (interval > 0.0f) ? std::fmod(m_snapshotAccum, interval) : 0.0f;
-            ++m_tick;
             SendSnapshots(reg);
         }
     }
     else if (IsClient())
     {
         ApplyInterpolation(reg);
+        SendInput();
     }
 }
 
@@ -566,6 +573,75 @@ void NetworkSystem::HandleRpc(PeerHandle fromPeer, const std::vector<u8>& body)
     }
 }
 
+void NetworkSystem::SetLocalInput(const InputCommand& cmdIn)
+{
+    if (!IsClient()) return;
+    InputCommand cmd = cmdIn;
+    cmd.tick = m_tick;
+    m_inputHistory.push_back(cmd);
+    while (m_inputHistory.size() > 3) m_inputHistory.pop_front();
+}
+
+NetworkSystem::InputCommand NetworkSystem::GetLatestInput(ClientId owner) const
+{
+    auto it = m_latestInput.find(owner);
+    return (it != m_latestInput.end()) ? it->second : InputCommand{};
+}
+
+void NetworkSystem::SendInput()
+{
+    if (m_inputHistory.empty() || m_serverPeer == kInvalidPeer) return;
+
+    NetWriter w;
+    w.WriteU8(static_cast<u8>(m_inputHistory.size()));
+    for (const auto& c : m_inputHistory)
+    {
+        w.WriteU32(c.tick);
+        w.WriteF32(c.moveVelX); w.WriteF32(c.moveVelZ);
+        w.WriteF32(c.aimYaw);   w.WriteF32(c.aimPitch);
+        w.WriteU32(c.buttons);
+        w.WriteBool(c.jump);
+    }
+    // 高頻度・欠落許容(冗長送信で補う)なので unreliable。
+    SendTo(m_serverPeer, PacketType::Input, w.Data(), false);
+}
+
+void NetworkSystem::HandleInput(PeerHandle fromPeer, const std::vector<u8>& body)
+{
+    auto it = m_peerToClient.find(fromPeer);
+    if (it == m_peerToClient.end()) return;
+    const ClientId owner = it->second;
+
+    try
+    {
+        NetReader r(body);
+        const u8 count = r.ReadU8();
+
+        InputCommand newest;
+        bool any = false;
+        for (u8 i = 0; i < count; ++i)
+        {
+            InputCommand c;
+            c.tick      = r.ReadU32();
+            c.moveVelX  = r.ReadF32(); c.moveVelZ = r.ReadF32();
+            c.aimYaw    = r.ReadF32(); c.aimPitch = r.ReadF32();
+            c.buttons   = r.ReadU32();
+            c.jump      = r.ReadBool();
+
+            if (!any || c.tick > newest.tick) { newest = c; any = true; }
+        }
+        if (!any) return;
+
+        auto existing = m_latestInput.find(owner);
+        if (existing == m_latestInput.end() || newest.tick > existing->second.tick)
+            m_latestInput[owner] = newest;
+    }
+    catch (const NetReadError&)
+    {
+        Logger::Warn("NetworkSystem: Input パケットの解析に失敗しました");
+    }
+}
+
 void NetworkSystem::HandleTransportEvent(const TransportEvent& ev, entt::registry& reg)
 {
     switch (ev.type)
@@ -632,7 +708,7 @@ void NetworkSystem::HandleTransportEvent(const TransportEvent& ev, entt::registr
         {
             if      (type == PacketType::SceneReady)  HandleSceneReady(ev.peer);
             else if (type == PacketType::RpcMessage)  HandleRpc(ev.peer, body);
-            // Input はフェーズ⑦で処理する。
+            else if (type == PacketType::Input)       HandleInput(ev.peer, body);
         }
         else if (IsClient())
         {

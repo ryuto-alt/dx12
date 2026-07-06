@@ -1150,6 +1150,37 @@ void ScriptEngine::RegisterNetworkBindings()
         return out;
     });
 
+    // クライアント専用。毎フレーム呼ぶ想定(呼ばなかったフレームは前回値が送られ続ける)。
+    // t = { moveX=, moveZ=, aimYaw=, aimPitch=, buttons=, jump= }(全省略可、既定0/false)。
+    net.set_function("setInput", [this](sol::object /*self*/, sol::table t) {
+        if (!m_network) return;
+        NetworkSystem::InputCommand cmd;
+        cmd.moveVelX  = t.get_or("moveX", 0.0f);
+        cmd.moveVelZ  = t.get_or("moveZ", 0.0f);
+        cmd.aimYaw    = t.get_or("aimYaw", 0.0f);
+        cmd.aimPitch  = t.get_or("aimPitch", 0.0f);
+        cmd.buttons   = static_cast<u32>(t.get_or("buttons", 0));
+        cmd.jump      = t.get_or("jump", false);
+        m_network->SetLocalInput(cmd);
+    });
+
+    // サーバー専用。entity の NetworkIdentity._owner の最新入力を返す
+    // (owner未接続/入力未受信なら全部ゼロのテーブル)。
+    net.set_function("getInput", [this](sol::object /*self*/, Entity& e) -> sol::table {
+        sol::table out = m_lua->create_table();
+        out["moveX"] = 0.0f; out["moveZ"] = 0.0f;
+        out["aimYaw"] = 0.0f; out["aimPitch"] = 0.0f;
+        out["buttons"] = 0; out["jump"] = false;
+        if (!m_network || !e.IsValid() || !e.HasComponent<NetworkIdentity>()) return out;
+
+        const auto cmd = m_network->GetLatestInput(e.GetComponent<NetworkIdentity>()._owner);
+        out["moveX"] = cmd.moveVelX;   out["moveZ"] = cmd.moveVelZ;
+        out["aimYaw"] = cmd.aimYaw;    out["aimPitch"] = cmd.aimPitch;
+        out["buttons"] = static_cast<int>(cmd.buttons);
+        out["jump"] = cmd.jump;
+        return out;
+    });
+
     // サーバー専用。実際の生成はフレーム境界(InstantiatePrefabがcmdListを要るため)。
     // 戻り値: netId(int, 失敗時0), err(string)。生成完了は net.spawned イベントで分かる。
     net.set_function("spawn", [this](sol::object /*self*/, const std::string& prefabPath,

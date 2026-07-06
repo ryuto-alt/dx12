@@ -689,6 +689,32 @@ function Net:despawn(entity) end
 ---@return Entity entity 見つからなければ isValid()==false
 function Net:findByNetId(netId) end
 
+---@class NetInputCommand
+---@field moveX? number
+---@field moveZ? number
+---@field aimYaw? number
+---@field aimPitch? number
+---@field buttons? integer ゲーム定義ビットフラグ
+---@field jump? boolean
+
+---ローカル入力をサーバーへ送信する（**クライアント専用**）。毎フレーム(OnUpdate)呼ぶこと
+---（呼ばなかったフレームは前回値が送られ続ける）
+---@param input NetInputCommand
+function Net:setInput(input) end
+
+---@class NetInputState
+---@field moveX number
+---@field moveZ number
+---@field aimYaw number
+---@field aimPitch number
+---@field buttons integer
+---@field jump boolean
+
+---entity(NetworkIdentityの`_owner`)の最新入力を読む（**サーバー専用**）
+---@param entity Entity
+---@return NetInputState
+function Net:getInput(entity) end
+
 ---サーバーへRPC送信（**クライアント専用**）。引数は number/string/boolean/Vec3 のみ
 ---@param name string
 ---@vararg number|string|boolean|Vec3

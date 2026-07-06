@@ -234,6 +234,8 @@ hit.normal    -- Vec3
 | `:rpcAll(name, ...)` | string(err) | **サーバー専用**。全クライアントへRPC送信 |
 | `:rpcClient(clientId, name, ...)` | string(err) | **サーバー専用**。特定クライアントへRPC送信 |
 | `:onRpc(name, fn)` | — | RPCハンドラ登録。`fn(sender, ...)`。senderはクライアント受信時は常に0(サーバー) |
+| `:setInput{moveX=,moveZ=,aimYaw=,aimPitch=,buttons=,jump=}` | — | **クライアント専用**。毎フレーム(OnUpdate)呼ぶ想定。全フィールド省略可(既定0/false) |
+| `:getInput(entity)` | `{moveX,moveZ,aimYaw,aimPitch,buttons,jump}` | **サーバー専用**。entityのNetworkIdentity._ownerの最新入力を読む |
 
 > イベント: `events:on("net.hostStarted"|"net.clientConnected"|"net.clientDisconnected"|"net.connected"|"net.clientReady"|"net.spawned"|"net.despawned"|"net.disconnected", fn)`。
 > `net.clientConnected`(サーバー視点、低レベル接続) / `net.clientReady`(サーバー視点、Baseline適用済み=対戦準備完了) / `net.connected`(クライアント視点、Welcome受信=`localClientId()`確定) の data に `client`(clientId) が入る。
@@ -241,7 +243,8 @@ hit.normal    -- Vec3
 > `NetworkIdentity` コンポーネント（Inspectorの「Network Identity」）を付けたエンティティが複製対象。サーバーが `_netId` を採番し、クライアント接続時に Welcome(clientId+シーンパス)→Baseline(netId対応表)→SceneReady のハンドシェイクで同期する。動的スポーンは `.prefab` を both サイドで個別に `InstantiatePrefab` するため通信量が小さい(JSON blob を流さない)。
 >
 > `NetworkTransform` コンポーネント（Inspectorの「Network Transform」）を NetworkIdentity と併用すると、サーバーが Transform(位置/回転/スケール、フィールドごとにon/off可)を `snapshotRate`(network.json、既定20Hz)で全readyクライアントへ送信する。クライアントは `interpDelayMs`(既定100ms)だけ過去を描画するよう2点補間(位置lerp・回転slerp)してこのエンティティの Transform に書き込む。`syncMode=0`(補間、既定)のみ実装済み。`syncMode=1`(オーナー予測)はフェーズ⑦で追加予定、それまでは全エンティティがサーバー権威+補間で動く。
-> 現状はフェーズ⑥(RPC)まで実装済み。クライアント予測/サーバーリコンシリエーション・興味管理は今後のフェーズで追加予定。
+> 入力コマンド: クライアントの`net:setInput`は直近3フレーム分を冗長送信(unreliable、パケットロス耐性)。サーバーは`net:getInput(entity)`で最新値(tickが一番新しいもの)を読み、`physics:move(entity, input.moveX, input.moveZ)`等ゲームスクリプト側で実際の移動に反映する想定(入力の適用方法はエンジンでなくゲームロジックが決める)。
+> 現状はフェーズ⑦a(入力コマンド+サーバー権威移動の土台)まで実装済み。クライアント予測/サーバーリコンシリエーション・興味管理は今後のフェーズで追加予定。
 
 ### time（`time`）— 時間 API（v0.9.3+）
 `:` ではなく `.` で呼ぶ。状態は Play 開始でリセットされる。

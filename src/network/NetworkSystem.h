@@ -7,6 +7,7 @@
 
 #include <entt/entt.hpp>
 
+#include <deque>
 #include <functional>
 #include <memory>
 #include <string>
@@ -92,6 +93,23 @@ public:
     bool SendRpcToClient(ClientId target, const std::string& name, const RpcArgs& args, std::string& outError); // サーバー専用
     bool SendRpcToAll(const std::string& name, const RpcArgs& args, std::string& outError);       // サーバー専用
 
+    // ---- 入力コマンド(フェーズ⑦a) ----
+    // 移動/照準/ボタンをゲーム非依存の固定スキーマで送る。tick は SetLocalInput 内で
+    // ローカルtick(m_tick)を自動で刻む(呼び出し側は気にしなくていい)。
+    struct InputCommand
+    {
+        NetTick tick = 0;
+        f32  moveVelX = 0.0f;   // world XZ の目標速度(PhysicsSystem::move と同じ単位系を想定)
+        f32  moveVelZ = 0.0f;
+        f32  aimYaw   = 0.0f;
+        f32  aimPitch = 0.0f;
+        u32  buttons  = 0;      // ゲーム定義ビットフラグ
+        bool jump     = false;
+    };
+
+    void SetLocalInput(const InputCommand& cmd);         // クライアント専用(未接続/サーバーでは無視)
+    InputCommand GetLatestInput(ClientId owner) const;    // サーバー専用。無ければ既定値(全部ゼロ)
+
 private:
     void HandleTransportEvent(const TransportEvent& ev, entt::registry& reg);
     void ResetState();
@@ -111,6 +129,10 @@ private:
 
     // ---- RPC(双方向) ----
     void HandleRpc(PeerHandle fromPeer, const std::vector<u8>& body);
+
+    // ---- 入力コマンド ----
+    void SendInput();                                              // クライアント: 直近3件を冗長送信
+    void HandleInput(PeerHandle fromPeer, const std::vector<u8>& body);   // サーバー
 
     // ---- サーバー専用(続き) ----
     void SendSnapshots(entt::registry& reg);
@@ -143,6 +165,10 @@ private:
 
     // ---- RPC(フェーズ⑥) ----
     std::unordered_map<std::string, RpcHandler> m_rpcHandlers;
+
+    // ---- 入力コマンド(フェーズ⑦a) ----
+    std::deque<InputCommand> m_inputHistory;                    // クライアント: 冗長送信用(直近3件)
+    std::unordered_map<ClientId, InputCommand> m_latestInput;   // サーバー: クライアント毎の最新入力
 };
 
 } // namespace dx12e
