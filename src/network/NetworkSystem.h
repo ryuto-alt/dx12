@@ -69,8 +69,12 @@ public:
     bool IsConnected() const { return m_transport && m_transport->IsConnected(); }
     ClientId LocalClientId() const { return m_localClientId; }
 
-    struct PlayerInfo { ClientId id; u32 rttMs; };
+    struct PlayerInfo { ClientId id; u32 rttMs; u64 bytesSent; u64 bytesReceived; };
     std::vector<PlayerInfo> Players() const;
+
+    // 統計窓(フェーズ⑧)用。
+    NetTick CurrentTick() const { return m_tick; }
+    u32 SyncedEntityCount(const entt::registry& reg) const;
 
     // ---- スポーン/デスポーン複製 ----
     // InstantiatePrefab は cmdList(モデルロード)が要るため即時実行できない。

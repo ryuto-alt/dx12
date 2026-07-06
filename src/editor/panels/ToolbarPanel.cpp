@@ -269,6 +269,7 @@ void ToolbarPanel::Render(bool isPlaying,
                 ctx.showBuildSettings = true;
             ImGui::MenuItem("パーティクルエディタ",     nullptr, &ctx.showVfxEditor);
             ImGui::MenuItem("MCP / AI Bridge",         nullptr, &ctx.showMcpBridge);
+            ImGui::MenuItem("Network",                 nullptr, &ctx.showNetworkStatus);
             ImGui::EndMenu();
         }
 
@@ -573,6 +574,7 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::MenuItem("Project",                nullptr, &ctx.showProject);
         ImGui::MenuItem("Git 変更",               nullptr, &ctx.showVersionControl);
         ImGui::MenuItem("MCP / AI Bridge",        nullptr, &ctx.showMcpBridge);
+        ImGui::MenuItem("Network",                nullptr, &ctx.showNetworkStatus);
         ImGui::MenuItem("パーティクルエディタ",    nullptr, &ctx.showVfxEditor);
         ImGui::Separator();
         if (ImGui::MenuItem("すべて閉じる"))
@@ -580,6 +582,7 @@ void ToolbarPanel::Render(bool isPlaying,
             ctx.showPostProcess = ctx.showPostParams = ctx.showSkybox = ctx.showSSAO =
                 ctx.showEngineSettings = ctx.showSceneFlow = ctx.showProject =
                 ctx.showVersionControl = ctx.showMcpBridge = ctx.showBuildSettings =
+                ctx.showNetworkStatus =
                 ctx.showVfxEditor = false;
         }
         ImGui::EndPopup();

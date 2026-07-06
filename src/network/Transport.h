@@ -50,6 +50,10 @@ public:
     virtual u32  GetRoundTripTimeMs(PeerHandle peer) const = 0;
     virtual bool IsHost() const = 0;
     virtual bool IsConnected() const = 0;
+
+    // 統計窓(フェーズ⑧)用。累積バイト数(送信/受信データ本体のみ、ヘッダ等は含まない概算)。
+    virtual u64 GetBytesSent(PeerHandle peer) const = 0;
+    virtual u64 GetBytesReceived(PeerHandle peer) const = 0;
 };
 
 } // namespace dx12e

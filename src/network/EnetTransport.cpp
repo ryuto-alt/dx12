@@ -53,6 +53,11 @@ struct EnetTransport::Impl
     std::unordered_set<u32> confirmedPeers;
     u32 nextPeerId = 1;
 
+    // 統計窓(フェーズ⑧)用の累積バイト数。ENetPeer自体には安定して公開された累積カウンタが
+    // ないため、送受信のたびに自前で加算する(概算。パケットヘッダ等は含まない本体サイズのみ)。
+    std::unordered_map<u32, u64> bytesSent;
+    std::unordered_map<u32, u64> bytesReceived;
+
     static u32 IdOf(ENetPeer* peer) { return static_cast<u32>(reinterpret_cast<uintptr_t>(peer->data)); }
     static void SetId(ENetPeer* peer, u32 id) { peer->data = reinterpret_cast<void*>(static_cast<uintptr_t>(id)); }
 
@@ -61,6 +66,8 @@ struct EnetTransport::Impl
         if (host) { enet_host_destroy(host); host = nullptr; }
         peersById.clear();
         confirmedPeers.clear();
+        bytesSent.clear();
+        bytesReceived.clear();
         nextPeerId = 1;
         isServer = false;
         if (enetAcquired) { ReleaseEnet(); enetAcquired = false; }
@@ -177,6 +184,10 @@ void EnetTransport::Send(PeerHandle peer, NetChannel channel, bool reliable, con
     {
         enet_packet_destroy(packet);
     }
+    else
+    {
+        s.bytesSent[peer] += size;
+    }
 }
 
 void EnetTransport::Broadcast(NetChannel channel, bool reliable, const void* data, size_t size, PeerHandle exclude)
@@ -189,7 +200,8 @@ void EnetTransport::Broadcast(NetChannel channel, bool reliable, const void* dat
     for (auto& [id, peer] : s.peersById)
     {
         if (id == exclude) continue;
-        enet_peer_send(peer, static_cast<enet_uint8>(channel), packet);
+        if (enet_peer_send(peer, static_cast<enet_uint8>(channel), packet) == 0)
+            s.bytesSent[id] += size;
     }
     // 誰にもキューされなかった(全員除外等)場合、ENet は参照カウント0のパケットを自動解放しない。
     if (packet->referenceCount == 0) enet_packet_destroy(packet);
@@ -231,6 +243,8 @@ std::vector<TransportEvent> EnetTransport::Poll(u32 timeoutMs)
             u32 id = Impl::IdOf(ev.peer);
             s.peersById.erase(id);
             s.confirmedPeers.erase(id);
+            s.bytesSent.erase(id);
+            s.bytesReceived.erase(id);
             TransportEvent te;
             te.type = TransportEventType::Disconnected;
             te.peer = id;
@@ -244,6 +258,7 @@ std::vector<TransportEvent> EnetTransport::Poll(u32 timeoutMs)
             te.peer = Impl::IdOf(ev.peer);
             te.channel = static_cast<NetChannel>(ev.channelID);
             te.data.assign(ev.packet->data, ev.packet->data + ev.packet->dataLength);
+            s.bytesReceived[te.peer] += ev.packet->dataLength;
             enet_packet_destroy(ev.packet);
             out.push_back(std::move(te));
             break;
@@ -266,5 +281,17 @@ u32 EnetTransport::GetRoundTripTimeMs(PeerHandle peer) const
 bool EnetTransport::IsHost() const { return m_impl->isServer; }
 
 bool EnetTransport::IsConnected() const { return m_impl->host != nullptr && !m_impl->confirmedPeers.empty(); }
+
+u64 EnetTransport::GetBytesSent(PeerHandle peer) const
+{
+    auto it = m_impl->bytesSent.find(peer);
+    return it != m_impl->bytesSent.end() ? it->second : 0;
+}
+
+u64 EnetTransport::GetBytesReceived(PeerHandle peer) const
+{
+    auto it = m_impl->bytesReceived.find(peer);
+    return it != m_impl->bytesReceived.end() ? it->second : 0;
+}
 
 } // namespace dx12e

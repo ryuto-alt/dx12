@@ -68,6 +68,8 @@ function Vec3.new(x, y, z) end
 ---| "ParticleEmitter"
 ---| "TrailRenderer"
 ---| "Trigger"
+---| "NetworkIdentity"
+---| "NetworkTransform"
 
 ---シーン内のエンティティ
 ---@class Entity
@@ -184,6 +186,13 @@ function Scene:setUVScale(e, u, v) end
 ---@param g number 0..1
 ---@param b number 0..1
 function Scene:setColor(e, r, g, b) end
+
+---Sprite2D::effectValue を書き換える（カスタムシェーダー(`shaderPath`)へ渡す汎用の進捗/強度値）。
+---頂点属性として補間されるだけなので毎フレーム呼んでもGPU同期無しで安価（ディゾルブ演出の進捗送りなどに）。
+---対象エンティティが Sprite2D を持たない場合は何もしない。
+---@param e Entity
+---@param value number 意味はシェーダー依存（例: 0..1 の消滅/出現進捗）
+function Scene:setSpriteEffect(e, value) end
 
 ---Gimmick コンポーネント付き全エンティティをパラメータ付き配列で返す
 ---@return GimmickInfo[]
@@ -635,6 +644,8 @@ events = nil
 ---@class NetPlayerInfo
 ---@field id integer clientId（ホストは0）
 ---@field rtt integer 往復遅延(ms)
+---@field bytesSent number 累積送信バイト数(概算)
+---@field bytesReceived number 累積受信バイト数(概算)
 
 ---@class Net
 local Net = {}

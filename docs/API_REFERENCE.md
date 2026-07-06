@@ -244,7 +244,10 @@ hit.normal    -- Vec3
 >
 > `NetworkTransform` コンポーネント（Inspectorの「Network Transform」）を NetworkIdentity と併用すると、サーバーが Transform(位置/回転/スケール、フィールドごとにon/off可)を `snapshotRate`(network.json、既定20Hz)で全readyクライアントへ送信する。`syncMode=0`(補間、既定): クライアントは `interpDelayMs`(既定100ms)だけ過去を描画するよう2点補間(位置lerp・回転slerp)して書き込む。`syncMode=1`(オーナー予測、自分がownerのCharacterController付きエンティティ向け): クライアントは自分の入力を即座にローカル物理へ反映しつつ(体感の遅延ゼロ)、サーバーから来た確定位置と自分の同tick時点の予測位置を比較し、`snapDistance`を超えて食い違っていたらサーバー位置へテレポート→未確認の入力だけ`PhysicsSystem::StepSingleCharacter`で再適用して「今」まで追いつく(古典的なclient-side prediction + reconciliation)。誤差が閾値以内ならローカル予測をそのまま信頼し補正しない。
 > 入力コマンド: クライアントの`net:setInput`は直近3フレーム分を冗長送信(unreliable、パケットロス耐性)し、内部的には最大64件(`kInputHistoryCap`)の入力履歴を保持してリプレイに使う。サーバーは`net:getInput(entity)`で最新値(tickが一番新しいもの)を読み、`physics:move(entity, input.moveX, input.moveZ)`等ゲームスクリプト側で実際の移動に反映する想定(入力の適用方法はエンジンでなくゲームロジックが決める)。
-> 現状はフェーズ⑦b(クライアント予測+サーバーリコンシリエーション)まで実装済み。興味管理・セッション抽象は今後のフェーズで追加予定。
+>
+> 興味管理(interest management): `NetworkIdentity.interestRadius`(0=常に関連)を使い、サーバーは各クライアントの所有エンティティ位置を観測点として、半径を超えて離れた複製エンティティのTransformスナップショットをそのクライアントへは送らない(帯域のO(接続数×エンティティ数)爆発を回避)。所有物が無いクライアントにはフィルタせず全部送る。現状は「継続的なスナップショット送信」だけを興味管理の対象にしており、動的スポーン(`net:spawn`)は引き続き全クライアントへブロードキャストする(スポーンは頻度が低く帯域上の主要因ではないため)。
+> エディタの「ツール > Network」窓(Play中)でロール/tick/複製数と接続一覧(clientId・RTT・送受信バイト概算)を確認できる。
+> 現状はフェーズ⑧(興味管理+統計窓)まで実装済み。エディタ設定UI・セッション抽象は今後のフェーズで追加予定。
 
 ### time（`time`）— 時間 API（v0.9.3+）
 `:` ではなく `.` で呼ぶ。状態は Play 開始でリセットされる。

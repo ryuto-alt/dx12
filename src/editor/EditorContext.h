@@ -129,6 +129,7 @@ public:
     bool showVersionControl = false;
     bool showMcpBridge      = false;   // MCP / AI Bridge モニタ窓
     bool showBuildSettings  = false;   // ビルド設定（Unity の Build Settings 相当）
+    bool showNetworkStatus  = false;   // マルチプレイ状態モニタ窓（接続一覧/tick/帯域、フェーズ⑧）
     // パーティクルエディタ（VFXアセットの作成・編集）。プレビュー枠+アセット一覧+パラメータで
     // 幅を食うため、右下タブ群（右カラム24%のさらに下42%）には収まらない。他の設定系ツール窓と
     // 違い右下タブにはドックせず独立したフローティング窓として開く＝ AnyToolWindowOpen には含めない
@@ -139,7 +140,7 @@ public:
     {
         return showPostProcess || showPostParams || showSkybox || showSSAO
             || showEngineSettings || showSceneFlow || showProject || showVersionControl
-            || showMcpBridge || showBuildSettings;
+            || showMcpBridge || showBuildSettings || showNetworkStatus;
     }
 
     // タッチパッド向けキーボードフライモード（` キーでトグル）。

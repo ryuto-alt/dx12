@@ -30,6 +30,9 @@ public:
     bool IsHost() const override;
     bool IsConnected() const override;
 
+    u64 GetBytesSent(PeerHandle peer) const override;
+    u64 GetBytesReceived(PeerHandle peer) const override;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> m_impl;

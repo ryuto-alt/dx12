@@ -361,6 +361,13 @@ void ScriptEngine::RegisterBindings()
                 if (mesh) mesh->SetVertexColor(*device, r, g, b, 1.0f);
             }
         },
+        // Sprite2D::effectValue を書き換える(カスタムシェーダーへ渡す汎用の進捗/強度値)。
+        // 頂点属性として補間されるだけなので毎フレーム呼んでも安価(GPU同期・VB再生成なし)。
+        "setSpriteEffect", [](Scene& s, Entity& e, float value) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<Sprite2D>(e.GetHandle())) return;
+            reg.get<Sprite2D>(e.GetHandle()).effectValue = value;
+        },
         // 配置済み Gimmick コンポーネントを持つ全エンティティを列挙し、
         // パラメータ付きの配列(1始まり)で返す。ゲームスクリプトが動き/当たり判定を駆動する。
         // 各要素: { e=Entity, name=, kind=, period=, phase=, amplitude=, threshold=, solid=, deadly= }
@@ -1145,6 +1152,8 @@ void ScriptEngine::RegisterNetworkBindings()
             sol::table row = m_lua->create_table();
             row["id"]  = static_cast<int>(p.id);
             row["rtt"] = static_cast<int>(p.rttMs);
+            row["bytesSent"] = static_cast<double>(p.bytesSent);
+            row["bytesReceived"] = static_cast<double>(p.bytesReceived);
             out[i++] = row;
         }
         return out;

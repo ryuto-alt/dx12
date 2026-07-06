@@ -1,5 +1,6 @@
 #include "network/NetworkSystem.h"
 #include "network/EnetTransport.h"
+#include "network/Interest.h"
 #include "network/NetBuffer.h"
 #include "core/Logger.h"
 #include "ecs/Components.h"
@@ -397,68 +398,91 @@ void NetworkSystem::SendSnapshots(entt::registry& reg)
 {
     if (m_readyClients.empty()) return;   // 誰も受け取れる状態でないなら送るだけ無駄
 
-    // NetWriterは追記専用で先に件数を書く必要があるため、対象を先に集めてから書く。
-    std::vector<entt::entity> entities;
+    struct Candidate { entt::entity e; NetId netId; ClientId owner; f32 interestRadius; };
+    std::vector<Candidate> candidates;
     for (auto [e, ni, nt, tf] : reg.view<NetworkIdentity, NetworkTransform, Transform>().each())
     {
         (void)nt; (void)tf;
         if (ni._netId == kInvalidNetId) continue;
-        entities.push_back(e);
+        candidates.push_back({ e, ni._netId, ni._owner, ni.interestRadius });
     }
-    if (entities.empty()) return;
+    if (candidates.empty()) return;
 
-    NetWriter w;
-    w.WriteU32(m_tick);
-    w.WriteU32(static_cast<u32>(entities.size()));
-    for (auto e : entities)
-    {
-        const auto& ni = reg.get<NetworkIdentity>(e);
-        const auto& nt = reg.get<NetworkTransform>(e);
-        const auto& tf = reg.get<Transform>(e);
-
-        u8 flags = 0;
-        if (nt.syncPosition) flags |= 0x1;
-        if (nt.syncRotation) flags |= 0x2;
-        if (nt.syncScale)    flags |= 0x4;
-
-        // オーナー予測(syncMode=1)のリコンシリエーションに使う: サーバーがこのエンティティの
-        // 所有者から最後に受理した入力のtick。非予測エンティティやowner未接続時は0(無視される)。
-        u32 lastProcessedInputTick = 0;
-        {
-            auto iit = m_latestInput.find(ni._owner);
-            if (iit != m_latestInput.end()) lastProcessedInputTick = iit->second.tick;
-        }
-
-        w.WriteU32(ni._netId);
-        w.WriteU8(flags);
-        w.WriteU32(lastProcessedInputTick);
-        if (nt.syncPosition)
-        {
-            w.WriteF32(tf.position.x); w.WriteF32(tf.position.y); w.WriteF32(tf.position.z);
-        }
-        if (nt.syncRotation)
-        {
-            using namespace DirectX;
-            XMFLOAT4 q = tf.quaternion;
-            if (!tf.useQuaternion)
-            {
-                XMStoreFloat4(&q, XMQuaternionRotationRollPitchYaw(
-                    XMConvertToRadians(tf.rotation.x),
-                    XMConvertToRadians(tf.rotation.y),
-                    XMConvertToRadians(tf.rotation.z)));
-            }
-            w.WriteF32(q.x); w.WriteF32(q.y); w.WriteF32(q.z); w.WriteF32(q.w);
-        }
-        if (nt.syncScale)
-        {
-            w.WriteF32(tf.scale.x); w.WriteF32(tf.scale.y); w.WriteF32(tf.scale.z);
-        }
-    }
-
-    // 未readyのpeer(Baseline適用待ち)には送らない(未知のnetIdを参照させないため)。
+    // 興味管理(フェーズ⑧): クライアント毎に「自分が所有するエンティティの位置」を観測点とし、
+    // interestRadius(NetworkIdentity)を超えて離れた候補はそのクライアントへは送らない
+    // (帯域のO(接続数×エンティティ数)爆発を避ける最初の一手。観測点が見つからない=
+    // 所有物がまだ無いクライアントにはフィルタせず全部送る)。
     for (auto& [peer, clientId] : m_peerToClient)
     {
-        if (m_readyClients.count(clientId) == 0) continue;
+        if (m_readyClients.count(clientId) == 0) continue;   // Baseline適用待ちには送らない
+
+        DirectX::XMFLOAT3 observerPos{};
+        bool hasObserver = false;
+        for (auto& c : candidates)
+        {
+            if (c.owner == clientId) { observerPos = reg.get<Transform>(c.e).position; hasObserver = true; break; }
+        }
+
+        NetWriter w;
+        w.WriteU32(m_tick);
+
+        std::vector<const Candidate*> relevant;
+        for (auto& c : candidates)
+        {
+            if (hasObserver)
+            {
+                const auto& pos = reg.get<Transform>(c.e).position;
+                if (!IsRelevant(observerPos, pos, c.interestRadius)) continue;
+            }
+            relevant.push_back(&c);
+        }
+
+        w.WriteU32(static_cast<u32>(relevant.size()));
+        for (auto* cp : relevant)
+        {
+            const auto& ni = reg.get<NetworkIdentity>(cp->e);
+            const auto& nt = reg.get<NetworkTransform>(cp->e);
+            const auto& tf = reg.get<Transform>(cp->e);
+
+            u8 flags = 0;
+            if (nt.syncPosition) flags |= 0x1;
+            if (nt.syncRotation) flags |= 0x2;
+            if (nt.syncScale)    flags |= 0x4;
+
+            // オーナー予測(syncMode=1)のリコンシリエーションに使う: サーバーがこのエンティティの
+            // 所有者から最後に受理した入力のtick。非予測エンティティやowner未接続時は0(無視される)。
+            u32 lastProcessedInputTick = 0;
+            {
+                auto iit = m_latestInput.find(ni._owner);
+                if (iit != m_latestInput.end()) lastProcessedInputTick = iit->second.tick;
+            }
+
+            w.WriteU32(ni._netId);
+            w.WriteU8(flags);
+            w.WriteU32(lastProcessedInputTick);
+            if (nt.syncPosition)
+            {
+                w.WriteF32(tf.position.x); w.WriteF32(tf.position.y); w.WriteF32(tf.position.z);
+            }
+            if (nt.syncRotation)
+            {
+                using namespace DirectX;
+                XMFLOAT4 q = tf.quaternion;
+                if (!tf.useQuaternion)
+                {
+                    XMStoreFloat4(&q, XMQuaternionRotationRollPitchYaw(
+                        XMConvertToRadians(tf.rotation.x),
+                        XMConvertToRadians(tf.rotation.y),
+                        XMConvertToRadians(tf.rotation.z)));
+                }
+                w.WriteF32(q.x); w.WriteF32(q.y); w.WriteF32(q.z); w.WriteF32(q.w);
+            }
+            if (nt.syncScale)
+            {
+                w.WriteF32(tf.scale.x); w.WriteF32(tf.scale.y); w.WriteF32(tf.scale.z);
+            }
+        }
+
         SendTo(peer, PacketType::Snapshot, w.Data(), false);
     }
 }
@@ -822,8 +846,16 @@ std::vector<NetworkSystem::PlayerInfo> NetworkSystem::Players() const
     if (!m_transport) return out;
     out.reserve(m_peerToClient.size());
     for (auto& [peer, id] : m_peerToClient)
-        out.push_back({ id, m_transport->GetRoundTripTimeMs(peer) });
+    {
+        out.push_back({ id, m_transport->GetRoundTripTimeMs(peer),
+                         m_transport->GetBytesSent(peer), m_transport->GetBytesReceived(peer) });
+    }
     return out;
+}
+
+u32 NetworkSystem::SyncedEntityCount(const entt::registry& reg) const
+{
+    return static_cast<u32>(reg.view<const NetworkIdentity>().size());
 }
 
 } // namespace dx12e

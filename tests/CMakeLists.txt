@@ -116,6 +116,16 @@ if(TARGET Renderer)
         target_compile_definitions(RpcArgsTests PRIVATE ${DX12_COMPILE_DEFS})
     endif()
     add_test(NAME RpcArgsTests COMMAND RpcArgsTests)
+
+    # IsRelevant(興味管理の距離判定)テスト。ヘッダオンリー・純DirectXMath。
+    add_executable(InterestFilterTests interest_filter_test.cpp)
+    target_include_directories(InterestFilterTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(InterestFilterTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(InterestFilterTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(InterestFilterTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME InterestFilterTests COMMAND InterestFilterTests)
 endif()
 
 # SpatialIndex（一様グリッド）テスト（Phase 5: RTS 空間クエリ）。ヘッダオンリー、entt のみ依存。
