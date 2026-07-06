@@ -81,6 +81,7 @@
 #include "editor/UndoSystem.h"
 #include "editor/ModelThumbnailRenderer.h"
 #include "editor/panels/McpBridgePanel.h"
+#include "editor/panels/NetworkPanel.h"
 #include "editor/panels/VfxEditorPanel.h"
 #include "project/Project.h"
 #include "project/ProjectManager.h"
@@ -498,10 +499,15 @@ void Application::RegisterShaderReloadHandlers()
     // その .hlsli の変更だけでは再コンパイルされない(依存追跡は Registry ソースのみ対象)。
     // カスタムシェーダー自身を保存し直せば最新の include 内容で再コンパイルされる。
     m_shaderManager->RegisterCustomReloadHandler(
-        [this](const std::string& relKey) { m_customPsoCache.erase(relKey); });
+        [this](const std::string& relKey)
+        {
+            m_customPsoCache.erase(relKey);
+            m_customSpritePsoCache.erase(relKey);  // Sprite2D::shaderPath 用キャッシュも同じキーで破棄
+        });
 }
 
-Application::CustomForwardPsos* Application::EnsureCustomPso(const std::string& shaderRel)
+// EnsureCustomPso/EnsureCustomSpritePso 共通: shaderRel の正規化キーを返す(小文字・'/'区切り)。
+static std::string NormalizeCustomShaderKey(const std::string& shaderRel)
 {
     std::string key = shaderRel;
     for (char& c : key)
@@ -509,25 +515,28 @@ Application::CustomForwardPsos* Application::EnsureCustomPso(const std::string& 
         if (c == '\\') c = '/';
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
+    return key;
+}
 
-    auto it = m_customPsoCache.find(key);
-    if (it != m_customPsoCache.end())
-        return it->second.valid ? &it->second : nullptr;
-
-    // バイトコードの取得元: エディタは ShaderManager(実行時コンパイル済みのメモリ内キャッシュ)。
-    // ゲームモード(ShaderManager 非生成)は BuildGame が game.pak に焼いた
-    // "shaders/custom/<relPath>_VS.cso" 等を ShaderCompiler::LoadFromFile 経由(VFS)で読む
-    // (キー生成規約は Application::BuildGame と一致させること)。
-    std::vector<u8> vsStorage, psStorage;
-    const std::vector<u8>* vsBytes = nullptr;
-    const std::vector<u8>* psBytes = nullptr;
+// バイトコードの取得元: エディタは ShaderManager(実行時コンパイル済みのメモリ内キャッシュ)。
+// ゲームモード(ShaderManager 非生成)は BuildGame が game.pak に焼いた
+// "shaders/custom/<relPath>_VS.cso" 等を ShaderCompiler::LoadFromFile 経由(VFS)で読む
+// (キー生成規約は Application::BuildGame と一致させること)。
+// 戻り値: 取得できたら true(vsBytesOut/psBytesOutが有効)。vsStorage/psStorageはゲームモード時の実体保持用。
+bool Application::FetchCustomShaderBytecode(const std::string& shaderRel,
+                                             std::vector<u8>& vsStorage, std::vector<u8>& psStorage,
+                                             const std::vector<u8>*& vsBytesOut, const std::vector<u8>*& psBytesOut)
+{
+    vsBytesOut = nullptr;
+    psBytesOut = nullptr;
+    const std::string key = NormalizeCustomShaderKey(shaderRel);
 
     if (m_shaderManager)
     {
         if (!m_shaderManager->HasValidCustomShader(shaderRel))
             m_shaderManager->CompileCustomShader(shaderRel);  // 未スキャン分の遅延コンパイル救済
-        vsBytes = m_shaderManager->GetCustomVsBytecode(shaderRel);
-        psBytes = m_shaderManager->GetCustomPsBytecode(shaderRel);
+        vsBytesOut = m_shaderManager->GetCustomVsBytecode(shaderRel);
+        psBytesOut = m_shaderManager->GetCustomPsBytecode(shaderRel);
     }
     else
     {
@@ -536,14 +545,29 @@ Application::CustomForwardPsos* Application::EnsureCustomPso(const std::string& 
             const std::wstring base = PathResolver::ShaderDirW() + L"custom/" + PathResolver::Utf8ToWide(key);
             vsStorage = ShaderCompiler::LoadFromFile(base + L"_VS.cso").data;
             psStorage = ShaderCompiler::LoadFromFile(base + L"_PS.cso").data;
-            vsBytes = &vsStorage;
-            psBytes = &psStorage;
+            vsBytesOut = &vsStorage;
+            psBytesOut = &psStorage;
         }
         catch (const std::exception&)
         {
-            // ビルドに含まれていない(未使用 or ビルド後に割当変更)。既定 Forward へフォールバック。
+            // ビルドに含まれていない(未使用 or ビルド後に割当変更)。既定シェーダーへフォールバック。
         }
     }
+    return vsBytesOut && psBytesOut && !vsBytesOut->empty() && !psBytesOut->empty();
+}
+
+Application::CustomForwardPsos* Application::EnsureCustomPso(const std::string& shaderRel)
+{
+    const std::string key = NormalizeCustomShaderKey(shaderRel);
+
+    auto it = m_customPsoCache.find(key);
+    if (it != m_customPsoCache.end())
+        return it->second.valid ? &it->second : nullptr;
+
+    std::vector<u8> vsStorage, psStorage;
+    const std::vector<u8>* vsBytes = nullptr;
+    const std::vector<u8>* psBytes = nullptr;
+    FetchCustomShaderBytecode(shaderRel, vsStorage, psStorage, vsBytes, psBytes);
 
     CustomForwardPsos entry;
     if (vsBytes && psBytes && !vsBytes->empty() && !psBytes->empty())
@@ -586,6 +610,61 @@ Application::CustomForwardPsos* Application::EnsureCustomPso(const std::string& 
     }
 
     auto& stored = m_customPsoCache[key];
+    stored = std::move(entry);
+    return stored.valid ? &stored : nullptr;
+}
+
+Application::CustomSpritePsos* Application::EnsureCustomSpritePso(const std::string& shaderRel)
+{
+    const std::string key = NormalizeCustomShaderKey(shaderRel);
+
+    auto it = m_customSpritePsoCache.find(key);
+    if (it != m_customSpritePsoCache.end())
+        return it->second.valid ? &it->second : nullptr;
+
+    std::vector<u8> vsStorage, psStorage;
+    const std::vector<u8>* vsBytes = nullptr;
+    const std::vector<u8>* psBytes = nullptr;
+    FetchCustomShaderBytecode(shaderRel, vsStorage, psStorage, vsBytes, psBytes);
+
+    CustomSpritePsos entry;
+    if (vsBytes && psBytes && !vsBytes->empty() && !psBytes->empty())
+    {
+        try
+        {
+            u32 layoutCount = 0;
+            const D3D12_INPUT_ELEMENT_DESC* layout = SpriteRenderer::GetInputLayout(&layoutCount);
+
+            // Sprite2D の world PSO と同じ深度設定(LESS_EQUAL・書き込みOFF)で固定。
+            // メッシュ版と違い深度プリパスの概念が無いので不透明/ブレンドの2種類のみ。
+            PipelineStateBuilder builder;
+            builder.SetRootSignature(m_spriteRenderer->GetRootSignature())
+                   .SetVertexShader(vsBytes->data(), vsBytes->size())
+                   .SetPixelShader(psBytes->data(), psBytes->size())
+                   .SetInputLayout(layout, layoutCount)
+                   .SetRenderTargetFormat(kSceneColorFormat)
+                   .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+                   .SetDepthEnabled(true)
+                   .SetDepthFunc(D3D12_COMPARISON_FUNC_LESS_EQUAL)
+                   .SetDepthWrite(false)
+                   .SetCullMode(D3D12_CULL_MODE_NONE);
+            entry.opaque = std::make_unique<PipelineState>();
+            entry.opaque->Initialize(*m_graphicsDevice, builder);
+
+            builder.SetAlphaBlendEnabled(true);
+            entry.blend = std::make_unique<PipelineState>();
+            entry.blend->Initialize(*m_graphicsDevice, builder);
+
+            entry.valid = true;
+        }
+        catch (const std::exception& ex)
+        {
+            Logger::Error("Sprite2D カスタムシェーダーのPSO生成に失敗しました: {} - {}", shaderRel, ex.what());
+            entry.valid = false;
+        }
+    }
+
+    auto& stored = m_customSpritePsoCache[key];
     stored = std::move(entry);
     return stored.valid ? &stored : nullptr;
 }
@@ -1393,6 +1472,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             m_vfxEditorPanel = std::make_unique<VfxEditorPanel>();
             m_vfxEditorPanel->Initialize(*m_graphicsDevice, m_srvHeap.get(), m_resourceManager.get(),
                                         PathResolver::ShaderDirW());
+            m_networkPanel = std::make_unique<NetworkPanel>();
         }
 
         // シーントランジション
@@ -1867,7 +1947,10 @@ nlohmann::json McpComponentSchema()
         F("size", "float2", json::array({1, 1})), F("uvMin", "float2", json::array({0, 0})),
         F("uvMax", "float2", json::array({1, 1})), F("color", "float4 (rgba)", json::array({1, 1, 1, 1})),
         F("worldSpace", "bool", true), F("billboard", "bool", false),
-    })));
+        F("shaderPath", "string (assets-relative, worldSpace only)", ""), F("shaderAlphaBlend", "bool", false),
+        F("effectValue", "float (generic progress/strength for custom shader)", 0.0),
+    }), "Use dx12_set_sprite_shader for shaderPath (custom HLSL, world-space only; different vertex/root-"
+        "signature contract than meshRenderer shaders, see docs/AUTHORING.md)."));
     comps.push_back(C("tags", true, true, json::array({}),
         "data is a STRING ARRAY, e.g. set_component(component='tags', data=[\"enemy\",\"boss\"])."));
     comps.push_back(C("data", true, true, json::array({}),
@@ -2222,6 +2305,33 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"shaderPath", mr.shaderPath},
                                {"alphaBlend", mr.shaderAlphaBlend},
                                {"skinnedFallbackWarning", reg.all_of<SkeletalAnimation>(e) && !mr.shaderPath.empty()}};
+        }
+        else if (method == "set_sprite_shader")
+        {
+            // Sprite2D::shaderPath の割当/解除。set_mesh_shader と同型だが、対象はworld-spaceスプライトのみ
+            // (ルートシグネチャ/頂点フォーマットがメッシュ用と異なる別キャッシュ。docs/AUTHORING.md参照)。
+            const auto e = ResolveMcpEntity(*m_scene, params);
+            auto& reg = m_scene->GetRegistry();
+            if (!reg.all_of<Sprite2D>(e)) throw McpError(McpErr::NotFound, "entity has no Sprite2D");
+            auto& sp = reg.get<Sprite2D>(e);
+
+            std::string rel = params.value("shaderPath", std::string());
+            if (!rel.empty())
+            {
+                if (rel.front() == '/' || rel.find('\\') != std::string::npos ||
+                    rel.find(':') != std::string::npos || rel.find("..") != std::string::npos)
+                    throw McpError(McpErr::InvalidParam, "invalid shaderPath (assets/shaders 相対のみ)");
+                if (!fs::exists(fs::path(PathResolver::ProjectShaderDir()) / rel))
+                    throw McpError(McpErr::NotFound, "shader not found: " + rel);
+            }
+            sp.shaderPath = rel;
+            if (params.contains("alphaBlend"))
+                sp.shaderAlphaBlend = params.value("alphaBlend", false);
+
+            resp["ok"] = true;
+            resp["result"] = {{"entityId", static_cast<u32>(e)}, {"shaderPath", sp.shaderPath},
+                               {"alphaBlend", sp.shaderAlphaBlend},
+                               {"worldSpaceWarning", !sp.worldSpace && !sp.shaderPath.empty()}};
         }
         else if (method == "attach_lua_component")
         {
@@ -5844,6 +5954,27 @@ void Application::EnterPlayMode()
     if (m_particleSystem) m_particleSystem->Clear();  // Play 開始時に粒子をリセット
     if (m_gpuParticles) m_gpuParticles->Clear();
 
+    // マルチプレイ ローカルテストループ(フェーズ⑨): ツールバーのPlayドロップダウンで
+    // 選んだロールに従い、Luaを書かずに net:host()/net:join() 相当を自動実行する。
+    // m_eventBus.Clear() より後なので、net.hostStarted/net.connected イベントは
+    // OnStart() 内の events:on 登録に間に合う(Post→Flushはフレーム末)。
+    if (m_networkSystem && m_editorCtx->netTestRole != NetTestRole::Offline)
+    {
+        std::string netErr;
+        if (m_editorCtx->netTestRole == NetTestRole::Host)
+        {
+            if (!m_networkSystem->Host(m_networkSystem->Config().defaultPort,
+                                       m_networkSystem->Config().maxPlayers, netErr))
+                Logger::Warn("テストロール: ホスト開始に失敗しました: {}", netErr);
+        }
+        else if (m_editorCtx->netTestRole == NetTestRole::Client)
+        {
+            if (!m_networkSystem->Join(m_editorCtx->netTestJoinAddress,
+                                       m_networkSystem->Config().defaultPort, netErr))
+                Logger::Warn("テストロール: 接続開始に失敗しました: {}", netErr);
+        }
+    }
+
     // エディタのスナップショットで上書き（Luaが勝手に変えた状態をエディタの状態に戻す）
     {
         auto& reg = m_scene->GetRegistry();
@@ -6743,7 +6874,7 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
 void Application::DrawWorldSprites(ID3D12GraphicsCommandList* cmd, DirectX::XMMATRIX viewProj,
                                   DirectX::XMFLOAT3 camRight, DirectX::XMFLOAT3 camUp,
                                   D3D12_CPU_DESCRIPTOR_HANDLE rtv, D3D12_CPU_DESCRIPTOR_HANDLE dsv,
-                                  u32 vpX, u32 vpY, u32 vpW, u32 vpH)
+                                  u32 vpX, u32 vpY, u32 vpW, u32 vpH, float time)
 {
     using namespace DirectX;
     if (!m_spriteRenderer || !m_scene) return;
@@ -6768,6 +6899,12 @@ void Application::DrawWorldSprites(ID3D12GraphicsCommandList* cmd, DirectX::XMMA
         d.srvIndex  = tex->GetSrvIndex();
         d.layer     = static_cast<float>(sp.layer);
         d.billboard = sp.billboard;
+        d.effect    = sp.effectValue;
+        if (!sp.shaderPath.empty())
+        {
+            if (CustomSpritePsos* custom = EnsureCustomSpritePso(sp.shaderPath))
+                d.customPso = sp.shaderAlphaBlend ? custom->blend->Get() : custom->opaque->Get();
+        }
         m_spriteRenderer->SubmitWorld(d);
     }
 
@@ -6776,7 +6913,7 @@ void Application::DrawWorldSprites(ID3D12GraphicsCommandList* cmd, DirectX::XMMA
         cmd->OMSetRenderTargets(1, &rtv, FALSE, &dsv);   // 深度テストのため DSV もバインド
         m_commandList->SetViewportAndScissor(vpX, vpY, vpW, vpH);
         m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-        m_spriteRenderer->RenderWorld(cmd, viewProj, camRight, camUp);
+        m_spriteRenderer->RenderWorld(cmd, viewProj, camRight, camUp, time);
     }
 }
 
@@ -8377,7 +8514,7 @@ void Application::Render()
         XMStoreFloat3(&camRight, invView.r[0]);
         XMStoreFloat3(&camUp,    invView.r[1]);
         DrawWorldSprites(nativeCmdList, m_camera->GetViewProjMatrix(), camRight, camUp,
-                         m_sceneRT->GetRtv(), m_dsvHandle, vpLeft, vpTop, vpW, vpH);
+                         m_sceneRT->GetRtv(), m_dsvHandle, vpLeft, vpTop, vpW, vpH, totalTime);
     }
 
     // ===== ポストプロセス: オフスクリーン RT → バックバッファ =====
@@ -8735,7 +8872,7 @@ void Application::Render()
             XMStoreFloat3(&pvRight, rot.r[0]);
             XMStoreFloat3(&pvUp,    rot.r[1]);
             DrawWorldSprites(nativeCmdList, camViewProj, pvRight, pvUp,
-                             m_cameraPreviewRT->GetRtv(), m_dsvHandle, 0u, 0u, pw, ph);
+                             m_cameraPreviewRT->GetRtv(), m_dsvHandle, 0u, 0u, pw, ph, totalTime);
 
             m_cameraPreviewRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
@@ -9304,6 +9441,13 @@ void Application::Render()
         if (m_editorCtx->showVersionControl) RenderVersionControlWindow();
         if (m_editorCtx->showMcpBridge && m_mcpBridge)
             McpBridgePanel::Render(*m_mcpBridge, *m_editorCtx);
+        if (m_networkPanel && m_networkSystem)
+        {
+            if (m_editorCtx->showNetworkStatus)
+                m_networkPanel->RenderStatus(*m_networkSystem, m_scene->GetRegistry(), *m_editorCtx);
+            if (m_editorCtx->showNetworkSettings)
+                m_networkPanel->RenderSettings(*m_networkSystem, *m_editorCtx, PathResolver::AssetsDir());
+        }
         if (m_vfxEditorPanel)
             m_vfxEditorPanel->RenderWindow(m_scene->GetRegistry(), *m_editorCtx, PathResolver::AssetsDir());
     }

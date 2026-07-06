@@ -71,6 +71,7 @@ namespace dx12e
     class EditorLayer;
     class ModelThumbnailRenderer;
     class VfxEditorPanel;
+    class NetworkPanel;
     class ShaderManager;
     struct Material;
 }
@@ -91,6 +92,11 @@ public:
                     const ProjectInfo* projectInfo = nullptr, bool buildMode = false);
     void Run();
     void Shutdown();
+
+    // マルチプレイ テストクライアント起動用(フェーズ⑨、--net-client CLI 引数)。
+    // Initialize() より前に呼ぶこと。"ip:port" 形式。空なら何もしない(通常起動)。
+    // Initialize 内でゲームモードの自動 Play に載せて net:join 相当を実行する。
+    void SetNetTestClientJoin(const std::string& ipPort) { m_pendingNetClientJoin = ipPort; }
 
     // ヘッドレスでゲームをビルド（--build CLI 用）。開始シーンは title.json があればそれ。
     // 成否を返す（CLI の終了コード / GUI の完了表示に使う）。
@@ -122,7 +128,7 @@ private:
     void DrawWorldSprites(ID3D12GraphicsCommandList* cmd, DirectX::XMMATRIX viewProj,
                           DirectX::XMFLOAT3 camRight, DirectX::XMFLOAT3 camUp,
                           D3D12_CPU_DESCRIPTOR_HANDLE rtv, D3D12_CPU_DESCRIPTOR_HANDLE dsv,
-                          u32 vpX, u32 vpY, u32 vpW, u32 vpH);
+                          u32 vpX, u32 vpY, u32 vpW, u32 vpH, float time);
     // CSM: カメラ視錐台を near→far で kNumCascades 分割し、各カスケードをライト視点へタイトフィット。
     // 結果は m_cascadeViewProj[] / m_cascadeSplitsView[] に格納する。
     void ComputeCascades(const DirectX::XMVECTOR& lightDir, f32 camNear, f32 camFar);
@@ -158,6 +164,22 @@ private:
     // キャッシュに無ければ ShaderManager からバイトコードを取り PSO を生成する。
     // コンパイル未完了/PSO生成失敗時は nullptr を返す(呼び出し側は既定 Forward へフォールバックすること)。
     CustomForwardPsos* EnsureCustomPso(const std::string& shaderRel);
+
+    // カスタムシェーダー(Sprite2D::shaderPath)割当用の遅延生成PSOキャッシュ。world space スプライトのみ対応。
+    // メッシュ版と違い深度プリパスの区別が無いため2種類(不透明/アルファブレンド)のみで足りる。
+    struct CustomSpritePsos
+    {
+        std::unique_ptr<PipelineState> opaque;  // BlendEnable=FALSE
+        std::unique_ptr<PipelineState> blend;   // SrcAlpha/InvSrcAlpha(Sprite2D::shaderAlphaBlend=true)
+        bool valid = false;
+    };
+    std::unordered_map<std::string, CustomSpritePsos> m_customSpritePsoCache;  // key: shaderPath(小文字正規化)
+    CustomSpritePsos* EnsureCustomSpritePso(const std::string& shaderRel);
+    // EnsureCustomPso/EnsureCustomSpritePso共通のバイトコード取得(エディタ=ShaderManager実行時コンパイル、
+    // ゲーム=ビルド焼き込みcso)。取得できなければ false(呼び出し側は既定シェーダーへフォールバック)。
+    bool FetchCustomShaderBytecode(const std::string& shaderRel,
+                                    std::vector<u8>& vsStorage, std::vector<u8>& psStorage,
+                                    const std::vector<u8>*& vsBytesOut, const std::vector<u8>*& psBytesOut);
 
     // MeshRenderer::overrideAlbedoTexture 等(インスタンス単位のマテリアルテクスチャ上書き、
     // アセットブラウザからのテクスチャD&D用)の SRV ブロックキャッシュ。Mesh::GetMaterial() は
@@ -394,6 +416,8 @@ private:
     std::unique_ptr<AudioSystem>       m_audioSystem;
     std::unique_ptr<PhysicsSystem>     m_physicsSystem;
     std::unique_ptr<NetworkSystem>     m_networkSystem;   // マルチプレイ（GPU非依存、Play/Stopでも再構築しない）
+    std::unique_ptr<NetworkPanel>      m_networkPanel;    // マルチプレイのエディタパネル（状態/設定窓）。ゲームでは null。
+    std::string m_pendingNetClientJoin;  // SetNetTestClientJoin で受けた "ip:port"。Initialize 内で1回消費。
     std::unique_ptr<PhysicsDebugRenderer> m_physicsDebugRenderer;
     std::unique_ptr<EditorIconRenderer>   m_editorIconRenderer;
     bool                               m_physicsDebugDraw = false;

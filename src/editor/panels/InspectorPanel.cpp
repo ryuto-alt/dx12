@@ -596,6 +596,67 @@ void InspectorPanel::Render(entt::registry& reg,
                     ImGui::TextDisabled("HUD 表示（画面固定）。位置は Transform の値をピクセル扱い");
                 }
 
+                // カスタムシェーダー割当（worldSpace のスプライトのみ有効。MeshRendererの仕組みを踏襲するが
+                // ルートシグネチャ/頂点フォーマットが異なるので互換性は無い＝別キャッシュ）。
+                if (ImGui::CollapsingHeader("Shader##Sprite2D"))
+                {
+                    namespace fs = std::filesystem;
+                    std::string currentLabel = sp.shaderPath.empty() ? "既定 (Sprite)" : sp.shaderPath;
+                    if (ImGui::BeginCombo("シェーダー##Sprite2D", currentLabel.c_str()))
+                    {
+                        std::vector<std::string> options;
+                        std::error_code ec;
+                        fs::path root(m_assetsDir + "shaders/");
+                        if (fs::exists(root, ec))
+                        {
+                            fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec);
+                            fs::recursive_directory_iterator end;
+                            for (; !ec && it != end; it.increment(ec))
+                            {
+                                std::error_code fec;
+                                if (!it->is_regular_file(fec) || fec) continue;
+                                if (it->path().extension() != L".hlsl") continue;
+                                fs::path rel = fs::relative(it->path(), root, fec);
+                                if (fec) continue;
+                                std::string relStr = rel.generic_string();
+                                if (FindShaderSourceByRelPath(relStr) != nullptr)
+                                    continue;  // Registry一致=上書き用途。個別割当の選択肢からは除外
+                                options.push_back(relStr);
+                            }
+                        }
+
+                        if (ImGui::Selectable("既定 (Sprite)", sp.shaderPath.empty()))
+                        { sp.shaderPath.clear(); changed = true; }
+                        for (const auto& opt : options)
+                        {
+                            if (ImGui::Selectable(opt.c_str(), sp.shaderPath == opt))
+                            { sp.shaderPath = opt; changed = true; }
+                        }
+                        if (options.empty())
+                            ImGui::TextDisabled("(assets/shaders/ に自作シェーダーなし)");
+                        ImGui::EndCombo();
+                    }
+                    if (!sp.worldSpace && !sp.shaderPath.empty())
+                        ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
+                            "HUD スプライトはカスタムシェーダー未対応(worldSpaceのみ)");
+
+                    if (!sp.shaderPath.empty())
+                    {
+                        changed |= ImGui::Checkbox("アルファブレンド有効##Sprite2D", &sp.shaderAlphaBlend);
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip(
+                                "ON: シェーダーの alpha 出力を SrcAlpha/InvSrcAlpha でブレンド(DepthWrite OFF)。"
+                                "OFF(既定): 不透明固定で alpha は無視される");
+                        active |= ImGui::IsItemActive();
+
+                        changed |= ImGui::DragFloat("エフェクト値 effectValue", &sp.effectValue, 0.005f, 0.0f, 1.0f, "%.3f");
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip("シェーダーへ渡す汎用の進捗/強度値(意味はシェーダー依存)。"
+                                               "Luaの scene:setSpriteEffect(e, value) で実行時にも変更可");
+                        active |= ImGui::IsItemActive();
+                    }
+                }
+
                 EndEdit(reg, ctx, ctx.selectedEntity, m_spriteEdit, changed, active, "Sprite2D");
             }
         }

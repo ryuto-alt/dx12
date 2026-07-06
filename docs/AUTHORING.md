@@ -260,6 +260,57 @@ Inspector の「Shader」欄直下にある**「アルファブレンド有効�
 プレイ時に反映される。プロジェクトシェーダーが壊れているとビルド自体が失敗する（黙って古い版を
 出荷しない設計）。
 
+### 6.1 Sprite2D のカスタムシェーダー（メッシュ用とは別契約）
+
+`Sprite2D`（world-space の2Dスプライト）にも同じ仕組みでカスタム `.hlsl` を割り当てられる
+（保存で自動ホットリロード、MeshRenderer と同じ `assets/shaders/` 配下、Registry 一致パスは
+プロジェクト全体の上書き用途という区別も同じ）。**ただし頂点フォーマットとルートシグネチャが
+メッシュ用シェーダーと異なる**ため、`arrow.hlsl`/`Forward.hlsl` 系のテンプレをそのまま使い回せない:
+
+```hlsl
+// Sprite2D カスタムシェーダーの契約（VSMain/PSMain 固定・vs_6_0/ps_6_0 固定）
+cbuffer SpriteCB : register(b0)
+{
+    float4x4 gTransform;  // viewProj(転置済み)。頂点は既にCPUでワールド座標変換済み
+    float    gTime;       // 経過秒（既定Sprite.hlslは未使用、アニメーション演出用）
+};
+
+struct VSIn
+{
+    float3 pos    : POSITION;
+    float2 uv     : TEXCOORD0;
+    float4 col    : COLOR0;
+    float  effect : TEXCOORD1;  // Sprite2D::effectValue（頂点属性として補間される汎用進捗値）
+};
+
+struct PSIn
+{
+    float4 pos    : SV_POSITION;
+    float2 uv     : TEXCOORD0;
+    float4 col    : COLOR0;
+    float  effect : TEXCOORD1;
+};
+
+Texture2D    gTex  : register(t0);
+SamplerState gSamp : register(s0);
+
+PSIn VSMain(VSIn v) { /* pos を gTransform で変換し、他フィールドをそのまま渡す */ }
+float4 PSMain(PSIn p) : SV_TARGET { /* gTex.Sample(gSamp, p.uv) を p.effect/gTime で加工 */ }
+```
+
+- 割当はシーン JSON の `sprite2d` 内に(MeshRendererのような別キー化はしない、`entt::meta` の
+  自動シリアライズにそのまま乗る):
+  ```json
+  "sprite2d": { "texturePath": "textures/wall.png", "shaderPath": "myfx/Dissolve.hlsl",
+                "shaderAlphaBlend": true, "effectValue": 0.0 }
+  ```
+- **`effectValue`** は Lua から実行時に書き換えられる（頂点属性なので GPU 同期・VB 再生成なし、
+  毎フレーム呼んでも安価）: `scene:setSpriteEffect(e, value)`。ディゾルブの進捗やパルスの強さなど
+  「今どれくらい効果がかかっているか」を送るのに使う。
+- **worldSpace のスプライトのみ対応**（HUD スプライトは既定シェーダー固定）。
+- MCP: `dx12_set_sprite_shader({entity, shaderPath, alphaBlend})`。Inspector は Sprite2D の
+  「Shader」セクション（コンボ+アルファブレンド+effectValueスライダー、MeshRenderer と同じ操作感）。
+
 ## 7. マテリアルのテクスチャ割当（アセットブラウザから D&D）
 
 Unity/Unreal 風に、アセットブラウザのテクスチャをドラッグ&ドロップでメッシュのマテリアルへ割り当てられる。

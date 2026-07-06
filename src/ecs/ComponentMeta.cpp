@@ -131,7 +131,10 @@ void RegisterCoreComponentMeta()
         .data<&Sprite2D::uvMax>("uvMax")
         .data<&Sprite2D::color>("color")
         .data<&Sprite2D::worldSpace>("worldSpace")
-        .data<&Sprite2D::billboard>("billboard");
+        .data<&Sprite2D::billboard>("billboard")
+        .data<&Sprite2D::shaderPath>("shaderPath")
+        .data<&Sprite2D::shaderAlphaBlend>("shaderAlphaBlend")
+        .data<&Sprite2D::effectValue>("effectValue");
 
     entt::meta_factory<TrailRenderer>{}
         .type("TrailRenderer")

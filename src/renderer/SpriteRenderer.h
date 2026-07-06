@@ -40,6 +40,10 @@ struct WorldSpriteDesc
     u32   srvIndex  = 0;
     float layer     = 0.0f;
     bool  billboard = false;             // true: 常にカメラへ正対（向きを無視）
+
+    // カスタムシェーダー用(Sprite2D::shaderPath/effectValue から供給。既定は無効)。
+    float effect     = 0.0f;             // 頂点属性として補間される汎用進捗値(TEXCOORD1)
+    void* customPso  = nullptr;          // 解決済み ID3D12PipelineState*。nullptr=既定 m_worldPso を使う
 };
 
 class SpriteRenderer
@@ -52,8 +56,8 @@ public:
     void Submit(const SpriteDesc& s);
     bool HasAny() const { return !m_sprites.empty(); }
 
-    // 呼び出し側で対象 RTV を先にバインドしておくこと。
-    void Render(ID3D12GraphicsCommandList* cmd, u32 screenW, u32 screenH);
+    // 呼び出し側で対象 RTV を先にバインドしておくこと。time はカスタムシェーダー向け(既定Sprite.hlslは無視)。
+    void Render(ID3D12GraphicsCommandList* cmd, u32 screenW, u32 screenH, float time = 0.0f);
 
     // --- ワールド空間 2D（カメラ連動・layer ソート・アルファブレンド・深度テスト）---
     // HUD 経路（上）とは別の PSO/頂点バッファ/リストで隔離。Initialize の後に呼ぶ。
@@ -71,12 +75,20 @@ public:
     void SubmitWorld(const WorldSpriteDesc& s);
     bool HasAnyWorld() const { return !m_worldSprites.empty(); }
     // viewProj=アクティブカメラの ViewProj。camRight/camUp=ビルボード展開用のカメラ右/上ベクトル。
+    // time はカスタムシェーダー向け(既定Sprite.hlslは無視)。
     // 呼び出し側で対象 RTV(sceneRT/preview)＋深度 DSV をバインド済みのこと（PSO は深度テスト有効）。
     void RenderWorld(ID3D12GraphicsCommandList* cmd, DirectX::XMMATRIX viewProj,
-                     DirectX::XMFLOAT3 camRight, DirectX::XMFLOAT3 camUp);
+                     DirectX::XMFLOAT3 camRight, DirectX::XMFLOAT3 camUp, float time = 0.0f);
+
+    // Sprite2D カスタムシェーダー用(Application::EnsureCustomSpritePso が使う)。
+    // ルートシグネチャ・頂点入力レイアウトは HUD/world 共通でこれ 1 種類のみ。
+    ID3D12RootSignature* GetRootSignature() const { return m_rootSig.Get(); }
+    static const D3D12_INPUT_ELEMENT_DESC* GetInputLayout(u32* countOut);
 
 private:
-    struct Vertex { DirectX::XMFLOAT3 pos; DirectX::XMFLOAT2 uv; DirectX::XMFLOAT4 col; };
+    // POSITION(12) + TEXCOORD0(8) + COLOR0(16) + TEXCOORD1(4) = 40 バイト。
+    // 末尾の effect はカスタムシェーダー向けの汎用進捗値(既定Sprite.hlslは未使用)。
+    struct Vertex { DirectX::XMFLOAT3 pos; DirectX::XMFLOAT2 uv; DirectX::XMFLOAT4 col; float effect; };
 
     static constexpr u32 kMaxSprites  = 4096;
     static constexpr u32 kMaxVertices = kMaxSprites * 6;

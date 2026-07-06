@@ -236,6 +236,16 @@ struct Sprite2D
     DirectX::XMFLOAT4 color{1.0f, 1.0f, 1.0f, 1.0f}; // 乗算色(a=不透明度)
     bool              worldSpace = true;    // true=カメラ連動ワールド / false=HUD
     bool              billboard  = false;   // worldSpace時: true=常にカメラ正対(3D内マーカー等)
+
+    // カスタムシェーダー割当(project assets/shaders/-相対、空=既定Sprite.hlsl)。worldSpaceのみ対応。
+    // 実行時コンパイル/ホットリロードはMeshRendererと同じShaderManager経由(Application::EnsureCustomSpritePso)。
+    // 頂点/ルートシグネチャ契約はメッシュ用シェーダーと異なる(docs/AUTHORING.md参照)。
+    std::string shaderPath;
+    // shaderPath設定時のみ意味を持つ。false=不透明(BlendEnable=FALSE)、true=SrcAlpha/InvSrcAlphaブレンド。
+    bool shaderAlphaBlend = false;
+    // カスタムシェーダーへ渡す汎用の進捗/強度値(0..1等、意味はシェーダー依存)。Lua `scene:setSpriteEffect`で
+    // 実行時に書き換え可能(頂点ごとに補間されるので同一バッチ内でもスプライト単位に異なる値を渡せる)。
+    float effectValue = 0.0f;
 };
 
 // 3D 空間オーディオ音源。Transform のワールド位置がエミッタになる。
