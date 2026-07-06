@@ -29,6 +29,16 @@ endif()
 
 add_test(NAME IndexAllocatorTests COMMAND IndexAllocatorTests)
 
+# NetWriter/NetReader 往復テスト（GPU非依存・ヘッダオンリー、vcpkg/entt不要なのでスタンドアロンでも動く）。
+add_executable(NetBufferTests net_buffer_test.cpp)
+target_include_directories(NetBufferTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(NetBufferTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(NetBufferTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME NetBufferTests COMMAND NetBufferTests)
+
 # シリアライズ往復テスト（安全網）。Scene ライブラリ（+ 推移依存）をリンクするため、
 # エンジン本体と一緒にビルドする構成でのみ有効。
 # tests を単体（cmake -S tests, vcpkg/VS不要）で構成したときは Scene が無いのでスキップし、
@@ -152,4 +162,16 @@ if(TARGET ProjectLib)
         target_compile_definitions(GitIntegrationTests PRIVATE ${DX12_COMPILE_DEFS})
     endif()
     add_test(NAME GitIntegrationTests COMMAND GitIntegrationTests)
+endif()
+
+# ENet ループバック疎通テスト（同一プロセス内でサーバー/クライアントを立てて往復確認）。
+# Network（+ vcpkg unofficial-enet, Core）が必要なので統合ビルドでのみ有効。
+if(TARGET Network)
+    add_executable(EnetLoopbackTests enet_loopback_test.cpp)
+    target_link_libraries(EnetLoopbackTests PRIVATE Network)
+    if(MSVC)
+        target_compile_options(EnetLoopbackTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(EnetLoopbackTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME EnetLoopbackTests COMMAND EnetLoopbackTests)
 endif()

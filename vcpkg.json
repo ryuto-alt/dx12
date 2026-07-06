@@ -17,6 +17,7 @@
     "sol2",
     "entt",
     "nlohmann-json",
-    "joltphysics"
+    "joltphysics",
+    "enet"
   ]
 }

@@ -28,6 +28,7 @@ add_subdirectory(src/audio)
 add_subdirectory(src/scene)
 add_subdirectory(src/scripting)
 add_subdirectory(src/physics)
+add_subdirectory(src/network)
 add_subdirectory(src/gui)
 add_subdirectory(src/editor)
 add_subdirectory(src/project)
@@ -57,6 +58,7 @@ target_link_libraries(DX12Engine
         Scene
         Scripting
         Physics
+        Network
         Gui
         Editor
         ProjectLib
@@ -119,6 +121,7 @@ target_link_libraries(GameRuntime
         Scene
         Scripting
         Physics
+        Network
         Gui
         Editor
         ProjectLib
