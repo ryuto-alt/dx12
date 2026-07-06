@@ -66,6 +66,8 @@
 #include <map>        // 変更ファイルツリーの構築
 #include "audio/AudioSystem.h"
 #include "physics/PhysicsSystem.h"
+#include "network/NetworkSystem.h"
+#include "network/NetworkConfig.h"
 #include "physics/PhysicsDebugRenderer.h"
 #include "gui/ImGuiManager.h"
 #include "scene/SceneSerializer.h"
@@ -739,6 +741,16 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     // m_eventBus は Application の安定メンバ。物理を Shutdown→Initialize で再構築しても
     // PhysicsSystem 側はこのポインタを保持し続ける（Shutdown では null 化しない）。
     m_physicsSystem->SetEventBus(&m_eventBus);
+
+    // Network System（GPU非依存。Play/Stopで再構築しない＝m_eventBusはここで一度だけ注入）。
+    // assets/network.json が無い(初回起動等)場合は既定値のまま続行する。
+    m_networkSystem = std::make_unique<NetworkSystem>();
+    m_networkSystem->SetEventBus(&m_eventBus);
+    {
+        NetworkConfig cfg;
+        cfg.Load(PathResolver::AssetsDir() + "network.json");
+        m_networkSystem->SetConfig(cfg);
+    }
 
     // Shader Visible SRV ヒープ
     m_srvHeap = std::make_unique<DescriptorHeap>();
@@ -3925,6 +3937,9 @@ void Application::Shutdown()
     // 破棄するので、ここで止めないと worker がそれらを破棄後に触って data race/UAF になる。
     if (m_mcpBridge) m_mcpBridge.reset();
 
+    // ネットワーク接続を明示的に切る（ENetのソケット/ホストをデバイス解放より前に片付ける）。
+    if (m_networkSystem) { m_networkSystem->Disconnect(); m_networkSystem.reset(); }
+
     // 非同期ロードスレッドの回収
     if (m_loadThread.joinable())
         m_loadThread.join();
@@ -4276,6 +4291,9 @@ void Application::Update()
     }
     else
     {
+        // ネットワーク受信/接続処理（スクリプト実行より前 — このフレームのシムに反映するため）。
+        if (m_networkSystem) m_networkSystem->PreSimUpdate(dt);
+
         // プレイモード: Luaがカメラ+ゲームロジックを制御
         // HUD は実際のゲームビューポート基準でレイアウトさせる。
         // 単体ゲーム=全画面、エディタ Play=中央 16:9 矩形（前フレームの値で1フレーム遅延だが無視できる）。
@@ -4406,6 +4424,12 @@ void Application::Update()
     if (m_engineMode == EngineMode::Playing && m_physicsSystem->IsInitialized())
     {
         m_physicsSystem->Update(dt, m_scene->GetRegistry());
+    }
+
+    // ネットワーク送信処理（物理確定後の座標を使うため直後。フェーズ⑤でスナップショット送信を実装）。
+    if (m_engineMode == EngineMode::Playing && m_networkSystem)
+    {
+        m_networkSystem->PostSimUpdate(dt);
     }
 
     // 3D 空間オーディオ: リスナー＝カメラ、AudioSource を駆動（Playing のみ）
@@ -5561,6 +5585,9 @@ void Application::WireScriptCallbacks()
 
     // C++ EventBus を ScriptEngine へ注入（events:on/emit/clear が薄いバインドになる）。
     m_scriptEngine->SetEventBus(&m_eventBus);
+
+    // マルチプレイシステムを Lua net API へ注入（net:host/join 等が薄いバインドになる）。
+    m_scriptEngine->SetNetworkSystem(m_networkSystem.get());
 }
 
 void Application::ApplyCameraTransformToGlobal(entt::entity camEntity)
@@ -5932,6 +5959,9 @@ void Application::EnterEditorMode()
 
     // Play 中に鳴っていた SE（空間含む）と BGM を停止（Stop で鳴り続けるのを防ぐ）
     if (m_audioSystem) { m_audioSystem->StopAllSFX(); m_audioSystem->StopBGM(); }
+
+    // Play 中に張ったネットワーク接続を Stop で確実に切る（次の Play に持ち越さない）。
+    if (m_networkSystem) m_networkSystem->Disconnect();
 
     // OnPlayStop は ScriptEngine::Shutdown より前に呼ぶ（Shutdown で Lua state が消える）
     if (m_engineMode == EngineMode::Playing)

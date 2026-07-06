@@ -20,6 +20,7 @@
 #include "renderer/Camera.h"
 #include "audio/AudioSystem.h"
 #include "physics/PhysicsSystem.h"
+#include "network/NetworkSystem.h"
 #include "animation/Skeleton.h"
 #include "animation/Animator.h"
 #include "animation/AnimationClip.h"
@@ -803,6 +804,7 @@ void ScriptEngine::RegisterBindings()
 
     RegisterPhysicsBindings();
     RegisterEventsBinding();
+    RegisterNetworkBindings();
 
     Logger::Info("Lua bindings registered");
 }
@@ -1097,6 +1099,55 @@ void ScriptEngine::RegisterEventsBinding()
 
     ev.set_function("clear", [this](sol::object /*self*/) {
         if (m_eventBus) m_eventBus->Clear();
+    });
+}
+
+void ScriptEngine::RegisterNetworkBindings()
+{
+    auto& lua = *m_lua;
+    sol::table net = lua.create_named_table("net");
+
+    // port/ip 省略時は NetworkConfig の既定値を使う。net が未注入(エディタ等)ならエラー文字列を返す。
+    net.set_function("host", [this](sol::object /*self*/, sol::optional<int> port) -> std::string {
+        if (!m_network) return "network system unavailable";
+        u16 p = port.has_value() ? static_cast<u16>(*port) : m_network->Config().defaultPort;
+        std::string err;
+        if (!m_network->Host(p, m_network->Config().maxPlayers, err)) return err;
+        return "";
+    });
+
+    net.set_function("join", [this](sol::object /*self*/, const std::string& ip,
+                                     sol::optional<int> port) -> std::string {
+        if (!m_network) return "network system unavailable";
+        u16 p = port.has_value() ? static_cast<u16>(*port) : m_network->Config().defaultPort;
+        std::string err;
+        if (!m_network->Join(ip, p, err)) return err;
+        return "";
+    });
+
+    net.set_function("disconnect", [this](sol::object /*self*/) {
+        if (m_network) m_network->Disconnect();
+    });
+
+    net.set_function("isServer",    [this](sol::object /*self*/) { return m_network && m_network->IsServer(); });
+    net.set_function("isClient",    [this](sol::object /*self*/) { return m_network && m_network->IsClient(); });
+    net.set_function("isConnected", [this](sol::object /*self*/) { return m_network && m_network->IsConnected(); });
+    net.set_function("localClientId", [this](sol::object /*self*/) -> int {
+        return m_network ? static_cast<int>(m_network->LocalClientId()) : 0;
+    });
+
+    net.set_function("players", [this](sol::object /*self*/) -> sol::table {
+        sol::table out = m_lua->create_table();
+        if (!m_network) return out;
+        int i = 1;
+        for (const auto& p : m_network->Players())
+        {
+            sol::table row = m_lua->create_table();
+            row["id"]  = static_cast<int>(p.id);
+            row["rtt"] = static_cast<int>(p.rttMs);
+            out[i++] = row;
+        }
+        return out;
     });
 }
 

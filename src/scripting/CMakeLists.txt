@@ -17,6 +17,7 @@ target_link_libraries(Scripting PUBLIC
     Animation
     Audio
     Physics
+    Network
     ${LUA_LIBRARIES}
     sol2::sol2
     Microsoft::DirectXMath

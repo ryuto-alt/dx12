@@ -218,6 +218,19 @@ hit.normal    -- Vec3
 
 > Trigger の `EmitEvent` アクション（§8）も C++ からこの `emit` を呼ぶ。物理接触は `engine.contact.enter` / `engine.contact.exit` を Post する。
 
+### net（`net`）— オンラインマルチプレイ（リッスンサーバー方式・ENetベース、開発中）
+| メソッド | 戻り値 | 説明 |
+|---|---|---|
+| `:host(port?)` | string(err) | リッスンサーバー開始（自分もプレイヤー参加）。省略時 `network.json` の既定ポート。空文字列=成功 |
+| `:join(ip, port?)` | string(err) | サーバーへ接続開始。**非同期**（成立/失敗は `net.clientConnected`/`net.disconnected` イベントで分かる） |
+| `:disconnect()` | — | 切断 |
+| `:isServer()` / `:isClient()` / `:isConnected()` | bool | 状態確認 |
+| `:localClientId()` | int | 自分の clientId（ホストは常に0） |
+| `:players()` | `{id, rtt}[]` | 接続中プレイヤー一覧 |
+
+> イベント: `events:on("net.hostStarted"|"net.clientConnected"|"net.clientDisconnected"|"net.disconnected", fn)`。`net.clientConnected`/`net.clientDisconnected` の data に `client`(clientId) が入る。
+> 現状はフェーズ②(基盤)まで実装済み。エンティティ複製・RPC・予測補正は今後のフェーズで追加予定。
+
 ### time（`time`）— 時間 API（v0.9.3+）
 `:` ではなく `.` で呼ぶ。状態は Play 開始でリセットされる。
 

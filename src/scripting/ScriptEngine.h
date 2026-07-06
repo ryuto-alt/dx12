@@ -24,6 +24,7 @@ class AudioSystem;
 class PhysicsSystem;
 class ParticleSystem;
 class GpuParticleSystem;
+class NetworkSystem;
 
 // スクリプトコンポーネントのプロパティ宣言（.lua の properties から解析）。
 // 型 / 既定値 / 範囲 / 表示名を持ち、Inspector の自動 UI 生成と Play 時の注入に使う。
@@ -63,6 +64,9 @@ public:
     // ポインタはメンバに保持され、Initialize 再実行（シーン切替）後の fx バインドも参照する。
     void SetParticleSystem(ParticleSystem* p) { m_particleSystem = p; }
     void SetGpuParticleSystem(GpuParticleSystem* p) { m_gpuParticleSystem = p; }
+
+    // マルチプレイシステムを Lua net API へ公開（Application が一度だけ注入。null 許容）。
+    void SetNetworkSystem(NetworkSystem* n) { m_network = n; }
 
     // EventBus 注入（WireScriptCallbacks から Application が呼ぶ）。
     // events:on/emit/clear バインドはこのポインタを実行時に参照する（null 許容）。
@@ -142,6 +146,8 @@ private:
     void RegisterPhysicsBindings();
     // events グローバルを C++ EventBus への薄いバインドとして登録する。
     void RegisterEventsBinding();
+    // net グローバルを NetworkSystem への薄いバインドとして登録する。
+    void RegisterNetworkBindings();
     // .lua の properties テーブルを解析して out へ詰める（失敗時は out 空のまま）。
     void ParsePropertySchema(const std::string& scriptPath, std::vector<ScriptPropDef>& out);
 
@@ -153,6 +159,7 @@ private:
     PhysicsSystem* m_physics = nullptr;
     ParticleSystem* m_particleSystem = nullptr;
     GpuParticleSystem* m_gpuParticleSystem = nullptr;   // 大量粒子用（fx の gpu=true で使用）
+    NetworkSystem* m_network = nullptr;   // マルチプレイ（net:host/join等）。null 許容
     EventBus*    m_eventBus = nullptr;   // Application が所有、null 許容（エディタ中は非使用）
     std::string  m_assetsDir;
     std::string  m_lastError;

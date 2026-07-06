@@ -64,6 +64,7 @@ namespace dx12e
     class McpBridge;
     class AudioSystem;
     class PhysicsSystem;
+    class NetworkSystem;
     class PhysicsDebugRenderer;
     class EditorIconRenderer;
     class EditorContext;
@@ -392,6 +393,7 @@ private:
     std::unordered_map<std::string, uint32_t> m_mcpIdempotency;  // idempotency_key -> 生成済み entityId
     std::unique_ptr<AudioSystem>       m_audioSystem;
     std::unique_ptr<PhysicsSystem>     m_physicsSystem;
+    std::unique_ptr<NetworkSystem>     m_networkSystem;   // マルチプレイ（GPU非依存、Play/Stopでも再構築しない）
     std::unique_ptr<PhysicsDebugRenderer> m_physicsDebugRenderer;
     std::unique_ptr<EditorIconRenderer>   m_editorIconRenderer;
     bool                               m_physicsDebugDraw = false;

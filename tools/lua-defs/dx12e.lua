@@ -628,6 +628,51 @@ function EventBus:clear() end
 events = nil
 
 -- ============================================================
+-- net: オンラインマルチプレイ（リッスンサーバー方式・ENetベース）
+-- 接続イベントは events:on("net.clientConnected"|"net.clientDisconnected"|"net.hostStarted"|"net.disconnected", fn) で購読
+-- ============================================================
+
+---@class NetPlayerInfo
+---@field id integer clientId（ホストは0）
+---@field rtt integer 往復遅延(ms)
+
+---@class Net
+local Net = {}
+
+---リッスンサーバーとして待ち受け開始（自分もプレイヤーとして参加）
+---@param port? integer 省略時は network.json の defaultPort
+---@return string err 空文字列なら成功
+function Net:host(port) end
+
+---サーバーへ接続開始。**非同期**（成立/失敗は net.clientConnected / net.disconnected イベントで分かる）
+---@param ip string
+---@param port? integer 省略時は network.json の defaultPort
+---@return string err 空文字列なら「試行開始できた」（接続成立を保証しない）
+function Net:join(ip, port) end
+
+---切断（サーバー/クライアントどちらでも呼べる）
+function Net:disconnect() end
+
+---@return boolean
+function Net:isServer() end
+---@return boolean
+function Net:isClient() end
+---@return boolean
+function Net:isConnected() end
+
+---自分の clientId（未接続時は0、ホストは常に0）
+---@return integer
+function Net:localClientId() end
+
+---接続中のプレイヤー一覧
+---@return NetPlayerInfo[]
+function Net:players() end
+
+---マルチプレイ（ENet, リッスンサーバー方式）
+---@type Net
+net = nil
+
+-- ============================================================
 -- ui: ゲーム内 HUD（即時モード・OnUpdate 内で毎フレーム呼ぶ / Play 中のみ）
 -- ============================================================
 
