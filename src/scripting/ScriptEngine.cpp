@@ -1178,6 +1178,81 @@ void ScriptEngine::RegisterNetworkBindings()
         entt::entity e = m_network ? m_network->FindEntityByNetId(static_cast<NetId>(netId)) : entt::null;
         return Entity(e, &m_scene->GetRegistry());
     });
+
+    // RPC: 引数は number/string/boolean/Vec3 のみ対応(テーブルや関数は不可)。
+    auto toRpcArgs = [](sol::variadic_args va) -> RpcArgs {
+        RpcArgs args;
+        for (auto v : va)
+        {
+            sol::object o = v;
+            if      (!o.valid() || o.is<sol::nil_t>()) args.push_back(RpcValue{});
+            else if (o.is<bool>())                     args.push_back(RpcValue::MakeBool(o.as<bool>()));
+            else if (o.is<double>())                   args.push_back(RpcValue::MakeNumber(o.as<double>()));
+            else if (o.is<DirectX::XMFLOAT3>())         args.push_back(RpcValue::MakeVec3(o.as<DirectX::XMFLOAT3>()));
+            else if (o.is<std::string>())               args.push_back(RpcValue::MakeString(o.as<std::string>()));
+            else args.push_back(RpcValue{});   // 未対応型はnil扱い(警告なし、シンプルさ優先)
+        }
+        return args;
+    };
+    auto fromRpcArgs = [](sol::state& lua, const RpcArgs& args) -> std::vector<sol::object> {
+        std::vector<sol::object> out;
+        out.reserve(args.size());
+        for (const auto& a : args)
+        {
+            switch (a.type)
+            {
+            case RpcValue::Type::Bool:   out.push_back(sol::make_object(lua, a.b)); break;
+            case RpcValue::Type::Number: out.push_back(sol::make_object(lua, a.num)); break;
+            case RpcValue::Type::String: out.push_back(sol::make_object(lua, a.str)); break;
+            case RpcValue::Type::Vec3:   out.push_back(sol::make_object(lua, a.vec)); break;
+            case RpcValue::Type::Nil:
+            default:                     out.push_back(sol::make_object(lua, sol::nil)); break;
+            }
+        }
+        return out;
+    };
+
+    net.set_function("rpc", [this, toRpcArgs](sol::object /*self*/, const std::string& name,
+                                                sol::variadic_args va) -> std::string {
+        if (!m_network) return "network system unavailable";
+        std::string err;
+        m_network->SendRpcToServer(name, toRpcArgs(va), err);
+        return err;
+    });
+
+    net.set_function("rpcAll", [this, toRpcArgs](sol::object /*self*/, const std::string& name,
+                                                   sol::variadic_args va) -> std::string {
+        if (!m_network) return "network system unavailable";
+        std::string err;
+        m_network->SendRpcToAll(name, toRpcArgs(va), err);
+        return err;
+    });
+
+    net.set_function("rpcClient", [this, toRpcArgs](sol::object /*self*/, int clientId, const std::string& name,
+                                                      sol::variadic_args va) -> std::string {
+        if (!m_network) return "network system unavailable";
+        std::string err;
+        m_network->SendRpcToClient(static_cast<ClientId>(clientId), name, toRpcArgs(va), err);
+        return err;
+    });
+
+    net.set_function("onRpc", [this, fromRpcArgs](sol::object /*self*/, const std::string& name, sol::function fn) {
+        if (!m_network) return;
+        sol::main_function mfn = fn;   // GC 寿命を確実に保持(events:on と同じ流儀)
+        m_network->SetRpcHandler(name, [this, mfn, fromRpcArgs, name](ClientId sender, const RpcArgs& args) mutable {
+            sol::protected_function pf = mfn;
+            if (!pf.valid()) return;
+            std::vector<sol::object> luaArgs;
+            luaArgs.push_back(sol::make_object(*m_lua, static_cast<int>(sender)));
+            for (auto& a : fromRpcArgs(*m_lua, args)) luaArgs.push_back(a);
+            auto r = pf(sol::as_args(luaArgs));
+            if (!r.valid())
+            {
+                sol::error err = r;
+                Logger::Warn("RPCハンドラでエラー（{}）: {}", name, err.what());
+            }
+        });
+    });
 }
 
 void ScriptEngine::LoadPrelude()

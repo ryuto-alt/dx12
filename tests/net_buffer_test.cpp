@@ -29,6 +29,15 @@ static void TestIntegerRoundtrip()
     CHECK(r.Remaining() == 0);
 }
 
+static void TestDoubleRoundtrip()
+{
+    NetWriter w;
+    w.WriteF64(3.14159265358979);
+    NetReader r(w.Data().data(), w.Data().size());
+    double v = r.ReadF64();
+    CHECK(v > 3.14159265358978 && v < 3.14159265358980);
+}
+
 static void TestFloatRoundtrip()
 {
     NetWriter w;
@@ -91,6 +100,7 @@ static void TestStringLengthOutOfRangeThrows()
 int main()
 {
     TestIntegerRoundtrip();
+    TestDoubleRoundtrip();
     TestFloatRoundtrip();
     TestBoolAndStringRoundtrip();
     TestBytesRoundtrip();

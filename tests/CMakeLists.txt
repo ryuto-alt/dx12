@@ -106,6 +106,16 @@ if(TARGET Renderer)
         target_compile_definitions(InterpolationTests PRIVATE ${DX12_COMPILE_DEFS})
     endif()
     add_test(NAME InterpolationTests COMMAND InterpolationTests)
+
+    # RpcValue/RpcArgs(net:rpc引数)シリアライズ往復テスト。ヘッダオンリー・純DirectXMath。
+    add_executable(RpcArgsTests rpc_args_test.cpp)
+    target_include_directories(RpcArgsTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(RpcArgsTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(RpcArgsTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(RpcArgsTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME RpcArgsTests COMMAND RpcArgsTests)
 endif()
 
 # SpatialIndex（一様グリッド）テスト（Phase 5: RTS 空間クエリ）。ヘッダオンリー、entt のみ依存。

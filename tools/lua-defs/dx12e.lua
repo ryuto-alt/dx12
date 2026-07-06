@@ -689,6 +689,31 @@ function Net:despawn(entity) end
 ---@return Entity entity 見つからなければ isValid()==false
 function Net:findByNetId(netId) end
 
+---サーバーへRPC送信（**クライアント専用**）。引数は number/string/boolean/Vec3 のみ
+---@param name string
+---@vararg number|string|boolean|Vec3
+---@return string err 空文字列なら成功
+function Net:rpc(name, ...) end
+
+---全クライアントへRPC送信（**サーバー専用**）
+---@param name string
+---@vararg number|string|boolean|Vec3
+---@return string err
+function Net:rpcAll(name, ...) end
+
+---特定クライアントへRPC送信（**サーバー専用**）
+---@param clientId integer
+---@param name string
+---@vararg number|string|boolean|Vec3
+---@return string err
+function Net:rpcClient(clientId, name, ...) end
+
+---RPCハンドラを登録する。fn(senderClientId, ...)（senderは受信側から見た相手。
+---クライアントが受ける場合は常にサーバー=0）
+---@param name string
+---@param fn fun(sender: integer, ...)
+function Net:onRpc(name, fn) end
+
 ---マルチプレイ（ENet, リッスンサーバー方式）
 ---@type Net
 net = nil

@@ -92,6 +92,7 @@ void NetworkSystem::ResetState()
     m_snapshotAccum = 0.0f;
     m_tick = 0;
     m_interpBuffers.clear();
+    m_rpcHandlers.clear();   // Lua側のsol::functionを握ったままにしない(Play終了でLua stateごと消える)
 }
 
 void NetworkSystem::PreSimUpdate(f32 /*dt*/, entt::registry& reg)
@@ -495,6 +496,76 @@ void NetworkSystem::ApplyInterpolation(entt::registry& reg)
     }
 }
 
+void NetworkSystem::SetRpcHandler(const std::string& name, RpcHandler handler)
+{
+    m_rpcHandlers[name] = std::move(handler);
+}
+
+bool NetworkSystem::SendRpcToServer(const std::string& name, const RpcArgs& args, std::string& outError)
+{
+    if (!IsClient()) { outError = "rpc-to-server is client-only"; return false; }
+    if (m_serverPeer == kInvalidPeer) { outError = "not connected"; return false; }
+
+    NetWriter w;
+    w.WriteString(name);
+    WriteRpcArgs(w, args);
+    SendTo(m_serverPeer, PacketType::RpcMessage, w.Data(), true);
+    return true;
+}
+
+bool NetworkSystem::SendRpcToClient(ClientId target, const std::string& name, const RpcArgs& args, std::string& outError)
+{
+    if (!IsServer()) { outError = "rpc-to-client is server-only"; return false; }
+
+    PeerHandle peer = kInvalidPeer;
+    for (auto& [p, id] : m_peerToClient) if (id == target) { peer = p; break; }
+    if (peer == kInvalidPeer) { outError = "unknown client"; return false; }
+
+    NetWriter w;
+    w.WriteString(name);
+    WriteRpcArgs(w, args);
+    SendTo(peer, PacketType::RpcMessage, w.Data(), true);
+    return true;
+}
+
+bool NetworkSystem::SendRpcToAll(const std::string& name, const RpcArgs& args, std::string& outError)
+{
+    if (!IsServer()) { outError = "rpc-to-all is server-only"; return false; }
+
+    NetWriter w;
+    w.WriteString(name);
+    WriteRpcArgs(w, args);
+    BroadcastPacket(PacketType::RpcMessage, w.Data(), true);
+    return true;
+}
+
+void NetworkSystem::HandleRpc(PeerHandle fromPeer, const std::vector<u8>& body)
+{
+    try
+    {
+        NetReader r(body);
+        const std::string name = r.ReadString();
+        const RpcArgs args = ReadRpcArgs(r);
+
+        ClientId sender = kServerClientId;
+        if (IsServer())
+        {
+            auto it = m_peerToClient.find(fromPeer);
+            sender = (it != m_peerToClient.end()) ? it->second : ClientId{ 0 };
+        }
+
+        auto hit = m_rpcHandlers.find(name);
+        if (hit != m_rpcHandlers.end() && hit->second)
+            hit->second(sender, args);
+        else
+            Logger::Warn("NetworkSystem: 未登録のRPCを受信しました: {}", name);
+    }
+    catch (const NetReadError&)
+    {
+        Logger::Warn("NetworkSystem: RpcMessage パケットの解析に失敗しました");
+    }
+}
+
 void NetworkSystem::HandleTransportEvent(const TransportEvent& ev, entt::registry& reg)
 {
     switch (ev.type)
@@ -559,17 +630,18 @@ void NetworkSystem::HandleTransportEvent(const TransportEvent& ev, entt::registr
 
         if (IsServer())
         {
-            if (type == PacketType::SceneReady) HandleSceneReady(ev.peer);
-            // Input/RpcMessage はフェーズ⑥/⑦で処理する。
+            if      (type == PacketType::SceneReady)  HandleSceneReady(ev.peer);
+            else if (type == PacketType::RpcMessage)  HandleRpc(ev.peer, body);
+            // Input はフェーズ⑦で処理する。
         }
         else if (IsClient())
         {
-            if      (type == PacketType::Welcome)  HandleWelcome(body);
-            else if (type == PacketType::Baseline) HandleBaseline(body, reg);
-            else if (type == PacketType::Spawn)    HandleSpawn(body);
-            else if (type == PacketType::Despawn)  HandleDespawn(body, reg);
-            else if (type == PacketType::Snapshot) HandleSnapshot(body);
-            // RpcMessage は後続フェーズで処理する。
+            if      (type == PacketType::Welcome)    HandleWelcome(body);
+            else if (type == PacketType::Baseline)   HandleBaseline(body, reg);
+            else if (type == PacketType::Spawn)      HandleSpawn(body);
+            else if (type == PacketType::Despawn)    HandleDespawn(body, reg);
+            else if (type == PacketType::Snapshot)   HandleSnapshot(body);
+            else if (type == PacketType::RpcMessage) HandleRpc(ev.peer, body);
         }
         break;
     }

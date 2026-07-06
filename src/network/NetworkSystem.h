@@ -2,6 +2,7 @@
 #include "engine/core/EventBus.h"
 #include "network/Interpolation.h"
 #include "network/NetworkConfig.h"
+#include "network/Rpc.h"
 #include "network/Transport.h"
 
 #include <entt/entt.hpp>
@@ -81,6 +82,16 @@ public:
 
     entt::entity FindEntityByNetId(NetId netId) const;
 
+    // ---- RPC(フェーズ⑥) ----
+    // name毎に1個(後勝ち)。sender は受信側から見た相手のclientId
+    // (サーバーが受ける場合=送信元クライアント、クライアントが受ける場合=常にkServerClientId)。
+    using RpcHandler = std::function<void(ClientId sender, const RpcArgs& args)>;
+    void SetRpcHandler(const std::string& name, RpcHandler handler);
+
+    bool SendRpcToServer(const std::string& name, const RpcArgs& args, std::string& outError);   // クライアント専用
+    bool SendRpcToClient(ClientId target, const std::string& name, const RpcArgs& args, std::string& outError); // サーバー専用
+    bool SendRpcToAll(const std::string& name, const RpcArgs& args, std::string& outError);       // サーバー専用
+
 private:
     void HandleTransportEvent(const TransportEvent& ev, entt::registry& reg);
     void ResetState();
@@ -97,6 +108,9 @@ private:
     void HandleDespawn(const std::vector<u8>& body, entt::registry& reg);
     void HandleSnapshot(const std::vector<u8>& body);
     void ApplyInterpolation(entt::registry& reg);
+
+    // ---- RPC(双方向) ----
+    void HandleRpc(PeerHandle fromPeer, const std::vector<u8>& body);
 
     // ---- サーバー専用(続き) ----
     void SendSnapshots(entt::registry& reg);
@@ -126,6 +140,9 @@ private:
     f32 m_snapshotAccum = 0.0f;     // サーバー: 次スナップショット送信までの残り時間
     NetTick m_tick = 0;             // サーバー: 送信したスナップショットの通し番号(参考値、厳密なfixed-tickではない)
     std::unordered_map<NetId, SnapshotBuffer> m_interpBuffers;   // クライアント: netId毎の補間バッファ
+
+    // ---- RPC(フェーズ⑥) ----
+    std::unordered_map<std::string, RpcHandler> m_rpcHandlers;
 };
 
 } // namespace dx12e

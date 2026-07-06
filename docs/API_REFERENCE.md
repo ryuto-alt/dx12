@@ -230,6 +230,10 @@ hit.normal    -- Vec3
 | `:spawn(prefabPath, x, y, z, owner?)` | netId(int), string(err) | **サーバー専用**。prefabPath は assets 相対（例 "prefabs/Player.prefab"）。生成はフレーム境界(`net.spawned`で分かる) |
 | `:despawn(entity)` | string(err) | **サーバー専用**。NetworkIdentity付きエンティティを破棄(即時) |
 | `:findByNetId(netId)` | Entity | netIdからエンティティを引く。見つからなければ`isValid()==false` |
+| `:rpc(name, ...)` | string(err) | **クライアント専用**。サーバーへRPC送信。引数は number/string/boolean/Vec3 のみ |
+| `:rpcAll(name, ...)` | string(err) | **サーバー専用**。全クライアントへRPC送信 |
+| `:rpcClient(clientId, name, ...)` | string(err) | **サーバー専用**。特定クライアントへRPC送信 |
+| `:onRpc(name, fn)` | — | RPCハンドラ登録。`fn(sender, ...)`。senderはクライアント受信時は常に0(サーバー) |
 
 > イベント: `events:on("net.hostStarted"|"net.clientConnected"|"net.clientDisconnected"|"net.connected"|"net.clientReady"|"net.spawned"|"net.despawned"|"net.disconnected", fn)`。
 > `net.clientConnected`(サーバー視点、低レベル接続) / `net.clientReady`(サーバー視点、Baseline適用済み=対戦準備完了) / `net.connected`(クライアント視点、Welcome受信=`localClientId()`確定) の data に `client`(clientId) が入る。
@@ -237,7 +241,7 @@ hit.normal    -- Vec3
 > `NetworkIdentity` コンポーネント（Inspectorの「Network Identity」）を付けたエンティティが複製対象。サーバーが `_netId` を採番し、クライアント接続時に Welcome(clientId+シーンパス)→Baseline(netId対応表)→SceneReady のハンドシェイクで同期する。動的スポーンは `.prefab` を both サイドで個別に `InstantiatePrefab` するため通信量が小さい(JSON blob を流さない)。
 >
 > `NetworkTransform` コンポーネント（Inspectorの「Network Transform」）を NetworkIdentity と併用すると、サーバーが Transform(位置/回転/スケール、フィールドごとにon/off可)を `snapshotRate`(network.json、既定20Hz)で全readyクライアントへ送信する。クライアントは `interpDelayMs`(既定100ms)だけ過去を描画するよう2点補間(位置lerp・回転slerp)してこのエンティティの Transform に書き込む。`syncMode=0`(補間、既定)のみ実装済み。`syncMode=1`(オーナー予測)はフェーズ⑦で追加予定、それまでは全エンティティがサーバー権威+補間で動く。
-> 現状はフェーズ⑤(NetworkTransformスナップショット+補間)まで実装済み。RPC・クライアント予測/サーバーリコンシリエーション・興味管理は今後のフェーズで追加予定。
+> 現状はフェーズ⑥(RPC)まで実装済み。クライアント予測/サーバーリコンシリエーション・興味管理は今後のフェーズで追加予定。
 
 ### time（`time`）— 時間 API（v0.9.3+）
 `:` ではなく `.` で呼ぶ。状態は Play 開始でリセットされる。

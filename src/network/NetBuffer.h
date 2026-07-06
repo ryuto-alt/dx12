@@ -19,6 +19,7 @@ public:
     void WriteU64(u64 v) { Append(&v, sizeof(v)); }
     void WriteI32(i32 v) { Append(&v, sizeof(v)); }
     void WriteF32(f32 v) { Append(&v, sizeof(v)); }
+    void WriteF64(f64 v) { Append(&v, sizeof(v)); }
     void WriteBool(bool v) { WriteU8(v ? 1 : 0); }
 
     void WriteString(const std::string& s)
@@ -62,6 +63,7 @@ public:
     u64  ReadU64()  { return ReadRaw<u64>(); }
     i32  ReadI32()  { return ReadRaw<i32>(); }
     f32  ReadF32()  { return ReadRaw<f32>(); }
+    f64  ReadF64()  { return ReadRaw<f64>(); }
     bool ReadBool() { return ReadU8() != 0; }
 
     std::string ReadString()
