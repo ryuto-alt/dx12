@@ -1,5 +1,6 @@
 #include "editor/panels/InspectorPanel.h"
 #include "editor/EditorContext.h"
+#include "editor/PropertyGrid.h"
 #include "editor/UndoSystem.h"
 #include "ecs/Components.h"
 #include "renderer/Camera.h"
@@ -24,6 +25,7 @@
 #include <filesystem>
 #include <algorithm>
 #include <cstring>
+#include <cstdio>
 
 #pragma warning(push)
 #pragma warning(disable: 4100)
@@ -41,28 +43,47 @@
 namespace
 {
 
-// CollapsingHeader の頭に種別アイコンを重ね描きするヘルパ。
-// tex==0 または icons==null なら通常のヘッダ。アイコン分だけラベル先頭に空白を入れて重ねる。
+// CollapsingHeader を Unreal 風カテゴリ帯（濃いグレー地＋左端アクセントストライプ）で描くヘルパ。
+// tex 指定でラベル頭に種別アイコンを重ね描きする。
 bool IconHeader(const dx12e::EditorUiIcons* ic, dx12e::u64 tex, const char* label,
                 ImGuiTreeNodeFlags flags = 0)
 {
+    namespace th = dx12e::theme;
+    ImGui::PushStyleColor(ImGuiCol_Header,        th::GroupBg);
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, th::Hex(0x272831));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive,  th::Hex(0x2b2c36));
+    ImGui::PushStyleColor(ImGuiCol_Text,          th::TextHi);
+
+    bool open;
     if (!ic || !tex)
-        return ImGui::CollapsingHeader(label, flags);
-
-    const float h = ImGui::GetTextLineHeight();
-    const float spaceW = ImGui::CalcTextSize(" ").x;
-    const int pad = (spaceW > 0.0f) ? static_cast<int>((h + 6.0f) / spaceW) + 1 : 3;
-    std::string padded(static_cast<size_t>(pad), ' ');
-    padded += label;
-
-    const bool open = ImGui::CollapsingHeader(padded.c_str(), flags);
+    {
+        open = ImGui::CollapsingHeader(label, flags);
+    }
+    else
+    {
+        const float h = ImGui::GetTextLineHeight();
+        const float spaceW = ImGui::CalcTextSize(" ").x;
+        const int pad = (spaceW > 0.0f) ? static_cast<int>((h + 6.0f) / spaceW) + 1 : 3;
+        std::string padded(static_cast<size_t>(pad), ' ');
+        padded += label;
+        open = ImGui::CollapsingHeader(padded.c_str(), flags);
+    }
+    ImGui::PopStyleColor(4);
 
     const ImVec2 mn = ImGui::GetItemRectMin();
     const ImVec2 mx = ImGui::GetItemRectMax();
-    const float cy = (mn.y + mx.y) * 0.5f;
-    const float x  = mn.x + ImGui::GetTreeNodeToLabelSpacing();
-    ImGui::GetWindowDrawList()->AddImage(static_cast<ImTextureID>(tex),
-        ImVec2(x, cy - h * 0.5f), ImVec2(x + h, cy + h * 0.5f));
+    // 左端のアクセントストライプ（カテゴリの目印。Unreal の Details 風）
+    ImGui::GetWindowDrawList()->AddRectFilled(
+        mn, ImVec2(mn.x + 3.0f, mx.y), ImGui::GetColorU32(th::Accent));
+
+    if (ic && tex)
+    {
+        const float h = ImGui::GetTextLineHeight();
+        const float cy = (mn.y + mx.y) * 0.5f;
+        const float x  = mn.x + ImGui::GetTreeNodeToLabelSpacing();
+        ImGui::GetWindowDrawList()->AddImage(static_cast<ImTextureID>(tex),
+            ImVec2(x, cy - h * 0.5f), ImVec2(x + h, cy + h * 0.5f));
+    }
     return open;
 }
 
@@ -157,15 +178,20 @@ void DrawLuaScriptSection(entt::registry& reg,
 {
     const bool hasLua = reg.all_of<dx12e::LuaScript>(e);
 
-    bool open = ImGui::CollapsingHeader("Lua Script",
+    bool open = IconHeader(nullptr, 0, "Lua Script",
         ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_AllowOverlap);
 
-    // ヘッダ右の状態アイコン: 付いてたら緑チェック、無ければグレー
-    ImGui::SameLine(ImGui::GetWindowWidth() - 50.0f);
-    if (hasLua)
-        ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "ATTACHED");
-    else
-        ImGui::TextDisabled("(none)");
+    // ヘッダ右の状態表示: 付いてたら緑、無ければグレー（テキスト幅から右寄せ位置を計算）
+    {
+        const char* status = hasLua ? "ATTACHED" : "(none)";
+        ImGui::SameLine(ImGui::GetWindowWidth()
+                        - ImGui::CalcTextSize(status).x
+                        - ImGui::GetStyle().WindowPadding.x - 24.0f);
+        if (hasLua)
+            ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), status);
+        else
+            ImGui::TextDisabled(status);
+    }
 
     if (!open) return;
 
@@ -190,14 +216,17 @@ void DrawLuaScriptSection(entt::registry& reg,
     char pathBuf[256];
     std::memset(pathBuf, 0, sizeof(pathBuf));
     strncpy_s(pathBuf, sizeof(pathBuf), ls.scriptPath.c_str(), _TRUNCATE);
-    ImGui::InputText("Script##LuaScript", pathBuf, sizeof(pathBuf),
-                     ImGuiInputTextFlags_ReadOnly);
-
-    ImGui::Checkbox("Enabled##LuaScript", &ls.enabled);
-    ImGui::SameLine();
-    ImGui::TextColored(
-        ls.started ? ImVec4(0.4f, 1.0f, 0.4f, 1.0f) : ImVec4(0.7f, 0.7f, 0.7f, 1.0f),
-        ls.started ? "RUNNING" : "IDLE");
+    if (dx12e::pg::Begin("LuaScriptHead"))
+    {
+        dx12e::pg::InputText("Script", pathBuf, sizeof(pathBuf), ImGuiInputTextFlags_ReadOnly);
+        dx12e::pg::Label("有効 Enabled");
+        ImGui::Checkbox("##lsEnabled", &ls.enabled);
+        ImGui::SameLine();
+        ImGui::TextColored(
+            ls.started ? ImVec4(0.4f, 1.0f, 0.4f, 1.0f) : ImVec4(0.7f, 0.7f, 0.7f, 1.0f),
+            ls.started ? "RUNNING" : "IDLE");
+        dx12e::pg::End();
+    }
 
     if (ImGui::Button("Reload##LuaScript"))
     {
@@ -244,73 +273,76 @@ void DrawLuaScriptSection(entt::registry& reg,
         {
             SyncScriptProps(ls, schema);
             ImGui::SeparatorText("プロパティ");
-            ImGui::PushItemWidth(-140.0f);
-            for (size_t i = 0; i < schema.size(); ++i)
+            if (dx12e::pg::Begin("LuaProps"))
             {
-                const auto& d = schema[i];
-                auto& p = ls.props[i];
-                const char* lbl = d.label.empty() ? d.name.c_str() : d.label.c_str();
-                ImGui::PushID(static_cast<int>(i));
-                switch (d.type)
+                for (size_t i = 0; i < schema.size(); ++i)
                 {
-                case dx12e::ScriptPropType::Float:
-                {
-                    float v = static_cast<float>(p.num);
-                    bool ch = d.hasRange ? ImGui::SliderFloat(lbl, &v, d.minVal, d.maxVal)
-                                         : ImGui::DragFloat(lbl, &v, 0.01f);
-                    if (ch) p.num = v;
-                    break;
-                }
-                case dx12e::ScriptPropType::Int:
-                {
-                    int v = static_cast<int>(p.num);
-                    bool ch = d.hasRange ? ImGui::SliderInt(lbl, &v, static_cast<int>(d.minVal), static_cast<int>(d.maxVal))
-                                         : ImGui::DragInt(lbl, &v);
-                    if (ch) p.num = v;
-                    break;
-                }
-                case dx12e::ScriptPropType::Bool:
-                    ImGui::Checkbox(lbl, &p.b);
-                    break;
-                case dx12e::ScriptPropType::String:
-                {
-                    char buf[256];
-                    std::memset(buf, 0, sizeof(buf));
-                    strncpy_s(buf, sizeof(buf), p.str.c_str(), _TRUNCATE);
-                    if (ImGui::InputText(lbl, buf, sizeof(buf)))
-                        p.str = buf;
-                    break;
-                }
-                case dx12e::ScriptPropType::Vec3:
-                    ImGui::DragFloat3(lbl, &p.vec.x, 0.01f);
-                    break;
-                case dx12e::ScriptPropType::Color:
-                    ImGui::ColorEdit3(lbl, &p.vec.x);
-                    break;
-                case dx12e::ScriptPropType::Entity:
-                {
-                    // シーン内のエンティティ名から選ぶコンボ（参照先を名前で保持）。
-                    const char* cur = p.str.empty() ? "(\xe3\x81\xaa\xe3\x81\x97)" : p.str.c_str();  // (なし)
-                    if (ImGui::BeginCombo(lbl, cur))
+                    const auto& d = schema[i];
+                    auto& p = ls.props[i];
+                    const char* lbl = d.label.empty() ? d.name.c_str() : d.label.c_str();
+                    ImGui::PushID(static_cast<int>(i));
+                    switch (d.type)
                     {
-                        if (ImGui::Selectable("(\xe3\x81\xaa\xe3\x81\x97)", p.str.empty()))  // (なし)
-                            p.str.clear();
-                        auto nameView = reg.view<dx12e::NameTag>();
-                        for (auto ne : nameView)
-                        {
-                            const auto& nm = nameView.get<dx12e::NameTag>(ne).name;
-                            if (nm.empty()) continue;
-                            if (ImGui::Selectable(nm.c_str(), nm == p.str))
-                                p.str = nm;
-                        }
-                        ImGui::EndCombo();
+                    case dx12e::ScriptPropType::Float:
+                    {
+                        float v = static_cast<float>(p.num);
+                        bool ch = d.hasRange ? dx12e::pg::SliderFloat(lbl, &v, d.minVal, d.maxVal)
+                                             : dx12e::pg::Float(lbl, &v, 0.01f);
+                        if (ch) p.num = v;
+                        break;
                     }
-                    break;
+                    case dx12e::ScriptPropType::Int:
+                    {
+                        int v = static_cast<int>(p.num);
+                        bool ch = d.hasRange ? dx12e::pg::SliderInt(lbl, &v, static_cast<int>(d.minVal), static_cast<int>(d.maxVal))
+                                             : dx12e::pg::Int(lbl, &v);
+                        if (ch) p.num = v;
+                        break;
+                    }
+                    case dx12e::ScriptPropType::Bool:
+                        dx12e::pg::Checkbox(lbl, &p.b);
+                        break;
+                    case dx12e::ScriptPropType::String:
+                    {
+                        char buf[256];
+                        std::memset(buf, 0, sizeof(buf));
+                        strncpy_s(buf, sizeof(buf), p.str.c_str(), _TRUNCATE);
+                        if (dx12e::pg::InputText(lbl, buf, sizeof(buf)))
+                            p.str = buf;
+                        break;
+                    }
+                    case dx12e::ScriptPropType::Vec3:
+                        dx12e::pg::Float3(lbl, &p.vec.x, 0.01f);
+                        break;
+                    case dx12e::ScriptPropType::Color:
+                        dx12e::pg::Color3(lbl, &p.vec.x);
+                        break;
+                    case dx12e::ScriptPropType::Entity:
+                    {
+                        // シーン内のエンティティ名から選ぶコンボ（参照先を名前で保持）。
+                        const char* cur = p.str.empty() ? "(なし)" : p.str.c_str();
+                        dx12e::pg::Label(lbl);
+                        if (ImGui::BeginCombo("##ent", cur))
+                        {
+                            if (ImGui::Selectable("(なし)", p.str.empty()))
+                                p.str.clear();
+                            auto nameView = reg.view<dx12e::NameTag>();
+                            for (auto ne : nameView)
+                            {
+                                const auto& nm = nameView.get<dx12e::NameTag>(ne).name;
+                                if (nm.empty()) continue;
+                                if (ImGui::Selectable(nm.c_str(), nm == p.str))
+                                    p.str = nm;
+                            }
+                            ImGui::EndCombo();
+                        }
+                        break;
+                    }
+                    }
+                    ImGui::PopID();
                 }
-                }
-                ImGui::PopID();
+                dx12e::pg::End();
             }
-            ImGui::PopItemWidth();
             if (ImGui::SmallButton("規定値に戻す"))
             {
                 for (size_t i = 0; i < schema.size(); ++i)
@@ -406,6 +438,7 @@ bool DirectionEditor(const char* id, DirectX::XMFLOAT3& dir, bool& active)
     bool changed = false;
     ImGui::PushID(id);
     ImGui::TextUnformatted("照らす方向 Direction");
+    ImGui::SetNextItemWidth(-FLT_MIN);
     changed |= ImGui::DragFloat3("##dir", &dir.x, 0.01f, -1.0f, 1.0f, "%.2f");
     active  |= ImGui::IsItemActive();
 
@@ -502,14 +535,14 @@ void InspectorPanel::Render(entt::registry& reg,
                 if (!m_transformEditing)
                     m_transformSnapshot = t;
 
-                ImGui::DragFloat3("Position", &t.position.x, 0.1f);
-                bool posActive = ImGui::IsItemActive();
-                ImGui::DragFloat3("Rotation", &t.rotation.x, 1.0f);
-                bool rotActive = ImGui::IsItemActive();
-                ImGui::DragFloat3("Scale",    &t.scale.x,    0.01f);
-                bool sclActive = ImGui::IsItemActive();
-
-                bool anyActive = posActive || rotActive || sclActive;
+                bool anyActive = false;
+                if (pg::Begin("Transform"))
+                {
+                    pg::Float3("位置 Position", &t.position.x, 0.1f,  0, 0, "%.3f", &anyActive);
+                    pg::Float3("回転 Rotation", &t.rotation.x, 1.0f,  0, 0, "%.2f", &anyActive);
+                    pg::Float3("拡縮 Scale",    &t.scale.x,    0.01f, 0, 0, "%.3f", &anyActive);
+                    pg::End();
+                }
                 if (anyActive)
                     m_transformEditing = true;
             }
@@ -543,8 +576,12 @@ void InspectorPanel::Render(entt::registry& reg,
             if (IconHeader(ic, ic ? ic->entMesh : 0, "MeshRenderer"))
             {
                 auto& r = reg.get<MeshRenderer>(ctx.selectedEntity);
-                ImGui::Text("Meshes: %d", static_cast<int>(r.meshes.size()));
-                ImGui::Text("Materials: %d", static_cast<int>(r.materials.size()));
+                if (pg::Begin("MeshRenderer"))
+                {
+                    pg::Text("Meshes",    "%d", static_cast<int>(r.meshes.size()));
+                    pg::Text("Materials", "%d", static_cast<int>(r.materials.size()));
+                    pg::End();
+                }
             }
         }
 
@@ -559,50 +596,40 @@ void InspectorPanel::Render(entt::registry& reg,
                 auto& sp = reg.get<Sprite2D>(ctx.selectedEntity);
                 bool changed = false, active = false;
 
-                char buf[256] = {};
-                size_t n = sp.texturePath.copy(buf, sizeof(buf) - 1);
-                buf[n] = '\0';
-                if (ImGui::InputText("テクスチャ Texture", buf, sizeof(buf)))
-                { sp.texturePath = buf; changed = true; }
-                active |= ImGui::IsItemActive();
-
-                changed |= ImGui::DragInt("描画順 Layer", &sp.layer, 1.0f, -1000, 1000);
-                active  |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat2("サイズ Size", &sp.size.x, 0.01f, 0.0f, 100.0f, "%.2f");
-                active  |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat2("UV Min", &sp.uvMin.x, 0.005f, 0.0f, 1.0f, "%.3f");
-                active  |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat2("UV Max", &sp.uvMax.x, 0.005f, 0.0f, 1.0f, "%.3f");
-                active  |= ImGui::IsItemActive();
-                changed |= ImGui::ColorEdit4("色 Color", &sp.color.x);
-
-                ImGui::SeparatorText("配置");
-                changed |= ImGui::Checkbox("ワールド空間 World Space", &sp.worldSpace);
-                if (sp.worldSpace)
+                if (pg::Begin("Sprite2D"))
                 {
-                    ImGui::SameLine(0.0f, 16.0f);
-                    changed |= ImGui::Checkbox("常にカメラを向く Billboard", &sp.billboard);
-                    ImGui::SameLine(); ImGui::TextDisabled("(?)");
-                    if (ImGui::BeginItemTooltip())
+                    char buf[256] = {};
+                    size_t n = sp.texturePath.copy(buf, sizeof(buf) - 1);
+                    buf[n] = '\0';
+                    if (pg::InputText("テクスチャ Texture", buf, sizeof(buf), 0, &active))
+                    { sp.texturePath = buf; changed = true; }
+
+                    changed |= pg::Int("描画順 Layer", &sp.layer, 1.0f, -1000, 1000, &active);
+                    changed |= pg::Float2("サイズ Size", &sp.size.x, 0.01f, 0.0f, 100.0f, "%.2f", &active);
+                    changed |= pg::Float2("UV Min", &sp.uvMin.x, 0.005f, 0.0f, 1.0f, "%.3f", &active);
+                    changed |= pg::Float2("UV Max", &sp.uvMax.x, 0.005f, 0.0f, 1.0f, "%.3f", &active);
+                    changed |= pg::Color4("色 Color", &sp.color.x);
+
+                    pg::Group("配置");
+                    changed |= pg::Checkbox("ワールド空間 World Space", &sp.worldSpace,
+                        "OFF: HUD 表示（画面固定）。位置は Transform の値をピクセル扱い");
+                    if (sp.worldSpace)
                     {
-                        ImGui::TextUnformatted(
+                        changed |= pg::Checkbox("常にカメラを向く Billboard", &sp.billboard,
                             "OFF: Transform の回転どおりに固定表示（ギズモの R で回転可）\n"
                             "ON : 常にアクティブカメラの方を向く（回転は無視される）");
-                        ImGui::EndTooltip();
                     }
-                }
-                else
-                {
-                    ImGui::TextDisabled("HUD 表示（画面固定）。位置は Transform の値をピクセル扱い");
+                    pg::End();
                 }
 
                 // カスタムシェーダー割当（worldSpace のスプライトのみ有効。MeshRendererの仕組みを踏襲するが
                 // ルートシグネチャ/頂点フォーマットが異なるので互換性は無い＝別キャッシュ）。
-                if (ImGui::CollapsingHeader("Shader##Sprite2D"))
+                if (IconHeader(nullptr, 0, "Shader##Sprite2D") && pg::Begin("Sprite2DShader"))
                 {
                     namespace fs = std::filesystem;
                     std::string currentLabel = sp.shaderPath.empty() ? "既定 (Sprite)" : sp.shaderPath;
-                    if (ImGui::BeginCombo("シェーダー##Sprite2D", currentLabel.c_str()))
+                    pg::Label("シェーダー");
+                    if (ImGui::BeginCombo("##sprShader", currentLabel.c_str()))
                     {
                         std::vector<std::string> options;
                         std::error_code ec;
@@ -636,25 +663,19 @@ void InspectorPanel::Render(entt::registry& reg,
                             ImGui::TextDisabled("(assets/shaders/ に自作シェーダーなし)");
                         ImGui::EndCombo();
                     }
+                    if (!sp.shaderPath.empty())
+                    {
+                        changed |= pg::Checkbox("アルファブレンド有効", &sp.shaderAlphaBlend,
+                            "ON: シェーダーの alpha 出力を SrcAlpha/InvSrcAlpha でブレンド(DepthWrite OFF)。"
+                            "OFF(既定): 不透明固定で alpha は無視される");
+                        changed |= pg::Float("エフェクト値 effectValue", &sp.effectValue, 0.005f, 0.0f, 1.0f, "%.3f", &active,
+                            "シェーダーへ渡す汎用の進捗/強度値(意味はシェーダー依存)。"
+                            "Luaの scene:setSpriteEffect(e, value) で実行時にも変更可");
+                    }
+                    pg::End();
                     if (!sp.worldSpace && !sp.shaderPath.empty())
                         ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
                             "HUD スプライトはカスタムシェーダー未対応(worldSpaceのみ)");
-
-                    if (!sp.shaderPath.empty())
-                    {
-                        changed |= ImGui::Checkbox("アルファブレンド有効##Sprite2D", &sp.shaderAlphaBlend);
-                        if (ImGui::IsItemHovered())
-                            ImGui::SetTooltip(
-                                "ON: シェーダーの alpha 出力を SrcAlpha/InvSrcAlpha でブレンド(DepthWrite OFF)。"
-                                "OFF(既定): 不透明固定で alpha は無視される");
-                        active |= ImGui::IsItemActive();
-
-                        changed |= ImGui::DragFloat("エフェクト値 effectValue", &sp.effectValue, 0.005f, 0.0f, 1.0f, "%.3f");
-                        if (ImGui::IsItemHovered())
-                            ImGui::SetTooltip("シェーダーへ渡す汎用の進捗/強度値(意味はシェーダー依存)。"
-                                               "Luaの scene:setSpriteEffect(e, value) で実行時にも変更可");
-                        active |= ImGui::IsItemActive();
-                    }
                 }
 
                 EndEdit(reg, ctx, ctx.selectedEntity, m_spriteEdit, changed, active, "Sprite2D");
@@ -667,9 +688,13 @@ void InspectorPanel::Render(entt::registry& reg,
             auto& skelAnim = reg.get<SkeletalAnimation>(ctx.selectedEntity);
             if (skelAnim.animator && IconHeader(ic, ic ? ic->entMesh : 0, "SkeletalAnimation"))
             {
-                ImGui::Text("Bones: %d",
-                    static_cast<int>(skelAnim.skeleton ? skelAnim.skeleton->GetBoneCount() : 0));
-                ImGui::Text("Clips: %d", static_cast<int>(skelAnim.clips.size()));
+                if (pg::Begin("SkeletalAnimation"))
+                {
+                    pg::Text("Bones", "%d",
+                        static_cast<int>(skelAnim.skeleton ? skelAnim.skeleton->GetBoneCount() : 0));
+                    pg::Text("Clips", "%d", static_cast<int>(skelAnim.clips.size()));
+                    pg::End();
+                }
 
                 for (i32 i = 0; i < static_cast<i32>(skelAnim.clips.size()); ++i)
                 {
@@ -708,7 +733,11 @@ void InspectorPanel::Render(entt::registry& reg,
             if (IconHeader(ic, ic ? ic->entEmpty : 0, "GridPlane"))
             {
                 auto& gp = reg.get<GridPlane>(ctx.selectedEntity);
-                ImGui::Checkbox("Enabled", &gp.enabled);
+                if (pg::Begin("GridPlane"))
+                {
+                    pg::Checkbox("有効 Enabled", &gp.enabled);
+                    pg::End();
+                }
             }
         }
 
@@ -726,24 +755,24 @@ void InspectorPanel::Render(entt::registry& reg,
                 bool changed = false, active = false;
                 const char* kinds[] = { "Static Wall（動かない壁）", "Spike Pulse（上下するトゲ）",
                                         "Slide X（左右に動く）", "Slide Z（前後に動く）" };
-                changed |= ImGui::Combo("種類 Kind", &gm.kind, kinds, IM_ARRAYSIZE(kinds));
-                if (gm.kind < 0) gm.kind = 0; if (gm.kind > 3) gm.kind = 3;
-                if (gm.kind != 0)  // Static 以外は動きパラメータを表示
+                if (pg::Begin("Gimmick"))
                 {
-                    changed |= ImGui::DragFloat("周期 Period(s)", &gm.period, 0.05f, 0.2f, 30.0f, "%.2f");
-                    active  |= ImGui::IsItemActive();
-                    changed |= ImGui::SliderFloat("位相 Phase", &gm.phase, 0.0f, 1.0f, "%.2f");
-                    active  |= ImGui::IsItemActive();
-                    changed |= ImGui::DragFloat("振幅 Amplitude", &gm.amplitude, 0.05f, 0.0f, 30.0f, "%.2f");
-                    active  |= ImGui::IsItemActive();
+                    changed |= pg::Combo("種類 Kind", &gm.kind, kinds, IM_ARRAYSIZE(kinds));
+                    if (gm.kind < 0) gm.kind = 0; if (gm.kind > 3) gm.kind = 3;
+                    if (gm.kind != 0)  // Static 以外は動きパラメータを表示
+                    {
+                        changed |= pg::Float("周期 Period(s)", &gm.period, 0.05f, 0.2f, 30.0f, "%.2f", &active);
+                        changed |= pg::SliderFloat("位相 Phase", &gm.phase, 0.0f, 1.0f, "%.2f", &active);
+                        changed |= pg::Float("振幅 Amplitude", &gm.amplitude, 0.05f, 0.0f, 30.0f, "%.2f", &active);
+                    }
+                    if (gm.kind == 1)  // SpikePulse 固有
+                    {
+                        changed |= pg::SliderFloat("塞ぐ閾値 Threshold", &gm.threshold, 0.0f, 1.0f, "%.2f", &active);
+                        changed |= pg::Checkbox("直撃死 Deadly", &gm.deadly);
+                    }
+                    changed |= pg::Checkbox("当たり判定 Solid", &gm.solid);
+                    pg::End();
                 }
-                if (gm.kind == 1)  // SpikePulse 固有
-                {
-                    changed |= ImGui::SliderFloat("塞ぐ閾値 Threshold", &gm.threshold, 0.0f, 1.0f, "%.2f");
-                    active  |= ImGui::IsItemActive();
-                    changed |= ImGui::Checkbox("直撃死 Deadly", &gm.deadly);
-                }
-                changed |= ImGui::Checkbox("当たり判定 Solid", &gm.solid);
                 ImGui::TextDisabled("基準位置=Transform。動き/早送りはゲーム側が駆動します");
                 EndEdit(reg, ctx, ctx.selectedEntity, m_gimmickEdit, changed, active, "Gimmick");
             }
@@ -760,75 +789,72 @@ void InspectorPanel::Render(entt::registry& reg,
                 auto& pe = reg.get<ParticleEmitter>(ctx.selectedEntity);
                 bool changed = false, active = false;
                 const char* kinds[] = { "Glow", "Fire", "Smoke", "Spark", "Magic", "Electric", "Ring", "Star" };
-                changed |= ImGui::Combo("見た目 Kind", &pe.kind, kinds, IM_ARRAYSIZE(kinds));
                 const char* blends[] = { "加算 Additive", "アルファ Alpha" };
-                changed |= ImGui::Combo("合成 Blend", &pe.blend, blends, IM_ARRAYSIZE(blends));
+                if (pg::Begin("ParticleEmitter"))
                 {
-                    static char texBuf[260] = "";
-                    ImGui::InputTextWithHint("テクスチャ TexturePath", "assetsからの相対パス。空=プロシージャル質感",
-                                             texBuf, sizeof(texBuf));
-                    if (ImGui::IsItemDeactivatedAfterEdit()) { pe.texturePath = texBuf; changed = true; }
-                    if (!ImGui::IsItemActive() && pe.texturePath != texBuf)
+                    changed |= pg::Combo("見た目 Kind", &pe.kind, kinds, IM_ARRAYSIZE(kinds));
+                    changed |= pg::Combo("合成 Blend", &pe.blend, blends, IM_ARRAYSIZE(blends));
                     {
-                        size_t n = pe.texturePath.size();
-                        if (n >= sizeof(texBuf)) n = sizeof(texBuf) - 1;
-                        std::memcpy(texBuf, pe.texturePath.c_str(), n);
-                        texBuf[n] = '\0';
+                        static char texBuf[260] = "";
+                        pg::Label("テクスチャ", "assetsからの相対パス。空=プロシージャル質感");
+                        ImGui::InputTextWithHint("##peTex", "空=プロシージャル質感", texBuf, sizeof(texBuf));
+                        if (ImGui::IsItemDeactivatedAfterEdit()) { pe.texturePath = texBuf; changed = true; }
+                        if (!ImGui::IsItemActive() && pe.texturePath != texBuf)
+                        {
+                            size_t n = pe.texturePath.size();
+                            if (n >= sizeof(texBuf)) n = sizeof(texBuf) - 1;
+                            std::memcpy(texBuf, pe.texturePath.c_str(), n);
+                            texBuf[n] = '\0';
+                        }
                     }
+                    changed |= pg::Checkbox("GPUパーティクル", &pe.gpu,
+                        "compute シムで最大 131072 粒子（加算専用・大量粒子向け）。\n歪み/ライト/中間サイズ/アルファ合成は CPU 専用のため無効");
+                    changed |= pg::Float("放出レート Rate(/s)", &pe.rate, 0.5f, 0.0f, pe.gpu ? 100000.0f : 500.0f, "%.1f", &active);
+                    changed |= pg::Checkbox("Play開始で放出", &pe.playOnStart);
+                    changed |= pg::Checkbox("ループ Looping", &pe.looping);
+                    if (!pe.looping)
+                        changed |= pg::Float("継続秒 Duration", &pe.duration, 0.05f, 0.0f, 60.0f, "%.2f", &active);
+
+                    pg::Group("見た目");
+                    changed |= pg::Color3("開始色 Color", &pe.color.x);
+                    changed |= pg::Checkbox("中間色を使う", &pe.hasColorMid);
+                    if (pe.hasColorMid)
+                        changed |= pg::Color3("中間色 ColorMid", &pe.colorMid.x);
+                    changed |= pg::Color3("終了色 ColorEnd", &pe.colorEnd.x);
+                    changed |= pg::Float("輝度 Intensity", &pe.intensity, 0.05f, 0.0f, 30.0f, "%.2f", &active);
+                    changed |= pg::Float("サイズ Size", &pe.size, 0.01f, 0.0f, 10.0f, "%.3f", &active);
+                    changed |= pg::Float("中間サイズ SizeMid", &pe.sizeMid, 0.01f, -1.0f, 10.0f, "%.3f", &active,
+                        "-1で無効。0以上で 開始→中間→終了 の3キーサイズカーブ");
+                    changed |= pg::Float("終了サイズ SizeEnd", &pe.sizeEnd, 0.01f, 0.0f, 10.0f, "%.3f", &active);
+                    changed |= pg::Float("寿命 Life(s)", &pe.life, 0.01f, 0.01f, 30.0f, "%.2f", &active);
+                    changed |= pg::SliderFloat("寿命ばらつき", &pe.lifeVar, 0.0f, 1.0f, "%.2f", &active);
+
+                    pg::Group("動き");
+                    changed |= pg::Float3("方向 Dir", &pe.dir.x, 0.01f, 0, 0, "%.2f", &active);
+                    changed |= pg::SliderFloat("拡がり Spread", &pe.spread, 0.0f, 1.0f, "%.2f", &active);
+                    changed |= pg::Float("速度 Speed", &pe.speed, 0.02f, 0.0f, 50.0f, "%.2f", &active);
+                    changed |= pg::SliderFloat("速度ばらつき", &pe.speedVar, 0.0f, 1.0f, "%.2f", &active);
+                    changed |= pg::Float("重力 Gravity", &pe.gravity, 0.02f, -50.0f, 50.0f, "%.2f", &active);
+                    changed |= pg::Float("抵抗 Drag", &pe.drag, 0.02f, 0.0f, 10.0f, "%.2f", &active);
+                    changed |= pg::Float("上向き Up", &pe.up, 0.02f, 0.0f, 10.0f, "%.2f", &active);
+                    changed |= pg::Float("ストレッチ Stretch", &pe.stretch, 0.02f, 0.0f, 10.0f, "%.2f", &active);
+                    changed |= pg::Float("乱流 Turbulence", &pe.turbStrength, 0.01f, 0.0f, 10.0f, "%.2f", &active,
+                        ">0 でカールノイズによる有機的な揺らぎ（煙/炎向け）");
+                    if (pe.turbStrength > 0.0f)
+                        changed |= pg::Float("乱流の細かさ", &pe.turbFreq, 0.01f, 0.01f, 10.0f, "%.2f", &active);
+
+                    pg::Group("特殊効果");
+                    changed |= pg::SliderFloat("画面歪み Distort", &pe.distort, 0.0f, 3.0f, "%.2f", &active,
+                        ">0 で色でなく画面の歪みを描く（熱ゆらぎ。Kind=Ring で衝撃波）");
+                    changed |= pg::Checkbox("ライト放出 Light", &pe.light,
+                        "明るい粒子の上位数個が実ポイントライトになり周囲を照らす（炎/魔法）");
+                    if (pe.light)
+                        changed |= pg::Float("光の距離 Range", &pe.lightRange, 0.05f, 0.1f, 50.0f, "%.2f", &active);
+                    changed |= pg::SliderFloat("明滅 Flicker", &pe.flicker, 0.0f, 1.0f, "%.2f", &active);
+                    if (pe.flicker > 0.0f)
+                        changed |= pg::Float("明滅の速さ", &pe.flickerFreq, 0.2f, 0.1f, 60.0f, "%.1f", &active);
+                    pg::End();
                 }
-                changed |= ImGui::Checkbox("GPUパーティクル", &pe.gpu);
-                ImGui::SameLine(); ImGui::TextDisabled("(?)");
-                if (ImGui::BeginItemTooltip())
-                { ImGui::TextUnformatted("compute シムで最大 131072 粒子（加算専用・大量粒子向け）。\n歪み/ライト/中間サイズ/アルファ合成は CPU 専用のため無効"); ImGui::EndTooltip(); }
-                changed |= ImGui::DragFloat("放出レート Rate(/s)", &pe.rate, 0.5f, 0.0f, pe.gpu ? 100000.0f : 500.0f); active |= ImGui::IsItemActive();
-                changed |= ImGui::Checkbox("Play開始で放出 playOnStart", &pe.playOnStart);
-                changed |= ImGui::Checkbox("ループ Looping", &pe.looping);
-                if (!pe.looping)
-                { changed |= ImGui::DragFloat("継続秒 Duration", &pe.duration, 0.05f, 0.0f, 60.0f); active |= ImGui::IsItemActive(); }
-                ImGui::SeparatorText("見た目");
-                changed |= ImGui::ColorEdit3("開始色 Color", &pe.color.x);
-                changed |= ImGui::Checkbox("中間色を使う HasColorMid", &pe.hasColorMid);
-                if (pe.hasColorMid)
-                    changed |= ImGui::ColorEdit3("中間色 ColorMid", &pe.colorMid.x);
-                changed |= ImGui::ColorEdit3("終了色 ColorEnd", &pe.colorEnd.x);
-                changed |= ImGui::DragFloat("輝度 Intensity", &pe.intensity, 0.05f, 0.0f, 30.0f); active |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat("サイズ Size", &pe.size, 0.01f, 0.0f, 10.0f); active |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat("中間サイズ SizeMid", &pe.sizeMid, 0.01f, -1.0f, 10.0f); active |= ImGui::IsItemActive();
-                ImGui::SameLine(); ImGui::TextDisabled("(?)");
-                if (ImGui::BeginItemTooltip())
-                { ImGui::TextUnformatted("-1で無効。0以上で 開始→中間→終了 の3キーサイズカーブ"); ImGui::EndTooltip(); }
-                changed |= ImGui::DragFloat("終了サイズ SizeEnd", &pe.sizeEnd, 0.01f, 0.0f, 10.0f); active |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat("寿命 Life(s)", &pe.life, 0.01f, 0.01f, 30.0f); active |= ImGui::IsItemActive();
-                changed |= ImGui::SliderFloat("寿命ばらつき LifeVar", &pe.lifeVar, 0.0f, 1.0f); active |= ImGui::IsItemActive();
-                ImGui::SeparatorText("動き");
-                changed |= ImGui::DragFloat3("方向 Dir", &pe.dir.x, 0.01f); active |= ImGui::IsItemActive();
-                changed |= ImGui::SliderFloat("拡がり Spread", &pe.spread, 0.0f, 1.0f); active |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat("速度 Speed", &pe.speed, 0.02f, 0.0f, 50.0f); active |= ImGui::IsItemActive();
-                changed |= ImGui::SliderFloat("速度ばらつき SpeedVar", &pe.speedVar, 0.0f, 1.0f); active |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat("重力 Gravity", &pe.gravity, 0.02f, -50.0f, 50.0f); active |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat("抵抗 Drag", &pe.drag, 0.02f, 0.0f, 10.0f); active |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat("上向き Up", &pe.up, 0.02f, 0.0f, 10.0f); active |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat("ストレッチ Stretch", &pe.stretch, 0.02f, 0.0f, 10.0f); active |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat("乱流 TurbStrength", &pe.turbStrength, 0.01f, 0.0f, 10.0f); active |= ImGui::IsItemActive();
-                ImGui::SameLine(); ImGui::TextDisabled("(?)");
-                if (ImGui::BeginItemTooltip())
-                { ImGui::TextUnformatted(">0 でカールノイズによる有機的な揺らぎ（煙/炎向け）"); ImGui::EndTooltip(); }
-                if (pe.turbStrength > 0.0f)
-                { changed |= ImGui::DragFloat("乱流の細かさ TurbFreq", &pe.turbFreq, 0.01f, 0.01f, 10.0f); active |= ImGui::IsItemActive(); }
-                ImGui::SeparatorText("特殊効果");
-                changed |= ImGui::SliderFloat("画面歪み Distort", &pe.distort, 0.0f, 3.0f); active |= ImGui::IsItemActive();
-                ImGui::SameLine(); ImGui::TextDisabled("(?)");
-                if (ImGui::BeginItemTooltip())
-                { ImGui::TextUnformatted(">0 で色でなく画面の歪みを描く（熱ゆらぎ。Kind=Ring で衝撃波）"); ImGui::EndTooltip(); }
-                changed |= ImGui::Checkbox("ライト放出 Light", &pe.light);
-                ImGui::SameLine(); ImGui::TextDisabled("(?)");
-                if (ImGui::BeginItemTooltip())
-                { ImGui::TextUnformatted("明るい粒子の上位数個が実ポイントライトになり周囲を照らす（炎/魔法）"); ImGui::EndTooltip(); }
-                if (pe.light)
-                { changed |= ImGui::DragFloat("光の距離 LightRange", &pe.lightRange, 0.05f, 0.1f, 50.0f); active |= ImGui::IsItemActive(); }
-                changed |= ImGui::SliderFloat("明滅 Flicker", &pe.flicker, 0.0f, 1.0f); active |= ImGui::IsItemActive();
-                if (pe.flicker > 0.0f)
-                { changed |= ImGui::DragFloat("明滅の速さ FlickerFreq", &pe.flickerFreq, 0.2f, 0.1f, 60.0f); active |= ImGui::IsItemActive(); }
                 ImGui::TextDisabled("エディタでもプレビュー表示されます。詳細な作成は ツール > パーティクルエディタ が便利です");
                 EndEdit(reg, ctx, ctx.selectedEntity, m_emitterEdit, changed, active, "Particle Emitter");
             }
@@ -844,15 +870,19 @@ void InspectorPanel::Render(entt::registry& reg,
                 BeginEdit(reg, ctx.selectedEntity, m_trailEdit);
                 auto& tr = reg.get<TrailRenderer>(ctx.selectedEntity);
                 bool changed = false, active = false;
-                changed |= ImGui::Checkbox("記録中 Emitting", &tr.emitting);
-                changed |= ImGui::DragFloat("幅 Width", &tr.width, 0.01f, 0.01f, 10.0f); active |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat("寿命 Life(s)", &tr.life, 0.02f, 0.05f, 10.0f); active |= ImGui::IsItemActive();
-                changed |= ImGui::ColorEdit3("先頭色 Color", &tr.color.x);
-                changed |= ImGui::ColorEdit3("尾の色 ColorEnd", &tr.colorEnd.x);
-                changed |= ImGui::DragFloat("輝度 Intensity", &tr.intensity, 0.05f, 0.0f, 30.0f); active |= ImGui::IsItemActive();
                 const char* tblends[] = { "加算 Additive", "アルファ Alpha" };
-                changed |= ImGui::Combo("合成 Blend", &tr.blend, tblends, IM_ARRAYSIZE(tblends));
-                changed |= ImGui::DragFloat("最小移動 MinDist", &tr.minDist, 0.005f, 0.001f, 2.0f); active |= ImGui::IsItemActive();
+                if (pg::Begin("TrailRenderer"))
+                {
+                    changed |= pg::Checkbox("記録中 Emitting", &tr.emitting);
+                    changed |= pg::Float("幅 Width", &tr.width, 0.01f, 0.01f, 10.0f, "%.3f", &active);
+                    changed |= pg::Float("寿命 Life(s)", &tr.life, 0.02f, 0.05f, 10.0f, "%.2f", &active);
+                    changed |= pg::Color3("先頭色 Color", &tr.color.x);
+                    changed |= pg::Color3("尾の色 ColorEnd", &tr.colorEnd.x);
+                    changed |= pg::Float("輝度 Intensity", &tr.intensity, 0.05f, 0.0f, 30.0f, "%.2f", &active);
+                    changed |= pg::Combo("合成 Blend", &tr.blend, tblends, IM_ARRAYSIZE(tblends));
+                    changed |= pg::Float("最小移動 MinDist", &tr.minDist, 0.005f, 0.001f, 2.0f, "%.3f", &active);
+                    pg::End();
+                }
                 ImGui::TextDisabled("エンティティを動かすと軌跡の帯が出ます（エディタでもプレビュー）");
                 EndEdit(reg, ctx, ctx.selectedEntity, m_trailEdit, changed, active, "Trail Renderer");
             }
@@ -868,18 +898,15 @@ void InspectorPanel::Render(entt::registry& reg,
                 BeginEdit(reg, ctx.selectedEntity, m_netIdEdit);
                 auto& ni = reg.get<NetworkIdentity>(ctx.selectedEntity);
                 bool changed = false, active = false;
-                changed |= ImGui::DragFloat("関連半径 InterestRadius", &ni.interestRadius, 0.5f, 0.0f, 1000.0f);
-                active |= ImGui::IsItemActive();
-                ImGui::SameLine(); ImGui::TextDisabled("(?)");
-                if (ImGui::BeginItemTooltip())
-                { ImGui::TextUnformatted("0 = 常に全クライアントへ複製（フェーズ⑧の興味管理で使用予定）"); ImGui::EndTooltip(); }
-                changed |= ImGui::Checkbox("サーバー権威 ServerAuthority", &ni.serverAuthority);
-                ImGui::BeginDisabled();
-                int netId = static_cast<int>(ni._netId);
-                int owner = static_cast<int>(ni._owner);
-                ImGui::DragInt("netId（実行時割当）", &netId);
-                ImGui::DragInt("owner clientId", &owner);
-                ImGui::EndDisabled();
+                if (pg::Begin("NetworkIdentity"))
+                {
+                    changed |= pg::Float("関連半径 InterestRadius", &ni.interestRadius, 0.5f, 0.0f, 1000.0f, "%.1f", &active,
+                        "0 = 常に全クライアントへ複製（フェーズ⑧の興味管理で使用予定）");
+                    changed |= pg::Checkbox("サーバー権威", &ni.serverAuthority);
+                    pg::Text("netId（実行時割当）", "%d", static_cast<int>(ni._netId));
+                    pg::Text("owner clientId", "%d", static_cast<int>(ni._owner));
+                    pg::End();
+                }
                 EndEdit(reg, ctx, ctx.selectedEntity, m_netIdEdit, changed, active, "Network Identity");
             }
         }
@@ -895,19 +922,20 @@ void InspectorPanel::Render(entt::registry& reg,
                 auto& nt = reg.get<NetworkTransform>(ctx.selectedEntity);
                 bool changed = false, active = false;
                 const char* modes[] = { "補間 Interpolated", "オーナー予測 Predicted(未実装)" };
-                changed |= ImGui::Combo("同期モード SyncMode", &nt.syncMode, modes, IM_ARRAYSIZE(modes));
-                changed |= ImGui::Checkbox("位置 Position", &nt.syncPosition);
-                ImGui::SameLine();
-                changed |= ImGui::Checkbox("回転 Rotation", &nt.syncRotation);
-                ImGui::SameLine();
-                changed |= ImGui::Checkbox("スケール Scale", &nt.syncScale);
-                changed |= ImGui::DragFloat("補間遅延 InterpDelayMs", &nt.interpDelayMs, 1.0f, 0.0f, 1000.0f);
-                active |= ImGui::IsItemActive();
-                ImGui::SameLine(); ImGui::TextDisabled("(?)");
-                if (ImGui::BeginItemTooltip())
-                { ImGui::TextUnformatted("受信スナップショットをこの時間だけ遅らせて補間する(ジッター吸収)"); ImGui::EndTooltip(); }
-                changed |= ImGui::DragFloat("テレポート距離 SnapDistance", &nt.snapDistance, 0.1f, 0.0f, 100.0f);
-                active |= ImGui::IsItemActive();
+                if (pg::Begin("NetworkTransform"))
+                {
+                    changed |= pg::Combo("同期モード SyncMode", &nt.syncMode, modes, IM_ARRAYSIZE(modes));
+                    pg::Label("同期する要素");
+                    changed |= ImGui::Checkbox("位置", &nt.syncPosition);
+                    ImGui::SameLine();
+                    changed |= ImGui::Checkbox("回転", &nt.syncRotation);
+                    ImGui::SameLine();
+                    changed |= ImGui::Checkbox("拡縮", &nt.syncScale);
+                    changed |= pg::Float("補間遅延 (ms)", &nt.interpDelayMs, 1.0f, 0.0f, 1000.0f, "%.0f", &active,
+                        "受信スナップショットをこの時間だけ遅らせて補間する(ジッター吸収)");
+                    changed |= pg::Float("テレポート距離", &nt.snapDistance, 0.1f, 0.0f, 100.0f, "%.1f", &active);
+                    pg::End();
+                }
                 EndEdit(reg, ctx, ctx.selectedEntity, m_netTfEdit, changed, active, "Network Transform");
             }
         }
@@ -921,59 +949,69 @@ void InspectorPanel::Render(entt::registry& reg,
             {
                 auto& tr = reg.get<Trigger>(ctx.selectedEntity);
                 const char* shapes[] = { "Box", "Sphere" };
-                ImGui::Combo("形 Shape", &tr.shape, shapes, IM_ARRAYSIZE(shapes));
-                if (tr.shape == 0) ImGui::DragFloat3("半径 HalfExtents", &tr.halfExtents.x, 0.05f, 0.0f, 1000.0f);
-                else               ImGui::DragFloat("半径 Radius", &tr.radius, 0.05f, 0.0f, 1000.0f);
-                ImGui::DragFloat3("オフセット Offset", &tr.offset.x, 0.05f);
+                if (pg::Begin("Trigger"))
                 {
-                    const char* cur = tr.filter.empty() ? "Player（既定）" : tr.filter.c_str();
-                    if (ImGui::BeginCombo("対象 Filter", cur))
+                    pg::Combo("形 Shape", &tr.shape, shapes, IM_ARRAYSIZE(shapes));
+                    if (tr.shape == 0) pg::Float3("半径 HalfExtents", &tr.halfExtents.x, 0.05f, 0.0f, 1000.0f, "%.2f");
+                    else               pg::Float("半径 Radius", &tr.radius, 0.05f, 0.0f, 1000.0f, "%.2f");
+                    pg::Float3("オフセット Offset", &tr.offset.x, 0.05f, 0, 0, "%.2f");
                     {
-                        if (ImGui::Selectable("Player（既定）", tr.filter.empty())) tr.filter.clear();
-                        auto nv = reg.view<dx12e::NameTag>();
-                        for (auto ne : nv)
-                        { const auto& nm = nv.get<dx12e::NameTag>(ne).name; if (nm.empty()) continue;
-                          if (ImGui::Selectable(nm.c_str(), nm == tr.filter)) tr.filter = nm; }
-                        ImGui::EndCombo();
+                        const char* cur = tr.filter.empty() ? "Player（既定）" : tr.filter.c_str();
+                        pg::Label("対象 Filter");
+                        if (ImGui::BeginCombo("##trFilter", cur))
+                        {
+                            if (ImGui::Selectable("Player（既定）", tr.filter.empty())) tr.filter.clear();
+                            auto nv = reg.view<dx12e::NameTag>();
+                            for (auto ne : nv)
+                            { const auto& nm = nv.get<dx12e::NameTag>(ne).name; if (nm.empty()) continue;
+                              if (ImGui::Selectable(nm.c_str(), nm == tr.filter)) tr.filter = nm; }
+                            ImGui::EndCombo();
+                        }
                     }
+                    pg::Checkbox("一度だけ Once", &tr.once);
+                    pg::End();
                 }
-                ImGui::Checkbox("一度だけ Once", &tr.once);
                 ImGui::SeparatorText("アクション");
                 int removeIdx = -1;
                 for (size_t i = 0; i < tr.actions.size(); ++i)
                 {
                     ImGui::PushID(static_cast<int>(i));
                     auto& a = tr.actions[i];
-                    const char* whens[] = { "入った時 Enter", "出た時 Exit", "居る間 Stay" };
-                    ImGui::Combo("いつ When", &a.when, whens, IM_ARRAYSIZE(whens));
-                    const char* types[] = { "Enable", "Disable", "Destroy", "Move", "PlayEffect",
-                                            "StopEffect", "PlaySound", "LoadScene", "FadeToScene",
-                                            "SetProperty", "EmitEvent" };
-                    ImGui::Combo("何を Type", &a.type, types, IM_ARRAYSIZE(types));
+                    if (pg::Begin("TriggerAction"))
                     {
-                        const char* cur = a.target.empty() ? "(なし=Filter対象)" : a.target.c_str();
-                        if (ImGui::BeginCombo("対象 Target", cur))
+                        const char* whens[] = { "入った時 Enter", "出た時 Exit", "居る間 Stay" };
+                        pg::Combo("いつ When", &a.when, whens, IM_ARRAYSIZE(whens));
+                        const char* types[] = { "Enable", "Disable", "Destroy", "Move", "PlayEffect",
+                                                "StopEffect", "PlaySound", "LoadScene", "FadeToScene",
+                                                "SetProperty", "EmitEvent" };
+                        pg::Combo("何を Type", &a.type, types, IM_ARRAYSIZE(types));
                         {
-                            if (ImGui::Selectable("(なし=Filter対象)", a.target.empty())) a.target.clear();
-                            auto nv = reg.view<dx12e::NameTag>();
-                            for (auto ne : nv)
-                            { const auto& nm = nv.get<dx12e::NameTag>(ne).name; if (nm.empty()) continue;
-                              if (ImGui::Selectable(nm.c_str(), nm == a.target)) a.target = nm; }
-                            ImGui::EndCombo();
+                            const char* cur = a.target.empty() ? "(なし=Filter対象)" : a.target.c_str();
+                            pg::Label("対象 Target");
+                            if (ImGui::BeginCombo("##actTarget", cur))
+                            {
+                                if (ImGui::Selectable("(なし=Filter対象)", a.target.empty())) a.target.clear();
+                                auto nv = reg.view<dx12e::NameTag>();
+                                for (auto ne : nv)
+                                { const auto& nm = nv.get<dx12e::NameTag>(ne).name; if (nm.empty()) continue;
+                                  if (ImGui::Selectable(nm.c_str(), nm == a.target)) a.target = nm; }
+                                ImGui::EndCombo();
+                            }
                         }
+                        char buf[256];
+                        if (a.type == 3) pg::Float3("移動量 Vec", &a.vec.x, 0.05f, 0, 0, "%.2f");
+                        if (a.type == 7 || a.type == 8)
+                        { std::memset(buf, 0, sizeof(buf)); strncpy_s(buf, sizeof(buf), a.str.c_str(), _TRUNCATE);
+                          if (pg::InputText("シーン Path", buf, sizeof(buf))) a.str = buf; }
+                        if (a.type == 8)
+                        { float d = static_cast<float>(a.num); if (pg::Float("秒 Dur", &d, 0.05f, 0.0f, 10.0f, "%.2f")) a.num = d; }
+                        if (a.type == 9 || a.type == 10)
+                        { std::memset(buf, 0, sizeof(buf)); strncpy_s(buf, sizeof(buf), a.str.c_str(), _TRUNCATE);
+                          const char* hint = a.type == 9 ? "プロパティ名 Prop" : "イベント名 Event";
+                          if (pg::InputText(hint, buf, sizeof(buf))) a.str = buf;
+                          float v = static_cast<float>(a.num); if (pg::Float("値 Value", &v, 0.05f)) a.num = v; }
+                        pg::End();
                     }
-                    char buf[256];
-                    if (a.type == 3) ImGui::DragFloat3("移動量 Vec", &a.vec.x, 0.05f);
-                    if (a.type == 7 || a.type == 8)
-                    { std::memset(buf, 0, sizeof(buf)); strncpy_s(buf, sizeof(buf), a.str.c_str(), _TRUNCATE);
-                      if (ImGui::InputText("シーン Path", buf, sizeof(buf))) a.str = buf; }
-                    if (a.type == 8)
-                    { float d = static_cast<float>(a.num); if (ImGui::DragFloat("秒 Dur", &d, 0.05f, 0.0f, 10.0f)) a.num = d; }
-                    if (a.type == 9 || a.type == 10)
-                    { std::memset(buf, 0, sizeof(buf)); strncpy_s(buf, sizeof(buf), a.str.c_str(), _TRUNCATE);
-                      const char* hint = a.type == 9 ? "プロパティ名 Prop" : "イベント名 Event";
-                      if (ImGui::InputText(hint, buf, sizeof(buf))) a.str = buf;
-                      float v = static_cast<float>(a.num); if (ImGui::DragFloat("値 Value", &v, 0.05f)) a.num = v; }
                     if (ImGui::SmallButton("このアクションを削除")) removeIdx = static_cast<int>(i);
                     ImGui::Separator();
                     ImGui::PopID();
@@ -997,42 +1035,37 @@ void InspectorPanel::Render(entt::registry& reg,
 
                 // 投影方式（透視 / 正射）。正射＝平行投影は距離で大きさが変わらない（2D/見下ろし向け）。
                 // 近づくとスプライト/メッシュを大きく見せたいなら「透視」を選ぶ。
-                int projIdx = (cam.projection == CameraProjection::Orthographic) ? 1 : 0;
-                const char* projItems[] = { "Perspective (透視)", "Orthographic (正射)" };
-                if (ImGui::Combo("Projection", &projIdx, projItems, 2))
+                if (pg::Begin("Camera"))
                 {
-                    cam.projection = (projIdx == 1) ? CameraProjection::Orthographic
-                                                    : CameraProjection::Perspective;
-                    changed = true;
-                }
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("正射は距離で大きさが変わりません（2D/見下ろし向け）。\n"
-                                      "近づくと大きくしたいなら透視を選びます。");
-
-                // 透視は FOV、正射は Ortho Size（ビュー縦の半分の世界単位）を出す。
-                if (cam.projection == CameraProjection::Perspective)
-                {
-                    changed |= ImGui::DragFloat("FOV", &cam.fovDegrees, 1.0f, 1.0f, 179.0f);
-                    active  |= ImGui::IsItemActive();
-                }
-                else
-                {
-                    changed |= ImGui::DragFloat("Ortho Size", &cam.orthoSize, 0.1f, 0.01f, 1000.0f);
-                    active  |= ImGui::IsItemActive();
-                }
-                changed |= ImGui::DragFloat("Near", &cam.nearClip, 0.01f, 0.001f, 100.0f);
-                active  |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat("Far", &cam.farClip, 10.0f, 1.0f, 100000.0f);
-                active  |= ImGui::IsItemActive();
-                if (ImGui::Checkbox("Active", &cam.isActive))
-                {
-                    changed = true;
-                    // アクティブカメラは常に1つだけ
-                    if (cam.isActive)
+                    int projIdx = (cam.projection == CameraProjection::Orthographic) ? 1 : 0;
+                    const char* projItems[] = { "Perspective (透視)", "Orthographic (正射)" };
+                    if (pg::Combo("投影 Projection", &projIdx, projItems, 2,
+                                  "正射は距離で大きさが変わりません（2D/見下ろし向け）。\n"
+                                  "近づくと大きくしたいなら透視を選びます。"))
                     {
-                        for (auto [oe, oc] : reg.view<CameraComponent>().each())
-                            if (oe != ctx.selectedEntity) oc.isActive = false;
+                        cam.projection = (projIdx == 1) ? CameraProjection::Orthographic
+                                                        : CameraProjection::Perspective;
+                        changed = true;
                     }
+
+                    // 透視は FOV、正射は Ortho Size（ビュー縦の半分の世界単位）を出す。
+                    if (cam.projection == CameraProjection::Perspective)
+                        changed |= pg::Float("視野角 FOV", &cam.fovDegrees, 1.0f, 1.0f, 179.0f, "%.1f", &active);
+                    else
+                        changed |= pg::Float("Ortho Size", &cam.orthoSize, 0.1f, 0.01f, 1000.0f, "%.2f", &active);
+                    changed |= pg::Float("Near", &cam.nearClip, 0.01f, 0.001f, 100.0f, "%.3f", &active);
+                    changed |= pg::Float("Far", &cam.farClip, 10.0f, 1.0f, 100000.0f, "%.0f", &active);
+                    if (pg::Checkbox("アクティブ Active", &cam.isActive))
+                    {
+                        changed = true;
+                        // アクティブカメラは常に1つだけ
+                        if (cam.isActive)
+                        {
+                            for (auto [oe, oc] : reg.view<CameraComponent>().each())
+                                if (oe != ctx.selectedEntity) oc.isActive = false;
+                        }
+                    }
+                    pg::End();
                 }
                 EndEdit(reg, ctx, ctx.selectedEntity, m_camEdit, changed, active, "Camera");
             }
@@ -1109,21 +1142,21 @@ void InspectorPanel::Render(entt::registry& reg,
                 auto& rb = reg.get<RigidBody>(ctx.selectedEntity);
                 bool changed = false, active = false;
 
-                const char* motionTypes[] = { "Static", "Kinematic", "Dynamic" };
-                int motionIdx = static_cast<int>(rb.motionType);
-                if (ImGui::Combo("Motion", &motionIdx, motionTypes, 3))
+                if (pg::Begin("RigidBody"))
                 {
-                    rb.motionType = static_cast<MotionType>(motionIdx);
-                    changed = true;
+                    const char* motionTypes[] = { "Static", "Kinematic", "Dynamic" };
+                    int motionIdx = static_cast<int>(rb.motionType);
+                    if (pg::Combo("挙動 Motion", &motionIdx, motionTypes, 3))
+                    {
+                        rb.motionType = static_cast<MotionType>(motionIdx);
+                        changed = true;
+                    }
+                    changed |= pg::Float("質量 Mass", &rb.mass, 0.5f, 0.0f, 10000.0f, "%.1f", &active);
+                    changed |= pg::Float("摩擦 Friction", &rb.friction, 0.01f, 0.0f, 2.0f, "%.2f", &active);
+                    changed |= pg::Float("反発 Bounce", &rb.restitution, 0.01f, 0.0f, 1.0f, "%.2f", &active);
+                    changed |= pg::Checkbox("重力 Gravity", &rb.useGravity);
+                    pg::End();
                 }
-
-                changed |= ImGui::DragFloat("Mass", &rb.mass, 0.5f, 0.0f, 10000.0f);
-                active  |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat("Friction", &rb.friction, 0.01f, 0.0f, 2.0f);
-                active  |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat("Bounce", &rb.restitution, 0.01f, 0.0f, 1.0f);
-                active  |= ImGui::IsItemActive();
-                changed |= ImGui::Checkbox("Gravity", &rb.useGravity);
                 EndEdit(reg, ctx, ctx.selectedEntity, m_rbEdit, changed, active, "RigidBody");
             }
         }
@@ -1138,10 +1171,12 @@ void InspectorPanel::Render(entt::registry& reg,
                 BeginEdit(reg, ctx.selectedEntity, m_boxColEdit);
                 auto& col = reg.get<BoxCollider>(ctx.selectedEntity);
                 bool changed = false, active = false;
-                changed |= ImGui::DragFloat3("Half Extents", &col.halfExtents.x, 0.05f, 0.01f, 1000.0f);
-                active  |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat3("Offset##Box", &col.offset.x, 0.05f);
-                active  |= ImGui::IsItemActive();
+                if (pg::Begin("BoxCollider"))
+                {
+                    changed |= pg::Float3("半径 Half Extents", &col.halfExtents.x, 0.05f, 0.01f, 1000.0f, "%.2f", &active);
+                    changed |= pg::Float3("オフセット Offset", &col.offset.x, 0.05f, 0, 0, "%.2f", &active);
+                    pg::End();
+                }
                 EndEdit(reg, ctx, ctx.selectedEntity, m_boxColEdit, changed, active, "Box Collider");
             }
         }
@@ -1155,10 +1190,12 @@ void InspectorPanel::Render(entt::registry& reg,
                 BeginEdit(reg, ctx.selectedEntity, m_sphereColEdit);
                 auto& col = reg.get<SphereCollider>(ctx.selectedEntity);
                 bool changed = false, active = false;
-                changed |= ImGui::DragFloat("Radius##Sphere", &col.radius, 0.05f, 0.01f, 1000.0f);
-                active  |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat3("Offset##Sphere", &col.offset.x, 0.05f);
-                active  |= ImGui::IsItemActive();
+                if (pg::Begin("SphereCollider"))
+                {
+                    changed |= pg::Float("半径 Radius", &col.radius, 0.05f, 0.01f, 1000.0f, "%.2f", &active);
+                    changed |= pg::Float3("オフセット Offset", &col.offset.x, 0.05f, 0, 0, "%.2f", &active);
+                    pg::End();
+                }
                 EndEdit(reg, ctx, ctx.selectedEntity, m_sphereColEdit, changed, active, "Sphere Collider");
             }
         }
@@ -1172,12 +1209,13 @@ void InspectorPanel::Render(entt::registry& reg,
                 BeginEdit(reg, ctx.selectedEntity, m_capsuleColEdit);
                 auto& col = reg.get<CapsuleCollider>(ctx.selectedEntity);
                 bool changed = false, active = false;
-                changed |= ImGui::DragFloat("Radius##Capsule", &col.radius, 0.05f, 0.01f, 1000.0f);
-                active  |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat("Half Height", &col.halfHeight, 0.05f, 0.01f, 1000.0f);
-                active  |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat3("Offset##Capsule", &col.offset.x, 0.05f);
-                active  |= ImGui::IsItemActive();
+                if (pg::Begin("CapsuleCollider"))
+                {
+                    changed |= pg::Float("半径 Radius", &col.radius, 0.05f, 0.01f, 1000.0f, "%.2f", &active);
+                    changed |= pg::Float("半分高さ Half Height", &col.halfHeight, 0.05f, 0.01f, 1000.0f, "%.2f", &active);
+                    changed |= pg::Float3("オフセット Offset", &col.offset.x, 0.05f, 0, 0, "%.2f", &active);
+                    pg::End();
+                }
                 EndEdit(reg, ctx, ctx.selectedEntity, m_capsuleColEdit, changed, active, "Capsule Collider");
             }
         }
@@ -1191,14 +1229,18 @@ void InspectorPanel::Render(entt::registry& reg,
                 BeginEdit(reg, ctx.selectedEntity, m_ccEdit);
                 auto& cc = reg.get<CharacterController>(ctx.selectedEntity);
                 bool changed = false, active = false;
-                changed |= ImGui::DragFloat("Radius##CC",     &cc.radius,      0.02f, 0.05f, 5.0f);   active |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat("Half Height##CC",&cc.halfHeight,  0.02f, 0.05f, 5.0f);   active |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat3("Offset##CC",    &cc.offset.x,    0.02f);                active |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat("Mass##CC",       &cc.mass,        1.0f,  1.0f, 1000.0f); active |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat("Max Slope(deg)", &cc.maxSlopeDeg, 0.5f,  0.0f, 89.0f);   active |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat("Step Height",    &cc.stepHeight,  0.01f, 0.0f, 2.0f);    active |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat("Jump Speed",     &cc.jumpSpeed,   0.1f,  0.0f, 50.0f);   active |= ImGui::IsItemActive();
-                changed |= ImGui::DragFloat("Gravity Scale",  &cc.gravityScale,0.05f, 0.0f, 5.0f);    active |= ImGui::IsItemActive();
+                if (pg::Begin("CharacterController"))
+                {
+                    changed |= pg::Float("半径 Radius",       &cc.radius,       0.02f, 0.05f, 5.0f,    "%.2f", &active);
+                    changed |= pg::Float("半分高さ Half Height", &cc.halfHeight, 0.02f, 0.05f, 5.0f,    "%.2f", &active);
+                    changed |= pg::Float3("オフセット Offset", &cc.offset.x,     0.02f, 0, 0,           "%.2f", &active);
+                    changed |= pg::Float("質量 Mass",         &cc.mass,         1.0f,  1.0f, 1000.0f,  "%.0f", &active);
+                    changed |= pg::Float("最大斜度 (deg)",     &cc.maxSlopeDeg,  0.5f,  0.0f, 89.0f,    "%.1f", &active);
+                    changed |= pg::Float("段差高さ Step",      &cc.stepHeight,   0.01f, 0.0f, 2.0f,     "%.2f", &active);
+                    changed |= pg::Float("ジャンプ速度",       &cc.jumpSpeed,    0.1f,  0.0f, 50.0f,    "%.1f", &active);
+                    changed |= pg::Float("重力スケール",       &cc.gravityScale, 0.05f, 0.0f, 5.0f,     "%.2f", &active);
+                    pg::End();
+                }
                 EndEdit(reg, ctx, ctx.selectedEntity, m_ccEdit, changed, active, "Character Controller");
             }
         }
@@ -1210,8 +1252,12 @@ void InspectorPanel::Render(entt::registry& reg,
             if (open && !removed)
             {
                 const auto& col = reg.get<ConvexHullCollider>(ctx.selectedEntity);
-                ImGui::Text("Points: %d", static_cast<int>(col.points.size()));
-                ImGui::TextDisabled("(auto-generated from mesh)");
+                if (pg::Begin("ConvexHull"))
+                {
+                    pg::Text("頂点数 Points", "%d", static_cast<int>(col.points.size()));
+                    pg::End();
+                }
+                ImGui::TextDisabled("(メッシュから自動生成)");
             }
         }
 
@@ -1236,10 +1282,17 @@ void InspectorPanel::Render(entt::registry& reg,
                         m_pbrRoughnessSnapshot = mr.overrideRoughness;
                     }
 
-                    ImGui::SliderFloat("Metallic", &mr.overrideMetallic, 0.0f, 1.0f);
-                    bool metalActive = ImGui::IsItemActive();
-                    ImGui::SliderFloat("Roughness", &mr.overrideRoughness, 0.0f, 1.0f);
-                    bool roughActive = ImGui::IsItemActive();
+                    bool metalActive = false, roughActive = false;
+                    bool hasNormal = mat->normalMapTexture != nullptr;
+                    bool hasMR2 = mat->metalRoughnessTexture != nullptr;
+                    if (pg::Begin("MaterialPBR"))
+                    {
+                        pg::SliderFloat("金属感 Metallic", &mr.overrideMetallic, 0.0f, 1.0f, "%.3f", &metalActive);
+                        pg::SliderFloat("粗さ Roughness", &mr.overrideRoughness, 0.0f, 1.0f, "%.3f", &roughActive);
+                        pg::Text("Normal Map", "%s", hasNormal ? "あり" : "なし");
+                        pg::Text("MetalRough Map", "%s", hasMR2 ? "あり" : "なし");
+                        pg::End();
+                    }
 
                     if (metalActive || roughActive)
                         m_pbrEditing = true;
@@ -1257,11 +1310,6 @@ void InspectorPanel::Render(entt::registry& reg,
                         }
                         m_pbrEditing = false;
                     }
-
-                    bool hasNormal = mat->normalMapTexture != nullptr;
-                    bool hasMR2 = mat->metalRoughnessTexture != nullptr;
-                    ImGui::Text("Normal Map: %s", hasNormal ? "Yes" : "No");
-                    ImGui::Text("MetalRough Map: %s", hasMR2 ? "Yes" : "No");
 
                     // テクスチャ上書き（アセットブラウザからテクスチャをドラッグ&ドロップして割当。
                     // Unity/Unreal 風）。サブメッシュ単位。Material 自体は同一モデルパスの全インスタンスで
@@ -1290,8 +1338,7 @@ void InspectorPanel::Render(entt::registry& reg,
                         const std::string& cur = MeshRenderer::SafeGetOverride(slotVec, smi);
                         bool hasTex = !cur.empty();
 
-                        ImGui::TextUnformatted(label);
-                        ImGui::SameLine(120.0f);
+                        pg::Label(label);
 
                         // サムネイル(実テクスチャ画像)。AssetBrowserPanel と同じキャッシュを使い回す
                         // (GetOrQueueThumbnail、無ければロードキューに積んで0=読込中を返す)。
@@ -1403,24 +1450,36 @@ void InspectorPanel::Render(entt::registry& reg,
                         ImGui::PopID();
                     };
 
-                    for (u32 smi = 0; smi < static_cast<u32>(mr.meshes.size()); ++smi)
+                    if (pg::Begin("MaterialTex"))
                     {
-                        if (!mr.meshes[smi]) continue;
-                        if (mr.meshes.size() > 1)
-                            ImGui::Text("Submesh %u", smi);
-                        drawTextureOverrideSlot("Albedo", mr.overrideAlbedoTexture, smi);
-                        drawTextureOverrideSlot("Normal", mr.overrideNormalTexture, smi);
-                        drawTextureOverrideSlot("MetalRoughness", mr.overrideMetalRoughnessTexture, smi);
+                        for (u32 smi = 0; smi < static_cast<u32>(mr.meshes.size()); ++smi)
+                        {
+                            if (!mr.meshes[smi]) continue;
+                            if (mr.meshes.size() > 1)
+                            {
+                                char sub[32];
+                                snprintf(sub, sizeof(sub), "Submesh %u", smi);
+                                pg::Group(sub);
+                            }
+                            drawTextureOverrideSlot("Albedo", mr.overrideAlbedoTexture, smi);
+                            drawTextureOverrideSlot("Normal", mr.overrideNormalTexture, smi);
+                            drawTextureOverrideSlot("MetalRoughness", mr.overrideMetalRoughnessTexture, smi);
+                        }
+                        pg::End();
                     }
                 }
             }
 
             // UV タイリング
-            if (ImGui::CollapsingHeader("UV Tiling"))
+            if (IconHeader(nullptr, 0, "UV Tiling"))
             {
                 bool uvChanged = false;
-                uvChanged |= ImGui::DragFloat("U Scale", &mr.uvScaleU, 0.1f, 0.01f, 100.0f);
-                uvChanged |= ImGui::DragFloat("V Scale", &mr.uvScaleV, 0.1f, 0.01f, 100.0f);
+                if (pg::Begin("UVTiling"))
+                {
+                    uvChanged |= pg::Float("U Scale", &mr.uvScaleU, 0.1f, 0.01f, 100.0f, "%.2f");
+                    uvChanged |= pg::Float("V Scale", &mr.uvScaleV, 0.1f, 0.01f, 100.0f, "%.2f");
+                    pg::End();
+                }
                 // U,V を連動させるボタン
                 if (ImGui::Button("U=V"))
                 {
@@ -1448,11 +1507,14 @@ void InspectorPanel::Render(entt::registry& reg,
             // カスタムシェーダー割当（静的メッシュのみ有効。スキンド/インスタンシングは既定へフォールバック）。
             // 一覧はプロジェクト assets/shaders/ 配下の .hlsl のうち、Registry(エンジン組み込み)と
             // 一致しないもの＝自作シェーダーだけ(一致するものは全体に効く「上書き」用途なので個別割当から除外)。
-            if (ImGui::CollapsingHeader("Shader"))
+            if (IconHeader(nullptr, 0, "Shader"))
             {
                 namespace fs = std::filesystem;
                 std::string currentLabel = mr.shaderPath.empty() ? "\xe6\x97\xa2\xe5\xae\x9a (Forward)" : mr.shaderPath;
-                if (ImGui::BeginCombo("\xe3\x82\xb7\xe3\x82\xa7\xe3\x83\xbc\xe3\x83\x80\xe3\x83\xbc", currentLabel.c_str()))
+                bool shaderGrid = pg::Begin("MeshShader");
+                if (shaderGrid)
+                    pg::Label("\xe3\x82\xb7\xe3\x82\xa7\xe3\x83\xbc\xe3\x83\x80\xe3\x83\xbc");  // シェーダー
+                if (ImGui::BeginCombo("##meshShader", currentLabel.c_str()))
                 {
                     std::vector<std::string> options;
                     std::error_code ec;
@@ -1486,26 +1548,22 @@ void InspectorPanel::Render(entt::registry& reg,
                         ImGui::TextDisabled("(assets/shaders/ \xe3\x81\xab\xe8\x87\xaa\xe4\xbd\x9c\xe3\x82\xb7\xe3\x82\xa7\xe3\x83\xbc\xe3\x83\x80\xe3\x83\xbc\xe3\x81\xaa\xe3\x81\x97)");
                     ImGui::EndCombo();
                 }
-                if (reg.all_of<SkeletalAnimation>(ctx.selectedEntity) && !mr.shaderPath.empty())
-                    ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
-                        "\xe3\x82\xb9\xe3\x82\xad\xe3\x83\xb3\xe3\x83\x89\xe3\x83\xa1\xe3\x83\x83\xe3\x82\xb7\xe3\x83\xa5\xe3\x81\xaf\xe6\x97\xa2\xe5\xae\x9a\xe3\x82\xb7\xe3\x82\xa7\xe3\x83\xbc\xe3\x83\x80\xe3\x83\xbc\xe3\x81\xb8\xe3\x83\x95\xe3\x82\xa9\xe3\x83\xbc\xe3\x83\xab\xe3\x83\x90\xe3\x83\x83\xe3\x82\xaf");
-
                 // カスタムシェーダー割当時のみ意味を持つ: PSが書く float4 の alpha を実際に
                 // ブレンドに使うかどうか。既定 OFF(不透明、DepthWrite=ON)のままだと
                 // シェーダー側でどれだけ alpha を作り込んでも画面には反映されない。
-                if (!mr.shaderPath.empty())
+                if (shaderGrid)
                 {
-                    ImGui::Checkbox("\xe3\x82\xa2\xe3\x83\xab\xe3\x83\x95\xe3\x82\xa1\xe3\x83\x96\xe3\x83\xac\xe3\x83\xb3\xe3\x83\x89\xe6\x9c\x89\xe5\x8a\xb9",
-                        &mr.shaderAlphaBlend);
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip(
-                            "ON: \xe3\x82\xb7\xe3\x82\xa7\xe3\x83\xbc\xe3\x83\x80\xe3\x83\xbc\xe3\x81\xae alpha "
-                            "\xe5\x87\xba\xe5\x8a\x9b\xe3\x82\x92 SrcAlpha/InvSrcAlpha "
-                            "\xe3\x81\xa7\xe3\x83\x96\xe3\x83\xac\xe3\x83\xb3\xe3\x83\x89(DepthWrite OFF)"
-                            "\xe3\x80\x82OFF(\xe6\x97\xa2\xe5\xae\x9a): "
-                            "\xe4\xb8\x8d\xe9\x80\x8f\xe6\x98\x8e\xe5\x9b\xba\xe5\xae\x9a\xe3\x81\xa7 alpha "
-                            "\xe3\x81\xaf\xe7\x84\xa1\xe8\xa6\x96\xe3\x81\x95\xe3\x82\x8c\xe3\x82\x8b");
+                    if (!mr.shaderPath.empty())
+                    {
+                        pg::Checkbox("アルファブレンド有効", &mr.shaderAlphaBlend,
+                            "ON: シェーダーの alpha 出力を SrcAlpha/InvSrcAlpha でブレンド(DepthWrite OFF)。"
+                            "OFF(既定): 不透明固定で alpha は無視される");
+                    }
+                    pg::End();
                 }
+                if (reg.all_of<SkeletalAnimation>(ctx.selectedEntity) && !mr.shaderPath.empty())
+                    ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
+                        "スキンドメッシュは既定シェーダーへフォールバック");
             }
         }
 
@@ -1634,7 +1692,6 @@ void InspectorPanel::RenderLightHero(entt::registry& reg, EditorContext& ctx, en
                                           "Point — 点光源（全方向）");
 
     ImGui::Spacing();
-    ImGui::PushItemWidth(-110.0f);
 
     // 色 × 明るさ の結果を帯でプレビュー（実際の光の見え方の目安）
     auto previewSwatch = [&](const DirectX::XMFLOAT3& col, float intensity)
@@ -1653,20 +1710,17 @@ void InspectorPanel::RenderLightHero(entt::registry& reg, EditorContext& ctx, en
         auto& pl = reg.get<PointLight>(e);
         bool changed = false, active = false;
         previewSwatch(pl.color, pl.intensity);
-        changed |= ImGui::ColorEdit3("色 Color", &pl.color.x, ImGuiColorEditFlags_NoInputs);
-        active  |= ImGui::IsItemActive();
-        changed |= ImGui::SliderFloat("明るさ Brightness", &pl.intensity, 0.0f, 20.0f, "%.2f");
-        active  |= ImGui::IsItemActive();
-        changed |= ImGui::SliderFloat("距離 Range", &pl.range, 0.1f, 100.0f, "%.1f");
-        active  |= ImGui::IsItemActive();
-        ImGui::TextDisabled("位置は Transform で決まります");
-        changed |= ImGui::Checkbox("影を落とす Cast Shadows", &pl.castShadows);
-        ImGui::SameLine(); ImGui::TextDisabled("(?)");
-        if (ImGui::BeginItemTooltip())
+        if (pg::Begin("PointLight"))
         {
-            ImGui::TextUnformatted("同時に影を落とせるポイントライトは最大2灯（カメラに近い順で優先）。\n"
-                                   "超えた分は影なしにフォールバックします。");
-            ImGui::EndTooltip();
+            changed |= pg::Color3("色 Color", &pl.color.x, ImGuiColorEditFlags_NoInputs);
+            active  |= ImGui::IsItemActive();
+            changed |= pg::SliderFloat("明るさ Brightness", &pl.intensity, 0.0f, 20.0f, "%.2f", &active);
+            changed |= pg::SliderFloat("距離 Range", &pl.range, 0.1f, 100.0f, "%.1f", &active,
+                "位置は Transform で決まります");
+            changed |= pg::Checkbox("影を落とす Shadows", &pl.castShadows,
+                "同時に影を落とせるポイントライトは最大2灯（カメラに近い順で優先）。\n"
+                "超えた分は影なしにフォールバックします。");
+            pg::End();
         }
         EndEdit(reg, ctx, e, m_plEdit, changed, active, "PointLight");
     }
@@ -1676,12 +1730,14 @@ void InspectorPanel::RenderLightHero(entt::registry& reg, EditorContext& ctx, en
         auto& dl = reg.get<DirectionalLight>(e);
         bool changed = false, active = false;
         previewSwatch(dl.color, dl.intensity);
-        changed |= ImGui::ColorEdit3("色 Color", &dl.color.x, ImGuiColorEditFlags_NoInputs);
-        active  |= ImGui::IsItemActive();
-        changed |= ImGui::SliderFloat("明るさ Brightness", &dl.intensity, 0.0f, 10.0f, "%.2f");
-        active  |= ImGui::IsItemActive();
-        changed |= ImGui::SliderFloat("環境光 Ambient", &dl.ambient, 0.0f, 1.0f, "%.2f");
-        active  |= ImGui::IsItemActive();
+        if (pg::Begin("DirectionalLight"))
+        {
+            changed |= pg::Color3("色 Color", &dl.color.x, ImGuiColorEditFlags_NoInputs);
+            active  |= ImGui::IsItemActive();
+            changed |= pg::SliderFloat("明るさ Brightness", &dl.intensity, 0.0f, 10.0f, "%.2f", &active);
+            changed |= pg::SliderFloat("環境光 Ambient", &dl.ambient, 0.0f, 1.0f, "%.2f", &active);
+            pg::End();
+        }
         changed |= DirectionEditor("dlDir", dl.direction, active);
         ImGui::TextDisabled("このライトの向きが影の向きになります");
         EndEdit(reg, ctx, e, m_dlEdit, changed, active, "DirectionalLight");
@@ -1692,31 +1748,25 @@ void InspectorPanel::RenderLightHero(entt::registry& reg, EditorContext& ctx, en
         auto& sl = reg.get<SpotLight>(e);
         bool changed = false, active = false;
         previewSwatch(sl.color, sl.intensity);
-        changed |= ImGui::ColorEdit3("色 Color", &sl.color.x, ImGuiColorEditFlags_NoInputs);
-        active  |= ImGui::IsItemActive();
-        changed |= ImGui::SliderFloat("明るさ Brightness", &sl.intensity, 0.0f, 30.0f, "%.2f");
-        active  |= ImGui::IsItemActive();
-        changed |= ImGui::SliderFloat("距離 Range", &sl.range, 0.1f, 100.0f, "%.1f");
-        active  |= ImGui::IsItemActive();
-        changed |= ImGui::SliderFloat("内側コーン Inner", &sl.innerConeDeg, 1.0f, 80.0f, "%.0f°");
-        active  |= ImGui::IsItemActive();
-        changed |= ImGui::SliderFloat("外側コーン Outer", &sl.outerConeDeg, 1.0f, 89.0f, "%.0f°");
-        active  |= ImGui::IsItemActive();
-        if (sl.innerConeDeg > sl.outerConeDeg) sl.innerConeDeg = sl.outerConeDeg;
+        if (pg::Begin("SpotLight"))
+        {
+            changed |= pg::Color3("色 Color", &sl.color.x, ImGuiColorEditFlags_NoInputs);
+            active  |= ImGui::IsItemActive();
+            changed |= pg::SliderFloat("明るさ Brightness", &sl.intensity, 0.0f, 30.0f, "%.2f", &active);
+            changed |= pg::SliderFloat("距離 Range", &sl.range, 0.1f, 100.0f, "%.1f", &active);
+            changed |= pg::SliderFloat("内側コーン Inner", &sl.innerConeDeg, 1.0f, 80.0f, "%.0f°", &active);
+            changed |= pg::SliderFloat("外側コーン Outer", &sl.outerConeDeg, 1.0f, 89.0f, "%.0f°", &active);
+            if (sl.innerConeDeg > sl.outerConeDeg) sl.innerConeDeg = sl.outerConeDeg;
+            changed |= pg::Checkbox("影を落とす Shadows", &sl.castShadows,
+                "同時に影を落とせるスポットライトは最大4灯（カメラに近い順で優先）。\n"
+                "超えた分は影なしにフォールバックします。");
+            pg::End();
+        }
         changed |= DirectionEditor("slDir", sl.direction, active);
         ImGui::TextDisabled("位置は Transform、向きは上の方向で決まります");
-        changed |= ImGui::Checkbox("影を落とす Cast Shadows", &sl.castShadows);
-        ImGui::SameLine(); ImGui::TextDisabled("(?)");
-        if (ImGui::BeginItemTooltip())
-        {
-            ImGui::TextUnformatted("同時に影を落とせるスポットライトは最大4灯（カメラに近い順で優先）。\n"
-                                   "超えた分は影なしにフォールバックします。");
-            ImGui::EndTooltip();
-        }
         EndEdit(reg, ctx, e, m_slEdit, changed, active, "SpotLight");
     }
 
-    ImGui::PopItemWidth();
     ImGui::Separator();
 }
 
@@ -1743,39 +1793,36 @@ void InspectorPanel::RenderAudioHero(entt::registry& reg, EditorContext& ctx, en
     ImGui::TextDisabled("%s", as.spatial ? "3D 空間音" : "2D サウンド");
 
     ImGui::Spacing();
-    ImGui::PushItemWidth(-110.0f);
 
     BeginEdit(reg, e, m_audioEdit);
     bool changed = false, active = false;
 
-    char buf[256] = {};
-    size_t n = as.clipPath.copy(buf, sizeof(buf) - 1);
-    buf[n] = '\0';
-    if (ImGui::InputText("クリップ Clip", buf, sizeof(buf)))
-    { as.clipPath = buf; changed = true; }
-    active |= ImGui::IsItemActive();
-
-    changed |= ImGui::SliderFloat("音量 Volume", &as.volume, 0.0f, 1.0f, "%.2f");
-    active  |= ImGui::IsItemActive();
-
-    ImGui::SeparatorText("再生");
-    changed |= ImGui::Checkbox("開始時に再生 Play On Start", &as.playOnStart);
-    ImGui::SameLine(0.0f, 16.0f);
-    changed |= ImGui::Checkbox("ループ Loop", &as.loop);
-
-    ImGui::SeparatorText("空間化");
-    changed |= ImGui::Checkbox("3D 空間音にする Spatial", &as.spatial);
-    if (as.spatial)
+    if (pg::Begin("AudioSource"))
     {
-        changed |= ImGui::DragFloat("最小距離 Min", &as.minDistance, 0.1f, 0.0f, 1000.0f, "%.1f");
-        active  |= ImGui::IsItemActive();
-        changed |= ImGui::DragFloat("最大距離 Max", &as.maxDistance, 0.5f, 0.1f, 5000.0f, "%.1f");
-        active  |= ImGui::IsItemActive();
-        ImGui::TextDisabled("空間化はモノラル wav のみ。位置は Transform。");
+        char buf[256] = {};
+        size_t n = as.clipPath.copy(buf, sizeof(buf) - 1);
+        buf[n] = '\0';
+        if (pg::InputText("クリップ Clip", buf, sizeof(buf), 0, &active))
+        { as.clipPath = buf; changed = true; }
+
+        changed |= pg::SliderFloat("音量 Volume", &as.volume, 0.0f, 1.0f, "%.2f", &active);
+
+        pg::Group("再生");
+        changed |= pg::Checkbox("開始時に再生 Play On Start", &as.playOnStart);
+        changed |= pg::Checkbox("ループ Loop", &as.loop);
+
+        pg::Group("空間化");
+        changed |= pg::Checkbox("3D 空間音にする Spatial", &as.spatial,
+            "空間化はモノラル wav のみ。位置は Transform。");
+        if (as.spatial)
+        {
+            changed |= pg::Float("最小距離 Min", &as.minDistance, 0.1f, 0.0f, 1000.0f, "%.1f", &active);
+            changed |= pg::Float("最大距離 Max", &as.maxDistance, 0.5f, 0.1f, 5000.0f, "%.1f", &active);
+        }
+        pg::End();
     }
 
     EndEdit(reg, ctx, e, m_audioEdit, changed, active, "Audio Source");
-    ImGui::PopItemWidth();
     ImGui::Separator();
 }
 
@@ -1799,31 +1846,37 @@ void InspectorPanel::RenderEngineSettings(EditorContext& ctx,
     if (IconHeader(ctx.icons, ctx.icons ? ctx.icons->entCamera : 0,
                    "\xe3\x82\xab\xe3\x83\xa1\xe3\x83\xa9", ImGuiTreeNodeFlags_DefaultOpen))  // Camera
     {
-        auto camPos = camera->GetPosition();
-        ImGui::Text("%.1f, %.1f, %.1f", camPos.x, camPos.y, camPos.z);
-        f32 moveSpeed = camera->GetMoveSpeed();
-        if (ImGui::SliderFloat("\xe9\x80\x9f\xe5\xba\xa6", &moveSpeed, 1.0f, 50.0f))  // Speed
-            camera->SetMoveSpeed(moveSpeed);
+        if (pg::Begin("EngineCam"))
+        {
+            auto camPos = camera->GetPosition();
+            pg::Text("位置", "%.1f, %.1f, %.1f", camPos.x, camPos.y, camPos.z);
+            f32 moveSpeed = camera->GetMoveSpeed();
+            if (pg::SliderFloat("移動速度", &moveSpeed, 1.0f, 50.0f, "%.1f"))
+                camera->SetMoveSpeed(moveSpeed);
+            pg::End();
+        }
     }
 
     // --- Shadow quality ---
-    if (ImGui::CollapsingHeader("\xe3\x82\xb7\xe3\x83\xa3\xe3\x83\x89\xe3\x82\xa6"))  // Shadow
+    if (IconHeader(nullptr, 0, "シャドウ"))
     {
         const char* qualities[] = {"1024 (Low)", "2048 (Medium)", "4096 (High)", "8192 (Ultra)"};
         const u32 sizes[] = {1024, 2048, 4096, 8192};
-        if (ImGui::Combo("\xe8\xa7\xa3\xe5\x83\x8f\xe5\xba\xa6", &shadowQualityIndex, qualities, 4))  // Resolution
+        if (pg::Begin("EngineShadow"))
         {
-            shadowMapSize = sizes[shadowQualityIndex];
-            shadowMapDirty = true;
-        }
-        ImGui::Text("%ux%u", shadowMapSize, shadowMapSize);
+            if (pg::Combo("解像度", &shadowQualityIndex, qualities, 4))
+            {
+                shadowMapSize = sizes[shadowQualityIndex];
+                shadowMapDirty = true;
+            }
+            pg::Text("実サイズ", "%ux%u", shadowMapSize, shadowMapSize);
 
-        // --- CSM (Cascaded Shadow Maps) ---
-        ImGui::Separator();
-        ImGui::TextUnformatted("CSM (4\xe5\x88\x86\xe5\x89\xb2)");  // CSM (4分割)
-        ImGui::SliderFloat("\xe5\x88\x86\xe5\x89\xb2\xce\xbb", &cascadeSplitLambda, 0.0f, 1.0f);  // 分割λ
-        ImGui::SliderFloat("\xe5\xa2\x83\xe7\x95\x8c\xe3\x83\x96\xe3\x83\xac\xe3\x83\xb3\xe3\x83\x89", &cascadeBlendBand, 0.0f, 5.0f);  // 境界ブレンド
-        ImGui::Checkbox("\xe3\x82\xab\xe3\x82\xb9\xe3\x82\xb1\xe3\x83\xbc\xe3\x83\x89\xe5\x8f\xaf\xe8\xa6\x96\xe5\x8c\x96", &showCascadeDebug);  // カスケード可視化
+            pg::Group("CSM (4分割)");
+            pg::SliderFloat("分割λ", &cascadeSplitLambda, 0.0f, 1.0f, "%.2f");
+            pg::SliderFloat("境界ブレンド", &cascadeBlendBand, 0.0f, 5.0f, "%.2f");
+            pg::Checkbox("カスケード可視化", &showCascadeDebug);
+            pg::End();
+        }
     }
 
     // --- Audio ---
@@ -1833,12 +1886,16 @@ void InspectorPanel::RenderEngineSettings(EditorContext& ctx,
         f32 masterVol = audioSystem->GetMasterVolume();
         f32 bgmVol    = audioSystem->GetBGMVolume();
         f32 sfxVol    = audioSystem->GetSFXVolume();
-        if (ImGui::SliderFloat("\xe3\x83\x9e\xe3\x82\xb9\xe3\x82\xbf\xe3\x83\xbc", &masterVol, 0.0f, 1.0f))
-            audioSystem->SetMasterVolume(masterVol);
-        if (ImGui::SliderFloat("BGM", &bgmVol, 0.0f, 1.0f))
-            audioSystem->SetBGMVolume(bgmVol);
-        if (ImGui::SliderFloat("SE", &sfxVol, 0.0f, 1.0f))
-            audioSystem->SetSFXVolume(sfxVol);
+        if (pg::Begin("EngineAudio"))
+        {
+            if (pg::SliderFloat("マスター", &masterVol, 0.0f, 1.0f, "%.2f"))
+                audioSystem->SetMasterVolume(masterVol);
+            if (pg::SliderFloat("BGM", &bgmVol, 0.0f, 1.0f, "%.2f"))
+                audioSystem->SetBGMVolume(bgmVol);
+            if (pg::SliderFloat("SE", &sfxVol, 0.0f, 1.0f, "%.2f"))
+                audioSystem->SetSFXVolume(sfxVol);
+            pg::End();
+        }
 
         const auto& bgmList = audioSystem->GetBGMList();
         for (const auto& bgm : bgmList)
@@ -1866,15 +1923,19 @@ void InspectorPanel::RenderEngineSettings(EditorContext& ctx,
     }
 
     // --- Settings ---
-    if (ImGui::CollapsingHeader("\xe8\xa8\xad\xe5\xae\x9a"))  // Settings
+    if (IconHeader(nullptr, 0, "設定"))
     {
-        ImGui::Checkbox("VSync", &useVsync);
-
-        bool debugDraw = physicsDebugRenderer->IsEnabled();
-        if (ImGui::Checkbox("Physics Debug", &debugDraw))
+        if (pg::Begin("EngineMisc"))
         {
-            physicsDebugRenderer->SetEnabled(debugDraw);
-            physicsDebugDraw = debugDraw;
+            pg::Checkbox("VSync", &useVsync);
+
+            bool debugDraw = physicsDebugRenderer->IsEnabled();
+            if (pg::Checkbox("Physics Debug", &debugDraw))
+            {
+                physicsDebugRenderer->SetEnabled(debugDraw);
+                physicsDebugDraw = debugDraw;
+            }
+            pg::End();
         }
     }
 

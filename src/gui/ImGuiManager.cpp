@@ -33,19 +33,25 @@ void ImGuiManager::Initialize(
     // ID 衝突警告のビジュアルオーバーレイを抑制（誤検出で popup が塞がれることがある）
     io.ConfigDebugHighlightIdConflicts = false;
 
-    // 日本語フォント読み込み（密度は Nebula 寄りにやや小さめ＝プロエディタ感）
+    // 日本語フォント読み込み。Yu Gothic Medium（Win標準・レンダリングがくっきり）優先、
+    // 無ければ Meiryo にフォールバック。サイズは 17px（可読性優先＝Unreal 寄りの密度）。
     {
-        const char* fontPath = "C:\\Windows\\Fonts\\meiryo.ttc";
-        if (std::filesystem::exists(fontPath))
+        const char* candidates[] = {
+            "C:\\Windows\\Fonts\\YuGothM.ttc",   // Yu Gothic Medium
+            "C:\\Windows\\Fonts\\meiryo.ttc",
+        };
+        bool loaded = false;
+        for (const char* fontPath : candidates)
         {
-            io.Fonts->AddFontFromFileTTF(fontPath, 15.0f, nullptr,
+            if (!std::filesystem::exists(fontPath)) continue;
+            io.Fonts->AddFontFromFileTTF(fontPath, 17.0f, nullptr,
                 io.Fonts->GetGlyphRangesJapanese());
-            Logger::Info("Japanese font loaded: meiryo.ttc");
+            Logger::Info("Japanese font loaded: {}", fontPath);
+            loaded = true;
+            break;
         }
-        else
-        {
+        if (!loaded)
             Logger::Warn("日本語フォントが見つかりません (Japanese font not found)");
-        }
     }
 
     // ===== Nebula Engine Editor ライクなダークテーマ =====
@@ -65,9 +71,9 @@ void ImGuiManager::Initialize(
     style.ScrollbarRounding       = 7.0f;
     // --- 余白（密度を上げて締まった印象に）---
     style.WindowPadding           = ImVec2(9, 8);
-    style.FramePadding            = ImVec2(8, 4);
+    style.FramePadding            = ImVec2(8, 5);
     style.CellPadding             = ImVec2(6, 4);
-    style.ItemSpacing             = ImVec2(8, 6);
+    style.ItemSpacing             = ImVec2(8, 7);
     style.ItemInnerSpacing        = ImVec2(6, 5);
     style.IndentSpacing           = 16.0f;
     style.ScrollbarSize           = 11.0f;   // Nebula のスリムなスクロールバー
