@@ -2223,6 +2223,10 @@ nlohmann::json McpComponentTypesOf(const entt::registry& reg, entt::entity e)
     if (reg.all_of<Trigger>(e))             a.push_back("trigger");
     if (reg.all_of<Gimmick>(e))             a.push_back("gimmick");
     if (reg.all_of<LuaScript>(e))           a.push_back("luaScript");
+    if (reg.all_of<TrailRenderer>(e))       a.push_back("trailRenderer");
+    if (reg.all_of<NetworkIdentity>(e))     a.push_back("networkIdentity");
+    if (reg.all_of<NetworkTransform>(e))    a.push_back("networkTransform");
+    if (reg.all_of<SkeletalAnimation>(e))   a.push_back("skeletalAnimation");
     return a;
 }
 } // namespace
@@ -7916,6 +7920,69 @@ void Application::Render()
         }
     }
 
+    // Deferred: MCP entity deletion（サブツリー削除後に deletedCount を遅延応答で返す）。
+    // ★エディタUIブランチの中ではなく Render トップレベルに置く(mcpDuplications と同格)。
+    //   ランチャー表示中でも drain され、MCP の delete_entity が未応答ハングしない。
+    if (!m_editorCtx->mcpDeletions.empty() && m_engineMode == EngineMode::Editor)
+    {
+        auto dels = std::move(m_editorCtx->mcpDeletions);
+        m_editorCtx->mcpDeletions.clear();
+        auto& reg = m_scene->GetRegistry();
+        for (auto& d : dels)
+        {
+            const entt::entity root = d.entity;
+            if (!reg.valid(root))
+            {
+                // 既に(先行サブツリー等で)削除済み。冪等に成功扱い(deletedCount=0)。
+                CompleteMcp(m_mcpBridge.get(), d.mcp,
+                    nlohmann::json{{"deletedEntityId", static_cast<u32>(root)},
+                                   {"deletedCount", 0}, {"sceneGeneration", m_sceneGeneration}});
+                continue;
+            }
+            // サブツリー収集（親→子の順。BFS）— 既存削除ブロックと同手順。
+            std::vector<entt::entity> subtree{root};
+            for (size_t i = 0; i < subtree.size(); ++i)
+                for (auto [c, t] : reg.view<const Transform>().each())
+                    if (t.parent == subtree[i]) subtree.push_back(c);
+
+            std::vector<DeletedEntityRecord> records;
+            records.reserve(subtree.size());
+            entt::entity externalParent = reg.all_of<Transform>(root)
+                ? reg.get<Transform>(root).parent : entt::null;
+            for (auto e : subtree)
+            {
+                DeletedEntityRecord rec;
+                rec.snapshot = SceneSerializer::SerializeEntity(*m_scene, e, PathResolver::AssetsDir());
+                if (reg.all_of<Transform>(e))
+                {
+                    auto parent = reg.get<Transform>(e).parent;
+                    auto it = std::find(subtree.begin(), subtree.end(), parent);
+                    if (it != subtree.end())
+                        rec.parentLocalIndex = static_cast<int>(it - subtree.begin());
+                }
+                records.push_back(std::move(rec));
+            }
+            const int deletedCount = static_cast<int>(subtree.size());
+            m_editorCtx->undoSystem.PushCommand(
+                std::make_unique<DeleteEntityCommand>(
+                    m_scene.get(), PathResolver::AssetsDir(),
+                    std::move(records), subtree, externalParent));
+            for (auto it = subtree.rbegin(); it != subtree.rend(); ++it)
+                if (reg.valid(*it)) m_scene->Remove(Entity(*it, &reg));
+
+            CompleteMcp(m_mcpBridge.get(), d.mcp,
+                nlohmann::json{{"deletedEntityId", static_cast<u32>(root)},
+                               {"deletedCount", deletedCount},
+                               {"sceneGeneration", m_sceneGeneration}});
+        }
+        // 削除で無効になった選択をクリーンアップ
+        auto& sel = m_editorCtx->selectedEntities;
+        sel.erase(std::remove_if(sel.begin(), sel.end(),
+                  [&](entt::entity e) { return !reg.valid(e); }), sel.end());
+        if (m_editorCtx->selectedEntity != entt::null && !reg.valid(m_editorCtx->selectedEntity))
+            m_editorCtx->selectedEntity = sel.empty() ? entt::null : sel.back();
+    }
+
     // Deferred: MCP entity duplication（複製先 entityId を遅延応答で返す）
     if (!m_editorCtx->mcpDuplications.empty() && m_engineMode == EngineMode::Editor)
     {
@@ -9656,67 +9723,6 @@ void Application::Render()
                         sel.empty() ? entt::null : sel.back();
                 }
             }
-        }
-
-        // Deferred: MCP entity deletion（サブツリー削除後に deletedCount を遅延応答で返す）
-        if (!m_editorCtx->mcpDeletions.empty() && m_engineMode == EngineMode::Editor)
-        {
-            auto dels = std::move(m_editorCtx->mcpDeletions);
-            m_editorCtx->mcpDeletions.clear();
-            auto& reg = m_scene->GetRegistry();
-            for (auto& d : dels)
-            {
-                const entt::entity root = d.entity;
-                if (!reg.valid(root))
-                {
-                    // 既に(先行サブツリー等で)削除済み。冪等に成功扱い(deletedCount=0)。
-                    CompleteMcp(m_mcpBridge.get(), d.mcp,
-                        nlohmann::json{{"deletedEntityId", static_cast<u32>(root)},
-                                       {"deletedCount", 0}, {"sceneGeneration", m_sceneGeneration}});
-                    continue;
-                }
-                // サブツリー収集（親→子の順。BFS）— 既存削除ブロックと同手順。
-                std::vector<entt::entity> subtree{root};
-                for (size_t i = 0; i < subtree.size(); ++i)
-                    for (auto [c, t] : reg.view<const Transform>().each())
-                        if (t.parent == subtree[i]) subtree.push_back(c);
-
-                std::vector<DeletedEntityRecord> records;
-                records.reserve(subtree.size());
-                entt::entity externalParent = reg.all_of<Transform>(root)
-                    ? reg.get<Transform>(root).parent : entt::null;
-                for (auto e : subtree)
-                {
-                    DeletedEntityRecord rec;
-                    rec.snapshot = SceneSerializer::SerializeEntity(*m_scene, e, PathResolver::AssetsDir());
-                    if (reg.all_of<Transform>(e))
-                    {
-                        auto parent = reg.get<Transform>(e).parent;
-                        auto it = std::find(subtree.begin(), subtree.end(), parent);
-                        if (it != subtree.end())
-                            rec.parentLocalIndex = static_cast<int>(it - subtree.begin());
-                    }
-                    records.push_back(std::move(rec));
-                }
-                const int deletedCount = static_cast<int>(subtree.size());
-                m_editorCtx->undoSystem.PushCommand(
-                    std::make_unique<DeleteEntityCommand>(
-                        m_scene.get(), PathResolver::AssetsDir(),
-                        std::move(records), subtree, externalParent));
-                for (auto it = subtree.rbegin(); it != subtree.rend(); ++it)
-                    if (reg.valid(*it)) m_scene->Remove(Entity(*it, &reg));
-
-                CompleteMcp(m_mcpBridge.get(), d.mcp,
-                    nlohmann::json{{"deletedEntityId", static_cast<u32>(root)},
-                                   {"deletedCount", deletedCount},
-                                   {"sceneGeneration", m_sceneGeneration}});
-            }
-            // 削除で無効になった選択をクリーンアップ
-            auto& sel = m_editorCtx->selectedEntities;
-            sel.erase(std::remove_if(sel.begin(), sel.end(),
-                      [&](entt::entity e) { return !reg.valid(e); }), sel.end());
-            if (m_editorCtx->selectedEntity != entt::null && !reg.valid(m_editorCtx->selectedEntity))
-                m_editorCtx->selectedEntity = sel.empty() ? entt::null : sel.back();
         }
 
         // ---- プロジェクト / バージョン管理(Git) ウィンドウ（トグル表示）----
