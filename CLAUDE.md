@@ -277,3 +277,5 @@ Application::Render()
 - **AI エージェント運用ガイド**: [`tools/mcp-server/AGENTS.md`](tools/mcp-server/AGENTS.md) — 典型ワークフロー・禁止パターン・よくある間違い
 - **ポート**: 自動採番(8787〜8797)。確定値は `%TEMP%\dx12_mcp.port` に書かれる。`DX12_MCP_PORT` 環境変数で上書き可。
 - **認証**: なし(localhost 専用・開発機前提)。ゲーム(封印ランタイム)ではブリッジは起動しない。
+- **配布**: MCP サーバはエンジン配布物に**同梱しない**。別リポジトリ [ryuto-alt/dx12-mcp](https://github.com/ryuto-alt/dx12-mcp) で配布する。
+  ソース・オブ・トゥルースは本リポジトリの `tools/mcp-server`。**MCP サーバを変更したら `tools/mcp-server/publish.ps1` で dx12-mcp へ同期すること。**

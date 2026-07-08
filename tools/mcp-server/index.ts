@@ -16,7 +16,7 @@ import { EngineClient } from "./engineClient.ts";
 // result のフィールド名(entityId 等)もエンジンの返り値をそのまま通す。
 
 const engine = new EngineClient();
-const server = new McpServer({ name: "dx12-engine", version: "0.4.0" });
+const server = new McpServer({ name: "dx12-engine", version: "0.5.0" });
 
 type ToolResult = {
   content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[];
@@ -278,7 +278,7 @@ reg(
   "コンポーネントを設定(無ければ追加・あれば置換)。component は jsonKey、data は dx12_describe_components の形。tags は data=文字列配列、DataComponent(data) は {key:{t,v}} オブジェクト。即時反映で {entityId, component} を返す。形が不安なら先に dx12_describe_components を見るとええ。",
   {
     ...entityRef,
-    component: z.string().describe("jsonKey。例: pointLight, directionalLight, spotLight, camera, rigidBody, boxCollider, transform, tags, data"),
+    component: z.string().describe("jsonKey。例: pointLight, directionalLight, spotLight, camera, rigidBody, boxCollider, transform, tags, data, particleEmitter, trailRenderer, networkIdentity, networkTransform, sprite2d, audioSource, trigger"),
     data: z.union([z.record(z.any()), z.array(z.any())]).describe("コンポーネントの値。オブジェクト or 配列(tags は文字列配列)。dx12_describe_components の fields に合わせる。"),
   },
   { idempotentHint: true },
@@ -891,6 +891,85 @@ reg(
   { code: z.string().describe("実行する Lua コード(複数行可)。") },
   {},
   ({ code }) => run(() => engine.call("eval_lua", { code })),
+);
+
+// ════════════════════════════════════════════════════════════════
+//  マテリアルテクスチャ・アニメーション制御
+// ════════════════════════════════════════════════════════════════
+
+reg(
+  "dx12_set_texture",
+  "テクスチャ上書き割当",
+  "エンティティの MeshRenderer にテクスチャを割り当てる(Inspector のアセットブラウザ D&D と同じ操作)。Material はモデル共有なので直接触らず、インスタンス単位の override に書く=他のインスタンスに波及しない。slot は albedo(既定)/normal/metalRoughness、submesh はサブメッシュ index(既定 0)。path 空文字で解除(Material 既定に戻る)。即時反映。entity(id) か name 指定。スプライトのテクスチャは set_component(sprite2d, {texturePath}) の方。",
+  {
+    ...entityRef,
+    path: z.string().describe("assets 相対パス(例: textures/rust.png)。空文字で override 解除。"),
+    slot: z.enum(["albedo", "normal", "metalRoughness"]).optional().describe("テクスチャスロット。省略で albedo。"),
+    submesh: z.number().int().optional().describe("サブメッシュ index。省略で 0。"),
+  },
+  { idempotentHint: true },
+  ({ entity, name, path, slot, submesh }) =>
+    run(() => engine.call("set_texture", { entity, name, path, slot, submesh })),
+);
+
+reg(
+  "dx12_play_anim",
+  "アニメーション再生",
+  "スケルタルアニメーションのクリップをクロスフェード再生する(Lua の playAnim/playAnimByName と同じ経路)。clipName(名前) か clip(index) で指定、blend はフェード秒(既定 0.3)。loop を渡すとループ設定も変更。クリップ一覧は dx12_get_anim_state で確認。★アニメーションの更新は Play 中に進む。entity(id) か name 指定。",
+  {
+    ...entityRef,
+    clip: z.number().int().optional().describe("クリップ index。clipName と排他(clipName 優先)。省略時 0。"),
+    clipName: z.string().optional().describe("クリップ名(完全一致)。dx12_get_anim_state の clips から選ぶ。"),
+    blend: z.number().optional().describe("クロスフェード秒。省略で 0.3。"),
+    loop: z.boolean().optional().describe("ループ再生するか。省略で現状維持。"),
+  },
+  {},
+  ({ entity, name, clip, clipName, blend, loop }) =>
+    run(() => engine.call("play_anim", { entity, name, clip, clipName, blend, loop })),
+);
+
+reg(
+  "dx12_get_anim_state",
+  "アニメーション状態取得",
+  "エンティティのスケルタルアニメーション情報を返す。{hasSkeletalAnimation, clips:[名前...]}。dx12_play_anim の clipName/clip を選ぶのに使う。entity(id) か name 指定。",
+  { ...entityRef },
+  { readOnlyHint: true },
+  ({ entity, name }) => run(() => engine.call("get_anim_state", { entity, name })),
+);
+
+// ════════════════════════════════════════════════════════════════
+//  マルチプレイヤー(ローカルテストループを AI から回す)
+// ════════════════════════════════════════════════════════════════
+
+reg(
+  "dx12_net_status",
+  "ネットワーク状態取得",
+  "マルチプレイヤーの現在状態を返す。{available, role(Offline/Host/Client), isConnected, localClientId, tick, syncedEntityCount, players:[{id, rttMs, bytesSent, bytesReceived}], config:{tickRate, snapshotRate, maxPlayers, defaultPort}, testRole, testJoinAddress}。接続確認・RTT/帯域の観測・複製エンティティ数の検証に。",
+  {},
+  { readOnlyHint: true },
+  () => run(() => engine.call("net_status", {})),
+);
+
+reg(
+  "dx12_net_setup",
+  "ネットワークテストロール設定",
+  "次の dx12_play で自動 Host/Join するロールを設定する(ツールバーの Play ロールドロップダウンと同じ)。典型フロー: ①複製したいエンティティに set_component で networkIdentity + networkTransform を付ける → ②net_setup(role='host') → ③dx12_play → ④dx12_net_launch_test_client → ⑤dx12_net_status で players/RTT を確認。role='offline' で解除。",
+  {
+    role: z.enum(["host", "client", "offline"]).describe("host=リッスンサーバー / client=address へ接続 / offline=マルチプレイ無効。"),
+    address: z.string().optional().describe("client 時の接続先 IP。省略で現状維持(既定 127.0.0.1)。"),
+    port: z.number().int().optional().describe("client 時の接続先ポート。省略/0 でエンジン設定の defaultPort。"),
+  },
+  { idempotentHint: true },
+  ({ role, address, port }) => run(() => engine.call("net_setup", { role, address, port })),
+);
+
+reg(
+  "dx12_net_launch_test_client",
+  "テストクライアント起動",
+  "ホスト中に、同じエンジンをもう1プロセス起動して 127.0.0.1 へ自動接続させる(ツールバーの「テストクライアント起動」ボタンと同じ)。マルチプレイの複製・補間・RPC を1台で動作確認するのに使う。★ホストとして Playing 中でないとエラー(net_setup role=host → play が先)。フレーム境界で起動されるので、直後に dx12_step_frames(60) を挟んでから dx12_net_status で players を確認するとよい。",
+  {},
+  {},
+  () => run(() => engine.call("net_launch_test_client", {})),
 );
 
 // ════════════════════════════════════════════════════════════════

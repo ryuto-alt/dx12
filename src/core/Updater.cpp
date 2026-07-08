@@ -454,7 +454,7 @@ bool RunHiddenPumped(const std::wstring& cmdLine, ProgressUI* ui, DWORD& code)
 }
 
 // zip を展開する。tar.exe(bsdtar, Windows 10 1803+ 標準) を最優先＝大量の小ファイル
-// (node_modules 同梱で 3000+ 個)でも数秒で済む。Expand-Archive は同条件で分単位かつ
+// (assets 数千個)でも数秒で済む。Expand-Archive は同条件で分単位かつ
 // UI を固めるため、tar が無い/失敗した時だけのフォールバックに降格。
 bool ExtractZip(const fs::path& zip, const fs::path& dest, ProgressUI* ui = nullptr)
 {

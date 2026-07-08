@@ -1702,6 +1702,9 @@ bool RemoveRegisteredComponent(entt::registry& reg, entt::entity e, const std::s
     else if (key == "gimmick")             reg.remove<Gimmick>(e);
     else if (key == "convexHullCollider")  reg.remove<ConvexHullCollider>(e);
     else if (key == "luaScript")           reg.remove<LuaScript>(e);
+    else if (key == "trailRenderer")       reg.remove<TrailRenderer>(e);
+    else if (key == "networkIdentity")     reg.remove<NetworkIdentity>(e);
+    else if (key == "networkTransform")    reg.remove<NetworkTransform>(e);
     else return false;
     return true;
 }
@@ -1753,8 +1756,16 @@ bool ApplyOrphanComponent(entt::registry& reg, entt::entity e,
         pe.lifeVar = d.value("lifeVar", 0.3f);
         if (d.contains("color"))    pe.color    = McpF3(d["color"], {1.0f, 0.6f, 0.2f});
         if (d.contains("colorEnd")) pe.colorEnd = McpF3(d["colorEnd"], {1.0f, 0.12f, 0.05f});
+        if (d.contains("colorMid")) { pe.colorMid = McpF3(d["colorMid"], {1.0f, 0.6f, 0.2f}); pe.hasColorMid = true; }
+        pe.hasColorMid = d.value("hasColorMid", pe.hasColorMid);
         pe.intensity = d.value("intensity", 3.0f); pe.gravity = d.value("gravity", 0.0f);
         pe.drag = d.value("drag", 1.0f); pe.up = d.value("up", 0.0f); pe.stretch = d.value("stretch", 0.0f);
+        pe.turbStrength = d.value("turbStrength", 0.0f); pe.turbFreq = d.value("turbFreq", 1.0f);
+        pe.sizeMid = d.value("sizeMid", -1.0f); pe.distort = d.value("distort", 0.0f);
+        pe.light = d.value("light", false); pe.lightRange = d.value("lightRange", 3.0f);
+        pe.flicker = d.value("flicker", 0.0f); pe.flickerFreq = d.value("flickerFreq", 18.0f);
+        pe.gpu = d.value("gpu", false);
+        pe.texturePath = d.value("texturePath", std::string{});
         reg.emplace_or_replace<ParticleEmitter>(e, pe);
         return true;
     }
@@ -2008,7 +2019,38 @@ nlohmann::json McpComponentSchema()
         F("color", "float3", json::array({1, 0.6, 0.2})), F("colorEnd", "float3", json::array({1, 0.12, 0.05})),
         F("intensity", "float", 3.0), F("gravity", "float", 0.0), F("drag", "float", 1.0),
         F("up", "float", 0.0), F("stretch", "float", 0.0),
+        F("colorMid", "float3 (set implies hasColorMid=true)", json::array({1, 0.6, 0.2})),
+        F("hasColorMid", "bool (3-key color curve start→mid→end)", false),
+        F("turbStrength", "float (>0 = curl-noise turbulence for smoke/fire)", 0.0),
+        F("turbFreq", "float", 1.0),
+        F("sizeMid", "float (>=0 = 3-key size curve)", -1.0),
+        F("distort", "float (>0 = heat-haze/shockwave distortion particles)", 0.0),
+        F("light", "bool (brightest N particles become real point lights)", false),
+        F("lightRange", "float", 3.0),
+        F("flicker", "float (0..1 emissive flicker)", 0.0), F("flickerFreq", "float", 18.0),
+        F("gpu", "bool (GPU compute particles, max 131072, additive only; distort/light/sizeMid/alpha-blend unsupported)", false),
+        F("texturePath", "string (assets-relative; empty = procedural look)", ""),
     })));
+    comps.push_back(C("trailRenderer", true, true, json::array({
+        F("emitting", "bool", true), F("width", "float (world units)", 0.25),
+        F("life", "float (sec = ribbon length)", 0.5),
+        F("color", "float3", json::array({0.4, 0.8, 1.0})), F("colorEnd", "float3", json::array({0.1, 0.2, 1.0})),
+        F("intensity", "float (HDR, >1 blooms)", 2.0), F("blend", "int (0=Additive,1=Alpha)", 0),
+        F("minDist", "float (min movement to drop a point)", 0.03),
+    }), "camera-facing ribbon trail (sword slash / projectile / magic tail). Follows the entity's world position."));
+    comps.push_back(C("networkIdentity", true, true, json::array({
+        F("interestRadius", "float (0 = always relevant, no distance culling)", 0.0),
+        F("serverAuthority", "bool", true),
+    }), "marks the entity for multiplayer replication (host assigns netId). Pair with networkTransform. "
+        "Use dx12_net_setup + dx12_play to test."));
+    comps.push_back(C("networkTransform", true, true, json::array({
+        F("syncMode", "int (0=interpolated proxy, 1=owner-predicted)", 0),
+        F("sendRate", "float Hz (reserved)", 20.0),
+        F("syncPosition", "bool", true), F("syncRotation", "bool", true), F("syncScale", "bool", false),
+        F("interpDelayMs", "float (jitter buffer)", 100.0), F("snapDistance", "float (teleport threshold)", 5.0),
+    }), "replicates Transform snapshots. Requires networkIdentity on the same entity."));
+    comps.push_back(C("skeletalAnimation", false, false, json::array({}),
+        "read-only via MCP (created by model load). Control playback with dx12_play_anim / dx12_get_anim_state."));
     comps.push_back(C("trigger", true, true, json::array({
         F("shape", "int (0=Box,1=Sphere)", 0), F("halfExtents", "float3", json::array({1, 1, 1})),
         F("radius", "float", 1.0), F("offset", "float3", json::array({0, 0, 0})),
@@ -2070,6 +2112,8 @@ nlohmann::json McpLuaApi()
         "spawnSphere(name,pos,radius) -> entity", "spawnPlane(name,pos,size,grid) -> entity",
         "remove(entity)", "getEntityCount() -> int", "findEntity(name) -> entity",
         "setUVScale(entity,u,v)", "setColor(entity,r,g,b)", "gimmicks() -> table",
+        "setSpriteEffect(entity,value)  (Sprite2D.effectValue、カスタムシェーダー用)",
+        "setSpriteAlpha(entity,alpha)  (Sprite2D不透明度0..1、半透明演出用)",
         "queryByTag(tag) -> table(names)", "queryInBox(minX,minZ,maxX,maxZ,tag?) -> table(names)",
     })));
     objects.push_back(O("input", "global", json::array({
@@ -2791,7 +2835,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"entityCount", entityCount},
                 {"sceneGeneration", m_sceneGeneration},
                 {"currentScene", ToAssetRel(m_editorCtx->currentScenePath)},
-                {"protocolVersion", 2}
+                {"protocolVersion", 3}
             };
         }
         else if (method == "find_entity")
@@ -3603,6 +3647,145 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             if (!ok) throw McpError(McpErr::Internal, "Lua error: " + err);
             resp["ok"] = true;
             resp["result"] = {{"result", resultStr}};
+        }
+        // ════════════════════════════════════════════════════════════
+        //  マテリアルテクスチャ上書き(Inspector の D&D 割当と同じ経路)
+        // ════════════════════════════════════════════════════════════
+        else if (method == "set_texture")
+        {
+            const auto e = ResolveMcpEntity(*m_scene, params);
+            auto& reg = m_scene->GetRegistry();
+            if (!reg.all_of<MeshRenderer>(e))
+                throw McpError(McpErr::InvalidParam, "entity has no meshRenderer");
+            const std::string slot = params.value("slot", std::string("albedo"));
+            const u32 submesh = params.value("submesh", 0u);
+            std::string rel = params.value("path", std::string());
+            if (!rel.empty())
+            {
+                if (rel.front() == '/' || rel.find('\\') != std::string::npos ||
+                    rel.find(':') != std::string::npos || rel.find("..") != std::string::npos)
+                    throw McpError(McpErr::InvalidParam, "invalid path (assets 相対のみ)");
+                if (!fs::exists(fs::path(PathResolver::AssetsDir()) / rel))
+                    throw McpError(McpErr::NotFound, "texture not found: " + rel);
+            }
+            auto& mr = reg.get<MeshRenderer>(e);
+            // Material は同一モデルの全インスタンスで共有されるため直接触らず、
+            // インスタンス単位の override に書く(描画側 EnsureMaterialOverrideSrv が合成)。
+            if      (slot == "albedo")         MeshRenderer::SetOverride(mr.overrideAlbedoTexture, submesh, rel);
+            else if (slot == "normal")         MeshRenderer::SetOverride(mr.overrideNormalTexture, submesh, rel);
+            else if (slot == "metalRoughness") MeshRenderer::SetOverride(mr.overrideMetalRoughnessTexture, submesh, rel);
+            else throw McpError(McpErr::InvalidParam, "slot must be albedo|normal|metalRoughness");
+            resp["ok"] = true;
+            resp["result"] = {{"entityId", static_cast<u32>(e)}, {"slot", slot},
+                              {"submesh", submesh}, {"path", rel}};
+        }
+        // ════════════════════════════════════════════════════════════
+        //  スケルタルアニメーション制御(Lua playAnim/playAnimByName と同じ経路)
+        // ════════════════════════════════════════════════════════════
+        else if (method == "play_anim")
+        {
+            const auto e = ResolveMcpEntity(*m_scene, params);
+            auto& reg = m_scene->GetRegistry();
+            if (!reg.all_of<SkeletalAnimation>(e))
+                throw McpError(McpErr::InvalidParam, "entity has no skeletalAnimation");
+            auto& sa = reg.get<SkeletalAnimation>(e);
+            if (!sa.animator) throw McpError(McpErr::Internal, "animator not initialized");
+            const float blend = params.value("blend", 0.3f);
+            int idx = -1;
+            if (params.contains("clipName"))
+            {
+                const std::string want = params["clipName"].get<std::string>();
+                for (int i = 0; i < static_cast<int>(sa.clips.size()); ++i)
+                    if (sa.clips[i]->GetName() == want) { idx = i; break; }
+                if (idx < 0) throw McpError(McpErr::NotFound, "no clip named '" + want + "' (dx12_get_anim_state で一覧を確認)");
+            }
+            else
+            {
+                idx = params.value("clip", 0);
+                if (idx < 0 || idx >= static_cast<int>(sa.clips.size()))
+                    throw McpError(McpErr::InvalidParam, "clip index out of range (0.." +
+                        std::to_string(sa.clips.empty() ? 0 : sa.clips.size() - 1) + ")");
+            }
+            sa.animator->CrossFadeTo(sa.clips[idx].get(), blend);
+            if (params.contains("loop")) sa.animator->SetLooping(params["loop"].get<bool>());
+            resp["ok"] = true;
+            resp["result"] = {{"entityId", static_cast<u32>(e)}, {"clip", idx},
+                              {"clipName", sa.clips[idx]->GetName()}, {"blend", blend}};
+        }
+        else if (method == "get_anim_state")
+        {
+            const auto e = ResolveMcpEntity(*m_scene, params);
+            auto& reg = m_scene->GetRegistry();
+            json result;
+            result["hasSkeletalAnimation"] = reg.all_of<SkeletalAnimation>(e);
+            json clips = json::array();
+            if (reg.all_of<SkeletalAnimation>(e))
+                for (const auto& c : reg.get<SkeletalAnimation>(e).clips)
+                    clips.push_back(c->GetName());
+            result["clips"] = std::move(clips);
+            resp["ok"] = true;
+            resp["result"] = std::move(result);
+        }
+        // ════════════════════════════════════════════════════════════
+        //  マルチプレイヤー(フェーズ⑨のローカルテストループを AI から回す)
+        // ════════════════════════════════════════════════════════════
+        else if (method == "net_status")
+        {
+            json result;
+            result["available"] = (m_networkSystem != nullptr);
+            if (m_networkSystem)
+            {
+                const char* role = m_networkSystem->IsServer() ? "Host"
+                                 : m_networkSystem->IsClient() ? "Client" : "Offline";
+                result["role"] = role;
+                result["isConnected"] = m_networkSystem->IsConnected();
+                result["localClientId"] = m_networkSystem->LocalClientId();
+                result["tick"] = m_networkSystem->CurrentTick();
+                result["syncedEntityCount"] = m_networkSystem->SyncedEntityCount(m_scene->GetRegistry());
+                json players = json::array();
+                for (const auto& p : m_networkSystem->Players())
+                    players.push_back({{"id", p.id}, {"rttMs", p.rttMs},
+                                       {"bytesSent", p.bytesSent}, {"bytesReceived", p.bytesReceived}});
+                result["players"] = std::move(players);
+                const auto& cfg = m_networkSystem->Config();
+                result["config"] = {{"tickRate", cfg.tickRate}, {"snapshotRate", cfg.snapshotRate},
+                                    {"maxPlayers", cfg.maxPlayers}, {"defaultPort", cfg.defaultPort}};
+            }
+            const char* testRole = m_editorCtx->netTestRole == NetTestRole::Host ? "host"
+                                 : m_editorCtx->netTestRole == NetTestRole::Client ? "client" : "offline";
+            result["testRole"] = testRole;
+            result["testJoinAddress"] = m_editorCtx->netTestJoinAddress;
+            resp["ok"] = true;
+            resp["result"] = std::move(result);
+        }
+        else if (method == "net_setup")
+        {
+            // ツールバーの Play ロールドロップダウンと同じ状態を書く。次の play で
+            // EnterPlayMode が Host/Join を自動実行する(直接 Host/Join は EnterPlayMode の
+            // イベント順序保証を壊すのでやらない)。
+            const std::string role = params.value("role", std::string());
+            if (role == "host")         m_editorCtx->netTestRole = NetTestRole::Host;
+            else if (role == "client")  m_editorCtx->netTestRole = NetTestRole::Client;
+            else if (role == "offline") m_editorCtx->netTestRole = NetTestRole::Offline;
+            else throw McpError(McpErr::InvalidParam, "role must be host|client|offline");
+            if (params.contains("address")) m_editorCtx->netTestJoinAddress = params["address"].get<std::string>();
+            const int port = params.value("port", 0);
+            if (port < 0 || port > 65535) throw McpError(McpErr::InvalidParam, "port must be 0..65535");
+            m_editorCtx->netTestJoinPort = static_cast<u16>(port);
+            resp["ok"] = true;
+            resp["result"] = {{"testRole", role}, {"address", m_editorCtx->netTestJoinAddress},
+                              {"port", m_editorCtx->netTestJoinPort}};
+        }
+        else if (method == "net_launch_test_client")
+        {
+            if (!m_networkSystem || !m_networkSystem->IsServer())
+                throw McpError(McpErr::ModeConflict,
+                    "not hosting (dx12_net_setup role=host → dx12_play してからテストクライアントを起動する)");
+            // ツールバーの「テストクライアント起動」ボタンと同じ: フレーム境界で CreateProcess。
+            m_editorCtx->netTestLaunchClientRequested = true;
+            resp["ok"] = true;
+            resp["result"] = {{"requested", true},
+                              {"note", "second engine process launches at next frame boundary and auto-joins 127.0.0.1"}};
         }
         else
         {

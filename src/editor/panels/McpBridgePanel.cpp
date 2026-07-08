@@ -29,21 +29,30 @@ namespace
 {
 namespace fs = std::filesystem;
 
-// tools/mcp-server を「実行時に」探して返す（末尾区切り無し・'/' 区切り）。見つからなければ空。
+// MCP サーバの場所を「実行時に」探して返す（末尾区切り無し・'/' 区切り）。見つからなければ空。
 //
-// 絶対パスをビルド時に焼き込むと、別PCやフォルダ移動・配布物では壊れる（= 今回の不具合）。
-// そこで実行ファイルの実体位置を起点に、上位ディレクトリを辿って tools/mcp-server/index.ts を探す。
-// dev ビルドの exe は build/<cfg>/DX12Engine.exe なので 2 階層上が repo ルート。
-// 配布で exe 隣に tools/ を同梱した場合も 0 階層目（exe 隣）で当たる。
-// これでビルドした本人かどうか・どのフォルダに置いたかに関係なく、その PC 上の実体を指す。
+// 配布物には MCP を同梱しない（別リポジトリ https://github.com/ryuto-alt/dx12-mcp から
+// インストールする方式）。探索順:
+//   1) 標準インストール先 %USERPROFILE%/dx12-mcp（install.ps1 の既定 clone 先）
+//   2) ソースからのビルド: exe から上位へ辿って tools/mcp-server/index.ts（dev 環境用）
+//   3) ビルド時マクロ（このマシンでビルドし、repo を動かしてない場合のみ有効）
 std::string ResolveMcpServerDir()
 {
-    auto hasIndex = [](const fs::path& dir) {
-        std::error_code ec;
+    std::error_code ec;
+
+    // 1) 標準インストール先（dx12-mcp リポジトリの clone。index.ts はリポジトリ直下）。
+    wchar_t prof[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"USERPROFILE", prof, MAX_PATH) > 0)
+    {
+        fs::path home(prof);
+        if (fs::exists(home / "dx12-mcp" / "index.ts", ec))
+            return (home / "dx12-mcp").generic_string();
+    }
+
+    // 2) 実行時解決: exe の場所から上位へ最大 8 階層辿る（ソースからビルドした dev 環境）。
+    auto hasIndex = [&ec](const fs::path& dir) {
         return fs::exists(dir / "tools" / "mcp-server" / "index.ts", ec);
     };
-
-    // 1) 実行時解決: exe の場所から上位へ最大 8 階層辿る。
     wchar_t buf[MAX_PATH] = {};
     if (GetModuleFileNameW(nullptr, buf, MAX_PATH) > 0)
     {
@@ -58,15 +67,14 @@ std::string ResolveMcpServerDir()
         }
     }
 
-    // 2) フォールバック: ビルド時マクロ（このマシンでビルドし、repo を動かしてない場合のみ有効）。
+    // 3) フォールバック: ビルド時マクロ。
     if (MCP_SERVER_DIR[0] != '\0')
     {
-        std::error_code ec;
         if (fs::exists(fs::path(MCP_SERVER_DIR) / "index.ts", ec))
             return fs::path(MCP_SERVER_DIR).generic_string();
     }
 
-    return std::string();  // どこにも無い（配布物に tools/ 未同梱など）
+    return std::string();  // 未インストール
 }
 
 // 解決結果を 1 度だけ計算してキャッシュ（毎フレームのディスク走査を避ける）。
@@ -139,19 +147,22 @@ void McpBridgePanel::Render(McpBridge& bridge, EditorContext& ctx)
 
     if (!serverFound)
     {
-        // tools/ が exe 近傍に無い（= ソース無しの配布物など）。手動で場所を指定してもらう。
-        ImGui::TextColored(ImVec4(0.95f, 0.6f, 0.5f, 1.0f),
-                           "MCP サーバ(tools/mcp-server)が見つかりません。");
-        ImGui::TextWrapped("エンジンのソース一式（tools/mcp-server を含む）を用意し、"
-                           "tools/mcp-server/index.ts の場所を指定してな。");
+        // 未インストール。別リポジトリからのインストールを案内する。
+        ImGui::TextColored(ImVec4(0.95f, 0.6f, 0.5f, 1.0f), "MCP サーバが未インストールです。");
+        ImGui::TextWrapped("MCP サーバは別リポジトリで配布しています。下のコマンドを"
+                           "ターミナル(PowerShell 等)に貼って実行すると %%USERPROFILE%%\\dx12-mcp に"
+                           "インストールされます（Node.js v24+ が必要）。完了後この窓を開き直してな。");
         ImGui::Spacing();
-        ImGui::TextDisabled("登録コマンド（<PATH> を index.ts の絶対パスに置換）:");
-        static std::string tmpl =
-            "claude mcp add dx12-engine -- node \"<PATH>/tools/mcp-server/index.ts\"";
+        static std::string installCmd =
+            "git clone https://github.com/ryuto-alt/dx12-mcp \"$env:USERPROFILE\\dx12-mcp\"; "
+            "cd \"$env:USERPROFILE\\dx12-mcp\"; ./install.ps1";
         ImGui::SetNextItemWidth(-FLT_MIN);
-        ImGui::InputText("##mcp_cmd_tmpl", tmpl.data(), tmpl.size() + 1, ImGuiInputTextFlags_ReadOnly);
-        if (ImGui::Button("テンプレをコピー", ImVec2(-FLT_MIN, 0)))
-            ImGui::SetClipboardText(tmpl.c_str());
+        ImGui::InputText("##mcp_install_cmd", installCmd.data(), installCmd.size() + 1,
+                         ImGuiInputTextFlags_ReadOnly);
+        if (ImGui::Button("インストールコマンドをコピー", ImVec2(-FLT_MIN, 0)))
+            ImGui::SetClipboardText(installCmd.c_str());
+        ImGui::Spacing();
+        ImGui::TextDisabled("リポジトリ: https://github.com/ryuto-alt/dx12-mcp");
     }
     else
     {

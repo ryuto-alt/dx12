@@ -1,105 +1,76 @@
 # DX12 Engine MCP server
 
-起動中のエディタを Codex / Claude Code から叩いてゲームを作るための MCP サーバ。
-エディタ(C++)が `127.0.0.1:8787` で待ち受ける TCP ブリッジに、改行区切り JSON で繋ぐ。
-ゲーム(封印ランタイム)ではブリッジは起動しない＝外から触れない。
+起動中の [DX12 Engine](https://github.com/ryuto-alt/dx12) エディタを Claude Code / Codex から
+叩いてゲームを作るための MCP サーバ。エディタ(C++)が `127.0.0.1:8787` で待ち受ける TCP ブリッジに
+改行区切り JSON で繋ぐ。ゲーム(封印ランタイム)ではブリッジは起動しない＝外から触れない。
 
-接続手順・全ツール詳細・トラブルシュートは **[../../docs/MCP.md](../../docs/MCP.md)**。
-セットアップは `install.ps1`(Windows)/ `install.sh`(Linux・macOS)で自動化できる(`npm install` + 自己テスト + 登録コマンド表示)。クローン用の設定テンプレは `.mcp.json.example`。
+- **配布リポジトリ**: https://github.com/ryuto-alt/dx12-mcp （エンジン本体には同梱されない）
+- **ソース・オブ・トゥルース**: エンジンリポジトリの `tools/mcp-server`（`publish.ps1` で dx12-mcp へ同期）
+- **必要環境**: Node.js **v24+**（`.ts` を型ストリップで直接実行。tsc ビルド不要）、起動中の DX12 Engine エディタ
 
-## 構成
-- `engineClient.ts` … TCP フレーミング + id 相関の薄いクライアント
-- `index.ts` … MCP サーバ本体(stdio)。ツール多数を公開(全量は [../../docs/MCP.md](../../docs/MCP.md) 参照。このファイルの表は抜粋)
-- `test.ts` … mock エンジンで framing/相関/エラーを検証(`node test.ts`)
+## インストール
 
-## ツール
-### エンティティ基本
-| ツール | 説明 |
-|---|---|
-| `dx12_list_entities` | 開いてるシーンのエンティティ一覧 (id, name) |
-| `dx12_get_entity` | エンティティの全コンポーネントと値を JSON で読む |
-| `dx12_create_entity` | エンティティ生成 (box/sphere/plane/empty, name, position)。遅延処理 |
-| `dx12_delete_entity` | エンティティ削除 (子ごと, Undo可)。遅延処理 |
-| `dx12_set_transform` | Transform 設定 (位置/回転/スケール、指定分のみ) |
-| `dx12_set_parent` | 親を設定/解除 (サイクルは拒否) |
-| `dx12_rename_entity` | 名前変更 (重複は連番付与、確定 name を返す) |
-
-### コンポーネント
-| ツール | 説明 |
-|---|---|
-| `dx12_set_component` | コンポーネントを設定(上書き)。jsonKey + data (get_entity と同形)。meshRenderer 非対応 |
-| `dx12_remove_component` | コンポーネント除去。transform/name は除去不可 |
-| `dx12_create_lua_component` | `assets/components/<name>.lua` を作成 (構文検証付き) |
-| `dx12_attach_lua_component` | エンティティに Lua 部品をアタッチ (実行は Play 時) |
-| `dx12_create_shader` | `assets/shaders/<name>.hlsl` を作成/上書き。書込直後にコンパイルを試し成否を返す |
-| `dx12_read_shader` | 既存カスタムシェーダーのソースを読む |
-| `dx12_set_mesh_shader` | エンティティの `MeshRenderer::shaderPath` を設定/解除 |
-
-### シーン / アセット
-| ツール | 説明 |
-|---|---|
-| `dx12_save_scene` | シーン保存 (assets 相対 path、省略で上書き) |
-| `dx12_open_scene` | シーンを開く (assets 相対 path)。遅延処理 |
-| `dx12_list_scenes` | `assets/scenes` 配下の .json 一覧 (path, name) |
-| `dx12_list_assets` | assets 配下のアセット一覧 (type フィルタ可: model/texture/script/audio/scene/prefab/shader) |
-| `dx12_spawn_model` | モデル (.gltf/.glb/.fbx/.obj) を生成。GPU ロードのため遅延処理 |
-
-### 再生制御 / 状態
-| ツール | 説明 |
-|---|---|
-| `dx12_play` | Editor -> Playing。遅延処理 |
-| `dx12_stop` | Playing -> Editor (スナップショット復元)。遅延処理 |
-| `dx12_get_mode` | 現在のモード (Editor / Playing) |
-| `dx12_get_log` | `dx12_engine.log` の末尾 N 行 (既定 50) |
-
-生成/削除/モデル生成/シーン読込/再生切替はメッシュ構築や GPU、重い遷移を伴うためフレーム境界で遅延処理。`create_entity`/`spawn_model` は id を即返さないので、`name` を付けて `dx12_list_entities`/`dx12_get_entity` で引く。
-
-## セットアップ
-```bash
-cd tools/mcp-server
-npm install
-node test.ts        # 自己テスト(エンジン不要)
+```powershell
+git clone https://github.com/ryuto-alt/dx12-mcp "$env:USERPROFILE\dx12-mcp"
+cd "$env:USERPROFILE\dx12-mcp"
+./install.ps1        # Linux/macOS: ./install.sh
 ```
-Node v24+ が `.ts` を直接実行する(型ストリップ)ので tsc ビルドは不要。
+
+`%USERPROFILE%\dx12-mcp` に置くと、エディタの「MCP / AI Bridge」窓が自動検出して
+登録コマンドをワンクリックでコピーできる。install スクリプトは Node v24+ を確認し、
+`npm install` + 自己テスト(エンジン不要)を実行して、絶対パス解決済みの登録コマンドを表示する。
 
 ## 接続
+
 ### Claude Code
-```bash
-claude mcp add dx12-engine -- node C:\Users\ryuto\Documents\dx12\tools\mcp-server\index.ts
+```powershell
+claude mcp add dx12-engine -- node "$env:USERPROFILE\dx12-mcp\index.ts"
 ```
-または `.mcp.json`:
+または `.mcp.json`（テンプレ: `.mcp.json.example`）:
 ```json
 {
   "mcpServers": {
     "dx12-engine": {
       "command": "node",
-      "args": ["C:\\Users\\ryuto\\Documents\\dx12\\tools\\mcp-server\\index.ts"]
+      "args": ["C:\\Users\\<you>\\dx12-mcp\\index.ts"]
     }
   }
 }
 ```
 
+> 注意: 既定では `env` に `DX12_MCP_PORT` を書かないこと。書くとポート自動探索
+> (`%TEMP%/dx12_mcp.port`)が無効化される。ポートを固定したい時だけ書く。
+
 ### Codex (`~/.codex/config.toml`)
 ```toml
 [mcp_servers.dx12-engine]
 command = "node"
-args = ["C:\\Users\\ryuto\\Documents\\dx12\\tools\\mcp-server\\index.ts"]
+args = ["C:\\Users\\<you>\\dx12-mcp\\index.ts"]
 ```
 
+## 構成
+- `engineClient.ts` … TCP フレーミング + id 相関の薄いクライアント（ポートは env `DX12_MCP_PORT` → `%TEMP%/dx12_mcp.port` → 8787 の順で自動解決。別マシンは `DX12_MCP_HOST`）
+- `index.ts` … MCP サーバ本体(stdio)。70+ ツールを公開（全量はエンジンリポジトリの [docs/MCP.md](https://github.com/ryuto-alt/dx12/blob/main/docs/MCP.md) 参照）
+- `test.ts` … mock エンジンで framing/相関/エラーを検証(`node test.ts`)
+- `AGENTS.md` … AI エージェント向け運用ガイド（典型ワークフロー・禁止パターン）
+
+## ツール(抜粋)
+
+| カテゴリ | 主なツール |
+|---|---|
+| エンティティ | `dx12_list_entities` `dx12_get_entity` `dx12_create_entity` `dx12_delete_entity` `dx12_set_transform` `dx12_set_parent` `dx12_duplicate_entity` |
+| コンポーネント | `dx12_describe_components` `dx12_set_component` `dx12_remove_component`（particleEmitter / trailRenderer / networkIdentity / networkTransform 等も対応） |
+| 見た目 | `dx12_set_pbr` `dx12_set_color` `dx12_set_texture` `dx12_create_shader` `dx12_set_mesh_shader` `dx12_set_sprite_shader` `dx12_set_post_process` `dx12_set_ssao` |
+| Lua | `dx12_create_lua_component` `dx12_attach_lua_component` `dx12_set_lua_property` `dx12_eval_lua` `dx12_describe_lua_api` |
+| アニメーション | `dx12_play_anim` `dx12_get_anim_state` |
+| マルチプレイヤー | `dx12_net_setup` `dx12_net_status` `dx12_net_launch_test_client` |
+| 再生/検証 | `dx12_play` `dx12_stop` `dx12_step_frames` `dx12_key_press` `dx12_raycast` `dx12_get_physics_state` `dx12_screenshot` `dx12_validate_scene` `dx12_build_game` |
+
+生成/削除/シーン読込/Play/Stop は**遅延同期**: エンジンはフレーム境界で実処理し、完了後に
+本物の結果(`entityId` 等)を同期で返す。「name で list して探す」旧パターンは不要。
+
 ## 使い方
-1. エディタ(`DX12Engine.exe`)を起動してシーンを開く(ブリッジが 8787 で待ち受け)
-2. AI から `dx12_list_entities` → 対象 id を確認
-3. `dx12_create_lua_component` で `.lua` を作る → 返った `path`
-4. `dx12_attach_lua_component` で id に貼る → Play で動く
-
-ポート変更は env `DX12_MCP_PORT`(クライアント側)と `Application.cpp` の `Start(8787)` を合わせる。
-
-## セキュリティ(設計判断・残存リスク)
-ブリッジは**エディタ専用**(`!m_isGameMode`)。ゲーム(封印ランタイム)では起動せず、外から触れない。
-
-- 受けるのは `127.0.0.1` のみ。外部ホストからは到達不可。
-- 最初の1行が JSON オブジェクト(`{`)で始まらない接続は即切断 → ブラウザの HTTP/WebSocket ドライブバイ(localhost CSRF)を遮断。
-- `attach` の `script` は assets 相対のみ(絶対パス/`..`/`\`/`:` を拒否)＝ assets 外の任意ファイルを Lua 実行させない。
-- `create` の Lua は書き込み前に構文チェック(コンパイルのみ・非実行)。
-
-**残存リスク**: ポートは無認証。同一マシンの**別ローカルプロセス**(=既にユーザ権限を持つ)は接続でき、貼った Lua は `io` ライブラリ有効の state で走る(任意ファイル read/write、PUC-Lua なら `io.popen` でシェル)。エディタ=信頼された開発機という前提で許容。**アップグレード経路**: ポートにトークン認証(エンジンが生成しユーザのみ読めるファイルに置く→クライアントが添付)、MCP 実行用に `io`/`os` を外した別 sol::state。
+1. エディタ(`DX12Engine.exe`)を起動してシーンを開く（ブリッジが 8787〜8797 で待ち受け）
+2. AI から `dx12_ping` → 疎通確認
+3. `dx12_create_entity` / `dx12_set_component` / `dx12_attach_lua_component` でシーンを組む
+4. `dx12_play` → `dx12_screenshot` / `dx12_get_log` で結果を確認
