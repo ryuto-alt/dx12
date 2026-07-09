@@ -14,6 +14,7 @@ add_library(Editor STATIC
     panels/NetworkPanel.cpp
     panels/MaterialEditorPanel.cpp
     panels/MaterialLibraryPanel.cpp
+    panels/MaterialPreviewRenderer.cpp
 )
 
 target_include_directories(Editor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)

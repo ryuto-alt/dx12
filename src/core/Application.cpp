@@ -1490,7 +1490,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             m_networkPanel = std::make_unique<NetworkPanel>();
 
             m_materialEditorPanel = std::make_unique<MaterialEditorPanel>();
-            m_materialEditorPanel->Initialize(m_materialAssetManager.get(), m_editorLayer->GetAssetBrowser());
+            m_materialEditorPanel->Initialize(m_materialAssetManager.get(), m_editorLayer->GetAssetBrowser(),
+                                              *m_graphicsDevice, m_srvHeap.get(), m_resourceManager.get());
 
             m_materialLibraryPanel = std::make_unique<MaterialLibraryPanel>();
             m_materialLibraryPanel->Initialize(m_resourceManager.get(), m_srvHeap.get(), m_materialAssetManager.get());
@@ -9322,6 +9323,15 @@ void Application::Render()
     if (m_vfxEditorPanel && m_editorCtx->showVfxEditor)
     {
         m_vfxEditorPanel->RenderPreview3D(*m_editorCtx, *m_commandList, m_gameClock.GetDeltaTime());
+        // プレビュー描画でRT/ビューポートを切り替えたので、バックバッファへ戻す。
+        m_commandList->SetRenderTarget(rtv, m_dsvHandle);
+        m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
+    }
+
+    // ===== マテリアルエディタの3Dプレビュー（専用オフスクリーンRT。UI本体は後段のImGuiパスで描く）=====
+    if (m_materialEditorPanel && m_editorCtx->showMaterialEditor)
+    {
+        m_materialEditorPanel->RenderPreview3D(*m_editorCtx, *m_commandList);
         // プレビュー描画でRT/ビューポートを切り替えたので、バックバッファへ戻す。
         m_commandList->SetRenderTarget(rtv, m_dsvHandle);
         m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());

@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <cstdio>
 
+#include <commdlg.h>
+
 namespace fs = std::filesystem;
 
 namespace dx12e
@@ -48,10 +50,25 @@ std::string Slugify(const std::string& name)
 }
 }
 
-void MaterialEditorPanel::Initialize(MaterialAssetManager* materialAssetManager, AssetBrowserPanel* assetBrowser)
+void MaterialEditorPanel::Initialize(MaterialAssetManager* materialAssetManager, AssetBrowserPanel* assetBrowser,
+                                     GraphicsDevice& device, DescriptorHeap* srvHeap, ResourceManager* resourceManager)
 {
     m_materialAssetManager = materialAssetManager;
     m_assetBrowser = assetBrowser;
+    m_preview.Initialize(device, srvHeap, resourceManager);
+}
+
+void MaterialEditorPanel::RenderPreview3D(EditorContext& ctx, CommandList& cmd)
+{
+    if (!ctx.showMaterialEditor || !m_preview.IsValid()) return;
+
+    MaterialPreviewRenderer::DrawInput input;
+    input.albedoPath         = m_current.albedoPath;
+    input.normalPath         = m_current.normalPath;
+    input.metalRoughnessPath = m_current.metalRoughnessPath;
+    input.metallic           = m_current.metallic;
+    input.roughness          = m_current.roughness;
+    m_preview.Render(cmd, input, m_previewShape, m_camYaw, m_camPitch, m_camDist);
 }
 
 void MaterialEditorPanel::NewAsset()
@@ -193,6 +210,80 @@ void MaterialEditorPanel::DrawTextureSlot(const std::string& assetsDir, const ch
         SaveAsset(assetsDir);
 }
 
+void MaterialEditorPanel::ImportFromImage(const std::string& assetsDir)
+{
+    char pathBuf[MAX_PATH] = "";
+    OPENFILENAMEA ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner   = nullptr;
+    ofn.lpstrFilter = "Images (*.png;*.jpg;*.jpeg)\0*.png;*.jpg;*.jpeg\0All Files\0*.*\0";
+    ofn.lpstrFile   = pathBuf;
+    ofn.nMaxFile    = MAX_PATH;
+    ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    std::string initDir = assetsDir;
+    ofn.lpstrInitialDir = initDir.c_str();
+    if (!GetOpenFileNameA(&ofn))
+        return;
+
+    fs::path picked(pathBuf);
+    std::string ext = picked.extension().string();
+    for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (ext != ".png" && ext != ".jpg" && ext != ".jpeg")
+        return;
+
+    std::string absNorm  = picked.lexically_normal().string();
+    std::string baseNorm = fs::path(assetsDir).lexically_normal().string();
+    std::replace(absNorm.begin(), absNorm.end(), '\\', '/');
+    std::replace(baseNorm.begin(), baseNorm.end(), '\\', '/');
+
+    std::string rel;
+    if (absNorm.rfind(baseNorm, 0) == 0)
+    {
+        // 既にプロジェクトassets配下 → コピーせずそのまま参照
+        rel = absNorm.substr(baseNorm.size());
+        while (!rel.empty() && rel.front() == '/') rel.erase(rel.begin());
+    }
+    else
+    {
+        // プロジェクト外(「自分のPNG/JPG」) → assets/textures/imported/ へコピー(重複時は連番)。
+        // ASSET_MANIFEST.md への記録は行わない(ユーザー自身の素材でライセンス記録の対象外)。
+        std::error_code ec;
+        fs::path destDir = fs::path(assetsDir) / "textures" / "imported";
+        fs::create_directories(destDir, ec);
+        std::string stem = picked.stem().string();
+        std::string destName = stem + picked.extension().string();
+        fs::path destPath = destDir / destName;
+        int suffix = 1;
+        while (fs::exists(destPath))
+        {
+            destName = stem + "_" + std::to_string(suffix++) + picked.extension().string();
+            destPath = destDir / destName;
+        }
+        fs::copy_file(picked, destPath, ec);
+        if (ec)
+        {
+            Logger::Warn("画像のコピーに失敗しました: {}", picked.string());
+            return;
+        }
+        rel = "textures/imported/" + destName;
+        std::replace(rel.begin(), rel.end(), '\\', '/');
+    }
+
+    // 「よくわからない普通の画像」への無難な既定値: 非金属・粗さ高め。
+    m_current = MaterialAssetData{};
+    m_current.name        = picked.stem().string();
+    m_current.albedoPath  = rel;
+    m_current.metallic    = 0.0f;
+    m_current.roughness   = 0.8f;
+    m_current.uvTilingU   = 1.0f;
+    m_current.uvTilingV   = 1.0f;
+    m_currentPath.clear();
+    std::snprintf(m_nameBuf, sizeof(m_nameBuf), "%s", m_current.name.c_str());
+
+    m_statusMsg = "\xe7\x94\xbb\xe5\x83\x8f\xe3\x81\x8b\xe3\x82\x89\xe4\xbd\x9c\xe6\x88\x90\xe3\x81\x97\xe3\x81\xbe\xe3\x81\x97\xe3\x81\x9f: " + m_current.name;  // 画像から作成しました:
+    m_statusFlash = 2.0f;
+}
+
 void MaterialEditorPanel::RenderWindow(EditorContext& ctx, const std::string& assetsDir)
 {
     if (!ctx.pendingOpenMaterialPath.empty())
@@ -205,7 +296,7 @@ void MaterialEditorPanel::RenderWindow(EditorContext& ctx, const std::string& as
 
     if (!ctx.showMaterialEditor) return;
 
-    ImGui::SetNextWindowSize(ImVec2(560.0f, 520.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(820.0f, 680.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("\xe3\x83\x9e\xe3\x83\x86\xe3\x83\xaa\xe3\x82\xa2\xe3\x83\xab\xe3\x82\xa8\xe3\x83\x87\xe3\x82\xa3\xe3\x82\xbf###MaterialEditorFloating",  // マテリアルエディタ
                       &ctx.showMaterialEditor, ImGuiWindowFlags_NoDocking))
     {
@@ -215,9 +306,54 @@ void MaterialEditorPanel::RenderWindow(EditorContext& ctx, const std::string& as
 
     if (ImGui::Button("\xe6\x96\xb0\xe8\xa6\x8f New")) NewAsset();  // 新規
     ImGui::SameLine();
+    if (ImGui::Button("\xe7\x94\xbb\xe5\x83\x8f\xe3\x81\x8b\xe3\x82\x89\xe4\xbd\x9c\xe6\x88\x90... Import Image"))  // 画像から作成...
+        ImportFromImage(assetsDir);
+    ImGui::SameLine();
     ImGui::TextDisabled("%s", m_currentPath.empty() ? "(unsaved)" : m_currentPath.c_str());
 
     ImGui::Separator();
+
+    // ---- 左: 3Dプレビュー(球体/平面、オービットドラッグ) ----
+    ImGui::BeginGroup();
+    {
+        const char* shapeLabel = (m_previewShape == MaterialPreviewShape::Sphere)
+            ? "\xe7\x90\x83\xe4\xbd\x93 Sphere" : "\xe5\xb9\xb3\xe9\x9d\xa2 Plane";  // 球体/平面
+        if (ImGui::Button(shapeLabel, ImVec2(140.0f, 0.0f)))
+            m_previewShape = (m_previewShape == MaterialPreviewShape::Sphere)
+                ? MaterialPreviewShape::Plane : MaterialPreviewShape::Sphere;
+
+        if (m_preview.IsValid())
+        {
+            u64 handle = m_preview.GetPreviewGpuHandle();
+            ImGui::Image(static_cast<ImTextureID>(handle),
+                        ImVec2(static_cast<float>(MaterialPreviewRenderer::kPreviewSize),
+                               static_cast<float>(MaterialPreviewRenderer::kPreviewSize)));
+            if (ImGui::IsItemHovered())
+            {
+                ImGuiIO& io = ImGui::GetIO();
+                if (ImGui::IsMouseDragging(ImGuiMouseButton_Left))
+                {
+                    m_camYaw   += io.MouseDelta.x * 0.01f;
+                    m_camPitch += io.MouseDelta.y * 0.01f;
+                    m_camPitch = std::clamp(m_camPitch, -1.5f, 1.5f);
+                }
+                m_camDist = std::clamp(m_camDist - io.MouseWheel * 0.3f, 1.5f, 12.0f);
+            }
+            ImGui::TextDisabled("\xe3\x83\x89\xe3\x83\xa9\xe3\x83\x83\xe3\x82\xb0\xe3\x81\xa7\xe5\x9b\x9e\xe8\xbb\xa2"
+                                 "\xe3\x83\xbb\xe3\x83\x9b\xe3\x82\xa4\xe3\x83\xab\xe3\x81\xa7\xe3\x82\xba\xe3\x83\xbc\xe3\x83\xa0");
+                                 // ドラッグで回転・ホイールでズーム
+        }
+        else
+        {
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f),
+                "\xe3\x83\x97\xe3\x83\xac\xe3\x83\x93\xe3\x83\xa5\xe3\x83\xbc\xe5\x88\x9d\xe6\x9c\x9f\xe5\x8c\x96\xe5\xa4\xb1\xe6\x95\x97");
+                // プレビュー初期化失敗
+        }
+    }
+    ImGui::EndGroup();
+
+    ImGui::SameLine();
+    ImGui::BeginGroup();
 
     ImGui::SetNextItemWidth(240.0f);
     ImGui::InputText("\xe5\x90\x8d\xe5\x89\x8d Name", m_nameBuf, sizeof(m_nameBuf));  // 名前
@@ -272,6 +408,8 @@ void MaterialEditorPanel::RenderWindow(EditorContext& ctx, const std::string& as
         ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.6f, 1.0f), "%s", m_statusMsg.c_str());
         m_statusFlash -= ImGui::GetIO().DeltaTime;
     }
+
+    ImGui::EndGroup();
 
     ImGui::End();
 }

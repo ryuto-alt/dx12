@@ -28,20 +28,62 @@ namespace dx12e
 
 namespace
 {
-// テンプレートタブに出す厳選候補。カタログに実在しない id は自然に非表示になる(自己修復)。
+// テンプレートタブに出す厳選候補。Poly Haven API(/assets?type=textures)を実際に取得して
+// download_count上位から選定した実在ID(2026-07時点で確認済み)。カタログに無くなった場合は
+// 自然に非表示になる(自己修復、DrawGrid呼び出し元のフィルタ参照)。
 struct TemplateEntry { const char* id; const char* labelJa; };
 constexpr TemplateEntry kTemplates[] = {
-    {"brown_mud_leaves_01", "地面(土+落ち葉)"},
-    {"forest_ground_04",    "地面(森の下草)"},
-    {"aerial_rocks_02",     "岩肌"},
-    {"coast_sand_rocks_02", "砂浜"},
-    {"red_brick_03",        "レンガ壁"},
-    {"castle_brick_07",     "石壁"},
-    {"cobblestone_floor_08","石畳"},
-    {"wood_planks_grey",    "木板(グレー)"},
-    {"weathered_planks",    "古材"},
-    {"green_metal_rust",    "サビた金属"},
-    {"square_floor_tiles",  "床タイル"},
+    // 地面/自然
+    {"forest_ground_04",     "地面(森の下草)"},
+    {"forrest_ground_01",    "地面(森)"},
+    {"brown_mud_leaves_01",  "地面(土+落ち葉)"},
+    {"brown_mud_dry",        "乾いた泥"},
+    {"rocks_ground_02",      "岩混じりの地面"},
+    {"aerial_beach_01",      "砂浜"},
+    {"coast_sand_rocks_02",  "砂岩の海岸"},
+    {"snow_02",              "雪"},
+    {"snow_field_aerial",    "雪原"},
+    {"aerial_rocks_02",      "岩肌"},
+    {"rock_face_03",         "岩壁"},
+    {"aerial_grass_rock",    "草+岩"},
+    // 壁/レンガ/石/コンクリート
+    {"beige_wall_001",       "漆喰壁(ベージュ)"},
+    {"painted_plaster_wall", "塗装漆喰壁"},
+    {"white_plaster_02",     "白漆喰"},
+    {"red_brick",            "レンガ壁(赤)"},
+    {"red_brick_03",         "レンガ壁(赤・汚れ)"},
+    {"medieval_blocks_03",   "中世石ブロック壁"},
+    {"concrete_floor_worn_001", "使い古したコンクリ床"},
+    {"concrete_floor_02",    "コンクリ床"},
+    {"cracked_concrete_wall","ひび割れコンクリ壁"},
+    {"rustic_stone_wall_02", "素朴な石壁"},
+    {"stone_tiles_02",       "石タイル"},
+    // 木材
+    {"plywood",              "合板"},
+    {"wood_table_001",       "木材(テーブル)"},
+    {"oak_veneer_01",        "オーク材"},
+    {"weathered_brown_planks","古びた木板"},
+    {"bark_brown_02",        "木の樹皮"},
+    // 金属
+    {"metal_plate",          "金属板"},
+    {"green_metal_rust",     "サビた金属(緑)"},
+    {"rust_coarse_01",       "粗いサビ"},
+    {"corrugated_iron",      "トタン屋根"},
+    {"roof_slates_03",       "スレート屋根"},
+    // 布/革
+    {"fabric_pattern_07",    "布地"},
+    {"brown_leather",        "革(茶)"},
+    // 床/タイル
+    {"floor_tiles_06",       "床タイル"},
+    {"granite_tile",         "御影石タイル"},
+    {"marble_01",            "大理石"},
+    {"cobblestone_floor_08", "石畳"},
+    {"large_floor_tiles_02", "大判床タイル"},
+    // その他
+    {"asphalt_02",           "アスファルト"},
+    {"gravel_embedded_concrete", "砂利入りコンクリ"},
+    {"dirty_carpet",         "汚れたカーペット"},
+    {"decrepit_wallpaper",   "古い壁紙"},
 };
 
 std::string LowerAscii(std::string s)

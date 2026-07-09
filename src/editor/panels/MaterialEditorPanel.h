@@ -4,6 +4,7 @@
 
 #include "core/Types.h"
 #include "resource/MaterialAssetIO.h"
+#include "editor/panels/MaterialPreviewRenderer.h"
 
 namespace dx12e
 {
@@ -11,16 +12,25 @@ namespace dx12e
 class EditorContext;
 class AssetBrowserPanel;
 class MaterialAssetManager;
+class GraphicsDevice;
+class DescriptorHeap;
+class ResourceManager;
+class CommandList;
 
 // マテリアルアセット(assets/materials/*.dxmat)を見ながら編集する独立フローティング窓
 // （ツール > マテリアルエディタ、またはアセットブラウザで .dxmat をダブルクリックで開く）。
-// VfxEditorPanel と違い専用3Dプレビューは持たない（シーンに割当済みのメッシュがそのままプレビューになる:
-// スカラー変更はドラッグ中 MaterialAssetManager::UpdateScalarsOnly で即反映、確定/テクスチャ変更で
-// ディスクへ保存 + Invalidate してホットリロードさせる）。
+// 専用3Dプレビュー(球体/平面、MaterialPreviewRenderer)を持つ。スカラー変更はドラッグ中
+// MaterialAssetManager::UpdateScalarsOnly で即反映、確定/テクスチャ変更でディスクへ保存 +
+// Invalidate してホットリロードさせる。
 class MaterialEditorPanel
 {
 public:
-    void Initialize(MaterialAssetManager* materialAssetManager, AssetBrowserPanel* assetBrowser);
+    void Initialize(MaterialAssetManager* materialAssetManager, AssetBrowserPanel* assetBrowser,
+                    GraphicsDevice& device, DescriptorHeap* srvHeap, ResourceManager* resourceManager);
+
+    // 3Dプレビューのオフスクリーン描画。ImGui BeginFrame より前、メインフレームのコマンドリストが
+    // 開いている間に呼ぶこと(VfxEditorPanel::RenderPreview3D と同じ運用)。
+    void RenderPreview3D(EditorContext& ctx, CommandList& cmd);
 
     // ctx.pendingOpenMaterialPath があれば消費してロードし、showMaterialEditor を立てる。
     // showMaterialEditor が false なら(消費後も含め)即 return。
@@ -31,6 +41,7 @@ private:
     bool LoadAsset(const std::string& relPath, const std::string& assetsDir);
     bool SaveAsset(const std::string& assetsDir);  // m_currentPath が空なら m_nameBuf からパスを決める
     void DrawTextureSlot(const std::string& assetsDir, const char* label, std::string& texRelPath);
+    void ImportFromImage(const std::string& assetsDir);  // 「画像から作成」: PNG/JPGを選んでワンクリックで.dxmat化
 
     MaterialAssetManager* m_materialAssetManager = nullptr;
     AssetBrowserPanel*    m_assetBrowser = nullptr;
@@ -40,6 +51,11 @@ private:
     char        m_nameBuf[128] = "NewMaterial";
     std::string m_statusMsg;
     f32         m_statusFlash = 0.0f;
+
+    // 3Dプレビュー
+    MaterialPreviewRenderer m_preview;
+    MaterialPreviewShape    m_previewShape = MaterialPreviewShape::Sphere;
+    f32 m_camYaw = 0.6f, m_camPitch = 0.3f, m_camDist = 3.0f;
 };
 
 } // namespace dx12e
