@@ -4236,8 +4236,10 @@ void Application::Run()
         // 遅延初回表示: 隠れたまま数フレーム描画して絵（ランチャー）が確定してから
         // ウィンドウを出し、スプラッシュを閉じる。表示された瞬間には既に描画済み＝
         // 「白いまま固まって見える/出るタイミングが不安定」が起きない。
-        if (m_deferredFirstShow && ++m_warmupFrames >= 3)
+        if (m_deferredFirstShow && ++m_warmupFrames >= 3 && !m_loading)
         {
+            // ロード中(--project直開き等)はまだ出さない。ロード完了時に
+            // UpdateProjectLoad 側が表示+スプラッシュClose を引き継ぐ。
             m_deferredFirstShow = false;
             m_window->Show();       // 最大化。直後の微小リサイズは描画継続中に処理される
             SplashScreen::Close();
@@ -5054,6 +5056,11 @@ void Application::BeginProjectLoad(const ProjectInfo& info, bool isNew)
                        PathResolver::AssetsDir() + "editor/icons/logo.png");
     SplashScreen::SetStatus(m_loadStatus);
 
+    // ロードが終わるまでメインウィンドウを隠す。ロード中に古いシーンやテンプレートが
+    // 一瞬見えるのを防ぐ(表示はスプラッシュのみ。完了時に UpdateProjectLoad が再表示する)。
+    if (m_window && m_window->GetHwnd() && IsWindowVisible(m_window->GetHwnd()))
+        ShowWindow(m_window->GetHwnd(), SW_HIDE);
+
     if (isNew)
     {
         // ディスク作成（フォルダ生成・テンプレ書き出し）はワーカースレッドで
@@ -5128,6 +5135,12 @@ void Application::UpdateProjectLoad(f32 dt)
         m_loading            = false;
         m_loadProjectStarted = false;
         m_editorCtx->buildCompleteFlash = 1.5f;
+
+        // ロード完了: 隠していたメインウィンドウを出してからスプラッシュを閉じる
+        // (順序を逆にすると一瞬何も表示されない空白ができる)。
+        // 起動直後の遅延表示(--project直開き等でまだ未表示)もここで役目を引き継ぐ。
+        if (m_window) m_window->Show();
+        m_deferredFirstShow = false;
         SplashScreen::Close();
     }
 }

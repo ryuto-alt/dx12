@@ -14,6 +14,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 
@@ -402,6 +404,120 @@ size_t MaterialPreviewRenderer::ScanAllMaterials(const std::string& assetsDir)
     return queued;
 }
 
+// キャッシュファイル名: キー(正規化絶対パス)のハッシュ。モデルサムネと同じ .thumbcache/ 内、
+// 衝突ドメインを分けるため "m" プレフィックス付き。
+std::string MaterialPreviewRenderer::ThumbCacheFilePath(const std::string& key) const
+{
+    const size_t h = std::hash<std::string>{}(key);
+    char filename[40];
+    snprintf(filename, sizeof(filename), "m%016zx.raw", h);
+    return PathResolver::AssetsDir() + ".thumbcache/" + filename;
+}
+
+// ディスクキャッシュ(128x128 RGBA8 raw、rowPitch=512)からサムネイルを復元する。
+// デコードも球描画も不要で 64KB のアップロードだけ=1件あたり<1ms。成功で true。
+bool MaterialPreviewRenderer::LoadThumbFromCache(CommandList& cmd, const std::string& key,
+                                                 const std::string& cacheFile)
+{
+    constexpr u32 kRowPitch = kThumbSize * 4;               // 512 (256アライン済み)
+    constexpr u32 kDataSize = kRowPitch * kThumbSize;       // 65536
+
+    std::vector<uint8_t> bytes;
+    {
+        std::ifstream ifs(std::filesystem::path(cacheFile), std::ios::binary);
+        if (!ifs) return false;
+        bytes.assign((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+        if (bytes.size() != kDataSize) return false;        // 壊れたキャッシュ→再レンダリングへ
+    }
+
+    ID3D12Device* dev = m_device->GetDevice();
+    ThumbEntry entry;
+
+    // 本体テクスチャ(再レンダリング(Invalidate)にも使うのでRT可・初期状態COPY_DEST)
+    {
+        D3D12_RESOURCE_DESC texDesc{};
+        texDesc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        texDesc.Width            = kThumbSize;
+        texDesc.Height           = kThumbSize;
+        texDesc.DepthOrArraySize = 1;
+        texDesc.MipLevels        = 1;
+        texDesc.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;
+        texDesc.SampleDesc       = {1, 0};
+        texDesc.Flags            = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+        D3D12_CLEAR_VALUE clearVal{};
+        clearVal.Format   = DXGI_FORMAT_R8G8B8A8_UNORM;
+        clearVal.Color[0] = 0.05f; clearVal.Color[1] = 0.05f;
+        clearVal.Color[2] = 0.06f; clearVal.Color[3] = 1.0f;
+
+        D3D12_HEAP_PROPERTIES heapProps{};
+        heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+        if (FAILED(dev->CreateCommittedResource(
+                &heapProps, D3D12_HEAP_FLAG_NONE, &texDesc, D3D12_RESOURCE_STATE_COPY_DEST,
+                &clearVal, IID_PPV_ARGS(&entry.texture))))
+            return false;
+    }
+
+    // アップロードバッファ(GPU完了まで m_thumbUploads で生存させる)
+    Microsoft::WRL::ComPtr<ID3D12Resource> upload;
+    {
+        D3D12_HEAP_PROPERTIES heapProps{};
+        heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+        D3D12_RESOURCE_DESC desc{};
+        desc.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+        desc.Width            = kDataSize;
+        desc.Height           = 1;
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels        = 1;
+        desc.Format           = DXGI_FORMAT_UNKNOWN;
+        desc.SampleDesc       = {1, 0};
+        desc.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        if (FAILED(dev->CreateCommittedResource(
+                &heapProps, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_GENERIC_READ,
+                nullptr, IID_PPV_ARGS(&upload))))
+            return false;
+        void* mapped = nullptr;
+        if (FAILED(upload->Map(0, nullptr, &mapped))) return false;
+        std::memcpy(mapped, bytes.data(), kDataSize);
+        upload->Unmap(0, nullptr);
+    }
+
+    ID3D12GraphicsCommandList* native = cmd.GetNative();
+    {
+        D3D12_TEXTURE_COPY_LOCATION src{};
+        src.pResource = upload.Get();
+        src.Type      = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        src.PlacedFootprint.Footprint = {DXGI_FORMAT_R8G8B8A8_UNORM, kThumbSize, kThumbSize, 1, kRowPitch};
+        D3D12_TEXTURE_COPY_LOCATION dst{};
+        dst.pResource        = entry.texture.Get();
+        dst.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        dst.SubresourceIndex = 0;
+        native->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+
+        D3D12_RESOURCE_BARRIER barrier{};
+        barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition.pResource   = entry.texture.Get();
+        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        native->ResourceBarrier(1, &barrier);
+    }
+    m_thumbUploads.push_back({std::move(upload), m_thumbFrame});
+
+    entry.srvIndex = m_srvHeap->AllocateIndex();
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+    srvDesc.Format                  = DXGI_FORMAT_R8G8B8A8_UNORM;
+    srvDesc.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Texture2D.MipLevels     = 1;
+    dev->CreateShaderResourceView(entry.texture.Get(), &srvDesc,
+                                  m_srvHeap->GetCpuHandle(entry.srvIndex));
+    entry.gpuHandle = m_srvHeap->GetGpuHandle(entry.srvIndex).ptr;
+
+    m_thumbCache[key] = std::move(entry);
+    return true;
+}
+
 void MaterialPreviewRenderer::RenderPendingThumbnails(CommandList& cmd)
 {
     if (!m_valid || !m_resourceManager || !m_thumbDepth) return;
@@ -409,10 +525,65 @@ void MaterialPreviewRenderer::RenderPendingThumbnails(CommandList& cmd)
     ID3D12GraphicsCommandList* native = cmd.GetNative();
     ID3D12Device* dev = m_device->GetDevice();
 
-    // 1フレーム2枚まで(テクスチャロード込みなのでスパイクを避ける)
-    for (int budget = 2; budget > 0 && !m_thumbQueue.empty(); --budget)
+    ++m_thumbFrame;
+
+    // 1) レンダリング済みサムネイルのディスク保存(発行から4フレーム後=トリプルバッファでも
+    //    GPU完了が保証されるタイミング。FrameResources::BeginFrame が過去フレームのフェンスを待つ)
+    for (auto it = m_thumbSaves.begin(); it != m_thumbSaves.end();)
+    {
+        if (m_thumbFrame - it->frame >= 4)
+        {
+            void* mapped = nullptr;
+            const D3D12_RANGE readRange{0, kThumbSize * kThumbSize * 4};
+            if (SUCCEEDED(it->readback->Map(0, &readRange, &mapped)))
+            {
+                std::error_code ec;
+                std::filesystem::create_directories(
+                    std::filesystem::path(it->file).parent_path(), ec);
+                std::ofstream ofs(std::filesystem::path(it->file), std::ios::binary | std::ios::trunc);
+                if (ofs)
+                    ofs.write(static_cast<const char*>(mapped),
+                              static_cast<std::streamsize>(kThumbSize * kThumbSize * 4));
+                const D3D12_RANGE writeRange{0, 0};
+                it->readback->Unmap(0, &writeRange);
+            }
+            it = m_thumbSaves.erase(it);
+        }
+        else
+            ++it;
+    }
+    // 2) 役目を終えたアップロードバッファの解放(同じく4フレーム後)
+    std::erase_if(m_thumbUploads, [&](const ThumbPendingUpload& u) {
+        return m_thumbFrame - u.frame >= 4;
+    });
+
+    // 3) キュー処理: ディスクキャッシュヒットは軽い(64KBアップロードのみ)ので16件/フレーム、
+    //    レンダリング(テクスチャデコード込みで重い)は2件/フレームまで。
+    int rendered = 0, cacheLoaded = 0;
+    while (!m_thumbQueue.empty() && cacheLoaded < 16)
     {
         const std::string key = m_thumbQueue.front();
+
+        // ディスクキャッシュ: キャッシュが .dxmat より新しければ復元(初回生成エントリのみ。
+        // Invalidate 再レンダリングは既存エントリがあるのでキャッシュを使わず描き直す)
+        const std::string cacheFile = ThumbCacheFilePath(key);
+        if (!m_thumbCache.count(key))
+        {
+            std::error_code ec1, ec2;
+            namespace fs = std::filesystem;
+            if (fs::exists(fs::path(cacheFile), ec1)
+                && fs::last_write_time(fs::path(cacheFile), ec1) >= fs::last_write_time(fs::path(key), ec2)
+                && !ec1 && !ec2
+                && LoadThumbFromCache(cmd, key, cacheFile))
+            {
+                m_thumbQueue.erase(m_thumbQueue.begin());
+                ++cacheLoaded;
+                continue;
+            }
+        }
+
+        if (rendered >= 2) break;   // 重い方の予算は使い切った(FIFOを保って次フレームへ)
+        ++rendered;
         m_thumbQueue.erase(m_thumbQueue.begin());
 
         // .dxmat 読み込み+パース
@@ -494,11 +665,54 @@ void MaterialPreviewRenderer::RenderPendingThumbnails(CommandList& cmd)
         DrawSceneTo(cmd, m_thumbRtvHandle, m_thumbDsvHandle, kThumbSize,
                     input, MaterialPreviewShape::Sphere, 0.6f, 0.3f, 3.0f);
 
+        // RT → COPY_SOURCE: 結果をリードバックへコピーしてディスクキャッシュに保存する
+        // (保存自体はGPU完了が確実な4フレーム後にMap。次回ロードからデコード不要になる)
         {
             D3D12_RESOURCE_BARRIER barrier{};
             barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
             barrier.Transition.pResource   = entry.texture.Get();
             barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_SOURCE;
+            barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            native->ResourceBarrier(1, &barrier);
+        }
+        {
+            constexpr u32 kRowPitch = kThumbSize * 4;
+            constexpr u32 kDataSize = kRowPitch * kThumbSize;
+            Microsoft::WRL::ComPtr<ID3D12Resource> readback;
+            D3D12_HEAP_PROPERTIES heapProps{};
+            heapProps.Type = D3D12_HEAP_TYPE_READBACK;
+            D3D12_RESOURCE_DESC desc{};
+            desc.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+            desc.Width            = kDataSize;
+            desc.Height           = 1;
+            desc.DepthOrArraySize = 1;
+            desc.MipLevels        = 1;
+            desc.Format           = DXGI_FORMAT_UNKNOWN;
+            desc.SampleDesc       = {1, 0};
+            desc.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+            if (SUCCEEDED(dev->CreateCommittedResource(
+                    &heapProps, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST,
+                    nullptr, IID_PPV_ARGS(&readback))))
+            {
+                D3D12_TEXTURE_COPY_LOCATION src{};
+                src.pResource        = entry.texture.Get();
+                src.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                src.SubresourceIndex = 0;
+                D3D12_TEXTURE_COPY_LOCATION dst{};
+                dst.pResource = readback.Get();
+                dst.Type      = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                dst.PlacedFootprint.Footprint =
+                    {DXGI_FORMAT_R8G8B8A8_UNORM, kThumbSize, kThumbSize, 1, kRowPitch};
+                native->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+                m_thumbSaves.push_back({ThumbCacheFilePath(key), std::move(readback), m_thumbFrame});
+            }
+        }
+        {
+            D3D12_RESOURCE_BARRIER barrier{};
+            barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            barrier.Transition.pResource   = entry.texture.Get();
+            barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
             barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
             barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
             native->ResourceBarrier(1, &barrier);

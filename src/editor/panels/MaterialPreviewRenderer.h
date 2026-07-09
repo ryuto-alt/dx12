@@ -113,6 +113,28 @@ private:
     };
     std::unordered_map<std::string, ThumbEntry> m_thumbCache;   // key: 正規化した絶対パス
     std::vector<std::string> m_thumbQueue;
+
+    // ---- ディスクキャッシュ(ModelThumbnailRendererと同じ assets/.thumbcache/、128px RGBA8 raw) ----
+    // 初回はテクスチャデコード+球描画(重い)だが、結果をディスクへ保存し、次回以降のプロジェクト
+    // ロードは 64KB の raw 読み込み+アップロードだけ(=デコード不要で爆速)。.dxmat の更新時刻が
+    // キャッシュより新しければ無効として再レンダリングする。
+    struct ThumbPendingSave
+    {
+        std::string file;                                    // 保存先キャッシュファイル
+        Microsoft::WRL::ComPtr<ID3D12Resource> readback;     // GPU→CPU リードバックバッファ
+        u64 frame = 0;                                       // 発行時の m_thumbFrame
+    };
+    struct ThumbPendingUpload
+    {
+        Microsoft::WRL::ComPtr<ID3D12Resource> upload;       // アップロードバッファ(GPU完了まで生存)
+        u64 frame = 0;
+    };
+    std::vector<ThumbPendingSave>   m_thumbSaves;
+    std::vector<ThumbPendingUpload> m_thumbUploads;
+    u64 m_thumbFrame = 0;    // RenderPendingThumbnails の呼び出しカウンタ(≒フレーム番号)
+    std::string ThumbCacheFilePath(const std::string& key) const;
+    bool LoadThumbFromCache(CommandList& cmd, const std::string& key, const std::string& cacheFile);
+
     Microsoft::WRL::ComPtr<ID3D12Resource> m_thumbDepth;        // 128px D32(全サムネイルで共用)
     DescriptorHeap m_thumbRtvHeap;                              // 1個をCreateRTVで使い回す
     DescriptorHeap m_thumbDsvHeap;
