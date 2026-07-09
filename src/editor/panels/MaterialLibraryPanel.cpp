@@ -103,15 +103,21 @@ std::string TodayDate()
 }
 
 // Poly Haven /files/<id> JSON から mapType(diff/nor_gl/arm 等)・解像度・拡張子で URL を引く。
+// マップ種別キーはAPI側で表記が揺れる(旧: "diff" → 現: "Diffuse" 等)ため大文字小文字を無視して照合する。
 std::string PickUrl(const nlohmann::json& filesJson, const std::string& mapType,
                     const std::string& res, const std::string& fmt)
 {
-    if (!filesJson.contains(mapType)) return "";
-    const auto& byRes = filesJson[mapType];
-    if (!byRes.is_object() || !byRes.contains(res)) return "";
-    const auto& byFmt = byRes[res];
-    if (!byFmt.is_object() || !byFmt.contains(fmt)) return "";
-    return byFmt[fmt].value("url", "");
+    const std::string wanted = LowerAscii(mapType);
+    for (auto it = filesJson.begin(); it != filesJson.end(); ++it)
+    {
+        if (LowerAscii(it.key()) != wanted) continue;
+        const auto& byRes = it.value();
+        if (!byRes.is_object() || !byRes.contains(res)) return "";
+        const auto& byFmt = byRes[res];
+        if (!byFmt.is_object() || !byFmt.contains(fmt)) return "";
+        return byFmt[fmt].value("url", "");
+    }
+    return "";
 }
 
 // asset.ps1(スキル)と同じ表形式でマニフェストへ追記する(CC-BY対策の出所記録。Poly HavenはCC0なので
@@ -295,10 +301,19 @@ void MaterialLibraryPanel::StartDownload(const std::string& id, const std::strin
         catch (const std::exception& e) { fail(std::string("files JSON解析失敗: ") + e.what()); return; }
 
         // diff(jpgで容量節約) / nor_gl(pngのみ。nor_dxは使わない=シェーダーがOpenGL規約のため) / arm(png、AO+Rough+Metal)
+        // albedoのキー名はAPI側で "diff" → "Diffuse" に変わった実績があるため両方試す。
         std::string diffUrl = PickUrl(filesJson, "diff", res, "jpg");
+        if (diffUrl.empty()) diffUrl = PickUrl(filesJson, "diffuse", res, "jpg");
         std::string normUrl = PickUrl(filesJson, "nor_gl", res, "png");
         std::string armUrl  = PickUrl(filesJson, "arm", res, "png");
-        if (diffUrl.empty()) { fail("albedo(diff)テクスチャが見つかりません"); return; }
+        if (diffUrl.empty())
+        {
+            std::string keys;
+            for (auto it = filesJson.begin(); it != filesJson.end(); ++it)
+                keys += (keys.empty() ? "" : ", ") + it.key();
+            fail("albedo(diff)テクスチャが見つかりません (APIのキー: " + keys + ")");
+            return;
+        }
 
         fs::path outDir = fs::path(assetsDir) / "textures" / id;
         std::error_code ec;
