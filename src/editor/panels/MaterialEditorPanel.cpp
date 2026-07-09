@@ -381,16 +381,19 @@ void MaterialEditorPanel::RenderWindow(EditorContext& ctx, const std::string& as
                 m_orbitAnchorY = io.MousePos.y;
             }
             // IsItemActive: プレビュー上で押下開始したドラッグのみ回転(途中で画像外へ出ても継続)。
-            if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f))
+            if (ImGui::IsItemActive() && ImGui::IsMouseDown(ImGuiMouseButton_Left))
             {
-                m_camYaw   += io.MouseDelta.x * 0.01f;
-                m_camPitch += io.MouseDelta.y * 0.01f;
+                // 回転量は io.MouseDelta ではなく「アンカーからの位置差」で計算する。
+                // 毎フレームのワープで戻された分がイベントキュー上の移動と相殺し、MouseDelta が
+                // 常にほぼ0になって回転しなくなるため(ワープ方式ではこの差分計算が定石)。
+                // 毎フレーム末尾でアンカーへ戻すので、この差分=今フレームの実移動量になる。
+                m_camYaw   += (io.MousePos.x - m_orbitAnchorX) * 0.01f;
+                m_camPitch += (io.MousePos.y - m_orbitAnchorY) * 0.01f;
                 m_camPitch = std::clamp(m_camPitch, -1.5f, 1.5f);
 
                 // カーソルを開始位置へワープ+非表示(無限回転、Unrealのビューポート操作と同じ)。
-                // io.WantSetMousePos はバックエンド(imgui_impl_win32)がOSカーソルを移動し、ImGui側の
-                // MouseDelta 計算もワープ分を含まないよう整合してくれる公式機構。離した瞬間に
-                // カーソルは開始位置へ再表示される。
+                // io.WantSetMousePos でバックエンド(imgui_impl_win32)がOSカーソルを移動する。
+                // 離した瞬間にカーソルは開始位置へ再表示される。
                 ImGui::SetMouseCursor(ImGuiMouseCursor_None);
                 io.MousePos = ImVec2(m_orbitAnchorX, m_orbitAnchorY);
                 io.WantSetMousePos = true;

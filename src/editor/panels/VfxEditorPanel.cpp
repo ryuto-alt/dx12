@@ -581,13 +581,15 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
             m_orbitAnchorX = io.MousePos.x;
             m_orbitAnchorY = io.MousePos.y;
         }
-        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f))
+        if (ImGui::IsItemActive() && ImGui::IsMouseDown(ImGuiMouseButton_Left))
         {
-            m_camYaw   += io.MouseDelta.x * 0.01f;
-            m_camPitch += io.MouseDelta.y * 0.01f;
+            // 回転量は「アンカーからの位置差」で計算(毎フレームのワープと MouseDelta が相殺して
+            // 回転しなくなるため。MaterialEditorPanel と同じ対処)。
+            m_camYaw   += (io.MousePos.x - m_orbitAnchorX) * 0.01f;
+            m_camPitch += (io.MousePos.y - m_orbitAnchorY) * 0.01f;
             m_camPitch = std::clamp(m_camPitch, -1.5f, 1.5f);
 
-            // カーソルを開始位置へワープ+非表示(無限回転)。MaterialEditorPanel と同じ対処。
+            // カーソルを開始位置へワープ+非表示(無限回転)。
             ImGui::SetMouseCursor(ImGuiMouseCursor_None);
             io.MousePos = ImVec2(m_orbitAnchorX, m_orbitAnchorY);
             io.WantSetMousePos = true;
