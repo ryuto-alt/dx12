@@ -1,8 +1,14 @@
 #pragma once
 
+#include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <DirectXMath.h>
 #include <wrl/client.h>
@@ -43,6 +49,7 @@ public:
     };
 
     void Initialize(GraphicsDevice& device, DescriptorHeap* srvHeap, ResourceManager* resourceManager);
+    ~MaterialPreviewRenderer();
     bool IsValid() const { return m_valid; }
 
     // オフスクリーンRTへ描画。cmd/nativeCmdListは呼び出し側が用意した有効なコマンドリスト。
@@ -61,11 +68,13 @@ public:
     // (ImGuiが前フレームで参照している可能性があるため、リソースの即時解放はしない)。
     void InvalidateThumbnail(const std::string& dxmatAbsPath);
     // フレーム先頭・メインコマンドリストが開いている間に呼ぶ(ModelThumbnailRendererと同じ運用)。
+    // 重い画像デコードはワーカースレッドが済ませており、ここではデコード完了分の
+    // GPUアップロード+球描画だけを行う(=ローディング画面のスピナーが固まらない)。
     void RenderPendingThumbnails(CommandList& cmd);
     // assets配下の全 .dxmat を走査して未キャッシュ分をキューに積む(プロジェクトロード時の事前生成用)。
     // 積んだ数を返す。進捗表示は GetPendingThumbnailCount() で残数を見る。
     size_t ScanAllMaterials(const std::string& assetsDir);
-    size_t GetPendingThumbnailCount() const { return m_thumbQueue.size(); }
+    size_t GetPendingThumbnailCount() const { return m_pendingKeys.size(); }
     static constexpr u32 kThumbSize = 128;
 
 private:
@@ -75,6 +84,14 @@ private:
     void DrawSceneTo(CommandList& cmd, D3D12_CPU_DESCRIPTOR_HANDLE rtv, D3D12_CPU_DESCRIPTOR_HANDLE dsv,
                      u32 size, const DrawInput& input, MaterialPreviewShape shape,
                      f32 camYaw, f32 camPitch, f32 camDist);
+    // ↑のさらに内側: SRVブロック確定済みで描くだけ(サムネイルの非同期パスと共用)。
+    void DrawSceneWithSrvs(CommandList& cmd, D3D12_CPU_DESCRIPTOR_HANDLE rtv, D3D12_CPU_DESCRIPTOR_HANDLE dsv,
+                           u32 size, u32 srvBlockStart, f32 metallic, f32 roughness,
+                           bool hasNormal, bool hasMetalRoughness, MaterialPreviewShape shape,
+                           f32 camYaw, f32 camPitch, f32 camDist);
+    // サムネイル用デコードワーカー(ファイル読み+パース+WICデコード+縮小をメイン外で行う)
+    void DecodeWorkerLoop();
+    void EnqueueThumbnailDecode(const std::string& key);
 
     GraphicsDevice*   m_device = nullptr;
     DescriptorHeap*   m_srvHeap = nullptr;
@@ -112,7 +129,20 @@ private:
         bool failed    = false;   // .dxmatパース失敗(Invalidateまで再試行しない)
     };
     std::unordered_map<std::string, ThumbEntry> m_thumbCache;   // key: 正規化した絶対パス
-    std::vector<std::string> m_thumbQueue;
+
+    // ---- 非同期デコード(ワーカー1本) ----
+    // 4Kテクスチャの WIC デコードは1枚数百msかかるため、メインスレッドでやると
+    // ローディング画面のスピナーやエディタが固まる。ワーカーが ScratchImage まで用意し、
+    // メインは軽いGPUアップロード+球描画だけを行う。
+    struct ThumbDecodeJob;                                       // cpp内定義(DirectXTex依存を隠す)
+    std::unordered_set<std::string> m_pendingKeys;               // 依頼済み(未完了)キー。メインスレッド専用
+    std::deque<std::string> m_decodeRequests;                    // ワーカー待ち(m_decodeMutex)
+    std::vector<std::shared_ptr<ThumbDecodeJob>> m_decodeDone;   // デコード完了→描画待ち(m_decodeMutex)
+    std::mutex m_decodeMutex;
+    std::condition_variable m_decodeCv;
+    std::thread m_decodeWorker;
+    std::atomic<bool> m_decodeStop{false};
+
     Microsoft::WRL::ComPtr<ID3D12Resource> m_thumbDepth;        // 128px D32(全サムネイルで共用)
     DescriptorHeap m_thumbRtvHeap;                              // 1個をCreateRTVで使い回す
     DescriptorHeap m_thumbDsvHeap;
