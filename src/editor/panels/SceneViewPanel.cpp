@@ -543,19 +543,15 @@ SubmeshPickResult SceneViewPanel::PickEntityAndSubmesh(entt::registry& reg,
     auto meshView = reg.view<const Transform, const MeshRenderer>();
     for (auto [e, transform, renderer] : meshView.each())
     {
-        XMFLOAT3 wpos   = transform.position;
-        XMFLOAT3 wscale = transform.scale;
-        if (transform.parent != entt::null && reg.valid(transform.parent))
-        {
-            XMMATRIX wm = ComputeWorldMatrix(reg, e);
-            XMFLOAT4X4 wf;
-            XMStoreFloat4x4(&wf, wm);
-            wpos = {wf._41, wf._42, wf._43};
-            wscale = {
-                XMVectorGetX(XMVector3Length(wm.r[0])),
-                XMVectorGetX(XMVector3Length(wm.r[1])),
-                XMVectorGetX(XMVector3Length(wm.r[2]))};
-        }
+        // 床グリッドはマテリアル適用対象外(HandlePicking と同じ扱い)。これが無いと
+        // 巨大な床平面が最近ヒットを奪い、D&Dしたマテリアルがグリッドに吸われて
+        // 「適用したのに何も変わらない」状態になる(グリッドは専用PSOでmaterialAssetを無視する)。
+        if (reg.all_of<GridPlane>(e)) continue;
+
+        // ローカルAABBの8頂点をワールド行列(回転込み)で変換してワールドAABBを再構築する。
+        // 旧実装は平行移動+スケールのみで回転を無視しており、回転させたメッシュで見た目と
+        // ヒット判定がズレてドロップが外れていた。
+        const XMMATRIX wm = ComputeWorldMatrix(reg, e);
 
         for (u32 mi = 0; mi < static_cast<u32>(renderer.meshes.size()); ++mi)
         {
@@ -563,16 +559,24 @@ SubmeshPickResult SceneViewPanel::PickEntityAndSubmesh(entt::registry& reg,
             if (!mesh) continue;
             auto meshMin = mesh->GetAABBMin();
             auto meshMax = mesh->GetAABBMax();
-            XMFLOAT3 worldMin = {
-                wpos.x + meshMin.x * wscale.x,
-                wpos.y + meshMin.y * wscale.y,
-                wpos.z + meshMin.z * wscale.z
-            };
-            XMFLOAT3 worldMax = {
-                wpos.x + meshMax.x * wscale.x,
-                wpos.y + meshMax.y * wscale.y,
-                wpos.z + meshMax.z * wscale.z
-            };
+
+            XMFLOAT3 worldMin = { FLT_MAX,  FLT_MAX,  FLT_MAX};
+            XMFLOAT3 worldMax = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+            for (int ci = 0; ci < 8; ++ci)
+            {
+                XMVECTOR corner = XMVectorSet(
+                    (ci & 1) ? meshMax.x : meshMin.x,
+                    (ci & 2) ? meshMax.y : meshMin.y,
+                    (ci & 4) ? meshMax.z : meshMin.z, 1.0f);
+                XMFLOAT3 c;
+                XMStoreFloat3(&c, XMVector3TransformCoord(corner, wm));
+                worldMin.x = (std::min)(worldMin.x, c.x);
+                worldMin.y = (std::min)(worldMin.y, c.y);
+                worldMin.z = (std::min)(worldMin.z, c.z);
+                worldMax.x = (std::max)(worldMax.x, c.x);
+                worldMax.y = (std::max)(worldMax.y, c.y);
+                worldMax.z = (std::max)(worldMax.z, c.z);
+            }
 
             f32 t = rayTestAABB(worldMin, worldMax);
             if (t > 0.0f && t < closestDist)
