@@ -576,23 +576,25 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
             imgPos, ImVec2(imgPos.x + 256.0f, imgPos.y + 256.0f));
 
         ImGuiIO& io = ImGui::GetIO();
+        // カーソル固定オービット(無限回転)。Win32 の物理カーソル位置を直接読み書きする
+        // (GetCursorPos で移動量→SetCursorPos で即アンカーへ戻す)。MaterialEditorPanel と同じ対処。
         if (ImGui::IsItemActivated())
         {
-            m_orbitAnchorX = io.MousePos.x;
-            m_orbitAnchorY = io.MousePos.y;
+            POINT p;
+            ::GetCursorPos(&p);
+            m_orbitAnchorX = static_cast<f32>(p.x);
+            m_orbitAnchorY = static_cast<f32>(p.y);
         }
         if (ImGui::IsItemActive() && ImGui::IsMouseDown(ImGuiMouseButton_Left))
         {
-            // 回転量は「アンカーからの位置差」で計算(毎フレームのワープと MouseDelta が相殺して
-            // 回転しなくなるため。MaterialEditorPanel と同じ対処)。
-            m_camYaw   += (io.MousePos.x - m_orbitAnchorX) * 0.01f;
-            m_camPitch += (io.MousePos.y - m_orbitAnchorY) * 0.01f;
+            POINT p;
+            ::GetCursorPos(&p);
+            m_camYaw   += (static_cast<f32>(p.x) - m_orbitAnchorX) * 0.01f;
+            m_camPitch += (static_cast<f32>(p.y) - m_orbitAnchorY) * 0.01f;
             m_camPitch = std::clamp(m_camPitch, -1.5f, 1.5f);
 
-            // カーソルを開始位置へワープ+非表示(無限回転)。
+            ::SetCursorPos(static_cast<int>(m_orbitAnchorX), static_cast<int>(m_orbitAnchorY));
             ImGui::SetMouseCursor(ImGuiMouseCursor_None);
-            io.MousePos = ImVec2(m_orbitAnchorX, m_orbitAnchorY);
-            io.WantSetMousePos = true;
         }
         if (ImGui::IsItemHovered() && io.MouseWheel != 0.0f)
             m_camDist = std::clamp(m_camDist - io.MouseWheel * 0.4f, 1.0f, 30.0f);

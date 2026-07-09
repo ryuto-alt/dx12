@@ -374,29 +374,29 @@ void MaterialEditorPanel::RenderWindow(EditorContext& ctx, const std::string& as
                 imgPos, ImVec2(imgPos.x + previewSize, imgPos.y + previewSize));
 
             ImGuiIO& io = ImGui::GetIO();
+            // カーソル固定オービット(無限回転、Unrealのビューポート操作と同じ)。
+            // ImGui のイベントキュー(io.MousePos/WantSetMousePos)経由はワープとイベント適用の
+            // タイミングが噛み合わず回転量が出ないため、Win32 の物理カーソル位置を直接読み書きする:
+            // GetCursorPos(即値) でアンカーからの移動量を取り、SetCursorPos で即座にアンカーへ戻す。
+            // ワープ→読み取りが同期的なので相殺やフレーム遅延が原理的に起きない。
             if (ImGui::IsItemActivated())
             {
-                // ドラッグ開始位置を記憶(ImGui座標)。以後はここへカーソルを固定する。
-                m_orbitAnchorX = io.MousePos.x;
-                m_orbitAnchorY = io.MousePos.y;
+                POINT p;
+                ::GetCursorPos(&p);   // スクリーン座標(物理)。ImGui座標系とは独立に扱う
+                m_orbitAnchorX = static_cast<f32>(p.x);
+                m_orbitAnchorY = static_cast<f32>(p.y);
             }
             // IsItemActive: プレビュー上で押下開始したドラッグのみ回転(途中で画像外へ出ても継続)。
             if (ImGui::IsItemActive() && ImGui::IsMouseDown(ImGuiMouseButton_Left))
             {
-                // 回転量は io.MouseDelta ではなく「アンカーからの位置差」で計算する。
-                // 毎フレームのワープで戻された分がイベントキュー上の移動と相殺し、MouseDelta が
-                // 常にほぼ0になって回転しなくなるため(ワープ方式ではこの差分計算が定石)。
-                // 毎フレーム末尾でアンカーへ戻すので、この差分=今フレームの実移動量になる。
-                m_camYaw   += (io.MousePos.x - m_orbitAnchorX) * 0.01f;
-                m_camPitch += (io.MousePos.y - m_orbitAnchorY) * 0.01f;
+                POINT p;
+                ::GetCursorPos(&p);
+                m_camYaw   += (static_cast<f32>(p.x) - m_orbitAnchorX) * 0.01f;
+                m_camPitch += (static_cast<f32>(p.y) - m_orbitAnchorY) * 0.01f;
                 m_camPitch = std::clamp(m_camPitch, -1.5f, 1.5f);
 
-                // カーソルを開始位置へワープ+非表示(無限回転、Unrealのビューポート操作と同じ)。
-                // io.WantSetMousePos でバックエンド(imgui_impl_win32)がOSカーソルを移動する。
-                // 離した瞬間にカーソルは開始位置へ再表示される。
-                ImGui::SetMouseCursor(ImGuiMouseCursor_None);
-                io.MousePos = ImVec2(m_orbitAnchorX, m_orbitAnchorY);
-                io.WantSetMousePos = true;
+                ::SetCursorPos(static_cast<int>(m_orbitAnchorX), static_cast<int>(m_orbitAnchorY));
+                ImGui::SetMouseCursor(ImGuiMouseCursor_None);   // ドラッグ中は非表示。離すとアンカー位置に再表示
             }
             if (ImGui::IsItemHovered())
                 m_camDist = std::clamp(m_camDist - io.MouseWheel * 0.3f, 1.5f, 12.0f);
