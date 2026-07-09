@@ -576,11 +576,21 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
             imgPos, ImVec2(imgPos.x + 256.0f, imgPos.y + 256.0f));
 
         ImGuiIO& io = ImGui::GetIO();
+        if (ImGui::IsItemActivated())
+        {
+            m_orbitAnchorX = io.MousePos.x;
+            m_orbitAnchorY = io.MousePos.y;
+        }
         if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f))
         {
             m_camYaw   += io.MouseDelta.x * 0.01f;
             m_camPitch += io.MouseDelta.y * 0.01f;
             m_camPitch = std::clamp(m_camPitch, -1.5f, 1.5f);
+
+            // カーソルを開始位置へワープ+非表示(無限回転)。MaterialEditorPanel と同じ対処。
+            ImGui::SetMouseCursor(ImGuiMouseCursor_None);
+            io.MousePos = ImVec2(m_orbitAnchorX, m_orbitAnchorY);
+            io.WantSetMousePos = true;
         }
         if (ImGui::IsItemHovered() && io.MouseWheel != 0.0f)
             m_camDist = std::clamp(m_camDist - io.MouseWheel * 0.4f, 1.0f, 30.0f);

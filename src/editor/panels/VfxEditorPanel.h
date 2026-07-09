@@ -120,6 +120,8 @@ private:
     f32 m_camYaw   = -2.6f;
     f32 m_camPitch = 0.35f;
     f32 m_camDist  = 6.0f;
+    // オービットドラッグ開始位置(ImGui座標)。ドラッグ中はカーソルをここへ固定+非表示(無限回転)。
+    f32 m_orbitAnchorX = 0.0f, m_orbitAnchorY = 0.0f;
     DirectX::XMFLOAT3 m_camTarget{0.0f, 1.0f, 0.0f};
     f32 m_emitAccum   = 0.0f;
     f32 m_previewTime = 0.0f;

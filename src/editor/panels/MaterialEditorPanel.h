@@ -56,6 +56,9 @@ private:
     MaterialPreviewRenderer m_preview;
     MaterialPreviewShape    m_previewShape = MaterialPreviewShape::Sphere;
     f32 m_camYaw = 0.6f, m_camPitch = 0.3f, m_camDist = 3.0f;
+    // オービットドラッグ開始位置(ImGui座標)。ドラッグ中はカーソルをここへ固定+非表示にして
+    // 無限回転できるようにする(離すと同じ位置にカーソルが再表示される。Unrealと同じ操作感)。
+    f32 m_orbitAnchorX = 0.0f, m_orbitAnchorY = 0.0f;
 };
 
 } // namespace dx12e

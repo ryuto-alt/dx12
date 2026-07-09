@@ -374,12 +374,26 @@ void MaterialEditorPanel::RenderWindow(EditorContext& ctx, const std::string& as
                 imgPos, ImVec2(imgPos.x + previewSize, imgPos.y + previewSize));
 
             ImGuiIO& io = ImGui::GetIO();
+            if (ImGui::IsItemActivated())
+            {
+                // ドラッグ開始位置を記憶(ImGui座標)。以後はここへカーソルを固定する。
+                m_orbitAnchorX = io.MousePos.x;
+                m_orbitAnchorY = io.MousePos.y;
+            }
             // IsItemActive: プレビュー上で押下開始したドラッグのみ回転(途中で画像外へ出ても継続)。
             if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f))
             {
                 m_camYaw   += io.MouseDelta.x * 0.01f;
                 m_camPitch += io.MouseDelta.y * 0.01f;
                 m_camPitch = std::clamp(m_camPitch, -1.5f, 1.5f);
+
+                // カーソルを開始位置へワープ+非表示(無限回転、Unrealのビューポート操作と同じ)。
+                // io.WantSetMousePos はバックエンド(imgui_impl_win32)がOSカーソルを移動し、ImGui側の
+                // MouseDelta 計算もワープ分を含まないよう整合してくれる公式機構。離した瞬間に
+                // カーソルは開始位置へ再表示される。
+                ImGui::SetMouseCursor(ImGuiMouseCursor_None);
+                io.MousePos = ImVec2(m_orbitAnchorX, m_orbitAnchorY);
+                io.WantSetMousePos = true;
             }
             if (ImGui::IsItemHovered())
                 m_camDist = std::clamp(m_camDist - io.MouseWheel * 0.3f, 1.5f, 12.0f);
