@@ -7,7 +7,7 @@
 namespace dx12e
 {
 // セマンティックバージョン（"MAJOR.MINOR.PATCH"）。GitHub リリースのタグ（"v1.2.3" 等）と比較する。
-constexpr const char* kEngineVersion = "0.9.7";
+constexpr const char* kEngineVersion = "0.9.8";
 
 // 自動アップデートの取得元 GitHub リポジトリ。
 constexpr const char* kUpdateRepoOwner = "ryuto-alt";
@@ -16,17 +16,18 @@ constexpr const char* kUpdateRepoName  = "dx12";
 // 起動時に一度だけ表示する「更新内容」ポップアップ（この版で直したこと）。
 // 表示済み判定は %LOCALAPPDATA%\DX12Engine\shown_version.txt（版が変わった初回だけ出す）。
 // 新しい版を出すときは kEngineVersion を上げ、ここも書き換えること。
-constexpr const char* kWhatsNewTitle = "DX12 Engine v0.9.7 の更新内容";
+constexpr const char* kWhatsNewTitle = "DX12 Engine v0.9.8 の更新内容";
 constexpr const char* kWhatsNewBody =
-    "今回の更新: マテリアル関連の使い勝手を大幅改善\n"
+    "今回の更新: エディタUIをUE5風に一新 + ロード高速化\n"
     "\n"
-    "・アセットブラウザ: .dxmat マテリアルを球体プレビューで表示するように\n"
-    "  なりました(ライティング込みの見た目で一覧できます)。\n"
-    "・マテリアルの D&D 適用: アセットブラウザから .dxmat をシーンビューの\n"
-    "  オブジェクトへ直接ドロップして適用できます(サブメッシュ単位、\n"
-    "  Undo対応。Unity/Unreal と同じ操作感)。\n"
-    "・マテリアルライブラリ: Poly Haven の API 変更でダウンロードが\n"
-    "  失敗していた問題を修正しました。\n"
-    "・マテリアルエディタ: ウィンドウの初期サイズを拡大、プレビュー球の\n"
-    "  ドラッグ回転の向きを反転して直感的にしました。\n";
+    "・カスタムタイトルバー: OSの標準タイトルバーを廃止し、メニュー・シーン名・\n"
+    "  ウィンドウ操作を統合したダークなタイトルバーに(Unreal/Unity風)。\n"
+    "・FreeType フォント描画で文字がくっきり。Play/Stop ボタンは画面中央に。\n"
+    "・multi-viewport: ツール窓(マテリアルエディタ等)をメインウィンドウの外へ\n"
+    "  ドラッグすると独立したウィンドウになります(マルチモニタ向け)。\n"
+    "・マテリアルサムネイル: プロジェクトロード時に事前生成し、結果をディスクに\n"
+    "  キャッシュ。2回目以降のロードが大幅に高速化。ロード中はスプラッシュ表示で\n"
+    "  固まらず、完了までエディタ画面を出しません。\n"
+    "・修正: マテリアルD&Dが床グリッドに吸われる/回転オブジェクトに当たらない問題。\n"
+    "・パーティクルに「向き Orient」を追加(ビルボード/水平/垂直)。\n";
 } // namespace dx12e
