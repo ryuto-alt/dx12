@@ -426,6 +426,8 @@ struct ParticleEmitter
 {
     int  kind        = 0;      // 見た目（0=Glow,1=Fire,2=Smoke,3=Spark,4=Magic,5=Electric,6=Ring,7=Star）
     int  blend       = 0;      // 0=加算 Additive, 1=前乗算アルファ（煙）
+    int  orient      = 0;      // 粒子の向き 0=ビルボード(常にカメラ正対) 1=水平(XZ地面向き) 2=垂直(XY,+Z正対)。
+                               // stretch>0 は速度整列が優先。gpu=true は非対応(常にビルボード)
     f32  rate        = 30.0f;  // 連続放出レート（個/秒）。0 で連続放出しない
     bool playOnStart = true;   // Play 開始時に自動で放出開始
     bool looping     = true;   // false なら duration 秒だけ放出して止まる（ワンショット）

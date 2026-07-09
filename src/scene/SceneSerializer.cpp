@@ -489,7 +489,7 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
         {
             const auto& pe = reg.get<ParticleEmitter>(entity);
             ej["particleEmitter"] = {
-                {"kind", pe.kind}, {"blend", pe.blend}, {"rate", pe.rate},
+                {"kind", pe.kind}, {"blend", pe.blend}, {"orient", pe.orient}, {"rate", pe.rate},
                 {"playOnStart", pe.playOnStart}, {"looping", pe.looping}, {"duration", pe.duration},
                 {"dir", SerializeFloat3(pe.dir)}, {"spread", pe.spread},
                 {"speed", pe.speed}, {"speedVar", pe.speedVar},
@@ -892,6 +892,7 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                 ParticleEmitter pe;
                 pe.kind        = pj.value("kind", 0);
                 pe.blend       = pj.value("blend", 0);
+                pe.orient      = pj.value("orient", 0);
                 pe.rate        = pj.value("rate", 30.0f);
                 pe.playOnStart = pj.value("playOnStart", true);
                 pe.looping     = pj.value("looping", true);

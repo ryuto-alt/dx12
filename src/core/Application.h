@@ -329,6 +329,8 @@ private:
     // エディタレイアウト
     static constexpr f32 kLeftPanelWidth  = 280.0f;
     static constexpr f32 kToolbarHeight   = 68.0f;  // タイトルバー兼メニューバー(~35px) + アイコン列の2段
+    // プロジェクトロード時のマテリアルサムネイル事前生成の総数(進捗表示用。UpdateProjectLoadフェーズ4)
+    size_t m_matThumbPreloadTotal = 0;
     bool m_isGameMode = false;
     std::unique_ptr<EditorContext> m_editorCtx;
     std::unique_ptr<EditorLayer>   m_editorLayer;

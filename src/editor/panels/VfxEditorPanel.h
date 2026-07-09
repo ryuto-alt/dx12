@@ -29,6 +29,7 @@ struct VfxAsset
 
     int  kind  = 1;   // ParticleKind（既定 = Fire）
     int  blend = 0;   // ParticleBlend
+    int  orient = 0;  // 粒子の向き 0=ビルボード 1=水平(地面) 2=垂直(+Z)
 
     // 配置エンティティ（継続放出）用
     f32  rate        = 30.0f;

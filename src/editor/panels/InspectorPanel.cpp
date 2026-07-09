@@ -797,6 +797,13 @@ void InspectorPanel::Render(entt::registry& reg,
                     changed |= pg::Combo("見た目 Kind", &pe.kind, kinds, IM_ARRAYSIZE(kinds));
                     changed |= pg::Combo("合成 Blend", &pe.blend, blends, IM_ARRAYSIZE(blends));
                     {
+                        const char* orients[] = { "ビルボード(カメラ正対)", "水平(地面向き)", "垂直(+Z正対)" };
+                        changed |= pg::Combo("向き Orient", &pe.orient, orients, IM_ARRAYSIZE(orients),
+                            "粒子クアッドの向き。ビルボード=常にカメラを向く(従来)。\n"
+                            "水平=XZ平面(リング/衝撃波/魔法陣)。垂直=XY平面固定。\n"
+                            "stretch>0 の速度ストレッチ時と GPUパーティクルでは無効");
+                    }
+                    {
                         static char texBuf[260] = "";
                         pg::Label("テクスチャ", "assetsからの相対パス。空=プロシージャル質感");
                         ImGui::InputTextWithHint("##peTex", "空=プロシージャル質感", texBuf, sizeof(texBuf));

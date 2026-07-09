@@ -62,6 +62,10 @@ public:
     void InvalidateThumbnail(const std::string& dxmatAbsPath);
     // フレーム先頭・メインコマンドリストが開いている間に呼ぶ(ModelThumbnailRendererと同じ運用)。
     void RenderPendingThumbnails(CommandList& cmd);
+    // assets配下の全 .dxmat を走査して未キャッシュ分をキューに積む(プロジェクトロード時の事前生成用)。
+    // 積んだ数を返す。進捗表示は GetPendingThumbnailCount() で残数を見る。
+    size_t ScanAllMaterials(const std::string& assetsDir);
+    size_t GetPendingThumbnailCount() const { return m_thumbQueue.size(); }
     static constexpr u32 kThumbSize = 128;
 
 private:

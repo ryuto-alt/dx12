@@ -527,6 +527,7 @@ void ParticleSystem::Emit(const EmitParams& p, const EmitParams* onDeath)
         pt.childIdx = childIdx;
         pt.kind  = p.kind;
         pt.blend = p.blend;
+        pt.orient = p.orient;
         pt.texSlot = texSlot;
         pt.alive = true;
     }
@@ -780,7 +781,9 @@ void ParticleSystem::Render(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj,
         g.stretch = pt.stretch;
         g.vel     = pt.vel;
         g.age01   = t;
-        g.kind    = static_cast<u32>(pt.kind);
+        // kind の上位ビットに orient をパックする(インスタンスレイアウトを変えずにVSへ渡すため。
+        // Particle.hlsl 側で kind & 0xFFFF / kind >> 16 に分解する)
+        g.kind    = static_cast<u32>(pt.kind) | (static_cast<u32>(pt.orient & 0x3) << 16);
         g.seed    = pt.seed;
         g.texIndex = (pt.texSlot < slotSrv.size()) ? slotSrv[pt.texSlot] : kNoTexture;
         return g;

@@ -1619,9 +1619,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
                     float progress = static_cast<float>(completed) / static_cast<float>(uncachedCount);
                     m_imguiManager->BeginFrame();
-                    float dispW = static_cast<float>(m_window->GetWidth());
-                    float dispH = static_cast<float>(m_window->GetHeight());
-                    ImGui::SetNextWindowPos(ImVec2(dispW * 0.5f, dispH * 0.5f),
+                    // multi-viewport有効時、ImGui座標はスクリーン座標になるためメインビューポート中心へ置く
+                    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
                         ImGuiCond_Always, ImVec2(0.5f, 0.5f));
                     ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Always);
                     ImGui::Begin("##Loading", nullptr,
@@ -4768,6 +4767,7 @@ void Application::Update()
             p.intensity = pe.intensity;
             p.gravity = pe.gravity; p.drag = pe.drag; p.up = pe.up;
             p.stretch = pe.stretch; p.kind = pe.kind; p.blend = pe.blend;
+            p.orient = pe.orient;
             p.turbStrength = pe.turbStrength; p.turbFreq = pe.turbFreq;
             p.sizeMid = pe.sizeMid; p.distort = pe.distort;
             p.light = pe.light;     p.lightRange = pe.lightRange;
@@ -5092,11 +5092,29 @@ void Application::UpdateProjectLoad(f32 dt)
         return;
     }
 
-    // フェーズ3: シーンロード（pending*）が消化されたら完了
+    // フェーズ3: シーンロード（pending*）が消化されたら次へ
     bool pendingScene = !m_editorCtx->pendingLoadPath.empty() || m_editorCtx->pendingNewScene;
     if (m_loadSceneWaitFrames > 0) --m_loadSceneWaitFrames;
     if (m_loadSceneWaitFrames == 0 && !pendingScene)
     {
+        // フェーズ4: マテリアル球体サムネイルの事前生成が終わるまでローディング画面を維持する
+        // (実際の生成は Render() 内の RenderPendingThumbnails が毎フレーム数件ずつ進める。
+        //  エディタが開いてからアセットブラウザで初表示した瞬間に重くなるのを防ぐ)。
+        if (m_materialEditorPanel)
+        {
+            const size_t remaining =
+                m_materialEditorPanel->GetPreviewRenderer().GetPendingThumbnailCount();
+            if (remaining > 0)
+            {
+                char buf[128];
+                snprintf(buf, sizeof(buf),
+                         "マテリアルを読み込み中... (%zu / %zu)",
+                         m_matThumbPreloadTotal - remaining, m_matThumbPreloadTotal);
+                m_loadStatus = buf;
+                return;
+            }
+        }
+
         m_loading            = false;
         m_loadProjectStarted = false;
         m_editorCtx->buildCompleteFlash = 1.5f;
@@ -5326,6 +5344,18 @@ void Application::LoadProject(const ProjectInfo& info)
             }
         }
         m_window->SetTitle(title);
+    }
+
+    // 6) マテリアル球体サムネイルの事前生成キューを積む。
+    //    エディタ使用中にアセットブラウザで初めて表示した瞬間にテクスチャロードで
+    //    ヒッチが出ないよう、プロジェクトロード中(UpdateProjectLoad フェーズ4)に全部済ませる。
+    if (m_materialEditorPanel)
+    {
+        const size_t queued =
+            m_materialEditorPanel->GetPreviewRenderer().ScanAllMaterials(PathResolver::AssetsDir());
+        m_matThumbPreloadTotal = m_materialEditorPanel->GetPreviewRenderer().GetPendingThumbnailCount();
+        if (queued > 0)
+            Logger::Info("マテリアルサムネイル事前生成: {} 件をキューに追加", queued);
     }
 
     Logger::Info("Project loaded: {} ({})", info.name, info.rootDir);

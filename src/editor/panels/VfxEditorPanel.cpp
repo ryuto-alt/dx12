@@ -99,6 +99,7 @@ void VfxEditorPanel::RenderPreview3D(EditorContext& ctx, CommandList& cmd, f32 d
         p.intensity = m_current.intensity;
         p.gravity = m_current.gravity;       p.drag = m_current.drag; p.up = m_current.up;
         p.stretch = m_current.stretch;       p.kind = m_current.kind; p.blend = m_current.blend;
+        p.orient = m_current.orient;
         p.turbStrength = m_current.turbStrength; p.turbFreq = m_current.turbFreq;
         p.flicker = m_current.flicker;       p.flickerFreq = m_current.flickerFreq;
         p.texturePath = m_current.texturePath;
@@ -174,6 +175,7 @@ bool VfxEditorPanel::LoadAsset(const std::string& path)
     a.name        = j.value("name", fs::path(path).stem().string());
     a.kind        = j.value("kind", 1);
     a.blend       = j.value("blend", 0);
+    a.orient      = j.value("orient", 0);
     a.rate        = j.value("rate", 30.0f);
     a.playOnStart = j.value("playOnStart", true);
     a.looping     = j.value("looping", true);
@@ -218,6 +220,7 @@ bool VfxEditorPanel::SaveAsset(const std::string& path)
     nlohmann::json j;
     j["name"] = m_current.name;
     j["kind"] = m_current.kind;   j["blend"] = m_current.blend;
+    j["orient"] = m_current.orient;
     j["rate"] = m_current.rate;   j["playOnStart"] = m_current.playOnStart;
     j["looping"] = m_current.looping; j["duration"] = m_current.duration;
     j["burstCount"] = m_current.burstCount;
@@ -253,6 +256,7 @@ void VfxEditorPanel::ApplyToSelected(entt::registry& reg, EditorContext& ctx)
     const ParticleEmitter before = reg.get<ParticleEmitter>(e);
     ParticleEmitter after = before;
     after.kind = m_current.kind;   after.blend = m_current.blend;
+    after.orient = m_current.orient;
     after.rate = m_current.rate;   after.playOnStart = m_current.playOnStart;
     after.looping = m_current.looping; after.duration = m_current.duration;
     after.dir = m_current.dir;     after.spread = m_current.spread;
@@ -282,6 +286,7 @@ void VfxEditorPanel::SpawnEntity(entt::registry& reg, EditorContext& ctx)
 {
     ParticleEmitter pe{};
     pe.kind = m_current.kind;   pe.blend = m_current.blend;
+    pe.orient = m_current.orient;
     pe.rate = m_current.rate;   pe.playOnStart = m_current.playOnStart;
     pe.looping = m_current.looping; pe.duration = m_current.duration;
     pe.dir = m_current.dir;     pe.spread = m_current.spread;
@@ -337,6 +342,8 @@ std::string VfxEditorPanel::BuildLuaSnippet() const
         ss << "  rMid=" << m_current.colorMid.x << ", gMid=" << m_current.colorMid.y
            << ", bMid=" << m_current.colorMid.z << ",\n";
     ss << "  kind=\"" << kindName << "\", blend=\"" << blendName << "\",\n";
+    if (m_current.orient == 1)      ss << "  orient=\"horizontal\",\n";
+    else if (m_current.orient == 2) ss << "  orient=\"vertical\",\n";
     ss << "  intensity=" << m_current.intensity << ", gravity=" << m_current.gravity
        << ", drag=" << m_current.drag << ", up=" << m_current.up
        << ", stretch=" << m_current.stretch << ",\n";
@@ -613,6 +620,14 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
     ImGui::Combo("見た目 Kind", &m_current.kind, kKindNames, IM_ARRAYSIZE(kKindNames));
     const char* blends[] = { "加算 Additive", "アルファ Alpha" };
     ImGui::Combo("合成 Blend", &m_current.blend, blends, IM_ARRAYSIZE(blends));
+    {
+        const char* orients[] = { "ビルボード(カメラ正対)", "水平(地面向き)", "垂直(+Z正対)" };
+        ImGui::Combo("向き Orient", &m_current.orient, orients, IM_ARRAYSIZE(orients));
+        ImGui::SameLine(); ImGui::TextDisabled("(?)");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("粒子クアッドの向き。水平=リング/衝撃波/魔法陣向け。\n"
+                              "stretch>0 の速度ストレッチ時と GPUパーティクルでは無効");
+    }
 
     {
         static char texBuf[260] = "";

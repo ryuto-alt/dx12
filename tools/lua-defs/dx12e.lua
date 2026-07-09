@@ -860,6 +860,7 @@ ui = nil
 ---@field turbFreq? number 乱流の周波数（既定 1）
 ---@field kind? FxKind 質感プリセット（既定 "glow"）
 ---@field blend? integer 0=加算 1=α（既定: smoke のみ 1）
+---@field orient? "billboard"|"horizontal"|"vertical"|integer 粒子の向き（既定 "billboard"=カメラ正対。"horizontal"=水平/地面向き、"vertical"=垂直+Z正対。数値 0/1/2 も可。stretch>0 と gpu=true では無効）
 ---@field flicker? number 明滅の強さ 0..1（既定 0）
 ---@field flickerFreq? number 明滅の周波数（既定 18）
 ---@field distort? number >0 で歪みパーティクル（熱ゆらぎ/衝撃波）

@@ -12,6 +12,7 @@
 #include "resource/ResourceManager.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -371,6 +372,34 @@ void MaterialPreviewRenderer::InvalidateThumbnail(const std::string& dxmatAbsPat
     // 既存テクスチャへ再レンダリング(解放しない)
     if (std::find(m_thumbQueue.begin(), m_thumbQueue.end(), key) == m_thumbQueue.end())
         m_thumbQueue.push_back(key);
+}
+
+size_t MaterialPreviewRenderer::ScanAllMaterials(const std::string& assetsDir)
+{
+    if (!m_valid || !m_thumbDepth) return 0;
+
+    namespace fs = std::filesystem;
+    size_t queued = 0;
+    std::error_code ec;
+    fs::recursive_directory_iterator it(fs::path(assetsDir), fs::directory_options::skip_permission_denied, ec);
+    fs::recursive_directory_iterator end;
+    for (; !ec && it != end; it.increment(ec))
+    {
+        std::error_code fec;
+        if (!it->is_regular_file(fec) || fec) continue;
+        std::string ext = it->path().extension().string();
+        for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (ext != ".dxmat") continue;
+
+        const std::string key = NormalizeThumbKey(it->path().string());
+        if (m_thumbCache.count(key)) continue;
+        if (std::find(m_thumbQueue.begin(), m_thumbQueue.end(), key) == m_thumbQueue.end())
+        {
+            m_thumbQueue.push_back(key);
+            ++queued;
+        }
+    }
+    return queued;
 }
 
 void MaterialPreviewRenderer::RenderPendingThumbnails(CommandList& cmd)

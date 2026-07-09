@@ -677,6 +677,23 @@ void ScriptEngine::RegisterBindings()
             p.turbStrength = t.get_or("turbStrength", 0.0f);  // カールノイズ乱流（煙/炎の有機的揺らぎ）
             p.turbFreq     = t.get_or("turbFreq", 1.0f);
 
+            // 粒子の向き（任意・後方互換）: 数値 or 文字列 billboard(0)/horizontal(1)/vertical(2)
+            {
+                sol::object oo = t["orient"];
+                if (oo.valid())
+                {
+                    if (oo.is<std::string>())
+                    {
+                        std::string s = oo.as<std::string>();
+                        if      (s == "billboard")  p.orient = 0;
+                        else if (s == "horizontal" || s == "ground") p.orient = 1;
+                        else if (s == "vertical")   p.orient = 2;
+                    }
+                    else if (oo.is<double>())
+                        p.orient = static_cast<int>(oo.as<double>());
+                }
+            }
+
             // --- プロシージャル質感(kind) / ブレンド / 3キー色 / 明滅（全て任意・後方互換）---
             //  kind は数値 or 文字列: glow/fire/smoke/spark/magic/electric(lightning)/ring(shockwave)/star(flare)
             int kind = 0;

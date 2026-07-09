@@ -70,9 +70,14 @@ VSOutput VSMain(VSInput i)
     float2 c = kCorners[i.vid];
     float3 worldPos;
 
+    // kind の上位ビットに粒子の向きモードがパックされている（C++側 ParticleSystem の GpuParticle 詰め参照）。
+    // 0=ビルボード（従来） 1=水平（XZ地面向き。リング/衝撃波/魔法陣） 2=垂直（XY,+Z正対。壁エフェクト）
+    uint orient = i.kind >> 16;
+    uint kind   = i.kind & 0xFFFFu;
+
     if (i.stretch > 0.0 && dot(i.vel, i.vel) > 1e-4)
     {
-        // 速度方向に伸びるストレッチビルボード（火花/筋/弾道）。
+        // 速度方向に伸びるストレッチビルボード（火花/筋/弾道）。orient は無視（速度整列が優先）。
         float3 vd = normalize(i.vel);
         float3 axisX = cross(vd, camRight.xyz);
         if (dot(axisX, axisX) < 1e-5) axisX = camUp.xyz;
@@ -84,12 +89,24 @@ VSOutput VSMain(VSInput i)
     }
     else
     {
-        // 通常の丸ビルボード（回転は火花の向き等に使用）
+        // 回転（ビルボードでは火花の向き / 水平・垂直では面内回転）
         float s = sin(i.rot), co = cos(i.rot);
         float2 r = float2(c.x * co - c.y * s, c.x * s + c.y * co);
+        float3 axisX = camRight.xyz;
+        float3 axisY = camUp.xyz;
+        if (orient == 1u)        // 水平: XZ平面（法線+Y）
+        {
+            axisX = float3(1, 0, 0);
+            axisY = float3(0, 0, 1);
+        }
+        else if (orient == 2u)   // 垂直: XY平面（法線+Z）
+        {
+            axisX = float3(1, 0, 0);
+            axisY = float3(0, 1, 0);
+        }
         worldPos = i.center
-                 + camRight.xyz * (r.x * i.size)
-                 + camUp.xyz    * (r.y * i.size);
+                 + axisX * (r.x * i.size)
+                 + axisY * (r.y * i.size);
     }
 
     VSOutput o;
@@ -97,7 +114,7 @@ VSOutput VSMain(VSInput i)
     o.color = i.color;
     o.uv    = c;   // フォールオフは放射状なので未回転の c を使う
     o.age01 = i.age01;
-    o.kind  = i.kind;
+    o.kind  = kind;   // PS には orient を剥がした純粋な kind を渡す
     o.seed  = i.seed;
     o.texIdx = i.texIdx;
     o.viewZ = o.pos.w;   // 標準射影では w = ビュー空間 Z

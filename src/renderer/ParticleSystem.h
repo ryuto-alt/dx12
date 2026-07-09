@@ -68,6 +68,8 @@ public:
         float turbFreq     = 1.0f;      // 乱流の空間周波数
         int   kind         = 0;         // ParticleKind
         int   blend        = 0;         // ParticleBlend（既定は加算、煙はα）
+        int   orient       = 0;         // 粒子の向き 0=ビルボード(常にカメラ正対) 1=水平(XZ地面向き) 2=垂直(XY,+Z正対)。
+                                        // stretch>0 の速度ストレッチ時は無視。GPUパーティクル(gpu=true)は非対応(常にビルボード)
         float flicker      = 0.0f;      // 発光明滅の強さ（0..1）
         float flickerFreq  = 18.0f;     // 明滅の速さ
         float sizeMid      = -1.0f;     // >=0 で3キーサイズカーブ（start→mid→end）
@@ -179,6 +181,7 @@ private:
         int   childIdx = -1;            // 死亡時に放出する子定義（m_childDefs の添字）
         int   kind = 0;
         int   blend = 0;
+        int   orient = 0;               // EmitParams::orient(GpuParticle::kind の上位ビットへパックして渡す)
         bool  light = false;
         bool  hasMid = false;
         bool  alive = false;
