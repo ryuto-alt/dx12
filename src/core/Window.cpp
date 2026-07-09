@@ -2,6 +2,8 @@
 #include "Logger.h"
 #include "input/InputSystem.h"
 
+#include <windowsx.h>   // GET_X_LPARAM / GET_Y_LPARAM
+
 // ImGui Win32 WndProc handler (forward declaration)
 extern LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -107,6 +109,16 @@ void Window::Show()
     SetForegroundWindow(m_hwnd);
 }
 
+void Window::EnableCustomTitleBar()
+{
+    if (!m_hwnd || m_customTitleBar) return;
+    m_customTitleBar = true;
+    // WM_NCCALCSIZE を発火させてフレームを再計算(キャプション領域をクライアントに取り込む)
+    SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    Logger::Info("カスタムタイトルバー有効化");
+}
+
 void Window::SetTitle(const std::wstring& title)
 {
     if (m_hwnd)
@@ -204,6 +216,47 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     {
         switch (msg)
         {
+        // ===== カスタムタイトルバー =====
+        // WM_NCCALCSIZE: 標準キャプション分をクライアント領域へ取り込む(左右下のリサイズ枠は残す)。
+        // フルスクリーン(WS_POPUP)中はOS側にキャプションが無いので素通し。
+        case WM_NCCALCSIZE:
+            if (window->m_customTitleBar && wParam == TRUE && !window->m_fullscreen)
+            {
+                auto* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(lParam);
+                const LONG originalTop = params->rgrc[0].top;
+                DefWindowProcW(hwnd, msg, wParam, lParam);   // 左右下の枠を標準計算
+                params->rgrc[0].top = originalTop;           // 上端はキャプション無しで窓の縁まで
+                if (IsZoomed(hwnd))
+                {
+                    // 最大化中は枠が画面外にはみ出す仕様のため、その分だけ下げないと上端が切れる
+                    const int frame = GetSystemMetrics(SM_CYSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+                    params->rgrc[0].top += frame;
+                }
+                return 0;
+            }
+            break;
+
+        // WM_NCHITTEST: 上端のリサイズ帯(キャプション除去で標準判定から漏れる分)と、
+        // ImGui側が「アイテムに乗ってない」と報告したタイトルバー帯のドラッグ(HTCAPTION)を自前判定。
+        // HTCAPTION を返すだけで移動ドラッグ・スナップ・ダブルクリック最大化を全部OSがやってくれる。
+        case WM_NCHITTEST:
+            if (window->m_customTitleBar && !window->m_fullscreen)
+            {
+                const LRESULT hit = DefWindowProcW(hwnd, msg, wParam, lParam);
+                if (hit != HTCLIENT) return hit;   // 左右下のリサイズ枠などはそのまま
+                POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                ScreenToClient(hwnd, &pt);
+                if (!IsZoomed(hwnd))
+                {
+                    const int frame = GetSystemMetrics(SM_CYSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+                    if (pt.y >= 0 && pt.y < frame) return HTTOP;
+                }
+                if (window->m_captionDraggable && pt.y < static_cast<LONG>(window->m_captionHeight))
+                    return HTCAPTION;
+                return HTCLIENT;
+            }
+            break;
+
         case WM_SIZE:
         {
             u32 newWidth = LOWORD(lParam);

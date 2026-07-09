@@ -780,6 +780,10 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     // タイトルバーの X を横取り。ゲーム(GameRuntime)は従来通り即終了、エディタでプロジェクトを
     // 開いている時はいきなり終了せずランチャー（プロジェクト作成前の画面）に戻す。
     m_window->SetCloseHandler([this]{ return HandleWindowCloseRequest(); });
+    // エディタはOS標準タイトルバーを外し、ImGuiのメニューバー行をタイトルバーとして使う
+    // (Unreal/Unity風。ドラッグ/最小化/最大化/閉じるは ToolbarPanel が描く)。ゲームは標準のまま。
+    if (!gameMode)
+        m_window->EnableCustomTitleBar();
 
     // グラフィックスデバイス初期化
     SplashScreen::SetStatus("グラフィックスデバイスを初期化中...");
@@ -9364,6 +9368,58 @@ void Application::Render()
     else if (!m_isGameMode && m_showLauncher)
     {
         // ---- プロジェクトランチャー（起動直後 / 「ランチャーに戻る」選択時）----
+        // カスタムタイトルバー有効時、ツールバー(タイトルバー役)が無いこの画面でも
+        // ウィンドウの移動/最小化/閉じるができるよう、最小限の操作を上端に重ねる。
+        if (m_window->IsCustomTitleBar())
+        {
+            const ImGuiIO& lio = ImGui::GetIO();
+            const ImGuiViewport* mainVp = ImGui::GetMainViewport();
+            const float kBarH = 36.0f, kBtnW = 44.0f;
+            ImGui::SetNextWindowPos(ImVec2(mainVp->Pos.x + mainVp->Size.x - kBtnW * 2.0f, mainVp->Pos.y),
+                                    ImGuiCond_Always);
+            ImGui::SetNextWindowSize(ImVec2(kBtnW * 2.0f, kBarH), ImGuiCond_Always);
+            ImGui::SetNextWindowViewport(mainVp->ID);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+            ImGui::Begin("##LauncherCaption", nullptr,
+                ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoSavedSettings |
+                ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoDocking);
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            auto capBtn = [&](const char* id, bool isClose) -> bool
+            {
+                const ImVec2 p0 = ImGui::GetCursorScreenPos();
+                bool clicked = ImGui::InvisibleButton(id, ImVec2(kBtnW, kBarH));
+                const bool hovered = ImGui::IsItemHovered();
+                const ImVec2 p1(p0.x + kBtnW, p0.y + kBarH);
+                if (hovered)
+                    dl->AddRectFilled(p0, p1, isClose ? IM_COL32(232, 17, 35, 255)
+                                                      : IM_COL32(255, 255, 255, 16));
+                const ImU32 fg = (isClose && hovered) ? IM_COL32(255, 255, 255, 255)
+                                                      : IM_COL32(198, 200, 207, 255);
+                const ImVec2 c((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f);
+                const float r = 5.0f;
+                if (isClose)
+                {
+                    dl->AddLine(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), fg, 1.0f);
+                    dl->AddLine(ImVec2(c.x - r, c.y + r), ImVec2(c.x + r, c.y - r), fg, 1.0f);
+                }
+                else
+                    dl->AddLine(ImVec2(c.x - r, c.y), ImVec2(c.x + r, c.y), fg, 1.0f);
+                ImGui::SameLine(0.0f, 0.0f);
+                return clicked;
+            };
+            if (capBtn("##ln_min", false)) m_window->Minimize();
+            if (capBtn("##ln_close", true)) m_window->RequestClose();
+            ImGui::End();
+            ImGui::PopStyleVar();
+
+            // 上端帯(ボタン部を除く)をドラッグ可能として報告(マウスはビューポート相対へ変換)
+            const ImVec2 mp(lio.MousePos.x - mainVp->Pos.x, lio.MousePos.y - mainVp->Pos.y);
+            const bool inBand = mp.y >= 0.0f && mp.y < kBarH
+                             && mp.x >= 0.0f && mp.x < mainVp->Size.x - kBtnW * 2.0f;
+            m_window->SetCaptionInfo(static_cast<u32>(kBarH), inBand);
+        }
+
         LauncherIcons li;
         li.logo        = m_icons.logo;
         li.newProject  = m_icons.newProject;
@@ -9818,9 +9874,11 @@ void Application::Render()
     // ---- ゲーム内 UI: テキスト/ボタン（ImGui オーバーレイ・ゲーム/Play 中のみ）----
     if (m_isGameMode || m_engineMode == EngineMode::Playing)
     {
-        ImGuiIO& io = ImGui::GetIO();
-        ImGui::SetNextWindowPos({0, 0});
-        ImGui::SetNextWindowSize(io.DisplaySize);
+        // multi-viewport有効時、ImGui座標はスクリーン座標になるためメインビューポート原点基準で置く
+        const ImGuiViewport* mainVp = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(mainVp->Pos);
+        ImGui::SetNextWindowSize(mainVp->Size);
+        ImGui::SetNextWindowViewport(mainVp->ID);
         ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize
             | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar
             | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBackground
@@ -9829,8 +9887,9 @@ void Application::Render()
 
         auto* dl = ImGui::GetWindowDrawList();
         // ゲーム UI はビューポート原点へオフセットし、矩形でクリップ＝パネル下に潜らない
-        const float ox = static_cast<float>(vpLeft);
-        const float oy = static_cast<float>(vpTop);
+        // (vpLeft/vpTop はクライアント基準なので ImGui 座標へはメインビューポート原点を足す)
+        const float ox = mainVp->Pos.x + static_cast<float>(vpLeft);
+        const float oy = mainVp->Pos.y + static_cast<float>(vpTop);
         dl->PushClipRect(ImVec2(ox, oy),
                          ImVec2(ox + static_cast<float>(vpW), oy + static_cast<float>(vpH)), true);
         std::unordered_set<std::string> nowPressed;
@@ -9849,7 +9908,10 @@ void Application::Render()
             }
             else if (c.type == UICommand::Type::Button)
             {
-                ImGui::SetCursorPos(ImVec2(ox + c.x, oy + c.y));
+                // SetCursorPos はウィンドウローカル座標(窓原点=メインビューポート原点)なので
+                // スクリーン座標の ox/oy ではなくクライアント基準の vpLeft/vpTop を使う
+                ImGui::SetCursorPos(ImVec2(static_cast<float>(vpLeft) + c.x,
+                                           static_cast<float>(vpTop)  + c.y));
                 if (ImGui::Button(c.text.c_str(), ImVec2(c.w, c.h)))
                     nowPressed.insert(c.text);
             }
@@ -9897,6 +9959,9 @@ void Application::Render()
     m_commandList->Close();
 
     m_commandQueue->ExecuteCommandList(nativeCmdList);
+    // multi-viewport: 引き出したフローティング窓(セカンダリスワップチェイン)の描画+Present。
+    // メインリストのExecute後に呼ぶことで、メインリスト内で遷移したテクスチャの状態が正しく見える。
+    m_imguiManager->RenderPlatformWindows();
     m_swapChain->Present(m_useVsync);
     m_frameResources->EndFrame(*m_commandQueue);
 

@@ -30,6 +30,12 @@ void ImGuiManager::Initialize(
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    // multi-viewport: フローティング窓(マテリアルエディタ等)をメインウィンドウの外へ
+    // ドラッグすると独立したOSウィンドウになる(Unreal/Unityと同じ)。ドック中のコアパネルは
+    // NoUndocking なので出て行かない。有効時、ImGui座標系は「スクリーン座標」になる点に注意
+    // (絶対座標(0,0)前提の窓は GetMainViewport()->Pos 基準に直してある)。
+    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+    io.ConfigViewportsNoTaskBarIcon = true;   // 引き出した窓はタスクバーに出さない(UE/Unityと同じ)
     // ID 衝突警告のビジュアルオーバーレイを抑制（誤検出で popup が塞がれることがある）
     io.ConfigDebugHighlightIdConflicts = false;
 
@@ -187,6 +193,20 @@ void ImGuiManager::EndFrame(ID3D12GraphicsCommandList* cmdList)
 {
     ImGui::Render();
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), cmdList);
+}
+
+void ImGuiManager::RenderPlatformWindows()
+{
+    // multi-viewport のセカンダリウィンドウ(引き出したフローティング窓)を描画・Present する。
+    // DX12バックエンドが専用のコマンドリスト/スワップチェインを内部管理してキューへ直接投げるため、
+    // メインのコマンドリストを ExecuteCommandList した後・Present の前に呼ぶこと
+    // (メインリスト内で遷移させたテクスチャ(サムネイル等)をセカンダリ側が参照しても順序が正しくなる)。
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
+    {
+        ImGui::UpdatePlatformWindows();
+        ImGui::RenderPlatformWindowsDefault(nullptr, nullptr);
+    }
 }
 
 void ImGuiManager::Shutdown()

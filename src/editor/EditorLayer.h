@@ -81,8 +81,15 @@ public:
     // マテリアル球体サムネイル(アセットブラウザへ転送するだけ)
     void SetMaterialPreviewRenderer(class MaterialPreviewRenderer* renderer);
 
-    // ビューポート領域（3D描画のオフセット計算用）
-    ImVec2 GetViewportPos()  const { return m_viewportPos; }
+    // ビューポート領域（3D描画のオフセット計算用）。
+    // 戻り値は「メインウィンドウのクライアント領域基準」のピクセル座標。multi-viewport有効時は
+    // ImGui座標(=スクリーン座標)からメインビューポート原点を引いて変換する
+    // (スワップチェインの D3D12 ビューポート矩形にそのまま使えるようにするため)。
+    ImVec2 GetViewportPos()  const
+    {
+        const ImVec2 vp = ImGui::GetMainViewport()->Pos;
+        return ImVec2(m_viewportPos.x - vp.x, m_viewportPos.y - vp.y);
+    }
     ImVec2 GetViewportSize() const { return m_viewportSize; }
 
     // マテリアルエディタ/ライブラリ等、Application 直属のフローティングツール窓が

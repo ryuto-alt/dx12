@@ -33,6 +33,25 @@ public:
     bool ProcessMessages();
     void ToggleFullscreen();
 
+    // ===== カスタムタイトルバー(エディタ用) =====
+    // OS標準のキャプション(白いタイトルバー)を外し、クライアント領域を窓の上端まで広げる。
+    // 見た目のタイトルバーはImGui側(ToolbarPanelのメニューバー行)が描き、ドラッグ移動は
+    // WM_NCHITTEST が HTCAPTION を返すことで実現する(スナップ/最大化ダブルクリックもOSが処理)。
+    // リサイズ境界・最小化アニメーション・タスクバー挙動は WS_OVERLAPPEDWINDOW のまま維持される。
+    void EnableCustomTitleBar();
+    bool IsCustomTitleBar() const { return m_customTitleBar; }
+    // ImGui側が毎フレーム報告する: タイトルバー帯の高さ(クライアント座標px)と、
+    // 「今マウスがドラッグ可能な余白上にあるか」(メニュー/ボタン等のアイテム上ではfalse)。
+    void SetCaptionInfo(u32 heightPx, bool draggable)
+    {
+        m_captionHeight = heightPx;
+        m_captionDraggable = draggable;
+    }
+    bool IsMaximized() const { return m_hwnd && ::IsZoomed(m_hwnd); }
+    void Minimize()          { if (m_hwnd) ::ShowWindow(m_hwnd, SW_MINIMIZE); }
+    void ToggleMaximize()    { if (m_hwnd) ::ShowWindow(m_hwnd, IsMaximized() ? SW_RESTORE : SW_MAXIMIZE); }
+    void RequestClose()      { if (m_hwnd) ::PostMessageW(m_hwnd, WM_CLOSE, 0, 0); }  // closeHandler を通す
+
     HWND         GetHwnd() const { return m_hwnd; }
     u32          GetWidth() const { return m_width; }
     u32          GetHeight() const { return m_height; }
@@ -61,6 +80,11 @@ private:
     RECT         m_windowedRect = {};
     InputSystem* m_inputSystem = nullptr;
     std::function<bool()> m_closeHandler;
+
+    // カスタムタイトルバー状態(EnableCustomTitleBar / SetCaptionInfo)
+    bool m_customTitleBar   = false;
+    u32  m_captionHeight    = 35;     // ImGui側が毎フレーム実測値で上書きする
+    bool m_captionDraggable = false;
 };
 
 } // namespace dx12e

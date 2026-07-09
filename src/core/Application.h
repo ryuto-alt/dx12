@@ -328,7 +328,7 @@ private:
     u32                                m_numPointShadowSlots = 0;
     // エディタレイアウト
     static constexpr f32 kLeftPanelWidth  = 280.0f;
-    static constexpr f32 kToolbarHeight   = 60.0f;  // メニューバー + アイコン列の2段
+    static constexpr f32 kToolbarHeight   = 68.0f;  // タイトルバー兼メニューバー(~35px) + アイコン列の2段
     bool m_isGameMode = false;
     std::unique_ptr<EditorContext> m_editorCtx;
     std::unique_ptr<EditorLayer>   m_editorLayer;

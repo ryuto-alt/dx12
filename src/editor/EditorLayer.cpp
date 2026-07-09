@@ -198,11 +198,14 @@ void EditorLayer::Render(bool isPlaying,
     // ===== DockSpace（ツールバーの下に全画面） =====
     ImGuiID dockspaceId = 0;
     {
-        f32 displayW = ImGui::GetIO().DisplaySize.x;
-        f32 displayH = ImGui::GetIO().DisplaySize.y;
+        // multi-viewport有効時、ImGui座標はスクリーン座標になるためメインビューポート原点基準で置く
+        const ImGuiViewport* mainVp = ImGui::GetMainViewport();
+        f32 displayW = mainVp->Size.x;
+        f32 displayH = mainVp->Size.y;
 
-        ImGui::SetNextWindowPos(ImVec2(0, toolbarHeight), ImGuiCond_Always);
+        ImGui::SetNextWindowPos(ImVec2(mainVp->Pos.x, mainVp->Pos.y + toolbarHeight), ImGuiCond_Always);
         ImGui::SetNextWindowSize(ImVec2(displayW, displayH - toolbarHeight), ImGuiCond_Always);
+        ImGui::SetNextWindowViewport(mainVp->ID);
 
         ImGuiWindowFlags hostFlags =
             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
@@ -290,9 +293,10 @@ void EditorLayer::Render(bool isPlaying,
         }
         else
         {
-            // フォールバック（全画面）
-            nodePos  = ImVec2(0, toolbarHeight);
-            nodeSize = ImGui::GetIO().DisplaySize;
+            // フォールバック（全画面。multi-viewport有効時はスクリーン座標なのでビューポート原点基準）
+            const ImGuiViewport* mainVp = ImGui::GetMainViewport();
+            nodePos  = ImVec2(mainVp->Pos.x, mainVp->Pos.y + toolbarHeight);
+            nodeSize = mainVp->Size;
             nodeSize.y -= toolbarHeight;
         }
         if (nodeSize.x < 1.0f) nodeSize.x = 1.0f;

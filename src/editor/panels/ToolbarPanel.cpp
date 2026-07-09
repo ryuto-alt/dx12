@@ -13,6 +13,7 @@
 #include <commdlg.h>
 #include <ShlObj.h>
 #include <shellapi.h>
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -20,6 +21,7 @@
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4201 4244 4267 4996)
 #include <imgui.h>
+#include <imgui_internal.h>   // MenuBarRect(タイトルバー帯の実寸取得)
 #pragma warning(pop)
 
 namespace
@@ -83,21 +85,44 @@ void ToolbarPanel::Render(bool isPlaying,
                           const std::string& assetsDir,
                           f32 toolbarHeight)
 {
-    f32 displayW = ImGui::GetIO().DisplaySize.x;
+    // multi-viewport有効時、ImGui座標はスクリーン座標になるためメインビューポート原点基準で置く
+    const ImGuiViewport* mainVp = ImGui::GetMainViewport();
+    f32 displayW = mainVp->Size.x;
 
-    ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+    ImGui::SetNextWindowPos(mainVp->Pos, ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(displayW, toolbarHeight), ImGuiCond_Always);
+    ImGui::SetNextWindowViewport(mainVp->ID);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 6));
+    // メニューバー行はカスタムタイトルバーを兼ねるので縦paddingを増やして高くする(UE風の~35px帯)。
+    // Begin時点のFramePaddingでメニューバー高さが決まるためBeginより前にpushする。
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 9));
     ImGui::PushStyleColor(ImGuiCol_WindowBg, dx12e::theme::Chrome);  // Nebula のクロム色
     ImGui::Begin("##Toolbar", nullptr,
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
         ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_MenuBar);
 
-    // ===== メニューバー（左上から横並び: ファイル / 編集 / 表示 / ツール / ヘルプ）=====
+    // ===== メニューバー = カスタムタイトルバー =====
+    // (左: ロゴ+メニュー / 中央: シーン名 / 右: 最小化・最大化・閉じる。
+    //  余白部分のドラッグ移動は Window::SetCaptionInfo 経由で WM_NCHITTEST が HTCAPTION を返す)
     bool openShortcutsPopup = false;
     bool openAboutPopup     = false;
+    ImRect titleBarRect;   // EndMenuBar後のドラッグ判定・キャプション高さ報告に使う
     if (ImGui::BeginMenuBar())
     {
+        titleBarRect = ImGui::GetCurrentWindow()->MenuBarRect();
+
+        // ---- ロゴ(タイトルバー左端。UEのエンジンアイコン位置) ----
+        if (ctx.icons && ctx.icons->logo)
+        {
+            const float kLogoSz = 18.0f;
+            ImVec2 cur = ImGui::GetCursorScreenPos();
+            ImGui::GetWindowDrawList()->AddImage(
+                static_cast<ImTextureID>(ctx.icons->logo),
+                ImVec2(cur.x, titleBarRect.GetCenter().y - kLogoSz * 0.5f),
+                ImVec2(cur.x + kLogoSz, titleBarRect.GetCenter().y + kLogoSz * 0.5f));
+            ImGui::Dummy(ImVec2(kLogoSz + 6.0f, 0.0f));
+        }
+
         // ---- ファイル ----
         if (ImGui::BeginMenu("ファイル"))
         {
@@ -287,8 +312,94 @@ void ToolbarPanel::Render(bool isPlaying,
             ImGui::EndMenu();
         }
 
+        const float menusEndX = ImGui::GetCursorScreenPos().x;   // メニュー列の右端(中央題字の重なり回避)
+        const float barH      = titleBarRect.GetHeight();
+
+        // ---- 中央: シーン名(UEのプロジェクト名表示の位置) ----
+        {
+            std::string title = "DX12 Engine";
+            if (!ctx.currentScenePath.empty())
+            {
+                // パス区切り・拡張子を手で剥がす(UTF-8のままでも安全な操作だけにする)
+                std::string name = ctx.currentScenePath;
+                if (size_t p = name.find_last_of("/\\"); p != std::string::npos) name = name.substr(p + 1);
+                if (size_t d = name.find_last_of('.');   d != std::string::npos) name = name.substr(0, d);
+                if (!name.empty()) title = name + " - DX12 Engine";
+            }
+            const ImVec2 ts = ImGui::CalcTextSize(title.c_str());
+            float cx = titleBarRect.Min.x + (titleBarRect.GetWidth() - ts.x) * 0.5f;
+            cx = (std::max)(cx, menusEndX + 24.0f);   // 窓が狭い時はメニューの右に退避
+            ImGui::GetWindowDrawList()->AddText(
+                ImVec2(cx, titleBarRect.GetCenter().y - ts.y * 0.5f),
+                ImGui::GetColorU32(dx12e::theme::TextDim), title.c_str());
+        }
+
+        // ---- 右端: 最小化 / 最大化(復元) / 閉じる(OS標準の代替。グリフはDrawListで描く) ----
+        if (window && window->IsCustomTitleBar())
+        {
+            const float btnW = 44.0f;
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            ImGui::SetCursorScreenPos(ImVec2(titleBarRect.Max.x - btnW * 3.0f, titleBarRect.Min.y));
+
+            auto captionButton = [&](const char* id, int glyph /*0=min 1=max 2=close*/) -> bool
+            {
+                const ImVec2 p0 = ImGui::GetCursorScreenPos();
+                bool clicked = ImGui::InvisibleButton(id, ImVec2(btnW, barH));
+                const bool hovered = ImGui::IsItemHovered();
+                const ImVec2 p1(p0.x + btnW, p0.y + barH);
+                if (hovered)
+                    dl->AddRectFilled(p0, p1, glyph == 2 ? IM_COL32(232, 17, 35, 255)
+                                                         : IM_COL32(255, 255, 255, 16));
+                const ImU32 fg = (glyph == 2 && hovered) ? IM_COL32(255, 255, 255, 255)
+                                                         : ImGui::GetColorU32(dx12e::theme::TextMid);
+                const ImVec2 c((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f);
+                const float r = 5.0f;   // グリフ半径
+                if (glyph == 0)          // ─
+                    dl->AddLine(ImVec2(c.x - r, c.y), ImVec2(c.x + r, c.y), fg, 1.0f);
+                else if (glyph == 1)     // □ / ❐(復元)
+                {
+                    if (window->IsMaximized())
+                    {
+                        dl->AddRect(ImVec2(c.x - r, c.y - r + 2), ImVec2(c.x + r - 2, c.y + r), fg, 1.0f, 0, 1.0f);
+                        dl->AddLine(ImVec2(c.x - r + 2, c.y - r + 2), ImVec2(c.x - r + 2, c.y - r), fg, 1.0f);
+                        dl->AddLine(ImVec2(c.x - r + 2, c.y - r), ImVec2(c.x + r, c.y - r), fg, 1.0f);
+                        dl->AddLine(ImVec2(c.x + r, c.y - r), ImVec2(c.x + r, c.y + r - 2), fg, 1.0f);
+                        dl->AddLine(ImVec2(c.x + r, c.y + r - 2), ImVec2(c.x + r - 2, c.y + r - 2), fg, 1.0f);
+                    }
+                    else
+                        dl->AddRect(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), fg, 1.0f, 0, 1.0f);
+                }
+                else                     // ✕
+                {
+                    dl->AddLine(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), fg, 1.0f);
+                    dl->AddLine(ImVec2(c.x - r, c.y + r), ImVec2(c.x + r, c.y - r), fg, 1.0f);
+                }
+                ImGui::SameLine(0.0f, 0.0f);
+                return clicked;
+            };
+
+            if (captionButton("##cap_min", 0))   window->Minimize();
+            if (captionButton("##cap_max", 1))   window->ToggleMaximize();
+            if (captionButton("##cap_close", 2)) window->RequestClose();
+        }
+
         ImGui::EndMenuBar();
     }
+    ImGui::PopStyleVar();   // FramePadding(タイトルバー用の縦増し。以降のツール列は通常値に戻す)
+
+    // タイトルバー帯のドラッグ可否をWindowへ報告する。アイテム(メニュー/ボタン)上や
+    // ポップアップ表示中はドラッグさせない。値は次のWM_NCHITTESTから効く(1フレーム遅れ許容)。
+    if (window && window->IsCustomTitleBar())
+    {
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
+        const bool inBand = mouse.x >= titleBarRect.Min.x && mouse.x < titleBarRect.Max.x
+                         && mouse.y >= titleBarRect.Min.y && mouse.y < titleBarRect.Max.y;
+        const bool blocked = ImGui::IsAnyItemHovered()
+                          || ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+        // キャプション高さはクライアント座標で渡す(multi-viewport有効時のImGui座標はスクリーン座標のため変換)
+        window->SetCaptionInfo(static_cast<u32>(titleBarRect.Max.y - mainVp->Pos.y), inBand && !blocked);
+    }
+
     if (openShortcutsPopup) ImGui::OpenPopup("ショートカット一覧##ShortcutsPopup");
     if (openAboutPopup)     ImGui::OpenPopup("バージョン情報##AboutPopup");
 
@@ -370,104 +481,7 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::SameLine(0, 12);
     }
 
-    // ===== Play/Stop =====（メニューバー下の先頭。緑=再生 / 赤=停止で色分け）
-    if (!isPlaying)
-    {
-        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.18f, 0.55f, 0.28f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.66f, 0.34f, 1.0f));
-        if (toolButton(ic ? ic->play : 0, "再生", "Play  再生（プレイモードへ）", false))
-        {
-            // game.lua は任意（各エンティティのスクリプトコンポーネントが動くため）。
-            // 旧来の「scripts/game.lua が無いと再生不可」警告は廃止し、そのまま再生する。
-            outPendingPlayMode = true;
-            outModeChangeRequested = true;
-        }
-        ImGui::PopStyleColor(2);
-    }
-    else
-    {
-        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.70f, 0.24f, 0.24f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.82f, 0.30f, 0.30f, 1.0f));
-        if (toolButton(ic ? ic->stop : 0, "停止", "Stop  停止（エディタへ戻る）", false))
-        {
-            outPendingPlayMode = false;
-            outModeChangeRequested = true;
-        }
-        ImGui::PopStyleColor(2);
-    }
-
-    // ===== マルチプレイ テストロール(フェーズ⑨) =====
-    // Play中はロール変更不可(Stopしてから変える)。EnterPlayModeがctx.netTestRoleを見て
-    // net:host()/net:join()相当を自動実行する(Luaを書かずに素早く2窓テストできるように)。
-    ImGui::SameLine(0, 8);
-    ImGui::BeginDisabled(isPlaying);
-    {
-        const char* roleLabels[] = { "オフライン", "ホストとしてPlay", "クライアント参加" };
-        int roleIdx = static_cast<int>(ctx.netTestRole);
-        ImGui::SetNextItemWidth(150);
-        if (ImGui::Combo("##net_test_role", &roleIdx, roleLabels, IM_ARRAYSIZE(roleLabels)))
-            ctx.netTestRole = static_cast<NetTestRole>(roleIdx);
-    }
-    ImGui::EndDisabled();
-
-    if (ctx.netTestRole == NetTestRole::Client)
-    {
-        ImGui::SameLine(0, 4);
-        ImGui::BeginDisabled(isPlaying);
-        char ipBuf[64];
-        strncpy_s(ipBuf, ctx.netTestJoinAddress.c_str(), _TRUNCATE);
-        ImGui::SetNextItemWidth(120);
-        if (ImGui::InputText("##net_test_ip", ipBuf, sizeof(ipBuf)))
-            ctx.netTestJoinAddress = ipBuf;
-        ImGui::EndDisabled();
-    }
-
-    if (isPlaying && ctx.netTestRole == NetTestRole::Host)
-    {
-        ImGui::SameLine(0, 8);
-        if (ImGui::Button("テストクライアント起動"))
-            ctx.netTestLaunchClientRequested = true;
-        ImGui::SameLine(0, 4); ImGui::TextDisabled("(?)");
-        if (ImGui::BeginItemTooltip())
-        {
-            ImGui::TextUnformatted("同じプロジェクトを --net-client 127.0.0.1:<port> でもう1つ起動して"
-                                   "\n自動でこのホストへ接続します(検証用の別ウィンドウ)。");
-            ImGui::EndTooltip();
-        }
-    }
-
-    // ===== Status =====
-    ImGui::SameLine(0, 12);
-    ImGui::AlignTextToFramePadding();
-    if (isPlaying)
-    {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 0.4f, 1.0f));
-        ImGui::Text("\xe2\x97\x8f \xe3\x83\x97\xe3\x83\xac\xe3\x82\xa4\xe4\xb8\xad");
-        ImGui::PopStyleColor();
-    }
-    else
-    {
-        ImGui::TextDisabled("\xe3\x82\xa8\xe3\x83\x87\xe3\x82\xa3\xe3\x82\xbf");
-    }
-
-    // Lua error
-    if (scriptEngine && !scriptEngine->GetLastError().empty())
-    {
-        ImGui::SameLine(0, 16);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
-        ImGui::Text("\xe2\x9a\xa0 Lua Error");
-        ImGui::PopStyleColor();
-    }
-
-    // Hot reload flash
-    if (ctx.hotReloadFlash > 0.0f)
-    {
-        ImGui::SameLine(0, 12);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.5f, ctx.hotReloadFlash));
-        ImGui::Text("\xe2\x9c\x93 Saved");
-        ImGui::PopStyleColor();
-        ctx.hotReloadFlash -= clock->GetDeltaTime();
-    }
+    // (Play/Stop はギズモ群の後、画面中央に描く。UE5 と同じ配置)
 
     // Error popup (中央モーダル)
     if (ctx.errorFlash > 0.0f)
@@ -565,7 +579,7 @@ void ToolbarPanel::Render(bool isPlaying,
     ImGui::PopStyleVar(2);
 
     // ===== ギズモ（移動 / 回転 / 拡縮 / 空間）=====
-    groupSep();
+    // (ブランド塊が末尾に区切り"|"を出しているので先頭の groupSep は不要)
     if (toolButton(ic ? ic->gizmoMove : 0, "移動",
                    "移動ギズモ  (W)", ctx.gizmoMode == GizmoMode::Translate))
         ctx.gizmoMode = GizmoMode::Translate;
@@ -633,21 +647,113 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::EndPopup();
     }
 
-    // ===== シーン名表示 =====
-    ImGui::SameLine(0, 16);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextDisabled("|");
-    ImGui::SameLine(0, 8);
-    if (!ctx.currentScenePath.empty())
+    // ===== Play コントロール（画面中央・大型。UE5 と同じ配置。シーン名表示はタイトルバー中央へ移設済み）=====
     {
-        std::string sceneName = std::filesystem::path(ctx.currentScenePath).stem().string();
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.85f, 1.0f, 1.0f));
-        ImGui::Text("[%s]", sceneName.c_str());
+        ImGui::SameLine();
+        // Play ボタンが常に画面中央へ来るよう配置（左のツール群と重なる狭い窓では右へ退避）
+        const float kPlayBtnHalf = 48.0f;
+        float cx = displayW * 0.5f - kPlayBtnHalf;
+        cx = (std::max)(cx, ImGui::GetCursorPosX() + 16.0f);
+        ImGui::SetCursorPosX(cx);
+    }
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(18, 5));   // Play/Stop は横に大きく
+    if (!isPlaying)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.18f, 0.55f, 0.28f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.66f, 0.34f, 1.0f));
+        if (toolButton(ic ? ic->play : 0, "再生", "Play  再生（プレイモードへ）", false))
+        {
+            // game.lua は任意（各エンティティのスクリプトコンポーネントが動くため）。
+            // 旧来の「scripts/game.lua が無いと再生不可」警告は廃止し、そのまま再生する。
+            outPendingPlayMode = true;
+            outModeChangeRequested = true;
+        }
+        ImGui::PopStyleColor(2);
+    }
+    else
+    {
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.70f, 0.24f, 0.24f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.82f, 0.30f, 0.30f, 1.0f));
+        if (toolButton(ic ? ic->stop : 0, "停止", "Stop  停止（エディタへ戻る）", false))
+        {
+            outPendingPlayMode = false;
+            outModeChangeRequested = true;
+        }
+        ImGui::PopStyleColor(2);
+    }
+    ImGui::PopStyleVar();   // FramePadding(Play大型化)
+
+    // ===== マルチプレイ テストロール(フェーズ⑨) =====
+    // Play中はロール変更不可(Stopしてから変える)。EnterPlayModeがctx.netTestRoleを見て
+    // net:host()/net:join()相当を自動実行する(Luaを書かずに素早く2窓テストできるように)。
+    ImGui::SameLine(0, 8);
+    ImGui::BeginDisabled(isPlaying);
+    {
+        const char* roleLabels[] = { "オフライン", "ホストとしてPlay", "クライアント参加" };
+        int roleIdx = static_cast<int>(ctx.netTestRole);
+        ImGui::SetNextItemWidth(150);
+        if (ImGui::Combo("##net_test_role", &roleIdx, roleLabels, IM_ARRAYSIZE(roleLabels)))
+            ctx.netTestRole = static_cast<NetTestRole>(roleIdx);
+    }
+    ImGui::EndDisabled();
+
+    if (ctx.netTestRole == NetTestRole::Client)
+    {
+        ImGui::SameLine(0, 4);
+        ImGui::BeginDisabled(isPlaying);
+        char ipBuf[64];
+        strncpy_s(ipBuf, ctx.netTestJoinAddress.c_str(), _TRUNCATE);
+        ImGui::SetNextItemWidth(120);
+        if (ImGui::InputText("##net_test_ip", ipBuf, sizeof(ipBuf)))
+            ctx.netTestJoinAddress = ipBuf;
+        ImGui::EndDisabled();
+    }
+
+    if (isPlaying && ctx.netTestRole == NetTestRole::Host)
+    {
+        ImGui::SameLine(0, 8);
+        if (ImGui::Button("テストクライアント起動"))
+            ctx.netTestLaunchClientRequested = true;
+        ImGui::SameLine(0, 4); ImGui::TextDisabled("(?)");
+        if (ImGui::BeginItemTooltip())
+        {
+            ImGui::TextUnformatted("同じプロジェクトを --net-client 127.0.0.1:<port> でもう1つ起動して"
+                                   "\n自動でこのホストへ接続します(検証用の別ウィンドウ)。");
+            ImGui::EndTooltip();
+        }
+    }
+
+    // ===== Status =====
+    ImGui::SameLine(0, 12);
+    ImGui::AlignTextToFramePadding();
+    if (isPlaying)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 0.4f, 1.0f));
+        ImGui::Text("\xe2\x97\x8f \xe3\x83\x97\xe3\x83\xac\xe3\x82\xa4\xe4\xb8\xad");
         ImGui::PopStyleColor();
     }
     else
     {
-        ImGui::TextDisabled("[Untitled]");
+        ImGui::TextDisabled("\xe3\x82\xa8\xe3\x83\x87\xe3\x82\xa3\xe3\x82\xbf");
+    }
+
+    // Lua error
+    if (scriptEngine && !scriptEngine->GetLastError().empty())
+    {
+        ImGui::SameLine(0, 16);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+        ImGui::Text("\xe2\x9a\xa0 Lua Error");
+        ImGui::PopStyleColor();
+    }
+
+    // Hot reload flash
+    if (ctx.hotReloadFlash > 0.0f)
+    {
+        ImGui::SameLine(0, 12);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.5f, ctx.hotReloadFlash));
+        ImGui::Text("\xe2\x9c\x93 Saved");
+        ImGui::PopStyleColor();
+        ctx.hotReloadFlash -= clock->GetDeltaTime();
     }
 
     // ===== FPS =====
