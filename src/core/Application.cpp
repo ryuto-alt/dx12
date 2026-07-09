@@ -5046,6 +5046,14 @@ void Application::BeginProjectLoad(const ProjectInfo& info, bool isNew)
     m_loadThreadDone      = false;
     m_loadStatus          = isNew ? "プロジェクトを作成中..." : "プロジェクトを読み込み中...";
 
+    // ローディングのくるくるは専用スレッドのスプラッシュ窓に任せる(起動時と同じ仕組み)。
+    // メインスレッドがシーンロードやマテリアルサムネイル生成(同期テクスチャデコード)で
+    // ブロックしてもアニメが止まらない(ImGui側の演出はフレームが止まると固まるため)。
+    SplashScreen::Show("DX12 Engine",
+                       std::string("v") + kEngineVersion,
+                       PathResolver::AssetsDir() + "editor/icons/logo.png");
+    SplashScreen::SetStatus(m_loadStatus);
+
     if (isNew)
     {
         // ディスク作成（フォルダ生成・テンプレ書き出し）はワーカースレッドで
@@ -5086,6 +5094,7 @@ void Application::UpdateProjectLoad(f32 dt)
     if (!m_loadProjectStarted)
     {
         m_loadStatus = "シーンを読み込み中...";
+        SplashScreen::SetStatus(m_loadStatus);
         LoadProject(m_loadInfo);
         m_loadProjectStarted  = true;
         m_loadSceneWaitFrames = 2;  // pending* が Render で消化されるまで猶予
@@ -5111,6 +5120,7 @@ void Application::UpdateProjectLoad(f32 dt)
                          "マテリアルを読み込み中... (%zu / %zu)",
                          m_matThumbPreloadTotal - remaining, m_matThumbPreloadTotal);
                 m_loadStatus = buf;
+                SplashScreen::SetStatus(m_loadStatus);
                 return;
             }
         }
@@ -5118,6 +5128,7 @@ void Application::UpdateProjectLoad(f32 dt)
         m_loading            = false;
         m_loadProjectStarted = false;
         m_editorCtx->buildCompleteFlash = 1.5f;
+        SplashScreen::Close();
     }
 }
 
