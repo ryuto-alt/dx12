@@ -10,10 +10,6 @@
 #include "renderer/Mesh.h"
 #include "resource/MaterialAssetIO.h"
 #include "resource/ResourceManager.h"
-#include "resource/TextureLoader.h"
-
-#include <DirectXTex.h>
-#include <objbase.h>   // CoInitializeEx(デコードワーカーのWIC用)
 
 #include <algorithm>
 #include <cctype>
@@ -121,17 +117,6 @@ std::string NormalizeThumbKey(const std::string& absPath)
 }
 } // namespace
 
-// デコードワーカーの成果物。重い処理(ファイル読み/パース/WICデコード/縮小)は全部済んでおり、
-// メインスレッドは GPU アップロードと球描画だけを行う。
-struct MaterialPreviewRenderer::ThumbDecodeJob
-{
-    std::string key;
-    MaterialAssetData data;
-    bool parsed = false;
-    DirectX::ScratchImage albedo, normal, mr;
-    bool hasAlbedo = false, hasNormal = false, hasMr = false;
-};
-
 void MaterialPreviewRenderer::Initialize(GraphicsDevice& device, DescriptorHeap* srvHeap, ResourceManager* resourceManager)
 {
     m_device = &device;
@@ -191,101 +176,6 @@ void MaterialPreviewRenderer::Initialize(GraphicsDevice& device, DescriptorHeap*
     }
 
     BuildPipeline(device);
-
-    // サムネイル用デコードワーカー起動(重い画像デコードをメインスレッドから逃がす)
-    if (m_valid && m_thumbDepth)
-        m_decodeWorker = std::thread([this] { DecodeWorkerLoop(); });
-}
-
-MaterialPreviewRenderer::~MaterialPreviewRenderer()
-{
-    m_decodeStop.store(true);
-    m_decodeCv.notify_all();
-    if (m_decodeWorker.joinable())
-        m_decodeWorker.join();
-}
-
-void MaterialPreviewRenderer::EnqueueThumbnailDecode(const std::string& key)
-{
-    if (m_pendingKeys.count(key)) return;   // 依頼済み
-    m_pendingKeys.insert(key);
-    {
-        std::scoped_lock lk(m_decodeMutex);
-        m_decodeRequests.push_back(key);
-    }
-    m_decodeCv.notify_one();
-}
-
-void MaterialPreviewRenderer::DecodeWorkerLoop()
-{
-    // WIC(DirectXTex LoadFromWICFile)はスレッドごとにCOM初期化が要る
-    const HRESULT coInit = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-
-    namespace fs = std::filesystem;
-    for (;;)
-    {
-        std::string key;
-        {
-            std::unique_lock lk(m_decodeMutex);
-            m_decodeCv.wait(lk, [this] { return m_decodeStop.load() || !m_decodeRequests.empty(); });
-            if (m_decodeStop.load()) break;
-            key = std::move(m_decodeRequests.front());
-            m_decodeRequests.pop_front();
-        }
-
-        auto job = std::make_shared<ThumbDecodeJob>();
-        job->key = key;
-
-        // .dxmat 読み込み+パース
-        {
-            std::ifstream ifs(fs::path(key), std::ios::binary);
-            if (ifs)
-            {
-                std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(ifs)),
-                                            std::istreambuf_iterator<char>());
-                job->parsed = ParseMaterialAsset(bytes, job->data);
-            }
-        }
-
-        if (job->parsed)
-        {
-            auto decode = [](const std::string& relPath, DirectX::ScratchImage& img) -> bool
-            {
-                if (relPath.empty()) return false;
-                const std::string full = PathResolver::AssetsDir() + relPath;
-                std::error_code ec;
-                if (!fs::exists(fs::path(full), ec) || ec) return false;
-                if (!TextureLoader::DecodeFromFile(PathResolver::Utf8ToWide(full), img)) return false;
-
-                // サムネイルは128px描画なので、4K等の大きい画像は512までCPU縮小して
-                // アップロード/VRAMを節約する(BC圧縮はデコード無しで縮小できないのでそのまま)
-                const DirectX::TexMetadata& meta = img.GetMetadata();
-                const size_t maxDim = (std::max)(meta.width, meta.height);
-                if (maxDim > 512 && !DirectX::IsCompressed(meta.format))
-                {
-                    const double scale = 512.0 / static_cast<double>(maxDim);
-                    DirectX::ScratchImage resized;
-                    if (SUCCEEDED(DirectX::Resize(*img.GetImage(0, 0, 0),
-                            (std::max<size_t>)(1, static_cast<size_t>(meta.width  * scale)),
-                            (std::max<size_t>)(1, static_cast<size_t>(meta.height * scale)),
-                            DirectX::TEX_FILTER_DEFAULT, resized)))
-                        img = std::move(resized);
-                }
-                return true;
-            };
-            job->hasAlbedo = decode(job->data.albedoPath,         job->albedo);
-            job->hasNormal = decode(job->data.normalPath,         job->normal);
-            job->hasMr     = decode(job->data.metalRoughnessPath, job->mr);
-        }
-
-        {
-            std::scoped_lock lk(m_decodeMutex);
-            m_decodeDone.push_back(std::move(job));
-        }
-    }
-
-    if (SUCCEEDED(coInit))
-        CoUninitialize();
 }
 
 void MaterialPreviewRenderer::BuildDepthBuffer(GraphicsDevice& device)
@@ -402,17 +292,6 @@ void MaterialPreviewRenderer::DrawSceneTo(CommandList& cmd, D3D12_CPU_DESCRIPTOR
     normal->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(srvBlockStart + 1));
     mr->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(srvBlockStart + 2));
 
-    DrawSceneWithSrvs(cmd, rtv, dsv, size, srvBlockStart, input.metallic, input.roughness,
-                      hasNormal, hasMetalRoughness, shape, camYaw, camPitch, camDist);
-}
-
-void MaterialPreviewRenderer::DrawSceneWithSrvs(CommandList& cmd, D3D12_CPU_DESCRIPTOR_HANDLE rtv,
-                                                D3D12_CPU_DESCRIPTOR_HANDLE dsv, u32 size,
-                                                u32 srvBlockStart, f32 metallic, f32 roughness,
-                                                bool hasNormal, bool hasMetalRoughness,
-                                                MaterialPreviewShape shape,
-                                                f32 camYaw, f32 camPitch, f32 camDist)
-{
     // オービットカメラ(球面座標→LookAt)。VfxEditorPanelと同じ方式。原点(マテリアルボール中心)を注視。
     const XMVECTOR target = XMVectorZero();
     const f32 cp = std::cos(camPitch), sp = std::sin(camPitch);
@@ -451,8 +330,8 @@ void MaterialPreviewRenderer::DrawSceneWithSrvs(CommandList& cmd, D3D12_CPU_DESC
     native->SetGraphicsRootDescriptorTable(2, m_srvHeap->GetGpuHandle(srvBlockStart));
 
     struct { f32 metallic; f32 roughness; u32 flags; f32 pad; } pbrParams;
-    pbrParams.metallic  = metallic;
-    pbrParams.roughness = roughness;
+    pbrParams.metallic  = input.metallic;
+    pbrParams.roughness = input.roughness;
     pbrParams.flags     = (hasNormal ? 1u : 0u) | (hasMetalRoughness ? 2u : 0u);
     pbrParams.pad       = 0.0f;
     native->SetGraphicsRoot32BitConstants(3, 4, &pbrParams, 0);
@@ -473,7 +352,8 @@ u64 MaterialPreviewRenderer::GetOrQueueThumbnail(const std::string& dxmatAbsPath
     if (it != m_thumbCache.end())
         return it->second.failed ? 0 : it->second.gpuHandle;
 
-    EnqueueThumbnailDecode(key);
+    if (std::find(m_thumbQueue.begin(), m_thumbQueue.end(), key) == m_thumbQueue.end())
+        m_thumbQueue.push_back(key);
     return 0;
 }
 
@@ -490,7 +370,8 @@ void MaterialPreviewRenderer::InvalidateThumbnail(const std::string& dxmatAbsPat
     if (it == m_thumbCache.end()) return;   // 未生成なら次の GetOrQueueThumbnail が積む
 
     // 既存テクスチャへ再レンダリング(解放しない)
-    EnqueueThumbnailDecode(key);
+    if (std::find(m_thumbQueue.begin(), m_thumbQueue.end(), key) == m_thumbQueue.end())
+        m_thumbQueue.push_back(key);
 }
 
 size_t MaterialPreviewRenderer::ScanAllMaterials(const std::string& assetsDir)
@@ -512,9 +393,9 @@ size_t MaterialPreviewRenderer::ScanAllMaterials(const std::string& assetsDir)
 
         const std::string key = NormalizeThumbKey(it->path().string());
         if (m_thumbCache.count(key)) continue;
-        if (!m_pendingKeys.count(key))
+        if (std::find(m_thumbQueue.begin(), m_thumbQueue.end(), key) == m_thumbQueue.end())
         {
-            EnqueueThumbnailDecode(key);
+            m_thumbQueue.push_back(key);
             ++queued;
         }
     }
@@ -525,46 +406,36 @@ void MaterialPreviewRenderer::RenderPendingThumbnails(CommandList& cmd)
 {
     if (!m_valid || !m_resourceManager || !m_thumbDepth) return;
 
-    // ワーカーがデコードし終えた分だけ取り出す(1フレーム2枚まで)。
-    // ここに来る時点で重い処理は済んでおり、GPUアップロード+128px球描画だけなので
-    // ローディング画面のスピナーやエディタのフレームを固めない。
-    std::vector<std::shared_ptr<ThumbDecodeJob>> ready;
-    {
-        std::scoped_lock lk(m_decodeMutex);
-        const size_t take = (std::min<size_t>)(2, m_decodeDone.size());
-        ready.assign(std::make_move_iterator(m_decodeDone.begin()),
-                     std::make_move_iterator(m_decodeDone.begin() + take));
-        m_decodeDone.erase(m_decodeDone.begin(), m_decodeDone.begin() + take);
-    }
-    if (ready.empty()) return;
-
     ID3D12GraphicsCommandList* native = cmd.GetNative();
     ID3D12Device* dev = m_device->GetDevice();
 
-    for (auto& job : ready)
+    // 1フレーム2枚まで(テクスチャロード込みなのでスパイクを避ける)
+    for (int budget = 2; budget > 0 && !m_thumbQueue.empty(); --budget)
     {
-        const std::string& key = job->key;
-        m_pendingKeys.erase(key);
+        const std::string key = m_thumbQueue.front();
+        m_thumbQueue.erase(m_thumbQueue.begin());
+
+        // .dxmat 読み込み+パース
+        MaterialAssetData data;
+        bool parsed = false;
+        {
+            std::ifstream ifs(std::filesystem::path(key), std::ios::binary);
+            if (ifs)
+            {
+                std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(ifs)),
+                                            std::istreambuf_iterator<char>());
+                parsed = ParseMaterialAsset(bytes, data);
+            }
+        }
 
         auto it = m_thumbCache.find(key);
-        if (!job->parsed)
+        if (!parsed)
         {
             // 既存サムネイルがあれば古い絵のまま残す(壊れた保存の途中かもしれない)。無ければ failed 登録。
             if (it == m_thumbCache.end())
                 m_thumbCache[key].failed = true;
             continue;
         }
-
-        // デコード済み ScratchImage から GPU テクスチャを作成(欠落分はデフォルトへフォールバック)
-        std::unique_ptr<Texture> texAlbedo, texNormal, texMr;
-        if (job->hasAlbedo) texAlbedo = TextureLoader::CreateFromScratchImage(*m_device, native, job->albedo, /*srgb=*/true);
-        if (job->hasNormal) texNormal = TextureLoader::CreateFromScratchImage(*m_device, native, job->normal, /*srgb=*/false);
-        if (job->hasMr)     texMr     = TextureLoader::CreateFromScratchImage(*m_device, native, job->mr,     /*srgb=*/false);
-
-        Texture* albedo = texAlbedo ? texAlbedo.get() : m_resourceManager->GetDefaultWhiteTexture();
-        Texture* normal = texNormal ? texNormal.get() : m_resourceManager->GetDefaultNormalTexture();
-        Texture* mrTex  = texMr     ? texMr.get()     : m_resourceManager->GetDefaultMetalRoughnessTexture();
-        if (!albedo || !normal || !mrTex) continue;
 
         const bool needTexture = (it == m_thumbCache.end()) || !it->second.texture;
         ThumbEntry& entry = m_thumbCache[key];
@@ -613,18 +484,15 @@ void MaterialPreviewRenderer::RenderPendingThumbnails(CommandList& cmd)
         // RTVは共有スロット1個を使い回す(記録時点で参照が焼き込まれるため上書きしてよい)
         dev->CreateRenderTargetView(entry.texture.Get(), nullptr, m_thumbRtvHandle);
 
-        // SRVリングへ書いて球を描く(マテリアルエディタの初期カメラと同じ構図で固定)
-        const u32 srvBlockStart = m_srvBlocks[m_srvRingCursor];
-        m_srvRingCursor = (m_srvRingCursor + 1) % kSrvRingCount;
-        albedo->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(srvBlockStart));
-        normal->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(srvBlockStart + 1));
-        mrTex->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(srvBlockStart + 2));
-        DrawSceneWithSrvs(cmd, m_thumbRtvHandle, m_thumbDsvHandle, kThumbSize, srvBlockStart,
-                          job->data.metallic, job->data.roughness,
-                          job->hasNormal, job->hasMr,
-                          MaterialPreviewShape::Sphere, 0.6f, 0.3f, 3.0f);
-        // texAlbedo/texNormal/texMr はこの後スコープアウトで破棄されるが、GpuResource の
-        // 解放はフェンス連動の DeferredRelease 経由なので GPU 実行前に消えることはない。
+        DrawInput input;
+        input.albedoPath         = data.albedoPath;
+        input.normalPath         = data.normalPath;
+        input.metalRoughnessPath = data.metalRoughnessPath;
+        input.metallic           = data.metallic;
+        input.roughness          = data.roughness;
+        // マテリアルエディタの初期カメラと同じ構図の球体で固定
+        DrawSceneTo(cmd, m_thumbRtvHandle, m_thumbDsvHandle, kThumbSize,
+                    input, MaterialPreviewShape::Sphere, 0.6f, 0.3f, 3.0f);
 
         {
             D3D12_RESOURCE_BARRIER barrier{};

@@ -60,11 +60,16 @@ std::vector<D3D12_SUBRESOURCE_DATA> BuildSubresources(const DirectX::ScratchImag
 
 } // namespace
 
-bool TextureLoader::DecodeFromFile(const std::wstring& filePath, DirectX::ScratchImage& out)
+std::unique_ptr<Texture> TextureLoader::LoadFromFile(
+    GraphicsDevice& device,
+    ID3D12GraphicsCommandList* cmdList,
+    const std::wstring& filePath,
+    bool srgb)
 {
+    DirectX::ScratchImage scratchImage;
+
     // 拡張子で読み込み方法を判定
-    const size_t dot = filePath.find_last_of(L'.');
-    const std::wstring ext = (dot != std::wstring::npos) ? filePath.substr(dot) : L"";
+    const std::wstring ext = filePath.substr(filePath.find_last_of(L'.'));
 
     HRESULT hr = S_OK;
     if (ext == L".dds" || ext == L".DDS")
@@ -73,7 +78,7 @@ bool TextureLoader::DecodeFromFile(const std::wstring& filePath, DirectX::Scratc
             filePath.c_str(),
             DirectX::DDS_FLAGS_NONE,
             nullptr,
-            out);
+            scratchImage);
     }
     else
     {
@@ -81,7 +86,7 @@ bool TextureLoader::DecodeFromFile(const std::wstring& filePath, DirectX::Scratc
             filePath.c_str(),
             DirectX::WIC_FLAGS_NONE,
             nullptr,
-            out);
+            scratchImage);
     }
 
     if (FAILED(hr))
@@ -91,29 +96,9 @@ bool TextureLoader::DecodeFromFile(const std::wstring& filePath, DirectX::Scratc
         std::string pathStr(static_cast<size_t>(sz - 1), '\0');
         WideCharToMultiByte(CP_UTF8, 0, filePath.c_str(), -1, pathStr.data(), sz, nullptr, nullptr);
         Logger::Error("テクスチャの読み込みに失敗しました: {}", pathStr);
-        return false;
-    }
-    return true;
-}
-
-std::unique_ptr<Texture> TextureLoader::LoadFromFile(
-    GraphicsDevice& device,
-    ID3D12GraphicsCommandList* cmdList,
-    const std::wstring& filePath,
-    bool srgb)
-{
-    DirectX::ScratchImage scratchImage;
-    if (!DecodeFromFile(filePath, scratchImage))
         return nullptr;
-    return CreateFromScratchImage(device, cmdList, scratchImage, srgb);
-}
+    }
 
-std::unique_ptr<Texture> TextureLoader::CreateFromScratchImage(
-    GraphicsDevice& device,
-    ID3D12GraphicsCommandList* cmdList,
-    DirectX::ScratchImage& scratchImage,
-    bool srgb)
-{
     // mip が無ければ生成（メタデータは生成後に取り直す）
     EnsureMipChain(scratchImage, srgb);
     DirectX::TexMetadata meta = scratchImage.GetMetadata();

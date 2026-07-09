@@ -5,8 +5,6 @@
 
 struct ID3D12GraphicsCommandList;
 
-namespace DirectX { class ScratchImage; }
-
 namespace dx12e
 {
 
@@ -21,19 +19,6 @@ public:
         ID3D12GraphicsCommandList* cmdList,
         const std::wstring& filePath,
         bool srgb = true);  // false = linear (normal/metalRoughness maps)
-
-    // ワーカースレッド用: ファイル→ScratchImage のデコードのみ(GPU/デバイスに触らない)。
-    // WIC を使うため呼び出しスレッドで CoInitializeEx 済みであること。
-    // 重い画像デコードをメインスレッドから逃がしてヒッチを防ぐ用途(サムネイル事前生成等)。
-    static bool DecodeFromFile(const std::wstring& filePath, DirectX::ScratchImage& out);
-
-    // デコード済み ScratchImage から GPU テクスチャを作成+アップロードする(メインスレッド、
-    // 有効な cmdList 必須)。LoadFromFile の後半と同一(mip 生成込み)。
-    static std::unique_ptr<Texture> CreateFromScratchImage(
-        GraphicsDevice& device,
-        ID3D12GraphicsCommandList* cmdList,
-        DirectX::ScratchImage& scratch,
-        bool srgb = true);
 
     // IBL 環境キューブ用：.dds の TEXTURECUBE を 6 面×全 mip でロードする。
     // SRV(TextureCube) は呼び出し側で Texture::CreateCubeSRV を使って張ること。
