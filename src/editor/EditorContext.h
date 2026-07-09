@@ -174,9 +174,23 @@ public:
     f32 viewportW = 0.0f;
     f32 viewportH = 0.0f;
 
+    // フローティングツール窓(マテリアルエディタ/マテリアルライブラリ/パーティクルエディタ等、
+    // ImGuiWindowFlags_NoDockingで浮かぶ独立窓)がホバーされているか。
+    // これらの窓は 3D ビューポート矩形の上に重なって浮かぶことがあるため、IsCursorInViewport が
+    // 矩形だけで判定すると「窓の上でドラッグ/ホイール操作した」のがそのままシーンカメラにも
+    // 効いてしまう(窓に隠れているだけの3Dビューを触っている扱いになる)。ここで弾く。
+    //
+    // 2値ラッチにしている理由: 各パネルが ThisFrame を立てるのは ImGui パスの「後半」
+    // (Application::Render の EditorLayer::Render より後)なので、同一フレーム内のリセット+読み取り
+    // だと HandleCameraNavigation は常に false を読んでしまう。フレーム冒頭で前フレームの
+    // ThisFrame を hovered へ確定コピーし、読む側は常に「前フレームの確定値」を見る(1フレーム遅延)。
+    bool floatingToolWindowHovered = false;           // 読み取り用(前フレームの確定値)
+    bool floatingToolWindowHoveredThisFrame = false;  // 書き込み用(各パネルが今フレーム立てる)
+
     bool IsCursorInViewport(f32 mx, f32 my) const
     {
-        return viewportW > 0.0f && viewportH > 0.0f
+        return !floatingToolWindowHovered
+            && viewportW > 0.0f && viewportH > 0.0f
             && mx >= viewportX && mx < viewportX + viewportW
             && my >= viewportY && my < viewportY + viewportH;
     }

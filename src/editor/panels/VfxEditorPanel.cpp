@@ -482,6 +482,13 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
         ImGui::End();
         return;
     }
+    // 3Dビューポートの上に重なって浮かぶことがあるので、ホバー中はシーンカメラのドラッグ/ホイール
+    // 操作が同時に反応しないよう EditorContext 経由で伝える(プレビューのオービット操作漏れ対策)。
+    // ThisFrame に書き、読む側は前フレームの確定値を見る。
+    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows
+                               | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem
+                               | ImGuiHoveredFlags_AllowWhenBlockedByPopup))
+        ctx.floatingToolWindowHoveredThisFrame = true;
 
     // ---- 左: アセット一覧 ----
     ImGui::BeginChild("##VfxAssetList", ImVec2(170.0f, 0.0f), true);

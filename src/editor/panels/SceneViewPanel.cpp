@@ -261,6 +261,7 @@ void SceneViewPanel::HandlePicking(entt::registry& reg,
     bool gizmoBlocking = ctx.HasSelection() && (ImGuizmo::IsUsing() || ImGuizmo::IsOver());
     if (ImGui::GetIO().KeyAlt                 // Alt+左ドラッグはオービット操作なのでピッキングしない
         || gizmoBlocking
+        || ctx.floatingToolWindowHovered      // フローティングツール窓の上のクリックは背後のシーンを選択しない
         || !ImGui::IsMouseClicked(ImGuiMouseButton_Left))
         return;
 
@@ -602,7 +603,8 @@ void SceneViewPanel::HandleTextureContextMenu(entt::registry& reg,
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Right))
     {
         ImVec2 mp = io.MousePos;
-        bool inViewport = mp.x >= vpX && mp.x < vpX + vpW && mp.y >= vpY && mp.y < vpY + vpH;
+        bool inViewport = !ctx.floatingToolWindowHovered
+            && mp.x >= vpX && mp.x < vpX + vpW && mp.y >= vpY && mp.y < vpY + vpH;
         m_textureCtxTarget = inViewport ? PickEntityAndSubmesh(reg, camera, vpX, vpY, vpW, vpH)
                                         : SubmeshPickResult{};
     }
@@ -654,7 +656,8 @@ void SceneViewPanel::HandleCameraNavigation(entt::registry& reg,
     ImGuiIO& io = ImGui::GetIO();
 
     ImVec2 m = io.MousePos;
-    bool inViewport = m.x >= vpX && m.x < vpX + vpW
+    bool inViewport = !ctx.floatingToolWindowHovered
+                   && m.x >= vpX && m.x < vpX + vpW
                    && m.y >= vpY && m.y < vpY + vpH;
 
     // ギズモ操作中、またはカーソルがビュー外なら以降のカメラ操作はしない

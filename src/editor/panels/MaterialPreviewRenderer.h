@@ -48,7 +48,7 @@ public:
                f32 camYaw, f32 camPitch, f32 camDist);
 
     u64 GetPreviewGpuHandle() const;
-    static constexpr u32 kPreviewSize = 384;
+    static constexpr u32 kPreviewSize = 512;
 
 private:
     void BuildPipeline(GraphicsDevice& device);

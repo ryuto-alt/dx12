@@ -9341,6 +9341,11 @@ void Application::Render()
     m_imguiManager->BeginFrame();
     ImGuizmo::BeginFrame();
 
+    // フローティングツール窓のホバー判定ラッチ。各窓は ImGui パス後半(EditorLayer::Render より後)で
+    // ThisFrame を立てるため、読む側(HandleCameraNavigation 等)は前フレームの確定値を参照する。
+    m_editorCtx->floatingToolWindowHovered = m_editorCtx->floatingToolWindowHoveredThisFrame;
+    m_editorCtx->floatingToolWindowHoveredThisFrame = false;
+
     // 版が変わった初回起動だけ「更新内容」モーダルを最前面に出す（ランチャー/エディタの上）。
     RenderWhatsNewPopup();
 

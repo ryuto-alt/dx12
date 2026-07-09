@@ -1330,7 +1330,7 @@ void InspectorPanel::Render(entt::registry& reg,
                             &reg, ctx.selectedEntity, before, mr, "Material Texture"));
                     };
 
-                    constexpr float kThumbSize = 40.0f;
+                    constexpr float kThumbSize = 64.0f;
 
                     auto drawTextureOverrideSlot = [&](const char* label, std::vector<std::string>& slotVec, u32 smi)
                     {

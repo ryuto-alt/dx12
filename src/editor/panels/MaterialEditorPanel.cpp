@@ -3,11 +3,14 @@
 #include "editor/panels/AssetBrowserPanel.h"
 #include "resource/MaterialAssetManager.h"
 #include "core/Logger.h"
+#include "core/PathResolver.h"
 
 #include <imgui.h>
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
+#include <cctype>
+#include <cwctype>
 #include <cstdio>
 
 #include <commdlg.h>
@@ -127,7 +130,7 @@ bool MaterialEditorPanel::SaveAsset(const std::string& assetsDir)
 void MaterialEditorPanel::DrawTextureSlot(const std::string& assetsDir, const char* label, std::string& texRelPath)
 {
     ImGui::PushID(label);
-    constexpr float kThumbSize = 48.0f;
+    constexpr float kThumbSize = 72.0f;
 
     bool hasTex = !texRelPath.empty();
     u64 gpuHandle = (hasTex && m_assetBrowser) ? m_assetBrowser->GetOrQueueThumbnail(assetsDir + texRelPath) : 0;
@@ -212,66 +215,95 @@ void MaterialEditorPanel::DrawTextureSlot(const std::string& assetsDir, const ch
 
 void MaterialEditorPanel::ImportFromImage(const std::string& assetsDir)
 {
-    char pathBuf[MAX_PATH] = "";
-    OPENFILENAMEA ofn = {};
+    // ワイド版ダイアログを使う。ANSI 版(GetOpenFileNameA)だと日本語ファイル名/フォルダ名が
+    // CP932 で返り、UTF-8 前提のエンジン内パス(vfs::Exists / PathResolver::Utf8ToWide)と食い違って
+    // 「コピーは成功するのにテクスチャ解決に失敗して白いまま」になる。
+    // OFN_NOCHANGEDIR: ダイアログがプロセスのカレントディレクトリを選択先へ変えてしまう
+    // Win32 の既定挙動を抑止(相対パス依存の処理を壊さないため)。
+    wchar_t pathBuf[MAX_PATH] = L"";
+    OPENFILENAMEW ofn = {};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner   = nullptr;
-    ofn.lpstrFilter = "Images (*.png;*.jpg;*.jpeg)\0*.png;*.jpg;*.jpeg\0All Files\0*.*\0";
+    ofn.lpstrFilter = L"Images (*.png;*.jpg;*.jpeg)\0*.png;*.jpg;*.jpeg\0All Files\0*.*\0";
     ofn.lpstrFile   = pathBuf;
     ofn.nMaxFile    = MAX_PATH;
-    ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-    std::string initDir = assetsDir;
+    ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    std::wstring initDir = PathResolver::Utf8ToWide(assetsDir);
     ofn.lpstrInitialDir = initDir.c_str();
-    if (!GetOpenFileNameA(&ofn))
+    if (!GetOpenFileNameW(&ofn))
         return;
 
     fs::path picked(pathBuf);
-    std::string ext = picked.extension().string();
-    for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    if (ext != ".png" && ext != ".jpg" && ext != ".jpeg")
+    std::wstring extW = picked.extension().wstring();
+    for (wchar_t& c : extW) c = static_cast<wchar_t>(std::towlower(c));
+    if (extW != L".png" && extW != L".jpg" && extW != L".jpeg")
         return;
+    std::string extAscii;  // 上でASCII拡張子のみ通しているので1バイト化して安全
+    for (wchar_t c : extW) extAscii += static_cast<char>(c);
 
-    std::string absNorm  = picked.lexically_normal().string();
-    std::string baseNorm = fs::path(assetsDir).lexically_normal().string();
-    std::replace(absNorm.begin(), absNorm.end(), '\\', '/');
-    std::replace(baseNorm.begin(), baseNorm.end(), '\\', '/');
+    // コピー先ファイル名は ASCII へ正規化する。日本語等の非ASCII名のままだと、UTF-8/ACP の
+    // 変換が混在する下流(vfs::Exists のナロー ifstream 等)で解決に失敗するため。
+    std::string asciiStem;
+    for (wchar_t wc : picked.stem().wstring())
+    {
+        if ((wc >= L'a' && wc <= L'z') || (wc >= L'A' && wc <= L'Z') || (wc >= L'0' && wc <= L'9'))
+            asciiStem += static_cast<char>(std::tolower(static_cast<int>(wc)));
+        else if (!asciiStem.empty() && asciiStem.back() != '_')
+            asciiStem += '_';
+    }
+    while (!asciiStem.empty() && asciiStem.back() == '_') asciiStem.pop_back();
+    if (asciiStem.empty()) asciiStem = "imported";
+
+    // assets 配下かの判定もワイドパスで行う(大文字小文字/区切り文字を正規化して前方一致)。
+    auto normalizeW = [](std::wstring s) {
+        for (wchar_t& c : s) { if (c == L'\\') c = L'/'; c = static_cast<wchar_t>(std::towlower(c)); }
+        return s;
+    };
+    const std::wstring absNorm  = normalizeW(picked.lexically_normal().wstring());
+    const std::wstring baseNorm = normalizeW(fs::path(PathResolver::Utf8ToWide(assetsDir)).lexically_normal().wstring());
 
     std::string rel;
-    if (absNorm.rfind(baseNorm, 0) == 0)
+    if (!baseNorm.empty() && absNorm.rfind(baseNorm, 0) == 0)
     {
-        // 既にプロジェクトassets配下 → コピーせずそのまま参照
-        rel = absNorm.substr(baseNorm.size());
-        while (!rel.empty() && rel.front() == '/') rel.erase(rel.begin());
+        // 既にプロジェクトassets配下 → コピーせずそのまま参照。相対部分が非ASCIIを含む場合は
+        // 下流のパス解決が保証できないため、プロジェクト外と同じコピー経路へフォールバックする。
+        std::wstring relW = absNorm.substr(baseNorm.size());
+        while (!relW.empty() && relW.front() == L'/') relW.erase(relW.begin());
+        bool asciiOnly = std::all_of(relW.begin(), relW.end(), [](wchar_t c) { return c < 128; });
+        if (asciiOnly)
+            for (wchar_t c : relW) rel += static_cast<char>(c);
     }
-    else
+
+    if (rel.empty())
     {
         // プロジェクト外(「自分のPNG/JPG」) → assets/textures/imported/ へコピー(重複時は連番)。
         // ASSET_MANIFEST.md への記録は行わない(ユーザー自身の素材でライセンス記録の対象外)。
         std::error_code ec;
-        fs::path destDir = fs::path(assetsDir) / "textures" / "imported";
+        fs::path destDir = fs::path(PathResolver::Utf8ToWide(assetsDir)) / L"textures" / L"imported";
         fs::create_directories(destDir, ec);
-        std::string stem = picked.stem().string();
-        std::string destName = stem + picked.extension().string();
+        std::string destName = asciiStem + extAscii;
         fs::path destPath = destDir / destName;
         int suffix = 1;
         while (fs::exists(destPath))
         {
-            destName = stem + "_" + std::to_string(suffix++) + picked.extension().string();
+            destName = asciiStem + "_" + std::to_string(suffix++) + extAscii;
             destPath = destDir / destName;
         }
+        ec.clear();
         fs::copy_file(picked, destPath, ec);
         if (ec)
         {
-            Logger::Warn("画像のコピーに失敗しました: {}", picked.string());
+            Logger::Warn("画像のコピーに失敗しました: {}", ec.message());
+            m_statusMsg = "\xe7\x94\xbb\xe5\x83\x8f\xe3\x81\xae\xe3\x82\xb3\xe3\x83\x94\xe3\x83\xbc\xe3\x81\xab\xe5\xa4\xb1\xe6\x95\x97\xe3\x81\x97\xe3\x81\xbe\xe3\x81\x97\xe3\x81\x9f";  // 画像のコピーに失敗しました
+            m_statusFlash = 3.0f;
             return;
         }
         rel = "textures/imported/" + destName;
-        std::replace(rel.begin(), rel.end(), '\\', '/');
     }
 
     // 「よくわからない普通の画像」への無難な既定値: 非金属・粗さ高め。
     m_current = MaterialAssetData{};
-    m_current.name        = picked.stem().string();
+    m_current.name        = asciiStem;
     m_current.albedoPath  = rel;
     m_current.metallic    = 0.0f;
     m_current.roughness   = 0.8f;
@@ -296,13 +328,20 @@ void MaterialEditorPanel::RenderWindow(EditorContext& ctx, const std::string& as
 
     if (!ctx.showMaterialEditor) return;
 
-    ImGui::SetNextWindowSize(ImVec2(820.0f, 680.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(980.0f, 780.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("\xe3\x83\x9e\xe3\x83\x86\xe3\x83\xaa\xe3\x82\xa2\xe3\x83\xab\xe3\x82\xa8\xe3\x83\x87\xe3\x82\xa3\xe3\x82\xbf###MaterialEditorFloating",  // マテリアルエディタ
                       &ctx.showMaterialEditor, ImGuiWindowFlags_NoDocking))
     {
         ImGui::End();
         return;
     }
+    // このフローティング窓は3Dビューポートの上に重なって浮かぶことがある。ホバー中はシーンカメラの
+    // ドラッグ/ホイール操作(HandleCameraNavigation)が同時に反応しないよう EditorContext 経由で伝える
+    // (ThisFrame に書き、読む側は前フレームの確定値を見る=EditorContext のコメント参照)。
+    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows
+                               | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem
+                               | ImGuiHoveredFlags_AllowWhenBlockedByPopup))
+        ctx.floatingToolWindowHoveredThisFrame = true;
 
     if (ImGui::Button("\xe6\x96\xb0\xe8\xa6\x8f New")) NewAsset();  // 新規
     ImGui::SameLine();

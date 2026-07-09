@@ -361,7 +361,7 @@ void MaterialLibraryPanel::StartDownload(const std::string& id, const std::strin
 void MaterialLibraryPanel::DrawGrid(EditorContext& /*ctx*/, const std::string& assetsDir,
                                     const std::vector<const CatalogItem*>& items)
 {
-    constexpr float kCellSize = 96.0f;
+    constexpr float kCellSize = 144.0f;
     float avail = ImGui::GetContentRegionAvail().x;
     int columns = (std::max)(1, static_cast<int>(avail / (kCellSize + 12.0f)));
 
@@ -441,7 +441,7 @@ void MaterialLibraryPanel::RenderWindow(EditorContext& ctx, const std::string& a
 
     EnsureCatalogRequested(assetsDir);
 
-    ImGui::SetNextWindowSize(ImVec2(720.0f, 640.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(920.0f, 760.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("\xe3\x83\x9e\xe3\x83\x86\xe3\x83\xaa\xe3\x82\xa2\xe3\x83\xab\xe3\x83\xa9\xe3\x82\xa4\xe3\x83\x96\xe3\x83\xa9\xe3\x83\xaa "
                       "(Poly Haven)###MaterialLibraryFloating",  // マテリアルライブラリ (Poly Haven)
                       &ctx.showMaterialLibrary, ImGuiWindowFlags_NoDocking))
@@ -449,6 +449,14 @@ void MaterialLibraryPanel::RenderWindow(EditorContext& ctx, const std::string& a
         ImGui::End();
         return;
     }
+    // 3Dビューポートの上に重なって浮かぶことがあるので、ホバー中はシーンカメラのドラッグ/ホイール
+    // 操作が同時に反応しないよう EditorContext 経由で伝える(スクロール等がカメラズームに漏れる対策)。
+    // ThisFrame に書き、読む側は前フレームの確定値を見る。RootAndChildWindows でグリッドの
+    // BeginChild スクロール領域上のホバーも拾う。
+    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows
+                               | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem
+                               | ImGuiHoveredFlags_AllowWhenBlockedByPopup))
+        ctx.floatingToolWindowHoveredThisFrame = true;
 
     const CatalogState state = m_catalogState.load();
     if (state == CatalogState::Fetching)
