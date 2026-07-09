@@ -2,6 +2,8 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
+#include <vector>
 #include <DirectXMath.h>
 #include <wrl/client.h>
 #include <directx/d3d12.h>
@@ -50,9 +52,25 @@ public:
     u64 GetPreviewGpuHandle() const;
     static constexpr u32 kPreviewSize = 512;
 
+    // ---- アセットブラウザ用の球体サムネイル(128px、.dxmat単位でキャッシュ) ----
+    // キャッシュ済みならGPUハンドルを即返す。無ければレンダリングキューに積んで0を返す
+    // (RenderPendingThumbnails が数フレーム後に用意する)。パースに失敗した .dxmat は
+    // failed としてキャッシュし、Invalidate されるまで再試行しない。
+    u64 GetOrQueueThumbnail(const std::string& dxmatAbsPath);
+    // .dxmat 保存時などに呼ぶ。既存サムネイルは解放せず同じテクスチャへ再レンダリングする
+    // (ImGuiが前フレームで参照している可能性があるため、リソースの即時解放はしない)。
+    void InvalidateThumbnail(const std::string& dxmatAbsPath);
+    // フレーム先頭・メインコマンドリストが開いている間に呼ぶ(ModelThumbnailRendererと同じ運用)。
+    void RenderPendingThumbnails(CommandList& cmd);
+    static constexpr u32 kThumbSize = 128;
+
 private:
     void BuildPipeline(GraphicsDevice& device);
     void BuildDepthBuffer(GraphicsDevice& device);
+    // プレビュー描画の共通部(テクスチャ解決→SRV→カメラ→クリア→ドロー)。バリアは呼び出し側の責務。
+    void DrawSceneTo(CommandList& cmd, D3D12_CPU_DESCRIPTOR_HANDLE rtv, D3D12_CPU_DESCRIPTOR_HANDLE dsv,
+                     u32 size, const DrawInput& input, MaterialPreviewShape shape,
+                     f32 camYaw, f32 camPitch, f32 camDist);
 
     GraphicsDevice*   m_device = nullptr;
     DescriptorHeap*   m_srvHeap = nullptr;
@@ -71,11 +89,31 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE m_dsvHandle{};
 
     // マテリアルテクスチャ3枚分のSRVブロック(albedo/normal/metalRoughness、連続3スロット)。
-    // 毎フレームCreateSRVを呼び直す(エディタツールなのでコストは無視できる)。
-    u32 m_srvBlockStart = 0xFFFFFFFFu;
+    // 毎回CreateSRVを呼び直す(エディタツールなのでコストは無視できる)。同一フレーム内で
+    // 複数回描画(エディタプレビュー+サムネイル数枚)しても、GPU実行前に先のSRVを上書き
+    // しないようリングで巡回して使う。
+    static constexpr u32 kSrvRingCount = 8;
+    u32 m_srvBlocks[kSrvRingCount] = {};
+    u32 m_srvRingCursor = 0;
 
     std::unique_ptr<Mesh> m_sphereMesh;
     std::unique_ptr<Mesh> m_planeMesh;
+
+    // ---- 球体サムネイルキャッシュ ----
+    struct ThumbEntry
+    {
+        Microsoft::WRL::ComPtr<ID3D12Resource> texture;   // 128px RGBA8、各エントリが自分のRTを持つ
+        u32  srvIndex  = 0xFFFFFFFFu;
+        u64  gpuHandle = 0;
+        bool failed    = false;   // .dxmatパース失敗(Invalidateまで再試行しない)
+    };
+    std::unordered_map<std::string, ThumbEntry> m_thumbCache;   // key: 正規化した絶対パス
+    std::vector<std::string> m_thumbQueue;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_thumbDepth;        // 128px D32(全サムネイルで共用)
+    DescriptorHeap m_thumbRtvHeap;                              // 1個をCreateRTVで使い回す
+    DescriptorHeap m_thumbDsvHeap;
+    D3D12_CPU_DESCRIPTOR_HANDLE m_thumbRtvHandle{};
+    D3D12_CPU_DESCRIPTOR_HANDLE m_thumbDsvHandle{};
 };
 
 } // namespace dx12e

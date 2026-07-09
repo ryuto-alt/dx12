@@ -1492,6 +1492,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             m_materialEditorPanel = std::make_unique<MaterialEditorPanel>();
             m_materialEditorPanel->Initialize(m_materialAssetManager.get(), m_editorLayer->GetAssetBrowser(),
                                               *m_graphicsDevice, m_srvHeap.get(), m_resourceManager.get());
+            // アセットブラウザの .dxmat 球体サムネイルはこのパネルのプレビューレンダラーを共用する
+            m_editorLayer->SetMaterialPreviewRenderer(&m_materialEditorPanel->GetPreviewRenderer());
 
             m_materialLibraryPanel = std::make_unique<MaterialLibraryPanel>();
             m_materialLibraryPanel->Initialize(m_resourceManager.get(), m_srvHeap.get(), m_materialAssetManager.get());
@@ -8185,6 +8187,11 @@ void Application::Render()
 
     // モデルサムネイルのオフスクリーンレンダリング
     m_thumbRenderer->RenderPending(nativeCmdList, m_swapChain->GetCurrentBackBufferIndex());
+
+    // マテリアル球体サムネイルのオフスクリーンレンダリング(アセットブラウザの .dxmat 表示用)。
+    // ModelThumbnailRenderer と同様、後段のパスが自分でRT/ビューポートを設定するのでここで戻す必要はない。
+    if (m_materialEditorPanel)
+        m_materialEditorPanel->GetPreviewRenderer().RenderPendingThumbnails(*m_commandList);
 
     u32 frameIndex = m_swapChain->GetCurrentBackBufferIndex();
     f32 totalTime = m_gameClock.GetTotalTime();

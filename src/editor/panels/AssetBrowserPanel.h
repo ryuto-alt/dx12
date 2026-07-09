@@ -15,6 +15,7 @@ class EditorContext;
 class ResourceManager;
 class DescriptorHeap;
 class ModelThumbnailRenderer;
+class MaterialPreviewRenderer;
 
 class AssetBrowserPanel
 {
@@ -37,6 +38,8 @@ public:
         Refresh();
     }
     void SetThumbnailRenderer(ModelThumbnailRenderer* r) { m_thumbRenderer = r; }
+    // .dxmat の球体サムネイル用(MaterialEditorPanel が所有する MaterialPreviewRenderer を借りる)
+    void SetMaterialPreviewRenderer(MaterialPreviewRenderer* r) { m_materialPreview = r; }
 
     // フレーム先頭でcmdListが有効な間に呼ぶ（テクスチャアップロード用）
     void LoadPendingThumbnails(ID3D12GraphicsCommandList* cmdList);
@@ -105,6 +108,9 @@ private:
 
     // モデルサムネイルレンダラー
     ModelThumbnailRenderer* m_thumbRenderer = nullptr;
+
+    // マテリアル球体サムネイル(所有はMaterialEditorPanel。ゲームモード等では nullptr のまま)
+    MaterialPreviewRenderer* m_materialPreview = nullptr;
 };
 
 } // namespace dx12e

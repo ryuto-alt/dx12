@@ -36,6 +36,10 @@ public:
     // showMaterialEditor が false なら(消費後も含め)即 return。
     void RenderWindow(EditorContext& ctx, const std::string& assetsDir);
 
+    // アセットブラウザの球体サムネイル(GetOrQueueThumbnail/RenderPendingThumbnails)を
+    // 使い回すための公開アクセサ。プレビューレンダラーはこのパネルが所有する。
+    MaterialPreviewRenderer& GetPreviewRenderer() { return m_preview; }
+
 private:
     void NewAsset();
     bool LoadAsset(const std::string& relPath, const std::string& assetsDir);

@@ -78,6 +78,9 @@ public:
     // サムネイルレンダラー設定
     void SetThumbnailRenderer(class ModelThumbnailRenderer* renderer);
 
+    // マテリアル球体サムネイル(アセットブラウザへ転送するだけ)
+    void SetMaterialPreviewRenderer(class MaterialPreviewRenderer* renderer);
+
     // ビューポート領域（3D描画のオフセット計算用）
     ImVec2 GetViewportPos()  const { return m_viewportPos; }
     ImVec2 GetViewportSize() const { return m_viewportSize; }

@@ -11,6 +11,8 @@
 #include "editor/ModelThumbnailRenderer.h"
 #include "scene/Scene.h"
 #include "renderer/Camera.h"
+#include "renderer/Mesh.h"
+#include "resource/MaterialAssetIO.h"
 #include "core/GameClock.h"
 #include "core/Logger.h"
 
@@ -23,6 +25,7 @@
 #include <DirectXMath.h>
 #include <cmath>
 #include <cctype>
+#include <fstream>
 #include <string>
 #include <filesystem>
 
@@ -458,22 +461,80 @@ void EditorLayer::Render(bool isPlaying,
             if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(
                     AssetBrowserPanel::kDragDropPayloadType))
             {
-                // Unity 準拠: シーンビューへのドロップは常に「配置」
-                // (画像はスプライト、モデル/プレハブはそのまま生成。Application 側で振り分け)。
-                // メッシュへのテクスチャ貼り付けは Inspector のテクスチャスロット D&D が専用操作。
                 const char* droppedPath = static_cast<const char*>(payload->Data);
 
-                PendingSpawnRequest req;
-                req.modelPath = droppedPath;
+                std::string ext = std::filesystem::path(droppedPath).extension().string();
+                for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
-                // マウス座標からワールド座標を計算（Y=0 平面との交点）
-                req.position = ScreenToWorldOnGroundPlane(
-                    camera, ImGui::GetIO().MousePos,
-                    m_viewportPos, m_viewportSize);
+                if (AssetBrowserPanel::ClassifyExtension(ext) == AssetBrowserPanel::AssetType::Material)
+                {
+                    // .dxmat は「配置」ではなく、ドロップ先メッシュ(サブメッシュ単位)へのマテリアル適用
+                    // (Unity/Unreal と同じ操作感。Inspector のマテリアルスロット D&D と同じ経路)。
+                    SubmeshPickResult pick = m_sceneView->PickEntityAndSubmesh(
+                        reg, camera, m_viewportPos.x, m_viewportPos.y,
+                        m_viewportSize.x, m_viewportSize.y);
+                    if (pick.entity != entt::null && reg.all_of<MeshRenderer>(pick.entity))
+                    {
+                        auto& mr = reg.get<MeshRenderer>(pick.entity);
+                        MeshRenderer before = mr;
 
-                m_ctx->pendingSpawns.push_back(req);
-                Logger::Info("Dropped to scene at ({:.1f}, {:.1f}, {:.1f}): {}",
-                    req.position.x, req.position.y, req.position.z, droppedPath);
+                        // 絶対パス → assets 相対(InspectorPanel の D&D と同じ変換)
+                        std::string abs  = std::filesystem::path(droppedPath).lexically_normal().string();
+                        std::string base = std::filesystem::path(assetsDir).lexically_normal().string();
+                        std::replace(abs.begin(), abs.end(), '\\', '/');
+                        std::replace(base.begin(), base.end(), '\\', '/');
+                        std::string rel = (abs.rfind(base, 0) == 0) ? abs.substr(base.size()) : abs;
+
+                        MeshRenderer::SetOverride(mr.materialAsset, pick.submeshIndex, rel);
+
+                        // UVタイリングが既定値(1.0)のままなら .dxmat の値を初期値としてコピー
+                        if (mr.uvScaleU == 1.0f && mr.uvScaleV == 1.0f)
+                        {
+                            std::ifstream ifs(assetsDir + rel, std::ios::binary);
+                            if (ifs)
+                            {
+                                std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(ifs)),
+                                                            std::istreambuf_iterator<char>());
+                                MaterialAssetData data;
+                                if (ParseMaterialAsset(bytes, data) &&
+                                    pick.submeshIndex < mr.meshes.size() && mr.meshes[pick.submeshIndex])
+                                {
+                                    mr.uvScaleU = data.uvTilingU;
+                                    mr.uvScaleV = data.uvTilingV;
+                                    if (scene)
+                                        for (auto* mesh : mr.meshes)
+                                            if (mesh) mesh->ApplyUVScale(*scene->GetDevice(), mr.uvScaleU, mr.uvScaleV);
+                                }
+                            }
+                        }
+
+                        m_ctx->undoSystem.PushCommand(std::make_unique<ComponentEditCommand<MeshRenderer>>(
+                            &reg, pick.entity, before, mr, "マテリアル割当(D&D)"));
+                        Logger::Info("マテリアルD&D適用: entity={} submesh={} -> {}",
+                            static_cast<u32>(pick.entity), pick.submeshIndex, rel);
+                    }
+                    else
+                    {
+                        Logger::Info("マテリアルD&D: ドロップ先にメッシュがないため何もしません");
+                    }
+                }
+                else
+                {
+                    // Unity 準拠: シーンビューへのドロップは常に「配置」
+                    // (画像はスプライト、モデル/プレハブはそのまま生成。Application 側で振り分け)。
+                    // メッシュへのテクスチャ貼り付けは Inspector のテクスチャスロット D&D が専用操作。
+                    PendingSpawnRequest req;
+                    req.modelPath = droppedPath;
+
+                    // マウス座標からワールド座標を計算（Y=0 平面との交点）
+                    req.position = ScreenToWorldOnGroundPlane(
+                        camera, ImGui::GetIO().MousePos,
+                        m_viewportPos, m_viewportSize);
+
+                    m_ctx->pendingSpawns.push_back(req);
+                    Logger::Info("Dropped to scene at ({:.1f}, {:.1f}, {:.1f}): {}",
+                        req.position.x, req.position.y, req.position.z, droppedPath);
+                }
             }
             ImGui::EndDragDropTarget();
         }
@@ -529,6 +590,11 @@ void EditorLayer::SetThumbnailRenderer(ModelThumbnailRenderer* renderer)
 {
     m_thumbRenderer = renderer;
     m_assetBrowser->SetThumbnailRenderer(renderer);
+}
+
+void EditorLayer::SetMaterialPreviewRenderer(MaterialPreviewRenderer* renderer)
+{
+    m_assetBrowser->SetMaterialPreviewRenderer(renderer);
 }
 
 } // namespace dx12e

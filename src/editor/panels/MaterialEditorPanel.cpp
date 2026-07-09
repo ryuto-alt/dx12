@@ -124,6 +124,7 @@ bool MaterialEditorPanel::SaveAsset(const std::string& assetsDir)
 
     if (m_materialAssetManager)
         m_materialAssetManager->Invalidate(m_currentPath);
+    m_preview.InvalidateThumbnail(assetsDir + m_currentPath);   // アセットブラウザの球体サムネも更新
     return true;
 }
 
@@ -328,7 +329,7 @@ void MaterialEditorPanel::RenderWindow(EditorContext& ctx, const std::string& as
 
     if (!ctx.showMaterialEditor) return;
 
-    ImGui::SetNextWindowSize(ImVec2(980.0f, 780.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(1300.0f, 980.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("\xe3\x83\x9e\xe3\x83\x86\xe3\x83\xaa\xe3\x82\xa2\xe3\x83\xab\xe3\x82\xa8\xe3\x83\x87\xe3\x82\xa3\xe3\x82\xbf###MaterialEditorFloating",  // マテリアルエディタ
                       &ctx.showMaterialEditor, ImGuiWindowFlags_NoDocking))
     {
@@ -391,8 +392,8 @@ void MaterialEditorPanel::RenderWindow(EditorContext& ctx, const std::string& as
             {
                 POINT p;
                 ::GetCursorPos(&p);
-                m_camYaw   += (static_cast<f32>(p.x) - m_orbitAnchorX) * 0.01f;
-                m_camPitch += (static_cast<f32>(p.y) - m_orbitAnchorY) * 0.01f;
+                m_camYaw   -= (static_cast<f32>(p.x) - m_orbitAnchorX) * 0.01f;
+                m_camPitch -= (static_cast<f32>(p.y) - m_orbitAnchorY) * 0.01f;
                 m_camPitch = std::clamp(m_camPitch, -1.5f, 1.5f);
 
                 ::SetCursorPos(static_cast<int>(m_orbitAnchorX), static_cast<int>(m_orbitAnchorY));

@@ -1,6 +1,7 @@
 #include "editor/panels/AssetBrowserPanel.h"
 #include "editor/EditorContext.h"
 #include "editor/ModelThumbnailRenderer.h"
+#include "editor/panels/MaterialPreviewRenderer.h"
 #include "resource/ResourceManager.h"
 #include "resource/MaterialAssetIO.h"
 #include "graphics/Texture.h"
@@ -562,23 +563,37 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                     }
                 }
 
-                // マテリアルプレビュー(.dxmat の albedo テクスチャを使い回す。Texture ブロックと同じ方式)
-                if (entry.type == AssetType::Material && !entry.isDirectory && !entry.materialThumbSource.empty())
+                // マテリアルプレビュー: 球体サムネイル(MaterialPreviewRenderer)を優先。
+                // 生成待ちの間・レンダラー不在時は従来の albedo 平面サムネで代用する。
+                if (entry.type == AssetType::Material && !entry.isDirectory)
                 {
-                    const std::string& key = entry.materialThumbSource;
-                    auto it = m_thumbnailCache.find(key);
-                    if (it != m_thumbnailCache.end() && it->second.loaded && it->second.gpuHandle != 0)
+                    u64 sphereHandle = m_materialPreview
+                        ? m_materialPreview->GetOrQueueThumbnail(entry.path.string()) : 0;
+                    if (sphereHandle != 0)
                     {
-                        ImTextureID texId = static_cast<ImTextureID>(it->second.gpuHandle);
+                        ImTextureID texId = static_cast<ImTextureID>(sphereHandle);
                         ImVec2 pv = ImGui::GetCursorScreenPos();
                         ImGui::Image(texId, ImVec2(thumbnailSize, thumbnailSize));
                         DecoratePreview(pv, thumbnailSize, AssetTypeColor(static_cast<int>(entry.type)));
                         hasPreview = true;
                     }
-                    else if (it == m_thumbnailCache.end())
+                    else if (!entry.materialThumbSource.empty())
                     {
-                        m_pendingThumbnailLoads.push_back(key);
-                        m_thumbnailCache[key] = ThumbnailInfo{};
+                        const std::string& key = entry.materialThumbSource;
+                        auto it = m_thumbnailCache.find(key);
+                        if (it != m_thumbnailCache.end() && it->second.loaded && it->second.gpuHandle != 0)
+                        {
+                            ImTextureID texId = static_cast<ImTextureID>(it->second.gpuHandle);
+                            ImVec2 pv = ImGui::GetCursorScreenPos();
+                            ImGui::Image(texId, ImVec2(thumbnailSize, thumbnailSize));
+                            DecoratePreview(pv, thumbnailSize, AssetTypeColor(static_cast<int>(entry.type)));
+                            hasPreview = true;
+                        }
+                        else if (it == m_thumbnailCache.end())
+                        {
+                            m_pendingThumbnailLoads.push_back(key);
+                            m_thumbnailCache[key] = ThumbnailInfo{};
+                        }
                     }
                 }
 
