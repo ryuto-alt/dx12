@@ -1,4 +1,5 @@
 find_package(directxtex CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
 
 include(FetchContent)
 FetchContent_Declare(
@@ -24,6 +25,8 @@ add_library(Resource STATIC
     ModelLoader.cpp
     ResourceManager.cpp
     VfsIOSystem.cpp
+    MaterialAssetIO.cpp
+    MaterialAssetManager.cpp
 )
 target_include_directories(Resource PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries(Resource PUBLIC
@@ -33,6 +36,7 @@ target_link_libraries(Resource PUBLIC
     assimp
     Microsoft::DirectXTex
     Microsoft::DirectXShaderCompiler
+    nlohmann_json::nlohmann_json
 )
 
 target_compile_options(Resource PRIVATE ${DX12_COMPILE_OPTIONS})

@@ -42,6 +42,7 @@
 #include "resource/ModelLoader.h"
 #include "resource/ResourceManager.h"
 #include "resource/TextureLoader.h"
+#include "resource/MaterialAssetManager.h"
 #include "graphics/Texture.h"
 #include "animation/Skeleton.h"
 #include "animation/AnimationClip.h"
@@ -83,6 +84,8 @@
 #include "editor/panels/McpBridgePanel.h"
 #include "editor/panels/NetworkPanel.h"
 #include "editor/panels/VfxEditorPanel.h"
+#include "editor/panels/MaterialEditorPanel.h"
+#include "editor/panels/MaterialLibraryPanel.h"
 #include "project/Project.h"
 #include "project/ProjectManager.h"
 #include "project/GitIntegration.h"
@@ -693,12 +696,12 @@ u32 Application::EnsureMaterialOverrideSrv(entt::entity e, u32 submeshIndex, con
     auto resolve = [&](const std::string& overridePath, Texture* fallback, bool srgb) -> Texture* {
         if (overridePath.empty())
             return fallback;
-        std::string fullPath = PathResolver::AssetsDir() + overridePath;
-        if (!std::filesystem::exists(fullPath))
+        if (!dx12e::vfs::Exists(overridePath))  // pak/ディスク両対応(std::filesystem::exists は pak モードで常に false)
         {
-            Logger::Warn("マテリアル上書きテクスチャが見つかりません: {}", fullPath);
+            Logger::Warn("マテリアル上書きテクスチャが見つかりません: {}", overridePath);
             return fallback;
         }
+        std::string fullPath = PathResolver::AssetsDir() + overridePath;
         return m_resourceManager->GetOrLoadTexture(PathResolver::Utf8ToWide(fullPath), cmdList, srgb);
     };
 
@@ -838,9 +841,10 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_networkSystem->SetHooks(std::move(hooks));
     }
 
-    // Shader Visible SRV ヒープ
+    // Shader Visible SRV ヒープ。1024→4096: マテリアルライブラリ(Poly Haven)の検索サムネイル(~200枚)+
+    // マテリアルアセットのSRVブロック(3連続×N)分の余裕を確保(shader-visibleヒープの上限は100万なので無視できる増量)。
     m_srvHeap = std::make_unique<DescriptorHeap>();
-    m_srvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1024, true);
+    m_srvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 4096, true);
 
     // ResourceManager
     m_resourceManager = std::make_unique<ResourceManager>();
@@ -931,6 +935,9 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         SplashScreen::SetStatus("アセットを読み込み中...");
         m_resourceManager = std::make_unique<ResourceManager>();
         m_resourceManager->Initialize(m_graphicsDevice.get(), m_srvHeap.get(), cmdList);
+
+        m_materialAssetManager = std::make_unique<MaterialAssetManager>();
+        m_materialAssetManager->Initialize(m_resourceManager.get(), m_graphicsDevice.get(), m_srvHeap.get());
 
         // SSAO 無効/編集ビュー用の 1x1 白 R8_UNORM ダミー（forward の g_ssao が常に 1.0 を返す）。
         {
@@ -1481,6 +1488,12 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             m_vfxEditorPanel->Initialize(*m_graphicsDevice, m_srvHeap.get(), m_resourceManager.get(),
                                         PathResolver::ShaderDirW());
             m_networkPanel = std::make_unique<NetworkPanel>();
+
+            m_materialEditorPanel = std::make_unique<MaterialEditorPanel>();
+            m_materialEditorPanel->Initialize(m_materialAssetManager.get(), m_editorLayer->GetAssetBrowser());
+
+            m_materialLibraryPanel = std::make_unique<MaterialLibraryPanel>();
+            m_materialLibraryPanel->Initialize(m_resourceManager.get(), m_srvHeap.get(), m_materialAssetManager.get());
         }
 
         // シーントランジション
@@ -7037,11 +7050,26 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
 
             const Material* mat = mesh->GetMaterial();
 
+            // マテリアルアセット(assets/materials/*.dxmat)割当があれば最優先で解決する。
+            // 優先度: materialAsset > overrideXxxTexture(テクスチャ個別上書き) > モデル焼き込み Material。
+            const MaterialAssetManager::Entry* matAsset = nullptr;
+            if (renderer.HasMaterialAsset(mi))
+            {
+                const MaterialAssetManager::Entry* loaded = m_materialAssetManager->GetOrLoad(
+                    MeshRenderer::SafeGetOverride(renderer.materialAsset, mi), nativeCmdList);
+                if (loaded && loaded->valid) matAsset = loaded;
+            }
+
             // PBR テクスチャ SRV ブロックをバインド。インスタンス単位のテクスチャ上書き
             // (D&Dでのマテリアル割当、MeshRenderer::overrideAlbedoTexture 等)があれば
             // 専用ブロックを優先する(mat は同一モデルの全インスタンスで共有されるため直接は触らない)。
             u32 overrideBlock = EnsureMaterialOverrideSrv(e, mi, renderer, mat, nativeCmdList);
-            if (overrideBlock != 0xFFFFFFFF)
+            if (matAsset)
+            {
+                m_commandList->SetSRVTable(RootSignature::kSlotSRVTable,
+                    m_srvHeap->GetGpuHandle(matAsset->srvBlockStart));
+            }
+            else if (overrideBlock != 0xFFFFFFFF)
             {
                 m_commandList->SetSRVTable(RootSignature::kSlotSRVTable,
                     m_srvHeap->GetGpuHandle(overrideBlock));
@@ -7060,17 +7088,31 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
 
             // PBR Material Constants (Slot 5)
             struct { float metallic; float roughness; u32 flags; float pad; } pbrParams;
-            // MeshRenderer のオーバーライド値を優先、なければ Material の値
-            pbrParams.metallic  = (renderer.overrideMetallic  >= 0.0f) ? renderer.overrideMetallic
-                                : (mat ? mat->defaultMetallic : 0.0f);
-            pbrParams.roughness = (renderer.overrideRoughness >= 0.0f) ? renderer.overrideRoughness
-                                : (mat ? mat->defaultRoughness : 0.5f);
-            pbrParams.flags     = 0;
-            if (mat && mat->normalMapTexture) pbrParams.flags |= 1u;
-            // overrideが有効な場合、metalRoughnessテクスチャのスケーリングを無効化
-            bool hasOverride = (renderer.overrideMetallic >= 0.0f || renderer.overrideRoughness >= 0.0f);
-            if (!hasOverride && mat && mat->metalRoughnessTexture) pbrParams.flags |= 2u;
-            pbrParams.pad = 0;
+            if (matAsset)
+            {
+                // MeshRenderer のスカラーオーバーライドは materialAsset の係数よりさらに優先
+                // (エンティティ単位の微調整用。glTF 意味論なのでテクスチャの有無に関わらず係数は常に効く)。
+                pbrParams.metallic  = (renderer.overrideMetallic  >= 0.0f) ? renderer.overrideMetallic  : matAsset->data.metallic;
+                pbrParams.roughness = (renderer.overrideRoughness >= 0.0f) ? renderer.overrideRoughness : matAsset->data.roughness;
+                pbrParams.flags = 0;
+                if (matAsset->hasNormalTex) pbrParams.flags |= 1u;
+                if (matAsset->hasMRTex)     pbrParams.flags |= 2u;
+                pbrParams.pad = 0;
+            }
+            else
+            {
+                // MeshRenderer のオーバーライド値を優先、なければ Material の値
+                pbrParams.metallic  = (renderer.overrideMetallic  >= 0.0f) ? renderer.overrideMetallic
+                                    : (mat ? mat->defaultMetallic : 0.0f);
+                pbrParams.roughness = (renderer.overrideRoughness >= 0.0f) ? renderer.overrideRoughness
+                                    : (mat ? mat->defaultRoughness : 0.5f);
+                pbrParams.flags     = 0;
+                if (mat && mat->normalMapTexture) pbrParams.flags |= 1u;
+                // overrideが有効な場合、metalRoughnessテクスチャのスケーリングを無効化
+                bool hasOverride = (renderer.overrideMetallic >= 0.0f || renderer.overrideRoughness >= 0.0f);
+                if (!hasOverride && mat && mat->metalRoughnessTexture) pbrParams.flags |= 2u;
+                pbrParams.pad = 0;
+            }
             nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPBRMaterial, 4, &pbrParams, 0);
 
             m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -7390,6 +7432,10 @@ void Application::Render()
 
     auto* nativeCmdList = m_frameResources->BeginFrame(*m_commandQueue);
     m_commandList->Wrap(nativeCmdList);
+
+    // マテリアルアセット(.dxmat)のホットリロード監視。エディタのみ(内部で0.5秒間隔にスロットリング)。
+    if (!m_isGameMode && m_materialAssetManager)
+        m_materialAssetManager->PollHotReload(m_gameClock.GetDeltaTime(), nativeCmdList);
 
     // Deferred: new scene（描画前に処理しないと GPU リソース解放でクラッシュする）
     if (m_editorCtx->pendingNewScene && m_engineMode == EngineMode::Editor)
@@ -8133,6 +8179,8 @@ void Application::Render()
 
     // サムネイルテクスチャのロード（描画コマンドの前に実行）
     m_editorLayer->LoadPendingThumbnails(nativeCmdList);
+    if (m_materialLibraryPanel)
+        m_materialLibraryPanel->LoadPendingThumbnails(nativeCmdList);
 
     // モデルサムネイルのオフスクリーンレンダリング
     m_thumbRenderer->RenderPending(nativeCmdList, m_swapChain->GetCurrentBackBufferIndex());
@@ -9739,6 +9787,10 @@ void Application::Render()
         }
         if (m_vfxEditorPanel)
             m_vfxEditorPanel->RenderWindow(m_scene->GetRegistry(), *m_editorCtx, PathResolver::AssetsDir());
+        if (m_materialEditorPanel)
+            m_materialEditorPanel->RenderWindow(*m_editorCtx, PathResolver::AssetsDir());
+        if (m_materialLibraryPanel)
+            m_materialLibraryPanel->RenderWindow(*m_editorCtx, PathResolver::AssetsDir());
     }
 
     // ---- ゲーム内 UI: テキスト/ボタン（ImGui オーバーレイ・ゲーム/Play 中のみ）----

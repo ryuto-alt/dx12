@@ -146,6 +146,12 @@ public:
     // 違い右下タブにはドックせず独立したフローティング窓として開く＝ AnyToolWindowOpen には含めない
     // （含めると右下タブ領域だけ確保されて中身が無い＝Inspectorが無駄に縮む）。
     bool showVfxEditor      = false;
+    // マテリアルエディタ/マテリアルライブラリ(Poly Havenダウンローダー)も VfxEditor 同様、
+    // 独立フローティング窓として開く(AnyToolWindowOpen には含めない)。
+    bool showMaterialEditor  = false;
+    bool showMaterialLibrary = false;
+    // AssetBrowser で .dxmat をダブルクリックした時に立つ。MaterialEditorPanel が消費して開く。
+    std::string pendingOpenMaterialPath;
 
     bool AnyToolWindowOpen() const
     {

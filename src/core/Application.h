@@ -73,6 +73,9 @@ namespace dx12e
     class VfxEditorPanel;
     class NetworkPanel;
     class ShaderManager;
+    class MaterialAssetManager;
+    class MaterialEditorPanel;
+    class MaterialLibraryPanel;
     struct Material;
 }
 
@@ -200,6 +203,11 @@ private:
     // 上書きが無ければ 0xFFFFFFFF を返す(呼び出し側は mat->srvBlockIndex 等の既定経路へフォールバック)。
     u32 EnsureMaterialOverrideSrv(entt::entity e, u32 submeshIndex, const MeshRenderer& renderer,
                                   const Material* mat, ID3D12GraphicsCommandList* cmdList);
+
+    // .dxmat マテリアルアセット(assets/materials/*.dxmat)のロード/SRV/ホットリロード管理。
+    // MeshRenderer::materialAsset が割当てられているサブメッシュはこちらが overrideXxxTexture より優先される。
+    std::unique_ptr<MaterialAssetManager> m_materialAssetManager;
+
     // ランチャーで選んだ/作成したプロジェクトを実行時に読み込む（パス再ポイント + シーンロード）
     void LoadProject(const ProjectInfo& info);
     // エディタUIアイコン(PNG)をSRVへ読み込む（起動時に1度。エンジン側assets基準）
@@ -410,6 +418,8 @@ private:
     std::unique_ptr<ScriptEngine>      m_scriptEngine;
     std::unique_ptr<McpBridge>         m_mcpBridge;   // エディタ専用 AI ブリッジ(TCP)。ゲームでは null。
     std::unique_ptr<VfxEditorPanel>    m_vfxEditorPanel;   // パーティクルエディタ（ツール窓）。ゲームでは null。
+    std::unique_ptr<MaterialEditorPanel>  m_materialEditorPanel;   // マテリアルエディタ（ツール窓）。ゲームでは null。
+    std::unique_ptr<MaterialLibraryPanel> m_materialLibraryPanel;  // Poly Havenマテリアルライブラリ(ツール窓)。ゲームでは null。
     // ---- MCP 状態（HandleMcpCommand とフレーム境界の遅延応答で共有）----
     int         m_sceneGeneration = 0;   // open_scene/new_scene のたびに +1。古い entity id 検出用。
     McpDeferred m_mcpModeReply;          // play/stop の遅延応答（モード遷移後に送る）。client=0 で無効。

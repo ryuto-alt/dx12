@@ -153,6 +153,9 @@ Core → spdlog
 ```
 
 ### RootSignature レイアウト
+初期実装(Phase 3A)時点の4スロット構成は下記の通りやったけど、**現在は Cook-Torrance PBR
+(法線マップ/metallic-roughness/IBL/CSM/SSAO込み)の9スロット構成**に拡張済み。詳細は
+`src/graphics/RootSignature.h/cpp`(`kSlotXxx` 定数群)を参照。
 ```
 Slot 0: RootConstants b0 (32 DWORD = MVP + Model行列) - ALL可視
 Slot 1: CBV b1 (PerFrame: view/proj/lightDir/time/lightColor/ambient) - ALL可視

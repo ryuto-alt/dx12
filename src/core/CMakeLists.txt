@@ -17,6 +17,7 @@ add_library(Core STATIC
     GameClock.cpp
     PathResolver.cpp
     Updater.cpp
+    Http.cpp
     vfs/Crypto.cpp
     vfs/Compression.cpp
     vfs/PakWriter.cpp

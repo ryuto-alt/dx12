@@ -19,10 +19,12 @@
 #include "animation/SkinningBuffer.h"
 #include "scripting/ScriptEngine.h"
 #include "resource/ShaderRegistry.h"
+#include "resource/MaterialAssetIO.h"
 #include "editor/panels/AssetBrowserPanel.h"
 
 #include <imgui_internal.h>   // BeginDragDropTargetCustom（ウィンドウ全体をドロップ先に）
 #include <filesystem>
+#include <fstream>
 #include <algorithm>
 #include <cstring>
 #include <cstdio>
@@ -1450,6 +1452,155 @@ void InspectorPanel::Render(entt::registry& reg,
                         ImGui::PopID();
                     };
 
+                    // マテリアルアセット(assets/materials/*.dxmat、Unrealのマテリアルインスタンス相当)。
+                    // 割当があれば上記3スロットのテクスチャ個別上書きより優先される(描画側 Application 参照)。
+                    auto drawMaterialAssetSlot = [&](u32 smi)
+                    {
+                        ImGui::PushID("MaterialAsset");
+                        ImGui::PushID(static_cast<int>(smi));
+
+                        const std::string& cur = MeshRenderer::SafeGetOverride(mr.materialAsset, smi);
+                        bool hasMat = !cur.empty();
+
+                        pg::Label("Material Asset");
+
+                        // サムネイルは .dxmat の albedo テクスチャを軽量パースして使い回す
+                        // (AssetBrowserPanel::Refresh と同じ方式。JSON数百バイトなので毎フレーム読んでも軽い)。
+                        u64 gpuHandle = 0;
+                        if (hasMat && m_assetBrowser)
+                        {
+                            std::ifstream ifs(m_assetsDir + cur, std::ios::binary);
+                            if (ifs)
+                            {
+                                std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+                                MaterialAssetData data;
+                                if (ParseMaterialAsset(bytes, data) && !data.albedoPath.empty())
+                                    gpuHandle = m_assetBrowser->GetOrQueueThumbnail(m_assetsDir + data.albedoPath);
+                            }
+                        }
+
+                        bool clicked;
+                        if (gpuHandle != 0)
+                        {
+                            clicked = ImGui::ImageButton("##matThumb", static_cast<ImTextureID>(gpuHandle),
+                                                          ImVec2(kThumbSize, kThumbSize));
+                        }
+                        else
+                        {
+                            clicked = ImGui::Button(hasMat ? "..." : "(none)", ImVec2(kThumbSize * 3.0f, kThumbSize));
+                        }
+                        if (clicked)
+                            ImGui::OpenPopup("MaterialPicker");
+
+                        // ドラッグ&ドロップ(アセットブラウザから .dxmat のみ受理)
+                        if (ImGui::BeginDragDropTarget())
+                        {
+                            if (const ImGuiPayload* payload =
+                                    ImGui::AcceptDragDropPayload(AssetBrowserPanel::kDragDropPayloadType))
+                            {
+                                const char* droppedPath = static_cast<const char*>(payload->Data);
+                                namespace fs = std::filesystem;
+                                std::string ext = fs::path(droppedPath).extension().string();
+                                for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+                                if (AssetBrowserPanel::ClassifyExtension(ext) == AssetBrowserPanel::AssetType::Material)
+                                {
+                                    std::string abs = fs::path(droppedPath).lexically_normal().string();
+                                    std::string base = fs::path(m_assetsDir).lexically_normal().string();
+                                    std::replace(abs.begin(), abs.end(), '\\', '/');
+                                    std::replace(base.begin(), base.end(), '\\', '/');
+                                    std::string rel = (abs.rfind(base, 0) == 0) ? abs.substr(base.size()) : abs;
+                                    applyOverride(mr.materialAsset, smi, rel);
+
+                                    // 割当時: UVタイリングが既定値(1.0)のままなら.dxmatの値を初期値としてコピーする
+                                    // (描画時に合成はしない。Mesh::ApplyUVScaleは頂点焼き込みのため)。
+                                    if (mr.uvScaleU == 1.0f && mr.uvScaleV == 1.0f)
+                                    {
+                                        std::ifstream ifs2(m_assetsDir + rel, std::ios::binary);
+                                        if (ifs2)
+                                        {
+                                            std::vector<uint8_t> bytes2((std::istreambuf_iterator<char>(ifs2)),
+                                                                         std::istreambuf_iterator<char>());
+                                            MaterialAssetData data2;
+                                            if (ParseMaterialAsset(bytes2, data2) && mr.meshes[smi])
+                                            {
+                                                mr.uvScaleU = data2.uvTilingU;
+                                                mr.uvScaleV = data2.uvTilingV;
+                                                if (scene)
+                                                    for (auto* mesh : mr.meshes)
+                                                        if (mesh) mesh->ApplyUVScale(*scene->GetDevice(), mr.uvScaleU, mr.uvScaleV);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            ImGui::EndDragDropTarget();
+                        }
+
+                        if (hasMat)
+                        {
+                            ImGui::SameLine();
+                            ImGui::BeginGroup();
+                            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 160.0f);
+                            ImGui::TextWrapped("%s", cur.c_str());
+                            ImGui::PopTextWrapPos();
+                            if (ImGui::SmallButton("x"))
+                                applyOverride(mr.materialAsset, smi, "");
+                            ImGui::SameLine();
+                            if (ImGui::SmallButton("Edit"))
+                            {
+                                ctx.pendingOpenMaterialPath = m_assetsDir + cur;
+                                ctx.showMaterialEditor = true;
+                            }
+                            ImGui::EndGroup();
+                        }
+
+                        // クリックで開く一覧ダイアログ(TexturePickerの.dxmat版)
+                        if (ImGui::BeginPopup("MaterialPicker"))
+                        {
+                            ImGui::TextDisabled("Select Material");
+                            ImGui::Separator();
+                            if (ImGui::Selectable("(None)", !hasMat))
+                            {
+                                applyOverride(mr.materialAsset, smi, "");
+                                ImGui::CloseCurrentPopup();
+                            }
+
+                            namespace fs = std::filesystem;
+                            std::error_code ec;
+                            fs::path root(m_assetsDir);
+                            if (fs::exists(root, ec))
+                            {
+                                fs::recursive_directory_iterator dirIt(
+                                    root, fs::directory_options::skip_permission_denied, ec);
+                                fs::recursive_directory_iterator dirEnd;
+                                for (; !ec && dirIt != dirEnd; dirIt.increment(ec))
+                                {
+                                    std::error_code fec;
+                                    if (!dirIt->is_regular_file(fec) || fec) continue;
+                                    std::string rowExt = dirIt->path().extension().string();
+                                    for (char& c : rowExt) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                                    if (AssetBrowserPanel::ClassifyExtension(rowExt) != AssetBrowserPanel::AssetType::Material)
+                                        continue;
+
+                                    fs::path relPath = fs::relative(dirIt->path(), root, fec);
+                                    if (fec) continue;
+                                    std::string relStr = relPath.generic_string();
+
+                                    if (ImGui::Selectable(relStr.c_str(), cur == relStr))
+                                    {
+                                        applyOverride(mr.materialAsset, smi, relStr);
+                                        ImGui::CloseCurrentPopup();
+                                    }
+                                }
+                            }
+                            ImGui::EndPopup();
+                        }
+
+                        ImGui::PopID();
+                        ImGui::PopID();
+                    };
+
                     if (pg::Begin("MaterialTex"))
                     {
                         for (u32 smi = 0; smi < static_cast<u32>(mr.meshes.size()); ++smi)
@@ -1461,9 +1612,19 @@ void InspectorPanel::Render(entt::registry& reg,
                                 snprintf(sub, sizeof(sub), "Submesh %u", smi);
                                 pg::Group(sub);
                             }
+                            drawMaterialAssetSlot(smi);
+
+                            bool matAssigned = mr.HasMaterialAsset(smi);
+                            if (matAssigned)
+                            {
+                                ImGui::BeginDisabled();
+                                ImGui::TextDisabled("\xe3\x83\x9e\xe3\x83\x86\xe3\x83\xaa\xe3\x82\xa2\xe3\x83\xab\xe5\x89\xb2\xe5\xbd\x93\xe4\xb8\xad\xe3\x81\xaf\xe7\x84\xa1\xe5\x8a\xb9"); // マテリアル割当中は無効
+                            }
                             drawTextureOverrideSlot("Albedo", mr.overrideAlbedoTexture, smi);
                             drawTextureOverrideSlot("Normal", mr.overrideNormalTexture, smi);
                             drawTextureOverrideSlot("MetalRoughness", mr.overrideMetalRoughnessTexture, smi);
+                            if (matAssigned)
+                                ImGui::EndDisabled();
                         }
                         pg::End();
                     }

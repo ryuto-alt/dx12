@@ -331,3 +331,53 @@ Metallic/Roughness の数値上書き(`overrideMetallic`/`overrideRoughness`)と
 
 シーン JSON には `"materialTextureOverrides"`（サブメッシュ数ぶんの配列、各要素は
 `{"albedo": "...", "normal": "...", "metalRoughness": "..."}` のうち設定されたキーのみ）として保存される。
+
+## 8. マテリアルアセット（`.dxmat`、Unreal のマテリアルインスタンス相当）
+
+上記7節のテクスチャ上書きは「エンティティ1体に対してその場でテクスチャを差し替える」その場限りの
+操作。複数のメッシュ/シーンをまたいで**再利用できる名前付きマテリアル**（地面・壁・石材といった
+テンプレート）が欲しい場合は `.dxmat` アセットを使う。
+
+**フォーマット**（`assets/materials/<name>.dxmat`、パスは assets 相対）:
+```json
+{
+  "version": 1,
+  "name": "red_brick_03",
+  "albedo": "textures/red_brick_03/red_brick_03_diff.jpg",
+  "normal": "textures/red_brick_03/red_brick_03_nor_gl.png",
+  "metalRoughness": "textures/red_brick_03/red_brick_03_arm.png",
+  "metallic": 1.0,
+  "roughness": 1.0,
+  "uvTiling": [1.0, 1.0],
+  "source": "Poly Haven",
+  "license": "CC0"
+}
+```
+`metallic`/`roughness` はテクスチャ値に掛かる**係数**（glTF 意味論。テクスチャが無ければそのまま
+定数値として使われる）。`metalRoughness` は glTF の ORM 規約と同じ **G=Roughness / B=Metallic**
+（Poly Haven の ARM パックテクスチャがそのまま使える。R=AO は現状未使用）。法線マップは
+**OpenGL 規約**（`PBR.hlsli` の `PerturbNormal` が G 反転しない）。Poly Haven からは `nor_gl` を選ぶこと
+（`nor_dx` は使わない）。
+
+**優先度**: `MeshRenderer::materialAsset`(サブメッシュ単位、`.dxmat` の assets相対パス) が設定されて
+いれば、7節の `overrideXxxTexture` より**常に優先**される。どちらも未設定ならモデル焼き込みの
+`Material` を使う。Metallic/Roughness は `overrideMetallic`/`overrideRoughness`(>=0 のとき) がさらに
+`.dxmat` の係数より優先される(エンティティ単位の微調整用)。
+
+**エディタでの使い方**:
+- **マテリアルライブラリ**（ツール > マテリアルライブラリ (Poly Haven)）: CC0・APIキー不要の
+  Poly Haven テクスチャセットをエディタ内から検索・ダウンロードできる（「テンプレート」タブに
+  地面/壁/石材等の厳選候補あり）。ダウンロードすると `assets/textures/<id>/` へ diff(albedo)・
+  nor_gl(normal)・arm(metalRoughness) の3枚を保存し、対応する `assets/materials/<id>.dxmat` を自動生成、
+  `assets/ASSET_MANIFEST.md` にも出所を記録する（Poly Haven は CC0 なので帰属は不要）。
+- **マテリアルエディタ**（ツール > マテリアルエディタ、またはアセットブラウザで `.dxmat` をダブル
+  クリック）: テクスチャ3スロット・Metallic/Roughness・UVタイリングを編集できる。既存マテリアルは
+  スライダードラッグ中も即座にシーンへプレビュー反映され（`MaterialAssetManager::UpdateScalarsOnly`、
+  SRV再構築なしの軽量パス）、指を離すとディスクへ保存される。外部エディタで `.dxmat` を直接編集した
+  場合も0.5秒間隔でホットリロードされる。
+- **Inspector**: サブメッシュごとの「Material Asset」欄にアセットブラウザから `.dxmat` を D&D、または
+  クリックしてピッカーから選択。割当中は7節のテクスチャ個別上書きスロットが無効表示になる
+  （優先度がひと目でわかるように）。
+
+シーン JSON には `"materialAssets"`（サブメッシュ数ぶんの配列、`.dxmat` の assets相対パス。空文字列 = 未割当）
+として保存される。`--validate` は参照している `.dxmat` の実在チェックも行う。

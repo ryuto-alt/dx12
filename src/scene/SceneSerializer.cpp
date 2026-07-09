@@ -403,6 +403,22 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                     ej["materialTextureOverrides"] = overridesJson;
             }
 
+            // マテリアルアセット割当（assets/materials/*.dxmat、サブメッシュ単位）。
+            // materialTextureOverrides より優先されるので別キーで保存する(Application 描画ループ参照)。
+            if (!mr.materialAsset.empty())
+            {
+                bool anyMaterial = false;
+                json materialsJson = json::array();
+                for (size_t i = 0; i < mr.materialAsset.size(); ++i)
+                {
+                    const std::string& path = MeshRenderer::SafeGetOverride(mr.materialAsset, static_cast<u32>(i));
+                    materialsJson.push_back(path);
+                    if (!path.empty()) anyMaterial = true;
+                }
+                if (anyMaterial)
+                    ej["materialAssets"] = materialsJson;
+            }
+
             // 頂点カラー保存（プリミティブのみ。モデルは頂点ごとの色を壊さないよう除外）
             if (mr.modelPath.rfind("__primitive_", 0) == 0 && !mr.meshes.empty() && mr.meshes[0])
             {
@@ -1037,6 +1053,15 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                     if (entry.contains("metalRoughness"))
                         MeshRenderer::SetOverride(mrOv.overrideMetalRoughnessTexture, smi, entry.value("metalRoughness", ""));
                 }
+            }
+
+            // マテリアルアセット割当復元（サブメッシュ単位、assets/materials/*.dxmat）
+            if (ej.contains("materialAssets") && reg.all_of<MeshRenderer>(e))
+            {
+                auto& mrMat = reg.get<MeshRenderer>(e);
+                const auto& arr = ej["materialAssets"];
+                for (size_t i = 0; i < arr.size(); ++i)
+                    MeshRenderer::SetOverride(mrMat.materialAsset, static_cast<u32>(i), arr[i].get<std::string>());
             }
 
             // LuaScript 復元（env は構築しない。Play 開始時に初期化される）

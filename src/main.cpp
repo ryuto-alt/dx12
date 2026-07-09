@@ -137,6 +137,19 @@ int RunValidate(const std::string& scenePathStr)
                     }
                 }
 
+                if (ej.contains("materialAssets") && ej["materialAssets"].is_array())
+                {
+                    for (const auto& mj : ej["materialAssets"])
+                    {
+                        if (!mj.is_string()) continue;
+                        std::string mp = mj.get<std::string>();
+                        if (mp.empty()) continue;
+                        std::error_code ec;
+                        if (!fs::exists(assetsDir / mp, ec))
+                            errors.push_back("material asset not found: " + mp + " (entity: " + nm + ")");
+                    }
+                }
+
                 if (ej.contains("trigger"))
                 {
                     ++triggers;

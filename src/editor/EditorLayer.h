@@ -82,6 +82,10 @@ public:
     ImVec2 GetViewportPos()  const { return m_viewportPos; }
     ImVec2 GetViewportSize() const { return m_viewportSize; }
 
+    // マテリアルエディタ/ライブラリ等、Application 直属のフローティングツール窓が
+    // サムネイルキャッシュを使い回すためのアクセサ(InspectorPanelと同じ理由)。
+    AssetBrowserPanel* GetAssetBrowser() const { return m_assetBrowser.get(); }
+
 private:
     void BuildDefaultLayout(ImGuiID dockspaceId, f32 toolbarHeight);
 

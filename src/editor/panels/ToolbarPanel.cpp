@@ -269,6 +269,8 @@ void ToolbarPanel::Render(bool isPlaying,
             if (ImGui::MenuItem("ビルド"))
                 ctx.showBuildSettings = true;
             ImGui::MenuItem("パーティクルエディタ",     nullptr, &ctx.showVfxEditor);
+            ImGui::MenuItem("マテリアルエディタ",       nullptr, &ctx.showMaterialEditor);
+            ImGui::MenuItem("マテリアルライブラリ (Poly Haven)", nullptr, &ctx.showMaterialLibrary);
             ImGui::MenuItem("MCP / AI Bridge",         nullptr, &ctx.showMcpBridge);
             ImGui::MenuItem("Network",                 nullptr, &ctx.showNetworkStatus);
             ImGui::MenuItem("Network 設定",             nullptr, &ctx.showNetworkSettings);

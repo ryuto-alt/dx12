@@ -60,6 +60,18 @@ if(TARGET Scene)
     add_test(NAME SerializeRoundtripTests COMMAND SerializeRoundtripTests)
 endif()
 
+# .dxmat(マテリアルアセット)JSON往復テスト。Resource(GPU非依存の純ロジック部分のみ使用)をリンクするため、
+# エンジン本体と一緒にビルドする構成でのみ有効(スタンドアロン構成では Resource が無いのでスキップ)。
+if(TARGET Resource)
+    add_executable(DxmatRoundtripTests dxmat_roundtrip_test.cpp)
+    target_link_libraries(DxmatRoundtripTests PRIVATE Resource)
+    if(MSVC)
+        target_compile_options(DxmatRoundtripTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(DxmatRoundtripTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME DxmatRoundtripTests COMMAND DxmatRoundtripTests)
+endif()
+
 # entt::meta コア部品フィールド反映テスト（Phase 2 土台）。ECS（+ entt/DirectXMath）をリンク。
 if(TARGET ECS)
     add_executable(ComponentMetaTests component_meta_test.cpp)

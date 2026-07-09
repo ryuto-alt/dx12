@@ -108,7 +108,12 @@ struct MeshRenderer
     std::vector<std::string> overrideNormalTexture;
     std::vector<std::string> overrideMetalRoughnessTexture;
 
-    // 上記3ベクタの範囲外アクセスを避けるためのヘルパ(未設定インデックスは空文字列扱い)
+    // マテリアルアセット割当(assets/materials/*.dxmat、サブメッシュ単位、Unrealのマテリアルインスタンス
+    // 相当)。空文字列 = 未割当。優先度は materialAsset > overrideXxxTexture(上記3ベクタ) > モデル焼き込み
+    // Material。実データの解決/SRV構築は Application::m_materialAssetManager(MaterialAssetManager)が行う。
+    std::vector<std::string> materialAsset;
+
+    // 上記4ベクタの範囲外アクセスを避けるためのヘルパ(未設定インデックスは空文字列扱い)
     static const std::string& SafeGetOverride(const std::vector<std::string>& v, u32 mi)
     {
         static const std::string kEmpty;
@@ -124,6 +129,10 @@ struct MeshRenderer
         return !SafeGetOverride(overrideAlbedoTexture, mi).empty()
             || !SafeGetOverride(overrideNormalTexture, mi).empty()
             || !SafeGetOverride(overrideMetalRoughnessTexture, mi).empty();
+    }
+    bool HasMaterialAsset(u32 mi) const
+    {
+        return !SafeGetOverride(materialAsset, mi).empty();
     }
 
     // インスタンシング: 共有メッシュを使う発光弾(Pfx)等は色を頂点バッファに焼かず

@@ -12,6 +12,8 @@ add_library(Editor STATIC
     panels/McpBridgePanel.cpp
     panels/VfxEditorPanel.cpp
     panels/NetworkPanel.cpp
+    panels/MaterialEditorPanel.cpp
+    panels/MaterialLibraryPanel.cpp
 )
 
 target_include_directories(Editor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)

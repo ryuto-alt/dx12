@@ -45,7 +45,7 @@ public:
     static constexpr const char* kDragDropPayloadType = "ASSET_PATH";
 
     // テクスチャD&D(マテリアル割当)等、他パネルからも拡張子種別を判定したいので公開。
-    enum class AssetType { Folder, Model, Texture, Scene, Script, Audio, Prefab, Shader, Other };
+    enum class AssetType { Folder, Model, Texture, Scene, Script, Audio, Prefab, Shader, Material, Other };
     static AssetType ClassifyExtension(const std::string& ext);
 
     // 他パネル(InspectorPanelのマテリアルテクスチャプレビュー等)から、このパネルが持つ
@@ -60,6 +60,9 @@ private:
         std::string           displayName;
         AssetType             type = AssetType::Other;
         bool                  isDirectory = false;
+        // AssetType::Material のみ: .dxmat が参照する albedo テクスチャの絶対パス(サムネイル使い回し用)。
+        // 未設定/パース失敗なら空(その場合は種別アイコンにフォールバック)。
+        std::string           materialThumbSource;
     };
 
     struct ThumbnailInfo
