@@ -363,21 +363,27 @@ void MaterialEditorPanel::RenderWindow(EditorContext& ctx, const std::string& as
 
         if (m_preview.IsValid())
         {
-            u64 handle = m_preview.GetPreviewGpuHandle();
-            ImGui::Image(static_cast<ImTextureID>(handle),
-                        ImVec2(static_cast<float>(MaterialPreviewRenderer::kPreviewSize),
-                               static_cast<float>(MaterialPreviewRenderer::kPreviewSize)));
-            if (ImGui::IsItemHovered())
+            // ImGui::Image は「掴めない」アイテムのため、その上で左ドラッグを始めるとImGui標準の
+            // ウィンドウ移動として扱われ、回転操作と一緒に窓ごと動いてしまう。InvisibleButton を
+            // 敷いてドラッグをアイテムとして捕捉し(=アクティブアイテム化)、画像は DrawList で重ね描きする。
+            const float previewSize = static_cast<float>(MaterialPreviewRenderer::kPreviewSize);
+            const ImVec2 imgPos = ImGui::GetCursorScreenPos();
+            ImGui::InvisibleButton("##previewOrbit", ImVec2(previewSize, previewSize));
+            ImGui::GetWindowDrawList()->AddImage(
+                static_cast<ImTextureID>(m_preview.GetPreviewGpuHandle()),
+                imgPos, ImVec2(imgPos.x + previewSize, imgPos.y + previewSize));
+
+            ImGuiIO& io = ImGui::GetIO();
+            // IsItemActive: プレビュー上で押下開始したドラッグのみ回転(途中で画像外へ出ても継続)。
+            if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f))
             {
-                ImGuiIO& io = ImGui::GetIO();
-                if (ImGui::IsMouseDragging(ImGuiMouseButton_Left))
-                {
-                    m_camYaw   += io.MouseDelta.x * 0.01f;
-                    m_camPitch += io.MouseDelta.y * 0.01f;
-                    m_camPitch = std::clamp(m_camPitch, -1.5f, 1.5f);
-                }
-                m_camDist = std::clamp(m_camDist - io.MouseWheel * 0.3f, 1.5f, 12.0f);
+                m_camYaw   += io.MouseDelta.x * 0.01f;
+                m_camPitch += io.MouseDelta.y * 0.01f;
+                m_camPitch = std::clamp(m_camPitch, -1.5f, 1.5f);
             }
+            if (ImGui::IsItemHovered())
+                m_camDist = std::clamp(m_camDist - io.MouseWheel * 0.3f, 1.5f, 12.0f);
+
             ImGui::TextDisabled("\xe3\x83\x89\xe3\x83\xa9\xe3\x83\x83\xe3\x82\xb0\xe3\x81\xa7\xe5\x9b\x9e\xe8\xbb\xa2"
                                  "\xe3\x83\xbb\xe3\x83\x9b\xe3\x82\xa4\xe3\x83\xab\xe3\x81\xa7\xe3\x82\xba\xe3\x83\xbc\xe3\x83\xa0");
                                  // ドラッグで回転・ホイールでズーム

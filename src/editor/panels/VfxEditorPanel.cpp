@@ -566,20 +566,24 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
     ImGui::BeginGroup();
     if (m_gfxInitialized)
     {
+        // ImGui::Image は「掴めない」アイテムのため、その上で左ドラッグを始めるとImGui標準の
+        // ウィンドウ移動として扱われ、回転操作と一緒に窓ごと動いてしまう。InvisibleButton を
+        // 敷いてドラッグをアイテムとして捕捉し、画像は DrawList で重ね描きする(MaterialEditorPanelと同じ対処)。
         const D3D12_GPU_DESCRIPTOR_HANDLE h = m_srvHeap->GetGpuHandle(m_previewRT.GetSrvIndex());
-        ImGui::Image(static_cast<ImTextureID>(h.ptr), ImVec2(256.0f, 256.0f));
-        if (ImGui::IsItemHovered())
+        const ImVec2 imgPos = ImGui::GetCursorScreenPos();
+        ImGui::InvisibleButton("##vfxPreviewOrbit", ImVec2(256.0f, 256.0f));
+        ImGui::GetWindowDrawList()->AddImage(static_cast<ImTextureID>(h.ptr),
+            imgPos, ImVec2(imgPos.x + 256.0f, imgPos.y + 256.0f));
+
+        ImGuiIO& io = ImGui::GetIO();
+        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f))
         {
-            ImGuiIO& io = ImGui::GetIO();
-            if (ImGui::IsMouseDragging(ImGuiMouseButton_Left))
-            {
-                m_camYaw   += io.MouseDelta.x * 0.01f;
-                m_camPitch += io.MouseDelta.y * 0.01f;
-                m_camPitch = std::clamp(m_camPitch, -1.5f, 1.5f);
-            }
-            if (io.MouseWheel != 0.0f)
-                m_camDist = std::clamp(m_camDist - io.MouseWheel * 0.4f, 1.0f, 30.0f);
+            m_camYaw   += io.MouseDelta.x * 0.01f;
+            m_camPitch += io.MouseDelta.y * 0.01f;
+            m_camPitch = std::clamp(m_camPitch, -1.5f, 1.5f);
         }
+        if (ImGui::IsItemHovered() && io.MouseWheel != 0.0f)
+            m_camDist = std::clamp(m_camDist - io.MouseWheel * 0.4f, 1.0f, 30.0f);
     }
     else
     {
