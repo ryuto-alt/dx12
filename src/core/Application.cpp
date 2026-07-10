@@ -85,6 +85,7 @@
 #include "editor/panels/McpBridgePanel.h"
 #include "editor/panels/NetworkPanel.h"
 #include "editor/panels/VfxEditorPanel.h"
+#include "editor/panels/UiEditorPanel.h"
 #include "editor/panels/MaterialEditorPanel.h"
 #include "editor/panels/MaterialLibraryPanel.h"
 #include "project/Project.h"
@@ -1495,6 +1496,9 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             m_vfxEditorPanel = std::make_unique<VfxEditorPanel>();
             m_vfxEditorPanel->Initialize(*m_graphicsDevice, m_srvHeap.get(), m_resourceManager.get(),
                                         PathResolver::ShaderDirW());
+            // UIエディタ（ゲーム内UIの2Dキャンバス編集）。GPU リソースは持たない
+            // （描画は UISystem::RenderPreview 経由で共有 SRV ヒープを借りるだけ）。
+            m_uiEditorPanel = std::make_unique<UiEditorPanel>();
             m_networkPanel = std::make_unique<NetworkPanel>();
 
             m_materialEditorPanel = std::make_unique<MaterialEditorPanel>();
@@ -10522,6 +10526,9 @@ void Application::Render()
         }
         if (m_vfxEditorPanel)
             m_vfxEditorPanel->RenderWindow(m_scene->GetRegistry(), *m_editorCtx, PathResolver::AssetsDir());
+        if (m_uiEditorPanel)
+            m_uiEditorPanel->RenderWindow(m_scene->GetRegistry(), *m_editorCtx, PathResolver::AssetsDir(),
+                                          m_resourceManager.get(), m_srvHeap.get(), nativeCmdList);
         if (m_materialEditorPanel)
             m_materialEditorPanel->RenderWindow(*m_editorCtx, PathResolver::AssetsDir());
         if (m_materialLibraryPanel)

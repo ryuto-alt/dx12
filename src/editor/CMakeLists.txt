@@ -11,6 +11,7 @@ add_library(Editor STATIC
     panels/ConsolePanel.cpp
     panels/McpBridgePanel.cpp
     panels/VfxEditorPanel.cpp
+    panels/UiEditorPanel.cpp
     panels/NetworkPanel.cpp
     panels/MaterialEditorPanel.cpp
     panels/MaterialLibraryPanel.cpp

@@ -72,6 +72,7 @@ namespace dx12e
     class EditorLayer;
     class ModelThumbnailRenderer;
     class VfxEditorPanel;
+    class UiEditorPanel;
     class NetworkPanel;
     class ShaderManager;
     class MaterialAssetManager;
@@ -421,6 +422,7 @@ private:
     std::unique_ptr<ScriptEngine>      m_scriptEngine;
     std::unique_ptr<McpBridge>         m_mcpBridge;   // エディタ専用 AI ブリッジ(TCP)。ゲームでは null。
     std::unique_ptr<VfxEditorPanel>    m_vfxEditorPanel;   // パーティクルエディタ（ツール窓）。ゲームでは null。
+    std::unique_ptr<UiEditorPanel>     m_uiEditorPanel;    // UIエディタ（ゲーム内UIの2Dキャンバス編集）。ゲームでは null。
     std::unique_ptr<MaterialEditorPanel>  m_materialEditorPanel;   // マテリアルエディタ（ツール窓）。ゲームでは null。
     std::unique_ptr<MaterialLibraryPanel> m_materialLibraryPanel;  // Poly Havenマテリアルライブラリ(ツール窓)。ゲームでは null。
     // ---- MCP 状態（HandleMcpCommand とフレーム境界の遅延応答で共有）----

@@ -642,6 +642,7 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::MenuItem("Network",                nullptr, &ctx.showNetworkStatus);
         ImGui::MenuItem("Network 設定",            nullptr, &ctx.showNetworkSettings);
         ImGui::MenuItem("パーティクルエディタ",    nullptr, &ctx.showVfxEditor);
+        ImGui::MenuItem("UIエディタ",              nullptr, &ctx.showUiEditor);
         ImGui::Separator();
         if (ImGui::MenuItem("すべて閉じる"))
         {
@@ -649,7 +650,7 @@ void ToolbarPanel::Render(bool isPlaying,
                 ctx.showEngineSettings = ctx.showSceneFlow = ctx.showProject =
                 ctx.showVersionControl = ctx.showMcpBridge = ctx.showBuildSettings =
                 ctx.showNetworkStatus = ctx.showNetworkSettings =
-                ctx.showVfxEditor = false;
+                ctx.showVfxEditor = ctx.showUiEditor = false;
         }
         ImGui::EndPopup();
     }

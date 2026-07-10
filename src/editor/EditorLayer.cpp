@@ -242,7 +242,7 @@ void EditorLayer::Render(bool isPlaying,
                 m_ctx->showProject = m_ctx->showVersionControl =
                 m_ctx->showMcpBridge = m_ctx->showBuildSettings =
                 m_ctx->showNetworkStatus = m_ctx->showNetworkSettings =
-                m_ctx->showVfxEditor = false;
+                m_ctx->showVfxEditor = m_ctx->showUiEditor = false;
             m_prevAnyToolShown = false;
             m_dockspaceBuilt = false;
             m_ctx->resetLayout = false;

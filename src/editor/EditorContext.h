@@ -156,6 +156,9 @@ public:
     // 独立フローティング窓として開く(AnyToolWindowOpen には含めない)。
     bool showMaterialEditor  = false;
     bool showMaterialLibrary = false;
+    // UIエディタ(ゲーム内UIの2Dキャンバス編集。UMGデザイナー相当)。広い面積が要るので
+    // VfxEditor 同様の独立フローティング窓(AnyToolWindowOpen には含めない)。
+    bool showUiEditor        = false;
     // AssetBrowser で .dxmat をダブルクリックした時に立つ。MaterialEditorPanel が消費して開く。
     std::string pendingOpenMaterialPath;
 
