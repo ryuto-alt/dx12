@@ -298,6 +298,8 @@ struct UIImage
     DirectX::XMFLOAT4 sliceBorder{0.0f, 0.0f, 0.0f, 0.0f}; // 9-slice境界px(左,上,右,下)。全0で無効
     float cornerRadius = 0.0f;                  // 単色矩形時のみ有効
     bool raycastBlock = true;                   // 手前に描かれた自分がクリックを遮る(UnityのraycastTarget相当)
+    float fillAmount = 1.0f;                    // 表示割合0..1(HPバー/ゲージ用。1=全表示、0=非表示)
+    int fillDir = 0;                            // fillが増える方向 0=左から 1=右から 2=下から 3=上から
 };
 
 // UIテキスト

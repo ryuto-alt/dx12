@@ -669,6 +669,8 @@ static void Test_UIImage()
             im.sliceBorder  = { 8.0f, 16.0f, 8.0f, 16.0f };
             im.cornerRadius = 6.0f;
             im.raycastBlock = false;   // 既定 true から変えて往復を確認
+            im.fillAmount   = 0.75f;   // 既定 1 から変えて往復を確認
+            im.fillDir      = 2;       // 下から
             r.emplace<UIImage>(e, im);
         },
         [](const UIImage& im) {
@@ -681,6 +683,8 @@ static void Test_UIImage()
             CHECK_F(im.sliceBorder.z, 8.0f);  CHECK_F(im.sliceBorder.w, 16.0f);
             CHECK_F(im.cornerRadius, 6.0f);
             CHECK(im.raycastBlock == false);
+            CHECK_F(im.fillAmount, 0.75f);
+            CHECK(im.fillDir == 2);
         });
 }
 

@@ -188,7 +188,9 @@ void RegisterCoreComponentMeta()
         .data<&UIImage::uvMax>("uvMax")
         .data<&UIImage::sliceBorder>("sliceBorder")
         .data<&UIImage::cornerRadius>("cornerRadius")
-        .data<&UIImage::raycastBlock>("raycastBlock");
+        .data<&UIImage::raycastBlock>("raycastBlock")
+        .data<&UIImage::fillAmount>("fillAmount")
+        .data<&UIImage::fillDir>("fillDir");
 
     entt::meta_factory<UIText>{}
         .type("UIText")

@@ -953,6 +953,15 @@ void InspectorPanel::Render(entt::registry& reg,
                     changed |= pg::Checkbox("クリックを遮る Raycast Block", &img.raycastBlock,
                         "ON: この画像が背後にあるボタンへのクリック/ホバーを遮る（Unity の raycastTarget 相当）。\n"
                         "OFF: クリックを素通しする（装飾用オーバーレイ向け）");
+                    changed |= pg::Float("表示割合 Fill Amount", &img.fillAmount, 0.005f, 0.0f, 1.0f,
+                        "%.3f", &active,
+                        "0〜1 の割合だけ表示する（HPバー/ゲージ用）。1=全表示、0=非表示。\n"
+                        "Lua からは scene:setUiFill(entity, amount) で更新できる");
+                    {
+                        static const char* fillDirs[] = {"左から", "右から", "下から", "上から"};
+                        changed |= pg::Combo("Fill 方向 Fill Dir", &img.fillDir, fillDirs, IM_ARRAYSIZE(fillDirs),
+                            "Fill Amount が増えるとき、どの端から現れていくか");
+                    }
                     pg::End();
                 }
                 EndEdit(reg, ctx, ctx.selectedEntity, m_uiImageEdit, changed, active, "UIImage");

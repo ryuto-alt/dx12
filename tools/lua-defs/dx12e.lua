@@ -236,6 +236,21 @@ function Scene:setUiVisible(e, visible) end
 ---@param path string assets/ からの相対パス
 function Scene:setUiTexture(e, path) end
 
+---UIImage::fillAmount（表示割合 0..1）を設定する。HPバー/ゲージ用。
+---クリップ方式なのでテクスチャ/9-slice/角丸すべてで「端から現れる」挙動になる
+---（方向は Inspector の「Fill 方向」= UIImage.fillDir で設定）。
+---```lua
+---scene:setUiFill(hpBar, hp / maxHp)
+---```
+---@param e Entity
+---@param amount number 0..1（範囲外はクランプされる）
+function Scene:setUiFill(e, amount) end
+
+---UIImage::fillAmount を返す。対象が UIImage を持たない場合は 0。
+---@param e Entity
+---@return number
+function Scene:getUiFill(e) end
+
 ---Gimmick コンポーネント付き全エンティティをパラメータ付き配列で返す
 ---@return GimmickInfo[]
 function Scene:gimmicks() end

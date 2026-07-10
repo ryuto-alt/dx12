@@ -842,9 +842,10 @@ vfx.<span class="tok-fn">play</span>(<span class="tok-s">"explosion"</span>, x, 
                   <td>UIツリーのルート。これが付いたエンティティの子孫が UI 要素になる。<code>scaleMode</code>: 0=ScaleToFit（等比縮小・中央寄せレターボックス）、1=ConstantPixel（左上原点・実ピクセル）</td></tr>
               <tr><td><code>UIRect</code></td><td><code>anchorMin/Max</code>, <code>pivot</code>, <code>offsetMin/Max</code>, <code>visible</code></td>
                   <td>レイアウト矩形（Unity の RectTransform 相当）。全UI要素に必須。<code>visible=false</code> で自身と子孫ごと非表示</td></tr>
-              <tr><td><code>UIImage</code></td><td><code>texturePath</code>, <code>color</code>, <code>uvMin/Max</code>, <code>sliceBorder</code>, <code>cornerRadius</code>, <code>raycastBlock</code></td>
+              <tr><td><code>UIImage</code></td><td><code>texturePath</code>, <code>color</code>, <code>uvMin/Max</code>, <code>sliceBorder</code>, <code>cornerRadius</code>, <code>raycastBlock</code>, <code>fillAmount</code>, <code>fillDir</code></td>
                   <td>画像。<code>texturePath</code> が空なら単色塗り矩形（<code>cornerRadius</code> で角丸）。<code>sliceBorder</code>(px, 左上右下)で9-slice。
-                  <code>raycastBlock</code>（既定 true）で背後のボタンへのクリックを遮る（Unity の raycastTarget 相当）</td></tr>
+                  <code>raycastBlock</code>（既定 true）で背後のボタンへのクリックを遮る（Unity の raycastTarget 相当）。
+                  <code>fillAmount</code>（0..1、既定 1）で端から割合表示＝HPバー/ゲージ（方向は <code>fillDir</code>: 0=左 1=右 2=下 3=上から。クリップ方式なので 9-slice/角丸でも自然）</td></tr>
               <tr><td><code>UIText</code></td><td><code>text</code>, <code>fontSize</code>, <code>color</code>, <code>alignH/V</code>, <code>wrap</code></td>
                   <td>テキスト。<code>alignH/V</code>: 0=左/上 1=中央 2=右/下。<code>wrap=true</code> で矩形幅に折り返し。クリックは遮らない</td></tr>
               <tr><td><code>UIButton</code></td><td><code>onClickEvent</code>, <code>normalColor/hoverColor/pressedColor</code>, <code>interactable</code></td>
@@ -867,7 +868,8 @@ vfx.<span class="tok-fn">play</span>(<span class="tok-s">"explosion"</span>, x, 
 scene:<span class="tok-fn">setUiText</span>(scoreLabel, <span class="tok-s">"SCORE: "</span> .. tostring(score))
 <span class="tok-k">local</span> current = scene:<span class="tok-fn">getUiText</span>(scoreLabel)
 
-<span class="tok-c">-- HPバー: 残量に応じて色を変える（UIImage優先、無ければUIText）</span>
+<span class="tok-c">-- HPバー: 残量ゲージ（UIImage.fillAmount）＋残量に応じて色も変える</span>
+scene:<span class="tok-fn">setUiFill</span>(hpBarFill, hp / maxHp)
 scene:<span class="tok-fn">setUiColor</span>(hpBarFill, <span class="tok-n">1</span>, hpRatio, <span class="tok-n">0</span>, <span class="tok-n">1</span>)
 
 <span class="tok-c">-- パネルの表示切替（UIRect.visible。UICanvasのみのエンティティならUICanvas.visible）</span>

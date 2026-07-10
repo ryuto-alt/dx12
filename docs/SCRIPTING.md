@@ -140,6 +140,7 @@ Hierarchy の「作成」→「UI（ゲーム内UI）」で `UICanvas`/`UIRect`/
 ```lua
 scene:setUiText(scoreLabel, "SCORE: " .. tostring(score))   -- テキスト書き換え
 scene:setUiColor(hpBarFill, 1, hpRatio, 0, 1)                -- 色（UIImage優先/無ければUIText）
+scene:setUiFill(hpBarFill, hp / maxHp)                       -- ゲージの残量（UIImage.fillAmount 0..1）
 scene:setUiVisible(pausePanel, isPaused)                     -- 表示/非表示
 scene:setUiTexture(weaponIcon, "textures/ui/icon_sword.png") -- 画像差し替え
 ```

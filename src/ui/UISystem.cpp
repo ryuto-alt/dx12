@@ -208,40 +208,65 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
     // --- UIImage: テクスチャ（9-slice 対応）または単色矩形。ボタンの状態色を乗算 ---
     if (const auto* img = reg.try_get<UIImage>(e))
     {
-        const DirectX::XMFLOAT4 col{img->color.x * tint.x, img->color.y * tint.y,
-                                    img->color.z * tint.z, img->color.w * tint.w};
-        const ImU32 ucol = ToImCol(col);
-        const ImVec2 pMin(s.minX, s.minY);
-        const ImVec2 pMax(s.maxX, s.maxY);
-        bool drawn = false;
-        if (!img->texturePath.empty() && ctx.resources && ctx.srvHeap && ctx.cmdList)
+        // fillAmount: 表示割合 0..1（HPバー/ゲージ用）。クリップ矩形方式なのでテクスチャ /
+        // 9-slice / 角丸すべてで同じ「端から現れる」挙動になる。0 は完全非表示
+        // （レイキャストは上の blockers 収集どおり効いたまま）。
+        const float fill = std::clamp(img->fillAmount, 0.0f, 1.0f);
+        if (fill > 0.0f)
         {
-            // エディタアイコンと同じ経路: SRV index → GPU ハンドル(u64) = ImTextureID。
-            // GetOrLoadTexture はパスキーでキャッシュされるため毎フレーム呼んでも安価。
-            const std::string abs = PathResolver::AssetsDir() + img->texturePath;
-            Texture* tex = ctx.resources->GetOrLoadTexture(
-                PathResolver::Utf8ToWide(abs), ctx.cmdList, true);
-            if (tex)
+            const bool fillPartial = fill < 1.0f;
+            if (fillPartial)
             {
-                const ImTextureID texId = static_cast<ImTextureID>(
-                    ctx.srvHeap->GetGpuHandle(tex->GetSrvIndex()).ptr);
-                const ImVec2 uv0(img->uvMin.x, img->uvMin.y);
-                const ImVec2 uv1(img->uvMax.x, img->uvMax.y);
-                const bool nineSlice = img->sliceBorder.x > 0.0f || img->sliceBorder.y > 0.0f
-                                    || img->sliceBorder.z > 0.0f || img->sliceBorder.w > 0.0f;
-                if (nineSlice)
-                    AddImage9Slice(ctx.dl, texId, pMin, pMax, uv0, uv1,
-                                   static_cast<float>(tex->GetWidth()),
-                                   static_cast<float>(tex->GetHeight()),
-                                   img->sliceBorder, ctx.scale, ucol);
-                else
-                    ctx.dl->AddImage(texId, pMin, pMax, uv0, uv1, ucol);
-                drawn = true;
+                ImVec2 cMin(s.minX, s.minY);
+                ImVec2 cMax(s.maxX, s.maxY);
+                switch (img->fillDir)
+                {
+                case 1:  cMin.x = s.maxX - s.Width() * fill;  break;   // 右から
+                case 2:  cMin.y = s.maxY - s.Height() * fill; break;   // 下から
+                case 3:  cMax.y = s.minY + s.Height() * fill; break;   // 上から
+                default: cMax.x = s.minX + s.Width() * fill;  break;   // 0: 左から
+                }
+                ctx.dl->PushClipRect(cMin, cMax, true);
             }
+
+            const DirectX::XMFLOAT4 col{img->color.x * tint.x, img->color.y * tint.y,
+                                        img->color.z * tint.z, img->color.w * tint.w};
+            const ImU32 ucol = ToImCol(col);
+            const ImVec2 pMin(s.minX, s.minY);
+            const ImVec2 pMax(s.maxX, s.maxY);
+            bool drawn = false;
+            if (!img->texturePath.empty() && ctx.resources && ctx.srvHeap && ctx.cmdList)
+            {
+                // エディタアイコンと同じ経路: SRV index → GPU ハンドル(u64) = ImTextureID。
+                // GetOrLoadTexture はパスキーでキャッシュされるため毎フレーム呼んでも安価。
+                const std::string abs = PathResolver::AssetsDir() + img->texturePath;
+                Texture* tex = ctx.resources->GetOrLoadTexture(
+                    PathResolver::Utf8ToWide(abs), ctx.cmdList, true);
+                if (tex)
+                {
+                    const ImTextureID texId = static_cast<ImTextureID>(
+                        ctx.srvHeap->GetGpuHandle(tex->GetSrvIndex()).ptr);
+                    const ImVec2 uv0(img->uvMin.x, img->uvMin.y);
+                    const ImVec2 uv1(img->uvMax.x, img->uvMax.y);
+                    const bool nineSlice = img->sliceBorder.x > 0.0f || img->sliceBorder.y > 0.0f
+                                        || img->sliceBorder.z > 0.0f || img->sliceBorder.w > 0.0f;
+                    if (nineSlice)
+                        AddImage9Slice(ctx.dl, texId, pMin, pMax, uv0, uv1,
+                                       static_cast<float>(tex->GetWidth()),
+                                       static_cast<float>(tex->GetHeight()),
+                                       img->sliceBorder, ctx.scale, ucol);
+                    else
+                        ctx.dl->AddImage(texId, pMin, pMax, uv0, uv1, ucol);
+                    drawn = true;
+                }
+            }
+            // texturePath 空 or ロード失敗 → 単色矩形（角丸対応）。失敗時も要素が見えるようにする
+            if (!drawn)
+                ctx.dl->AddRectFilled(pMin, pMax, ucol, img->cornerRadius * ctx.scale);
+
+            if (fillPartial)
+                ctx.dl->PopClipRect();
         }
-        // texturePath 空 or ロード失敗 → 単色矩形（角丸対応）。失敗時も要素が見えるようにする
-        if (!drawn)
-            ctx.dl->AddRectFilled(pMin, pMax, ucol, img->cornerRadius * ctx.scale);
     }
 
     // --- UIText: 整列 + 折り返し（ImGui 共有フォントのスケール描画。ボタンティントは掛けない）---

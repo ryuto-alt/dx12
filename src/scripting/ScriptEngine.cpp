@@ -418,6 +418,18 @@ void ScriptEngine::RegisterBindings()
             if (!reg.all_of<UIImage>(e.GetHandle())) return;
             reg.get<UIImage>(e.GetHandle()).texturePath = path;
         },
+        // UIImage::fillAmount を設定する(0..1 にクランプ。HPバー/ゲージ用)。UIImage が無ければ何もしない。
+        "setUiFill", [](Scene& s, Entity& e, float amount) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIImage>(e.GetHandle())) return;
+            reg.get<UIImage>(e.GetHandle()).fillAmount = std::clamp(amount, 0.0f, 1.0f);
+        },
+        // UIImage::fillAmount を読む。UIImage が無ければ 0。
+        "getUiFill", [](Scene& s, Entity& e) -> float {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIImage>(e.GetHandle())) return 0.0f;
+            return reg.get<UIImage>(e.GetHandle()).fillAmount;
+        },
         // 配置済み Gimmick コンポーネントを持つ全エンティティを列挙し、
         // パラメータ付きの配列(1始まり)で返す。ゲームスクリプトが動き/当たり判定を駆動する。
         // 各要素: { e=Entity, name=, kind=, period=, phase=, amplitude=, threshold=, solid=, deadly= }

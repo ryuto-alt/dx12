@@ -124,6 +124,8 @@ t.scale      -- Vec3
 | `:setUiColor(e, r, g, b, a)` | — | `UIImage.color` 優先、無ければ `UIText.color`（どちらも無ければ何もしない） |
 | `:setUiVisible(e, visible)` | — | `UIRect.visible` 優先（自身と子孫ごと隠す）、UIRect が無く UICanvas のみなら `UICanvas.visible` |
 | `:setUiTexture(e, path)` | — | `UIImage.texturePath` を差し替え（assets 相対。無ければ何もしない） |
+| `:setUiFill(e, amount)` | — | `UIImage.fillAmount`（表示割合 0..1、クランプあり）を設定。HPバー/ゲージ用 |
+| `:getUiFill(e)` | number | `UIImage.fillAmount` を読む（無ければ 0） |
 | `:gimmicks()` | table | Gimmick 付き全エンティティを配列で返す（要素: `{e,name,kind,period,phase,amplitude,threshold,solid,deadly}`） |
 | `:queryByTag(tag)` | table | タグ一致エンティティの**名前配列** |
 | `:queryInBox(minX, minZ, maxX, maxZ, tag?)` | table | XZ 矩形内のエンティティ名配列（RTS の矩形選択向け） |
@@ -360,7 +362,7 @@ Unity uGUI / Godot Control 相当の retained-mode UI。UI要素は **ECSコン�
 |---|---|---|
 | `UICanvas` | `refWidth/refHeight`(既定1920x1080), `scaleMode`(0=ScaleToFit 1=ConstantPixel), `sortOrder`, `visible` | UIツリーのルート |
 | `UIRect` | `anchorMin/Max`, `pivot`, `offsetMin/Max`, `visible` | レイアウト矩形（RectTransform相当）。全UI要素に必須 |
-| `UIImage` | `texturePath`(空=単色矩形), `color`, `uvMin/Max`, `sliceBorder`(px 左上右下, 9-slice), `cornerRadius`, `raycastBlock`(既定true) | 画像/単色矩形。`raycastBlock=true` なら背後のボタンへのクリックを遮る（Unity の raycastTarget 相当） |
+| `UIImage` | `texturePath`(空=単色矩形), `color`, `uvMin/Max`, `sliceBorder`(px 左上右下, 9-slice), `cornerRadius`, `raycastBlock`(既定true), `fillAmount`(0..1 既定1), `fillDir`(0=左 1=右 2=下 3=上から) | 画像/単色矩形。`raycastBlock=true` なら背後のボタンへのクリックを遮る（Unity の raycastTarget 相当）。`fillAmount<1` で端から割合表示（HPバー/ゲージ。クリップ方式なので 9-slice/角丸でも自然） |
 | `UIText` | `text`, `fontSize`, `color`, `alignH/V`(0=左/上 1=中央 2=右/下), `wrap` | テキスト。クリックは遮らない |
 | `UIButton` | `onClickEvent`, `normalColor/hoverColor/pressedColor`, `interactable` | 同一エンティティの `UIImage` を状態色でティント。release-inside でクリック確定。要素が重なった場合は**最前面だけ**が反応（子要素がクリックを吸っても親ボタンへバブリング） |
 
@@ -373,7 +375,7 @@ rectMax = parentMin + parentSize * anchorMax + offsetMax
 アンカーを引き伸ばす（例: 横ストレッチ）なら offset は左右の余白(px)になる。Inspector の**アンカープリセット**
 （9方位＋ストレッチ＋全面）は選択時に見た目の位置を保ったまま anchor/offset を再計算する。
 
-**Lua からの操作**（値の書き換えのみ。ツリー構造はエディタで組む）: `scene:setUiText/getUiText/setUiColor/setUiVisible/setUiTexture`（§3 Scene 参照）。
+**Lua からの操作**（値の書き換えのみ。ツリー構造はエディタで組む）: `scene:setUiText/getUiText/setUiColor/setUiVisible/setUiTexture/setUiFill/getUiFill`（§3 Scene 参照）。
 
 **ボタンのクリックを受ける**: 追加 API は無く既存の `events` で受ける。`UIButton.onClickEvent` に設定した名前で、
 release-inside 確定の**次フレーム**（`OnUpdate` より前）に `events:emit` 相当で発火する。data は `{source=エンティティID}`（他キー無し）。
