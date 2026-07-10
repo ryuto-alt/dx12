@@ -5,6 +5,7 @@
 #include <shellapi.h>
 #include <filesystem>
 #include <fstream>
+#include <algorithm>
 #include <array>
 #include <vector>
 #include <sstream>
@@ -255,7 +256,7 @@ GitResult GitIntegration::Push(const std::string& workDir, bool setUpstream)
 
 GitResult GitIntegration::Pull(const std::string& workDir)
 {
-    return RunGit(workDir, "pull");
+    return RunGit(workDir, "pull --prune");
 }
 
 GitResult GitIntegration::Fetch(const std::string& workDir)
@@ -512,7 +513,11 @@ GitResult GitIntegration::Clone(const std::string& url, const std::string& destP
 std::vector<std::string> GitIntegration::ListBranches(const std::string& workDir)
 {
     std::vector<std::string> branches;
-    auto r = RunGit(workDir, "branch --format=%(refname:short)");
+    // ローカルブランチだけでなく origin のリモート追跡ブランチも見る。
+    // git pull/fetch はカレントブランチの更新とリモート追跡ブランチ(refs/remotes/origin/*)の
+    // 更新はするが、リモートに新規作成されたブランチをローカルブランチとしては作らないため、
+    // ローカルだけ見ていると「pull しても新しいブランチが一生選択肢に出てこない」問題になる。
+    auto r = RunGit(workDir, "for-each-ref --format=%(refname:short) refs/heads refs/remotes/origin");
     if (!r.ok()) return branches;
 
     std::istringstream iss(r.output);
@@ -520,11 +525,22 @@ std::vector<std::string> GitIntegration::ListBranches(const std::string& workDir
     while (std::getline(iss, line))
     {
         if (!line.empty() && line.back() == '\r') line.pop_back();
-        size_t b = line.find_first_not_of(" \t*");  // 先頭の "* " や空白を除去
+        size_t b = line.find_first_not_of(" \t");
         if (b == std::string::npos) continue;
         size_t e = line.find_last_not_of(" \t");
         std::string name = line.substr(b, e - b + 1);
-        if (!name.empty()) branches.push_back(name);
+        if (name.empty()) continue;
+
+        // "origin/foo" -> "foo" に正規化してローカルとリモート追跡分を同一ブランチとして扱う
+        static const std::string kOriginPrefix = "origin/";
+        if (name.compare(0, kOriginPrefix.size(), kOriginPrefix) == 0)
+        {
+            name = name.substr(kOriginPrefix.size());
+            if (name == "HEAD") continue;   // origin/HEAD はリモートの既定ブランチへのシンボリック参照
+        }
+
+        if (std::find(branches.begin(), branches.end(), name) == branches.end())
+            branches.push_back(name);
     }
     return branches;
 }
