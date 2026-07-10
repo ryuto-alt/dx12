@@ -800,8 +800,10 @@ FX.<span class="tok-fn">supernova</span>(x, y, z)           <span class="tok-c">
 FX.<span class="tok-fn">spark</span>(x, y, z)               <span class="tok-c">-- 着弾火花 / FX.lightning / FX.pillar / FX.hit</span>
 vfx.<span class="tok-fn">play</span>(<span class="tok-s">"explosion"</span>, x, y, z, scale) <span class="tok-c">-- 名前で再生する統一窓口</span></code></pre>
 
-        <h3><code class="inl">ui</code>：ゲーム内 HUD（即時モード）</h3>
-        <p><code class="inl">OnUpdate</code> 内で毎フレーム呼ぶと描画される（Play 中のみ）。位置は <code class="inl">SCREEN_W</code> / <code class="inl">SCREEN_H</code> で調整。</p>
+        <h3><code class="inl">ui</code>：ゲーム内 HUD（即時モード・簡易/デバッグ用）</h3>
+        <p><code class="inl">OnUpdate</code> 内で毎フレーム呼ぶと描画される（Play 中のみ）。位置は <code class="inl">SCREEN_W</code> / <code class="inl">SCREEN_H</code> で調整。
+        座標指定で毎フレーム呼ぶだけの<b>簡易 API</b>。動作確認用のデバッグ表示や、ワンオフの表示に向く。
+        タイトルメニューやHUD一式など<b>恒常的な画面</b>を組むなら、下の「ゲーム内UI（コンポーネント方式）」を推奨。</p>
         <div class="tbl-wrap">
           <table>
             <thead><tr><th>API</th><th>説明</th></tr></thead>
@@ -813,6 +815,70 @@ vfx.<span class="tok-fn">play</span>(<span class="tok-s">"explosion"</span>, x, 
             </tbody>
           </table>
         </div>
+
+        <h3>ゲーム内UI（コンポーネント方式）</h3>
+        <p>Unity uGUI / Godot Control 相当の <b>retained-mode UI</b>。UI要素を <b>ECSコンポーネント</b>としてシーンに置き、
+        エディタで編集・シーン JSON に保存できる。レイアウトは<b>アンカー＋ピボット</b>で解像度追従し、
+        描画は既存の即時 <code class="inl">ui:*</code> と同じ全画面オーバーレイ（<code class="inl">##GameUI</code>）に統合される
+        （retained UI が奥、即時 <code class="inl">ui:*</code> が手前に描かれる）。表示条件も同じく <b>Play中 / ゲームモードのみ</b>
+        （エディタ編集中の WYSIWYG プレビューは無し）。</p>
+
+        <p><b>配置</b>: Hierarchy を右クリック →「作成」→「UI（ゲーム内UI）」から Canvas / Image / Text / Button を選ぶ。
+        Image / Text / Button は、選択中のエンティティが UI ツリー内ならその子に、そうでなければシーン内最初の
+        <code class="inl">UICanvas</code> の子に配置される（<code class="inl">UICanvas</code> が無ければ自動生成）。
+        Button は <code class="inl">UIRect</code>+<code class="inl">UIImage</code>+<code class="inl">UIButton</code> と、
+        ラベル用の子エンティティ（<code class="inl">UIText</code>）までまとめて生成される。</p>
+
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>コンポーネント</th><th>主なフィールド</th><th>説明</th></tr></thead>
+            <tbody>
+              <tr><td><code>UICanvas</code></td><td><code>refWidth/refHeight</code>, <code>scaleMode</code>, <code>sortOrder</code>, <code>visible</code></td>
+                  <td>UIツリーのルート。これが付いたエンティティの子孫が UI 要素になる。<code>scaleMode</code>: 0=ScaleToFit（等比縮小・中央寄せレターボックス）、1=ConstantPixel（左上原点・実ピクセル）</td></tr>
+              <tr><td><code>UIRect</code></td><td><code>anchorMin/Max</code>, <code>pivot</code>, <code>offsetMin/Max</code>, <code>visible</code></td>
+                  <td>レイアウト矩形（Unity の RectTransform 相当）。全UI要素に必須。<code>visible=false</code> で自身と子孫ごと非表示</td></tr>
+              <tr><td><code>UIImage</code></td><td><code>texturePath</code>, <code>color</code>, <code>uvMin/Max</code>, <code>sliceBorder</code>, <code>cornerRadius</code>, <code>raycastBlock</code></td>
+                  <td>画像。<code>texturePath</code> が空なら単色塗り矩形（<code>cornerRadius</code> で角丸）。<code>sliceBorder</code>(px, 左上右下)で9-slice。
+                  <code>raycastBlock</code>（既定 true）で背後のボタンへのクリックを遮る（Unity の raycastTarget 相当）</td></tr>
+              <tr><td><code>UIText</code></td><td><code>text</code>, <code>fontSize</code>, <code>color</code>, <code>alignH/V</code>, <code>wrap</code></td>
+                  <td>テキスト。<code>alignH/V</code>: 0=左/上 1=中央 2=右/下。<code>wrap=true</code> で矩形幅に折り返し。クリックは遮らない</td></tr>
+              <tr><td><code>UIButton</code></td><td><code>onClickEvent</code>, <code>normalColor/hoverColor/pressedColor</code>, <code>interactable</code></td>
+                  <td>同一エンティティの <code>UIImage</code> を状態色でティントするボタン。<b>release-inside でクリック確定</b>し、
+                  <code>onClickEvent</code> 名で <code class="inl">events</code> へ発火。要素が重なった場合は<b>最前面だけ</b>が反応
+                  （子要素がクリックを吸っても親ボタンへバブリングする）</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p><b>アンカー</b>: 親矩形内の正規化座標 <code class="inl">anchorMin</code>/<code class="inl">anchorMax</code>（0..1）と、
+        そこからのピクセルオフセット <code class="inl">offsetMin</code>/<code class="inl">offsetMax</code> で実ピクセル矩形が決まる
+        （<code class="inl">rectMin = parentMin + parentSize*anchorMin + offsetMin</code>、<code class="inl">rectMax</code> も同様）。
+        アンカーが一致する場合（例: 中央固定）は offset が「中心位置 ± 半サイズ」相当になり、Inspector 上は位置(px)＋サイズ(px)として編集できる。
+        アンカーを引き伸ばす場合（例: 横ストレッチ）は offset がそのまま左右の余白(px)になる。
+        Inspector の <b>アンカープリセット</b>（9方位＋ストレッチ＋全面）を使うと、選択時に見た目の位置を保ったまま anchor/offset を再計算してくれる。</p>
+
+        <p><b>Lua からの操作</b>（<code class="inl">Scene</code> 経由。表示中の値だけを書き換える。ツリー構造自体はエディタで組む）:</p>
+<pre><code><span class="tok-c">-- スコア表示を更新（scoreLabel は UIText 付きエンティティ）</span>
+scene:<span class="tok-fn">setUiText</span>(scoreLabel, <span class="tok-s">"SCORE: "</span> .. tostring(score))
+<span class="tok-k">local</span> current = scene:<span class="tok-fn">getUiText</span>(scoreLabel)
+
+<span class="tok-c">-- HPバー: 残量に応じて色を変える（UIImage優先、無ければUIText）</span>
+scene:<span class="tok-fn">setUiColor</span>(hpBarFill, <span class="tok-n">1</span>, hpRatio, <span class="tok-n">0</span>, <span class="tok-n">1</span>)
+
+<span class="tok-c">-- パネルの表示切替（UIRect.visible。UICanvasのみのエンティティならUICanvas.visible）</span>
+scene:<span class="tok-fn">setUiVisible</span>(pausePanel, isPaused)
+
+<span class="tok-c">-- アイコン差し替え</span>
+scene:<span class="tok-fn">setUiTexture</span>(weaponIcon, <span class="tok-s">"textures/ui/icon_sword.png"</span>)</code></pre>
+
+        <p><b>ボタンのクリックを受ける</b>: 追加 API は無く、既存の <code class="inl">events</code> で受ける。
+        <code class="inl">UIButton.onClickEvent</code> に設定した名前で、release-inside 確定の<b>次フレーム</b>（<code class="inl">OnUpdate</code> より前）に発火する。</p>
+<pre><code><span class="tok-k">function</span> <span class="tok-fn">OnStart</span>(self)
+    events:<span class="tok-fn">on</span>(<span class="tok-s">"start_clicked"</span>, <span class="tok-k">function</span>(data)
+        <span class="tok-c">-- data.source にボタンのエンティティID(entt raw id)が入る。data に他キーは無い</span>
+        <span class="tok-fn">goToScene</span>(<span class="tok-s">"assets/scenes/game.json"</span>)
+    <span class="tok-k">end</span>)
+<span class="tok-k">end</span></code></pre>
 
         <h3><code class="inl">time</code>：時間 API（ポーズ / スローモ / タイマー）</h3>
         <p><code class="inl">:</code> ではなく <code class="inl">.</code> で呼ぶ。<code class="inl">setScale</code> は <b><code class="inl">OnUpdate</code> に渡る dt 自体に掛かる</b>ので、既存の移動コードは無改修でスローモ/ポーズに追従する（物理・パーティクルは対象外）。状態は Play 開始でリセット。</p>

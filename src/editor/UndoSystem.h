@@ -148,7 +148,8 @@ private:
     Scene*       m_scene;
     std::string  m_assetsDir;
     entt::entity m_entity;
-    std::string  m_snapshot;  // Undo 時に確定（Redo 用の JSON）
+    std::string  m_snapshot;                          // Undo 時に確定（Redo 用の JSON）
+    entt::entity m_externalParent = entt::null;       // ルートの親（サブツリー外）。Undo 時に捕捉
 };
 
 // ── プレハブ生成コマンド（サブツリー対応。Undo で全エンティティ削除 / Redo で再生成） ──
@@ -173,6 +174,7 @@ private:
     std::string               m_assetsDir;
     std::vector<entt::entity> m_entities;   // 生成した全エンティティ（root 先頭）
     std::string               m_snapshot;   // Undo 時に確定（Redo 用のサブツリー JSON）
+    entt::entity              m_externalParent = entt::null;  // ルートの親（サブツリー外）。Undo 時に捕捉
 };
 
 // ── 複合コマンド（複数コマンドを 1 回の Undo/Redo で実行） ──

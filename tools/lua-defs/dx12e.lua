@@ -70,6 +70,11 @@ function Vec3.new(x, y, z) end
 ---| "Trigger"
 ---| "NetworkIdentity"
 ---| "NetworkTransform"
+---| "UICanvas"
+---| "UIRect"
+---| "UIImage"
+---| "UIText"
+---| "UIButton"
 
 ---シーン内のエンティティ
 ---@class Entity
@@ -193,6 +198,43 @@ function Scene:setColor(e, r, g, b) end
 ---@param e Entity
 ---@param value number 意味はシェーダー依存（例: 0..1 の消滅/出現進捗）
 function Scene:setSpriteEffect(e, value) end
+
+-- --- ゲーム内UI（retained-mode、UICanvas/UIRect/UIImage/UIText/UIButton）操作 ---
+-- UI要素はエディタ（Hierarchy の「UI」サブメニュー等）でツリーを組んで配置し、
+-- 以下のヘルパーで実行時に値だけ書き換える。ボタンのクリックは `events:on` で受ける
+-- （下の EventBus 節、および `docs/index.html` の「ゲーム内UI（コンポーネント方式）」参照）。
+-- 要素が重なった場合は最前面だけが反応する（UIImage.raycastBlock=true（既定）がクリックを遮る。
+-- UIText は遮らない。子要素がクリックを吸っても親ボタンへバブリングする）。
+
+---UIText::text を書き換える（スコア・残機・メッセージ）。対象が UIText を持たない場合は何もしない。
+---@param e Entity
+---@param text string
+function Scene:setUiText(e, text) end
+
+---UIText::text を読む。対象が UIText を持たない場合は空文字列を返す。
+---@param e Entity
+---@return string
+function Scene:getUiText(e) end
+
+---UI要素の色を書き換える（0..1）。UIImage を持っていればそちら優先、無ければ UIText。
+---どちらも持たない場合は何もしない。
+---@param e Entity
+---@param r number 0..1
+---@param g number 0..1
+---@param b number 0..1
+---@param a number 0..1
+function Scene:setUiColor(e, r, g, b, a) end
+
+---UI要素の表示/非表示を切り替える。UIRect を持っていればそちら（自身と子孫ごと隠れる）、
+---UIRect が無く UICanvas のみ持つ場合（キャンバス自身）は UICanvas.visible を切り替える。
+---@param e Entity
+---@param visible boolean
+function Scene:setUiVisible(e, visible) end
+
+---UIImage::texturePath を差し替える（assets/ からの相対パス）。対象が UIImage を持たない場合は何もしない。
+---@param e Entity
+---@param path string assets/ からの相対パス
+function Scene:setUiTexture(e, path) end
 
 ---Gimmick コンポーネント付き全エンティティをパラメータ付き配列で返す
 ---@return GimmickInfo[]
@@ -614,7 +656,9 @@ local EventBus = {}
 
 ---イベントを購読する。**Play 中のみ有効。`OnStart()` 内で登録すること**。
 ---Trigger の EmitEvent アクションもここに届く。物理接触は
----`engine.contact.enter` / `engine.contact.exit`（data.source / data.other にエンティティID）
+---`engine.contact.enter` / `engine.contact.exit`（data.source / data.other にエンティティID）。
+---UIButton は `onClickEvent` に設定した名前で release-inside 確定時に emit される
+---（data.source にボタンのエンティティID。data は他キー無し）。
 ---@param name string イベント名
 ---@param fn fun(data: table) ハンドラ（data はテーブル。source/other キーあり得る）
 ---@return integer id `events:off(id)` に渡す購読ID（失敗時 0）
@@ -757,6 +801,8 @@ net = nil
 
 -- ============================================================
 -- ui: ゲーム内 HUD（即時モード・OnUpdate 内で毎フレーム呼ぶ / Play 中のみ）
+-- 簡易/デバッグ用の即時 API。恒常的な UI（メニュー・HUD 一式）はエディタで組む
+-- retained-mode の UICanvas/UIRect/UIImage/UIText/UIButton（上の Scene:setUi* 参照）を推奨。
 -- ============================================================
 
 ---@class GameUi

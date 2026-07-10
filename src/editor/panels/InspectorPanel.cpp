@@ -26,6 +26,7 @@
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <cstdio>
 
@@ -485,6 +486,53 @@ void AddComponentMenuItem(entt::registry& reg, EditorContext& ctx,
     }
 }
 
+// ── UIRect 用: エンティティの「親矩形」をキャンバス空間(px)で解決する ──
+// UISystem と同じ式（rect = parentMin + parentSize*anchor + offset）で、祖先の UICanvas の
+// 基準解像度をルート矩形として e の親までのチェーンを順に適用する。ConstantPixel は
+// 実行時のビューポート寸法に依存するため基準解像度で近似する（アンカープリセットの
+// 「見た目の位置を維持する」offset 補正用途にはこれで十分）。
+// 祖先に UICanvas が無い（UI ツリー外）なら false を返し、out は変更しない。
+bool ResolveUiParentRectPx(entt::registry& reg, entt::entity e,
+                           DirectX::XMFLOAT2& outMin, DirectX::XMFLOAT2& outMax)
+{
+    // e の親 → UICanvas の直前 までの祖先を集める（e 自身とキャンバスは含めない）
+    std::vector<entt::entity> chain;
+    entt::entity canvas = entt::null;
+    entt::entity cur = e;
+    for (int guard = 0; guard < 64; ++guard)   // 循環親子の保険
+    {
+        const auto* t = reg.try_get<Transform>(cur);
+        entt::entity parent = t ? t->parent : entt::null;
+        if (parent == entt::null || !reg.valid(parent)) break;
+        if (reg.all_of<UICanvas>(parent)) { canvas = parent; break; }
+        chain.push_back(parent);
+        cur = parent;
+    }
+    if (canvas == entt::null) return false;
+
+    const auto& cv = reg.get<UICanvas>(canvas);
+    DirectX::XMFLOAT2 mn{0.0f, 0.0f};
+    DirectX::XMFLOAT2 mx{std::max(1.0f, cv.refWidth), std::max(1.0f, cv.refHeight)};
+
+    // キャンバス直下 → e の親 の順に解決（UIRect を持たない中間ノードは親矩形を素通し）
+    for (auto it = chain.rbegin(); it != chain.rend(); ++it)
+    {
+        const auto* r = reg.try_get<UIRect>(*it);
+        if (!r) continue;
+        const float pw = mx.x - mn.x;
+        const float ph = mx.y - mn.y;
+        const DirectX::XMFLOAT2 nmn{mn.x + pw * r->anchorMin.x + r->offsetMin.x,
+                                    mn.y + ph * r->anchorMin.y + r->offsetMin.y};
+        const DirectX::XMFLOAT2 nmx{mn.x + pw * r->anchorMax.x + r->offsetMax.x,
+                                    mn.y + ph * r->anchorMax.y + r->offsetMax.y};
+        mn = nmn;
+        mx = nmx;
+    }
+    outMin = mn;
+    outMax = mx;
+    return true;
+}
+
 } // anonymous namespace
 
 void InspectorPanel::Render(entt::registry& reg,
@@ -681,6 +729,303 @@ void InspectorPanel::Render(entt::registry& reg,
                 }
 
                 EndEdit(reg, ctx, ctx.selectedEntity, m_spriteEdit, changed, active, "Sprite2D");
+            }
+        }
+
+        // UICanvas（ゲーム内UIのルート。子孫の UIRect ツリーを Play 中に描画する）
+        if (reg.all_of<UICanvas>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entEmpty : 0, "UICanvas");
+            bool removed = ComponentRemoveMenu<UICanvas>(reg, ctx, ctx.selectedEntity, "UICanvas");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_uiCanvasEdit);
+                auto& cv = reg.get<UICanvas>(ctx.selectedEntity);
+                bool changed = false, active = false;
+
+                if (pg::Begin("UICanvas"))
+                {
+                    changed |= pg::Float("基準幅 Ref Width", &cv.refWidth, 1.0f, 1.0f, 16384.0f, "%.0f", &active,
+                        "レイアウトの基準解像度。UI はこの解像度で設計し、実行時に画面へ合わせる");
+                    changed |= pg::Float("基準高さ Ref Height", &cv.refHeight, 1.0f, 1.0f, 16384.0f, "%.0f", &active);
+                    static const char* scaleModes[] = {
+                        "等比スケール（中央寄せレターボックス）",
+                        "実ピクセル（左上原点・等倍）",
+                    };
+                    changed |= pg::Combo("スケールモード Scale Mode", &cv.scaleMode, scaleModes, 2,
+                        "等比スケール: 基準解像度をアスペクト比を保って画面に収める\n"
+                        "実ピクセル: スケールせず左上原点の実ピクセルで配置する");
+                    changed |= pg::Int("描画順 Sort Order", &cv.sortOrder, 1.0f, -100, 100, &active,
+                        "キャンバス間の描画順（小さいほど奥）");
+                    changed |= pg::Checkbox("表示 Visible", &cv.visible,
+                        "OFF: このキャンバス配下の UI をすべて描画しない");
+                    pg::End();
+                }
+                EndEdit(reg, ctx, ctx.selectedEntity, m_uiCanvasEdit, changed, active, "UICanvas");
+            }
+        }
+
+        // UIRect（UI レイアウトノード。アンカー＋オフセットで親矩形に追従する）
+        if (reg.all_of<UIRect>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entEmpty : 0, "UIRect");
+            bool removed = ComponentRemoveMenu<UIRect>(reg, ctx, ctx.selectedEntity, "UIRect");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_uiRectEdit);
+                auto& ur = reg.get<UIRect>(ctx.selectedEntity);
+                bool changed = false, active = false;
+
+                if (pg::Begin("UIRect"))
+                {
+                    // ── アンカープリセット（Unity 風 4x4 = 9方位＋ストレッチ）──
+                    // 選択時は解決済み矩形（見た目の位置）を維持するよう offset を補正してから
+                    // anchorMin/Max を差し替える。親矩形サイズはキャンバス基準解像度で解決する。
+                    pg::Label("アンカー Anchor",
+                        "親矩形のどこに追従するか。プリセット選択時は見た目の位置を保ったまま\n"
+                        "アンカーとオフセットを再計算する。最下行/最右列はストレッチ");
+                    {
+                        // 軸ごとの候補: {anchorMin, anchorMax}。0=左/上 0.5=中央 1=右/下 {0,1}=ストレッチ
+                        static const float kAxis[4][2] = {
+                            {0.0f, 0.0f}, {0.5f, 0.5f}, {1.0f, 1.0f}, {0.0f, 1.0f}};
+                        static const char* kColName[4] = {"左", "中央", "右", "横ストレッチ"};
+                        static const char* kRowName[4] = {"上", "中央", "下", "縦ストレッチ"};
+
+                        DirectX::XMFLOAT2 pMin{0.0f, 0.0f};
+                        DirectX::XMFLOAT2 pMax{1920.0f, 1080.0f};   // UI ツリー外は既定値で近似
+                        ResolveUiParentRectPx(reg, ctx.selectedEntity, pMin, pMax);
+                        const float pw = pMax.x - pMin.x;
+                        const float ph = pMax.y - pMin.y;
+
+                        ImGui::PushID("AnchorPreset");
+                        auto* dl = ImGui::GetWindowDrawList();
+                        const float cell = ImGui::GetFrameHeight();
+                        for (int row = 0; row < 4; ++row)
+                        {
+                            for (int col = 0; col < 4; ++col)
+                            {
+                                if (col) ImGui::SameLine(0.0f, 3.0f);
+                                ImGui::PushID(row * 4 + col);
+                                const bool current =
+                                    std::fabs(ur.anchorMin.x - kAxis[col][0]) < 1e-4f &&
+                                    std::fabs(ur.anchorMax.x - kAxis[col][1]) < 1e-4f &&
+                                    std::fabs(ur.anchorMin.y - kAxis[row][0]) < 1e-4f &&
+                                    std::fabs(ur.anchorMax.y - kAxis[row][1]) < 1e-4f;
+                                if (ImGui::Button("##anchor", ImVec2(cell, cell)))
+                                {
+                                    // 見た目の位置を維持: 新旧アンカー差 × 親サイズぶん offset を補正
+                                    ur.offsetMin.x += pw * (ur.anchorMin.x - kAxis[col][0]);
+                                    ur.offsetMax.x += pw * (ur.anchorMax.x - kAxis[col][1]);
+                                    ur.offsetMin.y += ph * (ur.anchorMin.y - kAxis[row][0]);
+                                    ur.offsetMax.y += ph * (ur.anchorMax.y - kAxis[row][1]);
+                                    ur.anchorMin = {kAxis[col][0], kAxis[row][0]};
+                                    ur.anchorMax = {kAxis[col][1], kAxis[row][1]};
+                                    changed = true;
+                                }
+                                if (ImGui::IsItemHovered())
+                                    ImGui::SetTooltip("%s・%s", kRowName[row], kColName[col]);
+
+                                // ミニ図: 外枠=親矩形、塗り=アンカーの位置/範囲
+                                const ImVec2 bmin = ImGui::GetItemRectMin();
+                                const ImVec2 bmax = ImGui::GetItemRectMax();
+                                dl->AddRect(ImVec2(bmin.x + 2.0f, bmin.y + 2.0f),
+                                            ImVec2(bmax.x - 2.0f, bmax.y - 2.0f),
+                                            ImGui::GetColorU32(ImGuiCol_TextDisabled));
+                                const float innerW = bmax.x - bmin.x - 6.0f;
+                                const float innerH = bmax.y - bmin.y - 6.0f;
+                                float x0 = bmin.x + 3.0f + innerW * kAxis[col][0];
+                                float x1 = bmin.x + 3.0f + innerW * kAxis[col][1];
+                                float y0 = bmin.y + 3.0f + innerH * kAxis[row][0];
+                                float y1 = bmin.y + 3.0f + innerH * kAxis[row][1];
+                                const float dot = 2.0f;   // 点アンカーの最低表示幅（半分）
+                                if (x1 - x0 < dot * 2.0f) { const float c = (x0 + x1) * 0.5f; x0 = c - dot; x1 = c + dot; }
+                                if (y1 - y0 < dot * 2.0f) { const float c = (y0 + y1) * 0.5f; y0 = c - dot; y1 = c + dot; }
+                                dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1),
+                                    ImGui::GetColorU32(current ? theme::Accent
+                                                               : ImGui::GetStyleColorVec4(ImGuiCol_Text)));
+                                ImGui::PopID();
+                            }
+                        }
+                        ImGui::PopID();
+                    }
+
+                    changed |= pg::Float2("アンカー Min", &ur.anchorMin.x, 0.005f, 0.0f, 1.0f, "%.3f", &active,
+                        "親矩形内の正規化位置（0=左/上 1=右/下）。直接編集では位置補正しない");
+                    changed |= pg::Float2("アンカー Max", &ur.anchorMax.x, 0.005f, 0.0f, 1.0f, "%.3f", &active);
+                    changed |= pg::Float2("ピボット Pivot", &ur.pivot.x, 0.005f, 0.0f, 1.0f, "%.3f", &active,
+                        "位置 Position が指す自分の基準点（0.5,0.5=中心）");
+
+                    const bool anchorsMatch =
+                        std::fabs(ur.anchorMax.x - ur.anchorMin.x) < 1e-4f &&
+                        std::fabs(ur.anchorMax.y - ur.anchorMin.y) < 1e-4f;
+                    if (anchorsMatch)
+                    {
+                        // アンカー一致: 位置(px)＋サイズ(px)で編集（offset へ換算して保持）
+                        DirectX::XMFLOAT2 size{ur.offsetMax.x - ur.offsetMin.x,
+                                               ur.offsetMax.y - ur.offsetMin.y};
+                        DirectX::XMFLOAT2 pos{ur.offsetMin.x + size.x * ur.pivot.x,
+                                              ur.offsetMin.y + size.y * ur.pivot.y};
+                        bool rectCh = false;
+                        rectCh |= pg::Float2("位置 Position", &pos.x, 1.0f, 0.0f, 0.0f, "%.0f", &active,
+                            "アンカー点からのピボット位置(px)");
+                        rectCh |= pg::Float2("サイズ Size", &size.x, 1.0f, 0.0f, 32768.0f, "%.0f", &active);
+                        if (rectCh)
+                        {
+                            ur.offsetMin = {pos.x - size.x * ur.pivot.x,
+                                            pos.y - size.y * ur.pivot.y};
+                            ur.offsetMax = {pos.x + size.x * (1.0f - ur.pivot.x),
+                                            pos.y + size.y * (1.0f - ur.pivot.y)};
+                            changed = true;
+                        }
+                    }
+                    else
+                    {
+                        // ストレッチ: アンカー辺からのオフセット(px)を直接編集
+                        changed |= pg::Float2("オフセット Min", &ur.offsetMin.x, 1.0f, 0.0f, 0.0f, "%.0f", &active,
+                            "アンカー Min 点からのオフセット(px)");
+                        changed |= pg::Float2("オフセット Max", &ur.offsetMax.x, 1.0f, 0.0f, 0.0f, "%.0f", &active,
+                            "アンカー Max 点からのオフセット(px)");
+                    }
+
+                    changed |= pg::Checkbox("表示 Visible", &ur.visible,
+                        "OFF: 自分と子孫を描画しない（ボタンも反応しない）");
+                    pg::End();
+                }
+                EndEdit(reg, ctx, ctx.selectedEntity, m_uiRectEdit, changed, active, "UIRect");
+            }
+        }
+
+        // UIImage（UI の画像/単色矩形。UIButton があれば状態色が乗算される）
+        if (reg.all_of<UIImage>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entMesh : 0, "UIImage");
+            bool removed = ComponentRemoveMenu<UIImage>(reg, ctx, ctx.selectedEntity, "UIImage");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_uiImageEdit);
+                auto& img = reg.get<UIImage>(ctx.selectedEntity);
+                bool changed = false, active = false;
+
+                if (pg::Begin("UIImage"))
+                {
+                    char buf[256] = {};
+                    size_t n = img.texturePath.copy(buf, sizeof(buf) - 1);
+                    buf[n] = '\0';
+                    if (pg::InputText("テクスチャ Texture", buf, sizeof(buf), 0, &active,
+                        "assets 相対パス。空なら単色塗り矩形。アセットブラウザから D&D で割当可。\n"
+                        "ロードに失敗した場合は単色矩形で代替表示される"))
+                    { img.texturePath = buf; changed = true; }
+
+                    // アセットブラウザからの D&D（テクスチャのみ受理、assets 相対パスへ変換）
+                    if (ImGui::BeginDragDropTarget())
+                    {
+                        if (const ImGuiPayload* payload =
+                                ImGui::AcceptDragDropPayload(AssetBrowserPanel::kDragDropPayloadType))
+                        {
+                            const char* droppedPath = static_cast<const char*>(payload->Data);
+                            namespace fs = std::filesystem;
+                            std::string ext = fs::path(droppedPath).extension().string();
+                            for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+                            if (AssetBrowserPanel::ClassifyExtension(ext) == AssetBrowserPanel::AssetType::Texture)
+                            {
+                                std::string abs = fs::path(droppedPath).lexically_normal().string();
+                                std::string base = fs::path(m_assetsDir).lexically_normal().string();
+                                std::replace(abs.begin(), abs.end(), '\\', '/');
+                                std::replace(base.begin(), base.end(), '\\', '/');
+                                img.texturePath = (abs.rfind(base, 0) == 0) ? abs.substr(base.size()) : abs;
+                                changed = true;
+                            }
+                        }
+                        ImGui::EndDragDropTarget();
+                    }
+
+                    changed |= pg::Color4("色 Color", &img.color.x);
+                    changed |= pg::Float2("UV Min", &img.uvMin.x, 0.005f, 0.0f, 1.0f, "%.3f", &active);
+                    changed |= pg::Float2("UV Max", &img.uvMax.x, 0.005f, 0.0f, 1.0f, "%.3f", &active);
+                    changed |= pg::FloatN("9スライス境界 Slice Border", &img.sliceBorder.x, 4, 0.5f,
+                        0.0f, 4096.0f, "%.0f", &active,
+                        "元テクスチャ上の境界px（左,上,右,下）。全0で無効。\n"
+                        "角は固定サイズのまま、辺と中央だけ引き伸ばして描画する");
+                    changed |= pg::Float("角丸半径 Corner Radius", &img.cornerRadius, 0.5f, 0.0f, 1024.0f,
+                        "%.0f", &active, "単色矩形（テクスチャ未指定）のときのみ有効");
+                    changed |= pg::Checkbox("クリックを遮る Raycast Block", &img.raycastBlock,
+                        "ON: この画像が背後にあるボタンへのクリック/ホバーを遮る（Unity の raycastTarget 相当）。\n"
+                        "OFF: クリックを素通しする（装飾用オーバーレイ向け）");
+                    pg::End();
+                }
+                EndEdit(reg, ctx, ctx.selectedEntity, m_uiImageEdit, changed, active, "UIImage");
+            }
+        }
+
+        // UIText（UI テキスト。ImGui 共有フォントのスケール描画）
+        if (reg.all_of<UIText>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entEmpty : 0, "UIText");
+            bool removed = ComponentRemoveMenu<UIText>(reg, ctx, ctx.selectedEntity, "UIText");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_uiTextEdit);
+                auto& txt = reg.get<UIText>(ctx.selectedEntity);
+                bool changed = false, active = false;
+
+                if (pg::Begin("UIText"))
+                {
+                    char buf[1024] = {};
+                    size_t n = txt.text.copy(buf, sizeof(buf) - 1);
+                    buf[n] = '\0';
+                    pg::Label("テキスト Text");
+                    if (ImGui::InputTextMultiline("##uiTextValue", buf, sizeof(buf),
+                                                  ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 4.0f)))
+                    { txt.text = buf; changed = true; }
+                    active |= ImGui::IsItemActive();
+
+                    changed |= pg::Float("フォントサイズ Font Size", &txt.fontSize, 0.5f, 4.0f, 512.0f,
+                                         "%.0f", &active, "キャンバス基準解像度でのpx。実行時にスケールされる");
+                    changed |= pg::Color4("色 Color", &txt.color.x);
+                    static const char* alignHItems[] = {"左", "中央", "右"};
+                    static const char* alignVItems[] = {"上", "中央", "下"};
+                    changed |= pg::Combo("水平整列 Align H", &txt.alignH, alignHItems, 3);
+                    changed |= pg::Combo("垂直整列 Align V", &txt.alignV, alignVItems, 3);
+                    changed |= pg::Checkbox("折り返し Wrap", &txt.wrap, "ON: UIRect の幅で折り返す");
+                    pg::End();
+                }
+                EndEdit(reg, ctx, ctx.selectedEntity, m_uiTextEdit, changed, active, "UIText");
+            }
+        }
+
+        // UIButton（クリックで events へ emit。同一エンティティの UIImage を状態色でティント）
+        if (reg.all_of<UIButton>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entEmpty : 0, "UIButton");
+            bool removed = ComponentRemoveMenu<UIButton>(reg, ctx, ctx.selectedEntity, "UIButton");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_uiButtonEdit);
+                auto& btn = reg.get<UIButton>(ctx.selectedEntity);
+                bool changed = false, active = false;
+
+                if (pg::Begin("UIButton"))
+                {
+                    char buf[128] = {};
+                    size_t n = btn.onClickEvent.copy(buf, sizeof(buf) - 1);
+                    buf[n] = '\0';
+                    if (pg::InputText("クリックイベント名 On Click", buf, sizeof(buf), 0, &active,
+                        "クリック確定時に events へ emit するイベント名。空なら発火しない。\n"
+                        "Lua 側は events:on(\"イベント名\", function(e) ... end) で受ける"))
+                    { btn.onClickEvent = buf; changed = true; }
+
+                    changed |= pg::Color4("通常色 Normal", &btn.normalColor.x);
+                    changed |= pg::Color4("ホバー色 Hover", &btn.hoverColor.x);
+                    changed |= pg::Color4("押下色 Pressed", &btn.pressedColor.x);
+                    changed |= pg::Checkbox("操作可能 Interactable", &btn.interactable,
+                        "OFF: 入力を受け付けず通常色で固定");
+                    pg::End();
+                }
+                if (!reg.all_of<UIImage>(ctx.selectedEntity))
+                    ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
+                        "状態色の反映には同一エンティティの UIImage が必要");
+                EndEdit(reg, ctx, ctx.selectedEntity, m_uiButtonEdit, changed, active, "UIButton");
             }
         }
 
@@ -1755,6 +2100,12 @@ void InspectorPanel::Render(entt::registry& reg,
             AddComponentMenuItem<ParticleEmitter>(reg, ctx, ctx.selectedEntity, "Particle Emitter");
             AddComponentMenuItem<TrailRenderer>(reg, ctx, ctx.selectedEntity, "Trail Renderer");
             AddComponentMenuItem<Trigger>(reg, ctx, ctx.selectedEntity, "Trigger");
+            ImGui::Separator();
+            AddComponentMenuItem<UICanvas>(reg, ctx, ctx.selectedEntity, "UI Canvas");
+            AddComponentMenuItem<UIRect>(reg, ctx, ctx.selectedEntity, "UI Rect");
+            AddComponentMenuItem<UIImage>(reg, ctx, ctx.selectedEntity, "UI Image");
+            AddComponentMenuItem<UIText>(reg, ctx, ctx.selectedEntity, "UI Text");
+            AddComponentMenuItem<UIButton>(reg, ctx, ctx.selectedEntity, "UI Button");
             ImGui::Separator();
             AddComponentMenuItem<RigidBody>(reg, ctx, ctx.selectedEntity, "RigidBody");
             AddComponentMenuItem<BoxCollider>(reg, ctx, ctx.selectedEntity, "Box Collider");

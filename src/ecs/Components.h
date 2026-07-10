@@ -257,6 +257,74 @@ struct Sprite2D
     float effectValue = 0.0f;
 };
 
+// --- ゲーム内UI（retained-mode、Unity uGUI / Godot Control 相当）---
+// UICanvas をルートに、その子孫エンティティへ UIRect（レイアウト）＋ UIImage/UIText/UIButton
+// （見た目/挙動）を付けて構成する。親子関係は Transform::parent（既存の階層機構）を使う。
+// データのみ。レイアウト解決/描画/入力は UISystem が Play 中に駆動する。
+
+// UIキャンバス: UIツリーのルート。これが付いたエンティティの子孫がUI要素になる
+struct UICanvas
+{
+    float refWidth  = 1920.0f;   // 基準解像度
+    float refHeight = 1080.0f;
+    int   scaleMode = 0;         // 0=ScaleToFit(等比縮放・中央寄せレターボックス) 1=ConstantPixel(左上原点実ピクセル)
+    int   sortOrder = 0;         // キャンバス間の描画順(小→大)
+    bool  visible   = true;
+};
+
+// UI矩形: レイアウトノード(UnityのRectTransform相当)。全UI要素に必須。
+// 解決式（親矩形からの実ピクセル矩形の求め方）:
+//   rectMin = parentMin + parentSize*anchorMin + offsetMin
+//   rectMax = parentMin + parentSize*anchorMax + offsetMax
+// Unity 同様、常に offsetMin/offsetMax(px) で保持する
+// (アンカー一致時は offsetMin=pos-size*pivot, offsetMax=pos+size*(1-pivot) に相当)。
+struct UIRect
+{
+    DirectX::XMFLOAT2 anchorMin{0.5f, 0.5f};  // 親矩形内の正規化アンカー
+    DirectX::XMFLOAT2 anchorMax{0.5f, 0.5f};
+    DirectX::XMFLOAT2 pivot{0.5f, 0.5f};
+    DirectX::XMFLOAT2 offsetMin{-50.0f, -50.0f};
+    DirectX::XMFLOAT2 offsetMax{50.0f, 50.0f};
+    bool visible = true;   // false なら自分と子孫を描画しない
+};
+
+// UI画像(または単色矩形)
+struct UIImage
+{
+    std::string texturePath;                    // assets相対。空=単色塗り矩形
+    DirectX::XMFLOAT4 color{1.0f, 1.0f, 1.0f, 1.0f};
+    DirectX::XMFLOAT2 uvMin{0.0f, 0.0f};        // アトラス切り出し
+    DirectX::XMFLOAT2 uvMax{1.0f, 1.0f};
+    DirectX::XMFLOAT4 sliceBorder{0.0f, 0.0f, 0.0f, 0.0f}; // 9-slice境界px(左,上,右,下)。全0で無効
+    float cornerRadius = 0.0f;                  // 単色矩形時のみ有効
+    bool raycastBlock = true;                   // 手前に描かれた自分がクリックを遮る(UnityのraycastTarget相当)
+};
+
+// UIテキスト
+struct UIText
+{
+    std::string text = "テキスト";
+    float fontSize = 24.0f;
+    DirectX::XMFLOAT4 color{1.0f, 1.0f, 1.0f, 1.0f};
+    int alignH = 1;      // 0=左 1=中央 2=右
+    int alignV = 1;      // 0=上 1=中央 2=下
+    bool wrap = false;   // 矩形幅で折り返し
+};
+
+// UIボタン(同一エンティティの UIImage を状態色でティントする)
+struct UIButton
+{
+    std::string onClickEvent;                     // クリック時に events へ emit するイベント名。空=無効
+    DirectX::XMFLOAT4 normalColor{1.0f, 1.0f, 1.0f, 1.0f};
+    DirectX::XMFLOAT4 hoverColor{0.85f, 0.85f, 0.85f, 1.0f};
+    DirectX::XMFLOAT4 pressedColor{0.65f, 0.65f, 0.65f, 1.0f};
+    bool interactable = true;
+
+    // ランタイム専有（非シリアライズ）
+    bool _hovered = false;
+    bool _pressed = false;
+};
+
 // 3D 空間オーディオ音源。Transform のワールド位置がエミッタになる。
 struct AudioSource
 {

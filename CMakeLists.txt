@@ -37,6 +37,7 @@ add_subdirectory(src/scripting)
 add_subdirectory(src/physics)
 add_subdirectory(src/network)
 add_subdirectory(src/gui)
+add_subdirectory(src/ui)
 add_subdirectory(src/editor)
 add_subdirectory(src/project)
 
@@ -67,6 +68,7 @@ target_link_libraries(DX12Engine
         Physics
         Network
         Gui
+        Ui
         Editor
         ProjectLib
 )
@@ -130,6 +132,7 @@ target_link_libraries(GameRuntime
         Physics
         Network
         Gui
+        Ui
         Editor
         ProjectLib
 )

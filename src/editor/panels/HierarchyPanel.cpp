@@ -499,6 +499,24 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
             req.position = {0.0f, 1.0f, 0.0f};
             ctx.pendingSpawns.push_back(req);
         }
+        ImGui::Separator();
+        if (ImGui::BeginMenu("UI（ゲーム内UI）"))
+        {
+            // Image/Text/Button は Application 側で「選択エンティティが UI ツリー内なら
+            // その子 → 無ければ最初の UICanvas の子 → Canvas 不在なら自動生成」に配置される
+            auto spawnUi = [&](const char* marker)
+            {
+                PendingSpawnRequest req;
+                req.modelPath = marker;
+                req.position = {0.0f, 0.0f, 0.0f};
+                ctx.pendingSpawns.push_back(req);
+            };
+            if (ImGui::MenuItem("Canvas（UIルート）"))       spawnUi("__ui_canvas__");
+            if (ImGui::MenuItem("Image（画像/単色矩形）"))   spawnUi("__ui_image__");
+            if (ImGui::MenuItem("Text（テキスト）"))         spawnUi("__ui_text__");
+            if (ImGui::MenuItem("Button（ボタン）"))         spawnUi("__ui_button__");
+            ImGui::EndMenu();
+        }
         ImGui::EndPopup();
     }
 

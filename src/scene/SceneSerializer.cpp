@@ -244,6 +244,12 @@ static void RegisterCoreComponentSerializers()
     R.Register(MakeReflectedInfo<TrailRenderer>("TrailRenderer", "trailRenderer", true));
     R.Register(MakeReflectedInfo<NetworkIdentity>("NetworkIdentity", "networkIdentity", true));
     R.Register(MakeReflectedInfo<NetworkTransform>("NetworkTransform", "networkTransform", true));
+    // ゲーム内UI（retained-mode）。ランタイム状態（_付き）は ComponentMeta 未登録なので保存されない
+    R.Register(MakeReflectedInfo<UICanvas>("UICanvas", "uiCanvas", true));
+    R.Register(MakeReflectedInfo<UIRect>("UIRect", "uiRect", true));
+    R.Register(MakeReflectedInfo<UIImage>("UIImage", "uiImage", true));
+    R.Register(MakeReflectedInfo<UIText>("UIText", "uiText", true));
+    R.Register(MakeReflectedInfo<UIButton>("UIButton", "uiButton", true));
 
     // ---- カメラ: フィールドは反射で復元し、新規追加時だけアクティブカメラの重複防止を行う ----
     {

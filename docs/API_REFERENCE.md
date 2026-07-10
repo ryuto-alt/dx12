@@ -100,7 +100,7 @@ t.scale      -- Vec3
 | `:isValid()` | bool | 有効なエンティティか |
 | `.name` | string | 名前（読み取り専用プロパティ） |
 | `.transform` | Transform | Transform 参照（読み書き） |
-| `:hasComponent(type)` | bool | コンポーネント有無。type: `"Transform"`,`"MeshRenderer"`,`"SkeletalAnimation"`,`"NodeAnimation"`,`"GridPlane"`,`"PointLight"`,`"DirectionalLight"`,`"SpotLight"`,`"Camera"`,`"AudioSource"`,`"Gimmick"`,`"ParticleEmitter"`,`"Trigger"`,`"CharacterController"` |
+| `:hasComponent(type)` | bool | コンポーネント有無。type: `"Transform"`,`"MeshRenderer"`,`"SkeletalAnimation"`,`"NodeAnimation"`,`"GridPlane"`,`"PointLight"`,`"DirectionalLight"`,`"SpotLight"`,`"Camera"`,`"AudioSource"`,`"Gimmick"`,`"ParticleEmitter"`,`"Trigger"`,`"CharacterController"`,`"UICanvas"`,`"UIRect"`,`"UIImage"`,`"UIText"`,`"UIButton"` |
 | `:playAnim(clipIndex, blendDuration)` | — | スケルタルアニメをクリップ番号で再生（クロスフェード） |
 | `:playAnimByName(name, blendDuration)` | — | クリップ名で再生 |
 | `:setLooping(loop)` | — | ループ ON/OFF |
@@ -119,6 +119,11 @@ t.scale      -- Vec3
 | `:findEntity(name)` | Entity | 名前で検索 |
 | `:setUVScale(e, u, v)` | — | UV タイリング（生成時に1回。GPU 同期あり） |
 | `:setColor(e, r, g, b)` | — | 頂点カラーで着色（生成時に1回。毎フレーム禁止） |
+| `:setUiText(e, text)` | — | `UIText.text` を書き換える（無ければ何もしない） |
+| `:getUiText(e)` | string | `UIText.text` を読む（無ければ空文字列） |
+| `:setUiColor(e, r, g, b, a)` | — | `UIImage.color` 優先、無ければ `UIText.color`（どちらも無ければ何もしない） |
+| `:setUiVisible(e, visible)` | — | `UIRect.visible` 優先（自身と子孫ごと隠す）、UIRect が無く UICanvas のみなら `UICanvas.visible` |
+| `:setUiTexture(e, path)` | — | `UIImage.texturePath` を差し替え（assets 相対。無ければ何もしない） |
 | `:gimmicks()` | table | Gimmick 付き全エンティティを配列で返す（要素: `{e,name,kind,period,phase,amplitude,threshold,solid,deadly}`） |
 | `:queryByTag(tag)` | table | タグ一致エンティティの**名前配列** |
 | `:queryInBox(minX, minZ, maxX, maxZ, tag?)` | table | XZ 矩形内のエンティティ名配列（RTS の矩形選択向け） |
@@ -334,13 +339,52 @@ function OnUpdate(self, dt)
 end
 ```
 
-### ui（`ui`）— 即時モード UI
+### ui（`ui`）— 即時モード UI（簡易/デバッグ用）
+`OnUpdate` 内で毎フレーム呼ぶと描画される（Play 中のみ）。座標指定で毎フレーム呼ぶだけの簡易 API。
+恒常的な画面（タイトルメニュー・HUD 一式）を組むなら次項の「ゲーム内UI（コンポーネント方式）」を推奨。
+
 | メソッド | 戻り値 | 説明 |
 |---|---|---|
 | `:text(x, y, text, size?=24, r?, g?, b?, a?)` | — | テキスト描画 |
 | `:button(x, y, w, h, label)` | bool | ボタン（押下で true） |
 | `:image(x, y, w, h, path)` | — | 画像描画 |
 | `:rect(x, y, w, h, r?, g?, b?, a?, rounding?)` | — | 塗りつぶし矩形（バー/背景） |
+
+### ゲーム内UI（コンポーネント方式・retained-mode）
+Unity uGUI / Godot Control 相当の retained-mode UI。UI要素は **ECSコンポーネント**としてシーンに置き、
+エディタで編集・シーン JSON に保存する（Hierarchy 右クリック→「作成」→「UI（ゲーム内UI）」で Canvas/Image/Text/Button を配置）。
+レイアウトは**アンカー＋ピボット**で解像度追従し、描画は既存の即時 `ui:*` と同じ全画面オーバーレイに統合される
+（retained UI が奥、即時 `ui:*` が手前）。表示条件は同じく **Play中 / ゲームモードのみ**（エディタ編集中の WYSIWYG プレビューは無し）。
+
+| コンポーネント | 主なフィールド | 説明 |
+|---|---|---|
+| `UICanvas` | `refWidth/refHeight`(既定1920x1080), `scaleMode`(0=ScaleToFit 1=ConstantPixel), `sortOrder`, `visible` | UIツリーのルート |
+| `UIRect` | `anchorMin/Max`, `pivot`, `offsetMin/Max`, `visible` | レイアウト矩形（RectTransform相当）。全UI要素に必須 |
+| `UIImage` | `texturePath`(空=単色矩形), `color`, `uvMin/Max`, `sliceBorder`(px 左上右下, 9-slice), `cornerRadius`, `raycastBlock`(既定true) | 画像/単色矩形。`raycastBlock=true` なら背後のボタンへのクリックを遮る（Unity の raycastTarget 相当） |
+| `UIText` | `text`, `fontSize`, `color`, `alignH/V`(0=左/上 1=中央 2=右/下), `wrap` | テキスト。クリックは遮らない |
+| `UIButton` | `onClickEvent`, `normalColor/hoverColor/pressedColor`, `interactable` | 同一エンティティの `UIImage` を状態色でティント。release-inside でクリック確定。要素が重なった場合は**最前面だけ**が反応（子要素がクリックを吸っても親ボタンへバブリング） |
+
+アンカー解決式（`UIRect`、親矩形基準・実ピクセル）:
+```
+rectMin = parentMin + parentSize * anchorMin + offsetMin
+rectMax = parentMin + parentSize * anchorMax + offsetMax
+```
+アンカー一致（例: 中央固定）なら offset は「中心位置 ± 半サイズ」相当（Inspector 上は位置/サイズ(px)で編集）。
+アンカーを引き伸ばす（例: 横ストレッチ）なら offset は左右の余白(px)になる。Inspector の**アンカープリセット**
+（9方位＋ストレッチ＋全面）は選択時に見た目の位置を保ったまま anchor/offset を再計算する。
+
+**Lua からの操作**（値の書き換えのみ。ツリー構造はエディタで組む）: `scene:setUiText/getUiText/setUiColor/setUiVisible/setUiTexture`（§3 Scene 参照）。
+
+**ボタンのクリックを受ける**: 追加 API は無く既存の `events` で受ける。`UIButton.onClickEvent` に設定した名前で、
+release-inside 確定の**次フレーム**（`OnUpdate` より前）に `events:emit` 相当で発火する。data は `{source=エンティティID}`（他キー無し）。
+```lua
+function OnStart(self)
+    events:on("start_clicked", function(data)
+        -- data.source にボタンのエンティティID(entt raw id)
+        goToScene("assets/scenes/game.json")
+    end)
+end
+```
 
 ---
 

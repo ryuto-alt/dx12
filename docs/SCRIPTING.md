@@ -132,6 +132,26 @@ ui:text(x, y, "HUD text", size, r, g, b, a)   -- 画面に文字（再生中の�
 下部の入力欄からは Lua を1行その場で実行できる（`scene`/`fx`/`camera` などそのまま使える簡易コンソール）。
 入力中は**予測変換**が出る: `time.` や `scene:fi` まで打つと候補がポップアップし、Tab で確定・↑↓ で選択・クリックで挿入できる（候補は実際の Lua 環境から動的に列挙されるので自作のグローバルも出る）。
 
+### ゲーム内UI（コンポーネント方式）
+`ui:text/button/image/rect` は**簡易/デバッグ用**の即時 API。タイトルメニューや HUD 一式など恒常的な画面は、
+Hierarchy の「作成」→「UI（ゲーム内UI）」で `UICanvas`/`UIRect`/`UIImage`/`UIText`/`UIButton` コンポーネントの
+ツリーをエディタで組んで作る（Unity uGUI 相当の retained-mode UI）。スクリプトからは表示中の値だけを書き換える:
+
+```lua
+scene:setUiText(scoreLabel, "SCORE: " .. tostring(score))   -- テキスト書き換え
+scene:setUiColor(hpBarFill, 1, hpRatio, 0, 1)                -- 色（UIImage優先/無ければUIText）
+scene:setUiVisible(pausePanel, isPaused)                     -- 表示/非表示
+scene:setUiTexture(weaponIcon, "textures/ui/icon_sword.png") -- 画像差し替え
+```
+
+ボタンのクリックは `events:on` で受ける（`UIButton.onClickEvent` に設定した名前で発火。`data.source` にボタンのエンティティID）:
+```lua
+function OnStart(self)
+    events:on("start_clicked", function(data) goToScene("scenes/game.json") end)
+end
+```
+詳細は API_REFERENCE.md の「ゲーム内UI（コンポーネント方式）」セクション、使い方サイト(`docs/index.html`)を参照。
+
 ---
 
 ## 低レベル API（細かい制御が要るとき）

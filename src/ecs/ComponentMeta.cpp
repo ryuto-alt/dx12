@@ -161,6 +161,51 @@ void RegisterCoreComponentMeta()
         .data<&NetworkTransform::syncScale>("syncScale")
         .data<&NetworkTransform::interpDelayMs>("interpDelayMs")
         .data<&NetworkTransform::snapDistance>("snapDistance");
+
+    // --- ゲーム内UI（retained-mode）---
+    entt::meta_factory<UICanvas>{}
+        .type("UICanvas")
+        .data<&UICanvas::refWidth>("refWidth")
+        .data<&UICanvas::refHeight>("refHeight")
+        .data<&UICanvas::scaleMode>("scaleMode")
+        .data<&UICanvas::sortOrder>("sortOrder")
+        .data<&UICanvas::visible>("visible");
+
+    entt::meta_factory<UIRect>{}
+        .type("UIRect")
+        .data<&UIRect::anchorMin>("anchorMin")
+        .data<&UIRect::anchorMax>("anchorMax")
+        .data<&UIRect::pivot>("pivot")
+        .data<&UIRect::offsetMin>("offsetMin")
+        .data<&UIRect::offsetMax>("offsetMax")
+        .data<&UIRect::visible>("visible");
+
+    entt::meta_factory<UIImage>{}
+        .type("UIImage")
+        .data<&UIImage::texturePath>("texturePath")
+        .data<&UIImage::color>("color")
+        .data<&UIImage::uvMin>("uvMin")
+        .data<&UIImage::uvMax>("uvMax")
+        .data<&UIImage::sliceBorder>("sliceBorder")
+        .data<&UIImage::cornerRadius>("cornerRadius")
+        .data<&UIImage::raycastBlock>("raycastBlock");
+
+    entt::meta_factory<UIText>{}
+        .type("UIText")
+        .data<&UIText::text>("text")
+        .data<&UIText::fontSize>("fontSize")
+        .data<&UIText::color>("color")
+        .data<&UIText::alignH>("alignH")
+        .data<&UIText::alignV>("alignV")
+        .data<&UIText::wrap>("wrap");
+
+    entt::meta_factory<UIButton>{}
+        .type("UIButton")
+        .data<&UIButton::onClickEvent>("onClickEvent")
+        .data<&UIButton::normalColor>("normalColor")
+        .data<&UIButton::hoverColor>("hoverColor")
+        .data<&UIButton::pressedColor>("pressedColor")
+        .data<&UIButton::interactable>("interactable");
 }
 
 } // namespace dx12e

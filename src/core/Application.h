@@ -62,6 +62,7 @@ namespace dx12e
     class Scene;
     class ScriptEngine;
     class McpBridge;
+    class UISystem;
     class AudioSystem;
     class PhysicsSystem;
     class NetworkSystem;
@@ -498,6 +499,10 @@ private:
     };
     std::vector<UICommand>          m_uiCommands;     // 今フレームの UI 描画要求
     std::unordered_set<std::string> m_pressedButtons; // 前フレームに押されたボタンのラベル
+
+    // ゲーム内 retained-mode UI（UICanvas/UIRect/UIImage/UIText/UIButton の
+    // レイアウト解決・描画・入力）。ImGui DrawList 経路で GPU リソースは持たない。
+    std::unique_ptr<UISystem> m_uiSystem;
 
     // シーントランジション（WP9）
     std::unique_ptr<SceneTransition> m_sceneTransition;

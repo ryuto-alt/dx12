@@ -258,6 +258,11 @@ void ScriptEngine::RegisterBindings()
             if (type == "ParticleEmitter")    return e.HasComponent<ParticleEmitter>();
             if (type == "TrailRenderer")      return e.HasComponent<TrailRenderer>();
             if (type == "Trigger")            return e.HasComponent<Trigger>();
+            if (type == "UICanvas")           return e.HasComponent<UICanvas>();
+            if (type == "UIRect")             return e.HasComponent<UIRect>();
+            if (type == "UIImage")            return e.HasComponent<UIImage>();
+            if (type == "UIText")             return e.HasComponent<UIText>();
+            if (type == "UIButton")           return e.HasComponent<UIButton>();
             // タイプミスや未対応型を「持ってない」と誤認させない（デバッグ困難の元）。
             // 毎フレーム呼ばれてもスパムしないよう型名ごとに1回だけ警告する。
             {
@@ -374,6 +379,44 @@ void ScriptEngine::RegisterBindings()
             auto& reg = s.GetRegistry();
             if (!reg.all_of<Sprite2D>(e.GetHandle())) return;
             reg.get<Sprite2D>(e.GetHandle()).color.w = alpha;
+        },
+        // --- ゲーム内UI（retained-mode）: スコア表示・HPバー等をスクリプトから書き換える ---
+        // UIText::text を書き換える(スコア・残機・メッセージ)。UIText が無ければ何もしない。
+        "setUiText", [](Scene& s, Entity& e, const std::string& text) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIText>(e.GetHandle())) return;
+            reg.get<UIText>(e.GetHandle()).text = text;
+        },
+        // UIText::text を読む。UIText が無ければ空文字列。
+        "getUiText", [](Scene& s, Entity& e) -> std::string {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIText>(e.GetHandle())) return std::string();
+            return reg.get<UIText>(e.GetHandle()).text;
+        },
+        // 色を書き換える(0..1)。UIImage 優先、無ければ UIText。どちらも無ければ何もしない。
+        "setUiColor", [](Scene& s, Entity& e, float r, float g, float b, float a) {
+            auto& reg = s.GetRegistry();
+            auto h = e.GetHandle();
+            if (reg.all_of<UIImage>(h))
+                reg.get<UIImage>(h).color = {r, g, b, a};
+            else if (reg.all_of<UIText>(h))
+                reg.get<UIText>(h).color = {r, g, b, a};
+        },
+        // 表示/非表示を切り替える。UIRect.visible を優先し(自身と子孫を丸ごと隠す)、
+        // UIRect が無く UICanvas のみ持つエンティティ(キャンバス自身)なら UICanvas.visible を切り替える。
+        "setUiVisible", [](Scene& s, Entity& e, bool visible) {
+            auto& reg = s.GetRegistry();
+            auto h = e.GetHandle();
+            if (reg.all_of<UIRect>(h))
+                reg.get<UIRect>(h).visible = visible;
+            else if (reg.all_of<UICanvas>(h))
+                reg.get<UICanvas>(h).visible = visible;
+        },
+        // UIImage::texturePath を差し替える(assets 相対)。UIImage が無ければ何もしない。
+        "setUiTexture", [](Scene& s, Entity& e, const std::string& path) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIImage>(e.GetHandle())) return;
+            reg.get<UIImage>(e.GetHandle()).texturePath = path;
         },
         // 配置済み Gimmick コンポーネントを持つ全エンティティを列挙し、
         // パラメータ付きの配列(1始まり)で返す。ゲームスクリプトが動き/当たり判定を駆動する。

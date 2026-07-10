@@ -62,6 +62,10 @@ void SpawnEntityCommand::Undo()
     auto& reg = m_scene->GetRegistry();
     if (reg.valid(m_entity))
     {
+        // SerializeEntity は外部親（サブツリー外の Transform::parent）を含めないため、
+        // Redo で親子関係を復元できるよう削除前にここで捕捉する
+        if (const auto* t = reg.try_get<Transform>(m_entity))
+            m_externalParent = t->parent;
         // Redo 用にスナップショットを取ってから削除する
         m_snapshot = SceneSerializer::SerializeEntity(*m_scene, m_entity, m_assetsDir);
         m_scene->Remove(Entity(m_entity, &reg));
@@ -72,9 +76,16 @@ void SpawnEntityCommand::Redo()
 {
     // 生成直後（まだ一度も Undo していない）はスナップショットが無いので何もしない
     if (m_snapshot.empty()) return;
+    auto& reg = m_scene->GetRegistry();
     entt::entity e = SceneSerializer::InstantiateEntity(*m_scene, m_snapshot, m_assetsDir);
     if (e != entt::null)
+    {
         m_entity = e;  // 新しい ID に更新
+        // 外部親を張り直す（親が既に消えていれば黙って null のまま＝安全）
+        if (m_externalParent != entt::null && reg.valid(m_externalParent)
+            && reg.all_of<Transform>(e))
+            reg.get<Transform>(e).parent = m_externalParent;
+    }
 }
 
 // ── SpawnPrefabCommand ──
@@ -83,7 +94,13 @@ void SpawnPrefabCommand::Undo()
     auto& reg = m_scene->GetRegistry();
     // Redo 用にサブツリー全体をスナップショット（root から子孫を辿って自己完結 JSON 化）
     if (!m_entities.empty() && reg.valid(m_entities[0]))
+    {
+        // SerializeSubtree は root の外部親（サブツリー外の Transform::parent）を含めない
+        // ため、Redo で親子関係を復元できるよう削除前にここで捕捉する
+        if (const auto* t = reg.try_get<Transform>(m_entities[0]))
+            m_externalParent = t->parent;
         m_snapshot = SceneSerializer::SerializeSubtree(*m_scene, m_entities[0], m_assetsDir);
+    }
 
     // 子 → 親 の順で削除（Scene::Remove はカスケードしないので全要素を明示削除）
     for (auto it = m_entities.rbegin(); it != m_entities.rend(); ++it)
@@ -95,9 +112,15 @@ void SpawnPrefabCommand::Undo()
 void SpawnPrefabCommand::Redo()
 {
     if (m_snapshot.empty()) return;
+    auto& reg = m_scene->GetRegistry();
     std::vector<entt::entity> all;
     SceneSerializer::InstantiateSubtree(*m_scene, m_snapshot, m_assetsDir, &all);
     m_entities = std::move(all);  // 新しい ID 群に更新
+    // root（先頭）の外部親を張り直す（親が既に消えていれば黙って null のまま＝安全）
+    if (!m_entities.empty() && reg.valid(m_entities[0])
+        && m_externalParent != entt::null && reg.valid(m_externalParent)
+        && reg.all_of<Transform>(m_entities[0]))
+        reg.get<Transform>(m_entities[0]).parent = m_externalParent;
 }
 
 } // namespace dx12e

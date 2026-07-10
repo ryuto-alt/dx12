@@ -56,6 +56,7 @@
 #include "scene/Entity.h"
 #include "ecs/Components.h"
 #include "scripting/ScriptEngine.h"
+#include "ui/UISystem.h"
 #include "core/mcp/McpBridge.h"
 #include <nlohmann/json.hpp>
 #include <filesystem>
@@ -1459,6 +1460,9 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_spriteRenderer = std::make_unique<SpriteRenderer>();
         m_spriteRenderer->Initialize(*m_graphicsDevice, m_srvHeap.get(),
                                      m_swapChain->GetFormat(), PathResolver::ShaderDirW());
+
+        // ゲーム内 retained-mode UI（UICanvas ツリー。##GameUI の ImGui DrawList へ描く）
+        m_uiSystem = std::make_unique<UISystem>();
         // ワールド空間 2D（Sprite2D, worldSpace=true）: HDR scene RT へ描く別経路（HUD と隔離）
         // 深度バッファ(D32_FLOAT)に対して深度テスト＝3D形状に正しく遮蔽される。
         m_spriteRenderer->InitializeWorld(*m_graphicsDevice, kSceneColorFormat,
@@ -4812,6 +4816,7 @@ void Application::Shutdown()
     // 新規レンダラ群（GPU リソース）をデバイス解放より前に明示破棄
     m_editorIconRenderer.reset();
     m_sceneTransition.reset();
+    m_uiSystem.reset();       // retained UI（GPU リソース非保持だが解放順を明確化）
     m_spriteRenderer.reset();
     m_postProcess.reset();
     m_bloomPass.reset();      // GPU リソース（チェーンRT/PSO）をデバイス解放より前に明示破棄
@@ -5153,6 +5158,11 @@ void Application::Update()
             int sh = (vs.y >= 1.0f) ? static_cast<int>(vs.y) : static_cast<int>(m_window->GetHeight());
             m_scriptEngine->SetScreenSize(sw, sh);
         }
+        // 前フレームの Render で確定した retained UI ボタンのクリックを Lua OnUpdate より
+        // 前に配信する（events:on ハンドラで書いた状態を同フレームの OnUpdate が参照できる）。
+        if (m_uiSystem)
+            m_uiSystem->DispatchPendingClicks(m_scene->GetRegistry(), m_eventBus);
+
         m_scriptEngine->CallOnUpdate(dt);
         m_scriptEngine->UpdateAttachedScripts(dt);
         m_scriptEngine->UpdateTriggers(dt);   // Trigger（イベント）評価
@@ -6591,6 +6601,9 @@ void Application::DoRuntimeSceneLoad(const std::string& rel, ID3D12GraphicsComma
     }
 
     m_eventBus.Clear();   // 前シーンの購読を消去（ランタイムシーン切替）
+    // 前シーンのボタンに対する保留クリックも破棄（新シーンのハンドラへ誤配信しない）
+    if (m_uiSystem)
+        m_uiSystem->ResetRuntimeState(m_scene->GetRegistry());
     m_scriptEngine->OnPlayStart();
     if (m_particleSystem) m_particleSystem->Clear();  // シーン切替時に前シーンの粒子を消す
     if (m_gpuParticles) m_gpuParticles->Clear();
@@ -6934,6 +6947,10 @@ void Application::EnterEditorMode()
     // 半壊状態の古いハンドラが発火しない（呼び順が将来変わっても安全）。
     m_eventBus.Clear();
     m_physicsSystem->SetEventBus(nullptr);
+
+    // retained UI の保留クリック/ボタン状態を破棄（次の Play へ持ち越さない）
+    if (m_uiSystem)
+        m_uiSystem->ResetRuntimeState(m_scene->GetRegistry());
 
     m_physicsSystem->UnregisterAllBodies(m_scene->GetRegistry());
     m_physicsSystem->UnregisterAllCharacters(m_scene->GetRegistry());
@@ -8256,6 +8273,127 @@ void Application::Render()
                 reg.emplace<Transform>(e, Transform{req.position, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
                 reg.emplace<Trigger>(e, Trigger{});
                 spawnedEntity = e;
+            }
+            else if (req.modelPath == "__ui_canvas__" || req.modelPath == "__ui_image__" ||
+                     req.modelPath == "__ui_text__"   || req.modelPath == "__ui_button__")
+            {
+                // ゲーム内UI: Canvas はルートに単体生成。Image/Text/Button は
+                // 「選択中エンティティが UI ツリー内（自身か祖先に UICanvas）ならその子 →
+                //  無ければシーン最初の UICanvas の子 → UICanvas 不在なら自動生成して子」に配置。
+                auto& reg = m_scene->GetRegistry();
+                std::vector<entt::entity> created;      // 生成順（root 先頭）。複数生成時の Undo 用
+                entt::entity uiPrimary = entt::null;    // ユーザーが要求した本体（選択用）
+
+                auto makeUiEntity = [&](const std::string& entName, entt::entity parent)
+                {
+                    auto e = reg.create();
+                    reg.emplace<NameTag>(e, NameTag{entName});
+                    Transform t{};
+                    t.parent = parent;
+                    reg.emplace<Transform>(e, t);
+                    created.push_back(e);
+                    return e;
+                };
+
+                if (req.modelPath == "__ui_canvas__")
+                {
+                    auto e = makeUiEntity(req.name.empty() ? std::string("UICanvas") : req.name,
+                                          entt::null);
+                    reg.emplace<UICanvas>(e, UICanvas{});
+                    uiPrimary = e;
+                }
+                else
+                {
+                    // 配置先の親を解決
+                    entt::entity uiParent = entt::null;
+                    {
+                        entt::entity it = m_editorCtx->selectedEntity;
+                        for (int guard = 0; guard < 64 && it != entt::null && reg.valid(it); ++guard)
+                        {
+                            if (reg.all_of<UICanvas>(it))
+                            {
+                                uiParent = m_editorCtx->selectedEntity;   // 選択そのものの子にする
+                                break;
+                            }
+                            const auto* t = reg.try_get<Transform>(it);
+                            it = t ? t->parent : entt::null;
+                        }
+                    }
+                    if (uiParent == entt::null)
+                    {
+                        auto canvasView = reg.view<const UICanvas>();
+                        if (canvasView.begin() != canvasView.end())
+                            uiParent = *canvasView.begin();
+                    }
+                    if (uiParent == entt::null)
+                    {
+                        auto c = makeUiEntity("UICanvas", entt::null);
+                        reg.emplace<UICanvas>(c, UICanvas{});
+                        uiParent = c;
+                    }
+
+                    if (req.modelPath == "__ui_image__")
+                    {
+                        auto e = makeUiEntity(req.name.empty() ? std::string("UIImage") : req.name,
+                                              uiParent);
+                        reg.emplace<UIRect>(e, UIRect{});
+                        reg.emplace<UIImage>(e, UIImage{});
+                        uiPrimary = e;
+                    }
+                    else if (req.modelPath == "__ui_text__")
+                    {
+                        auto e = makeUiEntity(req.name.empty() ? std::string("UIText") : req.name,
+                                              uiParent);
+                        UIRect r{};
+                        r.offsetMin = {-120.0f, -25.0f};
+                        r.offsetMax = { 120.0f,  25.0f};
+                        reg.emplace<UIRect>(e, r);
+                        reg.emplace<UIText>(e, UIText{});
+                        uiPrimary = e;
+                    }
+                    else   // __ui_button__
+                    {
+                        // ボタン一式: UIRect + UIImage + UIButton + 子に UIText（ラベル）
+                        auto e = makeUiEntity(req.name.empty() ? std::string("UIButton") : req.name,
+                                              uiParent);
+                        UIRect r{};
+                        r.offsetMin = {-110.0f, -32.0f};
+                        r.offsetMax = { 110.0f,  32.0f};
+                        reg.emplace<UIRect>(e, r);
+                        UIImage img{};
+                        img.color = {0.22f, 0.35f, 0.62f, 1.0f};   // ラベルが読める濃さの青系
+                        img.cornerRadius = 8.0f;
+                        reg.emplace<UIImage>(e, img);
+                        reg.emplace<UIButton>(e, UIButton{});
+                        uiPrimary = e;
+
+                        auto label = makeUiEntity("Label", e);
+                        UIRect lr{};
+                        lr.anchorMin = {0.0f, 0.0f};   // 親ボタン全面にストレッチ
+                        lr.anchorMax = {1.0f, 1.0f};
+                        lr.offsetMin = {0.0f, 0.0f};
+                        lr.offsetMax = {0.0f, 0.0f};
+                        reg.emplace<UIRect>(label, lr);
+                        UIText lt{};
+                        lt.text = "ボタン";
+                        reg.emplace<UIText>(label, lt);
+                    }
+                }
+
+                // Undo: 単体は下の共通 SpawnEntityCommand、複数生成（Canvas 自動生成 / Button の
+                // ラベル子）はサブツリー対応の SpawnPrefabCommand でまとめて積む
+                if (created.size() == 1)
+                {
+                    spawnedEntity = created[0];
+                }
+                else if (!created.empty())
+                {
+                    if (uiPrimary != entt::null)
+                        m_editorCtx->Select(uiPrimary);   // 自動生成 Canvas の下でも本体を選択状態に
+                    m_editorCtx->undoSystem.PushCommand(
+                        std::make_unique<SpawnPrefabCommand>(
+                            m_scene.get(), PathResolver::AssetsDir(), created));
+                }
             }
             else if (std::filesystem::path(req.modelPath).extension().string() == ".prefab")
             {
@@ -10408,6 +10546,16 @@ void Application::Render()
         const float oy = mainVp->Pos.y + static_cast<float>(vpTop);
         dl->PushClipRect(ImVec2(ox, oy),
                          ImVec2(ox + static_cast<float>(vpW), oy + static_cast<float>(vpH)), true);
+
+        // retained-mode UI（UICanvas ツリー）を即時 UI コマンドより先に描く＝即時 ui:* が手前。
+        // クリック確定はここでは配信せず、次フレーム Update 冒頭（Lua OnUpdate より前）で
+        // EventBus へ Emit される（UISystem::DispatchPendingClicks）。
+        if (m_uiSystem && m_scene)
+            m_uiSystem->RenderAndUpdateInput(m_scene->GetRegistry(), dl, ox, oy,
+                                             static_cast<float>(vpW), static_cast<float>(vpH),
+                                             m_resourceManager.get(), m_srvHeap.get(),
+                                             nativeCmdList);
+
         std::unordered_set<std::string> nowPressed;
         for (const auto& c : m_uiCommands)
         {
