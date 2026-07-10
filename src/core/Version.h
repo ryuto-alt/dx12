@@ -7,7 +7,7 @@
 namespace dx12e
 {
 // セマンティックバージョン（"MAJOR.MINOR.PATCH"）。GitHub リリースのタグ（"v1.2.3" 等）と比較する。
-constexpr const char* kEngineVersion = "0.9.8";
+constexpr const char* kEngineVersion = "1.0.0";
 
 // 自動アップデートの取得元 GitHub リポジトリ。
 constexpr const char* kUpdateRepoOwner = "ryuto-alt";
@@ -16,18 +16,18 @@ constexpr const char* kUpdateRepoName  = "dx12";
 // 起動時に一度だけ表示する「更新内容」ポップアップ（この版で直したこと）。
 // 表示済み判定は %LOCALAPPDATA%\DX12Engine\shown_version.txt（版が変わった初回だけ出す）。
 // 新しい版を出すときは kEngineVersion を上げ、ここも書き換えること。
-constexpr const char* kWhatsNewTitle = "DX12 Engine v0.9.8 の更新内容";
+constexpr const char* kWhatsNewTitle = "DX12 Engine v1.0.0 の更新内容";
 constexpr const char* kWhatsNewBody =
-    "今回の更新: エディタUIをUE5風に一新 + ロード高速化\n"
+    "v1.0.0: ゲーム内UI制作機能が一通り揃いました\n"
     "\n"
-    "・カスタムタイトルバー: OSの標準タイトルバーを廃止し、メニュー・シーン名・\n"
-    "  ウィンドウ操作を統合したダークなタイトルバーに(Unreal/Unity風)。\n"
-    "・FreeType フォント描画で文字がくっきり。Play/Stop ボタンは画面中央に。\n"
-    "・multi-viewport: ツール窓(マテリアルエディタ等)をメインウィンドウの外へ\n"
-    "  ドラッグすると独立したウィンドウになります(マルチモニタ向け)。\n"
-    "・マテリアルサムネイル: プロジェクトロード時に事前生成し、結果をディスクに\n"
-    "  キャッシュ。2回目以降のロードが大幅に高速化。ロード中はスプラッシュ表示で\n"
-    "  固まらず、完了までエディタ画面を出しません。\n"
-    "・修正: マテリアルD&Dが床グリッドに吸われる/回転オブジェクトに当たらない問題。\n"
-    "・パーティクルに「向き Orient」を追加(ビルボード/水平/垂直)。\n";
+    "・UIエディタ(新設): 「窓 ▾ > UIエディタ」で開く専用2Dキャンバス(UMGデザイナー相当)。\n"
+    "  ズーム/パン、画面サイズプレビュー(FHD/HD/縦/カスタム)、市松背景・グリッド表示。\n"
+    "・UI編集: クリックでボタン丸ごと選択・ダブルクリックで中のラベルを選択(Figma方式)。\n"
+    "  移動/8ハンドルリサイズ/アンカーハンドル直接編集、矢印キー移動、Del/Ctrl+D。\n"
+    "・配置テンプレ: 中央/上下左右/四隅へワンクリック配置(アンカーも同時設定=解像度追従)。\n"
+    "  Inspector の UIRect とUIエディタツールバーの両方から使えます。\n"
+    "・UIAnimator(新コンポーネント): 出現アニメ(フェード/ポップ/スライド、イージング7種)、\n"
+    "  ボタンのホバー/押下スケール、ループ(浮遊/パルス/点滅)をノーコード設定。\n"
+    "・Lua: scene:tweenUi(イージング付きトゥイーン) / showUi / hideUi を追加。\n"
+    "・UIImage の fill(HPバー/ゲージ)、テクスチャD&D割当も引き続き利用できます。\n";
 } // namespace dx12e
