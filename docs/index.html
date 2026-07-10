@@ -841,9 +841,14 @@ vfx.<span class="tok-fn">play</span>(<span class="tok-s">"explosion"</span>, x, 
           <li><b>ビュー</b>: マウスホイール＝カーソル中心ズーム、中/右ドラッグ＝パン、<b>Fit / 100%</b> ボタン。
               <b>画面サイズ</b>ドロップダウンで 1080p / 720p / 縦画面などの見え方を切り替えてプレビューできる
               （実行時と同じ ScaleToFit / レターボックスを再現）。市松背景・グリッド表示あり</li>
-          <li><b>編集</b>: クリック選択（Ctrl でマルチ）・移動ドラッグ・8 ハンドルリサイズは SceneView と同じ。
-              加えて選択中は<b>アンカーハンドル（4 つの三角）</b>が表示され、ドラッグで直接アンカーを編集できる
+          <li><b>選択</b>: クリックは<b>ウィジェット丸ごと</b>（ボタンならラベルではなくボタン本体）を選択し、
+              そのままドラッグで移動できる。ラベル等の子だけ触りたい時は<b>ダブルクリックで 1 段深掘り</b>
+              （Figma / UMG と同じ方式。SceneView の UI 編集モードも同様）。Ctrl+クリックでマルチ選択</li>
+          <li><b>編集</b>: 移動ドラッグ・8 ハンドルリサイズに加え、選択中は<b>アンカーハンドル（4 つの三角）</b>が
+              表示され、ドラッグで直接アンカーを編集できる
               （見た目の位置は保たれる。0 / 0.5 / 1 にスナップ。三角を割ればストレッチ、中央の丸で 4 つまとめて移動）</li>
+          <li><b>配置テンプレ</b>: ツールバーの「配置 ▾」（Inspector の UIRect にも同じ 9 方位ボタンあり）で
+              中央 / 上下左右 / 四隅へ<b>スナップ配置</b>。アンカーも同時に設定されるので解像度が変わってもその方位に追従する</li>
           <li><b>ショートカット</b>: 矢印キー＝1px 移動（Shift で 10px）、Del＝削除、Ctrl+D＝複製（すべて Undo 可）</li>
           <li><b>追加</b>: 上部の「＋ Canvas / 画像 / テキスト / ボタン」またはキャンバスの右クリックメニューから。
               配置ルールは Hierarchy の「UI（ゲーム内UI）」メニューと同じ</li>
@@ -868,6 +873,11 @@ vfx.<span class="tok-fn">play</span>(<span class="tok-s">"explosion"</span>, x, 
                   <td>同一エンティティの <code>UIImage</code> を状態色でティントするボタン。<b>release-inside でクリック確定</b>し、
                   <code>onClickEvent</code> 名で <code class="inl">events</code> へ発火。要素が重なった場合は<b>最前面だけ</b>が反応
                   （子要素がクリックを吸っても親ボタンへバブリングする）</td></tr>
+              <tr><td><code>UIAnimator</code></td><td><code>showAnim/showDuration/showDelay/showEasing/slideOffset</code>, <code>hoverScale/pressScale/hoverSpeed</code>, <code>loopAnim/loopSpeed/loopAmount</code></td>
+                  <td>UI アニメーション（Play 中のみ再生。効果は自分と子孫にまとめて掛かる）。
+                  <b>出現</b>=フェード / ポップ / 上下左右スライド（イージング 7 種: リニア〜バック/バウンス/弾性、<code>showDelay</code> で順番出し）。
+                  <b>ホバー/押下</b>=UIButton があるとき拡大/縮小で反応。<b>ループ</b>=浮遊 / パルス / 点滅。
+                  Lua の <code class="inl">scene:showUi/hideUi</code> で出現アニメの再生 / 逆再生ができる</td></tr>
             </tbody>
           </table>
         </div>
@@ -892,7 +902,15 @@ scene:<span class="tok-fn">setUiColor</span>(hpBarFill, <span class="tok-n">1</s
 scene:<span class="tok-fn">setUiVisible</span>(pausePanel, isPaused)
 
 <span class="tok-c">-- アイコン差し替え</span>
-scene:<span class="tok-fn">setUiTexture</span>(weaponIcon, <span class="tok-s">"textures/ui/icon_sword.png"</span>)</code></pre>
+scene:<span class="tok-fn">setUiTexture</span>(weaponIcon, <span class="tok-s">"textures/ui/icon_sword.png"</span>)
+
+<span class="tok-c">-- 動的UI: トゥイーン（イージング付きアニメ。dx/dy=実移動px、scale/alpha=見た目のみ）</span>
+scene:<span class="tok-fn">tweenUi</span>(menu, { dx = <span class="tok-n">200</span>, duration = <span class="tok-n">0.4</span>, easing = <span class="tok-s">"bounce"</span> })
+scene:<span class="tok-fn">tweenUi</span>(popup, { scale = <span class="tok-n">1.2</span>, alpha = <span class="tok-n">0</span>, duration = <span class="tok-n">0.25</span> })
+
+<span class="tok-c">-- UIAnimator の出現アニメを再生して表示 / 逆再生で消す（子孫ごと）</span>
+scene:<span class="tok-fn">showUi</span>(winPanel)
+scene:<span class="tok-fn">hideUi</span>(pauseMenu)</code></pre>
 
         <p><b>ボタンのクリックを受ける</b>: 追加 API は無く、既存の <code class="inl">events</code> で受ける。
         <code class="inl">UIButton.onClickEvent</code> に設定した名前で、release-inside 確定の<b>次フレーム</b>（<code class="inl">OnUpdate</code> より前）に発火する。</p>

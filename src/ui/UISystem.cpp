@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <cmath>
 #include <unordered_map>
 
 #include <imgui.h>
@@ -64,7 +65,12 @@ struct UiDrawContext
 
     // false = エディタプレビュー（RenderPreview / ResolveRects）: ボタンは normalColor
     // 固定で描き、_hovered/_pressed には読み書きとも一切触れない（ゲーム内状態を汚さない）。
+    // UIAnimator / tween の視覚エフェクトも interactive 時のみ適用する（プレビューは最終ポーズ）。
     bool interactive = true;
+
+    // 祖先から継承するアルファ乗数（UIAnimator / tween のフェードが子孫にまとめて掛かる）。
+    // DrawUiSubtree が push/pop 式に更新する。
+    float alphaMul = 1.0f;
 
     // エディタ支援（ResolveRects）: UIRect を持つ全要素の解決済みスクリーン矩形の出力先。
     // canvasEntity は現在トラバース中の UICanvas（キャンバス毎のループで更新）。
@@ -89,6 +95,186 @@ UiRectPx ToScreen(const UiRectPx& c, const UiDrawContext& ctx)
 {
     return {ctx.originX + c.minX * ctx.scale, ctx.originY + c.minY * ctx.scale,
             ctx.originX + c.maxX * ctx.scale, ctx.originY + c.maxY * ctx.scale};
+}
+
+// イージング（p: 0..1 → 0..1）。列挙は UIAnimator::showEasing / UiTween::easing 共通:
+//   0=リニア 1=イーズイン 2=イーズアウト 3=イン/アウト 4=バック(勢い) 5=バウンス 6=弾性
+float UiEase(int type, float p)
+{
+    p = std::clamp(p, 0.0f, 1.0f);
+    switch (type)
+    {
+    case 1:   // easeInCubic
+        return p * p * p;
+    case 2:   // easeOutCubic
+    {
+        const float q = 1.0f - p;
+        return 1.0f - q * q * q;
+    }
+    case 3:   // easeInOutCubic
+        return (p < 0.5f) ? 4.0f * p * p * p
+                          : 1.0f - std::pow(-2.0f * p + 2.0f, 3.0f) * 0.5f;
+    case 4:   // easeOutBack（少し行き過ぎて戻る）
+    {
+        constexpr float c1 = 1.70158f;
+        constexpr float c3 = c1 + 1.0f;
+        const float q = p - 1.0f;
+        return 1.0f + c3 * q * q * q + c1 * q * q;
+    }
+    case 5:   // easeOutBounce
+    {
+        constexpr float n1 = 7.5625f, d1 = 2.75f;
+        if (p < 1.0f / d1)        return n1 * p * p;
+        if (p < 2.0f / d1)        { p -= 1.5f / d1;   return n1 * p * p + 0.75f; }
+        if (p < 2.5f / d1)        { p -= 2.25f / d1;  return n1 * p * p + 0.9375f; }
+        p -= 2.625f / d1;         return n1 * p * p + 0.984375f;
+    }
+    case 6:   // easeOutElastic（ビヨンと弾む）
+    {
+        if (p <= 0.0f) return 0.0f;
+        if (p >= 1.0f) return 1.0f;
+        constexpr float c4 = 6.2831853f / 3.0f;
+        return std::pow(2.0f, -10.0f * p) * std::sin((p * 10.0f - 0.75f) * c4) + 1.0f;
+    }
+    default:  // 0: リニア
+        return p;
+    }
+}
+
+// UIAnimator / UITweenState を dt で進め、今フレームの視覚合成結果（_cur*）を確定する。
+// Play / ゲームモード中のみ呼ばれる（RenderAndUpdateInput の冒頭）。
+void UpdateUiAnimations(entt::registry& reg, float dt)
+{
+    dt = std::clamp(dt, 0.0f, 0.1f);   // ヒッチ時の飛びを抑える
+
+    // ---- UIAnimator（出現 / ホバー・押下 / ループ）----
+    for (auto [e, an] : reg.view<UIAnimator>().each())
+    {
+        // ホバー / 押下スケール（UIButton の前フレーム状態へ指数平滑で追従）
+        float hoverTarget = 1.0f;
+        if (const auto* btn = reg.try_get<UIButton>(e))
+        {
+            if (btn->interactable)
+                hoverTarget = btn->_pressed ? an.pressScale
+                            : (btn->_hovered ? an.hoverScale : 1.0f);
+        }
+        const float k = std::min(1.0f, dt * (std::max)(0.0f, an.hoverSpeed));
+        an._hoverS += (hoverTarget - an._hoverS) * k;
+
+        // 出現 / 消滅の状態機械
+        float alpha = 1.0f, scale = 1.0f;
+        DirectX::XMFLOAT2 off{0.0f, 0.0f};
+        if (an._mode == 0)   // 未開始 → Play 開始（または showUi）で自動スタート
+        {
+            an._t = 0.0f;
+            an._mode = (an.showAnim == 0) ? 2 : 1;
+        }
+        if (an._mode == 1 || an._mode == 3)
+        {
+            an._t += dt;
+            const float dur = (std::max)(0.01f, an.showDuration);
+            float p;
+            if (an._mode == 1)   // showing（showDelay の間は 0 で待つ）
+            {
+                p = (an._t - an.showDelay) / dur;
+                if (p >= 1.0f) an._mode = 2;
+                p = std::clamp(p, 0.0f, 1.0f);
+            }
+            else                 // hiding = show の逆再生（delay は使わない）
+            {
+                p = an._t / dur;
+                if (p >= 1.0f) an._mode = 4;
+                p = 1.0f - std::clamp(p, 0.0f, 1.0f);
+            }
+            const float ev = UiEase(an.showEasing, p);
+            switch (an.showAnim)
+            {
+            case 2:  alpha = ev; scale = 0.5f + 0.5f * ev;                  break;  // ポップ
+            case 3:  alpha = ev; off.x = -an.slideOffset * (1.0f - ev);     break;  // 左から
+            case 4:  alpha = ev; off.x =  an.slideOffset * (1.0f - ev);     break;  // 右から
+            case 5:  alpha = ev; off.y = -an.slideOffset * (1.0f - ev);     break;  // 上から
+            case 6:  alpha = ev; off.y =  an.slideOffset * (1.0f - ev);     break;  // 下から
+            default: alpha = ev;                                            break;  // フェード
+            }
+        }
+        else if (an._mode == 4)
+        {
+            alpha = 0.0f;   // 非表示（描画は DrawUiSubtree がサブツリーごとスキップ）
+        }
+
+        // ループ（表示中もアニメ中も常時加算）
+        an._loopT += dt;
+        if (an.loopAnim != 0)
+        {
+            const float s = std::sin(an._loopT * an.loopSpeed * 6.2831853f);
+            if (an.loopAnim == 1)      off.y += s * an.loopAmount;                        // 浮遊
+            else if (an.loopAnim == 2) scale *= 1.0f + s * an.loopAmount;                 // パルス
+            else if (an.loopAnim == 3)                                                    // 点滅
+                alpha *= 1.0f - (0.5f + 0.5f * s) * std::clamp(an.loopAmount, 0.0f, 1.0f);
+        }
+
+        an._curScale  = (std::max)(0.0f, scale * an._hoverS);
+        an._curAlpha  = std::clamp(alpha, 0.0f, 1.0f);
+        an._curOffset = off;
+    }
+
+    // ---- tween（scene:tweenUi。移動は UIRect offset を直接進め、拡縮/アルファは視覚のみ）----
+    for (auto [e, tw] : reg.view<UITweenState>().each())
+    {
+        float scale = tw.visScale, alpha = tw.visAlpha;
+        for (auto it = tw.tweens.begin(); it != tw.tweens.end();)
+        {
+            UiTween& t = *it;
+            t.t += dt;
+            if (t.t < t.delay) { ++it; continue; }
+            if (!t.started)
+            {
+                // delay 明けに from 値を捕捉（作成時でなく開始時 = 直前の状態から滑らかに繋がる）
+                t.started = true;
+                if (t.hasMove)
+                {
+                    if (const auto* r = reg.try_get<UIRect>(e))
+                    {
+                        t.baseOffMin = r->offsetMin;
+                        t.baseOffMax = r->offsetMax;
+                    }
+                    else
+                    {
+                        t.hasMove = false;
+                    }
+                }
+                t.scaleFrom = tw.visScale;
+                t.alphaFrom = tw.visAlpha;
+            }
+            const float p  = std::clamp((t.t - t.delay) / (std::max)(0.01f, t.duration), 0.0f, 1.0f);
+            const float ev = UiEase(t.easing, p);
+            if (t.hasMove)
+            {
+                if (auto* r = reg.try_get<UIRect>(e))
+                {
+                    r->offsetMin = {t.baseOffMin.x + t.moveDelta.x * ev,
+                                    t.baseOffMin.y + t.moveDelta.y * ev};
+                    r->offsetMax = {t.baseOffMax.x + t.moveDelta.x * ev,
+                                    t.baseOffMax.y + t.moveDelta.y * ev};
+                }
+            }
+            if (t.hasScale) scale = t.scaleFrom + (t.scaleTo - t.scaleFrom) * ev;
+            if (t.hasAlpha) alpha = t.alphaFrom + (t.alphaTo - t.alphaFrom) * ev;
+            if (p >= 1.0f)
+            {
+                // 完了: 視覚値は持続させる（alpha=0 で消したままにできる）
+                if (t.hasScale) tw.visScale = t.scaleTo;
+                if (t.hasAlpha) tw.visAlpha = t.alphaTo;
+                it = tw.tweens.erase(it);
+            }
+            else
+            {
+                ++it;
+            }
+        }
+        tw._curScale = (std::max)(0.0f, scale);
+        tw._curAlpha = std::clamp(alpha, 0.0f, 1.0f);
+    }
 }
 
 ImU32 ToImCol(const DirectX::XMFLOAT4& c)
@@ -230,7 +416,8 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
             }
 
             const DirectX::XMFLOAT4 col{img->color.x * tint.x, img->color.y * tint.y,
-                                        img->color.z * tint.z, img->color.w * tint.w};
+                                        img->color.z * tint.z,
+                                        img->color.w * tint.w * ctx.alphaMul};
             const ImU32 ucol = ToImCol(col);
             const ImVec2 pMin(s.minX, s.minY);
             const ImVec2 pMax(s.maxX, s.maxY);
@@ -272,7 +459,7 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
     // --- UIText: 整列 + 折り返し（ImGui 共有フォントのスケール描画。ボタンティントは掛けない）---
     if (const auto* txt = reg.try_get<UIText>(e))
     {
-        if (!txt->text.empty() && txt->color.w > 0.0f)
+        if (!txt->text.empty() && txt->color.w * ctx.alphaMul > 0.0f)
         {
             ImFont* font = ImGui::GetFont();
             const float fontSize = std::max(1.0f, txt->fontSize * ctx.scale);
@@ -285,7 +472,9 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
             float ty = s.minY;
             if (txt->alignV == 1)      ty = s.minY + (s.Height() - ts.y) * 0.5f;
             else if (txt->alignV == 2) ty = s.maxY - ts.y;
-            ctx.dl->AddText(font, fontSize, ImVec2(tx, ty), ToImCol(txt->color),
+            const DirectX::XMFLOAT4 tcol{txt->color.x, txt->color.y, txt->color.z,
+                                         txt->color.w * ctx.alphaMul};
+            ctx.dl->AddText(font, fontSize, ImVec2(tx, ty), ToImCol(tcol),
                             txt->text.c_str(), nullptr, wrapW);
         }
     }
@@ -297,10 +486,46 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
 void DrawUiSubtree(entt::entity e, const UiRectPx& parentRect, UiDrawContext& ctx)
 {
     UiRectPx current = parentRect;
+    const float parentAlpha = ctx.alphaMul;
     if (const auto* rect = ctx.reg->try_get<UIRect>(e))
     {
         if (!rect->visible) return;
         current = ResolveUiRect(*rect, parentRect);
+
+        // --- UIAnimator / tween の視覚エフェクト（Play / ゲームモード中のみ）---
+        // 矩形をキャンバス空間で変形するので、子孫のレイアウト解決・レイキャスト矩形にも
+        // そのまま効く（ボタンごと動く/縮む）。アルファは ctx.alphaMul で子孫へ継承。
+        if (ctx.interactive)
+        {
+            float fxScale = 1.0f, fxAlpha = 1.0f, fxOffX = 0.0f, fxOffY = 0.0f;
+            if (const auto* an = ctx.reg->try_get<UIAnimator>(e))
+            {
+                if (an->_mode == 4)
+                {
+                    ctx.alphaMul = parentAlpha;
+                    return;   // hideUi 完了 = サブツリーごと非表示（クリックも通らない）
+                }
+                fxScale *= an->_curScale;
+                fxAlpha *= an->_curAlpha;
+                fxOffX  += an->_curOffset.x;
+                fxOffY  += an->_curOffset.y;
+            }
+            if (const auto* tw = ctx.reg->try_get<UITweenState>(e))
+            {
+                fxScale *= tw->_curScale;
+                fxAlpha *= tw->_curAlpha;
+            }
+            if (fxScale != 1.0f || fxOffX != 0.0f || fxOffY != 0.0f)
+            {
+                const float cx = (current.minX + current.maxX) * 0.5f + fxOffX;
+                const float cy = (current.minY + current.maxY) * 0.5f + fxOffY;
+                const float hw = current.Width()  * 0.5f * fxScale;
+                const float hh = current.Height() * 0.5f * fxScale;
+                current = {cx - hw, cy - hh, cx + hw, cy + hh};
+            }
+            ctx.alphaMul = parentAlpha * fxAlpha;
+        }
+
         if (ctx.resolvedOut)
         {
             // エディタ支援（ResolveRects）: 描画順のままスクリーン矩形を収集
@@ -313,9 +538,12 @@ void DrawUiSubtree(entt::entity e, const UiRectPx& parentRect, UiDrawContext& ct
             DrawUiElement(e, current, ctx);
     }
     auto it = ctx.children->find(e);
-    if (it == ctx.children->end()) return;
-    for (entt::entity child : it->second)
-        DrawUiSubtree(child, current, ctx);
+    if (it != ctx.children->end())
+    {
+        for (entt::entity child : it->second)
+            DrawUiSubtree(child, current, ctx);
+    }
+    ctx.alphaMul = parentAlpha;   // 兄弟へ波及しないよう復元（push/pop）
 }
 
 // RenderAndUpdateInput / RenderPreview / ResolveRects の共通部:
@@ -398,6 +626,10 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
 {
     if (!dl || vw <= 0.0f || vh <= 0.0f)
         return;
+
+    // UIAnimator / tween を進める（Play / ゲームモード中のみここへ来る。エディタプレビューは
+    // RenderPreview 経路なのでアニメは進まず最終ポーズで表示される）。
+    UpdateUiAnimations(reg, ImGui::GetIO().DeltaTime);
 
     // このフレームの入力スナップショット（##GameUI ウィンドウ内で呼ばれる前提）
     std::vector<UiHitEntry> buttonRects;   // interactable な UIButton（描画順）
@@ -554,6 +786,22 @@ void UISystem::ResetRuntimeState(entt::registry& reg)
     {
         btn._hovered = false;
         btn._pressed = false;
+    }
+    // UIAnimator: 次の Play で出現アニメが最初から再生されるように全ランタイム状態を戻す
+    for (auto [e, an] : reg.view<UIAnimator>().each())
+    {
+        an._t = 0.0f;
+        an._mode = 0;
+        an._hoverS = 1.0f;
+        an._loopT = 0.0f;
+        an._curScale = 1.0f;
+        an._curAlpha = 1.0f;
+        an._curOffset = {0.0f, 0.0f};
+    }
+    // tween はランタイム専用なので丸ごと破棄
+    {
+        auto view = reg.view<UITweenState>();
+        reg.remove<UITweenState>(view.begin(), view.end());
     }
 }
 

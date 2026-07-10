@@ -126,6 +126,9 @@ t.scale      -- Vec3
 | `:setUiTexture(e, path)` | — | `UIImage.texturePath` を差し替え（assets 相対。無ければ何もしない） |
 | `:setUiFill(e, amount)` | — | `UIImage.fillAmount`（表示割合 0..1、クランプあり）を設定。HPバー/ゲージ用 |
 | `:getUiFill(e)` | number | `UIImage.fillAmount` を読む（無ければ 0） |
+| `:tweenUi(e, params)` | — | UI をトゥイーンで動かす。`params={dx?,dy?,scale?,alpha?,duration?,delay?,easing?}`。`dx/dy`=UIRect offset の相対移動(px)、`scale/alpha`=見た目のみ（子孫にも掛かる）。`easing`: `"linear"/"in"/"out"/"inOut"/"back"/"bounce"/"elastic"`。`e` は Entity かエンティティID |
+| `:showUi(e)` | — | 表示して `UIAnimator` の出現アニメを最初から再生（無ければ visible=true のみ） |
+| `:hideUi(e)` | — | 出現アニメの逆再生で消す（子孫ごと。消えた後はクリック不可）。無アニメなら即非表示。戻すのは `showUi` |
 | `:gimmicks()` | table | Gimmick 付き全エンティティを配列で返す（要素: `{e,name,kind,period,phase,amplitude,threshold,solid,deadly}`） |
 | `:queryByTag(tag)` | table | タグ一致エンティティの**名前配列** |
 | `:queryInBox(minX, minZ, maxX, maxZ, tag?)` | table | XZ 矩形内のエンティティ名配列（RTS の矩形選択向け） |

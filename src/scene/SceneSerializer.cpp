@@ -250,6 +250,7 @@ static void RegisterCoreComponentSerializers()
     R.Register(MakeReflectedInfo<UIImage>("UIImage", "uiImage", true));
     R.Register(MakeReflectedInfo<UIText>("UIText", "uiText", true));
     R.Register(MakeReflectedInfo<UIButton>("UIButton", "uiButton", true));
+    R.Register(MakeReflectedInfo<UIAnimator>("UIAnimator", "uiAnimator", true));
 
     // ---- カメラ: フィールドは反射で復元し、新規追加時だけアクティブカメラの重複防止を行う ----
     {

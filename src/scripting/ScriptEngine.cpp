@@ -263,6 +263,7 @@ void ScriptEngine::RegisterBindings()
             if (type == "UIImage")            return e.HasComponent<UIImage>();
             if (type == "UIText")             return e.HasComponent<UIText>();
             if (type == "UIButton")           return e.HasComponent<UIButton>();
+            if (type == "UIAnimator")         return e.HasComponent<UIAnimator>();
             // タイプミスや未対応型を「持ってない」と誤認させない（デバッグ困難の元）。
             // 毎フレーム呼ばれてもスパムしないよう型名ごとに1回だけ警告する。
             {
@@ -429,6 +430,79 @@ void ScriptEngine::RegisterBindings()
             auto& reg = s.GetRegistry();
             if (!reg.all_of<UIImage>(e.GetHandle())) return 0.0f;
             return reg.get<UIImage>(e.GetHandle()).fillAmount;
+        },
+        // --- UI アニメーション / トゥイーン ---
+        // 対象は Entity か エンティティID(数値。ボタンクリックの data.source をそのまま渡せる)。
+        // params: { dx=, dy=(相対移動px), scale=(視覚拡縮), alpha=(視覚透明度0..1),
+        //           duration=0.3, delay=0, easing="out" }
+        // easing: "linear"/"in"/"out"/"inOut"/"back"(勢い)/"bounce"/"elastic"(または 0..6 の数値)
+        "tweenUi", [](Scene& s, sol::object target, sol::table params) {
+            auto& reg = s.GetRegistry();
+            entt::entity h = entt::null;
+            if (target.is<Entity>()) h = target.as<Entity>().GetHandle();
+            else if (target.is<double>())
+                h = static_cast<entt::entity>(static_cast<std::uint32_t>(target.as<double>()));
+            if (h == entt::null || !reg.valid(h) || !reg.all_of<UIRect>(h)) return;
+
+            UiTween t;
+            t.duration = params.get_or("duration", 0.3f);
+            t.delay    = params.get_or("delay", 0.0f);
+            if (sol::object eo = params["easing"]; eo.valid())
+            {
+                if (eo.is<std::string>())
+                {
+                    const std::string es = eo.as<std::string>();
+                    if      (es == "linear")                    t.easing = 0;
+                    else if (es == "in")                        t.easing = 1;
+                    else if (es == "out")                       t.easing = 2;
+                    else if (es == "inOut" || es == "inout")    t.easing = 3;
+                    else if (es == "back")                      t.easing = 4;
+                    else if (es == "bounce")                    t.easing = 5;
+                    else if (es == "elastic")                   t.easing = 6;
+                }
+                else if (eo.is<int>())
+                {
+                    t.easing = std::clamp(eo.as<int>(), 0, 6);
+                }
+            }
+            const float dx = params.get_or("dx", 0.0f);
+            const float dy = params.get_or("dy", 0.0f);
+            if (dx != 0.0f || dy != 0.0f) { t.hasMove = true; t.moveDelta = {dx, dy}; }
+            if (sol::object v = params["scale"]; v.is<float>())
+            { t.hasScale = true; t.scaleTo = (std::max)(0.0f, v.as<float>()); }
+            if (sol::object v = params["alpha"]; v.is<float>())
+            { t.hasAlpha = true; t.alphaTo = std::clamp(v.as<float>(), 0.0f, 1.0f); }
+            if (!t.hasMove && !t.hasScale && !t.hasAlpha) return;
+            reg.get_or_emplace<UITweenState>(h).tweens.push_back(t);
+        },
+        // 表示して出現アニメを最初から再生（UIAnimator 無しなら visible=true だけ）。
+        "showUi", [](Scene& s, sol::object target) {
+            auto& reg = s.GetRegistry();
+            entt::entity h = entt::null;
+            if (target.is<Entity>()) h = target.as<Entity>().GetHandle();
+            else if (target.is<double>())
+                h = static_cast<entt::entity>(static_cast<std::uint32_t>(target.as<double>()));
+            if (h == entt::null || !reg.valid(h)) return;
+            if (reg.all_of<UIRect>(h))          reg.get<UIRect>(h).visible = true;
+            else if (reg.all_of<UICanvas>(h))   reg.get<UICanvas>(h).visible = true;
+            if (auto* an = reg.try_get<UIAnimator>(h)) { an->_t = 0.0f; an->_mode = 0; }
+        },
+        // 出現アニメの逆再生で消す（UIAnimator 無し/出現アニメ無しなら即 visible=false）。
+        // 消えた後に戻すのは showUi（setUiVisible では戻らない）。
+        "hideUi", [](Scene& s, sol::object target) {
+            auto& reg = s.GetRegistry();
+            entt::entity h = entt::null;
+            if (target.is<Entity>()) h = target.as<Entity>().GetHandle();
+            else if (target.is<double>())
+                h = static_cast<entt::entity>(static_cast<std::uint32_t>(target.as<double>()));
+            if (h == entt::null || !reg.valid(h)) return;
+            auto* an = reg.try_get<UIAnimator>(h);
+            if (an && an->showAnim != 0)
+            {
+                if (an->_mode != 4) { an->_t = 0.0f; an->_mode = 3; }
+            }
+            else if (reg.all_of<UIRect>(h))     reg.get<UIRect>(h).visible = false;
+            else if (reg.all_of<UICanvas>(h))   reg.get<UICanvas>(h).visible = false;
         },
         // 配置済み Gimmick コンポーネントを持つ全エンティティを列挙し、
         // パラメータ付きの配列(1始まり)で返す。ゲームスクリプトが動き/当たり判定を駆動する。

@@ -208,6 +208,21 @@ void RegisterCoreComponentMeta()
         .data<&UIButton::hoverColor>("hoverColor")
         .data<&UIButton::pressedColor>("pressedColor")
         .data<&UIButton::interactable>("interactable");
+
+    // UIAnimator: _ 付きランタイム状態（_t/_mode/_cur* 等）は登録しない = 保存されない
+    entt::meta_factory<UIAnimator>{}
+        .type("UIAnimator")
+        .data<&UIAnimator::showAnim>("showAnim")
+        .data<&UIAnimator::showDuration>("showDuration")
+        .data<&UIAnimator::showDelay>("showDelay")
+        .data<&UIAnimator::showEasing>("showEasing")
+        .data<&UIAnimator::slideOffset>("slideOffset")
+        .data<&UIAnimator::hoverScale>("hoverScale")
+        .data<&UIAnimator::pressScale>("pressScale")
+        .data<&UIAnimator::hoverSpeed>("hoverSpeed")
+        .data<&UIAnimator::loopAnim>("loopAnim")
+        .data<&UIAnimator::loopSpeed>("loopSpeed")
+        .data<&UIAnimator::loopAmount>("loopAmount");
 }
 
 } // namespace dx12e

@@ -1,6 +1,7 @@
 #include "editor/panels/InspectorPanel.h"
 #include "editor/EditorContext.h"
 #include "editor/PropertyGrid.h"
+#include "editor/UiEditUtil.h"
 #include "editor/UndoSystem.h"
 #include "ecs/Components.h"
 #include "renderer/Camera.h"
@@ -96,7 +97,7 @@ dx12e::u64 PickEntityIcon(entt::registry& reg, entt::entity e, const dx12e::Edit
     using namespace dx12e;
     if (reg.all_of<CameraComponent>(e))                       return ic.entCamera;
     if (reg.any_of<PointLight, DirectionalLight, SpotLight>(e)) return ic.entLight;
-    if (reg.any_of<UICanvas, UIRect, UIImage, UIText, UIButton>(e)) return ic.entUi;
+    if (reg.any_of<UICanvas, UIRect, UIImage, UIText, UIButton, UIAnimator>(e)) return ic.entUi;
     if (reg.all_of<MeshRenderer>(e))                          return ic.entMesh;
     if (reg.all_of<AudioSource>(e))                           return ic.entAudio;
     if (reg.any_of<RigidBody, BoxCollider, SphereCollider,
@@ -487,52 +488,8 @@ void AddComponentMenuItem(entt::registry& reg, EditorContext& ctx,
     }
 }
 
-// ── UIRect 用: エンティティの「親矩形」をキャンバス空間(px)で解決する ──
-// UISystem と同じ式（rect = parentMin + parentSize*anchor + offset）で、祖先の UICanvas の
-// 基準解像度をルート矩形として e の親までのチェーンを順に適用する。ConstantPixel は
-// 実行時のビューポート寸法に依存するため基準解像度で近似する（アンカープリセットの
-// 「見た目の位置を維持する」offset 補正用途にはこれで十分）。
-// 祖先に UICanvas が無い（UI ツリー外）なら false を返し、out は変更しない。
-bool ResolveUiParentRectPx(entt::registry& reg, entt::entity e,
-                           DirectX::XMFLOAT2& outMin, DirectX::XMFLOAT2& outMax)
-{
-    // e の親 → UICanvas の直前 までの祖先を集める（e 自身とキャンバスは含めない）
-    std::vector<entt::entity> chain;
-    entt::entity canvas = entt::null;
-    entt::entity cur = e;
-    for (int guard = 0; guard < 64; ++guard)   // 循環親子の保険
-    {
-        const auto* t = reg.try_get<Transform>(cur);
-        entt::entity parent = t ? t->parent : entt::null;
-        if (parent == entt::null || !reg.valid(parent)) break;
-        if (reg.all_of<UICanvas>(parent)) { canvas = parent; break; }
-        chain.push_back(parent);
-        cur = parent;
-    }
-    if (canvas == entt::null) return false;
-
-    const auto& cv = reg.get<UICanvas>(canvas);
-    DirectX::XMFLOAT2 mn{0.0f, 0.0f};
-    DirectX::XMFLOAT2 mx{std::max(1.0f, cv.refWidth), std::max(1.0f, cv.refHeight)};
-
-    // キャンバス直下 → e の親 の順に解決（UIRect を持たない中間ノードは親矩形を素通し）
-    for (auto it = chain.rbegin(); it != chain.rend(); ++it)
-    {
-        const auto* r = reg.try_get<UIRect>(*it);
-        if (!r) continue;
-        const float pw = mx.x - mn.x;
-        const float ph = mx.y - mn.y;
-        const DirectX::XMFLOAT2 nmn{mn.x + pw * r->anchorMin.x + r->offsetMin.x,
-                                    mn.y + ph * r->anchorMin.y + r->offsetMin.y};
-        const DirectX::XMFLOAT2 nmx{mn.x + pw * r->anchorMax.x + r->offsetMax.x,
-                                    mn.y + ph * r->anchorMax.y + r->offsetMax.y};
-        mn = nmn;
-        mx = nmx;
-    }
-    outMin = mn;
-    outMax = mx;
-    return true;
-}
+// ※ UIRect の「親矩形」解決（ResolveUiParentRectPx）は SceneView / UIエディタと共用のため
+//   editor/UiEditUtil.h（uiedit 名前空間）へ移設した。
 
 } // anonymous namespace
 
@@ -794,7 +751,7 @@ void InspectorPanel::Render(entt::registry& reg,
 
                         DirectX::XMFLOAT2 pMin{0.0f, 0.0f};
                         DirectX::XMFLOAT2 pMax{1920.0f, 1080.0f};   // UI ツリー外は既定値で近似
-                        ResolveUiParentRectPx(reg, ctx.selectedEntity, pMin, pMax);
+                        uiedit::ResolveUiParentRectPx(reg, ctx.selectedEntity, pMin, pMax);
                         const float pw = pMax.x - pMin.x;
                         const float ph = pMax.y - pMin.y;
 
@@ -844,6 +801,44 @@ void InspectorPanel::Render(entt::registry& reg,
                                 dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1),
                                     ImGui::GetColorU32(current ? theme::Accent
                                                                : ImGui::GetStyleColorVec4(ImGuiCol_Text)));
+                                ImGui::PopID();
+                            }
+                        }
+                        ImGui::PopID();
+                    }
+
+                    // ── 配置テンプレ（9 方位）: アンカー + 位置を同時スナップ ──
+                    // アンカープリセットが「アンカーだけ変える（見た目は保つ）」のに対し、こちらは
+                    // 要素そのものを親矩形のその方位へピッタリ寄せる（Unity の Alt+プリセット相当）。
+                    pg::Label("配置 Placement",
+                        "要素を親矩形の 9 方位へスナップ配置する。アンカーも同時に設定されるので\n"
+                        "解像度が変わってもその方位に追従する（サイズは維持）");
+                    {
+                        static const char* kPlaceLabels[3][3] = {
+                            {"\xe2\x86\x96", "\xe2\x86\x91", "\xe2\x86\x97"},   // ↖ ↑ ↗
+                            {"\xe2\x86\x90", "\xe2\x97\x8f", "\xe2\x86\x92"},   // ← ● →
+                            {"\xe2\x86\x99", "\xe2\x86\x93", "\xe2\x86\x98"},   // ↙ ↓ ↘
+                        };
+                        static const char* kPlaceNames[3][3] = {
+                            {"左上", "上", "右上"},
+                            {"左",   "中央", "右"},
+                            {"左下", "下", "右下"},
+                        };
+                        ImGui::PushID("UiPlacement");
+                        const float cell = ImGui::GetFrameHeight() + 4.0f;
+                        for (int row = 0; row < 3; ++row)
+                        {
+                            for (int col = 0; col < 3; ++col)
+                            {
+                                if (col) ImGui::SameLine(0.0f, 3.0f);
+                                ImGui::PushID(row * 3 + col);
+                                if (ImGui::Button(kPlaceLabels[row][col], ImVec2(cell, cell)))
+                                {
+                                    if (uiedit::ApplyUiPlacement(reg, ctx.selectedEntity, col, row))
+                                        changed = true;
+                                }
+                                if (ImGui::IsItemHovered())
+                                    ImGui::SetTooltip("%s に配置", kPlaceNames[row][col]);
                                 ImGui::PopID();
                             }
                         }
@@ -1036,6 +1031,62 @@ void InspectorPanel::Render(entt::registry& reg,
                     ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
                         "状態色の反映には同一エンティティの UIImage が必要");
                 EndEdit(reg, ctx, ctx.selectedEntity, m_uiButtonEdit, changed, active, "UIButton");
+            }
+        }
+
+        // UIAnimator（UI の出現/ホバー/ループアニメ。Play 中のみ再生。効果は自分と子孫に掛かる）
+        if (reg.all_of<UIAnimator>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entUi : 0, "UIAnimator");
+            bool removed = ComponentRemoveMenu<UIAnimator>(reg, ctx, ctx.selectedEntity, "UIAnimator");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_uiAnimatorEdit);
+                auto& an = reg.get<UIAnimator>(ctx.selectedEntity);
+                bool changed = false, active = false;
+
+                if (pg::Begin("UIAnimator"))
+                {
+                    static const char* showAnims[] = {"なし", "フェード", "ポップ(拡大)",
+                                                      "左から", "右から", "上から", "下から"};
+                    static const char* easings[] = {"リニア", "イーズイン", "イーズアウト",
+                                                    "イン/アウト", "バック(勢い)", "バウンス", "弾性"};
+                    static const char* loops[] = {"なし", "浮遊(上下)", "パルス(拡縮)", "点滅"};
+
+                    pg::Label("出現 Show",
+                        "Play 開始時と Lua scene:showUi() で再生される出現アニメ。\n"
+                        "scene:hideUi() は逆再生で消す");
+                    changed |= pg::Combo("出現アニメ Show Anim", &an.showAnim,
+                                         showAnims, IM_ARRAYSIZE(showAnims));
+                    changed |= pg::Float("時間 Duration", &an.showDuration, 0.01f, 0.05f, 5.0f,
+                                         "%.2f", &active);
+                    changed |= pg::Float("遅延 Delay", &an.showDelay, 0.01f, 0.0f, 10.0f, "%.2f", &active,
+                        "再生開始までの秒。複数の UI をずらして順番に出すのに使う");
+                    changed |= pg::Combo("イージング Easing", &an.showEasing,
+                                         easings, IM_ARRAYSIZE(easings));
+                    changed |= pg::Float("スライド距離 Slide", &an.slideOffset, 1.0f, 0.0f, 2000.0f,
+                                         "%.0f", &active, "「〜から」系のときの移動距離(px)");
+
+                    pg::Label("ホバー/押下 Hover",
+                        "同一エンティティに UIButton がある時だけ効く（ボタンの気持ちよさ用）");
+                    changed |= pg::Float("ホバー拡大 Hover Scale", &an.hoverScale, 0.005f, 0.5f, 2.0f,
+                                         "%.2f", &active);
+                    changed |= pg::Float("押下縮小 Press Scale", &an.pressScale, 0.005f, 0.5f, 2.0f,
+                                         "%.2f", &active);
+                    changed |= pg::Float("追従速度 Speed", &an.hoverSpeed, 0.1f, 1.0f, 40.0f,
+                                         "%.0f", &active, "大きいほどキビキビ反応する");
+
+                    pg::Label("ループ Loop", "常時再生されるループアニメ（注目させたい UI に）");
+                    changed |= pg::Combo("ループアニメ Loop Anim", &an.loopAnim,
+                                         loops, IM_ARRAYSIZE(loops));
+                    changed |= pg::Float("速さ Speed (Hz)", &an.loopSpeed, 0.01f, 0.05f, 10.0f,
+                                         "%.2f", &active);
+                    changed |= pg::Float("量 Amount", &an.loopAmount, 0.1f, 0.0f, 200.0f,
+                                         "%.2f", &active, "浮遊=px / パルス・点滅=割合(0.05 = ±5%)");
+                    pg::End();
+                }
+                ImGui::TextDisabled("アニメは Play 中に再生されます（エディタ上は最終ポーズ）");
+                EndEdit(reg, ctx, ctx.selectedEntity, m_uiAnimatorEdit, changed, active, "UIAnimator");
             }
         }
 
@@ -2116,6 +2167,7 @@ void InspectorPanel::Render(entt::registry& reg,
             AddComponentMenuItem<UIImage>(reg, ctx, ctx.selectedEntity, "UI Image");
             AddComponentMenuItem<UIText>(reg, ctx, ctx.selectedEntity, "UI Text");
             AddComponentMenuItem<UIButton>(reg, ctx, ctx.selectedEntity, "UI Button");
+            AddComponentMenuItem<UIAnimator>(reg, ctx, ctx.selectedEntity, "UI Animator");
             ImGui::Separator();
             AddComponentMenuItem<RigidBody>(reg, ctx, ctx.selectedEntity, "RigidBody");
             AddComponentMenuItem<BoxCollider>(reg, ctx, ctx.selectedEntity, "Box Collider");

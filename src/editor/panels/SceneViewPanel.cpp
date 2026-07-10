@@ -1,5 +1,6 @@
 #include "editor/panels/SceneViewPanel.h"
 #include "editor/EditorContext.h"
+#include "editor/UiEditUtil.h"
 #include "editor/UndoSystem.h"
 #include "ecs/Components.h"
 #include "renderer/Camera.h"
@@ -472,21 +473,32 @@ void SceneViewPanel::HandleUiEditing(entt::registry& reg,
             }
             if (hit)
             {
-                if (io.KeyCtrl)
+                // クリック = 最外殻のウィジェット（ボタン本体など）を選択、ダブルクリックで 1 段
+                // 深掘り（Figma / UMG 方式。ラベル(子 UIText)だけ掴んで「文字だけ動く」のを防ぐ）
+                const bool dbl = ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+                const entt::entity target =
+                    uiedit::ResolveClickTarget(reg, hit->e, ctx.selectedEntity, dbl);
+                if (target != entt::null)
                 {
-                    ctx.ToggleSelection(hit->e);   // 3D ピッキングと同じマルチ選択
-                }
-                else
-                {
-                    ctx.Select(hit->e);
-                    // 選択と同時に移動ドラッグ開始（Unity 同様、掴んでそのまま動かせる）
-                    m_uiDragEntity      = hit->e;
-                    m_uiDragStartRect   = reg.get<UIRect>(hit->e);
-                    m_uiDragStartMouse  = {mousePos.x, mousePos.y};
-                    m_uiDragStartMin    = {hit->min.x, hit->min.y};
-                    m_uiDragStartMax    = {hit->max.x, hit->max.y};
-                    m_uiDragCanvasScale = hit->canvasScale;
-                    m_uiDragEdges       = kUiDragMove;
+                    if (io.KeyCtrl)
+                    {
+                        ctx.ToggleSelection(target);   // 3D ピッキングと同じマルチ選択
+                    }
+                    else
+                    {
+                        ctx.Select(target);
+                        // 選択と同時に移動ドラッグ開始（Unity 同様、掴んでそのまま動かせる）
+                        if (const UiResolvedRect* tr = findRect(target))
+                        {
+                            m_uiDragEntity      = target;
+                            m_uiDragStartRect   = reg.get<UIRect>(target);
+                            m_uiDragStartMouse  = {mousePos.x, mousePos.y};
+                            m_uiDragStartMin    = {tr->min.x, tr->min.y};
+                            m_uiDragStartMax    = {tr->max.x, tr->max.y};
+                            m_uiDragCanvasScale = tr->canvasScale;
+                            m_uiDragEdges       = kUiDragMove;
+                        }
+                    }
                 }
                 m_uiClickConsumed = true;
                 // 選択が変わったので描画用に引き直す（ホバー状態は旧選択のものなので破棄）

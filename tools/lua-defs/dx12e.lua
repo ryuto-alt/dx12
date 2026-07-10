@@ -251,6 +251,30 @@ function Scene:setUiFill(e, amount) end
 ---@return number
 function Scene:getUiFill(e) end
 
+---UI要素をトゥイーンで動かす（イージング付きアニメーション）。対象は UIRect 必須。
+---`dx/dy` はレイアウト（UIRect offset）を実際に動かす＝終了位置でクリックも効く。
+---`scale/alpha` は見た目だけの拡縮/透明度（自分と子孫にまとめて掛かる。レイアウトは不変）。
+---同時に複数指定でき、連続で呼べば重ねがけもできる。Play 中のみ動く。
+---```lua
+----- メニューを右へ 200px、0.4秒 バウンスで
+---scene:tweenUi(menu, { dx = 200, duration = 0.4, easing = "bounce" })
+----- じわっと消す（消えた後もクリックは残るので hideUi と使い分け）
+---scene:tweenUi(popup, { alpha = 0, duration = 0.3 })
+---```
+---@param e Entity|integer 対象（ボタンクリックの data.source をそのまま渡してもよい）
+---@param params { dx?: number, dy?: number, scale?: number, alpha?: number, duration?: number, delay?: number, easing?: "linear"|"in"|"out"|"inOut"|"back"|"bounce"|"elastic" }
+function Scene:tweenUi(e, params) end
+
+---UI要素を表示して、UIAnimator の出現アニメを最初から再生する
+---（UIAnimator が無ければ setUiVisible(e, true) と同じ）。
+---@param e Entity|integer
+function Scene:showUi(e) end
+
+---UI要素を出現アニメの逆再生で消す（自分と子孫ごと。消えた後はクリックも通らない）。
+---UIAnimator が無い/出現アニメ「なし」なら即座に非表示。戻すのは showUi（setUiVisible では戻らない）。
+---@param e Entity|integer
+function Scene:hideUi(e) end
+
 ---Gimmick コンポーネント付き全エンティティをパラメータ付き配列で返す
 ---@return GimmickInfo[]
 function Scene:gimmicks() end

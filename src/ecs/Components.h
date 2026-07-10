@@ -327,6 +327,70 @@ struct UIButton
     bool _pressed = false;
 };
 
+// UI アニメーション（UIRect 持ちエンティティに付ける。Play / ゲームモード中のみ再生）。
+// 出現アニメ（Play 開始時と Lua scene:showUi() で再生）・ホバー/押下スケール（要 UIButton）・
+// ループアニメの 3 系統。視覚効果（平行移動/拡縮/アルファ）は自分と子孫にまとめて掛かる。
+// イージング(showEasing): 0=リニア 1=イーズイン 2=イーズアウト 3=イン/アウト 4=バック(勢い)
+//                         5=バウンス 6=弾性
+struct UIAnimator
+{
+    // 出現アニメ
+    int  showAnim     = 1;      // 0=なし 1=フェード 2=ポップ(拡大) 3=左から 4=右から 5=上から 6=下から
+    f32  showDuration = 0.35f;  // 秒
+    f32  showDelay    = 0.0f;   // 秒（複数要素を順番に出すのに使う）
+    int  showEasing   = 2;      // 既定 = イーズアウト
+    f32  slideOffset  = 80.0f;  // スライド距離（キャンバス px）
+
+    // ホバー / 押下スケール（同一エンティティに UIButton がある時のみ効く）
+    f32  hoverScale = 1.05f;
+    f32  pressScale = 0.95f;
+    f32  hoverSpeed = 14.0f;    // 追従速度（大きいほどキビキビ）
+
+    // ループアニメ（常時）
+    int  loopAnim   = 0;        // 0=なし 1=浮遊(上下) 2=パルス(拡縮) 3=点滅(アルファ)
+    f32  loopSpeed  = 1.0f;     // 周波数（Hz）
+    f32  loopAmount = 8.0f;     // 浮遊=px / パルス・点滅=割合（0.05 = ±5%）
+
+    // ランタイム専有（非シリアライズ・meta 未登録）
+    f32  _t      = 0.0f;        // show/hide の経過秒
+    int  _mode   = 0;           // 0=未開始 1=show中 2=表示済み 3=hide中 4=非表示
+    f32  _hoverS = 1.0f;        // ホバースケールの平滑値
+    f32  _loopT  = 0.0f;        // ループ位相（秒）
+    // 今フレームの合成結果（UISystem の更新が書き、描画が読む）
+    f32  _curScale = 1.0f;
+    f32  _curAlpha = 1.0f;
+    DirectX::XMFLOAT2 _curOffset{0.0f, 0.0f};
+};
+
+// Lua scene:tweenUi() の 1 本ぶんの実行状態（ランタイム専用・非シリアライズ・エディタ非表示）
+struct UiTween
+{
+    f32  t = 0.0f;              // 経過秒（delay 含む）
+    f32  duration = 0.3f;
+    f32  delay    = 0.0f;
+    int  easing   = 2;          // UIAnimator::showEasing と同じ列挙
+    bool started  = false;      // delay 明けに from 値を捕捉済みか
+
+    bool hasMove = false;       // UIRect offset への相対移動（キャンバス px）
+    DirectX::XMFLOAT2 moveDelta{0.0f, 0.0f};
+    DirectX::XMFLOAT2 baseOffMin{0.0f, 0.0f};
+    DirectX::XMFLOAT2 baseOffMax{0.0f, 0.0f};
+
+    bool hasScale = false;      // 視覚スケール（レイアウトは変えない）
+    f32  scaleFrom = 1.0f, scaleTo = 1.0f;
+    bool hasAlpha = false;      // 視覚アルファ乗数
+    f32  alphaFrom = 1.0f, alphaTo = 1.0f;
+};
+struct UITweenState
+{
+    std::vector<UiTween> tweens;
+    f32 visScale = 1.0f;        // tween 完了後も持続する視覚スケール / アルファ
+    f32 visAlpha = 1.0f;
+    // 今フレームの評価結果（UISystem の更新が書き、描画が読む）
+    f32 _curScale = 1.0f;
+    f32 _curAlpha = 1.0f;
+};
+
 // 3D 空間オーディオ音源。Transform のワールド位置がエミッタになる。
 struct AudioSource
 {

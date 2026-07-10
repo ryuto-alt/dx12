@@ -145,6 +145,19 @@ scene:setUiVisible(pausePanel, isPaused)                     -- 表示/非表示
 scene:setUiTexture(weaponIcon, "textures/ui/icon_sword.png") -- 画像差し替え
 ```
 
+**動的 UI（アニメーション/イージング）**: `UIAnimator` コンポーネント（Inspector の「✚ コンポーネント追加 > UI Animator」）で
+出現アニメ（フェード/ポップ/スライド）・ボタンのホバー/押下スケール・ループ（浮遊/パルス/点滅）をノーコード設定できる。
+スクリプトからはトゥイーンで自由に動かせる:
+
+```lua
+scene:tweenUi(menu,  { dx = 200, duration = 0.4, easing = "bounce" })  -- 右へ200pxバウンス移動
+scene:tweenUi(popup, { scale = 1.2, alpha = 0, duration = 0.25 })      -- 拡大しながらフェードアウト
+scene:showUi(winPanel)   -- UIAnimator の出現アニメを再生して表示
+scene:hideUi(pauseMenu)  -- 出現アニメの逆再生で消す（子孫ごと。戻すのは showUi）
+```
+`easing` は `"linear" / "in" / "out" / "inOut" / "back"（勢い） / "bounce" / "elastic"`。
+`dx/dy` はレイアウト（UIRect offset）を実際に動かすので終了位置でクリックも効く。`scale/alpha` は見た目だけ（子孫にまとめて掛かる）。
+
 ボタンのクリックは `events:on` で受ける（`UIButton.onClickEvent` に設定した名前で発火。`data.source` にボタンのエンティティID）:
 ```lua
 function OnStart(self)

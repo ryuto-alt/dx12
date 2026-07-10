@@ -7,6 +7,7 @@
 #include <filesystem>
 
 #include "editor/EditorContext.h"
+#include "editor/UiEditUtil.h"
 #include "editor/UndoSystem.h"
 #include "editor/panels/AssetBrowserPanel.h"
 #include "ui/UISystem.h"
@@ -155,7 +156,10 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
 
     ImGuiIO& io = ImGui::GetIO();
 
-    // ===== ツールバー（パレット + 画面サイズ + ズーム）=====
+    const bool selHasRectTb = ctx.selectedEntity != entt::null
+        && reg.valid(ctx.selectedEntity) && reg.all_of<UIRect>(ctx.selectedEntity);
+
+    // ===== ツールバー（パレット + 配置 + 画面サイズ + ズーム）=====
     const auto spawnMarker = [&ctx](const char* marker) {
         PendingSpawnRequest req;
         req.modelPath = marker;
@@ -181,6 +185,47 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
     ImGui::TextDisabled("|");
     ImGui::SameLine(0.0f, 14.0f);
 
+    // ---- 配置テンプレ（9 方位。アンカー + 位置を同時スナップ。Unity の Alt+プリセット相当）----
+    ImGui::BeginDisabled(!selHasRectTb);
+    if (ImGui::Button("配置 \xe2\x96\xbe"))   // ▾
+        ImGui::OpenPopup("##UiEdPlacement");
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("選択中の UI 要素を親矩形の 9 方位へスナップ配置\n"
+                          "（アンカーも同時に設定 = 解像度が変わっても追従する）");
+    if (ImGui::BeginPopup("##UiEdPlacement"))
+    {
+        static const char* kPlaceLabels[3][3] = {
+            {"\xe2\x86\x96", "\xe2\x86\x91", "\xe2\x86\x97"},   // ↖ ↑ ↗
+            {"\xe2\x86\x90", "\xe2\x97\x8f", "\xe2\x86\x92"},   // ← ● →
+            {"\xe2\x86\x99", "\xe2\x86\x93", "\xe2\x86\x98"},   // ↙ ↓ ↘
+        };
+        ImGui::TextDisabled("配置（アンカー + 位置）");
+        for (int ry = 0; ry < 3; ++ry)
+        {
+            for (int rx = 0; rx < 3; ++rx)
+            {
+                if (rx > 0) ImGui::SameLine();
+                ImGui::PushID(ry * 3 + rx);
+                if (ImGui::Button(kPlaceLabels[ry][rx], ImVec2(30.0f, 30.0f))
+                    && selHasRectTb)
+                {
+                    const UIRect before = reg.get<UIRect>(ctx.selectedEntity);
+                    if (uiedit::ApplyUiPlacement(reg, ctx.selectedEntity, rx, ry))
+                    {
+                        const UIRect& after = reg.get<UIRect>(ctx.selectedEntity);
+                        if (std::memcmp(&before, &after, sizeof(UIRect)) != 0)
+                            ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<UIRect>>(
+                                &reg, ctx.selectedEntity, before, after, "UI Placement"));
+                    }
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::PopID();
+            }
+        }
+        ImGui::EndPopup();
+    }
+
+    ImGui::SameLine(0.0f, 14.0f);
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("画面");
     ImGui::SameLine();
@@ -637,21 +682,32 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
         }
         else if (hoveredElem)
         {
-            if (io.KeyCtrl)
+            // クリック = 最外殻のウィジェット（ボタン本体など）を選択、ダブルクリックで 1 段深掘り
+            // （Figma / UMG 方式。ラベル(子 UIText)だけ掴んで「文字だけ動く」のを防ぐ）
+            const bool dbl = ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+            const entt::entity target =
+                uiedit::ResolveClickTarget(reg, hoveredElem->e, ctx.selectedEntity, dbl);
+            if (target != entt::null)
             {
-                ctx.ToggleSelection(hoveredElem->e);
-            }
-            else
-            {
-                ctx.Select(hoveredElem->e);
-                // 選択と同時に移動ドラッグ開始（Unity / UMG 同様、掴んでそのまま動かせる）
-                m_dragEntity      = hoveredElem->e;
-                m_dragStartRect   = reg.get<UIRect>(hoveredElem->e);
-                m_dragStartMouse  = io.MousePos;
-                m_dragStartMin    = hoveredElem->min;
-                m_dragStartMax    = hoveredElem->max;
-                m_dragCanvasScale = hoveredElem->canvasScale;
-                m_dragEdges       = kDragMove;
+                if (io.KeyCtrl)
+                {
+                    ctx.ToggleSelection(target);
+                }
+                else
+                {
+                    ctx.Select(target);
+                    // 選択と同時に移動ドラッグ開始（Unity / UMG 同様、掴んでそのまま動かせる）
+                    if (const UiResolvedRect* tr = findRect(target))
+                    {
+                        m_dragEntity      = target;
+                        m_dragStartRect   = reg.get<UIRect>(target);
+                        m_dragStartMouse  = io.MousePos;
+                        m_dragStartMin    = tr->min;
+                        m_dragStartMax    = tr->max;
+                        m_dragCanvasScale = tr->canvasScale;
+                        m_dragEdges       = kDragMove;
+                    }
+                }
             }
             // 選択が変わったので描画用に引き直す
             selRect = findRect(ctx.selectedEntity);
@@ -669,11 +725,19 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
     }
 
     // ---- オーバーレイ描画 ----
-    // ホバー中の非選択要素: 薄いアウトライン + 名前
-    if (hoveredElem && hoveredElem->e != ctx.selectedEntity && m_dragEdges == kDragNone)
+    // ホバー中の要素: 「クリックしたら選ばれる対象」（最外殻優先）に薄いアウトライン + 名前
+    if (hoveredElem && m_dragEdges == kDragNone)
     {
-        dl->AddRect(hoveredElem->min, hoveredElem->max, kHoverCol);
-        DrawNameLabel(dl, hoveredElem->min, EntityName(reg, hoveredElem->e), kHoverCol);
+        const entt::entity hoverTarget =
+            uiedit::ResolveClickTarget(reg, hoveredElem->e, ctx.selectedEntity, false);
+        if (hoverTarget != entt::null && hoverTarget != ctx.selectedEntity)
+        {
+            if (const UiResolvedRect* hr = findRect(hoverTarget))
+            {
+                dl->AddRect(hr->min, hr->max, kHoverCol);
+                DrawNameLabel(dl, hr->min, EntityName(reg, hoverTarget), kHoverCol);
+            }
+        }
     }
     // マルチ選択（プライマリ以外）: 細いアウトライン
     for (entt::entity e : ctx.selectedEntities)

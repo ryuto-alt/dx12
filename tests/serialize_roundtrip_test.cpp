@@ -738,6 +738,46 @@ static void Test_UIButton()
         });
 }
 
+static void Test_UIAnimator()
+{
+    Case<UIAnimator>(
+        [](entt::registry& r, entt::entity e) {
+            UIAnimator an;
+            an.showAnim     = 3;
+            an.showDuration = 0.5f;
+            an.showDelay    = 0.2f;
+            an.showEasing   = 4;
+            an.slideOffset  = 120.0f;
+            an.hoverScale   = 1.1f;
+            an.pressScale   = 0.9f;
+            an.hoverSpeed   = 20.0f;
+            an.loopAnim     = 1;
+            an.loopSpeed    = 2.0f;
+            an.loopAmount   = 12.0f;
+            an._mode = 2;      // ランタイム専有 → シリアライズされないこと
+            an._t    = 1.5f;
+            an._curAlpha = 0.5f;
+            r.emplace<UIAnimator>(e, an);
+        },
+        [](const UIAnimator& an) {
+            CHECK(an.showAnim == 3);
+            CHECK_F(an.showDuration, 0.5f);
+            CHECK_F(an.showDelay, 0.2f);
+            CHECK(an.showEasing == 4);
+            CHECK_F(an.slideOffset, 120.0f);
+            CHECK_F(an.hoverScale, 1.1f);
+            CHECK_F(an.pressScale, 0.9f);
+            CHECK_F(an.hoverSpeed, 20.0f);
+            CHECK(an.loopAnim == 1);
+            CHECK_F(an.loopSpeed, 2.0f);
+            CHECK_F(an.loopAmount, 12.0f);
+            // ランタイム専有はシリアライズされず既定値のまま
+            CHECK(an._mode == 0);
+            CHECK_F(an._t, 0.0f);
+            CHECK_F(an._curAlpha, 1.0f);
+        });
+}
+
 static void Test_Tag()
 {
     Case<Tag>(
@@ -979,6 +1019,7 @@ int main()
     Test_UIImage();
     Test_UIText();
     Test_UIButton();
+    Test_UIAnimator();
     Test_SkyboxSettings();
     Test_SSAOSettings();
     Test_EntityOrderStable();
