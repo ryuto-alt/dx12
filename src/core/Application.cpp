@@ -5385,6 +5385,7 @@ void Application::LoadEditorIcons(ID3D12GraphicsCommandList* cmdList)
     m_icons.spaceWorld  = load("space_world");
     m_icons.spaceLocal  = load("space_local");
     m_icons.window      = load("window");
+    m_icons.uiMode      = load("ui_mode");
 
     // エンティティ / コンポーネント種別
     m_icons.entMesh     = load("ent_mesh");
@@ -5394,6 +5395,7 @@ void Application::LoadEditorIcons(ID3D12GraphicsCommandList* cmdList)
     m_icons.entScript   = load("ent_script");
     m_icons.entPhysics  = load("ent_physics");
     m_icons.entCollider = load("ent_collider");
+    m_icons.entUi       = load("ent_ui");
     m_icons.entEmpty    = load("ent_empty");
 
     // プロジェクトテンプレート
@@ -10108,7 +10110,8 @@ void Application::Render()
             m_shadowMapDirty, m_cascadeSplitLambda, m_cascadeBlendBand,
             m_showCascadeDebug, &m_gameClock,
             m_modeChangeRequested, pendingPlayMode,
-            PathResolver::AssetsDir(), kLeftPanelWidth, kToolbarHeight);
+            PathResolver::AssetsDir(), kLeftPanelWidth, kToolbarHeight,
+            m_resourceManager.get(), m_srvHeap.get(), nativeCmdList);
 
         if (m_modeChangeRequested)
             m_pendingMode = pendingPlayMode ? EngineMode::Playing : EngineMode::Editor;

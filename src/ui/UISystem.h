@@ -4,6 +4,7 @@
 #include <vector>
 
 #include <entt/entt.hpp>
+#include <imgui.h>                  // UiResolvedRect の ImVec2（値メンバのため完全型が必要）
 
 struct ImDrawList;                  // ImGui（描画先 DrawList）
 struct ID3D12GraphicsCommandList;   // UIImage テクスチャの遅延ロード用
@@ -20,6 +21,20 @@ struct UIPendingClick
 {
     std::string  eventName;               // UIButton::onClickEvent
     entt::entity source = entt::null;     // ボタンのエンティティ
+};
+
+// エディタ支援用: レイアウト解決済みの UIRect 1 件（スクリーン座標）。
+// ResolveRects が描画順（= 奥→手前。後方ほど手前）で出力する。
+// canvasScale/canvasOrigin は「スクリーンΔ → キャンバス空間 px」の換算
+// （canvasPx = (screen - canvasOrigin) / canvasScale）に使う。
+struct UiResolvedRect
+{
+    entt::entity e = entt::null;             // UIRect を持つエンティティ
+    ImVec2       min{0.0f, 0.0f};            // 矩形 min（スクリーン座標）
+    ImVec2       max{0.0f, 0.0f};            // 矩形 max（スクリーン座標）
+    float        canvasScale = 1.0f;         // キャンバス空間 → スクリーンの倍率
+    ImVec2       canvasOrigin{0.0f, 0.0f};   // キャンバス原点（スクリーン座標）
+    entt::entity canvas = entt::null;        // 属する UICanvas エンティティ
 };
 
 // ゲーム内 retained-mode UI（UICanvas / UIRect / UIImage / UIText / UIButton）の
@@ -43,6 +58,22 @@ public:
                               float ox, float oy, float vw, float vh,
                               ResourceManager* resources, DescriptorHeap* srvHeap,
                               ID3D12GraphicsCommandList* cmdList);
+
+    // エディタの SceneView 用プレビュー描画（非 Play 時）。レイアウト解決＋描画のみで
+    // 入力処理を一切行わない: ボタンは normalColor 固定、_hovered/_pressed は読み書き
+    // せず、クリックキューにも積まない。内部状態を使わないため static（インスタンス不要）。
+    // 引数の意味は RenderAndUpdateInput と同じ。
+    static void RenderPreview(entt::registry& reg, ImDrawList* dl,
+                              float ox, float oy, float vw, float vh,
+                              ResourceManager* resources, DescriptorHeap* srvHeap,
+                              ID3D12GraphicsCommandList* cmdList);
+
+    // エディタ支援用: 描画せずレイアウト解決のみ行い、UIRect を持つ全要素（ボタンに
+    // 限らない）の解決済みスクリーン矩形を描画順（= 奥→手前）で out に積む（out は
+    // 冒頭でクリア）。SceneView での UI ピッキングやハンドル描画のヒットテストに使う。
+    static void ResolveRects(entt::registry& reg,
+                             float ox, float oy, float vw, float vh,
+                             std::vector<UiResolvedRect>& out);
 
     // 前フレームの Render で確定したクリックを EventBus へ即時 Emit する。
     // Application::Update の Lua OnUpdate 呼び出しより前に呼ぶこと

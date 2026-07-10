@@ -96,6 +96,7 @@ dx12e::u64 PickEntityIcon(entt::registry& reg, entt::entity e, const dx12e::Edit
     using namespace dx12e;
     if (reg.all_of<CameraComponent>(e))                       return ic.entCamera;
     if (reg.any_of<PointLight, DirectionalLight, SpotLight>(e)) return ic.entLight;
+    if (reg.any_of<UICanvas, UIRect, UIImage, UIText, UIButton>(e)) return ic.entUi;
     if (reg.all_of<MeshRenderer>(e))                          return ic.entMesh;
     if (reg.all_of<AudioSource>(e))                           return ic.entAudio;
     if (reg.any_of<RigidBody, BoxCollider, SphereCollider,

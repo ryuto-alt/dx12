@@ -52,6 +52,7 @@ inline const ImVec4 TypeCamera  = Hex(0x3fb6b0);
 inline const ImVec4 TypeAudio   = Hex(0x5fc77e);
 inline const ImVec4 TypeScript  = Hex(0xa98cff);
 inline const ImVec4 TypePhysics = Hex(0xe08a5b);
+inline const ImVec4 TypeUi      = Hex(0xec4899);
 inline const ImVec4 TypePrefab  = Hex(0x6ba2ff);
 inline const ImVec4 TypeEmpty   = Hex(0x8c8f98);
 

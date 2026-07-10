@@ -7,6 +7,8 @@
 #include "core/Types.h"
 #include "ecs/Components.h"
 
+struct ID3D12GraphicsCommandList;   // UI プレビューのテクスチャ遅延ロード用
+
 namespace dx12e
 {
 
@@ -14,6 +16,8 @@ class EditorContext;
 class Camera;
 class Scene;
 class Window;
+class ResourceManager;
+class DescriptorHeap;
 
 // メッシュ単位(サブメッシュ)のピッキング結果。テクスチャD&Dでどのメッシュに
 // マテリアルを割り当てるか特定するために使う（HandlePicking のエンティティ全体
@@ -27,10 +31,30 @@ struct SubmeshPickResult
 class SceneViewPanel
 {
 public:
+    // 非 Play 時のゲーム内 UI プレビュー（ctx.uiEditMode ON のとき）。
+    // UISystem::RenderPreview をギズモと同じ背景 DrawList へ描く（3D の上・全パネルの下）。
+    // resources/srvHeap/cmdList は UIImage テクスチャの遅延ロード用（##GameUI 経路と同じ）。
+    void RenderUiPreview(entt::registry& reg,
+                         EditorContext& ctx,
+                         f32 vpX, f32 vpY, f32 vpW, f32 vpH,
+                         ResourceManager* resources,
+                         DescriptorHeap* srvHeap,
+                         ID3D12GraphicsCommandList* cmdList);
+
     void RenderGizmo(entt::registry& reg,
                      EditorContext& ctx,
                      Camera* camera,
                      f32 vpX, f32 vpY, f32 vpW, f32 vpH);
+
+    // UI 編集モード（ctx.uiEditMode）の SceneView 上での UI 要素編集。
+    //   - 左クリック: 解決済み UI 矩形を手前優先でヒットテストして選択
+    //     （ヒット無しなら HandlePicking の 3D ピッキングへフォールスルー）
+    //   - 選択中の UIRect: アウトライン + 8 リサイズハンドルを描画し、
+    //     ハンドルドラッグでリサイズ / 矩形内ドラッグで移動（Undo 対応）
+    // RenderGizmo の後（ImGuizmo の当たり判定確定後）・HandlePicking の前に呼ぶこと。
+    void HandleUiEditing(entt::registry& reg,
+                         EditorContext& ctx,
+                         f32 vpX, f32 vpY, f32 vpW, f32 vpH);
 
     void HandlePicking(entt::registry& reg,
                        EditorContext& ctx,
@@ -80,6 +104,20 @@ private:
 
     // 右クリックのコンテキストメニュー対象(押下時にピッキングして確定、Popup描画まで保持)
     SubmeshPickResult m_textureCtxTarget{};
+
+    // ---- UI 編集モード（ctx.uiEditMode）のドラッグ状態 ----
+    // m_uiDragEdges: -1=非ドラッグ, 0=移動, 正=リサイズ中エッジの bit 組み合わせ
+    //                (1=左 2=右 4=上 8=下。四隅は 2bit。定数は .cpp の kUiEdge* 参照)
+    int               m_uiDragEdges  = -1;
+    entt::entity      m_uiDragEntity = entt::null;
+    UIRect            m_uiDragStartRect{};             // ドラッグ開始時の UIRect（Undo の before）
+    DirectX::XMFLOAT2 m_uiDragStartMouse{0.0f, 0.0f};  // 開始時のマウス（スクリーン座標）
+    DirectX::XMFLOAT2 m_uiDragStartMin{0.0f, 0.0f};    // 開始時の解決済みスクリーン矩形
+    DirectX::XMFLOAT2 m_uiDragStartMax{0.0f, 0.0f};
+    f32               m_uiDragCanvasScale = 1.0f;      // スクリーンΔ → キャンバス px の換算係数
+    // 今フレームの左クリックを UI 編集（選択/ドラッグ開始）が消費したか。
+    // HandlePicking がこれを見て 3D ピッキングをスキップする（毎フレーム再計算）。
+    bool              m_uiClickConsumed = false;
 };
 
 } // namespace dx12e

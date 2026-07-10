@@ -61,6 +61,15 @@ struct UiDrawContext
     // トラバース中に集めるレイキャスト情報（描画順 = 奥→手前。入力の解決は走査完了後）
     std::vector<UiHitEntry>* buttonRects = nullptr;  // interactable な UIButton 全件
     std::vector<UiHitEntry>* blockers    = nullptr;  // クリックを遮る要素（ボタン + raycastBlock 画像）
+
+    // false = エディタプレビュー（RenderPreview / ResolveRects）: ボタンは normalColor
+    // 固定で描き、_hovered/_pressed には読み書きとも一切触れない（ゲーム内状態を汚さない）。
+    bool interactive = true;
+
+    // エディタ支援（ResolveRects）: UIRect を持つ全要素の解決済みスクリーン矩形の出力先。
+    // canvasEntity は現在トラバース中の UICanvas（キャンバス毎のループで更新）。
+    std::vector<UiResolvedRect>* resolvedOut = nullptr;
+    entt::entity canvasEntity = entt::null;
 };
 
 // UIRect の解決式（Components.h のコメントと同一）:
@@ -167,7 +176,12 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
     auto* btn = reg.try_get<UIButton>(e);
     if (btn)
     {
-        if (btn->interactable)
+        if (!ctx.interactive)
+        {
+            // エディタプレビュー: 入力状態(_hovered/_pressed)には触れず normalColor 固定
+            tint = btn->normalColor;
+        }
+        else if (btn->interactable)
         {
             tint = btn->_pressed ? btn->pressedColor
                  : (btn->_hovered ? btn->hoverColor : btn->normalColor);
@@ -262,7 +276,16 @@ void DrawUiSubtree(entt::entity e, const UiRectPx& parentRect, UiDrawContext& ct
     {
         if (!rect->visible) return;
         current = ResolveUiRect(*rect, parentRect);
-        DrawUiElement(e, current, ctx);
+        if (ctx.resolvedOut)
+        {
+            // エディタ支援（ResolveRects）: 描画順のままスクリーン矩形を収集
+            const UiRectPx s = ToScreen(current, ctx);
+            ctx.resolvedOut->push_back({e, ImVec2(s.minX, s.minY), ImVec2(s.maxX, s.maxY),
+                                        ctx.scale, ImVec2(ctx.originX, ctx.originY),
+                                        ctx.canvasEntity});
+        }
+        if (ctx.dl)
+            DrawUiElement(e, current, ctx);
     }
     auto it = ctx.children->find(e);
     if (it == ctx.children->end()) return;
@@ -270,16 +293,16 @@ void DrawUiSubtree(entt::entity e, const UiRectPx& parentRect, UiDrawContext& ct
         DrawUiSubtree(child, current, ctx);
 }
 
-} // namespace
-
-void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
-                                    float ox, float oy, float vw, float vh,
-                                    ResourceManager* resources, DescriptorHeap* srvHeap,
-                                    ID3D12GraphicsCommandList* cmdList)
+// RenderAndUpdateInput / RenderPreview / ResolveRects の共通部:
+// キャンバス収集（sortOrder 昇順）→ 子リスト構築 → キャンバス毎のレイアウト解決＋
+// 描画（ctx.dl 有効時）/ 矩形収集（ctx.resolvedOut 有効時）。入力解決は含まない
+// （RenderAndUpdateInput だけがこの後に行う）。ctx には入力スナップショット等を
+// 呼び出し元で設定済みのものを受け取り、ここでは children とキャンバス毎の変換
+// （originX/Y・scale・canvasEntity）だけを更新する。
+// 戻り値: 可視キャンバスが 1 つ以上あったか（false なら何もしていない）。
+bool ResolveAndDrawCanvases(entt::registry& reg, float ox, float oy, float vw, float vh,
+                            UiDrawContext& ctx)
 {
-    if (!dl || vw <= 0.0f || vh <= 0.0f)
-        return;
-
     // キャンバス収集（sortOrder 昇順、同値は走査順を維持）
     struct CanvasEntry
     {
@@ -293,7 +316,7 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
             canvases.push_back({e, &canvas});
     }
     if (canvases.empty())
-        return;
+        return false;
     std::stable_sort(canvases.begin(), canvases.end(),
                      [](const CanvasEntry& a, const CanvasEntry& b)
                      { return a.canvas->sortOrder < b.canvas->sortOrder; });
@@ -305,25 +328,7 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
         if (t.parent != entt::null && reg.valid(t.parent))
             children[t.parent].push_back(e);
     }
-
-    // このフレームの入力スナップショット（##GameUI ウィンドウ内で呼ばれる前提）
-    std::vector<UiHitEntry> buttonRects;   // interactable な UIButton（描画順）
-    std::vector<UiHitEntry> blockers;      // クリックを遮る要素（描画順。後ろほど手前）
-    UiDrawContext ctx;
-    ctx.reg           = &reg;
-    ctx.children      = &children;
-    ctx.dl            = dl;
-    ctx.viewport      = {ox, oy, ox + vw, oy + vh};
-    ctx.mousePos      = ImGui::GetIO().MousePos;
-    ctx.windowHovered = ImGui::IsWindowHovered();
-    ctx.mouseDown     = ImGui::IsMouseDown(ImGuiMouseButton_Left);
-    ctx.mouseClicked  = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
-    ctx.mouseReleased = ImGui::IsMouseReleased(ImGuiMouseButton_Left);
-    ctx.resources     = resources;
-    ctx.srvHeap       = srvHeap;
-    ctx.cmdList       = cmdList;
-    ctx.buttonRects   = &buttonRects;
-    ctx.blockers      = &blockers;
+    ctx.children = &children;
 
     for (const CanvasEntry& entry : canvases)
     {
@@ -347,12 +352,49 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
             ctx.originY = oy;
             canvasRect  = {0.0f, 0.0f, vw, vh};
         }
+        ctx.canvasEntity = entry.e;
 
         auto it = children.find(entry.e);
         if (it == children.end()) continue;
         for (entt::entity child : it->second)
             DrawUiSubtree(child, canvasRect, ctx);
     }
+
+    ctx.children = nullptr;   // children はローカル所有。ダングリング参照を残さない
+    return true;
+}
+
+} // namespace
+
+void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
+                                    float ox, float oy, float vw, float vh,
+                                    ResourceManager* resources, DescriptorHeap* srvHeap,
+                                    ID3D12GraphicsCommandList* cmdList)
+{
+    if (!dl || vw <= 0.0f || vh <= 0.0f)
+        return;
+
+    // このフレームの入力スナップショット（##GameUI ウィンドウ内で呼ばれる前提）
+    std::vector<UiHitEntry> buttonRects;   // interactable な UIButton（描画順）
+    std::vector<UiHitEntry> blockers;      // クリックを遮る要素（描画順。後ろほど手前）
+    UiDrawContext ctx;
+    ctx.reg           = &reg;
+    ctx.dl            = dl;
+    ctx.viewport      = {ox, oy, ox + vw, oy + vh};
+    ctx.mousePos      = ImGui::GetIO().MousePos;
+    ctx.windowHovered = ImGui::IsWindowHovered();
+    ctx.mouseDown     = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+    ctx.mouseClicked  = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+    ctx.mouseReleased = ImGui::IsMouseReleased(ImGuiMouseButton_Left);
+    ctx.resources     = resources;
+    ctx.srvHeap       = srvHeap;
+    ctx.cmdList       = cmdList;
+    ctx.buttonRects   = &buttonRects;
+    ctx.blockers      = &blockers;
+
+    // レイアウト解決＋描画＋レイキャスト収集（RenderPreview / ResolveRects と共通）
+    if (!ResolveAndDrawCanvases(reg, ox, oy, vw, vh, ctx))
+        return;
 
     // --- 入力解決（Unity uGUI のレイキャスト方式。全キャンバスの矩形が確定してから）---
     // 最前面（描画で最後）のレイキャスト対象だけがクリック/ホバーを受け、重なった奥の
@@ -421,6 +463,46 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
             }
         }
     }
+}
+
+void UISystem::RenderPreview(entt::registry& reg, ImDrawList* dl,
+                             float ox, float oy, float vw, float vh,
+                             ResourceManager* resources, DescriptorHeap* srvHeap,
+                             ID3D12GraphicsCommandList* cmdList)
+{
+    if (!dl || vw <= 0.0f || vh <= 0.0f)
+        return;
+
+    // 入力処理なしのプレビュー: interactive=false でボタンは normalColor 固定、
+    // _hovered/_pressed は読み書きしない。buttonRects/blockers も収集しない
+    // （= 入力解決フェーズを丸ごとスキップ）。
+    UiDrawContext ctx;
+    ctx.reg         = &reg;
+    ctx.dl          = dl;
+    ctx.viewport    = {ox, oy, ox + vw, oy + vh};
+    ctx.resources   = resources;
+    ctx.srvHeap     = srvHeap;
+    ctx.cmdList     = cmdList;
+    ctx.interactive = false;
+
+    ResolveAndDrawCanvases(reg, ox, oy, vw, vh, ctx);
+}
+
+void UISystem::ResolveRects(entt::registry& reg,
+                            float ox, float oy, float vw, float vh,
+                            std::vector<UiResolvedRect>& out)
+{
+    out.clear();
+    if (vw <= 0.0f || vh <= 0.0f)
+        return;
+
+    // dl=nullptr で描画をスキップし、レイアウト解決と矩形収集のみ行う（副作用なし）
+    UiDrawContext ctx;
+    ctx.reg         = &reg;
+    ctx.interactive = false;
+    ctx.resolvedOut = &out;
+
+    ResolveAndDrawCanvases(reg, ox, oy, vw, vh, ctx);
 }
 
 void UISystem::DispatchPendingClicks(entt::registry& reg, EventBus& bus)

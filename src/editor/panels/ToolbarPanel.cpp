@@ -610,6 +610,13 @@ void ToolbarPanel::Render(bool isPlaying,
                    ctx.view2D))
         ctx.view2D = !ctx.view2D;
 
+    // ===== UI 編集モード（ゲーム内 UI を SceneView でプレビュー・編集）=====
+    ImGui::SameLine();
+    if (toolButton(ic ? ic->uiMode : 0, "UI",
+                   "UI編集モード（SceneViewでゲーム内UIをプレビュー・編集）",
+                   ctx.uiEditMode))
+        ctx.uiEditMode = !ctx.uiEditMode;
+
     // ※ ゲームビルドはツールバーに常駐させない。メニュー「ツール > ゲームをビルド…」から呼び出す。
     //    （配置先フォルダを毎回ピッカーで選ぶ方式。ユーザー要望でツールバーのボタンは撤去）
 

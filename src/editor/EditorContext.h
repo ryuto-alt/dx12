@@ -117,6 +117,12 @@ public:
     bool  view2D     = false;
     float view2DZoom = 6.0f;   // 正射の縦半分（世界単位）。小さいほどズームイン。
 
+    // UI 編集モード（ツールバーの「UI」トグル）。ON 中は非 Play でも SceneView に
+    // ゲーム内 UI（UICanvas ツリー）をプレビュー描画し、UI 要素のクリック選択・
+    // ドラッグ編集を 3D ピッキングより優先する。Play 中/ゲームモードは従来どおり
+    // ##GameUI 経路のみが描く（二重描画しない）。
+    bool uiEditMode = false;
+
     // メニュー「表示 > レイアウトをリセット」で立てるフラグ。
     // EditorLayer が検知してデフォルトドックレイアウトを再構築する。
     bool resetLayout = false;

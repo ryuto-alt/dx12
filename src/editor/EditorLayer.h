@@ -44,6 +44,9 @@ public:
                     ResourceManager* resourceManager,
                     DescriptorHeap* srvHeap);
 
+    // resourceManager/srvHeap/cmdList はゲーム内 UI プレビュー（UI編集モード時の
+    // SceneView 描画）の UIImage テクスチャ遅延ロード用。cmdList は記録中の
+    // コマンドリスト（Application::Render の nativeCmdList）を渡す。
     void Render(bool isPlaying,
                 Scene* scene,
                 Camera* camera,
@@ -64,7 +67,10 @@ public:
                 bool& outPendingPlayMode,
                 const std::string& assetsDir,
                 f32 leftPanelWidth,
-                f32 toolbarHeight);
+                f32 toolbarHeight,
+                ResourceManager* resourceManager,
+                DescriptorHeap* srvHeap,
+                ID3D12GraphicsCommandList* cmdList);
 
     // フレーム先頭でcmdListが有効な間に呼ぶ（テクスチャサムネイルのアップロード）
     void LoadPendingThumbnails(ID3D12GraphicsCommandList* cmdList);

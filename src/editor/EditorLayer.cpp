@@ -187,7 +187,10 @@ void EditorLayer::Render(bool isPlaying,
                          bool& outPendingPlayMode,
                          const std::string& assetsDir,
                          f32 /*leftPanelWidth*/,
-                         f32 toolbarHeight)
+                         f32 toolbarHeight,
+                         ResourceManager* resourceManager,
+                         DescriptorHeap* srvHeap,
+                         ID3D12GraphicsCommandList* cmdList)
 {
     auto& reg = scene->GetRegistry();
 
@@ -551,6 +554,13 @@ void EditorLayer::Render(bool isPlaying,
     // ===== 3D ビューポート操作（カメラナビ + ピッキング + ギズモ + 削除）=====
     if (!isPlaying)
     {
+        // ゲーム内 UI のプレビュー（UI編集モード ON のとき）。背景 DrawList に描くため
+        // ギズモ（RenderGizmo）より先に呼ぶ＝ギズモやハンドルが UI の手前に重なる。
+        // Play 中/ゲームモードは Application の ##GameUI 経路が描くのでここでは呼ばない。
+        m_sceneView->RenderUiPreview(reg, *m_ctx,
+                                     m_viewportPos.x, m_viewportPos.y,
+                                     m_viewportSize.x, m_viewportSize.y,
+                                     resourceManager, srvHeap, cmdList);
         m_sceneView->HandleCameraNavigation(reg, *m_ctx, camera,
                                             m_viewportPos.x, m_viewportPos.y,
                                             m_viewportSize.x, m_viewportSize.y);
@@ -563,6 +573,11 @@ void EditorLayer::Render(bool isPlaying,
         m_sceneView->RenderGizmo(reg, *m_ctx, camera,
                                  m_viewportPos.x, m_viewportPos.y,
                                  m_viewportSize.x, m_viewportSize.y);
+        // UI 編集モードの UI 要素編集（選択/移動/リサイズ）はギズモ確定後・3D ピッキング前。
+        // UI 要素にヒットしたクリックはここで消費され、HandlePicking へは渡らない。
+        m_sceneView->HandleUiEditing(reg, *m_ctx,
+                                     m_viewportPos.x, m_viewportPos.y,
+                                     m_viewportSize.x, m_viewportSize.y);
         m_sceneView->HandlePicking(reg, *m_ctx, camera,
                                    m_viewportPos.x, m_viewportPos.y,
                                    m_viewportSize.x, m_viewportSize.y);

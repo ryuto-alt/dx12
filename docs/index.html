@@ -820,14 +820,19 @@ vfx.<span class="tok-fn">play</span>(<span class="tok-s">"explosion"</span>, x, 
         <p>Unity uGUI / Godot Control 相当の <b>retained-mode UI</b>。UI要素を <b>ECSコンポーネント</b>としてシーンに置き、
         エディタで編集・シーン JSON に保存できる。レイアウトは<b>アンカー＋ピボット</b>で解像度追従し、
         描画は既存の即時 <code class="inl">ui:*</code> と同じ全画面オーバーレイ（<code class="inl">##GameUI</code>）に統合される
-        （retained UI が奥、即時 <code class="inl">ui:*</code> が手前に描かれる）。表示条件も同じく <b>Play中 / ゲームモードのみ</b>
-        （エディタ編集中の WYSIWYG プレビューは無し）。</p>
+        （retained UI が奥、即時 <code class="inl">ui:*</code> が手前に描かれる）。ゲーム中の表示条件も同じく <b>Play中 / ゲームモード</b>。
+        非 Play 中はツールバーの <b>UI</b> トグルで SceneView にプレビュー・編集できる（下の「エディタでの編集」参照）。</p>
 
         <p><b>配置</b>: Hierarchy を右クリック →「作成」→「UI（ゲーム内UI）」から Canvas / Image / Text / Button を選ぶ。
         Image / Text / Button は、選択中のエンティティが UI ツリー内ならその子に、そうでなければシーン内最初の
         <code class="inl">UICanvas</code> の子に配置される（<code class="inl">UICanvas</code> が無ければ自動生成）。
         Button は <code class="inl">UIRect</code>+<code class="inl">UIImage</code>+<code class="inl">UIButton</code> と、
         ラベル用の子エンティティ（<code class="inl">UIText</code>）までまとめて生成される。</p>
+
+        <p><b>エディタでの編集（WYSIWYG）</b>: ツールバーの <b>UI</b> トグルを ON にすると、非 Play 中でも SceneView に
+        UI ツリーがプレビュー描画される。UI 要素は<b>クリックで選択</b>（重なりは最前面優先。UI の無い場所のクリックは従来の 3D ピッキング）。
+        選択中の要素は<b>矩形内ドラッグで移動</b>、四隅・四辺中点の <b>8 ハンドルドラッグでリサイズ</b>できる（どちらも Ctrl+Z で Undo）。
+        アンカーの変更は Inspector の<b>アンカープリセット</b>で行う（ドラッグは offset だけを更新し、アンカー設定は保たれる）。</p>
 
         <div class="tbl-wrap">
           <table>

@@ -5,6 +5,7 @@
 #include "renderer/Camera.h"
 #include "renderer/Mesh.h"
 #include "scene/Scene.h"
+#include "ui/UISystem.h"
 
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4201 4244 4267 4996)
@@ -78,6 +79,40 @@ namespace
         eulerDeg[1] = y * kRad2Deg;
         eulerDeg[2] = z * kRad2Deg;
     }
+
+    // ---- UI 編集モード（HandleUiEditing）----
+    // m_uiDragEdges の値: リサイズ中はエッジ bit の組み合わせ（四隅は 2bit）
+    constexpr int kUiDragNone = -1;   // 非ドラッグ
+    constexpr int kUiDragMove = 0;    // 移動ドラッグ
+    constexpr int kUiEdgeL = 1, kUiEdgeR = 2, kUiEdgeT = 4, kUiEdgeB = 8;
+
+    constexpr f32 kUiHandleHalf    = 4.0f;   // リサイズハンドル矩形の半径（描画、スクリーン px）
+    constexpr f32 kUiHandleHitHalf = 6.0f;   // ハンドルの当たり判定半径（掴みやすく描画より広め）
+
+    // 選択アウトライン / ハンドルの色（テーマの Accent 0x4c8dff に合わせる）
+    constexpr ImU32 kUiAccentCol    = IM_COL32(76, 141, 255, 255);
+    constexpr ImU32 kUiHandleCol    = IM_COL32(255, 255, 255, 255);
+    constexpr ImU32 kUiHandleHotCol = IM_COL32(255, 204, 26, 255);   // ImGuizmo の SELECTION 相当
+}
+
+void SceneViewPanel::RenderUiPreview(entt::registry& reg,
+                                     EditorContext& ctx,
+                                     f32 vpX, f32 vpY, f32 vpW, f32 vpH,
+                                     ResourceManager* resources,
+                                     DescriptorHeap* srvHeap,
+                                     ID3D12GraphicsCommandList* cmdList)
+{
+    if (!ctx.uiEditMode || vpW <= 0.0f || vpH <= 0.0f)
+        return;
+
+    // ギズモ（RenderGizmo）と同じ背景 DrawList に描く: 全 ImGui ウィンドウより先に
+    // 描かれるため、バックバッファ直描きの 3D シーンの上・各パネルの下に自然に重なる。
+    // レターボックス帯や UICanvas 外へのはみ出しがビューポート外に掛からないよう、
+    // ##GameUI 経路の PushClipRect と同様にビューポート矩形でクリップする。
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    dl->PushClipRect(ImVec2(vpX, vpY), ImVec2(vpX + vpW, vpY + vpH), true);
+    UISystem::RenderPreview(reg, dl, vpX, vpY, vpW, vpH, resources, srvHeap, cmdList);
+    dl->PopClipRect();
 }
 
 void SceneViewPanel::RenderGizmo(entt::registry& reg,
@@ -89,6 +124,11 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
         return;
 
     if (!reg.valid(ctx.selectedEntity) || !reg.all_of<Transform>(ctx.selectedEntity))
+        return;
+
+    // UI 編集モード中は UIRect 持ちの選択に 3D ギズモを出さない
+    // （HandleUiEditing の矩形アウトライン + 8 ハンドルが移動/リサイズを担う）。
+    if (ctx.uiEditMode && reg.all_of<UIRect>(ctx.selectedEntity))
         return;
 
     auto& transform = reg.get<Transform>(ctx.selectedEntity);
@@ -246,6 +286,239 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
     m_gizmoWasUsing = isUsing;
 }
 
+// UI 編集モードの UI 要素編集（クリック選択 + ドラッグ移動 + 8 ハンドルリサイズ + Undo）。
+// EditorLayer が RenderGizmo（ImGuizmo の当たり判定確定）の後・HandlePicking の前に呼ぶ。
+// UI 要素にヒットしたクリックは m_uiClickConsumed に記録し、HandlePicking が 3D ピッキングを
+// スキップする（ヒット無しなら従来どおり 3D ピッキングへフォールスルー）。
+void SceneViewPanel::HandleUiEditing(entt::registry& reg,
+                                     EditorContext& ctx,
+                                     f32 vpX, f32 vpY, f32 vpW, f32 vpH)
+{
+    m_uiClickConsumed = false;
+
+    if (!ctx.uiEditMode || vpW <= 0.0f || vpH <= 0.0f)
+    {
+        m_uiDragEdges = kUiDragNone;
+        return;
+    }
+
+    ImGuiIO& io = ImGui::GetIO();
+    const ImVec2 mousePos = io.MousePos;
+    const bool inViewport = !ctx.floatingToolWindowHovered
+        && mousePos.x >= vpX && mousePos.x < vpX + vpW
+        && mousePos.y >= vpY && mousePos.y < vpY + vpH;
+
+    // ---- ドラッグ継続 / 終了（開始済みドラッグはビュー外に出てもボタンを離すまで追従）----
+    if (m_uiDragEdges != kUiDragNone)
+    {
+        m_uiClickConsumed = true;   // ドラッグ中は 3D ピッキングへ一切渡さない
+
+        if (!reg.valid(m_uiDragEntity) || !reg.all_of<UIRect>(m_uiDragEntity))
+        {
+            m_uiDragEdges = kUiDragNone;   // ドラッグ中に対象が消えた（削除等）
+        }
+        else if (!io.MouseDown[ImGuiMouseButton_Left])
+        {
+            // ドラッグ終了: 変化があれば Undo コマンドを push（ギズモドラッグと同じ定型）
+            const UIRect& before = m_uiDragStartRect;
+            const UIRect& after  = reg.get<UIRect>(m_uiDragEntity);
+            bool changed =
+                before.offsetMin.x != after.offsetMin.x ||
+                before.offsetMin.y != after.offsetMin.y ||
+                before.offsetMax.x != after.offsetMax.x ||
+                before.offsetMax.y != after.offsetMax.y;
+            if (changed)
+                ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<UIRect>>(
+                    &reg, m_uiDragEntity, before, after, "UI Rect"));
+            m_uiDragEdges = kUiDragNone;
+        }
+        else
+        {
+            // 「開始スナップショット + 総移動量」の絶対値方式で更新（増分方式のドリフト防止）。
+            // スクリーンΔ → キャンバス px は canvasScale で割るだけ（Inspector と同じ換算）。
+            const f32 scale = (m_uiDragCanvasScale > 1e-6f) ? m_uiDragCanvasScale : 1.0f;
+            const f32 dxC = (mousePos.x - m_uiDragStartMouse.x) / scale;
+            const f32 dyC = (mousePos.y - m_uiDragStartMouse.y) / scale;
+
+            auto& rect = reg.get<UIRect>(m_uiDragEntity);
+            rect = m_uiDragStartRect;
+
+            if (m_uiDragEdges == kUiDragMove)
+            {
+                rect.offsetMin.x += dxC; rect.offsetMax.x += dxC;
+                rect.offsetMin.y += dyC; rect.offsetMax.y += dyC;
+            }
+            else
+            {
+                // エッジ移動 = 該当 offset に Δcanvas を加算。解決式
+                // （rectMin = parentMin + parentSize*anchorMin + offsetMin）が offset に対して
+                // 線形・係数 1 なので、アンカー一致（pos/size 意味論）でもストレッチ
+                // （余白 px 意味論）でも同じ式で成立し、Inspector の表示と一貫する。
+                // 最小サイズガード: 幅/高さをキャンバス空間 1px 未満・反転にしない。
+                constexpr f32 kMinSizePx = 1.0f;
+                const f32 startW = (m_uiDragStartMax.x - m_uiDragStartMin.x) / scale;
+                const f32 startH = (m_uiDragStartMax.y - m_uiDragStartMin.y) / scale;
+                if (m_uiDragEdges & kUiEdgeL) rect.offsetMin.x += (std::min)(dxC, startW - kMinSizePx);
+                if (m_uiDragEdges & kUiEdgeR) rect.offsetMax.x += (std::max)(dxC, kMinSizePx - startW);
+                if (m_uiDragEdges & kUiEdgeT) rect.offsetMin.y += (std::min)(dyC, startH - kMinSizePx);
+                if (m_uiDragEdges & kUiEdgeB) rect.offsetMax.y += (std::max)(dyC, kMinSizePx - startH);
+            }
+        }
+    }
+
+    // ---- 解決済み UI 矩形（描画順 = 奥→手前）。ドラッグ反映後に解決するので今フレームの位置 ----
+    std::vector<UiResolvedRect> rects;
+    UISystem::ResolveRects(reg, vpX, vpY, vpW, vpH, rects);
+
+    auto findRect = [&rects](entt::entity e) -> const UiResolvedRect* {
+        if (e == entt::null) return nullptr;
+        for (const auto& rr : rects)
+            if (rr.e == e) return &rr;
+        return nullptr;
+    };
+
+    // 8 ハンドル（四隅 + 四辺中点）。配列順 = 当たり判定の優先順（角が先）。
+    struct UiHandle { f32 x, y; int edges; ImGuiMouseCursor cursor; };
+    auto makeHandles = [](const UiResolvedRect& rr, UiHandle out[8]) {
+        const f32 midX = (rr.min.x + rr.max.x) * 0.5f;
+        const f32 midY = (rr.min.y + rr.max.y) * 0.5f;
+        out[0] = {rr.min.x, rr.min.y, kUiEdgeL | kUiEdgeT, ImGuiMouseCursor_ResizeNWSE};
+        out[1] = {rr.max.x, rr.min.y, kUiEdgeR | kUiEdgeT, ImGuiMouseCursor_ResizeNESW};
+        out[2] = {rr.min.x, rr.max.y, kUiEdgeL | kUiEdgeB, ImGuiMouseCursor_ResizeNESW};
+        out[3] = {rr.max.x, rr.max.y, kUiEdgeR | kUiEdgeB, ImGuiMouseCursor_ResizeNWSE};
+        out[4] = {midX,     rr.min.y, kUiEdgeT,            ImGuiMouseCursor_ResizeNS};
+        out[5] = {midX,     rr.max.y, kUiEdgeB,            ImGuiMouseCursor_ResizeNS};
+        out[6] = {rr.min.x, midY,     kUiEdgeL,            ImGuiMouseCursor_ResizeEW};
+        out[7] = {rr.max.x, midY,     kUiEdgeR,            ImGuiMouseCursor_ResizeEW};
+    };
+
+    // 選択中エンティティの解決済み矩形（UIRect 持ちで可視ツリー内なら見つかる）
+    const UiResolvedRect* selRect = findRect(ctx.selectedEntity);
+    UiHandle handles[8] = {};
+    if (selRect)
+        makeHandles(*selRect, handles);
+
+    // ホバー中のハンドル（非ドラッグ時のみ。カーソル形状と色変化に使う）
+    int hoveredHandle = -1;
+    if (selRect && m_uiDragEdges == kUiDragNone && inViewport && !io.KeyAlt)
+    {
+        for (int i = 0; i < 8; ++i)
+        {
+            if (std::abs(mousePos.x - handles[i].x) <= kUiHandleHitHalf
+                && std::abs(mousePos.y - handles[i].y) <= kUiHandleHitHalf)
+            {
+                hoveredHandle = i;
+                break;
+            }
+        }
+    }
+
+    // ---- カーソル形状（ハンドル = リサイズ向き / 矩形内 = 移動）----
+    if (m_uiDragEdges > kUiDragMove)
+    {
+        for (int i = 0; selRect && i < 8; ++i)
+            if (handles[i].edges == m_uiDragEdges) { ImGui::SetMouseCursor(handles[i].cursor); break; }
+    }
+    else if (m_uiDragEdges == kUiDragMove)
+    {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+    }
+    else if (hoveredHandle >= 0)
+    {
+        ImGui::SetMouseCursor(handles[hoveredHandle].cursor);
+    }
+    else if (selRect && inViewport && !io.KeyAlt
+             && mousePos.x >= selRect->min.x && mousePos.x < selRect->max.x
+             && mousePos.y >= selRect->min.y && mousePos.y < selRect->max.y)
+    {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+    }
+
+    // ---- クリック: ハンドル > UI 要素（手前優先） > 3D ピッキングへフォールスルー ----
+    // gizmoBlocking は HandlePicking と同条件。ただし UIRect 持ちを選択中は RenderGizmo が
+    // ギズモを抑制しており、Manipulate が呼ばれず ImGuizmo::IsOver() がステイルになるため除外。
+    const bool uiRectSelected = ctx.selectedEntity != entt::null
+        && reg.valid(ctx.selectedEntity) && reg.all_of<UIRect>(ctx.selectedEntity);
+    const bool gizmoBlocking = ctx.HasSelection() && !uiRectSelected
+        && (ImGuizmo::IsUsing() || ImGuizmo::IsOver());
+    if (m_uiDragEdges == kUiDragNone
+        && inViewport && !io.KeyAlt && !gizmoBlocking
+        && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+    {
+        if (hoveredHandle >= 0)
+        {
+            // リサイズ開始（選択中エンティティ。selRect が今フレーム解決済み = UIRect 保有保証）
+            m_uiDragEntity      = ctx.selectedEntity;
+            m_uiDragStartRect   = reg.get<UIRect>(ctx.selectedEntity);
+            m_uiDragStartMouse  = {mousePos.x, mousePos.y};
+            m_uiDragStartMin    = {selRect->min.x, selRect->min.y};
+            m_uiDragStartMax    = {selRect->max.x, selRect->max.y};
+            m_uiDragCanvasScale = selRect->canvasScale;
+            m_uiDragEdges       = handles[hoveredHandle].edges;
+            m_uiClickConsumed   = true;
+        }
+        else
+        {
+            // 後方走査 = 描画順の逆 = 最前面優先で UI 要素をヒットテスト
+            const UiResolvedRect* hit = nullptr;
+            for (auto it = rects.rbegin(); it != rects.rend(); ++it)
+            {
+                if (mousePos.x >= it->min.x && mousePos.x < it->max.x
+                    && mousePos.y >= it->min.y && mousePos.y < it->max.y)
+                {
+                    hit = &(*it);
+                    break;
+                }
+            }
+            if (hit)
+            {
+                if (io.KeyCtrl)
+                {
+                    ctx.ToggleSelection(hit->e);   // 3D ピッキングと同じマルチ選択
+                }
+                else
+                {
+                    ctx.Select(hit->e);
+                    // 選択と同時に移動ドラッグ開始（Unity 同様、掴んでそのまま動かせる）
+                    m_uiDragEntity      = hit->e;
+                    m_uiDragStartRect   = reg.get<UIRect>(hit->e);
+                    m_uiDragStartMouse  = {mousePos.x, mousePos.y};
+                    m_uiDragStartMin    = {hit->min.x, hit->min.y};
+                    m_uiDragStartMax    = {hit->max.x, hit->max.y};
+                    m_uiDragCanvasScale = hit->canvasScale;
+                    m_uiDragEdges       = kUiDragMove;
+                }
+                m_uiClickConsumed = true;
+                // 選択が変わったので描画用に引き直す（ホバー状態は旧選択のものなので破棄）
+                selRect = findRect(ctx.selectedEntity);
+                if (selRect)
+                    makeHandles(*selRect, handles);
+                hoveredHandle = -1;
+            }
+            // ヒット無し → 消費しない = HandlePicking の 3D ピッキングへフォールスルー
+        }
+    }
+
+    // ---- 選択中 UI 要素のアウトライン + 8 ハンドル描画（プレビューと同じ背景 DrawList）----
+    if (selRect)
+    {
+        ImDrawList* dl = ImGui::GetBackgroundDrawList();
+        dl->PushClipRect(ImVec2(vpX, vpY), ImVec2(vpX + vpW, vpY + vpH), true);
+        dl->AddRect(selRect->min, selRect->max, kUiAccentCol, 0.0f, 0, 2.0f);
+        for (int i = 0; i < 8; ++i)
+        {
+            const bool hot = (m_uiDragEdges > kUiDragMove)
+                ? (handles[i].edges == m_uiDragEdges)
+                : (i == hoveredHandle);
+            const ImVec2 hmin(handles[i].x - kUiHandleHalf, handles[i].y - kUiHandleHalf);
+            const ImVec2 hmax(handles[i].x + kUiHandleHalf, handles[i].y + kUiHandleHalf);
+            dl->AddRectFilled(hmin, hmax, hot ? kUiHandleHotCol : kUiHandleCol);
+            dl->AddRect(hmin, hmax, kUiAccentCol);
+        }
+        dl->PopClipRect();
+    }
+}
+
 void SceneViewPanel::HandlePicking(entt::registry& reg,
                                    EditorContext& ctx,
                                    Camera* camera,
@@ -258,9 +531,15 @@ void SceneViewPanel::HandlePicking(entt::registry& reg,
     // 選択が無いと RenderGizmo が Manipulate を呼ばず、ImGuizmo::IsOver() が直前に選択して
     // いたエンティティ位置の当たり判定を保持（ステイル）するため、同じ場所を再クリックしても
     // IsOver()==true で弾かれて再選択できない不具合になる（選択→解除→同じ物を再選択できない）。
-    bool gizmoBlocking = ctx.HasSelection() && (ImGuizmo::IsUsing() || ImGuizmo::IsOver());
+    // UI 編集モードで UIRect 持ちを選択中も同じ理屈（RenderGizmo がギズモを抑制して
+    // Manipulate が呼ばれない）で IsOver() がステイルになるため、ブロック判定から除外する。
+    bool uiRectSelected = ctx.uiEditMode && ctx.selectedEntity != entt::null
+        && reg.valid(ctx.selectedEntity) && reg.all_of<UIRect>(ctx.selectedEntity);
+    bool gizmoBlocking = ctx.HasSelection() && !uiRectSelected
+        && (ImGuizmo::IsUsing() || ImGuizmo::IsOver());
     if (ImGui::GetIO().KeyAlt                 // Alt+左ドラッグはオービット操作なのでピッキングしない
         || gizmoBlocking
+        || m_uiClickConsumed                  // UI 編集（HandleUiEditing）がこのクリックを消費済み
         || ctx.floatingToolWindowHovered      // フローティングツール窓の上のクリックは背後のシーンを選択しない
         || !ImGui::IsMouseClicked(ImGuiMouseButton_Left))
         return;

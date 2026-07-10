@@ -261,6 +261,17 @@ Save-Icon "window" "#6366F1" {
     $g.FillPath($white, (Get-RoundRect 68 68 22 22 4))
 }
 
+# --- ui_mode: ピンク背景 + 白いUIパネル(角丸矩形+ボタンバー) + カーソル矢印（UI編集モード） ---
+Save-Icon "ui_mode" "#EC4899" {
+    param($g)
+    # UI パネル（角丸矩形の枠 + 中のボタンバー）
+    $p = New-WhitePen 5
+    $g.DrawPath($p, (Get-RoundRect 32 36 56 42 6))
+    $g.FillPath($white, (Get-RoundRect 40 46 26 12 4))
+    # カーソル矢印（パネル右下に重ねる）
+    Fill-Poly $g $white @((PF 66 52),(PF 66 88),(PF 76 80),(PF 84 96),(PF 90 93),(PF 82 76),(PF 94 76))
+}
+
 # --- gizmo_move: 青背景 + 白い4方向矢印 ---
 Save-Icon "gizmo_move" "#3B82F6" {
     param($g)
@@ -399,6 +410,15 @@ Save-Icon "ent_collider" "#22C55E" {
     foreach ($c in @(@(42,42),@(86,42),@(42,86),@(86,86))) {
         $g.FillEllipse($white, $c[0]-3, $c[1]-3, 6, 6)
     }
+}
+
+# --- ent_ui: ピンク背景 + 白いUIパネル（角丸矩形の枠 + ヘッダー線 + ボタン）（ゲーム内UI要素） ---
+Save-Icon "ent_ui" "#EC4899" {
+    param($g)
+    $p = New-WhitePen 5
+    $g.DrawPath($p, (Get-RoundRect 34 38 60 52 8))   # パネル枠
+    $g.DrawLine($p, 36, 54, 92, 54)                   # ヘッダー区切り線
+    $g.FillPath($white, (Get-RoundRect 44 64 40 14 5)) # 中のボタン
 }
 
 # --- ent_empty: スレート背景 + 白い3軸ピボット（空のTransform） ---
