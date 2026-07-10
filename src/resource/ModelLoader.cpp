@@ -14,6 +14,7 @@
 #include <assimp/postprocess.h>
 #include <assimp/config.h>
 #include <algorithm>
+#include <unordered_set>   // Probe のボーン名ユニーク数え上げ用
 
 #include <Windows.h>
 
@@ -436,6 +437,62 @@ std::vector<std::unique_ptr<NodeAnimationClip>> BuildAllNodeAnimClips(
 }
 
 } // anonymous namespace
+
+ModelProbeInfo ModelLoader::Probe(const std::filesystem::path& filePath)
+{
+    ModelProbeInfo info;
+    Assimp::Importer importer;
+    // メタ情報だけ欲しいので後処理は最小限(AABB 生成のみ)。三角形化しないので faces は
+    // ポリゴン数(三角形換算前)になる。
+    const aiScene* scene = importer.ReadFile(filePath.string(),
+                                             static_cast<unsigned>(aiProcess_GenBoundingBoxes));
+    if (!scene || !scene->mRootNode)
+    {
+        info.error = importer.GetErrorString();
+        if (info.error.empty()) info.error = "unknown import error";
+        return info;
+    }
+    info.meshCount     = scene->mNumMeshes;
+    info.materialCount = scene->mNumMaterials;
+
+    std::unordered_set<std::string> boneNames;
+    bool first = true;
+    for (unsigned i = 0; i < scene->mNumMeshes; ++i)
+    {
+        const aiMesh* mesh = scene->mMeshes[i];
+        info.totalVertices += mesh->mNumVertices;
+        info.totalFaces    += mesh->mNumFaces;
+        for (unsigned b = 0; b < mesh->mNumBones; ++b)
+            boneNames.insert(mesh->mBones[b]->mName.C_Str());
+        const aiAABB& ab = mesh->mAABB;
+        if (first)
+        {
+            info.aabbMin[0] = ab.mMin.x; info.aabbMin[1] = ab.mMin.y; info.aabbMin[2] = ab.mMin.z;
+            info.aabbMax[0] = ab.mMax.x; info.aabbMax[1] = ab.mMax.y; info.aabbMax[2] = ab.mMax.z;
+            first = false;
+        }
+        else
+        {
+            info.aabbMin[0] = (std::min)(info.aabbMin[0], ab.mMin.x);
+            info.aabbMin[1] = (std::min)(info.aabbMin[1], ab.mMin.y);
+            info.aabbMin[2] = (std::min)(info.aabbMin[2], ab.mMin.z);
+            info.aabbMax[0] = (std::max)(info.aabbMax[0], ab.mMax.x);
+            info.aabbMax[1] = (std::max)(info.aabbMax[1], ab.mMax.y);
+            info.aabbMax[2] = (std::max)(info.aabbMax[2], ab.mMax.z);
+        }
+    }
+    info.boneCount   = static_cast<uint32_t>(boneNames.size());
+    info.hasSkeleton = !boneNames.empty();
+
+    for (unsigned a = 0; a < scene->mNumAnimations; ++a)
+    {
+        const aiAnimation* anim = scene->mAnimations[a];
+        const double tps = (anim->mTicksPerSecond != 0.0) ? anim->mTicksPerSecond : 25.0;
+        info.animations.push_back({ anim->mName.C_Str(), anim->mDuration / tps });
+    }
+    info.ok = true;
+    return info;
+}
 
 ModelData ModelLoader::LoadFromFile(
     GraphicsDevice& device,

@@ -360,6 +360,62 @@ dx12_net_status()                                      # → players:[{id,rttMs,
 
 ---
 
+## シーン編集の強化 + アセット操作(v0.6.0 追加)
+
+### 数値で配置を決める(get_bounds が基礎)
+
+「上に置く」「隣に並べる」は目分量でなく AABB から計算する:
+
+```
+dx12_get_bounds(name:"Table")
+# → {min:[-1,0,-0.5], max:[1,0.8,0.5], center:[0,0.4,0], size:[2,0.8,1], hasMesh:true}
+dx12_create_entity(type:"box", name:"Cup", position:[0, 0.9, 0])   # 天面(max.y=0.8)より上へ
+dx12_snap_to_ground(name:"Cup")                                     # 底面をテーブル天面へぴったり
+```
+
+浮いてる/めり込んでる物の修正は `dx12_snap_to_ground` 一発。床が無ければ y=0 へ落ちる。
+向きは `dx12_look_at(name:"Turret", targetName:"Player")`(upright:true で水平回転のみ)。
+
+### 任意視点で見る(検証ループの強化)
+
+```
+dx12_screenshot_from(position:[0, 30, -30], target:[0, 0, 0])   # 俯瞰でレイアウト全体
+dx12_screenshot_from(position:[0, 1.7, -5], target:[0, 1.7, 0]) # プレイヤー目線の高さ
+```
+戻す時は事前に `dx12_get_editor_camera` で保存 → `dx12_set_editor_camera` で復元。
+
+### 一括配置(scatter)
+
+```
+# 木を 30 本、シード付き乱数で自然にばらまく(同 seed で再現可能)
+dx12_scatter(model:"models/tree.glb", count:30, area:[-20,-20,20,20],
+             seed:7, randomYaw:true, scaleRange:[0.8,1.3], snapToGround:true)
+# コインを等間隔グリッドで敷く
+dx12_scatter(type:"box", count:25, area:[-5,-5,5,5], placement:"grid", namePrefix:"Coin")
+```
+1体ずつフレーム境界で生成するので多数配置は時間がかかる。★Editor 限定。
+
+### アセットの取り込み・確認
+
+```
+dx12_import_asset(sourcePath:"C:/Users/me/Downloads/rock", destPath:"models/rock", overwrite:false)
+# → .gltf は .bin/テクスチャを同階層参照するのでフォルダごと import する
+
+dx12_asset_info(path:"models/rock/rock.gltf")
+# → {totalFaces, aabbMin/Max, hasSkeleton, animations, ...} spawn 前にサイズ・アニメ有無を確認
+
+dx12_preview_model(path:"models/rock/rock.gltf")   # 見た目を画像で確認(シーンは変更されない)
+dx12_view_texture(path:"textures/rust.dds")         # dds/tga も PNG 変換して見られる
+```
+
+### アセット整理の注意
+
+`dx12_move_asset` / `dx12_delete_asset` は**シーン/プレハブ内の参照パスを自動更新しない**。
+参照中のアセットを動かす/消すとロードが壊れる。`dx12_list_entities(verbose:true)` →
+`dx12_get_entity` で modelPath / texturePath を確認してから触ること。
+
+---
+
 ## MODE_CONFLICT(3): Playing 中は生成系が失敗する
 
 Playing 中に `create_entity` / `spawn_model` / `delete_entity` / `open_scene` 等を呼ぶと

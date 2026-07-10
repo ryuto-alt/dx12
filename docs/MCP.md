@@ -153,6 +153,11 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_get_anim_state` | `{entity:int}` | `{hasSkeletalAnimation, clips:[クリップ名...]}` ※`dx12_play_anim` の clipName 選びに |
 | `dx12_net_status` | `{}` | `{available, role:"Offline"\|"Host"\|"Client", isConnected, localClientId, tick, syncedEntityCount, players:[{id,rttMs,bytesSent,bytesReceived}], config:{tickRate,snapshotRate,maxPlayers,defaultPort}, testRole, testJoinAddress}` |
 | `dx12_screenshot` | `{}` | PNG 画像ブロック + text(`{path(絶対パス), width, height}`) |
+| `dx12_get_editor_camera` | `{}` | `{position, forward, yawDeg, pitchDeg, fovYDeg, orthographic, mode}` ※シーンビューを描いてるカメラの状態 |
+| `dx12_get_bounds` | `{entity:int, includeChildren?:bool}` | `{min, max, center, size, hasMesh}` ※ワールド空間 AABB(回転/親子変換込み)。配置座標の計算に |
+| `dx12_get_hierarchy` | `{}` | `{roots:[{entityId, name, children:[...]}], count, sceneGeneration}` ※シーンの親子ツリー |
+| `dx12_asset_info` | `{path}` | モデル: `{meshCount, totalVertices, totalFaces, materialCount, boneCount, hasSkeleton, animations:[{name,durationSec}], aabbMin/Max(メッシュローカル近似)}`、テクスチャ: `{width, height, mipLevels, format, isCubemap}`、他: `{type, fileSizeBytes}` |
+| `dx12_view_texture` | `{path, maxSize?:int=1024}` | PNG 画像ブロック ※dds/tga/hdr も変換して見られる。キューブマップは先頭面のみ |
 
 ### 4-2. 編集系(同期)
 
@@ -184,6 +189,12 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_play_anim` | `{entity:int, clip?:int, clipName?:string, blend?:f=0.3, loop?:bool}` | `{entityId, clip, clipName, blend}` ※スケルタルアニメのクロスフェード再生(Lua playAnim と同経路) |
 | `dx12_net_setup` | `{role:"host"\|"client"\|"offline", address?:string, port?:int}` | `{testRole, address, port}` ※次の `dx12_play` で自動 Host/Join(ツールバーの Play ロールと同じ) |
 | `dx12_net_launch_test_client` | `{}` | `{requested}` ※ホスト Playing 中のみ。同エンジンをもう1プロセス起動し 127.0.0.1 へ自動接続(フレーム境界) |
+| `dx12_set_editor_camera` | `{position?:[x,y,z], target?:[x,y,z], yawDeg?:f, pitchDeg?:f}` | `{position, forward, yawDeg, pitchDeg}` ※エディタのフライカメラを任意視点へ。target 指定で yaw/pitch 自動逆算。**Editor 限定**(Playing 中は MODE_CONFLICT) |
+| `dx12_look_at` | `{entity:int, target?:[x,y,z], targetEntity?:int, targetName?:string, upright?:bool}` | `{entityId, rotation, target}` ※+Z 正面の想定で rotation(Euler) を書く。upright=true でピッチ0。親が回転してると厳密でない |
+| `dx12_snap_to_ground` | `{entity:int, offset?:f}` | `{groundY, movedBy, position, groundEntityId?}` ※AABB ベース接地(Editor 中でも動く)。XZ が重なる他メッシュの天面へ底面を合わせる。床なしは y=0 |
+| `dx12_import_asset` | `{sourcePath:string(絶対パス可), destPath:string(assets相対), overwrite?:bool}` | `{imported:[相対パス...], count}` ※外部ファイル/フォルダを assets へコピー。.gltf はフォルダごと |
+| `dx12_move_asset` | `{from, to, overwrite?:bool}` | `{from, to, note}` ※assets 内の移動/リネーム。**シーン内の参照パスは自動更新されない** |
+| `dx12_delete_asset` | `{path, recursive?:bool}` | `{deleted, removedCount, wasDirectory}` ※ディレクトリは recursive:true 必須。参照中アセットを消すと壊れる |
 
 ### 4-3. 生成・削除・モード遷移(遅延同期 — 本物の値が返る)
 
@@ -206,8 +217,15 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_batch` | `{ops:[{method:string, params:object}], stopOnError?:bool}` | `{results:[{index, ok, result?, error?, error_code?}]}` |
 | `dx12_focus_and_screenshot` | `{entity:int}` | 画像コンテンツ(PNG) |
 
+| `dx12_scatter` | `{type\|model\|prefab(どれか1つ), count:int(1..200), area:[minX,minZ,maxX,maxZ], y?:f, placement?:"random"\|"grid", seed?:int, randomYaw?:bool, scaleRange?:[min,max], snapToGround?:bool, namePrefix?:string}` | `{entities:[{entityId,name}], count, seed, placement, errors?}` |
+| `dx12_screenshot_from` | `{position:[x,y,z], target?:[x,y,z]}` | 画像コンテンツ(PNG) ※Editor 限定 |
+| `dx12_preview_model` | `{path:string(.gltf/.glb/.fbx/.obj)}` | 画像コンテンツ(PNG) ※一時 spawn→撮影→削除。シーンは変更されない |
+
 **`dx12_batch` 実装**: 各 op を順に await。`stopOnError=true` なら最初の失敗以降を skip 記録。往復削減用。
 **`dx12_focus_and_screenshot` 実装**: `focus_camera` → (1フレーム描画) → `screenshot` → 画像読み込み → 画像コンテンツ返却。
+**`dx12_scatter` 実装**: seed 付き乱数(mulberry32)で位置を決め、`create_entity`/`spawn_model`/`spawn_prefab` を1体ずつ実行(+必要なら `set_transform`/`snap_to_ground`)。同じ seed なら同じ配置になる(リトライで再現)。失敗3件で打ち切り。
+**`dx12_screenshot_from` 実装**: `set_editor_camera` → (1フレーム描画) → `screenshot`。
+**`dx12_preview_model` 実装**: `spawn_model`(y=-10000 の遠方) → `focus_camera` → `screenshot` → `delete_entity`。失敗時も一時エンティティは削除する。
 
 ---
 

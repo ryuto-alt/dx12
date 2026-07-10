@@ -2,6 +2,7 @@
 
 #include <string>
 #include <memory>
+#include <cstdint>
 
 struct ID3D12GraphicsCommandList;
 
@@ -11,9 +12,27 @@ namespace dx12e
 class Texture;
 class GraphicsDevice;
 
+// MCP asset_info 用: GPU を使わずテクスチャのメタ情報だけ読む(DirectXTex のみ)。
+struct TextureProbeInfo
+{
+    bool        ok = false;
+    std::string error;
+    uint32_t width = 0, height = 0, mipLevels = 0, arraySize = 0;
+    std::string format;      // DXGI_FORMAT 名(未知の値は数値)
+    bool isCubemap = false;
+};
+
 class TextureLoader
 {
 public:
+    static TextureProbeInfo Probe(const std::wstring& filePath);
+
+    // MCP read_texture 用: 対応形式(dds/tga/hdr/WIC 系)を PNG へ変換して保存する。
+    // 長辺が maxSize を超える場合はアスペクト比を保って縮小。成功で true。
+    static bool ConvertToPng(const std::wstring& srcPath, const std::wstring& dstPngPath,
+                             uint32_t maxSize, std::string& outError,
+                             uint32_t& outWidth, uint32_t& outHeight);
+
     static std::unique_ptr<Texture> LoadFromFile(
         GraphicsDevice& device,
         ID3D12GraphicsCommandList* cmdList,

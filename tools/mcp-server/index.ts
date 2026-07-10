@@ -16,7 +16,7 @@ import { EngineClient } from "./engineClient.ts";
 // result のフィールド名(entityId 等)もエンジンの返り値をそのまま通す。
 
 const engine = new EngineClient();
-const server = new McpServer({ name: "dx12-engine", version: "0.5.0" });
+const server = new McpServer({ name: "dx12-engine", version: "0.6.0" });
 
 type ToolResult = {
   content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[];
@@ -973,8 +973,227 @@ reg(
 );
 
 // ════════════════════════════════════════════════════════════════
+//  シーン編集の強化(カメラ操作・境界・向き・接地・階層)
+// ════════════════════════════════════════════════════════════════
+
+reg(
+  "dx12_get_editor_camera",
+  "エディタカメラ取得",
+  "シーンビューを描いてるカメラの状態を返す。{position, forward, yawDeg, pitchDeg, fovYDeg, orthographic, mode}。Editor 中はフライカメラ、Playing 中はゲームカメラ。dx12_set_editor_camera で戻す時の保存用にも。",
+  {},
+  { readOnlyHint: true },
+  () => run(() => engine.call("get_editor_camera", {})),
+);
+
+reg(
+  "dx12_set_editor_camera",
+  "エディタカメラ設定",
+  "エディタのフライカメラを任意視点に置く(focus_camera より自由。俯瞰・引き構図・特定アングルの確認用)。position で位置、target で注視点(yaw/pitch を自動逆算)、または yawDeg/pitchDeg を直接指定。★Editor 限定(Playing 中は MODE_CONFLICT)。この後 dx12_screenshot でその視点の絵が撮れる(dx12_screenshot_from が一発でやる)。",
+  {
+    position: vec3.optional().describe("カメラ位置 [x,y,z]。省略で現在位置のまま。"),
+    target: vec3.optional().describe("注視点 [x,y,z]。指定すると yaw/pitch を自動計算(yawDeg/pitchDeg より優先)。"),
+    yawDeg: z.number().optional().describe("Y軸回転(度)。target 指定時は無視。"),
+    pitchDeg: z.number().optional().describe("X軸回転(度、±89 でクランプ)。target 指定時は無視。"),
+  },
+  { idempotentHint: true },
+  ({ position, target, yawDeg, pitchDeg }) =>
+    run(() => engine.call("set_editor_camera", { position, target, yawDeg, pitchDeg })),
+);
+
+reg(
+  "dx12_get_bounds",
+  "ワールドAABB取得",
+  "エンティティのワールド空間 AABB を返す。{min, max, center, size, hasMesh}。回転・スケール・親子変換込み。「テーブルの上に置く」「壁にぴったり寄せる」等、配置座標を数値で決める時の基礎情報。includeChildren=true で子孫も含めた全体境界。メッシュ無し(ライト等)は位置の点(size=0)。",
+  {
+    ...entityRef,
+    includeChildren: z.boolean().optional().describe("true で子孫エンティティの AABB も合成する(モデルルートが empty の時に有効)。"),
+  },
+  { readOnlyHint: true },
+  ({ entity, name, includeChildren }) =>
+    run(() => engine.call("get_bounds", { entity, name, includeChildren })),
+);
+
+reg(
+  "dx12_look_at",
+  "エンティティを向ける",
+  "エンティティを目標(座標 or 別エンティティ)の方へ回転させる(+Z が正面の想定で rotation Euler を書く)。カメラを被写体へ、敵をプレイヤーへ、砲台を目標へ等。upright=true で水平回転のみ(ピッチ 0=キャラ向け)。★rotation はローカル値なので親が回転してると厳密なワールド向きからずれる。",
+  {
+    ...entityRef,
+    target: vec3.optional().describe("目標のワールド座標 [x,y,z]。targetEntity/targetName と排他。"),
+    targetEntity: z.number().int().optional().describe("目標エンティティ id。"),
+    targetName: z.string().optional().describe("目標エンティティ名(完全一致)。"),
+    upright: z.boolean().optional().describe("true でピッチ 0(水平回転のみ)。キャラや車など直立させたい時。"),
+  },
+  {},
+  ({ entity, name, target, targetEntity, targetName, upright }) =>
+    run(() => engine.call("look_at", { entity, name, target, targetEntity, targetName, upright })),
+);
+
+reg(
+  "dx12_snap_to_ground",
+  "接地(下の面に置く)",
+  "エンティティを直下の床/他メッシュの天面に置く(AABB ベース、Editor 中でも動く)。XZ が重なる他メッシュの天面のうち自分の天面以下で最も高いものへ底面を合わせる。床が無ければ y=0 平面へ。offset で浮かせられる。spawn した物が空中に浮いてる/めり込んでる時の修正に。{groundY, movedBy, position, groundEntityId?} が返る。",
+  {
+    ...entityRef,
+    offset: z.number().optional().describe("接地面からの追加オフセット(m)。既定 0。"),
+  },
+  { idempotentHint: true },
+  ({ entity, name, offset }) => run(() => engine.call("snap_to_ground", { entity, name, offset })),
+);
+
+reg(
+  "dx12_get_hierarchy",
+  "シーン階層ツリー取得",
+  "シーン全体の親子ツリーを返す。{roots:[{entityId, name, children:[...]}], count, sceneGeneration}。dx12_list_entities のフラット一覧と違い構造(どれが誰の子か)が分かる。プレハブ/モデルの内部構造確認やシーン整理に。",
+  {},
+  { readOnlyHint: true },
+  () => run(() => engine.call("get_hierarchy", {})),
+);
+
+// ════════════════════════════════════════════════════════════════
+//  アセット操作(import / メタ情報 / 移動 / 削除)
+// ════════════════════════════════════════════════════════════════
+
+reg(
+  "dx12_import_asset",
+  "外部アセット取り込み",
+  "assets の外にあるファイル/フォルダをプロジェクトの assets/ へコピーする(ダウンロードした素材や /asset コマンドの出力の取り込み用)。sourcePath は絶対パス可(唯一 assets 外を読むツール)、destPath は assets 相対。フォルダを渡すと再帰コピー。★.gltf は同階層の .bin/テクスチャを参照するのでフォルダごと import すること。{imported:[相対パス...], count} が返る。",
+  {
+    sourcePath: z.string().describe("取り込み元の絶対パス(ファイル or フォルダ)。例: C:/Users/me/Downloads/rock.glb"),
+    destPath: z.string().describe("assets 相対の置き先。ファイルなら 'models/rock.glb'、フォルダ/末尾'/' ならその中へ元ファイル名で入る。"),
+    overwrite: z.boolean().optional().describe("true で既存を上書き。既定 false(存在したらエラー)。"),
+  },
+  {},
+  ({ sourcePath, destPath, overwrite }) =>
+    run(() => engine.call("import_asset", { sourcePath, destPath, overwrite })),
+);
+
+reg(
+  "dx12_asset_info",
+  "アセットのメタ情報",
+  "アセットの中身情報を GPU を使わず読む。モデル(gltf/glb/fbx/obj): meshCount/totalVertices/totalFaces/materialCount/boneCount/hasSkeleton/animations[{name,durationSec}]/aabbMin,aabbMax(メッシュローカル近似)。テクスチャ(png/jpg/dds/tga/bmp/hdr): width/height/mipLevels/format/isCubemap。その他は type と fileSizeBytes のみ。spawn 前に「このモデルどのくらいの大きさ? アニメ持ってる?」を確認するのに使う。",
+  {
+    path: z.string().describe("assets 相対パス。例: models/enemy.glb"),
+  },
+  { readOnlyHint: true },
+  ({ path }) => run(() => engine.call("asset_info", { path })),
+);
+
+reg(
+  "dx12_move_asset",
+  "アセット移動/リネーム",
+  "assets 内のファイル/フォルダを移動・リネームする。★シーン/プレハブ内の参照パスは自動更新されない(参照済みアセットを動かすとロードが壊れる。dx12_list_entities → get_entity で modelPath 等を確認してから)。",
+  {
+    from: z.string().describe("assets 相対の移動元。"),
+    to: z.string().describe("assets 相対の移動先。"),
+    overwrite: z.boolean().optional().describe("true で既存ファイルを上書き(ディレクトリは不可)。既定 false。"),
+  },
+  {},
+  ({ from, to, overwrite }) => run(() => engine.call("move_asset", { from, to, overwrite })),
+);
+
+reg(
+  "dx12_delete_asset",
+  "アセット削除",
+  "assets 内のファイルを削除する。ディレクトリは recursive=true が必須(誤爆防止)。★シーン/プレハブが参照中のアセットを消すとロードが壊れる。取り返しがつかないので消す前に本当に未参照か確認すること。",
+  {
+    path: z.string().describe("assets 相対パス。"),
+    recursive: z.boolean().optional().describe("ディレクトリを丸ごと消す時に true。既定 false。"),
+  },
+  { destructiveHint: true },
+  ({ path, recursive }) => run(() => engine.call("delete_asset", { path, recursive })),
+);
+
+// ════════════════════════════════════════════════════════════════
 //  合成ツール(エンジンには無い。Node 内で複数 call を順に行う)
 // ════════════════════════════════════════════════════════════════
+
+// 決定的な乱数(mulberry32)。同じ seed なら同じ配置=AI のリトライで結果が再現する。
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+reg(
+  "dx12_scatter",
+  "一括配置(散布/グリッド)",
+  "プリミティブ/モデル/プレハブを矩形エリアへ一括配置する(木を50本、コインを敷き詰める等を1回の呼び出しで)。placement='random'(seed 付き乱数、同 seed で再現) か 'grid'(等間隔)。randomYaw で向きをばらし、scaleRange でサイズをばらす。snapToGround=true で1体ずつ接地。★Editor 限定(Playing 中は不可)。{entities:[{entityId, name}], count, seed} が返る。多数配置は時間がかかる(1体ずつフレーム境界で生成)。",
+  {
+    type: z.string().optional().describe("プリミティブ種別(box/sphere/plane/empty 等、dx12_create_entity と同じ)。type/model/prefab のどれか1つ必須。"),
+    model: z.string().optional().describe("モデルの assets 相対パス(.gltf/.glb/.fbx/.obj)。"),
+    prefab: z.string().optional().describe("プレハブの assets 相対パス(.prefab)。"),
+    count: z.number().int().min(1).max(200).describe("配置する個数(1..200)。"),
+    area: z.array(z.number()).length(4).describe("配置エリア [minX, minZ, maxX, maxZ](ワールド座標)。"),
+    y: z.number().optional().describe("配置する高さ(Y)。既定 0。snapToGround を使うなら地面より上に。"),
+    placement: z.enum(["random", "grid"]).optional().describe("random=seed 付き乱数(既定) / grid=等間隔グリッド。"),
+    seed: z.number().int().optional().describe("乱数 seed。同じ seed なら同じ配置(既定 1)。"),
+    randomYaw: z.boolean().optional().describe("true で各個体の Y 回転をランダムに(既定: random 時 true / grid 時 false)。"),
+    scaleRange: z.array(z.number()).length(2).optional().describe("[min, max] の一様スケール倍率をランダム適用。例 [0.8, 1.3]。"),
+    snapToGround: z.boolean().optional().describe("true で配置後に1体ずつ snap_to_ground を呼ぶ。"),
+    namePrefix: z.string().optional().describe("エンティティ名の接頭辞(連番付与)。省略で種別/ファイル名。"),
+  },
+  {},
+  (args: any) => run(async () => {
+    const { count, area, placement = "random", seed = 1, scaleRange, snapToGround } = args;
+    const sources = [args.type, args.model, args.prefab].filter((s: any) => s != null);
+    if (sources.length !== 1) throw new Error("type / model / prefab のどれか1つだけ指定してや");
+    const [minX, minZ, maxX, maxZ] = area;
+    const y = args.y ?? 0;
+    const randomYaw = args.randomYaw ?? (placement === "random");
+    const rng = mulberry32(seed);
+    const prefix = args.namePrefix
+      ?? (args.type ?? String(args.model ?? args.prefab).split("/").pop()!.replace(/\.[^.]*$/, ""));
+
+    // 位置リストを先に決める(grid は行×列で等間隔、random は seed 付き乱数)
+    const positions: [number, number, number][] = [];
+    if (placement === "grid") {
+      const cols = Math.ceil(Math.sqrt(count));
+      const rows = Math.ceil(count / cols);
+      for (let i = 0; i < count; i++) {
+        const cx = i % cols, rz = Math.floor(i / cols);
+        const fx = cols > 1 ? cx / (cols - 1) : 0.5;
+        const fz = rows > 1 ? rz / (rows - 1) : 0.5;
+        positions.push([minX + (maxX - minX) * fx, y, minZ + (maxZ - minZ) * fz]);
+      }
+    } else {
+      for (let i = 0; i < count; i++)
+        positions.push([minX + (maxX - minX) * rng(), y, minZ + (maxZ - minZ) * rng()]);
+    }
+
+    const entities: any[] = [];
+    const errors: any[] = [];
+    for (let i = 0; i < count; i++) {
+      const nm = `${prefix}_${String(i + 1).padStart(3, "0")}`;
+      try {
+        let created: any;
+        if (args.type)        created = await engine.call("create_entity", { type: args.type, name: nm, position: positions[i] });
+        else if (args.model)  created = await engine.call("spawn_model", { path: args.model, name: nm, position: positions[i] });
+        else                  created = await engine.call("spawn_prefab", { path: args.prefab, name: nm, position: positions[i] });
+        const id = created?.rootEntityId ?? created?.entityId;
+        const tf: any = {};
+        if (randomYaw) tf.rotation = [0, rng() * 360, 0];
+        if (scaleRange) {
+          const s = scaleRange[0] + (scaleRange[1] - scaleRange[0]) * rng();
+          tf.scale = [s, s, s];
+        }
+        if (Object.keys(tf).length) await engine.call("set_transform", { entity: id, ...tf });
+        if (snapToGround) await engine.call("snap_to_ground", { entity: id });
+        entities.push({ entityId: id, name: created?.name ?? nm });
+      } catch (e: any) {
+        errors.push({ index: i, error: e.message });
+        if (errors.length >= 3) break;   // 失敗が3件溜まったら打ち切り(Playing 中など根本原因があるはず)
+      }
+    }
+    const out: any = { entities, count: entities.length, seed, placement };
+    if (errors.length) out.errors = errors;
+    return out;
+  }),
+);
 
 reg(
   "dx12_batch",
@@ -1065,6 +1284,85 @@ server.registerTool(
       if (!shot || !shot.path) throw new Error("screenshot_game_view が path を返さんかった");
       return imageResult(shot.path, { width: shot.width, height: shot.height, mode: shot.mode });
     } catch (e: any) {
+      return errResult(e);
+    }
+  },
+);
+
+// 任意視点スクショ(set_editor_camera → 次フレームで screenshot)。俯瞰/引きの構図を一発で。
+server.registerTool(
+  "dx12_screenshot_from",
+  {
+    title: "任意視点スクショ",
+    description: "エディタカメラを指定の位置・注視点へ動かしてからスクショを撮り、PNG 画像で返す(dx12_set_editor_camera + dx12_screenshot の合成)。俯瞰でレイアウト全体を見る、プレイヤー視点の高さで見る等。★Editor 限定。image ブロック + text(path/サイズ)を返す。",
+    inputSchema: {
+      position: vec3.describe("カメラ位置 [x,y,z]。"),
+      target: vec3.optional().describe("注視点 [x,y,z]。省略で現在の向きのまま位置だけ移動。"),
+    },
+    annotations: { title: "任意視点スクショ", openWorldHint: false, idempotentHint: true },
+  },
+  async ({ position, target }) => {
+    try {
+      await engine.call("set_editor_camera", { position, target });
+      const shot = await engine.call("screenshot", {});
+      if (!shot || !shot.path) throw new Error("screenshot が path を返さんかった");
+      return imageResult(shot.path, { position, target, width: shot.width, height: shot.height });
+    } catch (e: any) {
+      return errResult(e);
+    }
+  },
+);
+
+// テクスチャを画像として見る(エンジンが dds/tga 含め PNG へ変換 → 画像ブロックで返す)。
+server.registerTool(
+  "dx12_view_texture",
+  {
+    title: "テクスチャを見る",
+    description: "assets 内のテクスチャ(png/jpg/dds/tga/bmp/hdr)を PNG に変換して画像で返す。割り当てる前に絵柄を目で確認するのに使う。長辺 maxSize(既定 1024)超は縮小。キューブマップは先頭面のみ。image ブロック + text(元パス/サイズ)を返す。",
+    inputSchema: {
+      path: z.string().describe("assets 相対パス。例: textures/rust.png"),
+      maxSize: z.number().int().optional().describe("返す画像の長辺上限 px(16..4096)。既定 1024。"),
+    },
+    annotations: { title: "テクスチャを見る", openWorldHint: false, readOnlyHint: true },
+  },
+  async ({ path, maxSize }) => {
+    try {
+      const r = await engine.call("read_texture", { path, maxSize });
+      if (!r || !r.path) throw new Error("read_texture が path を返さんかった");
+      return imageResult(r.path, { sourcePath: r.sourcePath, width: r.width, height: r.height });
+    } catch (e: any) {
+      return errResult(e);
+    }
+  },
+);
+
+// モデルのプレビュー(一時 spawn → 寄せて撮影 → 削除)。spawn する価値があるか見た目で判断する用。
+server.registerTool(
+  "dx12_preview_model",
+  {
+    title: "モデルプレビュー",
+    description: "モデルを一時的にシーン外(遠方)へ spawn して撮影し、すぐ削除して PNG で返す(spawn_model → focus_and_screenshot → delete_entity の合成)。アセットの見た目を配置前に確認するのに使う。★Editor 限定。シーンは変更されない(一時エンティティは必ず削除される)。image ブロック + text(path/サイズ)を返す。",
+    inputSchema: {
+      path: z.string().describe("モデルの assets 相対パス(.gltf/.glb/.fbx/.obj)。"),
+    },
+    annotations: { title: "モデルプレビュー", openWorldHint: false, readOnlyHint: true },
+  },
+  async ({ path }) => {
+    let previewId: number | null = null;
+    try {
+      const created = await engine.call("spawn_model",
+        { path, name: "__mcp_preview__", position: [0, -10000, 0] });
+      previewId = created?.entityId;
+      await engine.call("focus_camera", { entity: previewId });
+      const shot = await engine.call("screenshot", {});
+      if (!shot || !shot.path) throw new Error("screenshot が path を返さんかった");
+      const img = imageResult(shot.path, { model: path, width: shot.width, height: shot.height });
+      await engine.call("delete_entity", { entity: previewId });
+      previewId = null;
+      return img;
+    } catch (e: any) {
+      // 撮影に失敗しても一時エンティティは残さない
+      if (previewId != null) { try { await engine.call("delete_entity", { entity: previewId }); } catch {} }
       return errResult(e);
     }
   },

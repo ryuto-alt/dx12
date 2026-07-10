@@ -8,6 +8,9 @@
 #include <DirectXTex.h>
 
 #include <vector>
+#include <algorithm>   // ConvertToPng の縮小サイズ計算
+#include <cstdio>      // Probe のエラーメッセージ整形
+#include <cwctype>     // 拡張子の小文字化
 
 namespace dx12e
 {
@@ -58,7 +61,140 @@ std::vector<D3D12_SUBRESOURCE_DATA> BuildSubresources(const DirectX::ScratchImag
     return subs;
 }
 
+// 拡張子で適切な DirectXTex ローダを選ぶ(Probe / ConvertToPng 共用)。
+HRESULT LoadScratchByExt(const std::wstring& filePath, DirectX::ScratchImage& scratch)
+{
+    const size_t dot = filePath.find_last_of(L'.');
+    std::wstring ext = (dot != std::wstring::npos) ? filePath.substr(dot) : L"";
+    for (auto& c : ext) c = static_cast<wchar_t>(::towlower(c));
+    if (ext == L".dds")
+        return DirectX::LoadFromDDSFile(filePath.c_str(), DirectX::DDS_FLAGS_NONE, nullptr, scratch);
+    if (ext == L".tga")
+        return DirectX::LoadFromTGAFile(filePath.c_str(), nullptr, scratch);
+    if (ext == L".hdr")
+        return DirectX::LoadFromHDRFile(filePath.c_str(), nullptr, scratch);
+    return DirectX::LoadFromWICFile(filePath.c_str(), DirectX::WIC_FLAGS_NONE, nullptr, scratch);
+}
+
+// 同上のメタデータ専用版(画素を読まないので速い)。
+HRESULT LoadMetadataByExt(const std::wstring& filePath, DirectX::TexMetadata& meta)
+{
+    const size_t dot = filePath.find_last_of(L'.');
+    std::wstring ext = (dot != std::wstring::npos) ? filePath.substr(dot) : L"";
+    for (auto& c : ext) c = static_cast<wchar_t>(::towlower(c));
+    if (ext == L".dds")
+        return DirectX::GetMetadataFromDDSFile(filePath.c_str(), DirectX::DDS_FLAGS_NONE, meta);
+    if (ext == L".tga")
+        return DirectX::GetMetadataFromTGAFile(filePath.c_str(), meta);
+    if (ext == L".hdr")
+        return DirectX::GetMetadataFromHDRFile(filePath.c_str(), meta);
+    return DirectX::GetMetadataFromWICFile(filePath.c_str(), DirectX::WIC_FLAGS_NONE, meta);
+}
+
+// よく使う DXGI_FORMAT だけ名前を返す(それ以外は数値)。asset_info の表示用。
+std::string DxgiFormatName(DXGI_FORMAT f)
+{
+    switch (f)
+    {
+    case DXGI_FORMAT_R8G8B8A8_UNORM:      return "R8G8B8A8_UNORM";
+    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return "R8G8B8A8_UNORM_SRGB";
+    case DXGI_FORMAT_B8G8R8A8_UNORM:      return "B8G8R8A8_UNORM";
+    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: return "B8G8R8A8_UNORM_SRGB";
+    case DXGI_FORMAT_B8G8R8X8_UNORM:      return "B8G8R8X8_UNORM";
+    case DXGI_FORMAT_R16G16B16A16_FLOAT:  return "R16G16B16A16_FLOAT";
+    case DXGI_FORMAT_R32G32B32A32_FLOAT:  return "R32G32B32A32_FLOAT";
+    case DXGI_FORMAT_R32G32B32_FLOAT:     return "R32G32B32_FLOAT";
+    case DXGI_FORMAT_R8_UNORM:            return "R8_UNORM";
+    case DXGI_FORMAT_R8G8_UNORM:          return "R8G8_UNORM";
+    case DXGI_FORMAT_BC1_UNORM:           return "BC1_UNORM";
+    case DXGI_FORMAT_BC1_UNORM_SRGB:      return "BC1_UNORM_SRGB";
+    case DXGI_FORMAT_BC3_UNORM:           return "BC3_UNORM";
+    case DXGI_FORMAT_BC3_UNORM_SRGB:      return "BC3_UNORM_SRGB";
+    case DXGI_FORMAT_BC5_UNORM:           return "BC5_UNORM";
+    case DXGI_FORMAT_BC6H_UF16:           return "BC6H_UF16";
+    case DXGI_FORMAT_BC7_UNORM:           return "BC7_UNORM";
+    case DXGI_FORMAT_BC7_UNORM_SRGB:      return "BC7_UNORM_SRGB";
+    default: return "DXGI_FORMAT(" + std::to_string(static_cast<int>(f)) + ")";
+    }
+}
+
 } // namespace
+
+TextureProbeInfo TextureLoader::Probe(const std::wstring& filePath)
+{
+    TextureProbeInfo info;
+    DirectX::TexMetadata meta{};
+    const HRESULT hr = LoadMetadataByExt(filePath, meta);
+    if (FAILED(hr))
+    {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "metadata load failed (hr=0x%08X)", static_cast<unsigned>(hr));
+        info.error = buf;
+        return info;
+    }
+    info.width     = static_cast<uint32_t>(meta.width);
+    info.height    = static_cast<uint32_t>(meta.height);
+    info.mipLevels = static_cast<uint32_t>(meta.mipLevels);
+    info.arraySize = static_cast<uint32_t>(meta.arraySize);
+    info.format    = DxgiFormatName(meta.format);
+    info.isCubemap = meta.IsCubemap();
+    info.ok = true;
+    return info;
+}
+
+bool TextureLoader::ConvertToPng(const std::wstring& srcPath, const std::wstring& dstPngPath,
+                                 uint32_t maxSize, std::string& outError,
+                                 uint32_t& outWidth, uint32_t& outHeight)
+{
+    using namespace DirectX;
+    ScratchImage scratch;
+    HRESULT hr = LoadScratchByExt(srcPath, scratch);
+    if (FAILED(hr)) { outError = "load failed"; return false; }
+
+    // BC 圧縮はまずデコード
+    if (IsCompressed(scratch.GetMetadata().format))
+    {
+        ScratchImage decompressed;
+        hr = Decompress(scratch.GetImages(), scratch.GetImageCount(), scratch.GetMetadata(),
+                        DXGI_FORMAT_R8G8B8A8_UNORM, decompressed);
+        if (FAILED(hr)) { outError = "decompress failed"; return false; }
+        scratch = std::move(decompressed);
+    }
+    // PNG 保存できる 8bit RGBA へ(HDR は 0..1 クランプ)
+    if (scratch.GetMetadata().format != DXGI_FORMAT_R8G8B8A8_UNORM)
+    {
+        ScratchImage converted;
+        hr = Convert(scratch.GetImages(), scratch.GetImageCount(), scratch.GetMetadata(),
+                     DXGI_FORMAT_R8G8B8A8_UNORM, TEX_FILTER_DEFAULT, TEX_THRESHOLD_DEFAULT, converted);
+        if (FAILED(hr)) { outError = "format convert failed"; return false; }
+        scratch = std::move(converted);
+    }
+    // 長辺 maxSize 超は縮小(AI に見せる用途なのでフル解像度は不要)
+    {
+        const TexMetadata& meta = scratch.GetMetadata();
+        const size_t longSide = (std::max)(meta.width, meta.height);
+        if (maxSize > 0 && longSide > maxSize)
+        {
+            const double scale = static_cast<double>(maxSize) / static_cast<double>(longSide);
+            size_t nw = static_cast<size_t>(static_cast<double>(meta.width) * scale);
+            size_t nh = static_cast<size_t>(static_cast<double>(meta.height) * scale);
+            if (nw < 1) nw = 1;
+            if (nh < 1) nh = 1;
+            ScratchImage resized;
+            hr = Resize(scratch.GetImages(), scratch.GetImageCount(), meta,
+                        nw, nh, TEX_FILTER_DEFAULT, resized);
+            if (FAILED(hr)) { outError = "resize failed"; return false; }
+            scratch = std::move(resized);
+        }
+    }
+    const Image* img = scratch.GetImage(0, 0, 0);   // キューブ/配列は先頭面のみ
+    if (!img) { outError = "no image"; return false; }
+    hr = SaveToWICFile(*img, WIC_FLAGS_NONE, GetWICCodec(WIC_CODEC_PNG), dstPngPath.c_str());
+    if (FAILED(hr)) { outError = "png save failed"; return false; }
+    outWidth  = static_cast<uint32_t>(img->width);
+    outHeight = static_cast<uint32_t>(img->height);
+    return true;
+}
 
 std::unique_ptr<Texture> TextureLoader::LoadFromFile(
     GraphicsDevice& device,

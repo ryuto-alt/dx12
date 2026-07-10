@@ -1851,6 +1851,73 @@ entt::entity ResolveMcpEntity(Scene& scene, const nlohmann::json& params)
         "invalid entity id (Stop/シーン再読込で id は変わる。dx12_list_entities で取り直すか name 指定で操作してくれ)");
 }
 
+// MCP パス系ツール共通: assets 相対パスの検証。絶対パス/ドライブレター/バックスラッシュ/".."
+// を拒否して assets ルート外へのアクセス(traversal)を防ぐ。通れば rel をそのまま返す。
+std::string ValidateMcpAssetRelPath(const std::string& rel, const char* paramName = "path")
+{
+    if (rel.empty())
+        throw McpError(McpErr::InvalidParam, std::string("missing '") + paramName + "'");
+    if (rel.front() == '/' || rel.find('\\') != std::string::npos ||
+        rel.find(':') != std::string::npos || rel.find("..") != std::string::npos)
+        throw McpError(McpErr::InvalidParam, std::string("invalid ") + paramName + " (assets 相対のみ)");
+    return rel;
+}
+
+// MCP get_bounds / snap_to_ground 用: エンティティ単体のワールド AABB。
+// メッシュ AABB の 8 頂点をワールド行列で変換して包む(回転にも正しい)。
+// メッシュ無し(ライト/カメラ/empty)はワールド位置の点(min=max)。Transform 無しは false。
+bool McpWorldAabb(const entt::registry& reg, entt::entity e,
+                  DirectX::XMFLOAT3& outMin, DirectX::XMFLOAT3& outMax, bool& outHasMesh)
+{
+    using namespace DirectX;
+    if (!reg.all_of<Transform>(e)) return false;
+    const XMMATRIX world = ComputeWorldMatrix(reg, e);
+    XMVECTOR mn = XMVectorReplicate(3.402823466e+38f);
+    XMVECTOR mx = XMVectorReplicate(-3.402823466e+38f);
+    outHasMesh = false;
+    if (reg.all_of<MeshRenderer>(e))
+    {
+        for (const auto* mesh : reg.get<MeshRenderer>(e).meshes)
+        {
+            if (!mesh) continue;
+            const XMFLOAT3 amn = mesh->GetAABBMin();
+            const XMFLOAT3 amx = mesh->GetAABBMax();
+            for (int c = 0; c < 8; ++c)
+            {
+                XMVECTOR p = XMVectorSet((c & 1) ? amx.x : amn.x,
+                                         (c & 2) ? amx.y : amn.y,
+                                         (c & 4) ? amx.z : amn.z, 1.0f);
+                p = XMVector3Transform(p, world);
+                mn = XMVectorMin(mn, p);
+                mx = XMVectorMax(mx, p);
+            }
+            outHasMesh = true;
+        }
+    }
+    if (!outHasMesh)
+    {
+        const XMVECTOR p = XMVectorSetW(world.r[3], 1.0f);
+        mn = p; mx = p;
+    }
+    XMStoreFloat3(&outMin, mn);
+    XMStoreFloat3(&outMax, mx);
+    return true;
+}
+
+// child の親チェーンに ancestor が居るか(child==ancestor も true)。循環ガード付き。
+bool McpIsDescendantOf(const entt::registry& reg, entt::entity child, entt::entity ancestor)
+{
+    entt::entity cur = child;
+    int depth = 0;
+    while (cur != entt::null && reg.valid(cur) && depth++ < 64)
+    {
+        if (cur == ancestor) return true;
+        if (!reg.all_of<Transform>(cur)) break;
+        cur = reg.get<Transform>(cur).parent;
+    }
+    return false;
+}
+
 // MCP key_* 用。params["key"] を Win32 VK コードに解決する。数値(VK そのもの)か、
 // 文字列(1文字 A-Z/0-9 or "SPACE"/"SHIFT"/"TAB"/"ESC"/"ENTER"/"UP"/"DOWN"/"LEFT"/"RIGHT"/"F1".."F12")。
 // Lua の KEY_* と同じ割り当て(ScriptEngine.cpp)。
@@ -3809,6 +3876,401 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"requested", true},
                               {"note", "second engine process launches at next frame boundary and auto-joins 127.0.0.1"}};
+        }
+        else if (method == "get_editor_camera")
+        {
+            // シーンビューを描いているカメラ(Editor=フライカメラ / Playing=ゲームカメラ)の状態。
+            const auto pos = m_camera->GetPosition();
+            const auto fwd = m_camera->GetForward();
+            resp["ok"] = true;
+            resp["result"] = {
+                {"position", {pos.x, pos.y, pos.z}},
+                {"forward",  {fwd.x, fwd.y, fwd.z}},
+                {"yawDeg",   DirectX::XMConvertToDegrees(m_camera->GetYaw())},
+                {"pitchDeg", DirectX::XMConvertToDegrees(m_camera->GetPitch())},
+                {"fovYDeg",  DirectX::XMConvertToDegrees(m_camera->GetFovY())},
+                {"orthographic", m_camera->IsOrthographic()},
+                {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"},
+            };
+        }
+        else if (method == "set_editor_camera")
+        {
+            // エディタのフライカメラを任意視点へ(focus_camera より自由。俯瞰や引きの構図撮影用)。
+            // Playing 中の m_camera はゲームカメラでゲームロジックと取り合いになるため Editor 限定。
+            if (m_engineMode == EngineMode::Playing)
+                throw McpError(McpErr::ModeConflict,
+                    "editor camera is only adjustable in Editor mode (dx12_stop first)");
+            DirectX::XMFLOAT3 pos = m_camera->GetPosition();
+            if (params.contains("position"))
+            {
+                const auto p = params["position"].get<std::vector<float>>();
+                if (p.size() != 3) throw McpError(McpErr::InvalidParam, "position must be [x,y,z]");
+                pos = { p[0], p[1], p[2] };
+                m_camera->SetPosition(pos);
+            }
+            if (params.contains("target"))
+            {
+                const auto tp = params["target"].get<std::vector<float>>();
+                if (tp.size() != 3) throw McpError(McpErr::InvalidParam, "target must be [x,y,z]");
+                m_camera->LookAt(pos, { tp[0], tp[1], tp[2] });   // yaw/pitch を逆算してくれる
+            }
+            else
+            {
+                if (params.contains("yawDeg"))
+                    m_camera->SetYaw(DirectX::XMConvertToRadians(params["yawDeg"].get<float>()));
+                if (params.contains("pitchDeg"))
+                {
+                    const float pd = std::clamp(params["pitchDeg"].get<float>(), -89.0f, 89.0f);
+                    m_camera->SetPitch(DirectX::XMConvertToRadians(pd));
+                }
+            }
+            const auto npos = m_camera->GetPosition();
+            const auto nfwd = m_camera->GetForward();
+            resp["ok"] = true;
+            resp["result"] = {
+                {"position", {npos.x, npos.y, npos.z}},
+                {"forward",  {nfwd.x, nfwd.y, nfwd.z}},
+                {"yawDeg",   DirectX::XMConvertToDegrees(m_camera->GetYaw())},
+                {"pitchDeg", DirectX::XMConvertToDegrees(m_camera->GetPitch())},
+            };
+        }
+        else if (method == "get_bounds")
+        {
+            // ワールド AABB。AI が「どこに何を置くか」を数値で決めるための基礎情報。
+            const auto e = ResolveMcpEntity(*m_scene, params);
+            auto& reg = m_scene->GetRegistry();
+            DirectX::XMFLOAT3 mn, mx;
+            bool hasMesh = false;
+            if (!McpWorldAabb(reg, e, mn, mx, hasMesh))
+                throw McpError(McpErr::NotFound, "entity has no Transform");
+            if (params.value("includeChildren", false))
+            {
+                auto view = reg.view<const Transform>();
+                for (auto c : view)
+                {
+                    if (c == e || !McpIsDescendantOf(reg, c, e)) continue;
+                    DirectX::XMFLOAT3 cmn, cmx;
+                    bool chm = false;
+                    if (!McpWorldAabb(reg, c, cmn, cmx, chm)) continue;
+                    mn = { std::min(mn.x, cmn.x), std::min(mn.y, cmn.y), std::min(mn.z, cmn.z) };
+                    mx = { std::max(mx.x, cmx.x), std::max(mx.y, cmx.y), std::max(mx.z, cmx.z) };
+                    hasMesh = hasMesh || chm;
+                }
+            }
+            resp["ok"] = true;
+            resp["result"] = {
+                {"entityId", static_cast<u32>(e)},
+                {"min", {mn.x, mn.y, mn.z}}, {"max", {mx.x, mx.y, mx.z}},
+                {"center", {(mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f, (mn.z + mx.z) * 0.5f}},
+                {"size", {mx.x - mn.x, mx.y - mn.y, mx.z - mn.z}},
+                {"hasMesh", hasMesh},
+            };
+        }
+        else if (method == "look_at")
+        {
+            // エンティティを目標(座標 or 別エンティティ)へ向ける。+Z が正面の想定(rotation Euler を書く)。
+            // 注: rotation はローカル値なので、親が回転していると厳密なワールド向きからずれる。
+            using namespace DirectX;
+            const auto e = ResolveMcpEntity(*m_scene, params);
+            auto& reg = m_scene->GetRegistry();
+            if (!reg.all_of<Transform>(e)) throw McpError(McpErr::NotFound, "entity has no Transform");
+            XMFLOAT3 tgt;
+            if (params.contains("target"))
+            {
+                const auto tp = params["target"].get<std::vector<float>>();
+                if (tp.size() != 3) throw McpError(McpErr::InvalidParam, "target must be [x,y,z]");
+                tgt = { tp[0], tp[1], tp[2] };
+            }
+            else
+            {
+                json tref;
+                if (params.contains("targetEntity"))    tref["entity"] = params["targetEntity"];
+                else if (params.contains("targetName")) tref["name"]   = params["targetName"];
+                else throw McpError(McpErr::InvalidParam,
+                    "need 'target' [x,y,z] or 'targetEntity'(id) / 'targetName'");
+                const auto te = ResolveMcpEntity(*m_scene, tref);
+                if (te == e) throw McpError(McpErr::InvalidParam, "cannot look at itself");
+                XMFLOAT4X4 twf;
+                XMStoreFloat4x4(&twf, ComputeWorldMatrix(reg, te));
+                tgt = { twf._41, twf._42, twf._43 };
+            }
+            XMFLOAT4X4 wf;
+            XMStoreFloat4x4(&wf, ComputeWorldMatrix(reg, e));
+            const XMFLOAT3 dir{ tgt.x - wf._41, tgt.y - wf._42, tgt.z - wf._43 };
+            const float len = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+            if (len < 1e-6f) throw McpError(McpErr::InvalidParam, "target coincides with entity position");
+            const float yawDeg = XMConvertToDegrees(std::atan2(dir.x, dir.z));
+            float pitchDeg = 0.0f;
+            if (!params.value("upright", false))
+                pitchDeg = XMConvertToDegrees(-std::asin(std::clamp(dir.y / len, -1.0f, 1.0f)));
+            auto& t = reg.get<Transform>(e);
+            t.rotation = { pitchDeg, yawDeg, 0.0f };
+            t.useQuaternion = false;
+            resp["ok"] = true;
+            resp["result"] = {{"entityId", static_cast<u32>(e)},
+                              {"rotation", {pitchDeg, yawDeg, 0.0f}},
+                              {"target", {tgt.x, tgt.y, tgt.z}}};
+        }
+        else if (method == "snap_to_ground")
+        {
+            // Editor 中でも使える AABB ベースの接地。XZ が重なる他メッシュの天面のうち
+            // 自分の天面以下で最も高いものに底面を合わせる。無ければ y=0 平面へ。
+            // (Playing 中の物理レイキャストは dx12_raycast を使う)
+            const auto e = ResolveMcpEntity(*m_scene, params);
+            auto& reg = m_scene->GetRegistry();
+            if (!reg.all_of<Transform>(e)) throw McpError(McpErr::NotFound, "entity has no Transform");
+            DirectX::XMFLOAT3 mn, mx;
+            bool hasMesh = false;
+            McpWorldAabb(reg, e, mn, mx, hasMesh);
+            {   // 子も含めた AABB(モデルのルートが empty のことがあるため)
+                auto view = reg.view<const Transform>();
+                for (auto c : view)
+                {
+                    if (c == e || !McpIsDescendantOf(reg, c, e)) continue;
+                    DirectX::XMFLOAT3 cmn, cmx;
+                    bool chm = false;
+                    if (!McpWorldAabb(reg, c, cmn, cmx, chm) || !chm) continue;
+                    mn = { std::min(mn.x, cmn.x), std::min(mn.y, cmn.y), std::min(mn.z, cmn.z) };
+                    mx = { std::max(mx.x, cmx.x), std::max(mx.y, cmx.y), std::max(mx.z, cmx.z) };
+                }
+            }
+            const float offset = params.value("offset", 0.0f);
+            float groundY = 0.0f;
+            entt::entity groundEnt = entt::null;
+            auto view = reg.view<const Transform, const MeshRenderer>();
+            for (auto o : view)
+            {
+                if (o == e || McpIsDescendantOf(reg, o, e) || McpIsDescendantOf(reg, e, o)) continue;
+                DirectX::XMFLOAT3 omn, omx;
+                bool ohm = false;
+                if (!McpWorldAabb(reg, o, omn, omx, ohm) || !ohm) continue;
+                if (omx.x < mn.x || omn.x > mx.x || omx.z < mn.z || omn.z > mx.z) continue;  // XZ 非重複
+                if (omx.y > mx.y + 1e-3f) continue;   // 完全に自分より上の床は無視
+                if (groundEnt == entt::null || omx.y > groundY) { groundY = omx.y; groundEnt = o; }
+            }
+            const float delta = (groundY + offset) - mn.y;
+            auto& t = reg.get<Transform>(e);
+            t.position.y += delta;   // 親に回転/スケールがあると厳密でない(ルート配置想定)
+            resp["ok"] = true;
+            resp["result"] = {{"entityId", static_cast<u32>(e)}, {"groundY", groundY},
+                              {"movedBy", delta},
+                              {"position", {t.position.x, t.position.y, t.position.z}}};
+            if (groundEnt != entt::null)
+                resp["result"]["groundEntityId"] = static_cast<u32>(groundEnt);
+            else
+                resp["result"]["note"] = "no ground mesh found; snapped to y=0 plane";
+        }
+        else if (method == "get_hierarchy")
+        {
+            // シーン全体の親子ツリー。list_entities のフラット一覧と違い構造が分かる。
+            auto& reg = m_scene->GetRegistry();
+            std::unordered_map<entt::entity, std::vector<entt::entity>> children;
+            std::vector<entt::entity> roots;
+            size_t total = 0;
+            auto view = reg.view<const NameTag>();
+            for (auto e : view)
+            {
+                ++total;
+                entt::entity parent = entt::null;
+                if (reg.all_of<Transform>(e)) parent = reg.get<Transform>(e).parent;
+                if (parent != entt::null && reg.valid(parent)) children[parent].push_back(e);
+                else roots.push_back(e);
+            }
+            std::function<json(entt::entity, int)> build = [&](entt::entity e, int depth) -> json
+            {
+                json n{{"entityId", static_cast<u32>(e)},
+                       {"name", reg.all_of<NameTag>(e) ? reg.get<NameTag>(e).name : std::string()}};
+                if (depth < 64)
+                {
+                    auto it = children.find(e);
+                    if (it != children.end())
+                    {
+                        json kids = json::array();
+                        for (auto c : it->second) kids.push_back(build(c, depth + 1));
+                        n["children"] = std::move(kids);
+                    }
+                }
+                return n;
+            };
+            json rootsJson = json::array();
+            for (auto r : roots) rootsJson.push_back(build(r, 0));
+            resp["ok"] = true;
+            resp["result"] = {{"roots", std::move(rootsJson)}, {"count", total},
+                              {"sceneGeneration", m_sceneGeneration}};
+        }
+        else if (method == "import_asset")
+        {
+            // 外部ファイル/フォルダを assets へコピーする(唯一 assets 外を「読む」ツール。
+            // 書き先は assets 限定)。/asset コマンド等で落とした素材の取り込みに使う。
+            const std::string src = params.value("sourcePath", std::string());
+            if (src.empty()) throw McpError(McpErr::InvalidParam, "missing 'sourcePath'");
+            const std::string destRel =
+                ValidateMcpAssetRelPath(params.value("destPath", std::string()), "destPath");
+            const bool overwrite = params.value("overwrite", false);
+            const fs::path srcPath(src);
+            if (!fs::exists(srcPath)) throw McpError(McpErr::NotFound, "source not found: " + src);
+            const fs::path assetsRoot(PathResolver::AssetsDir());
+            fs::path dest = assetsRoot / destRel;
+            json imported = json::array();
+            if (fs::is_directory(srcPath))
+            {
+                if (fs::exists(dest) && !overwrite)
+                    throw McpError(McpErr::InvalidParam,
+                        "destination exists (overwrite:true で上書き): " + destRel);
+                fs::create_directories(dest);
+                fs::copy(srcPath, dest,
+                         fs::copy_options::recursive | fs::copy_options::overwrite_existing);
+                for (const auto& de : fs::recursive_directory_iterator(dest))
+                    if (de.is_regular_file())
+                        imported.push_back(fs::relative(de.path(), assetsRoot).generic_string());
+            }
+            else
+            {
+                // destRel が既存ディレクトリ or 末尾 '/' ならファイル名を引き継ぐ
+                if ((fs::exists(dest) && fs::is_directory(dest)) || destRel.back() == '/')
+                    dest /= srcPath.filename();
+                if (fs::exists(dest) && !overwrite)
+                    throw McpError(McpErr::InvalidParam,
+                        "destination exists (overwrite:true で上書き): "
+                        + fs::relative(dest, assetsRoot).generic_string());
+                fs::create_directories(dest.parent_path());
+                fs::copy_file(srcPath, dest, fs::copy_options::overwrite_existing);
+                imported.push_back(fs::relative(dest, assetsRoot).generic_string());
+            }
+            resp["ok"] = true;
+            resp["result"] = {{"imported", imported}, {"count", imported.size()}};
+            {
+                std::string ext = srcPath.extension().string();
+                std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+                if (ext == ".gltf")
+                    resp["result"]["note"] =
+                        ".gltf は同階層の .bin / テクスチャを参照する。ロードに失敗したらフォルダごと import する";
+            }
+        }
+        else if (method == "asset_info")
+        {
+            // アセットのメタ情報。モデルは Assimp、テクスチャは DirectXTex で GPU を使わず読む。
+            const std::string rel = ValidateMcpAssetRelPath(params.value("path", std::string()));
+            const fs::path full = fs::path(PathResolver::AssetsDir()) / rel;
+            if (!fs::exists(full) || !fs::is_regular_file(full))
+                throw McpError(McpErr::NotFound, "asset not found: " + rel);
+            std::string ext = full.extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+            json result{{"path", rel}, {"fileSizeBytes", static_cast<u64>(fs::file_size(full))}};
+            if (ext == ".gltf" || ext == ".glb" || ext == ".fbx" || ext == ".obj")
+            {
+                result["type"] = "model";
+                const auto info = ModelLoader::Probe(full);
+                if (!info.ok) throw McpError(McpErr::Internal, "model probe failed: " + info.error);
+                result["meshCount"]      = info.meshCount;
+                result["materialCount"]  = info.materialCount;
+                result["totalVertices"]  = info.totalVertices;
+                result["totalFaces"]     = info.totalFaces;
+                result["boneCount"]      = info.boneCount;
+                result["hasSkeleton"]    = info.hasSkeleton;
+                json anims = json::array();
+                for (const auto& a : info.animations)
+                    anims.push_back({{"name", a.name}, {"durationSec", a.durationSec}});
+                result["animations"] = std::move(anims);
+                result["aabbMin"] = {info.aabbMin[0], info.aabbMin[1], info.aabbMin[2]};
+                result["aabbMax"] = {info.aabbMax[0], info.aabbMax[1], info.aabbMax[2]};
+                result["aabbNote"] = "メッシュローカル(ノード変換未適用)の近似 AABB";
+            }
+            else if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".dds" ||
+                     ext == ".tga" || ext == ".bmp" || ext == ".hdr")
+            {
+                result["type"] = "texture";
+                const auto info = TextureLoader::Probe(full.wstring());
+                if (!info.ok) throw McpError(McpErr::Internal, "texture probe failed: " + info.error);
+                result["width"]     = info.width;
+                result["height"]    = info.height;
+                result["mipLevels"] = info.mipLevels;
+                result["arraySize"] = info.arraySize;
+                result["format"]    = info.format;
+                result["isCubemap"] = info.isCubemap;
+            }
+            else
+            {
+                result["type"] = (ext == ".lua")    ? "script"
+                               : (ext == ".hlsl")   ? "shader"
+                               : (ext == ".prefab") ? "prefab"
+                               : (ext == ".json")   ? "scene"
+                               : (ext == ".wav" || ext == ".mp3" || ext == ".ogg") ? "audio"
+                               : "other";
+            }
+            resp["ok"] = true;
+            resp["result"] = std::move(result);
+        }
+        else if (method == "read_texture")
+        {
+            // 任意対応形式(dds/tga 含む)のテクスチャを PNG に変換して絶対パスを返す。
+            // Node 側が画像ブロックとして AI に見せる(dx12_view_texture)。
+            const std::string rel = ValidateMcpAssetRelPath(params.value("path", std::string()));
+            const fs::path full = fs::path(PathResolver::AssetsDir()) / rel;
+            if (!fs::exists(full)) throw McpError(McpErr::NotFound, "texture not found: " + rel);
+            const int maxSize = params.value("maxSize", 1024);
+            if (maxSize < 16 || maxSize > 4096)
+                throw McpError(McpErr::InvalidParam, "maxSize must be 16..4096");
+            const fs::path outPath = fs::absolute("mcp_texture.png");   // screenshot と同じく CWD へ上書き
+            std::string err;
+            uint32_t w = 0, h = 0;
+            if (!TextureLoader::ConvertToPng(full.wstring(), outPath.wstring(),
+                                             static_cast<uint32_t>(maxSize), err, w, h))
+                throw McpError(McpErr::Internal, "texture convert failed: " + err);
+            resp["ok"] = true;
+            resp["result"] = {{"path", outPath.string()}, {"width", w}, {"height", h},
+                              {"sourcePath", rel}};
+        }
+        else if (method == "move_asset")
+        {
+            // assets 内のファイル/フォルダの移動・リネーム。参照パスは自動更新しない。
+            const std::string fromRel =
+                ValidateMcpAssetRelPath(params.value("from", std::string()), "from");
+            const std::string toRel =
+                ValidateMcpAssetRelPath(params.value("to", std::string()), "to");
+            const fs::path assetsRoot(PathResolver::AssetsDir());
+            const fs::path fromP = assetsRoot / fromRel;
+            const fs::path toP   = assetsRoot / toRel;
+            if (!fs::exists(fromP)) throw McpError(McpErr::NotFound, "asset not found: " + fromRel);
+            if (fs::exists(toP))
+            {
+                if (!params.value("overwrite", false))
+                    throw McpError(McpErr::InvalidParam,
+                        "destination exists (overwrite:true で上書き): " + toRel);
+                if (fs::is_directory(toP))
+                    throw McpError(McpErr::InvalidParam, "cannot overwrite a directory: " + toRel);
+                fs::remove(toP);
+            }
+            fs::create_directories(toP.parent_path());
+            fs::rename(fromP, toP);
+            resp["ok"] = true;
+            resp["result"] = {{"from", fromRel}, {"to", toRel},
+                              {"note", "シーン/プレハブ内の参照パスは自動更新されない(必要なら開き直して保存)"}};
+        }
+        else if (method == "delete_asset")
+        {
+            // assets 内のファイル削除。ディレクトリは recursive:true 必須(誤爆防止)。
+            const std::string rel = ValidateMcpAssetRelPath(params.value("path", std::string()));
+            const fs::path full = fs::path(PathResolver::AssetsDir()) / rel;
+            if (!fs::exists(full)) throw McpError(McpErr::NotFound, "asset not found: " + rel);
+            uintmax_t removed = 0;
+            bool wasDirectory = false;
+            if (fs::is_directory(full))
+            {
+                wasDirectory = true;
+                if (!params.value("recursive", false))
+                    throw McpError(McpErr::InvalidParam,
+                        "'" + rel + "' is a directory (recursive:true で丸ごと削除)");
+                removed = fs::remove_all(full);
+            }
+            else
+            {
+                removed = fs::remove(full) ? 1 : 0;
+            }
+            resp["ok"] = true;
+            resp["result"] = {{"deleted", rel}, {"removedCount", removed},
+                              {"wasDirectory", wasDirectory},
+                              {"note", "シーン/プレハブ内の参照パスは自動更新されない"}};
         }
         else
         {

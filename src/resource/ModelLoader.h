@@ -31,9 +31,25 @@ struct ModelData
     std::vector<std::unique_ptr<NodeAnimationClip>>    nodeAnimClips;
 };
 
+// MCP asset_info 用: GPU を使わずモデルのメタ情報だけ読む(Assimp のみ)。
+struct ModelProbeInfo
+{
+    bool        ok = false;
+    std::string error;
+    uint32_t meshCount = 0, materialCount = 0, boneCount = 0;
+    uint64_t totalVertices = 0, totalFaces = 0;
+    bool     hasSkeleton = false;
+    struct Anim { std::string name; double durationSec = 0.0; };
+    std::vector<Anim> animations;
+    // メッシュローカル(ノード変換未適用)の近似 AABB
+    float aabbMin[3] = {0, 0, 0}, aabbMax[3] = {0, 0, 0};
+};
+
 class ModelLoader
 {
 public:
+    static ModelProbeInfo Probe(const std::filesystem::path& filePath);
+
     static ModelData LoadFromFile(
         GraphicsDevice& device,
         ID3D12GraphicsCommandList* cmdList,
