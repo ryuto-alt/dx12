@@ -204,8 +204,9 @@ std::unique_ptr<Texture> TextureLoader::LoadFromFile(
 {
     DirectX::ScratchImage scratchImage;
 
-    // 拡張子で読み込み方法を判定
-    const std::wstring ext = filePath.substr(filePath.find_last_of(L'.'));
+    // 拡張子で読み込み方法を判定(拡張子なしパスでも out_of_range を投げない)
+    const size_t dotPos = filePath.find_last_of(L'.');
+    const std::wstring ext = (dotPos != std::wstring::npos) ? filePath.substr(dotPos) : L"";
 
     HRESULT hr = S_OK;
     if (ext == L".dds" || ext == L".DDS")
@@ -289,7 +290,8 @@ std::unique_ptr<Texture> TextureLoader::LoadCubeFromFile(
         return s;
     };
 
-    const std::wstring ext = filePath.substr(filePath.find_last_of(L'.'));
+    const size_t dotPos = filePath.find_last_of(L'.');
+    const std::wstring ext = (dotPos != std::wstring::npos) ? filePath.substr(dotPos) : L"";
     if (!(ext == L".dds" || ext == L".DDS"))
     {
         Logger::Error("LoadCubeFromFile: キューブマップは .dds のみ対応です: {}", toUtf8(filePath));
