@@ -209,13 +209,21 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         return TRUE;
     }
 
-    // ImGui にイベントを渡す（結果は無視して InputSystem にも常に通知する）
-    ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam);
+    // ImGui にイベントを渡す（キー/マウス等は結果を無視して InputSystem にも常に通知する）
+    LRESULT imguiResult = ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam);
 
     if (window)
     {
         switch (msg)
         {
+        // IME確定文字の二重入力バグ修正: ImGui_ImplWin32 は WM_IME_COMPOSITION を内部で
+        // 一度 DefWindowProcW に渡しており、GCS_RESULTSTR（変換確定）時はその呼び出し内で
+        // Windows 標準IME処理が確定文字列の WM_CHAR を生成する。ここで関数末尾の
+        // DefWindowProcW にも同じメッセージを流すと確定文字列がもう一度 WM_CHAR 化され、
+        // 日本語(IME)入力のたびに文字が二重に書き込まれる。ImGui側の結果を返して打ち切る。
+        case WM_IME_COMPOSITION:
+            return imguiResult;
+
         // ===== カスタムタイトルバー =====
         // WM_NCCALCSIZE: 標準キャプション分をクライアント領域へ取り込む(左右下のリサイズ枠は残す)。
         // フルスクリーン(WS_POPUP)中はOS側にキャプションが無いので素通し。

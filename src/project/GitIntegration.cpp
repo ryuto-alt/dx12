@@ -44,12 +44,27 @@ GitResult GitIntegration::Run(const std::string& exe, const std::string& args,
     // 親側の read ハンドルは継承させない
     SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
 
-    // コマンドライン構築: "exe args"（exe は PATH 解決のためそのまま渡す）
-    std::string cmdLine = exe + " " + args;
-    std::vector<char> cmdBuf(cmdLine.begin(), cmdLine.end());
-    cmdBuf.push_back('\0');
+    // コマンドライン構築: "exe args"（exe は PATH 解決のためそのまま渡す）。
+    // コミットメッセージ等は UTF-8 で保持しているため、CreateProcessA（システムANSI
+    // コードページ＝日本語環境では通常 Shift-JIS で解釈）に渡すと文字化けし、稀に
+    // 変換結果に " が現れて引数の区切りが壊れ commit 自体が失敗する（→push も失敗扱い）。
+    // UTF-8→UTF-16 に明示変換して CreateProcessW へ渡す。
+    auto Utf8ToWide = [](const std::string& s) -> std::wstring {
+        if (s.empty()) return std::wstring();
+        int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
+        std::wstring w(len, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), w.data(), len);
+        return w;
+    };
 
-    STARTUPINFOA si{};
+    std::string cmdLine = exe + " " + args;
+    std::wstring wCmdLine = Utf8ToWide(cmdLine);
+    std::vector<wchar_t> cmdBuf(wCmdLine.begin(), wCmdLine.end());
+    cmdBuf.push_back(L'\0');
+
+    std::wstring wWorkDir = Utf8ToWide(workDir);
+
+    STARTUPINFOW si{};
     si.cb         = sizeof(si);
     si.dwFlags    = STARTF_USESTDHANDLES;
     si.hStdOutput = writePipe;
@@ -58,10 +73,10 @@ GitResult GitIntegration::Run(const std::string& exe, const std::string& args,
 
     PROCESS_INFORMATION pi{};
 
-    BOOL ok = CreateProcessA(
+    BOOL ok = CreateProcessW(
         nullptr, cmdBuf.data(), nullptr, nullptr, TRUE,
         CREATE_NO_WINDOW, nullptr,
-        workDir.empty() ? nullptr : workDir.c_str(),
+        wWorkDir.empty() ? nullptr : wWorkDir.c_str(),
         &si, &pi);
 
     // 書き込み側は親では使わない → 閉じておかないと read が EOF を検出できない
