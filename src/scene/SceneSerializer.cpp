@@ -384,6 +384,8 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                 ej["shader"] = mr.shaderPath;
                 if (mr.shaderAlphaBlend)
                     ej["shaderAlphaBlend"] = true;
+                if (mr.effectValue != 0.0f)
+                    ej["shaderEffectValue"] = mr.effectValue;
             }
 
             // マテリアルテクスチャ上書き（アセットブラウザからテクスチャをD&Dして割当、サブメッシュ単位）。
@@ -1043,6 +1045,7 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                 auto& mrRestore = reg.get<MeshRenderer>(e);
                 mrRestore.shaderPath = ej.value("shader", "");
                 mrRestore.shaderAlphaBlend = ej.value("shaderAlphaBlend", false);
+                mrRestore.effectValue = ej.value("shaderEffectValue", 0.0f);
             }
 
             // マテリアルテクスチャ上書き復元（サブメッシュ単位）

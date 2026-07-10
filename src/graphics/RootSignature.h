@@ -17,7 +17,7 @@ public:
 
     ID3D12RootSignature* Get() const { return m_rootSignature.Get(); }
 
-    static constexpr u32 kSlotPerObject    = 0;  // RootConstants b0 (32 DWORD = MVP+Model)
+    static constexpr u32 kSlotPerObject    = 0;  // RootConstants b0 (33 DWORD = MVP+Model+CustomEffect)
     static constexpr u32 kSlotPerFrame     = 1;  // CBV b1 (PerFrame + cameraPos)
     static constexpr u32 kSlotSRVTable     = 2;  // DescriptorTable t0,t1,t2 (albedo, normal, metalRoughness)
     static constexpr u32 kSlotBonesSRV     = 3;  // DescriptorTable t3 (bones)

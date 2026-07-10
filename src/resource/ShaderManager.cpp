@@ -456,9 +456,13 @@ bool ShaderManager::CompileCustomShader(const std::string& relPath)
         return true;
     }
 
-    entry.valid    = false;
     entry.errorLog = !vsResult.success ? vsResult.errorLog : psResult.errorLog;
-    Logger::Error("カスタムシェーダーのコンパイルに失敗しました: {}\n{}", relPath, entry.errorLog);
+    // 直前に有効なバイトコードがある場合は消さない(entry.vs/ps はここでは書き換えていない)。
+    // 一時的なファイルI/O失敗等での再コンパイルが、動いていた見た目を巻き添えで壊さないため。
+    if (entry.valid)
+        Logger::Error("カスタムシェーダーの再コンパイルに失敗しました(直前の有効なバイトコードを維持): {}\n{}", relPath, entry.errorLog);
+    else
+        Logger::Error("カスタムシェーダーのコンパイルに失敗しました: {}\n{}", relPath, entry.errorLog);
     return false;
 }
 

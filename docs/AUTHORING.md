@@ -247,6 +247,22 @@ Inspector の「Shader」欄直下にある**「アルファブレンド有効�
 "shaderAlphaBlend": true
 ```
 
+**進捗/強度値を渡したい場合（`effectValue`）**: `cbuffer PerObjectConstants : register(b0)` に
+`float4x4 mvp; float4x4 model;` の後ろへ `float effectValue;` を足すと、Sprite2D の `effectValue` と
+同じ役割の汎用フロートをメッシュにも渡せる（ディゾルブの進捗・パルスの強さ等）。
+既定シェーダー(Forward)はこの3つ目のフィールドを読まないため、追加しても他のメッシュ/シェーダーには
+影響しない。Lua `scene:setMeshEffect(entity, value)` で実行時に書き換え可能（ルート定数なので毎フレーム
+呼んでも安価、GPU同期・VB再生成なし）。シーン JSON では `"shaderEffectValue": 0.5` で初期値を指定できる
+（`shader` フィールドと併用時のみ意味を持つ）。
+```hlsl
+cbuffer PerObjectConstants : register(b0)
+{
+    float4x4 mvp;
+    float4x4 model;
+    float    effectValue;  // 追加分。0..1等、意味はシェーダー依存
+};
+```
+
 **MCP 経由（エディタ起動中、ファイル直書き不要）**: `dx12_create_shader({name, code})` で
 `assets/shaders/<name>.hlsl` を作成/上書きし、書き込み直後に実行時コンパイルを試して
 `{path, compiled, error?}` を返す（Lua の `dx12_create_lua_component` と違い書く前の静的検証は

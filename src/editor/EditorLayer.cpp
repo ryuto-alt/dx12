@@ -366,15 +366,18 @@ void EditorLayer::Render(bool isPlaying,
         ImGui::PopStyleVar(2);
         ImGui::PopStyleColor(2);
 
-        // ---- 下中央: 選択オブジェクトのラベル ----
+        // ---- 画面左下: 選択オブジェクトのラベル（Unreal Engine 方式）----
+        // シーンビュー内に重ねると作業の邪魔になるため、シーンビューではなく
+        // エディタウィンドウ全体の左下隅に固定表示する。
         if (m_ctx->HasSelection() && reg.valid(m_ctx->selectedEntity)
             && reg.all_of<NameTag>(m_ctx->selectedEntity))
         {
             const std::string& selName = reg.get<NameTag>(m_ctx->selectedEntity).name;
+            const ImGuiViewport* mainVp = ImGui::GetMainViewport();
             ImGui::SetNextWindowPos(
-                ImVec2(m_viewportPos.x + m_viewportSize.x * 0.5f,
-                       m_viewportPos.y + 10.0f),
-                ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+                ImVec2(mainVp->Pos.x + 10.0f,
+                       mainVp->Pos.y + mainVp->Size.y - 10.0f),
+                ImGuiCond_Always, ImVec2(0.0f, 1.0f));
             ImGui::SetNextWindowBgAlpha(0.82f);
             ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::AppBg);
             ImGui::PushStyleColor(ImGuiCol_Border,   theme::AccentDim2);

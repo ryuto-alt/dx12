@@ -381,6 +381,14 @@ void ScriptEngine::RegisterBindings()
             if (!reg.all_of<Sprite2D>(e.GetHandle())) return;
             reg.get<Sprite2D>(e.GetHandle()).color.w = alpha;
         },
+        // MeshRenderer::effectValue を書き換える(カスタムシェーダーへ渡す汎用の進捗/強度値、
+        // Sprite2D::effectValue のメッシュ版)。ルート定数なので毎フレーム呼んでも安価
+        // (GPU同期・VB再生成なし、マテリアル/テクスチャには一切影響しない)。
+        "setMeshEffect", [](Scene& s, Entity& e, float value) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<MeshRenderer>(e.GetHandle())) return;
+            reg.get<MeshRenderer>(e.GetHandle()).effectValue = value;
+        },
         // --- ゲーム内UI（retained-mode）: スコア表示・HPバー等をスクリプトから書き換える ---
         // UIText::text を書き換える(スコア・残機・メッセージ)。UIText が無ければ何もしない。
         "setUiText", [](Scene& s, Entity& e, const std::string& text) {

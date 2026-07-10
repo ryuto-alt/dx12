@@ -199,6 +199,14 @@ function Scene:setColor(e, r, g, b) end
 ---@param value number 意味はシェーダー依存（例: 0..1 の消滅/出現進捗）
 function Scene:setSpriteEffect(e, value) end
 
+---MeshRenderer::effectValue を書き換える（カスタムシェーダーへ渡す汎用の進捗/強度値、
+---Sprite2D::effectValue のメッシュ版）。ルート定数なので毎フレーム呼んでも安価
+---（GPU同期・VB再生成なし、マテリアル/テクスチャには一切影響しない）。
+---対象エンティティが MeshRenderer を持たない場合は何もしない。
+---@param e Entity
+---@param value number 意味はシェーダー依存（例: 0..1 の消滅/出現進捗）
+function Scene:setMeshEffect(e, value) end
+
 -- --- ゲーム内UI（retained-mode、UICanvas/UIRect/UIImage/UIText/UIButton）操作 ---
 -- UI要素はエディタ（Hierarchy の「UI」サブメニュー等）でツリーを組んで配置し、
 -- 以下のヘルパーで実行時に値だけ書き換える。ボタンのクリックは `events:on` で受ける

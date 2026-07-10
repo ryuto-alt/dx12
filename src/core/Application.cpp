@@ -2208,6 +2208,7 @@ nlohmann::json McpLuaApi()
         "setUVScale(entity,u,v)", "setColor(entity,r,g,b)", "gimmicks() -> table",
         "setSpriteEffect(entity,value)  (Sprite2D.effectValue、カスタムシェーダー用)",
         "setSpriteAlpha(entity,alpha)  (Sprite2D不透明度0..1、半透明演出用)",
+        "setMeshEffect(entity,value)  (MeshRenderer.effectValue、カスタムシェーダー用)",
         "queryByTag(tag) -> table(names)", "queryInBox(minX,minZ,maxX,maxZ,tag?) -> table(names)",
     })));
     objects.push_back(O("input", "global", json::array({
@@ -7589,10 +7590,11 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
                 meshWorld = nodeMat * world;
             }
 
-            struct PerObjectData { XMMATRIX mvp; XMMATRIX mdl; } objData;
+            struct PerObjectData { XMMATRIX mvp; XMMATRIX mdl; float effect; } objData;
             objData.mvp = XMMatrixTranspose(meshWorld * viewProj);
             objData.mdl = XMMatrixTranspose(meshWorld);
-            m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
+            objData.effect = renderer.effectValue;
+            m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 33, &objData);
 
             const Material* mat = mesh->GetMaterial();
 

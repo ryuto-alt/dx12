@@ -97,6 +97,11 @@ struct MeshRenderer
     // DepthWrite=OFF(半透明物の定石、ForwardGrid と同じ考え方)の専用 PSO を使う。
     bool shaderAlphaBlend = false;
 
+    // カスタムシェーダーへ渡す汎用の進捗/強度値(0..1等、意味はシェーダー依存)。Sprite2D::effectValue と
+    // 同じ役割のメッシュ版。Lua `scene:setMeshEffect(entity, value)` で実行時に書き換え可能
+    // (ルート定数なので毎フレーム呼んでも安価、VB再生成なし)。既定シェーダー(Forward)では未使用。
+    float effectValue = 0.0f;
+
     // マテリアルのテクスチャ差し替え（アセットブラウザからテクスチャをドラッグ&ドロップして割当。
     // Unity/Unreal 風）。サブメッシュ単位（meshes[]と同じインデックス）。空文字列 = Material 既定の
     // テクスチャを使う。**Mesh::GetMaterial() は同一モデルパスの全インスタンスで共有される
