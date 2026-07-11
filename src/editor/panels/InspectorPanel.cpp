@@ -679,6 +679,9 @@ void InspectorPanel::Render(entt::registry& reg,
                         changed |= pg::Float("エフェクト値 effectValue", &sp.effectValue, 0.005f, 0.0f, 1.0f, "%.3f", &active,
                             "シェーダーへ渡す汎用の進捗/強度値(意味はシェーダー依存)。"
                             "Luaの scene:setSpriteEffect(e, value) で実行時にも変更可");
+                        changed |= pg::Float4("パラメーター shaderParams", &sp.shaderParams.x, 0.01f, 0.0f, 0.0f, "%.3f", &active,
+                            "シェーダーへ渡す汎用パラメーター4つ(意味はシェーダー依存)。HLSL側は VSIn/PSIn に "
+                            "float4 params : TEXCOORD2; を足して読む。Luaの scene:setSpriteParams(e, x,y,z,w) でも変更可");
                     }
                     pg::End();
                     if (!sp.worldSpace && !sp.shaderPath.empty())
@@ -2132,6 +2135,13 @@ void InspectorPanel::Render(entt::registry& reg,
                         pg::Checkbox("アルファブレンド有効", &mr.shaderAlphaBlend,
                             "ON: シェーダーの alpha 出力を SrcAlpha/InvSrcAlpha でブレンド(DepthWrite OFF)。"
                             "OFF(既定): 不透明固定で alpha は無視される");
+                        pg::Float("エフェクト値 effectValue", &mr.effectValue, 0.005f, 0.0f, 1.0f, "%.3f", nullptr,
+                            "シェーダーへ渡す汎用の進捗/強度値(意味はシェーダー依存)。"
+                            "Luaの scene:setMeshEffect(e, value) で実行時にも変更可");
+                        pg::Float4("パラメーター shaderParams", &mr.shaderParams.x, 0.01f, 0.0f, 0.0f, "%.3f", nullptr,
+                            "シェーダーへ渡す汎用パラメーター4つ(意味はシェーダー依存)。HLSL側は cbuffer の "
+                            "effectValue の後ろに float4 shaderParams; を足して読む。"
+                            "Luaの scene:setMeshParams(e, x,y,z,w) でも変更可");
                     }
                     pg::End();
                 }

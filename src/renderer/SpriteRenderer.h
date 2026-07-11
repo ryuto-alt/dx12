@@ -41,8 +41,9 @@ struct WorldSpriteDesc
     float layer     = 0.0f;
     bool  billboard = false;             // true: 常にカメラへ正対（向きを無視）
 
-    // カスタムシェーダー用(Sprite2D::shaderPath/effectValue から供給。既定は無効)。
+    // カスタムシェーダー用(Sprite2D::shaderPath/effectValue/shaderParams から供給。既定は無効)。
     float effect     = 0.0f;             // 頂点属性として補間される汎用進捗値(TEXCOORD1)
+    DirectX::XMFLOAT4 params{0, 0, 0, 0}; // 汎用パラメーター4つ(TEXCOORD2。バッチを壊さず sprite 単位)
     void* customPso  = nullptr;          // 解決済み ID3D12PipelineState*。nullptr=既定 m_worldPso を使う
 };
 
@@ -86,9 +87,10 @@ public:
     static const D3D12_INPUT_ELEMENT_DESC* GetInputLayout(u32* countOut);
 
 private:
-    // POSITION(12) + TEXCOORD0(8) + COLOR0(16) + TEXCOORD1(4) = 40 バイト。
-    // 末尾の effect はカスタムシェーダー向けの汎用進捗値(既定Sprite.hlslは未使用)。
-    struct Vertex { DirectX::XMFLOAT3 pos; DirectX::XMFLOAT2 uv; DirectX::XMFLOAT4 col; float effect; };
+    // POSITION(12) + TEXCOORD0(8) + COLOR0(16) + TEXCOORD1(4) + TEXCOORD2(16) = 56 バイト。
+    // 末尾の effect/params はカスタムシェーダー向けの汎用値(既定Sprite.hlslは未使用)。
+    struct Vertex { DirectX::XMFLOAT3 pos; DirectX::XMFLOAT2 uv; DirectX::XMFLOAT4 col; float effect;
+                    DirectX::XMFLOAT4 params; };
 
     static constexpr u32 kMaxSprites  = 4096;
     static constexpr u32 kMaxVertices = kMaxSprites * 6;

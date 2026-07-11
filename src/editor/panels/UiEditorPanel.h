@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <entt/entt.hpp>
@@ -40,6 +41,20 @@ public:
                       ID3D12GraphicsCommandList* cmdList);
 
 private:
+    // ---- 階層ツリー（左ペイン。UMG/UI Builder の Hierarchy 相当）----
+    // クリック選択（Ctrl でマルチ）、D&D で親変更（要素の中央へドロップ）・兄弟並べ替え
+    // （要素の上下 1/4 へドロップ = その前/後へ挿入）。並び順は UIRect::order に永続化され、
+    // 描画順（上 = 奥、下 = 手前）と入力の前面判定の両方に効く。
+    using UiChildrenMap = std::unordered_map<entt::entity, std::vector<entt::entity>>;
+    void DrawHierarchyPane(entt::registry& reg, EditorContext& ctx);
+    void DrawUiTreeNode(entt::registry& reg, EditorContext& ctx, entt::entity e,
+                        const UiChildrenMap& children);
+
+    // ツリー D&D の確定内容（描画中に registry を書き換えない。ツリー走査後に適用）
+    entt::entity m_dropEntity = entt::null;   // 動かす要素
+    entt::entity m_dropParent = entt::null;   // 新しい親（キャンバス or UI 要素）
+    int          m_dropIndex  = -1;           // 兄弟内の挿入位置。-1 = 末尾
+
     // ---- ビュー（パン / ズーム / 画面サイズ）----
     f32    m_zoom = 1.0f;
     ImVec2 m_pan{0.0f, 0.0f};      // 仮想スクリーン中心の、キャンバス領域中心からのずれ（スクリーン px）

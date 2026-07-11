@@ -22,6 +22,7 @@ const D3D12_INPUT_ELEMENT_DESC kSpriteInputLayout[] = {
     {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
     {"COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
     {"TEXCOORD", 1, DXGI_FORMAT_R32_FLOAT,          0, 36, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+    {"TEXCOORD", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 40, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
 };
 } // namespace
 
@@ -403,14 +404,15 @@ void SpriteRenderer::RenderWorld(ID3D12GraphicsCommandList* cmd, XMMATRIX viewPr
         XMStoreFloat3(&pBR, br); XMStoreFloat3(&pBL, bl);
 
         // 上端→テクスチャ上(uvmin.y), 下端→テクスチャ下(uvmax.y)
-        // effect はカスタムシェーダー向けの汎用進捗値(頂点属性として補間される)。
+        // effect/params はカスタムシェーダー向けの汎用値(頂点属性として補間される)。
         const float fx = s.effect;
-        verts.push_back({pTL, {uvmin.x, uvmin.y}, c, fx});
-        verts.push_back({pTR, {uvmax.x, uvmin.y}, c, fx});
-        verts.push_back({pBR, {uvmax.x, uvmax.y}, c, fx});
-        verts.push_back({pTL, {uvmin.x, uvmin.y}, c, fx});
-        verts.push_back({pBR, {uvmax.x, uvmax.y}, c, fx});
-        verts.push_back({pBL, {uvmin.x, uvmax.y}, c, fx});
+        const XMFLOAT4 pr = s.params;
+        verts.push_back({pTL, {uvmin.x, uvmin.y}, c, fx, pr});
+        verts.push_back({pTR, {uvmax.x, uvmin.y}, c, fx, pr});
+        verts.push_back({pBR, {uvmax.x, uvmax.y}, c, fx, pr});
+        verts.push_back({pTL, {uvmin.x, uvmin.y}, c, fx, pr});
+        verts.push_back({pBR, {uvmax.x, uvmax.y}, c, fx, pr});
+        verts.push_back({pBL, {uvmin.x, uvmax.y}, c, fx, pr});
     }
     u32 vertexCount = static_cast<u32>(verts.size());
     // フレーム内の残り容量にクランプ（メイン＋プレビュー等の複数パスを線形に詰める）

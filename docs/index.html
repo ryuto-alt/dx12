@@ -716,6 +716,11 @@ properties = {
               <tr><td><code>scene:spawn(name, modelPath, pos, rot, scale)</code></td><td>モデル（gltf/fbx/obj）を生成</td></tr>
               <tr><td><code>scene:remove(e)</code> / <code>scene:getEntityCount()</code></td><td>削除 / エンティティ数</td></tr>
               <tr><td><code>scene:setColor(e, r,g,b)</code></td><td>頂点カラーで着色（<b>生成時1回だけ</b>。GPU 同期）</td></tr>
+              <tr><td><code>scene:setSpriteEffect(e, value)</code></td><td>Sprite2D の effectValue（カスタムシェーダー汎用値）。毎フレーム可</td></tr>
+              <tr><td><code>scene:setSpriteAlpha(e, alpha)</code></td><td>Sprite2D の不透明度 0..1（半透明演出）。毎フレーム可</td></tr>
+              <tr><td><code>scene:setSpriteParams(e, x,y,z,w)</code></td><td>Sprite2D の shaderParams（カスタムシェーダー汎用 float4）。毎フレーム可</td></tr>
+              <tr><td><code>scene:setMeshEffect(e, value)</code></td><td>MeshRenderer の effectValue（カスタムシェーダー汎用値）。毎フレーム可</td></tr>
+              <tr><td><code>scene:setMeshParams(e, x,y,z,w)</code></td><td>MeshRenderer の shaderParams（カスタムシェーダー汎用 float4）。毎フレーム可</td></tr>
               <tr><td><code>scene:queryByTag(tag)</code></td><td>タグ一致エンティティの<b>名前配列</b>（RTSの群選択など）</td></tr>
               <tr><td><code>scene:queryInBox(minX,minZ,maxX,maxZ[,tag])</code></td><td>XZ矩形内の名前配列（矩形選択）</td></tr>
             </tbody>

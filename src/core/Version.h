@@ -7,7 +7,7 @@
 namespace dx12e
 {
 // セマンティックバージョン（"MAJOR.MINOR.PATCH"）。GitHub リリースのタグ（"v1.2.3" 等）と比較する。
-constexpr const char* kEngineVersion = "1.0.1";
+constexpr const char* kEngineVersion = "1.0.2";
 
 // 自動アップデートの取得元 GitHub リポジトリ。
 constexpr const char* kUpdateRepoOwner = "ryuto-alt";
@@ -16,15 +16,17 @@ constexpr const char* kUpdateRepoName  = "dx12";
 // 起動時に一度だけ表示する「更新内容」ポップアップ（この版で直したこと）。
 // 表示済み判定は %LOCALAPPDATA%\DX12Engine\shown_version.txt（版が変わった初回だけ出す）。
 // 新しい版を出すときは kEngineVersion を上げ、ここも書き換えること。
-constexpr const char* kWhatsNewTitle = "DX12 Engine v1.0.1 の更新内容";
+constexpr const char* kWhatsNewTitle = "DX12 Engine v1.0.2 の更新内容";
 constexpr const char* kWhatsNewBody =
-    "v1.0.1: 選択ラベルの改善 + メッシュ用カスタムシェーダー値\n"
+    "v1.0.2: UIエディタの階層ツリー + カスタムシェーダーのパラメーター調整\n"
     "\n"
-    "・選択中オブジェクトのラベルをシーンビューの邪魔にならない位置へ移動\n"
-    "  (Unreal Engine方式、エディタウィンドウ左下に常時表示)。\n"
-    "・MeshRenderer に effectValue を追加(Sprite2D と同じくカスタムシェーダーへ渡す\n"
-    "  汎用の進捗/強度値)。Lua scene:setMeshEffect(entity, value) で実行時に書き換え可能。\n"
-    "・カスタムシェーダーのコンパイル失敗時、直前まで動いていたバイトコードを維持するよう修正\n"
-    "  (一時的な保存エラーで見た目が壊れるのを防止)。\n"
-    "・HRESULT 例外メッセージにエラーコード(16進)を追記し、DirectX エラーの原因調査をしやすく。\n";
+    "・UIエディタに階層ツリー(左ペイン)を追加。ドラッグ&ドロップで UI 要素の親変更、\n"
+    "  上下端へのドロップで兄弟の並べ替え(=描画順の変更。上=奥/下=手前)ができる。\n"
+    "  並び順は UIRect::order としてシーンに保存され、クリックの前面判定にも効く。\n"
+    "・カスタムシェーダーへ渡せる汎用パラメーター float4 shaderParams を MeshRenderer と\n"
+    "  Sprite2D に追加。Inspector の Shader セクションの4連スライダーで調整でき、\n"
+    "  Lua scene:setMeshParams / scene:setSpriteParams(entity, x,y,z,w) で実行時にも変更可能。\n"
+    "  HLSL側: メッシュは cbuffer の effectValue の後ろに float4 shaderParams; を追加、\n"
+    "  スプライトは VSIn/PSIn に float4 params : TEXCOORD2; を追加(docs/AUTHORING.md 参照)。\n"
+    "・エディタ終了時に MaterialPreviewRenderer の解放順の問題でクラッシュする不具合を修正。\n";
 } // namespace dx12e

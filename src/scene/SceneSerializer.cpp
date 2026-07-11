@@ -386,6 +386,10 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                     ej["shaderAlphaBlend"] = true;
                 if (mr.effectValue != 0.0f)
                     ej["shaderEffectValue"] = mr.effectValue;
+                if (mr.shaderParams.x != 0.0f || mr.shaderParams.y != 0.0f
+                    || mr.shaderParams.z != 0.0f || mr.shaderParams.w != 0.0f)
+                    ej["shaderParams"] = {mr.shaderParams.x, mr.shaderParams.y,
+                                          mr.shaderParams.z, mr.shaderParams.w};
             }
 
             // マテリアルテクスチャ上書き（アセットブラウザからテクスチャをD&Dして割当、サブメッシュ単位）。
@@ -1046,6 +1050,13 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                 mrRestore.shaderPath = ej.value("shader", "");
                 mrRestore.shaderAlphaBlend = ej.value("shaderAlphaBlend", false);
                 mrRestore.effectValue = ej.value("shaderEffectValue", 0.0f);
+                if (ej.contains("shaderParams") && ej["shaderParams"].is_array()
+                    && ej["shaderParams"].size() >= 4)
+                {
+                    const auto& sp = ej["shaderParams"];
+                    mrRestore.shaderParams = {sp[0].get<float>(), sp[1].get<float>(),
+                                              sp[2].get<float>(), sp[3].get<float>()};
+                }
             }
 
             // マテリアルテクスチャ上書き復元（サブメッシュ単位）

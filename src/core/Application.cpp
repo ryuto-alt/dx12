@@ -2092,6 +2092,7 @@ nlohmann::json McpComponentSchema()
         F("worldSpace", "bool", true), F("billboard", "bool", false),
         F("shaderPath", "string (assets-relative, worldSpace only)", ""), F("shaderAlphaBlend", "bool", false),
         F("effectValue", "float (generic progress/strength for custom shader)", 0.0),
+        F("shaderParams", "float4 (generic params for custom shader, TEXCOORD2)", json::array({0, 0, 0, 0})),
     }), "Use dx12_set_sprite_shader for shaderPath (custom HLSL, world-space only; different vertex/root-"
         "signature contract than meshRenderer shaders, see docs/AUTHORING.md)."));
     comps.push_back(C("tags", true, true, json::array({}),
@@ -2208,7 +2209,9 @@ nlohmann::json McpLuaApi()
         "setUVScale(entity,u,v)", "setColor(entity,r,g,b)", "gimmicks() -> table",
         "setSpriteEffect(entity,value)  (Sprite2D.effectValue、カスタムシェーダー用)",
         "setSpriteAlpha(entity,alpha)  (Sprite2D不透明度0..1、半透明演出用)",
+        "setSpriteParams(entity,x,y,z,w)  (Sprite2D.shaderParams、カスタムシェーダー汎用float4)",
         "setMeshEffect(entity,value)  (MeshRenderer.effectValue、カスタムシェーダー用)",
+        "setMeshParams(entity,x,y,z,w)  (MeshRenderer.shaderParams、カスタムシェーダー汎用float4)",
         "queryByTag(tag) -> table(names)", "queryInBox(minX,minZ,maxX,maxZ,tag?) -> table(names)",
     })));
     objects.push_back(O("input", "global", json::array({
@@ -4815,7 +4818,14 @@ void Application::Shutdown()
     }
 
     // リソース解放（逆順）
-    m_editorLayer.reset();
+    m_editorLayer.reset();   // MaterialPreviewRenderer への生ポインタ保持者 → パネルより先に破棄
+    // マテリアルエディタ/ライブラリ（プレビュー用 Mesh/RT 等の GPU リソース保持）を
+    // デバイス解放より前に明示破棄。Shutdown で消さないと ~Application のメンバー破棄まで
+    // 生き残り、破棄済み D3D12MA アロケータへ Release してクラッシュする（dx12_crash.log の
+    // MaterialPreviewRenderer → DeferredRelease::Defer 落ち）。
+    m_materialEditorPanel.reset();
+    m_materialLibraryPanel.reset();
+    m_materialAssetManager.reset();
     m_editorCtx.reset();
     m_physicsDebugRenderer.reset();
     // 新規レンダラ群（GPU リソース）をデバイス解放より前に明示破棄
@@ -7590,11 +7600,14 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
                 meshWorld = nodeMat * world;
             }
 
-            struct PerObjectData { XMMATRIX mvp; XMMATRIX mdl; float effect; } objData;
+            // pad は HLSL cbuffer のパッキング(float4 は 16 バイト境界)合わせ。RootSignature.cpp 参照。
+            struct PerObjectData { XMMATRIX mvp; XMMATRIX mdl; float effect; XMFLOAT3 _pad; XMFLOAT4 params; } objData;
             objData.mvp = XMMatrixTranspose(meshWorld * viewProj);
             objData.mdl = XMMatrixTranspose(meshWorld);
             objData.effect = renderer.effectValue;
-            m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 33, &objData);
+            objData._pad   = {};
+            objData.params = renderer.shaderParams;
+            m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 40, &objData);
 
             const Material* mat = mesh->GetMaterial();
 
@@ -7777,6 +7790,7 @@ void Application::DrawWorldSprites(ID3D12GraphicsCommandList* cmd, DirectX::XMMA
         d.layer     = static_cast<float>(sp.layer);
         d.billboard = sp.billboard;
         d.effect    = sp.effectValue;
+        d.params    = sp.shaderParams;
         if (!sp.shaderPath.empty())
         {
             if (CustomSpritePsos* custom = EnsureCustomSpritePso(sp.shaderPath))

@@ -102,6 +102,12 @@ struct MeshRenderer
     // (ルート定数なので毎フレーム呼んでも安価、VB再生成なし)。既定シェーダー(Forward)では未使用。
     float effectValue = 0.0f;
 
+    // カスタムシェーダーへ渡す汎用パラメーター4つ(意味はシェーダー依存。色/速度/しきい値等)。
+    // HLSL側は cbuffer PerObjectConstants の effectValue の後ろに float4 shaderParams; を足して読む
+    // (docs/AUTHORING.md 参照)。Inspector の Shader セクションで調整、Lua `scene:setMeshParams` でも
+    // 書き換え可能(effectValue と同じルート定数経路 = 毎フレーム安価)。既定シェーダーでは未使用。
+    DirectX::XMFLOAT4 shaderParams{0.0f, 0.0f, 0.0f, 0.0f};
+
     // マテリアルのテクスチャ差し替え（アセットブラウザからテクスチャをドラッグ&ドロップして割当。
     // Unity/Unreal 風）。サブメッシュ単位（meshes[]と同じインデックス）。空文字列 = Material 既定の
     // テクスチャを使う。**Mesh::GetMaterial() は同一モデルパスの全インスタンスで共有される
@@ -260,6 +266,10 @@ struct Sprite2D
     // カスタムシェーダーへ渡す汎用の進捗/強度値(0..1等、意味はシェーダー依存)。Lua `scene:setSpriteEffect`で
     // 実行時に書き換え可能(頂点ごとに補間されるので同一バッチ内でもスプライト単位に異なる値を渡せる)。
     float effectValue = 0.0f;
+    // カスタムシェーダーへ渡す汎用パラメーター4つ(意味はシェーダー依存)。effectValue と同じく
+    // 頂点属性(TEXCOORD2)として補間される = バッチを壊さず毎フレーム安価。HLSL側は VSIn/PSIn に
+    // `float4 params : TEXCOORD2;` を足して読む(docs/AUTHORING.md 参照)。Lua `scene:setSpriteParams`。
+    DirectX::XMFLOAT4 shaderParams{0.0f, 0.0f, 0.0f, 0.0f};
 };
 
 // --- ゲーム内UI（retained-mode、Unity uGUI / Godot Control 相当）---
@@ -291,6 +301,9 @@ struct UIRect
     DirectX::XMFLOAT2 offsetMin{-50.0f, -50.0f};
     DirectX::XMFLOAT2 offsetMax{50.0f, 50.0f};
     bool visible = true;   // false なら自分と子孫を描画しない
+    // 兄弟間の並び順(小さいほど先に描く = 奥)。UIエディタの階層ツリーの D&D 並べ替えが
+    // 書き換える。同値は registry 走査順を維持(stable)。UIRect を持たない中間ノードは 0 扱い。
+    int order = 0;
 };
 
 // UI画像(または単色矩形)

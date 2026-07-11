@@ -126,6 +126,283 @@ namespace
         dl->AddText(ImVec2(pos.x + 1.0f, pos.y + 1.0f), IM_COL32(0, 0, 0, 200), text);
         dl->AddText(pos, col, text);
     }
+
+    // ---- 階層ツリー用ヘルパー ----
+
+    // ツリー右端に薄く出す種別ラベル
+    const char* UiKindLabel(entt::registry& reg, entt::entity e)
+    {
+        if (reg.all_of<UICanvas>(e)) return "Canvas";
+        if (reg.all_of<UIButton>(e)) return "Button";
+        if (reg.all_of<UIImage>(e))  return "Image";
+        if (reg.all_of<UIText>(e))   return "Text";
+        if (reg.all_of<UIRect>(e))   return "Rect";
+        return "";
+    }
+
+    // node が ancestor の子孫か（自分自身は含まない。循環親子の保険つき）
+    bool IsDescendantOf(entt::registry& reg, entt::entity node, entt::entity ancestor)
+    {
+        entt::entity cur = node;
+        for (int guard = 0; guard < 64; ++guard)
+        {
+            const auto* t = reg.try_get<Transform>(cur);
+            if (!t || t->parent == entt::null || !reg.valid(t->parent)) return false;
+            if (t->parent == ancestor) return true;
+            cur = t->parent;
+        }
+        return false;
+    }
+
+    // parent の子を UIRect::order 昇順（stable = 同値・UIRect 無しは registry 走査順）で返す。
+    // UISystem::ResolveAndDrawCanvases の兄弟順と同じ規約。
+    std::vector<entt::entity> SortedChildrenOf(entt::registry& reg, entt::entity parent)
+    {
+        std::vector<entt::entity> list;
+        for (auto [e, t] : reg.view<const Transform>().each())
+            if (t.parent == parent) list.push_back(e);
+        std::stable_sort(list.begin(), list.end(),
+                         [&reg](entt::entity a, entt::entity b)
+                         {
+                             const auto* ra = reg.try_get<UIRect>(a);
+                             const auto* rb = reg.try_get<UIRect>(b);
+                             return (ra ? ra->order : 0) < (rb ? rb->order : 0);
+                         });
+        return list;
+    }
+
+    // 親チェーンを遡って属する UICanvas を返す（e 自身がキャンバスならそれ。無ければ null）
+    entt::entity FindCanvasOf(entt::registry& reg, entt::entity e)
+    {
+        entt::entity cur = e;
+        for (int guard = 0; guard < 64; ++guard)
+        {
+            if (!reg.valid(cur)) return entt::null;
+            if (reg.all_of<UICanvas>(cur)) return cur;
+            const auto* t = reg.try_get<Transform>(cur);
+            if (!t || t->parent == entt::null) return entt::null;
+            cur = t->parent;
+        }
+        return entt::null;
+    }
+
+    // 見た目の矩形を保ったまま親を差し替える（アンカードラッグと同じ offset 再計算）。
+    // 別キャンバスへの移動・矩形が解決できない（非表示等）場合は offset を触らず親差し替えのみ。
+    void ReparentPreservingRect(entt::registry& reg, entt::entity e, entt::entity newParent)
+    {
+        auto* tr = reg.try_get<Transform>(e);
+        if (!tr) return;
+        auto* rect = reg.try_get<UIRect>(e);
+
+        // キャンバス空間の値はビューポート非依存なので、解決用のビューポートは何でもよい
+        std::vector<UiResolvedRect> rects;
+        if (rect && FindCanvasOf(reg, e) != entt::null
+            && FindCanvasOf(reg, e) == FindCanvasOf(reg, newParent))
+            UISystem::ResolveRects(reg, 0.0f, 0.0f, 1920.0f, 1080.0f, rects);
+
+        const UiResolvedRect* er = nullptr;
+        for (const auto& rr : rects)
+            if (rr.e == e) { er = &rr; break; }
+
+        tr->parent = newParent;
+        if (!er) return;
+
+        // 新しい親矩形（rects は付け替え前の解決だが、親チェーンは付け替え後を遡る）
+        ImVec2 pMinS, pMaxS;
+        if (!ResolveParentScreenRect(reg, rects, *er, pMinS, pMaxS)) return;
+
+        const f32 cs = (er->canvasScale > 1e-6f) ? er->canvasScale : 1.0f;
+        const ImVec2 rMinC((er->min.x - er->canvasOrigin.x) / cs, (er->min.y - er->canvasOrigin.y) / cs);
+        const ImVec2 rMaxC((er->max.x - er->canvasOrigin.x) / cs, (er->max.y - er->canvasOrigin.y) / cs);
+        const ImVec2 pMinC((pMinS.x - er->canvasOrigin.x) / cs, (pMinS.y - er->canvasOrigin.y) / cs);
+        const ImVec2 pMaxC((pMaxS.x - er->canvasOrigin.x) / cs, (pMaxS.y - er->canvasOrigin.y) / cs);
+        const f32 pw = (std::max)(1e-3f, pMaxC.x - pMinC.x);
+        const f32 ph = (std::max)(1e-3f, pMaxC.y - pMinC.y);
+
+        // 解決式: rectMin = parentMin + parentSize * anchorMin + offsetMin（アンカードラッグと同じ）
+        rect->offsetMin.x = rMinC.x - (pMinC.x + pw * rect->anchorMin.x);
+        rect->offsetMin.y = rMinC.y - (pMinC.y + ph * rect->anchorMin.y);
+        rect->offsetMax.x = rMaxC.x - (pMinC.x + pw * rect->anchorMax.x);
+        rect->offsetMax.y = rMaxC.y - (pMinC.y + ph * rect->anchorMax.y);
+    }
+
+    // dropped を newParent の子へ移し（既に子ならその場で）、insertIdx の位置へ並べ替えて
+    // 兄弟全体の UIRect::order を 0..n で振り直す。insertIdx < 0 = 末尾。
+    void ApplyUiDrop(entt::registry& reg, entt::entity dropped, entt::entity newParent, int insertIdx)
+    {
+        auto* tr = reg.try_get<Transform>(dropped);
+        if (!tr || !reg.valid(newParent)) return;
+
+        if (tr->parent != newParent)
+            ReparentPreservingRect(reg, dropped, newParent);
+
+        std::vector<entt::entity> list = SortedChildrenOf(reg, newParent);
+        list.erase(std::remove(list.begin(), list.end(), dropped), list.end());
+        if (insertIdx < 0 || insertIdx > static_cast<int>(list.size()))
+            insertIdx = static_cast<int>(list.size());
+        list.insert(list.begin() + insertIdx, dropped);
+        int i = 0;
+        for (entt::entity c : list)
+            if (auto* r = reg.try_get<UIRect>(c)) r->order = i++;
+    }
+}
+
+// ===== 階層ツリー（左ペイン）=====
+
+void UiEditorPanel::DrawUiTreeNode(entt::registry& reg, EditorContext& ctx, entt::entity e,
+                                   const UiChildrenMap& children)
+{
+    if (!reg.valid(e)) return;
+    const auto it = children.find(e);
+    const bool leaf     = (it == children.end() || it->second.empty());
+    const bool isCanvas = reg.all_of<UICanvas>(e);
+
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth
+                             | ImGuiTreeNodeFlags_DefaultOpen;
+    if (leaf) flags |= ImGuiTreeNodeFlags_Leaf;
+    if (ctx.IsSelected(e)) flags |= ImGuiTreeNodeFlags_Selected;
+
+    ImGui::PushID(static_cast<int>(static_cast<u32>(e)));
+    const bool open = ImGui::TreeNodeEx(EntityName(reg, e), flags);
+
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::IsItemToggledOpen())
+    {
+        if (ImGui::GetIO().KeyCtrl) ctx.ToggleSelection(e);
+        else                        ctx.Select(e);
+    }
+
+    // ドラッグ元（キャンバスは sortOrder で並ぶので対象外。UIRect 持ちの要素のみ）
+    if (!isCanvas && reg.all_of<UIRect>(e)
+        && ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceNoHoldToOpenOthers))
+    {
+        ImGui::SetDragDropPayload("HIERARCHY_ENTITY", &e, sizeof(entt::entity));
+        ImGui::TextUnformatted(EntityName(reg, e));
+        ImGui::EndDragDropSource();
+    }
+
+    // ドロップ先: 要素の上下 1/4 = その前/後へ挿入（兄弟並べ替え）、中央 = 子にする（親変更）。
+    // キャンバスは「子にする」のみ。プレビュー（挿入線/枠）を描き、確定はツリー走査後に適用。
+    if (ImGui::BeginDragDropTarget())
+    {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(
+                "HIERARCHY_ENTITY",
+                ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect))
+        {
+            const entt::entity dropped = *static_cast<const entt::entity*>(payload->Data);
+            const bool valid = reg.valid(dropped) && dropped != e
+                            && reg.all_of<UIRect>(dropped)          // UI 要素のみ受ける
+                            && !IsDescendantOf(reg, e, dropped);    // 自分の子孫へは落とせない
+            if (valid)
+            {
+                const ImVec2 rmin = ImGui::GetItemRectMin();
+                const ImVec2 rmax = ImGui::GetItemRectMax();
+                const f32 h  = rmax.y - rmin.y;
+                const f32 my = ImGui::GetIO().MousePos.y;
+                int zone = 1;   // 0=前へ挿入, 1=子にする, 2=後へ挿入
+                if (!isCanvas)
+                {
+                    if      (my < rmin.y + h * 0.25f) zone = 0;
+                    else if (my > rmax.y - h * 0.25f) zone = 2;
+                }
+
+                ImDrawList* fdl = ImGui::GetWindowDrawList();
+                if (zone == 1)
+                    fdl->AddRect(rmin, rmax, kAccentCol);
+                else
+                {
+                    const f32 y = (zone == 0) ? rmin.y : rmax.y;
+                    fdl->AddLine(ImVec2(rmin.x, y), ImVec2(rmax.x, y), kAccentCol, 2.0f);
+                }
+
+                if (payload->IsDelivery())
+                {
+                    if (zone == 1)
+                    {
+                        m_dropEntity = dropped; m_dropParent = e; m_dropIndex = -1;
+                    }
+                    else if (const auto* t = reg.try_get<Transform>(e);
+                             t && t->parent != entt::null && reg.valid(t->parent))
+                    {
+                        // 兄弟リスト内（dropped 除外後）の e の位置を求めて前/後へ
+                        int idx = 0;
+                        for (entt::entity sib : SortedChildrenOf(reg, t->parent))
+                        {
+                            if (sib == dropped) continue;
+                            if (sib == e) break;
+                            ++idx;
+                        }
+                        m_dropEntity = dropped;
+                        m_dropParent = t->parent;
+                        m_dropIndex  = idx + (zone == 2 ? 1 : 0);
+                    }
+                }
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+
+    // 種別を薄く添える
+    if (const char* kind = UiKindLabel(reg, e); kind[0])
+    {
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", kind);
+    }
+
+    if (open)
+    {
+        if (it != children.end())
+            for (entt::entity c : it->second)
+                DrawUiTreeNode(reg, ctx, c, children);
+        ImGui::TreePop();
+    }
+    ImGui::PopID();
+}
+
+void UiEditorPanel::DrawHierarchyPane(entt::registry& reg, EditorContext& ctx)
+{
+    ImGui::TextDisabled("階層  (上=奥 / 下=手前)");
+    ImGui::SetItemTooltip("ドラッグ&ドロップ:\n"
+                          "  要素の中央へ = その子にする（親変更）\n"
+                          "  要素の上/下端へ = その前/後へ挿入（描画順の並べ替え）");
+    ImGui::Separator();
+
+    // キャンバス一覧（sortOrder 昇順 = UISystem の描画順と同じ）
+    struct Entry { entt::entity e; int order; };
+    std::vector<Entry> canvases;
+    for (auto [e, cv] : reg.view<const UICanvas>().each())
+        canvases.push_back({e, cv.sortOrder});
+    std::stable_sort(canvases.begin(), canvases.end(),
+                     [](const Entry& a, const Entry& b) { return a.order < b.order; });
+    if (canvases.empty())
+    {
+        ImGui::TextDisabled("UICanvas がありません");
+        return;
+    }
+
+    // 兄弟順つき子リストのスナップショット（UISystem::ResolveAndDrawCanvases と同じ規約）。
+    // D&D 確定はツリー走査後（m_dropEntity）に適用 = 走査中に registry の親子を書き換えない。
+    UiChildrenMap children;
+    for (auto [e, t] : reg.view<const Transform>().each())
+        if (t.parent != entt::null && reg.valid(t.parent))
+            children[t.parent].push_back(e);
+    for (auto& [parent, list] : children)
+        std::stable_sort(list.begin(), list.end(),
+                         [&reg](entt::entity a, entt::entity b)
+                         {
+                             const auto* ra = reg.try_get<UIRect>(a);
+                             const auto* rb = reg.try_get<UIRect>(b);
+                             return (ra ? ra->order : 0) < (rb ? rb->order : 0);
+                         });
+
+    m_dropEntity = entt::null;
+    for (const Entry& c : canvases)
+        DrawUiTreeNode(reg, ctx, c.e, children);
+
+    if (m_dropEntity != entt::null)
+    {
+        ApplyUiDrop(reg, m_dropEntity, m_dropParent, m_dropIndex);
+        m_dropEntity = entt::null;
+    }
 }
 
 void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const std::string& assetsDir,
@@ -269,8 +546,14 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
     ImGui::Checkbox("市松", &m_checkerBg);
     ImGui::SetItemTooltip("画面背景を市松模様に（透過 UI の視認用）");
 
-    // ===== キャンバス領域（下 1 行はステータスバーに残す）=====
+    // ===== 左: 階層ツリー / 右: キャンバス領域（下 1 行はステータスバーに残す）=====
     const f32 statusH = ImGui::GetFrameHeightWithSpacing();
+
+    if (ImGui::BeginChild("##UiEdTree", ImVec2(235.0f, -statusH), ImGuiChildFlags_Borders))
+        DrawHierarchyPane(reg, ctx);
+    ImGui::EndChild();
+    ImGui::SameLine();
+
     ImVec2 avail = ImGui::GetContentRegionAvail();
     avail.y -= statusH;
     const ImVec2 cPos = ImGui::GetCursorScreenPos();

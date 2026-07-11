@@ -251,4 +251,11 @@ inline bool Float3(const char* label, float* v, float speed = 0.01f,
     return FloatN(label, v, 3, speed, mn, mx, fmt, active, tip);
 }
 
+inline bool Float4(const char* label, float* v, float speed = 0.01f,
+                   float mn = 0.0f, float mx = 0.0f, const char* fmt = "%.3f",
+                   bool* active = nullptr, const char* tip = nullptr)
+{
+    return FloatN(label, v, 4, speed, mn, mx, fmt, active, tip);
+}
+
 } // namespace dx12e::pg

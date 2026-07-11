@@ -207,6 +207,26 @@ function Scene:setSpriteEffect(e, value) end
 ---@param value number 意味はシェーダー依存（例: 0..1 の消滅/出現進捗）
 function Scene:setMeshEffect(e, value) end
 
+---Sprite2D::shaderParams を書き換える（カスタムシェーダーへ渡す汎用パラメーター4つ、TEXCOORD2）。
+---effectValue と同じ頂点属性経路なのでバッチを壊さず毎フレーム呼んでも安価。
+---対象エンティティが Sprite2D を持たない場合は何もしない。
+---@param e Entity
+---@param x number 意味はシェーダー依存
+---@param y number
+---@param z number
+---@param w number
+function Scene:setSpriteParams(e, x, y, z, w) end
+
+---MeshRenderer::shaderParams を書き換える（カスタムシェーダーへ渡す汎用パラメーター4つ。
+---HLSL側は cbuffer PerObjectConstants の effectValue の後ろに float4 shaderParams; を足して読む）。
+---ルート定数なので毎フレーム呼んでも安価。対象エンティティが MeshRenderer を持たない場合は何もしない。
+---@param e Entity
+---@param x number 意味はシェーダー依存
+---@param y number
+---@param z number
+---@param w number
+function Scene:setMeshParams(e, x, y, z, w) end
+
 -- --- ゲーム内UI（retained-mode、UICanvas/UIRect/UIImage/UIText/UIButton）操作 ---
 -- UI要素はエディタ（Hierarchy の「UI」サブメニュー等）でツリーを組んで配置し、
 -- 以下のヘルパーで実行時に値だけ書き換える。ボタンのクリックは `events:on` で受ける

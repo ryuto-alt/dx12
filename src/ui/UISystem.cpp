@@ -581,6 +581,18 @@ bool ResolveAndDrawCanvases(entt::registry& reg, float ox, float oy, float vw, f
         if (t.parent != entt::null && reg.valid(t.parent))
             children[t.parent].push_back(e);
     }
+    // 兄弟順を UIRect::order 昇順に（stable = 同値・UIRect 無しノードは走査順を維持）。
+    // UIエディタの階層ツリーの並べ替えがここに効く（後ろほど手前に描かれる）。
+    for (auto& [parent, list] : children)
+    {
+        std::stable_sort(list.begin(), list.end(),
+                         [&reg](entt::entity a, entt::entity b)
+                         {
+                             const auto* ra = reg.try_get<UIRect>(a);
+                             const auto* rb = reg.try_get<UIRect>(b);
+                             return (ra ? ra->order : 0) < (rb ? rb->order : 0);
+                         });
+    }
     ctx.children = &children;
 
     for (const CanvasEntry& entry : canvases)

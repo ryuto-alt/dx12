@@ -259,9 +259,16 @@ cbuffer PerObjectConstants : register(b0)
 {
     float4x4 mvp;
     float4x4 model;
-    float    effectValue;  // 追加分。0..1等、意味はシェーダー依存
+    float    effectValue;   // 追加分。0..1等、意味はシェーダー依存
+    float4   shaderParams;  // さらに追加分。汎用パラメーター4つ(cbuffer パッキングで自動的に次の16バイト境界に載る)
 };
 ```
+
+**パラメーターを複数渡したい場合（`shaderParams`）**: 上記のように `effectValue` の後ろへ
+`float4 shaderParams;` を足すと、汎用パラメーター4つ（色・速度・しきい値など意味はシェーダー依存）を
+渡せる。Inspector の「Shader」セクション（エフェクト値の下の4連スライダー）で調整でき、
+Lua `scene:setMeshParams(entity, x, y, z, w)` で実行時にも書き換えられる（effectValue と同じ
+ルート定数経路 = 毎フレーム安価）。シーン JSON では `"shaderParams": [x, y, z, w]` で初期値を指定できる。
 
 **MCP 経由（エディタ起動中、ファイル直書き不要）**: `dx12_create_shader({name, code})` で
 `assets/shaders/<name>.hlsl` を作成/上書きし、書き込み直後に実行時コンパイルを試して
@@ -297,6 +304,7 @@ struct VSIn
     float2 uv     : TEXCOORD0;
     float4 col    : COLOR0;
     float  effect : TEXCOORD1;  // Sprite2D::effectValue（頂点属性として補間される汎用進捗値）
+    float4 params : TEXCOORD2;  // Sprite2D::shaderParams（汎用パラメーター4つ。読まないなら省略可）
 };
 
 struct PSIn
@@ -305,6 +313,7 @@ struct PSIn
     float2 uv     : TEXCOORD0;
     float4 col    : COLOR0;
     float  effect : TEXCOORD1;
+    float4 params : TEXCOORD2;
 };
 
 Texture2D    gTex  : register(t0);
@@ -323,6 +332,9 @@ float4 PSMain(PSIn p) : SV_TARGET { /* gTex.Sample(gSamp, p.uv) を p.effect/gTi
 - **`effectValue`** は Lua から実行時に書き換えられる（頂点属性なので GPU 同期・VB 再生成なし、
   毎フレーム呼んでも安価）: `scene:setSpriteEffect(e, value)`。ディゾルブの進捗やパルスの強さなど
   「今どれくらい効果がかかっているか」を送るのに使う。
+- **`shaderParams`**（汎用パラメーター4つ、TEXCOORD2）も同様: Inspector の Shader セクションの
+  4連スライダーで調整、Lua は `scene:setSpriteParams(e, x, y, z, w)`。effectValue と同じ頂点属性
+  経路なのでバッチを壊さず毎フレーム安価。シーン JSON では `"shaderParams": [x, y, z, w]`。
 - **worldSpace のスプライトのみ対応**（HUD スプライトは既定シェーダー固定）。
 - MCP: `dx12_set_sprite_shader({entity, shaderPath, alphaBlend})`。Inspector は Sprite2D の
   「Shader」セクション（コンボ+アルファブレンド+effectValueスライダー、MeshRenderer と同じ操作感）。

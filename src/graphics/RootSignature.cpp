@@ -11,11 +11,13 @@ void RootSignature::Initialize(GraphicsDevice& device)
     // Root parameters: 9
     D3D12_ROOT_PARAMETER1 rootParams[9]{};
 
-    // [0] Per-Object: 32bit constants (33 DWORDs = MVP(16) + Model(16) + CustomEffect(1))
+    // [0] Per-Object: 32bit constants (40 DWORDs = MVP(16) + Model(16) + CustomEffect(1) + pad(3) + CustomParams(4))
     // CustomEffect は MeshRenderer::effectValue（カスタムシェーダー向けの汎用進捗値、Sprite2D::effectValue
-    // と同じ役割）。既存の組み込みシェーダー(Forward等)はこの末尾1DWORDを読まないので後方互換。
+    // と同じ役割）、CustomParams は MeshRenderer::shaderParams（汎用 float4）。pad(3) は HLSL cbuffer の
+    // パッキング規則(float4 は 16 バイト境界から開始)に合わせる詰め物 = HLSL 側は effectValue の後ろへ
+    // float4 shaderParams; を足すだけでオフセットが一致する。既存シェーダーはこの末尾を読まないので後方互換。
     rootParams[0].ParameterType             = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    rootParams[0].Constants.Num32BitValues  = 33;
+    rootParams[0].Constants.Num32BitValues  = 40;
     rootParams[0].Constants.ShaderRegister  = 0;
     rootParams[0].Constants.RegisterSpace   = 0;
     rootParams[0].ShaderVisibility          = D3D12_SHADER_VISIBILITY_ALL;

@@ -134,7 +134,8 @@ void RegisterCoreComponentMeta()
         .data<&Sprite2D::billboard>("billboard")
         .data<&Sprite2D::shaderPath>("shaderPath")
         .data<&Sprite2D::shaderAlphaBlend>("shaderAlphaBlend")
-        .data<&Sprite2D::effectValue>("effectValue");
+        .data<&Sprite2D::effectValue>("effectValue")
+        .data<&Sprite2D::shaderParams>("shaderParams");
 
     entt::meta_factory<TrailRenderer>{}
         .type("TrailRenderer")
@@ -178,7 +179,8 @@ void RegisterCoreComponentMeta()
         .data<&UIRect::pivot>("pivot")
         .data<&UIRect::offsetMin>("offsetMin")
         .data<&UIRect::offsetMax>("offsetMax")
-        .data<&UIRect::visible>("visible");
+        .data<&UIRect::visible>("visible")
+        .data<&UIRect::order>("order");
 
     entt::meta_factory<UIImage>{}
         .type("UIImage")
