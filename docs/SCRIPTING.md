@@ -153,6 +153,9 @@ local on = scene:getUiToggle(muteToggle)
 scene:setUiToggle(muteToggle, true)
 ```
 
+ゲームパッド/キーボードの UI 操作は**設定不要で常時有効**: 矢印/D-pad/左スティックでフォーカス移動、
+Enter/Space/A で決定（フォーカスリング表示）。フォーカス中のスライダーは左右で値が変わる。
+
 **動的 UI（アニメーション/イージング）**: `UIAnimator` コンポーネント（Inspector の「✚ コンポーネント追加 > UI Animator」）で
 出現アニメ（フェード/ポップ/スライド）・ボタンのホバー/押下スケール・ループ（浮遊/パルス/点滅）をノーコード設定できる。
 スクリプトからはトゥイーンで自由に動かせる:

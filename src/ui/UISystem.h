@@ -25,6 +25,15 @@ struct UIPendingClick
     double value    = 0.0;                // スライダー=実値、トグル= 1/0
 };
 
+// ゲームパッド/キーボードの UI ナビゲーション入力（1 フレームぶんの「押しっぱなし」状態）。
+// Application がキーボード(矢印/Enter/Space)と XInput(D-pad/左スティック/A ボタン)をまとめて
+// 渡す。エッジ検出・キーリピート・フォーカス管理は UISystem 側で行う。
+struct UiNavInput
+{
+    bool left = false, right = false, up = false, down = false;
+    bool confirm = false;   // 決定（Enter / Space / パッド A）
+};
+
 // エディタ支援用: レイアウト解決済みの UIRect 1 件（スクリーン座標）。
 // ResolveRects が描画順（= 奥→手前。後方ほど手前）で出力する。
 // canvasScale/canvasOrigin は「スクリーンΔ → キャンバス空間 px」の換算
@@ -56,10 +65,14 @@ public:
     // vw/vh = ゲームビューポートのピクセルサイズ。
     // resources/srvHeap/cmdList は UIImage テクスチャの遅延ロード用
     // （エディタアイコンと同じ「SRV index → GPU ハンドル(u64) = ImTextureID」経路）。
+    // nav はゲームパッド/キーボードのフォーカスナビゲーション入力（省略 = ナビ無効）。
+    // 方向でフォーカス移動（フォーカス中のスライダーは左右で値変更）、決定でクリック確定。
+    // フォーカスリングは UI の最前面に描かれる。マウスクリックでもフォーカスは移る。
     void RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
                               float ox, float oy, float vw, float vh,
                               ResourceManager* resources, DescriptorHeap* srvHeap,
-                              ID3D12GraphicsCommandList* cmdList);
+                              ID3D12GraphicsCommandList* cmdList,
+                              const UiNavInput& nav = {});
 
     // エディタの SceneView 用プレビュー描画（非 Play 時）。レイアウト解決＋描画のみで
     // 入力処理を一切行わない: ボタンは normalColor 固定、_hovered/_pressed は読み書き
@@ -93,6 +106,13 @@ public:
 private:
     std::vector<UIPendingClick> m_pendingClicks;
     std::vector<std::string>    m_pendingSfx;
+
+    // ---- フォーカスナビゲーション（ランタイム状態）----
+    entt::entity m_focused = entt::null;   // 現在フォーカス中のウィジェット
+    UiNavInput   m_prevNav;                // 前フレームの nav（エッジ検出用）
+    float        m_navRepeatT = 0.0f;      // 方向ホールドのリピートタイマー（秒）
+    int          m_navHeldDir = -1;        // ホールド中の方向 0=左 1=右 2=上 3=下（-1=なし）
+    bool         m_confirmHeld = false;    // フォーカス上で決定を押下中（離しで確定）
 };
 
 } // namespace dx12e

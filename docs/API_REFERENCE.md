@@ -389,7 +389,13 @@ rectMax = parentMin + parentSize * anchorMax + offsetMax
 アンカーを引き伸ばす（例: 横ストレッチ）なら offset は左右の余白(px)になる。Inspector の**アンカープリセット**
 （9方位＋ストレッチ＋全面）は選択時に見た目の位置を保ったまま anchor/offset を再計算する。
 
-**Lua からの操作**（値の書き換えのみ。ツリー構造はエディタで組む）: `scene:setUiText/getUiText/setUiColor/setUiVisible/setUiTexture/setUiFill/getUiFill`（§3 Scene 参照）。
+**Lua からの操作**（値の書き換えのみ。ツリー構造はエディタで組む）: `scene:setUiText/getUiText/setUiColor/setUiVisible/setUiTexture/setUiFill/getUiFill/getUiSlider/setUiSlider/getUiToggle/setUiToggle/getUiScroll/setUiScroll`（§3 Scene 参照）。
+
+**ゲームパッド/キーボードのフォーカスナビゲーション**（設定不要で常時有効）:
+矢印キー / D-pad / 左スティックでフォーカス移動（位置ベースの空間ナビ）、Enter / Space / A ボタンで決定
+（押しで押下表示、離しで確定 = マウスと同じ手触り）。フォーカス中のウィジェットには青いフォーカスリングが出る。
+フォーカス中の **UISlider は左右で値変更**（`step` 未設定なら範囲の 1/20 刻み、ホールドでリピート）。
+マウスクリックでもフォーカスは移るので併用可。ボタンの `hoverSound` はフォーカス到達時にも鳴る。
 
 **ボタンのクリックを受ける**: 追加 API は無く既存の `events` で受ける。`UIButton.onClickEvent` に設定した名前で、
 release-inside 確定の**次フレーム**（`OnUpdate` より前）に `events:emit` 相当で発火する。data は `{source=エンティティID}`（他キー無し）。

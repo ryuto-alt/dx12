@@ -10640,10 +10640,28 @@ void Application::Render()
         // EventBus へ Emit される（UISystem::DispatchPendingClicks）。
         if (m_uiSystem && m_scene)
         {
+            // フォーカスナビ入力（キーボード矢印/Enter/Space + パッド0 の D-pad/左スティック/A）。
+            // 押しっぱなし状態を渡すだけ（エッジ/リピートは UISystem 側）。
+            UiNavInput nav;
+            if (m_inputSystem)
+            {
+                auto& in = *m_inputSystem;
+                constexpr float kStick = 0.5f;   // スティックの方向判定しきい値
+                nav.left    = in.IsKeyDown(VK_LEFT)  || in.IsPadButtonDown(0, XINPUT_GAMEPAD_DPAD_LEFT)
+                           || in.GetPadLeftStickX(0) < -kStick;
+                nav.right   = in.IsKeyDown(VK_RIGHT) || in.IsPadButtonDown(0, XINPUT_GAMEPAD_DPAD_RIGHT)
+                           || in.GetPadLeftStickX(0) >  kStick;
+                nav.up      = in.IsKeyDown(VK_UP)    || in.IsPadButtonDown(0, XINPUT_GAMEPAD_DPAD_UP)
+                           || in.GetPadLeftStickY(0) >  kStick;
+                nav.down    = in.IsKeyDown(VK_DOWN)  || in.IsPadButtonDown(0, XINPUT_GAMEPAD_DPAD_DOWN)
+                           || in.GetPadLeftStickY(0) < -kStick;
+                nav.confirm = in.IsKeyDown(VK_RETURN) || in.IsKeyDown(VK_SPACE)
+                           || in.IsPadButtonDown(0, XINPUT_GAMEPAD_A);
+            }
             m_uiSystem->RenderAndUpdateInput(m_scene->GetRegistry(), dl, ox, oy,
                                              static_cast<float>(vpW), static_cast<float>(vpH),
                                              m_resourceManager.get(), m_srvHeap.get(),
-                                             nativeCmdList);
+                                             nativeCmdList, nav);
             // UIButton の hover/click 効果音（UISystem は AudioSystem 非依存なのでここで配信）
             if (m_audioSystem)
                 for (const std::string& sfx : m_uiSystem->TakePendingSfx())

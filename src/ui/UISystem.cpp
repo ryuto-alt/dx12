@@ -818,7 +818,8 @@ bool ResolveAndDrawCanvases(entt::registry& reg, float ox, float oy, float vw, f
 void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
                                     float ox, float oy, float vw, float vh,
                                     ResourceManager* resources, DescriptorHeap* srvHeap,
-                                    ID3D12GraphicsCommandList* cmdList)
+                                    ID3D12GraphicsCommandList* cmdList,
+                                    const UiNavInput& nav)
 {
     if (!dl || vw <= 0.0f || vh <= 0.0f)
         return;
@@ -1028,6 +1029,166 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
             break;   // 一番手前のスクロールビューだけが受ける（ネスト時の同時スクロール防止）
         }
     }
+
+    // ===== フォーカスナビゲーション（ゲームパッド / キーボード）=====
+    // フォーカス対象 = このフレームに収集した操作可能ウィジェット全件（描画順）。
+    std::vector<UiHitEntry> focusables;
+    focusables.reserve(buttonRects.size() + sliderRects.size() + toggleRects.size());
+    focusables.insert(focusables.end(), buttonRects.begin(), buttonRects.end());
+    focusables.insert(focusables.end(), sliderRects.begin(), sliderRects.end());
+    focusables.insert(focusables.end(), toggleRects.begin(), toggleRects.end());
+
+    const auto findFocusable = [&focusables](entt::entity e) -> const UiHitEntry* {
+        for (const auto& f : focusables)
+            if (f.e == e) return &f;
+        return nullptr;
+    };
+
+    // マウスクリックでもフォーカスは移る（パッド⇄マウスの併用で迷子にならないように）
+    if (ctx.mouseClicked && effectiveWidget != entt::null && findFocusable(effectiveWidget))
+        m_focused = effectiveWidget;
+
+    // ---- 方向入力のエッジ + キーリピート（最初 0.4s、以後 0.12s）----
+    const bool dirHeld[4] = {nav.left, nav.right, nav.up, nav.down};
+    const bool dirPrev[4] = {m_prevNav.left, m_prevNav.right, m_prevNav.up, m_prevNav.down};
+    int dir = -1;
+    for (int i = 0; i < 4; ++i)
+        if (dirHeld[i] && !dirPrev[i]) { dir = i; break; }   // 新規押下が最優先
+    if (dir >= 0)
+    {
+        m_navHeldDir  = dir;
+        m_navRepeatT  = 0.4f;
+    }
+    else if (m_navHeldDir >= 0 && dirHeld[m_navHeldDir])
+    {
+        m_navRepeatT -= ImGui::GetIO().DeltaTime;
+        if (m_navRepeatT <= 0.0f) { dir = m_navHeldDir; m_navRepeatT = 0.12f; }
+    }
+    else
+    {
+        m_navHeldDir = -1;
+    }
+
+    if (dir >= 0 && !focusables.empty())
+    {
+        const UiHitEntry* cur = findFocusable(m_focused);
+        auto* focusedSlider = (cur && reg.all_of<UISlider>(m_focused))
+                            ? &reg.get<UISlider>(m_focused) : nullptr;
+        if (focusedSlider && (dir == 0 || dir == 1))
+        {
+            // フォーカス中のスライダー: 左右は移動ではなく値変更（step 未設定なら 1/20 刻み）
+            auto& sld = *focusedSlider;
+            const float range = sld.maxValue - sld.minValue;
+            const float delta = (sld.step > 0.0f) ? sld.step : range * 0.05f;
+            float v = sld.value + (dir == 1 ? delta : -delta);
+            if (sld.step > 0.0f)
+                v = sld.minValue + std::round((v - sld.minValue) / sld.step) * sld.step;
+            v = std::clamp(v, std::min(sld.minValue, sld.maxValue),
+                           std::max(sld.minValue, sld.maxValue));
+            if (v != sld.value)
+            {
+                sld.value = v;
+                if (!sld.onChangeEvent.empty())
+                    m_pendingClicks.push_back({sld.onChangeEvent, m_focused, true,
+                                               static_cast<double>(v)});
+            }
+        }
+        else if (!cur)
+        {
+            // フォーカスが無い/消えた: 一番左上のウィジェットへ（初回のナビ入力で必ず現れる）
+            const UiHitEntry* best = &focusables.front();
+            for (const auto& f : focusables)
+                if (f.rect.minY + f.rect.minX * 0.001f
+                    < best->rect.minY + best->rect.minX * 0.001f)
+                    best = &f;
+            m_focused = best->e;
+            m_confirmHeld = false;
+            if (const auto* b = reg.try_get<UIButton>(m_focused); b && !b->hoverSound.empty())
+                m_pendingSfx.push_back(b->hoverSound);
+        }
+        else
+        {
+            // 空間ナビゲーション: 方向の成分が正で、直交ずれのペナルティ込み最短の候補へ
+            const float cx = (cur->rect.minX + cur->rect.maxX) * 0.5f;
+            const float cy = (cur->rect.minY + cur->rect.maxY) * 0.5f;
+            const UiHitEntry* best = nullptr;
+            float bestScore = FLT_MAX;
+            for (const auto& f : focusables)
+            {
+                if (f.e == m_focused) continue;
+                const float fx = (f.rect.minX + f.rect.maxX) * 0.5f - cx;
+                const float fy = (f.rect.minY + f.rect.maxY) * 0.5f - cy;
+                float primary = 0.0f, ortho = 0.0f;
+                switch (dir)
+                {
+                case 0: primary = -fx; ortho = std::fabs(fy); break;   // 左
+                case 1: primary =  fx; ortho = std::fabs(fy); break;   // 右
+                case 2: primary = -fy; ortho = std::fabs(fx); break;   // 上
+                default: primary = fy; ortho = std::fabs(fx); break;   // 下
+                }
+                if (primary <= 1.0f) continue;   // その方向に無い
+                const float score = primary + ortho * 2.0f;
+                if (score < bestScore) { bestScore = score; best = &f; }
+            }
+            if (best)
+            {
+                m_focused = best->e;
+                m_confirmHeld = false;
+                if (const auto* b = reg.try_get<UIButton>(m_focused); b && !b->hoverSound.empty())
+                    m_pendingSfx.push_back(b->hoverSound);
+                // ponytail: スクロールビュー内のフォーカス先への自動スクロールは未対応。
+                // リスト UI をパッドで操作する時に必要になったら「包含スクロールビューへ
+                // 矩形が収まるよう scrollY を調整」を足す
+            }
+        }
+    }
+
+    // ---- 決定（押しで押下表示、離しで確定 = マウスの release-inside と同じ手触り）----
+    const bool confirmPressed  = nav.confirm && !m_prevNav.confirm;
+    const bool confirmReleased = !nav.confirm && m_prevNav.confirm;
+    if (const UiHitEntry* cur = findFocusable(m_focused))
+    {
+        if (auto* btn = reg.try_get<UIButton>(m_focused))
+        {
+            if (confirmPressed) { btn->_pressed = true; m_confirmHeld = true; }
+            if (confirmReleased && m_confirmHeld)
+            {
+                btn->_pressed = false;
+                m_confirmHeld = false;
+                if (!btn->onClickEvent.empty())
+                    m_pendingClicks.push_back({btn->onClickEvent, m_focused});
+                if (!btn->clickSound.empty())
+                    m_pendingSfx.push_back(btn->clickSound);
+            }
+        }
+        else if (auto* tgl = reg.try_get<UIToggle>(m_focused))
+        {
+            if (confirmPressed) { tgl->_pressed = true; m_confirmHeld = true; }
+            if (confirmReleased && m_confirmHeld)
+            {
+                tgl->_pressed = false;
+                m_confirmHeld = false;
+                tgl->isOn = !tgl->isOn;
+                if (!tgl->onChangeEvent.empty())
+                    m_pendingClicks.push_back({tgl->onChangeEvent, m_focused,
+                                               true, tgl->isOn ? 1.0 : 0.0});
+            }
+        }
+
+        // フォーカスリング（UI 全体の最前面。少し外側の角丸枠 + 薄いグロー）
+        const UiRectPx& r = cur->rect;
+        const ImU32 ring = IM_COL32(120, 180, 255, 235);
+        dl->AddRect(ImVec2(r.minX - 5.0f, r.minY - 5.0f), ImVec2(r.maxX + 5.0f, r.maxY + 5.0f),
+                    IM_COL32(120, 180, 255, 60), 8.0f, 0, 6.0f);
+        dl->AddRect(ImVec2(r.minX - 3.0f, r.minY - 3.0f), ImVec2(r.maxX + 3.0f, r.maxY + 3.0f),
+                    ring, 6.0f, 0, 2.0f);
+    }
+    else
+    {
+        m_confirmHeld = false;
+    }
+
+    m_prevNav = nav;
 }
 
 void UISystem::RenderPreview(entt::registry& reg, ImDrawList* dl,
@@ -1093,6 +1254,11 @@ void UISystem::ResetRuntimeState(entt::registry& reg)
 {
     m_pendingClicks.clear();
     m_pendingSfx.clear();
+    m_focused     = entt::null;
+    m_prevNav     = {};
+    m_navHeldDir  = -1;
+    m_navRepeatT  = 0.0f;
+    m_confirmHeld = false;
     for (auto [e, btn] : reg.view<UIButton>().each())
     {
         btn._hovered = false;
