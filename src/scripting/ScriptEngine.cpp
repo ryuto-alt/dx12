@@ -467,6 +467,21 @@ void ScriptEngine::RegisterBindings()
             sld.value = std::clamp(v, std::min(sld.minValue, sld.maxValue),
                                    std::max(sld.minValue, sld.maxValue));
         },
+        // UIScrollView のスクロール量(px)を読む/書く。書き込みは翌フレームの描画で
+        // 0..(コンテンツ−ビュー) にクランプされる。「一番下へ」は大きい値を入れれば良い。
+        "getUiScroll", [](Scene& s, Entity& e) -> std::tuple<float, float> {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIScrollView>(e.GetHandle())) return {0.0f, 0.0f};
+            const auto& sv = reg.get<UIScrollView>(e.GetHandle());
+            return {sv.scrollX, sv.scrollY};
+        },
+        "setUiScroll", [](Scene& s, Entity& e, float x, float y) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIScrollView>(e.GetHandle())) return;
+            auto& sv = reg.get<UIScrollView>(e.GetHandle());
+            sv.scrollX = std::max(0.0f, x);
+            sv.scrollY = std::max(0.0f, y);
+        },
         // UIToggle の状態を読む/書く。
         "getUiToggle", [](Scene& s, Entity& e) -> bool {
             auto& reg = s.GetRegistry();

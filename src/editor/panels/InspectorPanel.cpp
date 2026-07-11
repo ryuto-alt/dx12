@@ -1094,6 +1094,37 @@ void InspectorPanel::Render(entt::registry& reg,
             }
         }
 
+        // UIScrollView（子をクリップ + ホイールスクロール。子は階層ツリーでぶら下げる）
+        if (reg.all_of<UIScrollView>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entUi : 0, "UIScrollView");
+            bool removed = ComponentRemoveMenu<UIScrollView>(reg, ctx, ctx.selectedEntity, "UIScrollView");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_uiScrollEdit);
+                auto& sv = reg.get<UIScrollView>(ctx.selectedEntity);
+                bool changed = false, active = false;
+
+                if (pg::Begin("UIScrollView"))
+                {
+                    changed |= pg::Checkbox("縦スクロール Vertical", &sv.vertical);
+                    changed |= pg::Checkbox("横スクロール Horizontal", &sv.horizontal);
+                    changed |= pg::Float("位置 Y Scroll", &sv.scrollY, 1.0f, 0.0f, 100000.0f, "%.0f", &active,
+                        "現在のスクロール量(px)。Play 中はホイールで変わる。\n"
+                        "コンテンツ量に合わせて自動でクランプされる");
+                    if (sv.horizontal)
+                        changed |= pg::Float("位置 X Scroll", &sv.scrollX, 1.0f, 0.0f, 100000.0f, "%.0f", &active);
+                    changed |= pg::Float("ホイール速度 Wheel", &sv.wheelSpeed, 1.0f, 4.0f, 400.0f, "%.0f", &active,
+                        "ホイール1ノッチで進む量(px)");
+                    changed |= pg::Checkbox("バー表示 Show Bar", &sv.showBar);
+                    changed |= pg::Color4("バー色 Bar Color", &sv.barColor.x);
+                    pg::End();
+                }
+                ImGui::TextDisabled("コンテンツ実測: %.0f x %.0f px", sv._contentW, sv._contentH);
+                EndEdit(reg, ctx, ctx.selectedEntity, m_uiScrollEdit, changed, active, "UIScrollView");
+            }
+        }
+
         // UIToggle（チェックボックス。クリックで isOn 反転 + onChangeEvent を emit）
         if (reg.all_of<UIToggle>(ctx.selectedEntity))
         {
@@ -2269,6 +2300,7 @@ void InspectorPanel::Render(entt::registry& reg,
             AddComponentMenuItem<UIButton>(reg, ctx, ctx.selectedEntity, "UI Button");
             AddComponentMenuItem<UISlider>(reg, ctx, ctx.selectedEntity, "UI Slider");
             AddComponentMenuItem<UIToggle>(reg, ctx, ctx.selectedEntity, "UI Toggle");
+            AddComponentMenuItem<UIScrollView>(reg, ctx, ctx.selectedEntity, "UI Scroll View");
             AddComponentMenuItem<UIAnimator>(reg, ctx, ctx.selectedEntity, "UI Animator");
             ImGui::Separator();
             AddComponentMenuItem<RigidBody>(reg, ctx, ctx.selectedEntity, "RigidBody");

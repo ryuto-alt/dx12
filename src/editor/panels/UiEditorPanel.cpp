@@ -136,6 +136,7 @@ namespace
         if (reg.all_of<UIButton>(e)) return "Button";
         if (reg.all_of<UISlider>(e)) return "Slider";
         if (reg.all_of<UIToggle>(e)) return "Toggle";
+        if (reg.all_of<UIScrollView>(e)) return "Scroll";
         if (reg.all_of<UIImage>(e))  return "Image";
         if (reg.all_of<UIText>(e))   return "Text";
         if (reg.all_of<UIRect>(e))   return "Rect";
@@ -465,6 +466,10 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
     ImGui::SameLine();
     if (ImGui::Button("+ トグル")) spawnMarker("__ui_toggle__");
     ImGui::SetItemTooltip("UIToggle を追加（チェックボックス + ラベル付き）");
+    ImGui::SameLine();
+    if (ImGui::Button("+ スクロール")) spawnMarker("__ui_scrollview__");
+    ImGui::SetItemTooltip("UIScrollView を追加（子をクリップ + ホイールスクロール。\n"
+                          "階層ツリーで子をぶら下げて使う）");
 
     ImGui::SameLine(0.0f, 14.0f);
     ImGui::TextDisabled("|");
@@ -1168,6 +1173,7 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
         if (ImGui::MenuItem("ボタン Button")) spawnMarker("__ui_button__");
         if (ImGui::MenuItem("スライダー Slider")) spawnMarker("__ui_slider__");
         if (ImGui::MenuItem("トグル Toggle")) spawnMarker("__ui_toggle__");
+        if (ImGui::MenuItem("スクロールビュー ScrollView")) spawnMarker("__ui_scrollview__");
         if (selHasRect)
         {
             ImGui::Separator();

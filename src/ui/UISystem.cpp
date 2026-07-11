@@ -63,7 +63,17 @@ struct UiDrawContext
     std::vector<UiHitEntry>* buttonRects = nullptr;  // interactable な UIButton 全件
     std::vector<UiHitEntry>* sliderRects = nullptr;  // interactable な UISlider 全件
     std::vector<UiHitEntry>* toggleRects = nullptr;  // interactable な UIToggle 全件
+    std::vector<UiHitEntry>* scrollRects = nullptr;  // UIScrollView のビューポート（ホイール配送用）
     std::vector<UiHitEntry>* blockers    = nullptr;  // クリックを遮る要素（ウィジェット + raycastBlock 画像）
+
+    // UIScrollView のクリップ（スクリーン空間）。サブツリー内で収集するレイキャスト矩形は
+    // これと交差してから積む＝スクロールではみ出た要素はクリックも効かない。ネストは交差。
+    // DrawUiSubtree が push/pop 式に付け替える。
+    const UiRectPx* hitClip = nullptr;
+
+    // UIScrollView のコンテンツ計測先（キャンバス空間の合併矩形）。サブツリー内で UIRect を
+    // 解決するたびに合併する。ネストは内側の計測のみに入る（push/pop 式）。
+    UiRectPx* contentBounds = nullptr;
 
     // false = エディタプレビュー（RenderPreview / ResolveRects）: ボタンは normalColor
     // 固定で描き、_hovered/_pressed には読み書きとも一切触れない（ゲーム内状態を汚さない）。
@@ -97,6 +107,24 @@ UiRectPx ToScreen(const UiRectPx& c, const UiDrawContext& ctx)
 {
     return {ctx.originX + c.minX * ctx.scale, ctx.originY + c.minY * ctx.scale,
             ctx.originX + c.maxX * ctx.scale, ctx.originY + c.maxY * ctx.scale};
+}
+
+// レイキャスト矩形を ctx.hitClip（スクロールビューのクリップ）と交差してから out へ積む。
+// 完全にはみ出ていれば積まない（クリップ外の要素はクリックも受けない）。
+void PushHitRect(std::vector<UiHitEntry>* out, entt::entity e, const UiRectPx& s,
+                 const UiRectPx* clip)
+{
+    if (!out) return;
+    UiRectPx r = s;
+    if (clip)
+    {
+        r.minX = std::max(r.minX, clip->minX);
+        r.minY = std::max(r.minY, clip->minY);
+        r.maxX = std::min(r.maxX, clip->maxX);
+        r.maxY = std::min(r.maxY, clip->maxY);
+        if (r.minX >= r.maxX || r.minY >= r.maxY) return;
+    }
+    out->push_back({e, r});
 }
 
 // イージング（p: 0..1 → 0..1）。列挙は UIAnimator::showEasing / UiTween::easing 共通:
@@ -373,8 +401,7 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
         {
             tint = btn->_pressed ? btn->pressedColor
                  : (btn->_hovered ? btn->hoverColor : btn->normalColor);
-            if (ctx.buttonRects)
-                ctx.buttonRects->push_back({e, s});
+            PushHitRect(ctx.buttonRects, e, s, ctx.hitClip);
         }
         else
         {
@@ -389,12 +416,12 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
     auto* tgl = reg.try_get<UIToggle>(e);
     if (sld && ctx.interactive)
     {
-        if (sld->interactable) { if (ctx.sliderRects) ctx.sliderRects->push_back({e, s}); }
+        if (sld->interactable) PushHitRect(ctx.sliderRects, e, s, ctx.hitClip);
         else                   { sld->_hovered = false; sld->_dragging = false; }
     }
     if (tgl && ctx.interactive)
     {
-        if (tgl->interactable) { if (ctx.toggleRects) ctx.toggleRects->push_back({e, s}); }
+        if (tgl->interactable) PushHitRect(ctx.toggleRects, e, s, ctx.hitClip);
         else                   { tgl->_hovered = false; tgl->_pressed = false; }
     }
 
@@ -405,7 +432,7 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
         const auto* imgBlock = reg.try_get<UIImage>(e);
         if ((btn && btn->interactable) || (sld && sld->interactable)
             || (tgl && tgl->interactable) || (imgBlock && imgBlock->raycastBlock))
-            ctx.blockers->push_back({e, s});
+            PushHitRect(ctx.blockers, e, s, ctx.hitClip);
     }
 
     // --- UIImage: テクスチャ（9-slice 対応）または単色矩形。ボタンの状態色を乗算 ---
@@ -601,14 +628,104 @@ void DrawUiSubtree(entt::entity e, const UiRectPx& parentRect, UiDrawContext& ct
                                         ctx.scale, ImVec2(ctx.originX, ctx.originY),
                                         ctx.canvasEntity});
         }
+        // スクロールビューのコンテンツ計測（キャンバス空間。自分の矩形を親側の計測へ合併）
+        if (ctx.contentBounds)
+        {
+            ctx.contentBounds->minX = std::min(ctx.contentBounds->minX, current.minX);
+            ctx.contentBounds->minY = std::min(ctx.contentBounds->minY, current.minY);
+            ctx.contentBounds->maxX = std::max(ctx.contentBounds->maxX, current.maxX);
+            ctx.contentBounds->maxY = std::max(ctx.contentBounds->maxY, current.maxY);
+        }
         if (ctx.dl)
             DrawUiElement(e, current, ctx);
     }
-    auto it = ctx.children->find(e);
-    if (it != ctx.children->end())
+
+    // --- UIScrollView: 子をスクロール平行移動 + クリップして描き、コンテンツを計測 ---
+    auto* sv = ctx.reg->try_get<UIScrollView>(e);
+    if (sv && ctx.reg->all_of<UIRect>(e))
     {
-        for (entt::entity child : it->second)
-            DrawUiSubtree(child, current, ctx);
+        // クリップ（スクリーン空間）。ネストは親クリップと交差
+        UiRectPx clip = ToScreen(current, ctx);
+        if (ctx.hitClip)
+        {
+            clip.minX = std::max(clip.minX, ctx.hitClip->minX);
+            clip.minY = std::max(clip.minY, ctx.hitClip->minY);
+            clip.maxX = std::min(clip.maxX, ctx.hitClip->maxX);
+            clip.maxY = std::min(clip.maxY, ctx.hitClip->maxY);
+        }
+
+        // スクロールを 0..(コンテンツ−ビュー) にクランプ（前フレームの計測値を使う）
+        sv->scrollX = std::clamp(sv->scrollX, 0.0f,
+                                 std::max(0.0f, sv->_contentW - current.Width()));
+        sv->scrollY = std::clamp(sv->scrollY, 0.0f,
+                                 std::max(0.0f, sv->_contentH - current.Height()));
+
+        // 子には「スクロール分だけ上/左へ平行移動した親矩形」を渡す（アンカー解決ごと動く）
+        UiRectPx contentRect = current;
+        contentRect.minX -= sv->scrollX; contentRect.maxX -= sv->scrollX;
+        contentRect.minY -= sv->scrollY; contentRect.maxY -= sv->scrollY;
+
+        const UiRectPx* prevClip   = ctx.hitClip;
+        UiRectPx*       prevBounds = ctx.contentBounds;
+        UiRectPx bounds{FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX};
+        ctx.hitClip       = &clip;
+        ctx.contentBounds = &bounds;
+        if (ctx.dl)
+            ctx.dl->PushClipRect(ImVec2(clip.minX, clip.minY), ImVec2(clip.maxX, clip.maxY), true);
+
+        auto it = ctx.children->find(e);
+        if (it != ctx.children->end())
+            for (entt::entity child : it->second)
+                DrawUiSubtree(child, contentRect, ctx);
+
+        if (ctx.dl)
+            ctx.dl->PopClipRect();
+        ctx.hitClip       = prevClip;
+        ctx.contentBounds = prevBounds;
+
+        // 計測結果（コンテンツ原点=平行移動後の親左上からの広がり）を保存 → 次フレームのクランプへ
+        sv->_contentW = (bounds.maxX > bounds.minX) ? std::max(0.0f, bounds.maxX - contentRect.minX) : 0.0f;
+        sv->_contentH = (bounds.maxY > bounds.minY) ? std::max(0.0f, bounds.maxY - contentRect.minY) : 0.0f;
+
+        // スクロールバー（インジケータのみ。ドラッグ不可）
+        if (ctx.dl && sv->showBar)
+        {
+            const UiRectPx s = ToScreen(current, ctx);
+            const ImU32 bcol = ToImCol({sv->barColor.x, sv->barColor.y, sv->barColor.z,
+                                        sv->barColor.w * ctx.alphaMul});
+            const float barW = std::max(2.0f, 4.0f * ctx.scale);
+            if (sv->vertical && sv->_contentH > current.Height() + 0.5f)
+            {
+                const float frac  = current.Height() / sv->_contentH;
+                const float thumb = std::max(12.0f, s.Height() * frac);
+                const float t     = sv->scrollY / std::max(1.0f, sv->_contentH - current.Height());
+                const float y0    = s.minY + (s.Height() - thumb) * t;
+                ctx.dl->AddRectFilled(ImVec2(s.maxX - barW - 2.0f, y0),
+                                      ImVec2(s.maxX - 2.0f, y0 + thumb), bcol, barW * 0.5f);
+            }
+            if (sv->horizontal && sv->_contentW > current.Width() + 0.5f)
+            {
+                const float frac  = current.Width() / sv->_contentW;
+                const float thumb = std::max(12.0f, s.Width() * frac);
+                const float t     = sv->scrollX / std::max(1.0f, sv->_contentW - current.Width());
+                const float x0    = s.minX + (s.Width() - thumb) * t;
+                ctx.dl->AddRectFilled(ImVec2(x0, s.maxY - barW - 2.0f),
+                                      ImVec2(x0 + thumb, s.maxY - 2.0f), bcol, barW * 0.5f);
+            }
+        }
+
+        // ホイール配送用にビューポート矩形を収集（クリップ交差済み）
+        if (ctx.interactive)
+            PushHitRect(ctx.scrollRects, e, ToScreen(current, ctx), prevClip);
+    }
+    else
+    {
+        auto it = ctx.children->find(e);
+        if (it != ctx.children->end())
+        {
+            for (entt::entity child : it->second)
+                DrawUiSubtree(child, current, ctx);
+        }
     }
     ctx.alphaMul = parentAlpha;   // 兄弟へ波及しないよう復元（push/pop）
 }
@@ -714,6 +831,7 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
     std::vector<UiHitEntry> buttonRects;   // interactable な UIButton（描画順）
     std::vector<UiHitEntry> sliderRects;   // interactable な UISlider
     std::vector<UiHitEntry> toggleRects;   // interactable な UIToggle
+    std::vector<UiHitEntry> scrollRects;   // UIScrollView のビューポート
     std::vector<UiHitEntry> blockers;      // クリックを遮る要素（描画順。後ろほど手前）
     UiDrawContext ctx;
     ctx.reg           = &reg;
@@ -730,6 +848,7 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
     ctx.buttonRects   = &buttonRects;
     ctx.sliderRects   = &sliderRects;
     ctx.toggleRects   = &toggleRects;
+    ctx.scrollRects   = &scrollRects;
     ctx.blockers      = &blockers;
 
     // レイアウト解決＋描画＋レイキャスト収集（RenderPreview / ResolveRects と共通）
@@ -887,6 +1006,26 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
                                                    static_cast<double>(v)});
                 }
             }
+        }
+    }
+
+    // --- UIScrollView: マウスホイール（最前面 = 最後に描かれたビューが受ける）---
+    // クランプは翌フレームの描画側（コンテンツ計測とセット）で行う。
+    const float wheel = ImGui::GetIO().MouseWheel;
+    if (mouseValid && wheel != 0.0f)
+    {
+        for (auto it = scrollRects.rbegin(); it != scrollRects.rend(); ++it)
+        {
+            if (!it->rect.Contains(ctx.mousePos.x, ctx.mousePos.y))
+                continue;
+            if (auto* sv = reg.try_get<UIScrollView>(it->e))
+            {
+                if (sv->vertical)
+                    sv->scrollY -= wheel * sv->wheelSpeed;
+                else if (sv->horizontal)
+                    sv->scrollX -= wheel * sv->wheelSpeed;
+            }
+            break;   // 一番手前のスクロールビューだけが受ける（ネスト時の同時スクロール防止）
         }
     }
 }

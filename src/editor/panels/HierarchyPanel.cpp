@@ -519,6 +519,7 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
             if (ImGui::MenuItem("Button（ボタン）"))         spawnUi("__ui_button__");
             if (ImGui::MenuItem("Slider（スライダー）"))     spawnUi("__ui_slider__");
             if (ImGui::MenuItem("Toggle（トグル）"))         spawnUi("__ui_toggle__");
+            if (ImGui::MenuItem("ScrollView（スクロール）")) spawnUi("__ui_scrollview__");
             ImGui::EndMenu();
         }
         ImGui::EndPopup();

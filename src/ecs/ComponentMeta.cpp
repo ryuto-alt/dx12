@@ -225,6 +225,16 @@ void RegisterCoreComponentMeta()
         .data<&UISlider::knobColor>("knobColor")
         .data<&UISlider::interactable>("interactable");
 
+    entt::meta_factory<UIScrollView>{}
+        .type("UIScrollView")
+        .data<&UIScrollView::vertical>("vertical")
+        .data<&UIScrollView::horizontal>("horizontal")
+        .data<&UIScrollView::scrollX>("scrollX")
+        .data<&UIScrollView::scrollY>("scrollY")
+        .data<&UIScrollView::wheelSpeed>("wheelSpeed")
+        .data<&UIScrollView::showBar>("showBar")
+        .data<&UIScrollView::barColor>("barColor");
+
     entt::meta_factory<UIToggle>{}
         .type("UIToggle")
         .data<&UIToggle::isOn>("isOn")

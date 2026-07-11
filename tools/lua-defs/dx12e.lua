@@ -305,6 +305,19 @@ function Scene:getUiToggle(e) end
 ---@param on boolean
 function Scene:setUiToggle(e, on) end
 
+---UIScrollView のスクロール量(px)を返す（x, y の2値）。無ければ 0, 0。
+---@param e Entity
+---@return number x
+---@return number y
+function Scene:getUiScroll(e) end
+
+---UIScrollView のスクロール量(px)を設定する。翌フレームの描画で
+---0..(コンテンツ−ビュー) にクランプされるので、大きい値を入れれば「一番下へ」になる。
+---@param e Entity
+---@param x number
+---@param y number
+function Scene:setUiScroll(e, x, y) end
+
 ---UI要素をトゥイーンで動かす（イージング付きアニメーション）。対象は UIRect 必須。
 ---`dx/dy` はレイアウト（UIRect offset）を実際に動かす＝終了位置でクリックも効く。
 ---`scale/alpha` は見た目だけの拡縮/透明度（自分と子孫にまとめて掛かる。レイアウトは不変）。

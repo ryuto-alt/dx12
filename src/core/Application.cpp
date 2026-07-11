@@ -2217,6 +2217,7 @@ nlohmann::json McpLuaApi()
         "setUiTexture(e,path)", "setUiFill(e,amount) / getUiFill(e)  (UIImage.fillAmount 0..1)",
         "getUiSlider(e) / setUiSlider(e,v)  (UISlider実値。setはonChange発火しない)",
         "getUiToggle(e) / setUiToggle(e,on)  (UIToggle。setはonChange発火しない)",
+        "getUiScroll(e) -> x,y / setUiScroll(e,x,y)  (UIScrollViewのスクロール量px)",
         "tweenUi(e,params)", "showUi(e)", "hideUi(e)",
     })));
     objects.push_back(O("input", "global", json::array({
@@ -8303,7 +8304,8 @@ void Application::Render()
             }
             else if (req.modelPath == "__ui_canvas__" || req.modelPath == "__ui_image__" ||
                      req.modelPath == "__ui_text__"   || req.modelPath == "__ui_button__" ||
-                     req.modelPath == "__ui_slider__" || req.modelPath == "__ui_toggle__")
+                     req.modelPath == "__ui_slider__" || req.modelPath == "__ui_toggle__" ||
+                     req.modelPath == "__ui_scrollview__")
             {
                 // ゲーム内UI: Canvas はルートに単体生成。Image/Text/Button は
                 // 「選択中エンティティが UI ツリー内（自身か祖先に UICanvas）ならその子 →
@@ -8377,6 +8379,24 @@ void Application::Render()
                         r.offsetMax = { 120.0f,  25.0f};
                         reg.emplace<UIRect>(e, r);
                         reg.emplace<UIText>(e, UIText{});
+                        uiPrimary = e;
+                    }
+                    else if (req.modelPath == "__ui_scrollview__")
+                    {
+                        // スクロールビュー: UIRect(枠) + UIScrollView + 薄い背景 UIImage。
+                        // 子はこの下にぶら下げる(UIエディタの階層ツリーで D&D)。
+                        auto e = makeUiEntity(req.name.empty() ? std::string("UIScrollView")
+                                                               : req.name, uiParent);
+                        UIRect r{};
+                        r.offsetMin = {-160.0f, -120.0f};
+                        r.offsetMax = { 160.0f,  120.0f};
+                        reg.emplace<UIRect>(e, r);
+                        UIImage bg{};
+                        bg.color = {0.0f, 0.0f, 0.0f, 0.25f};   // 枠が分かる薄い背景
+                        bg.cornerRadius  = 6.0f;
+                        bg.raycastBlock  = false;               // 背面のボタンを邪魔しない
+                        reg.emplace<UIImage>(e, bg);
+                        reg.emplace<UIScrollView>(e, UIScrollView{});
                         uiPrimary = e;
                     }
                     else if (req.modelPath == "__ui_slider__")

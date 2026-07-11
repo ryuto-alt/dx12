@@ -385,6 +385,27 @@ struct UIToggle
     bool _pressed = false;
 };
 
+// UIスクロールビュー: 自分の UIRect がビューポート(クリップ枠)。子ツリーはこの矩形で
+// クリップされ、scrollX/scrollY(キャンバス空間 px)ぶんずれて描かれる。コンテンツの大きさは
+// 子の解決済み矩形の合併から毎フレーム自動計測され、スクロールは 0..(コンテンツ−ビュー) に
+// クランプされる。操作はホバー中のマウスホイール(縦。Shift なし横は horizontal のみの時)。
+// はみ出た子はクリックも効かない(レイキャスト矩形もクリップ)。
+// ponytail: ドラッグ/慣性スクロールは未対応。パッド/タッチが要るようになったら追加
+struct UIScrollView
+{
+    bool  vertical   = true;    // 縦スクロールを許可
+    bool  horizontal = false;   // 横スクロールを許可
+    float scrollX = 0.0f;       // 現在のスクロール量(キャンバス空間 px。0=先頭)
+    float scrollY = 0.0f;
+    float wheelSpeed = 48.0f;   // ホイール1ノッチのスクロール量(px)
+    bool  showBar = true;       // スクロールバー(位置インジケータ)を描く
+    DirectX::XMFLOAT4 barColor{1.0f, 1.0f, 1.0f, 0.35f};
+
+    // ランタイム専有（非シリアライズ）: 前フレームで計測したコンテンツサイズ(キャンバス px)
+    float _contentW = 0.0f;
+    float _contentH = 0.0f;
+};
+
 // UI アニメーション（UIRect 持ちエンティティに付ける。Play / ゲームモード中のみ再生）。
 // 出現アニメ（Play 開始時と Lua scene:showUi() で再生）・ホバー/押下スケール（要 UIButton）・
 // ループアニメの 3 系統。視覚効果（平行移動/拡縮/アルファ）は自分と子孫にまとめて掛かる。

@@ -130,6 +130,8 @@ t.scale      -- Vec3
 | `:setUiSlider(e, v)` | — | `UISlider.value` を設定（min..max へクランプ。`onChangeEvent` は発火しない） |
 | `:getUiToggle(e)` | bool | `UIToggle.isOn` を読む（無ければ false） |
 | `:setUiToggle(e, on)` | — | `UIToggle.isOn` を設定（`onChangeEvent` は発火しない） |
+| `:getUiScroll(e)` | x, y | `UIScrollView` のスクロール量(px)を2値で返す |
+| `:setUiScroll(e, x, y)` | — | スクロール量を設定（コンテンツ量へ自動クランプ。大きい値で「一番下へ」） |
 | `:tweenUi(e, params)` | — | UI をトゥイーンで動かす。`params={dx?,dy?,scale?,alpha?,duration?,delay?,easing?}`。`dx/dy`=UIRect offset の相対移動(px)、`scale/alpha`=見た目のみ（子孫にも掛かる）。`easing`: `"linear"/"in"/"out"/"inOut"/"back"/"bounce"/"elastic"`。`e` は Entity かエンティティID |
 | `:showUi(e)` | — | 表示して `UIAnimator` の出現アニメを最初から再生（無ければ visible=true のみ） |
 | `:hideUi(e)` | — | 出現アニメの逆再生で消す（子孫ごと。消えた後はクリック不可）。無アニメなら即非表示。戻すのは `showUi` |
