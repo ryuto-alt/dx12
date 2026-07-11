@@ -2213,6 +2213,11 @@ nlohmann::json McpLuaApi()
         "setMeshEffect(entity,value)  (MeshRenderer.effectValue、カスタムシェーダー用)",
         "setMeshParams(entity,x,y,z,w)  (MeshRenderer.shaderParams、カスタムシェーダー汎用float4)",
         "queryByTag(tag) -> table(names)", "queryInBox(minX,minZ,maxX,maxZ,tag?) -> table(names)",
+        "setUiText(e,text) / getUiText(e)", "setUiColor(e,r,g,b,a)", "setUiVisible(e,visible)",
+        "setUiTexture(e,path)", "setUiFill(e,amount) / getUiFill(e)  (UIImage.fillAmount 0..1)",
+        "getUiSlider(e) / setUiSlider(e,v)  (UISlider実値。setはonChange発火しない)",
+        "getUiToggle(e) / setUiToggle(e,on)  (UIToggle。setはonChange発火しない)",
+        "tweenUi(e,params)", "showUi(e)", "hideUi(e)",
     })));
     objects.push_back(O("input", "global", json::array({
         "isKeyDown(vk) -> bool", "isKeyPressed(vk) -> bool", "isAsyncKeyDown(vk) -> bool",
@@ -8297,7 +8302,8 @@ void Application::Render()
                 spawnedEntity = e;
             }
             else if (req.modelPath == "__ui_canvas__" || req.modelPath == "__ui_image__" ||
-                     req.modelPath == "__ui_text__"   || req.modelPath == "__ui_button__")
+                     req.modelPath == "__ui_text__"   || req.modelPath == "__ui_button__" ||
+                     req.modelPath == "__ui_slider__" || req.modelPath == "__ui_toggle__")
             {
                 // ゲーム内UI: Canvas はルートに単体生成。Image/Text/Button は
                 // 「選択中エンティティが UI ツリー内（自身か祖先に UICanvas）ならその子 →
@@ -8372,6 +8378,42 @@ void Application::Render()
                         reg.emplace<UIRect>(e, r);
                         reg.emplace<UIText>(e, UIText{});
                         uiPrimary = e;
+                    }
+                    else if (req.modelPath == "__ui_slider__")
+                    {
+                        // スライダー: UIRect(横長) + UISlider（見た目は自前描画なので UIImage 不要）
+                        auto e = makeUiEntity(req.name.empty() ? std::string("UISlider") : req.name,
+                                              uiParent);
+                        UIRect r{};
+                        r.offsetMin = {-140.0f, -14.0f};
+                        r.offsetMax = { 140.0f,  14.0f};
+                        reg.emplace<UIRect>(e, r);
+                        reg.emplace<UISlider>(e, UISlider{});
+                        uiPrimary = e;
+                    }
+                    else if (req.modelPath == "__ui_toggle__")
+                    {
+                        // トグル: UIRect(正方形の箱) + UIToggle + 右隣に子ラベル UIText
+                        auto e = makeUiEntity(req.name.empty() ? std::string("UIToggle") : req.name,
+                                              uiParent);
+                        UIRect r{};
+                        r.offsetMin = {-18.0f, -18.0f};
+                        r.offsetMax = { 18.0f,  18.0f};
+                        reg.emplace<UIRect>(e, r);
+                        reg.emplace<UIToggle>(e, UIToggle{});
+                        uiPrimary = e;
+
+                        auto label = makeUiEntity("Label", e);
+                        UIRect lr{};
+                        lr.anchorMin = {1.0f, 0.5f};   // 箱の右端に添える
+                        lr.anchorMax = {1.0f, 0.5f};
+                        lr.offsetMin = {10.0f, -14.0f};
+                        lr.offsetMax = {210.0f, 14.0f};
+                        reg.emplace<UIRect>(label, lr);
+                        UIText lt{};
+                        lt.text  = "トグル";
+                        lt.alignH = 0;   // 左寄せ
+                        reg.emplace<UIText>(label, lt);
                     }
                     else   // __ui_button__
                     {

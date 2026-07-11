@@ -84,6 +84,8 @@ private:
     EditState<UIImage>          m_uiImageEdit;
     EditState<UIText>           m_uiTextEdit;
     EditState<UIButton>         m_uiButtonEdit;
+    EditState<UISlider>         m_uiSliderEdit;
+    EditState<UIToggle>         m_uiToggleEdit;
     EditState<UIAnimator>       m_uiAnimatorEdit;
 
     // 種別専用インスペクター（ライト/オーディオは専用UIを最前面に出す。共通部品はこの下に並ぶ）。

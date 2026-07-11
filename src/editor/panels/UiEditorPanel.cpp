@@ -134,6 +134,8 @@ namespace
     {
         if (reg.all_of<UICanvas>(e)) return "Canvas";
         if (reg.all_of<UIButton>(e)) return "Button";
+        if (reg.all_of<UISlider>(e)) return "Slider";
+        if (reg.all_of<UIToggle>(e)) return "Toggle";
         if (reg.all_of<UIImage>(e))  return "Image";
         if (reg.all_of<UIText>(e))   return "Text";
         if (reg.all_of<UIRect>(e))   return "Rect";
@@ -457,6 +459,12 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
     ImGui::SameLine();
     if (ImGui::Button("+ ボタン")) spawnMarker("__ui_button__");
     ImGui::SetItemTooltip("UIButton を追加（背景画像 + ラベル付き）");
+    ImGui::SameLine();
+    if (ImGui::Button("+ スライダー")) spawnMarker("__ui_slider__");
+    ImGui::SetItemTooltip("UISlider を追加（音量調整等。値変更で onChangeEvent を emit）");
+    ImGui::SameLine();
+    if (ImGui::Button("+ トグル")) spawnMarker("__ui_toggle__");
+    ImGui::SetItemTooltip("UIToggle を追加（チェックボックス + ラベル付き）");
 
     ImGui::SameLine(0.0f, 14.0f);
     ImGui::TextDisabled("|");
@@ -1158,6 +1166,8 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
         if (ImGui::MenuItem("画像 Image"))   spawnMarker("__ui_image__");
         if (ImGui::MenuItem("テキスト Text")) spawnMarker("__ui_text__");
         if (ImGui::MenuItem("ボタン Button")) spawnMarker("__ui_button__");
+        if (ImGui::MenuItem("スライダー Slider")) spawnMarker("__ui_slider__");
+        if (ImGui::MenuItem("トグル Toggle")) spawnMarker("__ui_toggle__");
         if (selHasRect)
         {
             ImGui::Separator();

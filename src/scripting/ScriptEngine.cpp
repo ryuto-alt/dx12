@@ -453,6 +453,31 @@ void ScriptEngine::RegisterBindings()
             if (!reg.all_of<UIImage>(e.GetHandle())) return 0.0f;
             return reg.get<UIImage>(e.GetHandle()).fillAmount;
         },
+        // UISlider の現在値(実値)を読む/書く。書き込みは min..max へクランプ。onChangeEvent は
+        // 発火しない(スクリプト起因の変更でハンドラが再帰しないように。UIToggle も同じ)。
+        "getUiSlider", [](Scene& s, Entity& e) -> float {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UISlider>(e.GetHandle())) return 0.0f;
+            return reg.get<UISlider>(e.GetHandle()).value;
+        },
+        "setUiSlider", [](Scene& s, Entity& e, float v) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UISlider>(e.GetHandle())) return;
+            auto& sld = reg.get<UISlider>(e.GetHandle());
+            sld.value = std::clamp(v, std::min(sld.minValue, sld.maxValue),
+                                   std::max(sld.minValue, sld.maxValue));
+        },
+        // UIToggle の状態を読む/書く。
+        "getUiToggle", [](Scene& s, Entity& e) -> bool {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIToggle>(e.GetHandle())) return false;
+            return reg.get<UIToggle>(e.GetHandle()).isOn;
+        },
+        "setUiToggle", [](Scene& s, Entity& e, bool on) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIToggle>(e.GetHandle())) return;
+            reg.get<UIToggle>(e.GetHandle()).isOn = on;
+        },
         // --- UI アニメーション / トゥイーン ---
         // 対象は Entity か エンティティID(数値。ボタンクリックの data.source をそのまま渡せる)。
         // params: { dx=, dy=(相対移動px), scale=(視覚拡縮), alpha=(視覚透明度0..1),

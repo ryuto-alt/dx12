@@ -909,6 +909,13 @@ scene:<span class="tok-fn">setUiVisible</span>(pausePanel, isPaused)
 <span class="tok-c">-- アイコン差し替え</span>
 scene:<span class="tok-fn">setUiTexture</span>(weaponIcon, <span class="tok-s">"textures/ui/icon_sword.png"</span>)
 
+<span class="tok-c">-- スライダー/トグル（値変更は onChangeEvent で受ける。e.value に実値/1・0）</span>
+events:<span class="tok-fn">on</span>(<span class="tok-s">"volumeChanged"</span>, <span class="tok-k">function</span>(e) audio:<span class="tok-fn">setMasterVolume</span>(e.value) <span class="tok-k">end</span>)
+<span class="tok-k">local</span> v = scene:<span class="tok-fn">getUiSlider</span>(volSlider)
+scene:<span class="tok-fn">setUiSlider</span>(volSlider, <span class="tok-n">0.8</span>)   <span class="tok-c">-- イベントは発火しない</span>
+<span class="tok-k">local</span> on = scene:<span class="tok-fn">getUiToggle</span>(muteToggle)
+scene:<span class="tok-fn">setUiToggle</span>(muteToggle, <span class="tok-k">true</span>)
+
 <span class="tok-c">-- 動的UI: トゥイーン（イージング付きアニメ。dx/dy=実移動px、scale/alpha=見た目のみ）</span>
 scene:<span class="tok-fn">tweenUi</span>(menu, { dx = <span class="tok-n">200</span>, duration = <span class="tok-n">0.4</span>, easing = <span class="tok-s">"bounce"</span> })
 scene:<span class="tok-fn">tweenUi</span>(popup, { scale = <span class="tok-n">1.2</span>, alpha = <span class="tok-n">0</span>, duration = <span class="tok-n">0.25</span> })

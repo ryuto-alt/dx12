@@ -61,7 +61,9 @@ struct UiDrawContext
 
     // トラバース中に集めるレイキャスト情報（描画順 = 奥→手前。入力の解決は走査完了後）
     std::vector<UiHitEntry>* buttonRects = nullptr;  // interactable な UIButton 全件
-    std::vector<UiHitEntry>* blockers    = nullptr;  // クリックを遮る要素（ボタン + raycastBlock 画像）
+    std::vector<UiHitEntry>* sliderRects = nullptr;  // interactable な UISlider 全件
+    std::vector<UiHitEntry>* toggleRects = nullptr;  // interactable な UIToggle 全件
+    std::vector<UiHitEntry>* blockers    = nullptr;  // クリックを遮る要素（ウィジェット + raycastBlock 画像）
 
     // false = エディタプレビュー（RenderPreview / ResolveRects）: ボタンは normalColor
     // 固定で描き、_hovered/_pressed には読み書きとも一切触れない（ゲーム内状態を汚さない）。
@@ -382,12 +384,27 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
         }
     }
 
-    // クリックを遮る要素 = interactable な UIButton ＋ raycastBlock=true の UIImage。
-    // UIText は遮らない（ボタンのラベルが親ボタンのクリックを妨げないように）。
+    // --- UISlider / UIToggle: レイキャスト収集（入力解決はトラバース完了後。ボタンと同じ）---
+    auto* sld = reg.try_get<UISlider>(e);
+    auto* tgl = reg.try_get<UIToggle>(e);
+    if (sld && ctx.interactive)
+    {
+        if (sld->interactable) { if (ctx.sliderRects) ctx.sliderRects->push_back({e, s}); }
+        else                   { sld->_hovered = false; sld->_dragging = false; }
+    }
+    if (tgl && ctx.interactive)
+    {
+        if (tgl->interactable) { if (ctx.toggleRects) ctx.toggleRects->push_back({e, s}); }
+        else                   { tgl->_hovered = false; tgl->_pressed = false; }
+    }
+
+    // クリックを遮る要素 = interactable なウィジェット（Button/Slider/Toggle）＋
+    // raycastBlock=true の UIImage。UIText は遮らない（ラベルが親のクリックを妨げないように）。
     if (ctx.blockers)
     {
         const auto* imgBlock = reg.try_get<UIImage>(e);
-        if ((btn && btn->interactable) || (imgBlock && imgBlock->raycastBlock))
+        if ((btn && btn->interactable) || (sld && sld->interactable)
+            || (tgl && tgl->interactable) || (imgBlock && imgBlock->raycastBlock))
             ctx.blockers->push_back({e, s});
     }
 
@@ -453,6 +470,56 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
 
             if (fillPartial)
                 ctx.dl->PopClipRect();
+        }
+    }
+
+    // --- UISlider: トラック(角丸バー) + 塗り + つまみ(円) を自前描画 ---
+    if (sld)
+    {
+        const float range = (sld->maxValue > sld->minValue) ? (sld->maxValue - sld->minValue) : 1.0f;
+        const float t = std::clamp((sld->value - sld->minValue) / range, 0.0f, 1.0f);
+        const float trackH = std::max(2.0f, s.Height() * 0.35f);
+        const float cy = (s.minY + s.maxY) * 0.5f;
+        // つまみがはみ出さないよう、トラックの左右をつまみ半径ぶん内側へ
+        const float knobR = std::max(3.0f, s.Height() * 0.5f);
+        const float x0 = s.minX + knobR, x1 = s.maxX - knobR;
+        const float knobX = x0 + (x1 - x0) * t;
+        const bool hot = ctx.interactive && (sld->_hovered || sld->_dragging);
+
+        auto col = [&](const DirectX::XMFLOAT4& c, float mul) {
+            return ToImCol({c.x * mul, c.y * mul, c.z * mul, c.w * ctx.alphaMul});
+        };
+        ctx.dl->AddRectFilled(ImVec2(x0 - trackH * 0.5f, cy - trackH * 0.5f),
+                              ImVec2(x1 + trackH * 0.5f, cy + trackH * 0.5f),
+                              col(sld->trackColor, 1.0f), trackH * 0.5f);
+        if (t > 0.0f)
+            ctx.dl->AddRectFilled(ImVec2(x0 - trackH * 0.5f, cy - trackH * 0.5f),
+                                  ImVec2(knobX, cy + trackH * 0.5f),
+                                  col(sld->fillColor, 1.0f), trackH * 0.5f);
+        ctx.dl->AddCircleFilled(ImVec2(knobX, cy), knobR * (hot ? 1.08f : 1.0f),
+                                col(sld->knobColor, hot ? 1.0f : 0.92f));
+        ctx.dl->AddCircle(ImVec2(knobX, cy), knobR * (hot ? 1.08f : 1.0f),
+                          ToImCol({0.0f, 0.0f, 0.0f, 0.35f * ctx.alphaMul}));
+    }
+
+    // --- UIToggle: 角丸の箱 + isOn なら内側に塗り ---
+    if (tgl)
+    {
+        const bool hot = ctx.interactive && (tgl->_hovered || tgl->_pressed);
+        const float round = std::min(s.Width(), s.Height()) * 0.22f;
+        const float mul = tgl->_pressed ? 0.8f : (hot ? 1.25f : 1.0f);
+        ctx.dl->AddRectFilled(ImVec2(s.minX, s.minY), ImVec2(s.maxX, s.maxY),
+                              ToImCol({tgl->boxColor.x * mul, tgl->boxColor.y * mul,
+                                       tgl->boxColor.z * mul, tgl->boxColor.w * ctx.alphaMul}),
+                              round);
+        if (tgl->isOn)
+        {
+            const float inset = std::min(s.Width(), s.Height()) * 0.22f;
+            ctx.dl->AddRectFilled(ImVec2(s.minX + inset, s.minY + inset),
+                                  ImVec2(s.maxX - inset, s.maxY - inset),
+                                  ToImCol({tgl->checkColor.x, tgl->checkColor.y,
+                                           tgl->checkColor.z, tgl->checkColor.w * ctx.alphaMul}),
+                                  round * 0.6f);
         }
     }
 
@@ -645,6 +712,8 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
 
     // このフレームの入力スナップショット（##GameUI ウィンドウ内で呼ばれる前提）
     std::vector<UiHitEntry> buttonRects;   // interactable な UIButton（描画順）
+    std::vector<UiHitEntry> sliderRects;   // interactable な UISlider
+    std::vector<UiHitEntry> toggleRects;   // interactable な UIToggle
     std::vector<UiHitEntry> blockers;      // クリックを遮る要素（描画順。後ろほど手前）
     UiDrawContext ctx;
     ctx.reg           = &reg;
@@ -659,6 +728,8 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
     ctx.srvHeap       = srvHeap;
     ctx.cmdList       = cmdList;
     ctx.buttonRects   = &buttonRects;
+    ctx.sliderRects   = &sliderRects;
+    ctx.toggleRects   = &toggleRects;
     ctx.blockers      = &blockers;
 
     // レイアウト解決＋描画＋レイキャスト収集（RenderPreview / ResolveRects と共通）
@@ -685,16 +756,19 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
         }
     }
 
-    // topmost 自身が interactable な UIButton ならそれ。無ければ Transform::parent を
-    // 遡って最初のボタンへバブリング（ボタン内の子アイコン画像がクリックを吸っても親が
-    // 反応する）。どこにも無ければクリックは吸収されただけ（どのボタンも反応しない）。
-    entt::entity effectiveButton = entt::null;
+    // topmost 自身が interactable なウィジェット（Button/Slider/Toggle）ならそれ。無ければ
+    // Transform::parent を遡って最初のウィジェットへバブリング（ウィジェット内の子アイコン
+    // 画像がクリックを吸っても親が反応する）。どこにも無ければクリックは吸収されただけ。
+    entt::entity effectiveWidget = entt::null;
     entt::entity walk = topmost;
     for (int depth = 0; depth < 64 && walk != entt::null && reg.valid(walk); ++depth)
     {
-        if (const auto* b = reg.try_get<UIButton>(walk); b && b->interactable)
+        const auto* b = reg.try_get<UIButton>(walk);
+        const auto* sl = reg.try_get<UISlider>(walk);
+        const auto* tg = reg.try_get<UIToggle>(walk);
+        if ((b && b->interactable) || (sl && sl->interactable) || (tg && tg->interactable))
         {
-            effectiveButton = walk;
+            effectiveWidget = walk;
             break;
         }
         const auto* t = reg.try_get<Transform>(walk);
@@ -712,7 +786,7 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
         {
             // 非押下中: 最前面判定に勝った 1 個だけがホバーし、押下開始できる
             const bool wasHovered = btn->_hovered;
-            btn->_hovered = (hit.e == effectiveButton);
+            btn->_hovered = (hit.e == effectiveWidget);
             if (btn->_hovered && !wasHovered && !btn->hoverSound.empty())
                 m_pendingSfx.push_back(btn->hoverSound);   // ホバー開始の瞬間だけ 1 回
             if (btn->_hovered && ctx.mouseClicked)
@@ -737,6 +811,81 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
             else if (!ctx.mouseDown)
             {
                 btn->_pressed = false;   // フォーカス喪失等で release を取り逃した場合の安全網
+            }
+        }
+    }
+
+    // --- UIToggle: ボタンと同じ press → release-inside で isOn 反転 + onChangeEvent ---
+    for (const UiHitEntry& hit : toggleRects)
+    {
+        auto* tgl = reg.try_get<UIToggle>(hit.e);
+        if (!tgl)
+            continue;
+        const bool inside = mouseValid && hit.rect.Contains(ctx.mousePos.x, ctx.mousePos.y);
+        if (!tgl->_pressed)
+        {
+            tgl->_hovered = (hit.e == effectiveWidget);
+            if (tgl->_hovered && ctx.mouseClicked)
+                tgl->_pressed = true;
+        }
+        else
+        {
+            tgl->_hovered = inside;
+            if (ctx.mouseReleased)
+            {
+                if (inside)
+                {
+                    tgl->isOn = !tgl->isOn;
+                    if (!tgl->onChangeEvent.empty())
+                        m_pendingClicks.push_back({tgl->onChangeEvent, hit.e,
+                                                   true, tgl->isOn ? 1.0 : 0.0});
+                }
+                tgl->_pressed = false;
+            }
+            else if (!ctx.mouseDown)
+            {
+                tgl->_pressed = false;
+            }
+        }
+    }
+
+    // --- UISlider: クリックで即その位置へ + ドラッグ追従（ポインタキャプチャ相当）---
+    for (const UiHitEntry& hit : sliderRects)
+    {
+        auto* sld = reg.try_get<UISlider>(hit.e);
+        if (!sld)
+            continue;
+        if (!sld->_dragging)
+        {
+            sld->_hovered = (hit.e == effectiveWidget);
+            if (sld->_hovered && ctx.mouseClicked)
+                sld->_dragging = true;
+        }
+        if (sld->_dragging)
+        {
+            if (!ctx.mouseDown)
+            {
+                sld->_dragging = false;
+            }
+            else
+            {
+                // マウス X → 実値（描画と同じ「つまみ半径ぶん内側」のトラック範囲で正規化）
+                const float knobR = std::max(3.0f, hit.rect.Height() * 0.5f);
+                const float x0 = hit.rect.minX + knobR, x1 = hit.rect.maxX - knobR;
+                const float t = std::clamp((ctx.mousePos.x - x0) / std::max(1.0f, x1 - x0),
+                                           0.0f, 1.0f);
+                float v = sld->minValue + (sld->maxValue - sld->minValue) * t;
+                if (sld->step > 0.0f)
+                    v = sld->minValue + std::round((v - sld->minValue) / sld->step) * sld->step;
+                v = std::clamp(v, std::min(sld->minValue, sld->maxValue),
+                               std::max(sld->minValue, sld->maxValue));
+                if (v != sld->value)
+                {
+                    sld->value = v;
+                    if (!sld->onChangeEvent.empty())
+                        m_pendingClicks.push_back({sld->onChangeEvent, hit.e, true,
+                                                   static_cast<double>(v)});
+                }
             }
         }
     }
@@ -795,6 +944,8 @@ void UISystem::DispatchPendingClicks(entt::registry& reg, EventBus& bus)
         ev.name = c.eventName;
         if (c.source != entt::null && reg.valid(c.source))
             ev.source = c.source;
+        if (c.hasValue)
+            ev.set("value", c.value);   // スライダー実値 / トグル 1・0（Lua 側は e.value）
         bus.Emit(ev);   // 即時発火（呼び出し元が Lua OnUpdate より前のタイミングを保証する）
     }
 }
@@ -807,6 +958,16 @@ void UISystem::ResetRuntimeState(entt::registry& reg)
     {
         btn._hovered = false;
         btn._pressed = false;
+    }
+    for (auto [e, sld] : reg.view<UISlider>().each())
+    {
+        sld._hovered  = false;
+        sld._dragging = false;
+    }
+    for (auto [e, tgl] : reg.view<UIToggle>().each())
+    {
+        tgl._hovered = false;
+        tgl._pressed = false;
     }
     // UIAnimator: 次の Play で出現アニメが最初から再生されるように全ランタイム状態を戻す
     for (auto [e, an] : reg.view<UIAnimator>().each())

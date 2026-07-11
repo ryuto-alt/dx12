@@ -349,6 +349,42 @@ struct UIButton
     bool _pressed = false;
 };
 
+// UIスライダー: 自分の UIRect 全体が操作域。トラック(角丸バー)+塗り+つまみ(円)を自前描画する
+// (UIImage 不要)。クリック/ドラッグで value を変更し、値が変わったフレームだけ onChangeEvent を
+// emit する(イベントの data.value に実値が載る)。Lua: scene:getUiSlider / setUiSlider。
+struct UISlider
+{
+    float value    = 0.5f;   // 実値(minValue..maxValue)。0..1 正規化ではない
+    float minValue = 0.0f;
+    float maxValue = 1.0f;
+    float step     = 0.0f;   // 0=連続。>0 なら実値をこの刻みへスナップ(0.1 など)
+    std::string onChangeEvent;   // 値が変わった時に events へ emit するイベント名。空=無効
+    DirectX::XMFLOAT4 trackColor{0.22f, 0.22f, 0.27f, 1.0f};
+    DirectX::XMFLOAT4 fillColor{0.30f, 0.55f, 1.0f, 1.0f};
+    DirectX::XMFLOAT4 knobColor{1.0f, 1.0f, 1.0f, 1.0f};
+    bool interactable = true;
+
+    // ランタイム専有（非シリアライズ）
+    bool _hovered  = false;
+    bool _dragging = false;
+};
+
+// UIトグル(チェックボックス): 自分の UIRect 全体が箱＝クリック域。isOn で内側に塗りが入る。
+// クリック確定(release-inside)で isOn が反転し onChangeEvent を emit(data.value = 1/0)。
+// ラベルは子の UIText で添える(ボタンのラベルと同じ流儀)。Lua: scene:getUiToggle / setUiToggle。
+struct UIToggle
+{
+    bool isOn = false;
+    std::string onChangeEvent;
+    DirectX::XMFLOAT4 boxColor{0.22f, 0.22f, 0.27f, 1.0f};
+    DirectX::XMFLOAT4 checkColor{0.30f, 0.55f, 1.0f, 1.0f};
+    bool interactable = true;
+
+    // ランタイム専有（非シリアライズ）
+    bool _hovered = false;
+    bool _pressed = false;
+};
+
 // UI アニメーション（UIRect 持ちエンティティに付ける。Play / ゲームモード中のみ再生）。
 // 出現アニメ（Play 開始時と Lua scene:showUi() で再生）・ホバー/押下スケール（要 UIButton）・
 // ループアニメの 3 系統。視覚効果（平行移動/拡縮/アルファ）は自分と子孫にまとめて掛かる。

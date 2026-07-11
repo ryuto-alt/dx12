@@ -143,6 +143,14 @@ scene:setUiColor(hpBarFill, 1, hpRatio, 0, 1)                -- 色（UIImage優
 scene:setUiFill(hpBarFill, hp / maxHp)                       -- ゲージの残量（UIImage.fillAmount 0..1）
 scene:setUiVisible(pausePanel, isPaused)                     -- 表示/非表示
 scene:setUiTexture(weaponIcon, "textures/ui/icon_sword.png") -- 画像差し替え
+
+-- スライダー/トグル（値変更は onChangeEvent で受ける。e.value に実値/1・0 が入る）
+events:on("volumeChanged", function(e) audio:setMasterVolume(e.value) end)
+events:on("muteToggled",   function(e) audio:setMasterVolume(e.value == 1 and 0 or 1) end)
+local v  = scene:getUiSlider(volSlider)   -- 現在値を読む
+scene:setUiSlider(volSlider, 0.8)         -- スクリプトから設定（イベントは発火しない）
+local on = scene:getUiToggle(muteToggle)
+scene:setUiToggle(muteToggle, true)
 ```
 
 **動的 UI（アニメーション/イージング）**: `UIAnimator` コンポーネント（Inspector の「✚ コンポーネント追加 > UI Animator」）で

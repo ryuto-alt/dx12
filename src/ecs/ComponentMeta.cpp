@@ -213,6 +213,26 @@ void RegisterCoreComponentMeta()
         .data<&UIButton::hoverSound>("hoverSound")
         .data<&UIButton::clickSound>("clickSound");
 
+    entt::meta_factory<UISlider>{}
+        .type("UISlider")
+        .data<&UISlider::value>("value")
+        .data<&UISlider::minValue>("minValue")
+        .data<&UISlider::maxValue>("maxValue")
+        .data<&UISlider::step>("step")
+        .data<&UISlider::onChangeEvent>("onChangeEvent")
+        .data<&UISlider::trackColor>("trackColor")
+        .data<&UISlider::fillColor>("fillColor")
+        .data<&UISlider::knobColor>("knobColor")
+        .data<&UISlider::interactable>("interactable");
+
+    entt::meta_factory<UIToggle>{}
+        .type("UIToggle")
+        .data<&UIToggle::isOn>("isOn")
+        .data<&UIToggle::onChangeEvent>("onChangeEvent")
+        .data<&UIToggle::boxColor>("boxColor")
+        .data<&UIToggle::checkColor>("checkColor")
+        .data<&UIToggle::interactable>("interactable");
+
     // UIAnimator: _ 付きランタイム状態（_t/_mode/_cur* 等）は登録しない = 保存されない
     entt::meta_factory<UIAnimator>{}
         .type("UIAnimator")

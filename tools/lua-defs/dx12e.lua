@@ -279,6 +279,32 @@ function Scene:setUiFill(e, amount) end
 ---@return number
 function Scene:getUiFill(e) end
 
+---UISlider の現在値（実値 minValue..maxValue）を返す。無ければ 0。
+---値の変更はプレイヤー操作時に onChangeEvent（e.value = 実値）で通知される。
+---```lua
+---events:on("volumeChanged", function(e) audio:setMasterVolume(e.value) end)
+---```
+---@param e Entity
+---@return number
+function Scene:getUiSlider(e) end
+
+---UISlider の値を設定する（minValue..maxValue へクランプ）。
+---スクリプト起因の変更では onChangeEvent は発火しない（ハンドラの再帰防止）。
+---@param e Entity
+---@param v number
+function Scene:setUiSlider(e, v) end
+
+---UIToggle の状態を返す。無ければ false。
+---切替はプレイヤー操作時に onChangeEvent（e.value = 1/0）で通知される。
+---@param e Entity
+---@return boolean
+function Scene:getUiToggle(e) end
+
+---UIToggle の状態を設定する（onChangeEvent は発火しない）。
+---@param e Entity
+---@param on boolean
+function Scene:setUiToggle(e, on) end
+
 ---UI要素をトゥイーンで動かす（イージング付きアニメーション）。対象は UIRect 必須。
 ---`dx/dy` はレイアウト（UIRect offset）を実際に動かす＝終了位置でクリックも効く。
 ---`scale/alpha` は見た目だけの拡縮/透明度（自分と子孫にまとめて掛かる。レイアウトは不変）。

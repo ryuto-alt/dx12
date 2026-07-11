@@ -15,12 +15,14 @@ class ResourceManager;
 class DescriptorHeap;
 class EventBus;
 
-// クリック確定（release-inside）した UIButton の保留イベント。
+// クリック確定（release-inside）した UIButton / 値が変わった UISlider / UIToggle の保留イベント。
 // Render 中に積み、次フレームの Update 冒頭（Lua OnUpdate より前）で EventBus へ流す。
 struct UIPendingClick
 {
-    std::string  eventName;               // UIButton::onClickEvent
-    entt::entity source = entt::null;     // ボタンのエンティティ
+    std::string  eventName;               // UIButton::onClickEvent / UISlider・UIToggle::onChangeEvent
+    entt::entity source = entt::null;     // ウィジェットのエンティティ
+    bool   hasValue = false;              // true なら emit 時に data.value を載せる
+    double value    = 0.0;                // スライダー=実値、トグル= 1/0
 };
 
 // エディタ支援用: レイアウト解決済みの UIRect 1 件（スクリーン座標）。

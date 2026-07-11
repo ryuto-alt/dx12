@@ -1053,6 +1053,80 @@ void InspectorPanel::Render(entt::registry& reg,
             }
         }
 
+        // UISlider（トラック+つまみを自前描画。値変更で onChangeEvent を emit）
+        if (reg.all_of<UISlider>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entUi : 0, "UISlider");
+            bool removed = ComponentRemoveMenu<UISlider>(reg, ctx, ctx.selectedEntity, "UISlider");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_uiSliderEdit);
+                auto& sld = reg.get<UISlider>(ctx.selectedEntity);
+                bool changed = false, active = false;
+
+                if (pg::Begin("UISlider"))
+                {
+                    changed |= pg::Float("値 Value", &sld.value, 0.005f,
+                                         std::min(sld.minValue, sld.maxValue),
+                                         std::max(sld.minValue, sld.maxValue), "%.3f", &active,
+                        "現在値(実値)。Play 中はドラッグ操作で変わる。\n"
+                        "Lua: scene:getUiSlider(e) / scene:setUiSlider(e, v)");
+                    changed |= pg::Float("最小 Min", &sld.minValue, 0.01f, 0.0f, 0.0f, "%.3f", &active);
+                    changed |= pg::Float("最大 Max", &sld.maxValue, 0.01f, 0.0f, 0.0f, "%.3f", &active);
+                    changed |= pg::Float("刻み Step", &sld.step, 0.01f, 0.0f, 0.0f, "%.3f", &active,
+                        "0 = 連続。0.1 なら 0.1 刻みにスナップ");
+
+                    char buf[128] = {};
+                    size_t n = sld.onChangeEvent.copy(buf, sizeof(buf) - 1);
+                    buf[n] = '\0';
+                    if (pg::InputText("変更イベント名 On Change", buf, sizeof(buf), 0, &active,
+                        "値が変わった時に events へ emit するイベント名(空なら発火しない)。\n"
+                        "Lua 側: events:on(\"名前\", function(e) e.value が実値 end)"))
+                    { sld.onChangeEvent = buf; changed = true; }
+
+                    changed |= pg::Color4("トラック色 Track", &sld.trackColor.x);
+                    changed |= pg::Color4("塗り色 Fill", &sld.fillColor.x);
+                    changed |= pg::Color4("つまみ色 Knob", &sld.knobColor.x);
+                    changed |= pg::Checkbox("操作可能 Interactable", &sld.interactable);
+                    pg::End();
+                }
+                EndEdit(reg, ctx, ctx.selectedEntity, m_uiSliderEdit, changed, active, "UISlider");
+            }
+        }
+
+        // UIToggle（チェックボックス。クリックで isOn 反転 + onChangeEvent を emit）
+        if (reg.all_of<UIToggle>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entUi : 0, "UIToggle");
+            bool removed = ComponentRemoveMenu<UIToggle>(reg, ctx, ctx.selectedEntity, "UIToggle");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_uiToggleEdit);
+                auto& tgl = reg.get<UIToggle>(ctx.selectedEntity);
+                bool changed = false, active = false;
+
+                if (pg::Begin("UIToggle"))
+                {
+                    changed |= pg::Checkbox("オン Is On", &tgl.isOn,
+                        "現在の状態。Lua: scene:getUiToggle(e) / scene:setUiToggle(e, on)");
+
+                    char buf[128] = {};
+                    size_t n = tgl.onChangeEvent.copy(buf, sizeof(buf) - 1);
+                    buf[n] = '\0';
+                    if (pg::InputText("変更イベント名 On Change", buf, sizeof(buf), 0, &active,
+                        "切替時に events へ emit するイベント名(空なら発火しない)。\n"
+                        "Lua 側: events:on(\"名前\", function(e) e.value が 1/0 end)"))
+                    { tgl.onChangeEvent = buf; changed = true; }
+
+                    changed |= pg::Color4("箱色 Box", &tgl.boxColor.x);
+                    changed |= pg::Color4("チェック色 Check", &tgl.checkColor.x);
+                    changed |= pg::Checkbox("操作可能 Interactable", &tgl.interactable);
+                    pg::End();
+                }
+                EndEdit(reg, ctx, ctx.selectedEntity, m_uiToggleEdit, changed, active, "UIToggle");
+            }
+        }
+
         // UIAnimator（UI の出現/ホバー/ループアニメ。Play 中のみ再生。効果は自分と子孫に掛かる）
         if (reg.all_of<UIAnimator>(ctx.selectedEntity))
         {
@@ -2193,6 +2267,8 @@ void InspectorPanel::Render(entt::registry& reg,
             AddComponentMenuItem<UIImage>(reg, ctx, ctx.selectedEntity, "UI Image");
             AddComponentMenuItem<UIText>(reg, ctx, ctx.selectedEntity, "UI Text");
             AddComponentMenuItem<UIButton>(reg, ctx, ctx.selectedEntity, "UI Button");
+            AddComponentMenuItem<UISlider>(reg, ctx, ctx.selectedEntity, "UI Slider");
+            AddComponentMenuItem<UIToggle>(reg, ctx, ctx.selectedEntity, "UI Toggle");
             AddComponentMenuItem<UIAnimator>(reg, ctx, ctx.selectedEntity, "UI Animator");
             ImGui::Separator();
             AddComponentMenuItem<RigidBody>(reg, ctx, ctx.selectedEntity, "RigidBody");

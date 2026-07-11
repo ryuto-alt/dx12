@@ -517,6 +517,8 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
             if (ImGui::MenuItem("Image（画像/単色矩形）"))   spawnUi("__ui_image__");
             if (ImGui::MenuItem("Text（テキスト）"))         spawnUi("__ui_text__");
             if (ImGui::MenuItem("Button（ボタン）"))         spawnUi("__ui_button__");
+            if (ImGui::MenuItem("Slider（スライダー）"))     spawnUi("__ui_slider__");
+            if (ImGui::MenuItem("Toggle（トグル）"))         spawnUi("__ui_toggle__");
             ImGui::EndMenu();
         }
         ImGui::EndPopup();
