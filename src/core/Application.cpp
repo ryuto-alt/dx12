@@ -8809,9 +8809,14 @@ void Application::Render()
             else if (std::filesystem::path(req.modelPath).extension().string() == ".prefab")
             {
                 // プレハブ（再利用テンプレート）を展開。子も含めてサブツリーごと生成する。
+                // MCP spawn_prefab は assets 相対で来る(エディタUI経由は絶対)。相対のままだと
+                // InstantiatePrefab のディスクフォールバックが CWD 基準になり開けないので絶対化する。
+                std::string prefabPath = req.modelPath;
+                if (std::filesystem::path(prefabPath).is_relative())
+                    prefabPath = PathResolver::AssetsDir() + prefabPath;
                 std::vector<entt::entity> all;
                 entt::entity root = SceneSerializer::InstantiatePrefab(
-                    *m_scene, req.modelPath, PathResolver::AssetsDir(), &all);
+                    *m_scene, prefabPath, PathResolver::AssetsDir(), &all);
                 if (root != entt::null)
                 {
                     auto& reg = m_scene->GetRegistry();
