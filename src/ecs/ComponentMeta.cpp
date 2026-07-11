@@ -209,7 +209,9 @@ void RegisterCoreComponentMeta()
         .data<&UIButton::normalColor>("normalColor")
         .data<&UIButton::hoverColor>("hoverColor")
         .data<&UIButton::pressedColor>("pressedColor")
-        .data<&UIButton::interactable>("interactable");
+        .data<&UIButton::interactable>("interactable")
+        .data<&UIButton::hoverSound>("hoverSound")
+        .data<&UIButton::clickSound>("clickSound");
 
     // UIAnimator: _ 付きランタイム状態（_t/_mode/_cur* 等）は登録しない = 保存されない
     entt::meta_factory<UIAnimator>{}

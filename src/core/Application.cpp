@@ -10577,10 +10577,16 @@ void Application::Render()
         // クリック確定はここでは配信せず、次フレーム Update 冒頭（Lua OnUpdate より前）で
         // EventBus へ Emit される（UISystem::DispatchPendingClicks）。
         if (m_uiSystem && m_scene)
+        {
             m_uiSystem->RenderAndUpdateInput(m_scene->GetRegistry(), dl, ox, oy,
                                              static_cast<float>(vpW), static_cast<float>(vpH),
                                              m_resourceManager.get(), m_srvHeap.get(),
                                              nativeCmdList);
+            // UIButton の hover/click 効果音（UISystem は AudioSystem 非依存なのでここで配信）
+            if (m_audioSystem)
+                for (const std::string& sfx : m_uiSystem->TakePendingSfx())
+                    m_audioSystem->PlaySFX(sfx);
+        }
 
         std::unordered_set<std::string> nowPressed;
         for (const auto& c : m_uiCommands)

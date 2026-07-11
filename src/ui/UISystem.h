@@ -83,8 +83,14 @@ public:
     // 保留クリックと全 UIButton のランタイム状態を破棄（Play 終了・ランタイムシーン切替時）。
     void ResetRuntimeState(entt::registry& reg);
 
+    // このフレームで鳴らすべき UI 効果音（UIButton::hoverSound/clickSound、assets 相対パス）を
+    // 取り出す（内部リストは空になる）。呼び出し元（Application）が AudioSystem::PlaySFX へ流す。
+    // UISystem は AudioSystem に依存しない（描画/入力と同じ「収集→呼び出し元が配信」方式）。
+    std::vector<std::string> TakePendingSfx() { return std::move(m_pendingSfx); }
+
 private:
     std::vector<UIPendingClick> m_pendingClicks;
+    std::vector<std::string>    m_pendingSfx;
 };
 
 } // namespace dx12e

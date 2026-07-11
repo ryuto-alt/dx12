@@ -711,7 +711,10 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
         if (!btn->_pressed)
         {
             // 非押下中: 最前面判定に勝った 1 個だけがホバーし、押下開始できる
+            const bool wasHovered = btn->_hovered;
             btn->_hovered = (hit.e == effectiveButton);
+            if (btn->_hovered && !wasHovered && !btn->hoverSound.empty())
+                m_pendingSfx.push_back(btn->hoverSound);   // ホバー開始の瞬間だけ 1 回
             if (btn->_hovered && ctx.mouseClicked)
                 btn->_pressed = true;
         }
@@ -722,8 +725,13 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
             btn->_hovered = inside;
             if (ctx.mouseReleased)
             {
-                if (inside && !btn->onClickEvent.empty())
-                    m_pendingClicks.push_back({btn->onClickEvent, hit.e});
+                if (inside)
+                {
+                    if (!btn->onClickEvent.empty())
+                        m_pendingClicks.push_back({btn->onClickEvent, hit.e});
+                    if (!btn->clickSound.empty())
+                        m_pendingSfx.push_back(btn->clickSound);
+                }
                 btn->_pressed = false;
             }
             else if (!ctx.mouseDown)
@@ -794,6 +802,7 @@ void UISystem::DispatchPendingClicks(entt::registry& reg, EventBus& bus)
 void UISystem::ResetRuntimeState(entt::registry& reg)
 {
     m_pendingClicks.clear();
+    m_pendingSfx.clear();
     for (auto [e, btn] : reg.view<UIButton>().each())
     {
         btn._hovered = false;

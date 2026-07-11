@@ -1028,6 +1028,22 @@ void InspectorPanel::Render(entt::registry& reg,
                     changed |= pg::Color4("押下色 Pressed", &btn.pressedColor.x);
                     changed |= pg::Checkbox("操作可能 Interactable", &btn.interactable,
                         "OFF: 入力を受け付けず通常色で固定");
+
+                    pg::Group("効果音");
+                    {
+                        char sbuf[256] = {};
+                        size_t sn = btn.hoverSound.copy(sbuf, sizeof(sbuf) - 1);
+                        sbuf[sn] = '\0';
+                        if (pg::InputText("ホバー音 Hover SFX", sbuf, sizeof(sbuf), 0, &active,
+                            "カーソル/フォーカスが乗った瞬間に 1 回鳴らす wav\n"
+                            "(AudioSource のクリップと同じ assets 相対パス。空=鳴らさない)"))
+                        { btn.hoverSound = sbuf; changed = true; }
+                        sn = btn.clickSound.copy(sbuf, sizeof(sbuf) - 1);
+                        sbuf[sn] = '\0';
+                        if (pg::InputText("クリック音 Click SFX", sbuf, sizeof(sbuf), 0, &active,
+                            "クリック確定(ボタン上で離した)時に 1 回鳴らす wav"))
+                        { btn.clickSound = sbuf; changed = true; }
+                    }
                     pg::End();
                 }
                 if (!reg.all_of<UIImage>(ctx.selectedEntity))

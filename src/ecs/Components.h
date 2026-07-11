@@ -339,6 +339,10 @@ struct UIButton
     DirectX::XMFLOAT4 hoverColor{0.85f, 0.85f, 0.85f, 1.0f};
     DirectX::XMFLOAT4 pressedColor{0.65f, 0.65f, 0.65f, 1.0f};
     bool interactable = true;
+    // 効果音(AudioSource::clipPath と同じ assets 相対 wav。空=鳴らさない)。
+    // hover はカーソル/フォーカスが乗った瞬間、click はクリック確定(release-inside)時に 1 回再生。
+    std::string hoverSound;
+    std::string clickSound;
 
     // ランタイム専有（非シリアライズ）
     bool _hovered = false;
