@@ -560,6 +560,12 @@ private:
     // Play 開始時のシーン全体スナップショット（Stop 時の復元用）
     std::string m_playSceneJson;
 
+    // Play 開始時のシーンパス退避。Play 中の loadScene/goToScene が currentScenePath を
+    // 書き換えたまま Stop すると、以後のパス無し保存が別シーンを上書きしてしまうため、
+    // Stop 時に必ずここへ戻す。
+    std::string m_playScenePathSnapshot;
+    std::string m_playSceneRelSnapshot;
+
     // 現在ロード中シーンの assets 相対パス（シーンフロー / loadScene 用）
     std::string m_currentSceneRel;
 

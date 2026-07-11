@@ -7050,6 +7050,10 @@ void Application::EnterPlayMode()
     // Lua が触る前のエディタ状態を Stop 時の完全復元用に保存
     m_playSceneJson = SceneSerializer::SaveToString(*m_scene, PathResolver::AssetsDir());
 
+    // シーンパスも退避（Play 中の loadScene/goToScene が書き換えるため。Stop で復元）
+    m_playScenePathSnapshot = m_editorCtx->currentScenePath;
+    m_playSceneRelSnapshot  = m_currentSceneRel;
+
     // ゲーム用カメラ: アクティブな CameraComponent をグローバル Camera に同期
     SyncActiveCameraToGlobal();
 
@@ -7290,6 +7294,17 @@ void Application::EnterEditorMode()
     m_camera->SetPitch(m_cameraSnapshot.pitch);
 
     m_editorCtx->ClearSelection();
+
+    // Play 中のランタイムシーン切替で汚れたシーンパスを Play 開始時点に戻す。
+    // これをしないとパス無し save_scene / Ctrl+S / エディタ終了時の自動保存が
+    // 別シーン(タイトル等)を上書きする。下のディスク再読込フォールバックも復元後のパスで行う。
+    if (!m_playScenePathSnapshot.empty())
+    {
+        m_editorCtx->currentScenePath = m_playScenePathSnapshot;
+        m_currentSceneRel             = m_playSceneRelSnapshot;
+    }
+    m_playScenePathSnapshot.clear();
+    m_playSceneRelSnapshot.clear();
 
     // JSON スナップショットからシーン全体を完全復元
     {
