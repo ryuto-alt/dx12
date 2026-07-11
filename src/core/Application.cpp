@@ -1732,6 +1732,15 @@ bool RemoveRegisteredComponent(entt::registry& reg, entt::entity e, const std::s
     else if (key == "trailRenderer")       reg.remove<TrailRenderer>(e);
     else if (key == "networkIdentity")     reg.remove<NetworkIdentity>(e);
     else if (key == "networkTransform")    reg.remove<NetworkTransform>(e);
+    else if (key == "uiCanvas")            reg.remove<UICanvas>(e);
+    else if (key == "uiRect")              reg.remove<UIRect>(e);
+    else if (key == "uiImage")             reg.remove<UIImage>(e);
+    else if (key == "uiText")              reg.remove<UIText>(e);
+    else if (key == "uiButton")            reg.remove<UIButton>(e);
+    else if (key == "uiSlider")            reg.remove<UISlider>(e);
+    else if (key == "uiToggle")            reg.remove<UIToggle>(e);
+    else if (key == "uiScrollView")        reg.remove<UIScrollView>(e);
+    else if (key == "uiAnimator")          reg.remove<UIAnimator>(e);
     else return false;
     return true;
 }
@@ -2160,6 +2169,84 @@ nlohmann::json McpComponentSchema()
     comps.push_back(C("luaScript", false, true, json::array({
         F("scriptPath", "string (assets-relative)", ""), F("enabled", "bool", true),
     }), "attach via dx12_attach_lua_component (not set_component). Removable via MCP."));
+
+    // --- ゲーム内UI(retained-mode)。create は dx12_create_entity type=ui_*(部品構成済みで生成)、
+    // 調整はここの jsonKey で set_component。ツリーは dx12_set_parent + uiRect.order(兄弟描画順)。
+    comps.push_back(C("uiCanvas", true, true, json::array({
+        F("refWidth", "float (reference resolution)", 1920.0), F("refHeight", "float", 1080.0),
+        F("scaleMode", "int (0=ScaleToFit letterbox, 1=ConstantPixel)", 0),
+        F("sortOrder", "int (canvas draw order)", 0), F("visible", "bool", true),
+    }), "UI tree root. Children (via dx12_set_parent) with uiRect become UI elements."));
+    comps.push_back(C("uiRect", true, true, json::array({
+        F("anchorMin", "float2 (0..1 in parent)", json::array({0.5, 0.5})),
+        F("anchorMax", "float2", json::array({0.5, 0.5})),
+        F("pivot", "float2", json::array({0.5, 0.5})),
+        F("offsetMin", "float2 (px from anchor)", json::array({-50, -50})),
+        F("offsetMax", "float2", json::array({50, 50})),
+        F("visible", "bool", true),
+        F("order", "int (sibling draw order; larger = front)", 0),
+    }), "Layout: rectMin = parentMin + parentSize*anchorMin + offsetMin (same for max). "
+        "Full-stretch = anchorMin[0,0] anchorMax[1,1] offsets 0."));
+    comps.push_back(C("uiImage", true, true, json::array({
+        F("texturePath", "string (assets-relative; empty = solid color rect)", ""),
+        F("color", "float4 (rgba)", json::array({1, 1, 1, 1})),
+        F("uvMin", "float2", json::array({0, 0})), F("uvMax", "float2", json::array({1, 1})),
+        F("sliceBorder", "float4 (9-slice px L,T,R,B; all 0 = off)", json::array({0, 0, 0, 0})),
+        F("cornerRadius", "float (solid color rect only)", 0.0),
+        F("raycastBlock", "bool (blocks clicks like Unity raycastTarget)", true),
+        F("fillAmount", "float 0..1 (HP bar/gauge)", 1.0),
+        F("fillDir", "int (0=fromLeft,1=fromRight,2=fromBottom,3=fromTop)", 0),
+    })));
+    comps.push_back(C("uiText", true, true, json::array({
+        F("text", "string", "テキスト"), F("fontSize", "float", 24.0),
+        F("color", "float4 (rgba)", json::array({1, 1, 1, 1})),
+        F("alignH", "int (0=left,1=center,2=right)", 1),
+        F("alignV", "int (0=top,1=center,2=bottom)", 1), F("wrap", "bool", false),
+    })));
+    comps.push_back(C("uiButton", true, true, json::array({
+        F("onClickEvent", "string (emitted to Lua events on click; empty = none)", ""),
+        F("normalColor", "float4", json::array({1, 1, 1, 1})),
+        F("hoverColor", "float4", json::array({0.85, 0.85, 0.85, 1})),
+        F("pressedColor", "float4", json::array({0.65, 0.65, 0.65, 1})),
+        F("interactable", "bool", true),
+        F("hoverSound", "string (assets-relative wav; empty = silent)", ""),
+        F("clickSound", "string", ""),
+    }), "Needs uiImage on same entity for state tint. Lua: events:on(onClickEvent, fn); "
+        "e.source = entity id."));
+    comps.push_back(C("uiSlider", true, true, json::array({
+        F("value", "float (real value minValue..maxValue)", 0.5),
+        F("minValue", "float", 0.0), F("maxValue", "float", 1.0),
+        F("step", "float (0 = continuous)", 0.0),
+        F("onChangeEvent", "string (e.value = real value)", ""),
+        F("trackColor", "float4", json::array({0.22, 0.22, 0.27, 1})),
+        F("fillColor", "float4", json::array({0.3, 0.55, 1, 1})),
+        F("knobColor", "float4", json::array({1, 1, 1, 1})),
+        F("interactable", "bool", true),
+    }), "Self-drawn (no uiImage needed). uiRect is the operable area."));
+    comps.push_back(C("uiToggle", true, true, json::array({
+        F("isOn", "bool", false),
+        F("onChangeEvent", "string (e.value = 1/0)", ""),
+        F("boxColor", "float4", json::array({0.22, 0.22, 0.27, 1})),
+        F("checkColor", "float4", json::array({0.3, 0.55, 1, 1})),
+        F("interactable", "bool", true),
+    }), "uiRect = the checkbox itself. Label = child uiText entity (ui_toggle spawns one)."));
+    comps.push_back(C("uiScrollView", true, true, json::array({
+        F("vertical", "bool", true), F("horizontal", "bool", false),
+        F("scrollX", "float (px; auto-clamped to content)", 0.0), F("scrollY", "float", 0.0),
+        F("wheelSpeed", "float (px per wheel notch)", 48.0),
+        F("showBar", "bool", true), F("barColor", "float4", json::array({1, 1, 1, 0.35})),
+    }), "uiRect = viewport. Children are clipped + scrolled (clicks clipped too). "
+        "Hang children via dx12_set_parent."));
+    comps.push_back(C("uiAnimator", true, true, json::array({
+        F("showAnim", "int (0=none,1=fade,2=pop,3=fromLeft,4=fromRight,5=fromTop,6=fromBottom)", 1),
+        F("showDuration", "float (sec)", 0.35), F("showDelay", "float (sec)", 0.0),
+        F("showEasing", "int (0=linear,1=in,2=out,3=inOut,4=back,5=bounce,6=elastic)", 2),
+        F("slideOffset", "float (px)", 80.0),
+        F("hoverScale", "float (needs uiButton)", 1.05), F("pressScale", "float", 0.95),
+        F("hoverSpeed", "float", 14.0),
+        F("loopAnim", "int (0=none,1=float,2=pulse,3=blink)", 0),
+        F("loopSpeed", "float", 2.0), F("loopAmount", "float", 6.0),
+    }), "Play-mode only. Show anim replays on Lua scene:showUi()."));
     return json{{"components", std::move(comps)}};
 }
 
@@ -2334,6 +2421,9 @@ nlohmann::json McpComponentTypesOf(const entt::registry& reg, entt::entity e)
     return a;
 }
 } // namespace
+
+// エディタウィンドウ全体を PNG へ(定義は CaptureSceneScreenshot の手前)。MCP ui_screenshot 用。
+static std::string CaptureWindowScreenshot(HWND hwnd, std::string& err);
 
 std::string Application::HandleMcpCommand(uint64_t client, const std::string& line)
 {
@@ -2558,13 +2648,57 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             else if (type == "light_spot")        marker = "__spot_light__";
             else if (type == "particle_emitter")  marker = "__particle_emitter__";
             else if (type == "trigger")           marker = "__trigger__";
+            else if (type == "ui_canvas")     marker = "__ui_canvas__";
+            else if (type == "ui_image")      marker = "__ui_image__";
+            else if (type == "ui_text")       marker = "__ui_text__";
+            else if (type == "ui_button")     marker = "__ui_button__";
+            else if (type == "ui_slider")     marker = "__ui_slider__";
+            else if (type == "ui_toggle")     marker = "__ui_toggle__";
+            else if (type == "ui_scrollview") marker = "__ui_scrollview__";
             else throw McpError(McpErr::InvalidParam,
                 "type must be one of: box, sphere, plane, empty, camera, light_directional, "
-                "light_point, light_spot, particle_emitter, trigger");
+                "light_point, light_spot, particle_emitter, trigger, ui_canvas, ui_image, "
+                "ui_text, ui_button, ui_slider, ui_toggle, ui_scrollview");
+
+            // UI 要素の親の明示指定(id か名前)。ui_canvas はルート生成なので対象外。
+            entt::entity uiParentOverride = entt::null;
+            if (type.rfind("ui_", 0) == 0 && type != "ui_canvas"
+                && (params.contains("parent") || params.contains("parentName")))
+            {
+                auto& reg = m_scene->GetRegistry();
+                if (params.contains("parent"))
+                {
+                    const auto pe = static_cast<entt::entity>(params["parent"].get<u32>());
+                    if (!reg.valid(pe)) throw McpError(McpErr::NotFound, "invalid parent entity id");
+                    uiParentOverride = pe;
+                }
+                else
+                {
+                    const std::string pname = params["parentName"].get<std::string>();
+                    for (auto [pe, tag] : reg.view<const NameTag>().each())
+                        if (tag.name == pname) { uiParentOverride = pe; break; }
+                    if (uiParentOverride == entt::null)
+                        throw McpError(McpErr::NotFound, "parentName not found: " + pname);
+                }
+            }
             if (name.empty())   // 既定名: 種別名を先頭大文字に
             {
-                name = type;
-                if (name[0] >= 'a' && name[0] <= 'z') name[0] = static_cast<char>(name[0] - 'a' + 'A');
+                if (type.rfind("ui_", 0) == 0)
+                {
+                    // ui_scrollview → "UIScrollView" 等、UI は Pascal 風の既定名にする
+                    if      (type == "ui_canvas")     name = "UICanvas";
+                    else if (type == "ui_image")      name = "UIImage";
+                    else if (type == "ui_text")       name = "UIText";
+                    else if (type == "ui_button")     name = "UIButton";
+                    else if (type == "ui_slider")     name = "UISlider";
+                    else if (type == "ui_toggle")     name = "UIToggle";
+                    else                              name = "UIScrollView";
+                }
+                else
+                {
+                    name = type;
+                    if (name[0] >= 'a' && name[0] <= 'z') name[0] = static_cast<char>(name[0] - 'a' + 'A');
+                }
             }
             // idempotency: 同 key で既に生成済みかつ有効ならそれを即返す(再試行の重複生成防止)。
             if (!deferred.idempotencyKey.empty())
@@ -2585,6 +2719,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 sreq.position  = { pos[0], pos[1], pos[2] };
                 sreq.name      = name;
                 sreq.mcp       = deferred;
+                sreq.parent    = uiParentOverride;
                 m_editorCtx->pendingSpawns.push_back(std::move(sreq));
                 isDeferred = true;
             }
@@ -2861,6 +2996,97 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                     "unknown/unsupported component: " + comp + " (call dx12_describe_components)");
             resp["ok"] = true;
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"removed", comp}};
+        }
+        else if (method == "ui_tree")
+        {
+            // ゲーム内 UI ツリーを丸ごと JSON で返す（AI が UI 構造を「見る」ための読み取り API）。
+            // 座標はキャンバス空間 px（= uiRect で指定する単位。ビューポート非依存）。
+            auto& reg = m_scene->GetRegistry();
+
+            std::vector<UiResolvedRect> rects;
+            UISystem::ResolveRects(reg, 0.0f, 0.0f, 1920.0f, 1080.0f, rects);
+            auto findRect = [&rects](entt::entity e) -> const UiResolvedRect* {
+                for (const auto& rr : rects) if (rr.e == e) return &rr;
+                return nullptr;
+            };
+
+            // 兄弟順つき子リスト（UISystem::ResolveAndDrawCanvases と同じ規約）
+            std::unordered_map<entt::entity, std::vector<entt::entity>> children;
+            for (auto [e, t] : reg.view<const Transform>().each())
+                if (t.parent != entt::null && reg.valid(t.parent))
+                    children[t.parent].push_back(e);
+            for (auto& [p, list] : children)
+                std::stable_sort(list.begin(), list.end(),
+                                 [&reg](entt::entity a, entt::entity b)
+                                 {
+                                     const auto* ra = reg.try_get<UIRect>(a);
+                                     const auto* rb = reg.try_get<UIRect>(b);
+                                     return (ra ? ra->order : 0) < (rb ? rb->order : 0);
+                                 });
+
+            std::function<json(entt::entity)> makeNode = [&](entt::entity e) -> json {
+                json n;
+                n["entityId"] = static_cast<u32>(e);
+                if (const auto* tag = reg.try_get<NameTag>(e)) n["name"] = tag->name;
+                json kinds = json::array();
+                if (reg.all_of<UICanvas>(e))     kinds.push_back("uiCanvas");
+                if (reg.all_of<UIImage>(e))      kinds.push_back("uiImage");
+                if (reg.all_of<UIText>(e))       kinds.push_back("uiText");
+                if (reg.all_of<UIButton>(e))     kinds.push_back("uiButton");
+                if (reg.all_of<UISlider>(e))     kinds.push_back("uiSlider");
+                if (reg.all_of<UIToggle>(e))     kinds.push_back("uiToggle");
+                if (reg.all_of<UIScrollView>(e)) kinds.push_back("uiScrollView");
+                if (reg.all_of<UIAnimator>(e))   kinds.push_back("uiAnimator");
+                n["components"] = std::move(kinds);
+                if (const auto* r = reg.try_get<UIRect>(e))
+                {
+                    n["uiRect"] = {{"anchorMin", {r->anchorMin.x, r->anchorMin.y}},
+                                   {"anchorMax", {r->anchorMax.x, r->anchorMax.y}},
+                                   {"offsetMin", {r->offsetMin.x, r->offsetMin.y}},
+                                   {"offsetMax", {r->offsetMax.x, r->offsetMax.y}},
+                                   {"order", r->order}, {"visible", r->visible}};
+                    if (const UiResolvedRect* rr = findRect(e))
+                    {
+                        // 解決済み矩形をキャンバス空間 px へ（[x, y, w, h]、キャンバス左上原点）
+                        const float cs = (rr->canvasScale > 1e-6f) ? rr->canvasScale : 1.0f;
+                        n["resolvedRect"] = {(rr->min.x - rr->canvasOrigin.x) / cs,
+                                             (rr->min.y - rr->canvasOrigin.y) / cs,
+                                             (rr->max.x - rr->min.x) / cs,
+                                             (rr->max.y - rr->min.y) / cs};
+                    }
+                }
+                if (const auto* txt = reg.try_get<UIText>(e)) n["text"] = txt->text;
+                auto it = children.find(e);
+                if (it != children.end() && !it->second.empty())
+                {
+                    json kids = json::array();
+                    for (entt::entity c : it->second) kids.push_back(makeNode(c));
+                    n["children"] = std::move(kids);
+                }
+                return n;
+            };
+
+            struct Entry { entt::entity e; int order; };
+            std::vector<Entry> canvases;
+            for (auto [e, cv] : reg.view<const UICanvas>().each())
+                canvases.push_back({e, cv.sortOrder});
+            std::stable_sort(canvases.begin(), canvases.end(),
+                             [](const Entry& a, const Entry& b) { return a.order < b.order; });
+
+            json arr = json::array();
+            for (const Entry& c : canvases)
+            {
+                const auto& cv = reg.get<UICanvas>(c.e);
+                json cn = makeNode(c.e);
+                cn["uiCanvas"] = {{"refWidth", cv.refWidth}, {"refHeight", cv.refHeight},
+                                  {"scaleMode", cv.scaleMode}, {"sortOrder", cv.sortOrder},
+                                  {"visible", cv.visible}};
+                arr.push_back(std::move(cn));
+            }
+            resp["ok"] = true;
+            resp["result"] = {{"canvases", std::move(arr)},
+                              {"note", "coordinates are canvas-space px (same units as uiRect offsets); "
+                                       "resolvedRect = [x, y, w, h] from canvas top-left"}};
         }
         else if (method == "describe_components")
         {
@@ -3206,6 +3432,20 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["result"] = {{"path", path},
                               {"width", m_sceneRT->GetWidth()},
                               {"height", m_sceneRT->GetHeight()}};
+        }
+        else if (method == "ui_screenshot")
+        {
+            // エディタウィンドウ全体(ImGui パネル込み = UIエディタ/ゲーム内 UI プレビューが写る)を
+            // PNG にして返す。scene RT には ImGui 描画が乗らないため screenshot とは別経路。
+            std::string serr;
+            const std::string path = CaptureWindowScreenshot(m_window ? m_window->GetHwnd() : nullptr, serr);
+            if (path.empty()) throw std::runtime_error(serr.empty() ? "ui_screenshot failed" : serr);
+            RECT rc{};
+            GetClientRect(m_window->GetHwnd(), &rc);
+            resp["ok"] = true;
+            resp["result"] = {{"path", path},
+                              {"width", rc.right - rc.left}, {"height", rc.bottom - rc.top},
+                              {"note", "editor window capture (includes UI editor panel & game UI preview)"}};
         }
         else if (method == "project_world_to_screen")
         {
@@ -4359,6 +4599,67 @@ static bool WriteBgraPng(const std::wstring& path, const uint8_t* bgra,
     { err = "WIC write failed"; return false; }
 
     return true;
+}
+
+#ifndef PW_RENDERFULLCONTENT
+#define PW_RENDERFULLCONTENT 0x00000002   // Win8.1+ SDK。DX スワップチェイン内容も含めて描かせる
+#endif
+
+// エディタウィンドウのクライアント領域全体(ImGui パネル込み)を PNG へ書く。
+// scene RT に乗らない UI エディタ/ゲーム内 UI プレビュー等を AI が「見る」ための経路。
+// PrintWindow(PW_RENDERFULLCONTENT) はウィンドウが他窓の背後でも正しく描かせられる。
+// 最小化中はサイズが取れないため失敗を返す(呼び出し元がエラーメッセージで案内)。
+static std::string CaptureWindowScreenshot(HWND hwnd, std::string& err)
+{
+    namespace fs = std::filesystem;
+    if (!hwnd || IsIconic(hwnd)) { err = "window is minimized (restore the editor window first)"; return {}; }
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    const int w = rc.right - rc.left, h = rc.bottom - rc.top;
+    if (w <= 0 || h <= 0) { err = "window size is 0"; return {}; }
+
+    HDC wdc = GetDC(hwnd);
+    HDC mdc = CreateCompatibleDC(wdc);
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize        = sizeof(bi.bmiHeader);
+    bi.bmiHeader.biWidth       = w;
+    bi.bmiHeader.biHeight      = -h;   // top-down
+    bi.bmiHeader.biPlanes      = 1;
+    bi.bmiHeader.biBitCount    = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HBITMAP dib = CreateDIBSection(wdc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    std::string result;
+    if (dib && bits)
+    {
+        HGDIOBJ old = SelectObject(mdc, dib);
+        BOOL ok = PrintWindow(hwnd, mdc, PW_CLIENTONLY | PW_RENDERFULLCONTENT);
+        if (!ok)   // 古い環境向けフォールバック(前面にある時だけ正しい絵になる)
+            ok = BitBlt(mdc, 0, 0, w, h, wdc, 0, 0, SRCCOPY);
+        if (ok)
+        {
+            // GDI の DIB は alpha 未定義(0)のことがある → PNG が全透明にならないよう 255 で埋める
+            auto* px = static_cast<uint8_t*>(bits);
+            for (int i = 0; i < w * h; ++i) px[i * 4 + 3] = 0xFF;
+            const fs::path outPath = fs::absolute("mcp_ui_screenshot.png");
+            if (WriteBgraPng(outPath.wstring(), px, static_cast<uint32_t>(w),
+                             static_cast<uint32_t>(h), err))
+                result = outPath.string();
+        }
+        else
+        {
+            err = "PrintWindow/BitBlt failed";
+        }
+        SelectObject(mdc, old);
+    }
+    else
+    {
+        err = "DIB alloc failed";
+    }
+    if (dib) DeleteObject(dib);
+    DeleteDC(mdc);
+    ReleaseDC(hwnd, wdc);
+    return result;
 }
 
 std::string Application::CaptureSceneScreenshot(std::string& err)
@@ -8184,6 +8485,8 @@ void Application::Render()
             entt::entity spawnedEntity = entt::null;
             entt::entity mcpPrefabRoot = entt::null;          // prefab 経路の MCP 応答用ルート
             std::vector<entt::entity> mcpPrefabAll;           // prefab 経路の全 entity
+            entt::entity mcpUiPrimary = entt::null;           // __ui_*__ 経路の MCP 応答用本体
+            std::vector<entt::entity> mcpUiCreated;           // 同・生成された全 entity(ラベル子等)
 
             if (req.modelPath == "__primitive_box__")
             {
@@ -8334,8 +8637,13 @@ void Application::Render()
                 }
                 else
                 {
-                    // 配置先の親を解決
+                    // 配置先の親を解決（MCP の明示指定 > 選択中の UI ツリー > 最初の Canvas > 自動生成）
                     entt::entity uiParent = entt::null;
+                    if (req.parent != entt::null && reg.valid(req.parent))
+                    {
+                        uiParent = req.parent;
+                    }
+                    else
                     {
                         entt::entity it = m_editorCtx->selectedEntity;
                         for (int guard = 0; guard < 64 && it != entt::null && reg.valid(it); ++guard)
@@ -8478,6 +8786,10 @@ void Application::Render()
                         std::make_unique<SpawnPrefabCommand>(
                             m_scene.get(), PathResolver::AssetsDir(), created));
                 }
+                // MCP 応答用（単体でも複数でも「本体 + 生成された全 id」を返す）
+                mcpUiPrimary = (uiPrimary != entt::null) ? uiPrimary
+                             : (created.empty() ? entt::null : created[0]);
+                mcpUiCreated = created;
             }
             else if (std::filesystem::path(req.modelPath).extension().string() == ".prefab")
             {
@@ -8622,6 +8934,18 @@ void Application::Render()
                                        {"sceneGeneration", m_sceneGeneration}});
                     if (!req.mcp.idempotencyKey.empty())
                         m_mcpIdempotency[req.mcp.idempotencyKey] = static_cast<u32>(mcpPrefabRoot);
+                }
+                else if (mcpUiPrimary != entt::null && reg.valid(mcpUiPrimary))
+                {
+                    // UI 要素: 本体 id + 一緒に生成された全 id(自動 Canvas / ラベル子)を返す
+                    nlohmann::json ids = nlohmann::json::array();
+                    for (auto a : mcpUiCreated) ids.push_back(static_cast<u32>(a));
+                    CompleteMcp(m_mcpBridge.get(), req.mcp,
+                        nlohmann::json{{"entityId", static_cast<u32>(mcpUiPrimary)},
+                                       {"entityIds", ids}, {"name", name},
+                                       {"sceneGeneration", m_sceneGeneration}});
+                    if (!req.mcp.idempotencyKey.empty())
+                        m_mcpIdempotency[req.mcp.idempotencyKey] = static_cast<u32>(mcpUiPrimary);
                 }
                 else if (spawnedEntity != entt::null && reg.valid(spawnedEntity))
                 {

@@ -26,6 +26,9 @@ struct PendingSpawnRequest
     DirectX::XMFLOAT3 position{};
     std::string name;   // 空ならデフォルト名。MCP の create_entity から任意名を付けるのに使う。
     McpDeferred mcp;    // MCP 由来なら相関情報。生成後に本物の entityId を送り返す。client=0 で無効。
+    // UI 要素(__ui_*__)の親の明示指定(MCP 用)。null なら従来どおり
+    // 「選択中の UI ツリー → 最初の Canvas → 自動生成」の順で解決する。
+    entt::entity parent = entt::null;
 };
 
 // MCP 由来のエンティティ削除要求。フレーム境界でサブツリー削除後に deletedCount を送り返す。
