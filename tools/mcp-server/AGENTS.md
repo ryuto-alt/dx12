@@ -500,6 +500,25 @@ dx12_set_transform(name:"Player", position:[0,1,0])
 
 ---
 
+## ゲーム内 UI を組む（タイトル画面・設定画面・HUD）
+
+基本ループ: **生成 → 調整 → 数値確認 → 見た目確認** を回す。
+
+1. `dx12_create_entity(type: "ui_canvas")` — UI ルート。既にあれば省略（`dx12_ui_tree` で確認）
+2. `dx12_create_entity(type: "ui_button", name: "StartButton", parent: <canvasId>)` —
+   ボタンは背景+ラベル子つきで生成される（`ui_slider` / `ui_toggle` / `ui_scrollview` / `ui_image` / `ui_text` も同様）
+3. `dx12_set_component(component: "uiRect", data: {anchorMin:[0.5,0.5], anchorMax:[0.5,0.5], offsetMin:[-110,-32], offsetMax:[110,32]})` — 配置。
+   解決式は `rectMin = parentMin + parentSize*anchorMin + offsetMin`。全面ストレッチ = anchor [0,0]-[1,1] + offset 0
+4. `dx12_ui_tree` — 全要素の解決済み矩形（キャンバス空間 px）を数値で確認。重なり/はみ出しはここで分かる
+5. `dx12_ui_screenshot` — エディタウィンドウごと撮って見た目を確認（`dx12_screenshot` には UI は写らない）
+
+- ラベル文言は子の `uiText` を `set_component`（子の id と現在の文言は `dx12_ui_tree` の `children` / `text` で分かる）
+- クリック/値変更は Lua の `events:on(イベント名, fn)` で受ける（`uiButton.onClickEvent` / `uiSlider.onChangeEvent`。`e.value` に実値）
+- 兄弟の描画順 = `uiRect.order`（大きいほど手前）、親変更 = `dx12_set_parent`、リストは `uiScrollView` の子にぶら下げる
+- ゲームパッド/キーボードのフォーカスナビは自動で効く（設定不要）
+
+---
+
 ## エラーコード早見表
 
 | コード | 意味 | 典型的な対処 |

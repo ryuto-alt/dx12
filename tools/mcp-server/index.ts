@@ -203,6 +203,15 @@ reg(
 );
 
 reg(
+  "dx12_ui_tree",
+  "UIツリー取得",
+  "ゲーム内 UI のツリー構造を丸ごと JSON で返す(キャンバスごと)。各ノード: {entityId, name, components(uiImage/uiButton等の種別), uiRect(anchor/offset/order/visible), resolvedRect:[x,y,w,h](レイアウト解決済み・キャンバス空間px=uiRectと同じ単位), text?, children}。★UI を組む時の基本ループ: create_entity(ui_*) → set_component(uiRect等) → ui_tree で位置を数値確認 → dx12_ui_screenshot で見た目確認。兄弟の描画順は uiRect.order(大きいほど手前)、親変更は dx12_set_parent。",
+  {},
+  { readOnlyHint: true },
+  () => run(() => engine.call("ui_tree", {})),
+);
+
+reg(
   "dx12_describe_lua_api",
   "Lua API 辞書",
   "Lua コンポーネントスクリプトから使えるバインディング一覧を binding ごと(entity/transform/Vec3/self/scene/input/camera/physics/audio/ui/fx/events/globals/prelude)に返す静的辞書。★重要: MCP で見えるコンポーネントと Lua から読める API は違う。entity から直接読めるデータは transform だけで、entity.boxCollider 等は nil(collider/rigidBody の値は physics:getVelocity(e) 等の別 API 経由)。Lua を書く前にこれで実際に読める API を確認すると取り違えを防げる。",
@@ -278,7 +287,7 @@ reg(
   "コンポーネントを設定(無ければ追加・あれば置換)。component は jsonKey、data は dx12_describe_components の形。tags は data=文字列配列、DataComponent(data) は {key:{t,v}} オブジェクト。即時反映で {entityId, component} を返す。形が不安なら先に dx12_describe_components を見るとええ。",
   {
     ...entityRef,
-    component: z.string().describe("jsonKey。例: pointLight, directionalLight, spotLight, camera, rigidBody, boxCollider, transform, tags, data, particleEmitter, trailRenderer, networkIdentity, networkTransform, sprite2d, audioSource, trigger"),
+    component: z.string().describe("jsonKey。例: pointLight, directionalLight, spotLight, camera, rigidBody, boxCollider, transform, tags, data, particleEmitter, trailRenderer, networkIdentity, networkTransform, sprite2d, audioSource, trigger, uiCanvas, uiRect, uiImage, uiText, uiButton, uiSlider, uiToggle, uiScrollView, uiAnimator"),
     data: z.union([z.record(z.any()), z.array(z.any())]).describe("コンポーネントの値。オブジェクト or 配列(tags は文字列配列)。dx12_describe_components の fields に合わせる。"),
   },
   { idempotentHint: true },
@@ -490,20 +499,24 @@ reg(
 reg(
   "dx12_create_entity",
   "エンティティ生成",
-  "エンティティを生成する(エディタ専用)。フレーム境界で実処理されるが、Node が完了を待って【本物の {entityId, name, sceneGeneration} を同期で返す】({queued} は返らへん)。idempotency_key を付けると、再試行で同じキーが来ても二重生成されず同じ結果が返る。light_*/camera/particle_emitter/trigger は既定パラメータで生成される空エンティティ+コンポーネント(中身は dx12_describe_components 参照)。細かい値は生成後 dx12_set_component / dx12_set_transform で調整する。",
+  "エンティティを生成する(エディタ専用)。フレーム境界で実処理されるが、Node が完了を待って【本物の {entityId, name, sceneGeneration} を同期で返す】({queued} は返らへん)。idempotency_key を付けると、再試行で同じキーが来ても二重生成されず同じ結果が返る。light_*/camera/particle_emitter/trigger は既定パラメータで生成される空エンティティ+コンポーネント(中身は dx12_describe_components 参照)。細かい値は生成後 dx12_set_component / dx12_set_transform で調整する。★ui_* はゲーム内UI: エディタと同じ部品構成で生成(ui_button=背景+ラベル子、ui_toggle=箱+ラベル子)され、応答に entityIds(生成された全id)も付く。親は parent/parentName で明示指定(省略時は最初のCanvas、Canvas不在なら自動生成)。レイアウト調整は set_component の uiRect、構造確認は dx12_ui_tree、見た目確認は dx12_ui_screenshot。",
   {
     type: z.enum([
       "box", "sphere", "plane", "empty", "camera",
       "light_directional", "light_point", "light_spot",
       "particle_emitter", "trigger",
-    ]).describe("種別。empty は Transform のみ。light_*/camera/particle_emitter/trigger は該当コンポーネント付きで生成(値は既定。set_component で調整)。"),
+      "ui_canvas", "ui_image", "ui_text", "ui_button",
+      "ui_slider", "ui_toggle", "ui_scrollview",
+    ]).describe("種別。empty は Transform のみ。light_*/camera/particle_emitter/trigger は該当コンポーネント付きで生成(値は既定。set_component で調整)。ui_* はゲーム内UI要素(uiRect 等付き)。"),
     name: z.string().optional().describe("エンティティ名(一意推奨)。省略時は種別名。"),
-    position: vec3.optional().describe("[x,y,z]。省略時 [0,0,0]。"),
+    position: vec3.optional().describe("[x,y,z]。省略時 [0,0,0]。UI 要素では未使用(uiRect で配置)。"),
+    parent: z.number().int().optional().describe("UI 要素の親エンティティ id(ui_canvas 以外で有効)。parentName と排他。"),
+    parentName: z.string().optional().describe("UI 要素の親エンティティ名(完全一致)。"),
     idempotency_key: z.string().optional().describe("再試行の重複防止キー。同じキーの再送は二重生成されない。"),
   },
   {},
-  ({ type, name, position, idempotency_key }) =>
-    run(() => engine.call("create_entity", { type, name, position, idempotency_key })),
+  ({ type, name, position, parent, parentName, idempotency_key }) =>
+    run(() => engine.call("create_entity", { type, name, position, parent, parentName, idempotency_key })),
 );
 
 // プリミティブを1コールで生成＋整形する合成ヘルパ(create_entity → set_transform/set_pbr/set_color)。
@@ -1261,6 +1274,26 @@ server.registerTool(
     try {
       const shot = await engine.call("screenshot", {});
       if (!shot || !shot.path) throw new Error("screenshot が path を返さんかった");
+      return imageResult(shot.path, { width: shot.width, height: shot.height });
+    } catch (e: any) {
+      return errResult(e);
+    }
+  },
+);
+
+// エディタウィンドウ全体のスクショ(ImGui パネル込み)。ゲーム内 UI / UIエディタの見た目確認用。
+server.registerTool(
+  "dx12_ui_screenshot",
+  {
+    title: "UIスクリーンショット",
+    description: "エディタウィンドウ全体(ImGui パネル込み)を PNG で返す。★dx12_screenshot(シーンRT)には写らないゲーム内 UI プレビュー・UIエディタ・インスペクタが写る = AI が組んだ UI の見た目を目で確認して直すのに使う。ウィンドウが最小化中はエラー。レイアウトの数値確認は dx12_ui_tree の方が正確。",
+    inputSchema: {},
+    annotations: { title: "UIスクリーンショット", openWorldHint: false, readOnlyHint: true },
+  },
+  async () => {
+    try {
+      const shot = await engine.call("ui_screenshot", {});
+      if (!shot || !shot.path) throw new Error("ui_screenshot が path を返さんかった");
       return imageResult(shot.path, { width: shot.width, height: shot.height });
     } catch (e: any) {
       return errResult(e);

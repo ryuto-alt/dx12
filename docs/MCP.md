@@ -153,6 +153,8 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_get_anim_state` | `{entity:int}` | `{hasSkeletalAnimation, clips:[クリップ名...]}` ※`dx12_play_anim` の clipName 選びに |
 | `dx12_net_status` | `{}` | `{available, role:"Offline"\|"Host"\|"Client", isConnected, localClientId, tick, syncedEntityCount, players:[{id,rttMs,bytesSent,bytesReceived}], config:{tickRate,snapshotRate,maxPlayers,defaultPort}, testRole, testJoinAddress}` |
 | `dx12_screenshot` | `{}` | PNG 画像ブロック + text(`{path(絶対パス), width, height}`) |
+| `dx12_ui_screenshot` | `{}` | PNG 画像ブロック ※エディタウィンドウ全体(ImGuiパネル込み)。ゲーム内UI/UIエディタの見た目確認用(scene RT には UI が写らない) |
+| `dx12_ui_tree` | `{}` | `{canvases:[{entityId, name, uiCanvas:{refWidth,refHeight,...}, children:[{entityId, name, components, uiRect, resolvedRect:[x,y,w,h](キャンバス空間px), text?, children}]}]}` ※UIレイアウトの数値確認 |
 | `dx12_get_editor_camera` | `{}` | `{position, forward, yawDeg, pitchDeg, fovYDeg, orthographic, mode}` ※シーンビューを描いてるカメラの状態 |
 | `dx12_get_bounds` | `{entity:int, includeChildren?:bool}` | `{min, max, center, size, hasMesh}` ※ワールド空間 AABB(回転/親子変換込み)。配置座標の計算に |
 | `dx12_get_hierarchy` | `{}` | `{roots:[{entityId, name, children:[...]}], count, sceneGeneration}` ※シーンの親子ツリー |
@@ -200,7 +202,7 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 
 | ツール | params | 返り値 |
 |--------|--------|--------|
-| `dx12_create_entity` | `{type:"box"\|"sphere"\|"plane"\|"empty"\|"camera"\|"light_directional"\|"light_point"\|"light_spot"\|"particle_emitter"\|"trigger", name?, position?:[x,y,z], idempotency_key?:string}` | `{entityId, name, sceneGeneration}` ※light_*/camera/particle_emitter/trigger は既定値で生成(dx12_set_component で調整) |
+| `dx12_create_entity` | `{type:"box"\|"sphere"\|"plane"\|"empty"\|"camera"\|"light_directional"\|"light_point"\|"light_spot"\|"particle_emitter"\|"trigger"\|"ui_canvas"\|"ui_image"\|"ui_text"\|"ui_button"\|"ui_slider"\|"ui_toggle"\|"ui_scrollview", name?, position?:[x,y,z], parent?:int, parentName?:string, idempotency_key?:string}` | `{entityId, name, sceneGeneration}` ※light_*/camera/particle_emitter/trigger は既定値で生成(dx12_set_component で調整)。ui_* はエディタと同じ部品構成で生成され `entityIds`(自動Canvas/ラベル子含む全id)も返る。parent/parentName は ui_*(ui_canvas 以外)の親指定 |
 | `dx12_spawn_model` | `{path:string(.gltf/.glb/.fbx/.obj), position?:[x,y,z], name?, idempotency_key?:string}` | `{entityId, name, sceneGeneration}` |
 | `dx12_spawn_prefab` | `{path:string(.prefab), position?, name?}` | `{entityId, rootEntityId, entityIds:[...], name, sceneGeneration}` |
 | `dx12_duplicate_entity` | `{entity:int}` | `{entityId, name, sceneGeneration}` |
