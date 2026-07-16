@@ -677,6 +677,7 @@ static void Test_UIImage()
             im.fillDir      = 2;       // 下から
             im.gradientDir    = 2;
             im.gradientColor2 = { 0.5f, 0.6f, 0.7f, 1.0f };
+            im.gradientScrollSpeed = 0.8f;
             im.outlineWidth   = 3.0f;
             im.outlineColor   = { 0.9f, 0.8f, 0.1f, 1.0f };
             im.shadowColor    = { 0.0f, 0.0f, 0.0f, 0.6f };
@@ -699,6 +700,7 @@ static void Test_UIImage()
             CHECK(im.gradientDir == 2);
             CHECK_F(im.gradientColor2.x, 0.5f); CHECK_F(im.gradientColor2.y, 0.6f);
             CHECK_F(im.gradientColor2.z, 0.7f);
+            CHECK_F(im.gradientScrollSpeed, 0.8f);
             CHECK_F(im.outlineWidth, 3.0f);
             CHECK_F(im.outlineColor.x, 0.9f); CHECK_F(im.outlineColor.y, 0.8f);
             CHECK_F(im.shadowColor.w, 0.6f);
@@ -723,6 +725,7 @@ static void Test_UIText()
             tx.shadowColor  = { 0.0f, 0.0f, 0.0f, 0.5f };
             tx.shadowOffset = { 2.0f, 3.0f };
             tx.fontPath     = "fonts/title.ttf";
+            tx.typewriterSpeed = 20.0f;
             r.emplace<UIText>(e, tx);
         },
         [](const UIText& tx) {
@@ -738,6 +741,7 @@ static void Test_UIText()
             CHECK_F(tx.shadowColor.w, 0.5f);
             CHECK_F(tx.shadowOffset.x, 2.0f); CHECK_F(tx.shadowOffset.y, 3.0f);
             CHECK(tx.fontPath == "fonts/title.ttf");
+            CHECK_F(tx.typewriterSpeed, 20.0f);
         });
 }
 

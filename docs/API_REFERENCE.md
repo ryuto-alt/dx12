@@ -119,8 +119,10 @@ t.scale      -- Vec3
 | `:findEntity(name)` | Entity | 名前で検索 |
 | `:setUVScale(e, u, v)` | — | UV タイリング（生成時に1回。GPU 同期あり） |
 | `:setColor(e, r, g, b)` | — | 頂点カラーで着色（生成時に1回。毎フレーム禁止） |
-| `:setUiText(e, text)` | — | `UIText.text` を書き換える（無ければ何もしない） |
+| `:setUiText(e, text)` | — | `UIText.text` を書き換える（無ければ何もしない）。タイプライター中なら先頭から再生し直す |
 | `:getUiText(e)` | string | `UIText.text` を読む（無ければ空文字列） |
+| `:setUiTypewriter(e, charsPerSec)` | — | タイプライター速度（文字/秒）を設定して先頭から再生。0=即全表示（スキップに使える） |
+| `:isUiTypewriterDone(e)` | bool | タイプライターが全文まで到達したか（会話の「クリックで次へ」判定用。無効時は true） |
 | `:setUiColor(e, r, g, b, a)` | — | `UIImage.color` 優先、無ければ `UIText.color`（どちらも無ければ何もしない） |
 | `:setUiVisible(e, visible)` | — | `UIRect.visible` 優先（自身と子孫ごと隠す）、UIRect が無く UICanvas のみなら `UICanvas.visible` |
 | `:setUiTexture(e, path)` | — | `UIImage.texturePath` を差し替え（assets 相対。無ければ何もしない） |
@@ -134,7 +136,7 @@ t.scale      -- Vec3
 | `:setUiToggle(e, on)` | — | `UIToggle.isOn` を設定（`onChangeEvent` は発火しない） |
 | `:getUiScroll(e)` | x, y | `UIScrollView` のスクロール量(px)を2値で返す |
 | `:setUiScroll(e, x, y)` | — | スクロール量を設定（コンテンツ量へ自動クランプ。大きい値で「一番下へ」） |
-| `:tweenUi(e, params)` | — | UI をトゥイーンで動かす。`params={dx?,dy?,scale?,alpha?,rotate?,duration?,delay?,easing?}`。`dx/dy`=UIRect offset の相対移動(px)、`scale/alpha/rotate`=見た目のみ（子孫にも掛かる。`rotate` は度・絶対目標値で `UIRect.rotation` へ加算合成）。`easing`: `"linear"/"in"/"out"/"inOut"/"back"/"bounce"/"elastic"`。`e` は Entity かエンティティID |
+| `:tweenUi(e, params)` | — | UI をトゥイーンで動かす。`params={dx?,dy?,scale?,scaleX?,scaleY?,alpha?,rotate?,color?,shake?,shakeFreq?,duration?,delay?,easing?}`。`dx/dy`=UIRect offset の相対移動(px)、`scale/scaleX/scaleY/alpha/rotate/color`=見た目のみ（子孫にも掛かる。`rotate` は度・絶対目標値で `UIRect.rotation` へ加算合成。`scaleX/scaleY` で非等方=フリップ/スカッシュ）。`color={r,g,b}`=RGB乗算の絶対目標値（1超えで白フラッシュ。完了後も持続={1,1,1}で解除）。`shake`=振幅px の振動（duration で 0 へ減衰。`shakeFreq`=Hz 既定24）。`easing`: `"linear"/"in"/"out"/"inOut"/"back"/"bounce"/"elastic"`。`e` は Entity かエンティティID |
 | `:showUi(e)` | — | 表示して `UIAnimator` の出現アニメを最初から再生（無ければ visible=true のみ） |
 | `:hideUi(e)` | — | 出現アニメの逆再生で消す（子孫ごと。消えた後はクリック不可）。無アニメなら即非表示。戻すのは `showUi` |
 | `:setSpriteEffect(e, value)` | — | Sprite2D の effectValue（カスタムシェーダーへの汎用値）を変更。毎フレーム可 |
@@ -378,8 +380,8 @@ Unity uGUI / Godot Control 相当の retained-mode UI。UI要素は **ECSコン�
 |---|---|---|
 | `UICanvas` | `refWidth/refHeight`(既定1920x1080), `scaleMode`(0=ScaleToFit 1=ConstantPixel), `sortOrder`, `visible` | UIツリーのルート |
 | `UIRect` | `anchorMin/Max`, `pivot`, `offsetMin/Max`, `visible`, `rotation`(度), `skewX`(度) | レイアウト矩形（RectTransform相当）。全UI要素に必須。`rotation/skewX` はレイアウト解決後にピボット回りへ掛かる**視覚変換**（子孫も一緒に回る。斜め配置パネル/平行四辺形バナー用。回転中はエディタのリサイズハンドル非表示=数値編集。`UIScrollView` ノード自身では無視） |
-| `UIImage` | `texturePath`(空=単色矩形), `color`, `uvMin/Max`, `sliceBorder`(px 左上右下, 9-slice), `cornerRadius`, `raycastBlock`(既定true), `fillAmount`(0..1 既定1), `fillDir`(0=左 1=右 2=下 3=上から), `gradientDir`(0=なし 1=横 2=縦 3=斜め)+`gradientColor2`, `outlineWidth`+`outlineColor`, `shadowColor`(α0=無効)+`shadowOffset`+`shadowSoftness` | 画像/単色矩形。`raycastBlock=true` なら背後のボタンへのクリックを遮る（Unity の raycastTarget 相当）。`fillAmount<1` で端から割合表示（HPバー/ゲージ）。グラデはテクスチャ/9-slice/角丸すべてに掛かる（`gradientColor2` のαは無視）。影は矩形近似のドロップシャドウ |
-| `UIText` | `text`, `fontSize`, `color`, `alignH/V`(0=左/上 1=中央 2=右/下), `wrap`, `outlineWidth`+`outlineColor`(縁取り), `shadowColor`(α0=無効)+`shadowOffset`(影), `fontPath`(assets相対 .ttf/.otf。空=既定Yu Gothic) | テキスト。クリックは遮らない。縁取り/影はゲームUIの可読性の要。カスタムフォントは任意サイズでシャープ（失敗時は既定フォント） |
+| `UIImage` | `texturePath`(空=単色矩形), `color`, `uvMin/Max`, `sliceBorder`(px 左上右下, 9-slice), `cornerRadius`, `raycastBlock`(既定true), `fillAmount`(0..1 既定1), `fillDir`(0=左 1=右 2=下 3=上から), `gradientDir`(0=なし 1=横 2=縦 3=斜め)+`gradientColor2`+`gradientScrollSpeed`(周回/秒。0=静的), `outlineWidth`+`outlineColor`, `shadowColor`(α0=無効)+`shadowOffset`+`shadowSoftness` | 画像/単色矩形。`raycastBlock=true` なら背後のボタンへのクリックを遮る（Unity の raycastTarget 相当）。`fillAmount<1` で端から割合表示（HPバー/ゲージ）。グラデはテクスチャ/9-slice/角丸すべてに掛かる（`gradientColor2` のαは無視）。`gradientScrollSpeed≠0` で静的グラデの代わりに終端色の**光帯がグラデ方向へ流れる**（ガチャボタンの光沢流し。負値で逆方向）。影は矩形近似のドロップシャドウ |
+| `UIText` | `text`, `fontSize`, `color`, `alignH/V`(0=左/上 1=中央 2=右/下), `wrap`, `outlineWidth`+`outlineColor`(縁取り), `shadowColor`(α0=無効)+`shadowOffset`(影), `fontPath`(assets相対 .ttf/.otf。空=既定Yu Gothic), `typewriterSpeed`(文字/秒。0=無効) | テキスト。クリックは遮らない。縁取り/影はゲームUIの可読性の要。カスタムフォントは任意サイズでシャープ（失敗時は既定フォント）。`typewriterSpeed>0` で Play 中に1文字ずつ表示（UTF-8 単位=日本語も1文字ずつ。`setUiText` で先頭から再生し直し。整列は全文サイズ固定） |
 | `UIButton` | `onClickEvent`, `normalColor/hoverColor/pressedColor`, `interactable` | 同一エンティティの `UIImage` を状態色でティント。release-inside でクリック確定。要素が重なった場合は**最前面だけ**が反応（子要素がクリックを吸っても親ボタンへバブリング） |
 
 アンカー解決式（`UIRect`、親矩形基準・実ピクセル）:
@@ -391,7 +393,7 @@ rectMax = parentMin + parentSize * anchorMax + offsetMax
 アンカーを引き伸ばす（例: 横ストレッチ）なら offset は左右の余白(px)になる。Inspector の**アンカープリセット**
 （9方位＋ストレッチ＋全面）は選択時に見た目の位置を保ったまま anchor/offset を再計算する。
 
-**Lua からの操作**（値の書き換えのみ。ツリー構造はエディタで組む）: `scene:setUiText/getUiText/setUiColor/setUiVisible/setUiTexture/setUiFill/getUiFill/setUiRotation/getUiRotation/getUiSlider/setUiSlider/getUiToggle/setUiToggle/getUiScroll/setUiScroll`（§3 Scene 参照）。
+**Lua からの操作**（値の書き換えのみ。ツリー構造はエディタで組む）: `scene:setUiText/getUiText/setUiTypewriter/isUiTypewriterDone/setUiColor/setUiVisible/setUiTexture/setUiFill/getUiFill/setUiRotation/getUiRotation/getUiSlider/setUiSlider/getUiToggle/setUiToggle/getUiScroll/setUiScroll`（§3 Scene 参照）。定番演出は `uifx.*`（§5 prelude 参照）。
 
 **回転/装飾の既知の制限**: ①回転/スキューしたパネルの**中に** `UIScrollView` を置くのは非対応（クリップ位置がずれる。逆=スクロールビュー内の回転要素は OK）②`gradientColor2` のアルファは無視される ③回転+角丸+部分 fill の併用はゲージの切り口も丸くなる。
 
@@ -529,6 +531,26 @@ vfx.register(name, fn)            -- コードプリセット登録
 vfx.play(name, x, y, z, scale?)   -- Effekseer 実体があれば優先、無ければコード
 ```
 既定登録済み: `"explosion"` / `"supernova"` / `"spark"` / `"hit"`
+
+### uifx.*（ゲーム内UIの定番演出ワンライナー）
+`e` は Entity かエンティティID（ボタンイベントの `e.source` そのまま）。実体は `scene:tweenUi` の組み合わせ。
+
+| 関数 | 説明 |
+|---|---|
+| `uifx.punch(e, s?, dur?)` | ボタンを押した感（一瞬膨らんで戻る。既定 1.15倍/0.22秒） |
+| `uifx.flash(e, r?, g?, b?, dur?)` | 色フラッシュ（既定=白く光る。ダメージ赤は `uifx.flash(e, 3, 0.3, 0.3)`） |
+| `uifx.shake(e, amp?, dur?)` | 振動（既定 10px/0.4秒。減衰付き） |
+| `uifx.hit(e, amp?)` | 赤フラッシュ + 振動（被ダメの定番セット） |
+| `uifx.bounceIn(e, dur?)` | ぽよんと登場（0 からバウンドで等倍へ） |
+| `uifx.flipIn(e, dur?)` | ぺしゃんこ→開く（フリップ風。結果表示/カード公開） |
+| `uifx.popOut(e, dur?)` | 縮んで消える（ポップアップを閉じる） |
+| `uifx.fadeIn(e, dur?)` / `uifx.fadeOut(e, dur?)` | フェード（fadeOut 後もクリックは残る。消し切るなら `scene:hideUi`） |
+
+```lua
+events:on("startClicked", function(e)
+  uifx.punch(e.source)   -- クリックの気持ちよさはこれ1行
+end)
+```
 
 ---
 

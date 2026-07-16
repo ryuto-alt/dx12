@@ -977,7 +977,13 @@ void InspectorPanel::Render(entt::registry& reg,
                                              gradDirs, IM_ARRAYSIZE(gradDirs));
                     }
                     if (img.gradientDir > 0)
+                    {
                         changed |= pg::Color4("終端色 Gradient Color 2", &img.gradientColor2.x);
+                        changed |= pg::Float("グロス速度 Scroll Speed", &img.gradientScrollSpeed,
+                            0.05f, -10.0f, 10.0f, "%.2f", &active,
+                            "0以外で静的グラデの代わりに終端色の光帯がグラデ方向へ流れる\n"
+                            "（ガチャボタンの光沢流し）。周回数/秒。負値で逆方向、0 で静的グラデ");
+                    }
 
                     pg::Label("縁取り Outline", "枠線。角丸にも追従する");
                     changed |= pg::Float("太さ Outline Width", &img.outlineWidth, 0.25f, 0.0f, 64.0f,
@@ -1076,6 +1082,12 @@ void InspectorPanel::Render(entt::registry& reg,
                     if (txt.shadowColor.w > 0.0f)
                         changed |= pg::Float2("影オフセット Shadow Offset", &txt.shadowOffset.x,
                                               0.25f, 0.0f, 0.0f, "%.1f", &active, "キャンバスpx");
+
+                    changed |= pg::Float("タイプライター Typewriter", &txt.typewriterSpeed,
+                        0.5f, 0.0f, 200.0f, "%.0f", &active,
+                        "文字/秒。0 で無効(即全表示)。Play 中に1文字ずつ現れる(日本語も1文字ずつ)。\n"
+                        "Lua: scene:setUiText で文字列を変えると先頭から再生し直す。\n"
+                        "scene:setUiTypewriter(e,速度) / scene:isUiTypewriterDone(e) も使える");
                     pg::End();
                 }
                 EndEdit(reg, ctx, ctx.selectedEntity, m_uiTextEdit, changed, active, "UIText");
@@ -1253,7 +1265,8 @@ void InspectorPanel::Render(entt::registry& reg,
                 {
                     static const char* showAnims[] = {"なし", "フェード", "ポップ(拡大)",
                                                       "左から", "右から", "上から", "下から",
-                                                      "スピン(回転入場)"};
+                                                      "スピン(回転入場)", "バウンド落下",
+                                                      "フリップ(縦)", "シェイク入場"};
                     static const char* easings[] = {"リニア", "イーズイン", "イーズアウト",
                                                     "イン/アウト", "バック(勢い)", "バウンス", "弾性"};
                     static const char* loops[] = {"なし", "浮遊(上下)", "パルス(拡縮)", "点滅",
@@ -1271,7 +1284,9 @@ void InspectorPanel::Render(entt::registry& reg,
                     changed |= pg::Combo("イージング Easing", &an.showEasing,
                                          easings, IM_ARRAYSIZE(easings));
                     changed |= pg::Float("スライド距離 Slide", &an.slideOffset, 1.0f, 0.0f, 2000.0f,
-                                         "%.0f", &active, "「〜から」系のときの移動距離(px)");
+                                         "%.0f", &active,
+                                         "「〜から」系の移動距離 / バウンド落下の落下距離 / "
+                                         "シェイク入場の振幅基準(px)");
 
                     pg::Label("ホバー/押下 Hover",
                         "同一エンティティに UIButton がある時だけ効く（ボタンの気持ちよさ用）");

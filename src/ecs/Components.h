@@ -328,6 +328,9 @@ struct UIImage
     // 全対応・回転追従)。gradientColor2 のアルファは無視される(AA フリンジ保護のため)
     int gradientDir = 0;                        // 0=なし 1=横(左→右) 2=縦(上→下) 3=斜め(左上→右下)
     DirectX::XMFLOAT4 gradientColor2{1.0f, 1.0f, 1.0f, 1.0f};
+    // グロススイープ: gradientDir の方向に gradientColor2 の光帯が周期的に流れる(ガチャボタンの
+    // 光沢流し)。周回数/秒。0=静的グラデ(通常の線形補間)。gradientDir=0 なら無効
+    float gradientScrollSpeed = 0.0f;
     // 縁取り(枠線)。0=無効。角丸に追従する
     float outlineWidth = 0.0f;                  // キャンバスpx
     DirectX::XMFLOAT4 outlineColor{0.0f, 0.0f, 0.0f, 1.0f};
@@ -355,6 +358,13 @@ struct UIText
     // カスタムフォント(assets相対 .ttf/.otf。空=既定のYu Gothic)。ゲームの「らしさ」の要。
     // 動的フォントアトラスで任意サイズにシャープ。ロード失敗は警告+既定フォントへフォールバック
     std::string fontPath;
+    // タイプライター表示(文字/秒)。0=無効(即全表示)。Play 中のみ1文字ずつ現れる(UTF-8 の
+    // コードポイント単位=日本語も1文字ずつ)。setUiText で文字列を変えると先頭から再生し直す。
+    // 整列は全文のサイズで固定(表示が進んでも文字がずれない)
+    float typewriterSpeed = 0.0f;
+
+    // ランタイム専有（非シリアライズ）: タイプライターの経過秒
+    float _twT = 0.0f;
 };
 
 // UIボタン(同一エンティティの UIImage を状態色でティントする)
@@ -441,6 +451,7 @@ struct UIAnimator
 {
     // 出現アニメ
     int  showAnim     = 1;      // 0=なし 1=フェード 2=ポップ(拡大) 3=左から 4=右から 5=上から 6=下から 7=スピン(回転入場)
+                                // 8=バウンド落下(上から弾んで着地) 9=フリップ(縦つぶれから開く) 10=シェイク入場
     f32  showDuration = 0.35f;  // 秒
     f32  showDelay    = 0.0f;   // 秒（複数要素を順番に出すのに使う）
     int  showEasing   = 2;      // 既定 = イーズアウト
@@ -461,8 +472,10 @@ struct UIAnimator
     int  _mode   = 0;           // 0=未開始 1=show中 2=表示済み 3=hide中 4=非表示
     f32  _hoverS = 1.0f;        // ホバースケールの平滑値
     f32  _loopT  = 0.0f;        // ループ位相（秒）
-    // 今フレームの合成結果（UISystem の更新が書き、描画が読む）
-    f32  _curScale = 1.0f;
+    // 今フレームの合成結果（UISystem の更新が書き、描画が読む）。スケールは X/Y 別
+    // （フリップ=縦つぶれ等の非等方アニメ用。等方アニメは両方へ同値が入る）
+    f32  _curScaleX = 1.0f;
+    f32  _curScaleY = 1.0f;
     f32  _curAlpha = 1.0f;
     f32  _curRot   = 0.0f;      // 追加回転（度）。UIRect.rotation へ加算合成される
     DirectX::XMFLOAT2 _curOffset{0.0f, 0.0f};
@@ -482,23 +495,36 @@ struct UiTween
     DirectX::XMFLOAT2 baseOffMin{0.0f, 0.0f};
     DirectX::XMFLOAT2 baseOffMax{0.0f, 0.0f};
 
-    bool hasScale = false;      // 視覚スケール（レイアウトは変えない）
-    f32  scaleFrom = 1.0f, scaleTo = 1.0f;
+    bool hasScaleX = false;     // 視覚スケール（レイアウトは変えない）。X/Y 別
+                                // （scale= は両方、scaleX=/scaleY= は片方だけを動かす）
+    f32  scaleXFrom = 1.0f, scaleXTo = 1.0f;
+    bool hasScaleY = false;
+    f32  scaleYFrom = 1.0f, scaleYTo = 1.0f;
     bool hasAlpha = false;      // 視覚アルファ乗数
     f32  alphaFrom = 1.0f, alphaTo = 1.0f;
     bool hasRotate = false;     // 視覚回転（度、絶対目標値。UIRect.rotation へ加算合成）
     f32  rotFrom = 0.0f, rotTo = 0.0f;
+    bool hasColor = false;      // 視覚カラー乗数（RGB。1 超えも許可=白フラッシュ用。α は alpha= で）
+    DirectX::XMFLOAT3 colFrom{1.0f, 1.0f, 1.0f}, colTo{1.0f, 1.0f, 1.0f};
+    bool hasShake = false;      // 振動（減衰付き）。amplitude=px、freq=Hz。duration で 0 に減衰
+    f32  shakeAmp  = 8.0f;
+    f32  shakeFreq = 24.0f;
 };
 struct UITweenState
 {
     std::vector<UiTween> tweens;
-    f32 visScale = 1.0f;        // tween 完了後も持続する視覚スケール / アルファ / 回転
+    f32 visScaleX = 1.0f;       // tween 完了後も持続する視覚スケール / アルファ / 回転 / カラー
+    f32 visScaleY = 1.0f;
     f32 visAlpha = 1.0f;
     f32 visRot   = 0.0f;
+    DirectX::XMFLOAT3 visColor{1.0f, 1.0f, 1.0f};
     // 今フレームの評価結果（UISystem の更新が書き、描画が読む）
-    f32 _curScale = 1.0f;
+    f32 _curScaleX = 1.0f;
+    f32 _curScaleY = 1.0f;
     f32 _curAlpha = 1.0f;
     f32 _curRot   = 0.0f;
+    DirectX::XMFLOAT3 _curColor{1.0f, 1.0f, 1.0f};
+    DirectX::XMFLOAT2 _curOffset{0.0f, 0.0f};   // shake の今フレームぶん（減衰済み）
 };
 
 // 3D 空間オーディオ音源。Transform のワールド位置がエミッタになる。

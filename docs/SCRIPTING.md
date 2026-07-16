@@ -158,23 +158,49 @@ scene:setUiToggle(muteToggle, true)
 ゲームパッド/キーボードの UI 操作は**設定不要で常時有効**: 矢印/D-pad/左スティックでフォーカス移動、
 Enter/Space/A で決定（フォーカスリング表示）。フォーカス中のスライダーは左右で値が変わる。
 
-見た目の装飾は Inspector で設定する: `UIImage` はグラデーション・枠線・ドロップシャドウ、`UIText` は縁取り・影・カスタムフォント
-（assets 相対の .ttf/.otf）、`UIRect` は `rotation`/`skewX`（度）による傾きに対応している。
+見た目の装飾は Inspector で設定する: `UIImage` はグラデーション・グロススイープ（`gradientScrollSpeed`≠0 で
+終端色の光帯がグラデ方向へ流れる。ガチャボタンの光沢流し）・枠線・ドロップシャドウ、`UIText` は縁取り・影・カスタムフォント
+（assets 相対の .ttf/.otf）・タイプライター（`typewriterSpeed`=文字/秒。Play 中に1文字ずつ）、
+`UIRect` は `rotation`/`skewX`（度）による傾きに対応している。
 
 **動的 UI（アニメーション/イージング）**: `UIAnimator` コンポーネント（Inspector の「✚ コンポーネント追加 > UI Animator」）で
-出現アニメ（フェード/ポップ/スライド/スピン）・ボタンのホバー/押下スケール・ループ（浮遊/パルス/点滅/スピン/スウィング）をノーコード設定できる。
+出現アニメ（フェード/ポップ/スライド/スピン/バウンド落下/フリップ/シェイク）・ボタンのホバー/押下スケール・ループ（浮遊/パルス/点滅/スピン/スウィング）をノーコード設定できる。
 スクリプトからはトゥイーンで自由に動かせる:
 
 ```lua
 scene:tweenUi(menu,  { dx = 200, duration = 0.4, easing = "bounce" })  -- 右へ200pxバウンス移動
 scene:tweenUi(popup, { scale = 1.2, alpha = 0, duration = 0.25 })      -- 拡大しながらフェードアウト
 scene:tweenUi(icon,  { rotate = 360, duration = 0.5 })                 -- 1回転（度・絶対目標値）
+scene:tweenUi(card,  { scaleY = 1, duration = 0.35, easing = "back" }) -- 縦つぶれから開く（フリップ風）
+scene:tweenUi(hpBar, { color = {3, 0.3, 0.3}, duration = 0.1 })        -- 赤フラッシュ（1超え=輝き）
+scene:tweenUi(hpBar, { shake = 10, duration = 0.4 })                   -- 振動（減衰付き）
 scene:showUi(winPanel)   -- UIAnimator の出現アニメを再生して表示
 scene:hideUi(pauseMenu)  -- 出現アニメの逆再生で消す（子孫ごと。戻すのは showUi）
 ```
 `easing` は `"linear" / "in" / "out" / "inOut" / "back"（勢い） / "bounce" / "elastic"`。
-`dx/dy` はレイアウト（UIRect offset）を実際に動かすので終了位置でクリックも効く。`scale/alpha` は見た目だけ（子孫にまとめて掛かる）。
+`dx/dy` はレイアウト（UIRect offset）を実際に動かすので終了位置でクリックも効く。`scale/scaleX/scaleY/alpha` は見た目だけ（子孫にまとめて掛かる）。
 `rotate`（度・絶対目標値）も見た目だけで、`setUiRotation` の値に加算合成される。
+`color={r,g,b}` は RGB 乗算の絶対目標値（完了後も持続。`{1,1,1}` へ戻して解除）。
+
+定番演出は `uifx.*` のワンライナーが楽（プレリュード組み込み。`e` はボタンイベントの `e.source` そのまま可）:
+```lua
+uifx.punch(e.source)          -- ボタンを押した感（膨らんで戻る）
+uifx.flash(hpBar, 3, .3, .3)  -- 赤フラッシュ
+uifx.hit(hpBar)               -- 赤フラッシュ + 振動（被ダメ定番）
+uifx.bounceIn(resultPanel)    -- ぽよんと登場
+uifx.flipIn(card)             -- ぺしゃんこ→開く
+uifx.popOut(popup)            -- 縮んで消える
+```
+他に `uifx.shake / fadeIn / fadeOut`。
+
+**タイプライター（会話文の1文字ずつ表示）**: `UIText.typewriterSpeed`（文字/秒）を設定するだけ。
+`scene:setUiText` で文字列を変えると先頭から再生し直す。スキップ/送り判定:
+```lua
+if keyPressed("SPACE") then
+  if scene:isUiTypewriterDone(msg) then nextLine()          -- 全文表示済みなら次の行へ
+  else scene:setUiTypewriter(msg, 0) end                    -- 途中なら全文表示へスキップ
+end
+```
 
 ボタンのクリックは `events:on` で受ける（`UIButton.onClickEvent` に設定した名前で発火。`data.source` にボタンのエンティティID）:
 ```lua

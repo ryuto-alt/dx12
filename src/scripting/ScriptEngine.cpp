@@ -405,16 +405,43 @@ void ScriptEngine::RegisterBindings()
         },
         // --- ゲーム内UI（retained-mode）: スコア表示・HPバー等をスクリプトから書き換える ---
         // UIText::text を書き換える(スコア・残機・メッセージ)。UIText が無ければ何もしない。
+        // タイプライター(typewriterSpeed>0)は先頭から再生し直す=会話送りがこれ1発で書ける。
         "setUiText", [](Scene& s, Entity& e, const std::string& text) {
             auto& reg = s.GetRegistry();
             if (!reg.all_of<UIText>(e.GetHandle())) return;
-            reg.get<UIText>(e.GetHandle()).text = text;
+            auto& t = reg.get<UIText>(e.GetHandle());
+            if (t.text != text) t._twT = 0.0f;
+            t.text = text;
         },
         // UIText::text を読む。UIText が無ければ空文字列。
         "getUiText", [](Scene& s, Entity& e) -> std::string {
             auto& reg = s.GetRegistry();
             if (!reg.all_of<UIText>(e.GetHandle())) return std::string();
             return reg.get<UIText>(e.GetHandle()).text;
+        },
+        // タイプライター速度(文字/秒)を設定して先頭から再生。0=即全表示(スキップに使える)。
+        "setUiTypewriter", [](Scene& s, Entity& e, float speed) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIText>(e.GetHandle())) return;
+            auto& t = reg.get<UIText>(e.GetHandle());
+            t.typewriterSpeed = (std::max)(0.0f, speed);
+            t._twT = 0.0f;
+        },
+        // タイプライターが全文まで到達したか(会話の「クリックで次へ」判定用)。
+        // typewriterSpeed=0 や UIText 無しは true。
+        "isUiTypewriterDone", [](Scene& s, Entity& e) -> bool {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIText>(e.GetHandle())) return true;
+            const auto& t = reg.get<UIText>(e.GetHandle());
+            if (t.typewriterSpeed <= 0.0f) return true;
+            // UTF-8 コードポイント数（描画側と同じ数え方）
+            std::size_t chars = 0;
+            for (std::size_t i = 0; i < t.text.size(); ++chars)
+            {
+                const auto c = static_cast<unsigned char>(t.text[i]);
+                i += (c < 0xC0) ? 1 : (c < 0xE0) ? 2 : (c < 0xF0) ? 3 : 4;
+            }
+            return t._twT * t.typewriterSpeed >= static_cast<float>(chars);
         },
         // 色を書き換える(0..1)。UIImage 優先、無ければ UIText。どちらも無ければ何もしない。
         "setUiColor", [](Scene& s, Entity& e, float r, float g, float b, float a) {
@@ -507,8 +534,11 @@ void ScriptEngine::RegisterBindings()
         },
         // --- UI アニメーション / トゥイーン ---
         // 対象は Entity か エンティティID(数値。ボタンクリックの data.source をそのまま渡せる)。
-        // params: { dx=, dy=(相対移動px), scale=(視覚拡縮), alpha=(視覚透明度0..1),
+        // params: { dx=, dy=(相対移動px), scale=(視覚拡縮。scaleX=/scaleY= で非等方=
+        //           スカッシュ&ストレッチ/フリップ風), alpha=(視覚透明度0..1),
         //           rotate=(視覚回転・度・絶対目標値。UIRect.rotation へ加算合成),
+        //           color={r,g,b}(視覚カラー乗数。1超えで白フラッシュ。完了後も持続),
+        //           shake=(振動振幅px。duration で 0 へ減衰), shakeFreq=24(Hz),
         //           duration=0.3, delay=0, easing="out" }
         // easing: "linear"/"in"/"out"/"inOut"/"back"(勢い)/"bounce"/"elastic"(または 0..6 の数値)
         "tweenUi", [](Scene& s, sol::object target, sol::table params) {
@@ -544,12 +574,36 @@ void ScriptEngine::RegisterBindings()
             const float dy = params.get_or("dy", 0.0f);
             if (dx != 0.0f || dy != 0.0f) { t.hasMove = true; t.moveDelta = {dx, dy}; }
             if (sol::object v = params["scale"]; v.is<float>())
-            { t.hasScale = true; t.scaleTo = (std::max)(0.0f, v.as<float>()); }
+            {
+                const float sc = (std::max)(0.0f, v.as<float>());
+                t.hasScaleX = t.hasScaleY = true;
+                t.scaleXTo = t.scaleYTo = sc;
+            }
+            if (sol::object v = params["scaleX"]; v.is<float>())
+            { t.hasScaleX = true; t.scaleXTo = (std::max)(0.0f, v.as<float>()); }
+            if (sol::object v = params["scaleY"]; v.is<float>())
+            { t.hasScaleY = true; t.scaleYTo = (std::max)(0.0f, v.as<float>()); }
             if (sol::object v = params["alpha"]; v.is<float>())
             { t.hasAlpha = true; t.alphaTo = std::clamp(v.as<float>(), 0.0f, 1.0f); }
             if (sol::object v = params["rotate"]; v.is<float>())
             { t.hasRotate = true; t.rotTo = v.as<float>(); }
-            if (!t.hasMove && !t.hasScale && !t.hasAlpha && !t.hasRotate) return;
+            if (sol::object v = params["color"]; v.is<sol::table>())
+            {
+                sol::table ct = v.as<sol::table>();
+                t.hasColor = true;
+                t.colTo = {(std::max)(0.0f, ct.get_or(1, 1.0f)),
+                           (std::max)(0.0f, ct.get_or(2, 1.0f)),
+                           (std::max)(0.0f, ct.get_or(3, 1.0f))};
+            }
+            if (sol::object v = params["shake"]; v.is<float>())
+            {
+                t.hasShake  = true;
+                t.shakeAmp  = (std::max)(0.0f, v.as<float>());
+                t.shakeFreq = (std::max)(0.1f, params.get_or("shakeFreq", 24.0f));
+            }
+            if (!t.hasMove && !t.hasScaleX && !t.hasScaleY && !t.hasAlpha && !t.hasRotate
+                && !t.hasColor && !t.hasShake)
+                return;
             reg.get_or_emplace<UITweenState>(h).tweens.push_back(t);
         },
         // 表示して出現アニメを最初から再生（UIAnimator 無しなら visible=true だけ）。
@@ -2045,6 +2099,61 @@ vfx.register("explosion", function(x,y,z,s) FX.explosion(x,y,z,s) end)
 vfx.register("supernova", function(x,y,z,s) FX.supernova(x,y,z,s) end)
 vfx.register("spark",     function(x,y,z,s) FX.spark(x,y,z, math.floor(8*(s or 1))) end)
 vfx.register("hit",       function(x,y,z,s) FX.hit(0.6) end)
+
+-- ============================================================
+--  uifx: ゲーム内UI(UIRect持ちエンティティ)の定番演出ワンライナー集
+--  対象 e は Entity でも エンティティID(ボタンイベントの e.source)でも可。
+--  実体は scene:tweenUi の組み合わせ（エンジン改修なしの純 Lua）。
+-- ============================================================
+uifx = {}
+
+-- ボタンを押した感（一瞬膨らんで戻る）。s=膨らみ倍率
+function uifx.punch(e, s, dur)
+  s = s or 1.15; dur = dur or 0.22
+  scene:tweenUi(e, { scale=s,   duration=dur*0.35, easing="out" })
+  scene:tweenUi(e, { scale=1.0, duration=dur*0.65, delay=dur*0.35, easing="back" })
+end
+
+-- 色フラッシュ（既定=白く光る。1超え=輝き。ダメージ赤は uifx.flash(e, 3, 0.3, 0.3)）
+function uifx.flash(e, r, g, b, dur)
+  r = r or 2.5; g = g or 2.5; b = b or 2.5; dur = dur or 0.3
+  scene:tweenUi(e, { color={r,g,b}, duration=dur*0.25, easing="out" })
+  scene:tweenUi(e, { color={1,1,1}, duration=dur*0.75, delay=dur*0.25, easing="out" })
+end
+
+-- 振動（ダメージ/エラー通知）。amp=px
+function uifx.shake(e, amp, dur)
+  scene:tweenUi(e, { shake=amp or 10, duration=dur or 0.4 })
+end
+
+-- 赤フラッシュ + 振動（被ダメの定番セット）
+function uifx.hit(e, amp)
+  uifx.flash(e, 3, 0.35, 0.35, 0.35)
+  uifx.shake(e, amp or 8, 0.35)
+end
+
+-- ぽよんと登場（0 からバウンドで等倍へ）
+function uifx.bounceIn(e, dur)
+  dur = dur or 0.5
+  scene:tweenUi(e, { scale=0.01, alpha=0, duration=0.01 })
+  scene:tweenUi(e, { scale=1.0,  alpha=1, duration=dur, delay=0.02, easing="bounce" })
+end
+
+-- ぺしゃんこ→開く（フリップ風の注目演出。結果表示やカード公開に）
+function uifx.flipIn(e, dur)
+  dur = dur or 0.4
+  scene:tweenUi(e, { scaleY=0.01, alpha=0, duration=0.01 })
+  scene:tweenUi(e, { scaleY=1.0,  alpha=1, duration=dur, delay=0.02, easing="back" })
+end
+
+-- 縮んで消える（ポップアップを閉じる）
+function uifx.popOut(e, dur)
+  scene:tweenUi(e, { scale=0.01, alpha=0, duration=dur or 0.25, easing="in" })
+end
+
+-- フェードイン / アウト
+function uifx.fadeIn(e, dur)  scene:tweenUi(e, { alpha=1, duration=dur or 0.3 }) end
+function uifx.fadeOut(e, dur) scene:tweenUi(e, { alpha=0, duration=dur or 0.3 }) end
 )LUA";
 
     auto r = m_lua->safe_script(kPrelude, sol::script_pass_on_error);

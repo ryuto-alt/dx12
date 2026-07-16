@@ -159,6 +159,10 @@ struct UiDrawContext
     // DrawUiSubtree が push/pop 式に更新する。
     float alphaMul = 1.0f;
 
+    // 祖先から継承するカラー乗数（RGB。tween の color フラッシュが子孫にまとめて掛かる）。
+    // 1 超えあり（白フラッシュ用。ToImCol 側で 0..1 に飽和される）。push/pop 式。
+    DirectX::XMFLOAT3 colorMul{1.0f, 1.0f, 1.0f};
+
     // 祖先から継承する累積回転/スキュー変換（ヒット判定・resolvedOut 用。頂点には
     // DrawUiSubtree が local 変形だけを後がけする＝二重適用しない）。push/pop 式。
     bool       hasXform = false;
@@ -305,8 +309,8 @@ void UpdateUiAnimations(entt::registry& reg, float dt)
         const float k = std::min(1.0f, dt * (std::max)(0.0f, an.hoverSpeed));
         an._hoverS += (hoverTarget - an._hoverS) * k;
 
-        // 出現 / 消滅の状態機械
-        float alpha = 1.0f, scale = 1.0f, rot = 0.0f;
+        // 出現 / 消滅の状態機械（スケールは X/Y 別 = フリップ等の非等方アニメ用）
+        float alpha = 1.0f, scaleX = 1.0f, scaleY = 1.0f, rot = 0.0f;
         DirectX::XMFLOAT2 off{0.0f, 0.0f};
         if (an._mode == 0)   // 未開始 → Play 開始（または showUi）で自動スタート
         {
@@ -333,13 +337,21 @@ void UpdateUiAnimations(entt::registry& reg, float dt)
             const float ev = UiEase(an.showEasing, p);
             switch (an.showAnim)
             {
-            case 2:  alpha = ev; scale = 0.5f + 0.5f * ev;                  break;  // ポップ
+            case 2:  alpha = ev; scaleX = scaleY = 0.5f + 0.5f * ev;        break;  // ポップ
             case 3:  alpha = ev; off.x = -an.slideOffset * (1.0f - ev);     break;  // 左から
             case 4:  alpha = ev; off.x =  an.slideOffset * (1.0f - ev);     break;  // 右から
             case 5:  alpha = ev; off.y = -an.slideOffset * (1.0f - ev);     break;  // 上から
             case 6:  alpha = ev; off.y =  an.slideOffset * (1.0f - ev);     break;  // 下から
-            case 7:  alpha = ev; scale = 0.5f + 0.5f * ev;                          // スピン入場
+            case 7:  alpha = ev; scaleX = scaleY = 0.5f + 0.5f * ev;                // スピン入場
                      rot = -180.0f * (1.0f - ev);                           break;
+            case 8:  // バウンド落下（showEasing に関わらずバウンスで着地。slideOffset=落下距離）
+                     alpha = std::min(1.0f, p * 4.0f);
+                     off.y = -an.slideOffset * (1.0f - UiEase(5, p));       break;
+            case 9:  alpha = ev; scaleY = ev;                               break;  // フリップ（縦つぶれから開く）
+            case 10: // シェイク入場（すっと出て減衰振動。振幅は slideOffset の 1/4）
+                     alpha = std::min(1.0f, p * 3.0f);
+                     off.x = std::sin(p * 25.1327412f) * an.slideOffset * 0.25f * (1.0f - p);
+                                                                            break;
             default: alpha = ev;                                            break;  // フェード
             }
         }
@@ -354,14 +366,19 @@ void UpdateUiAnimations(entt::registry& reg, float dt)
         {
             const float s = std::sin(an._loopT * an.loopSpeed * 6.2831853f);
             if (an.loopAnim == 1)      off.y += s * an.loopAmount;                        // 浮遊
-            else if (an.loopAnim == 2) scale *= 1.0f + s * an.loopAmount;                 // パルス
+            else if (an.loopAnim == 2)                                                    // パルス
+            {
+                scaleX *= 1.0f + s * an.loopAmount;
+                scaleY *= 1.0f + s * an.loopAmount;
+            }
             else if (an.loopAnim == 3)                                                    // 点滅
                 alpha *= 1.0f - (0.5f + 0.5f * s) * std::clamp(an.loopAmount, 0.0f, 1.0f);
             else if (an.loopAnim == 4) rot += an._loopT * an.loopSpeed * 360.0f;          // スピン
             else if (an.loopAnim == 5) rot += s * an.loopAmount;                          // スウィング(±度)
         }
 
-        an._curScale  = (std::max)(0.0f, scale * an._hoverS);
+        an._curScaleX = (std::max)(0.0f, scaleX * an._hoverS);
+        an._curScaleY = (std::max)(0.0f, scaleY * an._hoverS);
         an._curAlpha  = std::clamp(alpha, 0.0f, 1.0f);
         an._curRot    = rot;
         an._curOffset = off;
@@ -370,7 +387,10 @@ void UpdateUiAnimations(entt::registry& reg, float dt)
     // ---- tween（scene:tweenUi。移動は UIRect offset を直接進め、拡縮/アルファは視覚のみ）----
     for (auto [e, tw] : reg.view<UITweenState>().each())
     {
-        float scale = tw.visScale, alpha = tw.visAlpha, rot = tw.visRot;
+        float scaleX = tw.visScaleX, scaleY = tw.visScaleY;
+        float alpha = tw.visAlpha, rot = tw.visRot;
+        DirectX::XMFLOAT3 colv = tw.visColor;
+        DirectX::XMFLOAT2 shakeOff{0.0f, 0.0f};
         for (auto it = tw.tweens.begin(); it != tw.tweens.end();)
         {
             UiTween& t = *it;
@@ -392,9 +412,11 @@ void UpdateUiAnimations(entt::registry& reg, float dt)
                         t.hasMove = false;
                     }
                 }
-                t.scaleFrom = tw.visScale;
-                t.alphaFrom = tw.visAlpha;
-                t.rotFrom   = tw.visRot;
+                t.scaleXFrom = tw.visScaleX;
+                t.scaleYFrom = tw.visScaleY;
+                t.alphaFrom  = tw.visAlpha;
+                t.rotFrom    = tw.visRot;
+                t.colFrom    = tw.visColor;
             }
             const float p  = std::clamp((t.t - t.delay) / (std::max)(0.01f, t.duration), 0.0f, 1.0f);
             const float ev = UiEase(t.easing, p);
@@ -408,15 +430,32 @@ void UpdateUiAnimations(entt::registry& reg, float dt)
                                     t.baseOffMax.y + t.moveDelta.y * ev};
                 }
             }
-            if (t.hasScale)  scale = t.scaleFrom + (t.scaleTo - t.scaleFrom) * ev;
+            if (t.hasScaleX) scaleX = t.scaleXFrom + (t.scaleXTo - t.scaleXFrom) * ev;
+            if (t.hasScaleY) scaleY = t.scaleYFrom + (t.scaleYTo - t.scaleYFrom) * ev;
             if (t.hasAlpha)  alpha = t.alphaFrom + (t.alphaTo - t.alphaFrom) * ev;
             if (t.hasRotate) rot   = t.rotFrom + (t.rotTo - t.rotFrom) * ev;
+            if (t.hasColor)
+            {
+                colv = {t.colFrom.x + (t.colTo.x - t.colFrom.x) * ev,
+                        t.colFrom.y + (t.colTo.y - t.colFrom.y) * ev,
+                        t.colFrom.z + (t.colTo.z - t.colFrom.z) * ev};
+            }
+            if (t.hasShake)
+            {
+                // 減衰付き振動（duration で振幅 0 へ。周波数違いの sin/cos で楕円軌道にしない）
+                const float tt    = t.t - t.delay;
+                const float decay = t.shakeAmp * (1.0f - p);
+                shakeOff.x += std::sin(tt * t.shakeFreq * 6.2831853f) * decay;
+                shakeOff.y += std::sin(tt * t.shakeFreq * 6.2831853f * 0.83f + 1.3f) * decay * 0.6f;
+            }
             if (p >= 1.0f)
             {
-                // 完了: 視覚値は持続させる（alpha=0 で消したままにできる）
-                if (t.hasScale)  tw.visScale = t.scaleTo;
-                if (t.hasAlpha)  tw.visAlpha = t.alphaTo;
-                if (t.hasRotate) tw.visRot   = t.rotTo;
+                // 完了: 視覚値は持続させる（alpha=0 で消したままにできる）。shake は 0 へ減衰済み
+                if (t.hasScaleX) tw.visScaleX = t.scaleXTo;
+                if (t.hasScaleY) tw.visScaleY = t.scaleYTo;
+                if (t.hasAlpha)  tw.visAlpha  = t.alphaTo;
+                if (t.hasRotate) tw.visRot    = t.rotTo;
+                if (t.hasColor)  tw.visColor  = t.colTo;
                 it = tw.tweens.erase(it);
             }
             else
@@ -424,9 +463,20 @@ void UpdateUiAnimations(entt::registry& reg, float dt)
                 ++it;
             }
         }
-        tw._curScale = (std::max)(0.0f, scale);
-        tw._curAlpha = std::clamp(alpha, 0.0f, 1.0f);
-        tw._curRot   = rot;
+        tw._curScaleX = (std::max)(0.0f, scaleX);
+        tw._curScaleY = (std::max)(0.0f, scaleY);
+        tw._curAlpha  = std::clamp(alpha, 0.0f, 1.0f);
+        tw._curRot    = rot;
+        tw._curColor  = {(std::max)(0.0f, colv.x), (std::max)(0.0f, colv.y),
+                         (std::max)(0.0f, colv.z)};   // 1 超えは許可（白フラッシュ）
+        tw._curOffset = shakeOff;
+    }
+
+    // ---- UIText タイプライター（経過秒を進めるだけ。表示バイト数は描画側で算出）----
+    for (auto [e, txt] : reg.view<UIText>().each())
+    {
+        if (txt.typewriterSpeed > 0.0f)
+            txt._twT += dt;
     }
 }
 
@@ -555,11 +605,42 @@ void AddImage9Slice(ImDrawList* dl, ImTextureID texId,
     }
 }
 
+// グロススイープ（UIImage.gradientScrollSpeed）: [p0,p1] 方向の正規化位置 t に対し、帯中心
+// cycle01 からの距離で頂点 RGB を bandCol へ三角減衰ブレンドする（α は保持）。帯は画面外から
+// 入って画面外へ抜けるよう中心を [-余白, 1+余白] で走らせる。頂点直接シェードなので
+// テクスチャ/9-slice/角丸/回転すべてに追従する（静的グラデと同じ流儀）。
+void ShadeVertsGlossBand(ImDrawList* dl, int vtxStart, int vtxEnd,
+                         const ImVec2& p0, const ImVec2& p1,
+                         const DirectX::XMFLOAT4& bandCol, float cycle01)
+{
+    const ImVec2 d(p1.x - p0.x, p1.y - p0.y);
+    const float len2 = d.x * d.x + d.y * d.y;
+    if (len2 <= 0.0f) return;
+    const float invLen2 = 1.0f / len2;
+    constexpr float kHalfW  = 0.22f;   // 帯の半幅（全長に対する割合）
+    constexpr float kMargin = kHalfW + 0.1f;
+    const float c = -kMargin + cycle01 * (1.0f + 2.0f * kMargin);   // 帯中心
+    ImDrawVert* v = dl->VtxBuffer.Data;
+    for (int i = vtxStart; i < vtxEnd; ++i)
+    {
+        ImDrawVert& vt = v[i];
+        const float t = ((vt.pos.x - p0.x) * d.x + (vt.pos.y - p0.y) * d.y) * invLen2;
+        const float w = 1.0f - std::fabs(t - c) / kHalfW;
+        if (w <= 0.0f) continue;
+        ImVec4 cur = ImGui::ColorConvertU32ToFloat4(vt.col);
+        cur.x += (bandCol.x - cur.x) * w;
+        cur.y += (bandCol.y - cur.y) * w;
+        cur.z += (bandCol.z - cur.z) * w;
+        vt.col = ImGui::ColorConvertFloat4ToU32(cur);
+    }
+}
+
 // 1 要素の描画とレイキャスト収集（入力の解決はトラバース完了後）。rect はキャンバス空間の解決済み矩形。
 void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
 {
     auto& reg = *ctx.reg;
     const UiRectPx s = ToScreen(rect, ctx);
+    const DirectX::XMFLOAT3& cm = ctx.colorMul;   // tween color フラッシュ（RGB 乗算・子孫継承）
 
     // --- UIButton: レイキャスト収集とティント色の確定 ---
     // 入力（ホバー/押下/クリック）の解決は全キャンバスのトラバース完了後に行うため、
@@ -635,8 +716,9 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
                 }
             }
 
-            const DirectX::XMFLOAT4 col{img->color.x * tint.x, img->color.y * tint.y,
-                                        img->color.z * tint.z,
+            const DirectX::XMFLOAT4 col{img->color.x * tint.x * cm.x,
+                                        img->color.y * tint.y * cm.y,
+                                        img->color.z * tint.z * cm.z,
                                         img->color.w * tint.w * ctx.alphaMul};
             const ImU32 ucol = ToImCol(col);
 
@@ -653,7 +735,8 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
                     ctx.dl->AddRectFilled(
                         ImVec2(s.minX + offX, s.minY + offY),
                         ImVec2(s.maxX + offX, s.maxY + offY),
-                        ToImCol({img->shadowColor.x, img->shadowColor.y, img->shadowColor.z,
+                        ToImCol({img->shadowColor.x * cm.x, img->shadowColor.y * cm.y,
+                                 img->shadowColor.z * cm.z,
                                  img->shadowColor.w * ctx.alphaMul}),
                         baseRad);
                 }
@@ -667,7 +750,8 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
                         ctx.dl->AddRectFilled(
                             ImVec2(s.minX + offX - grow, s.minY + offY - grow),
                             ImVec2(s.maxX + offX + grow, s.maxY + offY + grow),
-                            ToImCol({img->shadowColor.x, img->shadowColor.y, img->shadowColor.z,
+                            ToImCol({img->shadowColor.x * cm.x, img->shadowColor.y * cm.y,
+                                     img->shadowColor.z * cm.z,
                                      img->shadowColor.w * ctx.alphaMul * kFall[i]}),
                             baseRad + grow);
                     }
@@ -757,19 +841,32 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
                 }
                 // 終端色にも tint / 本体アルファを乗算（KeepAlpha = 頂点のアルファは保持され、
                 // gradientColor2 のアルファは使われない）
-                const ImU32 ucol2 = ToImCol({img->gradientColor2.x * tint.x,
-                                             img->gradientColor2.y * tint.y,
-                                             img->gradientColor2.z * tint.z, col.w});
-                ImGui::ShadeVertsLinearColorGradientKeepAlpha(
-                    ctx.dl, gradStart, ctx.dl->VtxBuffer.Size, p0, p1, ucol, ucol2);
+                const DirectX::XMFLOAT4 col2{img->gradientColor2.x * tint.x * cm.x,
+                                             img->gradientColor2.y * tint.y * cm.y,
+                                             img->gradientColor2.z * tint.z * cm.z, col.w};
+                if (img->gradientScrollSpeed != 0.0f)
+                {
+                    // グロススイープ: 静的グラデの代わりに gradientColor2 の光帯が
+                    // gradientDir 方向へ周期的に流れる（負の速度で逆方向）
+                    const double cyc = ImGui::GetTime()
+                                       * static_cast<double>(img->gradientScrollSpeed);
+                    float cycle01 = static_cast<float>(cyc - std::floor(cyc));
+                    ShadeVertsGlossBand(ctx.dl, gradStart, ctx.dl->VtxBuffer.Size,
+                                        p0, p1, col2, cycle01);
+                }
+                else
+                {
+                    ImGui::ShadeVertsLinearColorGradientKeepAlpha(
+                        ctx.dl, gradStart, ctx.dl->VtxBuffer.Size, p0, p1, ucol, ToImCol(col2));
+                }
             }
 
             // --- 縁取り（枠線。角丸に追従。ゲージ減少に影響されないようフル矩形）---
             if (img->outlineWidth > 0.0f && img->outlineColor.w > 0.0f)
             {
                 ctx.dl->AddRect(ImVec2(s.minX, s.minY), ImVec2(s.maxX, s.maxY),
-                                ToImCol({img->outlineColor.x, img->outlineColor.y,
-                                         img->outlineColor.z,
+                                ToImCol({img->outlineColor.x * cm.x, img->outlineColor.y * cm.y,
+                                         img->outlineColor.z * cm.z,
                                          img->outlineColor.w * ctx.alphaMul}),
                                 img->cornerRadius * ctx.scale, 0,
                                 std::max(1.0f, img->outlineWidth * ctx.scale));
@@ -791,7 +888,8 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
         const bool hot = ctx.interactive && (sld->_hovered || sld->_dragging);
 
         auto col = [&](const DirectX::XMFLOAT4& c, float mul) {
-            return ToImCol({c.x * mul, c.y * mul, c.z * mul, c.w * ctx.alphaMul});
+            return ToImCol({c.x * mul * cm.x, c.y * mul * cm.y, c.z * mul * cm.z,
+                            c.w * ctx.alphaMul});
         };
         ctx.dl->AddRectFilled(ImVec2(x0 - trackH * 0.5f, cy - trackH * 0.5f),
                               ImVec2(x1 + trackH * 0.5f, cy + trackH * 0.5f),
@@ -813,16 +911,18 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
         const float round = std::min(s.Width(), s.Height()) * 0.22f;
         const float mul = tgl->_pressed ? 0.8f : (hot ? 1.25f : 1.0f);
         ctx.dl->AddRectFilled(ImVec2(s.minX, s.minY), ImVec2(s.maxX, s.maxY),
-                              ToImCol({tgl->boxColor.x * mul, tgl->boxColor.y * mul,
-                                       tgl->boxColor.z * mul, tgl->boxColor.w * ctx.alphaMul}),
+                              ToImCol({tgl->boxColor.x * mul * cm.x, tgl->boxColor.y * mul * cm.y,
+                                       tgl->boxColor.z * mul * cm.z,
+                                       tgl->boxColor.w * ctx.alphaMul}),
                               round);
         if (tgl->isOn)
         {
             const float inset = std::min(s.Width(), s.Height()) * 0.22f;
             ctx.dl->AddRectFilled(ImVec2(s.minX + inset, s.minY + inset),
                                   ImVec2(s.maxX - inset, s.maxY - inset),
-                                  ToImCol({tgl->checkColor.x, tgl->checkColor.y,
-                                           tgl->checkColor.z, tgl->checkColor.w * ctx.alphaMul}),
+                                  ToImCol({tgl->checkColor.x * cm.x, tgl->checkColor.y * cm.y,
+                                           tgl->checkColor.z * cm.z,
+                                           tgl->checkColor.w * ctx.alphaMul}),
                                   round * 0.6f);
         }
     }
@@ -846,38 +946,62 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
             float ty = s.minY;
             if (txt->alignV == 1)      ty = s.minY + (s.Height() - ts.y) * 0.5f;
             else if (txt->alignV == 2) ty = s.maxY - ts.y;
-            const DirectX::XMFLOAT4 tcol{txt->color.x, txt->color.y, txt->color.z,
+            const DirectX::XMFLOAT4 tcol{txt->color.x * cm.x, txt->color.y * cm.y,
+                                         txt->color.z * cm.z,
                                          txt->color.w * ctx.alphaMul};
 
-            // 影（1 オフセットの先描き）→ 縁取り（8 方位の重ね描き）→ 本体。
-            // 全部このサブツリーの頂点キャプチャ内なので回転にも一緒に追従する
-            if (txt->shadowColor.w > 0.0f)
+            // タイプライター: 先頭 N 文字だけ描く（UTF-8 コードポイント単位 = マルチバイト
+            // 文字の途中で切らない）。整列(ts)は全文サイズで固定 = 表示が進んでも文字が
+            // ずれない。エディタプレビュー(interactive=false)は常に全文
+            const char* textBegin = txt->text.c_str();
+            const char* textEnd   = nullptr;   // nullptr = 全文
+            if (ctx.interactive && txt->typewriterSpeed > 0.0f)
             {
-                ctx.dl->AddText(font, fontSize,
-                                ImVec2(tx + txt->shadowOffset.x * ctx.scale,
-                                       ty + txt->shadowOffset.y * ctx.scale),
-                                ToImCol({txt->shadowColor.x, txt->shadowColor.y,
-                                         txt->shadowColor.z,
-                                         txt->shadowColor.w * ctx.alphaMul}),
-                                txt->text.c_str(), nullptr, wrapW);
+                const char* pAll = textBegin + txt->text.size();
+                const char* pCur = textBegin;
+                float remain = txt->_twT * txt->typewriterSpeed;
+                while (pCur < pAll && remain >= 1.0f)
+                {
+                    const auto c = static_cast<unsigned char>(*pCur);
+                    const int adv = (c < 0xC0) ? 1 : (c < 0xE0) ? 2 : (c < 0xF0) ? 3 : 4;
+                    pCur = std::min(pCur + adv, pAll);
+                    remain -= 1.0f;
+                }
+                textEnd = pCur;
             }
-            if (txt->outlineWidth > 0.0f && txt->outlineColor.w > 0.0f)
+            if (textEnd != textBegin)   // タイプライターでまだ 1 文字も出ていなければ描かない
             {
-                const float ow = std::max(1.0f, txt->outlineWidth * ctx.scale);
-                const ImU32 ocol = ToImCol({txt->outlineColor.x, txt->outlineColor.y,
-                                            txt->outlineColor.z,
-                                            txt->outlineColor.w * ctx.alphaMul});
-                static constexpr float kDirs[8][2] = {
-                    {-1.0f, 0.0f}, {1.0f, 0.0f}, {0.0f, -1.0f}, {0.0f, 1.0f},
-                    {-0.7071f, -0.7071f}, {0.7071f, -0.7071f},
-                    {-0.7071f, 0.7071f},  {0.7071f, 0.7071f}};
-                for (const auto& d : kDirs)
+                // 影（1 オフセットの先描き）→ 縁取り（8 方位の重ね描き）→ 本体。
+                // 全部このサブツリーの頂点キャプチャ内なので回転にも一緒に追従する
+                if (txt->shadowColor.w > 0.0f)
+                {
                     ctx.dl->AddText(font, fontSize,
-                                    ImVec2(tx + d[0] * ow, ty + d[1] * ow), ocol,
-                                    txt->text.c_str(), nullptr, wrapW);
+                                    ImVec2(tx + txt->shadowOffset.x * ctx.scale,
+                                           ty + txt->shadowOffset.y * ctx.scale),
+                                    ToImCol({txt->shadowColor.x * cm.x, txt->shadowColor.y * cm.y,
+                                             txt->shadowColor.z * cm.z,
+                                             txt->shadowColor.w * ctx.alphaMul}),
+                                    textBegin, textEnd, wrapW);
+                }
+                if (txt->outlineWidth > 0.0f && txt->outlineColor.w > 0.0f)
+                {
+                    const float ow = std::max(1.0f, txt->outlineWidth * ctx.scale);
+                    const ImU32 ocol = ToImCol({txt->outlineColor.x * cm.x,
+                                                txt->outlineColor.y * cm.y,
+                                                txt->outlineColor.z * cm.z,
+                                                txt->outlineColor.w * ctx.alphaMul});
+                    static constexpr float kDirs[8][2] = {
+                        {-1.0f, 0.0f}, {1.0f, 0.0f}, {0.0f, -1.0f}, {0.0f, 1.0f},
+                        {-0.7071f, -0.7071f}, {0.7071f, -0.7071f},
+                        {-0.7071f, 0.7071f},  {0.7071f, 0.7071f}};
+                    for (const auto& d : kDirs)
+                        ctx.dl->AddText(font, fontSize,
+                                        ImVec2(tx + d[0] * ow, ty + d[1] * ow), ocol,
+                                        textBegin, textEnd, wrapW);
+                }
+                ctx.dl->AddText(font, fontSize, ImVec2(tx, ty), ToImCol(tcol),
+                                textBegin, textEnd, wrapW);
             }
-            ctx.dl->AddText(font, fontSize, ImVec2(tx, ty), ToImCol(tcol),
-                            txt->text.c_str(), nullptr, wrapW);
         }
     }
 }
@@ -889,6 +1013,7 @@ void DrawUiSubtree(entt::entity e, const UiRectPx& parentRect, UiDrawContext& ct
 {
     UiRectPx current = parentRect;
     const float parentAlpha = ctx.alphaMul;
+    const DirectX::XMFLOAT3 parentColor = ctx.colorMul;
     const bool       parentHasXform = ctx.hasXform;   // 回転/スキューの push/pop（alphaMul と同じ規律）
     const UiXform2x3 parentXform    = ctx.xform;
     const UiXform2x3 parentInv      = ctx.invXform;
@@ -906,7 +1031,7 @@ void DrawUiSubtree(entt::entity e, const UiRectPx& parentRect, UiDrawContext& ct
         float fxRot = 0.0f;
         if (ctx.interactive)
         {
-            float fxScale = 1.0f, fxAlpha = 1.0f, fxOffX = 0.0f, fxOffY = 0.0f;
+            float fxScaleX = 1.0f, fxScaleY = 1.0f, fxAlpha = 1.0f, fxOffX = 0.0f, fxOffY = 0.0f;
             if (const auto* an = ctx.reg->try_get<UIAnimator>(e))
             {
                 if (an->_mode == 4)
@@ -914,24 +1039,31 @@ void DrawUiSubtree(entt::entity e, const UiRectPx& parentRect, UiDrawContext& ct
                     ctx.alphaMul = parentAlpha;
                     return;   // hideUi 完了 = サブツリーごと非表示（クリックも通らない）
                 }
-                fxScale *= an->_curScale;
-                fxAlpha *= an->_curAlpha;
-                fxRot   += an->_curRot;
-                fxOffX  += an->_curOffset.x;
-                fxOffY  += an->_curOffset.y;
+                fxScaleX *= an->_curScaleX;
+                fxScaleY *= an->_curScaleY;
+                fxAlpha  *= an->_curAlpha;
+                fxRot    += an->_curRot;
+                fxOffX   += an->_curOffset.x;
+                fxOffY   += an->_curOffset.y;
             }
             if (const auto* tw = ctx.reg->try_get<UITweenState>(e))
             {
-                fxScale *= tw->_curScale;
-                fxAlpha *= tw->_curAlpha;
-                fxRot   += tw->_curRot;
+                fxScaleX *= tw->_curScaleX;
+                fxScaleY *= tw->_curScaleY;
+                fxAlpha  *= tw->_curAlpha;
+                fxRot    += tw->_curRot;
+                fxOffX   += tw->_curOffset.x;   // shake
+                fxOffY   += tw->_curOffset.y;
+                ctx.colorMul = {parentColor.x * tw->_curColor.x,
+                                parentColor.y * tw->_curColor.y,
+                                parentColor.z * tw->_curColor.z};
             }
-            if (fxScale != 1.0f || fxOffX != 0.0f || fxOffY != 0.0f)
+            if (fxScaleX != 1.0f || fxScaleY != 1.0f || fxOffX != 0.0f || fxOffY != 0.0f)
             {
                 const float cx = (current.minX + current.maxX) * 0.5f + fxOffX;
                 const float cy = (current.minY + current.maxY) * 0.5f + fxOffY;
-                const float hw = current.Width()  * 0.5f * fxScale;
-                const float hh = current.Height() * 0.5f * fxScale;
+                const float hw = current.Width()  * 0.5f * fxScaleX;
+                const float hh = current.Height() * 0.5f * fxScaleY;
                 current = {cx - hw, cy - hh, cx + hw, cy + hh};
             }
             ctx.alphaMul = parentAlpha * fxAlpha;
@@ -1079,6 +1211,7 @@ void DrawUiSubtree(entt::entity e, const UiRectPx& parentRect, UiDrawContext& ct
         TransformUiVerts(ctx.dl, vtxStart, localXform);
 
     ctx.alphaMul = parentAlpha;   // 兄弟へ波及しないよう復元（push/pop）
+    ctx.colorMul = parentColor;
     ctx.hasXform = parentHasXform;
     ctx.xform    = parentXform;
     ctx.invXform = parentInv;
@@ -1663,11 +1796,15 @@ void UISystem::ResetRuntimeState(entt::registry& reg)
         an._mode = 0;
         an._hoverS = 1.0f;
         an._loopT = 0.0f;
-        an._curScale = 1.0f;
+        an._curScaleX = 1.0f;
+        an._curScaleY = 1.0f;
         an._curAlpha = 1.0f;
         an._curRot   = 0.0f;
         an._curOffset = {0.0f, 0.0f};
     }
+    // タイプライターも次の Play で先頭から
+    for (auto [e, txt] : reg.view<UIText>().each())
+        txt._twT = 0.0f;
     // tween はランタイム専用なので丸ごと破棄
     {
         auto view = reg.view<UITweenState>();

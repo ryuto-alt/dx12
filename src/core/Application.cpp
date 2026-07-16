@@ -2201,6 +2201,9 @@ nlohmann::json McpComponentSchema()
         F("fillDir", "int (0=fromLeft,1=fromRight,2=fromBottom,3=fromTop)", 0),
         F("gradientDir", "int (0=off,1=horizontal,2=vertical,3=diagonal)", 0),
         F("gradientColor2", "float4 (gradient end color; alpha ignored)", json::array({1, 1, 1, 1})),
+        F("gradientScrollSpeed", "float (gloss sweep: !=0 replaces static gradient with a "
+          "gradientColor2 light band sweeping along gradientDir; cycles/sec, negative = reverse)",
+          0.0),
         F("outlineWidth", "float (border px; 0 = off; follows cornerRadius)", 0.0),
         F("outlineColor", "float4", json::array({0, 0, 0, 1})),
         F("shadowColor", "float4 (drop shadow; alpha 0 = off; rect approximation)",
@@ -2218,6 +2221,8 @@ nlohmann::json McpComponentSchema()
         F("shadowColor", "float4 (alpha 0 = off)", json::array({0, 0, 0, 0})),
         F("shadowOffset", "float2 (px)", json::array({1, 1})),
         F("fontPath", "string (assets-relative .ttf/.otf; empty = default Yu Gothic)", ""),
+        F("typewriterSpeed", "float (chars/sec typewriter reveal in Play mode; 0 = off; "
+          "UTF-8 codepoint-safe; Lua setUiText restarts it)", 0.0),
     })));
     comps.push_back(C("uiButton", true, true, json::array({
         F("onClickEvent", "string (emitted to Lua events on click; empty = none)", ""),
@@ -2255,7 +2260,7 @@ nlohmann::json McpComponentSchema()
         "Hang children via dx12_set_parent."));
     comps.push_back(C("uiAnimator", true, true, json::array({
         F("showAnim", "int (0=none,1=fade,2=pop,3=fromLeft,4=fromRight,5=fromTop,6=fromBottom,"
-          "7=spinIn)", 1),
+          "7=spinIn,8=bounceDrop,9=flipIn,10=shakeIn)", 1),
         F("showDuration", "float (sec)", 0.35), F("showDelay", "float (sec)", 0.0),
         F("showEasing", "int (0=linear,1=in,2=out,3=inOut,4=back,5=bounce,6=elastic)", 2),
         F("slideOffset", "float (px)", 80.0),
@@ -2318,13 +2323,17 @@ nlohmann::json McpLuaApi()
         "setMeshEffect(entity,value)  (MeshRenderer.effectValue、カスタムシェーダー用)",
         "setMeshParams(entity,x,y,z,w)  (MeshRenderer.shaderParams、カスタムシェーダー汎用float4)",
         "queryByTag(tag) -> table(names)", "queryInBox(minX,minZ,maxX,maxZ,tag?) -> table(names)",
-        "setUiText(e,text) / getUiText(e)", "setUiColor(e,r,g,b,a)", "setUiVisible(e,visible)",
+        "setUiText(e,text) / getUiText(e)  (setはタイプライターを先頭から再生し直す)",
+        "setUiTypewriter(e,charsPerSec)  (0=即全表示。UIText.typewriterSpeed)",
+        "isUiTypewriterDone(e) -> bool  (会話の「クリックで次へ」判定用)",
+        "setUiColor(e,r,g,b,a)", "setUiVisible(e,visible)",
         "setUiTexture(e,path)", "setUiFill(e,amount) / getUiFill(e)  (UIImage.fillAmount 0..1)",
         "setUiRotation(e,deg) / getUiRotation(e)  (UIRect.rotation 視覚回転・度)",
         "getUiSlider(e) / setUiSlider(e,v)  (UISlider実値。setはonChange発火しない)",
         "getUiToggle(e) / setUiToggle(e,on)  (UIToggle。setはonChange発火しない)",
         "getUiScroll(e) -> x,y / setUiScroll(e,x,y)  (UIScrollViewのスクロール量px)",
-        "tweenUi(e,params)  (params: dx,dy,scale,alpha,rotate(度・絶対値),duration,delay,easing)",
+        "tweenUi(e,params)  (params: dx,dy,scale,scaleX,scaleY,alpha,rotate(度・絶対値),"
+        "color={r,g,b}(乗算・1超え=フラッシュ),shake(px振幅・減衰),shakeFreq,duration,delay,easing)",
         "showUi(e)", "hideUi(e)",
     })));
     objects.push_back(O("input", "global", json::array({
@@ -2397,6 +2406,9 @@ nlohmann::json McpLuaApi()
         "actor(name,opts?) -> Actor", "cameraFollow/cameraTPS/cameraLockOn(...)",
         "goToScene(path,dur?)", "win(dur?)", "clamp(v,lo,hi)", "lerp(a,b,t)", "angleDelta(from,to)",
         "FX.explosion/shockwave/spark/...", "vfx.register(name,fn) / vfx.play(name,x,y,z,scale?)",
+        "uifx.punch(e,s?,dur?) / flash(e,r?,g?,b?,dur?) / shake(e,amp?,dur?) / hit(e,amp?) / "
+        "bounceIn(e,dur?) / flipIn(e,dur?) / popOut(e,dur?) / fadeIn(e,dur?) / fadeOut(e,dur?)"
+        "  (ゲーム内UIの定番演出ワンライナー。e は Entity かボタンイベントの e.source)",
     })));
     return json{
         {"version", 1},

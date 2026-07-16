@@ -235,9 +235,32 @@ function Scene:setMeshParams(e, x, y, z, w) end
 -- UIText は遮らない。子要素がクリックを吸っても親ボタンへバブリングする）。
 
 ---UIText::text を書き換える（スコア・残機・メッセージ）。対象が UIText を持たない場合は何もしない。
+---タイプライター（UIText.typewriterSpeed > 0）は文字列が変わると先頭から再生し直す＝会話送りがこれ1発で書ける。
 ---@param e Entity
 ---@param text string
 function Scene:setUiText(e, text) end
+
+---タイプライター速度（文字/秒）を設定して先頭から再生する。0 で無効＝即全表示（スキップに使える）。
+---UTF-8 のコードポイント単位で1文字ずつ現れる（日本語も1文字ずつ）。Play 中のみ進む。
+---```lua
+---scene:setUiText(msg, "勇者は 荒野を 歩いていた……")
+---scene:setUiTypewriter(msg, 20)   -- 20文字/秒
+---```
+---@param e Entity
+---@param charsPerSec number 文字/秒。0 で即全表示
+function Scene:setUiTypewriter(e, charsPerSec) end
+
+---タイプライターが全文まで到達したか（会話の「クリックで次へ」判定用）。
+---typewriterSpeed=0 や UIText 無しは true。
+---```lua
+---if keyPressed("SPACE") then
+---  if scene:isUiTypewriterDone(msg) then nextLine()
+---  else scene:setUiTypewriter(msg, 0) end   -- 途中なら全文表示へスキップ
+---end
+---```
+---@param e Entity
+---@return boolean
+function Scene:isUiTypewriterDone(e) end
 
 ---UIText::text を読む。対象が UIText を持たない場合は空文字列を返す。
 ---@param e Entity
@@ -334,16 +357,26 @@ function Scene:setUiScroll(e, x, y) end
 
 ---UI要素をトゥイーンで動かす（イージング付きアニメーション）。対象は UIRect 必須。
 ---`dx/dy` はレイアウト（UIRect offset）を実際に動かす＝終了位置でクリックも効く。
----`scale/alpha` は見た目だけの拡縮/透明度（自分と子孫にまとめて掛かる。レイアウトは不変）。
+---`scale/alpha/rotate/color` は見た目だけ（自分と子孫にまとめて掛かる。レイアウトは不変）。
+---`scaleX/scaleY` で非等方＝スカッシュ&ストレッチ/フリップ風（scale は両方へ）。
+---`color={r,g,b}` は RGB 乗算の絶対目標値（1 超えで白フラッシュ。完了後も持続＝{1,1,1} へ戻して解除）。
+---`shake` は振幅px の振動で duration かけて 0 へ減衰（shakeFreq=Hz、既定 24）。
 ---同時に複数指定でき、連続で呼べば重ねがけもできる。Play 中のみ動く。
+---定番演出は uifx.punch / uifx.flash / uifx.shake 等のワンライナーが楽（プレリュード参照）。
 ---```lua
 ----- メニューを右へ 200px、0.4秒 バウンスで
 ---scene:tweenUi(menu, { dx = 200, duration = 0.4, easing = "bounce" })
 ----- じわっと消す（消えた後もクリックは残るので hideUi と使い分け）
 ---scene:tweenUi(popup, { alpha = 0, duration = 0.3 })
+----- ダメージで赤フラッシュ + 振動
+---scene:tweenUi(hpBar, { color = {3, 0.3, 0.3}, duration = 0.1 })
+---scene:tweenUi(hpBar, { color = {1, 1, 1}, duration = 0.25, delay = 0.1 })
+---scene:tweenUi(hpBar, { shake = 10, duration = 0.4 })
+----- ぺしゃんこから開く（フリップ風）
+---scene:tweenUi(card, { scaleY = 1, duration = 0.35, easing = "back" })
 ---```
 ---@param e Entity|integer 対象（ボタンクリックの data.source をそのまま渡してもよい）
----@param params { dx?: number, dy?: number, scale?: number, alpha?: number, rotate?: number, duration?: number, delay?: number, easing?: "linear"|"in"|"out"|"inOut"|"back"|"bounce"|"elastic" }
+---@param params { dx?: number, dy?: number, scale?: number, scaleX?: number, scaleY?: number, alpha?: number, rotate?: number, color?: number[], shake?: number, shakeFreq?: number, duration?: number, delay?: number, easing?: "linear"|"in"|"out"|"inOut"|"back"|"bounce"|"elastic" }
 function Scene:tweenUi(e, params) end
 
 ---UI要素を表示して、UIAnimator の出現アニメを最初から再生する

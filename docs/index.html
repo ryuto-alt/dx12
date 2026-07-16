@@ -870,24 +870,26 @@ vfx.<span class="tok-fn">play</span>(<span class="tok-s">"explosion"</span>, x, 
                   <td>レイアウト矩形（Unity の RectTransform 相当）。全UI要素に必須。<code>visible=false</code> で自身と子孫ごと非表示。
                   <code>rotation</code>/<code>skewX</code>（度、時計回り）はピボット回りの<b>見た目の変換</b>（レイアウトは軸平行のまま。子孫も一緒に回る。
                   UIScrollView 自身では無視され、回転したパネル内の UIScrollView は非対応。逆にスクロールビュー内の回転要素は OK）</td></tr>
-              <tr><td><code>UIImage</code></td><td><code>texturePath</code>, <code>color</code>, <code>uvMin/Max</code>, <code>sliceBorder</code>, <code>cornerRadius</code>, <code>raycastBlock</code>, <code>fillAmount</code>, <code>fillDir</code>, <code>gradientDir</code>, <code>gradientColor2</code>, <code>outlineWidth</code>, <code>outlineColor</code>, <code>shadowColor</code>, <code>shadowOffset</code>, <code>shadowSoftness</code></td>
+              <tr><td><code>UIImage</code></td><td><code>texturePath</code>, <code>color</code>, <code>uvMin/Max</code>, <code>sliceBorder</code>, <code>cornerRadius</code>, <code>raycastBlock</code>, <code>fillAmount</code>, <code>fillDir</code>, <code>gradientDir</code>, <code>gradientColor2</code>, <code>gradientScrollSpeed</code>, <code>outlineWidth</code>, <code>outlineColor</code>, <code>shadowColor</code>, <code>shadowOffset</code>, <code>shadowSoftness</code></td>
                   <td>画像。<code>texturePath</code> が空なら単色塗り矩形（<code>cornerRadius</code> で角丸）。<code>sliceBorder</code>(px, 左上右下)で9-slice。
                   <code>raycastBlock</code>（既定 true）で背後のボタンへのクリックを遮る（Unity の raycastTarget 相当）。
                   <code>fillAmount</code>（0..1、既定 1）で端から割合表示＝HPバー/ゲージ（方向は <code>fillDir</code>: 0=左 1=右 2=下 3=上から。クリップ方式なので 9-slice/角丸でも自然）。
                   <code>gradientDir</code>（0=なし 1=横 2=縦 3=斜め）＋<code>gradientColor2</code>（終端色。αは無視）でグラデーション（テクスチャ/9-slice/角丸すべてに掛かる）。
+                  <code>gradientScrollSpeed</code>（周回/秒。0=静的）を 0 以外にすると、静的グラデの代わりに<b>終端色の光帯がグラデ方向へ流れる</b>＝ガチャボタンの光沢流し（負値で逆方向）。
                   <code>outlineWidth</code>(px, 0=無効)＋<code>outlineColor</code> で角丸に追従する枠線。
                   <code>shadowColor</code>（α0=無効）＋<code>shadowOffset</code>(px)＋<code>shadowSoftness</code>(px, 0=シャープ)で矩形近似のドロップシャドウ</td></tr>
-              <tr><td><code>UIText</code></td><td><code>text</code>, <code>fontSize</code>, <code>color</code>, <code>alignH/V</code>, <code>wrap</code>, <code>outlineWidth</code>, <code>outlineColor</code>, <code>shadowColor</code>, <code>shadowOffset</code>, <code>fontPath</code></td>
+              <tr><td><code>UIText</code></td><td><code>text</code>, <code>fontSize</code>, <code>color</code>, <code>alignH/V</code>, <code>wrap</code>, <code>outlineWidth</code>, <code>outlineColor</code>, <code>shadowColor</code>, <code>shadowOffset</code>, <code>fontPath</code>, <code>typewriterSpeed</code></td>
                   <td>テキスト。<code>alignH/V</code>: 0=左/上 1=中央 2=右/下。<code>wrap=true</code> で矩形幅に折り返し。クリックは遮らない。
                   <code>outlineWidth</code>＋<code>outlineColor</code> で縁取り（8方位重ね描き）、<code>shadowColor</code>（α0=無効）＋<code>shadowOffset</code> で影。
-                  <code>fontPath</code>（assets 相対の .ttf/.otf。空=既定の Yu Gothic）でフォント差し替え（任意サイズでシャープ。読み込み失敗時は警告して既定フォント）</td></tr>
+                  <code>fontPath</code>（assets 相対の .ttf/.otf。空=既定の Yu Gothic）でフォント差し替え（任意サイズでシャープ。読み込み失敗時は警告して既定フォント）。
+                  <code>typewriterSpeed</code>（文字/秒。0=無効）で Play 中に1文字ずつ表示＝会話文のタイプライター（UTF-8 単位で日本語も1文字ずつ。<code class="inl">scene:setUiText</code> で先頭から再生し直し）</td></tr>
               <tr><td><code>UIButton</code></td><td><code>onClickEvent</code>, <code>normalColor/hoverColor/pressedColor</code>, <code>interactable</code></td>
                   <td>同一エンティティの <code>UIImage</code> を状態色でティントするボタン。<b>release-inside でクリック確定</b>し、
                   <code>onClickEvent</code> 名で <code class="inl">events</code> へ発火。要素が重なった場合は<b>最前面だけ</b>が反応
                   （子要素がクリックを吸っても親ボタンへバブリングする）</td></tr>
               <tr><td><code>UIAnimator</code></td><td><code>showAnim/showDuration/showDelay/showEasing/slideOffset</code>, <code>hoverScale/pressScale/hoverSpeed</code>, <code>loopAnim/loopSpeed/loopAmount</code></td>
                   <td>UI アニメーション（Play 中のみ再生。効果は自分と子孫にまとめて掛かる）。
-                  <b>出現</b>=フェード / ポップ / 上下左右スライド / スピン（回転入場）（イージング 7 種: リニア〜バック/バウンス/弾性、<code>showDelay</code> で順番出し）。
+                  <b>出現</b>=フェード / ポップ / 上下左右スライド / スピン（回転入場） / バウンド落下 / フリップ（縦つぶれから開く） / シェイク入場（イージング 7 種: リニア〜バック/バウンス/弾性、<code>showDelay</code> で順番出し）。
                   <b>ホバー/押下</b>=UIButton があるとき拡大/縮小で反応。<b>ループ</b>=浮遊 / パルス / 点滅 / スピン（連続回転、<code>loopSpeed</code>=回転数/秒） / スウィング（±<code>loopAmount</code>度）。
                   Lua の <code class="inl">scene:showUi/hideUi</code> で出現アニメの再生 / 逆再生ができる</td></tr>
             </tbody>
@@ -923,10 +925,20 @@ scene:<span class="tok-fn">setUiSlider</span>(volSlider, <span class="tok-n">0.8
 <span class="tok-k">local</span> on = scene:<span class="tok-fn">getUiToggle</span>(muteToggle)
 scene:<span class="tok-fn">setUiToggle</span>(muteToggle, <span class="tok-k">true</span>)
 
-<span class="tok-c">-- 動的UI: トゥイーン（イージング付きアニメ。dx/dy=実移動px、scale/alpha=見た目のみ）</span>
+<span class="tok-c">-- 動的UI: トゥイーン（イージング付きアニメ。dx/dy=実移動px、scale/scaleX/scaleY/alpha/rotate/color=見た目のみ）</span>
 scene:<span class="tok-fn">tweenUi</span>(menu, { dx = <span class="tok-n">200</span>, duration = <span class="tok-n">0.4</span>, easing = <span class="tok-s">"bounce"</span> })
 scene:<span class="tok-fn">tweenUi</span>(popup, { scale = <span class="tok-n">1.2</span>, alpha = <span class="tok-n">0</span>, duration = <span class="tok-n">0.25</span> })
+scene:<span class="tok-fn">tweenUi</span>(card, { scaleY = <span class="tok-n">1</span>, duration = <span class="tok-n">0.35</span>, easing = <span class="tok-s">"back"</span> })  <span class="tok-c">-- 縦つぶれから開く（フリップ風）</span>
+scene:<span class="tok-fn">tweenUi</span>(hpBar, { color = {<span class="tok-n">3</span>, <span class="tok-n">0.3</span>, <span class="tok-n">0.3</span>}, duration = <span class="tok-n">0.1</span> })  <span class="tok-c">-- 赤フラッシュ（RGB乗算・1超え=輝き。{1,1,1}で解除）</span>
+scene:<span class="tok-fn">tweenUi</span>(hpBar, { shake = <span class="tok-n">10</span>, duration = <span class="tok-n">0.4</span> })  <span class="tok-c">-- 振動（px振幅。durationで減衰）</span>
 scene:<span class="tok-fn">setUiRotation</span>(titleLogo, <span class="tok-n">-8</span>)   <span class="tok-c">-- 回転（度・時計回り、子孫ごと）。tweenUi の rotate = 度 でアニメも可</span>
+
+<span class="tok-c">-- 定番演出はワンライナー集 uifx.*（プレリュード組み込み。e はボタンイベントの e.source そのまま可）</span>
+uifx.<span class="tok-fn">punch</span>(e.source)         <span class="tok-c">-- ボタンを押した感 / 他に flash・shake・hit・bounceIn・flipIn・popOut・fadeIn/Out</span>
+
+<span class="tok-c">-- 会話文のタイプライター（UIText.typewriterSpeed=文字/秒 を設定するだけ。SPACE で送り/スキップ）</span>
+scene:<span class="tok-fn">setUiTypewriter</span>(msg, <span class="tok-n">20</span>)
+<span class="tok-k">if</span> scene:<span class="tok-fn">isUiTypewriterDone</span>(msg) <span class="tok-k">then</span> nextLine() <span class="tok-k">else</span> scene:<span class="tok-fn">setUiTypewriter</span>(msg, <span class="tok-n">0</span>) <span class="tok-k">end</span>
 
 <span class="tok-c">-- UIAnimator の出現アニメを再生して表示 / 逆再生で消す（子孫ごと）</span>
 scene:<span class="tok-fn">showUi</span>(winPanel)

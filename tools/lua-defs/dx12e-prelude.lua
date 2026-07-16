@@ -372,3 +372,63 @@ function vfx.play(name, x, y, z, scale) end
 ---@param name string
 ---@param fn fun(x: number, y: number, z: number, scale: number)
 function vfx.register(name, fn) end
+
+-- ============================================================
+-- uifx: ゲーム内UIの定番演出ワンライナー集
+-- ============================================================
+
+---@class Uifx
+uifx = {}
+
+---ボタンを押した感（一瞬膨らんで戻る）。クリックハンドラの先頭に1行入れるだけ。
+---```lua
+---events:on("startClicked", function(e) uifx.punch(e.source) end)
+---```
+---@param e Entity|integer 対象（ボタンイベントの e.source そのままでよい）
+---@param s? number 膨らみ倍率（既定 1.15）
+---@param dur? number 全体秒（既定 0.22）
+function uifx.punch(e, s, dur) end
+
+---色フラッシュ。引数なしで白く光る。1 超えの値で輝く（ダメージ赤は uifx.flash(e, 3, 0.3, 0.3)）。
+---@param e Entity|integer
+---@param r? number 既定 2.5
+---@param g? number 既定 2.5
+---@param b? number 既定 2.5
+---@param dur? number 全体秒（既定 0.3）
+function uifx.flash(e, r, g, b, dur) end
+
+---振動（ダメージ/エラー通知）。duration かけて減衰する。
+---@param e Entity|integer
+---@param amp? number 振幅px（既定 10）
+---@param dur? number 秒（既定 0.4）
+function uifx.shake(e, amp, dur) end
+
+---赤フラッシュ + 振動（被ダメの定番セット）。
+---@param e Entity|integer
+---@param amp? number 振動振幅px（既定 8）
+function uifx.hit(e, amp) end
+
+---ぽよんと登場（0 からバウンドで等倍へ）。
+---@param e Entity|integer
+---@param dur? number 秒（既定 0.5）
+function uifx.bounceIn(e, dur) end
+
+---ぺしゃんこ→開く（フリップ風。結果表示やカード公開に）。
+---@param e Entity|integer
+---@param dur? number 秒（既定 0.4）
+function uifx.flipIn(e, dur) end
+
+---縮んで消える（ポップアップを閉じる）。
+---@param e Entity|integer
+---@param dur? number 秒（既定 0.25）
+function uifx.popOut(e, dur) end
+
+---フェードイン。
+---@param e Entity|integer
+---@param dur? number 秒（既定 0.3）
+function uifx.fadeIn(e, dur) end
+
+---フェードアウト（クリックは残る。消し切るなら scene:hideUi）。
+---@param e Entity|integer
+---@param dur? number 秒（既定 0.3）
+function uifx.fadeOut(e, dur) end

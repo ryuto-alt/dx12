@@ -197,6 +197,7 @@ void RegisterCoreComponentMeta()
         .data<&UIImage::fillDir>("fillDir")
         .data<&UIImage::gradientDir>("gradientDir")
         .data<&UIImage::gradientColor2>("gradientColor2")
+        .data<&UIImage::gradientScrollSpeed>("gradientScrollSpeed")
         .data<&UIImage::outlineWidth>("outlineWidth")
         .data<&UIImage::outlineColor>("outlineColor")
         .data<&UIImage::shadowColor>("shadowColor")
@@ -215,7 +216,8 @@ void RegisterCoreComponentMeta()
         .data<&UIText::outlineColor>("outlineColor")
         .data<&UIText::shadowColor>("shadowColor")
         .data<&UIText::shadowOffset>("shadowOffset")
-        .data<&UIText::fontPath>("fontPath");
+        .data<&UIText::fontPath>("fontPath")
+        .data<&UIText::typewriterSpeed>("typewriterSpeed");
 
     entt::meta_factory<UIButton>{}
         .type("UIButton")
