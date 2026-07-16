@@ -253,6 +253,7 @@ static void RegisterCoreComponentSerializers()
     R.Register(MakeReflectedInfo<UISlider>("UISlider", "uiSlider", true));
     R.Register(MakeReflectedInfo<UIToggle>("UIToggle", "uiToggle", true));
     R.Register(MakeReflectedInfo<UIScrollView>("UIScrollView", "uiScrollView", true));
+    R.Register(MakeReflectedInfo<UILayout>("UILayout", "uiLayout", true));
     R.Register(MakeReflectedInfo<UIAnimator>("UIAnimator", "uiAnimator", true));
 
     // ---- カメラ: フィールドは反射で復元し、新規追加時だけアクティブカメラの重複防止を行う ----

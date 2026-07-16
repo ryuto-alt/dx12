@@ -866,30 +866,44 @@ vfx.<span class="tok-fn">play</span>(<span class="tok-s">"explosion"</span>, x, 
             <tbody>
               <tr><td><code>UICanvas</code></td><td><code>refWidth/refHeight</code>, <code>scaleMode</code>, <code>sortOrder</code>, <code>visible</code></td>
                   <td>UIツリーのルート。これが付いたエンティティの子孫が UI 要素になる。<code>scaleMode</code>: 0=ScaleToFit（等比縮小・中央寄せレターボックス）、1=ConstantPixel（左上原点・実ピクセル）</td></tr>
-              <tr><td><code>UIRect</code></td><td><code>anchorMin/Max</code>, <code>pivot</code>, <code>offsetMin/Max</code>, <code>rotation</code>, <code>skewX</code>, <code>visible</code></td>
+              <tr><td><code>UIRect</code></td><td><code>anchorMin/Max</code>, <code>pivot</code>, <code>offsetMin/Max</code>, <code>rotation</code>, <code>skewX</code>, <code>clipChildren</code>, <code>visible</code></td>
                   <td>レイアウト矩形（Unity の RectTransform 相当）。全UI要素に必須。<code>visible=false</code> で自身と子孫ごと非表示。
                   <code>rotation</code>/<code>skewX</code>（度、時計回り）はピボット回りの<b>見た目の変換</b>（レイアウトは軸平行のまま。子孫も一緒に回る。
-                  UIScrollView 自身では無視され、回転したパネル内の UIScrollView は非対応。逆にスクロールビュー内の回転要素は OK）</td></tr>
-              <tr><td><code>UIImage</code></td><td><code>texturePath</code>, <code>color</code>, <code>uvMin/Max</code>, <code>sliceBorder</code>, <code>cornerRadius</code>, <code>raycastBlock</code>, <code>fillAmount</code>, <code>fillDir</code>, <code>gradientDir</code>, <code>gradientColor2</code>, <code>gradientScrollSpeed</code>, <code>outlineWidth</code>, <code>outlineColor</code>, <code>shadowColor</code>, <code>shadowOffset</code>, <code>shadowSoftness</code></td>
-                  <td>画像。<code>texturePath</code> が空なら単色塗り矩形（<code>cornerRadius</code> で角丸）。<code>sliceBorder</code>(px, 左上右下)で9-slice。
+                  UIScrollView 自身では無視され、回転したパネル内の UIScrollView は非対応。逆にスクロールビュー内の回転要素は OK）。
+                  <code>clipChildren=true</code> で子ツリーを自矩形で<b>マスク</b>（ワイプ公開/マーキー。ScrollView 同様このノード自身の回転は無効）</td></tr>
+              <tr><td><code>UIImage</code></td><td><code>texturePath</code>, <code>color</code>, <code>shape</code>, <code>ringThickness</code>, <code>uvMin/Max</code>, <code>uvScroll</code>, <code>sliceBorder</code>, <code>cornerRadius</code>, <code>raycastBlock</code>, <code>fillAmount</code>, <code>fillDir</code>, <code>fillOrigin</code>, <code>segments</code>, <code>segmentGap/Color</code>, <code>gradientDir</code>, <code>gradientColor2</code>, <code>gradientScrollSpeed</code>, <code>outlineWidth</code>, <code>outlineColor</code>, <code>outlineStyle</code>, <code>outlineDash</code>, <code>shadowColor</code>, <code>shadowOffset</code>, <code>shadowSoftness</code></td>
+                  <td>画像。<code>texturePath</code> が空なら単色塗り（<code>cornerRadius</code> で角丸）。<code>sliceBorder</code>(px, 左上右下)で9-slice。
+                  <code>shape</code>（0=矩形 1=楕円 2=リング 3=ダイヤ 4=六角形 5=三角形）で<b>形状描画</b>＝テクスチャは形で切り抜かれる（丸アイコン/バフ枠/スキルノード。
+                  矩形以外は角丸/9-slice 無視。リングは単色専用の帯円=円形ゲージ向き、太さは <code>ringThickness</code>）。
                   <code>raycastBlock</code>（既定 true）で背後のボタンへのクリックを遮る（Unity の raycastTarget 相当）。
-                  <code>fillAmount</code>（0..1、既定 1）で端から割合表示＝HPバー/ゲージ（方向は <code>fillDir</code>: 0=左 1=右 2=下 3=上から。クリップ方式なので 9-slice/角丸でも自然）。
-                  <code>gradientDir</code>（0=なし 1=横 2=縦 3=斜め）＋<code>gradientColor2</code>（終端色。αは無視）でグラデーション（テクスチャ/9-slice/角丸すべてに掛かる）。
+                  <code>fillAmount</code>（0..1、既定 1）で割合表示＝HPバー/ゲージ（<code>fillDir</code>: 0=左 1=右 2=下 3=上から、<b>4=放射時計回り 5=放射反時計回り</b>＝クールダウン円。放射は矩形にも効き、開始角は <code>fillOrigin</code>。リングの fill は常に円弧）。
+                  <code>segments</code>（0=無効）で fill 軸と直交の区切り線を重ねる<b>分割チャンクゲージ</b>（スタミナ/弾数。矩形+線形fill専用）。
+                  <code>uvMax</code>&gt;1 で<b>タイル繰り返し</b>、<code>uvScroll</code>(uv/秒)で<b>流れるパターン</b>（警告帯/背景ストライプ。9-slice では無効）。
+                  <code>gradientDir</code>（0=なし 1=横 2=縦 3=斜め <b>4=放射(中心→外)</b>）＋<code>gradientColor2</code>（終端色。αは無視）でグラデーション（テクスチャ/9-slice/角丸/形状すべてに掛かる）。
                   <code>gradientScrollSpeed</code>（周回/秒。0=静的）を 0 以外にすると、静的グラデの代わりに<b>終端色の光帯がグラデ方向へ流れる</b>＝ガチャボタンの光沢流し（負値で逆方向）。
-                  <code>outlineWidth</code>(px, 0=無効)＋<code>outlineColor</code> で角丸に追従する枠線。
-                  <code>shadowColor</code>（α0=無効）＋<code>shadowOffset</code>(px)＋<code>shadowSoftness</code>(px, 0=シャープ)で矩形近似のドロップシャドウ</td></tr>
-              <tr><td><code>UIText</code></td><td><code>text</code>, <code>fontSize</code>, <code>color</code>, <code>alignH/V</code>, <code>wrap</code>, <code>outlineWidth</code>, <code>outlineColor</code>, <code>shadowColor</code>, <code>shadowOffset</code>, <code>fontPath</code>, <code>typewriterSpeed</code></td>
+                  <code>outlineWidth</code>(px, 0=無効)＋<code>outlineColor</code> で枠線。<code>outlineStyle</code>（0=実線 1=<b>破線</b> 2=<b>コーナーブラケット</b>＝SF/照準HUDの四隅鉤括弧。矩形専用・角丸無視、長さは <code>outlineDash</code>）。
+                  <code>shadowColor</code>（α0=無効）＋<code>shadowOffset</code>(px)＋<code>shadowSoftness</code>(px, 0=シャープ)でドロップシャドウ（形状近似）</td></tr>
+              <tr><td><code>UIText</code></td><td><code>text</code>, <code>fontSize</code>, <code>color</code>, <code>alignH/V</code>, <code>wrap</code>, <code>outlineWidth</code>, <code>outlineColor</code>, <code>shadowColor</code>, <code>shadowOffset</code>, <code>fontPath</code>, <code>typewriterSpeed</code>, <code>letterSpacing</code>, <code>charAnim</code>, <code>charAnimAmount/Speed</code>, <code>gradientDir</code>, <code>gradientColor2</code></td>
                   <td>テキスト。<code>alignH/V</code>: 0=左/上 1=中央 2=右/下。<code>wrap=true</code> で矩形幅に折り返し。クリックは遮らない。
                   <code>outlineWidth</code>＋<code>outlineColor</code> で縁取り（8方位重ね描き）、<code>shadowColor</code>（α0=無効）＋<code>shadowOffset</code> で影。
                   <code>fontPath</code>（assets 相対の .ttf/.otf。空=既定の Yu Gothic）でフォント差し替え（任意サイズでシャープ。読み込み失敗時は警告して既定フォント）。
-                  <code>typewriterSpeed</code>（文字/秒。0=無効）で Play 中に1文字ずつ表示＝会話文のタイプライター（UTF-8 単位で日本語も1文字ずつ。<code class="inl">scene:setUiText</code> で先頭から再生し直し）</td></tr>
+                  <code>typewriterSpeed</code>（文字/秒。0=無効）で Play 中に1文字ずつ表示＝会話文のタイプライター（UTF-8 単位で日本語も1文字ずつ。<code class="inl">scene:setUiText</code> で先頭から再生し直し）。
+                  <code>letterSpacing</code>(px。負=詰め)で<b>字間</b>＝タイトルの字間広げ、<code>charAnim</code>（0=なし 1=<b>ウェーブ</b> 2=<b>ジッター</b> 3=<b>レインボー</b>）で1文字ずつ動く/色が回るにぎやかし
+                  （振幅=<code>charAnimAmount</code>px、速度=<code>charAnimSpeed</code>Hz。字間/文字アニメは wrap とは非両立）。
+                  <code>gradientDir</code>（0=なし 1=横 2=縦）＋<code>gradientColor2</code> で<b>本体のみの2色グラデ</b>＝金色タイトル等（縁取り/影には掛からない）</td></tr>
               <tr><td><code>UIButton</code></td><td><code>onClickEvent</code>, <code>normalColor/hoverColor/pressedColor</code>, <code>interactable</code></td>
                   <td>同一エンティティの <code>UIImage</code> を状態色でティントするボタン。<b>release-inside でクリック確定</b>し、
                   <code>onClickEvent</code> 名で <code class="inl">events</code> へ発火。要素が重なった場合は<b>最前面だけ</b>が反応
                   （子要素がクリックを吸っても親ボタンへバブリングする）</td></tr>
+              <tr><td><code>UILayout</code></td><td><code>mode</code>, <code>cellW/cellH</code>, <code>spacing</code>, <code>padding</code>, <code>gridCols</code></td>
+                  <td><b>自動レイアウトコンテナ</b>（VBox 縦積み / HBox 横並び / Grid 行優先）。直下の子（UIRect 持ち）へ
+                  セル矩形を順番に配る＝手動 offset 計算なしでメニュー列/ツールバー/インベントリが組める。
+                  子は配られたセルを親矩形としてアンカー解決（全面ストレッチの子はセルいっぱい）。
+                  <code>cellW=0</code>(VBox)/<code>cellH=0</code>(HBox) は内側いっぱい。スクロールリストは
+                  UIScrollView の子コンテンツノードに付ける</td></tr>
               <tr><td><code>UIAnimator</code></td><td><code>showAnim/showDuration/showDelay/showEasing/slideOffset</code>, <code>hoverScale/pressScale/hoverSpeed</code>, <code>loopAnim/loopSpeed/loopAmount</code></td>
                   <td>UI アニメーション（Play 中のみ再生。効果は自分と子孫にまとめて掛かる）。
-                  <b>出現</b>=フェード / ポップ / 上下左右スライド / スピン（回転入場） / バウンド落下 / フリップ（縦つぶれから開く） / シェイク入場（イージング 7 種: リニア〜バック/バウンス/弾性、<code>showDelay</code> で順番出し）。
+                  <b>出現</b>=フェード / ポップ / 上下左右スライド / スピン（回転入場） / バウンド落下 / フリップ（縦つぶれ/横つぶれから開く） / シェイク入場（イージング 12 種: リニア〜バック/バウンス/弾性/エクスポ/インバック/クイント/サイン、<code>showDelay</code> で順番出し）。
                   <b>ホバー/押下</b>=UIButton があるとき拡大/縮小で反応。<b>ループ</b>=浮遊 / パルス / 点滅 / スピン（連続回転、<code>loopSpeed</code>=回転数/秒） / スウィング（±<code>loopAmount</code>度）。
                   Lua の <code class="inl">scene:showUi/hideUi</code> で出現アニメの再生 / 逆再生ができる</td></tr>
             </tbody>
@@ -931,10 +945,16 @@ scene:<span class="tok-fn">tweenUi</span>(popup, { scale = <span class="tok-n">1
 scene:<span class="tok-fn">tweenUi</span>(card, { scaleY = <span class="tok-n">1</span>, duration = <span class="tok-n">0.35</span>, easing = <span class="tok-s">"back"</span> })  <span class="tok-c">-- 縦つぶれから開く（フリップ風）</span>
 scene:<span class="tok-fn">tweenUi</span>(hpBar, { color = {<span class="tok-n">3</span>, <span class="tok-n">0.3</span>, <span class="tok-n">0.3</span>}, duration = <span class="tok-n">0.1</span> })  <span class="tok-c">-- 赤フラッシュ（RGB乗算・1超え=輝き。{1,1,1}で解除）</span>
 scene:<span class="tok-fn">tweenUi</span>(hpBar, { shake = <span class="tok-n">10</span>, duration = <span class="tok-n">0.4</span> })  <span class="tok-c">-- 振動（px振幅。durationで減衰）</span>
+scene:<span class="tok-fn">tweenUi</span>(hpFill, { fill = <span class="tok-n">0.35</span>, duration = <span class="tok-n">0.3</span> })  <span class="tok-c">-- ゲージをなめらかに増減（UIImage.fillAmount）</span>
+scene:<span class="tok-fn">tweenUi</span>(scoreText, { countTo = <span class="tok-n">12800</span>, countFmt = <span class="tok-s">"%06d"</span>, duration = <span class="tok-n">0.8</span>, easing = <span class="tok-s">"expo"</span>,
+                          onComplete = <span class="tok-k">function</span>() audio:<span class="tok-fn">playSFX</span>(<span class="tok-s">"se/coin.wav"</span>) <span class="tok-k">end</span> })  <span class="tok-c">-- 数字ロール+完了SE</span>
+scene:<span class="tok-fn">stopUiTweens</span>(btn)  <span class="tok-c">-- 進行中tweenを全打ち切り（連打対策）</span>
 scene:<span class="tok-fn">setUiRotation</span>(titleLogo, <span class="tok-n">-8</span>)   <span class="tok-c">-- 回転（度・時計回り、子孫ごと）。tweenUi の rotate = 度 でアニメも可</span>
 
 <span class="tok-c">-- 定番演出はワンライナー集 uifx.*（プレリュード組み込み。e はボタンイベントの e.source そのまま可）</span>
 uifx.<span class="tok-fn">punch</span>(e.source)         <span class="tok-c">-- ボタンを押した感 / 他に flash・shake・hit・bounceIn・flipIn・popOut・fadeIn/Out</span>
+uifx.<span class="tok-fn">stagger</span>(items, <span class="tok-n">0.07</span>, uifx.slideInLeft)  <span class="tok-c">-- リスト項目の順次入場 / slideInRight・slideInUp・popIn</span>
+uifx.<span class="tok-fn">countTo</span>(scoreText, <span class="tok-n">12800</span>, <span class="tok-n">0.8</span>, <span class="tok-s">"%06d"</span>)   <span class="tok-c">-- 数字ロール / fillTo・damageBar(ゴーストバー)・wiggle・heartbeat</span>
 
 <span class="tok-c">-- 会話文のタイプライター（UIText.typewriterSpeed=文字/秒 を設定するだけ。SPACE で送り/スキップ）</span>
 scene:<span class="tok-fn">setUiTypewriter</span>(msg, <span class="tok-n">20</span>)

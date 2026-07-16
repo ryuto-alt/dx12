@@ -896,6 +896,9 @@ void InspectorPanel::Render(entt::registry& reg,
                     changed |= pg::Float("スキュー Skew X", &ur.skewX, 0.5f, -85.0f, 85.0f,
                         "%.1f", &active,
                         "横方向の傾き（度）。平行四辺形のバナー/ボタンに（ペルソナ風の斜めUI）");
+                    changed |= pg::Checkbox("子をマスク Clip Children", &ur.clipChildren,
+                        "ON: 子ツリーをこの矩形でクリップ（はみ出しを隠す）。ワイプ公開・\n"
+                        "マーキー・ゲージ内スクロール用。このノード自身の回転/スキューは無効になる");
                     pg::End();
                 }
                 EndEdit(reg, ctx, ctx.selectedEntity, m_uiRectEdit, changed, active, "UIRect");
@@ -948,8 +951,23 @@ void InspectorPanel::Render(entt::registry& reg,
                     }
 
                     changed |= pg::Color4("色 Color", &img.color.x);
-                    changed |= pg::Float2("UV Min", &img.uvMin.x, 0.005f, 0.0f, 1.0f, "%.3f", &active);
-                    changed |= pg::Float2("UV Max", &img.uvMax.x, 0.005f, 0.0f, 1.0f, "%.3f", &active);
+                    {
+                        static const char* shapes[] = {"矩形", "楕円", "リング(枠円)", "ダイヤ",
+                                                       "六角形", "三角形(上向き)"};
+                        changed |= pg::Combo("形状 Shape", &img.shape, shapes, IM_ARRAYSIZE(shapes),
+                            "矩形以外は角丸/9スライス無効。テクスチャは形で切り抜かれる\n"
+                            "（丸アイコン等）。リングは単色専用の帯円（円形ゲージ向き）");
+                    }
+                    if (img.shape == 2)
+                        changed |= pg::Float("リング太さ Ring Thickness", &img.ringThickness,
+                            0.25f, 1.0f, 512.0f, "%.1f", &active, "帯の太さ（キャンバスpx）");
+                    changed |= pg::Float2("UV Min", &img.uvMin.x, 0.005f, -64.0f, 64.0f, "%.3f", &active);
+                    changed |= pg::Float2("UV Max", &img.uvMax.x, 0.005f, -64.0f, 64.0f, "%.3f", &active,
+                        "1 を超えるとタイル繰り返し（パターン背景。ストライプ/ドット等）");
+                    changed |= pg::Float2("UVスクロール UV Scroll", &img.uvScroll.x, 0.01f,
+                        -32.0f, 32.0f, "%.2f", &active,
+                        "uv/秒。タイル(UV Max>1)と併用で流れるパターンに\n"
+                        "（警告帯/コンベア/背景ストライプ）。9スライスでは無効");
                     changed |= pg::FloatN("9スライス境界 Slice Border", &img.sliceBorder.x, 4, 0.5f,
                         0.0f, 4096.0f, "%.0f", &active,
                         "元テクスチャ上の境界px（左,上,右,下）。全0で無効。\n"
@@ -964,32 +982,66 @@ void InspectorPanel::Render(entt::registry& reg,
                         "0〜1 の割合だけ表示する（HPバー/ゲージ用）。1=全表示、0=非表示。\n"
                         "Lua からは scene:setUiFill(entity, amount) で更新できる");
                     {
-                        static const char* fillDirs[] = {"左から", "右から", "下から", "上から"};
+                        static const char* fillDirs[] = {"左から", "右から", "下から", "上から",
+                                                         "放射(時計回り)", "放射(反時計回り)"};
                         changed |= pg::Combo("Fill 方向 Fill Dir", &img.fillDir, fillDirs, IM_ARRAYSIZE(fillDirs),
-                            "Fill Amount が増えるとき、どの端から現れていくか");
+                            "Fill Amount が増えるとき、どの端から現れていくか。\n"
+                            "放射=中心からの角度掃引（クールダウン円。矩形にも効く）");
+                    }
+                    if (img.fillDir >= 4 || img.shape == 2)
+                        changed |= pg::Float("Fill 開始角 Fill Origin", &img.fillOrigin, 1.0f,
+                            -360.0f, 360.0f, "%.0f", &active,
+                            "放射 fill の開始角（度）。0=真上、時計回り正");
+                    if (img.shape == 0 && img.fillDir <= 3)
+                    {
+                        changed |= pg::Int("分割数 Segments", &img.segments, 0.1f, 0, 64, &active,
+                            "0以外で fill 軸と直交する区切り線を重ねて「n分割チャンクゲージ」に\n"
+                            "（スタミナ/弾数）。矩形+線形 fill 専用");
+                        if (img.segments > 1)
+                        {
+                            changed |= pg::Float("区切り太さ Segment Gap", &img.segmentGap,
+                                0.25f, 0.5f, 64.0f, "%.1f", &active, "キャンバスpx");
+                            changed |= pg::Color4("区切り色 Segment Color", &img.segmentColor.x);
+                        }
                     }
 
                     pg::Label("グラデーション Gradient",
                         "色 Color → 終端色 の線形グラデーション。テクスチャ/9スライス/角丸にも掛かる");
                     {
-                        static const char* gradDirs[] = {"なし", "横(左→右)", "縦(上→下)", "斜め(左上→右下)"};
+                        static const char* gradDirs[] = {"なし", "横(左→右)", "縦(上→下)",
+                                                         "斜め(左上→右下)", "放射(中心→外)"};
                         changed |= pg::Combo("方向 Gradient Dir", &img.gradientDir,
                                              gradDirs, IM_ARRAYSIZE(gradDirs));
                     }
                     if (img.gradientDir > 0)
                     {
                         changed |= pg::Color4("終端色 Gradient Color 2", &img.gradientColor2.x);
-                        changed |= pg::Float("グロス速度 Scroll Speed", &img.gradientScrollSpeed,
-                            0.05f, -10.0f, 10.0f, "%.2f", &active,
-                            "0以外で静的グラデの代わりに終端色の光帯がグラデ方向へ流れる\n"
-                            "（ガチャボタンの光沢流し）。周回数/秒。負値で逆方向、0 で静的グラデ");
+                        if (img.gradientDir != 4)
+                            changed |= pg::Float("グロス速度 Scroll Speed", &img.gradientScrollSpeed,
+                                0.05f, -10.0f, 10.0f, "%.2f", &active,
+                                "0以外で静的グラデの代わりに終端色の光帯がグラデ方向へ流れる\n"
+                                "（ガチャボタンの光沢流し）。周回数/秒。負値で逆方向、0 で静的グラデ");
                     }
 
                     pg::Label("縁取り Outline", "枠線。角丸にも追従する");
                     changed |= pg::Float("太さ Outline Width", &img.outlineWidth, 0.25f, 0.0f, 64.0f,
                         "%.1f", &active, "キャンバスpx。0 で無効");
                     if (img.outlineWidth > 0.0f)
+                    {
                         changed |= pg::Color4("縁取り色 Outline Color", &img.outlineColor.x);
+                        if (img.shape == 0)
+                        {
+                            static const char* olStyles[] = {"実線", "破線",
+                                                             "コーナーブラケット(四隅)"};
+                            changed |= pg::Combo("スタイル Outline Style", &img.outlineStyle,
+                                olStyles, IM_ARRAYSIZE(olStyles),
+                                "破線/ブラケットは矩形専用・角丸無視。ブラケットは SF/照準 HUD の定番");
+                            if (img.outlineStyle != 0)
+                                changed |= pg::Float("破線長/腕長 Dash", &img.outlineDash,
+                                    0.5f, 2.0f, 256.0f, "%.0f", &active,
+                                    "破線=1区切りの長さ / ブラケット=腕の長さ（キャンバスpx）");
+                        }
+                    }
 
                     pg::Label("影 Drop Shadow",
                         "矩形近似のドロップシャドウ（テクスチャの形は反映しない）。色のαが 0 で無効");
@@ -1088,6 +1140,32 @@ void InspectorPanel::Render(entt::registry& reg,
                         "文字/秒。0 で無効(即全表示)。Play 中に1文字ずつ現れる(日本語も1文字ずつ)。\n"
                         "Lua: scene:setUiText で文字列を変えると先頭から再生し直す。\n"
                         "scene:setUiTypewriter(e,速度) / scene:isUiTypewriterDone(e) も使える");
+
+                    changed |= pg::Float("字間 Letter Spacing", &txt.letterSpacing, 0.1f,
+                        -32.0f, 64.0f, "%.1f", &active,
+                        "文字の間隔(px)。負で詰める。0以外で1文字ずつ描くモードに\n"
+                        "（折り返し Wrap とは非両立 = Wrap 優先）。タイトルの字間広げに");
+                    {
+                        static const char* charAnims[] = {"なし", "ウェーブ(上下うねり)",
+                                                          "ジッター(ガタガタ)", "レインボー(色相回転)"};
+                        changed |= pg::Combo("文字アニメ Char Anim", &txt.charAnim,
+                            charAnims, IM_ARRAYSIZE(charAnims),
+                            "1文字ずつ動く/色が変わる にぎやかしテキスト。Wrap とは非両立");
+                    }
+                    if (txt.charAnim == 1 || txt.charAnim == 2)
+                        changed |= pg::Float("アニメ振幅 Amount", &txt.charAnimAmount, 0.1f,
+                            0.0f, 64.0f, "%.1f", &active, "上下/ガタつきの振幅(px)");
+                    if (txt.charAnim != 0)
+                        changed |= pg::Float("アニメ速度 Speed", &txt.charAnimSpeed, 0.05f,
+                            0.0f, 20.0f, "%.2f", &active, "周波数(Hz)");
+                    {
+                        static const char* tGradDirs[] = {"なし", "横(左→右)", "縦(上→下)"};
+                        changed |= pg::Combo("グラデ Text Gradient", &txt.gradientDir,
+                            tGradDirs, IM_ARRAYSIZE(tGradDirs),
+                            "本体のみの2色グラデ（縁取り/影には掛からない）。金色タイトル等");
+                    }
+                    if (txt.gradientDir > 0)
+                        changed |= pg::Color4("グラデ終端色 Gradient Color 2", &txt.gradientColor2.x);
                     pg::End();
                 }
                 EndEdit(reg, ctx, ctx.selectedEntity, m_uiTextEdit, changed, active, "UIText");
@@ -1217,6 +1295,41 @@ void InspectorPanel::Render(entt::registry& reg,
             }
         }
 
+        // UILayout（自動レイアウト: 直下の子へセル矩形を順に配る）
+        if (reg.all_of<UILayout>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entUi : 0, "UILayout");
+            bool removed = ComponentRemoveMenu<UILayout>(reg, ctx, ctx.selectedEntity, "UILayout");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_uiLayoutEdit);
+                auto& lay = reg.get<UILayout>(ctx.selectedEntity);
+                bool changed = false, active = false;
+
+                if (pg::Begin("UILayout"))
+                {
+                    static const char* modes[] = {"縦積み VBox", "横並び HBox", "グリッド Grid"};
+                    changed |= pg::Combo("モード Mode", &lay.mode, modes, IM_ARRAYSIZE(modes),
+                        "直下の子(UIRect 持ち)へセル矩形を順番に配る。手動 offset 計算なしで\n"
+                        "メニュー列/ツールバー/インベントリが組める。子はセル内でアンカー解決\n"
+                        "（全面ストレッチの子はセルいっぱいに広がる）");
+                    changed |= pg::Float("セル幅 Cell W", &lay.cellW, 1.0f, 0.0f, 4096.0f,
+                        "%.0f", &active, "px。縦積み(VBox)では 0 = 親の内側いっぱい");
+                    changed |= pg::Float("セル高 Cell H", &lay.cellH, 1.0f, 0.0f, 4096.0f,
+                        "%.0f", &active, "px。横並び(HBox)では 0 = 親の内側いっぱい");
+                    changed |= pg::Float("間隔 Spacing", &lay.spacing, 0.5f, 0.0f, 512.0f,
+                        "%.0f", &active, "セル間の隙間(px)");
+                    changed |= pg::FloatN("余白 Padding", &lay.padding.x, 4, 0.5f, 0.0f, 512.0f,
+                        "%.0f", &active, "内側余白(左,上,右,下 px)");
+                    if (lay.mode == 2)
+                        changed |= pg::Int("列数 Grid Cols", &lay.gridCols, 0.1f, 1, 64, &active,
+                            "グリッドの列数（行優先で左上から埋まる）");
+                    pg::End();
+                }
+                EndEdit(reg, ctx, ctx.selectedEntity, m_uiLayoutEdit, changed, active, "UILayout");
+            }
+        }
+
         // UIToggle（チェックボックス。クリックで isOn 反転 + onChangeEvent を emit）
         if (reg.all_of<UIToggle>(ctx.selectedEntity))
         {
@@ -1266,9 +1379,13 @@ void InspectorPanel::Render(entt::registry& reg,
                     static const char* showAnims[] = {"なし", "フェード", "ポップ(拡大)",
                                                       "左から", "右から", "上から", "下から",
                                                       "スピン(回転入場)", "バウンド落下",
-                                                      "フリップ(縦)", "シェイク入場"};
+                                                      "フリップ(縦)", "シェイク入場",
+                                                      "フリップ(横=扉/カード)"};
                     static const char* easings[] = {"リニア", "イーズイン", "イーズアウト",
-                                                    "イン/アウト", "バック(勢い)", "バウンス", "弾性"};
+                                                    "イン/アウト", "バック(勢い)", "バウンス", "弾性",
+                                                    "エクスポ(鋭い減速)", "インバック(溜め)",
+                                                    "イン/アウトバック", "クイント(強い減速)",
+                                                    "サイン(ゆったり)"};
                     static const char* loops[] = {"なし", "浮遊(上下)", "パルス(拡縮)", "点滅",
                                                   "スピン(連続回転)", "スウィング(揺れ)"};
 
@@ -2398,6 +2515,7 @@ void InspectorPanel::Render(entt::registry& reg,
             AddComponentMenuItem<UISlider>(reg, ctx, ctx.selectedEntity, "UI Slider");
             AddComponentMenuItem<UIToggle>(reg, ctx, ctx.selectedEntity, "UI Toggle");
             AddComponentMenuItem<UIScrollView>(reg, ctx, ctx.selectedEntity, "UI Scroll View");
+            AddComponentMenuItem<UILayout>(reg, ctx, ctx.selectedEntity, "UI Layout (VBox/HBox/Grid)");
             AddComponentMenuItem<UIAnimator>(reg, ctx, ctx.selectedEntity, "UI Animator");
             ImGui::Separator();
             AddComponentMenuItem<RigidBody>(reg, ctx, ctx.selectedEntity, "RigidBody");

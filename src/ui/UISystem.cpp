@@ -5,6 +5,8 @@
 #include <cmath>
 #include <unordered_map>
 
+#include <cstdio>    // snprintf（tween 数字ロール）
+#include <cstdlib>   // atof（数字ロールの from 捕捉）
 #include <cstring>
 
 #include <imgui.h>
@@ -247,6 +249,8 @@ void PushHitRect(std::vector<UiHitEntry>* out, entt::entity e, const UiRectPx& s
 
 // イージング（p: 0..1 → 0..1）。列挙は UIAnimator::showEasing / UiTween::easing 共通:
 //   0=リニア 1=イーズイン 2=イーズアウト 3=イン/アウト 4=バック(勢い) 5=バウンス 6=弾性
+//   7=エクスポ(鋭く減速) 8=インバック(溜めて発進) 9=イン/アウトバック 10=クイント(強い減速)
+//   11=サイン(ゆったり対称)
 float UiEase(int type, float p)
 {
     p = std::clamp(p, 0.0f, 1.0f);
@@ -284,9 +288,50 @@ float UiEase(int type, float p)
         constexpr float c4 = 6.2831853f / 3.0f;
         return std::pow(2.0f, -10.0f * p) * std::sin((p * 10.0f - 0.75f) * c4) + 1.0f;
     }
+    case 7:   // easeOutExpo（鋭く立ち上がり滑らかに止まる。スナップの効いた UI 定番）
+        return (p >= 1.0f) ? 1.0f : 1.0f - std::pow(2.0f, -10.0f * p);
+    case 8:   // easeInBack（動く前に逆方向へ溜める = anticipation。退場にも合う）
+    {
+        constexpr float c1 = 1.70158f;
+        constexpr float c3 = c1 + 1.0f;
+        return c3 * p * p * p - c1 * p * p;
+    }
+    case 9:   // easeInOutBack（溜め → 行き過ぎ → 収束）
+    {
+        constexpr float c2 = 1.70158f * 1.525f;
+        if (p < 0.5f)
+        {
+            const float q = 2.0f * p;
+            return q * q * ((c2 + 1.0f) * q - c2) * 0.5f;
+        }
+        const float q = 2.0f * p - 2.0f;
+        return (q * q * ((c2 + 1.0f) * q + c2) + 2.0f) * 0.5f;
+    }
+    case 10:  // easeOutQuint（cubic より強い減速。大きい移動距離向き）
+    {
+        const float q = 1.0f - p;
+        const float q2 = q * q;
+        return 1.0f - q2 * q2 * q;
+    }
+    case 11:  // easeInOutSine（ゆったり対称。字幕・アンビエント向き）
+        return 0.5f - 0.5f * std::cos(p * 3.14159265f);
     default:  // 0: リニア
         return p;
     }
+}
+
+// 数字ロール（UiTween::hasCount）: countFmt(printf 書式)で数値をテキスト化して UIText へ書く。
+// 書式は ScriptEngine 側で [%][フラグ/幅/.精度][d|f] のみに検証済み（不正は "%d" に落ちている）
+void SetUiCountText(UIText& txt, double v, const std::string& fmt)
+{
+    char buf[64];
+    const char conv = fmt.empty() ? 'd' : fmt.back();
+    if (conv == 'f')
+        std::snprintf(buf, sizeof(buf), fmt.c_str(), v);
+    else
+        std::snprintf(buf, sizeof(buf), fmt.empty() ? "%d" : fmt.c_str(),
+                      static_cast<int>(std::llround(v)));
+    txt.text = buf;
 }
 
 // UIAnimator / UITweenState を dt で進め、今フレームの視覚合成結果（_cur*）を確定する。
@@ -294,6 +339,10 @@ float UiEase(int type, float p)
 void UpdateUiAnimations(entt::registry& reg, float dt)
 {
     dt = std::clamp(dt, 0.0f, 0.1f);   // ヒッチ時の飛びを抑える
+
+    // 完了コールバック（tween の onComplete）。ビュー走査中に Lua を呼ぶと tweens vector が
+    // 再入で伸びる恐れがあるため、集めておいて全走査後にまとめて発火する
+    std::vector<std::function<void()>> completed;
 
     // ---- UIAnimator（出現 / ホバー・押下 / ループ）----
     for (auto [e, an] : reg.view<UIAnimator>().each())
@@ -352,6 +401,7 @@ void UpdateUiAnimations(entt::registry& reg, float dt)
                      alpha = std::min(1.0f, p * 3.0f);
                      off.x = std::sin(p * 25.1327412f) * an.slideOffset * 0.25f * (1.0f - p);
                                                                             break;
+            case 11: alpha = ev; scaleX = ev;                               break;  // 横フリップ（扉/カード）
             default: alpha = ev;                                            break;  // フェード
             }
         }
@@ -417,6 +467,24 @@ void UpdateUiAnimations(entt::registry& reg, float dt)
                 t.alphaFrom  = tw.visAlpha;
                 t.rotFrom    = tw.visRot;
                 t.colFrom    = tw.visColor;
+                if (t.hasFill)
+                {
+                    // from = 開始時の現在値（直前の状態から滑らかに繋がる = ゴーストバー可）
+                    if (const auto* img = reg.try_get<UIImage>(e)) t.fillFrom = img->fillAmount;
+                    else                                           t.hasFill  = false;
+                }
+                if (t.hasCount)
+                {
+                    if (const auto* ut = reg.try_get<UIText>(e))
+                    {
+                        if (!t.countFromSet)   // from 省略時は現在テキストの数値解釈（失敗=0）
+                            t.countFrom = std::atof(ut->text.c_str());
+                    }
+                    else
+                    {
+                        t.hasCount = false;
+                    }
+                }
             }
             const float p  = std::clamp((t.t - t.delay) / (std::max)(0.01f, t.duration), 0.0f, 1.0f);
             const float ev = UiEase(t.easing, p);
@@ -448,6 +516,19 @@ void UpdateUiAnimations(entt::registry& reg, float dt)
                 shakeOff.x += std::sin(tt * t.shakeFreq * 6.2831853f) * decay;
                 shakeOff.y += std::sin(tt * t.shakeFreq * 6.2831853f * 0.83f + 1.3f) * decay * 0.6f;
             }
+            if (t.hasFill)
+            {
+                if (auto* img = reg.try_get<UIImage>(e))
+                    img->fillAmount = t.fillFrom + (t.fillTo - t.fillFrom) * ev;
+            }
+            if (t.hasCount)
+            {
+                if (auto* ut = reg.try_get<UIText>(e))
+                    SetUiCountText(*ut,
+                                   t.countFrom + (t.countTo - t.countFrom)
+                                       * static_cast<double>(ev),
+                                   t.countFmt);
+            }
             if (p >= 1.0f)
             {
                 // 完了: 視覚値は持続させる（alpha=0 で消したままにできる）。shake は 0 へ減衰済み
@@ -456,6 +537,7 @@ void UpdateUiAnimations(entt::registry& reg, float dt)
                 if (t.hasAlpha)  tw.visAlpha  = t.alphaTo;
                 if (t.hasRotate) tw.visRot    = t.rotTo;
                 if (t.hasColor)  tw.visColor  = t.colTo;
+                if (t.onComplete) completed.push_back(std::move(t.onComplete));
                 it = tw.tweens.erase(it);
             }
             else
@@ -478,6 +560,10 @@ void UpdateUiAnimations(entt::registry& reg, float dt)
         if (txt.typewriterSpeed > 0.0f)
             txt._twT += dt;
     }
+
+    // ---- tween 完了コールバック（走査完了後にまとめて発火 = Lua が tweenUi を呼んでも安全）----
+    for (auto& fn : completed)
+        fn();
 }
 
 ImU32 ToImCol(const DirectX::XMFLOAT4& c)
@@ -635,6 +721,242 @@ void ShadeVertsGlossBand(ImDrawList* dl, int vtxStart, int vtxEnd,
     }
 }
 
+// ==== シェイプ描画（UIImage.shape / 放射 fill / タイル繰り返し）====
+// 形状はスクリーン空間の凸ポリゴンとして構築し、単色は AddConvex/ConcavePolyFilled（AA 付き）、
+// テクスチャは扇の三角形分割 + 基準矩形→UV の写像（=画像を形で切り抜く。AA なし）で描く。
+// 放射 fill は「中心から境界への角度掃引」を同じポリゴン境界に対して行う（矩形にも効く）。
+
+constexpr float kUiDeg2Rad = 3.14159265358979323846f / 180.0f;
+
+// 角度（度。0=真上・時計回り正）→ スクリーン方向ベクトル（Y は下向き正）
+ImVec2 UiAngleDir(float deg)
+{
+    const float r = deg * kUiDeg2Rad;
+    return ImVec2(std::sin(r), -std::cos(r));
+}
+
+// shape の輪郭ポリゴン（時計回り・矩形 s に内接）。1=楕円(48分割) 3=ダイヤ 4=六角形(頂点が上)
+// 5=三角形(上向き。向きは UIRect.rotation で変える) それ以外=矩形。リング(2)は別経路（円弧ストローク）
+void BuildUiShapePoly(int shape, const UiRectPx& s, ImVector<ImVec2>& out)
+{
+    out.resize(0);
+    const float cx = (s.minX + s.maxX) * 0.5f;
+    const float cy = (s.minY + s.maxY) * 0.5f;
+    const float hw = s.Width() * 0.5f;
+    const float hh = s.Height() * 0.5f;
+    switch (shape)
+    {
+    case 1:
+        for (int i = 0; i < 48; ++i)
+        {
+            const ImVec2 d = UiAngleDir(static_cast<float>(i) * (360.0f / 48.0f));
+            out.push_back(ImVec2(cx + d.x * hw, cy + d.y * hh));
+        }
+        break;
+    case 3:
+        out.push_back(ImVec2(cx, s.minY));
+        out.push_back(ImVec2(s.maxX, cy));
+        out.push_back(ImVec2(cx, s.maxY));
+        out.push_back(ImVec2(s.minX, cy));
+        break;
+    case 4:
+        for (int i = 0; i < 6; ++i)
+        {
+            const ImVec2 d = UiAngleDir(static_cast<float>(i) * 60.0f);
+            out.push_back(ImVec2(cx + d.x * hw, cy + d.y * hh));
+        }
+        break;
+    case 5:
+        out.push_back(ImVec2(cx, s.minY));
+        out.push_back(ImVec2(s.maxX, s.maxY));
+        out.push_back(ImVec2(s.minX, s.maxY));
+        break;
+    default:
+        out.push_back(ImVec2(s.minX, s.minY));
+        out.push_back(ImVec2(s.maxX, s.minY));
+        out.push_back(ImVec2(s.maxX, s.maxY));
+        out.push_back(ImVec2(s.minX, s.maxY));
+        break;
+    }
+}
+
+// 凸ポリゴンを軸平行の半平面でその場クリップ（Sutherland–Hodgman の 1 辺ぶん。線形 fill 用）。
+// axis: 0=x 1=y。keepLess=true なら「座標 <= limit」側を残す
+void ClipUiPolyAxis(ImVector<ImVec2>& poly, int axis, bool keepLess, float limit)
+{
+    static ImVector<ImVec2> s_tmp;   // 描画パスは単一スレッド・再入なし
+    s_tmp.resize(0);
+    const int n = poly.Size;
+    for (int i = 0; i < n; ++i)
+    {
+        const ImVec2 a = poly[i];
+        const ImVec2 b = poly[(i + 1) % n];
+        const float av = (axis == 0) ? a.x : a.y;
+        const float bv = (axis == 0) ? b.x : b.y;
+        const bool ain = keepLess ? (av <= limit) : (av >= limit);
+        const bool bin = keepLess ? (bv <= limit) : (bv >= limit);
+        if (ain)
+            s_tmp.push_back(a);
+        if (ain != bin && bv != av)
+        {
+            const float t = (limit - av) / (bv - av);
+            s_tmp.push_back(ImVec2(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t));
+        }
+    }
+    poly = s_tmp;
+}
+
+// 中心 c から角度 deg 方向のレイと凸ポリゴン境界の交点（c はポリゴン内部前提）
+ImVec2 UiPolyBoundaryPoint(const ImVector<ImVec2>& poly, const ImVec2& c, float deg)
+{
+    const ImVec2 d = UiAngleDir(deg);
+    float bestT = 0.0f;
+    const int n = poly.Size;
+    for (int i = 0; i < n; ++i)
+    {
+        const ImVec2 a = poly[i];
+        const ImVec2 b = poly[(i + 1) % n];
+        const float ex = b.x - a.x, ey = b.y - a.y;
+        const float den = d.x * ey - d.y * ex;   // cross(d, e)
+        if (den > -1e-9f && den < 1e-9f) continue;
+        const float acx = a.x - c.x, acy = a.y - c.y;
+        const float t = (acx * ey - acy * ex) / den;   // cross(ac, e) / cross(d, e)
+        const float u = (acx * d.y - acy * d.x) / den; // cross(ac, d) / cross(d, e)
+        if (t > 0.0f && u >= -0.001f && u <= 1.001f && t > bestT)
+            bestT = t;
+    }
+    return ImVec2(c.x + d.x * bestT, c.y + d.y * bestT);
+}
+
+// 放射 fill（扇形）ポリゴン: [0]=中心、以降が a0 から sweep 度ぶんの境界点列。
+// 約 6 度刻み + 範囲内のポリゴン頂点角を挿入 = 矩形でも辺にぴったり沿う
+void BuildUiPiePoly(const ImVector<ImVec2>& shapePoly, const ImVec2& c,
+                    float a0, float sweep, ImVector<ImVec2>& out)
+{
+    out.resize(0);
+    out.push_back(c);
+    if (sweep == 0.0f) return;
+    static ImVector<float> s_angles;
+    s_angles.resize(0);
+    const float a1 = a0 + sweep;
+    const float lo = std::min(a0, a1), hi = std::max(a0, a1);
+    const int steps = std::max(2, static_cast<int>(std::fabs(sweep) / 6.0f) + 1);
+    for (int i = 0; i <= steps; ++i)
+        s_angles.push_back(a0 + sweep * (static_cast<float>(i) / static_cast<float>(steps)));
+    for (int i = 0; i < shapePoly.Size; ++i)
+    {
+        const float dx = shapePoly[i].x - c.x;
+        const float dy = shapePoly[i].y - c.y;
+        const float va = std::atan2(dx, -dy) / kUiDeg2Rad;   // 0=真上・時計回り
+        for (float k = -720.0f; k <= 720.0f; k += 360.0f)
+        {
+            const float cand = va + k;
+            if (cand > lo + 0.01f && cand < hi - 0.01f)
+                s_angles.push_back(cand);
+        }
+    }
+    std::sort(s_angles.begin(), s_angles.end());
+    if (sweep < 0.0f)
+        std::reverse(s_angles.begin(), s_angles.end());
+    float prev = FLT_MAX;
+    for (int i = 0; i < s_angles.Size; ++i)
+    {
+        if (std::fabs(s_angles[i] - prev) < 0.05f) continue;
+        prev = s_angles[i];
+        out.push_back(UiPolyBoundaryPoint(shapePoly, c, s_angles[i]));
+    }
+}
+
+// テクスチャ付きポリゴン: pts[0] を扇の要とした三角形分割。UV は基準矩形 s → [uv0,uv1] の
+// 写像（=画像を形で切り抜く）。凸形状（pts[0] が凸頂点）と扇形（pts[0]=中心）の両方に使える
+void AddUiPolyTextured(ImDrawList* dl, ImTextureID texId, const ImVec2* pts, int n,
+                       const UiRectPx& s, const ImVec2& uv0, const ImVec2& uv1, ImU32 col)
+{
+    if (n < 3) return;
+    const float invW = 1.0f / std::max(1e-6f, s.Width());
+    const float invH = 1.0f / std::max(1e-6f, s.Height());
+    dl->PushTexture(texId);
+    dl->PrimReserve((n - 2) * 3, n);
+    const unsigned int base = dl->_VtxCurrentIdx;
+    for (int i = 0; i < n; ++i)
+    {
+        const ImVec2 uv(uv0.x + (uv1.x - uv0.x) * (pts[i].x - s.minX) * invW,
+                        uv0.y + (uv1.y - uv0.y) * (pts[i].y - s.minY) * invH);
+        dl->PrimWriteVtx(pts[i], uv, col);
+    }
+    for (int i = 2; i < n; ++i)
+    {
+        dl->PrimWriteIdx(static_cast<ImDrawIdx>(base));
+        dl->PrimWriteIdx(static_cast<ImDrawIdx>(base + i - 1));
+        dl->PrimWriteIdx(static_cast<ImDrawIdx>(base + i));
+    }
+    dl->PopTexture();
+}
+
+// 放射グラデ（gradientDir=4）: 中心からの距離 0..1 で col1→col2 の RGB を上書き（α は保持。
+// ShadeVertsLinearColorGradientKeepAlpha の放射版）
+void ShadeVertsRadial(ImDrawList* dl, int vtxStart, int vtxEnd,
+                      const ImVec2& c, float maxDist, ImU32 col1, ImU32 col2)
+{
+    if (maxDist <= 0.0f) return;
+    const ImVec4 c1 = ImGui::ColorConvertU32ToFloat4(col1);
+    const ImVec4 c2 = ImGui::ColorConvertU32ToFloat4(col2);
+    const float invD = 1.0f / maxDist;
+    ImDrawVert* v = dl->VtxBuffer.Data;
+    for (int i = vtxStart; i < vtxEnd; ++i)
+    {
+        ImDrawVert& vt = v[i];
+        const float dx = vt.pos.x - c.x, dy = vt.pos.y - c.y;
+        const float t = std::clamp(std::sqrt(dx * dx + dy * dy) * invD, 0.0f, 1.0f);
+        ImVec4 cur = ImGui::ColorConvertU32ToFloat4(vt.col);
+        cur.x = c1.x + (c2.x - c1.x) * t;
+        cur.y = c1.y + (c2.y - c1.y) * t;
+        cur.z = c1.z + (c2.z - c1.z) * t;
+        vt.col = ImGui::ColorConvertFloat4ToU32(cur);
+    }
+}
+
+// タイル描画: uv 範囲が [0,1] を超える場合に整数 UV 境界でクワッド分割して描く
+// （バックエンドのサンプラが CLAMP のためジオメトリ側でリピートを再現）。uvScroll と併用で
+// パターンが流れる。極端な繰り返し数(>256)は安全のため単一クワッドへフォールバック
+void AddImageTiled(ImDrawList* dl, ImTextureID texId, const UiRectPx& s,
+                   const ImVec2& uv0, const ImVec2& uv1, ImU32 col)
+{
+    const float spanU = uv1.x - uv0.x, spanV = uv1.y - uv0.y;
+    if (spanU <= 0.0f || spanV <= 0.0f || spanU > 256.0f || spanV > 256.0f)
+    {
+        dl->AddImage(texId, ImVec2(s.minX, s.minY), ImVec2(s.maxX, s.maxY), uv0, uv1, col);
+        return;
+    }
+    static ImVector<float> s_cutsU, s_cutsV;
+    auto buildCuts = [](float a, float b, ImVector<float>& out) {
+        out.resize(0);
+        out.push_back(a);
+        for (float k = std::floor(a) + 1.0f; k < b; k += 1.0f)
+            if (k > a) out.push_back(k);
+        out.push_back(b);
+    };
+    buildCuts(uv0.x, uv1.x, s_cutsU);
+    buildCuts(uv0.y, uv1.y, s_cutsV);
+    const float w = s.Width(), h = s.Height();
+    for (int vi = 0; vi + 1 < s_cutsV.Size; ++vi)
+    {
+        const float v0 = s_cutsV[vi], v1 = s_cutsV[vi + 1];
+        const float y0 = s.minY + (v0 - uv0.y) / spanV * h;
+        const float y1 = s.minY + (v1 - uv0.y) / spanV * h;
+        const float fv = std::floor(v0);
+        for (int ui = 0; ui + 1 < s_cutsU.Size; ++ui)
+        {
+            const float u0 = s_cutsU[ui], u1 = s_cutsU[ui + 1];
+            const float x0 = s.minX + (u0 - uv0.x) / spanU * w;
+            const float x1 = s.minX + (u1 - uv0.x) / spanU * w;
+            const float fu = std::floor(u0);
+            dl->AddImage(texId, ImVec2(x0, y0), ImVec2(x1, y1),
+                         ImVec2(u0 - fu, v0 - fv), ImVec2(u1 - fu, v1 - fv), col);
+        }
+    }
+}
+
 // 1 要素の描画とレイキャスト収集（入力の解決はトラバース完了後）。rect はキャンバス空間の解決済み矩形。
 void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
 {
@@ -693,10 +1015,10 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
             PushHitRect(ctx.blockers, e, s, ctx.hitClip, ctx);
     }
 
-    // --- UIImage: テクスチャ（9-slice 対応）または単色矩形。ボタンの状態色を乗算 ---
+    // --- UIImage: テクスチャ / 単色を形状(shape)で描く。ボタンの状態色を乗算 ---
     if (const auto* img = reg.try_get<UIImage>(e))
     {
-        // fillAmount: 表示割合 0..1（HPバー/ゲージ用）。幾何方式＝表示部分の矩形へ縮め、
+        // fillAmount: 表示割合 0..1（HPバー/ゲージ用）。幾何方式＝表示部分の形へ縮め、
         // テクスチャは UV も比例で切る（クリップ矩形方式とピクセル一致）。GPU シザーは
         // スクリーン軸固定なので、回転（頂点変換）と干渉しないようクリップには依存しない。
         // 0 は完全非表示（レイキャストは上の blockers 収集どおり効いたまま）。
@@ -704,8 +1026,13 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
         if (fill > 0.0f)
         {
             const bool fillPartial = fill < 1.0f;
-            UiRectPx fs = s;   // 表示部分（スクリーン空間）
-            if (fillPartial)
+            const bool radialFill  = fillPartial && img->fillDir >= 4;   // 4=時計回り 5=反時計回り
+            const int  shapeKind   = std::clamp(img->shape, 0, 5);
+            const ImVec2 sc((s.minX + s.maxX) * 0.5f, (s.minY + s.maxY) * 0.5f);
+
+            // 線形 fill の表示部分（スクリーン空間）。放射 fill / リングでは使わない
+            UiRectPx fs = s;
+            if (fillPartial && !radialFill)
             {
                 switch (img->fillDir)
                 {
@@ -722,86 +1049,194 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
                                         img->color.w * tint.w * ctx.alphaMul};
             const ImU32 ucol = ToImCol(col);
 
-            // --- ドロップシャドウ（本体より先に描く。矩形近似 = テクスチャのアルファ形状は
-            // 反映しない。fillAmount<1 でもフル矩形 = ゲージが減っても影は変わらないのが正しい）---
+            // テクスチャ解決（エディタアイコンと同じ経路: SRV index → GPU ハンドル(u64) =
+            // ImTextureID。GetOrLoadTexture はパスキーでキャッシュされ毎フレーム安価）
+            ImTextureID texId = 0;
+            float texW = 0.0f, texH = 0.0f;
+            if (!img->texturePath.empty() && ctx.resources && ctx.srvHeap && ctx.cmdList)
+            {
+                const std::string abs = PathResolver::AssetsDir() + img->texturePath;
+                if (Texture* tex = ctx.resources->GetOrLoadTexture(
+                        PathResolver::Utf8ToWide(abs), ctx.cmdList, true))
+                {
+                    texId = static_cast<ImTextureID>(
+                        ctx.srvHeap->GetGpuHandle(tex->GetSrvIndex()).ptr);
+                    texW = static_cast<float>(tex->GetWidth());
+                    texH = static_cast<float>(tex->GetHeight());
+                }
+            }
+            const bool hasTex = texId != 0;
+            // 9-slice はテクスチャ付き矩形専用（放射 fill とは非両立 = その場合は平板扱い）
+            const bool nineSlice = hasTex && shapeKind == 0 && !radialFill
+                                   && (img->sliceBorder.x > 0.0f || img->sliceBorder.y > 0.0f
+                                       || img->sliceBorder.z > 0.0f || img->sliceBorder.w > 0.0f);
+
+            // UV（uvScroll 反映。9-slice では無効）
+            ImVec2 uv0(img->uvMin.x, img->uvMin.y);
+            ImVec2 uv1(img->uvMax.x, img->uvMax.y);
+            if (!nineSlice && (img->uvScroll.x != 0.0f || img->uvScroll.y != 0.0f))
+            {
+                const double tm = ImGui::GetTime();
+                const float sx = static_cast<float>(
+                    tm * img->uvScroll.x - std::floor(tm * img->uvScroll.x));
+                const float sy = static_cast<float>(
+                    tm * img->uvScroll.y - std::floor(tm * img->uvScroll.y));
+                uv0.x += sx; uv1.x += sx;
+                uv0.y += sy; uv1.y += sy;
+            }
+
+            // 形状ポリゴン（矩形以外、または矩形への放射 fill で使う）
+            static ImVector<ImVec2> s_shapePts, s_drawPts;
+            const bool usePoly = shapeKind == 1 || shapeKind >= 3
+                                 || (shapeKind == 0 && radialFill);
+            if (usePoly)
+                BuildUiShapePoly(shapeKind, s, s_shapePts);
+
+            // --- ドロップシャドウ（本体より先に描く。フル形状の近似 = テクスチャのアルファ
+            // 形状は反映しない。fillAmount<1 でもフル形状 = ゲージが減っても影は不変）---
             if (img->shadowColor.w > 0.0f)
             {
                 const float offX = img->shadowOffset.x * ctx.scale;
                 const float offY = img->shadowOffset.y * ctx.scale;
                 const float soft = std::max(0.0f, img->shadowSoftness) * ctx.scale;
-                const float baseRad = img->cornerRadius * ctx.scale;
-                if (soft < 0.5f)
+                const DirectX::XMFLOAT4 shBase{img->shadowColor.x * cm.x,
+                                               img->shadowColor.y * cm.y,
+                                               img->shadowColor.z * cm.z,
+                                               img->shadowColor.w * ctx.alphaMul};
+                static constexpr float kFall[4] = {0.42f, 0.24f, 0.12f, 0.05f};
+                if (shapeKind == 2)
                 {
-                    ctx.dl->AddRectFilled(
-                        ImVec2(s.minX + offX, s.minY + offY),
-                        ImVec2(s.maxX + offX, s.maxY + offY),
-                        ToImCol({img->shadowColor.x * cm.x, img->shadowColor.y * cm.y,
-                                 img->shadowColor.z * cm.z,
-                                 img->shadowColor.w * ctx.alphaMul}),
-                        baseRad);
+                    // リング: 同じ帯円を 1 回だけオフセット描き（簡易近似）
+                    const float th = std::max(1.0f, img->ringThickness * ctx.scale);
+                    const float rx = std::max(0.5f, s.Width() * 0.5f - th * 0.5f);
+                    const float ry = std::max(0.5f, s.Height() * 0.5f - th * 0.5f);
+                    ctx.dl->PathEllipticalArcTo(ImVec2(sc.x + offX, sc.y + offY),
+                                                ImVec2(rx, ry), 0.0f,
+                                                0.0f, 2.0f * 3.14159265f, 0);
+                    ctx.dl->PathStroke(ToImCol(shBase), 0, th);
+                }
+                else if (usePoly && shapeKind != 0)
+                {
+                    // 多角形: 中心拡張の層でソフト化（矩形の 4 層方式と同じ減衰）
+                    const float hw = std::max(1e-3f, s.Width() * 0.5f);
+                    const float hh = std::max(1e-3f, s.Height() * 0.5f);
+                    const int layers = (soft < 0.5f) ? 1 : 4;
+                    for (int li = 0; li < layers; ++li)
+                    {
+                        const float grow = (layers == 1)
+                            ? 0.0f : soft * static_cast<float>(li + 1) / 4.0f;
+                        const float kx = (hw + grow) / hw, ky = (hh + grow) / hh;
+                        s_drawPts.resize(0);
+                        for (int i = 0; i < s_shapePts.Size; ++i)
+                            s_drawPts.push_back(
+                                ImVec2(sc.x + (s_shapePts[i].x - sc.x) * kx + offX,
+                                       sc.y + (s_shapePts[i].y - sc.y) * ky + offY));
+                        DirectX::XMFLOAT4 lc = shBase;
+                        if (layers == 4) lc.w *= kFall[li];
+                        ctx.dl->AddConvexPolyFilled(s_drawPts.Data, s_drawPts.Size,
+                                                    ToImCol(lc));
+                    }
+                }
+                else if (soft < 0.5f)
+                {
+                    ctx.dl->AddRectFilled(ImVec2(s.minX + offX, s.minY + offY),
+                                          ImVec2(s.maxX + offX, s.maxY + offY),
+                                          ToImCol(shBase), img->cornerRadius * ctx.scale);
                 }
                 else
                 {
                     // 4 層を外へ広げつつアルファ減衰 = 疑似ソフトシャドウ
-                    static constexpr float kFall[4] = {0.42f, 0.24f, 0.12f, 0.05f};
+                    const float baseRad = img->cornerRadius * ctx.scale;
                     for (int i = 0; i < 4; ++i)
                     {
                         const float grow = soft * static_cast<float>(i + 1) / 4.0f;
+                        DirectX::XMFLOAT4 lc = shBase;
+                        lc.w *= kFall[i];
                         ctx.dl->AddRectFilled(
                             ImVec2(s.minX + offX - grow, s.minY + offY - grow),
                             ImVec2(s.maxX + offX + grow, s.maxY + offY + grow),
-                            ToImCol({img->shadowColor.x * cm.x, img->shadowColor.y * cm.y,
-                                     img->shadowColor.z * cm.z,
-                                     img->shadowColor.w * ctx.alphaMul * kFall[i]}),
-                            baseRad + grow);
+                            ToImCol(lc), baseRad + grow);
                     }
                 }
             }
 
             // グラデーション: 影の後・本体の前から頂点範囲を記録し、本体描画後に
-            // 線形シェードを後がけする（テクスチャ/9-slice/角丸すべて対応、回転にも追従）
+            // シェードを後がけする（テクスチャ/9-slice/角丸/形状すべて対応、回転にも追従）
             const int gradStart = (img->gradientDir > 0) ? ctx.dl->VtxBuffer.Size : -1;
-            bool drawn = false;
-            if (!img->texturePath.empty() && ctx.resources && ctx.srvHeap && ctx.cmdList)
+
+            // --- 本体 ---
+            if (shapeKind == 2)
             {
-                // エディタアイコンと同じ経路: SRV index → GPU ハンドル(u64) = ImTextureID。
-                // GetOrLoadTexture はパスキーでキャッシュされるため毎フレーム呼んでも安価。
-                const std::string abs = PathResolver::AssetsDir() + img->texturePath;
-                Texture* tex = ctx.resources->GetOrLoadTexture(
-                    PathResolver::Utf8ToWide(abs), ctx.cmdList, true);
-                if (tex)
+                // リング(帯円)。fill は常に円弧: fillOrigin から fill*360 度
+                // （fillDir=5 で反時計回り。0-3 の線形方向指定でも円弧として扱う）
+                const float th = std::max(1.0f, img->ringThickness * ctx.scale);
+                const float rx = std::max(0.5f, s.Width() * 0.5f - th * 0.5f);
+                const float ry = std::max(0.5f, s.Height() * 0.5f - th * 0.5f);
+                const float sweep = 360.0f * fill * ((img->fillDir == 5) ? -1.0f : 1.0f);
+                const float aA = (img->fillOrigin - 90.0f) * kUiDeg2Rad;   // ImGui は +X 基準
+                const float aB = aA + sweep * kUiDeg2Rad;
+                ctx.dl->PathEllipticalArcTo(sc, ImVec2(rx, ry), 0.0f,
+                                            std::min(aA, aB), std::max(aA, aB), 0);
+                ctx.dl->PathStroke(ucol, 0, th);
+            }
+            else if (usePoly)
+            {
+                if (radialFill)
                 {
-                    const ImTextureID texId = static_cast<ImTextureID>(
-                        ctx.srvHeap->GetGpuHandle(tex->GetSrvIndex()).ptr);
-                    const ImVec2 uv0(img->uvMin.x, img->uvMin.y);
-                    const ImVec2 uv1(img->uvMax.x, img->uvMax.y);
-                    const bool nineSlice = img->sliceBorder.x > 0.0f || img->sliceBorder.y > 0.0f
-                                        || img->sliceBorder.z > 0.0f || img->sliceBorder.w > 0.0f;
-                    if (nineSlice)
-                        AddImage9Slice(ctx.dl, texId, ImVec2(s.minX, s.minY), ImVec2(s.maxX, s.maxY),
-                                       uv0, uv1,
-                                       static_cast<float>(tex->GetWidth()),
-                                       static_cast<float>(tex->GetHeight()),
-                                       img->sliceBorder, ctx.scale, ucol,
-                                       fillPartial ? &fs : nullptr);
-                    else
+                    // 放射 fill: クールダウン円/矩形ワイプ。fillOrigin から掃引
+                    const float sweep = 360.0f * fill * ((img->fillDir == 5) ? -1.0f : 1.0f);
+                    BuildUiPiePoly(s_shapePts, sc, img->fillOrigin, sweep, s_drawPts);
+                }
+                else
+                {
+                    s_drawPts = s_shapePts;
+                    if (fillPartial)
                     {
-                        // 平板: 表示部分に合わせて UV を比例クロップ
-                        const float w = std::max(1e-6f, s.Width());
-                        const float h = std::max(1e-6f, s.Height());
-                        const ImVec2 fuv0(uv0.x + (uv1.x - uv0.x) * (fs.minX - s.minX) / w,
-                                          uv0.y + (uv1.y - uv0.y) * (fs.minY - s.minY) / h);
-                        const ImVec2 fuv1(uv1.x - (uv1.x - uv0.x) * (s.maxX - fs.maxX) / w,
-                                          uv1.y - (uv1.y - uv0.y) * (s.maxY - fs.maxY) / h);
-                        ctx.dl->AddImage(texId, ImVec2(fs.minX, fs.minY), ImVec2(fs.maxX, fs.maxY),
-                                         fuv0, fuv1, ucol);
+                        switch (img->fillDir)
+                        {
+                        case 1:  ClipUiPolyAxis(s_drawPts, 0, false, fs.minX); break;
+                        case 2:  ClipUiPolyAxis(s_drawPts, 1, false, fs.minY); break;
+                        case 3:  ClipUiPolyAxis(s_drawPts, 1, true,  fs.maxY); break;
+                        default: ClipUiPolyAxis(s_drawPts, 0, true,  fs.maxX); break;
+                        }
                     }
-                    drawn = true;
+                }
+                if (s_drawPts.Size >= 3)
+                {
+                    if (hasTex)
+                        AddUiPolyTextured(ctx.dl, texId, s_drawPts.Data, s_drawPts.Size,
+                                          s, uv0, uv1, ucol);
+                    else if (radialFill)   // 扇形は 180 度超で凹になる
+                        ctx.dl->AddConcavePolyFilled(s_drawPts.Data, s_drawPts.Size, ucol);
+                    else
+                        ctx.dl->AddConvexPolyFilled(s_drawPts.Data, s_drawPts.Size, ucol);
                 }
             }
-            // texturePath 空 or ロード失敗 → 単色矩形（角丸対応）。失敗時も要素が見えるようにする
-            if (!drawn)
+            else if (nineSlice)
             {
+                AddImage9Slice(ctx.dl, texId, ImVec2(s.minX, s.minY), ImVec2(s.maxX, s.maxY),
+                               uv0, uv1, texW, texH, img->sliceBorder, ctx.scale, ucol,
+                               fillPartial ? &fs : nullptr);
+            }
+            else if (hasTex)
+            {
+                // 平板: 表示部分に合わせて UV を比例クロップ。範囲が [0,1] を超えるなら
+                // タイル分割（uvMax>1 のパターン繰り返し / uvScroll の流し）
+                const float w = std::max(1e-6f, s.Width());
+                const float h = std::max(1e-6f, s.Height());
+                const ImVec2 fuv0(uv0.x + (uv1.x - uv0.x) * (fs.minX - s.minX) / w,
+                                  uv0.y + (uv1.y - uv0.y) * (fs.minY - s.minY) / h);
+                const ImVec2 fuv1(uv1.x - (uv1.x - uv0.x) * (s.maxX - fs.maxX) / w,
+                                  uv1.y - (uv1.y - uv0.y) * (s.maxY - fs.maxY) / h);
+                if (fuv0.x < 0.0f || fuv0.y < 0.0f || fuv1.x > 1.0f || fuv1.y > 1.0f)
+                    AddImageTiled(ctx.dl, texId, fs, fuv0, fuv1, ucol);
+                else
+                    ctx.dl->AddImage(texId, ImVec2(fs.minX, fs.minY), ImVec2(fs.maxX, fs.maxY),
+                                     fuv0, fuv1, ucol);
+            }
+            else
+            {
+                // 単色矩形（角丸対応。テクスチャロード失敗時も要素が見えるようにする）
                 const float rad = img->cornerRadius * ctx.scale;
                 if (fillPartial && rad > 0.0f)
                 {
@@ -832,44 +1267,160 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
             // --- グラデーション後がけ（端点は常にフル矩形 = ゲージが減っても色が潰れない）---
             if (gradStart >= 0 && ctx.dl->VtxBuffer.Size > gradStart)
             {
-                ImVec2 p0(s.minX, s.minY), p1;
-                switch (img->gradientDir)
-                {
-                case 2:  p1 = ImVec2(s.minX, s.maxY); break;   // 縦（上→下）
-                case 3:  p1 = ImVec2(s.maxX, s.maxY); break;   // 斜め（左上→右下）
-                default: p1 = ImVec2(s.maxX, s.minY); break;   // 1: 横（左→右）
-                }
                 // 終端色にも tint / 本体アルファを乗算（KeepAlpha = 頂点のアルファは保持され、
                 // gradientColor2 のアルファは使われない）
                 const DirectX::XMFLOAT4 col2{img->gradientColor2.x * tint.x * cm.x,
                                              img->gradientColor2.y * tint.y * cm.y,
                                              img->gradientColor2.z * tint.z * cm.z, col.w};
-                if (img->gradientScrollSpeed != 0.0f)
+                if (img->gradientDir == 4)
                 {
-                    // グロススイープ: 静的グラデの代わりに gradientColor2 の光帯が
-                    // gradientDir 方向へ周期的に流れる（負の速度で逆方向）
-                    const double cyc = ImGui::GetTime()
-                                       * static_cast<double>(img->gradientScrollSpeed);
-                    float cycle01 = static_cast<float>(cyc - std::floor(cyc));
-                    ShadeVertsGlossBand(ctx.dl, gradStart, ctx.dl->VtxBuffer.Size,
-                                        p0, p1, col2, cycle01);
+                    // 放射: 中心 → 形状の最遠点（スポットライト/ビネット風）
+                    float maxD = 0.0f;
+                    if (usePoly && shapeKind != 0)
+                    {
+                        for (int i = 0; i < s_shapePts.Size; ++i)
+                        {
+                            const float dx = s_shapePts[i].x - sc.x;
+                            const float dy = s_shapePts[i].y - sc.y;
+                            maxD = std::max(maxD, dx * dx + dy * dy);
+                        }
+                        maxD = std::sqrt(maxD);
+                    }
+                    else
+                    {
+                        const float hw = s.Width() * 0.5f, hh = s.Height() * 0.5f;
+                        maxD = std::sqrt(hw * hw + hh * hh);
+                    }
+                    ShadeVertsRadial(ctx.dl, gradStart, ctx.dl->VtxBuffer.Size, sc, maxD,
+                                     ucol, ToImCol(col2));
                 }
                 else
                 {
-                    ImGui::ShadeVertsLinearColorGradientKeepAlpha(
-                        ctx.dl, gradStart, ctx.dl->VtxBuffer.Size, p0, p1, ucol, ToImCol(col2));
+                    ImVec2 p0(s.minX, s.minY), p1;
+                    switch (img->gradientDir)
+                    {
+                    case 2:  p1 = ImVec2(s.minX, s.maxY); break;   // 縦（上→下）
+                    case 3:  p1 = ImVec2(s.maxX, s.maxY); break;   // 斜め（左上→右下）
+                    default: p1 = ImVec2(s.maxX, s.minY); break;   // 1: 横（左→右）
+                    }
+                    if (img->gradientScrollSpeed != 0.0f)
+                    {
+                        // グロススイープ: 静的グラデの代わりに gradientColor2 の光帯が
+                        // gradientDir 方向へ周期的に流れる（負の速度で逆方向）
+                        const double cyc = ImGui::GetTime()
+                                           * static_cast<double>(img->gradientScrollSpeed);
+                        float cycle01 = static_cast<float>(cyc - std::floor(cyc));
+                        ShadeVertsGlossBand(ctx.dl, gradStart, ctx.dl->VtxBuffer.Size,
+                                            p0, p1, col2, cycle01);
+                    }
+                    else
+                    {
+                        ImGui::ShadeVertsLinearColorGradientKeepAlpha(
+                            ctx.dl, gradStart, ctx.dl->VtxBuffer.Size, p0, p1, ucol,
+                            ToImCol(col2));
+                    }
                 }
             }
 
-            // --- 縁取り（枠線。角丸に追従。ゲージ減少に影響されないようフル矩形）---
+            // --- セグメント区切り（矩形 + 線形 fill 専用の分割ゲージ。表示部分にだけ重ねる）---
+            if (img->segments > 1 && shapeKind == 0 && img->fillDir <= 3)
+            {
+                const int nSeg = std::min(img->segments, 64);
+                const float gw = std::max(1.0f, img->segmentGap * ctx.scale);
+                const ImU32 segCol = ToImCol({img->segmentColor.x * cm.x,
+                                              img->segmentColor.y * cm.y,
+                                              img->segmentColor.z * cm.z,
+                                              img->segmentColor.w * ctx.alphaMul});
+                const bool horiz = img->fillDir <= 1;
+                for (int i = 1; i < nSeg; ++i)
+                {
+                    const float t = static_cast<float>(i) / static_cast<float>(nSeg);
+                    if (horiz)
+                    {
+                        const float x = s.minX + s.Width() * t;
+                        if (x < fs.minX - 0.5f || x > fs.maxX + 0.5f) continue;
+                        ctx.dl->AddRectFilled(ImVec2(x - gw * 0.5f, fs.minY),
+                                              ImVec2(x + gw * 0.5f, fs.maxY), segCol);
+                    }
+                    else
+                    {
+                        const float y = s.minY + s.Height() * t;
+                        if (y < fs.minY - 0.5f || y > fs.maxY + 0.5f) continue;
+                        ctx.dl->AddRectFilled(ImVec2(fs.minX, y - gw * 0.5f),
+                                              ImVec2(fs.maxX, y + gw * 0.5f), segCol);
+                    }
+                }
+            }
+
+            // --- 縁取り（フル形状に描く = ゲージ減少に影響されない）---
             if (img->outlineWidth > 0.0f && img->outlineColor.w > 0.0f)
             {
-                ctx.dl->AddRect(ImVec2(s.minX, s.minY), ImVec2(s.maxX, s.maxY),
-                                ToImCol({img->outlineColor.x * cm.x, img->outlineColor.y * cm.y,
-                                         img->outlineColor.z * cm.z,
-                                         img->outlineColor.w * ctx.alphaMul}),
-                                img->cornerRadius * ctx.scale, 0,
-                                std::max(1.0f, img->outlineWidth * ctx.scale));
+                const ImU32 ocol = ToImCol({img->outlineColor.x * cm.x,
+                                            img->outlineColor.y * cm.y,
+                                            img->outlineColor.z * cm.z,
+                                            img->outlineColor.w * ctx.alphaMul});
+                const float ow = std::max(1.0f, img->outlineWidth * ctx.scale);
+                if (shapeKind == 2)
+                {
+                    // リング: 外周 + 内周の 2 本
+                    const float th = std::max(1.0f, img->ringThickness * ctx.scale);
+                    const float rxO = std::max(0.5f, s.Width() * 0.5f);
+                    const float ryO = std::max(0.5f, s.Height() * 0.5f);
+                    ctx.dl->AddEllipse(sc, ImVec2(rxO, ryO), ocol, 0.0f, 0, ow);
+                    ctx.dl->AddEllipse(sc, ImVec2(std::max(0.5f, rxO - th),
+                                                  std::max(0.5f, ryO - th)),
+                                       ocol, 0.0f, 0, ow);
+                }
+                else if (usePoly && shapeKind != 0)
+                {
+                    ctx.dl->AddPolyline(s_shapePts.Data, s_shapePts.Size, ocol,
+                                        ImDrawFlags_Closed, ow);
+                }
+                else if (img->outlineStyle == 1)
+                {
+                    // 破線（cornerRadius は無視）
+                    const float dash = std::max(2.0f, img->outlineDash * ctx.scale);
+                    const float gap = dash * 0.6f;
+                    auto dashedLine = [&](float ax, float ay, float bx, float by) {
+                        const float dx = bx - ax, dy = by - ay;
+                        const float len = std::sqrt(dx * dx + dy * dy);
+                        if (len <= 0.0f) return;
+                        const float ux = dx / len, uy = dy / len;
+                        for (float d0 = 0.0f; d0 < len; d0 += dash + gap)
+                        {
+                            const float d1 = std::min(d0 + dash, len);
+                            ctx.dl->AddLine(ImVec2(ax + ux * d0, ay + uy * d0),
+                                            ImVec2(ax + ux * d1, ay + uy * d1), ocol, ow);
+                        }
+                    };
+                    dashedLine(s.minX, s.minY, s.maxX, s.minY);
+                    dashedLine(s.maxX, s.minY, s.maxX, s.maxY);
+                    dashedLine(s.maxX, s.maxY, s.minX, s.maxY);
+                    dashedLine(s.minX, s.maxY, s.minX, s.minY);
+                }
+                else if (img->outlineStyle == 2)
+                {
+                    // コーナーブラケット（四隅の鉤括弧。SF/ターゲット HUD 定番。cornerRadius 無視）
+                    const float L = std::min({std::max(2.0f, img->outlineDash * ctx.scale),
+                                              s.Width() * 0.5f, s.Height() * 0.5f});
+                    auto arm = [&](float ax, float ay, float bx, float by) {
+                        ctx.dl->AddLine(ImVec2(ax, ay), ImVec2(bx, by), ocol, ow);
+                    };
+                    arm(s.minX, s.minY, s.minX + L, s.minY);
+                    arm(s.minX, s.minY, s.minX, s.minY + L);
+                    arm(s.maxX, s.minY, s.maxX - L, s.minY);
+                    arm(s.maxX, s.minY, s.maxX, s.minY + L);
+                    arm(s.maxX, s.maxY, s.maxX - L, s.maxY);
+                    arm(s.maxX, s.maxY, s.maxX, s.maxY - L);
+                    arm(s.minX, s.maxY, s.minX + L, s.maxY);
+                    arm(s.minX, s.maxY, s.minX, s.maxY - L);
+                }
+                else
+                {
+                    // 実線（角丸に追従）
+                    ctx.dl->AddRect(ImVec2(s.minX, s.minY), ImVec2(s.maxX, s.maxY), ocol,
+                                    img->cornerRadius * ctx.scale, 0, ow);
+                }
             }
         }
     }
@@ -938,7 +1489,42 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
                     font = custom;
             const float fontSize = std::max(1.0f, txt->fontSize * ctx.scale);
             const float wrapW = txt->wrap ? std::max(1.0f, s.Width()) : 0.0f;
-            const ImVec2 ts = font->CalcTextSizeA(fontSize, FLT_MAX, wrapW, txt->text.c_str());
+            // per-glyph モード（字間 / 文字アニメ）。wrap とは非両立 = wrap 優先で通常描画
+            const bool perGlyph = !txt->wrap
+                                  && (txt->letterSpacing != 0.0f || txt->charAnim != 0);
+            const float sp = txt->letterSpacing * ctx.scale;
+            auto utf8Adv = [](const char* p) {
+                const auto c = static_cast<unsigned char>(*p);
+                return (c < 0xC0) ? 1 : (c < 0xE0) ? 2 : (c < 0xF0) ? 3 : 4;
+            };
+            ImVec2 ts;
+            if (perGlyph)
+            {
+                // 1 文字ずつ測って字間込みの行幅を出す（\n 対応。行高 = fontSize）
+                const char* p = txt->text.c_str();
+                const char* pAll = p + txt->text.size();
+                float lw = 0.0f, maxW = 0.0f;
+                int lines = 1, chars = 0;
+                while (p < pAll)
+                {
+                    if (*p == '\n')
+                    {
+                        maxW = std::max(maxW, (chars > 0) ? std::max(0.0f, lw - sp) : 0.0f);
+                        lw = 0.0f; chars = 0; ++lines; ++p;
+                        continue;
+                    }
+                    const char* pn = std::min(p + utf8Adv(p), pAll);
+                    lw += font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, p, pn).x + sp;
+                    ++chars;
+                    p = pn;
+                }
+                maxW = std::max(maxW, (chars > 0) ? std::max(0.0f, lw - sp) : 0.0f);
+                ts = ImVec2(maxW, fontSize * static_cast<float>(lines));
+            }
+            else
+            {
+                ts = font->CalcTextSizeA(fontSize, FLT_MAX, wrapW, txt->text.c_str());
+            }
             // ブロック単位の整列（CalcTextSizeA は折り返し後の全体サイズを返す）
             float tx = s.minX;
             if (txt->alignH == 1)      tx = s.minX + (s.Width() - ts.x) * 0.5f;
@@ -962,14 +1548,116 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
                 float remain = txt->_twT * txt->typewriterSpeed;
                 while (pCur < pAll && remain >= 1.0f)
                 {
-                    const auto c = static_cast<unsigned char>(*pCur);
-                    const int adv = (c < 0xC0) ? 1 : (c < 0xE0) ? 2 : (c < 0xF0) ? 3 : 4;
-                    pCur = std::min(pCur + adv, pAll);
+                    pCur = std::min(pCur + utf8Adv(pCur), pAll);
                     remain -= 1.0f;
                 }
                 textEnd = pCur;
             }
-            if (textEnd != textBegin)   // タイプライターでまだ 1 文字も出ていなければ描かない
+            if (textEnd == textBegin)
+            {
+                // タイプライターでまだ 1 文字も出ていない
+            }
+            else if (perGlyph)
+            {
+                // per-glyph: 1 文字ずつ配置して字間/ウェーブ/ジッター/レインボーを掛ける。
+                // 影 → 縁取り → 本体の 3 パスで層順を保つ（本体パスだけグラデ対象）
+                struct UiGlyphDraw { const char* b; const char* e; float x, y; ImU32 col; };
+                static ImVector<UiGlyphDraw> s_glyphs;
+                s_glyphs.resize(0);
+                const float animT = static_cast<float>(ImGui::GetTime());
+                const float amp = txt->charAnimAmount * ctx.scale;
+                const char* pStop = textEnd ? textEnd : (textBegin + txt->text.size());
+                const char* p = textBegin;
+                float gx = tx, gy = ty;
+                int idx = 0;
+                while (p < pStop)
+                {
+                    if (*p == '\n')
+                    {
+                        gx = tx; gy += fontSize; ++p;
+                        continue;
+                    }
+                    const char* pn = std::min(p + utf8Adv(p), pStop);
+                    const float w = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, p, pn).x;
+                    float dx = 0.0f, dy = 0.0f;
+                    ImU32 bodyCol = ToImCol(tcol);
+                    if (txt->charAnim == 1)        // ウェーブ（上下うねり）
+                    {
+                        dy = std::sin(animT * txt->charAnimSpeed * 6.2831853f
+                                      + static_cast<float>(idx) * 0.55f) * amp;
+                    }
+                    else if (txt->charAnim == 2)   // ジッター（時間量子化ハッシュで震え）
+                    {
+                        const int q = static_cast<int>(
+                            animT * std::max(0.1f, txt->charAnimSpeed) * 8.0f);
+                        unsigned int h = static_cast<unsigned int>(idx) * 374761393u
+                                         + static_cast<unsigned int>(q) * 668265263u;
+                        h = (h ^ (h >> 13)) * 1274126177u;
+                        dx = (static_cast<float>(h & 0xFF) / 255.0f - 0.5f) * amp;
+                        dy = (static_cast<float>((h >> 8) & 0xFF) / 255.0f - 0.5f) * amp;
+                    }
+                    else if (txt->charAnim == 3)   // レインボー（文字ごとに色相をずらして回す）
+                    {
+                        float r, g, b;
+                        const float hue = animT * txt->charAnimSpeed * 0.25f
+                                          + static_cast<float>(idx) * 0.09f;
+                        ImGui::ColorConvertHSVtoRGB(hue - std::floor(hue), 0.75f, 1.0f, r, g, b);
+                        bodyCol = ToImCol({r * cm.x, g * cm.y, b * cm.z,
+                                           txt->color.w * ctx.alphaMul});
+                    }
+                    s_glyphs.push_back({p, pn, gx + dx, gy + dy, bodyCol});
+                    gx += w + sp;
+                    p = pn;
+                    ++idx;
+                }
+                if (txt->shadowColor.w > 0.0f)
+                {
+                    const ImU32 shCol = ToImCol({txt->shadowColor.x * cm.x,
+                                                 txt->shadowColor.y * cm.y,
+                                                 txt->shadowColor.z * cm.z,
+                                                 txt->shadowColor.w * ctx.alphaMul});
+                    const float ox = txt->shadowOffset.x * ctx.scale;
+                    const float oy = txt->shadowOffset.y * ctx.scale;
+                    for (int i = 0; i < s_glyphs.Size; ++i)
+                        ctx.dl->AddText(font, fontSize,
+                                        ImVec2(s_glyphs[i].x + ox, s_glyphs[i].y + oy),
+                                        shCol, s_glyphs[i].b, s_glyphs[i].e);
+                }
+                if (txt->outlineWidth > 0.0f && txt->outlineColor.w > 0.0f)
+                {
+                    const float ow = std::max(1.0f, txt->outlineWidth * ctx.scale);
+                    const ImU32 ocol = ToImCol({txt->outlineColor.x * cm.x,
+                                                txt->outlineColor.y * cm.y,
+                                                txt->outlineColor.z * cm.z,
+                                                txt->outlineColor.w * ctx.alphaMul});
+                    static constexpr float kDirs[8][2] = {
+                        {-1.0f, 0.0f}, {1.0f, 0.0f}, {0.0f, -1.0f}, {0.0f, 1.0f},
+                        {-0.7071f, -0.7071f}, {0.7071f, -0.7071f},
+                        {-0.7071f, 0.7071f},  {0.7071f, 0.7071f}};
+                    for (const auto& d : kDirs)
+                        for (int i = 0; i < s_glyphs.Size; ++i)
+                            ctx.dl->AddText(font, fontSize,
+                                            ImVec2(s_glyphs[i].x + d[0] * ow,
+                                                   s_glyphs[i].y + d[1] * ow),
+                                            ocol, s_glyphs[i].b, s_glyphs[i].e);
+                }
+                const int gStart = (txt->gradientDir > 0 && txt->charAnim != 3)
+                                       ? ctx.dl->VtxBuffer.Size : -1;
+                for (int i = 0; i < s_glyphs.Size; ++i)
+                    ctx.dl->AddText(font, fontSize, ImVec2(s_glyphs[i].x, s_glyphs[i].y),
+                                    s_glyphs[i].col, s_glyphs[i].b, s_glyphs[i].e);
+                if (gStart >= 0 && ctx.dl->VtxBuffer.Size > gStart)
+                {
+                    const ImVec2 p0(tx, ty);
+                    const ImVec2 p1 = (txt->gradientDir == 2) ? ImVec2(tx, ty + ts.y)
+                                                              : ImVec2(tx + ts.x, ty);
+                    ImGui::ShadeVertsLinearColorGradientKeepAlpha(
+                        ctx.dl, gStart, ctx.dl->VtxBuffer.Size, p0, p1, ToImCol(tcol),
+                        ToImCol({txt->gradientColor2.x * cm.x, txt->gradientColor2.y * cm.y,
+                                 txt->gradientColor2.z * cm.z, tcol.w}));
+                }
+            }
+            else
             {
                 // 影（1 オフセットの先描き）→ 縁取り（8 方位の重ね描き）→ 本体。
                 // 全部このサブツリーの頂点キャプチャ内なので回転にも一緒に追従する
@@ -999,10 +1687,91 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
                                         ImVec2(tx + d[0] * ow, ty + d[1] * ow), ocol,
                                         textBegin, textEnd, wrapW);
                 }
+                // テキストグラデ（本体のみ。影/縁取りには掛けない）
+                const int gStart = (txt->gradientDir > 0) ? ctx.dl->VtxBuffer.Size : -1;
                 ctx.dl->AddText(font, fontSize, ImVec2(tx, ty), ToImCol(tcol),
                                 textBegin, textEnd, wrapW);
+                if (gStart >= 0 && ctx.dl->VtxBuffer.Size > gStart)
+                {
+                    const ImVec2 p0(tx, ty);
+                    const ImVec2 p1 = (txt->gradientDir == 2) ? ImVec2(tx, ty + ts.y)
+                                                              : ImVec2(tx + ts.x, ty);
+                    ImGui::ShadeVertsLinearColorGradientKeepAlpha(
+                        ctx.dl, gStart, ctx.dl->VtxBuffer.Size, p0, p1, ToImCol(tcol),
+                        ToImCol({txt->gradientColor2.x * cm.x, txt->gradientColor2.y * cm.y,
+                                 txt->gradientColor2.z * cm.z, tcol.w}));
+                }
             }
         }
+    }
+}
+
+void DrawUiSubtree(entt::entity e, const UiRectPx& parentRect, UiDrawContext& ctx);
+
+// 直下の子への再帰。UILayout があれば子（UIRect 持ち）へセル矩形を順に配る
+// （VBox/HBox/Grid。子は配られたセルを親矩形としてアンカー解決する = 子の書式はそのまま）。
+// UIRect を持たない子はレイアウトを消費せず親矩形を素通しする。
+void DrawUiChildren(entt::entity e, const UiRectPx& parentRect, UiDrawContext& ctx)
+{
+    auto it = ctx.children->find(e);
+    if (it == ctx.children->end()) return;
+    const auto* lay = ctx.reg->try_get<UILayout>(e);
+    if (!lay || !ctx.reg->all_of<UIRect>(e))
+    {
+        for (entt::entity child : it->second)
+            DrawUiSubtree(child, parentRect, ctx);
+        return;
+    }
+    UiRectPx inner = parentRect;
+    inner.minX += lay->padding.x;
+    inner.minY += lay->padding.y;
+    inner.maxX -= lay->padding.z;
+    inner.maxY -= lay->padding.w;
+    const float spacing = lay->spacing;
+    const int   cols = std::max(1, lay->gridCols);
+    int idx = 0;
+    for (entt::entity child : it->second)
+    {
+        if (!ctx.reg->all_of<UIRect>(child))
+        {
+            DrawUiSubtree(child, parentRect, ctx);
+            continue;
+        }
+        // セルサイズ: 積む軸は必ず正、交差軸は 0 以下でインナーいっぱい
+        UiRectPx cell = inner;
+        switch (lay->mode)
+        {
+        case 1:   // HBox（横並び）
+        {
+            const float cw = std::max(1.0f, lay->cellW);
+            const float ch = (lay->cellH > 0.0f) ? lay->cellH : inner.Height();
+            cell.minX = inner.minX + static_cast<float>(idx) * (cw + spacing);
+            cell.maxX = cell.minX + cw;
+            cell.maxY = cell.minY + ch;
+            break;
+        }
+        case 2:   // Grid（左上から行優先）
+        {
+            const float cw = std::max(1.0f, lay->cellW);
+            const float ch = std::max(1.0f, lay->cellH);
+            cell.minX = inner.minX + static_cast<float>(idx % cols) * (cw + spacing);
+            cell.minY = inner.minY + static_cast<float>(idx / cols) * (ch + spacing);
+            cell.maxX = cell.minX + cw;
+            cell.maxY = cell.minY + ch;
+            break;
+        }
+        default:  // VBox（縦積み）
+        {
+            const float cw = (lay->cellW > 0.0f) ? lay->cellW : inner.Width();
+            const float ch = std::max(1.0f, lay->cellH);
+            cell.minY = inner.minY + static_cast<float>(idx) * (ch + spacing);
+            cell.maxY = cell.minY + ch;
+            cell.maxX = cell.minX + cw;
+            break;
+        }
+        }
+        ++idx;
+        DrawUiSubtree(child, cell, ctx);
     }
 }
 
@@ -1076,8 +1845,9 @@ void DrawUiSubtree(entt::entity e, const UiRectPx& parentRect, UiDrawContext& ct
         {
             float rotDeg  = rect->rotation + fxRot;   // 静的回転 + Animator/tween の追加回転（度の加算 = 可換）
             float skewDeg = rect->skewX;
-            if (ctx.reg->all_of<UIScrollView>(e))
+            if (ctx.reg->all_of<UIScrollView>(e) || rect->clipChildren)
             {
+                // 軸平行 GPU シザー（スクロール/マスク）と回転は両立しないため無効化
                 rotDeg  = 0.0f;
                 skewDeg = 0.0f;
             }
@@ -1149,10 +1919,7 @@ void DrawUiSubtree(entt::entity e, const UiRectPx& parentRect, UiDrawContext& ct
         if (ctx.dl)
             ctx.dl->PushClipRect(ImVec2(clip.minX, clip.minY), ImVec2(clip.maxX, clip.maxY), true);
 
-        auto it = ctx.children->find(e);
-        if (it != ctx.children->end())
-            for (entt::entity child : it->second)
-                DrawUiSubtree(child, contentRect, ctx);
+        DrawUiChildren(e, contentRect, ctx);
 
         if (ctx.dl)
             ctx.dl->PopClipRect();
@@ -1196,11 +1963,35 @@ void DrawUiSubtree(entt::entity e, const UiRectPx& parentRect, UiDrawContext& ct
     }
     else
     {
-        auto it = ctx.children->find(e);
-        if (it != ctx.children->end())
+        // --- UIRect.clipChildren: スクロールなしの純粋マスク（ScrollView と同じ軸平行
+        // シザー。はみ出た子は描画もクリックも効かない）---
+        const auto* rectC = ctx.reg->try_get<UIRect>(e);
+        const bool clipKids = rectC && rectC->clipChildren;
+        UiRectPx clip{};
+        const UiRectPx* prevClip = ctx.hitClip;
+        if (clipKids)
         {
-            for (entt::entity child : it->second)
-                DrawUiSubtree(child, current, ctx);
+            clip = ToScreen(current, ctx);
+            if (prevClip)
+            {
+                clip.minX = std::max(clip.minX, prevClip->minX);
+                clip.minY = std::max(clip.minY, prevClip->minY);
+                clip.maxX = std::min(clip.maxX, prevClip->maxX);
+                clip.maxY = std::min(clip.maxY, prevClip->maxY);
+            }
+            ctx.hitClip = &clip;
+            if (ctx.dl)
+                ctx.dl->PushClipRect(ImVec2(clip.minX, clip.minY),
+                                     ImVec2(clip.maxX, clip.maxY), true);
+        }
+
+        DrawUiChildren(e, current, ctx);
+
+        if (clipKids)
+        {
+            if (ctx.dl)
+                ctx.dl->PopClipRect();
+            ctx.hitClip = prevClip;
         }
     }
 

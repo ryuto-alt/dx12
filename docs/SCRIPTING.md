@@ -158,10 +158,21 @@ scene:setUiToggle(muteToggle, true)
 ゲームパッド/キーボードの UI 操作は**設定不要で常時有効**: 矢印/D-pad/左スティックでフォーカス移動、
 Enter/Space/A で決定（フォーカスリング表示）。フォーカス中のスライダーは左右で値が変わる。
 
-見た目の装飾は Inspector で設定する: `UIImage` はグラデーション・グロススイープ（`gradientScrollSpeed`≠0 で
-終端色の光帯がグラデ方向へ流れる。ガチャボタンの光沢流し）・枠線・ドロップシャドウ、`UIText` は縁取り・影・カスタムフォント
-（assets 相対の .ttf/.otf）・タイプライター（`typewriterSpeed`=文字/秒。Play 中に1文字ずつ）、
-`UIRect` は `rotation`/`skewX`（度）による傾きに対応している。
+見た目の装飾は Inspector で設定する: `UIImage` は**形状**（`shape`: 矩形/楕円/リング(円形ゲージ)/ダイヤ/六角形/三角形。
+テクスチャは形で切り抜かれる=丸アイコン等）・**放射 fill**（`fillDir`=放射でクールダウン円。`fillOrigin`=開始角）・
+**分割ゲージ**（`segments`=スタミナ/弾数チャンク）・グラデーション（横/縦/斜め/**放射**）・グロススイープ
+（`gradientScrollSpeed`≠0 で終端色の光帯がグラデ方向へ流れる。ガチャボタンの光沢流し）・
+**タイルパターン**（`uvMax`>1 で繰り返し + `uvScroll` で流れる警告帯/背景ストライプ）・
+枠線（実線/**破線**/**コーナーブラケット**=SF HUD 定番）・ドロップシャドウ、
+`UIText` は縁取り・影・カスタムフォント（assets 相対の .ttf/.otf）・タイプライター（`typewriterSpeed`=文字/秒）・
+**字間**（`letterSpacing`。タイトルの字間広げ）・**文字アニメ**（`charAnim`: ウェーブ/ジッター/レインボー）・
+**テキストグラデ**（金色タイトル等）、
+`UIRect` は `rotation`/`skewX`（度）による傾きと `clipChildren`（子をマスク=ワイプ/マーキー）に対応している。
+
+**自動レイアウト**: `UILayout` コンポーネント（VBox/HBox/Grid）を親に付けると、直下の子（UIRect 持ち）へ
+セル矩形が順番に配られる＝手動 offset 計算なしでメニュー列/ツールバー/インベントリが組める。
+子はセル内で自身のアンカーどおりに解決される（全面ストレッチの子はセルいっぱい）。
+スクロールリストは UIScrollView の子に UILayout 持ちコンテンツノードを置く。
 
 **動的 UI（アニメーション/イージング）**: `UIAnimator` コンポーネント（Inspector の「✚ コンポーネント追加 > UI Animator」）で
 出現アニメ（フェード/ポップ/スライド/スピン/バウンド落下/フリップ/シェイク）・ボタンのホバー/押下スケール・ループ（浮遊/パルス/点滅/スピン/スウィング）をノーコード設定できる。
@@ -174,13 +185,21 @@ scene:tweenUi(icon,  { rotate = 360, duration = 0.5 })                 -- 1回�
 scene:tweenUi(card,  { scaleY = 1, duration = 0.35, easing = "back" }) -- 縦つぶれから開く（フリップ風）
 scene:tweenUi(hpBar, { color = {3, 0.3, 0.3}, duration = 0.1 })        -- 赤フラッシュ（1超え=輝き）
 scene:tweenUi(hpBar, { shake = 10, duration = 0.4 })                   -- 振動（減衰付き）
+scene:tweenUi(hpFill, { fill = 0.35, duration = 0.3 })                 -- ゲージをなめらかに減らす
+scene:tweenUi(scoreText, { countTo = 12800, countFmt = "%06d",         -- 数字ロール + 完了SE
+                           duration = 0.8, easing = "expo",
+                           onComplete = function() audio:playSFX("se/coin.wav") end })
+scene:stopUiTweens(btn)  -- 進行中の tween を全打ち切り（連打対策）
 scene:showUi(winPanel)   -- UIAnimator の出現アニメを再生して表示
 scene:hideUi(pauseMenu)  -- 出現アニメの逆再生で消す（子孫ごと。戻すのは showUi）
 ```
-`easing` は `"linear" / "in" / "out" / "inOut" / "back"（勢い） / "bounce" / "elastic"`。
+`easing` は `"linear" / "in" / "out" / "inOut" / "back"（勢い） / "bounce" / "elastic" /
+"expo"（鋭い減速=スナップ感） / "inBack"（溜め） / "inOutBack" / "quint"（強い減速） / "sine"（ゆったり）`。
+使い分けの定石: パネル移動は `out`/`expo`、ボタンの触感は `back`、祝祭の演出（結果/ガチャ）だけ `elastic`/`bounce`。
 `dx/dy` はレイアウト（UIRect offset）を実際に動かすので終了位置でクリックも効く。`scale/scaleX/scaleY/alpha` は見た目だけ（子孫にまとめて掛かる）。
 `rotate`（度・絶対目標値）も見た目だけで、`setUiRotation` の値に加算合成される。
 `color={r,g,b}` は RGB 乗算の絶対目標値（完了後も持続。`{1,1,1}` へ戻して解除）。
+`fill` は UIImage.fillAmount、`countTo` は UIText への数字ロール、`onComplete` は完了時コールバック（SE 同期/チェーン用）。
 
 定番演出は `uifx.*` のワンライナーが楽（プレリュード組み込み。`e` はボタンイベントの `e.source` そのまま可）:
 ```lua
@@ -190,8 +209,12 @@ uifx.hit(hpBar)               -- 赤フラッシュ + 振動（被ダメ定番�
 uifx.bounceIn(resultPanel)    -- ぽよんと登場
 uifx.flipIn(card)             -- ぺしゃんこ→開く
 uifx.popOut(popup)            -- 縮んで消える
+uifx.stagger(menuItems, 0.07, uifx.slideInLeft)  -- メニュー項目の順次入場（相場 0.05〜0.10s）
+uifx.countTo(scoreText, 12800, 0.8, "%06d")       -- スコアの数字ロール
+uifx.damageBar(hpFill, hpGhost, 0.42)             -- ゴーストバー付きダメージ（遅延削れ）
+uifx.heartbeat(skillIcon)                         -- クールダウン完了のドクン
 ```
-他に `uifx.shake / fadeIn / fadeOut`。
+他に `uifx.shake / fadeIn / fadeOut / slideInLeft / slideInRight / slideInUp / popIn / fillTo / wiggle`。
 
 **タイプライター（会話文の1文字ずつ表示）**: `UIText.typewriterSpeed`（文字/秒）を設定するだけ。
 `scene:setUiText` で文字列を変えると先頭から再生し直す。スキップ/送り判定:

@@ -1740,6 +1740,7 @@ bool RemoveRegisteredComponent(entt::registry& reg, entt::entity e, const std::s
     else if (key == "uiSlider")            reg.remove<UISlider>(e);
     else if (key == "uiToggle")            reg.remove<UIToggle>(e);
     else if (key == "uiScrollView")        reg.remove<UIScrollView>(e);
+    else if (key == "uiLayout")            reg.remove<UILayout>(e);
     else if (key == "uiAnimator")          reg.remove<UIAnimator>(e);
     else return false;
     return true;
@@ -2187,9 +2188,11 @@ nlohmann::json McpComponentSchema()
         F("order", "int (sibling draw order; larger = front)", 0),
         F("rotation", "float (visual rotation deg, CW, around pivot; children rotate too)", 0.0),
         F("skewX", "float (horizontal skew deg; parallelogram banners)", 0.0),
+        F("clipChildren", "bool (mask: children clipped to this rect; wipes/marquees. "
+          "Axis-aligned scissor = rotation/skewX disabled on this node)", false),
     }), "Layout: rectMin = parentMin + parentSize*anchorMin + offsetMin (same for max). "
         "Full-stretch = anchorMin[0,0] anchorMax[1,1] offsets 0. rotation/skewX are "
-        "visual-only (layout stays axis-aligned); ignored on uiScrollView nodes."));
+        "visual-only (layout stays axis-aligned); ignored on uiScrollView/clipChildren nodes."));
     comps.push_back(C("uiImage", true, true, json::array({
         F("texturePath", "string (assets-relative; empty = solid color rect)", ""),
         F("color", "float4 (rgba)", json::array({1, 1, 1, 1})),
@@ -2198,15 +2201,30 @@ nlohmann::json McpComponentSchema()
         F("cornerRadius", "float (solid color rect only)", 0.0),
         F("raycastBlock", "bool (blocks clicks like Unity raycastTarget)", true),
         F("fillAmount", "float 0..1 (HP bar/gauge)", 1.0),
-        F("fillDir", "int (0=fromLeft,1=fromRight,2=fromBottom,3=fromTop)", 0),
-        F("gradientDir", "int (0=off,1=horizontal,2=vertical,3=diagonal)", 0),
+        F("fillDir", "int (0=fromLeft,1=fromRight,2=fromBottom,3=fromTop,"
+          "4=radialCW,5=radialCCW; radial = cooldown sweep, works on rect too)", 0),
+        F("fillOrigin", "float (radial fill start angle deg; 0 = top, CW positive)", 0.0),
+        F("shape", "int (0=rect,1=ellipse,2=ring,3=diamond,4=hexagon,5=triangleUp; non-rect "
+          "ignores cornerRadius/9-slice; textures are masked to the shape; ring is solid-color "
+          "arc gauge whose fill is always radial)", 0),
+        F("ringThickness", "float (ring band thickness px; shape=2)", 8.0),
+        F("uvScroll", "float2 (uv/sec pattern scroll; tile with uvMax>1; not for 9-slice/shapes)",
+          json::array({0, 0})),
+        F("gradientDir", "int (0=off,1=horizontal,2=vertical,3=diagonal,4=radial center→edge)", 0),
         F("gradientColor2", "float4 (gradient end color; alpha ignored)", json::array({1, 1, 1, 1})),
         F("gradientScrollSpeed", "float (gloss sweep: !=0 replaces static gradient with a "
           "gradientColor2 light band sweeping along gradientDir; cycles/sec, negative = reverse)",
           0.0),
         F("outlineWidth", "float (border px; 0 = off; follows cornerRadius)", 0.0),
         F("outlineColor", "float4", json::array({0, 0, 0, 1})),
-        F("shadowColor", "float4 (drop shadow; alpha 0 = off; rect approximation)",
+        F("outlineStyle", "int (0=solid,1=dashed,2=corner brackets(sci-fi HUD); rect only; "
+          "1/2 ignore cornerRadius)", 0),
+        F("outlineDash", "float (dash length px / bracket arm length px)", 12.0),
+        F("segments", "int (segmented gauge: draws n-1 separator lines across the bar; "
+          "0 = off; rect + linear fill only)", 0),
+        F("segmentGap", "float (separator thickness px)", 3.0),
+        F("segmentColor", "float4", json::array({0, 0, 0, 0.7})),
+        F("shadowColor", "float4 (drop shadow; alpha 0 = off; shape approximation)",
           json::array({0, 0, 0, 0})),
         F("shadowOffset", "float2 (px)", json::array({2, 2})),
         F("shadowSoftness", "float (blur spread px; 0 = sharp)", 4.0),
@@ -2223,6 +2241,15 @@ nlohmann::json McpComponentSchema()
         F("fontPath", "string (assets-relative .ttf/.otf; empty = default Yu Gothic)", ""),
         F("typewriterSpeed", "float (chars/sec typewriter reveal in Play mode; 0 = off; "
           "UTF-8 codepoint-safe; Lua setUiText restarts it)", 0.0),
+        F("letterSpacing", "float (px between glyphs; negative = tighter; enables per-glyph "
+          "mode; not with wrap)", 0.0),
+        F("charAnim", "int (per-glyph anim: 0=off,1=wave,2=jitter,3=rainbow; not with wrap)", 0),
+        F("charAnimAmount", "float (wave/jitter amplitude px)", 4.0),
+        F("charAnimSpeed", "float (Hz)", 2.0),
+        F("gradientDir", "int (text body gradient: 0=off,1=horizontal,2=vertical; "
+          "gold titles etc.)", 0),
+        F("gradientColor2", "float4 (gradient end color; alpha ignored)",
+          json::array({1, 1, 1, 1})),
     })));
     comps.push_back(C("uiButton", true, true, json::array({
         F("onClickEvent", "string (emitted to Lua events on click; empty = none)", ""),
@@ -2258,11 +2285,23 @@ nlohmann::json McpComponentSchema()
         F("showBar", "bool", true), F("barColor", "float4", json::array({1, 1, 1, 0.35})),
     }), "uiRect = viewport. Children are clipped + scrolled (clicks clipped too). "
         "Hang children via dx12_set_parent."));
+    comps.push_back(C("uiLayout", true, true, json::array({
+        F("mode", "int (0=VBox vertical stack,1=HBox horizontal,2=Grid row-major)", 0),
+        F("cellW", "float (cell width px; VBox: 0 = full inner width)", 200.0),
+        F("cellH", "float (cell height px; HBox: 0 = full inner height)", 60.0),
+        F("spacing", "float (px between cells)", 8.0),
+        F("padding", "float4 (inner padding L,T,R,B px)", json::array({0, 0, 0, 0})),
+        F("gridCols", "int (grid columns; mode=2)", 4),
+    }), "Auto-layout container: direct children (with uiRect) each get a sequential cell rect "
+        "as their parent rect — no manual offset math for lists/toolbars/inventories. "
+        "Children anchor within their cell (full-stretch anchors = fill the cell). "
+        "Combine with uiScrollView by putting uiLayout on a child content node."));
     comps.push_back(C("uiAnimator", true, true, json::array({
         F("showAnim", "int (0=none,1=fade,2=pop,3=fromLeft,4=fromRight,5=fromTop,6=fromBottom,"
-          "7=spinIn,8=bounceDrop,9=flipIn,10=shakeIn)", 1),
+          "7=spinIn,8=bounceDrop,9=flipIn,10=shakeIn,11=flipInX(door/card))", 1),
         F("showDuration", "float (sec)", 0.35), F("showDelay", "float (sec)", 0.0),
-        F("showEasing", "int (0=linear,1=in,2=out,3=inOut,4=back,5=bounce,6=elastic)", 2),
+        F("showEasing", "int (0=linear,1=in,2=out,3=inOut,4=back,5=bounce,6=elastic,"
+          "7=expo,8=inBack,9=inOutBack,10=quint,11=sine)", 2),
         F("slideOffset", "float (px)", 80.0),
         F("hoverScale", "float (needs uiButton)", 1.05), F("pressScale", "float", 0.95),
         F("hoverSpeed", "float", 14.0),
@@ -2295,7 +2334,7 @@ nlohmann::json McpLuaApi()
         "isValid() -> bool",
         "name  (string, read-only property)",
         "transform  (Transform getter。フィールドは書込可: entity.transform.position = Vec3.new(x,y,z)。ただし entity.transform 自体の再代入は read-only) — 唯一直接読めるコンポーネントデータ",
-        "hasComponent(type:string) -> bool  (type: Transform,MeshRenderer,SkeletalAnimation,NodeAnimation,GridPlane,PointLight,DirectionalLight,SpotLight,Camera,AudioSource,Gimmick,ParticleEmitter,Trigger,CharacterController)",
+        "hasComponent(type:string) -> bool  (type: Transform,MeshRenderer,SkeletalAnimation,NodeAnimation,GridPlane,PointLight,DirectionalLight,SpotLight,Camera,AudioSource,Gimmick,ParticleEmitter,Trigger,CharacterController,UICanvas,UIRect,UIImage,UIText,UIButton,UISlider,UIToggle,UIScrollView,UILayout,UIAnimator)",
         "playAnim(clipIndex:int, blend:float)",
         "playAnimByName(name:string, blend:float)",
         "setLooping(loop:bool)",
@@ -2333,7 +2372,11 @@ nlohmann::json McpLuaApi()
         "getUiToggle(e) / setUiToggle(e,on)  (UIToggle。setはonChange発火しない)",
         "getUiScroll(e) -> x,y / setUiScroll(e,x,y)  (UIScrollViewのスクロール量px)",
         "tweenUi(e,params)  (params: dx,dy,scale,scaleX,scaleY,alpha,rotate(度・絶対値),"
-        "color={r,g,b}(乗算・1超え=フラッシュ),shake(px振幅・減衰),shakeFreq,duration,delay,easing)",
+        "color={r,g,b}(乗算・1超え=フラッシュ),shake(px振幅・減衰),shakeFreq,"
+        "fill(UIImage.fillAmount絶対値=ゲージなめらか増減),countTo/countFrom/countFmt(UITextへ数字ロール),"
+        "onComplete=function()(完了時1回),duration,delay,easing(linear/in/out/inOut/back/bounce/"
+        "elastic/expo/inBack/inOutBack/quint/sine))",
+        "stopUiTweens(e)  (進行中tween全打ち切り+視覚値リセット。連打対策)",
         "showUi(e)", "hideUi(e)",
     })));
     objects.push_back(O("input", "global", json::array({
@@ -3068,6 +3111,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 if (reg.all_of<UISlider>(e))     kinds.push_back("uiSlider");
                 if (reg.all_of<UIToggle>(e))     kinds.push_back("uiToggle");
                 if (reg.all_of<UIScrollView>(e)) kinds.push_back("uiScrollView");
+                if (reg.all_of<UILayout>(e))     kinds.push_back("uiLayout");
                 if (reg.all_of<UIAnimator>(e))   kinds.push_back("uiAnimator");
                 n["components"] = std::move(kinds);
                 if (const auto* r = reg.try_get<UIRect>(e))
@@ -5215,6 +5259,15 @@ void Application::Shutdown()
         m_physicsSystem.reset();
     }
     m_inputSystem.reset();
+    // UITweenState には Lua の onComplete クロージャが入っていることがある（tweenUi）。
+    // sol::function の unref が生きた lua_State を要求するため、Lua ステート破棄
+    // （m_scriptEngine.reset）より先に必ず破棄する（m_scene.reset は後ろのため）
+    if (m_scene)
+    {
+        auto& reg = m_scene->GetRegistry();
+        auto twView = reg.view<UITweenState>();
+        reg.remove<UITweenState>(twView.begin(), twView.end());
+    }
     m_scriptEngine.reset();
     m_audioSystem.reset();
     m_shadowSkinnedPipelineState.reset();

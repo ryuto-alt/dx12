@@ -263,6 +263,10 @@ void ScriptEngine::RegisterBindings()
             if (type == "UIImage")            return e.HasComponent<UIImage>();
             if (type == "UIText")             return e.HasComponent<UIText>();
             if (type == "UIButton")           return e.HasComponent<UIButton>();
+            if (type == "UISlider")           return e.HasComponent<UISlider>();
+            if (type == "UIToggle")           return e.HasComponent<UIToggle>();
+            if (type == "UIScrollView")       return e.HasComponent<UIScrollView>();
+            if (type == "UILayout")           return e.HasComponent<UILayout>();
             if (type == "UIAnimator")         return e.HasComponent<UIAnimator>();
             // タイプミスや未対応型を「持ってない」と誤認させない（デバッグ困難の元）。
             // 毎フレーム呼ばれてもスパムしないよう型名ごとに1回だけ警告する。
@@ -539,8 +543,13 @@ void ScriptEngine::RegisterBindings()
         //           rotate=(視覚回転・度・絶対目標値。UIRect.rotation へ加算合成),
         //           color={r,g,b}(視覚カラー乗数。1超えで白フラッシュ。完了後も持続),
         //           shake=(振動振幅px。duration で 0 へ減衰), shakeFreq=24(Hz),
+        //           fill=(UIImage.fillAmount を絶対目標値へ=ゲージのなめらか増減),
+        //           countTo=(UIText へ数字ロール。countFrom= 省略時は現在テキストの数値,
+        //           countFmt="%d"(printf 書式。"%05d"=ゼロ埋め,"%.1f"=小数)),
+        //           onComplete=function()(完了時に 1 回呼ばれる。SE 同期/演出チェーン用),
         //           duration=0.3, delay=0, easing="out" }
-        // easing: "linear"/"in"/"out"/"inOut"/"back"(勢い)/"bounce"/"elastic"(または 0..6 の数値)
+        // easing: "linear"/"in"/"out"/"inOut"/"back"(勢い)/"bounce"/"elastic"/"expo"(鋭い減速)/
+        //         "inBack"(溜め)/"inOutBack"/"quint"(強い減速)/"sine"(ゆったり)(または 0..11)
         "tweenUi", [](Scene& s, sol::object target, sol::table params) {
             auto& reg = s.GetRegistry();
             entt::entity h = entt::null;
@@ -564,10 +573,15 @@ void ScriptEngine::RegisterBindings()
                     else if (es == "back")                      t.easing = 4;
                     else if (es == "bounce")                    t.easing = 5;
                     else if (es == "elastic")                   t.easing = 6;
+                    else if (es == "expo")                      t.easing = 7;
+                    else if (es == "inBack")                    t.easing = 8;
+                    else if (es == "inOutBack")                 t.easing = 9;
+                    else if (es == "quint")                     t.easing = 10;
+                    else if (es == "sine")                      t.easing = 11;
                 }
                 else if (eo.is<int>())
                 {
-                    t.easing = std::clamp(eo.as<int>(), 0, 6);
+                    t.easing = std::clamp(eo.as<int>(), 0, 11);
                 }
             }
             const float dx = params.get_or("dx", 0.0f);
@@ -601,10 +615,58 @@ void ScriptEngine::RegisterBindings()
                 t.shakeAmp  = (std::max)(0.0f, v.as<float>());
                 t.shakeFreq = (std::max)(0.1f, params.get_or("shakeFreq", 24.0f));
             }
+            if (sol::object v = params["fill"]; v.is<float>())
+            { t.hasFill = true; t.fillTo = std::clamp(v.as<float>(), 0.0f, 1.0f); }
+            if (sol::object v = params["countTo"]; v.is<double>())
+            {
+                t.hasCount = true;
+                t.countTo  = v.as<double>();
+                if (sol::object f = params["countFrom"]; f.is<double>())
+                { t.countFromSet = true; t.countFrom = f.as<double>(); }
+                // printf 書式は [%][フラグ/幅/.精度][d|f] だけ許可（%s 等の書式事故防止）
+                std::string fmt = params.get_or("countFmt", std::string("%d"));
+                bool ok = fmt.size() >= 2 && fmt.front() == '%'
+                          && (fmt.back() == 'd' || fmt.back() == 'f');
+                for (size_t i = 1; ok && i + 1 < fmt.size(); ++i)
+                {
+                    const char ch = fmt[i];
+                    ok = (ch >= '0' && ch <= '9') || ch == '.' || ch == '-' || ch == '+'
+                         || ch == ' ' || ch == '#';
+                }
+                t.countFmt = ok ? fmt : std::string("%d");
+            }
+            if (sol::object v = params["onComplete"]; v.is<sol::function>())
+            {
+                // 完了フレームの UI 更新後に 1 回呼ばれる（SE 同期・演出チェーン用）。
+                // UITweenState は Stop/ランタイムシーン切替の ResetRuntimeState で
+                // Lua ステート破棄より先に消えるため、参照の残留はない
+                sol::function fn = v.as<sol::function>();
+                t.onComplete = [fn]() {
+                    sol::protected_function pf = fn;
+                    auto r = pf();
+                    if (!r.valid())
+                    {
+                        sol::error err = r;
+                        Logger::Warn("tweenUi onComplete エラー: {}", err.what());
+                    }
+                };
+            }
             if (!t.hasMove && !t.hasScaleX && !t.hasScaleY && !t.hasAlpha && !t.hasRotate
-                && !t.hasColor && !t.hasShake)
+                && !t.hasColor && !t.hasShake && !t.hasFill && !t.hasCount)
                 return;
             reg.get_or_emplace<UITweenState>(h).tweens.push_back(t);
+        },
+        // 進行中の tween を全部打ち切る（連打対策。DOTween の Kill 相当）。視覚値は
+        // 既定(等倍/不透明)へ戻す。UIAnimator の出現/ループには影響しない
+        "stopUiTweens", [](Scene& s, sol::object target) {
+            auto& reg = s.GetRegistry();
+            entt::entity h = entt::null;
+            if (target.is<Entity>()) h = target.as<Entity>().GetHandle();
+            else if (target.is<double>())
+                h = static_cast<entt::entity>(static_cast<std::uint32_t>(target.as<double>()));
+            if (h == entt::null || !reg.valid(h)) return;
+            if (auto* tw = reg.try_get<UITweenState>(h))
+                *tw = UITweenState{};
         },
         // 表示して出現アニメを最初から再生（UIAnimator 無しなら visible=true だけ）。
         "showUi", [](Scene& s, sol::object target) {
@@ -2154,6 +2216,74 @@ end
 -- フェードイン / アウト
 function uifx.fadeIn(e, dur)  scene:tweenUi(e, { alpha=1, duration=dur or 0.3 }) end
 function uifx.fadeOut(e, dur) scene:tweenUi(e, { alpha=0, duration=dur or 0.3 }) end
+
+-- ステージャー（リスト項目の順次入場。間隔の相場は 0.05〜0.10 秒）。
+-- list = Entity/ID の配列、fn は関数(e, delay) か uifx の関数名文字列。
+-- 例: uifx.stagger({item1, item2, item3}, 0.07, uifx.slideInLeft)
+--     uifx.stagger(items, 0.06, function(e, d) scene:tweenUi(e, {alpha=1, duration=0.3, delay=d}) end)
+function uifx.stagger(list, step, fn, ...)
+  step = step or 0.07
+  for i, e in ipairs(list) do fn(e, (i - 1) * step, ...) end
+end
+
+-- 方向スライド入場（delay 対応 = stagger と組み合わせる）。dist=px
+function uifx.slideInLeft(e, delay, dist, dur)
+  dist = dist or 80; dur = dur or 0.35; delay = delay or 0
+  scene:tweenUi(e, { alpha=0, duration=0.01, delay=delay })
+  scene:tweenUi(e, { dx=-dist, duration=0.01, delay=delay })
+  scene:tweenUi(e, { dx=dist, alpha=1, duration=dur, delay=delay + 0.02, easing="expo" })
+end
+function uifx.slideInRight(e, delay, dist, dur)
+  dist = dist or 80; dur = dur or 0.35; delay = delay or 0
+  scene:tweenUi(e, { alpha=0, duration=0.01, delay=delay })
+  scene:tweenUi(e, { dx=dist, duration=0.01, delay=delay })
+  scene:tweenUi(e, { dx=-dist, alpha=1, duration=dur, delay=delay + 0.02, easing="expo" })
+end
+function uifx.slideInUp(e, delay, dist, dur)   -- 下から上がってくる
+  dist = dist or 60; dur = dur or 0.35; delay = delay or 0
+  scene:tweenUi(e, { alpha=0, duration=0.01, delay=delay })
+  scene:tweenUi(e, { dy=dist, duration=0.01, delay=delay })
+  scene:tweenUi(e, { dy=-dist, alpha=1, duration=dur, delay=delay + 0.02, easing="expo" })
+end
+function uifx.popIn(e, delay, dur)             -- ぽんと出る（stagger 対応版 bounceIn）
+  dur = dur or 0.35; delay = delay or 0
+  scene:tweenUi(e, { scale=0.01, alpha=0, duration=0.01, delay=delay })
+  scene:tweenUi(e, { scale=1.0,  alpha=1, duration=dur, delay=delay + 0.02, easing="back" })
+end
+
+-- 数字ロール（スコア/所持金のカウントアップ）。fmt 例: "%d" "%05d" "%.1f"
+function uifx.countTo(e, to, dur, fmt)
+  scene:tweenUi(e, { countTo=to, countFmt=fmt or "%d", duration=dur or 0.6, easing="expo" })
+end
+
+-- ゲージをなめらかに増減（fill は絶対目標値 0..1）
+function uifx.fillTo(e, v, dur, easing)
+  scene:tweenUi(e, { fill=v, duration=dur or 0.35, easing=easing or "out" })
+end
+
+-- ゴーストバー付きダメージ（front=本体バー ghost=背後の白/黄バー。格ゲー/アクションの定番。
+-- 本体は即落ち、ゴーストが遅れて追従して「削られた量」を見せる）
+function uifx.damageBar(front, ghost, v, ghostDelay)
+  scene:tweenUi(front, { fill=v, duration=0.08, easing="out" })
+  scene:tweenUi(ghost, { fill=v, duration=0.45, delay=ghostDelay or 0.35, easing="out" })
+end
+
+-- 注目のゆらぎ（通知バッジ等を左右にクイックに振る）
+function uifx.wiggle(e, deg, dur)
+  deg = deg or 8; dur = dur or 0.4
+  scene:tweenUi(e, { rotate=-deg,  duration=dur*0.2, easing="out" })
+  scene:tweenUi(e, { rotate=deg,   duration=dur*0.3, delay=dur*0.2, easing="inOut" })
+  scene:tweenUi(e, { rotate=0,     duration=dur*0.5, delay=dur*0.5, easing="elastic" })
+end
+
+-- ハートビート（2 連パルス。クールダウン完了/低 HP 警告のワンショット）
+function uifx.heartbeat(e, s, dur)
+  s = s or 1.12; dur = dur or 0.5
+  scene:tweenUi(e, { scale=s,   duration=dur*0.15, easing="out" })
+  scene:tweenUi(e, { scale=1.0, duration=dur*0.15, delay=dur*0.15, easing="in" })
+  scene:tweenUi(e, { scale=s,   duration=dur*0.2,  delay=dur*0.35, easing="out" })
+  scene:tweenUi(e, { scale=1.0, duration=dur*0.45, delay=dur*0.55, easing="out" })
+end
 )LUA";
 
     auto r = m_lua->safe_script(kPrelude, sol::script_pass_on_error);

@@ -647,6 +647,7 @@ static void Test_UIRect()
             rc.visible   = false;
             rc.rotation  = -12.5f;   // 既定 0 から変えて往復を確認
             rc.skewX     = 8.0f;
+            rc.clipChildren = true;
             r.emplace<UIRect>(e, rc);
         },
         [](const UIRect& rc) {
@@ -658,6 +659,7 @@ static void Test_UIRect()
             CHECK(rc.visible == false);
             CHECK_F(rc.rotation, -12.5f);
             CHECK_F(rc.skewX, 8.0f);
+            CHECK(rc.clipChildren == true);
         });
 }
 
@@ -674,7 +676,16 @@ static void Test_UIImage()
             im.cornerRadius = 6.0f;
             im.raycastBlock = false;   // 既定 true から変えて往復を確認
             im.fillAmount   = 0.75f;   // 既定 1 から変えて往復を確認
-            im.fillDir      = 2;       // 下から
+            im.fillDir      = 4;       // 放射（時計回り）
+            im.fillOrigin   = 90.0f;
+            im.shape        = 4;       // 六角形
+            im.ringThickness = 12.0f;
+            im.uvScroll     = { 0.5f, -0.25f };
+            im.outlineStyle = 2;       // コーナーブラケット
+            im.outlineDash  = 20.0f;
+            im.segments     = 5;
+            im.segmentGap   = 2.0f;
+            im.segmentColor = { 0.1f, 0.2f, 0.3f, 0.9f };
             im.gradientDir    = 2;
             im.gradientColor2 = { 0.5f, 0.6f, 0.7f, 1.0f };
             im.gradientScrollSpeed = 0.8f;
@@ -696,7 +707,16 @@ static void Test_UIImage()
             CHECK_F(im.cornerRadius, 6.0f);
             CHECK(im.raycastBlock == false);
             CHECK_F(im.fillAmount, 0.75f);
-            CHECK(im.fillDir == 2);
+            CHECK(im.fillDir == 4);
+            CHECK_F(im.fillOrigin, 90.0f);
+            CHECK(im.shape == 4);
+            CHECK_F(im.ringThickness, 12.0f);
+            CHECK_F(im.uvScroll.x, 0.5f); CHECK_F(im.uvScroll.y, -0.25f);
+            CHECK(im.outlineStyle == 2);
+            CHECK_F(im.outlineDash, 20.0f);
+            CHECK(im.segments == 5);
+            CHECK_F(im.segmentGap, 2.0f);
+            CHECK_F(im.segmentColor.w, 0.9f);
             CHECK(im.gradientDir == 2);
             CHECK_F(im.gradientColor2.x, 0.5f); CHECK_F(im.gradientColor2.y, 0.6f);
             CHECK_F(im.gradientColor2.z, 0.7f);
@@ -726,6 +746,12 @@ static void Test_UIText()
             tx.shadowOffset = { 2.0f, 3.0f };
             tx.fontPath     = "fonts/title.ttf";
             tx.typewriterSpeed = 20.0f;
+            tx.letterSpacing  = 3.5f;
+            tx.charAnim       = 1;
+            tx.charAnimAmount = 6.0f;
+            tx.charAnimSpeed  = 3.0f;
+            tx.gradientDir    = 2;
+            tx.gradientColor2 = { 1.0f, 0.8f, 0.2f, 1.0f };
             r.emplace<UIText>(e, tx);
         },
         [](const UIText& tx) {
@@ -742,6 +768,36 @@ static void Test_UIText()
             CHECK_F(tx.shadowOffset.x, 2.0f); CHECK_F(tx.shadowOffset.y, 3.0f);
             CHECK(tx.fontPath == "fonts/title.ttf");
             CHECK_F(tx.typewriterSpeed, 20.0f);
+            CHECK_F(tx.letterSpacing, 3.5f);
+            CHECK(tx.charAnim == 1);
+            CHECK_F(tx.charAnimAmount, 6.0f);
+            CHECK_F(tx.charAnimSpeed, 3.0f);
+            CHECK(tx.gradientDir == 2);
+            CHECK_F(tx.gradientColor2.y, 0.8f);
+        });
+}
+
+static void Test_UILayout()
+{
+    Case<UILayout>(
+        [](entt::registry& r, entt::entity e) {
+            UILayout ly;
+            ly.mode     = 2;
+            ly.cellW    = 120.0f;
+            ly.cellH    = 90.0f;
+            ly.spacing  = 4.0f;
+            ly.padding  = { 10.0f, 20.0f, 30.0f, 40.0f };
+            ly.gridCols = 5;
+            r.emplace<UILayout>(e, ly);
+        },
+        [](const UILayout& ly) {
+            CHECK(ly.mode == 2);
+            CHECK_F(ly.cellW, 120.0f);
+            CHECK_F(ly.cellH, 90.0f);
+            CHECK_F(ly.spacing, 4.0f);
+            CHECK_F(ly.padding.x, 10.0f); CHECK_F(ly.padding.y, 20.0f);
+            CHECK_F(ly.padding.z, 30.0f); CHECK_F(ly.padding.w, 40.0f);
+            CHECK(ly.gridCols == 5);
         });
 }
 
@@ -1052,6 +1108,7 @@ int main()
     Test_UIImage();
     Test_UIText();
     Test_UIButton();
+    Test_UILayout();
     Test_UIAnimator();
     Test_SkyboxSettings();
     Test_SSAOSettings();

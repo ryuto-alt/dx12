@@ -137,6 +137,7 @@ namespace
         if (reg.all_of<UISlider>(e)) return "Slider";
         if (reg.all_of<UIToggle>(e)) return "Toggle";
         if (reg.all_of<UIScrollView>(e)) return "Scroll";
+        if (reg.all_of<UILayout>(e)) return "Layout";
         if (reg.all_of<UIImage>(e))  return "Image";
         if (reg.all_of<UIText>(e))   return "Text";
         if (reg.all_of<UIRect>(e))   return "Rect";

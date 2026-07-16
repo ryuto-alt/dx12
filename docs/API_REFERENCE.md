@@ -100,7 +100,7 @@ t.scale      -- Vec3
 | `:isValid()` | bool | 有効なエンティティか |
 | `.name` | string | 名前（読み取り専用プロパティ） |
 | `.transform` | Transform | Transform 参照（読み書き） |
-| `:hasComponent(type)` | bool | コンポーネント有無。type: `"Transform"`,`"MeshRenderer"`,`"SkeletalAnimation"`,`"NodeAnimation"`,`"GridPlane"`,`"PointLight"`,`"DirectionalLight"`,`"SpotLight"`,`"Camera"`,`"AudioSource"`,`"Gimmick"`,`"ParticleEmitter"`,`"Trigger"`,`"CharacterController"`,`"UICanvas"`,`"UIRect"`,`"UIImage"`,`"UIText"`,`"UIButton"` |
+| `:hasComponent(type)` | bool | コンポーネント有無。type: `"Transform"`,`"MeshRenderer"`,`"SkeletalAnimation"`,`"NodeAnimation"`,`"GridPlane"`,`"PointLight"`,`"DirectionalLight"`,`"SpotLight"`,`"Camera"`,`"AudioSource"`,`"Gimmick"`,`"ParticleEmitter"`,`"Trigger"`,`"CharacterController"`,`"UICanvas"`,`"UIRect"`,`"UIImage"`,`"UIText"`,`"UIButton"`,`"UISlider"`,`"UIToggle"`,`"UIScrollView"`,`"UILayout"`,`"UIAnimator"` |
 | `:playAnim(clipIndex, blendDuration)` | — | スケルタルアニメをクリップ番号で再生（クロスフェード） |
 | `:playAnimByName(name, blendDuration)` | — | クリップ名で再生 |
 | `:setLooping(loop)` | — | ループ ON/OFF |
@@ -136,7 +136,8 @@ t.scale      -- Vec3
 | `:setUiToggle(e, on)` | — | `UIToggle.isOn` を設定（`onChangeEvent` は発火しない） |
 | `:getUiScroll(e)` | x, y | `UIScrollView` のスクロール量(px)を2値で返す |
 | `:setUiScroll(e, x, y)` | — | スクロール量を設定（コンテンツ量へ自動クランプ。大きい値で「一番下へ」） |
-| `:tweenUi(e, params)` | — | UI をトゥイーンで動かす。`params={dx?,dy?,scale?,scaleX?,scaleY?,alpha?,rotate?,color?,shake?,shakeFreq?,duration?,delay?,easing?}`。`dx/dy`=UIRect offset の相対移動(px)、`scale/scaleX/scaleY/alpha/rotate/color`=見た目のみ（子孫にも掛かる。`rotate` は度・絶対目標値で `UIRect.rotation` へ加算合成。`scaleX/scaleY` で非等方=フリップ/スカッシュ）。`color={r,g,b}`=RGB乗算の絶対目標値（1超えで白フラッシュ。完了後も持続={1,1,1}で解除）。`shake`=振幅px の振動（duration で 0 へ減衰。`shakeFreq`=Hz 既定24）。`easing`: `"linear"/"in"/"out"/"inOut"/"back"/"bounce"/"elastic"`。`e` は Entity かエンティティID |
+| `:tweenUi(e, params)` | — | UI をトゥイーンで動かす。`params={dx?,dy?,scale?,scaleX?,scaleY?,alpha?,rotate?,color?,shake?,shakeFreq?,fill?,countTo?,countFrom?,countFmt?,onComplete?,duration?,delay?,easing?}`。`dx/dy`=UIRect offset の相対移動(px)、`scale/scaleX/scaleY/alpha/rotate/color`=見た目のみ（子孫にも掛かる。`rotate` は度・絶対目標値で `UIRect.rotation` へ加算合成。`scaleX/scaleY` で非等方=フリップ/スカッシュ）。`color={r,g,b}`=RGB乗算の絶対目標値（1超えで白フラッシュ。完了後も持続={1,1,1}で解除）。`shake`=振幅px の振動（duration で 0 へ減衰。`shakeFreq`=Hz 既定24）。`fill`=UIImage.fillAmount の絶対目標値（ゲージなめらか増減。from は現在値）。`countTo`=UIText への数字ロール（`countFrom` 省略時は現在テキストの数値解釈、`countFmt`=printf 書式 `"%d"/"%05d"/"%.1f"`）。`onComplete`=完了時に1回呼ばれる関数（SE同期/チェーン）。`easing`: `"linear"/"in"/"out"/"inOut"/"back"/"bounce"/"elastic"/"expo"/"inBack"/"inOutBack"/"quint"/"sine"`。`e` は Entity かエンティティID |
+| `:stopUiTweens(e)` | — | 進行中の tween を全打ち切り+視覚値リセット（DOTween の Kill 相当。連打対策） |
 | `:showUi(e)` | — | 表示して `UIAnimator` の出現アニメを最初から再生（無ければ visible=true のみ） |
 | `:hideUi(e)` | — | 出現アニメの逆再生で消す（子孫ごと。消えた後はクリック不可）。無アニメなら即非表示。戻すのは `showUi` |
 | `:setSpriteEffect(e, value)` | — | Sprite2D の effectValue（カスタムシェーダーへの汎用値）を変更。毎フレーム可 |
@@ -379,10 +380,11 @@ Unity uGUI / Godot Control 相当の retained-mode UI。UI要素は **ECSコン�
 | コンポーネント | 主なフィールド | 説明 |
 |---|---|---|
 | `UICanvas` | `refWidth/refHeight`(既定1920x1080), `scaleMode`(0=ScaleToFit 1=ConstantPixel), `sortOrder`, `visible` | UIツリーのルート |
-| `UIRect` | `anchorMin/Max`, `pivot`, `offsetMin/Max`, `visible`, `rotation`(度), `skewX`(度) | レイアウト矩形（RectTransform相当）。全UI要素に必須。`rotation/skewX` はレイアウト解決後にピボット回りへ掛かる**視覚変換**（子孫も一緒に回る。斜め配置パネル/平行四辺形バナー用。回転中はエディタのリサイズハンドル非表示=数値編集。`UIScrollView` ノード自身では無視） |
-| `UIImage` | `texturePath`(空=単色矩形), `color`, `uvMin/Max`, `sliceBorder`(px 左上右下, 9-slice), `cornerRadius`, `raycastBlock`(既定true), `fillAmount`(0..1 既定1), `fillDir`(0=左 1=右 2=下 3=上から), `gradientDir`(0=なし 1=横 2=縦 3=斜め)+`gradientColor2`+`gradientScrollSpeed`(周回/秒。0=静的), `outlineWidth`+`outlineColor`, `shadowColor`(α0=無効)+`shadowOffset`+`shadowSoftness` | 画像/単色矩形。`raycastBlock=true` なら背後のボタンへのクリックを遮る（Unity の raycastTarget 相当）。`fillAmount<1` で端から割合表示（HPバー/ゲージ）。グラデはテクスチャ/9-slice/角丸すべてに掛かる（`gradientColor2` のαは無視）。`gradientScrollSpeed≠0` で静的グラデの代わりに終端色の**光帯がグラデ方向へ流れる**（ガチャボタンの光沢流し。負値で逆方向）。影は矩形近似のドロップシャドウ |
-| `UIText` | `text`, `fontSize`, `color`, `alignH/V`(0=左/上 1=中央 2=右/下), `wrap`, `outlineWidth`+`outlineColor`(縁取り), `shadowColor`(α0=無効)+`shadowOffset`(影), `fontPath`(assets相対 .ttf/.otf。空=既定Yu Gothic), `typewriterSpeed`(文字/秒。0=無効) | テキスト。クリックは遮らない。縁取り/影はゲームUIの可読性の要。カスタムフォントは任意サイズでシャープ（失敗時は既定フォント）。`typewriterSpeed>0` で Play 中に1文字ずつ表示（UTF-8 単位=日本語も1文字ずつ。`setUiText` で先頭から再生し直し。整列は全文サイズ固定） |
+| `UIRect` | `anchorMin/Max`, `pivot`, `offsetMin/Max`, `visible`, `rotation`(度), `skewX`(度), `clipChildren` | レイアウト矩形（RectTransform相当）。全UI要素に必須。`rotation/skewX` はレイアウト解決後にピボット回りへ掛かる**視覚変換**（子孫も一緒に回る。斜め配置パネル/平行四辺形バナー用。回転中はエディタのリサイズハンドル非表示=数値編集。`UIScrollView` ノード自身では無視）。`clipChildren=true` で子ツリーを自矩形で**マスク**（ワイプ公開/マーキー。ScrollView 同様このノード自身の回転は無効） |
+| `UIImage` | `texturePath`(空=単色), `color`, `shape`(0=矩形 1=楕円 2=リング 3=ダイヤ 4=六角形 5=三角形)+`ringThickness`, `uvMin/Max`(1超え=タイル), `uvScroll`(uv/秒), `sliceBorder`(px 左上右下, 9-slice), `cornerRadius`, `raycastBlock`(既定true), `fillAmount`(0..1 既定1), `fillDir`(0=左 1=右 2=下 3=上から 4=放射時計回り 5=放射反時計回り)+`fillOrigin`(開始角度), `segments`+`segmentGap/Color`(分割ゲージ), `gradientDir`(0=なし 1=横 2=縦 3=斜め 4=放射)+`gradientColor2`+`gradientScrollSpeed`(周回/秒。0=静的), `outlineWidth`+`outlineColor`+`outlineStyle`(0=実線 1=破線 2=コーナーブラケット)+`outlineDash`, `shadowColor`(α0=無効)+`shadowOffset`+`shadowSoftness` | 画像/単色。`shape≠0` は**形状描画**＝テクスチャを形で切り抜く（丸アイコン/バフ枠/スキルノード。角丸/9-slice 無視。リングは単色専用の帯円=円形ゲージ）。放射 fill はクールダウン円（矩形にも効く。リングの fill は常に円弧）。`segments` はスタミナ/弾数のチャンクゲージ（矩形+線形fill専用）。`uvMax>1`+`uvScroll` で**流れるタイルパターン**（警告帯/ストライプ。9-sliceでは無効）。グラデは全描画形態に掛かる（`gradientColor2` のαは無視）。`gradientScrollSpeed≠0` で光帯がグラデ方向へ流れる（ガチャの光沢流し）。ブラケット枠は SF/照準 HUD の四隅鉤括弧。影は形状近似のドロップシャドウ |
+| `UIText` | `text`, `fontSize`, `color`, `alignH/V`(0=左/上 1=中央 2=右/下), `wrap`, `outlineWidth`+`outlineColor`(縁取り), `shadowColor`(α0=無効)+`shadowOffset`(影), `fontPath`(assets相対 .ttf/.otf。空=既定Yu Gothic), `typewriterSpeed`(文字/秒。0=無効), `letterSpacing`(px 字間), `charAnim`(0=なし 1=ウェーブ 2=ジッター 3=レインボー)+`charAnimAmount/Speed`, `gradientDir`(0=なし 1=横 2=縦)+`gradientColor2` | テキスト。クリックは遮らない。縁取り/影はゲームUIの可読性の要。`typewriterSpeed>0` で Play 中に1文字ずつ表示（UTF-8 単位。`setUiText` で先頭から再生し直し。整列は全文サイズ固定）。`letterSpacing`/`charAnim` は 1 文字ずつ描く per-glyph モード（**wrap とは非両立**=wrap優先）。テキストグラデは本体のみ（縁取り/影には掛からない。金色タイトル等） |
 | `UIButton` | `onClickEvent`, `normalColor/hoverColor/pressedColor`, `interactable` | 同一エンティティの `UIImage` を状態色でティント。release-inside でクリック確定。要素が重なった場合は**最前面だけ**が反応（子要素がクリックを吸っても親ボタンへバブリング） |
+| `UILayout` | `mode`(0=VBox 1=HBox 2=Grid), `cellW/cellH`(px。VBoxのcellW=0/HBoxのcellH=0は内側いっぱい), `spacing`, `padding`(左上右下px), `gridCols` | **自動レイアウトコンテナ**。直下の子（UIRect持ち）へセル矩形を順番に配る＝手動 offset 計算なしでメニュー列/ツールバー/インベントリ。子はセル内でアンカー解決（全面ストレッチ=セルいっぱい）。スクロールリストは UIScrollView の子コンテンツノードに付ける |
 
 アンカー解決式（`UIRect`、親矩形基準・実ピクセル）:
 ```
@@ -395,7 +397,7 @@ rectMax = parentMin + parentSize * anchorMax + offsetMax
 
 **Lua からの操作**（値の書き換えのみ。ツリー構造はエディタで組む）: `scene:setUiText/getUiText/setUiTypewriter/isUiTypewriterDone/setUiColor/setUiVisible/setUiTexture/setUiFill/getUiFill/setUiRotation/getUiRotation/getUiSlider/setUiSlider/getUiToggle/setUiToggle/getUiScroll/setUiScroll`（§3 Scene 参照）。定番演出は `uifx.*`（§5 prelude 参照）。
 
-**回転/装飾の既知の制限**: ①回転/スキューしたパネルの**中に** `UIScrollView` を置くのは非対応（クリップ位置がずれる。逆=スクロールビュー内の回転要素は OK）②`gradientColor2` のアルファは無視される ③回転+角丸+部分 fill の併用はゲージの切り口も丸くなる。
+**回転/装飾の既知の制限**: ①回転/スキューしたパネルの**中に** `UIScrollView`/`clipChildren` を置くのは非対応（クリップ位置がずれる。逆=スクロールビュー内の回転要素は OK）②`gradientColor2` のアルファは無視される ③回転+角丸+部分 fill の併用はゲージの切り口も丸くなる ④テクスチャ付き形状（shape≠0）/放射 fill の縁は AA なし（縁取りを付けると綺麗）⑤放射 fill と 9-slice は非両立（平板扱い）⑥破線/ブラケット枠は矩形専用・角丸無視。
 
 **ゲームパッド/キーボードのフォーカスナビゲーション**（設定不要で常時有効）:
 矢印キー / D-pad / 左スティックでフォーカス移動（位置ベースの空間ナビ）、Enter / Space / A ボタンで決定
@@ -545,6 +547,14 @@ vfx.play(name, x, y, z, scale?)   -- Effekseer 実体があれば優先、無け
 | `uifx.flipIn(e, dur?)` | ぺしゃんこ→開く（フリップ風。結果表示/カード公開） |
 | `uifx.popOut(e, dur?)` | 縮んで消える（ポップアップを閉じる） |
 | `uifx.fadeIn(e, dur?)` / `uifx.fadeOut(e, dur?)` | フェード（fadeOut 後もクリックは残る。消し切るなら `scene:hideUi`） |
+| `uifx.stagger(list, step?, fn, ...)` | リスト項目の順次入場（間隔の相場 0.05〜0.10秒）。`fn` に下の slideIn 系/popIn を渡す |
+| `uifx.slideInLeft/Right/Up(e, delay?, dist?, dur?)` | 方向スライド入場（`expo`。delay 付き=stagger と組む） |
+| `uifx.popIn(e, delay?, dur?)` | ぽんと出る（delay 対応版 bounceIn） |
+| `uifx.countTo(e, to, dur?, fmt?)` | 数字ロール（スコア/所持金。`fmt` 例 `"%06d"`） |
+| `uifx.fillTo(e, v, dur?, easing?)` | ゲージをなめらかに増減（fillAmount 絶対値 0..1） |
+| `uifx.damageBar(front, ghost, v, ghostDelay?)` | ゴーストバー付きダメージ（本体即落ち+背後バーが遅れて追従=遅延削れ） |
+| `uifx.wiggle(e, deg?, dur?)` | 注目のゆらぎ（通知バッジを左右にクイックに振る） |
+| `uifx.heartbeat(e, s?, dur?)` | ドクドク2連パルス（クールダウン完了/低HP警告） |
 
 ```lua
 events:on("startClicked", function(e)

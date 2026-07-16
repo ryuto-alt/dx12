@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <memory>
 #include <cstdint>
+#include <functional>
 #include <DirectXMath.h>
 #include <entt/entt.hpp>
 #include "core/Types.h"
@@ -310,6 +311,10 @@ struct UIRect
     // 横スキュー(度)。平行四辺形のバナー/ボタン用。UIScrollView ノード自身では rotation と
     // ともに無視される（軸平行クリップと両立しないため）。
     float skewX = 0.0f;
+    // 子ツリーを自分の解決済み矩形でクリップ(マスク)する。ワイプ公開・マーキー・
+    // ゲージ内スクロール等の「はみ出しを隠す」表現用。UIScrollView と同じ軸平行 GPU
+    // シザーなので、このノード自身の rotation/skewX は無視される(ScrollView と同じ制限)。
+    bool clipChildren = false;
 };
 
 // UI画像(または単色矩形)
@@ -318,22 +323,39 @@ struct UIImage
     std::string texturePath;                    // assets相対。空=単色塗り矩形
     DirectX::XMFLOAT4 color{1.0f, 1.0f, 1.0f, 1.0f};
     DirectX::XMFLOAT2 uvMin{0.0f, 0.0f};        // アトラス切り出し
-    DirectX::XMFLOAT2 uvMax{1.0f, 1.0f};
+    DirectX::XMFLOAT2 uvMax{1.0f, 1.0f};        // uv範囲が[0,1]を超えるとタイル繰り返し(内部でクワッド分割描画)
     DirectX::XMFLOAT4 sliceBorder{0.0f, 0.0f, 0.0f, 0.0f}; // 9-slice境界px(左,上,右,下)。全0で無効
     float cornerRadius = 0.0f;                  // 単色矩形時のみ有効
     bool raycastBlock = true;                   // 手前に描かれた自分がクリックを遮る(UnityのraycastTarget相当)
     float fillAmount = 1.0f;                    // 表示割合0..1(HPバー/ゲージ用。1=全表示、0=非表示)
     int fillDir = 0;                            // fillが増える方向 0=左から 1=右から 2=下から 3=上から
+                                                // 4=放射・時計回り 5=放射・反時計回り(クールダウン円)
+    float fillOrigin = 0.0f;                    // 放射fill(fillDir>=4)の開始角(度。0=真上、時計回り正)
+    // 形状。0以外は cornerRadius/9-slice を無視。テクスチャは矩形と同じ UV をポリゴンで
+    // 切り抜いて貼る(=どんな画像も形にマスクされる。丸アイコン等)。リングだけ単色専用
+    int shape = 0;                              // 0=矩形 1=楕円 2=リング(枠円) 3=ダイヤ 4=六角形 5=三角形(上向き)
+    float ringThickness = 8.0f;                 // shape=2 の帯の太さ(キャンバスpx)
+    // UVスクロール(uv/秒)。タイル繰り返し(uvMax>1)と併用で流れるストライプ/警告帯/
+    // コンベアなどのパターンアニメになる。9-slice と shape!=0 では無効
+    DirectX::XMFLOAT2 uvScroll{0.0f, 0.0f};
     // グラデーション: color から gradientColor2 へ線形補間(頂点シェード=テクスチャ/9-slice/角丸
     // 全対応・回転追従)。gradientColor2 のアルファは無視される(AA フリンジ保護のため)
-    int gradientDir = 0;                        // 0=なし 1=横(左→右) 2=縦(上→下) 3=斜め(左上→右下)
+    int gradientDir = 0;                        // 0=なし 1=横(左→右) 2=縦(上→下) 3=斜め(左上→右下) 4=放射(中心→外)
     DirectX::XMFLOAT4 gradientColor2{1.0f, 1.0f, 1.0f, 1.0f};
     // グロススイープ: gradientDir の方向に gradientColor2 の光帯が周期的に流れる(ガチャボタンの
-    // 光沢流し)。周回数/秒。0=静的グラデ(通常の線形補間)。gradientDir=0 なら無効
+    // 光沢流し)。周回数/秒。0=静的グラデ(通常の線形補間)。gradientDir=0/4 なら無効
     float gradientScrollSpeed = 0.0f;
     // 縁取り(枠線)。0=無効。角丸に追従する
     float outlineWidth = 0.0f;                  // キャンバスpx
     DirectX::XMFLOAT4 outlineColor{0.0f, 0.0f, 0.0f, 1.0f};
+    // 枠線スタイル(shape=0 の矩形専用。他形状は実線)。1/2 は cornerRadius を無視
+    int outlineStyle = 0;                       // 0=実線 1=破線 2=コーナーブラケット(四隅の鉤括弧。SF HUD 定番)
+    float outlineDash = 12.0f;                  // 破線=1区切りの長さ / ブラケット=腕の長さ(キャンバスpx)
+    // 分割ゲージ: fill 軸と直交する区切り線を(segments-1)本重ね描きして「n分割チャンク」に
+    // 見せる(スタミナ/弾数ゲージ)。0=無効。矩形+線形fill(fillDir 0-3)専用
+    int segments = 0;
+    float segmentGap = 3.0f;                    // 区切り線の太さ(キャンバスpx)
+    DirectX::XMFLOAT4 segmentColor{0.0f, 0.0f, 0.0f, 0.7f};
     // ドロップシャドウ(矩形近似=テクスチャのアルファ形状は反映しない)。α=0 で無効
     DirectX::XMFLOAT4 shadowColor{0.0f, 0.0f, 0.0f, 0.0f};
     DirectX::XMFLOAT2 shadowOffset{2.0f, 2.0f}; // キャンバスpx
@@ -362,6 +384,17 @@ struct UIText
     // コードポイント単位=日本語も1文字ずつ)。setUiText で文字列を変えると先頭から再生し直す。
     // 整列は全文のサイズで固定(表示が進んでも文字がずれない)
     float typewriterSpeed = 0.0f;
+    // 字間(キャンバスpx。負=詰める)。0以外は1文字ずつ描く per-glyph モードになる
+    // (wrap とは非両立=wrap 優先で無効化。改行 \n は対応)
+    float letterSpacing = 0.0f;
+    // 文字アニメ(per-glyph モード)。ゆらぎ系のにぎやかしテキスト(Godot RichTextLabel の
+    // [wave][shake][rainbow] 相当)。wrap=true では無効
+    int charAnim = 0;                           // 0=なし 1=ウェーブ(上下うねり) 2=ジッター(ガタガタ震え) 3=レインボー(色相回転)
+    float charAnimAmount = 4.0f;                // ウェーブ/ジッターの振幅(キャンバスpx)
+    float charAnimSpeed = 2.0f;                 // 周波数(Hz)。レインボーは色相周回/秒×0.25
+    // テキストグラデーション(本体のみ。縁取り/影には掛からない)。α は無視
+    int gradientDir = 0;                        // 0=なし 1=横(左→右) 2=縦(上→下)。金色タイトル等
+    DirectX::XMFLOAT4 gradientColor2{1.0f, 1.0f, 1.0f, 1.0f};
 
     // ランタイム専有（非シリアライズ）: タイプライターの経過秒
     float _twT = 0.0f;
@@ -442,16 +475,34 @@ struct UIScrollView
     float _contentH = 0.0f;
 };
 
+// UIレイアウトコンテナ: 直下の子(UIRect 持ち)へ「セル矩形」を順番に配り、子はそのセルを
+// 親矩形としてアンカー解決する(セル内で anchorMin=Max=中央+サイズ指定でも、0-1 ストレッチ
+// でも、子の書式はそのまま効く)。手動 offset 計算なしでリスト/ツールバー/グリッドが組める。
+// セルは自分の解決済み矩形の内側(padding 控除)に padding 起点で敷き詰める。
+// メニュー項目列・インベントリグリッド・スキルバー等の定番骨格用。UIScrollView と併用可
+// (コンテンツ側ノードに付ける)。
+struct UILayout
+{
+    int   mode  = 0;         // 0=縦積み(VBox) 1=横並び(HBox) 2=グリッド(左上から行優先)
+    float cellW = 200.0f;    // セル幅(キャンバスpx)。VBox では 0=親の内側いっぱい
+    float cellH = 60.0f;     // セル高(キャンバスpx)。HBox では 0=親の内側いっぱい
+    float spacing = 8.0f;    // セル間の間隔(px)
+    DirectX::XMFLOAT4 padding{0.0f, 0.0f, 0.0f, 0.0f};   // 内側余白(左,上,右,下 px)
+    int   gridCols = 4;      // mode=2 の列数(1以上)
+};
+
 // UI アニメーション（UIRect 持ちエンティティに付ける。Play / ゲームモード中のみ再生）。
 // 出現アニメ（Play 開始時と Lua scene:showUi() で再生）・ホバー/押下スケール（要 UIButton）・
 // ループアニメの 3 系統。視覚効果（平行移動/拡縮/アルファ）は自分と子孫にまとめて掛かる。
 // イージング(showEasing): 0=リニア 1=イーズイン 2=イーズアウト 3=イン/アウト 4=バック(勢い)
-//                         5=バウンス 6=弾性
+//                         5=バウンス 6=弾性 7=エクスポ(鋭く減速) 8=インバック(溜めて発進)
+//                         9=イン/アウトバック 10=クイント(強い減速) 11=サイン(ゆったり)
 struct UIAnimator
 {
     // 出現アニメ
     int  showAnim     = 1;      // 0=なし 1=フェード 2=ポップ(拡大) 3=左から 4=右から 5=上から 6=下から 7=スピン(回転入場)
                                 // 8=バウンド落下(上から弾んで着地) 9=フリップ(縦つぶれから開く) 10=シェイク入場
+                                // 11=横フリップ(横つぶれから開く=扉/カード)
     f32  showDuration = 0.35f;  // 秒
     f32  showDelay    = 0.0f;   // 秒（複数要素を順番に出すのに使う）
     int  showEasing   = 2;      // 既定 = イーズアウト
@@ -509,6 +560,16 @@ struct UiTween
     bool hasShake = false;      // 振動（減衰付き）。amplitude=px、freq=Hz。duration で 0 に減衰
     f32  shakeAmp  = 8.0f;
     f32  shakeFreq = 24.0f;
+    bool hasFill = false;       // UIImage.fillAmount を絶対目標値へ(ゲージのなめらか増減。
+                                // from は開始時の現在値を捕捉=ゴーストバー遅延削れが作れる)
+    f32  fillFrom = 1.0f, fillTo = 1.0f;
+    bool hasCount = false;      // UIText へ数字ロール(カウントアップ演出)。from 省略時は
+                                // 開始時のテキストを数値解釈(失敗=0)=連続加算が自然に繋がる
+    bool   countFromSet = false;
+    double countFrom = 0.0, countTo = 0.0;
+    std::string countFmt;       // printf 書式(既定 "%d"。"%05d"=ゼロ埋め、"%.1f"=小数)
+    // 完了コールバック(SE 同期・演出チェーン用)。tween 完了フレームの更新後に 1 回呼ばれる
+    std::function<void()> onComplete;
 };
 struct UITweenState
 {

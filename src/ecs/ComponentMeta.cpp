@@ -182,7 +182,8 @@ void RegisterCoreComponentMeta()
         .data<&UIRect::visible>("visible")
         .data<&UIRect::order>("order")
         .data<&UIRect::rotation>("rotation")
-        .data<&UIRect::skewX>("skewX");
+        .data<&UIRect::skewX>("skewX")
+        .data<&UIRect::clipChildren>("clipChildren");
 
     entt::meta_factory<UIImage>{}
         .type("UIImage")
@@ -195,11 +196,20 @@ void RegisterCoreComponentMeta()
         .data<&UIImage::raycastBlock>("raycastBlock")
         .data<&UIImage::fillAmount>("fillAmount")
         .data<&UIImage::fillDir>("fillDir")
+        .data<&UIImage::fillOrigin>("fillOrigin")
+        .data<&UIImage::shape>("shape")
+        .data<&UIImage::ringThickness>("ringThickness")
+        .data<&UIImage::uvScroll>("uvScroll")
         .data<&UIImage::gradientDir>("gradientDir")
         .data<&UIImage::gradientColor2>("gradientColor2")
         .data<&UIImage::gradientScrollSpeed>("gradientScrollSpeed")
         .data<&UIImage::outlineWidth>("outlineWidth")
         .data<&UIImage::outlineColor>("outlineColor")
+        .data<&UIImage::outlineStyle>("outlineStyle")
+        .data<&UIImage::outlineDash>("outlineDash")
+        .data<&UIImage::segments>("segments")
+        .data<&UIImage::segmentGap>("segmentGap")
+        .data<&UIImage::segmentColor>("segmentColor")
         .data<&UIImage::shadowColor>("shadowColor")
         .data<&UIImage::shadowOffset>("shadowOffset")
         .data<&UIImage::shadowSoftness>("shadowSoftness");
@@ -217,7 +227,13 @@ void RegisterCoreComponentMeta()
         .data<&UIText::shadowColor>("shadowColor")
         .data<&UIText::shadowOffset>("shadowOffset")
         .data<&UIText::fontPath>("fontPath")
-        .data<&UIText::typewriterSpeed>("typewriterSpeed");
+        .data<&UIText::typewriterSpeed>("typewriterSpeed")
+        .data<&UIText::letterSpacing>("letterSpacing")
+        .data<&UIText::charAnim>("charAnim")
+        .data<&UIText::charAnimAmount>("charAnimAmount")
+        .data<&UIText::charAnimSpeed>("charAnimSpeed")
+        .data<&UIText::gradientDir>("gradientDir")
+        .data<&UIText::gradientColor2>("gradientColor2");
 
     entt::meta_factory<UIButton>{}
         .type("UIButton")
@@ -250,6 +266,15 @@ void RegisterCoreComponentMeta()
         .data<&UIScrollView::wheelSpeed>("wheelSpeed")
         .data<&UIScrollView::showBar>("showBar")
         .data<&UIScrollView::barColor>("barColor");
+
+    entt::meta_factory<UILayout>{}
+        .type("UILayout")
+        .data<&UILayout::mode>("mode")
+        .data<&UILayout::cellW>("cellW")
+        .data<&UILayout::cellH>("cellH")
+        .data<&UILayout::spacing>("spacing")
+        .data<&UILayout::padding>("padding")
+        .data<&UILayout::gridCols>("gridCols");
 
     entt::meta_factory<UIToggle>{}
         .type("UIToggle")

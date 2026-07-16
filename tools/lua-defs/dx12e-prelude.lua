@@ -433,6 +433,84 @@ function uifx.fadeIn(e, dur) end
 ---@param dur? number 秒（既定 0.3）
 function uifx.fadeOut(e, dur) end
 
+---ステージャー（リスト項目の順次入場）。間隔の相場は 0.05〜0.10 秒。
+---fn には uifx.slideInLeft 等の (e, delay, ...) を取る関数を渡す。
+---```lua
+---uifx.stagger({item1, item2, item3}, 0.07, uifx.slideInLeft)
+---uifx.stagger(items, 0.06, function(e, d) scene:tweenUi(e, {alpha=1, duration=0.3, delay=d}) end)
+---```
+---@param list (Entity|integer)[]
+---@param step? number 要素間の遅延秒（既定 0.07）
+---@param fn fun(e: Entity|integer, delay: number, ...)
+function uifx.stagger(list, step, fn, ...) end
+
+---左から鋭くスライド入場（delay 対応 = stagger と組む）。
+---@param e Entity|integer
+---@param delay? number 開始遅延秒（既定 0）
+---@param dist? number 距離px（既定 80）
+---@param dur? number 秒（既定 0.35）
+function uifx.slideInLeft(e, delay, dist, dur) end
+
+---右から鋭くスライド入場。
+---@param e Entity|integer
+---@param delay? number
+---@param dist? number
+---@param dur? number
+function uifx.slideInRight(e, delay, dist, dur) end
+
+---下からふわっと上がって入場。
+---@param e Entity|integer
+---@param delay? number
+---@param dist? number 既定 60
+---@param dur? number
+function uifx.slideInUp(e, delay, dist, dur) end
+
+---ぽんと出る（stagger 対応版 bounceIn。delay 付き）。
+---@param e Entity|integer
+---@param delay? number
+---@param dur? number 既定 0.35
+function uifx.popIn(e, delay, dur) end
+
+---数字ロール（スコア/所持金のカウントアップ。UIText 対象）。
+---```lua
+---uifx.countTo(scoreText, 12800, 0.8, "%06d")
+---```
+---@param e Entity|integer
+---@param to number 目標値
+---@param dur? number 秒（既定 0.6）
+---@param fmt? string printf 書式（既定 "%d"。"%05d"=ゼロ埋め, "%.1f"=小数）
+function uifx.countTo(e, to, dur, fmt) end
+
+---ゲージをなめらかに増減（UIImage.fillAmount を絶対値 0..1 へ）。
+---@param e Entity|integer
+---@param v number 目標 0..1
+---@param dur? number 秒（既定 0.35）
+---@param easing? string 既定 "out"
+function uifx.fillTo(e, v, dur, easing) end
+
+---ゴーストバー付きダメージ表現（本体バー即落ち + 背後バーが遅れて追従）。
+---front と ghost は同じ位置に重ねた 2 枚のゲージ（ghost が奥・白/黄色）。
+---```lua
+---uifx.damageBar(hpFill, hpGhost, 0.42)
+---```
+---@param front Entity|integer 本体バー（即座に v へ）
+---@param ghost Entity|integer ゴーストバー（遅れて v へ）
+---@param v number 目標 0..1
+---@param ghostDelay? number ゴーストの遅延秒（既定 0.35）
+function uifx.damageBar(front, ghost, v, ghostDelay) end
+
+---注目のゆらぎ（通知バッジ等を左右にクイックに振って戻す）。
+---@param e Entity|integer
+---@param deg? number 振れ角（既定 8）
+---@param dur? number 秒（既定 0.4）
+function uifx.wiggle(e, deg, dur) end
+
+---ハートビート（ドクドクと 2 連パルス。クールダウン完了/低 HP 警告のワンショット）。
+---@param e Entity|integer
+---@param s? number 拡大率（既定 1.12）
+---@param dur? number 秒（既定 0.5）
+function uifx.heartbeat(e, s, dur) end
+
 -- ============================================================
 -- time 拡張(純Lua部分): タイマー / 共有ビデオ時計 / 個別時計
 -- (time.now/dt/setScale 等の C++ コアは dx12e.lua 側)

@@ -75,6 +75,11 @@ function Vec3.new(x, y, z) end
 ---| "UIImage"
 ---| "UIText"
 ---| "UIButton"
+---| "UISlider"
+---| "UIToggle"
+---| "UIScrollView"
+---| "UILayout"
+---| "UIAnimator"
 
 ---シーン内のエンティティ
 ---@class Entity
@@ -361,8 +366,13 @@ function Scene:setUiScroll(e, x, y) end
 ---`scaleX/scaleY` で非等方＝スカッシュ&ストレッチ/フリップ風（scale は両方へ）。
 ---`color={r,g,b}` は RGB 乗算の絶対目標値（1 超えで白フラッシュ。完了後も持続＝{1,1,1} へ戻して解除）。
 ---`shake` は振幅px の振動で duration かけて 0 へ減衰（shakeFreq=Hz、既定 24）。
----同時に複数指定でき、連続で呼べば重ねがけもできる。Play 中のみ動く。
----定番演出は uifx.punch / uifx.flash / uifx.shake 等のワンライナーが楽（プレリュード参照）。
+---`fill` は UIImage.fillAmount を絶対目標値へ＝ゲージのなめらか増減（from は現在値）。
+---`countTo` は UIText へ数字ロール（カウントアップ演出）。countFrom 省略時は現在テキストの
+---数値解釈（＝連続加算が自然に繋がる）。countFmt は printf 書式（"%d"/"%05d"/"%.1f"）。
+---`onComplete` は完了フレームに 1 回呼ばれる（SE 同期・演出チェーン用）。
+---同時に複数指定でき、連続で呼べば重ねがけもできる。Play 中のみ動く。連打で重なりすぎる
+---場面は scene:stopUiTweens(e) で打ち切ってから掛け直す。
+---定番演出は uifx.punch / uifx.flash / uifx.countTo 等のワンライナーが楽（プレリュード参照）。
 ---```lua
 ----- メニューを右へ 200px、0.4秒 バウンスで
 ---scene:tweenUi(menu, { dx = 200, duration = 0.4, easing = "bounce" })
@@ -372,12 +382,23 @@ function Scene:setUiScroll(e, x, y) end
 ---scene:tweenUi(hpBar, { color = {3, 0.3, 0.3}, duration = 0.1 })
 ---scene:tweenUi(hpBar, { color = {1, 1, 1}, duration = 0.25, delay = 0.1 })
 ---scene:tweenUi(hpBar, { shake = 10, duration = 0.4 })
+----- HPゲージをなめらかに減らす
+---scene:tweenUi(hpFill, { fill = 0.35, duration = 0.3, easing = "out" })
+----- スコアの数字ロール（完了時に SE）
+---scene:tweenUi(scoreText, { countTo = 12800, countFmt = "%06d", duration = 0.8,
+---                           easing = "expo", onComplete = function() audio:playSFX("se/coin.wav") end })
 ----- ぺしゃんこから開く（フリップ風）
 ---scene:tweenUi(card, { scaleY = 1, duration = 0.35, easing = "back" })
 ---```
 ---@param e Entity|integer 対象（ボタンクリックの data.source をそのまま渡してもよい）
----@param params { dx?: number, dy?: number, scale?: number, scaleX?: number, scaleY?: number, alpha?: number, rotate?: number, color?: number[], shake?: number, shakeFreq?: number, duration?: number, delay?: number, easing?: "linear"|"in"|"out"|"inOut"|"back"|"bounce"|"elastic" }
+---@param params { dx?: number, dy?: number, scale?: number, scaleX?: number, scaleY?: number, alpha?: number, rotate?: number, color?: number[], shake?: number, shakeFreq?: number, fill?: number, countTo?: number, countFrom?: number, countFmt?: string, onComplete?: fun(), duration?: number, delay?: number, easing?: "linear"|"in"|"out"|"inOut"|"back"|"bounce"|"elastic"|"expo"|"inBack"|"inOutBack"|"quint"|"sine" }
 function Scene:tweenUi(e, params) end
+
+---進行中の tween を全部打ち切り、視覚値（拡縮/透明度/回転/カラー）を既定へ戻す
+---（DOTween の Kill 相当。ボタン連打で tween が積み重なるのを防ぐ）。
+---UIAnimator の出現/ループアニメには影響しない。
+---@param e Entity|integer
+function Scene:stopUiTweens(e) end
 
 ---UI要素を表示して、UIAnimator の出現アニメを最初から再生する
 ---（UIAnimator が無ければ setUiVisible(e, true) と同じ）。
