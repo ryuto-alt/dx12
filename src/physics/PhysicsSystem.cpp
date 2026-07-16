@@ -2,6 +2,7 @@
 #include "ecs/Components.h"
 #include "core/Logger.h"
 
+#include <algorithm>
 #include <cstdarg>
 #include <mutex>
 #include <vector>
@@ -471,15 +472,23 @@ void PhysicsSystem::RegisterBody(entt::registry& registry, entt::entity entity)
     }
     else if (box)
     {
-        shape = new JPH::BoxShape(JPH::Vec3(box->halfExtents.x, box->halfExtents.y, box->halfExtents.z));
+        // halfExtents は Transform.scale 乗算が前提（Trigger/EditorIconRenderer と同じ規約）。
+        // これが無いと SpawnBox→scale で見た目だけ拡大したボックス（Ground/Wall等）が
+        // 実際にはデフォルトの 0.5 半径でしか衝突しなくなる。
+        shape = new JPH::BoxShape(JPH::Vec3(box->halfExtents.x * transform->scale.x,
+                                             box->halfExtents.y * transform->scale.y,
+                                             box->halfExtents.z * transform->scale.z));
     }
     else if (sphere)
     {
-        shape = new JPH::SphereShape(sphere->radius);
+        f32 s = std::max({transform->scale.x, transform->scale.y, transform->scale.z});
+        shape = new JPH::SphereShape(sphere->radius * s);
     }
     else if (capsule)
     {
-        shape = new JPH::CapsuleShape(capsule->halfHeight, capsule->radius);
+        f32 radiusScale = std::max(transform->scale.x, transform->scale.z);
+        shape = new JPH::CapsuleShape(capsule->halfHeight * transform->scale.y,
+                                       capsule->radius * radiusScale);
     }
     else
     {

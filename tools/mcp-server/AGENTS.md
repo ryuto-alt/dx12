@@ -502,7 +502,21 @@ dx12_set_transform(name:"Player", position:[0,1,0])
 
 ## ゲーム内 UI を組む（タイトル画面・設定画面・HUD）
 
-基本ループ: **生成 → 調整 → 数値確認 → 見た目確認** を回す。
+基本ループ: **設計方針 → 制約付き生成 → 自動監査 → 見た目確認 → 保存** を回す。
+
+新規画面は原則として次の順で作る:
+
+1. `dx12_ui_design_brief(genre, screen)` で画面目的に合う構図とアンチパターンを得る
+2. `dx12_ui_compose(blueprint)` の `dock` / `stack` / `grid` を使って骨格を作る
+3. `dx12_ui_audit(strictness:"strict")` が pass するまで entityId 付き issue を修正する
+4. `dx12_ui_screenshot()` で視線誘導・作品固有性・余白を目視する
+5. `dx12_save_scene()`
+
+`ui_audit` の pass は美しさを保証しない。数値的な崩れを除いた後、スクリーンショットで
+「主役が1つか」「全要素が同じ角丸カードになっていないか」「青紫ネオン/グラデ/影を
+無意味に重ねていないか」「作品固有の構図か」を必ず判断する。
+
+手動で細部を組む場合の基本:
 
 1. `dx12_create_entity(type: "ui_canvas")` — UI ルート。既にあれば省略（`dx12_ui_tree` で確認）
 2. `dx12_create_entity(type: "ui_button", name: "StartButton", parent: <canvasId>)` —

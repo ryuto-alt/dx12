@@ -712,10 +712,12 @@ void InspectorPanel::Render(entt::registry& reg,
                     static const char* scaleModes[] = {
                         "等比スケール（中央寄せレターボックス）",
                         "実ピクセル（左上原点・等倍）",
+                        "引き伸ばし（画面全体・余白なし）",
                     };
-                    changed |= pg::Combo("スケールモード Scale Mode", &cv.scaleMode, scaleModes, 2,
-                        "等比スケール: 基準解像度をアスペクト比を保って画面に収める\n"
-                        "実ピクセル: スケールせず左上原点の実ピクセルで配置する");
+                    changed |= pg::Combo("スケールモード Scale Mode", &cv.scaleMode, scaleModes, 3,
+                        "等比スケール: 基準解像度をアスペクト比を保って画面に収める（縦横比が違う画面では余白ができる）\n"
+                        "実ピクセル: スケールせず左上原点の実ピクセルで配置する\n"
+                        "引き伸ばし: 縦横を個別に伸縮して画面いっぱいに敷き詰める（余白ゼロ。HUD向け）");
                     changed |= pg::Int("描画順 Sort Order", &cv.sortOrder, 1.0f, -100, 100, &active,
                         "キャンバス間の描画順（小さいほど奥）");
                     changed |= pg::Checkbox("表示 Visible", &cv.visible,

@@ -706,6 +706,9 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 | `dx12_get_mode` | Editor / Playing |
 | `dx12_get_log` | ログ末尾 N 行 |
 | `dx12_describe_components` | コンポーネント定義（jsonKey/fields/default） |
+| `dx12_ui_tree` | UI階層・解決矩形・表示/文字/装飾/入力/レイアウト情報 |
+| `dx12_ui_design_brief` | ジャンル×画面目的から構図・制約・アンチパターンを生成 |
+| `dx12_ui_audit` | UI崩れ・可読性・入力遮断・過装飾を自動監査 |
 | `dx12_get_scene_settings` | スカイボックス/IBL 設定 |
 | `dx12_screenshot` | スクショ（PNG） |
 
@@ -742,6 +745,7 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 |---|---|
 | `dx12_batch` | 複数 op を順次実行（往復削減） |
 | `dx12_focus_and_screenshot` | フォーカス→描画→スクショ |
+| `dx12_ui_compose` | dock/stack/grid と意味的roleから制約付きUI一式を生成 |
 
 ---
 

@@ -123,8 +123,10 @@ struct UiDrawContext
     const std::unordered_map<entt::entity, std::vector<entt::entity>>* children = nullptr;
     ImDrawList* dl = nullptr;
 
-    // キャンバス空間 → スクリーン: screen = origin + canvasPx * scale
-    float originX = 0.0f, originY = 0.0f, scale = 1.0f;
+    // キャンバス空間 → スクリーン: screen = origin + canvasPx * (scaleX, scaleY)
+    // scaleX/scaleY はレイアウト矩形(位置・サイズ)の変換専用。角丸/アウトライン幅/フォント
+    // サイズ等の「等方であるべき」装飾量は scale（= min(scaleX,scaleY)）を使い続ける。
+    float originX = 0.0f, originY = 0.0f, scale = 1.0f, scaleX = 1.0f, scaleY = 1.0f;
 
     UiRectPx viewport;             // ゲームビューポート矩形（スクリーンpx）。ホバー判定はこの内側のみ
     ImVec2 mousePos{0.0f, 0.0f};
@@ -193,8 +195,8 @@ UiRectPx ResolveUiRect(const UIRect& r, const UiRectPx& parent)
 
 UiRectPx ToScreen(const UiRectPx& c, const UiDrawContext& ctx)
 {
-    return {ctx.originX + c.minX * ctx.scale, ctx.originY + c.minY * ctx.scale,
-            ctx.originX + c.maxX * ctx.scale, ctx.originY + c.maxY * ctx.scale};
+    return {ctx.originX + c.minX * ctx.scaleX, ctx.originY + c.minY * ctx.scaleY,
+            ctx.originX + c.maxX * ctx.scaleX, ctx.originY + c.maxY * ctx.scaleY};
 }
 
 // レイキャスト矩形を ctx.hitClip（スクロールビューのクリップ）と交差してから out へ積む。
@@ -2129,14 +2131,32 @@ bool ResolveAndDrawCanvases(entt::registry& reg, float ox, float oy, float vw, f
             const float refW = std::max(1.0f, entry.canvas->refWidth);
             const float refH = std::max(1.0f, entry.canvas->refHeight);
             ctx.scale   = std::min(vw / refW, vh / refH);
+            ctx.scaleX  = ctx.scale;
+            ctx.scaleY  = ctx.scale;
             ctx.originX = ox + (vw - refW * ctx.scale) * 0.5f;
             ctx.originY = oy + (vh - refH * ctx.scale) * 0.5f;
+            canvasRect  = {0.0f, 0.0f, refW, refH};
+        }
+        else if (entry.canvas->scaleMode == 2)
+        {
+            // StretchToFill: 基準解像度の縦横を個別倍率でビューポートへ引き伸ばし、
+            // レターボックス余白を作らない（画面いっぱいに UI を敷き詰めたい HUD 向け）。
+            // 装飾量(角丸/アウトライン/フォント等)は等方性を保つため小さい方の倍率を使う。
+            const float refW = std::max(1.0f, entry.canvas->refWidth);
+            const float refH = std::max(1.0f, entry.canvas->refHeight);
+            ctx.scaleX  = vw / refW;
+            ctx.scaleY  = vh / refH;
+            ctx.scale   = std::min(ctx.scaleX, ctx.scaleY);
+            ctx.originX = ox;
+            ctx.originY = oy;
             canvasRect  = {0.0f, 0.0f, refW, refH};
         }
         else
         {
             // ConstantPixel: 左上原点・実ピクセル等倍
             ctx.scale   = 1.0f;
+            ctx.scaleX  = 1.0f;
+            ctx.scaleY  = 1.0f;
             ctx.originX = ox;
             ctx.originY = oy;
             canvasRect  = {0.0f, 0.0f, vw, vh};

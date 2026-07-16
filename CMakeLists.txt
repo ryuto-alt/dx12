@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(DX12_BUILD_TESTS "Build unit tests" ON)
 
 # MSVC compile options (not global - applied per-target to avoid conflicts with FetchContent deps)
-set(DX12_COMPILE_OPTIONS /W4 /WX /MP /permissive- /utf-8 /external:anglebrackets /external:W0)
+set(DX12_COMPILE_OPTIONS /W4 /WX /MP /permissive- /utf-8 /external:anglebrackets /external:W0 /bigobj)
 set(DX12_COMPILE_DEFS UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 
 # クラッシュレポート(core/CrashHandler)で関数名/行番号を解決できるよう、Release でも PDB を出す。

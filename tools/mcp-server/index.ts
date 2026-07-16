@@ -3,6 +3,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import fs from "node:fs";
 import { EngineClient } from "./engineClient.ts";
+import { auditUiTree, designBrief } from "./uiQuality.ts";
+import { BLUEPRINT_EXAMPLE, composeUi } from "./uiComposer.ts";
 
 // DX12 ゲームエンジン用 MCP サーバ。Codex / Claude Code から接続し、
 // 起動中のエディタ(TCP 127.0.0.1:<port>)を叩いてゲームを作っていくための入口。
@@ -16,7 +18,7 @@ import { EngineClient } from "./engineClient.ts";
 // result のフィールド名(entityId 等)もエンジンの返り値をそのまま通す。
 
 const engine = new EngineClient();
-const server = new McpServer({ name: "dx12-engine", version: "0.6.0" });
+const server = new McpServer({ name: "dx12-engine", version: "0.7.0" });
 
 type ToolResult = {
   content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[];
@@ -209,6 +211,39 @@ reg(
   {},
   { readOnlyHint: true },
   () => run(() => engine.call("ui_tree", {})),
+);
+
+reg(
+  "dx12_ui_design_brief",
+  "ゲームUIデザイン方針",
+  "画面を組む前に、ジャンルと画面目的から構図・視覚階層・余白・操作サイズ・避けるべきAI的表現を返す。単なる色テーマではなく、title/HUD/inventory/settings/result/dialogごとに情報設計を変える。★ui_composeや手動生成の前に呼び、返ったbriefを設計判断の基準にする。",
+  {
+    genre: z.enum(["cinematic", "tactical", "fantasy", "horror", "arcade", "cozy"]).describe("作品の視覚文法。安易な青紫ネオン固定を避け、ゲーム固有の方向性を選ぶ。"),
+    screen: z.enum(["title", "hud", "inventory", "settings", "result", "dialog", "other"]).describe("作る画面の役割。"),
+    tone: z.string().optional().describe("premium / playful / restrained / brutalist 等の補助トーン。"),
+  },
+  { readOnlyHint: true },
+  ({ genre, screen, tone }) => run(async () => designBrief(genre, screen, tone)),
+);
+
+reg(
+  "dx12_ui_audit",
+  "ゲームUI品質監査",
+  "現在のui_treeを自動解析し、崩れ・入力遮断・小さな操作領域・文字切れ・文字あふれ・rich/wrap競合・操作要素の重なり・過装飾・色の散乱を検出する。score/grade/passと、entityId付きの修正案を返す。★UI生成後は必ずstrictでpassさせ、その後ui_screenshotで美的判断を行う。数値監査だけで完成扱いにしない。",
+  { strictness: z.enum(["balanced", "strict"]).optional().describe("strictはwarningが1件でもpass=false。最終検証ではstrict推奨。") },
+  { readOnlyHint: true },
+  ({ strictness }) => run(async () => auditUiTree(await engine.call("ui_tree", {}), strictness ?? "balanced")),
+);
+
+reg(
+  "dx12_ui_compose",
+  "制約付きゲームUI構築",
+  "役割(role)とレイアウト意図(dock/stack/grid)から、Canvas・UIRect・UILayout・スタイル・ボタンラベル・控えめなインタラクションをまとめて構築する。生offsetの手計算を減らしUI崩れを防ぐ。themeは色だけでなく角・枠・コントラストの文法を変える。既存UIは消さず、prefix付きの新Canvasを作る。失敗時は作成Canvasを自動削除して半端なUIを残さない。構築後は返されるnext順にui_audit→ui_screenshot→save_sceneを行う。blueprint例: " + JSON.stringify(BLUEPRINT_EXAMPLE),
+  {
+    blueprint: z.any().describe("{theme,prefix,sortOrder?,root}。node={name,kind:'panel|text|button|stack|grid',role?,text?,event?,layout?,flow?,style?,textStyle?,children?}。layout.dock='fill|top|bottom|left|right|center|point', margin=数値または[l,t,r,b], width/height。stack.flow={direction:'vertical|horizontal',cellHeight,cellWidth,spacing,padding}、grid.flow={columns,...}。全nameはblueprint内で一意。"),
+  },
+  { destructiveHint: false },
+  ({ blueprint }) => run(() => composeUi(engine, blueprint)),
 );
 
 reg(

@@ -2175,7 +2175,7 @@ nlohmann::json McpComponentSchema()
     // 調整はここの jsonKey で set_component。ツリーは dx12_set_parent + uiRect.order(兄弟描画順)。
     comps.push_back(C("uiCanvas", true, true, json::array({
         F("refWidth", "float (reference resolution)", 1920.0), F("refHeight", "float", 1080.0),
-        F("scaleMode", "int (0=ScaleToFit letterbox, 1=ConstantPixel)", 0),
+        F("scaleMode", "int (0=ScaleToFit letterbox, 1=ConstantPixel, 2=StretchToFill no margins)", 0),
         F("sortOrder", "int (canvas draw order)", 0), F("visible", "bool", true),
     }), "UI tree root. Children (via dx12_set_parent) with uiRect become UI elements."));
     comps.push_back(C("uiRect", true, true, json::array({
@@ -3126,9 +3126,11 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {
                     n["uiRect"] = {{"anchorMin", {r->anchorMin.x, r->anchorMin.y}},
                                    {"anchorMax", {r->anchorMax.x, r->anchorMax.y}},
+                                   {"pivot", {r->pivot.x, r->pivot.y}},
                                    {"offsetMin", {r->offsetMin.x, r->offsetMin.y}},
                                    {"offsetMax", {r->offsetMax.x, r->offsetMax.y}},
-                                   {"order", r->order}, {"visible", r->visible}};
+                                   {"order", r->order}, {"visible", r->visible},
+                                   {"clipChildren", r->clipChildren}};
                     if (r->rotation != 0.0f) n["uiRect"]["rotation"] = r->rotation;
                     if (r->skewX != 0.0f)    n["uiRect"]["skewX"] = r->skewX;
                     if (const UiResolvedRect* rr = findRect(e))
@@ -3141,7 +3143,51 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                                              (rr->max.y - rr->min.y) / cs};
                     }
                 }
-                if (const auto* txt = reg.try_get<UIText>(e)) n["text"] = txt->text;
+                // 品質監査が「矩形だけ」ではなく可読性・過装飾・入力領域まで判断できるよう、
+                // UI の見た目に関わる値を ui_tree に含める。テクスチャ本体等の重いデータは返さない。
+                if (const auto* img = reg.try_get<UIImage>(e))
+                {
+                    n["uiImage"] = {{"texturePath", img->texturePath},
+                                    {"color", {img->color.x, img->color.y, img->color.z, img->color.w}},
+                                    {"cornerRadius", img->cornerRadius},
+                                    {"raycastBlock", img->raycastBlock},
+                                    {"shape", img->shape}, {"fillAmount", img->fillAmount},
+                                    {"gradientDir", img->gradientDir},
+                                    {"gradientScrollSpeed", img->gradientScrollSpeed},
+                                    {"outlineWidth", img->outlineWidth},
+                                    {"outlineStyle", img->outlineStyle},
+                                    {"shadowAlpha", img->shadowColor.w},
+                                    {"shadowSoftness", img->shadowSoftness}};
+                }
+                if (const auto* txt = reg.try_get<UIText>(e))
+                {
+                    n["text"] = txt->text;
+                    n["uiText"] = {{"fontSize", txt->fontSize},
+                                   {"color", {txt->color.x, txt->color.y, txt->color.z, txt->color.w}},
+                                   {"alignH", txt->alignH}, {"alignV", txt->alignV},
+                                   {"wrap", txt->wrap}, {"fontPath", txt->fontPath},
+                                   {"outlineWidth", txt->outlineWidth},
+                                   {"shadowAlpha", txt->shadowColor.w},
+                                   {"letterSpacing", txt->letterSpacing},
+                                   {"charAnim", txt->charAnim}, {"rich", txt->rich}};
+                }
+                if (const auto* btn = reg.try_get<UIButton>(e))
+                    n["uiButton"] = {{"onClickEvent", btn->onClickEvent},
+                                     {"interactable", btn->interactable}};
+                if (const auto* lay = reg.try_get<UILayout>(e))
+                    n["uiLayout"] = {{"mode", lay->mode}, {"cellW", lay->cellW},
+                                     {"cellH", lay->cellH}, {"spacing", lay->spacing},
+                                     {"padding", {lay->padding.x, lay->padding.y,
+                                                  lay->padding.z, lay->padding.w}},
+                                     {"gridCols", lay->gridCols}};
+                if (const auto* anim = reg.try_get<UIAnimator>(e))
+                    n["uiAnimator"] = {{"showAnim", anim->showAnim},
+                                       {"showDuration", anim->showDuration},
+                                       {"showDelay", anim->showDelay},
+                                       {"hoverScale", anim->hoverScale},
+                                       {"pressScale", anim->pressScale},
+                                       {"loopAnim", anim->loopAnim},
+                                       {"loopAmount", anim->loopAmount}};
                 auto it = children.find(e);
                 if (it != children.end() && !it->second.empty())
                 {

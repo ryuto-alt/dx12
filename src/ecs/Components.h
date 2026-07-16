@@ -284,6 +284,7 @@ struct UICanvas
     float refWidth  = 1920.0f;   // 基準解像度
     float refHeight = 1080.0f;
     int   scaleMode = 0;         // 0=ScaleToFit(等比縮放・中央寄せレターボックス) 1=ConstantPixel(左上原点実ピクセル)
+                                 // 2=StretchToFill(縦横個別倍率でビューポート全体に敷き詰め・余白なし)
     int   sortOrder = 0;         // キャンバス間の描画順(小→大)
     bool  visible   = true;
 };
