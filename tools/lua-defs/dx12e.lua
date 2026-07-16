@@ -1161,6 +1161,41 @@ function nextScene() end
 ---ゲーム終了
 function quit() end
 
+-- --- time: 時間 API（'.' で呼ぶ。C++ 側コア。after/every 等の純Lua拡張はプレリュード参照）---
+
+---@class TimeApi
+time = {}
+
+---スケール済み経過秒（setScale の影響を受ける。ポーズ中は止まる）
+---@return number
+function time.now() end
+
+---実時間の経過秒（setScale の影響を受けない）
+---@return number
+function time.realtime() end
+
+---スケール済みの今フレーム dt（秒）
+---@return number
+function time.dt() end
+
+---実時間の今フレーム dt（秒）
+---@return number
+function time.realDt() end
+
+---フレーム番号
+---@return integer
+function time.frame() end
+
+---現在のタイムスケール
+---@return number
+function time.getScale() end
+
+---タイムスケールを設定する。0=ポーズ、0.5=スローモ、2=早送り。
+---OnUpdate に渡る dt 自体に掛かるので、既存スクリプトは無改修で追従する。
+---UI アニメ(tweenUi/UIAnimator)は実時間で動く＝ポーズ中もポーズメニューは動く。
+---@param s number 0 以上
+function time.setScale(s) end
+
 ---フェード付きシーン切替
 ---@param rel string assets/ からの相対パス
 ---@param dur? number フェード秒（既定 0.6）

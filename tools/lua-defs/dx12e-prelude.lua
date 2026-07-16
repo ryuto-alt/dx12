@@ -432,3 +432,119 @@ function uifx.fadeIn(e, dur) end
 ---@param e Entity|integer
 ---@param dur? number 秒（既定 0.3）
 function uifx.fadeOut(e, dur) end
+
+-- ============================================================
+-- time 拡張(純Lua部分): タイマー / 共有ビデオ時計 / 個別時計
+-- (time.now/dt/setScale 等の C++ コアは dx12e.lua 側)
+-- ============================================================
+
+---sec 秒後に fn を1回呼ぶ。スケール済み時間で進む(setScale(0) 中は止まる)。Play 開始でクリア。
+---@param sec number
+---@param fn fun()
+---@return integer id time.cancel 用
+function time.after(sec, fn) end
+
+---sec 秒ごとに fn を繰り返し呼ぶ。
+---@param sec number
+---@param fn fun()
+---@return integer id time.cancel 用
+function time.every(sec, fn) end
+
+---after/every のタイマーを解除する。
+---@param id integer
+function time.cancel(id) end
+
+---@class TimeVideo
+time.video = {}
+
+---ステージ全体に1本流れる「動画時間」を開始する(決定論タイムライン用)。
+---@param duration number 制限時間(秒)
+---@param opts? { skipCost?: number } skip 時の残り時間消費倍率(0=コスト無し)
+function time.video.start(duration, opts) end
+
+---ビデオ時計を停止する
+function time.video.stop() end
+
+---@return boolean
+function time.video.active() end
+
+---@return number 現在のビデオ時刻(秒)
+function time.video.now() end
+
+---@return number
+function time.video.duration() end
+
+---@return number 残り時間(秒)
+function time.video.remaining() end
+
+---@return boolean 制限時間切れか
+function time.video.finished() end
+
+---対象のオフセットを直接設定する(e は self / 名前 / 数値id)
+function time.video.setOffset(e, off) end
+
+---@return number
+function time.video.getOffset(e) end
+
+---対象のローカル時間だけを ±amount 秒動かす(先送り/巻き戻し)。skipCost 分の残り時間も消費。
+---@param amount number
+function time.video.skip(e, amount) end
+
+---@return number 対象のローカル時刻 = ビデオ時刻 + オフセット
+function time.video.localTime(e) end
+
+---エンティティ単位の独立クロックの現在時刻(初アクセスで 0 から開始)
+---@return number
+function time.localTime(e) end
+
+---個別時計を ±amount 秒スキップする
+---@param amount number
+---@return number スキップ後の時刻
+function time.skipEntity(e, amount) end
+
+---個別時計の進む速さ(0=停止、負=逆再生)
+---@param s number
+function time.scaleEntity(e, s) end
+
+---@return number
+function time.getEntityScale(e) end
+
+---個別時計を破棄する(次アクセスで 0 から)
+function time.resetEntity(e) end
+
+-- ============================================================
+-- charge: 押しっぱなしチャージ計測(弓を引く等)
+-- ============================================================
+
+charge = {}
+
+---@class Charge
+---@field v number 現在のチャージ量
+local Charge = {}
+
+---チャージ計測を作る。OnUpdate で :update() を呼び続ける。
+---```lua
+---local c = charge.new("E", { max = 2.0, rate = 1.0 })
+---function OnUpdate(self, dt)
+---  c:update()
+---  local r = c:released()
+---  if r then fireArrow(r) end
+---end
+---```
+---@param key string keyDown のキー名("E" 等)
+---@param opts? { max?: number, rate?: number, realtime?: boolean } realtime=true でポーズ中も実時間で溜まる
+---@return Charge
+function charge.new(key, opts) end
+
+---毎フレーム呼ぶ(押下中に溜め、離した瞬間を検出する)
+function Charge:update() end
+
+---@return boolean 押しっぱなしでチャージ中か
+function Charge:charging() end
+
+---@return number 0..1 のチャージ割合(ゲージ表示用)
+function Charge:ratio() end
+
+---離した瞬間だけチャージ量(秒)を返す。それ以外は nil。
+---@return number|nil
+function Charge:released() end
