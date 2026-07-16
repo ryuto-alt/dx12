@@ -393,15 +393,16 @@ void SceneViewPanel::HandleUiEditing(entt::registry& reg,
         out[7] = {rr.max.x, midY,     kUiEdgeR,            ImGuiMouseCursor_ResizeEW};
     };
 
-    // 選択中エンティティの解決済み矩形（UIRect 持ちで可視ツリー内なら見つかる）
+    // 選択中エンティティの解決済み矩形（UIRect 持ちで可視ツリー内なら見つかる）。
+    // 回転/スキュー中（hasXform）はリサイズハンドルを出さない（軸平行前提のため）。
     const UiResolvedRect* selRect = findRect(ctx.selectedEntity);
     UiHandle handles[8] = {};
-    if (selRect)
+    if (selRect && !selRect->hasXform)
         makeHandles(*selRect, handles);
 
     // ホバー中のハンドル（非ドラッグ時のみ。カーソル形状と色変化に使う）
     int hoveredHandle = -1;
-    if (selRect && m_uiDragEdges == kUiDragNone && inViewport && !io.KeyAlt)
+    if (selRect && !selRect->hasXform && m_uiDragEdges == kUiDragNone && inViewport && !io.KeyAlt)
     {
         for (int i = 0; i < 8; ++i)
         {
@@ -429,8 +430,7 @@ void SceneViewPanel::HandleUiEditing(entt::registry& reg,
         ImGui::SetMouseCursor(handles[hoveredHandle].cursor);
     }
     else if (selRect && inViewport && !io.KeyAlt
-             && mousePos.x >= selRect->min.x && mousePos.x < selRect->max.x
-             && mousePos.y >= selRect->min.y && mousePos.y < selRect->max.y)
+             && uiedit::ResolvedRectContains(*selRect, ImVec2(mousePos.x, mousePos.y)))
     {
         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
     }
@@ -461,11 +461,11 @@ void SceneViewPanel::HandleUiEditing(entt::registry& reg,
         else
         {
             // 後方走査 = 描画順の逆 = 最前面優先で UI 要素をヒットテスト
+            // （回転/スキュー要素は逆写像で判定）
             const UiResolvedRect* hit = nullptr;
             for (auto it = rects.rbegin(); it != rects.rend(); ++it)
             {
-                if (mousePos.x >= it->min.x && mousePos.x < it->max.x
-                    && mousePos.y >= it->min.y && mousePos.y < it->max.y)
+                if (uiedit::ResolvedRectContains(*it, ImVec2(mousePos.x, mousePos.y)))
                 {
                     hit = &(*it);
                     break;
@@ -503,7 +503,7 @@ void SceneViewPanel::HandleUiEditing(entt::registry& reg,
                 m_uiClickConsumed = true;
                 // 選択が変わったので描画用に引き直す（ホバー状態は旧選択のものなので破棄）
                 selRect = findRect(ctx.selectedEntity);
-                if (selRect)
+                if (selRect && !selRect->hasXform)
                     makeHandles(*selRect, handles);
                 hoveredHandle = -1;
             }
@@ -516,8 +516,8 @@ void SceneViewPanel::HandleUiEditing(entt::registry& reg,
     {
         ImDrawList* dl = ImGui::GetBackgroundDrawList();
         dl->PushClipRect(ImVec2(vpX, vpY), ImVec2(vpX + vpW, vpY + vpH), true);
-        dl->AddRect(selRect->min, selRect->max, kUiAccentCol, 0.0f, 0, 2.0f);
-        for (int i = 0; i < 8; ++i)
+        uiedit::DrawResolvedOutline(dl, *selRect, kUiAccentCol, 2.0f);
+        for (int i = 0; !selRect->hasXform && i < 8; ++i)
         {
             const bool hot = (m_uiDragEdges > kUiDragMove)
                 ? (handles[i].edges == m_uiDragEdges)

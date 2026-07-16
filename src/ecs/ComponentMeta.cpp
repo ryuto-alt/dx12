@@ -180,7 +180,9 @@ void RegisterCoreComponentMeta()
         .data<&UIRect::offsetMin>("offsetMin")
         .data<&UIRect::offsetMax>("offsetMax")
         .data<&UIRect::visible>("visible")
-        .data<&UIRect::order>("order");
+        .data<&UIRect::order>("order")
+        .data<&UIRect::rotation>("rotation")
+        .data<&UIRect::skewX>("skewX");
 
     entt::meta_factory<UIImage>{}
         .type("UIImage")
@@ -192,7 +194,14 @@ void RegisterCoreComponentMeta()
         .data<&UIImage::cornerRadius>("cornerRadius")
         .data<&UIImage::raycastBlock>("raycastBlock")
         .data<&UIImage::fillAmount>("fillAmount")
-        .data<&UIImage::fillDir>("fillDir");
+        .data<&UIImage::fillDir>("fillDir")
+        .data<&UIImage::gradientDir>("gradientDir")
+        .data<&UIImage::gradientColor2>("gradientColor2")
+        .data<&UIImage::outlineWidth>("outlineWidth")
+        .data<&UIImage::outlineColor>("outlineColor")
+        .data<&UIImage::shadowColor>("shadowColor")
+        .data<&UIImage::shadowOffset>("shadowOffset")
+        .data<&UIImage::shadowSoftness>("shadowSoftness");
 
     entt::meta_factory<UIText>{}
         .type("UIText")
@@ -201,7 +210,12 @@ void RegisterCoreComponentMeta()
         .data<&UIText::color>("color")
         .data<&UIText::alignH>("alignH")
         .data<&UIText::alignV>("alignV")
-        .data<&UIText::wrap>("wrap");
+        .data<&UIText::wrap>("wrap")
+        .data<&UIText::outlineWidth>("outlineWidth")
+        .data<&UIText::outlineColor>("outlineColor")
+        .data<&UIText::shadowColor>("shadowColor")
+        .data<&UIText::shadowOffset>("shadowOffset")
+        .data<&UIText::fontPath>("fontPath");
 
     entt::meta_factory<UIButton>{}
         .type("UIButton")

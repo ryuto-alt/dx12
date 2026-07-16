@@ -2,9 +2,23 @@
 
 #include <entt/entt.hpp>
 #include <DirectXMath.h>
+#include <imgui.h>
+
+#include "ui/UISystem.h"   // UiResolvedRect / UiXform2x3
+
+struct ImDrawList;
 
 namespace dx12e::uiedit
 {
+
+// 解決済み UI 矩形のアウトライン描画（選択枠/ホバー枠）。回転/スキュー（hasXform）の要素は
+// 変形後 4 隅の四辺形（AddQuad）で描く。非変形は従来どおり AddRect。
+void DrawResolvedOutline(ImDrawList* dl, const UiResolvedRect& rr, ImU32 col,
+                         float thickness = 1.0f);
+
+// マウス点が解決済み UI 矩形に入っているか。回転/スキューの要素は点を逆写像してから
+// レイアウト空間の AABB で判定する（UiEditorPanel / SceneViewPanel のピッキング共通）。
+bool ResolvedRectContains(const UiResolvedRect& rr, const ImVec2& p);
 
 // クリック選択の対象解決（Figma / UMG 方式）。
 // hit = 最前面ヒット要素。ボタンのラベル（子 UIText）を直接掴んで「文字だけ動く」のを防ぐため、

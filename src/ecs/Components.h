@@ -304,6 +304,12 @@ struct UIRect
     // 兄弟間の並び順(小さいほど先に描く = 奥)。UIエディタの階層ツリーの D&D 並べ替えが
     // 書き換える。同値は registry 走査順を維持(stable)。UIRect を持たない中間ノードは 0 扱い。
     int order = 0;
+    // 視覚回転(度、時計回り正)。レイアウト解決後に pivot 点回りへ掛かり、子孫にも階層合成で
+    // 効く（斜め配置パネル・傾けた強調テキスト用）。レイアウト自体は軸平行のまま。
+    float rotation = 0.0f;
+    // 横スキュー(度)。平行四辺形のバナー/ボタン用。UIScrollView ノード自身では rotation と
+    // ともに無視される（軸平行クリップと両立しないため）。
+    float skewX = 0.0f;
 };
 
 // UI画像(または単色矩形)
@@ -318,6 +324,17 @@ struct UIImage
     bool raycastBlock = true;                   // 手前に描かれた自分がクリックを遮る(UnityのraycastTarget相当)
     float fillAmount = 1.0f;                    // 表示割合0..1(HPバー/ゲージ用。1=全表示、0=非表示)
     int fillDir = 0;                            // fillが増える方向 0=左から 1=右から 2=下から 3=上から
+    // グラデーション: color から gradientColor2 へ線形補間(頂点シェード=テクスチャ/9-slice/角丸
+    // 全対応・回転追従)。gradientColor2 のアルファは無視される(AA フリンジ保護のため)
+    int gradientDir = 0;                        // 0=なし 1=横(左→右) 2=縦(上→下) 3=斜め(左上→右下)
+    DirectX::XMFLOAT4 gradientColor2{1.0f, 1.0f, 1.0f, 1.0f};
+    // 縁取り(枠線)。0=無効。角丸に追従する
+    float outlineWidth = 0.0f;                  // キャンバスpx
+    DirectX::XMFLOAT4 outlineColor{0.0f, 0.0f, 0.0f, 1.0f};
+    // ドロップシャドウ(矩形近似=テクスチャのアルファ形状は反映しない)。α=0 で無効
+    DirectX::XMFLOAT4 shadowColor{0.0f, 0.0f, 0.0f, 0.0f};
+    DirectX::XMFLOAT2 shadowOffset{2.0f, 2.0f}; // キャンバスpx
+    float shadowSoftness = 4.0f;                // ぼかし広がり(キャンバスpx)。0=シャープ
 };
 
 // UIテキスト
@@ -329,6 +346,15 @@ struct UIText
     int alignH = 1;      // 0=左 1=中央 2=右
     int alignV = 1;      // 0=上 1=中央 2=下
     bool wrap = false;   // 矩形幅で折り返し
+    // 縁取り(8方位の重ね描き)。0=無効。ゲームUIの可読性の要
+    float outlineWidth = 0.0f;                  // キャンバスpx
+    DirectX::XMFLOAT4 outlineColor{0.0f, 0.0f, 0.0f, 1.0f};
+    // 影(1オフセットの先描き)。α=0 で無効
+    DirectX::XMFLOAT4 shadowColor{0.0f, 0.0f, 0.0f, 0.0f};
+    DirectX::XMFLOAT2 shadowOffset{1.0f, 1.0f}; // キャンバスpx
+    // カスタムフォント(assets相対 .ttf/.otf。空=既定のYu Gothic)。ゲームの「らしさ」の要。
+    // 動的フォントアトラスで任意サイズにシャープ。ロード失敗は警告+既定フォントへフォールバック
+    std::string fontPath;
 };
 
 // UIボタン(同一エンティティの UIImage を状態色でティントする)
@@ -414,7 +440,7 @@ struct UIScrollView
 struct UIAnimator
 {
     // 出現アニメ
-    int  showAnim     = 1;      // 0=なし 1=フェード 2=ポップ(拡大) 3=左から 4=右から 5=上から 6=下から
+    int  showAnim     = 1;      // 0=なし 1=フェード 2=ポップ(拡大) 3=左から 4=右から 5=上から 6=下から 7=スピン(回転入場)
     f32  showDuration = 0.35f;  // 秒
     f32  showDelay    = 0.0f;   // 秒（複数要素を順番に出すのに使う）
     int  showEasing   = 2;      // 既定 = イーズアウト
@@ -426,9 +452,9 @@ struct UIAnimator
     f32  hoverSpeed = 14.0f;    // 追従速度（大きいほどキビキビ）
 
     // ループアニメ（常時）
-    int  loopAnim   = 0;        // 0=なし 1=浮遊(上下) 2=パルス(拡縮) 3=点滅(アルファ)
-    f32  loopSpeed  = 1.0f;     // 周波数（Hz）
-    f32  loopAmount = 8.0f;     // 浮遊=px / パルス・点滅=割合（0.05 = ±5%）
+    int  loopAnim   = 0;        // 0=なし 1=浮遊(上下) 2=パルス(拡縮) 3=点滅(アルファ) 4=スピン(連続回転) 5=スウィング(揺れ)
+    f32  loopSpeed  = 1.0f;     // 周波数（Hz）。スピンは回転数/秒
+    f32  loopAmount = 8.0f;     // 浮遊=px / パルス・点滅=割合（0.05 = ±5%）/ スウィング=±度
 
     // ランタイム専有（非シリアライズ・meta 未登録）
     f32  _t      = 0.0f;        // show/hide の経過秒
@@ -438,6 +464,7 @@ struct UIAnimator
     // 今フレームの合成結果（UISystem の更新が書き、描画が読む）
     f32  _curScale = 1.0f;
     f32  _curAlpha = 1.0f;
+    f32  _curRot   = 0.0f;      // 追加回転（度）。UIRect.rotation へ加算合成される
     DirectX::XMFLOAT2 _curOffset{0.0f, 0.0f};
 };
 
@@ -459,15 +486,19 @@ struct UiTween
     f32  scaleFrom = 1.0f, scaleTo = 1.0f;
     bool hasAlpha = false;      // 視覚アルファ乗数
     f32  alphaFrom = 1.0f, alphaTo = 1.0f;
+    bool hasRotate = false;     // 視覚回転（度、絶対目標値。UIRect.rotation へ加算合成）
+    f32  rotFrom = 0.0f, rotTo = 0.0f;
 };
 struct UITweenState
 {
     std::vector<UiTween> tweens;
-    f32 visScale = 1.0f;        // tween 完了後も持続する視覚スケール / アルファ
+    f32 visScale = 1.0f;        // tween 完了後も持続する視覚スケール / アルファ / 回転
     f32 visAlpha = 1.0f;
+    f32 visRot   = 0.0f;
     // 今フレームの評価結果（UISystem の更新が書き、描画が読む）
     f32 _curScale = 1.0f;
     f32 _curAlpha = 1.0f;
+    f32 _curRot   = 0.0f;
 };
 
 // 3D 空間オーディオ音源。Transform のワールド位置がエミッタになる。

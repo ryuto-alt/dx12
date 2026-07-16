@@ -143,6 +143,8 @@ scene:setUiColor(hpBarFill, 1, hpRatio, 0, 1)                -- 色（UIImage優
 scene:setUiFill(hpBarFill, hp / maxHp)                       -- ゲージの残量（UIImage.fillAmount 0..1）
 scene:setUiVisible(pausePanel, isPaused)                     -- 表示/非表示
 scene:setUiTexture(weaponIcon, "textures/ui/icon_sword.png") -- 画像差し替え
+scene:setUiRotation(titleLogo, -8)                           -- 回転（度・時計回り。子孫ごと回る見た目の変換）
+local deg = scene:getUiRotation(titleLogo)                   -- 現在の回転角を読む
 
 -- スライダー/トグル（値変更は onChangeEvent で受ける。e.value に実値/1・0 が入る）
 events:on("volumeChanged", function(e) audio:setMasterVolume(e.value) end)
@@ -156,18 +158,23 @@ scene:setUiToggle(muteToggle, true)
 ゲームパッド/キーボードの UI 操作は**設定不要で常時有効**: 矢印/D-pad/左スティックでフォーカス移動、
 Enter/Space/A で決定（フォーカスリング表示）。フォーカス中のスライダーは左右で値が変わる。
 
+見た目の装飾は Inspector で設定する: `UIImage` はグラデーション・枠線・ドロップシャドウ、`UIText` は縁取り・影・カスタムフォント
+（assets 相対の .ttf/.otf）、`UIRect` は `rotation`/`skewX`（度）による傾きに対応している。
+
 **動的 UI（アニメーション/イージング）**: `UIAnimator` コンポーネント（Inspector の「✚ コンポーネント追加 > UI Animator」）で
-出現アニメ（フェード/ポップ/スライド）・ボタンのホバー/押下スケール・ループ（浮遊/パルス/点滅）をノーコード設定できる。
+出現アニメ（フェード/ポップ/スライド/スピン）・ボタンのホバー/押下スケール・ループ（浮遊/パルス/点滅/スピン/スウィング）をノーコード設定できる。
 スクリプトからはトゥイーンで自由に動かせる:
 
 ```lua
 scene:tweenUi(menu,  { dx = 200, duration = 0.4, easing = "bounce" })  -- 右へ200pxバウンス移動
 scene:tweenUi(popup, { scale = 1.2, alpha = 0, duration = 0.25 })      -- 拡大しながらフェードアウト
+scene:tweenUi(icon,  { rotate = 360, duration = 0.5 })                 -- 1回転（度・絶対目標値）
 scene:showUi(winPanel)   -- UIAnimator の出現アニメを再生して表示
 scene:hideUi(pauseMenu)  -- 出現アニメの逆再生で消す（子孫ごと。戻すのは showUi）
 ```
 `easing` は `"linear" / "in" / "out" / "inOut" / "back"（勢い） / "bounce" / "elastic"`。
 `dx/dy` はレイアウト（UIRect offset）を実際に動かすので終了位置でクリックも効く。`scale/alpha` は見た目だけ（子孫にまとめて掛かる）。
+`rotate`（度・絶対目標値）も見た目だけで、`setUiRotation` の値に加算合成される。
 
 ボタンのクリックは `events:on` で受ける（`UIButton.onClickEvent` に設定した名前で発火。`data.source` にボタンのエンティティID）:
 ```lua

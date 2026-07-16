@@ -30,6 +30,30 @@ namespace
     }
 }
 
+void DrawResolvedOutline(ImDrawList* dl, const UiResolvedRect& rr, ImU32 col, float thickness)
+{
+    if (rr.hasXform)
+    {
+        const ImVec2 a = rr.xform.Apply(rr.min.x, rr.min.y);
+        const ImVec2 b = rr.xform.Apply(rr.max.x, rr.min.y);
+        const ImVec2 c = rr.xform.Apply(rr.max.x, rr.max.y);
+        const ImVec2 d = rr.xform.Apply(rr.min.x, rr.max.y);
+        dl->AddQuad(a, b, c, d, col, thickness);
+    }
+    else
+    {
+        dl->AddRect(rr.min, rr.max, col, 0.0f, 0, thickness);
+    }
+}
+
+bool ResolvedRectContains(const UiResolvedRect& rr, const ImVec2& p)
+{
+    ImVec2 q = p;
+    if (rr.hasXform)
+        q = rr.xform.Inverted().Apply(p.x, p.y);
+    return q.x >= rr.min.x && q.x < rr.max.x && q.y >= rr.min.y && q.y < rr.max.y;
+}
+
 entt::entity ResolveClickTarget(entt::registry& reg, entt::entity hit,
                                 entt::entity currentSelection, bool doubleClick)
 {

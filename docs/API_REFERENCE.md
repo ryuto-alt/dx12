@@ -126,13 +126,15 @@ t.scale      -- Vec3
 | `:setUiTexture(e, path)` | — | `UIImage.texturePath` を差し替え（assets 相対。無ければ何もしない） |
 | `:setUiFill(e, amount)` | — | `UIImage.fillAmount`（表示割合 0..1、クランプあり）を設定。HPバー/ゲージ用 |
 | `:getUiFill(e)` | number | `UIImage.fillAmount` を読む（無ければ 0） |
+| `:setUiRotation(e, deg)` | — | `UIRect.rotation`（視覚回転・度・時計回り。ピボット回り、子孫も一緒に回る）を設定 |
+| `:getUiRotation(e)` | number | `UIRect.rotation` を読む（無ければ 0） |
 | `:getUiSlider(e)` | number | `UISlider.value`（実値 min..max）を読む（無ければ 0） |
 | `:setUiSlider(e, v)` | — | `UISlider.value` を設定（min..max へクランプ。`onChangeEvent` は発火しない） |
 | `:getUiToggle(e)` | bool | `UIToggle.isOn` を読む（無ければ false） |
 | `:setUiToggle(e, on)` | — | `UIToggle.isOn` を設定（`onChangeEvent` は発火しない） |
 | `:getUiScroll(e)` | x, y | `UIScrollView` のスクロール量(px)を2値で返す |
 | `:setUiScroll(e, x, y)` | — | スクロール量を設定（コンテンツ量へ自動クランプ。大きい値で「一番下へ」） |
-| `:tweenUi(e, params)` | — | UI をトゥイーンで動かす。`params={dx?,dy?,scale?,alpha?,duration?,delay?,easing?}`。`dx/dy`=UIRect offset の相対移動(px)、`scale/alpha`=見た目のみ（子孫にも掛かる）。`easing`: `"linear"/"in"/"out"/"inOut"/"back"/"bounce"/"elastic"`。`e` は Entity かエンティティID |
+| `:tweenUi(e, params)` | — | UI をトゥイーンで動かす。`params={dx?,dy?,scale?,alpha?,rotate?,duration?,delay?,easing?}`。`dx/dy`=UIRect offset の相対移動(px)、`scale/alpha/rotate`=見た目のみ（子孫にも掛かる。`rotate` は度・絶対目標値で `UIRect.rotation` へ加算合成）。`easing`: `"linear"/"in"/"out"/"inOut"/"back"/"bounce"/"elastic"`。`e` は Entity かエンティティID |
 | `:showUi(e)` | — | 表示して `UIAnimator` の出現アニメを最初から再生（無ければ visible=true のみ） |
 | `:hideUi(e)` | — | 出現アニメの逆再生で消す（子孫ごと。消えた後はクリック不可）。無アニメなら即非表示。戻すのは `showUi` |
 | `:setSpriteEffect(e, value)` | — | Sprite2D の effectValue（カスタムシェーダーへの汎用値）を変更。毎フレーム可 |
@@ -375,9 +377,9 @@ Unity uGUI / Godot Control 相当の retained-mode UI。UI要素は **ECSコン�
 | コンポーネント | 主なフィールド | 説明 |
 |---|---|---|
 | `UICanvas` | `refWidth/refHeight`(既定1920x1080), `scaleMode`(0=ScaleToFit 1=ConstantPixel), `sortOrder`, `visible` | UIツリーのルート |
-| `UIRect` | `anchorMin/Max`, `pivot`, `offsetMin/Max`, `visible` | レイアウト矩形（RectTransform相当）。全UI要素に必須 |
-| `UIImage` | `texturePath`(空=単色矩形), `color`, `uvMin/Max`, `sliceBorder`(px 左上右下, 9-slice), `cornerRadius`, `raycastBlock`(既定true), `fillAmount`(0..1 既定1), `fillDir`(0=左 1=右 2=下 3=上から) | 画像/単色矩形。`raycastBlock=true` なら背後のボタンへのクリックを遮る（Unity の raycastTarget 相当）。`fillAmount<1` で端から割合表示（HPバー/ゲージ。クリップ方式なので 9-slice/角丸でも自然） |
-| `UIText` | `text`, `fontSize`, `color`, `alignH/V`(0=左/上 1=中央 2=右/下), `wrap` | テキスト。クリックは遮らない |
+| `UIRect` | `anchorMin/Max`, `pivot`, `offsetMin/Max`, `visible`, `rotation`(度), `skewX`(度) | レイアウト矩形（RectTransform相当）。全UI要素に必須。`rotation/skewX` はレイアウト解決後にピボット回りへ掛かる**視覚変換**（子孫も一緒に回る。斜め配置パネル/平行四辺形バナー用。回転中はエディタのリサイズハンドル非表示=数値編集。`UIScrollView` ノード自身では無視） |
+| `UIImage` | `texturePath`(空=単色矩形), `color`, `uvMin/Max`, `sliceBorder`(px 左上右下, 9-slice), `cornerRadius`, `raycastBlock`(既定true), `fillAmount`(0..1 既定1), `fillDir`(0=左 1=右 2=下 3=上から), `gradientDir`(0=なし 1=横 2=縦 3=斜め)+`gradientColor2`, `outlineWidth`+`outlineColor`, `shadowColor`(α0=無効)+`shadowOffset`+`shadowSoftness` | 画像/単色矩形。`raycastBlock=true` なら背後のボタンへのクリックを遮る（Unity の raycastTarget 相当）。`fillAmount<1` で端から割合表示（HPバー/ゲージ）。グラデはテクスチャ/9-slice/角丸すべてに掛かる（`gradientColor2` のαは無視）。影は矩形近似のドロップシャドウ |
+| `UIText` | `text`, `fontSize`, `color`, `alignH/V`(0=左/上 1=中央 2=右/下), `wrap`, `outlineWidth`+`outlineColor`(縁取り), `shadowColor`(α0=無効)+`shadowOffset`(影), `fontPath`(assets相対 .ttf/.otf。空=既定Yu Gothic) | テキスト。クリックは遮らない。縁取り/影はゲームUIの可読性の要。カスタムフォントは任意サイズでシャープ（失敗時は既定フォント） |
 | `UIButton` | `onClickEvent`, `normalColor/hoverColor/pressedColor`, `interactable` | 同一エンティティの `UIImage` を状態色でティント。release-inside でクリック確定。要素が重なった場合は**最前面だけ**が反応（子要素がクリックを吸っても親ボタンへバブリング） |
 
 アンカー解決式（`UIRect`、親矩形基準・実ピクセル）:
@@ -389,7 +391,9 @@ rectMax = parentMin + parentSize * anchorMax + offsetMax
 アンカーを引き伸ばす（例: 横ストレッチ）なら offset は左右の余白(px)になる。Inspector の**アンカープリセット**
 （9方位＋ストレッチ＋全面）は選択時に見た目の位置を保ったまま anchor/offset を再計算する。
 
-**Lua からの操作**（値の書き換えのみ。ツリー構造はエディタで組む）: `scene:setUiText/getUiText/setUiColor/setUiVisible/setUiTexture/setUiFill/getUiFill/getUiSlider/setUiSlider/getUiToggle/setUiToggle/getUiScroll/setUiScroll`（§3 Scene 参照）。
+**Lua からの操作**（値の書き換えのみ。ツリー構造はエディタで組む）: `scene:setUiText/getUiText/setUiColor/setUiVisible/setUiTexture/setUiFill/getUiFill/setUiRotation/getUiRotation/getUiSlider/setUiSlider/getUiToggle/setUiToggle/getUiScroll/setUiScroll`（§3 Scene 参照）。
+
+**回転/装飾の既知の制限**: ①回転/スキューしたパネルの**中に** `UIScrollView` を置くのは非対応（クリップ位置がずれる。逆=スクロールビュー内の回転要素は OK）②`gradientColor2` のアルファは無視される ③回転+角丸+部分 fill の併用はゲージの切り口も丸くなる。
 
 **ゲームパッド/キーボードのフォーカスナビゲーション**（設定不要で常時有効）:
 矢印キー / D-pad / 左スティックでフォーカス移動（位置ベースの空間ナビ）、Enter / Space / A ボタンで決定

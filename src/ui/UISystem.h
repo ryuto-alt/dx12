@@ -34,18 +34,50 @@ struct UiNavInput
     bool confirm = false;   // 決定（Enter / Space / パッド A）
 };
 
+// スクリーン空間の 2x3 アフィン変換（UIRect.rotation / skewX の視覚変換）。
+// p' = (m00*x + m01*y + m02, m10*x + m11*y + m12)。既定 = 単位行列（変換なし）。
+struct UiXform2x3
+{
+    float m00 = 1.0f, m01 = 0.0f, m02 = 0.0f;
+    float m10 = 0.0f, m11 = 1.0f, m12 = 0.0f;
+    ImVec2 Apply(float x, float y) const
+    {
+        return ImVec2(m00 * x + m01 * y + m02, m10 * x + m11 * y + m12);
+    }
+    // 逆変換。退化時（det≈0。skew はクランプ済みなので実質起きない）は単位行列を返す
+    UiXform2x3 Inverted() const
+    {
+        const float det = m00 * m11 - m01 * m10;
+        if (det > -1e-8f && det < 1e-8f)
+            return {};
+        const float inv = 1.0f / det;
+        UiXform2x3 r;
+        r.m00 =  m11 * inv;
+        r.m01 = -m01 * inv;
+        r.m10 = -m10 * inv;
+        r.m11 =  m00 * inv;
+        r.m02 = -(r.m00 * m02 + r.m01 * m12);
+        r.m12 = -(r.m10 * m02 + r.m11 * m12);
+        return r;
+    }
+};
+
 // エディタ支援用: レイアウト解決済みの UIRect 1 件（スクリーン座標）。
 // ResolveRects が描画順（= 奥→手前。後方ほど手前）で出力する。
 // canvasScale/canvasOrigin は「スクリーンΔ → キャンバス空間 px」の換算
 // （canvasPx = (screen - canvasOrigin) / canvasScale）に使う。
+// min/max は「レイアウト空間」（回転/スキュー適用前の軸平行矩形）のまま。
+// hasXform=true なら xform（祖先込みの累積変換）を掛けた四辺形が実際の見た目。
 struct UiResolvedRect
 {
     entt::entity e = entt::null;             // UIRect を持つエンティティ
-    ImVec2       min{0.0f, 0.0f};            // 矩形 min（スクリーン座標）
-    ImVec2       max{0.0f, 0.0f};            // 矩形 max（スクリーン座標）
+    ImVec2       min{0.0f, 0.0f};            // 矩形 min（スクリーン座標、レイアウト空間）
+    ImVec2       max{0.0f, 0.0f};            // 矩形 max（スクリーン座標、レイアウト空間）
     float        canvasScale = 1.0f;         // キャンバス空間 → スクリーンの倍率
     ImVec2       canvasOrigin{0.0f, 0.0f};   // キャンバス原点（スクリーン座標）
     entt::entity canvas = entt::null;        // 属する UICanvas エンティティ
+    bool         hasXform = false;           // 回転/スキュー（自分または祖先）があるか
+    UiXform2x3   xform;                      // レイアウト空間 → 実スクリーンの累積変換
 };
 
 // ゲーム内 retained-mode UI（UICanvas / UIRect / UIImage / UIText / UIButton）の

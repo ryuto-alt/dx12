@@ -453,6 +453,18 @@ void ScriptEngine::RegisterBindings()
             if (!reg.all_of<UIImage>(e.GetHandle())) return 0.0f;
             return reg.get<UIImage>(e.GetHandle()).fillAmount;
         },
+        // UIRect::rotation(視覚回転・度)を設定する。UIRect が無ければ何もしない。
+        "setUiRotation", [](Scene& s, Entity& e, float deg) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIRect>(e.GetHandle())) return;
+            reg.get<UIRect>(e.GetHandle()).rotation = deg;
+        },
+        // UIRect::rotation を読む。UIRect が無ければ 0。
+        "getUiRotation", [](Scene& s, Entity& e) -> float {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIRect>(e.GetHandle())) return 0.0f;
+            return reg.get<UIRect>(e.GetHandle()).rotation;
+        },
         // UISlider の現在値(実値)を読む/書く。書き込みは min..max へクランプ。onChangeEvent は
         // 発火しない(スクリプト起因の変更でハンドラが再帰しないように。UIToggle も同じ)。
         "getUiSlider", [](Scene& s, Entity& e) -> float {
@@ -496,6 +508,7 @@ void ScriptEngine::RegisterBindings()
         // --- UI アニメーション / トゥイーン ---
         // 対象は Entity か エンティティID(数値。ボタンクリックの data.source をそのまま渡せる)。
         // params: { dx=, dy=(相対移動px), scale=(視覚拡縮), alpha=(視覚透明度0..1),
+        //           rotate=(視覚回転・度・絶対目標値。UIRect.rotation へ加算合成),
         //           duration=0.3, delay=0, easing="out" }
         // easing: "linear"/"in"/"out"/"inOut"/"back"(勢い)/"bounce"/"elastic"(または 0..6 の数値)
         "tweenUi", [](Scene& s, sol::object target, sol::table params) {
@@ -534,7 +547,9 @@ void ScriptEngine::RegisterBindings()
             { t.hasScale = true; t.scaleTo = (std::max)(0.0f, v.as<float>()); }
             if (sol::object v = params["alpha"]; v.is<float>())
             { t.hasAlpha = true; t.alphaTo = std::clamp(v.as<float>(), 0.0f, 1.0f); }
-            if (!t.hasMove && !t.hasScale && !t.hasAlpha) return;
+            if (sol::object v = params["rotate"]; v.is<float>())
+            { t.hasRotate = true; t.rotTo = v.as<float>(); }
+            if (!t.hasMove && !t.hasScale && !t.hasAlpha && !t.hasRotate) return;
             reg.get_or_emplace<UITweenState>(h).tweens.push_back(t);
         },
         // 表示して出現アニメを最初から再生（UIAnimator 無しなら visible=true だけ）。

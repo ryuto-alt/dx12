@@ -855,9 +855,11 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
     }
 
     // ---- 選択中エンティティの解決済み矩形とハンドル ----
+    // 回転/スキュー中（hasXform）はリサイズ/アンカーハンドルを出さない（軸平行前提の
+    // ドラッグ数学が成立しないため）。移動ドラッグ・矢印ナッジ・Inspector 数値編集は有効。
     const UiResolvedRect* selRect = findRect(ctx.selectedEntity);
     UiHandle handles[8] = {};
-    if (selRect)
+    if (selRect && !selRect->hasXform)
         MakeHandles(*selRect, handles);
 
     // アンカーハンドル位置（親矩形 + アンカー値）。親が解決できない時は非表示。
@@ -865,7 +867,8 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
     bool   hasParentRect = false;
     ImVec2 anchorPosS[4] = {};       // 0..3 = (xMin,yMin)(xMax,yMin)(xMin,yMax)(xMax,yMax)
     ImVec2 anchorCenterS{};
-    if (selRect && reg.valid(ctx.selectedEntity) && reg.all_of<UIRect>(ctx.selectedEntity))
+    if (selRect && !selRect->hasXform
+        && reg.valid(ctx.selectedEntity) && reg.all_of<UIRect>(ctx.selectedEntity))
     {
         hasParentRect = ResolveParentScreenRect(reg, rects, *selRect, parentMinS, parentMaxS);
         if (hasParentRect)
@@ -906,7 +909,7 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
                 if (dx * dx + dy * dy <= 6.0f * 6.0f) hoveredAnchor = 4;
             }
         }
-        if (hoveredAnchor < 0 && selRect)
+        if (hoveredAnchor < 0 && selRect && !selRect->hasXform)
         {
             for (int i = 0; i < 8; ++i)
             {
@@ -920,11 +923,10 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
         }
         if (hoveredAnchor < 0 && hoveredHandle < 0)
         {
-            // 後方走査 = 描画順の逆 = 最前面優先
+            // 後方走査 = 描画順の逆 = 最前面優先（回転/スキュー要素は逆写像で判定）
             for (auto it = rects.rbegin(); it != rects.rend(); ++it)
             {
-                if (io.MousePos.x >= it->min.x && io.MousePos.x < it->max.x
-                    && io.MousePos.y >= it->min.y && io.MousePos.y < it->max.y)
+                if (uiedit::ResolvedRectContains(*it, io.MousePos))
                 {
                     hoveredElem = &(*it);
                     break;
@@ -1007,7 +1009,7 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
             }
             // 選択が変わったので描画用に引き直す
             selRect = findRect(ctx.selectedEntity);
-            if (selRect)
+            if (selRect && !selRect->hasXform)
                 MakeHandles(*selRect, handles);
             hoveredHandle = -1;
             hasParentRect = false;   // アンカーは次フレームに再計算（1 フレームだけ非表示で十分）
@@ -1030,7 +1032,7 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
         {
             if (const UiResolvedRect* hr = findRect(hoverTarget))
             {
-                dl->AddRect(hr->min, hr->max, kHoverCol);
+                uiedit::DrawResolvedOutline(dl, *hr, kHoverCol);
                 DrawNameLabel(dl, hr->min, EntityName(reg, hoverTarget), kHoverCol);
             }
         }
@@ -1040,12 +1042,13 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
     {
         if (e == ctx.selectedEntity) continue;
         if (const UiResolvedRect* rr = findRect(e))
-            dl->AddRect(rr->min, rr->max, kAccentCol);
+            uiedit::DrawResolvedOutline(dl, *rr, kAccentCol);
     }
     // プライマリ選択: アウトライン + 名前 + 8 ハンドル + アンカーハンドル
+    // （回転/スキュー中はハンドル無し = hasParentRect/handles とも上のガードで空）
     if (selRect)
     {
-        dl->AddRect(selRect->min, selRect->max, kAccentCol, 0.0f, 0, 2.0f);
+        uiedit::DrawResolvedOutline(dl, *selRect, kAccentCol, 2.0f);
         DrawNameLabel(dl, selRect->min, EntityName(reg, ctx.selectedEntity), kAccentCol);
 
         if (hasParentRect)
@@ -1074,7 +1077,7 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
             dl->AddCircle(anchorCenterS, 3.5f, IM_COL32(0, 0, 0, 160));
         }
 
-        for (int i = 0; i < 8; ++i)
+        for (int i = 0; !selRect->hasXform && i < 8; ++i)
         {
             const bool hot = (m_dragEdges > kDragMove)
                 ? (handles[i].edges == m_dragEdges)

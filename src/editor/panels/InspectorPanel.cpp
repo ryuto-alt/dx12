@@ -888,6 +888,14 @@ void InspectorPanel::Render(entt::registry& reg,
 
                     changed |= pg::Checkbox("表示 Visible", &ur.visible,
                         "OFF: 自分と子孫を描画しない（ボタンも反応しない）");
+                    changed |= pg::Float("回転 Rotation", &ur.rotation, 0.5f, -360.0f, 360.0f,
+                        "%.1f", &active,
+                        "視覚回転（度・時計回り）。ピボット点回りに掛かり、子孫も一緒に回る。\n"
+                        "レイアウトは軸平行のまま（回転中はリサイズ/アンカーハンドル非表示）。\n"
+                        "UIScrollView ノード自身では無視される");
+                    changed |= pg::Float("スキュー Skew X", &ur.skewX, 0.5f, -85.0f, 85.0f,
+                        "%.1f", &active,
+                        "横方向の傾き（度）。平行四辺形のバナー/ボタンに（ペルソナ風の斜めUI）");
                     pg::End();
                 }
                 EndEdit(reg, ctx, ctx.selectedEntity, m_uiRectEdit, changed, active, "UIRect");
@@ -960,6 +968,34 @@ void InspectorPanel::Render(entt::registry& reg,
                         changed |= pg::Combo("Fill 方向 Fill Dir", &img.fillDir, fillDirs, IM_ARRAYSIZE(fillDirs),
                             "Fill Amount が増えるとき、どの端から現れていくか");
                     }
+
+                    pg::Label("グラデーション Gradient",
+                        "色 Color → 終端色 の線形グラデーション。テクスチャ/9スライス/角丸にも掛かる");
+                    {
+                        static const char* gradDirs[] = {"なし", "横(左→右)", "縦(上→下)", "斜め(左上→右下)"};
+                        changed |= pg::Combo("方向 Gradient Dir", &img.gradientDir,
+                                             gradDirs, IM_ARRAYSIZE(gradDirs));
+                    }
+                    if (img.gradientDir > 0)
+                        changed |= pg::Color4("終端色 Gradient Color 2", &img.gradientColor2.x);
+
+                    pg::Label("縁取り Outline", "枠線。角丸にも追従する");
+                    changed |= pg::Float("太さ Outline Width", &img.outlineWidth, 0.25f, 0.0f, 64.0f,
+                        "%.1f", &active, "キャンバスpx。0 で無効");
+                    if (img.outlineWidth > 0.0f)
+                        changed |= pg::Color4("縁取り色 Outline Color", &img.outlineColor.x);
+
+                    pg::Label("影 Drop Shadow",
+                        "矩形近似のドロップシャドウ（テクスチャの形は反映しない）。色のαが 0 で無効");
+                    changed |= pg::Color4("影色 Shadow Color", &img.shadowColor.x);
+                    if (img.shadowColor.w > 0.0f)
+                    {
+                        changed |= pg::Float2("影オフセット Shadow Offset", &img.shadowOffset.x,
+                                              0.25f, 0.0f, 0.0f, "%.1f", &active, "キャンバスpx");
+                        changed |= pg::Float("影ぼかし Shadow Softness", &img.shadowSoftness,
+                                             0.25f, 0.0f, 64.0f, "%.1f", &active,
+                                             "外へ広がるぼかし量(px)。0 でシャープな影");
+                    }
                     pg::End();
                 }
                 EndEdit(reg, ctx, ctx.selectedEntity, m_uiImageEdit, changed, active, "UIImage");
@@ -996,6 +1032,50 @@ void InspectorPanel::Render(entt::registry& reg,
                     changed |= pg::Combo("水平整列 Align H", &txt.alignH, alignHItems, 3);
                     changed |= pg::Combo("垂直整列 Align V", &txt.alignV, alignVItems, 3);
                     changed |= pg::Checkbox("折り返し Wrap", &txt.wrap, "ON: UIRect の幅で折り返す");
+
+                    // カスタムフォント（assets 相対 .ttf/.otf。アセットブラウザから D&D 可）
+                    {
+                        char fbuf[256] = {};
+                        size_t fn = txt.fontPath.copy(fbuf, sizeof(fbuf) - 1);
+                        fbuf[fn] = '\0';
+                        if (pg::InputText("フォント Font", fbuf, sizeof(fbuf), 0, &active,
+                            "assets 相対の .ttf/.otf。空なら既定フォント（Yu Gothic）。\n"
+                            "アセットブラウザから D&D で割当可。ロード失敗は既定フォントで表示"))
+                        { txt.fontPath = fbuf; changed = true; }
+                        if (ImGui::BeginDragDropTarget())
+                        {
+                            if (const ImGuiPayload* payload =
+                                    ImGui::AcceptDragDropPayload(AssetBrowserPanel::kDragDropPayloadType))
+                            {
+                                const char* droppedPath = static_cast<const char*>(payload->Data);
+                                namespace fs = std::filesystem;
+                                std::string ext = fs::path(droppedPath).extension().string();
+                                for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                                if (ext == ".ttf" || ext == ".otf")
+                                {
+                                    std::string abs = fs::path(droppedPath).lexically_normal().string();
+                                    std::string base = fs::path(m_assetsDir).lexically_normal().string();
+                                    std::replace(abs.begin(), abs.end(), '\\', '/');
+                                    std::replace(base.begin(), base.end(), '\\', '/');
+                                    txt.fontPath = (abs.rfind(base, 0) == 0) ? abs.substr(base.size()) : abs;
+                                    changed = true;
+                                }
+                            }
+                            ImGui::EndDragDropTarget();
+                        }
+                    }
+
+                    pg::Label("縁取り Outline", "8方位の重ね描き。ゲームUIの可読性の要");
+                    changed |= pg::Float("太さ Outline Width", &txt.outlineWidth, 0.25f, 0.0f, 16.0f,
+                        "%.1f", &active, "キャンバスpx。0 で無効");
+                    if (txt.outlineWidth > 0.0f)
+                        changed |= pg::Color4("縁取り色 Outline Color", &txt.outlineColor.x);
+
+                    pg::Label("影 Shadow", "1オフセットの落ち影。色のαが 0 で無効");
+                    changed |= pg::Color4("影色 Shadow Color", &txt.shadowColor.x);
+                    if (txt.shadowColor.w > 0.0f)
+                        changed |= pg::Float2("影オフセット Shadow Offset", &txt.shadowOffset.x,
+                                              0.25f, 0.0f, 0.0f, "%.1f", &active, "キャンバスpx");
                     pg::End();
                 }
                 EndEdit(reg, ctx, ctx.selectedEntity, m_uiTextEdit, changed, active, "UIText");
@@ -1172,10 +1252,12 @@ void InspectorPanel::Render(entt::registry& reg,
                 if (pg::Begin("UIAnimator"))
                 {
                     static const char* showAnims[] = {"なし", "フェード", "ポップ(拡大)",
-                                                      "左から", "右から", "上から", "下から"};
+                                                      "左から", "右から", "上から", "下から",
+                                                      "スピン(回転入場)"};
                     static const char* easings[] = {"リニア", "イーズイン", "イーズアウト",
                                                     "イン/アウト", "バック(勢い)", "バウンス", "弾性"};
-                    static const char* loops[] = {"なし", "浮遊(上下)", "パルス(拡縮)", "点滅"};
+                    static const char* loops[] = {"なし", "浮遊(上下)", "パルス(拡縮)", "点滅",
+                                                  "スピン(連続回転)", "スウィング(揺れ)"};
 
                     pg::Label("出現 Show",
                         "Play 開始時と Lua scene:showUi() で再生される出現アニメ。\n"

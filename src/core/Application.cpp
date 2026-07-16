@@ -2185,8 +2185,11 @@ nlohmann::json McpComponentSchema()
         F("offsetMax", "float2", json::array({50, 50})),
         F("visible", "bool", true),
         F("order", "int (sibling draw order; larger = front)", 0),
+        F("rotation", "float (visual rotation deg, CW, around pivot; children rotate too)", 0.0),
+        F("skewX", "float (horizontal skew deg; parallelogram banners)", 0.0),
     }), "Layout: rectMin = parentMin + parentSize*anchorMin + offsetMin (same for max). "
-        "Full-stretch = anchorMin[0,0] anchorMax[1,1] offsets 0."));
+        "Full-stretch = anchorMin[0,0] anchorMax[1,1] offsets 0. rotation/skewX are "
+        "visual-only (layout stays axis-aligned); ignored on uiScrollView nodes."));
     comps.push_back(C("uiImage", true, true, json::array({
         F("texturePath", "string (assets-relative; empty = solid color rect)", ""),
         F("color", "float4 (rgba)", json::array({1, 1, 1, 1})),
@@ -2196,12 +2199,25 @@ nlohmann::json McpComponentSchema()
         F("raycastBlock", "bool (blocks clicks like Unity raycastTarget)", true),
         F("fillAmount", "float 0..1 (HP bar/gauge)", 1.0),
         F("fillDir", "int (0=fromLeft,1=fromRight,2=fromBottom,3=fromTop)", 0),
+        F("gradientDir", "int (0=off,1=horizontal,2=vertical,3=diagonal)", 0),
+        F("gradientColor2", "float4 (gradient end color; alpha ignored)", json::array({1, 1, 1, 1})),
+        F("outlineWidth", "float (border px; 0 = off; follows cornerRadius)", 0.0),
+        F("outlineColor", "float4", json::array({0, 0, 0, 1})),
+        F("shadowColor", "float4 (drop shadow; alpha 0 = off; rect approximation)",
+          json::array({0, 0, 0, 0})),
+        F("shadowOffset", "float2 (px)", json::array({2, 2})),
+        F("shadowSoftness", "float (blur spread px; 0 = sharp)", 4.0),
     })));
     comps.push_back(C("uiText", true, true, json::array({
         F("text", "string", "テキスト"), F("fontSize", "float", 24.0),
         F("color", "float4 (rgba)", json::array({1, 1, 1, 1})),
         F("alignH", "int (0=left,1=center,2=right)", 1),
         F("alignV", "int (0=top,1=center,2=bottom)", 1), F("wrap", "bool", false),
+        F("outlineWidth", "float (8-dir text outline px; 0 = off)", 0.0),
+        F("outlineColor", "float4", json::array({0, 0, 0, 1})),
+        F("shadowColor", "float4 (alpha 0 = off)", json::array({0, 0, 0, 0})),
+        F("shadowOffset", "float2 (px)", json::array({1, 1})),
+        F("fontPath", "string (assets-relative .ttf/.otf; empty = default Yu Gothic)", ""),
     })));
     comps.push_back(C("uiButton", true, true, json::array({
         F("onClickEvent", "string (emitted to Lua events on click; empty = none)", ""),
@@ -2238,14 +2254,16 @@ nlohmann::json McpComponentSchema()
     }), "uiRect = viewport. Children are clipped + scrolled (clicks clipped too). "
         "Hang children via dx12_set_parent."));
     comps.push_back(C("uiAnimator", true, true, json::array({
-        F("showAnim", "int (0=none,1=fade,2=pop,3=fromLeft,4=fromRight,5=fromTop,6=fromBottom)", 1),
+        F("showAnim", "int (0=none,1=fade,2=pop,3=fromLeft,4=fromRight,5=fromTop,6=fromBottom,"
+          "7=spinIn)", 1),
         F("showDuration", "float (sec)", 0.35), F("showDelay", "float (sec)", 0.0),
         F("showEasing", "int (0=linear,1=in,2=out,3=inOut,4=back,5=bounce,6=elastic)", 2),
         F("slideOffset", "float (px)", 80.0),
         F("hoverScale", "float (needs uiButton)", 1.05), F("pressScale", "float", 0.95),
         F("hoverSpeed", "float", 14.0),
-        F("loopAnim", "int (0=none,1=float,2=pulse,3=blink)", 0),
-        F("loopSpeed", "float", 2.0), F("loopAmount", "float", 6.0),
+        F("loopAnim", "int (0=none,1=float,2=pulse,3=blink,4=spin,5=sway)", 0),
+        F("loopSpeed", "float (Hz; spin = revolutions/sec)", 2.0),
+        F("loopAmount", "float (float=px, pulse/blink=ratio, sway=deg)", 6.0),
     }), "Play-mode only. Show anim replays on Lua scene:showUi()."));
     return json{{"components", std::move(comps)}};
 }
@@ -2302,10 +2320,12 @@ nlohmann::json McpLuaApi()
         "queryByTag(tag) -> table(names)", "queryInBox(minX,minZ,maxX,maxZ,tag?) -> table(names)",
         "setUiText(e,text) / getUiText(e)", "setUiColor(e,r,g,b,a)", "setUiVisible(e,visible)",
         "setUiTexture(e,path)", "setUiFill(e,amount) / getUiFill(e)  (UIImage.fillAmount 0..1)",
+        "setUiRotation(e,deg) / getUiRotation(e)  (UIRect.rotation 視覚回転・度)",
         "getUiSlider(e) / setUiSlider(e,v)  (UISlider実値。setはonChange発火しない)",
         "getUiToggle(e) / setUiToggle(e,on)  (UIToggle。setはonChange発火しない)",
         "getUiScroll(e) -> x,y / setUiScroll(e,x,y)  (UIScrollViewのスクロール量px)",
-        "tweenUi(e,params)", "showUi(e)", "hideUi(e)",
+        "tweenUi(e,params)  (params: dx,dy,scale,alpha,rotate(度・絶対値),duration,delay,easing)",
+        "showUi(e)", "hideUi(e)",
     })));
     objects.push_back(O("input", "global", json::array({
         "isKeyDown(vk) -> bool", "isKeyPressed(vk) -> bool", "isAsyncKeyDown(vk) -> bool",
@@ -3045,6 +3065,8 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                                    {"offsetMin", {r->offsetMin.x, r->offsetMin.y}},
                                    {"offsetMax", {r->offsetMax.x, r->offsetMax.y}},
                                    {"order", r->order}, {"visible", r->visible}};
+                    if (r->rotation != 0.0f) n["uiRect"]["rotation"] = r->rotation;
+                    if (r->skewX != 0.0f)    n["uiRect"]["skewX"] = r->skewX;
                     if (const UiResolvedRect* rr = findRect(e))
                     {
                         // 解決済み矩形をキャンバス空間 px へ（[x, y, w, h]、キャンバス左上原点）

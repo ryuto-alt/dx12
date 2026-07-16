@@ -645,6 +645,8 @@ static void Test_UIRect()
             rc.offsetMin = { 10.0f, -20.0f };
             rc.offsetMax = { -30.0f, 40.0f };
             rc.visible   = false;
+            rc.rotation  = -12.5f;   // 既定 0 から変えて往復を確認
+            rc.skewX     = 8.0f;
             r.emplace<UIRect>(e, rc);
         },
         [](const UIRect& rc) {
@@ -654,6 +656,8 @@ static void Test_UIRect()
             CHECK_F(rc.offsetMin.x, 10.0f); CHECK_F(rc.offsetMin.y, -20.0f);
             CHECK_F(rc.offsetMax.x, -30.0f);CHECK_F(rc.offsetMax.y, 40.0f);
             CHECK(rc.visible == false);
+            CHECK_F(rc.rotation, -12.5f);
+            CHECK_F(rc.skewX, 8.0f);
         });
 }
 
@@ -671,6 +675,13 @@ static void Test_UIImage()
             im.raycastBlock = false;   // 既定 true から変えて往復を確認
             im.fillAmount   = 0.75f;   // 既定 1 から変えて往復を確認
             im.fillDir      = 2;       // 下から
+            im.gradientDir    = 2;
+            im.gradientColor2 = { 0.5f, 0.6f, 0.7f, 1.0f };
+            im.outlineWidth   = 3.0f;
+            im.outlineColor   = { 0.9f, 0.8f, 0.1f, 1.0f };
+            im.shadowColor    = { 0.0f, 0.0f, 0.0f, 0.6f };
+            im.shadowOffset   = { 4.0f, 5.0f };
+            im.shadowSoftness = 7.0f;
             r.emplace<UIImage>(e, im);
         },
         [](const UIImage& im) {
@@ -685,6 +696,14 @@ static void Test_UIImage()
             CHECK(im.raycastBlock == false);
             CHECK_F(im.fillAmount, 0.75f);
             CHECK(im.fillDir == 2);
+            CHECK(im.gradientDir == 2);
+            CHECK_F(im.gradientColor2.x, 0.5f); CHECK_F(im.gradientColor2.y, 0.6f);
+            CHECK_F(im.gradientColor2.z, 0.7f);
+            CHECK_F(im.outlineWidth, 3.0f);
+            CHECK_F(im.outlineColor.x, 0.9f); CHECK_F(im.outlineColor.y, 0.8f);
+            CHECK_F(im.shadowColor.w, 0.6f);
+            CHECK_F(im.shadowOffset.x, 4.0f); CHECK_F(im.shadowOffset.y, 5.0f);
+            CHECK_F(im.shadowSoftness, 7.0f);
         });
 }
 
@@ -699,6 +718,11 @@ static void Test_UIText()
             tx.alignH   = 2;
             tx.alignV   = 0;
             tx.wrap     = true;
+            tx.outlineWidth = 2.0f;
+            tx.outlineColor = { 0.1f, 0.1f, 0.2f, 1.0f };
+            tx.shadowColor  = { 0.0f, 0.0f, 0.0f, 0.5f };
+            tx.shadowOffset = { 2.0f, 3.0f };
+            tx.fontPath     = "fonts/title.ttf";
             r.emplace<UIText>(e, tx);
         },
         [](const UIText& tx) {
@@ -709,6 +733,11 @@ static void Test_UIText()
             CHECK(tx.alignH == 2);
             CHECK(tx.alignV == 0);
             CHECK(tx.wrap == true);
+            CHECK_F(tx.outlineWidth, 2.0f);
+            CHECK_F(tx.outlineColor.z, 0.2f);
+            CHECK_F(tx.shadowColor.w, 0.5f);
+            CHECK_F(tx.shadowOffset.x, 2.0f); CHECK_F(tx.shadowOffset.y, 3.0f);
+            CHECK(tx.fontPath == "fonts/title.ttf");
         });
 }
 

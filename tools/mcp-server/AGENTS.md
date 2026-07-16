@@ -515,6 +515,10 @@ dx12_set_transform(name:"Player", position:[0,1,0])
 - ラベル文言は子の `uiText` を `set_component`（子の id と現在の文言は `dx12_ui_tree` の `children` / `text` で分かる）
 - クリック/値変更は Lua の `events:on(イベント名, fn)` で受ける（`uiButton.onClickEvent` / `uiSlider.onChangeEvent`。`e.value` に実値）
 - 兄弟の描画順 = `uiRect.order`（大きいほど手前）、親変更 = `dx12_set_parent`、リストは `uiScrollView` の子にぶら下げる
+- 見た目の装飾も `dx12_set_component` で設定できる: `uiRect` の `rotation`/`skewX`（度。例: `rotation: -8` で斜めバナー＝ペルソナ風 UI。子孫ごと回る見た目の変換）、
+  `uiImage` の `gradientDir`+`gradientColor2`（グラデ）/ `outlineWidth`+`outlineColor`（枠線）/ `shadowColor`+`shadowOffset`+`shadowSoftness`（影）、
+  `uiText` の `outlineWidth`（縁取り）/ `shadowColor`（影）/ `fontPath`（assets 相対 .ttf/.otf）
+- 回転したパネルの中に `ui_scrollview` を置くのは非対応（逆にスクロールビュー内の回転要素は OK）
 - ゲームパッド/キーボードのフォーカスナビは自動で効く（設定不要）
 
 ---

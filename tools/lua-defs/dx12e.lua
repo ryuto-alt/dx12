@@ -279,6 +279,20 @@ function Scene:setUiFill(e, amount) end
 ---@return number
 function Scene:getUiFill(e) end
 
+---UIRect::rotation（視覚回転・度・時計回り）を設定する。ピボット点回りに掛かり、
+---子孫も一緒に回る。レイアウトは軸平行のまま。対象が UIRect を持たない場合は何もしない。
+---```lua
+---scene:setUiRotation(banner, -8)   -- ペルソナ風の斜めバナー
+---```
+---@param e Entity
+---@param deg number 度（時計回り正）
+function Scene:setUiRotation(e, deg) end
+
+---UIRect::rotation を返す。対象が UIRect を持たない場合は 0。
+---@param e Entity
+---@return number
+function Scene:getUiRotation(e) end
+
 ---UISlider の現在値（実値 minValue..maxValue）を返す。無ければ 0。
 ---値の変更はプレイヤー操作時に onChangeEvent（e.value = 実値）で通知される。
 ---```lua
@@ -329,7 +343,7 @@ function Scene:setUiScroll(e, x, y) end
 ---scene:tweenUi(popup, { alpha = 0, duration = 0.3 })
 ---```
 ---@param e Entity|integer 対象（ボタンクリックの data.source をそのまま渡してもよい）
----@param params { dx?: number, dy?: number, scale?: number, alpha?: number, duration?: number, delay?: number, easing?: "linear"|"in"|"out"|"inOut"|"back"|"bounce"|"elastic" }
+---@param params { dx?: number, dy?: number, scale?: number, alpha?: number, rotate?: number, duration?: number, delay?: number, easing?: "linear"|"in"|"out"|"inOut"|"back"|"bounce"|"elastic" }
 function Scene:tweenUi(e, params) end
 
 ---UI要素を表示して、UIAnimator の出現アニメを最初から再生する
