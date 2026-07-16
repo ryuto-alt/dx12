@@ -538,6 +538,44 @@ dx12_set_transform(name:"Player", position:[0,1,0])
 - 回転したパネルの中に `ui_scrollview` を置くのは非対応（逆にスクロールビュー内の回転要素は OK）
 - ゲームパッド/キーボードのフォーカスナビは自動で効く（設定不要）
 
+### UI監査の計測lint (dx12_ui_audit)
+
+`dx12_ui_audit` は主観ヒューリスティックに加えて、resolvedRect から測定する「AIっぽいUI」検出ルールを持つ:
+
+- `SIBLING_MISALIGNMENT` (warning): 同じ親の兄弟の左端/上端が **1〜3pxだけ** ズレているペア。0px(整列済み)と4px以上(意図的な差)は対象外。fix に揃えるべき座標が入る。
+- `OFF_GRID_SPACING` (suggestion): 縦積み/横並びの隣接兄弟の間隔が4pxグリッドに乗っていない(gap%4≠0)。64px超の間隔は領域分割とみなし対象外。
+- `FONT_SIZE_SPRAWL` (suggestion): 表示中の uiText.fontSize が5種類を超えた(タイポスケールの乱れ)。
+- `CENTERED_MONOTONY` (suggestion): 操作+テキスト要素が6個以上あり、その80%以上が水平中央揃え(キャンバス中心±2px)。全部中央はAI的構図の典型。
+
+返り値には issue にならなくても常に `metrics` が付く:
+`{ fontSizes: [{size,count}...], colorGroups: [{color,count,examples}...], centeredRatio, gapValues }`
+colorGroups は近似色(RGB 1/8刻み)をまとめた代表色・使用回数・使用エンティティ名の例。UI生成後はこの metrics を見てスケール/パレット/構図を整えること。
+
+### dx12_ui_compare — 参照UIとの横並び比較
+
+`dx12_ui_compare(referencePath, grid?)` は、ユーザーが渡した参照ゲームのUIスクショ(PNG絶対パス)と、現在のエディタUI(`ui_screenshot`)を**1枚の横並び画像**(左=参照、右=現在、間に4px区切り線)に合成して返す。AIは2枚別々の画像より1枚に合成された画像の方が正確に比較できる、というのが設計動機。
+
+- 返り値: image ブロック + text に `{path, diffRatio, refSize, curSize}`。diffRatio は同サイズに正規化した上での RGB 距離ベースのピクセル差分率(%)。
+- `grid: true` で右側(現在)にだけ8pxグリッド線を薄く重畳。整列・余白のズレ確認に使う。
+- **推奨ループ**: 合成画像を見て「参照と違う点を3つ」挙げる → 直す → 再度 dx12_ui_compare。diffRatio の減少を目安にしつつ、最終判断は目視で行う。
+- 実装は `uiCompare.ts`(pure、pngjs 依存)。テストは `node uiCompare.test.ts`。
+
+### UI 素材ワークフロー(フォント / 9-slice / アイコン)
+
+ゲーム UI の見た目を上げる素材導入は以下の流れで行う。
+
+**フォント導入 (dx12_install_font)**
+1. `dx12_install_font { family: "Noto Sans JP", weight: 700 }` — Google Fonts から .ttf を落として `assets/fonts/` へ自動取り込み。`{fontPath}` が返る。
+2. 返った `fontPath` をテキストに設定: `dx12_set_component { component: "uiText", data: { fontPath: "fonts/NotoSansJP-700.ttf" } }`。
+3. ★日本語 UI には必ず日本語対応フォント(Noto Sans JP / M PLUS Rounded 1c / Zen Kaku Gothic New 等)。欧文フォントだと日本語が豆腐(□)になる。見出し 700、本文 400 の 2 ウェイト運用が基本。
+
+**9-slice パネル / アイコン (dx12_import_asset)**
+- 画像素材は `dx12_import_asset { sourcePath: "<絶対パス>", destPath: "ui/panel.png" }` で assets へ取り込み、`uiImage.texturePath` に設定する。
+- 9-slice はエンジン実装済み: `uiImage` に `texturePath` + `sliceBorder: [左, 上, 右, 下]`(px)を設定すると、角を保ったままパネルが伸縮する。角丸枠・装飾フレームはこれで 1 枚のテクスチャから任意サイズに展開できる。
+- アイコンは正方形 PNG を `texturePath` に設定するだけ(sliceBorder 不要)。
+
+導入後は `dx12_ui_screenshot` で実際の描画を確認すること。
+
 ---
 
 ## エラーコード早見表

@@ -35,6 +35,20 @@ function luminance(c: number[]): number {
   return .2126 * lin(c[0] ?? 1) + .7152 * lin(c[1] ?? 1) + .0722 * lin(c[2] ?? 1);
 }
 
+// インタラクティブ要素か(ボタン/スライダー/トグル)。
+function isInteractive(n: any): boolean {
+  return (n?.components?.includes("uiButton") && n?.uiButton?.interactable !== false)
+    || n?.components?.includes("uiSlider") || n?.components?.includes("uiToggle");
+}
+
+// 監査対象になる表示中の矩形持ちノードか。
+function hasVisibleRect(n: any): boolean {
+  return Array.isArray(n?.resolvedRect) && n?.uiRect?.visible !== false;
+}
+
+// 使用色を近似グループ化した測定値。issue ではなく常に metrics として返す。
+export type ColorGroup = { color: number[]; count: number; examples: string[] };
+
 export function auditUiTree(tree: any, strictness: "balanced" | "strict" = "balanced") {
   const all = flatten(tree);
   const issues: UiIssue[] = [];
@@ -90,11 +104,99 @@ export function auditUiTree(tree: any, strictness: "balanced" | "strict" = "bala
     }
   }
 
+  // ── 計測lint: 兄弟間の整列・間隔 ─────────────────────────────
+  // 「ほぼ揃ってるのに1〜3pxだけズレ」「gapが4pxグリッドに乗らない」は生成UIの典型。
+  const gapValues: number[] = [];
+  for (const p of all) {
+    const kids = (p.node?.children ?? []).filter(hasVisibleRect);
+
+    // SIBLING_MISALIGNMENT: 左端(または上端)が1〜3pxだけズレている兄弟ペア。
+    // 0pxちょうど(揃ってる)と4px以上(意図的な差)は対象外。
+    for (let i = 0; i < kids.length; i++) for (let j = i + 1; j < kids.length; j++) {
+      const [ax, ay] = kids[i].resolvedRect, [bx, by] = kids[j].resolvedRect;
+      const dx = Math.round(Math.abs(ax - bx)), dy = Math.round(Math.abs(ay - by));
+      if (dx >= 1 && dx <= 3)
+        issues.push({ severity: "warning", code: "SIBLING_MISALIGNMENT", entityId: kids[j].entityId, name: kids[j].name,
+          message: `兄弟「${kids[i].name}」と左端が ${dx}px だけズレています (x=${ax.toFixed(0)} と x=${bx.toFixed(0)})。`,
+          fix: `x を ${ax.toFixed(0)} に揃える(またはUILayoutで整列する)。` });
+      else if (dy >= 1 && dy <= 3)
+        issues.push({ severity: "warning", code: "SIBLING_MISALIGNMENT", entityId: kids[j].entityId, name: kids[j].name,
+          message: `兄弟「${kids[i].name}」と上端が ${dy}px だけズレています (y=${ay.toFixed(0)} と y=${by.toFixed(0)})。`,
+          fix: `y を ${ay.toFixed(0)} に揃える(またはUILayoutで整列する)。` });
+    }
+
+    // OFF_GRID_SPACING: 隣接兄弟の間隔が4pxグリッドに乗っていない。
+    // 縦積み(横方向に重なる)は垂直gap、横並び(縦方向に重なる)は水平gapで判定。
+    // 64pxを超える間隔はレイアウト領域の分割とみなして issue にしない(gapValues には残す)。
+    const checkGaps = (axis: 0 | 1) => {
+      const sorted = [...kids].sort((a, b) => a.resolvedRect[axis] - b.resolvedRect[axis]);
+      for (let i = 0; i + 1 < sorted.length; i++) {
+        const a = sorted[i].resolvedRect, b = sorted[i + 1].resolvedRect;
+        const cross = axis === 0 ? 1 : 0;
+        const overlap = Math.min(a[cross] + a[cross + 2], b[cross] + b[cross + 2]) - Math.max(a[cross], b[cross]);
+        if (overlap <= 0) continue; // 交差軸で重なってない=積み/並びの関係にない
+        const gap = Math.round((b[axis] - (a[axis] + a[axis + 2])) * 10) / 10;
+        if (gap <= 0) continue;
+        gapValues.push(gap);
+        if (gap <= 64 && gap % 4 !== 0)
+          issues.push({ severity: "suggestion", code: "OFF_GRID_SPACING", entityId: sorted[i + 1].entityId, name: sorted[i + 1].name,
+            message: `「${sorted[i].name}」との${axis === 1 ? "垂直" : "水平"}間隔 ${gap}px が4pxグリッドに乗っていません。`,
+            fix: `間隔を ${Math.round(gap / 4) * 4 || 4}px など4の倍数に揃える。` });
+      }
+    };
+    checkGaps(1);
+    checkGaps(0);
+  }
+
+  // ── 計測lint: タイポスケール ─────────────────────────────────
+  const fontSizeCount = new Map<number, number>();
+  for (const f of all) if (f.node?.uiText && hasVisibleRect(f.node)) {
+    const fs = Number(f.node.uiText.fontSize ?? 24);
+    fontSizeCount.set(fs, (fontSizeCount.get(fs) ?? 0) + 1);
+  }
+  const fontSizes = [...fontSizeCount.entries()].sort((a, b) => b[0] - a[0])
+    .map(([size, count]) => ({ size, count }));
+  if (fontSizes.length > 5)
+    issues.push({ severity: "suggestion", code: "FONT_SIZE_SPRAWL",
+      message: `文字サイズが ${fontSizes.length} 種類あり、タイポスケールが乱れています (${fontSizes.map(f => f.size).join(", ")}px)。`,
+      fix: "見出し・本文・補助の3〜5段のスケール(例: 48/32/24/18)へ集約する。" });
+
+  // ── 計測lint: 中央揃え単調 ───────────────────────────────────
+  // インタラクティブ+テキスト要素の矩形中心がキャンバス中心±2pxに乗る割合。全部中央はAI的構図の典型。
+  let centeredTargets = 0, centeredHits = 0;
+  for (const f of all) {
+    const n = f.node;
+    if (!hasVisibleRect(n) || !(isInteractive(n) || n?.uiText)) continue;
+    const cv = f.canvas?.uiCanvas ?? { refWidth: 1920, refHeight: 1080 };
+    centeredTargets++;
+    if (Math.abs((n.resolvedRect[0] + n.resolvedRect[2] / 2) - cv.refWidth / 2) <= 2) centeredHits++;
+  }
+  const centeredRatio = centeredTargets > 0 ? centeredHits / centeredTargets : 0;
+  if (centeredTargets >= 6 && centeredRatio >= .8)
+    issues.push({ severity: "suggestion", code: "CENTERED_MONOTONY",
+      message: `操作/テキスト要素 ${centeredTargets} 個のうち ${Math.round(centeredRatio * 100)}% が水平中央揃えです。`,
+      fix: "情報レールを左右に寄せる等、非対称の構図を混ぜる(designBrief の composition を参照)。" });
+
   // A restrained palette is usually more authored than every element having a unique colour.
   const colors = new Set(all.map(f => f.node?.uiImage?.color).filter(Array.isArray)
     .map((c: number[]) => c.slice(0, 3).map(v => Math.round(v * 16)).join(",")));
   if (colors.size > 12) issues.push({ severity: "suggestion", code: "PALETTE_SPRAWL",
     message: `${colors.size}系統の面色があり、画面の統一感が弱くなっています。`, fix: "背景・面・文字・アクセント・状態色の5役程度へ色を整理する。" });
+
+  // colorGroups: 近似色(RGB各成分を1/8刻みで量子化)ごとに代表色・使用回数・使用エンティティ例をまとめる。
+  const groupMap = new Map<string, { sum: number[]; count: number; examples: string[] }>();
+  for (const f of all) {
+    const c = f.node?.uiImage?.color;
+    if (!Array.isArray(c)) continue;
+    const key = c.slice(0, 3).map((v: number) => Math.round(v * 8)).join(",");
+    const g = groupMap.get(key) ?? { sum: [0, 0, 0], count: 0, examples: [] };
+    for (let k = 0; k < 3; k++) g.sum[k] += c[k] ?? 0;
+    g.count++;
+    if (g.examples.length < 3 && f.node?.name) g.examples.push(f.node.name);
+    groupMap.set(key, g);
+  }
+  const colorGroups: ColorGroup[] = [...groupMap.values()].sort((a, b) => b.count - a.count)
+    .map(g => ({ color: g.sum.map(v => Math.round(v / g.count * 1000) / 1000), count: g.count, examples: g.examples }));
 
   const errors = issues.filter(i => i.severity === "error").length;
   const warnings = issues.filter(i => i.severity === "warning").length;
@@ -105,6 +207,13 @@ export function auditUiTree(tree: any, strictness: "balanced" | "strict" = "bala
     grade: score >= 90 ? "A" : score >= 80 ? "B" : score >= 65 ? "C" : score >= 50 ? "D" : "F",
     summary: { canvases: tree?.canvases?.length ?? 0, nodes: all.length, errors, warnings, suggestions },
     issues,
+    // 測定値サマリ。issue にならなくても常に返す(AIっぽさの定量把握用)。
+    metrics: {
+      fontSizes,                                        // 使用フォントサイズと回数(降順)
+      colorGroups,                                      // 近似色グループ(代表色/回数/使用例)
+      centeredRatio: Math.round(centeredRatio * 1000) / 1000, // 水平中央揃え率(操作+テキスト要素)
+      gapValues: [...new Set(gapValues)].sort((a, b) => a - b), // 観測した兄弟間gap(重複除去・昇順)
+    },
     principles: ["主役は1つ", "装飾より余白と整列", "CTAは画面内1–2個", "操作領域72×44px以上", "生成後はui_tree監査とスクリーンショットを両方確認"],
   };
 }

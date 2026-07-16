@@ -2,9 +2,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { EngineClient } from "./engineClient.ts";
 import { auditUiTree, designBrief } from "./uiQuality.ts";
 import { BLUEPRINT_EXAMPLE, composeUi } from "./uiComposer.ts";
+import { compareUiImages } from "./uiCompare.ts";
+import { downloadFont } from "./uiAssets.ts";
 
 // DX12 ゲームエンジン用 MCP サーバ。Codex / Claude Code から接続し、
 // 起動中のエディタ(TCP 127.0.0.1:<port>)を叩いてゲームを作っていくための入口。
@@ -1334,6 +1338,50 @@ server.registerTool(
       return errResult(e);
     }
   },
+);
+
+// 参照UIスクショ + 現在UI を横並び1枚に合成して返す比較ツール(outputSchema なし = image 結果)。
+server.registerTool(
+  "dx12_ui_compare",
+  {
+    title: "参照UIとの比較",
+    description: "参照ゲームのUIスクショ(referencePath)と現在のUI(ui_screenshot)を横並び1枚(左=参照、右=現在、間に区切り線)に合成したPNGで返す。2枚を別々に見るより正確に差分を比較できる。text にピクセル差分率 diffRatio(%) と両画像サイズも返す。grid=true で右側(現在)に8pxグリッド線を薄く重畳(整列・余白の確認用)。★使い方: 合成画像を見て『参照と違う点を3つ』具体的に挙げてから直し、再度このツールで確認するループを回す。1回で寄せきろうとしない。",
+    inputSchema: {
+      referencePath: z.string().describe("参照UI画像(PNG)の絶対パス。ユーザーから貰った目標スクショ。"),
+      grid: z.boolean().optional().describe("true で右側(現在のUI)に8pxグリッド線を薄く重畳。整列確認用。既定 false。"),
+    },
+    annotations: { title: "参照UIとの比較", openWorldHint: false, readOnlyHint: true },
+  },
+  async ({ referencePath, grid }) => {
+    try {
+      const shot = await engine.call("ui_screenshot", {});
+      if (!shot || !shot.path) throw new Error("ui_screenshot が path を返さんかった");
+      const r = compareUiImages(fs.readFileSync(referencePath), fs.readFileSync(shot.path), { grid });
+      const outPath = path.join(os.tmpdir(), `dx12_ui_compare_${Date.now()}.png`);
+      fs.writeFileSync(outPath, r.compositePng);
+      return imageResult(outPath, { diffRatio: Number(r.diffRatio.toFixed(2)), refSize: r.refSize, curSize: r.curSize });
+    } catch (e: any) {
+      return errResult(e);
+    }
+  },
+);
+
+// ── UI 素材(フォント導入) ──────────────────────────────────────
+reg(
+  "dx12_install_font",
+  "Google Fonts からフォント導入",
+  "Google Fonts からフォント(.ttf)をダウンロードして現在のプロジェクトの assets/fonts/ へ取り込む。返る fontPath を uiText.fontPath に設定して使う(例: dx12_set_component で uiText:{fontPath:'fonts/NotoSansJP-700.ttf'})。★日本語を表示する UI には日本語対応フォント(Noto Sans JP / M PLUS Rounded 1c / Zen Kaku Gothic New 等)を選ぶこと — Roboto 等の欧文フォントでは日本語が豆腐(□)になる。family は Google Fonts のファミリー名そのまま(スペース含む)。{fontPath, family, weight} が返る。",
+  {
+    family: z.string().describe("Google Fonts のファミリー名。例: 'Noto Sans JP', 'Roboto', 'Bebas Neue'"),
+    weight: z.number().int().optional().describe("ウェイト(100–900)。省略時は 400。太字見出しは 700 推奨。"),
+  },
+  {},
+  ({ family, weight }) =>
+    run(async () => {
+      const { tmpPath, fileName } = await downloadFont(family, weight);
+      await engine.call("import_asset", { sourcePath: tmpPath, destPath: `fonts/${fileName}`, overwrite: true });
+      return { fontPath: `fonts/${fileName}`, family, weight: weight ?? 400 };
+    }),
 );
 
 // ゲームカメラ視点のスクショ。アクティブな CameraComponent でシーンを1フレーム描いて撮る。
