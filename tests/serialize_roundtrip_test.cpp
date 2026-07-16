@@ -801,6 +801,43 @@ static void Test_UILayout()
         });
 }
 
+static void Test_UIScrollView()
+{
+    Case<UIScrollView>(
+        [](entt::registry& r, entt::entity e) {
+            UIScrollView sv;
+            sv.vertical   = false;   // 既定 true から変えて往復を確認
+            sv.horizontal = true;
+            sv.scrollX    = 120.0f;
+            sv.scrollY    = 340.0f;
+            sv.wheelSpeed = 64.0f;
+            sv.showBar    = false;
+            sv.barColor   = { 0.2f, 0.4f, 0.6f, 0.8f };
+            sv.dragScroll = false;   // 既定 true から変えて往復を確認
+            sv.flickDecay = 7.5f;
+            sv._dragging  = true;    // ランタイム専有 → シリアライズされないこと
+            sv._dragMoved = true;
+            sv._velX      = 500.0f;
+            r.emplace<UIScrollView>(e, sv);
+        },
+        [](const UIScrollView& sv) {
+            CHECK(sv.vertical == false);
+            CHECK(sv.horizontal == true);
+            CHECK_F(sv.scrollX, 120.0f);
+            CHECK_F(sv.scrollY, 340.0f);
+            CHECK_F(sv.wheelSpeed, 64.0f);
+            CHECK(sv.showBar == false);
+            CHECK_F(sv.barColor.x, 0.2f); CHECK_F(sv.barColor.y, 0.4f);
+            CHECK_F(sv.barColor.z, 0.6f); CHECK_F(sv.barColor.w, 0.8f);
+            CHECK(sv.dragScroll == false);
+            CHECK_F(sv.flickDecay, 7.5f);
+            // ランタイム専有はシリアライズされず既定値のまま
+            CHECK(sv._dragging == false);
+            CHECK(sv._dragMoved == false);
+            CHECK_F(sv._velX, 0.0f);
+        });
+}
+
 static void Test_UIButton()
 {
     Case<UIButton>(
@@ -1107,6 +1144,7 @@ int main()
     Test_UIRect();
     Test_UIImage();
     Test_UIText();
+    Test_UIScrollView();
     Test_UIButton();
     Test_UILayout();
     Test_UIAnimator();

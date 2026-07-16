@@ -2283,6 +2283,10 @@ nlohmann::json McpComponentSchema()
         F("scrollX", "float (px; auto-clamped to content)", 0.0), F("scrollY", "float", 0.0),
         F("wheelSpeed", "float (px per wheel notch)", 48.0),
         F("showBar", "bool", true), F("barColor", "float4", json::array({1, 1, 1, 0.35})),
+        F("dragScroll", "bool (drag/flick inertia scrolling; a >6px drag cancels button "
+          "presses inside so scrolling never misfires clicks)", true),
+        F("flickDecay", "float (flick inertia exponential decay per second; 0 = no inertia, "
+          "stops on release)", 4.0),
     }), "uiRect = viewport. Children are clipped + scrolled (clicks clipped too). "
         "Hang children via dx12_set_parent."));
     comps.push_back(C("uiLayout", true, true, json::array({

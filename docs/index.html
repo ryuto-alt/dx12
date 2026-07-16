@@ -900,7 +900,10 @@ vfx.<span class="tok-fn">play</span>(<span class="tok-s">"explosion"</span>, x, 
                   セル矩形を順番に配る＝手動 offset 計算なしでメニュー列/ツールバー/インベントリが組める。
                   子は配られたセルを親矩形としてアンカー解決（全面ストレッチの子はセルいっぱい）。
                   <code>cellW=0</code>(VBox)/<code>cellH=0</code>(HBox) は内側いっぱい。スクロールリストは
-                  UIScrollView の子コンテンツノードに付ける</td></tr>
+                  UIScrollView の子コンテンツノードに付ける。UIScrollView はホイールに加え
+                  <b>ドラッグ/フリック(慣性)スクロール</b>にも対応（<code>dragScroll</code> で許可、
+                  <code>flickDecay</code>=慣性の減衰率/秒で 0=慣性なし。ドラッグでスクロールした押下は
+                  リスト内ボタンのクリックにならない）</td></tr>
               <tr><td><code>UIAnimator</code></td><td><code>showAnim/showDuration/showDelay/showEasing/slideOffset</code>, <code>hoverScale/pressScale/hoverSpeed</code>, <code>loopAnim/loopSpeed/loopAmount</code></td>
                   <td>UI アニメーション（Play 中のみ再生。効果は自分と子孫にまとめて掛かる）。
                   <b>出現</b>=フェード / ポップ / 上下左右スライド / スピン（回転入場） / バウンド落下 / フリップ（縦つぶれ/横つぶれから開く） / シェイク入場（イージング 12 種: リニア〜バック/バウンス/弾性/エクスポ/インバック/クイント/サイン、<code>showDelay</code> で順番出し）。

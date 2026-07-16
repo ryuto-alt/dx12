@@ -265,7 +265,9 @@ void RegisterCoreComponentMeta()
         .data<&UIScrollView::scrollY>("scrollY")
         .data<&UIScrollView::wheelSpeed>("wheelSpeed")
         .data<&UIScrollView::showBar>("showBar")
-        .data<&UIScrollView::barColor>("barColor");
+        .data<&UIScrollView::barColor>("barColor")
+        .data<&UIScrollView::dragScroll>("dragScroll")
+        .data<&UIScrollView::flickDecay>("flickDecay");
 
     entt::meta_factory<UILayout>{}
         .type("UILayout")

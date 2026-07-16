@@ -1264,7 +1264,7 @@ void InspectorPanel::Render(entt::registry& reg,
             }
         }
 
-        // UIScrollView（子をクリップ + ホイールスクロール。子は階層ツリーでぶら下げる）
+        // UIScrollView（子をクリップ + ホイール/ドラッグスクロール。子は階層ツリーでぶら下げる）
         if (reg.all_of<UIScrollView>(ctx.selectedEntity))
         {
             bool open = IconHeader(ic, ic ? ic->entUi : 0, "UIScrollView");
@@ -1286,6 +1286,13 @@ void InspectorPanel::Render(entt::registry& reg,
                         changed |= pg::Float("位置 X Scroll", &sv.scrollX, 1.0f, 0.0f, 100000.0f, "%.0f", &active);
                     changed |= pg::Float("ホイール速度 Wheel", &sv.wheelSpeed, 1.0f, 4.0f, 400.0f, "%.0f", &active,
                         "ホイール1ノッチで進む量(px)");
+                    changed |= pg::Checkbox("ドラッグ操作 Drag Scroll", &sv.dragScroll,
+                        "ON: ドラッグ/フリック(慣性)でもスクロールできる(タッチUI風)。\n"
+                        "6px 超えてドラッグするとリスト内ボタンの押下はキャンセルされ、\n"
+                        "スクロールしてもクリック誤発火しない");
+                    changed |= pg::Float("慣性減衰 Flick Decay", &sv.flickDecay, 0.1f, 0.0f, 20.0f, "%.1f", &active,
+                        "フリック慣性の指数減衰率(/秒)。大きいほどすぐ止まる。\n"
+                        "0 = 慣性なし(離した瞬間停止)");
                     changed |= pg::Checkbox("バー表示 Show Bar", &sv.showBar);
                     changed |= pg::Color4("バー色 Bar Color", &sv.barColor.x);
                     pg::End();

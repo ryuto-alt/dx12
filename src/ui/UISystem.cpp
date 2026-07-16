@@ -1900,11 +1900,34 @@ void DrawUiSubtree(entt::entity e, const UiRectPx& parentRect, UiDrawContext& ct
             clip.maxY = std::min(clip.maxY, ctx.hitClip->maxY);
         }
 
+        // フリック慣性: release 後は速度を指数減衰させながら流す（クランプとセットで
+        // 行うのでここ。Play 中のみ = エディタプレビュー(interactive=false)では動かさない）
+        if (ctx.interactive && !sv->_dragging && (sv->_velX != 0.0f || sv->_velY != 0.0f))
+        {
+            const float dt = ImGui::GetIO().DeltaTime;
+            sv->scrollX += sv->_velX * dt;
+            sv->scrollY += sv->_velY * dt;
+            const float k = std::exp(-sv->flickDecay * dt);
+            sv->_velX *= k;
+            sv->_velY *= k;
+            // 十分遅くなったら停止（サブピクセルで延々流れ続けない）
+            if (std::fabs(sv->_velX) < 1.0f) sv->_velX = 0.0f;
+            if (std::fabs(sv->_velY) < 1.0f) sv->_velY = 0.0f;
+        }
+
         // スクロールを 0..(コンテンツ−ビュー) にクランプ（前フレームの計測値を使う）
+        const float rawSX = sv->scrollX, rawSY = sv->scrollY;
         sv->scrollX = std::clamp(sv->scrollX, 0.0f,
                                  std::max(0.0f, sv->_contentW - current.Width()));
         sv->scrollY = std::clamp(sv->scrollY, 0.0f,
                                  std::max(0.0f, sv->_contentH - current.Height()));
+        // 端でクランプされたらその軸の慣性は止める（壁で跳ねずに止まるタッチUIの定番。
+        // ドラッグ中も端に張り付いた時点で速度を捨てる=壁際 release でフリックしない）
+        if (ctx.interactive)
+        {
+            if (sv->scrollX != rawSX) sv->_velX = 0.0f;
+            if (sv->scrollY != rawSY) sv->_velY = 0.0f;
+        }
 
         // 子には「スクロール分だけ上/左へ平行移動した親矩形」を渡す（アンカー解決ごと動く）
         UiRectPx contentRect = current;
@@ -1957,9 +1980,12 @@ void DrawUiSubtree(entt::entity e, const UiRectPx& parentRect, UiDrawContext& ct
             }
         }
 
-        // ホイール配送用にビューポート矩形を収集（クリップ交差済み）
+        // ホイール/ドラッグ配送用にビューポート矩形を収集（クリップ交差済み）
         if (ctx.interactive)
+        {
+            sv->_scale = ctx.scale;   // 入力解決のスクリーン→キャンバスpx換算用に保存
             PushHitRect(ctx.scrollRects, e, ToScreen(current, ctx), prevClip, ctx);
+        }
     }
     else
     {
@@ -2171,6 +2197,90 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
         }
         const auto* t = reg.try_get<Transform>(walk);
         walk = t ? t->parent : entt::null;
+    }
+
+    // --- UIScrollView: ドラッグ/フリックスクロール（dragScroll。タッチUI相当）---
+    // mouseClicked でビューポート内の最前面ビューをドラッグ候補にし、開始点からスクリーン
+    // 6px を超えて動いたらドラッグ確定=以後マウスに張り付いてスクロール。確定した瞬間に
+    // 進行中のウィジェット押下をキャンセルする（リスト内のボタンをドラッグしてスクロール
+    // してもクリック誤発火しない）。慣性の減衰・端の停止は描画側のクランプとセットで行う。
+    // ボタンの release-inside より先に処理する（同一フレームの確定+release でも発火させない）。
+    {
+        const float dt = ImGui::GetIO().DeltaTime;
+        // 進行中ドラッグの継続/終了（スライダー同様ポインタキャプチャ相当。ビュー外でも追従）
+        for (auto [se, sv] : reg.view<UIScrollView>().each())
+        {
+            if (!sv._dragging)
+                continue;
+            // release フレームぶんの移動も先に取り込んでから終了判定する（しきい値超過と
+            // release が同一フレームの超高速フリックでも誤クリックさせず、速度にも入れる）
+            const float sdx = ctx.mousePos.x - sv._prevMX;   // スクリーンpx
+            const float sdy = ctx.mousePos.y - sv._prevMY;
+            // 開始点から 6px 超えたらドラッグ確定（それまでは候補のまま=クリック誤爆防止）
+            if (!sv._dragMoved && sdx * sdx + sdy * sdy > 6.0f * 6.0f)
+            {
+                sv._dragMoved = true;
+                // 確定した瞬間、進行中のボタン/トグル押下・スライダードラッグをキャンセル。
+                // 以後 mouseClicked なしでは再押下されないので、この押下シーケンスで
+                // release-inside クリックが発火することはない
+                for (auto [be, btn] : reg.view<UIButton>().each())
+                    btn._pressed = false;
+                for (auto [te, tgl] : reg.view<UIToggle>().each())
+                    tgl._pressed = false;
+                for (auto [le, sld] : reg.view<UISlider>().each())
+                    sld._dragging = false;
+            }
+            if (sv._dragMoved)
+            {
+                // マウス移動デルタ（スクリーン→キャンバスpx換算）で許可軸を直接動かす=指に
+                // 張り付く。クランプは翌フレームの描画側（ホイールと同じ）
+                const float scl = (sv._scale > 1e-6f) ? sv._scale : 1.0f;
+                const float dx = sdx / scl;
+                const float dy = sdy / scl;
+                if (dt > 1e-6f)
+                {
+                    // 直近速度の指数平滑（数フレームぶん。release 時にそのまま慣性へ渡る）
+                    const float a = std::min(1.0f, dt * 20.0f);
+                    if (sv.horizontal) sv._velX += (-dx / dt - sv._velX) * a;
+                    if (sv.vertical)   sv._velY += (-dy / dt - sv._velY) * a;
+                }
+                if (sv.horizontal) sv.scrollX -= dx;
+                if (sv.vertical)   sv.scrollY -= dy;
+                sv._prevMX = ctx.mousePos.x;
+                sv._prevMY = ctx.mousePos.y;
+            }
+            if (!ctx.mouseDown)
+            {
+                // release: ドラッグ中に平滑追跡した直近速度がそのまま慣性の初速になる
+                //（flickDecay=0 は慣性なし=離した瞬間停止）
+                sv._dragging  = false;
+                sv._dragMoved = false;
+                if (sv.flickDecay <= 0.0f)
+                {
+                    sv._velX = 0.0f;
+                    sv._velY = 0.0f;
+                }
+            }
+        }
+        // ドラッグ候補の開始（ホイールと同じ「最前面のビュー 1 つ」だけ。ネスト時は手前優先）
+        if (mouseValid && ctx.mouseClicked)
+        {
+            for (auto it = scrollRects.rbegin(); it != scrollRects.rend(); ++it)
+            {
+                if (!it->Contains(ctx.mousePos.x, ctx.mousePos.y))
+                    continue;
+                if (auto* sv = reg.try_get<UIScrollView>(it->e); sv && sv->dragScroll)
+                {
+                    sv->_dragging  = true;
+                    sv->_dragMoved = false;
+                    sv->_prevMX = ctx.mousePos.x;   // 確定までは「押下開始点」として保持
+                    sv->_prevMY = ctx.mousePos.y;
+                    sv->_velX = 0.0f;   // 触った瞬間に進行中の慣性を止める（触って止めるのも定番）
+                    sv->_velY = 0.0f;
+                }
+                break;   // 一番手前のスクロールビューだけが受ける（ホイールと同じ選び方）
+            }
+        }
     }
 
     // 各ボタンの状態更新（描画ティントは前フレーム状態で済ませてある）
@@ -2579,6 +2689,14 @@ void UISystem::ResetRuntimeState(entt::registry& reg)
     {
         tgl._hovered = false;
         tgl._pressed = false;
+    }
+    // UIScrollView: ドラッグ/フリックの進行状態を破棄（押下残留の回収と同じ流儀）
+    for (auto [e, sv] : reg.view<UIScrollView>().each())
+    {
+        sv._dragging  = false;
+        sv._dragMoved = false;
+        sv._velX = 0.0f;
+        sv._velY = 0.0f;
     }
     // UIAnimator: 次の Play で出現アニメが最初から再生されるように全ランタイム状態を戻す
     for (auto [e, an] : reg.view<UIAnimator>().each())
