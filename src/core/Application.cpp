@@ -2250,6 +2250,10 @@ nlohmann::json McpComponentSchema()
           "gold titles etc.)", 0),
         F("gradientColor2", "float4 (gradient end color; alpha ignored)",
           json::array({1, 1, 1, 1})),
+        F("rich", "bool (inline tags in text: [c=RRGGBB]..[/c] color span, [wave]..[/wave], "
+          "[shake]..[/shake], [rainbow]..[/rainbow] per-span char anim reusing "
+          "charAnimAmount/Speed; flat, no nesting; unclosed tag runs to end; unknown tags "
+          "drawn literally; forces per-glyph; disabled with wrap; gradientDir ignored)", false),
     })));
     comps.push_back(C("uiButton", true, true, json::array({
         F("onClickEvent", "string (emitted to Lua events on click; empty = none)", ""),

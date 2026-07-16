@@ -39,6 +39,16 @@ else()
 endif()
 add_test(NAME NetBufferTests COMMAND NetBufferTests)
 
+# UIText リッチテキスト(インラインタグ)パーサのテスト(ヘッダオンリー・依存ゼロなのでスタンドアロンでも動く)。
+add_executable(UiRichTextTests ui_rich_text_test.cpp)
+target_include_directories(UiRichTextTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(UiRichTextTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(UiRichTextTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME UiRichTextTests COMMAND UiRichTextTests)
+
 # シリアライズ往復テスト（安全網）。Scene ライブラリ（+ 推移依存）をリンクするため、
 # エンジン本体と一緒にビルドする構成でのみ有効。
 # tests を単体（cmake -S tests, vcpkg/VS不要）で構成したときは Scene が無いのでスキップし、

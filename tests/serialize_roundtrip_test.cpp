@@ -752,6 +752,7 @@ static void Test_UIText()
             tx.charAnimSpeed  = 3.0f;
             tx.gradientDir    = 2;
             tx.gradientColor2 = { 1.0f, 0.8f, 0.2f, 1.0f };
+            tx.rich           = true;
             r.emplace<UIText>(e, tx);
         },
         [](const UIText& tx) {
@@ -774,6 +775,7 @@ static void Test_UIText()
             CHECK_F(tx.charAnimSpeed, 3.0f);
             CHECK(tx.gradientDir == 2);
             CHECK_F(tx.gradientColor2.y, 0.8f);
+            CHECK(tx.rich == true);
         });
 }
 

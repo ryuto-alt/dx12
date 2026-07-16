@@ -1166,6 +1166,12 @@ void InspectorPanel::Render(entt::registry& reg,
                     }
                     if (txt.gradientDir > 0)
                         changed |= pg::Color4("グラデ終端色 Gradient Color 2", &txt.gradientColor2.x);
+
+                    changed |= pg::Checkbox("リッチテキスト Rich", &txt.rich,
+                        "ON: テキスト内のタグをスパン装飾として解釈（入れ子なし。閉じ忘れは文末まで）:\n"
+                        "  [c=RRGGBB]色[/c]  [wave]うねり[/wave]  [shake]震え[/shake]  [rainbow]虹[/rainbow]\n"
+                        "アニメの振幅/速度は上の Char Anim 設定を流用。不正・未知のタグはそのまま表示。\n"
+                        "Wrap とは非両立（Wrap 優先で無効）。テキストグラデは rich では無効");
                     pg::End();
                 }
                 EndEdit(reg, ctx, ctx.selectedEntity, m_uiTextEdit, changed, active, "UIText");

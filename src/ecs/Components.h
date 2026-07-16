@@ -395,6 +395,12 @@ struct UIText
     // テキストグラデーション(本体のみ。縁取り/影には掛からない)。α は無視
     int gradientDir = 0;                        // 0=なし 1=横(左→右) 2=縦(上→下)。金色タイトル等
     DirectX::XMFLOAT4 gradientColor2{1.0f, 1.0f, 1.0f, 1.0f};
+    // リッチテキスト(インラインタグ。明示オプトイン)。true でテキスト内の
+    // [c=RRGGBB]..[/c](色スパン) / [wave][shake][rainbow]..[/同](スパン単位の文字アニメ。
+    // 振幅/速度は charAnimAmount/Speed を流用)を解釈する。入れ子なし・閉じ忘れは文末まで・
+    // 不正/未知のタグはそのまま表示。per-glyph 描画を強制(wrap=true では無効=wrap 優先)。
+    // 整列・タイプライターの文字数はタグ除去後で数える。gradientDir は rich では無効
+    bool rich = false;
 
     // ランタイム専有（非シリアライズ）: タイプライターの経過秒
     float _twT = 0.0f;

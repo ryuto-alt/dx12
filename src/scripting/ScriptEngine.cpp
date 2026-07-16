@@ -13,6 +13,7 @@
 #include "scene/Scene.h"
 #include "scene/Entity.h"
 #include "ecs/Components.h"
+#include "ui/UiRichText.h"   // isUiTypewriterDone: rich=true のタグ除去後文字数
 #include "renderer/Mesh.h"
 #include "renderer/ParticleSystem.h"
 #include "renderer/GpuParticleSystem.h"
@@ -438,12 +439,19 @@ void ScriptEngine::RegisterBindings()
             if (!reg.all_of<UIText>(e.GetHandle())) return true;
             const auto& t = reg.get<UIText>(e.GetHandle());
             if (t.typewriterSpeed <= 0.0f) return true;
-            // UTF-8 コードポイント数（描画側と同じ数え方）
+            // UTF-8 コードポイント数（描画側と同じ数え方。rich=true はタグ除去後 = タグは0文字）
             std::size_t chars = 0;
-            for (std::size_t i = 0; i < t.text.size(); ++chars)
+            if (t.rich && !t.wrap)
             {
-                const auto c = static_cast<unsigned char>(t.text[i]);
-                i += (c < 0xC0) ? 1 : (c < 0xE0) ? 2 : (c < 0xF0) ? 3 : 4;
+                chars = static_cast<std::size_t>(UiRichStrippedCodepoints(t.text));
+            }
+            else
+            {
+                for (std::size_t i = 0; i < t.text.size(); ++chars)
+                {
+                    const auto c = static_cast<unsigned char>(t.text[i]);
+                    i += (c < 0xC0) ? 1 : (c < 0xE0) ? 2 : (c < 0xF0) ? 3 : 4;
+                }
             }
             return t._twT * t.typewriterSpeed >= static_cast<float>(chars);
         },

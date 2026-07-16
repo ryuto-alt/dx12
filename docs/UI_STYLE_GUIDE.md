@@ -66,6 +66,13 @@ AI/人間がシーン JSON + Lua で「そのジャンルらしい」UIを組む
 - **スポットライト/オーブ**: `gradientDir=4(放射)`
 - **タイトルの字間**: `letterSpacing` 4〜12(ミニマル系はさらに広く)
 
+## 参考実装(プレハブキット)
+
+上記5テーマ(ペルソナ風/ガチャ/ミニマル/レトロ/ホラー)の実装済みプレハブキットが
+testengine プロジェクトにある: `assets/prefabs/ui/<theme>/`(各 button/panel/dialog/gauge+固有2種)、
+ショーケース `assets/scenes/uikit_<theme>.json`、生成は `tools/gen_uikit_<theme>.py`。
+新しいテーマのUIを作るときは、近いテーマのジェネレータをコピーして色/形の定数を差し替えるのが速い。
+
 ## 情報源
 
 Game UI Database / Interface In Game / GDC "Juice It or Lose It" / GDC "Tenacious Design and

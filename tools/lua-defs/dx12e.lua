@@ -241,6 +241,13 @@ function Scene:setMeshParams(e, x, y, z, w) end
 
 ---UIText::text を書き換える（スコア・残機・メッセージ）。対象が UIText を持たない場合は何もしない。
 ---タイプライター（UIText.typewriterSpeed > 0）は文字列が変わると先頭から再生し直す＝会話送りがこれ1発で書ける。
+---UIText.rich=true ならテキスト内のインラインタグがスパン装飾として解釈される:
+---`[c=RRGGBB]色[/c]`・`[wave]うねり[/wave]`・`[shake]震え[/shake]`・`[rainbow]虹[/rainbow]`
+---（入れ子なし・閉じ忘れは文末まで・不正/未知のタグはそのまま表示。wrap とは非両立＝wrap 優先。
+---タイプライターの文字数はタグ除去後で数える）。
+---```lua
+---scene:setUiText(msg, "[c=ff5566]DANGER[/c] を [wave]避けろ[/wave]")
+---```
 ---@param e Entity
 ---@param text string
 function Scene:setUiText(e, text) end

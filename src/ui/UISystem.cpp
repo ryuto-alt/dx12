@@ -16,6 +16,7 @@
 #include "core/PathResolver.h"
 #include "core/vfs/Vfs.h"
 #include "ecs/Components.h"
+#include "ui/UiRichText.h"
 #include "engine/core/EventBus.h"
 #include "graphics/DescriptorHeap.h"
 #include "graphics/Texture.h"
@@ -1489,34 +1490,52 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
                     font = custom;
             const float fontSize = std::max(1.0f, txt->fontSize * ctx.scale);
             const float wrapW = txt->wrap ? std::max(1.0f, s.Width()) : 0.0f;
-            // per-glyph モード（字間 / 文字アニメ）。wrap とは非両立 = wrap 優先で通常描画
+            // リッチテキスト（インラインタグ）。wrap とは非両立 = wrap 優先で無効（タグは素通し表示）
+            const bool rich = txt->rich && !txt->wrap;
+            // per-glyph モード（rich / 字間 / 文字アニメ）。wrap とは非両立 = wrap 優先で通常描画
             const bool perGlyph = !txt->wrap
-                                  && (txt->letterSpacing != 0.0f || txt->charAnim != 0);
+                                  && (rich || txt->letterSpacing != 0.0f || txt->charAnim != 0);
             const float sp = txt->letterSpacing * ctx.scale;
             auto utf8Adv = [](const char* p) {
                 const auto c = static_cast<unsigned char>(*p);
                 return (c < 0xC0) ? 1 : (c < 0xE0) ? 2 : (c < 0xF0) ? 3 : 4;
             };
+            // ラン列（rich ならタグを分解、それ以外は全文 1 ラン）。per-glyph の計測と描画は
+            // これを順に消費する = タグは幅0・文字数0。static 使い回しで毎フレームの再確保を避ける
+            static std::vector<UiRichRun> s_runs;
+            if (perGlyph)
+            {
+                if (rich)
+                    ParseUiRichText(txt->text, s_runs);
+                else
+                {
+                    s_runs.clear();
+                    s_runs.push_back({txt->text.c_str(), txt->text.c_str() + txt->text.size(),
+                                      false, 0xFFFFFFu, -1});
+                }
+            }
             ImVec2 ts;
             if (perGlyph)
             {
                 // 1 文字ずつ測って字間込みの行幅を出す（\n 対応。行高 = fontSize）
-                const char* p = txt->text.c_str();
-                const char* pAll = p + txt->text.size();
                 float lw = 0.0f, maxW = 0.0f;
                 int lines = 1, chars = 0;
-                while (p < pAll)
+                for (const auto& run : s_runs)
                 {
-                    if (*p == '\n')
+                    const char* p = run.b;
+                    while (p < run.e)
                     {
-                        maxW = std::max(maxW, (chars > 0) ? std::max(0.0f, lw - sp) : 0.0f);
-                        lw = 0.0f; chars = 0; ++lines; ++p;
-                        continue;
+                        if (*p == '\n')
+                        {
+                            maxW = std::max(maxW, (chars > 0) ? std::max(0.0f, lw - sp) : 0.0f);
+                            lw = 0.0f; chars = 0; ++lines; ++p;
+                            continue;
+                        }
+                        const char* pn = std::min(p + utf8Adv(p), run.e);
+                        lw += font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, p, pn).x + sp;
+                        ++chars;
+                        p = pn;
                     }
-                    const char* pn = std::min(p + utf8Adv(p), pAll);
-                    lw += font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, p, pn).x + sp;
-                    ++chars;
-                    p = pn;
                 }
                 maxW = std::max(maxW, (chars > 0) ? std::max(0.0f, lw - sp) : 0.0f);
                 ts = ImVec2(maxW, fontSize * static_cast<float>(lines));
@@ -1537,78 +1556,94 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
                                          txt->color.w * ctx.alphaMul};
 
             // タイプライター: 先頭 N 文字だけ描く（UTF-8 コードポイント単位 = マルチバイト
-            // 文字の途中で切らない）。整列(ts)は全文サイズで固定 = 表示が進んでも文字が
-            // ずれない。エディタプレビュー(interactive=false)は常に全文
+            // 文字の途中で切らない。rich はタグ除去後の文字数 = タグは0文字扱い）。
+            // 整列(ts)は全文サイズで固定 = 表示が進んでも文字がずれない。
+            // エディタプレビュー(interactive=false)は常に全文
+            const int twLimit = (ctx.interactive && txt->typewriterSpeed > 0.0f)
+                                    ? static_cast<int>(txt->_twT * txt->typewriterSpeed)
+                                    : -1;   // -1 = 全文
             const char* textBegin = txt->text.c_str();
-            const char* textEnd   = nullptr;   // nullptr = 全文
-            if (ctx.interactive && txt->typewriterSpeed > 0.0f)
+            const char* textEnd   = nullptr;   // 通常パス用（nullptr = 全文）
+            if (twLimit >= 0 && !perGlyph)
             {
                 const char* pAll = textBegin + txt->text.size();
                 const char* pCur = textBegin;
-                float remain = txt->_twT * txt->typewriterSpeed;
-                while (pCur < pAll && remain >= 1.0f)
-                {
+                for (int i = 0; i < twLimit && pCur < pAll; ++i)
                     pCur = std::min(pCur + utf8Adv(pCur), pAll);
-                    remain -= 1.0f;
-                }
                 textEnd = pCur;
             }
-            if (textEnd == textBegin)
+            if (twLimit == 0)
             {
                 // タイプライターでまだ 1 文字も出ていない
             }
             else if (perGlyph)
             {
-                // per-glyph: 1 文字ずつ配置して字間/ウェーブ/ジッター/レインボーを掛ける。
+                // per-glyph: ラン列を順に消費して 1 文字ずつ配置し、字間/ウェーブ/ジッター/
+                // レインボーを掛ける（rich ならランの色/アニメ上書きが本体設定より優先）。
                 // 影 → 縁取り → 本体の 3 パスで層順を保つ（本体パスだけグラデ対象）
                 struct UiGlyphDraw { const char* b; const char* e; float x, y; ImU32 col; };
                 static ImVector<UiGlyphDraw> s_glyphs;
                 s_glyphs.resize(0);
                 const float animT = static_cast<float>(ImGui::GetTime());
                 const float amp = txt->charAnimAmount * ctx.scale;
-                const char* pStop = textEnd ? textEnd : (textBegin + txt->text.size());
-                const char* p = textBegin;
                 float gx = tx, gy = ty;
-                int idx = 0;
-                while (p < pStop)
+                int idx = 0, twCount = 0;
+                for (const auto& run : s_runs)
                 {
-                    if (*p == '\n')
+                    if (twLimit >= 0 && twCount >= twLimit) break;
+                    // 文字ごとに: 色 = ランの上書き色 or 本体色、アニメ = ランのアニメ or charAnim
+                    const int runAnim = (run.anim >= 0) ? run.anim : txt->charAnim;
+                    const ImU32 runCol =
+                        run.hasColor
+                            ? ToImCol({static_cast<float>((run.rgb >> 16) & 0xFFu) / 255.0f * cm.x,
+                                       static_cast<float>((run.rgb >> 8) & 0xFFu) / 255.0f * cm.y,
+                                       static_cast<float>(run.rgb & 0xFFu) / 255.0f * cm.z,
+                                       txt->color.w * ctx.alphaMul})
+                            : ToImCol(tcol);
+                    const char* p = run.b;
+                    while (p < run.e)
                     {
-                        gx = tx; gy += fontSize; ++p;
-                        continue;
+                        if (twLimit >= 0 && twCount >= twLimit) break;
+                        if (*p == '\n')
+                        {
+                            gx = tx; gy += fontSize; ++p; ++twCount;
+                            continue;
+                        }
+                        const char* pn = std::min(p + utf8Adv(p), run.e);
+                        const float w = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, p, pn).x;
+                        float dx = 0.0f, dy = 0.0f;
+                        ImU32 bodyCol = runCol;
+                        if (runAnim == 1)        // ウェーブ（上下うねり）
+                        {
+                            dy = std::sin(animT * txt->charAnimSpeed * 6.2831853f
+                                          + static_cast<float>(idx) * 0.55f) * amp;
+                        }
+                        else if (runAnim == 2)   // ジッター（時間量子化ハッシュで震え）
+                        {
+                            const int q = static_cast<int>(
+                                animT * std::max(0.1f, txt->charAnimSpeed) * 8.0f);
+                            unsigned int h = static_cast<unsigned int>(idx) * 374761393u
+                                             + static_cast<unsigned int>(q) * 668265263u;
+                            h = (h ^ (h >> 13)) * 1274126177u;
+                            dx = (static_cast<float>(h & 0xFF) / 255.0f - 0.5f) * amp;
+                            dy = (static_cast<float>((h >> 8) & 0xFF) / 255.0f - 0.5f) * amp;
+                        }
+                        else if (runAnim == 3)   // レインボー（文字ごとに色相をずらして回す）
+                        {
+                            float r, g, b;
+                            const float hue = animT * txt->charAnimSpeed * 0.25f
+                                              + static_cast<float>(idx) * 0.09f;
+                            ImGui::ColorConvertHSVtoRGB(hue - std::floor(hue), 0.75f, 1.0f,
+                                                        r, g, b);
+                            bodyCol = ToImCol({r * cm.x, g * cm.y, b * cm.z,
+                                               txt->color.w * ctx.alphaMul});
+                        }
+                        s_glyphs.push_back({p, pn, gx + dx, gy + dy, bodyCol});
+                        gx += w + sp;
+                        p = pn;
+                        ++idx;
+                        ++twCount;
                     }
-                    const char* pn = std::min(p + utf8Adv(p), pStop);
-                    const float w = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, p, pn).x;
-                    float dx = 0.0f, dy = 0.0f;
-                    ImU32 bodyCol = ToImCol(tcol);
-                    if (txt->charAnim == 1)        // ウェーブ（上下うねり）
-                    {
-                        dy = std::sin(animT * txt->charAnimSpeed * 6.2831853f
-                                      + static_cast<float>(idx) * 0.55f) * amp;
-                    }
-                    else if (txt->charAnim == 2)   // ジッター（時間量子化ハッシュで震え）
-                    {
-                        const int q = static_cast<int>(
-                            animT * std::max(0.1f, txt->charAnimSpeed) * 8.0f);
-                        unsigned int h = static_cast<unsigned int>(idx) * 374761393u
-                                         + static_cast<unsigned int>(q) * 668265263u;
-                        h = (h ^ (h >> 13)) * 1274126177u;
-                        dx = (static_cast<float>(h & 0xFF) / 255.0f - 0.5f) * amp;
-                        dy = (static_cast<float>((h >> 8) & 0xFF) / 255.0f - 0.5f) * amp;
-                    }
-                    else if (txt->charAnim == 3)   // レインボー（文字ごとに色相をずらして回す）
-                    {
-                        float r, g, b;
-                        const float hue = animT * txt->charAnimSpeed * 0.25f
-                                          + static_cast<float>(idx) * 0.09f;
-                        ImGui::ColorConvertHSVtoRGB(hue - std::floor(hue), 0.75f, 1.0f, r, g, b);
-                        bodyCol = ToImCol({r * cm.x, g * cm.y, b * cm.z,
-                                           txt->color.w * ctx.alphaMul});
-                    }
-                    s_glyphs.push_back({p, pn, gx + dx, gy + dy, bodyCol});
-                    gx += w + sp;
-                    p = pn;
-                    ++idx;
                 }
                 if (txt->shadowColor.w > 0.0f)
                 {
@@ -1641,7 +1676,8 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
                                                    s_glyphs[i].y + d[1] * ow),
                                             ocol, s_glyphs[i].b, s_glyphs[i].e);
                 }
-                const int gStart = (txt->gradientDir > 0 && txt->charAnim != 3)
+                // テキストグラデは rich では無効（頂点シェードがスパン色を潰すため）
+                const int gStart = (txt->gradientDir > 0 && txt->charAnim != 3 && !rich)
                                        ? ctx.dl->VtxBuffer.Size : -1;
                 for (int i = 0; i < s_glyphs.Size; ++i)
                     ctx.dl->AddText(font, fontSize, ImVec2(s_glyphs[i].x, s_glyphs[i].y),

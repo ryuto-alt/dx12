@@ -166,7 +166,10 @@ Enter/Space/A で決定（フォーカスリング表示）。フォーカス中
 枠線（実線/**破線**/**コーナーブラケット**=SF HUD 定番）・ドロップシャドウ、
 `UIText` は縁取り・影・カスタムフォント（assets 相対の .ttf/.otf）・タイプライター（`typewriterSpeed`=文字/秒）・
 **字間**（`letterSpacing`。タイトルの字間広げ）・**文字アニメ**（`charAnim`: ウェーブ/ジッター/レインボー）・
-**テキストグラデ**（金色タイトル等）、
+**テキストグラデ**（金色タイトル等）・**リッチテキスト**（`rich=true` でテキスト内の
+`[c=RRGGBB]色[/c]` / `[wave]..[/wave]` / `[shake]..[/shake]` / `[rainbow]..[/rainbow]` をスパン装飾として
+解釈。`scene:setUiText` で流し込む会話文の一部だけ赤くする/揺らすのに使う。入れ子なし・閉じ忘れは文末まで・
+不正/未知のタグはそのまま表示。wrap とは非両立＝wrap 優先、テキストグラデは rich では無効）、
 `UIRect` は `rotation`/`skewX`（度）による傾きと `clipChildren`（子をマスク=ワイプ/マーキー）に対応している。
 
 **自動レイアウト**: `UILayout` コンポーネント（VBox/HBox/Grid）を親に付けると、直下の子（UIRect 持ち）へ

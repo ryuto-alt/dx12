@@ -233,7 +233,8 @@ void RegisterCoreComponentMeta()
         .data<&UIText::charAnimAmount>("charAnimAmount")
         .data<&UIText::charAnimSpeed>("charAnimSpeed")
         .data<&UIText::gradientDir>("gradientDir")
-        .data<&UIText::gradientColor2>("gradientColor2");
+        .data<&UIText::gradientColor2>("gradientColor2")
+        .data<&UIText::rich>("rich");
 
     entt::meta_factory<UIButton>{}
         .type("UIButton")
