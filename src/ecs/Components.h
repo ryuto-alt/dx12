@@ -151,6 +151,13 @@ struct MeshRenderer
     // ここに持つ（setColor が書き込む）。instanced=true の間 setColor は VB を再生成しない。
     DirectX::XMFLOAT4 instanceColor = {1.0f, 1.0f, 1.0f, 1.0f};
     bool instanced = false;
+
+    // 一律色ティント(scene:setColor / シーンJSONの "color")。頂点色は共有メッシュに焼かれるため
+    // メッシュ側からは「意図した割当」を復元できない(モデル本来の頂点色と区別が付かない)。
+    // ここに保持してシリアライズすることで、エディタ保存やPlayスナップショット往復でも
+    // モデルへの色指定が消えないようにする(2026-07-17: タイトルロゴの色がSave経由で消えた対策)。
+    DirectX::XMFLOAT4 colorTint = {1.0f, 1.0f, 1.0f, 1.0f};
+    bool hasColorTint = false;
 };
 
 struct SkeletalAnimation

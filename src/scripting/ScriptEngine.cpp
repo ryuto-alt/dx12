@@ -358,6 +358,8 @@ void ScriptEngine::RegisterBindings()
             auto& reg = s.GetRegistry();
             if (!reg.all_of<MeshRenderer>(e.GetHandle())) return;
             auto& mr = reg.get<MeshRenderer>(e.GetHandle());
+            mr.colorTint    = {r, g, b, 1.0f};   // シーン保存で色指定が消えないよう記録
+            mr.hasColorTint = true;
             // 共有メッシュ(instanced)は VB を焼かず per-instance 色へ。発光弾はこちら＝
             // setColor が VB 再生成しない＝大量の弾でも GPU 同期ゼロ。
             if (mr.instanced)

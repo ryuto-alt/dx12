@@ -512,6 +512,9 @@ void Application::RegisterShaderReloadHandlers()
 }
 
 // EnsureCustomPso/EnsureCustomSpritePso 共通: shaderRel の正規化キーを返す(小文字・'/'区切り)。
+// シーン JSON には assets 相対の "shaders/foo.hlsl" 表記が紛れ込みがち(正しくは
+// assets/shaders 相対の "foo.hlsl")。従来は黙って既定 Forward にフォールバックして
+// いたので、先頭の "shaders/" は剥がして同一キーに正規化する。
 static std::string NormalizeCustomShaderKey(const std::string& shaderRel)
 {
     std::string key = shaderRel;
@@ -520,6 +523,8 @@ static std::string NormalizeCustomShaderKey(const std::string& shaderRel)
         if (c == '\\') c = '/';
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
+    if (key.rfind("shaders/", 0) == 0)
+        key.erase(0, 8);
     return key;
 }
 
@@ -538,10 +543,11 @@ bool Application::FetchCustomShaderBytecode(const std::string& shaderRel,
 
     if (m_shaderManager)
     {
-        if (!m_shaderManager->HasValidCustomShader(shaderRel))
-            m_shaderManager->CompileCustomShader(shaderRel);  // 未スキャン分の遅延コンパイル救済
-        vsBytesOut = m_shaderManager->GetCustomVsBytecode(shaderRel);
-        psBytesOut = m_shaderManager->GetCustomPsBytecode(shaderRel);
+        // key を渡す("shaders/" 接頭辞剥がし済み。ShaderManager 側は assets/shaders 相対で管理)
+        if (!m_shaderManager->HasValidCustomShader(key))
+            m_shaderManager->CompileCustomShader(key);  // 未スキャン分の遅延コンパイル救済
+        vsBytesOut = m_shaderManager->GetCustomVsBytecode(key);
+        psBytesOut = m_shaderManager->GetCustomPsBytecode(key);
     }
     else
     {
@@ -2657,6 +2663,8 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             std::string rel = params.value("shaderPath", std::string());
             if (!rel.empty())
             {
+                if (rel.rfind("shaders/", 0) == 0)
+                    rel.erase(0, 8);  // assets相対表記("shaders/foo.hlsl")も受け付けて正規化
                 if (rel.front() == '/' || rel.find('\\') != std::string::npos ||
                     rel.find(':') != std::string::npos || rel.find("..") != std::string::npos)
                     throw McpError(McpErr::InvalidParam, "invalid shaderPath (assets/shaders 相対のみ)");
@@ -2684,6 +2692,8 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             std::string rel = params.value("shaderPath", std::string());
             if (!rel.empty())
             {
+                if (rel.rfind("shaders/", 0) == 0)
+                    rel.erase(0, 8);  // assets相対表記("shaders/foo.hlsl")も受け付けて正規化
                 if (rel.front() == '/' || rel.find('\\') != std::string::npos ||
                     rel.find(':') != std::string::npos || rel.find("..") != std::string::npos)
                     throw McpError(McpErr::InvalidParam, "invalid shaderPath (assets/shaders 相対のみ)");
@@ -3751,6 +3761,8 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             auto* device = m_scene->GetDevice();
             if (!device) throw McpError(McpErr::Internal, "no graphics device");
             auto& mr = reg.get<MeshRenderer>(e);
+            mr.colorTint    = {c[0], c[1], c[2], 1.0f};   // シーン保存で色指定が消えないよう記録
+            mr.hasColorTint = true;
             for (auto* mesh : mr.meshes) if (mesh) mesh->SetVertexColor(*device, c[0], c[1], c[2], 1.0f);
             resp["ok"] = true;
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"color", {c[0], c[1], c[2]}}};

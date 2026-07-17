@@ -436,8 +436,15 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                     ej["materialAssets"] = materialsJson;
             }
 
-            // 頂点カラー保存（プリミティブのみ。モデルは頂点ごとの色を壊さないよう除外）
-            if (mr.modelPath.rfind("__primitive_", 0) == 0 && !mr.meshes.empty() && mr.meshes[0])
+            // 色ティント保存。明示的な割当(hasColorTint: JSONのcolor/scene:setColor由来)は
+            // モデルでも保存する(従来はプリミティブ限定で、エディタ保存のたびにモデルの
+            // 色指定が消えていた)。旧シーン互換: フラグが無いプリミティブはメッシュの
+            // 頂点色から従来どおり推定する(モデルは本来の頂点色と区別できないため除外)。
+            if (mr.hasColorTint)
+            {
+                ej["color"] = json::array({ mr.colorTint.x, mr.colorTint.y, mr.colorTint.z });
+            }
+            else if (mr.modelPath.rfind("__primitive_", 0) == 0 && !mr.meshes.empty() && mr.meshes[0])
             {
                 auto c = mr.meshes[0]->GetVertexColor();
                 if (c.x < 0.999f || c.y < 0.999f || c.z < 0.999f)
@@ -1025,6 +1032,8 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
             {
                 auto c = DeserializeFloat3(ej["color"], {1, 1, 1});
                 auto& mr = reg.get<MeshRenderer>(e);
+                mr.colorTint    = {c.x, c.y, c.z, 1.0f};   // 保存で消えないよう意図を記録
+                mr.hasColorTint = true;
                 if (auto* dev = scene.GetDevice())
                     for (auto* mesh : mr.meshes)
                         if (mesh) mesh->SetVertexColor(*dev, c.x, c.y, c.z, 1.0f);
