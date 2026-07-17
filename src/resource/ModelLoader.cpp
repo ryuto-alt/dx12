@@ -535,10 +535,26 @@ ModelData ModelLoader::LoadFromFile(
     std::vector<std::unique_ptr<NodeAnimationClip>> nodeAnimClips;
     std::vector<DirectX::XMMATRIX> bakeGlobalMatrices; // per-node bake matrices (empty if not applicable)
 
-    if (!skeleton && scene->mNumAnimations > 0)
+    if (!skeleton)
     {
         nodeGraph = BuildNodeGraph(scene);
-        if (nodeGraph)
+        if (nodeGraph && scene->mNumAnimations == 0)
+        {
+            // 静的モデル: ノード階層のデフォルト変換(mTransformation)を頂点へ焼き込む。
+            // これが無いと DCC ツール側で回転/移動させたオブジェクトがメッシュローカルの
+            // 姿勢のまま出てしまう(例: Blender で90度回転させた円柱が未回転で刺さる)。
+            const u32 nodeCount = nodeGraph->GetNodeCount();
+            bakeGlobalMatrices.resize(nodeCount, DirectX::XMMatrixIdentity());
+            for (u32 i = 0; i < nodeCount; ++i)
+            {
+                const SceneNode& sceneNode = nodeGraph->GetNode(i);
+                const DirectX::XMMATRIX localMatrix = DirectX::XMLoadFloat4x4(&sceneNode.localDefault);
+                bakeGlobalMatrices[i] = (sceneNode.parentIndex >= 0)
+                    ? localMatrix * bakeGlobalMatrices[static_cast<u32>(sceneNode.parentIndex)]
+                    : localMatrix;
+            }
+        }
+        else if (nodeGraph)
         {
             nodeAnimClips = BuildAllNodeAnimClips(scene, *nodeGraph);
 
