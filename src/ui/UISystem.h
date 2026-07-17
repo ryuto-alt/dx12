@@ -135,6 +135,10 @@ public:
     // UISystem は AudioSystem に依存しない（描画/入力と同じ「収集→呼び出し元が配信」方式）。
     std::vector<std::string> TakePendingSfx() { return std::move(m_pendingSfx); }
 
+    // フォーカスナビの初期フォーカスを外部から与える（Lua: setUiFocus）。
+    // 妥当性チェックは次フレームの RenderAndUpdateInput が行う（非フォーカサブルなら無視される）。
+    void SetFocus(entt::entity e) { m_focused = e; m_confirmHeld = false; }
+
 private:
     std::vector<UIPendingClick> m_pendingClicks;
     std::vector<std::string>    m_pendingSfx;

@@ -2458,7 +2458,9 @@ nlohmann::json McpLuaApi()
     })));
     objects.push_back(O("globals", "", json::array({
         "log(msg)", "saveNum(key,val)", "loadNum(key,default?) -> double",
-        "loadScene(rel)", "nextScene()", "quit()", "fadeToScene(rel,dur?)", "transitionToScene(rel,type:int,dur?)",
+        "loadScene(rel)", "nextScene()", "quit()", "fadeToScene(rel,dur?)",
+        "transitionToScene(rel,type:int,dur?)  (type: 0=Fade,1=横Wipe,2=Circle,3=縦Wipe,4=シークバー早送り)",
+        "setUiFocus(entityOrId)  (フォーカスナビの初期フォーカス。メニュー表示時に既定ボタンへ)",
         "ASSETS, SCREEN_W, SCREEN_H, KEY_*(VK codes), MOTION_STATIC/KINEMATIC/DYNAMIC",
     })));
     objects.push_back(O("prelude", "global (高レベルヘルパ)", json::array({
@@ -3026,8 +3028,16 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
             const std::string comp = params.value("component", std::string());
-            const json data = params.value("data", json::object());
             if (comp.empty()) throw McpError(McpErr::InvalidParam, "missing 'component'");
+            // フィールドは 'data'（'values' も別名として許容）。どちらも無ければエラー。
+            // 旧実装は無指定を空オブジェクト扱い＝全フィールドをデフォルトで再生成する事故になっていた
+            // （onClickEvent 等が黙って消える）。
+            json data;
+            if (params.contains("data"))        data = params["data"];
+            else if (params.contains("values")) data = params["values"];
+            if (!data.is_object() || data.empty())
+                throw McpError(McpErr::InvalidParam,
+                    "missing component fields: pass a non-empty 'data' object");
             if (comp == "transform")
             {
                 // コア不変: 専用処理(set_transform 相当)
@@ -3066,13 +3076,21 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             else
             {
+                // 部分更新(マージ): 現在値を書き出してから data を被せる。未指定フィールドが
+                // デフォルトへ戻らない(従来は data のみで再生成=丸ごと置換の罠だった)。
+                json cur = json::object();
+                RuntimeComponentRegistry::Get().ForEach([&](const RuntimeComponentInfo& info) {
+                    if (info.serialize) info.serialize(reg, e, cur);
+                });
+                json merged = (cur.contains(comp) && cur[comp].is_object()) ? cur[comp] : json::object();
+                merged.update(data);
                 // deserialize に emplace-only の型があるため、"上書き(set)" 実現には
                 // 既存を remove してから登録済みデシリアライザで再生成する。
                 if (!RemoveRegisteredComponent(reg, e, comp))
                     throw McpError(McpErr::UnknownComponent,
                         "unknown/unsupported component: " + comp + " (call dx12_describe_components)");
                 json ej;
-                ej[comp] = data;          // deserialize は ej.contains(jsonKey) を見る形
+                ej[comp] = merged;        // deserialize は ej.contains(jsonKey) を見る形
                 RuntimeComponentRegistry::Get().ForEach([&](const RuntimeComponentInfo& info) {
                     if (info.deserialize) info.deserialize(reg, e, ej);
                 });
@@ -6947,6 +6965,12 @@ void Application::WireScriptCallbacks()
             if (!m_sceneTransition) return;
             m_transitionTargetScene = rel;
             m_sceneTransition->Start(static_cast<TransitionType>(type), dur);
+        });
+
+    m_scriptEngine->SetUiFocusCallback(
+        [this](std::uint32_t id) {
+            if (m_uiSystem)
+                m_uiSystem->SetFocus(static_cast<entt::entity>(id));
         });
 
     // ゲーム内 UI（即時モード）コールバック

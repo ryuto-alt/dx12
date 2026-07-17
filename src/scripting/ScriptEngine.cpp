@@ -935,12 +935,21 @@ void ScriptEngine::RegisterBindings()
     lua["loadScene"] = [this](const std::string& rel) { if (m_loadSceneCb) m_loadSceneCb(rel); };
     lua["nextScene"] = [this]() { if (m_nextSceneCb) m_nextSceneCb(); };
     lua["quit"]      = [this]() { if (m_quitCb) m_quitCb(); };
-    // フェード等のトランジション付きシーン切替（type: 0=Fade,1=Wipe,2=Circle,3=縦Wipe）
+    // フェード等のトランジション付きシーン切替（type: 0=Fade,1=Wipe,2=Circle,3=縦Wipe,4=シークバー早送り）
     lua["fadeToScene"] = [this](const std::string& rel, sol::optional<float> dur) {
         if (m_transitionCb) m_transitionCb(rel, 0, dur.value_or(0.6f));
     };
     lua["transitionToScene"] = [this](const std::string& rel, int type, sol::optional<float> dur) {
         if (m_transitionCb) m_transitionCb(rel, type, dur.value_or(0.6f));
+    };
+    // フォーカスナビ(矢印/D-pad + Enter/Space/A)へ初期フォーカスを与える。
+    // Entity か数値 id を受ける。メニュー表示時に既定ボタンへ当ててパッド即操作可能にする用。
+    lua["setUiFocus"] = [this](sol::object target) {
+        if (!m_uiFocusCb) return;
+        if (target.is<Entity>())
+            m_uiFocusCb(static_cast<std::uint32_t>(target.as<Entity>().GetHandle()));
+        else if (target.is<double>())
+            m_uiFocusCb(static_cast<std::uint32_t>(target.as<double>()));
     };
 
     // --- ゲーム内 UI（即時モード）---

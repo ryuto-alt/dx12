@@ -123,10 +123,11 @@ void SceneTransition::Render(ID3D12GraphicsCommandList* cmd, float aspect)
 {
     if (!m_active || !m_pso) return;
 
-    struct TransCB { float progress; int type; float aspect; float pad; } cb{};
+    struct TransCB { float progress; int type; float aspect; float total; } cb{};
     cb.progress = Progress();
     cb.type     = static_cast<int>(m_type);
     cb.aspect   = aspect;
+    cb.total    = std::clamp(m_t / m_dur, 0.0f, 1.0f);   // 全体進行 0..1（閉じ→開きを跨ぐ。Seek のシークバー用）
 
     cmd->SetPipelineState(m_pso.Get());
     cmd->SetGraphicsRootSignature(m_rootSig.Get());

@@ -16,6 +16,7 @@ enum class TransitionType
     Wipe         = 1,   // 横ワイプ
     Circle       = 2,   // 円（アイリス）
     WipeVertical = 3,
+    Seek         = 4,   // シークバー早送り（プレイヘッド掃引+シークバー。動画モチーフのゲーム向け）
 };
 
 // 画面遷移オーバーレイ。progress を 0→1→0 で動かし、中間点でシーンロードを発火させる。
