@@ -7,7 +7,7 @@
 namespace dx12e
 {
 // セマンティックバージョン（"MAJOR.MINOR.PATCH"）。GitHub リリースのタグ（"v1.2.3" 等）と比較する。
-constexpr const char* kEngineVersion = "1.1.0";
+constexpr const char* kEngineVersion = "1.1.1";
 
 // 自動アップデートの取得元 GitHub リポジトリ。
 constexpr const char* kUpdateRepoOwner = "ryuto-alt";
@@ -16,21 +16,16 @@ constexpr const char* kUpdateRepoName  = "dx12";
 // 起動時に一度だけ表示する「更新内容」ポップアップ（この版で直したこと）。
 // 表示済み判定は %LOCALAPPDATA%\DX12Engine\shown_version.txt（版が変わった初回だけ出す）。
 // 新しい版を出すときは kEngineVersion を上げ、ここも書き換えること。
-constexpr const char* kWhatsNewTitle = "DX12 Engine v1.1.0 の更新内容";
+constexpr const char* kWhatsNewTitle = "DX12 Engine v1.1.1 の更新内容";
 constexpr const char* kWhatsNewBody =
-    "v1.1.0: ゲーム内UIの表現力を大幅拡張（形状/放射ゲージ/自動レイアウト/リッチテキスト）\n"
+    "v1.1.1: モデル読み込み/ビルド出力の重要バグ修正 + MCP UI品質ツール\n"
     "\n"
-    "・UIImage に形状描画: 楕円/リング(円形ゲージ)/ダイヤ/六角形/三角形。テクスチャは形で\n"
-    "  切り抜かれる(丸アイコン等)。放射fill(クールダウン円)・分割ゲージ(segments)・\n"
-    "  タイルパターンの流し(uvScroll)・破線/コーナーブラケット枠・放射グラデも追加。\n"
-    "・UIText: 字間(letterSpacing)・文字アニメ(ウェーブ/ジッター/レインボー)・本体グラデ・\n"
-    "  リッチテキスト(rich=true で [c=RRGGBB]色[/c] [wave] [shake] [rainbow] タグ)。\n"
-    "・UILayout コンポーネント新設(VBox/HBox/Grid): 子へセル矩形を自動配布=リストや\n"
-    "  インベントリが offset 手計算なしで組める。UIRect.clipChildren で子のマスクも可能。\n"
-    "・UIScrollView がドラッグ/フリック(慣性)スクロールに対応。ドラッグ中はリスト内\n"
-    "  ボタンを誤クリックしない。\n"
-    "・tweenUi 拡張: fill=(ゲージのなめらか増減)・countTo(数字ロール)・onComplete\n"
-    "  (完了コールバック)・stopUiTweens(連打対策)。イージング5種追加(expo 等)。\n"
-    "・uifx ワンライナー追加: stagger(順次入場)/damageBar(ゴーストバー)/countTo/heartbeat 等。\n"
-    "・docs/UI_STYLE_GUIDE.md 新設: ジャンル別デザイン語彙→エンジン機能の対応表。\n";
+    "・静的FBX/glTFのノード変換を頂点へ焼き込むように修正。Blender等でオブジェクトを\n"
+    "  回転/移動して組んだモデルが崩れて表示される問題(矢が文字に刺さる等)を解消。\n"
+    "・MCP spawn_model が assets 相対パスを解決できず全モデルのロードに失敗していたのを修正。\n"
+    "・ビルドしたゲームの画面周囲に余白が出る問題を解消。\n"
+    "・UICanvas に StretchToFill モード(scaleMode=2, レターボックス無し)を追加。\n"
+    "・Box/Sphere/CapsuleCollider が Transform.scale を無視していたのを修正\n"
+    "  (見た目だけ拡大した床が既定サイズでしか当たらない問題)。\n"
+    "・MCP UI品質3点セット: dx12_ui_compare(2画面差分)/計測lint/dx12_install_font。\n";
 } // namespace dx12e
