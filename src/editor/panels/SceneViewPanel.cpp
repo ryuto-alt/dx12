@@ -687,26 +687,14 @@ void SceneViewPanel::HandlePicking(entt::registry& reg,
             }
         }
 
-        // 親階層込みのワールド位置/スケールで判定
-        XMFLOAT3 wpos   = transform.position;
-        XMFLOAT3 wscale = transform.scale;
-        if (transform.parent != entt::null && reg.valid(transform.parent))
-        {
-            XMMATRIX wm = ComputeWorldMatrix(reg, e);
-            XMFLOAT4X4 wf;
-            XMStoreFloat4x4(&wf, wm);
-            wpos = {wf._41, wf._42, wf._43};
-            wscale = {
-                XMVectorGetX(XMVector3Length(wm.r[0])),
-                XMVectorGetX(XMVector3Length(wm.r[1])),
-                XMVectorGetX(XMVector3Length(wm.r[2]))};
-        }
-
         XMFLOAT3 worldMin, worldMax;
 
         if (reg.all_of<MeshRenderer>(e))
         {
-            // MeshRenderer あり: メッシュ AABB を使う
+            // MeshRenderer あり: 統合ローカルAABBの8頂点をワールド行列(回転込み)で変換して
+            // ワールドAABBを再構築する。旧実装は平行移動+スケールのみで回転を無視しており、
+            // 回転させたメッシュで見た目とヒット判定がズレてクリック選択が外れていた
+            // (PickEntityAndSubmesh と同じ修正)。
             const auto& renderer = reg.get<MeshRenderer>(e);
             XMFLOAT3 aabbMin = {  FLT_MAX,  FLT_MAX,  FLT_MAX };
             XMFLOAT3 aabbMax = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
@@ -722,20 +710,36 @@ void SceneViewPanel::HandlePicking(entt::registry& reg,
                 aabbMax.y = (std::max)(aabbMax.y, meshMax.y);
                 aabbMax.z = (std::max)(aabbMax.z, meshMax.z);
             }
-            worldMin = {
-                wpos.x + aabbMin.x * wscale.x,
-                wpos.y + aabbMin.y * wscale.y,
-                wpos.z + aabbMin.z * wscale.z
-            };
-            worldMax = {
-                wpos.x + aabbMax.x * wscale.x,
-                wpos.y + aabbMax.y * wscale.y,
-                wpos.z + aabbMax.z * wscale.z
-            };
+            const XMMATRIX wm = ComputeWorldMatrix(reg, e);
+            worldMin = {  FLT_MAX,  FLT_MAX,  FLT_MAX };
+            worldMax = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+            for (int ci = 0; ci < 8; ++ci)
+            {
+                XMVECTOR corner = XMVectorSet(
+                    (ci & 1) ? aabbMax.x : aabbMin.x,
+                    (ci & 2) ? aabbMax.y : aabbMin.y,
+                    (ci & 4) ? aabbMax.z : aabbMin.z, 1.0f);
+                XMFLOAT3 c;
+                XMStoreFloat3(&c, XMVector3TransformCoord(corner, wm));
+                worldMin.x = (std::min)(worldMin.x, c.x);
+                worldMin.y = (std::min)(worldMin.y, c.y);
+                worldMin.z = (std::min)(worldMin.z, c.z);
+                worldMax.x = (std::max)(worldMax.x, c.x);
+                worldMax.y = (std::max)(worldMax.y, c.y);
+                worldMax.z = (std::max)(worldMax.z, c.z);
+            }
         }
         else
         {
-            // MeshRenderer なし (Camera/Light/Empty): 固定サイズ AABB
+            // MeshRenderer なし (Camera/Light/Empty): ワールド位置中心の固定サイズ AABB
+            XMFLOAT3 wpos = transform.position;
+            if (transform.parent != entt::null && reg.valid(transform.parent))
+            {
+                XMMATRIX wm = ComputeWorldMatrix(reg, e);
+                XMFLOAT4X4 wf;
+                XMStoreFloat4x4(&wf, wm);
+                wpos = {wf._41, wf._42, wf._43};
+            }
             constexpr f32 kIconHalf = 0.5f;
             worldMin = {
                 wpos.x - kIconHalf,
