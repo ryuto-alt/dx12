@@ -246,7 +246,6 @@ public:
     bool pendingRedo = false;
     std::vector<PendingScriptAttach> pendingScriptAttachments;
     std::vector<PendingMaterialTextureDrop> pendingMaterialTextureDrops;
-    std::vector<PendingModelSwap> pendingModelSwaps;   // Inspector のモデル差し替え
     // 選択エンティティ（+子孫）を .prefab として書き出す要求。Application がフレーム境界で処理。
     entt::entity pendingCreatePrefab = entt::null;
     std::string pendingLoadPath;
@@ -294,6 +293,14 @@ public:
 
     // エディタ UI アイコン（Application が所有・populate。null/0 ならテキスト表示にフォールバック）
     const EditorUiIcons* icons = nullptr;
+
+    // Inspector のモデル差し替え（フレーム境界で SwapEntityModel が処理）。
+    // ★注意: このメンバは必ずクラス末尾に置くこと。中間(pendingMaterialTextureDrops の直後)へ
+    // 挿入すると後続メンバのオフセットが +24 ずれ、v1.1.1 以前から潜在する何者かのヒープ域外
+    // 書き込み(float パターン)が pendingLoadPath を直撃してシーン切り替えで確実にクラッシュする
+    // (2026-07-17 に実測。旧レイアウトでは無害な領域に落ちていた)。犯人は未特定のため、
+    // EditorContext へメンバを足すときは常に末尾へ追加し、既存オフセットを動かさないこと。
+    std::vector<PendingModelSwap> pendingModelSwaps;
 };
 
 } // namespace dx12e
