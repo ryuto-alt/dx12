@@ -9025,7 +9025,12 @@ void Application::Render()
                 }
                 else if (extIs({".gltf", ".glb", ".obj", ".fbx", ".dae", ".stl", ".ply", ".3ds"}))
                 {
-                    auto entity = m_scene->Spawn(name, req.modelPath, req.position);
+                    // MCP spawn_model は assets 相対で来る(D&D は絶対)。相対のままだと
+                    // VfsIOSystem のディスクフォールバックが CWD 基準になり開けないので絶対化する。
+                    std::string modelPath = req.modelPath;
+                    if (std::filesystem::path(modelPath).is_relative())
+                        modelPath = PathResolver::AssetsDir() + modelPath;
+                    auto entity = m_scene->Spawn(name, modelPath, req.position);
 
                     // D&D時のみ: AABBから自動スケーリング
                     bool valid = entity.IsValid();
