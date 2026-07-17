@@ -1007,7 +1007,8 @@ scene:<span class="tok-fn">hideUi</span>(pauseMenu)</code></pre>
               <tr><td><code>events:on(name, fn)</code></td><td>購読（<code>OnStart</code> 内で）。<code>fn(data)</code> が呼ばれる。戻り値の id を <code>events:off(id)</code> へ</td></tr>
               <tr><td><code>events:emit(name[, data])</code></td><td>発火。<code>data</code> = <code>{ value=5 }</code>。Trigger の EmitEvent もここに届く</td></tr>
               <tr><td><code>goToScene(path[, sec])</code> / <code>loadScene(path)</code></td><td>フェード遷移 / 即ロード</td></tr>
-              <tr><td><code>transitionToScene(path, type[, dur])</code></td><td><code>type</code>: 0=Fade 1=Wipe 2=Circle 3=縦Wipe</td></tr>
+              <tr><td><code>transitionToScene(path, type[, dur])</code></td><td><code>type</code>: 0=Fade 1=Wipe 2=Circle 3=縦Wipe 4=シークバー早送り（動画プレイヤー風プレイヘッド掃引）</td></tr>
+              <tr><td><code>setUiFocus(entity)</code></td><td>フォーカスナビ（矢印/D-pad + Enter/Space/A）の初期フォーカスを既定ボタンへ当てる</td></tr>
               <tr><td><code>nextScene()</code> / <code>quit()</code></td><td>sceneflow の次へ / ゲーム終了</td></tr>
               <tr><td><code>saveNum(key, v)</code> / <code>loadNum(key[, def])</code></td><td>シーンを越えて残る数値（スコア・タイム）</td></tr>
               <tr><td><code>log(...)</code> / <code>logWarn(...)</code> / <code>logError(...)</code></td><td>任意個・任意型の引数を <code>tostring</code> 連結してログ出力。エディタの<a href="#editor">コンソールパネル</a>に出る（<code>print(...)</code> も同じ経路）</td></tr>
