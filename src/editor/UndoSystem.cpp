@@ -123,4 +123,19 @@ void SpawnPrefabCommand::Redo()
         reg.get<Transform>(m_entities[0]).parent = m_externalParent;
 }
 
+// ── ModelSwapCommand ──
+void ModelSwapCommand::Swap(const std::string& path)
+{
+    auto& reg = m_scene->GetRegistry();
+    if (!reg.valid(m_entity)) return;
+    entt::entity ne = SceneSerializer::SwapEntityModel(*m_scene, m_entity, path, m_assetsDir);
+    if (ne != entt::null)
+        m_entity = ne;   // 新しい ID に更新（失敗時は旧エンティティが残るので据え置き）
+    else
+        Logger::Warn("[Undo/Redo] モデル差し替えに失敗しました: {}", path);
+}
+
+void ModelSwapCommand::Undo() { Swap(m_oldPath); }
+void ModelSwapCommand::Redo() { Swap(m_newPath); }
+
 } // namespace dx12e

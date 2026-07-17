@@ -590,6 +590,80 @@ void InspectorPanel::Render(entt::registry& reg,
                     pg::Text("Materials", "%d", static_cast<int>(r.materials.size()));
                     pg::End();
                 }
+
+                // ── モデル差し替え ──
+                // 現在のモデルパス表示 + assets 内モデル一覧コンボ + アセットブラウザからの
+                // D&D 受け。選択/ドロップは pendingModelSwaps に積み、フレーム境界で
+                // SwapEntityModel が全コンポーネント・親子関係を維持したまま差し替える。
+                {
+                    namespace fs = std::filesystem;
+
+                    // 現在パスを assets 相対で表示（プリミティブはマーカー名のまま）
+                    std::string cur = r.modelPath;
+                    {
+                        std::string abs = fs::path(cur).lexically_normal().string();
+                        std::string base = fs::path(m_assetsDir).lexically_normal().string();
+                        std::replace(abs.begin(), abs.end(), '\\', '/');
+                        std::replace(base.begin(), base.end(), '\\', '/');
+                        if (abs.rfind(base, 0) == 0) cur = abs.substr(base.size());
+                    }
+
+                    if (pg::Begin("ModelSwap"))
+                    {
+                        pg::Label("モデル Model");
+                        if (ImGui::BeginCombo("##swapModel", cur.empty() ? "(none)" : cur.c_str()))
+                        {
+                            std::vector<std::string> options;
+                            std::error_code ec;
+                            fs::path root(m_assetsDir);
+                            if (fs::exists(root, ec))
+                            {
+                                fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec);
+                                fs::recursive_directory_iterator end;
+                                for (; !ec && it != end; it.increment(ec))
+                                {
+                                    std::error_code fec;
+                                    if (!it->is_regular_file(fec) || fec) continue;
+                                    std::string ext = it->path().extension().string();
+                                    for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                                    if (AssetBrowserPanel::ClassifyExtension(ext) != AssetBrowserPanel::AssetType::Model)
+                                        continue;
+                                    fs::path rel = fs::relative(it->path(), root, fec);
+                                    if (fec) continue;
+                                    options.push_back(rel.generic_string());
+                                }
+                            }
+                            std::sort(options.begin(), options.end());
+                            for (const auto& opt : options)
+                            {
+                                if (ImGui::Selectable(opt.c_str(), opt == cur) && opt != cur)
+                                    ctx.pendingModelSwaps.push_back(
+                                        {ctx.selectedEntity, m_assetsDir + opt});
+                            }
+                            ImGui::EndCombo();
+                        }
+                        // アセットブラウザからモデルファイルを直接ドロップして差し替え
+                        if (ImGui::BeginDragDropTarget())
+                        {
+                            if (const ImGuiPayload* payload =
+                                    ImGui::AcceptDragDropPayload(AssetBrowserPanel::kDragDropPayloadType))
+                            {
+                                const char* droppedPath = static_cast<const char*>(payload->Data);
+                                std::string ext = fs::path(droppedPath).extension().string();
+                                for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                                if (AssetBrowserPanel::ClassifyExtension(ext) == AssetBrowserPanel::AssetType::Model)
+                                    ctx.pendingModelSwaps.push_back(
+                                        {ctx.selectedEntity, std::string(droppedPath)});
+                            }
+                            ImGui::EndDragDropTarget();
+                        }
+                        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByPopup))
+                            ImGui::SetTooltip("クリックで assets 内のモデル一覧から選択\n"
+                                              "アセットブラウザからモデルをドロップしても差し替え可能\n"
+                                              "Transform・スクリプト・物理などは維持されます");
+                        pg::End();
+                    }
+                }
             }
         }
 

@@ -9369,6 +9369,48 @@ void Application::Render()
         }
     }
 
+    // モデル差し替え 遅延処理（Inspector の MeshRenderer へのD&D/コンボ選択）。
+    // モデルロードを伴うため cmdList 有効なフレーム境界で SwapEntityModel を実行する。
+    if (!m_editorCtx->pendingModelSwaps.empty() && m_engineMode == EngineMode::Editor)
+    {
+        auto swaps = std::move(m_editorCtx->pendingModelSwaps);
+        m_editorCtx->pendingModelSwaps.clear();
+
+        m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
+                            m_srvHeap.get(), nativeCmdList);
+        auto& reg = m_scene->GetRegistry();
+        for (const auto& req : swaps)
+        {
+            if (!reg.valid(req.entity) || !reg.all_of<MeshRenderer>(req.entity))
+                continue;
+
+            const std::string oldPath = reg.get<MeshRenderer>(req.entity).modelPath;
+            const bool wasSelected = m_editorCtx->IsSelected(req.entity);
+
+            entt::entity ne = SceneSerializer::SwapEntityModel(
+                *m_scene, req.entity, req.newModelPath, PathResolver::AssetsDir());
+            if (ne == entt::null)
+            {
+                m_editorCtx->errorMessage = "モデル差し替え失敗: " + req.newModelPath;
+                m_editorCtx->errorFlash = 3.0f;
+                continue;
+            }
+
+            if (wasSelected)
+                m_editorCtx->Select(ne);
+            m_editorCtx->undoSystem.PushCommand(std::make_unique<ModelSwapCommand>(
+                m_scene.get(), PathResolver::AssetsDir(), ne,
+                oldPath, req.newModelPath));
+            Logger::Info("モデル差し替え: {} -> {}", oldPath, req.newModelPath);
+        }
+        // 差し替えで無効になった選択をクリーンアップ
+        auto& sel = m_editorCtx->selectedEntities;
+        sel.erase(std::remove_if(sel.begin(), sel.end(),
+                  [&](entt::entity e) { return !reg.valid(e); }), sel.end());
+        if (m_editorCtx->selectedEntity != entt::null && !reg.valid(m_editorCtx->selectedEntity))
+            m_editorCtx->selectedEntity = sel.empty() ? entt::null : sel.back();
+    }
+
     // マテリアルテクスチャD&D割当 遅延処理（アセットブラウザ→SceneView/Inspector）
     if (!m_editorCtx->pendingMaterialTextureDrops.empty())
     {

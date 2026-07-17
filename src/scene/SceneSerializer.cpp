@@ -1467,6 +1467,57 @@ entt::entity SceneSerializer::DuplicateEntity(Scene& scene, entt::entity src,
     return copy;
 }
 
+entt::entity SceneSerializer::SwapEntityModel(Scene& scene, entt::entity e,
+                                              const std::string& newModelPath,
+                                              const std::string& assetsDir)
+{
+    auto& reg = scene.GetRegistry();
+    if (!reg.valid(e) || !reg.all_of<NameTag>(e) || !reg.all_of<Transform>(e)
+        || !reg.all_of<MeshRenderer>(e))
+        return entt::null;
+
+    json ej = SerializeEntityJson(reg, e, assetsDir);
+
+    // モデルパスを差し替え（プリミティブ⇔モデルの変更も許可。プリミティブ専用の
+    // 頂点カラーはモデルでは意味を持たないので一緒に落とす）
+    ej.erase("primitive");
+    ej.erase("color");
+    ej.erase("meshRenderer");
+    if (newModelPath.rfind("__primitive_", 0) == 0)
+    {
+        // Undo でプリミティブへ戻すケース（modelPath にはマーカーが入っている）
+        if      (newModelPath == "__primitive_sphere__") ej["primitive"] = "sphere";
+        else if (newModelPath == "__primitive_plane__")  ej["primitive"] = "plane";
+        else                                              ej["primitive"] = "box";
+    }
+    else
+    {
+        std::string rel = MakeRelative(newModelPath, assetsDir);
+        if (rel.empty()) rel = newModelPath;
+        ej["meshRenderer"] = json{{"modelPath", rel}};
+    }
+
+    const entt::entity parent = reg.get<Transform>(e).parent;
+
+    // 先に新エンティティを生成し、成功してから旧を消す（ロード失敗時は旧を維持）
+    entt::entity ne = InstantiateEntityJson(scene, ej, assetsDir);
+    if (ne == entt::null)
+    {
+        Logger::Error("モデル差し替え失敗（ロードエラー）: {}", newModelPath);
+        return entt::null;
+    }
+
+    reg.get<Transform>(ne).parent = parent;
+
+    // 子エンティティの親参照を新エンティティへ付け替え
+    for (auto [c, tf] : reg.view<Transform>().each())
+        if (c != ne && tf.parent == e)
+            tf.parent = ne;
+
+    scene.Remove(Entity(e, &reg));
+    return ne;
+}
+
 // ── Prefab / サブツリー ──
 // root とその全子孫を 1 つの JSON（シーンと同形式 + parent をローカル index 参照）に直列化する。
 // root の親（サブツリー外）は含めない＝プレハブは自己完結する。

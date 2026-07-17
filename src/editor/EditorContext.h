@@ -57,6 +57,14 @@ struct PendingMaterialTextureDrop
     std::string texturePath;           // 絶対パス(処理側で assets 相対に正規化)
 };
 
+// Inspector の「モデル差し替え」要求。モデルロード(GetOrLoadModel)が cmdList を
+// 要するためフレーム境界で処理する(SceneSerializer::SwapEntityModel)。
+struct PendingModelSwap
+{
+    entt::entity entity = entt::null;
+    std::string  newModelPath;         // 絶対 or assets 相対(処理側で正規化)
+};
+
 
 class EditorContext
 {
@@ -238,6 +246,7 @@ public:
     bool pendingRedo = false;
     std::vector<PendingScriptAttach> pendingScriptAttachments;
     std::vector<PendingMaterialTextureDrop> pendingMaterialTextureDrops;
+    std::vector<PendingModelSwap> pendingModelSwaps;   // Inspector のモデル差し替え
     // 選択エンティティ（+子孫）を .prefab として書き出す要求。Application がフレーム境界で処理。
     entt::entity pendingCreatePrefab = entt::null;
     std::string pendingLoadPath;
