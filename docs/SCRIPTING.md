@@ -136,8 +136,13 @@ local hit = physics:raycast(origin, dir, maxDist)  -- RaycastHit{hit,distance,po
 physics:applyImpulse(e, Vec3.new(0, 5, 0))
 
 fadeToScene("scenes/title.json", 0.5)    -- 低レベルの遷移
+transitionToScene("scenes/select.json", 4, 1.3)  -- 演出付き遷移(0=Fade 1=Wipe 2=Circle 3=縦Wipe 4=シークバー早送り)
 loadScene("scenes/level1.json")          -- 即ロード（フェード無し）
 nextScene()                              -- sceneflow の次へ
+
+-- メニュー表示時に既定ボタンへフォーカスを当てると、矢印/D-pad/スティックで移動・
+-- Enter/Space/A で決定のフォーカスナビが即使える(リングはエンジンが描画)
+setUiFocus(scene:findEntity("StartButton"))
 ```
 
 ---

@@ -317,7 +317,15 @@ end
 | `nextScene()` | SceneFlow の次シーンへ |
 | `quit()` | ゲーム終了 |
 | `fadeToScene(rel, dur?=0.6)` | フェード切替 |
-| `transitionToScene(rel, type, dur?=0.6)` | トランジション切替（type: 0=Fade,1=Wipe,2=Circle,3=縦Wipe） |
+| `transitionToScene(rel, type, dur?=0.6)` | トランジション切替（type: 0=Fade,1=Wipe,2=Circle,3=縦Wipe,4=シークバー早送り） |
+
+> type 4「シークバー早送り」は動画プレイヤー風の演出: 光るプレイヘッドが左→右へ2回掃き（閉じ/開き）、
+> 画面下のシークバーが遷移全体の進行と同期して伸びる。動画/時間モチーフのゲーム向け。
+
+### ゲーム内 UI フォーカスナビ
+| 関数 | 説明 |
+|---|---|
+| `setUiFocus(entityOrId)` | フォーカスナビ（矢印/D-pad/左スティック + Enter/Space/A）の初期フォーカスを与える。メニュー表示時に既定ボタンへ当てるとパッド/キーボードで即操作できる。非フォーカサブル指定は無視される |
 
 ### キーコード定数（`input:isKeyDown(...)` に渡す）
 - `KEY_W` `KEY_A` `KEY_S` `KEY_D` `KEY_E` `KEY_Q`
