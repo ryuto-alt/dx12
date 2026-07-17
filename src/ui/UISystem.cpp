@@ -2133,8 +2133,13 @@ bool ResolveAndDrawCanvases(entt::registry& reg, float ox, float oy, float vw, f
             ctx.scale   = std::min(vw / refW, vh / refH);
             ctx.scaleX  = ctx.scale;
             ctx.scaleY  = ctx.scale;
-            ctx.originX = ox + (vw - refW * ctx.scale) * 0.5f;
-            ctx.originY = oy + (vh - refH * ctx.scale) * 0.5f;
+            // 余白が 2px 未満ならその軸だけ伸ばして消す（ウィンドウサイズの整数丸めや
+            // OS のフレーム計算で生じる線状のレターボックス対策。2px 未満の非等方
+            // ストレッチは知覚できない。意図的なレターボックスには影響しない）。
+            if (vw - refW * ctx.scale < 2.0f) ctx.scaleX = vw / refW;
+            if (vh - refH * ctx.scale < 2.0f) ctx.scaleY = vh / refH;
+            ctx.originX = ox + (vw - refW * ctx.scaleX) * 0.5f;
+            ctx.originY = oy + (vh - refH * ctx.scaleY) * 0.5f;
             canvasRect  = {0.0f, 0.0f, refW, refH};
         }
         else if (entry.canvas->scaleMode == 2)

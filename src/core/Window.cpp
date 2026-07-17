@@ -3,6 +3,8 @@
 #include "input/InputSystem.h"
 
 #include <windowsx.h>   // GET_X_LPARAM / GET_Y_LPARAM
+#include <algorithm>
+#include <numeric>      // std::gcd
 
 // ImGui Win32 WndProc handler (forward declaration)
 extern LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -21,11 +23,12 @@ Window::~Window()
 
 void Window::Initialize(HINSTANCE hInstance, int /*nCmdShow*/,
                          u32 width, u32 height, const wchar_t* title,
-                         bool deferShow)
+                         bool deferShow, bool startMaximized)
 {
     m_width = width;
     m_height = height;
     m_title = title;
+    m_startMaximized = startMaximized;
 
     // exe に埋め込んだアプリアイコン（resources/app.ico, IDI_APPICON=101）を読む。
     // 大（タスクバー/Alt+Tab）と小（タイトルバー）を別サイズで読み、失敗時は既定にフォールバック。
@@ -58,12 +61,60 @@ void Window::Initialize(HINSTANCE hInstance, int /*nCmdShow*/,
     RECT rect = { 0, 0, static_cast<LONG>(m_width), static_cast<LONG>(m_height) };
     AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX, FALSE);
 
+    int winX = CW_USEDEFAULT, winY = CW_USEDEFAULT;
+    if (!startMaximized)
+    {
+        // 指定解像度のまま表示するモード: 作業領域に収まらない場合はアスペクト比を保って
+        // クライアント領域を縮める（比率が崩れると UI の ScaleToFit がレターボックスを作る）。
+        // 収まるサイズが確定したら作業領域の中央に置く。
+        RECT wa{};
+        if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0))
+        {
+            const LONG frameW  = (rect.right - rect.left) - static_cast<LONG>(m_width);
+            const LONG frameH  = (rect.bottom - rect.top) - static_cast<LONG>(m_height);
+            const LONG maxCliW = (wa.right - wa.left) - frameW;
+            const LONG maxCliH = (wa.bottom - wa.top) - frameH;
+            if (maxCliW > 0 && maxCliH > 0
+                && (static_cast<LONG>(m_width) > maxCliW || static_cast<LONG>(m_height) > maxCliH))
+            {
+                // 既約アスペクト比の整数倍へ切り下げて比を厳密に維持する。
+                // 浮動小数の切り捨てで比が僅かに崩れると UI の ScaleToFit が
+                // 1px 級のレターボックス（線状の余白）を作るため。
+                const u32 g  = std::gcd(m_width, m_height);
+                const u32 rw = m_width / g, rh = m_height / g;
+                const u32 n  = std::min(static_cast<u32>(maxCliW) / rw,
+                                        static_cast<u32>(maxCliH) / rh);
+                if (n >= 1 && rw <= 64)
+                {
+                    m_width  = rw * n;
+                    m_height = rh * n;
+                }
+                else
+                {
+                    // 既約比が粗すぎる/入らない場合: 幅基準で縮め、高さは比から丸めて導出
+                    const float s = std::min(maxCliW / static_cast<float>(m_width),
+                                             maxCliH / static_cast<float>(m_height));
+                    const u32 w  = std::max(1u, static_cast<u32>(m_width * s));
+                    const u32 h  = std::max(1u, static_cast<u32>(
+                        (static_cast<u64>(w) * m_height + m_width / 2) / m_width));
+                    m_width  = w;
+                    m_height = h;
+                }
+                rect = { 0, 0, static_cast<LONG>(m_width), static_cast<LONG>(m_height) };
+                AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX, FALSE);
+                Logger::Info("ウィンドウを作業領域に合わせて縮小: {}x{}", m_width, m_height);
+            }
+            winX = wa.left + ((wa.right - wa.left) - (rect.right - rect.left)) / 2;
+            winY = wa.top  + ((wa.bottom - wa.top) - (rect.bottom - rect.top)) / 2;
+        }
+    }
+
     m_hwnd = CreateWindowExW(
         0,
         L"DX12EngineWindowClass",
         m_title.c_str(),
         WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT,
+        winX, winY,
         rect.right - rect.left,
         rect.bottom - rect.top,
         nullptr,
@@ -76,6 +127,27 @@ void Window::Initialize(HINSTANCE hInstance, int /*nCmdShow*/,
     {
         Logger::Critical("ウィンドウの作成に失敗しました");
         throw std::runtime_error("ウィンドウの作成に失敗しました");
+    }
+
+    if (!startMaximized)
+    {
+        // 実クライアント領域が指定サイズと一致するか実測して補正する。
+        // OS のフレーム計算が AdjustWindowRect の想定とずれるとクライアントが数 px 狂い、
+        // アスペクト比の崩れ = ScaleToFit の余白として見えるため。
+        RECT cr{};
+        if (GetClientRect(m_hwnd, &cr)
+            && (cr.right != static_cast<LONG>(m_width) || cr.bottom != static_cast<LONG>(m_height)))
+        {
+            RECT wr{};
+            GetWindowRect(m_hwnd, &wr);
+            SetWindowPos(m_hwnd, nullptr, 0, 0,
+                         (wr.right - wr.left) + (static_cast<LONG>(m_width)  - cr.right),
+                         (wr.bottom - wr.top) + (static_cast<LONG>(m_height) - cr.bottom),
+                         SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+            Logger::Info("クライアント領域を補正: {}x{} -> {}x{}",
+                         cr.right, cr.bottom, m_width, m_height);
+            m_resized = false;   // スワップチェイン生成前の確定なのでリサイズ扱いにしない
+        }
     }
 
     // deferShow=true なら表示しない（重い初期化中に白い未応答ウィンドウを見せないため。
@@ -104,7 +176,7 @@ void Window::Initialize(HINSTANCE hInstance, int /*nCmdShow*/,
 void Window::Show()
 {
     if (!m_hwnd || IsWindowVisible(m_hwnd)) return;
-    ShowWindow(m_hwnd, SW_SHOWMAXIMIZED);
+    ShowWindow(m_hwnd, m_startMaximized ? SW_SHOWMAXIMIZED : SW_SHOW);
     UpdateWindow(m_hwnd);
     SetForegroundWindow(m_hwnd);
 }

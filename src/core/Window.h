@@ -22,10 +22,14 @@ public:
 
     // deferShow=true でウィンドウを作るだけにして表示しない（初期化完了後に Show() を呼ぶ）。
     // スプラッシュ表示中に白い未応答ウィンドウが出るのを防ぐ。
+    // startMaximized=false（ゲームモード用）は最大化せず指定解像度のまま表示する。
+    // 最大化するとクライアント領域がタスクバー分だけ 16:9 より横長になり、UI キャンバスの
+    // ScaleToFit がレターボックス（左右の余白）を作ってエディタの見え方と食い違うため。
     void Initialize(HINSTANCE hInstance, int nCmdShow,
                     u32 width = 1280, u32 height = 720,
                     const wchar_t* title = L"DX12 Engine",
-                    bool deferShow = false);
+                    bool deferShow = false,
+                    bool startMaximized = true);
 
     // deferShow=true で作ったウィンドウを表示する（多重呼び出し安全）
     void Show();
@@ -77,6 +81,7 @@ private:
     bool         m_shouldClose = false;
     bool         m_resized = false;
     bool         m_fullscreen = false;
+    bool         m_startMaximized = true;
     RECT         m_windowedRect = {};
     InputSystem* m_inputSystem = nullptr;
     std::function<bool()> m_closeHandler;

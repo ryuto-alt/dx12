@@ -778,7 +778,10 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     // ゲーム/ヘッドレスビルドはスプラッシュを出さないので従来どおり即表示。
     const bool deferMainWindow = !gameMode && !buildMode;
     SplashScreen::SetStatus("ウィンドウを作成中...");
-    m_window->Initialize(hInstance, nCmdShow, winW, winH, windowTitle.c_str(), deferMainWindow);
+    // ゲーム(GameRuntime)は最大化せずビルド設定の解像度のまま表示する。最大化すると
+    // クライアント領域が 16:9 より横長になり、UI の ScaleToFit が左右に余白を作るため。
+    m_window->Initialize(hInstance, nCmdShow, winW, winH, windowTitle.c_str(),
+                         deferMainWindow, /*startMaximized=*/!gameMode);
     // タイトルバーの X を横取り。ゲーム(GameRuntime)は従来通り即終了、エディタでプロジェクトを
     // 開いている時はいきなり終了せずランチャー（プロジェクト作成前の画面）に戻す。
     m_window->SetCloseHandler([this]{ return HandleWindowCloseRequest(); });
@@ -11114,8 +11117,12 @@ void Application::Render()
         ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize
             | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar
             | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBackground
-            | ImGuiWindowFlags_NoBringToFrontOnFocus;
+            | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNav;
+        // ボーダー無効化必須: ImGui はウィンドウ外周に 1px の枠を描くため、フルスクリーンの
+        // ##GameUI では画面の最外周 1px に線が出る（ゲーム画面を縁取る「余白」に見える）
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
         ImGui::Begin("##GameUI", nullptr, flags);
+        ImGui::PopStyleVar();
 
         auto* dl = ImGui::GetWindowDrawList();
         // ゲーム UI はビューポート原点へオフセットし、矩形でクリップ＝パネル下に潜らない
