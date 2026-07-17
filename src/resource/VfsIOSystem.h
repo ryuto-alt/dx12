@@ -19,7 +19,7 @@ public:
     VfsIOSystem() = default;
     ~VfsIOSystem() override = default;
 
-    // vfs::ReadAssetAbs(file) が非空、または fs::exists なら true。
+    // vfs::ExistsAbs(file)、または fs::exists なら true。
     bool Exists(const char* pFile) const override;
 
     // VFS のキーは常に '/' 区切り。

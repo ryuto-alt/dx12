@@ -195,6 +195,31 @@ bool Exists(const std::string& relPath)
     return in.is_open();
 }
 
+bool ExistsAbs(const std::string& absPath)
+{
+    const std::string a    = ToLowerSlash(absPath);
+    const std::string base = ToLowerSlash(PathResolver::AssetsDir());
+
+    if (!base.empty() && a.size() >= base.size() && a.compare(0, base.size(), base) == 0)
+        return Exists(a.substr(base.size()));
+
+    if (g_pak)
+    {
+        const std::string root = ToLowerSlash(PathResolver::BaseDir());
+        if (!root.empty() && a.size() >= root.size() && a.compare(0, root.size(), root) == 0)
+            return Exists(a.substr(root.size()));
+        return false; // ゲームモードで未知のパス
+    }
+
+    std::ifstream in(absPath, std::ios::binary);
+    return in.is_open();
+}
+
+bool ExistsAbs(const std::wstring& absPath)
+{
+    return ExistsAbs(WideToUtf8(absPath));
+}
+
 bool ReadBootConfig(BootConfig& out)
 {
     if (!g_pak)

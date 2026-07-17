@@ -31,6 +31,11 @@ std::vector<uint8_t> ReadAssetAbs(const std::wstring& absPath);
 
 bool Exists(const std::string& relPath);
 
+// 絶対パス版 Exists。ReadAssetAbs と同じプレフィックス剥がしで相対キーへ正規化してから
+// 存在確認する（ゲームモード: pak の TOC 照会のみで復号しない。ディスクモード: ファイル存在）。
+bool ExistsAbs(const std::string& absPath);
+bool ExistsAbs(const std::wstring& absPath);
+
 // pak の "__manifest__" エントリから読むブート設定（ゲームモード）。ディスクモードでは false。
 struct BootConfig
 {

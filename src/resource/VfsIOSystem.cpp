@@ -145,7 +145,7 @@ bool VfsIOSystem::Exists(const char* pFile) const
         return false;
     }
 
-    if (!vfs::ReadAssetAbs(std::string(pFile)).empty())
+    if (vfs::ExistsAbs(std::string(pFile)))
     {
         return true;
     }

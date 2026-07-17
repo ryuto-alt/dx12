@@ -7,6 +7,7 @@
 #include "graphics/DescriptorHeap.h"
 #include "resource/ResourceManager.h"
 #include "resource/VfsIOSystem.h"
+#include "core/vfs/Vfs.h"
 
 #include <cstdlib>
 #include <assimp/Importer.hpp>
@@ -50,25 +51,33 @@ std::filesystem::path ResolveTexturePath(
 {
     std::wstring wide = ToWideString(rawPath);
     std::filesystem::path p(wide);
-    std::error_code ec;
+
+    // ディスクだけでなく VFS(game.pak) も見る。ゲームモードではルーズファイルが
+    // 存在しないため、fs::exists だけだと .mtl の map_Kd 等が全て解決失敗して白くなる。
+    auto found = [](const std::filesystem::path& candidate) {
+        if (vfs::ExistsAbs(candidate.wstring()))
+            return true;
+        std::error_code ec;
+        return std::filesystem::exists(candidate, ec);
+    };
 
     // 1. 絶対パスがそのまま存在する
-    if (p.is_absolute() && std::filesystem::exists(p, ec))
+    if (p.is_absolute() && found(p))
         return p;
 
     // 2. モデルと同じディレクトリにファイル名だけで探す
     auto byFilename = modelDir / p.filename();
-    if (std::filesystem::exists(byFilename, ec))
+    if (found(byFilename))
         return byFilename;
 
     // 3. モデルディレクトリからの相対パス
     auto relative = modelDir / p;
-    if (std::filesystem::exists(relative, ec))
+    if (found(relative))
         return relative;
 
     // 4. textures/ サブフォルダ
     auto inTextures = modelDir / "textures" / p.filename();
-    if (std::filesystem::exists(inTextures, ec))
+    if (found(inTextures))
         return inTextures;
 
     return {}; // 見つからない
