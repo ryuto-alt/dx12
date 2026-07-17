@@ -156,7 +156,17 @@ const CachedModel* ResourceManager::GetOrLoadModel(
     const std::string& filePath,
     ID3D12GraphicsCommandList* cmdList)
 {
-    auto it = m_modelCache.find(filePath);
+    // キャッシュキーはパス正規化して作る。同じファイルでも D&D 配置(バックスラッシュ
+    // 絶対パス)と Play→Stop のシーン復元(AssetsDir + 相対 = スラッシュ区切り)で
+    // 文字列が異なりキャッシュミスし、Stop のたびにディスクから再ロードして編集中と
+    // 別ジオメトリ(外部ツールで書き換わった後の内容等)を拾うバグがあった。
+    std::error_code ec;
+    std::string key = std::filesystem::weakly_canonical(
+        std::filesystem::path(filePath), ec).generic_string();
+    if (ec || key.empty())
+        key = std::filesystem::path(filePath).lexically_normal().generic_string();
+
+    auto it = m_modelCache.find(key);
     if (it != m_modelCache.end())
     {
         return it->second.get();
@@ -168,7 +178,7 @@ const CachedModel* ResourceManager::GetOrLoadModel(
     if (modelData.meshes.empty())
     {
         Logger::Warn("モデルの読み込みに失敗しました（nullptr をキャッシュし、以後は再試行しません）: {}", filePath);
-        m_modelCache[filePath] = nullptr;   // 失敗もキャッシュ＝毎フレーム再ロード試行してログが埋まるのを防ぐ
+        m_modelCache[key] = nullptr;   // 失敗もキャッシュ＝毎フレーム再ロード試行してログが埋まるのを防ぐ
         return nullptr;
     }
 
@@ -181,7 +191,7 @@ const CachedModel* ResourceManager::GetOrLoadModel(
     cached->nodeAnimClips = std::move(modelData.nodeAnimClips);
 
     const CachedModel* rawPtr = cached.get();
-    m_modelCache[filePath] = std::move(cached);
+    m_modelCache[key] = std::move(cached);
     m_uploadsPending = true;
 
     Logger::Info("Model cached: {} ({} meshes)", filePath, rawPtr->meshes.size());
