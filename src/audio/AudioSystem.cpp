@@ -243,8 +243,43 @@ void AudioSystem::PlayBGM(const std::string& filePath, bool loop)
 
     m_bgmVoice->Start();
     m_currentBGMPath = filePath;
+    m_bgmLoop = loop;
 
     Logger::Info("BGM playing: {} (loop={})", filePath, loop);
+}
+
+void AudioSystem::SeekBGM(f32 seconds)
+{
+    if (!m_bgmVoice || m_currentBGMPath.empty()) return;
+
+    AudioClip* clip = GetOrLoadClip(m_currentBGMPath);
+    if (!clip) return;
+
+    const WAVEFORMATEX& fmt = clip->GetFormat();
+    if (fmt.nBlockAlign == 0 || fmt.nSamplesPerSec == 0) return;
+
+    const u32 totalFrames = clip->GetSizeInBytes() / fmt.nBlockAlign;
+    if (totalFrames == 0) return;
+    u32 frame = static_cast<u32>(seconds * static_cast<f32>(fmt.nSamplesPerSec));
+    frame %= totalFrames;   // ループ範囲内に丸める(負は呼び出し側で扱わない)
+
+    m_bgmVoice->Stop();
+    m_bgmVoice->FlushSourceBuffers();
+
+    XAUDIO2_BUFFER buffer{};
+    buffer.AudioBytes = clip->GetSizeInBytes();
+    buffer.pAudioData = clip->GetPCMData();
+    buffer.Flags      = XAUDIO2_END_OF_STREAM;
+    buffer.LoopCount  = m_bgmLoop ? XAUDIO2_LOOP_INFINITE : 0;
+    buffer.PlayBegin  = frame;   // ここから再生(ループ時は末尾→先頭に戻る)
+
+    HRESULT hr = m_bgmVoice->SubmitSourceBuffer(&buffer);
+    if (FAILED(hr))
+    {
+        Logger::Error("バッファ送信（BGMシーク）に失敗しました: 0x{:08X}", static_cast<u32>(hr));
+        return;
+    }
+    m_bgmVoice->Start();
 }
 
 void AudioSystem::StopBGM()

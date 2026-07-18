@@ -2418,7 +2418,7 @@ nlohmann::json McpLuaApi()
         "addCharacterController(e,radius,halfHeight)", "move(e,vx,vz)", "jump(e,amount?)", "isGrounded(e) -> bool",
     })));
     objects.push_back(O("audio", "global", json::array({
-        "playBGM(path)/stopBGM()/pauseBGM()/resumeBGM()", "playSFX(path)",
+        "playBGM(path)/stopBGM()/pauseBGM()/resumeBGM()", "seekBGM(sec)  (再生位置を秒指定でジャンプ。ループ維持、イントロスキップ等)", "playSFX(path)",
         "playSpatial(path,x,y,z,minD,maxD,vol?,loop?)", "stopAllSFX()",
         "setMasterVolume/setBGMVolume/setSFXVolume(v)", "getBGMList()/getSFXList() -> table",
     })));

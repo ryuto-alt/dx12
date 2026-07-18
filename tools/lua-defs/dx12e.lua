@@ -640,6 +640,10 @@ function AudioSystem:stopBGM() end
 function AudioSystem:pauseBGM() end
 function AudioSystem:resumeBGM() end
 
+---再生中 BGM の位置を秒指定でジャンプ（ループ設定は維持。イントロスキップ等に）
+---@param seconds number 曲頭からの秒数（曲長超過はループ内に丸め）
+function AudioSystem:seekBGM(seconds) end
+
 ---2D 効果音を再生
 ---@param path string assets/ からの相対パス
 function AudioSystem:playSFX(path) end

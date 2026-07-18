@@ -820,6 +820,7 @@ void ScriptEngine::RegisterBindings()
         "stopBGM",         &AudioSystem::StopBGM,
         "pauseBGM",        &AudioSystem::PauseBGM,
         "resumeBGM",       &AudioSystem::ResumeBGM,
+        "seekBGM",         &AudioSystem::SeekBGM,
         "playSFX",         &AudioSystem::PlaySFX,
         "playSpatial",     [](AudioSystem& a, const std::string& path, float x, float y, float z,
                               float minD, float maxD, sol::optional<float> vol, sol::optional<bool> loop) {
