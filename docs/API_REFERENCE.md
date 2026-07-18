@@ -151,6 +151,7 @@ t.scale      -- Vec3
 | メソッド | 説明 |
 |---|---|
 | `:playBGM(path)` / `:stopBGM()` / `:pauseBGM()` / `:resumeBGM()` | BGM 制御 |
+| `:seekBGM(sec)` | 再生中 BGM の位置を秒指定でジャンプ（ループ設定維持。イントロスキップ等に） |
 | `:playSFX(path)` | 2D 効果音 |
 | `:playSpatial(path, x, y, z, minD, maxD, vol?, loop?)` | 3D 空間効果音 |
 | `:stopAllSFX()` | 全 SE 停止 |
