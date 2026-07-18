@@ -986,6 +986,9 @@ namespace IMGUIZMO_NAMESPACE
 #ifdef IMGUI_HAS_VIEWPORT
       ImGui::SetNextWindowSize(ImGui::GetMainViewport()->Size);
       ImGui::SetNextWindowPos(ImGui::GetMainViewport()->Pos);
+      // メインビューポートに固定。これが無いとこの透明窓が独立プラットフォームウィンドウ化する
+      // ことがあり(1920x1032の"gizmo"窓)、既定 drawlist が見えない別OSウィンドウ側になる。
+      ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
 #else
       ImGuiIO& io = ImGui::GetIO();
       ImGui::SetNextWindowSize(io.DisplaySize);

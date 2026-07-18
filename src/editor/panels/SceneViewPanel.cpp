@@ -110,7 +110,10 @@ void SceneViewPanel::RenderUiPreview(entt::registry& reg,
     // 描かれるため、バックバッファ直描きの 3D シーンの上・各パネルの下に自然に重なる。
     // レターボックス帯や UICanvas 外へのはみ出しがビューポート外に掛からないよう、
     // ##GameUI 経路の PushClipRect と同様にビューポート矩形でクリップする。
-    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    // 注: 引数なし GetBackgroundDrawList() は「カレントウィンドウのビューポート」の背景リストを
+    // 返す(imgui 1.92+)。マルチビューポートでパネルが分離していると別OSウィンドウ側に描かれて
+    // 見えなくなるため、必ずメインビューポートを明示する。
+    ImDrawList* dl = ImGui::GetBackgroundDrawList(ImGui::GetMainViewport());
     dl->PushClipRect(ImVec2(vpX, vpY), ImVec2(vpX + vpW, vpY + vpH), true);
     UISystem::RenderPreview(reg, dl, vpX, vpY, vpW, vpH, resources, srvHeap, cmdList);
     dl->PopClipRect();
@@ -145,7 +148,9 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
                                        : transform.GetWorldMatrix());
 
     ImGuizmo::SetOrthographic(ctx.view2D);   // 2D ビューモードは正射ギズモ
-    ImGuizmo::SetDrawlist(ImGui::GetBackgroundDrawList());
+    // メインビューポート明示必須(引数なしはカレントウィンドウ依存で、ImGuizmo の "gizmo" 窓が
+    // 独立ビューポート化していると見えない別OSウィンドウにギズモが描かれる)
+    ImGuizmo::SetDrawlist(ImGui::GetBackgroundDrawList(ImGui::GetMainViewport()));
     ImGuizmo::SetRect(vpX, vpY, vpW, vpH);
 
     // ImGuizmo は既定で「カメラに近い側」に軸を反転表示する(AllowAxisFlip)。
@@ -514,7 +519,7 @@ void SceneViewPanel::HandleUiEditing(entt::registry& reg,
     // ---- 選択中 UI 要素のアウトライン + 8 ハンドル描画（プレビューと同じ背景 DrawList）----
     if (selRect)
     {
-        ImDrawList* dl = ImGui::GetBackgroundDrawList();
+        ImDrawList* dl = ImGui::GetBackgroundDrawList(ImGui::GetMainViewport());
         dl->PushClipRect(ImVec2(vpX, vpY), ImVec2(vpX + vpW, vpY + vpH), true);
         uiedit::DrawResolvedOutline(dl, *selRect, kUiAccentCol, 2.0f);
         for (int i = 0; !selRect->hasXform && i < 8; ++i)
