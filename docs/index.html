@@ -784,6 +784,7 @@ properties = {
               <tr><td><code>camera:project(x,y,z)</code></td><td>ワールド座標 → スクリーン <code>u, v, visible</code>（頭上ダメージ表示など）</td></tr>
               <tr><td><code>camera:getPosition()</code> / <code>setPosition(v)</code></td><td>低レベルのフライカメラ操作（yaw/pitch/速度も）</td></tr>
               <tr><td><code>audio:playBGM(path)</code> / <code>stopBGM()</code></td><td>BGM 再生 / 停止（<code>pauseBGM</code> / <code>resumeBGM</code>）</td></tr>
+              <tr><td><code>audio:seekBGM(sec)</code></td><td>再生中 BGM の位置を秒指定でジャンプ（ループ維持。イントロスキップ等）</td></tr>
               <tr><td><code>audio:playSFX(path)</code></td><td>効果音を鳴らす</td></tr>
               <tr><td><code>audio:playSpatial(path,x,y,z,minD,maxD[,vol,loop])</code></td><td>3D空間オーディオ（距離減衰）</td></tr>
               <tr><td><code>audio:setMasterVolume(v)</code></td><td><code>setBGMVolume</code> / <code>setSFXVolume</code></td></tr>
