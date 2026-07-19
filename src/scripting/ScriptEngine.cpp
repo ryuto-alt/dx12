@@ -307,6 +307,11 @@ void ScriptEngine::RegisterBindings()
             e.GetComponent<SkeletalAnimation>().animator->SetLooping(loop);
         },
 
+        "setAnimSpeed", [](Entity& e, float speed) {
+            if (!e.HasComponent<SkeletalAnimation>()) return;
+            e.GetComponent<SkeletalAnimation>().animator->SetSpeed(speed);
+        },
+
         "getAnimCount", [](const Entity& e) -> int {
             if (!e.HasComponent<SkeletalAnimation>()) return 0;
             return static_cast<int>(e.GetComponent<SkeletalAnimation>().clips.size());
@@ -409,6 +414,35 @@ void ScriptEngine::RegisterBindings()
             auto& reg = s.GetRegistry();
             if (!reg.all_of<Sprite2D>(e.GetHandle())) return;
             reg.get<Sprite2D>(e.GetHandle()).shaderParams = {x, y, z, w};
+        },
+        // Sprite2D::uvMin/uvMax を直接指定(アトラス切り出しの実行時切替。フリップブック
+        // (animFrames>0)/スクロール中は描画時に上書きされる点に注意)。
+        "setSpriteUV", [](Scene& s, Entity& e, float u0, float v0, float u1, float v1) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<Sprite2D>(e.GetHandle())) return;
+            auto& sp = reg.get<Sprite2D>(e.GetHandle());
+            sp.uvMin = {u0, v0};
+            sp.uvMax = {u1, v1};
+        },
+        // Sprite2D の UVスクロール速度(単位/秒)を設定(溶岩表面・滝・背景ループ用)。
+        // animFrames>0 のときはフリップブック優先で無視される。
+        "setSpriteScroll", [](Scene& s, Entity& e, float su, float sv) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<Sprite2D>(e.GetHandle())) return;
+            auto& sp = reg.get<Sprite2D>(e.GetHandle());
+            sp.scrollU = su;
+            sp.scrollV = sv;
+        },
+        // Sprite2D のフリップブックアニメを設定(frames=0 で停止し uvMin/uvMax 指定に戻る)。
+        // cols=0 は frames と同じ(横1行ストリップ)、row はシート内の行(walk行/jump行等)。
+        "setSpriteAnim", [](Scene& s, Entity& e, int frames, float fps, int cols, int row) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<Sprite2D>(e.GetHandle())) return;
+            auto& sp = reg.get<Sprite2D>(e.GetHandle());
+            sp.animFrames = frames;
+            sp.animFps    = fps;
+            sp.animCols   = cols;
+            sp.animRow    = row;
         },
         // --- ゲーム内UI（retained-mode）: スコア表示・HPバー等をスクリプトから書き換える ---
         // UIText::text を書き換える(スコア・残機・メッセージ)。UIText が無ければ何もしない。
@@ -816,12 +850,18 @@ void ScriptEngine::RegisterBindings()
 
     // --- Audio ---
     lua.new_usertype<AudioSystem>("AudioSystem",
-        "playBGM",         &AudioSystem::PlayBGM,
+        // メンバ関数ポインタ直バインドだと C++ 側のデフォルト引数(loop)が効かず
+        // 1引数呼びでエラーになるので、sol::optional で loop を省略可にする
+        "playBGM",         [](AudioSystem& a, const std::string& path, sol::optional<bool> loop) {
+                               a.PlayBGM(path, loop.value_or(true));
+                           },
         "stopBGM",         &AudioSystem::StopBGM,
         "pauseBGM",        &AudioSystem::PauseBGM,
         "resumeBGM",       &AudioSystem::ResumeBGM,
         "seekBGM",         &AudioSystem::SeekBGM,
-        "playSFX",         &AudioSystem::PlaySFX,
+        "playSFX",         [](AudioSystem& a, const std::string& path, sol::optional<bool> loop) {
+                               a.PlaySFX(path, loop.value_or(false));
+                           },
         "playSpatial",     [](AudioSystem& a, const std::string& path, float x, float y, float z,
                               float minD, float maxD, sol::optional<float> vol, sol::optional<bool> loop) {
                                a.PlaySFXSpatial(path, x, y, z, minD, maxD,

@@ -211,6 +211,7 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_duplicate_entity` | `{entity:int}` | `{entityId, name, sceneGeneration}` |
 | `dx12_delete_entity` | `{entity:int}` | `{deletedEntityId, deletedCount, sceneGeneration}` |
 | `dx12_open_scene` | `{path:string(assets相対)}` | `{sceneName, path, entityCount, sceneGeneration}` |
+| `dx12_open_project` | `{path:string(プロジェクトルート絶対パス)}` | `{name, rootDir, defaultScene, loading:true}` ※ロードは非同期に数フレーム進む。完了は `dx12_ping` の currentScene で確認 |
 | `dx12_new_scene` | `{savePath?:string}` | `{applied}` |
 | `dx12_play` | `{}` | `{mode:"Playing", sceneGeneration}` |
 | `dx12_stop` | `{}` | `{mode:"Editor", sceneGeneration}` |

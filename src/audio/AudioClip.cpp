@@ -11,6 +11,10 @@
 #include <dr_wav.h>
 #define DR_MP3_IMPLEMENTATION
 #include <dr_mp3.h>
+// stb_vorbis (OGG Vorbis デコーダー、シングルファイル実装)
+#pragma warning(disable: 4127 4189 4457 4459 4569 4702)
+#define STB_VORBIS_NO_PUSHDATA_API   // pull API(decode_filename/memory)のみ使う
+#include <stb_vorbis.c>
 #pragma warning(pop)
 
 namespace dx12e
@@ -25,6 +29,8 @@ bool AudioClip::LoadFromFile(const std::string& filePath)
         return LoadWav(filePath);
     else if (ext == ".mp3")
         return LoadMp3(filePath);
+    else if (ext == ".ogg")
+        return LoadOgg(filePath);
 
     Logger::Error("未対応のオーディオ形式です: {}", ext);
     return false;
@@ -106,6 +112,40 @@ bool AudioClip::LoadMp3(const std::string& filePath)
     return true;
 }
 
+bool AudioClip::LoadOgg(const std::string& filePath)
+{
+    int channels = 0, sampleRate = 0;
+    short* samples = nullptr;
+    int totalFrames = stb_vorbis_decode_filename(filePath.c_str(), &channels, &sampleRate, &samples);
+
+    if (totalFrames <= 0 || !samples)
+    {
+        Logger::Error("OGG を開けません: {}", filePath);
+        return false;
+    }
+
+    // WAVEFORMATEX 設定
+    m_format.wFormatTag      = WAVE_FORMAT_PCM;
+    m_format.nChannels       = static_cast<WORD>(channels);
+    m_format.nSamplesPerSec  = static_cast<DWORD>(sampleRate);
+    m_format.wBitsPerSample  = 16;
+    m_format.nBlockAlign     = static_cast<WORD>(channels * 2);
+    m_format.nAvgBytesPerSec = sampleRate * m_format.nBlockAlign;
+    m_format.cbSize          = 0;
+
+    // PCMデータをバイト配列にコピー
+    size_t dataSize = static_cast<size_t>(totalFrames) * channels * sizeof(short);
+    m_pcmData.resize(dataSize);
+    std::memcpy(m_pcmData.data(), samples, dataSize);
+
+    free(samples);   // stb_vorbis_decode_* は malloc 確保
+
+    Logger::Info("OGG loaded: {} ({}Hz, {}ch, {:.1f}s)",
+                 filePath, sampleRate, channels,
+                 static_cast<f32>(totalFrames) / static_cast<f32>(sampleRate));
+    return true;
+}
+
 bool AudioClip::LoadFromMemory(const uint8_t* data, size_t size, const std::string& extHint)
 {
     std::string ext = extHint;
@@ -115,6 +155,8 @@ bool AudioClip::LoadFromMemory(const uint8_t* data, size_t size, const std::stri
         return LoadWavFromMemory(data, size);
     else if (ext == ".mp3")
         return LoadMp3FromMemory(data, size);
+    else if (ext == ".ogg")
+        return LoadOggFromMemory(data, size);
 
     Logger::Error("未対応のオーディオ形式です（メモリ読み込み）: {}", ext);
     return false;
@@ -191,6 +233,41 @@ bool AudioClip::LoadMp3FromMemory(const uint8_t* data, size_t size)
     drmp3_free(samples, nullptr);
 
     Logger::Info("MP3 loaded from memory ({}Hz, {}ch, {:.1f}s)",
+                 sampleRate, channels,
+                 static_cast<f32>(totalFrames) / static_cast<f32>(sampleRate));
+    return true;
+}
+
+bool AudioClip::LoadOggFromMemory(const uint8_t* data, size_t size)
+{
+    int channels = 0, sampleRate = 0;
+    short* samples = nullptr;
+    int totalFrames = stb_vorbis_decode_memory(data, static_cast<int>(size),
+                                               &channels, &sampleRate, &samples);
+
+    if (totalFrames <= 0 || !samples)
+    {
+        Logger::Error("OGG をメモリから開けません（{} バイト）", size);
+        return false;
+    }
+
+    // WAVEFORMATEX 設定
+    m_format.wFormatTag      = WAVE_FORMAT_PCM;
+    m_format.nChannels       = static_cast<WORD>(channels);
+    m_format.nSamplesPerSec  = static_cast<DWORD>(sampleRate);
+    m_format.wBitsPerSample  = 16;
+    m_format.nBlockAlign     = static_cast<WORD>(channels * 2);
+    m_format.nAvgBytesPerSec = sampleRate * m_format.nBlockAlign;
+    m_format.cbSize          = 0;
+
+    // PCMデータをバイト配列にコピー
+    size_t dataSize = static_cast<size_t>(totalFrames) * channels * sizeof(short);
+    m_pcmData.resize(dataSize);
+    std::memcpy(m_pcmData.data(), samples, dataSize);
+
+    free(samples);   // stb_vorbis_decode_* は malloc 確保
+
+    Logger::Info("OGG loaded from memory ({}Hz, {}ch, {:.1f}s)",
                  sampleRate, channels,
                  static_cast<f32>(totalFrames) / static_cast<f32>(sampleRate));
     return true;

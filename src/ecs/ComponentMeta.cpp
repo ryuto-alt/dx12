@@ -135,7 +135,14 @@ void RegisterCoreComponentMeta()
         .data<&Sprite2D::shaderPath>("shaderPath")
         .data<&Sprite2D::shaderAlphaBlend>("shaderAlphaBlend")
         .data<&Sprite2D::effectValue>("effectValue")
-        .data<&Sprite2D::shaderParams>("shaderParams");
+        .data<&Sprite2D::shaderParams>("shaderParams")
+        .data<&Sprite2D::animFrames>("animFrames")
+        .data<&Sprite2D::animFps>("animFps")
+        .data<&Sprite2D::animCols>("animCols")
+        .data<&Sprite2D::animRow>("animRow")
+        .data<&Sprite2D::animRows>("animRows")
+        .data<&Sprite2D::scrollU>("scrollU")
+        .data<&Sprite2D::scrollV>("scrollV");
 
     entt::meta_factory<TrailRenderer>{}
         .type("TrailRenderer")

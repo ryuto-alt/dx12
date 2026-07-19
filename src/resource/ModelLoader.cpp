@@ -10,6 +10,7 @@
 #include "core/vfs/Vfs.h"
 
 #include <cstdlib>
+#include <cctype>   // ::tolower(拡張子の小文字化)
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
@@ -219,7 +220,10 @@ std::unique_ptr<AnimationClip> BuildAnimationClipFromAnim(
         clip->AddTrack(std::move(track));
     }
 
-    Logger::Info("AnimationClip built: '{}' {} tracks, duration={:.2f}",
+    // ticks → 秒へ正規化（glTF=1000ticks/s(ms)、FBX=30等の単位差をロード時に吸収）
+    clip->NormalizeToSeconds();
+
+    Logger::Info("AnimationClip built: '{}' {} tracks, duration={:.2f}s",
                  clip->GetName(), clip->GetTrackCount(), clip->GetDuration());
     return clip;
 }
@@ -418,7 +422,10 @@ std::unique_ptr<NodeAnimationClip> BuildNodeAnimClipFromAnim(
         clip->AddTrack(std::move(track));
     }
 
-    Logger::Info("NodeAnimClip built: '{}' {} tracks, duration={:.2f}",
+    // ticks → 秒へ正規化（AnimationClip と同じ規約）
+    clip->NormalizeToSeconds();
+
+    Logger::Info("NodeAnimClip built: '{}' {} tracks, duration={:.2f}s",
                  clip->GetName(), clip->GetTrackCount(), clip->GetDuration());
     return clip;
 }
@@ -512,14 +519,16 @@ ModelData ModelLoader::LoadFromFile(
     Assimp::Importer importer;
     importer.SetIOHandler(new VfsIOSystem()); // importer が所有権を持ち dtor で delete する
 
-    const unsigned int flags =
+    // 全フォーマットで FlipUVs を掛ける(従来挙動)。assimp の glTF インポータは UV を
+    // 左下原点(OpenGL流)で返すため、FlipUVs で D3D の左上原点に揃う(実機検証済み)。
+    unsigned int flags =
         aiProcess_Triangulate |
-        aiProcess_FlipUVs |
         aiProcess_GenNormals |
         aiProcess_CalcTangentSpace |
         aiProcess_JoinIdenticalVertices |
         aiProcess_LimitBoneWeights |
-        aiProcess_PopulateArmatureData;
+        aiProcess_PopulateArmatureData |
+        aiProcess_FlipUVs;
 
     const aiScene* scene = importer.ReadFile(filePath.string(), flags);
 

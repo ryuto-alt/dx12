@@ -218,7 +218,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         bool buildMode = false;
         std::string buildProjectDir;  // --build <dir> で指定したプロジェクト（空=組み込み）
         std::string netClientJoin;    // --net-client <ip[:port]>（マルチプレイのテストクライアント起動）
-        std::string netClientProject; // --project <dir>（--net-client と併用。開くプロジェクトルート）
+        std::string netClientProject; // --project <dir>（開くプロジェクトルート。--net-client 併用または単独指定）
 #ifndef DX12_GAME_RUNTIME
         if (lpCmdLine)
         {
@@ -352,10 +352,9 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         dx12e::Application app;
 #ifndef DX12_GAME_RUNTIME
         if (!netClientJoin.empty())
-        {
             app.SetNetTestClientJoin(netClientJoin);
-            app.SetNetTestProject(netClientProject);
-        }
+        if (!netClientProject.empty())
+            app.SetNetTestProject(netClientProject);   // --project 単独でもプロジェクトを開ける
 #endif
         app.Initialize(hInstance, nCmdShow, gameMode, nullptr, buildMode);
 

@@ -49,6 +49,29 @@ else()
 endif()
 add_test(NAME UiRichTextTests COMMAND UiRichTextTests)
 
+# Sprite2D フリップブック/UVスクロールの UV 計算(renderer/SpriteAnim.h)テスト。
+# ヘッダオンリー・依存ゼロなのでスタンドアロンでも動く。
+add_executable(SpriteAnimTests sprite_anim_test.cpp)
+target_include_directories(SpriteAnimTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(SpriteAnimTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(SpriteAnimTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME SpriteAnimTests COMMAND SpriteAnimTests)
+
+# OGG Vorbis デコード(third_party/stb_vorbis.c、AudioClip .ogg 対応の土台)テスト。
+# 埋め込み OGG(ogg_test_data.h)をメモリからデコードして PCM 長を確認する。依存ゼロ。
+# stb_vorbis はサードパーティ実装をそのまま取り込むため、警告のエラー化はしない。
+add_executable(OggDecodeTests ogg_decode_test.cpp)
+target_include_directories(OggDecodeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../third_party)
+if(MSVC)
+    target_compile_options(OggDecodeTests PRIVATE /W4 /permissive- /utf-8)
+else()
+    target_compile_options(OggDecodeTests PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME OggDecodeTests COMMAND OggDecodeTests)
+
 # シリアライズ往復テスト（安全網）。Scene ライブラリ（+ 推移依存）をリンクするため、
 # エンジン本体と一緒にビルドする構成でのみ有効。
 # tests を単体（cmake -S tests, vcpkg/VS不要）で構成したときは Scene が無いのでスキップし、
@@ -108,6 +131,34 @@ if(TARGET Renderer)
         target_compile_definitions(CameraProjectionTests PRIVATE ${DX12_COMPILE_DEFS})
     endif()
     add_test(NAME CameraProjectionTests COMMAND CameraProjectionTests)
+
+    # AnimationClip::NormalizeToSeconds（ticks→秒正規化。glTF=1000ticks/s 由来の
+    # ポーズ凍結/スロー再生の再発防止）テスト。AnimationClip.cpp は純ロジックなので直接ビルド。
+    add_executable(AnimClipNormalizeTests
+        anim_clip_normalize_test.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/AnimationClip.cpp)
+    target_include_directories(AnimClipNormalizeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(AnimClipNormalizeTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(AnimClipNormalizeTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(AnimClipNormalizeTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME AnimClipNormalizeTests COMMAND AnimClipNormalizeTests)
+
+    # Animator の再生速度倍率(SetSpeed。speed=2.0 で進行2倍、0 で一時停止)テスト。
+    # Animator/Skeleton/AnimationClip は純ロジック(GPU非依存)なので直接ビルド。
+    add_executable(AnimatorSpeedTests
+        animator_speed_test.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/Animator.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/AnimationClip.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/Skeleton.cpp)
+    target_include_directories(AnimatorSpeedTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(AnimatorSpeedTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(AnimatorSpeedTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(AnimatorSpeedTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME AnimatorSpeedTests COMMAND AnimatorSpeedTests)
 
     # Frustum（視錐台抽出＋球カリング）テスト。ヘッダオンリー・純 DirectXMath。
     add_executable(FrustumTests frustum_test.cpp)

@@ -131,7 +131,7 @@ void AudioSystem::ScanAudioFiles()
             if (!entry.is_regular_file()) continue;
             std::string ext = entry.path().extension().string();
             std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-            if (ext == ".wav" || ext == ".mp3")
+            if (ext == ".wav" || ext == ".mp3" || ext == ".ogg")
             {
                 // assetsDir 相対パスで格納
                 auto relPath = std::filesystem::relative(entry.path(), m_assetsDir).string();

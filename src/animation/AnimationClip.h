@@ -35,6 +35,13 @@ public:
     const BoneTrack& GetTrack(u32 i) const          { return m_tracks[i]; }
     const BoneTrack* FindTrackForBone(u32 boneIndex) const;
 
+    // duration と全キー時刻を ticks → 秒へ正規化し、m_ticksPerSecond を 1 にする。
+    // Assimp のキー時刻は ticks 単位（glTF は通常 1000 ticks/s = ミリ秒、FBX は 30 等）。
+    // ロード直後に一度だけ呼ぶことで、以降 Animator は「秒」で統一的に扱える
+    // （Update の deltaTime[秒] * tps(=1) がそのままキー時刻と比較可能になる）。
+    // m_ticksPerSecond <= 0 の場合は 25 ticks/s（Assimp 既定）とみなす。
+    void NormalizeToSeconds();
+
     void SetName(const std::string& name) { m_name = name; }
     const std::string& GetName() const    { return m_name; }
 

@@ -278,6 +278,21 @@ struct Sprite2D
     // 頂点属性(TEXCOORD2)として補間される = バッチを壊さず毎フレーム安価。HLSL側は VSIn/PSIn に
     // `float4 params : TEXCOORD2;` を足して読む(docs/AUTHORING.md 参照)。Lua `scene:setSpriteParams`。
     DirectX::XMFLOAT4 shaderParams{0.0f, 0.0f, 0.0f, 0.0f};
+
+    // --- フリップブックアニメ（スプライトシート）。animFrames>0 で有効になり、テクスチャを
+    // animCols x N グリッドとみなして frame = floor(t*animFps) % animFrames のセルを自動で
+    // uvMin/uvMax に設定する(ユーザー指定の uvMin/uvMax は無視)。Editor 中もプレビュー再生。
+    // UV 計算は renderer/SpriteAnim.h の純関数(単体テスト対象)。Lua `scene:setSpriteAnim`。
+    int   animFrames = 0;      // 総フレーム数(0=アニメなし)
+    float animFps    = 8.0f;   // 再生速度(フレーム/秒)
+    int   animCols   = 0;      // シートの列数(0=animFramesと同じ=横1行ストリップ)
+    int   animRow    = 0;      // シート内の開始行(複数アニメを行で並べたシート用)
+    int   animRows   = 0;      // シートの総行数(0=自動: animRow + ceil(animFrames/animCols))
+
+    // --- UVスクロール(単位/秒)。時間経過で uvMin/uvMax の両方へ加算(溶岩表面・滝・背景ループ用)。
+    // animFrames>0 のときはフリップブック優先で無視。Lua `scene:setSpriteScroll`。
+    float scrollU = 0.0f;
+    float scrollV = 0.0f;
 };
 
 // --- ゲーム内UI（retained-mode、Unity uGUI / Godot Control 相当）---

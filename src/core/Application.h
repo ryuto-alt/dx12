@@ -102,8 +102,8 @@ public:
     // Initialize() より前に呼ぶこと。"ip:port" 形式。空なら何もしない(通常起動)。
     // Initialize 内でゲームモードの自動 Play に載せて net:join 相当を実行する。
     void SetNetTestClientJoin(const std::string& ipPort) { m_pendingNetClientJoin = ipPort; }
-    // --net-client と併用する --project <dir>。ランチャーを飛ばしてこのプロジェクトを直接開く。
-    // 空なら最後に開いたシーンのまま参加する。Initialize() より前に呼ぶこと。
+    // --project <dir>。ランチャーを飛ばしてこのプロジェクトを直接開く。--net-client 併用時は
+    // 開いた後に自動Play=Join、単独指定なら開くだけ。Initialize() より前に呼ぶこと。
     void SetNetTestProject(const std::string& dir) { m_pendingNetClientProject = dir; }
 
     // ヘッドレスでゲームをビルド（--build CLI 用）。開始シーンは title.json があればそれ。
@@ -439,6 +439,8 @@ private:
     std::unique_ptr<NetworkPanel>      m_networkPanel;    // マルチプレイのエディタパネル（状態/設定窓）。ゲームでは null。
     std::string m_pendingNetClientJoin;     // SetNetTestClientJoin で受けた "ip:port"。Initialize 内で1回消費。
     std::string m_pendingNetClientProject;  // SetNetTestProject で受けたプロジェクトルート。同上。
+    std::string m_restoreProjectRoot;       // 通常起動の復元用: lastOpenedScene の上位で見つけた .dx12proj のルート
+    std::string m_restoreSceneRel;          // 同・前回シーンの assets 相対パス(BeginProjectLoad で開き直す)
     bool m_netClientAutoPlayPending = false; // --net-client: プロジェクトロード完了後にPlay(Join)する予約。
     std::unique_ptr<PhysicsDebugRenderer> m_physicsDebugRenderer;
     std::unique_ptr<EditorIconRenderer>   m_editorIconRenderer;

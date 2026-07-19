@@ -34,6 +34,7 @@
 #include "renderer/SSAOPass.h"
 #include "renderer/ParticleSystem.h"
 #include "renderer/SpriteRenderer.h"
+#include "renderer/SpriteAnim.h"
 #include "renderer/SceneTransition.h"
 #include "renderer/IBLBaker.h"
 #include "renderer/SkyboxRenderer.h"
@@ -1040,7 +1041,40 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             std::string lastScene = ProjectManager::LoadLastOpenedScene();
             std::string defaultScene = PathResolver::AssetsDir() + "scenes/default.json";
 
+            // lastOpenedScene がプロジェクト(.dx12proj)配下なら、ここで直読みせず
+            // Initialize 末尾で BeginProjectLoad してプロジェクトごと復元する。
+            // 直読みだと PathResolver のアセットルートがエンジン側のままになり、
+            // プロジェクトのテクスチャ/モデルが全部読み込み失敗するため。
             if (!loaded && !m_isGameMode && !lastScene.empty() && std::filesystem::exists(lastScene))
+            {
+                std::filesystem::path cur = std::filesystem::path(lastScene).parent_path();
+                while (!cur.empty() && m_restoreProjectRoot.empty())
+                {
+                    std::error_code ec;
+                    for (const auto& de : std::filesystem::directory_iterator(cur, ec))
+                    {
+                        if (de.is_regular_file() && de.path().extension() == ".dx12proj")
+                        {
+                            m_restoreProjectRoot = cur.string();
+                            break;
+                        }
+                    }
+                    std::filesystem::path up = cur.parent_path();
+                    if (up == cur) break;
+                    cur = up;
+                }
+                if (!m_restoreProjectRoot.empty())
+                {
+                    // 前回開いてたシーンをそのまま開けるよう assets 相対パスを控えておく
+                    std::string norm = lastScene;
+                    std::replace(norm.begin(), norm.end(), '\\', '/');
+                    if (size_t p = norm.rfind("/assets/"); p != std::string::npos)
+                        m_restoreSceneRel = norm.substr(p + 8);
+                }
+            }
+
+            if (!loaded && !m_isGameMode && m_restoreProjectRoot.empty() &&
+                !lastScene.empty() && std::filesystem::exists(lastScene))
             {
                 loaded = SceneSerializer::Load(*m_scene, lastScene, PathResolver::AssetsDir());
                 if (loaded)
@@ -1577,6 +1611,34 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_netClientAutoPlayPending = true;
         m_pendingNetClientJoin.clear();
     }
+    // --project 単独指定(--net-client 無し): ランチャーを飛ばして指定プロジェクトを開くだけ。
+    // 自動 Play / 接続はしない(テストクライアント専用の挙動は --net-client 併用時のみ)。
+    else if (!m_isGameMode && !m_pendingNetClientProject.empty())
+    {
+        ProjectInfo info;
+        if (ProjectManager::ProjectFromFolder(m_pendingNetClientProject, info))
+            BeginProjectLoad(info, /*isNew=*/false);
+        else
+            Logger::Warn("--project のプロジェクトが開けません: {}", m_pendingNetClientProject);
+        m_pendingNetClientProject.clear();
+    }
+    // 通常起動(引数なし): lastOpenedScene の上位で見つけた .dx12proj のプロジェクトを復元する。
+    // シーン直読みだけだとアセットルートがエンジン側のままでテクスチャ/モデルが全滅するため、
+    // ランチャーのクリックと同じ BeginProjectLoad 経路でプロジェクトごと開き直す。
+    else if (!m_isGameMode && !m_restoreProjectRoot.empty())
+    {
+        ProjectInfo info;
+        if (ProjectManager::ProjectFromFolder(m_restoreProjectRoot, info))
+        {
+            if (!m_restoreSceneRel.empty())
+                info.defaultScene = m_restoreSceneRel;   // 前回開いてたシーンをそのまま開く
+            BeginProjectLoad(info, /*isNew=*/false);
+        }
+        else
+        {
+            Logger::Warn("前回プロジェクトの復元に失敗: {}", m_restoreProjectRoot);
+        }
+    }
 
     // 全モデルのサムネイルを起動時にロード/レンダリング（エディタ専用機能）。
     // ゲーム(封印ランタイム)では実行しない＝起動時に exe 隣へ assets/.thumbcache/ を作らない。
@@ -2112,6 +2174,13 @@ nlohmann::json McpComponentSchema()
         F("shaderPath", "string (assets-relative, worldSpace only)", ""), F("shaderAlphaBlend", "bool", false),
         F("effectValue", "float (generic progress/strength for custom shader)", 0.0),
         F("shaderParams", "float4 (generic params for custom shader, TEXCOORD2)", json::array({0, 0, 0, 0})),
+        F("animFrames", "int (flipbook total frames; 0=off. When >0, uvMin/uvMax are auto-set per frame)", 0),
+        F("animFps", "float (flipbook playback speed, frames/sec)", 8.0),
+        F("animCols", "int (sprite-sheet columns; 0=animFrames i.e. single-row strip)", 0),
+        F("animRow", "int (start row in sheet, for multi-animation sheets)", 0),
+        F("animRows", "int (total rows in sheet; 0=auto: animRow+ceil(animFrames/animCols))", 0),
+        F("scrollU", "float (UV scroll speed, units/sec; ignored while animFrames>0)", 0.0),
+        F("scrollV", "float (UV scroll speed, units/sec; ignored while animFrames>0)", 0.0),
     }), "Use dx12_set_sprite_shader for shaderPath (custom HLSL, world-space only; different vertex/root-"
         "signature contract than meshRenderer shaders, see docs/AUTHORING.md)."));
     comps.push_back(C("tags", true, true, json::array({}),
@@ -2355,6 +2424,7 @@ nlohmann::json McpLuaApi()
         "playAnim(clipIndex:int, blend:float)",
         "playAnimByName(name:string, blend:float)",
         "setLooping(loop:bool)",
+        "setAnimSpeed(speed:float)  (再生速度倍率。既定1.0、2.0で2倍速、0で一時停止。移動速度と足の同期に)",
         "getAnimCount() -> int",
         "getAnimName(index:int) -> string",
     })));
@@ -2376,6 +2446,9 @@ nlohmann::json McpLuaApi()
         "setSpriteEffect(entity,value)  (Sprite2D.effectValue、カスタムシェーダー用)",
         "setSpriteAlpha(entity,alpha)  (Sprite2D不透明度0..1、半透明演出用)",
         "setSpriteParams(entity,x,y,z,w)  (Sprite2D.shaderParams、カスタムシェーダー汎用float4)",
+        "setSpriteUV(entity,u0,v0,u1,v1)  (Sprite2D.uvMin/uvMax 直接指定)",
+        "setSpriteScroll(entity,su,sv)  (Sprite2D UVスクロール速度・単位/秒。溶岩/滝等)",
+        "setSpriteAnim(entity,frames,fps,cols,row)  (Sprite2D フリップブック。frames=0で停止)",
         "setMeshEffect(entity,value)  (MeshRenderer.effectValue、カスタムシェーダー用)",
         "setMeshParams(entity,x,y,z,w)  (MeshRenderer.shaderParams、カスタムシェーダー汎用float4)",
         "queryByTag(tag) -> table(names)", "queryInBox(minX,minZ,maxX,maxZ,tag?) -> table(names)",
@@ -2930,6 +3003,29 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             m_editorCtx->pendingLoadPath = full;
             m_mcpLoadReply = deferred;
             isDeferred = true;
+        }
+        else if (method == "open_project")
+        {
+            // プロジェクトを開く(ランチャーのクリックと同等)。path はプロジェクトルート絶対パス。
+            // BeginProjectLoad は数フレームかけて非同期にロードする(スプラッシュ表示→シーン差替)ので、
+            // ここでは開始だけして即応答する。完了確認は dx12_ping の currentScene で行える。
+            if (busyPlaying)
+                throw McpError(McpErr::ModeConflict, "cannot open project while Playing; call dx12_stop first");
+            if (m_loading)
+                throw McpError(McpErr::ModeConflict, "a project load is already in progress; retry after it completes");
+            if (m_mcpLoadReply.client != 0 || !m_editorCtx->pendingLoadPath.empty())
+                throw McpError(McpErr::ModeConflict, "a scene load is already in progress; retry after it completes");
+            const std::string root = params.value("path", std::string());
+            if (root.empty()) throw McpError(McpErr::InvalidParam, "missing 'path' (project root absolute path)");
+            if (!fs::exists(root) || !fs::is_directory(root))
+                throw McpError(McpErr::NotFound, "project folder not found: " + root);
+            ProjectInfo info;
+            if (!ProjectManager::ProjectFromFolder(root, info))
+                throw McpError(McpErr::NotFound, "not a project folder: " + root);
+            BeginProjectLoad(info, /*isNew=*/false);
+            resp["ok"] = true;
+            resp["result"] = {{"name", info.name}, {"rootDir", info.rootDir},
+                              {"defaultScene", info.defaultScene}, {"loading", true}};
         }
         else if (method == "list_scenes")
         {
@@ -4221,9 +4317,11 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             sa.animator->CrossFadeTo(sa.clips[idx].get(), blend);
             if (params.contains("loop")) sa.animator->SetLooping(params["loop"].get<bool>());
+            if (params.contains("speed")) sa.animator->SetSpeed(params["speed"].get<float>());
             resp["ok"] = true;
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"clip", idx},
-                              {"clipName", sa.clips[idx]->GetName()}, {"blend", blend}};
+                              {"clipName", sa.clips[idx]->GetName()}, {"blend", blend},
+                              {"speed", sa.animator->GetSpeed()}};
         }
         else if (method == "get_anim_state")
         {
@@ -8287,6 +8385,19 @@ void Application::DrawWorldSprites(ID3D12GraphicsCommandList* cmd, DirectX::XMMA
         d.size      = sp.size;
         d.uvMin     = sp.uvMin;
         d.uvMax     = sp.uvMax;
+        // フリップブック/UVスクロール（Editor 中もプレビュー再生。SpriteAnim.h の純関数）
+        if (sp.animFrames > 0)
+        {
+            const SpriteUvRect r = ComputeFlipbookUv(sp.animFrames, sp.animFps, sp.animCols,
+                                                     sp.animRow, sp.animRows, time);
+            d.uvMin = {r.u0, r.v0}; d.uvMax = {r.u1, r.v1};
+        }
+        else if (sp.scrollU != 0.0f || sp.scrollV != 0.0f)
+        {
+            const SpriteUvRect r = ComputeScrollUv(sp.uvMin.x, sp.uvMin.y, sp.uvMax.x, sp.uvMax.y,
+                                                   sp.scrollU, sp.scrollV, time);
+            d.uvMin = {r.u0, r.v0}; d.uvMax = {r.u1, r.v1};
+        }
         d.color     = sp.color;
         d.srvIndex  = tex->GetSrvIndex();
         d.layer     = static_cast<float>(sp.layer);
@@ -8703,7 +8814,8 @@ void Application::Render()
                 auto& reg = m_scene->GetRegistry();
                 auto e = reg.create();
                 reg.emplace<NameTag>(e, NameTag{name});
-                reg.emplace<Transform>(e);
+                // MCP の position 指定を反映（デフォルト Transform だと (0,0,0) 固定になってた）
+                reg.emplace<Transform>(e, Transform{req.position, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
                 spawnedEntity = e;
             }
             else if (req.modelPath == "__camera__")
@@ -9509,6 +9621,20 @@ void Application::Render()
     u32 frameIndex = m_swapChain->GetCurrentBackBufferIndex();
     f32 totalTime = m_gameClock.GetTotalTime();
 
+    // ===== スケルタルアニメのボーン行列を毎フレーム GPU へアップロード =====
+    // 以前は CSM シャドウパス(ci==0)内でのみ skinningBuffer->Update していたため、
+    // 影OFFシーンや正射カメラ(2Dゲーム。シャドウパスが丸ごとスキップされる)では
+    // ボーン行列が一度もアップロードされず、Animator が進んでいてもポーズが凍結して見えた。
+    // シャドウパスの有無に依存しないよう、ここで無条件に1回だけ更新する。
+    {
+        auto& skinReg = m_scene->GetRegistry();
+        for (auto [se, skelAnim] : skinReg.view<SkeletalAnimation>().each())
+        {
+            if (skelAnim.animator && skelAnim.skinningBuffer)
+                skelAnim.skinningBuffer->Update(skelAnim.animator->GetSkinningMatrices(), frameIndex);
+        }
+    }
+
     // シャドウマップ再作成（ImGuiで解像度変更時、前フレーム完了後に実行）
     if (m_shadowMapDirty)
     {
@@ -9882,9 +10008,10 @@ void Application::Render()
             // RTVなし、DSVのみ（該当カスケードのスライス）
             nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_shadowDsvHandles[ci]);
 
-            // skinningBuffer の Update はフレーム内1回で良い（最初のカスケードのみ）。SRVバインドは各カスケードで必要。
+            // skinningBuffer はフレーム先頭で全 SkeletalAnimation を一括 Update 済み
+            // （シャドウパスは影OFF/正射カメラでスキップされるため、ここでは更新しない）。
             RenderDepthOnlyScene(cascadeVP, *m_shadowPipelineState, *m_shadowSkinnedPipelineState,
-                                 /*updateSkinning*/ ci == 0, frameIndex);
+                                 /*updateSkinning*/ false, frameIndex);
         }
 
         m_commandList->TransitionResource(m_shadowMap.Get(),
@@ -10501,6 +10628,19 @@ void Application::Render()
                 s.size     = sp.size;
                 s.uvMin    = sp.uvMin;
                 s.uvMax    = sp.uvMax;
+                // フリップブック/UVスクロール（ワールド側 DrawWorldSprites と同じ純関数を適用）
+                if (sp.animFrames > 0)
+                {
+                    const SpriteUvRect r = ComputeFlipbookUv(sp.animFrames, sp.animFps, sp.animCols,
+                                                             sp.animRow, sp.animRows, totalTime);
+                    s.uvMin = {r.u0, r.v0}; s.uvMax = {r.u1, r.v1};
+                }
+                else if (sp.scrollU != 0.0f || sp.scrollV != 0.0f)
+                {
+                    const SpriteUvRect r = ComputeScrollUv(sp.uvMin.x, sp.uvMin.y, sp.uvMax.x, sp.uvMax.y,
+                                                           sp.scrollU, sp.scrollV, totalTime);
+                    s.uvMin = {r.u0, r.v0}; s.uvMax = {r.u1, r.v1};
+                }
                 s.color    = sp.color;
                 s.srvIndex = tex->GetSrvIndex();
                 s.layer    = static_cast<float>(sp.layer);

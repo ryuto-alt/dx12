@@ -262,6 +262,9 @@ physics:applyImpulse(e, Vec3.new(0, 5, 0))
 scene:setSpriteAlpha(e, 0.4)             -- Sprite2D の不透明度(0..1)。半透明演出(毎フレーム可)
 scene:setSpriteEffect(e, 0.5)            -- カスタムスプライトシェーダーへの汎用値(毎フレーム可)
 scene:setSpriteParams(e, 1, 0.5, 0, 0)   -- カスタムスプライトシェーダーへの汎用float4(毎フレーム可)
+scene:setSpriteUV(e, 0, 0, 0.25, 1)      -- Sprite2D の uvMin/uvMax 直接指定(アトラス切替)
+scene:setSpriteScroll(e, 0.5, 0)         -- UVスクロール速度(単位/秒)。溶岩/滝/背景ループ
+scene:setSpriteAnim(e, 4, 8, 0, 0)       -- フリップブック(frames,fps,cols,row)。frames=0で停止
 scene:setMeshEffect(e, 0.5)              -- カスタムメッシュシェーダーへの汎用値(毎フレーム可)
 scene:setMeshParams(e, 1, 0.5, 0, 0)     -- カスタムメッシュシェーダーへの汎用float4(毎フレーム可)
 

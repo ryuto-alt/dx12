@@ -143,6 +143,9 @@ t.scale      -- Vec3
 | `:setSpriteEffect(e, value)` | — | Sprite2D の effectValue（カスタムシェーダーへの汎用値）を変更。毎フレーム可 |
 | `:setSpriteAlpha(e, alpha)` | — | Sprite2D の不透明度(0..1)を変更。半透明演出用。毎フレーム可 |
 | `:setSpriteParams(e, x, y, z, w)` | — | Sprite2D の shaderParams（カスタムシェーダーへの汎用 float4、TEXCOORD2）を変更。毎フレーム可 |
+| `:setSpriteUV(e, u0, v0, u1, v1)` | — | Sprite2D の uvMin/uvMax を直接指定（アトラス切り出しの実行時切替）。`animFrames>0` 中は描画時に上書きされる |
+| `:setSpriteScroll(e, su, sv)` | — | Sprite2D の UVスクロール速度（単位/秒）。溶岩表面・滝・背景ループ用。`animFrames>0` 中は無視 |
+| `:setSpriteAnim(e, frames, fps, cols, row)` | — | Sprite2D のフリップブックアニメ設定（`frames=0` で停止し UV 指定に戻る。`cols=0`=frames と同じ=横1行ストリップ、`row`=シート内の行） |
 | `:setMeshEffect(e, value)` | — | MeshRenderer の effectValue（カスタムシェーダーへの汎用値）を変更。毎フレーム可 |
 | `:setMeshParams(e, x, y, z, w)` | — | MeshRenderer の shaderParams（カスタムシェーダーへの汎用 float4）を変更。毎フレーム可 |
 | `:gimmicks()` | table | Gimmick 付き全エンティティを配列で返す（要素: `{e,name,kind,period,phase,amplitude,threshold,solid,deadly}`） |
@@ -193,7 +196,7 @@ t.scale      -- Vec3
 ### AudioSystem（`audio`）
 | メソッド | 説明 |
 |---|---|
-| `:playBGM(path)` / `:stopBGM()` / `:pauseBGM()` / `:resumeBGM()` | BGM 制御 |
+| `:playBGM(path)` / `:stopBGM()` / `:pauseBGM()` / `:resumeBGM()` | BGM 制御（対応形式: `.wav` / `.mp3` / `.ogg`） |
 | `:seekBGM(sec)` | 再生中 BGM の位置を秒指定でジャンプ（ループ設定維持。イントロスキップ等に） |
 | `:playSFX(path)` | 2D 効果音 |
 | `:playSpatial(path, x, y, z, minD, maxD, vol?, loop?)` | 3D 空間効果音 |
@@ -598,7 +601,7 @@ end)
 | コンポーネント | フィールド（既定値） |
 |---|---|
 | `CameraComponent` | `fovDegrees=60`, `nearClip=0.1`, `farClip=1000`, `isActive=false`, `projection`(Perspective/Orthographic), `orthoSize=10` |
-| `Sprite2D` | `texturePath`, `layer=0`, `size=(1,1)`, `uvMin`,`uvMax`, `color=(1,1,1,1)`, `worldSpace=true`, `billboard=false` |
+| `Sprite2D` | `texturePath`, `layer=0`, `size=(1,1)`, `uvMin`,`uvMax`, `color=(1,1,1,1)`, `worldSpace=true`, `billboard=false`, `animFrames=0`(フリップブック総フレーム。>0でuvMin/Max自動), `animFps=8`, `animCols=0`(0=animFrames), `animRow=0`, `animRows=0`(0=自動), `scrollU/scrollV=0`(UVスクロール 単位/秒。animFrames>0中は無視) |
 | `AudioSource` | `clipPath`, `volume=1`, `loop=false`, `spatial=true`, `playOnStart=true`, `minDistance=1`, `maxDistance=30` |
 
 ### アニメーション

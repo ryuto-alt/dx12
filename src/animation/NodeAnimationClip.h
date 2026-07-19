@@ -29,6 +29,9 @@ public:
     const NodeTrack& GetTrack(u32 i) const          { return m_tracks[i]; }
     const NodeTrack* FindTrackForNode(u32 nodeIndex) const;
 
+    // ticks → 秒へ正規化（AnimationClip::NormalizeToSeconds と同じ規約。ロード直後に一度呼ぶ）
+    void NormalizeToSeconds();
+
     void SetName(const std::string& name) { m_name = name; }
     const std::string& GetName() const    { return m_name; }
 

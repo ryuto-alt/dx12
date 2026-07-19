@@ -702,6 +702,24 @@ void InspectorPanel::Render(entt::registry& reg,
                             "ON : 常にアクティブカメラの方を向く（回転は無視される）");
                     }
                     pg::End();
+
+                    // フリップブック（スプライトシート）/ UVスクロール。エディタ中もプレビュー再生される
+                    pg::Group("アニメ");
+                    changed |= pg::Int("フレーム数 animFrames", &sp.animFrames, 1.0f, 0, 1024, &active);
+                    if (sp.animFrames > 0)
+                    {
+                        changed |= pg::Float("速度 animFps", &sp.animFps, 0.1f, 0.0f, 120.0f, "%.1f", &active);
+                        changed |= pg::Int("列数 animCols", &sp.animCols, 1.0f, 0, 1024, &active);
+                        changed |= pg::Int("開始行 animRow", &sp.animRow, 1.0f, 0, 1024, &active);
+                        changed |= pg::Int("総行数 animRows", &sp.animRows, 1.0f, 0, 1024, &active);
+                        ImGui::TextDisabled("animFrames>0 中は UV Min/Max は無視（自動設定）");
+                    }
+                    else
+                    {
+                        changed |= pg::Float("スクロールU scrollU", &sp.scrollU, 0.01f, -100.0f, 100.0f, "%.2f", &active);
+                        changed |= pg::Float("スクロールV scrollV", &sp.scrollV, 0.01f, -100.0f, 100.0f, "%.2f", &active);
+                    }
+                    pg::End();
                 }
 
                 // カスタムシェーダー割当（worldSpace のスプライトのみ有効。MeshRendererの仕組みを踏襲するが

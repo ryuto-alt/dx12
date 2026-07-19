@@ -686,6 +686,15 @@ reg(
 );
 
 reg(
+  "dx12_open_project",
+  "プロジェクトを開く",
+  "プロジェクトを開く(ランチャーのクリックと同等)。path はプロジェクトルートの絶対パス(.dx12proj のあるフォルダ)。アセットルート/シーン/game.lua がそのプロジェクトに切り替わる。ロードは非同期に数フレームかけて進むので、完了確認は dx12_ping の currentScene / entityCount で行うこと。開いた後は古い entityId は無効になる。",
+  { path: z.string().describe("プロジェクトルートの絶対パス。例: C:/Users/me/MyGame") },
+  {},
+  ({ path }) => run(() => engine.call("open_project", { path })),
+);
+
+reg(
   "dx12_new_scene",
   "新規シーン",
   "新規シーンを作る(現在のシーンを破棄)。savePath を渡すとそのパスに紐づけて作る。フレーム境界で実処理され {applied} を同期で返す。現在の編集内容は失われるので注意。",
@@ -967,17 +976,18 @@ reg(
 reg(
   "dx12_play_anim",
   "アニメーション再生",
-  "スケルタルアニメーションのクリップをクロスフェード再生する(Lua の playAnim/playAnimByName と同じ経路)。clipName(名前) か clip(index) で指定、blend はフェード秒(既定 0.3)。loop を渡すとループ設定も変更。クリップ一覧は dx12_get_anim_state で確認。★アニメーションの更新は Play 中に進む。entity(id) か name 指定。",
+  "スケルタルアニメーションのクリップをクロスフェード再生する(Lua の playAnim/playAnimByName と同じ経路)。clipName(名前) か clip(index) で指定、blend はフェード秒(既定 0.3)。loop を渡すとループ設定、speed を渡すと再生速度倍率も変更。クリップ一覧は dx12_get_anim_state で確認。★アニメーションの更新は Play 中に進む。entity(id) か name 指定。",
   {
     ...entityRef,
     clip: z.number().int().optional().describe("クリップ index。clipName と排他(clipName 優先)。省略時 0。"),
     clipName: z.string().optional().describe("クリップ名(完全一致)。dx12_get_anim_state の clips から選ぶ。"),
     blend: z.number().optional().describe("クロスフェード秒。省略で 0.3。"),
     loop: z.boolean().optional().describe("ループ再生するか。省略で現状維持。"),
+    speed: z.number().optional().describe("再生速度倍率(1.0=等速、2.0=2倍速、0=一時停止)。省略で現状維持。"),
   },
   {},
-  ({ entity, name, clip, clipName, blend, loop }) =>
-    run(() => engine.call("play_anim", { entity, name, clip, clipName, blend, loop })),
+  ({ entity, name, clip, clipName, blend, loop, speed }) =>
+    run(() => engine.call("play_anim", { entity, name, clip, clipName, blend, loop, speed })),
 );
 
 reg(
