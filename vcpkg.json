@@ -11,7 +11,7 @@
     "directxmath",
     {
       "name": "imgui",
-      "features": ["docking-experimental", "dx12-binding", "win32-binding", "freetype"]
+      "features": ["docking-experimental", "dx12-binding", "win32-binding", "freetype", "test-engine"]
     },
     "lua",
     "sol2",

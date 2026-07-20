@@ -73,6 +73,7 @@
 #include "network/NetworkConfig.h"
 #include "physics/PhysicsDebugRenderer.h"
 #include "gui/ImGuiManager.h"
+#include "gui/UiTestHarness.h"
 #include "scene/SceneSerializer.h"
 #include "scene/SceneFlow.h"
 #include "engine/ecs/ComponentRegistry.h"   // MCP set_component の deserialize 走査用
@@ -1390,6 +1391,15 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     m_imguiManager->Initialize(
         m_window->GetHwnd(), *m_graphicsDevice, m_commandQueue->GetQueue(),
         *m_srvHeap, m_swapChain->GetFormat(), FrameResources::kFrameCount);
+
+    // UI 自動テストエンジン。ImGui コンテキスト生成直後・初回 NewFrame より前に開始する。
+    // エディタでは常時初期化して「ツール > エンジン診断」からいつでも検査を回せるようにする
+    // (テストを走らせない限り実行時コストはほぼゼロ)。ゲームモードでは載せない。
+    if (!m_isGameMode)
+    {
+        m_uiTests = std::make_unique<UiTestHarness>();
+        m_uiTests->Initialize(this, m_uiTestsRunAll, m_uiTestsSpeed);
+    }
 
     // EditorLayer 初期化
     m_editorLayer = std::make_unique<EditorLayer>();
@@ -5355,6 +5365,13 @@ void Application::Shutdown()
     DeferredRelease::FlushAll();
 
     // ImGui 解放
+    // UI テストエンジンは ImGui コンテキスト破棄より先に止める
+    if (m_uiTests)
+    {
+        m_uiTests->Shutdown();
+        m_uiTests.reset();
+    }
+
     if (m_imguiManager)
     {
         m_imguiManager->Shutdown();
@@ -5417,6 +5434,11 @@ void Application::Shutdown()
         m_physicsSystem->Shutdown();
         m_physicsSystem.reset();
     }
+    // Window は InputSystem を生ポインタで持つ。m_window.reset()（= DestroyWindow）は
+    // WM_KILLFOCUS を投げ、WndProc がそのポインタ経由で OnFocusLost() を呼ぶため、
+    // 参照を切らずに InputSystem を解放すると解放済みメモリへの書き込みで落ちる。
+    if (m_window)
+        m_window->SetInputSystem(nullptr);
     m_inputSystem.reset();
     // UITweenState には Lua の onComplete クロージャが入っていることがある（tweenUi）。
     // sol::function の unref が生きた lua_State を要求するため、Lua ステート破棄
@@ -11438,6 +11460,9 @@ void Application::Render()
     }
     m_uiCommands.clear();
 
+    // エンジン診断パネル(ツール > エンジン診断)。ImGui の最後に描く
+    if (m_uiTests) m_uiTests->DrawDiagnosticsPanel(&m_editorCtx->showEngineDiagnostics);
+
     m_imguiManager->EndFrame(nativeCmdList);
 
     // ---- シーントランジション オーバーレイ（ImGui の上に被せる）----
@@ -11476,6 +11501,17 @@ void Application::Render()
     m_imguiManager->RenderPlatformWindows();
     m_swapChain->Present(m_useVsync);
     m_frameResources->EndFrame(*m_commandQueue);
+
+    // UI 自動テスト: Present 後にテストのコルーチンを進める(--ui-tests-run-all なら完走で終了要求)
+    if (m_uiTests)
+    {
+        m_uiTests->PostRender();
+        if (m_uiTests->WantsExit())
+        {
+            m_uiTestExitCode = m_uiTests->ExitCode();
+            PostQuitMessage(0);
+        }
+    }
 
     // フェンス連動の遅延解放（DeferredRelease）。リモート側の「アップロードを積んだ
     // フレームだけ WaitIdle」方式より強い保証:

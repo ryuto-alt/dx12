@@ -3,6 +3,7 @@ find_package(imgui CONFIG REQUIRED)
 add_library(Gui STATIC
     ImGuiManager.cpp
     ImGuizmo.cpp
+    UiTestHarness.cpp
 )
 
 # ImGuizmo はサードパーティコードなので警告抑制

@@ -220,6 +220,12 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         std::string netClientJoin;    // --net-client <ip[:port]>（マルチプレイのテストクライアント起動）
         std::string netClientProject; // --project <dir>（開くプロジェクトルート。--net-client 併用または単独指定）
 #ifndef DX12_GAME_RUNTIME
+        // UI 自動テスト（エディタ専用。GameRuntime では引数を解釈しないので存在しない）
+        bool uiTests       = false;   // --ui-tests（ImGuiTestEngine による UI 自動テストを有効化）
+        bool uiTestsRunAll = false;   // --ui-tests-run-all（全テストを自動実行して終了コードを返す）
+        int  uiTestsSpeed  = 0;       // --ui-tests-speed=N（0=Fast 1=Normal 2=Cinematic）
+#endif
+#ifndef DX12_GAME_RUNTIME
         if (lpCmdLine)
         {
             std::string args(lpCmdLine);
@@ -304,6 +310,12 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
                         netClientJoin = toUtf8(argv[++i]);
                     else if (wcscmp(argv[i], L"--project") == 0 && i + 1 < argc)
                         netClientProject = toUtf8(argv[++i]);
+                    else if (wcscmp(argv[i], L"--ui-tests") == 0)
+                        uiTests = true;
+                    else if (wcscmp(argv[i], L"--ui-tests-run-all") == 0)
+                        { uiTests = true; uiTestsRunAll = true; }
+                    else if (wcsncmp(argv[i], L"--ui-tests-speed=", 17) == 0)
+                        { uiTests = true; uiTestsSpeed = _wtoi(argv[i] + 17); }
                 }
                 LocalFree(argv);
             }
@@ -381,6 +393,8 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
             app.SetNetTestClientJoin(netClientJoin);
         if (!netClientProject.empty())
             app.SetNetTestProject(netClientProject);   // --project 単独でもプロジェクトを開ける
+        if (uiTests)
+            app.EnableUiTests(uiTestsRunAll, uiTestsSpeed);
 #endif
         app.Initialize(hInstance, nCmdShow, gameMode, nullptr, buildMode);
 
@@ -397,7 +411,14 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         }
 
         app.Run();
+#ifndef DX12_GAME_RUNTIME
+        const int uiTestExit = app.UiTestExitCode();   // --ui-tests-run-all のときだけ非 0 になりうる
         app.Shutdown();
+        if (uiTests && uiTestsRunAll)
+            return uiTestExit;
+#else
+        app.Shutdown();
+#endif
     }
     catch (const std::exception& e)
     {

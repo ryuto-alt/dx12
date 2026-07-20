@@ -59,6 +59,7 @@ namespace dx12e
     class ResourceManager;
     class InputSystem;
     class ImGuiManager;
+    class UiTestHarness;
     class Scene;
     class ScriptEngine;
     class McpBridge;
@@ -105,6 +106,12 @@ public:
     // --project <dir>。ランチャーを飛ばしてこのプロジェクトを直接開く。--net-client 併用時は
     // 開いた後に自動Play=Join、単独指定なら開くだけ。Initialize() より前に呼ぶこと。
     void SetNetTestProject(const std::string& dir) { m_pendingNetClientProject = dir; }
+
+    // ImGuiTestEngine による UI 自動テスト(--ui-tests)。Initialize より前に呼ぶ。
+    // runAll=true なら起動後に全テストを走らせ、完了したら終了する(終了コード=UiTestExitCode)。
+    void EnableUiTests(bool runAll, int speedMode)
+    { m_uiTestsRequested = true; m_uiTestsRunAll = runAll; m_uiTestsSpeed = speedMode; }
+    int  UiTestExitCode() const { return m_uiTestExitCode; }
 
     // ヘッドレスでゲームをビルド（--build CLI 用）。開始シーンは title.json があればそれ。
     // 成否を返す（CLI の終了コード / GUI の完了表示に使う）。
@@ -276,6 +283,11 @@ private:
     std::unique_ptr<ShaderManager>     m_shaderManager;
     f32                                m_shaderPollTimer = 0.0f;
     std::unique_ptr<ImGuiManager>      m_imguiManager;
+    std::unique_ptr<UiTestHarness>     m_uiTests;              // --ui-tests のときだけ生成
+    bool m_uiTestsRequested = false;
+    bool m_uiTestsRunAll    = false;
+    int  m_uiTestsSpeed     = 0;
+    int  m_uiTestExitCode   = 0;
     std::unique_ptr<PipelineState>     m_skinnedPipelineState;        // 通常 forward(skinned, LESS)
     std::unique_ptr<PipelineState>     m_skinnedPipelineStateLEqual;  // SSAO 深度プリパス併用時(skinned, LESS_EQUAL)
     std::unique_ptr<PipelineState>     m_gridPipelineState;
