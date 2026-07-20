@@ -701,9 +701,11 @@ void InspectorPanel::Render(entt::registry& reg,
                             "OFF: Transform の回転どおりに固定表示（ギズモの R で回転可）\n"
                             "ON : 常にアクティブカメラの方を向く（回転は無視される）");
                     }
-                    pg::End();
 
                     // フリップブック（スプライトシート）/ UVスクロール。エディタ中もプレビュー再生される
+                    // ※ ここでテーブルを閉じないこと。閉じた状態で pg::Group() を呼ぶと
+                    //   ImGui::TableNextRow() が null テーブルを触って即クラッシュする
+                    //   （Sprite2D を選ぶだけでエディタが落ちていた。超詳細診断以前の UI 自動テストで発覚）。
                     pg::Group("アニメ");
                     changed |= pg::Int("フレーム数 animFrames", &sp.animFrames, 1.0f, 0, 1024, &active);
                     if (sp.animFrames > 0)
