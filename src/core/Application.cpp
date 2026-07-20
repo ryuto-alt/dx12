@@ -1042,39 +1042,11 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             std::string lastScene = ProjectManager::LoadLastOpenedScene();
             std::string defaultScene = PathResolver::AssetsDir() + "scenes/default.json";
 
-            // lastOpenedScene がプロジェクト(.dx12proj)配下なら、ここで直読みせず
-            // Initialize 末尾で BeginProjectLoad してプロジェクトごと復元する。
-            // 直読みだと PathResolver のアセットルートがエンジン側のままになり、
-            // プロジェクトのテクスチャ/モデルが全部読み込み失敗するため。
-            if (!loaded && !m_isGameMode && !lastScene.empty() && std::filesystem::exists(lastScene))
-            {
-                std::filesystem::path cur = std::filesystem::path(lastScene).parent_path();
-                while (!cur.empty() && m_restoreProjectRoot.empty())
-                {
-                    std::error_code ec;
-                    for (const auto& de : std::filesystem::directory_iterator(cur, ec))
-                    {
-                        if (de.is_regular_file() && de.path().extension() == ".dx12proj")
-                        {
-                            m_restoreProjectRoot = cur.string();
-                            break;
-                        }
-                    }
-                    std::filesystem::path up = cur.parent_path();
-                    if (up == cur) break;
-                    cur = up;
-                }
-                if (!m_restoreProjectRoot.empty())
-                {
-                    // 前回開いてたシーンをそのまま開けるよう assets 相対パスを控えておく
-                    std::string norm = lastScene;
-                    std::replace(norm.begin(), norm.end(), '\\', '/');
-                    if (size_t p = norm.rfind("/assets/"); p != std::string::npos)
-                        m_restoreSceneRel = norm.substr(p + 8);
-                }
-            }
-
-            if (!loaded && !m_isGameMode && m_restoreProjectRoot.empty() &&
+            // 通常起動では前回プロジェクトを復元しない(ランチャーを表示する)。
+            // lastOpenedScene の直読みは --net-client でプロジェクト未指定のとき専用
+            // (「最後のシーンのまま参加」の挙動を維持するため)。
+            if (!loaded && !m_isGameMode &&
+                !m_pendingNetClientJoin.empty() && m_pendingNetClientProject.empty() &&
                 !lastScene.empty() && std::filesystem::exists(lastScene))
             {
                 loaded = SceneSerializer::Load(*m_scene, lastScene, PathResolver::AssetsDir());
@@ -1623,23 +1595,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             Logger::Warn("--project のプロジェクトが開けません: {}", m_pendingNetClientProject);
         m_pendingNetClientProject.clear();
     }
-    // 通常起動(引数なし): lastOpenedScene の上位で見つけた .dx12proj のプロジェクトを復元する。
-    // シーン直読みだけだとアセットルートがエンジン側のままでテクスチャ/モデルが全滅するため、
-    // ランチャーのクリックと同じ BeginProjectLoad 経路でプロジェクトごと開き直す。
-    else if (!m_isGameMode && !m_restoreProjectRoot.empty())
-    {
-        ProjectInfo info;
-        if (ProjectManager::ProjectFromFolder(m_restoreProjectRoot, info))
-        {
-            if (!m_restoreSceneRel.empty())
-                info.defaultScene = m_restoreSceneRel;   // 前回開いてたシーンをそのまま開く
-            BeginProjectLoad(info, /*isNew=*/false);
-        }
-        else
-        {
-            Logger::Warn("前回プロジェクトの復元に失敗: {}", m_restoreProjectRoot);
-        }
-    }
+    // 通常起動(引数なし): 前回プロジェクトは復元せず、ランチャー(m_showLauncher=true のまま)を表示する。
 
     // 全モデルのサムネイルを起動時にロード/レンダリング（エディタ専用機能）。
     // ゲーム(封印ランタイム)では実行しない＝起動時に exe 隣へ assets/.thumbcache/ を作らない。

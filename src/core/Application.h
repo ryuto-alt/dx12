@@ -439,8 +439,6 @@ private:
     std::unique_ptr<NetworkPanel>      m_networkPanel;    // マルチプレイのエディタパネル（状態/設定窓）。ゲームでは null。
     std::string m_pendingNetClientJoin;     // SetNetTestClientJoin で受けた "ip:port"。Initialize 内で1回消費。
     std::string m_pendingNetClientProject;  // SetNetTestProject で受けたプロジェクトルート。同上。
-    std::string m_restoreProjectRoot;       // 通常起動の復元用: lastOpenedScene の上位で見つけた .dx12proj のルート
-    std::string m_restoreSceneRel;          // 同・前回シーンの assets 相対パス(BeginProjectLoad で開き直す)
     bool m_netClientAutoPlayPending = false; // --net-client: プロジェクトロード完了後にPlay(Join)する予約。
     std::unique_ptr<PhysicsDebugRenderer> m_physicsDebugRenderer;
     std::unique_ptr<EditorIconRenderer>   m_editorIconRenderer;
