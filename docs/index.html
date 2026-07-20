@@ -1024,6 +1024,182 @@ scene:<span class="tok-fn">hideUi</span>(pauseMenu)</code></pre>
     <span class="tok-k">end</span>)
 <span class="tok-k">end</span></code></pre>
 
+        <h3>UIアニメーションの書き方</h3>
+        <p>動かす手段は3つあり、<b>持続時間を持つ状態を誰が持つか</b>で使い分ける。
+        迷ったら「決め打ちの登場演出＝<code class="inl">UIAnimator</code>」「状況で変わる値＝<code class="inl">tweenUi</code>」「よくある演出＝<code class="inl">uifx</code>」。</p>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>手段</th><th>書く場所</th><th>向いている用途</th></tr></thead>
+            <tbody>
+              <tr><td><code>UIAnimator</code></td><td>エディタ（コンポーネント）</td><td><b>宣言的</b>。画面が出た瞬間の登場演出・ボタンのホバー拡大・常時ふわふわ。Lua を1行も書かずに済む</td></tr>
+              <tr><td><code>scene:tweenUi</code></td><td>Lua</td><td><b>命令的</b>。ゲーム状況で変わる値（HP・スコア・選択位置）。1エンティティに<b>複数重ねられる</b></td></tr>
+              <tr><td><code>uifx.*</code></td><td>Lua</td><td>tweenUi を包んだ定番19本。<code>punch</code> / <code>hit</code> / <code>stagger</code> など名前で意図が伝わる</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p><b>1. UIAnimator</b>: <code class="inl">UIRect</code> を持つエンティティに Add Component で足すだけ。
+        <b>Play / ゲームモード中のみ</b>再生され、効果（移動・拡縮・アルファ・回転）は<b>自分と子孫にまとめて</b>掛かる
+        ＝ パネルのルートに1個付ければ中身ごと動く。メニューを順番に出すなら各項目の
+        <code class="inl">showDelay</code> を 0.05〜0.10 秒ずつずらす（項目が多いほど詰める）。
+        <code class="inl">hoverScale</code> / <code class="inl">pressScale</code> は
+        <b>同じエンティティに <code class="inl">UIButton</code> がある時だけ</b>効く（子ラベルに付けても反応しない）。</p>
+
+        <p><b>2. tweenUi</b>: 1回の呼び出しで指定したチャンネルだけが動く。別々に呼べば<b>同時に重なる</b>ので
+        「動かしながら色を変える」は2行で書く。同じチャンネルを二重に掛けると後勝ち。</p>
+<pre><code><span class="tok-c">-- 重ねがけ: 位置と色を別々のトゥイーンで同時に動かす</span>
+scene:<span class="tok-fn">tweenUi</span>(card, { dy = <span class="tok-n">-40</span>, duration = <span class="tok-n">0.35</span>, easing = <span class="tok-s">"expo"</span> })
+scene:<span class="tok-fn">tweenUi</span>(card, { alpha = <span class="tok-n">1</span>, duration = <span class="tok-n">0.35</span> })
+
+<span class="tok-c">-- 連鎖: onComplete で次を呼ぶ（溜めてから撃つ）</span>
+scene:<span class="tok-fn">tweenUi</span>(icon, { scale = <span class="tok-n">0.8</span>, duration = <span class="tok-n">0.12</span>, easing = <span class="tok-s">"inBack"</span>,
+    onComplete = <span class="tok-k">function</span>()
+        scene:<span class="tok-fn">tweenUi</span>(icon, { scale = <span class="tok-n">1.0</span>, duration = <span class="tok-n">0.4</span>, easing = <span class="tok-s">"elastic"</span> })
+    <span class="tok-k">end</span> })
+
+<span class="tok-c">-- 白フラッシュ: color は 1 を超える値を入れられる</span>
+scene:<span class="tok-fn">tweenUi</span>(portrait, { color = { <span class="tok-n">3</span>, <span class="tok-n">3</span>, <span class="tok-n">3</span> }, duration = <span class="tok-n">0.08</span> })
+
+<span class="tok-c">-- 割り込み対策: 別の演出を始める前に止める</span>
+scene:<span class="tok-fn">stopUiTweens</span>(hpBar)
+scene:<span class="tok-fn">tweenUi</span>(hpBar, { fill = hp / hpMax, duration = <span class="tok-n">0.3</span> })</code></pre>
+
+        <p><b>3. 時間とイージングの相場</b>（実在ゲームの実測ベース。詳細は
+        <code class="inl">docs/UI_STYLE_GUIDE.md</code>）。<code class="inl">linear</code> は進捗表示以外に使わない
+        ＝ 装飾に使うと機械っぽくなる。</p>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>用途</th><th>duration</th><th>easing</th><th>書き方</th></tr></thead>
+            <tbody>
+              <tr><td>ボタン押下感</td><td>0.12s+0.09s</td><td>out→back</td><td><code>uifx.punch(e.source)</code></td></tr>
+              <tr><td>パネル/メニュー遷移</td><td>0.2〜0.4s</td><td>out / expo</td><td><code>uifx.slideInLeft</code> / showAnim+expo</td></tr>
+              <tr><td>ステージャー間隔</td><td>0.05〜0.10s</td><td>—</td><td><code>uifx.stagger(items, 0.07, uifx.slideInLeft)</code></td></tr>
+              <tr><td>ゲージ増減</td><td>0.3s前後</td><td>out</td><td><code>tweenUi{fill=}</code> / <code>uifx.fillTo</code></td></tr>
+              <tr><td>ゴーストバー（遅れて削れる）</td><td>本体0.08s＋0.35s後に0.45s</td><td>out</td><td><code>uifx.damageBar(front, ghost, v)</code></td></tr>
+              <tr><td>数字ロール</td><td>0.6〜0.8s</td><td>expo</td><td><code>uifx.countTo(e, v, 0.8, "%06d")</code></td></tr>
+              <tr><td>祝祭（結果/ガチャ/実績）</td><td>0.8〜1.2s</td><td>elastic / bounce</td><td><code>uifx.bounceIn</code>。日常UIに使うと安っぽい</td></tr>
+              <tr><td>被ダメージ</td><td>フラッシュ0.1s＋シェイク0.4s</td><td>—</td><td><code>uifx.hit(hpBar)</code></td></tr>
+              <tr><td>クールダウン</td><td>実時間で減少</td><td>linear可</td><td><code>shape=リング</code>＋<code>fill</code>、完了時 <code>uifx.heartbeat</code></td></tr>
+              <tr><td>画面ワイプ</td><td>0.3〜0.6s</td><td>inOut</td><td><code>clipChildren</code>＋子を <code>tweenUi{dx=}</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p><b>4. 実戦レシピ</b></p>
+<pre><code><span class="tok-c">-- ポーズメニュー: パネルを出して、項目を時間差で流し込む</span>
+scene:<span class="tok-fn">showUi</span>(pauseRoot)
+uifx.<span class="tok-fn">stagger</span>({ btnResume, btnOption, btnQuit }, <span class="tok-n">0.07</span>, uifx.slideInLeft)
+
+<span class="tok-c">-- ボタンが押された: 押した本人を弾ませてから遷移</span>
+events:<span class="tok-fn">on</span>(<span class="tok-s">"start_clicked"</span>, <span class="tok-k">function</span>(data)
+    uifx.<span class="tok-fn">punch</span>(data.source)
+    <span class="tok-fn">goToScene</span>(<span class="tok-s">"assets/scenes/game.json"</span>)
+<span class="tok-k">end</span>)
+
+<span class="tok-c">-- 被弾: バーを減らし、ゴーストバーを遅れて追わせ、画面を揺らす</span>
+uifx.<span class="tok-fn">damageBar</span>(hpFront, hpGhost, hp / hpMax)
+uifx.<span class="tok-fn">hit</span>(hudRoot)
+
+<span class="tok-c">-- リザルト: スコアをロールさせ、終わったらランクを跳ねさせる</span>
+scene:<span class="tok-fn">tweenUi</span>(scoreText, { countTo = score, countFmt = <span class="tok-s">"%06d"</span>,
+    duration = <span class="tok-n">0.8</span>, easing = <span class="tok-s">"expo"</span>,
+    onComplete = <span class="tok-k">function</span>() uifx.<span class="tok-fn">bounceIn</span>(rankBadge) <span class="tok-k">end</span> })
+
+<span class="tok-c">-- モーダルを閉じる: 逆再生で消す（子孫ごと）</span>
+scene:<span class="tok-fn">hideUi</span>(modalRoot)</code></pre>
+
+        <p><b>よくある詰まり</b>: ①UIAnimator が動かない → <b>Play中 / ゲームモード中しか再生されない</b>（編集中のプレビューでは止まったまま）
+        ②ホバー拡大が効かない → <code class="inl">UIButton</code> が<b>同じエンティティに</b>無い
+        ③演出が二重に走る → 前のトゥイーンを <code class="inl">stopUiTweens</code> で止めていない
+        ④子だけ動かしたい → UIAnimator は<b>子孫ごと</b>掛かるので、動かしたい範囲のルートに付け替える。</p>
+
+        <h3>2D スプライトの連番アニメ（<code class="inl">Sprite2D</code>）</h3>
+        <p><code class="inl">Sprite2D</code> は3D空間に置く板（<code class="inl">worldSpace=true</code>）としても、
+        画面固定のHUD（<code class="inl">false</code>）としても使える。連番アニメのフィールド名とシート解釈は
+        <code class="inl">UIImage</code> / <code class="inl">MeshRenderer</code> と<b>完全に共通</b>
+        （UV計算は <code class="inl">renderer/SpriteAnim.h</code> の純関数を3者で共有）。</p>
+
+        <p><b>手順1: 置く</b> — アセットブラウザから画像を <b>SceneView へドラッグ＆ドロップ</b>するだけで
+        <code class="inl">Sprite2D</code> 付きエンティティができる（対応: <code class="inl">.png .jpg .jpeg .bmp .tga .dds .gif</code>）。
+        ドロップ直後は <code class="inl">worldSpace=true</code> / <code class="inl">billboard=false</code> で、床とZファイトしないよう
+        <b>ドロップ位置から Y+0.5</b> 持ち上がる。画像が <code class="inl">assets/</code> の外にあると配置できない。
+        HUD にするなら Inspector で <code class="inl">worldSpace</code> を OFF ＝ 以降 <code class="inl">Transform</code> の x/y が
+        <b>画面ピクセル座標の中心</b>として扱われる。常にカメラを向かせたいなら <code class="inl">billboard</code> を ON（worldSpace時のみ）。</p>
+
+        <p><b>手順2: シートを用意する</b> — 前提は<b>等分割グリッド</b>ひとつだけ。コマの間に余白や区切り線を入れず、
+        全コマを同じ寸法で敷き詰める。UV をセル単位で切るので、コマごとに大きさが違うシートは扱えない。</p>
+
+        <p><b>手順3: パラメータを決める</b> — Inspector の Sprite2D →「アニメ」グループで設定する（エディタ中もプレビュー再生される）。</p>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>作りたいもの</th><th>シート</th><th>設定</th></tr></thead>
+            <tbody>
+              <tr><td><b>爆発</b>（1回だけ再生して消す）</td><td>8コマを横1列</td><td><code>animFrames=8</code> <code>animFps=24</code> <code>animCols=0</code> <code>animMode=1</code><br>cols=0 なので自動で8列1行扱い</td></tr>
+              <tr><td><b>たいまつの炎</b>（延々ループ）</td><td>16コマを 4×4</td><td><code>animFrames=16</code> <code>animFps=12</code> <code>animCols=4</code> <code>animMode=0</code><br>animRows は自動で 4（= ceil(16/4)）</td></tr>
+              <tr><td><b>キャラの歩き</b>（行で複数モーション）</td><td>4行シート<br>行0=待機6 / 行1=歩き6 / 行2=攻撃4 / 行3=やられ5</td><td>歩きなら <code>animFrames=6</code> <code>animCols=6</code> <code>animRow=1</code> <b><code>animRows=4</code></b> <code>animMode=0</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p><b>いちばんハマるのが <code class="inl">animRows</code></b>。既定の <code class="inl">0</code> は
+        「<code class="inl">animRow + ceil(animFrames/animCols)</code> 行のシート」と<b>推測</b>する。
+        上の歩き（row=1・6コマ・6列）なら推測値は 2 行になり、実際は4行シートなので<b>UVが縦にずれて隣の行が混ざる</b>。
+        判定はかんたんで、<b>アニメ行の下にまだ別の行が続くシートなら animRows を実数で書く</b>。
+        1モーションしか入っていないシートなら 0（自動）のままでいい。</p>
+
+        <p><b>手順4: Lua でモーションを切り替える</b> — <code class="inl">setSpriteAnim</code> は
+        <b>呼ぶたび再生位置が頭に戻る</b>ので、切り替え前に「今と同じモーションか」を見て無駄な呼び出しを避ける。</p>
+<pre><code><span class="tok-k">local</span> MOTION = {
+    idle   = { row = <span class="tok-n">0</span>, frames = <span class="tok-n">6</span>, fps = <span class="tok-n">8</span>  },
+    walk   = { row = <span class="tok-n">1</span>, frames = <span class="tok-n">6</span>, fps = <span class="tok-n">12</span> },
+    attack = { row = <span class="tok-n">2</span>, frames = <span class="tok-n">4</span>, fps = <span class="tok-n">18</span> },
+    die    = { row = <span class="tok-n">3</span>, frames = <span class="tok-n">5</span>, fps = <span class="tok-n">10</span> },
+}
+<span class="tok-k">local</span> SHEET_COLS = <span class="tok-n">6</span>
+
+<span class="tok-k">local function</span> <span class="tok-fn">play</span>(self, name, mode)
+    <span class="tok-k">if</span> self.motion == name <span class="tok-k">then return end</span>   <span class="tok-c">-- 同じなら頭出ししない</span>
+    self.motion = name
+    <span class="tok-k">local</span> m = MOTION[name]
+    scene:<span class="tok-fn">setSpriteAnim</span>(self.e, m.frames, m.fps, SHEET_COLS, m.row)
+    scene:<span class="tok-fn">setSpriteAnimMode</span>(self.e, mode <span class="tok-k">or</span> <span class="tok-n">0</span>)
+<span class="tok-k">end</span>
+
+<span class="tok-k">function</span> <span class="tok-fn">OnUpdate</span>(self, dt)
+    <span class="tok-k">if</span> self.attacking <span class="tok-k">then</span>
+        <span class="tok-k">if</span> scene:<span class="tok-fn">isSpriteAnimDone</span>(self.e) <span class="tok-k">then</span> self.attacking = <span class="tok-k">false</span> <span class="tok-k">end</span>
+        <span class="tok-k">return</span>
+    <span class="tok-k">end</span>
+
+    <span class="tok-k">if</span> input:<span class="tok-fn">isKeyDown</span>(KEY_SPACE) <span class="tok-k">then</span>
+        self.attacking = <span class="tok-k">true</span>
+        <span class="tok-fn">play</span>(self, <span class="tok-s">"attack"</span>, <span class="tok-n">1</span>)              <span class="tok-c">-- 1=単発</span>
+    <span class="tok-k">elseif</span> math.<span class="tok-fn">abs</span>(self.vx) &gt; <span class="tok-n">0.01</span> <span class="tok-k">then</span>
+        <span class="tok-fn">play</span>(self, <span class="tok-s">"walk"</span>)
+    <span class="tok-k">else</span>
+        <span class="tok-fn">play</span>(self, <span class="tok-s">"idle"</span>)
+    <span class="tok-k">end</span>
+<span class="tok-k">end</span></code></pre>
+
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>やりたいこと</th><th>書き方</th></tr></thead>
+            <tbody>
+              <tr><td>連番を止めて静止画に戻す</td><td><code>scene:setSpriteAnim(e, 0, 0, 0, 0)</code> ＝ uvMin/uvMax 指定に戻る</td></tr>
+              <tr><td>同じモーションを頭から流し直す</td><td><code>scene:restartSpriteAnim(e)</code>（設定は変えない）</td></tr>
+              <tr><td>アトラスの一部だけ静止表示</td><td><code>scene:setSpriteUV(e, u0,v0,u1,v1)</code>。連番が有効だと毎フレーム上書きされるので先に止める</td></tr>
+              <tr><td>背景をスクロールさせる</td><td><code>scene:setSpriteScroll(e, 0.1, 0)</code>。連番中は無視される</td></tr>
+              <tr><td>フェードアウト</td><td><code>scene:setSpriteAlpha(e, a)</code></td></tr>
+              <tr><td>重なり順を変える</td><td><code>Sprite2D.layer</code>（小さいほど奥）</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p><b>UI・3Dでも同じ書き方が通る</b>: <code class="inl">UIImage</code> なら
+        <code class="inl">setUiAnim</code> / <code class="inl">setUiAnimMode</code> / <code class="inl">isUiAnimDone</code>、
+        3Dメッシュなら <code class="inl">setMeshAnim</code> / <code class="inl">setMeshAnimMode</code> / <code class="inl">isMeshAnimDone</code>。
+        上の <code class="inl">play()</code> は関数名を差し替えるだけで流用できる。</p>
+
         <h3><code class="inl">time</code>：時間 API（ポーズ / スローモ / タイマー）</h3>
         <p><code class="inl">:</code> ではなく <code class="inl">.</code> で呼ぶ。<code class="inl">setScale</code> は <b><code class="inl">OnUpdate</code> に渡る dt 自体に掛かる</b>ので、既存の移動コードは無改修でスローモ/ポーズに追従する（物理・パーティクルは対象外）。状態は Play 開始でリセット。</p>
         <div class="tbl-wrap">
