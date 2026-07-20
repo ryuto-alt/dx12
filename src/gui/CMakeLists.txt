@@ -10,7 +10,9 @@ add_library(Gui STATIC
 set_source_files_properties(ImGuizmo.cpp PROPERTIES COMPILE_FLAGS "/W0")
 
 target_include_directories(Gui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
-target_link_libraries(Gui PUBLIC Graphics imgui::imgui)
+# UiTestHarness(エンジン診断)は core/Application.h と editor/EditorContext.h を読む＝
+# entt / DirectXMath / ecs のヘッダが要る。ECS はそれらを PUBLIC で持つ（Gui は参照しない＝循環しない）。
+target_link_libraries(Gui PUBLIC Graphics imgui::imgui ECS)
 
 if(MSVC)
     target_compile_options(Gui PRIVATE ${DX12_COMPILE_OPTIONS})

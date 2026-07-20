@@ -14,6 +14,12 @@ class CrashHandler
 public:
     // WinMain の先頭で1回呼ぶ(Logger より前でよい。ハンドラはログシステムに依存しない)。
     static void Install();
+
+    // 「落ちる直前に何をしていたか」を残す。dx12_crash.log に新しい順で最大 16 件出る。
+    // スタックトレースだけでは分からない“操作の文脈”(どのパネルのどの手順か)を補う。
+    // クラッシュ処理中はヒープを触れないので、固定長リングへ strncpy するだけの実装。
+    // 呼び出しコストはほぼゼロなので、時間のかかる処理の前に気軽に置いてよい。
+    static void Breadcrumb(const char* text);
 };
 
 } // namespace dx12e

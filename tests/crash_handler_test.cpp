@@ -19,6 +19,9 @@ int main(int argc, char** argv)
     if (argc > 1 && std::strcmp(argv[1], "--crash-child") == 0)
     {
         dx12e::CrashHandler::Install();
+        // パンくずが「新しい順」で残ることも確認する（古いものが押し出されるリング）
+        dx12e::CrashHandler::Breadcrumb("crumb-oldest");
+        dx12e::CrashHandler::Breadcrumb("crumb-newest");
         volatile int* p = nullptr;
         *p = 42;      // アクセス違反 → CrashHandler がレポートを書いてプロセス終了
         return 0;     // 到達しない
@@ -60,6 +63,19 @@ int main(int argc, char** argv)
     if (report.find("#00") == std::string::npos)
     {
         std::printf("FAIL: レポートにスタックトレースが無い:\n%s\n", report.c_str());
+        return 1;
+    }
+
+    const size_t newest = report.find("crumb-newest");
+    const size_t oldest = report.find("crumb-oldest");
+    if (newest == std::string::npos || oldest == std::string::npos)
+    {
+        std::printf("FAIL: レポートにパンくずが無い:\n%s\n", report.c_str());
+        return 1;
+    }
+    if (newest > oldest)
+    {
+        std::printf("FAIL: パンくずが新しい順に並んでいない:\n%s\n", report.c_str());
         return 1;
     }
 

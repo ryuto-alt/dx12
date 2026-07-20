@@ -119,6 +119,18 @@ public:
 
     enum class EngineMode { Editor, Playing };
 
+    // ===== エンジン診断(UI 自動テスト)用フック。通常のコードからは使わない =====
+    // メニュー経由の操作は「シーンを開く」等が Win32 のモーダルダイアログを開き、
+    // 自動テストがそこで永久に固まる。テストからはこれらで状態を直接動かす。
+    EditorContext* GetEditorContext()  { return m_editorCtx.get(); }
+    EngineMode     GetEngineMode() const { return m_engineMode; }
+    // 次のフレーム境界で Play/Stop する。m_pendingMode を直接書くと同フレームの
+    // EditorLayer::Render に Editor へ上書きされるため、Update 冒頭で消費する要求として積む。
+    void           RequestMode(EngineMode m) { m_diagModeRequest = (m == EngineMode::Playing) ? 2 : 1; }
+    // 検査でシーンを汚さないための退避/復元。戻り値は退避先パス(空なら失敗)。
+    std::string    SaveSceneSnapshot();
+    void           RequestSceneRestore(const std::string& path);
+
 private:
     void Update();
     void Render();
@@ -288,6 +300,7 @@ private:
     bool m_uiTestsRunAll    = false;
     int  m_uiTestsSpeed     = 0;
     int  m_uiTestExitCode   = 0;
+    int  m_diagModeRequest  = 0;   // 診断からの Play/Stop 要求（0=なし 1=Editor 2=Playing）
     std::unique_ptr<PipelineState>     m_skinnedPipelineState;        // 通常 forward(skinned, LESS)
     std::unique_ptr<PipelineState>     m_skinnedPipelineStateLEqual;  // SSAO 深度プリパス併用時(skinned, LESS_EQUAL)
     std::unique_ptr<PipelineState>     m_gridPipelineState;

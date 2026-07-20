@@ -19,6 +19,15 @@ namespace
 // クラッシュ処理中は通常のヒープ/CRT/ロガーが壊れている可能性があるため、
 // このファイル内では Win32 API と snprintf/fprintf だけで完結させる。
 
+// ---- パンくず(直前の操作) ----
+// クラッシュハンドラから読むので固定長・ヒープ非使用。書き手はほぼメインスレッドだが、
+// 万一競合しても壊れるのは1行分の文字列だけ(ロックは取らない=クラッシュ経路を増やさない)。
+constexpr int  kCrumbCount = 16;
+constexpr int  kCrumbLen   = 192;
+char           g_crumbs[kCrumbCount][kCrumbLen] = {};
+volatile LONG  g_crumbSeq = 0;            // 累計書き込み数(次に書くスロット = seq % kCrumbCount)
+ULONGLONG      g_startTick = GetTickCount64();
+
 const char* ExceptionName(DWORD code)
 {
     switch (code)
@@ -115,6 +124,22 @@ void WriteStackTrace(FILE* out, const CONTEXT* crashCtx)
     }
 }
 
+// 直近のパンくずを新しい順に書く。1件も無ければ何も出さない。
+void WriteBreadcrumbs(FILE* out)
+{
+    const LONG seq = g_crumbSeq;
+    if (seq <= 0)
+        return;
+
+    std::fprintf(out, "\n--- 直前の操作(新しい順) ---\n");
+    const int shown = (seq < kCrumbCount) ? static_cast<int>(seq) : kCrumbCount;
+    for (int i = 0; i < shown; ++i)
+    {
+        const LONG idx = (seq - 1 - i) % kCrumbCount;
+        std::fprintf(out, "  [-%d] %s\n", i, g_crumbs[idx]);
+    }
+}
+
 void WriteMiniDump(EXCEPTION_POINTERS* ep)
 {
     HANDLE file = CreateFileA("dx12_crash.dmp", GENERIC_WRITE, 0, nullptr,
@@ -173,6 +198,8 @@ LONG WINAPI OnUnhandledException(EXCEPTION_POINTERS* ep)
             }
         }
 
+        WriteBreadcrumbs(out);
+
         std::fprintf(out, "\n--- スタックトレース(クラッシュスレッド) ---\n");
         if (ep && ep->ContextRecord)
             WriteStackTrace(out, ep->ContextRecord);
@@ -200,6 +227,17 @@ void ReportHereAndDie()
 }
 
 } // namespace
+
+void CrashHandler::Breadcrumb(const char* text)
+{
+    if (text == nullptr)
+        return;
+
+    const LONG slot = (InterlockedIncrement(&g_crumbSeq) - 1) % kCrumbCount;
+    const double sec = static_cast<double>(GetTickCount64() - g_startTick) / 1000.0;
+    // 起動からの経過秒を頭に付ける(「固まった」報告でどこで止まったか分かる)
+    std::snprintf(g_crumbs[slot], kCrumbLen, "+%.1fs %s", sec, text);
+}
 
 void CrashHandler::Install()
 {

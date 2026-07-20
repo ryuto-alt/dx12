@@ -5059,6 +5059,15 @@ void Application::Run()
             m_modeChangeRequested = true;
         }
 
+        // エンジン診断(UI自動テスト)からの Play/Stop 要求。ImGui パスより前のここで消費する
+        // （Render 側の「m_modeChangeRequested なら pendingPlayMode で上書き」に潰されないため）。
+        if (m_diagModeRequest != 0 && !m_loading)
+        {
+            m_pendingMode = (m_diagModeRequest == 2) ? EngineMode::Playing : EngineMode::Editor;
+            m_diagModeRequest = 0;
+            m_modeChangeRequested = true;
+        }
+
         // モード切替（前フレームのImGuiボタンから遅延実行）
         if (m_modeChangeRequested)
         {
@@ -7676,6 +7685,31 @@ void Application::LoadGameScript()
         m_scriptEngine->LoadScript(scriptPath);
     else
         Logger::Warn("ゲームスクリプトが見つかりません: {}", scriptPath);
+}
+
+// エンジン診断が検査前に現在のシーンを退避するための保存先。assets 配下に置くのは、
+// シーンJSON がアセットを assets 相対で参照するため（外に出すと復元時に解決できない）。
+std::string Application::SaveSceneSnapshot()
+{
+    if (!m_scene || !m_editorCtx)
+        return {};
+
+    const std::string assetsDir = PathResolver::AssetsDir();
+    const std::string path      = assetsDir + "scenes/.diagnostics_snapshot.json";
+    std::error_code ec;
+    std::filesystem::create_directories(assetsDir + "scenes", ec);
+    if (!SceneSerializer::Save(*m_scene, path, assetsDir))
+    {
+        Logger::Warn("診断: シーンの退避に失敗しました: {}", path);
+        return {};
+    }
+    return path;
+}
+
+void Application::RequestSceneRestore(const std::string& path)
+{
+    if (m_editorCtx && !path.empty())
+        m_editorCtx->pendingLoadPath = path;   // フレーム境界で SceneSerializer::Load される
 }
 
 bool Application::BuildGameStandalone()
