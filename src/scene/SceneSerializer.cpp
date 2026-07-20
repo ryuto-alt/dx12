@@ -1,6 +1,7 @@
 #include "scene/SceneSerializer.h"
 #include "scene/Scene.h"
 #include "ecs/Components.h"
+#include "ecs/ComponentMeta.h"             // entt::meta フィールド反映（シリアライズの単一ソース）
 #include "renderer/Mesh.h"
 #include "renderer/Material.h"
 #include "core/Logger.h"
@@ -80,254 +81,202 @@ static ScriptPropType ScriptPropTypeFromStr(const std::string& s)
     return ScriptPropType::Float;
 }
 
-// コア部品の直列化/復元を RuntimeComponentRegistry へ登録する（Phase 1）。
-// 既存の per-type コード（SerializeEntityJson / InstantiateEntityJson 内の if 連鎖）を
-// そのままラムダへ移設したもの＝挙動は不変。serialize_roundtrip_test が同値性を担保する。
-// 段階移行のため、現状は light×3 / camera / rigidBody / 各 collider のみ登録。
-// 残り（gimmick/audioSource/particleEmitter/trigger/convexHull/luaScript）は順次移設する。
+// ===== entt::meta 反射ベースの汎用シリアライズ（ComponentMeta が単一ソース）=====
+// ComponentMeta.cpp に登録された「永続フィールドだけ」を JSON へ往復させる。
+// 新規コンポーネントの追加手順:
+//   ① Components.h に struct
+//   ② ComponentMeta.cpp に meta_factory 登録（永続フィールドのみ。_ 付きランタイム状態は登録しない）
+//   ③ 下の RegisterCoreComponentSerializers に MakeReflectedInfo 1 行
+// これで保存/復元が揃う（従来の手書き serialize/deserialize ラムダは不要）。
+
+// meta_any の値 → JSON。未対応型は null を返す（呼び出し側で警告スキップ）。
+static json MetaFieldToJson(const entt::meta_any& v)
+{
+    const auto t = v.type();
+    if (t == entt::resolve<f32>())         return v.cast<f32>();
+    if (t == entt::resolve<i32>())         return v.cast<i32>();
+    if (t == entt::resolve<u32>())         return v.cast<u32>();
+    if (t == entt::resolve<bool>())        return v.cast<bool>();
+    if (t == entt::resolve<std::string>()) return v.cast<std::string>();
+    if (t == entt::resolve<XMFLOAT3>())    return SerializeFloat3(v.cast<XMFLOAT3>());
+    if (t == entt::resolve<XMFLOAT2>())
+    {
+        const auto f = v.cast<XMFLOAT2>();
+        return json::array({f.x, f.y});
+    }
+    if (t == entt::resolve<XMFLOAT4>())
+    {
+        const auto f = v.cast<XMFLOAT4>();
+        return json::array({f.x, f.y, f.z, f.w});
+    }
+    if (t.is_enum())
+    {
+        entt::meta_any c = v;   // allow_cast は自己変換なのでコピーに対して行う
+        if (c.allow_cast<int>())
+            return c.cast<int>();
+    }
+    return json{};
+}
+
+// JSON → meta フィールド設定。型不一致や未対応型は false（フィールド単位でスキップ）。
+static bool JsonToMetaField(entt::meta_any& obj, const entt::meta_data& data, const json& j)
+{
+    const auto t = data.type();
+    try
+    {
+        if (t == entt::resolve<f32>())         return data.set(obj, j.get<f32>());
+        if (t == entt::resolve<i32>())         return data.set(obj, j.get<i32>());
+        if (t == entt::resolve<u32>())         return data.set(obj, j.get<u32>());
+        if (t == entt::resolve<bool>())        return data.set(obj, j.get<bool>());
+        if (t == entt::resolve<std::string>()) return data.set(obj, j.get<std::string>());
+        if (t == entt::resolve<XMFLOAT3>())    return data.set(obj, DeserializeFloat3(j));
+        if (t == entt::resolve<XMFLOAT2>())
+        {
+            if (!j.is_array() || j.size() < 2) return false;
+            return data.set(obj, XMFLOAT2{j[0].get<f32>(), j[1].get<f32>()});
+        }
+        if (t == entt::resolve<XMFLOAT4>())
+        {
+            if (!j.is_array() || j.size() < 4) return false;
+            return data.set(obj, XMFLOAT4{j[0].get<f32>(), j[1].get<f32>(),
+                                          j[2].get<f32>(), j[3].get<f32>()});
+        }
+        if (t.is_enum())
+        {
+            entt::meta_any v{j.get<int>()};
+            if (!v.allow_cast(t)) return false;
+            return data.set(obj, v);
+        }
+    }
+    catch (const json::exception&)
+    {
+        return false;   // 型不一致はフィールド単位でスキップ（シーン全体を巻き込まない）
+    }
+    return false;
+}
+
+// T の RuntimeComponentInfo を反射から生成する。
+// replaceExisting: true = emplace_or_replace / false = 既に持っていたら何もしない
+// （ライト/カメラは従来 emplace-if-absent だったので false、それ以外は true で挙動を維持）。
+template <typename T>
+static RuntimeComponentInfo MakeReflectedInfo(const char* typeName, const char* jsonKey,
+                                              bool replaceExisting)
+{
+    const std::string key = jsonKey;
+    RuntimeComponentInfo info;
+    info.typeName = typeName;
+    info.source   = ComponentSource::Core;
+
+    info.serialize = [key](const entt::registry& reg, entt::entity e, json& ej)
+    {
+        if (!reg.all_of<T>(e)) return;
+        T comp = reg.get<T>(e);   // 値コピー（const 越しの meta get を避ける）
+        entt::meta_any handle = entt::forward_as_meta(comp);
+        json out = json::object();
+        for (auto&& [id, data] : entt::resolve<T>().data())
+        {
+            (void)id;
+            const char* name = data.name();
+            if (!name) continue;
+            json jv = MetaFieldToJson(data.get(handle));
+            if (jv.is_null())
+            {
+                Logger::Warn("MetaSerialize: 未対応のフィールド型です（{}.{}）", key, name);
+                continue;
+            }
+            out[name] = std::move(jv);
+        }
+        ej[key] = std::move(out);
+    };
+
+    info.deserialize = [key, replaceExisting](entt::registry& reg, entt::entity e, const json& ej)
+    {
+        if (!ej.contains(key) || !ej[key].is_object()) return;
+        const json& cj = ej[key];
+
+        T comp{};   // 既定値から開始し、JSON に存在するフィールドだけ上書き（後方互換）
+        entt::meta_any handle = entt::forward_as_meta(comp);
+        for (auto&& [id, data] : entt::resolve<T>().data())
+        {
+            (void)id;
+            const char* name = data.name();
+            if (!name || !cj.contains(name)) continue;
+            if (!JsonToMetaField(handle, data, cj[name]))
+                Logger::Warn("MetaDeserialize: フィールドをスキップしました（{}.{}）", key, name);
+        }
+
+        if (replaceExisting)
+            reg.emplace_or_replace<T>(e, std::move(comp));
+        else if (!reg.all_of<T>(e))
+            reg.emplace<T>(e, std::move(comp));
+    };
+
+    return info;
+}
+
+// コア部品の直列化/復元を RuntimeComponentRegistry へ登録する。
+// 純フィールド型は entt::meta 反射（MakeReflectedInfo）で自動化し、独自フォーマットを
+// 持つ型（Tag=配列直値 / DataComponent=型付きマップ）だけ手書きを残す。
+// serialize_roundtrip_test が新旧の同値性を担保する。
+// 残りのレガシーif連鎖（gimmick/audioSource/particleEmitter/trigger/convexHull/luaScript）は順次移設する。
 static void RegisterCoreComponentSerializers()
 {
     static bool done = false;
     if (done) return;
     done = true;
 
+    // フィールド定義の単一ソース = ComponentMeta（entt::meta）。ここで確実に登録しておく
+    RegisterCoreComponentMeta();
+
     auto& R = RuntimeComponentRegistry::Get();
 
-    R.Register({ "PointLight", ComponentSource::Core,
-        [](const entt::registry& reg, entt::entity entity, json& ej) {
-            if (reg.all_of<PointLight>(entity)) {
-                const auto& pl = reg.get<PointLight>(entity);
-                ej["pointLight"] = {
-                    {"color",     SerializeFloat3(pl.color)},
-                    {"intensity", pl.intensity},
-                    {"range",     pl.range}
-                };
-            }
-        },
-        [](entt::registry& reg, entt::entity e, const json& ej) {
-            if (ej.contains("pointLight")) {
-                const auto& plj = ej["pointLight"];
-                PointLight pl;
-                if (plj.contains("color"))     pl.color     = DeserializeFloat3(plj["color"], {1,1,1});
-                if (plj.contains("intensity")) pl.intensity = plj["intensity"].get<f32>();
-                if (plj.contains("range"))     pl.range     = plj["range"].get<f32>();
-                if (!reg.all_of<PointLight>(e))
-                    reg.emplace<PointLight>(e, pl);
-            }
-        }, {}, {} });
+    // ---- 反射ベース（純フィールド型）----
+    // ライトは「既にあれば上書きしない」(emplace-if-absent) が従来挙動なので replaceExisting=false
+    R.Register(MakeReflectedInfo<PointLight>("PointLight", "pointLight", false));
+    R.Register(MakeReflectedInfo<DirectionalLight>("DirectionalLight", "directionalLight", false));
+    R.Register(MakeReflectedInfo<SpotLight>("SpotLight", "spotLight", false));
+    R.Register(MakeReflectedInfo<RigidBody>("RigidBody", "rigidBody", true));
+    R.Register(MakeReflectedInfo<BoxCollider>("BoxCollider", "boxCollider", true));
+    R.Register(MakeReflectedInfo<SphereCollider>("SphereCollider", "sphereCollider", true));
+    R.Register(MakeReflectedInfo<CapsuleCollider>("CapsuleCollider", "capsuleCollider", true));
+    R.Register(MakeReflectedInfo<CharacterController>("CharacterController", "characterController", true));
+    R.Register(MakeReflectedInfo<Sprite2D>("Sprite2D", "sprite2d", true));
+    R.Register(MakeReflectedInfo<TrailRenderer>("TrailRenderer", "trailRenderer", true));
+    R.Register(MakeReflectedInfo<NetworkIdentity>("NetworkIdentity", "networkIdentity", true));
+    R.Register(MakeReflectedInfo<NetworkTransform>("NetworkTransform", "networkTransform", true));
+    // ゲーム内UI（retained-mode）。ランタイム状態（_付き）は ComponentMeta 未登録なので保存されない
+    R.Register(MakeReflectedInfo<UICanvas>("UICanvas", "uiCanvas", true));
+    R.Register(MakeReflectedInfo<UIRect>("UIRect", "uiRect", true));
+    R.Register(MakeReflectedInfo<UIImage>("UIImage", "uiImage", true));
+    R.Register(MakeReflectedInfo<UIText>("UIText", "uiText", true));
+    R.Register(MakeReflectedInfo<UIButton>("UIButton", "uiButton", true));
+    R.Register(MakeReflectedInfo<UISlider>("UISlider", "uiSlider", true));
+    R.Register(MakeReflectedInfo<UIToggle>("UIToggle", "uiToggle", true));
+    R.Register(MakeReflectedInfo<UIScrollView>("UIScrollView", "uiScrollView", true));
+    R.Register(MakeReflectedInfo<UILayout>("UILayout", "uiLayout", true));
+    R.Register(MakeReflectedInfo<UIAnimator>("UIAnimator", "uiAnimator", true));
 
-    R.Register({ "DirectionalLight", ComponentSource::Core,
-        [](const entt::registry& reg, entt::entity entity, json& ej) {
-            if (reg.all_of<DirectionalLight>(entity)) {
-                const auto& dl = reg.get<DirectionalLight>(entity);
-                ej["directionalLight"] = {
-                    {"direction", SerializeFloat3(dl.direction)},
-                    {"color",     SerializeFloat3(dl.color)},
-                    {"intensity", dl.intensity},
-                    {"ambient",   dl.ambient}
-                };
+    // ---- カメラ: フィールドは反射で復元し、新規追加時だけアクティブカメラの重複防止を行う ----
+    {
+        auto info = MakeReflectedInfo<CameraComponent>("CameraComponent", "camera", false);
+        auto generic = info.deserialize;
+        info.deserialize = [generic](entt::registry& reg, entt::entity e, const json& ej)
+        {
+            const bool had = reg.all_of<CameraComponent>(e);
+            generic(reg, e, ej);
+            if (had) return;   // 既存カメラには触らない（従来挙動）
+            auto* cam = reg.try_get<CameraComponent>(e);
+            if (!cam || !cam->isActive) return;
+            // アクティブカメラの重複防止（複製時など）
+            for (auto [oe, oc] : reg.view<const CameraComponent>().each())
+            {
+                if (oe != e && oc.isActive) { cam->isActive = false; break; }
             }
-        },
-        [](entt::registry& reg, entt::entity e, const json& ej) {
-            if (ej.contains("directionalLight")) {
-                const auto& dlj = ej["directionalLight"];
-                DirectionalLight dl;
-                if (dlj.contains("direction")) dl.direction = DeserializeFloat3(dlj["direction"], {0,-1,0});
-                if (dlj.contains("color"))     dl.color     = DeserializeFloat3(dlj["color"], {1,1,1});
-                if (dlj.contains("intensity")) dl.intensity = dlj["intensity"].get<f32>();
-                dl.ambient = dlj.value("ambient", 0.25f);
-                if (!reg.all_of<DirectionalLight>(e))
-                    reg.emplace<DirectionalLight>(e, dl);
-            }
-        }, {}, {} });
+        };
+        R.Register(std::move(info));
+    }
 
-    R.Register({ "SpotLight", ComponentSource::Core,
-        [](const entt::registry& reg, entt::entity entity, json& ej) {
-            if (reg.all_of<SpotLight>(entity)) {
-                const auto& sl = reg.get<SpotLight>(entity);
-                ej["spotLight"] = {
-                    {"color",        SerializeFloat3(sl.color)},
-                    {"intensity",    sl.intensity},
-                    {"range",        sl.range},
-                    {"direction",    SerializeFloat3(sl.direction)},
-                    {"innerConeDeg", sl.innerConeDeg},
-                    {"outerConeDeg", sl.outerConeDeg}
-                };
-            }
-        },
-        [](entt::registry& reg, entt::entity e, const json& ej) {
-            if (ej.contains("spotLight")) {
-                const auto& slj = ej["spotLight"];
-                SpotLight sl;
-                if (slj.contains("color"))     sl.color     = DeserializeFloat3(slj["color"], {1,1,1});
-                sl.intensity    = slj.value("intensity", 3.0f);
-                sl.range        = slj.value("range", 15.0f);
-                if (slj.contains("direction")) sl.direction = DeserializeFloat3(slj["direction"], {0,-1,0});
-                sl.innerConeDeg = slj.value("innerConeDeg", 18.0f);
-                sl.outerConeDeg = slj.value("outerConeDeg", 28.0f);
-                if (!reg.all_of<SpotLight>(e))
-                    reg.emplace<SpotLight>(e, sl);
-            }
-        }, {}, {} });
-
-    R.Register({ "CameraComponent", ComponentSource::Core,
-        [](const entt::registry& reg, entt::entity entity, json& ej) {
-            if (reg.all_of<CameraComponent>(entity)) {
-                const auto& cam = reg.get<CameraComponent>(entity);
-                ej["camera"] = {
-                    {"fovDegrees", cam.fovDegrees},
-                    {"nearClip",   cam.nearClip},
-                    {"farClip",    cam.farClip},
-                    {"isActive",   cam.isActive},
-                    {"projection", static_cast<int>(cam.projection)},
-                    {"orthoSize",  cam.orthoSize}
-                };
-            }
-        },
-        [](entt::registry& reg, entt::entity e, const json& ej) {
-            if (ej.contains("camera")) {
-                const auto& cj = ej["camera"];
-                CameraComponent cam;
-                if (cj.contains("fovDegrees")) cam.fovDegrees = cj["fovDegrees"].get<f32>();
-                if (cj.contains("nearClip"))   cam.nearClip   = cj["nearClip"].get<f32>();
-                if (cj.contains("farClip"))    cam.farClip    = cj["farClip"].get<f32>();
-                if (cj.contains("isActive"))   cam.isActive   = cj["isActive"].get<bool>();
-                if (cj.contains("projection")) cam.projection = static_cast<CameraProjection>(cj["projection"].get<int>());
-                if (cj.contains("orthoSize"))  cam.orthoSize  = cj["orthoSize"].get<f32>();
-                // アクティブカメラの重複防止（複製時など）
-                if (cam.isActive) {
-                    for (auto [oe, oc] : reg.view<const CameraComponent>().each()) {
-                        if (oe != e && oc.isActive) { cam.isActive = false; break; }
-                    }
-                }
-                if (!reg.all_of<CameraComponent>(e))
-                    reg.emplace<CameraComponent>(e, cam);
-            }
-        }, {}, {} });
-
-    R.Register({ "RigidBody", ComponentSource::Core,
-        [](const entt::registry& reg, entt::entity entity, json& ej) {
-            if (reg.all_of<RigidBody>(entity)) {
-                const auto& rb = reg.get<RigidBody>(entity);
-                ej["rigidBody"] = {
-                    {"motionType",    static_cast<int>(rb.motionType)},
-                    {"mass",          rb.mass},
-                    {"restitution",   rb.restitution},
-                    {"friction",      rb.friction},
-                    {"linearDamping", rb.linearDamping},
-                    {"angularDamping",rb.angularDamping},
-                    {"useGravity",    rb.useGravity}
-                };
-            }
-        },
-        [](entt::registry& reg, entt::entity e, const json& ej) {
-            if (ej.contains("rigidBody")) {
-                const auto& rbj = ej["rigidBody"];
-                RigidBody rb;
-                if (rbj.contains("motionType"))    rb.motionType    = static_cast<MotionType>(rbj["motionType"].get<int>());
-                if (rbj.contains("mass"))          rb.mass          = rbj["mass"].get<f32>();
-                if (rbj.contains("restitution"))   rb.restitution   = rbj["restitution"].get<f32>();
-                if (rbj.contains("friction"))      rb.friction      = rbj["friction"].get<f32>();
-                if (rbj.contains("linearDamping")) rb.linearDamping = rbj["linearDamping"].get<f32>();
-                if (rbj.contains("angularDamping"))rb.angularDamping= rbj["angularDamping"].get<f32>();
-                if (rbj.contains("useGravity"))    rb.useGravity    = rbj["useGravity"].get<bool>();
-                reg.emplace_or_replace<RigidBody>(e, rb);
-            }
-        }, {}, {} });
-
-    R.Register({ "BoxCollider", ComponentSource::Core,
-        [](const entt::registry& reg, entt::entity entity, json& ej) {
-            if (reg.all_of<BoxCollider>(entity)) {
-                const auto& col = reg.get<BoxCollider>(entity);
-                ej["boxCollider"] = {
-                    {"halfExtents", SerializeFloat3(col.halfExtents)},
-                    {"offset",      SerializeFloat3(col.offset)}
-                };
-            }
-        },
-        [](entt::registry& reg, entt::entity e, const json& ej) {
-            if (ej.contains("boxCollider")) {
-                const auto& cj = ej["boxCollider"];
-                BoxCollider col;
-                if (cj.contains("halfExtents")) col.halfExtents = DeserializeFloat3(cj["halfExtents"], {0.5f, 0.5f, 0.5f});
-                if (cj.contains("offset"))      col.offset      = DeserializeFloat3(cj["offset"]);
-                reg.emplace_or_replace<BoxCollider>(e, col);
-            }
-        }, {}, {} });
-
-    R.Register({ "SphereCollider", ComponentSource::Core,
-        [](const entt::registry& reg, entt::entity entity, json& ej) {
-            if (reg.all_of<SphereCollider>(entity)) {
-                const auto& col = reg.get<SphereCollider>(entity);
-                ej["sphereCollider"] = {
-                    {"radius", col.radius},
-                    {"offset", SerializeFloat3(col.offset)}
-                };
-            }
-        },
-        [](entt::registry& reg, entt::entity e, const json& ej) {
-            if (ej.contains("sphereCollider")) {
-                const auto& cj = ej["sphereCollider"];
-                SphereCollider col;
-                if (cj.contains("radius")) col.radius = cj["radius"].get<f32>();
-                if (cj.contains("offset")) col.offset = DeserializeFloat3(cj["offset"]);
-                reg.emplace_or_replace<SphereCollider>(e, col);
-            }
-        }, {}, {} });
-
-    R.Register({ "CapsuleCollider", ComponentSource::Core,
-        [](const entt::registry& reg, entt::entity entity, json& ej) {
-            if (reg.all_of<CapsuleCollider>(entity)) {
-                const auto& col = reg.get<CapsuleCollider>(entity);
-                ej["capsuleCollider"] = {
-                    {"radius",     col.radius},
-                    {"halfHeight", col.halfHeight},
-                    {"offset",     SerializeFloat3(col.offset)}
-                };
-            }
-        },
-        [](entt::registry& reg, entt::entity e, const json& ej) {
-            if (ej.contains("capsuleCollider")) {
-                const auto& cj = ej["capsuleCollider"];
-                CapsuleCollider col;
-                if (cj.contains("radius"))     col.radius     = cj["radius"].get<f32>();
-                if (cj.contains("halfHeight")) col.halfHeight = cj["halfHeight"].get<f32>();
-                if (cj.contains("offset"))     col.offset     = DeserializeFloat3(cj["offset"]);
-                reg.emplace_or_replace<CapsuleCollider>(e, col);
-            }
-        }, {}, {} });
-
-    R.Register({ "CharacterController", ComponentSource::Core,
-        [](const entt::registry& reg, entt::entity entity, json& ej) {
-            if (reg.all_of<CharacterController>(entity)) {
-                const auto& cc = reg.get<CharacterController>(entity);
-                ej["characterController"] = {
-                    {"radius",       cc.radius},
-                    {"halfHeight",   cc.halfHeight},
-                    {"offset",       SerializeFloat3(cc.offset)},
-                    {"mass",         cc.mass},
-                    {"maxSlopeDeg",  cc.maxSlopeDeg},
-                    {"stepHeight",   cc.stepHeight},
-                    {"jumpSpeed",    cc.jumpSpeed},
-                    {"gravityScale", cc.gravityScale}
-                };
-            }
-        },
-        [](entt::registry& reg, entt::entity e, const json& ej) {
-            if (ej.contains("characterController")) {
-                const auto& cj = ej["characterController"];
-                CharacterController cc;
-                cc.radius       = cj.value("radius",       0.4f);
-                cc.halfHeight   = cj.value("halfHeight",   0.6f);
-                if (cj.contains("offset")) cc.offset = DeserializeFloat3(cj["offset"]);
-                cc.mass         = cj.value("mass",         70.0f);
-                cc.maxSlopeDeg  = cj.value("maxSlopeDeg",  50.0f);
-                cc.stepHeight   = cj.value("stepHeight",   0.3f);
-                cc.jumpSpeed    = cj.value("jumpSpeed",    6.0f);
-                cc.gravityScale = cj.value("gravityScale", 1.0f);
-                reg.emplace_or_replace<CharacterController>(e, cc);
-            }
-        }, {}, {} });
+    // ---- 独自フォーマット型（配列直値/型付きマップ）は手書きを維持 ----
 
     R.Register({ "Tag", ComponentSource::Core,
         [](const entt::registry& reg, entt::entity entity, json& ej) {
@@ -389,42 +338,6 @@ static void RegisterCoreComponentSerializers()
             }
         }, {}, {} });
 
-    R.Register({ "Sprite2D", ComponentSource::Core,
-        [](const entt::registry& reg, entt::entity entity, json& ej) {
-            if (reg.all_of<Sprite2D>(entity)) {
-                const auto& sp = reg.get<Sprite2D>(entity);
-                ej["sprite2d"] = {
-                    {"texturePath", sp.texturePath},
-                    {"layer",       sp.layer},
-                    {"size",        json::array({sp.size.x, sp.size.y})},
-                    {"uvMin",       json::array({sp.uvMin.x, sp.uvMin.y})},
-                    {"uvMax",       json::array({sp.uvMax.x, sp.uvMax.y})},
-                    {"color",       json::array({sp.color.x, sp.color.y, sp.color.z, sp.color.w})},
-                    {"worldSpace",  sp.worldSpace},
-                    {"billboard",   sp.billboard}
-                };
-            }
-        },
-        [](entt::registry& reg, entt::entity e, const json& ej) {
-            if (ej.contains("sprite2d")) {
-                const auto& sj = ej["sprite2d"];
-                Sprite2D sp;
-                sp.texturePath = sj.value("texturePath", "");
-                sp.layer       = sj.value("layer", 0);
-                if (sj.contains("size")  && sj["size"].is_array()  && sj["size"].size()  >= 2)
-                    sp.size  = { sj["size"][0].get<float>(),  sj["size"][1].get<float>() };
-                if (sj.contains("uvMin") && sj["uvMin"].is_array() && sj["uvMin"].size() >= 2)
-                    sp.uvMin = { sj["uvMin"][0].get<float>(), sj["uvMin"][1].get<float>() };
-                if (sj.contains("uvMax") && sj["uvMax"].is_array() && sj["uvMax"].size() >= 2)
-                    sp.uvMax = { sj["uvMax"][0].get<float>(), sj["uvMax"][1].get<float>() };
-                if (sj.contains("color") && sj["color"].is_array() && sj["color"].size() >= 4)
-                    sp.color = { sj["color"][0].get<float>(), sj["color"][1].get<float>(),
-                                 sj["color"][2].get<float>(), sj["color"][3].get<float>() };
-                sp.worldSpace = sj.value("worldSpace", true);
-                sp.billboard  = sj.value("billboard", false);
-                reg.emplace_or_replace<Sprite2D>(e, sp);
-            }
-        }, {}, {} });
 }
 
 // 単一エンティティを JSON ノードに直列化（parent は含まない）
@@ -469,8 +382,69 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                 }
             }
 
-            // 頂点カラー保存（プリミティブのみ。モデルは頂点ごとの色を壊さないよう除外）
-            if (mr.modelPath.rfind("__primitive_", 0) == 0 && !mr.meshes.empty() && mr.meshes[0])
+            // カスタムシェーダー割当（プリミティブ/モデル問わず。空なら既定 Forward）
+            if (!mr.shaderPath.empty())
+            {
+                ej["shader"] = mr.shaderPath;
+                if (mr.shaderAlphaBlend)
+                    ej["shaderAlphaBlend"] = true;
+                if (mr.effectValue != 0.0f)
+                    ej["shaderEffectValue"] = mr.effectValue;
+                if (mr.shaderParams.x != 0.0f || mr.shaderParams.y != 0.0f
+                    || mr.shaderParams.z != 0.0f || mr.shaderParams.w != 0.0f)
+                    ej["shaderParams"] = {mr.shaderParams.x, mr.shaderParams.y,
+                                          mr.shaderParams.z, mr.shaderParams.w};
+            }
+
+            // マテリアルテクスチャ上書き（アセットブラウザからテクスチャをD&Dして割当、サブメッシュ単位）。
+            // Material 自体は同一モデルの全インスタンスで共有されるため、上書きは MeshRenderer 側に
+            // インスタンス単位で保持している(Application::EnsureMaterialOverrideSrv 参照)。
+            {
+                size_t maxLen = (std::max)({mr.overrideAlbedoTexture.size(),
+                                             mr.overrideNormalTexture.size(),
+                                             mr.overrideMetalRoughnessTexture.size()});
+                bool anyOverride = false;
+                json overridesJson = json::array();
+                for (size_t i = 0; i < maxLen; ++i)
+                {
+                    json entry = json::object();
+                    const std::string& a = MeshRenderer::SafeGetOverride(mr.overrideAlbedoTexture, static_cast<u32>(i));
+                    const std::string& n = MeshRenderer::SafeGetOverride(mr.overrideNormalTexture, static_cast<u32>(i));
+                    const std::string& m = MeshRenderer::SafeGetOverride(mr.overrideMetalRoughnessTexture, static_cast<u32>(i));
+                    if (!a.empty()) { entry["albedo"] = a; anyOverride = true; }
+                    if (!n.empty()) { entry["normal"] = n; anyOverride = true; }
+                    if (!m.empty()) { entry["metalRoughness"] = m; anyOverride = true; }
+                    overridesJson.push_back(entry);
+                }
+                if (anyOverride)
+                    ej["materialTextureOverrides"] = overridesJson;
+            }
+
+            // マテリアルアセット割当（assets/materials/*.dxmat、サブメッシュ単位）。
+            // materialTextureOverrides より優先されるので別キーで保存する(Application 描画ループ参照)。
+            if (!mr.materialAsset.empty())
+            {
+                bool anyMaterial = false;
+                json materialsJson = json::array();
+                for (size_t i = 0; i < mr.materialAsset.size(); ++i)
+                {
+                    const std::string& path = MeshRenderer::SafeGetOverride(mr.materialAsset, static_cast<u32>(i));
+                    materialsJson.push_back(path);
+                    if (!path.empty()) anyMaterial = true;
+                }
+                if (anyMaterial)
+                    ej["materialAssets"] = materialsJson;
+            }
+
+            // 色ティント保存。明示的な割当(hasColorTint: JSONのcolor/scene:setColor由来)は
+            // モデルでも保存する(従来はプリミティブ限定で、エディタ保存のたびにモデルの
+            // 色指定が消えていた)。旧シーン互換: フラグが無いプリミティブはメッシュの
+            // 頂点色から従来どおり推定する(モデルは本来の頂点色と区別できないため除外)。
+            if (mr.hasColorTint)
+            {
+                ej["color"] = json::array({ mr.colorTint.x, mr.colorTint.y, mr.colorTint.z });
+            }
+            else if (mr.modelPath.rfind("__primitive_", 0) == 0 && !mr.meshes.empty() && mr.meshes[0])
             {
                 auto c = mr.meshes[0]->GetVertexColor();
                 if (c.x < 0.999f || c.y < 0.999f || c.z < 0.999f)
@@ -493,6 +467,20 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
             if (mr.uvScaleU != 1.0f || mr.uvScaleV != 1.0f)
             {
                 ej["uvTiling"] = {{"u", mr.uvScaleU}, {"v", mr.uvScaleV}};
+            }
+
+            // UV スクロール（既定 0 のときは書かない）
+            if (mr.uvScrollU != 0.0f || mr.uvScrollV != 0.0f)
+            {
+                ej["uvScroll"] = {{"u", mr.uvScrollU}, {"v", mr.uvScrollV}};
+            }
+
+            // 連番アニメ（無効時は書かない）
+            if (mr.animFrames > 0)
+            {
+                ej["flipbook"] = {{"frames", mr.animFrames}, {"fps", mr.animFps},
+                                  {"cols",   mr.animCols},   {"row", mr.animRow},
+                                  {"rows",   mr.animRows},   {"mode", mr.animMode}};
             }
         }
 
@@ -539,15 +527,21 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
         {
             const auto& pe = reg.get<ParticleEmitter>(entity);
             ej["particleEmitter"] = {
-                {"kind", pe.kind}, {"blend", pe.blend}, {"rate", pe.rate},
+                {"kind", pe.kind}, {"blend", pe.blend}, {"orient", pe.orient}, {"rate", pe.rate},
                 {"playOnStart", pe.playOnStart}, {"looping", pe.looping}, {"duration", pe.duration},
                 {"dir", SerializeFloat3(pe.dir)}, {"spread", pe.spread},
                 {"speed", pe.speed}, {"speedVar", pe.speedVar},
                 {"size", pe.size}, {"sizeEnd", pe.sizeEnd},
                 {"life", pe.life}, {"lifeVar", pe.lifeVar},
                 {"color", SerializeFloat3(pe.color)}, {"colorEnd", SerializeFloat3(pe.colorEnd)},
+                {"colorMid", SerializeFloat3(pe.colorMid)}, {"hasColorMid", pe.hasColorMid},
                 {"intensity", pe.intensity}, {"gravity", pe.gravity},
-                {"drag", pe.drag}, {"up", pe.up}, {"stretch", pe.stretch}
+                {"drag", pe.drag}, {"up", pe.up}, {"stretch", pe.stretch},
+                {"turbStrength", pe.turbStrength}, {"turbFreq", pe.turbFreq},
+                {"sizeMid", pe.sizeMid}, {"distort", pe.distort},
+                {"light", pe.light}, {"lightRange", pe.lightRange},
+                {"flicker", pe.flicker}, {"flickerFreq", pe.flickerFreq},
+                {"gpu", pe.gpu}, {"texturePath", pe.texturePath}
             };
         }
 
@@ -675,6 +669,21 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
             {"hueOn",        pp.hueOn},        {"hueShift",   pp.hueShift},
             {"tintOn",       pp.tintOn},       {"tint",       {pp.tint.x, pp.tint.y, pp.tint.z}},
             {"bloomOn",      pp.bloomOn},      {"bloom",      pp.bloom}, {"bloomThreshold", pp.bloomThreshold},
+            {"bloomKnee",    pp.bloomKnee},    {"bloomRadius", pp.bloomRadius},
+            {"tonemapper",   pp.tonemapper},
+            {"autoExposureOn", pp.autoExposureOn}, {"aeSpeed", pp.aeSpeed}, {"aeEvComp", pp.aeEvComp},
+            {"aeLogMin",     pp.aeLogMin},     {"aeLogMax",   pp.aeLogMax},
+            {"lutOn",        pp.lutOn},        {"lutPath",    pp.lutPath}, {"lutAmount", pp.lutAmount},
+            {"debandOn",     pp.debandOn},
+            {"godraysOn",    pp.godraysOn},    {"grIntensity", pp.grIntensity},
+            {"grDensity",    pp.grDensity},    {"grDecay",     pp.grDecay},
+            {"lensflareOn",  pp.lensflareOn},  {"lfIntensity", pp.lfIntensity},
+            {"lfGhosts",     pp.lfGhosts},     {"lfDispersal", pp.lfDispersal},
+            {"lfHalo",       pp.lfHalo},       {"lfChroma",    pp.lfChroma},
+            {"dofOn",        pp.dofOn},        {"dofFocusDist", pp.dofFocusDist},
+            {"dofFocusRange", pp.dofFocusRange}, {"dofBlurSize", pp.dofBlurSize},
+            {"motionBlurOn", pp.motionBlurOn}, {"mbStrength",  pp.mbStrength},
+            {"mbSamples",    pp.mbSamples},
             {"vignetteOn",   pp.vignetteOn},   {"vignette",   pp.vignette},
             {"chromaticOn",  pp.chromaticOn},  {"chromatic",  pp.chromatic},
             {"pixelizeOn",   pp.pixelizeOn},   {"pixelSize",  pp.pixelSize},
@@ -707,6 +716,9 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
             {"drawSkybox",      sk.drawSkybox},
         };
     }
+
+    // リアルタイム影 ON/OFF（シーン単位）
+    root["shadows"] = scene.GetShadowsEnabled();
 
     // SSAO 設定（シーン単位）
     {
@@ -743,6 +755,23 @@ static void LoadPostSettings(Scene& scene, const json& root)
         if (pj.contains("tint")) pp.tint = DeserializeFloat3(pj["tint"], {1, 1, 1});
         pp.bloomOn      = pj.value("bloomOn",      pp.bloomOn);      pp.bloom      = pj.value("bloom",      pp.bloom);
         pp.bloomThreshold = pj.value("bloomThreshold", pp.bloomThreshold);
+        pp.bloomKnee    = pj.value("bloomKnee",    pp.bloomKnee);    pp.bloomRadius = pj.value("bloomRadius", pp.bloomRadius);
+        pp.tonemapper   = pj.value("tonemapper",   pp.tonemapper);
+        pp.autoExposureOn = pj.value("autoExposureOn", pp.autoExposureOn);
+        pp.aeSpeed      = pj.value("aeSpeed",      pp.aeSpeed);      pp.aeEvComp   = pj.value("aeEvComp",   pp.aeEvComp);
+        pp.aeLogMin     = pj.value("aeLogMin",     pp.aeLogMin);     pp.aeLogMax   = pj.value("aeLogMax",   pp.aeLogMax);
+        pp.lutOn        = pj.value("lutOn",        pp.lutOn);        pp.lutPath    = pj.value("lutPath",    pp.lutPath);
+        pp.lutAmount    = pj.value("lutAmount",    pp.lutAmount);
+        pp.debandOn     = pj.value("debandOn",     pp.debandOn);
+        pp.godraysOn    = pj.value("godraysOn",    pp.godraysOn);    pp.grIntensity = pj.value("grIntensity", pp.grIntensity);
+        pp.grDensity    = pj.value("grDensity",    pp.grDensity);    pp.grDecay     = pj.value("grDecay",     pp.grDecay);
+        pp.lensflareOn  = pj.value("lensflareOn",  pp.lensflareOn);  pp.lfIntensity = pj.value("lfIntensity", pp.lfIntensity);
+        pp.lfGhosts     = pj.value("lfGhosts",     pp.lfGhosts);     pp.lfDispersal = pj.value("lfDispersal", pp.lfDispersal);
+        pp.lfHalo       = pj.value("lfHalo",       pp.lfHalo);       pp.lfChroma    = pj.value("lfChroma",    pp.lfChroma);
+        pp.dofOn        = pj.value("dofOn",        pp.dofOn);        pp.dofFocusDist = pj.value("dofFocusDist", pp.dofFocusDist);
+        pp.dofFocusRange = pj.value("dofFocusRange", pp.dofFocusRange); pp.dofBlurSize = pj.value("dofBlurSize", pp.dofBlurSize);
+        pp.motionBlurOn = pj.value("motionBlurOn", pp.motionBlurOn); pp.mbStrength  = pj.value("mbStrength",  pp.mbStrength);
+        pp.mbSamples    = pj.value("mbSamples",    pp.mbSamples);
         pp.vignetteOn   = pj.value("vignetteOn",   pp.vignetteOn);   pp.vignette   = pj.value("vignette",   pp.vignette);
         pp.chromaticOn  = pj.value("chromaticOn",  pp.chromaticOn);  pp.chromatic  = pj.value("chromatic",  pp.chromatic);
         pp.pixelizeOn   = pj.value("pixelizeOn",   pp.pixelizeOn);   pp.pixelSize  = pj.value("pixelSize",  pp.pixelSize);
@@ -901,6 +930,7 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                 ParticleEmitter pe;
                 pe.kind        = pj.value("kind", 0);
                 pe.blend       = pj.value("blend", 0);
+                pe.orient      = pj.value("orient", 0);
                 pe.rate        = pj.value("rate", 30.0f);
                 pe.playOnStart = pj.value("playOnStart", true);
                 pe.looping     = pj.value("looping", true);
@@ -915,11 +945,23 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                 pe.lifeVar  = pj.value("lifeVar", 0.3f);
                 if (pj.contains("color"))    pe.color    = DeserializeFloat3(pj["color"], {1.0f, 0.6f, 0.2f});
                 if (pj.contains("colorEnd")) pe.colorEnd = DeserializeFloat3(pj["colorEnd"], {1.0f, 0.12f, 0.05f});
+                if (pj.contains("colorMid")) pe.colorMid = DeserializeFloat3(pj["colorMid"], {1.0f, 0.6f, 0.2f});
+                pe.hasColorMid = pj.value("hasColorMid", false);
                 pe.intensity = pj.value("intensity", 3.0f);
                 pe.gravity   = pj.value("gravity", 0.0f);
                 pe.drag      = pj.value("drag", 1.0f);
                 pe.up        = pj.value("up", 0.0f);
                 pe.stretch   = pj.value("stretch", 0.0f);
+                pe.turbStrength = pj.value("turbStrength", 0.0f);
+                pe.turbFreq     = pj.value("turbFreq", 1.0f);
+                pe.sizeMid   = pj.value("sizeMid", -1.0f);
+                pe.distort   = pj.value("distort", 0.0f);
+                pe.light     = pj.value("light", false);
+                pe.lightRange = pj.value("lightRange", 3.0f);
+                pe.flicker      = pj.value("flicker", 0.0f);
+                pe.flickerFreq  = pj.value("flickerFreq", 18.0f);
+                pe.gpu       = pj.value("gpu", false);
+                pe.texturePath = pj.value("texturePath", std::string());
                 reg.emplace_or_replace<ParticleEmitter>(e, pe);
             }
 
@@ -1004,6 +1046,8 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
             {
                 auto c = DeserializeFloat3(ej["color"], {1, 1, 1});
                 auto& mr = reg.get<MeshRenderer>(e);
+                mr.colorTint    = {c.x, c.y, c.z, 1.0f};   // 保存で消えないよう意図を記録
+                mr.hasColorTint = true;
                 if (auto* dev = scene.GetDevice())
                     for (auto* mesh : mr.meshes)
                         if (mesh) mesh->SetVertexColor(*dev, c.x, c.y, c.z, 1.0f);
@@ -1024,6 +1068,71 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                             mesh->ApplyUVScale(*scene.GetDevice(), mr.uvScaleU, mr.uvScaleV);
                     }
                 }
+            }
+
+            // UV スクロール復元（頂点は触らないのでロード時の再構築は不要）
+            if (ej.contains("uvScroll") && reg.all_of<MeshRenderer>(e))
+            {
+                const auto& sj = ej["uvScroll"];
+                auto& mr = reg.get<MeshRenderer>(e);
+                mr.uvScrollU = sj.value("u", 0.0f);
+                mr.uvScrollV = sj.value("v", 0.0f);
+            }
+
+            // 連番アニメ復元
+            if (ej.contains("flipbook") && reg.all_of<MeshRenderer>(e))
+            {
+                const auto& fj = ej["flipbook"];
+                auto& mr = reg.get<MeshRenderer>(e);
+                mr.animFrames = fj.value("frames", 0);
+                mr.animFps    = fj.value("fps",    8.0f);
+                mr.animCols   = fj.value("cols",   0);
+                mr.animRow    = fj.value("row",    0);
+                mr.animRows   = fj.value("rows",   0);
+                mr.animMode   = fj.value("mode",   0);
+            }
+
+            // カスタムシェーダー割当復元
+            if (ej.contains("shader") && reg.all_of<MeshRenderer>(e))
+            {
+                auto& mrRestore = reg.get<MeshRenderer>(e);
+                mrRestore.shaderPath = ej.value("shader", "");
+                mrRestore.shaderAlphaBlend = ej.value("shaderAlphaBlend", false);
+                mrRestore.effectValue = ej.value("shaderEffectValue", 0.0f);
+                if (ej.contains("shaderParams") && ej["shaderParams"].is_array()
+                    && ej["shaderParams"].size() >= 4)
+                {
+                    const auto& sp = ej["shaderParams"];
+                    mrRestore.shaderParams = {sp[0].get<float>(), sp[1].get<float>(),
+                                              sp[2].get<float>(), sp[3].get<float>()};
+                }
+            }
+
+            // マテリアルテクスチャ上書き復元（サブメッシュ単位）
+            if (ej.contains("materialTextureOverrides") && reg.all_of<MeshRenderer>(e))
+            {
+                auto& mrOv = reg.get<MeshRenderer>(e);
+                const auto& arr = ej["materialTextureOverrides"];
+                for (size_t i = 0; i < arr.size(); ++i)
+                {
+                    const auto& entry = arr[i];
+                    u32 smi = static_cast<u32>(i);
+                    if (entry.contains("albedo"))
+                        MeshRenderer::SetOverride(mrOv.overrideAlbedoTexture, smi, entry.value("albedo", ""));
+                    if (entry.contains("normal"))
+                        MeshRenderer::SetOverride(mrOv.overrideNormalTexture, smi, entry.value("normal", ""));
+                    if (entry.contains("metalRoughness"))
+                        MeshRenderer::SetOverride(mrOv.overrideMetalRoughnessTexture, smi, entry.value("metalRoughness", ""));
+                }
+            }
+
+            // マテリアルアセット割当復元（サブメッシュ単位、assets/materials/*.dxmat）
+            if (ej.contains("materialAssets") && reg.all_of<MeshRenderer>(e))
+            {
+                auto& mrMat = reg.get<MeshRenderer>(e);
+                const auto& arr = ej["materialAssets"];
+                for (size_t i = 0; i < arr.size(); ++i)
+                    MeshRenderer::SetOverride(mrMat.materialAsset, static_cast<u32>(i), arr[i].get<std::string>());
             }
 
             // LuaScript 復元（env は構築しない。Play 開始時に初期化される）
@@ -1092,16 +1201,24 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
 {
     scene.Clear();
 
-    // ポストプロセス設定（entities が無くても復元する）
-    LoadPostSettings(scene, root);
-    // スカイボックス / IBL 設定
-    LoadSkyboxSettings(scene, root);
-    // SSAO 設定
-    LoadSSAOSettings(scene, root);
+    // JSON として valid でも「型」が想定と違う値（例: intensity が文字列）は
+    // json::type_error を投げる。1 箇所のミスでシーン全体・アプリ全体を巻き込まず、
+    // 該当セクション/エンティティだけスキップして警告に倒す。
+
+    // ポストプロセス / スカイボックス / SSAO 設定（entities が無くても復元する）
+    try { LoadPostSettings(scene, root); }
+    catch (const json::exception& e) { Logger::Warn("postProcess 設定をスキップしました（型不正）: {}", e.what()); }
+    try { LoadSkyboxSettings(scene, root); }
+    catch (const json::exception& e) { Logger::Warn("skybox 設定をスキップしました（型不正）: {}", e.what()); }
+    try { LoadSSAOSettings(scene, root); }
+    catch (const json::exception& e) { Logger::Warn("ssao 設定をスキップしました（型不正）: {}", e.what()); }
+
+    // リアルタイム影 ON/OFF（キーが無ければ既定 ON ＝後方互換）
+    scene.SetShadowsEnabled(root.value("shadows", true));
 
     if (!root.contains("entities") || !root["entities"].is_array())
     {
-        Logger::Warn("Scene JSON has no entities array");
+        Logger::Warn("シーン JSON に entities 配列がありません");
         return true;
     }
 
@@ -1109,7 +1226,20 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
     std::vector<entt::entity> created;
     created.reserve(root["entities"].size());
     for (const auto& ej : root["entities"])
-        created.push_back(InstantiateEntityJson(scene, ej, assetsDir));
+    {
+        entt::entity e = entt::null;
+        try
+        {
+            e = InstantiateEntityJson(scene, ej, assetsDir);
+        }
+        catch (const std::exception& ex)
+        {
+            const std::string nm = (ej.is_object() && ej.contains("name") && ej["name"].is_string())
+                ? ej["name"].get<std::string>() : "?";
+            Logger::Error("エンティティ [{}] \"{}\" をスキップしました（値不正）: {}", created.size(), nm, ex.what());
+        }
+        created.push_back(e);
+    }
 
     // 2パス目: 親子関係の復元
     auto& reg = scene.GetRegistry();
@@ -1117,16 +1247,49 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
     for (const auto& ej : root["entities"])
     {
         entt::entity e = created[idx++];
-        if (e == entt::null || !ej.contains("parent")) continue;
+        if (e == entt::null || !ej.is_object() || !ej.contains("parent")) continue;
+        if (!ej["parent"].is_number_integer())
+        {
+            Logger::Warn("エンティティ [{}] の parent が整数ではないため、ルートのままにします", idx - 1);
+            continue;
+        }
 
         int parentIdx = ej["parent"].get<int>();
         if (parentIdx < 0 || parentIdx >= static_cast<int>(created.size())) continue;
 
         entt::entity parent = created[static_cast<size_t>(parentIdx)];
-        if (parent == entt::null || parent == e) continue;
+        if (parent == entt::null || parent == e)
+        {
+            if (parent == entt::null)
+                Logger::Warn("エンティティ [{}] の親（index {}）が読み込めなかったため、ルートのままにします", idx - 1, parentIdx);
+            continue;
+        }
 
         if (reg.all_of<Transform>(e))
             reg.get<Transform>(e).parent = parent;
+    }
+
+    // 3パス目: 親子グラフの正規化。相互参照(A→B→A 等)のサイクルが成立していると、
+    // 削除時のサブツリー収集や祖先走査が無限ループ/無限膨張するため、検出したら
+    // そのエンティティをルートへ切り離す（旧バージョンで保存された壊れたデータ対策）。
+    for (entt::entity e : created)
+    {
+        if (e == entt::null || !reg.all_of<Transform>(e)) continue;
+        int depth = 0;
+        entt::entity cur = reg.get<Transform>(e).parent;
+        while (cur != entt::null && depth < 4096)
+        {
+            if (cur == e) break;   // 自分に戻ってきた = サイクル
+            auto* t = reg.try_get<Transform>(cur);
+            cur = t ? t->parent : entt::null;
+            ++depth;
+        }
+        if (cur == e || depth >= 4096)
+        {
+            Logger::Warn("親子関係にサイクルを検出したため、エンティティ {} をルートへ切り離しました",
+                         static_cast<u32>(e));
+            reg.get<Transform>(e).parent = entt::null;
+        }
     }
 
     return true;
@@ -1146,7 +1309,7 @@ bool SceneSerializer::Save(const Scene& scene, const std::string& filePath,
     std::ofstream ofs(filePath);
     if (!ofs.is_open())
     {
-        Logger::Error("Failed to open file for writing: {}", filePath);
+        Logger::Error("ファイルを書き込み用に開けません: {}", filePath);
         return false;
     }
 
@@ -1169,7 +1332,7 @@ bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
     std::ifstream ifs(filePath);
     if (!ifs.is_open())
     {
-        Logger::Error("Failed to open scene file: {}", filePath);
+        Logger::Error("シーンファイルを開けません: {}", filePath);
         return false;
     }
 
@@ -1180,12 +1343,22 @@ bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
     }
     catch (const json::parse_error& e)
     {
-        Logger::Error("JSON parse error: {}", e.what());
+        Logger::Error("JSON の解析に失敗しました: {}", e.what());
         return false;
     }
     ifs.close();
 
-    bool ok = ApplySceneJson(scene, root, assetsDir);
+    bool ok = false;
+    try
+    {
+        ok = ApplySceneJson(scene, root, assetsDir);
+    }
+    catch (const json::exception& e)
+    {
+        // ApplySceneJson 内でセクション/エンティティ単位に捕捉しているが、最後の保険
+        Logger::Error("シーン読み込みを中断しました（JSON の値が不正）: {}", e.what());
+        return false;
+    }
     if (ok)
         Logger::Info("Scene loaded ({} entities): {}",
                      root.contains("entities") ? root["entities"].size() : 0, filePath);
@@ -1208,11 +1381,20 @@ bool SceneSerializer::LoadFromString(Scene& scene, const std::string& jsonStr,
     }
     catch (const json::parse_error& e)
     {
-        Logger::Error("JSON parse error (snapshot): {}", e.what());
+        Logger::Error("JSON の解析に失敗しました（スナップショット）: {}", e.what());
         return false;
     }
 
-    bool ok = ApplySceneJson(scene, root, assetsDir);
+    bool ok = false;
+    try
+    {
+        ok = ApplySceneJson(scene, root, assetsDir);
+    }
+    catch (const json::exception& e)
+    {
+        Logger::Error("シーン復元を中断しました（JSON の値が不正）: {}", e.what());
+        return false;
+    }
     if (ok)
         Logger::Info("Scene restored from snapshot ({} entities)",
                      root.contains("entities") ? root["entities"].size() : 0);
@@ -1301,7 +1483,7 @@ entt::entity SceneSerializer::InstantiateEntity(Scene& scene, const std::string&
     try { ej = json::parse(jsonStr); }
     catch (const json::parse_error& e)
     {
-        Logger::Error("JSON parse error (entity): {}", e.what());
+        Logger::Error("JSON の解析に失敗しました（エンティティ）: {}", e.what());
         return entt::null;
     }
     ej["name"] = MakeUniqueName(scene, ej.value("name", "Unnamed"));
@@ -1351,6 +1533,57 @@ entt::entity SceneSerializer::DuplicateEntity(Scene& scene, entt::entity src,
     // 親は元エンティティと同じにする
     reg.get<Transform>(copy).parent = reg.get<Transform>(src).parent;
     return copy;
+}
+
+entt::entity SceneSerializer::SwapEntityModel(Scene& scene, entt::entity e,
+                                              const std::string& newModelPath,
+                                              const std::string& assetsDir)
+{
+    auto& reg = scene.GetRegistry();
+    if (!reg.valid(e) || !reg.all_of<NameTag>(e) || !reg.all_of<Transform>(e)
+        || !reg.all_of<MeshRenderer>(e))
+        return entt::null;
+
+    json ej = SerializeEntityJson(reg, e, assetsDir);
+
+    // モデルパスを差し替え（プリミティブ⇔モデルの変更も許可。プリミティブ専用の
+    // 頂点カラーはモデルでは意味を持たないので一緒に落とす）
+    ej.erase("primitive");
+    ej.erase("color");
+    ej.erase("meshRenderer");
+    if (newModelPath.rfind("__primitive_", 0) == 0)
+    {
+        // Undo でプリミティブへ戻すケース（modelPath にはマーカーが入っている）
+        if      (newModelPath == "__primitive_sphere__") ej["primitive"] = "sphere";
+        else if (newModelPath == "__primitive_plane__")  ej["primitive"] = "plane";
+        else                                              ej["primitive"] = "box";
+    }
+    else
+    {
+        std::string rel = MakeRelative(newModelPath, assetsDir);
+        if (rel.empty()) rel = newModelPath;
+        ej["meshRenderer"] = json{{"modelPath", rel}};
+    }
+
+    const entt::entity parent = reg.get<Transform>(e).parent;
+
+    // 先に新エンティティを生成し、成功してから旧を消す（ロード失敗時は旧を維持）
+    entt::entity ne = InstantiateEntityJson(scene, ej, assetsDir);
+    if (ne == entt::null)
+    {
+        Logger::Error("モデル差し替え失敗（ロードエラー）: {}", newModelPath);
+        return entt::null;
+    }
+
+    reg.get<Transform>(ne).parent = parent;
+
+    // 子エンティティの親参照を新エンティティへ付け替え
+    for (auto [c, tf] : reg.view<Transform>().each())
+        if (c != ne && tf.parent == e)
+            tf.parent = ne;
+
+    scene.Remove(Entity(e, &reg));
+    return ne;
 }
 
 // ── Prefab / サブツリー ──
@@ -1410,7 +1643,7 @@ entt::entity SceneSerializer::InstantiateSubtree(Scene& scene, const std::string
     try { root = json::parse(jsonStr); }
     catch (const json::parse_error& e)
     {
-        Logger::Error("JSON parse error (subtree): {}", e.what());
+        Logger::Error("JSON の解析に失敗しました（サブツリー）: {}", e.what());
         return entt::null;
     }
     if (!root.contains("entities") || !root["entities"].is_array() || root["entities"].empty())
@@ -1423,17 +1656,30 @@ entt::entity SceneSerializer::InstantiateSubtree(Scene& scene, const std::string
     created.reserve(root["entities"].size());
     for (const auto& ej : root["entities"])
     {
-        json copy = ej;
-        copy["name"] = MakeUniqueName(scene, ej.value("name", std::string("Unnamed")));
-        created.push_back(InstantiateEntityJson(scene, copy, assetsDir));
+        entt::entity e = entt::null;
+        try
+        {
+            json copy = ej;
+            copy["name"] = MakeUniqueName(scene, ej.value("name", std::string("Unnamed")));
+            e = InstantiateEntityJson(scene, copy, assetsDir);
+        }
+        catch (const std::exception& ex)
+        {
+            Logger::Error("サブツリーのエンティティ [{}] をスキップしました（値不正）: {}",
+                          created.size(), ex.what());
+        }
+        created.push_back(e);
     }
 
     // 2パス目: 親子関係の復元（root はサブツリー外の親を持たない）
+    // parent は ApplySceneJson と同じく整数型チェックしてから読む（旧データで
+    // null/文字列が入っていると get<int> が type_error を投げてフレーム境界処理ごと落ちる）
     size_t idx = 0;
     for (const auto& ej : root["entities"])
     {
         entt::entity e = created[idx++];
-        if (e == entt::null || !ej.contains("parent")) continue;
+        if (e == entt::null || !ej.is_object() || !ej.contains("parent")) continue;
+        if (!ej["parent"].is_number_integer()) continue;
         int p = ej["parent"].get<int>();
         if (p < 0 || p >= static_cast<int>(created.size())) continue;
         entt::entity parent = created[static_cast<size_t>(p)];
@@ -1458,7 +1704,7 @@ bool SceneSerializer::SavePrefab(const Scene& scene, entt::entity root,
     std::ofstream ofs(filePath);
     if (!ofs.is_open())
     {
-        Logger::Error("Failed to write prefab: {}", filePath);
+        Logger::Error("プレハブの書き込みに失敗しました: {}", filePath);
         return false;
     }
     ofs << s;
@@ -1479,7 +1725,7 @@ entt::entity SceneSerializer::InstantiatePrefab(Scene& scene, const std::string&
     std::ifstream ifs(filePath, std::ios::binary);
     if (!ifs.is_open())
     {
-        Logger::Error("Failed to open prefab: {}", filePath);
+        Logger::Error("プレハブを開けません: {}", filePath);
         return entt::null;
     }
     std::stringstream ss; ss << ifs.rdbuf();

@@ -76,6 +76,19 @@ VSOutput VSMain(VSInput i)
 
 float4 PSMain(VSOutput i) : SV_TARGET
 {
+    // soft particles を先に評価して隠れた画素を捨てる（火柱は遮蔽フェードしない）。
+    // 高コストな fbm シェーディングの前に clip する。
+    float soft = 1.0;
+    if (params2.z > 0.0 && i.kind != BEAM_FIRE)
+    {
+        float2 suv = i.pos.xy * float2(params2.z, params2.w);
+        float sceneD = gSceneDepth.SampleLevel(sDepth, suv, 0).r;
+        float sceneZ = params2.y / (sceneD - params2.x);
+        soft = saturate((sceneZ - i.viewZ) / max(params.z, 1e-3));
+    }
+    float a = i.color.a * soft;
+    clip(a - 1e-3);
+
     float u = i.uv.x;            // 長手
     float v = i.uv.y;            // 幅 [-1,1]
     float av = abs(v);
@@ -123,16 +136,5 @@ float4 PSMain(VSOutput i) : SV_TARGET
         col *= smoothstep(0.0, 0.035, u) * smoothstep(1.0, 0.94, u);            // 端テーパ
     }
 
-    // soft particles（火柱は発光体なので遮蔽フェードしない＝根本が消えない）
-    float soft = 1.0;
-    if (params2.z > 0.0 && i.kind != BEAM_FIRE)
-    {
-        float2 suv = i.pos.xy * float2(params2.z, params2.w);
-        float sceneD = gSceneDepth.SampleLevel(sDepth, suv, 0).r;
-        float sceneZ = params2.y / (sceneD - params2.x);
-        soft = saturate((sceneZ - i.viewZ) / max(params.z, 1e-3));
-    }
-
-    float a = i.color.a * soft;
     return float4(col * a * params.x, a);
 }

@@ -71,6 +71,21 @@ if keyPressed("ESC")then ... end   -- 押した瞬間だけ true
 ```
 使えるキー名: `W A S D E Q  UP DOWN LEFT RIGHT  SPACE SHIFT TAB ENTER ESC`
 
+### ゲームパッド（Xbox コントローラー）
+```lua
+if padDown("A")     then jump() end        -- 押している間ずっと true
+if padPressed("RB") then dash() end        -- 押した瞬間だけ true
+if padReleased("A") then release() end     -- 離した瞬間だけ true（チャージ攻撃向け）
+
+local lx, ly = padStick("left")            -- 左スティック(-1..1)。移動入力に使う
+local rt = padTrigger("right")             -- 右トリガー(0..1)。アクセル/ADS等
+
+padVibrate(0.6, 0.3, 0.2)                  -- 低周波0.6・高周波0.3の振動を0.2秒だけ
+```
+使えるボタン名: `A B X Y  LB RB  BACK START  LSTICK RSTICK  DPAD_UP DPAD_DOWN DPAD_LEFT DPAD_RIGHT`
+2台目以降は各関数の最後に `pad` 引数（0始まり）を渡す: `padDown("A", 1)`。`padConnected(pad?)` で接続確認。
+低レベルAPI（`input:isPadButtonDown` 等、`PAD_*` 定数）は下記§と API_REFERENCE.md の Gamepad セクション参照。
+
 ### シーン遷移
 ```lua
 goToScene("scenes/clear.json", 0.7)  -- フェード付きで指定シーンへ（秒数省略可）
@@ -117,6 +132,112 @@ ui:text(x, y, "HUD text", size, r, g, b, a)   -- 画面に文字（再生中の�
 下部の入力欄からは Lua を1行その場で実行できる（`scene`/`fx`/`camera` などそのまま使える簡易コンソール）。
 入力中は**予測変換**が出る: `time.` や `scene:fi` まで打つと候補がポップアップし、Tab で確定・↑↓ で選択・クリックで挿入できる（候補は実際の Lua 環境から動的に列挙されるので自作のグローバルも出る）。
 
+### ゲーム内UI（コンポーネント方式）
+`ui:text/button/image/rect` は**簡易/デバッグ用**の即時 API。タイトルメニューや HUD 一式など恒常的な画面は、
+Hierarchy の「作成」→「UI（ゲーム内UI）」で `UICanvas`/`UIRect`/`UIImage`/`UIText`/`UIButton` コンポーネントの
+ツリーをエディタで組んで作る（Unity uGUI 相当の retained-mode UI）。スクリプトからは表示中の値だけを書き換える:
+
+```lua
+scene:setUiText(scoreLabel, "SCORE: " .. tostring(score))   -- テキスト書き換え
+scene:setUiColor(hpBarFill, 1, hpRatio, 0, 1)                -- 色（UIImage優先/無ければUIText）
+scene:setUiFill(hpBarFill, hp / maxHp)                       -- ゲージの残量（UIImage.fillAmount 0..1）
+scene:setUiVisible(pausePanel, isPaused)                     -- 表示/非表示
+scene:setUiTexture(weaponIcon, "textures/ui/icon_sword.png") -- 画像差し替え
+scene:setUiRotation(titleLogo, -8)                           -- 回転（度・時計回り。子孫ごと回る見た目の変換）
+local deg = scene:getUiRotation(titleLogo)                   -- 現在の回転角を読む
+
+-- スライダー/トグル（値変更は onChangeEvent で受ける。e.value に実値/1・0 が入る）
+events:on("volumeChanged", function(e) audio:setMasterVolume(e.value) end)
+events:on("muteToggled",   function(e) audio:setMasterVolume(e.value == 1 and 0 or 1) end)
+local v  = scene:getUiSlider(volSlider)   -- 現在値を読む
+scene:setUiSlider(volSlider, 0.8)         -- スクリプトから設定（イベントは発火しない）
+local on = scene:getUiToggle(muteToggle)
+scene:setUiToggle(muteToggle, true)
+```
+
+ゲームパッド/キーボードの UI 操作は**設定不要で常時有効**: 矢印/D-pad/左スティックでフォーカス移動、
+Enter/Space/A で決定（フォーカスリング表示）。フォーカス中のスライダーは左右で値が変わる。
+
+見た目の装飾は Inspector で設定する: `UIImage` は**形状**（`shape`: 矩形/楕円/リング(円形ゲージ)/ダイヤ/六角形/三角形。
+テクスチャは形で切り抜かれる=丸アイコン等）・**放射 fill**（`fillDir`=放射でクールダウン円。`fillOrigin`=開始角）・
+**分割ゲージ**（`segments`=スタミナ/弾数チャンク）・グラデーション（横/縦/斜め/**放射**）・グロススイープ
+（`gradientScrollSpeed`≠0 で終端色の光帯がグラデ方向へ流れる。ガチャボタンの光沢流し）・
+**タイルパターン**（`uvMax`>1 で繰り返し + `uvScroll` で流れる警告帯/背景ストライプ）・
+枠線（実線/**破線**/**コーナーブラケット**=SF HUD 定番）・ドロップシャドウ、
+`UIText` は縁取り・影・カスタムフォント（assets 相対の .ttf/.otf）・タイプライター（`typewriterSpeed`=文字/秒）・
+**字間**（`letterSpacing`。タイトルの字間広げ）・**文字アニメ**（`charAnim`: ウェーブ/ジッター/レインボー）・
+**テキストグラデ**（金色タイトル等）・**リッチテキスト**（`rich=true` でテキスト内の
+`[c=RRGGBB]色[/c]` / `[wave]..[/wave]` / `[shake]..[/shake]` / `[rainbow]..[/rainbow]` をスパン装飾として
+解釈。`scene:setUiText` で流し込む会話文の一部だけ赤くする/揺らすのに使う。入れ子なし・閉じ忘れは文末まで・
+不正/未知のタグはそのまま表示。wrap とは非両立＝wrap 優先、テキストグラデは rich では無効）、
+`UIRect` は `rotation`/`skewX`（度）による傾きと `clipChildren`（子をマスク=ワイプ/マーキー）に対応している。
+
+**自動レイアウト**: `UILayout` コンポーネント（VBox/HBox/Grid）を親に付けると、直下の子（UIRect 持ち）へ
+セル矩形が順番に配られる＝手動 offset 計算なしでメニュー列/ツールバー/インベントリが組める。
+子はセル内で自身のアンカーどおりに解決される（全面ストレッチの子はセルいっぱい）。
+スクロールリストは UIScrollView の子に UILayout 持ちコンテンツノードを置く。
+スクロール操作はホイールに加え**ドラッグ/フリック(慣性)**にも対応（`dragScroll` で許可、
+`flickDecay`=慣性の減衰率/秒。0=慣性なし。ドラッグでスクロールした押下はリスト内ボタンのクリックにならない）。
+
+**動的 UI（アニメーション/イージング）**: `UIAnimator` コンポーネント（Inspector の「✚ コンポーネント追加 > UI Animator」）で
+出現アニメ（フェード/ポップ/スライド/スピン/バウンド落下/フリップ/シェイク）・ボタンのホバー/押下スケール・ループ（浮遊/パルス/点滅/スピン/スウィング）をノーコード設定できる。
+スクリプトからはトゥイーンで自由に動かせる:
+
+```lua
+scene:tweenUi(menu,  { dx = 200, duration = 0.4, easing = "bounce" })  -- 右へ200pxバウンス移動
+scene:tweenUi(popup, { scale = 1.2, alpha = 0, duration = 0.25 })      -- 拡大しながらフェードアウト
+scene:tweenUi(icon,  { rotate = 360, duration = 0.5 })                 -- 1回転（度・絶対目標値）
+scene:tweenUi(card,  { scaleY = 1, duration = 0.35, easing = "back" }) -- 縦つぶれから開く（フリップ風）
+scene:tweenUi(hpBar, { color = {3, 0.3, 0.3}, duration = 0.1 })        -- 赤フラッシュ（1超え=輝き）
+scene:tweenUi(hpBar, { shake = 10, duration = 0.4 })                   -- 振動（減衰付き）
+scene:tweenUi(hpFill, { fill = 0.35, duration = 0.3 })                 -- ゲージをなめらかに減らす
+scene:tweenUi(scoreText, { countTo = 12800, countFmt = "%06d",         -- 数字ロール + 完了SE
+                           duration = 0.8, easing = "expo",
+                           onComplete = function() audio:playSFX("se/coin.wav") end })
+scene:stopUiTweens(btn)  -- 進行中の tween を全打ち切り（連打対策）
+scene:showUi(winPanel)   -- UIAnimator の出現アニメを再生して表示
+scene:hideUi(pauseMenu)  -- 出現アニメの逆再生で消す（子孫ごと。戻すのは showUi）
+```
+`easing` は `"linear" / "in" / "out" / "inOut" / "back"（勢い） / "bounce" / "elastic" /
+"expo"（鋭い減速=スナップ感） / "inBack"（溜め） / "inOutBack" / "quint"（強い減速） / "sine"（ゆったり）`。
+使い分けの定石: パネル移動は `out`/`expo`、ボタンの触感は `back`、祝祭の演出（結果/ガチャ）だけ `elastic`/`bounce`。
+`dx/dy` はレイアウト（UIRect offset）を実際に動かすので終了位置でクリックも効く。`scale/scaleX/scaleY/alpha` は見た目だけ（子孫にまとめて掛かる）。
+`rotate`（度・絶対目標値）も見た目だけで、`setUiRotation` の値に加算合成される。
+`color={r,g,b}` は RGB 乗算の絶対目標値（完了後も持続。`{1,1,1}` へ戻して解除）。
+`fill` は UIImage.fillAmount、`countTo` は UIText への数字ロール、`onComplete` は完了時コールバック（SE 同期/チェーン用）。
+
+定番演出は `uifx.*` のワンライナーが楽（プレリュード組み込み。`e` はボタンイベントの `e.source` そのまま可）:
+```lua
+uifx.punch(e.source)          -- ボタンを押した感（膨らんで戻る）
+uifx.flash(hpBar, 3, .3, .3)  -- 赤フラッシュ
+uifx.hit(hpBar)               -- 赤フラッシュ + 振動（被ダメ定番）
+uifx.bounceIn(resultPanel)    -- ぽよんと登場
+uifx.flipIn(card)             -- ぺしゃんこ→開く
+uifx.popOut(popup)            -- 縮んで消える
+uifx.stagger(menuItems, 0.07, uifx.slideInLeft)  -- メニュー項目の順次入場（相場 0.05〜0.10s）
+uifx.countTo(scoreText, 12800, 0.8, "%06d")       -- スコアの数字ロール
+uifx.damageBar(hpFill, hpGhost, 0.42)             -- ゴーストバー付きダメージ（遅延削れ）
+uifx.heartbeat(skillIcon)                         -- クールダウン完了のドクン
+```
+他に `uifx.shake / fadeIn / fadeOut / slideInLeft / slideInRight / slideInUp / popIn / fillTo / wiggle`。
+
+**タイプライター（会話文の1文字ずつ表示）**: `UIText.typewriterSpeed`（文字/秒）を設定するだけ。
+`scene:setUiText` で文字列を変えると先頭から再生し直す。スキップ/送り判定:
+```lua
+if keyPressed("SPACE") then
+  if scene:isUiTypewriterDone(msg) then nextLine()          -- 全文表示済みなら次の行へ
+  else scene:setUiTypewriter(msg, 0) end                    -- 途中なら全文表示へスキップ
+end
+```
+
+ボタンのクリックは `events:on` で受ける（`UIButton.onClickEvent` に設定した名前で発火。`data.source` にボタンのエンティティID）:
+```lua
+function OnStart(self)
+    events:on("start_clicked", function(data) goToScene("scenes/game.json") end)
+end
+```
+詳細は API_REFERENCE.md の「ゲーム内UI（コンポーネント方式）」セクション、使い方サイト(`docs/index.html`)を参照。
+
 ---
 
 ## 低レベル API（細かい制御が要るとき）
@@ -132,8 +253,20 @@ end
 input:isKeyDown(KEY_W)                    -- KEY_W / KEY_ESCAPE ... 定数
 input:isKeyPressed(KEY_SPACE)
 
+input:isPadButtonDown(0, PAD_A)           -- pad=0(1台目), PAD_A / PAD_RB ... 定数
+input:getPadLeftStickX(0)                 -- スティックXY・トリガー・振動も input: 経由
+
 local hit = physics:raycast(origin, dir, maxDist)  -- RaycastHit{hit,distance,point,normal}
 physics:applyImpulse(e, Vec3.new(0, 5, 0))
+
+scene:setSpriteAlpha(e, 0.4)             -- Sprite2D の不透明度(0..1)。半透明演出(毎フレーム可)
+scene:setSpriteEffect(e, 0.5)            -- カスタムスプライトシェーダーへの汎用値(毎フレーム可)
+scene:setSpriteParams(e, 1, 0.5, 0, 0)   -- カスタムスプライトシェーダーへの汎用float4(毎フレーム可)
+scene:setSpriteUV(e, 0, 0, 0.25, 1)      -- Sprite2D の uvMin/uvMax 直接指定(アトラス切替)
+scene:setSpriteScroll(e, 0.5, 0)         -- UVスクロール速度(単位/秒)。溶岩/滝/背景ループ
+scene:setSpriteAnim(e, 4, 8, 0, 0)       -- フリップブック(frames,fps,cols,row)。frames=0で停止
+scene:setMeshEffect(e, 0.5)              -- カスタムメッシュシェーダーへの汎用値(毎フレーム可)
+scene:setMeshParams(e, 1, 0.5, 0, 0)     -- カスタムメッシュシェーダーへの汎用float4(毎フレーム可)
 
 fadeToScene("scenes/title.json", 0.5)    -- 低レベルの遷移
 transitionToScene("scenes/select.json", 4, 1.3)  -- 演出付き遷移(0=Fade 1=Wipe 2=Circle 3=縦Wipe 4=シークバー早送り)

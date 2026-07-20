@@ -1,6 +1,7 @@
 add_library(Editor STATIC
     EditorLayer.cpp
     UndoSystem.cpp
+    UiEditUtil.cpp
     ModelThumbnailRenderer.cpp
     EditorIconRenderer.cpp
     panels/ToolbarPanel.cpp
@@ -8,7 +9,14 @@ add_library(Editor STATIC
     panels/InspectorPanel.cpp
     panels/SceneViewPanel.cpp
     panels/AssetBrowserPanel.cpp
+    panels/ConsolePanel.cpp
     panels/McpBridgePanel.cpp
+    panels/VfxEditorPanel.cpp
+    panels/UiEditorPanel.cpp
+    panels/NetworkPanel.cpp
+    panels/MaterialEditorPanel.cpp
+    panels/MaterialLibraryPanel.cpp
+    panels/MaterialPreviewRenderer.cpp
 )
 
 target_include_directories(Editor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)

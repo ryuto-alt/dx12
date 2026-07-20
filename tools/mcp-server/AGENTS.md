@@ -117,6 +117,51 @@ dx12_create_lua_component(name:"Rotate", code:[[
 dx12_attach_lua_component(entity: 88, script:"components/Rotate.lua")
 ```
 
+### 4b. カスタムシェーダーを作ってメッシュに割り当てる
+
+```
+dx12_create_shader(name:"ToonShade", code:[[
+Texture2D    g_albedo  : register(t0);
+SamplerState g_sampler : register(s0);
+
+cbuffer PerObjectConstants : register(b0) { float4x4 mvp; float4x4 model; };
+cbuffer PerFrameConstants  : register(b1) {
+    float4x4 view; float4x4 proj;
+    float3 lightDir; float time;
+    float3 lightColor; float ambientStrength;
+};
+
+struct VSInput { float3 position:POSITION; float3 normal:NORMAL; float4 color:COLOR;
+                 float2 texCoord:TEXCOORD0; float4 tangent:TANGENT;
+                 uint4 boneIndices:BLENDINDICES; float4 boneWeights:BLENDWEIGHT; };
+struct PSInput { float4 positionSV:SV_POSITION; float3 worldNormal:NORMAL;
+                 float4 color:COLOR; float2 texCoord:TEXCOORD0; };
+
+PSInput VSMain(VSInput input) {
+    PSInput o;
+    o.positionSV = mul(float4(input.position,1.0f), mvp);
+    o.worldNormal = normalize(mul(input.normal,(float3x3)model));
+    o.color = input.color; o.texCoord = input.texCoord;
+    return o;
+}
+float4 PSMain(PSInput input) : SV_TARGET {
+    float4 albedo = g_albedo.Sample(g_sampler, input.texCoord) * input.color;
+    float ndotl = max(dot(normalize(input.worldNormal), normalize(-lightDir)), 0.0f);
+    float band = ndotl > 0.5 ? 1.0 : (ndotl > 0.15 ? 0.5 : 0.15);   // トゥーン: 3段階に量子化
+    return float4(albedo.rgb * lightColor * band, albedo.a);
+}
+]])
+# → {path:"ToonShade.hlsl", compiled:true}
+# compiled:false なら error を読んで直し、dx12_create_shader を撃ち直す(ファイルは残るので反復修正できる)
+
+dx12_set_mesh_shader(entity: 88, shaderPath:"ToonShade.hlsl")
+# → {entityId:88, shaderPath:"ToonShade.hlsl", skinnedFallbackWarning:false}
+
+dx12_focus_and_screenshot(entity: 88)   # 見た目を確認
+```
+※ 静的メッシュのみ有効。スキンドメッシュ(SkeletalAnimation持ち)は `skinnedFallbackWarning:true` が返り既定Forwardへ自動フォールバックする。
+既存シェーダーの読み直しは `dx12_read_shader(path:"ToonShade.hlsl")`。詳細は [`docs/AUTHORING.md`](../../docs/AUTHORING.md) の「6. カスタムシェーダー」。
+
 ### 5. Play/Stop して確認
 
 ```
@@ -211,6 +256,166 @@ key は VK 整数か名前(`"W"`,`"D"`,`"SPACE"`,`"UP"`,`"F1"` 等)。
 
 ---
 
+## 物理ランタイム検証(raycast/overlap/velocity)
+
+`dx12_raycast` / `dx12_overlap_box` / `dx12_overlap_sphere` / `dx12_get_physics_state` は
+**Playing 中のみ意味のある結果を返す**(RigidBody は Play 開始時にしか物理へ登録されない)。
+Editor 中に呼んでもエラーにはならず、hit=false / entities=[] / velocity=[0,0,0] が返るだけ。
+
+```
+dx12_play()
+dx12_key_down(key:"D")
+dx12_step_frames(frames:30)
+dx12_get_physics_state(name:"Player")          # {velocity, isGrounded, ...}
+dx12_raycast(origin:[0,5,0], direction:[0,-1,0], maxDistance:10)  # 足元の地面判定
+dx12_overlap_sphere(center:[0,1,0], radius:2)  # 索敵範囲に何がいるか
+dx12_key_up(key:"D")
+dx12_stop()
+```
+
+`dx12_query_entities(box:...)` は Transform.position ベースの単純判定、
+`dx12_overlap_box`/`dx12_overlap_sphere` は実際のコライダー形状での物理判定。用途で使い分ける。
+
+---
+
+## Lua 即時実行(eval) — デバッグの近道
+
+`dx12_eval_lua` は任意の Lua を Lua state でその場実行する。スクリプトを書いてアタッチせずに
+値を確認・書き換えできる。`dx12_describe_lua_api` にある全バインディングがそのまま使える。
+
+```
+dx12_eval_lua(code:"local e = scene:findEntity('Player'); return e.transform.position.y")
+# → {result: "3.5"}
+
+dx12_eval_lua(code:"local e = scene:findEntity('Player'); e.transform.position.y = 10")
+# → {result: ""}  (return してないので result は空)
+```
+
+★ `print()` は捕捉されない。デバッグ出力は `log(msg)` を使うと `dx12_get_log` に出る。
+物理系バインディング(`physics:*`)は Playing 中でないと効果が無い(bodies が未登録のため)。
+
+---
+
+## ポストプロセス/SSAO の調整
+
+```
+dx12_get_post_process()                                   # 現状値を確認
+dx12_set_post_process(vignetteOn:true, vignette:0.6,
+                       tintOn:true, tint:[1.0,0.95,0.85])  # 暖色ビネット
+dx12_focus_and_screenshot(name:"MainCamera")               # 見た目を確認
+```
+
+各エフェクトは `<name>On`(bool) を true にしないとパラメータを変えても反映されない。
+
+---
+
+## シーン検証パイプライン(validate)
+
+`dx12_validate_scene` はヘッドレスの `--validate` を子プロセスとして実行し、参照切れ
+(スクリプト不在・entity参照未解決・Trigger target 不明・LoadScene 先不在)を検出する。
+編集後は毎回これで確認してから Play するとよい。
+
+```
+dx12_save_scene()
+dx12_validate_scene()
+# → {pass:false, report:"...\n[ERROR] unresolved entity reference: \"Boss\" (trigger action target of WinZone)\n..."}
+```
+
+---
+
+## テクスチャ / アニメーション / マルチプレイヤー(v0.5.0 追加)
+
+### テクスチャ割当
+```
+dx12_list_assets(type:"texture")                       # パスを探す
+dx12_set_texture(name:"Wall", path:"textures/brick.png")            # albedo(既定)
+dx12_set_texture(name:"Wall", path:"textures/brick_n.png", slot:"normal")
+dx12_set_texture(name:"Wall", path:"")                 # 解除(Material 既定に戻す)
+```
+Inspector の D&D と同じインスタンス単位 override。Material は共有なので他インスタンスに波及しない。
+スプライトのテクスチャは `dx12_set_component(component:"sprite2d", data:{texturePath:...})` の方。
+
+### スケルタルアニメーション
+```
+dx12_get_anim_state(name:"Player")                     # → {clips:["Idle","Walk","Run"]}
+dx12_play_anim(name:"Player", clipName:"Run", blend:0.2)
+```
+アニメーションの時間進行は Play 中。クリップはモデルロード時に読み込まれたもののみ。
+
+### マルチプレイヤーのローカルテストループ
+```
+# ①複製したいエンティティに複製マークを付ける(Editor 中)
+dx12_set_component(name:"Player", component:"networkIdentity", data:{})
+dx12_set_component(name:"Player", component:"networkTransform", data:{syncPosition:true})
+# ②ロール設定 → Play(EnterPlayMode が自動で Host する)
+dx12_net_setup(role:"host")
+dx12_play()
+# ③2個目のエンジンプロセスを起動して自動接続させる
+dx12_net_launch_test_client()
+dx12_step_frames(120)                                  # 接続待ち
+# ④観測
+dx12_net_status()                                      # → players:[{id,rttMs,...}], syncedEntityCount
+```
+`net_launch_test_client` はホスト Playing 中のみ。終わったら `dx12_stop`(ロールは `net_setup(role:"offline")` で解除)。
+
+---
+
+## シーン編集の強化 + アセット操作(v0.6.0 追加)
+
+### 数値で配置を決める(get_bounds が基礎)
+
+「上に置く」「隣に並べる」は目分量でなく AABB から計算する:
+
+```
+dx12_get_bounds(name:"Table")
+# → {min:[-1,0,-0.5], max:[1,0.8,0.5], center:[0,0.4,0], size:[2,0.8,1], hasMesh:true}
+dx12_create_entity(type:"box", name:"Cup", position:[0, 0.9, 0])   # 天面(max.y=0.8)より上へ
+dx12_snap_to_ground(name:"Cup")                                     # 底面をテーブル天面へぴったり
+```
+
+浮いてる/めり込んでる物の修正は `dx12_snap_to_ground` 一発。床が無ければ y=0 へ落ちる。
+向きは `dx12_look_at(name:"Turret", targetName:"Player")`(upright:true で水平回転のみ)。
+
+### 任意視点で見る(検証ループの強化)
+
+```
+dx12_screenshot_from(position:[0, 30, -30], target:[0, 0, 0])   # 俯瞰でレイアウト全体
+dx12_screenshot_from(position:[0, 1.7, -5], target:[0, 1.7, 0]) # プレイヤー目線の高さ
+```
+戻す時は事前に `dx12_get_editor_camera` で保存 → `dx12_set_editor_camera` で復元。
+
+### 一括配置(scatter)
+
+```
+# 木を 30 本、シード付き乱数で自然にばらまく(同 seed で再現可能)
+dx12_scatter(model:"models/tree.glb", count:30, area:[-20,-20,20,20],
+             seed:7, randomYaw:true, scaleRange:[0.8,1.3], snapToGround:true)
+# コインを等間隔グリッドで敷く
+dx12_scatter(type:"box", count:25, area:[-5,-5,5,5], placement:"grid", namePrefix:"Coin")
+```
+1体ずつフレーム境界で生成するので多数配置は時間がかかる。★Editor 限定。
+
+### アセットの取り込み・確認
+
+```
+dx12_import_asset(sourcePath:"C:/Users/me/Downloads/rock", destPath:"models/rock", overwrite:false)
+# → .gltf は .bin/テクスチャを同階層参照するのでフォルダごと import する
+
+dx12_asset_info(path:"models/rock/rock.gltf")
+# → {totalFaces, aabbMin/Max, hasSkeleton, animations, ...} spawn 前にサイズ・アニメ有無を確認
+
+dx12_preview_model(path:"models/rock/rock.gltf")   # 見た目を画像で確認(シーンは変更されない)
+dx12_view_texture(path:"textures/rust.dds")         # dds/tga も PNG 変換して見られる
+```
+
+### アセット整理の注意
+
+`dx12_move_asset` / `dx12_delete_asset` は**シーン/プレハブ内の参照パスを自動更新しない**。
+参照中のアセットを動かす/消すとロードが壊れる。`dx12_list_entities(verbose:true)` →
+`dx12_get_entity` で modelPath / texturePath を確認してから触ること。
+
+---
+
 ## MODE_CONFLICT(3): Playing 中は生成系が失敗する
 
 Playing 中に `create_entity` / `spawn_model` / `delete_entity` / `open_scene` 等を呼ぶと
@@ -292,6 +497,84 @@ dx12_set_transform(name:"Player", position:[0,1,0])
 `snapshot restore failed; reloading from disk` が出ていれば自動復旧済み、
 `scene is empty after Stop` が出ていればディスクにも有効なシーンが無い状態
 (未保存の新規シーンを Play→Stop した等)。その場合は `dx12_open_scene` で開き直す。
+
+---
+
+## ゲーム内 UI を組む（タイトル画面・設定画面・HUD）
+
+基本ループ: **設計方針 → 制約付き生成 → 自動監査 → 見た目確認 → 保存** を回す。
+
+新規画面は原則として次の順で作る:
+
+1. `dx12_ui_design_brief(genre, screen)` で画面目的に合う構図とアンチパターンを得る
+2. `dx12_ui_compose(blueprint)` の `dock` / `stack` / `grid` を使って骨格を作る
+3. `dx12_ui_audit(strictness:"strict")` が pass するまで entityId 付き issue を修正する
+4. `dx12_ui_screenshot()` で視線誘導・作品固有性・余白を目視する
+5. `dx12_save_scene()`
+
+`ui_audit` の pass は美しさを保証しない。数値的な崩れを除いた後、スクリーンショットで
+「主役が1つか」「全要素が同じ角丸カードになっていないか」「青紫ネオン/グラデ/影を
+無意味に重ねていないか」「作品固有の構図か」を必ず判断する。
+
+手動で細部を組む場合の基本:
+
+1. `dx12_create_entity(type: "ui_canvas")` — UI ルート。既にあれば省略（`dx12_ui_tree` で確認）
+2. `dx12_create_entity(type: "ui_button", name: "StartButton", parent: <canvasId>)` —
+   ボタンは背景+ラベル子つきで生成される（`ui_slider` / `ui_toggle` / `ui_scrollview` / `ui_image` / `ui_text` も同様）
+3. `dx12_set_component(component: "uiRect", data: {anchorMin:[0.5,0.5], anchorMax:[0.5,0.5], offsetMin:[-110,-32], offsetMax:[110,32]})` — 配置。
+   解決式は `rectMin = parentMin + parentSize*anchorMin + offsetMin`。全面ストレッチ = anchor [0,0]-[1,1] + offset 0
+4. `dx12_ui_tree` — 全要素の解決済み矩形（キャンバス空間 px）を数値で確認。重なり/はみ出しはここで分かる
+5. `dx12_ui_screenshot` — エディタウィンドウごと撮って見た目を確認（`dx12_screenshot` には UI は写らない）
+
+- ラベル文言は子の `uiText` を `set_component`（子の id と現在の文言は `dx12_ui_tree` の `children` / `text` で分かる）
+- クリック/値変更は Lua の `events:on(イベント名, fn)` で受ける（`uiButton.onClickEvent` / `uiSlider.onChangeEvent`。`e.value` に実値）
+- 兄弟の描画順 = `uiRect.order`（大きいほど手前）、親変更 = `dx12_set_parent`、リストは `uiScrollView` の子にぶら下げる
+- 見た目の装飾も `dx12_set_component` で設定できる: `uiRect` の `rotation`/`skewX`（度。例: `rotation: -8` で斜めバナー＝ペルソナ風 UI。子孫ごと回る見た目の変換）、
+  `uiImage` の `gradientDir`+`gradientColor2`（グラデ）/ `gradientScrollSpeed`（≠0 で光帯がグラデ方向へ流れるグロススイープ＝ガチャボタンの光沢流し。周回/秒）/
+  `outlineWidth`+`outlineColor`（枠線）/ `shadowColor`+`shadowOffset`+`shadowSoftness`（影）、
+  `uiText` の `outlineWidth`（縁取り）/ `shadowColor`（影）/ `fontPath`（assets 相対 .ttf/.otf）/ `typewriterSpeed`（文字/秒。Play 中に1文字ずつ＝会話文タイプライター）
+- 動きは `uiAnimator`（出現 8=bounceDrop/9=flipIn/10=shakeIn 含む）と Lua `scene:tweenUi`（scaleX/scaleY・color フラッシュ・shake 対応）、
+  定番演出は prelude の `uifx.punch/flash/shake/hit/bounceIn/flipIn/popOut/fadeIn/fadeOut`（`dx12_describe_lua_api` 参照）
+- 回転したパネルの中に `ui_scrollview` を置くのは非対応（逆にスクロールビュー内の回転要素は OK）
+- ゲームパッド/キーボードのフォーカスナビは自動で効く（設定不要）
+
+### UI監査の計測lint (dx12_ui_audit)
+
+`dx12_ui_audit` は主観ヒューリスティックに加えて、resolvedRect から測定する「AIっぽいUI」検出ルールを持つ:
+
+- `SIBLING_MISALIGNMENT` (warning): 同じ親の兄弟の左端/上端が **1〜3pxだけ** ズレているペア。0px(整列済み)と4px以上(意図的な差)は対象外。fix に揃えるべき座標が入る。
+- `OFF_GRID_SPACING` (suggestion): 縦積み/横並びの隣接兄弟の間隔が4pxグリッドに乗っていない(gap%4≠0)。64px超の間隔は領域分割とみなし対象外。
+- `FONT_SIZE_SPRAWL` (suggestion): 表示中の uiText.fontSize が5種類を超えた(タイポスケールの乱れ)。
+- `CENTERED_MONOTONY` (suggestion): 操作+テキスト要素が6個以上あり、その80%以上が水平中央揃え(キャンバス中心±2px)。全部中央はAI的構図の典型。
+
+返り値には issue にならなくても常に `metrics` が付く:
+`{ fontSizes: [{size,count}...], colorGroups: [{color,count,examples}...], centeredRatio, gapValues }`
+colorGroups は近似色(RGB 1/8刻み)をまとめた代表色・使用回数・使用エンティティ名の例。UI生成後はこの metrics を見てスケール/パレット/構図を整えること。
+
+### dx12_ui_compare — 参照UIとの横並び比較
+
+`dx12_ui_compare(referencePath, grid?)` は、ユーザーが渡した参照ゲームのUIスクショ(PNG絶対パス)と、現在のエディタUI(`ui_screenshot`)を**1枚の横並び画像**(左=参照、右=現在、間に4px区切り線)に合成して返す。AIは2枚別々の画像より1枚に合成された画像の方が正確に比較できる、というのが設計動機。
+
+- 返り値: image ブロック + text に `{path, diffRatio, refSize, curSize}`。diffRatio は同サイズに正規化した上での RGB 距離ベースのピクセル差分率(%)。
+- `grid: true` で右側(現在)にだけ8pxグリッド線を薄く重畳。整列・余白のズレ確認に使う。
+- **推奨ループ**: 合成画像を見て「参照と違う点を3つ」挙げる → 直す → 再度 dx12_ui_compare。diffRatio の減少を目安にしつつ、最終判断は目視で行う。
+- 実装は `uiCompare.ts`(pure、pngjs 依存)。テストは `node uiCompare.test.ts`。
+
+### UI 素材ワークフロー(フォント / 9-slice / アイコン)
+
+ゲーム UI の見た目を上げる素材導入は以下の流れで行う。
+
+**フォント導入 (dx12_install_font)**
+1. `dx12_install_font { family: "Noto Sans JP", weight: 700 }` — Google Fonts から .ttf を落として `assets/fonts/` へ自動取り込み。`{fontPath}` が返る。
+2. 返った `fontPath` をテキストに設定: `dx12_set_component { component: "uiText", data: { fontPath: "fonts/NotoSansJP-700.ttf" } }`。
+3. ★日本語 UI には必ず日本語対応フォント(Noto Sans JP / M PLUS Rounded 1c / Zen Kaku Gothic New 等)。欧文フォントだと日本語が豆腐(□)になる。見出し 700、本文 400 の 2 ウェイト運用が基本。
+
+**9-slice パネル / アイコン (dx12_import_asset)**
+- 画像素材は `dx12_import_asset { sourcePath: "<絶対パス>", destPath: "ui/panel.png" }` で assets へ取り込み、`uiImage.texturePath` に設定する。
+- 9-slice はエンジン実装済み: `uiImage` に `texturePath` + `sliceBorder: [左, 上, 右, 下]`(px)を設定すると、角を保ったままパネルが伸縮する。角丸枠・装飾フレームはこれで 1 枚のテクスチャから任意サイズに展開できる。
+- アイコンは正方形 PNG を `texturePath` に設定するだけ(sliceBorder 不要)。
+
+導入後は `dx12_ui_screenshot` で実際の描画を確認すること。
 
 ---
 

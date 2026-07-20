@@ -60,7 +60,7 @@ Entity Scene::Spawn(const std::string& name,
     const CachedModel* cached = m_resourceManager->GetOrLoadModel(modelPath, m_cmdList);
     if (!cached)
     {
-        Logger::Warn("Failed to load model: {}", modelPath);
+        Logger::Warn("モデルの読み込みに失敗しました: {}", modelPath);
         OutputDebugStringA(("[Spawn FAILED] " + modelPath + "\n").c_str());
         return Entity();
     }
@@ -238,10 +238,19 @@ Entity Scene::SpawnBox(const std::string& name,
 
     MeshRenderer& renderer = entity.AddComponent<MeshRenderer>();
     renderer.modelPath = "__primitive_box__";
-    auto boxMesh = std::make_unique<Mesh>();
-    boxMesh->InitializeAsBox(*m_device);
-    renderer.meshes.push_back(boxMesh.get());
-    m_ownedMeshes.push_back(std::move(boxMesh));
+    // 発光弾(Pfx*)は共有 unit box を使い instancing 対象に（色は instanceColor へ）。
+    if (name.rfind("Pfx", 0) == 0)
+    {
+        renderer.meshes.push_back(GetSharedGlowMesh(false, 0.0f));
+        renderer.instanced = true;
+    }
+    else
+    {
+        auto boxMesh = std::make_unique<Mesh>();
+        boxMesh->InitializeAsBox(*m_device);
+        renderer.meshes.push_back(boxMesh.get());
+        m_ownedMeshes.push_back(std::move(boxMesh));
+    }
 
     Logger::Info("Spawned box '{}'", name);
     return entity;
@@ -255,10 +264,20 @@ Entity Scene::SpawnSphere(const std::string& name,
 
     MeshRenderer& renderer = entity.AddComponent<MeshRenderer>();
     renderer.modelPath = "__primitive_sphere__";
-    auto sphereMesh = std::make_unique<Mesh>();
-    sphereMesh->InitializeAsSphere(*m_device, radius);
-    renderer.meshes.push_back(sphereMesh.get());
-    m_ownedMeshes.push_back(std::move(sphereMesh));
+    // 発光弾(Pfx*)は同半径で共有メッシュ → instancing 対象（色は instanceColor へ）。
+    // scale は {1,1,1} のまま＝半径はメッシュ側に焼く＝game1 の挙動を一切変えない。
+    if (name.rfind("Pfx", 0) == 0)
+    {
+        renderer.meshes.push_back(GetSharedGlowMesh(true, radius));
+        renderer.instanced = true;
+    }
+    else
+    {
+        auto sphereMesh = std::make_unique<Mesh>();
+        sphereMesh->InitializeAsSphere(*m_device, radius);
+        renderer.meshes.push_back(sphereMesh.get());
+        m_ownedMeshes.push_back(std::move(sphereMesh));
+    }
 
     Logger::Info("Spawned sphere '{}'", name);
     return entity;
@@ -276,9 +295,27 @@ void Scene::Remove(Entity entity)
     }
 }
 
+Mesh* Scene::GetSharedGlowMesh(bool sphere, f32 radius)
+{
+    // sphere は半径(0.1mm刻み)別、box は単一キー。値の Mesh は m_ownedMeshes が所有。
+    uint64_t key = sphere ? (0x5000000000000000ull | static_cast<uint64_t>(radius * 10000.0f + 0.5f))
+                          : 0x6000000000000000ull;
+    auto it = m_glowMeshCache.find(key);
+    if (it != m_glowMeshCache.end()) return it->second;
+
+    auto mesh = std::make_unique<Mesh>();
+    if (sphere) mesh->InitializeAsSphere(*m_device, radius);
+    else        mesh->InitializeAsBox(*m_device);
+    Mesh* ptr = mesh.get();
+    m_ownedMeshes.push_back(std::move(mesh));
+    m_glowMeshCache[key] = ptr;
+    return ptr;
+}
+
 void Scene::Clear()
 {
     m_registry.clear();
+    m_glowMeshCache.clear();   // m_ownedMeshes の前にクリア（dangling 回避）
     m_ownedMeshes.clear();
     m_postSettings = PostProcessSettings{};  // ポスト設定もデフォルトへ
 }

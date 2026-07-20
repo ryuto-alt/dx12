@@ -2,8 +2,10 @@
 #include "core/Logger.h"
 
 #include <Windows.h>
+#include <shellapi.h>
 #include <filesystem>
 #include <fstream>
+#include <algorithm>
 #include <array>
 #include <vector>
 #include <sstream>
@@ -43,12 +45,27 @@ GitResult GitIntegration::Run(const std::string& exe, const std::string& args,
     // 親側の read ハンドルは継承させない
     SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
 
-    // コマンドライン構築: "exe args"（exe は PATH 解決のためそのまま渡す）
-    std::string cmdLine = exe + " " + args;
-    std::vector<char> cmdBuf(cmdLine.begin(), cmdLine.end());
-    cmdBuf.push_back('\0');
+    // コマンドライン構築: "exe args"（exe は PATH 解決のためそのまま渡す）。
+    // コミットメッセージ等は UTF-8 で保持しているため、CreateProcessA（システムANSI
+    // コードページ＝日本語環境では通常 Shift-JIS で解釈）に渡すと文字化けし、稀に
+    // 変換結果に " が現れて引数の区切りが壊れ commit 自体が失敗する（→push も失敗扱い）。
+    // UTF-8→UTF-16 に明示変換して CreateProcessW へ渡す。
+    auto Utf8ToWide = [](const std::string& s) -> std::wstring {
+        if (s.empty()) return std::wstring();
+        int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
+        std::wstring w(len, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), w.data(), len);
+        return w;
+    };
 
-    STARTUPINFOA si{};
+    std::string cmdLine = exe + " " + args;
+    std::wstring wCmdLine = Utf8ToWide(cmdLine);
+    std::vector<wchar_t> cmdBuf(wCmdLine.begin(), wCmdLine.end());
+    cmdBuf.push_back(L'\0');
+
+    std::wstring wWorkDir = Utf8ToWide(workDir);
+
+    STARTUPINFOW si{};
     si.cb         = sizeof(si);
     si.dwFlags    = STARTF_USESTDHANDLES;
     si.hStdOutput = writePipe;
@@ -57,10 +74,10 @@ GitResult GitIntegration::Run(const std::string& exe, const std::string& args,
 
     PROCESS_INFORMATION pi{};
 
-    BOOL ok = CreateProcessA(
+    BOOL ok = CreateProcessW(
         nullptr, cmdBuf.data(), nullptr, nullptr, TRUE,
         CREATE_NO_WINDOW, nullptr,
-        workDir.empty() ? nullptr : workDir.c_str(),
+        wWorkDir.empty() ? nullptr : wWorkDir.c_str(),
         &si, &pi);
 
     // 書き込み側は親では使わない → 閉じておかないと read が EOF を検出できない
@@ -111,6 +128,66 @@ bool GitIntegration::IsGitAvailable()
 bool GitIntegration::IsGhAvailable()
 {
     return Run("gh", "--version", "").ok();
+}
+
+GitResult GitIntegration::InstallGit(const std::atomic<bool>& abortFlag)
+{
+    GitResult result;
+    static const char* kDownloadPage = "https://git-scm.com/download/win";
+
+    // winget（Win10 1809+/Win11 標準搭載）があればサイレントインストールを試す。
+    if (Run("winget", "--version", "").ok())
+    {
+        std::string cmd = "winget install --id Git.Git -e --source winget "
+                           "--accept-package-agreements --accept-source-agreements";
+        std::vector<char> buf(cmd.begin(), cmd.end());
+        buf.push_back('\0');
+
+        STARTUPINFOA si{};
+        si.cb = sizeof(si);
+        PROCESS_INFORMATION pi{};
+        // gh ログインと同じ流儀: 別コンソールで進捗/確認プロンプトをそのまま見せる。
+        BOOL ok = CreateProcessA(nullptr, buf.data(), nullptr, nullptr, FALSE,
+                                 CREATE_NEW_CONSOLE, nullptr, nullptr, &si, &pi);
+        if (!ok)
+        {
+            result.exitCode = -1;
+            result.output   = "winget の起動に失敗したで。手動でダウンロードページを開くで。";
+            ShellExecuteA(nullptr, "open", kDownloadPage, nullptr, nullptr, SW_SHOWNORMAL);
+            return result;
+        }
+
+        DWORD code = 1;
+        for (;;)
+        {
+            DWORD wr = WaitForSingleObject(pi.hProcess, 500);
+            if (wr == WAIT_OBJECT_0) { GetExitCodeProcess(pi.hProcess, &code); break; }
+            if (abortFlag.load()) break;   // シャットダウン中: 子は残しても無害
+        }
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+
+        result.exitCode = (int)code;
+        if (code == 0)
+        {
+            result.output = "Git をインストールしたで。このパネルを開き直すと反映されるで"
+                             "（反映されなければ一度エディタを再起動してや＝PATH の再読み込みのため）。";
+        }
+        else
+        {
+            result.output = "winget でのインストールに失敗した（コード " + std::to_string((int)code) +
+                             "）。手動でダウンロードページを開くで。";
+            ShellExecuteA(nullptr, "open", kDownloadPage, nullptr, nullptr, SW_SHOWNORMAL);
+        }
+        return result;
+    }
+
+    // winget が無い環境: 公式ダウンロードページを開いて手動インストールしてもらう
+    ShellExecuteA(nullptr, "open", kDownloadPage, nullptr, nullptr, SW_SHOWNORMAL);
+    result.exitCode = 0;
+    result.output = "winget が見つからへんかったから、ブラウザで公式ダウンロードページを開いたで。"
+                    "インストーラーを実行してから、このパネルを開き直してや。";
+    return result;
 }
 
 bool GitIntegration::IsRepo(const std::string& workDir)
@@ -179,7 +256,7 @@ GitResult GitIntegration::Push(const std::string& workDir, bool setUpstream)
 
 GitResult GitIntegration::Pull(const std::string& workDir)
 {
-    return RunGit(workDir, "pull");
+    return RunGit(workDir, "pull --prune");
 }
 
 GitResult GitIntegration::Fetch(const std::string& workDir)
@@ -216,11 +293,16 @@ std::vector<GitFileChange> GitIntegration::ChangedFiles(const std::string& workD
         if (path.size() >= 2 && path.front() == '"' && path.back() == '"')
             path = path.substr(1, path.size() - 2);
 
+        // コンフリクト（未マージ）は X/Y の組み合わせで判定: UU/AA/DD/AU/UA/UD/DU。
+        // 単純に X を見るだけだと AA(両者追加) や DD(両者削除) が 'A'/'D' 扱いになって見逃す。
+        bool isConflict = (X == 'U' || Y == 'U' || (X == 'A' && Y == 'A') || (X == 'D' && Y == 'D'));
+
         GitFileChange c;
         c.path   = path;
         c.staged = (X != ' ' && X != '?');
         char raw = (X != ' ') ? X : Y;           // staged 優先、無ければ worktree
         if (raw == '?') raw = 'A';               // 未追跡=追加扱い（VS と同じ）
+        if (isConflict) raw = 'U';
         c.status = raw;
         out.push_back(std::move(c));
     }
@@ -249,6 +331,53 @@ std::string GitIntegration::RemoteUrl(const std::string& workDir)
     return url;
 }
 
+bool GitIntegration::IsMergeInProgress(const std::string& workDir)
+{
+    std::error_code ec;
+    return fs::exists(fs::path(workDir) / ".git" / "MERGE_HEAD", ec);
+}
+
+std::vector<std::string> GitIntegration::ConflictedFiles(const std::string& workDir)
+{
+    std::vector<std::string> out;
+    for (const auto& c : ChangedFiles(workDir))
+        if (c.status == 'U') out.push_back(c.path);
+    return out;
+}
+
+GitResult GitIntegration::ResolveOurs(const std::string& workDir, const std::string& path)
+{
+    // checkout --ours は削除系コンフリクト(DU/UD/DD)では対象が片側に無く失敗しうる。
+    // その場合の判定はエラー出力に委ねる（呼び出し側でログ表示）。
+    auto r = RunGit(workDir, "checkout --ours -- \"" + path + "\"");
+    if (!r.ok()) return r;
+    auto add = RunGit(workDir, "add -- \"" + path + "\"");
+    add.output = r.output + add.output;
+    return add;
+}
+
+GitResult GitIntegration::ResolveTheirs(const std::string& workDir, const std::string& path)
+{
+    auto r = RunGit(workDir, "checkout --theirs -- \"" + path + "\"");
+    if (!r.ok()) return r;
+    auto add = RunGit(workDir, "add -- \"" + path + "\"");
+    add.output = r.output + add.output;
+    return add;
+}
+
+void GitIntegration::OpenConflictFile(const std::string& workDir, const std::string& relPath)
+{
+    std::error_code ec;
+    fs::path full = fs::absolute(fs::path(workDir) / relPath, ec);
+    std::string fullStr = full.string();
+    // VSCode があればそれで開く（コンフリクトマーカーの色分け/マージエディタが効く）。
+    // ShellExecuteA の "open" は起動を待たない（フリーズ回避）。
+    HINSTANCE h = ShellExecuteA(nullptr, "open", "code", ("\"" + fullStr + "\"").c_str(),
+                                workDir.c_str(), SW_SHOWNORMAL);
+    if ((INT_PTR)h <= 32)   // code が PATH に無い等で起動失敗 → 既定アプリで開く
+        ShellExecuteA(nullptr, "open", fullStr.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
 GitResult GitIntegration::CreateGitHubRepo(const std::string& workDir,
                                            const std::string& repoName,
                                            bool isPrivate)
@@ -272,29 +401,51 @@ std::string GitIntegration::GitHubUser()
     return u.substr(b, e - b + 1);
 }
 
-bool GitIntegration::LaunchLogin()
+GitResult GitIntegration::LoginAndWait(const std::atomic<bool>& abortFlag)
 {
-    // gh auth login は対話式（ブラウザでのデバイス認証）。別コンソールを開いて
-    // ユーザーが操作できるようにする。完了後に git の資格情報ヘルパも gh に設定。
-    // /k で完了後もウィンドウを残す（ワンタイムコード等の確認用）。
-    std::string cmd =
-        "cmd.exe /k \"gh auth login --hostname github.com --git-protocol https --web "
-        "&& gh auth setup-git && echo. && echo [ログイン処理が完了したらこのウィンドウは閉じてOK]\"";
-
+    // gh auth login --web は gh 自身がブラウザ承認をポーリングして待ち、終わったらプロセスが
+    // 終了する。なので「子プロセスの終了をそのまま待つ」だけでイベント駆動の完了検知になる
+    // （こちらで gh api user を何度も叩いてポーリングする必要が無い＝検知が速い）。
+    // 別コンソールでワンタイムコード等の対話表示はそのまま見せる。
+    std::string cmd = "gh auth login --hostname github.com --git-protocol https --web";
     std::vector<char> buf(cmd.begin(), cmd.end());
     buf.push_back('\0');
 
     STARTUPINFOA si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
+    GitResult result;
     BOOL ok = CreateProcessA(nullptr, buf.data(), nullptr, nullptr, FALSE,
                              CREATE_NEW_CONSOLE, nullptr, nullptr, &si, &pi);
-    if (ok)
+    if (!ok)
     {
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
+        result.exitCode = -1;
+        result.output   = "ログイン画面の起動に失敗したで";
+        return result;
     }
-    return ok == TRUE;
+
+    // 500ms 刻みで「プロセス終了」か「abort 要求」だけ見る（gh api user の連打ポーリングより軽い）。
+    DWORD code = 1;
+    for (;;)
+    {
+        DWORD wr = WaitForSingleObject(pi.hProcess, 500);
+        if (wr == WAIT_OBJECT_0) { GetExitCodeProcess(pi.hProcess, &code); break; }
+        if (abortFlag.load()) break;   // シャットダウン中: 子は残しても無害（ユーザーは認証継続可）
+    }
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+
+    if (code == 0)
+    {
+        RunGh("", "auth setup-git");   // git の資格情報ヘルパも gh に統一（失敗しても致命的ではない）
+        result.exitCode = 0;
+        result.output   = GitHubUser();
+    }
+    else
+    {
+        result.exitCode = 1;
+    }
+    return result;
 }
 
 std::string GitIntegration::RepoNameFromUrl(const std::string& url)
@@ -310,6 +461,37 @@ std::string GitIntegration::RepoNameFromUrl(const std::string& url)
     size_t slash = u.find_last_of("/:");
     std::string name = (slash == std::string::npos) ? u : u.substr(slash + 1);
     return name;
+}
+
+std::string GitIntegration::ToWebUrl(const std::string& remoteUrl)
+{
+    std::string u = remoteUrl;
+    size_t b = u.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos) return "";
+    size_t e = u.find_last_not_of(" \t\r\n");
+    u = u.substr(b, e - b + 1);
+
+    // プレフィックス文字数は手計算せず size() で取る（オフバイワンを構造的に防ぐ）
+    static const std::string kPrefixes[] = {
+        "git@github.com:", "https://github.com/", "http://github.com/", "ssh://git@github.com/"
+    };
+    std::string path;   // "owner/repo"
+    for (const auto& prefix : kPrefixes)
+    {
+        if (u.compare(0, prefix.size(), prefix) == 0)
+        {
+            path = u.substr(prefix.size());
+            break;
+        }
+    }
+    if (path.empty()) return "";   // github.com 以外、またはパース不能
+
+    if (path.size() > 4 && path.compare(path.size() - 4, 4, ".git") == 0)
+        path.erase(path.size() - 4);
+    while (!path.empty() && path.back() == '/')
+        path.pop_back();
+    if (path.empty()) return "";
+    return "https://github.com/" + path;
 }
 
 GitResult GitIntegration::Clone(const std::string& url, const std::string& destParentDir,
@@ -331,7 +513,11 @@ GitResult GitIntegration::Clone(const std::string& url, const std::string& destP
 std::vector<std::string> GitIntegration::ListBranches(const std::string& workDir)
 {
     std::vector<std::string> branches;
-    auto r = RunGit(workDir, "branch --format=%(refname:short)");
+    // ローカルブランチだけでなく origin のリモート追跡ブランチも見る。
+    // git pull/fetch はカレントブランチの更新とリモート追跡ブランチ(refs/remotes/origin/*)の
+    // 更新はするが、リモートに新規作成されたブランチをローカルブランチとしては作らないため、
+    // ローカルだけ見ていると「pull しても新しいブランチが一生選択肢に出てこない」問題になる。
+    auto r = RunGit(workDir, "for-each-ref --format=%(refname:short) refs/heads refs/remotes/origin");
     if (!r.ok()) return branches;
 
     std::istringstream iss(r.output);
@@ -339,11 +525,22 @@ std::vector<std::string> GitIntegration::ListBranches(const std::string& workDir
     while (std::getline(iss, line))
     {
         if (!line.empty() && line.back() == '\r') line.pop_back();
-        size_t b = line.find_first_not_of(" \t*");  // 先頭の "* " や空白を除去
+        size_t b = line.find_first_not_of(" \t");
         if (b == std::string::npos) continue;
         size_t e = line.find_last_not_of(" \t");
         std::string name = line.substr(b, e - b + 1);
-        if (!name.empty()) branches.push_back(name);
+        if (name.empty()) continue;
+
+        // "origin/foo" -> "foo" に正規化してローカルとリモート追跡分を同一ブランチとして扱う
+        static const std::string kOriginPrefix = "origin/";
+        if (name.compare(0, kOriginPrefix.size(), kOriginPrefix) == 0)
+        {
+            name = name.substr(kOriginPrefix.size());
+            if (name == "HEAD") continue;   // origin/HEAD はリモートの既定ブランチへのシンボリック参照
+        }
+
+        if (std::find(branches.begin(), branches.end(), name) == branches.end())
+            branches.push_back(name);
     }
     return branches;
 }

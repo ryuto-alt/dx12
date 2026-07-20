@@ -385,6 +385,46 @@ static void Test_RigidBody()
         });
 }
 
+static void Test_NetworkIdentity()
+{
+    Case<NetworkIdentity>(
+        [](entt::registry& r, entt::entity e) {
+            NetworkIdentity ni;
+            ni.interestRadius = 25.0f;
+            ni.serverAuthority = false;
+            r.emplace<NetworkIdentity>(e, ni);
+        },
+        [](const NetworkIdentity& ni) {
+            CHECK_F(ni.interestRadius, 25.0f);
+            CHECK(ni.serverAuthority == false);
+        });
+}
+
+static void Test_NetworkTransform()
+{
+    Case<NetworkTransform>(
+        [](entt::registry& r, entt::entity e) {
+            NetworkTransform nt;
+            nt.syncMode = 1;
+            nt.sendRate = 30.0f;
+            nt.syncPosition = true;
+            nt.syncRotation = false;
+            nt.syncScale = true;
+            nt.interpDelayMs = 50.0f;
+            nt.snapDistance = 2.5f;
+            r.emplace<NetworkTransform>(e, nt);
+        },
+        [](const NetworkTransform& nt) {
+            CHECK(nt.syncMode == 1);
+            CHECK_F(nt.sendRate, 30.0f);
+            CHECK(nt.syncPosition == true);
+            CHECK(nt.syncRotation == false);
+            CHECK(nt.syncScale == true);
+            CHECK_F(nt.interpDelayMs, 50.0f);
+            CHECK_F(nt.snapDistance, 2.5f);
+        });
+}
+
 static void Test_BoxCollider()
 {
     Case<BoxCollider>(
@@ -559,6 +599,14 @@ static void Test_Sprite2D()
             sp.uvMax = { 0.7f, 0.9f };
             sp.color = { 0.5f, 0.6f, 0.7f, 0.8f };
             sp.worldSpace = false;
+            sp.animFrames = 8;
+            sp.animFps    = 12.0f;
+            sp.animCols   = 4;
+            sp.animRow    = 1;
+            sp.animRows   = 2;
+            sp.animMode   = 2;
+            sp.scrollU    = 0.5f;
+            sp.scrollV    = -0.25f;
             r.emplace<Sprite2D>(e, sp);
         },
         [](const Sprite2D& sp) {
@@ -570,6 +618,318 @@ static void Test_Sprite2D()
             CHECK_F(sp.color.x, 0.5f); CHECK_F(sp.color.y, 0.6f);
             CHECK_F(sp.color.z, 0.7f); CHECK_F(sp.color.w, 0.8f);
             CHECK(sp.worldSpace == false);
+            CHECK(sp.animFrames == 8);
+            CHECK_F(sp.animFps, 12.0f);
+            CHECK(sp.animCols == 4);
+            CHECK(sp.animRow == 1);
+            CHECK(sp.animRows == 2);
+            CHECK(sp.animMode == 2);
+            CHECK_F(sp.scrollU, 0.5f); CHECK_F(sp.scrollV, -0.25f);
+        });
+}
+
+static void Test_UICanvas()
+{
+    Case<UICanvas>(
+        [](entt::registry& r, entt::entity e) {
+            UICanvas cv;
+            cv.refWidth  = 1280.0f;
+            cv.refHeight = 720.0f;
+            cv.scaleMode = 1;
+            cv.sortOrder = 3;
+            cv.visible   = false;
+            r.emplace<UICanvas>(e, cv);
+        },
+        [](const UICanvas& cv) {
+            CHECK_F(cv.refWidth, 1280.0f);
+            CHECK_F(cv.refHeight, 720.0f);
+            CHECK(cv.scaleMode == 1);
+            CHECK(cv.sortOrder == 3);
+            CHECK(cv.visible == false);
+        });
+}
+
+static void Test_UIRect()
+{
+    Case<UIRect>(
+        [](entt::registry& r, entt::entity e) {
+            UIRect rc;
+            rc.anchorMin = { 0.0f, 0.0f };
+            rc.anchorMax = { 1.0f, 0.5f };
+            rc.pivot     = { 0.25f, 0.75f };
+            rc.offsetMin = { 10.0f, -20.0f };
+            rc.offsetMax = { -30.0f, 40.0f };
+            rc.visible   = false;
+            rc.rotation  = -12.5f;   // 既定 0 から変えて往復を確認
+            rc.skewX     = 8.0f;
+            rc.clipChildren = true;
+            r.emplace<UIRect>(e, rc);
+        },
+        [](const UIRect& rc) {
+            CHECK_F(rc.anchorMin.x, 0.0f);  CHECK_F(rc.anchorMin.y, 0.0f);
+            CHECK_F(rc.anchorMax.x, 1.0f);  CHECK_F(rc.anchorMax.y, 0.5f);
+            CHECK_F(rc.pivot.x, 0.25f);     CHECK_F(rc.pivot.y, 0.75f);
+            CHECK_F(rc.offsetMin.x, 10.0f); CHECK_F(rc.offsetMin.y, -20.0f);
+            CHECK_F(rc.offsetMax.x, -30.0f);CHECK_F(rc.offsetMax.y, 40.0f);
+            CHECK(rc.visible == false);
+            CHECK_F(rc.rotation, -12.5f);
+            CHECK_F(rc.skewX, 8.0f);
+            CHECK(rc.clipChildren == true);
+        });
+}
+
+static void Test_UIImage()
+{
+    Case<UIImage>(
+        [](entt::registry& r, entt::entity e) {
+            UIImage im;
+            im.texturePath  = "textures/panel.png";
+            im.color        = { 0.1f, 0.2f, 0.3f, 0.4f };
+            im.uvMin        = { 0.1f, 0.2f };
+            im.uvMax        = { 0.8f, 0.9f };
+            im.sliceBorder  = { 8.0f, 16.0f, 8.0f, 16.0f };
+            im.cornerRadius = 6.0f;
+            im.raycastBlock = false;   // 既定 true から変えて往復を確認
+            im.fillAmount   = 0.75f;   // 既定 1 から変えて往復を確認
+            im.fillDir      = 4;       // 放射（時計回り）
+            im.fillOrigin   = 90.0f;
+            im.shape        = 4;       // 六角形
+            im.ringThickness = 12.0f;
+            im.uvScroll     = { 0.5f, -0.25f };
+            im.outlineStyle = 2;       // コーナーブラケット
+            im.outlineDash  = 20.0f;
+            im.segments     = 5;
+            im.segmentGap   = 2.0f;
+            im.segmentColor = { 0.1f, 0.2f, 0.3f, 0.9f };
+            im.gradientDir    = 2;
+            im.gradientColor2 = { 0.5f, 0.6f, 0.7f, 1.0f };
+            im.gradientScrollSpeed = 0.8f;
+            im.outlineWidth   = 3.0f;
+            im.outlineColor   = { 0.9f, 0.8f, 0.1f, 1.0f };
+            im.shadowColor    = { 0.0f, 0.0f, 0.0f, 0.6f };
+            im.shadowOffset   = { 4.0f, 5.0f };
+            im.shadowSoftness = 7.0f;
+            im.animFrames = 6;
+            im.animFps    = 10.0f;
+            im.animCols   = 3;
+            im.animRow    = 1;
+            im.animRows   = 2;
+            im.animMode   = 1;
+            r.emplace<UIImage>(e, im);
+        },
+        [](const UIImage& im) {
+            CHECK(im.texturePath == "textures/panel.png");
+            CHECK_F(im.color.x, 0.1f); CHECK_F(im.color.y, 0.2f);
+            CHECK_F(im.color.z, 0.3f); CHECK_F(im.color.w, 0.4f);
+            CHECK_F(im.uvMin.x, 0.1f); CHECK_F(im.uvMin.y, 0.2f);
+            CHECK_F(im.uvMax.x, 0.8f); CHECK_F(im.uvMax.y, 0.9f);
+            CHECK_F(im.sliceBorder.x, 8.0f);  CHECK_F(im.sliceBorder.y, 16.0f);
+            CHECK_F(im.sliceBorder.z, 8.0f);  CHECK_F(im.sliceBorder.w, 16.0f);
+            CHECK_F(im.cornerRadius, 6.0f);
+            CHECK(im.raycastBlock == false);
+            CHECK_F(im.fillAmount, 0.75f);
+            CHECK(im.fillDir == 4);
+            CHECK_F(im.fillOrigin, 90.0f);
+            CHECK(im.shape == 4);
+            CHECK_F(im.ringThickness, 12.0f);
+            CHECK_F(im.uvScroll.x, 0.5f); CHECK_F(im.uvScroll.y, -0.25f);
+            CHECK(im.outlineStyle == 2);
+            CHECK_F(im.outlineDash, 20.0f);
+            CHECK(im.segments == 5);
+            CHECK_F(im.segmentGap, 2.0f);
+            CHECK_F(im.segmentColor.w, 0.9f);
+            CHECK(im.gradientDir == 2);
+            CHECK_F(im.gradientColor2.x, 0.5f); CHECK_F(im.gradientColor2.y, 0.6f);
+            CHECK_F(im.gradientColor2.z, 0.7f);
+            CHECK_F(im.gradientScrollSpeed, 0.8f);
+            CHECK_F(im.outlineWidth, 3.0f);
+            CHECK_F(im.outlineColor.x, 0.9f); CHECK_F(im.outlineColor.y, 0.8f);
+            CHECK_F(im.shadowColor.w, 0.6f);
+            CHECK_F(im.shadowOffset.x, 4.0f); CHECK_F(im.shadowOffset.y, 5.0f);
+            CHECK_F(im.shadowSoftness, 7.0f);
+            CHECK(im.animFrames == 6);
+            CHECK_F(im.animFps, 10.0f);
+            CHECK(im.animCols == 3);
+            CHECK(im.animRow == 1);
+            CHECK(im.animRows == 2);
+            CHECK(im.animMode == 1);
+        });
+}
+
+static void Test_UIText()
+{
+    Case<UIText>(
+        [](entt::registry& r, entt::entity e) {
+            UIText tx;
+            tx.text     = "スコア: 100";
+            tx.fontSize = 32.0f;
+            tx.color    = { 1.0f, 0.9f, 0.2f, 1.0f };
+            tx.alignH   = 2;
+            tx.alignV   = 0;
+            tx.wrap     = true;
+            tx.outlineWidth = 2.0f;
+            tx.outlineColor = { 0.1f, 0.1f, 0.2f, 1.0f };
+            tx.shadowColor  = { 0.0f, 0.0f, 0.0f, 0.5f };
+            tx.shadowOffset = { 2.0f, 3.0f };
+            tx.fontPath     = "fonts/title.ttf";
+            tx.typewriterSpeed = 20.0f;
+            tx.letterSpacing  = 3.5f;
+            tx.charAnim       = 1;
+            tx.charAnimAmount = 6.0f;
+            tx.charAnimSpeed  = 3.0f;
+            tx.gradientDir    = 2;
+            tx.gradientColor2 = { 1.0f, 0.8f, 0.2f, 1.0f };
+            tx.rich           = true;
+            r.emplace<UIText>(e, tx);
+        },
+        [](const UIText& tx) {
+            CHECK(tx.text == "スコア: 100");
+            CHECK_F(tx.fontSize, 32.0f);
+            CHECK_F(tx.color.x, 1.0f); CHECK_F(tx.color.y, 0.9f);
+            CHECK_F(tx.color.z, 0.2f); CHECK_F(tx.color.w, 1.0f);
+            CHECK(tx.alignH == 2);
+            CHECK(tx.alignV == 0);
+            CHECK(tx.wrap == true);
+            CHECK_F(tx.outlineWidth, 2.0f);
+            CHECK_F(tx.outlineColor.z, 0.2f);
+            CHECK_F(tx.shadowColor.w, 0.5f);
+            CHECK_F(tx.shadowOffset.x, 2.0f); CHECK_F(tx.shadowOffset.y, 3.0f);
+            CHECK(tx.fontPath == "fonts/title.ttf");
+            CHECK_F(tx.typewriterSpeed, 20.0f);
+            CHECK_F(tx.letterSpacing, 3.5f);
+            CHECK(tx.charAnim == 1);
+            CHECK_F(tx.charAnimAmount, 6.0f);
+            CHECK_F(tx.charAnimSpeed, 3.0f);
+            CHECK(tx.gradientDir == 2);
+            CHECK_F(tx.gradientColor2.y, 0.8f);
+            CHECK(tx.rich == true);
+        });
+}
+
+static void Test_UILayout()
+{
+    Case<UILayout>(
+        [](entt::registry& r, entt::entity e) {
+            UILayout ly;
+            ly.mode     = 2;
+            ly.cellW    = 120.0f;
+            ly.cellH    = 90.0f;
+            ly.spacing  = 4.0f;
+            ly.padding  = { 10.0f, 20.0f, 30.0f, 40.0f };
+            ly.gridCols = 5;
+            r.emplace<UILayout>(e, ly);
+        },
+        [](const UILayout& ly) {
+            CHECK(ly.mode == 2);
+            CHECK_F(ly.cellW, 120.0f);
+            CHECK_F(ly.cellH, 90.0f);
+            CHECK_F(ly.spacing, 4.0f);
+            CHECK_F(ly.padding.x, 10.0f); CHECK_F(ly.padding.y, 20.0f);
+            CHECK_F(ly.padding.z, 30.0f); CHECK_F(ly.padding.w, 40.0f);
+            CHECK(ly.gridCols == 5);
+        });
+}
+
+static void Test_UIScrollView()
+{
+    Case<UIScrollView>(
+        [](entt::registry& r, entt::entity e) {
+            UIScrollView sv;
+            sv.vertical   = false;   // 既定 true から変えて往復を確認
+            sv.horizontal = true;
+            sv.scrollX    = 120.0f;
+            sv.scrollY    = 340.0f;
+            sv.wheelSpeed = 64.0f;
+            sv.showBar    = false;
+            sv.barColor   = { 0.2f, 0.4f, 0.6f, 0.8f };
+            sv.dragScroll = false;   // 既定 true から変えて往復を確認
+            sv.flickDecay = 7.5f;
+            sv._dragging  = true;    // ランタイム専有 → シリアライズされないこと
+            sv._dragMoved = true;
+            sv._velX      = 500.0f;
+            r.emplace<UIScrollView>(e, sv);
+        },
+        [](const UIScrollView& sv) {
+            CHECK(sv.vertical == false);
+            CHECK(sv.horizontal == true);
+            CHECK_F(sv.scrollX, 120.0f);
+            CHECK_F(sv.scrollY, 340.0f);
+            CHECK_F(sv.wheelSpeed, 64.0f);
+            CHECK(sv.showBar == false);
+            CHECK_F(sv.barColor.x, 0.2f); CHECK_F(sv.barColor.y, 0.4f);
+            CHECK_F(sv.barColor.z, 0.6f); CHECK_F(sv.barColor.w, 0.8f);
+            CHECK(sv.dragScroll == false);
+            CHECK_F(sv.flickDecay, 7.5f);
+            // ランタイム専有はシリアライズされず既定値のまま
+            CHECK(sv._dragging == false);
+            CHECK(sv._dragMoved == false);
+            CHECK_F(sv._velX, 0.0f);
+        });
+}
+
+static void Test_UIButton()
+{
+    Case<UIButton>(
+        [](entt::registry& r, entt::entity e) {
+            UIButton bt;
+            bt.onClickEvent = "start_clicked";
+            bt.normalColor  = { 0.9f, 0.9f, 0.9f, 1.0f };
+            bt.hoverColor   = { 0.8f, 0.8f, 0.8f, 1.0f };
+            bt.pressedColor = { 0.5f, 0.5f, 0.5f, 1.0f };
+            bt.interactable = false;
+            bt._hovered = true;   // ランタイム専有 → シリアライズされないこと
+            bt._pressed = true;
+            r.emplace<UIButton>(e, bt);
+        },
+        [](const UIButton& bt) {
+            CHECK(bt.onClickEvent == "start_clicked");
+            CHECK_F(bt.normalColor.x, 0.9f);  CHECK_F(bt.normalColor.w, 1.0f);
+            CHECK_F(bt.hoverColor.x, 0.8f);
+            CHECK_F(bt.pressedColor.x, 0.5f);
+            CHECK(bt.interactable == false);
+            // ランタイム専有はシリアライズされず既定値のまま
+            CHECK(bt._hovered == false);
+            CHECK(bt._pressed == false);
+        });
+}
+
+static void Test_UIAnimator()
+{
+    Case<UIAnimator>(
+        [](entt::registry& r, entt::entity e) {
+            UIAnimator an;
+            an.showAnim     = 3;
+            an.showDuration = 0.5f;
+            an.showDelay    = 0.2f;
+            an.showEasing   = 4;
+            an.slideOffset  = 120.0f;
+            an.hoverScale   = 1.1f;
+            an.pressScale   = 0.9f;
+            an.hoverSpeed   = 20.0f;
+            an.loopAnim     = 1;
+            an.loopSpeed    = 2.0f;
+            an.loopAmount   = 12.0f;
+            an._mode = 2;      // ランタイム専有 → シリアライズされないこと
+            an._t    = 1.5f;
+            an._curAlpha = 0.5f;
+            r.emplace<UIAnimator>(e, an);
+        },
+        [](const UIAnimator& an) {
+            CHECK(an.showAnim == 3);
+            CHECK_F(an.showDuration, 0.5f);
+            CHECK_F(an.showDelay, 0.2f);
+            CHECK(an.showEasing == 4);
+            CHECK_F(an.slideOffset, 120.0f);
+            CHECK_F(an.hoverScale, 1.1f);
+            CHECK_F(an.pressScale, 0.9f);
+            CHECK_F(an.hoverSpeed, 20.0f);
+            CHECK(an.loopAnim == 1);
+            CHECK_F(an.loopSpeed, 2.0f);
+            CHECK_F(an.loopAmount, 12.0f);
+            // ランタイム専有はシリアライズされず既定値のまま
+            CHECK(an._mode == 0);
+            CHECK_F(an._t, 0.0f);
+            CHECK_F(an._curAlpha, 1.0f);
         });
 }
 
@@ -796,6 +1156,8 @@ int main()
     Test_ParticleEmitter();
     Test_Trigger();
     Test_RigidBody();
+    Test_NetworkIdentity();
+    Test_NetworkTransform();
     Test_BoxCollider();
     Test_SphereCollider();
     Test_CapsuleCollider();
@@ -807,6 +1169,14 @@ int main()
     Test_QueryInBox();
     Test_DataComponent();
     Test_Sprite2D();
+    Test_UICanvas();
+    Test_UIRect();
+    Test_UIImage();
+    Test_UIText();
+    Test_UIScrollView();
+    Test_UIButton();
+    Test_UILayout();
+    Test_UIAnimator();
     Test_SkyboxSettings();
     Test_SSAOSettings();
     Test_EntityOrderStable();

@@ -21,6 +21,9 @@ class SkyboxRenderer
 public:
     void Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat, const std::wstring& shaderDirW);
 
+    // シェーダーホットリロード用。PSO のみ作り直す(ルートシグネチャは不変のため触らない)。
+    void RecreatePipelines(GraphicsDevice& device);
+
     // 呼び出し側で対象 RTV と descriptor heap(srv) を先にバインドしておくこと。
     // envCubeSrvGpu は環境キューブの shader-visible SRV(GPU ハンドル)。
     // invViewProj は HLSL 行ベクトル mul 用に転置済みを渡すこと。
@@ -35,6 +38,10 @@ public:
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSig;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pso;
+
+    // RecreatePipelines 用に保持
+    std::wstring m_shaderDir;
+    DXGI_FORMAT  m_rtvFormat = DXGI_FORMAT_UNKNOWN;
 };
 
 } // namespace dx12e

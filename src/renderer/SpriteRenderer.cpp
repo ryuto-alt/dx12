@@ -11,13 +11,38 @@ using namespace DirectX;
 
 namespace dx12e
 {
+namespace
+{
+// ルート定数の総数(32bit単位): 16=viewProj(転置済み4x4)、17個目=time。
+constexpr UINT kRootConstCount = 17;
+
+// HUD/world/カスタムシェーダー共通の頂点入力レイアウト(SpriteRenderer::Vertex と一致させること)。
+const D3D12_INPUT_ELEMENT_DESC kSpriteInputLayout[] = {
+    {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+    {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+    {"COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+    {"TEXCOORD", 1, DXGI_FORMAT_R32_FLOAT,          0, 36, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+    {"TEXCOORD", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 40, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+};
+} // namespace
+
+const D3D12_INPUT_ELEMENT_DESC* SpriteRenderer::GetInputLayout(u32* countOut)
+{
+    if (countOut) *countOut = static_cast<u32>(_countof(kSpriteInputLayout));
+    return kSpriteInputLayout;
+}
+
 void SpriteRenderer::Initialize(GraphicsDevice& device, DescriptorHeap* srvHeap,
                                 DXGI_FORMAT rtvFormat, const std::wstring& shaderDir)
 {
-    m_srvHeap = srvHeap;
+    m_srvHeap   = srvHeap;
+    m_shaderDir = shaderDir;
+    m_rtvFormat = rtvFormat;
     auto* dev = device.GetDevice();
 
-    // --- Root Signature: b0(ortho 16 DWORD, VERTEX) + t0(SRV table, PIXEL) + s0 ---
+    // --- Root Signature: b0(transform 16 DWORD + time 1 DWORD, VERTEX) + t0(SRV table, PIXEL) + s0 ---
+    // 17個目(time)は既定のSprite.hlslは読まない(未使用な追加DWORDは無視される)ので後方互換。
+    // カスタムシェーダーがtimeを使いたい場合だけ cbuffer に float を1つ足して読む。
     {
         D3D12_DESCRIPTOR_RANGE srvRange{};
         srvRange.RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
@@ -27,7 +52,7 @@ void SpriteRenderer::Initialize(GraphicsDevice& device, DescriptorHeap* srvHeap,
         D3D12_ROOT_PARAMETER params[2]{};
         params[0].ParameterType            = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         params[0].Constants.ShaderRegister = 0;
-        params[0].Constants.Num32BitValues = 16;
+        params[0].Constants.Num32BitValues = kRootConstCount;
         params[0].ShaderVisibility         = D3D12_SHADER_VISIBILITY_VERTEX;
 
         params[1].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -60,47 +85,7 @@ void SpriteRenderer::Initialize(GraphicsDevice& device, DescriptorHeap* srvHeap,
     }
 
     // --- PSO: TriangleList / AlphaBlend ON / Depth OFF ---
-    {
-        auto vs = ShaderCompiler::LoadFromFile(shaderDir + L"Sprite_VS.cso");
-        auto ps = ShaderCompiler::LoadFromFile(shaderDir + L"Sprite_PS.cso");
-
-        D3D12_INPUT_ELEMENT_DESC layout[] = {
-            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-            {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-            {"COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-        };
-
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
-        pso.pRootSignature = m_rootSig.Get();
-        pso.VS = { vs.GetData(), vs.GetSize() };
-        pso.PS = { ps.GetData(), ps.GetSize() };
-        pso.InputLayout = { layout, _countof(layout) };
-        pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-
-        pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-        pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-        pso.RasterizerState.DepthClipEnable = TRUE;
-
-        auto& rt = pso.BlendState.RenderTarget[0];
-        rt.BlendEnable           = TRUE;
-        rt.SrcBlend              = D3D12_BLEND_SRC_ALPHA;
-        rt.DestBlend             = D3D12_BLEND_INV_SRC_ALPHA;
-        rt.BlendOp               = D3D12_BLEND_OP_ADD;
-        rt.SrcBlendAlpha         = D3D12_BLEND_ONE;
-        rt.DestBlendAlpha        = D3D12_BLEND_INV_SRC_ALPHA;
-        rt.BlendOpAlpha          = D3D12_BLEND_OP_ADD;
-        rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-
-        pso.DepthStencilState.DepthEnable   = FALSE;
-        pso.DepthStencilState.StencilEnable = FALSE;
-        pso.SampleMask       = UINT_MAX;
-        pso.NumRenderTargets = 1;
-        pso.RTVFormats[0]    = rtvFormat;
-        pso.DSVFormat        = DXGI_FORMAT_UNKNOWN;
-        pso.SampleDesc       = { 1, 0 };
-
-        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_pso)));
-    }
+    RecreatePipelines(device);
 
     // --- Dynamic Vertex Buffer (Upload Heap) ---
     // kFrameCount 区画ぶん確保し、フレームごとに別区画へ書く（in-flight 競合＝チラつき防止）。
@@ -143,7 +128,7 @@ void SpriteRenderer::Submit(const SpriteDesc& s)
     m_sprites.push_back(s);
 }
 
-void SpriteRenderer::Render(ID3D12GraphicsCommandList* cmd, u32 screenW, u32 screenH)
+void SpriteRenderer::Render(ID3D12GraphicsCommandList* cmd, u32 screenW, u32 screenH, float time)
 {
     if (!m_initialized || m_sprites.empty()) return;
 
@@ -191,14 +176,16 @@ void SpriteRenderer::Render(ID3D12GraphicsCommandList* cmd, u32 screenW, u32 scr
     // 正射影（左上原点）。転置して渡す（HLSL は mul(rowvec, M)）。
     XMMATRIX ortho = XMMatrixOrthographicOffCenterLH(
         0.0f, static_cast<f32>(screenW), static_cast<f32>(screenH), 0.0f, 0.0f, 1.0f);
-    XMFLOAT4X4 orthoT;
-    XMStoreFloat4x4(&orthoT, XMMatrixTranspose(ortho));
+    struct RootConsts { XMFLOAT4X4 transform; float time; };
+    RootConsts rc{};
+    XMStoreFloat4x4(&rc.transform, XMMatrixTranspose(ortho));
+    rc.time = time;
 
     ID3D12DescriptorHeap* heaps[] = { m_srvHeap->GetHeap() };
     cmd->SetPipelineState(m_pso.Get());
     cmd->SetGraphicsRootSignature(m_rootSig.Get());
     cmd->SetDescriptorHeaps(1, heaps);
-    cmd->SetGraphicsRoot32BitConstants(0, 16, &orthoT, 0);
+    cmd->SetGraphicsRoot32BitConstants(0, kRootConstCount, &rc, 0);
     cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cmd->IASetVertexBuffers(0, 1, &m_vbView);
 
@@ -225,54 +212,15 @@ void SpriteRenderer::InitializeWorld(GraphicsDevice& device, DXGI_FORMAT sceneRt
                                      DXGI_FORMAT depthFormat, const std::wstring& shaderDir)
 {
     auto* dev = device.GetDevice();
+    m_shaderDir      = shaderDir;
+    m_sceneRtvFormat = sceneRtvFormat;
+    m_depthFormat    = depthFormat;
 
     // PSO: Sprite_VS/PS, AlphaBlend, CullNone。RTV=sceneRtvFormat。
     // 深度テストは有効・書き込みは無効（LESS_EQUAL）→ 不透明シーン形状に正しく遮蔽されつつ、
     // 半透明スプライト同士は layer 昇順の CPU ソート順で重ねられる（深度書き込みで順序が壊れない）。
     // RootSignature は Initialize で作った m_rootSig を共有する。
-    {
-        auto vs = ShaderCompiler::LoadFromFile(shaderDir + L"Sprite_VS.cso");
-        auto ps = ShaderCompiler::LoadFromFile(shaderDir + L"Sprite_PS.cso");
-
-        D3D12_INPUT_ELEMENT_DESC layout[] = {
-            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-            {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-            {"COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-        };
-
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
-        pso.pRootSignature = m_rootSig.Get();
-        pso.VS = { vs.GetData(), vs.GetSize() };
-        pso.PS = { ps.GetData(), ps.GetSize() };
-        pso.InputLayout = { layout, _countof(layout) };
-        pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-
-        pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-        pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-        pso.RasterizerState.DepthClipEnable = TRUE;
-
-        auto& rt = pso.BlendState.RenderTarget[0];
-        rt.BlendEnable           = TRUE;
-        rt.SrcBlend              = D3D12_BLEND_SRC_ALPHA;
-        rt.DestBlend             = D3D12_BLEND_INV_SRC_ALPHA;
-        rt.BlendOp               = D3D12_BLEND_OP_ADD;
-        rt.SrcBlendAlpha         = D3D12_BLEND_ONE;
-        rt.DestBlendAlpha        = D3D12_BLEND_INV_SRC_ALPHA;
-        rt.BlendOpAlpha          = D3D12_BLEND_OP_ADD;
-        rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-
-        pso.DepthStencilState.DepthEnable    = TRUE;
-        pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;   // テストのみ・書き込まない
-        pso.DepthStencilState.DepthFunc      = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-        pso.DepthStencilState.StencilEnable  = FALSE;
-        pso.SampleMask       = UINT_MAX;
-        pso.NumRenderTargets = 1;
-        pso.RTVFormats[0]    = sceneRtvFormat;
-        pso.DSVFormat        = depthFormat;
-        pso.SampleDesc       = { 1, 0 };
-
-        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_worldPso)));
-    }
+    RecreatePipelines(device);
 
     // world 用 動的頂点バッファ（Upload Heap）。1 フレーム複数パス分の容量。
     {
@@ -302,6 +250,89 @@ void SpriteRenderer::InitializeWorld(GraphicsDevice& device, DXGI_FORMAT sceneRt
     Logger::Info("SpriteRenderer world path initialized");
 }
 
+void SpriteRenderer::RecreatePipelines(GraphicsDevice& device)
+{
+    auto* dev = device.GetDevice();
+
+    // --- HUD PSO: Depth OFF ---
+    if (m_rtvFormat != DXGI_FORMAT_UNKNOWN)
+    {
+        auto vs = ShaderCompiler::LoadFromFile(m_shaderDir + L"Sprite_VS.cso");
+        auto ps = ShaderCompiler::LoadFromFile(m_shaderDir + L"Sprite_PS.cso");
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
+        pso.pRootSignature = m_rootSig.Get();
+        pso.VS = { vs.GetData(), vs.GetSize() };
+        pso.PS = { ps.GetData(), ps.GetSize() };
+        pso.InputLayout = { kSpriteInputLayout, _countof(kSpriteInputLayout) };
+        pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+
+        pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+        pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        pso.RasterizerState.DepthClipEnable = TRUE;
+
+        auto& rt = pso.BlendState.RenderTarget[0];
+        rt.BlendEnable           = TRUE;
+        rt.SrcBlend              = D3D12_BLEND_SRC_ALPHA;
+        rt.DestBlend             = D3D12_BLEND_INV_SRC_ALPHA;
+        rt.BlendOp               = D3D12_BLEND_OP_ADD;
+        rt.SrcBlendAlpha         = D3D12_BLEND_ONE;
+        rt.DestBlendAlpha        = D3D12_BLEND_INV_SRC_ALPHA;
+        rt.BlendOpAlpha          = D3D12_BLEND_OP_ADD;
+        rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+        pso.DepthStencilState.DepthEnable   = FALSE;
+        pso.DepthStencilState.StencilEnable = FALSE;
+        pso.SampleMask       = UINT_MAX;
+        pso.NumRenderTargets = 1;
+        pso.RTVFormats[0]    = m_rtvFormat;
+        pso.DSVFormat        = DXGI_FORMAT_UNKNOWN;
+        pso.SampleDesc       = { 1, 0 };
+
+        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_pso)));
+    }
+
+    // --- world PSO: Depth テストのみ(LESS_EQUAL・書き込み無し) ---
+    if (m_sceneRtvFormat != DXGI_FORMAT_UNKNOWN)
+    {
+        auto vs = ShaderCompiler::LoadFromFile(m_shaderDir + L"Sprite_VS.cso");
+        auto ps = ShaderCompiler::LoadFromFile(m_shaderDir + L"Sprite_PS.cso");
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
+        pso.pRootSignature = m_rootSig.Get();
+        pso.VS = { vs.GetData(), vs.GetSize() };
+        pso.PS = { ps.GetData(), ps.GetSize() };
+        pso.InputLayout = { kSpriteInputLayout, _countof(kSpriteInputLayout) };
+        pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+
+        pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+        pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        pso.RasterizerState.DepthClipEnable = TRUE;
+
+        auto& rt = pso.BlendState.RenderTarget[0];
+        rt.BlendEnable           = TRUE;
+        rt.SrcBlend              = D3D12_BLEND_SRC_ALPHA;
+        rt.DestBlend             = D3D12_BLEND_INV_SRC_ALPHA;
+        rt.BlendOp               = D3D12_BLEND_OP_ADD;
+        rt.SrcBlendAlpha         = D3D12_BLEND_ONE;
+        rt.DestBlendAlpha        = D3D12_BLEND_INV_SRC_ALPHA;
+        rt.BlendOpAlpha          = D3D12_BLEND_OP_ADD;
+        rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+        pso.DepthStencilState.DepthEnable    = TRUE;
+        pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;   // テストのみ・書き込まない
+        pso.DepthStencilState.DepthFunc      = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+        pso.DepthStencilState.StencilEnable  = FALSE;
+        pso.SampleMask       = UINT_MAX;
+        pso.NumRenderTargets = 1;
+        pso.RTVFormats[0]    = m_sceneRtvFormat;
+        pso.DSVFormat        = m_depthFormat;
+        pso.SampleDesc       = { 1, 0 };
+
+        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_worldPso)));
+    }
+}
+
 void SpriteRenderer::BeginWorldVertexFrame()
 {
     m_worldFrameIdx = (m_worldFrameIdx + 1) % kFrameCount;   // フレーム間で区画を巡回(チラつき防止)
@@ -320,7 +351,7 @@ void SpriteRenderer::SubmitWorld(const WorldSpriteDesc& s)
 }
 
 void SpriteRenderer::RenderWorld(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj,
-                                 XMFLOAT3 camRight, XMFLOAT3 camUp)
+                                 XMFLOAT3 camRight, XMFLOAT3 camUp, float time)
 {
     if (!m_worldInitialized || m_worldSprites.empty()) return;
 
@@ -373,12 +404,15 @@ void SpriteRenderer::RenderWorld(ID3D12GraphicsCommandList* cmd, XMMATRIX viewPr
         XMStoreFloat3(&pBR, br); XMStoreFloat3(&pBL, bl);
 
         // 上端→テクスチャ上(uvmin.y), 下端→テクスチャ下(uvmax.y)
-        verts.push_back({pTL, {uvmin.x, uvmin.y}, c});
-        verts.push_back({pTR, {uvmax.x, uvmin.y}, c});
-        verts.push_back({pBR, {uvmax.x, uvmax.y}, c});
-        verts.push_back({pTL, {uvmin.x, uvmin.y}, c});
-        verts.push_back({pBR, {uvmax.x, uvmax.y}, c});
-        verts.push_back({pBL, {uvmin.x, uvmax.y}, c});
+        // effect/params はカスタムシェーダー向けの汎用値(頂点属性として補間される)。
+        const float fx = s.effect;
+        const XMFLOAT4 pr = s.params;
+        verts.push_back({pTL, {uvmin.x, uvmin.y}, c, fx, pr});
+        verts.push_back({pTR, {uvmax.x, uvmin.y}, c, fx, pr});
+        verts.push_back({pBR, {uvmax.x, uvmax.y}, c, fx, pr});
+        verts.push_back({pTL, {uvmin.x, uvmin.y}, c, fx, pr});
+        verts.push_back({pBR, {uvmax.x, uvmax.y}, c, fx, pr});
+        verts.push_back({pBL, {uvmin.x, uvmax.y}, c, fx, pr});
     }
     u32 vertexCount = static_cast<u32>(verts.size());
     // フレーム内の残り容量にクランプ（メイン＋プレビュー等の複数パスを線形に詰める）
@@ -403,28 +437,35 @@ void SpriteRenderer::RenderWorld(ID3D12GraphicsCommandList* cmd, XMMATRIX viewPr
     m_worldVbView.SizeInBytes    = kWorldMaxVerts * sizeof(Vertex);
 
     // viewProj を転置して b0 へ（HLSL は mul(rowvec, M)）。正射カメラ時も同じ経路で正しく射影される。
-    XMFLOAT4X4 vpT;
-    XMStoreFloat4x4(&vpT, XMMatrixTranspose(viewProj));
+    struct RootConsts { XMFLOAT4X4 transform; float time; };
+    RootConsts rc{};
+    XMStoreFloat4x4(&rc.transform, XMMatrixTranspose(viewProj));
+    rc.time = time;
 
     ID3D12DescriptorHeap* heaps[] = { m_srvHeap->GetHeap() };
-    cmd->SetPipelineState(m_worldPso.Get());
     cmd->SetGraphicsRootSignature(m_rootSig.Get());
     cmd->SetDescriptorHeaps(1, heaps);
-    cmd->SetGraphicsRoot32BitConstants(0, 16, &vpT, 0);
+    cmd->SetGraphicsRoot32BitConstants(0, kRootConstCount, &rc, 0);
     cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cmd->IASetVertexBuffers(0, 1, &m_worldVbView);
 
-    // テクスチャ単位でバッチ（連続する同一 srvIndex をまとめて描く）
+    // テクスチャ + カスタムPSO単位でバッチ（連続する同一 srvIndex・同一customPsoをまとめて描く）。
+    // customPso が変わるたびに SetPipelineState し直す(nullptr の区間は既定 m_worldPso)。
     u32 vtx = 0;
     size_t i = 0;
+    ID3D12PipelineState* boundPso = nullptr;
     while (i < m_worldSprites.size() && vtx < vertexCount)
     {
         u32 srv = m_worldSprites[i].srvIndex;
+        auto* pso = static_cast<ID3D12PipelineState*>(m_worldSprites[i].customPso);
         size_t runStart = i;
-        while (i < m_worldSprites.size() && m_worldSprites[i].srvIndex == srv) ++i;
+        while (i < m_worldSprites.size() && m_worldSprites[i].srvIndex == srv
+               && m_worldSprites[i].customPso == m_worldSprites[runStart].customPso) ++i;
         u32 count = static_cast<u32>((i - runStart) * 6);
         if (vtx + count > vertexCount) count = vertexCount - vtx;
 
+        ID3D12PipelineState* wantPso = pso ? pso : m_worldPso.Get();
+        if (wantPso != boundPso) { cmd->SetPipelineState(wantPso); boundPso = wantPso; }
         cmd->SetGraphicsRootDescriptorTable(1, m_srvHeap->GetGpuHandle(srv));
         cmd->DrawInstanced(count, 1, base + vtx, 0);   // フレーム内オフセットを加味
         vtx += count;

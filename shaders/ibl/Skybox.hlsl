@@ -1,6 +1,6 @@
 // Skybox.hlsl - 全画面三角形で環境キューブを view ray でサンプルして背景を塗る（graphics）
 // 深度テスト/書き込み OFF。メインパスの不透明描画前に描き、後続の不透明物が上書きする。
-// forward と輝度を揃えるため skybox 側でも ACES + ガンマを適用して LDR で scene RT へ書く。
+// forward と同じくリニア HDR のまま scene RT へ書く（トーンマップは PostProcess 最終段）。
 
 cbuffer SkyboxConstants : register(b0)
 {
@@ -35,19 +35,11 @@ VSOut VSMain(uint id : SV_VertexID)
     return o;
 }
 
-float3 ACESFilmSky(float3 x)
-{
-    float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
-    return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
-}
-
 float4 PSMain(VSOut i) : SV_TARGET
 {
     float3 dir = normalize(i.dir);
     float3 col = g_env.SampleLevel(g_samp, dir, 0).rgb * intensity;
 
-    // forward と統一: ACES + ガンマで LDR 化
-    col = ACESFilmSky(col);
-    col = pow(col, 1.0 / 2.2);
+    // リニア HDR のまま出力（ACES+ガンマは PostProcess 最終段で forward と一括）
     return float4(col, 1.0);
 }

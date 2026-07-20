@@ -10,9 +10,8 @@ SamplerState g_sampler        : register(s0);
 // Bones (t3 - moved from t1)
 StructuredBuffer<float4x4> g_bones : register(t3);
 
-// Shadow (CSM: Texture2DArray, 1スライス=1カスケード)
+// Shadow (CSM: Texture2DArray, 1スライス=1カスケード)。g_shadowSampler(s1)は Lighting.hlsli で共有宣言。
 Texture2DArray         g_shadowMap     : register(t4);
-SamplerComparisonState g_shadowSampler : register(s1);
 
 // IBL (t5,t6,t7 / s2=linear-clamp(mip有), s3=linear-clamp(mipなし))
 TextureCube  g_irradianceMap  : register(t5);
@@ -39,6 +38,8 @@ cbuffer PBRMaterial : register(b2)
     float defaultRoughness;
     uint  pbrFlags;
     float _pbrPad;
+    // UV 変換 (xy=スケール, zw=オフセット)。MeshRenderer の UV スクロール/連番アニメ用。
+    float4 uvScaleOffset;
 };
 
 struct VSInput
@@ -149,13 +150,16 @@ float CalcShadow(float3 worldPos, float viewDepth)
 
 float4 PSMain(PSInput input) : SV_TARGET
 {
-    float4 albedo4 = g_albedo.Sample(g_sampler, input.texCoord) * input.color;
+    // UV スクロール/連番アニメ (b2)。無効時は uvScaleOffset=(1,1,0,0) なので恒等変換
+    float2 uv = input.texCoord * uvScaleOffset.xy + uvScaleOffset.zw;
+
+    float4 albedo4 = g_albedo.Sample(g_sampler, uv) * input.color;
     float3 albedo = albedo4.rgb;
 
     float3 N;
     if (pbrFlags & 1u)
     {
-        float3 normalSample = g_normalMap.Sample(g_sampler, input.texCoord).rgb;
+        float3 normalSample = g_normalMap.Sample(g_sampler, uv).rgb;
         N = PerturbNormal(input.worldNormal, input.worldTangent, input.tangentW, normalSample);
     }
     else
@@ -166,7 +170,7 @@ float4 PSMain(PSInput input) : SV_TARGET
     float metallic, roughness;
     if (pbrFlags & 2u)
     {
-        float4 mr = g_metalRoughness.Sample(g_sampler, input.texCoord);
+        float4 mr = g_metalRoughness.Sample(g_sampler, uv);
         roughness = mr.g * defaultRoughness;
         metallic  = mr.b * defaultMetallic;
     }
@@ -235,8 +239,6 @@ float4 PSMain(PSInput input) : SV_TARGET
         color *= tint[SelectCascade(input.viewDepth)];
     }
 
-    color = ACESFilm(color);
-    color = pow(color, 1.0 / 2.2);
-
+    // リニア HDR のまま scene RT へ出力（トーンマップ+ガンマは PostProcess 最終段）
     return float4(color, albedo4.a);
 }

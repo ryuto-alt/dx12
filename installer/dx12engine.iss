@@ -47,14 +47,19 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "{#SrcDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\GameRuntime.exe"; DestDir: "{app}"; Flags: ignoreversion
+; gh.exe(GitHub CLI、同梱): エディタの GitHub 連携(リポジトリ作成/push/ログイン)に必要。
+; CMake configure 時に third_party/gh-cli/ へ自動取得され、ビルド後に exe の隣へコピーされる。
+Source: "{#SrcDir}\gh.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "{#SrcDir}\*.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\shaders\*"; DestDir: "{app}\shaders"; Flags: ignoreversion recursesubdirs createallsubdirs
+; シェーダーソース(.hlsl/.hlsli)。配布エディタでのシェーダーホットリロード/エンジンシェーダー編集用
+; (PathResolver::ShaderSourceDirW() が配布時に exe 隣の shaders-src/ を見る)。
+Source: "{#RepoRoot}\shaders\*"; DestDir: "{app}\shaders-src"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#RepoRoot}\assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion recursesubdirs createallsubdirs
-; MCP(AI ブリッジ)サーバを同梱。エンジンは exe の隣の tools\mcp-server\index.ts を実行時に探すので、
-; ここに入れておけば配布先でも「MCP / AI Bridge」窓のコマンドがそのまま繋がる（node_modules も含めて同梱＝npm install 不要）。
-; ※ node_modules は .gitignore 済みなので、ビルド前に tools\mcp-server で `npm install` を実行しておくこと。
-;    installer\build.ps1 を使えば自動で行う。
-Source: "{#RepoRoot}\tools\mcp-server\*"; DestDir: "{app}\tools\mcp-server"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: ".gitignore,*.log,*.tsbuildinfo"
+; MCP(AI ブリッジ)サーバは同梱しない。別リポジトリ https://github.com/ryuto-alt/dx12-mcp から
+; インストールする（エディタの「MCP / AI Bridge」窓が手順を案内する）。
+; VSCode 補完用の Lua API 型定義（導入手順は同フォルダの README.md）
+Source: "{#RepoRoot}\tools\lua-defs\*"; DestDir: "{app}\tools\lua-defs"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "README.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]

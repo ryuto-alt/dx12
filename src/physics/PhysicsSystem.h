@@ -48,6 +48,15 @@ public:
     // 入力（_desiredVel/_jumpQueued）→ 速度合成 → ExtendedUpdate → _grounded/_verticalVel 更新。
     void StepCharacters(f32 fixedDt, entt::registry& registry);
 
+    // マルチプレイのクライアント予測リコンシリエーション専用(フェーズ⑦b)。
+    // 指定した1体だけ StepCharacters と同じロジックで ExtendedUpdate を進める
+    // (他のキャラ/剛体には一切触れない)。該当キャラが無ければ何もしない。
+    void StepSingleCharacter(entt::entity entity, f32 fixedDt, entt::registry& registry);
+
+    // 予測リコンシリエーションの補正用: CharacterVirtual の位置を直接テレポートする
+    // (ExtendedUpdate を経由しない、SetPositionAndRotation の Character 版)。
+    void SetCharacterPosition(entt::entity entity, DirectX::XMFLOAT3 pos);
+
     // CharacterVirtual の位置を Transform に書き戻す（accumulator ループ後に 1 回）。
     void SyncCharactersToTransforms(entt::registry& registry);
 
@@ -72,6 +81,10 @@ public:
     size_t OverlapSphere(const DirectX::XMFLOAT3& center,
                          float radius,
                          entt::entity* out, size_t cap) const;
+
+    // bodyId → entity 逆引き（Raycast の結果を entity に紐付けるため。MCP/Lua 両方から使う）。
+    // 見つからなければ entt::null。
+    entt::entity EntityForBody(uint32_t bodyId) const;
 
     // --- 接触コールバック（EventBus 経由）---
     // EventBus を設定する。Initialize より前でも後でも可。

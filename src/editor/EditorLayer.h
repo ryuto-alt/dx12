@@ -30,6 +30,7 @@ class HierarchyPanel;
 class InspectorPanel;
 class SceneViewPanel;
 class AssetBrowserPanel;
+class ConsolePanel;
 
 class EditorLayer
 {
@@ -43,6 +44,9 @@ public:
                     ResourceManager* resourceManager,
                     DescriptorHeap* srvHeap);
 
+    // resourceManager/srvHeap/cmdList はゲーム内 UI プレビュー（UI編集モード時の
+    // SceneView 描画）の UIImage テクスチャ遅延ロード用。cmdList は記録中の
+    // コマンドリスト（Application::Render の nativeCmdList）を渡す。
     void Render(bool isPlaying,
                 Scene* scene,
                 Camera* camera,
@@ -63,7 +67,10 @@ public:
                 bool& outPendingPlayMode,
                 const std::string& assetsDir,
                 f32 leftPanelWidth,
-                f32 toolbarHeight);
+                f32 toolbarHeight,
+                ResourceManager* resourceManager,
+                DescriptorHeap* srvHeap,
+                ID3D12GraphicsCommandList* cmdList);
 
     // フレーム先頭でcmdListが有効な間に呼ぶ（テクスチャサムネイルのアップロード）
     void LoadPendingThumbnails(ID3D12GraphicsCommandList* cmdList);
@@ -77,9 +84,23 @@ public:
     // サムネイルレンダラー設定
     void SetThumbnailRenderer(class ModelThumbnailRenderer* renderer);
 
-    // ビューポート領域（3D描画のオフセット計算用）
-    ImVec2 GetViewportPos()  const { return m_viewportPos; }
+    // マテリアル球体サムネイル(アセットブラウザへ転送するだけ)
+    void SetMaterialPreviewRenderer(class MaterialPreviewRenderer* renderer);
+
+    // ビューポート領域（3D描画のオフセット計算用）。
+    // 戻り値は「メインウィンドウのクライアント領域基準」のピクセル座標。multi-viewport有効時は
+    // ImGui座標(=スクリーン座標)からメインビューポート原点を引いて変換する
+    // (スワップチェインの D3D12 ビューポート矩形にそのまま使えるようにするため)。
+    ImVec2 GetViewportPos()  const
+    {
+        const ImVec2 vp = ImGui::GetMainViewport()->Pos;
+        return ImVec2(m_viewportPos.x - vp.x, m_viewportPos.y - vp.y);
+    }
     ImVec2 GetViewportSize() const { return m_viewportSize; }
+
+    // マテリアルエディタ/ライブラリ等、Application 直属のフローティングツール窓が
+    // サムネイルキャッシュを使い回すためのアクセサ(InspectorPanelと同じ理由)。
+    AssetBrowserPanel* GetAssetBrowser() const { return m_assetBrowser.get(); }
 
 private:
     void BuildDefaultLayout(ImGuiID dockspaceId, f32 toolbarHeight);
@@ -98,6 +119,7 @@ private:
     std::unique_ptr<InspectorPanel>    m_inspector;
     std::unique_ptr<SceneViewPanel>    m_sceneView;
     std::unique_ptr<AssetBrowserPanel> m_assetBrowser;
+    std::unique_ptr<ConsolePanel>      m_console;
     class ModelThumbnailRenderer* m_thumbRenderer = nullptr;
 };
 

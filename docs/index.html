@@ -336,7 +336,7 @@ footer{position:relative; z-index:1; border-top:1px solid var(--border); margin-
             </div>
             <div class="hero-stats">
               <div class="st"><b>1 つ</b><span>のexeがエディタ兼ランタイム</span></div>
-              <div class="st"><b>37</b><span>MCPツールでAI操作</span></div>
+              <div class="st"><b>87</b><span>MCPツールでAI操作</span></div>
               <div class="st"><b>27</b><span>パーティクルプリセット</span></div>
             </div>
           </div>
@@ -538,6 +538,12 @@ cmake --build build/release</code></pre>
           <li><b>Hierarchy へドラッグ&amp;ドロップ</b>で親子付け（空白へドロップで解除）。<code class="inl">.lua</code> をドロップでスクリプトをアタッチ。</li>
           <li><b>Inspector「＋コンポーネント追加」</b>でライト / カメラ / RigidBody / コライダー等を後付け。ヘッダ右クリックで削除。</li>
           <li><b>Play / Stop</b> で即実行・即停止。停止すると編集状態に戻る（配置したライトやマテリアルもスナップショット復元される）。</li>
+          <li><b>MeshRenderer の「UV &amp; Anim」</b>で 3D メッシュの UV タイリング（<code class="inl">uvScaleU/V</code>、頂点へ焼き込み）に加え、
+            <b>UVスクロール</b>（<code class="inl">uvScrollU/V</code>＝滝・溶岩・コンベア・流れる雲）と<b>連番アニメ</b>
+            （<code class="inl">animFrames/animFps/animCols/animRow/animRows/animMode</code>＝板ポリの炎/爆発、アニメする看板）を設定できる。
+            スクロール/連番はルート定数（<code class="inl">b2 uvScaleOffset</code>）経由で <b>頂点バッファ再生成なし</b>＝毎フレーム変えても安価。
+            優先順は 連番 &gt; UVスクロール で、タイリングとスクロールは併用可。既定の <code class="inl">Forward</code> /
+            <code class="inl">ForwardSkinned</code> でのみ効く（カスタムシェーダーは自前で b2 を読む）。</li>
         </ul>
 
         <h3>コンソール</h3>
@@ -716,6 +722,18 @@ properties = {
               <tr><td><code>scene:spawn(name, modelPath, pos, rot, scale)</code></td><td>モデル（gltf/fbx/obj）を生成</td></tr>
               <tr><td><code>scene:remove(e)</code> / <code>scene:getEntityCount()</code></td><td>削除 / エンティティ数</td></tr>
               <tr><td><code>scene:setColor(e, r,g,b)</code></td><td>頂点カラーで着色（<b>生成時1回だけ</b>。GPU 同期）</td></tr>
+              <tr><td><code>scene:setSpriteEffect(e, value)</code></td><td>Sprite2D の effectValue（カスタムシェーダー汎用値）。毎フレーム可</td></tr>
+              <tr><td><code>scene:setSpriteAlpha(e, alpha)</code></td><td>Sprite2D の不透明度 0..1（半透明演出）。毎フレーム可</td></tr>
+              <tr><td><code>scene:setSpriteParams(e, x,y,z,w)</code></td><td>Sprite2D の shaderParams（カスタムシェーダー汎用 float4）。毎フレーム可</td></tr>
+              <tr><td><code>scene:setSpriteUV(e, u0,v0,u1,v1)</code></td><td>Sprite2D の uvMin/uvMax を直接指定（アトラス切り出しの実行時切替）</td></tr>
+              <tr><td><code>scene:setSpriteScroll(e, su, sv)</code></td><td>Sprite2D の UVスクロール速度（単位/秒）。溶岩表面・滝・背景ループ</td></tr>
+              <tr><td><code>scene:setSpriteAnim(e, frames, fps, cols, row)</code></td><td>連番アニメ設定（<code>frames=0</code>で停止）。<b>呼ぶたび頭から再生</b>＝モーション切替がこれ1発</td></tr>
+              <tr><td><code>scene:setSpriteAnimMode(e, mode)</code> / <code>restartSpriteAnim(e)</code> / <code>isSpriteAnimDone(e)</code></td><td>再生モード（0=ループ 1=単発 2=往復）／頭から再生し直す／単発の再生が終わったか</td></tr>
+              <tr><td><code>scene:setMeshEffect(e, value)</code></td><td>MeshRenderer の effectValue（カスタムシェーダー汎用値）。毎フレーム可</td></tr>
+              <tr><td><code>scene:setMeshParams(e, x,y,z,w)</code></td><td>MeshRenderer の shaderParams（カスタムシェーダー汎用 float4）。毎フレーム可</td></tr>
+              <tr><td><code>scene:setMeshUvScroll(e, su, sv)</code></td><td>3D メッシュの UVスクロール（uv/秒）＝滝・溶岩・コンベア・流れる雲。頂点を触らないので毎フレーム可</td></tr>
+              <tr><td><code>scene:setMeshAnim(e, frames, fps, cols, row)</code></td><td>3D メッシュの連番アニメ（板ポリの炎/爆発、アニメする看板）。<b>呼ぶたび頭から再生</b></td></tr>
+              <tr><td><code>scene:setMeshAnimMode(e, mode)</code> / <code>isMeshAnimDone(e)</code></td><td>再生モード（0=ループ 1=単発 2=往復）／単発の再生が終わったか</td></tr>
               <tr><td><code>scene:queryByTag(tag)</code></td><td>タグ一致エンティティの<b>名前配列</b>（RTSの群選択など）</td></tr>
               <tr><td><code>scene:queryInBox(minX,minZ,maxX,maxZ[,tag])</code></td><td>XZ矩形内の名前配列（矩形選択）</td></tr>
             </tbody>
@@ -736,6 +754,24 @@ properties = {
           </table>
         </div>
         <p>キー定数: <code class="inl">KEY_A</code>..<code class="inl">KEY_Z</code> / <code class="inl">KEY_0</code>..<code class="inl">KEY_9</code> / <code class="inl">KEY_SPACE KEY_SHIFT KEY_TAB KEY_ENTER KEY_ESCAPE KEY_UP KEY_DOWN KEY_LEFT KEY_RIGHT KEY_F1..F3 KEY_RBUTTON</code>。文字列名で済ます <code class="inl">keyDown("W")</code> / <code class="inl">keyPressed("ESC")</code> もある。</p>
+
+        <h3><code class="inl">input</code>：ゲームパッド（Xbox コントローラー / XInput）</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>API</th><th>説明</th></tr></thead>
+            <tbody>
+              <tr><td><code>input:isPadConnected(pad)</code> / <code>getConnectedPadCount()</code></td><td>接続状態（<code>pad</code> = 0..3、最大4台）</td></tr>
+              <tr><td><code>input:isPadButtonDown(pad, PAD_A)</code></td><td>押している間ずっと true</td></tr>
+              <tr><td><code>input:isPadButtonPressed(pad, PAD_RB)</code></td><td>押した瞬間だけ true</td></tr>
+              <tr><td><code>input:isPadButtonReleased(pad, PAD_A)</code></td><td>離した瞬間だけ true（チャージ攻撃向け）</td></tr>
+              <tr><td><code>input:getPadLeftStickX/Y(pad)</code> / <code>getPadRightStickX/Y(pad)</code></td><td>スティック傾き（円形デッドゾーン適用済み、-1..1）</td></tr>
+              <tr><td><code>input:getPadLeftTrigger(pad)</code> / <code>getPadRightTrigger(pad)</code></td><td>トリガー押し込み量（デッドゾーン適用済み、0..1）</td></tr>
+              <tr><td><code>input:setPadVibration(pad, left, right)</code></td><td>振動（0.0..1.0。left=低周波・強、right=高周波・弱）</td></tr>
+              <tr><td><code>input:setPadVibrationTimed(pad, left, right, sec)</code></td><td>sec 秒後に自動停止する振動（ワンショット向け）</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>ボタン定数: <code class="inl">PAD_A PAD_B PAD_X PAD_Y PAD_LB PAD_RB PAD_BACK PAD_START PAD_LSTICK PAD_RSTICK PAD_DPAD_UP/DOWN/LEFT/RIGHT</code>。文字列名で済ます簡易API: <code class="inl">padDown("A")</code> / <code class="inl">padPressed("RB")</code> / <code class="inl">padReleased("A")</code> / <code class="inl">padStick("left")</code>（x,y を返す）/ <code class="inl">padTrigger("right")</code> / <code class="inl">padVibrate(low, high, sec?)</code>。2台目以降は各関数末尾に <code class="inl">pad</code>（0始まり）を渡す。</p>
 
         <h3><code class="inl">physics</code>：当たり判定・剛体・キャラ操作</h3>
         <div class="tbl-wrap">
@@ -783,8 +819,10 @@ FX.<span class="tok-fn">supernova</span>(x, y, z)           <span class="tok-c">
 FX.<span class="tok-fn">spark</span>(x, y, z)               <span class="tok-c">-- 着弾火花 / FX.lightning / FX.pillar / FX.hit</span>
 vfx.<span class="tok-fn">play</span>(<span class="tok-s">"explosion"</span>, x, y, z, scale) <span class="tok-c">-- 名前で再生する統一窓口</span></code></pre>
 
-        <h3><code class="inl">ui</code>：ゲーム内 HUD（即時モード）</h3>
-        <p><code class="inl">OnUpdate</code> 内で毎フレーム呼ぶと描画される（Play 中のみ）。位置は <code class="inl">SCREEN_W</code> / <code class="inl">SCREEN_H</code> で調整。</p>
+        <h3><code class="inl">ui</code>：ゲーム内 HUD（即時モード・簡易/デバッグ用）</h3>
+        <p><code class="inl">OnUpdate</code> 内で毎フレーム呼ぶと描画される（Play 中のみ）。位置は <code class="inl">SCREEN_W</code> / <code class="inl">SCREEN_H</code> で調整。
+        座標指定で毎フレーム呼ぶだけの<b>簡易 API</b>。動作確認用のデバッグ表示や、ワンオフの表示に向く。
+        タイトルメニューやHUD一式など<b>恒常的な画面</b>を組むなら、下の「ゲーム内UI（コンポーネント方式）」を推奨。</p>
         <div class="tbl-wrap">
           <table>
             <thead><tr><th>API</th><th>説明</th></tr></thead>
@@ -796,6 +834,195 @@ vfx.<span class="tok-fn">play</span>(<span class="tok-s">"explosion"</span>, x, 
             </tbody>
           </table>
         </div>
+
+        <h3>ゲーム内UI（コンポーネント方式）</h3>
+        <p>Unity uGUI / Godot Control 相当の <b>retained-mode UI</b>。UI要素を <b>ECSコンポーネント</b>としてシーンに置き、
+        エディタで編集・シーン JSON に保存できる。レイアウトは<b>アンカー＋ピボット</b>で解像度追従し、
+        描画は既存の即時 <code class="inl">ui:*</code> と同じ全画面オーバーレイ（<code class="inl">##GameUI</code>）に統合される
+        （retained UI が奥、即時 <code class="inl">ui:*</code> が手前に描かれる）。ゲーム中の表示条件も同じく <b>Play中 / ゲームモード</b>。
+        非 Play 中はツールバーの <b>UI</b> トグルで SceneView にプレビュー・編集できる（下の「エディタでの編集」参照）。</p>
+
+        <p><b>配置</b>: Hierarchy を右クリック →「作成」→「UI（ゲーム内UI）」から Canvas / Image / Text / Button を選ぶ。
+        Image / Text / Button は、選択中のエンティティが UI ツリー内ならその子に、そうでなければシーン内最初の
+        <code class="inl">UICanvas</code> の子に配置される（<code class="inl">UICanvas</code> が無ければ自動生成）。
+        Button は <code class="inl">UIRect</code>+<code class="inl">UIImage</code>+<code class="inl">UIButton</code> と、
+        ラベル用の子エンティティ（<code class="inl">UIText</code>）までまとめて生成される。</p>
+
+        <p><b>エディタでの編集（WYSIWYG）</b>: ツールバーの <b>UI</b> トグルを ON にすると、非 Play 中でも SceneView に
+        UI ツリーがプレビュー描画される。UI 要素は<b>クリックで選択</b>（重なりは最前面優先。UI の無い場所のクリックは従来の 3D ピッキング）。
+        選択中の要素は<b>矩形内ドラッグで移動</b>、四隅・四辺中点の <b>8 ハンドルドラッグでリサイズ</b>できる（どちらも Ctrl+Z で Undo）。
+        アンカーの変更は Inspector の<b>アンカープリセット</b>で行う（ドラッグは offset だけを更新し、アンカー設定は保たれる）。</p>
+
+        <p><b>UIエディタ（専用 2D キャンバス）</b>: ツールバーの<b>「窓 ▾」→「UIエディタ」</b>で、
+        Unreal UMG デザイナー / Unity UI Builder 相当の専用ウィンドウが開く。ゲーム画面と同じスケーリングで
+        UI だけを大きくプレビューしながら編集できる。</p>
+        <ul>
+          <li><b>ビュー</b>: マウスホイール＝カーソル中心ズーム、中/右ドラッグ＝パン、<b>Fit / 100%</b> ボタン。
+              <b>画面サイズ</b>ドロップダウンで 1080p / 720p / 縦画面などの見え方を切り替えてプレビューできる
+              （実行時と同じ ScaleToFit / レターボックスを再現）。市松背景・グリッド表示あり</li>
+          <li><b>選択</b>: クリックは<b>ウィジェット丸ごと</b>（ボタンならラベルではなくボタン本体）を選択し、
+              そのままドラッグで移動できる。ラベル等の子だけ触りたい時は<b>ダブルクリックで 1 段深掘り</b>
+              （Figma / UMG と同じ方式。SceneView の UI 編集モードも同様）。Ctrl+クリックでマルチ選択</li>
+          <li><b>編集</b>: 移動ドラッグ・8 ハンドルリサイズに加え、選択中は<b>アンカーハンドル（4 つの三角）</b>が
+              表示され、ドラッグで直接アンカーを編集できる
+              （見た目の位置は保たれる。0 / 0.5 / 1 にスナップ。三角を割ればストレッチ、中央の丸で 4 つまとめて移動）</li>
+          <li><b>配置テンプレ</b>: ツールバーの「配置 ▾」（Inspector の UIRect にも同じ 9 方位ボタンあり）で
+              中央 / 上下左右 / 四隅へ<b>スナップ配置</b>。アンカーも同時に設定されるので解像度が変わってもその方位に追従する</li>
+          <li><b>ショートカット</b>: 矢印キー＝1px 移動（Shift で 10px）、Del＝削除、Ctrl+D＝複製（すべて Undo 可）</li>
+          <li><b>追加</b>: 上部の「＋ Canvas / 画像 / テキスト / ボタン」またはキャンバスの右クリックメニューから。
+              配置ルールは Hierarchy の「UI（ゲーム内UI）」メニューと同じ</li>
+          <li><b>テクスチャ割当</b>: アセットブラウザから画像を UIImage の上へドラッグ＆ドロップ</li>
+        </ul>
+
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>コンポーネント</th><th>主なフィールド</th><th>説明</th></tr></thead>
+            <tbody>
+              <tr><td><code>UICanvas</code></td><td><code>refWidth/refHeight</code>, <code>scaleMode</code>, <code>sortOrder</code>, <code>visible</code></td>
+                  <td>UIツリーのルート。これが付いたエンティティの子孫が UI 要素になる。<code>scaleMode</code>: 0=ScaleToFit（等比縮放・中央寄せレターボックス）、1=ConstantPixel（左上原点・実ピクセル）、2=StretchToFill（縦横個別倍率でビューポート全体に敷き詰め・余白なし）</td></tr>
+              <tr><td><code>UIRect</code></td><td><code>anchorMin/Max</code>, <code>pivot</code>, <code>offsetMin/Max</code>, <code>rotation</code>, <code>skewX</code>, <code>clipChildren</code>, <code>visible</code></td>
+                  <td>レイアウト矩形（Unity の RectTransform 相当）。全UI要素に必須。<code>visible=false</code> で自身と子孫ごと非表示。
+                  <code>rotation</code>/<code>skewX</code>（度、時計回り）はピボット回りの<b>見た目の変換</b>（レイアウトは軸平行のまま。子孫も一緒に回る。
+                  UIScrollView 自身では無視され、回転したパネル内の UIScrollView は非対応。逆にスクロールビュー内の回転要素は OK）。
+                  <code>clipChildren=true</code> で子ツリーを自矩形で<b>マスク</b>（ワイプ公開/マーキー。ScrollView 同様このノード自身の回転は無効）</td></tr>
+              <tr><td><code>UIImage</code></td><td><code>texturePath</code>, <code>color</code>, <code>shape</code>, <code>ringThickness</code>, <code>uvMin/Max</code>, <code>uvScroll</code>, <code>animFrames</code>, <code>animFps</code>, <code>animCols</code>, <code>animRow</code>, <code>animRows</code>, <code>animMode</code>, <code>sliceBorder</code>, <code>cornerRadius</code>, <code>raycastBlock</code>, <code>fillAmount</code>, <code>fillDir</code>, <code>fillOrigin</code>, <code>segments</code>, <code>segmentGap/Color</code>, <code>gradientDir</code>, <code>gradientColor2</code>, <code>gradientScrollSpeed</code>, <code>outlineWidth</code>, <code>outlineColor</code>, <code>outlineStyle</code>, <code>outlineDash</code>, <code>shadowColor</code>, <code>shadowOffset</code>, <code>shadowSoftness</code></td>
+                  <td>画像。<code>texturePath</code> が空なら単色塗り（<code>cornerRadius</code> で角丸）。<code>sliceBorder</code>(px, 左上右下)で9-slice。
+                  <code>shape</code>（0=矩形 1=楕円 2=リング 3=ダイヤ 4=六角形 5=三角形）で<b>形状描画</b>＝テクスチャは形で切り抜かれる（丸アイコン/バフ枠/スキルノード。
+                  矩形以外は角丸/9-slice 無視。リングは単色専用の帯円=円形ゲージ向き、太さは <code>ringThickness</code>）。
+                  <code>raycastBlock</code>（既定 true）で背後のボタンへのクリックを遮る（Unity の raycastTarget 相当）。
+                  <code>fillAmount</code>（0..1、既定 1）で割合表示＝HPバー/ゲージ（<code>fillDir</code>: 0=左 1=右 2=下 3=上から、<b>4=放射時計回り 5=放射反時計回り</b>＝クールダウン円。放射は矩形にも効き、開始角は <code>fillOrigin</code>。リングの fill は常に円弧）。
+                  <code>segments</code>（0=無効）で fill 軸と直交の区切り線を重ねる<b>分割チャンクゲージ</b>（スタミナ/弾数。矩形+線形fill専用）。
+                  <code>uvMax</code>&gt;1 で<b>タイル繰り返し</b>、<code>uvScroll</code>(uv/秒)で<b>流れるパターン</b>（警告帯/背景ストライプ。9-slice では無効）。
+                  <code>animFrames</code>&gt;0 で<b>連番アニメ</b>＝テクスチャを <code>animCols</code> x N グリッドとみなしてコマ送り（爆発/回復/アイコンのループ演出。
+                  <code>animFps</code>=速度、<code>animRow</code>=シート内の開始行、<code>animRows</code>=総行数(0=自動)、
+                  <code>animMode</code>: 0=ループ 1=<b>単発</b>（最終フレームで停止） 2=<b>往復</b>。エディタ中もプレビュー再生。
+                  有効中は <code>uvMin/uvMax</code> と <code>uvScroll</code> を無視し、9-slice と <code>shape≠0</code> では無効）。
+                  <code>gradientDir</code>（0=なし 1=横 2=縦 3=斜め <b>4=放射(中心→外)</b>）＋<code>gradientColor2</code>（終端色。αは無視）でグラデーション（テクスチャ/9-slice/角丸/形状すべてに掛かる）。
+                  <code>gradientScrollSpeed</code>（周回/秒。0=静的）を 0 以外にすると、静的グラデの代わりに<b>終端色の光帯がグラデ方向へ流れる</b>＝ガチャボタンの光沢流し（負値で逆方向）。
+                  <code>outlineWidth</code>(px, 0=無効)＋<code>outlineColor</code> で枠線。<code>outlineStyle</code>（0=実線 1=<b>破線</b> 2=<b>コーナーブラケット</b>＝SF/照準HUDの四隅鉤括弧。矩形専用・角丸無視、長さは <code>outlineDash</code>）。
+                  <code>shadowColor</code>（α0=無効）＋<code>shadowOffset</code>(px)＋<code>shadowSoftness</code>(px, 0=シャープ)でドロップシャドウ（形状近似）</td></tr>
+              <tr><td><code>UIText</code></td><td><code>text</code>, <code>fontSize</code>, <code>color</code>, <code>alignH/V</code>, <code>wrap</code>, <code>outlineWidth</code>, <code>outlineColor</code>, <code>shadowColor</code>, <code>shadowOffset</code>, <code>fontPath</code>, <code>typewriterSpeed</code>, <code>letterSpacing</code>, <code>charAnim</code>, <code>charAnimAmount/Speed</code>, <code>gradientDir</code>, <code>gradientColor2</code>, <code>rich</code></td>
+                  <td>テキスト。<code>alignH/V</code>: 0=左/上 1=中央 2=右/下。<code>wrap=true</code> で矩形幅に折り返し。クリックは遮らない。
+                  <code>outlineWidth</code>＋<code>outlineColor</code> で縁取り（8方位重ね描き）、<code>shadowColor</code>（α0=無効）＋<code>shadowOffset</code> で影。
+                  <code>fontPath</code>（assets 相対の .ttf/.otf。空=既定の Yu Gothic）でフォント差し替え（任意サイズでシャープ。読み込み失敗時は警告して既定フォント）。
+                  <code>typewriterSpeed</code>（文字/秒。0=無効）で Play 中に1文字ずつ表示＝会話文のタイプライター（UTF-8 単位で日本語も1文字ずつ。<code class="inl">scene:setUiText</code> で先頭から再生し直し）。
+                  <code>letterSpacing</code>(px。負=詰め)で<b>字間</b>＝タイトルの字間広げ、<code>charAnim</code>（0=なし 1=<b>ウェーブ</b> 2=<b>ジッター</b> 3=<b>レインボー</b>）で1文字ずつ動く/色が回るにぎやかし
+                  （振幅=<code>charAnimAmount</code>px、速度=<code>charAnimSpeed</code>Hz。字間/文字アニメは wrap とは非両立）。
+                  <code>gradientDir</code>（0=なし 1=横 2=縦）＋<code>gradientColor2</code> で<b>本体のみの2色グラデ</b>＝金色タイトル等（縁取り/影には掛からない）。
+                  <code>rich=true</code> で<b>リッチテキスト（インラインタグ）</b>: <code>[c=RRGGBB]色[/c]</code>・<code>[wave]うねり[/wave]</code>・<code>[shake]震え[/shake]</code>・<code>[rainbow]虹[/rainbow]</code> をスパン装飾として解釈
+                  （入れ子なし・閉じ忘れは文末まで・不正/未知のタグはそのまま表示。アニメの振幅/速度は <code>charAnimAmount/Speed</code> を流用。
+                  整列とタイプライターの文字数はタグ除去後で数える。wrap とは非両立＝wrap 優先、テキストグラデは rich では無効）</td></tr>
+              <tr><td><code>UIButton</code></td><td><code>onClickEvent</code>, <code>normalColor/hoverColor/pressedColor</code>, <code>interactable</code>, <code>hoverSound</code>, <code>clickSound</code></td>
+                  <td>同一エンティティの <code>UIImage</code> を状態色でティントするボタン。<b>release-inside でクリック確定</b>し、
+                  <code>onClickEvent</code> 名で <code class="inl">events</code> へ発火。要素が重なった場合は<b>最前面だけ</b>が反応
+                  （子要素がクリックを吸っても親ボタンへバブリングする）。
+                  <code>hoverSound</code>/<code>clickSound</code>（assets 相対の wav。空=鳴らさない）は
+                  カーソル/フォーカスが乗った瞬間 / クリック確定時に1回鳴る</td></tr>
+              <tr><td><code>UISlider</code></td><td><code>value</code>, <code>minValue/maxValue</code>, <code>step</code>, <code>onChangeEvent</code>, <code>trackColor/fillColor/knobColor</code>, <code>interactable</code></td>
+                  <td>UIRect 全体が操作域のスライダー。トラック（角丸バー）＋塗り＋つまみ（円）を<b>自前描画</b>するので <code>UIImage</code> は不要。
+                  クリック/ドラッグで <code>value</code>（実値 <code>minValue</code>..<code>maxValue</code>。0..1 正規化ではない）が変わり、
+                  変わったフレームだけ <code>onChangeEvent</code> を発火（<code>data.value</code>=実値）。<code>step</code>&gt;0 でその刻みにスナップ</td></tr>
+              <tr><td><code>UIToggle</code></td><td><code>isOn</code>, <code>onChangeEvent</code>, <code>boxColor</code>, <code>checkColor</code>, <code>interactable</code></td>
+                  <td>チェックボックス。UIRect 全体が箱＝クリック域で、<code>isOn</code> のとき内側に <code>checkColor</code> の塗りが入る。
+                  release-inside で <code>isOn</code> が反転し <code>onChangeEvent</code> を発火（<code>data.value</code>=1/0）。
+                  ラベルは子の <code>UIText</code> で添える（ボタンのラベルと同じ流儀）</td></tr>
+              <tr><td><code>UIScrollView</code></td><td><code>vertical</code>, <code>horizontal</code>, <code>scrollX/scrollY</code>, <code>wheelSpeed</code>, <code>showBar</code>, <code>barColor</code>, <code>dragScroll</code>, <code>flickDecay</code></td>
+                  <td>自分の UIRect がビューポート（クリップ枠）。子ツリーはこの矩形でクリップされ <code>scrollX/scrollY</code>(px) ぶんずれて描かれる
+                  （はみ出た子はクリックも効かない）。コンテンツ量は子の解決済み矩形の合併から毎フレーム自動計測し、0..(コンテンツ−ビュー) にクランプ。
+                  ホバー中のホイールに加え<b>ドラッグ/フリック(慣性)スクロール</b>対応（<code>dragScroll</code> で許可、
+                  <code>flickDecay</code>=慣性の減衰率/秒で 0=慣性なし）。スクリーン 6px を超えて動いたらドラッグ確定＝
+                  進行中のボタン押下/スライダードラッグはキャンセルされるので、<b>リスト内ボタンをドラッグしてもクリック誤発火しない</b></td></tr>
+              <tr><td><code>UILayout</code></td><td><code>mode</code>, <code>cellW/cellH</code>, <code>spacing</code>, <code>padding</code>, <code>gridCols</code></td>
+                  <td><b>自動レイアウトコンテナ</b>（VBox 縦積み / HBox 横並び / Grid 行優先）。直下の子（UIRect 持ち）へ
+                  セル矩形を順番に配る＝手動 offset 計算なしでメニュー列/ツールバー/インベントリが組める。
+                  子は配られたセルを親矩形としてアンカー解決（全面ストレッチの子はセルいっぱい）。
+                  <code>cellW=0</code>(VBox)/<code>cellH=0</code>(HBox) は内側いっぱい。スクロールリストは
+                  <code>UIScrollView</code> の子コンテンツノードに付ける</td></tr>
+              <tr><td><code>UIAnimator</code></td><td><code>showAnim/showDuration/showDelay/showEasing/slideOffset</code>, <code>hoverScale/pressScale/hoverSpeed</code>, <code>loopAnim/loopSpeed/loopAmount</code></td>
+                  <td>UI アニメーション（Play / ゲームモード中のみ再生。効果は自分と子孫にまとめて掛かる）。
+                  <b>出現</b> <code>showAnim</code>: 0=なし 1=フェード 2=ポップ(拡大) 3=左から 4=右から 5=上から 6=下から
+                  7=スピン(回転入場) 8=バウンド落下 9=フリップ(縦つぶれから開く) 10=シェイク入場 11=横フリップ(扉/カード)
+                  ＋<code>showDuration</code>(既定0.35秒)・<code>showDelay</code>（順番出し）・<code>slideOffset</code>（スライド距離px、既定80）。
+                  <b>イージング</b> <code>showEasing</code>（既定2）: 0=リニア 1=イーズイン 2=イーズアウト 3=イン/アウト 4=バック(勢い) 5=バウンス
+                  6=弾性 7=エクスポ(鋭く減速) 8=<b>インバック</b>(溜めて発進) 9=<b>イン/アウトバック</b> 10=<b>クイント</b>(強い減速) 11=<b>サイン</b>(ゆったり)。
+                  <b>ホバー/押下</b>=同一エンティティに <code>UIButton</code> があるときだけ <code>hoverScale</code>(1.05)/<code>pressScale</code>(0.95) へ
+                  <code>hoverSpeed</code>(14) で追従。
+                  <b>ループ</b> <code>loopAnim</code>: 0=なし 1=浮遊(<code>loopAmount</code>=px) 2=パルス(拡縮) 3=点滅(アルファ)
+                  4=スピン(<code>loopSpeed</code>=回転数/秒) 5=スウィング(±<code>loopAmount</code>度)。パルス/点滅の <code>loopAmount</code> は割合（0.05=±5%）。
+                  Lua の <code class="inl">scene:showUi/hideUi</code> で出現アニメの再生 / 逆再生ができる</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p><b>アンカー</b>: 親矩形内の正規化座標 <code class="inl">anchorMin</code>/<code class="inl">anchorMax</code>（0..1）と、
+        そこからのピクセルオフセット <code class="inl">offsetMin</code>/<code class="inl">offsetMax</code> で実ピクセル矩形が決まる
+        （<code class="inl">rectMin = parentMin + parentSize*anchorMin + offsetMin</code>、<code class="inl">rectMax</code> も同様）。
+        アンカーが一致する場合（例: 中央固定）は offset が「中心位置 ± 半サイズ」相当になり、Inspector 上は位置(px)＋サイズ(px)として編集できる。
+        アンカーを引き伸ばす場合（例: 横ストレッチ）は offset がそのまま左右の余白(px)になる。
+        Inspector の <b>アンカープリセット</b>（9方位＋ストレッチ＋全面）を使うと、選択時に見た目の位置を保ったまま anchor/offset を再計算してくれる。</p>
+
+        <p><b>Lua からの操作</b>（<code class="inl">Scene</code> 経由。表示中の値だけを書き換える。ツリー構造自体はエディタで組む）:</p>
+<pre><code><span class="tok-c">-- スコア表示を更新（scoreLabel は UIText 付きエンティティ）</span>
+scene:<span class="tok-fn">setUiText</span>(scoreLabel, <span class="tok-s">"SCORE: "</span> .. tostring(score))
+<span class="tok-k">local</span> current = scene:<span class="tok-fn">getUiText</span>(scoreLabel)
+
+<span class="tok-c">-- HPバー: 残量ゲージ（UIImage.fillAmount）＋残量に応じて色も変える</span>
+scene:<span class="tok-fn">setUiFill</span>(hpBarFill, hp / maxHp)
+scene:<span class="tok-fn">setUiColor</span>(hpBarFill, <span class="tok-n">1</span>, hpRatio, <span class="tok-n">0</span>, <span class="tok-n">1</span>)
+
+<span class="tok-c">-- パネルの表示切替（UIRect.visible。UICanvasのみのエンティティならUICanvas.visible）</span>
+scene:<span class="tok-fn">setUiVisible</span>(pausePanel, isPaused)
+
+<span class="tok-c">-- アイコン差し替え</span>
+scene:<span class="tok-fn">setUiTexture</span>(weaponIcon, <span class="tok-s">"textures/ui/icon_sword.png"</span>)
+
+<span class="tok-c">-- 連番アニメ（スプライトシート）: 4x4=16コマを 12fps で単発再生し、終わったら消す</span>
+scene:<span class="tok-fn">setUiAnim</span>(hitFx, <span class="tok-n">16</span>, <span class="tok-n">12</span>, <span class="tok-n">4</span>, <span class="tok-n">0</span>)   <span class="tok-c">-- frames, fps, cols, row（呼ぶたび頭から）</span>
+scene:<span class="tok-fn">setUiAnimMode</span>(hitFx, <span class="tok-n">1</span>)             <span class="tok-c">-- 0=ループ 1=単発 2=往復</span>
+<span class="tok-k">if</span> scene:<span class="tok-fn">isUiAnimDone</span>(hitFx) <span class="tok-k">then</span> scene:<span class="tok-fn">setUiVisible</span>(hitFx, <span class="tok-k">false</span>) <span class="tok-k">end</span>
+scene:<span class="tok-fn">setUiUvScroll</span>(bg, <span class="tok-n">0.5</span>, <span class="tok-n">0</span>)         <span class="tok-c">-- 流れる背景（uvMax&gt;1 のタイルと併用）</span>
+
+<span class="tok-c">-- スライダー/トグル（値変更は onChangeEvent で受ける。e.value に実値/1・0）</span>
+events:<span class="tok-fn">on</span>(<span class="tok-s">"volumeChanged"</span>, <span class="tok-k">function</span>(e) audio:<span class="tok-fn">setMasterVolume</span>(e.value) <span class="tok-k">end</span>)
+<span class="tok-k">local</span> v = scene:<span class="tok-fn">getUiSlider</span>(volSlider)
+scene:<span class="tok-fn">setUiSlider</span>(volSlider, <span class="tok-n">0.8</span>)   <span class="tok-c">-- イベントは発火しない</span>
+<span class="tok-k">local</span> on = scene:<span class="tok-fn">getUiToggle</span>(muteToggle)
+scene:<span class="tok-fn">setUiToggle</span>(muteToggle, <span class="tok-k">true</span>)
+
+<span class="tok-c">-- 動的UI: トゥイーン（イージング付きアニメ。dx/dy=実移動px、scale/scaleX/scaleY/alpha/rotate/color=見た目のみ）</span>
+scene:<span class="tok-fn">tweenUi</span>(menu, { dx = <span class="tok-n">200</span>, duration = <span class="tok-n">0.4</span>, easing = <span class="tok-s">"bounce"</span> })
+scene:<span class="tok-fn">tweenUi</span>(popup, { scale = <span class="tok-n">1.2</span>, alpha = <span class="tok-n">0</span>, duration = <span class="tok-n">0.25</span> })
+scene:<span class="tok-fn">tweenUi</span>(card, { scaleY = <span class="tok-n">1</span>, duration = <span class="tok-n">0.35</span>, easing = <span class="tok-s">"back"</span> })  <span class="tok-c">-- 縦つぶれから開く（フリップ風）</span>
+scene:<span class="tok-fn">tweenUi</span>(hpBar, { color = {<span class="tok-n">3</span>, <span class="tok-n">0.3</span>, <span class="tok-n">0.3</span>}, duration = <span class="tok-n">0.1</span> })  <span class="tok-c">-- 赤フラッシュ（RGB乗算・1超え=輝き。{1,1,1}で解除）</span>
+scene:<span class="tok-fn">tweenUi</span>(hpBar, { shake = <span class="tok-n">10</span>, duration = <span class="tok-n">0.4</span> })  <span class="tok-c">-- 振動（px振幅。durationで減衰）</span>
+scene:<span class="tok-fn">tweenUi</span>(hpFill, { fill = <span class="tok-n">0.35</span>, duration = <span class="tok-n">0.3</span> })  <span class="tok-c">-- ゲージをなめらかに増減（UIImage.fillAmount）</span>
+scene:<span class="tok-fn">tweenUi</span>(scoreText, { countTo = <span class="tok-n">12800</span>, countFmt = <span class="tok-s">"%06d"</span>, duration = <span class="tok-n">0.8</span>, easing = <span class="tok-s">"expo"</span>,
+                          onComplete = <span class="tok-k">function</span>() audio:<span class="tok-fn">playSFX</span>(<span class="tok-s">"se/coin.wav"</span>) <span class="tok-k">end</span> })  <span class="tok-c">-- 数字ロール+完了SE</span>
+scene:<span class="tok-fn">stopUiTweens</span>(btn)  <span class="tok-c">-- 進行中tweenを全打ち切り（連打対策）</span>
+<span class="tok-c">-- easing は12種: "linear" "in" "out"(既定) "inOut" "back" "bounce" "elastic" "expo" "inBack" "inOutBack" "quint" "sine"</span>
+scene:<span class="tok-fn">setUiRotation</span>(titleLogo, <span class="tok-n">-8</span>)   <span class="tok-c">-- 回転（度・時計回り、子孫ごと）。tweenUi の rotate = 度 でアニメも可</span>
+
+<span class="tok-c">-- 定番演出はワンライナー集 uifx.*（プレリュード組み込み。e はボタンイベントの e.source そのまま可）</span>
+uifx.<span class="tok-fn">punch</span>(e.source)         <span class="tok-c">-- ボタンを押した感 / 他に flash・shake・hit・bounceIn・flipIn・popOut・fadeIn/Out</span>
+uifx.<span class="tok-fn">stagger</span>(items, <span class="tok-n">0.07</span>, uifx.slideInLeft)  <span class="tok-c">-- リスト項目の順次入場 / slideInRight・slideInUp・popIn</span>
+uifx.<span class="tok-fn">countTo</span>(scoreText, <span class="tok-n">12800</span>, <span class="tok-n">0.8</span>, <span class="tok-s">"%06d"</span>)   <span class="tok-c">-- 数字ロール / fillTo・damageBar(ゴーストバー)・wiggle・heartbeat</span>
+
+<span class="tok-c">-- 会話文のタイプライター（UIText.typewriterSpeed=文字/秒 を設定するだけ。SPACE で送り/スキップ）</span>
+scene:<span class="tok-fn">setUiTypewriter</span>(msg, <span class="tok-n">20</span>)
+<span class="tok-k">if</span> scene:<span class="tok-fn">isUiTypewriterDone</span>(msg) <span class="tok-k">then</span> nextLine() <span class="tok-k">else</span> scene:<span class="tok-fn">setUiTypewriter</span>(msg, <span class="tok-n">0</span>) <span class="tok-k">end</span>
+
+<span class="tok-c">-- UIAnimator の出現アニメを再生して表示 / 逆再生で消す（子孫ごと）</span>
+scene:<span class="tok-fn">showUi</span>(winPanel)
+scene:<span class="tok-fn">hideUi</span>(pauseMenu)</code></pre>
+
+        <p><b>ボタンのクリックを受ける</b>: 追加 API は無く、既存の <code class="inl">events</code> で受ける。
+        <code class="inl">UIButton.onClickEvent</code> に設定した名前で、release-inside 確定の<b>次フレーム</b>（<code class="inl">OnUpdate</code> より前）に発火する。</p>
+<pre><code><span class="tok-k">function</span> <span class="tok-fn">OnStart</span>(self)
+    events:<span class="tok-fn">on</span>(<span class="tok-s">"start_clicked"</span>, <span class="tok-k">function</span>(data)
+        <span class="tok-c">-- data.source にボタンのエンティティID(entt raw id)が入る。data に他キーは無い</span>
+        <span class="tok-fn">goToScene</span>(<span class="tok-s">"assets/scenes/game.json"</span>)
+    <span class="tok-k">end</span>)
+<span class="tok-k">end</span></code></pre>
 
         <h3><code class="inl">time</code>：時間 API（ポーズ / スローモ / タイマー）</h3>
         <p><code class="inl">:</code> ではなく <code class="inl">.</code> で呼ぶ。<code class="inl">setScale</code> は <b><code class="inl">OnUpdate</code> に渡る dt 自体に掛かる</b>ので、既存の移動コードは無改修でスローモ/ポーズに追従する（物理・パーティクルは対象外）。状態は Play 開始でリセット。</p>
@@ -1143,7 +1370,7 @@ claude mcp add dx12-engine -- node &lt;REPO&gt;/tools/mcp-server/index.ts</code>
               <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/SCRIPTING.md" target="_blank" rel="noopener"><code>docs/SCRIPTING.md</code></a></td><td>Lua スクリプトAPIガイド（高レベル / 低レベル）</td></tr>
               <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/SCRIPT_COMPONENTS.md" target="_blank" rel="noopener"><code>docs/SCRIPT_COMPONENTS.md</code></a></td><td>プロパティ付きコンポーネント / プレハブ</td></tr>
               <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/AUTHORING.md" target="_blank" rel="noopener"><code>docs/AUTHORING.md</code></a></td><td>ParticleEmitter / Trigger+Action / イベントバス / validate</td></tr>
-              <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/MCP.md" target="_blank" rel="noopener"><code>docs/MCP.md</code></a></td><td>MCP / AIブリッジ 完全リファレンス（全37ツール・error_code）</td></tr>
+              <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/MCP.md" target="_blank" rel="noopener"><code>docs/MCP.md</code></a></td><td>MCP / AIブリッジ 完全リファレンス（全87ツール・error_code）</td></tr>
               <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/ASSET_PROTECTION_DESIGN.md" target="_blank" rel="noopener"><code>docs/ASSET_PROTECTION_DESIGN.md</code></a></td><td>ゲーム専用ランタイム + 暗号化パックの設計</td></tr>
             </tbody>
           </table>

@@ -29,16 +29,31 @@ public:
     static const std::string&  ScriptsDir();  // 末尾 "/" 付き
     static const std::string&  BaseDir();     // 末尾 "/" 付き（配布=exeフォルダ / 開発=プロジェクトルート）
 
+    // シェーダー *ソース*(.hlsl/.hlsli)の置き場。開発時はリポジトリの shaders/、
+    // 配布時は exe 隣の shaders-src/（同梱されていれば）。実行時コンパイルの include 検索・
+    // ホットリロードの監視対象・エンジンシェーダーのプロジェクトへの上書きコピー元に使う。
+    static const std::wstring& ShaderSourceDirW();  // 末尾 L"/" 付き
+
+    // プロジェクト固有シェーダーの置き場 = AssetsDir() + "shaders/"（UTF-8、末尾 "/" 付き）。
+    // ここに置いた .hlsl はエンジンの相対パスと一致すれば上書き、一致しなければ自作シェーダー扱い。
+    static std::string ProjectShaderDir();
+
     // グローバル game.lua の場所を解決する。
     // scripts/game.lua 優先。無ければ assets/game.lua にフォールバック
     // （= プロジェクトの Lua を全部 assets/ 配下に置く単一ルート構成を許す）。
     // どちらも無ければ scripts/game.lua を返す（存在チェックは呼び出し側）。
     static std::string GameLuaPath();
 
+    // UTF-8 → UTF-16。パスを Windows API / DirectXTex に渡すときは必ずこれを使う。
+    // std::wstring(s.begin(), s.end()) はバイト値の1対1コピーなので
+    // 日本語などマルチバイトのパスが壊れる（無言でロード失敗の原因になる）。
+    static std::wstring Utf8ToWide(const std::string& utf8);
+
 private:
     static bool         s_initialized;
     static std::string  s_assets;
     static std::wstring s_shaderW;
+    static std::wstring s_shaderSrcW;
     static std::string  s_scripts;
     static std::string  s_base;
 };

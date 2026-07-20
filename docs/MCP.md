@@ -26,6 +26,25 @@ AI → dx12_set_transform(entity: 42, ...)   ← そのまま entityId を使う
 
 ## 1. セットアップ
 
+MCP サーバは **別リポジトリ [ryuto-alt/dx12-mcp](https://github.com/ryuto-alt/dx12-mcp) で配布**する
+(エンジン配布物には同梱されない)。エディタの「MCP / AI Bridge」窓がインストールコマンドを表示する。
+
+### 配布エンジン利用者(推奨)
+
+```powershell
+git clone https://github.com/ryuto-alt/dx12-mcp "$env:USERPROFILE\dx12-mcp"
+cd "$env:USERPROFILE\dx12-mcp"
+./install.ps1        # Linux/macOS: ./install.sh
+```
+
+`%USERPROFILE%\dx12-mcp` に入れておくと、エディタの「MCP / AI Bridge」窓が自動検出して
+登録コマンドをワンクリックコピーできる。
+
+### エンジンをソースから開発している場合
+
+このリポジトリの `tools/mcp-server` がソース・オブ・トゥルース(dx12-mcp リポジトリへは
+`tools/mcp-server/publish.ps1` で同期する)。そのまま使える:
+
 ```bash
 cd tools/mcp-server
 
@@ -117,12 +136,33 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_find_entity` | `{name:string}` | `{entityId, name}` または `null` |
 | `dx12_query_entities` | `{tag?:string, box?:[minX,minZ,maxX,maxZ]}` | `{entities:[{entityId,name}], count}` ※tag か box のどちらか必須 |
 | `dx12_list_scenes` | `{}` | `[{path, name}]` |
-| `dx12_list_assets` | `{type?:"model"\|"texture"\|"script"\|"audio"\|"scene"\|"prefab"}` | `[{path, type, name}]` |
+| `dx12_list_assets` | `{type?:"model"\|"texture"\|"script"\|"audio"\|"scene"\|"prefab"\|"shader"}` | `[{path, type, name}]` |
 | `dx12_get_mode` | `{}` | `{mode:"Editor"\|"Playing"}` |
 | `dx12_get_log` | `{lines?:int=50}` | `["ログ行", ...]`(末尾N行) |
 | `dx12_describe_components` | `{component?:string}` | `{components:[{jsonKey, settable, removable, fields:[{name,type,default}], note?}]}` |
 | `dx12_get_scene_settings` | `{}` | `{skybox:{envMapPath, iblIntensity, skyboxIntensity, drawSkybox}, note}` |
+| `dx12_get_post_process` | `{}` | ポストプロセス全フィールド(約25エフェクトの `<name>On`/パラメータ) |
+| `dx12_get_ssao` | `{}` | `{enabled, radius, bias, intensity, power, sampleCount, blur}` |
+| `dx12_read_lua_component` | `{path:string}` | `{path, code}` ※既存 .lua のソースをそのまま読む |
+| `dx12_read_shader` | `{path:string(assets/shaders相対)}` | `{path, code, compiled}` ※既存カスタムシェーダーのソースをそのまま読む(compiled は直近の既知のコンパイル成否) |
+| `dx12_raycast` | `{origin:[x,y,z], direction:[x,y,z], maxDistance?:f}` | `{hit, distance?, point?, normal?, entityId?, name?}` ※Playing 中のみ意味のある結果 |
+| `dx12_overlap_box` | `{center:[x,y,z], halfExtents:[x,y,z], maxResults?:int}` | `{entities:[{entityId,name}], count}` ※Playing 中のみ |
+| `dx12_overlap_sphere` | `{center:[x,y,z], radius:f, maxResults?:int}` | `{entities:[{entityId,name}], count}` ※Playing 中のみ |
+| `dx12_get_physics_state` | `{entity:int}` | `{entityId, hasRigidBody, velocity:[x,y,z], hasCharacterController, isGrounded}` ※Playing 中のみ |
+| `dx12_validate_scene` | `{path?:string}` | `{pass, exitCode, report, scenePath}` ※`--validate` をヘッドレス子プロセスで実行。省略時は現在のシーン |
+| `dx12_get_anim_state` | `{entity:int}` | `{hasSkeletalAnimation, clips:[クリップ名...]}` ※`dx12_play_anim` の clipName 選びに |
+| `dx12_net_status` | `{}` | `{available, role:"Offline"\|"Host"\|"Client", isConnected, localClientId, tick, syncedEntityCount, players:[{id,rttMs,bytesSent,bytesReceived}], config:{tickRate,snapshotRate,maxPlayers,defaultPort}, testRole, testJoinAddress}` |
 | `dx12_screenshot` | `{}` | PNG 画像ブロック + text(`{path(絶対パス), width, height}`) |
+| `dx12_ui_screenshot` | `{}` | PNG 画像ブロック ※エディタウィンドウ全体(ImGuiパネル込み)。ゲーム内UI/UIエディタの見た目確認用(scene RT には UI が写らない) |
+| `dx12_ui_tree` | `{}` | `{canvases:[{entityId, name, uiCanvas:{refWidth,refHeight,...}, children:[{entityId, name, components, uiRect, resolvedRect:[x,y,w,h](キャンバス空間px), text?, children}]}]}` ※UIレイアウトの数値確認 |
+| `dx12_ui_design_brief` | `{genre:"cinematic"\|"tactical"\|"fantasy"\|"horror"\|"arcade"\|"cozy", screen:"title"\|"hud"\|"inventory"\|"settings"\|"result"\|"dialog"\|"other", tone?}` | 画面固有の構図・階層・制約・アンチパターン。UI生成前に呼ぶ |
+| `dx12_ui_audit` | `{strictness?:"balanced"\|"strict"}` | 現在のUIを数値監査。`{pass,score,grade,summary,issues[]}`。崩れ/重なり/可読性/入力遮断/過装飾を検出 |
+| `dx12_ui_compose` | `{blueprint:{theme,prefix,root}}` | dock/stack/grid と意味的roleからUI一式を制約付き生成。失敗時ロールバック。生成後はaudit→screenshot必須 |
+| `dx12_get_editor_camera` | `{}` | `{position, forward, yawDeg, pitchDeg, fovYDeg, orthographic, mode}` ※シーンビューを描いてるカメラの状態 |
+| `dx12_get_bounds` | `{entity:int, includeChildren?:bool}` | `{min, max, center, size, hasMesh}` ※ワールド空間 AABB(回転/親子変換込み)。配置座標の計算に |
+| `dx12_get_hierarchy` | `{}` | `{roots:[{entityId, name, children:[...]}], count, sceneGeneration}` ※シーンの親子ツリー |
+| `dx12_asset_info` | `{path}` | モデル: `{meshCount, totalVertices, totalFaces, materialCount, boneCount, hasSkeleton, animations:[{name,durationSec}], aabbMin/Max(メッシュローカル近似)}`、テクスチャ: `{width, height, mipLevels, format, isCubemap}`、他: `{type, fileSizeBytes}` |
+| `dx12_view_texture` | `{path, maxSize?:int=1024}` | PNG 画像ブロック ※dds/tga/hdr も変換して見られる。キューブマップは先頭面のみ |
 
 ### 4-2. 編集系(同期)
 
@@ -136,23 +176,42 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_select_entity` | `{entity:int}` | `{selected}` |
 | `dx12_focus_camera` | `{entity:int}` | `{cameraPos:[x,y,z], target, distance}` |
 | `dx12_set_pbr` | `{entity:int, metallic?:f, roughness?:f, uvScaleU?:f, uvScaleV?:f}` | `{entityId, metallic, roughness, uvScaleU, uvScaleV}` |
+| `dx12_set_mesh_shader` | `{entity:int, shaderPath?:string(assets/shaders相対), alphaBlend?:bool}` | `{entityId, shaderPath, alphaBlend, skinnedFallbackWarning}` ※shaderPath省略/空文字で既定Forwardに戻す。alphaBlend省略時は既存値を維持、既定false(不透明固定でPSのalpha出力は無視される)。true でSrcAlpha/InvSrcAlphaブレンド(DepthWrite OFF) |
+| `dx12_set_sprite_shader` | `{entity:int, shaderPath?:string(assets/shaders相対), alphaBlend?:bool}` | `{entityId, shaderPath, alphaBlend, worldSpaceWarning}` ※Sprite2D専用・world-spaceのみ対応。MeshRendererのシェーダーとは頂点/ルートシグネチャの契約が異なる(docs/AUTHORING.md §6.1)。shaderPath省略/空文字で既定Spriteシェーダーに戻す |
 | `dx12_set_scene_settings` | `{skybox:{envMapPath?, iblIntensity?, skyboxIntensity?, drawSkybox?}}` | `{applied, envMapRebake}` |
+| `dx12_set_post_process` | 約25エフェクトの `<name>On`/パラメータ(指定分のみ適用) | `{applied}` |
+| `dx12_set_ssao` | `{enabled?, radius?, bias?, intensity?, power?, sampleCount?, blur?}` | `{applied}` |
 | `dx12_undo` | `{}` | `{queuedUndo}` |
 | `dx12_redo` | `{}` | `{queuedRedo}` |
 | `dx12_save_scene` | `{path?:string}` | `{path}` ※省略で現在シーンへ上書き |
-| `dx12_create_lua_component` | `{name:string, code:string}` | `{path}` ※書込前に構文検証 |
+| `dx12_create_lua_component` | `{name:string, code:string}` | `{path}` ※書込前に構文検証。既存パスなら上書き更新も兼ねる |
+| `dx12_create_shader` | `{name:string, code:string}` | `{path, compiled, error?}` ※assets/shaders/に作成/上書き後、即コンパイルを試す。Luaと違い失敗してもファイルは残る(反復修正前提) |
 | `dx12_attach_lua_component` | `{entity:int, script:string(assets相対)}` | `ok` |
+| `dx12_create_prefab` | `{entity:int, path?:string}` | `{path, entityId}` ※path省略で assets/prefabs/<name>.prefab |
+| `dx12_eval_lua` | `{code:string}` | `{result:string}` ※任意 Lua をその場実行(デバッグ用) |
+| `dx12_build_game` | `{}` | `{success, outputDir, error?}` ※ヘッドレスビルド(同期・数十秒かかることあり) |
+| `dx12_set_texture` | `{entity:int, path:string(assets相対、空文字で解除), slot?:"albedo"\|"normal"\|"metalRoughness", submesh?:int}` | `{entityId, slot, submesh, path}` ※Inspector のテクスチャ D&D と同じインスタンス単位 override(Material 共有を壊さない) |
+| `dx12_play_anim` | `{entity:int, clip?:int, clipName?:string, blend?:f=0.3, loop?:bool}` | `{entityId, clip, clipName, blend}` ※スケルタルアニメのクロスフェード再生(Lua playAnim と同経路) |
+| `dx12_net_setup` | `{role:"host"\|"client"\|"offline", address?:string, port?:int}` | `{testRole, address, port}` ※次の `dx12_play` で自動 Host/Join(ツールバーの Play ロールと同じ) |
+| `dx12_net_launch_test_client` | `{}` | `{requested}` ※ホスト Playing 中のみ。同エンジンをもう1プロセス起動し 127.0.0.1 へ自動接続(フレーム境界) |
+| `dx12_set_editor_camera` | `{position?:[x,y,z], target?:[x,y,z], yawDeg?:f, pitchDeg?:f}` | `{position, forward, yawDeg, pitchDeg}` ※エディタのフライカメラを任意視点へ。target 指定で yaw/pitch 自動逆算。**Editor 限定**(Playing 中は MODE_CONFLICT) |
+| `dx12_look_at` | `{entity:int, target?:[x,y,z], targetEntity?:int, targetName?:string, upright?:bool}` | `{entityId, rotation, target}` ※+Z 正面の想定で rotation(Euler) を書く。upright=true でピッチ0。親が回転してると厳密でない |
+| `dx12_snap_to_ground` | `{entity:int, offset?:f}` | `{groundY, movedBy, position, groundEntityId?}` ※AABB ベース接地(Editor 中でも動く)。XZ が重なる他メッシュの天面へ底面を合わせる。床なしは y=0 |
+| `dx12_import_asset` | `{sourcePath:string(絶対パス可), destPath:string(assets相対), overwrite?:bool}` | `{imported:[相対パス...], count}` ※外部ファイル/フォルダを assets へコピー。.gltf はフォルダごと |
+| `dx12_move_asset` | `{from, to, overwrite?:bool}` | `{from, to, note}` ※assets 内の移動/リネーム。**シーン内の参照パスは自動更新されない** |
+| `dx12_delete_asset` | `{path, recursive?:bool}` | `{deleted, removedCount, wasDirectory}` ※ディレクトリは recursive:true 必須。参照中アセットを消すと壊れる |
 
 ### 4-3. 生成・削除・モード遷移(遅延同期 — 本物の値が返る)
 
 | ツール | params | 返り値 |
 |--------|--------|--------|
-| `dx12_create_entity` | `{type:"box"\|"sphere"\|"plane"\|"empty", name?, position?:[x,y,z], idempotency_key?:string}` | `{entityId, name, sceneGeneration}` |
+| `dx12_create_entity` | `{type:"box"\|"sphere"\|"plane"\|"empty"\|"camera"\|"light_directional"\|"light_point"\|"light_spot"\|"particle_emitter"\|"trigger"\|"ui_canvas"\|"ui_image"\|"ui_text"\|"ui_button"\|"ui_slider"\|"ui_toggle"\|"ui_scrollview", name?, position?:[x,y,z], parent?:int, parentName?:string, idempotency_key?:string}` | `{entityId, name, sceneGeneration}` ※light_*/camera/particle_emitter/trigger は既定値で生成(dx12_set_component で調整)。ui_* はエディタと同じ部品構成で生成され `entityIds`(自動Canvas/ラベル子含む全id)も返る。parent/parentName は ui_*(ui_canvas 以外)の親指定 |
 | `dx12_spawn_model` | `{path:string(.gltf/.glb/.fbx/.obj), position?:[x,y,z], name?, idempotency_key?:string}` | `{entityId, name, sceneGeneration}` |
 | `dx12_spawn_prefab` | `{path:string(.prefab), position?, name?}` | `{entityId, rootEntityId, entityIds:[...], name, sceneGeneration}` |
 | `dx12_duplicate_entity` | `{entity:int}` | `{entityId, name, sceneGeneration}` |
 | `dx12_delete_entity` | `{entity:int}` | `{deletedEntityId, deletedCount, sceneGeneration}` |
 | `dx12_open_scene` | `{path:string(assets相対)}` | `{sceneName, path, entityCount, sceneGeneration}` |
+| `dx12_open_project` | `{path:string(プロジェクトルート絶対パス)}` | `{name, rootDir, defaultScene, loading:true}` ※ロードは非同期に数フレーム進む。完了は `dx12_ping` の currentScene で確認 |
 | `dx12_new_scene` | `{savePath?:string}` | `{applied}` |
 | `dx12_play` | `{}` | `{mode:"Playing", sceneGeneration}` |
 | `dx12_stop` | `{}` | `{mode:"Editor", sceneGeneration}` |
@@ -164,8 +223,15 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_batch` | `{ops:[{method:string, params:object}], stopOnError?:bool}` | `{results:[{index, ok, result?, error?, error_code?}]}` |
 | `dx12_focus_and_screenshot` | `{entity:int}` | 画像コンテンツ(PNG) |
 
+| `dx12_scatter` | `{type\|model\|prefab(どれか1つ), count:int(1..200), area:[minX,minZ,maxX,maxZ], y?:f, placement?:"random"\|"grid", seed?:int, randomYaw?:bool, scaleRange?:[min,max], snapToGround?:bool, namePrefix?:string}` | `{entities:[{entityId,name}], count, seed, placement, errors?}` |
+| `dx12_screenshot_from` | `{position:[x,y,z], target?:[x,y,z]}` | 画像コンテンツ(PNG) ※Editor 限定 |
+| `dx12_preview_model` | `{path:string(.gltf/.glb/.fbx/.obj)}` | 画像コンテンツ(PNG) ※一時 spawn→撮影→削除。シーンは変更されない |
+
 **`dx12_batch` 実装**: 各 op を順に await。`stopOnError=true` なら最初の失敗以降を skip 記録。往復削減用。
 **`dx12_focus_and_screenshot` 実装**: `focus_camera` → (1フレーム描画) → `screenshot` → 画像読み込み → 画像コンテンツ返却。
+**`dx12_scatter` 実装**: seed 付き乱数(mulberry32)で位置を決め、`create_entity`/`spawn_model`/`spawn_prefab` を1体ずつ実行(+必要なら `set_transform`/`snap_to_ground`)。同じ seed なら同じ配置になる(リトライで再現)。失敗3件で打ち切り。
+**`dx12_screenshot_from` 実装**: `set_editor_camera` → (1フレーム描画) → `screenshot`。
+**`dx12_preview_model` 実装**: `spawn_model`(y=-10000 の遠方) → `focus_camera` → `screenshot` → `delete_entity`。失敗時も一時エンティティは削除する。
 
 ---
 
@@ -256,8 +322,18 @@ dx12_play → (ゲームロジック動作) → dx12_stop
   → ブラウザの HTTP/WebSocket ドライブバイ(localhost CSRF)を遮断。
 - パス系ツールは **assets 相対のみ**。絶対パス・`..`・`\`・`:` を拒否。
 - `create_lua_component` の Lua は書き込み前に構文チェック(コンパイルのみ・非実行)。
+- `create_shader` は書き込み前の静的検証ができない(DXC はファイルからしかコンパイルできない)ため、
+  書いた後にコンパイルを試し成否を返す方式。失敗してもファイルは書き込まれたまま残る
+  (無効なカスタムシェーダーは既定 Forward へ安全にフォールバックするだけで実害は無い)。
 - **認証なし(localhost 開発機前提)**。同一マシンの別ユーザプロセスは接続可能なため、
   共有開発機では注意。アップグレード経路: ポートのトークン認証。
+- **`dx12_eval_lua` は任意 Lua コードをその場実行する**(意図的な設計。デバッグ効率を優先)。
+  上記の認証なしモデルと同水準のリスク(localhost の他プロセスから叩かれれば任意 Lua 実行が可能)。
+  ファイルシステムへの直接アクセスは Lua 標準の `io`/`os` ライブラリを sol2 側で公開していない限り
+  できないが、エンジンが公開する全バインディング(scene/physics/audio 等)は呼べる。
+- `dx12_validate_scene` はエンジン自身を `--validate` 付きで子プロセス起動する。この経路は
+  main.cpp で GPU/ウィンドウ/MCP ブリッジの初期化より前に return するため、実行中のエディタと
+  ポート等が衝突することはない。
 
 ---
 

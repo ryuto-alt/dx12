@@ -9,12 +9,16 @@ if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/AssetKey.h")
 endif()
 
 add_library(Core STATIC
+    Version.cpp
     Application.cpp
     Window.cpp
+    SplashScreen.cpp
     Logger.cpp
+    CrashHandler.cpp
     GameClock.cpp
     PathResolver.cpp
     Updater.cpp
+    Http.cpp
     vfs/Crypto.cpp
     vfs/Compression.cpp
     vfs/PakWriter.cpp
@@ -33,7 +37,7 @@ find_package(spdlog CONFIG REQUIRED)
 
 target_link_libraries(Core
     PUBLIC spdlog::spdlog
-    PRIVATE imgui::imgui bcrypt.lib Cabinet.lib ws2_32.lib
+    PRIVATE imgui::imgui bcrypt.lib Cabinet.lib ws2_32.lib gdiplus.lib  # gdiplus はスプラッシュのPNGロゴ用
 )
 
 target_compile_options(Core PRIVATE ${DX12_COMPILE_OPTIONS})

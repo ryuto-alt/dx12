@@ -1,9 +1,13 @@
 #include "core/Application.h"
+#include "core/CrashHandler.h"
 #include "core/PathResolver.h"
 #include "core/Updater.h"
+#include "core/SplashScreen.h"
+#include "core/Version.h"
 #include "core/vfs/Vfs.h"
 
 #include <Windows.h>
+#include <shellapi.h>   // CommandLineToArgvW（--net-client / --project の解析用）
 #include <string>
 #include <fstream>
 #include <sstream>
@@ -64,11 +68,23 @@ int RunValidate(const std::string& scenePathStr)
         else
         {
             std::set<std::string> names, dups;
-            for (const auto& ej : *entities)
             {
-                std::string nm = ej.value("name", std::string{});
-                if (nm.empty()) continue;
-                if (!names.insert(nm).second) dups.insert(nm);
+                size_t i = 0;
+                for (const auto& ej : *entities)
+                {
+                    // 型不一致(entities配列にobject以外が混ざる等)で検証ツール自体が
+                    // 落ちないように、1エンティティ単位でエラー化して続行する
+                    try
+                    {
+                        std::string nm = ej.value("name", std::string{});
+                        if (!nm.empty() && !names.insert(nm).second) dups.insert(nm);
+                    }
+                    catch (const std::exception& e)
+                    {
+                        errors.push_back("entities[" + std::to_string(i) + "]: bad value: " + e.what());
+                    }
+                    ++i;
+                }
             }
             for (const auto& d : dups)
                 warnings.push_back("duplicate entity name: " + d + " (references become ambiguous)");
@@ -88,8 +104,12 @@ int RunValidate(const std::string& scenePathStr)
             };
 
             int scripts = 0, triggers = 0, emitters = 0;
+            size_t entityIdx = 0;
             for (const auto& ej : *entities)
             {
+                ++entityIdx;
+                try
+                {
                 std::string nm = ej.value("name", std::string("?"));
 
                 if (ej.contains("luaScript"))
@@ -117,6 +137,19 @@ int RunValidate(const std::string& scenePathStr)
                     }
                 }
 
+                if (ej.contains("materialAssets") && ej["materialAssets"].is_array())
+                {
+                    for (const auto& mj : ej["materialAssets"])
+                    {
+                        if (!mj.is_string()) continue;
+                        std::string mp = mj.get<std::string>();
+                        if (mp.empty()) continue;
+                        std::error_code ec;
+                        if (!fs::exists(assetsDir / mp, ec))
+                            errors.push_back("material asset not found: " + mp + " (entity: " + nm + ")");
+                    }
+                }
+
                 if (ej.contains("trigger"))
                 {
                     ++triggers;
@@ -135,6 +168,12 @@ int RunValidate(const std::string& scenePathStr)
                 }
 
                 if (ej.contains("particleEmitter")) ++emitters;
+                }
+                catch (const std::exception& e)
+                {
+                    errors.push_back("entities[" + std::to_string(entityIdx - 1) +
+                                     "]: bad value: " + e.what());
+                }
             }
 
             infos.push_back("entities=" + std::to_string(entities->size()) +
@@ -169,21 +208,43 @@ int RunValidate(const std::string& scenePathStr)
 
 int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCmdLine, _In_ int nCmdShow)
 {
+    // ネイティブクラッシュ(アクセス違反等)でも原因が追えるよう、最初にクラッシュハンドラを仕込む。
+    // クラッシュ時は CWD に dx12_crash.log(スタックトレース) + dx12_crash.dmp(ミニダンプ)が残る。
+    dx12e::CrashHandler::Install();
+
     try
     {
         bool gameMode  = false;
         bool buildMode = false;
         std::string buildProjectDir;  // --build <dir> で指定したプロジェクト（空=組み込み）
+        std::string netClientJoin;    // --net-client <ip[:port]>（マルチプレイのテストクライアント起動）
+        std::string netClientProject; // --project <dir>（開くプロジェクトルート。--net-client 併用または単独指定）
 #ifndef DX12_GAME_RUNTIME
-        bool justUpdated = false;     // --updated: 更新バッチからの再起動。今回は更新チェックをスキップ
         if (lpCmdLine)
         {
             std::string args(lpCmdLine);
 
-            // 更新適用後の再起動。直後の起動で再び同期ネットワークチェックを走らせると
-            // ウィンドウが出るまで数秒固まるので、この起動だけチェックを飛ばす。
-            if (args.find("--updated") != std::string::npos)
-                justUpdated = true;
+            // --write-version <file>: 実行バイナリが自認するエンジン版をファイルに書いて終了。
+            // installer/build.ps1 がパッケージ前に「exe の版 == Version.cpp の版」を検証するための
+            // ヘッドレス出口（過去に一部 obj の再コンパイル漏れで版がズレた exe を配布し、
+            // 自動更新が無限ループした事故の再発防止）。
+            size_t wv = args.find("--write-version");
+            if (wv != std::string::npos)
+            {
+                std::string rest = args.substr(wv + 15);  // "--write-version" の後ろ
+                size_t b = rest.find_first_not_of(" \t\"");
+                std::string path;
+                if (b != std::string::npos)
+                {
+                    size_t e = rest.find_last_not_of(" \t\"");
+                    path = rest.substr(b, e - b + 1);
+                }
+                if (path.empty()) return 1;
+                std::ofstream f(path, std::ios::trunc);
+                if (!f) return 1;
+                f << dx12e::kEngineVersion;
+                return 0;
+            }
 
             // --validate <scene.json>: ヘッドレスでシーンの参照グラフを検証して終了（GUI 起動しない）。
             size_t vp = args.find("--validate");
@@ -220,6 +281,34 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
                 gameMode = false;  // 明示的にエディタ起動
         }
 
+        // --net-client <ip[:port]> / --project <dir>: マルチプレイのテストクライアント起動(フェーズ⑨)。
+        // プロジェクトパスに日本語/空白が入り得るため、lpCmdLine(ANSI)ではなく
+        // Wide argv で取って UTF-8 化する（エンジン内部のパスは全て UTF-8）。
+        {
+            int argc = 0;
+            if (LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc))
+            {
+                auto toUtf8 = [](const wchar_t* w) {
+                    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+                    std::string s(n > 0 ? static_cast<size_t>(n) : 0, '\0');
+                    if (n > 0)
+                    {
+                        WideCharToMultiByte(CP_UTF8, 0, w, -1, s.data(), n, nullptr, nullptr);
+                        s.pop_back(); // API が書き込んだ終端 NUL は std::string の長さに含めない
+                    }
+                    return s;
+                };
+                for (int i = 1; i < argc; ++i)
+                {
+                    if (wcscmp(argv[i], L"--net-client") == 0 && i + 1 < argc)
+                        netClientJoin = toUtf8(argv[++i]);
+                    else if (wcscmp(argv[i], L"--project") == 0 && i + 1 < argc)
+                        netClientProject = toUtf8(argv[++i]);
+                }
+                LocalFree(argv);
+            }
+        }
+
         // 配布レイアウト判定: exe の隣に game.json があれば（引数無しの直起動でも）ゲームモード。
         // これでビルドした Game.exe をダブルクリックするとゲームが立ち上がる。
         if (!buildMode)
@@ -249,7 +338,11 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
             wchar_t _exeBuf[MAX_PATH] = {};
             GetModuleFileNameW(nullptr, _exeBuf, MAX_PATH);
             std::filesystem::path _exeDir = std::filesystem::path(_exeBuf).parent_path();
-            if (!dx12e::vfs::MountPak((_exeDir / "game.pak").string()))
+            // MountPak expects UTF-8。path::string() は ACP(日本語環境=Shift-JIS)を返すため、
+            // 非 ASCII フォルダ("新しいフォルダー"等)だと Utf8ToWide で化けて CreateFileW が失敗する。
+            // u8string() で UTF-8 バイト列を保ったまま渡す。
+            const std::u8string _pakU8 = (_exeDir / "game.pak").u8string();
+            if (!dx12e::vfs::MountPak(std::string(_pakU8.begin(), _pakU8.end())))
                 throw std::runtime_error("game.pak not found or corrupt");
         }
 #endif
@@ -260,12 +353,36 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         // GameRuntime（配布ゲーム）はエンジンの自動更新を行わない（エンジンのリリースで
         // ゲームの exe が置き換わってしまうのを防ぐ）。
 #ifndef DX12_GAME_RUNTIME
-        if (!buildMode && !justUpdated && dx12e::Updater::RunStartupCheck())
+        // エディタ起動: 初期化が終わるまで枠なしスプラッシュ（Unity 風）を出す。
+        // 専用スレッドで動くので、以降の同期処理（更新チェックの WinHTTP 数秒・
+        // D3D12/シェーダ/アセット初期化）中も固まらずアニメし続ける。
+        if (!gameMode && !buildMode)
+        {
+            dx12e::SplashScreen::Show(
+                "DX12 Engine",
+                std::string("v") + dx12e::kEngineVersion,
+                dx12e::PathResolver::AssetsDir() + "editor/icons/logo.png");
+            dx12e::SplashScreen::SetStatus("アップデートを確認中...");
+        }
+
+        // justUpdated（--updated）による1回スキップは廃止した。「毎回絶対に確認してほしい」という
+        // 要求のため、更新直後の再起動を含め全ての起動で必ずチェックする（スプラッシュ画面が
+        // チェック中もアニメし続けるので、数秒の同期待ちでも固まって見えない）。
+        if (!buildMode && dx12e::Updater::RunStartupCheck())
+        {
+            dx12e::SplashScreen::Close();   // 更新適用へ（更新バッチが上書き→再起動する）
             return EXIT_SUCCESS;
+        }
 #endif
 
         dx12e::Application app;
-        app.Initialize(hInstance, nCmdShow, gameMode);
+#ifndef DX12_GAME_RUNTIME
+        if (!netClientJoin.empty())
+            app.SetNetTestClientJoin(netClientJoin);
+        if (!netClientProject.empty())
+            app.SetNetTestProject(netClientProject);   // --project 単独でもプロジェクトを開ける
+#endif
+        app.Initialize(hInstance, nCmdShow, gameMode, nullptr, buildMode);
 
         if (buildMode)
         {
@@ -284,12 +401,24 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
     }
     catch (const std::exception& e)
     {
+        dx12e::SplashScreen::Close();   // 初期化中の例外でスプラッシュが残らないように
         // GUI アプリはコンソールが無いので、致命的エラーをファイルにも残す
         {
             std::ofstream f("dx12_crash.log", std::ios::trunc);
             if (f) f << "Fatal Error: " << e.what() << "\n";
         }
-        MessageBoxA(nullptr, e.what(), "Fatal Error", MB_OK | MB_ICONERROR);
+        // エラーメッセージは UTF-8（日本語含む）なので W 版で出す（A 版だと文字化けする）
+        {
+            const char* msg = e.what();
+            int n = MultiByteToWideChar(CP_UTF8, 0, msg, -1, nullptr, 0);
+            std::wstring wmsg(n > 0 ? static_cast<size_t>(n) : 0, L'\0');
+            if (n > 0)
+            {
+                MultiByteToWideChar(CP_UTF8, 0, msg, -1, wmsg.data(), n);
+                wmsg.pop_back();
+            }
+            MessageBoxW(nullptr, wmsg.c_str(), L"致命的なエラー", MB_OK | MB_ICONERROR);
+        }
         return EXIT_FAILURE;
     }
     return EXIT_SUCCESS;

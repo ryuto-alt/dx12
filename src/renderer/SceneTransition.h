@@ -16,6 +16,7 @@ enum class TransitionType
     Wipe         = 1,   // 横ワイプ
     Circle       = 2,   // 円（アイリス）
     WipeVertical = 3,
+    Seek         = 4,   // シークバー早送り（プレイヘッド掃引+シークバー。動画モチーフのゲーム向け）
 };
 
 // 画面遷移オーバーレイ。progress を 0→1→0 で動かし、中間点でシーンロードを発火させる。
@@ -23,6 +24,9 @@ class SceneTransition
 {
 public:
     void Initialize(GraphicsDevice& device, DXGI_FORMAT outFormat, const std::wstring& shaderDir);
+
+    // シェーダーホットリロード用。PSO のみ作り直す(ルートシグネチャは不変のため触らない)。
+    void RecreatePipelines(GraphicsDevice& device);
 
     // 遷移開始。totalDuration 秒で「閉じる→（中間でロード）→開く」。
     void Start(TransitionType type, float totalDuration);
@@ -40,6 +44,10 @@ private:
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSig;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pso;
+
+    // RecreatePipelines 用に保持
+    std::wstring m_shaderDir;
+    DXGI_FORMAT  m_outFormat = DXGI_FORMAT_UNKNOWN;
 
     bool  m_active        = false;
     bool  m_halfwayPending = false;

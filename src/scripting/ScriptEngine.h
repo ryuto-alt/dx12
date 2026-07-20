@@ -23,6 +23,8 @@ class Camera;
 class AudioSystem;
 class PhysicsSystem;
 class ParticleSystem;
+class GpuParticleSystem;
+class NetworkSystem;
 
 // スクリプトコンポーネントのプロパティ宣言（.lua の properties から解析）。
 // 型 / 既定値 / 範囲 / 表示名を持ち、Inspector の自動 UI 生成と Play 時の注入に使う。
@@ -61,6 +63,10 @@ public:
     // パーティクルシステムを Lua fx API へ公開（Application が一度だけ注入）。
     // ポインタはメンバに保持され、Initialize 再実行（シーン切替）後の fx バインドも参照する。
     void SetParticleSystem(ParticleSystem* p) { m_particleSystem = p; }
+    void SetGpuParticleSystem(GpuParticleSystem* p) { m_gpuParticleSystem = p; }
+
+    // マルチプレイシステムを Lua net API へ公開（Application が一度だけ注入。null 許容）。
+    void SetNetworkSystem(NetworkSystem* n) { m_network = n; }
 
     // EventBus 注入（WireScriptCallbacks から Application が呼ぶ）。
     // events:on/emit/clear バインドはこのポインタを実行時に参照する（null 許容）。
@@ -96,6 +102,18 @@ public:
     // 失敗時 err にエラー文を入れる。MCP の create で書き込み前チェックに使う。
     bool CheckLuaSyntax(const std::string& code, std::string& err);
 
+    // 任意 Lua コードをその場実行する(MCP eval / デバッグ用)。globals フォールバック環境で
+    // 実行するため scene/physics/camera/audio 等の既存グローバルバインディングがそのまま使える
+    // (例: `local e = scene:findEntity("Player"); e.transform.position.y = 5`)。
+    // 戻り値: 実行成功なら true。code が値を return していれば resultStr に tostring() 文字列。
+    // 失敗時は false を返し err にエラー文を入れる(resultStr は空のまま)。
+    bool EvalLua(const std::string& code, std::string& resultStr, std::string& err);
+
+    // Lua 入力行の末尾トークンに対する補完候補を返す(コンソールの予測変換用)。
+    // グローバル/テーブルは実際の lua state から動的列挙、usertype(scene: 等)は
+    // メタテーブルのメソッド名を列挙する。候補はソート済み・重複なし。
+    std::vector<std::string> GetCompletions(const std::string& line);
+
     void Shutdown();
 
     const std::string& GetLastError() const { return m_lastError; }
@@ -111,6 +129,8 @@ public:
     using UiRectCb   = std::function<void(float x, float y, float w, float h, float r, float g, float b, float a, float rounding)>;
 
     using TransitionCb = std::function<void(const std::string& rel, int type, float dur)>;
+    // ゲーム内 UI のフォーカスナビへ初期フォーカスを与える（Lua: setUiFocus(entity)）。id=entt id。
+    using UiFocusCb = std::function<void(std::uint32_t id)>;
 
     void SetLoadSceneCallback(LoadSceneCb cb) { m_loadSceneCb = std::move(cb); }
     void SetNextSceneCallback(VoidCb cb)      { m_nextSceneCb = std::move(cb); }
@@ -119,6 +139,7 @@ public:
     void SetUiCallbacks(UiTextCb t, UiButtonCb b, UiImageCb i)
     { m_uiTextCb = std::move(t); m_uiButtonCb = std::move(b); m_uiImageCb = std::move(i); }
     void SetUiRectCallback(UiRectCb r) { m_uiRectCb = std::move(r); }
+    void SetUiFocusCallback(UiFocusCb cb) { m_uiFocusCb = std::move(cb); }
 
 private:
     void RegisterBindings();
@@ -128,6 +149,8 @@ private:
     void RegisterPhysicsBindings();
     // events グローバルを C++ EventBus への薄いバインドとして登録する。
     void RegisterEventsBinding();
+    // net グローバルを NetworkSystem への薄いバインドとして登録する。
+    void RegisterNetworkBindings();
     // .lua の properties テーブルを解析して out へ詰める（失敗時は out 空のまま）。
     void ParsePropertySchema(const std::string& scriptPath, std::vector<ScriptPropDef>& out);
 
@@ -138,9 +161,21 @@ private:
     AudioSystem*   m_audio   = nullptr;
     PhysicsSystem* m_physics = nullptr;
     ParticleSystem* m_particleSystem = nullptr;
+    GpuParticleSystem* m_gpuParticleSystem = nullptr;   // 大量粒子用（fx の gpu=true で使用）
+    NetworkSystem* m_network = nullptr;   // マルチプレイ（net:host/join等）。null 許容
     EventBus*    m_eventBus = nullptr;   // Application が所有、null 許容（エディタ中は非使用）
     std::string  m_assetsDir;
     std::string  m_lastError;
+
+    // time API の状態（Lua グローバル time.*）。Play 開始でリセット。
+    // m_timeScale はスクリプトに渡る dt 自体を倍率する(0=ポーズ、0.5=スローモ)。
+    // 物理/パーティクルは対象外(スクリプト駆動のゲームロジックだけがスケールされる)。
+    double m_timeElapsed    = 0.0;   // スケール適用済み経過秒
+    double m_timeUnscaled   = 0.0;   // 実時間経過秒
+    float  m_timeScale      = 1.0f;
+    float  m_timeDt         = 0.0f;  // 今フレームのスケール済み dt
+    float  m_timeUnscaledDt = 0.0f;
+    u64    m_timeFrame      = 0;
 
     // シーン切替（Shutdown→Initialize で lua state は作り直される）をまたいで
     // 残す数値ストレージ。Lua: saveNum(key,val) / loadNum(key,default)。
@@ -158,6 +193,7 @@ private:
     UiButtonCb  m_uiButtonCb;
     UiImageCb   m_uiImageCb;
     UiRectCb    m_uiRectCb;
+    UiFocusCb   m_uiFocusCb;
 };
 
 } // namespace dx12e

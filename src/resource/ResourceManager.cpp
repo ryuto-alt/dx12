@@ -2,6 +2,7 @@
 
 #include "core/Assert.h"
 #include "core/Logger.h"
+#include "core/PathResolver.h"
 #include "core/vfs/Vfs.h"
 #include "graphics/Texture.h"
 #include "graphics/DescriptorHeap.h"
@@ -86,6 +87,7 @@ void ResourceManager::Initialize(GraphicsDevice* device, DescriptorHeap* srvHeap
         m_defaultMetalRoughness->SetSrvIndex(mIdx);
         m_defaultMetalRoughness->CreateSRV(*device, m_srvHeap->GetCpuHandle(mIdx));
     }
+    m_uploadsPending = true;  // 既定テクスチャのアップロードを初回フレームで確定させる
 }
 
 Texture* ResourceManager::GetOrLoadTexture(
@@ -129,7 +131,8 @@ Texture* ResourceManager::GetOrLoadTexture(
 
     if (!texture)
     {
-        Logger::Warn("Failed to load texture, returning nullptr");
+        Logger::Warn("テクスチャの読み込みに失敗しました（nullptr をキャッシュし、以後は再試行しません）");
+        m_textureCache[filePath] = nullptr;   // 失敗もキャッシュ＝毎フレーム再ロード試行してログが埋まるのを防ぐ
         return nullptr;
     }
 
@@ -141,6 +144,8 @@ Texture* ResourceManager::GetOrLoadTexture(
     // キャッシュ登録
     Texture* rawPtr = texture.get();
     m_textureCache[filePath] = std::move(texture);
+    m_pendingUploads.push_back(rawPtr);   // フレーム末尾にステージングを遅延解放
+    m_uploadsPending = true;
 
     Logger::Info("Texture cached (srvIndex={})", rawPtr->GetSrvIndex());
 
@@ -151,7 +156,17 @@ const CachedModel* ResourceManager::GetOrLoadModel(
     const std::string& filePath,
     ID3D12GraphicsCommandList* cmdList)
 {
-    auto it = m_modelCache.find(filePath);
+    // キャッシュキーはパス正規化して作る。同じファイルでも D&D 配置(バックスラッシュ
+    // 絶対パス)と Play→Stop のシーン復元(AssetsDir + 相対 = スラッシュ区切り)で
+    // 文字列が異なりキャッシュミスし、Stop のたびにディスクから再ロードして編集中と
+    // 別ジオメトリ(外部ツールで書き換わった後の内容等)を拾うバグがあった。
+    std::error_code ec;
+    std::string key = std::filesystem::weakly_canonical(
+        std::filesystem::path(filePath), ec).generic_string();
+    if (ec || key.empty())
+        key = std::filesystem::path(filePath).lexically_normal().generic_string();
+
+    auto it = m_modelCache.find(key);
     if (it != m_modelCache.end())
     {
         return it->second.get();
@@ -159,6 +174,13 @@ const CachedModel* ResourceManager::GetOrLoadModel(
 
     auto modelData = ModelLoader::LoadFromFile(*m_device, cmdList,
                                                std::filesystem::path(filePath), *this);
+
+    if (modelData.meshes.empty())
+    {
+        Logger::Warn("モデルの読み込みに失敗しました（nullptr をキャッシュし、以後は再試行しません）: {}", filePath);
+        m_modelCache[key] = nullptr;   // 失敗もキャッシュ＝毎フレーム再ロード試行してログが埋まるのを防ぐ
+        return nullptr;
+    }
 
     auto cached = std::make_unique<CachedModel>();
     cached->meshes        = std::move(modelData.meshes);
@@ -169,7 +191,8 @@ const CachedModel* ResourceManager::GetOrLoadModel(
     cached->nodeAnimClips = std::move(modelData.nodeAnimClips);
 
     const CachedModel* rawPtr = cached.get();
-    m_modelCache[filePath] = std::move(cached);
+    m_modelCache[key] = std::move(cached);
+    m_uploadsPending = true;
 
     Logger::Info("Model cached: {} ({} meshes)", filePath, rawPtr->meshes.size());
     return rawPtr;
@@ -181,8 +204,9 @@ Texture* ResourceManager::GetOrLoadEmbeddedTexture(
     const char* formatHint,
     ID3D12GraphicsCommandList* cmdList)
 {
-    // wstring キーに変換してキャッシュ検索
-    std::wstring wkey(key.begin(), key.end());
+    // wstring キーに変換してキャッシュ検索（UTF-8正変換。バイトコピーだと
+    // 日本語キーが壊れて wstring パス経由のキャッシュと不一致になる）
+    std::wstring wkey = PathResolver::Utf8ToWide(key);
     auto it = m_textureCache.find(wkey);
     if (it != m_textureCache.end())
         return it->second.get();
@@ -195,7 +219,18 @@ Texture* ResourceManager::GetOrLoadEmbeddedTexture(
     texture->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(srvIdx));
     auto* rawPtr = texture.get();
     m_textureCache[wkey] = std::move(texture);
+    m_pendingUploads.push_back(rawPtr);   // フレーム末尾にステージングを遅延解放
+    m_uploadsPending = true;
     return rawPtr;
+}
+
+void ResourceManager::DeferPendingUploads()
+{
+    // Texture::FinishUpload は DeferredRelease 有効時、フェンス連動の遅延解放になる
+    for (Texture* t : m_pendingUploads)
+        t->FinishUpload();
+    m_pendingUploads.clear();
+    m_uploadsPending = false;
 }
 
 void ResourceManager::FinishUploads()
@@ -205,15 +240,17 @@ void ResourceManager::FinishUploads()
     if (m_defaultMetalRoughness) m_defaultMetalRoughness->FinishUpload();
     for (auto& [path, texture] : m_textureCache)
     {
-        texture->FinishUpload();
+        if (texture) texture->FinishUpload();   // 失敗キャッシュ(nullptr)はスキップ
     }
     for (auto& [path, model] : m_modelCache)
     {
+        if (!model) continue;   // 失敗キャッシュ(nullptr)はスキップ(テクスチャ側と同じ)
         for (auto& mesh : model->meshes)
         {
             mesh->FinishUpload();
         }
     }
+    m_uploadsPending = false;
 }
 
 } // namespace dx12e

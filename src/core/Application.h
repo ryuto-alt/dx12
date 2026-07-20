@@ -39,8 +39,15 @@ namespace dx12e
     class CommandList;
     class RenderTarget;
     class PostProcess;
+    class BloomPass;
+    class AutoExposurePass;
+    class GodRaysPass;
+    class LensFlarePass;
+    class DofPass;
+    class MotionBlurPass;
     class SSAOPass;
     class ParticleSystem;
+    class GpuParticleSystem;
     class SpriteRenderer;
     class SceneTransition;
     class IBLBaker;
@@ -55,13 +62,22 @@ namespace dx12e
     class Scene;
     class ScriptEngine;
     class McpBridge;
+    class UISystem;
     class AudioSystem;
     class PhysicsSystem;
+    class NetworkSystem;
     class PhysicsDebugRenderer;
     class EditorIconRenderer;
     class EditorContext;
     class EditorLayer;
     class ModelThumbnailRenderer;
+    class VfxEditorPanel;
+    class UiEditorPanel;
+    class NetworkPanel;
+    class ShaderManager;
+    class MaterialAssetManager;
+    class MaterialEditorPanel;
+    class MaterialLibraryPanel;
     struct Material;
 }
 
@@ -78,9 +94,17 @@ public:
     Application& operator=(const Application&) = delete;
 
     void Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode = false,
-                    const ProjectInfo* projectInfo = nullptr);
+                    const ProjectInfo* projectInfo = nullptr, bool buildMode = false);
     void Run();
     void Shutdown();
+
+    // マルチプレイ テストクライアント起動用(フェーズ⑨、--net-client CLI 引数)。
+    // Initialize() より前に呼ぶこと。"ip:port" 形式。空なら何もしない(通常起動)。
+    // Initialize 内でゲームモードの自動 Play に載せて net:join 相当を実行する。
+    void SetNetTestClientJoin(const std::string& ipPort) { m_pendingNetClientJoin = ipPort; }
+    // --project <dir>。ランチャーを飛ばしてこのプロジェクトを直接開く。--net-client 併用時は
+    // 開いた後に自動Play=Join、単独指定なら開くだけ。Initialize() より前に呼ぶこと。
+    void SetNetTestProject(const std::string& dir) { m_pendingNetClientProject = dir; }
 
     // ヘッドレスでゲームをビルド（--build CLI 用）。開始シーンは title.json があればそれ。
     // 成否を返す（CLI の終了コード / GUI の完了表示に使う）。
@@ -112,11 +136,80 @@ private:
     void DrawWorldSprites(ID3D12GraphicsCommandList* cmd, DirectX::XMMATRIX viewProj,
                           DirectX::XMFLOAT3 camRight, DirectX::XMFLOAT3 camUp,
                           D3D12_CPU_DESCRIPTOR_HANDLE rtv, D3D12_CPU_DESCRIPTOR_HANDLE dsv,
-                          u32 vpX, u32 vpY, u32 vpW, u32 vpH);
+                          u32 vpX, u32 vpY, u32 vpW, u32 vpH, float time);
     // CSM: カメラ視錐台を near→far で kNumCascades 分割し、各カスケードをライト視点へタイトフィット。
     // 結果は m_cascadeViewProj[] / m_cascadeSplitsView[] に格納する。
     void ComputeCascades(const DirectX::XMVECTOR& lightDir, f32 camNear, f32 camFar);
+    // 深度専用シーン描画（CSM各カスケード/スポット影/ポイント影の各面/SSAOプリパスで共用）。
+    // RT/DSV・ビューポート・クリア・バリアは呼び出し側の責任。frameIndex はボーンSRV参照用。
+    // updateSkinning=true の時だけ skinningBuffer->Update を呼ぶ（1フレームに1回で十分なため）。
+    void RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState& staticPSO,
+                              PipelineState& skinnedPSO, bool updateSkinning, u32 frameIndex);
     void RebuildScene();
+    // シェーダーホットリロード用 PSO 再生成。初回(Initialize)と再生成(hot-reload)の両方から呼ぶ。
+    // 既存 unique_ptr が非 null ならその場で Initialize() し直す(オブジェクトの住所は変えない=
+    // ModelThumbnailRenderer 等が生ポインタを保持しているケースでのダングリングを避けるため)。
+    // ShaderManager::RegisterReloadHandler で csoName ごとに束ねて登録する。
+    void RecreateForwardPsos();          // m_pipelineState / LEqual / Thumb (Forward_VS/PS, ForwardLdr_PS)
+    void RecreateSkinnedPsos();          // m_skinnedPipelineState / LEqual (ForwardSkinned_VS, Forward_PS)
+    void RecreateGridPso();              // m_gridPipelineState (ForwardGrid_VS/PS)
+    void RecreateEmissivePso();          // m_emissivePipelineState (Emissive_VS/PS)
+    void RecreateShadowPsos();           // m_shadowPipelineState / m_shadowSkinnedPipelineState
+    void RecreateDepthPrepassPsos();     // m_depthPrepassPSO / m_depthPrepassSkinnedPSO
+    void RegisterShaderReloadHandlers(); // 上記全部+PostProcess等を ShaderManager に束ねて登録する(Initialize末尾で1回)
+
+    // カスタムシェーダー(MeshRenderer::shaderPath)割当用の遅延生成PSOキャッシュ。
+    // 静的メッシュのみ対応(スキンド/インスタンシングは m_pipelineState 等の既定へフォールバック)。
+    struct CustomForwardPsos
+    {
+        std::unique_ptr<PipelineState> less;       // DepthFunc=LESS、不透明
+        std::unique_ptr<PipelineState> lequal;     // 深度プリパス併用(SSAO)時、不透明
+        std::unique_ptr<PipelineState> lessBlend;   // DepthFunc=LESS、アルファブレンド(shaderAlphaBlend=true)
+        std::unique_ptr<PipelineState> lequalBlend; // 深度プリパス併用時、アルファブレンド
+        bool valid = false;
+    };
+    std::unordered_map<std::string, CustomForwardPsos> m_customPsoCache;  // key: shaderPath(小文字正規化)
+    // キャッシュに無ければ ShaderManager からバイトコードを取り PSO を生成する。
+    // コンパイル未完了/PSO生成失敗時は nullptr を返す(呼び出し側は既定 Forward へフォールバックすること)。
+    CustomForwardPsos* EnsureCustomPso(const std::string& shaderRel);
+
+    // カスタムシェーダー(Sprite2D::shaderPath)割当用の遅延生成PSOキャッシュ。world space スプライトのみ対応。
+    // メッシュ版と違い深度プリパスの区別が無いため2種類(不透明/アルファブレンド)のみで足りる。
+    struct CustomSpritePsos
+    {
+        std::unique_ptr<PipelineState> opaque;  // BlendEnable=FALSE
+        std::unique_ptr<PipelineState> blend;   // SrcAlpha/InvSrcAlpha(Sprite2D::shaderAlphaBlend=true)
+        bool valid = false;
+    };
+    std::unordered_map<std::string, CustomSpritePsos> m_customSpritePsoCache;  // key: shaderPath(小文字正規化)
+    CustomSpritePsos* EnsureCustomSpritePso(const std::string& shaderRel);
+    // EnsureCustomPso/EnsureCustomSpritePso共通のバイトコード取得(エディタ=ShaderManager実行時コンパイル、
+    // ゲーム=ビルド焼き込みcso)。取得できなければ false(呼び出し側は既定シェーダーへフォールバック)。
+    bool FetchCustomShaderBytecode(const std::string& shaderRel,
+                                    std::vector<u8>& vsStorage, std::vector<u8>& psStorage,
+                                    const std::vector<u8>*& vsBytesOut, const std::vector<u8>*& psBytesOut);
+
+    // MeshRenderer::overrideAlbedoTexture 等(インスタンス単位のマテリアルテクスチャ上書き、
+    // アセットブラウザからのテクスチャD&D用)の SRV ブロックキャッシュ。Mesh::GetMaterial() は
+    // 同一モデルパスの全インスタンスで共有されるため、上書き分だけこの専用ブロックへ
+    // albedo/normal/metalRoughness の3連続SRVを合成し、通常の mat->srvBlockIndex の代わりに使う。
+    struct MaterialOverrideSrv
+    {
+        u32 blockStart = 0xFFFFFFFF;   // srvHeap 上の3連続ブロックの先頭(未確保なら0xFFFFFFFF)
+        std::string albedoPath, normalPath, mrPath;  // 直近ビルド時の上書きパス(変化検知用)
+    };
+    // key = (entityID << 16) | submeshIndex。エンティティ削除時の明示破棄は行わない
+    // (ParticleSystem 同様、無効エンティティは次回描画されない=実害なし。SRVヒープを僅かに消費し続ける
+    // 既知の制約)。
+    std::unordered_map<u64, MaterialOverrideSrv> m_materialOverrideSrvCache;
+    // 上書きが無ければ 0xFFFFFFFF を返す(呼び出し側は mat->srvBlockIndex 等の既定経路へフォールバック)。
+    u32 EnsureMaterialOverrideSrv(entt::entity e, u32 submeshIndex, const MeshRenderer& renderer,
+                                  const Material* mat, ID3D12GraphicsCommandList* cmdList);
+
+    // .dxmat マテリアルアセット(assets/materials/*.dxmat)のロード/SRV/ホットリロード管理。
+    // MeshRenderer::materialAsset が割当てられているサブメッシュはこちらが overrideXxxTexture より優先される。
+    std::unique_ptr<MaterialAssetManager> m_materialAssetManager;
+
     // ランチャーで選んだ/作成したプロジェクトを実行時に読み込む（パス再ポイント + シーンロード）
     void LoadProject(const ProjectInfo& info);
     // エディタUIアイコン(PNG)をSRVへ読み込む（起動時に1度。エンジン側assets基準）
@@ -132,6 +225,9 @@ private:
     // エディタの「Project」「Version Control」ウィンドウ描画（ランチャー閉後）
     void RenderProjectWindow();
     void RenderVersionControlWindow();
+    // タイトルバーの X（WM_CLOSE）横取りハンドラ。true=そのまま終了、false=横取りして呑み込んだ
+    // （ランチャーに戻した/Playを止めた等）。Window::SetCloseHandler に渡す。
+    bool HandleWindowCloseRequest();
     void RenderBuildSettingsWindow();   // 「ビルド設定」窓（構成/開始シーン/出力先 → ビルド実行）
     // git/gh 操作をワーカースレッドで実行（メインスレッドを固めない）。
     // task はワーカー上で走り GitResult を返す。label はバナー表示名。
@@ -141,6 +237,8 @@ private:
     // 現在のプロジェクトを保存（.dx12proj + 現在シーン）
     void SaveCurrentProject();
     void EnterPlayMode();
+    // 「テストクライアント起動」ボタン(フェーズ⑨): 同じ exe を --net-client 付きで別プロセス起動。
+    void LaunchNetTestClient();
     void EnterEditorMode();
     // エディタで開いたシーンに GridPlane が無ければ床グリッドを足す。
     // 旧シーンや Grid 未配置のテンプレ(platformer 等)を開いてもグリッドが必ず出るようにする。
@@ -171,13 +269,23 @@ private:
     std::unique_ptr<RootSignature>     m_rootSignature;
     std::unique_ptr<PipelineState>     m_pipelineState;        // 通常 forward(static, DepthFunc=LESS)
     std::unique_ptr<PipelineState>     m_pipelineStateLEqual;  // SSAO 深度プリパス併用時(static, LESS_EQUAL)
+    std::unique_ptr<PipelineState>     m_pipelineStateThumb;   // サムネイル用(static, LESS, R8G8B8A8)
     std::unique_ptr<DescriptorHeap>    m_srvHeap;
     std::unique_ptr<ResourceManager>   m_resourceManager;
+    // プロジェクト独自HLSL(上書き/自作)の実行時コンパイル+ホットリロード。エディタモードのみ生成。
+    std::unique_ptr<ShaderManager>     m_shaderManager;
+    f32                                m_shaderPollTimer = 0.0f;
     std::unique_ptr<ImGuiManager>      m_imguiManager;
     std::unique_ptr<PipelineState>     m_skinnedPipelineState;        // 通常 forward(skinned, LESS)
     std::unique_ptr<PipelineState>     m_skinnedPipelineStateLEqual;  // SSAO 深度プリパス併用時(skinned, LESS_EQUAL)
     std::unique_ptr<PipelineState>     m_gridPipelineState;
-    std::unique_ptr<PipelineState>     m_emissivePipelineState;  // 加算発光パーティクル用
+    std::unique_ptr<PipelineState>     m_emissivePipelineState;  // 加算発光（Pfx）GPU instancing 用
+    // ---- 発光メッシュ instancing 用 per-instance バッファ（リング=FrameResources::kFrameCount=3）----
+    static constexpr u32 kMaxInstances = 4096;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_instanceBuffer[3];
+    uint8_t*                               m_instanceMapped[3] = {};
+    D3D12_VERTEX_BUFFER_VIEW               m_instanceVbView[3] = {};
+    u32                                    m_instanceCursor = 0;  // フレーム内 instance 連番（メイン＋プレビュー共有）
     std::unique_ptr<PipelineState>     m_shadowPipelineState;
     std::unique_ptr<PipelineState>     m_shadowSkinnedPipelineState;
     // ---- CSM (Cascaded Shadow Maps, 4分割) ----
@@ -186,7 +294,7 @@ private:
     std::unique_ptr<DescriptorHeap>    m_shadowDsvHeap;        // 容量 kNumCascades
     D3D12_CPU_DESCRIPTOR_HANDLE        m_shadowDsvHandles[kNumCascades]{}; // スライス毎の DSV
     u32                                m_shadowSrvIndex = 0;    // 配列SRV(1個)
-    u32                                m_shadowMapSize = 4096;
+    u32                                m_shadowMapSize = 2048;  // 4096→2048: トップダウンで影は小さく、1/4の帯域で十分
     i32                                m_shadowQualityIndex = 2;  // 0:1024, 1:2048, 2:4096, 3:8192
     bool                               m_shadowMapDirty = false;
     // CSM パラメータ（ImGui 編集用）
@@ -197,9 +305,34 @@ private:
     // フレーム毎に計算した結果（描画パス間で共有）
     DirectX::XMFLOAT4X4                m_cascadeViewProj[kNumCascades]{};  // 行優先(world*VP用、非転置)
     f32                                m_cascadeSplitsView[kNumCascades]{}; // 各カスケード遠端 view深度(正値)
+
+    // ---- スポット/ポイントライトの影 ----
+    // castShadows=true のライトのうちカメラに近い順で固定スロットへ毎フレーム割当（多数灯があっても
+    // 上限を超えた分は影なしにフォールバック＝CSMと同じ「固定配列」方針）。
+    static constexpr u32 kMaxShadowSpot      = 4;   // スポット影の同時上限
+    static constexpr u32 kMaxShadowPoint     = 2;   // ポイント影の同時上限（6面/灯）
+    static constexpr u32 kSpotShadowMapSize  = 1024;
+    static constexpr u32 kPointShadowMapSize = 512;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_spotShadowMap;   // Texture2DArray(ArraySize=kMaxShadowSpot)
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_pointShadowMap;  // Texture2DArray(ArraySize=kMaxShadowPoint*6)。SRVはTextureCubeArrayとして参照
+    std::unique_ptr<DescriptorHeap>    m_punctualShadowDsvHeap;  // 容量 kMaxShadowSpot + kMaxShadowPoint*6
+    D3D12_CPU_DESCRIPTOR_HANDLE        m_spotShadowDsvHandles[kMaxShadowSpot]{};
+    D3D12_CPU_DESCRIPTOR_HANDLE        m_pointShadowDsvHandles[kMaxShadowPoint * 6]{};
+    u32                                m_spotShadowSrvIndex  = 0;
+    u32                                m_pointShadowSrvIndex = 0;  // 初期化時に spotIndex+1（連番）である前提でRootSig側テーブルを組む
+    // フレーム毎のスロット割当結果（影パス描画とCB書き込みの両方で参照）
+    DirectX::XMFLOAT4X4                m_spotShadowViewProj[kMaxShadowSpot]{};  // 行優先(world*VP用、非転置)
+    entt::entity                       m_spotShadowEntity[kMaxShadowSpot]{};
+    u32                                m_numSpotShadowSlots = 0;
+    // ポイント影: シェーダ側は距離ベースで比較深度を再構成するので面ごとのVPはCBへ渡さない
+    // （描画パス内のローカル変数で完結）。永続する必要があるのは「どの灯がどのキューブスロットか」のみ。
+    entt::entity                       m_pointShadowEntity[kMaxShadowPoint]{};
+    u32                                m_numPointShadowSlots = 0;
     // エディタレイアウト
     static constexpr f32 kLeftPanelWidth  = 280.0f;
-    static constexpr f32 kToolbarHeight   = 60.0f;  // メニューバー + アイコン列の2段
+    static constexpr f32 kToolbarHeight   = 68.0f;  // タイトルバー兼メニューバー(~35px) + アイコン列の2段
+    // プロジェクトロード時のマテリアルサムネイル事前生成の総数(進捗表示用。UpdateProjectLoadフェーズ4)
+    size_t m_matThumbPreloadTotal = 0;
     bool m_isGameMode = false;
     std::unique_ptr<EditorContext> m_editorCtx;
     std::unique_ptr<EditorLayer>   m_editorLayer;
@@ -227,6 +360,9 @@ private:
     std::string m_ghUser;                 // gh ログインユーザー（空=未ログイン）
     bool        m_ghUserChecked = false;  // ログイン状態を取得済みか（重いので一度だけ）
 
+    // GitHub に新規作成するリポジトリ名（初回はプロジェクト名で事前入力、編集可）
+    std::array<char, 100> m_gitNewRepoNameBuf{};
+
     // ブランチ操作
     std::vector<std::string> m_gitBranches;     // ローカルブランチ一覧
     std::array<char, 128>    m_gitNewBranchBuf{}; // 新規ブランチ名入力
@@ -236,6 +372,10 @@ private:
     int         m_gitBehind = -1;
     std::array<char, 512> m_gitCloneBuf{};      // クローン元 URL 入力
     std::vector<GitFileChange> m_gitChanges;    // 変更ファイル一覧（VS の「変更」ツリー用）
+
+    // マージコンフリクト（pull 等で発生）
+    bool                     m_gitMergeInProgress = false; // .git/MERGE_HEAD の有無
+    std::vector<std::string> m_gitConflicts;               // 未解消ファイルのパス一覧
 
     // ---- 非同期 git 操作（メインスレッドを固めないためのワーカー） ----
     enum class GitOpStatus { None, Running, Success, Failure };
@@ -249,6 +389,7 @@ private:
     GitOpStatus        m_gitOpStatus = GitOpStatus::None; // 直近操作の状態（バナー）
     std::string        m_gitOpLabel;             // 直近操作名（"プッシュ" 等）
     float              m_gitSpin = 0.0f;         // 実行中スピナーのアニメ時間
+    bool               m_gitInstallPending = false; // Git インストール中→完了後に m_gitChecked を再評価
 
     // ---- エディタUIアイコン（ImTextureID=ImU64。0=未読込。EditorContext::icons から参照される）----
     EditorUiIcons m_icons;
@@ -280,6 +421,10 @@ private:
     EventBus                           m_eventBus;
     std::unique_ptr<ScriptEngine>      m_scriptEngine;
     std::unique_ptr<McpBridge>         m_mcpBridge;   // エディタ専用 AI ブリッジ(TCP)。ゲームでは null。
+    std::unique_ptr<VfxEditorPanel>    m_vfxEditorPanel;   // パーティクルエディタ（ツール窓）。ゲームでは null。
+    std::unique_ptr<UiEditorPanel>     m_uiEditorPanel;    // UIエディタ（ゲーム内UIの2Dキャンバス編集）。ゲームでは null。
+    std::unique_ptr<MaterialEditorPanel>  m_materialEditorPanel;   // マテリアルエディタ（ツール窓）。ゲームでは null。
+    std::unique_ptr<MaterialLibraryPanel> m_materialLibraryPanel;  // Poly Havenマテリアルライブラリ(ツール窓)。ゲームでは null。
     // ---- MCP 状態（HandleMcpCommand とフレーム境界の遅延応答で共有）----
     int         m_sceneGeneration = 0;   // open_scene/new_scene のたびに +1。古い entity id 検出用。
     McpDeferred m_mcpModeReply;          // play/stop の遅延応答（モード遷移後に送る）。client=0 で無効。
@@ -290,6 +435,11 @@ private:
     std::unordered_map<std::string, uint32_t> m_mcpIdempotency;  // idempotency_key -> 生成済み entityId
     std::unique_ptr<AudioSystem>       m_audioSystem;
     std::unique_ptr<PhysicsSystem>     m_physicsSystem;
+    std::unique_ptr<NetworkSystem>     m_networkSystem;   // マルチプレイ（GPU非依存、Play/Stopでも再構築しない）
+    std::unique_ptr<NetworkPanel>      m_networkPanel;    // マルチプレイのエディタパネル（状態/設定窓）。ゲームでは null。
+    std::string m_pendingNetClientJoin;     // SetNetTestClientJoin で受けた "ip:port"。Initialize 内で1回消費。
+    std::string m_pendingNetClientProject;  // SetNetTestProject で受けたプロジェクトルート。同上。
+    bool m_netClientAutoPlayPending = false; // --net-client: プロジェクトロード完了後にPlay(Join)する予約。
     std::unique_ptr<PhysicsDebugRenderer> m_physicsDebugRenderer;
     std::unique_ptr<EditorIconRenderer>   m_editorIconRenderer;
     bool                               m_physicsDebugDraw = false;
@@ -298,7 +448,21 @@ private:
     std::unique_ptr<DescriptorHeap> m_offscreenRtvHeap;
     std::unique_ptr<RenderTarget>   m_sceneRT;
     std::unique_ptr<PostProcess>    m_postProcess;
+    std::unique_ptr<BloomPass>      m_bloomPass;     // 物理ベースブルーム（ダウン/アップチェーン）
+    std::unique_ptr<AutoExposurePass> m_autoExposure; // 自動露出（compute ヒストグラム）
+    std::unique_ptr<GodRaysPass>    m_godRaysPass;    // スクリーンスペース ゴッドレイ
+    std::unique_ptr<LensFlarePass>  m_lensFlarePass;  // 疑似レンズフレア（ブルームチェーン入力）
+    std::unique_ptr<DofPass>        m_dofPass;        // 被写界深度（gather ボケ）
+    std::unique_ptr<MotionBlurPass> m_motionBlurPass; // カメラモーションブラー（深度再構成）
+    std::unique_ptr<RenderTarget>   m_distortRT;      // パーティクル歪みバッファ（RG16F、熱ゆらぎ/衝撃波）
+    DirectX::XMFLOAT4X4             m_prevViewProj{};       // 前フレームの viewProj（モーションブラー用）
+    bool                            m_prevViewProjValid = false;
+
+    // 遅延初回表示: 隠れたまま数フレーム描画→絵が確定してから Show + スプラッシュ Close
+    bool m_deferredFirstShow = false;
+    int  m_warmupFrames      = 0;
     std::unique_ptr<ParticleSystem> m_particleSystem;  // 加算ビルボードパーティクル（Lua fx API）
+    std::unique_ptr<GpuParticleSystem> m_gpuParticles; // GPUパーティクル（compute+indirect、大量粒子用）
 
     // ---- SSAO（深度プリパス + 深度再構築法線 半球カーネルAO + ブラー）----
     std::unique_ptr<SSAOPass>      m_ssaoPass;                       // AO 生成器
@@ -321,6 +485,7 @@ private:
 
     // カメラプレビュー（選択カメラ視点を小窓表示）。専用 RT + 専用 per-frame CB。
     std::unique_ptr<RenderTarget>   m_cameraPreviewRT;
+    std::unique_ptr<RenderTarget>   m_cameraPreviewLdrRT;  // プレビュー表示用(トーンマップ済みLDR)
     std::unique_ptr<ConstantBuffer> m_previewFrameCB;
 
     // 2D スプライト / ゲーム内 UI 描画（WP4 / WP7）
@@ -336,6 +501,10 @@ private:
     };
     std::vector<UICommand>          m_uiCommands;     // 今フレームの UI 描画要求
     std::unordered_set<std::string> m_pressedButtons; // 前フレームに押されたボタンのラベル
+
+    // ゲーム内 retained-mode UI（UICanvas/UIRect/UIImage/UIText/UIButton の
+    // レイアウト解決・描画・入力）。ImGui DrawList 経路で GPU リソースは持たない。
+    std::unique_ptr<UISystem> m_uiSystem;
 
     // シーントランジション（WP9）
     std::unique_ptr<SceneTransition> m_sceneTransition;
@@ -390,6 +559,12 @@ private:
 
     // Play 開始時のシーン全体スナップショット（Stop 時の復元用）
     std::string m_playSceneJson;
+
+    // Play 開始時のシーンパス退避。Play 中の loadScene/goToScene が currentScenePath を
+    // 書き換えたまま Stop すると、以後のパス無し保存が別シーンを上書きしてしまうため、
+    // Stop 時に必ずここへ戻す。
+    std::string m_playScenePathSnapshot;
+    std::string m_playSceneRelSnapshot;
 
     // 現在ロード中シーンの assets 相対パス（シーンフロー / loadScene 用）
     std::string m_currentSceneRel;

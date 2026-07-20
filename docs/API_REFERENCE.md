@@ -100,7 +100,7 @@ t.scale      -- Vec3
 | `:isValid()` | bool | 有効なエンティティか |
 | `.name` | string | 名前（読み取り専用プロパティ） |
 | `.transform` | Transform | Transform 参照（読み書き） |
-| `:hasComponent(type)` | bool | コンポーネント有無。type: `"Transform"`,`"MeshRenderer"`,`"SkeletalAnimation"`,`"NodeAnimation"`,`"GridPlane"`,`"PointLight"`,`"DirectionalLight"`,`"SpotLight"`,`"Camera"`,`"AudioSource"`,`"Gimmick"`,`"ParticleEmitter"`,`"Trigger"`,`"CharacterController"` |
+| `:hasComponent(type)` | bool | コンポーネント有無。type: `"Transform"`,`"MeshRenderer"`,`"SkeletalAnimation"`,`"NodeAnimation"`,`"GridPlane"`,`"PointLight"`,`"DirectionalLight"`,`"SpotLight"`,`"Camera"`,`"AudioSource"`,`"Gimmick"`,`"ParticleEmitter"`,`"Trigger"`,`"CharacterController"`,`"UICanvas"`,`"UIRect"`,`"UIImage"`,`"UIText"`,`"UIButton"`,`"UISlider"`,`"UIToggle"`,`"UIScrollView"`,`"UILayout"`,`"UIAnimator"` |
 | `:playAnim(clipIndex, blendDuration)` | — | スケルタルアニメをクリップ番号で再生（クロスフェード） |
 | `:playAnimByName(name, blendDuration)` | — | クリップ名で再生 |
 | `:setLooping(loop)` | — | ループ ON/OFF |
@@ -119,6 +119,47 @@ t.scale      -- Vec3
 | `:findEntity(name)` | Entity | 名前で検索 |
 | `:setUVScale(e, u, v)` | — | UV タイリング（生成時に1回。GPU 同期あり） |
 | `:setColor(e, r, g, b)` | — | 頂点カラーで着色（生成時に1回。毎フレーム禁止） |
+| `:setUiText(e, text)` | — | `UIText.text` を書き換える（無ければ何もしない）。タイプライター中なら先頭から再生し直す |
+| `:getUiText(e)` | string | `UIText.text` を読む（無ければ空文字列） |
+| `:setUiTypewriter(e, charsPerSec)` | — | タイプライター速度（文字/秒）を設定して先頭から再生。0=即全表示（スキップに使える） |
+| `:isUiTypewriterDone(e)` | bool | タイプライターが全文まで到達したか（会話の「クリックで次へ」判定用。無効時は true） |
+| `:setUiColor(e, r, g, b, a)` | — | `UIImage.color` 優先、無ければ `UIText.color`（どちらも無ければ何もしない） |
+| `:setUiVisible(e, visible)` | — | `UIRect.visible` 優先（自身と子孫ごと隠す）、UIRect が無く UICanvas のみなら `UICanvas.visible` |
+| `:setUiTexture(e, path)` | — | `UIImage.texturePath` を差し替え（assets 相対。無ければ何もしない） |
+| `:setUiUvScroll(e, su, sv)` | — | `UIImage.uvScroll`（uv/秒）を設定。`uvMax>1`（タイル）と併用で流れるパターン。連番アニメ中は無視 |
+| `:setUiAnim(e, frames, fps, cols, row)` | — | UIImage の連番アニメ設定（`frames=0` で停止し uvMin/uvMax 指定に戻る。`cols=0`=frames と同じ=横1行ストリップ、`row`=シート内の行）。**呼ぶたび再生位置が頭に戻る** |
+| `:setUiAnimMode(e, mode)` | — | 再生モード（0=ループ 1=単発（最終フレームで停止） 2=往復）。再生位置は頭に戻る |
+| `:restartUiAnim(e)` | — | 連番アニメを頭から再生し直す（設定は変えない） |
+| `:isUiAnimDone(e)` | bool | 単発（mode=1）の再生が終わったか。ループ/往復は常に false |
+| `:setUiFill(e, amount)` | — | `UIImage.fillAmount`（表示割合 0..1、クランプあり）を設定。HPバー/ゲージ用 |
+| `:getUiFill(e)` | number | `UIImage.fillAmount` を読む（無ければ 0） |
+| `:setUiRotation(e, deg)` | — | `UIRect.rotation`（視覚回転・度・時計回り。ピボット回り、子孫も一緒に回る）を設定 |
+| `:getUiRotation(e)` | number | `UIRect.rotation` を読む（無ければ 0） |
+| `:getUiSlider(e)` | number | `UISlider.value`（実値 min..max）を読む（無ければ 0） |
+| `:setUiSlider(e, v)` | — | `UISlider.value` を設定（min..max へクランプ。`onChangeEvent` は発火しない） |
+| `:getUiToggle(e)` | bool | `UIToggle.isOn` を読む（無ければ false） |
+| `:setUiToggle(e, on)` | — | `UIToggle.isOn` を設定（`onChangeEvent` は発火しない） |
+| `:getUiScroll(e)` | x, y | `UIScrollView` のスクロール量(px)を2値で返す |
+| `:setUiScroll(e, x, y)` | — | スクロール量を設定（コンテンツ量へ自動クランプ。大きい値で「一番下へ」） |
+| `:tweenUi(e, params)` | — | UI をトゥイーンで動かす。`params={dx?,dy?,scale?,scaleX?,scaleY?,alpha?,rotate?,color?,shake?,shakeFreq?,fill?,countTo?,countFrom?,countFmt?,onComplete?,duration?,delay?,easing?}`。`dx/dy`=UIRect offset の相対移動(px)、`scale/scaleX/scaleY/alpha/rotate/color`=見た目のみ（子孫にも掛かる。`rotate` は度・絶対目標値で `UIRect.rotation` へ加算合成。`scaleX/scaleY` で非等方=フリップ/スカッシュ）。`color={r,g,b}`=RGB乗算の絶対目標値（1超えで白フラッシュ。完了後も持続={1,1,1}で解除）。`shake`=振幅px の振動（duration で 0 へ減衰。`shakeFreq`=Hz 既定24）。`fill`=UIImage.fillAmount の絶対目標値（ゲージなめらか増減。from は現在値）。`countTo`=UIText への数字ロール（`countFrom` 省略時は現在テキストの数値解釈、`countFmt`=printf 書式 `"%d"/"%05d"/"%.1f"`）。`onComplete`=完了時に1回呼ばれる関数（SE同期/チェーン）。`easing`: `"linear"/"in"/"out"/"inOut"/"back"/"bounce"/"elastic"/"expo"/"inBack"/"inOutBack"/"quint"/"sine"`。`e` は Entity かエンティティID |
+| `:stopUiTweens(e)` | — | 進行中の tween を全打ち切り+視覚値リセット（DOTween の Kill 相当。連打対策） |
+| `:showUi(e)` | — | 表示して `UIAnimator` の出現アニメを最初から再生（無ければ visible=true のみ） |
+| `:hideUi(e)` | — | 出現アニメの逆再生で消す（子孫ごと。消えた後はクリック不可）。無アニメなら即非表示。戻すのは `showUi` |
+| `:setSpriteEffect(e, value)` | — | Sprite2D の effectValue（カスタムシェーダーへの汎用値）を変更。毎フレーム可 |
+| `:setSpriteAlpha(e, alpha)` | — | Sprite2D の不透明度(0..1)を変更。半透明演出用。毎フレーム可 |
+| `:setSpriteParams(e, x, y, z, w)` | — | Sprite2D の shaderParams（カスタムシェーダーへの汎用 float4、TEXCOORD2）を変更。毎フレーム可 |
+| `:setSpriteUV(e, u0, v0, u1, v1)` | — | Sprite2D の uvMin/uvMax を直接指定（アトラス切り出しの実行時切替）。`animFrames>0` 中は描画時に上書きされる |
+| `:setSpriteScroll(e, su, sv)` | — | Sprite2D の UVスクロール速度（単位/秒）。溶岩表面・滝・背景ループ用。`animFrames>0` 中は無視 |
+| `:setSpriteAnim(e, frames, fps, cols, row)` | — | Sprite2D のフリップブックアニメ設定（`frames=0` で停止し UV 指定に戻る。`cols=0`=frames と同じ=横1行ストリップ、`row`=シート内の行）。**呼ぶたび再生位置が頭に戻る**＝モーション切替がこれ1発 |
+| `:setSpriteAnimMode(e, mode)` | — | 再生モード（0=ループ 1=単発（最終フレームで停止） 2=往復）。再生位置は頭に戻る |
+| `:restartSpriteAnim(e)` | — | 連番アニメを頭から再生し直す（設定は変えない） |
+| `:isSpriteAnimDone(e)` | bool | 単発（mode=1）の再生が終わったか。爆発スプライトを消す判定に使う |
+| `:setMeshEffect(e, value)` | — | MeshRenderer の effectValue（カスタムシェーダーへの汎用値）を変更。毎フレーム可 |
+| `:setMeshParams(e, x, y, z, w)` | — | MeshRenderer の shaderParams（カスタムシェーダーへの汎用 float4）を変更。毎フレーム可 |
+| `:setMeshUvScroll(e, su, sv)` | — | MeshRenderer の UVスクロール速度（uv/秒）。滝/溶岩/コンベア/流れる雲。頂点を触らないので毎フレーム可（VB再生成なし） |
+| `:setMeshAnim(e, frames, fps, cols, row)` | — | MeshRenderer の連番アニメ設定（`frames=0` で停止）。板ポリの炎/爆発、アニメする看板。**呼ぶたび再生位置が頭に戻る** |
+| `:setMeshAnimMode(e, mode)` | — | 再生モード（0=ループ 1=単発 2=往復）。再生位置は頭に戻る |
+| `:isMeshAnimDone(e)` | bool | 単発（mode=1）の再生が終わったか |
 | `:gimmicks()` | table | Gimmick 付き全エンティティを配列で返す（要素: `{e,name,kind,period,phase,amplitude,threshold,solid,deadly}`） |
 | `:queryByTag(tag)` | table | タグ一致エンティティの**名前配列** |
 | `:queryInBox(minX, minZ, maxX, maxZ, tag?)` | table | XZ 矩形内のエンティティ名配列（RTS の矩形選択向け） |
@@ -136,6 +177,23 @@ t.scale      -- Vec3
 
 > `vk` には `KEY_*` 定数（§4）を渡す。文字列で扱う `keyDown("W")`（§5）も用意。
 
+### Gamepad（`input`、Xbox コントローラー / XInput、`pad` = 0..3）
+| メソッド | 戻り値 | 説明 |
+|---|---|---|
+| `:isPadConnected(pad)` | bool | 接続中か |
+| `:getConnectedPadCount()` | int | 接続台数 |
+| `:isPadButtonDown(pad, btn)` | bool | 押されている間 true |
+| `:isPadButtonPressed(pad, btn)` | bool | 押した瞬間だけ true |
+| `:isPadButtonReleased(pad, btn)` | bool | 離した瞬間だけ true |
+| `:getPadLeftStickX/Y(pad)` / `:getPadRightStickX/Y(pad)` | float | スティック傾き（円形デッドゾーン適用済み、-1..1） |
+| `:getPadLeftTrigger(pad)` / `:getPadRightTrigger(pad)` | float | トリガー押し込み量（デッドゾーン適用済み、0..1） |
+| `:setPadVibration(pad, leftMotor, rightMotor)` | — | 振動（0.0..1.0。left=低周波・強、right=高周波・弱） |
+| `:setPadVibrationTimed(pad, leftMotor, rightMotor, sec)` | — | sec 秒後に自動停止する振動（ワンショット向け） |
+
+`btn` には `PAD_A PAD_B PAD_X PAD_Y PAD_LB PAD_RB PAD_BACK PAD_START PAD_LSTICK PAD_RSTICK PAD_DPAD_UP/DOWN/LEFT/RIGHT` 定数を渡す（値は `XINPUT_GAMEPAD_*` と同一）。
+文字列名で済ます `padDown("A")` / `padPressed("RB")` / `padStick("left")` / `padVibrate(low, high, sec?)`（§5）も用意。
+デッドゾーンは XInput 標準値（`XINPUT_GAMEPAD_{LEFT,RIGHT}_THUMB_DEADZONE` / `TRIGGER_THRESHOLD`）を使用し、スティックは軸別ではなく円形（radial）で処理（斜め入力が弱くならないよう）。
+
 ### Camera（`camera`）
 | メソッド | 戻り値 | 説明 |
 |---|---|---|
@@ -150,7 +208,7 @@ t.scale      -- Vec3
 ### AudioSystem（`audio`）
 | メソッド | 説明 |
 |---|---|
-| `:playBGM(path)` / `:stopBGM()` / `:pauseBGM()` / `:resumeBGM()` | BGM 制御 |
+| `:playBGM(path)` / `:stopBGM()` / `:pauseBGM()` / `:resumeBGM()` | BGM 制御（対応形式: `.wav` / `.mp3` / `.ogg`） |
 | `:seekBGM(sec)` | 再生中 BGM の位置を秒指定でジャンプ（ループ設定維持。イントロスキップ等に） |
 | `:playSFX(path)` | 2D 効果音 |
 | `:playSpatial(path, x, y, z, minD, maxD, vol?, loop?)` | 3D 空間効果音 |
@@ -201,6 +259,37 @@ hit.normal    -- Vec3
 | `:clear()` | — | 全購読解除（Play 開始時に自動 clear） |
 
 > Trigger の `EmitEvent` アクション（§8）も C++ からこの `emit` を呼ぶ。物理接触は `engine.contact.enter` / `engine.contact.exit` を Post する。
+
+### net（`net`）— オンラインマルチプレイ（リッスンサーバー方式・ENetベース、開発中）
+| メソッド | 戻り値 | 説明 |
+|---|---|---|
+| `:host(port?)` | string(err) | リッスンサーバー開始（自分もプレイヤー参加）。省略時 `network.json` の既定ポート。空文字列=成功 |
+| `:join(ip, port?)` | string(err) | サーバーへ接続開始。**非同期**（成立/失敗は `net.clientConnected`/`net.disconnected` イベントで分かる） |
+| `:disconnect()` | — | 切断 |
+| `:isServer()` / `:isClient()` / `:isConnected()` | bool | 状態確認 |
+| `:localClientId()` | int | 自分の clientId（ホストは常に0） |
+| `:players()` | `{id, rtt}[]` | 接続中プレイヤー一覧 |
+| `:spawn(prefabPath, x, y, z, owner?)` | netId(int), string(err) | **サーバー専用**。prefabPath は assets 相対（例 "prefabs/Player.prefab"）。生成はフレーム境界(`net.spawned`で分かる) |
+| `:despawn(entity)` | string(err) | **サーバー専用**。NetworkIdentity付きエンティティを破棄(即時) |
+| `:findByNetId(netId)` | Entity | netIdからエンティティを引く。見つからなければ`isValid()==false` |
+| `:rpc(name, ...)` | string(err) | **クライアント専用**。サーバーへRPC送信。引数は number/string/boolean/Vec3 のみ |
+| `:rpcAll(name, ...)` | string(err) | **サーバー専用**。全クライアントへRPC送信 |
+| `:rpcClient(clientId, name, ...)` | string(err) | **サーバー専用**。特定クライアントへRPC送信 |
+| `:onRpc(name, fn)` | — | RPCハンドラ登録。`fn(sender, ...)`。senderはクライアント受信時は常に0(サーバー) |
+| `:setInput{moveX=,moveZ=,aimYaw=,aimPitch=,buttons=,jump=}` | — | **クライアント専用**。毎フレーム(OnUpdate)呼ぶ想定。全フィールド省略可(既定0/false) |
+| `:getInput(entity)` | `{moveX,moveZ,aimYaw,aimPitch,buttons,jump}` | **サーバー専用**。entityのNetworkIdentity._ownerの最新入力を読む |
+
+> イベント: `events:on("net.hostStarted"|"net.clientConnected"|"net.clientDisconnected"|"net.connected"|"net.clientReady"|"net.spawned"|"net.despawned"|"net.disconnected", fn)`。
+> `net.clientConnected`(サーバー視点、低レベル接続) / `net.clientReady`(サーバー視点、Baseline適用済み=対戦準備完了) / `net.connected`(クライアント視点、Welcome受信=`localClientId()`確定) の data に `client`(clientId) が入る。
+> `net.spawned` の data に `netId`/`owner`、`net.despawned` の data に `netId` が入る。
+> `NetworkIdentity` コンポーネント（Inspectorの「Network Identity」）を付けたエンティティが複製対象。サーバーが `_netId` を採番し、クライアント接続時に Welcome(clientId+シーンパス)→Baseline(netId対応表)→SceneReady のハンドシェイクで同期する。動的スポーンは `.prefab` を both サイドで個別に `InstantiatePrefab` するため通信量が小さい(JSON blob を流さない)。
+>
+> `NetworkTransform` コンポーネント（Inspectorの「Network Transform」）を NetworkIdentity と併用すると、サーバーが Transform(位置/回転/スケール、フィールドごとにon/off可)を `snapshotRate`(network.json、既定20Hz)で全readyクライアントへ送信する。`syncMode=0`(補間、既定): クライアントは `interpDelayMs`(既定100ms)だけ過去を描画するよう2点補間(位置lerp・回転slerp)して書き込む。`syncMode=1`(オーナー予測、自分がownerのCharacterController付きエンティティ向け): クライアントは自分の入力を即座にローカル物理へ反映しつつ(体感の遅延ゼロ)、サーバーから来た確定位置と自分の同tick時点の予測位置を比較し、`snapDistance`を超えて食い違っていたらサーバー位置へテレポート→未確認の入力だけ`PhysicsSystem::StepSingleCharacter`で再適用して「今」まで追いつく(古典的なclient-side prediction + reconciliation)。誤差が閾値以内ならローカル予測をそのまま信頼し補正しない。
+> 入力コマンド: クライアントの`net:setInput`は直近3フレーム分を冗長送信(unreliable、パケットロス耐性)し、内部的には最大64件(`kInputHistoryCap`)の入力履歴を保持してリプレイに使う。サーバーは`net:getInput(entity)`で最新値(tickが一番新しいもの)を読み、`physics:move(entity, input.moveX, input.moveZ)`等ゲームスクリプト側で実際の移動に反映する想定(入力の適用方法はエンジンでなくゲームロジックが決める)。
+>
+> 興味管理(interest management): `NetworkIdentity.interestRadius`(0=常に関連)を使い、サーバーは各クライアントの所有エンティティ位置を観測点として、半径を超えて離れた複製エンティティのTransformスナップショットをそのクライアントへは送らない(帯域のO(接続数×エンティティ数)爆発を回避)。所有物が無いクライアントにはフィルタせず全部送る。現状は「継続的なスナップショット送信」だけを興味管理の対象にしており、動的スポーン(`net:spawn`)は引き続き全クライアントへブロードキャストする(スポーンは頻度が低く帯域上の主要因ではないため)。
+> エディタの「ツール > Network」窓(Play中)でロール/tick/複製数と接続一覧(clientId・RTT・送受信バイト概算)を確認できる。
+> 現状はフェーズ⑧(興味管理+統計窓)まで実装済み。エディタ設定UI・セッション抽象は今後のフェーズで追加予定。
 
 ### time（`time`）— 時間 API（v0.9.3+）
 `:` ではなく `.` で呼ぶ。状態は Play 開始でリセットされる。
@@ -287,13 +376,65 @@ function OnUpdate(self, dt)
 end
 ```
 
-### ui（`ui`）— 即時モード UI
+### ui（`ui`）— 即時モード UI（簡易/デバッグ用）
+`OnUpdate` 内で毎フレーム呼ぶと描画される（Play 中のみ）。座標指定で毎フレーム呼ぶだけの簡易 API。
+恒常的な画面（タイトルメニュー・HUD 一式）を組むなら次項の「ゲーム内UI（コンポーネント方式）」を推奨。
+
 | メソッド | 戻り値 | 説明 |
 |---|---|---|
 | `:text(x, y, text, size?=24, r?, g?, b?, a?)` | — | テキスト描画 |
 | `:button(x, y, w, h, label)` | bool | ボタン（押下で true） |
 | `:image(x, y, w, h, path)` | — | 画像描画 |
 | `:rect(x, y, w, h, r?, g?, b?, a?, rounding?)` | — | 塗りつぶし矩形（バー/背景） |
+
+### ゲーム内UI（コンポーネント方式・retained-mode）
+Unity uGUI / Godot Control 相当の retained-mode UI。UI要素は **ECSコンポーネント**としてシーンに置き、
+エディタで編集・シーン JSON に保存する（Hierarchy 右クリック→「作成」→「UI（ゲーム内UI）」で Canvas/Image/Text/Button を配置）。
+レイアウトは**アンカー＋ピボット**で解像度追従し、描画は既存の即時 `ui:*` と同じ全画面オーバーレイに統合される
+（retained UI が奥、即時 `ui:*` が手前）。表示条件は同じく **Play中 / ゲームモードのみ**（エディタ編集中の WYSIWYG プレビューは無し）。
+
+| コンポーネント | 主なフィールド | 説明 |
+|---|---|---|
+| `UICanvas` | `refWidth/refHeight`(既定1920x1080), `scaleMode`(0=ScaleToFit 1=ConstantPixel 2=StretchToFill), `sortOrder`, `visible` | UIツリーのルート。`ScaleToFit`=等比縮放+レターボックス、`ConstantPixel`=左上原点の実ピクセル、`StretchToFill`=縦横個別倍率で余白なし |
+| `UIRect` | `anchorMin/Max`, `pivot`, `offsetMin/Max`, `visible`, `rotation`(度), `skewX`(度), `clipChildren` | レイアウト矩形（RectTransform相当）。全UI要素に必須。`rotation/skewX` はレイアウト解決後にピボット回りへ掛かる**視覚変換**（子孫も一緒に回る。斜め配置パネル/平行四辺形バナー用。回転中はエディタのリサイズハンドル非表示=数値編集。`UIScrollView` ノード自身では無視）。`clipChildren=true` で子ツリーを自矩形で**マスク**（ワイプ公開/マーキー。ScrollView 同様このノード自身の回転は無効） |
+| `UIImage` | `texturePath`(空=単色), `color`, `shape`(0=矩形 1=楕円 2=リング 3=ダイヤ 4=六角形 5=三角形)+`ringThickness`, `uvMin/Max`(1超え=タイル), `uvScroll`(uv/秒), `animFrames`+`animFps=8`+`animCols`+`animRow`+`animRows`+`animMode`(連番アニメ), `sliceBorder`(px 左上右下, 9-slice), `cornerRadius`, `raycastBlock`(既定true), `fillAmount`(0..1 既定1), `fillDir`(0=左 1=右 2=下 3=上から 4=放射時計回り 5=放射反時計回り)+`fillOrigin`(開始角度), `segments`+`segmentGap/Color`(分割ゲージ), `gradientDir`(0=なし 1=横 2=縦 3=斜め 4=放射)+`gradientColor2`+`gradientScrollSpeed`(周回/秒。0=静的), `outlineWidth`+`outlineColor`+`outlineStyle`(0=実線 1=破線 2=コーナーブラケット)+`outlineDash`, `shadowColor`(α0=無効)+`shadowOffset`+`shadowSoftness` | 画像/単色。`shape≠0` は**形状描画**＝テクスチャを形で切り抜く（丸アイコン/バフ枠/スキルノード。角丸/9-slice 無視。リングは単色専用の帯円=円形ゲージ）。放射 fill はクールダウン円（矩形にも効く。リングの fill は常に円弧）。`segments` はスタミナ/弾数のチャンクゲージ（矩形+線形fill専用）。`uvMax>1`+`uvScroll` で**流れるタイルパターン**（警告帯/ストライプ。9-sliceでは無効）。グラデは全描画形態に掛かる（`gradientColor2` のαは無視）。`gradientScrollSpeed≠0` で光帯がグラデ方向へ流れる（ガチャの光沢流し）。ブラケット枠は SF/照準 HUD の四隅鉤括弧。影は形状近似のドロップシャドウ。`animFrames>0` で**連番アニメ**（テクスチャを `animCols` x N グリッドとみなしてコマ送り＝爆発/回復/アイコンのループ演出。`animMode` 0=ループ 1=単発（最終フレームで停止） 2=往復。エディタ中もプレビュー再生。有効中は `uvMin/uvMax` と `uvScroll` を無視、9-slice と `shape≠0` では無効） |
+| `UIText` | `text`, `fontSize`, `color`, `alignH/V`(0=左/上 1=中央 2=右/下), `wrap`, `outlineWidth`+`outlineColor`(縁取り), `shadowColor`(α0=無効)+`shadowOffset`(影), `fontPath`(assets相対 .ttf/.otf。空=既定Yu Gothic), `typewriterSpeed`(文字/秒。0=無効), `letterSpacing`(px 字間), `charAnim`(0=なし 1=ウェーブ 2=ジッター 3=レインボー)+`charAnimAmount/Speed`, `gradientDir`(0=なし 1=横 2=縦)+`gradientColor2`, `rich` | テキスト。クリックは遮らない。縁取り/影はゲームUIの可読性の要。`typewriterSpeed>0` で Play 中に1文字ずつ表示（UTF-8 単位。`setUiText` で先頭から再生し直し。整列は全文サイズ固定）。`letterSpacing`/`charAnim` は 1 文字ずつ描く per-glyph モード（**wrap とは非両立**=wrap優先）。テキストグラデは本体のみ（縁取り/影には掛からない。金色タイトル等）。`rich=true` で**インラインタグ**をスパン装飾として解釈: `[c=RRGGBB]色[/c]` / `[wave]..[/wave]` / `[shake]..[/shake]` / `[rainbow]..[/rainbow]`（入れ子なし・閉じ忘れは文末まで・不正/未知のタグはそのまま表示。アニメの振幅/速度は `charAnimAmount/Speed` を流用。整列/タイプライターの文字数はタグ除去後） |
+| `UIButton` | `onClickEvent`, `normalColor/hoverColor/pressedColor`, `interactable`, `hoverSound`/`clickSound`(assets相対 wav) | 同一エンティティの `UIImage` を状態色でティント。release-inside でクリック確定。要素が重なった場合は**最前面だけ**が反応（子要素がクリックを吸っても親ボタンへバブリング）。`hoverSound` はカーソル/フォーカスが乗った瞬間、`clickSound` はクリック確定時に1回鳴る（空=鳴らさない） |
+| `UISlider` | `value`(実値), `minValue=0`/`maxValue=1`, `step`(0=連続), `onChangeEvent`, `trackColor/fillColor/knobColor`, `interactable` | UIRect 全体が操作域。トラック+塗り+つまみを**自前描画**（UIImage 不要）。ドラッグで `value` が変わったフレームだけ `onChangeEvent` を emit（`data.value`=実値）。Lua: `getUiSlider/setUiSlider` |
+| `UIToggle` | `isOn`, `onChangeEvent`, `boxColor`, `checkColor`, `interactable` | チェックボックス。UIRect 全体が箱＝クリック域。release-inside で `isOn` 反転＋`onChangeEvent`（`data.value`=1/0）。ラベルは子の `UIText` で添える。Lua: `getUiToggle/setUiToggle` |
+| `UIScrollView` | `vertical=true`/`horizontal=false`, `scrollX/scrollY`(px), `wheelSpeed=48`, `showBar=true`+`barColor`, `dragScroll=true`, `flickDecay=4`(/秒。0=慣性なし) | 自分の UIRect がビューポート＝子ツリーのクリップ枠。コンテンツ量は子矩形の合併から毎フレーム自動計測し 0..(コンテンツ−ビュー) にクランプ。ホイール＋**ドラッグ/フリック(慣性)スクロール**（スクリーン6px超で確定＝進行中のボタン押下/スライダードラッグはキャンセル＝リスト内ボタンの誤発火なし）。はみ出た子はクリックも効かない |
+| `UIAnimator` | `showAnim=1`, `showDuration=0.35`, `showDelay=0`, `showEasing=2`, `slideOffset=80`(px), `hoverScale=1.05`/`pressScale=0.95`/`hoverSpeed=14`, `loopAnim=0`, `loopSpeed=1`(Hz), `loopAmount=8` | Play/ゲームモード中のみ再生。効果（移動/拡縮/アルファ/回転）は自分と子孫にまとめて掛かる。**出現** `showAnim`: 0=なし 1=フェード 2=ポップ 3=左から 4=右から 5=上から 6=下から 7=スピン 8=バウンド落下 9=フリップ(縦つぶれ) 10=シェイク入場 11=横フリップ(扉/カード)。**イージング** `showEasing`: 0=リニア 1=イン 2=アウト 3=イン/アウト 4=バック 5=バウンス 6=弾性 7=エクスポ 8=インバック(溜め) 9=イン/アウトバック 10=クイント 11=サイン。**ホバー/押下**は同一エンティティに `UIButton` がある時のみ。**ループ** `loopAnim`: 0=なし 1=浮遊(px) 2=パルス(割合) 3=点滅(割合) 4=スピン(`loopSpeed`=回転/秒) 5=スウィング(±度)。Lua: `showUi/hideUi` |
+| `UILayout` | `mode`(0=VBox 1=HBox 2=Grid), `cellW/cellH`(px。VBoxのcellW=0/HBoxのcellH=0は内側いっぱい), `spacing`, `padding`(左上右下px), `gridCols` | **自動レイアウトコンテナ**。直下の子（UIRect持ち）へセル矩形を順番に配る＝手動 offset 計算なしでメニュー列/ツールバー/インベントリ。子はセル内でアンカー解決（全面ストレッチ=セルいっぱい）。スクロールリストは `UIScrollView` の子コンテンツノードに付ける |
+
+アンカー解決式（`UIRect`、親矩形基準・実ピクセル）:
+```
+rectMin = parentMin + parentSize * anchorMin + offsetMin
+rectMax = parentMin + parentSize * anchorMax + offsetMax
+```
+アンカー一致（例: 中央固定）なら offset は「中心位置 ± 半サイズ」相当（Inspector 上は位置/サイズ(px)で編集）。
+アンカーを引き伸ばす（例: 横ストレッチ）なら offset は左右の余白(px)になる。Inspector の**アンカープリセット**
+（9方位＋ストレッチ＋全面）は選択時に見た目の位置を保ったまま anchor/offset を再計算する。
+
+**Lua からの操作**（値の書き換えのみ。ツリー構造はエディタで組む）: `scene:setUiText/getUiText/setUiTypewriter/isUiTypewriterDone/setUiColor/setUiVisible/setUiTexture/setUiUvScroll/setUiAnim/setUiAnimMode/restartUiAnim/isUiAnimDone/setUiFill/getUiFill/setUiRotation/getUiRotation/getUiSlider/setUiSlider/getUiToggle/setUiToggle/getUiScroll/setUiScroll`（§3 Scene 参照）。定番演出は `uifx.*`（§5 prelude 参照）。
+
+**回転/装飾の既知の制限**: ①回転/スキューしたパネルの**中に** `UIScrollView`/`clipChildren` を置くのは非対応（クリップ位置がずれる。逆=スクロールビュー内の回転要素は OK）②`gradientColor2` のアルファは無視される ③回転+角丸+部分 fill の併用はゲージの切り口も丸くなる ④テクスチャ付き形状（shape≠0）/放射 fill の縁は AA なし（縁取りを付けると綺麗）⑤放射 fill と 9-slice は非両立（平板扱い）⑥破線/ブラケット枠は矩形専用・角丸無視⑦`UIText.rich` は wrap とは非両立（wrap 優先でタグは素通し表示）・テキストグラデ（`gradientDir`）は rich では無効（頂点シェードがスパン色を潰すため）。
+
+**ゲームパッド/キーボードのフォーカスナビゲーション**（設定不要で常時有効）:
+矢印キー / D-pad / 左スティックでフォーカス移動（位置ベースの空間ナビ）、Enter / Space / A ボタンで決定
+（押しで押下表示、離しで確定 = マウスと同じ手触り）。フォーカス中のウィジェットには青いフォーカスリングが出る。
+フォーカス中の **UISlider は左右で値変更**（`step` 未設定なら範囲の 1/20 刻み、ホールドでリピート）。
+マウスクリックでもフォーカスは移るので併用可。ボタンの `hoverSound` はフォーカス到達時にも鳴る。
+
+**ボタンのクリックを受ける**: 追加 API は無く既存の `events` で受ける。`UIButton.onClickEvent` に設定した名前で、
+release-inside 確定の**次フレーム**（`OnUpdate` より前）に `events:emit` 相当で発火する。data は `{source=エンティティID}`（他キー無し）。
+```lua
+function OnStart(self)
+    events:on("start_clicked", function(data)
+        -- data.source にボタンのエンティティID(entt raw id)
+        goToScene("assets/scenes/game.json")
+    end)
+end
+```
 
 ---
 
@@ -421,6 +562,34 @@ vfx.play(name, x, y, z, scale?)   -- Effekseer 実体があれば優先、無け
 ```
 既定登録済み: `"explosion"` / `"supernova"` / `"spark"` / `"hit"`
 
+### uifx.*（ゲーム内UIの定番演出ワンライナー）
+`e` は Entity かエンティティID（ボタンイベントの `e.source` そのまま）。実体は `scene:tweenUi` の組み合わせ。
+
+| 関数 | 説明 |
+|---|---|
+| `uifx.punch(e, s?, dur?)` | ボタンを押した感（一瞬膨らんで戻る。既定 1.15倍/0.22秒） |
+| `uifx.flash(e, r?, g?, b?, dur?)` | 色フラッシュ（既定=白く光る。ダメージ赤は `uifx.flash(e, 3, 0.3, 0.3)`） |
+| `uifx.shake(e, amp?, dur?)` | 振動（既定 10px/0.4秒。減衰付き） |
+| `uifx.hit(e, amp?)` | 赤フラッシュ + 振動（被ダメの定番セット） |
+| `uifx.bounceIn(e, dur?)` | ぽよんと登場（0 からバウンドで等倍へ） |
+| `uifx.flipIn(e, dur?)` | ぺしゃんこ→開く（フリップ風。結果表示/カード公開） |
+| `uifx.popOut(e, dur?)` | 縮んで消える（ポップアップを閉じる） |
+| `uifx.fadeIn(e, dur?)` / `uifx.fadeOut(e, dur?)` | フェード（fadeOut 後もクリックは残る。消し切るなら `scene:hideUi`） |
+| `uifx.stagger(list, step?, fn, ...)` | リスト項目の順次入場（間隔の相場 0.05〜0.10秒）。`fn` に下の slideIn 系/popIn を渡す |
+| `uifx.slideInLeft/Right/Up(e, delay?, dist?, dur?)` | 方向スライド入場（`expo`。delay 付き=stagger と組む） |
+| `uifx.popIn(e, delay?, dur?)` | ぽんと出る（delay 対応版 bounceIn） |
+| `uifx.countTo(e, to, dur?, fmt?)` | 数字ロール（スコア/所持金。`fmt` 例 `"%06d"`） |
+| `uifx.fillTo(e, v, dur?, easing?)` | ゲージをなめらかに増減（fillAmount 絶対値 0..1） |
+| `uifx.damageBar(front, ghost, v, ghostDelay?)` | ゴーストバー付きダメージ（本体即落ち+背後バーが遅れて追従=遅延削れ） |
+| `uifx.wiggle(e, deg?, dur?)` | 注目のゆらぎ（通知バッジを左右にクイックに振る） |
+| `uifx.heartbeat(e, s?, dur?)` | ドクドク2連パルス（クールダウン完了/低HP警告） |
+
+```lua
+events:on("startClicked", function(e)
+  uifx.punch(e.source)   -- クリックの気持ちよさはこれ1行
+end)
+```
+
 ---
 
 ## 7. ECS コンポーネント全一覧
@@ -434,7 +603,7 @@ vfx.play(name, x, y, z, scale?)   -- Effekseer 実体があれば優先、無け
 | `Tag` | `tags`（string 配列。`scene:queryByTag` で列挙） |
 | `DataComponent` | `values`（動的 key→DataValue。Lua から読み書き） |
 | `Transform` | `position`,`rotation`(Euler度),`scale`,`quaternion`,`useQuaternion`,`parent`(親エンティティ) |
-| `MeshRenderer` | `modelPath`, `overrideMetallic=-1`, `overrideRoughness=-1`, `uvScaleU=1`, `uvScaleV=1` |
+| `MeshRenderer` | `modelPath`, `overrideMetallic=-1`, `overrideRoughness=-1`, `uvScaleU=1`, `uvScaleV=1`（UVタイリング。頂点へ焼き込み）, `uvScrollU/uvScrollV=0`（UVスクロール uv/秒。滝/溶岩/コンベア）, `animFrames=0`+`animFps=8`+`animCols=0`+`animRow=0`+`animRows=0`+`animMode=0`（連番アニメ。板ポリの炎/爆発、アニメする看板）— Inspector は「UV & Anim」セクション |
 | `GridPlane` | `enabled=true`（エディタグリッド床） |
 
 ### ライト
@@ -448,8 +617,17 @@ vfx.play(name, x, y, z, scale?)   -- Effekseer 実体があれば優先、無け
 | コンポーネント | フィールド（既定値） |
 |---|---|
 | `CameraComponent` | `fovDegrees=60`, `nearClip=0.1`, `farClip=1000`, `isActive=false`, `projection`(Perspective/Orthographic), `orthoSize=10` |
-| `Sprite2D` | `texturePath`, `layer=0`, `size=(1,1)`, `uvMin`,`uvMax`, `color=(1,1,1,1)`, `worldSpace=true`, `billboard=false` |
+| `Sprite2D` | `texturePath`, `layer=0`, `size=(1,1)`, `uvMin`,`uvMax`, `color=(1,1,1,1)`, `worldSpace=true`, `billboard=false`, `animFrames=0`(フリップブック総フレーム。>0でuvMin/Max自動), `animFps=8`, `animCols=0`(0=animFrames), `animRow=0`, `animRows=0`(0=自動), `animMode=0`(0=ループ 1=単発 2=往復), `scrollU/scrollV=0`(UVスクロール 単位/秒。animFrames>0中は無視) |
 | `AudioSource` | `clipPath`, `volume=1`, `loop=false`, `spatial=true`, `playOnStart=true`, `minDistance=1`, `maxDistance=30` |
+
+**連番アニメ（UIImage / Sprite2D / MeshRenderer 共通）**: UV 計算は `renderer/SpriteAnim.h` の純関数を3者で共有する
+（テクスチャを `animCols` x `animRows` グリッドとみなし `frame = floor(t*animFps)` のセルを写す。`animCols=0`=横1行ストリップ、
+`animRows=0`=自動 `animRow + ceil(animFrames/animCols)`。アニメ行の下に別アニメ行が続くシートでは `animRows` を明示する）。
+`animMode`: 0=ループ / 1=単発（最終フレームで停止。`is*AnimDone` で終了検知） / 2=往復（周期は `2*animFrames-2` ＝両端が2回続かない）。
+MeshRenderer はシーン JSON では `uvScroll`（`{u,v}`）と `flipbook`（`{frames,fps,cols,row,rows,mode}`）のキーで保存され、
+実装はルート定数 `b2 uvScaleOffset` を PS が `uv = texCoord * xy + zw` として使う方式＝**頂点バッファ再生成なし**（毎フレーム変えても安価）。
+優先順は 連番 > UVスクロール で、頂点へ焼き込む `uvScaleU/V`（タイリング）とスクロールは併用できる。
+既定の `Forward` / `ForwardSkinned` でのみ効く（カスタムシェーダーは自前で b2 を読む必要がある）。
 
 ### アニメーション
 | コンポーネント | 説明 |
@@ -565,6 +743,9 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 | `dx12_get_mode` | Editor / Playing |
 | `dx12_get_log` | ログ末尾 N 行 |
 | `dx12_describe_components` | コンポーネント定義（jsonKey/fields/default） |
+| `dx12_ui_tree` | UI階層・解決矩形・表示/文字/装飾/入力/レイアウト情報 |
+| `dx12_ui_design_brief` | ジャンル×画面目的から構図・制約・アンチパターンを生成 |
+| `dx12_ui_audit` | UI崩れ・可読性・入力遮断・過装飾を自動監査 |
 | `dx12_get_scene_settings` | スカイボックス/IBL 設定 |
 | `dx12_screenshot` | スクショ（PNG） |
 
@@ -601,6 +782,7 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 |---|---|
 | `dx12_batch` | 複数 op を順次実行（往復削減） |
 | `dx12_focus_and_screenshot` | フォーカス→描画→スクショ |
+| `dx12_ui_compose` | dock/stack/grid と意味的roleから制約付きUI一式を生成 |
 
 ---
 
@@ -722,14 +904,22 @@ Lua の `fx:*`（§6）の C++ 実体。
 enum `ParticleKind`: Glow/Fire/Smoke/Spark/Magic/Electric/Ring/Star ／ `ParticleBlend`: Additive/AlphaPremul ／ `BeamKind`: Energy/Electric/Fire
 `EmitParams` / `BeamParams` のフィールドは §6 の fx テーブルキーと対応。
 
-### InputSystem（`input/InputSystem.h`）— Raw Input
+### InputSystem（`input/InputSystem.h`）— Raw Input + XInput
 | メソッド | 説明 |
 |---|---|
-| `Initialize(hwnd)` / `Update()` | 初期化 / フレーム開始時 |
+| `Initialize(hwnd)` / `Update(dt)` | 初期化 / フレーム開始時（dt はパッド振動タイマー消費用。既定 0） |
 | `IsKeyDown/IsKeyPressed/IsAsyncKeyDown(vk)` | キー判定 |
 | `GetMouseDeltaX/Y()` `IsMouseCaptured()` `IsRightMouseDown()` | マウス |
 | `SetMouseCapture(b)` / `ToggleMouseCapture()` | キャプチャ |
 | `OnKeyDown/OnKeyUp/OnRawInput/OnMouseButton/OnFocusLost` | WndProc から呼ぶ |
+| `IsPadConnected(pad)` / `GetConnectedPadCount()` | XInput 接続状態（pad=0..3、`kMaxGamepads`=4） |
+| `IsPadButtonDown/Pressed/Released(pad, button)` | ボタン判定（`button` は `XINPUT_GAMEPAD_*` ビット値） |
+| `GetPadLeftStickX/Y / GetPadRightStickX/Y(pad)` | スティック（`GamepadState` 内で円形デッドゾーン適用済み、-1..1） |
+| `GetPadLeftTrigger/RightTrigger(pad)` | トリガー（デッドゾーン適用済み、0..1） |
+| `SetPadVibration(pad, left, right)` | 振動（`XInputSetState` ラップ。0.0..1.0） |
+| `SetPadVibrationTimed(pad, left, right, sec)` | sec 秒後に `Update()` 内で自動停止する振動 |
+
+`Update()` 内 `UpdateGamepads(dt)` が毎フレーム4台分 `XInputGetState` をポーリングし、`GamepadState`（`buttons`/`prevButtons` でエッジ判定、`vibrationTimeLeft` でタイマー振動を管理）を更新する。`xinput.lib` は `src/input/CMakeLists.txt` で `PRIVATE` リンク。
 
 ### ScriptEngine（`scripting/ScriptEngine.h`）— Lua ランタイム
 | メソッド | 説明 |

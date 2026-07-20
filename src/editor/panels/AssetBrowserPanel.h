@@ -15,6 +15,7 @@ class EditorContext;
 class ResourceManager;
 class DescriptorHeap;
 class ModelThumbnailRenderer;
+class MaterialPreviewRenderer;
 
 class AssetBrowserPanel
 {
@@ -37,6 +38,8 @@ public:
         Refresh();
     }
     void SetThumbnailRenderer(ModelThumbnailRenderer* r) { m_thumbRenderer = r; }
+    // .dxmat の球体サムネイル用(MaterialEditorPanel が所有する MaterialPreviewRenderer を借りる)
+    void SetMaterialPreviewRenderer(MaterialPreviewRenderer* r) { m_materialPreview = r; }
 
     // フレーム先頭でcmdListが有効な間に呼ぶ（テクスチャアップロード用）
     void LoadPendingThumbnails(ID3D12GraphicsCommandList* cmdList);
@@ -44,15 +47,25 @@ public:
     // ドラッグ&ドロップ用ペイロード型名
     static constexpr const char* kDragDropPayloadType = "ASSET_PATH";
 
-private:
-    enum class AssetType { Folder, Model, Texture, Scene, Script, Audio, Prefab, Other };
+    // テクスチャD&D(マテリアル割当)等、他パネルからも拡張子種別を判定したいので公開。
+    enum class AssetType { Folder, Model, Texture, Scene, Script, Audio, Prefab, Shader, Material, Other };
+    static AssetType ClassifyExtension(const std::string& ext);
 
+    // 他パネル(InspectorPanelのマテリアルテクスチャプレビュー等)から、このパネルが持つ
+    // サムネイルキャッシュを使い回すための公開アクセサ。キャッシュ済みならGPUハンドルを即返す。
+    // 無ければロードキューに積んで 0 を返す(LoadPendingThumbnailsが数フレーム後に用意する)。
+    u64 GetOrQueueThumbnail(const std::string& absPath);
+
+private:
     struct AssetEntry
     {
         std::filesystem::path path;
         std::string           displayName;
         AssetType             type = AssetType::Other;
         bool                  isDirectory = false;
+        // AssetType::Material のみ: .dxmat が参照する albedo テクスチャの絶対パス(サムネイル使い回し用)。
+        // 未設定/パース失敗なら空(その場合は種別アイコンにフォールバック)。
+        std::string           materialThumbSource;
     };
 
     struct ThumbnailInfo
@@ -64,7 +77,6 @@ private:
 
     void Refresh();
     void DrawFolderTree(const std::filesystem::path& dir, bool& needRefresh);
-    static AssetType ClassifyExtension(const std::string& ext);
     static const char* GetTypeIcon(AssetType type);
     // GetTypeColor は .cpp 内のみで使用（ImVec4 は imgui.h 依存）
     ThumbnailInfo& GetOrLoadThumbnail(const std::filesystem::path& path,
@@ -96,6 +108,9 @@ private:
 
     // モデルサムネイルレンダラー
     ModelThumbnailRenderer* m_thumbRenderer = nullptr;
+
+    // マテリアル球体サムネイル(所有はMaterialEditorPanel。ゲームモード等では nullptr のまま)
+    MaterialPreviewRenderer* m_materialPreview = nullptr;
 };
 
 } // namespace dx12e

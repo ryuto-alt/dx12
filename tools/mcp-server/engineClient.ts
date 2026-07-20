@@ -26,9 +26,19 @@ for (const m of [
   "rename_entity", "select_entity", "focus_camera", "set_pbr", "set_color", "set_lua_property",
   "set_scene_settings", "undo", "redo", "save_scene",
   "create_lua_component", "attach_lua_component",
+  "create_shader", "read_shader", "set_mesh_shader",
   // 入力シミュレーション(即時)
   "key_down", "key_up", "key_press",
+  // シーン編集(同期)
+  "get_editor_camera", "set_editor_camera", "get_bounds", "look_at",
+  "snap_to_ground", "get_hierarchy",
+  // アセット操作(同期・軽量)
+  "move_asset", "delete_asset",
 ]) TIMEOUT_BY_METHOD[m] = 8000;
+// アセット操作(重め): probe は Assimp の読込、import はフォルダコピー、read_texture は変換。
+TIMEOUT_BY_METHOD["asset_info"]   = 30000;
+TIMEOUT_BY_METHOD["import_asset"] = 60000;
+TIMEOUT_BY_METHOD["read_texture"] = 15000;
 // step_frames は最大 600 フレーム(~10s)回ってから返るので長めに。
 TIMEOUT_BY_METHOD["step_frames"] = 30000;
 // 遅延同期(エンティティ生成/削除/複製) = 15000ms
@@ -67,12 +77,14 @@ export class EngineClient {
   private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
   private host: string;
   private port: number;
+  private explicitPort: boolean;   // 呼び出し側がポートを固定したか（test.ts 等）。固定時は再探索しない。
   private defaultTimeoutMs: number;
 
   // Node の型ストリップ実行はパラメータプロパティ非対応なので明示代入。
   // 引数省略時はポート自動探索。test.ts は (host, port, timeout) を明示指定してくる。
   constructor(host?: string, port?: number, timeoutMs?: number) {
     this.host = host ?? process.env.DX12_MCP_HOST ?? "127.0.0.1";
+    this.explicitPort = port != null;
     this.port = port ?? discoverPort();
     this.defaultTimeoutMs = timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
@@ -107,6 +119,9 @@ export class EngineClient {
     // single-flight: 接続確立中の Promise を共有。並行 call が複数ソケットを張るのを防ぐ
     // (engine は単一クライアントしか捌けないため2本目以降がハングする)。
     if (this.connecting) return this.connecting;
+    // 再接続のたびにポートを再探索する（固定指定が無い場合）。ビルド等で一時的に死にポートを
+    // 掴んでも、エディタの正しいポートが %TEMP%/dx12_mcp.port に戻れば再起動なしで自己回復する。
+    if (!this.explicitPort) this.port = discoverPort();
     this.connecting = new Promise((resolve, reject) => {
       const s = net.connect(this.port, this.host);
       s.setEncoding("utf8");

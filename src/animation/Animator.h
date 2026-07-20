@@ -23,6 +23,15 @@ public:
 
     void SetLooping(bool loop) { m_looping = loop; }
 
+    // 再生速度倍率（既定 1.0。2.0 で2倍速、0 で一時停止）。
+    // Update の deltaTime に乗算され、クロスフェード中は両クリップに適用される。
+    void  SetSpeed(float speed) { m_speed = speed; }
+    float GetSpeed() const      { return m_speed; }
+
+    // 現在クリップの再生位置（ticks。NormalizeToSeconds 済みクリップなら秒）。
+    // ※ GetCurrentTime は windows.h のマクロと衝突するためこの名前
+    float GetClipTime() const { return m_currentTime; }
+
     void CrossFadeTo(const AnimationClip* nextClip, float blendDuration = 0.3f);
     void SetClip(const AnimationClip* clip);
 
@@ -42,6 +51,7 @@ private:
     const AnimationClip* m_clip     = nullptr;
     float                m_currentTime = 0.0f;
     bool                 m_looping     = true;
+    float                m_speed       = 1.0f;
 
     const AnimationClip* m_nextClip      = nullptr;
     float                m_nextTime      = 0.0f;

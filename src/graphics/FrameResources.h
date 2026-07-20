@@ -30,6 +30,10 @@ public:
     ID3D12GraphicsCommandList* BeginFrame(CommandQueue& queue);
     void                       EndFrame(CommandQueue& queue);
 
+    // フレーム途中の例外からの復旧用。open のままの cmdList を実行せずに Close する。
+    // Close せず放置すると次の BeginFrame の Reset が失敗し続けて復帰不能になる。
+    void                       AbortFrame();
+
     ID3D12CommandAllocator*     GetCurrentAllocator() const { return m_frames[m_currentFrame].commandAllocator.Get(); }
     ID3D12GraphicsCommandList*  GetCommandList()      const { return m_commandList.Get(); }
 

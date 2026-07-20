@@ -1,6 +1,7 @@
 #include "resource/ShaderCompiler.h"
 #include "core/Logger.h"
 #include "core/vfs/Vfs.h"
+#include "resource/ShaderManager.h"
 
 #include <fstream>
 #include <stdexcept>
@@ -10,6 +11,18 @@ namespace dx12e
 
 ShaderCompiler::ShaderBytecode ShaderCompiler::LoadFromFile(const std::wstring& csoPath)
 {
+    // プロジェクト独自シェーダー(上書き/ホットリロード)。ShaderManager はエディタモードのみ
+    // 生成されるので、ゲームモードでは常に nullptr = 挙動不変(vfs/ディスク読みへフォールバック)。
+    if (ShaderManager* sm = ShaderManager::Instance())
+    {
+        if (const std::vector<u8>* overrideBytes = sm->TryGetOverride(csoPath))
+        {
+            ShaderBytecode bc;
+            bc.data = *overrideBytes;
+            return bc;
+        }
+    }
+
     // ゲームモード(pak マウント済み)では VFS 経由で復号して読む。
     // エディタ/dev では VFS がディスクを生読みする（下の ifstream は欠落時の最終手段）。
     {
@@ -25,15 +38,15 @@ ShaderCompiler::ShaderBytecode ShaderCompiler::LoadFromFile(const std::wstring& 
     std::ifstream file(csoPath, std::ios::binary | std::ios::ate);
     if (!file.is_open())
     {
-        Logger::Error("ShaderCompiler: Failed to open .cso file");
-        throw std::runtime_error("ShaderCompiler: Failed to open .cso file");
+        Logger::Error("ShaderCompiler: .cso ファイルを開けません");
+        throw std::runtime_error("ShaderCompiler: .cso ファイルを開けません");
     }
 
     auto fileSize = file.tellg();
     if (fileSize <= 0)
     {
-        Logger::Error("ShaderCompiler: .cso file is empty or unreadable");
-        throw std::runtime_error("ShaderCompiler: .cso file is empty or unreadable");
+        Logger::Error("ShaderCompiler: .cso ファイルが空か読み取れません");
+        throw std::runtime_error("ShaderCompiler: .cso ファイルが空か読み取れません");
     }
     
     ShaderBytecode bytecode;

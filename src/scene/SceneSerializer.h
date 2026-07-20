@@ -36,6 +36,14 @@ public:
     static entt::entity DuplicateEntity(Scene& scene, entt::entity src,
                                         const std::string& assetsDir);
 
+    // エンティティのモデル(modelPath)だけを差し替える。全コンポーネント・親子関係・
+    // 名前を維持したまま JSON 経由で再生成するため entt::entity ID は変わる。
+    // 失敗時（モデルロード失敗等）は entt::null を返し、元エンティティは無傷。
+    // 注意: モデルロードを伴うため cmdList が有効なフレーム境界で呼ぶこと。
+    static entt::entity SwapEntityModel(Scene& scene, entt::entity e,
+                                        const std::string& newModelPath,
+                                        const std::string& assetsDir);
+
     // --- Prefab / サブツリー（再利用テンプレート）---
     // root + 全子孫を 1 つの自己完結 JSON（parent はローカル index 参照）に直列化
     static std::string SerializeSubtree(const Scene& scene, entt::entity root,

@@ -3,10 +3,17 @@ add_library(Renderer STATIC
     Camera.cpp
     Material.cpp
     PostProcess.cpp
+    BloomPass.cpp
+    AutoExposurePass.cpp
+    GodRaysPass.cpp
+    LensFlarePass.cpp
+    DofPass.cpp
+    MotionBlurPass.cpp
     SSAOPass.cpp
     SpriteRenderer.cpp
     SceneTransition.cpp
     ParticleSystem.cpp
+    GpuParticleSystem.cpp
     IBLBaker.cpp
     SkyboxRenderer.cpp
 )

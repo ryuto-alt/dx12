@@ -65,36 +65,42 @@ void SkyboxRenderer::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat, c
     }
 
     // --- PSO: VB なし全画面三角形 / Depth OFF / Cull NONE ---
-    {
-        auto vs = ShaderCompiler::LoadFromFile(shaderDirW + L"Skybox_VS.cso");
-        auto ps = ShaderCompiler::LoadFromFile(shaderDirW + L"Skybox_PS.cso");
-
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
-        pso.pRootSignature = m_rootSig.Get();
-        pso.VS = { vs.GetData(), vs.GetSize() };
-        pso.PS = { ps.GetData(), ps.GetSize() };
-        pso.InputLayout = { nullptr, 0 };
-
-        pso.RasterizerState.FillMode        = D3D12_FILL_MODE_SOLID;
-        pso.RasterizerState.CullMode        = D3D12_CULL_MODE_NONE;
-        pso.RasterizerState.DepthClipEnable = TRUE;
-
-        pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-
-        pso.DepthStencilState.DepthEnable   = FALSE;
-        pso.DepthStencilState.StencilEnable = FALSE;
-
-        pso.SampleMask            = UINT_MAX;
-        pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-        pso.NumRenderTargets      = 1;
-        pso.RTVFormats[0]         = rtvFormat;
-        pso.DSVFormat             = DXGI_FORMAT_UNKNOWN;
-        pso.SampleDesc            = { 1, 0 };
-
-        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_pso)));
-    }
+    m_rtvFormat = rtvFormat;
+    m_shaderDir = shaderDirW;
+    RecreatePipelines(device);
 
     Logger::Info("SkyboxRenderer initialized");
+}
+
+void SkyboxRenderer::RecreatePipelines(GraphicsDevice& device)
+{
+    auto* dev = device.GetDevice();
+    auto vs = ShaderCompiler::LoadFromFile(m_shaderDir + L"Skybox_VS.cso");
+    auto ps = ShaderCompiler::LoadFromFile(m_shaderDir + L"Skybox_PS.cso");
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
+    pso.pRootSignature = m_rootSig.Get();
+    pso.VS = { vs.GetData(), vs.GetSize() };
+    pso.PS = { ps.GetData(), ps.GetSize() };
+    pso.InputLayout = { nullptr, 0 };
+
+    pso.RasterizerState.FillMode        = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode        = D3D12_CULL_MODE_NONE;
+    pso.RasterizerState.DepthClipEnable = TRUE;
+
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    pso.DepthStencilState.DepthEnable   = FALSE;
+    pso.DepthStencilState.StencilEnable = FALSE;
+
+    pso.SampleMask            = UINT_MAX;
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets      = 1;
+    pso.RTVFormats[0]         = m_rtvFormat;
+    pso.DSVFormat             = DXGI_FORMAT_UNKNOWN;
+    pso.SampleDesc            = { 1, 0 };
+
+    ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_pso)));
 }
 
 void SkyboxRenderer::Render(ID3D12GraphicsCommandList* cmd,

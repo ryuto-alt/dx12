@@ -148,7 +148,8 @@ private:
     Scene*       m_scene;
     std::string  m_assetsDir;
     entt::entity m_entity;
-    std::string  m_snapshot;  // Undo 時に確定（Redo 用の JSON）
+    std::string  m_snapshot;                          // Undo 時に確定（Redo 用の JSON）
+    entt::entity m_externalParent = entt::null;       // ルートの親（サブツリー外）。Undo 時に捕捉
 };
 
 // ── プレハブ生成コマンド（サブツリー対応。Undo で全エンティティ削除 / Redo で再生成） ──
@@ -173,6 +174,34 @@ private:
     std::string               m_assetsDir;
     std::vector<entt::entity> m_entities;   // 生成した全エンティティ（root 先頭）
     std::string               m_snapshot;   // Undo 時に確定（Redo 用のサブツリー JSON）
+    entt::entity              m_externalParent = entt::null;  // ルートの親（サブツリー外）。Undo 時に捕捉
+};
+
+// ── モデル差し替えコマンド ──
+// SceneSerializer::SwapEntityModel で新旧パスを行き来する。swap のたびに
+// entity ID が変わるため m_entity を実行結果で更新し続ける。
+// 注意: モデルロードを伴うため pendingUndo/pendingRedo 経由のフレーム境界で実行すること。
+class ModelSwapCommand : public IUndoCommand
+{
+public:
+    ModelSwapCommand(Scene* scene, std::string assetsDir, entt::entity entity,
+                     std::string oldModelPath, std::string newModelPath)
+        : m_scene(scene), m_assetsDir(std::move(assetsDir)), m_entity(entity),
+          m_oldPath(std::move(oldModelPath)), m_newPath(std::move(newModelPath)) {}
+
+    void Undo() override;   // 旧モデルへ戻す
+    void Redo() override;   // 新モデルへ差し替え直す
+
+    const char* GetName() const override { return "Model Swap"; }
+
+private:
+    void Swap(const std::string& path);
+
+    Scene*       m_scene;
+    std::string  m_assetsDir;
+    entt::entity m_entity;    // 現在の entity ID（swap ごとに更新）
+    std::string  m_oldPath;
+    std::string  m_newPath;
 };
 
 // ── 複合コマンド（複数コマンドを 1 回の Undo/Redo で実行） ──

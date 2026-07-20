@@ -15,6 +15,7 @@ class PhysicsDebugRenderer;
 class GameClock;
 class Scene;
 class ScriptEngine;
+class AssetBrowserPanel;
 
 class InspectorPanel
 {
@@ -42,6 +43,8 @@ public:
 
     void SetScriptEngine(ScriptEngine* e) { m_scriptEngine = e; }
     void SetAssetsDir(const std::string& d) { m_assetsDir = d; }
+    // マテリアルテクスチャスロットのサムネイルプレビュー/選択ダイアログに使う
+    void SetAssetBrowser(AssetBrowserPanel* p) { m_assetBrowser = p; }
 
     // Undo 用: コンポーネント編集の追跡状態
     template<typename T>
@@ -67,11 +70,25 @@ private:
     EditState<CameraComponent>  m_camEdit;
     EditState<Gimmick>          m_gimmickEdit;
     EditState<ParticleEmitter>  m_emitterEdit;
+    EditState<Sprite2D>        m_spriteEdit;
+    EditState<TrailRenderer>    m_trailEdit;
     EditState<RigidBody>        m_rbEdit;
     EditState<BoxCollider>      m_boxColEdit;
     EditState<SphereCollider>   m_sphereColEdit;
     EditState<CapsuleCollider>  m_capsuleColEdit;
     EditState<CharacterController> m_ccEdit;
+    EditState<NetworkIdentity>  m_netIdEdit;
+    EditState<NetworkTransform> m_netTfEdit;
+    EditState<UICanvas>         m_uiCanvasEdit;
+    EditState<UIRect>           m_uiRectEdit;
+    EditState<UIImage>          m_uiImageEdit;
+    EditState<UIText>           m_uiTextEdit;
+    EditState<UIButton>         m_uiButtonEdit;
+    EditState<UISlider>         m_uiSliderEdit;
+    EditState<UIToggle>         m_uiToggleEdit;
+    EditState<UIScrollView>     m_uiScrollEdit;
+    EditState<UILayout>         m_uiLayoutEdit;
+    EditState<UIAnimator>       m_uiAnimatorEdit;
 
     // 種別専用インスペクター（ライト/オーディオは専用UIを最前面に出す。共通部品はこの下に並ぶ）。
     void RenderLightHero(entt::registry& reg, EditorContext& ctx, entt::entity e);
@@ -79,6 +96,7 @@ private:
 
     ScriptEngine* m_scriptEngine = nullptr;
     std::string   m_assetsDir;
+    AssetBrowserPanel* m_assetBrowser = nullptr;
 };
 
 } // namespace dx12e

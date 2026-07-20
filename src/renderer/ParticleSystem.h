@@ -12,6 +12,8 @@
 namespace dx12e
 {
 class GraphicsDevice;
+class DescriptorHeap;
+class ResourceManager;
 
 // 見た目の種別（Particle.hlsl の KIND_* と一致必須）。
 enum class ParticleKind : int
@@ -66,8 +68,15 @@ public:
         float turbFreq     = 1.0f;      // 乱流の空間周波数
         int   kind         = 0;         // ParticleKind
         int   blend        = 0;         // ParticleBlend（既定は加算、煙はα）
+        int   orient       = 0;         // 粒子の向き 0=ビルボード(常にカメラ正対) 1=水平(XZ地面向き) 2=垂直(XY,+Z正対)。
+                                        // stretch>0 の速度ストレッチ時は無視。GPUパーティクル(gpu=true)は非対応(常にビルボード)
         float flicker      = 0.0f;      // 発光明滅の強さ（0..1）
         float flickerFreq  = 18.0f;     // 明滅の速さ
+        float sizeMid      = -1.0f;     // >=0 で3キーサイズカーブ（start→mid→end）
+        float distort      = 0.0f;      // >0 で歪みパーティクル（シーンでなく歪みバッファへ描く。熱ゆらぎ/衝撃波）
+        bool  light        = false;     // true で「明るい粒子上位N個のポイントライト化」候補
+        float lightRange   = 3.0f;      // ポイントライト化時の到達距離
+        std::string texturePath;        // 空=プロシージャル質感(kind依存)、指定時はテクスチャを貼る（assets絶対/相対いずれもResourceManagerに渡した値そのまま）
     };
 
     // 連続ビーム（2点間カメラ向きquad）。レーザー/エネルギー線/火柱/稲妻。
@@ -82,13 +91,48 @@ public:
         int   kind       = 0;       // BeamKind
     };
 
-    void Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
-                    DXGI_FORMAT dsvFormat, const std::wstring& shaderDir);
+    // トレイル（軌跡リボン）のパラメータ。id 単位に位置履歴を保持して帯を描く。
+    struct TrailParams
+    {
+        float width     = 0.25f;
+        DirectX::XMFLOAT3 color{0.4f, 0.8f, 1.0f};
+        DirectX::XMFLOAT3 colorEnd{0.1f, 0.2f, 1.0f};
+        float intensity = 2.0f;
+        float life      = 0.5f;    // 各点の寿命（秒）＝帯の長さ
+        int   blend     = 0;       // 0=加算（エネルギー）, 1=前乗算アルファ（煙）
+        float minDist   = 0.03f;   // 前回の点からこれ以上離れたら新しい点を打つ
+    };
 
-    void Emit(const EmitParams& p);
+    // パーティクルライト（明るい粒子上位N個をポイントライト化する）情報。
+    struct LightInfo
+    {
+        DirectX::XMFLOAT3 pos;
+        float             range;
+        DirectX::XMFLOAT3 color;   // intensity 乗算済み
+    };
+
+    // srvHeap/resourceManager: テクスチャ付きパーティクル用。null なら常にプロシージャル質感になる
+    // （テクスチャ指定があっても解決できずプロシージャルへフォールバック）。
+    void Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
+                    DXGI_FORMAT dsvFormat, DXGI_FORMAT distortFormat,
+                    const std::wstring& shaderDir,
+                    DescriptorHeap* srvHeap = nullptr, ResourceManager* resourceManager = nullptr);
+
+    // シェーダーホットリロード用。6 グラフィックス PSO(Add/Alpha/Beam/Distort/TrailAdd/TrailAlpha)
+    // のみ作り直す(ルートシグネチャ/各種バッファは不変のため触らない)。
+    void RecreatePipelines(GraphicsDevice& device);
+
+    // onDeath: 粒子の死亡位置で子バーストを放出（サブエミッタ・1段のみ）。
+    void Emit(const EmitParams& p, const EmitParams* onDeath = nullptr);
     void EmitBeam(const BeamParams& b);
+    // 毎フレーム呼んで軌跡点を記録する（id はエンティティID等の一意な値）。
+    // 呼ばれなくなったトレイルは寿命経過後に自動削除。
+    void TrailPoint(u64 id, const DirectX::XMFLOAT3& pos, const TrailParams& tp);
     void Update(f32 dt);
     void Clear();
+
+    // light=true の生存粒子から明るい順に最大 maxCount 個を返す（forward のポイントライト空き枠用）。
+    u32 CollectLights(u32 maxCount, LightInfo* out) const;
 
     // シーン深度 SRV（R32_FLOAT）と線形化パラメータを供給（soft particles 用）。
     // projA=_33, projB=_43, invRTW=1/RTwidth, invRTH=1/RTheight。invRTW<=0 で soft 無効。
@@ -102,6 +146,12 @@ public:
     void Render(ID3D12GraphicsCommandList* cmd, DirectX::XMMATRIX viewProj,
                 DirectX::XMFLOAT3 camRight, DirectX::XMFLOAT3 camUp,
                 DirectX::XMFLOAT3 camPos);
+
+    // 歪みパーティクル（distort>0）を歪みバッファ(RG16F)へ描く。
+    // Render() の後・同一フレーム内に、歪みRTをバインドしてから呼ぶこと。
+    void RenderDistortion(ID3D12GraphicsCommandList* cmd, DirectX::XMMATRIX viewProj,
+                          DirectX::XMFLOAT3 camRight, DirectX::XMFLOAT3 camUp);
+    bool HasDistortion() const { return m_distortCount > 0; }
 
     // 画面インパクト（ヒット時にクロマ/放射ブラーを瞬間的に上げる用）。
     void  AddPulse(float amount) { if (amount > m_pulse) m_pulse = amount; }
@@ -118,6 +168,7 @@ private:
         DirectX::XMFLOAT3 colM;
         DirectX::XMFLOAT3 col1;
         float size0, size1;
+        float sizeM = -1.0f;            // >=0 で3キーサイズ
         float age, life;
         float rot, rotVel;
         float gravity, drag, alpha;
@@ -125,13 +176,19 @@ private:
         float turbStrength = 0.0f, turbFreq = 1.0f;
         float seed = 0.0f;
         float flicker = 0.0f, flickerFreq = 18.0f;
+        float distort = 0.0f;           // >0 で歪みバッファ行き
+        float lightRange = 3.0f;
+        int   childIdx = -1;            // 死亡時に放出する子定義（m_childDefs の添字）
         int   kind = 0;
         int   blend = 0;
+        int   orient = 0;               // EmitParams::orient(GpuParticle::kind の上位ビットへパックして渡す)
+        bool  light = false;
         bool  hasMid = false;
         bool  alive = false;
+        u32   texSlot = kNoTexture;     // m_texPaths の添字。kNoTexture ならプロシージャル質感
     };
 
-    // シェーダのインスタンス入力レイアウトと一致（stride 64）。
+    // シェーダのインスタンス入力レイアウトと一致（stride 68）。
     struct GpuParticle
     {
         DirectX::XMFLOAT3 center;   // 0  POSITION
@@ -143,6 +200,7 @@ private:
         float             age01;    // 52 TEXCOORD3
         u32               kind;     // 56 TEXCOORD4
         float             seed;     // 60 TEXCOORD5
+        u32               texIndex; // 64 TEXCOORD6（SRVヒープの絶対インデックス。kNoTexture=プロシージャル）
     };
 
     struct Beam
@@ -168,26 +226,73 @@ private:
         float             seed;   // 52 TEXCOORD3
     };
 
-    float Rand(float a, float b);
+    // トレイル内部表現（点の帯）。ノードは古い順に並ぶ。
+    struct TrailNode
+    {
+        DirectX::XMFLOAT3 pos;
+        float age = 0.0f;
+    };
+    struct Trail
+    {
+        u64 id = 0;
+        TrailParams p;
+        std::vector<TrailNode> nodes;
+        float sinceTouched = 0.0f;   // TrailPoint が来なくなってからの経過秒
+    };
 
-    static constexpr u32 kMaxParticles = 8000;
-    static constexpr u32 kMaxBeams     = 512;
+    // Trail.hlsl の頂点レイアウトと一致（stride 36）。
+    struct TrailVtx
+    {
+        DirectX::XMFLOAT3 pos;
+        DirectX::XMFLOAT4 col;
+        DirectX::XMFLOAT2 uv;    // x=尾0..先頭1, y=横 -1..1
+    };
+
+    float Rand(float a, float b);
+    void  ResetPool();   // 空きリスト/生存リストを初期状態へ（Initialize/Clear 共用）
+    u32   InternTexPath(const std::string& path);   // 空文字は kNoTexture を返す。それ以外は m_texPaths に登録/検索
+
+    static constexpr u32 kNoTexture      = 0xFFFFFFFFu;  // プロシージャル質感（テクスチャ未指定）
+    static constexpr u32 kMaxParticles   = 8000;
+    static constexpr u32 kMaxBeams       = 512;
+    static constexpr u32 kMaxChildDefs   = 2048;  // サブエミッタ定義リング（超過で古い定義を上書き）
+    static constexpr u32 kMaxTrails      = 128;
+    static constexpr u32 kMaxTrailNodes  = 96;    // 1トレイルあたりの最大点数
+    static constexpr u32 kMaxTrailVerts  = 24576;
+    // in-flight 多重度（SwapChain::kFrameCount と一致）。動的バッファをこの数の区画に
+    // 分けてフレームごとに書き分ける（前フレームがGPUで読行中の区画を上書きしない）
+    static constexpr u32 kFrames       = 3;
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSig;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoAdd;    // 加算
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoAlpha;  // 前乗算アルファ（煙）
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoBeam;   // 加算ビーム
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoDistort;   // 歪みバッファ行き（RG16F加算）
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoTrailAdd;  // トレイル（加算）
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoTrailAlpha;// トレイル（前乗算α）
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_instanceBuffer; // UPLOAD
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_beamBuffer;     // UPLOAD
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_trailBuffer;    // UPLOAD
     D3D12_VERTEX_BUFFER_VIEW                     m_vbView{};
     D3D12_VERTEX_BUFFER_VIEW                     m_beamVbView{};
+    D3D12_VERTEX_BUFFER_VIEW                     m_trailVbView{};
 
     std::vector<Particle>   m_particles;
-    std::vector<GpuParticle> m_gpu;     // 毎フレーム再構築（加算→α の順に詰める）
+    std::vector<GpuParticle> m_gpu;     // 毎フレーム再構築（加算→α→歪み の順に詰める）
     std::vector<Beam>        m_beamPool;
     std::vector<GpuBeam>     m_gpuBeams;
+    std::vector<u32>         m_freeList; // 空きスロットのスタック（O(1) 確保）
+    std::vector<u32>         m_live;     // 生存パーティクルの密なインデックス列
+    std::vector<EmitParams>  m_childDefs;     // サブエミッタ定義（リング上書き）
+    std::vector<std::pair<DirectX::XMFLOAT3, int>> m_deathSpawns; // Update 中に溜める死亡時バースト
+    std::vector<Trail>       m_trails;
+    std::vector<TrailVtx>    m_trailVerts;    // 毎フレーム再構築（加算→α の順）
+    u32   m_trailAddVerts = 0;          // m_trailVerts 内の加算頂点数（先頭から）
+    u32   m_childCursor  = 0;
     u32   m_additiveCount = 0;          // m_gpu 内の加算粒子数（先頭から）
-    u32   m_cursor     = 0;             // 空きスロット探索の起点
+    u32   m_alphaCount   = 0;           // 続く α 粒子数
+    u32   m_distortCount = 0;           // 末尾の歪み粒子数
+    u32   m_frameIdx   = 0;             // 動的バッファの書き込み区画（Render毎に巡回）
     u32   m_beamCursor = 0;
     int   m_aliveCount = 0;
     float m_pulse      = 0.0f;
@@ -199,6 +304,16 @@ private:
     D3D12_GPU_DESCRIPTOR_HANDLE m_depthSrv{};
     float m_projA = 0.0f, m_projB = 0.0f, m_invRTW = 0.0f, m_invRTH = 0.0f;
     bool  m_hasDepth = false;
+
+    // テクスチャ付きパーティクル用（null なら常にプロシージャル）
+    DescriptorHeap*  m_srvHeap = nullptr;
+    ResourceManager* m_resourceManager = nullptr;
+    std::vector<std::string> m_texPaths;   // Particle::texSlot の添字→assetsパス（追記のみ、小規模想定）
+
+    // RecreatePipelines 用に保持
+    std::wstring m_shaderDir;
+    DXGI_FORMAT  m_rtvFormat     = DXGI_FORMAT_UNKNOWN;
+    DXGI_FORMAT  m_distortFormat = DXGI_FORMAT_UNKNOWN;
 };
 
 } // namespace dx12e

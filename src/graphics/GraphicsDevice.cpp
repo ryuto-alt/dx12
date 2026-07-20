@@ -60,8 +60,9 @@ void GraphicsDevice::Initialize(Window& /*window*/)
         m_adapter->GetDesc1(&adapterDesc);
         // wchar_t → char 安全変換
         int nameSize = WideCharToMultiByte(CP_UTF8, 0, adapterDesc.Description, -1, nullptr, 0, nullptr, nullptr);
-        std::string adapterName(static_cast<size_t>(nameSize - 1), '\0');
+        std::string adapterName(static_cast<size_t>(nameSize), '\0');
         WideCharToMultiByte(CP_UTF8, 0, adapterDesc.Description, -1, adapterName.data(), nameSize, nullptr, nullptr);
+        adapterName.pop_back();
         Logger::Info("GPU selected: {}", adapterName);
     }
 
@@ -115,7 +116,7 @@ void GraphicsDevice::Initialize(Window& /*window*/)
         else
         {
             m_dxrSupported = false;
-            Logger::Warn("DXR not supported on this device");
+            Logger::Warn("この GPU は DXR（レイトレーシング）非対応です");
         }
     }
 }

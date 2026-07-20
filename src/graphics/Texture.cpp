@@ -1,4 +1,5 @@
 #include "graphics/Texture.h"
+#include "graphics/DeferredRelease.h"
 #include "graphics/GraphicsDevice.h"
 #include "core/Assert.h"
 #include "core/Logger.h"
@@ -144,7 +145,7 @@ void Texture::CreateSRV(GraphicsDevice& device, D3D12_CPU_DESCRIPTOR_HANDLE cpuH
     srvDesc.ViewDimension                 = D3D12_SRV_DIMENSION_TEXTURE2D;
     srvDesc.Shader4ComponentMapping       = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srvDesc.Texture2D.MostDetailedMip     = 0;
-    srvDesc.Texture2D.MipLevels           = 1;
+    srvDesc.Texture2D.MipLevels           = (m_mipLevels > 0) ? m_mipLevels : 1;  // 全ミップを公開(旧: 1固定でミップが死んでいた)
     srvDesc.Texture2D.PlaneSlice          = 0;
     srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
 
@@ -168,7 +169,11 @@ void Texture::CreateCubeSRV(GraphicsDevice& device, D3D12_CPU_DESCRIPTOR_HANDLE 
 
 void Texture::FinishUpload()
 {
-    m_uploadBuffer.Reset();
+    // アップロードステージングはコピーコマンドが GPU で完了するまで生かす必要がある。
+    // DeferredRelease 経由で解放する（有効時はフェンス連動、無効時は即時 =
+    // 呼び出し側が WaitIdle 済み前提）。
+    if (m_uploadBuffer)
+        DeferredRelease::Defer(std::move(m_uploadBuffer), nullptr);
 }
 
 } // namespace dx12e

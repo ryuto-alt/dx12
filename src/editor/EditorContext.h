@@ -16,12 +16,19 @@ namespace dx12e
 
 enum class GizmoMode { Translate, Rotate, Scale };
 
+// ツールバーのPlayドロップダウンで選ぶマルチプレイのテストロール(フェーズ⑨)。
+// EnterPlayModeがこれを見てnet:host()/net:join()相当を自動実行する(Lua無しでの手早い動作確認用)。
+enum class NetTestRole { Offline, Host, Client };
+
 struct PendingSpawnRequest
 {
     std::string modelPath;
     DirectX::XMFLOAT3 position{};
     std::string name;   // 空ならデフォルト名。MCP の create_entity から任意名を付けるのに使う。
     McpDeferred mcp;    // MCP 由来なら相関情報。生成後に本物の entityId を送り返す。client=0 で無効。
+    // UI 要素(__ui_*__)の親の明示指定(MCP 用)。null なら従来どおり
+    // 「選択中の UI ツリー → 最初の Canvas → 自動生成」の順で解決する。
+    entt::entity parent = entt::null;
 };
 
 // MCP 由来のエンティティ削除要求。フレーム境界でサブツリー削除後に deletedCount を送り返す。
@@ -36,6 +43,26 @@ struct PendingScriptAttach
 {
     entt::entity entity = entt::null;
     std::string  scriptPath;   // assets 相対パス
+};
+
+// アセットブラウザからテクスチャをドラッグ&ドロップしてマテリアルに割り当てる要求
+// (SceneView 上のメッシュへドロップ、または Inspector のマテリアルスロットへドロップ)。
+// テクスチャロード(GetOrLoadTexture)が cmdList を要するためフレーム境界で処理する。
+enum class MaterialTextureSlot { Albedo, Normal, MetalRoughness };
+struct PendingMaterialTextureDrop
+{
+    entt::entity entity = entt::null;
+    u32 submeshIndex = 0;              // MeshRenderer::meshes[] のインデックス
+    MaterialTextureSlot slot = MaterialTextureSlot::Albedo;
+    std::string texturePath;           // 絶対パス(処理側で assets 相対に正規化)
+};
+
+// Inspector の「モデル差し替え」要求。モデルロード(GetOrLoadModel)が cmdList を
+// 要するためフレーム境界で処理する(SceneSerializer::SwapEntityModel)。
+struct PendingModelSwap
+{
+    entt::entity entity = entt::null;
+    std::string  newModelPath;         // 絶対 or assets 相対(処理側で正規化)
 };
 
 
@@ -101,6 +128,12 @@ public:
     bool  view2D     = false;
     float view2DZoom = 6.0f;   // 正射の縦半分（世界単位）。小さいほどズームイン。
 
+    // UI 編集モード（ツールバーの「UI」トグル）。ON 中は非 Play でも SceneView に
+    // ゲーム内 UI（UICanvas ツリー）をプレビュー描画し、UI 要素のクリック選択・
+    // ドラッグ編集を 3D ピッキングより優先する。Play 中/ゲームモードは従来どおり
+    // ##GameUI 経路のみが描く（二重描画しない）。
+    bool uiEditMode = false;
+
     // メニュー「表示 > レイアウトをリセット」で立てるフラグ。
     // EditorLayer が検知してデフォルトドックレイアウトを再構築する。
     bool resetLayout = false;
@@ -117,12 +150,34 @@ public:
     bool showVersionControl = false;
     bool showMcpBridge      = false;   // MCP / AI Bridge モニタ窓
     bool showBuildSettings  = false;   // ビルド設定（Unity の Build Settings 相当）
+    bool showNetworkStatus  = false;   // マルチプレイ状態モニタ窓（接続一覧/tick/帯域、フェーズ⑧）
+    bool showNetworkSettings = false;  // マルチプレイ設定窓（tickRate/port等、assets/network.json、フェーズ⑨）
+
+    // ---- マルチプレイのローカルテストループ（ツールバーPlayドロップダウン、フェーズ⑨）----
+    NetTestRole netTestRole = NetTestRole::Offline;   // 次にPlayした時に自動でHost/Joinするか
+    std::string netTestJoinAddress = "127.0.0.1";     // Client選択時の接続先IP
+    u16 netTestJoinPort = 0;                          // 0=NetworkConfig.defaultPortを使う。--net-client CLI 起動時のみ明示指定
+    bool netTestLaunchClientRequested = false;        // 「テストクライアント起動」ボタン押下(フレーム境界でCreateProcess)
+    // パーティクルエディタ（VFXアセットの作成・編集）。プレビュー枠+アセット一覧+パラメータで
+    // 幅を食うため、右下タブ群（右カラム24%のさらに下42%）には収まらない。他の設定系ツール窓と
+    // 違い右下タブにはドックせず独立したフローティング窓として開く＝ AnyToolWindowOpen には含めない
+    // （含めると右下タブ領域だけ確保されて中身が無い＝Inspectorが無駄に縮む）。
+    bool showVfxEditor      = false;
+    // マテリアルエディタ/マテリアルライブラリ(Poly Havenダウンローダー)も VfxEditor 同様、
+    // 独立フローティング窓として開く(AnyToolWindowOpen には含めない)。
+    bool showMaterialEditor  = false;
+    bool showMaterialLibrary = false;
+    // UIエディタ(ゲーム内UIの2Dキャンバス編集。UMGデザイナー相当)。広い面積が要るので
+    // VfxEditor 同様の独立フローティング窓(AnyToolWindowOpen には含めない)。
+    bool showUiEditor        = false;
+    // AssetBrowser で .dxmat をダブルクリックした時に立つ。MaterialEditorPanel が消費して開く。
+    std::string pendingOpenMaterialPath;
 
     bool AnyToolWindowOpen() const
     {
         return showPostProcess || showPostParams || showSkybox || showSSAO
             || showEngineSettings || showSceneFlow || showProject || showVersionControl
-            || showMcpBridge || showBuildSettings;
+            || showMcpBridge || showBuildSettings || showNetworkStatus || showNetworkSettings;
     }
 
     // タッチパッド向けキーボードフライモード（` キーでトグル）。
@@ -139,9 +194,23 @@ public:
     f32 viewportW = 0.0f;
     f32 viewportH = 0.0f;
 
+    // フローティングツール窓(マテリアルエディタ/マテリアルライブラリ/パーティクルエディタ等、
+    // ImGuiWindowFlags_NoDockingで浮かぶ独立窓)がホバーされているか。
+    // これらの窓は 3D ビューポート矩形の上に重なって浮かぶことがあるため、IsCursorInViewport が
+    // 矩形だけで判定すると「窓の上でドラッグ/ホイール操作した」のがそのままシーンカメラにも
+    // 効いてしまう(窓に隠れているだけの3Dビューを触っている扱いになる)。ここで弾く。
+    //
+    // 2値ラッチにしている理由: 各パネルが ThisFrame を立てるのは ImGui パスの「後半」
+    // (Application::Render の EditorLayer::Render より後)なので、同一フレーム内のリセット+読み取り
+    // だと HandleCameraNavigation は常に false を読んでしまう。フレーム冒頭で前フレームの
+    // ThisFrame を hovered へ確定コピーし、読む側は常に「前フレームの確定値」を見る(1フレーム遅延)。
+    bool floatingToolWindowHovered = false;           // 読み取り用(前フレームの確定値)
+    bool floatingToolWindowHoveredThisFrame = false;  // 書き込み用(各パネルが今フレーム立てる)
+
     bool IsCursorInViewport(f32 mx, f32 my) const
     {
-        return viewportW > 0.0f && viewportH > 0.0f
+        return !floatingToolWindowHovered
+            && viewportW > 0.0f && viewportH > 0.0f
             && mx >= viewportX && mx < viewportX + viewportW
             && my >= viewportY && my < viewportY + viewportH;
     }
@@ -158,6 +227,7 @@ public:
     f32 hotReloadFlash    = 0.0f;
     f32 buildCompleteFlash = 0.0f;
     f32 buildErrorFlash    = 0.0f;  // ビルド失敗表示（>0 の間 赤で「✗ ビルド失敗」）
+    std::string buildErrorMsg;      // ビルド失敗の具体理由（空なら汎用メッセージ）
 
     // エラー通知（Play 不可等）
     std::string errorMessage;
@@ -175,11 +245,15 @@ public:
     bool pendingUndo = false;
     bool pendingRedo = false;
     std::vector<PendingScriptAttach> pendingScriptAttachments;
+    std::vector<PendingMaterialTextureDrop> pendingMaterialTextureDrops;
     // 選択エンティティ（+子孫）を .prefab として書き出す要求。Application がフレーム境界で処理。
     entt::entity pendingCreatePrefab = entt::null;
     std::string pendingLoadPath;
     std::string pendingGameLoadPath;  // Play 中の loadScene()（assets 相対）。フレーム境界で安全にロード
     bool pendingBuildGame = false;     // ビルド設定パネルの「ビルド」で立つ＝実行要求
+    // ファイルメニュー「プロジェクトを閉じる」で立つ。Application がフレーム境界で
+    // ランチャーへ戻す（削除等のファイル操作は一切不要＝現在の状態はそのままメモリに残す）。
+    bool pendingCloseProject = false;
     // 直近ビルドの成果物フォルダ（完了後に Explorer で開くために保持）。
     std::string lastBuildDir;
 
@@ -207,6 +281,10 @@ public:
     bool showNewScriptDialog = false;
     char newScriptNameBuf[128] = {};
 
+    // カスタムシェーダー作成ダイアログ
+    bool showNewShaderDialog = false;
+    char newShaderNameBuf[128] = {};
+
     // Undo/Redo
     UndoSystem undoSystem;
 
@@ -215,6 +293,14 @@ public:
 
     // エディタ UI アイコン（Application が所有・populate。null/0 ならテキスト表示にフォールバック）
     const EditorUiIcons* icons = nullptr;
+
+    // Inspector のモデル差し替え（フレーム境界で SwapEntityModel が処理）。
+    // ★注意: このメンバは必ずクラス末尾に置くこと。中間(pendingMaterialTextureDrops の直後)へ
+    // 挿入すると後続メンバのオフセットが +24 ずれ、v1.1.1 以前から潜在する何者かのヒープ域外
+    // 書き込み(float パターン)が pendingLoadPath を直撃してシーン切り替えで確実にクラッシュする
+    // (2026-07-17 に実測。旧レイアウトでは無害な領域に落ちていた)。犯人は未特定のため、
+    // EditorContext へメンバを足すときは常に末尾へ追加し、既存オフセットを動かさないこと。
+    std::vector<PendingModelSwap> pendingModelSwaps;
 };
 
 } // namespace dx12e

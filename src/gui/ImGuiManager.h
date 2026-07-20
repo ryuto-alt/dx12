@@ -29,6 +29,8 @@ public:
 
     void BeginFrame();
     void EndFrame(ID3D12GraphicsCommandList* cmdList);
+    // multi-viewportのセカンダリ窓の描画+Present。メインコマンドリストのExecute後・Present前に呼ぶ。
+    void RenderPlatformWindows();
     void Shutdown();
 
     static LRESULT WndProcHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);

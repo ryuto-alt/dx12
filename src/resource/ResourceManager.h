@@ -63,6 +63,13 @@ public:
     DescriptorHeap* GetSrvHeap() const { return m_srvHeap; }
 
     void FinishUploads();
+    // 直近のフレームで新しいアップロード(テクスチャ/モデル)を積んだか。
+    // true のフレームだけ WaitIdle+FinishUploads する＝定常時の毎フレーム全同期を撤廃。
+    bool HasPendingUploads() const { return m_uploadsPending; }
+
+    // 毎フレーム末尾用: 今フレームで新規ロードされたテクスチャのステージングだけを
+    // 遅延解放キューへ回す。FinishUploads(全キャッシュ走査)と違い O(新規ロード数)。
+    void DeferPendingUploads();
 
 private:
     GraphicsDevice*  m_device  = nullptr;
@@ -72,6 +79,12 @@ private:
     std::unique_ptr<Texture> m_defaultNormal;         // (128,128,255,255) = flat normal
     std::unique_ptr<Texture> m_defaultMetalRoughness; // (0,128,0,255) = non-metal, mid-rough
     std::unordered_map<std::string, std::unique_ptr<CachedModel>> m_modelCache;
+
+    // 今フレームでロードされ、アップロードステージングが未回収のテクスチャ
+    // (キャッシュは解放されないので生ポインタで安全)。毎フレーム末尾の
+    // DeferPendingUploads がフェンス連動の遅延解放キューへ回す。
+    std::vector<Texture*> m_pendingUploads;
+    bool m_uploadsPending = false;  // FinishUploads/DeferPendingUploads で false に戻す
 };
 
 } // namespace dx12e

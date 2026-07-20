@@ -61,4 +61,14 @@ void FrameResources::EndFrame(CommandQueue& queue)
     m_currentFrame = (m_currentFrame + 1) % kFrameCount;
 }
 
+void FrameResources::AbortFrame()
+{
+    // 記録済みコマンドは実行せず破棄する（実行すると中途半端なバリア列がGPUに流れる）。
+    // 既に Closed の場合 Close は失敗コードを返すだけなので無視してよい。
+    // m_currentFrame は進めない = 同じスロットを次の BeginFrame で再利用する
+    // （fenceValue は変わっていないので待ちの整合は保たれる）。
+    if (m_commandList)
+        m_commandList->Close();
+}
+
 } // namespace dx12e

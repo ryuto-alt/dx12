@@ -30,22 +30,34 @@ void ImGuiManager::Initialize(
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    // multi-viewport: フローティング窓(マテリアルエディタ等)をメインウィンドウの外へ
+    // ドラッグすると独立したOSウィンドウになる(Unreal/Unityと同じ)。ドック中のコアパネルは
+    // NoUndocking なので出て行かない。有効時、ImGui座標系は「スクリーン座標」になる点に注意
+    // (絶対座標(0,0)前提の窓は GetMainViewport()->Pos 基準に直してある)。
+    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+    io.ConfigViewportsNoTaskBarIcon = true;   // 引き出した窓はタスクバーに出さない(UE/Unityと同じ)
     // ID 衝突警告のビジュアルオーバーレイを抑制（誤検出で popup が塞がれることがある）
     io.ConfigDebugHighlightIdConflicts = false;
 
-    // 日本語フォント読み込み（密度は Nebula 寄りにやや小さめ＝プロエディタ感）
+    // 日本語フォント読み込み。Yu Gothic Medium（Win標準・レンダリングがくっきり）優先、
+    // 無ければ Meiryo にフォールバック。サイズは 17px（可読性優先＝Unreal 寄りの密度）。
     {
-        const char* fontPath = "C:\\Windows\\Fonts\\meiryo.ttc";
-        if (std::filesystem::exists(fontPath))
+        const char* candidates[] = {
+            "C:\\Windows\\Fonts\\YuGothM.ttc",   // Yu Gothic Medium
+            "C:\\Windows\\Fonts\\meiryo.ttc",
+        };
+        bool loaded = false;
+        for (const char* fontPath : candidates)
         {
-            io.Fonts->AddFontFromFileTTF(fontPath, 15.0f, nullptr,
+            if (!std::filesystem::exists(fontPath)) continue;
+            io.Fonts->AddFontFromFileTTF(fontPath, 17.0f, nullptr,
                 io.Fonts->GetGlyphRangesJapanese());
-            Logger::Info("Japanese font loaded: meiryo.ttc");
+            Logger::Info("Japanese font loaded: {}", fontPath);
+            loaded = true;
+            break;
         }
-        else
-        {
-            Logger::Warn("Japanese font not found, using default");
-        }
+        if (!loaded)
+            Logger::Warn("日本語フォントが見つかりません (Japanese font not found)");
     }
 
     // ===== Nebula Engine Editor ライクなダークテーマ =====
@@ -65,9 +77,9 @@ void ImGuiManager::Initialize(
     style.ScrollbarRounding       = 7.0f;
     // --- 余白（密度を上げて締まった印象に）---
     style.WindowPadding           = ImVec2(9, 8);
-    style.FramePadding            = ImVec2(8, 4);
+    style.FramePadding            = ImVec2(8, 5);
     style.CellPadding             = ImVec2(6, 4);
-    style.ItemSpacing             = ImVec2(8, 6);
+    style.ItemSpacing             = ImVec2(8, 7);
     style.ItemInnerSpacing        = ImVec2(6, 5);
     style.IndentSpacing           = 16.0f;
     style.ScrollbarSize           = 11.0f;   // Nebula のスリムなスクロールバー
@@ -181,6 +193,20 @@ void ImGuiManager::EndFrame(ID3D12GraphicsCommandList* cmdList)
 {
     ImGui::Render();
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), cmdList);
+}
+
+void ImGuiManager::RenderPlatformWindows()
+{
+    // multi-viewport のセカンダリウィンドウ(引き出したフローティング窓)を描画・Present する。
+    // DX12バックエンドが専用のコマンドリスト/スワップチェインを内部管理してキューへ直接投げるため、
+    // メインのコマンドリストを ExecuteCommandList した後・Present の前に呼ぶこと
+    // (メインリスト内で遷移させたテクスチャ(サムネイル等)をセカンダリ側が参照しても順序が正しくなる)。
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
+    {
+        ImGui::UpdatePlatformWindows();
+        ImGui::RenderPlatformWindowsDefault(nullptr, nullptr);
+    }
 }
 
 void ImGuiManager::Shutdown()

@@ -10,9 +10,8 @@
 Texture2D    g_albedo  : register(t0);
 SamplerState g_sampler : register(s0);
 
-// Shadow map (CSM: Texture2DArray, 1スライス=1カスケード)
+// Shadow map (CSM: Texture2DArray, 1スライス=1カスケード)。g_shadowSampler(s1)は Lighting.hlsli で共有宣言。
 Texture2DArray         g_shadowMap      : register(t4);
-SamplerComparisonState g_shadowSampler  : register(s1);
 
 // PerObject constants (b0) - MVP + Model matrix as RootConstants (32 DWORD)
 cbuffer PerObjectConstants : register(b0)
@@ -148,5 +147,7 @@ float4 PSMain(PSInput input) : SV_TARGET
     float NdotL = max(dot(N, L), 0.0f);
     float3 lighting = ambientStrength * lightColor + NdotL * lightColor * 0.3f * shadow;
 
-    return float4(color * lighting, alpha);
+    // グリッド色は表示基準(sRGB風)で調整されている。シーンRTはリニアHDRになった
+    // (最終段でACES+ガンマが掛かる)ため、リニアへ変換して見た目を従来と揃える。
+    return float4(pow(max(color * lighting, 0.0f), 2.2f), alpha);
 }

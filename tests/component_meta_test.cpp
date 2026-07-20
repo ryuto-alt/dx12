@@ -75,13 +75,17 @@ int main()
     Expect<BoxCollider>({ "halfExtents", "offset" });
     Expect<SphereCollider>({ "radius", "offset" });
     Expect<CapsuleCollider>({ "radius", "halfHeight", "offset" });
+    Expect<CharacterController>({ "radius", "halfHeight", "offset", "mass", "maxSlopeDeg", "stepHeight", "jumpSpeed", "gravityScale" });
     Expect<AudioSource>({ "clipPath", "volume", "loop", "spatial", "playOnStart", "minDistance", "maxDistance" });
     Expect<Tag>({ "tags" });
     Expect<Sprite2D>({ "texturePath", "layer", "size", "uvMin", "uvMax", "color", "worldSpace" });
+    Expect<NetworkIdentity>({ "interestRadius", "serverAuthority" });
+    Expect<NetworkTransform>({ "syncMode", "sendRate", "syncPosition", "syncRotation", "syncScale",
+                                "interpDelayMs", "snapDistance" });
 
     // 反映は冪等（2回呼んでも壊れない）
     RegisterCoreComponentMeta();
-    CHECK(FieldNames<PointLight>().size() == 3);
+    CHECK(FieldNames<PointLight>().size() == 4);
 
     std::printf("component_meta: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

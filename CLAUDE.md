@@ -44,8 +44,11 @@
 ゲームの中身は全部データ（シーン JSON + `.lua` コンポーネント）。同じものを人間はエディタで、
 Claude Code はテキストで作れる。新機能の作法はここを参照:
 - **[`docs/AUTHORING.md`](docs/AUTHORING.md)** … 配置エフェクト `ParticleEmitter` / イベント `Trigger`+Action /
-  エンティティ参照プロパティ(`type="entity"`) / イベントバス `events` / ヘッドレス検証 `--validate`
+  エンティティ参照プロパティ(`type="entity"`) / イベントバス `events` / ヘッドレス検証 `--validate` /
+  カスタムシェーダー(`assets/shaders/*.hlsl`、保存で自動ホットリロード)
 - [`docs/SCRIPT_COMPONENTS.md`](docs/SCRIPT_COMPONENTS.md) … プロパティ付き Lua コンポーネント / プレハブ
+- **[`docs/UI_STYLE_GUIDE.md`](docs/UI_STYLE_GUIDE.md)** … ゲームUIを作るとき必読。ジャンル別デザイン語彙(形/色/字/動き)→
+  エンジン機能の対応表・モーション相場・アンチパターン(実在ゲームのリサーチベース)
 - 検証: `DX12Engine.exe --validate <scene.json>`（参照切れ・スクリプト不在をヘッドレスで報告。終了コード 0/1）
 
 ## ビルド方法
@@ -152,6 +155,9 @@ Core → spdlog
 ```
 
 ### RootSignature レイアウト
+初期実装(Phase 3A)時点の4スロット構成は下記の通りやったけど、**現在は Cook-Torrance PBR
+(法線マップ/metallic-roughness/IBL/CSM/SSAO込み)の9スロット構成**に拡張済み。詳細は
+`src/graphics/RootSignature.h/cpp`(`kSlotXxx` 定数群)を参照。
 ```
 Slot 0: RootConstants b0 (32 DWORD = MVP + Model行列) - ALL可視
 Slot 1: CBV b1 (PerFrame: view/proj/lightDir/time/lightColor/ambient) - ALL可視
@@ -276,3 +282,5 @@ Application::Render()
 - **AI エージェント運用ガイド**: [`tools/mcp-server/AGENTS.md`](tools/mcp-server/AGENTS.md) — 典型ワークフロー・禁止パターン・よくある間違い
 - **ポート**: 自動採番(8787〜8797)。確定値は `%TEMP%\dx12_mcp.port` に書かれる。`DX12_MCP_PORT` 環境変数で上書き可。
 - **認証**: なし(localhost 専用・開発機前提)。ゲーム(封印ランタイム)ではブリッジは起動しない。
+- **配布**: MCP サーバはエンジン配布物に**同梱しない**。別リポジトリ [ryuto-alt/dx12-mcp](https://github.com/ryuto-alt/dx12-mcp) で配布する。
+  ソース・オブ・トゥルースは本リポジトリの `tools/mcp-server`。**MCP サーバを変更したら `tools/mcp-server/publish.ps1` で dx12-mcp へ同期すること。**

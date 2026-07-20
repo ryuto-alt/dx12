@@ -7,9 +7,8 @@ Texture2D    g_normalMap      : register(t1);
 Texture2D    g_metalRoughness : register(t2);
 SamplerState g_sampler        : register(s0);
 
-// Shadow (CSM: Texture2DArray, 1スライス=1カスケード)
+// Shadow (CSM: Texture2DArray, 1スライス=1カスケード)。g_shadowSampler(s1)は Lighting.hlsli で共有宣言。
 Texture2DArray         g_shadowMap     : register(t4);
-SamplerComparisonState g_shadowSampler : register(s1);
 
 // IBL (t5,t6,t7 / s2=linear-clamp(mip有), s3=linear-clamp(mipなし))
 TextureCube  g_irradianceMap  : register(t5);
@@ -36,6 +35,9 @@ cbuffer PBRMaterial : register(b2)
     float defaultRoughness;
     uint  pbrFlags;       // bit0=hasNormalMap, bit1=hasMetalRoughness
     float _pbrPad;
+    // UV 変換 (xy=スケール, zw=オフセット)。MeshRenderer の UV スクロール/連番アニメ用。
+    // 無効時は (1,1,0,0) が入るので従来と同じ結果になる。
+    float4 uvScaleOffset;
 };
 
 struct VSInput
@@ -104,14 +106,16 @@ float SampleCascade(int cascade, float3 worldPos)
     // 比較深度を手前へずらして自己遮蔽を抑える。
     float current = proj.z - shadowParams.y;
     float texel = shadowParams.x;  // 1/shadowMapSize
+    // 3x3 PCF（9タップ）。床は全画面なのでタップ数が直接 fill コスト。5x5(25)→3x3(9)で約64%削減。
+    // 影の縁が僅かに硬くなるだけ（minimal画質方針で許容）。
     float s = 0.0f;
     [unroll]
-    for (int y = -2; y <= 2; ++y)
+    for (int y = -1; y <= 1; ++y)
     [unroll]
-    for (int x = -2; x <= 2; ++x)
+    for (int x = -1; x <= 1; ++x)
         s += g_shadowMap.SampleCmpLevelZero(g_shadowSampler,
                  float3(uv + float2(x, y) * texel, (float)cascade), current);
-    return s / 25.0f;
+    return s / 9.0f;
 }
 
 float CalcShadow(float3 worldPos, float viewDepth)
@@ -136,15 +140,18 @@ float CalcShadow(float3 worldPos, float viewDepth)
 
 float4 PSMain(PSInput input) : SV_TARGET
 {
+    // UV スクロール/連番アニメ (b2)。無効時は uvScaleOffset=(1,1,0,0) なので恒等変換
+    float2 uv = input.texCoord * uvScaleOffset.xy + uvScaleOffset.zw;
+
     // Albedo
-    float4 albedo4 = g_albedo.Sample(g_sampler, input.texCoord) * input.color;
+    float4 albedo4 = g_albedo.Sample(g_sampler, uv) * input.color;
     float3 albedo = albedo4.rgb;
 
     // Normal
     float3 N;
     if (pbrFlags & 1u)
     {
-        float3 normalSample = g_normalMap.Sample(g_sampler, input.texCoord).rgb;
+        float3 normalSample = g_normalMap.Sample(g_sampler, uv).rgb;
         N = PerturbNormal(input.worldNormal, input.worldTangent, input.tangentW, normalSample);
     }
     else
@@ -156,7 +163,7 @@ float4 PSMain(PSInput input) : SV_TARGET
     float metallic, roughness;
     if (pbrFlags & 2u)
     {
-        float4 mr = g_metalRoughness.Sample(g_sampler, input.texCoord);
+        float4 mr = g_metalRoughness.Sample(g_sampler, uv);
         roughness = mr.g * defaultRoughness;
         metallic  = mr.b * defaultMetallic;
     }
@@ -230,9 +237,14 @@ float4 PSMain(PSInput input) : SV_TARGET
         color *= tint[SelectCascade(input.viewDepth)];
     }
 
-    // Tone mapping + gamma
+#ifdef LDR_OUTPUT
+    // LDR 直出力バリアント（サムネイル等、ポストプロセスを通らない R8G8B8A8 RT 用）
     color = ACESFilm(color);
     color = pow(color, 1.0 / 2.2);
+#endif
+    // 通常経路はリニア HDR のまま scene RT(R16G16B16A16_FLOAT) へ出力する。
+    // トーンマップ(ACES)+ガンマは PostProcess の最終段で一括適用（bloom が
+    // トーンマップ前の正しい輝度エネルギーを拾えるようにするため）。
 
     return float4(color, albedo4.a);
 }

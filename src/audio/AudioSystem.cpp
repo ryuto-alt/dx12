@@ -28,7 +28,7 @@ void AudioSystem::Initialize(const std::string& assetsDir)
     hr = XAudio2Create(&m_xaudio2, 0, XAUDIO2_DEFAULT_PROCESSOR);
     if (FAILED(hr))
     {
-        Logger::Error("XAudio2Create failed: 0x{:08X}", static_cast<u32>(hr));
+        Logger::Error("XAudio2 の初期化に失敗しました: 0x{:08X}", static_cast<u32>(hr));
         return;
     }
 
@@ -36,7 +36,7 @@ void AudioSystem::Initialize(const std::string& assetsDir)
     hr = m_xaudio2->CreateMasteringVoice(&m_masterVoice);
     if (FAILED(hr))
     {
-        Logger::Error("CreateMasteringVoice failed: 0x{:08X}", static_cast<u32>(hr));
+        Logger::Error("マスタリングボイスの作成に失敗しました: 0x{:08X}", static_cast<u32>(hr));
         return;
     }
 
@@ -59,7 +59,7 @@ void AudioSystem::Initialize(const std::string& assetsDir)
         m_listener.OrientFront = {0.0f, 0.0f, 1.0f};
         m_listener.OrientTop   = {0.0f, 1.0f, 0.0f};
         if (!m_x3dReady)
-            Logger::Warn("X3DAudioInitialize failed: spatial audio disabled");
+            Logger::Warn("X3DAudio の初期化に失敗したため、空間オーディオを無効化します");
     }
 
     ScanAudioFiles();
@@ -116,6 +116,12 @@ void AudioSystem::ScanAudioFiles()
     m_bgmList.clear();
     m_sfxList.clear();
 
+    // ゲームモードでは loose な assets/ はディスクに無く(全部 pak 内)、この一覧は
+    // エディタの音声ピッカ用。ディスク走査は無駄なうえ、AssetsDir(UTF-8)を
+    // std::filesystem::path(=ACP 解釈)に通すと非 ASCII フォルダ名で例外になり得る。
+    if (vfs::InGameMode())
+        return;
+
     auto scanDir = [&](const std::string& subDir, std::vector<std::string>& outList) {
         std::filesystem::path dir = std::filesystem::path(m_assetsDir) / subDir;
         if (!std::filesystem::exists(dir)) return;
@@ -125,7 +131,7 @@ void AudioSystem::ScanAudioFiles()
             if (!entry.is_regular_file()) continue;
             std::string ext = entry.path().extension().string();
             std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-            if (ext == ".wav" || ext == ".mp3")
+            if (ext == ".wav" || ext == ".mp3" || ext == ".ogg")
             {
                 // assetsDir 相対パスで格納
                 auto relPath = std::filesystem::relative(entry.path(), m_assetsDir).string();
@@ -183,7 +189,7 @@ AudioClip* AudioSystem::GetOrLoadClip(const std::string& filePath)
     if (!loaded)
     {
         // 無言で消える音を可視化（pak ミス / 形式不明 / ファイル欠落）。
-        Logger::Warn("Audio load failed: '{}' (vfs+disk both failed; gameMode={})",
+        Logger::Warn("オーディオの読み込みに失敗しました: '{}'（vfs/ディスク両方失敗, gameMode={}）",
                      filePath, vfs::InGameMode());
         return nullptr;
     }
@@ -215,7 +221,7 @@ void AudioSystem::PlayBGM(const std::string& filePath, bool loop)
     HRESULT hr = m_xaudio2->CreateSourceVoice(&m_bgmVoice, &fmt);
     if (FAILED(hr))
     {
-        Logger::Error("CreateSourceVoice (BGM) failed: 0x{:08X}", static_cast<u32>(hr));
+        Logger::Error("ソースボイス作成（BGM）に失敗しました: 0x{:08X}", static_cast<u32>(hr));
         return;
     }
 
@@ -231,14 +237,49 @@ void AudioSystem::PlayBGM(const std::string& filePath, bool loop)
     hr = m_bgmVoice->SubmitSourceBuffer(&buffer);
     if (FAILED(hr))
     {
-        Logger::Error("SubmitSourceBuffer (BGM) failed: 0x{:08X}", static_cast<u32>(hr));
+        Logger::Error("バッファ送信（BGM）に失敗しました: 0x{:08X}", static_cast<u32>(hr));
         return;
     }
 
     m_bgmVoice->Start();
     m_currentBGMPath = filePath;
+    m_bgmLoop = loop;
 
     Logger::Info("BGM playing: {} (loop={})", filePath, loop);
+}
+
+void AudioSystem::SeekBGM(f32 seconds)
+{
+    if (!m_bgmVoice || m_currentBGMPath.empty()) return;
+
+    AudioClip* clip = GetOrLoadClip(m_currentBGMPath);
+    if (!clip) return;
+
+    const WAVEFORMATEX& fmt = clip->GetFormat();
+    if (fmt.nBlockAlign == 0 || fmt.nSamplesPerSec == 0) return;
+
+    const u32 totalFrames = clip->GetSizeInBytes() / fmt.nBlockAlign;
+    if (totalFrames == 0) return;
+    u32 frame = static_cast<u32>(seconds * static_cast<f32>(fmt.nSamplesPerSec));
+    frame %= totalFrames;   // ループ範囲内に丸める(負は呼び出し側で扱わない)
+
+    m_bgmVoice->Stop();
+    m_bgmVoice->FlushSourceBuffers();
+
+    XAUDIO2_BUFFER buffer{};
+    buffer.AudioBytes = clip->GetSizeInBytes();
+    buffer.pAudioData = clip->GetPCMData();
+    buffer.Flags      = XAUDIO2_END_OF_STREAM;
+    buffer.LoopCount  = m_bgmLoop ? XAUDIO2_LOOP_INFINITE : 0;
+    buffer.PlayBegin  = frame;   // ここから再生(ループ時は末尾→先頭に戻る)
+
+    HRESULT hr = m_bgmVoice->SubmitSourceBuffer(&buffer);
+    if (FAILED(hr))
+    {
+        Logger::Error("バッファ送信（BGMシーク）に失敗しました: 0x{:08X}", static_cast<u32>(hr));
+        return;
+    }
+    m_bgmVoice->Start();
 }
 
 void AudioSystem::StopBGM()
@@ -312,7 +353,7 @@ void AudioSystem::PlaySFX(const std::string& filePath, bool loop)
     HRESULT hr = m_xaudio2->CreateSourceVoice(&slot.voice, &fmt);
     if (FAILED(hr))
     {
-        Logger::Error("CreateSourceVoice (SFX) failed: 0x{:08X}", static_cast<u32>(hr));
+        Logger::Error("ソースボイス作成（SFX）に失敗しました: 0x{:08X}", static_cast<u32>(hr));
         return;
     }
 
@@ -327,7 +368,7 @@ void AudioSystem::PlaySFX(const std::string& filePath, bool loop)
     hr = slot.voice->SubmitSourceBuffer(&buffer);
     if (FAILED(hr))
     {
-        Logger::Error("SubmitSourceBuffer (SFX) failed: 0x{:08X}", static_cast<u32>(hr));
+        Logger::Error("バッファ送信（SFX）に失敗しました: 0x{:08X}", static_cast<u32>(hr));
         return;
     }
 
@@ -387,7 +428,7 @@ i32 AudioSystem::PlaySFXSpatial(const std::string& filePath, float x, float y, f
     // モノ以外は空間化できないので通常 SFX にフォールバック
     if (clip->GetFormat().nChannels != 1)
     {
-        Logger::Warn("PlaySFXSpatial: '{}' is not mono; playing as 2D SFX", filePath);
+        Logger::Warn("PlaySFXSpatial: '{}' はモノラルではないため 2D SFX として再生します", filePath);
         PlaySFX(filePath, loop);
         return -1;
     }
@@ -415,7 +456,7 @@ i32 AudioSystem::PlaySFXSpatial(const std::string& filePath, float x, float y, f
     HRESULT hr = m_xaudio2->CreateSourceVoice(&slot.voice, &fmt);
     if (FAILED(hr))
     {
-        Logger::Error("CreateSourceVoice (spatial) failed: 0x{:08X}", static_cast<u32>(hr));
+        Logger::Error("ソースボイス作成（空間SFX）に失敗しました: 0x{:08X}", static_cast<u32>(hr));
         return -1;
     }
 
@@ -435,7 +476,7 @@ i32 AudioSystem::PlaySFXSpatial(const std::string& filePath, float x, float y, f
     hr = slot.voice->SubmitSourceBuffer(&buffer);
     if (FAILED(hr))
     {
-        Logger::Error("SubmitSourceBuffer (spatial) failed: 0x{:08X}", static_cast<u32>(hr));
+        Logger::Error("バッファ送信（空間SFX）に失敗しました: 0x{:08X}", static_cast<u32>(hr));
         return -1;
     }
 

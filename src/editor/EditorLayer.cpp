@@ -7,9 +7,12 @@
 #include "editor/panels/InspectorPanel.h"
 #include "editor/panels/SceneViewPanel.h"
 #include "editor/panels/AssetBrowserPanel.h"
+#include "editor/panels/ConsolePanel.h"
 #include "editor/ModelThumbnailRenderer.h"
 #include "scene/Scene.h"
 #include "renderer/Camera.h"
+#include "renderer/Mesh.h"
+#include "resource/MaterialAssetIO.h"
 #include "core/GameClock.h"
 #include "core/Logger.h"
 
@@ -21,7 +24,10 @@
 
 #include <DirectXMath.h>
 #include <cmath>
+#include <cctype>
+#include <fstream>
 #include <string>
+#include <filesystem>
 
 namespace dx12e
 {
@@ -87,9 +93,11 @@ void EditorLayer::Initialize(EditorContext* ctx,
     m_inspector    = std::make_unique<InspectorPanel>();
     m_sceneView    = std::make_unique<SceneViewPanel>();
     m_assetBrowser = std::make_unique<AssetBrowserPanel>();
+    m_console      = std::make_unique<ConsolePanel>();
 
     m_hierarchy->SetAssetsDir(assetsDir);
     m_assetBrowser->Initialize(assetsDir, scriptsDir, resourceManager, srvHeap);
+    m_inspector->SetAssetBrowser(m_assetBrowser.get());
 }
 
 void EditorLayer::BuildDefaultLayout(ImGuiID dockspaceId, f32 /*toolbarHeight*/)
@@ -120,7 +128,10 @@ void EditorLayer::BuildDefaultLayout(ImGuiID dockspaceId, f32 /*toolbarHeight*/)
     // 左: ヒエラルキー
     ImGui::DockBuilderDockWindow(
         "\xe3\x83\x92\xe3\x82\xa8\xe3\x83\xa9\xe3\x83\xab\xe3\x82\xad\xe3\x83\xbc", dockLeft);
-    // 中央下: アセットブラウザ（単独で横長に使う）
+    // 中央下: コンソールを先にドック → アセットブラウザを後にドック
+    // （同ノードのタブ。アセットブラウザが既定のアクティブタブになる）
+    ImGui::DockBuilderDockWindow(
+        "\xe3\x82\xb3\xe3\x83\xb3\xe3\x82\xbd\xe3\x83\xbc\xe3\x83\xab", dockBottom);  // コンソール
     ImGui::DockBuilderDockWindow(
         "\xe3\x82\xa2\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88\xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6", dockBottom);
 
@@ -144,6 +155,8 @@ void EditorLayer::BuildDefaultLayout(ImGuiID dockspaceId, f32 /*toolbarHeight*/)
         ImGui::DockBuilderDockWindow("Scene Flow",              dockRightBottom);
         ImGui::DockBuilderDockWindow("Project",                 dockRightBottom);
         ImGui::DockBuilderDockWindow("Version Control (Git)",   dockRightBottom);
+        ImGui::DockBuilderDockWindow("Network",                 dockRightBottom);
+        ImGui::DockBuilderDockWindow("Network 設定",            dockRightBottom);
     }
     else
     {
@@ -174,7 +187,10 @@ void EditorLayer::Render(bool isPlaying,
                          bool& outPendingPlayMode,
                          const std::string& assetsDir,
                          f32 /*leftPanelWidth*/,
-                         f32 toolbarHeight)
+                         f32 toolbarHeight,
+                         ResourceManager* resourceManager,
+                         DescriptorHeap* srvHeap,
+                         ID3D12GraphicsCommandList* cmdList)
 {
     auto& reg = scene->GetRegistry();
 
@@ -185,11 +201,14 @@ void EditorLayer::Render(bool isPlaying,
     // ===== DockSpace（ツールバーの下に全画面） =====
     ImGuiID dockspaceId = 0;
     {
-        f32 displayW = ImGui::GetIO().DisplaySize.x;
-        f32 displayH = ImGui::GetIO().DisplaySize.y;
+        // multi-viewport有効時、ImGui座標はスクリーン座標になるためメインビューポート原点基準で置く
+        const ImGuiViewport* mainVp = ImGui::GetMainViewport();
+        f32 displayW = mainVp->Size.x;
+        f32 displayH = mainVp->Size.y;
 
-        ImGui::SetNextWindowPos(ImVec2(0, toolbarHeight), ImGuiCond_Always);
+        ImGui::SetNextWindowPos(ImVec2(mainVp->Pos.x, mainVp->Pos.y + toolbarHeight), ImGuiCond_Always);
         ImGui::SetNextWindowSize(ImVec2(displayW, displayH - toolbarHeight), ImGuiCond_Always);
+        ImGui::SetNextWindowViewport(mainVp->ID);
 
         ImGuiWindowFlags hostFlags =
             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
@@ -221,7 +240,9 @@ void EditorLayer::Render(bool isPlaying,
             m_ctx->showPostProcess = m_ctx->showPostParams = m_ctx->showSkybox =
                 m_ctx->showSSAO = m_ctx->showEngineSettings = m_ctx->showSceneFlow =
                 m_ctx->showProject = m_ctx->showVersionControl =
-                m_ctx->showMcpBridge = m_ctx->showBuildSettings = false;
+                m_ctx->showMcpBridge = m_ctx->showBuildSettings =
+                m_ctx->showNetworkStatus = m_ctx->showNetworkSettings =
+                m_ctx->showVfxEditor = m_ctx->showUiEditor = false;
             m_prevAnyToolShown = false;
             m_dockspaceBuilt = false;
             m_ctx->resetLayout = false;
@@ -262,6 +283,9 @@ void EditorLayer::Render(bool isPlaying,
 
     m_assetBrowser->Render(*m_ctx, clock->GetDeltaTime());
 
+    // コンソール（アセットブラウザの隣タブに常設。全ログ + Lua 即時実行）
+    m_console->Render(scriptEngine, isPlaying);
+
     // ===== 中央ノードの領域を取得し、シーンビューを 16:9 にレターボックス =====
     {
         ImVec2 nodePos, nodeSize;
@@ -272,9 +296,10 @@ void EditorLayer::Render(bool isPlaying,
         }
         else
         {
-            // フォールバック（全画面）
-            nodePos  = ImVec2(0, toolbarHeight);
-            nodeSize = ImGui::GetIO().DisplaySize;
+            // フォールバック（全画面。multi-viewport有効時はスクリーン座標なのでビューポート原点基準）
+            const ImGuiViewport* mainVp = ImGui::GetMainViewport();
+            nodePos  = ImVec2(mainVp->Pos.x, mainVp->Pos.y + toolbarHeight);
+            nodeSize = mainVp->Size;
             nodeSize.y -= toolbarHeight;
         }
         if (nodeSize.x < 1.0f) nodeSize.x = 1.0f;
@@ -341,15 +366,18 @@ void EditorLayer::Render(bool isPlaying,
         ImGui::PopStyleVar(2);
         ImGui::PopStyleColor(2);
 
-        // ---- 下中央: 選択オブジェクトのラベル ----
+        // ---- 画面左下: 選択オブジェクトのラベル（Unreal Engine 方式）----
+        // シーンビュー内に重ねると作業の邪魔になるため、シーンビューではなく
+        // エディタウィンドウ全体の左下隅に固定表示する。
         if (m_ctx->HasSelection() && reg.valid(m_ctx->selectedEntity)
             && reg.all_of<NameTag>(m_ctx->selectedEntity))
         {
             const std::string& selName = reg.get<NameTag>(m_ctx->selectedEntity).name;
+            const ImGuiViewport* mainVp = ImGui::GetMainViewport();
             ImGui::SetNextWindowPos(
-                ImVec2(m_viewportPos.x + m_viewportSize.x * 0.5f,
-                       m_viewportPos.y + 10.0f),
-                ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+                ImVec2(mainVp->Pos.x + 10.0f,
+                       mainVp->Pos.y + mainVp->Size.y - 10.0f),
+                ImGuiCond_Always, ImVec2(0.0f, 1.0f));
             ImGui::SetNextWindowBgAlpha(0.82f);
             ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::AppBg);
             ImGui::PushStyleColor(ImGuiCol_Border,   theme::AccentDim2);
@@ -444,17 +472,79 @@ void EditorLayer::Render(bool isPlaying,
                     AssetBrowserPanel::kDragDropPayloadType))
             {
                 const char* droppedPath = static_cast<const char*>(payload->Data);
-                PendingSpawnRequest req;
-                req.modelPath = droppedPath;
 
-                // マウス座標からワールド座標を計算（Y=0 平面との交点）
-                req.position = ScreenToWorldOnGroundPlane(
-                    camera, ImGui::GetIO().MousePos,
-                    m_viewportPos, m_viewportSize);
+                std::string ext = std::filesystem::path(droppedPath).extension().string();
+                for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
-                m_ctx->pendingSpawns.push_back(req);
-                Logger::Info("Dropped to scene at ({:.1f}, {:.1f}, {:.1f}): {}",
-                    req.position.x, req.position.y, req.position.z, droppedPath);
+                if (AssetBrowserPanel::ClassifyExtension(ext) == AssetBrowserPanel::AssetType::Material)
+                {
+                    // .dxmat は「配置」ではなく、ドロップ先メッシュ(サブメッシュ単位)へのマテリアル適用
+                    // (Unity/Unreal と同じ操作感。Inspector のマテリアルスロット D&D と同じ経路)。
+                    SubmeshPickResult pick = m_sceneView->PickEntityAndSubmesh(
+                        reg, camera, m_viewportPos.x, m_viewportPos.y,
+                        m_viewportSize.x, m_viewportSize.y);
+                    if (pick.entity != entt::null && reg.all_of<MeshRenderer>(pick.entity))
+                    {
+                        auto& mr = reg.get<MeshRenderer>(pick.entity);
+                        MeshRenderer before = mr;
+
+                        // 絶対パス → assets 相対(InspectorPanel の D&D と同じ変換)
+                        std::string abs  = std::filesystem::path(droppedPath).lexically_normal().string();
+                        std::string base = std::filesystem::path(assetsDir).lexically_normal().string();
+                        std::replace(abs.begin(), abs.end(), '\\', '/');
+                        std::replace(base.begin(), base.end(), '\\', '/');
+                        std::string rel = (abs.rfind(base, 0) == 0) ? abs.substr(base.size()) : abs;
+
+                        MeshRenderer::SetOverride(mr.materialAsset, pick.submeshIndex, rel);
+
+                        // UVタイリングが既定値(1.0)のままなら .dxmat の値を初期値としてコピー
+                        if (mr.uvScaleU == 1.0f && mr.uvScaleV == 1.0f)
+                        {
+                            std::ifstream ifs(assetsDir + rel, std::ios::binary);
+                            if (ifs)
+                            {
+                                std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(ifs)),
+                                                            std::istreambuf_iterator<char>());
+                                MaterialAssetData data;
+                                if (ParseMaterialAsset(bytes, data) &&
+                                    pick.submeshIndex < mr.meshes.size() && mr.meshes[pick.submeshIndex])
+                                {
+                                    mr.uvScaleU = data.uvTilingU;
+                                    mr.uvScaleV = data.uvTilingV;
+                                    if (scene)
+                                        for (auto* mesh : mr.meshes)
+                                            if (mesh) mesh->ApplyUVScale(*scene->GetDevice(), mr.uvScaleU, mr.uvScaleV);
+                                }
+                            }
+                        }
+
+                        m_ctx->undoSystem.PushCommand(std::make_unique<ComponentEditCommand<MeshRenderer>>(
+                            &reg, pick.entity, before, mr, "マテリアル割当(D&D)"));
+                        Logger::Info("マテリアルD&D適用: entity={} submesh={} -> {}",
+                            static_cast<u32>(pick.entity), pick.submeshIndex, rel);
+                    }
+                    else
+                    {
+                        Logger::Info("マテリアルD&D: ドロップ先にメッシュがないため何もしません");
+                    }
+                }
+                else
+                {
+                    // Unity 準拠: シーンビューへのドロップは常に「配置」
+                    // (画像はスプライト、モデル/プレハブはそのまま生成。Application 側で振り分け)。
+                    // メッシュへのテクスチャ貼り付けは Inspector のテクスチャスロット D&D が専用操作。
+                    PendingSpawnRequest req;
+                    req.modelPath = droppedPath;
+
+                    // マウス座標からワールド座標を計算（Y=0 平面との交点）
+                    req.position = ScreenToWorldOnGroundPlane(
+                        camera, ImGui::GetIO().MousePos,
+                        m_viewportPos, m_viewportSize);
+
+                    m_ctx->pendingSpawns.push_back(req);
+                    Logger::Info("Dropped to scene at ({:.1f}, {:.1f}, {:.1f}): {}",
+                        req.position.x, req.position.y, req.position.z, droppedPath);
+                }
             }
             ImGui::EndDragDropTarget();
         }
@@ -467,6 +557,13 @@ void EditorLayer::Render(bool isPlaying,
     // ===== 3D ビューポート操作（カメラナビ + ピッキング + ギズモ + 削除）=====
     if (!isPlaying)
     {
+        // ゲーム内 UI のプレビュー（UI編集モード ON のとき）。背景 DrawList に描くため
+        // ギズモ（RenderGizmo）より先に呼ぶ＝ギズモやハンドルが UI の手前に重なる。
+        // Play 中/ゲームモードは Application の ##GameUI 経路が描くのでここでは呼ばない。
+        m_sceneView->RenderUiPreview(reg, *m_ctx,
+                                     m_viewportPos.x, m_viewportPos.y,
+                                     m_viewportSize.x, m_viewportSize.y,
+                                     resourceManager, srvHeap, cmdList);
         m_sceneView->HandleCameraNavigation(reg, *m_ctx, camera,
                                             m_viewportPos.x, m_viewportPos.y,
                                             m_viewportSize.x, m_viewportSize.y);
@@ -479,12 +576,20 @@ void EditorLayer::Render(bool isPlaying,
         m_sceneView->RenderGizmo(reg, *m_ctx, camera,
                                  m_viewportPos.x, m_viewportPos.y,
                                  m_viewportSize.x, m_viewportSize.y);
+        // UI 編集モードの UI 要素編集（選択/移動/リサイズ）はギズモ確定後・3D ピッキング前。
+        // UI 要素にヒットしたクリックはここで消費され、HandlePicking へは渡らない。
+        m_sceneView->HandleUiEditing(reg, *m_ctx,
+                                     m_viewportPos.x, m_viewportPos.y,
+                                     m_viewportSize.x, m_viewportSize.y);
         m_sceneView->HandlePicking(reg, *m_ctx, camera,
                                    m_viewportPos.x, m_viewportPos.y,
                                    m_viewportSize.x, m_viewportSize.y);
         m_sceneView->HandleDeleteKey(reg, *m_ctx, scene,
                                      m_viewportPos.x, m_viewportPos.y,
                                      m_viewportSize.x, m_viewportSize.y);
+        m_sceneView->HandleTextureContextMenu(reg, *m_ctx, camera,
+                                              m_viewportPos.x, m_viewportPos.y,
+                                              m_viewportSize.x, m_viewportSize.y);
     }
 }
 
@@ -507,6 +612,11 @@ void EditorLayer::SetThumbnailRenderer(ModelThumbnailRenderer* renderer)
 {
     m_thumbRenderer = renderer;
     m_assetBrowser->SetThumbnailRenderer(renderer);
+}
+
+void EditorLayer::SetMaterialPreviewRenderer(MaterialPreviewRenderer* renderer)
+{
+    m_assetBrowser->SetMaterialPreviewRenderer(renderer);
 }
 
 } // namespace dx12e

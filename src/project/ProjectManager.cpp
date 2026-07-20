@@ -3,6 +3,7 @@
 #include "core/Logger.h"
 
 #include <Windows.h>
+#include <atomic>
 #include <fstream>
 #include <filesystem>
 #include <algorithm>
@@ -146,8 +147,9 @@ bool ProjectManager::PickFolder(HWND /*hwnd*/, std::string& outPath, const wchar
                         int len = WideCharToMultiByte(CP_UTF8, 0, pathW, -1, nullptr, 0, nullptr, nullptr);
                         if (len > 0)
                         {
-                            std::string s(static_cast<size_t>(len - 1), '\0');
+                            std::string s(static_cast<size_t>(len), '\0');
                             WideCharToMultiByte(CP_UTF8, 0, pathW, -1, s.data(), len, nullptr, nullptr);
+                            s.pop_back();
                             picked = s;
                             ok = true;
                         }
@@ -425,25 +427,46 @@ LauncherAction ProjectManager::RenderLauncher(ProjectInfo& outInfo, HWND hwnd,
 
     // --- GitHub ログイン状態 ---
     {
-        static bool s_loginChecked = false;
+        static bool        s_loginChecked = false;
         static std::string s_loginUser;
+        static bool        s_loginRunning = false;
+        static std::atomic<bool> s_loginDone{false};
+        static std::string s_loginPendingUser;
+        // ponytail: ランチャーはアプリ全体の m_gitAbort を持たないので、ログイン待ちスレッドは
+        // detach する（gh.exe の終了待ちだけで Application/ProjectManager の状態には触れないので
+        // プロセス終了時に残っても無害）。中断UIが要るなら Application 側に寄せる。
+        static const std::atomic<bool> s_neverAbort{false};
+
         if (launcherAppearing) s_loginChecked = false;  // ランチャー再入時だけ再確認
-        if (!s_loginChecked)
+        if (!s_loginChecked && !s_loginRunning)
         {
             s_loginChecked = true;
             s_loginUser = (s_ghAvail == 1) ? GitIntegration::GitHubUser() : std::string();
         }
+        if (s_loginRunning && s_loginDone.load())        // 非同期ログイン待ちの完了を取り込む
+        {
+            s_loginUser    = s_loginPendingUser;
+            s_loginRunning = false;
+        }
+
         ImGui::SetCursorPosX(24);
         if (s_ghAvail == 0)
             ImGui::TextDisabled("GitHub CLI (gh) が無いため、ログインは使えません");
+        else if (s_loginRunning)
+            ImGui::TextDisabled("ログイン待ち中...（別ウィンドウでブラウザ認証してや）");
         else if (s_loginUser.empty())
         {
             ImGui::TextDisabled("GitHub: 未ログイン");
             ImGui::SameLine();
             if (ImGui::SmallButton("ログイン"))
             {
-                GitIntegration::LaunchLogin();
-                s_loginChecked = false;  // 完了後の再表示で更新
+                s_loginRunning = true;
+                s_loginDone.store(false);
+                std::thread([]{
+                    auto r = GitIntegration::LoginAndWait(s_neverAbort);
+                    s_loginPendingUser = r.output;
+                    s_loginDone.store(true);
+                }).detach();
             }
         }
         else
@@ -550,6 +573,11 @@ void ProjectManager::SaveLastOpenedScene(const std::string& scenePath)
     std::ofstream ofs(filePath);
     if (ofs.is_open())
         ofs << j.dump(2);
+}
+
+bool ProjectManager::ProjectFromFolder(const std::string& dir, ProjectInfo& out)
+{
+    return MakeProjectFromFolder(dir, out);
 }
 
 std::string ProjectManager::LoadLastOpenedScene()

@@ -1,7 +1,9 @@
 #include "editor/panels/AssetBrowserPanel.h"
 #include "editor/EditorContext.h"
 #include "editor/ModelThumbnailRenderer.h"
+#include "editor/panels/MaterialPreviewRenderer.h"
 #include "resource/ResourceManager.h"
+#include "resource/MaterialAssetIO.h"
 #include "graphics/Texture.h"
 #include "graphics/DescriptorHeap.h"
 #include "project/ProjectManager.h"
@@ -119,6 +121,19 @@ void AssetBrowserPanel::LoadPendingThumbnails(ID3D12GraphicsCommandList* cmdList
         m_pendingThumbnailLoads.begin() + static_cast<ptrdiff_t>(count));
 }
 
+u64 AssetBrowserPanel::GetOrQueueThumbnail(const std::string& absPath)
+{
+    auto it = m_thumbnailCache.find(absPath);
+    if (it != m_thumbnailCache.end())
+        return (it->second.loaded && !it->second.failed) ? it->second.gpuHandle : 0;
+
+    // グリッド表示(Render内)と同じキュー+プレースホルダ方式。LoadPendingThumbnailsが
+    // 次フレーム以降に実ロードする(呼び出し側は0が返る間は「読み込み中」として扱うこと)。
+    m_pendingThumbnailLoads.push_back(absPath);
+    m_thumbnailCache[absPath] = ThumbnailInfo{};
+    return 0;
+}
+
 const char* AssetBrowserPanel::GetTypeIcon(AssetType type)
 {
     switch (type)
@@ -130,6 +145,8 @@ const char* AssetBrowserPanel::GetTypeIcon(AssetType type)
     case AssetType::Script:  return "Script";
     case AssetType::Audio:   return "Audio";
     case AssetType::Prefab:  return "Prefab";
+    case AssetType::Shader:  return "Shader";
+    case AssetType::Material: return "Material";
     default:                 return "File";
     }
 }
@@ -146,6 +163,8 @@ static ImVec4 AssetTypeColor(int type)
     case 4: return ImVec4(0.4f, 0.55f, 1.0f, 1.0f);   // Script
     case 5: return ImVec4(0.85f, 0.35f, 0.85f, 1.0f);  // Audio
     case 6: return ImVec4(0.55f, 0.85f, 0.95f, 1.0f);  // Prefab
+    case 7: return ImVec4(0.75f, 0.45f, 0.95f, 1.0f);  // Shader
+    case 8: return ImVec4(0.95f, 0.65f, 0.20f, 1.0f);  // Material
     default: return ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
     }
 }
@@ -363,8 +382,8 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
 
     // ===== 上部: フィルタタブ + サイズスライダー =====
     {
-        const char* filterNames[] = {"All", "3D Models", "Scenes", "Textures", "Scripts", "Audio"};
-        for (int i = 0; i < 6; ++i)
+        const char* filterNames[] = {"All", "3D Models", "Scenes", "Textures", "Scripts", "Audio", "Materials"};
+        for (int i = 0; i < 7; ++i)
         {
             if (i > 0) ImGui::SameLine();
             bool active = (m_filterIndex == i);
@@ -498,6 +517,7 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
             case 3: filterType = AssetType::Texture;  break;
             case 4: filterType = AssetType::Script;   break;
             case 5: filterType = AssetType::Audio;    break;
+            case 6: filterType = AssetType::Material; break;
             }
             entries.erase(
                 std::remove_if(entries.begin(), entries.end(),
@@ -540,6 +560,40 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                     {
                         m_pendingThumbnailLoads.push_back(key);
                         m_thumbnailCache[key] = ThumbnailInfo{};
+                    }
+                }
+
+                // マテリアルプレビュー: 球体サムネイル(MaterialPreviewRenderer)を優先。
+                // 生成待ちの間・レンダラー不在時は従来の albedo 平面サムネで代用する。
+                if (entry.type == AssetType::Material && !entry.isDirectory)
+                {
+                    u64 sphereHandle = m_materialPreview
+                        ? m_materialPreview->GetOrQueueThumbnail(entry.path.string()) : 0;
+                    if (sphereHandle != 0)
+                    {
+                        ImTextureID texId = static_cast<ImTextureID>(sphereHandle);
+                        ImVec2 pv = ImGui::GetCursorScreenPos();
+                        ImGui::Image(texId, ImVec2(thumbnailSize, thumbnailSize));
+                        DecoratePreview(pv, thumbnailSize, AssetTypeColor(static_cast<int>(entry.type)));
+                        hasPreview = true;
+                    }
+                    else if (!entry.materialThumbSource.empty())
+                    {
+                        const std::string& key = entry.materialThumbSource;
+                        auto it = m_thumbnailCache.find(key);
+                        if (it != m_thumbnailCache.end() && it->second.loaded && it->second.gpuHandle != 0)
+                        {
+                            ImTextureID texId = static_cast<ImTextureID>(it->second.gpuHandle);
+                            ImVec2 pv = ImGui::GetCursorScreenPos();
+                            ImGui::Image(texId, ImVec2(thumbnailSize, thumbnailSize));
+                            DecoratePreview(pv, thumbnailSize, AssetTypeColor(static_cast<int>(entry.type)));
+                            hasPreview = true;
+                        }
+                        else if (it == m_thumbnailCache.end())
+                        {
+                            m_pendingThumbnailLoads.push_back(key);
+                            m_thumbnailCache[key] = ThumbnailInfo{};
+                        }
                     }
                 }
 
@@ -610,7 +664,8 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                 // --- ドラッグ&ドロップソース ---
                 if (!entry.isDirectory &&
                     (entry.type == AssetType::Model || entry.type == AssetType::Texture ||
-                     entry.type == AssetType::Script || entry.type == AssetType::Prefab))
+                     entry.type == AssetType::Script || entry.type == AssetType::Prefab ||
+                     entry.type == AssetType::Material))
                 {
                     if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
                     {
@@ -680,9 +735,14 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                         req.position = {0.0f, 0.0f, 0.0f};
                         ctx.pendingSpawns.push_back(req);
                     }
-                    else if (entry.type == AssetType::Script)
+                    else if (entry.type == AssetType::Script || entry.type == AssetType::Shader)
                     {
                         OpenInVSCode(entry.path.string());
+                    }
+                    else if (entry.type == AssetType::Material)
+                    {
+                        ctx.pendingOpenMaterialPath = entry.path.string();
+                        ctx.showMaterialEditor = true;
                     }
                 }
 
@@ -712,7 +772,8 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                     {
                         if (ImGui::MenuItem("\xe9\x96\x8b\xe3\x81\x8f"))  // 開く
                         {
-                            if (entry.type == AssetType::Scene || entry.type == AssetType::Script)
+                            if (entry.type == AssetType::Scene || entry.type == AssetType::Script ||
+                                entry.type == AssetType::Shader)
                                 OpenInVSCode(entry.path.string());
                             else
                                 ShellExecuteA(nullptr, "open", entry.path.string().c_str(),
@@ -747,7 +808,7 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                         ImGui::TextDisabled("Double-click: Spawn | Drag: D&D to scene");
                     else if (entry.type == AssetType::Scene)
                         ImGui::TextDisabled("Double-click: Load scene");
-                    else if (entry.type == AssetType::Script)
+                    else if (entry.type == AssetType::Script || entry.type == AssetType::Shader)
                         ImGui::TextDisabled("Double-click: Open in VS Code");
                     ImGui::EndTooltip();
                 }
@@ -790,6 +851,14 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                 ctx.showNewScriptDialog = true;
                 std::memset(ctx.newScriptNameBuf, 0, sizeof(ctx.newScriptNameBuf));
                 strncpy_s(ctx.newScriptNameBuf, "NewScript", _TRUNCATE);
+            }
+
+            // 新規シェーダー
+            if (ImGui::MenuItem("\xe6\x96\xb0\xe8\xa6\x8f\xe3\x82\xb7\xe3\x82\xa7\xe3\x83\xbc\xe3\x83\x80\xe3\x83\xbc"))  // 新規シェーダー
+            {
+                ctx.showNewShaderDialog = true;
+                std::memset(ctx.newShaderNameBuf, 0, sizeof(ctx.newShaderNameBuf));
+                strncpy_s(ctx.newShaderNameBuf, "NewShader", _TRUNCATE);
             }
 
             ImGui::Separator();
@@ -842,7 +911,7 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
             std::error_code ec;
             if (isDir) std::filesystem::remove_all(m_pendingDeletePath, ec);
             else       std::filesystem::remove(m_pendingDeletePath, ec);
-            if (ec) Logger::Warn("Asset delete failed: {} ({})", m_pendingDeletePath.string(), ec.message());
+            if (ec) Logger::Warn("アセットの削除に失敗しました: {}（{}）", m_pendingDeletePath.string(), ec.message());
             else    Logger::Info("Asset deleted: {}", m_pendingDeletePath.string());
             if (isCurrentScene) ctx.currentScenePath.clear();
             if (m_selectedPath == m_pendingDeletePath) m_selectedPath.clear();
@@ -910,6 +979,23 @@ void AssetBrowserPanel::Refresh()
         else
         {
             entry.type = ClassifyExtension(dirEntry.path().extension().string());
+            if (entry.type == AssetType::Material)
+            {
+                // サムネイルは .dxmat の albedo テクスチャを使い回す(軽量な同期読み込み、
+                // JSON数百バイト程度なので Refresh の頻度でも問題にならない)。
+                std::ifstream ifs(entry.path, std::ios::binary);
+                if (ifs)
+                {
+                    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+                    MaterialAssetData data;
+                    if (ParseMaterialAsset(bytes, data) && !data.albedoPath.empty())
+                    {
+                        std::filesystem::path abs = m_assetsRoot / data.albedoPath;
+                        if (std::filesystem::exists(abs))
+                            entry.materialThumbSource = abs.string();
+                    }
+                }
+            }
             files.push_back(entry);
         }
     }
@@ -934,10 +1020,14 @@ AssetBrowserPanel::AssetType AssetBrowserPanel::ClassifyExtension(const std::str
         return AssetType::Scene;
     if (ext == ".lua")
         return AssetType::Script;
+    if (ext == ".hlsl" || ext == ".hlsli")
+        return AssetType::Shader;
     if (ext == ".wav" || ext == ".mp3" || ext == ".ogg")
         return AssetType::Audio;
     if (ext == ".prefab")
         return AssetType::Prefab;
+    if (ext == ".dxmat")
+        return AssetType::Material;
     return AssetType::Other;
 }
 

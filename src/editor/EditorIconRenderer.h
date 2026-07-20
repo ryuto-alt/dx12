@@ -40,6 +40,9 @@ public:
     void Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat, DXGI_FORMAT dsvFormat,
                     const std::wstring& shaderDir);
 
+    // シェーダーホットリロード用。通常アイコン/ビルボード両 PSO を作り直す(ルートシグネチャ/頂点バッファは不変)。
+    void RecreatePipelines(GraphicsDevice& device);
+
     void BeginFrame();
 
     void CollectFromRegistry(entt::registry& registry, const EditorContext& ctx);
@@ -85,6 +88,8 @@ private:
                              const DirectX::XMFLOAT3& color);
 
     static constexpr u32 kMaxVertices = 65536;
+    // in-flight 多重度（SwapChain::kFrameCount と一致）。動的VBを区画リングで書き分ける
+    static constexpr u32 kFrames      = 3;
 
     // 3D ライン（選択時の補助線: フラスタム / 範囲球 / 矢印）
     std::vector<IconLineVertex> m_vertices;
@@ -100,7 +105,13 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature>  m_billboardRootSig;
     Microsoft::WRL::ComPtr<ID3D12PipelineState>  m_billboardPSO;
 
+    u32  m_frameIdx    = 0;   // 動的VBの書き込み区画（Render毎に巡回）
     bool m_initialized = false;
+
+    // RecreatePipelines 用に保持
+    std::wstring m_shaderDir;
+    DXGI_FORMAT  m_rtvFormat = DXGI_FORMAT_UNKNOWN;
+    DXGI_FORMAT  m_dsvFormat = DXGI_FORMAT_UNKNOWN;
 };
 
 } // namespace dx12e

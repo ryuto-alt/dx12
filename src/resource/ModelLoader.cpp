@@ -7,13 +7,16 @@
 #include "graphics/DescriptorHeap.h"
 #include "resource/ResourceManager.h"
 #include "resource/VfsIOSystem.h"
+#include "core/vfs/Vfs.h"
 
 #include <cstdlib>
+#include <cctype>   // ::tolower(拡張子の小文字化)
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 #include <assimp/config.h>
 #include <algorithm>
+#include <unordered_set>   // Probe のボーン名ユニーク数え上げ用
 
 #include <Windows.h>
 
@@ -38,8 +41,9 @@ std::wstring ToWideString(const char* str)
         return {};
     }
 
-    std::wstring result(static_cast<size_t>(len) - 1, L'\0');
+    std::wstring result(static_cast<size_t>(len), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, str, -1, result.data(), len);
+    result.pop_back();
     return result;
 }
 
@@ -49,25 +53,33 @@ std::filesystem::path ResolveTexturePath(
 {
     std::wstring wide = ToWideString(rawPath);
     std::filesystem::path p(wide);
-    std::error_code ec;
+
+    // ディスクだけでなく VFS(game.pak) も見る。ゲームモードではルーズファイルが
+    // 存在しないため、fs::exists だけだと .mtl の map_Kd 等が全て解決失敗して白くなる。
+    auto found = [](const std::filesystem::path& candidate) {
+        if (vfs::ExistsAbs(candidate.wstring()))
+            return true;
+        std::error_code ec;
+        return std::filesystem::exists(candidate, ec);
+    };
 
     // 1. 絶対パスがそのまま存在する
-    if (p.is_absolute() && std::filesystem::exists(p, ec))
+    if (p.is_absolute() && found(p))
         return p;
 
     // 2. モデルと同じディレクトリにファイル名だけで探す
     auto byFilename = modelDir / p.filename();
-    if (std::filesystem::exists(byFilename, ec))
+    if (found(byFilename))
         return byFilename;
 
     // 3. モデルディレクトリからの相対パス
     auto relative = modelDir / p;
-    if (std::filesystem::exists(relative, ec))
+    if (found(relative))
         return relative;
 
     // 4. textures/ サブフォルダ
     auto inTextures = modelDir / "textures" / p.filename();
-    if (std::filesystem::exists(inTextures, ec))
+    if (found(inTextures))
         return inTextures;
 
     return {}; // 見つからない
@@ -209,7 +221,10 @@ std::unique_ptr<AnimationClip> BuildAnimationClipFromAnim(
         clip->AddTrack(std::move(track));
     }
 
-    Logger::Info("AnimationClip built: '{}' {} tracks, duration={:.2f}",
+    // ticks → 秒へ正規化（glTF=1000ticks/s(ms)、FBX=30等の単位差をロード時に吸収）
+    clip->NormalizeToSeconds();
+
+    Logger::Info("AnimationClip built: '{}' {} tracks, duration={:.2f}s",
                  clip->GetName(), clip->GetTrackCount(), clip->GetDuration());
     return clip;
 }
@@ -365,7 +380,7 @@ std::unique_ptr<NodeAnimationClip> BuildNodeAnimClipFromAnim(
         i32 nodeIndex = graph.FindNodeIndex(nodeName);
         if (nodeIndex < 0)
         {
-            Logger::Warn("  NodeAnim channel '{}' has no matching node - skipped", nodeName);
+            Logger::Warn("  NodeAnim チャンネル '{}' に対応するノードが無いためスキップしました", nodeName);
             continue;
         }
 
@@ -408,7 +423,10 @@ std::unique_ptr<NodeAnimationClip> BuildNodeAnimClipFromAnim(
         clip->AddTrack(std::move(track));
     }
 
-    Logger::Info("NodeAnimClip built: '{}' {} tracks, duration={:.2f}",
+    // ticks → 秒へ正規化（AnimationClip と同じ規約）
+    clip->NormalizeToSeconds();
+
+    Logger::Info("NodeAnimClip built: '{}' {} tracks, duration={:.2f}s",
                  clip->GetName(), clip->GetTrackCount(), clip->GetDuration());
     return clip;
 }
@@ -437,6 +455,62 @@ std::vector<std::unique_ptr<NodeAnimationClip>> BuildAllNodeAnimClips(
 
 } // anonymous namespace
 
+ModelProbeInfo ModelLoader::Probe(const std::filesystem::path& filePath)
+{
+    ModelProbeInfo info;
+    Assimp::Importer importer;
+    // メタ情報だけ欲しいので後処理は最小限(AABB 生成のみ)。三角形化しないので faces は
+    // ポリゴン数(三角形換算前)になる。
+    const aiScene* scene = importer.ReadFile(filePath.string(),
+                                             static_cast<unsigned>(aiProcess_GenBoundingBoxes));
+    if (!scene || !scene->mRootNode)
+    {
+        info.error = importer.GetErrorString();
+        if (info.error.empty()) info.error = "unknown import error";
+        return info;
+    }
+    info.meshCount     = scene->mNumMeshes;
+    info.materialCount = scene->mNumMaterials;
+
+    std::unordered_set<std::string> boneNames;
+    bool first = true;
+    for (unsigned i = 0; i < scene->mNumMeshes; ++i)
+    {
+        const aiMesh* mesh = scene->mMeshes[i];
+        info.totalVertices += mesh->mNumVertices;
+        info.totalFaces    += mesh->mNumFaces;
+        for (unsigned b = 0; b < mesh->mNumBones; ++b)
+            boneNames.insert(mesh->mBones[b]->mName.C_Str());
+        const aiAABB& ab = mesh->mAABB;
+        if (first)
+        {
+            info.aabbMin[0] = ab.mMin.x; info.aabbMin[1] = ab.mMin.y; info.aabbMin[2] = ab.mMin.z;
+            info.aabbMax[0] = ab.mMax.x; info.aabbMax[1] = ab.mMax.y; info.aabbMax[2] = ab.mMax.z;
+            first = false;
+        }
+        else
+        {
+            info.aabbMin[0] = (std::min)(info.aabbMin[0], ab.mMin.x);
+            info.aabbMin[1] = (std::min)(info.aabbMin[1], ab.mMin.y);
+            info.aabbMin[2] = (std::min)(info.aabbMin[2], ab.mMin.z);
+            info.aabbMax[0] = (std::max)(info.aabbMax[0], ab.mMax.x);
+            info.aabbMax[1] = (std::max)(info.aabbMax[1], ab.mMax.y);
+            info.aabbMax[2] = (std::max)(info.aabbMax[2], ab.mMax.z);
+        }
+    }
+    info.boneCount   = static_cast<uint32_t>(boneNames.size());
+    info.hasSkeleton = !boneNames.empty();
+
+    for (unsigned a = 0; a < scene->mNumAnimations; ++a)
+    {
+        const aiAnimation* anim = scene->mAnimations[a];
+        const double tps = (anim->mTicksPerSecond != 0.0) ? anim->mTicksPerSecond : 25.0;
+        info.animations.push_back({ anim->mName.C_Str(), anim->mDuration / tps });
+    }
+    info.ok = true;
+    return info;
+}
+
 ModelData ModelLoader::LoadFromFile(
     GraphicsDevice& device,
     ID3D12GraphicsCommandList* cmdList,
@@ -446,20 +520,22 @@ ModelData ModelLoader::LoadFromFile(
     Assimp::Importer importer;
     importer.SetIOHandler(new VfsIOSystem()); // importer が所有権を持ち dtor で delete する
 
-    const unsigned int flags =
+    // 全フォーマットで FlipUVs を掛ける(従来挙動)。assimp の glTF インポータは UV を
+    // 左下原点(OpenGL流)で返すため、FlipUVs で D3D の左上原点に揃う(実機検証済み)。
+    unsigned int flags =
         aiProcess_Triangulate |
-        aiProcess_FlipUVs |
         aiProcess_GenNormals |
         aiProcess_CalcTangentSpace |
         aiProcess_JoinIdenticalVertices |
         aiProcess_LimitBoneWeights |
-        aiProcess_PopulateArmatureData;
+        aiProcess_PopulateArmatureData |
+        aiProcess_FlipUVs;
 
     const aiScene* scene = importer.ReadFile(filePath.string(), flags);
 
     if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || !scene->mRootNode)
     {
-        Logger::Error("Failed to load model: {}", filePath.string());
+        Logger::Error("モデルの読み込みに失敗しました: {}", filePath.string());
         return {};
     }
 
@@ -478,10 +554,26 @@ ModelData ModelLoader::LoadFromFile(
     std::vector<std::unique_ptr<NodeAnimationClip>> nodeAnimClips;
     std::vector<DirectX::XMMATRIX> bakeGlobalMatrices; // per-node bake matrices (empty if not applicable)
 
-    if (!skeleton && scene->mNumAnimations > 0)
+    if (!skeleton)
     {
         nodeGraph = BuildNodeGraph(scene);
-        if (nodeGraph)
+        if (nodeGraph && scene->mNumAnimations == 0)
+        {
+            // 静的モデル: ノード階層のデフォルト変換(mTransformation)を頂点へ焼き込む。
+            // これが無いと DCC ツール側で回転/移動させたオブジェクトがメッシュローカルの
+            // 姿勢のまま出てしまう(例: Blender で90度回転させた円柱が未回転で刺さる)。
+            const u32 nodeCount = nodeGraph->GetNodeCount();
+            bakeGlobalMatrices.resize(nodeCount, DirectX::XMMatrixIdentity());
+            for (u32 i = 0; i < nodeCount; ++i)
+            {
+                const SceneNode& sceneNode = nodeGraph->GetNode(i);
+                const DirectX::XMMATRIX localMatrix = DirectX::XMLoadFloat4x4(&sceneNode.localDefault);
+                bakeGlobalMatrices[i] = (sceneNode.parentIndex >= 0)
+                    ? localMatrix * bakeGlobalMatrices[static_cast<u32>(sceneNode.parentIndex)]
+                    : localMatrix;
+            }
+        }
+        else if (nodeGraph)
         {
             nodeAnimClips = BuildAllNodeAnimClips(scene, *nodeGraph);
 
@@ -766,7 +858,7 @@ ModelData ModelLoader::LoadFromFile(
                         }
                         else
                         {
-                            Logger::Warn("Texture not found: {}", texPath.C_Str());
+                            Logger::Warn("テクスチャが見つかりません: {}", texPath.C_Str());
                         }
                     }
                 }
@@ -873,7 +965,7 @@ std::vector<std::unique_ptr<AnimationClip>> ModelLoader::LoadAnimationsFromFile(
 
     if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || !scene->mRootNode)
     {
-        Logger::Error("Failed to load animations: {}", filePath.string());
+        Logger::Error("アニメーションの読み込みに失敗しました: {}", filePath.string());
         return {};
     }
 

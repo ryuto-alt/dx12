@@ -2,6 +2,7 @@
 #include "ecs/Components.h"
 #include "core/Logger.h"
 
+#include <algorithm>
 #include <cstdarg>
 #include <mutex>
 #include <vector>
@@ -471,15 +472,23 @@ void PhysicsSystem::RegisterBody(entt::registry& registry, entt::entity entity)
     }
     else if (box)
     {
-        shape = new JPH::BoxShape(JPH::Vec3(box->halfExtents.x, box->halfExtents.y, box->halfExtents.z));
+        // halfExtents は Transform.scale 乗算が前提（Trigger/EditorIconRenderer と同じ規約）。
+        // これが無いと SpawnBox→scale で見た目だけ拡大したボックス（Ground/Wall等）が
+        // 実際にはデフォルトの 0.5 半径でしか衝突しなくなる。
+        shape = new JPH::BoxShape(JPH::Vec3(box->halfExtents.x * transform->scale.x,
+                                             box->halfExtents.y * transform->scale.y,
+                                             box->halfExtents.z * transform->scale.z));
     }
     else if (sphere)
     {
-        shape = new JPH::SphereShape(sphere->radius);
+        f32 s = std::max({transform->scale.x, transform->scale.y, transform->scale.z});
+        shape = new JPH::SphereShape(sphere->radius * s);
     }
     else if (capsule)
     {
-        shape = new JPH::CapsuleShape(capsule->halfHeight, capsule->radius);
+        f32 radiusScale = std::max(transform->scale.x, transform->scale.z);
+        shape = new JPH::CapsuleShape(capsule->halfHeight * transform->scale.y,
+                                       capsule->radius * radiusScale);
     }
     else
     {
@@ -713,6 +722,57 @@ void PhysicsSystem::StepCharacters(f32 fixedDt, entt::registry& registry)
     }
 }
 
+void PhysicsSystem::StepSingleCharacter(entt::entity entity, f32 fixedDt, entt::registry& registry)
+{
+    // マルチプレイ予測リコンシリエーションのリプレイ専用。StepCharacters と同一ロジックだが
+    // 指定した1体のみを進める(他キャラ/剛体のワールド状態は現在のまま=一般的な近似)。
+    if (!m_initialized) return;
+    auto it = m_impl->characters.find(entity);
+    if (it == m_impl->characters.end()) return;
+    auto* cc = registry.try_get<CharacterController>(entity);
+    if (!cc) return;
+
+    auto& ch = it->second;
+    const JPH::Vec3 baseGravity = m_impl->physicsSystem->GetGravity();
+
+    JPH::CharacterVirtual::ExtendedUpdateSettings updateSettings;
+    JPH::DefaultBroadPhaseLayerFilter bpFilter(m_impl->objVsBpFilter, Layers::MOVING);
+    JPH::DefaultObjectLayerFilter     objFilter(m_impl->objLayerPairFilter, Layers::MOVING);
+
+    bool grounded = ch->GetGroundState() == JPH::CharacterVirtual::EGroundState::OnGround;
+    if (grounded && cc->_verticalVel < 0.0f) cc->_verticalVel = 0.0f;
+    cc->_verticalVel += baseGravity.GetY() * cc->gravityScale * fixedDt;
+    if (cc->_jumpQueued && grounded) { cc->_verticalVel = cc->jumpSpeed; }
+    cc->_jumpQueued = false;
+
+    JPH::Vec3 ground = ch->GetGroundVelocity();
+    JPH::Vec3 vel(cc->_desiredVel.x + (grounded ? ground.GetX() : 0.0f),
+                  cc->_verticalVel,
+                  cc->_desiredVel.z + (grounded ? ground.GetZ() : 0.0f));
+    ch->SetLinearVelocity(vel);
+
+    updateSettings.mWalkStairsStepUp = JPH::Vec3(0, cc->stepHeight, 0);
+
+    ch->ExtendedUpdate(
+        fixedDt,
+        baseGravity * cc->gravityScale,
+        updateSettings,
+        bpFilter, objFilter,
+        JPH::BodyFilter{}, JPH::ShapeFilter{},
+        *m_impl->tempAllocator);
+
+    cc->_grounded = ch->GetGroundState() == JPH::CharacterVirtual::EGroundState::OnGround;
+    cc->_desiredVel = { 0.0f, 0.0f, 0.0f };
+}
+
+void PhysicsSystem::SetCharacterPosition(entt::entity entity, DirectX::XMFLOAT3 pos)
+{
+    if (!m_initialized) return;
+    auto it = m_impl->characters.find(entity);
+    if (it == m_impl->characters.end()) return;
+    it->second->SetPosition(JPH::RVec3(pos.x, pos.y, pos.z));
+}
+
 void PhysicsSystem::SyncCharactersToTransforms(entt::registry& registry)
 {
     if (!m_initialized || m_impl->characters.empty()) return;
@@ -861,6 +921,12 @@ size_t PhysicsSystem::OverlapSphere(const XMFLOAT3& center,
     m_impl->physicsSystem->GetBroadPhaseQuery().CollideSphere(
         JPH::Vec3(center.x, center.y, center.z), radius, col);
     return col.count;
+}
+
+entt::entity PhysicsSystem::EntityForBody(uint32_t bodyId) const
+{
+    auto it = m_bodyToEntity.find(bodyId);
+    return it != m_bodyToEntity.end() ? it->second : entt::null;
 }
 
 // ========== Time Model（pause / manual step / gravity）==========

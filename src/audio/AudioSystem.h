@@ -34,6 +34,7 @@ public:
     void StopBGM();
     void PauseBGM();
     void ResumeBGM();
+    void SeekBGM(f32 seconds);   // 再生中BGMの位置を秒指定でジャンプ(ループ設定は維持)
 
     // SFX
     void PlaySFX(const std::string& filePath, bool loop = false);
@@ -72,6 +73,7 @@ private:
     // BGM
     IXAudio2SourceVoice* m_bgmVoice = nullptr;
     std::string          m_currentBGMPath;
+    bool                 m_bgmLoop = true;
 
     // SFX pool
     static constexpr u32 kMaxSFXVoices = 16;

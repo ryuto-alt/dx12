@@ -9,9 +9,11 @@ DirectX 12 ゲームエンジン + エディタ
   起動時に最新リリースを確認し、新しい版があれば自動で更新します（管理者不要）。
 
 ■ AI 連携（MCP）
-  本体に MCP サーバ（tools\mcp-server）を同梱しています。エディタの
-  「MCP / AI Bridge」窓のコマンドをコピーして実行すれば、Claude Code 等から
-  エディタを操作できます。利用には Node v24 以上が必要です（https://nodejs.org/）。
+  MCP サーバは別リポジトリで配布しています:
+    https://github.com/ryuto-alt/dx12-mcp
+  エディタの「MCP / AI Bridge」窓に表示されるインストールコマンドを実行すると、
+  Claude Code 等からエディタを操作できます。利用には Node v24 以上と Git が
+  必要です（https://nodejs.org/）。
 
 ■ アンインストール
   Windows の「アプリ」設定、または「プログラムの追加と削除」から

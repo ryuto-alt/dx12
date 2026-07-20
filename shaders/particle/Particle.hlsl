@@ -15,7 +15,12 @@ cbuffer CamCB : register(b0)
 };
 
 Texture2D    gSceneDepth : register(t0);   // R32_FLOAT シーン深度（NDC z）
-SamplerState sDepth      : register(s0);   // LINEAR CLAMP
+// t1 は GpuParticleDraw.hlsl が StructuredBuffer<GPart>(VS,root SRV) として使用中のため、
+// このPS専用テクスチャは t2 に置く（同じ Particle_PS.cso を GPU パーティクル描画でも共用するため）。
+Texture2D    gAlbedo     : register(t2);   // 粒子アルベド（texIndex!=0xFFFFFFFF の時のみサンプル）
+SamplerState sDepth      : register(s0);   // LINEAR CLAMP（デプス/アルベド共用）
+
+#define kNoTexture 0xFFFFFFFFu
 
 // kind 定義（C++ 側 ParticleKind と一致必須）
 #define KIND_GLOW     0
@@ -38,6 +43,7 @@ struct VSInput
     float  age01   : TEXCOORD3;   // 寿命 0..1
     uint   kind    : TEXCOORD4;   // 見た目の種別
     float  seed    : TEXCOORD5;   // 個体差用シード
+    uint   texIdx  : TEXCOORD6;   // SRVヒープの絶対インデックス。kNoTexture ならプロシージャル
     uint   vid     : SV_VertexID;
 };
 
@@ -50,6 +56,7 @@ struct VSOutput
     nointerpolation uint kind : TEXCOORD2;
     float  seed  : TEXCOORD3;
     float  viewZ : TEXCOORD4;    // ビュー空間 Z（= clip.w）
+    nointerpolation uint texIdx : TEXCOORD5;
 };
 
 // 四角形2三角形分のコーナー
@@ -63,9 +70,14 @@ VSOutput VSMain(VSInput i)
     float2 c = kCorners[i.vid];
     float3 worldPos;
 
+    // kind の上位ビットに粒子の向きモードがパックされている（C++側 ParticleSystem の GpuParticle 詰め参照）。
+    // 0=ビルボード（従来） 1=水平（XZ地面向き。リング/衝撃波/魔法陣） 2=垂直（XY,+Z正対。壁エフェクト）
+    uint orient = i.kind >> 16;
+    uint kind   = i.kind & 0xFFFFu;
+
     if (i.stretch > 0.0 && dot(i.vel, i.vel) > 1e-4)
     {
-        // 速度方向に伸びるストレッチビルボード（火花/筋/弾道）。
+        // 速度方向に伸びるストレッチビルボード（火花/筋/弾道）。orient は無視（速度整列が優先）。
         float3 vd = normalize(i.vel);
         float3 axisX = cross(vd, camRight.xyz);
         if (dot(axisX, axisX) < 1e-5) axisX = camUp.xyz;
@@ -77,12 +89,24 @@ VSOutput VSMain(VSInput i)
     }
     else
     {
-        // 通常の丸ビルボード（回転は火花の向き等に使用）
+        // 回転（ビルボードでは火花の向き / 水平・垂直では面内回転）
         float s = sin(i.rot), co = cos(i.rot);
         float2 r = float2(c.x * co - c.y * s, c.x * s + c.y * co);
+        float3 axisX = camRight.xyz;
+        float3 axisY = camUp.xyz;
+        if (orient == 1u)        // 水平: XZ平面（法線+Y）
+        {
+            axisX = float3(1, 0, 0);
+            axisY = float3(0, 0, 1);
+        }
+        else if (orient == 2u)   // 垂直: XY平面（法線+Z）
+        {
+            axisX = float3(1, 0, 0);
+            axisY = float3(0, 1, 0);
+        }
         worldPos = i.center
-                 + camRight.xyz * (r.x * i.size)
-                 + camUp.xyz    * (r.y * i.size);
+                 + axisX * (r.x * i.size)
+                 + axisY * (r.y * i.size);
     }
 
     VSOutput o;
@@ -90,8 +114,9 @@ VSOutput VSMain(VSInput i)
     o.color = i.color;
     o.uv    = c;   // フォールオフは放射状なので未回転の c を使う
     o.age01 = i.age01;
-    o.kind  = i.kind;
+    o.kind  = kind;   // PS には orient を剥がした純粋な kind を渡す
     o.seed  = i.seed;
+    o.texIdx = i.texIdx;
     o.viewZ = o.pos.w;   // 標準射影では w = ビュー空間 Z
     return o;
 }
@@ -179,13 +204,52 @@ void ShadeKind(VSOutput i, out float shape, out float3 kindColor)
     }
 }
 
+// ---- 歪みパーティクル PS（RG16F 歪みオフセットバッファへ加算）----
+// color.r = 歪み強度, color.a = 寿命フェード。出力 rg = ローカルUV単位のオフセット。
+// KIND_RING = 拡大する衝撃波（放射方向へ押し出す）/ その他 = 熱ゆらぎ（fbm ノイズベクトル）。
+float4 PSDistort(VSOutput i) : SV_TARGET
+{
+    // シーン深度による手動オクルージョン（壁の向こうを歪ませない）
+    float soft = 1.0;
+    if (params2.z > 0.0)
+    {
+        float2 suv = i.pos.xy * float2(params2.z, params2.w);
+        float sceneD = gSceneDepth.SampleLevel(sDepth, suv, 0).r;
+        float sceneZ = params2.y / (sceneD - params2.x);
+        soft = saturate((sceneZ - i.viewZ) / 0.5);
+    }
+    float strength = i.color.r * i.color.a * soft;
+    clip(strength - 1e-4);
+
+    float2 uv = i.uv;
+    float  r  = length(uv);
+    float2 dir = (r > 1e-4) ? uv / r : float2(0.0, 0.0);
+    float2 ofs;
+    if (i.kind == KIND_RING)
+    {
+        // 拡大リング: age01 で半径が広がる帯の内側→外側へ押し出す
+        float rad  = i.age01;
+        float band = exp(-pow((r - rad) * 7.0, 2.0));
+        ofs = dir * band;
+    }
+    else
+    {
+        // 熱ゆらぎ: 上昇スクロールする fbm のベクトル場（丸マスク）
+        float2 p = uv * 2.5 + float2(i.seed * 7.0, -params.z * 1.6 - i.seed * 3.0);
+        float n1 = fbm2(p, 3);
+        float n2 = fbm2(p + float2(9.7, 3.1), 3);
+        float mask = saturate(1.0 - r);
+        ofs = float2(n1, n2) * mask;
+    }
+    // 0.03 = 強度1.0 のときの最大オフセット（ローカルUVの約3%）
+    return float4(ofs * strength * 0.03, 0.0, 1.0);
+}
+
 float4 PSMain(VSOutput i) : SV_TARGET
 {
-    float shape;
-    float3 kindColor;
-    ShadeKind(i, shape, kindColor);
-
-    // ---- soft particles: シーン深度で手動オクルージョン＋接地フェード ----
+    // ---- soft particles を先に評価: シーン深度で手動オクルージョン＋接地フェード ----
+    // 隠れた／寿命末端でフェードした画素はここで clip し、高コストな fbm/ShadeKind と
+    // ROP 書き込みを丸ごとスキップする（加算は0加算・前乗算αは0書きで結果は同一）。
     float soft = 1.0;
     if (params2.z > 0.0)
     {
@@ -194,6 +258,24 @@ float4 PSMain(VSOutput i) : SV_TARGET
         float sceneZ = params2.y / (sceneD - params2.x);     // 線形ビュー深度
         float fadeDist = params.w * (i.kind == KIND_SMOKE ? 3.0 : 1.0);
         soft = saturate((sceneZ - i.viewZ) / max(fadeDist, 1e-3));
+    }
+    clip(soft * i.color.a - 1e-3);
+
+    float shape;
+    float3 kindColor;
+    if (i.texIdx != kNoTexture)
+    {
+        // テクスチャ貼り付けモード: プロシージャル形状の代わりに実画像をビルボードへ。
+        // uv は [-1,1] 中心原点なので [0,1] へ写像。色は頂点色(寿命カーブ)で乗算し、
+        // アルファをそのままカバレッジに使う（straight alpha、Sprite と同じ規約）。
+        float2 tuv = i.uv * 0.5 + 0.5;
+        float4 tex = gAlbedo.Sample(sDepth, tuv);
+        shape = tex.a;
+        kindColor = tex.rgb * i.color.rgb;
+    }
+    else
+    {
+        ShadeKind(i, shape, kindColor);
     }
 
     float cov = shape * i.color.a * soft;

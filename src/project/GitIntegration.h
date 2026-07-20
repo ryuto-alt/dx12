@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -31,6 +32,11 @@ public:
     static bool IsGitAvailable();
     static bool IsGhAvailable();
 
+    // git が未インストールの環境向け: winget があれば `winget install Git.Git` を別コンソールで実行し
+    // 終了を待つ（gh ログインと同じ待ち方）。winget が無ければ公式ダウンロードページをブラウザで開く。
+    // abortFlag はシャットダウン時の待機切り上げ用（LoginAndWait と同様、子プロセス自体は残る）。
+    static GitResult InstallGit(const std::atomic<bool>& abortFlag);
+
     // workDir が git リポジトリ（.git を持つ作業ツリー）か
     static bool IsRepo(const std::string& workDir);
 
@@ -51,6 +57,18 @@ public:
     static std::string CurrentBranch(const std::string& workDir);
     static std::string RemoteUrl(const std::string& workDir);               // origin の URL（無ければ空）
 
+    // ---- マージコンフリクト ----
+    // pull/merge の途中か（.git/MERGE_HEAD の有無）。解消後 commit するまで true のまま。
+    static bool IsMergeInProgress(const std::string& workDir);
+    // 未解消（'U'）のファイルのリポジトリ相対パス一覧
+    static std::vector<std::string> ConflictedFiles(const std::string& workDir);
+    // 指定ファイルを自分側(HEAD)の内容で解消して add する
+    static GitResult ResolveOurs(const std::string& workDir, const std::string& path);
+    // 指定ファイルを相手側(取り込んだブランチ)の内容で解消して add する
+    static GitResult ResolveTheirs(const std::string& workDir, const std::string& path);
+    // コンフリクト中のファイルを外部アプリで開く（VSCode があればそれ、無ければ既定アプリ）
+    static void OpenConflictFile(const std::string& workDir, const std::string& relPath);
+
     // gh でリポジトリ作成してプッシュ（gh が必要）。private=true で非公開。
     static GitResult CreateGitHubRepo(const std::string& workDir,
                                       const std::string& repoName,
@@ -59,9 +77,11 @@ public:
     // ---- GitHub ログイン（gh CLI） ----
     // gh の認証ユーザー名（未ログイン/未インストールなら空）。ログイン判定にも使う。
     static std::string GitHubUser();
-    // 別コンソールウィンドウで `gh auth login` を対話起動する（デバイス認証フロー）。
-    // 起動できたら true。完了後は git の資格情報ヘルパも gh に設定する。
-    static bool LaunchLogin();
+    // 別コンソールウィンドウで `gh auth login --web` を起動し、子プロセスの終了をそのまま待つ
+    // （ポーリングではなくイベント待ちなので、ブラウザ承認した瞬間に検知できる）。
+    // abortFlag が立ったら待機だけ切り上げる（子プロセス自体は残る＝ユーザーは認証継続可）。
+    // 成功したら output にログインユーザー名を入れて返す（git の資格情報ヘルパも gh に設定済み）。
+    static GitResult LoginAndWait(const std::atomic<bool>& abortFlag);
 
     // ---- クローン ----
     // url を destDir（クローン先の親フォルダ直下に repo 名で展開される）へ clone する。
@@ -70,6 +90,9 @@ public:
                            std::string& outRepoDir);
     // git URL から末尾のリポジトリ名（.git を除く）を取り出す
     static std::string RepoNameFromUrl(const std::string& url);
+    // remote の URL（https/ssh どちらの形式でも）を https://github.com/owner/repo 形式に変換。
+    // github.com 以外やパース不能なら空文字を返す（ブラウザで開くリンク表示用）。
+    static std::string ToWebUrl(const std::string& remoteUrl);
 
     // ---- ブランチ ----
     static std::vector<std::string> ListBranches(const std::string& workDir); // ローカルブランチ名

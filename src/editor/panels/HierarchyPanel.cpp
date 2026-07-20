@@ -25,6 +25,7 @@ static u64 PickEntityIcon(entt::registry& reg, entt::entity e, const EditorUiIco
 {
     if (reg.all_of<CameraComponent>(e))                            return ic.entCamera;
     if (reg.any_of<PointLight, DirectionalLight, SpotLight>(e))   return ic.entLight;
+    if (reg.any_of<UICanvas, UIRect, UIImage, UIText, UIButton>(e)) return ic.entUi;
     if (reg.all_of<MeshRenderer>(e))                              return ic.entMesh;
     if (reg.all_of<AudioSource>(e))                              return ic.entAudio;
     if (reg.any_of<RigidBody, BoxCollider, SphereCollider,
@@ -39,6 +40,7 @@ static ImVec4 PickEntityTint(entt::registry& reg, entt::entity e)
     using namespace dx12e::theme;
     if (reg.all_of<CameraComponent>(e))                            return TypeCamera;
     if (reg.any_of<PointLight, DirectionalLight, SpotLight>(e))   return TypeLight;
+    if (reg.any_of<UICanvas, UIRect, UIImage, UIText, UIButton>(e)) return TypeUi;
     if (reg.all_of<MeshRenderer>(e))                              return TypeMesh;
     if (reg.all_of<AudioSource>(e))                              return TypeAudio;
     if (reg.any_of<RigidBody, BoxCollider, SphereCollider,
@@ -201,12 +203,14 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
             entt::entity droppedEntity = *static_cast<const entt::entity*>(payload->Data);
             if (droppedEntity != e && reg.valid(droppedEntity) && reg.all_of<Transform>(droppedEntity))
             {
-                // 循環防止: e が droppedEntity の子孫でないかチェック
+                // 循環防止: e が droppedEntity の子孫でないかチェック。
+                // 祖先鎖が既にサイクル化した壊れデータでも無限ループしないよう深さ上限付き。
                 bool isCyclic = false;
                 entt::entity check = e;
+                int depth = 0;
                 while (check != entt::null && reg.valid(check) && reg.all_of<Transform>(check))
                 {
-                    if (check == droppedEntity) { isCyclic = true; break; }
+                    if (check == droppedEntity || ++depth >= 4096) { isCyclic = true; break; }
                     check = reg.get<Transform>(check).parent;
                 }
                 if (!isCyclic)
@@ -266,12 +270,23 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
         {
             // Undo コマンドは Application の遅延削除処理で積まれる
             ctx.pendingDeletions.push_back(e);
-            if (ctx.IsSelected(e))
-            {
-                auto& sel = ctx.selectedEntities;
-                sel.erase(std::remove(sel.begin(), sel.end(), e), sel.end());
+            // e 本体だけでなく e のサブツリーに含まれる選択も外す（残すと削除後に
+            // ダングリング選択ハンドルが selectedEntities に残る）
+            auto isSelfOrDescendant = [&](entt::entity s) {
+                int depth = 0;
+                for (entt::entity cur = s; cur != entt::null && depth < 4096; ++depth)
+                {
+                    if (cur == e) return true;
+                    auto* t = reg.try_get<Transform>(cur);
+                    cur = t ? t->parent : entt::null;
+                }
+                return false;
+            };
+            auto& sel = ctx.selectedEntities;
+            sel.erase(std::remove_if(sel.begin(), sel.end(), isSelfOrDescendant), sel.end());
+            if (ctx.selectedEntity == e || (ctx.selectedEntity != entt::null
+                                            && isSelfOrDescendant(ctx.selectedEntity)))
                 ctx.selectedEntity = sel.empty() ? entt::null : sel.back();
-            }
         }
 
         // 親子解除
@@ -498,6 +513,27 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
             req.modelPath = "__trigger__";
             req.position = {0.0f, 1.0f, 0.0f};
             ctx.pendingSpawns.push_back(req);
+        }
+        ImGui::Separator();
+        if (ImGui::BeginMenu("UI（ゲーム内UI）"))
+        {
+            // Image/Text/Button は Application 側で「選択エンティティが UI ツリー内なら
+            // その子 → 無ければ最初の UICanvas の子 → Canvas 不在なら自動生成」に配置される
+            auto spawnUi = [&](const char* marker)
+            {
+                PendingSpawnRequest req;
+                req.modelPath = marker;
+                req.position = {0.0f, 0.0f, 0.0f};
+                ctx.pendingSpawns.push_back(req);
+            };
+            if (ImGui::MenuItem("Canvas（UIルート）"))       spawnUi("__ui_canvas__");
+            if (ImGui::MenuItem("Image（画像/単色矩形）"))   spawnUi("__ui_image__");
+            if (ImGui::MenuItem("Text（テキスト）"))         spawnUi("__ui_text__");
+            if (ImGui::MenuItem("Button（ボタン）"))         spawnUi("__ui_button__");
+            if (ImGui::MenuItem("Slider（スライダー）"))     spawnUi("__ui_slider__");
+            if (ImGui::MenuItem("Toggle（トグル）"))         spawnUi("__ui_toggle__");
+            if (ImGui::MenuItem("ScrollView（スクロール）")) spawnUi("__ui_scrollview__");
+            ImGui::EndMenu();
         }
         ImGui::EndPopup();
     }

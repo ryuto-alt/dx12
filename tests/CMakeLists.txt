@@ -29,6 +29,49 @@ endif()
 
 add_test(NAME IndexAllocatorTests COMMAND IndexAllocatorTests)
 
+# NetWriter/NetReader 往復テスト（GPU非依存・ヘッダオンリー、vcpkg/entt不要なのでスタンドアロンでも動く）。
+add_executable(NetBufferTests net_buffer_test.cpp)
+target_include_directories(NetBufferTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(NetBufferTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(NetBufferTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME NetBufferTests COMMAND NetBufferTests)
+
+# UIText リッチテキスト(インラインタグ)パーサのテスト(ヘッダオンリー・依存ゼロなのでスタンドアロンでも動く)。
+add_executable(UiRichTextTests ui_rich_text_test.cpp)
+target_include_directories(UiRichTextTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(UiRichTextTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(UiRichTextTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME UiRichTextTests COMMAND UiRichTextTests)
+
+# Sprite2D フリップブック/UVスクロールの UV 計算(renderer/SpriteAnim.h)テスト。
+# ヘッダオンリー・依存ゼロなのでスタンドアロンでも動く。
+add_executable(SpriteAnimTests sprite_anim_test.cpp)
+target_include_directories(SpriteAnimTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(SpriteAnimTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(SpriteAnimTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME SpriteAnimTests COMMAND SpriteAnimTests)
+
+# OGG Vorbis デコード(third_party/stb_vorbis.c、AudioClip .ogg 対応の土台)テスト。
+# 埋め込み OGG(ogg_test_data.h)をメモリからデコードして PCM 長を確認する。依存ゼロ。
+# stb_vorbis はサードパーティ実装をそのまま取り込むため、警告のエラー化はしない。
+add_executable(OggDecodeTests ogg_decode_test.cpp)
+target_include_directories(OggDecodeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../third_party)
+if(MSVC)
+    target_compile_options(OggDecodeTests PRIVATE /W4 /permissive- /utf-8)
+else()
+    target_compile_options(OggDecodeTests PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME OggDecodeTests COMMAND OggDecodeTests)
+
 # シリアライズ往復テスト（安全網）。Scene ライブラリ（+ 推移依存）をリンクするため、
 # エンジン本体と一緒にビルドする構成でのみ有効。
 # tests を単体（cmake -S tests, vcpkg/VS不要）で構成したときは Scene が無いのでスキップし、
@@ -48,6 +91,18 @@ if(TARGET Scene)
     endif()
 
     add_test(NAME SerializeRoundtripTests COMMAND SerializeRoundtripTests)
+endif()
+
+# .dxmat(マテリアルアセット)JSON往復テスト。Resource(GPU非依存の純ロジック部分のみ使用)をリンクするため、
+# エンジン本体と一緒にビルドする構成でのみ有効(スタンドアロン構成では Resource が無いのでスキップ)。
+if(TARGET Resource)
+    add_executable(DxmatRoundtripTests dxmat_roundtrip_test.cpp)
+    target_link_libraries(DxmatRoundtripTests PRIVATE Resource)
+    if(MSVC)
+        target_compile_options(DxmatRoundtripTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(DxmatRoundtripTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME DxmatRoundtripTests COMMAND DxmatRoundtripTests)
 endif()
 
 # entt::meta コア部品フィールド反映テスト（Phase 2 土台）。ECS（+ entt/DirectXMath）をリンク。
@@ -76,6 +131,74 @@ if(TARGET Renderer)
         target_compile_definitions(CameraProjectionTests PRIVATE ${DX12_COMPILE_DEFS})
     endif()
     add_test(NAME CameraProjectionTests COMMAND CameraProjectionTests)
+
+    # AnimationClip::NormalizeToSeconds（ticks→秒正規化。glTF=1000ticks/s 由来の
+    # ポーズ凍結/スロー再生の再発防止）テスト。AnimationClip.cpp は純ロジックなので直接ビルド。
+    add_executable(AnimClipNormalizeTests
+        anim_clip_normalize_test.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/AnimationClip.cpp)
+    target_include_directories(AnimClipNormalizeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(AnimClipNormalizeTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(AnimClipNormalizeTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(AnimClipNormalizeTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME AnimClipNormalizeTests COMMAND AnimClipNormalizeTests)
+
+    # Animator の再生速度倍率(SetSpeed。speed=2.0 で進行2倍、0 で一時停止)テスト。
+    # Animator/Skeleton/AnimationClip は純ロジック(GPU非依存)なので直接ビルド。
+    add_executable(AnimatorSpeedTests
+        animator_speed_test.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/Animator.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/AnimationClip.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/Skeleton.cpp)
+    target_include_directories(AnimatorSpeedTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(AnimatorSpeedTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(AnimatorSpeedTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(AnimatorSpeedTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME AnimatorSpeedTests COMMAND AnimatorSpeedTests)
+
+    # Frustum（視錐台抽出＋球カリング）テスト。ヘッダオンリー・純 DirectXMath。
+    add_executable(FrustumTests frustum_test.cpp)
+    target_include_directories(FrustumTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(FrustumTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(FrustumTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(FrustumTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME FrustumTests COMMAND FrustumTests)
+
+    # SnapshotBuffer(ネットワーク補間バッファ)テスト。ヘッダオンリー・純DirectXMath。
+    add_executable(InterpolationTests interpolation_test.cpp)
+    target_include_directories(InterpolationTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(InterpolationTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(InterpolationTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(InterpolationTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME InterpolationTests COMMAND InterpolationTests)
+
+    # RpcValue/RpcArgs(net:rpc引数)シリアライズ往復テスト。ヘッダオンリー・純DirectXMath。
+    add_executable(RpcArgsTests rpc_args_test.cpp)
+    target_include_directories(RpcArgsTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(RpcArgsTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(RpcArgsTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(RpcArgsTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME RpcArgsTests COMMAND RpcArgsTests)
+
+    # IsRelevant(興味管理の距離判定)テスト。ヘッダオンリー・純DirectXMath。
+    add_executable(InterestFilterTests interest_filter_test.cpp)
+    target_include_directories(InterestFilterTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(InterestFilterTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(InterestFilterTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(InterestFilterTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME InterestFilterTests COMMAND InterestFilterTests)
 endif()
 
 # SpatialIndex（一様グリッド）テスト（Phase 5: RTS 空間クエリ）。ヘッダオンリー、entt のみ依存。
@@ -130,4 +253,41 @@ if(TARGET Core)
         target_compile_definitions(VfsTests PRIVATE ${DX12_COMPILE_DEFS})
     endif()
     add_test(NAME VfsTests COMMAND VfsTests)
+endif()
+
+# CrashHandler 統合テスト（子プロセスをわざとアクセス違反で落とし、
+# dx12_crash.log / dx12_crash.dmp の生成とレポート内容を確認）。
+if(TARGET Core)
+    add_executable(CrashHandlerTests crash_handler_test.cpp)
+    target_link_libraries(CrashHandlerTests PRIVATE Core)
+    target_include_directories(CrashHandlerTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(CrashHandlerTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(CrashHandlerTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME CrashHandlerTests COMMAND CrashHandlerTests)
+endif()
+
+# GitIntegration::ToWebUrl（remote URL → ブラウザ用 https URL）の文字列変換テスト。
+# プレフィックス文字数のオフバイワン再発防止（実際に "ryuto-alt" → "yuto-alt" になった事例）。
+if(TARGET ProjectLib)
+    add_executable(GitIntegrationTests git_integration_test.cpp)
+    target_link_libraries(GitIntegrationTests PRIVATE ProjectLib)
+    if(MSVC)
+        target_compile_options(GitIntegrationTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(GitIntegrationTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME GitIntegrationTests COMMAND GitIntegrationTests)
+endif()
+
+# ENet ループバック疎通テスト（同一プロセス内でサーバー/クライアントを立てて往復確認）。
+# Network（+ vcpkg unofficial-enet, Core）が必要なので統合ビルドでのみ有効。
+if(TARGET Network)
+    add_executable(EnetLoopbackTests enet_loopback_test.cpp)
+    target_link_libraries(EnetLoopbackTests PRIVATE Network)
+    if(MSVC)
+        target_compile_options(EnetLoopbackTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(EnetLoopbackTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME EnetLoopbackTests COMMAND EnetLoopbackTests)
 endif()

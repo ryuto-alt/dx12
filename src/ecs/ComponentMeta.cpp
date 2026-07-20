@@ -42,7 +42,8 @@ void RegisterCoreComponentMeta()
         .type("PointLight")
         .data<&PointLight::color>("color")
         .data<&PointLight::intensity>("intensity")
-        .data<&PointLight::range>("range");
+        .data<&PointLight::range>("range")
+        .data<&PointLight::castShadows>("castShadows");
 
     entt::meta_factory<DirectionalLight>{}
         .type("DirectionalLight")
@@ -58,7 +59,8 @@ void RegisterCoreComponentMeta()
         .data<&SpotLight::range>("range")
         .data<&SpotLight::direction>("direction")
         .data<&SpotLight::innerConeDeg>("innerConeDeg")
-        .data<&SpotLight::outerConeDeg>("outerConeDeg");
+        .data<&SpotLight::outerConeDeg>("outerConeDeg")
+        .data<&SpotLight::castShadows>("castShadows");
 
     entt::meta_factory<CameraComponent>{}
         .type("CameraComponent")
@@ -95,6 +97,17 @@ void RegisterCoreComponentMeta()
         .data<&CapsuleCollider::halfHeight>("halfHeight")
         .data<&CapsuleCollider::offset>("offset");
 
+    entt::meta_factory<CharacterController>{}
+        .type("CharacterController")
+        .data<&CharacterController::radius>("radius")
+        .data<&CharacterController::halfHeight>("halfHeight")
+        .data<&CharacterController::offset>("offset")
+        .data<&CharacterController::mass>("mass")
+        .data<&CharacterController::maxSlopeDeg>("maxSlopeDeg")
+        .data<&CharacterController::stepHeight>("stepHeight")
+        .data<&CharacterController::jumpSpeed>("jumpSpeed")
+        .data<&CharacterController::gravityScale>("gravityScale");
+
     entt::meta_factory<AudioSource>{}
         .type("AudioSource")
         .data<&AudioSource::clipPath>("clipPath")
@@ -118,7 +131,190 @@ void RegisterCoreComponentMeta()
         .data<&Sprite2D::uvMax>("uvMax")
         .data<&Sprite2D::color>("color")
         .data<&Sprite2D::worldSpace>("worldSpace")
-        .data<&Sprite2D::billboard>("billboard");
+        .data<&Sprite2D::billboard>("billboard")
+        .data<&Sprite2D::shaderPath>("shaderPath")
+        .data<&Sprite2D::shaderAlphaBlend>("shaderAlphaBlend")
+        .data<&Sprite2D::effectValue>("effectValue")
+        .data<&Sprite2D::shaderParams>("shaderParams")
+        .data<&Sprite2D::animFrames>("animFrames")
+        .data<&Sprite2D::animFps>("animFps")
+        .data<&Sprite2D::animCols>("animCols")
+        .data<&Sprite2D::animRow>("animRow")
+        .data<&Sprite2D::animRows>("animRows")
+        .data<&Sprite2D::animMode>("animMode")
+        .data<&Sprite2D::scrollU>("scrollU")
+        .data<&Sprite2D::scrollV>("scrollV");
+
+    entt::meta_factory<TrailRenderer>{}
+        .type("TrailRenderer")
+        .data<&TrailRenderer::emitting>("emitting")
+        .data<&TrailRenderer::width>("width")
+        .data<&TrailRenderer::life>("life")
+        .data<&TrailRenderer::color>("color")
+        .data<&TrailRenderer::colorEnd>("colorEnd")
+        .data<&TrailRenderer::intensity>("intensity")
+        .data<&TrailRenderer::blend>("blend")
+        .data<&TrailRenderer::minDist>("minDist");
+
+    entt::meta_factory<NetworkIdentity>{}
+        .type("NetworkIdentity")
+        .data<&NetworkIdentity::interestRadius>("interestRadius")
+        .data<&NetworkIdentity::serverAuthority>("serverAuthority");
+
+    entt::meta_factory<NetworkTransform>{}
+        .type("NetworkTransform")
+        .data<&NetworkTransform::syncMode>("syncMode")
+        .data<&NetworkTransform::sendRate>("sendRate")
+        .data<&NetworkTransform::syncPosition>("syncPosition")
+        .data<&NetworkTransform::syncRotation>("syncRotation")
+        .data<&NetworkTransform::syncScale>("syncScale")
+        .data<&NetworkTransform::interpDelayMs>("interpDelayMs")
+        .data<&NetworkTransform::snapDistance>("snapDistance");
+
+    // --- ゲーム内UI（retained-mode）---
+    entt::meta_factory<UICanvas>{}
+        .type("UICanvas")
+        .data<&UICanvas::refWidth>("refWidth")
+        .data<&UICanvas::refHeight>("refHeight")
+        .data<&UICanvas::scaleMode>("scaleMode")
+        .data<&UICanvas::sortOrder>("sortOrder")
+        .data<&UICanvas::visible>("visible");
+
+    entt::meta_factory<UIRect>{}
+        .type("UIRect")
+        .data<&UIRect::anchorMin>("anchorMin")
+        .data<&UIRect::anchorMax>("anchorMax")
+        .data<&UIRect::pivot>("pivot")
+        .data<&UIRect::offsetMin>("offsetMin")
+        .data<&UIRect::offsetMax>("offsetMax")
+        .data<&UIRect::visible>("visible")
+        .data<&UIRect::order>("order")
+        .data<&UIRect::rotation>("rotation")
+        .data<&UIRect::skewX>("skewX")
+        .data<&UIRect::clipChildren>("clipChildren");
+
+    entt::meta_factory<UIImage>{}
+        .type("UIImage")
+        .data<&UIImage::texturePath>("texturePath")
+        .data<&UIImage::color>("color")
+        .data<&UIImage::uvMin>("uvMin")
+        .data<&UIImage::uvMax>("uvMax")
+        .data<&UIImage::sliceBorder>("sliceBorder")
+        .data<&UIImage::cornerRadius>("cornerRadius")
+        .data<&UIImage::raycastBlock>("raycastBlock")
+        .data<&UIImage::fillAmount>("fillAmount")
+        .data<&UIImage::fillDir>("fillDir")
+        .data<&UIImage::fillOrigin>("fillOrigin")
+        .data<&UIImage::shape>("shape")
+        .data<&UIImage::ringThickness>("ringThickness")
+        .data<&UIImage::uvScroll>("uvScroll")
+        .data<&UIImage::animFrames>("animFrames")
+        .data<&UIImage::animFps>("animFps")
+        .data<&UIImage::animCols>("animCols")
+        .data<&UIImage::animRow>("animRow")
+        .data<&UIImage::animRows>("animRows")
+        .data<&UIImage::animMode>("animMode")
+        .data<&UIImage::gradientDir>("gradientDir")
+        .data<&UIImage::gradientColor2>("gradientColor2")
+        .data<&UIImage::gradientScrollSpeed>("gradientScrollSpeed")
+        .data<&UIImage::outlineWidth>("outlineWidth")
+        .data<&UIImage::outlineColor>("outlineColor")
+        .data<&UIImage::outlineStyle>("outlineStyle")
+        .data<&UIImage::outlineDash>("outlineDash")
+        .data<&UIImage::segments>("segments")
+        .data<&UIImage::segmentGap>("segmentGap")
+        .data<&UIImage::segmentColor>("segmentColor")
+        .data<&UIImage::shadowColor>("shadowColor")
+        .data<&UIImage::shadowOffset>("shadowOffset")
+        .data<&UIImage::shadowSoftness>("shadowSoftness");
+
+    entt::meta_factory<UIText>{}
+        .type("UIText")
+        .data<&UIText::text>("text")
+        .data<&UIText::fontSize>("fontSize")
+        .data<&UIText::color>("color")
+        .data<&UIText::alignH>("alignH")
+        .data<&UIText::alignV>("alignV")
+        .data<&UIText::wrap>("wrap")
+        .data<&UIText::outlineWidth>("outlineWidth")
+        .data<&UIText::outlineColor>("outlineColor")
+        .data<&UIText::shadowColor>("shadowColor")
+        .data<&UIText::shadowOffset>("shadowOffset")
+        .data<&UIText::fontPath>("fontPath")
+        .data<&UIText::typewriterSpeed>("typewriterSpeed")
+        .data<&UIText::letterSpacing>("letterSpacing")
+        .data<&UIText::charAnim>("charAnim")
+        .data<&UIText::charAnimAmount>("charAnimAmount")
+        .data<&UIText::charAnimSpeed>("charAnimSpeed")
+        .data<&UIText::gradientDir>("gradientDir")
+        .data<&UIText::gradientColor2>("gradientColor2")
+        .data<&UIText::rich>("rich");
+
+    entt::meta_factory<UIButton>{}
+        .type("UIButton")
+        .data<&UIButton::onClickEvent>("onClickEvent")
+        .data<&UIButton::normalColor>("normalColor")
+        .data<&UIButton::hoverColor>("hoverColor")
+        .data<&UIButton::pressedColor>("pressedColor")
+        .data<&UIButton::interactable>("interactable")
+        .data<&UIButton::hoverSound>("hoverSound")
+        .data<&UIButton::clickSound>("clickSound");
+
+    entt::meta_factory<UISlider>{}
+        .type("UISlider")
+        .data<&UISlider::value>("value")
+        .data<&UISlider::minValue>("minValue")
+        .data<&UISlider::maxValue>("maxValue")
+        .data<&UISlider::step>("step")
+        .data<&UISlider::onChangeEvent>("onChangeEvent")
+        .data<&UISlider::trackColor>("trackColor")
+        .data<&UISlider::fillColor>("fillColor")
+        .data<&UISlider::knobColor>("knobColor")
+        .data<&UISlider::interactable>("interactable");
+
+    entt::meta_factory<UIScrollView>{}
+        .type("UIScrollView")
+        .data<&UIScrollView::vertical>("vertical")
+        .data<&UIScrollView::horizontal>("horizontal")
+        .data<&UIScrollView::scrollX>("scrollX")
+        .data<&UIScrollView::scrollY>("scrollY")
+        .data<&UIScrollView::wheelSpeed>("wheelSpeed")
+        .data<&UIScrollView::showBar>("showBar")
+        .data<&UIScrollView::barColor>("barColor")
+        .data<&UIScrollView::dragScroll>("dragScroll")
+        .data<&UIScrollView::flickDecay>("flickDecay");
+
+    entt::meta_factory<UILayout>{}
+        .type("UILayout")
+        .data<&UILayout::mode>("mode")
+        .data<&UILayout::cellW>("cellW")
+        .data<&UILayout::cellH>("cellH")
+        .data<&UILayout::spacing>("spacing")
+        .data<&UILayout::padding>("padding")
+        .data<&UILayout::gridCols>("gridCols");
+
+    entt::meta_factory<UIToggle>{}
+        .type("UIToggle")
+        .data<&UIToggle::isOn>("isOn")
+        .data<&UIToggle::onChangeEvent>("onChangeEvent")
+        .data<&UIToggle::boxColor>("boxColor")
+        .data<&UIToggle::checkColor>("checkColor")
+        .data<&UIToggle::interactable>("interactable");
+
+    // UIAnimator: _ 付きランタイム状態（_t/_mode/_cur* 等）は登録しない = 保存されない
+    entt::meta_factory<UIAnimator>{}
+        .type("UIAnimator")
+        .data<&UIAnimator::showAnim>("showAnim")
+        .data<&UIAnimator::showDuration>("showDuration")
+        .data<&UIAnimator::showDelay>("showDelay")
+        .data<&UIAnimator::showEasing>("showEasing")
+        .data<&UIAnimator::slideOffset>("slideOffset")
+        .data<&UIAnimator::hoverScale>("hoverScale")
+        .data<&UIAnimator::pressScale>("pressScale")
+        .data<&UIAnimator::hoverSpeed>("hoverSpeed")
+        .data<&UIAnimator::loopAnim>("loopAnim")
+        .data<&UIAnimator::loopSpeed>("loopSpeed")
+        .data<&UIAnimator::loopAmount>("loopAmount");
 }
 
 } // namespace dx12e

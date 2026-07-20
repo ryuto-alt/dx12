@@ -5,17 +5,19 @@
   "dependencies": [
     "spdlog",
     "directx-headers",
+    "directx-dxc",
     "d3d12-memory-allocator",
     "directxtex",
     "directxmath",
     {
       "name": "imgui",
-      "features": ["docking-experimental", "dx12-binding", "win32-binding"]
+      "features": ["docking-experimental", "dx12-binding", "win32-binding", "freetype"]
     },
     "lua",
     "sol2",
     "entt",
     "nlohmann-json",
-    "joltphysics"
+    "joltphysics",
+    "enet"
   ]
 }

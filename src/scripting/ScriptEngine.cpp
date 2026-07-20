@@ -2,6 +2,8 @@
 #include "core/Logger.h"
 #include "core/vfs/Vfs.h"
 
+#include <set>
+
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4244 4267 4996)
 #define SOL_ALL_SAFETIES_ON 1
@@ -11,12 +13,16 @@
 #include "scene/Scene.h"
 #include "scene/Entity.h"
 #include "ecs/Components.h"
+#include "ui/UiRichText.h"   // isUiTypewriterDone: rich=true のタグ除去後文字数
 #include "renderer/Mesh.h"
+#include "renderer/SpriteAnim.h"   // isSpriteAnimDone/isUiAnimDone: 連番の単発終了判定
 #include "renderer/ParticleSystem.h"
+#include "renderer/GpuParticleSystem.h"
 #include "input/InputSystem.h"
 #include "renderer/Camera.h"
 #include "audio/AudioSystem.h"
 #include "physics/PhysicsSystem.h"
+#include "network/NetworkSystem.h"
 #include "animation/Skeleton.h"
 #include "animation/Animator.h"
 #include "animation/AnimationClip.h"
@@ -26,6 +32,8 @@
 #include "animation/NodeGraph.h"
 
 #include <DirectXMath.h>
+#include <algorithm>
+#include <cctype>
 #include <tuple>
 #include <cfloat>
 #include <cmath>
@@ -131,28 +139,32 @@ bool InitializeLuaScriptInstance(sol::state& lua,
     {
         sol::error err = result;
         lastError = err.what();
-        Logger::Error("Lua load error (entity={} path={}): {}",
+        Logger::Error("Luaエラー（スクリプト読み込み, entity={} path={}）: {}",
                       static_cast<u32>(e), ls.scriptPath, lastError);
-        ls.loadError = true;
+        ls.loadError = true; ls.errorMessage = lastError;
         return false;
     }
 
     ls.env       = env;
     ls.self      = self;
-    ls.loadError = false;
+    ls.loadError = false; ls.errorMessage.clear();
 
-    // OnStart(self) を呼ぶ
-    sol::protected_function fn = (*env)["OnStart"];
-    if (fn.valid())
+    // OnStart(self) を呼ぶ。
+    // 必ず raw_get（フォールバック無し）で「このスクリプト自身が定義した関数」だけを見る。
+    // (*env)["OnStart"] だと env の __index フォールバック経由で lua.globals() まで辿り、
+    // game.lua のグローバル OnStart/OnUpdate を self 引数で誤呼び出ししてしまう。
+    sol::object fnObj = env->raw_get<sol::object>("OnStart");
+    if (fnObj.get_type() == sol::type::function)
     {
+        sol::protected_function fn = fnObj;
         auto r = fn(*self);
         if (!r.valid())
         {
             sol::error err = r;
             lastError = err.what();
-            Logger::Error("Lua OnStart error (entity={}): {}",
+            Logger::Error("Luaエラー（OnStart, entity={}）: {}",
                           static_cast<u32>(e), lastError);
-            ls.loadError = true;
+            ls.loadError = true; ls.errorMessage = lastError;
             return false;
         }
     }
@@ -221,9 +233,12 @@ void ScriptEngine::RegisterBindings()
             [](Entity& e) -> Transform& { return e.GetComponent<Transform>(); }
         ),
 
-        // Component query
+        // Component query（全コンポーネント型を網羅。未知の型名は黙って false にせず警告を出す）
         "hasComponent", [](const Entity& e, const std::string& type) -> bool {
             if (type == "Transform")          return e.HasComponent<Transform>();
+            if (type == "NameTag")            return e.HasComponent<NameTag>();
+            if (type == "Tag")                return e.HasComponent<Tag>();
+            if (type == "DataComponent")      return e.HasComponent<DataComponent>();
             if (type == "MeshRenderer")       return e.HasComponent<MeshRenderer>();
             if (type == "SkeletalAnimation")  return e.HasComponent<SkeletalAnimation>();
             if (type == "NodeAnimation")      return e.HasComponent<NodeAnimationComp>();
@@ -232,11 +247,36 @@ void ScriptEngine::RegisterBindings()
             if (type == "DirectionalLight")   return e.HasComponent<DirectionalLight>();
             if (type == "SpotLight")          return e.HasComponent<SpotLight>();
             if (type == "Camera")             return e.HasComponent<CameraComponent>();
+            if (type == "Sprite2D")           return e.HasComponent<Sprite2D>();
             if (type == "AudioSource")        return e.HasComponent<AudioSource>();
             if (type == "Gimmick")            return e.HasComponent<Gimmick>();
-            if (type == "ParticleEmitter")    return e.HasComponent<ParticleEmitter>();
-            if (type == "Trigger")            return e.HasComponent<Trigger>();
+            if (type == "RigidBody")          return e.HasComponent<RigidBody>();
+            if (type == "BoxCollider")        return e.HasComponent<BoxCollider>();
+            if (type == "SphereCollider")     return e.HasComponent<SphereCollider>();
+            if (type == "CapsuleCollider")    return e.HasComponent<CapsuleCollider>();
+            if (type == "ConvexHullCollider") return e.HasComponent<ConvexHullCollider>();
             if (type == "CharacterController") return e.HasComponent<CharacterController>();
+            if (type == "LuaScript")          return e.HasComponent<LuaScript>();
+            if (type == "ParticleEmitter")    return e.HasComponent<ParticleEmitter>();
+            if (type == "TrailRenderer")      return e.HasComponent<TrailRenderer>();
+            if (type == "Trigger")            return e.HasComponent<Trigger>();
+            if (type == "UICanvas")           return e.HasComponent<UICanvas>();
+            if (type == "UIRect")             return e.HasComponent<UIRect>();
+            if (type == "UIImage")            return e.HasComponent<UIImage>();
+            if (type == "UIText")             return e.HasComponent<UIText>();
+            if (type == "UIButton")           return e.HasComponent<UIButton>();
+            if (type == "UISlider")           return e.HasComponent<UISlider>();
+            if (type == "UIToggle")           return e.HasComponent<UIToggle>();
+            if (type == "UIScrollView")       return e.HasComponent<UIScrollView>();
+            if (type == "UILayout")           return e.HasComponent<UILayout>();
+            if (type == "UIAnimator")         return e.HasComponent<UIAnimator>();
+            // タイプミスや未対応型を「持ってない」と誤認させない（デバッグ困難の元）。
+            // 毎フレーム呼ばれてもスパムしないよう型名ごとに1回だけ警告する。
+            {
+                static std::set<std::string> warned;
+                if (warned.insert(type).second)
+                    Logger::Warn("hasComponent: 不明なコンポーネント型 \"{}\"", type);
+            }
             return false;
         },
 
@@ -266,6 +306,11 @@ void ScriptEngine::RegisterBindings()
         "setLooping", [](Entity& e, bool loop) {
             if (!e.HasComponent<SkeletalAnimation>()) return;
             e.GetComponent<SkeletalAnimation>().animator->SetLooping(loop);
+        },
+
+        "setAnimSpeed", [](Entity& e, float speed) {
+            if (!e.HasComponent<SkeletalAnimation>()) return;
+            e.GetComponent<SkeletalAnimation>().animator->SetSpeed(speed);
         },
 
         "getAnimCount", [](const Entity& e) -> int {
@@ -319,12 +364,485 @@ void ScriptEngine::RegisterBindings()
             auto& reg = s.GetRegistry();
             if (!reg.all_of<MeshRenderer>(e.GetHandle())) return;
             auto& mr = reg.get<MeshRenderer>(e.GetHandle());
+            mr.colorTint    = {r, g, b, 1.0f};   // シーン保存で色指定が消えないよう記録
+            mr.hasColorTint = true;
+            // 共有メッシュ(instanced)は VB を焼かず per-instance 色へ。発光弾はこちら＝
+            // setColor が VB 再生成しない＝大量の弾でも GPU 同期ゼロ。
+            if (mr.instanced)
+            {
+                mr.instanceColor = {r, g, b, 1.0f};
+                return;
+            }
             auto* device = s.GetDevice();
             if (!device) return;
             for (auto* mesh : mr.meshes)
             {
                 if (mesh) mesh->SetVertexColor(*device, r, g, b, 1.0f);
             }
+        },
+        // Sprite2D::effectValue を書き換える(カスタムシェーダーへ渡す汎用の進捗/強度値)。
+        // 頂点属性として補間されるだけなので毎フレーム呼んでも安価(GPU同期・VB再生成なし)。
+        "setSpriteEffect", [](Scene& s, Entity& e, float value) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<Sprite2D>(e.GetHandle())) return;
+            reg.get<Sprite2D>(e.GetHandle()).effectValue = value;
+        },
+        // Sprite2D::color.w を書き換える(不透明度0..1、半透明演出用)。setSpriteEffect同様、
+        // 頂点属性として補間されるだけなので毎フレーム呼んでも安価(GPU同期・VB再生成なし)。
+        "setSpriteAlpha", [](Scene& s, Entity& e, float alpha) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<Sprite2D>(e.GetHandle())) return;
+            reg.get<Sprite2D>(e.GetHandle()).color.w = alpha;
+        },
+        // MeshRenderer::effectValue を書き換える(カスタムシェーダーへ渡す汎用の進捗/強度値、
+        // Sprite2D::effectValue のメッシュ版)。ルート定数なので毎フレーム呼んでも安価
+        // (GPU同期・VB再生成なし、マテリアル/テクスチャには一切影響しない)。
+        "setMeshEffect", [](Scene& s, Entity& e, float value) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<MeshRenderer>(e.GetHandle())) return;
+            reg.get<MeshRenderer>(e.GetHandle()).effectValue = value;
+        },
+        // MeshRenderer::shaderParams(カスタムシェーダーへ渡す汎用 float4)を書き換える。
+        // effectValue と同じルート定数経路なので毎フレーム呼んでも安価。
+        "setMeshParams", [](Scene& s, Entity& e, float x, float y, float z, float w) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<MeshRenderer>(e.GetHandle())) return;
+            reg.get<MeshRenderer>(e.GetHandle()).shaderParams = {x, y, z, w};
+        },
+        // Sprite2D::shaderParams(カスタムシェーダーへ渡す汎用 float4、TEXCOORD2)を書き換える。
+        // effectValue と同じ頂点属性経路なので毎フレーム呼んでも安価(GPU同期・VB再生成なし)。
+        "setSpriteParams", [](Scene& s, Entity& e, float x, float y, float z, float w) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<Sprite2D>(e.GetHandle())) return;
+            reg.get<Sprite2D>(e.GetHandle()).shaderParams = {x, y, z, w};
+        },
+        // Sprite2D::uvMin/uvMax を直接指定(アトラス切り出しの実行時切替。フリップブック
+        // (animFrames>0)/スクロール中は描画時に上書きされる点に注意)。
+        "setSpriteUV", [](Scene& s, Entity& e, float u0, float v0, float u1, float v1) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<Sprite2D>(e.GetHandle())) return;
+            auto& sp = reg.get<Sprite2D>(e.GetHandle());
+            sp.uvMin = {u0, v0};
+            sp.uvMax = {u1, v1};
+        },
+        // Sprite2D の UVスクロール速度(単位/秒)を設定(溶岩表面・滝・背景ループ用)。
+        // animFrames>0 のときはフリップブック優先で無視される。
+        "setSpriteScroll", [](Scene& s, Entity& e, float su, float sv) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<Sprite2D>(e.GetHandle())) return;
+            auto& sp = reg.get<Sprite2D>(e.GetHandle());
+            sp.scrollU = su;
+            sp.scrollV = sv;
+        },
+        // Sprite2D のフリップブックアニメを設定(frames=0 で停止し uvMin/uvMax 指定に戻る)。
+        // cols=0 は frames と同じ(横1行ストリップ)、row はシート内の行(walk行/jump行等)。
+        // 呼ぶたび再生位置が頭に戻る = 攻撃モーション等の切替がこれ1発で書ける。
+        "setSpriteAnim", [](Scene& s, Entity& e, int frames, float fps, int cols, int row) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<Sprite2D>(e.GetHandle())) return;
+            auto& sp = reg.get<Sprite2D>(e.GetHandle());
+            sp.animFrames = frames;
+            sp.animFps    = fps;
+            sp.animCols   = cols;
+            sp.animRow    = row;
+            sp._animT     = 0.0f;
+        },
+        // Sprite2D の再生モードを設定(0=ループ 1=単発(最終フレームで停止) 2=往復)。
+        // 再生位置は頭に戻る。
+        "setSpriteAnimMode", [](Scene& s, Entity& e, int mode) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<Sprite2D>(e.GetHandle())) return;
+            auto& sp = reg.get<Sprite2D>(e.GetHandle());
+            sp.animMode = mode;
+            sp._animT   = 0.0f;
+        },
+        // Sprite2D の連番アニメを頭から再生し直す(設定は変えない)。
+        "restartSpriteAnim", [](Scene& s, Entity& e) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<Sprite2D>(e.GetHandle())) return;
+            reg.get<Sprite2D>(e.GetHandle())._animT = 0.0f;
+        },
+        // 単発(animMode=1)の再生が終わったか。ループ/往復は常に false。
+        // 爆発スプライトを消す/次の行動へ進む判定に使う。
+        "isSpriteAnimDone", [](Scene& s, Entity& e) -> bool {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<Sprite2D>(e.GetHandle())) return false;
+            const auto& sp = reg.get<Sprite2D>(e.GetHandle());
+            return IsFlipbookFinished(sp.animFrames, sp.animFps, sp.animMode, sp._animT);
+        },
+        // --- メッシュ(3D)の UVスクロール / 連番アニメ ---
+        // MeshRenderer の UVスクロール速度(uv/秒)。滝・溶岩・コンベア・流れる雲。
+        // 頂点は触らないので毎フレーム呼んでも安価(VB再生成なし)。
+        "setMeshUvScroll", [](Scene& s, Entity& e, float su, float sv) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<MeshRenderer>(e.GetHandle())) return;
+            auto& mr = reg.get<MeshRenderer>(e.GetHandle());
+            mr.uvScrollU = su;
+            mr.uvScrollV = sv;
+        },
+        // MeshRenderer の連番アニメを設定(frames=0 で停止)。呼ぶたび再生位置が頭に戻る。
+        // cols=0 は frames と同じ(横1行ストリップ)、row はシート内の行。
+        "setMeshAnim", [](Scene& s, Entity& e, int frames, float fps, int cols, int row) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<MeshRenderer>(e.GetHandle())) return;
+            auto& mr = reg.get<MeshRenderer>(e.GetHandle());
+            mr.animFrames = frames;
+            mr.animFps    = fps;
+            mr.animCols   = cols;
+            mr.animRow    = row;
+            mr._animT     = 0.0f;
+        },
+        // MeshRenderer の再生モード(0=ループ 1=単発 2=往復)。再生位置は頭に戻る。
+        "setMeshAnimMode", [](Scene& s, Entity& e, int mode) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<MeshRenderer>(e.GetHandle())) return;
+            auto& mr = reg.get<MeshRenderer>(e.GetHandle());
+            mr.animMode = mode;
+            mr._animT   = 0.0f;
+        },
+        // MeshRenderer の連番アニメが単発再生を終えたか。
+        "isMeshAnimDone", [](Scene& s, Entity& e) -> bool {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<MeshRenderer>(e.GetHandle())) return false;
+            const auto& mr = reg.get<MeshRenderer>(e.GetHandle());
+            return IsFlipbookFinished(mr.animFrames, mr.animFps, mr.animMode, mr._animT);
+        },
+        // --- ゲーム内UI（retained-mode）: スコア表示・HPバー等をスクリプトから書き換える ---
+        // UIText::text を書き換える(スコア・残機・メッセージ)。UIText が無ければ何もしない。
+        // タイプライター(typewriterSpeed>0)は先頭から再生し直す=会話送りがこれ1発で書ける。
+        "setUiText", [](Scene& s, Entity& e, const std::string& text) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIText>(e.GetHandle())) return;
+            auto& t = reg.get<UIText>(e.GetHandle());
+            if (t.text != text) t._twT = 0.0f;
+            t.text = text;
+        },
+        // UIText::text を読む。UIText が無ければ空文字列。
+        "getUiText", [](Scene& s, Entity& e) -> std::string {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIText>(e.GetHandle())) return std::string();
+            return reg.get<UIText>(e.GetHandle()).text;
+        },
+        // タイプライター速度(文字/秒)を設定して先頭から再生。0=即全表示(スキップに使える)。
+        "setUiTypewriter", [](Scene& s, Entity& e, float speed) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIText>(e.GetHandle())) return;
+            auto& t = reg.get<UIText>(e.GetHandle());
+            t.typewriterSpeed = (std::max)(0.0f, speed);
+            t._twT = 0.0f;
+        },
+        // タイプライターが全文まで到達したか(会話の「クリックで次へ」判定用)。
+        // typewriterSpeed=0 や UIText 無しは true。
+        "isUiTypewriterDone", [](Scene& s, Entity& e) -> bool {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIText>(e.GetHandle())) return true;
+            const auto& t = reg.get<UIText>(e.GetHandle());
+            if (t.typewriterSpeed <= 0.0f) return true;
+            // UTF-8 コードポイント数（描画側と同じ数え方。rich=true はタグ除去後 = タグは0文字）
+            std::size_t chars = 0;
+            if (t.rich && !t.wrap)
+            {
+                chars = static_cast<std::size_t>(UiRichStrippedCodepoints(t.text));
+            }
+            else
+            {
+                for (std::size_t i = 0; i < t.text.size(); ++chars)
+                {
+                    const auto c = static_cast<unsigned char>(t.text[i]);
+                    i += (c < 0xC0) ? 1 : (c < 0xE0) ? 2 : (c < 0xF0) ? 3 : 4;
+                }
+            }
+            return t._twT * t.typewriterSpeed >= static_cast<float>(chars);
+        },
+        // 色を書き換える(0..1)。UIImage 優先、無ければ UIText。どちらも無ければ何もしない。
+        "setUiColor", [](Scene& s, Entity& e, float r, float g, float b, float a) {
+            auto& reg = s.GetRegistry();
+            auto h = e.GetHandle();
+            if (reg.all_of<UIImage>(h))
+                reg.get<UIImage>(h).color = {r, g, b, a};
+            else if (reg.all_of<UIText>(h))
+                reg.get<UIText>(h).color = {r, g, b, a};
+        },
+        // 表示/非表示を切り替える。UIRect.visible を優先し(自身と子孫を丸ごと隠す)、
+        // UIRect が無く UICanvas のみ持つエンティティ(キャンバス自身)なら UICanvas.visible を切り替える。
+        "setUiVisible", [](Scene& s, Entity& e, bool visible) {
+            auto& reg = s.GetRegistry();
+            auto h = e.GetHandle();
+            if (reg.all_of<UIRect>(h))
+                reg.get<UIRect>(h).visible = visible;
+            else if (reg.all_of<UICanvas>(h))
+                reg.get<UICanvas>(h).visible = visible;
+        },
+        // UIImage::texturePath を差し替える(assets 相対)。UIImage が無ければ何もしない。
+        "setUiTexture", [](Scene& s, Entity& e, const std::string& path) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIImage>(e.GetHandle())) return;
+            reg.get<UIImage>(e.GetHandle()).texturePath = path;
+        },
+        // UIImage の UVスクロール速度(uv/秒)。タイル(uvMax>1)と併用で流れるパターンになる。
+        // 連番アニメ(animFrames>0)中は無視される。
+        "setUiUvScroll", [](Scene& s, Entity& e, float su, float sv) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIImage>(e.GetHandle())) return;
+            reg.get<UIImage>(e.GetHandle()).uvScroll = {su, sv};
+        },
+        // UIImage の連番アニメを設定(frames=0 で停止し uvMin/uvMax 指定に戻る)。
+        // 呼ぶたび再生位置が頭に戻る。cols=0 は frames と同じ(横1行ストリップ)。
+        "setUiAnim", [](Scene& s, Entity& e, int frames, float fps, int cols, int row) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIImage>(e.GetHandle())) return;
+            auto& img = reg.get<UIImage>(e.GetHandle());
+            img.animFrames = frames;
+            img.animFps    = fps;
+            img.animCols   = cols;
+            img.animRow    = row;
+            img._animT     = 0.0f;
+        },
+        // UIImage の再生モード(0=ループ 1=単発 2=往復)。再生位置は頭に戻る。
+        "setUiAnimMode", [](Scene& s, Entity& e, int mode) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIImage>(e.GetHandle())) return;
+            auto& img = reg.get<UIImage>(e.GetHandle());
+            img.animMode = mode;
+            img._animT   = 0.0f;
+        },
+        // UIImage の連番アニメを頭から再生し直す(設定は変えない)。
+        "restartUiAnim", [](Scene& s, Entity& e) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIImage>(e.GetHandle())) return;
+            reg.get<UIImage>(e.GetHandle())._animT = 0.0f;
+        },
+        // UIImage の連番アニメが単発再生を終えたか(ループ/往復は常に false)。
+        "isUiAnimDone", [](Scene& s, Entity& e) -> bool {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIImage>(e.GetHandle())) return false;
+            const auto& img = reg.get<UIImage>(e.GetHandle());
+            return IsFlipbookFinished(img.animFrames, img.animFps, img.animMode, img._animT);
+        },
+        // UIImage::fillAmount を設定する(0..1 にクランプ。HPバー/ゲージ用)。UIImage が無ければ何もしない。
+        "setUiFill", [](Scene& s, Entity& e, float amount) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIImage>(e.GetHandle())) return;
+            reg.get<UIImage>(e.GetHandle()).fillAmount = std::clamp(amount, 0.0f, 1.0f);
+        },
+        // UIImage::fillAmount を読む。UIImage が無ければ 0。
+        "getUiFill", [](Scene& s, Entity& e) -> float {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIImage>(e.GetHandle())) return 0.0f;
+            return reg.get<UIImage>(e.GetHandle()).fillAmount;
+        },
+        // UIRect::rotation(視覚回転・度)を設定する。UIRect が無ければ何もしない。
+        "setUiRotation", [](Scene& s, Entity& e, float deg) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIRect>(e.GetHandle())) return;
+            reg.get<UIRect>(e.GetHandle()).rotation = deg;
+        },
+        // UIRect::rotation を読む。UIRect が無ければ 0。
+        "getUiRotation", [](Scene& s, Entity& e) -> float {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIRect>(e.GetHandle())) return 0.0f;
+            return reg.get<UIRect>(e.GetHandle()).rotation;
+        },
+        // UISlider の現在値(実値)を読む/書く。書き込みは min..max へクランプ。onChangeEvent は
+        // 発火しない(スクリプト起因の変更でハンドラが再帰しないように。UIToggle も同じ)。
+        "getUiSlider", [](Scene& s, Entity& e) -> float {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UISlider>(e.GetHandle())) return 0.0f;
+            return reg.get<UISlider>(e.GetHandle()).value;
+        },
+        "setUiSlider", [](Scene& s, Entity& e, float v) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UISlider>(e.GetHandle())) return;
+            auto& sld = reg.get<UISlider>(e.GetHandle());
+            sld.value = std::clamp(v, std::min(sld.minValue, sld.maxValue),
+                                   std::max(sld.minValue, sld.maxValue));
+        },
+        // UIScrollView のスクロール量(px)を読む/書く。書き込みは翌フレームの描画で
+        // 0..(コンテンツ−ビュー) にクランプされる。「一番下へ」は大きい値を入れれば良い。
+        "getUiScroll", [](Scene& s, Entity& e) -> std::tuple<float, float> {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIScrollView>(e.GetHandle())) return {0.0f, 0.0f};
+            const auto& sv = reg.get<UIScrollView>(e.GetHandle());
+            return {sv.scrollX, sv.scrollY};
+        },
+        "setUiScroll", [](Scene& s, Entity& e, float x, float y) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIScrollView>(e.GetHandle())) return;
+            auto& sv = reg.get<UIScrollView>(e.GetHandle());
+            sv.scrollX = std::max(0.0f, x);
+            sv.scrollY = std::max(0.0f, y);
+        },
+        // UIToggle の状態を読む/書く。
+        "getUiToggle", [](Scene& s, Entity& e) -> bool {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIToggle>(e.GetHandle())) return false;
+            return reg.get<UIToggle>(e.GetHandle()).isOn;
+        },
+        "setUiToggle", [](Scene& s, Entity& e, bool on) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIToggle>(e.GetHandle())) return;
+            reg.get<UIToggle>(e.GetHandle()).isOn = on;
+        },
+        // --- UI アニメーション / トゥイーン ---
+        // 対象は Entity か エンティティID(数値。ボタンクリックの data.source をそのまま渡せる)。
+        // params: { dx=, dy=(相対移動px), scale=(視覚拡縮。scaleX=/scaleY= で非等方=
+        //           スカッシュ&ストレッチ/フリップ風), alpha=(視覚透明度0..1),
+        //           rotate=(視覚回転・度・絶対目標値。UIRect.rotation へ加算合成),
+        //           color={r,g,b}(視覚カラー乗数。1超えで白フラッシュ。完了後も持続),
+        //           shake=(振動振幅px。duration で 0 へ減衰), shakeFreq=24(Hz),
+        //           fill=(UIImage.fillAmount を絶対目標値へ=ゲージのなめらか増減),
+        //           countTo=(UIText へ数字ロール。countFrom= 省略時は現在テキストの数値,
+        //           countFmt="%d"(printf 書式。"%05d"=ゼロ埋め,"%.1f"=小数)),
+        //           onComplete=function()(完了時に 1 回呼ばれる。SE 同期/演出チェーン用),
+        //           duration=0.3, delay=0, easing="out" }
+        // easing: "linear"/"in"/"out"/"inOut"/"back"(勢い)/"bounce"/"elastic"/"expo"(鋭い減速)/
+        //         "inBack"(溜め)/"inOutBack"/"quint"(強い減速)/"sine"(ゆったり)(または 0..11)
+        "tweenUi", [](Scene& s, sol::object target, sol::table params) {
+            auto& reg = s.GetRegistry();
+            entt::entity h = entt::null;
+            if (target.is<Entity>()) h = target.as<Entity>().GetHandle();
+            else if (target.is<double>())
+                h = static_cast<entt::entity>(static_cast<std::uint32_t>(target.as<double>()));
+            if (h == entt::null || !reg.valid(h) || !reg.all_of<UIRect>(h)) return;
+
+            UiTween t;
+            t.duration = params.get_or("duration", 0.3f);
+            t.delay    = params.get_or("delay", 0.0f);
+            if (sol::object eo = params["easing"]; eo.valid())
+            {
+                if (eo.is<std::string>())
+                {
+                    const std::string es = eo.as<std::string>();
+                    if      (es == "linear")                    t.easing = 0;
+                    else if (es == "in")                        t.easing = 1;
+                    else if (es == "out")                       t.easing = 2;
+                    else if (es == "inOut" || es == "inout")    t.easing = 3;
+                    else if (es == "back")                      t.easing = 4;
+                    else if (es == "bounce")                    t.easing = 5;
+                    else if (es == "elastic")                   t.easing = 6;
+                    else if (es == "expo")                      t.easing = 7;
+                    else if (es == "inBack")                    t.easing = 8;
+                    else if (es == "inOutBack")                 t.easing = 9;
+                    else if (es == "quint")                     t.easing = 10;
+                    else if (es == "sine")                      t.easing = 11;
+                }
+                else if (eo.is<int>())
+                {
+                    t.easing = std::clamp(eo.as<int>(), 0, 11);
+                }
+            }
+            const float dx = params.get_or("dx", 0.0f);
+            const float dy = params.get_or("dy", 0.0f);
+            if (dx != 0.0f || dy != 0.0f) { t.hasMove = true; t.moveDelta = {dx, dy}; }
+            if (sol::object v = params["scale"]; v.is<float>())
+            {
+                const float sc = (std::max)(0.0f, v.as<float>());
+                t.hasScaleX = t.hasScaleY = true;
+                t.scaleXTo = t.scaleYTo = sc;
+            }
+            if (sol::object v = params["scaleX"]; v.is<float>())
+            { t.hasScaleX = true; t.scaleXTo = (std::max)(0.0f, v.as<float>()); }
+            if (sol::object v = params["scaleY"]; v.is<float>())
+            { t.hasScaleY = true; t.scaleYTo = (std::max)(0.0f, v.as<float>()); }
+            if (sol::object v = params["alpha"]; v.is<float>())
+            { t.hasAlpha = true; t.alphaTo = std::clamp(v.as<float>(), 0.0f, 1.0f); }
+            if (sol::object v = params["rotate"]; v.is<float>())
+            { t.hasRotate = true; t.rotTo = v.as<float>(); }
+            if (sol::object v = params["color"]; v.is<sol::table>())
+            {
+                sol::table ct = v.as<sol::table>();
+                t.hasColor = true;
+                t.colTo = {(std::max)(0.0f, ct.get_or(1, 1.0f)),
+                           (std::max)(0.0f, ct.get_or(2, 1.0f)),
+                           (std::max)(0.0f, ct.get_or(3, 1.0f))};
+            }
+            if (sol::object v = params["shake"]; v.is<float>())
+            {
+                t.hasShake  = true;
+                t.shakeAmp  = (std::max)(0.0f, v.as<float>());
+                t.shakeFreq = (std::max)(0.1f, params.get_or("shakeFreq", 24.0f));
+            }
+            if (sol::object v = params["fill"]; v.is<float>())
+            { t.hasFill = true; t.fillTo = std::clamp(v.as<float>(), 0.0f, 1.0f); }
+            if (sol::object v = params["countTo"]; v.is<double>())
+            {
+                t.hasCount = true;
+                t.countTo  = v.as<double>();
+                if (sol::object f = params["countFrom"]; f.is<double>())
+                { t.countFromSet = true; t.countFrom = f.as<double>(); }
+                // printf 書式は [%][フラグ/幅/.精度][d|f] だけ許可（%s 等の書式事故防止）
+                std::string fmt = params.get_or("countFmt", std::string("%d"));
+                bool ok = fmt.size() >= 2 && fmt.front() == '%'
+                          && (fmt.back() == 'd' || fmt.back() == 'f');
+                for (size_t i = 1; ok && i + 1 < fmt.size(); ++i)
+                {
+                    const char ch = fmt[i];
+                    ok = (ch >= '0' && ch <= '9') || ch == '.' || ch == '-' || ch == '+'
+                         || ch == ' ' || ch == '#';
+                }
+                t.countFmt = ok ? fmt : std::string("%d");
+            }
+            if (sol::object v = params["onComplete"]; v.is<sol::function>())
+            {
+                // 完了フレームの UI 更新後に 1 回呼ばれる（SE 同期・演出チェーン用）。
+                // UITweenState は Stop/ランタイムシーン切替の ResetRuntimeState で
+                // Lua ステート破棄より先に消えるため、参照の残留はない
+                sol::function fn = v.as<sol::function>();
+                t.onComplete = [fn]() {
+                    sol::protected_function pf = fn;
+                    auto r = pf();
+                    if (!r.valid())
+                    {
+                        sol::error err = r;
+                        Logger::Warn("tweenUi onComplete エラー: {}", err.what());
+                    }
+                };
+            }
+            if (!t.hasMove && !t.hasScaleX && !t.hasScaleY && !t.hasAlpha && !t.hasRotate
+                && !t.hasColor && !t.hasShake && !t.hasFill && !t.hasCount)
+                return;
+            reg.get_or_emplace<UITweenState>(h).tweens.push_back(t);
+        },
+        // 進行中の tween を全部打ち切る（連打対策。DOTween の Kill 相当）。視覚値は
+        // 既定(等倍/不透明)へ戻す。UIAnimator の出現/ループには影響しない
+        "stopUiTweens", [](Scene& s, sol::object target) {
+            auto& reg = s.GetRegistry();
+            entt::entity h = entt::null;
+            if (target.is<Entity>()) h = target.as<Entity>().GetHandle();
+            else if (target.is<double>())
+                h = static_cast<entt::entity>(static_cast<std::uint32_t>(target.as<double>()));
+            if (h == entt::null || !reg.valid(h)) return;
+            if (auto* tw = reg.try_get<UITweenState>(h))
+                *tw = UITweenState{};
+        },
+        // 表示して出現アニメを最初から再生（UIAnimator 無しなら visible=true だけ）。
+        "showUi", [](Scene& s, sol::object target) {
+            auto& reg = s.GetRegistry();
+            entt::entity h = entt::null;
+            if (target.is<Entity>()) h = target.as<Entity>().GetHandle();
+            else if (target.is<double>())
+                h = static_cast<entt::entity>(static_cast<std::uint32_t>(target.as<double>()));
+            if (h == entt::null || !reg.valid(h)) return;
+            if (reg.all_of<UIRect>(h))          reg.get<UIRect>(h).visible = true;
+            else if (reg.all_of<UICanvas>(h))   reg.get<UICanvas>(h).visible = true;
+            if (auto* an = reg.try_get<UIAnimator>(h)) { an->_t = 0.0f; an->_mode = 0; }
+        },
+        // 出現アニメの逆再生で消す（UIAnimator 無し/出現アニメ無しなら即 visible=false）。
+        // 消えた後に戻すのは showUi（setUiVisible では戻らない）。
+        "hideUi", [](Scene& s, sol::object target) {
+            auto& reg = s.GetRegistry();
+            entt::entity h = entt::null;
+            if (target.is<Entity>()) h = target.as<Entity>().GetHandle();
+            else if (target.is<double>())
+                h = static_cast<entt::entity>(static_cast<std::uint32_t>(target.as<double>()));
+            if (h == entt::null || !reg.valid(h)) return;
+            auto* an = reg.try_get<UIAnimator>(h);
+            if (an && an->showAnim != 0)
+            {
+                if (an->_mode != 4) { an->_t = 0.0f; an->_mode = 3; }
+            }
+            else if (reg.all_of<UIRect>(h))     reg.get<UIRect>(h).visible = false;
+            else if (reg.all_of<UICanvas>(h))   reg.get<UICanvas>(h).visible = false;
         },
         // 配置済み Gimmick コンポーネントを持つ全エンティティを列挙し、
         // パラメータ付きの配列(1始まり)で返す。ゲームスクリプトが動き/当たり判定を駆動する。
@@ -386,7 +904,21 @@ void ScriptEngine::RegisterBindings()
         "setMouseCapture", &InputSystem::SetMouseCapture,
         "isRightMouseDown", &InputSystem::IsRightMouseDown,
         "getMouseDeltaX",  &InputSystem::GetMouseDeltaX,
-        "getMouseDeltaY",  &InputSystem::GetMouseDeltaY
+        "getMouseDeltaY",  &InputSystem::GetMouseDeltaY,
+        // --- ゲームパッド(XInput / Xbox コントローラー、pad = 0..3) ---
+        "isPadConnected",      &InputSystem::IsPadConnected,
+        "getConnectedPadCount", &InputSystem::GetConnectedPadCount,
+        "isPadButtonDown",     &InputSystem::IsPadButtonDown,
+        "isPadButtonPressed",  &InputSystem::IsPadButtonPressed,
+        "isPadButtonReleased", &InputSystem::IsPadButtonReleased,
+        "getPadLeftStickX",   &InputSystem::GetPadLeftStickX,
+        "getPadLeftStickY",   &InputSystem::GetPadLeftStickY,
+        "getPadRightStickX",  &InputSystem::GetPadRightStickX,
+        "getPadRightStickY",  &InputSystem::GetPadRightStickY,
+        "getPadLeftTrigger",  &InputSystem::GetPadLeftTrigger,
+        "getPadRightTrigger", &InputSystem::GetPadRightTrigger,
+        "setPadVibration",      &InputSystem::SetPadVibration,
+        "setPadVibrationTimed", &InputSystem::SetPadVibrationTimed
     );
 
     // --- Camera ---
@@ -421,11 +953,18 @@ void ScriptEngine::RegisterBindings()
 
     // --- Audio ---
     lua.new_usertype<AudioSystem>("AudioSystem",
-        "playBGM",         &AudioSystem::PlayBGM,
+        // メンバ関数ポインタ直バインドだと C++ 側のデフォルト引数(loop)が効かず
+        // 1引数呼びでエラーになるので、sol::optional で loop を省略可にする
+        "playBGM",         [](AudioSystem& a, const std::string& path, sol::optional<bool> loop) {
+                               a.PlayBGM(path, loop.value_or(true));
+                           },
         "stopBGM",         &AudioSystem::StopBGM,
         "pauseBGM",        &AudioSystem::PauseBGM,
         "resumeBGM",       &AudioSystem::ResumeBGM,
-        "playSFX",         &AudioSystem::PlaySFX,
+        "seekBGM",         &AudioSystem::SeekBGM,
+        "playSFX",         [](AudioSystem& a, const std::string& path, sol::optional<bool> loop) {
+                               a.PlaySFX(path, loop.value_or(false));
+                           },
         "playSpatial",     [](AudioSystem& a, const std::string& path, float x, float y, float z,
                               float minD, float maxD, sol::optional<float> vol, sol::optional<bool> loop) {
                                a.PlaySFXSpatial(path, x, y, z, minD, maxD,
@@ -484,8 +1023,50 @@ void ScriptEngine::RegisterBindings()
         lua[name] = static_cast<int>(ch);
     }
 
-    // --- ユーティリティ ---
-    lua["log"] = [](const std::string& msg) { Logger::Info("[Lua] {}", msg); };
+    // --- ゲームパッドボタン定数（isPadButtonDown/Pressed/Released に渡す。値は XINPUT_GAMEPAD_* と同一）---
+    lua["PAD_DPAD_UP"]    = static_cast<int>(XINPUT_GAMEPAD_DPAD_UP);
+    lua["PAD_DPAD_DOWN"]  = static_cast<int>(XINPUT_GAMEPAD_DPAD_DOWN);
+    lua["PAD_DPAD_LEFT"]  = static_cast<int>(XINPUT_GAMEPAD_DPAD_LEFT);
+    lua["PAD_DPAD_RIGHT"] = static_cast<int>(XINPUT_GAMEPAD_DPAD_RIGHT);
+    lua["PAD_START"]      = static_cast<int>(XINPUT_GAMEPAD_START);
+    lua["PAD_BACK"]       = static_cast<int>(XINPUT_GAMEPAD_BACK);
+    lua["PAD_LSTICK"]     = static_cast<int>(XINPUT_GAMEPAD_LEFT_THUMB);
+    lua["PAD_RSTICK"]     = static_cast<int>(XINPUT_GAMEPAD_RIGHT_THUMB);
+    lua["PAD_LB"]         = static_cast<int>(XINPUT_GAMEPAD_LEFT_SHOULDER);
+    lua["PAD_RB"]         = static_cast<int>(XINPUT_GAMEPAD_RIGHT_SHOULDER);
+    lua["PAD_A"]          = static_cast<int>(XINPUT_GAMEPAD_A);
+    lua["PAD_B"]          = static_cast<int>(XINPUT_GAMEPAD_B);
+    lua["PAD_X"]          = static_cast<int>(XINPUT_GAMEPAD_X);
+    lua["PAD_Y"]          = static_cast<int>(XINPUT_GAMEPAD_Y);
+
+    // --- ユーティリティ / デバッグログ（エディタのコンソールパネルに出る）---
+    // 任意個・任意型の引数を tostring でつないで出す（Unity の Debug.Log 相当）。
+    //   log("hp:", hp)  /  logWarn("弾切れ")  /  logError("想定外:", state)
+    // print() も同じ経路へ差し替え（素の print は捕捉されずどこにも出ないため）。
+    auto joinArgs = [](sol::variadic_args va, sol::this_state ts) -> std::string {
+        sol::state_view L(ts);
+        sol::protected_function tostr = L["tostring"];
+        std::string line;
+        for (auto v : va)
+        {
+            if (!line.empty()) line += "\t";
+            auto r = tostr(v);
+            line += r.valid() ? r.get<std::string>() : std::string("?");
+        }
+        return line;
+    };
+    lua["log"] = [joinArgs](sol::variadic_args va, sol::this_state ts) {
+        Logger::Info("[Lua] {}", joinArgs(va, ts));
+    };
+    lua["logWarn"] = [joinArgs](sol::variadic_args va, sol::this_state ts) {
+        Logger::Warn("[Lua] {}", joinArgs(va, ts));
+    };
+    lua["logError"] = [joinArgs](sol::variadic_args va, sol::this_state ts) {
+        Logger::Error("[Lua] {}", joinArgs(va, ts));
+    };
+    lua["print"] = [joinArgs](sol::variadic_args va, sol::this_state ts) {
+        Logger::Info("[Lua] {}", joinArgs(va, ts));
+    };
 
     // --- シーンをまたいで残る数値ストレージ（スコア受け渡し等）---
     lua["saveNum"] = [this](const std::string& key, double v) { m_blackboard[key] = v; };
@@ -498,12 +1079,21 @@ void ScriptEngine::RegisterBindings()
     lua["loadScene"] = [this](const std::string& rel) { if (m_loadSceneCb) m_loadSceneCb(rel); };
     lua["nextScene"] = [this]() { if (m_nextSceneCb) m_nextSceneCb(); };
     lua["quit"]      = [this]() { if (m_quitCb) m_quitCb(); };
-    // フェード等のトランジション付きシーン切替（type: 0=Fade,1=Wipe,2=Circle,3=縦Wipe）
+    // フェード等のトランジション付きシーン切替（type: 0=Fade,1=Wipe,2=Circle,3=縦Wipe,4=シークバー早送り）
     lua["fadeToScene"] = [this](const std::string& rel, sol::optional<float> dur) {
         if (m_transitionCb) m_transitionCb(rel, 0, dur.value_or(0.6f));
     };
     lua["transitionToScene"] = [this](const std::string& rel, int type, sol::optional<float> dur) {
         if (m_transitionCb) m_transitionCb(rel, type, dur.value_or(0.6f));
+    };
+    // フォーカスナビ(矢印/D-pad + Enter/Space/A)へ初期フォーカスを与える。
+    // Entity か数値 id を受ける。メニュー表示時に既定ボタンへ当ててパッド即操作可能にする用。
+    lua["setUiFocus"] = [this](sol::object target) {
+        if (!m_uiFocusCb) return;
+        if (target.is<Entity>())
+            m_uiFocusCb(static_cast<std::uint32_t>(target.as<Entity>().GetHandle()));
+        else if (target.is<double>())
+            m_uiFocusCb(static_cast<std::uint32_t>(target.as<double>()));
     };
 
     // --- ゲーム内 UI（即時モード）---
@@ -572,6 +1162,23 @@ void ScriptEngine::RegisterBindings()
             p.turbStrength = t.get_or("turbStrength", 0.0f);  // カールノイズ乱流（煙/炎の有機的揺らぎ）
             p.turbFreq     = t.get_or("turbFreq", 1.0f);
 
+            // 粒子の向き（任意・後方互換）: 数値 or 文字列 billboard(0)/horizontal(1)/vertical(2)
+            {
+                sol::object oo = t["orient"];
+                if (oo.valid())
+                {
+                    if (oo.is<std::string>())
+                    {
+                        std::string s = oo.as<std::string>();
+                        if      (s == "billboard")  p.orient = 0;
+                        else if (s == "horizontal" || s == "ground") p.orient = 1;
+                        else if (s == "vertical")   p.orient = 2;
+                    }
+                    else if (oo.is<double>())
+                        p.orient = static_cast<int>(oo.as<double>());
+                }
+            }
+
             // --- プロシージャル質感(kind) / ブレンド / 3キー色 / 明滅（全て任意・後方互換）---
             //  kind は数値 or 文字列: glow/fire/smoke/spark/magic/electric(lightning)/ring(shockwave)/star(flare)
             int kind = 0;
@@ -605,19 +1212,62 @@ void ScriptEngine::RegisterBindings()
             }
             p.flicker     = t.get_or("flicker", 0.0f);
             p.flickerFreq = t.get_or("flickerFreq", 18.0f);
+            p.sizeMid     = t.get_or("sizeMid", -1.0f);     // >=0 で3キーサイズ（start→mid→end）
+            p.distort     = t.get_or("distort", 0.0f);      // >0 で歪みパーティクル（熱ゆらぎ/衝撃波）
+            p.light       = t.get_or("light", false);       // 明るい粒子上位をポイントライト化
+            p.lightRange  = t.get_or("lightRange", 3.0f);
             return p;
         };
 
+        // onDeath = {…} で粒子の死亡位置に子バースト（サブエミッタ・1段のみ）。
+        // 例: fx:burst{count=1, life=1.2, gravity=-9, onDeath={kind="spark", count=24, speed=5}}
+        // gpu = true で GPUパーティクル（compute シム・最大 131072・加算専用）へルーティング。
+        // 例: fx:burst{gpu=true, count=20000, kind="spark", speed=12, gravity=-9}
+        auto emitWithChild = [this, buildParams](sol::table t, bool ring) {
+            if (t.get_or("gpu", false) && m_gpuParticleSystem)
+            {
+                auto p = buildParams(t);
+                GpuParticleSystem::EmitRequest r;
+                r.pos    = p.pos;
+                r.count  = static_cast<u32>((std::max)(p.count, 0));
+                r.dir    = p.dir;
+                r.spread = p.spread;
+                r.col0   = { p.color.x * p.intensity, p.color.y * p.intensity, p.color.z * p.intensity };
+                r.speed  = p.speed;
+                const auto& ce = p.hasColorEnd ? p.colorEnd : p.color;
+                r.col1   = { ce.x * p.intensity, ce.y * p.intensity, ce.z * p.intensity };
+                r.speedVar = p.speedVar;
+                r.size0 = p.size;    r.size1 = p.sizeEnd;
+                r.life  = p.life;    r.lifeVar = p.lifeVar;
+                r.gravity = p.gravity; r.drag = p.drag; r.up = p.up;
+                r.turb  = p.turbStrength;
+                r.kind  = p.kind;
+                r.stretch = p.stretch;
+                m_gpuParticleSystem->Emit(r);
+                return;
+            }
+            if (!m_particleSystem) return;
+            auto p = buildParams(t);
+            p.ring = ring;
+            sol::optional<sol::table> od = t["onDeath"];
+            if (od)
+            {
+                auto child = buildParams(*od);
+                child.ring = od->get_or("ring", false);
+                m_particleSystem->Emit(p, &child);
+            }
+            else
+            {
+                m_particleSystem->Emit(p);
+            }
+        };
+
         auto fx = lua.create_named_table("fx");
-        fx.set_function("burst", [this, buildParams](sol::object, sol::table t) {
-            if (!m_particleSystem) return;
-            auto p = buildParams(t); p.ring = false;
-            m_particleSystem->Emit(p);
+        fx.set_function("burst", [emitWithChild](sol::object, sol::table t) {
+            emitWithChild(t, false);
         });
-        fx.set_function("ring", [this, buildParams](sol::object, sol::table t) {
-            if (!m_particleSystem) return;
-            auto p = buildParams(t); p.ring = true;
-            m_particleSystem->Emit(p);
+        fx.set_function("ring", [emitWithChild](sol::object, sol::table t) {
+            emitWithChild(t, true);
         });
         fx.set_function("pulse", [this](sol::object, sol::optional<float> amt) {
             if (m_particleSystem) m_particleSystem->AddPulse(amt.value_or(0.5f));
@@ -653,8 +1303,24 @@ void ScriptEngine::RegisterBindings()
         });
     }
 
+    // --- time: 時間 API（'.' で呼ぶ）---
+    // now/dt はタイムスケール適用済み。setScale(0)=ポーズ、0.5=スローモ、2=早送り。
+    // スケールは OnUpdate に渡る dt 自体に掛かるので、既存スクリプトは無改修で追従する。
+    // after/every/cancel タイマーは prelude(純Lua)側で time テーブルに追加される。
+    {
+        sol::table tm = lua.create_named_table("time");
+        tm.set_function("now",      [this] { return m_timeElapsed; });
+        tm.set_function("realtime", [this] { return m_timeUnscaled; });
+        tm.set_function("dt",       [this] { return m_timeDt; });
+        tm.set_function("realDt",   [this] { return m_timeUnscaledDt; });
+        tm.set_function("frame",    [this] { return m_timeFrame; });
+        tm.set_function("getScale", [this] { return m_timeScale; });
+        tm.set_function("setScale", [this](float s) { m_timeScale = (s < 0.0f) ? 0.0f : s; });
+    }
+
     RegisterPhysicsBindings();
     RegisterEventsBinding();
+    RegisterNetworkBindings();
 
     Logger::Info("Lua bindings registered");
 }
@@ -904,8 +1570,8 @@ void ScriptEngine::RegisterEventsBinding()
             if (!s_warned)
             {
                 s_warned = true;
-                Logger::Warn("events:on called but EventBus is not available "
-                             "(events:on/emit は Playing 中のみ有効。OnStart() 内で登録してください)");
+                Logger::Warn("events:on を呼びましたが EventBus が利用できません"
+                             "（events:on/emit は Playing 中のみ有効。OnStart() 内で登録してください）");
             }
             return 0;
         }
@@ -917,7 +1583,7 @@ void ScriptEngine::RegisterEventsBinding()
             if (!r.valid())
             {
                 sol::error err = r;
-                Logger::Warn("events handler error ({}): {}", e.name, err.what());
+                Logger::Warn("イベントハンドラでエラー（{}）: {}", e.name, err.what());
             }
         });
     });
@@ -952,6 +1618,192 @@ void ScriptEngine::RegisterEventsBinding()
     });
 }
 
+void ScriptEngine::RegisterNetworkBindings()
+{
+    auto& lua = *m_lua;
+    sol::table net = lua.create_named_table("net");
+
+    // port/ip 省略時は NetworkConfig の既定値を使う。net が未注入(エディタ等)ならエラー文字列を返す。
+    net.set_function("host", [this](sol::object /*self*/, sol::optional<int> port) -> std::string {
+        if (!m_network) return "network system unavailable";
+        u16 p = port.has_value() ? static_cast<u16>(*port) : m_network->Config().defaultPort;
+        std::string err;
+        if (!m_network->Host(p, m_network->Config().maxPlayers, err)) return err;
+        return "";
+    });
+
+    net.set_function("join", [this](sol::object /*self*/, const std::string& ip,
+                                     sol::optional<int> port) -> std::string {
+        if (!m_network) return "network system unavailable";
+        u16 p = port.has_value() ? static_cast<u16>(*port) : m_network->Config().defaultPort;
+        std::string err;
+        if (!m_network->Join(ip, p, err)) return err;
+        return "";
+    });
+
+    net.set_function("disconnect", [this](sol::object /*self*/) {
+        if (m_network) m_network->Disconnect();
+    });
+
+    net.set_function("isServer",    [this](sol::object /*self*/) { return m_network && m_network->IsServer(); });
+    net.set_function("isClient",    [this](sol::object /*self*/) { return m_network && m_network->IsClient(); });
+    net.set_function("isConnected", [this](sol::object /*self*/) { return m_network && m_network->IsConnected(); });
+    net.set_function("localClientId", [this](sol::object /*self*/) -> int {
+        return m_network ? static_cast<int>(m_network->LocalClientId()) : 0;
+    });
+
+    net.set_function("players", [this](sol::object /*self*/) -> sol::table {
+        sol::table out = m_lua->create_table();
+        if (!m_network) return out;
+        int i = 1;
+        for (const auto& p : m_network->Players())
+        {
+            sol::table row = m_lua->create_table();
+            row["id"]  = static_cast<int>(p.id);
+            row["rtt"] = static_cast<int>(p.rttMs);
+            row["bytesSent"] = static_cast<double>(p.bytesSent);
+            row["bytesReceived"] = static_cast<double>(p.bytesReceived);
+            out[i++] = row;
+        }
+        return out;
+    });
+
+    // クライアント専用。毎フレーム呼ぶ想定(呼ばなかったフレームは前回値が送られ続ける)。
+    // t = { moveX=, moveZ=, aimYaw=, aimPitch=, buttons=, jump= }(全省略可、既定0/false)。
+    net.set_function("setInput", [this](sol::object /*self*/, sol::table t) {
+        if (!m_network) return;
+        NetworkSystem::InputCommand cmd;
+        cmd.moveVelX  = t.get_or("moveX", 0.0f);
+        cmd.moveVelZ  = t.get_or("moveZ", 0.0f);
+        cmd.aimYaw    = t.get_or("aimYaw", 0.0f);
+        cmd.aimPitch  = t.get_or("aimPitch", 0.0f);
+        cmd.buttons   = static_cast<u32>(t.get_or("buttons", 0));
+        cmd.jump      = t.get_or("jump", false);
+        m_network->SetLocalInput(cmd);
+    });
+
+    // サーバー専用。entity の NetworkIdentity._owner の最新入力を返す
+    // (owner未接続/入力未受信なら全部ゼロのテーブル)。
+    net.set_function("getInput", [this](sol::object /*self*/, Entity& e) -> sol::table {
+        sol::table out = m_lua->create_table();
+        out["moveX"] = 0.0f; out["moveZ"] = 0.0f;
+        out["aimYaw"] = 0.0f; out["aimPitch"] = 0.0f;
+        out["buttons"] = 0; out["jump"] = false;
+        if (!m_network || !e.IsValid() || !e.HasComponent<NetworkIdentity>()) return out;
+
+        const auto cmd = m_network->GetLatestInput(e.GetComponent<NetworkIdentity>()._owner);
+        out["moveX"] = cmd.moveVelX;   out["moveZ"] = cmd.moveVelZ;
+        out["aimYaw"] = cmd.aimYaw;    out["aimPitch"] = cmd.aimPitch;
+        out["buttons"] = static_cast<int>(cmd.buttons);
+        out["jump"] = cmd.jump;
+        return out;
+    });
+
+    // サーバー専用。実際の生成はフレーム境界(InstantiatePrefabがcmdListを要るため)。
+    // 戻り値: netId(int, 失敗時0), err(string)。生成完了は net.spawned イベントで分かる。
+    net.set_function("spawn", [this](sol::object /*self*/, const std::string& prefabPath,
+                                       f32 x, f32 y, f32 z, sol::optional<int> owner) -> std::tuple<int, std::string> {
+        if (!m_network) return { 0, "network system unavailable" };
+        const ClientId ownerId = owner.has_value() ? static_cast<ClientId>(*owner) : kServerClientId;
+        std::string err;
+        NetId id = m_network->RequestSpawn(prefabPath, x, y, z, ownerId, err);
+        return { static_cast<int>(id), err };
+    });
+
+    // サーバー専用。破棄は即時(cmdList不要)。
+    net.set_function("despawn", [this](sol::object /*self*/, Entity& e) -> std::string {
+        if (!m_network) return "network system unavailable";
+        if (!e.IsValid() || !e.HasComponent<NetworkIdentity>())
+            return "entity has no NetworkIdentity";
+        const NetId id = e.GetComponent<NetworkIdentity>()._netId;
+        std::string err;
+        m_network->RequestDespawn(id, m_scene->GetRegistry(), err);
+        return err;
+    });
+
+    // netId からエンティティを引く(スポーン完了後のnet.spawnedハンドラ等から使う想定)。
+    // 見つからなければ IsValid()==false の Entity を返す。
+    net.set_function("findByNetId", [this](sol::object /*self*/, int netId) -> Entity {
+        entt::entity e = m_network ? m_network->FindEntityByNetId(static_cast<NetId>(netId)) : entt::null;
+        return Entity(e, &m_scene->GetRegistry());
+    });
+
+    // RPC: 引数は number/string/boolean/Vec3 のみ対応(テーブルや関数は不可)。
+    auto toRpcArgs = [](sol::variadic_args va) -> RpcArgs {
+        RpcArgs args;
+        for (auto v : va)
+        {
+            sol::object o = v;
+            if      (!o.valid() || o.is<sol::nil_t>()) args.push_back(RpcValue{});
+            else if (o.is<bool>())                     args.push_back(RpcValue::MakeBool(o.as<bool>()));
+            else if (o.is<double>())                   args.push_back(RpcValue::MakeNumber(o.as<double>()));
+            else if (o.is<DirectX::XMFLOAT3>())         args.push_back(RpcValue::MakeVec3(o.as<DirectX::XMFLOAT3>()));
+            else if (o.is<std::string>())               args.push_back(RpcValue::MakeString(o.as<std::string>()));
+            else args.push_back(RpcValue{});   // 未対応型はnil扱い(警告なし、シンプルさ優先)
+        }
+        return args;
+    };
+    auto fromRpcArgs = [](sol::state& lua, const RpcArgs& args) -> std::vector<sol::object> {
+        std::vector<sol::object> out;
+        out.reserve(args.size());
+        for (const auto& a : args)
+        {
+            switch (a.type)
+            {
+            case RpcValue::Type::Bool:   out.push_back(sol::make_object(lua, a.b)); break;
+            case RpcValue::Type::Number: out.push_back(sol::make_object(lua, a.num)); break;
+            case RpcValue::Type::String: out.push_back(sol::make_object(lua, a.str)); break;
+            case RpcValue::Type::Vec3:   out.push_back(sol::make_object(lua, a.vec)); break;
+            case RpcValue::Type::Nil:
+            default:                     out.push_back(sol::make_object(lua, sol::nil)); break;
+            }
+        }
+        return out;
+    };
+
+    net.set_function("rpc", [this, toRpcArgs](sol::object /*self*/, const std::string& name,
+                                                sol::variadic_args va) -> std::string {
+        if (!m_network) return "network system unavailable";
+        std::string err;
+        m_network->SendRpcToServer(name, toRpcArgs(va), err);
+        return err;
+    });
+
+    net.set_function("rpcAll", [this, toRpcArgs](sol::object /*self*/, const std::string& name,
+                                                   sol::variadic_args va) -> std::string {
+        if (!m_network) return "network system unavailable";
+        std::string err;
+        m_network->SendRpcToAll(name, toRpcArgs(va), err);
+        return err;
+    });
+
+    net.set_function("rpcClient", [this, toRpcArgs](sol::object /*self*/, int clientId, const std::string& name,
+                                                      sol::variadic_args va) -> std::string {
+        if (!m_network) return "network system unavailable";
+        std::string err;
+        m_network->SendRpcToClient(static_cast<ClientId>(clientId), name, toRpcArgs(va), err);
+        return err;
+    });
+
+    net.set_function("onRpc", [this, fromRpcArgs](sol::object /*self*/, const std::string& name, sol::function fn) {
+        if (!m_network) return;
+        sol::main_function mfn = fn;   // GC 寿命を確実に保持(events:on と同じ流儀)
+        m_network->SetRpcHandler(name, [this, mfn, fromRpcArgs, name](ClientId sender, const RpcArgs& args) mutable {
+            sol::protected_function pf = mfn;
+            if (!pf.valid()) return;
+            std::vector<sol::object> luaArgs;
+            luaArgs.push_back(sol::make_object(*m_lua, static_cast<int>(sender)));
+            for (auto& a : fromRpcArgs(*m_lua, args)) luaArgs.push_back(a);
+            auto r = pf(sol::as_args(luaArgs));
+            if (!r.valid())
+            {
+                sol::error err = r;
+                Logger::Warn("RPCハンドラでエラー（{}）: {}", name, err.what());
+            }
+        });
+    });
+}
+
 void ScriptEngine::LoadPrelude()
 {
     // 高レベルゲームスクリプトAPI（プランナー/AI 向け）。
@@ -974,12 +1826,185 @@ local KEYS = {
 function keyDown(name)    local k = KEYS[name]; return k ~= nil and input:isKeyDown(k)    end
 function keyPressed(name) local k = KEYS[name]; return k ~= nil and input:isKeyPressed(k) end
 
+-- ===== gamepad: Xbox コントローラー簡易API（pad 省略時は 0 = 1台目）=====
+-- padDown("A")/padPressed("RB")/padReleased("LB") はボタン名文字列で判定。
+-- padStick("left"|"right", pad?) はスティックの (x, y) を2値で返す（デッドゾーン適用済み）。
+-- padTrigger("left"|"right", pad?) は 0..1 のアナログ値。
+-- padVibrate(low, high, seconds?, pad?) は振動（low=強モーター/high=弱モーター、共に0..1）。
+--   seconds を渡すとその秒数だけ鳴って自動停止、省略時は手動で padVibrate(0,0) するまで鳴り続ける。
+local PAD_BUTTONS = {
+  A=PAD_A, B=PAD_B, X=PAD_X, Y=PAD_Y,
+  LB=PAD_LB, RB=PAD_RB, BACK=PAD_BACK, START=PAD_START,
+  LSTICK=PAD_LSTICK, RSTICK=PAD_RSTICK,
+  DPAD_UP=PAD_DPAD_UP, DPAD_DOWN=PAD_DPAD_DOWN, DPAD_LEFT=PAD_DPAD_LEFT, DPAD_RIGHT=PAD_DPAD_RIGHT,
+}
+function padConnected(pad) return input:isPadConnected(pad or 0) end
+function padDown(name, pad)     local b = PAD_BUTTONS[name]; return b ~= nil and input:isPadButtonDown(pad or 0, b) end
+function padPressed(name, pad)  local b = PAD_BUTTONS[name]; return b ~= nil and input:isPadButtonPressed(pad or 0, b) end
+function padReleased(name, pad) local b = PAD_BUTTONS[name]; return b ~= nil and input:isPadButtonReleased(pad or 0, b) end
+function padStick(side, pad)
+  pad = pad or 0
+  if side == "right" then return input:getPadRightStickX(pad), input:getPadRightStickY(pad) end
+  return input:getPadLeftStickX(pad), input:getPadLeftStickY(pad)
+end
+function padTrigger(side, pad)
+  pad = pad or 0
+  if side == "right" then return input:getPadRightTrigger(pad) end
+  return input:getPadLeftTrigger(pad)
+end
+function padVibrate(low, high, seconds, pad)
+  pad = pad or 0
+  if seconds then input:setPadVibrationTimed(pad, low, high, seconds)
+  else input:setPadVibration(pad, low, high) end
+end
+)LUA" R"LUA(
 -- ===== events: 疎結合のイベントバス =====
 -- どのコンポーネントからでも events:on("name", fn) で購読、events:emit("name", data) で発火。
 -- events:on は購読IDを返す。個別解除は events:off(id)、全消去は events:clear()。
 -- Trigger の EmitEvent アクション（C++ 側）もこの emit を呼ぶ。Play 開始時に clear される。
 -- 実体は C++ EventBus への薄いバインド（RegisterEventsBinding で登録済み）。
 -- 旧・純 Lua 実装（events = { _h = {} } ...）はここから削除した。
+
+-- ===== time: タイマー（C++ 側 time.now/dt/setScale 等に追加する純 Lua 部分）=====
+-- time.after(sec, fn) -> id   sec 秒後に fn を1回呼ぶ
+-- time.every(sec, fn) -> id   sec 秒ごとに fn を繰り返し呼ぶ
+-- time.cancel(id)             どちらも解除
+-- タイマーはスケール済み時間で進む(setScale(0) 中は止まる)。Play 開始でクリア。
+time._timers, time._nextId = {}, 1
+function time.after(sec, fn)
+  local id = time._nextId; time._nextId = id + 1
+  time._timers[id] = { left = sec, fn = fn }
+  return id
+end
+function time.every(sec, fn)
+  local id = time._nextId; time._nextId = id + 1
+  time._timers[id] = { left = sec, interval = sec, fn = fn }
+  return id
+end
+function time.cancel(id) time._timers[id] = nil end
+
+-- エンティティキー解決: self テーブル(.name) / 名前文字列 / 数値id を受け付ける。
+-- キーは名前を優先(イベントで target 名を渡す既存の流儀と噛み合う)。同名エンティティは同一時計になる点に注意。
+local function _timeKey(e)
+  if type(e) == "table" then return e.name or tostring(e.entity) end
+  return e
+end
+
+-- ===== time.video: 共有ビデオ時計 =====
+-- ステージ全体に1本流れる"動画時間"。ギミックは video.localTime(self) を t にして動きを t の
+-- 純関数で書く(決定論タイムライン)。矢が刺さったら video.skip(target, ±sec) でその対象の
+-- オフセットだけを動かす = 先送り/巻き戻し。skip は残り時間も自動で消費する(skipCost 倍率、
+-- 「先送りすると制限時間が減る」ルールの実装。0 でコスト無し)。
+time.video = { _active = false, _t = 0, _dur = 0, _consumed = 0, _skipCost = 1.0, _offsets = {} }
+function time.video.start(duration, opts)
+  local v = time.video
+  v._active, v._t, v._dur, v._consumed = true, 0, duration or 0, 0
+  v._skipCost = (opts and opts.skipCost) or 1.0
+  v._offsets = {}
+end
+function time.video.stop() time.video._active = false end
+function time.video.active() return time.video._active end
+function time.video.now() return time.video._t end
+function time.video.duration() return time.video._dur end
+function time.video.remaining()
+  local v = time.video
+  if not v._active then return math.huge end
+  local r = v._dur - v._t - v._consumed
+  return r > 0 and r or 0
+end
+function time.video.finished() return time.video._active and time.video.remaining() <= 0 end
+function time.video.setOffset(e, off) time.video._offsets[_timeKey(e)] = off end
+function time.video.getOffset(e) return time.video._offsets[_timeKey(e)] or 0 end
+function time.video.skip(e, amount)
+  local v = time.video
+  local k = _timeKey(e)
+  v._offsets[k] = (v._offsets[k] or 0) + amount
+  v._consumed = v._consumed + math.abs(amount) * v._skipCost
+  return v._offsets[k]
+end
+function time.video.localTime(e) return time.video._t + time.video.getOffset(e) end
+
+-- ===== 個別時計: エンティティ単位の独立クロック =====
+-- 共有ビデオ時計と無関係に、オブジェクトごとに進む・止まる・スキップできる時計。
+-- 初アクセスで t=0 から開始。scaleEntity(e, 0)=そのオブジェクトだけ停止、負値=逆再生。
+time._ent = {}
+local function _entClock(e)
+  local k = _timeKey(e)
+  local c = time._ent[k]
+  if not c then c = { t = 0, scale = 1 }; time._ent[k] = c end
+  return c
+end
+function time.localTime(e) return _entClock(e).t end
+function time.skipEntity(e, amount) local c = _entClock(e); c.t = c.t + amount; return c.t end
+function time.scaleEntity(e, s) _entClock(e).scale = s end
+function time.getEntityScale(e) return _entClock(e).scale end
+function time.resetEntity(e) time._ent[_timeKey(e)] = nil end
+
+-- ===== charge: 押しっぱなしチャージ計測（弓を引く等）=====
+-- local c = charge.new("E", { max = 2.0, rate = 1.0 })
+-- OnUpdate で c:update() を呼ぶ。c:charging()/c:ratio() でゲージ表示、
+-- 離した瞬間 c:released() がチャージ量を返す(それ以外は nil)。
+charge = {}
+charge.__index = charge
+function charge.new(key, opts)
+  opts = opts or {}
+  return setmetatable({
+    key = key, max = opts.max or 2.0, rate = opts.rate or 1.0,
+    realtime = opts.realtime or false,   -- true: ポーズ中も実時間で溜まる
+    v = 0, _charging = false, _released = false,
+  }, charge)
+end
+function charge:update()
+  local dt = self.realtime and time.realDt() or time.dt()
+  self._released = false
+  if keyDown(self.key) then
+    self._charging = true
+    self.v = math.min(self.v + dt * self.rate, self.max)
+  elseif self._charging then
+    self._charging = false
+    self._released = true
+  end
+end
+function charge:charging() return self._charging end
+function charge:value() return self.v end
+function charge:ratio() return self.max > 0 and (self.v / self.max) or 0 end
+function charge:released()
+  if not self._released then return nil end
+  self._released = false
+  local v = self.v
+  self.v = 0
+  return v
+end
+
+function __time_reset()
+  time._timers, time._nextId = {}, 1
+  -- time.video はメソッドも入っているテーブルなので丸ごと差し替えず状態フィールドだけ戻す
+  local v = time.video
+  v._active, v._t, v._dur, v._consumed, v._skipCost = false, 0, 0, 0, 1.0
+  v._offsets = {}
+  time._ent = {}
+end
+function __time_tick(dt)
+  -- ビデオ時計・個別時計を進める
+  if time.video._active then time.video._t = time.video._t + dt end
+  for _, c in pairs(time._ent) do c.t = c.t + dt * c.scale end
+
+  -- タイマー: スナップショットしてから回す(fn 内で after/cancel されても安全)
+  local ids = {}
+  for id in pairs(time._timers) do ids[#ids + 1] = id end
+  for _, id in ipairs(ids) do
+    local t = time._timers[id]
+    if t then
+      t.left = t.left - dt
+      while t and t.left <= 0 do
+        local ok, err = pcall(t.fn)
+        if not ok then print("time timer error: " .. tostring(err)) end
+        if t.interval and t.interval > 0 then t.left = t.left + t.interval
+        else time._timers[id] = nil; t = nil end
+      end
+    end
+  end
+end
 
 local function d2xz(ax, az, bx, bz) local dx, dz = ax-bx, az-bz; return dx*dx + dz*dz end
 
@@ -1299,13 +2324,136 @@ vfx.register("explosion", function(x,y,z,s) FX.explosion(x,y,z,s) end)
 vfx.register("supernova", function(x,y,z,s) FX.supernova(x,y,z,s) end)
 vfx.register("spark",     function(x,y,z,s) FX.spark(x,y,z, math.floor(8*(s or 1))) end)
 vfx.register("hit",       function(x,y,z,s) FX.hit(0.6) end)
+
+-- ============================================================
+--  uifx: ゲーム内UI(UIRect持ちエンティティ)の定番演出ワンライナー集
+--  対象 e は Entity でも エンティティID(ボタンイベントの e.source)でも可。
+--  実体は scene:tweenUi の組み合わせ（エンジン改修なしの純 Lua）。
+-- ============================================================
+uifx = {}
+
+-- ボタンを押した感（一瞬膨らんで戻る）。s=膨らみ倍率
+function uifx.punch(e, s, dur)
+  s = s or 1.15; dur = dur or 0.22
+  scene:tweenUi(e, { scale=s,   duration=dur*0.35, easing="out" })
+  scene:tweenUi(e, { scale=1.0, duration=dur*0.65, delay=dur*0.35, easing="back" })
+end
+
+-- 色フラッシュ（既定=白く光る。1超え=輝き。ダメージ赤は uifx.flash(e, 3, 0.3, 0.3)）
+function uifx.flash(e, r, g, b, dur)
+  r = r or 2.5; g = g or 2.5; b = b or 2.5; dur = dur or 0.3
+  scene:tweenUi(e, { color={r,g,b}, duration=dur*0.25, easing="out" })
+  scene:tweenUi(e, { color={1,1,1}, duration=dur*0.75, delay=dur*0.25, easing="out" })
+end
+
+-- 振動（ダメージ/エラー通知）。amp=px
+function uifx.shake(e, amp, dur)
+  scene:tweenUi(e, { shake=amp or 10, duration=dur or 0.4 })
+end
+
+-- 赤フラッシュ + 振動（被ダメの定番セット）
+function uifx.hit(e, amp)
+  uifx.flash(e, 3, 0.35, 0.35, 0.35)
+  uifx.shake(e, amp or 8, 0.35)
+end
+
+-- ぽよんと登場（0 からバウンドで等倍へ）
+function uifx.bounceIn(e, dur)
+  dur = dur or 0.5
+  scene:tweenUi(e, { scale=0.01, alpha=0, duration=0.01 })
+  scene:tweenUi(e, { scale=1.0,  alpha=1, duration=dur, delay=0.02, easing="bounce" })
+end
+
+-- ぺしゃんこ→開く（フリップ風の注目演出。結果表示やカード公開に）
+function uifx.flipIn(e, dur)
+  dur = dur or 0.4
+  scene:tweenUi(e, { scaleY=0.01, alpha=0, duration=0.01 })
+  scene:tweenUi(e, { scaleY=1.0,  alpha=1, duration=dur, delay=0.02, easing="back" })
+end
+
+-- 縮んで消える（ポップアップを閉じる）
+function uifx.popOut(e, dur)
+  scene:tweenUi(e, { scale=0.01, alpha=0, duration=dur or 0.25, easing="in" })
+end
+
+-- フェードイン / アウト
+function uifx.fadeIn(e, dur)  scene:tweenUi(e, { alpha=1, duration=dur or 0.3 }) end
+function uifx.fadeOut(e, dur) scene:tweenUi(e, { alpha=0, duration=dur or 0.3 }) end
+
+-- ステージャー（リスト項目の順次入場。間隔の相場は 0.05〜0.10 秒）。
+-- list = Entity/ID の配列、fn は関数(e, delay) か uifx の関数名文字列。
+-- 例: uifx.stagger({item1, item2, item3}, 0.07, uifx.slideInLeft)
+--     uifx.stagger(items, 0.06, function(e, d) scene:tweenUi(e, {alpha=1, duration=0.3, delay=d}) end)
+function uifx.stagger(list, step, fn, ...)
+  step = step or 0.07
+  for i, e in ipairs(list) do fn(e, (i - 1) * step, ...) end
+end
+
+-- 方向スライド入場（delay 対応 = stagger と組み合わせる）。dist=px
+function uifx.slideInLeft(e, delay, dist, dur)
+  dist = dist or 80; dur = dur or 0.35; delay = delay or 0
+  scene:tweenUi(e, { alpha=0, duration=0.01, delay=delay })
+  scene:tweenUi(e, { dx=-dist, duration=0.01, delay=delay })
+  scene:tweenUi(e, { dx=dist, alpha=1, duration=dur, delay=delay + 0.02, easing="expo" })
+end
+function uifx.slideInRight(e, delay, dist, dur)
+  dist = dist or 80; dur = dur or 0.35; delay = delay or 0
+  scene:tweenUi(e, { alpha=0, duration=0.01, delay=delay })
+  scene:tweenUi(e, { dx=dist, duration=0.01, delay=delay })
+  scene:tweenUi(e, { dx=-dist, alpha=1, duration=dur, delay=delay + 0.02, easing="expo" })
+end
+function uifx.slideInUp(e, delay, dist, dur)   -- 下から上がってくる
+  dist = dist or 60; dur = dur or 0.35; delay = delay or 0
+  scene:tweenUi(e, { alpha=0, duration=0.01, delay=delay })
+  scene:tweenUi(e, { dy=dist, duration=0.01, delay=delay })
+  scene:tweenUi(e, { dy=-dist, alpha=1, duration=dur, delay=delay + 0.02, easing="expo" })
+end
+function uifx.popIn(e, delay, dur)             -- ぽんと出る（stagger 対応版 bounceIn）
+  dur = dur or 0.35; delay = delay or 0
+  scene:tweenUi(e, { scale=0.01, alpha=0, duration=0.01, delay=delay })
+  scene:tweenUi(e, { scale=1.0,  alpha=1, duration=dur, delay=delay + 0.02, easing="back" })
+end
+
+-- 数字ロール（スコア/所持金のカウントアップ）。fmt 例: "%d" "%05d" "%.1f"
+function uifx.countTo(e, to, dur, fmt)
+  scene:tweenUi(e, { countTo=to, countFmt=fmt or "%d", duration=dur or 0.6, easing="expo" })
+end
+
+-- ゲージをなめらかに増減（fill は絶対目標値 0..1）
+function uifx.fillTo(e, v, dur, easing)
+  scene:tweenUi(e, { fill=v, duration=dur or 0.35, easing=easing or "out" })
+end
+
+-- ゴーストバー付きダメージ（front=本体バー ghost=背後の白/黄バー。格ゲー/アクションの定番。
+-- 本体は即落ち、ゴーストが遅れて追従して「削られた量」を見せる）
+function uifx.damageBar(front, ghost, v, ghostDelay)
+  scene:tweenUi(front, { fill=v, duration=0.08, easing="out" })
+  scene:tweenUi(ghost, { fill=v, duration=0.45, delay=ghostDelay or 0.35, easing="out" })
+end
+
+-- 注目のゆらぎ（通知バッジ等を左右にクイックに振る）
+function uifx.wiggle(e, deg, dur)
+  deg = deg or 8; dur = dur or 0.4
+  scene:tweenUi(e, { rotate=-deg,  duration=dur*0.2, easing="out" })
+  scene:tweenUi(e, { rotate=deg,   duration=dur*0.3, delay=dur*0.2, easing="inOut" })
+  scene:tweenUi(e, { rotate=0,     duration=dur*0.5, delay=dur*0.5, easing="elastic" })
+end
+
+-- ハートビート（2 連パルス。クールダウン完了/低 HP 警告のワンショット）
+function uifx.heartbeat(e, s, dur)
+  s = s or 1.12; dur = dur or 0.5
+  scene:tweenUi(e, { scale=s,   duration=dur*0.15, easing="out" })
+  scene:tweenUi(e, { scale=1.0, duration=dur*0.15, delay=dur*0.15, easing="in" })
+  scene:tweenUi(e, { scale=s,   duration=dur*0.2,  delay=dur*0.35, easing="out" })
+  scene:tweenUi(e, { scale=1.0, duration=dur*0.45, delay=dur*0.55, easing="out" })
+end
 )LUA";
 
     auto r = m_lua->safe_script(kPrelude, sol::script_pass_on_error);
     if (!r.valid())
     {
         sol::error err = r;
-        Logger::Error("ScriptEngine prelude error: {}", err.what());
+        Logger::Error("ScriptEngine の初期化スクリプト（prelude）でエラー: {}", err.what());
     }
 }
 
@@ -1327,7 +2475,7 @@ void ScriptEngine::LoadScript(const std::string& filePath)
     {
         sol::error err = result;
         m_lastError = err.what();
-        Logger::Error("Lua load error: {}", m_lastError);
+        Logger::Error("Luaエラー（スクリプト読み込み）: {}", m_lastError);
     }
     else
     {
@@ -1343,7 +2491,7 @@ void ScriptEngine::LoadScriptFromString(const std::string& code, const std::stri
     {
         sol::error err = result;
         m_lastError = err.what();
-        Logger::Error("Lua load error (from string): {}", m_lastError);
+        Logger::Error("Luaエラー（文字列スクリプト読み込み）: {}", m_lastError);
     }
     else
     {
@@ -1361,7 +2509,7 @@ void ScriptEngine::CallOnStart()
         {
             sol::error err = result;
             m_lastError = err.what();
-            Logger::Error("Lua OnStart error: {}", m_lastError);
+            Logger::Error("Luaエラー（OnStart）: {}", m_lastError);
         }
         else
         {
@@ -1372,15 +2520,35 @@ void ScriptEngine::CallOnStart()
 
 void ScriptEngine::CallOnUpdate(f32 dt)
 {
+    // time API を進める(Play ループで毎フレーム1回、UpdateAttachedScripts より先に呼ばれる)。
+    // 以降スクリプトへ渡る dt は全てスケール済み(m_timeDt)になる。
+    m_timeUnscaledDt = dt;
+    m_timeDt         = dt * m_timeScale;
+    m_timeUnscaled  += dt;
+    m_timeElapsed   += m_timeDt;
+    ++m_timeFrame;
+    {
+        sol::protected_function tick = (*m_lua)["__time_tick"];
+        if (tick.valid())
+        {
+            auto r = tick(m_timeDt);
+            if (!r.valid())
+            {
+                sol::error err = r;
+                Logger::Error("Luaエラー（time timer）: {}", err.what());
+            }
+        }
+    }
+
     sol::protected_function fn = (*m_lua)["OnUpdate"];
     if (fn.valid())
     {
-        auto result = fn(dt);
+        auto result = fn(m_timeDt);
         if (!result.valid())
         {
             sol::error err = result;
             m_lastError = err.what();
-            Logger::Error("Lua OnUpdate error: {}", m_lastError);
+            Logger::Error("Luaエラー（OnUpdate）: {}", m_lastError);
         }
     }
 }
@@ -1399,6 +2567,7 @@ void ScriptEngine::AttachScriptToEntity(entt::entity e, const std::string& scrip
         existing->self.reset();
         existing->started    = false;
         existing->loadError  = false;
+        existing->errorMessage.clear();
     }
     else
     {
@@ -1461,13 +2630,47 @@ void ScriptEngine::ParsePropertySchema(const std::string& scriptPath,
     // "properties" を含まないスクリプト（旧来のコントローラ等）は実行しない＝副作用ゼロ。
     if (code.find("properties") == std::string::npos) return;
 
-    // 独立した環境で実行し properties テーブルだけ読む（グローバルへフォールバックするが書込は env 内）。
-    sol::environment env(*m_lua, sol::create, m_lua->globals());
+    // 独立した環境で実行し properties テーブルだけ読む。エンジン API(scene/fx/net 等)は
+    // 意図的に見せない: この解析はエディタ中(Play 外)にも走るため、トップレベルで
+    // エンジン API を呼ぶスクリプトを本物のグローバルへフォールバックさせると、
+    // 未初期化サブシステム経由のネイティブクラッシュを踏み得る。純関数ライブラリと
+    // スカラー定数(KEY_* 等)だけを写した砂箱で実行し、それ以外の呼び出しは
+    // Lua エラー → 下の警告ログに落とす。
+    sol::environment env(*m_lua, sol::create);
+    {
+        static const char* kSafeLibs[] = { "math", "string", "table", "pairs", "ipairs",
+                                           "tostring", "tonumber", "type", "select", "next",
+                                           "unpack", "rawget", "rawset", "setmetatable",
+                                           "getmetatable", "error", "pcall" };
+        sol::table g = m_lua->globals();
+        for (const char* k : kSafeLibs)
+        {
+            sol::object o = g[k];
+            if (o.valid()) env[k] = o;
+        }
+        // 数値/文字列/bool のグローバル定数(KEY_A 等)はそのまま見せる
+        for (auto& [key, value] : g)
+        {
+            const sol::type t = value.get_type();
+            if (t == sol::type::number || t == sol::type::string || t == sol::type::boolean)
+                env[key] = value;
+        }
+        env["print"] = [](sol::variadic_args va) {
+            std::string line;
+            for (auto v : va)
+            {
+                if (!line.empty()) line += "\t";
+                line += v.get<sol::object>().is<std::string>()
+                        ? v.get<std::string>() : std::string("(non-string)");
+            }
+            Logger::Info("[lua properties] {}", line);
+        };
+    }
     auto r = m_lua->safe_script(code, env, sol::script_pass_on_error);
     if (!r.valid())
     {
         sol::error err = r;
-        Logger::Warn("Script schema parse error ({}): {}", scriptPath, err.what());
+        Logger::Warn("スクリプトの properties 解析に失敗（{}）: {}", scriptPath, err.what());
         return;
     }
 
@@ -1551,6 +2754,7 @@ void ScriptEngine::ReloadScript(entt::entity e)
     ls.self.reset();
     ls.started   = false;
     ls.loadError = false;
+    ls.errorMessage.clear();
     InvalidatePropertySchema(ls.scriptPath);   // ファイルが書き換わった可能性 → 再解析
     Logger::Info("LuaScript reload queued: entity={}", static_cast<u32>(e));
     // 実際の再構築は UpdateAttachedScripts のループで行う
@@ -1567,9 +2771,111 @@ bool ScriptEngine::CheckLuaSyntax(const std::string& code, std::string& err)
     return false;
 }
 
+bool ScriptEngine::EvalLua(const std::string& code, std::string& resultStr, std::string& err)
+{
+    resultStr.clear();
+    err.clear();
+    if (!m_lua) { err = "lua state not initialized"; return false; }
+    // 関数で包んで実行する: code が文でも式(return 込み)でも受け付けたいのと、
+    // 戻り値を C++ 側では protected_function_result の多値インデックスに頼らず、
+    // Lua 自身の tostring() で文字列化してから受け取ることで sol2 の型変換を単純にする。
+    const std::string wrapped =
+        "local __eval_fn = function()\n" + code + "\nend\n"
+        "local __r = { __eval_fn() }\n"
+        "if #__r > 0 then return tostring(__r[1]) end\n"
+        "return nil\n";
+    sol::protected_function_result result = m_lua->safe_script(wrapped, sol::script_pass_on_error);
+    if (!result.valid())
+    {
+        sol::error e = result;
+        err = e.what();
+        return false;
+    }
+    sol::optional<std::string> s = result;
+    if (s) resultStr = *s;
+    return true;
+}
+
+std::vector<std::string> ScriptEngine::GetCompletions(const std::string& line)
+{
+    std::vector<std::string> out;
+    if (!m_lua) return out;
+
+    // 行末の補完対象トークンを切り出す(識別子と . : で構成される末尾部分)。
+    // 例: "log(time.vi" → token="time.vi" → base="time", partial="vi"
+    size_t start = line.size();
+    while (start > 0)
+    {
+        const char c = line[start - 1];
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '.' || c == ':') --start;
+        else break;
+    }
+    const std::string token = line.substr(start);
+    const size_t sepPos = token.find_last_of(".:");
+    const std::string basePath = (sepPos == std::string::npos) ? "" : token.substr(0, sepPos);
+    const std::string partial  = (sepPos == std::string::npos) ? token : token.substr(sepPos + 1);
+    if (basePath.empty() && partial.empty()) return out;
+
+    auto collect = [&](sol::table t) {
+        for (auto& kv : t)
+        {
+            if (!kv.first.is<std::string>()) continue;
+            std::string key = kv.first.as<std::string>();
+            if (key.rfind("__", 0) == 0) continue;                       // メタ/内部キー
+            if (basePath.empty() && key.rfind('_', 0) == 0) continue;    // 内部グローバル(_timers 等)
+            if (!partial.empty() && key.rfind(partial, 0) != 0) continue;
+            out.push_back(std::move(key));
+        }
+    };
+
+    if (basePath.empty())
+    {
+        collect(m_lua->globals());
+    }
+    else
+    {
+        // basePath を . : で分割して globals からテーブルを辿る(userdata は末端のみ対応)
+        sol::object cur = m_lua->globals();
+        size_t p = 0;
+        while (p <= basePath.size())
+        {
+            const size_t q = basePath.find_first_of(".:", p);
+            const std::string part = basePath.substr(p, (q == std::string::npos ? basePath.size() : q) - p);
+            if (part.empty()) return out;
+            if (cur.get_type() != sol::type::table) return out;   // 途中に userdata が挟まる形は非対応
+            cur = cur.as<sol::table>()[part];
+            if (q == std::string::npos) break;
+            p = q + 1;
+        }
+        if (cur.get_type() == sol::type::table)
+        {
+            collect(cur.as<sol::table>());
+        }
+        else if (cur.get_type() == sol::type::userdata)
+        {
+            // usertype(scene/input/physics 等)はメソッドがメタテーブルに入っている
+            sol::object mt = cur.as<sol::userdata>()[sol::metatable_key];
+            if (mt.get_type() == sol::type::table) collect(mt.as<sol::table>());
+        }
+    }
+
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
+
 void ScriptEngine::OnPlayStart()
 {
     auto& reg = m_scene->GetRegistry();
+
+    // time API リセット（経過時間/フレーム/スケール/Lua タイマー）
+    m_timeElapsed = 0.0; m_timeUnscaled = 0.0;
+    m_timeScale = 1.0f; m_timeDt = 0.0f; m_timeUnscaledDt = 0.0f; m_timeFrame = 0;
+    if (m_lua)
+    {
+        sol::protected_function reset = (*m_lua)["__time_reset"];
+        if (reset.valid()) reset();
+    }
 
     // イベントバスの購読をクリア（前回 Play のリスナーが残らないように）。
     // 通常は Application が OnPlayStart 直前に m_eventBus.Clear() を呼ぶが、念のため。
@@ -1660,16 +2966,18 @@ void ScriptEngine::UpdateAttachedScripts(f32 dt)
             (*self)["transform"] = tf;
         (*self)["enabled"] = ls.enabled;
 
-        sol::protected_function fn = (*env)["OnUpdate"];
-        if (!fn.valid()) continue;
-        auto result = fn(*self, dt);
+        // raw_get = フォールバック無し。globals の game.lua 製 OnUpdate を誤って拾わない
+        sol::object fnObj = env->raw_get<sol::object>("OnUpdate");
+        if (fnObj.get_type() != sol::type::function) continue;
+        sol::protected_function fn = fnObj;
+        auto result = fn(*self, dt * m_timeScale);   // time.setScale がコンポーネントにも効く
         if (!result.valid())
         {
             sol::error err = result;
             m_lastError = err.what();
-            Logger::Error("Lua OnUpdate error (entity={}): {}",
+            Logger::Error("Luaエラー（OnUpdate, entity={}）: {}",
                           static_cast<u32>(e), m_lastError);
-            ls.loadError = true;
+            ls.loadError = true; ls.errorMessage = m_lastError;
         }
     }
 }

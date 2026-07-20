@@ -75,7 +75,7 @@ void IBLBaker::Initialize(GraphicsDevice& device, const std::wstring& shaderDirW
         if (FAILED(hr))
         {
             if (error)
-                Logger::Error("IBLBaker compute RS error: {}",
+                Logger::Error("IBLBaker のルートシグネチャ作成に失敗しました: {}",
                     static_cast<const char*>(error->GetBufferPointer()));
             ThrowIfFailed(hr);
         }
@@ -84,9 +84,21 @@ void IBLBaker::Initialize(GraphicsDevice& device, const std::wstring& shaderDirW
     }
 
     // --- Compute PSOs ---
+    m_shaderDir = shaderDirW;
+    RecreatePipelines(device);
+
+    CreateDerivedResources(device);
+
+    m_initialized = true;
+    Logger::Info("IBLBaker initialized");
+}
+
+void IBLBaker::RecreatePipelines(GraphicsDevice& device)
+{
+    auto* dev = device.GetDevice();
     auto makeCS = [&](const std::wstring& cso, Microsoft::WRL::ComPtr<ID3D12PipelineState>& out)
     {
-        auto bc = ShaderCompiler::LoadFromFile(shaderDirW + cso);
+        auto bc = ShaderCompiler::LoadFromFile(m_shaderDir + cso);
         D3D12_COMPUTE_PIPELINE_STATE_DESC pso{};
         pso.pRootSignature = m_computeRS.Get();
         pso.CS = { bc.GetData(), bc.GetSize() };
@@ -95,11 +107,6 @@ void IBLBaker::Initialize(GraphicsDevice& device, const std::wstring& shaderDirW
     makeCS(L"IrradianceConvolution_CS.cso", m_psoIrradiance);
     makeCS(L"PrefilterEnv_CS.cso",          m_psoPrefilter);
     makeCS(L"IntegrateBRDF_CS.cso",         m_psoBrdf);
-
-    CreateDerivedResources(device);
-
-    m_initialized = true;
-    Logger::Info("IBLBaker initialized");
 }
 
 void IBLBaker::CreateDerivedResources(GraphicsDevice& device)

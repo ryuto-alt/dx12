@@ -132,6 +132,9 @@ void Animator::Update(float deltaTime)
         return;
     }
 
+    // 再生速度倍率を適用（クロスフェード中の両クリップ・ブレンド進行にも一律適用）
+    deltaTime *= m_speed;
+
     // 現在のクリップの時間を進める
     m_currentTime += deltaTime * m_clip->GetTicksPerSecond();
     if (m_looping)

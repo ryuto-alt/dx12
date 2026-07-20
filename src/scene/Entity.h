@@ -1,7 +1,9 @@
 #pragma once
 
 #include <entt/entt.hpp>
+#include <stdexcept>
 #include <string>
+#include <typeinfo>
 
 namespace dx12e
 {
@@ -12,34 +14,41 @@ public:
     Entity() = default;
     Entity(entt::entity handle, entt::registry* registry);
 
+    // 無効な Entity（findEntity 失敗の戻り値や削除済みハンドル）への操作は
+    // ヌルポインタ参照で即死せず例外にする。Lua から呼ばれた場合は sol2 が
+    // 捕捉して Lua エラー（スクリプト側で原因が読めるメッセージ）に変換される。
     template<typename T, typename... Args>
     T& AddComponent(Args&&... args)
     {
+        EnsureValid("AddComponent");
         return m_registry->emplace<T>(m_handle, std::forward<Args>(args)...);
     }
 
     template<typename T>
     T& GetComponent()
     {
+        EnsureHas<T>("GetComponent");
         return m_registry->get<T>(m_handle);
     }
 
     template<typename T>
     const T& GetComponent() const
     {
+        EnsureHas<T>("GetComponent");
         return m_registry->get<T>(m_handle);
     }
 
     template<typename T>
     bool HasComponent() const
     {
-        return m_registry->all_of<T>(m_handle);
+        return IsValid() && m_registry->all_of<T>(m_handle);
     }
 
     template<typename T>
     void RemoveComponent()
     {
-        m_registry->remove<T>(m_handle);
+        if (IsValid())
+            m_registry->remove<T>(m_handle);
     }
 
     entt::entity GetHandle() const { return m_handle; }
@@ -49,6 +58,22 @@ public:
     bool operator!=(const Entity& other) const { return m_handle != other.m_handle; }
 
 private:
+    void EnsureValid(const char* op) const
+    {
+        if (!IsValid())
+            throw std::runtime_error(std::string("Entity::") + op +
+                ": invalid entity (destroyed or findEntity returned nothing). Check isValid() first.");
+    }
+
+    template<typename T>
+    void EnsureHas(const char* op) const
+    {
+        EnsureValid(op);
+        if (!m_registry->all_of<T>(m_handle))
+            throw std::runtime_error(std::string("Entity::") + op +
+                ": missing component " + typeid(T).name());
+    }
+
     entt::entity    m_handle   = entt::null;
     entt::registry* m_registry = nullptr;
 };

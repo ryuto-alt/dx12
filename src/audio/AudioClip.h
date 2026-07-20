@@ -23,8 +23,10 @@ public:
 private:
     bool LoadWav(const std::string& filePath);
     bool LoadMp3(const std::string& filePath);
+    bool LoadOgg(const std::string& filePath);
     bool LoadWavFromMemory(const uint8_t* data, size_t size);
     bool LoadMp3FromMemory(const uint8_t* data, size_t size);
+    bool LoadOggFromMemory(const uint8_t* data, size_t size);
 
     std::vector<u8> m_pcmData;
     WAVEFORMATEX    m_format{};

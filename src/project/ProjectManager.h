@@ -48,6 +48,10 @@ public:
     static LauncherAction RenderLauncher(ProjectInfo& outInfo, HWND hwnd,
                                          const LauncherIcons& icons = {});
 
+    // フォルダから ProjectInfo を組み立てる（.dx12proj があれば読む、無ければ合成）。
+    // --net-client の自動プロジェクトオープン等、ダイアログ無しで開きたい時用。
+    static bool ProjectFromFolder(const std::string& dir, ProjectInfo& out);
+
     // Editor state persistence (last opened scene etc.)
     static void SaveLastOpenedScene(const std::string& scenePath);
     static std::string LoadLastOpenedScene();

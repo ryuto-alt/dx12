@@ -8,12 +8,16 @@ namespace dx12e
 
 void RootSignature::Initialize(GraphicsDevice& device)
 {
-    // Root parameters: 8
-    D3D12_ROOT_PARAMETER1 rootParams[8]{};
+    // Root parameters: 9
+    D3D12_ROOT_PARAMETER1 rootParams[9]{};
 
-    // [0] Per-Object: 32bit constants (32 DWORDs = MVP(16) + Model(16))
+    // [0] Per-Object: 32bit constants (40 DWORDs = MVP(16) + Model(16) + CustomEffect(1) + pad(3) + CustomParams(4))
+    // CustomEffect は MeshRenderer::effectValue（カスタムシェーダー向けの汎用進捗値、Sprite2D::effectValue
+    // と同じ役割）、CustomParams は MeshRenderer::shaderParams（汎用 float4）。pad(3) は HLSL cbuffer の
+    // パッキング規則(float4 は 16 バイト境界から開始)に合わせる詰め物 = HLSL 側は effectValue の後ろへ
+    // float4 shaderParams; を足すだけでオフセットが一致する。既存シェーダーはこの末尾を読まないので後方互換。
     rootParams[0].ParameterType             = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    rootParams[0].Constants.Num32BitValues  = 32;
+    rootParams[0].Constants.Num32BitValues  = 40;
     rootParams[0].Constants.ShaderRegister  = 0;
     rootParams[0].Constants.RegisterSpace   = 0;
     rootParams[0].ShaderVisibility          = D3D12_SHADER_VISIBILITY_ALL;
@@ -67,9 +71,12 @@ void RootSignature::Initialize(GraphicsDevice& device)
     rootParams[4].DescriptorTable.pDescriptorRanges   = &shadowRange;
     rootParams[4].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    // [5] PBR Material: 4 constants (metallic, roughness, flags, pad)
+    // [5] PBR Material: 8 constants (metallic, roughness, flags, pad, uvScaleOffset(float4))
+    // uvScaleOffset は MeshRenderer の UV スクロール/連番アニメ用: PS が texCoord * xy + zw で
+    // サンプリング UV を作る。無効時は (1,1,0,0) を入れる = 従来と同じ結果。float4 は 16 バイト
+    // 境界から始まる HLSL の詰め方に合わせて pad の後ろへ置いてあるのでオフセットが一致する。
     rootParams[5].ParameterType             = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    rootParams[5].Constants.Num32BitValues  = 4;
+    rootParams[5].Constants.Num32BitValues  = 8;
     rootParams[5].Constants.ShaderRegister  = 2;  // b2
     rootParams[5].Constants.RegisterSpace   = 0;
     rootParams[5].ShaderVisibility          = D3D12_SHADER_VISIBILITY_PIXEL;
@@ -101,6 +108,20 @@ void RootSignature::Initialize(GraphicsDevice& device)
     rootParams[7].DescriptorTable.NumDescriptorRanges = 1;
     rootParams[7].DescriptorTable.pDescriptorRanges   = &aoRange;
     rootParams[7].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // [8] スポット/ポイント影 SRV DescriptorTable (t9=スポットTexture2DArray, t10=ポイントTextureCubeArray) 連続2枚
+    D3D12_DESCRIPTOR_RANGE1 punctualShadowRange{};
+    punctualShadowRange.RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    punctualShadowRange.NumDescriptors                    = 2;  // t9, t10 連続
+    punctualShadowRange.BaseShaderRegister                = 9;
+    punctualShadowRange.RegisterSpace                     = 0;
+    punctualShadowRange.Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    punctualShadowRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    rootParams[8].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParams[8].DescriptorTable.NumDescriptorRanges = 1;
+    rootParams[8].DescriptorTable.pDescriptorRanges   = &punctualShadowRange;
+    rootParams[8].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
 
     // Static Samplers (s0=albedo wrap, s1=shadow PCF, s2=IBL linear-clamp mip有,
     //                  s3=BRDF linear-clamp mipなし, s4=AO point-clamp スクリーンサンプル)
@@ -173,7 +194,7 @@ void RootSignature::Initialize(GraphicsDevice& device)
     {
         if (errorBlob)
         {
-            Logger::Error("Root Signature serialization error: {}",
+            Logger::Error("ルートシグネチャのシリアライズに失敗しました: {}",
                 static_cast<const char*>(errorBlob->GetBufferPointer()));
         }
         ThrowIfFailed(hr);
@@ -185,7 +206,7 @@ void RootSignature::Initialize(GraphicsDevice& device)
         serializedBlob->GetBufferSize(),
         IID_PPV_ARGS(&m_rootSignature)));
 
-    Logger::Info("RootSignature created (PBR: 8 slots)");
+    Logger::Info("RootSignature created (PBR: 9 slots)");
 }
 
 } // namespace dx12e
