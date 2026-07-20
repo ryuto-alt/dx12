@@ -3,14 +3,21 @@
 // バージョン定数の唯一の実体。宣言・注意書きは Version.h を参照。
 namespace dx12e
 {
-const char* const kEngineVersion = "1.5.0";
+const char* const kEngineVersion = "1.5.1";
 
 const char* const kUpdateRepoOwner = "ryuto-alt";
 const char* const kUpdateRepoName  = "dx12";
 
-const char* const kWhatsNewTitle = "DX12 Engine v1.5.0 の更新内容";
+const char* const kWhatsNewTitle = "DX12 Engine v1.5.1 の更新内容";
 const char* const kWhatsNewBody =
-    "v1.5.0: エンジン診断を大幅に強化（検査項目 6 → 22）\n"
+    "v1.5.1: エンジン診断の誤検知を修正\n"
+    "\n"
+    "・[すべてのツール窓を開いて描画] が「Post Process パラメータ : 中身が空」\n"
+    "  で失敗していたのを修正。ポストプロセスを何も有効にしていないシーンでは\n"
+    "  この窓は案内文だけを出すのが正常で、不具合ではありませんでした。\n"
+    "\n"
+    "v1.5.0 の内容(本バージョンに含まれます):\n"
+    "エンジン診断を大幅に強化（検査項目 6 → 22）\n"
     "\n"
     "[ツール > エンジン診断] が、エディタのほぼ全機能を自動で触って\n"
     "クラッシュ・フリーズ・エラーを探すようになりました。\n"

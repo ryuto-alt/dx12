@@ -434,10 +434,13 @@ void T_OpenAllToolWindows(ImGuiTestContext* ctx)
 
     // 「フラグ → 窓」。ツールメニュー経由ではなく直接立てる（メニューにはダイアログ項目が混じるため）
     // optional=true: 環境によって存在しない窓（MCP ブリッジ未起動など）。出なくても失敗にしない。
-    struct Entry { bool EditorContext::* flag; const char* window; const char* label; bool optional; };
+    // textOnlyOk=true: 中身が案内テキストだけになる状態が正常な窓。GatherItems は ID 付き
+    //   アイテムしか拾わない（TextDisabled は ID 無し）ので、空判定から除外する。
+    struct Entry { bool EditorContext::* flag; const char* window; const char* label; bool optional; bool textOnlyOk; };
     static const Entry kEntries[] = {
         { &EditorContext::showPostProcess,     "//Post Process",            "Post Process",           false },
-        { &EditorContext::showPostParams,      "//Post Process パラメータ", "Post Process パラメータ", false },
+        // マスター OFF / 有効エフェクト 0 件なら案内文だけ＝正常（Application.cpp の showPostParams 参照）
+        { &EditorContext::showPostParams,      "//Post Process パラメータ", "Post Process パラメータ", false, true },
         { &EditorContext::showSkybox,          "//Skybox / IBL",            "Skybox / IBL",           false },
         { &EditorContext::showSSAO,            "//SSAO",                    "SSAO",                   false },
         { &EditorContext::showEngineSettings,  "//エンジン設定",            "エンジン設定",           false },
@@ -481,11 +484,14 @@ void T_OpenAllToolWindows(ImGuiTestContext* ctx)
         }
 
         // 中身がひとつも描かれていない＝窓は出たが空、も異常として拾う
-        ctx->SetRef(id);
-        ImGuiTestItemList items;
-        ctx->GatherItems(&items, "", 4);
-        if (items.GetSize() == 0)
-            bad += std::string("\n  ・") + e.label + " : 中身が空";
+        if (!e.textOnlyOk)
+        {
+            ctx->SetRef(id);
+            ImGuiTestItemList items;
+            ctx->GatherItems(&items, "", 4);
+            if (items.GetSize() == 0)
+                bad += std::string("\n  ・") + e.label + " : 中身が空";
+        }
         ctx->Yield(3);
     }
 
