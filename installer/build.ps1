@@ -17,15 +17,34 @@ $repoRoot = Split-Path -Parent $here
 $srcDir   = Join-Path $repoRoot "build\release"               # exe + dll + shaders
 $outDir   = Join-Path $here "output"
 
-# --- バージョンを Version.h から取得 ---
-$verLine = Select-String -Path (Join-Path $repoRoot "src\core\Version.h") -Pattern 'kEngineVersion\s*=\s*"([0-9.]+)"'
-if (-not $verLine) { Write-Error "Version.h から kEngineVersion を取得できへんかった" }
+# --- バージョンを Version.cpp から取得（定数の実体は Version.cpp に一本化した） ---
+$verLine = Select-String -Path (Join-Path $repoRoot "src\core\Version.cpp") -Pattern 'kEngineVersion\s*=\s*"([0-9.]+)"'
+if (-not $verLine) { Write-Error "Version.cpp から kEngineVersion を取得できへんかった" }
 $version = $verLine.Matches[0].Groups[1].Value
 Write-Host "DX12 Engine v$version の配布物をビルドするで" -ForegroundColor Cyan
 
 if (-not (Test-Path (Join-Path $srcDir "DX12Engine.exe"))) {
   Write-Error "build\release\DX12Engine.exe が無い。先に build_release.bat を実行してや。"
 }
+
+# --- ビルド済み exe の版がソースと一致するか検証 ---
+# 過去に Version 変更後の再コンパイルを VS が一部 obj で取りこぼし、「自分を旧版と思い込む
+# Updater」入りの exe を配布 → 自動更新が無限ループする事故があった（v1.2.2〜v1.4.2）。
+# exe 自身に --write-version で版を自己申告させ、ズレていたらパッケージを中断する。
+$verProbe = Join-Path $outDir "exe_version_probe.txt"
+New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+if (Test-Path $verProbe) { Remove-Item -Force $verProbe }
+$proc = Start-Process -FilePath (Join-Path $srcDir "DX12Engine.exe") `
+  -ArgumentList "--write-version", "`"$verProbe`"" -WorkingDirectory $srcDir -Wait -PassThru
+$exeVersion = if (Test-Path $verProbe) { (Get-Content $verProbe -Raw).Trim() } else { "" }
+Remove-Item -Force $verProbe -ErrorAction SilentlyContinue
+if ($proc.ExitCode -ne 0 -or -not $exeVersion) {
+  Write-Error "exe の版の自己申告(--write-version)に失敗した。旧版の exe が残ってへんか、build_release.bat からやり直してや。"
+}
+if ($exeVersion -ne $version) {
+  Write-Error "版の不一致: Version.cpp は $version やのに exe は $exeVersion と自己申告した。再コンパイル漏れの疑い。build\release を消してクリーンビルドしてや。"
+}
+Write-Host "exe の版検証 OK (v$exeVersion)" -ForegroundColor Green
 
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 

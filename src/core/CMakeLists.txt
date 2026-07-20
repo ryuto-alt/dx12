@@ -9,6 +9,7 @@ if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/AssetKey.h")
 endif()
 
 add_library(Core STATIC
+    Version.cpp
     Application.cpp
     Window.cpp
     SplashScreen.cpp

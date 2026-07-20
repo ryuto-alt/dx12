@@ -224,6 +224,28 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         {
             std::string args(lpCmdLine);
 
+            // --write-version <file>: 実行バイナリが自認するエンジン版をファイルに書いて終了。
+            // installer/build.ps1 がパッケージ前に「exe の版 == Version.cpp の版」を検証するための
+            // ヘッドレス出口（過去に一部 obj の再コンパイル漏れで版がズレた exe を配布し、
+            // 自動更新が無限ループした事故の再発防止）。
+            size_t wv = args.find("--write-version");
+            if (wv != std::string::npos)
+            {
+                std::string rest = args.substr(wv + 15);  // "--write-version" の後ろ
+                size_t b = rest.find_first_not_of(" \t\"");
+                std::string path;
+                if (b != std::string::npos)
+                {
+                    size_t e = rest.find_last_not_of(" \t\"");
+                    path = rest.substr(b, e - b + 1);
+                }
+                if (path.empty()) return 1;
+                std::ofstream f(path, std::ios::trunc);
+                if (!f) return 1;
+                f << dx12e::kEngineVersion;
+                return 0;
+            }
+
             // --validate <scene.json>: ヘッドレスでシーンの参照グラフを検証して終了（GUI 起動しない）。
             size_t vp = args.find("--validate");
             if (vp != std::string::npos)
