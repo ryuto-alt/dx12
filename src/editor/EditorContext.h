@@ -295,12 +295,17 @@ public:
     const EditorUiIcons* icons = nullptr;
 
     // Inspector のモデル差し替え（フレーム境界で SwapEntityModel が処理）。
-    // ★注意: このメンバは必ずクラス末尾に置くこと。中間(pendingMaterialTextureDrops の直後)へ
-    // 挿入すると後続メンバのオフセットが +24 ずれ、v1.1.1 以前から潜在する何者かのヒープ域外
-    // 書き込み(float パターン)が pendingLoadPath を直撃してシーン切り替えで確実にクラッシュする
-    // (2026-07-17 に実測。旧レイアウトでは無害な領域に落ちていた)。犯人は未特定のため、
-    // EditorContext へメンバを足すときは常に末尾へ追加し、既存オフセットを動かさないこと。
+    // 【2026-07-20 追記・解決済み】かつてここに「メンバを中間に挿入するとヒープ域外書き込みが
+    // pendingLoadPath を直撃してクラッシュするので必ず末尾へ足すこと」という注意書きがあったが、
+    // 真因は域外書き込みではなく ninja のヘッダー依存の再コンパイル取りこぼしだった。
+    // 古い .obj が旧レイアウトのオフセットへ書き、新しい .obj が新オフセットから読むことで
+    // 「floatパターンでメンバが壊れる」ように見えていた(v1.4.4 の EditorLayer.cpp.obj でも再発)。
+    // → メンバはどこへ足してもよい。ただしヘッダーを変更した日は build/release を消して
+    //    クリーンビルドすること(installer/build.ps1 が stale obj を検出して配布を止める)。
     std::vector<PendingModelSwap> pendingModelSwaps;
+
+    // エンジン診断パネル（UI 自動テストの実行・結果表示。ツール > エンジン診断）
+    bool showEngineDiagnostics = false;
 };
 
 } // namespace dx12e

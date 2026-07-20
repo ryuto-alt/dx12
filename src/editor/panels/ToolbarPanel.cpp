@@ -299,6 +299,8 @@ void ToolbarPanel::Render(bool isPlaying,
             ImGui::MenuItem("MCP / AI Bridge",         nullptr, &ctx.showMcpBridge);
             ImGui::MenuItem("Network",                 nullptr, &ctx.showNetworkStatus);
             ImGui::MenuItem("Network 設定",             nullptr, &ctx.showNetworkSettings);
+            ImGui::Separator();
+            ImGui::MenuItem("エンジン診断 (UI 自動テスト)", nullptr, &ctx.showEngineDiagnostics);
             ImGui::EndMenu();
         }
 

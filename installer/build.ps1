@@ -33,19 +33,66 @@ if (-not (Test-Path (Join-Path $srcDir "DX12Engine.exe"))) {
 # ここでは src/ 以下の最新ソース更新時刻より古い .obj が build\release に残っていたら
 # パッケージを中断する。誤検知(git checkout での mtime 更新など)でも、クリーン
 # ビルドし直せば必ず通る=安全側に倒す。
-# .cpp は自 TU の直接依存なので ninja が取りこぼさない。事故るのは「ヘッダー変更 →
-# それを include する他 TU の再コンパイル漏れ」なので、比較対象はヘッダーの最新時刻のみ。
-$newestSrc = Get-ChildItem (Join-Path $repoRoot "src") -Recurse -Include *.h, *.hpp |
-  Sort-Object LastWriteTime -Descending | Select-Object -First 1
-$staleObjs = Get-ChildItem $srcDir -Recurse -Filter *.obj |
-  Where-Object { $_.LastWriteTime -lt $newestSrc.LastWriteTime }
-if ($staleObjs) {
-  $names = ($staleObjs | Select-Object -First 8 | ForEach-Object Name) -join ", "
-  Write-Error ("再コンパイル漏れの疑い: 最新ヘッダー ($($newestSrc.Name) " +
-    "$($newestSrc.LastWriteTime)) より古い .obj が $($staleObjs.Count) 個ある ($names ...)。" +
-    " build\release を削除してクリーンビルドしてからやり直してや。")
+# 事故るのは「ヘッダー変更 → それを include する他 TU の再コンパイル漏れ」。
+# 「全 obj を最新ヘッダーと比較」では、そのヘッダーを include しない TU まで巻き込んで
+# 誤検知するので、ninja が記録している実際の依存関係（-t deps）を使い、
+# 各 obj を「その obj 自身が include しているヘッダー」の最新時刻とだけ比較する。
+# ninja は PATH に無いことがある（VS 同梱版）。見つからなければ検査はスキップする。
+$ninja = (Get-Command ninja -ErrorAction SilentlyContinue).Source
+if (-not $ninja) {
+  foreach ($p in @(
+    "$env:ProgramFiles\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe",
+    "$env:ProgramFiles\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe")) {
+    if (Test-Path $p) { $ninja = $p; break }
+  }
 }
-Write-Host "stale obj 検査 OK (全 obj が最新ソース以降にコンパイル済み)" -ForegroundColor Green
+$depsRaw = ""
+if ($ninja) {
+  Push-Location $srcDir
+  $depsRaw = (& $ninja -t deps 2>$null) -join "`n"
+  Pop-Location
+}
+if (-not $depsRaw) {
+  Write-Warning "ninja -t deps が読めなかったため、再コンパイル漏れ検査をスキップした。"
+} else {
+  $stale = @()
+  $curObj = $null
+  $curNewestDep = [datetime]::MinValue
+  $curNewestName = ""
+  $flush = {
+    if ($curObj) {
+      $objPath = Join-Path $srcDir $curObj
+      if (Test-Path $objPath) {
+        $objTime = (Get-Item $objPath).LastWriteTime
+        if ($curNewestDep -gt $objTime) {
+          $script:stale += [pscustomobject]@{ Obj = $curObj; Dep = $curNewestName; DepTime = $curNewestDep; ObjTime = $objTime }
+        }
+      }
+    }
+  }
+  foreach ($line in $depsRaw -split "`n") {
+    if ($line -match '^(\S.*?):\s+#deps') {
+      & $flush
+      $curObj = $matches[1]; $curNewestDep = [datetime]::MinValue; $curNewestName = ""
+    } elseif ($line -match '^\s+(\S.*)$' -and $curObj) {
+      $dep = $matches[1].Trim()
+      $depPath = if ([IO.Path]::IsPathRooted($dep)) { $dep } else { Join-Path $srcDir $dep }
+      if (Test-Path $depPath) {
+        $t = (Get-Item $depPath).LastWriteTime
+        if ($t -gt $curNewestDep) { $curNewestDep = $t; $curNewestName = $dep }
+      }
+    }
+  }
+  & $flush
+
+  if ($stale.Count -gt 0) {
+    $detail = ($stale | Select-Object -First 6 | ForEach-Object {
+      "$($_.Obj) ($($_.ObjTime)) < $([IO.Path]::GetFileName($_.Dep)) ($($_.DepTime))" }) -join "; "
+    Write-Error ("再コンパイル漏れを検出: 自分が include するヘッダーより古い .obj が " +
+      "$($stale.Count) 個ある — $detail 。build\release を削除してクリーンビルドしてからやり直してや。")
+  }
+  Write-Host "再コンパイル漏れ検査 OK (ninja 依存グラフで全 obj が最新)" -ForegroundColor Green
+}
 
 # --- ビルド済み exe の版がソースと一致するか検証 ---
 # 過去に Version 変更後の再コンパイルを VS が一部 obj で取りこぼし、「自分を旧版と思い込む
