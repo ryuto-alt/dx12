@@ -1000,6 +1000,33 @@ void SceneViewPanel::HandleCameraNavigation(entt::registry& reg,
         return;
     }
 
+    // --- ホイール/パンの基準距離を毎フレーム更新 ---
+    // m_orbitDistance は元々 Alt オービット中(下の 1 箇所)でしか更新されず、
+    // オービットを一度もしなければ初期値 10.0 のままだった。その結果ホイールの
+    // step が max(0.5, 10*0.15)=1.5 に固定され、カメラを遠くへ引くほど 1 ノッチの
+    // 移動量が相対的に小さくなり「引いても距離が変わらない」ように見えていた。
+    // 注視点(選択物、無ければ原点)までの実距離を毎フレーム入れて、距離に比例した
+    // 指数的なズーム感にする(Unity/Blender と同じ挙動)。パン量も同じ距離を使う。
+    if (!(io.KeyAlt && io.MouseDown[ImGuiMouseButton_Left]))   // オービット中は確定済みの距離を維持
+    {
+        XMFLOAT3 pivot{0, 0, 0};
+        if (ctx.selectedEntity != entt::null && reg.valid(ctx.selectedEntity)
+            && reg.all_of<Transform>(ctx.selectedEntity))
+        {
+            const auto& t = reg.get<Transform>(ctx.selectedEntity);
+            pivot = t.position;
+            if (t.parent != entt::null && reg.valid(t.parent))
+            {
+                XMFLOAT4X4 wf;
+                XMStoreFloat4x4(&wf, ComputeWorldMatrix(reg, ctx.selectedEntity));
+                pivot = {wf._41, wf._42, wf._43};
+            }
+        }
+        XMFLOAT3 camPosNow = camera->GetPosition();
+        XMVECTOR d = XMLoadFloat3(&camPosNow) - XMLoadFloat3(&pivot);
+        m_orbitDistance = std::clamp(XMVectorGetX(XMVector3Length(d)), 0.5f, 1000.0f);
+    }
+
     // --- タッチパッド/ホイール ナビゲーション ---
     //   縦スワイプ(二本指)        : 前後
     //   SHIFT + 縦スワイプ          : 上下
