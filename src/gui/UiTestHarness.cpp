@@ -3,7 +3,10 @@
 #include "core/CrashHandler.h"
 #include "core/Logger.h"
 #include "core/Version.h"
+#include "ecs/Components.h"
 #include "editor/EditorContext.h"
+#include "gui/DeepDiagnostics.h"
+#include "scene/Scene.h"
 
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4201 4244 4267 4996)
@@ -14,13 +17,16 @@
 #include <imgui_te_ui.h>
 #include <imgui_te_utils.h>
 #include <imgui_te_exporters.h>
+#include "gui/ImGuizmo.h"   // ImVec2/ImDrawList を使うので imgui.h より後に置くこと
 #pragma warning(pop)
 
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <map>
+#include <set>
 #include <vector>
 
 namespace dx12e
@@ -877,6 +883,280 @@ void T_SpamAddDelete(ImGuiTestContext* ctx)
     ctx->Yield(8);
 }
 
+// ===================== 超詳細診断 =====================
+// ここから下は「UI が動くか」ではなく「エンジンの機能そのものが正しいか」を見る。
+// 実体（純データ検査）は gui/DeepDiagnostics.cpp。ここはその結果を検査結果へ変換する薄い層と、
+// GPU/ImGuizmo が絡んで純データでは書けないぶんだけ。
+
+// DeepDiagReport を検査結果へ流し込む。エラーが 1 件でもあればテスト失敗。
+// 注意/情報は失敗にしない（誤検知で赤くすると誰も見なくなる）。
+void ReportDeep(ImGuiTestContext* ctx, const DeepDiagReport& r)
+{
+    ctx->LogInfo("%s: %s", r.title.c_str(), r.Summary().c_str());
+
+    for (const DeepDiagIssue& i : r.issues)
+    {
+        if (i.level >= 2)      ctx->LogError("%s", i.text.c_str());
+        else if (i.level == 1) ctx->LogWarning("注意: %s", i.text.c_str());
+        else                   ctx->LogInfo("情報: %s", i.text.c_str());
+    }
+    if (r.omitted > 0)
+        ctx->LogWarning("他 %d 件は表示を省略した", r.omitted);
+    if (!r.skipped.empty())
+        ctx->LogWarning("%s", r.skipped.c_str());
+
+    if (r.Errors() > 0)
+        IM_ERRORF("%s: %d 件の問題（上の赤い行を参照）", r.title.c_str(), r.Errors());
+}
+
+// シーン RT を 1 枚読み戻して数値化する。要求はフレーム境界で消化されるので数フレーム待つ。
+Application::DiagFrameStats GrabFrame(ImGuiTestContext* ctx)
+{
+    if (g_app == nullptr) return {};
+    g_app->RequestDiagnosticFrameStats();
+    for (int i = 0; i < 180; ++i)
+    {
+        ctx->Yield();
+        const Application::DiagFrameStats s = g_app->TakeDiagnosticFrameStats();
+        if (s.valid) return s;
+    }
+    return {};
+}
+
+// Transform に NaN/Inf が入っていないか
+bool TransformFinite(const Transform& t)
+{
+    const float v[9] = { t.position.x, t.position.y, t.position.z,
+                         t.rotation.x, t.rotation.y, t.rotation.z,
+                         t.scale.x,    t.scale.y,    t.scale.z };
+    for (float f : v) if (!std::isfinite(f)) return false;
+    return true;
+}
+
+bool TransformEqual(const Transform& a, const Transform& b)
+{
+    return a.position.x == b.position.x && a.position.y == b.position.y && a.position.z == b.position.z
+        && a.rotation.x == b.rotation.x && a.rotation.y == b.rotation.y && a.rotation.z == b.rotation.z
+        && a.scale.x    == b.scale.x    && a.scale.y    == b.scale.y    && a.scale.z    == b.scale.z;
+}
+
+// Box を 1 個足して、その entt::entity を返す（ヒエラルキーの並び順に依存しない取り方）。
+entt::entity AddBoxAndGet(ImGuiTestContext* ctx, entt::registry& reg)
+{
+    std::set<entt::entity> before;
+    for (auto e : reg.view<Transform>()) before.insert(e);
+
+    AddEntity(ctx, "Box");
+    ctx->Yield(6);
+
+    for (auto e : reg.view<Transform>())
+        if (before.find(e) == before.end()) return e;
+    return entt::null;
+}
+
+// ---- 純データ検査（DeepDiagnostics へ委譲）----
+
+void T_DeepShaders(ImGuiTestContext* ctx)
+{
+    Step(ctx, "全シェーダー(.cso)の存在・破損・鮮度を検査");
+    ReportDeep(ctx, DeepDiag::Shaders());
+}
+
+void T_DeepTextures(ImGuiTestContext* ctx)
+{
+    Step(ctx, "assets 配下の全画像を読み込み検証（色空間込み）");
+    ReportDeep(ctx, DeepDiag::Textures());
+}
+
+void T_DeepModels(ImGuiTestContext* ctx)
+{
+    Step(ctx, "assets 配下の全モデルを読み込み検証");
+    ReportDeep(ctx, DeepDiag::Models());
+}
+
+void T_DeepGammaConfig(ImGuiTestContext* ctx)
+{
+    IM_CHECK(g_app != nullptr);
+    Step(ctx, "表示パイプラインのフォーマット構成を検査");
+    ReportDeep(ctx, DeepDiag::Gamma(*g_app));
+}
+
+void T_DeepSceneAssets(ImGuiTestContext* ctx)
+{
+    IM_CHECK(g_app != nullptr);
+    Step(ctx, "シーンが参照しているアセットが描画対象になっているか検査");
+    ReportDeep(ctx, DeepDiag::SceneAssets(*g_app));
+}
+
+// ---- GPU が絡む検査 ----
+
+// 「エディタは動いているのに絵が出ていない」をピクセルで確かめる。
+// UI 自動テストは絵を一切見ないので、描画パスが丸ごと死んでいても全部緑になりうる。
+void T_DeepRenderProof(ImGuiTestContext* ctx)
+{
+    IM_CHECK(g_app != nullptr);
+    EditorContext* ed = Ed();
+    IM_CHECK(ed != nullptr);
+
+    Step(ctx, "シーンビューの絵を読み戻す");
+    const Application::DiagFrameStats base = GrabFrame(ctx);
+    IM_CHECK(base.valid);
+    IM_CHECK(base.width > 0 && base.height > 0);
+    ctx->LogInfo("シーン RT %ux%u / 平均輝度 %.3f / 非黒 %.1f%%",
+                 base.width, base.height, base.meanLuma, base.nonBlack * 100.0f);
+
+    if (base.nonBlack < 0.01f)
+        IM_ERRORF("シーンビューがほぼ真っ黒（非黒ピクセル %.2f%%）。描画パスが動いていない",
+                  base.nonBlack * 100.0f);
+
+    // 投影方式を変えれば絵は必ず変わる。変わらない＝シーンビューが再描画されていない
+    // （＝表示が固まっていて、以降の検査も全部当てにならない）。
+    Step(ctx, "投影を切り替えて絵が変わるか確認");
+    const bool saved2D = ed->view2D;
+    ed->view2D = !saved2D;
+    ctx->Yield(10);
+    const Application::DiagFrameStats flipped = GrabFrame(ctx);
+    ed->view2D = saved2D;
+    ctx->Yield(10);
+
+    IM_CHECK_NO_RET(flipped.valid);
+    if (flipped.valid && flipped.hash == base.hash)
+        IM_ERRORF("投影を 2D↔3D で切り替えても絵が 1 ピクセルも変わらない。"
+                  "シーンビューが再描画されていない");
+}
+
+// スクリーンショットの表示変換がシーンのトーンマップ設定に追従しているか。
+// シーン RT はポスト処理前のリニア HDR なので、読み戻し側が設定を見ずに決め打ちすると
+// 「ビューポートと違う色の PNG」が出てきて、色やコントラストの判断を丸ごと誤らせる。
+void T_DeepGammaRoundTrip(ImGuiTestContext* ctx)
+{
+    IM_CHECK(g_app != nullptr);
+    Scene* scene = g_app->GetScene();
+    IM_CHECK(scene != nullptr);
+
+    PostProcessSettings& pp = scene->GetPostSettings();
+    const int savedTone = pp.tonemapper;
+
+    Step(ctx, "トーンマップ「なし(ガンマのみ)」で読み戻す");
+    pp.tonemapper = 2;
+    ctx->Yield(6);
+    const Application::DiagFrameStats gammaOnly = GrabFrame(ctx);
+
+    Step(ctx, "トーンマップ「ACES」で読み戻す");
+    pp.tonemapper = 0;
+    ctx->Yield(6);
+    const Application::DiagFrameStats acesTone = GrabFrame(ctx);
+
+    pp.tonemapper = savedTone;
+    ctx->Yield(4);
+
+    IM_CHECK(gammaOnly.valid && acesTone.valid);
+    // ACES は肩が寝ているぶん必ず暗くなる。真っ黒な画では差が出ないので前提も確認する。
+    if (gammaOnly.meanLuma < 0.01f)
+    {
+        ctx->LogWarning("画が暗すぎて表示変換の差を判定できない（平均輝度 %.4f）", gammaOnly.meanLuma);
+        return;
+    }
+    ctx->LogInfo("平均輝度: ガンマのみ %.3f / ACES %.3f", gammaOnly.meanLuma, acesTone.meanLuma);
+    if (std::fabs(gammaOnly.meanLuma - acesTone.meanLuma) < 0.005f)
+        IM_ERRORF("トーンマップを変えても読み戻した絵が変わらない。"
+                  "スクリーンショットがシーン設定を無視している（ビューポートと別の絵になる）");
+}
+
+// ギズモが「触っていないのに値を書き換える」「NaN を出す」「掴んだ状態のまま固まる」を検査する。
+// 親が回転＋非一様スケールを持つ子が一番壊れやすいので、その形で全モードを通す。
+void T_DeepGizmo(ImGuiTestContext* ctx)
+{
+    IM_CHECK(g_app != nullptr);
+    EditorContext* ed = Ed();
+    IM_CHECK(ed != nullptr);
+    Scene* scene = g_app->GetScene();
+    IM_CHECK(scene != nullptr);
+    entt::registry& reg = scene->GetRegistry();
+
+    Step(ctx, "親(回転+非一様スケール)と子を作る");
+    const entt::entity parent = AddBoxAndGet(ctx, reg);
+    const entt::entity child  = AddBoxAndGet(ctx, reg);
+    IM_CHECK(parent != entt::null && child != entt::null);
+    IM_CHECK(reg.valid(parent) && reg.valid(child));
+
+    {
+        Transform& tp = reg.get<Transform>(parent);
+        tp.position = {  2.0f, 0.5f, -1.0f };
+        tp.rotation = { 23.0f, 41.0f, 17.0f };
+        tp.scale    = {  1.7f, 0.6f,  2.3f };
+
+        Transform& tc = reg.get<Transform>(child);
+        tc.parent   = parent;
+        tc.position = { 1.0f, 2.0f, -0.5f };
+    }
+
+    ed->selectedEntity = child;
+    ed->selectedEntities.assign(1, child);
+    ctx->Yield(6);
+
+    const Transform expected = reg.get<Transform>(child);
+
+    const GizmoMode modes[3]  = { GizmoMode::Translate, GizmoMode::Rotate, GizmoMode::Scale };
+    const char*     names[3]  = { "移動", "回転", "スケール" };
+    const bool      saved2D   = ed->view2D;
+    const bool      savedLoc  = ed->gizmoLocalSpace;
+    const GizmoMode savedMode = ed->gizmoMode;
+
+    for (int v2 = 0; v2 < 2; ++v2)
+        for (int loc = 0; loc < 2; ++loc)
+            for (int m = 0; m < 3; ++m)
+            {
+                ed->view2D          = (v2 != 0);
+                ed->gizmoLocalSpace = (loc != 0);
+                ed->gizmoMode       = modes[m];
+                ctx->Yield(4);
+
+                if (!reg.valid(child)) { IM_ERRORF("子エンティティが消えた"); break; }
+                const Transform& t = reg.get<Transform>(child);
+
+                if (!TransformFinite(t))
+                {
+                    IM_ERRORF("%s / %s / %s でギズモが Transform を NaN にした",
+                              names[m], (loc != 0) ? "ローカル" : "ワールド",
+                              (v2 != 0) ? "2Dビュー" : "3Dビュー");
+                    break;
+                }
+                // ドラッグしていないのに値が変わったら、描画のたびに物が動く＝致命的
+                if (!TransformEqual(t, expected))
+                {
+                    IM_ERRORF("%s / %s / %s で、掴んでいないのに Transform が書き換わった",
+                              names[m], (loc != 0) ? "ローカル" : "ワールド",
+                              (v2 != 0) ? "2Dビュー" : "3Dビュー");
+                    break;
+                }
+                // 掴んだままの状態が残ると、以降クリックでの選択が全部吸われる
+                IM_CHECK_NO_RET(!ImGuizmo::IsUsing());
+            }
+
+    ed->view2D          = saved2D;
+    ed->gizmoLocalSpace = savedLoc;
+    ed->gizmoMode       = savedMode;
+    ctx->Yield(4);
+
+    // 親のワールド行列が有限か（非一様スケール＋回転の合成で崩れていないか）
+    if (reg.valid(child))
+    {
+        DirectX::XMFLOAT4X4 wf;
+        DirectX::XMStoreFloat4x4(&wf, ComputeWorldMatrix(reg, child));
+        bool finite = true;
+        for (int i = 0; i < 4; ++i)
+            for (int j = 0; j < 4; ++j)
+                if (!std::isfinite(wf.m[i][j])) finite = false;
+        if (!finite)
+            IM_ERRORF("親が回転+非一様スケールのとき、子のワールド行列が NaN になる");
+    }
+
+    // 回転ギズモは gizmoLocalSpace を無視して常にワールド軸で出る（SceneViewPanel の実装仕様）。
+    // 不具合ではないが「T を押しても回転だけ切り替わらない」と見えるので記録に残す。
+    ctx->LogInfo("仕様メモ: 回転ギズモはローカル/ワールド切替を無視して常にワールド軸で表示される");
+}
+
 // ===================== テスト表 =====================
 
 struct DiagReg
@@ -886,6 +1166,7 @@ struct DiagReg
     const char* group;      // 診断パネルの見出し（日本語）
     const char* display;    // 診断パネルの行名（日本語）
     void (*body)(ImGuiTestContext*);
+    bool        deep;       // true=超詳細診断。「すべて検査する」には含めず専用ボタンで走らせる
 };
 
 const DiagReg kTests[] = {
@@ -919,6 +1200,16 @@ const DiagReg kTests[] = {
 
     { "stress","rapid_selection",       "ストレス",           "選択を高速に切り替える",               T_RapidSelection        },
     { "stress","spam_add_delete",       "ストレス",           "生成と削除を連打",                     T_SpamAddDelete         },
+
+    // ---- 超詳細診断（deep=true。「すべて検査する」には含まれない）----
+    { "deep",  "deep_shaders",          "超詳細: シェーダー", "全 .cso の存在 / 破損 / 鮮度",         T_DeepShaders,        true },
+    { "deep",  "deep_textures",         "超詳細: テクスチャ", "全画像の読み込みと色空間",             T_DeepTextures,       true },
+    { "deep",  "deep_models",           "超詳細: モデル",     "全モデルの読み込みと形状",             T_DeepModels,         true },
+    { "deep",  "deep_gamma_config",     "超詳細: ガンマ",     "表示パイプラインのフォーマット構成",   T_DeepGammaConfig,    true },
+    { "deep",  "deep_gamma_roundtrip",  "超詳細: ガンマ",     "スクショの表示変換がシーン設定に追従", T_DeepGammaRoundTrip, true },
+    { "deep",  "deep_scene_assets",     "超詳細: アセット",   "シーンのアセットが描画対象になっているか", T_DeepSceneAssets, true },
+    { "deep",  "deep_render_proof",     "超詳細: 描画",       "実際に絵が出ているかピクセルで確認",   T_DeepRenderProof,    true },
+    { "deep",  "deep_gizmo",            "超詳細: ギズモ",     "全モード×親子×2D で誤作動しないか",    T_DeepGizmo,          true },
 };
 
 const DiagReg* FindReg(const ImGuiTest* test)
@@ -936,10 +1227,11 @@ const char* DisplayName(const ImGuiTest* test)
 
 // ===================== UiTestHarness =====================
 
-void UiTestHarness::Initialize(Application* app, bool runAllAndExit, int speedMode)
+void UiTestHarness::Initialize(Application* app, bool runAllAndExit, int speedMode, bool deepOnly)
 {
     m_app           = app;
     m_runAllAndExit = runAllAndExit;
+    m_deepOnly      = deepOnly;
     g_app           = app;
 
     m_engine = ImGuiTestEngine_CreateContext();
@@ -980,7 +1272,7 @@ void UiTestHarness::RefreshSummary()
     m_lastSuccess = summary.CountSuccess;
 }
 
-void UiTestHarness::QueueTests(const char* filterCategory, bool failedOnly)
+void UiTestHarness::QueueTests(const char* filterCategory, bool failedOnly, int deepSel)
 {
     ImVector<ImGuiTest*> tests;
     ImGuiTestEngine_GetTestList(m_engine, &tests);
@@ -992,6 +1284,13 @@ void UiTestHarness::QueueTests(const char* filterCategory, bool failedOnly)
         if (test == nullptr) continue;
         if (filterCategory != nullptr && std::strcmp(test->Category, filterCategory) != 0) continue;
         if (failedOnly && test->Output.Status != ImGuiTestStatus_Error) continue;
+        // deepSel: -1=問わない / 0=通常の検査だけ / 1=超詳細だけ
+        if (deepSel >= 0)
+        {
+            const DiagReg* reg = FindReg(test);
+            const bool isDeep = (reg != nullptr && reg->deep);
+            if (isDeep != (deepSel == 1)) continue;
+        }
 
         g_testNotes.erase(test->Name);
         ImGuiTestEngine_QueueTest(m_engine, test, ImGuiTestRunFlags_None);
@@ -1079,9 +1378,10 @@ void UiTestHarness::PostRender()
         ++warmup;
         if (warmup < 60) return;
         if (warmup < 1800 && ImGui::FindWindowByName(kWinHierarchyName) == nullptr) return;
-        QueueTests(nullptr, false);
+        QueueTests(nullptr, false, m_deepOnly ? 1 : -1);
         m_started = true;
-        Logger::Info("UI テスト: 全テストをキューへ投入しました");
+        Logger::Info("UI テスト: {} 件をキューへ投入しました ({})",
+                     m_queuedTotal, m_deepOnly ? "超詳細診断のみ" : "全テスト");
         return;
     }
 
@@ -1207,12 +1507,28 @@ void UiTestHarness::DrawDiagnosticsPanel(bool* show)
     ImGui::TextDisabled("・検査中はマウスとキーボードが自動で動きます。触らずにお待ちください。");
     ImGui::TextDisabled("・シーンは検査前に退避し、完了後に自動で元へ戻します。");
     ImGui::TextDisabled("・[ビルド] の検査だけは実際に書き出すため、時間がかかります。");
+    ImGui::TextDisabled("・[超詳細診断] は UI ではなくエンジンの中身"
+                        "（シェーダー / テクスチャ / モデル / ガンマ / 描画 / ギズモ）を検査します。");
     ImGui::Separator();
 
     // ---- 実行ボタン ----
     ImGui::BeginDisabled(m_running);
     if (ImGui::Button("▶ すべて検査する", ImVec2(180, 36)))
-        QueueTests(nullptr, false);
+        QueueTests(nullptr, false, 0);
+    ImGui::SameLine();
+    if (ImGui::Button("🔬 超詳細診断", ImVec2(150, 36)))
+        QueueTests(nullptr, false, 1);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "エンジンの機能そのものを検査します（UI 操作ではありません）:\n"
+            "・全シェーダーが存在して壊れておらず、.hlsl より新しいか\n"
+            "・全テクスチャが読めるか / 法線マップが sRGB で保存されていないか\n"
+            "・全モデルが読めるか / 頂点が NaN でないか / ボーンが上限を超えていないか\n"
+            "・表示パイプラインのフォーマットがガンマ二重適用になっていないか\n"
+            "・スクリーンショットの色がビューポートと一致するか\n"
+            "・実際に絵が出ているか（ピクセルで確認）\n"
+            "・ギズモが全モード×親子×2D で誤作動しないか\n\n"
+            "アセット数が多いと数分かかります。");
     ImGui::SameLine();
     ImGui::BeginDisabled(ng == 0);
     if (ImGui::Button("失敗だけ再検査", ImVec2(140, 36)))

@@ -109,8 +109,10 @@ public:
 
     // ImGuiTestEngine による UI 自動テスト(--ui-tests)。Initialize より前に呼ぶ。
     // runAll=true なら起動後に全テストを走らせ、完了したら終了する(終了コード=UiTestExitCode)。
-    void EnableUiTests(bool runAll, int speedMode)
-    { m_uiTestsRequested = true; m_uiTestsRunAll = runAll; m_uiTestsSpeed = speedMode; }
+    // deepOnly=true なら超詳細診断だけを走らせる(--ui-tests-deep。UI 操作をほぼ伴わない)。
+    void EnableUiTests(bool runAll, int speedMode, bool deepOnly = false)
+    { m_uiTestsRequested = true; m_uiTestsRunAll = runAll; m_uiTestsSpeed = speedMode;
+      m_uiTestsDeepOnly = deepOnly; }
     int  UiTestExitCode() const { return m_uiTestExitCode; }
 
     // ヘッドレスでゲームをビルド（--build CLI 用）。開始シーンは title.json があればそれ。
@@ -131,6 +133,42 @@ public:
     std::string    SaveSceneSnapshot();
     void           RequestSceneRestore(const std::string& path);
 
+    // ===== 超詳細診断用フック =====
+    // シーンが参照しているアセットを走査するために registry が要る（DeepDiag::SceneAssets）。
+    Scene*         GetScene() { return m_scene.get(); }
+
+    // 表示パイプラインのフォーマット構成。ガンマ二重適用の検出用（DeepDiag::Gamma）。
+    // DXGI_FORMAT を u32 で渡すのは、この診断を将来ヘッドレス側から呼んでも
+    // d3d12 ヘッダを引きずらないようにするため。
+    struct DiagRenderInfo
+    {
+        u32   backBufferFormat = 0;
+        u32   sceneColorFormat = 0;
+        u32   depthFormat      = 0;
+        int   tonemapper       = 0;
+        bool  postEnabled      = true;
+        bool  exposureOn       = false;
+        float exposure         = 1.0f;
+    };
+    DiagRenderInfo GetDiagRenderInfo() const;
+
+    // 直近フレームの絵そのものを数値で受け取る。「配置したのに何も映らない」
+    // 「ポスト処理が実は走っていない」をピクセルで確かめるため。
+    struct DiagFrameStats
+    {
+        bool  valid    = false;
+        u32   width    = 0;
+        u32   height   = 0;
+        float meanLuma = 0.0f;   // トーンマップ後 0..1 の平均輝度
+        float nonBlack = 0.0f;   // 真っ黒でないピクセルの割合 0..1
+        u64   hash     = 0;      // 絵が変わったかの比較用（値そのものに意味は無い）
+    };
+    // 次のフレーム境界で 1 枚読み戻す。ImGui のフレーム内から直接キャプチャすると
+    // コマンドリストが二重に開くので、要求を積んで Run ループに拾わせる。
+    void           RequestDiagnosticFrameStats() { m_diagFrameStatsRequest = true; }
+    // 測れていれば valid=true を返し、状態をリセットする（未完了なら valid=false）。
+    DiagFrameStats TakeDiagnosticFrameStats();
+
 private:
     void Update();
     void Render();
@@ -142,6 +180,10 @@ private:
     // 直近フレームのシーン描画(m_sceneRT)を PNG に書き出す。成功=絶対パス / 失敗=空文字列+err。
     // MCP の screenshot 用。同期 readback(WaitIdle×2)＝低頻度のエディタ操作として割り切る。
     std::string CaptureSceneScreenshot(std::string& err);
+    // m_sceneRT を CPU へ読み戻し、現在のポスト設定と同じ表示変換を掛けて BGRA8 にする。
+    // CaptureSceneScreenshot と超詳細診断のフレーム統計で共用する実体。
+    // フレーム境界からのみ呼ぶこと(内部で BeginFrame/WaitIdle する)。
+    bool ReadbackSceneBgra(std::vector<u8>& outBgra, u32& outW, u32& outH, std::string& err);
     // シーン内の全メッシュを指定 viewProj で描画（メインパスとカメラプレビューで共用）。
     // isGameView=true でエディタ用グリッドを除外。per-frame CB / シャドウSRV /
     // ルートシグネチャ / RT / ビューポートは呼び出し側で設定済みとする。
@@ -298,9 +340,12 @@ private:
     std::unique_ptr<UiTestHarness>     m_uiTests;              // --ui-tests のときだけ生成
     bool m_uiTestsRequested = false;
     bool m_uiTestsRunAll    = false;
+    bool m_uiTestsDeepOnly  = false;   // --ui-tests-deep（超詳細診断だけ走らせる）
     int  m_uiTestsSpeed     = 0;
     int  m_uiTestExitCode   = 0;
     int  m_diagModeRequest  = 0;   // 診断からの Play/Stop 要求（0=なし 1=Editor 2=Playing）
+    bool m_diagFrameStatsRequest = false;   // 超詳細診断からのフレーム読み戻し要求
+    DiagFrameStats m_diagFrameStats;        // 直近の測定結果（Take で valid を落とす）
     std::unique_ptr<PipelineState>     m_skinnedPipelineState;        // 通常 forward(skinned, LESS)
     std::unique_ptr<PipelineState>     m_skinnedPipelineStateLEqual;  // SSAO 深度プリパス併用時(skinned, LESS_EQUAL)
     std::unique_ptr<PipelineState>     m_gridPipelineState;

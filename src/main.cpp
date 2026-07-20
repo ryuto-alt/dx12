@@ -223,6 +223,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         // UI 自動テスト（エディタ専用。GameRuntime では引数を解釈しないので存在しない）
         bool uiTests       = false;   // --ui-tests（ImGuiTestEngine による UI 自動テストを有効化）
         bool uiTestsRunAll = false;   // --ui-tests-run-all（全テストを自動実行して終了コードを返す）
+        bool uiTestsDeep   = false;   // --ui-tests-deep（超詳細診断だけを自動実行。UI 操作をほぼ伴わない）
         int  uiTestsSpeed  = 0;       // --ui-tests-speed=N（0=Fast 1=Normal 2=Cinematic）
 #endif
 #ifndef DX12_GAME_RUNTIME
@@ -314,6 +315,8 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
                         uiTests = true;
                     else if (wcscmp(argv[i], L"--ui-tests-run-all") == 0)
                         { uiTests = true; uiTestsRunAll = true; }
+                    else if (wcscmp(argv[i], L"--ui-tests-deep") == 0)
+                        { uiTests = true; uiTestsRunAll = true; uiTestsDeep = true; }
                     else if (wcsncmp(argv[i], L"--ui-tests-speed=", 17) == 0)
                         { uiTests = true; uiTestsSpeed = _wtoi(argv[i] + 17); }
                 }
@@ -394,7 +397,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         if (!netClientProject.empty())
             app.SetNetTestProject(netClientProject);   // --project 単独でもプロジェクトを開ける
         if (uiTests)
-            app.EnableUiTests(uiTestsRunAll, uiTestsSpeed);
+            app.EnableUiTests(uiTestsRunAll, uiTestsSpeed, uiTestsDeep);
 #endif
         app.Initialize(hInstance, nCmdShow, gameMode, nullptr, buildMode);
 

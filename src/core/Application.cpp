@@ -1398,7 +1398,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     if (!m_isGameMode)
     {
         m_uiTests = std::make_unique<UiTestHarness>();
-        m_uiTests->Initialize(this, m_uiTestsRunAll, m_uiTestsSpeed);
+        m_uiTests->Initialize(this, m_uiTestsRunAll, m_uiTestsSpeed, m_uiTestsDeepOnly);
     }
 
     // EditorLayer 初期化
@@ -4909,20 +4909,19 @@ static std::string CaptureWindowScreenshot(HWND hwnd, std::string& err)
     return result;
 }
 
-std::string Application::CaptureSceneScreenshot(std::string& err)
+bool Application::ReadbackSceneBgra(std::vector<u8>& outBgra, u32& outW, u32& outH, std::string& err)
 {
-    namespace fs = std::filesystem;
     using Microsoft::WRL::ComPtr;
 
-    if (!m_sceneRT || !m_sceneRT->GetResource()) { err = "scene RT not ready"; return {}; }
-    if (!m_commandQueue || !m_frameResources)    { err = "gpu not ready";     return {}; }
+    if (!m_sceneRT || !m_sceneRT->GetResource()) { err = "scene RT not ready"; return false; }
+    if (!m_commandQueue || !m_frameResources)    { err = "gpu not ready";     return false; }
 
     auto* dev    = m_graphicsDevice->GetDevice();
     auto* srcTex = m_sceneRT->GetResource();
     const D3D12_RESOURCE_DESC texDesc = srcTex->GetDesc();
     const UINT w = static_cast<UINT>(texDesc.Width);
     const UINT h = texDesc.Height;
-    if (w == 0 || h == 0) { err = "scene size is 0"; return {}; }
+    if (w == 0 || h == 0) { err = "scene size is 0"; return false; }
 
     // readback バッファのレイアウト(行ピッチは 256B アライン)を取得
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
@@ -4945,7 +4944,7 @@ std::string Application::CaptureSceneScreenshot(std::string& err)
         bd.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
         if (FAILED(dev->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &bd,
                 D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&readback))))
-        { err = "readback alloc failed"; return {}; }
+        { err = "readback alloc failed"; return false; }
     }
 
     // 前フレームの GPU 完了を待ってから sceneRT(単一リソース＝内容確定)をコピー
@@ -4978,56 +4977,153 @@ std::string Application::CaptureSceneScreenshot(std::string& err)
 
     if (needBarrier) barrier(D3D12_RESOURCE_STATE_COPY_SOURCE, prev);  // 元の状態へ戻す(エンジンの追跡と一致)
 
-    if (FAILED(cmd->Close())) { m_frameResources->EndFrame(*m_commandQueue); err = "cmd close failed"; return {}; }
+    if (FAILED(cmd->Close())) { m_frameResources->EndFrame(*m_commandQueue); err = "cmd close failed"; return false; }
     m_commandQueue->ExecuteCommandList(cmd);
     m_commandQueue->WaitIdle();
     m_frameResources->EndFrame(*m_commandQueue);
 
-    // R16G16B16A16_FLOAT(リニアHDR) → ACES → sRGB OETF → BGRA8。
-    // PostProcess 最終段と同じトーンマップを CPU で適用し「ビューポートで見える絵」に寄せる。
+    // R16G16B16A16_FLOAT(リニアHDR) → 表示変換 → BGRA8。
+    //
+    // ここは PostProcess.hlsl の ToneMapGamma と *同じ分岐* を辿らせること。
+    // 以前は ACES 決め打ちだったので、シーンのトーンマップを AgX / なし にしていると
+    // スクリーンショットだけ別物の絵になり、色やコントラストの判断を誤らせていた
+    // (2D ゲームは「なし(ガンマのみ)」を使うので特に事故りやすい)。
+    // 露出も同様に効かせる。それ以外のグレーディングは掛けない(掛けたければ PostProcess を CPU で
+    // 丸ごと再実装することになる)ので、色を厳密に見るときはビューポートを信じること。
     void* mapped = nullptr;
     D3D12_RANGE rr{ 0, static_cast<SIZE_T>(totalBytes) };
-    if (FAILED(readback->Map(0, &rr, &mapped))) { err = "readback map failed"; return {}; }
+    if (FAILED(readback->Map(0, &rr, &mapped))) { err = "readback map failed"; return false; }
 
-    auto aces = [](float x) -> float
+    static const PostProcessSettings kDefaultPost{};
+    const PostProcessSettings& pp = m_scene ? m_scene->GetPostSettings() : kDefaultPost;
+    const int   tonemapper = (pp.tonemapper >= 0 && pp.tonemapper <= 2) ? pp.tonemapper : 0;
+    const float exposure   = pp.exposureOn ? pp.exposure : 1.0f;
+
+    auto sat = [](float x) { return x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x); };
+
+    // 以下 3 つは PostProcess.hlsl の ACESFilm / AgXContrast / TonemapAgX / ToneMapGamma の写し。
+    // 片方を直したらもう片方も直すこと（ずれるとスクショだけ違う絵になる）。
+    auto aces1 = [&](float x)
     {
         const float a = 2.51f, b = 0.03f, c = 2.43f, d = 0.59f, e = 0.14f;
-        if (x <= 0.0f) return 0.0f;
-        const float v = (x * (a * x + b)) / (x * (c * x + d) + e);
-        return v > 1.0f ? 1.0f : v;
+        return sat((x * (a * x + b)) / (x * (c * x + d) + e));
     };
-    auto toSrgb = [](float c) -> uint8_t
+    auto agxContrast = [](float x)
     {
-        if (c <= 0.0f) return 0;
-        if (c >= 1.0f) return 255;
-        c = c <= 0.0031308f ? c * 12.92f : 1.055f * std::pow(c, 1.0f / 2.4f) - 0.055f;
-        const int v = static_cast<int>(c * 255.0f + 0.5f);
+        const float x2 = x * x, x4 = x2 * x2;
+        return 15.5f * x4 * x2 - 40.14f * x4 * x + 31.96f * x4
+             - 6.868f * x2 * x + 0.4298f * x2 + 0.1191f * x - 0.00232f;
+    };
+    auto toneMapGamma = [&](float rgb[3])
+    {
+        if (tonemapper == 2)   // トーンマップなし（ガンマのみ）
+        {
+            for (int i = 0; i < 3; ++i) rgb[i] = std::pow((std::max)(rgb[i], 0.0f), 1.0f / 2.2f);
+            return;
+        }
+        if (tonemapper == 0)   // ACES
+        {
+            for (int i = 0; i < 3; ++i) rgb[i] = std::pow(aces1(rgb[i]), 1.0f / 2.2f);
+            return;
+        }
+        // AgX（行列 → log2 → コントラスト曲線 → 逆行列。出力は既にガンマ空間）
+        static const float kAgx[9] = {
+            0.842479062253094f, 0.0784335999999992f, 0.0792237451477643f,
+            0.0423282422610123f, 0.878468636469772f, 0.0791661274605434f,
+            0.0423756549057051f, 0.0784336f,         0.879142973793104f };
+        static const float kAgxInv[9] = {
+             1.19687900512017f,  -0.0980208811401368f, -0.0990297440797205f,
+            -0.0528968517574562f, 1.15190312990417f,   -0.0989611768448433f,
+            -0.0529716355144438f,-0.0980434501171241f,  1.15107367264116f };
+        const float minEv = -12.47393f, maxEv = 4.026069f;
+
+        auto mul3 = [](const float m[9], float v[3])
+        {
+            const float a = m[0] * v[0] + m[1] * v[1] + m[2] * v[2];
+            const float b = m[3] * v[0] + m[4] * v[1] + m[5] * v[2];
+            const float c = m[6] * v[0] + m[7] * v[1] + m[8] * v[2];
+            v[0] = a; v[1] = b; v[2] = c;
+        };
+        for (int i = 0; i < 3; ++i) rgb[i] = (std::max)(rgb[i], 0.0f);
+        mul3(kAgx, rgb);
+        for (int i = 0; i < 3; ++i)
+        {
+            const float l = std::log2((std::max)(rgb[i], 1e-10f));
+            rgb[i] = ((l < minEv ? minEv : (l > maxEv ? maxEv : l)) - minEv) / (maxEv - minEv);
+            rgb[i] = agxContrast(rgb[i]);
+        }
+        mul3(kAgxInv, rgb);
+        for (int i = 0; i < 3; ++i) rgb[i] = sat(rgb[i]);
+    };
+
+    auto toByte = [&](float c)
+    {
+        const int v = static_cast<int>(sat(c) * 255.0f + 0.5f);
         return static_cast<uint8_t>(v < 0 ? 0 : (v > 255 ? 255 : v));
     };
 
-    std::vector<uint8_t> bgra(static_cast<size_t>(w) * h * 4);
+    outBgra.assign(static_cast<size_t>(w) * h * 4, 0);
     const auto* base = static_cast<const uint8_t*>(mapped);
     for (UINT y = 0; y < h; ++y)
     {
         const auto* in  = reinterpret_cast<const uint16_t*>(base + static_cast<size_t>(fp.Footprint.RowPitch) * y);
-        uint8_t*    out = &bgra[static_cast<size_t>(w) * 4 * y];
+        uint8_t*    out = &outBgra[static_cast<size_t>(w) * 4 * y];
         for (UINT x = 0; x < w; ++x)
         {
-            const float r = DirectX::PackedVector::XMConvertHalfToFloat(in[x * 4 + 0]);
-            const float g = DirectX::PackedVector::XMConvertHalfToFloat(in[x * 4 + 1]);
-            const float b = DirectX::PackedVector::XMConvertHalfToFloat(in[x * 4 + 2]);
-            out[x * 4 + 0] = toSrgb(aces(b));   // BGRA 順
-            out[x * 4 + 1] = toSrgb(aces(g));
-            out[x * 4 + 2] = toSrgb(aces(r));
+            float rgb[3] = {
+                DirectX::PackedVector::XMConvertHalfToFloat(in[x * 4 + 0]) * exposure,
+                DirectX::PackedVector::XMConvertHalfToFloat(in[x * 4 + 1]) * exposure,
+                DirectX::PackedVector::XMConvertHalfToFloat(in[x * 4 + 2]) * exposure };
+            toneMapGamma(rgb);
+            out[x * 4 + 0] = toByte(rgb[2]);   // BGRA 順
+            out[x * 4 + 1] = toByte(rgb[1]);
+            out[x * 4 + 2] = toByte(rgb[0]);
             out[x * 4 + 3] = 255;
         }
     }
     D3D12_RANGE wr{ 0, 0 };
     readback->Unmap(0, &wr);
 
+    outW = w;
+    outH = h;
+    return true;
+}
+
+std::string Application::CaptureSceneScreenshot(std::string& err)
+{
+    namespace fs = std::filesystem;
+
+    std::vector<u8> bgra;
+    u32 w = 0, h = 0;
+    if (!ReadbackSceneBgra(bgra, w, h, err)) return {};
+
     const fs::path outPath = fs::absolute("mcp_screenshot.png");   // CWD(= dx12_engine.log と同じ場所)へ上書き
     if (!WriteBgraPng(outPath.wstring(), bgra.data(), w, h, err)) return {};
     return outPath.string();
+}
+
+Application::DiagRenderInfo Application::GetDiagRenderInfo() const
+{
+    DiagRenderInfo info;
+    info.backBufferFormat = m_swapChain ? static_cast<u32>(m_swapChain->GetFormat()) : 0u;
+    info.sceneColorFormat = m_sceneRT   ? static_cast<u32>(m_sceneRT->GetFormat())   : 0u;
+    info.depthFormat      = static_cast<u32>(DXGI_FORMAT_D32_FLOAT);
+    if (m_scene)
+    {
+        const PostProcessSettings& pp = m_scene->GetPostSettings();
+        info.tonemapper  = pp.tonemapper;
+        info.postEnabled = pp.enabled;
+        info.exposureOn  = pp.exposureOn;
+        info.exposure    = pp.exposure;
+    }
+    return info;
+}
+
+Application::DiagFrameStats Application::TakeDiagnosticFrameStats()
+{
+    const DiagFrameStats out = m_diagFrameStats;
+    m_diagFrameStats = {};
+    return out;
 }
 
 void Application::Run()
@@ -5046,6 +5142,44 @@ void Application::Run()
             m_mcpBridge->Poll([this](uint64_t client, const std::string& line) {
                 return HandleMcpCommand(client, line);
             });
+
+        // 超詳細診断からのフレーム読み戻し要求。ReadbackSceneBgra は内部でコマンドリストを
+        // 開くのでフレーム境界のここでしか呼べない（ImGui のテスト本体から直接は呼べない）。
+        if (m_diagFrameStatsRequest)
+        {
+            m_diagFrameStatsRequest = false;
+            std::vector<u8> bgra;
+            u32 w = 0, h = 0;
+            std::string err;
+            DiagFrameStats st;
+            if (ReadbackSceneBgra(bgra, w, h, err))
+            {
+                const size_t px = static_cast<size_t>(w) * h;
+                u64    lumaSum  = 0;
+                size_t nonBlack = 0;
+                u64    hash     = 1469598103934665603ull;   // FNV-1a
+                for (size_t i = 0; i < px; ++i)
+                {
+                    const uint8_t b = bgra[i * 4 + 0], g = bgra[i * 4 + 1], r = bgra[i * 4 + 2];
+                    const uint32_t l = (r * 54u + g * 183u + b * 19u) >> 8;   // 近似輝度
+                    lumaSum += l;
+                    if (l > 8) ++nonBlack;
+                    // 全画素を混ぜると遅いので 64 画素おき。絵の変化検出にはこれで十分。
+                    if ((i & 63) == 0) { hash ^= (r | (g << 8) | (b << 16)); hash *= 1099511628211ull; }
+                }
+                st.valid    = true;
+                st.width    = w;
+                st.height   = h;
+                st.meanLuma = px ? static_cast<float>(lumaSum) / static_cast<float>(px) / 255.0f : 0.0f;
+                st.nonBlack = px ? static_cast<float>(nonBlack) / static_cast<float>(px) : 0.0f;
+                st.hash     = hash;
+            }
+            else
+            {
+                Logger::Warn("超詳細診断: フレーム読み戻しに失敗: {}", err);
+            }
+            m_diagFrameStats = st;
+        }
 
         // --net-client: プロジェクトロード完了後にクライアントとして自動Play=Join(フェーズ⑨)。
         // ※ Update 内で立てると同フレームの EditorLayer::Render 後の

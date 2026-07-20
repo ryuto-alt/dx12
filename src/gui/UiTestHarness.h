@@ -29,8 +29,9 @@ class Application;
 class UiTestHarness
 {
 public:
-    // ImGui コンテキスト生成後・最初の NewFrame より前に呼ぶ
-    void Initialize(Application* app, bool runAllAndExit, int speedMode);
+    // ImGui コンテキスト生成後・最初の NewFrame より前に呼ぶ。
+    // deepOnly=true なら自動実行の対象を超詳細診断だけに絞る（--ui-tests-deep）。
+    void Initialize(Application* app, bool runAllAndExit, int speedMode, bool deepOnly = false);
 
     // 毎フレーム Present の後に呼ぶ（テストのコルーチンを進める）
     void PostRender();
@@ -48,14 +49,16 @@ public:
 private:
     void RegisterTests();
     void RefreshSummary();
-    // filterCategory=nullptr で全件、"vfx" 等でそのグループだけ、failedOnly で前回失敗分だけ
-    void QueueTests(const char* filterCategory, bool failedOnly);
+    // filterCategory=nullptr で全件、"vfx" 等でそのグループだけ、failedOnly で前回失敗分だけ。
+    // deepSel: -1=超詳細を問わない / 0=通常の検査だけ / 1=超詳細だけ
+    void QueueTests(const char* filterCategory, bool failedOnly, int deepSel = -1);
     void BeginRun();
     std::string BuildReport() const;
 
     ::ImGuiTestEngine* m_engine = nullptr;
     Application* m_app = nullptr;
     bool m_runAllAndExit = false;
+    bool m_deepOnly      = false;   // --ui-tests-deep: 自動実行を超詳細診断だけに絞る
     bool m_started       = false;
     bool m_wantsExit     = false;
     int  m_exitCode      = 0;
