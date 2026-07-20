@@ -3,13 +3,25 @@
 // バージョン定数の唯一の実体。宣言・注意書きは Version.h を参照。
 namespace dx12e
 {
-const char* const kEngineVersion = "1.6.0";
+const char* const kEngineVersion = "1.6.1";
 
 const char* const kUpdateRepoOwner = "ryuto-alt";
 const char* const kUpdateRepoName  = "dx12";
 
-const char* const kWhatsNewTitle = "DX12 Engine v1.6.0 の更新内容";
+const char* const kWhatsNewTitle = "DX12 Engine v1.6.1 の更新内容";
 const char* const kWhatsNewBody =
+    "v1.6.1: この「更新内容」ウィンドウ自体が出ずに操作不能になるのを修正\n"
+    "\n"
+    "■ 更新後の初回起動でエディタが操作できなくなるのを修正\n"
+    "  この更新内容ウィンドウが、エディタ本体とは別のウィンドウとして\n"
+    "  画面外や裏に出てしまい、「何も表示されないのにクリックが効かない」\n"
+    "  状態になっていました。本文が長いと[閉じる]ボタンも画面外に出るため、\n"
+    "  閉じる手段が無く詰みます。エディタ内に固定＋本文をスクロール式にし、\n"
+    "  ESC でも閉じられるようにしました。\n"
+    "  (v1.6.0 でこれを踏んだ場合、この画面が読めているなら解消済みです)\n"
+    "\n"
+    "以下は v1.6.0 の内容(本バージョンに含まれます):\n"
+    "\n"
     "v1.6.0: 超詳細診断モードの追加 + クラッシュ 2 件修正\n"
     "\n"
     "■ [ツール > エンジン診断] に [超詳細診断] ボタンを追加\n"

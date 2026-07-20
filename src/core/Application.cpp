@@ -6470,10 +6470,16 @@ void Application::RenderWhatsNewPopup()
     const char* kId = "更新内容###whatsnew";
     if (!m_whatsNewOpened) { ImGui::OpenPopup(kId); m_whatsNewOpened = true; }
 
-    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(760.0f, 0.0f), ImGuiCond_Appearing);
-    if (ImGui::BeginPopupModal(kId, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
+    // マルチビューポート有効なので、明示しないとこのモーダルが独立OSウィンドウ化し、
+    // 「画面に出ていないのに入力だけ塞ぐ」状態になる（ギズモ消失バグと同じ罠）。
+    // 併せて AlwaysAutoResize は使わない: 本文が画面より縦に長いと「閉じる」が画面外に出て詰む。
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowViewport(vp->ID);
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    const float wnH = (vp->WorkSize.y * 0.8f < 720.0f) ? vp->WorkSize.y * 0.8f : 720.0f;
+    ImGui::SetNextWindowSize(ImVec2(760.0f, wnH), ImGuiCond_Appearing);
+    bool open = true;  // ESC で閉じられるように p_open を渡す（保険）
+    if (ImGui::BeginPopupModal(kId, &open, ImGuiWindowFlags_NoSavedSettings))
     {
         // 見づらい要望対応: 専用フォントは追加せず、既存フォントを SetWindowFontScale で拡大
         // （ToolbarPanel.cpp のエラーモーダルと同じやり方）。
@@ -6484,12 +6490,17 @@ void Application::RenderWhatsNewPopup()
         ImGui::SetWindowFontScale(1.0f);
         ImGui::Separator();
         ImGui::Spacing();
-        ImGui::SetWindowFontScale(1.18f);
-        ImGui::TextWrapped("%s", kWhatsNewBody);
-        ImGui::SetWindowFontScale(1.0f);
-        ImGui::Spacing();
+        // 本文はスクロール領域に入れる。ボタン1行分を残しておけば「閉じる」は必ず見える。
+        const float footer = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y * 2.0f;
+        if (ImGui::BeginChild("##whatsnew_body", ImVec2(0.0f, -footer), false))
+        {
+            ImGui::SetWindowFontScale(1.18f);
+            ImGui::TextWrapped("%s", kWhatsNewBody);
+            ImGui::SetWindowFontScale(1.0f);
+        }
+        ImGui::EndChild();
         ImGui::Separator();
-        if (ImGui::Button("閉じる", ImVec2(160.0f, 0.0f)))
+        if (ImGui::Button("閉じる", ImVec2(160.0f, 0.0f)) || !open)
         {
             // この版は表示済みとして記録 → 次回以降は版が変わるまで出さない。
             WriteShownVersion(kEngineVersion);
