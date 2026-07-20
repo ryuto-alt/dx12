@@ -147,8 +147,9 @@ bool ProjectManager::PickFolder(HWND /*hwnd*/, std::string& outPath, const wchar
                         int len = WideCharToMultiByte(CP_UTF8, 0, pathW, -1, nullptr, 0, nullptr, nullptr);
                         if (len > 0)
                         {
-                            std::string s(static_cast<size_t>(len - 1), '\0');
+                            std::string s(static_cast<size_t>(len), '\0');
                             WideCharToMultiByte(CP_UTF8, 0, pathW, -1, s.data(), len, nullptr, nullptr);
+                            s.pop_back();
                             picked = s;
                             ok = true;
                         }

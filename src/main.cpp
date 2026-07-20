@@ -268,8 +268,12 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
             {
                 auto toUtf8 = [](const wchar_t* w) {
                     int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
-                    std::string s(n > 0 ? static_cast<size_t>(n - 1) : 0, '\0');
-                    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w, -1, s.data(), n, nullptr, nullptr);
+                    std::string s(n > 0 ? static_cast<size_t>(n) : 0, '\0');
+                    if (n > 0)
+                    {
+                        WideCharToMultiByte(CP_UTF8, 0, w, -1, s.data(), n, nullptr, nullptr);
+                        s.pop_back(); // API が書き込んだ終端 NUL は std::string の長さに含めない
+                    }
                     return s;
                 };
                 for (int i = 1; i < argc; ++i)
@@ -385,8 +389,12 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         {
             const char* msg = e.what();
             int n = MultiByteToWideChar(CP_UTF8, 0, msg, -1, nullptr, 0);
-            std::wstring wmsg(n > 0 ? static_cast<size_t>(n - 1) : 0, L'\0');
-            if (n > 0) MultiByteToWideChar(CP_UTF8, 0, msg, -1, wmsg.data(), n);
+            std::wstring wmsg(n > 0 ? static_cast<size_t>(n) : 0, L'\0');
+            if (n > 0)
+            {
+                MultiByteToWideChar(CP_UTF8, 0, msg, -1, wmsg.data(), n);
+                wmsg.pop_back();
+            }
             MessageBoxW(nullptr, wmsg.c_str(), L"致命的なエラー", MB_OK | MB_ICONERROR);
         }
         return EXIT_FAILURE;

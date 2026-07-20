@@ -41,8 +41,9 @@ std::wstring ToWideString(const char* str)
         return {};
     }
 
-    std::wstring result(static_cast<size_t>(len) - 1, L'\0');
+    std::wstring result(static_cast<size_t>(len), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, str, -1, result.data(), len);
+    result.pop_back();
     return result;
 }
 

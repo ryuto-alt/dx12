@@ -773,8 +773,9 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                 int n = MultiByteToWideChar(CP_UTF8, 0, bc.title.c_str(), -1, nullptr, 0);
                 if (n > 0)
                 {
-                    std::wstring wt(static_cast<size_t>(n - 1), L'\0');
+                    std::wstring wt(static_cast<size_t>(n), L'\0');
                     MultiByteToWideChar(CP_UTF8, 0, bc.title.c_str(), -1, wt.data(), n);
+                    wt.pop_back();
                     windowTitle = wt;   // 配布ゲームはエンジン名ではなく製品タイトルを表示
                 }
             }
@@ -7272,8 +7273,12 @@ void Application::LaunchNetTestClient()
     {
         // rootDir は UTF-8。日本語パスでも化けないように wide へ変換してから渡す。
         int n = MultiByteToWideChar(CP_UTF8, 0, m_projectInfo.rootDir.c_str(), -1, nullptr, 0);
-        std::wstring wroot(n > 0 ? static_cast<size_t>(n - 1) : 0, L'\0');
-        if (n > 0) MultiByteToWideChar(CP_UTF8, 0, m_projectInfo.rootDir.c_str(), -1, wroot.data(), n);
+        std::wstring wroot(n > 0 ? static_cast<size_t>(n) : 0, L'\0');
+        if (n > 0)
+        {
+            MultiByteToWideChar(CP_UTF8, 0, m_projectInfo.rootDir.c_str(), -1, wroot.data(), n);
+            wroot.pop_back();
+        }
         cmd += L" --project \"" + wroot + L"\"";
     }
 

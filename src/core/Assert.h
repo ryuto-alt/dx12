@@ -20,8 +20,9 @@ inline void ThrowIfFailed(HRESULT hr)
         LPCTSTR errMsg = err.ErrorMessage();
         // wchar_t → char 安全変換
         int size = WideCharToMultiByte(CP_UTF8, 0, errMsg, -1, nullptr, 0, nullptr, nullptr);
-        std::string msg(static_cast<size_t>(size - 1), '\0');
+        std::string msg(static_cast<size_t>(size), '\0');
         WideCharToMultiByte(CP_UTF8, 0, errMsg, -1, msg.data(), size, nullptr, nullptr);
+        msg.pop_back();
         char hexBuf[16];
         snprintf(hexBuf, sizeof(hexBuf), "0x%08X", static_cast<unsigned int>(hr));
         throw std::runtime_error(std::string("HRESULT failed (") + hexBuf + "): " + msg);

@@ -46,8 +46,9 @@ std::wstring Utf8ToWide(const std::string& s)
     if (s.empty()) return {};
     int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
     if (n <= 0) return {};
-    std::wstring w(static_cast<size_t>(n - 1), L'\0');
+    std::wstring w(static_cast<size_t>(n), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n);
+    w.pop_back();
     return w;
 }
 

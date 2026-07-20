@@ -230,8 +230,9 @@ std::unique_ptr<Texture> TextureLoader::LoadFromFile(
     {
         // wstring → string for logger
         int sz = WideCharToMultiByte(CP_UTF8, 0, filePath.c_str(), -1, nullptr, 0, nullptr, nullptr);
-        std::string pathStr(static_cast<size_t>(sz - 1), '\0');
+        std::string pathStr(static_cast<size_t>(sz), '\0');
         WideCharToMultiByte(CP_UTF8, 0, filePath.c_str(), -1, pathStr.data(), sz, nullptr, nullptr);
+        pathStr.pop_back();
         Logger::Error("テクスチャの読み込みに失敗しました: {}", pathStr);
         return nullptr;
     }
@@ -285,8 +286,9 @@ std::unique_ptr<Texture> TextureLoader::LoadCubeFromFile(
     auto toUtf8 = [](const std::wstring& w) -> std::string {
         int sz = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
         if (sz <= 1) return std::string{};
-        std::string s(static_cast<size_t>(sz - 1), '\0');
+        std::string s(static_cast<size_t>(sz), '\0');
         WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, s.data(), sz, nullptr, nullptr);
+        s.pop_back();
         return s;
     };
 
