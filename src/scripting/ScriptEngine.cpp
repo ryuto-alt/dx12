@@ -313,6 +313,61 @@ void ScriptEngine::RegisterBindings()
             e.GetComponent<SkeletalAnimation>().animator->SetSpeed(speed);
         },
 
+        // --- タイムライン製 UI アニメ(.uianim) ---
+        // 実体の評価は UiAnimRuntime（Application::Update）が行う。ここは再生状態を
+        // 立てるだけなので、UiAnimRuntime への参照を ScriptEngine に持たせる必要がない。
+        // clipPath 省略時は現在割り当てられているクリップを頭から再生する。
+        "playUiAnim", [](Entity& e, sol::optional<std::string> clipPath) {
+            auto& pl = e.GetOrAddComponent<UIAnimPlayer>();
+            if (clipPath && !clipPath->empty()) pl.clipPath = *clipPath;
+            if (pl.clipPath.empty()) return;
+            pl._time = pl._prevTime = 0.0f;
+            pl._finished = false;
+            pl._playing  = true;
+        },
+
+        "stopUiAnim", [](Entity& e) {
+            if (!e.HasComponent<UIAnimPlayer>()) return;
+            e.GetComponent<UIAnimPlayer>()._playing = false;
+        },
+
+        // 任意時刻へシーク（0..duration）。再生中かどうかは変えない = 一時停止したまま
+        // スクラブしてポーズ絵を作る、といった使い方ができる。
+        "setUiAnimTime", [](Entity& e, float t) {
+            if (!e.HasComponent<UIAnimPlayer>()) return;
+            auto& pl = e.GetComponent<UIAnimPlayer>();
+            pl._time = pl._prevTime = (t > 0.0f) ? t : 0.0f;
+            pl._finished = false;
+        },
+
+        "setUiAnimSpeed", [](Entity& e, float speed) {
+            if (!e.HasComponent<UIAnimPlayer>()) return;
+            e.GetComponent<UIAnimPlayer>().speed = speed;
+        },
+
+        // --- スプライトシート連番アニメ(.spranim) ---
+        // 同じシーケンスを再指定しても頭から再生し直す（被弾モーションの連打など、
+        // 「もう一度頭から」が欲しい場面の方が多い）。
+        "playSprite", [](Entity& e, const std::string& seqName) {
+            auto& sa = e.GetOrAddComponent<SpriteAnimator>();
+            sa.currentSeq = seqName;
+            sa._time = 0.0f;
+            sa._finished = false;
+            sa._playing  = true;
+        },
+
+        "stopSprite", [](Entity& e) {
+            if (!e.HasComponent<SpriteAnimator>()) return;
+            e.GetComponent<SpriteAnimator>()._playing = false;
+        },
+
+        "setSpriteSheet", [](Entity& e, const std::string& sheetPath) {
+            auto& sa = e.GetOrAddComponent<SpriteAnimator>();
+            sa.sheetPath = sheetPath;
+            sa._time = 0.0f;
+            sa._finished = false;
+        },
+
         "getAnimCount", [](const Entity& e) -> int {
             if (!e.HasComponent<SkeletalAnimation>()) return 0;
             return static_cast<int>(e.GetComponent<SkeletalAnimation>().clips.size());

@@ -255,6 +255,11 @@ static void RegisterCoreComponentSerializers()
     R.Register(MakeReflectedInfo<UIScrollView>("UIScrollView", "uiScrollView", true));
     R.Register(MakeReflectedInfo<UILayout>("UILayout", "uiLayout", true));
     R.Register(MakeReflectedInfo<UIAnimator>("UIAnimator", "uiAnimator", true));
+    // タイムライン製クリップ(.uianim) / スプライトシート(.spranim) の再生器
+    R.Register(MakeReflectedInfo<UIAnimPlayer>("UIAnimPlayer", "uiAnimPlayer", true));
+    R.Register(MakeReflectedInfo<SpriteAnimator>("SpriteAnimator", "spriteAnimator", true));
+    // プレハブインスタンスの紐付け。.prefab 側へ書き出す時だけ StripPrefabLinks で落とす
+    R.Register(MakeReflectedInfo<PrefabLink>("PrefabLink", "prefabLink", true));
 
     // ---- カメラ: フィールドは反射で復元し、新規追加時だけアクティブカメラの重複防止を行う ----
     {
@@ -1691,12 +1696,209 @@ entt::entity SceneSerializer::InstantiateSubtree(Scene& scene, const std::string
     return created.empty() ? entt::null : created[0];
 }
 
+namespace
+{
+
+// .prefab へ書き出す JSON から PrefabLink を落とす。
+// 残すと「自分自身を指すプレハブ」ができ、展開のたびにリンクが二重になる。
+void StripPrefabLinks(json& prefabJson)
+{
+    if (!prefabJson.contains("entities") || !prefabJson["entities"].is_array()) return;
+    for (auto& ej : prefabJson["entities"])
+        if (ej.is_object()) ej.erase("prefabLink");
+}
+
+// assets ルートからの相対パスへ正規化（区切りは '/' に統一）。
+// assetsDir の外にあるファイルは絶対パスのまま返す（相対にできないため）。
+std::string ToAssetRelative(const std::string& absPath, const std::string& assetsDir)
+{
+    namespace fs = std::filesystem;
+    std::string abs  = fs::path(absPath).lexically_normal().string();
+    std::string base = fs::path(assetsDir).lexically_normal().string();
+    std::replace(abs.begin(), abs.end(), '\\', '/');
+    std::replace(base.begin(), base.end(), '\\', '/');
+    if (!base.empty() && base.back() != '/') base += '/';
+    return (abs.rfind(base, 0) == 0) ? abs.substr(base.size()) : abs;
+}
+
+// プレハブ JSON を読む（VFS 優先 → ディスクフォールバック。InstantiatePrefab と同じ順序）。
+bool ReadPrefabJson(const std::string& absPath, json& out)
+{
+    auto b = vfs::ReadAssetAbs(absPath);
+    if (b.empty())
+    {
+        std::ifstream ifs(absPath, std::ios::binary);
+        if (!ifs.is_open()) return false;
+        std::stringstream ss; ss << ifs.rdbuf();
+        const std::string s = ss.str();
+        b.assign(s.begin(), s.end());
+    }
+    out = json::parse(b.begin(), b.end(), nullptr, /*allow_exceptions=*/false);
+    return !out.is_discarded() && out.is_object() && out.contains("entities")
+        && out["entities"].is_array();
+}
+
+// エンティティ 1 個ぶんの JSON を比較して差分を積む。
+// name は展開時に連番が付くので比較しない（毎回全インスタンスが差分だらけになる）。
+// parent はローカル index なので構造が同じなら一致する = 比較対象に残してよい。
+void DiffEntityJson(const json& mine, const json& base, int index, const std::string& name,
+                    std::vector<SceneSerializer::PrefabOverride>& out)
+{
+    static const char* const kIgnored[] = {"name", "prefabLink"};
+    auto ignored = [&](const std::string& key)
+    {
+        for (const char* k : kIgnored) if (key == k) return true;
+        return false;
+    };
+
+    for (auto it = mine.begin(); it != mine.end(); ++it)
+    {
+        if (ignored(it.key())) continue;
+        const auto bit = base.find(it.key());
+        if (bit == base.end())
+        {
+            out.push_back({index, name, it.key(), "(追加)"});
+            continue;
+        }
+        if (*bit == it.value()) continue;
+
+        // コンポーネントがオブジェクトならフィールド単位まで降りる（どこを触ったか分かるように）
+        if (it.value().is_object() && bit->is_object())
+        {
+            for (auto f = it.value().begin(); f != it.value().end(); ++f)
+            {
+                const auto bf = bit->find(f.key());
+                if (bf == bit->end() || *bf != f.value())
+                    out.push_back({index, name, it.key(), f.key()});
+            }
+            // ベース側にしか無いフィールドは「消された」ではなく既定値化なので拾わない
+            // （反射シリアライズは既定値も必ず書くため、実際にはここへ来ない）
+        }
+        else
+        {
+            out.push_back({index, name, it.key(), "(値)"});
+        }
+    }
+    for (auto it = base.begin(); it != base.end(); ++it)
+    {
+        if (ignored(it.key())) continue;
+        if (!mine.contains(it.key())) out.push_back({index, name, it.key(), "(削除)"});
+    }
+}
+
+} // namespace
+
+bool SceneSerializer::ComputePrefabOverrides(const Scene& scene, entt::entity root,
+                                             const std::string& assetsDir,
+                                             std::vector<PrefabOverride>& out)
+{
+    out.clear();
+    const auto& reg = scene.GetRegistry();
+    if (!reg.valid(root) || !reg.all_of<PrefabLink>(root)) return false;
+
+    const std::string abs = assetsDir + reg.get<PrefabLink>(root).sourcePath;
+    json base;
+    if (!ReadPrefabJson(abs, base)) return false;
+
+    json mine = json::parse(SerializeSubtree(scene, root, assetsDir), nullptr, false);
+    if (mine.is_discarded() || !mine.contains("entities")) return false;
+
+    const auto& mineArr = mine["entities"];
+    const auto& baseArr = base["entities"];
+    const size_t n = (std::min)(mineArr.size(), baseArr.size());
+    for (size_t i = 0; i < n; ++i)
+    {
+        const std::string nm = mineArr[i].value("name", std::string("?"));
+        DiffEntityJson(mineArr[i], baseArr[i], static_cast<int>(i), nm, out);
+    }
+    // 要素数が違う = 子を足した/消した。フィールド差分より重い変更なので明示的に出す
+    for (size_t i = n; i < mineArr.size(); ++i)
+        out.push_back({static_cast<int>(i), mineArr[i].value("name", std::string("?")),
+                       "(構成)", "(子を追加)"});
+    for (size_t i = n; i < baseArr.size(); ++i)
+        out.push_back({static_cast<int>(i), baseArr[i].value("name", std::string("?")),
+                       "(構成)", "(子を削除)"});
+    return true;
+}
+
+bool SceneSerializer::ApplyPrefabInstance(const Scene& scene, entt::entity root,
+                                          const std::string& assetsDir)
+{
+    const auto& reg = scene.GetRegistry();
+    if (!reg.valid(root) || !reg.all_of<PrefabLink>(root)) return false;
+    const std::string rel = reg.get<PrefabLink>(root).sourcePath;
+    if (rel.empty()) return false;
+    return SavePrefab(scene, root, assetsDir + rel, assetsDir);
+}
+
+entt::entity SceneSerializer::RevertPrefabInstance(Scene& scene, entt::entity root,
+                                                   const std::string& assetsDir)
+{
+    auto& reg = scene.GetRegistry();
+    if (!reg.valid(root) || !reg.all_of<PrefabLink>(root)) return entt::null;
+    const std::string rel = reg.get<PrefabLink>(root).sourcePath;
+
+    // サブツリーの外側にいる親だけ引き継ぐ（戻した拍子に階層のトップへ飛ばさないため）。
+    // Transform や UIRect は「元に戻す」の意味どおりプレハブの値へ戻す（Unity と同じ）。
+    const entt::entity externalParent =
+        reg.all_of<Transform>(root) ? reg.get<Transform>(root).parent : entt::null;
+
+    // 先に新しい方を作る。失敗しても元のインスタンスが無傷で残るようにするため。
+    std::vector<entt::entity> created;
+    const entt::entity newRoot = InstantiatePrefab(scene, assetsDir + rel, assetsDir, &created);
+    if (newRoot == entt::null) return entt::null;
+
+    // 古いサブツリーを削除（Scene::Remove はカスケードしないので子から順に消す）
+    std::vector<entt::entity> old;
+    old.push_back(root);
+    for (size_t head = 0; head < old.size(); ++head)
+    {
+        for (auto [child, tf] : reg.view<const Transform>().each())
+            if (tf.parent == old[head]
+                && std::find(old.begin(), old.end(), child) == old.end())
+                old.push_back(child);
+    }
+    for (auto it = old.rbegin(); it != old.rend(); ++it)
+        if (reg.valid(*it)) reg.destroy(*it);
+
+    if (externalParent != entt::null && reg.valid(externalParent)
+        && reg.all_of<Transform>(newRoot))
+        reg.get<Transform>(newRoot).parent = externalParent;
+
+    return newRoot;
+}
+
+int SceneSerializer::RefreshPrefabInstances(Scene& scene, const std::string& sourcePath,
+                                            const std::string& assetsDir, entt::entity except)
+{
+    auto& reg = scene.GetRegistry();
+    // Revert は destroy/create するのでビューを回しながらだと壊れる。先に対象を集める
+    std::vector<entt::entity> targets;
+    for (auto [e, link] : reg.view<const PrefabLink>().each())
+        if (link.sourcePath == sourcePath && e != except) targets.push_back(e);
+
+    int n = 0;
+    for (entt::entity e : targets)
+        if (reg.valid(e) && RevertPrefabInstance(scene, e, assetsDir) != entt::null) ++n;
+    return n;
+}
+
 bool SceneSerializer::SavePrefab(const Scene& scene, entt::entity root,
                                  const std::string& filePath, const std::string& assetsDir)
 {
     namespace fs = std::filesystem;
     std::string s = SerializeSubtree(scene, root, assetsDir);
     if (s.empty()) return false;
+
+    // 自己参照リンクを落としてから書く（下の StripPrefabLinks のコメント参照）
+    {
+        json j = json::parse(s, nullptr, /*allow_exceptions=*/false);
+        if (!j.is_discarded())
+        {
+            StripPrefabLinks(j);
+            s = j.dump(2);
+        }
+    }
 
     fs::path dir = fs::path(filePath).parent_path();
     if (!dir.empty()) fs::create_directories(dir);
@@ -1717,19 +1919,35 @@ entt::entity SceneSerializer::InstantiatePrefab(Scene& scene, const std::string&
                                                 std::vector<entt::entity>* outAll)
 {
     // VFS 経由で読む（ゲームモード: pak 復号。エディタ: ディスク）。
+    std::string jsonStr;
     auto b = vfs::ReadAssetAbs(filePath);
     if (!b.empty())
-        return InstantiateSubtree(scene, std::string(b.begin(), b.end()), assetsDir, outAll);
-
-    // ディスクフォールバック
-    std::ifstream ifs(filePath, std::ios::binary);
-    if (!ifs.is_open())
     {
-        Logger::Error("プレハブを開けません: {}", filePath);
-        return entt::null;
+        jsonStr.assign(b.begin(), b.end());
     }
-    std::stringstream ss; ss << ifs.rdbuf();
-    return InstantiateSubtree(scene, ss.str(), assetsDir, outAll);
+    else
+    {
+        // ディスクフォールバック
+        std::ifstream ifs(filePath, std::ios::binary);
+        if (!ifs.is_open())
+        {
+            Logger::Error("プレハブを開けません: {}", filePath);
+            return entt::null;
+        }
+        std::stringstream ss; ss << ifs.rdbuf();
+        jsonStr = ss.str();
+    }
+
+    const entt::entity root = InstantiateSubtree(scene, jsonStr, assetsDir, outAll);
+    // 元 .prefab への紐付けをルートへ張る（Apply/Revert/差分表示はこれが起点）。
+    // ここで一括して付けるので、エディタ D&D / MCP / ネットワーク spawn のどの経路でも効く。
+    if (root != entt::null)
+    {
+        auto& reg = scene.GetRegistry();
+        if (reg.valid(root))
+            reg.emplace_or_replace<PrefabLink>(root, PrefabLink{ToAssetRelative(filePath, assetsDir)});
+    }
+    return root;
 }
 
 } // namespace dx12e

@@ -13,6 +13,8 @@ add_library(Editor STATIC
     panels/McpBridgePanel.cpp
     panels/VfxEditorPanel.cpp
     panels/UiEditorPanel.cpp
+    panels/AnimationEditorPanel.cpp
+    panels/SpriteSheetEditorPanel.cpp
     panels/NetworkPanel.cpp
     panels/MaterialEditorPanel.cpp
     panels/MaterialLibraryPanel.cpp
@@ -20,7 +22,8 @@ add_library(Editor STATIC
 )
 
 target_include_directories(Editor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
-target_link_libraries(Editor PUBLIC Core Scene ECS Renderer Gui Resource Audio Physics)
+# Ui: UiAnimRuntime（.uianim/.spranim のロードと ECS への適用）をアニメ系パネルが使う
+target_link_libraries(Editor PUBLIC Core Scene ECS Renderer Gui Resource Audio Physics Ui)
 
 # MCP / AI Bridge パネルの接続コマンド表示用フォールバックパス。
 # 通常はパネルが exe を基準に tools/mcp-server を「実行時」解決する（別 PC・フォルダ移動でも有効）。

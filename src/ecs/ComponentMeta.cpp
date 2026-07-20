@@ -191,7 +191,10 @@ void RegisterCoreComponentMeta()
         .data<&UIRect::order>("order")
         .data<&UIRect::rotation>("rotation")
         .data<&UIRect::skewX>("skewX")
-        .data<&UIRect::clipChildren>("clipChildren");
+        .data<&UIRect::clipChildren>("clipChildren")
+        .data<&UIRect::scaleX>("scaleX")
+        .data<&UIRect::scaleY>("scaleY")
+        .data<&UIRect::alpha>("alpha");
 
     entt::meta_factory<UIImage>{}
         .type("UIImage")
@@ -315,6 +318,27 @@ void RegisterCoreComponentMeta()
         .data<&UIAnimator::loopAnim>("loopAnim")
         .data<&UIAnimator::loopSpeed>("loopSpeed")
         .data<&UIAnimator::loopAmount>("loopAmount");
+
+    // UIAnimPlayer / SpriteAnimator: 再生位置や _cur* は毎フレーム作り直す状態なので登録しない
+    entt::meta_factory<UIAnimPlayer>{}
+        .type("UIAnimPlayer")
+        .data<&UIAnimPlayer::clipPath>("clipPath")
+        .data<&UIAnimPlayer::playOnStart>("playOnStart")
+        .data<&UIAnimPlayer::loop>("loop")
+        .data<&UIAnimPlayer::speed>("speed")
+        .data<&UIAnimPlayer::finishEvent>("finishEvent");
+
+    entt::meta_factory<SpriteAnimator>{}
+        .type("SpriteAnimator")
+        .data<&SpriteAnimator::sheetPath>("sheetPath")
+        .data<&SpriteAnimator::currentSeq>("currentSeq")
+        .data<&SpriteAnimator::playOnStart>("playOnStart")
+        .data<&SpriteAnimator::speed>("speed")
+        .data<&SpriteAnimator::applyTexture>("applyTexture");
+
+    entt::meta_factory<PrefabLink>{}
+        .type("PrefabLink")
+        .data<&PrefabLink::sourcePath>("sourcePath");
 }
 
 } // namespace dx12e

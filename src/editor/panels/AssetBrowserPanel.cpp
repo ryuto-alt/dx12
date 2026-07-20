@@ -147,6 +147,8 @@ const char* AssetBrowserPanel::GetTypeIcon(AssetType type)
     case AssetType::Prefab:  return "Prefab";
     case AssetType::Shader:  return "Shader";
     case AssetType::Material: return "Material";
+    case AssetType::UiAnim:  return "UiAnim";
+    case AssetType::SpriteSheet: return "SpriteSheet";
     default:                 return "File";
     }
 }
@@ -165,6 +167,8 @@ static ImVec4 AssetTypeColor(int type)
     case 6: return ImVec4(0.55f, 0.85f, 0.95f, 1.0f);  // Prefab
     case 7: return ImVec4(0.75f, 0.45f, 0.95f, 1.0f);  // Shader
     case 8: return ImVec4(0.95f, 0.65f, 0.20f, 1.0f);  // Material
+    case 9: return ImVec4(0.95f, 0.45f, 0.70f, 1.0f);  // UiAnim（アニメ系はピンク寄りで統一）
+    case 10: return ImVec4(0.98f, 0.60f, 0.40f, 1.0f); // SpriteSheet
     default: return ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
     }
 }
@@ -665,7 +669,8 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                 if (!entry.isDirectory &&
                     (entry.type == AssetType::Model || entry.type == AssetType::Texture ||
                      entry.type == AssetType::Script || entry.type == AssetType::Prefab ||
-                     entry.type == AssetType::Material))
+                     entry.type == AssetType::Material || entry.type == AssetType::UiAnim ||
+                     entry.type == AssetType::SpriteSheet))
                 {
                     if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
                     {
@@ -743,6 +748,16 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                     {
                         ctx.pendingOpenMaterialPath = entry.path.string();
                         ctx.showMaterialEditor = true;
+                    }
+                    else if (entry.type == AssetType::UiAnim)
+                    {
+                        ctx.pendingOpenUiAnimPath = entry.path.string();
+                        ctx.showAnimEditor = true;
+                    }
+                    else if (entry.type == AssetType::SpriteSheet)
+                    {
+                        ctx.pendingOpenSpriteSheetPath = entry.path.string();
+                        ctx.showSpriteSheetEditor = true;
                     }
                 }
 
@@ -1028,6 +1043,10 @@ AssetBrowserPanel::AssetType AssetBrowserPanel::ClassifyExtension(const std::str
         return AssetType::Prefab;
     if (ext == ".dxmat")
         return AssetType::Material;
+    if (ext == ".uianim")
+        return AssetType::UiAnim;
+    if (ext == ".spranim")
+        return AssetType::SpriteSheet;
     return AssetType::Other;
 }
 

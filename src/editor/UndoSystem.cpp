@@ -123,6 +123,45 @@ void SpawnPrefabCommand::Redo()
         reg.get<Transform>(m_entities[0]).parent = m_externalParent;
 }
 
+// ── PrefabRevertCommand ──
+namespace
+{
+// サブツリーを丸ごと差し替える共通処理。
+// 「消す前に今の姿を JSON 化 → 子から順に削除 → 与えられた JSON を展開 → 外部親を復元」
+// という Undo/Redo 対称の手順を 1 箇所にまとめたもの。
+void SwapSubtree(Scene* scene, const std::string& assetsDir, const std::string& incomingJson,
+                 std::string& outCapturedJson, std::vector<entt::entity>& entities,
+                 entt::entity externalParent)
+{
+    auto& reg = scene->GetRegistry();
+    if (!entities.empty() && reg.valid(entities[0]))
+        outCapturedJson = SceneSerializer::SerializeSubtree(*scene, entities[0], assetsDir);
+
+    for (auto it = entities.rbegin(); it != entities.rend(); ++it)
+        if (reg.valid(*it)) scene->Remove(Entity(*it, &reg));
+    entities.clear();
+
+    if (incomingJson.empty()) return;
+    std::vector<entt::entity> all;
+    SceneSerializer::InstantiateSubtree(*scene, incomingJson, assetsDir, &all);
+    entities = std::move(all);
+
+    if (!entities.empty() && reg.valid(entities[0]) && externalParent != entt::null
+        && reg.valid(externalParent) && reg.all_of<Transform>(entities[0]))
+        reg.get<Transform>(entities[0]).parent = externalParent;
+}
+} // namespace
+
+void PrefabRevertCommand::Undo()
+{
+    SwapSubtree(m_scene, m_assetsDir, m_before, m_after, m_entities, m_externalParent);
+}
+
+void PrefabRevertCommand::Redo()
+{
+    SwapSubtree(m_scene, m_assetsDir, m_after, m_before, m_entities, m_externalParent);
+}
+
 // ── ModelSwapCommand ──
 void ModelSwapCommand::Swap(const std::string& path)
 {

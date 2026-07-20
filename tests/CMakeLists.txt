@@ -60,6 +60,28 @@ else()
 endif()
 add_test(NAME SpriteAnimTests COMMAND SpriteAnimTests)
 
+# UIアニメクリップ(animation/UiAnimAsset.h)の評価テスト。
+# 評価とイージングは純関数(nlohmann も entt も要らない)なのでスタンドアロンでも動く。
+add_executable(UiAnimTests ui_anim_test.cpp)
+target_include_directories(UiAnimTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(UiAnimTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(UiAnimTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME UiAnimTests COMMAND UiAnimTests)
+
+# スプライトシート(animation/SpriteAnimAsset.h)の任意セル順/可変フレーム長の畳み込みテスト。
+# こちらも純関数・依存ゼロ。
+add_executable(SpriteAnimAssetTests sprite_anim_asset_test.cpp)
+target_include_directories(SpriteAnimAssetTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(SpriteAnimAssetTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(SpriteAnimAssetTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME SpriteAnimAssetTests COMMAND SpriteAnimAssetTests)
+
 # OGG Vorbis デコード(third_party/stb_vorbis.c、AudioClip .ogg 対応の土台)テスト。
 # 埋め込み OGG(ogg_test_data.h)をメモリからデコードして PCM 長を確認する。依存ゼロ。
 # stb_vorbis はサードパーティ実装をそのまま取り込むため、警告のエラー化はしない。
