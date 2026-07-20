@@ -21,12 +21,16 @@ $engineRepo = Split-Path -Parent (Split-Path -Parent $here)
 git -C $work config user.name  (git -C $engineRepo config user.name)
 git -C $work config user.email (git -C $engineRepo config user.email)
 
-# 配布対象ファイルをミラー（node_modules / ログ / .git は除外）
-$files = @("index.ts", "engineClient.ts", "test.ts", "package.json", "package-lock.json",
-           "install.ps1", "install.sh", "README.md", "AGENTS.md", ".mcp.json.example", ".gitignore")
-foreach ($f in $files) {
-  Copy-Item (Join-Path $here $f) -Destination $work -Force
+# 配布対象ファイルをミラー（node_modules / ログ / .git / publish.ps1 自身は除外）
+# ponytail: 列挙やなくglob。ファイル追加したのにここに書き忘れる事故(ui*.ts 漏れ)を防ぐ。
+$files = Get-ChildItem $here -File -Force | Where-Object {
+  $_.Name -ne "publish.ps1" -and
+  ($_.Extension -in ".ts", ".json", ".ps1", ".sh", ".md" -or $_.Name -in ".mcp.json.example", ".gitignore")
 }
+foreach ($f in $files) {
+  Copy-Item $f.FullName -Destination $work -Force
+}
+Write-Host ("同期対象: " + ($files.Name -join ", "))
 
 git -C $work add -A
 if (git -C $work status --porcelain) {
