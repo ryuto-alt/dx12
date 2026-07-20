@@ -27,6 +27,26 @@ if (-not (Test-Path (Join-Path $srcDir "DX12Engine.exe"))) {
   Write-Error "build\release\DX12Engine.exe が無い。先に build_release.bat を実行してや。"
 }
 
+# --- 再コンパイル漏れ(stale obj)検査 ---
+# v1.4.2 と v1.4.4 の 2 度、「ヘッダー変更後に一部 .obj だけ ninja が再コンパイルを
+# 取りこぼした混成 exe」を配布する事故が起きた(構造体レイアウト不一致で即クラッシュ)。
+# ここでは src/ 以下の最新ソース更新時刻より古い .obj が build\release に残っていたら
+# パッケージを中断する。誤検知(git checkout での mtime 更新など)でも、クリーン
+# ビルドし直せば必ず通る=安全側に倒す。
+# .cpp は自 TU の直接依存なので ninja が取りこぼさない。事故るのは「ヘッダー変更 →
+# それを include する他 TU の再コンパイル漏れ」なので、比較対象はヘッダーの最新時刻のみ。
+$newestSrc = Get-ChildItem (Join-Path $repoRoot "src") -Recurse -Include *.h, *.hpp |
+  Sort-Object LastWriteTime -Descending | Select-Object -First 1
+$staleObjs = Get-ChildItem $srcDir -Recurse -Filter *.obj |
+  Where-Object { $_.LastWriteTime -lt $newestSrc.LastWriteTime }
+if ($staleObjs) {
+  $names = ($staleObjs | Select-Object -First 8 | ForEach-Object Name) -join ", "
+  Write-Error ("再コンパイル漏れの疑い: 最新ヘッダー ($($newestSrc.Name) " +
+    "$($newestSrc.LastWriteTime)) より古い .obj が $($staleObjs.Count) 個ある ($names ...)。" +
+    " build\release を削除してクリーンビルドしてからやり直してや。")
+}
+Write-Host "stale obj 検査 OK (全 obj が最新ソース以降にコンパイル済み)" -ForegroundColor Green
+
 # --- ビルド済み exe の版がソースと一致するか検証 ---
 # 過去に Version 変更後の再コンパイルを VS が一部 obj で取りこぼし、「自分を旧版と思い込む
 # Updater」入りの exe を配布 → 自動更新が無限ループする事故があった（v1.2.2〜v1.4.2）。
