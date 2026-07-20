@@ -468,6 +468,20 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
             {
                 ej["uvTiling"] = {{"u", mr.uvScaleU}, {"v", mr.uvScaleV}};
             }
+
+            // UV スクロール（既定 0 のときは書かない）
+            if (mr.uvScrollU != 0.0f || mr.uvScrollV != 0.0f)
+            {
+                ej["uvScroll"] = {{"u", mr.uvScrollU}, {"v", mr.uvScrollV}};
+            }
+
+            // 連番アニメ（無効時は書かない）
+            if (mr.animFrames > 0)
+            {
+                ej["flipbook"] = {{"frames", mr.animFrames}, {"fps", mr.animFps},
+                                  {"cols",   mr.animCols},   {"row", mr.animRow},
+                                  {"rows",   mr.animRows},   {"mode", mr.animMode}};
+            }
         }
 
         if (reg.all_of<GridPlane>(entity))
@@ -1056,6 +1070,28 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                 }
             }
 
+            // UV スクロール復元（頂点は触らないのでロード時の再構築は不要）
+            if (ej.contains("uvScroll") && reg.all_of<MeshRenderer>(e))
+            {
+                const auto& sj = ej["uvScroll"];
+                auto& mr = reg.get<MeshRenderer>(e);
+                mr.uvScrollU = sj.value("u", 0.0f);
+                mr.uvScrollV = sj.value("v", 0.0f);
+            }
+
+            // 連番アニメ復元
+            if (ej.contains("flipbook") && reg.all_of<MeshRenderer>(e))
+            {
+                const auto& fj = ej["flipbook"];
+                auto& mr = reg.get<MeshRenderer>(e);
+                mr.animFrames = fj.value("frames", 0);
+                mr.animFps    = fj.value("fps",    8.0f);
+                mr.animCols   = fj.value("cols",   0);
+                mr.animRow    = fj.value("row",    0);
+                mr.animRows   = fj.value("rows",   0);
+                mr.animMode   = fj.value("mode",   0);
+            }
+
             // カスタムシェーダー割当復元
             if (ej.contains("shader") && reg.all_of<MeshRenderer>(e))
             {
@@ -1231,6 +1267,29 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
 
         if (reg.all_of<Transform>(e))
             reg.get<Transform>(e).parent = parent;
+    }
+
+    // 3パス目: 親子グラフの正規化。相互参照(A→B→A 等)のサイクルが成立していると、
+    // 削除時のサブツリー収集や祖先走査が無限ループ/無限膨張するため、検出したら
+    // そのエンティティをルートへ切り離す（旧バージョンで保存された壊れたデータ対策）。
+    for (entt::entity e : created)
+    {
+        if (e == entt::null || !reg.all_of<Transform>(e)) continue;
+        int depth = 0;
+        entt::entity cur = reg.get<Transform>(e).parent;
+        while (cur != entt::null && depth < 4096)
+        {
+            if (cur == e) break;   // 自分に戻ってきた = サイクル
+            auto* t = reg.try_get<Transform>(cur);
+            cur = t ? t->parent : entt::null;
+            ++depth;
+        }
+        if (cur == e || depth >= 4096)
+        {
+            Logger::Warn("親子関係にサイクルを検出したため、エンティティ {} をルートへ切り離しました",
+                         static_cast<u32>(e));
+            reg.get<Transform>(e).parent = entt::null;
+        }
     }
 
     return true;
@@ -1597,17 +1656,30 @@ entt::entity SceneSerializer::InstantiateSubtree(Scene& scene, const std::string
     created.reserve(root["entities"].size());
     for (const auto& ej : root["entities"])
     {
-        json copy = ej;
-        copy["name"] = MakeUniqueName(scene, ej.value("name", std::string("Unnamed")));
-        created.push_back(InstantiateEntityJson(scene, copy, assetsDir));
+        entt::entity e = entt::null;
+        try
+        {
+            json copy = ej;
+            copy["name"] = MakeUniqueName(scene, ej.value("name", std::string("Unnamed")));
+            e = InstantiateEntityJson(scene, copy, assetsDir);
+        }
+        catch (const std::exception& ex)
+        {
+            Logger::Error("サブツリーのエンティティ [{}] をスキップしました（値不正）: {}",
+                          created.size(), ex.what());
+        }
+        created.push_back(e);
     }
 
     // 2パス目: 親子関係の復元（root はサブツリー外の親を持たない）
+    // parent は ApplySceneJson と同じく整数型チェックしてから読む（旧データで
+    // null/文字列が入っていると get<int> が type_error を投げてフレーム境界処理ごと落ちる）
     size_t idx = 0;
     for (const auto& ej : root["entities"])
     {
         entt::entity e = created[idx++];
-        if (e == entt::null || !ej.contains("parent")) continue;
+        if (e == entt::null || !ej.is_object() || !ej.contains("parent")) continue;
+        if (!ej["parent"].is_number_integer()) continue;
         int p = ej["parent"].get<int>();
         if (p < 0 || p >= static_cast<int>(created.size())) continue;
         entt::entity parent = created[static_cast<size_t>(p)];

@@ -15,6 +15,7 @@
 #include "ecs/Components.h"
 #include "ui/UiRichText.h"   // isUiTypewriterDone: rich=true のタグ除去後文字数
 #include "renderer/Mesh.h"
+#include "renderer/SpriteAnim.h"   // isSpriteAnimDone/isUiAnimDone: 連番の単発終了判定
 #include "renderer/ParticleSystem.h"
 #include "renderer/GpuParticleSystem.h"
 #include "input/InputSystem.h"
@@ -435,6 +436,7 @@ void ScriptEngine::RegisterBindings()
         },
         // Sprite2D のフリップブックアニメを設定(frames=0 で停止し uvMin/uvMax 指定に戻る)。
         // cols=0 は frames と同じ(横1行ストリップ)、row はシート内の行(walk行/jump行等)。
+        // 呼ぶたび再生位置が頭に戻る = 攻撃モーション等の切替がこれ1発で書ける。
         "setSpriteAnim", [](Scene& s, Entity& e, int frames, float fps, int cols, int row) {
             auto& reg = s.GetRegistry();
             if (!reg.all_of<Sprite2D>(e.GetHandle())) return;
@@ -443,6 +445,67 @@ void ScriptEngine::RegisterBindings()
             sp.animFps    = fps;
             sp.animCols   = cols;
             sp.animRow    = row;
+            sp._animT     = 0.0f;
+        },
+        // Sprite2D の再生モードを設定(0=ループ 1=単発(最終フレームで停止) 2=往復)。
+        // 再生位置は頭に戻る。
+        "setSpriteAnimMode", [](Scene& s, Entity& e, int mode) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<Sprite2D>(e.GetHandle())) return;
+            auto& sp = reg.get<Sprite2D>(e.GetHandle());
+            sp.animMode = mode;
+            sp._animT   = 0.0f;
+        },
+        // Sprite2D の連番アニメを頭から再生し直す(設定は変えない)。
+        "restartSpriteAnim", [](Scene& s, Entity& e) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<Sprite2D>(e.GetHandle())) return;
+            reg.get<Sprite2D>(e.GetHandle())._animT = 0.0f;
+        },
+        // 単発(animMode=1)の再生が終わったか。ループ/往復は常に false。
+        // 爆発スプライトを消す/次の行動へ進む判定に使う。
+        "isSpriteAnimDone", [](Scene& s, Entity& e) -> bool {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<Sprite2D>(e.GetHandle())) return false;
+            const auto& sp = reg.get<Sprite2D>(e.GetHandle());
+            return IsFlipbookFinished(sp.animFrames, sp.animFps, sp.animMode, sp._animT);
+        },
+        // --- メッシュ(3D)の UVスクロール / 連番アニメ ---
+        // MeshRenderer の UVスクロール速度(uv/秒)。滝・溶岩・コンベア・流れる雲。
+        // 頂点は触らないので毎フレーム呼んでも安価(VB再生成なし)。
+        "setMeshUvScroll", [](Scene& s, Entity& e, float su, float sv) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<MeshRenderer>(e.GetHandle())) return;
+            auto& mr = reg.get<MeshRenderer>(e.GetHandle());
+            mr.uvScrollU = su;
+            mr.uvScrollV = sv;
+        },
+        // MeshRenderer の連番アニメを設定(frames=0 で停止)。呼ぶたび再生位置が頭に戻る。
+        // cols=0 は frames と同じ(横1行ストリップ)、row はシート内の行。
+        "setMeshAnim", [](Scene& s, Entity& e, int frames, float fps, int cols, int row) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<MeshRenderer>(e.GetHandle())) return;
+            auto& mr = reg.get<MeshRenderer>(e.GetHandle());
+            mr.animFrames = frames;
+            mr.animFps    = fps;
+            mr.animCols   = cols;
+            mr.animRow    = row;
+            mr._animT     = 0.0f;
+        },
+        // MeshRenderer の再生モード(0=ループ 1=単発 2=往復)。再生位置は頭に戻る。
+        "setMeshAnimMode", [](Scene& s, Entity& e, int mode) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<MeshRenderer>(e.GetHandle())) return;
+            auto& mr = reg.get<MeshRenderer>(e.GetHandle());
+            mr.animMode = mode;
+            mr._animT   = 0.0f;
+        },
+        // MeshRenderer の連番アニメが単発再生を終えたか。
+        "isMeshAnimDone", [](Scene& s, Entity& e) -> bool {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<MeshRenderer>(e.GetHandle())) return false;
+            const auto& mr = reg.get<MeshRenderer>(e.GetHandle());
+            return IsFlipbookFinished(mr.animFrames, mr.animFps, mr.animMode, mr._animT);
         },
         // --- ゲーム内UI（retained-mode）: スコア表示・HPバー等をスクリプトから書き換える ---
         // UIText::text を書き換える(スコア・残機・メッセージ)。UIText が無ければ何もしない。
@@ -515,6 +578,46 @@ void ScriptEngine::RegisterBindings()
             auto& reg = s.GetRegistry();
             if (!reg.all_of<UIImage>(e.GetHandle())) return;
             reg.get<UIImage>(e.GetHandle()).texturePath = path;
+        },
+        // UIImage の UVスクロール速度(uv/秒)。タイル(uvMax>1)と併用で流れるパターンになる。
+        // 連番アニメ(animFrames>0)中は無視される。
+        "setUiUvScroll", [](Scene& s, Entity& e, float su, float sv) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIImage>(e.GetHandle())) return;
+            reg.get<UIImage>(e.GetHandle()).uvScroll = {su, sv};
+        },
+        // UIImage の連番アニメを設定(frames=0 で停止し uvMin/uvMax 指定に戻る)。
+        // 呼ぶたび再生位置が頭に戻る。cols=0 は frames と同じ(横1行ストリップ)。
+        "setUiAnim", [](Scene& s, Entity& e, int frames, float fps, int cols, int row) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIImage>(e.GetHandle())) return;
+            auto& img = reg.get<UIImage>(e.GetHandle());
+            img.animFrames = frames;
+            img.animFps    = fps;
+            img.animCols   = cols;
+            img.animRow    = row;
+            img._animT     = 0.0f;
+        },
+        // UIImage の再生モード(0=ループ 1=単発 2=往復)。再生位置は頭に戻る。
+        "setUiAnimMode", [](Scene& s, Entity& e, int mode) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIImage>(e.GetHandle())) return;
+            auto& img = reg.get<UIImage>(e.GetHandle());
+            img.animMode = mode;
+            img._animT   = 0.0f;
+        },
+        // UIImage の連番アニメを頭から再生し直す(設定は変えない)。
+        "restartUiAnim", [](Scene& s, Entity& e) {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIImage>(e.GetHandle())) return;
+            reg.get<UIImage>(e.GetHandle())._animT = 0.0f;
+        },
+        // UIImage の連番アニメが単発再生を終えたか(ループ/往復は常に false)。
+        "isUiAnimDone", [](Scene& s, Entity& e) -> bool {
+            auto& reg = s.GetRegistry();
+            if (!reg.all_of<UIImage>(e.GetHandle())) return false;
+            const auto& img = reg.get<UIImage>(e.GetHandle());
+            return IsFlipbookFinished(img.animFrames, img.animFps, img.animMode, img._animT);
         },
         // UIImage::fillAmount を設定する(0..1 にクランプ。HPバー/ゲージ用)。UIImage が無ければ何もしない。
         "setUiFill", [](Scene& s, Entity& e, float amount) {
@@ -2527,8 +2630,42 @@ void ScriptEngine::ParsePropertySchema(const std::string& scriptPath,
     // "properties" を含まないスクリプト（旧来のコントローラ等）は実行しない＝副作用ゼロ。
     if (code.find("properties") == std::string::npos) return;
 
-    // 独立した環境で実行し properties テーブルだけ読む（グローバルへフォールバックするが書込は env 内）。
-    sol::environment env(*m_lua, sol::create, m_lua->globals());
+    // 独立した環境で実行し properties テーブルだけ読む。エンジン API(scene/fx/net 等)は
+    // 意図的に見せない: この解析はエディタ中(Play 外)にも走るため、トップレベルで
+    // エンジン API を呼ぶスクリプトを本物のグローバルへフォールバックさせると、
+    // 未初期化サブシステム経由のネイティブクラッシュを踏み得る。純関数ライブラリと
+    // スカラー定数(KEY_* 等)だけを写した砂箱で実行し、それ以外の呼び出しは
+    // Lua エラー → 下の警告ログに落とす。
+    sol::environment env(*m_lua, sol::create);
+    {
+        static const char* kSafeLibs[] = { "math", "string", "table", "pairs", "ipairs",
+                                           "tostring", "tonumber", "type", "select", "next",
+                                           "unpack", "rawget", "rawset", "setmetatable",
+                                           "getmetatable", "error", "pcall" };
+        sol::table g = m_lua->globals();
+        for (const char* k : kSafeLibs)
+        {
+            sol::object o = g[k];
+            if (o.valid()) env[k] = o;
+        }
+        // 数値/文字列/bool のグローバル定数(KEY_A 等)はそのまま見せる
+        for (auto& [key, value] : g)
+        {
+            const sol::type t = value.get_type();
+            if (t == sol::type::number || t == sol::type::string || t == sol::type::boolean)
+                env[key] = value;
+        }
+        env["print"] = [](sol::variadic_args va) {
+            std::string line;
+            for (auto v : va)
+            {
+                if (!line.empty()) line += "\t";
+                line += v.get<sol::object>().is<std::string>()
+                        ? v.get<std::string>() : std::string("(non-string)");
+            }
+            Logger::Info("[lua properties] {}", line);
+        };
+    }
     auto r = m_lua->safe_script(code, env, sol::script_pass_on_error);
     if (!r.valid())
     {

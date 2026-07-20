@@ -73,6 +73,37 @@ static void TestFlipbookDefaultFps()
     CHECK(Near(r.u0, 0.25f) && Near(r.u1, 0.5f));
 }
 
+// 再生モード: once は最終フレームで停止、pingpong は 0..n-1..0 で往復
+static void TestFlipbookModes()
+{
+    // once: 4フレーム 8fps。t=0/0.125/0.375 は素直に進み、t>=0.5 は frame 3 で止まる
+    CHECK(ComputeFlipbookFrame(4, 8.0f, kFlipbookOnce, 0.0f) == 0);
+    CHECK(ComputeFlipbookFrame(4, 8.0f, kFlipbookOnce, 0.375f) == 3);
+    CHECK(ComputeFlipbookFrame(4, 8.0f, kFlipbookOnce, 0.5f) == 3);
+    CHECK(ComputeFlipbookFrame(4, 8.0f, kFlipbookOnce, 100.0f) == 3);
+    CHECK(ComputeFlipbookFrame(4, 8.0f, kFlipbookOnce, -1.0f) == 0);
+
+    // once の終了判定
+    CHECK(!IsFlipbookFinished(4, 8.0f, kFlipbookOnce, 0.375f));
+    CHECK(IsFlipbookFinished(4, 8.0f, kFlipbookOnce, 0.5f));
+    CHECK(!IsFlipbookFinished(4, 8.0f, kFlipbookLoop, 100.0f));   // ループは永遠に終わらない
+
+    // pingpong: 4フレームなら周期 6 → 0,1,2,3,2,1, 0,1,..
+    const int expect[7] = {0, 1, 2, 3, 2, 1, 0};
+    for (int i = 0; i < 7; ++i)
+        CHECK(ComputeFlipbookFrame(4, 8.0f, kFlipbookPingPong, i * 0.125f) == expect[i]);
+
+    // pingpong で 1 フレームしかない場合は常に frame 0（ゼロ除算/負周期にしない）
+    CHECK(ComputeFlipbookFrame(1, 8.0f, kFlipbookPingPong, 3.0f) == 0);
+
+    // ループ既定は従来どおり
+    CHECK(ComputeFlipbookFrame(4, 8.0f, kFlipbookLoop, 0.5f) == 0);
+
+    // Ex 版の UV は frame → セル変換が同じ（pingpong で frame 2 = 列2）
+    SpriteUvRect r = ComputeFlipbookUvEx(4, 8.0f, 0, 0, 0, kFlipbookPingPong, 0.5f);
+    CHECK(Near(r.u0, 0.5f) && Near(r.u1, 0.75f));
+}
+
 // UVスクロール: min/max 双方に同じオフセット（矩形サイズ不変）、[0,1) 折り返し
 static void TestScroll()
 {
@@ -102,6 +133,7 @@ int main()
     TestFlipbookGrid();
     TestFlipbookRowSelect();
     TestFlipbookDefaultFps();
+    TestFlipbookModes();
     TestScroll();
 
     std::printf("SpriteAnimTests: %d checks, %d failures\n", g_checks, g_failures);

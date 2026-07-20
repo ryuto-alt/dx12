@@ -22,7 +22,7 @@ public:
     static constexpr u32 kSlotSRVTable     = 2;  // DescriptorTable t0,t1,t2 (albedo, normal, metalRoughness)
     static constexpr u32 kSlotBonesSRV     = 3;  // DescriptorTable t3 (bones)
     static constexpr u32 kSlotShadowSRV    = 4;  // DescriptorTable t4 (shadow map)
-    static constexpr u32 kSlotPBRMaterial  = 5;  // RootConstants b2 (4 DWORD: metallic, roughness, flags, pad)
+    static constexpr u32 kSlotPBRMaterial  = 5;  // RootConstants b2 (8 DWORD: metallic, roughness, flags, pad, uvScaleOffset.xyzw)
     static constexpr u32 kSlotIBLTable     = 6;  // DescriptorTable t5,t6,t7 (irradiance, prefiltered, brdfLUT)
     static constexpr u32 kSlotAOSRV        = 7;  // DescriptorTable t8 (SSAO ao, screen-space)
     static constexpr u32 kSlotPunctualShadowSRV = 8;  // DescriptorTable t9,t10 (spot shadow array, point shadow cube array)

@@ -81,9 +81,30 @@ struct MeshRenderer
     float overrideMetallic  = -1.0f;  // < 0 = Material の値を使う
     float overrideRoughness = -1.0f;
 
-    // UV タイリング
+    // UV タイリング（頂点バッファへ焼き込む方式。値を変えると Mesh::ApplyUVScale で VB を作り直す）
     float uvScaleU = 1.0f;
     float uvScaleV = 1.0f;
+
+    // --- UVスクロール(uv/秒)。滝・溶岩・コンベア・流れる雲など。頂点は触らず、シェーダーの
+    // b2 ルート定数 uvScaleOffset に毎フレーム値を積むだけなので VB 再生成は起きない。
+    // uvScaleU/V(タイリング)とは併用できる(タイル済みの UV の上をスクロールする)。
+    // 既定 Forward / ForwardSkinned で効く。カスタムシェーダーは自前で b2 を読む必要がある。
+    // Lua `scene:setMeshUvScroll(entity, u, v)`
+    float uvScrollU = 0.0f;
+    float uvScrollV = 0.0f;
+
+    // --- 連番アニメ(スプライトシート)。animFrames>0 で有効。アルベドを animCols x N グリッドと
+    // みなし frame = floor(t*animFps) のセルだけを UV に写す(炎/水しぶき/爆発の板ポリ、
+    // アニメする看板やモニタ)。有効時は uvScaleU/V と uvScrollU/V より優先される。
+    // UV 計算は Sprite2D/UIImage と同じ renderer/SpriteAnim.h の純関数。Lua `scene:setMeshAnim`
+    int   animFrames = 0;      // 総フレーム数(0=アニメなし)
+    float animFps    = 8.0f;   // 再生速度(フレーム/秒)
+    int   animCols   = 0;      // シートの列数(0=animFramesと同じ=横1行ストリップ)
+    int   animRow    = 0;      // シート内の開始行(複数アニメを行で並べたシート用)
+    int   animRows   = 0;      // シートの総行数(0=自動: animRow + ceil(animFrames/animCols))
+    int   animMode   = 0;      // 0=ループ 1=単発(最終フレームで停止) 2=往復(ピンポン)
+    // 再生位置(秒。非シリアライズ)。Application::Update が毎フレーム dt を足す
+    float _animT = 0.0f;
 
     // カスタムシェーダー割当（プロジェクト assets/shaders/ 相対パス、空 = 既定の Forward）。
     // 静的メッシュのみ対応（スキンド/インスタンシングは既定へフォールバック）。ShaderManager 経由で
@@ -288,6 +309,10 @@ struct Sprite2D
     int   animCols   = 0;      // シートの列数(0=animFramesと同じ=横1行ストリップ)
     int   animRow    = 0;      // シート内の開始行(複数アニメを行で並べたシート用)
     int   animRows   = 0;      // シートの総行数(0=自動: animRow + ceil(animFrames/animCols))
+    int   animMode   = 0;      // 0=ループ 1=単発(最終フレームで停止) 2=往復(ピンポン)
+    // 再生位置(秒。非シリアライズ)。Application::Update が毎フレーム dt を足す。
+    // Lua `scene:setSpriteAnim` / `scene:restartSpriteAnim` で 0 に戻すと頭から再生される
+    float _animT = 0.0f;
 
     // --- UVスクロール(単位/秒)。時間経過で uvMin/uvMax の両方へ加算(溶岩表面・滝・背景ループ用)。
     // animFrames>0 のときはフリップブック優先で無視。Lua `scene:setSpriteScroll`。
@@ -306,6 +331,7 @@ struct UICanvas
     float refWidth  = 1920.0f;   // 基準解像度
     float refHeight = 1080.0f;
     int   scaleMode = 0;         // 0=ScaleToFit(等比縮放・中央寄せレターボックス) 1=ConstantPixel(左上原点実ピクセル)
+                                 // 2=StretchToFill(縦横を個別倍率で引き伸ばし・余白なし。装飾量は小さい方の倍率)
                                  // 2=StretchToFill(縦横個別倍率でビューポート全体に敷き詰め・余白なし)
     int   sortOrder = 0;         // キャンバス間の描画順(小→大)
     bool  visible   = true;
@@ -361,6 +387,20 @@ struct UIImage
     // UVスクロール(uv/秒)。タイル繰り返し(uvMax>1)と併用で流れるストライプ/警告帯/
     // コンベアなどのパターンアニメになる。9-slice と shape!=0 では無効
     DirectX::XMFLOAT2 uvScroll{0.0f, 0.0f};
+    // --- 連番アニメ(スプライトシート)。animFrames>0 で有効。テクスチャを animCols x N の
+    // グリッドとみなして frame = floor(t*animFps) のセルを uvMin/uvMax の代わりに使う
+    // (ユーザー指定の uvMin/uvMax と uvScroll は無視される)。Sprite2D と同じ UV 計算
+    // (renderer/SpriteAnim.h の純関数)。エディタ中もプレビュー再生する。
+    // 9-slice / shape!=0 では無効(UV を矩形前提で扱うため)。Lua `scene:setUiAnim`
+    int   animFrames = 0;      // 総フレーム数(0=アニメなし)
+    float animFps    = 8.0f;   // 再生速度(フレーム/秒)
+    int   animCols   = 0;      // シートの列数(0=animFramesと同じ=横1行ストリップ)
+    int   animRow    = 0;      // シート内の開始行(複数アニメを行で並べたシート用)
+    int   animRows   = 0;      // シートの総行数(0=自動: animRow + ceil(animFrames/animCols))
+    int   animMode   = 0;      // 0=ループ 1=単発(最終フレームで停止) 2=往復(ピンポン)
+    // 単発/往復で「いつ再生を始めたか」を持つランタイム値(秒。非シリアライズ)。
+    // Lua `scene:setUiAnim` / `scene:restartUiAnim` で 0 に戻すと頭から再生される
+    float _animT = 0.0f;
     // グラデーション: color から gradientColor2 へ線形補間(頂点シェード=テクスチャ/9-slice/角丸
     // 全対応・回転追従)。gradientColor2 のアルファは無視される(AA フリンジ保護のため)
     int gradientDir = 0;                        // 0=なし 1=横(左→右) 2=縦(上→下) 3=斜め(左上→右下) 4=放射(中心→外)
@@ -543,6 +583,7 @@ struct UIAnimator
 {
     // 出現アニメ
     int  showAnim     = 1;      // 0=なし 1=フェード 2=ポップ(拡大) 3=左から 4=右から 5=上から 6=下から 7=スピン(回転入場)
+                                // 8=バウンド落下 9=フリップ(縦つぶれから開く) 10=シェイク入場 11=横フリップ(扉/カード)
                                 // 8=バウンド落下(上から弾んで着地) 9=フリップ(縦つぶれから開く) 10=シェイク入場
                                 // 11=横フリップ(横つぶれから開く=扉/カード)
     f32  showDuration = 0.35f;  // 秒

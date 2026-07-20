@@ -485,7 +485,7 @@ function uifx.countTo(e, to, dur, fmt) end
 ---@param e Entity|integer
 ---@param v number 目標 0..1
 ---@param dur? number 秒（既定 0.35）
----@param easing? string 既定 "out"
+---@param easing? "linear"|"in"|"out"|"inOut"|"back"|"bounce"|"elastic"|"expo"|"inBack"|"inOutBack"|"quint"|"sine" 既定 "out"
 function uifx.fillTo(e, v, dur, easing) end
 
 ---ゴーストバー付きダメージ表現（本体バー即落ち + 背後バーが遅れて追従）。

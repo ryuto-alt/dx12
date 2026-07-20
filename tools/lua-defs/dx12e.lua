@@ -222,6 +222,59 @@ function Scene:setMeshEffect(e, value) end
 ---@param w number
 function Scene:setSpriteParams(e, x, y, z, w) end
 
+---Sprite2D の不透明度（color.a）を書き換える（0..1）。半透明フェード演出用。毎フレーム可。
+---@param e Entity
+---@param alpha number 0..1
+function Scene:setSpriteAlpha(e, alpha) end
+
+---Sprite2D の uvMin/uvMax を直接指定する（アトラス切り出しの実行時切替）。
+---連番アニメ（animFrames>0）が有効な間は描画時に上書きされるので効かない。
+---@param e Entity
+---@param u0 number
+---@param v0 number
+---@param u1 number
+---@param v1 number
+function Scene:setSpriteUV(e, u0, v0, u1, v1) end
+
+---Sprite2D の UVスクロール速度（単位/秒）を設定する（溶岩表面・滝・背景ループ）。
+---連番アニメ（animFrames>0）が有効な間はそちらが優先されて無視される。
+---@param e Entity
+---@param su number 横スクロール速度
+---@param sv number 縦スクロール速度
+function Scene:setSpriteScroll(e, su, sv) end
+
+---Sprite2D の連番アニメ（スプライトシート）を設定する。テクスチャを cols x N のグリッドと
+---みなし、frame = floor(t*fps) のセルを uvMin/uvMax の代わりに使う。
+---**呼ぶたび再生位置が頭に戻る**＝攻撃モーション等の切替がこれ1発で書ける。
+---```lua
+---scene:setSpriteAnim(player, 8, 12, 8, 1)   -- 8コマ/12fps/横8列/シートの1行目(=walk行)
+---scene:setSpriteAnim(player, 0, 0, 0, 0)    -- 停止して uvMin/uvMax 指定に戻す
+---```
+---@param e Entity
+---@param frames integer 総フレーム数（0 で停止し UV 指定に戻る）
+---@param fps number 再生速度（フレーム/秒。<=0 は 8 とみなされる）
+---@param cols integer シートの列数（0 = frames と同じ = 横1行ストリップ）
+---@param row integer シート内の開始行（複数アニメを行で並べたシート用）
+function Scene:setSpriteAnim(e, frames, fps, cols, row) end
+
+---Sprite2D の再生モードを設定する。再生位置は頭に戻る。
+---@param e Entity
+---@param mode integer 0=ループ 1=単発（最終フレームで停止） 2=往復（ピンポン）
+function Scene:setSpriteAnimMode(e, mode) end
+
+---Sprite2D の連番アニメを頭から再生し直す（設定は変えない）。
+---@param e Entity
+function Scene:restartSpriteAnim(e) end
+
+---単発（animMode=1）の再生が終わったか。ループ/往復は常に false。
+---爆発スプライトを消す / 次の行動へ進む判定に使う。
+---```lua
+---if scene:isSpriteAnimDone(explosion) then scene:remove(explosion) end
+---```
+---@param e Entity
+---@return boolean
+function Scene:isSpriteAnimDone(e) end
+
 ---MeshRenderer::shaderParams を書き換える（カスタムシェーダーへ渡す汎用パラメーター4つ。
 ---HLSL側は cbuffer PerObjectConstants の effectValue の後ろに float4 shaderParams; を足して読む）。
 ---ルート定数なので毎フレーム呼んでも安価。対象エンティティが MeshRenderer を持たない場合は何もしない。
@@ -231,6 +284,35 @@ function Scene:setSpriteParams(e, x, y, z, w) end
 ---@param z number
 ---@param w number
 function Scene:setMeshParams(e, x, y, z, w) end
+
+---MeshRenderer の UVスクロール速度（uv/秒）を設定する（滝・溶岩・コンベア・流れる雲）。
+---頂点は触らずルート定数へ積むだけなので毎フレーム呼んでも安価（VB再生成なし）。
+---uvScaleU/V（UVタイリング）とは併用できる＝タイル済みの UV の上をスクロールする。
+---既定の Forward / ForwardSkinned でのみ効く（カスタムシェーダーは自前で b2 を読む必要がある）。
+---@param e Entity
+---@param su number 横スクロール速度
+---@param sv number 縦スクロール速度
+function Scene:setMeshUvScroll(e, su, sv) end
+
+---MeshRenderer の連番アニメを設定する（炎/水しぶき/爆発の板ポリ、アニメする看板やモニタ）。
+---アルベドを cols x N グリッドとみなしてコマ送りする。有効時は UVタイリング/UVスクロールより優先。
+---**呼ぶたび再生位置が頭に戻る**。UV 計算は Sprite2D / UIImage と同じ。
+---@param e Entity
+---@param frames integer 総フレーム数（0 で停止）
+---@param fps number 再生速度（フレーム/秒）
+---@param cols integer シートの列数（0 = frames と同じ = 横1行ストリップ）
+---@param row integer シート内の開始行
+function Scene:setMeshAnim(e, frames, fps, cols, row) end
+
+---MeshRenderer の再生モードを設定する。再生位置は頭に戻る。
+---@param e Entity
+---@param mode integer 0=ループ 1=単発（最終フレームで停止） 2=往復（ピンポン）
+function Scene:setMeshAnimMode(e, mode) end
+
+---MeshRenderer の連番アニメが単発再生を終えたか（ループ/往復は常に false）。
+---@param e Entity
+---@return boolean
+function Scene:isMeshAnimDone(e) end
 
 -- --- ゲーム内UI（retained-mode、UICanvas/UIRect/UIImage/UIText/UIButton）操作 ---
 -- UI要素はエディタ（Hierarchy の「UI」サブメニュー等）でツリーを組んで配置し、
@@ -298,6 +380,50 @@ function Scene:setUiVisible(e, visible) end
 ---@param e Entity
 ---@param path string assets/ からの相対パス
 function Scene:setUiTexture(e, path) end
+
+---UIImage の UVスクロール速度（uv/秒）を設定する。uvMax>1（タイル繰り返し）と併用すると
+---流れるストライプ / 警告帯 / コンベアのパターンアニメになる。
+---連番アニメ（animFrames>0）中と、9-slice / shape≠0 では無効。
+---```lua
+---scene:setUiUvScroll(warningStripe, 0.5, 0)
+---```
+---@param e Entity
+---@param su number 横スクロール速度
+---@param sv number 縦スクロール速度
+function Scene:setUiUvScroll(e, su, sv) end
+
+---UIImage の連番アニメ（スプライトシート）を設定する。テクスチャを cols x N のグリッドと
+---みなしてコマ送りする（爆発/回復/レベルアップのエフェクト、常時回るローダー）。
+---**呼ぶたび再生位置が頭に戻る**。有効中は uvMin/uvMax と uvScroll を無視し、
+---9-slice / shape≠0 では無効。エディタ中もプレビュー再生する。
+---```lua
+---scene:setUiAnim(hitFx, 16, 12, 4, 0)   -- 4x4=16コマを 12fps で
+---scene:setUiAnim(hitFx, 0, 0, 0, 0)     -- 停止して uvMin/uvMax 指定に戻す
+---```
+---@param e Entity
+---@param frames integer 総フレーム数（0 で停止し UV 指定に戻る）
+---@param fps number 再生速度（フレーム/秒。<=0 は 8 とみなされる）
+---@param cols integer シートの列数（0 = frames と同じ = 横1行ストリップ）
+---@param row integer シート内の開始行
+function Scene:setUiAnim(e, frames, fps, cols, row) end
+
+---UIImage の再生モードを設定する。再生位置は頭に戻る。
+---単発=ヒット/回復の演出、往復=待機アイコンの呼吸、ループ=常時回るローダー。
+---@param e Entity
+---@param mode integer 0=ループ 1=単発（最終フレームで停止） 2=往復（ピンポン）
+function Scene:setUiAnimMode(e, mode) end
+
+---UIImage の連番アニメを頭から再生し直す（設定は変えない）。
+---@param e Entity
+function Scene:restartUiAnim(e) end
+
+---UIImage の連番アニメが単発再生を終えたか（ループ/往復は常に false）。
+---```lua
+---if scene:isUiAnimDone(hitFx) then scene:setUiVisible(hitFx, false) end
+---```
+---@param e Entity
+---@return boolean
+function Scene:isUiAnimDone(e) end
 
 ---UIImage::fillAmount（表示割合 0..1）を設定する。HPバー/ゲージ用。
 ---クリップ方式なのでテクスチャ/9-slice/角丸すべてで「端から現れる」挙動になる

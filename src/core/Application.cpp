@@ -2082,7 +2082,9 @@ nlohmann::json McpComponentSchema()
     comps.push_back(C("meshRenderer", false, false, json::array({
         F("modelPath", "string (assets-relative)", ""),
     }), "read-only via MCP; create with dx12_spawn_model/dx12_create_entity. Use dx12_set_pbr for material, "
-        "dx12_set_mesh_shader for shaderPath (custom HLSL from dx12_create_shader)."));
+        "dx12_set_mesh_shader for shaderPath (custom HLSL from dx12_create_shader). UV scroll "
+        "(uvScrollU/V) and sprite-sheet flipbook (animFrames/animFps/animCols/animRow/animRows/animMode) "
+        "are set in the Inspector 'UV & Anim' section or from Lua: scene:setMeshUvScroll / scene:setMeshAnim."));
     comps.push_back(C("pointLight", true, true, json::array({
         F("color", "float3", json::array({1, 1, 1})), F("intensity", "float", 1.0), F("range", "float", 10.0),
         F("castShadows", "bool (max 2 simultaneous, nearest-to-camera wins)", false),
@@ -2136,6 +2138,7 @@ nlohmann::json McpComponentSchema()
         F("animCols", "int (sprite-sheet columns; 0=animFrames i.e. single-row strip)", 0),
         F("animRow", "int (start row in sheet, for multi-animation sheets)", 0),
         F("animRows", "int (total rows in sheet; 0=auto: animRow+ceil(animFrames/animCols))", 0),
+        F("animMode", "int (0=loop, 1=once (hold last frame), 2=ping-pong)", 0),
         F("scrollU", "float (UV scroll speed, units/sec; ignored while animFrames>0)", 0.0),
         F("scrollV", "float (UV scroll speed, units/sec; ignored while animFrames>0)", 0.0),
     }), "Use dx12_set_sprite_shader for shaderPath (custom HLSL, world-space only; different vertex/root-"
@@ -2245,6 +2248,13 @@ nlohmann::json McpComponentSchema()
         F("ringThickness", "float (ring band thickness px; shape=2)", 8.0),
         F("uvScroll", "float2 (uv/sec pattern scroll; tile with uvMax>1; not for 9-slice/shapes)",
           json::array({0, 0})),
+        F("animFrames", "int (sprite-sheet flipbook total frames; 0=off. When >0, uvMin/uvMax and "
+          "uvScroll are ignored; not for 9-slice/shapes)", 0),
+        F("animFps", "float (flipbook playback speed, frames/sec)", 8.0),
+        F("animCols", "int (sprite-sheet columns; 0=animFrames i.e. single-row strip)", 0),
+        F("animRow", "int (start row in sheet, for multi-animation sheets)", 0),
+        F("animRows", "int (total rows in sheet; 0=auto: animRow+ceil(animFrames/animCols))", 0),
+        F("animMode", "int (0=loop, 1=once (hold last frame), 2=ping-pong)", 0),
         F("gradientDir", "int (0=off,1=horizontal,2=vertical,3=diagonal,4=radial center→edge)", 0),
         F("gradientColor2", "float4 (gradient end color; alpha ignored)", json::array({1, 1, 1, 1})),
         F("gradientScrollSpeed", "float (gloss sweep: !=0 replaces static gradient with a "
@@ -2697,6 +2707,8 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             {
                 if (rel.rfind("shaders/", 0) == 0)
                     rel.erase(0, 8);  // assets相対表記("shaders/foo.hlsl")も受け付けて正規化
+                if (rel.empty())     // 入力が "shaders/" ちょうどだと erase で空になる
+                    throw McpError(McpErr::InvalidParam, "invalid shaderPath (assets/shaders 相対のみ)");
                 if (rel.front() == '/' || rel.find('\\') != std::string::npos ||
                     rel.find(':') != std::string::npos || rel.find("..") != std::string::npos)
                     throw McpError(McpErr::InvalidParam, "invalid shaderPath (assets/shaders 相対のみ)");
@@ -2726,6 +2738,8 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             {
                 if (rel.rfind("shaders/", 0) == 0)
                     rel.erase(0, 8);  // assets相対表記("shaders/foo.hlsl")も受け付けて正規化
+                if (rel.empty())     // 入力が "shaders/" ちょうどだと erase で空になる
+                    throw McpError(McpErr::InvalidParam, "invalid shaderPath (assets/shaders 相対のみ)");
                 if (rel.front() == '/' || rel.find('\\') != std::string::npos ||
                     rel.find(':') != std::string::npos || rel.find("..") != std::string::npos)
                     throw McpError(McpErr::InvalidParam, "invalid shaderPath (assets/shaders 相対のみ)");
@@ -3342,12 +3356,15 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 parent = static_cast<entt::entity>(pid);
                 if (!reg.valid(parent)) throw std::runtime_error("invalid parent id");
                 // サイクル検出: parent の祖先鎖に child が現れたら拒否(O(N))。
-                for (entt::entity cur = parent; cur != entt::null; )
+                // 祖先鎖自体が既に相互参照で壊れていても抜けられるよう深さ上限を置く。
+                int depth = 0;
+                for (entt::entity cur = parent; cur != entt::null && depth < 4096; ++depth)
                 {
                     if (cur == child) throw std::runtime_error("would create cycle");
                     auto* t = reg.try_get<Transform>(cur);
                     cur = t ? t->parent : entt::null;
                 }
+                if (depth >= 4096) throw std::runtime_error("parent chain broken (cycle)");
             }
             auto& t = reg.get_or_emplace<Transform>(child);
             t.parent = parent;   // 階層は Transform.parent が駆動。SerializeEntity に自動反映。
@@ -5453,6 +5470,20 @@ void Application::Update()
     f32 dt = m_gameClock.GetDeltaTime();
 
     m_framesSinceStart++;
+
+    // 連番アニメの再生位置を進める（Sprite2D / UIImage / MeshRenderer 共通。ここ1箇所だけで
+    // 加算する = 描画側が複数回走っても二重に進まない。エディタ中もプレビュー再生する）。
+    if (m_scene)
+    {
+        auto& animReg = m_scene->GetRegistry();
+        for (auto [e, sp] : animReg.view<Sprite2D>().each())
+            if (sp.animFrames > 0) sp._animT += dt;
+        for (auto [e, img] : animReg.view<UIImage>().each())
+            if (img.animFrames > 0) img._animT += dt;
+        for (auto [e, mr] : animReg.view<MeshRenderer>().each())
+            if (mr.animFrames > 0 || mr.uvScrollU != 0.0f || mr.uvScrollV != 0.0f)
+                mr._animT += dt;
+    }
 
     // 非同期プロジェクトロードの状態機械を進める
     UpdateProjectLoad(dt);
@@ -8209,7 +8240,8 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             }
 
             // PBR Material Constants (Slot 5)
-            struct { float metallic; float roughness; u32 flags; float pad; } pbrParams;
+            struct { float metallic; float roughness; u32 flags; float pad;
+                     float uvScaleX, uvScaleY, uvOffsetX, uvOffsetY; } pbrParams;
             if (matAsset)
             {
                 // MeshRenderer のスカラーオーバーライドは materialAsset の係数よりさらに優先
@@ -8235,7 +8267,30 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
                 if (!hasOverride && mat && mat->metalRoughnessTexture) pbrParams.flags |= 2u;
                 pbrParams.pad = 0;
             }
-            nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPBRMaterial, 4, &pbrParams, 0);
+            // UV 変換: 連番アニメ > UVスクロール > 恒等 の優先順（renderer/SpriteAnim.h の純関数）
+            pbrParams.uvScaleX = 1.0f; pbrParams.uvScaleY = 1.0f;
+            pbrParams.uvOffsetX = 0.0f; pbrParams.uvOffsetY = 0.0f;
+            if (renderer.animFrames > 0)
+            {
+                const SpriteUvRect r = ComputeFlipbookUvEx(
+                    renderer.animFrames, renderer.animFps, renderer.animCols,
+                    renderer.animRow, renderer.animRows, renderer.animMode, renderer._animT);
+                // セル矩形へ写す: uv' = uv * (幅,高) + (左,上)
+                pbrParams.uvScaleX  = r.u1 - r.u0;
+                pbrParams.uvScaleY  = r.v1 - r.v0;
+                pbrParams.uvOffsetX = r.u0;
+                pbrParams.uvOffsetY = r.v0;
+            }
+            else if (renderer.uvScrollU != 0.0f || renderer.uvScrollV != 0.0f)
+            {
+                // オフセットは [0,1) に折り返す（長時間再生での float 精度劣化を防ぐ。
+                // サンプラーは WRAP なので見た目は連続する）
+                float du = renderer.uvScrollU * renderer._animT;
+                float dv = renderer.uvScrollV * renderer._animT;
+                pbrParams.uvOffsetX = du - std::floor(du);
+                pbrParams.uvOffsetY = dv - std::floor(dv);
+            }
+            nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPBRMaterial, 8, &pbrParams, 0);
 
             m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
@@ -8349,8 +8404,9 @@ void Application::DrawWorldSprites(ID3D12GraphicsCommandList* cmd, DirectX::XMMA
         // フリップブック/UVスクロール（Editor 中もプレビュー再生。SpriteAnim.h の純関数）
         if (sp.animFrames > 0)
         {
-            const SpriteUvRect r = ComputeFlipbookUv(sp.animFrames, sp.animFps, sp.animCols,
-                                                     sp.animRow, sp.animRows, time);
+            const SpriteUvRect r = ComputeFlipbookUvEx(sp.animFrames, sp.animFps, sp.animCols,
+                                                       sp.animRow, sp.animRows, sp.animMode,
+                                                       sp._animT);
             d.uvMin = {r.u0, r.v0}; d.uvMax = {r.u1, r.v1};
         }
         else if (sp.scrollU != 0.0f || sp.scrollV != 0.0f)
@@ -9451,6 +9507,7 @@ void Application::Render()
         auto& reg = m_scene->GetRegistry();
         for (const auto& req : attachments)
         {
+            if (!m_scriptEngine) break;
             if (!reg.valid(req.entity))
             {
                 OutputDebugStringA("[PendingScriptAttachments] SKIP invalid entity\n");
@@ -10592,8 +10649,9 @@ void Application::Render()
                 // フリップブック/UVスクロール（ワールド側 DrawWorldSprites と同じ純関数を適用）
                 if (sp.animFrames > 0)
                 {
-                    const SpriteUvRect r = ComputeFlipbookUv(sp.animFrames, sp.animFps, sp.animCols,
-                                                             sp.animRow, sp.animRows, totalTime);
+                    const SpriteUvRect r = ComputeFlipbookUvEx(sp.animFrames, sp.animFps, sp.animCols,
+                                                               sp.animRow, sp.animRows, sp.animMode,
+                                                               sp._animT);
                     s.uvMin = {r.u0, r.v0}; s.uvMax = {r.u1, r.v1};
                 }
                 else if (sp.scrollU != 0.0f || sp.scrollV != 0.0f)
@@ -11202,13 +11260,15 @@ void Application::Render()
                 auto& reg = m_scene->GetRegistry();
                 if (!reg.valid(root)) continue;  // 先行削除のサブツリーに含まれていた場合
 
-                // サブツリー収集（親→子の順。BFS）
+                // サブツリー収集（親→子の順。BFS）。壊れたデータで親子が相互参照して
+                // いても止まるよう、訪問済み集合で重複追加を弾く（無いと無限膨張する）
                 std::vector<entt::entity> subtree{root};
+                std::unordered_set<entt::entity> visited{root};
                 for (size_t i = 0; i < subtree.size(); ++i)
                 {
                     for (auto [c, t] : reg.view<const Transform>().each())
                     {
-                        if (t.parent == subtree[i])
+                        if (t.parent == subtree[i] && visited.insert(c).second)
                             subtree.push_back(c);
                     }
                 }

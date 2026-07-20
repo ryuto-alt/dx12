@@ -599,6 +599,14 @@ static void Test_Sprite2D()
             sp.uvMax = { 0.7f, 0.9f };
             sp.color = { 0.5f, 0.6f, 0.7f, 0.8f };
             sp.worldSpace = false;
+            sp.animFrames = 8;
+            sp.animFps    = 12.0f;
+            sp.animCols   = 4;
+            sp.animRow    = 1;
+            sp.animRows   = 2;
+            sp.animMode   = 2;
+            sp.scrollU    = 0.5f;
+            sp.scrollV    = -0.25f;
             r.emplace<Sprite2D>(e, sp);
         },
         [](const Sprite2D& sp) {
@@ -610,6 +618,13 @@ static void Test_Sprite2D()
             CHECK_F(sp.color.x, 0.5f); CHECK_F(sp.color.y, 0.6f);
             CHECK_F(sp.color.z, 0.7f); CHECK_F(sp.color.w, 0.8f);
             CHECK(sp.worldSpace == false);
+            CHECK(sp.animFrames == 8);
+            CHECK_F(sp.animFps, 12.0f);
+            CHECK(sp.animCols == 4);
+            CHECK(sp.animRow == 1);
+            CHECK(sp.animRows == 2);
+            CHECK(sp.animMode == 2);
+            CHECK_F(sp.scrollU, 0.5f); CHECK_F(sp.scrollV, -0.25f);
         });
 }
 
@@ -694,6 +709,12 @@ static void Test_UIImage()
             im.shadowColor    = { 0.0f, 0.0f, 0.0f, 0.6f };
             im.shadowOffset   = { 4.0f, 5.0f };
             im.shadowSoftness = 7.0f;
+            im.animFrames = 6;
+            im.animFps    = 10.0f;
+            im.animCols   = 3;
+            im.animRow    = 1;
+            im.animRows   = 2;
+            im.animMode   = 1;
             r.emplace<UIImage>(e, im);
         },
         [](const UIImage& im) {
@@ -726,6 +747,12 @@ static void Test_UIImage()
             CHECK_F(im.shadowColor.w, 0.6f);
             CHECK_F(im.shadowOffset.x, 4.0f); CHECK_F(im.shadowOffset.y, 5.0f);
             CHECK_F(im.shadowSoftness, 7.0f);
+            CHECK(im.animFrames == 6);
+            CHECK_F(im.animFps, 10.0f);
+            CHECK(im.animCols == 3);
+            CHECK(im.animRow == 1);
+            CHECK(im.animRows == 2);
+            CHECK(im.animMode == 1);
         });
 }
 

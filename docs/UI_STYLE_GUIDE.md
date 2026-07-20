@@ -46,6 +46,20 @@ AI/人間がシーン JSON + Lua で「そのジャンルらしい」UIを組む
 | クールダウン | リアルタイム減 | linear可(進捗表示は例外) | `shape=リング`+`fill`、完了時 `uifx.heartbeat` |
 | 画面ワイプ | 0.3〜0.6s | inOut | `clipChildren`+子を`tweenUi{dx=}` / transitionToScene |
 
+### イージング語彙(12種。`tweenUi{easing=}` の文字列 / `UIAnimator.showEasing` の番号)
+
+| 文字列(番号) | 性格 | 使いどころ |
+|---|---|---|
+| `linear`(0) | 等速 | 進捗表示・クールダウンのみ。装飾には使わない |
+| `in`(1) / `out`(2) / `inOut`(3) | 加速 / 減速 / 対称 | `out` が既定にして大半の正解(入場・ゲージ) |
+| `back`(4) | 行き過ぎて戻る | ポップアップ着地・カード公開 |
+| `bounce`(5) / `elastic`(6) | 弾む / 揺れ残る | 祝祭(結果/ガチャ/実績)。日常UIに使うと安っぽい |
+| `expo`(7) | 鋭く減速 | 長距離スライド・数字ロール |
+| `inBack`(8) | 逆方向へ溜めて発進 | 退場、発射前のアンティシペーション |
+| `inOutBack`(9) | 溜め→行き過ぎ→収束 | 画面間の大きな入替 |
+| `quint`(10) | `expo` より穏やかな強減速 | 大きい移動距離のパネル |
+| `sine`(11) | ゆったり対称 | 字幕・アンビエント・常時ループ |
+
 - **SE同期**: 視覚のピークと音のアタックを合わせる。`tweenUi{onComplete=}`で完了時に鳴らす。
 - **方向の意味**: 階層を下る=右/下から入場、戻る=逆方向。空間の一貫性を守る。
 - **連打対策**: ハンドラ先頭で `scene:stopUiTweens(e.source)` してから掛け直す。
@@ -57,6 +71,11 @@ AI/人間がシーン JSON + Lua で「そのジャンルらしい」UIを組む
 - **丸アイコン/バッジ/バフ枠**: `shape=1(楕円)/3(ダイヤ)/4(六角形)` — テクスチャは形で切り抜かれる
 - **分割ゲージ(スタミナ/弾数)**: `segments` + `segmentGap/Color`
 - **動くパターン背景(ストライプ/警告帯)**: タイルテクスチャ + `uvMax=(8,1)` + `uvScroll=(0.5,0)`
+- **コマ送りエフェクト(ヒット/回復/レベルアップ)**: スプライトシート + `UIImage.animFrames/animCols` +
+  `animMode=1(単発)`。終了は `scene:isUiAnimDone(e)` で拾って消す。待機アイコンの呼吸は `animMode=2(往復)`、
+  常時回るローダーは `animMode=0(ループ)`(9-slice / `shape≠0` では無効)
+- **出現の作り分け**: `UIAnimator.showAnim` 11種(スピン/バウンド落下/縦フリップ/横フリップ/シェイク入場)を
+  画面の性格で選ぶ。列は `showDelay` を要素ごとにずらす(= `uifx.stagger` と同じ効果をデータ側で)
 - **SF照準枠**: `outlineStyle=2(ブラケット)` + `outlineDash`=腕長。点線枠は `outlineStyle=1`
 - **金色タイトル**: `UIText.gradientDir=2` + `gradientColor2` 暗金。にぎやかし文字=`charAnim`
 - **ワイプ公開/マーキー**: 親に `clipChildren=true`、子を `tweenUi{dx/dy}` で動かす

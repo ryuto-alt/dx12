@@ -20,6 +20,7 @@
 #include "engine/core/EventBus.h"
 #include "graphics/DescriptorHeap.h"
 #include "graphics/Texture.h"
+#include "renderer/SpriteAnim.h"   // UIImage 連番アニメ（Sprite2D と共通の UV 計算）
 #include "resource/ResourceManager.h"
 
 namespace dx12e
@@ -1074,10 +1075,19 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
                                    && (img->sliceBorder.x > 0.0f || img->sliceBorder.y > 0.0f
                                        || img->sliceBorder.z > 0.0f || img->sliceBorder.w > 0.0f);
 
-            // UV（uvScroll 反映。9-slice では無効）
+            // UV（連番アニメ > uvScroll の優先順。どちらも 9-slice では無効）
             ImVec2 uv0(img->uvMin.x, img->uvMin.y);
             ImVec2 uv1(img->uvMax.x, img->uvMax.y);
-            if (!nineSlice && (img->uvScroll.x != 0.0f || img->uvScroll.y != 0.0f))
+            if (!nineSlice && shapeKind == 0 && img->animFrames > 0)
+            {
+                // Sprite2D と同じ純関数（renderer/SpriteAnim.h）。_animT は Application::Update が進める
+                const SpriteUvRect fr = ComputeFlipbookUvEx(
+                    img->animFrames, img->animFps, img->animCols,
+                    img->animRow, img->animRows, img->animMode, img->_animT);
+                uv0 = ImVec2(fr.u0, fr.v0);
+                uv1 = ImVec2(fr.u1, fr.v1);
+            }
+            else if (!nineSlice && (img->uvScroll.x != 0.0f || img->uvScroll.y != 0.0f))
             {
                 const double tm = ImGui::GetTime();
                 const float sx = static_cast<float>(

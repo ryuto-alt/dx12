@@ -35,6 +35,9 @@ cbuffer PBRMaterial : register(b2)
     float defaultRoughness;
     uint  pbrFlags;       // bit0=hasNormalMap, bit1=hasMetalRoughness
     float _pbrPad;
+    // UV 変換 (xy=スケール, zw=オフセット)。MeshRenderer の UV スクロール/連番アニメ用。
+    // 無効時は (1,1,0,0) が入るので従来と同じ結果になる。
+    float4 uvScaleOffset;
 };
 
 struct VSInput
@@ -137,15 +140,18 @@ float CalcShadow(float3 worldPos, float viewDepth)
 
 float4 PSMain(PSInput input) : SV_TARGET
 {
+    // UV スクロール/連番アニメ (b2)。無効時は uvScaleOffset=(1,1,0,0) なので恒等変換
+    float2 uv = input.texCoord * uvScaleOffset.xy + uvScaleOffset.zw;
+
     // Albedo
-    float4 albedo4 = g_albedo.Sample(g_sampler, input.texCoord) * input.color;
+    float4 albedo4 = g_albedo.Sample(g_sampler, uv) * input.color;
     float3 albedo = albedo4.rgb;
 
     // Normal
     float3 N;
     if (pbrFlags & 1u)
     {
-        float3 normalSample = g_normalMap.Sample(g_sampler, input.texCoord).rgb;
+        float3 normalSample = g_normalMap.Sample(g_sampler, uv).rgb;
         N = PerturbNormal(input.worldNormal, input.worldTangent, input.tangentW, normalSample);
     }
     else
@@ -157,7 +163,7 @@ float4 PSMain(PSInput input) : SV_TARGET
     float metallic, roughness;
     if (pbrFlags & 2u)
     {
-        float4 mr = g_metalRoughness.Sample(g_sampler, input.texCoord);
+        float4 mr = g_metalRoughness.Sample(g_sampler, uv);
         roughness = mr.g * defaultRoughness;
         metallic  = mr.b * defaultMetallic;
     }

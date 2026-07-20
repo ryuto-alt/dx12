@@ -203,12 +203,14 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
             entt::entity droppedEntity = *static_cast<const entt::entity*>(payload->Data);
             if (droppedEntity != e && reg.valid(droppedEntity) && reg.all_of<Transform>(droppedEntity))
             {
-                // 循環防止: e が droppedEntity の子孫でないかチェック
+                // 循環防止: e が droppedEntity の子孫でないかチェック。
+                // 祖先鎖が既にサイクル化した壊れデータでも無限ループしないよう深さ上限付き。
                 bool isCyclic = false;
                 entt::entity check = e;
+                int depth = 0;
                 while (check != entt::null && reg.valid(check) && reg.all_of<Transform>(check))
                 {
-                    if (check == droppedEntity) { isCyclic = true; break; }
+                    if (check == droppedEntity || ++depth >= 4096) { isCyclic = true; break; }
                     check = reg.get<Transform>(check).parent;
                 }
                 if (!isCyclic)
@@ -268,12 +270,23 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
         {
             // Undo コマンドは Application の遅延削除処理で積まれる
             ctx.pendingDeletions.push_back(e);
-            if (ctx.IsSelected(e))
-            {
-                auto& sel = ctx.selectedEntities;
-                sel.erase(std::remove(sel.begin(), sel.end(), e), sel.end());
+            // e 本体だけでなく e のサブツリーに含まれる選択も外す（残すと削除後に
+            // ダングリング選択ハンドルが selectedEntities に残る）
+            auto isSelfOrDescendant = [&](entt::entity s) {
+                int depth = 0;
+                for (entt::entity cur = s; cur != entt::null && depth < 4096; ++depth)
+                {
+                    if (cur == e) return true;
+                    auto* t = reg.try_get<Transform>(cur);
+                    cur = t ? t->parent : entt::null;
+                }
+                return false;
+            };
+            auto& sel = ctx.selectedEntities;
+            sel.erase(std::remove_if(sel.begin(), sel.end(), isSelfOrDescendant), sel.end());
+            if (ctx.selectedEntity == e || (ctx.selectedEntity != entt::null
+                                            && isSelfOrDescendant(ctx.selectedEntity)))
                 ctx.selectedEntity = sel.empty() ? entt::null : sel.back();
-            }
         }
 
         // 親子解除

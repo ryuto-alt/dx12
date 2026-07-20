@@ -712,6 +712,12 @@ void InspectorPanel::Render(entt::registry& reg,
                         changed |= pg::Int("列数 animCols", &sp.animCols, 1.0f, 0, 1024, &active);
                         changed |= pg::Int("開始行 animRow", &sp.animRow, 1.0f, 0, 1024, &active);
                         changed |= pg::Int("総行数 animRows", &sp.animRows, 1.0f, 0, 1024, &active);
+                        {
+                            static const char* animModes[] = {"ループ", "単発(最後で停止)", "往復(ピンポン)"};
+                            changed |= pg::Combo("再生モード animMode", &sp.animMode, animModes,
+                                IM_ARRAYSIZE(animModes),
+                                "単発=爆発/被弾など1回きりの演出。往復=0→末尾→0 の呼吸アニメ");
+                        }
                         ImGui::TextDisabled("animFrames>0 中は UV Min/Max は無視（自動設定）");
                     }
                     else
@@ -1062,6 +1068,23 @@ void InspectorPanel::Render(entt::registry& reg,
                         -32.0f, 32.0f, "%.2f", &active,
                         "uv/秒。タイル(UV Max>1)と併用で流れるパターンに\n"
                         "（警告帯/コンベア/背景ストライプ）。9スライスでは無効");
+                    // 連番アニメ（スプライトシート）。エディタ中もプレビュー再生される
+                    changed |= pg::Int("連番フレーム数 animFrames", &img.animFrames, 1.0f, 0, 1024, &active,
+                        "0=なし。1以上でテクスチャをコマ送り再生（爆発/ローディング/アイコン点滅）。\n"
+                        "有効中は UV Min/Max と UVスクロールは無視される。9スライス/矩形以外の形状では無効");
+                    if (img.animFrames > 0)
+                    {
+                        changed |= pg::Float("速度 animFps", &img.animFps, 0.1f, 0.0f, 120.0f, "%.1f", &active);
+                        changed |= pg::Int("列数 animCols", &img.animCols, 1.0f, 0, 1024, &active,
+                            "0=animFrames と同じ（横1行ストリップ）");
+                        changed |= pg::Int("開始行 animRow", &img.animRow, 1.0f, 0, 1024, &active);
+                        changed |= pg::Int("総行数 animRows", &img.animRows, 1.0f, 0, 1024, &active,
+                            "0=自動（開始行 + ceil(animFrames/animCols)）");
+                        static const char* uiAnimModes[] = {"ループ", "単発(最後で停止)", "往復(ピンポン)"};
+                        changed |= pg::Combo("再生モード animMode", &img.animMode, uiAnimModes,
+                            IM_ARRAYSIZE(uiAnimModes),
+                            "単発=1回きりの演出。往復=0→末尾→0 の呼吸アニメ");
+                    }
                     changed |= pg::FloatN("9スライス境界 Slice Border", &img.sliceBorder.x, 4, 0.5f,
                         0.0f, 4096.0f, "%.0f", &active,
                         "元テクスチャ上の境界px（左,上,右,下）。全0で無効。\n"
@@ -2489,8 +2512,8 @@ void InspectorPanel::Render(entt::registry& reg,
                 }
             }
 
-            // UV タイリング
-            if (IconHeader(nullptr, 0, "UV Tiling"))
+            // UV タイリング / UVスクロール / 連番アニメ
+            if (IconHeader(nullptr, 0, "UV & Anim"))
             {
                 bool uvChanged = false;
                 if (pg::Begin("UVTiling"))
@@ -2520,6 +2543,35 @@ void InspectorPanel::Render(entt::registry& reg,
                         if (mesh)
                             mesh->ApplyUVScale(*scene->GetDevice(), mr.uvScaleU, mr.uvScaleV);
                     }
+                }
+
+                // UVスクロール（頂点は触らずシェーダー側で流す。滝/溶岩/コンベア）と
+                // 連番アニメ（有効中はタイリング/スクロールより優先）
+                if (pg::Begin("UVAnim"))
+                {
+                    pg::Group("アニメ");
+                    pg::Float("UVスクロールU uvScrollU", &mr.uvScrollU, 0.01f, -100.0f, 100.0f,
+                              "%.2f", nullptr,
+                              "uv/秒。頂点は触らないので VB 再生成なし（タイリングと併用可）");
+                    pg::Float("UVスクロールV uvScrollV", &mr.uvScrollV, 0.01f, -100.0f, 100.0f,
+                              "%.2f");
+                    pg::Int("連番フレーム数 animFrames", &mr.animFrames, 1.0f, 0, 1024, nullptr,
+                            "0=なし。1以上でアルベドをコマ送り再生（炎/水しぶき/アニメする看板）。\n"
+                            "有効中は UV タイリング/スクロールより優先される");
+                    if (mr.animFrames > 0)
+                    {
+                        pg::Float("速度 animFps", &mr.animFps, 0.1f, 0.0f, 120.0f, "%.1f");
+                        pg::Int("列数 animCols", &mr.animCols, 1.0f, 0, 1024, nullptr,
+                                "0=animFrames と同じ（横1行ストリップ）");
+                        pg::Int("開始行 animRow", &mr.animRow, 1.0f, 0, 1024);
+                        pg::Int("総行数 animRows", &mr.animRows, 1.0f, 0, 1024, nullptr,
+                                "0=自動（開始行 + ceil(animFrames/animCols)）");
+                        static const char* meshAnimModes[] = {"ループ", "単発(最後で停止)", "往復(ピンポン)"};
+                        pg::Combo("再生モード animMode", &mr.animMode, meshAnimModes,
+                                  IM_ARRAYSIZE(meshAnimModes),
+                                  "単発=1回きりの演出。往復=0→末尾→0 の呼吸アニメ");
+                    }
+                    pg::End();
                 }
             }
 

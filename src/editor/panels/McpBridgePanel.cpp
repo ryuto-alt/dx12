@@ -53,8 +53,11 @@ std::string ResolveMcpServerDir()
     auto hasIndex = [&ec](const fs::path& dir) {
         return fs::exists(dir / "tools" / "mcp-server" / "index.ts", ec);
     };
+    // GetModuleFileNameW はバッファ不足時に MAX_PATH ちょうどを返し NUL 終端を保証しない
+    // (長いインストールパスで配列外読みになる)ため、戻り値 == MAX_PATH は不採用にする。
     wchar_t buf[MAX_PATH] = {};
-    if (GetModuleFileNameW(nullptr, buf, MAX_PATH) > 0)
+    const DWORD exeLen = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    if (exeLen > 0 && exeLen < MAX_PATH)
     {
         fs::path dir = fs::path(buf).parent_path();
         for (int i = 0; i < 8 && !dir.empty(); ++i)

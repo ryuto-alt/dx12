@@ -71,9 +71,12 @@ void RootSignature::Initialize(GraphicsDevice& device)
     rootParams[4].DescriptorTable.pDescriptorRanges   = &shadowRange;
     rootParams[4].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    // [5] PBR Material: 4 constants (metallic, roughness, flags, pad)
+    // [5] PBR Material: 8 constants (metallic, roughness, flags, pad, uvScaleOffset(float4))
+    // uvScaleOffset は MeshRenderer の UV スクロール/連番アニメ用: PS が texCoord * xy + zw で
+    // サンプリング UV を作る。無効時は (1,1,0,0) を入れる = 従来と同じ結果。float4 は 16 バイト
+    // 境界から始まる HLSL の詰め方に合わせて pad の後ろへ置いてあるのでオフセットが一致する。
     rootParams[5].ParameterType             = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    rootParams[5].Constants.Num32BitValues  = 4;
+    rootParams[5].Constants.Num32BitValues  = 8;
     rootParams[5].Constants.ShaderRegister  = 2;  // b2
     rootParams[5].Constants.RegisterSpace   = 0;
     rootParams[5].ShaderVisibility          = D3D12_SHADER_VISIBILITY_PIXEL;

@@ -459,13 +459,17 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
         }
 
         // PBR
-        struct { float metallic; float roughness; u32 flags; float pad; } pbr;
+        struct { float metallic; float roughness; u32 flags; float pad;
+                 float uvScaleX, uvScaleY, uvOffsetX, uvOffsetY; } pbr;
         pbr.metallic  = mat ? mat->defaultMetallic  : 0.0f;
         pbr.roughness = mat ? mat->defaultRoughness : 0.5f;
         pbr.flags     = 0;
         pbr.pad       = 0;
+        // サムネイルは UV スクロール/連番を適用しない（恒等変換）
+        pbr.uvScaleX = 1.0f; pbr.uvScaleY = 1.0f;
+        pbr.uvOffsetX = 0.0f; pbr.uvOffsetY = 0.0f;
         cmdList->SetGraphicsRoot32BitConstants(
-            RootSignature::kSlotPBRMaterial, 4, &pbr, 0);
+            RootSignature::kSlotPBRMaterial, 8, &pbr, 0);
 
         // 頂点/インデックス
         auto& vbv = mesh->GetVertexBuffer().GetView();

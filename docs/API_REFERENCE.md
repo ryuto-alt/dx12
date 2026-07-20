@@ -126,6 +126,11 @@ t.scale      -- Vec3
 | `:setUiColor(e, r, g, b, a)` | — | `UIImage.color` 優先、無ければ `UIText.color`（どちらも無ければ何もしない） |
 | `:setUiVisible(e, visible)` | — | `UIRect.visible` 優先（自身と子孫ごと隠す）、UIRect が無く UICanvas のみなら `UICanvas.visible` |
 | `:setUiTexture(e, path)` | — | `UIImage.texturePath` を差し替え（assets 相対。無ければ何もしない） |
+| `:setUiUvScroll(e, su, sv)` | — | `UIImage.uvScroll`（uv/秒）を設定。`uvMax>1`（タイル）と併用で流れるパターン。連番アニメ中は無視 |
+| `:setUiAnim(e, frames, fps, cols, row)` | — | UIImage の連番アニメ設定（`frames=0` で停止し uvMin/uvMax 指定に戻る。`cols=0`=frames と同じ=横1行ストリップ、`row`=シート内の行）。**呼ぶたび再生位置が頭に戻る** |
+| `:setUiAnimMode(e, mode)` | — | 再生モード（0=ループ 1=単発（最終フレームで停止） 2=往復）。再生位置は頭に戻る |
+| `:restartUiAnim(e)` | — | 連番アニメを頭から再生し直す（設定は変えない） |
+| `:isUiAnimDone(e)` | bool | 単発（mode=1）の再生が終わったか。ループ/往復は常に false |
 | `:setUiFill(e, amount)` | — | `UIImage.fillAmount`（表示割合 0..1、クランプあり）を設定。HPバー/ゲージ用 |
 | `:getUiFill(e)` | number | `UIImage.fillAmount` を読む（無ければ 0） |
 | `:setUiRotation(e, deg)` | — | `UIRect.rotation`（視覚回転・度・時計回り。ピボット回り、子孫も一緒に回る）を設定 |
@@ -145,9 +150,16 @@ t.scale      -- Vec3
 | `:setSpriteParams(e, x, y, z, w)` | — | Sprite2D の shaderParams（カスタムシェーダーへの汎用 float4、TEXCOORD2）を変更。毎フレーム可 |
 | `:setSpriteUV(e, u0, v0, u1, v1)` | — | Sprite2D の uvMin/uvMax を直接指定（アトラス切り出しの実行時切替）。`animFrames>0` 中は描画時に上書きされる |
 | `:setSpriteScroll(e, su, sv)` | — | Sprite2D の UVスクロール速度（単位/秒）。溶岩表面・滝・背景ループ用。`animFrames>0` 中は無視 |
-| `:setSpriteAnim(e, frames, fps, cols, row)` | — | Sprite2D のフリップブックアニメ設定（`frames=0` で停止し UV 指定に戻る。`cols=0`=frames と同じ=横1行ストリップ、`row`=シート内の行） |
+| `:setSpriteAnim(e, frames, fps, cols, row)` | — | Sprite2D のフリップブックアニメ設定（`frames=0` で停止し UV 指定に戻る。`cols=0`=frames と同じ=横1行ストリップ、`row`=シート内の行）。**呼ぶたび再生位置が頭に戻る**＝モーション切替がこれ1発 |
+| `:setSpriteAnimMode(e, mode)` | — | 再生モード（0=ループ 1=単発（最終フレームで停止） 2=往復）。再生位置は頭に戻る |
+| `:restartSpriteAnim(e)` | — | 連番アニメを頭から再生し直す（設定は変えない） |
+| `:isSpriteAnimDone(e)` | bool | 単発（mode=1）の再生が終わったか。爆発スプライトを消す判定に使う |
 | `:setMeshEffect(e, value)` | — | MeshRenderer の effectValue（カスタムシェーダーへの汎用値）を変更。毎フレーム可 |
 | `:setMeshParams(e, x, y, z, w)` | — | MeshRenderer の shaderParams（カスタムシェーダーへの汎用 float4）を変更。毎フレーム可 |
+| `:setMeshUvScroll(e, su, sv)` | — | MeshRenderer の UVスクロール速度（uv/秒）。滝/溶岩/コンベア/流れる雲。頂点を触らないので毎フレーム可（VB再生成なし） |
+| `:setMeshAnim(e, frames, fps, cols, row)` | — | MeshRenderer の連番アニメ設定（`frames=0` で停止）。板ポリの炎/爆発、アニメする看板。**呼ぶたび再生位置が頭に戻る** |
+| `:setMeshAnimMode(e, mode)` | — | 再生モード（0=ループ 1=単発 2=往復）。再生位置は頭に戻る |
+| `:isMeshAnimDone(e)` | bool | 単発（mode=1）の再生が終わったか |
 | `:gimmicks()` | table | Gimmick 付き全エンティティを配列で返す（要素: `{e,name,kind,period,phase,amplitude,threshold,solid,deadly}`） |
 | `:queryByTag(tag)` | table | タグ一致エンティティの**名前配列** |
 | `:queryInBox(minX, minZ, maxX, maxZ, tag?)` | table | XZ 矩形内のエンティティ名配列（RTS の矩形選択向け） |
@@ -383,12 +395,16 @@ Unity uGUI / Godot Control 相当の retained-mode UI。UI要素は **ECSコン�
 
 | コンポーネント | 主なフィールド | 説明 |
 |---|---|---|
-| `UICanvas` | `refWidth/refHeight`(既定1920x1080), `scaleMode`(0=ScaleToFit 1=ConstantPixel), `sortOrder`, `visible` | UIツリーのルート |
+| `UICanvas` | `refWidth/refHeight`(既定1920x1080), `scaleMode`(0=ScaleToFit 1=ConstantPixel 2=StretchToFill), `sortOrder`, `visible` | UIツリーのルート。`ScaleToFit`=等比縮放+レターボックス、`ConstantPixel`=左上原点の実ピクセル、`StretchToFill`=縦横個別倍率で余白なし |
 | `UIRect` | `anchorMin/Max`, `pivot`, `offsetMin/Max`, `visible`, `rotation`(度), `skewX`(度), `clipChildren` | レイアウト矩形（RectTransform相当）。全UI要素に必須。`rotation/skewX` はレイアウト解決後にピボット回りへ掛かる**視覚変換**（子孫も一緒に回る。斜め配置パネル/平行四辺形バナー用。回転中はエディタのリサイズハンドル非表示=数値編集。`UIScrollView` ノード自身では無視）。`clipChildren=true` で子ツリーを自矩形で**マスク**（ワイプ公開/マーキー。ScrollView 同様このノード自身の回転は無効） |
-| `UIImage` | `texturePath`(空=単色), `color`, `shape`(0=矩形 1=楕円 2=リング 3=ダイヤ 4=六角形 5=三角形)+`ringThickness`, `uvMin/Max`(1超え=タイル), `uvScroll`(uv/秒), `sliceBorder`(px 左上右下, 9-slice), `cornerRadius`, `raycastBlock`(既定true), `fillAmount`(0..1 既定1), `fillDir`(0=左 1=右 2=下 3=上から 4=放射時計回り 5=放射反時計回り)+`fillOrigin`(開始角度), `segments`+`segmentGap/Color`(分割ゲージ), `gradientDir`(0=なし 1=横 2=縦 3=斜め 4=放射)+`gradientColor2`+`gradientScrollSpeed`(周回/秒。0=静的), `outlineWidth`+`outlineColor`+`outlineStyle`(0=実線 1=破線 2=コーナーブラケット)+`outlineDash`, `shadowColor`(α0=無効)+`shadowOffset`+`shadowSoftness` | 画像/単色。`shape≠0` は**形状描画**＝テクスチャを形で切り抜く（丸アイコン/バフ枠/スキルノード。角丸/9-slice 無視。リングは単色専用の帯円=円形ゲージ）。放射 fill はクールダウン円（矩形にも効く。リングの fill は常に円弧）。`segments` はスタミナ/弾数のチャンクゲージ（矩形+線形fill専用）。`uvMax>1`+`uvScroll` で**流れるタイルパターン**（警告帯/ストライプ。9-sliceでは無効）。グラデは全描画形態に掛かる（`gradientColor2` のαは無視）。`gradientScrollSpeed≠0` で光帯がグラデ方向へ流れる（ガチャの光沢流し）。ブラケット枠は SF/照準 HUD の四隅鉤括弧。影は形状近似のドロップシャドウ |
+| `UIImage` | `texturePath`(空=単色), `color`, `shape`(0=矩形 1=楕円 2=リング 3=ダイヤ 4=六角形 5=三角形)+`ringThickness`, `uvMin/Max`(1超え=タイル), `uvScroll`(uv/秒), `animFrames`+`animFps=8`+`animCols`+`animRow`+`animRows`+`animMode`(連番アニメ), `sliceBorder`(px 左上右下, 9-slice), `cornerRadius`, `raycastBlock`(既定true), `fillAmount`(0..1 既定1), `fillDir`(0=左 1=右 2=下 3=上から 4=放射時計回り 5=放射反時計回り)+`fillOrigin`(開始角度), `segments`+`segmentGap/Color`(分割ゲージ), `gradientDir`(0=なし 1=横 2=縦 3=斜め 4=放射)+`gradientColor2`+`gradientScrollSpeed`(周回/秒。0=静的), `outlineWidth`+`outlineColor`+`outlineStyle`(0=実線 1=破線 2=コーナーブラケット)+`outlineDash`, `shadowColor`(α0=無効)+`shadowOffset`+`shadowSoftness` | 画像/単色。`shape≠0` は**形状描画**＝テクスチャを形で切り抜く（丸アイコン/バフ枠/スキルノード。角丸/9-slice 無視。リングは単色専用の帯円=円形ゲージ）。放射 fill はクールダウン円（矩形にも効く。リングの fill は常に円弧）。`segments` はスタミナ/弾数のチャンクゲージ（矩形+線形fill専用）。`uvMax>1`+`uvScroll` で**流れるタイルパターン**（警告帯/ストライプ。9-sliceでは無効）。グラデは全描画形態に掛かる（`gradientColor2` のαは無視）。`gradientScrollSpeed≠0` で光帯がグラデ方向へ流れる（ガチャの光沢流し）。ブラケット枠は SF/照準 HUD の四隅鉤括弧。影は形状近似のドロップシャドウ。`animFrames>0` で**連番アニメ**（テクスチャを `animCols` x N グリッドとみなしてコマ送り＝爆発/回復/アイコンのループ演出。`animMode` 0=ループ 1=単発（最終フレームで停止） 2=往復。エディタ中もプレビュー再生。有効中は `uvMin/uvMax` と `uvScroll` を無視、9-slice と `shape≠0` では無効） |
 | `UIText` | `text`, `fontSize`, `color`, `alignH/V`(0=左/上 1=中央 2=右/下), `wrap`, `outlineWidth`+`outlineColor`(縁取り), `shadowColor`(α0=無効)+`shadowOffset`(影), `fontPath`(assets相対 .ttf/.otf。空=既定Yu Gothic), `typewriterSpeed`(文字/秒。0=無効), `letterSpacing`(px 字間), `charAnim`(0=なし 1=ウェーブ 2=ジッター 3=レインボー)+`charAnimAmount/Speed`, `gradientDir`(0=なし 1=横 2=縦)+`gradientColor2`, `rich` | テキスト。クリックは遮らない。縁取り/影はゲームUIの可読性の要。`typewriterSpeed>0` で Play 中に1文字ずつ表示（UTF-8 単位。`setUiText` で先頭から再生し直し。整列は全文サイズ固定）。`letterSpacing`/`charAnim` は 1 文字ずつ描く per-glyph モード（**wrap とは非両立**=wrap優先）。テキストグラデは本体のみ（縁取り/影には掛からない。金色タイトル等）。`rich=true` で**インラインタグ**をスパン装飾として解釈: `[c=RRGGBB]色[/c]` / `[wave]..[/wave]` / `[shake]..[/shake]` / `[rainbow]..[/rainbow]`（入れ子なし・閉じ忘れは文末まで・不正/未知のタグはそのまま表示。アニメの振幅/速度は `charAnimAmount/Speed` を流用。整列/タイプライターの文字数はタグ除去後） |
-| `UIButton` | `onClickEvent`, `normalColor/hoverColor/pressedColor`, `interactable` | 同一エンティティの `UIImage` を状態色でティント。release-inside でクリック確定。要素が重なった場合は**最前面だけ**が反応（子要素がクリックを吸っても親ボタンへバブリング） |
-| `UILayout` | `mode`(0=VBox 1=HBox 2=Grid), `cellW/cellH`(px。VBoxのcellW=0/HBoxのcellH=0は内側いっぱい), `spacing`, `padding`(左上右下px), `gridCols` | **自動レイアウトコンテナ**。直下の子（UIRect持ち）へセル矩形を順番に配る＝手動 offset 計算なしでメニュー列/ツールバー/インベントリ。子はセル内でアンカー解決（全面ストレッチ=セルいっぱい）。スクロールリストは UIScrollView の子コンテンツノードに付ける。UIScrollView はホイールに加え**ドラッグ/フリック(慣性)スクロール**対応（`dragScroll` で許可、`flickDecay`=減衰率/秒で 0=慣性なし。ドラッグでスクロールした押下はリスト内ボタンのクリックにならない） |
+| `UIButton` | `onClickEvent`, `normalColor/hoverColor/pressedColor`, `interactable`, `hoverSound`/`clickSound`(assets相対 wav) | 同一エンティティの `UIImage` を状態色でティント。release-inside でクリック確定。要素が重なった場合は**最前面だけ**が反応（子要素がクリックを吸っても親ボタンへバブリング）。`hoverSound` はカーソル/フォーカスが乗った瞬間、`clickSound` はクリック確定時に1回鳴る（空=鳴らさない） |
+| `UISlider` | `value`(実値), `minValue=0`/`maxValue=1`, `step`(0=連続), `onChangeEvent`, `trackColor/fillColor/knobColor`, `interactable` | UIRect 全体が操作域。トラック+塗り+つまみを**自前描画**（UIImage 不要）。ドラッグで `value` が変わったフレームだけ `onChangeEvent` を emit（`data.value`=実値）。Lua: `getUiSlider/setUiSlider` |
+| `UIToggle` | `isOn`, `onChangeEvent`, `boxColor`, `checkColor`, `interactable` | チェックボックス。UIRect 全体が箱＝クリック域。release-inside で `isOn` 反転＋`onChangeEvent`（`data.value`=1/0）。ラベルは子の `UIText` で添える。Lua: `getUiToggle/setUiToggle` |
+| `UIScrollView` | `vertical=true`/`horizontal=false`, `scrollX/scrollY`(px), `wheelSpeed=48`, `showBar=true`+`barColor`, `dragScroll=true`, `flickDecay=4`(/秒。0=慣性なし) | 自分の UIRect がビューポート＝子ツリーのクリップ枠。コンテンツ量は子矩形の合併から毎フレーム自動計測し 0..(コンテンツ−ビュー) にクランプ。ホイール＋**ドラッグ/フリック(慣性)スクロール**（スクリーン6px超で確定＝進行中のボタン押下/スライダードラッグはキャンセル＝リスト内ボタンの誤発火なし）。はみ出た子はクリックも効かない |
+| `UIAnimator` | `showAnim=1`, `showDuration=0.35`, `showDelay=0`, `showEasing=2`, `slideOffset=80`(px), `hoverScale=1.05`/`pressScale=0.95`/`hoverSpeed=14`, `loopAnim=0`, `loopSpeed=1`(Hz), `loopAmount=8` | Play/ゲームモード中のみ再生。効果（移動/拡縮/アルファ/回転）は自分と子孫にまとめて掛かる。**出現** `showAnim`: 0=なし 1=フェード 2=ポップ 3=左から 4=右から 5=上から 6=下から 7=スピン 8=バウンド落下 9=フリップ(縦つぶれ) 10=シェイク入場 11=横フリップ(扉/カード)。**イージング** `showEasing`: 0=リニア 1=イン 2=アウト 3=イン/アウト 4=バック 5=バウンス 6=弾性 7=エクスポ 8=インバック(溜め) 9=イン/アウトバック 10=クイント 11=サイン。**ホバー/押下**は同一エンティティに `UIButton` がある時のみ。**ループ** `loopAnim`: 0=なし 1=浮遊(px) 2=パルス(割合) 3=点滅(割合) 4=スピン(`loopSpeed`=回転/秒) 5=スウィング(±度)。Lua: `showUi/hideUi` |
+| `UILayout` | `mode`(0=VBox 1=HBox 2=Grid), `cellW/cellH`(px。VBoxのcellW=0/HBoxのcellH=0は内側いっぱい), `spacing`, `padding`(左上右下px), `gridCols` | **自動レイアウトコンテナ**。直下の子（UIRect持ち）へセル矩形を順番に配る＝手動 offset 計算なしでメニュー列/ツールバー/インベントリ。子はセル内でアンカー解決（全面ストレッチ=セルいっぱい）。スクロールリストは `UIScrollView` の子コンテンツノードに付ける |
 
 アンカー解決式（`UIRect`、親矩形基準・実ピクセル）:
 ```
@@ -399,7 +415,7 @@ rectMax = parentMin + parentSize * anchorMax + offsetMax
 アンカーを引き伸ばす（例: 横ストレッチ）なら offset は左右の余白(px)になる。Inspector の**アンカープリセット**
 （9方位＋ストレッチ＋全面）は選択時に見た目の位置を保ったまま anchor/offset を再計算する。
 
-**Lua からの操作**（値の書き換えのみ。ツリー構造はエディタで組む）: `scene:setUiText/getUiText/setUiTypewriter/isUiTypewriterDone/setUiColor/setUiVisible/setUiTexture/setUiFill/getUiFill/setUiRotation/getUiRotation/getUiSlider/setUiSlider/getUiToggle/setUiToggle/getUiScroll/setUiScroll`（§3 Scene 参照）。定番演出は `uifx.*`（§5 prelude 参照）。
+**Lua からの操作**（値の書き換えのみ。ツリー構造はエディタで組む）: `scene:setUiText/getUiText/setUiTypewriter/isUiTypewriterDone/setUiColor/setUiVisible/setUiTexture/setUiUvScroll/setUiAnim/setUiAnimMode/restartUiAnim/isUiAnimDone/setUiFill/getUiFill/setUiRotation/getUiRotation/getUiSlider/setUiSlider/getUiToggle/setUiToggle/getUiScroll/setUiScroll`（§3 Scene 参照）。定番演出は `uifx.*`（§5 prelude 参照）。
 
 **回転/装飾の既知の制限**: ①回転/スキューしたパネルの**中に** `UIScrollView`/`clipChildren` を置くのは非対応（クリップ位置がずれる。逆=スクロールビュー内の回転要素は OK）②`gradientColor2` のアルファは無視される ③回転+角丸+部分 fill の併用はゲージの切り口も丸くなる ④テクスチャ付き形状（shape≠0）/放射 fill の縁は AA なし（縁取りを付けると綺麗）⑤放射 fill と 9-slice は非両立（平板扱い）⑥破線/ブラケット枠は矩形専用・角丸無視⑦`UIText.rich` は wrap とは非両立（wrap 優先でタグは素通し表示）・テキストグラデ（`gradientDir`）は rich では無効（頂点シェードがスパン色を潰すため）。
 
@@ -587,7 +603,7 @@ end)
 | `Tag` | `tags`（string 配列。`scene:queryByTag` で列挙） |
 | `DataComponent` | `values`（動的 key→DataValue。Lua から読み書き） |
 | `Transform` | `position`,`rotation`(Euler度),`scale`,`quaternion`,`useQuaternion`,`parent`(親エンティティ) |
-| `MeshRenderer` | `modelPath`, `overrideMetallic=-1`, `overrideRoughness=-1`, `uvScaleU=1`, `uvScaleV=1` |
+| `MeshRenderer` | `modelPath`, `overrideMetallic=-1`, `overrideRoughness=-1`, `uvScaleU=1`, `uvScaleV=1`（UVタイリング。頂点へ焼き込み）, `uvScrollU/uvScrollV=0`（UVスクロール uv/秒。滝/溶岩/コンベア）, `animFrames=0`+`animFps=8`+`animCols=0`+`animRow=0`+`animRows=0`+`animMode=0`（連番アニメ。板ポリの炎/爆発、アニメする看板）— Inspector は「UV & Anim」セクション |
 | `GridPlane` | `enabled=true`（エディタグリッド床） |
 
 ### ライト
@@ -601,8 +617,17 @@ end)
 | コンポーネント | フィールド（既定値） |
 |---|---|
 | `CameraComponent` | `fovDegrees=60`, `nearClip=0.1`, `farClip=1000`, `isActive=false`, `projection`(Perspective/Orthographic), `orthoSize=10` |
-| `Sprite2D` | `texturePath`, `layer=0`, `size=(1,1)`, `uvMin`,`uvMax`, `color=(1,1,1,1)`, `worldSpace=true`, `billboard=false`, `animFrames=0`(フリップブック総フレーム。>0でuvMin/Max自動), `animFps=8`, `animCols=0`(0=animFrames), `animRow=0`, `animRows=0`(0=自動), `scrollU/scrollV=0`(UVスクロール 単位/秒。animFrames>0中は無視) |
+| `Sprite2D` | `texturePath`, `layer=0`, `size=(1,1)`, `uvMin`,`uvMax`, `color=(1,1,1,1)`, `worldSpace=true`, `billboard=false`, `animFrames=0`(フリップブック総フレーム。>0でuvMin/Max自動), `animFps=8`, `animCols=0`(0=animFrames), `animRow=0`, `animRows=0`(0=自動), `animMode=0`(0=ループ 1=単発 2=往復), `scrollU/scrollV=0`(UVスクロール 単位/秒。animFrames>0中は無視) |
 | `AudioSource` | `clipPath`, `volume=1`, `loop=false`, `spatial=true`, `playOnStart=true`, `minDistance=1`, `maxDistance=30` |
+
+**連番アニメ（UIImage / Sprite2D / MeshRenderer 共通）**: UV 計算は `renderer/SpriteAnim.h` の純関数を3者で共有する
+（テクスチャを `animCols` x `animRows` グリッドとみなし `frame = floor(t*animFps)` のセルを写す。`animCols=0`=横1行ストリップ、
+`animRows=0`=自動 `animRow + ceil(animFrames/animCols)`。アニメ行の下に別アニメ行が続くシートでは `animRows` を明示する）。
+`animMode`: 0=ループ / 1=単発（最終フレームで停止。`is*AnimDone` で終了検知） / 2=往復（周期は `2*animFrames-2` ＝両端が2回続かない）。
+MeshRenderer はシーン JSON では `uvScroll`（`{u,v}`）と `flipbook`（`{frames,fps,cols,row,rows,mode}`）のキーで保存され、
+実装はルート定数 `b2 uvScaleOffset` を PS が `uv = texCoord * xy + zw` として使う方式＝**頂点バッファ再生成なし**（毎フレーム変えても安価）。
+優先順は 連番 > UVスクロール で、頂点へ焼き込む `uvScaleU/V`（タイリング）とスクロールは併用できる。
+既定の `Forward` / `ForwardSkinned` でのみ効く（カスタムシェーダーは自前で b2 を読む必要がある）。
 
 ### アニメーション
 | コンポーネント | 説明 |
