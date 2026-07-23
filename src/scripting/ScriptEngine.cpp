@@ -962,6 +962,8 @@ void ScriptEngine::RegisterBindings()
         "pauseBGM",        &AudioSystem::PauseBGM,
         "resumeBGM",       &AudioSystem::ResumeBGM,
         "seekBGM",         &AudioSystem::SeekBGM,
+        "setBGMRate",      &AudioSystem::SetBGMRate,
+        "setListener",     &AudioSystem::SetListenerPos,
         "playSFX",         [](AudioSystem& a, const std::string& path, sol::optional<bool> loop) {
                                a.PlaySFX(path, loop.value_or(false));
                            },
@@ -1074,6 +1076,62 @@ void ScriptEngine::RegisterBindings()
         auto it = m_blackboard.find(key);
         return (it != m_blackboard.end()) ? it->second : def.value_or(0.0);
     };
+
+    // --- ディスク永続の数値ストア（settings.json。音量・映像設定などの保存用）---
+    lua["savePersist"] = [this](const std::string& key, double v) {
+        if (m_persistSaveCb) m_persistSaveCb(key, v);
+    };
+    lua["loadPersist"] = [this](const std::string& key, sol::optional<double> def) -> double {
+        return m_persistLoadCb ? m_persistLoadCb(key, def.value_or(0.0)) : def.value_or(0.0);
+    };
+
+    // --- 映像設定（display:*。Application が注入したコールバック経由）---
+    // set 系は即適用され settings.json に保存される。ゲームモード起動時に自動適用。
+    {
+        auto display = lua.create_named_table("display");
+        display.set_function("setVSync", [this](sol::object, bool b) {
+            if (m_displayCb.setVsync) m_displayCb.setVsync(b);
+        });
+        display.set_function("getVSync", [this](sol::object) -> bool {
+            return m_displayCb.getVsync ? m_displayCb.getVsync() : false;
+        });
+        display.set_function("setFpsLimit", [this](sol::object, int v) {
+            if (m_displayCb.setFpsLimit) m_displayCb.setFpsLimit(v);
+        });
+        display.set_function("getFpsLimit", [this](sol::object) -> int {
+            return m_displayCb.getFpsLimit ? m_displayCb.getFpsLimit() : 0;
+        });
+        display.set_function("setWindowMode", [this](sol::object, const std::string& m) {
+            if (m_displayCb.setWindowMode) m_displayCb.setWindowMode(m);
+        });
+        display.set_function("getWindowMode", [this](sol::object) -> std::string {
+            return m_displayCb.getWindowMode ? m_displayCb.getWindowMode() : "windowed";
+        });
+        display.set_function("setResolution", [this](sol::object, int w, int h) {
+            if (m_displayCb.setResolution) m_displayCb.setResolution(w, h);
+        });
+        display.set_function("getResolution", [this](sol::object) -> std::tuple<int, int> {
+            int w = 0, h = 0;
+            if (m_displayCb.getResolution) m_displayCb.getResolution(w, h);
+            return { w, h };
+        });
+        display.set_function("getResolutions", [this](sol::object, sol::this_state ts) -> sol::table {
+            sol::state_view sv(ts);
+            sol::table list = sv.create_table();
+            if (m_displayCb.getResolutions)
+            {
+                int i = 1;
+                for (auto& [w, h] : m_displayCb.getResolutions())
+                {
+                    sol::table e = sv.create_table();
+                    e["w"] = w;
+                    e["h"] = h;
+                    list[i++] = e;
+                }
+            }
+            return list;
+        });
+    }
 
     // --- ゲーム制御（Application が注入したコールバック経由）---
     lua["loadScene"] = [this](const std::string& rel) { if (m_loadSceneCb) m_loadSceneCb(rel); };

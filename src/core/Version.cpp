@@ -3,13 +3,32 @@
 // バージョン定数の唯一の実体。宣言・注意書きは Version.h を参照。
 namespace dx12e
 {
-const char* const kEngineVersion = "1.6.1";
+const char* const kEngineVersion = "1.6.2";
 
 const char* const kUpdateRepoOwner = "ryuto-alt";
 const char* const kUpdateRepoName  = "dx12";
 
-const char* const kWhatsNewTitle = "DX12 Engine v1.6.1 の更新内容";
+const char* const kWhatsNewTitle = "DX12 Engine v1.6.2 の更新内容";
 const char* const kWhatsNewBody =
+    "v1.6.2: ゲーム内オプション画面が作れる映像/オーディオ API を追加\n"
+    "\n"
+    "■ 映像設定 API (Lua display:*) を追加\n"
+    "  ゲーム内のオプション画面から画面モードや FPS を変更できるようになりました。\n"
+    "  すべて settings.json に自動保存され、次回起動時に自動適用されます:\n"
+    "  ・display:setWindowMode(\"windowed\"/\"borderless\"/\"fullscreen\")\n"
+    "    フルスクリーンはディスプレイモード変更方式(ALLOW_TEARING と両立)\n"
+    "  ・display:setVSync(true/false) … 垂直同期\n"
+    "  ・display:setFpsLimit(n) … FPS 上限(0=無制限。垂直同期 OFF 時に有効)\n"
+    "  ・display:setResolution(w, h) / getResolutions() … 解像度変更と一覧\n"
+    "  ・各 get 系(getWindowMode / getVSync / getFpsLimit / getResolution)\n"
+    "\n"
+    "■ オーディオ API を強化\n"
+    "  ・audio:setBGMRate(r) … BGM 再生速度(ピッチ連動)。スローモ/早送り演出用\n"
+    "  ・audio:setListener(x,y,z) … 空間オーディオのリスナーをプレイヤーに追従\n"
+    "  ・空間 SFX がステレオ素材でも自動モノ化されて鳴るようになりました\n"
+    "\n"
+    "以下は v1.6.1 の内容(本バージョンに含まれます):\n"
+    "\n"
     "v1.6.1: この「更新内容」ウィンドウ自体が出ずに操作不能になるのを修正\n"
     "\n"
     "■ 更新後の初回起動でエディタが操作できなくなるのを修正\n"

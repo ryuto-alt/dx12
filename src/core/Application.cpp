@@ -799,6 +799,24 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     if (!gameMode)
         m_window->EnableCustomTitleBar();
 
+    // ゲームモード: 保存済みの映像設定（オプション画面の settings.json）をスワップチェイン
+    // 生成前に適用する。エディタではエディタ自身の窓を勝手に変えないため適用しない
+    // （Play 中に display.* を呼んだときだけライブで反映される）。
+    if (gameMode)
+    {
+        m_useVsync = PersistGet("video_vsync", m_useVsync ? 1.0 : 0.0) != 0.0;
+        m_fpsLimit = static_cast<f32>(PersistGet("video_fps", m_fpsLimit));
+        const int mode = static_cast<int>(PersistGet("video_mode", 0));
+        const u32 w = static_cast<u32>(PersistGet("video_w", 0));
+        const u32 h = static_cast<u32>(PersistGet("video_h", 0));
+        if (mode == static_cast<int>(WindowMode::Borderless))
+            m_window->SetMode(WindowMode::Borderless);
+        else if (mode == static_cast<int>(WindowMode::Fullscreen))
+            m_window->SetMode(WindowMode::Fullscreen, w, h);
+        else if (w > 0 && h > 0)
+            m_window->SetClientSize(w, h);
+    }
+
     // グラフィックスデバイス初期化
     SplashScreen::SetStatus("グラフィックスデバイスを初期化中...");
     m_graphicsDevice = std::make_unique<GraphicsDevice>();
@@ -2468,7 +2486,7 @@ nlohmann::json McpLuaApi()
         "addCharacterController(e,radius,halfHeight)", "move(e,vx,vz)", "jump(e,amount?)", "isGrounded(e) -> bool",
     })));
     objects.push_back(O("audio", "global", json::array({
-        "playBGM(path)/stopBGM()/pauseBGM()/resumeBGM()", "seekBGM(sec)  (再生位置を秒指定でジャンプ。ループ維持、イントロスキップ等)", "playSFX(path)",
+        "playBGM(path)/stopBGM()/pauseBGM()/resumeBGM()", "seekBGM(sec)  (再生位置を秒指定でジャンプ。ループ維持、イントロスキップ等)", "setBGMRate(ratio)  (再生速度倍率・ピッチ連動0.05〜2.0。1=通常。playBGMで1.0に戻る)", "setListener(x,y,z)  (空間SFXのリスナー位置上書き。プレイヤー中心の定位に。毎フレーム呼ぶ想定)", "playSFX(path)",
         "playSpatial(path,x,y,z,minD,maxD,vol?,loop?)", "stopAllSFX()",
         "setMasterVolume/setBGMVolume/setSFXVolume(v)", "getBGMList()/getSFXList() -> table",
     })));
@@ -5448,12 +5466,12 @@ void Application::Run()
             m_mcpStepReply = {};
         }
 
-        // フレームレートリミッター（VSync OFF時のCPU暴走を防止）
-        if (!m_useVsync)
+        // フレームレートリミッター（VSync OFF時のCPU暴走を防止。上限はオプション画面から変更可能）
+        if (!m_useVsync && m_fpsLimit > 0.0f)
         {
             using namespace std::chrono;
             auto targetDuration = duration_cast<high_resolution_clock::duration>(
-                duration<f64>(1.0 / static_cast<f64>(kTargetFps)));
+                duration<f64>(1.0 / static_cast<f64>(m_fpsLimit)));
             auto elapsed = high_resolution_clock::now() - m_frameStart;
             auto remaining = targetDuration - elapsed;
 
@@ -6516,6 +6534,9 @@ void Application::LoadProject(const ProjectInfo& info)
     namespace fs = std::filesystem;
     m_projectInfo = info;
 
+    // settings.json はプロジェクトごとなので読み直す
+    m_persistLoaded = false;
+
     // git 状態をプロジェクトごとに再評価
     m_gitChecked   = false;
     m_gitOutput.clear();
@@ -7203,6 +7224,61 @@ void Application::RenderVersionControlWindow()
     ImGui::End();
 }
 
+// ---- ユーザー設定の永続化（settings.json）--------------------------------
+// 数値のみのフラット JSON。Lua の savePersist/loadPersist と映像設定(video_*)が使う。
+
+std::filesystem::path Application::PersistPath() const
+{
+    if (m_isGameMode)
+    {
+        wchar_t exe[MAX_PATH] = {};
+        GetModuleFileNameW(nullptr, exe, MAX_PATH);
+        return std::filesystem::path(exe).parent_path() / L"settings.json";
+    }
+    return std::filesystem::path(PathResolver::AssetsDir()).parent_path() / "settings.json";
+}
+
+void Application::LoadPersistStore()
+{
+    if (m_persistLoaded) return;
+    m_persistLoaded = true;
+    m_persistStore.clear();
+    std::ifstream f(PersistPath());
+    if (!f) return;
+    try
+    {
+        nlohmann::json j = nlohmann::json::parse(f);
+        for (auto& [k, v] : j.items())
+            if (v.is_number()) m_persistStore[k] = v.get<double>();
+    }
+    catch (const std::exception& e)
+    {
+        Logger::Warn("settings.json の読み込みに失敗: {}", e.what());
+    }
+}
+
+void Application::SavePersistStore()
+{
+    nlohmann::json j = nlohmann::json::object();
+    for (auto& [k, v] : m_persistStore) j[k] = v;
+    std::ofstream f(PersistPath());
+    if (f) f << j.dump(2);
+}
+
+double Application::PersistGet(const std::string& key, double def)
+{
+    LoadPersistStore();
+    auto it = m_persistStore.find(key);
+    return it == m_persistStore.end() ? def : it->second;
+}
+
+void Application::PersistSet(const std::string& key, double v)
+{
+    LoadPersistStore();
+    m_persistStore[key] = v;
+    SavePersistStore();
+}
+
 void Application::WireScriptCallbacks()
 {
     if (!m_scriptEngine) return;
@@ -7263,6 +7339,61 @@ void Application::WireScriptCallbacks()
             c.r = r; c.g = g; c.b = b; c.a = a;
             m_uiCommands.push_back(std::move(c));
         });
+
+    // 映像設定（Lua display.*）。set 系は即適用し settings.json にも保存する。
+    // 保存キー: video_vsync / video_fps / video_mode(0=win,1=borderless,2=full) / video_w / video_h
+    {
+        ScriptEngine::DisplayCallbacks dc;
+        dc.setVsync = [this](bool b) { m_useVsync = b; PersistSet("video_vsync", b ? 1.0 : 0.0); };
+        dc.getVsync = [this] { return m_useVsync; };
+        dc.setFpsLimit = [this](int v) {
+            m_fpsLimit = static_cast<f32>(std::max(0, v));
+            PersistSet("video_fps", static_cast<double>(m_fpsLimit));
+        };
+        dc.getFpsLimit = [this] { return static_cast<int>(m_fpsLimit); };
+        dc.setWindowMode = [this](const std::string& m) {
+            WindowMode mode = m == "borderless" ? WindowMode::Borderless
+                            : m == "fullscreen" ? WindowMode::Fullscreen
+                                                : WindowMode::Windowed;
+            if (m_window)
+                m_window->SetMode(mode, static_cast<u32>(PersistGet("video_w", 0)),
+                                        static_cast<u32>(PersistGet("video_h", 0)));
+            PersistSet("video_mode", static_cast<double>(mode));
+        };
+        dc.getWindowMode = [this]() -> std::string {
+            if (!m_window) return "windowed";
+            switch (m_window->GetMode())
+            {
+            case WindowMode::Borderless: return "borderless";
+            case WindowMode::Fullscreen: return "fullscreen";
+            default:                     return "windowed";
+            }
+        };
+        dc.setResolution = [this](int w, int h) {
+            PersistSet("video_w", w);
+            PersistSet("video_h", h);
+            if (!m_window) return;
+            if (m_window->GetMode() == WindowMode::Fullscreen)
+                m_window->SetMode(WindowMode::Fullscreen, static_cast<u32>(w), static_cast<u32>(h));
+            else
+                m_window->SetClientSize(static_cast<u32>(w), static_cast<u32>(h));
+        };
+        dc.getResolution = [this](int& w, int& h) {
+            w = m_window ? static_cast<int>(m_window->GetWidth()) : 0;
+            h = m_window ? static_cast<int>(m_window->GetHeight()) : 0;
+        };
+        dc.getResolutions = [] {
+            std::vector<std::pair<int, int>> out;
+            for (auto& [w, h] : Window::EnumResolutions())
+                out.emplace_back(static_cast<int>(w), static_cast<int>(h));
+            return out;
+        };
+        m_scriptEngine->SetDisplayCallbacks(std::move(dc));
+
+        m_scriptEngine->SetPersistCallbacks(
+            [this](const std::string& key, double v) { PersistSet(key, v); },
+            [this](const std::string& key, double def) { return PersistGet(key, def); });
+    }
 
     // C++ EventBus を ScriptEngine へ注入（events:on/emit/clear が薄いバインドになる）。
     m_scriptEngine->SetEventBus(&m_eventBus);

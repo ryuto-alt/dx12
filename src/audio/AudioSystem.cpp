@@ -241,6 +241,7 @@ void AudioSystem::PlayBGM(const std::string& filePath, bool loop)
         return;
     }
 
+    m_bgmVoice->SetFrequencyRatio(1.0f);   // 前曲のスローモ演出を持ち越さない
     m_bgmVoice->Start();
     m_currentBGMPath = filePath;
     m_bgmLoop = loop;
@@ -280,6 +281,15 @@ void AudioSystem::SeekBGM(f32 seconds)
         return;
     }
     m_bgmVoice->Start();
+}
+
+void AudioSystem::SetBGMRate(f32 ratio)
+{
+    if (!m_bgmVoice) return;
+    // XAudio2 の既定 MaxFrequencyRatio は 2.0。下限は無音同然になる前に打ち切る
+    if (ratio < 0.05f) ratio = 0.05f;
+    if (ratio > 2.0f)  ratio = 2.0f;
+    m_bgmVoice->SetFrequencyRatio(ratio);
 }
 
 void AudioSystem::StopBGM()
@@ -382,9 +392,20 @@ void AudioSystem::SetListener(float px, float py, float pz,
                               float fx, float fy, float fz,
                               float ux, float uy, float uz)
 {
+    // Lua がプレイヤー位置を指定している間は、カメラ由来の位置より優先する(向きはカメラのまま)
+    if (m_listenerPosOverride)
+    {
+        px = m_lopX; py = m_lopY; pz = m_lopZ;
+    }
     m_listener.Position    = {px, py, pz};
     m_listener.OrientFront = {fx, fy, fz};
     m_listener.OrientTop   = {ux, uy, uz};
+}
+
+void AudioSystem::SetListenerPos(float x, float y, float z)
+{
+    m_listenerPosOverride = true;
+    m_lopX = x; m_lopY = y; m_lopZ = z;
 }
 
 void AudioSystem::ComputeAndApply(SFXSlot& slot)
@@ -425,12 +446,11 @@ i32 AudioSystem::PlaySFXSpatial(const std::string& filePath, float x, float y, f
     AudioClip* clip = GetOrLoadClip(filePath);
     if (!clip) return -1;
 
-    // モノ以外は空間化できないので通常 SFX にフォールバック
+    // ステレオ素材は自動でモノにダウンミックスして空間化(キャッシュごと変換、次回からはモノ)
     if (clip->GetFormat().nChannels != 1)
     {
-        Logger::Warn("PlaySFXSpatial: '{}' はモノラルではないため 2D SFX として再生します", filePath);
-        PlaySFX(filePath, loop);
-        return -1;
+        Logger::Info("PlaySFXSpatial: '{}' をモノにダウンミックスして空間再生します", filePath);
+        clip->DownmixToMono();
     }
 
     // 空きスロット探索（PlaySFX と同じ方針）

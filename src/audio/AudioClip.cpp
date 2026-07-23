@@ -20,6 +20,27 @@
 namespace dx12e
 {
 
+void AudioClip::DownmixToMono()
+{
+    const u16 ch = m_format.nChannels;
+    if (ch <= 1 || m_format.wBitsPerSample != 16) return;
+
+    const size_t frames = m_pcmData.size() / (static_cast<size_t>(ch) * 2);
+    std::vector<u8> mono(frames * 2);
+    auto* src = reinterpret_cast<const int16_t*>(m_pcmData.data());
+    auto* dst = reinterpret_cast<int16_t*>(mono.data());
+    for (size_t i = 0; i < frames; ++i)
+    {
+        int sum = 0;
+        for (u16 c = 0; c < ch; ++c) sum += src[i * ch + c];
+        dst[i] = static_cast<int16_t>(sum / ch);
+    }
+    m_pcmData = std::move(mono);
+    m_format.nChannels       = 1;
+    m_format.nBlockAlign     = 2;
+    m_format.nAvgBytesPerSec = m_format.nSamplesPerSec * 2;
+}
+
 bool AudioClip::LoadFromFile(const std::string& filePath)
 {
     std::string ext = std::filesystem::path(filePath).extension().string();

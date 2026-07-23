@@ -15,6 +15,7 @@ class AudioClip
 public:
     bool LoadFromFile(const std::string& filePath);
     bool LoadFromMemory(const uint8_t* data, size_t size, const std::string& extHint);
+    void DownmixToMono();   // 16bit PCM前提。空間SFXがステレオ素材でもそのまま使えるように
 
     const u8*         GetPCMData() const { return m_pcmData.data(); }
     u32               GetSizeInBytes() const { return static_cast<u32>(m_pcmData.size()); }

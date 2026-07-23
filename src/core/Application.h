@@ -644,10 +644,21 @@ private:
     f32 m_scriptPollTimer = 0.0f;
     static constexpr f32 kScriptPollInterval = 0.5f;
 
-    // フレームレートリミッター
-    static constexpr f32 kTargetFps = 144.0f;
+    // フレームレートリミッター（VSync OFF 時のみ有効。0=無制限。オプション画面から変更可能）
+    f32  m_fpsLimit = 144.0f;
     bool m_useVsync = false;
     std::chrono::high_resolution_clock::time_point m_frameStart{};
+
+    // ---- ユーザー設定の永続化（settings.json）----
+    // Lua の savePersist/loadPersist と、映像設定（video_* キー）の保存先。
+    // エディタ: <プロジェクト>/settings.json、ゲーム: exe と同じディレクトリ。
+    std::filesystem::path PersistPath() const;
+    void   LoadPersistStore();
+    void   SavePersistStore();
+    double PersistGet(const std::string& key, double def);
+    void   PersistSet(const std::string& key, double v);
+    std::unordered_map<std::string, double> m_persistStore;
+    bool m_persistLoaded = false;
 };
 
 } // namespace dx12e

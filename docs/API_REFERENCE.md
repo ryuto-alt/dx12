@@ -210,6 +210,8 @@ t.scale      -- Vec3
 |---|---|
 | `:playBGM(path)` / `:stopBGM()` / `:pauseBGM()` / `:resumeBGM()` | BGM 制御（対応形式: `.wav` / `.mp3` / `.ogg`） |
 | `:seekBGM(sec)` | 再生中 BGM の位置を秒指定でジャンプ（ループ設定維持。イントロスキップ等に） |
+| `:setBGMRate(ratio)` | BGM 再生速度倍率（ピッチ連動、0.05〜2.0）。1=通常、0.5=半速+1oct下。スローモ演出用。playBGM で 1.0 に戻る |
+| `:setListener(x, y, z)` | 空間SFXのリスナー位置を上書き（プレイヤー中心の定位に）。毎フレーム呼ぶ想定。一度呼ぶとカメラ位置より優先 |
 | `:playSFX(path)` | 2D 効果音 |
 | `:playSpatial(path, x, y, z, minD, maxD, vol?, loop?)` | 3D 空間効果音 |
 | `:stopAllSFX()` | 全 SE 停止 |

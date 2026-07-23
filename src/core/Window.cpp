@@ -199,47 +199,142 @@ void Window::SetTitle(const std::wstring& title)
 
 void Window::ToggleFullscreen()
 {
-    if (!m_fullscreen)
+    // F11: ウィンドウ ⇄ ボーダレス（従来挙動）
+    SetMode(m_mode == WindowMode::Windowed ? WindowMode::Borderless : WindowMode::Windowed);
+}
+
+void Window::SetMode(WindowMode mode, u32 width, u32 height)
+{
+    if (!m_hwnd) return;
+
+    // Fullscreen から抜けるときはディスプレイモードを元に戻す
+    if (m_displayModeChanged && mode != WindowMode::Fullscreen)
     {
-        // ウィンドウ → ボーダレスフルスクリーン
+        ChangeDisplaySettingsW(nullptr, 0);
+        m_displayModeChanged = false;
+    }
+
+    // ウィンドウ位置の復元用に、ウィンドウモードから出るときだけ矩形を覚える
+    if (m_mode == WindowMode::Windowed && mode != WindowMode::Windowed)
         GetWindowRect(m_hwnd, &m_windowedRect);
 
-        // スタイルをボーダレスに変更
-        SetWindowLongPtrW(m_hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
-
-        // モニター情報取得
-        HMONITOR monitor = MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST);
-        MONITORINFO mi = {};
-        mi.cbSize = sizeof(mi);
-        GetMonitorInfoW(monitor, &mi);
-
-        SetWindowPos(m_hwnd, HWND_TOP,
-            mi.rcMonitor.left, mi.rcMonitor.top,
-            mi.rcMonitor.right - mi.rcMonitor.left,
-            mi.rcMonitor.bottom - mi.rcMonitor.top,
-            SWP_FRAMECHANGED | SWP_NOACTIVATE);
-
-        ShowWindow(m_hwnd, SW_MAXIMIZE);
-        m_fullscreen = true;
-
-        Logger::Info("Fullscreen enabled");
-    }
-    else
+    switch (mode)
     {
-        // ボーダレスフルスクリーン → ウィンドウ
+    case WindowMode::Windowed:
+    {
+        // 一度もウィンドウ表示していない(起動直後にボーダレス等へ入った)場合の復元先を用意
+        if (m_windowedRect.right - m_windowedRect.left <= 0
+            || m_windowedRect.bottom - m_windowedRect.top <= 0)
+        {
+            RECT r = { 0, 0, 1280, 720 };
+            AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX, FALSE);
+            const LONG w = r.right - r.left, h = r.bottom - r.top;
+            RECT wa{};
+            SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+            m_windowedRect = { wa.left + ((wa.right - wa.left) - w) / 2,
+                               wa.top + ((wa.bottom - wa.top) - h) / 2, 0, 0 };
+            m_windowedRect.right  = m_windowedRect.left + w;
+            m_windowedRect.bottom = m_windowedRect.top + h;
+        }
         SetWindowLongPtrW(m_hwnd, GWL_STYLE, WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX | WS_VISIBLE);
-
         SetWindowPos(m_hwnd, HWND_NOTOPMOST,
             m_windowedRect.left, m_windowedRect.top,
             m_windowedRect.right - m_windowedRect.left,
             m_windowedRect.bottom - m_windowedRect.top,
             SWP_FRAMECHANGED | SWP_NOACTIVATE);
-
         ShowWindow(m_hwnd, SW_NORMAL);
+        m_mode = WindowMode::Windowed;
         m_fullscreen = false;
-
+        if (width > 0 && height > 0)
+            SetClientSize(width, height);
         Logger::Info("Windowed mode restored");
+        break;
     }
+    case WindowMode::Borderless:
+    {
+        SetWindowLongPtrW(m_hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+        HMONITOR monitor = MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi = {};
+        mi.cbSize = sizeof(mi);
+        GetMonitorInfoW(monitor, &mi);
+        SetWindowPos(m_hwnd, HWND_TOP,
+            mi.rcMonitor.left, mi.rcMonitor.top,
+            mi.rcMonitor.right - mi.rcMonitor.left,
+            mi.rcMonitor.bottom - mi.rcMonitor.top,
+            SWP_FRAMECHANGED | SWP_NOACTIVATE);
+        ShowWindow(m_hwnd, SW_MAXIMIZE);
+        m_mode = WindowMode::Borderless;
+        m_fullscreen = true;
+        Logger::Info("Borderless fullscreen enabled");
+        break;
+    }
+    case WindowMode::Fullscreen:
+    {
+        // 解像度指定なしなら現在のデスクトップ解像度
+        if (width == 0 || height == 0)
+        {
+            DEVMODEW cur = {};
+            cur.dmSize = sizeof(cur);
+            if (EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &cur))
+            {
+                width  = cur.dmPelsWidth;
+                height = cur.dmPelsHeight;
+            }
+        }
+        DEVMODEW dm = {};
+        dm.dmSize       = sizeof(dm);
+        dm.dmFields     = DM_PELSWIDTH | DM_PELSHEIGHT;
+        dm.dmPelsWidth  = width;
+        dm.dmPelsHeight = height;
+        // CDS_FULLSCREEN = 一時的なモード変更（プロセス終了で OS が自動復元）
+        LONG r = ChangeDisplaySettingsW(&dm, CDS_FULLSCREEN);
+        if (r != DISP_CHANGE_SUCCESSFUL)
+        {
+            Logger::Warn("ディスプレイモード変更失敗 ({}x{}, code={}) — ボーダレスにフォールバック",
+                         width, height, r);
+            SetMode(WindowMode::Borderless);
+            return;
+        }
+        m_displayModeChanged = true;
+        SetWindowLongPtrW(m_hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+        SetWindowPos(m_hwnd, HWND_TOP, 0, 0,
+            static_cast<int>(width), static_cast<int>(height),
+            SWP_FRAMECHANGED | SWP_NOACTIVATE);
+        ShowWindow(m_hwnd, SW_SHOW);
+        m_mode = WindowMode::Fullscreen;
+        m_fullscreen = true;
+        Logger::Info("Fullscreen enabled ({}x{})", width, height);
+        break;
+    }
+    }
+}
+
+void Window::SetClientSize(u32 width, u32 height)
+{
+    if (!m_hwnd || m_mode != WindowMode::Windowed || width == 0 || height == 0) return;
+    RECT rect = { 0, 0, static_cast<LONG>(width), static_cast<LONG>(height) };
+    AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX, FALSE);
+    SetWindowPos(m_hwnd, nullptr, 0, 0,
+        rect.right - rect.left, rect.bottom - rect.top,
+        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    Logger::Info("Client size set to {}x{}", width, height);
+}
+
+std::vector<std::pair<u32, u32>> Window::EnumResolutions()
+{
+    std::vector<std::pair<u32, u32>> out;
+    DEVMODEW dm = {};
+    dm.dmSize = sizeof(dm);
+    for (DWORD i = 0; EnumDisplaySettingsW(nullptr, i, &dm); ++i)
+    {
+        if (dm.dmBitsPerPel != 32) continue;
+        if (dm.dmPelsWidth < 1024 || dm.dmPelsHeight < 576) continue;   // 極小モードは除外
+        std::pair<u32, u32> mode{ dm.dmPelsWidth, dm.dmPelsHeight };
+        if (std::find(out.begin(), out.end(), mode) == out.end())
+            out.push_back(mode);
+    }
+    std::sort(out.begin(), out.end());
+    return out;
 }
 
 bool Window::ProcessMessages()

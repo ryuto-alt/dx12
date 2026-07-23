@@ -770,6 +770,16 @@ function AudioSystem:resumeBGM() end
 ---@param seconds number 曲頭からの秒数（曲長超過はループ内に丸め）
 function AudioSystem:seekBGM(seconds) end
 
+---BGM の再生速度倍率（ピッチ連動）。1=通常、0.5=半速+1オクターブ下。スローモ演出用
+---@param ratio number 0.05〜2.0 にクランプ。playBGM で新曲開始時に 1.0 へ戻る
+function AudioSystem:setBGMRate(ratio) end
+
+---空間SFXのリスナー位置を上書き（プレイヤー中心の定位に）。毎フレーム呼ぶ想定
+---@param x number
+---@param y number
+---@param z number
+function AudioSystem:setListener(x, y, z) end
+
 ---2D 効果音を再生
 ---@param path string assets/ からの相対パス
 function AudioSystem:playSFX(path) end
@@ -818,6 +828,51 @@ function AudioSystem:rescan() end
 ---BGM / SE / 3D 空間オーディオ
 ---@type AudioSystem
 audio = nil
+
+-- ============================================================
+-- display: 映像設定（オプション画面用）。set 系は即適用 + settings.json に保存され、
+-- ゲームモード起動時に自動適用される（エディタでは自動適用しない）。
+-- ============================================================
+
+---@class DisplayApi
+local DisplayApi = {}
+
+---垂直同期の ON/OFF
+---@param b boolean
+function DisplayApi:setVSync(b) end
+
+---@return boolean
+function DisplayApi:getVSync() end
+
+---フレームレート上限（VSync OFF 時のみ有効。0=無制限）
+---@param fps integer
+function DisplayApi:setFpsLimit(fps) end
+
+---@return integer
+function DisplayApi:getFpsLimit() end
+
+---画面モード切り替え
+---@param mode "windowed"|"borderless"|"fullscreen"
+function DisplayApi:setWindowMode(mode) end
+
+---@return "windowed"|"borderless"|"fullscreen"
+function DisplayApi:getWindowMode() end
+
+---解像度変更（ウィンドウ=クライアントサイズ / フルスクリーン=ディスプレイモード。ボーダレス中は保存のみ）
+---@param w integer
+---@param h integer
+function DisplayApi:setResolution(w, h) end
+
+---現在の解像度（クライアント領域）
+---@return integer w, integer h
+function DisplayApi:getResolution() end
+
+---プライマリモニタが対応する解像度一覧（昇順）
+---@return {w:integer, h:integer}[]
+function DisplayApi:getResolutions() end
+
+---@type DisplayApi
+display = nil
 
 -- ============================================================
 -- physics: 当たり判定・剛体・キャラクターコントローラ
@@ -1308,6 +1363,17 @@ function saveNum(key, v) end
 ---@param def? number 無いときの既定値（省略時 0）
 ---@return number
 function loadNum(key, def) end
+
+---ディスク永続の数値ストアに保存（settings.json。再起動しても残る。音量・設定の保存用）
+---@param key string
+---@param v number
+function savePersist(key, v) end
+
+---ディスク永続の数値ストアから取得
+---@param key string
+---@param def? number 無いときの既定値（省略時 0）
+---@return number
+function loadPersist(key, def) end
 
 ---シーンを即切替（フェード無し）
 ---@param rel string assets/ からの相対パス（例: "scenes/level1.json"）

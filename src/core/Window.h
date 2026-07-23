@@ -5,11 +5,18 @@
 #include "Types.h"
 #include <functional>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace dx12e
 {
 
 class InputSystem;
+
+// ウィンドウ表示モード（オプション画面の「画面モード」）
+// Fullscreen は CDS_FULLSCREEN によるディスプレイモード変更 + ボーダレス。
+// ALLOW_TEARING スワップチェインは DXGI 排他フルスクリーンと併用不可のため、この方式を採る。
+enum class WindowMode { Windowed, Borderless, Fullscreen };
 
 class Window
 {
@@ -36,6 +43,16 @@ public:
 
     bool ProcessMessages();
     void ToggleFullscreen();
+
+    // ===== 表示モード / 解像度（オプション画面用）=====
+    // width/height: Windowed=クライアントサイズ / Fullscreen=ディスプレイモード。0=現状維持。
+    // Borderless では無視される（常にデスクトップ解像度）。
+    void SetMode(WindowMode mode, u32 width = 0, u32 height = 0);
+    WindowMode GetMode() const { return m_mode; }
+    // ウィンドウモード時のクライアント領域サイズ変更（他モードでは何もしない）
+    void SetClientSize(u32 width, u32 height);
+    // プライマリモニタが対応する解像度一覧（32bpp、重複除去、昇順）
+    static std::vector<std::pair<u32, u32>> EnumResolutions();
 
     // ===== カスタムタイトルバー(エディタ用) =====
     // OS標準のキャプション(白いタイトルバー)を外し、クライアント領域を窓の上端まで広げる。
@@ -80,7 +97,9 @@ private:
     std::wstring m_title = L"DX12 Engine";
     bool         m_shouldClose = false;
     bool         m_resized = false;
-    bool         m_fullscreen = false;
+    bool         m_fullscreen = false;   // m_mode != Windowed と同義（WndProc の既存判定用に維持）
+    WindowMode   m_mode = WindowMode::Windowed;
+    bool         m_displayModeChanged = false;   // CDS_FULLSCREEN 適用中か
     bool         m_startMaximized = true;
     RECT         m_windowedRect = {};
     InputSystem* m_inputSystem = nullptr;

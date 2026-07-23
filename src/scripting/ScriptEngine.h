@@ -141,6 +141,27 @@ public:
     void SetUiRectCallback(UiRectCb r) { m_uiRectCb = std::move(r); }
     void SetUiFocusCallback(UiFocusCb cb) { m_uiFocusCb = std::move(cb); }
 
+    // 映像設定（Application が注入）。Lua の display.* から呼ばれる（'.' 呼び、time と同様）。
+    struct DisplayCallbacks
+    {
+        std::function<void(bool)>                        setVsync;
+        std::function<bool()>                            getVsync;
+        std::function<void(int)>                         setFpsLimit;      // 0=無制限
+        std::function<int()>                             getFpsLimit;
+        std::function<void(const std::string&)>          setWindowMode;    // "windowed"|"borderless"|"fullscreen"
+        std::function<std::string()>                     getWindowMode;
+        std::function<void(int, int)>                    setResolution;
+        std::function<void(int&, int&)>                  getResolution;
+        std::function<std::vector<std::pair<int, int>>()> getResolutions;
+    };
+    void SetDisplayCallbacks(DisplayCallbacks cb) { m_displayCb = std::move(cb); }
+
+    // ディスク永続の数値ストア（settings.json）。Lua: savePersist(key,v) / loadPersist(key,def)。
+    using PersistSaveCb = std::function<void(const std::string&, double)>;
+    using PersistLoadCb = std::function<double(const std::string&, double)>;
+    void SetPersistCallbacks(PersistSaveCb s, PersistLoadCb l)
+    { m_persistSaveCb = std::move(s); m_persistLoadCb = std::move(l); }
+
 private:
     void RegisterBindings();
     // 高レベルヘルパー(actor/keyDown/cameraFollow 等)をグローバルへ定義する
@@ -194,6 +215,9 @@ private:
     UiImageCb   m_uiImageCb;
     UiRectCb    m_uiRectCb;
     UiFocusCb   m_uiFocusCb;
+    DisplayCallbacks m_displayCb;
+    PersistSaveCb    m_persistSaveCb;
+    PersistLoadCb    m_persistLoadCb;
 };
 
 } // namespace dx12e

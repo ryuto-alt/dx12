@@ -35,15 +35,18 @@ public:
     void PauseBGM();
     void ResumeBGM();
     void SeekBGM(f32 seconds);   // 再生中BGMの位置を秒指定でジャンプ(ループ設定は維持)
+    void SetBGMRate(f32 ratio);  // 再生速度倍率(ピッチ連動)。1=通常、0.5=半速+1oct下。スローモ演出用
 
     // SFX
     void PlaySFX(const std::string& filePath, bool loop = false);
     void StopAllSFX();
 
-    // 3D 空間オーディオ（SFX のみ・モノ前提。リスナーは通常カメラ）
+    // 3D 空間オーディオ（SFX のみ。ステレオ素材は自動モノ化。リスナーは通常カメラ）
     void SetListener(float px, float py, float pz,
                      float fx, float fy, float fz,
                      float ux, float uy, float uz);
+    // Lua用: リスナー位置をプレイヤー等に上書き(向きはカメラ由来のまま)。毎フレーム呼ばれる想定
+    void SetListenerPos(float x, float y, float z);
     // 空間 SFX をワンショット再生。戻り値スロット ID（追従用）、失敗/非対応は -1。
     i32  PlaySFXSpatial(const std::string& filePath, float x, float y, float z,
                         float minDistance, float maxDistance,
@@ -89,6 +92,8 @@ private:
     // X3DAudio
     X3DAUDIO_HANDLE   m_x3d{};
     X3DAUDIO_LISTENER m_listener{};
+    bool  m_listenerPosOverride = false;   // Lua が SetListenerPos した後はカメラ位置より優先
+    float m_lopX = 0, m_lopY = 0, m_lopZ = 0;
     u32  m_outChannels = 2;
     bool m_x3dReady = false;
     void ComputeAndApply(SFXSlot& slot);
