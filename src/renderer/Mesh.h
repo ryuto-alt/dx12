@@ -34,9 +34,12 @@ struct MeshInstanceData
 class Mesh
 {
 public:
+    // cmd を渡すと VB/IB(LOD含む) を DEFAULT ヒープ(VRAM)に作りコピーを cmd に積む
+    // （モデルロード経路は必ず渡すこと。UPLOAD 直読みは大型メッシュで GPU が桁違いに遅い）。
     void Initialize(GraphicsDevice& device,
                     const std::vector<Vertex>& vertices,
-                    const std::vector<u32>& indices);
+                    const std::vector<u32>& indices,
+                    ID3D12GraphicsCommandList* cmd = nullptr);
 
     void InitializeAsBox(GraphicsDevice& device);
     void InitializeAsPlane(GraphicsDevice& device, f32 size = 50.0f, u32 subdivisions = 1);
@@ -47,6 +50,18 @@ public:
     const VertexBuffer& GetVertexBuffer() const { return m_vertexBuffer; }
     const IndexBuffer&  GetIndexBuffer()  const { return m_indexBuffer; }
     u32 GetIndexCount() const { return m_indexBuffer.GetIndexCount(); }
+
+    // 自動LOD: Initialize 時に meshoptimizer で簡略化インデックスを生成（LOD0=フル解像度）。
+    // 小さいメッシュや簡略化が効かない形状では m_lodCount=1 のまま＝常に LOD0。
+    // lod は範囲外なら最終LODへクランプ（影パスは +1 バイアスで呼んでも安全）。
+    static constexpr u32 kMaxLods = 5;   // LOD0 + 簡略4段(30%/10%/3%/1%)
+    u32 GetLodCount() const { return m_lodCount; }
+    const IndexBuffer& GetIndexBufferLod(u32 lod) const
+    {
+        if (lod >= m_lodCount) lod = m_lodCount - 1;
+        return (lod == 0) ? m_indexBuffer : m_lodIndexBuffers[lod - 1];
+    }
+    u32 GetIndexCountLod(u32 lod) const { return GetIndexBufferLod(lod).GetIndexCount(); }
 
     void SetMaterial(Material* mat) { m_material = mat; }
     const Material* GetMaterial() const { return m_material; }
@@ -84,8 +99,16 @@ public:
     static u32 GetInstancedInputLayoutCount();
 
 private:
+    // 自動LOD生成（Initialize 末尾から呼ぶ。失敗/効果なしなら m_lodCount=1 のまま）
+    void GenerateLods(GraphicsDevice& device,
+                      const std::vector<Vertex>& vertices,
+                      const std::vector<u32>& indices,
+                      ID3D12GraphicsCommandList* cmd);
+
     VertexBuffer m_vertexBuffer;
     IndexBuffer  m_indexBuffer;
+    IndexBuffer  m_lodIndexBuffers[kMaxLods - 1];
+    u32          m_lodCount = 1;
     Material*    m_material = nullptr;
     DirectX::XMFLOAT3 m_aabbMin = { 0, 0, 0 };
     DirectX::XMFLOAT3 m_aabbMax = { 0, 0, 0 };

@@ -761,7 +761,7 @@ ModelData ModelLoader::LoadFromFile(
 
         // --- Create Mesh ---
         auto mesh = std::make_unique<Mesh>();
-        mesh->Initialize(device, vertices, indices);
+        mesh->Initialize(device, vertices, indices, cmdList);   // DEFAULT ヒープ(VRAM)常駐
 
         // --- Create Material ---
         auto material = std::make_unique<Material>();

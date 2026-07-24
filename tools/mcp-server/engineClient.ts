@@ -20,7 +20,7 @@ for (const m of [
   "ping", "list_entities", "get_entity", "find_entity", "query_entities",
   "list_scenes", "list_assets", "get_mode", "get_log", "describe_components",
   "describe_lua_api", "get_scene_settings", "get_lua_component_state",
-  "project_world_to_screen", "screenshot", "screenshot_game_view",
+  "project_world_to_screen", "screenshot", "screenshot_game_view", "perf_stats",
   // 同期編集
   "set_transform", "set_component", "remove_component", "set_parent",
   "rename_entity", "select_entity", "focus_camera", "set_pbr", "set_color", "set_lua_property",

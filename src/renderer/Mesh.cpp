@@ -1,5 +1,7 @@
 #include "renderer/Mesh.h"
+#include "core/Logger.h"
 #include <algorithm>
+#include <meshoptimizer.h>
 
 using namespace DirectX;
 
@@ -18,9 +20,36 @@ static const D3D12_INPUT_ELEMENT_DESC kInputLayout[] =
 };
 
 void Mesh::Initialize(GraphicsDevice& device,
-                      const std::vector<Vertex>& vertices,
-                      const std::vector<u32>& indices)
+                      const std::vector<Vertex>& inVertices,
+                      const std::vector<u32>& inIndices,
+                      ID3D12GraphicsCommandList* cmd)
 {
+    // meshoptimizer 定石パイプライン: 完全重複頂点の融合 → 頂点キャッシュ最適化 → フェッチ最適化。
+    // DCC エクスポート(GLB 等)は UV/法線シームで頂点が分割され、素通しだと
+    // ポストトランスフォームキャッシュがほぼ効かず、ハイポリ大量描画で頂点処理律速になる。
+    std::vector<Vertex> vertices;
+    std::vector<u32>    indices;
+    if (!inVertices.empty() && !inIndices.empty())
+    {
+        std::vector<u32> remap(inVertices.size());
+        const size_t unique = meshopt_generateVertexRemap(remap.data(),
+            inIndices.data(), inIndices.size(),
+            inVertices.data(), inVertices.size(), sizeof(Vertex));
+        vertices.resize(unique);
+        indices.resize(inIndices.size());
+        meshopt_remapVertexBuffer(vertices.data(), inVertices.data(), inVertices.size(),
+                                  sizeof(Vertex), remap.data());
+        meshopt_remapIndexBuffer(indices.data(), inIndices.data(), inIndices.size(), remap.data());
+        meshopt_optimizeVertexCache(indices.data(), indices.data(), indices.size(), unique);
+        meshopt_optimizeVertexFetch(vertices.data(), indices.data(), indices.size(),
+                                    vertices.data(), unique, sizeof(Vertex));
+    }
+    else
+    {
+        vertices = inVertices;
+        indices  = inIndices;
+    }
+
     // AABB + 頂点データキャッシュ
     m_verticesCache = vertices;  // UV スケール用に全頂点を保持
     if (!vertices.empty())
@@ -42,17 +71,77 @@ void Mesh::Initialize(GraphicsDevice& device,
     m_vertexBuffer.Initialize(device,
                               vertices.data(),
                               static_cast<u32>(vertices.size() * sizeof(Vertex)),
-                              static_cast<u32>(sizeof(Vertex)));
+                              static_cast<u32>(sizeof(Vertex)),
+                              cmd);
 
     m_indexBuffer.Initialize(device,
                              indices.data(),
-                             static_cast<u32>(indices.size()));
+                             static_cast<u32>(indices.size()),
+                             cmd);
+
+    GenerateLods(device, vertices, indices, cmd);
+}
+
+// meshoptimizer で LOD1(~30%) / LOD2(~10%) のインデックスを生成する。
+// 頂点バッファは全LODで共有（simplify はインデックスの間引きのみ＝スキニングもそのまま動く）。
+// 前LODからさらに簡略化する方式（高速で遷移も滑らか）。
+void Mesh::GenerateLods(GraphicsDevice& device,
+                        const std::vector<Vertex>& vertices,
+                        const std::vector<u32>& indices,
+                        ID3D12GraphicsCommandList* cmd)
+{
+    m_lodCount = 1;
+    // 小さいメッシュはLOD不要（切替の手間のほうが高くつく）
+    if (vertices.empty() || indices.size() < 3000) return;
+
+    struct LodSpec { f32 targetRatio; f32 maxError; };
+    static constexpr LodSpec kSpecs[kMaxLods - 1] =
+        { {0.30f, 0.05f}, {0.10f, 0.25f}, {0.03f, 0.45f}, {0.01f, 0.65f} };
+
+    // Permissive: DCCエクスポート品はUV/法線シームで頂点が全スプリットされがちで、
+    // 既定では全エッジが境界扱い＝簡略化がほぼ進まない（例: Blender GLB が 755712→755706）。
+    // シームをまたぐコラプスを許可して実効を出す。Prune で分離小片も除去。
+    constexpr unsigned kSimplifyOpts = meshopt_SimplifyPermissive | meshopt_SimplifyPrune;
+
+    const u32* srcIdx   = indices.data();
+    size_t     srcCount = indices.size();
+    std::vector<u32> prev;
+    for (const auto& spec : kSpecs)
+    {
+        size_t target = static_cast<size_t>(static_cast<f64>(indices.size()) * spec.targetRatio);
+        target = (std::max<size_t>)(target - target % 3, 96);
+
+        std::vector<u32> dst(srcCount);
+        f32 err = 0.0f;
+        const size_t n = meshopt_simplify(dst.data(), srcIdx, srcCount,
+                                          &vertices[0].position.x, vertices.size(), sizeof(Vertex),
+                                          target, spec.maxError, kSimplifyOpts, &err);
+        // 有意に減らなければ以降のLODは諦める（UV/法線の切れ目が多い形状など）
+        if (n == 0 || n >= srcCount - srcCount / 10)
+        {
+            Logger::Info("Mesh LOD{}: 簡略化が効かず打ち切り ({} -> {} idx, err={:.4f})",
+                         m_lodCount, srcCount, n, err);
+            break;
+        }
+        Logger::Info("Mesh LOD{}: {} -> {} idx (err={:.4f})", m_lodCount, srcCount, n, err);
+
+        dst.resize(n);
+        meshopt_optimizeVertexCache(dst.data(), dst.data(), n, vertices.size());
+        m_lodIndexBuffers[m_lodCount - 1].Initialize(device, dst.data(), static_cast<u32>(n), cmd);
+        ++m_lodCount;
+
+        prev     = std::move(dst);
+        srcIdx   = prev.data();
+        srcCount = prev.size();
+    }
 }
 
 void Mesh::FinishUpload()
 {
     m_vertexBuffer.FinishUpload();
     m_indexBuffer.FinishUpload();
+    for (u32 i = 1; i < m_lodCount; ++i)
+        m_lodIndexBuffers[i - 1].FinishUpload();
 }
 
 void Mesh::InitializeAsBox(GraphicsDevice& device)

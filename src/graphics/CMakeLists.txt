@@ -12,6 +12,7 @@ add_library(Graphics STATIC
     CommandList.cpp
     Texture.cpp
     RenderTarget.cpp
+    GpuTimer.cpp
 )
 
 target_include_directories(Graphics

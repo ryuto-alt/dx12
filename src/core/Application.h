@@ -38,6 +38,7 @@ namespace dx12e
     class PipelineState;
     class CommandList;
     class RenderTarget;
+    class GpuTimer;
     class PostProcess;
     class BloomPass;
     class AutoExposurePass;
@@ -61,6 +62,7 @@ namespace dx12e
     class ImGuiManager;
     class UiTestHarness;
     class Scene;
+    class SkinningBuffer;
     class ScriptEngine;
     class McpBridge;
     class UISystem;
@@ -207,8 +209,70 @@ private:
     // 深度専用シーン描画（CSM各カスケード/スポット影/ポイント影の各面/SSAOプリパスで共用）。
     // RT/DSV・ビューポート・クリア・バリアは呼び出し側の責任。frameIndex はボーンSRV参照用。
     // updateSkinning=true の時だけ skinningBuffer->Update を呼ぶ（1フレームに1回で十分なため）。
+    // lodBias: 影パスは +1（1段粗いLOD）で呼ぶ。SSAO深度プリパスは 0 =
+    // メインパスと同一LOD必須（LESS_EQUAL で同一深度を通すため）。
     void RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState& staticPSO,
-                              PipelineState& skinnedPSO, bool updateSkinning, u32 frameIndex);
+                              PipelineState& skinnedPSO, bool updateSkinning, u32 frameIndex,
+                              u32 lodBias = 0);
+    // フレーム描画リスト: Transform+MeshRenderer の走査・ワールド行列合成を1フレーム1回だけ行い、
+    // メイン/深度プリパス/CSM各カスケード/スポット影/ポイント影の全パスで共有する
+    // （従来は最悪 ~20 パス × entt 全走査 + ComputeWorldMatrix 再計算）。
+    // Grid/Pfx/park(scale≈0)/メッシュ無しは従来どおり除外。sortKey 順ソート済み＝PSO 切替を最小化。
+    // 各パスは自分の視錐台でこのリストを球カリングして消費する（保守的＝偽陰性なし。
+    // CSM はタイトフィット正射 + DepthClipEnable=TRUE で今もクリップされる範囲しか落ちない）。
+    struct DrawItem
+    {
+        entt::entity        e;
+        const MeshRenderer* renderer;
+        DirectX::XMFLOAT4X4 world;        // 親階層合成済みワールド行列
+        SkinningBuffer*     skin;         // スキンドなら該当バッファ / 静的は nullptr
+        f32                 radius;       // 保守的バウンディング球半径（ワールドスケール込み）
+        u32                 lod;          // メインカメラ基準の選択LOD（Mesh 側でクランプされる）
+        bool                hasNodeAnim;
+        u32                 sortKey;      // 0=既定static / 1=カスタム不透明 / 2=skinned / 3=カスタム半透明(最後)
+    };
+    std::vector<DrawItem> m_drawItems;
+    void BuildDrawList();
+    u32 m_statDraws  = 0;   // フレーム内の DrawIndexedInstanced 発行数（ビューポートHUD用）
+    u32 m_statCulled = 0;   // フレーム内にフラスタムカリングで省いたエンティティ描画の延べ数
+    u32 m_statTris   = 0;   // フレーム内に発行した三角形数（全パス・インスタンス数込み）
+
+    // パス別内訳（perf_stats 用）。描画サイトは m_passBucket に加算し、Render() が
+    // パス境界でバケツを差し替える（main=メインビュー / shadow=CSM+スポット+ポイント影 / other=それ以外）。
+    struct PassStats { u32 draws = 0, tris = 0; };
+    PassStats  m_passMain, m_passShadow, m_passOther;
+    PassStats* m_passBucket = &m_passOther;
+
+    // ---- パフォーマンス診断（MCP perf_stats / benchmark 用）----
+    // GPU パス別タイムスタンプ。Render() 内の各パスを挟んで計測（結果は約3フレーム遅れ）。
+    std::unique_ptr<GpuTimer> m_gpuTimer;
+    static constexpr u32 kPerfGpuScopes = 8;   // >= GpuTimer::Scope::Count（cpp で static_assert）
+    struct PerfFrame
+    {
+        f32 frameMs;       // フレーム間隔（リミッター/VSync 込み＝実 FPS の逆数）
+        f32 workMs;        // フレーム処理時間（リミッター前。Update+Render+MCP）
+        f32 fenceWaitMs;   // BeginFrame のフェンス待ち（GPU が追いつかないと増える）
+        f32 presentMs;     // Present+EndFrame（VSync 待ち込み）
+        u32 draws, culled, tris;
+        PassStats passMain, passShadow;   // パス別内訳（other = 全体との差分で出せるので持たない）
+        f32 gpuMs[kPerfGpuScopes];
+    };
+    static constexpr u32 kPerfHistory = 240;   // 直近 240 フレーム（60fps で 4 秒）
+    std::array<PerfFrame, kPerfHistory> m_perfHistory{};
+    u64 m_perfTotalFrames = 0;   // 書き込んだ延べ数（リング位置 = % kPerfHistory）
+    std::chrono::high_resolution_clock::time_point m_perfPrevFrame{};
+    bool m_perfPrevFrameValid = false;
+    f32 m_perfFenceWaitMs = 0.0f;   // Render() 内で計測 → RecordPerfFrame が読む
+    f32 m_perfPresentMs   = 0.0f;
+    void RecordPerfFrame();   // Render() 末尾（EndFrame 後）で1回呼ぶ
+
+    // benchmark（遅延応答）: N フレームの perf を貯めて統計を返す
+    McpDeferred      m_benchReply{};
+    std::vector<f32> m_benchSamples;      // frameMs
+    u32              m_benchFramesLeft = 0;
+    f64 m_benchDraws = 0, m_benchCulled = 0, m_benchTris = 0;
+    f64 m_benchWork = 0, m_benchFence = 0, m_benchPresent = 0;
+    f64 m_benchGpu[kPerfGpuScopes] = {};
     void RebuildScene();
     // シェーダーホットリロード用 PSO 再生成。初回(Initialize)と再生成(hot-reload)の両方から呼ぶ。
     // 既存 unique_ptr が非 null ならその場で Initialize() し直す(オブジェクトの住所は変えない=
@@ -322,6 +386,7 @@ private:
     void ApplyCameraTransformToGlobal(entt::entity camEntity);
     // Play 中のシーン切替（フレーム境界で安全に実行）
     void DoRuntimeSceneLoad(const std::string& assetsRelPath, ID3D12GraphicsCommandList* cmdList);
+    void DoScenePreload(const std::string& assetsRelPath, ID3D12GraphicsCommandList* cmdList);
 
     std::unique_ptr<Window>         m_window;
     std::unique_ptr<GraphicsDevice> m_graphicsDevice;
@@ -589,6 +654,7 @@ private:
     // シーントランジション（WP9）
     std::unique_ptr<SceneTransition> m_sceneTransition;
     std::string                      m_transitionTargetScene;  // 中間点でロードする assets 相対パス（空=ロード無し）
+    std::vector<std::string>         m_pendingScenePreloads;   // Lua preloadScene の保留分（cmdList のあるフレーム境界で処理）
 
     // シーンフロー（WP6）
     std::unique_ptr<SceneFlow> m_sceneFlow;

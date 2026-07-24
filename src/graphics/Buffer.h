@@ -36,7 +36,12 @@ protected:
 class VertexBuffer : public Buffer
 {
 public:
-    void Initialize(GraphicsDevice& device, const void* data, u32 sizeInBytes, u32 strideInBytes);
+    // cmd を渡すと DEFAULT ヒープ(VRAM)本体 + UPLOAD ステージングで作り、cmd にコピーを積む
+    // （大型メッシュは毎フレームの PCIe 読み出しが消えて桁違いに速い）。ステージングは
+    // FinishUpload()（DeferredRelease 連動）で解放する。cmd=nullptr は従来どおり UPLOAD 直
+    // （動的/小型バッファ・コマンドリストが無い場面用）。
+    void Initialize(GraphicsDevice& device, const void* data, u32 sizeInBytes, u32 strideInBytes,
+                    ID3D12GraphicsCommandList* cmd = nullptr);
     void FinishUpload();
 
     const D3D12_VERTEX_BUFFER_VIEW& GetView() const { return m_view; }
@@ -52,7 +57,9 @@ private:
 class IndexBuffer : public Buffer
 {
 public:
-    void Initialize(GraphicsDevice& device, const u32* indices, u32 indexCount);
+    // cmd の意味は VertexBuffer::Initialize と同じ（DEFAULT ヒープ + ステージングコピー）。
+    void Initialize(GraphicsDevice& device, const u32* indices, u32 indexCount,
+                    ID3D12GraphicsCommandList* cmd = nullptr);
     void FinishUpload();
 
     const D3D12_INDEX_BUFFER_VIEW& GetView()       const { return m_view; }

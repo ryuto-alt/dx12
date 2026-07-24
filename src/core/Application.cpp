@@ -19,6 +19,7 @@
 #include "graphics/CommandList.h"
 #include "graphics/Texture.h"
 #include "graphics/RenderTarget.h"
+#include "graphics/GpuTimer.h"
 #include "renderer/Mesh.h"
 #include "renderer/Material.h"
 #include "renderer/Camera.h"
@@ -840,6 +841,10 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     // フレームリソース初期化
     m_frameResources = std::make_unique<FrameResources>();
     m_frameResources->Initialize(*m_graphicsDevice, *m_commandQueue);
+
+    // GPU パス別タイムスタンプ（MCP perf_stats / benchmark 用。失敗しても no-op で害なし）
+    m_gpuTimer = std::make_unique<GpuTimer>();
+    m_gpuTimer->Initialize(m_graphicsDevice->GetDevice(), m_commandQueue->GetQueue());
 
     // ゲームクロックリセット
     m_gameClock.Reset();
@@ -1916,6 +1921,106 @@ struct McpError : std::runtime_error
     McpError(int c, const std::string& m) : std::runtime_error(m), code(c) {}
 };
 
+// ---- perf_stats / benchmark 共通の集計・整形 ----
+// 平均値を詰めた PerfSummary を JSON レポート（数値 + 簡易ボトルネック解析）へ変換する。
+// 解析はヒューリスティック: フレーム時間に対する GPU 合計・CPU 実働・待ち時間の比率で分類。
+struct PerfSummary
+{
+    double fps = 0, frameMs = 0, frameMsMin = 0, frameMsMax = 0, frameMsP95 = 0;
+    double workMs = 0, fenceWaitMs = 0, presentMs = 0;   // 平均
+    double draws = 0, culled = 0, tris = 0;              // 平均
+    double gpuMs[GpuTimer::Count] = {};                  // 平均
+    int    samples = 0;
+};
+
+// v を昇順ソートして p(0..1) 分位点を返す（サンプル少数でも落ちない素朴実装）。
+inline double PerfPercentile(std::vector<f32>& v, double p)
+{
+    if (v.empty()) return 0.0;
+    std::sort(v.begin(), v.end());
+    const size_t i = (std::min)(v.size() - 1,
+        static_cast<size_t>(p * static_cast<double>(v.size() - 1) + 0.5));
+    return v[i];
+}
+
+nlohmann::json PerfReportJson(const PerfSummary& s, bool vsync, float fpsLimit)
+{
+    auto r2 = [](double v) { return std::round(v * 100.0) / 100.0; };
+
+    nlohmann::json gpu = nlohmann::json::object();
+    for (u32 i = 0; i < GpuTimer::Count; ++i)
+        gpu[GpuTimer::Name(i)] = r2(s.gpuMs[i]);
+
+    nlohmann::json j{
+        {"fps", r2(s.fps)},
+        {"frameMs", {{"avg", r2(s.frameMs)}, {"min", r2(s.frameMsMin)},
+                     {"max", r2(s.frameMsMax)}, {"p95", r2(s.frameMsP95)}}},
+        {"cpu", {{"workMs", r2(s.workMs)}, {"fenceWaitMs", r2(s.fenceWaitMs)},
+                 {"presentMs", r2(s.presentMs)}}},
+        {"gpuPassMs", gpu},
+        {"drawCalls", r2(s.draws)},
+        {"culled", r2(s.culled)},
+        {"triangles", static_cast<u64>(s.tris)},
+        {"samples", s.samples},
+        {"vsync", vsync},
+        {"fpsLimit", fpsLimit},
+    };
+
+    // ---- 簡易ボトルネック解析 ----
+    const double frame    = (std::max)(s.frameMs, 0.001);
+    const double gpuTotal = s.gpuMs[GpuTimer::Total];
+    const double waits    = s.fenceWaitMs + s.presentMs;              // GPU/表示待ちで CPU が寝てた時間
+    const double cpuMs    = (std::max)(0.0, s.workMs - waits);        // CPU の実働
+
+    std::string verdict = "balanced";
+    if (fpsLimit > 0.0f && !vsync && s.fps >= fpsLimit * 0.95)
+        verdict = "fps-limit-capped";
+    else if (gpuTotal > frame * 0.7 || waits > frame * 0.5)
+        verdict = (gpuTotal >= cpuMs) ? "gpu-bound" : "cpu-bound";
+    else if (cpuMs > frame * 0.7)
+        verdict = "cpu-bound";
+    else if (vsync)
+        verdict = "vsync-capped-or-balanced";
+
+    std::vector<std::string> notes;
+    if (verdict == "gpu-bound")
+    {
+        u32 worst = GpuTimer::Shadows;
+        for (u32 i = GpuTimer::Shadows; i < GpuTimer::Count; ++i)
+            if (s.gpuMs[i] > s.gpuMs[worst]) worst = i;
+        char buf[160];
+        std::snprintf(buf, sizeof(buf), "GPU最大パス: %s (%.2fms)", GpuTimer::Name(worst), s.gpuMs[worst]);
+        notes.push_back(buf);
+        switch (worst)
+        {
+        case GpuTimer::Shadows:
+            notes.push_back("影が重い: シャドウ解像度/カスケード数の削減、影を落とすライト数の見直しを検討"); break;
+        case GpuTimer::MainScene:
+            notes.push_back("メインパスが重い: triangles と drawCalls を確認。LOD/インスタンシング/ポリ削減を検討"); break;
+        case GpuTimer::PrepassSSAO:
+            notes.push_back("SSAO が重い: sampleCount 削減か SSAO OFF で切り分け"); break;
+        case GpuTimer::PostFX:
+            notes.push_back("ポストが重い: bloom/DoF/motionBlur/godRays を個別 OFF で切り分け"); break;
+        default: break;
+        }
+    }
+    if (verdict == "cpu-bound")
+        notes.push_back("CPUバウンド: drawCalls が多ければバッチング/カリング強化。Lua/物理/アニメ更新も確認");
+    if (s.draws > 3000)
+        notes.push_back("drawCalls が多い(平均" + std::to_string(static_cast<int>(s.draws)) + "/フレーム)");
+    if (s.tris > 5e6)
+    {
+        char buf[96];
+        std::snprintf(buf, sizeof(buf), "三角形数が多い(平均 %.1fM/フレーム)", s.tris / 1e6);
+        notes.push_back(buf);
+    }
+    if (vsync)
+        notes.push_back("VSync ON: 上限測定には video 設定で VSync OFF 推奨");
+
+    j["analysis"] = {{"verdict", verdict}, {"notes", notes}};
+    return j;
+}
+
 // MCP のエンティティ指定を解決する。params["name"](完全一致 FindEntity) を優先し、
 // 無ければ params["entity"](数値 id) を検証して返す。どちらも解決できなければ NotFound を投げる。
 // ※ コンポーネント有無は見ない(呼び出し側で all_of を別に確認 → エラー文を分けるため)。
@@ -2537,6 +2642,7 @@ nlohmann::json McpLuaApi()
     objects.push_back(O("globals", "", json::array({
         "log(msg)", "saveNum(key,val)", "loadNum(key,default?) -> double",
         "loadScene(rel)", "nextScene()", "quit()", "fadeToScene(rel,dur?)",
+        "preloadScene(rel)  (次シーンのテクスチャ/モデルを先読み。切替はしない=トランジションのカクつき対策)",
         "transitionToScene(rel,type:int,dur?)  (type: 0=Fade,1=横Wipe,2=Circle,3=縦Wipe,4=シークバー早送り)",
         "setUiFocus(entityOrId)  (フォーカスナビの初期フォーカス。メニュー表示時に既定ボタンへ)",
         "ASSETS, SCREEN_W, SCREEN_H, KEY_*(VK codes), MOTION_STATIC/KINEMATIC/DYNAMIC",
@@ -3876,6 +3982,94 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 throw McpError(McpErr::ModeConflict, "a step is already pending; retry shortly");
             m_mcpStepFramesLeft = n;
             m_mcpStepReply = deferred;
+            isDeferred = true;
+        }
+        else if (method == "perf_stats")
+        {
+            // 直近 window フレームのリングバッファを平均して即答（ベンチ不要の現状把握用）。
+            const u32 have = static_cast<u32>((std::min<u64>)(m_perfTotalFrames, kPerfHistory));
+            if (have == 0) throw McpError(McpErr::Internal, "no frames recorded yet");
+            const int windowReq = params.value("window", 60);
+            const u32 n = static_cast<u32>(std::clamp(windowReq, 1, static_cast<int>(have)));
+
+            PerfSummary s{};
+            f64 mainDraws = 0, mainTris = 0, shadowDraws = 0, shadowTris = 0;
+            std::vector<f32> fm;
+            fm.reserve(n);
+            for (u32 i = 0; i < n; ++i)
+            {
+                const PerfFrame& f = m_perfHistory[static_cast<size_t>((m_perfTotalFrames - 1 - i) % kPerfHistory)];
+                if (f.frameMs > 0.0f) fm.push_back(f.frameMs);   // 起動直後の未計測 0 は除外
+                s.workMs += f.workMs; s.fenceWaitMs += f.fenceWaitMs; s.presentMs += f.presentMs;
+                s.draws += f.draws; s.culled += f.culled; s.tris += f.tris;
+                mainDraws += f.passMain.draws; mainTris += f.passMain.tris;
+                shadowDraws += f.passShadow.draws; shadowTris += f.passShadow.tris;
+                for (u32 g = 0; g < GpuTimer::Count; ++g) s.gpuMs[g] += f.gpuMs[g];
+            }
+            const double inv = 1.0 / static_cast<double>(n);
+            s.workMs *= inv; s.fenceWaitMs *= inv; s.presentMs *= inv;
+            s.draws *= inv; s.culled *= inv; s.tris *= inv;
+            for (u32 g = 0; g < GpuTimer::Count; ++g) s.gpuMs[g] *= inv;
+            s.samples = static_cast<int>(fm.size());
+            if (!fm.empty())
+            {
+                double sum = 0; for (f32 v : fm) sum += v;
+                s.frameMs = sum / static_cast<double>(fm.size());
+                s.fps = (s.frameMs > 0.0) ? 1000.0 / s.frameMs : 0.0;
+                s.frameMsP95 = PerfPercentile(fm, 0.95);   // 内部でソート
+                s.frameMsMin = fm.front();
+                s.frameMsMax = fm.back();
+            }
+            nlohmann::json rep = PerfReportJson(s, m_useVsync, m_fpsLimit);
+
+            // パス別内訳（平均/フレーム）。other = 深度プリパス/エディタプレビュー等
+            rep["passes"] = {
+                {"main",   {{"draws", mainDraws / n},   {"tris", static_cast<u64>(mainTris / n)}}},
+                {"shadow", {{"draws", shadowDraws / n}, {"tris", static_cast<u64>(shadowTris / n)}}},
+                {"other",  {{"draws", s.draws - (mainDraws + shadowDraws) / n},
+                            {"tris",  static_cast<u64>(s.tris - (mainTris + shadowTris) / n)}}},
+            };
+
+            // シーン構成（描いてる物の内訳。ボトルネック解析の材料）
+            auto& reg = m_scene->GetRegistry();
+            int ents = 0, meshEnts = 0, skinned = 0, ptL = 0, spL = 0, emitters = 0;
+            for (auto e : reg.view<const NameTag>()) { (void)e; ++ents; }
+            for (auto e : reg.view<const MeshRenderer>()) { (void)e; ++meshEnts; }
+            for (auto e : reg.view<const SkeletalAnimation>()) { (void)e; ++skinned; }
+            for (auto e : reg.view<const PointLight>()) { (void)e; ++ptL; }
+            for (auto e : reg.view<const SpotLight>()) { (void)e; ++spL; }
+            for (auto e : reg.view<const ParticleEmitter>()) { (void)e; ++emitters; }
+            rep["scene"] = {
+                {"entities", ents},
+                {"meshRenderers", meshEnts},
+                {"drawItems", static_cast<int>(m_drawItems.size())},
+                {"skinned", skinned},
+                {"pointLights", ptL},
+                {"spotLights", spL},
+                {"particleEmitters", emitters},
+                {"shadowsEnabled", m_scene->GetShadowsEnabled()},
+                {"ssaoEnabled", m_scene->GetSSAOSettings().enabled},
+                {"gpuTimerValid", m_gpuTimer && m_gpuTimer->IsValid()},
+                {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"},
+            };
+            resp["ok"] = true;
+            resp["result"] = rep;
+        }
+        else if (method == "benchmark")
+        {
+            // N フレーム計測してから応答する遅延同期。カメラ/シーンは呼び出し側が事前に整えること。
+            int n = params.value("frames", 300);
+            if (n < 30) n = 30;
+            if (n > 3600) n = 3600;
+            if (m_benchFramesLeft > 0 || m_benchReply.client != 0)
+                throw McpError(McpErr::ModeConflict, "a benchmark is already running; wait for it to finish");
+            m_benchSamples.clear();
+            m_benchSamples.reserve(static_cast<size_t>(n));
+            m_benchDraws = m_benchCulled = m_benchTris = 0;
+            m_benchWork = m_benchFence = m_benchPresent = 0;
+            for (auto& g : m_benchGpu) g = 0;
+            m_benchFramesLeft = static_cast<u32>(n);
+            m_benchReply = deferred;
             isDeferred = true;
         }
         else if (method == "set_color")
@@ -7379,6 +7573,10 @@ void Application::WireScriptCallbacks()
             m_sceneTransition->Start(static_cast<TransitionType>(type), dur);
         });
 
+    // preloadScene: cmdList が要るのでフレーム境界まで遅延（pendingGameLoadPath と同じ流儀）
+    m_scriptEngine->SetPreloadSceneCallback(
+        [this](const std::string& rel) { m_pendingScenePreloads.push_back(rel); });
+
     m_scriptEngine->SetUiFocusCallback(
         [this](std::uint32_t id) {
             if (m_uiSystem)
@@ -7609,6 +7807,56 @@ void Application::DoRuntimeSceneLoad(const std::string& rel, ID3D12GraphicsComma
     m_skyboxDirty = true;
 
     Logger::Info("Runtime scene loaded: {}", rel);
+}
+
+// シーン JSON を走査し、参照されているテクスチャ/モデルをキャッシュへ先読みする。
+// シーンは構築しない(エンティティ/物理/スクリプトに影響なし)。キャッシュキーは実ロード経路と
+// 同一の絶対パス形式(テクスチャ=wide絶対+srgb既定true / モデル=assetsDir+相対)に合わせる。
+void Application::DoScenePreload(const std::string& rel, ID3D12GraphicsCommandList* cmdList)
+{
+    auto bytes = dx12e::vfs::ReadAsset(rel);
+    if (bytes.empty())
+    {
+        Logger::Warn("preloadScene: シーンが見つかりません: {}", rel);
+        return;
+    }
+    nlohmann::json j = nlohmann::json::parse(bytes.begin(), bytes.end(), nullptr, false);
+    if (j.is_discarded())
+    {
+        Logger::Warn("preloadScene: JSON 解析に失敗: {}", rel);
+        return;
+    }
+
+    int nTex = 0, nMdl = 0;
+    auto endsWith = [](const std::string& s, const char* suf) {
+        const size_t n = std::strlen(suf);
+        return s.size() >= n && _stricmp(s.c_str() + s.size() - n, suf) == 0;
+    };
+    std::function<void(const nlohmann::json&)> walk = [&](const nlohmann::json& node) {
+        if (node.is_string())
+        {
+            const std::string s = node.get<std::string>();
+            if (endsWith(s, ".png") || endsWith(s, ".jpg") || endsWith(s, ".jpeg")
+                || endsWith(s, ".dds") || endsWith(s, ".tga"))
+            {
+                if (m_resourceManager->GetOrLoadTexture(
+                        PathResolver::Utf8ToWide(PathResolver::AssetsDir() + s), cmdList))
+                    ++nTex;
+            }
+            else if (endsWith(s, ".obj") || endsWith(s, ".fbx") || endsWith(s, ".gltf")
+                     || endsWith(s, ".glb"))
+            {
+                if (m_resourceManager->GetOrLoadModel(PathResolver::AssetsDir() + s, cmdList))
+                    ++nMdl;
+            }
+        }
+        else if (node.is_object() || node.is_array())
+        {
+            for (const auto& c : node) walk(c);
+        }
+    };
+    walk(j);
+    Logger::Info("preloadScene: {} (テクスチャ{}件 / モデル{}件)", rel, nTex, nMdl);
 }
 
 void Application::EnsureEditorGrid()
@@ -8516,6 +8764,169 @@ void Application::RenderBuildSettingsWindow()
     ImGui::End();
 }
 
+// フレーム描画リスト構築（Render() 先頭で1回）。詳細は Application.h の DrawItem コメント参照。
+void Application::BuildDrawList()
+{
+    using namespace DirectX;
+
+    // 前フレームの描画統計を HUD へ引き渡してからリセット
+    if (m_editorCtx)
+    {
+        m_editorCtx->statDraws  = m_statDraws;
+        m_editorCtx->statCulled = m_statCulled;
+    }
+    m_statDraws  = 0;
+    m_statCulled = 0;
+    m_statTris   = 0;
+    m_passMain = {}; m_passShadow = {}; m_passOther = {};
+    m_passBucket = &m_passOther;
+
+    m_drawItems.clear();
+    if (!m_scene) return;
+
+    // LOD 選択基準（メインカメラ位置。フレーム内は全パス共通＝深度プリパスとメインの整合を保つ）
+    XMVECTOR camPos = XMVectorZero();
+    if (m_camera)
+    {
+        const XMFLOAT3 cp = m_camera->GetPosition();
+        camPos = XMLoadFloat3(&cp);
+    }
+
+    auto& reg = m_scene->GetRegistry();
+    auto renderView = reg.view<const Transform, const MeshRenderer>();
+    for (auto [e, transform, renderer] : renderView.each())
+    {
+        if (renderer.meshes.empty()) continue;
+        if (reg.all_of<GridPlane>(e)) continue;
+        // park 済み（scale≈0 で退避したプール要素）は全パスで不可視＝リストから除外。
+        const auto& sc = transform.scale;
+        if (sc.x * sc.x + sc.y * sc.y + sc.z * sc.z < 1e-8f) continue;
+        // 発光弾(Pfx*) はメインのパス3で instancing 描画・影/深度は落とさない（従来挙動）。
+        if (auto* nt = reg.try_get<NameTag>(e); nt && nt->name.rfind("Pfx", 0) == 0) continue;
+
+        XMMATRIX world = (transform.parent != entt::null)
+            ? ComputeWorldMatrix(reg, e) : transform.GetWorldMatrix();
+
+        DrawItem item{};
+        item.e        = e;
+        item.renderer = &renderer;
+        XMStoreFloat4x4(&item.world, world);
+
+        auto* skel = reg.try_get<SkeletalAnimation>(e);
+        item.skin        = skel ? skel->skinningBuffer.get() : nullptr;
+        item.hasNodeAnim = reg.all_of<NodeAnimationComp>(e);
+
+        // ワールドスケール＝ワールド行列の行ベクトル長の最大（親スケールも含む。
+        // 旧実装のローカル transform.scale 参照より正確）。
+        const f32 ms = (std::max)((std::max)(
+            XMVectorGetX(XMVector3Length(world.r[0])),
+            XMVectorGetX(XMVector3Length(world.r[1]))),
+            XMVectorGetX(XMVector3Length(world.r[2])));
+        f32 meshRadius = 1.0f;
+        for (const auto* m : renderer.meshes)
+            if (m) meshRadius = (std::max)(meshRadius, m->GetBoundingRadius());
+        // スキンド/ノードアニメは変形でバインドポーズ球を超え得るので余裕を大きめに取る。
+        const f32 bias = (item.skin || item.hasNodeAnim) ? 2.0f : 1.25f;
+        item.radius = meshRadius * ms * bias;
+
+        // LOD 選択: 見かけの大きさ（半径/距離 ≒ 画面高さに占める割合）で段階を落とす。
+        // LOD1 の簡略化誤差は実測 0.1% 未満なので半画面未満は迷わず落とす。
+        // トライアングルが数px未満になる領域はラスタ効率が崩壊するため遠距離は強めに削る。
+        // LODが無い/浅いメッシュは Mesh 側で最終LODへクランプされる。
+        const f32 dist = XMVectorGetX(XMVector3Length(XMVectorSubtract(world.r[3], camPos)));
+        const f32 apparent = item.radius / (std::max)(dist, 1e-3f);
+        item.lod = (apparent < 0.04f) ? 4u
+                 : (apparent < 0.10f) ? 3u
+                 : (apparent < 0.25f) ? 2u
+                 : (apparent < 0.50f) ? 1u : 0u;
+
+        // 0=既定static / 1=カスタム不透明 / 2=skinned / 3=カスタム半透明（不透明の後に描く。
+        // 旧実装は entt 格納順で半透明の前後関係が運任せだったため、これはむしろ改善）。
+        if (item.skin)                          item.sortKey = 2u;
+        else if (renderer.shaderPath.empty())   item.sortKey = 0u;
+        else                                    item.sortKey = renderer.shaderAlphaBlend ? 3u : 1u;
+        m_drawItems.push_back(item);
+    }
+
+    // PSO バケツ → シェーダ → メッシュ順に整列＝パイプライン/マテリアル/VB の切替回数を最小化。
+    std::sort(m_drawItems.begin(), m_drawItems.end(),
+        [](const DrawItem& a, const DrawItem& b) {
+            if (a.sortKey != b.sortKey) return a.sortKey < b.sortKey;
+            if (a.sortKey == 1u || a.sortKey == 3u) {
+                const int c = a.renderer->shaderPath.compare(b.renderer->shaderPath);
+                if (c != 0) return c < 0;
+            }
+            return a.renderer->meshes[0] < b.renderer->meshes[0];
+        });
+}
+
+// フレーム末（Present/EndFrame 後）に1回。perf リング履歴の記録と benchmark の収集・完了を行う。
+void Application::RecordPerfFrame()
+{
+    const auto now = std::chrono::high_resolution_clock::now();
+    PerfFrame f{};
+    f.frameMs = m_perfPrevFrameValid
+        ? std::chrono::duration<f32, std::milli>(now - m_perfPrevFrame).count() : 0.0f;
+    m_perfPrevFrame = now;
+    m_perfPrevFrameValid = true;
+    f.workMs      = std::chrono::duration<f32, std::milli>(now - m_frameStart).count();
+    f.fenceWaitMs = m_perfFenceWaitMs;
+    f.presentMs   = m_perfPresentMs;
+    f.draws  = m_statDraws;
+    f.culled = m_statCulled;
+    f.tris   = m_statTris;
+    f.passMain   = m_passMain;
+    f.passShadow = m_passShadow;
+    for (u32 s = 0; s < GpuTimer::Count; ++s)
+        f.gpuMs[s] = m_gpuTimer ? m_gpuTimer->GetMs(static_cast<GpuTimer::Scope>(s)) : 0.0f;
+    m_perfHistory[static_cast<size_t>(m_perfTotalFrames % kPerfHistory)] = f;
+    ++m_perfTotalFrames;
+
+    // benchmark 収集中: サンプルを貯め、満了したら遅延応答を返す
+    if (m_benchFramesLeft > 0 && f.frameMs > 0.0f)
+    {
+        m_benchSamples.push_back(f.frameMs);
+        m_benchDraws += f.draws; m_benchCulled += f.culled; m_benchTris += f.tris;
+        m_benchWork += f.workMs; m_benchFence += f.fenceWaitMs; m_benchPresent += f.presentMs;
+        for (u32 s = 0; s < GpuTimer::Count; ++s) m_benchGpu[s] += f.gpuMs[s];
+
+        if (--m_benchFramesLeft == 0)
+        {
+            const size_t n = m_benchSamples.size();
+            PerfSummary sum{};
+            sum.samples = static_cast<int>(n);
+            if (n > 0)
+            {
+                double total = 0; for (f32 v : m_benchSamples) total += v;
+                sum.frameMs = total / static_cast<double>(n);
+                sum.fps = (sum.frameMs > 0.0) ? 1000.0 / sum.frameMs : 0.0;
+                std::vector<f32> tmp = m_benchSamples;
+                sum.frameMsP95 = PerfPercentile(tmp, 0.95);   // 内部でソート
+                sum.frameMsMin = tmp.front();
+                sum.frameMsMax = tmp.back();
+                const double inv = 1.0 / static_cast<double>(n);
+                sum.workMs = m_benchWork * inv; sum.fenceWaitMs = m_benchFence * inv;
+                sum.presentMs = m_benchPresent * inv;
+                sum.draws = m_benchDraws * inv; sum.culled = m_benchCulled * inv;
+                sum.tris = m_benchTris * inv;
+                for (u32 s = 0; s < GpuTimer::Count; ++s) sum.gpuMs[s] = m_benchGpu[s] * inv;
+            }
+            nlohmann::json rep = PerfReportJson(sum, m_useVsync, m_fpsLimit);
+            rep["frames"] = static_cast<int>(n);
+            // 1% low FPS（p99 フレーム時間の逆数。スパイクの体感指標）
+            {
+                std::vector<f32> tmp = m_benchSamples;
+                const double p99 = PerfPercentile(tmp, 0.99);
+                rep["fps1PercentLow"] = (p99 > 0.0) ? std::round(100000.0 / p99) / 100.0 : 0.0;
+            }
+            if (m_benchReply.client != 0)
+                CompleteMcp(m_mcpBridge.get(), m_benchReply, std::move(rep));
+            m_benchReply = {};
+            m_benchSamples.clear();
+        }
+    }
+}
+
 void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u32 frameIndex,
                                    DirectX::XMMATRIX viewProj, bool isGameView, u32 aoSrvIndex,
                                    bool depthPrepassActive)
@@ -8524,12 +8935,16 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
     auto& reg = m_scene->GetRegistry();
     auto renderView = reg.view<const Transform, const MeshRenderer>();
 
-    // 視錐台カリング（ゲームビューのみ）。画面外エンティティの forward ドローを省く＝
-    // 敵がアリーナ全域に散るゲームで、画面外の敵を毎フレーム描かずに済む。
-    // 編集シーンビュー(isGameView=false)では従来通り全描画＝編集時の見え方は不変。
-    const bool cullEnabled = isGameView;
-    Frustum camFrustum;
-    if (cullEnabled) camFrustum = Frustum::FromViewProj(viewProj);
+    // 視錐台カリング（全ビュー）。保守的球判定＝画面に少しでも掛かる物は必ず残るため、
+    // 編集ビューでも見え方は不変のまま画面外ドローだけを省ける。
+    const Frustum camFrustum = Frustum::FromViewProj(viewProj);
+
+    // ループ内の冗長ステート切替スキップ用（この関数呼び出し内でのみ有効。
+    // 描画リストはソート済みなので同一 PSO/マテリアル/VB が連続しやすい）。
+    ID3D12PipelineState* lastPso    = nullptr;
+    u64                  lastMatSrv = ~0ull;
+    const Mesh*          lastVbMesh = nullptr;
+    u32                  lastLod    = ~0u;
 
     // SSAO AO テーブル(t8)を1回バインド（無効/編集ビューは白=1.0 ダミー）。
     // 全 forward 系 PSO が同一 RootSig を共有するため、ここで一括バインドして hazard を防ぐ。
@@ -8537,72 +8952,48 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
         m_commandList->SetSRVTable(RootSignature::kSlotAOSRV,
             m_srvHeap->GetGpuHandle(aoSrvIndex));
 
-    // パーティクル判定（名前が "Pfx" で始まる＝加算発光で描く）
+    // パーティクル判定（名前が "Pfx" で始まる＝加算発光で描く。パス3の instancing 集約用）
     auto isPfx = [&](entt::entity e) -> bool {
         const auto* nt = reg.try_get<NameTag>(e);
         return nt && nt->name.rfind("Pfx", 0) == 0;
     };
 
-    // 1エンティティ分の描画（パイプライン選択 + メッシュ描画）
-    auto drawEntity = [&](entt::entity e, const Transform& transform, const MeshRenderer& renderer)
+    // 1エンティティ分の描画（パイプライン選択 + メッシュ描画）。
+    // park除外/ワールド行列/カリングは呼び出し側（描画リスト or グリッド walk）で解決済み。
+    auto drawEntity = [&](entt::entity e, const MeshRenderer& renderer, XMMATRIX world,
+                          SkinningBuffer* skin, bool hasNodeAnim, bool isGrid, u32 lod)
     {
-        // park 済み（scale≈0 で画面外へ退避したプール要素）は不可視なので描画スキップ。
-        // エンジンはフラスタムカリングしないため、これが無いと game1 の未使用プール(~700体)を
-        // 毎フレーム全部描いてしまい、空に見える画面でもGPUが張り付く。
-        const auto& sc = transform.scale;
-        if (sc.x * sc.x + sc.y * sc.y + sc.z * sc.z < 1e-8f) return;
-
-        XMMATRIX world = (transform.parent != entt::null)
-            ? ComputeWorldMatrix(reg, e) : transform.GetWorldMatrix();
-
-        bool isGrid = reg.all_of<GridPlane>(e);
-        bool isSkinned = reg.all_of<SkeletalAnimation>(e);
-
-        // フラスタムカリング: グリッド以外で、ワールド球が視錐台の完全に外なら描画スキップ。
-        // 床/壁など大きい構造物は球半径も大きく必ず交差＝カリングされない（自然に残る）。
-        if (cullEnabled && !isGrid)
+        // PSO 選択。同一 PSO が連続する間はバインドをスキップ（リストはソート済み）。
+        PipelineState* psoSel;
+        if (isGrid)
         {
-            const float ms = (std::max)((std::max)(std::abs(sc.x), std::abs(sc.y)), std::abs(sc.z));
-            // ponytail: 球は meshes[0] 基準＋1.25x バイアスで保守的（game1 の敵は単一メッシュ）。
-            const float radius = (!renderer.meshes.empty() && renderer.meshes[0])
-                               ? renderer.meshes[0]->GetBoundingRadius() : 1.0f;
-            if (!camFrustum.SphereVisible(world.r[3], radius * ms * 1.25f)) return;
+            psoSel = m_gridPipelineState.get();
         }
-
-        if (isPfx(e))
+        else if (skin)
         {
-            m_commandList->SetPipelineState(*m_emissivePipelineState);
-        }
-        else if (isGrid)
-        {
-            m_commandList->SetPipelineState(*m_gridPipelineState);
-        }
-        else if (isSkinned)
-        {
-            auto& skelAnim = reg.get<SkeletalAnimation>(e);
             // 深度プリパス併用時は LESS_EQUAL バリアントで同一深度を通す。
-            m_commandList->SetPipelineState(depthPrepassActive
-                ? *m_skinnedPipelineStateLEqual : *m_skinnedPipelineState);
-            m_commandList->SetSRVTable(RootSignature::kSlotBonesSRV,
-                m_srvHeap->GetGpuHandle(skelAnim.skinningBuffer->GetSrvIndex(frameIndex)));
+            psoSel = depthPrepassActive ? m_skinnedPipelineStateLEqual.get()
+                                        : m_skinnedPipelineState.get();
         }
         else
         {
             // カスタムシェーダー割当(静的メッシュのみ)。未コンパイル/生成失敗時は既定 Forward へフォールバック。
             CustomForwardPsos* custom = renderer.shaderPath.empty() ? nullptr : EnsureCustomPso(renderer.shaderPath);
             if (custom)
-            {
-                PipelineState* pso = renderer.shaderAlphaBlend
+                psoSel = renderer.shaderAlphaBlend
                     ? (depthPrepassActive ? custom->lequalBlend.get() : custom->lessBlend.get())
                     : (depthPrepassActive ? custom->lequal.get() : custom->less.get());
-                m_commandList->SetPipelineState(*pso);
-            }
             else
-                m_commandList->SetPipelineState(depthPrepassActive
-                    ? *m_pipelineStateLEqual : *m_pipelineState);
+                psoSel = depthPrepassActive ? m_pipelineStateLEqual.get() : m_pipelineState.get();
         }
-
-        bool hasNodeAnim = reg.all_of<NodeAnimationComp>(e);
+        if (psoSel->Get() != lastPso)
+        {
+            m_commandList->SetPipelineState(*psoSel);
+            lastPso = psoSel->Get();
+        }
+        if (skin)
+            m_commandList->SetSRVTable(RootSignature::kSlotBonesSRV,
+                m_srvHeap->GetGpuHandle(skin->GetSrvIndex(frameIndex)));
         for (u32 mi = 0; mi < static_cast<u32>(renderer.meshes.size()); ++mi)
         {
             const auto* mesh = renderer.meshes[mi];
@@ -8639,26 +9030,23 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             // (D&Dでのマテリアル割当、MeshRenderer::overrideAlbedoTexture 等)があれば
             // 専用ブロックを優先する(mat は同一モデルの全インスタンスで共有されるため直接は触らない)。
             u32 overrideBlock = EnsureMaterialOverrideSrv(e, mi, renderer, mat, nativeCmdList);
+            D3D12_GPU_DESCRIPTOR_HANDLE matSrv;
             if (matAsset)
-            {
-                m_commandList->SetSRVTable(RootSignature::kSlotSRVTable,
-                    m_srvHeap->GetGpuHandle(matAsset->srvBlockStart));
-            }
+                matSrv = m_srvHeap->GetGpuHandle(matAsset->srvBlockStart);
             else if (overrideBlock != 0xFFFFFFFF)
-            {
-                m_commandList->SetSRVTable(RootSignature::kSlotSRVTable,
-                    m_srvHeap->GetGpuHandle(overrideBlock));
-            }
+                matSrv = m_srvHeap->GetGpuHandle(overrideBlock);
             else if (mat && mat->srvBlockIndex != 0xFFFFFFFF)
-            {
-                m_commandList->SetSRVTable(RootSignature::kSlotSRVTable,
-                    m_srvHeap->GetGpuHandle(mat->srvBlockIndex));
-            }
+                matSrv = m_srvHeap->GetGpuHandle(mat->srvBlockIndex);
             else
             {
                 Texture* tex = (mat && mat->albedoTexture) ? mat->albedoTexture : m_resourceManager->GetDefaultWhiteTexture();
-                m_commandList->SetSRVTable(RootSignature::kSlotSRVTable,
-                    m_srvHeap->GetGpuHandle(tex->GetSrvIndex()));
+                matSrv = m_srvHeap->GetGpuHandle(tex->GetSrvIndex());
+            }
+            // 同一マテリアル連続時はディスクリプタテーブル張り替えをスキップ
+            if (matSrv.ptr != lastMatSrv)
+            {
+                m_commandList->SetSRVTable(RootSignature::kSlotSRVTable, matSrv);
+                lastMatSrv = matSrv.ptr;
             }
 
             // PBR Material Constants (Slot 5)
@@ -8714,30 +9102,44 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             }
             nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPBRMaterial, 8, &pbrParams, 0);
 
-            m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-            m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
-            m_commandList->SetIndexBuffer(mesh->GetIndexBuffer().GetView());
-            m_commandList->DrawIndexedInstanced(mesh->GetIndexCount());
+            // 同一メッシュ・同一LOD連続時（同モデルの複数エンティティ等）は IA バインドをスキップ
+            if (mesh != lastVbMesh || lod != lastLod)
+            {
+                m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
+                m_commandList->SetIndexBuffer(mesh->GetIndexBufferLod(lod).GetView());
+                lastVbMesh = mesh;
+                lastLod    = lod;
+            }
+            m_commandList->DrawIndexedInstanced(mesh->GetIndexCountLod(lod));
+            ++m_statDraws;
+            m_statTris += mesh->GetIndexCountLod(lod) / 3;
+            ++m_passBucket->draws;
+            m_passBucket->tris += mesh->GetIndexCountLod(lod) / 3;
         }
     };
 
-    // パス1: 不透明（グリッド・パーティクル以外）を描く＝深度を確定
-    for (auto [e, transform, renderer] : renderView.each())
+    // パス1: 不透明（グリッド・パーティクル以外）＝フレーム描画リスト（ソート済み）を
+    // カメラ視錐台でカリングしながら描く。リストは Render() 先頭の BuildDrawList() で構築済み。
+    for (const DrawItem& item : m_drawItems)
     {
-        if (reg.all_of<GridPlane>(e)) continue;
-        if (isPfx(e)) continue;
-        drawEntity(e, transform, renderer);
+        XMMATRIX world = XMLoadFloat4x4(&item.world);
+        if (!camFrustum.SphereVisible(world.r[3], item.radius)) { ++m_statCulled; continue; }
+        drawEntity(item.e, *item.renderer, world, item.skin, item.hasNodeAnim, /*isGrid*/ false, item.lod);
     }
 
     // パス2: エディタ用グリッド。線だけを後描きする（ForwardGrid 側で線以外 alpha=0）。
     // 床全体へ半透明の膜を被せず、グリッド表示だけ維持する。
+    // グリッドは描画リスト対象外なので従来どおり registry を直接走査（エディタのみ・少数）。
     if (!isGameView)
     {
         for (auto [e, transform, renderer] : renderView.each())
         {
             const auto* gp = reg.try_get<GridPlane>(e);
             if (!gp || !gp->enabled) continue;
-            drawEntity(e, transform, renderer);
+            XMMATRIX world = (transform.parent != entt::null)
+                ? ComputeWorldMatrix(reg, e) : transform.GetWorldMatrix();
+            drawEntity(e, renderer, world, nullptr, reg.all_of<NodeAnimationComp>(e), /*isGrid*/ true, /*lod*/ 0u);
         }
     }
 
@@ -8794,6 +9196,10 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
                 iv.SizeInBytes     = b.count * sizeof(MeshInstanceData);
                 nativeCmdList->IASetVertexBuffers(1, 1, &iv);                          // slot1
                 m_commandList->DrawIndexedInstanced(b.mesh->GetIndexCount(), b.count);
+                ++m_statDraws;
+                m_statTris += b.mesh->GetIndexCount() / 3 * b.count;
+                ++m_passBucket->draws;
+                m_passBucket->tris += b.mesh->GetIndexCount() / 3 * b.count;
             }
         }
     }
@@ -8866,46 +9272,56 @@ void Application::DrawWorldSprites(ID3D12GraphicsCommandList* cmd, DirectX::XMMA
 // RTVなし/DSVのみを前提に、Transform+MeshRenderer を全走査して viewProj で変換し描画する。
 // GridPlane・park済み(scale≈0)・発光弾(Pfx*)は除外（元のシャドウパスのフィルタをそのまま踏襲）。
 void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState& staticPSO,
-                                       PipelineState& skinnedPSO, bool updateSkinning, u32 frameIndex)
+                                       PipelineState& skinnedPSO, bool updateSkinning, u32 frameIndex,
+                                       u32 lodBias)
 {
     using namespace DirectX;
 
     auto& reg = m_scene->GetRegistry();
-    auto renderView = reg.view<const Transform, const MeshRenderer>();
-    for (auto [e, transform, renderer] : renderView.each())
+
+    // このパスの視錐台（ライト/カメラ視点）で描画リストを球カリングする。
+    // CSM はタイトフィット正射 + DepthClipEnable=TRUE のため、落とすのは
+    // 「現状でもラスタライザにクリップされている範囲」だけ＝影の見た目は不変。
+    const Frustum frustum = Frustum::FromViewProj(viewProj);
+
+    ID3D12PipelineState* lastPso    = nullptr;
+    const Mesh*          lastVbMesh = nullptr;
+    u32                  lastLod    = ~0u;
+
+    for (const DrawItem& item : m_drawItems)
     {
-        if (reg.all_of<GridPlane>(e)) continue;
-        // park 済み(scale≈0)は影/深度も不要＝該当ドローをまるごと削減。
-        const auto& sc = transform.scale;
-        if (sc.x * sc.x + sc.y * sc.y + sc.z * sc.z < 1e-8f) continue;
-        // 発光弾(Pfx*)は光源扱い＝影/深度を落とさない（加算発光なので影が無い方が自然）。
-        if (auto* nt = reg.try_get<NameTag>(e); nt && nt->name.rfind("Pfx", 0) == 0) continue;
+        XMMATRIX world = XMLoadFloat4x4(&item.world);
+        if (!frustum.SphereVisible(world.r[3], item.radius)) { ++m_statCulled; continue; }
+        const u32 lod = item.lod + lodBias;   // Mesh 側で最終LODへクランプ
 
-        XMMATRIX world = (transform.parent != entt::null)
-            ? ComputeWorldMatrix(reg, e) : transform.GetWorldMatrix();
-
-        bool isSkinned = reg.all_of<SkeletalAnimation>(e);
-        if (isSkinned)
+        if (item.skin)
         {
-            auto& skelAnim = reg.get<SkeletalAnimation>(e);
             if (updateSkinning)
+            {
+                auto& skelAnim = reg.get<SkeletalAnimation>(item.e);
                 skelAnim.skinningBuffer->Update(skelAnim.animator->GetSkinningMatrices(), frameIndex);
-            m_commandList->SetPipelineState(skinnedPSO);
+            }
+            if (skinnedPSO.Get() != lastPso)
+            {
+                m_commandList->SetPipelineState(skinnedPSO);
+                lastPso = skinnedPSO.Get();
+            }
             m_commandList->SetSRVTable(RootSignature::kSlotBonesSRV,
-                m_srvHeap->GetGpuHandle(skelAnim.skinningBuffer->GetSrvIndex(frameIndex)));
+                m_srvHeap->GetGpuHandle(item.skin->GetSrvIndex(frameIndex)));
         }
-        else
+        else if (staticPSO.Get() != lastPso)
         {
             m_commandList->SetPipelineState(staticPSO);
+            lastPso = staticPSO.Get();
         }
 
-        bool hasNodeAnim = reg.all_of<NodeAnimationComp>(e);
+        const MeshRenderer& renderer = *item.renderer;
         for (u32 mi = 0; mi < static_cast<u32>(renderer.meshes.size()); ++mi)
         {
             const auto* mesh = renderer.meshes[mi];
 
             XMMATRIX meshWorld = world;
-            if (hasNodeAnim && mi < static_cast<u32>(renderer.meshNodeTransforms.size()))
+            if (item.hasNodeAnim && mi < static_cast<u32>(renderer.meshNodeTransforms.size()))
             {
                 XMMATRIX nodeMat = XMLoadFloat4x4(&renderer.meshNodeTransforms[mi]);
                 meshWorld = nodeMat * world;
@@ -8916,10 +9332,19 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
             objData.mdl = XMMatrixTranspose(meshWorld);
             m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
 
-            m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-            m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
-            m_commandList->SetIndexBuffer(mesh->GetIndexBuffer().GetView());
-            m_commandList->DrawIndexedInstanced(mesh->GetIndexCount());
+            if (mesh != lastVbMesh || lod != lastLod)
+            {
+                m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
+                m_commandList->SetIndexBuffer(mesh->GetIndexBufferLod(lod).GetView());
+                lastVbMesh = mesh;
+                lastLod    = lod;
+            }
+            m_commandList->DrawIndexedInstanced(mesh->GetIndexCountLod(lod));
+            ++m_statDraws;
+            m_statTris += mesh->GetIndexCountLod(lod) / 3;
+            ++m_passBucket->draws;
+            m_passBucket->tris += mesh->GetIndexCountLod(lod) / 3;
         }
     }
 }
@@ -9044,8 +9469,17 @@ void Application::Render()
         m_resourceManager->FinishUploads();
     }
 
+    // フェンス待ち時間を計測（GPU がフレームを消化しきれていないとここが伸びる＝GPUバウンドの指標）
+    const auto perfFenceT0 = std::chrono::high_resolution_clock::now();
     auto* nativeCmdList = m_frameResources->BeginFrame(*m_commandQueue);
+    m_perfFenceWaitMs = std::chrono::duration<f32, std::milli>(
+        std::chrono::high_resolution_clock::now() - perfFenceT0).count();
     m_commandList->Wrap(nativeCmdList);
+
+    // GPU パス計測: このスロットの前回結果（約3フレーム前）を読み戻してから今フレームの計測開始
+    static_assert(GpuTimer::Count <= kPerfGpuScopes, "kPerfGpuScopes を GpuTimer::Count に合わせて広げること");
+    m_gpuTimer->NewFrame(m_swapChain->GetCurrentBackBufferIndex());
+    m_gpuTimer->Begin(nativeCmdList, GpuTimer::Total);
 
     // マテリアルアセット(.dxmat)のホットリロード監視。エディタのみ(内部で0.5秒間隔にスロットリング)。
     if (!m_isGameMode && m_materialAssetManager)
@@ -9154,6 +9588,15 @@ void Application::Render()
             }
             m_mcpLoadReply = {};
         }
+    }
+
+    // Lua preloadScene: 次シーンが参照するテクスチャ/モデルをキャッシュへ先読み
+    // (シーン切替はしない。トランジション中間点の同期ロードを軽くしてカクつきを消す)
+    if (!m_pendingScenePreloads.empty() && nativeCmdList)
+    {
+        for (const auto& rel : m_pendingScenePreloads)
+            DoScenePreload(rel, nativeCmdList);
+        m_pendingScenePreloads.clear();
     }
 
     // Play 中のシーン切替（Lua loadScene/nextScene、またはトランジション中間点）
@@ -10444,6 +10887,9 @@ void Application::Render()
     m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
     m_commandList->SetRootSignature(*m_rootSignature);
 
+    // フレーム描画リストを構築（1回）。以降の影/プリパス/メイン/プレビューの全パスで共有する。
+    BuildDrawList();
+
     // ===== スポットライト影スロット割当（castShadows なライトをカメラに近い順で最大kMaxShadowSpot灯）=====
     // 結果は m_spotShadowViewProj[] / m_spotShadowEntity[] に格納し、直後の影パス描画と
     // 後段のライト収集(shadowIndex書き込み)の両方で使う。
@@ -10492,6 +10938,9 @@ void Application::Render()
         m_numSpotShadowSlots = n;
     }
 
+    m_gpuTimer->Begin(nativeCmdList, GpuTimer::Shadows);
+    m_passBucket = &m_passShadow;
+
     // ===== スポットライト影パス =====
     if (m_scene && m_scene->GetShadowsEnabled() && m_numSpotShadowSlots > 0)
     {
@@ -10512,7 +10961,7 @@ void Application::Render()
             m_commandList->ClearDepthStencil(m_spotShadowDsvHandles[i]);
             nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_spotShadowDsvHandles[i]);
             RenderDepthOnlyScene(lvp, *m_shadowPipelineState, *m_shadowSkinnedPipelineState,
-                                 /*updateSkinning*/ false, frameIndex);
+                                 /*updateSkinning*/ false, frameIndex, /*lodBias*/ 1);
         }
 
         m_commandList->TransitionResource(m_spotShadowMap.Get(),
@@ -10585,7 +11034,7 @@ void Application::Render()
                 m_commandList->ClearDepthStencil(m_pointShadowDsvHandles[slice]);
                 nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_pointShadowDsvHandles[slice]);
                 RenderDepthOnlyScene(faceView * faceProj, *m_shadowPipelineState, *m_shadowSkinnedPipelineState,
-                                     /*updateSkinning*/ false, frameIndex);
+                                     /*updateSkinning*/ false, frameIndex, /*lodBias*/ 1);
             }
         }
 
@@ -10624,12 +11073,15 @@ void Application::Render()
             // skinningBuffer はフレーム先頭で全 SkeletalAnimation を一括 Update 済み
             // （シャドウパスは影OFF/正射カメラでスキップされるため、ここでは更新しない）。
             RenderDepthOnlyScene(cascadeVP, *m_shadowPipelineState, *m_shadowSkinnedPipelineState,
-                                 /*updateSkinning*/ false, frameIndex);
+                                 /*updateSkinning*/ false, frameIndex, /*lodBias*/ 1);
         }
 
         m_commandList->TransitionResource(m_shadowMap.Get(),
             D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     }
+
+    m_gpuTimer->End(nativeCmdList, GpuTimer::Shadows);
+    m_passBucket = &m_passOther;
 
     // ===== メインパス（オフスクリーン RT へ描画）=====
 
@@ -10643,6 +11095,7 @@ void Application::Render()
                        && !m_camera->IsOrthographic();
     u32 aoSrv = m_ssaoWhiteSrvIndex;  // 既定 = 白（AO=1.0 素通し）
 
+    m_gpuTimer->Begin(nativeCmdList, GpuTimer::PrepassSSAO);
     if (useSSAO)
     {
         XMMATRIX camVP = m_camera->GetViewProjMatrix();
@@ -10674,6 +11127,7 @@ void Application::Render()
         m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
         m_commandList->SetRootSignature(*m_rootSignature);
     }
+    m_gpuTimer->End(nativeCmdList, GpuTimer::PrepassSSAO);
 
     m_sceneRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
 
@@ -10885,8 +11339,12 @@ void Application::Render()
 
     // 全Entityを描画（メインパス: 編集カメラ視点）。AO は SSAO 有効時のみ実テクスチャ、無効時は白。
     // useSSAO=true のときだけ深度プリパスで深度が完成済み → LESS_EQUAL forward PSO で再利用する。
+    m_gpuTimer->Begin(nativeCmdList, GpuTimer::MainScene);
+    m_passBucket = &m_passMain;
     RenderSceneMeshes(nativeCmdList, frameIndex, viewProj,
                       (m_isGameMode || m_engineMode == EngineMode::Playing), aoSrv, useSSAO);
+    m_passBucket = &m_passOther;
+    m_gpuTimer->End(nativeCmdList, GpuTimer::MainScene);
 
     // ---- Physics Debug Draw（オフスクリーン RT へ）----
     if (m_physicsDebugDraw && m_physicsDebugRenderer->IsEnabled())
@@ -10901,6 +11359,7 @@ void Application::Render()
 
     // ---- パーティクル（プロシージャル質感ビルボード）: HDR scene RT へ ----
     // エディタ編集中も描画する（配置エミッタ/トレイルの常時プレビュー。従来は Play/ゲームのみ）
+    m_gpuTimer->Begin(nativeCmdList, GpuTimer::Particles);
     bool particleDistortDrawn = false;
     if (m_particleSystem)
     {
@@ -10961,6 +11420,7 @@ void Application::Render()
         m_commandList->TransitionResource(m_depthBuffer.Get(),
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
     }
+    m_gpuTimer->End(nativeCmdList, GpuTimer::Particles);
 
     // ---- ワールド空間 2D スプライト（Sprite2D, worldSpace=true）: HDR scene RT へ ----
     // 各スプライトをエンティティのワールド行列で配置（3D 空間の任意位置/向き/スケール、billboard 可）。
@@ -10977,6 +11437,7 @@ void Application::Render()
     }
 
     // ===== ポストプロセス: オフスクリーン RT → バックバッファ =====
+    m_gpuTimer->Begin(nativeCmdList, GpuTimer::PostFX);
     auto* backBuffer = m_swapChain->GetCurrentBackBuffer();
     auto  rtv        = m_swapChain->GetCurrentRTV();
 
@@ -11183,6 +11644,8 @@ void Application::Render()
         XMStoreFloat4x4(&m_prevViewProj, m_camera->GetViewProjMatrix());
         m_prevViewProjValid = true;
     }
+    m_gpuTimer->End(nativeCmdList, GpuTimer::PostFX);
+    m_gpuTimer->Begin(nativeCmdList, GpuTimer::UI);
 
     // ---- Editor Icon Draw（ポスト後のバックバッファへ, エディタモードのみ）----
     if (m_engineMode == EngineMode::Editor && !m_isGameMode)
@@ -12073,6 +12536,10 @@ void Application::Render()
         m_sceneTransition->Render(nativeCmdList, aspect);
     }
 
+    m_gpuTimer->End(nativeCmdList, GpuTimer::UI);
+    m_gpuTimer->End(nativeCmdList, GpuTimer::Total);
+    m_gpuTimer->Resolve(nativeCmdList);
+
     m_commandList->TransitionResource(backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
     m_commandList->Close();
 
@@ -12080,8 +12547,11 @@ void Application::Render()
     // multi-viewport: 引き出したフローティング窓(セカンダリスワップチェイン)の描画+Present。
     // メインリストのExecute後に呼ぶことで、メインリスト内で遷移したテクスチャの状態が正しく見える。
     m_imguiManager->RenderPlatformWindows();
+    const auto perfPresentT0 = std::chrono::high_resolution_clock::now();
     m_swapChain->Present(m_useVsync);
     m_frameResources->EndFrame(*m_commandQueue);
+    m_perfPresentMs = std::chrono::duration<f32, std::milli>(
+        std::chrono::high_resolution_clock::now() - perfPresentT0).count();
 
     // UI 自動テスト: Present 後にテストのコルーチンを進める(--ui-tests-run-all なら完走で終了要求)
     if (m_uiTests)
@@ -12105,6 +12575,8 @@ void Application::Render()
     m_resourceManager->DeferPendingUploads();
     DeferredRelease::Stamp(m_commandQueue->GetLastSignaledValue());
     DeferredRelease::Collect(m_commandQueue->GetCompletedValue());
+
+    RecordPerfFrame();
 }
 
 } // namespace dx12e

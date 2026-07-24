@@ -192,6 +192,9 @@ const CachedModel* ResourceManager::GetOrLoadModel(
 
     const CachedModel* rawPtr = cached.get();
     m_modelCache[key] = std::move(cached);
+    // メッシュの VB/IB ステージングをフレーム末尾に遅延解放（テクスチャと同じ経路）
+    for (auto& mesh : rawPtr->meshes)
+        m_pendingMeshUploads.push_back(mesh.get());
     m_uploadsPending = true;
 
     Logger::Info("Model cached: {} ({} meshes)", filePath, rawPtr->meshes.size());
@@ -226,10 +229,13 @@ Texture* ResourceManager::GetOrLoadEmbeddedTexture(
 
 void ResourceManager::DeferPendingUploads()
 {
-    // Texture::FinishUpload は DeferredRelease 有効時、フェンス連動の遅延解放になる
+    // Texture/Mesh::FinishUpload は DeferredRelease 有効時、フェンス連動の遅延解放になる
     for (Texture* t : m_pendingUploads)
         t->FinishUpload();
     m_pendingUploads.clear();
+    for (Mesh* m : m_pendingMeshUploads)
+        m->FinishUpload();
+    m_pendingMeshUploads.clear();
     m_uploadsPending = false;
 }
 

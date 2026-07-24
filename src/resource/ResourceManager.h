@@ -84,6 +84,8 @@ private:
     // (キャッシュは解放されないので生ポインタで安全)。毎フレーム末尾の
     // DeferPendingUploads がフェンス連動の遅延解放キューへ回す。
     std::vector<Texture*> m_pendingUploads;
+    // 今フレームでロードされ、VB/IB ステージングが未回収のメッシュ（キャッシュ所有なので生ポインタ）
+    std::vector<Mesh*> m_pendingMeshUploads;
     bool m_uploadsPending = false;  // FinishUploads/DeferPendingUploads で false に戻す
 };
 

@@ -762,6 +762,29 @@ reg(
   ({ frames }) => run(() => engine.call("step_frames", { frames })),
 );
 
+reg(
+  "dx12_perf_stats",
+  "パフォーマンス統計",
+  "直近 window フレーム(既定60)の性能統計を即時取得。fps / frameMs(avg,min,max,p95) / cpu(workMs,fenceWaitMs,presentMs) / gpuPassMs(total,shadows,prepassSsao,mainScene,particles,postFx,ui ※約3フレーム遅れのGPUタイムスタンプ) / drawCalls / culled / triangles / vsync / fpsLimit / scene(エンティティ内訳・shadows/ssao) と analysis(verdict: gpu-bound|cpu-bound|fps-limit-capped 等 + 改善ノート)を返す。FPS が出ない時はまずこれで犯人を特定する。",
+  { window: z.number().int().optional().describe("平均するフレーム数(既定 60, 最大 240)。") },
+  { readOnlyHint: true },
+  ({ window }) => run(() => engine.call("perf_stats", { window })),
+);
+
+reg(
+  "dx12_benchmark",
+  "ベンチマーク実行",
+  "N フレーム(既定300, 30..3600)計測してから統計を返す遅延同期ベンチ。返り値は dx12_perf_stats と同形式 + frames / fps1PercentLow(p99フレーム時間の逆数=スパイク体感指標)。カメラ位置・シーン・Play/Editor 状態は呼び出し側が事前に整えること。最適化の前後で同条件で回して比較するのが正しい使い方。実行中の重複呼び出しはエラー。",
+  { frames: z.number().int().optional().describe("計測フレーム数(既定 300)。30..3600。") },
+  { readOnlyHint: true },
+  ({ frames }) =>
+    run(() =>
+      engine.call("benchmark", { frames }, {
+        // 30fps まで落ちてても間に合う余裕: frames×34ms + 10s
+        timeout: (frames ?? 300) * 34 + 10000,
+      })),
+);
+
 // ════════════════════════════════════════════════════════════════
 //  ランタイム物理検証(raycast/overlap/velocity) — 全て同期・読み取り系。
 //  bodies は Play 中のみ登録される(RegisterBody は Play 開始/loadScene 時)。
