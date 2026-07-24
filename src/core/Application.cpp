@@ -10211,10 +10211,12 @@ void Application::Render()
     {
         auto vp = m_editorLayer->GetViewportPos();
         auto vs = m_editorLayer->GetViewportSize();
-        vpLeft = static_cast<u32>(vp.x);
-        vpTop  = static_cast<u32>(vp.y);
-        vpW    = static_cast<u32>(vs.x);
-        vpH    = static_cast<u32>(vs.y);
+        // 負座標(パネルのドラッグ中/画面外)を u32 へキャストすると巨大値にラップし、
+        // ビューポートが RT 外へ飛んで描画が全滅する(クリアだけ残り真っ青)ため 0 で下限。
+        vpLeft = static_cast<u32>((std::max)(0.0f, vp.x));
+        vpTop  = static_cast<u32>((std::max)(0.0f, vp.y));
+        vpW    = static_cast<u32>((std::max)(0.0f, vs.x));
+        vpH    = static_cast<u32>((std::max)(0.0f, vs.y));
         if (vpW < 1) vpW = 1;
         if (vpH < 1) vpH = 1;
         // 全画面は「単体ゲーム（エディタUIなし）」のみ。エディタは編集中も Play 中も
@@ -10283,6 +10285,47 @@ void Application::Render()
         }
         if (!applied)
             m_camera->SetAspect(renderAspect);  // アクティブカメラが無ければアスペクトのみ更新
+    }
+
+    // ===== カメラ非有限値ガード =====
+    // スクリプト/物理の発散で NaN 化した Transform がカメラ同期・focus_camera 経由で m_camera に
+    // 入ると、ビュー行列が NaN 化し全描画が消えて「シーンビューが真っ青」のまま戻らなくなる
+    // (Stop してもエディタカメラは復元されない)。毎フレーム検査し、非有限になったら直近の
+    // 正常姿勢へ戻して、原因調査用に直近の MCP コマンドと共にログを残す。
+    {
+        static XMFLOAT3 s_lastGoodCamPos{-14.7f, 9.6f, -9.0f};
+        static f32  s_lastGoodCamYaw = 0.0f, s_lastGoodCamPitch = 0.0f;
+        static bool s_camWasBad = false;
+        const XMFLOAT3 cp = m_camera->GetPosition();
+        const bool camFinite =
+            std::isfinite(cp.x) && std::isfinite(cp.y) && std::isfinite(cp.z) &&
+            std::isfinite(m_camera->GetYaw()) && std::isfinite(m_camera->GetPitch());
+        if (camFinite)
+        {
+            s_lastGoodCamPos   = cp;
+            s_lastGoodCamYaw   = m_camera->GetYaw();
+            s_lastGoodCamPitch = m_camera->GetPitch();
+            s_camWasBad = false;
+        }
+        else
+        {
+            if (!s_camWasBad)
+            {
+                std::string lastMcp = "(なし)";
+                if (m_mcpBridge)
+                {
+                    const auto cmds = m_mcpBridge->RecentCommands();
+                    if (!cmds.empty()) lastMcp = cmds.back().method;
+                }
+                Logger::Error("カメラが非有限値になりました pos=({}, {}, {}) yaw={} pitch={} "
+                              "直近MCP={} — 直前の正常姿勢へ復元します",
+                              cp.x, cp.y, cp.z, m_camera->GetYaw(), m_camera->GetPitch(), lastMcp);
+                s_camWasBad = true;
+            }
+            m_camera->SetPosition(s_lastGoodCamPos);
+            m_camera->SetYaw(s_lastGoodCamYaw);
+            m_camera->SetPitch(s_lastGoodCamPitch);
+        }
     }
 
     // ライトの向きを Transform 回転に追従させる（回転の変化分=デルタを direction に適用）。
