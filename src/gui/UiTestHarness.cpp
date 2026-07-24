@@ -2,6 +2,7 @@
 #include "core/Application.h"
 #include "core/CrashHandler.h"
 #include "core/Logger.h"
+#include "core/PathResolver.h"
 #include "core/Version.h"
 #include "ecs/Components.h"
 #include "editor/EditorContext.h"
@@ -1157,6 +1158,277 @@ void T_DeepGizmo(ImGuiTestContext* ctx)
     ctx->LogInfo("仕様メモ: 回転ギズモはローカル/ワールド切替を無視して常にワールド軸で表示される");
 }
 
+// ---- コピペ / 複製 / プレハブの機能維持検査 ----
+
+// 「親(Box+Trigger) + 子(Box+コライダー+Luaスクリプト)」というステージ制作の典型構成を作る。
+// 子の名前を Trigger の target と Lua の entity プロパティが名前参照する＝複製時のリマップ検査台。
+struct SubtreeFixture
+{
+    entt::entity parent = entt::null;
+    entt::entity child  = entt::null;
+    std::string  childName;
+};
+
+SubtreeFixture MakeColliderSubtree(ImGuiTestContext* ctx, entt::registry& reg)
+{
+    SubtreeFixture fx;
+    fx.parent = AddBoxAndGet(ctx, reg);
+    fx.child  = AddBoxAndGet(ctx, reg);
+    if (fx.parent == entt::null || fx.child == entt::null) return fx;
+
+    // 親子に一意な名前を付ける。生成直後は両方とも同じ名前になり得て、同名だと
+    // 名前参照が元から曖昧（エンジンの名前解決は任意の一致を拾う）＝リマップ検査にならない。
+    static int s_diagSeq = 0;
+    const std::string suffix = std::to_string(++s_diagSeq);
+    reg.get<NameTag>(fx.parent).name = "DiagParent_" + suffix;
+    reg.get<NameTag>(fx.child).name  = "DiagChild_" + suffix;
+
+    reg.get<Transform>(fx.child).parent = fx.parent;
+    fx.childName = reg.get<NameTag>(fx.child).name;
+
+    // 子: 当たり判定 + Lua スクリプト（entity プロパティで自分の兄弟=子自身を名前参照）
+    reg.emplace_or_replace<BoxCollider>(fx.child, BoxCollider{});
+    LuaScript ls;
+    ls.scriptPath = "scripts/__diag_copy_test.lua";   // データ複製の検査なので実在は不要
+    ScriptProp p;
+    p.name = "targetRef";
+    p.type = ScriptPropType::Entity;
+    p.str  = fx.childName;
+    ls.props.push_back(std::move(p));
+    reg.emplace_or_replace<LuaScript>(fx.child, std::move(ls));
+
+    // 親: Trigger の filter / actions[].target も子を名前参照
+    Trigger tr;
+    tr.filter = fx.childName;
+    TriggerAction act;
+    act.target = fx.childName;
+    tr.actions.push_back(std::move(act));
+    reg.emplace_or_replace<Trigger>(fx.parent, std::move(tr));
+    return fx;
+}
+
+// 生成済み集合 before に対する「新入りのうち親を持たないルート」を返す
+entt::entity FindNewRoot(entt::registry& reg, const std::set<entt::entity>& before)
+{
+    for (auto e : reg.view<Transform>())
+        if (before.find(e) == before.end() && reg.get<Transform>(e).parent == entt::null)
+            return e;
+    return entt::null;
+}
+
+entt::entity FindChildOf(entt::registry& reg, entt::entity parent,
+                         const std::set<entt::entity>& before)
+{
+    for (auto e : reg.view<Transform>())
+        if (before.find(e) == before.end() && reg.get<Transform>(e).parent == parent)
+            return e;
+    return entt::null;
+}
+
+// コピペした複製が「見た目だけの箱」になっていないかを実データで検査する。
+// 子階層・コライダー・Lua スクリプト(プロパティ込み)・Trigger が全部残り、
+// 名前参照は複製後の名前へ付け替わっていて、Undo/Redo で往復できること。
+void T_DeepCopyPasteSubtree(ImGuiTestContext* ctx)
+{
+    IM_CHECK(g_app != nullptr);
+    EditorContext* ed = Ed();
+    IM_CHECK(ed != nullptr);
+    Scene* scene = g_app->GetScene();
+    IM_CHECK(scene != nullptr);
+    entt::registry& reg = scene->GetRegistry();
+
+    Step(ctx, "親(Trigger) + 子(コライダー+Lua) を作る");
+    SubtreeFixture fx = MakeColliderSubtree(ctx, reg);
+    IM_CHECK(fx.parent != entt::null && fx.child != entt::null);
+
+    std::set<entt::entity> before;
+    for (auto e : reg.view<Transform>()) before.insert(e);
+
+    Step(ctx, "編集メニューでコピー → 貼り付け");
+    ed->selectedEntity = fx.parent;
+    ed->selectedEntities.assign(1, fx.parent);
+    ctx->Yield(2);
+    ctx->SetRef(kWinToolbar);
+    ctx->MenuClick("編集/コピー");
+    ctx->Yield(2);
+    ctx->MenuClick("編集/貼り付け");
+    ctx->Yield(8);   // ペーストはフレーム境界の遅延処理
+
+    const entt::entity pastedRoot = FindNewRoot(reg, before);
+    IM_CHECK(pastedRoot != entt::null);
+    const entt::entity pastedChild = FindChildOf(reg, pastedRoot, before);
+    if (pastedChild == entt::null)
+    {
+        IM_ERRORF("ペーストで子エンティティが複製されていない（サブツリーが失われた）");
+        return;
+    }
+
+    Step(ctx, "複製先のコンポーネントを検査");
+    if (!reg.all_of<BoxCollider>(pastedChild))
+        IM_ERRORF("ペーストした子に BoxCollider が引き継がれていない");
+    if (!reg.all_of<LuaScript>(pastedChild))
+        IM_ERRORF("ペーストした子に Lua スクリプトが引き継がれていない");
+    if (!reg.all_of<Trigger>(pastedRoot))
+        IM_ERRORF("ペーストした親に Trigger が引き継がれていない");
+
+    // 名前参照のリマップ（複製セット内の参照は新しい名前を指すこと）
+    const std::string newChildName = reg.get<NameTag>(pastedChild).name;
+    IM_CHECK_NO_RET(newChildName != fx.childName);   // 連番でリネームされている前提
+    if (reg.all_of<LuaScript>(pastedChild))
+    {
+        const auto& ls = reg.get<LuaScript>(pastedChild);
+        IM_CHECK_NO_RET(!ls.props.empty());
+        if (!ls.props.empty() && ls.props[0].str != newChildName)
+            IM_ERRORF("Lua の entity プロパティが複製後の名前へリマップされていない"
+                      "（%s のままで参照切れ）", ls.props[0].str.c_str());
+    }
+    if (reg.all_of<Trigger>(pastedRoot))
+    {
+        const auto& tr = reg.get<Trigger>(pastedRoot);
+        if (tr.filter != newChildName)
+            IM_ERRORF("Trigger.filter が複製後の名前へリマップされていない（%s）", tr.filter.c_str());
+        if (!tr.actions.empty() && tr.actions[0].target != newChildName)
+            IM_ERRORF("Trigger.actions[].target がリマップされていない（%s）",
+                      tr.actions[0].target.c_str());
+    }
+
+    Step(ctx, "Undo で親子ごと消え、Redo で親子ごと戻るか");
+    ed->pendingUndo = true;
+    ctx->Yield(6);
+    if (reg.valid(pastedRoot) || reg.valid(pastedChild))
+        IM_ERRORF("ペーストの Undo でサブツリーが消えていない");
+    ed->pendingRedo = true;
+    ctx->Yield(8);
+    const entt::entity redoRoot = FindNewRoot(reg, before);
+    if (redoRoot == entt::null || FindChildOf(reg, redoRoot, before) == entt::null)
+        IM_ERRORF("ペーストの Redo で親子が復元されない");
+}
+
+// 複製(Ctrl+D 相当)の子孫維持と、親子両方選択時の二重複製防止。
+void T_DeepDuplicateSubtree(ImGuiTestContext* ctx)
+{
+    IM_CHECK(g_app != nullptr);
+    EditorContext* ed = Ed();
+    IM_CHECK(ed != nullptr);
+    Scene* scene = g_app->GetScene();
+    IM_CHECK(scene != nullptr);
+    entt::registry& reg = scene->GetRegistry();
+
+    Step(ctx, "親 + 子(コライダー) を作って両方選択");
+    SubtreeFixture fx = MakeColliderSubtree(ctx, reg);
+    IM_CHECK(fx.parent != entt::null && fx.child != entt::null);
+
+    std::set<entt::entity> before;
+    for (auto e : reg.view<Transform>()) before.insert(e);
+
+    // 親子「両方」を選択して複製 → 正しければ新規は 2 体（root+child）だけ。
+    // 子が個別にもう 1 回複製されると 3 体になる＝二重複製バグ。
+    ed->selectedEntity = fx.parent;
+    ed->selectedEntities.assign({ fx.parent, fx.child });
+    ctx->Yield(2);
+    Step(ctx, "編集メニューで複製");
+    ctx->SetRef(kWinToolbar);
+    ctx->MenuClick("編集/複製");
+    ctx->Yield(8);
+
+    int newCount = 0;
+    for (auto e : reg.view<Transform>())
+        if (before.find(e) == before.end()) ++newCount;
+
+    if (newCount < 2)
+        IM_ERRORF("複製で子が複製されていない（新規 %d 体、期待 2 体）", newCount);
+    else if (newCount > 2)
+        IM_ERRORF("親子両方選択の複製で子が二重複製された（新規 %d 体、期待 2 体）", newCount);
+
+    const entt::entity dupRoot = FindNewRoot(reg, before);
+    IM_CHECK(dupRoot != entt::null);
+    const entt::entity dupChild = FindChildOf(reg, dupRoot, before);
+    if (dupChild == entt::null || !reg.all_of<BoxCollider>(dupChild))
+        IM_ERRORF("複製した子にコライダーが引き継がれていない");
+}
+
+// プレハブの往復: プレハブ化 → .prefab がディスクに出る → 元がインスタンス化(PrefabLink) →
+// 配置した新インスタンスにも子・コライダー・リンクが揃っているか。
+void T_DeepPrefabRoundtrip(ImGuiTestContext* ctx)
+{
+    IM_CHECK(g_app != nullptr);
+    EditorContext* ed = Ed();
+    IM_CHECK(ed != nullptr);
+    Scene* scene = g_app->GetScene();
+    IM_CHECK(scene != nullptr);
+    entt::registry& reg = scene->GetRegistry();
+    namespace fs = std::filesystem;
+
+    const fs::path prefabDir = fs::path(PathResolver::AssetsDir()) / "prefabs";
+    std::set<std::string> filesBefore;
+    std::error_code ec;
+    if (fs::exists(prefabDir, ec))
+        for (const auto& f : fs::directory_iterator(prefabDir, ec))
+            filesBefore.insert(f.path().string());
+
+    Step(ctx, "親 + 子(コライダー+Lua) を作ってプレハブ化");
+    SubtreeFixture fx = MakeColliderSubtree(ctx, reg);
+    IM_CHECK(fx.parent != entt::null && fx.child != entt::null);
+    ed->pendingCreatePrefab = fx.parent;
+    ctx->Yield(6);
+
+    // ディスクに .prefab が出たか（後始末のため新規ファイルを控える）
+    std::string createdFile;
+    if (fs::exists(prefabDir, ec))
+        for (const auto& f : fs::directory_iterator(prefabDir, ec))
+            if (filesBefore.find(f.path().string()) == filesBefore.end()
+                && f.path().extension() == ".prefab")
+                createdFile = f.path().string();
+    if (createdFile.empty())
+    {
+        IM_ERRORF("プレハブ化しても assets/prefabs に .prefab が保存されない");
+        return;
+    }
+    ctx->LogInfo("プレハブ保存: %s", createdFile.c_str());
+
+    // 元エンティティがインスタンスに格上げされたか（Unity 同等挙動）
+    if (!reg.all_of<PrefabLink>(fx.parent))
+        IM_ERRORF("プレハブ化した元エンティティに PrefabLink が付かない（Apply/Revert 不能）");
+
+    Step(ctx, "保存した .prefab をシーンへ配置");
+    std::set<entt::entity> before;
+    for (auto e : reg.view<Transform>()) before.insert(e);
+    PendingSpawnRequest req;
+    req.modelPath = createdFile;
+    req.position  = { 5.0f, 0.0f, 0.0f };
+    ed->pendingSpawns.push_back(req);
+    ctx->Yield(8);
+
+    const entt::entity instRoot = FindNewRoot(reg, before);
+    if (instRoot == entt::null)
+    {
+        IM_ERRORF("プレハブを配置してもインスタンスが生成されない");
+    }
+    else
+    {
+        if (!reg.all_of<PrefabLink>(instRoot))
+            IM_ERRORF("配置したインスタンスに PrefabLink が無い（リンク切れ）");
+        const Transform& t = reg.get<Transform>(instRoot);
+        if (std::fabs(t.position.x - 5.0f) > 0.001f)
+            IM_ERRORF("プレハブ配置位置が指定と違う（x=%.2f、期待 5.0）", t.position.x);
+
+        const entt::entity instChild = FindChildOf(reg, instRoot, before);
+        if (instChild == entt::null)
+            IM_ERRORF("プレハブ配置で子エンティティが展開されない");
+        else
+        {
+            if (!reg.all_of<BoxCollider>(instChild))
+                IM_ERRORF("プレハブ配置した子にコライダーが無い");
+            if (!reg.all_of<LuaScript>(instChild))
+                IM_ERRORF("プレハブ配置した子に Lua スクリプトが無い");
+        }
+    }
+
+    // 後始末: テストが作った .prefab を消す（シーンはハーネスが復元するがディスクは残るため）
+    fs::remove(createdFile, ec);
+    if (ec) ctx->LogWarning("テスト用 .prefab の削除に失敗: %s", createdFile.c_str());
+}
+
 // ===================== テスト表 =====================
 
 struct DiagReg
@@ -1210,6 +1482,9 @@ const DiagReg kTests[] = {
     { "deep",  "deep_scene_assets",     "超詳細: アセット",   "シーンのアセットが描画対象になっているか", T_DeepSceneAssets, true },
     { "deep",  "deep_render_proof",     "超詳細: 描画",       "実際に絵が出ているかピクセルで確認",   T_DeepRenderProof,    true },
     { "deep",  "deep_gizmo",            "超詳細: ギズモ",     "全モード×親子×2D で誤作動しないか",    T_DeepGizmo,          true },
+    { "deep",  "deep_copy_paste",       "超詳細: コピペ複製", "コピペで子・コライダー・Lua・参照が残るか", T_DeepCopyPasteSubtree, true },
+    { "deep",  "deep_duplicate",        "超詳細: コピペ複製", "複製の子孫維持と二重複製防止",         T_DeepDuplicateSubtree, true },
+    { "deep",  "deep_prefab_roundtrip", "超詳細: プレハブ",   "プレハブ化→配置→リンク→構成維持",      T_DeepPrefabRoundtrip,  true },
 };
 
 const DiagReg* FindReg(const ImGuiTest* test)
