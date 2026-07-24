@@ -838,7 +838,15 @@ void T_BuildGame(ImGuiTestContext* ctx)
     if (!buildDir.empty())
     {
         Step(ctx, "成果物を確認: %s", buildDir.c_str());
-        IM_CHECK_NO_RET(fs::exists(fs::path(buildDir) / "Game.exe"));
+        // exe 名はゲーム名から生成される（BuildGame と同じサニタイズ。空なら "Game"）
+        std::string exeStem;
+        for (char c : std::string(ed->buildConfig.title))
+            if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == ' ')
+                exeStem += c;
+        while (!exeStem.empty() && exeStem.back()  == ' ') exeStem.pop_back();
+        while (!exeStem.empty() && exeStem.front() == ' ') exeStem.erase(exeStem.begin());
+        if (exeStem.empty()) exeStem = "Game";
+        IM_CHECK_NO_RET(fs::exists(fs::path(buildDir) / (exeStem + ".exe")));
         IM_CHECK_NO_RET(fs::exists(fs::path(buildDir) / "game.pak"));
     }
 

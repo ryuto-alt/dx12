@@ -6299,6 +6299,47 @@ void Application::LoadSkyboxIfNeeded(ID3D12GraphicsCommandList* cmd)
     Logger::Info("Skybox loaded: {} (ibl={}, sky={})", sky.envMapPath, m_iblIntensity, m_skyboxIntensity);
 }
 
+// ===== プロジェクト固有ビルド設定の永続化(<プロジェクトルート>/build_settings.json) =====
+// .dx12proj は Project::Save が既知フィールドだけで全体を書き直すため、そこへ相乗りすると
+// 他の保存経路(lastOpenedScene 更新等)で消える。独立ファイルでプロジェクト単位に保存/復元する。
+static void LoadProjectBuildConfig(EditorContext& ctx, const std::string& projectRoot)
+{
+    ctx.buildConfig = {};   // まず既定へ(前プロジェクトの設定を引き継がない)
+    std::ifstream ifs(std::filesystem::path(projectRoot) / "build_settings.json");
+    if (!ifs.is_open()) return;
+    try
+    {
+        nlohmann::json j;
+        ifs >> j;
+        strncpy_s(ctx.buildConfig.title, j.value("title", std::string("Game")).c_str(), _TRUNCATE);
+        ctx.buildConfig.width      = std::clamp(j.value("width", 1280), 320, 7680);
+        ctx.buildConfig.height     = std::clamp(j.value("height", 720), 240, 4320);
+        ctx.buildConfig.startScene = j.value("startScene", std::string());
+        ctx.buildConfig.outputDir  = j.value("outputDir", std::string());
+        ctx.buildConfig.openFolderAfterBuild = j.value("openFolderAfterBuild", true);
+    }
+    catch (const std::exception& ex)
+    {
+        Logger::Warn("build_settings.json の読み込みに失敗しました(既定値を使用): {}", ex.what());
+        ctx.buildConfig = {};
+    }
+}
+
+static void SaveProjectBuildConfig(const EditorContext& ctx, const std::string& projectRoot)
+{
+    if (projectRoot.empty()) return;
+    nlohmann::json j = {
+        {"title",      ctx.buildConfig.title},
+        {"width",      ctx.buildConfig.width},
+        {"height",     ctx.buildConfig.height},
+        {"startScene", ctx.buildConfig.startScene},
+        {"outputDir",  ctx.buildConfig.outputDir},
+        {"openFolderAfterBuild", ctx.buildConfig.openFolderAfterBuild},
+    };
+    std::ofstream ofs(std::filesystem::path(projectRoot) / "build_settings.json");
+    if (ofs.is_open()) ofs << j.dump(2) << '\n';
+}
+
 void Application::BeginProjectLoad(const ProjectInfo& info, bool isNew)
 {
     namespace fs = std::filesystem;
@@ -6315,6 +6356,10 @@ void Application::BeginProjectLoad(const ProjectInfo& info, bool isNew)
     m_loadSpinTime        = 0.0f;
     m_loadThreadDone      = false;
     m_loadStatus          = isNew ? "プロジェクトを作成中..." : "プロジェクトを読み込み中...";
+
+    // プロジェクト固有のビルド設定(ゲーム名/解像度/出力先)を復元。無ければ既定へリセット。
+    if (m_editorCtx)
+        LoadProjectBuildConfig(*m_editorCtx, info.rootDir);
 
     // ローディングのくるくるは専用スレッドのスプラッシュ窓に任せる(起動時と同じ仕組み)。
     // メインスレッドがシーンロードやマテリアルサムネイル生成(同期テクスチャデコード)で
@@ -8066,30 +8111,30 @@ bool Application::BuildGame()
 
     // ビルド出力先。ユーザーがビルド設定で選んだフォルダの中に「製品名_build」サブフォルダを作る。
     // 選んだフォルダ自体を出力先にして remove_all するとユーザーのデータを消す恐れがあるので必ずサブフォルダ化する。
-    fs::path outputDir;
-    if (m_editorCtx && !m_editorCtx->buildConfig.outputDir.empty())
-    {
-        // フォルダ名 = タイトルをサニタイズ（英数・空白・_- のみ残す）。空なら "Game"
-        std::string sub;
+    // 製品名 = ゲーム名をサニタイズ（英数・空白・_- のみ残す）。空なら "Game"。
+    // 出力フォルダ名と exe 名の両方に使う（タイトルバーはマニフェスト title=入力値そのまま）。
+    std::string productName;
+    if (m_editorCtx)
         for (char c : std::string(m_editorCtx->buildConfig.title))
             if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == ' ')
-                sub += c;
-        while (!sub.empty() && sub.back()  == ' ') sub.pop_back();
-        while (!sub.empty() && sub.front() == ' ') sub.erase(sub.begin());
-        if (sub.empty()) sub = "Game";
-        sub += "_build";
-        outputDir = fs::path(m_editorCtx->buildConfig.outputDir) / sub;
-    }
+                productName += c;
+    while (!productName.empty() && productName.back()  == ' ') productName.pop_back();
+    while (!productName.empty() && productName.front() == ' ') productName.erase(productName.begin());
+    if (productName.empty()) productName = "Game";
+    const std::string exeName = productName + ".exe";
+
+    fs::path outputDir;
+    if (m_editorCtx && !m_editorCtx->buildConfig.outputDir.empty())
+        outputDir = fs::path(m_editorCtx->buildConfig.outputDir) / (productName + "_build");
     else
-    {
         outputDir = fs::path(PathResolver::BaseDir()) / "build" / "game";
-    }
 
     // クリーンアップ（安全策: 既存が「前回ビルド or 空」でなければ消さずに中止＝ユーザーデータ保護）
     if (fs::exists(outputDir))
     {
         std::error_code ec;
         bool looksLikeBuild = fs::exists(outputDir / "Game.exe")
+                           || fs::exists(outputDir / exeName)
                            || fs::exists(outputDir / "game.pak")
                            || fs::is_empty(outputDir, ec);
         if (!looksLikeBuild)
@@ -8119,8 +8164,8 @@ bool Application::BuildGame()
             return false;
         }
 
-        fs::copy_file(runtimeSrc, outputDir / "Game.exe", fs::copy_options::overwrite_existing);
-        Logger::Info("Copied GameRuntime.exe -> Game.exe");
+        fs::copy_file(runtimeSrc, outputDir / exeName, fs::copy_options::overwrite_existing);
+        Logger::Info("Copied GameRuntime.exe -> {}", exeName);
 
         // 同じフォルダの .dll をすべて配布フォルダへ。
         // dxcompiler.dll(実行時シェーダーコンパイル専用、エディタのみ必要)だけ除外する。
@@ -8303,9 +8348,9 @@ bool Application::BuildGame()
 
     // 5. 起動用バッチ（GameRuntime は --game 不要: 常にゲームモード）
     {
-        std::ofstream bat(outputDir / "Game.bat");
+        std::ofstream bat(outputDir / (productName + ".bat"));
         bat << "@echo off\n";
-        bat << "Game.exe\n";
+        bat << "\"" << exeName << "\"\n";
         bat << "pause\n";
     }
 
@@ -8322,6 +8367,7 @@ void Application::RenderBuildSettingsWindow()
 
     namespace fs = std::filesystem;
     auto& cfg = m_editorCtx->buildConfig;
+    const auto before = cfg;   // フレーム末尾の変更検知→プロジェクトへ自動保存用
 
     ImGui::SetNextWindowSize(ImVec2(380, 0), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("ビルド設定", &m_editorCtx->showBuildSettings))
@@ -8364,9 +8410,10 @@ void Application::RenderBuildSettingsWindow()
     // ===== 製品 =====
     if (ImGui::CollapsingHeader("製品", ImGuiTreeNodeFlags_DefaultOpen))
     {
-        ImGui::TextUnformatted("タイトル（ウィンドウ名）");
+        ImGui::TextUnformatted("ゲーム名（ウィンドウタイトル / exe名）");
         ImGui::SetNextItemWidth(-1.0f);
         ImGui::InputText("##title", cfg.title, sizeof(cfg.title));
+        ImGui::TextDisabled("※ exe名/フォルダ名には英数・空白・_- のみが使われます");
 
         ImGui::TextUnformatted("解像度");
         struct Res { const char* name; int w, h; };
@@ -8458,6 +8505,13 @@ void Application::RenderBuildSettingsWindow()
         ImGui::PopStyleColor();
         m_editorCtx->buildErrorFlash -= m_gameClock.GetDeltaTime();
     }
+
+    // 変更があればプロジェクトへ即保存（<ルート>/build_settings.json。開き直しでも保持）
+    if (strcmp(before.title, cfg.title) != 0 || before.width != cfg.width ||
+        before.height != cfg.height || before.startScene != cfg.startScene ||
+        before.outputDir != cfg.outputDir ||
+        before.openFolderAfterBuild != cfg.openFolderAfterBuild)
+        SaveProjectBuildConfig(*m_editorCtx, m_loadInfo.rootDir);
 
     ImGui::End();
 }
