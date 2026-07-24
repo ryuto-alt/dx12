@@ -341,16 +341,16 @@ LauncherAction ProjectManager::RenderLauncher(ProjectInfo& outInfo, HWND hwnd,
 
         float tW = 472.0f;
         if (IconActionButton(icons.tmplFps, "[F]", "FPS  (一人称シューター)",
-                             "マウスルック + WASD。囲い壁アリーナ + クロスヘア", ImVec2(tW, 60)))
+                             "物理ベースの射撃レンジ。的・木箱・HUD・タイトル/クリア画面つき", ImVec2(tW, 60)))
             pick("fps");
         if (IconActionButton(icons.tmplTps, "[T]", "TPS  (三人称アクション)",
-                             "追従カメラ + キャラ移動。マウスで周回", ImVec2(tW, 60)))
+                             "コイン集めアクション。物理ジャンプ・ゴールトリガー・画面遷移つき", ImVec2(tW, 60)))
             pick("tps");
         if (IconActionButton(icons.tmpl2d, "[2]", "2D  (横スクロール)",
-                             "正射投影 + 重力ジャンプ。A/D 移動・Space ジャンプ", ImVec2(tW, 60)))
+                             "プラットフォーマー1コース。動く床・トゲ・コイン・ゴール旗つき", ImVec2(tW, 60)))
             pick("2d");
         if (IconActionButton(icons.tmplEmpty, "[E]", "空  (最小構成)",
-                             "グリッド + 床 + ライト + カメラだけ", ImVec2(tW, 60)))
+                             "グリッド + キューブ + ライト + カメラ。部品サンプル Spinner.lua つき", ImVec2(tW, 60)))
             pick("empty");
 
         ImGui::Dummy(ImVec2(0, 4));

@@ -1,5 +1,6 @@
 add_library(ProjectLib STATIC
     Project.cpp
+    ProjectTemplates.cpp
     ProjectManager.cpp
     GitIntegration.cpp
 )

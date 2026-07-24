@@ -5,6 +5,7 @@
 #include "core/SplashScreen.h"
 #include "core/Version.h"
 #include "core/vfs/Vfs.h"
+#include "project/Project.h"
 
 #include <Windows.h>
 #include <shellapi.h>   // CommandLineToArgvW（--net-client / --project の解析用）
@@ -266,6 +267,52 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
                     path = rest.substr(b, e - b + 1);
                 }
                 return RunValidate(path);
+            }
+
+            // --new-project <dir> [--template empty|fps|tps|2d]:
+            // ヘッドレスでテンプレートからプロジェクトを生成して終了（GUI 起動しない）。
+            // Claude Code / CI がランチャーなしでプロジェクトを作れる入口。
+            if (args.find("--new-project") != std::string::npos)
+            {
+                std::string dir, tmpl = "empty";
+                int argc = 0;
+                if (LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc))
+                {
+                    auto toUtf8 = [](const wchar_t* w) {
+                        int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+                        std::string s(n > 0 ? static_cast<size_t>(n) : 0, '\0');
+                        if (n > 0)
+                        {
+                            WideCharToMultiByte(CP_UTF8, 0, w, -1, s.data(), n, nullptr, nullptr);
+                            s.pop_back();
+                        }
+                        return s;
+                    };
+                    for (int i = 1; i < argc; ++i)
+                    {
+                        if (wcscmp(argv[i], L"--new-project") == 0 && i + 1 < argc)
+                            dir = toUtf8(argv[++i]);
+                        else if (wcscmp(argv[i], L"--template") == 0 && i + 1 < argc)
+                            tmpl = toUtf8(argv[++i]);
+                    }
+                    LocalFree(argv);
+                }
+                if (dir.empty()) return 1;
+
+                std::filesystem::path root(dir);
+                std::filesystem::create_directories(root);
+                dx12e::ProjectInfo info;
+                info.name         = root.filename().string();
+                if (info.name.empty()) info.name = "MyGame";
+                info.rootDir      = root.string();
+                info.assetsDir    = (root / "assets").string() + "/";
+                info.scriptsDir   = (root / "scripts").string() + "/";
+                info.defaultScene = "scenes/main.json";
+                info.templateId   = tmpl;
+                dx12e::Project::CreateDefaultStructure(info);
+                const bool ok = dx12e::Project::Save(
+                    info, (root / (info.name + ".dx12proj")).string());
+                return ok ? 0 : 1;
             }
 
             if (args.find("--game") != std::string::npos)
