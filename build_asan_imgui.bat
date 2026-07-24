@@ -25,5 +25,6 @@ cmake -B build/asan-imgui -G Ninja -DCMAKE_BUILD_TYPE=Release ^
  -DVCPKG_OVERLAY_TRIPLETS="%~dp0build\asan-triplets" ^
  -DCMAKE_CXX_FLAGS="/DWIN32 /D_WINDOWS /EHsc /fsanitize=address /Zi /D_DISABLE_STRING_ANNOTATION /D_DISABLE_VECTOR_ANNOTATION /D_DISABLE_OPTIONAL_ANNOTATION" ^
  || exit /b 1
-cmake --build build/asan-imgui || exit /b 1
+if not defined DX12_BUILD_JOBS set "DX12_BUILD_JOBS=10"
+powershell -NoProfile -Command "$psi = New-Object System.Diagnostics.ProcessStartInfo('cmake', '--build build/asan-imgui -j %DX12_BUILD_JOBS%'); $psi.UseShellExecute = $false; $p = [System.Diagnostics.Process]::Start($psi); try { $p.PriorityClass = 'BelowNormal' } catch {}; $p.WaitForExit(); exit $p.ExitCode" || exit /b 1
 echo BUILD_ASAN_IMGUI_OK

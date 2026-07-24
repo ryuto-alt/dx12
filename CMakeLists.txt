@@ -7,13 +7,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(DX12_BUILD_TESTS "Build unit tests" ON)
 
 # MSVC compile options (not global - applied per-target to avoid conflicts with FetchContent deps)
-set(DX12_COMPILE_OPTIONS /W4 /WX /MP /permissive- /utf-8 /external:anglebrackets /external:W0 /bigobj)
+set(DX12_COMPILE_OPTIONS /W4 /WX /permissive- /utf-8 /external:anglebrackets /external:W0 /bigobj)
 set(DX12_COMPILE_DEFS UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 
-# クラッシュレポート(core/CrashHandler)で関数名/行番号を解決できるよう、Release でも PDB を出す。
-# /Zi はデバッグ情報の生成のみで最適化(/O2)には影響しない。/OPT:REF,ICF で /DEBUG による肥大も抑える。
+# デバッグ情報は obj 埋め込み(/Z7)。/Zi と違い cl 同士が mspdbsrv 経由で PDB 書き込みを
+# 取り合わないので、Ninja の高並列ビルドが詰まらない。PDB 自体はリンク時に生成されるため、
+# クラッシュレポート(core/CrashHandler)の関数名/行番号解決は従来どおり有効。
+# Release も /DEBUG + /OPT:REF,ICF で従来の /Zi 構成と同じ PDB が出る。
 if(MSVC)
-    add_compile_options("$<$<CONFIG:Release>:/Zi>")
+    set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,Release>:Embedded>")
     add_link_options("$<$<CONFIG:Release>:/DEBUG>" "$<$<CONFIG:Release>:/OPT:REF>" "$<$<CONFIG:Release>:/OPT:ICF>")
 endif()
 
@@ -151,6 +153,20 @@ if(MSVC)
     # 実行時に一切ロードされず、同梱しなくても安全に起動できる。
     target_link_options(GameRuntime PRIVATE "/DELAYLOAD:dxcompiler.dll")
     target_link_libraries(GameRuntime PRIVATE delayimp.lib)
+endif()
+
+# --- プリコンパイル済みヘッダー(src/pch.h) ---
+# windows.h / d3d12 / entt / spdlog / nlohmann-json / ImGui 等の重量級ヘッダーを
+# TU ごとに毎回パースするのをやめる(111 TU × 数十万行 → ターゲットごとに 1 回)。
+# 中身の方針は src/pch.h のコメント参照。ターゲットごとに固有フラグ(/bigobj や
+# DX12_GAME_RUNTIME 等)が違うので REUSE_FROM は使わず各自でコンパイルする。
+if(MSVC)
+    foreach(DX12_PCH_TARGET IN ITEMS
+        Core Graphics Renderer Resource Animation ECS Audio Input
+        Scene Scripting Physics Network Gui Ui Editor ProjectLib
+        DX12Engine GameRuntime)
+        target_precompile_headers(${DX12_PCH_TARGET} PRIVATE "${CMAKE_SOURCE_DIR}/src/pch.h")
+    endforeach()
 endif()
 
 # --- 実行時シェーダーコンパイル用 DLL 同梱 ---

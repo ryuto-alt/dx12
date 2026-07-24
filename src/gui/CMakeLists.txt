@@ -7,8 +7,12 @@ add_library(Gui STATIC
     DeepDiagnostics.cpp
 )
 
-# ImGuizmo はサードパーティコードなので警告抑制
-set_source_files_properties(ImGuizmo.cpp PROPERTIES COMPILE_FLAGS "/W0")
+# ImGuizmo はサードパーティコードなので警告抑制。
+# PCH も外す: PCH は /W4 でコンパイルされるため、PCH 内 imgui ヘッダのテンプレートを
+# ImGuizmo が実体化すると C4245 が /W0 でも漏れて /WX で止まる。
+set_source_files_properties(ImGuizmo.cpp PROPERTIES
+    COMPILE_FLAGS "/W0"
+    SKIP_PRECOMPILE_HEADERS ON)
 
 target_include_directories(Gui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 # UiTestHarness(エンジン診断)は core/Application.h と editor/EditorContext.h を読む＝
