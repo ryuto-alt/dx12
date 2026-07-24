@@ -80,6 +80,9 @@ function Vec3.new(x, y, z) end
 ---| "UIScrollView"
 ---| "UILayout"
 ---| "UIAnimator"
+---| "UIAnimPlayer"
+---| "SpriteAnimator"
+---| "PrefabLink"
 
 ---シーン内のエンティティ
 ---@class Entity
@@ -118,6 +121,34 @@ function Entity:getAnimCount() end
 ---@param index integer 0始まり
 ---@return string
 function Entity:getAnimName(index) end
+
+---UIアニメクリップ(.uianim)を頭から再生する。UIAnimPlayer が無ければ自動で付く。
+---clipPath 省略時は既に割り当てられているクリップを再生。
+---@param clipPath string? assets 相対（例 "uianim/menu_open.uianim"）
+function Entity:playUiAnim(clipPath) end
+
+---UIアニメの再生を止める（姿勢はその場で固定）
+function Entity:stopUiAnim() end
+
+---UIアニメを任意時刻へシークする。再生中かどうかは変えない
+---@param t number 秒（0..クリップの尺）
+function Entity:setUiAnimTime(t) end
+
+---UIアニメの再生速度。負の値で逆再生、0 で一時停止
+---@param speed number
+function Entity:setUiAnimSpeed(speed) end
+
+---スプライトシート(.spranim)のシーケンスを頭から再生する。
+---SpriteAnimator が無ければ自動で付く。同じ名前を再指定しても頭から再生し直す。
+---@param seqName string シーケンス名（例 "run"）
+function Entity:playSprite(seqName) end
+
+---スプライト連番アニメの再生を止める
+function Entity:stopSprite() end
+
+---スプライトシートを差し替える（再生位置は 0 に戻る）
+---@param sheetPath string assets 相対（例 "spriteanim/player.spranim"）
+function Entity:setSpriteSheet(sheetPath) end
 
 -- ============================================================
 -- scene: エンティティの取得・生成・検索

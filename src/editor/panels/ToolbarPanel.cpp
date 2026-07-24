@@ -294,6 +294,8 @@ void ToolbarPanel::Render(bool isPlaying,
             if (ImGui::MenuItem("ビルド"))
                 ctx.showBuildSettings = true;
             ImGui::MenuItem("パーティクルエディタ",     nullptr, &ctx.showVfxEditor);
+            ImGui::MenuItem("UIアニメーション",         nullptr, &ctx.showAnimEditor);
+            ImGui::MenuItem("スプライトシート",         nullptr, &ctx.showSpriteSheetEditor);
             ImGui::MenuItem("マテリアルエディタ",       nullptr, &ctx.showMaterialEditor);
             ImGui::MenuItem("マテリアルライブラリ (Poly Haven)", nullptr, &ctx.showMaterialLibrary);
             ImGui::MenuItem("MCP / AI Bridge",         nullptr, &ctx.showMcpBridge);
@@ -645,6 +647,8 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::MenuItem("Network 設定",            nullptr, &ctx.showNetworkSettings);
         ImGui::MenuItem("パーティクルエディタ",    nullptr, &ctx.showVfxEditor);
         ImGui::MenuItem("UIエディタ",              nullptr, &ctx.showUiEditor);
+        ImGui::MenuItem("UIアニメーション",        nullptr, &ctx.showAnimEditor);
+        ImGui::MenuItem("スプライトシート",        nullptr, &ctx.showSpriteSheetEditor);
         ImGui::Separator();
         if (ImGui::MenuItem("すべて閉じる"))
         {
@@ -652,7 +656,8 @@ void ToolbarPanel::Render(bool isPlaying,
                 ctx.showEngineSettings = ctx.showSceneFlow = ctx.showProject =
                 ctx.showVersionControl = ctx.showMcpBridge = ctx.showBuildSettings =
                 ctx.showNetworkStatus = ctx.showNetworkSettings =
-                ctx.showVfxEditor = ctx.showUiEditor = false;
+                ctx.showVfxEditor = ctx.showUiEditor =
+                ctx.showAnimEditor = ctx.showSpriteSheetEditor = false;
         }
         ImGui::EndPopup();
     }

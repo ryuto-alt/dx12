@@ -9,6 +9,7 @@
 
 #include "core/Types.h"
 #include "ecs/Components.h"
+#include "ui/UISystem.h"   // UiResolvedRect（スマートガイドの吸着候補を保持する）
 
 struct ID3D12GraphicsCommandList;   // UIImage テクスチャの遅延ロード用
 
@@ -49,11 +50,27 @@ private:
     void DrawHierarchyPane(entt::registry& reg, EditorContext& ctx);
     void DrawUiTreeNode(entt::registry& reg, EditorContext& ctx, entt::entity e,
                         const UiChildrenMap& children);
+    // 左ペイン下段: assets/prefabs/ui/ の一覧。キャンバスへの D&D 元になる。
+    void DrawPrefabPalette(const std::string& assetsDir);
+    // マルチ選択の整列 / 等間隔分布。
+    // mode: 0=左 1=左右中央 2=右 3=上 4=上下中央 5=下 6=横に等間隔 7=縦に等間隔
+    void AlignSelection(entt::registry& reg, EditorContext& ctx, int mode);
 
     // ツリー D&D の確定内容（描画中に registry を書き換えない。ツリー走査後に適用）
     entt::entity m_dropEntity = entt::null;   // 動かす要素
     entt::entity m_dropParent = entt::null;   // 新しい親（キャンバス or UI 要素）
     int          m_dropIndex  = -1;           // 兄弟内の挿入位置。-1 = 末尾
+
+    // キャンバスへ落とされた .prefab（絶対パス）と、その落下位置。
+    // ドロップ処理の中で spawn 要求を積むと解決済み矩形をもう一度引き直す必要があるので、
+    // 1 フレーム内で「受け取る → 位置を決めて積む」を分けている。
+    std::string m_pendingPrefabDrop;
+    ImVec2      m_pendingPrefabDropPos{0.0f, 0.0f};
+
+    // 左ペイン下段の UI プレハブパレット（assets/prefabs/ui/ の一覧）。
+    // ディレクトリ走査は毎フレームやらず、「更新」ボタンとプレハブ作成時にだけ取り直す。
+    std::vector<std::string> m_prefabPaths;
+    bool m_prefabListLoaded = false;
 
     // ---- ビュー（パン / ズーム / 画面サイズ）----
     f32    m_zoom = 1.0f;
@@ -73,6 +90,18 @@ private:
     ImVec2       m_dragStartMin{0.0f, 0.0f};     // 開始時の解決済みスクリーン矩形
     ImVec2       m_dragStartMax{0.0f, 0.0f};
     f32          m_dragCanvasScale = 1.0f;       // スクリーンΔ → キャンバス px の換算係数
+    // マルチ選択の一括移動: 掴んだ要素以外の選択要素と、そのドラッグ開始時の UIRect。
+    // 掴んだ要素の子孫は親と一緒に動くので含めない（二重に移動してしまうため）。
+    std::vector<std::pair<entt::entity, UIRect>> m_dragExtra;
+
+    // ---- スマートガイド（Figma 風の整列吸着。Alt 押下で一時無効）----
+    bool m_smartGuides = true;
+    // 吸着候補の供給元。ResolveRects は毎フレーム走るのでその結果を保持しておく。
+    std::vector<UiResolvedRect> m_lastRects;
+    // 今フレーム表示するガイド線（スクリーン座標）。vertical=true なら x=pos の縦線、
+    // a/b はもう一方の軸の描画範囲。
+    struct GuideLine { bool vertical; f32 pos; f32 a; f32 b; };
+    std::vector<GuideLine> m_guides;
 
     // ---- アンカーハンドルドラッグ ----
     // m_anchorDrag: -1=非ドラッグ, 0..3=三角（bit0: 0=X min / 1=X max、bit1: 0=Y min / 1=Y max）,

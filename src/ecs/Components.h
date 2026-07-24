@@ -364,6 +364,16 @@ struct UIRect
     // ゲージ内スクロール等の「はみ出しを隠す」表現用。UIScrollView と同じ軸平行 GPU
     // シザーなので、このノード自身の rotation/skewX は無視される(ScrollView と同じ制限)。
     bool clipChildren = false;
+
+    // 視覚スケール(pivot 点回り)。rotation/skewX と同じくレイアウト矩形は変えず、自分と子孫の
+    // 見た目だけを拡縮する。Unity RectTransform の localScale 相当。
+    // UIAnimator/UiTween の実行時スケール(_curScale*)とは**掛け算**で合流するので、
+    // 「静的に 0.8 倍で置いた要素」にポップ演出を足しても互いを壊さない。
+    float scaleX = 1.0f;
+    float scaleY = 1.0f;
+    // 視覚アルファ。自分と子孫にまとめて掛かる(グループ透過)。UIImage/UIText の color.w とは
+    // 別枠 = 「パネルごとフェード」と「この文字だけ薄く」を独立に指定できる。
+    float alpha = 1.0f;
 };
 
 // UI画像(または単色矩形)
@@ -669,6 +679,66 @@ struct UITweenState
     f32 _curRot   = 0.0f;
     DirectX::XMFLOAT3 _curColor{1.0f, 1.0f, 1.0f};
     DirectX::XMFLOAT2 _curOffset{0.0f, 0.0f};   // shake の今フレームぶん（減衰済み）
+};
+
+// タイムラインで作った UI アニメクリップ（.uianim）の再生器。
+// UIAnimator が「決め打ちのプリセット」なのに対し、こっちは AnimationEditorPanel で
+// キーを打って作る任意アニメ。1 エンティティに付けると、そのサブツリー全体を
+// トラックの target（名前パス）で指して動かせる = パネル1個に対して再生器1個で済む。
+//
+// UIAnimator / UiTween との合成規約:
+//   - offset/anchor/rotation/色/fill など「コンポーネント値そのもの」を持つトラックは**直接書き込む**。
+//     エディタのプレビュー（RenderPreview）でもスクラブが効くのはこのため。
+//   - scale / groupAlpha だけは視覚合成なので _cur* に出し、UIAnimator/UiTween と掛け算で合流する。
+struct UIAnimPlayer
+{
+    std::string clipPath;          // assets 相対（例 "uianim/menu_open.uianim"）。空 = 何もしない
+    bool  playOnStart = true;      // Play 開始時に自動再生
+    bool  loop        = false;     // クリップ側の loop を上書きしたい時に true（false ならクリップ設定に従う）
+    f32   speed       = 1.0f;      // 再生速度倍率（負値で逆再生、0 で一時停止）
+    std::string finishEvent;       // 再生完了時に EventBus へ発火（空 = 発火しない）
+
+    // ランタイム専有（非シリアライズ・meta 未登録）
+    f32  _time     = 0.0f;         // クリップ内の再生位置（秒）
+    f32  _prevTime = 0.0f;         // 前フレームの位置（イベント発火の区間判定用）
+    bool _playing  = false;
+    bool _finished = false;        // 単発クリップが終端に達したか（finishEvent の二重発火防止）
+    bool _loaded   = false;        // clipPath のロードを試したか（毎フレームの再ロードを防ぐ）
+    // 今フレームの視覚合成結果（クリップ評価が書き、描画が読む）
+    f32  _curScaleX = 1.0f;
+    f32  _curScaleY = 1.0f;
+    f32  _curAlpha  = 1.0f;
+};
+
+// スプライトシート（.spranim）の連番アニメ再生器。同じエンティティの Sprite2D または
+// UIImage の uvMin/uvMax を毎フレーム書き換える（両方あれば両方に書く）。
+// Sprite2D::animFrames / UIImage::animFrames の「等分割・連続フレーム」より表現力が高い
+// （任意セル順・可変フレーム長・名前付きシーケンス切替）。両方設定した場合はこちらが勝つ。
+struct SpriteAnimator
+{
+    std::string sheetPath;         // assets 相対（例 "spriteanim/player.spranim"）。空 = 何もしない
+    std::string currentSeq;        // 再生中のシーケンス名（空 = シートの先頭）
+    bool  playOnStart = true;
+    f32   speed       = 1.0f;
+    bool  applyTexture = true;     // シートの texture を Sprite2D/UIImage の texturePath へも反映するか
+
+    // ランタイム専有（非シリアライズ・meta 未登録）
+    f32  _time     = 0.0f;
+    bool _playing  = false;
+    bool _finished = false;        // 単発シーケンスの完了（finishEvent の二重発火防止）
+    bool _loaded   = false;
+    i32  _curFrame = -1;           // 今フレームのセル番号（エディタ表示用。-1 = 未評価）
+};
+
+// プレハブインスタンスと元 .prefab の紐付け（インスタンスの**ルートだけ**が持つ）。
+// これがあると Inspector に「適用 / 元に戻す / 変更点」が出て、Unity のプレハブと同じ
+// 往復編集ができる。持っていないエンティティは今まで通りの「展開しっぱなしのコピー」。
+//
+// 子エンティティには付けない。理由: サブツリー全体でひとつのインスタンスなので、
+// 子ごとにリンクがあると「どこが起点か」が曖昧になり、入れ子プレハブと区別できなくなる。
+struct PrefabLink
+{
+    std::string sourcePath;   // assets 相対（例 "prefabs/ui/hp_bar.prefab"）
 };
 
 // 3D 空間オーディオ音源。Transform のワールド位置がエミッタになる。

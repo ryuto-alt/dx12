@@ -177,6 +177,32 @@ private:
     entt::entity              m_externalParent = entt::null;  // ルートの親（サブツリー外）。Undo 時に捕捉
 };
 
+// ── プレハブ Revert コマンド（サブツリーを丸ごと入れ替える） ──
+// Revert は「古いサブツリーを消して .prefab から作り直す」なので、Undo するには
+// 消す前の姿を持っておく必要がある。Undo/Redo は保持した 2 つの JSON を差し替えるだけ
+// （SpawnPrefabCommand と同じ「削除は子から、外部親は別途復元」の流儀）。
+class PrefabRevertCommand : public IUndoCommand
+{
+public:
+    PrefabRevertCommand(Scene* scene, std::string assetsDir, std::string beforeJson,
+                        std::vector<entt::entity> after, entt::entity externalParent)
+        : m_scene(scene), m_assetsDir(std::move(assetsDir)), m_before(std::move(beforeJson)),
+          m_entities(std::move(after)), m_externalParent(externalParent) {}
+
+    void Undo() override;   // 今のサブツリーを消して m_before を復元
+    void Redo() override;   // 逆
+
+    const char* GetName() const override { return "Revert Prefab"; }
+
+private:
+    Scene*                    m_scene;
+    std::string               m_assetsDir;
+    std::string               m_before;     // Revert 前のサブツリー JSON
+    std::string               m_after;      // Undo 時に確定（Redo 用）
+    std::vector<entt::entity> m_entities;   // 現在シーンにいるサブツリー（root 先頭）
+    entt::entity              m_externalParent = entt::null;
+};
+
 // ── モデル差し替えコマンド ──
 // SceneSerializer::SwapEntityModel で新旧パスを行き来する。swap のたびに
 // entity ID が変わるため m_entity を実行結果で更新し続ける。

@@ -29,6 +29,12 @@ struct PendingSpawnRequest
     // UI 要素(__ui_*__)の親の明示指定(MCP 用)。null なら従来どおり
     // 「選択中の UI ツリー → 最初の Canvas → 自動生成」の順で解決する。
     entt::entity parent = entt::null;
+
+    // UI エディタのキャンバスへ .prefab をドロップした時だけ立つ。
+    // 生成後に root の UIRect を uiCanvasPos（キャンバス基準解像度の px 座標）へ移す。
+    // position(3D ワールド座標)とは別枠にしてあるのは、UI は Transform を使わへんため。
+    bool placeInUiCanvas = false;
+    DirectX::XMFLOAT2 uiCanvasPos{0.0f, 0.0f};
 };
 
 // MCP 由来のエンティティ削除要求。フレーム境界でサブツリー削除後に deletedCount を送り返す。
@@ -170,8 +176,23 @@ public:
     // UIエディタ(ゲーム内UIの2Dキャンバス編集。UMGデザイナー相当)。広い面積が要るので
     // VfxEditor 同様の独立フローティング窓(AnyToolWindowOpen には含めない)。
     bool showUiEditor        = false;
+    // UIアニメーションのタイムラインエディタ(.uianim のキーフレーム編集)。横に長い窓が要るので
+    // これも独立フローティング(AnyToolWindowOpen には含めない)。
+    bool showAnimEditor      = false;
+    // スプライトシートエディタ(.spranim の分割/フレーム選択/シーケンス編集)。同上。
+    bool showSpriteSheetEditor = false;
     // AssetBrowser で .dxmat をダブルクリックした時に立つ。MaterialEditorPanel が消費して開く。
     std::string pendingOpenMaterialPath;
+    // 同じく .uianim / .spranim のダブルクリック。各パネルが消費して開く。
+    std::string pendingOpenUiAnimPath;
+    std::string pendingOpenSpriteSheetPath;
+
+    // プレハブのリンク操作。どちらもエンティティの生成/破棄を伴うので、
+    // 他の pending* と同じくフレーム境界（Application）で実行する。
+    std::vector<entt::entity> pendingPrefabApply;    // インスタンス → 元 .prefab へ書き戻す
+    std::vector<entt::entity> pendingPrefabRevert;   // インスタンス ← 元 .prefab で作り直す
+    // Apply 後に「他のインスタンスも更新する」を押した時だけ立てる（伝播元を除いて Revert）
+    std::vector<entt::entity> pendingPrefabPropagate;
 
     bool AnyToolWindowOpen() const
     {

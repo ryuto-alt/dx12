@@ -64,6 +64,7 @@ namespace dx12e
     class ScriptEngine;
     class McpBridge;
     class UISystem;
+    class UiAnimRuntime;
     class AudioSystem;
     class PhysicsSystem;
     class NetworkSystem;
@@ -74,6 +75,8 @@ namespace dx12e
     class ModelThumbnailRenderer;
     class VfxEditorPanel;
     class UiEditorPanel;
+    class AnimationEditorPanel;
+    class SpriteSheetEditorPanel;
     class NetworkPanel;
     class ShaderManager;
     class MaterialAssetManager;
@@ -493,6 +496,8 @@ private:
     std::unique_ptr<McpBridge>         m_mcpBridge;   // エディタ専用 AI ブリッジ(TCP)。ゲームでは null。
     std::unique_ptr<VfxEditorPanel>    m_vfxEditorPanel;   // パーティクルエディタ（ツール窓）。ゲームでは null。
     std::unique_ptr<UiEditorPanel>     m_uiEditorPanel;    // UIエディタ（ゲーム内UIの2Dキャンバス編集）。ゲームでは null。
+    std::unique_ptr<AnimationEditorPanel>   m_animEditorPanel;        // .uianim タイムライン。ゲームでは null。
+    std::unique_ptr<SpriteSheetEditorPanel> m_spriteSheetEditorPanel; // .spranim シート編集。ゲームでは null。
     std::unique_ptr<MaterialEditorPanel>  m_materialEditorPanel;   // マテリアルエディタ（ツール窓）。ゲームでは null。
     std::unique_ptr<MaterialLibraryPanel> m_materialLibraryPanel;  // Poly Havenマテリアルライブラリ(ツール窓)。ゲームでは null。
     // ---- MCP 状態（HandleMcpCommand とフレーム境界の遅延応答で共有）----
@@ -575,6 +580,11 @@ private:
     // ゲーム内 retained-mode UI（UICanvas/UIRect/UIImage/UIText/UIButton の
     // レイアウト解決・描画・入力）。ImGui DrawList 経路で GPU リソースは持たない。
     std::unique_ptr<UISystem> m_uiSystem;
+
+    // タイムライン製 UI アニメ(.uianim)とスプライトシート(.spranim)の再生。
+    // UISystem と別なのは、SpriteAnimator が UI ではない Sprite2D にも効くため
+    // （##GameUI 描画時にしか回らない UISystem に置くと 2D スプライトへ届かない）。
+    std::unique_ptr<UiAnimRuntime> m_uiAnimRuntime;
 
     // シーントランジション（WP9）
     std::unique_ptr<SceneTransition> m_sceneTransition;

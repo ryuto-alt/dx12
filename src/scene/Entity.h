@@ -38,6 +38,15 @@ public:
         return m_registry->get<T>(m_handle);
     }
 
+    // 既にあればそれを、無ければ既定構築して返す。Lua から「まず付けてから設定」を
+    // 1 行で書けるようにするためのもの（scene:playUiAnim 等が使う）。
+    template<typename T>
+    T& GetOrAddComponent()
+    {
+        EnsureValid("GetOrAddComponent");
+        return m_registry->get_or_emplace<T>(m_handle);
+    }
+
     template<typename T>
     bool HasComponent() const
     {

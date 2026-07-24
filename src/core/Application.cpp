@@ -58,6 +58,7 @@
 #include "ecs/Components.h"
 #include "scripting/ScriptEngine.h"
 #include "ui/UISystem.h"
+#include "ui/UiAnimRuntime.h"
 #include "core/mcp/McpBridge.h"
 #include <nlohmann/json.hpp>
 #include <filesystem>
@@ -88,6 +89,8 @@
 #include "editor/panels/NetworkPanel.h"
 #include "editor/panels/VfxEditorPanel.h"
 #include "editor/panels/UiEditorPanel.h"
+#include "editor/panels/AnimationEditorPanel.h"
+#include "editor/panels/SpriteSheetEditorPanel.h"
 #include "editor/panels/MaterialEditorPanel.h"
 #include "editor/panels/MaterialLibraryPanel.h"
 #include "project/Project.h"
@@ -1508,6 +1511,9 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
         // ゲーム内 retained-mode UI（UICanvas ツリー。##GameUI の ImGui DrawList へ描く）
         m_uiSystem = std::make_unique<UISystem>();
+        // .uianim / .spranim の再生（エディタ中もプレビュー再生するので封印ランタイム判定は不要）
+        m_uiAnimRuntime = std::make_unique<UiAnimRuntime>();
+        m_uiAnimRuntime->SetAssetsDir(PathResolver::AssetsDir());
         // ワールド空間 2D（Sprite2D, worldSpace=true）: HDR scene RT へ描く別経路（HUD と隔離）
         // 深度バッファ(D32_FLOAT)に対して深度テスト＝3D形状に正しく遮蔽される。
         m_spriteRenderer->InitializeWorld(*m_graphicsDevice, kSceneColorFormat,
@@ -1543,6 +1549,10 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             // UIエディタ（ゲーム内UIの2Dキャンバス編集）。GPU リソースは持たない
             // （描画は UISystem::RenderPreview 経由で共有 SRV ヒープを借りるだけ）。
             m_uiEditorPanel = std::make_unique<UiEditorPanel>();
+            // アニメ系オーサリング（.uianim タイムライン / .spranim シート）。どちらも
+            // GPU リソースは持たず、テクスチャは共有 SRV ヒープから借りるだけ。
+            m_animEditorPanel = std::make_unique<AnimationEditorPanel>();
+            m_spriteSheetEditorPanel = std::make_unique<SpriteSheetEditorPanel>();
             m_networkPanel = std::make_unique<NetworkPanel>();
 
             m_materialEditorPanel = std::make_unique<MaterialEditorPanel>();
@@ -2580,6 +2590,9 @@ nlohmann::json McpComponentTypesOf(const entt::registry& reg, entt::entity e)
     if (reg.all_of<NetworkIdentity>(e))     a.push_back("networkIdentity");
     if (reg.all_of<NetworkTransform>(e))    a.push_back("networkTransform");
     if (reg.all_of<SkeletalAnimation>(e))   a.push_back("skeletalAnimation");
+    if (reg.all_of<UIAnimPlayer>(e))        a.push_back("uiAnimPlayer");
+    if (reg.all_of<SpriteAnimator>(e))      a.push_back("spriteAnimator");
+    if (reg.all_of<PrefabLink>(e))          a.push_back("prefabLink");
     return a;
 }
 } // namespace
@@ -5554,6 +5567,7 @@ void Application::Shutdown()
     m_editorIconRenderer.reset();
     m_sceneTransition.reset();
     m_uiSystem.reset();       // retained UI（GPU リソース非保持だが解放順を明確化）
+    m_uiAnimRuntime.reset();
     m_spriteRenderer.reset();
     m_postProcess.reset();
     m_bloomPass.reset();      // GPU リソース（チェーンRT/PSO）をデバイス解放より前に明示破棄
@@ -5666,6 +5680,22 @@ void Application::Update()
         for (auto [e, mr] : animReg.view<MeshRenderer>().each())
             if (mr.animFrames > 0 || mr.uvScrollU != 0.0f || mr.uvScrollV != 0.0f)
                 mr._animT += dt;
+
+        // タイムライン製 UI アニメ / スプライトシートも同じ場所で進める。
+        // 発火イベントは EventBus へ即時 Emit する（Lua の OnUpdate より前 = クリック配信と同じ規律）。
+        if (m_uiAnimRuntime)
+        {
+            // イベントは滅多に出ないので、空 vector はヒープを触らない = ローカルで十分
+            std::vector<UiAnimRuntime::PendingEvent> animEvents;
+            m_uiAnimRuntime->Update(animReg, dt, animEvents);
+            for (const auto& pe : animEvents)
+            {
+                EngineEvent ev;
+                ev.name   = pe.name;
+                ev.source = pe.source;
+                m_eventBus.Emit(ev);
+            }
+        }
     }
 
     // 非同期プロジェクトロードの状態機械を進める
@@ -7502,6 +7532,8 @@ void Application::DoRuntimeSceneLoad(const std::string& rel, ID3D12GraphicsComma
     if (m_uiSystem)
         m_uiSystem->ResetRuntimeState(m_scene->GetRegistry());
     m_scriptEngine->OnPlayStart();
+    // ランタイムのシーン切替でも新シーンのクリップを頭出しする（Play 開始と同じ規律）
+    if (m_uiAnimRuntime) m_uiAnimRuntime->OnPlayStart(m_scene->GetRegistry());
     if (m_particleSystem) m_particleSystem->Clear();  // シーン切替時に前シーンの粒子を消す
     if (m_gpuParticles) m_gpuParticles->Clear();
     SyncActiveCameraToGlobal();
@@ -7689,7 +7721,10 @@ void Application::EnterPlayMode()
 
     LoadGameScript();
     m_eventBus.Clear();   // Play 開始時に前 Play の購読を完全消去
+    // playOnStart のクリップ/シートを頭出し。events:on の登録より前だと発火を取りこぼすので、
+    // Lua の OnPlayStart より**後**に置く（最初の実評価は次フレームの Update）。
     m_scriptEngine->OnPlayStart();
+    if (m_uiAnimRuntime) m_uiAnimRuntime->OnPlayStart(m_scene->GetRegistry());
     if (m_particleSystem) m_particleSystem->Clear();  // Play 開始時に粒子をリセット
     if (m_gpuParticles) m_gpuParticles->Clear();
 
@@ -7856,6 +7891,8 @@ void Application::EnterEditorMode()
     // retained UI の保留クリック/ボタン状態を破棄（次の Play へ持ち越さない）
     if (m_uiSystem)
         m_uiSystem->ResetRuntimeState(m_scene->GetRegistry());
+    if (m_uiAnimRuntime)
+        m_uiAnimRuntime->OnPlayStop(m_scene->GetRegistry());
 
     m_physicsSystem->UnregisterAllBodies(m_scene->GetRegistry());
     m_physicsSystem->UnregisterAllCharacters(m_scene->GetRegistry());
@@ -9463,6 +9500,27 @@ void Application::Render()
                     auto& reg = m_scene->GetRegistry();
                     if (reg.all_of<Transform>(root))
                         reg.get<Transform>(root).position = req.position;
+
+                    // UI エディタのキャンバスへドロップされた UI プレハブ:
+                    // 親を指定の UI ノードにして、ドロップ位置（キャンバス px）へ移す。
+                    // 矩形サイズはプレハブが持っているものを維持し、中心だけを合わせる。
+                    if (req.placeInUiCanvas && req.parent != entt::null && reg.valid(req.parent))
+                    {
+                        if (reg.all_of<Transform>(root))
+                            reg.get<Transform>(root).parent = req.parent;
+                        if (auto* rect = reg.try_get<UIRect>(root))
+                        {
+                            // 親矩形の解決を通さずに済むよう、アンカーを左上に寄せて
+                            // offset をキャンバス絶対座標として扱う（ドロップ直後の見た目を確定させる）
+                            const f32 w = rect->offsetMax.x - rect->offsetMin.x;
+                            const f32 h = rect->offsetMax.y - rect->offsetMin.y;
+                            rect->anchorMin = {0.0f, 0.0f};
+                            rect->anchorMax = {0.0f, 0.0f};
+                            rect->offsetMin = {req.uiCanvasPos.x - w * 0.5f,
+                                               req.uiCanvasPos.y - h * 0.5f};
+                            rect->offsetMax = {rect->offsetMin.x + w, rect->offsetMin.y + h};
+                        }
+                    }
                     m_editorCtx->Select(root);
                     m_editorCtx->undoSystem.PushCommand(
                         std::make_unique<SpawnPrefabCommand>(
@@ -9642,7 +9700,11 @@ void Application::Render()
             namespace fs = std::filesystem;
             std::string base = reg.get<NameTag>(root).name;
             if (base.empty()) base = "Prefab";
+            // UI 要素は assets/prefabs/ui/ へ分ける。UIエディタのパレットがこの階層を直接読むので、
+            // 3D プレハブと混ざらへんようにしておく。
+            const bool isUi = reg.any_of<UIRect, UICanvas>(root);
             fs::path dir = fs::path(PathResolver::AssetsDir()) / "prefabs";
+            if (isUi) dir /= "ui";
             std::error_code ec; fs::create_directories(dir, ec);
             fs::path file = dir / (base + ".prefab");
             for (int n = 1; fs::exists(file); ++n)
@@ -9650,10 +9712,74 @@ void Application::Render()
 
             if (SceneSerializer::SavePrefab(*m_scene, root, file.string(), PathResolver::AssetsDir()))
             {
+                // 作った元のエンティティを、そのプレハブの「インスタンス」に格上げする
+                // （Unity と同じ挙動。以後この場で編集して「適用」で元へ戻せる）。
+                std::string rel = fs::relative(file, fs::path(PathResolver::AssetsDir()), ec)
+                                      .generic_string();
+                if (ec) rel = file.filename().string();
+                reg.emplace_or_replace<PrefabLink>(root, PrefabLink{rel});
+
                 m_editorCtx->hotReloadFlash = 1.0f;   // 保存通知のフラッシュを流用
                 Logger::Info("Prefab created: {}", file.string());
             }
         }
+    }
+
+    // プレハブのリンク操作（適用 / 元に戻す / 他インスタンスへ伝播）。
+    // Revert はエンティティを作り直すので、他の pending* と同じくフレーム境界で実行する。
+    if (m_engineMode == EngineMode::Editor && m_scene)
+    {
+        auto& reg = m_scene->GetRegistry();
+        const std::string assets = PathResolver::AssetsDir();
+
+        for (entt::entity e : m_editorCtx->pendingPrefabApply)
+        {
+            if (!reg.valid(e)) continue;
+            if (SceneSerializer::ApplyPrefabInstance(*m_scene, e, assets))
+            {
+                m_editorCtx->hotReloadFlash = 1.0f;
+                Logger::Info("Prefab applied: {}", reg.get<PrefabLink>(e).sourcePath);
+            }
+        }
+        m_editorCtx->pendingPrefabApply.clear();
+
+        for (entt::entity e : m_editorCtx->pendingPrefabRevert)
+        {
+            if (!reg.valid(e) || !reg.all_of<PrefabLink>(e)) continue;
+
+            // Undo 用に「戻す前の姿」と外部親を捕まえてから作り直す
+            const std::string before = SceneSerializer::SerializeSubtree(*m_scene, e, assets);
+            const entt::entity extParent =
+                reg.all_of<Transform>(e) ? reg.get<Transform>(e).parent : entt::null;
+
+            const entt::entity newRoot = SceneSerializer::RevertPrefabInstance(*m_scene, e, assets);
+            if (newRoot == entt::null) continue;
+
+            // 新サブツリーの全エンティティを集める（コマンドが Undo 時に消す対象）
+            std::vector<entt::entity> after{newRoot};
+            for (size_t head = 0; head < after.size(); ++head)
+                for (auto [child, tf] : reg.view<const Transform>().each())
+                    if (tf.parent == after[head]
+                        && std::find(after.begin(), after.end(), child) == after.end())
+                        after.push_back(child);
+
+            m_editorCtx->undoSystem.PushCommand(std::make_unique<PrefabRevertCommand>(
+                m_scene.get(), assets, before, after, extParent));
+            m_editorCtx->Select(newRoot);   // 元の ID は消えたので選択を張り替える
+        }
+        m_editorCtx->pendingPrefabRevert.clear();
+
+        for (entt::entity e : m_editorCtx->pendingPrefabPropagate)
+        {
+            if (!reg.valid(e) || !reg.all_of<PrefabLink>(e)) continue;
+            const std::string src = reg.get<PrefabLink>(e).sourcePath;
+            // 伝播は元に戻せない（多数のサブツリーを作り直すため）。Undo 履歴は汚さず、
+            // 代わりに件数をログへ残して何が起きたか追えるようにする。
+            const int n = SceneSerializer::RefreshPrefabInstances(*m_scene, src, assets, e);
+            Logger::Info("Prefab propagated to {} instance(s): {}", n, src);
+            m_editorCtx->hotReloadFlash = 1.0f;
+        }
+        m_editorCtx->pendingPrefabPropagate.clear();
     }
 
     // ファイルメニュー「プロジェクトを閉じる」→ ランチャーに戻す。
@@ -11671,6 +11797,14 @@ void Application::Render()
         if (m_uiEditorPanel)
             m_uiEditorPanel->RenderWindow(m_scene->GetRegistry(), *m_editorCtx, PathResolver::AssetsDir(),
                                           m_resourceManager.get(), m_srvHeap.get(), nativeCmdList);
+        if (m_animEditorPanel)
+            m_animEditorPanel->RenderWindow(m_scene->GetRegistry(), *m_editorCtx,
+                                            PathResolver::AssetsDir(), m_uiAnimRuntime.get());
+        if (m_spriteSheetEditorPanel)
+            m_spriteSheetEditorPanel->RenderWindow(m_scene->GetRegistry(), *m_editorCtx,
+                                                   PathResolver::AssetsDir(), m_resourceManager.get(),
+                                                   m_srvHeap.get(), nativeCmdList,
+                                                   m_uiAnimRuntime.get());
         if (m_materialEditorPanel)
             m_materialEditorPanel->RenderWindow(*m_editorCtx, PathResolver::AssetsDir());
         if (m_materialLibraryPanel)

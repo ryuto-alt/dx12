@@ -18,6 +18,7 @@
 #pragma warning(pop)
 
 #include <cfloat>
+#include <string>
 #include <cstdarg>
 #include <algorithm>
 
@@ -199,6 +200,19 @@ inline bool InputText(const char* label, char* buf, size_t size,
     detail::Track(active);
     ImGui::PopID();
     return ch;
+}
+
+// std::string 版。呼び出し側で毎回 char バッファへ copy する定型を畳んだもの。
+// 260 文字を超えるパスは扱わない（Windows の MAX_PATH 相当で十分）。
+inline bool InputTextStr(const char* label, std::string& v, bool* active = nullptr,
+                         const char* tip = nullptr)
+{
+    char buf[260] = {};
+    const size_t n = v.copy(buf, sizeof(buf) - 1);
+    buf[n] = '\0';
+    if (!InputText(label, buf, sizeof(buf), 0, active, tip)) return false;
+    v = buf;
+    return true;
 }
 
 // N 軸ドラッグ（左端に軸カラーバー: X=赤 Y=緑 Z=青 W=灰）

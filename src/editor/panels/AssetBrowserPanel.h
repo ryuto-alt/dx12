@@ -48,7 +48,8 @@ public:
     static constexpr const char* kDragDropPayloadType = "ASSET_PATH";
 
     // テクスチャD&D(マテリアル割当)等、他パネルからも拡張子種別を判定したいので公開。
-    enum class AssetType { Folder, Model, Texture, Scene, Script, Audio, Prefab, Shader, Material, Other };
+    enum class AssetType { Folder, Model, Texture, Scene, Script, Audio, Prefab, Shader, Material,
+                           UiAnim, SpriteSheet, Other };
     static AssetType ClassifyExtension(const std::string& ext);
 
     // 他パネル(InspectorPanelのマテリアルテクスチャプレビュー等)から、このパネルが持つ

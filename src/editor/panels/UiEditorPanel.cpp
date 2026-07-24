@@ -112,6 +112,38 @@ namespace
         return v;
     }
 
+    // ---- スマートガイド（Figma 風の整列吸着）----
+    // 移動中の要素の 3 点（min / 中央 / max）を、他要素と親キャンバスの同じ 3 点へ吸着させる。
+    // 判定はスクリーン座標で行う = ズーム率によらず「見た目で 7px 近づいたら吸く」になる。
+    constexpr f32 kSmartSnapPx = 7.0f;
+
+    struct SnapResult
+    {
+        f32  delta = 0.0f;   // 補正量（スクリーン px）
+        bool hit   = false;
+        f32  line  = 0.0f;   // 吸着した相手の座標（ガイド線を引く位置）
+    };
+
+    // mine: 自分側の 3 点 / cand: 相手側の候補座標。最も近い組み合わせ 1 つを返す。
+    SnapResult SnapToCandidates(const f32 mine[3], const std::vector<f32>& cand)
+    {
+        SnapResult best;
+        f32 bestDist = kSmartSnapPx;
+        for (f32 c : cand)
+        {
+            for (int i = 0; i < 3; ++i)
+            {
+                const f32 d = c - mine[i];
+                if (std::fabs(d) >= bestDist) continue;
+                bestDist  = std::fabs(d);
+                best.delta = d;
+                best.hit   = true;
+                best.line  = c;
+            }
+        }
+        return best;
+    }
+
     const char* EntityName(entt::registry& reg, entt::entity e)
     {
         if (const auto* tag = reg.try_get<NameTag>(e))
@@ -404,9 +436,174 @@ void UiEditorPanel::DrawHierarchyPane(entt::registry& reg, EditorContext& ctx)
 
     if (m_dropEntity != entt::null)
     {
+        // D&D（親変更 + 兄弟並べ替え）は Transform::parent と、新旧の兄弟全部の
+        // UIRect::order/offset を書き換える。どれが変わるか事前には分からないので、
+        // 関係しうるエンティティ（動かす要素 + 新旧の親の子全部）を丸ごとスナップショットし、
+        // 実際に変わったものだけ CompositeCommand へ束ねる = Ctrl+Z 1 回で完全に戻る。
+        std::vector<entt::entity> touched{m_dropEntity};
+        const auto* movedTr = reg.try_get<Transform>(m_dropEntity);
+        for (entt::entity parent : {movedTr ? movedTr->parent : entt::null, m_dropParent})
+        {
+            if (parent == entt::null || !reg.valid(parent)) continue;
+            for (entt::entity c : SortedChildrenOf(reg, parent))
+                if (std::find(touched.begin(), touched.end(), c) == touched.end())
+                    touched.push_back(c);
+        }
+
+        std::vector<std::pair<entt::entity, UIRect>> rectBefore;
+        for (entt::entity e : touched)
+            if (const auto* r = reg.try_get<UIRect>(e)) rectBefore.emplace_back(e, *r);
+        const Transform trBefore = movedTr ? *movedTr : Transform{};
+        const bool hadTransform = (movedTr != nullptr);
+
         ApplyUiDrop(reg, m_dropEntity, m_dropParent, m_dropIndex);
         m_dropEntity = entt::null;
+
+        auto composite = std::make_unique<CompositeCommand>("UI 階層の変更");
+        if (hadTransform)
+        {
+            const auto* trAfter = reg.try_get<Transform>(touched[0]);
+            if (trAfter && trAfter->parent != trBefore.parent)
+                composite->Add(std::make_unique<ComponentEditCommand<Transform>>(
+                    &reg, touched[0], trBefore, *trAfter, "UI Reparent"));
+        }
+        for (const auto& [e, before] : rectBefore)
+        {
+            const auto* after = reg.try_get<UIRect>(e);
+            if (!after || std::memcmp(&before, after, sizeof(UIRect)) == 0) continue;
+            composite->Add(std::make_unique<ComponentEditCommand<UIRect>>(
+                &reg, e, before, *after, "UI Rect"));
+        }
+        if (!composite->Empty()) ctx.undoSystem.PushCommand(std::move(composite));
     }
+}
+
+void UiEditorPanel::AlignSelection(entt::registry& reg, EditorContext& ctx, int mode)
+{
+    // 対象は「UIRect を持つ選択要素」だけ。並べ替えは解決済みのスクリーン矩形ではなく
+    // UIRect の offset（= キャンバス空間）で行う。アンカーが違う要素が混ざっていても
+    // offset を直接動かす限り「見た目の移動量」と一致する。
+    struct Item { entt::entity e; UIRect before; f32 minv, maxv; };
+    std::vector<Item> items;
+    for (entt::entity e : ctx.selectedEntities)
+    {
+        if (!reg.valid(e) || !reg.all_of<UIRect>(e)) continue;
+        const UIRect& r = reg.get<UIRect>(e);
+        const bool horiz = (mode <= 2) || mode == 6;
+        items.push_back({e, r,
+                         horiz ? r.offsetMin.x : r.offsetMin.y,
+                         horiz ? r.offsetMax.x : r.offsetMax.y});
+    }
+    if (items.size() < 2) return;
+
+    // 全体の外接範囲（整列の基準）
+    f32 lo = FLT_MAX, hi = -FLT_MAX;
+    for (const auto& it : items) { lo = (std::min)(lo, it.minv); hi = (std::max)(hi, it.maxv); }
+
+    auto moveBy = [&](Item& it, f32 d)
+    {
+        auto& r = reg.get<UIRect>(it.e);
+        if (mode <= 2 || mode == 6) { r.offsetMin.x += d; r.offsetMax.x += d; }
+        else                        { r.offsetMin.y += d; r.offsetMax.y += d; }
+    };
+
+    if (mode == 6 || mode == 7)
+    {
+        // 等間隔分布: 両端を固定したまま、間の要素の「隙間」を均す。
+        // 中心を等分するのではなく隙間を等分するのが Figma / Illustrator の既定挙動。
+        std::sort(items.begin(), items.end(),
+                  [](const Item& a, const Item& b) { return a.minv < b.minv; });
+        f32 totalSize = 0.0f;
+        for (const auto& it : items) totalSize += (it.maxv - it.minv);
+        const f32 gap = ((hi - lo) - totalSize) / static_cast<f32>(items.size() - 1);
+
+        f32 cursor = lo;
+        for (auto& it : items)
+        {
+            moveBy(it, cursor - it.minv);
+            cursor += (it.maxv - it.minv) + gap;
+        }
+    }
+    else
+    {
+        const int kind = mode % 3;   // 0=手前側 1=中央 2=奥側
+        const f32 center = (lo + hi) * 0.5f;
+        for (auto& it : items)
+        {
+            f32 d = 0.0f;
+            if (kind == 0)      d = lo - it.minv;
+            else if (kind == 1) d = center - (it.minv + it.maxv) * 0.5f;
+            else                d = hi - it.maxv;
+            moveBy(it, d);
+        }
+    }
+
+    for (const auto& it : items)
+    {
+        const UIRect& after = reg.get<UIRect>(it.e);
+        if (std::memcmp(&it.before, &after, sizeof(UIRect)) == 0) continue;
+        ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<UIRect>>(
+            &reg, it.e, it.before, after, "UI Align"));
+    }
+}
+
+void UiEditorPanel::DrawPrefabPalette(const std::string& assetsDir)
+{
+    namespace fs = std::filesystem;
+
+    ImGui::TextDisabled("UI プレハブ");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("更新")) m_prefabListLoaded = false;
+    ImGui::SetItemTooltip("assets/prefabs/ui/ の一覧を読み直す");
+
+    if (!m_prefabListLoaded)
+    {
+        m_prefabPaths.clear();
+        std::error_code ec;
+        const fs::path dir = fs::path(assetsDir) / "prefabs" / "ui";
+        if (fs::exists(dir, ec))
+        {
+            for (auto& entry : fs::directory_iterator(dir, ec))
+            {
+                if (!entry.is_regular_file()) continue;
+                if (entry.path().extension() != ".prefab") continue;
+                m_prefabPaths.push_back(entry.path().string());
+            }
+            std::sort(m_prefabPaths.begin(), m_prefabPaths.end());
+        }
+        m_prefabListLoaded = true;
+    }
+
+    if (m_prefabPaths.empty())
+    {
+        ImGui::TextDisabled("(空)\n要素を右クリック →\n「プレハブにする」で作る");
+        return;
+    }
+
+    if (ImGui::BeginChild("##UiPrefabList", ImVec2(0.0f, 0.0f)))
+    {
+        for (const auto& path : m_prefabPaths)
+        {
+            const std::string name = fs::path(path).stem().string();
+            ImGui::Selectable(name.c_str());
+            // キャンバスへドラッグして配置できるよう、アセットブラウザと同じ payload を出す
+            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
+            {
+                ImGui::SetDragDropPayload(AssetBrowserPanel::kDragDropPayloadType,
+                                          path.c_str(), path.size() + 1);
+                ImGui::Text("%s", name.c_str());
+                ImGui::TextDisabled("キャンバスへドロップ");
+                ImGui::EndDragDropSource();
+            }
+            // ダブルクリックはキャンバス中央へ配置（ドラッグせずに置きたい時用）
+            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+            {
+                m_pendingPrefabDrop = path;
+                m_pendingPrefabDropPos = ImVec2(-1.0f, -1.0f);   // 画面外 = 中央配置へフォールバック
+            }
+        }
+    }
+    ImGui::EndChild();
 }
 
 void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const std::string& assetsDir,
@@ -516,6 +713,39 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
         ImGui::EndPopup();
     }
 
+    // ---- 整列 / 分布（マルチ選択専用。Figma / Illustrator の整列パネル相当）----
+    {
+        const bool multi = ctx.selectedEntities.size() >= 2;
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!multi);
+        if (ImGui::Button("整列 \xe2\x96\xbe"))
+            ImGui::OpenPopup("##UiEdAlign");
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip(multi
+            ? "選択した複数要素を揃える / 等間隔に並べる"
+            : "Ctrl+クリックで 2 つ以上選ぶと使える");
+
+        if (ImGui::BeginPopup("##UiEdAlign"))
+        {
+            // 0..5 = 左/横中央/右/上/縦中央/下、6/7 = 横/縦に等間隔分布
+            static const char* kAlignLabels[8] = {
+                "左揃え", "左右中央", "右揃え", "上揃え", "上下中央", "下揃え",
+                "横に等間隔", "縦に等間隔"};
+            for (int mode = 0; mode < 8; ++mode)
+            {
+                if (mode == 6) ImGui::Separator();
+                if (!ImGui::MenuItem(kAlignLabels[mode])) continue;
+                AlignSelection(reg, ctx, mode);
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+    }
+
+    ImGui::SameLine();
+    ImGui::Checkbox("ガイド", &m_smartGuides);
+    ImGui::SetItemTooltip("ドラッグ中に他の要素・画面の端/中央へ吸着する（Alt 押下で一時無効）");
+
     ImGui::SameLine(0.0f, 14.0f);
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("画面");
@@ -564,7 +794,15 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
     const f32 statusH = ImGui::GetFrameHeightWithSpacing();
 
     if (ImGui::BeginChild("##UiEdTree", ImVec2(235.0f, -statusH), ImGuiChildFlags_Borders))
-        DrawHierarchyPane(reg, ctx);
+    {
+        // 上: 階層 / 下: UI プレハブのパレット。パレットは高さを固定して階層を潰さない。
+        const f32 paletteH = 152.0f;
+        if (ImGui::BeginChild("##UiEdTreeInner", ImVec2(0.0f, -paletteH)))
+            DrawHierarchyPane(reg, ctx);
+        ImGui::EndChild();
+        ImGui::Separator();
+        DrawPrefabPalette(assetsDir);
+    }
     ImGui::EndChild();
     ImGui::SameLine();
 
@@ -709,6 +947,16 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
     // ---- ゲーム内 UI のプレビュー（SceneView プレビューと同経路）----
     UISystem::RenderPreview(reg, dl, ox, oy, vw, vh, resources, srvHeap, cmdList);
 
+    // ---- スマートガイド ----
+    // 編集ブロック（下）はプレビュー描画より後に走るので、UI 要素の見た目は常に 1 フレーム遅れる。
+    // ガイドも前フレームの計算結果をここで描くことで、線と要素のズレを無くしている。
+    for (const auto& g : m_guides)
+    {
+        constexpr ImU32 kGuideCol = IM_COL32(255, 70, 160, 220);
+        if (g.vertical) dl->AddLine(ImVec2(g.pos, g.a), ImVec2(g.pos, g.b), kGuideCol, 1.0f);
+        else            dl->AddLine(ImVec2(g.a, g.pos), ImVec2(g.b, g.pos), kGuideCol, 1.0f);
+    }
+
     // 仮想スクリーンの枠（プレビューの上に描いて輪郭を出す）
     dl->AddRect(ImVec2(ox - 1.0f, oy - 1.0f), ImVec2(ox + vw + 1.0f, oy + vh + 1.0f), kScreenBorder);
 
@@ -748,14 +996,75 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
             if (changed)
                 ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<UIRect>>(
                     &reg, m_dragEntity, before, after, "UI Rect"));
+            // マルチ選択ぶんも 1 要素 1 コマンドで積む。Ctrl+Z 1 回では 1 要素しか戻らへんが、
+            // グループ用のコマンド型を足すより既存の仕組みに乗る方が壊れにくい。
+            for (const auto& [other, startRect] : m_dragExtra)
+            {
+                if (!reg.valid(other) || !reg.all_of<UIRect>(other)) continue;
+                const UIRect& a2 = reg.get<UIRect>(other);
+                if (std::memcmp(&startRect, &a2, sizeof(UIRect)) == 0) continue;
+                ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<UIRect>>(
+                    &reg, other, startRect, a2, "UI Rect"));
+            }
+            m_dragExtra.clear();
+            m_guides.clear();
             m_dragEdges = kDragNone;
         }
         else
         {
             // 「開始スナップショット + 総移動量」の絶対値方式（増分方式のドリフト防止）
             const f32 scale = (m_dragCanvasScale > 1e-6f) ? m_dragCanvasScale : 1.0f;
-            const f32 dxC = (io.MousePos.x - m_dragStartMouse.x) / scale;
-            const f32 dyC = (io.MousePos.y - m_dragStartMouse.y) / scale;
+            f32 dxS = io.MousePos.x - m_dragStartMouse.x;   // スクリーン px
+            f32 dyS = io.MousePos.y - m_dragStartMouse.y;
+
+            // ---- スマートガイド（移動時のみ。Alt 押下で一時無効 = Figma と同じ操作感）----
+            m_guides.clear();
+            if (m_dragEdges == kDragMove && m_smartGuides && !io.KeyAlt)
+            {
+                // 候補: 同じキャンバスの他要素（自分と子孫は除く）＋ 仮想スクリーン自体
+                std::vector<f32> candX, candY;
+                ImVec2 otherMin(FLT_MAX, FLT_MAX), otherMax(-FLT_MAX, -FLT_MAX);
+                for (const auto& rr : m_lastRects)
+                {
+                    if (rr.e == m_dragEntity || rr.hasXform) continue;
+                    if (IsDescendantOf(reg, rr.e, m_dragEntity)) continue;
+                    candX.push_back(rr.min.x);
+                    candX.push_back((rr.min.x + rr.max.x) * 0.5f);
+                    candX.push_back(rr.max.x);
+                    candY.push_back(rr.min.y);
+                    candY.push_back((rr.min.y + rr.max.y) * 0.5f);
+                    candY.push_back(rr.max.y);
+                    otherMin = ImVec2((std::min)(otherMin.x, rr.min.x), (std::min)(otherMin.y, rr.min.y));
+                    otherMax = ImVec2((std::max)(otherMax.x, rr.max.x), (std::max)(otherMax.y, rr.max.y));
+                }
+                candX.push_back(ox); candX.push_back(ox + vw * 0.5f); candX.push_back(ox + vw);
+                candY.push_back(oy); candY.push_back(oy + vh * 0.5f); candY.push_back(oy + vh);
+                otherMin = ImVec2((std::min)(otherMin.x, ox), (std::min)(otherMin.y, oy));
+                otherMax = ImVec2((std::max)(otherMax.x, ox + vw), (std::max)(otherMax.y, oy + vh));
+
+                const f32 mx[3] = {m_dragStartMin.x + dxS,
+                                   (m_dragStartMin.x + m_dragStartMax.x) * 0.5f + dxS,
+                                   m_dragStartMax.x + dxS};
+                const f32 my[3] = {m_dragStartMin.y + dyS,
+                                   (m_dragStartMin.y + m_dragStartMax.y) * 0.5f + dyS,
+                                   m_dragStartMax.y + dyS};
+
+                const SnapResult sx = SnapToCandidates(mx, candX);
+                const SnapResult sy = SnapToCandidates(my, candY);
+                if (sx.hit)
+                {
+                    dxS += sx.delta;
+                    m_guides.push_back({true, sx.line, otherMin.y, otherMax.y});
+                }
+                if (sy.hit)
+                {
+                    dyS += sy.delta;
+                    m_guides.push_back({false, sy.line, otherMin.x, otherMax.x});
+                }
+            }
+
+            const f32 dxC = dxS / scale;
+            const f32 dyC = dyS / scale;
 
             auto& rect = reg.get<UIRect>(m_dragEntity);
             rect = m_dragStartRect;
@@ -764,6 +1073,17 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
             {
                 rect.offsetMin.x += dxC; rect.offsetMax.x += dxC;
                 rect.offsetMin.y += dyC; rect.offsetMax.y += dyC;
+
+                // マルチ選択: 掴んだ要素と同じ移動量を他の選択要素へも適用する。
+                // 吸着は掴んだ要素の矩形だけで判定する（各要素が別々に吸くと相対配置が崩れるため）。
+                for (const auto& [other, startRect] : m_dragExtra)
+                {
+                    if (!reg.valid(other) || !reg.all_of<UIRect>(other)) continue;
+                    auto& r2 = reg.get<UIRect>(other);
+                    r2 = startRect;
+                    r2.offsetMin.x += dxC; r2.offsetMax.x += dxC;
+                    r2.offsetMin.y += dyC; r2.offsetMax.y += dyC;
+                }
             }
             else
             {
@@ -782,6 +1102,9 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
     // ---- 解決済み UI 矩形（描画順 = 奥→手前）。ドラッグ反映後に解決 = 今フレームの位置 ----
     std::vector<UiResolvedRect> rects;
     UISystem::ResolveRects(reg, ox, oy, vw, vh, rects);
+    // スマートガイドの吸着候補は「前フレームの解決結果」を使う。移動中の要素の矩形は
+    // 開始矩形 + 移動量で解析的に求まるので、候補側（動かへん兄弟）は 1 フレーム古くて問題ない。
+    m_lastRects = rects;
 
     const auto findRect = [&rects](entt::entity e) -> const UiResolvedRect* {
         if (e == entt::null) return nullptr;
@@ -994,7 +1317,11 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
                 }
                 else
                 {
-                    ctx.Select(target);
+                    // 既に複数選択の一部を掴んだ場合は選択を壊さずグループ移動に入る
+                    // （選択し直しになると「まとめて動かす」が永遠にできへん）。
+                    const bool groupDrag = ctx.IsSelected(target) && ctx.selectedEntities.size() > 1;
+                    if (!groupDrag) ctx.Select(target);
+
                     // 選択と同時に移動ドラッグ開始（Unity / UMG 同様、掴んでそのまま動かせる）
                     if (const UiResolvedRect* tr = findRect(target))
                     {
@@ -1005,6 +1332,19 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
                         m_dragStartMax    = tr->max;
                         m_dragCanvasScale = tr->canvasScale;
                         m_dragEdges       = kDragMove;
+
+                        m_dragExtra.clear();
+                        if (groupDrag)
+                        {
+                            for (entt::entity other : ctx.selectedEntities)
+                            {
+                                if (other == target || !reg.valid(other)) continue;
+                                if (!reg.all_of<UIRect>(other)) continue;
+                                // 掴んだ要素の子孫は親と一緒に動くので二重に足さない
+                                if (IsDescendantOf(reg, other, target)) continue;
+                                m_dragExtra.emplace_back(other, reg.get<UIRect>(other));
+                            }
+                        }
                     }
                 }
             }
@@ -1185,6 +1525,18 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
                 ctx.pendingDuplications.push_back(ctx.selectedEntity);
             if (ImGui::MenuItem("削除 (Del)"))
                 ctx.pendingDeletions.push_back(ctx.selectedEntity);
+            ImGui::Separator();
+            // 選択サブツリーを assets/prefabs/ui/ へ書き出して、その場でインスタンス化する
+            // （UI パーツを何十個も並べる用途では、これが無いと同じ物を作り直す羽目になる）
+            if (ImGui::MenuItem("プレハブにする"))
+                ctx.pendingCreatePrefab = ctx.selectedEntity;
+            if (reg.all_of<PrefabLink>(ctx.selectedEntity))
+            {
+                if (ImGui::MenuItem("プレハブに適用 Apply"))
+                    ctx.pendingPrefabApply.push_back(ctx.selectedEntity);
+                if (ImGui::MenuItem("プレハブから戻す Revert"))
+                    ctx.pendingPrefabRevert.push_back(ctx.selectedEntity);
+            }
         }
         ImGui::EndPopup();
     }
@@ -1230,8 +1582,53 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
                     ctx.Select(target->e);
                 }
             }
+            else if (AssetBrowserPanel::ClassifyExtension(ext)
+                     == AssetBrowserPanel::AssetType::Prefab)
+            {
+                // UI プレハブをドロップ位置へ配置する。実際の生成はフレーム境界（pendingSpawns）
+                // なので、ここでは「どのキャンバスの子として、どのキャンバス座標に置くか」だけ渡す。
+                m_pendingPrefabDrop = droppedPath;
+                m_pendingPrefabDropPos = io.MousePos;
+            }
         }
         ImGui::EndDragDropTarget();
+    }
+
+    // ===== ドロップされた UI プレハブの配置予約 =====
+    // 生成後に位置を合わせたいので、生成要求と「置きたいキャンバス座標」を一緒に積む。
+    if (!m_pendingPrefabDrop.empty())
+    {
+        // ドロップ位置を含む最前面のキャンバスを親にする（無ければキャンバス自動生成に任せる）
+        entt::entity parent = entt::null;
+        f32 canvasX = 0.0f, canvasY = 0.0f;
+        for (auto it = rects.rbegin(); it != rects.rend(); ++it)
+        {
+            if (m_pendingPrefabDropPos.x < it->min.x || m_pendingPrefabDropPos.x >= it->max.x
+                || m_pendingPrefabDropPos.y < it->min.y || m_pendingPrefabDropPos.y >= it->max.y)
+                continue;
+            parent = it->e;
+            const f32 cs = (it->canvasScale > 1e-6f) ? it->canvasScale : 1.0f;
+            canvasX = (m_pendingPrefabDropPos.x - it->canvasOrigin.x) / cs;
+            canvasY = (m_pendingPrefabDropPos.y - it->canvasOrigin.y) / cs;
+            break;
+        }
+        if (parent == entt::null)
+        {
+            // 要素の上ではなくキャンバスの余白に落とされた場合: 最初のキャンバスへ入れる
+            auto canvasView = reg.view<const UICanvas>();
+            if (canvasView.begin() != canvasView.end()) parent = *canvasView.begin();
+            canvasX = refW * 0.5f;
+            canvasY = refH * 0.5f;
+        }
+
+        PendingSpawnRequest req;
+        req.modelPath = m_pendingPrefabDrop;
+        req.parent    = parent;
+        req.uiCanvasPos   = {canvasX, canvasY};
+        req.placeInUiCanvas = true;
+        ctx.pendingSpawns.push_back(req);
+
+        m_pendingPrefabDrop.clear();
     }
 
     // ===== ステータスバー =====

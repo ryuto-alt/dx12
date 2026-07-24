@@ -488,6 +488,35 @@ void AddComponentMenuItem(entt::registry& reg, EditorContext& ctx,
     }
 }
 
+// 直前に描いたウィジェットをアセットパスの D&D 受け口にする。
+// wantExt（例 ".uianim"）に一致する拡張子だけ受理し、assets ルートからの相対パスへ直して書く。
+// 一致しないものを無視するのは、ドロップ先を間違えた時に黙って壊れるのを防ぐため。
+inline bool AcceptAssetPathDrop(std::string& outRelPath, const char* wantExt,
+                                const std::string& assetsDir)
+{
+    if (!ImGui::BeginDragDropTarget()) return false;
+    bool changed = false;
+    if (const ImGuiPayload* payload =
+            ImGui::AcceptDragDropPayload(AssetBrowserPanel::kDragDropPayloadType))
+    {
+        namespace fs = std::filesystem;
+        const char* dropped = static_cast<const char*>(payload->Data);
+        std::string ext = fs::path(dropped).extension().string();
+        for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (ext == wantExt)
+        {
+            std::string abs  = fs::path(dropped).lexically_normal().string();
+            std::string base = fs::path(assetsDir).lexically_normal().string();
+            std::replace(abs.begin(), abs.end(), '\\', '/');
+            std::replace(base.begin(), base.end(), '\\', '/');
+            outRelPath = (abs.rfind(base, 0) == 0) ? abs.substr(base.size()) : abs;
+            changed = true;
+        }
+    }
+    ImGui::EndDragDropTarget();
+    return changed;
+}
+
 // ※ UIRect の「親矩形」解決（ResolveUiParentRectPx）は SceneView / UIエディタと共用のため
 //   editor/UiEditUtil.h（uiedit 名前空間）へ移設した。
 
@@ -525,6 +554,12 @@ void InspectorPanel::Render(entt::registry& reg,
         }
 
         ImGui::Separator();
+
+        // --- プレハブインスタンス（PrefabLink 持ちのルートだけ）---
+        // 変更点の一覧と 適用 / 元に戻す を最上段に出す。Unity のプレハブヘッダー相当で、
+        // 「今どのプレハブの実体を触っているのか」を触る前に分からせるのが狙い。
+        if (scene && reg.all_of<PrefabLink>(ctx.selectedEntity))
+            RenderPrefabHeader(reg, ctx, *scene, ctx.selectedEntity);
 
         // 種別専用インスペクター（ライト/オーディオは専用UIを最前面に。共通部品はこの下）
         if (reg.any_of<PointLight, DirectionalLight, SpotLight>(ctx.selectedEntity))
@@ -1001,6 +1036,15 @@ void InspectorPanel::Render(entt::registry& reg,
                     changed |= pg::Checkbox("子をマスク Clip Children", &ur.clipChildren,
                         "ON: 子ツリーをこの矩形でクリップ（はみ出しを隠す）。ワイプ公開・\n"
                         "マーキー・ゲージ内スクロール用。このノード自身の回転/スキューは無効になる");
+
+                    pg::Label("視覚変形 Visual",
+                        "レイアウト矩形は変えずに見た目だけ変える。回転/スキューと同じ扱いで、\n"
+                        "UIAnimator や tween の実行時アニメとは掛け算で合流する");
+                    changed |= pg::Float("スケール X", &ur.scaleX, 0.005f, 0.0f, 10.0f, "%.3f", &active,
+                        "ピボット点回りの拡縮。ピボット(0,0) なら左上を固定して伸びる（ゲージ向き）");
+                    changed |= pg::Float("スケール Y", &ur.scaleY, 0.005f, 0.0f, 10.0f, "%.3f", &active);
+                    changed |= pg::Float("アルファ Alpha", &ur.alpha, 0.005f, 0.0f, 1.0f, "%.3f", &active,
+                        "自分と子孫にまとめて掛かるグループ透過。UIImage/UIText の色アルファとは別枠");
                     pg::End();
                 }
                 EndEdit(reg, ctx, ctx.selectedEntity, m_uiRectEdit, changed, active, "UIRect");
@@ -1557,6 +1601,74 @@ void InspectorPanel::Render(entt::registry& reg,
                 }
                 ImGui::TextDisabled("アニメは Play 中に再生されます（エディタ上は最終ポーズ）");
                 EndEdit(reg, ctx, ctx.selectedEntity, m_uiAnimatorEdit, changed, active, "UIAnimator");
+            }
+        }
+
+        // UIAnimPlayer（タイムラインで作った .uianim クリップの再生器）
+        if (reg.all_of<UIAnimPlayer>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entUi : 0, "UIAnimPlayer");
+            bool removed = ComponentRemoveMenu<UIAnimPlayer>(reg, ctx, ctx.selectedEntity, "UIAnimPlayer");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_uiAnimPlayerEdit);
+                auto& pl = reg.get<UIAnimPlayer>(ctx.selectedEntity);
+                bool changed = false, active = false;
+
+                if (pg::Begin("UIAnimPlayer"))
+                {
+                    changed |= pg::InputTextStr("クリップ Clip", pl.clipPath, &active,
+                        "assets 相対の .uianim パス（例 uianim/menu_open.uianim）。\n"
+                        "アセットブラウザからドラッグしてもええ");
+                    changed |= AcceptAssetPathDrop(pl.clipPath, ".uianim", m_assetsDir);
+                    changed |= pg::Checkbox("開始時に再生 Play On Start", &pl.playOnStart);
+                    changed |= pg::Checkbox("ループ Loop", &pl.loop,
+                        "ON: クリップ側の設定に関わらずループする");
+                    changed |= pg::Float("速度 Speed", &pl.speed, 0.01f, -8.0f, 8.0f, "%.2f", &active,
+                        "負の値で逆再生、0 で一時停止");
+                    changed |= pg::InputTextStr("完了イベント Finish Event", pl.finishEvent, &active,
+                        "再生完了時に EventBus へ発火するイベント名（空=発火しない）");
+                    pg::End();
+                }
+                if (ImGui::Button("UIアニメーションを開く"))
+                    ctx.showAnimEditor = true;
+                EndEdit(reg, ctx, ctx.selectedEntity, m_uiAnimPlayerEdit, changed, active,
+                        "UIAnimPlayer");
+            }
+        }
+
+        // SpriteAnimator（.spranim シートの連番アニメ。Sprite2D / UIImage の UV を駆動する）
+        if (reg.all_of<SpriteAnimator>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entMesh : 0, "SpriteAnimator");
+            bool removed = ComponentRemoveMenu<SpriteAnimator>(reg, ctx, ctx.selectedEntity,
+                                                               "SpriteAnimator");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_spriteAnimatorEdit);
+                auto& sa = reg.get<SpriteAnimator>(ctx.selectedEntity);
+                bool changed = false, active = false;
+
+                if (pg::Begin("SpriteAnimator"))
+                {
+                    changed |= pg::InputTextStr("シート Sheet", sa.sheetPath, &active,
+                        "assets 相対の .spranim パス（例 spriteanim/player.spranim）");
+                    changed |= AcceptAssetPathDrop(sa.sheetPath, ".spranim", m_assetsDir);
+                    changed |= pg::InputTextStr("シーケンス Sequence", sa.currentSeq, &active,
+                        "再生するシーケンス名（空 = シートの先頭）。Lua は entity:playSprite(\"run\")");
+                    changed |= pg::Checkbox("開始時に再生 Play On Start", &sa.playOnStart);
+                    changed |= pg::Float("速度 Speed", &sa.speed, 0.01f, 0.0f, 8.0f, "%.2f", &active);
+                    changed |= pg::Checkbox("テクスチャも反映 Apply Texture", &sa.applyTexture,
+                        "ON: シートの texture を Sprite2D/UIImage の texturePath へも書き込む");
+                    pg::End();
+                }
+                if (!reg.any_of<Sprite2D, UIImage>(ctx.selectedEntity))
+                    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f),
+                                       "Sprite2D か UIImage が無いと何も表示されへん");
+                if (ImGui::Button("スプライトシートを開く"))
+                    ctx.showSpriteSheetEditor = true;
+                EndEdit(reg, ctx, ctx.selectedEntity, m_spriteAnimatorEdit, changed, active,
+                        "SpriteAnimator");
             }
         }
 
@@ -2678,6 +2790,10 @@ void InspectorPanel::Render(entt::registry& reg,
             AddComponentMenuItem<UIScrollView>(reg, ctx, ctx.selectedEntity, "UI Scroll View");
             AddComponentMenuItem<UILayout>(reg, ctx, ctx.selectedEntity, "UI Layout (VBox/HBox/Grid)");
             AddComponentMenuItem<UIAnimator>(reg, ctx, ctx.selectedEntity, "UI Animator");
+            AddComponentMenuItem<UIAnimPlayer>(reg, ctx, ctx.selectedEntity,
+                                               "UI Anim Player (.uianim クリップ)");
+            AddComponentMenuItem<SpriteAnimator>(reg, ctx, ctx.selectedEntity,
+                                                 "Sprite Animator (.spranim シート)");
             ImGui::Separator();
             AddComponentMenuItem<RigidBody>(reg, ctx, ctx.selectedEntity, "RigidBody");
             AddComponentMenuItem<BoxCollider>(reg, ctx, ctx.selectedEntity, "Box Collider");
@@ -2760,6 +2876,86 @@ void InspectorPanel::Render(entt::registry& reg,
 // グローバルなエンジン設定（カメラ速度/シャドウ/オーディオ/VSync/ビルド）。
 // Inspector から分離して独立ウィンドウ「エンジン設定」に描く（下ドックに置く）。
 // ── ライト専用インスペクター（明るさ/色/距離/コーン/方向）。種別を判定して該当UIを出す ──
+void InspectorPanel::RenderPrefabHeader(entt::registry& reg, EditorContext& ctx, Scene& scene,
+                                        entt::entity e)
+{
+    const auto& link = reg.get<PrefabLink>(e);
+
+    // 差分キャッシュの更新（選択が変わった時 + 0.3 秒ごと）
+    m_prefabDiffTimer -= ImGui::GetIO().DeltaTime;
+    if (m_prefabDiffEntity != e || m_prefabDiffTimer <= 0.0f)
+    {
+        m_prefabDiffEntity = e;
+        m_prefabDiffTimer  = 0.3f;
+        m_prefabDiffOk = SceneSerializer::ComputePrefabOverrides(scene, e, m_assetsDir, m_prefabDiff);
+    }
+
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.16f, 0.20f, 0.26f, 1.0f));
+    ImGui::BeginChild("##PrefabHeader", ImVec2(0.0f, 0.0f),
+                      ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_Borders);
+
+    ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.95f, 1.0f), "プレハブ");
+    ImGui::SameLine();
+    ImGui::TextWrapped("%s", link.sourcePath.c_str());
+
+    if (!m_prefabDiffOk)
+    {
+        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.4f, 1.0f),
+                           "元の .prefab が見つからへん（移動/削除された？）");
+    }
+
+    const bool dirty = m_prefabDiffOk && !m_prefabDiff.empty();
+
+    if (!m_prefabDiffOk) ImGui::BeginDisabled();
+    if (ImGui::Button("適用 Apply"))
+        ctx.pendingPrefabApply.push_back(e);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("このインスタンスの今の姿を元の .prefab へ書き戻す");
+    ImGui::SameLine();
+    if (ImGui::Button("元に戻す Revert"))
+        ctx.pendingPrefabRevert.push_back(e);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("元の .prefab の状態へ戻す（外側の親だけ維持。この操作は作り直しなので\n"
+                          "エンティティ ID が変わる）");
+    ImGui::SameLine();
+    if (ImGui::Button("他のインスタンスも更新"))
+        ctx.pendingPrefabPropagate.push_back(e);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("同じ .prefab から作った他のインスタンスを、保存済みの .prefab の内容で\n"
+                          "作り直す（先に「適用」してから押すこと）");
+    ImGui::SameLine();
+    if (ImGui::Button("リンクを外す"))
+        reg.remove<PrefabLink>(e);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("ただのコピーに戻す（以後 適用/元に戻す は出えへん）");
+    if (!m_prefabDiffOk) ImGui::EndDisabled();
+
+    if (dirty)
+    {
+        char label[96];
+        std::snprintf(label, sizeof(label), "変更点 %d 件###PrefabOverrides",
+                      static_cast<int>(m_prefabDiff.size()));
+        if (ImGui::TreeNode(label))
+        {
+            // 件数が多い時に Inspector を占領しないよう、スクロール枠に閉じ込める
+            ImGui::BeginChild("##OvrList", ImVec2(0.0f, 120.0f), ImGuiChildFlags_Borders);
+            for (const auto& o : m_prefabDiff)
+                ImGui::BulletText("[%s] %s . %s", o.entityName.c_str(), o.component.c_str(),
+                                  o.field.c_str());
+            ImGui::EndChild();
+            ImGui::TreePop();
+        }
+    }
+    else if (m_prefabDiffOk)
+    {
+        ImGui::TextDisabled("元の .prefab と同じ状態");
+    }
+
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+    ImGui::Separator();
+}
+
 void InspectorPanel::RenderLightHero(entt::registry& reg, EditorContext& ctx, entt::entity e)
 {
     const EditorUiIcons* ic = ctx.icons;
