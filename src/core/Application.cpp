@@ -9173,6 +9173,44 @@ void Application::Render()
         {
             std::string name = std::filesystem::path(req.modelPath).stem().string();
             if (!req.name.empty()) name = req.name;   // MCP 等からの任意名で上書き
+
+            // マーカー生成物は stem だと "__primitive_box__" がそのまま名前になるので人間向けへ
+            if (req.name.empty())
+            {
+                if      (req.modelPath == "__primitive_box__")    name = "Box";
+                else if (req.modelPath == "__primitive_sphere__") name = "Sphere";
+                else if (req.modelPath == "__primitive_plane__")  name = "Plane";
+                else if (req.modelPath == "__empty__")            name = "Empty";
+                else if (req.modelPath == "__camera__")           name = "Camera";
+                else if (req.modelPath == "__directional_light__") name = "DirectionalLight";
+                else if (req.modelPath == "__point_light__")      name = "PointLight";
+                else if (req.modelPath == "__spot_light__")       name = "SpotLight";
+                else if (req.modelPath == "__particle_emitter__") name = "ParticleEmitter";
+                else if (req.modelPath == "__trigger__")          name = "Trigger";
+            }
+            // 同名エンティティがいると Trigger / Lua の名前参照が区別できず、
+            // コピペ時の参照リマップも誤った相手に付く。生成時点で連番ユニーク化する。
+            {
+                auto& reg = m_scene->GetRegistry();
+                auto exists = [&](const std::string& n)
+                {
+                    for (auto [e, tag] : reg.view<const NameTag>().each())
+                        if (tag.name == n) return true;
+                    return false;
+                };
+                if (exists(name))
+                {
+                    std::string stem = name;
+                    auto p = stem.rfind(" (");
+                    if (p != std::string::npos && stem.back() == ')')
+                        stem = stem.substr(0, p);
+                    for (int i = 1; i < 1000; ++i)
+                    {
+                        std::string cand = stem + " (" + std::to_string(i) + ")";
+                        if (!exists(cand)) { name = cand; break; }
+                    }
+                }
+            }
             entt::entity spawnedEntity = entt::null;
             entt::entity mcpPrefabRoot = entt::null;          // prefab 経路の MCP 応答用ルート
             std::vector<entt::entity> mcpPrefabAll;           // prefab 経路の全 entity
@@ -9207,7 +9245,7 @@ void Application::Render()
             {
                 auto& reg = m_scene->GetRegistry();
                 auto e = reg.create();
-                reg.emplace<NameTag>(e, NameTag{req.name.empty() ? std::string("Camera") : req.name});
+                reg.emplace<NameTag>(e, NameTag{name});
                 reg.emplace<Transform>(e, Transform{req.position, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
                 // 他にアクティブカメラがなければ自動で isActive=true
                 bool hasActive = false;
@@ -9220,7 +9258,7 @@ void Application::Render()
             {
                 auto& reg = m_scene->GetRegistry();
                 auto e = reg.create();
-                reg.emplace<NameTag>(e, NameTag{req.name.empty() ? std::string("DirectionalLight") : req.name});
+                reg.emplace<NameTag>(e, NameTag{name});
                 reg.emplace<Transform>(e, Transform{req.position, {-30.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
                 reg.emplace<DirectionalLight>(e, DirectionalLight{{0.0f, -1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, 1.0f});
                 spawnedEntity = e;
@@ -9229,7 +9267,7 @@ void Application::Render()
             {
                 auto& reg = m_scene->GetRegistry();
                 auto e = reg.create();
-                reg.emplace<NameTag>(e, NameTag{req.name.empty() ? std::string("PointLight") : req.name});
+                reg.emplace<NameTag>(e, NameTag{name});
                 reg.emplace<Transform>(e, Transform{req.position, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
                 reg.emplace<PointLight>(e, PointLight{{1.0f, 1.0f, 1.0f}, 1.0f, 10.0f});
                 spawnedEntity = e;
@@ -9238,7 +9276,7 @@ void Application::Render()
             {
                 auto& reg = m_scene->GetRegistry();
                 auto e = reg.create();
-                reg.emplace<NameTag>(e, NameTag{req.name.empty() ? std::string("SpotLight") : req.name});
+                reg.emplace<NameTag>(e, NameTag{name});
                 reg.emplace<Transform>(e, Transform{req.position, {-60.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
                 reg.emplace<SpotLight>(e, SpotLight{});
                 spawnedEntity = e;
@@ -9282,7 +9320,7 @@ void Application::Render()
                 // 配置エフェクト: 空エンティティ + ParticleEmitter（エディタで即プレビュー表示）
                 auto& reg = m_scene->GetRegistry();
                 auto e = reg.create();
-                reg.emplace<NameTag>(e, NameTag{req.name.empty() ? std::string("ParticleEmitter") : req.name});
+                reg.emplace<NameTag>(e, NameTag{name});
                 reg.emplace<Transform>(e, Transform{req.position, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
                 reg.emplace<ParticleEmitter>(e, ParticleEmitter{});
                 spawnedEntity = e;
@@ -9292,7 +9330,7 @@ void Application::Render()
                 // イベント範囲: 空エンティティ + Trigger（Inspector でアクションを組む）
                 auto& reg = m_scene->GetRegistry();
                 auto e = reg.create();
-                reg.emplace<NameTag>(e, NameTag{req.name.empty() ? std::string("Trigger") : req.name});
+                reg.emplace<NameTag>(e, NameTag{name});
                 reg.emplace<Transform>(e, Transform{req.position, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
                 reg.emplace<Trigger>(e, Trigger{});
                 spawnedEntity = e;
