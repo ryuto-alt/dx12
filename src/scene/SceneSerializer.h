@@ -36,6 +36,17 @@ public:
     static entt::entity DuplicateEntity(Scene& scene, entt::entity src,
                                         const std::string& assetsDir);
 
+    // リストから「先祖も含まれているエンティティ」を除いた最上位だけを返す。
+    // サブツリー複製と併用しないと、親子両方を選択してコピーしたとき子が二重化する。
+    static std::vector<entt::entity> TopmostRoots(const Scene& scene,
+                                                  const std::vector<entt::entity>& entities);
+
+    // サブツリー（src + 全子孫）を全コンポーネント込みで複製。root の親は元と同じ。
+    // outAll に生成した全エンティティ（root 先頭）を返す（Undo 用）。
+    static entt::entity DuplicateSubtree(Scene& scene, entt::entity src,
+                                         const std::string& assetsDir,
+                                         std::vector<entt::entity>* outAll = nullptr);
+
     // エンティティのモデル(modelPath)だけを差し替える。全コンポーネント・親子関係・
     // 名前を維持したまま JSON 経由で再生成するため entt::entity ID は変わる。
     // 失敗時（モデルロード失敗等）は entt::null を返し、元エンティティは無傷。

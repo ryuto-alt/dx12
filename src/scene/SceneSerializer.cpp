@@ -18,6 +18,7 @@
 #include <sstream>
 #include <filesystem>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <algorithm>
 
@@ -1651,6 +1652,9 @@ entt::entity SceneSerializer::InstantiateSubtree(Scene& scene, const std::string
         Logger::Error("JSON の解析に失敗しました（サブツリー）: {}", e.what());
         return entt::null;
     }
+    // 旧クリップボード形式（単一エンティティの JSON オブジェクト）も受け付ける
+    if (root.is_object() && !root.contains("entities") && root.contains("name"))
+        root = json{{"entities", json::array({std::move(root)})}};
     if (!root.contains("entities") || !root["entities"].is_array() || root["entities"].empty())
         return entt::null;
 
@@ -1692,8 +1696,86 @@ entt::entity SceneSerializer::InstantiateSubtree(Scene& scene, const std::string
             reg.get<Transform>(e).parent = parent;
     }
 
+    // 3パス目: サブツリー内部への名前参照を連番リネーム後の名前へ付け替える。
+    // Lua の entity プロパティ / Trigger の filter・actions[].target は名前文字列で
+    // 参照するため、リネームで内部参照が切れる（外部エンティティへの参照はそのまま）。
+    std::unordered_map<std::string, std::string> renamed;
+    idx = 0;
+    for (const auto& ej : root["entities"])
+    {
+        entt::entity e = created[idx++];
+        if (e == entt::null || !ej.is_object() || !reg.all_of<NameTag>(e)) continue;
+        std::string oldName = ej.value("name", std::string());
+        const std::string& newName = reg.get<NameTag>(e).name;
+        if (!oldName.empty() && newName != oldName)
+            renamed.emplace(std::move(oldName), newName);   // 同名は先勝ち（root 優先）
+    }
+    if (!renamed.empty())
+    {
+        auto remap = [&](std::string& ref)
+        {
+            auto it = renamed.find(ref);
+            if (it != renamed.end()) ref = it->second;
+        };
+        for (auto e : created)
+        {
+            if (e == entt::null) continue;
+            if (reg.all_of<LuaScript>(e))
+                for (auto& p : reg.get<LuaScript>(e).props)
+                    if (p.type == ScriptPropType::Entity) remap(p.str);
+            if (reg.all_of<Trigger>(e))
+            {
+                auto& tr = reg.get<Trigger>(e);
+                remap(tr.filter);
+                for (auto& a : tr.actions) remap(a.target);
+            }
+        }
+    }
+
     if (outAll) *outAll = created;
     return created.empty() ? entt::null : created[0];
+}
+
+std::vector<entt::entity> SceneSerializer::TopmostRoots(const Scene& scene,
+                                                        const std::vector<entt::entity>& entities)
+{
+    const auto& reg = scene.GetRegistry();
+    std::unordered_set<entt::entity> set(entities.begin(), entities.end());
+    std::vector<entt::entity> out;
+    for (auto e : entities)
+    {
+        if (!reg.valid(e) || !reg.all_of<Transform>(e)) continue;
+        bool covered = false;
+        entt::entity p = reg.get<Transform>(e).parent;
+        int guard = 0;   // 親参照が循環していても抜けられるように
+        while (p != entt::null && reg.valid(p) && guard++ < 1024)
+        {
+            if (set.count(p)) { covered = true; break; }
+            p = reg.all_of<Transform>(p) ? reg.get<Transform>(p).parent : entt::null;
+        }
+        if (!covered) out.push_back(e);
+    }
+    return out;
+}
+
+entt::entity SceneSerializer::DuplicateSubtree(Scene& scene, entt::entity src,
+                                               const std::string& assetsDir,
+                                               std::vector<entt::entity>* outAll)
+{
+    auto& reg = scene.GetRegistry();
+    if (!reg.valid(src) || !reg.all_of<NameTag>(src) || !reg.all_of<Transform>(src))
+        return entt::null;
+
+    const entt::entity parent = reg.get<Transform>(src).parent;
+    std::string subtreeJson = SerializeSubtree(scene, src, assetsDir);
+    if (subtreeJson.empty()) return entt::null;
+
+    entt::entity copy = InstantiateSubtree(scene, subtreeJson, assetsDir, outAll);
+    if (copy == entt::null) return entt::null;
+
+    // 親は元エンティティと同じにする（子孫の親子は InstantiateSubtree が復元済み）
+    reg.get<Transform>(copy).parent = parent;
+    return copy;
 }
 
 namespace

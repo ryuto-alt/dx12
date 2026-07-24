@@ -5847,15 +5847,14 @@ void Application::Update()
             if (GetAsyncKeyState('Y') & 1)
                 m_editorCtx->pendingRedo = true;
 
-            // コピー (Ctrl+C) — 全コンポーネントを JSON スナップショットで保持
+            // コピー (Ctrl+C) — 選択の最上位ごとにサブツリー（子孫+Lua+コライダー込み）を
+            // JSON スナップショットで保持。親子両方選択時の子二重コピーは TopmostRoots が防ぐ
             if (GetAsyncKeyState('C') & 1)
             {
                 m_editorCtx->clipboard.clear();
-                auto& reg = m_scene->GetRegistry();
-                for (auto e : m_editorCtx->selectedEntities)
+                for (auto e : SceneSerializer::TopmostRoots(*m_scene, m_editorCtx->selectedEntities))
                 {
-                    if (!reg.valid(e)) continue;
-                    std::string snap = SceneSerializer::SerializeEntity(
+                    std::string snap = SceneSerializer::SerializeSubtree(
                         *m_scene, e, PathResolver::AssetsDir());
                     if (!snap.empty())
                         m_editorCtx->clipboard.push_back(std::move(snap));
@@ -9812,16 +9811,17 @@ void Application::Render()
                             m_srvHeap.get(), nativeCmdList);
 
         m_editorCtx->ClearSelection();
-        for (auto src : sources)
+        for (auto src : SceneSerializer::TopmostRoots(*m_scene, sources))
         {
-            entt::entity copy = SceneSerializer::DuplicateEntity(
-                *m_scene, src, PathResolver::AssetsDir());
+            std::vector<entt::entity> all;
+            entt::entity copy = SceneSerializer::DuplicateSubtree(
+                *m_scene, src, PathResolver::AssetsDir(), &all);
             if (copy == entt::null) continue;
 
             m_editorCtx->AddToSelection(copy);
             m_editorCtx->undoSystem.PushCommand(
-                std::make_unique<SpawnEntityCommand>(
-                    m_scene.get(), PathResolver::AssetsDir(), copy));
+                std::make_unique<SpawnPrefabCommand>(
+                    m_scene.get(), PathResolver::AssetsDir(), std::move(all)));
             Logger::Info("Duplicated entity: {}",
                          m_scene->GetRegistry().get<NameTag>(copy).name);
         }
@@ -9906,14 +9906,15 @@ void Application::Render()
                 FailMcp(m_mcpBridge.get(), d.mcp, McpErr::NotFound, "source entity no longer valid");
                 continue;
             }
-            entt::entity copy = SceneSerializer::DuplicateEntity(*m_scene, d.entity, PathResolver::AssetsDir());
+            std::vector<entt::entity> all;
+            entt::entity copy = SceneSerializer::DuplicateSubtree(*m_scene, d.entity, PathResolver::AssetsDir(), &all);
             if (copy == entt::null)
             {
                 FailMcp(m_mcpBridge.get(), d.mcp, McpErr::Internal, "duplicate failed");
                 continue;
             }
             m_editorCtx->undoSystem.PushCommand(
-                std::make_unique<SpawnEntityCommand>(m_scene.get(), PathResolver::AssetsDir(), copy));
+                std::make_unique<SpawnPrefabCommand>(m_scene.get(), PathResolver::AssetsDir(), std::move(all)));
             std::string nm = reg.all_of<NameTag>(copy) ? reg.get<NameTag>(copy).name : std::string();
             Logger::Info("Duplicated entity (MCP): {}", nm);
             CompleteMcp(m_mcpBridge.get(), d.mcp,
@@ -9934,19 +9935,20 @@ void Application::Render()
         m_editorCtx->ClearSelection();
         for (const auto& snap : pastes)
         {
-            entt::entity e = SceneSerializer::InstantiateEntity(
-                *m_scene, snap, PathResolver::AssetsDir());
+            std::vector<entt::entity> all;
+            entt::entity e = SceneSerializer::InstantiateSubtree(
+                *m_scene, snap, PathResolver::AssetsDir(), &all);
             if (e == entt::null) continue;
 
             auto& reg = m_scene->GetRegistry();
-            // 元と重ならないよう少しずらして配置
+            // 元と重ならないよう root だけ少しずらして配置（子孫は相対のまま追従）
             if (reg.all_of<Transform>(e))
                 reg.get<Transform>(e).position.x += 1.0f;
 
             m_editorCtx->AddToSelection(e);
             m_editorCtx->undoSystem.PushCommand(
-                std::make_unique<SpawnEntityCommand>(
-                    m_scene.get(), PathResolver::AssetsDir(), e));
+                std::make_unique<SpawnPrefabCommand>(
+                    m_scene.get(), PathResolver::AssetsDir(), std::move(all)));
             Logger::Info("Pasted entity: {}", reg.get<NameTag>(e).name);
         }
     }

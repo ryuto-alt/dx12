@@ -243,11 +243,9 @@ void ToolbarPanel::Render(bool isPlaying,
             if (ImGui::MenuItem("コピー", "Ctrl+C", false, hasSel))
             {
                 ctx.clipboard.clear();
-                auto& reg = scene->GetRegistry();
-                for (auto e : ctx.selectedEntities)
+                for (auto e : SceneSerializer::TopmostRoots(*scene, ctx.selectedEntities))
                 {
-                    if (!reg.valid(e)) continue;
-                    std::string snap = SceneSerializer::SerializeEntity(*scene, e, assetsDir);
+                    std::string snap = SceneSerializer::SerializeSubtree(*scene, e, assetsDir);
                     if (!snap.empty())
                         ctx.clipboard.push_back(std::move(snap));
                 }
