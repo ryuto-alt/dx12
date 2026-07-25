@@ -203,6 +203,13 @@ public:
     bool  view2D     = false;
     float view2DZoom = 6.0f;   // 正射の縦半分（世界単位）。小さいほどズームイン。
 
+    // クラスタードライティング（Forward+）のデバッグ表示。
+    // 0=off / 1=ライト複雑度ヒートマップ（青→緑→赤。上限 128 灯に張り付いた所は白）/
+    // 2=クラスタ境界。Application::Render が毎フレーム読んで b1 の clusterExtra.z へ流す。
+    // 「1 クラスタ 128 灯を超えて無言で切り捨てられている場所」を見つける唯一の手段なので、
+    // 診断（DeepDiagnostics の lighting）と dx12_list_lights の警告からここへ誘導している。
+    u32 clusterDebugMode = 0;
+
     // UI 編集モード（ツールバーの「UI」トグル）。ON 中は非 Play でも SceneView に
     // ゲーム内 UI（UICanvas ツリー）をプレビュー描画し、UI 要素のクリック選択・
     // ドラッグ編集を 3D ピッキングより優先する。Play 中/ゲームモードは従来どおり

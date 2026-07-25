@@ -4630,6 +4630,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             nlohmann::json rep = PerfReportJson(s, m_useVsync, m_fpsLimit);
             rep["instancing"] = m_instancingEnabled;   // settings.json "render_instancing" で A/B 可
+            // クラスタードライティング（Forward+）。settings.json "render_clustered" で A/B 可。
+            // OFF / 正射カメラのときは「先頭 64 灯を総当たり」フォールバックで走る。
+            rep["clustered"]  = m_clusteredEnabled;
 
             // パス別内訳（平均/フレーム）。other = 深度プリパス/エディタプレビュー等
             rep["passes"] = {
@@ -10852,6 +10855,7 @@ void Application::RecordPerfFrame()
             nlohmann::json rep = PerfReportJson(sum, m_useVsync, m_fpsLimit);
             rep["frames"] = static_cast<int>(n);
             rep["instancing"] = m_instancingEnabled;
+            rep["clustered"]  = m_clusteredEnabled;
             // uncap で外していた FPS 上限/VSync を元に戻す（レポートには計測時の値=解除後を載せる）
             if (m_benchRestore)
             {
@@ -13860,6 +13864,8 @@ void Application::Render()
         fc.clusterViewport = {static_cast<f32>(vpLeft), static_cast<f32>(vpTop),
                               static_cast<f32>(cluster::kGridX) / static_cast<f32>(vpW),
                               static_cast<f32>(cluster::kGridY) / static_cast<f32>(vpH)};
+        // デバッグ表示はエディタのライティング窓から（ゲームモードは常に 0）
+        m_clusterDebugMode = m_editorCtx ? m_editorCtx->clusterDebugMode : 0u;
         fc.clusterExtra    = {static_cast<f32>(numClusterLights),
                               static_cast<f32>(cluster::kMaxLightsPerCluster),
                               static_cast<f32>(m_clusterDebugMode), 0.0f};
