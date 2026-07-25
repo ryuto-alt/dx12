@@ -5,6 +5,7 @@
 #include "renderer/Mesh.h"
 #include "renderer/Material.h"
 #include "core/Logger.h"
+#include "core/PathResolver.h"
 #include "core/vfs/Vfs.h"
 #include "engine/ecs/ComponentRegistry.h"  // Phase 1: コア部品の直列化をレジストリ走査へ
 #include "terrain/TerrainIO.h"             // 複製時に .hf のパスを振り直す
@@ -1960,6 +1961,51 @@ entt::entity SceneSerializer::SwapEntityModel(Scene& scene, entt::entity e,
 // ── Prefab / サブツリー ──
 // root とその全子孫を 1 つの JSON（シーンと同形式 + parent をローカル index 参照）に直列化する。
 // root の親（サブツリー外）は含めない＝プレハブは自己完結する。
+// 地形(.hf) / スプラット(.splat) / スカルプト(.smsh) の実データはシーン JSON に入らず
+// assets 配下の外部ファイルにある。複製 / ペースト / プレハブ展開で名前が連番リネームされたのに
+// パスを素通しでコピーすると、複製元と複製先が同じファイルを指す。以後どちらを彫っても
+// 同じファイルへ自動保存され、両方が壊れる。
+// → リネームされたら実ファイルを新しい名前へコピーし、パスもそこへ付け替える。
+//   コピーできなかった場合はパスを付け替えない（＝従来どおり共有。参照切れで平坦になるより安全）。
+static void RepointGeneratedAssets(json& ej, const std::string& oldName,
+                                   const std::string& newName, const std::string& assetsDir)
+{
+    if (newName.empty() || oldName == newName) return;
+    if (!ej.contains("terrain") && !ej.contains("sculpt")) return;
+
+    namespace fs = std::filesystem;
+    const std::string base = assetsDir.empty() ? PathResolver::AssetsDir() : assetsDir;
+
+    auto repoint = [&](json& node, const char* key, const std::string& newRel)
+    {
+        if (!node.is_object() || !node.contains(key) || !node[key].is_string()) return;
+        const std::string oldRel = node[key].get<std::string>();
+        if (oldRel.empty() || oldRel == newRel) return;   // 未保存はそのまま（保存時に自分の名前で決まる）
+
+        std::error_code ec;
+        const fs::path src(base + oldRel);
+        const fs::path dst(base + newRel);
+        if (!fs::exists(src, ec)) return;
+        fs::create_directories(dst.parent_path(), ec);
+        fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
+        if (ec)
+        {
+            Logger::Warn("複製時に {} を {} へコピーできませんでした（元と共有します）: {}",
+                         oldRel, newRel, ec.message());
+            return;
+        }
+        node[key] = newRel;
+    };
+
+    if (ej.contains("terrain") && ej["terrain"].is_object())
+    {
+        repoint(ej["terrain"], "heightmapPath", terrain::MakeHeightFieldRelPath(newName));
+        repoint(ej["terrain"], "splatPath",     terrain::MakeSplatRelPath(newName));
+    }
+    if (ej.contains("sculpt") && ej["sculpt"].is_object())
+        repoint(ej["sculpt"], "meshPath", sculpt::MakeSculptMeshRelPath(newName));
+}
+
 std::string SceneSerializer::SerializeSubtree(const Scene& scene, entt::entity root,
                                               const std::string& assetsDir)
 {
@@ -2034,7 +2080,11 @@ entt::entity SceneSerializer::InstantiateSubtree(Scene& scene, const std::string
         try
         {
             json copy = ej;
-            copy["name"] = MakeUniqueName(scene, ej.value("name", std::string("Unnamed")));
+            const std::string oldName = ej.value("name", std::string("Unnamed"));
+            const std::string newName = MakeUniqueName(scene, oldName);
+            copy["name"] = newName;
+            // 地形/スカルプトの外部ファイルを複製先専用にする（共有バグの根治はここ）
+            RepointGeneratedAssets(copy, oldName, newName, assetsDir);
             e = InstantiateEntityJson(scene, copy, assetsDir);
         }
         catch (const std::exception& ex)
