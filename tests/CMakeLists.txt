@@ -237,6 +237,19 @@ if(TARGET Renderer)
     endif()
     add_test(NAME AnimPoseTests COMMAND AnimPoseTests)
 
+    # アニメイベント収集（animation/AnimEvent.h）+ ステートマシン（AnimGraphAsset.h）テスト。
+    # どちらも純関数（GPU/entt/Jolt 非依存）。AnimationClip.cpp だけ実体が要る。
+    add_executable(AnimGraphTests
+        anim_graph_test.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/AnimationClip.cpp)
+    target_include_directories(AnimGraphTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(AnimGraphTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(AnimGraphTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(AnimGraphTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME AnimGraphTests COMMAND AnimGraphTests)
+
     # Frustum（視錐台抽出＋球カリング）テスト。ヘッダオンリー・純 DirectXMath。
     add_executable(FrustumTests frustum_test.cpp)
     target_include_directories(FrustumTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

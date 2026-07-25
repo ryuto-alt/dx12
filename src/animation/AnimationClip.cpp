@@ -1,5 +1,7 @@
 #include "animation/AnimationClip.h"
 
+#include <algorithm>
+
 namespace dx12e
 {
 
@@ -23,6 +25,14 @@ const BoneTrack* AnimationClip::FindTrackForBone(u32 boneIndex) const
     return (slot >= 0) ? &m_tracks[static_cast<size_t>(slot)] : nullptr;
 }
 
+void AnimationClip::AddEvent(AnimEvent ev)
+{
+    // time 昇順を保って挿入する（線形探索で十分な件数）。
+    auto it = std::upper_bound(m_events.begin(), m_events.end(), ev.time,
+        [](float t, const AnimEvent& e) { return t < e.time; });
+    m_events.insert(it, std::move(ev));
+}
+
 void AnimationClip::NormalizeToSeconds()
 {
     const float tps = (m_ticksPerSecond > 0.0f) ? m_ticksPerSecond : 25.0f;
@@ -35,6 +45,11 @@ void AnimationClip::NormalizeToSeconds()
         for (auto& k : track.rotationKeys) k.time *= inv;
         for (auto& k : track.scaleKeys)    k.time *= inv;
     }
+    // イベント時刻も一緒に正規化する（忘れると足音だけ ticks 単位のまま残る）。
+    // 通常イベントは .animfsm から「正規化後」に流し込まれるので空だが、
+    // 将来ローダ側が埋めるようになったときのために揃えておく。
+    for (auto& ev : m_events) ev.time *= inv;
+
     m_ticksPerSecond = 1.0f;
 }
 

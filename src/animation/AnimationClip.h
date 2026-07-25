@@ -3,6 +3,7 @@
 #include <vector>
 #include <DirectXMath.h>
 #include "core/Types.h"
+#include "animation/AnimEvent.h"
 
 namespace dx12e
 {
@@ -45,6 +46,12 @@ public:
     void SetName(const std::string& name) { m_name = name; }
     const std::string& GetName() const    { return m_name; }
 
+    // --- イベント（足音等。実体は .animfsm の "clipEvents" から流し込む）---
+    // 時刻昇順を保って挿入する（CollectAnimEvents が返す添字順＝時刻順になる）。
+    void AddEvent(AnimEvent ev);
+    void ClearEvents() { m_events.clear(); }
+    const std::vector<AnimEvent>& GetEvents() const { return m_events; }
+
 private:
     std::string m_name;
     std::vector<BoneTrack> m_tracks;
@@ -52,6 +59,7 @@ private:
     // 以前は全トラックの線形探索だったので、ボーン数 × トラック数 の総当たりが
     // クロスフェード中はフレームあたり 2 回走っていた。
     std::vector<i32> m_boneToTrack;
+    std::vector<AnimEvent> m_events;   // time 昇順（AddEvent が保証する）
     float m_duration       = 0.0f;
     float m_ticksPerSecond = 25.0f;
 };
