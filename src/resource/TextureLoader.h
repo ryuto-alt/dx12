@@ -39,9 +39,14 @@ class TextureLoader
 {
 public:
     // ---- BC 圧縮（取り込み時に DirectXTex の Compress を通し、結果を .dds でディスクキャッシュする）----
-    // settings.json の "texture_compression"(0/1、既定 1) で切り替える逃げ道。
-    // ハードウェア/ツール差で問題が出たら 0 にすれば従来どおり無圧縮で読む。
-    static void SetCompressionEnabled(bool enabled);
+    // settings.json の "texture_compression" で切り替える。
+    //   0 = 無圧縮（ハードウェア/ツール差で絵が壊れた時の逃げ道。従来の R8G8B8A8 で読む）
+    //   1 = 高速（既定。BC7 は TEX_COMPRESS_BC7_QUICK ＝ mode6 のみ）
+    //   2 = 高品質（BC7 の全モード探索。実測で 1 の 30〜35 倍遅い）
+    // ★ 1 と 2 は .texcache のキーが別なので、切り替えると一度だけ作り直しになる。
+    enum class CompressionMode : int { Off = 0, Fast = 1, HighQuality = 2 };
+    static void SetCompressionMode(int mode);
+    static CompressionMode GetCompressionMode();
     static bool IsCompressionEnabled();
 
     // 用途 + 元フォーマットから BC 形式を決める純関数（DXGI_FORMAT_UNKNOWN = 圧縮しない）。

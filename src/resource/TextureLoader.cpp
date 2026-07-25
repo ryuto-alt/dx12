@@ -11,7 +11,8 @@
 
 #include <vector>
 #include <algorithm>   // ConvertToPng の縮小サイズ計算
-#include <atomic>      // 圧縮 ON/OFF スイッチ
+#include <atomic>      // 圧縮モードのスイッチ
+#include <chrono>      // BC 圧縮の所要時間ログ
 #include <cstdio>      // Probe のエラーメッセージ整形
 #include <cstring>     // ハッシュの memcpy
 #include <cwctype>     // 拡張子の小文字化
@@ -24,8 +25,9 @@ namespace dx12e
 namespace
 {
 
-// settings.json の "texture_compression"(既定 1)。Application がプロジェクトロード時に反映する。
-std::atomic<bool> g_compressionEnabled{true};
+// settings.json の "texture_compression"(0=無圧縮 / 1=高速 / 2=高品質、既定 1)。
+// Application がプロジェクトロード時に反映する。
+std::atomic<int> g_compressionMode{1};
 // キャッシュディレクトリを作れなかった時の警告を 1 度だけ出すためのフラグ。
 std::atomic<bool> g_cacheDirWarned{false};
 
@@ -131,8 +133,16 @@ std::string DxgiFormatName(DXGI_FORMAT f)
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  BC 圧縮 + .dds ディスクキャッシュ
-//  BC7 の CPU 圧縮は 4K テクスチャで数秒かかる。毎起動でやると話にならないので、
-//  「元データのハッシュ + 用途 + 出力形式」をキーに .dds を吐いて 2 回目以降はそれを読む。
+//  ★ BC7 の CPU 圧縮は「数秒」では終わらない。実測（i7-14700F / 20 コア /
+//     TEX_COMPRESS_PARALLEL 有効・Sponza の実テクスチャ 1024²+全ミップ）:
+//        全モード探索  37.4 s（PSNR 43.3 dB）
+//        mode6 のみ     1.1 s（PSNR 40.4 dB）  ← TEX_COMPRESS_BC7_QUICK
+//        BC1（参考）    0.003 s（PSNR 15.7 dB）
+//     並列化は既に効いている（同じ画像の単スレッド版は 190 s）。遅さの正体は
+//     DirectXTex の BC7 コーデックのモード全探索そのもの。
+//     そこで既定は QUICK(mode6) にし、"texture_compression"=2 で全探索へ戻せるようにした。
+//  毎起動でやると話にならないので、
+//  「元データのハッシュ + 用途 + 出力形式 + 品質」をキーに .dds を吐いて 2 回目以降はそれを読む。
 //  置き場は .thumbcache と同じ流儀（エディタ = assets/.texcache/、
 //  pak 配布ゲーム = assets/ がディスクに無いので exe 隣の .texcache/）。
 // ─────────────────────────────────────────────────────────────────────────────
@@ -206,7 +216,8 @@ void CompressInPlace(DirectX::ScratchImage& scratch, TextureUsage usage, bool sr
                      uint64_t contentHash, const std::string& cacheKey)
 {
     using namespace DirectX;
-    if (!g_compressionEnabled.load() || usage == TextureUsage::Unknown)
+    const int quality = g_compressionMode.load();
+    if (quality == 0 || usage == TextureUsage::Unknown)
         return;
 
     const TexMetadata& meta = scratch.GetMetadata();
@@ -226,9 +237,12 @@ void CompressInPlace(DirectX::ScratchImage& scratch, TextureUsage usage, bool sr
         const std::string dir = CacheDir();
         if (!dir.empty())
         {
+            // ★ 品質をキーに含める（含めないと texture_compression を 1↔2 で切り替えても
+            //   古い品質のキャッシュを読み続けて設定が効かない）。
             const std::string key = cacheKey + "|" + std::to_string(contentHash)
                                   + "|u" + std::to_string(static_cast<int>(usage))
-                                  + "|f" + std::to_string(static_cast<int>(dst)) + "|v1";
+                                  + "|f" + std::to_string(static_cast<int>(dst))
+                                  + "|q" + std::to_string(quality) + "|v2";
             char name[40];
             snprintf(name, sizeof(name), "t%016llx.dds",
                      static_cast<unsigned long long>(HashString(key)));
@@ -259,10 +273,24 @@ void CompressInPlace(DirectX::ScratchImage& scratch, TextureUsage usage, bool sr
     TEX_COMPRESS_FLAGS flags = TEX_COMPRESS_PARALLEL;
     if (IsSRGB(dst))
         flags |= TEX_COMPRESS_SRGB;   // 誤差評価を知覚空間で行う（sRGB 入力 → sRGB 出力）
+    // 高速モードは BC7 の探索を mode6 だけに絞る（30〜35 倍速く、PSNR は 3〜4 dB 落ちる）。
+    // このフラグは BC7 専用（BC6HBC7.cpp の D3DXEncodeBC7 でのみ参照される）。BC5/BC1 は元から一瞬。
+    if (quality <= 1)
+        flags |= TEX_COMPRESS_BC7_QUICK;
 
     ScratchImage compressed;
+    const auto t0 = std::chrono::steady_clock::now();
     const HRESULT hr = Compress(scratch.GetImages(), scratch.GetImageCount(), scratch.GetMetadata(),
                                 dst, flags, TEX_THRESHOLD_DEFAULT, compressed);
+    const double elapsedMs =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if (elapsedMs > 1000.0)
+    {
+        // 1 秒を超えたら必ず記録に残す（「初回ロードが固まった」の切り分けが一瞬で済む）。
+        Logger::Info("BC 圧縮 {:.1f}s: {}x{} {} q={} ({})", elapsedMs / 1000.0,
+                     static_cast<unsigned>(meta.width), static_cast<unsigned>(meta.height),
+                     DxgiFormatName(dst), quality, cacheKey);
+    }
     if (FAILED(hr))
     {
         Logger::Warn("BC 圧縮に失敗しました（無圧縮のまま続行）: hr=0x{:08X} format={}",
@@ -284,14 +312,19 @@ void CompressInPlace(DirectX::ScratchImage& scratch, TextureUsage usage, bool sr
 
 } // namespace
 
-void TextureLoader::SetCompressionEnabled(bool enabled)
+void TextureLoader::SetCompressionMode(int mode)
 {
-    g_compressionEnabled.store(enabled);
+    g_compressionMode.store((mode < 0) ? 0 : (mode > 2 ? 2 : mode));
+}
+
+TextureLoader::CompressionMode TextureLoader::GetCompressionMode()
+{
+    return static_cast<CompressionMode>(g_compressionMode.load());
 }
 
 bool TextureLoader::IsCompressionEnabled()
 {
-    return g_compressionEnabled.load();
+    return g_compressionMode.load() != 0;
 }
 
 DXGI_FORMAT TextureLoader::SelectCompressedFormat(TextureUsage usage, DXGI_FORMAT srcFormat, bool srgb)

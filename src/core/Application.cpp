@@ -999,8 +999,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         // クラスタードライティング（Forward+）。0 にすると「先頭 64 灯を総当たり」
         // フォールバックへ倒す（A/B 検証用。旧 8 灯経路そのものは残していない）。
         m_clusteredEnabled  = PersistGet("render_clustered", 1.0) != 0.0;
-        // BC7/BC5 テクスチャ圧縮の逃げ道（0 で無圧縮のまま読む）。既定 1。
-        TextureLoader::SetCompressionEnabled(PersistGet("texture_compression", 1.0) != 0.0);
+        // BC7/BC5 テクスチャ圧縮（0=無圧縮 / 1=高速 / 2=高品質）。既定 1。
+        TextureLoader::SetCompressionMode(static_cast<int>(PersistGet("texture_compression", 1.0)));
         const int mode = static_cast<int>(PersistGet("video_mode", 0));
         const u32 w = static_cast<u32>(PersistGet("video_w", 0));
         const u32 h = static_cast<u32>(PersistGet("video_h", 0));
@@ -8427,10 +8427,15 @@ void Application::LoadProject(const ProjectInfo& info)
     m_clusteredEnabled = PersistGet("render_clustered", 1.0) != 0.0;
     Logger::Info("クラスタードライティング: {}", m_clusteredEnabled ? "ON" : "OFF");
 
-    // BC7/BC5 テクスチャ圧縮（settings.json "texture_compression" 0/1、既定 1）。
-    // ハードウェア/ツール差で絵が壊れた時に 0 で従来の R8G8B8A8 へ戻せる逃げ道。
-    TextureLoader::SetCompressionEnabled(PersistGet("texture_compression", 1.0) != 0.0);
-    Logger::Info("テクスチャ BC 圧縮: {}", TextureLoader::IsCompressionEnabled() ? "ON" : "OFF");
+    // BC7/BC5 テクスチャ圧縮（settings.json "texture_compression"、既定 1）。
+    //   0 = 無圧縮（ハードウェア/ツール差で絵が壊れた時に従来の R8G8B8A8 へ戻す逃げ道）
+    //   1 = 高速（BC7 は mode6 のみ。実測 1024² で 1.1 秒）
+    //   2 = 高品質（BC7 全モード探索。実測 1024² で 37 秒。初回だけ待てるなら）
+    TextureLoader::SetCompressionMode(static_cast<int>(PersistGet("texture_compression", 1.0)));
+    {
+        const int q = static_cast<int>(TextureLoader::GetCompressionMode());
+        Logger::Info("テクスチャ BC 圧縮: {}", q == 0 ? "OFF" : (q == 1 ? "ON(高速)" : "ON(高品質)"));
+    }
 
     // 1.5) プロジェクト独自シェーダー(上書き/自作)を再走査。切替前の PSO が残っている可能性があるので
     //      WaitIdle 後に全リロードキーを差分無視で作り直す(Poll() の逐次差分検知とは別経路)。
