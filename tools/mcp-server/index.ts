@@ -20,6 +20,10 @@ import {
   assetsDirCandidatesFromLog, assetsDirFromScenePath, checkScenePath,
   summarizeScene, validateSceneJson,
 } from "./sceneWrite.ts";
+import {
+  COMPOSITE_TOOLS, METHOD_KEY_ALIASES, definedOnly, unknownKeyError, unknownParamKeys,
+  verifyApplied,
+} from "./paramGuard.ts";
 
 // DX12 ゲームエンジン用 MCP サーバ。Codex / Claude Code から接続し、
 // 起動中のエディタ(TCP 127.0.0.1:<port>)を叩いてゲームを作っていくための入口。
@@ -89,6 +93,49 @@ function imageResult(pngPath: string, extra: Record<string, unknown>): ToolResul
 
 type Ann = { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean };
 
+/**
+ * ツール名 → そのツールが宣言している引数キー。dx12_batch の引数検査と
+ * schemaDrift.test.ts(エンジンとのドリフト検出)から引く。
+ */
+export const TOOL_PARAM_KEYS = new Map<string, string[]>();
+
+/**
+ * 全ツール共通の登録ラッパ。★ここが「引数を無言で捨てない」ための要。
+ *
+ * inputSchema を生の shape ではなく z.object(shape).passthrough() で渡している。
+ * 生の shape だと SDK が z.object(shape) にするため zod が未知キーを【黙って捨て】、
+ * ハンドラは何事も無かったように engine を呼んで {applied:true} を返す(＝AI が
+ * 「設定したのに変わらない」と同じ操作を繰り返す事故の原因)。passthrough なら
+ * 未知キーがここまで届くので、捨てずに「近い正解つきのエラー」にして返せる。
+ *
+ * ★.strict() を使わない理由: SDK は inputSchema の parse 失敗を -32602 の
+ * バリデーションエラーにするだけで、どのキーが余計かの具体的な案内も
+ * 「近い正解」も出せない。自前で弾けばヒントと有効値を添えられる。
+ */
+function regRaw(
+  name: string,
+  config: { title: string; description: string; inputSchema?: Record<string, z.ZodTypeAny>;
+            outputSchema?: Record<string, z.ZodTypeAny>; annotations?: Record<string, unknown> },
+  handler: (args: any) => Promise<ToolResult>,
+) {
+  const shape = config.inputSchema ?? {};
+  const declared = Object.keys(shape);
+  TOOL_PARAM_KEYS.set(name, declared);
+  server.registerTool(
+    name,
+    {
+      ...config,
+      // as any: SDK は ZodRawShape でも ZodObject でも受けるが型定義は前者しか公開していない。
+      inputSchema: z.object(shape).passthrough() as any,
+    },
+    async (args: any) => {
+      const unknown = unknownParamKeys(args, declared);
+      if (unknown.length > 0) return errResult(unknownKeyError(name, unknown, declared));
+      return handler(args);
+    },
+  );
+}
+
 // JSON ツール登録ヘルパ。openWorldHint は常に false(外部世界とやり取りしない閉じたツール群)。
 function reg(
   name: string,
@@ -98,7 +145,7 @@ function reg(
   ann: Ann,
   handler: (args: any) => Promise<ToolResult>,
 ) {
-  server.registerTool(
+  regRaw(
     name,
     {
       title,
@@ -109,6 +156,40 @@ function reg(
     },
     handler,
   );
+}
+
+/**
+ * set_* → get_* の対がある設定ツール用。適用してから【エンジンから読み返して】返す。
+ *
+ * 旧実装は engine の {applied:true} をそのまま返していた。エンジンは未知フィールドを
+ * 無視しても applied:true を返すので「成功したように見えて何も変わっていない」が
+ * 起きる。読み返した実値を返せば AI が自分で気づけるし、要求と食い違ったフィールドは
+ * mismatched に出して applied:false にする(嘘をつかない)。
+ */
+async function applyAndVerify(
+  setMethod: string, getMethod: string, args: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const requested = definedOnly(args);
+  await engine.call(setMethod, requested);
+  let current: unknown = null;
+  try {
+    current = await engine.call(getMethod, {});
+  } catch {
+    // 読み返しに失敗したら「適用したかどうか分からない」と正直に返す
+    return { applied: null, requested, note: `${getMethod} で読み返せなかった。値は自分で確認してくれ` };
+  }
+  const mismatched = verifyApplied(requested, current);
+  const out: Record<string, unknown> = {
+    applied: mismatched.length === 0,
+    requestedKeys: Object.keys(requested),
+    current,
+  };
+  if (mismatched.length > 0) {
+    out.mismatched = mismatched;
+    out.hint = "要求した値がエンジンに入っていない(エンジンがクランプしたか、そのフィールドを見ていない)。"
+      + "current の実値を見て次の手を決めること。同じ呼び出しを繰り返しても変わらない";
+  }
+  return out;
 }
 
 // ── 共通 zod 部品 ────────────────────────────────────────────────
@@ -482,17 +563,35 @@ reg(
 reg(
   "dx12_set_scene_settings",
   "シーン設定変更",
-  "シーンのスカイボックス/IBL を設定する。skybox 内の指定フィールドだけ適用。envMapPath を変えると {applied, envMapRebake} を返し再ベイクが走ることがある。",
+  "シーンのスカイボックス/IBL を設定する。skybox 内の指定フィールドだけ適用。★適用後にエンジンから読み返した実値を current に返す(envMapPath を変えたときは envMapRebake も)。",
   {
+    // ★入れ子も passthrough。素の z.object は skybox 内の未知キーを黙って捨てるため、
+    //   skybox:{envMapPath:...} の打ち間違いが無言で無視されていた(下のハンドラで弾く)。
     skybox: z.object({
       envMapPath: z.string().optional().describe("環境マップ(HDR/EXR 等)の assets 相対パス。"),
       iblIntensity: z.number().optional().describe("IBL(間接光)の強さ。"),
       skyboxIntensity: z.number().optional().describe("スカイボックス描画の明るさ。"),
       drawSkybox: z.boolean().optional().describe("スカイボックスを描画するか。"),
-    }).describe("スカイボックス設定。指定したフィールドのみ適用。"),
+    }).passthrough().describe("スカイボックス設定。指定したフィールドのみ適用。"),
   },
   { idempotentHint: true },
-  ({ skybox }) => run(() => engine.call("set_scene_settings", { skybox })),
+  ({ skybox }) => run(async () => {
+    const known = ["envMapPath", "iblIntensity", "skyboxIntensity", "drawSkybox"];
+    const bad = unknownParamKeys(skybox, known);
+    if (bad.length > 0) throw unknownKeyError("dx12_set_scene_settings skybox", bad, known);
+    const clean = definedOnly(skybox ?? {});
+    const r = await engine.call("set_scene_settings", { skybox: clean }) as Record<string, unknown>;
+    const current = await engine.call("get_scene_settings", {}).catch(() => null);
+    const mismatched = verifyApplied({ skybox: clean }, current);
+    return {
+      applied: mismatched.length === 0,
+      envMapRebake: r?.envMapRebake ?? false,
+      current,
+      ...(mismatched.length > 0
+        ? { mismatched, hint: "要求した値がエンジンに入っていない。current の実値を見て次の手を決めること" }
+        : {}),
+    };
+  }),
 );
 
 reg(
@@ -922,7 +1021,7 @@ reg(
 reg(
   "dx12_set_post_process",
   "ポストプロセス設定変更",
-  "ポストプロセスのフィールドを指定分だけ更新する(未指定フィールドは現状維持)。カラーグレーディング(exposure/contrast/brightness/saturation/warmth/hueShift/tint) / ブルーム・ビネット(bloom/bloomThreshold/vignette) / スタイライズ(chromatic/pixelSize/posterize/ditherLevels/scanline/sharpen/grain) / 色操作(invert/sepia/grayscale) / 歪み(lens/waveAmp・Freq・Speed/radial/glitch) / 輪郭(outline/outlineColor) / fxaaOn。各エフェクトは <name>On(bool) で有効化しないと数値を変えても見た目に効かない。先に dx12_get_post_process で現状値を確認するとよい。",
+  "ポストプロセスのフィールドを指定分だけ更新する(未指定フィールドは現状維持)。カラーグレーディング(exposure/contrast/brightness/saturation/warmth/hueShift/tint) / 自動露出(autoExposureOn/ae*) / 3D LUT(lutOn/lutPath/lutAmount) / ブルーム・ビネット(bloom/bloomThreshold/bloomKnee/bloomRadius/vignette) / ゴッドレイ(godraysOn/gr*) / レンズフレア(lensflareOn/lf*) / 被写界深度(dofOn/dof*) / モーションブラー(motionBlurOn/mb*) / スタイライズ(chromatic/pixelSize/posterize/ditherLevels/scanline/sharpen/grain) / 色操作(invert/sepia/grayscale) / 歪み(lens/waveAmp・Freq・Speed/radial/glitch) / 輪郭(outline/outlineColor) / fxaaOn / debandOn。各エフェクトは <name>On(bool) で有効化しないと数値を変えても見た目に効かない。先に dx12_get_post_process で現状値を確認するとよい。★適用後にエンジンから読み返した実値を current に入れて返す(要求と食い違うものは mismatched に出る)。",
   {
     enabled: z.boolean().optional().describe("マスタースイッチ(false で全エフェクト素通し)。"),
     // エンジンは以前から tonemapper を受けていたのに、このスキーマに無いせいで MCP から渡せなかった。
@@ -937,7 +1036,42 @@ reg(
     hueOn: z.boolean().optional(), hueShift: z.number().optional(),
     tintOn: z.boolean().optional(), tint: v3().optional(),
     bloomOn: z.boolean().optional(), bloom: z.number().optional(), bloomThreshold: z.number().optional(),
+    // ↓ bloomKnee / bloomRadius 以下は「エンジンは受けているのにスキーマに無い＝渡しても黙って捨てられる」
+    //   状態だった分（PostProcessSettings.h の DX12E_POST_FIELDS が正。schemaDrift.test.ts が再発を止める）。
+    bloomKnee: z.number().optional().describe("しきい値のソフト肩。既定 0.5。"),
+    bloomRadius: z.number().optional().describe("アップサンプル合成率。大きいほど広く柔らかい。既定 0.65。"),
     vignetteOn: z.boolean().optional(), vignette: z.number().optional(),
+    // ── 自動露出(eye adaptation。compute のヒストグラムで測光して時間追従) ──
+    autoExposureOn: z.boolean().optional().describe("自動露出。ON にすると exposure より優先して効く。"),
+    aeSpeed: z.number().optional().describe("適応速度(1/秒)。既定 2。"),
+    aeEvComp: z.number().optional().describe("EV 補正(+で明るく)。既定 0。"),
+    aeLogMin: z.number().optional().describe("測光レンジ下限(log2 輝度)。既定 -8。"),
+    aeLogMax: z.number().optional().describe("測光レンジ上限(log2 輝度)。既定 4。"),
+    // ── 3D LUT カラーグレーディング(トーンマップ後の LDR に適用) ──
+    lutOn: z.boolean().optional().describe("3D LUT を有効化。"),
+    lutPath: z.string().optional().describe("LUT 画像の assets 相対パス(ストリップ形式 N*N x N。例 1024x32)。"),
+    lutAmount: z.number().optional().describe("LUT の適用率 0..1。既定 1。"),
+    // ── ゴッドレイ(スクリーンスペース光条。平行光源が画面内/近くにある時のみ) ──
+    godraysOn: z.boolean().optional().describe("ゴッドレイ(光芒)。★ボリュメトリックフォグと同時に使うと太陽の散乱が二重計上になる。"),
+    grIntensity: z.number().optional().describe("光条の強さ。既定 0.6。"),
+    grDensity: z.number().optional().describe("行進距離(大きいほど長い光条)。既定 0.9。"),
+    grDecay: z.number().optional().describe("タップ毎の減衰(1 に近いほど遠くまで伸びる)。既定 0.96。"),
+    // ── レンズフレア(疑似・ブルームチェーン入力。ブルームと併用推奨) ──
+    lensflareOn: z.boolean().optional().describe("レンズフレア。bloomOn と併用推奨。"),
+    lfIntensity: z.number().optional().describe("強度。既定 0.5。"),
+    lfGhosts: z.number().int().optional().describe("ゴースト数 1..8。既定 4。"),
+    lfDispersal: z.number().optional().describe("ゴースト間隔。既定 0.35。"),
+    lfHalo: z.number().optional().describe("ハロー半径。既定 0.45。"),
+    lfChroma: z.number().optional().describe("色収差量。既定 0.01。"),
+    // ── 被写界深度(gather ボケ。透視カメラのみ) ──
+    dofOn: z.boolean().optional().describe("被写界深度。★正射カメラでは効かない。"),
+    dofFocusDist: z.number().optional().describe("フォーカス距離(カメラからのビュー距離)。既定 8。"),
+    dofFocusRange: z.number().optional().describe("完全にシャープな範囲の広さ。既定 5。"),
+    dofBlurSize: z.number().optional().describe("最大ボケ半径(px)。既定 12。"),
+    // ── カメラモーションブラー(深度再構成方式・velocity buffer 不要) ──
+    motionBlurOn: z.boolean().optional().describe("カメラモーションブラー。"),
+    mbStrength: z.number().optional().describe("シャッター係数(速度に乗算)。既定 0.5。"),
+    mbSamples: z.number().int().optional().describe("タップ数 4..16。既定 10。"),
     chromaticOn: z.boolean().optional(), chromatic: z.number().optional(),
     pixelizeOn: z.boolean().optional(), pixelSize: z.number().optional(),
     posterizeOn: z.boolean().optional(), posterize: z.number().int().optional(),
@@ -954,9 +1088,10 @@ reg(
     glitchOn: z.boolean().optional(), glitch: z.number().optional(),
     outlineOn: z.boolean().optional(), outline: z.number().optional(), outlineColor: v3().optional(),
     fxaaOn: z.boolean().optional(),
+    debandOn: z.boolean().optional().describe("8bit 出力のバンディング除去(TPDF ディザ)。既定 ON。切ると空やビネットに縞が出る。"),
   },
   { idempotentHint: true },
-  (a) => run(() => engine.call("set_post_process", a)),
+  (a) => run(() => applyAndVerify("set_post_process", "get_post_process", a)),
 );
 
 reg(
@@ -982,7 +1117,7 @@ reg(
     blur: z.boolean().optional(),
   },
   { idempotentHint: true },
-  (a) => run(() => engine.call("set_ssao", a)),
+  (a) => run(() => applyAndVerify("set_ssao", "get_ssao", a)),
 );
 
 reg(
@@ -1013,7 +1148,7 @@ reg(
     bias: z.number().optional().describe("レイ始点の押し出し(m)"),
   },
   { idempotentHint: true },
-  (a) => run(() => engine.call("set_ssr", a)),
+  (a) => run(() => applyAndVerify("set_ssr", "get_ssr", a)),
 );
 
 reg(
@@ -1044,7 +1179,7 @@ reg(
     iblFallback: z.boolean().optional().describe("画面外へ抜けたレイに irradiance キューブを積む"),
   },
   { idempotentHint: true },
-  (a) => run(() => engine.call("set_ssgi", a)),
+  (a) => run(() => applyAndVerify("set_ssgi", "get_ssgi", a)),
 );
 
 reg(
@@ -1071,7 +1206,7 @@ reg(
     fadeDistance: z.number().optional().describe("フェードにかける距離(m)。"),
   },
   { idempotentHint: true },
-  (a) => run(() => engine.call("set_contact_shadow", a)),
+  (a) => run(() => applyAndVerify("set_contact_shadow", "get_contact_shadow", a)),
 );
 
 reg(
@@ -1097,7 +1232,7 @@ reg(
     debugVelocity: z.boolean().optional().describe("速度バッファを画面に可視化する(検証用)。静止時に全面が均一なグレーになるのが正常で、縞々に揺れていたらジッタ除去のバグ。カメラを右へパンすると赤寄り、左で緑寄り。★確認は dx12_screenshot ではなく dx12_ui_screenshot を使うこと(dx12_screenshot はポスト前の m_sceneRT を読むので TAA も可視化も映らない)。保存はされない。"),
   },
   { idempotentHint: true },
-  (a) => run(() => engine.call("set_taa", a)),
+  (a) => run(() => applyAndVerify("set_taa", "get_taa", a)),
 );
 
 reg(
@@ -1131,7 +1266,7 @@ reg(
     debugMode: z.number().int().optional().describe("0=オフ / 1=散乱だけ / 2=透過率だけ / 3=froxel スライスの縞。保存されない検証用。"),
   },
   { idempotentHint: true },
-  (a) => run(() => engine.call("set_volumetric_fog", a)),
+  (a) => run(() => applyAndVerify("set_volumetric_fog", "get_volumetric_fog", a)),
 );
 
 // ════════════════════════════════════════════════════════════════
@@ -1309,13 +1444,16 @@ reg(
 reg(
   "dx12_snap_to_ground",
   "接地(下の面に置く)",
-  "エンティティを直下の床/他メッシュの天面に置く(AABB ベース、Editor 中でも動く)。XZ が重なる他メッシュの天面のうち自分の天面以下で最も高いものへ底面を合わせる。床が無ければ y=0 平面へ。offset で浮かせられる。spawn した物が空中に浮いてる/めり込んでる時の修正に。{groundY, movedBy, position, groundEntityId?} が返る。",
+  "エンティティを直下の床/他メッシュの天面に置く(Editor 中でも動く)。既定は三角形単位の精密レイキャストで真下の【実際の面】に乗せる(斜面・階段・地形の起伏に追従)。真下に三角形が無ければ AABB の天面判定へフォールバックし、それも無ければ y=0 平面へ。offset で浮かせられる。spawn した物が空中に浮いてる/めり込んでる時の修正に。{groundY, movedBy, position, method, groundEntityId?} が返る(method=raycast なら精密、aabb ならフォールバック)。",
   {
     ...entityRef,
     offset: z.number().optional().describe("接地面からの追加オフセット(m)。既定 0。"),
+    // エンジンは以前から precise を受けていたのにスキーマに無く、渡しても黙って捨てられていた。
+    precise: z.boolean().optional().describe("三角形単位の精密レイキャストで接地面を決める。既定 true。false にすると旧来の AABB 天面判定だけになる(地形の上で山頂の高さに吸い付く)。"),
   },
   { idempotentHint: true },
-  ({ entity, name, offset }) => run(() => engine.call("snap_to_ground", { entity, name, offset })),
+  ({ entity, name, offset, precise }) =>
+    run(() => engine.call("snap_to_ground", { entity, name, offset, precise })),
 );
 
 reg(
@@ -1472,10 +1610,22 @@ reg(
   }),
 );
 
+/**
+ * dx12_batch の op(engine method 直叩き)に対して、対応するツールが宣言している
+ * 引数キーを返す。合成ツール(engine と 1:1 でない)と未知 method は null = 検査しない。
+ */
+function batchDeclaredKeys(method: string): string[] | null {
+  const toolName = `dx12_${method}`;
+  if (COMPOSITE_TOOLS.has(toolName)) return null;
+  const declared = TOOL_PARAM_KEYS.get(toolName);
+  if (!declared) return null;   // ツール未登録の method(read_texture 等)はエンジンに任せる
+  return [...declared, ...(METHOD_KEY_ALIASES[method] ?? [])];
+}
+
 reg(
   "dx12_batch",
   "一括実行",
-  "複数のエンジン操作を順番に実行して往復を減らす。各 op は engine の method 名(dx12_ 接頭辞なし。例 create_entity)と params。結果は {results:[{index, ok, result?|error?, error_code?, skipped?}]}。stopOnError=true なら最初の失敗で打ち切り、残りは skipped 記録。各 op は同期結果なので確実(ただし1フレーム原子性は無い)。",
+  "複数のエンジン操作を順番に実行して往復を減らす。各 op は engine の method 名(dx12_ 接頭辞なし。例 create_entity)と params。結果は {results:[{index, ok, result?|error?, error_code?, skipped?}]}。stopOnError=true なら最初の失敗で打ち切り、残りは skipped 記録。各 op は同期結果なので確実(ただし1フレーム原子性は無い)。★params のキーは対応する dx12_<method> ツールと同じ。知らないキーが混じっていたらそのopは実行せずエラーにする(エンジンは知らないキーを黙って無視するため)。",
   {
     ops: z.array(z.object({
       method: z.string().describe("エンジン method 名(dx12_ 接頭辞なし)。例: create_entity, set_component"),
@@ -1491,6 +1641,13 @@ reg(
       if (aborted) { results.push({ index: i, ok: false, skipped: true }); continue; }
       const op = ops[i];
       try {
+        // batch はツールのスキーマを通らない = 未知キーがそのままエンジンへ流れて
+        // 黙って無視される唯一の抜け道。ここで同じ検査をかける。
+        const declared = batchDeclaredKeys(op.method);
+        if (declared) {
+          const bad = unknownParamKeys(op.params, declared);
+          if (bad.length > 0) throw unknownKeyError(`dx12_batch ops[${i}] (${op.method})`, bad, declared);
+        }
         const r = await engine.call(op.method, op.params ?? {});
         results.push({ index: i, ok: true, result: r });
       } catch (e: any) {
@@ -1505,7 +1662,7 @@ reg(
 );
 
 // 画像を返す合成ツール(focus → 1フレーム描画 → 撮影)。outputSchema は宣言しない(構造化結果ではなく image)。
-server.registerTool(
+regRaw(
   "dx12_focus_and_screenshot",
   {
     title: "寄せて撮影",
@@ -1526,7 +1683,7 @@ server.registerTool(
 );
 
 // スクショ単体も画像ブロックで返す。
-server.registerTool(
+regRaw(
   "dx12_screenshot",
   {
     title: "スクリーンショット",
@@ -1546,7 +1703,7 @@ server.registerTool(
 );
 
 // エディタウィンドウ全体のスクショ(ImGui パネル込み)。ゲーム内 UI / UIエディタの見た目確認用。
-server.registerTool(
+regRaw(
   "dx12_ui_screenshot",
   {
     title: "UIスクリーンショット",
@@ -1566,7 +1723,7 @@ server.registerTool(
 );
 
 // 参照UIスクショ + 現在UI を横並び1枚に合成して返す比較ツール(outputSchema なし = image 結果)。
-server.registerTool(
+regRaw(
   "dx12_ui_compare",
   {
     title: "参照UIとの比較",
@@ -1611,7 +1768,7 @@ reg(
 
 // ゲームカメラ視点のスクショ。アクティブな CameraComponent でシーンを1フレーム描いて撮る。
 // Editor 中でも Play せずにゲームカメラの画角を確認できる(Playing 中は通常 screenshot と同じ絵)。
-server.registerTool(
+regRaw(
   "dx12_screenshot_game_view",
   {
     title: "ゲーム画面スクショ",
@@ -1631,7 +1788,7 @@ server.registerTool(
 );
 
 // 任意視点スクショ(set_editor_camera → 次フレームで screenshot)。俯瞰/引きの構図を一発で。
-server.registerTool(
+regRaw(
   "dx12_screenshot_from",
   {
     title: "任意視点スクショ",
@@ -1655,7 +1812,7 @@ server.registerTool(
 );
 
 // テクスチャを画像として見る(エンジンが dds/tga 含め PNG へ変換 → 画像ブロックで返す)。
-server.registerTool(
+regRaw(
   "dx12_view_texture",
   {
     title: "テクスチャを見る",
@@ -1678,7 +1835,7 @@ server.registerTool(
 );
 
 // モデルのプレビュー(一時 spawn → 寄せて撮影 → 削除)。spawn する価値があるか見た目で判断する用。
-server.registerTool(
+regRaw(
   "dx12_preview_model",
   {
     title: "モデルプレビュー",
@@ -2076,7 +2233,7 @@ function readReference(referencePath: string): Buffer {
 }
 
 // ── ① 参照画像との「絵づくり」比較（測光つき）─────────────────
-server.registerTool(
+regRaw(
   "dx12_look_compare",
   {
     title: "参照画像との絵づくり比較(測光)",
@@ -2145,7 +2302,7 @@ server.registerTool(
 );
 
 // ── ② カメラを動かして連写 → コンタクトシート ────────────────
-server.registerTool(
+regRaw(
   "dx12_camera_path",
   {
     title: "カメラを動かして連写(コンタクトシート)",
@@ -2263,7 +2420,7 @@ async function resolveAssetsDir(explicit?: string): Promise<{ dir: string; how: 
   );
 }
 
-server.registerTool(
+regRaw(
   "dx12_scene_write",
   {
     title: "シーンJSONを直接書き出す",

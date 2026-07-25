@@ -12,6 +12,12 @@
 //   - RegisterCoreComponentSerializers … 反射登録された部品のキー(pointLight/rigidBody/uiText …)
 //   - InstantiateEntityJson  … 復元時の分岐(gridPlane > terrain > sculpt > meshRenderer > primitive)
 //   - LoadFromString         … parent は「entities 配列のインデックス」
+//
+// 「打ち間違いキーに近い正解を添える」ロジックは MCP ツールの引数検査でも同じものが要るので
+// paramGuard.ts へ移した(ここは後方互換のため再エクスポートする)。
+
+import { editDistance, nearestKey } from "./paramGuard.ts";
+export { editDistance, nearestKey } from "./paramGuard.ts";
 
 // ── スキーマ定数(SceneSerializer.cpp と 1:1) ─────────────────────
 export const SCENE_ROOT_KEYS = [
@@ -91,36 +97,6 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 
 function isVec(v: unknown, n: number): boolean {
   return Array.isArray(v) && v.length === n && v.every((x) => typeof x === "number" && Number.isFinite(x));
-}
-
-/** 編集距離(打ち間違いキーの候補提示用。短い文字列しか来ないので素朴な DP で十分)。 */
-function editDistance(a: string, b: string): number {
-  const dp: number[] = Array.from({ length: b.length + 1 }, (_, j) => j);
-  for (let i = 1; i <= a.length; i++) {
-    let prev = dp[0];
-    dp[0] = i;
-    for (let j = 1; j <= b.length; j++) {
-      const tmp = dp[j];
-      dp[j] = Math.min(dp[j] + 1, dp[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
-      prev = tmp;
-    }
-  }
-  return dp[b.length];
-}
-
-/** 未知キーに一番近い既知キーを返す(大文字小文字違いは最優先)。 */
-export function nearestKey(key: string, known: readonly string[]): string | null {
-  const lower = key.toLowerCase();
-  const exactCase = known.find((k) => k.toLowerCase() === lower);
-  if (exactCase) return exactCase;
-  let best: string | null = null;
-  let bestD = Infinity;
-  for (const k of known) {
-    const d = editDistance(lower, k.toLowerCase());
-    if (d < bestD) { bestD = d; best = k; }
-  }
-  // 3 文字以上ズレていたら「近い」とは言わない(見当違いの提案は害になる)。
-  return bestD <= Math.max(2, Math.floor(key.length / 3)) ? best : null;
 }
 
 /** assets 相対パスとして妥当か(engine の open_scene / ValidateMcpAssetRelPath と同じ制約)。 */

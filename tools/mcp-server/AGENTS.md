@@ -417,6 +417,32 @@ dx12_focus_and_screenshot(name:"MainCamera")               # 見た目を確認
 
 各エフェクトは `<name>On`(bool) を true にしないとパラメータを変えても反映されない。
 
+`dx12_set_*`(post_process / ssao / ssr / ssgi / contact_shadow / taa / volumetric_fog /
+scene_settings)は適用後に **エンジンから読み返した実値** を `current` に入れて返す。
+要求と食い違ったフィールドは `mismatched` に出て `applied:false` になる
+(＝「成功したように見えるのに何も変わっていない」が起きない)。
+
+```
+dx12_set_taa(enabled:true, sampleCount:16)
+# → {applied:true,  requestedKeys:[...], current:{enabled:true, sampleCount:16, active:true, ...}}
+# → {applied:false, mismatched:[{key:"sampleCount", requested:16, actual:8}], ...}  ← 同じ呼び出しを繰り返しても無駄
+```
+
+### 引数名を間違えると「無言で無視」ではなくエラーになる
+
+かつては zod がスキーマに無いキーを黙って捨て、それでも `{applied:true}` が返っていた
+(`tonemapper` / `godraysOn` / `dofOn` 等が長期間そうなっていた)。今は未知キーを
+**近い正解つきのエラー**で返す。`dx12_batch` の `params` も同じ検査を通る。
+
+```
+dx12_set_post_process(godrays:true)
+# → エラー(code=2): 知らない引数 godrays(→ godraysOn のことか?) が来た(このまま実行すると黙って無視される)
+```
+
+**メンテナ向け**: エンジン側の MCP ハンドラにフィールドを足したら `index.ts` の
+`inputSchema` にも足すこと。忘れると `npm test`(`schemaDrift.test.ts`)が
+`Application.cpp:<行> / index.ts:<行>` 付きで落ちる。
+
 ---
 
 ## シーン検証パイプライン(validate)
