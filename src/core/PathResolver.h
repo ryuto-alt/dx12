@@ -49,6 +49,9 @@ public:
     // 日本語などマルチバイトのパスが壊れる（無言でロード失敗の原因になる）。
     static std::wstring Utf8ToWide(const std::string& utf8);
 
+    // UTF-16 → UTF-8。Utf8ToWide の逆。ログや文字列キー（BC 圧縮キャッシュ等）で使う。
+    static std::string WideToUtf8(const std::wstring& w);
+
 private:
     static bool         s_initialized;
     static std::string  s_assets;

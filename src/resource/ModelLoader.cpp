@@ -817,7 +817,7 @@ ModelData ModelLoader::LoadFromFile(
                                 reinterpret_cast<const uint8_t*>(embTex->pcData),
                                 embTex->mWidth,
                                 embTex->achFormatHint,
-                                cmdList);
+                                cmdList, /*srgb=*/true, TextureUsage::BaseColor);
                             if (texture)
                                 material->albedoTexture = texture;
                         }
@@ -838,7 +838,7 @@ ModelData ModelLoader::LoadFromFile(
                                     reinterpret_cast<const uint8_t*>(aiTex->pcData),
                                     aiTex->mWidth,
                                     aiTex->achFormatHint,
-                                    cmdList);
+                                    cmdList, /*srgb=*/true, TextureUsage::BaseColor);
                                 if (texture)
                                     material->albedoTexture = texture;
                             }
@@ -850,7 +850,8 @@ ModelData ModelLoader::LoadFromFile(
                         if (!resolvedPath.empty())
                         {
                             Texture* texture = resourceManager.GetOrLoadTexture(
-                                resolvedPath.wstring(), cmdList);
+                                resolvedPath.wstring(), cmdList,
+                                /*srgb=*/true, TextureUsage::BaseColor);
                             if (texture)
                             {
                                 material->albedoTexture = texture;
@@ -865,7 +866,8 @@ ModelData ModelLoader::LoadFromFile(
             }
 
             // --- PBR: Normal Map ---
-            auto loadPBRTexture = [&](aiTextureType type, bool srgb) -> Texture* {
+            // usage は BC 圧縮の形式選択（Normal→BC5_UNORM / NonColor→BC7_UNORM）に使う。
+            auto loadPBRTexture = [&](aiTextureType type, bool srgb, TextureUsage usage) -> Texture* {
                 if (aiMat->GetTextureCount(type) == 0) return nullptr;
                 aiString tp;
                 if (aiMat->GetTexture(type, 0, &tp) != AI_SUCCESS) return nullptr;
@@ -876,26 +878,26 @@ ModelData ModelLoader::LoadFromFile(
                     std::string key = filePath.string() + "_emb_" + tp.C_Str();
                     return resourceManager.GetOrLoadEmbeddedTexture(
                         key, reinterpret_cast<const uint8_t*>(emb->pcData),
-                        emb->mWidth, emb->achFormatHint, cmdList);
+                        emb->mWidth, emb->achFormatHint, cmdList, srgb, usage);
                 }
                 if (tp.C_Str()[0] != '*')
                 {
                     auto resolved = ResolveTexturePath(tp.C_Str(), parentDir);
                     if (!resolved.empty())
-                        return resourceManager.GetOrLoadTexture(resolved.wstring(), cmdList, srgb);
+                        return resourceManager.GetOrLoadTexture(resolved.wstring(), cmdList, srgb, usage);
                 }
                 return nullptr;
             };
 
             // Normal map (linear)
-            material->normalMapTexture = loadPBRTexture(aiTextureType_NORMALS, false);
+            material->normalMapTexture = loadPBRTexture(aiTextureType_NORMALS, false, TextureUsage::Normal);
             if (!material->normalMapTexture)
-                material->normalMapTexture = loadPBRTexture(aiTextureType_HEIGHT, false);
+                material->normalMapTexture = loadPBRTexture(aiTextureType_HEIGHT, false, TextureUsage::Normal);
 
             // Metalness (linear)
-            material->metalRoughnessTexture = loadPBRTexture(aiTextureType_METALNESS, false);
+            material->metalRoughnessTexture = loadPBRTexture(aiTextureType_METALNESS, false, TextureUsage::NonColor);
             if (!material->metalRoughnessTexture)
-                material->metalRoughnessTexture = loadPBRTexture(aiTextureType_DIFFUSE_ROUGHNESS, false);
+                material->metalRoughnessTexture = loadPBRTexture(aiTextureType_DIFFUSE_ROUGHNESS, false, TextureUsage::NonColor);
 
             // PBR scalar factors
             float metallic = 0.0f, roughness = 0.5f;

@@ -127,6 +127,18 @@ if(TARGET Resource)
     add_test(NAME DxmatRoundtripTests COMMAND DxmatRoundtripTests)
 endif()
 
+# BC7/BC5 テクスチャ圧縮の形式選択 + DirectXTex の圧縮/伸長往復テスト。
+# Resource が Microsoft::DirectXTex を PUBLIC でリンクしているので、GPU 無しで CPU コーデックを叩ける。
+if(TARGET Resource)
+    add_executable(TextureCompressTests texture_compress_test.cpp)
+    target_link_libraries(TextureCompressTests PRIVATE Resource)
+    if(MSVC)
+        target_compile_options(TextureCompressTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(TextureCompressTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME TextureCompressTests COMMAND TextureCompressTests)
+endif()
+
 # entt::meta コア部品フィールド反映テスト（Phase 2 土台）。ECS（+ entt/DirectXMath）をリンク。
 if(TARGET ECS)
     add_executable(ComponentMetaTests component_meta_test.cpp)

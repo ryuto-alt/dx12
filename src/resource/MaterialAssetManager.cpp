@@ -60,7 +60,8 @@ void MaterialAssetManager::LoadInto(Entry& entry, const std::string& relPath, ID
 
     // テクスチャ解決は Application::EnsureMaterialOverrideSrv と同じ方針:
     // albedo=sRGB、normal・metalRoughness(ARM)=linear。欠落分はデフォルトへフォールバックする。
-    auto resolve = [&](const std::string& texRelPath, Texture* fallback, bool srgb) -> Texture* {
+    auto resolve = [&](const std::string& texRelPath, Texture* fallback, bool srgb,
+                       TextureUsage usage) -> Texture* {
         if (texRelPath.empty())
             return fallback;
         if (!vfs::Exists(texRelPath))
@@ -69,12 +70,15 @@ void MaterialAssetManager::LoadInto(Entry& entry, const std::string& relPath, ID
             return fallback;
         }
         std::string fullPath = PathResolver::AssetsDir() + texRelPath;
-        return m_resourceManager->GetOrLoadTexture(PathResolver::Utf8ToWide(fullPath), cmdList, srgb);
+        return m_resourceManager->GetOrLoadTexture(PathResolver::Utf8ToWide(fullPath), cmdList, srgb, usage);
     };
 
-    Texture* albedo = resolve(data.albedoPath, m_resourceManager->GetDefaultWhiteTexture(), /*srgb=*/true);
-    Texture* normal = resolve(data.normalPath, m_resourceManager->GetDefaultNormalTexture(), /*srgb=*/false);
-    Texture* mr     = resolve(data.metalRoughnessPath, m_resourceManager->GetDefaultMetalRoughnessTexture(), /*srgb=*/false);
+    Texture* albedo = resolve(data.albedoPath, m_resourceManager->GetDefaultWhiteTexture(),
+                              /*srgb=*/true,  TextureUsage::BaseColor);
+    Texture* normal = resolve(data.normalPath, m_resourceManager->GetDefaultNormalTexture(),
+                              /*srgb=*/false, TextureUsage::Normal);
+    Texture* mr     = resolve(data.metalRoughnessPath, m_resourceManager->GetDefaultMetalRoughnessTexture(),
+                              /*srgb=*/false, TextureUsage::NonColor);
     if (!albedo || !normal || !mr)
         return;
 

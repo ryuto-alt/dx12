@@ -275,19 +275,23 @@ void MaterialPreviewRenderer::DrawSceneTo(CommandList& cmd, D3D12_CPU_DESCRIPTOR
     m_srvRingCursor = (m_srvRingCursor + 1) % kSrvRingCount;
     // テクスチャ解決は Application::EnsureMaterialOverrideSrv/MaterialAssetManager と同じ方針:
     // albedo=sRGB、normal・metalRoughness(ARM)=linear。欠落分はResourceManagerのデフォルトへ。
-    auto resolve = [&](const std::string& relPath, Texture* fallback, bool srgb) -> Texture* {
+    auto resolve = [&](const std::string& relPath, Texture* fallback, bool srgb,
+                       TextureUsage usage) -> Texture* {
         if (relPath.empty() || !dx12e::vfs::Exists(relPath))
             return fallback;
         std::string fullPath = PathResolver::AssetsDir() + relPath;
-        return m_resourceManager->GetOrLoadTexture(PathResolver::Utf8ToWide(fullPath), nativeCmdList, srgb);
+        return m_resourceManager->GetOrLoadTexture(PathResolver::Utf8ToWide(fullPath), nativeCmdList, srgb, usage);
     };
 
     const bool hasNormal = !input.normalPath.empty();
     const bool hasMetalRoughness = !input.metalRoughnessPath.empty();
 
-    Texture* albedo = resolve(input.albedoPath, m_resourceManager->GetDefaultWhiteTexture(), /*srgb=*/true);
-    Texture* normal = resolve(input.normalPath, m_resourceManager->GetDefaultNormalTexture(), /*srgb=*/false);
-    Texture* mr     = resolve(input.metalRoughnessPath, m_resourceManager->GetDefaultMetalRoughnessTexture(), /*srgb=*/false);
+    Texture* albedo = resolve(input.albedoPath, m_resourceManager->GetDefaultWhiteTexture(),
+                              /*srgb=*/true,  TextureUsage::BaseColor);
+    Texture* normal = resolve(input.normalPath, m_resourceManager->GetDefaultNormalTexture(),
+                              /*srgb=*/false, TextureUsage::Normal);
+    Texture* mr     = resolve(input.metalRoughnessPath, m_resourceManager->GetDefaultMetalRoughnessTexture(),
+                              /*srgb=*/false, TextureUsage::NonColor);
     if (!albedo || !normal || !mr) return;
 
     albedo->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(srvBlockStart));

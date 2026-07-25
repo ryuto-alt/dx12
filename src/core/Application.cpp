@@ -778,7 +778,8 @@ u32 Application::EnsureMaterialOverrideSrv(entt::entity e, u32 submeshIndex, con
 
     // 上書き指定があればロードして使い、無ければ Material 既定→ResourceManager デフォルトの順に
     // フォールバック（ModelLoader が SRV ブロックを組む時と同じ解決順）。
-    auto resolve = [&](const std::string& overridePath, Texture* fallback, bool srgb) -> Texture* {
+    auto resolve = [&](const std::string& overridePath, Texture* fallback, bool srgb,
+                       TextureUsage usage) -> Texture* {
         if (overridePath.empty())
             return fallback;
         if (!dx12e::vfs::Exists(overridePath))  // pak/ディスク両対応(std::filesystem::exists は pak モードで常に false)
@@ -787,16 +788,16 @@ u32 Application::EnsureMaterialOverrideSrv(entt::entity e, u32 submeshIndex, con
             return fallback;
         }
         std::string fullPath = PathResolver::AssetsDir() + overridePath;
-        return m_resourceManager->GetOrLoadTexture(PathResolver::Utf8ToWide(fullPath), cmdList, srgb);
+        return m_resourceManager->GetOrLoadTexture(PathResolver::Utf8ToWide(fullPath), cmdList, srgb, usage);
     };
 
     Texture* albedoFallback = (mat && mat->albedoTexture) ? mat->albedoTexture : m_resourceManager->GetDefaultWhiteTexture();
     Texture* normalFallback = (mat && mat->normalMapTexture) ? mat->normalMapTexture : m_resourceManager->GetDefaultNormalTexture();
     Texture* mrFallback     = (mat && mat->metalRoughnessTexture) ? mat->metalRoughnessTexture : m_resourceManager->GetDefaultMetalRoughnessTexture();
 
-    Texture* albedo = resolve(albedoPath, albedoFallback, /*srgb=*/true);
-    Texture* normal = resolve(normalPath, normalFallback, /*srgb=*/false);
-    Texture* mr     = resolve(mrPath,     mrFallback,     /*srgb=*/false);
+    Texture* albedo = resolve(albedoPath, albedoFallback, /*srgb=*/true,  TextureUsage::BaseColor);
+    Texture* normal = resolve(normalPath, normalFallback, /*srgb=*/false, TextureUsage::Normal);
+    Texture* mr     = resolve(mrPath,     mrFallback,     /*srgb=*/false, TextureUsage::NonColor);
     if (!albedo || !normal || !mr)
         return 0xFFFFFFFF;
 
@@ -888,6 +889,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_useVsync = PersistGet("video_vsync", m_useVsync ? 1.0 : 0.0) != 0.0;
         m_fpsLimit = static_cast<f32>(PersistGet("video_fps", m_fpsLimit));
         m_instancingEnabled = PersistGet("render_instancing", 1.0) != 0.0;
+        // BC7/BC5 テクスチャ圧縮の逃げ道（0 で無圧縮のまま読む）。既定 1。
+        TextureLoader::SetCompressionEnabled(PersistGet("texture_compression", 1.0) != 0.0);
         const int mode = static_cast<int>(PersistGet("video_mode", 0));
         const u32 w = static_cast<u32>(PersistGet("video_w", 0));
         const u32 h = static_cast<u32>(PersistGet("video_h", 0));
@@ -8203,6 +8206,11 @@ void Application::LoadProject(const ProjectInfo& info)
     m_instancingEnabled = PersistGet("render_instancing", 1.0) != 0.0;
     Logger::Info("自動インスタンシング: {}", m_instancingEnabled ? "ON" : "OFF");
 
+    // BC7/BC5 テクスチャ圧縮（settings.json "texture_compression" 0/1、既定 1）。
+    // ハードウェア/ツール差で絵が壊れた時に 0 で従来の R8G8B8A8 へ戻せる逃げ道。
+    TextureLoader::SetCompressionEnabled(PersistGet("texture_compression", 1.0) != 0.0);
+    Logger::Info("テクスチャ BC 圧縮: {}", TextureLoader::IsCompressionEnabled() ? "ON" : "OFF");
+
     // 1.5) プロジェクト独自シェーダー(上書き/自作)を再走査。切替前の PSO が残っている可能性があるので
     //      WaitIdle 後に全リロードキーを差分無視で作り直す(Poll() の逐次差分検知とは別経路)。
     if (m_shaderManager)
@@ -10091,11 +10099,21 @@ bool Application::BuildGame()
         {
             fs::path assetsDir = fs::path(PathResolver::AssetsDir());
             std::error_code ec;
-            for (auto& entry : fs::recursive_directory_iterator(assetsDir, ec))
+            for (fs::recursive_directory_iterator it(assetsDir, ec), end; it != end; it.increment(ec))
             {
-                if (!entry.is_regular_file()) continue;
-                std::string relPath = entry.path().lexically_relative(assetsDir).generic_string();
-                pak.AddFile(entry.path().string(), relPath);
+                if (ec) break;
+                // "." 始まりのフォルダ（.thumbcache / .texcache）はエディタ専用のキャッシュ。
+                // 出荷 pak に入れても実行時には参照されず容量を食うだけなので丸ごと除外する。
+                if (it->is_directory(ec))
+                {
+                    const std::string dirName = it->path().filename().string();
+                    if (!dirName.empty() && dirName[0] == '.')
+                        it.disable_recursion_pending();
+                    continue;
+                }
+                if (!it->is_regular_file(ec)) continue;
+                std::string relPath = it->path().lexically_relative(assetsDir).generic_string();
+                pak.AddFile(it->path().string(), relPath);
             }
         }
 
