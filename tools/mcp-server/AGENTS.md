@@ -202,17 +202,41 @@ dx12_look_compare(referencePath:"C:/ref/forest_dusk.png", position:[0,2,-8], tar
 # → 画像(左=参照 / 右=現在) +
 #   delta: {exposureEV:-0.83, contrastRatio:0.78, saturationRatio:1.31, cctDeltaK:-1200, histogramEmdEV:0.62, ...}
 #   suggestions: [
-#     "露出: 参照より平均輝度が -0.83EV 暗い。dx12_set_post_process の exposure を現在値の ×1.78 に…",
-#     "彩度: 参照より 1.31 倍 高い。… saturation を現在値の ×0.76 に…",
+#     "露出: 参照より平均輝度が -0.83EV 暗い。dx12_set_sun の intensity を現在値の ×1.78 に…",
+#     "コントラスト: … ×0.78 で眠い。まず光で作る: ambient を下げて影を締める…",
 #     "色温度: 参照より 1200K 暖色寄り。dx12_set_sun の kelvin を 6100 にする…" ]
 ```
+
+#### ★ 何が映る絵を測っているのかを絶対に間違えないこと
+
+`dx12_screenshot` は**シーン RT(ポスト前のリニア HDR)**を読み戻して、CPU 側で
+**露出 → トーンマップ → ガンマ**だけを掛けた絵を返す(`Application::ReadbackSceneBgra`)。
+
+| | `dx12_screenshot` / `dx12_look_compare` | エディタのビューポート(`dx12_ui_screenshot`) |
+|---|---|---|
+| ライト・環境光・材質・IBL・影・SSAO | ○ 映る | ○ |
+| post の `exposure` / `tonemapper` | ○ 映る | ○ |
+| post のグレーディング(`contrast` `brightness` `saturation` `warmth` `hueShift` `tint`) | **× 映らない** | ○ |
+| ブルーム・ビネット・グレイン・歪み | **× 映らない** | ○ |
+
+つまり **`saturation` を下げても `dx12_look_compare` の数値は 1 ミリも動かない**。
+「下げた → 変わらない → もっと下げる」の無限ループに入るので、
+
+- 数値で追い込むのは**ライト側**(`dx12_set_sun` の intensity / kelvin / ambient、ライトの色、
+  材質の albedo / roughness、IBL)と **`exposure` / `tonemapper`** だけ。
+- グレーディングを触った結果は必ず `dx12_ui_screenshot` でビューポートを目視して確認する。
+
+suggestions もこの順で書いてある(光で作る案が先、post 案は「目視で確認」の但し書きつき)。
+
+#### そのほかの読み方
 
 - **1 回で寄せきろうとしない。** suggestions のうち**露出 → コントラスト → 色温度 → 彩度**の順で
   1 つずつ動かして撮り直す(同時に触ると何が効いたか分からなくなる)。
 - `exposure` / `contrast` / `saturation` の示唆は**現在値への倍率**で出る。`dx12_get_post_process` で
   現在値を読んでから掛ける。各エフェクトは `<name>On:true` にしないと効かない。
 - `cct` が `null` で返ることがある。これは**推定できなかった**という意味で、`cctNote` に理由が入る
-  (強いカラーライトで黒体軌跡から離れている / 絵が暗すぎる)。null の時に色温度をいじっても迷走する。
+  (黒体軌跡から離れすぎ = 強いカラーライトの色被り / 絵が暗すぎる)。
+  null の時に色温度をいじっても迷走するので、先に色被りか露出を外す。
 - 数値が全部許容内なら suggestions は「ほぼ一致」1 本になる。そこから先は合成画像を見て
   構図・素材・法線マップの差を探す仕事。
 

@@ -925,6 +925,10 @@ reg(
   "ポストプロセスのフィールドを指定分だけ更新する(未指定フィールドは現状維持)。カラーグレーディング(exposure/contrast/brightness/saturation/warmth/hueShift/tint) / ブルーム・ビネット(bloom/bloomThreshold/vignette) / スタイライズ(chromatic/pixelSize/posterize/ditherLevels/scanline/sharpen/grain) / 色操作(invert/sepia/grayscale) / 歪み(lens/waveAmp・Freq・Speed/radial/glitch) / 輪郭(outline/outlineColor) / fxaaOn。各エフェクトは <name>On(bool) で有効化しないと数値を変えても見た目に効かない。先に dx12_get_post_process で現状値を確認するとよい。",
   {
     enabled: z.boolean().optional().describe("マスタースイッチ(false で全エフェクト素通し)。"),
+    // エンジンは以前から tonemapper を受けていたのに、このスキーマに無いせいで MCP から渡せなかった。
+    // exposure と並んで dx12_screenshot(シーン RT の CPU トーンマップ)に反映される数少ないノブなので、
+    // dx12_look_compare の示唆から実際に触れるようにここへ追加する。
+    tonemapper: z.number().int().optional().describe("トーンマッパー: 0=ACES / 1=AgX / 2=なし(ガンマのみ)。★exposure と共に dx12_screenshot にも反映される(他のグレーディングは反映されない)。"),
     exposureOn: z.boolean().optional(), exposure: z.number().optional(),
     contrastOn: z.boolean().optional(), contrast: z.number().optional(),
     brightnessOn: z.boolean().optional(), brightness: z.number().optional(),
@@ -1929,8 +1933,12 @@ server.registerTool(
       + "★さらに『どのノブをどっちへ何倍動かせばいいか』を数値で返す。リアル系ライティングを詰める本体はこれ。"
       + "返す数値: 対数輝度ヒストグラム(既定 24 ビン)とその EMD、平均/中央輝度、コントラスト(対数輝度の標準偏差と P5–P95)、"
       + "相関色温度 CCT(McCamy 近似)、平均彩度(HSV S と CIELAB C*)、黒潰れ率 / 白飛び率。"
-      + "suggestions に『参照より平均輝度が -0.8EV 暗い → exposure を ×1.74』の形で具体的な次の一手が入る。"
-      + "★使い方: suggestions のとおり dx12_set_post_process / dx12_set_sun を 1 つだけ動かして撮り直す、を繰り返す。"
+      + "suggestions に『参照より平均輝度が -0.8EV 暗い → 太陽の intensity を ×1.74』の形で具体的な次の一手が入る。"
+      + "★使い方: suggestions のとおりノブを 1 つだけ動かして撮り直す、を繰り返す(同時に触ると何が効いたか分からない)。"
+      + "★★測っているのは dx12_screenshot(シーン RT を CPU で露出+トーンマップ+ガンマした絵)なので、"
+      + "ライト・環境光・材質・IBL・影・SSAO と post の exposure / tonemapper は反映されるが、"
+      + "カラーグレーディング(contrast/saturation/warmth/tint)・ブルーム・ビネットは【反映されない】。"
+      + "それらを触った結果は dx12_ui_screenshot でビューポートを目視して確認すること。"
       + "position/target を渡すとその視点へカメラを動かしてから撮る(★Editor 限定)。",
     inputSchema: {
       referencePath: z.string().describe("参照画像(PNG)の絶対パス。実写写真や参考ゲームのスクショ。"),
@@ -1970,7 +1978,13 @@ server.registerTool(
         current: roundStats(r.current),
         delta: roundDelta(r.delta),
         suggestions: r.suggestions,
-        cctFormula: "McCamy 1992: n=(x-0.3320)/(0.1858-y), CCT=449n^3+3525n^2+6823.3n+5520.33",
+        cctFormula: "McCamy 1992: n=(x-0.3320)/(0.1858-y), CCT=449n^3+3525n^2+6823.3n+5520.33"
+          + "（黒体軌跡からの距離 Duv > 0.05 なら CCT は null。理由は cctNote）",
+        measuredOn: gameView
+          ? "screenshot_game_view(ゲームカメラ視点のシーン RT)"
+          : "screenshot(シーン RT を CPU で 露出→トーンマップ→ガンマ した絵)",
+        notReflected: "post のグレーディング(contrast/brightness/saturation/warmth/hueShift/tint)・"
+          + "ブルーム・ビネット・グレインはこの絵に映らない。触ったら dx12_ui_screenshot で目視すること。",
       });
     } catch (e: any) {
       return errResult(e);

@@ -6,7 +6,7 @@
  *   [4-6]  露出・コントラスト・分位点 — 半分の明るさ = -1EV、単色はコントラスト 0
  *   [7-9]  ヒストグラム — 正規化(合計 1)・EMD が 0 / ビン移動量と一致
  *   [10-12] 彩度・黒潰れ・白飛び
- *   [13-15] compareLook の delta と suggestions（示唆に必ずノブ名が入る）
+ *   [13-16] compareLook の delta と suggestions（ノブ名 / 映らない post ノブの但し書き）
  *
  * 実行: node lookCompare.test.ts（Node v24 型ストリップ）
  */
@@ -156,8 +156,8 @@ console.log("\n[10-12] 彩度 / 黒潰れ / 白飛び");
   pass("blackLevel / whiteLevel で潰れ判定の閾値を変えられる");
 }
 
-// ─── [13-15] compareLook（delta と示唆） ──────────────────────────────────
-console.log("\n[13-15] compareLook — 差分と『次の一手』");
+// ─── [13-16] compareLook（delta と示唆） ──────────────────────────────────
+console.log("\n[13-16] compareLook — 差分と『次の一手』");
 {
   // 13. 同じ絵なら diffRatio 0・露出差 0・示唆は「ほぼ一致」1 本
   const img = halves(32, 24, [180, 170, 160], [40, 42, 48]);
@@ -169,16 +169,18 @@ console.log("\n[13-15] compareLook — 差分と『次の一手』");
   assert.match(same.suggestions[0], /ほぼ一致/);
   pass("同一画像: diffRatio=0 / exposureEV=0 / 示唆は「ほぼ一致」のみ");
 
-  // 14. 現在が暗い → exposureEV が負、示唆に exposure の倍率が入る
+  // 14. 現在が暗い → exposureEV が負。示唆は「太陽の intensity ×2.0」を第一候補にし、
+  //     スクショに映る exposure も併記する（-1EV のズレ → 現在値の ×2.0）
   const ref = solid(32, 32, [128, 128, 128]);
   const cur = solid(32, 32, [92, 92, 92]);
   const r = compareLook(ref, cur);
   assert.ok(r.delta.exposureEV < -0.9 && r.delta.exposureEV > -1.1, `ev=${r.delta.exposureEV}`);
   const expo = r.suggestions.find((s) => s.startsWith("露出:"));
   assert.ok(expo, "露出の示唆が無い");
+  assert.match(expo!, /dx12_set_sun の intensity/);
   assert.match(expo!, /exposure/);
-  assert.match(expo!, /×2\.0/);   // -1EV のズレ → 現在値の ×2.0
-  pass(`暗い側: ${r.delta.exposureEV.toFixed(2)}EV → 「exposure を ×2.0」と言える`);
+  assert.match(expo!, /×2\.0/);
+  pass(`暗い側: ${r.delta.exposureEV.toFixed(2)}EV → 「intensity / exposure を ×2.0」と言える`);
 
   // 15. 彩度と色温度のズレも名指しできる（ノブ名 saturation / kelvin が入る）
   const grayRef = solid(32, 32, [140, 140, 140]);
@@ -187,13 +189,30 @@ console.log("\n[13-15] compareLook — 差分と『次の一手』");
   const sat = r2.suggestions.find((s) => s.startsWith("彩度:"));
   const cct = r2.suggestions.find((s) => s.startsWith("色温度:"));
   assert.ok(sat && /saturation/.test(sat), "彩度の示唆にノブ名が無い");
-  assert.ok(cct && /kelvin|warmth/.test(cct), "色温度の示唆にノブ名が無い");
+  assert.ok(cct && /kelvin/.test(cct), "色温度の示唆に kelvin が無い");
   assert.ok(r2.delta.cctDeltaK !== null && r2.delta.cctDeltaK < 0, `cctDelta=${r2.delta.cctDeltaK}`);
   assert.ok(r2.delta.saturationRatio > 1);
   // 合成画像は uiCompare と同じ横並び（幅 = 左 + 4px + 右）
   const sheet = PNG.sync.read(r2.compositePng);
   assert.equal(sheet.width, 32 + 4 + 32);
-  pass(`暖色ズレ ${Math.round(r2.delta.cctDeltaK!)}K を検出し kelvin / warmth を名指しできる`);
+  pass(`暖色ズレ ${Math.round(r2.delta.cctDeltaK!)}K を検出し kelvin を名指しできる`);
+
+  // 16. ★回帰防止: post のグレーディング(contrast/saturation/warmth)は dx12_screenshot に
+  //     映らない。それらを勧める示唆には必ず「目視で確認」の但し書きが付くこと。
+  //     これが無いと「下げた → スクショが変わらない → もう一度下げる」の無限ループになる。
+  const softRef = halves(32, 24, [250, 250, 250], [5, 5, 5]);      // 硬い参照
+  const flatCur = halves(32, 24, [150, 150, 150], [120, 120, 120]); // 眠い現在
+  const r3 = compareLook(softRef, flatCur);
+  for (const s of r3.suggestions) {
+    if (/dx12_set_post_process の (contrast|saturation|warmth)/.test(s)) {
+      assert.match(s, /dx12_ui_screenshot/, `post ノブの示唆に目視の但し書きが無い: ${s}`);
+    }
+  }
+  const con = r3.suggestions.find((s) => s.startsWith("コントラスト:"));
+  assert.ok(con, "コントラストの示唆が無い");
+  assert.match(con!, /ambient/);            // 先に「光で作る」を勧める
+  assert.match(con!, /dx12_ui_screenshot/);  // post を出すなら但し書きつき
+  pass("post グレーディングを勧める示唆には必ず『dx12_ui_screenshot で目視』が付く");
 }
 
 console.log(`\nOK: lookCompare テスト ${passed} 項目すべて通過`);

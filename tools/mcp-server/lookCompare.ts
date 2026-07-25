@@ -6,6 +6,24 @@
 //
 // 依存は pngjs のみ(uiCompare.ts と同じ)。横並び合成そのものは compareUiImages を再利用する。
 //
+// ★★ 測定対象が「何の絵」なのかの注意（示唆の作り方がここに縛られる）★★
+//   engine の screenshot は m_sceneRT(リニア HDR)を読み戻し、CPU 側で
+//   【露出 → トーンマップ → ガンマ 1/2.2】だけを掛けて 8bit にしている
+//   (Application::ReadbackSceneBgra。PostProcess.hlsl の ToneMapGamma の写し)。
+//   つまりスクショに映るのは:
+//     ○ 映る … ライト(intensity/color/kelvin)・環境光・材質・IBL・影・SSAO・
+//               dx12_set_post_process の exposure と tonemapper
+//     × 映らない … カラーグレーディング(contrast/brightness/saturation/warmth/hueShift/tint)、
+//               ブルーム・ビネット・グレイン等のポスト効果全般
+//   ビューポート(バックバッファ)にはポストが全部乗るので、目で見える絵とスクショは別物。
+//   したがって示唆は【スクショに映るノブ】を第一候補にし、映らないノブは
+//   「dx12_ui_screenshot で目視」と断ってから出すこと。ここを外すと
+//   「saturation を下げた → スクショが変わらない → もう一度下げる」の無限ループになる。
+//
+//   なお engine 側のガンマは純 2.2、こちらの逆変換は sRGB の折れ線(参照が写真＝sRGB のため)。
+//   中間調のズレは 0.03EV 程度で許容差(0.15EV)より十分小さい。両者を同じ曲線で戻すので
+//   差分としては打ち消し合う。極端な暗部だけは曲線差が出るが、そこは元々ヒストグラム下限。
+//
 // ── 採用した式と出典 ────────────────────────────────────────────────
 //  ① sRGB の逆ガンマ(EOTF): lin = c/12.92 (c<=0.04045) / ((c+0.055)/1.055)^2.4
 //     IEC 61966-2-1 / W3C "A Standard Default Color Space for the Internet - sRGB"
@@ -398,10 +416,20 @@ function fixed(v: number, n = 2): string {
   return v.toFixed(n);
 }
 
+/** スクショ(シーン RT)に映らないポストのノブを触らせる時に必ず添える但し書き。 */
+const POST_ONLY =
+  "★ポストのグレーディングは dx12_screenshot(シーン RT)に映らないため、この数値では追い込めない。" +
+  "触ったら dx12_ui_screenshot でビューポートを目視して確認すること";
+
 /**
  * 統計の差から「何をどっちへ動かすか」の日本語の示唆を作る。
- * エンジン側のノブ名(dx12_set_post_process / dx12_set_sun のフィールド)を必ず添える。
- * ※ exposure / contrast / saturation は【現在値への倍率】として書く(シェーダが乗算・
+ * エンジン側のノブ名(dx12_set_sun / dx12_set_post_process のフィールド)を必ず添える。
+ *
+ * ★順序が命: スクショに映るノブ(ライト・環境光・材質・exposure・tonemapper)を第一候補にする。
+ *   ポストのグレーディング(contrast/saturation/warmth/tint)はシーン RT に乗らないので、
+ *   出すとしても必ず POST_ONLY の但し書きとセットで後ろに置く。
+ *   (これを守らないと「下げた→スクショが変わらない→もう一度下げる」の無限ループになる)
+ * ※ exposure / contrast / saturation は【現在値への倍率】で書く(シェーダがそれぞれ乗算・
  *    ピボット 0.5 の乗算・luma との lerp なので、倍率で指示するのが一番外さない)。
  */
 export function buildSuggestions(ref: LookStats, cur: LookStats, delta: LookDelta): string[] {
@@ -412,26 +440,37 @@ export function buildSuggestions(ref: LookStats, cur: LookStats, delta: LookDelt
     const mul = Math.pow(2, -delta.exposureEV);
     out.push(
       `露出: 参照より平均輝度が ${delta.exposureEV >= 0 ? "+" : ""}${fixed(delta.exposureEV)}EV ${dir}。` +
-      `dx12_set_post_process の exposure を現在値の ×${fixed(mul)} に(exposureOn:true が必要)、` +
-      `または dx12_set_sun の intensity を ×${fixed(mul)} する。`,
+      `dx12_set_sun の intensity を現在値の ×${fixed(mul)} にする(絵の作りとして正しい直し方)。` +
+      `全体を一律に持ち上げるだけなら dx12_set_post_process の exposure を ×${fixed(mul)}` +
+      `(exposureOn:true。exposure と tonemapper だけはスクショにも反映される)。`,
     );
   }
 
   if (Math.abs(delta.contrastRatio - 1) >= TOL_RATIO) {
-    const dir = delta.contrastRatio < 1 ? "眠い(コントラスト不足)" : "硬い(コントラスト過多)";
+    const soft = delta.contrastRatio < 1;
     out.push(
-      `コントラスト: 対数輝度の標準偏差が参照の ×${fixed(delta.contrastRatio)} で${dir}。` +
-      `dx12_set_post_process の contrast を現在値の ×${fixed(1 / delta.contrastRatio)} に(contrastOn:true)。` +
-      `実効レンジ P5–P95 は 参照 ${fixed(ref.dynamicRangeEV, 1)}EV / 現在 ${fixed(cur.dynamicRangeEV, 1)}EV。`,
+      `コントラスト: 対数輝度の標準偏差が参照の ×${fixed(delta.contrastRatio)} で` +
+      `${soft ? "眠い(コントラスト不足)" : "硬い(コントラスト過多)"}。` +
+      `実効レンジ P5–P95 は 参照 ${fixed(ref.dynamicRangeEV, 1)}EV / 現在 ${fixed(cur.dynamicRangeEV, 1)}EV。` +
+      (soft
+        ? "まず光で作る: dx12_set_sun の ambient を下げて影を締める / intensity を上げて陰影の比を広げる。"
+        : "まず光で作る: dx12_set_sun の ambient を上げて影を起こす / 補助ライトを足して影を潰さない。") +
+      `それでも足りなければ dx12_set_post_process の contrast を現在値の ×${fixed(1 / delta.contrastRatio)}` +
+      `(contrastOn:true)。${POST_ONLY}。`,
     );
   }
 
   if (Math.abs(delta.saturationRatio - 1) >= TOL_RATIO) {
-    const dir = delta.saturationRatio > 1 ? "高い" : "低い";
+    const high = delta.saturationRatio > 1;
     out.push(
-      `彩度: 参照より ${fixed(delta.saturationRatio)} 倍 ${dir}(HSV S: 参照 ${fixed(ref.saturationHsv, 3)} / 現在 ${fixed(cur.saturationHsv, 3)}、` +
+      `彩度: 参照より ${fixed(delta.saturationRatio)} 倍 ${high ? "高い" : "低い"}` +
+      `(HSV S: 参照 ${fixed(ref.saturationHsv, 3)} / 現在 ${fixed(cur.saturationHsv, 3)}、` +
       `CIELAB C*: 参照 ${fixed(ref.chromaLab, 1)} / 現在 ${fixed(cur.chromaLab, 1)})。` +
-      `dx12_set_post_process の saturation を現在値の ×${fixed(1 / delta.saturationRatio)} に(saturationOn:true)。`,
+      `まず素材と光で作る: ${high ? "ライトの color を白へ寄せる" : "ライトの color に色味を足す"}、` +
+      `dx12_set_pbr / dx12_set_color でアルベドの鮮やかさを${high ? "落とす" : "上げる"}、` +
+      `IBL(skybox)の色被りを疑う。` +
+      `一律に効かせるなら dx12_set_post_process の saturation を現在値の ×${fixed(1 / delta.saturationRatio)}` +
+      `(saturationOn:true)。${POST_ONLY}。`,
     );
   }
 
@@ -440,8 +479,8 @@ export function buildSuggestions(ref: LookStats, cur: LookStats, delta: LookDelt
     out.push(
       `色温度: 参照より ${Math.abs(Math.round(delta.cctDeltaK))}K ${dir}寄り` +
       `(参照 ${Math.round(ref.cct!)}K / 現在 ${Math.round(cur.cct!)}K)。` +
-      `dx12_set_sun の kelvin を ${Math.round(ref.cct!)} にする、` +
-      `または dx12_set_post_process の warmth を ${delta.cctDeltaK > 0 ? "上げる(暖色へ)" : "下げる(寒色へ)"}(warmthOn:true)。`,
+      `dx12_set_sun の kelvin を ${Math.round(ref.cct!)} にする(これはスクショにも反映される)。` +
+      `dx12_set_post_process の warmth でも寄せられる。${POST_ONLY}。`,
     );
   } else if (ref.cct == null || cur.cct == null) {
     const why = [
@@ -459,13 +498,13 @@ export function buildSuggestions(ref: LookStats, cur: LookStats, delta: LookDelt
     if (delta.blackClipDelta > 0) {
       out.push(
         `黒潰れ: 現在 ${fixed(cur.blackClipPercent, 1)}% / 参照 ${fixed(ref.blackClipPercent, 1)}% で潰れすぎ。` +
-        `影のディテールが消えている。dx12_set_sun の ambient を上げる、影の強さを弱める、` +
-        `または dx12_set_post_process の contrast を下げる。`,
+        `影のディテールが消えている。dx12_set_sun の ambient を上げる、` +
+        `影側を起こす補助ライトを足す、スカイ/IBL の強度を上げる(dx12_set_scene_settings)。`,
       );
     } else {
       out.push(
         `黒潰れ: 現在 ${fixed(cur.blackClipPercent, 1)}% / 参照 ${fixed(ref.blackClipPercent, 1)}% で参照より締まっていない。` +
-        `暗部が浮いて霞んで見える。ambient を下げる、または contrast を上げる。`,
+        `暗部が浮いて霞んで見える。dx12_set_sun の ambient を下げる、IBL の強度を下げる。`,
       );
     }
   }
@@ -474,12 +513,14 @@ export function buildSuggestions(ref: LookStats, cur: LookStats, delta: LookDelt
     if (delta.whiteClipDelta > 0) {
       out.push(
         `白飛び: 現在 ${fixed(cur.whiteClipPercent, 1)}% / 参照 ${fixed(ref.whiteClipPercent, 1)}% で飛びすぎ。` +
-        `exposure か太陽の intensity を下げる、bloomThreshold を上げる。`,
+        `dx12_set_sun の intensity か dx12_set_post_process の exposure を下げる。` +
+        `トーンマッパーを ACES / AgX にするとハイライトの粘りが出る(tonemapper もスクショに反映される)。`,
       );
     } else {
       out.push(
         `白飛び: 現在 ${fixed(cur.whiteClipPercent, 1)}% / 参照 ${fixed(ref.whiteClipPercent, 1)}% でハイライトが伸びていない。` +
-        `参照はもっと光っている。bloomOn:true + bloom を上げる、または exposure を少し上げる。`,
+        `参照はもっと光っている。光源の intensity を上げる / 鏡面の強い材質(roughness を下げる)を置く。` +
+        `ブルームで伸ばす手もある。${POST_ONLY}。`,
       );
     }
   }
@@ -488,7 +529,8 @@ export function buildSuggestions(ref: LookStats, cur: LookStats, delta: LookDelt
   if (delta.histogramEmdEV >= 0.5) {
     out.push(
       `輝度分布: ヒストグラムの EMD が ${fixed(delta.histogramEmdEV)}EV あり、平均だけ合わせても形が違う。` +
-      `トーンカーブ相当(contrast + brightness)か、ライトの配置そのものを見直す。`,
+      `露出やグレーディングでは埋まらない。ライトの数・配置・種類(面光源的な補助光の有無)と` +
+      `トーンマッパーの選択(dx12_set_post_process の tonemapper: 0=ACES / 1=AgX / 2=なし)を見直す。`,
     );
   }
 
