@@ -757,6 +757,13 @@ properties = {
               <tr><td><code>e:hasComponent("T")</code></td><td>所持判定。T = <code>MeshRenderer / PointLight / DirectionalLight / SpotLight / Camera / AudioSource / ParticleEmitter / Trigger / CharacterController / SkeletalAnimation / RigidBody …</code></td></tr>
               <tr><td><code>e:playAnim(i, blend)</code></td><td>スケルタルアニメ再生（<code>blend</code> 秒でクロスフェード）。<code>e:playAnimByName(name, blend)</code></td></tr>
               <tr><td><code>e:setLooping(b)</code> / <code>e:getAnimCount()</code> / <code>e:getAnimName(i)</code></td><td>ループ設定 / クリップ数 / クリップ名</td></tr>
+              <tr><td><code>e:setAnimSpeed(s)</code></td><td>再生速度倍率（既定 1.0、2.0 で2倍速、0 で一時停止）。移動速度と足の同期に</td></tr>
+              <tr><td><code>e:setAnimFloat(n, v)</code> / <code>e:setAnimBool(n, v)</code> / <code>e:setAnimTrigger(n)</code></td><td>アニメ FSM（<code>.animfsm</code>）のパラメータを書く。グラフの構造はアセット側にあり、Lua はパラメータだけ触る</td></tr>
+              <tr><td><code>e:getAnimFloat(n)</code> / <code>e:getAnimBool(n)</code></td><td>FSM パラメータを読む（無ければ 0 / false）</td></tr>
+              <tr><td><code>e:getAnimStateName(layer?)</code> / <code>e:getAnimNormalizedTime(layer?)</code></td><td>現在のステート名 / 正規化時間 0..1（攻撃の当たり判定窓などに）</td></tr>
+              <tr><td><code>e:playAnimState(name, blend?)</code></td><td>ステートへ強制遷移（デバッグ / カットシーン用）</td></tr>
+              <tr><td><code>e:setAnimLayerWeight(i, w)</code> / <code>e:getAnimLayerWeight(i)</code></td><td>レイヤー重み 0..1（上半身だけ別アニメのフェードイン等）</td></tr>
+              <tr><td><code>e:setFootIKWeight(w)</code> / <code>e:isFootGrounded(right?)</code></td><td>フット IK（接地補正）の効き / 足が地面に当たっているか。<code>FootIK</code> コンポーネントが要る</td></tr>
               <tr><td><code>e:light()</code> / <code>e:addLight("point")</code> / <code>e:removeLight()</code></td><td><code>Light</code>（Point/Directional/Spot を1つにまとめたプロキシ）を取得 / 後付け / 削除。無ければ <code>light()</code> は nil</td></tr>
               <tr><td><code>Light</code></td><td><code>.type .intensity .color .direction .range .ambient .innerAngle .outerAngle .castShadows</code>（持っていない型の項目は読むと既定値・書くと無視）</td></tr>
             </tbody>

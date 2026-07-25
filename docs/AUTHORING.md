@@ -458,6 +458,27 @@ Ctrl+Z / Ctrl+Y = パネル内 Undo（ECS の Undo とは別勘定）。
 `e:stopSprite()` / `e:setSpriteSheet(path)`。単発シーケンスは完了時に `finishEvent` を EventBus へ飛ばす。
 `SpriteAnimator` が動いている間は旧 `animFrames` 経路を止める（二重駆動しない）。
 
+## 10.4 キャラクターのアニメーション（`.animfsm`）
+
+3D キャラのスケルタルアニメは、`SkeletalAnimation`（モデルのロード時に自動で付く）だけでも
+`e:playAnimByName("Walk", 0.25)` で再生できる。そこから一段上げるのが **`.animfsm`**
+（アニメーションステートマシンの JSON アセット）。
+
+`AnimatorController` コンポーネントに `.animfsm` のパスを割り当てると、
+
+- ステートと遷移（条件 / `exitTime` / 割り込み可否 / Any State）
+- 1D ブレンドツリー（歩き↔走りを速度で混ぜる。位相同期 + 速度同期つき）
+- レイヤーとボーンマスク（下半身は走り、上半身は構え）
+- クリップイベント（足音などを EventBus へ）
+
+が**全部データ側**で組める。Lua はパラメータを書くだけになる
+（`e:setAnimFloat("speed", v)` / `e:setAnimTrigger("jump")`）。
+
+`.spranim` / `.uianim` と違い**専用エディタ窓は無い**。JSON をテキストエディタで直接書く
+（Inspector は現在ステート・レイヤー重み・パラメータの読み取り専用表示）。
+スキーマの全項目・落とし穴・フット IK（接地補正）の設定は
+[`ANIMATION.md`](ANIMATION.md) にまとめてある。
+
 ## 10.5 地形（ハイトフィールド / `.hf`）
 
 山・谷・丘を「彫って」作るステージ地形。Unity Terrain / UE Landscape と同じ **ハイトフィールド**方式

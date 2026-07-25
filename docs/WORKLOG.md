@@ -103,6 +103,32 @@ git checkout master                 # 現在の作業ブランチ（feat/engine-
   他ウィンドウ/タブをクリックすると以降の `WM_KEYUP` が届かず、最後のキーが押下のまま残って動けなくなる不具合。
   `WM_KILLFOCUS` で `InputSystem::OnFocusLost()` を呼び、全キー状態＋マウス差分をクリアして解消。
 
+## 2026-07-26 アニメーション基盤の刷新（計画05 Step 1〜6）
+
+- **クロスフェードが骨を縮めていたバグ（B1）を修正**（src/animation/Animator.cpp）
+  最終スキニング行列を要素ごとに XMVectorLerp していた。行列の線形補間は回転を保存しない。
+  実測: 90 度離れた 2 姿勢を t=0.5 で混ぜると骨長 1.000 → **0.707**（29.3% 収縮）。
+  中間表現 AnimPose（ローカル TRS 配列）を挟み、位置=lerp / 回転=slerp / スケール=lerp に。
+  	ests/anim_pose_test.cpp が旧実装も一緒に計算して差を固定している。
+  単一クリップ再生の結果は旧実装と**ビット一致**（後方互換の機械的保証）。
+- 同時に B2（CrossFadeTo(clip, 0) の 0 除算 → NaN 固着）/ B3（先クリップのラップに
+  現クリップの loop フラグを流用）/ B5（duration<=0 のポーズクリップが無視される）を修正。
+- **.animfsm（アニメーションステートマシン）** を新設。ステート/遷移/条件/1D ブレンドツリー/
+  レイヤー/ボーンマスク/クリップイベントを JSON で組む。Lua はパラメータだけ触る。
+  → docs/ANIMATION.md
+- **フット IK**（2 ボーン解析 IK + 地面レイキャスト + 腰下げ + 面法線）。
+  前提として PhysicsSystem::RaycastEx（真の面法線を返す版）を追加した。
+- Lua API を 14 本追加。setAnimSpeed が辞書 5 箇所中 2 箇所にしか無かったドリフトも解消
+  （dx12e.lua / API_REFERENCE.md / index.html / SCRIPTING.md / McpLuaApi）。
+
+### 既知の残課題（このタスクでは触っていない）
+
+- **PhysicsSystem::Raycast（法線が {0,1,0} 固定のフェイク）はそのまま**。
+  Lua の physics:raycast の挙動を変えると既存ゲームに影響しうるため、
+  法線が要る用途は RaycastEx を使う形にした。いつか統一するなら別タスクで。
+- **glTF のインポート向きが Y-up モデルに対して過剰回転する**（Fox.glb が縦に立つ）。
+  スケルタルの計算とは無関係で、ModelLoader 側の座標変換の問題。別タスク。
+
 ---
 
 ## 次にやる候補 / TODO

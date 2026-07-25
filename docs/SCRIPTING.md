@@ -168,6 +168,62 @@ log(scene:lightCount().point)         -- 8 個を超えたライトは黙って�
 （例: `physics:raycast(pos, Vec3.new(0,-1,0), 50).point.y` で足元の地面の高さを取る）。作り方は
 [`AUTHORING.md`](AUTHORING.md) の 10.5 / 10.6 節。
 
+### アニメーション（キャラクター）
+
+**素朴な使い方 — クリップを直接切り替える。** モデルをロードすると `SkeletalAnimation` が
+自動で付くので、そのまま再生できる。
+
+```lua
+local e = scene:findEntity("Player")
+e:playAnimByName("Walk", 0.25)   -- 0.25 秒かけてクロスフェード
+e:setLooping(true)
+e:setAnimSpeed(1.5)              -- 移動速度に合わせて足の回転を速める
+log(e:getAnimCount(), e:getAnimName(0))
+```
+
+**データ駆動の使い方 — ステートマシン（`.animfsm`）。** キャラに `AnimatorController` を
+付けて `.animfsm` を割り当てると、ステート・遷移・ブレンドツリー・レイヤー・足音イベントを
+**アセット側（JSON）**で組める。Lua が触るのは**パラメータだけ**になる。
+
+```lua
+function OnUpdate(self, dt)
+    local e = self.entity
+    local vx, vz = ...                                  -- ゲーム側の移動速度
+    e:setAnimFloat("speed", math.sqrt(vx*vx + vz*vz))   -- 歩き↔走りが自動でブレンドされる
+    e:setAnimBool("grounded", physics:isGrounded(e))
+    if jumpPressed then e:setAnimTrigger("jump") end
+end
+```
+
+読み出し / 制御:
+
+```lua
+e:getAnimStateName()          -- "Locomotion" など。レイヤー番号を渡せる
+e:getAnimNormalizedTime()     -- 0..1。攻撃の当たり判定窓に使う
+e:playAnimState("Jump", 0.1)  -- 強制遷移（デバッグ / カットシーン）
+e:setAnimLayerWeight(1, 0.5)  -- 上半身レイヤーを半分だけ効かせる
+```
+
+**足音などのアニメイベント**は `.animfsm` の `clipEvents` に時刻を書くと EventBus に流れる。
+1 周にちょうど 1 回だけ鳴る（二重発火も取りこぼしも無い）:
+
+```lua
+events:on("footstep", function(ev)
+    audio:play("audio/sfx/foot_" .. ev.string .. ".wav")   -- ev.string = "left"/"right"
+end)
+```
+
+**フット IK（接地補正）** は `FootIK` コンポーネントを付けるだけ。斜面や段差で足が
+めり込まず浮かなくなる。ボーン名は一般的な命名から自動推定される。**Play 中のみ動く**。
+
+```lua
+e:setFootIKWeight(0.0)        -- 崖から落ちる演出などで一時的に切る
+if e:isFootGrounded() then ... end
+```
+
+`.animfsm` のスキーマ・ブレンドツリー・レイヤー・落とし穴の一覧は
+[`ANIMATION.md`](ANIMATION.md) にまとめてある。
+
 ### その他
 ```lua
 log("hp:", hp)                       -- ログ出力（任意個・任意型を tostring 連結、[Lua] 接頭辞）
