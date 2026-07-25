@@ -8,9 +8,18 @@
 //   autoExposureOn などが長期間このまま渡せなくなっていた。
 //   完全自動同期までは要らないが「次に足し忘れたらテストが赤くなる」だけは必要。
 //
-// ★真実の情報源
-//   src/core/Application.cpp の HandleMcpCommand() 内 `method == "..."` の分岐。
-//   params から読むキーを静的に拾う。現在拾える書き方は 5 通り:
+// ★真実の情報源(2 世代ある。両方読める)
+//   [新] src/core/Application.cpp のディスパッチ表:
+//          McpDefine("get_dxr|set_dxr", "shadowEnabled:any,aoRadius:number,...", DX12E_MCP_HANDLER { ... });
+//        第 2 引数が【エンジン自身が申告するキー表】(dx12_describe_mcp_params がそのまま返す予定のもの)。
+//        以前の 118 本の `else if (method == "...")` は MSVC の C1061 上限に張り付いていたため
+//        表引きへ置き換えられた(#30)。**キーはこの申告表とハンドラ本文の走査の和集合**を採る:
+//          - 申告表だけ  … 本文の書き方が想定外でも拾える(= 取りこぼさない)
+//          - 本文だけ    … 申告表の書き忘れがあっても拾える(= 嘘の表に騙されない)
+//   [旧] HandleMcpCommand() 内 `method == "..."` の else-if 連鎖。
+//        古いコミットを checkout したときのために残してある(McpDefine が 1 本も無ければこちら)。
+//
+//   どちらの世代でも、params から読むキーを本文から静的に拾う。現在拾える書き方は 5 通り:
 //     1) params.value("k",…) / params.contains("k") / params["k"] / params.at("k") / params.find("k")
 //     2) Mcp*Param(params, "k") 系ヘルパ
 //     3) キー名リテラルを取らないヘルパ(ResolveMcpEntity=entity/name, ParseMcpVk=key) … 別表で補う
@@ -36,12 +45,21 @@ const PARAM_READ_PATTERNS: readonly RegExp[] = [
 ];
 
 export type EngineMethod = {
+  /** ハンドラ本文の走査 ∪ McpDefine の申告表。 */
   keys: string[];
   line: number;
   /** ハンドラが {"applied", true} を返す＝「成功したように見えるだけ」の返り値。 */
   returnsAppliedTrue: boolean;
   /** 入れ子オブジェクトで読むキー。親キー名 → 子キー名(set_scene_settings の skybox)。 */
   nested: Record<string, string[]>;
+  /**
+   * McpDefine の第 2 引数(エンジン自身が申告するキー表)。キー名 → 型("number"/"int"/
+   * "bool"/"string"/"vec3"/"any")。文字列リテラルで書かれていない場合(McpPostParamSpec() 等の
+   * 関数呼び出し)と旧世代のソースでは null。
+   * ★これは将来 dx12_describe_mcp_params が返すものと同じ。着地したらテキスト解析をやめて
+   *   そちらへ移れるように、ここでも申告表を素通しで持っておく。
+   */
+  declared: Record<string, string> | null;
 };
 
 /**
@@ -97,11 +115,107 @@ function nestedParamKeys(body: string): Record<string, string[]> {
   return out;
 }
 
+/** ハンドラ本文 1 つ分からキー / 入れ子 / applied を抜く(新旧の世代で共通)。 */
+function scanHandlerBody(body: string) {
+  const keys = new Set<string>();
+  for (const p of PARAM_READ_PATTERNS) {
+    p.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = p.exec(body))) keys.add(m[1]);
+  }
+  for (const h of IMPLICIT_HELPER_KEYS) if (h.re.test(body)) for (const key of h.keys) keys.add(key);
+  for (const key of lambdaParamKeys(body)) keys.add(key);
+  return {
+    keys,
+    nested: nestedParamKeys(body),
+    returnsAppliedTrue: /\{\s*"applied"\s*,\s*true\s*\}/.test(body),
+  };
+}
+
+/**
+ * 隣接した C++ 文字列リテラルを 1 本に繋ぐ("a" "b" → "ab")。
+ * リテラルが 1 つも無い(= McpPostParamSpec() のような関数呼び出し)なら null。
+ */
+function cppStringLiteral(arg: string): string | null {
+  const parts = [...arg.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1]);
+  if (parts.length === 0) return null;
+  return parts.join("").replace(/\\(.)/g, "$1");
+}
+
+/** "a:number,b:any" → {a:"number", b:"any"}。空文字("" = 引数なし)は {}。 */
+function parseParamSpec(spec: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const part of spec.split(",")) {
+    const s = part.trim();
+    if (!s) continue;
+    const i = s.indexOf(":");
+    out[i < 0 ? s : s.slice(0, i)] = i < 0 ? "any" : s.slice(i + 1).trim();
+  }
+  return out;
+}
+
+/**
+ * [新世代] ディスパッチ表 McpDefine("a|b", "キー:型,...", DX12E_MCP_HANDLER { ... }) を読む。
+ * McpDefine が 1 本も無ければ null(呼び出し側が旧世代のパーサへ落ちる)。
+ */
+function parseMcpDefineTable(cppSource: string): Map<string, EngineMethod> | null {
+  const out = new Map<string, EngineMethod>();
+  const re = /\bMcpDefine\s*\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(cppSource))) {
+    // 宣言側 (void Application::McpDefine(...)) は読まない
+    if (/Application::\s*$/.test(cppSource.slice(Math.max(0, m.index - 20), m.index))) continue;
+    // ★行コメントの中の例(「McpDefine("名前", "キー:型,...", ...) を 1 本足す」)を拾わない。
+    //   拾うと "名前" という架空の method が生えて [1] の逆引きが嘘をつく。
+    const lineStart = cppSource.lastIndexOf("\n", m.index) + 1;
+    if (cppSource.slice(lineStart, m.index).includes("//")) continue;
+    const open = m.index + m[0].length - 1;
+    const args = splitCallArgs(cppSource, open);
+    if (args.length < 3) continue;
+    const names = cppStringLiteral(args[0]);
+    // method 名は英小文字/数字/_ と、get/set をまとめる '|' だけ(コメント例や日本語を弾く保険)。
+    if (!names || !/^[a-z0-9_]+(\|[a-z0-9_]+)*$/.test(names)) continue;
+    const spec = cppStringLiteral(args[1]);
+    const body = args.slice(2).join(",");
+    const scanned = scanHandlerBody(body);
+    const declared = spec == null ? null : parseParamSpec(spec);
+    // ★和集合。申告表(describe_mcp_params が返すもの)と本文のどちらに出てきても
+    //   「エンジンが受け付けるキー」として扱う＝どちらの書き忘れでも取りこぼさない。
+    const keys = new Set(scanned.keys);
+    const nested: Record<string, string[]> = { ...scanned.nested };
+    for (const k of Object.keys(declared ?? {})) {
+      // 申告表は入れ子を "skybox.envMapPath" のドット表記で書く。トップレベルの
+      // 突き合わせ([2])に混ぜると「TS に無いキー」の誤検出になるので、入れ子表([8])へ送る。
+      const dot = k.indexOf(".");
+      if (dot < 0) { keys.add(k); continue; }
+      const [parent, child] = [k.slice(0, dot), k.slice(dot + 1)];
+      keys.add(parent);
+      nested[parent] = [...new Set([...(nested[parent] ?? []), child])].sort();
+    }
+    const line = cppSource.slice(0, m.index).split("\n").length;
+    for (const name of names.split("|").map((s) => s.trim()).filter(Boolean)) {
+      out.set(name, {
+        keys: [...keys].sort(), line,
+        returnsAppliedTrue: scanned.returnsAppliedTrue, nested, declared,
+      });
+    }
+  }
+  return out.size > 0 ? out : null;
+}
+
 /**
  * Application.cpp から「method 名 → 受け付ける params キー」を抜く。
- * 同じ分岐が複数 method を受ける場合(overlap_box || overlap_sphere)は両方に同じ集合を割り当てる。
+ * 同じハンドラが複数 method を受ける場合(get_dxr|set_dxr)は両方に同じ集合を割り当てる。
+ *
+ * ★まずディスパッチ表(McpDefine)を読み、無ければ旧世代の else-if 連鎖を読む。
+ *   旧世代の注意点(古いコミットを見るときのため残す): ハンドラは 1 関数ではなく、
+ *   C1061 対策で切り出された受け皿関数(HandleMcpRenderCommand)の分岐はインデントが浅い。
+ *   「最頻インデントの行だけを分岐の頭」とすると切り出し先が丸ごと落ちるので、
+ *   インデントではなく【入れ子関係】で頭かどうかを決める(下の isInnerRecheck)。
  */
 export function parseEngineMethods(cppSource: string): Map<string, EngineMethod> {
+  const table = parseMcpDefineTable(cppSource);
+  if (table) return table;
   const lines = cppSource.split(/\r?\n/);
   const all: { line: number; names: string[]; indent: number }[] = [];
   for (let i = 0; i < lines.length; i++) {
@@ -118,33 +232,31 @@ export function parseEngineMethods(cppSource: string): Map<string, EngineMethod>
   }
   // ★入れ子の `if (method == "...")` を分岐の頭と誤認しない。
   //   1 ブロックで 2 method を捌く所は中でもう一度 method を見る
-  //   (overlap_box||overlap_sphere / terrain_paint||terrain_autopaint)。
+  //   (get_dxr||set_dxr の中の set_dxr / overlap_box||overlap_sphere / terrain_paint||terrain_autopaint)。
   //   これを頭と数えるとブロックが途中で切れ、前半のキーが落ちて【ドリフトを見逃す】。
-  //   本物の else-if 連鎖は全部同じインデントに並ぶので、最頻インデントだけを採用する。
-  const histogram = new Map<number, number>();
-  for (const h of all) histogram.set(h.indent, (histogram.get(h.indent) ?? 0) + 1);
-  let topIndent = 0, topCount = -1;
-  for (const [indent, count] of histogram) {
-    if (count > topCount || (count === topCount && indent < topIndent)) { topIndent = indent; topCount = count; }
+  //   見分け方: 「直前の頭より深いインデント」かつ「名前が直前の頭の名前の部分集合」なら中の再判定。
+  //   インデントの絶対値には依らないので、分岐が複数の関数へ散っても壊れない。
+  const heads: typeof all = [];
+  for (const h of all) {
+    const cur = heads[heads.length - 1];
+    const isInnerRecheck = cur != null && h.indent > cur.indent
+      && h.names.every((n) => cur.names.includes(n));
+    if (!isInnerRecheck) heads.push(h);
   }
-  const heads = all.filter((h) => h.indent === topIndent);
   const out = new Map<string, EngineMethod>();
   for (let k = 0; k < heads.length; k++) {
     const from = heads[k].line;
-    const to = k + 1 < heads.length ? heads[k + 1].line : lines.length;
-    const body = lines.slice(from, to).join("\n");
-    const keys = new Set<string>();
-    for (const p of PARAM_READ_PATTERNS) {
-      p.lastIndex = 0;
-      let m: RegExpExecArray | null;
-      while ((m = p.exec(body))) keys.add(m[1]);
-    }
-    for (const h of IMPLICIT_HELPER_KEYS) if (h.re.test(body)) for (const key of h.keys) keys.add(key);
-    for (const key of lambdaParamKeys(body)) keys.add(key);
-    const nested = nestedParamKeys(body);
-    const returnsAppliedTrue = /\{\s*"applied"\s*,\s*true\s*\}/.test(body);
+    let to = k + 1 < heads.length ? heads[k + 1].line : lines.length;
+    // ★関数の閉じ括弧(桁 0 の '}')で必ず切る。分岐が複数の関数に散っている今、
+    //   「次の頭まで」だけだと関数の末尾〜次の関数の前置きまで巻き込み、
+    //   そこで読んでいる params のキーが最後の method に混ざる(偽のドリフト源)。
+    for (let i = from + 1; i < to; i++) if (/^\}/.test(lines[i])) { to = i; break; }
+    const scanned = scanHandlerBody(lines.slice(from, to).join("\n"));
     for (const n of heads[k].names) {
-      out.set(n, { keys: [...keys].sort(), line: from + 1, returnsAppliedTrue, nested });
+      out.set(n, {
+        keys: [...scanned.keys].sort(), line: from + 1,
+        returnsAppliedTrue: scanned.returnsAppliedTrue, nested: scanned.nested, declared: null,
+      });
     }
   }
   return out;

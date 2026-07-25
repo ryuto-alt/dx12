@@ -57,6 +57,8 @@ export const LIGHTING_PRESETS = ["day", "dusk", "night", "indoor", "horror", "st
 export const DIAG_CHECKS = [
   "shaders", "textures", "models", "gamma", "scene_assets",
   "lighting", "terrain", "picking", "instancing", "scripts",
+  // DXR（計画09）。ケーパビリティ / 加速構造 / RT 影・RT-AO の設定矛盾を見る。
+  "dxr",
 ] as const;
 /** 重い検査（assets 全走査）。速く回したいときはこれを外す。 */
 export const DIAG_SLOW_CHECKS = ["textures", "models"] as const;
@@ -68,6 +70,9 @@ export const DIAG_SLOW_CHECKS = ["textures", "models"] as const;
 // schemaDrift.test.ts [10] が C++ の kEntries[] と集合一致を検証している。
 export const RENDER_DEBUG_MODES = [
   "normal", "roughness", "metallic", "depth", "ao", "contactShadow", "velocity", "ssr", "ssgi",
+  // DXR（計画09）。rt = プライマリレイのヒット距離、rtDiff = RT とラスタの距離差
+  // （加速構造の検証はこれが本命）。非対応 GPU では真っ黒 + warnings が返るだけでエラーにはならない。
+  "rt", "rtDiff",
   "shadowCascade", "lightComplexity", "clusterGrid", "decalCount",
   "fogScattering", "fogTransmittance", "fogSlice", "off",
 ] as const;

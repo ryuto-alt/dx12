@@ -205,7 +205,11 @@ console.log("\n[22-26] renderDebugModeIssue（非対応 mode を理由つきで�
   for (const m of RENDER_DEBUG_MODES) {
     assert.equal(renderDebugModeIssue(m), null, `${m} は有効`);
   }
-  assert.equal(RENDER_DEBUG_MODES.length, 17, "16 種の可視化 + off");
+  // 数は schemaDrift.test.ts [10] が C++ の kEntries[] と集合一致で見張っているので、
+  // ここは「増減に気づく」ための固定値。増えたら kEntries[] と突き合わせてから更新すること。
+  assert.equal(RENDER_DEBUG_MODES.length, 19, "18 種の可視化(rt / rtDiff を含む) + off");
+  assert.ok(RENDER_DEBUG_MODES.includes("rt") && RENDER_DEBUG_MODES.includes("rtDiff"),
+    "DXR の rt / rtDiff が enum に入っている(入っていないと zod が新モードを弾く)");
   pass(`有効な mode ${RENDER_DEBUG_MODES.length} 件は素通り（off を含む）`);
 
   // 23. albedo / overdraw は「非対応」だと言い切り、理由と代替を本文に持つ。

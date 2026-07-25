@@ -317,6 +317,27 @@ reg(
 );
 
 reg(
+  "dx12_describe_mcp_params",
+  "MCP引数辞書",
+  "エンジン側の MCP ハンドラが【実際に受け付ける引数キーと型】を method 名で引く辞書。"
+  + "エンジンのディスパッチ表(McpDefine の第 2 引数)をそのまま返すので、"
+  + "docs や このサーバの zod スキーマが古くても【エンジンの現物】が分かる。"
+  + "\n■ 返り値 {methods:{<method名>:[{key,type}]}, count, globalKeys:[\"idempotency_key\"], note}。"
+  + "type は bool / int / number / string / vec3 / object / any。"
+  + "\"親.子\"(例 skybox.envMapPath)は入れ子オブジェクトのキー。"
+  + "any は C++ 側で型を静的に決められなかっただけで「何でも通る」という意味ではない。"
+  + "\n■ method には dx12_ 接頭辞を付けない(ツール名 dx12_set_dxr → method \"set_dxr\")。省略で全件。"
+  + "\n■ ★使いどころ: ツールが『知らない引数』と言って弾いたときや、"
+  + "設定したのに変わらないときに、まずこれでエンジンの現物と突き合わせること。",
+  {
+    method: z.string().optional().describe(
+      "engine の method 名(dx12_ 接頭辞なし。例 \"set_dxr\")。省略で全 method を返す。"),
+  },
+  { readOnlyHint: true },
+  ({ method }) => run(() => engine.call("describe_mcp_params", { method })),
+);
+
+reg(
   "dx12_ui_tree",
   "UIツリー取得",
   "ゲーム内 UI のツリー構造を丸ごと JSON で返す(キャンバスごと)。各ノード: {entityId, name, components(uiImage/uiButton等の種別), uiRect(anchor/offset/order/visible), resolvedRect:[x,y,w,h](レイアウト解決済み・キャンバス空間px=uiRectと同じ単位), text?, children}。★UI を組む時の基本ループ: create_entity(ui_*) → set_component(uiRect等) → ui_tree で位置を数値確認 → dx12_ui_screenshot で見た目確認。兄弟の描画順は uiRect.order(大きいほど手前)、親変更は dx12_set_parent。",
@@ -912,7 +933,12 @@ reg(
 reg(
   "dx12_perf_stats",
   "パフォーマンス統計",
-  "直近 window フレーム(既定60)の性能統計を即時取得。fps / frameMs(avg,min,max,p95) / cpu(workMs,fenceWaitMs,presentMs) / gpuPassMs(total,shadows,prepassSsao,mainScene,particles,postFx,ui ※約3フレーム遅れのGPUタイムスタンプ) / drawCalls / culled / triangles / vsync / fpsLimit / scene(エンティティ内訳・shadows/ssao) と analysis(verdict: gpu-bound|cpu-bound|fps-limit-capped 等 + 改善ノート)を返す。FPS が出ない時はまずこれで犯人を特定する。",
+  "直近 window フレーム(既定60)の性能統計を即時取得。fps / frameMs(avg,min,max,p95) / cpu(workMs,fenceWaitMs,presentMs) / "
+  + "gpuPassMs(total, shadows, prepassSsao, clusterCull, raytracing, rtScreen, screenSpaceGi, volFog, mainScene, particles, postFx, ui "
+  + "※約3フレーム遅れのGPUタイムスタンプ。raytracing = DXR の BLAS 遅延構築 + TLAS の毎フレーム再構築(加速構造だけ)、"
+  + "rtScreen = RT サン影 + RT-AO + RT デバッグのスクリーン空間パス。どちらも DXR OFF なら 0) / "
+  + "drawCalls / culled / triangles / vsync / fpsLimit / scene(エンティティ内訳・shadows/ssao) と "
+  + "analysis(verdict: gpu-bound|cpu-bound|fps-limit-capped 等 + 改善ノート)を返す。FPS が出ない時はまずこれで犯人を特定する。",
   { window: z.number().int().optional().describe("平均するフレーム数(既定 60, 最大 240)。") },
   { readOnlyHint: true },
   ({ window }) => run(() => engine.call("perf_stats", { window })),
@@ -1261,6 +1287,131 @@ reg(
   },
   { idempotentHint: true },
   (a) => run(() => applyAndVerify("set_shadow_pcss", "get_shadow_pcss", a)),
+);
+
+// ── DXR(レイトレーシング) ────────────────────────────────────────
+// エンジン側は Application.cpp:3647 の 1 ブロックで get/set を捌いている(C1061 対策)。
+// 受け付ける引数とクランプ範囲はそこと docs/MCP.md §4-2 を読んで写した(憶測なし)。
+//
+// ★非対応 GPU の扱いがこのツールの肝。set_dxr は m_dxrEnabled が false だと
+//   McpErr::InvalidParam(error_code:2) を投げる。これを素の errResult で返すと
+//   AI からは「引数を間違えた」と区別が付かず、値を変えて延々と撃ち直す
+//   (error_code:2 は引数不正の汎用コードでもあるため)。
+//   なので「環境が非対応」だけは【エラーではない結果】として返し、
+//   applied:false / supported:false / retryable:false と代替手段まで書いて打ち切らせる。
+
+/** set_dxr の「非対応 GPU」エラーだけを見分ける(同じ error_code:2 の引数不正と混ぜない)。 */
+function isDxrUnsupportedError(e: unknown): boolean {
+  const err = e as { code?: unknown; message?: unknown };
+  return err?.code === 2 && typeof err.message === "string"
+    && err.message.includes("does not support inline raytracing");
+}
+
+/**
+ * 非対応 GPU で set_dxr を諦めるときの返り値。
+ * 「バグ」ではなく「この機械では永久に無理」であることと、代わりに何を使うかを本文に書く。
+ */
+function dxrUnsupportedResult(current: any, requested: Record<string, unknown>) {
+  return {
+    applied: false,
+    supported: false,
+    retryable: false,
+    requestedKeys: Object.keys(requested),
+    raytracingTier: current?.raytracingTier ?? "none",
+    highestShaderModel: current?.highestShaderModel ?? null,
+    reason: "この GPU / ドライバは inline raytracing(RayQuery)に対応していないので、"
+      + "dx12_set_dxr は何を渡しても error_code:2 で失敗する。"
+      + "★これは不具合でも引数ミスでもない。引数を変えて撃ち直しても永久に通らないので繰り返さないこと。"
+      + "要件は DXR Tier 1.1 かつ Shader Model 6.5(RTX 20 系 / RX 6000 系以降)。",
+    next: "RT 影 / RT-AO は諦めて、影は dx12_set_shadow_pcss(CSM + PCSS)、"
+      + "遮蔽は dx12_set_ssao と dx12_set_contact_shadow で作ること。"
+      + '実際に見えている Tier と SM は起動ログの "DXR:" 行(dx12_get_log)と、この返り値の '
+      + "raytracingTier / highestShaderModel で確認できる。",
+    current,
+  };
+}
+
+reg(
+  "dx12_get_dxr",
+  "DXR設定取得",
+  "現在のシーンの DXR(DirectX Raytracing / inline raytracing)設定と、加速構造の実測値を返す。"
+  + "★このツールは非対応 GPU でも【成功する】(supported:false が返るだけ)。"
+  + "RT 系を触る前にまずこれを呼んで supported を見ること。"
+  + "\n■ ケーパビリティ: supported(bool) / raytracingTier(\"1.1\" \"1.2\" … or \"none\") / highestShaderModel(\"6.8\" 等)。"
+  + "\n■ 設定: shadowEnabled, shadowSunAngle, shadowNormalBias, shadowMaxDistance, shadowIntensity, "
+  + "aoEnabled, aoRadius, aoRayCount, aoIntensity, aoPower, aoCombineWithSsao, maxInstances, forceBuildTlas。"
+  + "\n■ 実際に走ったか: shadowActive(ON でも本当に RT 影パスが走ったフレームか) / tlasReady(TLAS が建っているか)。"
+  + "enabled:true なのに shadowActive:false なら supported / tlasReady / カメラ(正射)を疑う。"
+  + "\n■ stats(直近フレームの加速構造の実測): instances, blasCount, blasBytes, blasTriangles, tlasBytes, "
+  + "scratchBytes, instanceDescBytes, skippedSkinned, skippedTransparent, droppedOverLimit, bytesPerTriangle。"
+  + "skippedSkinned / skippedTransparent は仕様(スキンドと半透明は TLAS に入らず CSM が担当する)。"
+  + "droppedOverLimit > 0 なら maxInstances に引っかかっている。"
+  + "\n■ 加速構造が正しいかの目視は dx12_render_debug の mode:\"rtDiff\"(黒 = ラスタと一致)が本命。",
+  {},
+  { readOnlyHint: true },
+  () => run(() => engine.call("get_dxr", {})),
+);
+
+reg(
+  "dx12_set_dxr",
+  "DXR設定変更",
+  "DXR のフィールドを指定分だけ更新する(未指定は現状維持)。DXR 1.1 の inline raytracing(RayQuery)で、"
+  + "RT サン影は既存のコンタクトシャドウ枠(t11)、RT-AO は既存の SSAO 枠(t8) へ書く"
+  + "(ルートシグネチャは 1 DWORD も増えない)。設定はシーン JSON の raytracing に保存される"
+  + "(forceBuildTlas だけは検証用の一時トグルなので保存されない)。"
+  + "\n■ ★非対応 GPU では【適用できない】。その場合はエラーではなく "
+  + "{applied:false, supported:false, retryable:false, reason, next} を返すので、"
+  + "reason を読んで諦めること(引数を変えて撃ち直しても永久に通らない)。まず dx12_get_dxr で supported を見るのが早い。"
+  + "\n■ スキンドメッシュと半透明は加速構造に入らない。そこは従来どおり CSM が担当し、"
+  + "フォワードの min() で合成される(RT 影が有効なフレームは CSM が『RT の担当ぶん』を描かなくなる = 排他)。"
+  + "\n■ PCSS と併用するときは shadowSunAngle:0(ハード)にして半影は PCSS に任せるのが正しい。"
+  + "\n■ 効いているかの確認は dx12_get_dxr の shadowActive / tlasReady と、"
+  + "dx12_render_debug の mode:\"rt\" / \"rtDiff\"、コストは dx12_perf_stats の gpuPassMs.raytracing / rtScreen。"
+  + "\n■ ★適用後にエンジンから読み返した実値を current に入れて返す(要求と食い違うものは mismatched に出る)。",
+  {
+    shadowEnabled: z.boolean().optional().describe(
+      "RT サン影を使うか(既定 false)。ON の間はコンタクトシャドウパスの代わりに RT 影が同じ t11 を埋める。"),
+    shadowSunAngle: z.number().optional().describe(
+      "太陽の角直径(度)。0..20 にクランプ。既定 0.53(実際の太陽)。0 でハードシャドウ。★PCSS 併用時は 0 が正しい。"),
+    shadowNormalBias: z.number().optional().describe(
+      "レイ始点の法線方向オフセット(m)。0..1 にクランプ。既定 0.02。アクネ(自己遮蔽の縞)が出るなら上げる。"
+      + "CSM の depthBias と違いワールド空間の実距離なので peter-panning にならない。"),
+    shadowMaxDistance: z.number().optional().describe(
+      "影レイの最大距離(m)。0..100000 にクランプ。既定 0 = 無限。遠景の遮蔽物を追わない分だけ速くなる。"),
+    shadowIntensity: z.number().optional().describe(
+      "RT 影の強さ。0..1 にクランプ。既定 1(RT 影のみ)。0 で無効、途中の値は CSM とのブレンド(デバッグ用)。"),
+    aoEnabled: z.boolean().optional().describe(
+      "RT-AO を使うか(既定 false)。ON の間は SSAO 枠(t8)を RT-AO が埋める。"),
+    aoRadius: z.number().optional().describe("半球レイの長さ(m)。0.01..100 にクランプ。既定 1。"),
+    aoRayCount: z.number().int().optional().describe(
+      "1px あたりのレイ本数。1..8 にクランプ。既定 2。増やすほど滑らかで重い。"),
+    aoIntensity: z.number().optional().describe("RT-AO の強さ。0..1 にクランプ。既定 1。"),
+    aoPower: z.number().optional().describe("pow() のべき指数(SSAO と同じ意味)。0.01..8 にクランプ。既定 1.5。"),
+    aoCombineWithSsao: z.boolean().optional().describe(
+      "SSAO と min() 合成するか(既定 false)。RT-AO は細かい皺の遮蔽が苦手なので、"
+      + "『大きな遮蔽 = RT / 細部 = SSAO』の合成が実用上いちばん良い。"),
+    maxInstances: z.number().int().optional().describe(
+      "TLAS へ入れるインスタンスの上限。0..32768 にクランプ。0 で既定(RaytracingScene::kMaxRtInstances)。"
+      + "dx12_get_dxr の stats.droppedOverLimit > 0 なら足りていない。"),
+    forceBuildTlas: z.boolean().optional().describe(
+      "RT 影 / RT-AO が両方 OFF でも TLAS を建てる(検証用)。シーン JSON には保存されない。"
+      + "dx12_render_debug の mode:\"rt\" / \"rtDiff\" はこれを一時的に立ててから撮る。"),
+  },
+  { idempotentHint: true },
+  (a) => run(async () => {
+    // 撃つ前に get_dxr で確定させる(get は非対応 GPU でも成功する)。
+    // ここで打ち切ると「非対応なのに毎回 set を撃ってエラーを見る」ループが起きない。
+    const before = await engine.call("get_dxr", {});
+    if (before?.supported === false) return dxrUnsupportedResult(before, definedOnly(a));
+    try {
+      return await applyAndVerify("set_dxr", "get_dxr", a);
+    } catch (e) {
+      // get と set の間に非対応が判明する経路(デバイスロスト後の再初期化など)の保険。
+      // ★引数不正の error_code:2 とは message で区別する(全部を握り潰すと本物のバグが隠れる)。
+      if (!isDxrUnsupportedError(e)) throw e;
+      return dxrUnsupportedResult(await engine.call("get_dxr", {}), definedOnly(a));
+    }
+  }),
 );
 
 reg(
@@ -2039,11 +2190,19 @@ regRaw(
       + "ao(SSAO。白=遮蔽なし) / contactShadow(白=遮蔽なし) / "
       + "velocity(速度バッファ。R=+X G=+画面下。★静止していれば一様な (0.5,0.5,0.5) が正常。gain 20 くらいが見やすい) / "
       + "ssr / ssgi(時間蓄積があるので frames を 8〜16 に) / "
+      + "rt(DXR のプライマリレイのヒット距離をヒートマップ。空/ミスは黒。depthRange で正規化。"
+      + "RT 影 / RT-AO が OFF でも TLAS を一時的に建てるので TLAS が正しく建つかの目視に使える) / "
+      + "rtDiff(★加速構造の検証はこれが本命。|RT のヒット距離 − ラスタの距離| をヒートマップ。"
+      + "【黒 = 完全一致】、マゼンタ = 片方だけヒット。行列の転置ミスやノード変換の付け忘れを一発で炙り出す。"
+      + "gain を 20 くらいにすると 5cm でフルスケール。スキンドと半透明は TLAS に入らない仕様なのでマゼンタになるのが正常。"
+      + "BLAS は LOD0 固定なので遠くて低 LOD の物に数 cm の差が出るのも正常) / "
       + "shadowCascade(CSM のカスケードを赤/緑/青/黄で色分け) / "
       + "lightComplexity(クラスタごとの灯数ヒートマップ。青0→緑→赤、★白=128 灯で切り捨て中) / "
       + "clusterGrid(クラスタ境界の市松) / decalCount(★白=16 枚で切り捨て中) / "
       + "fogScattering・fogTransmittance・fogSlice(ボリュメトリックフォグの散乱/透過率/froxel スライス) / "
       + "off(何も撮らず全部戻すだけ。途中で失敗したときのリセット用)。"
+      + "\n■ rt / rtDiff は DXR 非対応 GPU だと【真っ黒になるだけ】でエラーにはならない"
+      + "(warnings に理由が出る)。先に dx12_get_dxr で supported を見ておくと空振りしない。"
       + "\n■ normal / roughness / metallic / velocity は【深度+速度プリパスでしか書かれない】ので、"
       + "TAA も SSR も SSGI も OFF のときはエンジンが TAA を一時 ON にして撮る(warnings に出る)。"
       + "この 4 モードが『ジオメトリだけの粗い絵』に見えるのは仕様。"
@@ -2672,7 +2831,7 @@ reg(
   "エンジン診断(機械可読)",
   "『いま何か壊れてないか？』を 1 回で聞くツール。シェーダーの作り忘れ・壊れたテクスチャ・法線マップが sRGB・"
   + "参照切れアセット・ライトの上限超過・地形の .hf 不整合・ピッキングが破綻する条件・インスタンシングの不適格理由・"
-  + "Lua の閉じ忘れ、を検査して JSON で返す。"
+  + "Lua の閉じ忘れ・DXR(dxr: ケーパビリティと加速構造、RT 影/RT-AO の設定矛盾)、を検査して JSON で返す。"
   + "★判定は summary.errors > 0 だけを見ればよい(注意/情報は失敗ではない)。各 issue は日本語 1 行で次の一手が書いてある。"
   + "fast:true か only で重い検査(textures/models = assets 全走査で数十秒)を外せる。"
   + "instancing は 1 度も描画していないと測れない(skipped に理由が入る)。",

@@ -79,9 +79,10 @@ args = ["C:\\Users\\<you>\\dx12-mcp\\index.ts"]
 | 地形 | `dx12_terrain_create` `dx12_terrain_generate` `dx12_terrain_sculpt` `dx12_terrain_erode` `dx12_terrain_sample` `dx12_terrain_set_layers`（.terrainlayers を割り当てる**唯一の経路**。初回はスプラット生成＋自動ペイント） `dx12_terrain_autopaint`（傾斜/標高から4層を焼き直す・冪等） `dx12_terrain_paint`（円ブラシで1層を塗る・相対） `dx12_terrain_splat_info`（塗り結果を絵を見ずに数値検証） |
 | スカルプト | `dx12_sculpt_create` `dx12_sculpt_make_editable` `dx12_sculpt_brush` |
 | ライティング | `dx12_list_lights`（灯数バジェット警告つき） `dx12_set_sun` `dx12_apply_lighting_preset` |
-| 描画の切り分け | `dx12_render_debug`（中間バッファ可視化: normal/roughness/metallic/depth/ao/contactShadow/velocity/ssr/ssgi/shadowCascade/lightComplexity/clusterGrid/decalCount/fog*/off の 17 mode。撮ったら設定は必ず元へ戻る。`albedo`・`overdraw` は理由つきで非対応） |
+| 描画の切り分け | `dx12_render_debug`（中間バッファ可視化: normal/roughness/metallic/depth/ao/contactShadow/velocity/ssr/ssgi/**rt**/**rtDiff**/shadowCascade/lightComplexity/clusterGrid/decalCount/fog*/off の 19 mode。撮ったら設定は必ず元へ戻る。`albedo`・`overdraw` は理由つきで非対応） |
 | 影 | `dx12_get_shadow_pcss` `dx12_set_shadow_pcss`（PCSS ソフトシャドウ。OFF で従来 PCF とビット一致） |
-| 診断 | `dx12_diagnose`（シェーダー/テクスチャ/シーン参照/ライト/地形/ピッキング/Lua を一括検査） |
+| レイトレーシング | `dx12_get_dxr` `dx12_set_dxr`（DXR 1.1 inline raytracing の RT サン影 / RT-AO。**非対応 GPU では `set` がエラーではなく `retryable:false` の結果で返る**＝撃ち直さない。検証は `dx12_render_debug(mode:"rtDiff")`） |
+| 診断 | `dx12_diagnose`（シェーダー/テクスチャ/シーン参照/ライト/地形/ピッキング/Lua/**dxr** を一括検査） `dx12_describe_mcp_params`（エンジンが実際に受け付ける引数キーと型を method 名で引く。「設定したのに変わらない」ときの現物照合） |
 | 品質判断 | `dx12_look_compare`（参照画像との測光比較: EV/コントラスト/CCT/彩度/黒潰れ + 具体的な示唆） `dx12_camera_path`（動かして連写 → コンタクトシート + フレーム間差分） `dx12_scene_write`（シーン JSON を検証つきで直接書く） |
 
 生成/削除/シーン読込/Play/Stop は**遅延同期**: エンジンはフレーム境界で実処理し、完了後に

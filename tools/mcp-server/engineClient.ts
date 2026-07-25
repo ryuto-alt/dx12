@@ -44,6 +44,8 @@ for (const m of [
   "terrain_splat_info",
   // 影(PCSS)の設定 get/set は即時
   "get_shadow_pcss", "set_shadow_pcss",
+  // DXR の設定 get/set も即時(TLAS の再構築は次フレームの描画側で走る)
+  "get_dxr", "set_dxr",
   // ライティング(同期)
   "list_lights", "set_sun", "apply_lighting_preset",
 ]) TIMEOUT_BY_METHOD[m] = 8000;

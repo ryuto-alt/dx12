@@ -25,6 +25,11 @@ export const SCENE_ROOT_KEYS = [
   // ↓ BuildSceneJson は昔から書いているのにここに無く、エンジン自身が書いたシーンに対して
   //   「ルートの未知キー」警告を出していた（取りこぼし。まとめて追加）。
   "contactShadow", "taa", "ssr", "ssgi", "volumetricFog", "decalAtlas",
+  // ↓ 同じ取りこぼしが 3 回目。BuildSceneJson が root["shadowPcss"] / root["raytracing"] を
+  //   書くようになったのにここへ足し忘れると、エンジン自身が保存したシーンを読み込んだだけで
+  //   「ルートの未知キー」警告が出る。schemaDrift.test.ts [11] が SceneSerializer.cpp の
+  //   root["..."] 代入と突き合わせるので、次からは足し忘れた時点でテストが赤くなる。
+  "shadowPcss", "raytracing",
 ] as const;
 
 /** 反射登録されたコア部品の JSON キー(RegisterCoreComponentSerializers の登録順)。 */
@@ -190,7 +195,8 @@ export function validateSceneJson(root: unknown, opts: ValidateOptions = {}): Sc
     errors.push('"shadows" は bool。数値や文字列だと LoadFromString が既定(true)に落ちる');
   }
   for (const k of ["postProcess", "skybox", "ssao",
-                   "contactShadow", "taa", "ssr", "ssgi", "volumetricFog"] as const) {
+                   "contactShadow", "taa", "ssr", "ssgi", "volumetricFog",
+                   "shadowPcss", "raytracing"] as const) {
     if (root[k] !== undefined && !isPlainObject(root[k])) {
       errors.push(`"${k}" はオブジェクト。今は ${Array.isArray(root[k]) ? "配列" : typeof root[k]}`);
     }

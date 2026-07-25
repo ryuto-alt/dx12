@@ -439,9 +439,16 @@ dx12_set_post_process(godrays:true)
 # → エラー(code=2): 知らない引数 godrays(→ godraysOn のことか?) が来た(このまま実行すると黙って無視される)
 ```
 
+**エンジンの現物を確かめる — `dx12_describe_mcp_params`**: 「知らない引数」と弾かれた / 設定したのに
+変わらないときは、これでエンジンが**実際に受け付けるキーと型**を引ける
+（`dx12_describe_mcp_params(method:"set_dxr")` → `{methods:{set_dxr:[{key:"shadowEnabled",type:"any"},...]}}`。
+`method` は `dx12_` 接頭辞なし、省略で全件）。docs や zod スキーマが古くてもこちらが正。
+
 **メンテナ向け**: エンジン側の MCP ハンドラにフィールドを足したら `index.ts` の
 `inputSchema` にも足すこと。忘れると `npm test`(`schemaDrift.test.ts`)が
 `Application.cpp:<行> / index.ts:<行>` 付きで落ちる。
+エンジンのハンドラは `McpDefine("名前", "キー:型,...", ...)` のディスパッチ表になっており、
+`schemaDrift.ts` はその**申告表とハンドラ本文の両方**を読んで和集合を取る（どちらの書き忘れも拾う）。
 
 ### 影を柔らかくする — `dx12_set_shadow_pcss`
 
@@ -478,6 +485,7 @@ dx12_render_debug(mode:"depth", depthRange:60)         # 手前が潰れてな�
 dx12_render_debug(mode:"velocity", gain:20, frames:8)  # 静止時に一様なグレーなら正常
 dx12_render_debug(mode:"lightComplexity")              # 白いところは 128 灯で切り捨て中
 dx12_render_debug(mode:"ssr", frames:16)               # 時間蓄積があるので frames を増やす
+dx12_render_debug(mode:"rtDiff", gain:20)              # ★加速構造の検証。黒=RT とラスタが一致
 dx12_render_debug(mode:"off")                          # 撮らずに全部戻すだけ(リセット用)
 ```
 
@@ -494,6 +502,45 @@ dx12_render_debug(mode:"off")                          # 撮らずに全部戻�
   添えて弾かれる（`albedo` は前方レンダラなので G-Buffer が存在しない。`overdraw` は専用パスが要る）。
   代わりに最終画は `dx12_screenshot`、描画負荷は `dx12_perf_stats` の `draws`/`tris`、
   ライトの重なりは `mode:"lightComplexity"` を見ること。
+- **`rt` / `rtDiff` は DXR 用**。`rt` はプライマリレイのヒット距離（空/ミスは黒、`depthRange` で正規化）、
+  `rtDiff` は **|RT のヒット距離 − ラスタの距離|**（**黒 = 完全一致**、マゼンタ = 片方だけヒット）。
+  **加速構造（BLAS/TLAS）が正しいかの検証はこれが本命**で、行列の転置ミスやノード変換の付け忘れを一発で炙り出す。
+  `gain:20` くらいにすると 5cm でフルスケール。RT 影 / RT-AO が OFF でも TLAS を一時的に建てて撮る。
+  **スキンドと半透明は TLAS に入らない仕様なのでマゼンタになるのが正常**。BLAS は LOD0 固定なので、
+  遠くて低 LOD で描かれている物に数 cm の差が出るのも正常。
+  DXR 非対応 GPU では**真っ黒になるだけでエラーにはならない**（`warnings` に理由が出る）。
+
+---
+
+## レイトレーシング — `dx12_get_dxr` / `dx12_set_dxr`
+
+DXR 1.1 の inline raytracing（RayQuery）。**RT サン影**は既存のコンタクトシャドウ枠(t11)、
+**RT-AO** は既存の SSAO 枠(t8) へ書くので、ルートシグネチャは 1 DWORD も増えない。
+設定はシーン JSON の `raytracing` に保存される（`forceBuildTlas` だけは保存しない一時トグル）。
+
+```
+dx12_get_dxr()
+# → {supported:true, raytracingTier:"1.2", highestShaderModel:"6.8",
+#    shadowEnabled:false, shadowSunAngle:0.53, ..., shadowActive:false, tlasReady:true,
+#    stats:{instances:412, blasCount:37, blasBytes:..., skippedSkinned:3, droppedOverLimit:0, ...}}
+dx12_set_dxr(shadowEnabled:true, shadowSunAngle:0, aoEnabled:true, aoRayCount:4)
+```
+
+- **★まず `supported` を見る。** 非対応 GPU（DXR Tier 1.1 / SM 6.5 未満）では `dx12_set_dxr` は
+  適用できない。その場合は**エラーではなく** `{applied:false, supported:false, retryable:false, reason, next}`
+  が返る。**引数を変えて撃ち直しても永久に通らない**ので、`next` に従って
+  `dx12_set_shadow_pcss`（CSM + PCSS）と `dx12_set_ssao` / `dx12_set_contact_shadow` で作ること。
+  `dx12_get_dxr` の方は非対応 GPU でも**成功する**（`supported:false` が返るだけ）。
+- `shadowEnabled:true` なのに **`shadowActive:false`** なら効いていない。`tlasReady` と `supported`、
+  カメラ（正射）を疑う。
+- **PCSS と併用するときは `shadowSunAngle:0`**（ハード）にして半影は PCSS に任せるのが正しい。
+- **スキンドメッシュと半透明は加速構造に入らない**。そこは従来どおり CSM が担当し、フォワードの
+  `min()` で合成される（`stats.skippedSkinned` / `skippedTransparent` に本数が出る）。
+- `stats.droppedOverLimit > 0` なら TLAS のインスタンス上限に引っかかっている → `maxInstances` を上げる。
+- コストは `dx12_perf_stats` の `gpuPassMs.raytracing`（BLAS/TLAS の構築）と `gpuPassMs.rtScreen`
+  （RT 影 / RT-AO / RT デバッグのスクリーン空間パス）で見る。
+- 加速構造そのものの正しさは `dx12_render_debug(mode:"rtDiff", gain:20)`、
+  設定の矛盾は `dx12_diagnose(only:["dxr"])`。
 
 ---
 

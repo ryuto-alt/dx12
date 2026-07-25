@@ -16,9 +16,10 @@ import {
 } from "./schemaDrift.ts";
 import { COMPOSITE_TOOLS, GLOBAL_PARAM_KEYS, METHOD_KEY_ALIASES } from "./paramGuard.ts";
 import {
-  RENDER_DEBUG_MODES, RENDER_DEBUG_UNSUPPORTED,
+  DIAG_CHECKS, RENDER_DEBUG_MODES, RENDER_DEBUG_UNSUPPORTED,
   SCULPT_BRUSHES, SCULPT_PRIMITIVES, TERRAIN_BRUSHES, TERRAIN_PRESETS,
 } from "./sceneTools.ts";
+import { SCENE_ROOT_KEYS } from "./sceneWrite.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..", "..");
@@ -57,9 +58,15 @@ const SPREADS: Record<string, string[]> = { "...entityRef": ["entity", "name"] }
 const SHARED_BLOCK_KEYS: Record<string, string[]> = {
   overlap_box: ["radius"],
   overlap_sphere: ["halfExtents"],
-  // Application.cpp:5565 `get_shadow_pcss || set_shadow_pcss`。get は引数を取らない({} が正)。
+  // Application.cpp `get_shadow_pcss || set_shadow_pcss`。get は引数を取らない({} が正)。
   get_shadow_pcss: [
     "enabled", "lightTanAngle", "maxPenumbraTexels", "blockerSearchTexels", "temporalDither",
+  ],
+  // Application.cpp `get_dxr || set_dxr`。同じく get は引数を取らない。
+  get_dxr: [
+    "shadowEnabled", "shadowSunAngle", "shadowNormalBias", "shadowMaxDistance", "shadowIntensity",
+    "aoEnabled", "aoRadius", "aoRayCount", "aoIntensity", "aoPower", "aoCombineWithSsao",
+    "maxInstances", "forceBuildTlas",
   ],
   // Application.cpp:6358 `terrain_paint || terrain_autopaint`
   terrain_paint: [
@@ -105,6 +112,48 @@ check("スプレッドが全部 SPREADS に載っている",
     scene != null && (scene.nested["skybox"] ?? []).includes("envMapPath")
     && (scene.nested["skybox"] ?? []).includes("drawSkybox"),
     `set_scene_settings nested=${JSON.stringify(scene?.nested)}`);
+
+  // ★穴 3: ディスパッチ表への移行(#30)。以前は 118 本の `else if (method == "...")` で、
+  //   パーサは「最頻インデントの行が分岐の頭」という前提で読んでいた。
+  //   今は McpDefine("a|b", "キー:型,...", DX12E_MCP_HANDLER {...}) の表引きなので、
+  //   その前提は完全に消えている。新世代の読み方が生きていることをここで固定する。
+  const usesTable = /\bMcpDefine\s*\(\s*"/.test(cpp);
+  check("Application.cpp はディスパッチ表(McpDefine)になっている", usesTable,
+    "else-if 連鎖へ戻ったなら parseEngineMethods の旧世代フォールバックが使われる(それ自体は動く)");
+  for (const m of ["get_shadow_pcss", "set_shadow_pcss", "get_dxr", "set_dxr"]) {
+    check(`ディスパッチ表の "a|b" 形式も両方拾える: ${m}`, engine.has(m),
+      'McpDefine("get_x|set_x", ...) の | 区切りを parseEngineMethods が展開できていない');
+  }
+  {
+    // get/set が 1 本のハンドラなら【同じ行・同じ集合】になるのが正(片方だけなら切れている)。
+    const g = engine.get("get_dxr"), s = engine.get("set_dxr");
+    check("`get_dxr|set_dxr` は 1 本のハンドラとして両 method に同じ集合が付く",
+      g != null && s != null && g.line === s.line
+      && g.keys.includes("shadowEnabled") && g.keys.includes("forceBuildTlas"),
+      `get=${JSON.stringify(g)} / set=${JSON.stringify(s)}`);
+    // 他のハンドラのキーが混ざっていないこと(splitCallArgs が本文の途中で切れていない印)。
+    check("ハンドラの範囲が隣へ漏れていない", s != null && !s.keys.includes("idempotency_key"),
+      `set_dxr keys=${s?.keys.join(",")}`);
+  }
+  if (usesTable) {
+    // ★McpDefine の第 2 引数は【エンジン自身が申告するキー表】で、そのまま
+    //   dx12_describe_mcp_params が返す想定のもの。申告表とハンドラ本文が食い違うと
+    //   「describe が嘘をつく」= AI が存在しない引数を渡す / 使える引数を知らないままになる。
+    //   describe_mcp_params が着地したらテキスト解析をやめてそれを引けばよく、その時に
+    //   「申告表が正しい」ことの担保がここになる。
+    const lies: string[] = [];
+    let specced = 0;
+    for (const [name, em] of engine) {
+      if (!em.declared) continue;   // McpPostParamSpec() 等、リテラルでない申告表は対象外
+      specced++;
+      const spec = new Set(Object.keys(em.declared).map((k) => k.split(".")[0]));
+      const missing = em.keys.filter((k) => !spec.has(k));
+      if (missing.length > 0) lies.push(`${name}: 本文は読むのに申告表に無い → ${missing.join(", ")}`);
+    }
+    check("McpDefine の申告表が 100 本以上のハンドラに付いている", specced >= 100, `specced=${specced}`);
+    check("申告表とハンドラ本文が一致(describe_mcp_params が嘘をつかない)", lies.length === 0,
+      lies.join("\n      "));
+  }
 }
 
 const keysOf = (t: { schemaKeys: string[] }) =>
@@ -320,8 +369,11 @@ console.log("\n[9] アニメーション系ツール(エンジンに実装済み
   {
     // エンジン側が param を正として読み、name はエンティティ名の後方互換フォールバックである
     // ことの確認。ここが崩れたら TS の name の意味も戻す必要がある。
-    const at = cpp.indexOf(`method == "set_anim_param"`);
-    const body = cpp.slice(at, at + 2000);
+    // ★ハンドラの探し方はディスパッチ表(McpDefine)を前提にする。旧世代の
+    //   `else if (method == "set_anim_param")` も一応見る(古いコミット用)。
+    const at = [`McpDefine("set_anim_param"`, `method == "set_anim_param"`]
+      .map((needle) => cpp.indexOf(needle)).find((i) => i >= 0) ?? -1;
+    const body = at < 0 ? "" : cpp.slice(at, at + 2500);
     check("engine の set_anim_param は param を先に読む(name はフォールバック)",
       /params\.value\(\s*"param"/.test(body)
       && body.indexOf('params.value("param"') < body.indexOf('params.value("name"'),
@@ -346,6 +398,12 @@ console.log("\n[10] 新規ツール(エンジンに実装済みで TS 定義が�
       "enabled", "lightTanAngle", "maxPenumbraTexels", "blockerSearchTexels", "temporalDither",
     ],
     dx12_get_shadow_pcss: [],
+    dx12_set_dxr: [
+      "shadowEnabled", "shadowSunAngle", "shadowNormalBias", "shadowMaxDistance", "shadowIntensity",
+      "aoEnabled", "aoRadius", "aoRayCount", "aoIntensity", "aoPower", "aoCombineWithSsao",
+      "maxInstances", "forceBuildTlas",
+    ],
+    dx12_get_dxr: [],
   };
   for (const [tool, keys] of Object.entries(want)) {
     const t = tools.find((x) => x.tool === tool);
@@ -362,6 +420,26 @@ console.log("\n[10] 新規ツール(エンジンに実装済みで TS 定義が�
   check("dx12_set_shadow_pcss は applyAndVerify で get_shadow_pcss を読み返す",
     setPcss != null && setPcss.methods.includes("set_shadow_pcss")
     && setPcss.methods.includes("get_shadow_pcss"), `methods=${setPcss?.methods.join(",")}`);
+
+  // set_dxr も同じ理由で [4] に引っかからない(applied は method 名で決まる)。
+  // さらに DXR は「非対応 GPU では error_code:2 で必ず落ちる」経路があるので、
+  //   ① applyAndVerify で読み返していること
+  //   ② 撃つ前に get_dxr で supported を見て、非対応を【エラーではない結果】として返すこと
+  // の 2 つを名指しで固定する。②が無いと AI が非対応環境で延々と撃ち直す。
+  {
+    const setDxr = tools.find((t) => t.tool === "dx12_set_dxr");
+    check("dx12_set_dxr は applyAndVerify で get_dxr を読み返す",
+      setDxr != null && setDxr.methods.includes("set_dxr") && setDxr.methods.includes("get_dxr"),
+      `methods=${setDxr?.methods.join(",")}`);
+    check("dx12_set_dxr は非対応 GPU を「正常な非対応」として返す(retryable:false)",
+      /function dxrUnsupportedResult/.test(indexSrc)
+      && /retryable:\s*false/.test(indexSrc)
+      && /isDxrUnsupportedError/.test(indexSrc),
+      "非対応 GPU の error_code:2 を素のエラーで返すと引数不正と区別が付かず、AI が撃ち直し続ける");
+    check("非対応判定は error_code だけでなく message でも絞っている(引数不正を握り潰さない)",
+      /does not support inline raytracing/.test(indexSrc),
+      "error_code:2 は引数不正の汎用コードでもあるので、全部を非対応扱いにすると本物のバグが隠れる");
+  }
 
   // render_debug の mode 表 ⇔ Application.cpp の kEntries[]。
   // C++ は `static const DbgEntry kEntries[] = {{"off", 0}, {"normal", ...}, ...}` なので
@@ -384,6 +462,73 @@ console.log("\n[10] 新規ツール(エンジンに実装済みで TS 定義が�
         `Application.cpp の kEntries[] に "${m}" が生えた。sceneTools.ts の RENDER_DEBUG_UNSUPPORTED から外し、`
         + "RENDER_DEBUG_MODES へ足すこと");
     }
+  }
+}
+
+console.log("\n[11] エンジン側の『名前表』との突き合わせ(列挙の取りこぼし)");
+{
+  // (0) describe_mcp_params。エンジンが自分の引数表を返せるようになった(#30)ので、
+  //     TS 側にもツールが無いと AI から引けない = 「エンジンの現物」を確かめる手段が無くなる。
+  //     このテストが静的に読んでいる McpDefine の申告表と、実行時に返るものは同じ表。
+  if (engine.has("describe_mcp_params")) {
+    check("dx12_describe_mcp_params が登録されている(エンジンの引数表を AI から引ける)",
+      tools.some((t) => t.tool === "dx12_describe_mcp_params"),
+      "engine に describe_mcp_params があるのに TS ツールが無い");
+  }
+
+  // ★ここは「増えたのに TS が知らない」を拾う場所。zod で弾かれる列挙は黙って捨てられこそ
+  //   しないが、エンジンに生えた検査 / パスが MCP から永遠に選べない・見えないのは同じ害。
+
+  // (a) diagnose の only ⇔ DeepDiag::AllCheckIds()
+  const DIAG_CPP = path.join(repoRoot, "src", "gui", "DeepDiagnostics.cpp");
+  if (!fs.existsSync(DIAG_CPP)) {
+    console.log("  --  DeepDiagnostics.cpp が無いので diagnose の検査 ID は照合しない");
+  } else {
+    const src = fs.readFileSync(DIAG_CPP, "utf8");
+    const at = src.indexOf("DeepDiag::AllCheckIds()");
+    const block = at < 0 ? "" : src.slice(at, src.indexOf("}", src.indexOf("return", at)));
+    const ids = [...block.matchAll(/"([a-z0-9_]+)"/g)].map((m) => m[1]);
+    check("DeepDiagnostics.cpp から AllCheckIds() を読める", ids.length >= 10, `ids=${ids.join(",")}`);
+    check("DIAG_CHECKS が AllCheckIds() と一致(順序込み)",
+      JSON.stringify(ids) === JSON.stringify([...DIAG_CHECKS]),
+      `engine=[${ids.join(",")}] / ts=[${DIAG_CHECKS.join(",")}]`);
+  }
+
+  // (b) perf_stats の gpuPassMs ⇔ GpuTimer::Name()
+  //     返り値のキーはツール説明にしか書けない(engine の result は素通し)ので、
+  //     「説明に全パス名が載っているか」で見る。載っていないパスは AI から存在しないのと同じ。
+  const TIMER_CPP = path.join(repoRoot, "src", "graphics", "GpuTimer.cpp");
+  if (!fs.existsSync(TIMER_CPP)) {
+    console.log("  --  GpuTimer.cpp が無いので gpuPassMs は照合しない");
+  } else {
+    const names = [...fs.readFileSync(TIMER_CPP, "utf8")
+      .matchAll(/case\s+[A-Za-z]+\s*:\s*return\s+"([A-Za-z0-9_]+)"/g)].map((m) => m[1]);
+    check("GpuTimer.cpp からパス名を読める", names.length >= 10, `names=${names.join(",")}`);
+    const perf = tools.find((t) => t.tool === "dx12_perf_stats");
+    const desc = perf ? indexSrc.slice(indexSrc.indexOf('"dx12_perf_stats"'),
+      indexSrc.indexOf('"dx12_perf_stats"') + 2000) : "";
+    const missing = names.filter((n) => !desc.includes(n));
+    check("dx12_perf_stats の説明が gpuPassMs の全パス名を挙げている", missing.length === 0,
+      `説明に無い: ${missing.join(", ")}  (GpuTimer::Name が増えたら index.ts の説明にも足すこと)`);
+  }
+}
+
+console.log("\n[12] シーン JSON のルートキー(SceneSerializer.cpp が書くもの ⊆ SCENE_ROOT_KEYS)");
+{
+  // ★取りこぼしの常習犯。contactShadow / taa / ssr / ssgi のときと、shadowPcss / raytracing の
+  //   ときで計 3 回起きている。エンジン自身が保存したシーンを読んだだけで
+  //   「ルートの未知キー」警告が出る = dx12_scene_write の検証が嘘をつく。
+  const SER = path.join(repoRoot, "src", "scene", "SceneSerializer.cpp");
+  if (!fs.existsSync(SER)) {
+    console.log("  --  SceneSerializer.cpp が無いのでルートキーは照合しない");
+  } else {
+    const written = [...new Set([...fs.readFileSync(SER, "utf8")
+      .matchAll(/\broot\s*\[\s*"([A-Za-z0-9_]+)"\s*\]\s*=/g)].map((m) => m[1]))];
+    check("SceneSerializer.cpp から root[...] への書き込みを読める", written.length >= 10,
+      `written=${written.join(",")}`);
+    const missing = written.filter((k) => !(SCENE_ROOT_KEYS as readonly string[]).includes(k));
+    check("SCENE_ROOT_KEYS がエンジンの書くルートキーを網羅している", missing.length === 0,
+      `足りない: ${missing.join(", ")}  → sceneWrite.ts の SCENE_ROOT_KEYS に足すこと`);
   }
 }
 
