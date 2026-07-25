@@ -10,6 +10,7 @@
 #include "core/vfs/Vfs.h"
 
 #include <cstdlib>
+#include <cmath>    // 祖先変換が単位行列かの判定
 #include <cctype>   // ::tolower(拡張子の小文字化)
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
@@ -115,9 +116,17 @@ void CollectBoneNames(const aiScene* scene, std::unordered_map<std::string, cons
     }
 }
 
+// skippedAncestors: 直近のボーン祖先より下にある「ボーンではないノード」のローカル変換の積
+//   （行ベクトル規約 = 子 * 親 の順）。glTF の "Z_UP" / "Armature"、Collada/FBX の軸変換
+//   ノードはスケルトンに現れないので、ここで拾って直下のボーンへ畳み込む。
+//   これを捨てると Z-up でオーサリングされた glTF（CesiumMan.glb）が寝たまま入る。
+//   ★glTF は仕様上 Y-up 固定で、assimp の glTF2 インポータは軸変換を一切足さない
+//     （glTF2Importer::ImportNodes を確認済み。aiProcess_ にも該当フラグは無い）。
+//     「Z-up の glTF」に見えるものは、ファイル側が変換ノードを持っているだけ。
 void BuildSkeletonRecursive(
     const aiNode* node,
     i32 parentIndex,
+    DirectX::FXMMATRIX skippedAncestors,
     const std::unordered_map<std::string, const aiBone*>& boneMap,
     Skeleton& skeleton)
 {
@@ -126,21 +135,41 @@ void BuildSkeletonRecursive(
 
     i32 currentIndex = parentIndex;
 
+    const DirectX::XMFLOAT4X4 localF = ToXMFLOAT4X4(node->mTransformation);
+    DirectX::XMMATRIX childSkipped =
+        DirectX::XMMatrixMultiply(DirectX::XMLoadFloat4x4(&localF), skippedAncestors);
+
     if (it != boneMap.end())
     {
         BoneNode boneNode;
         boneNode.name = nodeName;
         boneNode.parentIndex = parentIndex;
         boneNode.inverseBindPose = ToXMFLOAT4X4(it->second->mOffsetMatrix);
-        boneNode.localBindPose = ToXMFLOAT4X4(node->mTransformation);
+        boneNode.localBindPose = localF;
+
+        // 祖先の変換が単位行列でなければ preTransform として持たせる。
+        // （単位行列なら hasPreTransform=false のまま = 従来と完全に同じ計算）
+        DirectX::XMFLOAT4X4 pre;
+        DirectX::XMStoreFloat4x4(&pre, skippedAncestors);
+        constexpr float kEps = 1e-6f;
+        bool isIdentity = true;
+        for (int r = 0; r < 4 && isIdentity; ++r)
+            for (int c = 0; c < 4; ++c)
+                if (std::fabs(pre.m[r][c] - ((r == c) ? 1.0f : 0.0f)) > kEps) { isIdentity = false; break; }
+        if (!isIdentity)
+        {
+            boneNode.preTransform    = pre;
+            boneNode.hasPreTransform = true;
+        }
 
         currentIndex = static_cast<i32>(skeleton.GetBoneCount());
         skeleton.AddBone(std::move(boneNode));
+        childSkipped = DirectX::XMMatrixIdentity();
     }
 
     for (unsigned int ci = 0; ci < node->mNumChildren; ++ci)
     {
-        BuildSkeletonRecursive(node->mChildren[ci], currentIndex, boneMap, skeleton);
+        BuildSkeletonRecursive(node->mChildren[ci], currentIndex, childSkipped, boneMap, skeleton);
     }
 }
 
@@ -155,7 +184,7 @@ std::unique_ptr<Skeleton> BuildSkeleton(const aiScene* scene)
     }
 
     auto skeleton = std::make_unique<Skeleton>();
-    BuildSkeletonRecursive(scene->mRootNode, -1, boneMap, *skeleton);
+    BuildSkeletonRecursive(scene->mRootNode, -1, DirectX::XMMatrixIdentity(), boneMap, *skeleton);
 
     Logger::Info("Skeleton built: {} bones", skeleton->GetBoneCount());
 

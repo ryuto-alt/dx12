@@ -13434,9 +13434,12 @@ void Application::Render()
                         auto& t = entity.GetComponent<Transform>();
                         t.scale = {kDefaultScale, kDefaultScale, kDefaultScale};
 
-                        // glTF/glb はZ-upなのでX軸90度回転で立たせる
-                        if (ext == ".gltf" || ext == ".glb")
-                            t.rotation.x = 90.0f;
+                        // ★ここに昔あった「glTF/glb は Z-up なので X 軸 90 度回転」は削除した(B13)。
+                        //   glTF 2.0 は仕様上 Y-up 固定で、assimp も軸変換を一切足さない。
+                        //   Z-up でオーサリングされたファイル(CesiumMan.glb 等)は自分の中に
+                        //   変換ノード("Z_UP")を持っており、それは ModelLoader が
+                        //   BoneNode::preTransform として畳み込む。ここで一律に回すと
+                        //   正しい Y-up の glTF(Fox.glb)が立ち上がってしまう。
                     }
                     spawnedEntity = entity.GetHandle();
                 }

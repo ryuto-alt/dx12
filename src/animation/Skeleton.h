@@ -16,6 +16,14 @@ struct BoneNode
     DirectX::XMFLOAT4X4 inverseBindPose;
     DirectX::XMFLOAT4X4 localBindPose;
 
+    // 「ボーンではない祖先ノード」の変換をまとめたもの（行ベクトル規約）。
+    // glTF の "Z_UP" / "Armature"、Collada/FBX の軸変換ノードのように、スケルトンの
+    // 外側に置かれた変換ノードは骨として現れないので、ここへ畳み込んでおき
+    // ComputeGlobalMatrices が local の直後に掛ける（＝失われないようにする）。
+    // 大半のモデルは単位行列なので hasPreTransform=false で完全に従来どおりの計算になる。
+    DirectX::XMFLOAT4X4 preTransform{1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    bool                hasPreTransform = false;
+
     // localBindPose を TRS へ分解したもの（Skeleton::AddBone が自動で埋める）。
     // AnimPose がトラックの無いボーンを埋めるのに使う。行列を毎フレーム分解する
     // コストを避けるためのキャッシュであり、S*R*T で localBindPose を再構成できる。

@@ -211,6 +211,12 @@ void ComputeGlobalMatrices(const Skeleton& skeleton, const AnimPose& pose,
                        ? BoneTRSToMatrix(pose[i])
                        : XMLoadFloat4x4(&bone.localBindPose);
 
+        // ボーンでない祖先ノード（glTF の "Z_UP"/"Armature" 等の軸変換）を掛け直す。
+        // アニメーショントラックはボーンのローカルしか持たないので、local の直後に
+        // 入れないと「再生した瞬間に軸変換が消える」ことになる。
+        if (bone.hasPreTransform)
+            local = local * XMLoadFloat4x4(&bone.preTransform);
+
         if (bone.parentIndex >= 0)
         {
             // 親が子より前に並んでいる前提（Skeleton::AreBonesCorrectlyOrdered）。
