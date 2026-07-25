@@ -484,6 +484,49 @@ static void Test_AnimatorController()
         });
 }
 
+// フット IK（接地補正）。_ 付きのランタイム状態は往復に出てこないこと。
+static void Test_FootIK()
+{
+    Case<FootIK>(
+        [](entt::registry& r, entt::entity e) {
+            FootIK ik;
+            ik.enabled         = false;
+            ik.weight          = 0.75f;
+            ik.leftFootBone    = "mixamorig:LeftFoot";
+            ik.rightFootBone   = "mixamorig:RightFoot";
+            ik.pelvisBone      = "mixamorig:Hips";
+            ik.rayUpOffset     = 0.6f;
+            ik.rayLength       = 1.4f;
+            ik.footHeight      = 0.12f;
+            ik.maxPelvisDrop   = 0.4f;
+            ik.maxFootPitchDeg = 30.0f;
+            ik.smoothTime      = 0.08f;
+            ik.fadeOutTime     = 0.2f;
+            ik.alignToNormal   = false;
+            ik.kneeForward     = {0.0f, 0.0f, -1.0f};
+            r.emplace<FootIK>(e, ik);
+        },
+        [](const FootIK& ik) {
+            CHECK(ik.enabled == false);
+            CHECK_F(ik.weight, 0.75f);
+            CHECK(ik.leftFootBone == "mixamorig:LeftFoot");
+            CHECK(ik.rightFootBone == "mixamorig:RightFoot");
+            CHECK(ik.pelvisBone == "mixamorig:Hips");
+            CHECK_F(ik.rayUpOffset, 0.6f);
+            CHECK_F(ik.rayLength, 1.4f);
+            CHECK_F(ik.footHeight, 0.12f);
+            CHECK_F(ik.maxPelvisDrop, 0.4f);
+            CHECK_F(ik.maxFootPitchDeg, 30.0f);
+            CHECK_F(ik.smoothTime, 0.08f);
+            CHECK_F(ik.fadeOutTime, 0.2f);
+            CHECK(ik.alignToNormal == false);
+            CHECK_V3(ik.kneeForward, 0.0f, 0.0f, -1.0f);
+            // 復元直後は未解決（複製先が元の解決結果を引き継がないこと）
+            CHECK(ik._resolved == false);
+            CHECK(ik._lFoot == -1 && ik._rFoot == -1);
+        });
+}
+
 static void Test_BoxCollider()
 {
     Case<BoxCollider>(
@@ -1219,6 +1262,7 @@ int main()
     Test_NetworkTransform();
     Test_Decal();
     Test_AnimatorController();
+    Test_FootIK();
     Test_BoxCollider();
     Test_SphereCollider();
     Test_CapsuleCollider();

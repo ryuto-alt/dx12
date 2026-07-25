@@ -394,6 +394,30 @@ void RegisterCoreComponentMeta()
         .data<&AnimatorController::applyRootMotion>("applyRootMotion")
         .data<&AnimatorController::eventChannel>("eventChannel");
 
+    // FootIK: _ 付きのランタイム状態（解決済みボーン index / 平滑値）は登録しない
+    entt::meta_factory<FootIK>{}
+        .type("FootIK")
+        .data<&FootIK::enabled>("enabled")
+        .data<&FootIK::weight>("weight")
+        .data<&FootIK::leftHipBone>("leftHipBone")
+        .data<&FootIK::leftKneeBone>("leftKneeBone")
+        .data<&FootIK::leftFootBone>("leftFootBone")
+        .data<&FootIK::leftToeBone>("leftToeBone")
+        .data<&FootIK::rightHipBone>("rightHipBone")
+        .data<&FootIK::rightKneeBone>("rightKneeBone")
+        .data<&FootIK::rightFootBone>("rightFootBone")
+        .data<&FootIK::rightToeBone>("rightToeBone")
+        .data<&FootIK::pelvisBone>("pelvisBone")
+        .data<&FootIK::rayUpOffset>("rayUpOffset")
+        .data<&FootIK::rayLength>("rayLength")
+        .data<&FootIK::footHeight>("footHeight")
+        .data<&FootIK::maxPelvisDrop>("maxPelvisDrop")
+        .data<&FootIK::maxFootPitchDeg>("maxFootPitchDeg")
+        .data<&FootIK::smoothTime>("smoothTime")
+        .data<&FootIK::fadeOutTime>("fadeOutTime")
+        .data<&FootIK::alignToNormal>("alignToNormal")
+        .data<&FootIK::kneeForward>("kneeForward");
+
     entt::meta_factory<PrefabLink>{}
         .type("PrefabLink")
         .data<&PrefabLink::sourcePath>("sourcePath");

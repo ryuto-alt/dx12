@@ -88,6 +88,14 @@ int main()
     Expect<AnimatorController>({ "graphPath", "playOnStart", "speed", "applyRootMotion", "eventChannel" });
     // _state / _loaded / _failed / _loadedPath はランタイム専有なので meta に出てはいけない
     CHECK(FieldNames<AnimatorController>().size() == 5);
+    Expect<FootIK>({ "enabled", "weight", "leftHipBone", "leftKneeBone", "leftFootBone",
+                     "rightHipBone", "rightKneeBone", "rightFootBone", "pelvisBone",
+                     "rayUpOffset", "rayLength", "footHeight", "maxPelvisDrop",
+                     "maxFootPitchDeg", "smoothTime", "fadeOutTime", "alignToNormal",
+                     "kneeForward" });
+    // _lHip / _lLift 等のランタイム状態は meta に出てはいけない
+    // （永続フィールドは 11 本のボーン名/有効/重み + 9 本のパラメータ = 20 本）
+    CHECK(FieldNames<FootIK>().size() == 20);
 
     // 反映は冪等（2回呼んでも壊れない）
     RegisterCoreComponentMeta();

@@ -277,6 +277,18 @@ if(TARGET Renderer)
     endif()
     add_test(NAME BoneMaskTests COMMAND BoneMaskTests)
 
+    # 2 ボーン解析 IK（animation/TwoBoneIK.h）テスト。フット IK の心臓部。
+    # 「解いたあと FK し直すと足首が目標に乗る」「ボーン長が保存される」を数値で守る。
+    # ヘッダオンリー・純 DirectXMath。
+    add_executable(TwoBoneIKTests two_bone_ik_test.cpp)
+    target_include_directories(TwoBoneIKTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(TwoBoneIKTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(TwoBoneIKTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(TwoBoneIKTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME TwoBoneIKTests COMMAND TwoBoneIKTests)
+
     # Frustum（視錐台抽出＋球カリング）テスト。ヘッダオンリー・純 DirectXMath。
     add_executable(FrustumTests frustum_test.cpp)
     target_include_directories(FrustumTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

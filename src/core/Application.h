@@ -332,6 +332,10 @@ private:
     f32  m_benchSavedFpsLimit = 0.0f;
     bool m_benchSavedVsync = false;
     void RebuildScene();
+    // フット IK（接地補正）を 1 フレームぶん適用する。Play 中のみ。
+    // 物理ステップ後・スキニングバッファのアップロード前に呼ぶこと
+    // （IK 後のボーン行列が GPU へ行くように）。
+    void ApplyFootIkPass();
     // シェーダーホットリロード用 PSO 再生成。初回(Initialize)と再生成(hot-reload)の両方から呼ぶ。
     // 既存 unique_ptr が非 null ならその場で Initialize() し直す(オブジェクトの住所は変えない=
     // ModelThumbnailRenderer 等が生ポインタを保持しているケースでのダングリングを避けるため)。

@@ -68,6 +68,7 @@
 #include "ui/UISystem.h"
 #include "ui/UiAnimRuntime.h"
 #include "animation/AnimGraphRuntime.h"
+#include "animation/FootIK.h"
 #include "core/mcp/McpBridge.h"
 #include <nlohmann/json.hpp>
 #include <filesystem>
@@ -2258,6 +2259,7 @@ bool RemoveRegisteredComponent(entt::registry& reg, entt::entity e, const std::s
     else if (key == "uiAnimPlayer")        reg.remove<UIAnimPlayer>(e);
     else if (key == "spriteAnimator")      reg.remove<SpriteAnimator>(e);
     else if (key == "animatorController")  reg.remove<AnimatorController>(e);
+    else if (key == "footIK")              reg.remove<FootIK>(e);
     else return false;
     return true;
 }
@@ -3034,6 +3036,28 @@ nlohmann::json McpComponentSchema()
         "The graph structure (states/transitions/blend trees/layers/masks/clipEvents) lives in the .animfsm "
         "JSON asset - edit it with Write/Edit, then dx12_open_scene to reload. Inspect with "
         "dx12_describe_anim_graph, drive with dx12_set_anim_param, force a state with dx12_play_anim {state}."));
+    comps.push_back(C("footIK", true, true, json::array({
+        F("enabled", "bool", true),
+        F("weight", "float (0..1 overall strength)", 1.0),
+        F("leftHipBone", "string (empty = auto-detect from common naming)", ""),
+        F("leftKneeBone", "string", ""), F("leftFootBone", "string", ""), F("leftToeBone", "string", ""),
+        F("rightHipBone", "string", ""), F("rightKneeBone", "string", ""),
+        F("rightFootBone", "string", ""), F("rightToeBone", "string", ""),
+        F("pelvisBone", "string (empty = root bone)", ""),
+        F("rayUpOffset", "float (metres above the ankle to start the ray)", 0.5),
+        F("rayLength", "float (total ray length in metres)", 1.0),
+        F("footHeight", "float (ankle height above ground in the rest pose)", 0.1),
+        F("maxPelvisDrop", "float (metres)", 0.5),
+        F("maxFootPitchDeg", "float (degrees)", 45.0),
+        F("smoothTime", "float (seconds, exponential smoothing time constant)", 0.1),
+        F("fadeOutTime", "float (seconds)", 0.15),
+        F("alignToNormal", "bool", true),
+        F("kneeForward", "float3 (model space direction the knee points)", json::array({0, 0, 1})),
+    }), "Foot placement IK. Requires skeletalAnimation on the same entity. Raycasts the ground, "
+        "matches ankle height and orientation, and drops the pelvis to reach the lower foot. "
+        "ONLY RUNS IN PLAY MODE (physics bodies exist only while playing). Bone names left empty "
+        "are auto-detected from common rig naming; check the resolved result in dx12_get_anim_state's "
+        "footIK block. Uses PhysicsSystem::RaycastEx for true surface normals."));
     comps.push_back(C("trigger", true, true, json::array({
         F("shape", "int (0=Box,1=Sphere)", 0), F("halfExtents", "float3", json::array({1, 1, 1})),
         F("radius", "float", 1.0), F("offset", "float3", json::array({0, 0, 0})),
@@ -3271,6 +3295,9 @@ nlohmann::json McpLuaApi()
         "playAnimState(stateName:string, blend:float?)  (ステートへ強制遷移。デバッグ/カットシーン用)",
         "setAnimLayerWeight(layer:int, w:float)  (レイヤー重み 0..1。上半身レイヤーのフェードイン等)",
         "getAnimLayerWeight(layer:int) -> float",
+        "setFootIKWeight(w:float)  (フット IK の効きを実行時に変える 0..1。FootIK コンポーネントが要る)",
+        "getFootIKWeight() -> float",
+        "isFootGrounded(rightFoot:bool?) -> bool  (フット IK のレイが地面に当たっているか。省略で左足)",
         "注: アニメイベント(足音)は EventBus に流れる。events:on(\"footstep\", function(ev) ... end) で受ける",
         "-- UI アニメ(.uianim) / スプライトシート(.spranim) --",
         "playUiAnim(clipPath:string?)  (UIAnimPlayer が無ければ付ける。clipPath 省略で現在のクリップを再生)",
@@ -3500,6 +3527,7 @@ nlohmann::json McpComponentTypesOf(const entt::registry& reg, entt::entity e)
     if (reg.all_of<UIAnimPlayer>(e))        a.push_back("uiAnimPlayer");
     if (reg.all_of<SpriteAnimator>(e))      a.push_back("spriteAnimator");
     if (reg.all_of<AnimatorController>(e))  a.push_back("animatorController");
+    if (reg.all_of<FootIK>(e))              a.push_back("footIK");
     if (reg.all_of<PrefabLink>(e))          a.push_back("prefabLink");
     return a;
 }
@@ -5688,6 +5716,43 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                     result["parameters"] = std::move(ps);
                 }
             }
+
+            // ---- FootIK（接地の破綻をスクショ無しで検知できるようにする）----
+            if (reg.all_of<FootIK>(e))
+            {
+                const auto& ik = reg.get<FootIK>(e);
+                json fj;
+                fj["enabled"]       = ik.enabled;
+                fj["weight"]        = ik.weight;
+                fj["resolved"]      = ik._resolved;
+                fj["resolveFailed"] = ik._resolveFailed;
+                fj["bones"] = {{"leftHip", ik._lHip}, {"leftKnee", ik._lKnee}, {"leftFoot", ik._lFoot},
+                               {"rightHip", ik._rHip}, {"rightKnee", ik._rKnee}, {"rightFoot", ik._rFoot},
+                               {"pelvis", ik._pelvis}};
+                if (ik._resolved && reg.all_of<SkeletalAnimation>(e))
+                {
+                    const auto& sk = reg.get<SkeletalAnimation>(e).skeleton;
+                    auto boneName = [&](i32 b) -> std::string {
+                        return (sk && b >= 0 && static_cast<u32>(b) < sk->GetBoneCount())
+                             ? sk->GetBone(static_cast<u32>(b)).name : std::string();
+                    };
+                    fj["boneNames"] = {{"leftHip", boneName(ik._lHip)}, {"leftKnee", boneName(ik._lKnee)},
+                                       {"leftFoot", boneName(ik._lFoot)}, {"rightHip", boneName(ik._rHip)},
+                                       {"rightKnee", boneName(ik._rKnee)}, {"rightFoot", boneName(ik._rFoot)},
+                                       {"pelvis", boneName(ik._pelvis)}};
+                }
+                fj["leftContact"]  = ik._lContact;
+                fj["rightContact"] = ik._rContact;
+                fj["leftWeight"]   = ik._lWeight;
+                fj["rightWeight"]  = ik._rWeight;
+                fj["leftLift"]     = ik._lLift;
+                fj["rightLift"]    = ik._rLift;
+                fj["pelvisOffset"] = ik._pelvisDrop;
+                fj["leftNormal"]   = json::array({ik._lNormal.x, ik._lNormal.y, ik._lNormal.z});
+                fj["rightNormal"]  = json::array({ik._rNormal.x, ik._rNormal.y, ik._rNormal.z});
+                result["footIK"] = std::move(fj);
+            }
+
             resp["ok"] = true;
             resp["result"] = std::move(result);
         }
@@ -8585,6 +8650,122 @@ void Application::Update()
     if (m_engineMode == EngineMode::Playing)
     {
         m_eventBus.Flush();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// フット IK パス。FootIK + SkeletalAnimation を持つエンティティの足を地面に合わせる。
+//
+// FootIK.cpp（Animation ライブラリ）は entt も PhysicsSystem も知らない。
+// ここが「エンティティを走査して PhysicsSystem::RaycastEx を繋ぐ」接着層。
+// ---------------------------------------------------------------------------
+void Application::ApplyFootIkPass()
+{
+    if (!m_scene) return;
+    // 物理ボディは Play 中しか存在しない＝エディタでは接地判定ができない（仕様）
+    if (m_engineMode != EngineMode::Playing) return;
+    if (!m_physicsSystem) return;
+
+    auto& reg = m_scene->GetRegistry();
+    auto view = reg.view<FootIK, SkeletalAnimation>();
+    if (view.begin() == view.end()) return;
+
+    const f32 dt = m_gameClock.GetDeltaTime();
+
+    // PhysicsSystem::RaycastEx を FootIK 側のコールバック形へ包む。
+    // ★従来の Raycast は法線を (0,1,0) にフェイクしているので使えない★
+    const FootIKRayCast rayFn =
+        [this](const DirectX::XMFLOAT3& origin, const DirectX::XMFLOAT3& dir, f32 maxDist,
+               DirectX::XMFLOAT3& outPoint, DirectX::XMFLOAT3& outNormal) -> bool
+    {
+        const RaycastHit hit = m_physicsSystem->RaycastEx(origin, dir, maxDist);
+        if (!hit.hit) return false;
+        outPoint  = hit.point;
+        outNormal = hit.normal;
+        return true;
+    };
+
+    for (auto [e, ik, skelAnim] : view.each())
+    {
+        if (!ik.enabled || ik.weight <= 0.0f) continue;
+        if (!skelAnim.animator || !skelAnim.skeleton) continue;
+
+        // ---- ボーン解決（1 回だけ）----
+        if (!ik._resolved && !ik._resolveFailed)
+        {
+            FootIKBoneNames names;
+            names.leftHip   = ik.leftHipBone;   names.leftKnee  = ik.leftKneeBone;
+            names.leftFoot  = ik.leftFootBone;  names.leftToe   = ik.leftToeBone;
+            names.rightHip  = ik.rightHipBone;  names.rightKnee = ik.rightKneeBone;
+            names.rightFoot = ik.rightFootBone; names.rightToe  = ik.rightToeBone;
+            names.pelvis    = ik.pelvisBone;
+
+            FootIKBones bones;
+            if (ResolveFootIKBones(*skelAnim.skeleton, names, bones))
+            {
+                ik._lHip = bones.left.hip;   ik._lKnee = bones.left.knee;
+                ik._lFoot = bones.left.foot; ik._lToe  = bones.left.toe;
+                ik._rHip = bones.right.hip;  ik._rKnee = bones.right.knee;
+                ik._rFoot = bones.right.foot; ik._rToe = bones.right.toe;
+                ik._pelvis = bones.pelvis;
+                ik._resolved = true;
+            }
+            else
+            {
+                ik._resolveFailed = true;
+                std::string all;
+                for (u32 b = 0; b < skelAnim.skeleton->GetBoneCount(); ++b)
+                {
+                    if (!all.empty()) all += ", ";
+                    all += skelAnim.skeleton->GetBone(b).name;
+                }
+                Logger::Warn("FootIK: 足ボーンを特定できませんでした。FootIK の "
+                             "leftHipBone/leftKneeBone/leftFootBone(+right) で明示指定してください。"
+                             "このスケルトンのボーン一覧: [{}]", all);
+            }
+        }
+        if (!ik._resolved) continue;
+
+        FootIKBones bones;
+        bones.left  = { ik._lHip, ik._lKnee, ik._lFoot, ik._lToe };
+        bones.right = { ik._rHip, ik._rKnee, ik._rFoot, ik._rToe };
+        bones.pelvis = ik._pelvis;
+
+        FootIKParams params;
+        params.weight          = ik.weight;
+        params.rayUpOffset     = ik.rayUpOffset;
+        params.rayLength       = ik.rayLength;
+        params.footHeight      = ik.footHeight;
+        params.maxPelvisDrop   = ik.maxPelvisDrop;
+        params.maxFootPitchDeg = ik.maxFootPitchDeg;
+        params.smoothTime      = ik.smoothTime;
+        params.fadeOutTime     = ik.fadeOutTime;
+        params.alignToNormal   = ik.alignToNormal;
+        params.kneeForward     = ik.kneeForward;
+
+        FootIKState st;
+        st.leftLift    = ik._lLift;    st.rightLift   = ik._rLift;
+        st.pelvisDrop  = ik._pelvisDrop;
+        st.leftWeight  = ik._lWeight;  st.rightWeight = ik._rWeight;
+        st.leftNormal  = ik._lNormal;  st.rightNormal = ik._rNormal;
+        st.leftContact = ik._lContact; st.rightContact = ik._rContact;
+        st.initialized = ik._smoothInit;
+
+        // 接地判定は CharacterController があればそれを使う（ジャンプ中は IK を切る）
+        bool grounded = true;
+        if (reg.all_of<CharacterController>(e))
+            grounded = reg.get<CharacterController>(e)._grounded;
+
+        const DirectX::XMMATRIX world = ComputeWorldMatrix(reg, e);
+        ApplyFootIK(*skelAnim.animator, *skelAnim.skeleton, world,
+                    bones, params, st, rayFn, dt, grounded);
+
+        ik._lLift   = st.leftLift;    ik._rLift   = st.rightLift;
+        ik._pelvisDrop = st.pelvisDrop;
+        ik._lWeight = st.leftWeight;  ik._rWeight = st.rightWeight;
+        ik._lNormal = st.leftNormal;  ik._rNormal = st.rightNormal;
+        ik._lContact = st.leftContact; ik._rContact = st.rightContact;
+        ik._smoothInit = st.initialized;
     }
 }
 
@@ -13914,6 +14095,12 @@ void Application::Render()
 
     u32 frameIndex = m_swapChain->GetCurrentBackBufferIndex();
     f32 totalTime = m_gameClock.GetTotalTime();
+
+    // ===== フット IK（接地補正）=====
+    // 物理ステップが終わった後・スキニングバッファのアップロード前に走らせる
+    // （IK 後のボーン行列がアップロードされるように）。
+    // Play 中だけ（PhysicsSystem が body を持つのが Play 中だけのため）。
+    ApplyFootIkPass();
 
     // ===== スケルタルアニメのボーン行列を毎フレーム GPU へアップロード =====
     // 以前は CSM シャドウパス(ci==0)内でのみ skinningBuffer->Update していたため、

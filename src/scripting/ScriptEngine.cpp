@@ -520,6 +520,7 @@ void ScriptEngine::RegisterBindings()
             if (type == "UILayout")           return e.HasComponent<UILayout>();
             if (type == "UIAnimator")         return e.HasComponent<UIAnimator>();
             if (type == "AnimatorController") return e.HasComponent<AnimatorController>();
+            if (type == "FootIK")             return e.HasComponent<FootIK>();
             // タイプミスや未対応型を「持ってない」と誤認させない（デバッグ困難の元）。
             // 毎フレーム呼ばれてもスパムしないよう型名ごとに1回だけ警告する。
             {
@@ -640,6 +641,23 @@ void ScriptEngine::RegisterBindings()
             const u32 li = static_cast<u32>((std::max)(0, layer));
             if (!st || li >= st->layers.size()) return 0.0f;
             return st->layers[li].weight;
+        },
+
+        // --- フット IK（接地補正）---
+        "setFootIKWeight", [](Entity& e, float w) {
+            if (!e.HasComponent<FootIK>()) return;
+            e.GetComponent<FootIK>().weight = std::clamp(w, 0.0f, 1.0f);
+        },
+
+        "getFootIKWeight", [](Entity& e) -> float {
+            if (!e.HasComponent<FootIK>()) return 0.0f;
+            return e.GetComponent<FootIK>().weight;
+        },
+
+        "isFootGrounded", [](Entity& e, sol::optional<bool> rightFoot) -> bool {
+            if (!e.HasComponent<FootIK>()) return false;
+            const FootIK& ik = e.GetComponent<FootIK>();
+            return rightFoot.value_or(false) ? ik._rContact : ik._lContact;
         },
 
         // --- タイムライン製 UI アニメ(.uianim) ---

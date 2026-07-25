@@ -237,6 +237,50 @@ struct AnimatorController
     AnimatorController& operator=(const AnimatorController& other);
 };
 
+// -------------------------------------------------------------------------
+// フット IK（接地補正）。SkeletalAnimation が必須。
+// 地面へレイキャストして足首の高さと向きを合わせ、届かない側に合わせて腰を下げる。
+// ボーン名が空なら一般的な命名から自動推定する（mixamorig: / .L .R / Bip01 等）。
+//
+// ⚠️ Play 中しか動かない（PhysicsSystem が body を持つのが Play 中だけのため）。
+//    エディタのシーンビューでは接地しない。仕様。
+// -------------------------------------------------------------------------
+struct FootIK
+{
+    bool enabled = true;
+    f32  weight  = 1.0f;        // 0..1 全体の効き
+
+    // ---- ボーン指定（空なら自動推定。推定結果は _*Index に入る）----
+    std::string leftHipBone, leftKneeBone, leftFootBone, leftToeBone;
+    std::string rightHipBone, rightKneeBone, rightFootBone, rightToeBone;
+    std::string pelvisBone;     // 腰下げの対象（空ならルートボーン）
+
+    // ---- パラメータ ----
+    f32 rayUpOffset     = 0.5f;   // 足首から何 m 上からレイを打つか
+    f32 rayLength       = 1.0f;   // レイの全長
+    f32 footHeight      = 0.10f;  // レストポーズでの足首の地面からの高さ
+    f32 maxPelvisDrop   = 0.5f;   // 腰を下げられる上限(m)。これを超える段差は諦める
+    f32 maxFootPitchDeg = 45.0f;  // 面法線に合わせる足の傾きの上限(度)
+    f32 smoothTime      = 0.10f;  // 足首高さ/腰オフセットの指数平滑の時定数(秒)
+    f32 fadeOutTime     = 0.15f;  // 非接地時に IK を切るフェード時間(秒)
+    bool alignToNormal  = true;   // 面法線に足を合わせるか
+    DirectX::XMFLOAT3 kneeForward{0.0f, 0.0f, 1.0f};  // 膝が向く方向（モデル空間）
+
+    // ---- ランタイム専有（非シリアライズ・meta 未登録）----
+    i32  _lHip = -1, _lKnee = -1, _lFoot = -1, _lToe = -1;
+    i32  _rHip = -1, _rKnee = -1, _rFoot = -1, _rToe = -1;
+    i32  _pelvis = -1;
+    bool _resolved = false;
+    bool _resolveFailed = false;
+    f32  _lLift = 0.0f, _rLift = 0.0f;      // 平滑済みの足首の上げ下げ量
+    f32  _pelvisDrop = 0.0f;                // 平滑済みの腰下げ量（0 以下）
+    f32  _lWeight = 0.0f, _rWeight = 0.0f;  // フェード済みの片足ごとの効き
+    bool _lContact = false, _rContact = false;
+    bool _smoothInit = false;
+    DirectX::XMFLOAT3 _lNormal{0.0f, 1.0f, 0.0f};
+    DirectX::XMFLOAT3 _rNormal{0.0f, 1.0f, 0.0f};
+};
+
 struct NodeAnimationComp
 {
     std::unique_ptr<NodeGraph>    nodeGraph;

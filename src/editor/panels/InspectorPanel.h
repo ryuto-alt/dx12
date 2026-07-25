@@ -95,6 +95,7 @@ private:
     EditState<UIAnimPlayer>     m_uiAnimPlayerEdit;
     EditState<SpriteAnimator>   m_spriteAnimatorEdit;
     EditState<AnimatorController> m_animatorControllerEdit;
+    EditState<FootIK>           m_footIkEdit;
 
     // プレハブ差分のキャッシュ。差分計算はサブツリー全体を JSON 化するので、
     // 毎フレームやると要素の多い UI プレハブで無駄が大きい。選択が変わった時と

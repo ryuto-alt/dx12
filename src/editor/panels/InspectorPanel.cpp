@@ -1767,6 +1767,89 @@ void InspectorPanel::Render(entt::registry& reg,
             }
         }
 
+        // FootIK（接地補正）
+        if (reg.all_of<FootIK>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entMesh : 0, "FootIK");
+            bool removed = ComponentRemoveMenu<FootIK>(reg, ctx, ctx.selectedEntity, "FootIK");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_footIkEdit);
+                auto& ik = reg.get<FootIK>(ctx.selectedEntity);
+                bool changed = false, active = false;
+
+                if (pg::Begin("FootIK"))
+                {
+                    changed |= pg::Checkbox("有効 Enabled", &ik.enabled);
+                    changed |= pg::Float("効き Weight", &ik.weight, 0.01f, 0.0f, 1.0f, "%.2f", &active,
+                        "0 で無効、1 で完全に接地補正する");
+                    changed |= pg::Float("足首の高さ Foot Height", &ik.footHeight, 0.005f, 0.0f, 0.5f,
+                        "%.3f", &active, "レストポーズでの足首の地面からの高さ(m)");
+                    changed |= pg::Float("レイ開始オフセット Ray Up", &ik.rayUpOffset, 0.01f, 0.0f, 2.0f,
+                        "%.2f", &active, "足首から何 m 上からレイを打つか");
+                    changed |= pg::Float("レイ長さ Ray Length", &ik.rayLength, 0.01f, 0.05f, 5.0f,
+                        "%.2f", &active);
+                    changed |= pg::Float("腰下げ上限 Max Pelvis Drop", &ik.maxPelvisDrop, 0.01f, 0.0f, 2.0f,
+                        "%.2f", &active, "これを超える段差は諦める(m)");
+                    changed |= pg::Checkbox("面法線に合わせる Align To Normal", &ik.alignToNormal,
+                        "斜面で足を寝かせる");
+                    changed |= pg::Float("傾きの上限 Max Foot Pitch", &ik.maxFootPitchDeg, 1.0f, 0.0f, 90.0f,
+                        "%.0f", &active, "急斜面で足が不自然にねじれるのを防ぐ(度)");
+                    changed |= pg::Float("平滑時間 Smooth Time", &ik.smoothTime, 0.005f, 0.0f, 0.5f,
+                        "%.3f", &active, "段差でレイが飛ぶのをならす時定数(秒)");
+                    changed |= pg::Float("フェード時間 Fade Out", &ik.fadeOutTime, 0.005f, 0.0f, 1.0f,
+                        "%.3f", &active, "非接地(ジャンプ中など)で IK を切る時間(秒)");
+                    pg::End();
+                }
+
+                if (pg::Begin("ボーン指定 Bones（空 = 自動推定）"))
+                {
+                    changed |= pg::InputTextStr("左 股関節 L Hip",  ik.leftHipBone,  &active);
+                    changed |= pg::InputTextStr("左 膝 L Knee",     ik.leftKneeBone, &active);
+                    changed |= pg::InputTextStr("左 足首 L Foot",   ik.leftFootBone, &active);
+                    changed |= pg::InputTextStr("右 股関節 R Hip",  ik.rightHipBone,  &active);
+                    changed |= pg::InputTextStr("右 膝 R Knee",     ik.rightKneeBone, &active);
+                    changed |= pg::InputTextStr("右 足首 R Foot",   ik.rightFootBone, &active);
+                    changed |= pg::InputTextStr("腰 Pelvis",        ik.pelvisBone,    &active);
+                    pg::End();
+                }
+
+                if (!reg.all_of<SkeletalAnimation>(ctx.selectedEntity))
+                    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f),
+                                       "SkeletalAnimation が無いと動きません");
+                else if (ik._resolveFailed)
+                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+                                       "足ボーンを特定できません。上のボーン名を明示指定してください"
+                                       "（候補はログに出ています）");
+
+                // 読み取り専用のライブ表示（Play 中のみ動く）
+                if (ik._resolved)
+                {
+                    auto& sa = reg.get<SkeletalAnimation>(ctx.selectedEntity);
+                    auto boneName = [&](i32 b) -> const char* {
+                        return (sa.skeleton && b >= 0 && static_cast<u32>(b) < sa.skeleton->GetBoneCount())
+                             ? sa.skeleton->GetBone(static_cast<u32>(b)).name.c_str() : "-";
+                    };
+                    if (pg::Begin("解決結果 / 実行状態"))
+                    {
+                        pg::Text("左脚", "%s / %s / %s",
+                                 boneName(ik._lHip), boneName(ik._lKnee), boneName(ik._lFoot));
+                        pg::Text("右脚", "%s / %s / %s",
+                                 boneName(ik._rHip), boneName(ik._rKnee), boneName(ik._rFoot));
+                        pg::Text("腰", "%s", boneName(ik._pelvis));
+                        pg::Text("接地", "L=%s(w %.2f)  R=%s(w %.2f)",
+                                 ik._lContact ? "○" : "×", ik._lWeight,
+                                 ik._rContact ? "○" : "×", ik._rWeight);
+                        pg::Text("補正量", "L %+.3fm  R %+.3fm  腰 %+.3fm",
+                                 ik._lLift, ik._rLift, ik._pelvisDrop);
+                        pg::End();
+                    }
+                    ImGui::TextDisabled("※ Play 中のみ動きます（物理ボディが要るため）");
+                }
+                EndEdit(reg, ctx, ctx.selectedEntity, m_footIkEdit, changed, active, "FootIK");
+            }
+        }
+
         // NodeAnimation
         if (reg.all_of<NodeAnimationComp>(ctx.selectedEntity))
         {
@@ -2907,6 +2990,8 @@ void InspectorPanel::Render(entt::registry& reg,
                                                  "Sprite Animator (.spranim シート)");
             AddComponentMenuItem<AnimatorController>(reg, ctx, ctx.selectedEntity,
                                                      "Animator Controller (.animfsm ステートマシン)");
+            AddComponentMenuItem<FootIK>(reg, ctx, ctx.selectedEntity,
+                                         "Foot IK (接地補正・Play 中のみ)");
             ImGui::Separator();
             AddComponentMenuItem<RigidBody>(reg, ctx, ctx.selectedEntity, "RigidBody");
             AddComponentMenuItem<BoxCollider>(reg, ctx, ctx.selectedEntity, "Box Collider");

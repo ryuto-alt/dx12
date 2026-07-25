@@ -265,6 +265,8 @@ static void RegisterCoreComponentSerializers()
     R.Register(MakeReflectedInfo<SpriteAnimator>("SpriteAnimator", "spriteAnimator", true));
     // スケルタルアニメのステートマシン(.animfsm)。構造はアセット側、ここはパスとパラメータだけ
     R.Register(MakeReflectedInfo<AnimatorController>("AnimatorController", "animatorController", true));
+    // フット IK（接地補正）。ボーン名が空なら一般的な命名から自動推定する
+    R.Register(MakeReflectedInfo<FootIK>("FootIK", "footIK", true));
     // プレハブインスタンスの紐付け。.prefab 側へ書き出す時だけ StripPrefabLinks で落とす
     R.Register(MakeReflectedInfo<PrefabLink>("PrefabLink", "prefabLink", true));
 
