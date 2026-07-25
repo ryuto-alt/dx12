@@ -226,13 +226,39 @@ private:
     // 戻り値が空文字列なら「遅延応答」(フレーム境界で結果確定後に SendToClient で送る)。
     // client は遅延応答を送り返すための McpBridge クライアントトークン。
     std::string HandleMcpCommand(uint64_t client, const std::string& line);
-    // ★N37 の受け皿。HandleMcpCommand の else-if チェーンは MSVC の C1061
-    //   （ブロック入れ子上限）に張り付いており、1 本足すとコンパイルが落ちる。
-    //   レンダリング設定系の MCP method は**チェーンではなくこちらへ足すこと**。
-    //   処理したら true を返す（呼び出し側はそのまま応答して return する）。
-    bool HandleMcpRenderCommand(const std::string& method,
-                                const nlohmann::json& params,
-                                nlohmann::json& resp);
+
+    // ---- MCP ディスパッチ表（method 名 → ハンドラ）----------------------------
+    // ★#30 / N37 / N43 の根治。以前は HandleMcpCommand の中に `else if (method == "...")` が
+    //   118 本並んでいて、MSVC の C1061（ブロックの入れ子が深すぎます）上限に張り付いていた。
+    //   表引きにしたので **method を何本足しても入れ子は 1 段も深くならない**。
+    //   新しい method は Application.cpp の Register***McpMethods() のどれかへ 1 本足すだけ。
+    //
+    // ハンドラの引数名は旧 else-if チェーンのローカル変数と同じにしてある
+    //   （params / resp / method / deferred / isDeferred / busyPlaying）。
+    //   おかげで 118 本の本文を 1 行も書き換えずに移設できた。DX12E_MCP_HANDLER が定型を包む。
+    using McpHandler = std::function<void(const nlohmann::json& params,
+                                          nlohmann::json&       resp,
+                                          const std::string&    method,
+                                          McpDeferred&          deferred,
+                                          bool&                 isDeferred,
+                                          bool                  busyPlaying)>;
+    struct McpMethodEntry
+    {
+        // 受け付ける params のキー表 "key:type,key:type,..."（type は bool/int/number/string/vec3/object/any）。
+        // dx12_describe_mcp_params がそのまま返す。**本文で読むキーと一致させること。**
+        const char* paramSpec = "";
+        McpHandler  fn;
+    };
+    // 名前は "a" か "a|b"（get/set を 1 本のハンドラで捌く場合。本文が method を見て分ける）。
+    void McpDefine(const char* names, const char* paramSpec, McpHandler fn);
+    void EnsureMcpMethodTable();          // 初回の MCP コマンドで 1 度だけ表を組む
+    void RegisterMcpEntityMethods();      // エンティティ / コンポーネント / シーン入出力
+    void RegisterMcpEditorMethods();      // エディタ操作（設定 / Play / 入力 / スクショ / 計測）
+    void RegisterMcpRenderMethods();      // 描画設定（ポスト / SSAO / SSR / SSGI / TAA / フォグ / PCSS / DXR）
+    void RegisterMcpToolingMethods();     // ビルド検証 / Lua / テクスチャ / アニメ / マルチプレイ
+    void RegisterMcpAssetMethods();       // カメラ / 空間クエリ / アセット入出力 / ピッキング
+    void RegisterMcpTerrainMethods();     // 地形 / スカルプト
+    void RegisterMcpLightingMethods();    // ライティング / 診断
     // 直近フレームのシーン描画(m_sceneRT)を PNG に書き出す。成功=絶対パス / 失敗=空文字列+err。
     // MCP の screenshot 用。同期 readback(WaitIdle×2)＝低頻度のエディタ操作として割り切る。
     std::string CaptureSceneScreenshot(std::string& err);
@@ -754,6 +780,8 @@ private:
     int         m_mcpStepFramesLeft = 0; // step_frames で残り何フレーム回すか。0 で非アクティブ。
     McpDeferred m_mcpGameViewReply;      // screenshot_game_view の遅延応答（1フレーム描画後に送る）。client=0 で無効。
     std::unordered_map<std::string, uint32_t> m_mcpIdempotency;  // idempotency_key -> 生成済み entityId
+    // method 名 → ハンドラ。EnsureMcpMethodTable() が初回に 1 度だけ組む（#30 / N37 の根治）。
+    std::unordered_map<std::string, McpMethodEntry> m_mcpMethods;
     std::unique_ptr<AudioSystem>       m_audioSystem;
     std::unique_ptr<PhysicsSystem>     m_physicsSystem;
     std::unique_ptr<NetworkSystem>     m_networkSystem;   // マルチプレイ（GPU非依存、Play/Stopでも再構築しない）

@@ -3594,190 +3594,122 @@ static std::string CaptureWindowScreenshot(HWND hwnd, std::string& err);
 
 
 // ---------------------------------------------------------------------------
-// MCP: レンダリング設定系の method（HandleMcpCommand の巨大な else-if チェーンの外）
+// MCP: method 名 → ハンドラのディスパッチ表（#30。N37 / N43 の根治）
 // ---------------------------------------------------------------------------
-// ★N37 対策の受け皿。HandleMcpCommand の else-if チェーンは MSVC の
-//   「ブロックの入れ子のレベルが深すぎます (C1061)」上限に張り付いており、
-//   1 本足しただけでコンパイルが落ちる（実際に落ちた）。
-//   **新しいレンダリング設定の method はチェーンではなくこの関数へ足すこと。**
-//   ここは平坦な if / else if なので、いくら足しても入れ子が深くならない。
+// ★以前は HandleMcpCommand の中に `else if (method == "...")` が 118 本並んでいて、
+//   MSVC の「ブロックの入れ子のレベルが深すぎます (C1061)」上限に張り付いていた。
+//   1 本足すだけでコンパイルが落ち、逃げ道として get/set を 1 ブロックへ束ねたり
+//   HandleMcpRenderCommand() へ早期 return させたりしていた（N37 / N43）。
+//   **表引きにしたので method を何本足しても入れ子は 1 段も深くならない。**
+//   HandleMcpRenderCommand() は役目を終えたので削除した。
 //
-// 戻り値: この関数が method を処理したら true（呼び出し側はそのまま応答を返す）。
-// 例外は呼び出し側（HandleMcpCommand の try/catch）が受ける。
-bool Application::HandleMcpRenderCommand(const std::string& method,
-                                         const nlohmann::json& params,
-                                         nlohmann::json& resp)
+// 新しい method の足し方（これだけ）:
+//   1. 下の Register***McpMethods() のどれかへ
+//        McpDefine("名前", "キー:型,...", DX12E_MCP_HANDLER { ... });
+//      を 1 本足す（置く場所はテーマで選ぶ。順序に意味は無い＝表引きなので）。
+//   2. 第 2 引数のキー表は `dx12_describe_mcp_params` がそのまま返す。
+//      **本文で読むキーと必ず一致させること**（tests/mcp_param_spec_test が機械的に見張る）。
+//   3. docs/MCP.md と tools/mcp-server/index.ts の zod スキーマにも同じキーを足す
+//      （足し忘れると zod が黙って引数を捨てる。N21）。
+//
+// ★ハンドラの引数名は旧チェーンのローカル変数と同じ（params / resp / method /
+//   deferred / isDeferred / busyPlaying）。おかげで 118 本の本文を 1 行も書き換えずに移設できた。
+//   使わない引数があっても警告が出ないよう [[maybe_unused]] を付けてある。
+#define DX12E_MCP_HANDLER                                                    \
+    [this]([[maybe_unused]] const nlohmann::json& params,                    \
+           [[maybe_unused]] nlohmann::json&       resp,                      \
+           [[maybe_unused]] const std::string&    method,                    \
+           [[maybe_unused]] McpDeferred&          deferred,                  \
+           [[maybe_unused]] bool&                 isDeferred,                \
+           [[maybe_unused]] bool                  busyPlaying) -> void
+
+namespace
 {
-    using json = nlohmann::json;
-    if (!m_scene) return false;
-
-    if (method == "get_shadow_pcss" || method == "set_shadow_pcss")
+// ポスト / SSAO のキー表は本文に書かず、**唯一の名前表**である X マクロから組み立てる
+// （計画03 Phase 3。`PostProcessSettings.h` のコメントが予告していたもの）。
+// フィールドを足したら X マクロ 1 箇所を直すだけで MCP のキー表も追従する。
+const char* McpPostParamSpec()
+{
+    static const std::string spec = []
     {
-        // ★get/set を 1 つの else-if に畳んである。MCP のディスパッチは巨大な
-        //   else-if チェーンで、MSVC の「ブロックの入れ子が深すぎます(C1061)」上限に
-        //   既に張り付いているため（N37）。新しい method を足す人は get/set を必ず束ねること。
-        auto& p = m_scene->GetShadowPcssSettings();
-        if (method == "set_shadow_pcss")
-        {
-            p.enabled = params.value("enabled", p.enabled);
-            if (params.contains("lightTanAngle"))
-                p.lightTanAngle = McpFloatParam(params, "lightTanAngle", p.lightTanAngle, 0.001f, 0.5f);
-            if (params.contains("maxPenumbraTexels"))
-                p.maxPenumbraTexels = McpFloatParam(params, "maxPenumbraTexels", p.maxPenumbraTexels, 1.0f, 64.0f);
-            if (params.contains("blockerSearchTexels"))
-                p.blockerSearchTexels = McpFloatParam(params, "blockerSearchTexels", p.blockerSearchTexels, 1.0f, 64.0f);
-            p.temporalDither = params.value("temporalDither", p.temporalDither);
-        }
-        resp["ok"] = true;
-        resp["result"] = {{"enabled", p.enabled},
-                          {"lightTanAngle", p.lightTanAngle},
-                          {"maxPenumbraTexels", p.maxPenumbraTexels},
-                          {"blockerSearchTexels", p.blockerSearchTexels},
-                          {"temporalDither", p.temporalDither},
-                          // ON でも実際に走らない条件を明示する（誤診断を防ぐ）
-                          {"active", p.enabled && m_scene->GetShadowsEnabled()
-                                     && !m_camera->IsOrthographic()},
-                          {"temporalDitherActive", p.enabled && p.temporalDither
-                                     && m_scene->GetTaaSettings().enabled},
-                          {"applied", method == "set_shadow_pcss"},
-                          {"note", "OFF にすると従来の 3x3 PCF に戻る（絵はビット一致）。"
-                                   "時間ディザは TAA 有効時のみ効く"}};
-    }
-    // --- DXR レイトレーシング（計画09）---
-    else if (method == "get_dxr" || method == "set_dxr")
-    {
-        // ★get/set を 1 つの else-if に畳んである（N37。C1061 の入れ子上限対策）。
-        //   RT サン影は既存のコンタクトシャドウ枠(t11)、RT-AO は既存の SSAO 枠(t8) へ書く。
-        //   ルートシグネチャは 1 DWORD も増えない。
-        auto& r = m_scene->GetRtSettings();
-        if (method == "set_dxr")
-        {
-            if (!m_dxrEnabled)
-                throw McpError(McpErr::InvalidParam,
-                    "this GPU does not support inline raytracing",
-                    "DXR Tier 1.1 かつ Shader Model 6.5 が必要（RTX 20 系 / RX 6000 系以降）。"
-                    "起動ログの \"DXR:\" 行に実際の Tier と SM が出る");
-            r.shadowEnabled = params.value("shadowEnabled", r.shadowEnabled);
-            if (params.contains("shadowSunAngle"))
-                r.shadowSunAngle = McpFloatParam(params, "shadowSunAngle", r.shadowSunAngle, 0.0f, 20.0f);
-            if (params.contains("shadowNormalBias"))
-                r.shadowNormalBias = McpFloatParam(params, "shadowNormalBias", r.shadowNormalBias, 0.0f, 1.0f);
-            if (params.contains("shadowMaxDistance"))
-                r.shadowMaxDistance = McpFloatParam(params, "shadowMaxDistance", r.shadowMaxDistance, 0.0f, 100000.0f);
-            if (params.contains("shadowIntensity"))
-                r.shadowIntensity = McpFloatParam(params, "shadowIntensity", r.shadowIntensity, 0.0f, 1.0f);
-            r.aoEnabled = params.value("aoEnabled", r.aoEnabled);
-            if (params.contains("aoRadius"))
-                r.aoRadius = McpFloatParam(params, "aoRadius", r.aoRadius, 0.01f, 100.0f);
-            if (params.contains("aoRayCount"))
-                r.aoRayCount = std::clamp(params.value("aoRayCount", r.aoRayCount), 1, 8);
-            if (params.contains("aoIntensity"))
-                r.aoIntensity = McpFloatParam(params, "aoIntensity", r.aoIntensity, 0.0f, 1.0f);
-            if (params.contains("aoPower"))
-                r.aoPower = McpFloatParam(params, "aoPower", r.aoPower, 0.01f, 8.0f);
-            r.aoCombineWithSsao = params.value("aoCombineWithSsao", r.aoCombineWithSsao);
-            if (params.contains("maxInstances"))
-                r.maxInstances = std::clamp(params.value("maxInstances", r.maxInstances), 0, 32768);
-            r.forceBuildTlas = params.value("forceBuildTlas", r.forceBuildTlas);
-        }
-        const auto* gd = m_graphicsDevice.get();
-        const int tier = gd ? static_cast<int>(gd->GetRaytracingTier()) : 0;
-        const int sm   = gd ? static_cast<int>(gd->GetHighestShaderModel()) : 0;
-        json stats = json::object();
-        if (m_rtScene)
-        {
-            const auto& s = m_rtScene->GetStats();
-            stats = {{"instances", s.instances}, {"blasCount", s.blasCount},
-                     {"blasBytes", s.blasBytes}, {"blasTriangles", s.blasTriangles},
-                     {"tlasBytes", s.tlasBytes}, {"scratchBytes", s.scratchBytes},
-                     {"instanceDescBytes", s.instanceDescBytes},
-                     {"skippedSkinned", s.skippedSkinned},
-                     {"skippedTransparent", s.skippedTransparent},
-                     {"droppedOverLimit", s.droppedOverLimit},
-                     {"bytesPerTriangle", s.blasTriangles
-                          ? static_cast<double>(s.blasBytes) / static_cast<double>(s.blasTriangles) : 0.0}};
-        }
-        resp["ok"] = true;
-        resp["result"] = {{"supported", m_dxrEnabled},
-                          {"raytracingTier", tier == 0 ? std::string("none")
-                               : std::to_string(tier / 10) + "." + std::to_string(tier % 10)},
-                          {"highestShaderModel", std::to_string(sm >> 4) + "." + std::to_string(sm & 0xF)},
-                          {"shadowEnabled", r.shadowEnabled},
-                          {"shadowSunAngle", r.shadowSunAngle},
-                          {"shadowNormalBias", r.shadowNormalBias},
-                          {"shadowMaxDistance", r.shadowMaxDistance},
-                          {"shadowIntensity", r.shadowIntensity},
-                          {"aoEnabled", r.aoEnabled},
-                          {"aoRadius", r.aoRadius},
-                          {"aoRayCount", r.aoRayCount},
-                          {"aoIntensity", r.aoIntensity},
-                          {"aoPower", r.aoPower},
-                          {"aoCombineWithSsao", r.aoCombineWithSsao},
-                          {"maxInstances", r.maxInstances},
-                          {"forceBuildTlas", r.forceBuildTlas},
-                          // ON でも実際に走らない条件を明示する（誤診断を防ぐ）
-                          {"shadowActive", m_rtShadowActiveThisFrame},
-                          {"tlasReady", m_rtScene && m_rtScene->IsReady()},
-                          {"stats", stats},
-                          {"applied", method == "set_dxr"},
-                          {"note", "RT 影は t11(コンタクトシャドウ枠)、RT-AO は t8(SSAO枠)へ書く。"
-                                   "ルートシグネチャ増分ゼロ。スキンドと半透明は TLAS に入らないので "
-                                   "CSM が担当する（min 合成）"}};
-    }
-
-    else
-        return false;   // 未対応の method（呼び出し側の else-if チェーンへ落とす）
-
-    return true;
+        std::string t;
+#define DX12E_MCP_PP_B(f) t += #f ":bool,";
+#define DX12E_MCP_PP_F(f) t += #f ":number,";
+#define DX12E_MCP_PP_I(f) t += #f ":int,";
+#define DX12E_MCP_PP_V(f) t += #f ":vec3,";
+#define DX12E_MCP_PP_S(f) t += #f ":string,";
+        DX12E_POST_FIELDS(DX12E_MCP_PP_B, DX12E_MCP_PP_F, DX12E_MCP_PP_I,
+                          DX12E_MCP_PP_V, DX12E_MCP_PP_S)
+#undef DX12E_MCP_PP_B
+#undef DX12E_MCP_PP_F
+#undef DX12E_MCP_PP_I
+#undef DX12E_MCP_PP_V
+#undef DX12E_MCP_PP_S
+        if (!t.empty()) t.pop_back();
+        return t;
+    }();
+    return spec.c_str();
 }
-std::string Application::HandleMcpCommand(uint64_t client, const std::string& line)
+
+const char* McpSsaoParamSpec()
+{
+    static const std::string spec = []
+    {
+        std::string t;
+#define DX12E_MCP_SS_B(f) t += #f ":bool,";
+#define DX12E_MCP_SS_F(f) t += #f ":number,";
+#define DX12E_MCP_SS_I(f) t += #f ":int,";
+        DX12E_SSAO_FIELDS(DX12E_MCP_SS_B, DX12E_MCP_SS_F, DX12E_MCP_SS_I)
+#undef DX12E_MCP_SS_B
+#undef DX12E_MCP_SS_F
+#undef DX12E_MCP_SS_I
+        if (!t.empty()) t.pop_back();
+        return t;
+    }();
+    return spec.c_str();
+}
+} // namespace
+
+// names は "a" または "a|b"（get/set を 1 本のハンドラで捌く場合。本文が method を見て分ける）。
+void Application::McpDefine(const char* names, const char* paramSpec, McpHandler fn)
+{
+    const std::string all(names);
+    size_t pos = 0;
+    for (;;)
+    {
+        const size_t bar = all.find('|', pos);
+        const std::string one = all.substr(pos, bar == std::string::npos ? std::string::npos : bar - pos);
+        if (!one.empty())
+        {
+            if (!m_mcpMethods.emplace(one, McpMethodEntry{paramSpec, fn}).second)
+                Logger::Error("MCP: duplicate method name '{}' (dispatch table)", one);
+        }
+        if (bar == std::string::npos) break;
+        pos = bar + 1;
+    }
+}
+
+// 表は初回の MCP コマンドで 1 度だけ組む（起動時コストをエディタ操作に持ち込まない）。
+void Application::EnsureMcpMethodTable()
+{
+    if (!m_mcpMethods.empty()) return;
+    m_mcpMethods.reserve(192);
+    RegisterMcpEntityMethods();
+    RegisterMcpEditorMethods();
+    RegisterMcpRenderMethods();
+    RegisterMcpToolingMethods();
+    RegisterMcpAssetMethods();
+    RegisterMcpTerrainMethods();
+    RegisterMcpLightingMethods();
+}
+
+// ---- エンティティ / コンポーネント / シーン入出力 ----
+void Application::RegisterMcpEntityMethods()
 {
     using json = nlohmann::json;
     namespace fs = std::filesystem;
 
-    json req;
-    try { req = json::parse(line); }
-    catch (const std::exception& e)
-    {
-        return json{{"id", nullptr}, {"ok", false}, {"error_code", McpErr::InvalidParam},
-                    {"error", std::string("parse error: ") + e.what()}}.dump();
-    }
-
-    json resp;
-    resp["id"] = req.value("id", json(nullptr));
-    const std::string method = req.value("method", std::string());
-    const json params = req.value("params", json::object());
-
-    // 遅延応答(create/spawn/delete/open_scene/play/stop)の相関情報。
-    // 該当ブランチで deferred=true にし、保留キューへ mcp を積んで空文字列を返す。
-    McpDeferred deferred{ client, req.value("id", 0LL), params.value("idempotency_key", std::string()) };
-    bool isDeferred = false;
-
-    try
-    {
-        if (!m_scene || !m_scriptEngine)
-            throw std::runtime_error("engine not ready");
-
-        // 生成/削除/シーン系を弾く判定。Playing 中はもちろん、同一 Poll バッチで先に play が
-        // 積まれた(モード遷移保留)場合も弾く＝そのフレームで spawn ドレインが skip されて
-        // 遅延応答が宙吊り(クライアント timeout)になるのを防ぐ。
-        const bool busyPlaying = (m_engineMode == EngineMode::Playing) ||
-                                 (m_modeChangeRequested && m_pendingMode == EngineMode::Playing);
-
-        // ★N37: 下の else-if チェーンは MSVC の C1061（ブロック入れ子上限）に張り付いていて、
-        //   1 本足しただけでコンパイルが落ちる。レンダリング設定系はチェーンの外の
-        //   HandleMcpRenderCommand() で先に処理して早期 return する
-        //   （**この if は else if ではないのでチェーンの深さを 1 も増やさない**）。
-        //   新しいレンダリング設定の method はそちらへ足すこと。
-        if (HandleMcpRenderCommand(method, params, resp))
-        {
-            if (m_mcpBridge)
-                m_mcpBridge->RecordCommand(method, resp.value("ok", false),
-                                           resp.value("error", std::string()));
-            return resp.dump();
-        }
-
-        if (method == "list_entities")
+    McpDefine("list_entities", "component_type:string,name_prefix:string,verbose:bool", DX12E_MCP_HANDLER
         {
             const bool verbose = params.value("verbose", false);
             const std::string namePrefix = params.value("name_prefix", std::string());
@@ -3804,8 +3736,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"entities", arr}, {"count", arr.size()},
                               {"sceneGeneration", m_sceneGeneration}};
-        }
-        else if (method == "create_lua_component")
+        });
+
+    McpDefine("create_lua_component", "code:string,name:string", DX12E_MCP_HANDLER
         {
             const std::string name = params.value("name", std::string());
             const std::string code = params.value("code", std::string());
@@ -3826,8 +3759,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             ofs.write(code.data(), static_cast<std::streamsize>(code.size()));
             resp["ok"] = true;
             resp["result"] = {{"path", rel}};
-        }
-        else if (method == "create_shader")
+        });
+
+    McpDefine("create_shader", "code:string,name:string", DX12E_MCP_HANDLER
         {
             // カスタムシェーダー(MeshRenderer::shaderPath 割当用)を assets/shaders/ に作成/上書きする。
             // Lua と違い、書く前の静的検証ができない(DXC はファイルからしかコンパイルできない)ため、
@@ -3858,8 +3792,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"path", rel}, {"compiled", compiled}};
             if (!compiled) resp["result"]["error"] = error.empty() ? "shader manager unavailable" : error;
-        }
-        else if (method == "read_shader")
+        });
+
+    McpDefine("read_shader", "path:string", DX12E_MCP_HANDLER
         {
             const std::string rel = params.value("path", std::string());
             if (rel.empty()) throw McpError(McpErr::InvalidParam, "missing 'path'");
@@ -3876,8 +3811,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"path", rel}, {"code", oss.str()},
                                {"compiled", m_shaderManager && m_shaderManager->HasValidCustomShader(rel)}};
-        }
-        else if (method == "set_mesh_shader")
+        });
+
+    McpDefine("set_mesh_shader", "alphaBlend:bool,entity:int,name:string,shaderPath:string", DX12E_MCP_HANDLER
         {
             // MeshRenderer::shaderPath の割当/解除。Inspector の「Shader」コンボと同じ操作を MCP から。
             // modelPath と違いメッシュ再ロードを伴わない(PSO 選択が変わるだけ)ので即時反映して安全。
@@ -3907,8 +3843,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"shaderPath", mr.shaderPath},
                                {"alphaBlend", mr.shaderAlphaBlend},
                                {"skinnedFallbackWarning", reg.all_of<SkeletalAnimation>(e) && !mr.shaderPath.empty()}};
-        }
-        else if (method == "set_sprite_shader")
+        });
+
+    McpDefine("set_sprite_shader", "alphaBlend:bool,entity:int,name:string,shaderPath:string", DX12E_MCP_HANDLER
         {
             // Sprite2D::shaderPath の割当/解除。set_mesh_shader と同型だが、対象はworld-spaceスプライトのみ
             // (ルートシグネチャ/頂点フォーマットがメッシュ用と異なる別キャッシュ。docs/AUTHORING.md参照)。
@@ -3938,8 +3875,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"shaderPath", sp.shaderPath},
                                {"alphaBlend", sp.shaderAlphaBlend},
                                {"worldSpaceWarning", !sp.worldSpace && !sp.shaderPath.empty()}};
-        }
-        else if (method == "attach_lua_component")
+        });
+
+    McpDefine("attach_lua_component", "entity:int,name:string,script:string", DX12E_MCP_HANDLER
         {
             const std::string script = params.value("script", std::string());
             if (script.empty()) throw std::runtime_error("missing 'script'");
@@ -3952,8 +3890,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             m_scriptEngine->AttachScriptToEntity(e, script);
             m_scriptEngine->ReloadScript(e);
             resp["ok"] = true;
-        }
-        else if (method == "create_entity")
+        });
+
+    McpDefine("create_entity", "name:string,parent:any,parentName:any,position:any,type:string", DX12E_MCP_HANDLER
         {
             // 生成はメッシュ構築に cmdList が要るためフレーム境界で遅延処理。本物の entityId は
             // 生成後に SendToClient で返す(遅延同期)。Play 中は spawn キューが drain されないため拒否。
@@ -4050,8 +3989,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 m_editorCtx->pendingSpawns.push_back(std::move(sreq));
                 isDeferred = true;
             }
-        }
-        else if (method == "delete_entity")
+        });
+
+    McpDefine("delete_entity", "entity:int,name:string", DX12E_MCP_HANDLER
         {
             // 削除ドレイン(Render)は Editor モード限定。Play 中に積むと drain されず未応答ハングするため弾く。
             if (busyPlaying)
@@ -4060,8 +4000,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             // 子ごと削除+Undo はフレーム境界で処理し、deletedCount を遅延応答で返す。
             m_editorCtx->mcpDeletions.push_back(McpPendingDelete{ e, deferred });
             isDeferred = true;
-        }
-        else if (method == "set_transform")
+        });
+
+    McpDefine("set_transform", "entity:int,name:string,position:any,quaternion:any,rotation:any,scale:any", DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);   // 無効 id は "invalid entity id" を投げる
             auto& reg = m_scene->GetRegistry();
@@ -4096,8 +4037,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             resp["ok"] = true;
             resp["result"] = {{"entityId", static_cast<u32>(e)}};
-        }
-        else if (method == "get_entity")
+        });
+
+    McpDefine("get_entity", "entity:int,name:string", DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
@@ -4115,8 +4057,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             result["sceneGeneration"] = m_sceneGeneration;
             resp["ok"] = true;
             resp["result"] = std::move(result);
-        }
-        else if (method == "save_scene")
+        });
+
+    McpDefine("save_scene", "path:string", DX12E_MCP_HANDLER
         {
             std::string rel = params.value("path", std::string());
             std::string full;
@@ -4138,8 +4081,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 throw std::runtime_error("save failed");
             resp["ok"] = true;
             resp["result"] = {{"path", rel.empty() ? m_editorCtx->currentScenePath : rel}};
-        }
-        else if (method == "open_scene")
+        });
+
+    McpDefine("open_scene", "path:string", DX12E_MCP_HANDLER
         {
             std::string rel = params.value("path", std::string());
             if (rel.empty()) throw McpError(McpErr::InvalidParam, "missing 'path'");
@@ -4159,8 +4103,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             m_editorCtx->pendingLoadPath = full;
             m_mcpLoadReply = deferred;
             isDeferred = true;
-        }
-        else if (method == "open_project")
+        });
+
+    McpDefine("open_project", "path:string", DX12E_MCP_HANDLER
         {
             // プロジェクトを開く(ランチャーのクリックと同等)。path はプロジェクトルート絶対パス。
             // BeginProjectLoad は数フレームかけて非同期にロードする(スプラッシュ表示→シーン差替)ので、
@@ -4182,8 +4127,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"name", info.name}, {"rootDir", info.rootDir},
                               {"defaultScene", info.defaultScene}, {"loading", true}};
-        }
-        else if (method == "list_scenes")
+        });
+
+    McpDefine("list_scenes", "", DX12E_MCP_HANDLER
         {
             json arr = json::array();
             const std::string root = PathResolver::AssetsDir();      // 末尾 '/'
@@ -4199,8 +4145,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             resp["ok"] = true;
             resp["result"] = std::move(arr);
-        }
-        else if (method == "list_assets")
+        });
+
+    McpDefine("list_assets", "type:string", DX12E_MCP_HANDLER
         {
             const std::string filter = params.value("type", std::string());
             json arr = json::array();
@@ -4233,8 +4180,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             resp["ok"] = true;
             resp["result"] = std::move(arr);
-        }
-        else if (method == "spawn_model")
+        });
+
+    McpDefine("spawn_model", "name:string,path:string,position:any", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot spawn while Playing; call dx12_stop first");
@@ -4274,8 +4222,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 m_editorCtx->pendingSpawns.push_back(std::move(sreq));
                 isDeferred = true;
             }
-        }
-        else if (method == "set_component")
+        });
+
+    McpDefine("set_component", "component:string,data:any,entity:int,name:string,values:any", DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
@@ -4349,8 +4298,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             resp["ok"] = true;
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"component", comp}};
-        }
-        else if (method == "remove_component")
+        });
+
+    McpDefine("remove_component", "component:string,entity:int,name:string", DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
@@ -4362,8 +4312,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                     "unknown/unsupported component: " + comp + " (call dx12_describe_components)");
             resp["ok"] = true;
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"removed", comp}};
-        }
-        else if (method == "ui_tree")
+        });
+
+    McpDefine("ui_tree", "", DX12E_MCP_HANDLER
         {
             // ゲーム内 UI ツリーを丸ごと JSON で返す（AI が UI 構造を「見る」ための読み取り API）。
             // 座標はキャンバス空間 px（= uiRect で指定する単位。ビューポート非依存）。
@@ -4502,8 +4453,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["result"] = {{"canvases", std::move(arr)},
                               {"note", "coordinates are canvas-space px (same units as uiRect offsets); "
                                        "resolvedRect = [x, y, w, h] from canvas top-left"}};
-        }
-        else if (method == "describe_components")
+        });
+
+    McpDefine("describe_components", "component:string", DX12E_MCP_HANDLER
         {
             const std::string only = params.value("component", std::string());
             json all = McpComponentSchema();
@@ -4522,15 +4474,17 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 resp["ok"] = true;
                 resp["result"] = {{"components", std::move(filtered)}};
             }
-        }
-        else if (method == "describe_lua_api")
+        });
+
+    McpDefine("describe_lua_api", "", DX12E_MCP_HANDLER
         {
             // Lua スクリプトから使えるバインディング一覧(静的)。MCP のコンポーネントと
             // Lua から読める API のズレ(entity.boxCollider は nil 等)を AI に伝えるため。
             resp["ok"] = true;
             resp["result"] = McpLuaApi();
-        }
-        else if (method == "set_parent")
+        });
+
+    McpDefine("set_parent", "entity:int,name:string,parent:any", DX12E_MCP_HANDLER
         {
             auto& reg = m_scene->GetRegistry();
             const auto child = ResolveMcpEntity(*m_scene, params);   // entity か name で子を指定
@@ -4554,8 +4508,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             auto& t = reg.get_or_emplace<Transform>(child);
             t.parent = parent;   // 階層は Transform.parent が駆動。SerializeEntity に自動反映。
             resp["ok"] = true;
-        }
-        else if (method == "group_entities")
+        });
+
+    McpDefine("group_entities", "entities:any,name:string,names:any", DX12E_MCP_HANDLER
         {
             // 複数エンティティを空の親(グループ)へまとめる。ヒエラルキーの Ctrl+G と同じ動作。
             // 親は原点・無回転・スケール1で作るので、子のワールド行列は変わらない＝見た目は動かない。
@@ -4646,8 +4601,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"sceneGeneration", m_sceneGeneration},
             };
             Logger::Info("MCP group_entities: '{}' に {} 件をまとめました", gname, members.size());
-        }
-        else if (method == "rename_entity")
+        });
+
+    McpDefine("rename_entity", "entity:any,name:string", DX12E_MCP_HANDLER
         {
             // ここの "name" は新しい名前。エンティティ指定は entity(id) のみ(name 引きは曖昧なので不可)。
             const auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
@@ -4667,8 +4623,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             reg.get<NameTag>(e).name = name;
             resp["ok"] = true;
             resp["result"] = {{"name", name}};
-        }
-        else if (method == "ping")
+        });
+
+    McpDefine("ping", "", DX12E_MCP_HANDLER
         {
             int entityCount = 0;
             for (auto e : m_scene->GetRegistry().view<NameTag>()) { (void)e; ++entityCount; }
@@ -4681,8 +4638,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"currentScene", ToAssetRel(m_editorCtx->currentScenePath)},
                 {"protocolVersion", 3}
             };
-        }
-        else if (method == "find_entity")
+        });
+
+    McpDefine("find_entity", "name:string", DX12E_MCP_HANDLER
         {
             const std::string name = params.value("name", std::string());
             if (name.empty()) throw McpError(McpErr::InvalidParam, "missing 'name'");
@@ -4692,8 +4650,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 resp["result"] = {{"entityId", static_cast<u32>(ent.GetHandle())}, {"name", name}};
             else
                 resp["result"] = nullptr;
-        }
-        else if (method == "query_entities")
+        });
+
+    McpDefine("query_entities", "box:any,tag:string", DX12E_MCP_HANDLER
         {
             auto& reg = m_scene->GetRegistry();
             const std::string tag = params.value("tag", std::string());
@@ -4720,15 +4679,17 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             resp["ok"] = true;
             resp["result"] = {{"entities", arr}, {"count", arr.size()}};
-        }
-        else if (method == "select_entity")
+        });
+
+    McpDefine("select_entity", "entity:int,name:string", DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);
             m_editorCtx->Select(e);
             resp["ok"] = true;
             resp["result"] = {{"selected", static_cast<u32>(e)}};
-        }
-        else if (method == "focus_camera")
+        });
+
+    McpDefine("focus_camera", "entity:int,name:string", DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
@@ -4763,8 +4724,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"cameraPos", {camPos.x, camPos.y, camPos.z}},
                               {"target", {wpos.x, wpos.y, wpos.z}}, {"distance", dist}};
-        }
-        else if (method == "set_pbr")
+        });
+
+    McpDefine("set_pbr", "entity:int,metallic:any,name:string,roughness:any,uvScaleU:any,uvScaleV:any", DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
@@ -4779,28 +4741,32 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["result"] = {{"entityId", static_cast<u32>(e)},
                               {"metallic", mr.overrideMetallic}, {"roughness", mr.overrideRoughness},
                               {"uvScaleU", mr.uvScaleU}, {"uvScaleV", mr.uvScaleV}};
-        }
-        else if (method == "duplicate_entity")
+        });
+
+    McpDefine("duplicate_entity", "entity:int,name:string", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot duplicate while Playing; call dx12_stop first");
             const auto e = ResolveMcpEntity(*m_scene, params);
             m_editorCtx->mcpDuplications.push_back(McpPendingDelete{ e, deferred });  // .entity=複製元
             isDeferred = true;
-        }
-        else if (method == "undo")
+        });
+
+    McpDefine("undo", "", DX12E_MCP_HANDLER
         {
             m_editorCtx->pendingUndo = true;   // フレーム境界で適用
             resp["ok"] = true;
             resp["result"] = {{"queuedUndo", true}};
-        }
-        else if (method == "redo")
+        });
+
+    McpDefine("redo", "", DX12E_MCP_HANDLER
         {
             m_editorCtx->pendingRedo = true;
             resp["ok"] = true;
             resp["result"] = {{"queuedRedo", true}};
-        }
-        else if (method == "new_scene")
+        });
+
+    McpDefine("new_scene", "savePath:string", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot create a new scene while Playing");
@@ -4815,8 +4781,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             m_editorCtx->pendingNewScene = true;   // フレーム境界で空シーン生成 + sceneGeneration++
             resp["ok"] = true;
             resp["result"] = {{"applied", "next frame"}};
-        }
-        else if (method == "spawn_prefab")
+        });
+
+    McpDefine("spawn_prefab", "name:string,path:string,position:any", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot spawn while Playing; call dx12_stop first");
@@ -4838,8 +4805,58 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             sreq.mcp       = deferred;
             m_editorCtx->pendingSpawns.push_back(std::move(sreq));
             isDeferred = true;
-        }
-        else if (method == "get_scene_settings")
+        });
+}
+
+// ---- エディタ操作（設定・Play/Stop・入力・スクショ・計測・物理クエリ） ----
+void Application::RegisterMcpEditorMethods()
+{
+    using json = nlohmann::json;
+    namespace fs = std::filesystem;
+
+    // ディスパッチ表そのものを機械可読で返す（#20-7）。TS 側が Application.cpp を
+    // テキスト解析しなくてもスキーマのドリフトを検出できるようにするための唯一の入口。
+    // 表が正なので「実装にあるのに describe に出ない」は原理的に起きない。
+    McpDefine("describe_mcp_params", "method:string", DX12E_MCP_HANDLER
+        {
+            const std::string only = params.value("method", std::string());
+            json methods = json::object();
+            for (const auto& [name, entry] : m_mcpMethods)
+            {
+                if (!only.empty() && name != only) continue;
+                json keys = json::array();
+                const std::string spec(entry.paramSpec ? entry.paramSpec : "");
+                size_t pos = 0;
+                while (pos <= spec.size() && !spec.empty())
+                {
+                    const size_t comma = spec.find(',', pos);
+                    const std::string one =
+                        spec.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+                    if (!one.empty())
+                    {
+                        const size_t colon = one.find(':');
+                        keys.push_back({{"key",  one.substr(0, colon)},
+                                        {"type", colon == std::string::npos ? std::string("any")
+                                                                            : one.substr(colon + 1)}});
+                    }
+                    if (comma == std::string::npos) break;
+                    pos = comma + 1;
+                }
+                methods[name] = std::move(keys);
+            }
+            if (!only.empty() && methods.empty())
+                throw McpError(McpErr::InvalidParam, "unknown method: " + only,
+                               "method を省くと全 method を返す");
+            resp["ok"] = true;
+            resp["result"] = {{"methods", methods},
+                              {"count", methods.size()},
+                              {"globalKeys", json::array({"idempotency_key"})},
+                              {"note", "type は bool/int/number/string/vec3/object/any。"
+                                       "\"親.子\" は入れ子オブジェクトのキー（例 skybox.envMapPath）。"
+                                       "any は C++ 側で型を静的に決められなかったもので、値の型制約が無い意味ではない"}};
+        });
+
+    McpDefine("get_scene_settings", "", DX12E_MCP_HANDLER
         {
             const auto& sky = m_scene->GetSkyboxSettings();
             resp["ok"] = true;
@@ -4847,8 +4864,10 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                                   {"envMapPath", sky.envMapPath}, {"iblIntensity", sky.iblIntensity},
                                   {"skyboxIntensity", sky.skyboxIntensity}, {"drawSkybox", sky.drawSkybox}}},
                               {"note", "post-process は dx12_get_post_process、SSAO は dx12_get_ssao、SSR は dx12_get_ssr、SSGI は dx12_get_ssgi、ボリュメトリックフォグは dx12_get_volumetric_fog を使う"}};
-        }
-        else if (method == "set_scene_settings")
+        });
+
+    McpDefine("set_scene_settings", "skybox:object,skybox.drawSkybox:any,skybox.envMapPath:any,skybox.iblIntensity:any,"
+              "skybox.skyboxIntensity:any", DX12E_MCP_HANDLER
         {
             const json sky = params.value("skybox", json::object());
             auto& s = m_scene->GetSkyboxSettings();
@@ -4867,8 +4886,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             if (envChanged) { m_loadedSkyboxPath.clear(); m_skyboxDirty = true; }  // 環境マップ再ベイク要求
             resp["ok"] = true;
             resp["result"] = {{"applied", true}, {"envMapRebake", envChanged}};
-        }
-        else if (method == "play")
+        });
+
+    McpDefine("play", "", DX12E_MCP_HANDLER
         {
             if (m_engineMode == EngineMode::Playing)
             {
@@ -4887,8 +4907,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 m_mcpModeReply = deferred;
                 isDeferred = true;
             }
-        }
-        else if (method == "stop")
+        });
+
+    McpDefine("stop", "", DX12E_MCP_HANDLER
         {
             if (m_engineMode == EngineMode::Editor)
             {
@@ -4904,13 +4925,15 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 m_mcpModeReply = deferred;
                 isDeferred = true;
             }
-        }
-        else if (method == "get_mode")
+        });
+
+    McpDefine("get_mode", "", DX12E_MCP_HANDLER
         {
             resp["ok"] = true;
             resp["result"] = {{"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"}};
-        }
-        else if (method == "get_log")
+        });
+
+    McpDefine("get_log", "lines:int", DX12E_MCP_HANDLER
         {
             int lines = params.value("lines", 50);
             if (lines < 1) lines = 1;
@@ -4931,8 +4954,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             resp["ok"] = true;
             resp["result"] = arr;   // ファイル無しは空配列(grace)
-        }
-        else if (method == "screenshot")
+        });
+
+    McpDefine("screenshot", "", DX12E_MCP_HANDLER
         {
             // 直近フレームのシーン描画を PNG にして絶対パスを返す。AI 側はそのパスを画像として読む。
             std::string serr;
@@ -4942,8 +4966,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["result"] = {{"path", path},
                               {"width", m_sceneRT->GetWidth()},
                               {"height", m_sceneRT->GetHeight()}};
-        }
-        else if (method == "ui_screenshot")
+        });
+
+    McpDefine("ui_screenshot", "", DX12E_MCP_HANDLER
         {
             // エディタウィンドウ全体(ImGui パネル込み = UIエディタ/ゲーム内 UI プレビューが写る)を
             // PNG にして返す。scene RT には ImGui 描画が乗らないため screenshot とは別経路。
@@ -4956,8 +4981,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["result"] = {{"path", path},
                               {"width", rc.right - rc.left}, {"height", rc.bottom - rc.top},
                               {"note", "editor window capture (includes UI editor panel & game UI preview)"}};
-        }
-        else if (method == "project_world_to_screen")
+        });
+
+    McpDefine("project_world_to_screen", "entity:int,name:string", DX12E_MCP_HANDLER
         {
             // エンティティのワールド座標を、今シーンビューを描いているカメラ(m_camera)の
             // ビュー*射影で画面ピクセルへ投影する。Playing 中は m_camera = アクティブなゲームカメラ
@@ -4982,8 +5008,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                               {"visible", visible}, {"depth", ndcZ}, {"w", w},
                               {"width", m_sceneRT->GetWidth()}, {"height", m_sceneRT->GetHeight()},
                               {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"}};
-        }
-        else if (method == "get_lua_component_state")
+        });
+
+    McpDefine("get_lua_component_state", "entity:int,name:string", DX12E_MCP_HANDLER
         {
             // LuaScript の現在のプロパティ値(オーバーライド+スキーマ既定)を全部返す。
             // get_entity は保存済みオーバーライドしか出さないので、スキーマを基準に既定も含めて出す。
@@ -5028,8 +5055,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                               {"enabled", ls.enabled}, {"started", ls.started},
                               {"loadError", ls.loadError}, {"errorMessage", ls.errorMessage},
                               {"properties", std::move(props)}};
-        }
-        else if (method == "set_lua_property")
+        });
+
+    McpDefine("set_lua_property", "entity:int,key:string,name:string,value:any", DX12E_MCP_HANDLER
         {
             // LuaScript のプロパティを1つ書き換える。スキーマで型を確認して検証。
             // 実行中(Playing)なら ReloadScript で再注入、Editor では保存だけ(次 Play で反映)。
@@ -5075,8 +5103,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             if (ls.started) m_scriptEngine->ReloadScript(e);  // 実行中のみ再注入(Editor は保存のみ)
             resp["ok"] = true;
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"key", key}, {"reloaded", ls.started}};
-        }
-        else if (method == "key_down")
+        });
+
+    McpDefine("key_down", "key:string", DX12E_MCP_HANDLER
         {
             // 合成キー押下(押しっぱなし)。次フレーム以降の Lua input:isKeyDown / keyDown() が true になる。
             // key_up を呼ぶまで保持。Playing 中の移動などの確認用(isAsyncKeyDown 系には効かない)。
@@ -5084,23 +5113,26 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             m_inputSystem->OnKeyDown(vk);
             resp["ok"] = true;
             resp["result"] = {{"key", vk}, {"down", true}};
-        }
-        else if (method == "key_up")
+        });
+
+    McpDefine("key_up", "key:string", DX12E_MCP_HANDLER
         {
             const int vk = ParseMcpVk(params);
             m_inputSystem->OnKeyUp(vk);
             resp["ok"] = true;
             resp["result"] = {{"key", vk}, {"down", false}};
-        }
-        else if (method == "key_press")
+        });
+
+    McpDefine("key_press", "key:string", DX12E_MCP_HANDLER
         {
             // 1フレームだけ押す(isKeyPressed が立つ)。ジャンプ等のタップ操作の確認用。
             const int vk = ParseMcpVk(params);
             m_inputSystem->InjectKeyPress(vk);
             resp["ok"] = true;
             resp["result"] = {{"key", vk}, {"pressed", true}};
-        }
-        else if (method == "render_debug")
+        });
+
+    McpDefine("render_debug", "depthRange:number,exposure:number,frames:int,gain:number,mode:string", DX12E_MCP_HANDLER
         {
             // 中間バッファ可視化。mode を受けて必要な機能を一時的に ON にし、N フレーム描いてから
             // スクリーンショットを撮って返し、設定を元へ戻す（＝呼ぶ前と完全に同じ状態に戻る）。
@@ -5252,8 +5284,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             m_mcpRenderDebugReply      = deferred;
             m_renderDebugWarnings      = warn.dump();
             isDeferred = true;
-        }
-        else if (method == "step_frames")
+        });
+
+    McpDefine("step_frames", "frames:any,n:int", DX12E_MCP_HANDLER
         {
             // N フレーム進めてから応答する同期バリア(遅延応答)。key_down/press の後に呼ぶと
             // 入力がシミュレーションに効いてから get_entity/project_world_to_screen で結果を見られる。
@@ -5266,8 +5299,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             m_mcpStepFramesLeft = n;
             m_mcpStepReply = deferred;
             isDeferred = true;
-        }
-        else if (method == "perf_stats")
+        });
+
+    McpDefine("perf_stats", "window:int", DX12E_MCP_HANDLER
         {
             // 直近 window フレームのリングバッファを平均して即答（ベンチ不要の現状把握用）。
             const u32 have = static_cast<u32>((std::min<u64>)(m_perfTotalFrames, kPerfHistory));
@@ -5347,8 +5381,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             };
             resp["ok"] = true;
             resp["result"] = rep;
-        }
-        else if (method == "benchmark")
+        });
+
+    McpDefine("benchmark", "frames:int,uncap:bool", DX12E_MCP_HANDLER
         {
             // N フレーム計測してから応答する遅延同期。カメラ/シーンは呼び出し側が事前に整えること。
             int n = params.value("frames", 300);
@@ -5375,8 +5410,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             m_benchFramesLeft = static_cast<u32>(n);
             m_benchReply = deferred;
             isDeferred = true;
-        }
-        else if (method == "set_color")
+        });
+
+    McpDefine("set_color", "color:any,entity:int,name:string", DX12E_MCP_HANDLER
         {
             // メッシュの頂点色(基本色の乗算)を設定する。scene:setColor(Lua) と同じ。
             // 足場やコインの色付けに。色は [r,g,b](0..1)。
@@ -5393,8 +5429,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             for (auto* mesh : mr.meshes) if (mesh) mesh->SetVertexColor(*device, c[0], c[1], c[2], 1.0f);
             resp["ok"] = true;
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"color", {c[0], c[1], c[2]}}};
-        }
-        else if (method == "screenshot_game_view")
+        });
+
+    McpDefine("screenshot_game_view", "", DX12E_MCP_HANDLER
         {
             // アクティブな CameraComponent 視点でシーンを1フレーム描いて撮る(遅延応答)。
             // Editor 中でもゲームカメラの画角を確認できる。Playing 中は通常 screenshot と同じ絵。
@@ -5409,13 +5446,14 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 throw McpError(McpErr::ModeConflict, "a game-view screenshot is already pending; retry shortly");
             m_mcpGameViewReply = deferred;   // フレーム境界で描画→撮影→応答(Run ループ側)
             isDeferred = true;
-        }
-        // ════════════════════════════════════════════════════════════
-        //  ランタイム物理検証(raycast/overlap/velocity) — 全て同期・読み取り系。
-        //  bodies は Play 中のみ登録される(RegisterBody は Play 開始/loadScene 時)。
-        //  Editor 中に呼んでもエラーにはせず hit=false / entities=[] / velocity=[0,0,0] を返す。
-        // ════════════════════════════════════════════════════════════
-        else if (method == "raycast")
+        });
+
+    // ════════════════════════════════════════════════════════════
+    //  ランタイム物理検証(raycast/overlap/velocity) — 全て同期・読み取り系。
+    //  bodies は Play 中のみ登録される(RegisterBody は Play 開始/loadScene 時)。
+    //  Editor 中に呼んでもエラーにはせず hit=false / entities=[] / velocity=[0,0,0] を返す。
+    // ════════════════════════════════════════════════════════════
+    McpDefine("raycast", "direction:any,maxDistance:number,origin:any", DX12E_MCP_HANDLER
         {
             auto originV = params.value("origin", std::vector<float>{});
             auto dirV = params.value("direction", std::vector<float>{});
@@ -5441,8 +5479,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             resp["ok"] = true;
             resp["result"] = std::move(result);
-        }
-        else if (method == "overlap_box" || method == "overlap_sphere")
+        });
+
+    McpDefine("overlap_box|overlap_sphere", "center:any,halfExtents:any,maxResults:int,radius:number", DX12E_MCP_HANDLER
         {
             int maxResults = params.value("maxResults", 32);
             if (maxResults < 1) maxResults = 1;
@@ -5477,8 +5516,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             resp["ok"] = true;
             resp["result"] = {{"entities", arr}, {"count", arr.size()}};
-        }
-        else if (method == "get_physics_state")
+        });
+
+    McpDefine("get_physics_state", "entity:int,name:string", DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
@@ -5502,11 +5542,12 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             resp["ok"] = true;
             resp["result"] = std::move(result);
-        }
-        // ════════════════════════════════════════════════════════════
-        //  コンテンツ制作ヘルパー拡充
-        // ════════════════════════════════════════════════════════════
-        else if (method == "read_lua_component")
+        });
+
+    // ════════════════════════════════════════════════════════════
+    //  コンテンツ制作ヘルパー拡充
+    // ════════════════════════════════════════════════════════════
+    McpDefine("read_lua_component", "path:string", DX12E_MCP_HANDLER
         {
             std::string rel = params.value("path", std::string());
             if (rel.empty()) throw McpError(McpErr::InvalidParam, "missing 'path'");
@@ -5520,8 +5561,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             std::ostringstream ss; ss << ifs.rdbuf();
             resp["ok"] = true;
             resp["result"] = {{"path", rel}, {"code", ss.str()}};
-        }
-        else if (method == "create_prefab")
+        });
+
+    McpDefine("create_prefab", "entity:int,name:string,path:string", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot create a prefab while Playing; call dx12_stop first");
@@ -5554,11 +5596,19 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 throw McpError(McpErr::Internal, "failed to save prefab");
             resp["ok"] = true;
             resp["result"] = {{"path", rel}, {"entityId", static_cast<u32>(e)}};
-        }
-        // ════════════════════════════════════════════════════════════
-        //  ビジュアル/ポスト設定の操作(ポストプロセス・SSAO)
-        // ════════════════════════════════════════════════════════════
-        else if (method == "get_post_process")
+        });
+}
+
+// ---- 描画設定（ポスト / SSAO / SSR / SSGI / コンタクトシャドウ / TAA / フォグ） ----
+void Application::RegisterMcpRenderMethods()
+{
+    using json = nlohmann::json;
+    namespace fs = std::filesystem;
+
+    // ════════════════════════════════════════════════════════════
+    //  ビジュアル/ポスト設定の操作(ポストプロセス・SSAO)
+    // ════════════════════════════════════════════════════════════
+    McpDefine("get_post_process", "", DX12E_MCP_HANDLER
         {
             const auto& pp = m_scene->GetPostSettings();
             resp["ok"] = true;
@@ -5606,8 +5656,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"motionBlurOn", pp.motionBlurOn}, {"mbStrength", pp.mbStrength},
                 {"mbSamples", pp.mbSamples},
             };
-        }
-        else if (method == "set_post_process")
+        });
+
+    McpDefine("set_post_process", McpPostParamSpec(), DX12E_MCP_HANDLER
         {
             auto& pp = m_scene->GetPostSettings();
             pp.enabled = params.value("enabled", pp.enabled);
@@ -5675,16 +5726,18 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             pp.fxaaOn = params.value("fxaaOn", pp.fxaaOn);
             resp["ok"] = true;
             resp["result"] = {{"applied", true}};
-        }
-        else if (method == "get_ssao")
+        });
+
+    McpDefine("get_ssao", "", DX12E_MCP_HANDLER
         {
             const auto& s = m_scene->GetSSAOSettings();
             resp["ok"] = true;
             resp["result"] = {{"enabled", s.enabled}, {"radius", s.radius}, {"bias", s.bias},
                               {"intensity", s.intensity}, {"power", s.power},
                               {"sampleCount", s.sampleCount}, {"blur", s.blur}};
-        }
-        else if (method == "set_ssao")
+        });
+
+    McpDefine("set_ssao", McpSsaoParamSpec(), DX12E_MCP_HANDLER
         {
             auto& s = m_scene->GetSSAOSettings();
             s.enabled = params.value("enabled", s.enabled);
@@ -5696,8 +5749,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             s.blur = params.value("blur", s.blur);
             resp["ok"] = true;
             resp["result"] = {{"applied", true}};
-        }
-        else if (method == "get_ssr")
+        });
+
+    McpDefine("get_ssr", "", DX12E_MCP_HANDLER
         {
             const auto& s = m_scene->GetSsrSettings();
             resp["ok"] = true;
@@ -5706,8 +5760,10 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                               {"maxSteps", s.maxSteps}, {"stride", s.stride},
                               {"roughnessCutoff", s.roughnessCutoff}, {"edgeFade", s.edgeFade},
                               {"bias", s.bias}};
-        }
-        else if (method == "set_ssr")
+        });
+
+    McpDefine("set_ssr", "bias:any,edgeFade:any,enabled:any,intensity:any,maxDistance:any,maxSteps:any,"
+              "roughnessCutoff:any,stride:any,thickness:any", DX12E_MCP_HANDLER
         {
             auto& s = m_scene->GetSsrSettings();
             s.enabled         = params.value("enabled",         s.enabled);
@@ -5721,8 +5777,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             s.bias            = params.value("bias",            s.bias);
             resp["ok"] = true;
             resp["result"] = {{"applied", true}};
-        }
-        else if (method == "get_ssgi")
+        });
+
+    McpDefine("get_ssgi", "", DX12E_MCP_HANDLER
         {
             const auto& s = m_scene->GetSsgiSettings();
             resp["ok"] = true;
@@ -5731,8 +5788,10 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                               {"rayCount", s.rayCount}, {"stepCount", s.stepCount},
                               {"clampValue", s.clampValue}, {"feedback", s.feedback},
                               {"iblFallback", s.iblFallback}};
-        }
-        else if (method == "set_ssgi")
+        });
+
+    McpDefine("set_ssgi", "clampValue:any,enabled:any,feedback:any,iblFallback:any,intensity:any,radius:any,"
+              "rayCount:any,stepCount:any,thickness:any", DX12E_MCP_HANDLER
         {
             auto& s = m_scene->GetSsgiSettings();
             s.enabled     = params.value("enabled",     s.enabled);
@@ -5746,8 +5805,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             s.iblFallback = params.value("iblFallback", s.iblFallback);
             resp["ok"] = true;
             resp["result"] = {{"applied", true}};
-        }
-        else if (method == "get_contact_shadow")
+        });
+
+    McpDefine("get_contact_shadow", "", DX12E_MCP_HANDLER
         {
             const auto& c = m_scene->GetContactShadowSettings();
             resp["ok"] = true;
@@ -5755,8 +5815,10 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                               {"thickness", c.thickness}, {"bias", c.bias},
                               {"intensity", c.intensity}, {"steps", c.steps},
                               {"maxDistance", c.maxDistance}, {"fadeDistance", c.fadeDistance}};
-        }
-        else if (method == "set_contact_shadow")
+        });
+
+    McpDefine("set_contact_shadow", "bias:any,enabled:any,fadeDistance:any,intensity:any,maxDistance:any,rayLength:any,"
+              "steps:any,thickness:any", DX12E_MCP_HANDLER
         {
             auto& c = m_scene->GetContactShadowSettings();
             c.enabled      = params.value("enabled",      c.enabled);
@@ -5769,8 +5831,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             c.fadeDistance = params.value("fadeDistance", c.fadeDistance);
             resp["ok"] = true;
             resp["result"] = {{"applied", true}};
-        }
-        else if (method == "get_taa")
+        });
+
+    McpDefine("get_taa", "", DX12E_MCP_HANDLER
         {
             const auto& t = m_scene->GetTaaSettings();
             resp["ok"] = true;
@@ -5782,8 +5845,10 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                               {"active", t.enabled && m_taaPass && !m_camera->IsOrthographic()
                                          && !(m_editorCtx && m_editorCtx->view2D)},
                               {"fxaaSuppressed", t.enabled}};
-        }
-        else if (method == "set_taa")
+        });
+
+    McpDefine("set_taa", "debugVelocity:any,enabled:any,feedbackMax:any,feedbackMin:any,jitterScale:any,"
+              "sampleCount:any,varianceGamma:any", DX12E_MCP_HANDLER
         {
             auto& t = m_scene->GetTaaSettings();
             t.enabled       = params.value("enabled",       t.enabled);
@@ -5795,8 +5860,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             t.debugVelocity = params.value("debugVelocity", t.debugVelocity);
             resp["ok"] = true;
             resp["result"] = {{"applied", true}};
-        }
-        else if (method == "get_volumetric_fog")
+        });
+
+    McpDefine("get_volumetric_fog", "", DX12E_MCP_HANDLER
         {
             const auto& f = m_scene->GetVolumetricFogSettings();
             resp["ok"] = true;
@@ -5814,8 +5880,11 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"active", f.enabled && f.density > 0.0f && m_volumetricFogPass
                            && !m_camera->IsOrthographic()
                            && !(m_editorCtx && m_editorCtx->view2D)}};
-        }
-        else if (method == "set_volumetric_fog")
+        });
+
+    McpDefine("set_volumetric_fog", "albedo:any,ambient:any,anisotropy:any,debugMode:any,density:any,depthDistribution:any,"
+              "distance:any,enabled:any,extendBeyondRange:any,heightFalloff:any,heightRef:any,"
+              "lightScattering:any,sunIntensity:any,temporal:any,temporalBlend:any", DX12E_MCP_HANDLER
         {
             auto& f = m_scene->GetVolumetricFogSettings();
             auto vec3 = [&](const char* key, DirectX::XMFLOAT3& dst)
@@ -5844,11 +5913,136 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             f.debugMode         = params.value("debugMode",         f.debugMode);
             resp["ok"] = true;
             resp["result"] = {{"applied", true}};
-        }
-        // ════════════════════════════════════════════════════════════
-        //  ビルド/検証パイプライン連携
-        // ════════════════════════════════════════════════════════════
-        else if (method == "validate_scene")
+        });
+
+    McpDefine("get_shadow_pcss|set_shadow_pcss", "blockerSearchTexels:number,enabled:any,lightTanAngle:number,maxPenumbraTexels:number,"
+              "temporalDither:any", DX12E_MCP_HANDLER
+        {
+            // get/set を 1 本のハンドラで捌く（"a|b" 登録）。束ねる義務はもう無い（C1061 は根治済み）が、
+            // 返り値が同一なのでこの形の方が読みやすい。
+            auto& p = m_scene->GetShadowPcssSettings();
+            if (method == "set_shadow_pcss")
+            {
+                p.enabled = params.value("enabled", p.enabled);
+                if (params.contains("lightTanAngle"))
+                    p.lightTanAngle = McpFloatParam(params, "lightTanAngle", p.lightTanAngle, 0.001f, 0.5f);
+                if (params.contains("maxPenumbraTexels"))
+                    p.maxPenumbraTexels = McpFloatParam(params, "maxPenumbraTexels", p.maxPenumbraTexels, 1.0f, 64.0f);
+                if (params.contains("blockerSearchTexels"))
+                    p.blockerSearchTexels = McpFloatParam(params, "blockerSearchTexels", p.blockerSearchTexels, 1.0f, 64.0f);
+                p.temporalDither = params.value("temporalDither", p.temporalDither);
+            }
+            resp["ok"] = true;
+            resp["result"] = {{"enabled", p.enabled},
+                              {"lightTanAngle", p.lightTanAngle},
+                              {"maxPenumbraTexels", p.maxPenumbraTexels},
+                              {"blockerSearchTexels", p.blockerSearchTexels},
+                              {"temporalDither", p.temporalDither},
+                              // ON でも実際に走らない条件を明示する（誤診断を防ぐ）
+                              {"active", p.enabled && m_scene->GetShadowsEnabled()
+                                         && !m_camera->IsOrthographic()},
+                              {"temporalDitherActive", p.enabled && p.temporalDither
+                                         && m_scene->GetTaaSettings().enabled},
+                              {"applied", method == "set_shadow_pcss"},
+                              {"note", "OFF にすると従来の 3x3 PCF に戻る（絵はビット一致）。"
+                                       "時間ディザは TAA 有効時のみ効く"}};
+        });
+
+    McpDefine("get_dxr|set_dxr", "aoCombineWithSsao:any,aoEnabled:any,aoIntensity:number,aoPower:number,aoRadius:number,"
+              "aoRayCount:any,forceBuildTlas:any,maxInstances:any,shadowEnabled:any,"
+              "shadowIntensity:number,shadowMaxDistance:number,shadowNormalBias:number,"
+              "shadowSunAngle:number", DX12E_MCP_HANDLER
+        {
+            // get/set を 1 本のハンドラで捌く（"a|b" 登録）。
+            //   RT サン影は既存のコンタクトシャドウ枠(t11)、RT-AO は既存の SSAO 枠(t8) へ書く。
+            //   ルートシグネチャは 1 DWORD も増えない。
+            auto& r = m_scene->GetRtSettings();
+            if (method == "set_dxr")
+            {
+                if (!m_dxrEnabled)
+                    throw McpError(McpErr::InvalidParam,
+                        "this GPU does not support inline raytracing",
+                        "DXR Tier 1.1 かつ Shader Model 6.5 が必要（RTX 20 系 / RX 6000 系以降）。"
+                        "起動ログの \"DXR:\" 行に実際の Tier と SM が出る");
+                r.shadowEnabled = params.value("shadowEnabled", r.shadowEnabled);
+                if (params.contains("shadowSunAngle"))
+                    r.shadowSunAngle = McpFloatParam(params, "shadowSunAngle", r.shadowSunAngle, 0.0f, 20.0f);
+                if (params.contains("shadowNormalBias"))
+                    r.shadowNormalBias = McpFloatParam(params, "shadowNormalBias", r.shadowNormalBias, 0.0f, 1.0f);
+                if (params.contains("shadowMaxDistance"))
+                    r.shadowMaxDistance = McpFloatParam(params, "shadowMaxDistance", r.shadowMaxDistance, 0.0f, 100000.0f);
+                if (params.contains("shadowIntensity"))
+                    r.shadowIntensity = McpFloatParam(params, "shadowIntensity", r.shadowIntensity, 0.0f, 1.0f);
+                r.aoEnabled = params.value("aoEnabled", r.aoEnabled);
+                if (params.contains("aoRadius"))
+                    r.aoRadius = McpFloatParam(params, "aoRadius", r.aoRadius, 0.01f, 100.0f);
+                if (params.contains("aoRayCount"))
+                    r.aoRayCount = std::clamp(params.value("aoRayCount", r.aoRayCount), 1, 8);
+                if (params.contains("aoIntensity"))
+                    r.aoIntensity = McpFloatParam(params, "aoIntensity", r.aoIntensity, 0.0f, 1.0f);
+                if (params.contains("aoPower"))
+                    r.aoPower = McpFloatParam(params, "aoPower", r.aoPower, 0.01f, 8.0f);
+                r.aoCombineWithSsao = params.value("aoCombineWithSsao", r.aoCombineWithSsao);
+                if (params.contains("maxInstances"))
+                    r.maxInstances = std::clamp(params.value("maxInstances", r.maxInstances), 0, 32768);
+                r.forceBuildTlas = params.value("forceBuildTlas", r.forceBuildTlas);
+            }
+            const auto* gd = m_graphicsDevice.get();
+            const int tier = gd ? static_cast<int>(gd->GetRaytracingTier()) : 0;
+            const int sm   = gd ? static_cast<int>(gd->GetHighestShaderModel()) : 0;
+            json stats = json::object();
+            if (m_rtScene)
+            {
+                const auto& s = m_rtScene->GetStats();
+                stats = {{"instances", s.instances}, {"blasCount", s.blasCount},
+                         {"blasBytes", s.blasBytes}, {"blasTriangles", s.blasTriangles},
+                         {"tlasBytes", s.tlasBytes}, {"scratchBytes", s.scratchBytes},
+                         {"instanceDescBytes", s.instanceDescBytes},
+                         {"skippedSkinned", s.skippedSkinned},
+                         {"skippedTransparent", s.skippedTransparent},
+                         {"droppedOverLimit", s.droppedOverLimit},
+                         {"bytesPerTriangle", s.blasTriangles
+                              ? static_cast<double>(s.blasBytes) / static_cast<double>(s.blasTriangles) : 0.0}};
+            }
+            resp["ok"] = true;
+            resp["result"] = {{"supported", m_dxrEnabled},
+                              {"raytracingTier", tier == 0 ? std::string("none")
+                                   : std::to_string(tier / 10) + "." + std::to_string(tier % 10)},
+                              {"highestShaderModel", std::to_string(sm >> 4) + "." + std::to_string(sm & 0xF)},
+                              {"shadowEnabled", r.shadowEnabled},
+                              {"shadowSunAngle", r.shadowSunAngle},
+                              {"shadowNormalBias", r.shadowNormalBias},
+                              {"shadowMaxDistance", r.shadowMaxDistance},
+                              {"shadowIntensity", r.shadowIntensity},
+                              {"aoEnabled", r.aoEnabled},
+                              {"aoRadius", r.aoRadius},
+                              {"aoRayCount", r.aoRayCount},
+                              {"aoIntensity", r.aoIntensity},
+                              {"aoPower", r.aoPower},
+                              {"aoCombineWithSsao", r.aoCombineWithSsao},
+                              {"maxInstances", r.maxInstances},
+                              {"forceBuildTlas", r.forceBuildTlas},
+                              // ON でも実際に走らない条件を明示する（誤診断を防ぐ）
+                              {"shadowActive", m_rtShadowActiveThisFrame},
+                              {"tlasReady", m_rtScene && m_rtScene->IsReady()},
+                              {"stats", stats},
+                              {"applied", method == "set_dxr"},
+                              {"note", "RT 影は t11(コンタクトシャドウ枠)、RT-AO は t8(SSAO枠)へ書く。"
+                                       "ルートシグネチャ増分ゼロ。スキンドと半透明は TLAS に入らないので "
+                                       "CSM が担当する（min 合成）"}};
+        });
+}
+
+// ---- ビルド検証 / Lua / テクスチャ / アニメーション / マルチプレイ ----
+void Application::RegisterMcpToolingMethods()
+{
+    using json = nlohmann::json;
+    namespace fs = std::filesystem;
+
+    // ════════════════════════════════════════════════════════════
+    //  ビルド/検証パイプライン連携
+    // ════════════════════════════════════════════════════════════
+    McpDefine("validate_scene", "path:string", DX12E_MCP_HANDLER
         {
             std::string rel = params.value("path", std::string());
             fs::path scenePath;
@@ -5889,8 +6083,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"pass", code == 0}, {"exitCode", code}, {"report", report},
                               {"scenePath", scenePath.string()}};
-        }
-        else if (method == "build_game")
+        });
+
+    McpDefine("build_game", "", DX12E_MCP_HANDLER
         {
             const bool ok = BuildGame();
             json result{{"success", ok}};
@@ -5902,13 +6097,14 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             resp["ok"] = true;
             resp["result"] = std::move(result);
-        }
-        // ════════════════════════════════════════════════════════════
-        //  Lua 即時実行(eval) — デバッグ用。globals フォールバック環境で実行するため
-        //  scene/physics/camera/audio 等の既存グローバルバインディングがそのまま使える。
-        //  print() は捕捉されない(log() を使うと dx12_get_log で見える)。
-        // ════════════════════════════════════════════════════════════
-        else if (method == "eval_lua")
+        });
+
+    // ════════════════════════════════════════════════════════════
+    //  Lua 即時実行(eval) — デバッグ用。globals フォールバック環境で実行するため
+    //  scene/physics/camera/audio 等の既存グローバルバインディングがそのまま使える。
+    //  print() は捕捉されない(log() を使うと dx12_get_log で見える)。
+    // ════════════════════════════════════════════════════════════
+    McpDefine("eval_lua", "code:string", DX12E_MCP_HANDLER
         {
             const std::string code = params.value("code", std::string());
             if (code.empty()) throw McpError(McpErr::InvalidParam, "missing 'code'");
@@ -5917,11 +6113,12 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             if (!ok) throw McpError(McpErr::Internal, "Lua error: " + err);
             resp["ok"] = true;
             resp["result"] = {{"result", resultStr}};
-        }
-        // ════════════════════════════════════════════════════════════
-        //  マテリアルテクスチャ上書き(Inspector の D&D 割当と同じ経路)
-        // ════════════════════════════════════════════════════════════
-        else if (method == "set_texture")
+        });
+
+    // ════════════════════════════════════════════════════════════
+    //  マテリアルテクスチャ上書き(Inspector の D&D 割当と同じ経路)
+    // ════════════════════════════════════════════════════════════
+    McpDefine("set_texture", "entity:int,name:string,path:string,slot:string,submesh:int", DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
@@ -5948,11 +6145,13 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"slot", slot},
                               {"submesh", submesh}, {"path", rel}};
-        }
-        // ════════════════════════════════════════════════════════════
-        //  スケルタルアニメーション制御(Lua playAnim/playAnimByName と同じ経路)
-        // ════════════════════════════════════════════════════════════
-        else if (method == "play_anim")
+        });
+
+    // ════════════════════════════════════════════════════════════
+    //  スケルタルアニメーション制御(Lua playAnim/playAnimByName と同じ経路)
+    // ════════════════════════════════════════════════════════════
+    McpDefine("play_anim", "blend:number,clip:int,clipName:any,entity:int,layer:int,loop:any,name:string,"
+              "speed:any,state:any", DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
@@ -6007,8 +6206,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                                   {"clipName", sa.clips[idx]->GetName()}, {"blend", blend},
                                   {"speed", sa.animator->GetSpeed()}};
             }
-        }
-        else if (method == "get_anim_state")
+        });
+
+    McpDefine("get_anim_state", "entity:int,name:string", DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
@@ -6115,8 +6315,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
 
             resp["ok"] = true;
             resp["result"] = std::move(result);
-        }
-        else if (method == "set_anim_param")
+        });
+
+    McpDefine("set_anim_param", "entity:int,name:string,param:string,trigger:bool,value:any", DX12E_MCP_HANDLER
         {
             // ★このメソッドだけ 'name' が二重の意味を持っていた（エンティティ名 / FSM パラメータ名）。
             //   ResolveMcpEntity は params["name"] を最優先でエンティティ名として引くので、
@@ -6172,8 +6373,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             else                                         out["value"] = it->second.b;
             resp["ok"] = true;
             resp["result"] = std::move(out);
-        }
-        else if (method == "describe_anim_graph")
+        });
+
+    McpDefine("describe_anim_graph", "entity:int,name:string,path:any", DX12E_MCP_HANDLER
         {
             // entity 指定ならロード済みのグラフを、path 指定なら .animfsm を直接読んで返す。
             AnimGraphAsset asset;
@@ -6205,11 +6407,12 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             result["graph"]  = json::parse(SerializeAnimGraphAsset(asset));
             resp["ok"] = true;
             resp["result"] = std::move(result);
-        }
-        // ════════════════════════════════════════════════════════════
-        //  マルチプレイヤー(フェーズ⑨のローカルテストループを AI から回す)
-        // ════════════════════════════════════════════════════════════
-        else if (method == "net_status")
+        });
+
+    // ════════════════════════════════════════════════════════════
+    //  マルチプレイヤー(フェーズ⑨のローカルテストループを AI から回す)
+    // ════════════════════════════════════════════════════════════
+    McpDefine("net_status", "", DX12E_MCP_HANDLER
         {
             json result;
             result["available"] = (m_networkSystem != nullptr);
@@ -6237,8 +6440,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             result["testJoinAddress"] = m_editorCtx->netTestJoinAddress;
             resp["ok"] = true;
             resp["result"] = std::move(result);
-        }
-        else if (method == "net_setup")
+        });
+
+    McpDefine("net_setup", "address:any,port:int,role:string", DX12E_MCP_HANDLER
         {
             // ツールバーの Play ロールドロップダウンと同じ状態を書く。次の play で
             // EnterPlayMode が Host/Join を自動実行する(直接 Host/Join は EnterPlayMode の
@@ -6255,8 +6459,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"testRole", role}, {"address", m_editorCtx->netTestJoinAddress},
                               {"port", m_editorCtx->netTestJoinPort}};
-        }
-        else if (method == "net_launch_test_client")
+        });
+
+    McpDefine("net_launch_test_client", "", DX12E_MCP_HANDLER
         {
             if (!m_networkSystem || !m_networkSystem->IsServer())
                 throw McpError(McpErr::ModeConflict,
@@ -6266,8 +6471,16 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"requested", true},
                               {"note", "second engine process launches at next frame boundary and auto-joins 127.0.0.1"}};
-        }
-        else if (method == "get_editor_camera")
+        });
+}
+
+// ---- カメラ / 空間クエリ / アセット入出力 / ピッキング ----
+void Application::RegisterMcpAssetMethods()
+{
+    using json = nlohmann::json;
+    namespace fs = std::filesystem;
+
+    McpDefine("get_editor_camera", "", DX12E_MCP_HANDLER
         {
             // シーンビューを描いているカメラ(Editor=フライカメラ / Playing=ゲームカメラ)の状態。
             const auto pos = m_camera->GetPosition();
@@ -6282,8 +6495,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"orthographic", m_camera->IsOrthographic()},
                 {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"},
             };
-        }
-        else if (method == "set_editor_camera")
+        });
+
+    McpDefine("set_editor_camera", "pitchDeg:any,position:any,target:any,yawDeg:any", DX12E_MCP_HANDLER
         {
             // エディタのフライカメラを任意視点へ(focus_camera より自由。俯瞰や引きの構図撮影用)。
             // Playing 中の m_camera はゲームカメラでゲームロジックと取り合いになるため Editor 限定。
@@ -6323,8 +6537,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"yawDeg",   DirectX::XMConvertToDegrees(m_camera->GetYaw())},
                 {"pitchDeg", DirectX::XMConvertToDegrees(m_camera->GetPitch())},
             };
-        }
-        else if (method == "get_bounds")
+        });
+
+    McpDefine("get_bounds", "entity:int,includeChildren:bool,name:string", DX12E_MCP_HANDLER
         {
             // ワールド AABB。AI が「どこに何を置くか」を数値で決めるための基礎情報。
             const auto e = ResolveMcpEntity(*m_scene, params);
@@ -6355,8 +6570,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"size", {mx.x - mn.x, mx.y - mn.y, mx.z - mn.z}},
                 {"hasMesh", hasMesh},
             };
-        }
-        else if (method == "look_at")
+        });
+
+    McpDefine("look_at", "entity:int,name:string,target:any,targetEntity:any,targetName:any,upright:bool", DX12E_MCP_HANDLER
         {
             // エンティティを目標(座標 or 別エンティティ)へ向ける。+Z が正面の想定(rotation Euler を書く)。
             // 注: rotation はローカル値なので、親が回転していると厳密なワールド向きからずれる。
@@ -6400,8 +6616,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["result"] = {{"entityId", static_cast<u32>(e)},
                               {"rotation", {pitchDeg, yawDeg, 0.0f}},
                               {"target", {tgt.x, tgt.y, tgt.z}}};
-        }
-        else if (method == "snap_to_ground")
+        });
+
+    McpDefine("snap_to_ground", "entity:int,name:string,offset:number,precise:bool", DX12E_MCP_HANDLER
         {
             // Editor 中でも使える AABB ベースの接地。XZ が重なる他メッシュの天面のうち
             // 自分の天面以下で最も高いものに底面を合わせる。無ければ y=0 平面へ。
@@ -6480,8 +6697,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 resp["result"]["groundEntityId"] = static_cast<u32>(groundEnt);
             else
                 resp["result"]["note"] = "no ground mesh found; snapped to y=0 plane";
-        }
-        else if (method == "get_hierarchy")
+        });
+
+    McpDefine("get_hierarchy", "", DX12E_MCP_HANDLER
         {
             // シーン全体の親子ツリー。list_entities のフラット一覧と違い構造が分かる。
             auto& reg = m_scene->GetRegistry();
@@ -6518,8 +6736,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"roots", std::move(rootsJson)}, {"count", total},
                               {"sceneGeneration", m_sceneGeneration}};
-        }
-        else if (method == "import_asset")
+        });
+
+    McpDefine("import_asset", "destPath:string,overwrite:bool,sourcePath:string", DX12E_MCP_HANDLER
         {
             // 外部ファイル/フォルダを assets へコピーする(唯一 assets 外を「読む」ツール。
             // 書き先は assets 限定)。/asset コマンド等で落とした素材の取り込みに使う。
@@ -6567,8 +6786,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                     resp["result"]["note"] =
                         ".gltf は同階層の .bin / テクスチャを参照する。ロードに失敗したらフォルダごと import する";
             }
-        }
-        else if (method == "asset_info")
+        });
+
+    McpDefine("asset_info", "path:string", DX12E_MCP_HANDLER
         {
             // アセットのメタ情報。モデルは Assimp、テクスチャは DirectXTex で GPU を使わず読む。
             const std::string rel = ValidateMcpAssetRelPath(params.value("path", std::string()));
@@ -6621,8 +6841,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             resp["ok"] = true;
             resp["result"] = std::move(result);
-        }
-        else if (method == "read_texture")
+        });
+
+    McpDefine("read_texture", "maxSize:int,path:string", DX12E_MCP_HANDLER
         {
             // 任意対応形式(dds/tga 含む)のテクスチャを PNG に変換して絶対パスを返す。
             // Node 側が画像ブロックとして AI に見せる(dx12_view_texture)。
@@ -6641,8 +6862,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"path", outPath.string()}, {"width", w}, {"height", h},
                               {"sourcePath", rel}};
-        }
-        else if (method == "move_asset")
+        });
+
+    McpDefine("move_asset", "from:string,overwrite:bool,to:string", DX12E_MCP_HANDLER
         {
             // assets 内のファイル/フォルダの移動・リネーム。参照パスは自動更新しない。
             const std::string fromRel =
@@ -6667,8 +6889,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"from", fromRel}, {"to", toRel},
                               {"note", "シーン/プレハブ内の参照パスは自動更新されない(必要なら開き直して保存)"}};
-        }
-        else if (method == "delete_asset")
+        });
+
+    McpDefine("delete_asset", "path:string,recursive:bool", DX12E_MCP_HANDLER
         {
             // assets 内のファイル削除。ディレクトリは recursive:true 必須(誤爆防止)。
             const std::string rel = ValidateMcpAssetRelPath(params.value("path", std::string()));
@@ -6692,11 +6915,13 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["result"] = {{"deleted", rel}, {"removedCount", removed},
                               {"wasDirectory", wasDirectory},
                               {"note", "シーン/プレハブ内の参照パスは自動更新されない"}};
-        }
-        // ════════════════════════════════════════════════════════════
-        //  精密ピッキング（三角形単位。エディタのクリック選択と同じ実装を共有）
-        // ════════════════════════════════════════════════════════════
-        else if (method == "pick")
+        });
+
+    // ════════════════════════════════════════════════════════════
+    //  精密ピッキング（三角形単位。エディタのクリック選択と同じ実装を共有）
+    // ════════════════════════════════════════════════════════════
+    McpDefine("pick", "all:bool,includeIcons:bool,maxCandidates:int,maxHits:int,trianglePrecise:bool,"
+              "u:number,v:number,x:number,y:number", DX12E_MCP_HANDLER
         {
             if (!m_camera || !m_sceneRT) throw McpError(McpErr::Internal, "renderer not ready");
             const f32 vw = static_cast<f32>(m_sceneRT->GetWidth());
@@ -6744,8 +6969,10 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                                  "スキンドメッシュはバインドポーズの AABB 止まり。";
             resp["ok"] = true;
             resp["result"] = std::move(result);
-        }
-        else if (method == "raycast_precise")
+        });
+
+    McpDefine("raycast_precise", "all:bool,direction:vec3,maxCandidates:int,maxDistance:number,maxHits:int,origin:vec3,"
+              "trianglePrecise:bool", DX12E_MCP_HANDLER
         {
             const DirectX::XMFLOAT3 o = McpVec3Required(params, "origin");
             const DirectX::XMFLOAT3 d = McpVec3Required(params, "direction");
@@ -6770,11 +6997,20 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                              "スキンドメッシュだけはバインドポーズの AABB 止まり。";
             resp["ok"] = true;
             resp["result"] = std::move(result);
-        }
-        // ════════════════════════════════════════════════════════════
-        //  ハイトフィールド地形
-        // ════════════════════════════════════════════════════════════
-        else if (method == "terrain_create")
+        });
+}
+
+// ---- 地形 / スカルプト ----
+void Application::RegisterMcpTerrainMethods()
+{
+    using json = nlohmann::json;
+    namespace fs = std::filesystem;
+
+    // ════════════════════════════════════════════════════════════
+    //  ハイトフィールド地形
+    // ════════════════════════════════════════════════════════════
+    McpDefine("terrain_create", "color:vec3,maxHeight:number,name:string,position:vec3,resolution:int,uvScale:number,"
+              "worldSize:number", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot create/modify terrain while Playing",
@@ -6849,8 +7085,10 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 m_editorCtx->mcpProcCreates.push_back(std::move(pending));
                 isDeferred = true;
             }
-        }
-        else if (method == "terrain_generate")
+        });
+
+    McpDefine("terrain_generate", "amplitude:number,baseHeight:number,edgeFalloff:number,entity:int,frequency:number,"
+              "name:string,octaves:int,preset:string,ridged:number,seed:int,valleyDepth:number", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot modify terrain while Playing",
@@ -6898,8 +7136,11 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"resolution", hf.Resolution()}, {"worldSize", hf.WorldSize()},
                 {"note", "高さ配列を丸ごと作り直した(既存の彫りは消える)。同じ seed/params なら毎回同じ地形＝冪等。"
                          "メッシュ・コリジョン・.hf の保存は次のフレームで自動反映される。"}};
-        }
-        else if (method == "terrain_sculpt")
+        });
+
+    McpDefine("terrain_sculpt", "brush:string,entity:int,falloff:number,flattenHeight:number,mirrorX:bool,mirrorZ:bool,"
+              "name:string,noiseFrequency:number,noiseOctaves:int,noiseRidged:number,point:any,"
+              "points:any,radius:number,seed:int,strength:number,worldPos:any", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot modify terrain while Playing",
@@ -6985,8 +7226,12 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"note", "★相対操作（同じ呼び出しを2回撃つと2回ぶん盛れる）。絶対値で整地したいときは "
                          "brush:\"flatten\" + flattenHeight を使うと冪等になる。"
                          "strength は raise/lower/noise = メートル、smooth/flatten = 寄せ具合(2 でほぼ完全)。"}};
-        }
-        else if (method == "terrain_paint" || method == "terrain_autopaint")
+        });
+
+    McpDefine("terrain_paint|terrain_autopaint", "dirtSlopeEnd:number,dirtSlopeStart:number,entity:int,falloff:number,layer:int,"
+              "name:string,noiseStrength:number,point:any,points:any,radius:number,"
+              "rockSlopeEnd:number,rockSlopeStart:number,snowHeightEnd:number,snowHeightStart:number,"
+              "strength:number,worldPos:any", DX12E_MCP_HANDLER
         {
             // 地形のテクスチャレイヤーを塗る（terrain_sculpt の写経）。
             //   terrain_paint     … 円ブラシで 1 レイヤーの重みを上げる（相対操作）
@@ -7085,8 +7330,13 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                              "そのレイヤー 100%。他レイヤーは合計 1 を保つよう比例縮小される。"
                              "全面を傾斜/標高から焼き直すなら dx12_terrain_autopaint。"}};
             }
-        }
-        else if (method == "terrain_set_layers")
+        });
+
+    McpDefine("terrain_set_layers", "autopaint:bool,distTiling:any,distTilingFarScale:number,distTilingStart:number,"
+              "entity:int,heightBlendDepth:number,layerSetPath:any,macro:any,macroScale:number,"
+              "macroStrength:number,name:string,normalStrength:number,pom:any,pomFadeEnd:number,"
+              "pomFadeStart:number,pomHeightScale:number,splatResolution:int,triplanar:any,"
+              "triplanarSharpness:number,uvScale:number", DX12E_MCP_HANDLER
         {
             // 地形へ .terrainlayers（4 層の PBR 素材）を割り当てる / 外す。
             // ★これが無かったので terrain_paint / autopaint は「シーン JSON を手書きして
@@ -7201,11 +7451,10 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                     : "割当てた。スプラットは .splat へ自動保存される。"
                       "塗るのは dx12_terrain_paint / dx12_terrain_autopaint、"
                       "結果の確認は dx12_terrain_splat_info。"}};
-        }
-        else if (method == "terrain_splat_info")
+        });
+
+    McpDefine("terrain_splat_info", "entity:int,gridSize:int,name:string,point:any,points:any", DX12E_MCP_HANDLER
         {
-            // ★MSVC の C1061（else-if の入れ子上限）に張り付いているので、
-            //   新しい method を足す人は get/set を 1 ブロックへ束ねること（N37）。
             // スプラット（レイヤー重み）の要約を返す読み取り専用メソッド。
             // terrain_paint / autopaint の結果を「絵を見ずに」検証するために使う。
             auto& reg = m_scene->GetRegistry();
@@ -7324,8 +7573,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 resp["ok"] = true;
                 resp["result"] = std::move(out);
             }
-        }
-        else if (method == "terrain_erode")
+        });
+
+    McpDefine("terrain_erode", "entity:int,iterations:int,name:string,region:any,talusDeg:number", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot modify terrain while Playing",
@@ -7378,8 +7628,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"minHeight", hMin}, {"maxHeight", hMax},
                 {"note", "熱浸食(安息角を超えた斜面の土砂を隣へ落とす)。相対操作なので繰り返すほど崩れる。"
                          "重いので iterations は 16〜40 くらいから試すとええ。"}};
-        }
-        else if (method == "terrain_sample")
+        });
+
+    McpDefine("terrain_sample", "entity:int,name:string,points:any", DX12E_MCP_HANDLER
         {
             // 読み取り専用。木や建物を「地形の上」に置くための高さ/法線問い合わせ。
             auto& reg = m_scene->GetRegistry();
@@ -7434,11 +7685,13 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"samples", samples}, {"count", samples.size()},
                 {"note", "worldY をそのまま dx12_set_transform の y に使えば地形に接地する"
                          "(範囲外は端の値。inside=false で判別)。"}};
-        }
-        // ════════════════════════════════════════════════════════════
-        //  頂点スカルプト（洞窟・アーチ・岩みたいな異形）
-        // ════════════════════════════════════════════════════════════
-        else if (method == "sculpt_create")
+        });
+
+    // ════════════════════════════════════════════════════════════
+    //  頂点スカルプト（洞窟・アーチ・岩みたいな異形）
+    // ════════════════════════════════════════════════════════════
+    McpDefine("sculpt_create", "collision:any,color:vec3,name:string,position:vec3,primitive:string,size:number,"
+              "subdivisions:int,uvScale:number", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot create a sculpt mesh while Playing",
@@ -7497,8 +7750,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 m_editorCtx->mcpProcCreates.push_back(std::move(pending));
                 isDeferred = true;
             }
-        }
-        else if (method == "sculpt_make_editable")
+        });
+
+    McpDefine("sculpt_make_editable", "entity:int,name:string", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot convert a model while Playing",
@@ -7537,8 +7791,12 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 m_editorCtx->mcpProcCreates.push_back(std::move(pending));
                 isDeferred = true;
             }
-        }
-        else if (method == "sculpt_brush")
+        });
+
+    McpDefine("sculpt_brush", "brush:string,direction:vec3,entity:int,falloff:number,grabDelta:vec3,"
+              "localPosition:vec3,name:string,noiseFrequency:number,noiseOctaves:int,"
+              "noiseRidged:number,position:vec3,radius:number,seed:int,strength:number,"
+              "symmetryX:bool,symmetryY:bool,symmetryZ:bool", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot sculpt while Playing",
@@ -7622,11 +7880,19 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"note", "★相対操作（撃つたびに彫れる）。radius/strength は【メッシュのローカル単位】"
                          "＝Transform の scale が掛かる前の大きさ。当てる場所は dx12_pick / "
                          "dx12_raycast_precise の worldPos をそのまま position に渡すのが確実。"}};
-        }
-        // ════════════════════════════════════════════════════════════
-        //  ライティング
-        // ════════════════════════════════════════════════════════════
-        else if (method == "list_lights")
+        });
+}
+
+// ---- ライティング / 診断 ----
+void Application::RegisterMcpLightingMethods()
+{
+    using json = nlohmann::json;
+    namespace fs = std::filesystem;
+
+    // ════════════════════════════════════════════════════════════
+    //  ライティング
+    // ════════════════════════════════════════════════════════════
+    McpDefine("list_lights", "cursor:int,limit:int", DX12E_MCP_HANDLER
         {
             using namespace DirectX;
             auto& reg = m_scene->GetRegistry();
@@ -7747,8 +8013,10 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                          "灯数はクラスタードライティングで合計 1024 灯まで(点/スポットの個別上限は無い)。"
                          "ただし影が落ちるのは spot 4 / point 2 のまま。"
                          "太陽の調整は dx12_set_sun、まとめて雰囲気を変えるなら dx12_apply_lighting_preset。"}};
-        }
-        else if (method == "set_sun")
+        });
+
+    McpDefine("set_sun", "ambient:number,azimuth:number,color:vec3,elevation:number,intensity:number,"
+              "kelvin:number,timeOfDay:number", DX12E_MCP_HANDLER
         {
             auto& reg = m_scene->GetRegistry();
             // view.front() は空なら entt::null。break 付きの for だと MSVC が C4702 を出す。
@@ -7801,8 +8069,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"note", "絶対指定＝同じ引数の再実行で同じ結果(冪等)。timeOfDay は 0..24 で "
                          "向き/色/強度/環境光を一括で決める(Lua の Lighting.setTimeOfDay と同じカーブ)。"
                          "azimuth/elevation は【太陽が見える方向】(方位 +Z=0°,+X=90° / 高度 0=地平線,90=真上)。"}};
-        }
-        else if (method == "apply_lighting_preset")
+        });
+
+    McpDefine("apply_lighting_preset", "preset:string", DX12E_MCP_HANDLER
         {
             auto& reg = m_scene->GetRegistry();
             std::vector<std::string> presetIds;
@@ -7841,11 +8110,12 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"note", sun == entt::null
                     ? "平行光(太陽)が無いのでポストだけ適用した。dx12_create_entity(type:\"light_directional\") で作れる"
                     : "太陽 + ポストをまとめて適用した(冪等)。細部は dx12_set_sun / dx12_set_post_process で詰める"}};
-        }
-        // ════════════════════════════════════════════════════════════
-        //  エンジン診断（機械可読）
-        // ════════════════════════════════════════════════════════════
-        else if (method == "diagnose")
+        });
+
+    // ════════════════════════════════════════════════════════════
+    //  エンジン診断（機械可読）
+    // ════════════════════════════════════════════════════════════
+    McpDefine("diagnose", "only:any", DX12E_MCP_HANDLER
         {
             const std::vector<std::string> allIds = DeepDiag::AllCheckIds();
             std::string only;
@@ -7891,6 +8161,49 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                              "instancing は 1 度も描画していないと測れない(skipped に理由が入る)。";
             resp["ok"] = true;
             resp["result"] = std::move(report);
+        });
+}
+
+std::string Application::HandleMcpCommand(uint64_t client, const std::string& line)
+{
+    using json = nlohmann::json;
+
+    json req;
+    try { req = json::parse(line); }
+    catch (const std::exception& e)
+    {
+        return json{{"id", nullptr}, {"ok", false}, {"error_code", McpErr::InvalidParam},
+                    {"error", std::string("parse error: ") + e.what()}}.dump();
+    }
+
+    json resp;
+    resp["id"] = req.value("id", json(nullptr));
+    const std::string method = req.value("method", std::string());
+    const json params = req.value("params", json::object());
+
+    // 遅延応答(create/spawn/delete/open_scene/play/stop)の相関情報。
+    // 該当ハンドラで deferred=true にし、保留キューへ mcp を積んで空文字列を返す。
+    McpDeferred deferred{ client, req.value("id", 0LL), params.value("idempotency_key", std::string()) };
+    bool isDeferred = false;
+
+    try
+    {
+        if (!m_scene || !m_scriptEngine)
+            throw std::runtime_error("engine not ready");
+
+        // 生成/削除/シーン系を弾く判定。Playing 中はもちろん、同一 Poll バッチで先に play が
+        // 積まれた(モード遷移保留)場合も弾く＝そのフレームで spawn ドレインが skip されて
+        // 遅延応答が宙吊り(クライアント timeout)になるのを防ぐ。
+        const bool busyPlaying = (m_engineMode == EngineMode::Playing) ||
+                                 (m_modeChangeRequested && m_pendingMode == EngineMode::Playing);
+
+        // ★ディスパッチ（旧: 118 本の else-if 連鎖 = C1061 の温床。N37 / N43）。
+        //   表引きなので method を何本足しても入れ子は深くならない。
+        EnsureMcpMethodTable();
+        const auto it = m_mcpMethods.find(method);
+        if (it != m_mcpMethods.end())
+        {
+            it->second.fn(params, resp, method, deferred, isDeferred, busyPlaying);
         }
         else
         {
