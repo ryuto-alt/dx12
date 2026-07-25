@@ -561,6 +561,33 @@ void RenderLightingPanel(Scene* scene,
             pg::End();
         }
         ImGui::TextDisabled("影を落とせるのは スポット4灯 / ポイント2灯 まで（カメラに近い順）");
+
+        // ---- コンタクトシャドウ（CSM の解像度では抜ける接地部の影をスクリーン空間で補う）----
+        // CSM の ON/OFF とは独立（CSM を切っていても接地感だけ足せる）。
+        if (pg::Begin("LightContactShadow"))
+        {
+            auto& cs = scene->GetContactShadowSettings();
+            pg::Group("コンタクトシャドウ");
+            pg::Checkbox("有効", &cs.enabled,
+                         "深度バッファを太陽方向へレイマーチして、物と地面の接地部の細かい影を足します"
+                         "（透視ビューのみ。2D 正射では無効）");
+            ImGui::BeginDisabled(!cs.enabled);
+            pg::SliderFloat("レイ長 (m)", &cs.rayLength, 0.02f, 2.0f, "%.2f", nullptr,
+                            "伸ばすほど遠くの遮蔽を拾えますが、サンプル間隔が粗くなりノイズが増えます");
+            pg::SliderInt("ステップ数", &cs.steps, 4, 32, nullptr,
+                          "レイマーチのサンプル数。16 前後が品質/負荷の相場");
+            pg::SliderFloat("厚み (m)", &cs.thickness, 0.02f, 2.0f, "%.2f", nullptr,
+                            "遮蔽とみなす深度差の上限。深度バッファは表面しか持たないので、"
+                            "これを超える差は「物体の裏側を通っただけ」として無視します");
+            pg::SliderFloat("バイアス (m)", &cs.bias, 0.0f, 0.2f, "%.3f", nullptr,
+                            "自己遮蔽（自分の面に自分の影が出るシミ）を抑える押し出し量");
+            pg::SliderFloat("強度", &cs.intensity, 0.0f, 1.0f, "%.2f");
+            pg::SliderFloat("フェード開始 (m)", &cs.maxDistance, 5.0f, 200.0f, "%.0f", nullptr,
+                            "カメラからこの距離を超えたら効果を弱めます（遠景は精度が出ないため）");
+            pg::SliderFloat("フェード幅 (m)", &cs.fadeDistance, 1.0f, 50.0f, "%.0f");
+            ImGui::EndDisabled();
+            pg::End();
+        }
     }
 
     // =====================================================================

@@ -985,6 +985,33 @@ reg(
   (a) => run(() => engine.call("set_ssao", a)),
 );
 
+reg(
+  "dx12_get_contact_shadow",
+  "コンタクトシャドウ設定取得",
+  "現在のシーンのコンタクトシャドウ(深度バッファをスクリーン空間でレイマーチする近接遮蔽)設定を返す。{enabled, rayLength, thickness, bias, intensity, steps, maxDistance, fadeDistance}。★太陽(平行光)専用。正射カメラ/2Dビューでは自動無効化される(SSAO と同じ制約)。",
+  {},
+  { readOnlyHint: true },
+  () => run(() => engine.call("get_contact_shadow", {})),
+);
+
+reg(
+  "dx12_set_contact_shadow",
+  "コンタクトシャドウ設定変更",
+  "コンタクトシャドウのフィールドを指定分だけ更新する(未指定は現状維持)。CSM の解像度では抜ける「物と地面の接地部の細かい影」を補うための機能。rayLength=レイ長(m。伸ばすほどノイズが増える), thickness=遮蔽とみなす深度差の上限(m), bias=自己遮蔽バイアス(m), intensity=強さ(0..1), steps=レイマーチのステップ数(4..32、16 が相場), maxDistance/fadeDistance=遠景のフェード(m)。",
+  {
+    enabled: z.boolean().optional(),
+    rayLength: z.number().optional().describe("レイ長(m)。0.1〜0.5 が接触スケール。"),
+    thickness: z.number().optional().describe("遮蔽とみなす深度差の上限(m)。"),
+    bias: z.number().optional().describe("自己遮蔽バイアス(m)。シミが出るなら上げる。"),
+    intensity: z.number().optional().describe("0..1。"),
+    steps: z.number().int().optional().describe("4〜32。既定 16。"),
+    maxDistance: z.number().optional().describe("この距離(m)からフェード開始。"),
+    fadeDistance: z.number().optional().describe("フェードにかける距離(m)。"),
+  },
+  { idempotentHint: true },
+  (a) => run(() => engine.call("set_contact_shadow", a)),
+);
+
 // ════════════════════════════════════════════════════════════════
 //  ビルド/検証パイプライン連携
 // ════════════════════════════════════════════════════════════════

@@ -10,6 +10,7 @@ add_library(Renderer STATIC
     DofPass.cpp
     MotionBlurPass.cpp
     SSAOPass.cpp
+    ContactShadowPass.cpp
     SpriteRenderer.cpp
     SceneTransition.cpp
     ParticleSystem.cpp

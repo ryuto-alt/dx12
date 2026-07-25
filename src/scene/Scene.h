@@ -12,6 +12,7 @@
 #include "scene/Entity.h"
 #include "renderer/PostProcessSettings.h"
 #include "renderer/SSAOSettings.h"
+#include "renderer/ContactShadowSettings.h"
 // SpawnSculpt の既定引数で SculptPrimitive の列挙子を使うため（前方宣言では足りない）。
 #include "terrain/SculptMesh.h"
 
@@ -135,6 +136,9 @@ public:
     SSAOSettings&       GetSSAOSettings()       { return m_ssao; }
     const SSAOSettings& GetSSAOSettings() const { return m_ssao; }
 
+    ContactShadowSettings&       GetContactShadowSettings()       { return m_contactShadow; }
+    const ContactShadowSettings& GetContactShadowSettings() const { return m_contactShadow; }
+
     // リアルタイム影(CSM)をこのシーンで描くか。false なら影パスを丸ごとスキップ
     // （トップダウン等で影が要らないシーンの FPS 向上用。シェーダは無影センチネルで全面ライト）。
     bool GetShadowsEnabled() const { return m_shadowsEnabled; }
@@ -156,6 +160,7 @@ private:
     PostProcessSettings m_postSettings;
     SkyboxSettings      m_skybox;
     SSAOSettings        m_ssao;
+    ContactShadowSettings m_contactShadow;
     bool                m_shadowsEnabled = true;  // 既定 ON（エディタ/従来シーン互換）
 
     ResourceManager*  m_resourceManager = nullptr;

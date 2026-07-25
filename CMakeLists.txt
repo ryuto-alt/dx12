@@ -267,6 +267,7 @@ if(DXC_EXECUTABLE)
     set(SHADER_IBL_INC       "${CMAKE_SOURCE_DIR}/shaders/ibl/IBLCommon.hlsli")
     set(SHADER_SSAO          "${CMAKE_SOURCE_DIR}/shaders/ssao/SSAO.hlsl")
     set(SHADER_SSAO_BLUR     "${CMAKE_SOURCE_DIR}/shaders/ssao/SSAOBlur.hlsl")
+    set(SHADER_CONTACT_SHADOW "${CMAKE_SOURCE_DIR}/shaders/shadow/ContactShadow.hlsl")
 
     set(SHADER_OUTPUTS
         "${SHADER_OUTPUT_DIR}/Forward_VS.cso"
@@ -326,6 +327,8 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/SSAO_VS.cso"
         "${SHADER_OUTPUT_DIR}/SSAO_PS.cso"
         "${SHADER_OUTPUT_DIR}/SSAOBlur_PS.cso"
+        "${SHADER_OUTPUT_DIR}/ContactShadow_VS.cso"
+        "${SHADER_OUTPUT_DIR}/ContactShadow_PS.cso"
     )
 
     add_custom_command(
@@ -383,14 +386,14 @@ if(DXC_EXECUTABLE)
     add_custom_command(
         OUTPUT "${SHADER_OUTPUT_DIR}/ForwardGrid_VS.cso"
         COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/ForwardGrid_VS.cso" "${SHADER_GRID}"
-        DEPENDS "${SHADER_GRID}"
+        DEPENDS "${SHADER_GRID}" ${SHADER_FWD_INC}   # Lighting.hlsli/PBR.hlsli を include している
         COMMENT "Compiling ForwardGrid.hlsl -> ForwardGrid_VS.cso (vs_6_0)"
     )
 
     add_custom_command(
         OUTPUT "${SHADER_OUTPUT_DIR}/ForwardGrid_PS.cso"
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/ForwardGrid_PS.cso" "${SHADER_GRID}"
-        DEPENDS "${SHADER_GRID}"
+        DEPENDS "${SHADER_GRID}" ${SHADER_FWD_INC}   # Lighting.hlsli/PBR.hlsli を include している
         COMMENT "Compiling ForwardGrid.hlsl -> ForwardGrid_PS.cso (ps_6_0)"
     )
 
@@ -711,6 +714,21 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/SSAOBlur_PS.cso" "${SHADER_SSAO_BLUR}"
         DEPENDS "${SHADER_SSAO_BLUR}" "${SHADER_POST_INC}"
         COMMENT "Compiling SSAOBlur.hlsl -> SSAOBlur_PS.cso (ps_6_0)"
+    )
+
+    # --- コンタクトシャドウ（VS は FSTriVS 流用。SSAO と同じフルスクリーン 1 パス）---
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ContactShadow_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E FSTriVS -Fo "${SHADER_OUTPUT_DIR}/ContactShadow_VS.cso" "${SHADER_CONTACT_SHADOW}"
+        DEPENDS "${SHADER_CONTACT_SHADOW}" "${SHADER_POST_INC}"
+        COMMENT "Compiling ContactShadow.hlsl -> ContactShadow_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ContactShadow_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/ContactShadow_PS.cso" "${SHADER_CONTACT_SHADOW}"
+        DEPENDS "${SHADER_CONTACT_SHADOW}" "${SHADER_POST_INC}"
+        COMMENT "Compiling ContactShadow.hlsl -> ContactShadow_PS.cso (ps_6_0)"
     )
 
     add_custom_target(Shaders ALL DEPENDS ${SHADER_OUTPUTS})

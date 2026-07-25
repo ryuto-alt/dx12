@@ -41,9 +41,9 @@ const std::vector<ShaderSource>& BuildRegistry()
             { "forward/PBR.hlsli", "forward/Lighting.hlsli" },
         },
         {
-            // 注意: CMakeLists.txt の DEPENDS には Lighting.hlsli が抜けている(既存の潜在バグ、
-            // ForwardGrid.hlsl 自体は `#include "Lighting.hlsli"` している)。ここでは実際の
-            // include に合わせて正しく列挙する(ホットリロードの逆引きが漏れないように)。
+            // ForwardGrid.hlsl は `#include "Lighting.hlsli"` している。
+            // CMakeLists.txt の DEPENDS に Lighting.hlsli が抜けていた既存バグは修正済み
+            // （PerFrameConstants を拡張したときに再コンパイルされずレイアウトがズレる）。
             "forward/ForwardGrid.hlsl",
             {
                 { L"ForwardGrid_VS.cso", L"VSMain", L"vs_6_0" },
@@ -233,6 +233,15 @@ const std::vector<ShaderSource>& BuildRegistry()
         {
             "ssao/SSAOBlur.hlsl",
             { { L"SSAOBlur_PS.cso", L"PSMain", L"ps_6_0" } },
+            { "post/FullscreenTri.hlsli" },
+        },
+        {
+            // コンタクトシャドウ（深度バッファのスクリーン空間レイマーチ。SSAO と同じ 1 パス構成）
+            "shadow/ContactShadow.hlsl",
+            {
+                { L"ContactShadow_VS.cso", L"FSTriVS", L"vs_6_0" },
+                { L"ContactShadow_PS.cso", L"PSMain", L"ps_6_0" },
+            },
             { "post/FullscreenTri.hlsli" },
         },
     };

@@ -37,8 +37,8 @@ TextureCubeArray       g_pointShadowMap      : register(t10);  // NumCubes=MAX_S
 // PerFrame constants (b1)
 // CSM 対応で lightViewProj(64B) を cascadeViewProj[4](256B) + cascadeSplitsView(16B) + shadowParams(16B) へ拡張。
 // IBL 対応で iblParams(16B) を追加。スポット/ポイント影対応で shadowIndex・spotShadowMatrix[]・
-// spotShadowTexel/pointShadowNear を追加。
-// C++ Application.cpp の FrameConstants(1520B) とバイト単位で一致させること。
+// spotShadowTexel/pointShadowNear を追加。コンタクトシャドウ対応で末尾に 16B を追加。
+// C++ Application.cpp の FrameConstants(1536B) とバイト単位で一致させること。
 cbuffer PerFrameConstants : register(b1)
 {
     float4x4 view;                               // 64B  (offset   0)
@@ -59,7 +59,10 @@ cbuffer PerFrameConstants : register(b1)
     float  maxPrefilterMip;  // prefiltered cube の最大 mip index（=4.0）
     uint   hasIBL;           // 1=IBL テクスチャ有効, 0=従来 ambient フォールバック
     float  skyboxIntensity;  // skybox 描画/反射の明るさ
-};                                               // total = 1520B
+    // ▼ コンタクトシャドウ制御 16B (offset 1520)
+    float  contactShadowEnabled;  // 1=実テクスチャ(t11)を読む, 0=読まず 1.0（白ダミー 1x1 の範囲外 Load 対策）
+    float3 _csPad;
+};                                               // total = 1536B
 
 // スポットライト影: spotShadowMatrix[idx] で射影し 3x3 PCF（CSM の SampleCascade と同じ流儀）。
 float SampleSpotShadow(int idx, float3 worldPos)

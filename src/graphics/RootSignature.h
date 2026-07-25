@@ -26,6 +26,7 @@ public:
     static constexpr u32 kSlotIBLTable     = 6;  // DescriptorTable t5,t6,t7 (irradiance, prefiltered, brdfLUT)
     static constexpr u32 kSlotAOSRV        = 7;  // DescriptorTable t8 (SSAO ao, screen-space)
     static constexpr u32 kSlotPunctualShadowSRV = 8;  // DescriptorTable t9,t10 (spot shadow array, point shadow cube array)
+    static constexpr u32 kSlotContactShadowSRV  = 9;  // DescriptorTable t11 (contact shadow, screen-space)
 
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;

@@ -777,6 +777,21 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
         };
     }
 
+    // コンタクトシャドウ設定（シーン単位）
+    {
+        const auto& cs = scene.GetContactShadowSettings();
+        root["contactShadow"] = {
+            {"enabled",      cs.enabled},
+            {"rayLength",    cs.rayLength},
+            {"thickness",    cs.thickness},
+            {"bias",         cs.bias},
+            {"intensity",    cs.intensity},
+            {"steps",        cs.steps},
+            {"maxDistance",  cs.maxDistance},
+            {"fadeDistance", cs.fadeDistance},
+        };
+    }
+
     return root;
 }
 
@@ -869,6 +884,25 @@ static void LoadSSAOSettings(Scene& scene, const json& root)
         ss.blur        = sj.value("blur",        ss.blur);
     }
     scene.GetSSAOSettings() = ss;
+}
+
+// JSON からコンタクトシャドウ設定を復元（contactShadow が無ければデフォルト = 後方互換）
+static void LoadContactShadowSettings(Scene& scene, const json& root)
+{
+    ContactShadowSettings cs;  // デフォルト（未指定キーは既定値を維持）
+    if (root.contains("contactShadow"))
+    {
+        const auto& cj = root["contactShadow"];
+        cs.enabled      = cj.value("enabled",      cs.enabled);
+        cs.rayLength    = cj.value("rayLength",    cs.rayLength);
+        cs.thickness    = cj.value("thickness",    cs.thickness);
+        cs.bias         = cj.value("bias",         cs.bias);
+        cs.intensity    = cj.value("intensity",    cs.intensity);
+        cs.steps        = cj.value("steps",        cs.steps);
+        cs.maxDistance  = cj.value("maxDistance",  cs.maxDistance);
+        cs.fadeDistance = cj.value("fadeDistance", cs.fadeDistance);
+    }
+    scene.GetContactShadowSettings() = cs;
 }
 
 // JSON ノードから 1 エンティティを既存シーンに追加生成（Clear しない）
@@ -1291,6 +1325,8 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
     catch (const json::exception& e) { Logger::Warn("skybox 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadSSAOSettings(scene, root); }
     catch (const json::exception& e) { Logger::Warn("ssao 設定をスキップしました（型不正）: {}", e.what()); }
+    try { LoadContactShadowSettings(scene, root); }
+    catch (const json::exception& e) { Logger::Warn("contactShadow 設定をスキップしました（型不正）: {}", e.what()); }
 
     // リアルタイム影 ON/OFF（キーが無ければ既定 ON ＝後方互換）
     scene.SetShadowsEnabled(root.value("shadows", true));

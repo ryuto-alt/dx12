@@ -8,8 +8,8 @@ namespace dx12e
 
 void RootSignature::Initialize(GraphicsDevice& device)
 {
-    // Root parameters: 9
-    D3D12_ROOT_PARAMETER1 rootParams[9]{};
+    // Root parameters: 10
+    D3D12_ROOT_PARAMETER1 rootParams[10]{};
 
     // [0] Per-Object: 32bit constants (40 DWORDs = MVP(16) + Model(16) + CustomEffect(1) + pad(3) + CustomParams(4))
     // CustomEffect は MeshRenderer::effectValue（カスタムシェーダー向けの汎用進捗値、Sprite2D::effectValue
@@ -123,6 +123,21 @@ void RootSignature::Initialize(GraphicsDevice& device)
     rootParams[8].DescriptorTable.pDescriptorRanges   = &punctualShadowRange;
     rootParams[8].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
 
+    // [9] コンタクトシャドウ SRV DescriptorTable (t11) — スクリーン空間の近接遮蔽（太陽の寄与へ乗算）。
+    // SSAO(t8)と同じく PS が無条件で Load するため、無効時も白ダミー(1x1)を必ずバインドすること。
+    D3D12_DESCRIPTOR_RANGE1 contactShadowRange{};
+    contactShadowRange.RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    contactShadowRange.NumDescriptors                    = 1;
+    contactShadowRange.BaseShaderRegister                = 11;  // t11
+    contactShadowRange.RegisterSpace                     = 0;
+    contactShadowRange.Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    contactShadowRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    rootParams[9].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParams[9].DescriptorTable.NumDescriptorRanges = 1;
+    rootParams[9].DescriptorTable.pDescriptorRanges   = &contactShadowRange;
+    rootParams[9].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
+
     // Static Samplers (s0=albedo wrap, s1=shadow PCF, s2=IBL linear-clamp mip有,
     //                  s3=BRDF linear-clamp mipなし, s4=AO point-clamp スクリーンサンプル)
     D3D12_STATIC_SAMPLER_DESC staticSamplers[5]{};
@@ -206,7 +221,7 @@ void RootSignature::Initialize(GraphicsDevice& device)
         serializedBlob->GetBufferSize(),
         IID_PPV_ARGS(&m_rootSignature)));
 
-    Logger::Info("RootSignature created (PBR: 9 slots)");
+    Logger::Info("RootSignature created (PBR: 10 slots)");
 }
 
 } // namespace dx12e

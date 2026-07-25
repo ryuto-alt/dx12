@@ -33,6 +33,7 @@
 #include "renderer/MotionBlurPass.h"
 #include "renderer/GpuParticleSystem.h"
 #include "renderer/SSAOPass.h"
+#include "renderer/ContactShadowPass.h"
 #include "renderer/ParticleSystem.h"
 #include "renderer/SpriteRenderer.h"
 #include "renderer/SpriteAnim.h"
@@ -486,6 +487,12 @@ void Application::RegisterShaderReloadHandlers()
         m_shaderManager->RegisterReloadHandler(
             { L"SSAO_VS.cso", L"SSAO_PS.cso", L"SSAOBlur_PS.cso" },
             [this]() { m_ssaoPass->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_contactShadowPass)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"ContactShadow_VS.cso", L"ContactShadow_PS.cso" },
+            [this]() { m_contactShadowPass->RecreatePipelines(*m_graphicsDevice); });
     }
     if (m_bloomPass)
     {
@@ -1479,8 +1486,13 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         float                maxPrefilterMip;
         u32                  hasIBL;
         float                skyboxIntensity;
-    };  // total = 1520B
-    static_assert(sizeof(FrameConstants) == 1520, "FrameConstants must be 1520 bytes");
+        // ▼ コンタクトシャドウ制御 16B (offset 1520)
+        float                contactShadowEnabled;
+        DirectX::XMFLOAT3    _csPad;
+    };  // total = 1536B
+    // ここは CB の確保サイズを決めるためだけの定義。Render() 内の同名構造体・
+    // ModelThumbnailRenderer・Lighting.hlsli の PerFrameConstants と必ず揃えること。
+    static_assert(sizeof(FrameConstants) == 1536, "FrameConstants must be 1536 bytes");
     m_perFrameCB = std::make_unique<ConstantBuffer>();
     m_perFrameCB->Initialize(*m_graphicsDevice, sizeof(FrameConstants), FrameResources::kFrameCount);
 
@@ -1534,10 +1546,13 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     // オフスクリーン描画用 RT + ポストプロセス（WP3）
     SplashScreen::SetStatus("レンダラーを初期化中...");
     {
-        // 容量 32: sceneRT(1)+cameraPreview(2)+SSAO(2)+ブルームチェーン(6) = 11 使用。
-        // 今後のポスト追加パス（ゴッドレイ/DoF 等）用に余裕を持たせる（RTV は非シェーダ可視で安価）。
+        // sceneRT(1)+cameraPreview(2)+ブルームチェーン(6)+ゴッドレイ/レンズフレア/DoF/
+        // モーションブラー+SSAO(2)+コンタクトシャドウ(1)+歪みRT で 20 個ほど使う。
+        // 容量 64: 今後の深度依存パス（モーションベクター/SSGI/SSR/ボリュメトリック等）を
+        // 足しても枯渇しない余裕を先に取っておく（RTV は非シェーダ可視で安価。
+        // 枯渇時は DescriptorHeap::Allocate が Logger::Error + throw で fail-fast する）。
         m_offscreenRtvHeap = std::make_unique<DescriptorHeap>();
-        m_offscreenRtvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 32, false);
+        m_offscreenRtvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 64, false);
 
         // シーンは HDR(kSceneColorFormat) の中間RTへ描き、ポストで backbuffer へ解決する。
         // クリア色はリニア空間の値（最終段のACES+ガンマ後にコーンフラワーブルーに見える値）
@@ -1589,6 +1604,11 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_ssaoPass = std::make_unique<SSAOPass>();
         m_ssaoPass->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
                                m_window->GetWidth(), m_window->GetHeight(), PathResolver::ShaderDirW());
+
+        // コンタクトシャドウ（SSAO と同じ深度プリパスの結果を使う 1 パス。RT も同じヒープから）。
+        m_contactShadowPass = std::make_unique<ContactShadowPass>();
+        m_contactShadowPass->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
+                                        m_window->GetWidth(), m_window->GetHeight(), PathResolver::ShaderDirW());
 
         // 2D スプライト（バックバッファ＝スワップチェイン形式へ描く）
         m_spriteRenderer = std::make_unique<SpriteRenderer>();
@@ -4532,6 +4552,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"particleEmitters", emitters},
                 {"shadowsEnabled", m_scene->GetShadowsEnabled()},
                 {"ssaoEnabled", m_scene->GetSSAOSettings().enabled},
+                {"contactShadowEnabled", m_scene->GetContactShadowSettings().enabled},
                 {"gpuTimerValid", m_gpuTimer && m_gpuTimer->IsValid()},
                 {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"},
             };
@@ -4884,6 +4905,29 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             s.power = params.value("power", s.power);
             s.sampleCount = params.value("sampleCount", s.sampleCount);
             s.blur = params.value("blur", s.blur);
+            resp["ok"] = true;
+            resp["result"] = {{"applied", true}};
+        }
+        else if (method == "get_contact_shadow")
+        {
+            const auto& c = m_scene->GetContactShadowSettings();
+            resp["ok"] = true;
+            resp["result"] = {{"enabled", c.enabled}, {"rayLength", c.rayLength},
+                              {"thickness", c.thickness}, {"bias", c.bias},
+                              {"intensity", c.intensity}, {"steps", c.steps},
+                              {"maxDistance", c.maxDistance}, {"fadeDistance", c.fadeDistance}};
+        }
+        else if (method == "set_contact_shadow")
+        {
+            auto& c = m_scene->GetContactShadowSettings();
+            c.enabled      = params.value("enabled",      c.enabled);
+            c.rayLength    = params.value("rayLength",    c.rayLength);
+            c.thickness    = params.value("thickness",    c.thickness);
+            c.bias         = params.value("bias",         c.bias);
+            c.intensity    = params.value("intensity",    c.intensity);
+            c.steps        = params.value("steps",        c.steps);
+            c.maxDistance  = params.value("maxDistance",  c.maxDistance);
+            c.fadeDistance = params.value("fadeDistance", c.fadeDistance);
             resp["ok"] = true;
             resp["result"] = {{"applied", true}};
         }
@@ -6905,6 +6949,9 @@ void Application::Run()
                 // SSAO の AO/Blur RT も同寸へ（深度と同じフル解像度）
                 if (m_ssaoPass)
                     m_ssaoPass->Resize(*m_graphicsDevice, w, h);
+                // コンタクトシャドウの RT も同寸へ（同じ深度を読むのでフル解像度）
+                if (m_contactShadowPass)
+                    m_contactShadowPass->Resize(*m_graphicsDevice, w, h);
                 // ブルームチェーン（1/2〜1/64）も追従
                 if (m_bloomPass)
                     m_bloomPass->Resize(*m_graphicsDevice, w, h);
@@ -7152,8 +7199,9 @@ void Application::Shutdown()
     m_motionBlurPass.reset();
     m_distortRT.reset();
     m_gpuParticles.reset();
-    // SSAO（GPU リソース）をデバイス解放より前に明示破棄
+    // SSAO / コンタクトシャドウ（GPU リソース）をデバイス解放より前に明示破棄
     m_ssaoPass.reset();
+    m_contactShadowPass.reset();
     m_ssaoWhiteTex.reset();
     m_depthPrepassPSO.reset();
     m_depthPrepassSkinnedPSO.reset();
@@ -10638,7 +10686,7 @@ void Application::RecordPerfFrame()
 
 void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u32 frameIndex,
                                    DirectX::XMMATRIX viewProj, bool isGameView, u32 aoSrvIndex,
-                                   bool depthPrepassActive)
+                                   bool depthPrepassActive, u32 contactShadowSrvIndex)
 {
     using namespace DirectX;
     auto& reg = m_scene->GetRegistry();
@@ -10660,6 +10708,16 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
     if (aoSrvIndex != DescriptorHeap::kInvalidIndex)
         m_commandList->SetSRVTable(RootSignature::kSlotAOSRV,
             m_srvHeap->GetGpuHandle(aoSrvIndex));
+
+    // コンタクトシャドウ(t11)も同じ理由でここで 1 回バインド。
+    // PS が無条件で Load するので、無効時も白ダミー(1.0)を必ず張ること。
+    {
+        const u32 csIdx = (contactShadowSrvIndex != DescriptorHeap::kInvalidIndex)
+            ? contactShadowSrvIndex : m_ssaoWhiteSrvIndex;
+        if (csIdx != DescriptorHeap::kInvalidIndex)
+            m_commandList->SetSRVTable(RootSignature::kSlotContactShadowSRV,
+                m_srvHeap->GetGpuHandle(csIdx));
+    }
 
     // パーティクル判定（名前が "Pfx" で始まる＝加算発光で描く。パス3の instancing 集約用）
     auto isPfx = [&](entt::entity e) -> bool {
@@ -13159,18 +13217,27 @@ void Application::Render()
 
     // ===== メインパス（オフスクリーン RT へ描画）=====
 
-    // ===== 深度プリパス → SSAO（透視のみ。2D 正射ビューや無効時は素通し）=====
-    // SSAO 有効時はカメラ視点の深度を m_depthBuffer へ先に完成させ、深度から法線を再構築して AO を作る。
+    // ===== 深度プリパス → SSAO / コンタクトシャドウ（透視のみ。2D 正射ビューや無効時は素通し）=====
+    // どちらもカメラ視点の深度を m_depthBuffer へ先に完成させてから、その深度を読んで作る。
+    // プリパスは 1 回だけ走らせて 2 つのパスで共有する。
     const SSAOSettings& ssaoCfg = m_scene->GetSSAOSettings();
+    const ContactShadowSettings& csCfg = m_scene->GetContactShadowSettings();
     // SSAO は透視前提（深度線形化が透視射影に依存）。正射カメラ（俯瞰ゲーム/2Dビュー）では
     // AO 計算が壊れて全面 AO≈0 になり、ambient を黒く潰す（ゲームだけ真っ暗の原因）。→ 正射は無効化。
+    // コンタクトシャドウもビュー空間でレイを飛ばす＝同じ理由で透視限定。
+    const bool viewSupportsScreenSpace = !(m_editorCtx && m_editorCtx->view2D)
+                                       && !m_camera->IsOrthographic();
     const bool useSSAO = ssaoCfg.enabled && m_ssaoPass && m_ssaoPass->IsReady()
-                       && !(m_editorCtx && m_editorCtx->view2D)
-                       && !m_camera->IsOrthographic();
+                       && viewSupportsScreenSpace;
+    const bool useContactShadow = csCfg.enabled && m_contactShadowPass
+                                && m_contactShadowPass->IsReady()
+                                && viewSupportsScreenSpace;
+    const bool useDepthPrepass = useSSAO || useContactShadow;
     u32 aoSrv = m_ssaoWhiteSrvIndex;  // 既定 = 白（AO=1.0 素通し）
+    u32 csSrv = m_ssaoWhiteSrvIndex;  // 既定 = 白（遮蔽なし素通し。SSAO と同じ 1x1 白を共用）
 
     m_gpuTimer->Begin(nativeCmdList, GpuTimer::PrepassSSAO);
-    if (useSSAO)
+    if (useDepthPrepass)
     {
         XMMATRIX camVP = m_camera->GetViewProjMatrix();
 
@@ -13185,20 +13252,36 @@ void Application::Render()
                              /*updateSkinning*/ false, frameIndex, /*lodBias*/ 0,
                              m_depthPrepassPSOInst.get());
 
-        // --- SSAO 生成（depth SRV を読み AO→Blur）---
         m_commandList->TransitionResource(m_depthBuffer.Get(),
             D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        aoSrv = m_ssaoPass->Generate(nativeCmdList, m_srvHeap.get(),
-            m_srvHeap->GetGpuHandle(m_depthSrvIndex), ssaoCfg,
-            m_camera->GetProjectionMatrix(), m_camera->GetNearZ(), m_camera->GetFarZ(),
-            vpLeft, vpTop, vpW, vpH, frameIndex);
-        // 生成失敗（未準備）時は白ダミー(AO=1.0)へフォールバック。誤テクスチャの読み出しを防ぐ。
-        if (aoSrv == DescriptorHeap::kInvalidIndex)
-            aoSrv = m_ssaoWhiteSrvIndex;
+
+        // --- SSAO 生成（depth SRV を読み AO→Blur）---
+        if (useSSAO)
+        {
+            aoSrv = m_ssaoPass->Generate(nativeCmdList, m_srvHeap.get(),
+                m_srvHeap->GetGpuHandle(m_depthSrvIndex), ssaoCfg,
+                m_camera->GetProjectionMatrix(), m_camera->GetNearZ(), m_camera->GetFarZ(),
+                vpLeft, vpTop, vpW, vpH, frameIndex);
+            // 生成失敗（未準備）時は白ダミー(AO=1.0)へフォールバック。誤テクスチャの読み出しを防ぐ。
+            if (aoSrv == DescriptorHeap::kInvalidIndex)
+                aoSrv = m_ssaoWhiteSrvIndex;
+        }
+
+        // --- コンタクトシャドウ生成（同じ深度を太陽方向へレイマーチ）---
+        if (useContactShadow)
+        {
+            csSrv = m_contactShadowPass->Generate(nativeCmdList,
+                m_srvHeap->GetGpuHandle(m_depthSrvIndex), csCfg,
+                m_camera->GetViewMatrix(), m_camera->GetProjectionMatrix(), lightDirF3,
+                vpLeft, vpTop, vpW, vpH, frameIndex);
+            if (csSrv == DescriptorHeap::kInvalidIndex)
+                csSrv = m_ssaoWhiteSrvIndex;
+        }
+
         m_commandList->TransitionResource(m_depthBuffer.Get(),
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
 
-        // SSAO/プリパスで RootSig/PSO/RT/ヒープを切り替えたので forward 用に再設定
+        // プリパス/SSAO/コンタクトシャドウで RootSig/PSO/RT/ヒープを切り替えたので forward 用に再設定
         m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
         m_commandList->SetRootSignature(*m_rootSignature);
     }
@@ -13209,7 +13292,7 @@ void Application::Render()
     constexpr float clearColor[4] = {0.127f, 0.306f, 0.850f, 1.0f};  // リニア空間のコーンフラワーブルー
     m_commandList->ClearRenderTarget(m_sceneRT->GetRtv(), clearColor);
     // プリパス有効時は深度が完成済みなので forward では clear しない（再利用）。
-    if (!useSSAO)
+    if (!useDepthPrepass)
         m_commandList->ClearDepthStencil(m_dsvHandle);
     m_commandList->SetRenderTarget(m_sceneRT->GetRtv(), m_dsvHandle);
     m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
@@ -13256,8 +13339,11 @@ void Application::Render()
         float maxPrefilterMip;
         u32   hasIBL;
         float skyboxIntensity;
+        // ▼ コンタクトシャドウ制御 16B
+        float contactShadowEnabled;  // 1=実テクスチャ(t11)を読む / 0=読まず 1.0（白ダミー1x1の範囲外Load=0対策）
+        XMFLOAT3 _csPad;
     };
-    static_assert(sizeof(FrameConstants) == 1520, "FrameConstants must be 1520 bytes");
+    static_assert(sizeof(FrameConstants) == 1536, "FrameConstants must be 1536 bytes");
 
     FrameConstants fc{};
     XMStoreFloat4x4(&fc.view, XMMatrixTranspose(m_camera->GetViewMatrix()));
@@ -13291,6 +13377,9 @@ void Application::Render()
     // AO: 実 AO テクスチャがバインドされている時だけシェーダで読む。SSAO 無効/正射/フォールバック時は
     // 白ダミー(1x1)で、Load は範囲外 0 を返して環境光を潰すため、シェーダ側で読まず ao=1 にする。
     fc.aoEnabled = (aoSrv != m_ssaoWhiteSrvIndex) ? 1.0f : 0.0f;
+
+    // コンタクトシャドウも同じ規約（白ダミーが張られている時はシェーダ側で読まない）。
+    fc.contactShadowEnabled = (csSrv != m_ssaoWhiteSrvIndex) ? 1.0f : 0.0f;
 
     // PointLight を ECS から収集
     fc.numPointLights = 0;
@@ -13410,14 +13499,16 @@ void Application::Render()
 
     XMMATRIX viewProj = m_camera->GetViewProjMatrix();
 
-    // 全Entityを描画（メインパス: 編集カメラ視点）。AO は SSAO 有効時のみ実テクスチャ、無効時は白。
-    // useSSAO=true のときだけ深度プリパスで深度が完成済み → LESS_EQUAL forward PSO で再利用する。
+    // 全Entityを描画（メインパス: 編集カメラ視点）。AO / コンタクトシャドウは有効時のみ実テクスチャ、
+    // 無効時は白（＝素通し）。深度プリパスが走ったときだけ深度が完成済み →
+    // LESS_EQUAL forward PSO で再利用する。
     m_gpuTimer->Begin(nativeCmdList, GpuTimer::MainScene);
     m_passBucket = &m_passMain;
     {
         CpuScopeTimer _tMain(&m_cpuMs[CpuMainRec]);
         RenderSceneMeshes(nativeCmdList, frameIndex, viewProj,
-                          (m_isGameMode || m_engineMode == EngineMode::Playing), aoSrv, useSSAO);
+                          (m_isGameMode || m_engineMode == EngineMode::Playing), aoSrv,
+                          useDepthPrepass, csSrv);
     }
     m_passBucket = &m_passOther;
     m_gpuTimer->End(nativeCmdList, GpuTimer::MainScene);
@@ -13857,6 +13948,7 @@ void Application::Render()
             XMStoreFloat4x4(&fcp.proj, XMMatrixTranspose(proj));
             fcp.cameraPos = tf.position;
             fcp.aoEnabled = 0.0f;   // プレビューは白ダミー AO（SSAO 非対応）なので AO を読まない
+            fcp.contactShadowEnabled = 0.0f;   // 同上（コンタクトシャドウもプレビューでは作らない）
             m_previewFrameCB->Update(&fcp, sizeof(fcp), frameIndex);
 
             m_cameraPreviewRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
@@ -13877,7 +13969,8 @@ void Application::Render()
                     m_srvHeap->GetGpuHandle(m_iblBaker->GetIrradianceSrv()));
 
             // グリッドは出さない＝isGameView=true。プレビューは SSAO 非対応＝白ダミー。
-            RenderSceneMeshes(nativeCmdList, frameIndex, camViewProj, true, m_ssaoWhiteSrvIndex);
+            RenderSceneMeshes(nativeCmdList, frameIndex, camViewProj, true, m_ssaoWhiteSrvIndex,
+                              /*depthPrepassActive=*/false, m_ssaoWhiteSrvIndex);
 
             // ワールド空間スプライトもプレビューへ（このカメラ視点で。ビルボードは行列の右/上ベクトル）。
             XMFLOAT3 pvRight, pvUp;

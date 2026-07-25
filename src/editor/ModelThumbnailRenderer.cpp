@@ -91,9 +91,9 @@ void ModelThumbnailRenderer::CreateSharedResources()
     }
 
     // ===== PerFrame アップロードバッファ =====
-    // main の Forward PSO を流用するため b1 のレイアウトは Application.cpp の FrameConstants(1520B)
+    // main の Forward PSO を流用するため b1 のレイアウトは Application.cpp の FrameConstants(1536B)
     // と一致させる。256B アラインで 1536B 確保（CSM の cascadeViewProj[4]/cascadeSplitsView/
-    // shadowParams/スポット影行列/IBL まで含めて書けるサイズ）。
+    // shadowParams/スポット影行列/IBL/コンタクトシャドウまで含めて書けるサイズ）。
     {
         D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_UPLOAD};
         D3D12_RESOURCE_DESC desc{};
@@ -305,7 +305,7 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
 
     // ===== PerFrame CB 書き込み =====
     // main の Forward PSO(Forward.hlsl)を流用するので b1 のレイアウトは
-    // Application.cpp の FrameConstants(1520B) / Lighting.hlsli の PerFrameConstants と
+    // Application.cpp の FrameConstants(1536B) / Lighting.hlsli の PerFrameConstants と
     // バイト単位で一致させること。サムネには影を出さないため CSM 領域は
     // 「cascade0 を必ず選ばせて UV クリップ → CalcShadow が 1.0(無影) を返す」値に倒す。
     // スポット/ポイント影も numPointLights/numSpotLights=0 で未使用（shadowIndex 参照自体が発生しない）。
@@ -341,8 +341,11 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
         float maxPrefilterMip;
         u32   hasIBL;
         float skyboxIntensity;
-    };  // total = 1520B
-    static_assert(sizeof(FrameConstants) == 1520, "FrameConstants must be 1520 bytes (match Application.cpp / Lighting.hlsli)");
+        // ▼ コンタクトシャドウ制御 16B (offset 1520)。サムネは白ダミー(t11)なので 0 固定。
+        float contactShadowEnabled;
+        XMFLOAT3 _csPad;
+    };  // total = 1536B
+    static_assert(sizeof(FrameConstants) == 1536, "FrameConstants must be 1536 bytes (match Application.cpp / Lighting.hlsli)");
     {
         FrameConstants fc{};
         XMStoreFloat4x4(&fc.view, XMMatrixTranspose(viewMat));
@@ -421,11 +424,15 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
             m_srvHeap->GetGpuHandle(defTex->GetSrvIndex()));
     }
 
-    // SSAO AO SRV (t8): forward PS が無条件で Load するので白ダミー(R8_UNORM)を必ずバインド。
+    // SSAO AO SRV (t8) / コンタクトシャドウ SRV (t11): forward PS が無条件で Load するので
+    // 白ダミー(R8_UNORM=1.0)を必ずバインドする（どちらも同じ 1x1 白を共用）。
     if (m_aoWhiteSrvIndex != 0xFFFFFFFFu)
     {
         cmdList->SetGraphicsRootDescriptorTable(
             RootSignature::kSlotAOSRV,
+            m_srvHeap->GetGpuHandle(m_aoWhiteSrvIndex));
+        cmdList->SetGraphicsRootDescriptorTable(
+            RootSignature::kSlotContactShadowSRV,
             m_srvHeap->GetGpuHandle(m_aoWhiteSrvIndex));
     }
 

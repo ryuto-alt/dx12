@@ -21,6 +21,10 @@ SamplerState g_brdfSampler    : register(s3);  // LINEAR CLAMP（mipなし, LUT 
 Texture2D<float> g_ssao        : register(t8);
 SamplerState     g_ssaoSampler : register(s4);  // POINT CLAMP（未使用だが RootSig 整合のため宣言）
 
+// コンタクトシャドウ（深度バッファのスクリーン空間レイマーチ。1=遮蔽なし）。
+// CSM が解像度不足で落とせない接地部の細かい影を補うため、太陽の寄与へ乗算する。
+Texture2D<float> g_contactShadow : register(t11);
+
 // PerObject constants (b0)
 cbuffer PerObjectConstants : register(b0)
 {
@@ -183,6 +187,12 @@ float4 PSMain(PSInput input) : SV_TARGET
 
     // Shadow (CSM カスケード選択 PCF)
     float shadow = CalcShadow(input.worldPos, input.viewDepth);
+
+    // コンタクトシャドウ（スクリーン空間・フル解像度・同一ビューポートなのでピクセル直読み）。
+    // contactShadowEnabled=0（無効/正射/フォールバック）のときは読まず 1.0。
+    // 白ダミーは 1x1 のため Load(画面座標) が範囲外で 0 を返し、太陽光を全消しするのを防ぐ。
+    if (contactShadowEnabled > 0.5)
+        shadow = min(shadow, g_contactShadow.Load(int3(input.positionSV.xy, 0)));
 
     // Directional Light（影付き）
     float3 Lo = ShadePunctual(N, V, L, lightColor * shadow, albedo, F0, metallic, roughness);

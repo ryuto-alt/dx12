@@ -49,6 +49,7 @@ namespace dx12e
     class DofPass;
     class MotionBlurPass;
     class SSAOPass;
+    class ContactShadowPass;
     class ParticleSystem;
     class GpuParticleSystem;
     class SpriteRenderer;
@@ -203,9 +204,11 @@ private:
     // ルートシグネチャ / RT / ビューポートは呼び出し側で設定済みとする。
     // depthPrepassActive=true のときだけ深度プリパス併用用の LESS_EQUAL forward PSO を使う
     // （プリパスが書いた深度を再利用するため）。false の通常経路は LESS PSO（既存 z-fight 挙動を維持）。
+    // contactShadowSrvIndex は t11 に張るスクリーン空間の近接遮蔽（無効時は白ダミー）。
     void RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u32 frameIndex,
                            DirectX::XMMATRIX viewProj, bool isGameView, u32 aoSrvIndex,
-                           bool depthPrepassActive = false);
+                           bool depthPrepassActive = false,
+                           u32 contactShadowSrvIndex = 0xFFFFFFFFu);
     // Sprite2D(worldSpace=true) を指定 viewProj/RT/DSV へ描画（メインパスとカメラプレビューで共用）。
     // camRight/camUp はビルボード展開用。billboard でないものはエンティティのワールド行列で配置。
     void DrawWorldSprites(ID3D12GraphicsCommandList* cmd, DirectX::XMMATRIX viewProj,
@@ -665,6 +668,10 @@ private:
     u32                           m_ssaoWhiteSrvIndex = 0xFFFFFFFFu; // 白AOダミー SRV index
     std::unique_ptr<PipelineState> m_depthPrepassPSO;               // 深度プリパス（static, bias なし）
     std::unique_ptr<PipelineState> m_depthPrepassSkinnedPSO;        // 深度プリパス（skinned）
+
+    // ---- コンタクトシャドウ（同じ深度プリパスを使うスクリーン空間レイマーチ）----
+    // 白ダミーは SSAO と共用（どちらも 1x1 R8_UNORM の 1.0）。
+    std::unique_ptr<ContactShadowPass> m_contactShadowPass;
 
     // IBL 環境マップ（irradiance/prefiltered/BRDF LUT）+ 任意スカイボックス
     std::unique_ptr<IBLBaker>       m_iblBaker;
