@@ -211,7 +211,7 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_build_game` | `{}` | `{success, outputDir, error?}` ※ヘッドレスビルド(同期・数十秒かかることあり) |
 | `dx12_set_texture` | `{entity:int, path:string(assets相対、空文字で解除), slot?:"albedo"\|"normal"\|"metalRoughness", submesh?:int}` | `{entityId, slot, submesh, path}` ※Inspector のテクスチャ D&D と同じインスタンス単位 override(Material 共有を壊さない) |
 | `dx12_play_anim` | `{entity:int, clip?:int, clipName?:string, blend?:f=0.3, loop?:bool, speed?:f, state?:string, layer?:int=0}` | `{entityId, clip, clipName, blend, speed}` または `{entityId, state, layer, blend}` ※スケルタルアニメのクロスフェード再生(Lua playAnim と同経路)。**`state` を渡すと `.animfsm` のステート遷移**になる(`AnimatorController` が要る)。渡さなければ従来どおり clip 経路で完全後方互換。`state`/`layer` は **TS 側未定義** |
-| `dx12_set_anim_param` | `{entity:int, name:string, value?:number\|bool, trigger?:bool}` | `{entityId, name, value}` ※アニメ FSM のパラメータを外から叩いて遷移を検証する。**TS 側未定義**（B12 と同様） |
+| `dx12_set_anim_param` | `{entity?:int / name?:string(エンティティ名), param:string(FSM パラメータ名), value?:number\|bool, trigger?:bool}` | `{entityId, param, name(=param。後方互換), value}` ※アニメ FSM のパラメータを外から叩いて遷移を検証する。**★パラメータ名は `param`**。`name` は他ツールと同じく「エンティティ名」。`param` を省略したときだけ `name` をパラメータ名として読む後方互換がある（`{entity, name:"Speed"}` も通る）が、**新しいコードは必ず `param` を使うこと** |
 | `dx12_net_setup` | `{role:"host"\|"client"\|"offline", address?:string, port?:int}` | `{testRole, address, port}` ※次の `dx12_play` で自動 Host/Join(ツールバーの Play ロールと同じ) |
 | `dx12_net_launch_test_client` | `{}` | `{requested}` ※ホスト Playing 中のみ。同エンジンをもう1プロセス起動し 127.0.0.1 へ自動接続(フレーム境界) |
 | `dx12_set_editor_camera` | `{position?:[x,y,z], target?:[x,y,z], yawDeg?:f, pitchDeg?:f}` | `{position, forward, yawDeg, pitchDeg}` ※エディタのフライカメラを任意視点へ。target 指定で yaw/pitch 自動逆算。**Editor 限定**(Playing 中は MODE_CONFLICT) |
@@ -225,6 +225,8 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_terrain_erode` | `{entity?/name?, iterations?:int=16, talusDeg?:f=34, region?:[minX,minZ,maxX,maxZ]}` | `{entityId, iterations, talusDeg, changed, minHeight, maxHeight}` ※熱浸食。相対操作。★Editor 限定 |
 | `dx12_terrain_paint` | `{entity?/name?, layer?:0..3, point?:[x,z] \| points?:[[x,z]...](最大512) \| worldPos?:[x,y,z], radius?=12, strength?=0.7, falloff?=0.5}` | `{entityId, layer, points, radius, strength, changed, splatSize}` ※**テクスチャレイヤーの重み**を円ブラシで塗る。座標は**ワールド XZ**。相対操作。`terrain.layerSetPath` 未設定だと `INVALID_PARAM`。★Editor 限定 |
 | `dx12_terrain_autopaint` | `{entity?/name?, rockSlopeStart?, rockSlopeEnd?, dirtSlopeStart?, dirtSlopeEnd?, snowHeightStart?, snowHeightEnd?, noiseStrength?}` | `{entityId, splatSize}` ※傾斜と標高から 4 層を焼き直す（**冪等**。手で塗った内容は消える）。傾斜は 0=平ら〜1=垂直、標高はワールド Y(m)。★Editor 限定 |
+| `dx12_terrain_set_layers` | `{entity?/name?, layerSetPath:string(assets 相対 .terrainlayers。**空文字で割当解除**), splatResolution?:int=512(32..2048), autopaint?:bool=true, uvScale?, heightBlendDepth?:0.01..1, triplanarSharpness?:1..16, normalStrength?:0..2, macroScale?:10..400, macroStrength?:0..1, distTilingStart?:5..200, distTilingFarScale?:2..16, pomHeightScale?:0..0.3, pomFadeStart?:0..40, pomFadeEnd?:1..120, triplanar?:bool, pom?:bool, macro?:bool, distTiling?:bool}` | `{entityId, layerSetPath, previousLayerSetPath, layerCount, layerNames:[...], splatPath, splatSize, splatCreated, uvScale, terrainMatFlags, sceneGeneration, note}` ※**地形にテクスチャレイヤーを割り当てる唯一の MCP 経路**（#27）。初回割当時にスプラットを作り、`autopaint:true`（既定）なら傾斜/標高から自動で塗る。省略したパラメータは触らない（冪等）。`layerSetPath:""` で外すと従来の頂点色描画へ戻る。★Editor 限定 |
+| `dx12_terrain_splat_info` | `{entity?/name?, gridSize?:int=8(0..32。0 で grid を返さない), point?:[x,z] \| points?:[[x,z]...](最大256)}` | `{entityId, layerSetPath, splatPath, hasSplat, unsavedSplat, splatSize, coverage:[4](層ごとの平均重み 0..1), dominantRatio:[4](その層が最大だったテクセルの割合), gridSize, grid:[gridSize 本の文字列。`grid[z][x]` が `'0'..'3'` でそのセルの支配レイヤー。z が増えると +Z、x が増えると +X], samples:[{world:[x,z], texel:[tx,tz], weights:[4], dominant:int}], note}` ※**読み取り専用**。`terrain_paint` / `autopaint` の結果を絵を見ずに検証する。スプラット未作成なら `hasSplat:false` と案内だけ返す。Playing 中も可 |
 | `dx12_sculpt_brush` | `{entity?/name?, brush?:"draw"\|"pull"\|"push"\|"smooth"\|"flatten"\|"pinch"\|"noise"\|"grab", position?:[x,y,z](ワールド) \| localPosition?, radius?=0.5, strength?=0.2, falloff?=0.5, direction?, grabDelta?, symmetryX/Y/Z?, noise*?, seed?}` | `{entityId, brush, movedVertices, localCenter, radius, strength, vertexCount, triangleCount, localBounds}` ※radius/strength は**メッシュのローカル単位**(Transform の scale が掛かる前)。相対操作。★Editor 限定 |
 | `dx12_set_sun` | `{timeOfDay?:0..24, azimuth?:deg, elevation?:deg, color?:[r,g,b], kelvin?:1000..40000, intensity?, ambient?}` | `{entityId, name, direction, azimuthDeg, elevationDeg, color, intensity, ambient, timeOfDay}` ※最初の DirectionalLight を**絶対指定**で更新(冪等)。方位/高度は「太陽が見える方向」(+Z=0°, +X=90° / 高度 0=地平線) |
 | `dx12_apply_lighting_preset` | `{preset:"day"\|"dusk"\|"night"\|"indoor"\|"horror"\|"studio"}` | `{preset, label, tip, sun:{...}\|null, post:{exposure/bloom/vignette/saturation...}}` ※**エディタの「ライティング」窓と同じ表・同じ式**(`src/editor/LightingPresets.h` に 1 本化)。太陽が無ければポストのみ適用 |
@@ -292,11 +294,20 @@ MCP で見えるものとエディタで選ばれるものが食い違わない�
 - 手順は「① `dx12_terrain_create` → ② `dx12_terrain_generate`（土台）→ ③ `dx12_terrain_sculpt`/`dx12_terrain_erode`（詰め）」。
   ②は高さを丸ごと作り直すので、**必ず③より先**にやること。
 - **テクスチャレイヤー**（4 層スプラット）は `terrain.layerSetPath` に `.terrainlayers` を割り当てた地形だけ。
-  割り当てはシーン JSON か地形ツール窓から行う（MCP からコンポーネントは触れない）。
+  割り当ては **`dx12_terrain_set_layers`**（MCP）/ シーン JSON / 地形ツール窓のどれでもよい。
   割当後は `dx12_terrain_autopaint`（傾斜と標高から焼き直す・冪等）と
-  `dx12_terrain_paint`（円ブラシで 1 層を塗る・相対）が使える。詳細は
+  `dx12_terrain_paint`（円ブラシで 1 層を塗る・相対）が使え、結果は
+  `dx12_terrain_splat_info` で数値検証できる。詳細は
   [`AUTHORING.md` §10.5.1](AUTHORING.md)。**高さを彫り直したら autopaint をやり直すこと**
   （重みは高さに自動追従しない）。
+  手順の例:
+  ```
+  dx12_terrain_create      {name:"Terrain", resolution:256, worldSize:400}
+  dx12_terrain_generate    {name:"Terrain", preset:"mountains", seed:1}
+  dx12_terrain_set_layers  {name:"Terrain", layerSetPath:"terrain/alpine.terrainlayers"}   ← ここが無くて詰んでいた
+  dx12_terrain_paint       {name:"Terrain", point:[0,0], layer:2, radius:60, strength:1}
+  dx12_terrain_splat_info  {name:"Terrain", point:[0,0]}   → weights:[0,0,1,0] で確認
+  ```
 
 **スカルプト（異形メッシュ）**
 

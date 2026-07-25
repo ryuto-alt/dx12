@@ -5758,15 +5758,31 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         }
         else if (method == "set_anim_param")
         {
-            const auto e = ResolveMcpEntity(*m_scene, params);
+            // ★このメソッドだけ 'name' が二重の意味を持っていた（エンティティ名 / FSM パラメータ名）。
+            //   ResolveMcpEntity は params["name"] を最優先でエンティティ名として引くので、
+            //   {entity:7, name:"Speed"} が必ず "no entity named 'Speed'" で落ちていた。
+            //   → パラメータ名は 'param' を正とし、'name' は後方互換のフォールバックにする。
+            //     エンティティ解決は「entity(id) が有効ならそれを使い、無ければ従来どおり
+            //     ResolveMcpEntity（= name をエンティティ名として引く）」。
+            //     こうすると {entity, name} も {name, param} も {entity, param} も全部通る。
             auto& reg = m_scene->GetRegistry();
+            entt::entity e = entt::null;
+            {
+                const auto idParam = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
+                if (params.contains("entity") && reg.valid(idParam)) e = idParam;
+                else                                                e = ResolveMcpEntity(*m_scene, params);
+            }
             if (!reg.all_of<AnimatorController>(e))
                 throw McpError(McpErr::InvalidParam, "entity has no animatorController");
             auto& ac = reg.get<AnimatorController>(e);
             if (!ac._state || !ac._state->valid)
                 throw McpError(McpErr::Internal,
                     "animatorController graph not loaded (graphPath='" + ac.graphPath + "')");
-            const std::string name = params.value("name", std::string());
+            std::string name = params.value("param", std::string());
+            if (name.empty()) name = params.value("name", std::string());
+            if (name.empty())
+                throw McpError(McpErr::InvalidParam, "missing 'param' (FSM パラメータ名)",
+                    "param にパラメータ名、entity か name でエンティティを指定する");
             auto it = ac._state->params.find(name);
             if (it == ac._state->params.end())
                 throw McpError(McpErr::NotFound,
@@ -5790,7 +5806,8 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
 
             json out;
             out["entityId"] = static_cast<u32>(e);
-            out["name"] = name;
+            out["param"] = name;
+            out["name"]  = name;   // 後方互換（TS 側が 'param' へ移るまで）
             if (it->second.type == AnimParamType::Float) out["value"] = it->second.f;
             else                                         out["value"] = it->second.b;
             resp["ok"] = true;
@@ -6707,6 +6724,243 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                     {"note", "★相対操作（同じ呼び出しを2回撃つと2回ぶん塗れる）。strength=1 で 1 回塗れば"
                              "そのレイヤー 100%。他レイヤーは合計 1 を保つよう比例縮小される。"
                              "全面を傾斜/標高から焼き直すなら dx12_terrain_autopaint。"}};
+            }
+        }
+        else if (method == "terrain_set_layers")
+        {
+            // 地形へ .terrainlayers（4 層の PBR 素材）を割り当てる / 外す。
+            // ★これが無かったので terrain_paint / autopaint は「シーン JSON を手書きして
+            //   開き直した地形」にしか使えなかった（#27）。
+            if (busyPlaying)
+                throw McpError(McpErr::ModeConflict, "cannot modify terrain while Playing",
+                               "先に dx12_stop で Editor へ戻してくれ");
+            auto& reg = m_scene->GetRegistry();
+            const auto e = ResolveMcpComponentEntity<Terrain>(
+                *m_scene, params, "terrain", "先に dx12_terrain_create で地形を作ってくれ");
+            Terrain& t = reg.get<Terrain>(e);
+            if (!t._hf || !t._hf->IsValid())
+                throw McpError(McpErr::Internal, "terrain has no valid height field");
+
+            if (!params.contains("layerSetPath"))
+                throw McpError(McpErr::InvalidParam, "missing 'layerSetPath'",
+                    "assets 相対の .terrainlayers。空文字 \"\" を渡すと割当を外して従来の見た目へ戻す");
+            const std::string prev = t.layerSetPath;
+            std::string relPath = params["layerSetPath"].get<std::string>();
+
+            u32  layerCount = 0;
+            json layerNames = json::array();
+            if (!relPath.empty())
+            {
+                relPath = ValidateMcpAssetRelPath(relPath, "layerSetPath");
+                if (!vfs::Exists(relPath))
+                    throw McpError(McpErr::NotFound, "layer set not found: " + relPath,
+                        "assets 相対で .terrainlayers を指す（例 terrain/alpine.terrainlayers）");
+                TerrainLayerSetData lsData;
+                if (!ParseTerrainLayerSet(vfs::ReadAsset(relPath), lsData))
+                    throw McpError(McpErr::InvalidParam, "failed to parse " + relPath,
+                        "JSON の形式が違う。既存の .terrainlayers を雛形にしてくれ");
+                layerCount = static_cast<u32>((std::min)(lsData.layers.size(), size_t{4}));
+                for (u32 i = 0; i < layerCount; ++i) layerNames.push_back(lsData.layers[i].name);
+            }
+            t.layerSetPath = relPath;
+
+            // 各種パラメータ（省略したものは触らない）
+            if (params.contains("splatResolution"))
+                t.splatResolution = TerrainSplatMap::NormalizeSize(
+                    static_cast<u32>(McpIntParam(params, "splatResolution", 512, 32, 2048)));
+            if (params.contains("uvScale"))
+                t.uvScale = McpFloatParam(params, "uvScale", t.uvScale, 0.01f, 1000.0f);
+            if (params.contains("heightBlendDepth"))
+                t.heightBlendDepth = McpFloatParam(params, "heightBlendDepth", t.heightBlendDepth, 0.01f, 1.0f);
+            if (params.contains("triplanarSharpness"))
+                t.triplanarSharpness = McpFloatParam(params, "triplanarSharpness", t.triplanarSharpness, 1.0f, 16.0f);
+            if (params.contains("normalStrength"))
+                t.normalStrength = McpFloatParam(params, "normalStrength", t.normalStrength, 0.0f, 2.0f);
+            if (params.contains("macroScale"))
+                t.macroScale = McpFloatParam(params, "macroScale", t.macroScale, 10.0f, 400.0f);
+            if (params.contains("macroStrength"))
+                t.macroStrength = McpFloatParam(params, "macroStrength", t.macroStrength, 0.0f, 1.0f);
+            if (params.contains("distTilingStart"))
+                t.distTilingStart = McpFloatParam(params, "distTilingStart", t.distTilingStart, 5.0f, 200.0f);
+            if (params.contains("distTilingFarScale"))
+                t.distTilingFarScale = McpFloatParam(params, "distTilingFarScale", t.distTilingFarScale, 2.0f, 16.0f);
+            if (params.contains("pomHeightScale"))
+                t.pomHeightScale = McpFloatParam(params, "pomHeightScale", t.pomHeightScale, 0.0f, 0.3f);
+            if (params.contains("pomFadeStart"))
+                t.pomFadeStart = McpFloatParam(params, "pomFadeStart", t.pomFadeStart, 0.0f, 40.0f);
+            if (params.contains("pomFadeEnd"))
+                t.pomFadeEnd = McpFloatParam(params, "pomFadeEnd", t.pomFadeEnd, 1.0f, 120.0f);
+            {
+                // bit0=triplanar bit1=pom bit2=macro bit3=distTiling
+                u32 flags = t.terrainMatFlags;
+                auto setBit = [&](const char* key, u32 bit) {
+                    if (params.contains(key) && params[key].is_boolean())
+                        flags = params[key].get<bool>() ? (flags | bit) : (flags & ~bit);
+                };
+                setBit("triplanar", 0x1u); setBit("pom", 0x2u);
+                setBit("macro", 0x4u);     setBit("distTiling", 0x8u);
+                t.terrainMatFlags = flags;
+            }
+
+            // 割当の付け外しでスプラットを用意/破棄する（TerrainPanel と同じ規則）。
+            bool splatCreated = false;
+            if (t.layerSetPath.empty())
+            {
+                t._splat.reset();
+            }
+            else if (!t._splat)
+            {
+                t._splat = std::make_shared<TerrainSplatMap>();
+                if (t.splatPath.empty() || !terrain::LoadSplatMapAsset(t.splatPath, *t._splat))
+                {
+                    t._splat->Create(t.splatResolution);
+                    if (params.value("autopaint", true))
+                        t._splat->AutoPaintFromHeightField(*t._hf, TerrainAutoPaintParams{});
+                    t._splatNeedsSave = true;
+                    splatCreated = true;
+                }
+                t.splatResolution = t._splat->Size();
+            }
+            t.MarkVisualDirty();
+
+            resp["ok"] = true;
+            resp["result"] = {
+                {"entityId", static_cast<u32>(e)},
+                {"layerSetPath", t.layerSetPath},
+                {"previousLayerSetPath", prev},
+                {"layerCount", layerCount},
+                {"layerNames", layerNames},
+                {"splatPath", t.splatPath},
+                {"splatSize", t._splat ? t._splat->Size() : 0u},
+                {"splatCreated", splatCreated},
+                {"uvScale", t.uvScale},
+                {"terrainMatFlags", t.terrainMatFlags},
+                {"sceneGeneration", m_sceneGeneration},
+                {"note", t.layerSetPath.empty()
+                    ? "レイヤーセットを外した（従来の頂点色 / .dxmat 経路へ戻る）"
+                    : "割当てた。スプラットは .splat へ自動保存される。"
+                      "塗るのは dx12_terrain_paint / dx12_terrain_autopaint、"
+                      "結果の確認は dx12_terrain_splat_info。"}};
+        }
+        else if (method == "terrain_splat_info")
+        {
+            // スプラット（レイヤー重み）の要約を返す読み取り専用メソッド。
+            // terrain_paint / autopaint の結果を「絵を見ずに」検証するために使う。
+            auto& reg = m_scene->GetRegistry();
+            const auto e = ResolveMcpComponentEntity<Terrain>(
+                *m_scene, params, "terrain", "先に dx12_terrain_create で地形を作ってくれ");
+            Terrain& t = reg.get<Terrain>(e);
+
+            json out;
+            out["entityId"]     = static_cast<u32>(e);
+            out["layerSetPath"] = t.layerSetPath;
+            out["splatPath"]    = t.splatPath;
+            out["hasSplat"]     = static_cast<bool>(t._splat && t._splat->IsValid());
+            out["unsavedSplat"] = t._splatNeedsSave;
+            if (!t._splat || !t._splat->IsValid())
+            {
+                out["splatSize"] = 0;
+                out["note"] = "この地形にはまだスプラットが無い。dx12_terrain_set_layers で "
+                              ".terrainlayers を割り当てると作られる";
+                resp["ok"] = true;
+                resp["result"] = std::move(out);
+            }
+            else
+            {
+                const TerrainSplatMap& sp = *t._splat;
+                const u32 size = sp.Size();
+                const std::vector<u8>& px = sp.Pixels();
+                out["splatSize"] = size;
+
+                // 全面の平均重み(0..1) と「最大レイヤー」のテクセル数
+                double sum[4] = {0, 0, 0, 0};
+                u64    domCount[4] = {0, 0, 0, 0};
+                const u64 total = static_cast<u64>(size) * size;
+                for (u64 i = 0; i < total; ++i)
+                {
+                    const u8* p = &px[static_cast<size_t>(i) * 4];
+                    u32 best = 0;
+                    for (u32 c = 0; c < 4; ++c)
+                    {
+                        sum[c] += p[c];
+                        if (p[c] > p[best]) best = c;
+                    }
+                    ++domCount[best];
+                }
+                json coverage = json::array(), dominant = json::array();
+                for (u32 c = 0; c < 4; ++c)
+                {
+                    coverage.push_back(sum[c] / (255.0 * static_cast<double>(total)));
+                    dominant.push_back(static_cast<double>(domCount[c]) / static_cast<double>(total));
+                }
+                out["coverage"]      = coverage;   // 平均重み（4 層の合計はほぼ 1）
+                out["dominantRatio"] = dominant;   // そのレイヤーが最大だったテクセルの割合
+
+                // 粗いグリッド（各セルの支配レイヤー番号）。paint がどこに乗ったかを目で追える。
+                const i32 g = McpIntParam(params, "gridSize", 8, 0, 32);
+                if (g > 0)
+                {
+                    json grid = json::array();
+                    for (i32 gz = 0; gz < g; ++gz)
+                    {
+                        std::string row;
+                        for (i32 gx = 0; gx < g; ++gx)
+                        {
+                            const u32 x0 = static_cast<u32>(static_cast<u64>(gx)     * size / static_cast<u32>(g));
+                            const u32 x1 = static_cast<u32>(static_cast<u64>(gx + 1) * size / static_cast<u32>(g));
+                            const u32 z0 = static_cast<u32>(static_cast<u64>(gz)     * size / static_cast<u32>(g));
+                            const u32 z1 = static_cast<u32>(static_cast<u64>(gz + 1) * size / static_cast<u32>(g));
+                            u64 acc[4] = {0, 0, 0, 0};
+                            for (u32 z = z0; z < z1; ++z)
+                                for (u32 x = x0; x < x1; ++x)
+                                {
+                                    const u8* p = &px[(static_cast<size_t>(z) * size + x) * 4];
+                                    for (u32 c = 0; c < 4; ++c) acc[c] += p[c];
+                                }
+                            u32 best = 0;
+                            for (u32 c = 1; c < 4; ++c) if (acc[c] > acc[best]) best = c;
+                            row.push_back(static_cast<char>('0' + best));
+                        }
+                        grid.push_back(row);
+                    }
+                    out["gridSize"] = g;
+                    out["grid"]     = grid;   // grid[z][x] = 支配レイヤー番号。z が増えると +Z
+                }
+
+                // 指定ワールド座標の正確な重み
+                if (params.contains("point") || params.contains("points"))
+                {
+                    const DirectX::XMFLOAT3 origin = McpTerrainOrigin(reg, e);
+                    const f32 worldSize = t._hf ? t._hf->WorldSize() : t.worldSize;
+                    json samples = json::array();
+                    auto sample = [&](const nlohmann::json& a) {
+                        if (!a.is_array() || (a.size() != 2 && a.size() != 3))
+                            throw McpError(McpErr::InvalidParam, "point must be [x,z] or [x,y,z]");
+                        const f32 wx = a[0].get<f32>();
+                        const f32 wz = (a.size() == 2) ? a[1].get<f32>() : a[2].get<f32>();
+                        const i32 tx = sp.LocalToTexelX(wx - origin.x, worldSize);
+                        const i32 tz = sp.LocalToTexelZ(wz - origin.z, worldSize);
+                        const u8* p = &px[(static_cast<size_t>(tz) * size + static_cast<size_t>(tx)) * 4];
+                        u32 best = 0;
+                        for (u32 c = 1; c < 4; ++c) if (p[c] > p[best]) best = c;
+                        samples.push_back({{"world", {wx, wz}}, {"texel", {tx, tz}},
+                                           {"weights", {p[0] / 255.0, p[1] / 255.0,
+                                                        p[2] / 255.0, p[3] / 255.0}},
+                                           {"dominant", best}});
+                    };
+                    if (params.contains("points"))
+                    {
+                        if (!params["points"].is_array() || params["points"].size() > 256)
+                            throw McpError(McpErr::InvalidParam, "points must be an array (max 256)");
+                        for (const auto& a : params["points"]) sample(a);
+                    }
+                    if (params.contains("point")) sample(params["point"]);
+                    out["samples"] = samples;
+                }
+                out["note"] = "coverage/dominantRatio は 0..1。grid[z][x] は '0'..'3' の文字で"
+                              "そのセルの支配レイヤー（z が増えると +Z、x が増えると +X）。";
+                resp["ok"] = true;
+                resp["result"] = std::move(out);
             }
         }
         else if (method == "terrain_erode")
