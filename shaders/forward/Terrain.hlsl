@@ -105,13 +105,14 @@ struct VSInput
     float4 boneWeights : BLENDWEIGHT;
 };
 
+// ★頂点タンジェントは持たない。地形のタンジェントは常に +X 固定（TerrainMeshBuilder）で、
+//   レイヤー UV はワールド投影だから、タンジェント基底は法線とワールド軸だけで作れる
+//   （Whiteout の Y 投影項がそのまま TBN になっている）。
 struct PSInput
 {
     float4 positionSV   : SV_POSITION;
     float3 worldPos     : TEXCOORD2;
     float3 worldNormal  : NORMAL;
-    float3 worldTangent : TANGENT;
-    float  tangentW     : TEXCOORD3;
     float2 texCoord     : TEXCOORD0;
     float  viewDepth    : TEXCOORD4;
 };
@@ -125,8 +126,6 @@ PSInput VSMain(VSInput input)
     float4 worldPos4    = mul(float4(input.position, 1.0f), model);
     output.worldPos     = worldPos4.xyz;
     output.worldNormal  = normalize(mul(input.normal, (float3x3)model));
-    output.worldTangent = normalize(mul(input.tangent.xyz, (float3x3)model));
-    output.tangentW     = input.tangent.w;
     output.texCoord     = input.texCoord;
 
     float4 viewPos4     = mul(worldPos4, view);
@@ -271,6 +270,14 @@ Surface CompositeLayers(float2 uvBase, float2 dxBase, float2 dyBase, float4 w, f
     return s;
 }
 
+// 0..1 の RG からタンジェント空間法線を復元する（Z は XY から再構成＝BC5/2ch 互換。
+// PBR.hlsli の PerturbNormal と同じ再構成）。
+float3 UnpackTangentNormal(float2 nxy01, float strength)
+{
+    float2 nxy = (nxy01 * 2.0 - 1.0) * strength;
+    return float3(nxy, sqrt(saturate(1.0 - dot(nxy, nxy))));
+}
+
 // ---------------------------------------------------------------------------
 //  マクロバリエーション（タップ 0 の算術 value noise）
 //  t0/t1/t2 が埋まっていてノイズテクスチャ用のディスクリプタが無いので算術で作る。
@@ -321,13 +328,30 @@ float4 PSMain(PSInput input) : SV_TARGET
     // ペイントで崩れた重みを正規化（合計 1 の保証は無い）
     w /= max(w.x + w.y + w.z + w.w, 1e-4);
 
-    // ===== レイヤーのサンプル（平面 Y 投影）=====
-    // ワールド XZ をレイヤー UV の素にする（地形は平行移動のみ有効なので歪まない）。
+    // ===== レイヤーのサンプル =====
+    // ワールド座標を投影して UV にする（地形は平行移動のみ有効なので歪まない）。
+    // ★導関数は分岐に入る前にここで 1 回だけ作る（SampleGrad へ渡す）。
     float3 dWdx = ddx(input.worldPos);
     float3 dWdy = ddy(input.worldPos);
 
+    float3 gN = normalize(input.worldNormal);
+
+    // トライプラナーの重み（bgolus。ハードコード 4 乗が最速かつ十分だが、
+    // 鋭さは triplanarSharpness で調整できるようにしてある）。
+    //   出典: https://bgolus.medium.com/normal-mapping-for-a-triplanar-shader-10bf39dca05a
+    float3 tb = pow(abs(gN), triplanarSharpness);
+    tb /= max(tb.x + tb.y + tb.z, 1e-5);
+
+    // UV のミラー防止（軸の符号で U を反転する。bgolus の axisSign）。
+    // ★HLSL 2021 の ?: はスカラー条件しか取らない。sign() は 0 を返し得るので使わない。
+    float3 axisSign = float3(gN.x < 0.0 ? -1.0 : 1.0,
+                             gN.y < 0.0 ? -1.0 : 1.0,
+                             gN.z < 0.0 ? -1.0 : 1.0);
+
     // ★高さブレンドは CompositeLayers の中（4 レイヤーぶんの合成もそこ）
-    Surface S = CompositeLayers(input.worldPos.xz, dWdx.xz, dWdy.xz, w, 1.0);
+    Surface S = CompositeLayers(input.worldPos.xz * float2(axisSign.y, 1.0),
+                                dWdx.xz * float2(axisSign.y, 1.0),
+                                dWdy.xz * float2(axisSign.y, 1.0), w, 1.0);
 
     const float dist = length(cameraPos - input.worldPos);
 
@@ -342,7 +366,9 @@ float4 PSMain(PSInput input) : SV_TARGET
         if ((terrainFlags & TF_DISTTILE) && distBlend > 0.001)
         {
             float far = 1.0 / max(terrainParams.z, 1.0);
-            Surface F = CompositeLayers(input.worldPos.xz, dWdx.xz, dWdy.xz, w, far);
+            Surface F = CompositeLayers(input.worldPos.xz * float2(axisSign.y, 1.0),
+                                        dWdx.xz * float2(axisSign.y, 1.0),
+                                        dWdy.xz * float2(axisSign.y, 1.0), w, far);
             S.albedo    = lerp(S.albedo,    F.albedo,    distBlend);
             S.nxy01     = lerp(S.nxy01,     F.nxy01,     distBlend);
             S.roughness = lerp(S.roughness, F.roughness, distBlend);
@@ -350,9 +376,56 @@ float4 PSMain(PSInput input) : SV_TARGET
         }
     }
 
-    float3 albedo   = S.albedo;
-    float  roughness = S.roughness;
-    float  matAO     = S.ao;
+    // ===== トライプラナー投影（Whiteout ブレンド・急斜面だけ）=====
+    // 平坦地は tb.y ≈ 1 なので Y 投影だけで足りる。急斜面（テクスチャが縦に引き伸ばされる所）
+    // だけ 3 投影に落とす。しきい値 0.98 で「引き伸ばしが目に見える斜面」をほぼ拾える。
+    // 遠景は法線を弱める（ミップで潰れた法線がノイズにしか見えなくなるのを防ぐ）。
+    const float nStr = normalStrength * (1.0 - 0.5 * saturate((dist - 60.0) / 120.0));
+
+    float3 albedo;
+    float  roughness;
+    float  matAO;
+    float3 N;
+
+    [branch]
+    if ((terrainFlags & TF_TRIPLANAR) && tb.y < 0.98)
+    {
+        // X 投影 = ZY 平面 / Z 投影 = XY 平面（U 側だけ軸の符号でミラーを解く）
+        float2 sX = float2(axisSign.x, 1.0);
+        float2 sZ = float2(-axisSign.z, 1.0);
+        Surface SX = CompositeLayers(input.worldPos.zy * sX, dWdx.zy * sX, dWdy.zy * sX, w, 1.0);
+        Surface SZ = CompositeLayers(input.worldPos.xy * sZ, dWdx.xy * sZ, dWdy.xy * sZ, w, 1.0);
+
+        albedo    = SX.albedo    * tb.x + S.albedo    * tb.y + SZ.albedo    * tb.z;
+        roughness = SX.roughness * tb.x + S.roughness * tb.y + SZ.roughness * tb.z;
+        matAO     = SX.ao        * tb.x + S.ao        * tb.y + SZ.ao        * tb.z;
+
+        // 3 投影はそれぞれ別のタンジェント空間にあるので素直に混ぜてはいけない。
+        // Whiteout ブレンド（bgolus / Barré-Brisebois & Hill "Blending in Detail"）。
+        float3 tnX = UnpackTangentNormal(SX.nxy01, nStr);
+        float3 tnY = UnpackTangentNormal(S.nxy01,  nStr);
+        float3 tnZ = UnpackTangentNormal(SZ.nxy01, nStr);
+        tnX.x *= axisSign.x;
+        tnY.x *= axisSign.y;
+        tnZ.x *= -axisSign.z;
+        tnX = float3(tnX.xy + gN.zy, abs(tnX.z) * gN.x);
+        tnY = float3(tnY.xy + gN.xz, abs(tnY.z) * gN.y);
+        tnZ = float3(tnZ.xy + gN.xy, abs(tnZ.z) * gN.z);
+        N = normalize(tnX.zyx * tb.x + tnY.xzy * tb.y + tnZ.xyz * tb.z);
+    }
+    else
+    {
+        albedo    = S.albedo;
+        roughness = S.roughness;
+        matAO     = S.ao;
+
+        // Y 投影だけ。上のトライプラナー式に tb=(0,1,0) を入れたものと厳密に一致させる
+        // （しきい値を跨いだときに法線が飛ばないように）。
+        float3 tnY = UnpackTangentNormal(S.nxy01, nStr);
+        tnY.x *= axisSign.y;
+        tnY = float3(tnY.xy + gN.xz, abs(tnY.z) * gN.y);
+        N = normalize(tnY.xzy);
+    }
 
     // ===== マクロバリエーション =====
     // 低周波ノイズ 1 系統をアルベドに掛ける（テクスチャを引かないのでタップ 0）。
@@ -361,19 +434,6 @@ float4 PSMain(PSInput input) : SV_TARGET
     {
         float m = MacroNoise(input.worldPos.xz / max(macroScale, 1e-3));
         albedo *= lerp(1.0, m * 2.0, saturate(terrainParams.w));
-    }
-
-    // ===== 法線（XY を加重和 → Z を再構成。PBR.hlsli の PerturbNormal と同じ再構成）=====
-    // 遠景は法線を弱める（ミップで潰れた法線がノイズにしか見えなくなるのを防ぐ）。
-    float3 gN = normalize(input.worldNormal);
-    const float nStr = normalStrength * (1.0 - 0.5 * saturate((dist - 60.0) / 120.0));
-    float3 N;
-    {
-        float2 nxy = (S.nxy01 * 2.0 - 1.0) * nStr;
-        float3 nTS = float3(nxy, sqrt(saturate(1.0 - dot(nxy, nxy))));
-        float3 T = normalize(input.worldTangent - dot(input.worldTangent, gN) * gN);
-        float3 B = cross(gN, T) * input.tangentW;
-        N = normalize(mul(nTS, float3x3(T, B, gN)));
     }
 
     float metallic = 0.0;                    // 地形は非金属
