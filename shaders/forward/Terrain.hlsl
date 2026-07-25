@@ -234,6 +234,77 @@ LayerSample SampleLayerPlanar(uint i, float2 uv, float2 dx, float2 dy)
     return o;
 }
 
+// 1 投影ぶんの合成結果（4 レイヤーを高さブレンドで混ぜたもの）。
+struct Surface
+{
+    float3 albedo;
+    float2 nxy01;      // 0..1 のタンジェント空間 XY
+    float  roughness;
+    float  ao;
+};
+
+// uvBase / dBase は「タイリング 1.0 のときの投影座標（メートル）とその導関数」。
+// tileMul で距離タイリング（粗い側）へ切り替える。
+// ★導関数は必ず呼び出し側（分岐の外）で作ったものを渡すこと。
+//   分岐の中で ddx/ddy を取ると遠景でミップが暴れて黒帯が出る。
+Surface CompositeLayers(float2 uvBase, float2 dxBase, float2 dyBase, float4 w, float tileMul)
+{
+    LayerSample L[4];
+    [unroll]
+    for (uint i = 0; i < 4; ++i)
+    {
+        float t = layerTiling[i] * tileMul;
+        L[i] = SampleLayerPlanar(i, uvBase * t, dxBase * t, dyBase * t);
+    }
+
+    float4 h  = float4(L[0].height, L[1].height, L[2].height, L[3].height);
+    float4 bw = HeightBlend4(h, w, heightBlendDepth);
+
+    Surface s;
+    s.albedo    = L[0].albedo   * bw.x + L[1].albedo   * bw.y
+                + L[2].albedo   * bw.z + L[3].albedo   * bw.w;
+    s.nxy01     = L[0].normalXY * bw.x + L[1].normalXY * bw.y
+                + L[2].normalXY * bw.z + L[3].normalXY * bw.w;
+    s.roughness = L[0].roughness * bw.x + L[1].roughness * bw.y
+                + L[2].roughness * bw.z + L[3].roughness * bw.w;
+    s.ao        = L[0].ao * bw.x + L[1].ao * bw.y + L[2].ao * bw.z + L[3].ao * bw.w;
+    return s;
+}
+
+// ---------------------------------------------------------------------------
+//  マクロバリエーション（タップ 0 の算術 value noise）
+//  t0/t1/t2 が埋まっていてノイズテクスチャ用のディスクリプタが無いので算術で作る。
+//  50〜200m スケールの低周波を 1 枚アルベドに掛けるだけで、広い面の「同じ色がずっと続く」
+//  作り物感がかなり消える（UE 界隈で最初にやる定番）。
+//  出典: https://www.worldofleveldesign.com/categories/ue4/landscape-macro-tiling-variation.php
+// ---------------------------------------------------------------------------
+float TerrHash21(float2 p)
+{
+    p = frac(p * float2(123.34, 345.45));
+    p += dot(p, p + 34.345);
+    return frac(p.x * p.y);
+}
+
+float TerrValueNoise(float2 p)
+{
+    float2 i = floor(p);
+    float2 f = frac(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = TerrHash21(i);
+    float b = TerrHash21(i + float2(1.0, 0.0));
+    float c = TerrHash21(i + float2(0.0, 1.0));
+    float d = TerrHash21(i + float2(1.0, 1.0));
+    return lerp(lerp(a, b, f.x), lerp(c, d, f.x), f.y);
+}
+
+float MacroNoise(float2 p)
+{
+    float n = 0.0, a = 0.5;
+    [unroll]
+    for (int i = 0; i < 3; ++i) { n += a * TerrValueNoise(p); p *= 2.03; a *= 0.5; }
+    return n / 0.875;   // 3 オクターブ（0.5+0.25+0.125）で 0..1 に正規化
+}
+
 float4 PSMain(PSInput input) : SV_TARGET
 {
     // ===== スプラット重み =====
@@ -255,34 +326,50 @@ float4 PSMain(PSInput input) : SV_TARGET
     float3 dWdx = ddx(input.worldPos);
     float3 dWdy = ddy(input.worldPos);
 
-    LayerSample L[4];
-    [unroll]
-    for (uint i = 0; i < 4; ++i)
+    // ★高さブレンドは CompositeLayers の中（4 レイヤーぶんの合成もそこ）
+    Surface S = CompositeLayers(input.worldPos.xz, dWdx.xz, dWdy.xz, w, 1.0);
+
+    const float dist = length(cameraPos - input.worldPos);
+
+    // ===== 距離タイリング =====
+    // 同じテクスチャを「遠距離用の粗いタイリング」でもう一度引いて距離で lerp する。
+    // 遠景の格子模様（同じ絵が等間隔に並んで見える現象）が消える。マクロと併用すると
+    // タイリングはほぼ完全に見えなくなる、というのが UE 界隈の定説。
+    //   出典: https://80.lv/articles/tutorial-fixing-landscape-texture-tiling-in-ue4
     {
-        float  t  = layerTiling[i];
-        float2 uv = input.worldPos.xz * t;
-        L[i] = SampleLayerPlanar(i, uv, dWdx.xz * t, dWdy.xz * t);
+        float distBlend = saturate((dist - terrainParams.y) / max(terrainParams.y, 1.0));
+        [branch]
+        if ((terrainFlags & TF_DISTTILE) && distBlend > 0.001)
+        {
+            float far = 1.0 / max(terrainParams.z, 1.0);
+            Surface F = CompositeLayers(input.worldPos.xz, dWdx.xz, dWdy.xz, w, far);
+            S.albedo    = lerp(S.albedo,    F.albedo,    distBlend);
+            S.nxy01     = lerp(S.nxy01,     F.nxy01,     distBlend);
+            S.roughness = lerp(S.roughness, F.roughness, distBlend);
+            S.ao        = lerp(S.ao,        F.ao,        distBlend);
+        }
     }
 
-    // ===== 重みの決定（高さブレンド）=====
-    // 線形ブレンドは境界が必ずぼやける。高さの高い方を勝たせると
-    // 「砂利の隙間に砂が入る」形の鋭い境界になる。
-    float4 h = float4(L[0].height, L[1].height, L[2].height, L[3].height);
-    float4 bw = HeightBlend4(h, w, heightBlendDepth);
+    float3 albedo   = S.albedo;
+    float  roughness = S.roughness;
+    float  matAO     = S.ao;
 
-    float3 albedo = L[0].albedo * bw.x + L[1].albedo * bw.y
-                  + L[2].albedo * bw.z + L[3].albedo * bw.w;
-    float2 nxy01  = L[0].normalXY * bw.x + L[1].normalXY * bw.y
-                  + L[2].normalXY * bw.z + L[3].normalXY * bw.w;
-    float roughness = L[0].roughness * bw.x + L[1].roughness * bw.y
-                    + L[2].roughness * bw.z + L[3].roughness * bw.w;
-    float matAO = L[0].ao * bw.x + L[1].ao * bw.y + L[2].ao * bw.z + L[3].ao * bw.w;
+    // ===== マクロバリエーション =====
+    // 低周波ノイズ 1 系統をアルベドに掛ける（テクスチャを引かないのでタップ 0）。
+    [branch]
+    if (terrainFlags & TF_MACRO)
+    {
+        float m = MacroNoise(input.worldPos.xz / max(macroScale, 1e-3));
+        albedo *= lerp(1.0, m * 2.0, saturate(terrainParams.w));
+    }
 
     // ===== 法線（XY を加重和 → Z を再構成。PBR.hlsli の PerturbNormal と同じ再構成）=====
+    // 遠景は法線を弱める（ミップで潰れた法線がノイズにしか見えなくなるのを防ぐ）。
     float3 gN = normalize(input.worldNormal);
+    const float nStr = normalStrength * (1.0 - 0.5 * saturate((dist - 60.0) / 120.0));
     float3 N;
     {
-        float2 nxy = (nxy01 * 2.0 - 1.0) * normalStrength;
+        float2 nxy = (S.nxy01 * 2.0 - 1.0) * nStr;
         float3 nTS = float3(nxy, sqrt(saturate(1.0 - dot(nxy, nxy))));
         float3 T = normalize(input.worldTangent - dot(input.worldTangent, gN) * gN);
         float3 B = cross(gN, T) * input.tangentW;
