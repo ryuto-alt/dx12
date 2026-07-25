@@ -23,8 +23,8 @@ cbuffer TaaCB : register(b0)
     float4x4 invViewProj;    // 現(非ジッタ) viewProj の逆行列（転置済み）
     float4x4 prevViewProj;   // 前(非ジッタ) viewProj（転置済み）
     float4   rectP;          // xy=UVオフセット, zw=UVスケール（ビューポート矩形）
-    float4   texel;          // xy=1/RTW,1/RTH  zw=ビューポートpxサイズ
-    float4   rtSize;         // xy=フルRTのpxサイズ  zw=未使用
+    float4   texel;          // xy=1/RTW,1/RTH   （zw は 16B 境界のための詰め物）
+    float4   rtSize;         // xy=フルRTのpxサイズ（zw は詰め物）
     float4   params;         // x=historyValid y=feedbackMin z=feedbackMax w=varianceGamma
 };
 

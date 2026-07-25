@@ -6,9 +6,15 @@
 //   params.w = 0   … 従来の深度再構成。各ピクセルのワールド位置を 深度 + 逆viewProj で
 //                    復元し、前フレーム viewProj で再投影する。カメラの動きだけ。
 //
-// ★符号規約に注意: 速度バッファは velocity = 現UV - 前UV（TAA の規約）だが、
-//   このシェーダが欲しいのは「前フレームへ向かうベクトル」= 前UV - 現UV なので反転する。
-//   ここを間違えると動いた方向と逆にブレる（症状が微妙で気づきにくい）。
+// ★空(深度=1.0)は速度バッファ方式でも深度再構成にフォールバックする。
+//   スカイボックスは深度テスト OFF で速度パスにも参加しないので、速度バッファ上は
+//   ずっと 0 のまま＝そのまま読むと「TAA を ON にした途端に空だけブラーが消える」。
+//   TAA.hlsl も同じ理由で同じフォールバックを持っている。
+//
+// ★符号について: 速度バッファは velocity = 現UV - 前UV（TAA の規約）だが、
+//   このシェーダが欲しいのは「前フレームへ向かうベクトル」= 前UV - 現UV なので反転してある。
+//   現在のタップ列 t = k/(n-1) - 0.5 は 0 対称なので実は符号を間違えても結果は同じだが、
+//   片側カーネル（t ∈ [-1, 0] 等）に変えた瞬間に効いてくる。ここを触るときは思い出すこと。
 
 #include "FullscreenTri.hlsli"
 
@@ -25,27 +31,32 @@ Texture2D    gDepth    : register(t1);
 // 速度バッファ。Texture2D<float2> ではなく float4 で受けるのは、速度バッファが使えない時に
 // 別のテクスチャ（深度）をダミーとして張れるようにするため（params.w=0 なら読まない）。
 Texture2D    gVelocity : register(t2);
-SamplerState gSamp     : register(s0);
+SamplerState gSamp     : register(s0);   // LINEAR CLAMP（シーンのタップ用）
+// ★速度は必ず POINT で読むこと。バイリニアだと物体のシルエットで前景と背景の速度が
+//   混ざり、動く物の周囲 1px に逆方向のブラーの縁ができる（TAA も同じ理由で POINT）。
+SamplerState gPoint    : register(s1);   // POINT CLAMP（速度/深度用）
 
 float4 MotionBlurPS(FSQuadVSOut i) : SV_TARGET
 {
     float2 uvFull = i.uv * rectP.zw + rectP.xy;
+    float  depth  = gDepth.SampleLevel(gPoint, uvFull, 0).r;
+    const bool isSky = (depth >= 1.0 - 1e-6);
 
     float2 vel;
-    if (params.w > 0.5)
+    if (params.w > 0.5 && !isSky)
     {
         // 速度バッファ方式（オブジェクト毎のブラー）。TAA の符号規約から反転する。
-        vel = -gVelocity.Sample(gSamp, uvFull).rg * params.x;
+        vel = -gVelocity.SampleLevel(gPoint, uvFull, 0).rg * params.x;
     }
     else
     {
-        // 深度再構成方式（カメラの動きのみ）
-        float  depth = gDepth.Sample(gSamp, uvFull).r;
+        // 深度再構成方式（カメラの動きのみ）。空もここを通る。
         float2 ndc   = float2(i.uv.x * 2.0 - 1.0, 1.0 - i.uv.y * 2.0);
         float4 world = mul(invViewProj, float4(ndc, depth, 1.0));
-        world /= max(world.w, 1e-6);
+        // w は負にもなり得る（錐台外の再構成）。abs で守りつつ符号は保つこと。
+        world /= (abs(world.w) > 1e-6 ? world.w : 1e-6);
         float4 prevClip = mul(prevViewProj, world);
-        float2 prevNdc  = prevClip.xy / max(prevClip.w, 1e-6);
+        float2 prevNdc  = prevClip.xy / (abs(prevClip.w) > 1e-6 ? prevClip.w : 1e-6);
         float2 prevUv   = float2(prevNdc.x * 0.5 + 0.5, 0.5 - prevNdc.y * 0.5);
         vel = (prevUv - i.uv) * params.x;
     }

@@ -54,19 +54,26 @@ void MotionBlurPass::Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap,
         params[3].Constants.Num32BitValues = kMBCBNum32;
         params[3].ShaderVisibility         = D3D12_SHADER_VISIBILITY_PIXEL;
 
-        D3D12_STATIC_SAMPLER_DESC samp{};
-        samp.Filter           = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-        samp.AddressU         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-        samp.AddressV         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-        samp.AddressW         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-        samp.ShaderRegister   = 0;
-        samp.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        // s0 = LINEAR CLAMP（シーンのタップ）／ s1 = POINT CLAMP（速度・深度）。
+        // ★速度をバイリニアで読むと、物体のシルエットで前景と背景の速度が混ざって
+        //   動く物の周囲 1px に逆方向のブラーの縁ができる。必ず POINT で読むこと。
+        D3D12_STATIC_SAMPLER_DESC samp[2]{};
+        samp[0].Filter           = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+        samp[0].AddressU         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        samp[0].AddressV         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        samp[0].AddressW         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        samp[0].MaxLOD           = D3D12_FLOAT32_MAX;
+        samp[0].ShaderRegister   = 0;
+        samp[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        samp[1]                  = samp[0];
+        samp[1].Filter           = D3D12_FILTER_MIN_MAG_MIP_POINT;
+        samp[1].ShaderRegister   = 1;
 
         D3D12_ROOT_SIGNATURE_DESC desc{};
         desc.NumParameters     = _countof(params);
         desc.pParameters       = params;
-        desc.NumStaticSamplers = 1;
-        desc.pStaticSamplers   = &samp;
+        desc.NumStaticSamplers = _countof(samp);
+        desc.pStaticSamplers   = samp;
         desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS
                    | D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS
                    | D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;

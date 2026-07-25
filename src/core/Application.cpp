@@ -11382,6 +11382,11 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
                 XMStoreFloat4(&d.r1, t.r[1]);
                 XMStoreFloat4(&d.r2, t.r[2]);
                 d.color = {1.0f, 1.0f, 1.0f, 1.0f};
+                // ★不変条件: depthInstScratch と depthInstPrevScratch は必ず同じ要素数・同じ順序。
+                //   同じ base オフセットへ別々のストライドで memcpy し、slot1/slot2 として
+                //   同じインスタンスに割り当てられるため。**この2つの push_back の間に
+                //   early-continue を挟むと無言で対応がズレる**（前フレームのワールド行列が
+                //   別のインスタンスに付き、そのオブジェクトだけ盛大にゴーストする）。
                 depthInstScratch.push_back(d);
                 if (velocityMode)
                 {

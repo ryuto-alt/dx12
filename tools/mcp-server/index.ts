@@ -1015,7 +1015,7 @@ reg(
 reg(
   "dx12_get_taa",
   "TAA設定取得",
-  "現在のシーンの TAA(テンポラルアンチエイリアス)設定を返す。{enabled, sampleCount, feedbackMin, feedbackMax, varianceGamma, jitterScale, debugVelocity} に加え、実際に走っているかの active と、FXAA が抑制されているかの fxaaSuppressed を返す。★正射カメラ/2Dビューでは自動無効化される(SSAO と同じ制約)。TAA が ON の間は dx12_set_post_process の fxaaOn は無視される。",
+  "現在のシーンの TAA(テンポラルアンチエイリアス)設定を返す。{enabled, sampleCount, feedbackMin, feedbackMax, varianceGamma, jitterScale, debugVelocity} に加え、実際に走っているかの active と、FXAA が抑制されているかの fxaaSuppressed を返す。★正射カメラ/2Dビューでは自動無効化される(SSAO と同じ制約)。TAA が ON の間は dx12_set_post_process の fxaaOn は無視される。★効果の確認には dx12_ui_screenshot を使うこと(dx12_screenshot は解決前の m_sceneRT を読むため TAA が映らない)。",
   {},
   { readOnlyHint: true },
   () => run(() => engine.call("get_taa", {})),
@@ -1032,7 +1032,7 @@ reg(
     feedbackMax: z.number().optional().describe("安定しているピクセルで使う履歴の比率。既定 0.97。高いほど滑らかだがゴーストしやすい。"),
     varianceGamma: z.number().optional().describe("近傍色の許容幅 μ±γσ。既定 1.0。下げるとゴーストが減りチラつきが増える。"),
     jitterScale: z.number().optional().describe("ジッタ量の倍率。1.0 = ±0.5px。ブラーが強すぎるなら下げる。"),
-    debugVelocity: z.boolean().optional().describe("速度バッファを画面に可視化する(検証用)。静止時に全面が均一なグレーになるのが正常。保存はされない。"),
+    debugVelocity: z.boolean().optional().describe("速度バッファを画面に可視化する(検証用)。静止時に全面が均一なグレーになるのが正常で、縞々に揺れていたらジッタ除去のバグ。カメラを右へパンすると赤寄り、左で緑寄り。★確認は dx12_screenshot ではなく dx12_ui_screenshot を使うこと(dx12_screenshot はポスト前の m_sceneRT を読むので TAA も可視化も映らない)。保存はされない。"),
   },
   { idempotentHint: true },
   (a) => run(() => engine.call("set_taa", a)),

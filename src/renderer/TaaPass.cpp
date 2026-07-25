@@ -21,8 +21,8 @@ struct TaaCB
     float invViewProj[16];   // offset  0
     float prevViewProj[16];  // offset 16
     float rectP[4];          // offset 32 : xy=UVオフセット, zw=UVスケール
-    float texel[4];          // offset 36 : xy=1/RTW,1/RTH  zw=ビューポートpxサイズ
-    float rtSize[4];         // offset 40 : xy=フルRTのpxサイズ
+    float texel[4];          // offset 36 : xy=1/RTW,1/RTH （zw は 16B 境界のための詰め物）
+    float rtSize[4];         // offset 40 : xy=フルRTのpxサイズ（zw は詰め物）
     float params[4];         // offset 44 : x=historyValid y=feedbackMin z=feedbackMax w=varianceGamma
 };
 static_assert(sizeof(TaaCB) == 48 * sizeof(float), "TaaCB must be 48 DWORDs");
@@ -285,14 +285,23 @@ u32 TaaPass::Resolve(CommandList& cmd,
     cb.rectP[0] = uvOfsX; cb.rectP[1] = uvOfsY; cb.rectP[2] = uvSclX; cb.rectP[3] = uvSclY;
     cb.texel[0] = 1.0f / static_cast<float>(m_width);
     cb.texel[1] = 1.0f / static_cast<float>(m_height);
-    cb.texel[2] = static_cast<float>(vpW);
-    cb.texel[3] = static_cast<float>(vpH);
     cb.rtSize[0] = static_cast<float>(m_width);
     cb.rtSize[1] = static_cast<float>(m_height);
+    (void)vpW; (void)vpH;   // 矩形は rectP に入っている（ビューポート設定にのみ使う）
     cb.params[0] = m_historyValid ? 1.0f : 0.0f;
     cb.params[1] = std::clamp(s.feedbackMin, 0.0f, 0.99f);
     cb.params[2] = std::clamp(s.feedbackMax, cb.params[1], 0.995f);
     cb.params[3] = std::clamp(s.varianceGamma, 0.1f, 4.0f);
+
+    // 履歴が無効な初回（起動直後 / リサイズ直後 / シーン切替直後）は、まだ一度も書かれていない
+    // 履歴 RT をサンプルすることになる。params.x=0 で寄与は 0 に掛け消されるが、
+    // 未初期化メモリが NaN だと 0 * NaN = NaN が伝播しうる。素直にクリアしておく。
+    if (!m_historyValid)
+    {
+        src->Transition(cmd, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        constexpr float black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        cmd.ClearRenderTarget(src->GetRtv(), black);
+    }
 
     src->Transition(cmd, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     dst->Transition(cmd, D3D12_RESOURCE_STATE_RENDER_TARGET);
