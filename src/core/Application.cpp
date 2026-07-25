@@ -14014,8 +14014,15 @@ void Application::Render()
             XMFLOAT4X4 invT, prevT;
             XMStoreFloat4x4(&invT,  XMMatrixTranspose(inv));
             XMStoreFloat4x4(&prevT, XMMatrixTranspose(XMLoadFloat4x4(&m_prevViewProj)));
+            // 速度バッファが今フレーム書かれていれば、それを使って「オブジェクト毎の」
+            // モーションブラーにする（従来の深度再構成はカメラの動きしか拾えない）。
+            // 使えない時は深度 SRV をダミーとして張る（params.w=0 なのでシェーダは読まない）。
+            const u32 velIdx = velocityPrepass ? m_taaPass->GetVelocitySrvIndex()
+                                               : DescriptorHeap::kInvalidIndex;
+            const bool mbUseVelocity = (velIdx != DescriptorHeap::kInvalidIndex);
+            const auto velSrvGpu = mbUseVelocity ? m_srvHeap->GetGpuHandle(velIdx) : depthSrvGpu;
             const u32 o = m_motionBlurPass->Apply(*m_commandList, m_srvHeap.get(),
-                curSceneSrv, depthSrvGpu, invT, prevT,
+                curSceneSrv, depthSrvGpu, velSrvGpu, mbUseVelocity, invT, prevT,
                 uvOfsX, uvOfsY, uvSclX, uvSclY, vpLeft, vpTop, vpW, vpH, ppApplied);
             if (o != DescriptorHeap::kInvalidIndex)
                 curSceneSrv = m_srvHeap->GetGpuHandle(o);

@@ -32,23 +32,27 @@ void MotionBlurPass::Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap,
     m_width  = (width  > 0) ? width  : 1;
     m_height = (height > 0) ? height : 1;
 
-    // --- Root Signature: t0/t1(SRV table ×2) + b0(40 DWORD) + s0 ---
+    // --- Root Signature: t0=scene / t1=depth / t2=velocity + b0(40 DWORD) + s0 ---
     {
-        D3D12_DESCRIPTOR_RANGE r0{}, r1{};
+        D3D12_DESCRIPTOR_RANGE r0{}, r1{}, r2{};
         r0.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV; r0.NumDescriptors = 1; r0.BaseShaderRegister = 0;
         r1 = r0; r1.BaseShaderRegister = 1;
+        r2 = r0; r2.BaseShaderRegister = 2;
 
-        D3D12_ROOT_PARAMETER params[3]{};
+        D3D12_ROOT_PARAMETER params[4]{};
         params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         params[0].DescriptorTable = {1, &r0};
         params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
         params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         params[1].DescriptorTable = {1, &r1};
         params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-        params[2].ParameterType            = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        params[2].Constants.ShaderRegister = 0;
-        params[2].Constants.Num32BitValues = kMBCBNum32;
-        params[2].ShaderVisibility         = D3D12_SHADER_VISIBILITY_PIXEL;
+        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[2].DescriptorTable = {1, &r2};
+        params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        params[3].ParameterType            = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        params[3].Constants.ShaderRegister = 0;
+        params[3].Constants.Num32BitValues = kMBCBNum32;
+        params[3].ShaderVisibility         = D3D12_SHADER_VISIBILITY_PIXEL;
 
         D3D12_STATIC_SAMPLER_DESC samp{};
         samp.Filter           = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -59,7 +63,7 @@ void MotionBlurPass::Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap,
         samp.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         D3D12_ROOT_SIGNATURE_DESC desc{};
-        desc.NumParameters     = 3;
+        desc.NumParameters     = _countof(params);
         desc.pParameters       = params;
         desc.NumStaticSamplers = 1;
         desc.pStaticSamplers   = &samp;
@@ -121,6 +125,8 @@ void MotionBlurPass::Resize(GraphicsDevice& device, u32 width, u32 height)
 u32 MotionBlurPass::Apply(CommandList& cmd, DescriptorHeap* /*srvHeap*/,
                           D3D12_GPU_DESCRIPTOR_HANDLE sceneSrvGpu,
                           D3D12_GPU_DESCRIPTOR_HANDLE depthSrvGpu,
+                          D3D12_GPU_DESCRIPTOR_HANDLE velocitySrvGpu,
+                          bool useVelocityBuffer,
                           const DirectX::XMFLOAT4X4& invViewProjT,
                           const DirectX::XMFLOAT4X4& prevViewProjT,
                           float uvOfsX, float uvOfsY, float uvScaleX, float uvScaleY,
@@ -138,6 +144,8 @@ u32 MotionBlurPass::Apply(CommandList& cmd, DescriptorHeap* /*srvHeap*/,
     cb.params[0] = (std::min)((std::max)(s.mbStrength, 0.0f), 2.0f);
     cb.params[1] = static_cast<float>((std::min)((std::max)(s.mbSamples, 4), 16));
     cb.params[2] = 0.06f;   // 最大ブラー（ローカルUV。画面の約6%）
+    // x>0.5 で速度バッファ方式（オブジェクト毎のブラー）。0 なら従来の深度再構成（カメラのみ）。
+    cb.params[3] = useVelocityBuffer ? 1.0f : 0.0f;
 
     m_outRT->Transition(cmd, D3D12_RESOURCE_STATE_RENDER_TARGET);
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_outRT->GetRtv();
@@ -148,7 +156,8 @@ u32 MotionBlurPass::Apply(CommandList& cmd, DescriptorHeap* /*srvHeap*/,
     native->SetPipelineState(m_pso.Get());
     native->SetGraphicsRootDescriptorTable(0, sceneSrvGpu);
     native->SetGraphicsRootDescriptorTable(1, depthSrvGpu);
-    native->SetGraphicsRoot32BitConstants(2, kMBCBNum32, &cb, 0);
+    native->SetGraphicsRootDescriptorTable(2, velocitySrvGpu);
+    native->SetGraphicsRoot32BitConstants(3, kMBCBNum32, &cb, 0);
     native->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     native->IASetVertexBuffers(0, 0, nullptr);
     native->IASetIndexBuffer(nullptr);

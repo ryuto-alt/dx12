@@ -16,9 +16,12 @@ class DescriptorHeap;
 class RenderTarget;
 class CommandList;
 
-// カメラモーションブラー（velocity buffer 不要の深度再構成方式）。
-// 深度 + 逆viewProj でワールド位置を復元し、前フレーム viewProj で再投影した速度方向に
-// N タップ平均する。出力 RT はシーンと同じ正規化 UV レイアウトで、uber の入力シーンとして使う。
+// モーションブラー。速度方向に N タップ平均する。出力 RT はシーンと同じ正規化 UV
+// レイアウトで、uber の入力シーンとして使う。速度の求め方は2通り:
+//   - 速度バッファあり(TAA 有効時): 速度バッファ(RG16F)をそのまま読む
+//     → カメラだけでなく**オブジェクト毎**のブラーが出る（回転する物体が正しくブレる）。
+//   - 速度バッファなし: 従来の深度再構成（深度 + 逆viewProj → 前フレーム viewProj で再投影）
+//     → カメラの動きだけ。静止カメラでは何もブレない。
 class MotionBlurPass
 {
 public:
@@ -35,6 +38,10 @@ public:
     u32 Apply(CommandList& cmd, DescriptorHeap* srvHeap,
               D3D12_GPU_DESCRIPTOR_HANDLE sceneSrvGpu,
               D3D12_GPU_DESCRIPTOR_HANDLE depthSrvGpu,
+              // 速度バッファ(TaaPass)の SRV。useVelocityBuffer=false のときは読まれないので
+              // 何を渡してもよい（float 系テクスチャなら可。呼び出し側は depth を渡している）。
+              D3D12_GPU_DESCRIPTOR_HANDLE velocitySrvGpu,
+              bool useVelocityBuffer,
               const DirectX::XMFLOAT4X4& invViewProjT,
               const DirectX::XMFLOAT4X4& prevViewProjT,
               float uvOfsX, float uvOfsY, float uvScaleX, float uvScaleY,
