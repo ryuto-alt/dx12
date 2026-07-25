@@ -66,6 +66,9 @@ struct AnimGraphRuntimeState
     AnimParamMap                  params;
     bool                          valid = false;
 
+    // マスクで指定されたが見つからなかったボーン名（ロード時に 1 回だけ埋まる。警告用）
+    std::vector<std::string> missingMaskBones;
+
     // 毎フレームの再確保を避けるための一時バッファ
     AnimPose poseA, poseB, layerPose, refPose;
     std::vector<u32> eventHits;

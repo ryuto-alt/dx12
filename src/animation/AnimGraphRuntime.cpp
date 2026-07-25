@@ -2,6 +2,7 @@
 #include "animation/AnimationClip.h"
 #include "animation/Animator.h"
 #include "animation/BlendTree.h"
+#include "animation/BoneMask.h"
 #include "animation/Skeleton.h"
 
 #include <algorithm>
@@ -281,11 +282,22 @@ void InitRuntime(AnimGraphRuntimeState& rt, const Skeleton& skeleton)
 {
     InitAnimParams(rt.asset, rt.params);
     rt.layers.assign(rt.asset.layers.size(), AnimLayerRuntime{});
+    rt.missingMaskBones.clear();
     for (size_t i = 0; i < rt.asset.layers.size(); ++i)
     {
         const AnimLayerDef& def = rt.asset.layers[i];
         rt.layers[i].weight = def.weight;
         EnterState(rt.layers[i], FindAnimState(def, def.defaultState));
+
+        // ボーンマスクをここで 1 回だけ解決する（毎フレーム名前を引かない）。
+        // レイヤー 0 のマスクは意味が薄い（下に敷くものが無い）が、
+        // 「一部のボーンだけアニメさせる」用途で使えるので禁止はしない。
+        if (def.hasMask)
+        {
+            BuildBoneMaskFromNames(skeleton, def.mask.include, def.mask.includeChildren,
+                                   def.mask.weight, rt.layers[i].maskWeights,
+                                   &rt.missingMaskBones);
+        }
     }
     MakeBindPose(skeleton, rt.poseA);
     rt.poseB     = rt.poseA;

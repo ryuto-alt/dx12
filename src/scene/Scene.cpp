@@ -510,6 +510,15 @@ void Scene::UpdateAnimGraphs(f32 dt)
                     ctrl._state = std::make_unique<AnimGraphRuntimeState>();
                     ctrl._state->asset = std::move(asset);
                     anim_graph::InitRuntime(*ctrl._state, *skelAnim.skeleton);
+
+                    if (!ctrl._state->missingMaskBones.empty())
+                    {
+                        std::string list;
+                        for (const auto& m : ctrl._state->missingMaskBones)
+                        { if (!list.empty()) list += ", "; list += m; }
+                        Logger::Warn("AnimGraph: マスクのボーンが見つからない [{}] ({})",
+                                     list, ctrl.graphPath);
+                    }
                 }
             }
         }

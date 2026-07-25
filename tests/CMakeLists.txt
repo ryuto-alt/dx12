@@ -262,6 +262,21 @@ if(TARGET Renderer)
     endif()
     add_test(NAME AnimGraphTests COMMAND AnimGraphTests)
 
+    # ボーンマスク（animation/BoneMask.h）+ レイヤー合成テスト。
+    # 「マスク外のボーンが下位レイヤーとビット単位で同一」を守る。
+    add_executable(BoneMaskTests
+        bone_mask_test.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/AnimPose.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/AnimationClip.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/Skeleton.cpp)
+    target_include_directories(BoneMaskTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(BoneMaskTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(BoneMaskTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(BoneMaskTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME BoneMaskTests COMMAND BoneMaskTests)
+
     # Frustum（視錐台抽出＋球カリング）テスト。ヘッダオンリー・純 DirectXMath。
     add_executable(FrustumTests frustum_test.cpp)
     target_include_directories(FrustumTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
