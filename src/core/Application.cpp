@@ -8702,15 +8702,24 @@ void Application::CaptureFinalBackBufferRegion(ID3D12GraphicsCommandList* cmd, I
     m_mcpFinalShot.pending  = false;
     m_mcpFinalShot.captured = false;
 
+    // ★どの早期 return でも必ずここを通す。通さないと遅延応答が宙吊りになり、
+    //   決定論モードの「時間を固定したまま」状態がエディタに残り続ける（＝時間が止まって見える）。
+    auto bail = [&](const char* why)
+    {
+        FailMcp(m_mcpBridge.get(), m_mcpFinalShot.reply, McpErr::Internal, why);
+        m_mcpFinalShot = {};
+        m_deterministicCapture = false;
+    };
+
     auto* dev = m_graphicsDevice ? m_graphicsDevice->GetDevice() : nullptr;
-    if (!dev) return;
+    if (!dev) { bail("graphics device not ready"); return; }
 
     const D3D12_RESOURCE_DESC bbDesc = backBuffer->GetDesc();
     const u32 fullW = static_cast<u32>(bbDesc.Width);
     const u32 fullH = bbDesc.Height;
-    if (vpW == 0 || vpH == 0 || fullW == 0 || fullH == 0) return;
     // ビューポートがバックバッファをはみ出していたらクランプ（リサイズ直後の 1 フレームで起きる）。
-    if (vpX >= fullW || vpY >= fullH) return;
+    if (vpW == 0 || vpH == 0 || fullW == 0 || fullH == 0 || vpX >= fullW || vpY >= fullH)
+    { bail("viewport rect is empty (window minimized or resizing?)"); return; }
     vpW = (std::min)(vpW, fullW - vpX);
     vpH = (std::min)(vpH, fullH - vpY);
 
@@ -8736,7 +8745,7 @@ void Application::CaptureFinalBackBufferRegion(ID3D12GraphicsCommandList* cmd, I
     Microsoft::WRL::ComPtr<ID3D12Resource> readback;
     if (FAILED(dev->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &bd,
             D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&readback))))
-        return;
+    { bail("readback alloc failed"); return; }
 
     // バックバッファはこの時点で RENDER_TARGET（呼び出し側の契約）。COPY_SOURCE へ往復させる。
     auto barrier = [&](D3D12_RESOURCE_STATES a, D3D12_RESOURCE_STATES b)
