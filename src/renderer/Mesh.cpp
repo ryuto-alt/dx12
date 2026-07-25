@@ -209,43 +209,53 @@ void Mesh::InitializeAsBox(GraphicsDevice& device)
     const XMFLOAT2 uv11 = {1, 1};
     const XMFLOAT2 uv01 = {0, 1};
 
+    // TANGENT は各面の「U が増える向き」。w は cross(N,T) が V の向きと一致するかの符号で、
+    // 全面 +1 になる（下の UV 割り当てから手計算。PBR.hlsli の PerturbNormal と同じ規約）。
+    // ★これが (0,0,0,1) のままだと、法線マップを貼ったとき PerturbNormal の
+    //   normalize(0) が NaN になる（#26 でプリミティブにも法線マップが効くようになったため必要）。
+    const XMFLOAT4 tPX = { 1,  0,  0, 1};
+    const XMFLOAT4 tNX = {-1,  0,  0, 1};
+    const XMFLOAT4 tPY = { 0,  1,  0, 1};
+    const XMFLOAT4 tPZ = { 0,  0,  1, 1};
+    const XMFLOAT4 tNZ = { 0,  0, -1, 1};
+
     std::vector<Vertex> vertices =
     {
         // +Y face (top) - normal (0, 1, 0)
-        { {-h,  h, -h}, { 0,  1,  0}, white, uv00 },
-        { {-h,  h,  h}, { 0,  1,  0}, white, uv10 },
-        { { h,  h,  h}, { 0,  1,  0}, white, uv11 },
-        { { h,  h, -h}, { 0,  1,  0}, white, uv01 },
+        { {-h,  h, -h}, { 0,  1,  0}, white, uv00, tPZ },
+        { {-h,  h,  h}, { 0,  1,  0}, white, uv10, tPZ },
+        { { h,  h,  h}, { 0,  1,  0}, white, uv11, tPZ },
+        { { h,  h, -h}, { 0,  1,  0}, white, uv01, tPZ },
 
         // -Y face (bottom) - normal (0, -1, 0)
-        { {-h, -h,  h}, { 0, -1,  0}, white, uv00 },
-        { {-h, -h, -h}, { 0, -1,  0}, white, uv10 },
-        { { h, -h, -h}, { 0, -1,  0}, white, uv11 },
-        { { h, -h,  h}, { 0, -1,  0}, white, uv01 },
+        { {-h, -h,  h}, { 0, -1,  0}, white, uv00, tNZ },
+        { {-h, -h, -h}, { 0, -1,  0}, white, uv10, tNZ },
+        { { h, -h, -h}, { 0, -1,  0}, white, uv11, tNZ },
+        { { h, -h,  h}, { 0, -1,  0}, white, uv01, tNZ },
 
         // +X face (right) - normal (1, 0, 0)
-        { { h, -h, -h}, { 1,  0,  0}, white, uv00 },
-        { { h,  h, -h}, { 1,  0,  0}, white, uv10 },
-        { { h,  h,  h}, { 1,  0,  0}, white, uv11 },
-        { { h, -h,  h}, { 1,  0,  0}, white, uv01 },
+        { { h, -h, -h}, { 1,  0,  0}, white, uv00, tPY },
+        { { h,  h, -h}, { 1,  0,  0}, white, uv10, tPY },
+        { { h,  h,  h}, { 1,  0,  0}, white, uv11, tPY },
+        { { h, -h,  h}, { 1,  0,  0}, white, uv01, tPY },
 
         // -X face (left) - normal (-1, 0, 0)
-        { {-h, -h,  h}, {-1,  0,  0}, white, uv00 },
-        { {-h,  h,  h}, {-1,  0,  0}, white, uv10 },
-        { {-h,  h, -h}, {-1,  0,  0}, white, uv11 },
-        { {-h, -h, -h}, {-1,  0,  0}, white, uv01 },
+        { {-h, -h,  h}, {-1,  0,  0}, white, uv00, tPY },
+        { {-h,  h,  h}, {-1,  0,  0}, white, uv10, tPY },
+        { {-h,  h, -h}, {-1,  0,  0}, white, uv11, tPY },
+        { {-h, -h, -h}, {-1,  0,  0}, white, uv01, tPY },
 
         // +Z face (front) - normal (0, 0, 1)
-        { {-h, -h,  h}, { 0,  0,  1}, white, uv00 },
-        { { h, -h,  h}, { 0,  0,  1}, white, uv10 },
-        { { h,  h,  h}, { 0,  0,  1}, white, uv11 },
-        { {-h,  h,  h}, { 0,  0,  1}, white, uv01 },
+        { {-h, -h,  h}, { 0,  0,  1}, white, uv00, tPX },
+        { { h, -h,  h}, { 0,  0,  1}, white, uv10, tPX },
+        { { h,  h,  h}, { 0,  0,  1}, white, uv11, tPX },
+        { {-h,  h,  h}, { 0,  0,  1}, white, uv01, tPX },
 
         // -Z face (back) - normal (0, 0, -1)
-        { { h, -h, -h}, { 0,  0, -1}, white, uv00 },
-        { {-h, -h, -h}, { 0,  0, -1}, white, uv10 },
-        { {-h,  h, -h}, { 0,  0, -1}, white, uv11 },
-        { { h,  h, -h}, { 0,  0, -1}, white, uv01 },
+        { { h, -h, -h}, { 0,  0, -1}, white, uv00, tNX },
+        { {-h, -h, -h}, { 0,  0, -1}, white, uv10, tNX },
+        { {-h,  h, -h}, { 0,  0, -1}, white, uv11, tNX },
+        { { h,  h, -h}, { 0,  0, -1}, white, uv01, tNX },
     };
 
     std::vector<u32> indices =
@@ -288,7 +298,8 @@ void Mesh::InitializeAsPlane(GraphicsDevice& device, f32 size, u32 subdivisions)
             f32 pz = -half + static_cast<f32>(z) * step;
             f32 u = static_cast<f32>(x) / static_cast<f32>(subdivisions) * uvScale;
             f32 v = static_cast<f32>(z) / static_cast<f32>(subdivisions) * uvScale;
-            vertices.push_back({{px, 0, pz}, normal, white, {u, v}});
+            // U は +X、V は +Z。cross(N,T) = (0,0,-1) なので w = -1（法線マップ用）
+            vertices.push_back({{px, 0, pz}, normal, white, {u, v}, {1.0f, 0.0f, 0.0f, -1.0f}});
         }
     }
 
@@ -332,7 +343,10 @@ void Mesh::InitializeAsSphere(GraphicsDevice& device, f32 radius, u32 slices, u3
                 static_cast<f32>(slice) / static_cast<f32>(slices),
                 static_cast<f32>(stack) / static_cast<f32>(stacks)
             };
-            vertices.push_back({pos, normal, white, uv});
+            // U は theta 方向。T = d(pos)/d(theta) を正規化したもの。
+            // cross(N,T) が d(pos)/d(phi)（= V 方向）と一致するので w = +1。
+            const XMFLOAT4 tangent = {-sinTheta, 0.0f, cosTheta, 1.0f};
+            vertices.push_back({pos, normal, white, uv, tangent});
         }
     }
 

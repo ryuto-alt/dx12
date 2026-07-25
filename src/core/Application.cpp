@@ -12002,10 +12002,23 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
                 pbrParams.roughness = (renderer.overrideRoughness >= 0.0f) ? renderer.overrideRoughness
                                     : (mat ? mat->defaultRoughness : 0.5f);
                 pbrParams.flags     = 0;
-                if (mat && mat->normalMapTexture) pbrParams.flags |= 1u;
-                // overrideが有効な場合、metalRoughnessテクスチャのスケーリングを無効化
-                bool hasOverride = (renderer.overrideMetallic >= 0.0f || renderer.overrideRoughness >= 0.0f);
-                if (!hasOverride && mat && mat->metalRoughnessTexture) pbrParams.flags |= 2u;
+                // ★上書きテクスチャ(MeshRenderer::overrideNormalTexture /
+                //   overrideMetalRoughnessTexture)も見る。EnsureMaterialOverrideSrv は既に
+                //   t1/t2 を差し替えているのに、ここが Material 側しか見ていなかったので
+                //   「set_texture で法線/ORM を貼っても SRV だけ差し替わりシェーダが無視する」
+                //   状態だった(#26)。ブロックが確保できた時だけ立てる(確保に失敗したら
+                //   t1/t2 は 3 本ブロックではないので絶対にサンプルさせない)。
+                const bool ovBlockOk = (overrideBlock != 0xFFFFFFFFu);
+                const bool ovNormal  = ovBlockOk &&
+                    !MeshRenderer::SafeGetOverride(renderer.overrideNormalTexture, mi).empty();
+                const bool ovMR      = ovBlockOk &&
+                    !MeshRenderer::SafeGetOverride(renderer.overrideMetalRoughnessTexture, mi).empty();
+                if (ovNormal || (mat && mat->normalMapTexture))      pbrParams.flags |= 1u;
+                // ★metallic/roughness のスカラーは glTF 意味論の「係数」として扱い、
+                //   MR テクスチャを殺さない(matAsset 経路と同じ規則に揃えた)。
+                //   SceneSerializer が全モデルに material{metallic,roughness} を必ず書くため、
+                //   旧実装では「保存し直したシーンでは ORM テクスチャが必ず死ぬ」状態だった。
+                if (ovMR || (mat && mat->metalRoughnessTexture))     pbrParams.flags |= 2u;
                 pbrParams.pad = 0;
             }
             // UV 変換: 連番アニメ > UVスクロール > 恒等 の優先順（renderer/SpriteAnim.h の純関数）
@@ -12149,9 +12162,10 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
         pbrParams.roughness = (r.overrideRoughness >= 0.0f) ? r.overrideRoughness
                                                             : (mat ? mat->defaultRoughness : 0.5f);
         pbrParams.flags = 0;
-        if (mat && mat->normalMapTexture) pbrParams.flags |= 1u;
-        const bool hasOverride = (r.overrideMetallic >= 0.0f || r.overrideRoughness >= 0.0f);
-        if (!hasOverride && mat && mat->metalRoughnessTexture) pbrParams.flags |= 2u;
+        if (mat && mat->normalMapTexture)      pbrParams.flags |= 1u;
+        // ★metallic/roughness のスカラーは glTF 意味論の「係数」＝ MR テクスチャを殺さない
+        //   （非インスタンス経路 / matAsset 経路と同じ規則。#26 で揃えた）
+        if (mat && mat->metalRoughnessTexture) pbrParams.flags |= 2u;
         pbrParams.pad = 0.0f;
         pbrParams.uvScaleX = 1.0f; pbrParams.uvScaleY = 1.0f;
         pbrParams.uvOffsetX = 0.0f; pbrParams.uvOffsetY = 0.0f;
