@@ -8,6 +8,8 @@
  *   [16-18] zod の $ref 回帰防止 — v3() が毎回新インスタンスを返し、JSON Schema に $ref が出ない
  *   [19-21] nonSettableComponentError — terrain / sculptMesh / gridPlane を「unknown」ではなく
  *           「専用ツールの担当」として弾く（B11）
+ *   [22-26] renderDebugModeIssue — dx12_render_debug の mode 検証。非対応の albedo / overdraw を
+ *           「理由 + 代わりに見るもの」つきで弾く（AI に無駄撃ちさせない）
  *
  * 実行: node sceneTools.test.ts（Node v24 型ストリップ・エンジン不要）
  */
@@ -15,10 +17,10 @@
 import assert from "node:assert/strict";
 import { z } from "zod";
 import {
-  DIAG_CHECKS, LIGHTING_PRESETS, SCULPT_BRUSHES, SCULPT_PRIMITIVES,
-  TERRAIN_BRUSHES, TERRAIN_PRESETS,
+  DIAG_CHECKS, LIGHTING_PRESETS, RENDER_DEBUG_MODES, RENDER_DEBUG_UNSUPPORTED,
+  SCULPT_BRUSHES, SCULPT_PRIMITIVES, TERRAIN_BRUSHES, TERRAIN_PRESETS,
   fastDiagnoseOnly, nonSettableComponentError, normalizeDiagnoseOnly, normalizeStrokePoints,
-  v2, v3, v4,
+  renderDebugModeIssue, v2, v3, v4,
 } from "./sceneTools.ts";
 
 let passed = 0;
@@ -194,6 +196,68 @@ console.log("\n[16-18] zod の $ref 回帰防止（vec の使い回し禁止）"
   }
   assert.equal(nonSettableComponentError(undefined), null);
   pass("触れるコンポーネント / 未知の名前は素通り（エンジンの判断を奪わない）");
+}
+
+// ─── [22-26] renderDebugModeIssue（dx12_render_debug の mode 検証）───────────
+console.log("\n[22-26] renderDebugModeIssue（非対応 mode を理由つきで弾く）");
+{
+  // 22. 有効な mode は全部素通り（null）
+  for (const m of RENDER_DEBUG_MODES) {
+    assert.equal(renderDebugModeIssue(m), null, `${m} は有効`);
+  }
+  assert.equal(RENDER_DEBUG_MODES.length, 17, "16 種の可視化 + off");
+  pass(`有効な mode ${RENDER_DEBUG_MODES.length} 件は素通り（off を含む）`);
+
+  // 23. albedo / overdraw は「非対応」だと言い切り、理由と代替を本文に持つ。
+  //     ここが弱いと AI は綴り違いだと解釈して何度も撃ち直す。
+  for (const [mode, why] of Object.entries(RENDER_DEBUG_UNSUPPORTED)) {
+    const msg = renderDebugModeIssue(mode);
+    assert.ok(msg, `${mode} は弾かれる`);
+    assert.ok(msg!.includes(mode), "どの mode が駄目かが本文に入る");
+    assert.ok(msg!.includes("非対応"), "「間違い」ではなく「非対応」だと言い切る");
+    assert.ok(msg!.includes(why.slice(0, 12)), "理由(なぜ作っていないか)が本文に入る");
+    assert.ok(msg!.includes("代わりに"), "代わりに何を見ればいいかが本文に入る");
+  }
+  pass("albedo / overdraw は『非対応 + 理由 + 代替手段』で弾かれる");
+
+  // 24. albedo は前方レンダラであること、overdraw は perf_stats / lightComplexity を案内する
+  assert.ok(renderDebugModeIssue("albedo")!.includes("前方レンダラ"));
+  assert.ok(renderDebugModeIssue("albedo")!.includes("dx12_screenshot"));
+  assert.ok(renderDebugModeIssue("overdraw")!.includes("dx12_perf_stats"));
+  assert.ok(renderDebugModeIssue("overdraw")!.includes("lightComplexity"));
+  pass("それぞれ具体的な代替ツール名が入っている");
+
+  // 25. 未知の綴りは有効値の一覧つきで弾く（+ 非対応 2 種の存在も知らせる）
+  const unknown = renderDebugModeIssue("nromal");
+  assert.ok(unknown && unknown.includes("nromal"));
+  assert.ok(unknown!.includes("normal") && unknown!.includes("shadowCascade"), "有効値の一覧が出る");
+  assert.ok(unknown!.includes("albedo") && unknown!.includes("overdraw"), "非対応 2 種も併せて知らせる");
+  pass("未知の mode は有効値一覧つきで弾かれる");
+
+  // 26. 型違い(数値/undefined)は zod の既定メッセージに任せる = null
+  assert.equal(renderDebugModeIssue(3), null);
+  assert.equal(renderDebugModeIssue(undefined), null);
+  assert.equal(renderDebugModeIssue(null), null);
+  pass("文字列以外は zod の既定メッセージに委ねる");
+
+  // z.enum の errorMap 経由でも同じ本文が出ること（index.ts の renderDebugModeSchema と同じ組み立て）。
+  const modeSchema = z.enum(RENDER_DEBUG_MODES as unknown as [string, ...string[]], {
+    errorMap: (issue, ctx) => {
+      const msg = renderDebugModeIssue((issue as { received?: unknown }).received);
+      return { message: msg ?? ctx.defaultError };
+    },
+  });
+  const r = modeSchema.safeParse("albedo");
+  assert.equal(r.success, false);
+  assert.ok(!r.success && r.error.issues[0].message.includes("前方レンダラ"),
+    "zod のエラー本文がそのまま理由になる（SDK はこの message を -32602 の本文に載せる）");
+  assert.ok(modeSchema.safeParse("velocity").success, "有効な mode は通る");
+  pass("z.enum + errorMap で理由つきのスキーマ違反になる");
+
+  // $ref 回帰防止の流儀: mode スキーマもファクトリで毎回新インスタンスにする
+  const factory = () => z.enum(RENDER_DEBUG_MODES as unknown as [string, ...string[]]);
+  assert.notStrictEqual(factory(), factory());
+  pass("mode スキーマもファクトリ（インスタンス使い回し禁止の流儀に従う）");
 }
 
 console.log(`\nOK: sceneTools テスト ${passed} 件通過`);

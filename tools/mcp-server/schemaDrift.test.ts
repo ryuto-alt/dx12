@@ -16,6 +16,7 @@ import {
 } from "./schemaDrift.ts";
 import { COMPOSITE_TOOLS, GLOBAL_PARAM_KEYS, METHOD_KEY_ALIASES } from "./paramGuard.ts";
 import {
+  RENDER_DEBUG_MODES, RENDER_DEBUG_UNSUPPORTED,
   SCULPT_BRUSHES, SCULPT_PRIMITIVES, TERRAIN_BRUSHES, TERRAIN_PRESETS,
 } from "./sceneTools.ts";
 
@@ -56,6 +57,10 @@ const SPREADS: Record<string, string[]> = { "...entityRef": ["entity", "name"] }
 const SHARED_BLOCK_KEYS: Record<string, string[]> = {
   overlap_box: ["radius"],
   overlap_sphere: ["halfExtents"],
+  // Application.cpp:5565 `get_shadow_pcss || set_shadow_pcss`。get は引数を取らない({} が正)。
+  get_shadow_pcss: [
+    "enabled", "lightTanAngle", "maxPenumbraTexels", "blockerSearchTexels", "temporalDither",
+  ],
   // Application.cpp:6358 `terrain_paint || terrain_autopaint`
   terrain_paint: [
     "rockSlopeStart", "rockSlopeEnd", "dirtSlopeStart", "dirtSlopeEnd",
@@ -292,7 +297,7 @@ console.log("\n[9] アニメーション系ツール(エンジンに実装済み
   // [1] は「TS → エンジン」しか見ないので、逆向き(エンジン → TS)はここで名指しで押さえる。
   const want: Record<string, string[]> = {
     dx12_play_anim: ["entity", "name", "clip", "clipName", "blend", "loop", "speed", "state", "layer"],
-    dx12_set_anim_param: ["entity", "name", "value", "trigger"],
+    dx12_set_anim_param: ["entity", "name", "param", "value", "trigger"],
     dx12_describe_anim_graph: ["entity", "name", "path"],
   };
   for (const [tool, keys] of Object.entries(want)) {
@@ -302,22 +307,84 @@ console.log("\n[9] アニメーション系ツール(エンジンに実装済み
     const missing = keys.filter((k) => !declared.has(k));
     check(`${tool} が engine の引数を全部宣言している`, missing.length === 0, `足りない: ${missing.join(", ")}`);
   }
-  // dx12_set_anim_param だけは entityRef を展開してはいけない。エンジンが name を
-  // 【FSM パラメータ名】として読むので、エンティティ名の name と衝突する(下の警告も参照)。
-  const sap = tools.find((t) => t.tool === "dx12_set_anim_param");
-  check("dx12_set_anim_param は entityRef を展開していない(name の意味が違う)",
-    sap != null && !sap.schemaKeys.includes("...entityRef"), `schemaKeys=${sap?.schemaKeys.join(",")}`);
 
-  // ★エンジン側の既知の不具合の見張り。set_anim_param は ResolveMcpEntity(params) を先に呼ぶので
-  //   パラメータ名の name をエンティティ名として引きに行って落ちる。C++ が直ったらこの check が
-  //   落ちる → そのときに AGENTS.md の警告書きを消すこと。
-  const sapBody = cpp.slice(cpp.indexOf(`method == "set_anim_param"`));
-  const stillBroken = /ResolveMcpEntity\s*\([^)]*params\s*\)/.test(sapBody.slice(0, 900))
-    && /params\.value\(\s*"name"/.test(sapBody.slice(0, 900));
-  check("engine の set_anim_param が name の二重解釈のままか(直ったらここが落ちる=警告を消す合図)",
-    stillBroken,
-    "Application.cpp の set_anim_param が name をエンティティ名として解決しなくなった模様。"
-    + "AGENTS.md / index.ts の『使えない』警告と、この check を消すこと");
+  // ★以前ここには「エンジンが name をエンティティ名/FSM パラメータ名の二重の意味で読んでいる」
+  //   前提の 2 つの見張り(entityRef を展開しないこと / 壊れたままであること)が入っていた。
+  //   エンジンが param を正にして name をエンティティ名へ戻した(Application.cpp:5943)ので撤去し、
+  //   代わりに「param が正・name はエンティティ名」を固定する検査へ置き換えた。
+  const sap = tools.find((t) => t.tool === "dx12_set_anim_param");
+  check("dx12_set_anim_param は param を宣言している(パラメータ名の正)",
+    sap != null && sap.schemaKeys.includes("param"), `schemaKeys=${sap?.schemaKeys.join(",")}`);
+  check("dx12_set_anim_param は他ツールと同じ entityRef を展開している(name = エンティティ名)",
+    sap != null && sap.schemaKeys.includes("...entityRef"), `schemaKeys=${sap?.schemaKeys.join(",")}`);
+  {
+    // エンジン側が param を正として読み、name はエンティティ名の後方互換フォールバックである
+    // ことの確認。ここが崩れたら TS の name の意味も戻す必要がある。
+    const at = cpp.indexOf(`method == "set_anim_param"`);
+    const body = cpp.slice(at, at + 2000);
+    check("engine の set_anim_param は param を先に読む(name はフォールバック)",
+      /params\.value\(\s*"param"/.test(body)
+      && body.indexOf('params.value("param"') < body.indexOf('params.value("name"'),
+      "Application.cpp の set_anim_param が param を読まなくなった / name を先に見るようになった");
+  }
+}
+
+console.log("\n[10] 新規ツール(エンジンに実装済みで TS 定義が無かった分)");
+{
+  // [1] は「TS → エンジン」しか見ないので、逆向き(エンジンにあるのに TS が無い)は名指しで押さえる。
+  // 引数は Application.cpp の各ハンドラを読んで写したもの(docs/MCP.md §4-2 と一致)。
+  const want: Record<string, string[]> = {
+    dx12_render_debug: ["mode", "frames", "gain", "depthRange", "exposure"],
+    dx12_terrain_set_layers: [
+      "entity", "name", "layerSetPath", "splatResolution", "autopaint", "uvScale", "heightBlendDepth",
+      "triplanarSharpness", "normalStrength", "macroScale", "macroStrength", "distTilingStart",
+      "distTilingFarScale", "pomHeightScale", "pomFadeStart", "pomFadeEnd",
+      "triplanar", "pom", "macro", "distTiling",
+    ],
+    dx12_terrain_splat_info: ["entity", "name", "gridSize", "point", "points"],
+    dx12_set_shadow_pcss: [
+      "enabled", "lightTanAngle", "maxPenumbraTexels", "blockerSearchTexels", "temporalDither",
+    ],
+    dx12_get_shadow_pcss: [],
+  };
+  for (const [tool, keys] of Object.entries(want)) {
+    const t = tools.find((x) => x.tool === tool);
+    if (!t) { check(`${tool} が登録されている`, false); continue; }
+    const declared = keysOf(t);
+    const missing = keys.filter((k) => !declared.has(k));
+    check(`${tool} が engine の引数を全部宣言している`, missing.length === 0, `足りない: ${missing.join(", ")}`);
+  }
+
+  // set_shadow_pcss は get_shadow_pcss と同じ else-if ブロックなので [4] の
+  // 「{applied:true} を返す」判定に引っかからない(返すのは applied: method=="set_..." )。
+  // 読み返しの流儀から外れていないことをここで名指しで固定する。
+  const setPcss = tools.find((t) => t.tool === "dx12_set_shadow_pcss");
+  check("dx12_set_shadow_pcss は applyAndVerify で get_shadow_pcss を読み返す",
+    setPcss != null && setPcss.methods.includes("set_shadow_pcss")
+    && setPcss.methods.includes("get_shadow_pcss"), `methods=${setPcss?.methods.join(",")}`);
+
+  // render_debug の mode 表 ⇔ Application.cpp の kEntries[]。
+  // C++ は `static const DbgEntry kEntries[] = {{"off", 0}, {"normal", ...}, ...}` なので
+  // parseStringVector(std::vector<std::string> 用)では拾えない。ここで直接抜く。
+  {
+    const at = cpp.indexOf("static const DbgEntry kEntries[]");
+    const block = at < 0 ? "" : cpp.slice(at, cpp.indexOf("};", at));
+    const engineModes = [...block.matchAll(/\{\s*"([A-Za-z0-9_]+)"\s*,/g)].map((m) => m[1]);
+    check("Application.cpp から render_debug の mode 表を読める", engineModes.length >= 16,
+      `modes=${engineModes.join(",")}`);
+    const sortedEngine = [...engineModes].sort();
+    const sortedTs = [...RENDER_DEBUG_MODES].sort();
+    check("RENDER_DEBUG_MODES が kEntries[] と一致(集合)",
+      JSON.stringify(sortedEngine) === JSON.stringify(sortedTs),
+      `engine=[${sortedEngine.join(",")}] / ts=[${sortedTs.join(",")}]`);
+    // 非対応の 2 つは【エンジンにも無い】こと。増えたら TS の除外表を消す合図。
+    for (const m of Object.keys(RENDER_DEBUG_UNSUPPORTED)) {
+      check(`非対応 mode "${m}" はエンジンにも無い(実装されたら除外表を消す合図)`,
+        !engineModes.includes(m),
+        `Application.cpp の kEntries[] に "${m}" が生えた。sceneTools.ts の RENDER_DEBUG_UNSUPPORTED から外し、`
+        + "RENDER_DEBUG_MODES へ足すこと");
+    }
+  }
 }
 
 console.log(failed === 0

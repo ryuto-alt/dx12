@@ -70,15 +70,17 @@ args = ["C:\\Users\\<you>\\dx12-mcp\\index.ts"]
 | コンポーネント | `dx12_describe_components` `dx12_set_component` `dx12_remove_component`（particleEmitter / trailRenderer / networkIdentity / networkTransform 等も対応） |
 | 見た目 | `dx12_material_apply`（PBR 4点セットを1回で。フォルダ名から用途推定 + ORM が効く状態に自動調整） `dx12_set_pbr` `dx12_set_color` `dx12_set_texture` `dx12_create_shader` `dx12_set_mesh_shader` `dx12_set_sprite_shader` `dx12_set_post_process` `dx12_set_ssao` |
 | Lua | `dx12_create_lua_component` `dx12_attach_lua_component` `dx12_set_lua_property` `dx12_eval_lua` `dx12_describe_lua_api` |
-| アニメーション | `dx12_play_anim`（クリップ再生 / `state` で .animfsm のステート遷移・`layer` 指定可） `dx12_get_anim_state` `dx12_describe_anim_graph`（.animfsm の構造・ステート名/パラメータ名） `dx12_set_anim_param`（FSM パラメータを外から叩いて遷移を検証） |
+| アニメーション | `dx12_play_anim`（クリップ再生 / `state` で .animfsm のステート遷移・`layer` 指定可） `dx12_get_anim_state` `dx12_describe_anim_graph`（.animfsm の構造・ステート名/パラメータ名） `dx12_set_anim_param`（FSM パラメータを外から叩いて遷移を検証。**パラメータ名は `param`**、`name` はエンティティ名） |
 | マルチプレイヤー | `dx12_net_setup` `dx12_net_status` `dx12_net_launch_test_client` |
 | 再生/検証 | `dx12_play` `dx12_stop` `dx12_step_frames` `dx12_key_press` `dx12_raycast` `dx12_get_physics_state` `dx12_screenshot` `dx12_validate_scene` `dx12_build_game` |
 | シーン編集強化 | `dx12_get_bounds` `dx12_look_at` `dx12_snap_to_ground` `dx12_get_hierarchy` `dx12_set_editor_camera` `dx12_screenshot_from` `dx12_scatter` |
 | アセット操作 | `dx12_import_asset` `dx12_asset_info` `dx12_move_asset` `dx12_delete_asset` `dx12_view_texture` `dx12_preview_model` |
 | 精密ピック | `dx12_pick`（画面座標→三角形精密ヒット列） `dx12_raycast_precise`（描画メッシュ基準のワールドレイ） |
-| 地形 | `dx12_terrain_create` `dx12_terrain_generate` `dx12_terrain_sculpt` `dx12_terrain_erode` `dx12_terrain_sample` `dx12_terrain_autopaint`（傾斜/標高から4層を焼き直す・冪等） `dx12_terrain_paint`（円ブラシで1層を塗る・相対） |
+| 地形 | `dx12_terrain_create` `dx12_terrain_generate` `dx12_terrain_sculpt` `dx12_terrain_erode` `dx12_terrain_sample` `dx12_terrain_set_layers`（.terrainlayers を割り当てる**唯一の経路**。初回はスプラット生成＋自動ペイント） `dx12_terrain_autopaint`（傾斜/標高から4層を焼き直す・冪等） `dx12_terrain_paint`（円ブラシで1層を塗る・相対） `dx12_terrain_splat_info`（塗り結果を絵を見ずに数値検証） |
 | スカルプト | `dx12_sculpt_create` `dx12_sculpt_make_editable` `dx12_sculpt_brush` |
 | ライティング | `dx12_list_lights`（灯数バジェット警告つき） `dx12_set_sun` `dx12_apply_lighting_preset` |
+| 描画の切り分け | `dx12_render_debug`（中間バッファ可視化: normal/roughness/metallic/depth/ao/contactShadow/velocity/ssr/ssgi/shadowCascade/lightComplexity/clusterGrid/decalCount/fog*/off の 17 mode。撮ったら設定は必ず元へ戻る。`albedo`・`overdraw` は理由つきで非対応） |
+| 影 | `dx12_get_shadow_pcss` `dx12_set_shadow_pcss`（PCSS ソフトシャドウ。OFF で従来 PCF とビット一致） |
 | 診断 | `dx12_diagnose`（シェーダー/テクスチャ/シーン参照/ライト/地形/ピッキング/Lua を一括検査） |
 | 品質判断 | `dx12_look_compare`（参照画像との測光比較: EV/コントラスト/CCT/彩度/黒潰れ + 具体的な示唆） `dx12_camera_path`（動かして連写 → コンタクトシート + フレーム間差分） `dx12_scene_write`（シーン JSON を検証つきで直接書く） |
 

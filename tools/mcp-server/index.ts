@@ -10,9 +10,10 @@ import { BLUEPRINT_EXAMPLE, composeUi } from "./uiComposer.ts";
 import { compareUiImages } from "./uiCompare.ts";
 import { downloadFont } from "./uiAssets.ts";
 import {
-  LIGHTING_PRESETS, SCULPT_BRUSHES, SCULPT_PRIMITIVES, TERRAIN_BRUSHES, TERRAIN_PRESETS,
+  LIGHTING_PRESETS, RENDER_DEBUG_MODES, SCULPT_BRUSHES, SCULPT_PRIMITIVES,
+  TERRAIN_BRUSHES, TERRAIN_PRESETS,
   DIAG_CHECKS, fastDiagnoseOnly, nonSettableComponentError, normalizeDiagnoseOnly,
-  normalizeStrokePoints, argError, v2, v3, v4,
+  normalizeStrokePoints, renderDebugModeIssue, argError, v2, v3, v4,
 } from "./sceneTools.ts";
 import { compareLook, roundDelta, roundStats } from "./lookCompare.ts";
 import { buildContactSheet, planCameraPath, type PathMode } from "./contactSheet.ts";
@@ -1220,6 +1221,48 @@ reg(
   (a) => run(() => applyAndVerify("set_contact_shadow", "get_contact_shadow", a)),
 );
 
+// ── PCSS(ソフトシャドウ) ─────────────────────────────────────────
+// エンジン側は Application.cpp:5565 の 1 ブロックで get/set を捌いている(MSVC の C1061 対策)。
+// 受け付ける引数とクランプ範囲はそこを読んで写した(憶測なし)。
+
+reg(
+  "dx12_get_shadow_pcss",
+  "PCSSソフトシャドウ設定取得",
+  "現在のシーンの PCSS(ブロッカー探索 → 可変ペナンブラのソフトシャドウ)設定を返す。"
+  + "{enabled, lightTanAngle, maxPenumbraTexels, blockerSearchTexels, temporalDither} に加えて、"
+  + "★実際に走る条件を満たしているかの active(影が ON かつ透視カメラ)と、"
+  + "時間ディザが本当に効いているかの temporalDitherActive(TAA が ON のときだけ true)を返す。"
+  + "enabled:true なのに active:false なら、シーンの影が切れているか正射/2D ビューになっている。",
+  {},
+  { readOnlyHint: true },
+  () => run(() => engine.call("get_shadow_pcss", {})),
+);
+
+reg(
+  "dx12_set_shadow_pcss",
+  "PCSSソフトシャドウ設定変更",
+  "PCSS のフィールドを指定分だけ更新する(未指定は現状維持)。CSM の固定幅 3x3 PCF を"
+  + "「ブロッカー探索 → 距離に応じた可変ペナンブラ」へ置き換える = 接地部は鋭く、離れるほど柔らかい影になる。"
+  + "★OFF に戻すと従来の 3x3 PCF と【ビット一致】の絵に戻る(切り分けに使える)。"
+  + "★lightTanAngle は太陽の角半径の tan。実際の太陽は 0.0044(ほぼ硬い影)で、既定 0.05 は誇張値。"
+  + "影がぼやけすぎるなら下げる。★temporalDither は TAA 有効時のみ効く(無効時はエンジンが自動で切るので"
+  + "temporalDitherActive:false が返る)。設定はシーン JSON の shadowPcss に保存される。"
+  + "★適用後にエンジンから読み返した実値を current に入れて返す(要求と食い違うものは mismatched に出る)。",
+  {
+    enabled: z.boolean().optional().describe("PCSS を使うか。false で従来の 3x3 PCF(絵はビット一致)。"),
+    lightTanAngle: z.number().optional().describe(
+      "太陽の角半径の tan。0.001..0.5 にクランプされる。既定 0.05(誇張値)。実際の太陽は 0.0044。"),
+    maxPenumbraTexels: z.number().optional().describe(
+      "ペナンブラ幅の上限(シャドウマップのテクセル数)。1..64 にクランプ。大きいほど柔らかく重い。"),
+    blockerSearchTexels: z.number().optional().describe(
+      "ブロッカー探索の半径(シャドウマップのテクセル数)。1..64 にクランプ。小さすぎると遠くの影が硬いまま。"),
+    temporalDither: z.boolean().optional().describe(
+      "サンプル位置をフレームごとに回してバンディングを散らす。★TAA 有効時のみ効く(無効だとチラつくだけなのでエンジンが自動で切る)。"),
+  },
+  { idempotentHint: true },
+  (a) => run(() => applyAndVerify("set_shadow_pcss", "get_shadow_pcss", a)),
+);
+
 reg(
   "dx12_get_taa",
   "TAA設定取得",
@@ -1576,35 +1619,23 @@ reg(
   "アニメーション FSM(.animfsm)のパラメータを外から書き換えて遷移を発火させる。"
     + "value に数値(Float パラメータ)か真偽値(Bool パラメータ)を渡すか、trigger:true で Trigger を立てる(value と trigger のどちらかが必須)。"
     + "パラメータ名の一覧は dx12_describe_anim_graph の graph.parameters、現在値は dx12_get_anim_state の parameters で確認。"
-    + "★対象は entity(数値 id)で指定すること。name はパラメータ名として使うので、エンティティ名では指定できない。"
+    + "★パラメータ名は param。name は他ツールと同じ【エンティティ名】(entity と排他)。"
+    + "エンジンには『param 省略時だけ name をパラメータ名として読む』後方互換が残っているが、新しい呼び出しは必ず param を使うこと。"
     + "★遷移が実際に進むのは Play 中(dx12_play)だけ。",
   {
-    // ★ここだけ entityRef を展開しない。エンジンの set_anim_param は name を
-    //   【パラメータ名】として読むので、entityRef の name(エンティティ名)と衝突する。
-    entity: z.number().int().describe("エンティティ id(int)。dx12_list_entities / dx12_find_entity で取得。"),
-    name: z.string().describe("FSM パラメータ名(完全一致)。dx12_describe_anim_graph の graph.parameters から選ぶ。"),
+    // ★以前はここだけ entityRef を展開していなかった。エンジンが name を【パラメータ名】として
+    //   読んでいた時期の名残で、今は param が正・name はエンティティ名に戻っている
+    //   (Application.cpp:5943)。他ツールと同じ entityRef でよい。
+    ...entityRef,
+    param: z.string().describe("FSM パラメータ名(完全一致)。dx12_describe_anim_graph の graph.parameters から選ぶ。"),
     value: z.union([z.number(), z.boolean()]).optional().describe(
       "設定する値。Float パラメータなら数値、Bool パラメータなら真偽値。trigger と併用不可(trigger:true が優先)。"),
     trigger: z.boolean().optional().describe(
       "true で Trigger パラメータを立てる(値は true 固定。消費は FSM 側)。value の代わりに使う。"),
   },
   {},
-  ({ entity, name, value, trigger }) => run(async () => {
-    try {
-      return await engine.call("set_anim_param", { entity, name, value, trigger });
-    } catch (e: any) {
-      // エンジンの set_anim_param は先に ResolveMcpEntity(params) を呼ぶため、パラメータ名の
-      // name をエンティティ名として引きに行って NotFound になる(エンジン側の既知の不具合)。
-      // 生の "no entity named 'Speed'" は原因が読み取れないので言い換える。
-      if (typeof e?.message === "string" && e.message.includes(`no entity named '${name}'`)) {
-        e.message = `set_anim_param: エンジンがパラメータ名 '${name}' をエンティティ名として解決しようとして失敗した`
-          + "(エンジン側 ResolveMcpEntity が params.name を先に見る既知の不具合)。"
-          + "回避策は無い。エンジンの Application.cpp 側の修正が要る";
-        e.hint = "dx12_eval_lua で Lua 側の API からパラメータを叩くか、エンジンの修正を待つこと";
-      }
-      throw e;
-    }
-  }),
+  ({ entity, name, param, value, trigger }) =>
+    run(() => engine.call("set_anim_param", { entity, name, param, value, trigger })),
 );
 
 // ════════════════════════════════════════════════════════════════
@@ -1980,6 +2011,83 @@ regRaw(
   },
 );
 
+// ── 中間バッファ可視化(「なぜ変に見えるか」の切り分け) ────────────────────
+//
+// ★mode を zod の enum にしてある。albedo / overdraw は【意図的に非対応】なので、
+//   渡されたら errorMap で「なぜ無いか + 代わりに何を見るか」を本文にして弾く
+//   (ただ弾くと AI は綴り間違いだと解釈して何度も撃ち直す)。理由の表は sceneTools.ts。
+// ★毎回新しい zod インスタンスを作るファクトリにしてある($ref に畳まれるのを避ける流儀)。
+const renderDebugModeSchema = () =>
+  z.enum(RENDER_DEBUG_MODES as unknown as [string, ...string[]], {
+    errorMap: (issue, ctx) => {
+      const msg = renderDebugModeIssue((issue as { received?: unknown }).received);
+      return { message: msg ?? ctx.defaultError };
+    },
+  });
+
+regRaw(
+  "dx12_render_debug",
+  {
+    title: "中間バッファ可視化",
+    description:
+      "レンダラの中間バッファを可視化して PNG 画像で返す。★『絵がなんか変』の原因を切り分けるための唯一の入口。"
+      + "frames フレーム描いてから撮影し、【呼ぶ前と完全に同じ設定へ必ず戻す】(一時的に ON にした機能も戻る)。"
+      + "可視化はポスト前の m_sceneRT へ描くので dx12_screenshot と違って必ず写る。"
+      + "\n■ mode: normal(ワールド法線 0.5+0.5*N。★G-Buffer は幾何法線なので法線マップは載っていない) / "
+      + "roughness / metallic(どちらも G-Buffer のスカラー値のみ。ORM テクスチャは載っていない) / "
+      + "depth(ビュー空間 Z のヒートマップ。青=近→赤=遠、空は黒。depthRange で正規化) / "
+      + "ao(SSAO。白=遮蔽なし) / contactShadow(白=遮蔽なし) / "
+      + "velocity(速度バッファ。R=+X G=+画面下。★静止していれば一様な (0.5,0.5,0.5) が正常。gain 20 くらいが見やすい) / "
+      + "ssr / ssgi(時間蓄積があるので frames を 8〜16 に) / "
+      + "shadowCascade(CSM のカスケードを赤/緑/青/黄で色分け) / "
+      + "lightComplexity(クラスタごとの灯数ヒートマップ。青0→緑→赤、★白=128 灯で切り捨て中) / "
+      + "clusterGrid(クラスタ境界の市松) / decalCount(★白=16 枚で切り捨て中) / "
+      + "fogScattering・fogTransmittance・fogSlice(ボリュメトリックフォグの散乱/透過率/froxel スライス) / "
+      + "off(何も撮らず全部戻すだけ。途中で失敗したときのリセット用)。"
+      + "\n■ normal / roughness / metallic / velocity は【深度+速度プリパスでしか書かれない】ので、"
+      + "TAA も SSR も SSGI も OFF のときはエンジンが TAA を一時 ON にして撮る(warnings に出る)。"
+      + "この 4 モードが『ジオメトリだけの粗い絵』に見えるのは仕様。"
+      + "\n■ 返り値 {path(絶対パス), mode, width, height, toneMapped, warnings:[...], mode_engine}。"
+      + "toneMapped:false のモードはトーンマップ/露出を掛けずに 8bit へ落とすので、"
+      + "【PNG のピクセル値がそのままバッファの値】として読める。warnings は必ず読むこと"
+      + "(「フォグが無効なので何も出ない」等、真っ黒な絵の理由がここに出る)。"
+      + "\n■ albedo と overdraw は意図的に非対応(理由つきで弾かれる)。",
+    inputSchema: {
+      mode: renderDebugModeSchema().describe(
+        "可視化する中間バッファ。off は『何も撮らず設定を戻すだけ』。albedo / overdraw は非対応。"),
+      frames: z.number().int().min(1).max(120).optional().describe(
+        "撮影までに描くフレーム数(1..120、既定 3)。ssr / ssgi は時間蓄積があるので 8〜16 にすると安定する。"),
+      gain: z.number().optional().describe(
+        "可視化の倍率(既定 1)。velocity は値が小さいので 20 くらいにすると見やすい。"),
+      depthRange: z.number().optional().describe(
+        "mode:\"depth\" のヒートマップを正規化する距離(m。既定 100)。屋内なら 20、遠景なら 500 等。"),
+      exposure: z.number().optional().describe(
+        "HDR を出すモード(ssr / ssgi)の露出倍率(既定 1)。真っ黒/真っ白なときに動かす。"),
+    },
+    annotations: { title: "中間バッファ可視化", openWorldHint: false, readOnlyHint: true, idempotentHint: true },
+  },
+  async ({ mode, frames, gain, depthRange, exposure }) => {
+    try {
+      const r = await engine.call("render_debug", definedOnly({ mode, frames, gain, depthRange, exposure }));
+      const meta = {
+        mode: r?.mode ?? mode,
+        width: r?.width, height: r?.height,
+        toneMapped: r?.toneMapped,
+        warnings: r?.warnings ?? [],
+        mode_engine: r?.mode_engine,
+      };
+      // mode:"off" は撮影しない(エンジンが path:"(no capture)" を返す)。画像が無いので JSON だけ返す。
+      const p: unknown = r?.path;
+      if (typeof p !== "string" || !fs.existsSync(p)) {
+        return { content: [{ type: "text", text: JSON.stringify({ path: p ?? null, ...meta }, null, 2) }] };
+      }
+      return imageResult(p, meta);
+    } catch (e: any) {
+      return errResult(e);
+    }
+  },
+);
+
 // 参照UIスクショ + 現在UI を横並び1枚に合成して返す比較ツール(outputSchema なし = image 結果)。
 regRaw(
   "dx12_ui_compare",
@@ -2342,6 +2450,68 @@ reg(
   },
   { idempotentHint: true, destructiveHint: true },
   (a) => run(() => engine.call("terrain_autopaint", a)),
+);
+
+reg(
+  "dx12_terrain_set_layers",
+  "地形にテクスチャレイヤーを割り当てる",
+  "地形へ .terrainlayers(4 層の PBR 素材セット)を割り当てる/外す。"
+  + "★これが『地形にテクスチャを載せる唯一の MCP 経路』。set_component では terrain を触れないので、"
+  + "ここを通らないと dx12_terrain_paint / dx12_terrain_autopaint は INVALID_PARAM で弾かれ続ける。"
+  + "初回割当時にスプラット(4 層の重みテクスチャ)を作り、autopaint:true(既定)なら傾斜/標高から自動で塗る。"
+  + "★layerSetPath:\"\"(空文字)を渡すと割当を外して従来の頂点色 / .dxmat 経路の見た目へ戻る。"
+  + "★省略したパラメータは触らない(冪等)。手順: dx12_terrain_create → dx12_terrain_generate → ここで割当 → "
+  + "dx12_terrain_paint で仕上げ → dx12_terrain_splat_info で数値確認。"
+  + "返り値 {entityId, layerSetPath, previousLayerSetPath, layerCount, layerNames, splatPath, splatSize, "
+  + "splatCreated, uvScale, terrainMatFlags, sceneGeneration, note}。★Editor 限定(Playing 中は MODE_CONFLICT)。",
+  {
+    ...entityRef,
+    layerSetPath: z.string().describe(
+      "assets 相対の .terrainlayers(例: terrain/alpine.terrainlayers)。空文字 \"\" で割当解除。存在しなければ NOT_FOUND。"),
+    splatResolution: z.number().int().optional().describe(
+      "スプラットの一辺(32..2048、既定 512。2 の冪へ正規化される)。初回作成時のみ効く。"),
+    autopaint: z.boolean().optional().describe(
+      "スプラットを新規作成したとき傾斜/標高から自動で塗るか(既定 true)。false だとレイヤー 0 一色。"),
+    uvScale: z.number().optional().describe("レイヤーテクスチャのタイリング倍率(0.01..1000)。大きいほど細かく繰り返す。"),
+    heightBlendDepth: z.number().optional().describe(
+      "ハイトブレンドの食い込み深さ 0.01..1。大きいほど層の境界が『石の隙間に砂が入る』ような噛み合いになる。"),
+    triplanarSharpness: z.number().optional().describe("三平面投影のブレンド鋭さ 1..16。大きいほど面の切り替わりが硬い。"),
+    normalStrength: z.number().optional().describe("レイヤー法線マップの強さ 0..2。0 で法線マップ無効。"),
+    macroScale: z.number().optional().describe("マクロバリエーションの周期(m) 10..400。遠景のタイリング感を崩す模様の大きさ。"),
+    macroStrength: z.number().optional().describe("マクロバリエーションの強さ 0..1。0 で無効。"),
+    distTilingStart: z.number().optional().describe("距離タイリング低減が始まる距離(m) 5..200。"),
+    distTilingFarScale: z.number().optional().describe("遠景でのタイリング倍率 2..16。大きいほど遠くの繰り返しが目立たなくなる。"),
+    pomHeightScale: z.number().optional().describe("視差オクルージョンマッピングの高さ 0..0.3。0 で凹凸なし。上げすぎると輪郭が溶ける。"),
+    pomFadeStart: z.number().optional().describe("POM のフェード開始距離(m) 0..40。"),
+    pomFadeEnd: z.number().optional().describe("POM が完全に消える距離(m) 1..120。Start より大きくする。"),
+    triplanar: z.boolean().optional().describe("三平面投影を使うか(急斜面の引き伸ばし対策)。terrainMatFlags bit0。"),
+    pom: z.boolean().optional().describe("視差オクルージョンマッピングを使うか。terrainMatFlags bit1。重い。"),
+    macro: z.boolean().optional().describe("マクロバリエーションを使うか。terrainMatFlags bit2。"),
+    distTiling: z.boolean().optional().describe("距離タイリング低減を使うか。terrainMatFlags bit3。"),
+  },
+  { idempotentHint: true },
+  (a) => run(() => engine.call("terrain_set_layers", a)),
+);
+
+reg(
+  "dx12_terrain_splat_info",
+  "地形スプラットの要約を読む",
+  "地形のスプラット(4 層の重みテクスチャ)の要約を返す【読み取り専用】ツール。"
+  + "★dx12_terrain_paint / dx12_terrain_autopaint の結果を『絵を見ずに数値で』検証するのに使う。"
+  + "coverage[4] は層ごとの平均重み(0..1。4 層の合計はほぼ 1)、dominantRatio[4] はその層が最大だったテクセルの割合。"
+  + "grid は gridSize 本の文字列で、grid[z][x] が '0'..'3' = そのセルの支配レイヤー番号"
+  + "(z が増えると +Z、x が増えると +X)。point/points を渡すとその【ワールド XZ】座標の正確な重みが samples に返る。"
+  + "スプラット未作成なら hasSplat:false と案内だけ返る(まず dx12_terrain_set_layers で割り当てる)。Playing 中も呼べる。",
+  {
+    ...entityRef,
+    gridSize: z.number().int().optional().describe(
+      "支配レイヤーの粗いグリッドの一辺(0..32、既定 8)。0 を渡すと grid を返さない(coverage だけ欲しいとき)。"),
+    point: v2().optional().describe("[x,z] ワールド座標 1 点の重みを見る。[x,y,z] でも可(y は無視)。"),
+    points: z.array(z.array(z.number())).optional().describe(
+      "[[x,z],...] 複数点(最大 256)。point と併用すると両方が samples に入る(読み取りなので二重適用の心配は無い)。"),
+  },
+  { readOnlyHint: true, idempotentHint: true },
+  (a) => run(() => engine.call("terrain_splat_info", a)),
 );
 
 reg(

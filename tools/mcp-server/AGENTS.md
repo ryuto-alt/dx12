@@ -443,6 +443,58 @@ dx12_set_post_process(godrays:true)
 `inputSchema` にも足すこと。忘れると `npm test`(`schemaDrift.test.ts`)が
 `Application.cpp:<行> / index.ts:<行>` 付きで落ちる。
 
+### 影を柔らかくする — `dx12_set_shadow_pcss`
+
+CSM の固定幅 3x3 PCF を「ブロッカー探索 → 可変ペナンブラ」に置き換える。
+接地部は鋭く、離れるほど柔らかい影になる。**OFF に戻すと従来の PCF と絵がビット一致**するので、
+「影のせいで変なのか」の切り分けにそのまま使える。
+
+```
+dx12_get_shadow_pcss()
+# → {enabled:false, lightTanAngle:0.05, maxPenumbraTexels:16, blockerSearchTexels:8,
+#    temporalDither:false, active:false, temporalDitherActive:false}
+dx12_set_shadow_pcss(enabled:true, lightTanAngle:0.02)
+```
+
+- `enabled:true` なのに **`active:false`** なら効いていない ＝ シーンの影が切れているか、
+  正射 / 2D ビューになっている（`active` はその 2 条件を見た結果）。
+- `lightTanAngle` は太陽の角半径の tan。既定 `0.05` は誇張値で、**実際の太陽は 0.0044**（ほぼ硬い影）。
+  ぼやけすぎたらここを下げる。
+- `temporalDither` は **TAA 有効時だけ**効く（無効だとチラつくだけなのでエンジンが自動で切り、
+  `temporalDitherActive:false` が返る）。設定はシーン JSON の `shadowPcss` に保存される。
+
+---
+
+## 「絵がなんか変」の切り分け — `dx12_render_debug`
+
+最終画だけ見て原因を当てにいかないこと。**中間バッファを 1 枚ずつ見るのが最短**。
+呼ぶ前と後でシーンの設定は**完全に同じ**（一時的に ON にした機能は必ず戻る）ので、
+何度撃っても副作用が残らない。可視化はポスト前の `m_sceneRT` へ描くので、
+`dx12_screenshot` の「TAA/可視化が写らない」罠を踏まない。
+
+```
+dx12_render_debug(mode:"normal")                       # 法線が飛んでないか
+dx12_render_debug(mode:"depth", depthRange:60)         # 手前が潰れてないか(青=近→赤=遠)
+dx12_render_debug(mode:"velocity", gain:20, frames:8)  # 静止時に一様なグレーなら正常
+dx12_render_debug(mode:"lightComplexity")              # 白いところは 128 灯で切り捨て中
+dx12_render_debug(mode:"ssr", frames:16)               # 時間蓄積があるので frames を増やす
+dx12_render_debug(mode:"off")                          # 撮らずに全部戻すだけ(リセット用)
+```
+
+- **`warnings` を必ず読む。** 真っ黒な絵の理由はだいたいここに出る
+  （「フォグが無効なので何も出ない」「デカールが 1 枚も無い」「TAA を一時的に ON にした」）。
+- `normal` / `roughness` / `metallic` / `velocity` は**深度+速度プリパスでしか書かれない**ので、
+  TAA も SSR も SSGI も OFF なら**エンジンが TAA を一時 ON にして**撮る（`warnings` に出る）。
+  この 4 モードが「ジオメトリだけの粗い絵」に見えるのは**仕様**。
+  なお G-Buffer は**幾何法線**なので、`normal` に法線マップは載っていない
+  （`roughness` / `metallic` も同じくスカラー値のみで ORM テクスチャは載らない）。
+- `toneMapped:false` のモードは**トーンマップ / 露出を掛けずに** 8bit へ落とすので、
+  **PNG のピクセル値がそのままバッファの値**として読める。
+- **`albedo` と `overdraw` は意図的に非対応**。撃つと「なぜ無いか + 代わりに何を見ればいいか」を
+  添えて弾かれる（`albedo` は前方レンダラなので G-Buffer が存在しない。`overdraw` は専用パスが要る）。
+  代わりに最終画は `dx12_screenshot`、描画負荷は `dx12_perf_stats` の `draws`/`tris`、
+  ライトの重なりは `mode:"lightComplexity"` を見ること。
+
 ---
 
 ## シーン検証パイプライン(validate)
@@ -540,11 +592,17 @@ dx12_get_anim_state(entity:42)                         # → layers[].state / pa
 ```
 `state` を渡さなければ従来どおりクリップ経路（完全後方互換）。ステート名は `dx12_describe_anim_graph` で確認する。
 
-> **`dx12_set_anim_param` はエンジン側の不具合で現状使えない。** エンジンの `set_anim_param` は
-> `ResolveMcpEntity(params)` を先に呼ぶので、パラメータ名として渡した `name` を**エンティティ名として**
-> 引きに行って `no entity named '...'` で落ちる。TS 側では回避できない（`name` はワイヤ上のキーが固定）。
-> エンジンが `entity` だけでエンティティを解決するか、パラメータ名を別キー（例 `param`）にすれば直る。
-> それまでの回避策は `dx12_eval_lua` で Lua 側から叩くこと。ツール定義自体は入れてある（直れば即使える）。
+#### FSM のパラメータを外から叩く — `dx12_set_anim_param`
+```
+dx12_set_anim_param(name:"Player", param:"Speed", value:4.5)   # Float
+dx12_set_anim_param(entity:42, param:"Grounded", value:true)   # Bool
+dx12_set_anim_param(entity:42, param:"Jump", trigger:true)     # Trigger
+dx12_get_anim_state(entity:42)                                 # → parameters で現在値を確認
+```
+**パラメータ名は `param`**。`name` は他ツールと同じ「エンティティ名」（`entity` と排他）。
+エンジンには「`param` を省略したときだけ `name` をパラメータ名として読む」後方互換が残っているが、
+**新しい呼び出しは必ず `param` を使うこと**（`{entity, name:"Speed"}` は動くが読む人が混乱する）。
+遷移が実際に進むのは Play 中だけ。パラメータ名の一覧は `dx12_describe_anim_graph` の `graph.parameters`。
 
 ### マルチプレイヤーのローカルテストループ
 ```
@@ -869,12 +927,19 @@ dx12_save_scene()
 ### ワークフロー: 地形にテクスチャを塗る（4 層スプラット）
 
 `terrain.layerSetPath` に `.terrainlayers`（4 層の PBR 素材）が割り当たっている地形だけが対象。
-**未割当なら `INVALID_PARAM(2)`** で、割当は地形ツール窓かシーン JSON からしかできない
-（`dx12_set_component(component:"terrain")` は使えない → 後述の B11）。JSON から入れるなら
-`dx12_scene_write` でエンティティの `terrain.layerSetPath` を書く。
+**未割当なら `INVALID_PARAM(2)`**。割当は **`dx12_terrain_set_layers` が唯一の MCP 経路**
+（`dx12_set_component(component:"terrain")` は使えない → 後述の B11）。
 
 ```
-# ① 傾斜と標高から全面を焼き直す（★冪等。まずこれ。手で塗った内容は消える）
+# ⓪ レイヤーセットを割り当てる（初回だけ。スプラットが無ければ作って自動で塗る）
+dx12_terrain_set_layers(name:"Terrain", layerSetPath:"terrain/alpine.terrainlayers")
+# → {layerCount:4, layerNames:["grass","dirt","rock","snow"], splatCreated:true, splatSize:512}
+#   ★ここが無いと terrain_paint / terrain_autopaint は永遠に INVALID_PARAM で弾かれる。
+#   layerSetPath:"" を渡すと割当を外して従来の頂点色の見た目へ戻る。
+#   uvScale / triplanar / pom / macro / distTiling 等のマテリアル設定もここで一緒に触れる
+#   （省略したものは触らない＝冪等）。★Editor 限定。
+
+# ① 傾斜と標高から全面を焼き直す（★冪等。手で塗った内容は消える）
 dx12_terrain_autopaint(entity:88, rockSlopeStart:0.35, rockSlopeEnd:0.6,
                        snowHeightStart:45, snowHeightEnd:70, noiseStrength:0.25)
 # → {entityId:88, splatSize:512}
@@ -883,6 +948,12 @@ dx12_terrain_autopaint(entity:88, rockSlopeStart:0.35, rockSlopeEnd:0.6,
 dx12_terrain_paint(entity:88, layer:1, points:[[-40,-20],[-10,0],[20,25]],
                    radius:8, strength:1, falloff:0.3)
 # → {layer:1, points:3, changed:true, splatSize:512}
+
+# ③ 絵を見ずに数値で確認する（読み取り専用。Playing 中も可）
+dx12_terrain_splat_info(entity:88, gridSize:8, point:[-10,0])
+# → {coverage:[0.42,0.31,0.19,0.08], dominantRatio:[...],
+#    grid:["00112233", ...],            # grid[z][x] = '0'..'3' の支配レイヤー
+#    samples:[{world:[-10,0], texel:[228,256], weights:[0,1,0,0], dominant:1}]}
 
 dx12_step_frames(frames:2)
 dx12_screenshot_from(position:[0,180,-260], target:[0,0,0])
