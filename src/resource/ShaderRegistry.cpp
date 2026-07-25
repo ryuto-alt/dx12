@@ -244,6 +244,35 @@ const std::vector<ShaderSource>& BuildRegistry()
             },
             { "post/FullscreenTri.hlsli" },
         },
+        {
+            // 速度バッファ（モーションベクター）生成。PS は 3 経路で共有する。
+            "velocity/VelocityPrepass.hlsl",
+            {
+                { L"VelocityPrepass_VS.cso", L"VSMain",     L"vs_6_0" },
+                { L"VelocityPrepass_PS.cso", L"VelocityPS", L"ps_6_0" },
+            },
+            { "velocity/VelocityCommon.hlsli" },
+        },
+        {
+            "velocity/VelocityPrepassInstanced.hlsl",
+            { { L"VelocityPrepassInstanced_VS.cso", L"VSMain", L"vs_6_0" } },
+            { "velocity/VelocityCommon.hlsli" },
+        },
+        {
+            "velocity/VelocityPrepassSkinned.hlsl",
+            { { L"VelocityPrepassSkinned_VS.cso", L"VSMain", L"vs_6_0" } },
+            { "velocity/VelocityCommon.hlsli" },
+        },
+        {
+            "post/TAA.hlsl",
+            { { L"TaaResolve_PS.cso", L"TaaResolvePS", L"ps_6_0" } },
+            { "post/FullscreenTri.hlsli" },
+        },
+        {
+            "velocity/VelocityDebug.hlsl",
+            { { L"VelocityDebug_PS.cso", L"VelocityDebugPS", L"ps_6_0" } },
+            { "post/FullscreenTri.hlsli" },
+        },
     };
     return registry;
 }

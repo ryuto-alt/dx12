@@ -23,6 +23,9 @@ struct DrawItem
     entt::entity        e;
     const MeshRenderer* renderer;
     DirectX::XMFLOAT4X4 world;        // 親階層合成済みワールド行列
+    // 前フレームのワールド行列（速度バッファ生成用）。TAA 無効時は world と同値のまま
+    // （＝速度 0）。新規スポーンしたエンティティも world と同値にして初回のゴーストを防ぐ。
+    DirectX::XMFLOAT4X4 prevWorld;
     SkinningBuffer*     skin;         // スキンドなら該当バッファ / 静的は nullptr
     // 保守的バウンディング球。中心は「メッシュAABBの中心をワールドへ移した点」で、
     // エンティティ原点ではない（原点からジオメトリがズレたモデルの誤カリング防止）。

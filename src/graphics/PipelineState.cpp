@@ -99,6 +99,16 @@ PipelineStateBuilder& PipelineStateBuilder::SetRenderTargetFormat(DXGI_FORMAT fo
     return *this;
 }
 
+PipelineStateBuilder& PipelineStateBuilder::SetRenderTargetFormats(u32 count, const DXGI_FORMAT* formats)
+{
+    if (count > D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT)
+        count = D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT;
+    m_desc.NumRenderTargets = count;
+    for (u32 i = 0; i < D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i)
+        m_desc.RTVFormats[i] = (i < count && formats) ? formats[i] : DXGI_FORMAT_UNKNOWN;
+    return *this;
+}
+
 PipelineStateBuilder& PipelineStateBuilder::SetDepthStencilFormat(DXGI_FORMAT format)
 {
     m_desc.DSVFormat = format;

@@ -31,6 +31,18 @@ struct MeshInstanceData
     DirectX::XMFLOAT4 color;  // TEXCOORD11
 };
 
+// 速度パス用の per-instance「前フレームのワールド行列」（slot2, PER_INSTANCE, stride=48）。
+// r0..r2 = XMMatrixTranspose(prevWorld) の先頭3行。
+// ★既存の MeshInstanceData(64B) を太らせない: kMaxInstances(262144) × 3 フレームぶんの
+//   UPLOAD ヒープなので、+48B すると TAA を使わない人にも +38MB 払わせることになる。
+//   よって別バッファにして TAA 有効時のみ遅延確保する。
+struct MeshInstancePrevData
+{
+    DirectX::XMFLOAT4 p0;     // TEXCOORD12
+    DirectX::XMFLOAT4 p1;     // TEXCOORD13
+    DirectX::XMFLOAT4 p2;     // TEXCOORD14
+};
+
 class Mesh
 {
 public:
@@ -122,6 +134,10 @@ public:
     // slot0(頂点) + slot1(MeshInstanceData, PER_INSTANCE) のインスタンシング用レイアウト。
     static const D3D12_INPUT_ELEMENT_DESC* GetInstancedInputLayout();
     static u32 GetInstancedInputLayoutCount();
+    // 上記 + slot2(MeshInstancePrevData, PER_INSTANCE) を足した速度パス専用レイアウト。
+    // 既存の kInstancedInputLayout は絶対に変更しない（既存 PSO が全部作り直しになる）。
+    static const D3D12_INPUT_ELEMENT_DESC* GetVelocityInstancedInputLayout();
+    static u32 GetVelocityInstancedInputLayoutCount();
 
 private:
     // 自動LOD生成（Initialize 末尾から呼ぶ。失敗/効果なしなら m_lodCount=1 のまま）

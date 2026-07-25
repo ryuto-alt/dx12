@@ -268,6 +268,14 @@ if(DXC_EXECUTABLE)
     set(SHADER_SSAO          "${CMAKE_SOURCE_DIR}/shaders/ssao/SSAO.hlsl")
     set(SHADER_SSAO_BLUR     "${CMAKE_SOURCE_DIR}/shaders/ssao/SSAOBlur.hlsl")
     set(SHADER_CONTACT_SHADOW "${CMAKE_SOURCE_DIR}/shaders/shadow/ContactShadow.hlsl")
+    set(SHADER_VELOCITY      "${CMAKE_SOURCE_DIR}/shaders/velocity/VelocityPrepass.hlsl")
+    set(SHADER_VELOCITY_INST "${CMAKE_SOURCE_DIR}/shaders/velocity/VelocityPrepassInstanced.hlsl")
+    set(SHADER_VELOCITY_SKIN "${CMAKE_SOURCE_DIR}/shaders/velocity/VelocityPrepassSkinned.hlsl")
+    set(SHADER_VELOCITY_INC  "${CMAKE_SOURCE_DIR}/shaders/velocity/VelocityCommon.hlsli")
+    set(SHADER_TAA           "${CMAKE_SOURCE_DIR}/shaders/post/TAA.hlsl")
+    # ★ shaders/debug/ は .gitignore の "Debug/" に食われて新規ファイルが追跡されない。
+    #    velocity/ 配下に置くこと（DebugLine.hlsl は昔から追跡済みなので生き残っているだけ）。
+    set(SHADER_VEL_DEBUG     "${CMAKE_SOURCE_DIR}/shaders/velocity/VelocityDebug.hlsl")
 
     set(SHADER_OUTPUTS
         "${SHADER_OUTPUT_DIR}/Forward_VS.cso"
@@ -329,6 +337,12 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/SSAOBlur_PS.cso"
         "${SHADER_OUTPUT_DIR}/ContactShadow_VS.cso"
         "${SHADER_OUTPUT_DIR}/ContactShadow_PS.cso"
+        "${SHADER_OUTPUT_DIR}/VelocityPrepass_VS.cso"
+        "${SHADER_OUTPUT_DIR}/VelocityPrepass_PS.cso"
+        "${SHADER_OUTPUT_DIR}/VelocityPrepassInstanced_VS.cso"
+        "${SHADER_OUTPUT_DIR}/VelocityPrepassSkinned_VS.cso"
+        "${SHADER_OUTPUT_DIR}/TaaResolve_PS.cso"
+        "${SHADER_OUTPUT_DIR}/VelocityDebug_PS.cso"
     )
 
     add_custom_command(
@@ -729,6 +743,51 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/ContactShadow_PS.cso" "${SHADER_CONTACT_SHADOW}"
         DEPENDS "${SHADER_CONTACT_SHADOW}" "${SHADER_POST_INC}"
         COMMENT "Compiling ContactShadow.hlsl -> ContactShadow_PS.cso (ps_6_0)"
+    )
+
+    # --- 速度バッファ（モーションベクター）生成パス: 静的 / インスタンシング / スキンド ---
+    # PS は 3 経路で共有（VelocityCommon.hlsli の VelocityPS）。VelocityPrepass.hlsl からだけ出す。
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/VelocityPrepass_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/VelocityPrepass_VS.cso" "${SHADER_VELOCITY}"
+        DEPENDS "${SHADER_VELOCITY}" "${SHADER_VELOCITY_INC}"
+        COMMENT "Compiling VelocityPrepass.hlsl -> VelocityPrepass_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/VelocityPrepass_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E VelocityPS -Fo "${SHADER_OUTPUT_DIR}/VelocityPrepass_PS.cso" "${SHADER_VELOCITY}"
+        DEPENDS "${SHADER_VELOCITY}" "${SHADER_VELOCITY_INC}"
+        COMMENT "Compiling VelocityPrepass.hlsl -> VelocityPrepass_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/VelocityPrepassInstanced_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/VelocityPrepassInstanced_VS.cso" "${SHADER_VELOCITY_INST}"
+        DEPENDS "${SHADER_VELOCITY_INST}" "${SHADER_VELOCITY_INC}"
+        COMMENT "Compiling VelocityPrepassInstanced.hlsl -> VelocityPrepassInstanced_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/VelocityPrepassSkinned_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/VelocityPrepassSkinned_VS.cso" "${SHADER_VELOCITY_SKIN}"
+        DEPENDS "${SHADER_VELOCITY_SKIN}" "${SHADER_VELOCITY_INC}"
+        COMMENT "Compiling VelocityPrepassSkinned.hlsl -> VelocityPrepassSkinned_VS.cso (vs_6_0)"
+    )
+
+    # --- TAA 解決 / 速度バッファのデバッグ可視化（VS は PostProcess_VS.cso を流用）---
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/TaaResolve_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E TaaResolvePS -Fo "${SHADER_OUTPUT_DIR}/TaaResolve_PS.cso" "${SHADER_TAA}"
+        DEPENDS "${SHADER_TAA}" "${SHADER_POST_INC}"
+        COMMENT "Compiling TAA.hlsl -> TaaResolve_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/VelocityDebug_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E VelocityDebugPS -Fo "${SHADER_OUTPUT_DIR}/VelocityDebug_PS.cso" "${SHADER_VEL_DEBUG}"
+        DEPENDS "${SHADER_VEL_DEBUG}" "${SHADER_POST_INC}"
+        COMMENT "Compiling VelocityDebug.hlsl -> VelocityDebug_PS.cso (ps_6_0)"
     )
 
     add_custom_target(Shaders ALL DEPENDS ${SHADER_OUTPUTS})

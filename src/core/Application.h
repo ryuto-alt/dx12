@@ -50,6 +50,7 @@ namespace dx12e
     class MotionBlurPass;
     class SSAOPass;
     class ContactShadowPass;
+    class TaaPass;
     class ParticleSystem;
     class GpuParticleSystem;
     class SpriteRenderer;
@@ -225,9 +226,34 @@ private:
     // メインパスと同一LOD必須（LESS_EQUAL で同一深度を通すため）。
     // instPSO を渡すと、batchKey が同じ静的メッシュ群を DrawIndexedInstanced に畳む
     // （nullptr なら従来どおり per-object 描画）。
+    //
+    // ★深度プリパスのモード契約（00-COORDINATION §2。3つ目のモードを作らないこと）:
+    //   DepthOnly            … 従来どおり深度のみ（CSM / スポット影 / ポイント影 / SSAO+コンタクトシャドウ）
+    //   DepthVelocityGBuffer … 深度 + 速度(RG16F) [+ 将来の G-Buffer(法線/ラフネス/メタリック)]。
+    //                          RTV は呼び出し側（TaaPass::BeginVelocity 等）がバインドしておくこと。
+    //                          このモードでのみ b0 のレイアウトが 36 DWORD の速度用に変わり、
+    //                          スキンドは t12 に前フレームのボーン行列がバインドされる。
+    //   G-Buffer を足す者へ: PSO を 3 本（静的/インスタンシング/スキンド）差し替えて
+    //   SetRenderTargetFormats に RTV を追加し、VelocityCommon.hlsli の PS 出力を
+    //   構造体化して SV_TARGET1.. を足すだけでよい。ここの分岐は増やさないこと。
+    enum class PrepassMode : u32
+    {
+        DepthOnly,
+        DepthVelocityGBuffer,
+    };
+    struct PrepassParams
+    {
+        PrepassMode         mode = PrepassMode::DepthOnly;
+        DirectX::XMFLOAT4X4 prevViewProj{};          // 前フレームの「ジッタなし」viewProj（非転置）
+        DirectX::XMFLOAT2   jitterNdc{0.0f, 0.0f};   // 現フレームの NDC ジッタ（速度から除去する量）
+        // 半透明(sortKey==3)をプリパスから除外する。カメラのプリパス専用。
+        // 影パスでは false のまま＝半透明も従来どおり影を落とす。
+        bool                skipTransparent = false;
+    };
     void RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState& staticPSO,
                               PipelineState& skinnedPSO, bool updateSkinning, u32 frameIndex,
-                              u32 lodBias = 0, PipelineState* instPSO = nullptr);
+                              u32 lodBias = 0, PipelineState* instPSO = nullptr,
+                              const PrepassParams* prepass = nullptr);
     // フレーム描画リスト: Transform+MeshRenderer の走査・ワールド行列合成を1フレーム1回だけ行い、
     // メイン/深度プリパス/CSM各カスケード/スポット影/ポイント影の全パスで共有する
     // （従来は最悪 ~20 パス × entt 全走査 + ComputeWorldMatrix 再計算）。
@@ -299,6 +325,8 @@ private:
     void RecreateEmissivePso();          // m_emissivePipelineState (Emissive_VS/PS)
     void RecreateShadowPsos();           // m_shadowPipelineState / m_shadowSkinnedPipelineState
     void RecreateDepthPrepassPsos();     // m_depthPrepassPSO / m_depthPrepassSkinnedPSO
+    void RecreateVelocityPsos();         // m_velocityPSO / Inst / Skinned（深度+速度プリパス）
+    void EnsureInstancePrevBuffer();     // 速度パス用 per-instance 前ワールドバッファの遅延確保
     void RegisterShaderReloadHandlers(); // 上記全部+PostProcess等を ShaderManager に束ねて登録する(Initialize末尾で1回)
 
     // カスタムシェーダー(MeshRenderer::shaderPath)割当用の遅延生成PSOキャッシュ。
@@ -459,6 +487,12 @@ private:
     uint8_t*                               m_instanceMapped[3] = {};
     D3D12_VERTEX_BUFFER_VIEW               m_instanceVbView[3] = {};
     u32                                    m_instanceCursor = 0;  // フレーム内 instance 連番（メイン＋プレビュー共有）
+    // 速度パス用の per-instance「前フレームのワールド行列」バッファ（slot2, stride=48）。
+    // TAA 有効時のみ EnsureInstancePrevBuffer() で遅延確保する（+37MB を使わない人に払わせない）。
+    // インデックスは m_instanceBuffer と同じ base/count を共有する＝並びが必ず揃う。
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_instancePrevBuffer[3];
+    uint8_t*                               m_instancePrevMapped[3] = {};
+    D3D12_VERTEX_BUFFER_VIEW               m_instancePrevVbView[3] = {};
     std::unique_ptr<PipelineState>     m_shadowPipelineState;
     std::unique_ptr<PipelineState>     m_shadowPipelineStateInst;   // 影パスのインスタンシング版
     std::unique_ptr<PipelineState>     m_depthPrepassPSOInst;       // 深度プリパスのインスタンシング版
@@ -672,6 +706,24 @@ private:
     // ---- コンタクトシャドウ（同じ深度プリパスを使うスクリーン空間レイマーチ）----
     // 白ダミーは SSAO と共用（どちらも 1x1 R8_UNORM の 1.0）。
     std::unique_ptr<ContactShadowPass> m_contactShadowPass;
+
+    // ---- TAA（速度バッファ + ジッタ + 履歴再投影）----
+    // 深度プリパスを MRT 化して速度(RG16F)を書き、ポストチェーンの先頭（トーンマップ前の
+    // HDR）で解決する。ジッタは Camera には一切入れない（ピッキング/MCP 投影を壊さないため）。
+    std::unique_ptr<TaaPass>       m_taaPass;
+    std::unique_ptr<PipelineState> m_velocityPSO;          // 深度+速度（static）
+    std::unique_ptr<PipelineState> m_velocityPSOInst;      // 深度+速度（instanced）
+    std::unique_ptr<PipelineState> m_velocityPSOSkinned;   // 深度+速度（skinned, t12=前ボーン）
+    DirectX::XMFLOAT4X4 m_prevViewProjNoJitter{};          // 前フレームの「ジッタなし」viewProj
+    bool                m_prevViewProjNJValid = false;
+    // 前フレームの frameIndex（SkinningBuffer の「前フレームのスロット」を指すため）。
+    // GetCurrentBackBufferIndex() の巡回順は DXGI 仕様上保証されないので明示記録する。
+    u32                 m_prevFrameIndex = 0;
+    bool                m_prevFrameIndexValid = false;
+    DirectX::XMFLOAT2   m_taaJitterNdc{};                  // 現フレームの NDC ジッタ
+    // BuildDrawList() が PrevWorldMatrix を更新するか（TAA 有効時のみ。10万体の
+    // emplace_or_replace を TAA を使わない人に払わせないため）。
+    bool                m_trackPrevWorld = false;
 
     // IBL 環境マップ（irradiance/prefiltered/BRDF LUT）+ 任意スカイボックス
     std::unique_ptr<IBLBaker>       m_iblBaker;

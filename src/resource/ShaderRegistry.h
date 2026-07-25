@@ -23,7 +23,7 @@ struct ShaderSource
     std::vector<const char*> staticDeps;    // #include される .hlsli の相対パス(CMake DEPENDS の写し)
 };
 
-// CMakeLists.txt の DXC カスタムコマンド群(全55 .cso / 29 .hlsl)の写し。
+// CMakeLists.txt の DXC カスタムコマンド群(全61 .cso / 34 .hlsl)の写し。
 // CMake 側を変更したら必ずこちらも同期すること(実行時ホットリロードのソース・オブ・トゥルース)。
 const std::vector<ShaderSource>& AllShaderSources();
 

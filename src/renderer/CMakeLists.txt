@@ -11,6 +11,7 @@ add_library(Renderer STATIC
     MotionBlurPass.cpp
     SSAOPass.cpp
     ContactShadowPass.cpp
+    TaaPass.cpp
     SpriteRenderer.cpp
     SceneTransition.cpp
     ParticleSystem.cpp

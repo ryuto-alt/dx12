@@ -8,8 +8,18 @@ namespace dx12e
 
 void RootSignature::Initialize(GraphicsDevice& device)
 {
-    // Root parameters: 10
-    D3D12_ROOT_PARAMETER1 rootParams[10]{};
+    // Root parameters: 11
+    //
+    // ★ルート定数の予算（上限 64 DWORD。超えると D3D12SerializeVersionedRootSignature が
+    //   失敗して全描画が死ぬ）:
+    //     slot0  32bit定数          40 DWORD
+    //     slot1  CBV                 2 DWORD
+    //     slot5  32bit定数           8 DWORD
+    //     slot2,3,4,6,7,8,9,10 テーブル × 8 = 8 DWORD
+    //     -------------------------------------- 合計 58 / 64
+    //   残り 6 DWORD。これ以降 SRV を足す機能は新規スロットを取らず、既存テーブルへ
+    //   相乗りするか複数リソースを 1 テーブルに統合すること。
+    D3D12_ROOT_PARAMETER1 rootParams[11]{};
 
     // [0] Per-Object: 32bit constants (40 DWORDs = MVP(16) + Model(16) + CustomEffect(1) + pad(3) + CustomParams(4))
     // CustomEffect は MeshRenderer::effectValue（カスタムシェーダー向けの汎用進捗値、Sprite2D::effectValue
@@ -138,6 +148,23 @@ void RootSignature::Initialize(GraphicsDevice& device)
     rootParams[9].DescriptorTable.pDescriptorRanges   = &contactShadowRange;
     rootParams[9].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
 
+    // [10] 前フレームのボーン行列 SRV DescriptorTable (t12) — 速度バッファ生成パス専用。
+    // SkinningBuffer は frameCount 枚を多重化しているので「前フレームの frameIndex のスロット」を
+    // そのままここへ張れば前フレームのボーン行列になる（二重バッファ不要）。
+    // 速度パス以外の PSO はこのレジスタを読まないのでバインドしなくてよい。
+    D3D12_DESCRIPTOR_RANGE1 prevBoneRange{};
+    prevBoneRange.RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    prevBoneRange.NumDescriptors                    = 1;
+    prevBoneRange.BaseShaderRegister                = 12;  // t12
+    prevBoneRange.RegisterSpace                     = 0;
+    prevBoneRange.Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    prevBoneRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    rootParams[10].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParams[10].DescriptorTable.NumDescriptorRanges = 1;
+    rootParams[10].DescriptorTable.pDescriptorRanges   = &prevBoneRange;
+    rootParams[10].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_VERTEX;
+
     // Static Samplers (s0=albedo wrap, s1=shadow PCF, s2=IBL linear-clamp mip有,
     //                  s3=BRDF linear-clamp mipなし, s4=AO point-clamp スクリーンサンプル)
     D3D12_STATIC_SAMPLER_DESC staticSamplers[5]{};
@@ -221,7 +248,7 @@ void RootSignature::Initialize(GraphicsDevice& device)
         serializedBlob->GetBufferSize(),
         IID_PPV_ARGS(&m_rootSignature)));
 
-    Logger::Info("RootSignature created (PBR: 10 slots)");
+    Logger::Info("RootSignature created (PBR: 11 slots)");
 }
 
 } // namespace dx12e

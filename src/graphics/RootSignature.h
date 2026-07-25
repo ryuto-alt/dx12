@@ -27,6 +27,7 @@ public:
     static constexpr u32 kSlotAOSRV        = 7;  // DescriptorTable t8 (SSAO ao, screen-space)
     static constexpr u32 kSlotPunctualShadowSRV = 8;  // DescriptorTable t9,t10 (spot shadow array, point shadow cube array)
     static constexpr u32 kSlotContactShadowSRV  = 9;  // DescriptorTable t11 (contact shadow, screen-space)
+    static constexpr u32 kSlotPrevBonesSRV      = 10; // DescriptorTable t12 (前フレームのボーン行列。速度パス専用)
 
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;

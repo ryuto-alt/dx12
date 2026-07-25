@@ -34,6 +34,8 @@
 #include "renderer/GpuParticleSystem.h"
 #include "renderer/SSAOPass.h"
 #include "renderer/ContactShadowPass.h"
+#include "renderer/TaaPass.h"
+#include "renderer/PrevWorldComponent.h"
 #include "renderer/ParticleSystem.h"
 #include "renderer/SpriteRenderer.h"
 #include "renderer/SpriteAnim.h"
@@ -453,6 +455,70 @@ void Application::RecreateDepthPrepassPsos()
     }
 }
 
+// 深度+速度プリパス（PrepassMode::DepthVelocityGBuffer）の PSO 3 本。
+// 深度プリパス PSO との唯一の違いは「RTV に速度バッファ(RG16F)を持つ」ことと VS/PS。
+// 深度をフォワードとビット一致させるため、VS の演算順は ShadowPass / DepthPrepassSkinned と
+// 完全に揃えてある（shaders/velocity/*.hlsl のヘッダコメント参照）。
+void Application::RecreateVelocityPsos()
+{
+    const DXGI_FORMAT rtFormats[] = { TaaPass::kVelocityFormat };
+
+    auto build = [&](const wchar_t* vsName, const D3D12_INPUT_ELEMENT_DESC* layout, u32 layoutCount,
+                     std::unique_ptr<PipelineState>& out)
+    {
+        auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + vsName);
+        auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"VelocityPrepass_PS.cso");
+        if (vs.GetSize() == 0 || ps.GetSize() == 0) return;
+        PipelineStateBuilder builder;
+        builder.SetRootSignature(m_rootSignature->Get())
+               .SetVertexShader(vs.GetData(), vs.GetSize())
+               .SetPixelShader(ps.GetData(), ps.GetSize())
+               .SetInputLayout(layout, layoutCount)
+               .SetRenderTargetFormats(static_cast<u32>(std::size(rtFormats)), rtFormats)
+               .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+               .SetDepthEnabled(true)
+               .SetCullMode(D3D12_CULL_MODE_NONE);  // 深度バイアスなし（深度プリパスと同条件）
+        if (!out) out = std::make_unique<PipelineState>();
+        out->Initialize(*m_graphicsDevice, builder);
+    };
+
+    build(L"VelocityPrepass_VS.cso", Mesh::GetInputLayout(), Mesh::GetInputLayoutCount(),
+          m_velocityPSO);
+    build(L"VelocityPrepassInstanced_VS.cso",
+          Mesh::GetVelocityInstancedInputLayout(), Mesh::GetVelocityInstancedInputLayoutCount(),
+          m_velocityPSOInst);
+    build(L"VelocityPrepassSkinned_VS.cso", Mesh::GetInputLayout(), Mesh::GetInputLayoutCount(),
+          m_velocityPSOSkinned);
+}
+
+// 速度パス用の per-instance「前フレームのワールド行列」バッファ（slot2）を必要になった時だけ確保する。
+// 既存の m_instanceBuffer と同じリング構成・同じ base/count で使う（stride だけ 48B）。
+void Application::EnsureInstancePrevBuffer()
+{
+    if (m_instancePrevBuffer[0]) return;   // 確保済み
+
+    for (u32 fi = 0; fi < FrameResources::kFrameCount; ++fi)
+    {
+        const UINT bytes = kMaxInstances * sizeof(MeshInstancePrevData);
+        D3D12_HEAP_PROPERTIES hp{}; hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+        D3D12_RESOURCE_DESC rd{};
+        rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        rd.Width = bytes; rd.Height = 1; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
+        rd.SampleDesc = {1, 0}; rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        ThrowIfFailed(m_graphicsDevice->GetDevice()->CreateCommittedResource(
+            &hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr, IID_PPV_ARGS(&m_instancePrevBuffer[fi])));
+        void* mapped = nullptr; D3D12_RANGE rr{0, 0};
+        ThrowIfFailed(m_instancePrevBuffer[fi]->Map(0, &rr, &mapped));
+        m_instancePrevMapped[fi] = static_cast<uint8_t*>(mapped);
+        m_instancePrevVbView[fi].BufferLocation = m_instancePrevBuffer[fi]->GetGPUVirtualAddress();
+        m_instancePrevVbView[fi].StrideInBytes  = sizeof(MeshInstancePrevData);
+        m_instancePrevVbView[fi].SizeInBytes    = bytes;
+    }
+    Logger::Info("速度パス用の per-instance 前ワールドバッファを確保しました ({} MB)",
+                 kMaxInstances * sizeof(MeshInstancePrevData) * FrameResources::kFrameCount / (1024 * 1024));
+}
+
 void Application::RegisterShaderReloadHandlers()
 {
     if (!m_shaderManager)
@@ -476,6 +542,16 @@ void Application::RegisterShaderReloadHandlers()
     m_shaderManager->RegisterReloadHandler(
         { L"DepthPrepassSkinned_VS.cso" },
         [this]() { RecreateDepthPrepassPsos(); });
+    m_shaderManager->RegisterReloadHandler(
+        { L"VelocityPrepass_VS.cso", L"VelocityPrepass_PS.cso",
+          L"VelocityPrepassInstanced_VS.cso", L"VelocityPrepassSkinned_VS.cso" },
+        [this]() { RecreateVelocityPsos(); });
+    if (m_taaPass)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"TaaResolve_PS.cso", L"VelocityDebug_PS.cso" },
+            [this]() { m_taaPass->RecreatePipelines(*m_graphicsDevice); });
+    }
     if (m_postProcess)
     {
         m_shaderManager->RegisterReloadHandler(
@@ -1340,6 +1416,9 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         // 深度プリパス PSO（SSAO 用カメラ深度）+ Skinned版
         RecreateDepthPrepassPsos();
 
+        // 深度+速度プリパス PSO（TAA 用モーションベクター）。static / instanced / skinned の3本。
+        RecreateVelocityPsos();
+
         Logger::Info("Shadow map initialized ({}x{})", m_shadowMapSize, m_shadowMapSize);
     }
 
@@ -1609,6 +1688,13 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_contactShadowPass = std::make_unique<ContactShadowPass>();
         m_contactShadowPass->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
                                         m_window->GetWidth(), m_window->GetHeight(), PathResolver::ShaderDirW());
+
+        // TAA（速度RT 1 + 履歴RT 2 = RTV 3 枚。履歴はシーンと同じ HDR フォーマット、
+        // デバッグ可視化だけバックバッファ形式へ直接描く）。
+        m_taaPass = std::make_unique<TaaPass>();
+        m_taaPass->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
+                              m_window->GetWidth(), m_window->GetHeight(),
+                              kSceneColorFormat, m_swapChain->GetFormat(), PathResolver::ShaderDirW());
 
         // 2D スプライト（バックバッファ＝スワップチェイン形式へ描く）
         m_spriteRenderer = std::make_unique<SpriteRenderer>();
@@ -6960,6 +7046,11 @@ void Application::Run()
                 if (m_dofPass)        m_dofPass->Resize(*m_graphicsDevice, w, h);
                 if (m_motionBlurPass) m_motionBlurPass->Resize(*m_graphicsDevice, w, h);
                 if (m_distortRT)      m_distortRT->Resize(*m_graphicsDevice, w, h);
+                // TAA: 速度RT/履歴RT を作り直し、履歴と前フレーム行列を無効化する
+                // （座標系が変わるので持ち越すと画面が歪んで尾を引く）。
+                if (m_taaPass)      { m_taaPass->Resize(*m_graphicsDevice, w, h); m_taaPass->InvalidateHistory(); }
+                m_prevViewProjNJValid = false;
+                m_prevFrameIndexValid = false;
                 m_prevViewProjValid = false;  // リサイズ直後のMB速度スパイク防止
 
                 // カメラアスペクト比更新（エディタモードではサイドバー分引く）
@@ -7202,9 +7293,13 @@ void Application::Shutdown()
     // SSAO / コンタクトシャドウ（GPU リソース）をデバイス解放より前に明示破棄
     m_ssaoPass.reset();
     m_contactShadowPass.reset();
+    m_taaPass.reset();
     m_ssaoWhiteTex.reset();
     m_depthPrepassPSO.reset();
     m_depthPrepassSkinnedPSO.reset();
+    m_velocityPSO.reset();
+    m_velocityPSOInst.reset();
+    m_velocityPSOSkinned.reset();
     // IBL / Skybox（GPU リソース）をデバイス解放より前に明示破棄。SRV index も srvHeap 生存中に返却。
     m_skyboxRenderer.reset();
     if (m_iblBaker)
@@ -10499,6 +10594,17 @@ void Application::BuildDrawList()
         item.e        = e;
         item.renderer = &renderer;
         XMStoreFloat4x4(&item.world, world);
+        // 速度バッファ用の前フレームワールド行列。TAA 無効時は追跡しない＝world と同値（速度0）。
+        // 新規スポーン直後も PrevWorldMatrix が無いので world と同値になり、初回のゴーストを防ぐ。
+        if (m_trackPrevWorld)
+        {
+            if (const auto* pw = reg.try_get<PrevWorldMatrix>(e)) item.prevWorld = pw->m;
+            else                                                  item.prevWorld = item.world;
+        }
+        else
+        {
+            item.prevWorld = item.world;
+        }
 
         auto* skel = reg.try_get<SkeletalAnimation>(e);
         item.skin        = skel ? skel->skinningBuffer.get() : nullptr;
@@ -10585,6 +10691,15 @@ void Application::BuildDrawList()
         m_drawItems.push_back(item);
     }
     }   // _scan
+
+    // 速度バッファ用に「今フレームのワールド行列」を次フレームの prevWorld として記録する。
+    // ★view 走査を抜けてから別ループで書く（走査中に別ストレージへ emplace すると entt の
+    //   バージョン次第で挙動が怪しいため。ここなら確実に安全）。
+    if (m_trackPrevWorld)
+    {
+        for (const auto& it : m_drawItems)
+            reg.emplace_or_replace<PrevWorldMatrix>(it.e, PrevWorldMatrix{it.world});
+    }
 
     CpuScopeTimer _sort(&m_cpuMs[CpuListSort]);
     // PSO バケツ → シェーダ → メッシュ → LOD → バッチ鍵 の順に整列。
@@ -11158,11 +11273,27 @@ void Application::DrawWorldSprites(ID3D12GraphicsCommandList* cmd, DirectX::XMMA
 // GridPlane・park済み(scale≈0)・発光弾(Pfx*)は除外（元のシャドウパスのフィルタをそのまま踏襲）。
 void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState& staticPSO,
                                        PipelineState& skinnedPSO, bool updateSkinning, u32 frameIndex,
-                                       u32 lodBias, PipelineState* instPSO)
+                                       u32 lodBias, PipelineState* instPSO,
+                                       const PrepassParams* prepass)
 {
     using namespace DirectX;
 
     auto& reg = m_scene->GetRegistry();
+
+    // 速度モード（PrepassMode::DepthVelocityGBuffer）。b0 のレイアウトが変わり、
+    // インスタンシング経路は slot2 に前フレームワールドを積み、スキンドは t12 に前ボーンを張る。
+    const bool velocityMode = prepass && prepass->mode == PrepassMode::DepthVelocityGBuffer;
+    const XMMATRIX prevViewProj = velocityMode ? XMLoadFloat4x4(&prepass->prevViewProj)
+                                               : XMMatrixIdentity();
+    const XMFLOAT2 jitterNdc = prepass ? prepass->jitterNdc : XMFLOAT2{0.0f, 0.0f};
+    const bool skipTransparent = prepass && prepass->skipTransparent;
+    if (velocityMode && !m_instancePrevMapped[frameIndex]) instPSO = nullptr;  // 前ワールドVBが無ければ従来経路
+
+    // 速度パスの b0(36 DWORD)。静的/スキンドは mvp 版、インスタンシングは vp 版。
+    struct VelocityObjCB { XMMATRIX a; XMMATRIX b; XMFLOAT2 jitter; XMFLOAT2 pad; };
+    static constexpr u32 kVelocityObjNum32 = 36;
+    static_assert(sizeof(VelocityObjCB) == kVelocityObjNum32 * sizeof(float),
+                  "VelocityObjCB は shaders/velocity/*.hlsl の cbuffer と一致させること");
 
     // このパスの視錐台（ライト/カメラ視点）で描画リストを球カリングする。
     // CSM はタイトフィット正射 + DepthClipEnable=TRUE のため、落とすのは
@@ -11176,18 +11307,27 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
     const size_t itemCount = m_drawItems.size();
     const XMMATRIX passVpT = XMMatrixTranspose(viewProj);   // instanced VS の b0 用
     // 描画は単一スレッドなので関数ローカル static で使い回す。
-    static std::vector<MeshInstanceData> depthInstScratch;
+    static std::vector<MeshInstanceData>     depthInstScratch;
+    static std::vector<MeshInstancePrevData> depthInstPrevScratch;
     bool instOverflow = false;   // リングが尽きたら以降このパスは従来経路のみ
 
     for (size_t i = 0; i < itemCount; ++i)
     {
         const DrawItem& item = m_drawItems[i];
 
+        // 半透明（カスタムシェーダ + shaderAlphaBlend）はカメラのプリパスから除外する。
+        // ＝プリパスが半透明の深度を書いてしまうと、その裏の不透明が forward の LESS_EQUAL で
+        //   弾かれて「ガラス越しにクリア色が見える」（00-COORDINATION §6 B3）。
+        // 影パスでは skipTransparent=false のままなので、半透明の影は従来どおり落ちる。
+        // 半透明は velocity も書かない（TAA は背後の不透明の速度で再投影する＝標準的な扱い）。
+        if (skipTransparent && item.sortKey == 3u) continue;
+
         // ★自動インスタンシング: 同一 batchKey の連続ランを 1 ドローに畳む。
         //   batchKey は LOD 込みなので、このパスの lodBias を足しても run 内は同一 LOD。
         if (instPSO && m_instancingEnabled && item.batchKey != 0 && !instOverflow)
         {
             depthInstScratch.clear();
+            depthInstPrevScratch.clear();
             size_t j = i;
             for (; j < itemCount && m_drawItems[j].batchKey == item.batchKey; ++j)
             {
@@ -11200,6 +11340,15 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
                 XMStoreFloat4(&d.r2, t.r[2]);
                 d.color = {1.0f, 1.0f, 1.0f, 1.0f};
                 depthInstScratch.push_back(d);
+                if (velocityMode)
+                {
+                    XMMATRIX pt = XMMatrixTranspose(XMLoadFloat4x4(&m_drawItems[j].prevWorld));
+                    MeshInstancePrevData p;
+                    XMStoreFloat4(&p.p0, pt.r[0]);
+                    XMStoreFloat4(&p.p1, pt.r[1]);
+                    XMStoreFloat4(&p.p2, pt.r[2]);
+                    depthInstPrevScratch.push_back(p);
+                }
             }
             const u32 n = static_cast<u32>(depthInstScratch.size());
             if (n == 0) { i = j - 1; continue; }
@@ -11209,6 +11358,9 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
                 const u32 base = m_instanceCursor;
                 std::memcpy(m_instanceMapped[frameIndex] + static_cast<size_t>(base) * sizeof(MeshInstanceData),
                             depthInstScratch.data(), static_cast<size_t>(n) * sizeof(MeshInstanceData));
+                if (velocityMode)
+                    std::memcpy(m_instancePrevMapped[frameIndex] + static_cast<size_t>(base) * sizeof(MeshInstancePrevData),
+                                depthInstPrevScratch.data(), static_cast<size_t>(n) * sizeof(MeshInstancePrevData));
                 m_instanceCursor += n;
 
                 if (instPSO->Get() != lastPso)
@@ -11216,7 +11368,19 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
                     m_commandList->SetPipelineState(*instPSO);
                     lastPso = instPSO->Get();
                 }
-                m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 16, &passVpT);
+                if (velocityMode)
+                {
+                    VelocityObjCB vc;
+                    vc.a      = passVpT;                              // transpose(jittered VP)
+                    vc.b      = XMMatrixTranspose(prevViewProj);      // transpose(prev non-jittered VP)
+                    vc.jitter = jitterNdc;
+                    vc.pad    = {0.0f, 0.0f};
+                    m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, kVelocityObjNum32, &vc);
+                }
+                else
+                {
+                    m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 16, &passVpT);
+                }
 
                 const Mesh* mesh = item.renderer->meshes[0];
                 const u32   lodI = item.lod + lodBias;
@@ -11227,6 +11391,13 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
                 iv.BufferLocation += static_cast<u64>(base) * sizeof(MeshInstanceData);
                 iv.SizeInBytes     = n * sizeof(MeshInstanceData);
                 m_commandList->GetNative()->IASetVertexBuffers(1, 1, &iv);
+                if (velocityMode)
+                {
+                    D3D12_VERTEX_BUFFER_VIEW pv = m_instancePrevVbView[frameIndex];
+                    pv.BufferLocation += static_cast<u64>(base) * sizeof(MeshInstancePrevData);
+                    pv.SizeInBytes     = n * sizeof(MeshInstancePrevData);
+                    m_commandList->GetNative()->IASetVertexBuffers(2, 1, &pv);
+                }
                 lastVbMesh = mesh;
                 lastLod    = lodI;
 
@@ -11261,6 +11432,15 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
             }
             m_commandList->SetSRVTable(RootSignature::kSlotBonesSRV,
                 m_srvHeap->GetGpuHandle(item.skin->GetSrvIndex(frameIndex)));
+            if (velocityMode)
+            {
+                // SkinningBuffer は frameCount 枚を多重化していて毎フレーム frameIndex の
+                // スロットだけを書く＝前フレームのスロットに前フレームの行列がそのまま残っている。
+                // 履歴が無い初回は現フレームを前としても使う（＝速度0）。
+                const u32 prevSlot = m_prevFrameIndexValid ? m_prevFrameIndex : frameIndex;
+                m_commandList->SetSRVTable(RootSignature::kSlotPrevBonesSRV,
+                    m_srvHeap->GetGpuHandle(item.skin->GetSrvIndex(prevSlot)));
+            }
         }
         else if (staticPSO.Get() != lastPso)
         {
@@ -11280,10 +11460,29 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
                 meshWorld = nodeMat * world;
             }
 
-            struct PerObjectData { XMMATRIX mvp; XMMATRIX mdl; } objData;
-            objData.mvp = XMMatrixTranspose(meshWorld * viewProj);
-            objData.mdl = XMMatrixTranspose(meshWorld);
-            m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
+            if (velocityMode)
+            {
+                // 前フレームのメッシュワールド。ノードアニメ(meshNodeTransforms)は現在値しか
+                // 持っていないので、そのメッシュの速度は「親のワールドの動き」だけの近似になる
+                // （既知の制限。精密にやるなら MeshRenderer に prevMeshNodeTransforms が要る）。
+                XMMATRIX prevMeshWorld = XMLoadFloat4x4(&item.prevWorld);
+                if (item.hasNodeAnim && mi < static_cast<u32>(renderer.meshNodeTransforms.size()))
+                    prevMeshWorld = XMLoadFloat4x4(&renderer.meshNodeTransforms[mi]) * prevMeshWorld;
+
+                VelocityObjCB vc;
+                vc.a      = XMMatrixTranspose(meshWorld * viewProj);        // viewProj はジッタ込み
+                vc.b      = XMMatrixTranspose(prevMeshWorld * prevViewProj); // 前は非ジッタ
+                vc.jitter = jitterNdc;
+                vc.pad    = {0.0f, 0.0f};
+                m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, kVelocityObjNum32, &vc);
+            }
+            else
+            {
+                struct PerObjectData { XMMATRIX mvp; XMMATRIX mdl; } objData;
+                objData.mvp = XMMatrixTranspose(meshWorld * viewProj);
+                objData.mdl = XMMatrixTranspose(meshWorld);
+                m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
+            }
 
             if (mesh != lastVbMesh || lod != lastLod)
             {
@@ -13011,6 +13210,17 @@ void Application::Render()
     m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
     m_commandList->SetRootSignature(*m_rootSignature);
 
+    // ===== TAA の有効判定（BuildDrawList より前に決めること）=====
+    // 「速度バッファ用に前フレームのワールド行列を追跡するか」がここで決まるため、
+    // 描画リスト構築より前に確定させる必要がある。
+    // 正射（2D ビュー / 俯瞰ゲーム）では無効: サブピクセルジッタと深度再投影が透視前提で、
+    // 深度プリパス自体も透視限定の運用になっている。
+    const TaaSettings& taaCfg = m_scene->GetTaaSettings();
+    const bool taaViewOk = !(m_editorCtx && m_editorCtx->view2D) && !m_camera->IsOrthographic();
+    const bool taaActive = taaCfg.enabled && m_taaPass && m_taaPass->IsReady() && taaViewOk;
+    if (taaActive) EnsureInstancePrevBuffer();
+    m_trackPrevWorld = taaActive;
+
     // フレーム描画リストを構築（1回）。以降の影/プリパス/メイン/プレビューの全パスで共有する。
     BuildDrawList();   // 内部で buildList / listSort を別々に計時する
 
@@ -13232,7 +13442,11 @@ void Application::Render()
     const bool useContactShadow = csCfg.enabled && m_contactShadowPass
                                 && m_contactShadowPass->IsReady()
                                 && viewSupportsScreenSpace;
-    const bool useDepthPrepass = useSSAO || useContactShadow;
+    // ★TAA 有効時は SSAO/コンタクトシャドウが無効でも必ずプリパスを走らせる（速度バッファのため）。
+    //   新しく深度を要求するパスを足したら、この行に OR で足すこと（00-COORDINATION §2 H2）。
+    const bool useDepthPrepass = useSSAO || useContactShadow || taaActive;
+    // 速度モードで走らせるか（PSO 3 本が揃っていることが条件）。
+    const bool velocityPrepass = taaActive && m_velocityPSO && m_velocityPSOSkinned;
     u32 aoSrv = m_ssaoWhiteSrvIndex;  // 既定 = 白（AO=1.0 素通し）
     u32 csSrv = m_ssaoWhiteSrvIndex;  // 既定 = 白（遮蔽なし素通し。SSAO と同じ 1x1 白を共用）
 
@@ -13241,16 +13455,37 @@ void Application::Render()
     {
         XMMATRIX camVP = m_camera->GetViewProjMatrix();
 
-        // --- 深度プリパス（カメラ視点で m_depthBuffer/m_dsvHandle へ深度のみ書く）---
+        // --- 深度プリパス（カメラ視点で m_depthBuffer/m_dsvHandle へ書く）---
         m_commandList->ClearDepthStencil(m_dsvHandle);
-        nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_dsvHandle);
         m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
 
-        // skinningBuffer は毎フレーム1回どこかで Update されていれば良い（このプリパスより前に
-        // シャドウパスの ci==0 で更新済み＝ここでは false）。
-        RenderDepthOnlyScene(camVP, *m_depthPrepassPSO, *m_depthPrepassSkinnedPSO,
-                             /*updateSkinning*/ false, frameIndex, /*lodBias*/ 0,
-                             m_depthPrepassPSOInst.get());
+        // 半透明（sortKey==3）はカメラのプリパスから除外する（00-COORDINATION §6 B3）。
+        // 影パスは従来どおり半透明も描く＝影の見た目は不変。
+        Application::PrepassParams pp{};
+        pp.skipTransparent = true;
+        pp.jitterNdc       = {0.0f, 0.0f};
+
+        if (velocityPrepass)
+        {
+            // 深度 + 速度を同時に書く（RTV=速度RT / DSV=m_dsvHandle）。
+            pp.mode = PrepassMode::DepthVelocityGBuffer;
+            XMStoreFloat4x4(&pp.prevViewProj,
+                m_prevViewProjNJValid ? XMLoadFloat4x4(&m_prevViewProjNoJitter) : camVP);
+            m_taaPass->BeginVelocity(*m_commandList, m_dsvHandle, vpLeft, vpTop, vpW, vpH);
+            RenderDepthOnlyScene(camVP, *m_velocityPSO, *m_velocityPSOSkinned,
+                                 /*updateSkinning*/ false, frameIndex, /*lodBias*/ 0,
+                                 m_velocityPSOInst.get(), &pp);
+            m_taaPass->EndVelocity(*m_commandList);
+        }
+        else
+        {
+            nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_dsvHandle);
+            // skinningBuffer は毎フレーム1回どこかで Update されていれば良い（このプリパスより前に
+            // シャドウパスの ci==0 で更新済み＝ここでは false）。
+            RenderDepthOnlyScene(camVP, *m_depthPrepassPSO, *m_depthPrepassSkinnedPSO,
+                                 /*updateSkinning*/ false, frameIndex, /*lodBias*/ 0,
+                                 m_depthPrepassPSOInst.get(), &pp);
+        }
 
         m_commandList->TransitionResource(m_depthBuffer.Get(),
             D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -13807,9 +14042,30 @@ void Application::Render()
             uvOfsX, uvOfsY, uvSclX, uvSclY,
             1.0f / fullW, 1.0f / fullH, totalTime, frameIndex);
 
+        // ---- 速度バッファのデバッグ可視化（ポスト後のバックバッファを上書き）----
+        // 静止時に全面が均一な (0.5,0.5,0.5) グレーになるのが「ジッタが正しく除去されている」証拠。
+        if (taaActive && taaCfg.debugVelocity && m_taaPass)
+        {
+            const u32 velSrv = m_taaPass->GetVelocitySrvIndex();
+            if (velSrv != DescriptorHeap::kInvalidIndex)
+            {
+                nativeCmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+                m_taaPass->DrawVelocityDebug(*m_commandList, m_srvHeap->GetGpuHandle(velSrv),
+                    uvOfsX, uvOfsY, uvSclX, uvSclY, vpLeft, vpTop, vpW, vpH,
+                    /*scale*/ 20.0f);
+            }
+        }
+
         // 次フレームのモーションブラー用に今フレームの viewProj を保存
         XMStoreFloat4x4(&m_prevViewProj, m_camera->GetViewProjMatrix());
         m_prevViewProjValid = true;
+        // 速度バッファ/TAA 用に「ジッタなし」viewProj と frameIndex を保存する。
+        // frameIndex は SkinningBuffer の前フレームスロットを指すため
+        //（GetCurrentBackBufferIndex() の巡回順は DXGI 仕様上保証されないので明示記録）。
+        XMStoreFloat4x4(&m_prevViewProjNoJitter, m_camera->GetViewProjMatrix());
+        m_prevViewProjNJValid = true;
+        m_prevFrameIndex      = frameIndex;
+        m_prevFrameIndexValid = true;
     }
     m_gpuTimer->End(nativeCmdList, GpuTimer::PostFX);
     m_gpuTimer->Begin(nativeCmdList, GpuTimer::UI);

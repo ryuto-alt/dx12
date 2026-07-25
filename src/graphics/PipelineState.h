@@ -23,6 +23,10 @@ public:
     PipelineStateBuilder& SetPixelShader(const void* bytecode, SIZE_T size);
     PipelineStateBuilder& SetInputLayout(const D3D12_INPUT_ELEMENT_DESC* elements, u32 count);
     PipelineStateBuilder& SetRenderTargetFormat(DXGI_FORMAT format);
+    // MRT（複数レンダーターゲット）版。深度プリパスの DepthVelocityGBuffer モード用。
+    // count は 0..8。既存の SetRenderTargetFormat（1本 or 0本）は温存してあるので、
+    // 従来の呼び出し側は一切影響を受けない。
+    PipelineStateBuilder& SetRenderTargetFormats(u32 count, const DXGI_FORMAT* formats);
     PipelineStateBuilder& SetDepthStencilFormat(DXGI_FORMAT format);
     PipelineStateBuilder& SetDepthEnabled(bool enabled);
     PipelineStateBuilder& SetDepthWrite(bool enabled);  // 深度テストは残しつつ書き込みのみ制御（半透明オーバーレイ用）
