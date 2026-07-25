@@ -12,6 +12,7 @@ add_library(Renderer STATIC
     SSAOPass.cpp
     ContactShadowPass.cpp
     TaaPass.cpp
+    ClusteredLightCulling.cpp
     SpriteRenderer.cpp
     SceneTransition.cpp
     ParticleSystem.cpp

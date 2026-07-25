@@ -233,9 +233,16 @@ if(DXC_EXECUTABLE)
     set(SHADER_SKINNED "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardSkinned.hlsl")
     set(SHADER_EMISSIVE "${CMAKE_SOURCE_DIR}/shaders/forward/Emissive.hlsl")
     # Forward/Skinned が include する共有ヘッダ（編集時に再コンパイルさせる）
+    # ★ClusterCommon.hlsli は Lighting.hlsli が include している。ここに入れておかないと
+    #   クラスタ定数を変えたときにフォワード系の .cso が古いまま残る。
     set(SHADER_FWD_INC
         "${CMAKE_SOURCE_DIR}/shaders/forward/PBR.hlsli"
+        "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterCommon.hlsli"
         "${CMAKE_SOURCE_DIR}/shaders/forward/Lighting.hlsli")
+    # クラスタードライティング（Forward+）のライトカリング compute 2 本
+    set(SHADER_CLUSTER_BUILD "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterBuild.hlsl")
+    set(SHADER_CLUSTER_CULL  "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterCull.hlsl")
+    set(SHADER_CLUSTER_INC   "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterCommon.hlsli")
     set(SHADER_GRID          "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardGrid.hlsl")
     set(SHADER_FWD_INST      "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardInstanced.hlsl")
     set(SHADER_SHADOW_INST   "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPassInstanced.hlsl")
@@ -343,6 +350,23 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/VelocityPrepassSkinned_VS.cso"
         "${SHADER_OUTPUT_DIR}/TaaResolve_PS.cso"
         "${SHADER_OUTPUT_DIR}/VelocityDebug_PS.cso"
+        "${SHADER_OUTPUT_DIR}/ClusterBuild_CS.cso"
+        "${SHADER_OUTPUT_DIR}/ClusterCull_CS.cso"
+    )
+
+    # --- クラスタードライティング（Forward+）のライトカリング compute 2 パス ---
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ClusterBuild_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSMain -Fo "${SHADER_OUTPUT_DIR}/ClusterBuild_CS.cso" "${SHADER_CLUSTER_BUILD}"
+        DEPENDS "${SHADER_CLUSTER_BUILD}" "${SHADER_CLUSTER_INC}"
+        COMMENT "Compiling ClusterBuild.hlsl -> ClusterBuild_CS.cso (cs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ClusterCull_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSMain -Fo "${SHADER_OUTPUT_DIR}/ClusterCull_CS.cso" "${SHADER_CLUSTER_CULL}"
+        DEPENDS "${SHADER_CLUSTER_CULL}" "${SHADER_CLUSTER_INC}"
+        COMMENT "Compiling ClusterCull.hlsl -> ClusterCull_CS.cso (cs_6_0)"
     )
 
     add_custom_command(

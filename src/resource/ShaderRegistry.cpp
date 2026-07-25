@@ -30,7 +30,7 @@ const std::vector<ShaderSource>& BuildRegistry()
                 { L"Forward_PS.cso", L"PSMain", L"ps_6_0" },
                 { L"ForwardLdr_PS.cso", L"PSMain", L"ps_6_0", L"LDR_OUTPUT=1" },
             },
-            { "forward/PBR.hlsli", "forward/Lighting.hlsli" },
+            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ClusterCommon.hlsli" },
         },
         {
             "forward/ForwardSkinned.hlsl",
@@ -38,7 +38,19 @@ const std::vector<ShaderSource>& BuildRegistry()
                 { L"ForwardSkinned_VS.cso", L"VSMain", L"vs_6_0" },
                 { L"ForwardSkinned_PS.cso", L"PSMain", L"ps_6_0" },
             },
-            { "forward/PBR.hlsli", "forward/Lighting.hlsli" },
+            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ClusterCommon.hlsli" },
+        },
+        {
+            // クラスタードライティング（Forward+）のライトカリング compute。
+            // ClusterCommon.hlsli は Lighting.hlsli（＝フォワード PS 側）とも共有している。
+            "forward/ClusterBuild.hlsl",
+            { { L"ClusterBuild_CS.cso", L"CSMain", L"cs_6_0" } },
+            { "forward/ClusterCommon.hlsli" },
+        },
+        {
+            "forward/ClusterCull.hlsl",
+            { { L"ClusterCull_CS.cso", L"CSMain", L"cs_6_0" } },
+            { "forward/ClusterCommon.hlsli" },
         },
         {
             // ForwardGrid.hlsl は `#include "Lighting.hlsli"` している。
@@ -49,7 +61,7 @@ const std::vector<ShaderSource>& BuildRegistry()
                 { L"ForwardGrid_VS.cso", L"VSMain", L"vs_6_0" },
                 { L"ForwardGrid_PS.cso", L"PSMain", L"ps_6_0" },
             },
-            { "forward/PBR.hlsli", "forward/Lighting.hlsli" },
+            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ClusterCommon.hlsli" },
         },
         {
             "shadow/ShadowPass.hlsl",

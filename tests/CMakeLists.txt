@@ -39,6 +39,19 @@ else()
 endif()
 add_test(NAME NetBufferTests COMMAND NetBufferTests)
 
+# クラスタードライティング（Forward+）の Z 指数分割とカリング判定のテスト。
+# renderer/ClusterMath.h はヘッダオンリー・GPU/DirectXMath 非依存なのでスタンドアロンでも動く。
+# HLSL 側（shaders/forward/ClusterCommon.hlsli）は同じ式を手で写しているので、
+# 片方を直したら必ず両方直すこと。
+add_executable(ClusterMathTests cluster_math_test.cpp)
+target_include_directories(ClusterMathTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(ClusterMathTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(ClusterMathTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME ClusterMathTests COMMAND ClusterMathTests)
+
 # UIText リッチテキスト(インラインタグ)パーサのテスト(ヘッダオンリー・依存ゼロなのでスタンドアロンでも動く)。
 add_executable(UiRichTextTests ui_rich_text_test.cpp)
 target_include_directories(UiRichTextTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
