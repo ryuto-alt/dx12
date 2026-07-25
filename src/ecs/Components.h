@@ -14,6 +14,7 @@ namespace dx12e
 {
 
 class Mesh;
+class HeightField;   // terrain/HeightField.h（Terrain コンポーネントが shared_ptr で持つ）
 struct Material;
 class Skeleton;
 class AnimationClip;
@@ -218,6 +219,99 @@ struct GridPlane
 // 板は2三角形・深度書き込み無し・線以外 alpha=0 なので、大きくしても描画コストは変わらない。
 // spawn/save/load で必ず同じ値を使うこと。
 inline constexpr f32 kEditorGridSize = 20000.0f;
+
+// --- ハイトフィールド地形（山を作る道具。Unity Terrain / UE Landscape と同じ方式）---
+//
+// 描画は「普通の Mesh を持つ普通のエンティティ」として行う（MeshRenderer に CPU 生成の
+// メッシュを載せる）。これで描画リスト構築・カリング・影・ピッキング・マテリアル割当が
+// 全部そのまま乗る。コリジョンは Jolt の HeightFieldShape（PhysicsSystem::RegisterBody が
+// この部品を見て作る）＝同じ高さ配列を見るので、彫れば当たり判定も自動で追従する。
+//
+// 高さ配列そのものはシーン JSON に入れない（解像度 256 で 6 万要素＝JSON が破綻する）。
+// assets/terrain/<name>.hf にバイナリで置き、ここはパスだけを持つ（読み込みは vfs 経由）。
+inline constexpr const char* kTerrainMeshMarker = "__terrain__";
+
+struct Terrain
+{
+    u32  resolution = 128;       // 1 辺のサンプル数。HeightField::NormalizeResolution で 4 の倍数へ丸まる
+    f32  worldSize  = 200.0f;    // 1 辺のワールド長(m)。セル幅 = worldSize/(resolution-1)
+    f32  maxHeight  = 200.0f;    // ブラシの高さクランプ上限（±この値）
+    std::string heightmapPath;   // assets 相対（例 "terrain/Terrain.hf"）。空 = 未保存（平坦で復元）
+    f32  uvScale    = 24.0f;     // 地形全体で UV が何回繰り返すか（タイリングテクスチャ用）
+    DirectX::XMFLOAT4 color{0.42f, 0.50f, 0.32f, 1.0f};  // 頂点色（マテリアル未割当時の見た目）
+
+    // ---- ランタイム専有（非シリアライズ・meta 未登録）----
+    // 高さ配列の実体。描画メッシュ生成・コリジョン・ブラシが同じインスタンスを見る。
+    std::shared_ptr<HeightField> _hf;
+    bool _meshDirty     = false;   // 高さが変わった → メッシュを作り直す
+    bool _colliderDirty = false;   // 高さが変わった → 物理形状を作り直す（Play 中の追従用）
+    // 高さが変わった → .hf を書き出す必要がある。高さ配列はシーン JSON に入らないので、
+    // これを消化しないと Play→Stop のシーン再構築で「保存済みの .hf」まで彫った内容が
+    // 巻き戻ってしまう（TerrainPanel がストローク終了時に消化して自動保存する）。
+    bool _needsSave     = false;
+    // 直近の変更で汚れたグリッド矩形（メッシュ部分更新用。x1 < x0 なら無効＝全面扱いしない）
+    i32 _dirtyX0 = 0, _dirtyZ0 = 0, _dirtyX1 = -1, _dirtyZ1 = -1;
+
+    void MarkDirty(i32 x0, i32 z0, i32 x1, i32 z1)
+    {
+        if (x1 < x0 || z1 < z0) return;
+        if (_dirtyX1 < _dirtyX0 || _dirtyZ1 < _dirtyZ0)
+        {
+            _dirtyX0 = x0; _dirtyZ0 = z0; _dirtyX1 = x1; _dirtyZ1 = z1;
+        }
+        else
+        {
+            if (x0 < _dirtyX0) _dirtyX0 = x0;
+            if (z0 < _dirtyZ0) _dirtyZ0 = z0;
+            if (x1 > _dirtyX1) _dirtyX1 = x1;
+            if (z1 > _dirtyZ1) _dirtyZ1 = z1;
+        }
+        _meshDirty     = true;
+        _colliderDirty = true;
+        _needsSave     = true;
+    }
+
+    void ClearDirtyRect() { _dirtyX0 = 0; _dirtyZ0 = 0; _dirtyX1 = -1; _dirtyZ1 = -1; }
+
+    // 見た目だけ（頂点色 / UV タイリング）の変更。高さは動いていないので、
+    // .hf の保存も物理形状の作り直しも要らない（矩形無効 = 全面再構築）。
+    void MarkVisualDirty() { ClearDirtyRect(); _meshDirty = true; }
+};
+
+// --- 任意メッシュの頂点スカルプト（洞窟・アーチ・岩みたいな異形を作る道具）---
+//
+// ハイトフィールド地形はオーバーハングが作れないので、そこはこっちが担当する。
+// 地形とまったく同じ構図: 描画は「普通の Mesh を持つ普通のエンティティ」（MeshRenderer に
+// CPU 生成メッシュを載せる）＝描画リスト構築・カリング・影・ピッキング・マテリアル割当が
+// そのまま乗る。コリジョンは Jolt の MeshShape（PhysicsSystem::RegisterBody がこの部品を
+// 見て作る）で、ストローク終了時に作り直す＝彫った形に当たり判定が追従する。
+//
+// 頂点配列そのものはシーン JSON に入れない（数万頂点で JSON が破綻する）。
+// assets/sculpt/<name>.smsh にバイナリで置き、ここはパスだけを持つ（読み込みは vfs 経由）。
+class SculptMeshData;   // terrain/SculptMesh.h（頂点配列 + 溶接/隣接 + ブラシの実体）
+inline constexpr const char* kSculptMeshMarker = "__sculpt__";
+
+struct SculptMesh
+{
+    std::string meshPath;        // assets 相対（例 "sculpt/Rock.smsh"）。空 = 未保存（素体で復元）
+    f32  uvScale   = 1.0f;       // UV の倍率（.dxmat のタイリング用）
+    bool collision = true;       // 彫った形の MeshShape コライダーを作るか
+    DirectX::XMFLOAT4 color{0.72f, 0.70f, 0.66f, 1.0f};  // 頂点色（マテリアル未割当時の見た目）
+
+    // ---- ランタイム専有（非シリアライズ・meta 未登録）----
+    // 頂点配列の実体。描画メッシュ生成・コリジョン・ブラシが同じインスタンスを見る。
+    std::shared_ptr<SculptMeshData> _data;
+    bool _meshDirty     = false;   // 頂点が変わった → GPU の頂点バッファを送り直す
+    bool _colliderDirty = false;   // 頂点が変わった → 物理形状を作り直す（ストローク終了時のみ）
+    // 頂点配列はシーン JSON に入らないため、これを消化しないと Play→Stop のシーン再構築で
+    // 彫った内容が「保存済みの .smsh」まで巻き戻ってしまう（SculptPanel が自動保存する）。
+    bool _needsSave     = false;
+
+    // 彫った（＝形が変わった）。コライダーの作り直しと .smsh 保存も要る。
+    void MarkDirty()       { _meshDirty = true; _colliderDirty = true; _needsSave = true; }
+    // 見た目だけ（頂点色 / UV）の変更。形は変わっていないので物理も保存も要らない。
+    void MarkVisualDirty() { _meshDirty = true; }
+};
 
 struct PointLight
 {

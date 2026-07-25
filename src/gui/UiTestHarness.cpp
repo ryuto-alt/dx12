@@ -51,6 +51,10 @@ const char* kWinUiEditor    = "//UIエディタ###UiEditorPanelFloating";
 const char* kWinMaterial    = "//マテリアルエディタ###MaterialEditorFloating";
 const char* kWinMatLibrary  = "//マテリアルライブラリ (Poly Haven)###MaterialLibraryFloating";
 const char* kWinBuild       = "//ビルド設定";
+// 後から増えた独立フローティング窓（NoDocking なので右下のツール窓群には入らない）
+const char* kWinLighting    = "//ライティング###LightingPanelFloating";
+const char* kWinTerrain     = "//地形ツール###TerrainToolFloating";
+const char* kWinSculpt      = "//スカルプト（異形）###SculptToolFloating";
 
 // パーティクルエディタは中身を BeginChild で 3 分割している。子ウィンドウの中の項目は
 // 親窓からの ID パスでは引けない（子窓の実 ID は "親名/str_id_XXXXXXXX" のハッシュ）ので、
@@ -302,13 +306,17 @@ void T_SpawnAllEntityTypes(ImGuiTestContext* ctx)
 
 void T_InspectorOpenAll(ImGuiTestContext* ctx)
 {
-    ctx->SetRef(kWinHierarchy);
-    ImGuiTestItemList items;
-    ctx->GatherItems(&items, "", 3);
-    for (int i = 0; i < items.GetSize() && i < 12; ++i)
+    // 行は毎回集め直す。ヒエラルキーは ImGuiListClipper で可視行しか作らないので、
+    // 選択やスクロールで前に拾った ID が消え、"Unable to locate item" で落ちていた。
+    for (int i = 0; i < 12; ++i)
     {
+        ctx->SetRef(kWinHierarchy);
+        ImGuiTestItemList items;
+        ctx->GatherItems(&items, "", 3);
+        if (i >= items.GetSize()) break;
         const ImGuiTestItemInfo* item = items[i];
         if (item == nullptr || item->ID == 0) continue;
+        if (!ctx->ItemExists(item->ID)) continue;
         Step(ctx, "インスペクターの全セクションを開く (%d件目)", i + 1);
         ctx->MouseMove(item->ID);
         ctx->MouseClick(0);
@@ -566,6 +574,73 @@ void T_AssetBrowser(ImGuiTestContext* ctx)
     ctx->LogInfo("clicked %d asset browser items", clicked);
     IM_CHECK_NO_RET(clicked > 0);
     ctx->Yield(6);
+}
+
+// 後から増えたフローティング窓（ライティング / 地形ツール）が、開いて中身が描かれ、
+// 極端なサイズでも落ちず、ちゃんと閉じられるか。
+// T_OpenAllToolWindows は右下ドックに入るツール窓だけを見ているので、
+// NoDocking の独立窓であるこれらは 1 件も検査されていなかった。
+void T_NewFloatingPanels(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    IM_CHECK(ed != nullptr);
+
+    struct Entry { bool EditorContext::* flag; const char* window; const char* label; };
+    static const Entry kPanels[] = {
+        { &EditorContext::showLighting,      kWinLighting, "ライティング" },
+        { &EditorContext::showTerrainEditor, kWinTerrain,  "地形ツール"   },
+        { &EditorContext::showSculptEditor,  kWinSculpt,   "スカルプト"   },
+    };
+
+    // 失敗は集めて最後にまとめて投げる（1 件で中断すると残りが検査されない）
+    std::string bad;
+    for (const Entry& e : kPanels)
+    {
+        Step(ctx, "パネルを開く: %s", e.label);
+        const bool wasOpen = ed->*(e.flag);
+        ed->*(e.flag) = true;
+
+        ImGuiID id = 0;
+        for (int i = 0; i < 8 && id == 0; ++i)
+        {
+            ctx->Yield(6);
+            id = FocusWindow(ctx, e.window);
+        }
+        if (id == 0)
+        {
+            bad += std::string("\n  ・") + e.label + " : 窓が出ない";
+            ed->*(e.flag) = wasOpen;
+            ctx->Yield(4);
+            continue;
+        }
+
+        // 窓は出たが中身が 1 つも無い（描画が即 return している）も異常として拾う
+        ctx->SetRef(id);
+        ImGuiTestItemList items;
+        ctx->GatherItems(&items, "", 4);
+        if (items.GetSize() == 0)
+            bad += std::string("\n  ・") + e.label + " : 中身が空";
+
+        // 極小サイズでもレイアウトが壊れないか（SameLine 前提の行がゼロ幅で割る温床）
+        Step(ctx, "極小サイズへリサイズ: %s", e.label);
+        ctx->WindowResize(id, ImVec2(260.0f, 200.0f));
+        ctx->Yield(8);
+        Step(ctx, "元のサイズへ戻す: %s", e.label);
+        ctx->WindowResize(id, ImVec2(430.0f, 760.0f));
+        ctx->Yield(8);
+
+        Step(ctx, "パネルを閉じる: %s", e.label);
+        ed->*(e.flag) = false;
+        ctx->Yield(8);
+        if (FocusWindow(ctx, e.window) != 0)
+            bad += std::string("\n  ・") + e.label + " : 閉じても窓が残っている";
+
+        ed->*(e.flag) = wasOpen;   // ユーザーの開閉状態は必ず戻す
+        ctx->Yield(4);
+    }
+
+    if (!bad.empty())
+        IM_ERRORF("フローティングパネルに問題があります:%s", bad.c_str());
 }
 
 void T_LayoutReset(ImGuiTestContext* ctx)
@@ -859,17 +934,25 @@ void T_RapidSelection(ImGuiTestContext* ctx)
 {
     Step(ctx, "選択を高速に切り替える");
     ctx->SetRef(kWinHierarchy);
-    ImGuiTestItemList items;
-    ctx->GatherItems(&items, "", 3);
-    IM_CHECK_NO_RET(items.GetSize() > 0);
+    {
+        ImGuiTestItemList probe;
+        ctx->GatherItems(&probe, "", 3);
+        IM_CHECK_NO_RET(probe.GetSize() > 0);
+    }
 
     for (int pass = 0; pass < 6; ++pass)
     {
+        // 毎パス集め直す。クリッパーで可視行が入れ替わると前の ID は消えるため
+        // （使い回すと "Unable to locate item" で落ちる）。
+        ctx->SetRef(kWinHierarchy);
+        ImGuiTestItemList items;
+        ctx->GatherItems(&items, "", 3);
         for (int i = 0; i < items.GetSize() && i < 10; ++i)
         {
             const ImGuiTestItemInfo* item = items[i];
             if (item == nullptr || item->ID == 0) continue;
             if (std::strstr(item->DebugLabel, "✚") != nullptr) continue;
+            if (!ctx->ItemExists(item->ID)) continue;
             ctx->MouseMove(item->ID);
             ctx->MouseClick(0);
             ctx->Yield();   // 1 フレームだけ＝Inspector が描き終わる前に次の選択へ
@@ -995,6 +1078,42 @@ void T_DeepSceneAssets(ImGuiTestContext* ctx)
     IM_CHECK(g_app != nullptr);
     Step(ctx, "シーンが参照しているアセットが描画対象になっているか検査");
     ReportDeep(ctx, DeepDiag::SceneAssets(*g_app));
+}
+
+void T_DeepLighting(ImGuiTestContext* ctx)
+{
+    IM_CHECK(g_app != nullptr);
+    Step(ctx, "灯数の上限 / 影スロット / 消灯したライト / IBL 構成を検査");
+    ReportDeep(ctx, DeepDiag::Lighting(*g_app));
+}
+
+void T_DeepTerrain(ImGuiTestContext* ctx)
+{
+    IM_CHECK(g_app != nullptr);
+    Step(ctx, "地形の .hf 整合・コライダー・ハイトマップ共有を検査");
+    ReportDeep(ctx, DeepDiag::Terrain(*g_app));
+}
+
+void T_DeepPicking(ImGuiTestContext* ctx)
+{
+    IM_CHECK(g_app != nullptr);
+    Step(ctx, "三角形精密ピッキングが破綻する条件を検査");
+    ReportDeep(ctx, DeepDiag::Picking(*g_app));
+}
+
+void T_DeepInstancing(ImGuiTestContext* ctx)
+{
+    IM_CHECK(g_app != nullptr);
+    // 描画リストは Render() の先頭で組み直される。読む前に数フレーム回して最新にする。
+    ctx->Yield(6);
+    Step(ctx, "自動インスタンシングの適格率と不適格理由を集計");
+    ReportDeep(ctx, DeepDiag::Instancing(*g_app));
+}
+
+void T_DeepScripts(ImGuiTestContext* ctx)
+{
+    Step(ctx, "assets / scripts の全 .lua を構文スキャン");
+    ReportDeep(ctx, DeepDiag::Scripts());
 }
 
 // ---- GPU が絡む検査 ----
@@ -1143,6 +1262,72 @@ void T_DeepGizmo(ImGuiTestContext* ctx)
                 IM_CHECK_NO_RET(!ImGuizmo::IsUsing());
             }
 
+    // ---- マルチ選択（ギズモ大改修で入った仮想ピボット経路）----
+    // 2 体以上選ぶと SceneViewPanel は「選択群の中心に置いた平行移動だけの行列」を
+    // ImGuizmo へ渡し、返ってきた行列との差分を各選択のワールドへ掛ける（回転/拡縮も群に効く）。
+    // 掴んでいない間は、この経路でも 1 ミリも動いてはいけない
+    // （毎フレーム差分を掛け続けると選択しただけで物が流れていく）。
+    Step(ctx, "マルチ選択（親＋子）で全モードを通す");
+    ed->view2D = saved2D;
+    if (reg.valid(parent) && reg.valid(child))
+    {
+        const Transform parentExpected = reg.get<Transform>(parent);
+        ed->selectedEntity = parent;
+        ed->selectedEntities.assign({ parent, child });
+        ctx->Yield(6);
+
+        for (int loc = 0; loc < 2; ++loc)
+            for (int m = 0; m < 3; ++m)
+            {
+                ed->gizmoLocalSpace = (loc != 0);
+                ed->gizmoMode       = modes[m];
+                ctx->Yield(4);
+
+                if (!reg.valid(parent) || !reg.valid(child))
+                {
+                    IM_ERRORF("マルチ選択中にエンティティが消えた");
+                    break;
+                }
+                const Transform& tp = reg.get<Transform>(parent);
+                const Transform& tc = reg.get<Transform>(child);
+                if (!TransformFinite(tp) || !TransformFinite(tc))
+                {
+                    IM_ERRORF("マルチ選択の %s で Transform が NaN になった", names[m]);
+                    break;
+                }
+                if (!TransformEqual(tp, parentExpected) || !TransformEqual(tc, expected))
+                {
+                    IM_ERRORF("マルチ選択の %s で、掴んでいないのに Transform が書き換わった"
+                              "（仮想ピボットの差分が毎フレーム掛かっている）", names[m]);
+                    break;
+                }
+                IM_CHECK_NO_RET(!ImGuizmo::IsUsing());
+            }
+    }
+
+    // ---- 常時スナップ（スナップ量が EditorContext へ外出しされた）----
+    // snapAlways=true は Ctrl を押していなくてもスナップ値を ImGuizmo へ渡す経路。
+    // ここで「掴んでいないのにスナップ位置へ吸われる」と、選択しただけで物が動く。
+    Step(ctx, "常時スナップ ON で全モードを通す");
+    const bool savedSnapAlways = ed->snapAlways;
+    ed->snapAlways     = true;
+    ed->selectedEntity = child;
+    ed->selectedEntities.assign(1, child);
+    ctx->Yield(4);
+    for (int m = 0; m < 3; ++m)
+    {
+        ed->gizmoMode = modes[m];
+        ctx->Yield(4);
+        if (!reg.valid(child)) break;
+        const Transform& t = reg.get<Transform>(child);
+        if (!TransformFinite(t) || !TransformEqual(t, expected))
+        {
+            IM_ERRORF("常時スナップ ON の %s で、掴んでいないのに Transform が書き換わった", names[m]);
+            break;
+        }
+    }
+    ed->snapAlways = savedSnapAlways;
+
     ed->view2D          = saved2D;
     ed->gizmoLocalSpace = savedLoc;
     ed->gizmoMode       = savedMode;
@@ -1164,6 +1349,8 @@ void T_DeepGizmo(ImGuiTestContext* ctx)
     // 回転ギズモは gizmoLocalSpace を無視して常にワールド軸で出る（SceneViewPanel の実装仕様）。
     // 不具合ではないが「T を押しても回転だけ切り替わらない」と見えるので記録に残す。
     ctx->LogInfo("仕様メモ: 回転ギズモはローカル/ワールド切替を無視して常にワールド軸で表示される");
+    ctx->LogInfo("仕様メモ: マルチ選択中はローカル/ワールド切替も無視してワールド固定"
+                 "（代表 1 個の姿勢に群全体が引っ張られるのを避けるため）");
 }
 
 // ---- コピペ / 複製 / プレハブの機能維持検査 ----
@@ -1463,6 +1650,7 @@ const DiagReg kTests[] = {
     { "panel", "open_all_tool_windows", "パネル",             "すべてのツール窓を開いて描画",         T_OpenAllToolWindows    },
     { "panel", "console",               "パネル",             "コンソール（フィルタ / Lua 実行）",    T_ConsolePanel          },
     { "panel", "asset_browser",         "パネル",             "アセットブラウザ",                     T_AssetBrowser          },
+    { "panel", "new_floating_panels",   "パネル",             "ライティング / 地形ツールの開閉",       T_NewFloatingPanels     },
     { "panel", "layout_reset",          "パネル",             "ドックレイアウトのリセット",           T_LayoutReset           },
 
     { "uied",  "ui_spawn_all",          "UI エディタ",        "UI 要素を全種類配置",                  T_UiEditorSpawnAll      },
@@ -1488,6 +1676,11 @@ const DiagReg kTests[] = {
     { "deep",  "deep_gamma_config",     "超詳細: ガンマ",     "表示パイプラインのフォーマット構成",   T_DeepGammaConfig,    true },
     { "deep",  "deep_gamma_roundtrip",  "超詳細: ガンマ",     "スクショの表示変換がシーン設定に追従", T_DeepGammaRoundTrip, true },
     { "deep",  "deep_scene_assets",     "超詳細: アセット",   "シーンのアセットが描画対象になっているか", T_DeepSceneAssets, true },
+    { "deep",  "deep_lighting",         "超詳細: ライティング", "灯数上限 / 影スロット / 消灯 / IBL",  T_DeepLighting,       true },
+    { "deep",  "deep_terrain",          "超詳細: 地形",       ".hf の整合 / コライダー / 共有の罠",   T_DeepTerrain,        true },
+    { "deep",  "deep_picking",          "超詳細: ピッキング", "三角形精密判定が破綻する条件",         T_DeepPicking,        true },
+    { "deep",  "deep_instancing",       "超詳細: 性能",       "インスタンシング適格率と不適格理由",   T_DeepInstancing,     true },
+    { "deep",  "deep_scripts",          "超詳細: スクリプト", "全 .lua の構文スキャン",               T_DeepScripts,        true },
     { "deep",  "deep_render_proof",     "超詳細: 描画",       "実際に絵が出ているかピクセルで確認",   T_DeepRenderProof,    true },
     { "deep",  "deep_gizmo",            "超詳細: ギズモ",     "全モード×親子×2D で誤作動しないか",    T_DeepGizmo,          true },
     { "deep",  "deep_copy_paste",       "超詳細: コピペ複製", "コピペで子・コライダー・Lua・参照が残るか", T_DeepCopyPasteSubtree, true },
@@ -1798,8 +1991,8 @@ void UiTestHarness::DrawDiagnosticsPanel(bool* show, bool* hoveredOut)
     ImGui::TextDisabled("・検査中はマウスとキーボードが自動で動きます。触らずにお待ちください。");
     ImGui::TextDisabled("・シーンは検査前に退避し、完了後に自動で元へ戻します。");
     ImGui::TextDisabled("・[ビルド] の検査だけは実際に書き出すため、時間がかかります。");
-    ImGui::TextDisabled("・[超詳細診断] は UI ではなくエンジンの中身"
-                        "（シェーダー / テクスチャ / モデル / ガンマ / 描画 / ギズモ）を検査します。");
+    ImGui::TextDisabled("・[超詳細診断] は UI ではなくエンジンの中身（シェーダー / テクスチャ / モデル /"
+                        " ガンマ / 描画 / ギズモ / ライティング / 地形 / ピッキング / 性能 / Lua）を検査します。");
     ImGui::Separator();
 
     // ---- 実行ボタン ----
@@ -1818,7 +2011,12 @@ void UiTestHarness::DrawDiagnosticsPanel(bool* show, bool* hoveredOut)
             "・表示パイプラインのフォーマットがガンマ二重適用になっていないか\n"
             "・スクリーンショットの色がビューポートと一致するか\n"
             "・実際に絵が出ているか（ピクセルで確認）\n"
-            "・ギズモが全モード×親子×2D で誤作動しないか\n\n"
+            "・ギズモが全モード×親子×マルチ選択×常時スナップ×2D で誤作動しないか\n"
+            "・ライトが上限(点8/スポット8)を超えて無言で切り捨てられていないか\n"
+            "・地形の .hf が壊れていないか / 同じハイトマップを複数の地形が共有していないか\n"
+            "・三角形の精密ピッキングが効かない形になっていないか\n"
+            "・自動インスタンシングが効いているか（不適格の理由をランキング表示）\n"
+            "・全 .lua が構文として閉じているか\n\n"
             "アセット数が多いと数分かかります。");
     ImGui::SameLine();
     ImGui::BeginDisabled(ng == 0);

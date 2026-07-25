@@ -33,6 +33,17 @@ public:
     void Update(f32 dt, entt::registry& registry);
     void Shutdown();
 
+    // 地形コライダーの追従。高さ配列を編集した側が Terrain::_colliderDirty を立てておくと、
+    // 次の Update（と手動呼び出し）で Jolt の HeightFieldShape を作り直す。
+    // ＝Play 中に地形を彫っても当たり判定がズレない。
+    void RefreshTerrainColliders(entt::registry& registry);
+
+    // スカルプトメッシュ（彫った異形）のコライダー追従。頂点を編集した側が
+    // SculptMesh::_colliderDirty を立てておくと、次の Update（と手動呼び出し）で
+    // Jolt の MeshShape を作り直す。MeshShape の構築は重いので、エディタ側は
+    // ストローク終了時にだけ _colliderDirty を立てること（ドラッグ中に毎フレームやると詰まる）。
+    void RefreshSculptColliders(entt::registry& registry);
+
     // Entity の物理体を登録/解除
     void RegisterBody(entt::registry& registry, entt::entity entity);
     void UnregisterBody(entt::registry& registry, entt::entity entity);

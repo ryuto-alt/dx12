@@ -3144,6 +3144,25 @@ void InspectorPanel::RenderEngineSettings(EditorContext& ctx,
         }
     }
 
+    // --- Gizmo ---
+    // ギズモのスナップ量。従来は SceneViewPanel にハードコード（移動1.0 / 回転15 / スケール0.1）
+    // やったのでここに出す。既定値は同じなので、触らなければ挙動は変わらない。
+    if (IconHeader(nullptr, 0, "ギズモ"))
+    {
+        if (pg::Begin("EngineGizmo"))
+        {
+            pg::Float("移動スナップ", &ctx.snapTranslate, 0.05f, 0.001f, 1000.0f, "%.3f m",
+                      nullptr, "Ctrl ドラッグ中に位置がこの刻みへ吸着する");
+            pg::Float("回転スナップ", &ctx.snapRotateDeg, 0.5f, 0.1f, 180.0f, "%.1f deg",
+                      nullptr, "Ctrl ドラッグ中に角度がこの刻みへ吸着する");
+            pg::Float("スケールスナップ", &ctx.snapScale, 0.01f, 0.001f, 100.0f, "%.3f",
+                      nullptr, "Ctrl ドラッグ中に倍率がこの刻みへ吸着する");
+            pg::Checkbox("常にスナップ", &ctx.snapAlways,
+                         "ON にすると Ctrl を押さなくても常にスナップする");
+            pg::End();
+        }
+    }
+
     // --- Shadow quality ---
     if (IconHeader(nullptr, 0, "シャドウ"))
     {

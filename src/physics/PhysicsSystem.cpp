@@ -1,6 +1,8 @@
 #include "physics/PhysicsSystem.h"
 #include "ecs/Components.h"
 #include "core/Logger.h"
+#include "terrain/HeightField.h"   // 地形コライダー（Terrain::_hf の高さ配列を Jolt へ渡す）
+#include "terrain/SculptMesh.h"    // スカルプトコライダー（SculptMesh::_data の三角形を Jolt へ渡す）
 
 #include <algorithm>
 #include <cstdarg>
@@ -22,6 +24,8 @@
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
+#include <Jolt/Physics/Collision/Shape/HeightFieldShape.h>
+#include <Jolt/Physics/Collision/Shape/MeshShape.h>   // スカルプトメッシュ（彫った異形）のコライダー
 #include <Jolt/Physics/Character/CharacterVirtual.h>
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/CastResult.h>
@@ -309,6 +313,12 @@ void PhysicsSystem::Update(f32 dt, entt::registry& registry)
         return;
     }
 
+    // 地形を彫った直後なら、ステップ前にコライダーを作り直しておく
+    //（描画メッシュと当たり判定が 1 フレームでもズレないようにする）。
+    RefreshTerrainColliders(registry);
+    // 彫ったスカルプトメッシュも同じ理屈でコライダーを作り直す（ストローク終了時にだけ立つ）。
+    RefreshSculptColliders(registry);
+
     SyncTransformsToPhysics(registry);
 
     // dt をクランプ（モード切替時の大きな dt で一気に何ステップも走るのを防ぐ）
@@ -431,6 +441,54 @@ void PhysicsSystem::SyncPhysicsToTransforms(entt::registry& registry)
     }
 }
 
+void PhysicsSystem::RefreshTerrainColliders(entt::registry& registry)
+{
+    if (!m_initialized) return;
+
+    // 反復中に RegisterBody/UnregisterBody がコンポーネントへ書き込むので、
+    // 対象を先に集めてから処理する（view の反復と書き込みを混ぜない）。
+    std::vector<entt::entity> dirty;
+    for (auto [e, terrain, rb] : registry.view<Terrain, RigidBody>().each())
+    {
+        (void)rb;
+        if (terrain._colliderDirty) dirty.push_back(e);
+    }
+    if (dirty.empty()) return;
+
+    for (entt::entity e : dirty)
+    {
+        auto* rb = registry.try_get<RigidBody>(e);
+        if (!rb) continue;
+        if (rb->bodyId != kInvalidBodyId) UnregisterBody(registry, e);
+        RegisterBody(registry, e);   // 成功/失敗どちらでも _colliderDirty は落とす
+        if (auto* t = registry.try_get<Terrain>(e)) t->_colliderDirty = false;
+    }
+}
+
+void PhysicsSystem::RefreshSculptColliders(entt::registry& registry)
+{
+    if (!m_initialized) return;
+
+    // RefreshTerrainColliders と同じ流儀: 反復中に RegisterBody/UnregisterBody が
+    // コンポーネントへ書き込むので、対象を先に集めてから処理する。
+    std::vector<entt::entity> dirty;
+    for (auto [e, sculpt, rb] : registry.view<SculptMesh, RigidBody>().each())
+    {
+        (void)rb;
+        if (sculpt._colliderDirty) dirty.push_back(e);
+    }
+    if (dirty.empty()) return;
+
+    for (entt::entity e : dirty)
+    {
+        auto* rb = registry.try_get<RigidBody>(e);
+        if (!rb) continue;
+        if (rb->bodyId != kInvalidBodyId) UnregisterBody(registry, e);
+        RegisterBody(registry, e);   // 成功/失敗どちらでも _colliderDirty は落とす
+        if (auto* sc = registry.try_get<SculptMesh>(e)) sc->_colliderDirty = false;
+    }
+}
+
 // ========== Body Registration ==========
 
 void PhysicsSystem::RegisterBody(entt::registry& registry, entt::entity entity)
@@ -446,14 +504,138 @@ void PhysicsSystem::RegisterBody(entt::registry& registry, entt::entity entity)
 
     auto& bodyInterface = m_impl->physicsSystem->GetBodyInterface();
 
-    // Determine shape
+    // ---- 地形（ハイトフィールド）----
+    // 高さを解析的に引ける形状なので、メッシュコライダーを作らず Jolt の HeightFieldShape に
+    // そのまま渡す。これだけで「重力で落ちてきた剛体が乗る/めり込まない/斜面で滑る」も
+    // CharacterVirtual の斜面登坂も Raycast も全部そのまま効く（Terrain 専用の解決コードは不要）。
+    // HeightFieldShape は静的専用なので motionType の指定に関わらず Static で作る。
+    if (auto* terrain = registry.try_get<Terrain>(entity); terrain && terrain->_hf && terrain->_hf->IsValid())
+    {
+        const HeightField& hf = *terrain->_hf;
+        const f32 cell = hf.CellSize();
+        const f32 half = hf.HalfSize();
+
+        // 座標規約は TerrainMeshBuilder と同一:
+        //   pos = offset + scale * (ix, heights[iz*n+ix], iz)、offset = (-half, 0, -half)
+        // ＝描画メッシュと 1 サンプルもズレない。
+        JPH::HeightFieldShapeSettings hfSettings(
+            hf.Heights().data(),
+            JPH::Vec3(-half, 0.0f, -half),
+            JPH::Vec3(cell, 1.0f, cell),
+            static_cast<JPH::uint32>(hf.Resolution()));
+        hfSettings.mBlockSize     = 2;   // サンプル数はこの倍数である必要がある（Normalize 済み）
+        hfSettings.mBitsPerSample = 8;   // ブロックごとの min/max 基準なので 8bit で十分な精度
+
+        auto hfResult = hfSettings.Create();
+        if (!hfResult.IsValid())
+        {
+            Logger::Error("地形コライダーの生成に失敗しました: {}", hfResult.GetError().c_str());
+            return;
+        }
+        JPH::ShapeRefC terrainShape = hfResult.Get();
+
+        JPH::BodyCreationSettings terrainSettings(
+            terrainShape,
+            JPH::RVec3(transform->position.x, transform->position.y, transform->position.z),
+            JPH::Quat::sIdentity(),          // 地形は回転させない（ハイトフィールドの前提）
+            JPH::EMotionType::Static,
+            Layers::NON_MOVING);
+        terrainSettings.mFriction    = rb->friction;
+        terrainSettings.mRestitution = rb->restitution;
+
+        JPH::BodyID terrainId = bodyInterface.CreateAndAddBody(terrainSettings,
+                                                               JPH::EActivation::DontActivate);
+        rb->bodyId = terrainId.GetIndexAndSequenceNumber();
+        m_bodyToEntity[rb->bodyId] = entity;
+        terrain->_colliderDirty = false;
+        return;
+    }
+
+    // ---- スカルプトメッシュ（彫った異形）----
+    // 頂点を直接動かして作る形なので、凸包では洞窟もアーチも表現できない。三角形メッシュ形状
+    //（Jolt の MeshShape）をそのまま張る＝彫った通りに当たる。Transform のスケールは形状へ
+    // 焼き込む（BoxCollider が halfExtents に scale を掛けるのと同じ規約）。
+    // MeshShape は静的専用（Shape::MustBeStatic）なので、動かす剛体に付いている場合だけ
+    // 凸包へフォールバックし、その旨を警告に出す。
     JPH::ShapeRefC shape;
+    if (auto* sculpt = registry.try_get<SculptMesh>(entity);
+        sculpt && sculpt->_data && sculpt->_data->IsValid())
+    {
+        sculpt->_colliderDirty = false;   // 成功/失敗どちらでも消化する（無限リトライを避ける）
+        // 当たり判定オフ＝物理ボディそのものを作らない。ここで return しないと下の
+        // 「コライダー部品が無ければ scale から箱」フォールバックに落ちて、
+        // 見えない 1x1x1 の箱が湧く（OFF にしたのにぶつかる、という最悪の挙動）。
+        if (!sculpt->collision) return;
+
+        const SculptMeshData& data      = *sculpt->_data;
+        const auto&           positions = data.Positions();
+        const auto&           indices   = data.Indices();
+        const f32 sclX = transform->scale.x;
+        const f32 sclY = transform->scale.y;
+        const f32 sclZ = transform->scale.z;
+
+        if (rb->motionType == MotionType::Static)
+        {
+            JPH::VertexList verts;
+            verts.reserve(positions.size());
+            for (const auto& p : positions)
+                verts.push_back(JPH::Float3(p.x * sclX, p.y * sclY, p.z * sclZ));
+
+            JPH::IndexedTriangleList tris;
+            tris.reserve(indices.size() / 3);
+            for (size_t t = 0; t + 2 < indices.size(); t += 3)
+                tris.push_back(JPH::IndexedTriangle(indices[t], indices[t + 1], indices[t + 2], 0));
+
+            // 巻き順は SculptMesh 側で「cross(v1-v0,v2-v0) が外向き」＝ Jolt が要求する CCW に
+            // 揃えてある。退化三角形は MeshShapeSettings のコンストラクタが落とす。
+            JPH::MeshShapeSettings meshSettings(std::move(verts), std::move(tris));
+            auto meshResult = meshSettings.Create();
+            if (meshResult.IsValid())
+            {
+                shape = meshResult.Get();
+            }
+            else
+            {
+                Logger::Error("スカルプトメッシュのコライダー生成に失敗しました: {}",
+                              meshResult.GetError().c_str());
+            }
+        }
+        else
+        {
+            // 動く剛体は MeshShape を持てない（Jolt の制約）。凸包で妥協する＝穴は塞がる。
+            std::vector<JPH::Vec3> hullPoints;
+            hullPoints.reserve(positions.size());
+            for (const auto& p : positions)
+                hullPoints.push_back(JPH::Vec3(p.x * sclX, p.y * sclY, p.z * sclZ));
+
+            JPH::ConvexHullShapeSettings hullSettings(hullPoints.data(),
+                static_cast<int>(hullPoints.size()), 0.01f);
+            hullSettings.mMaxConvexRadius = 0.05f;
+            auto hullResult = hullSettings.Create();
+            if (hullResult.IsValid()) shape = hullResult.Get();
+
+            Logger::Warn("スカルプトメッシュ '{}' は Static ではないので凸包コライダーに"
+                         "フォールバックしました（三角形メッシュ形状は静的な剛体にしか付けられへん）。"
+                         "彫った凹み/穴は当たり判定では埋まるで。",
+                         registry.all_of<NameTag>(entity) ? registry.get<NameTag>(entity).name
+                                                          : std::string("Sculpt"));
+        }
+
+        // 形状を作れなかったときも箱で代用はしない（原因が見えない当たり判定を残さない）。
+        if (shape.GetPtr() == nullptr) return;
+    }
+
+    // Determine shape
     auto* convex  = registry.try_get<ConvexHullCollider>(entity);
     auto* box     = registry.try_get<BoxCollider>(entity);
     auto* sphere  = registry.try_get<SphereCollider>(entity);
     auto* capsule = registry.try_get<CapsuleCollider>(entity);
 
-    if (convex && !convex->points.empty())
+    if (shape.GetPtr() != nullptr)
+    {
+        // 上のスカルプトメッシュ経路で形状が決まっている（コライダー部品より優先）
+    }
+    else if (convex && !convex->points.empty())
     {
         // Convex Hull: 頂点データから凸包を生成
         std::vector<JPH::Vec3> joltPoints;

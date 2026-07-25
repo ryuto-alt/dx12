@@ -109,4 +109,48 @@ struct PostProcessSettings
     // 既定 ON（見た目の副作用なし・空やビネットの縞が消える）
     bool  debandOn     = true;
 };
+
+// 「名前 → PostProcessSettings のフィールド」対応表（X マクロ）。
+// Lua の post.get/post.set/post.setMany が文字列キーでアクセスするための唯一の名前表。
+// 個別バインドを 90 本生やす代わりにここ 1 箇所を回して get/set/names を生成する
+// ＝フィールドを足すときの修正はこの表だけで済む（MCP の set_post_process も
+// 同じ名前を使うので、将来あちらもこの表から生成できる）。
+// 引数は種別ごとのマクロ: B=bool / F=float / I=int / V=XMFLOAT3 / S=std::string
+#define DX12E_POST_FIELDS(B, F, I, V, S)                                          \
+    B(enabled) I(tonemapper)                                                      \
+    B(exposureOn)   F(exposure)                                                   \
+    B(contrastOn)   F(contrast)                                                   \
+    B(brightnessOn) F(brightness)                                                 \
+    B(saturationOn) F(saturation)                                                 \
+    B(warmthOn)     F(warmth)                                                     \
+    B(hueOn)        F(hueShift)                                                   \
+    B(tintOn)       V(tint)                                                       \
+    B(bloomOn)      F(bloom) F(bloomThreshold) F(bloomKnee) F(bloomRadius)        \
+    B(vignetteOn)   F(vignette)                                                   \
+    B(autoExposureOn) F(aeSpeed) F(aeEvComp) F(aeLogMin) F(aeLogMax)              \
+    B(lutOn)        S(lutPath) F(lutAmount)                                       \
+    B(chromaticOn)  F(chromatic)                                                  \
+    B(pixelizeOn)   F(pixelSize)                                                  \
+    B(posterizeOn)  I(posterize)                                                  \
+    B(ditherOn)     I(ditherLevels)                                               \
+    B(scanlineOn)   F(scanline)                                                   \
+    B(sharpenOn)    F(sharpen)                                                    \
+    B(grainOn)      F(grain)                                                      \
+    B(invertOn)     F(invert)                                                     \
+    B(sepiaOn)      F(sepia)                                                      \
+    B(grayscaleOn)  F(grayscale)                                                  \
+    B(lensOn)       F(lens)                                                       \
+    B(waveOn)       F(waveAmp) F(waveFreq) F(waveSpeed)                           \
+    B(radialOn)     F(radial)                                                     \
+    B(glitchOn)     F(glitch)                                                     \
+    B(outlineOn)    F(outline) V(outlineColor)                                    \
+    B(godraysOn)    F(grIntensity) F(grDensity) F(grDecay)                        \
+    B(lensflareOn)  F(lfIntensity) I(lfGhosts) F(lfDispersal) F(lfHalo) F(lfChroma) \
+    B(dofOn)        F(dofFocusDist) F(dofFocusRange) F(dofBlurSize)               \
+    B(motionBlurOn) F(mbStrength) I(mbSamples)                                    \
+    B(fxaaOn) B(debandOn)
+
+// SSAOSettings 版（同じ流儀。実体は renderer/SSAOSettings.h）
+#define DX12E_SSAO_FIELDS(B, F, I)                                                \
+    B(enabled) F(radius) F(bias) F(intensity) F(power) I(sampleCount) B(blur)
 }

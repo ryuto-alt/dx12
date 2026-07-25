@@ -717,6 +717,18 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
             req.position = {0.0f, 0.0f, 0.0f};
             ctx.pendingSpawns.push_back(req);
         }
+        // 地形（ハイトフィールド）。エンティティ生成そのものは解像度/サイズを決めてからなので、
+        // ここでは地形ツール窓を開くだけ（窓の「＋ 地形を作成」で作る）。
+        if (ImGui::MenuItem("Terrain（地形・山を作る）"))
+        {
+            ctx.showTerrainEditor = true;
+        }
+        // スカルプト（任意メッシュの頂点編集）。地形と同じく素体の分割数を決めてからなので、
+        // ここではスカルプト窓を開くだけ（窓の「＋ 素体を作成」で作る）。
+        if (ImGui::MenuItem("Sculpt（異形・洞窟・アーチ・岩）"))
+        {
+            ctx.showSculptEditor = true;
+        }
         ImGui::Separator();
         if (ImGui::MenuItem("Camera"))
         {

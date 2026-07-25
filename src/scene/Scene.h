@@ -12,6 +12,8 @@
 #include "scene/Entity.h"
 #include "renderer/PostProcessSettings.h"
 #include "renderer/SSAOSettings.h"
+// SpawnSculpt の既定引数で SculptPrimitive の列挙子を使うため（前方宣言では足りない）。
+#include "terrain/SculptMesh.h"
 
 struct ID3D12GraphicsCommandList;
 
@@ -59,6 +61,39 @@ public:
     Entity SpawnSphere(const std::string& name,
                        DirectX::XMFLOAT3 position,
                        f32 radius = 0.5f);
+
+    // --- ハイトフィールド地形 ---
+    // params の resolution / worldSize / heightmapPath 等を元に HeightField を用意し、
+    // CPU 生成メッシュを載せた「普通のエンティティ」を作る（+ 静的コライダー用の RigidBody）。
+    // heightmapPath が空でなければ vfs 経由で .hf を読む（読めなければ平坦のまま警告）。
+    // cmd = 記録中のコマンドリスト（null なら Initialize 時のものを使う。シーンロード中は
+    // そのままで良いが、フレーム途中で呼ぶときは必ずその時点の cmdList を渡すこと）。
+    Entity SpawnTerrain(const std::string& name,
+                        DirectX::XMFLOAT3 position,
+                        const Terrain& params,
+                        ID3D12GraphicsCommandList* cmd = nullptr);
+
+    // 高さ配列の変更をメッシュへ反映する（Terrain::_dirtyX0.. の矩形だけ差し替える）。
+    // 頂点数が合わない（解像度が変わった）ときは丸ごと作り直す。
+    // 呼んだあと Terrain::_meshDirty は落ちる（_colliderDirty は物理側が消費する）。
+    void RebuildTerrainMesh(entt::entity e, ID3D12GraphicsCommandList* cmd = nullptr);
+
+    // --- 頂点スカルプトメッシュ（洞窟・アーチ・岩などの異形）---
+    // params.meshPath が空でなければ vfs 経由で .smsh を読む。空（または読めない）なら
+    // fallbackPrimitive / fallbackSubdivisions / fallbackSize から素体を作る。
+    // 地形と同じく「CPU 生成メッシュを載せた普通のエンティティ」+ 静的コライダー用 RigidBody。
+    Entity SpawnSculpt(const std::string& name,
+                       DirectX::XMFLOAT3 position,
+                       const SculptMesh& params,
+                       SculptPrimitive fallbackPrimitive = SculptPrimitive::Sphere,
+                       u32 fallbackSubdivisions = 16,
+                       f32 fallbackSize = 2.0f,
+                       ID3D12GraphicsCommandList* cmd = nullptr);
+
+    // 頂点の変更を GPU のメッシュへ反映する（トポロジは変わらないので頂点だけ送り直す）。
+    // 頂点数が合わない（素体を作り直した）ときは丸ごと再初期化する。
+    // 呼んだあと SculptMesh::_meshDirty は落ちる（_colliderDirty は物理側が消費する）。
+    void RebuildSculptMesh(entt::entity e, ID3D12GraphicsCommandList* cmd = nullptr);
 
     void Remove(Entity entity);
     void Clear();

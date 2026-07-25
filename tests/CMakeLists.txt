@@ -192,6 +192,17 @@ if(TARGET Renderer)
     endif()
     add_test(NAME FrustumTests COMMAND FrustumTests)
 
+    # 精密ピッキングの土台（editor/RayGeometry.h: レイ-三角形/AABB/球 + ヒット順ソート）テスト。
+    # ヘッダオンリー・純 DirectXMath（entt も GPU も要らない）。
+    add_executable(RayPickTests ray_pick_test.cpp)
+    target_include_directories(RayPickTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(RayPickTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(RayPickTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(RayPickTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME RayPickTests COMMAND RayPickTests)
+
     # SnapshotBuffer(ネットワーク補間バッファ)テスト。ヘッダオンリー・純DirectXMath。
     add_executable(InterpolationTests interpolation_test.cpp)
     target_include_directories(InterpolationTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
@@ -221,6 +232,43 @@ if(TARGET Renderer)
         target_compile_definitions(InterestFilterTests PRIVATE ${DX12_COMPILE_DEFS})
     endif()
     add_test(NAME InterestFilterTests COMMAND InterestFilterTests)
+endif()
+
+# 地形（ハイトフィールドのサンプリング / スカルプトブラシ / .hf 往復 / レイキャスト）テスト。
+# HeightField.cpp / TerrainBrush.cpp は純ロジック（GPU も entt も vfs も不要）なので
+# Terrain ライブラリをリンクせず直接ビルドする（CameraProjectionTests と同じ流儀）。
+if(TARGET Renderer)
+    find_package(directxmath CONFIG REQUIRED)
+    add_executable(TerrainTests
+        terrain_test.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/terrain/HeightField.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/terrain/TerrainBrush.cpp)
+    target_include_directories(TerrainTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(TerrainTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(TerrainTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(TerrainTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME TerrainTests COMMAND TerrainTests)
+endif()
+
+# 頂点スカルプト（素体生成 / 溶接・隣接 / 各ブラシ / 法線の部分再計算 / 対称 / .smsh 往復）テスト。
+# SculptMesh.cpp も純ロジック（重み関数とノイズだけ TerrainBrush と共有）なので、
+# TerrainTests と同じくライブラリをリンクせず直接ビルドする。
+if(TARGET Renderer)
+    find_package(directxmath CONFIG REQUIRED)
+    add_executable(SculptTests
+        sculpt_test.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/terrain/SculptMesh.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/terrain/TerrainBrush.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/terrain/HeightField.cpp)
+    target_include_directories(SculptTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(SculptTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(SculptTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(SculptTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME SculptTests COMMAND SculptTests)
 endif()
 
 # SpatialIndex（一様グリッド）テスト（Phase 5: RTS 空間クエリ）。ヘッダオンリー、entt のみ依存。
@@ -312,4 +360,19 @@ if(TARGET Network)
         target_compile_definitions(EnetLoopbackTests PRIVATE ${DX12_COMPILE_DEFS})
     endif()
     add_test(NAME EnetLoopbackTests COMMAND EnetLoopbackTests)
+endif()
+
+# editor/LightMath.h（太陽の方位/高度 ⇔ direction、時刻カーブ、色温度、コーン角、
+# ワールド→スクリーン投影、レイ幾何）のテスト。シーンビューのライト直接操作の心臓部。
+# ヘッダオンリー・純 DirectXMath（ImGui も entt も要らない）。
+if(TARGET Renderer)
+    find_package(directxmath CONFIG REQUIRED)
+    add_executable(LightMathTests light_math_test.cpp)
+    target_include_directories(LightMathTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(LightMathTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(LightMathTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(LightMathTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME LightMathTests COMMAND LightMathTests)
 endif()

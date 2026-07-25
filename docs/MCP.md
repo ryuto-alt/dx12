@@ -163,6 +163,11 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_get_hierarchy` | `{}` | `{roots:[{entityId, name, children:[...]}], count, sceneGeneration}` ※シーンの親子ツリー |
 | `dx12_asset_info` | `{path}` | モデル: `{meshCount, totalVertices, totalFaces, materialCount, boneCount, hasSkeleton, animations:[{name,durationSec}], aabbMin/Max(メッシュローカル近似)}`、テクスチャ: `{width, height, mipLevels, format, isCubemap}`、他: `{type, fileSizeBytes}` |
 | `dx12_view_texture` | `{path, maxSize?:int=1024}` | PNG 画像ブロック ※dds/tga/hdr も変換して見られる。キューブマップは先頭面のみ |
+| `dx12_pick` | `{x?,y?(px) \| u?,v?(0..1), all?:bool, maxHits?:int=16, includeIcons?:bool=true, trianglePrecise?:bool=true, maxCandidates?:int=64}` | `{hits:[{entityId,name,submeshIndex,distance,worldPos,worldNormal,isIcon}], count, totalHits, truncated, screen, viewport, mode}` ※**エディタの左クリック選択と同じ `RaycastScene`**。座標系は `dx12_screenshot` / `dx12_project_world_to_screen` と同じ |
+| `dx12_raycast_precise` | `{origin:[x,y,z], direction:[x,y,z], maxDistance?:f=1000, all?:bool, maxHits?:int=16, trianglePrecise?:bool=true, maxCandidates?:int=256}` | `dx12_pick` と同形式 + `{origin, direction, maxDistance}` ※**描画メッシュの三角形基準**。`dx12_raycast`(物理コライダー基準・Playing 限定)とは別物 |
+| `dx12_terrain_sample` | `{entity?/name?, points?:[[x,z]...] (最大512)}` | `{entityId, name, origin, resolution, worldSize, cellSize, boundsXZ, minHeight, maxHeight, samples:[{x,z,height,worldY,normal,slopeDeg,inside}], count}` |
+| `dx12_list_lights` | `{limit?:int=50, cursor?:int}` | `{lights:[{entityId,name,type,position,slot,color,intensity,range?,direction?,innerConeDeg?,outerConeDeg?,castShadows?,overBudget,effective}], count, total, cursor, nextCursor, has_more, budget:{point,spot,directional,shadowSpot,shadowPoint}, warnings:[...]}` ※**上限超過は無言で描画されない**ので必ずここで確認する |
+| `dx12_diagnose` | `{only?:string[], fast?:bool}` | `DeepDiag::RunAll` の JSON(`{version, engine, checks:[{id,title,checked,errors,warnings,infos,issues,omitted,skipped}], summary:{checks,errors,warnings,infos,ok,unknownIds}, checkIds, note}`) ※`summary.errors > 0` だけが失敗 |
 
 ### 4-2. 編集系(同期)
 
@@ -197,10 +202,16 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_net_launch_test_client` | `{}` | `{requested}` ※ホスト Playing 中のみ。同エンジンをもう1プロセス起動し 127.0.0.1 へ自動接続(フレーム境界) |
 | `dx12_set_editor_camera` | `{position?:[x,y,z], target?:[x,y,z], yawDeg?:f, pitchDeg?:f}` | `{position, forward, yawDeg, pitchDeg}` ※エディタのフライカメラを任意視点へ。target 指定で yaw/pitch 自動逆算。**Editor 限定**(Playing 中は MODE_CONFLICT) |
 | `dx12_look_at` | `{entity:int, target?:[x,y,z], targetEntity?:int, targetName?:string, upright?:bool}` | `{entityId, rotation, target}` ※+Z 正面の想定で rotation(Euler) を書く。upright=true でピッチ0。親が回転してると厳密でない |
-| `dx12_snap_to_ground` | `{entity:int, offset?:f}` | `{groundY, movedBy, position, groundEntityId?}` ※AABB ベース接地(Editor 中でも動く)。XZ が重なる他メッシュの天面へ底面を合わせる。床なしは y=0 |
+| `dx12_snap_to_ground` | `{entity:int, offset?:f, precise?:bool=true}` | `{groundY, movedBy, method:"raycast"\|"aabb", position, groundEntityId?}` ※**三角形精密レイキャストで真下の実際の面へ接地**(地形の起伏・斜面・彫った岩に乗る)。真下に三角形が無ければ従来の AABB 天面判定へフォールバック(`method:"aabb"`)。床なしは y=0。Editor 中でも動く |
 | `dx12_import_asset` | `{sourcePath:string(絶対パス可), destPath:string(assets相対), overwrite?:bool}` | `{imported:[相対パス...], count}` ※外部ファイル/フォルダを assets へコピー。.gltf はフォルダごと |
 | `dx12_move_asset` | `{from, to, overwrite?:bool}` | `{from, to, note}` ※assets 内の移動/リネーム。**シーン内の参照パスは自動更新されない** |
 | `dx12_delete_asset` | `{path, recursive?:bool}` | `{deleted, removedCount, wasDirectory}` ※ディレクトリは recursive:true 必須。参照中アセットを消すと壊れる |
+| `dx12_terrain_generate` | `{entity?/name?, preset?:"hills"\|"canyon"\|"mountains", seed?:int, frequency?, octaves?, amplitude?, ridged?, baseHeight?, edgeFalloff?, valleyDepth?}` | `{entityId, preset, params:{...}, minHeight, maxHeight, resolution, worldSize}` ※高さ配列を丸ごと作り直す(既存の彫りは消える)。**同じ seed/params なら毎回同じ地形=冪等**。★Editor 限定 |
+| `dx12_terrain_sculpt` | `{entity?/name?, brush?:"raise"\|"lower"\|"smooth"\|"flatten"\|"noise", point?:[x,z] \| points?:[[x,z]...](最大512) \| worldPos?:[x,y,z], radius?=12, strength?=5, falloff?=0.5, flattenHeight?, mirrorX?, mirrorZ?, noiseFrequency?, noiseOctaves?, noiseRidged?, seed?}` | `{entityId, brush, points, radius, strength, changed, minHeight, maxHeight}` ※座標は**ワールド XZ**。相対操作(2回撃つと2回ぶん)。`flatten`+`flattenHeight` は絶対値なので冪等寄り。★Editor 限定 |
+| `dx12_terrain_erode` | `{entity?/name?, iterations?:int=16, talusDeg?:f=34, region?:[minX,minZ,maxX,maxZ]}` | `{entityId, iterations, talusDeg, changed, minHeight, maxHeight}` ※熱浸食。相対操作。★Editor 限定 |
+| `dx12_sculpt_brush` | `{entity?/name?, brush?:"draw"\|"pull"\|"push"\|"smooth"\|"flatten"\|"pinch"\|"noise"\|"grab", position?:[x,y,z](ワールド) \| localPosition?, radius?=0.5, strength?=0.2, falloff?=0.5, direction?, grabDelta?, symmetryX/Y/Z?, noise*?, seed?}` | `{entityId, brush, movedVertices, localCenter, radius, strength, vertexCount, triangleCount, localBounds}` ※radius/strength は**メッシュのローカル単位**(Transform の scale が掛かる前)。相対操作。★Editor 限定 |
+| `dx12_set_sun` | `{timeOfDay?:0..24, azimuth?:deg, elevation?:deg, color?:[r,g,b], kelvin?:1000..40000, intensity?, ambient?}` | `{entityId, name, direction, azimuthDeg, elevationDeg, color, intensity, ambient, timeOfDay}` ※最初の DirectionalLight を**絶対指定**で更新(冪等)。方位/高度は「太陽が見える方向」(+Z=0°, +X=90° / 高度 0=地平線) |
+| `dx12_apply_lighting_preset` | `{preset:"day"\|"dusk"\|"night"\|"indoor"\|"horror"\|"studio"}` | `{preset, label, tip, sun:{...}\|null, post:{exposure/bloom/vignette/saturation...}}` ※**エディタの「ライティング」窓と同じ表・同じ式**(`src/editor/LightingPresets.h` に 1 本化)。太陽が無ければポストのみ適用 |
 
 ### 4-3. 生成・削除・モード遷移(遅延同期 — 本物の値が返る)
 
@@ -216,6 +227,9 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_new_scene` | `{savePath?:string}` | `{applied}` |
 | `dx12_play` | `{}` | `{mode:"Playing", sceneGeneration}` |
 | `dx12_stop` | `{}` | `{mode:"Editor", sceneGeneration}` |
+| `dx12_terrain_create` | `{name?="Terrain", resolution?:int=128(16..512), worldSize?:f=200, maxHeight?:f=200, position?:[x,y,z], uvScale?, color?:[r,g,b]}` | `{entityId, name, created, resolution, worldSize, maxHeight, sceneGeneration}` ※**同名があれば作り直さず設定更新**(冪等)。resolution/worldSize を変えた時だけ高さがリセットされ `heightsReset:true` |
+| `dx12_sculpt_create` | `{name?="Sculpt", primitive?:"box"\|"sphere"\|"plane"\|"cylinder", subdivisions?:int=16(1..64), size?:f=2, position?, uvScale?, color?, collision?}` | `{entityId, name, created, vertexCount, triangleCount, sceneGeneration}` ※**同名があれば素体を作り直さない**(彫った形を失わないため) |
+| `dx12_sculpt_make_editable` | `{entity?/name?(元モデル), name?(出力名。既定 "<元>_Sculpt")}` | `{entityId, name, created, sourceEntityId, vertexCount, triangleCount, sceneGeneration}` ※元の .glb 等は読むだけ。CPU 頂点キャッシュが無いモデルは不可 |
 
 ### 4-4. Node 合成ツール(エンジン非依存。Node が複数 call を順に実行)
 
@@ -233,6 +247,48 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 **`dx12_scatter` 実装**: seed 付き乱数(mulberry32)で位置を決め、`create_entity`/`spawn_model`/`spawn_prefab` を1体ずつ実行(+必要なら `set_transform`/`snap_to_ground`)。同じ seed なら同じ配置になる(リトライで再現)。失敗3件で打ち切り。
 **`dx12_screenshot_from` 実装**: `set_editor_camera` → (1フレーム描画) → `screenshot`。
 **`dx12_preview_model` 実装**: `spawn_model`(y=-10000 の遠方) → `focus_camera` → `screenshot` → `delete_entity`。失敗時も一時エンティティは削除する。
+
+### 4-5. 精密ピック / 地形 / スカルプトの約束事
+
+**2 種類のレイキャストを取り違えないこと。**
+
+| | `dx12_raycast` | `dx12_raycast_precise` / `dx12_pick` |
+|---|---|---|
+| 何に当たるか | Jolt の**物理コライダー** | **描画メッシュの三角形** |
+| いつ使えるか | **Playing 中のみ**(body は Play 開始時に登録される) | Editor / Playing どちらでも |
+| 精度 | コライダー形状(箱/カプセル/凸包の近似) | 実際の三角形。法線も面の法線 |
+| 典型用途 | ゲームロジックの当たり確認・接地判定の再現 | 「スクショのここに何がある？」「地面の実際の高さは？」配置の自動化 |
+| 制限 | 法線は up 向きの近似 | スキンドメッシュはバインドポーズの AABB 止まり |
+
+`dx12_pick` はエディタの左クリック選択と**同じ `RaycastScene` 実装**を通る（`src/editor/ScenePick.h`）。
+MCP で見えるものとエディタで選ばれるものが食い違わないのが、この 2 つを共有している理由。
+
+> ブロードフェーズは**直近に描かれたフレームの描画リスト**を借りる（10 万体でも速いのはこのため）。
+> `dx12_set_transform` で動かした直後に撃つと 1 フレームぶん古い位置で判定されることがある。
+> 移動 → ピックを続けてやるときは間に `dx12_step_frames(frames:1)` を挟むこと。
+
+**地形（ハイトフィールド）**
+
+- 座標は常に**ワールド XZ**（`point:[x,z]`）。`dx12_pick` の `worldPos:[x,y,z]` をそのまま渡してもよい（y は無視）。
+- 高さ配列はシーン JSON に入らない。`assets/terrain/<name>.hf` へ**自動保存**される（彫った次のフレームで書き出す）。
+- コリジョンは Jolt の `HeightFieldShape` が**同じ高さ配列を読む**＝彫れば当たり判定も一緒に動く。
+- 回転・スケールは効かない（XZ グリッドの前提）。位置だけが意味を持つ。
+- 手順は「① `dx12_terrain_create` → ② `dx12_terrain_generate`（土台）→ ③ `dx12_terrain_sculpt`/`dx12_terrain_erode`（詰め）」。
+  ②は高さを丸ごと作り直すので、**必ず③より先**にやること。
+
+**スカルプト（異形メッシュ）**
+
+- ハイトフィールドで作れないもの（洞窟・アーチ・せり出した岩）担当。トポロジは変えず頂点だけ動かす。
+- `position` は**ワールド座標**で渡すが、`radius` / `strength` は**メッシュのローカル単位**（Transform の scale が掛かる前）。
+- 頂点配列は `assets/sculpt/<name>.smsh` へ自動保存。コライダー（`MeshShape`）も彫った形に追従する。
+
+**共通**
+
+- 地形・スカルプトの生成 / 編集系は**すべて Editor 限定**（Playing 中は `MODE_CONFLICT(3)`）。
+  Play→Stop はシーンを作り直すので、Playing 中に彫っても巻き戻る。
+- メッシュ・コリジョン・`.hf`/`.smsh` の保存が反映されるのは**次のフレーム**（エディタのブラシと同じ経路）。
+  彫った直後に見た目を確認するなら `dx12_step_frames(frames:2)` を挟んでから撮ること
+  （`dx12_screenshot` は直近に描かれたフレームを返すため）。`dx12_step_frames` は Editor でも使える。
 
 ---
 
@@ -291,6 +347,26 @@ AI がリトライしたときに重複エンティティを防ぐ用途。
 | 4 | `STALE_SCENE` | （予約・現状未送出）シーン再読込での entityId 失効。実際は `NOT_FOUND(1)` が返るので `sceneGeneration` 変化で判断。 |
 | 6 | `UNKNOWN_COMPONENT` | `component` の jsonKey が不明。`dx12_describe_components` で有効な jsonKey を確認。 |
 | 7 | `INTERNAL` | エンジン内部エラー。`dx12_get_log` でエンジンログを確認。 |
+
+### error_hint / error_values（「次の一手」と有効値）
+
+エラー応答には **任意で** 次の 2 フィールドが乗る（無いこともある。旧来の形は変えていない）。
+
+| フィールド | 内容 |
+|---|---|
+| `error_hint` | 次に何をすればいいかを 1 文で（例: 「先に `dx12_stop` で Editor へ戻してくれ」）|
+| `error_values` | 列挙型の引数が不正だったときの**有効値の全部**（例: `["raise","lower","smooth","flatten","noise"]`）|
+
+Node 側は `Error.hint` / `Error.valid_values` として受け取り、ツールのエラーメッセージへ
+
+```
+エラー(code=2): unknown brush: dig
+ヒント: 有効値のどれかを指定してくれ
+有効な値: raise, lower, smooth, flatten, noise
+```
+
+の形で整形して返す。**エラー本文を読めばリトライの引数が決まる**のが狙いなので、
+新しいツールを足すときは範囲外・列挙ミスに必ず hint（と可能なら valid_values）を添えること。
 
 ---
 
@@ -360,7 +436,8 @@ dx12_play → (ゲームロジック動作) → dx12_stop
 
 - **リクエスト**: `{"id":<正整数>, "method":<string>, "params":<object>}\n`
 - **レスポンス(成功)**: `{"id":<同id>, "ok":true, "result":<any>}\n`
-- **レスポンス(失敗)**: `{"id":<同id>, "ok":false, "error":<string>, "error_code":<int>}\n`
+- **レスポンス(失敗)**: `{"id":<同id>, "ok":false, "error":<string>, "error_code":<int>,
+  "error_hint":<string 任意>, "error_values":<string[] 任意>}\n`
 
 遅延同期 method は受信時は何も返さず、フレーム境界で実処理後に同じ id でレスポンスを送る。
 

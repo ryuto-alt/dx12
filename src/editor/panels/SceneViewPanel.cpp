@@ -1,7 +1,9 @@
 #include "editor/panels/SceneViewPanel.h"
 #include "editor/EditorContext.h"
+#include "editor/ScenePick.h"
 #include "editor/UiEditUtil.h"
 #include "editor/UndoSystem.h"
+#include "core/CpuScope.h"
 #include "ecs/Components.h"
 #include "renderer/Camera.h"
 #include "renderer/Mesh.h"
@@ -16,6 +18,8 @@
 #include "gui/ImGuizmo.h"
 #include <DirectXMath.h>
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
 #include <cstring>
 
 namespace dx12e
@@ -81,6 +85,46 @@ namespace
         eulerDeg[2] = z * kRad2Deg;
     }
 
+    // 行列（ローカル or 親を外した後の行列）を Transform の TRS へ書き戻す。
+    // DecomposeWorldToRPY と対で「GetWorldMatrix と無損失にラウンドトリップする」のが要点。
+    void ApplyMatrixToTransform(Transform& t, const XMMATRIX& m)
+    {
+        XMFLOAT4X4 f;
+        XMStoreFloat4x4(&f, m);
+        float translation[3], rotation[3], scale[3];
+        DecomposeWorldToRPY(f, translation, rotation, scale);
+        t.position = {translation[0], translation[1], translation[2]};
+        t.rotation = {rotation[0], rotation[1], rotation[2]};
+        // Scale が 0 以下になると行列が壊れてギズモが消えるので最小値でクランプ
+        constexpr float kMinScale = 0.001f;
+        t.scale = {(std::max)(scale[0], kMinScale),
+                   (std::max)(scale[1], kMinScale),
+                   (std::max)(scale[2], kMinScale)};
+    }
+
+    // ギズモのドラッグ増分をマウス脇に小さく表示する。
+    // 注: 引数なし GetBackgroundDrawList() は「カレントウィンドウのビューポート」の
+    // 背景リストを返すため、マルチビューポートで別 OS ウィンドウ側に描かれて見えなくなる。
+    // 必ずメインビューポートを明示すること（RenderUiPreview と同じ理由）。
+    void DrawGizmoDeltaOverlay(const char* text)
+    {
+        ImDrawList* dl = ImGui::GetBackgroundDrawList(ImGui::GetMainViewport());
+        const ImVec2 mp = ImGui::GetIO().MousePos;
+        const ImVec2 pos(mp.x + 18.0f, mp.y + 18.0f);
+        const ImVec2 ts = ImGui::CalcTextSize(text);
+        const ImVec2 bmin(pos.x - 6.0f, pos.y - 4.0f);
+        const ImVec2 bmax(pos.x + ts.x + 6.0f, pos.y + ts.y + 4.0f);
+        dl->AddRectFilled(bmin, bmax, IM_COL32(18, 20, 26, 225), 4.0f);
+        dl->AddRect(bmin, bmax, IM_COL32(255, 204, 26, 200), 4.0f);
+        dl->AddText(pos, IM_COL32(255, 255, 255, 255), text);
+    }
+
+    // 開始時スケールに対する倍率（0 割り回避）
+    float ScaleRatio(float now, float start)
+    {
+        return (std::abs(start) > 1e-6f) ? (now / start) : 1.0f;
+    }
+
     // ---- UI 編集モード（HandleUiEditing）----
     // m_uiDragEdges の値: リサイズ中はエッジ bit の組み合わせ（四隅は 2bit）
     constexpr int kUiDragNone = -1;   // 非ドラッグ
@@ -135,6 +179,10 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
     if (ctx.uiEditMode && reg.all_of<UIRect>(ctx.selectedEntity))
         return;
 
+    // 計測（perf_stats の cpuScopeMs "gizmo"）。editorUi にも同じ時間が入る二重計上だが、
+    // 「エディタUIが重い」の内訳としてギズモを名指しするのが目的。
+    CpuScopeTimer _tGizmo(ctx.cpuScopeMs ? &ctx.cpuScopeMs[CpuGizmo] : nullptr);
+
     auto& transform = reg.get<Transform>(ctx.selectedEntity);
 
     XMFLOAT4X4 viewF, projF;
@@ -163,23 +211,34 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
     // 描画を抑止する（反転自体は掴みやすさのため残す）。GetStyle はグローバル状態なので毎フレーム設定で良い。
     ImGuizmo::GetStyle().HatchedAxisLineThickness = 0.0f;
 
-    // 回転ギズモが「細くて暗くて小さい」と、どの輪を掴んでるか分からず変な軸で回してしまう。
-    // 線を太く・色を鮮やかに・サイズを大きくして、どの軸の輪か一目で分かるようにする。
-    {
-        ImGuizmo::Style& gz = ImGuizmo::GetStyle();
-        gz.RotationLineThickness      = 4.0f;   // 軸リング（既定2.0）
-        gz.RotationOuterLineThickness = 3.0f;   // 外周のスクリーン回転円
-        gz.TranslationLineThickness   = 4.0f;
-        gz.Colors[ImGuizmo::DIRECTION_X] = ImVec4(0.95f, 0.22f, 0.22f, 1.0f); // 鮮やかな赤=X
-        gz.Colors[ImGuizmo::DIRECTION_Y] = ImVec4(0.30f, 0.90f, 0.30f, 1.0f); // 鮮やかな緑=Y
-        gz.Colors[ImGuizmo::DIRECTION_Z] = ImVec4(0.25f, 0.55f, 1.00f, 1.0f); // 鮮やかな青=Z
-        gz.Colors[ImGuizmo::SELECTION]   = ImVec4(1.00f, 0.80f, 0.10f, 0.90f); // ホバー時の黄色をくっきり
-    }
-    ImGuizmo::SetGizmoSizeClipSpace(0.15f);   // 既定0.1より大きく＝掴みやすく・見やすく
-
     ImGuizmo::OPERATION op = ImGuizmo::TRANSLATE;
     if (ctx.gizmoMode == GizmoMode::Rotate) op = ImGuizmo::ROTATE;
     if (ctx.gizmoMode == GizmoMode::Scale)  op = ImGuizmo::SCALE;
+
+    // 回転ギズモが「細くて暗くて小さい」と、どの輪を掴んでるか分からず変な軸で回してしまう。
+    // 線を太く・色を鮮やかに・サイズを大きくして、どの軸の輪か一目で分かるようにする。
+    //
+    // さらにホバー中は線をもう一段太く・SELECTION をより明るくして「今どれを掴めるか」を
+    // 押す前に見せる。ImGuizmo には GetHoveredHandleType() が無い版があるため（vcpkg の
+    // バージョンは今回上げない方針）、IsOver(OPERATION) で代用する。IsOver は直前の
+    // Manipulate 時の当たり判定を見るので 1 フレーム遅れるが、強調表示なので実用上問題ない。
+    const bool gizmoHovered = ImGuizmo::IsUsing() || ImGuizmo::IsOver(op);
+    {
+        ImGuizmo::Style& gz = ImGuizmo::GetStyle();
+        const float boost = gizmoHovered ? 1.5f : 1.0f;
+        gz.RotationLineThickness      = 4.0f * boost;   // 軸リング（既定2.0）
+        gz.RotationOuterLineThickness = 3.0f * boost;   // 外周のスクリーン回転円
+        gz.TranslationLineThickness   = 4.0f * boost;
+        gz.ScaleLineThickness         = 4.0f * boost;
+        gz.CenterCircleSize           = gizmoHovered ? 8.0f : 6.0f;
+        gz.Colors[ImGuizmo::DIRECTION_X] = ImVec4(0.95f, 0.22f, 0.22f, 1.0f); // 鮮やかな赤=X
+        gz.Colors[ImGuizmo::DIRECTION_Y] = ImVec4(0.30f, 0.90f, 0.30f, 1.0f); // 鮮やかな緑=Y
+        gz.Colors[ImGuizmo::DIRECTION_Z] = ImVec4(0.25f, 0.55f, 1.00f, 1.0f); // 鮮やかな青=Z
+        gz.Colors[ImGuizmo::SELECTION]   = gizmoHovered
+            ? ImVec4(1.00f, 0.92f, 0.35f, 1.00f)    // ホバー中はさらに明るい黄
+            : ImVec4(1.00f, 0.80f, 0.10f, 0.90f);
+    }
+    ImGuizmo::SetGizmoSizeClipSpace(0.15f);   // 既定0.1より大きく＝掴みやすく・見やすく
 
     ImGuizmo::MODE mode = ctx.gizmoLocalSpace ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
 
@@ -189,19 +248,22 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
     if (ctx.gizmoMode == GizmoMode::Rotate)
         mode = ImGuizmo::WORLD;
 
-    float snapValues[3] = {1.0f, 1.0f, 1.0f};
+    // スナップ量はエディタ設定（EditorContext）から。既定値は従来のハードコードと同じ。
+    float snapValues[3] = {ctx.snapTranslate, ctx.snapTranslate, ctx.snapTranslate};
     if (ctx.gizmoMode == GizmoMode::Rotate)
-        snapValues[0] = snapValues[1] = snapValues[2] = 15.0f;
+        snapValues[0] = snapValues[1] = snapValues[2] = ctx.snapRotateDeg;
     else if (ctx.gizmoMode == GizmoMode::Scale)
-        snapValues[0] = snapValues[1] = snapValues[2] = 0.1f;
-    bool useSnap = ImGui::GetIO().KeyCtrl;   // ImGui 経由＝ウィンドウがフォーカスされている時だけ
+        snapValues[0] = snapValues[1] = snapValues[2] = ctx.snapScale;
+    // ImGui 経由＝ウィンドウがフォーカスされている時だけ。常時スナップも設定で選べる。
+    const bool useSnap = ctx.snapAlways || ImGui::GetIO().KeyCtrl;
 
-    // ギズモ操作開始を検出して Transform をスナップショット
-    bool isUsing = ImGuizmo::IsUsing();
-    if (isUsing && !m_gizmoWasUsing)
+    // ---- Undo の before スナップショット ----
+    // ImGuizmo が掴みを開始できるのは CanActivate() == ImGui::IsMouseClicked(0) のフレームだけ。
+    // そこで「押した瞬間のフレーム」に限り Manipulate の前に全選択の Transform を控える。
+    // （旧実装は IsUsing() を Manipulate の前に読んでおり、掴んだ初フレームぶんの変更が
+    //   before 側に混ざる＝Undo が 1 フレーム足りない状態になっていた）
+    if (!m_gizmoWasUsing && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
     {
-        // ドラッグ開始: 全選択エンティティの変更前 Transform を保存
-        m_gizmoStartTransform = transform;
         m_gizmoStartGroup.clear();
         for (auto e : ctx.selectedEntities)
         {
@@ -210,56 +272,129 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
         }
     }
 
-    if (ImGuizmo::Manipulate(
-            &viewF._11, &projF._11,
-            op, mode,
-            &worldF._11, nullptr,
-            useSnap ? snapValues : nullptr))
+    // ---- マルチ選択の仮想ピボット ----
+    // 選択群の中心（各エンティティのワールド位置の平均）に平行移動だけの行列を置き、
+    // それを Manipulate に渡す。返ってきた行列との差分を各エンティティのワールドへ
+    // 右から掛けることで、Translate だけでなく Rotate/Scale も群全体へ効く。
+    // ※ ImGuizmo の deltaMatrix は操作ごとに意味が違う（移動=ワールド平行移動 /
+    //    回転=ローカル基準 / スケール=ドラッグ開始からの絶対値）ので使わない。
+    //    自前の「前フレームとの差分」なら 3 操作とも同じ 1 本の式で済む。
+    const bool multi = ctx.selectedEntities.size() > 1;
+    XMFLOAT4X4 gizmoM = worldF;
+    if (multi)
     {
-        XMFLOAT3 oldPos = transform.position;
-
-        // 親がいる場合: 操作後のワールド行列を親の逆行列でローカルに戻す
-        XMFLOAT4X4 localF = worldF;
-        if (hasParent)
+        if (!m_gizmoWasUsing)
         {
-            XMMATRIX parentWorld = ComputeWorldMatrix(reg, transform.parent);
-            XMMATRIX local = XMLoadFloat4x4(&worldF)
-                           * XMMatrixInverse(nullptr, parentWorld);
-            XMStoreFloat4x4(&localF, local);
-        }
-
-        float translation[3], rotation[3], scale[3];
-        // ImGuizmo::DecomposeMatrixToComponents は回転順が GetWorldMatrix と食い違うので使わない。
-        // エンジンの RollPitchYaw と完全に逆対応する自前分解で無損失ラウンドトリップにする。
-        DecomposeWorldToRPY(localF, translation, rotation, scale);
-        transform.position = {translation[0], translation[1], translation[2]};
-        transform.rotation = {rotation[0], rotation[1], rotation[2]};
-
-        // Scale が 0 以下になると行列が壊れてギズモが消えるので最小値でクランプ
-        constexpr float kMinScale = 0.001f;
-        scale[0] = (std::max)(scale[0], kMinScale);
-        scale[1] = (std::max)(scale[1], kMinScale);
-        scale[2] = (std::max)(scale[2], kMinScale);
-        transform.scale = {scale[0], scale[1], scale[2]};
-
-        // ライトの向きは Transform 回転に追従（Application 側で direction に反映）するので
-        // ここでは特別扱い不要。回転ギズモを回せば光の向きも変わる。
-
-        // マルチ選択時: 移動デルタを他の選択エンティティにも適用
-        if (ctx.gizmoMode == GizmoMode::Translate && ctx.selectedEntities.size() > 1)
-        {
-            XMFLOAT3 delta = {transform.position.x - oldPos.x,
-                              transform.position.y - oldPos.y,
-                              transform.position.z - oldPos.z};
+            // 非ドラッグ中は毎フレーム置き直す（選択の増減にも追従）。
+            // ドラッグ中は前フレームの値を持ち越して差分の基準にする。
+            XMVECTOR sum = XMVectorZero();
+            int count = 0;
             for (auto e : ctx.selectedEntities)
             {
-                if (e == ctx.selectedEntity) continue;
                 if (!reg.valid(e) || !reg.all_of<Transform>(e)) continue;
-                auto& t = reg.get<Transform>(e);
-                t.position.x += delta.x;
-                t.position.y += delta.y;
-                t.position.z += delta.z;
+                const auto& t = reg.get<Transform>(e);
+                const XMMATRIX w = (t.parent != entt::null && reg.valid(t.parent))
+                    ? ComputeWorldMatrix(reg, e) : t.GetWorldMatrix();
+                sum = XMVectorAdd(sum, w.r[3]);
+                ++count;
             }
+            const XMMATRIX pivot = (count > 0)
+                ? XMMatrixTranslationFromVector(
+                      XMVectorScale(sum, 1.0f / static_cast<float>(count)))
+                : XMMatrixIdentity();
+            XMStoreFloat4x4(&m_gizmoPivot, pivot);
+        }
+        gizmoM = m_gizmoPivot;
+        // ピボットは平行移動のみ＝軸は常にワールド向き。マルチ選択で LOCAL にすると
+        // 代表 1 個の姿勢に群全体が引っ張られて直感に反するため WORLD 固定にする。
+        mode = ImGuizmo::WORLD;
+    }
+    const XMFLOAT4X4 gizmoBefore = gizmoM;
+
+    const bool manipulated = ImGuizmo::Manipulate(
+            &viewF._11, &projF._11,
+            op, mode,
+            &gizmoM._11, nullptr,
+            useSnap ? snapValues : nullptr);
+
+    // IsUsing() は Manipulate の「後」に読む＝掴んだフレームの状態が今フレームで確定する。
+    const bool isUsing = ImGuizmo::IsUsing();
+
+    if (manipulated)
+    {
+        if (multi)
+        {
+            // W = inv(操作前ピボット) * 操作後ピボット ＝ ワールド空間で群に掛ける変換。
+            // 各選択は worldNew = worldOld * W（行ベクトル規約）。回転/スケールは
+            // ピボット中心での回転・拡大になり、平行移動は従来と同じ挙動に一致する。
+            XMVECTOR det = XMVectorZero();
+            const XMMATRIX invBefore = XMMatrixInverse(&det, XMLoadFloat4x4(&gizmoBefore));
+            if (std::abs(XMVectorGetX(det)) > 1e-12f)
+            {
+                const XMMATRIX W = invBefore * XMLoadFloat4x4(&gizmoM);
+                for (auto e : ctx.selectedEntities)
+                {
+                    if (!reg.valid(e) || !reg.all_of<Transform>(e)) continue;
+                    auto& t = reg.get<Transform>(e);
+                    const bool childHasParent =
+                        (t.parent != entt::null && reg.valid(t.parent));
+                    const XMMATRIX oldWorld = childHasParent
+                        ? ComputeWorldMatrix(reg, e) : t.GetWorldMatrix();
+                    XMMATRIX newLocal = oldWorld * W;
+                    if (childHasParent)
+                        newLocal = newLocal
+                                 * XMMatrixInverse(nullptr, ComputeWorldMatrix(reg, t.parent));
+                    ApplyMatrixToTransform(t, newLocal);
+                }
+            }
+            m_gizmoPivot = gizmoM;   // 次フレームの差分基準
+        }
+        else
+        {
+            // 親がいる場合: 操作後のワールド行列を親の逆行列でローカルに戻す
+            XMMATRIX local = XMLoadFloat4x4(&gizmoM);
+            if (hasParent)
+                local = local * XMMatrixInverse(nullptr, ComputeWorldMatrix(reg, transform.parent));
+            ApplyMatrixToTransform(transform, local);
+            // ライトの向きは Transform 回転に追従（Application 側で direction に反映）するので
+            // ここでは特別扱い不要。回転ギズモを回せば光の向きも変わる。
+        }
+    }
+
+    // ---- ドラッグ中の増分を数値でオーバーレイ表示（代表エンティティ基準）----
+    if (isUsing && !m_gizmoStartGroup.empty() && reg.all_of<Transform>(ctx.selectedEntity))
+    {
+        const Transform* start = nullptr;
+        for (const auto& entry : m_gizmoStartGroup)
+            if (entry.first == ctx.selectedEntity) { start = &entry.second; break; }
+
+        if (start)
+        {
+            const Transform& now = reg.get<Transform>(ctx.selectedEntity);
+            char buf[128];
+            switch (ctx.gizmoMode)
+            {
+            case GizmoMode::Rotate:
+                std::snprintf(buf, sizeof(buf), "R  X %+.1f  Y %+.1f  Z %+.1f",
+                              now.rotation.x - start->rotation.x,
+                              now.rotation.y - start->rotation.y,
+                              now.rotation.z - start->rotation.z);
+                break;
+            case GizmoMode::Scale:
+                std::snprintf(buf, sizeof(buf), "S  X %.3f  Y %.3f  Z %.3f",
+                              ScaleRatio(now.scale.x, start->scale.x),
+                              ScaleRatio(now.scale.y, start->scale.y),
+                              ScaleRatio(now.scale.z, start->scale.z));
+                break;
+            case GizmoMode::Translate:
+            default:
+                std::snprintf(buf, sizeof(buf), "T  X %+.3f  Y %+.3f  Z %+.3f",
+                              now.position.x - start->position.x,
+                              now.position.y - start->position.y,
+                              now.position.z - start->position.z);
+                break;
+            }
+            DrawGizmoDeltaOverlay(buf);
         }
     }
 
@@ -300,7 +435,8 @@ void SceneViewPanel::HandleUiEditing(entt::registry& reg,
                                      EditorContext& ctx,
                                      f32 vpX, f32 vpY, f32 vpW, f32 vpH)
 {
-    m_uiClickConsumed = false;
+    // ビューポートツール（地形ブラシ等）が消費したクリックは UI 編集にも 3D ピックにも渡さない
+    m_uiClickConsumed = m_toolConsumed;
 
     if (!ctx.uiEditMode || vpW <= 0.0f || vpH <= 0.0f)
     {
@@ -447,7 +583,7 @@ void SceneViewPanel::HandleUiEditing(entt::registry& reg,
         && reg.valid(ctx.selectedEntity) && reg.all_of<UIRect>(ctx.selectedEntity);
     const bool gizmoBlocking = ctx.HasSelection() && !uiRectSelected
         && (ImGuizmo::IsUsing() || ImGuizmo::IsOver());
-    if (m_uiDragEdges == kUiDragNone
+    if (m_uiDragEdges == kUiDragNone && !m_uiClickConsumed
         && inViewport && !io.KeyAlt && !gizmoBlocking
         && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
     {
@@ -556,338 +692,139 @@ void SceneViewPanel::HandlePicking(entt::registry& reg,
         && (ImGuizmo::IsUsing() || ImGuizmo::IsOver());
     if (ImGui::GetIO().KeyAlt                 // Alt+左ドラッグはオービット操作なのでピッキングしない
         || gizmoBlocking
+        || m_toolConsumed                     // ビューポートツール（地形ブラシ等）が消費済み
         || m_uiClickConsumed                  // UI 編集（HandleUiEditing）がこのクリックを消費済み
         || ctx.floatingToolWindowHovered      // フローティングツール窓の上のクリックは背後のシーンを選択しない
         || !ImGui::IsMouseClicked(ImGuiMouseButton_Left))
         return;
 
-    ImVec2 mousePos = ImGui::GetIO().MousePos;
+    if (!camera) return;
+
+    const ImVec2 mousePos = ImGui::GetIO().MousePos;
 
     if (mousePos.x < vpX || mousePos.x >= vpX + vpW
         || mousePos.y < vpY || mousePos.y >= vpY + vpH)
         return;
 
-    // NDC
-    f32 ndcX = ((mousePos.x - vpX) / vpW) * 2.0f - 1.0f;
-    f32 ndcY = 1.0f - ((mousePos.y - vpY) / vpH) * 2.0f;
+    // 計測（perf_stats の cpuScopeMs "picking"）。editorUi の内数（二重計上）。
+    CpuScopeTimer _tPick(ctx.cpuScopeMs ? &ctx.cpuScopeMs[CpuPicking] : nullptr);
 
-    XMMATRIX view = camera->GetViewMatrix();
-    XMMATRIX proj = camera->GetProjectionMatrix();
-    XMMATRIX invView     = XMMatrixInverse(nullptr, view);
-    XMMATRIX invViewProj = XMMatrixInverse(nullptr, view * proj);
-    const XMVECTOR camRightV = invView.r[0];   // ビルボードスプライトのピッキング展開用
-    const XMVECTOR camUpV    = invView.r[1];
+    // 三角形単位の精密ピッキング（ScenePick）。ブロードフェーズに Application の描画リストを
+    // 使うので、旧実装のように 10 万体ぶんの ComputeWorldMatrix を回し直すことはもう無い。
+    const std::vector<ScenePickHit> hits = RaycastScene(
+        reg, ctx.drawItems, *camera, vpX, vpY, vpW, vpH, mousePos.x, mousePos.y);
 
-    // クリップ空間の near/far をワールドへアンプロジェクトしてレイを作る。
-    // 透視でも正射でも正しい（正射はカメラ位置基準だと平行レイにならず破綻する）。
-    XMVECTOR pNear = XMVector4Transform(XMVectorSet(ndcX, ndcY, 0.0f, 1.0f), invViewProj);
-    XMVECTOR pFar  = XMVector4Transform(XMVectorSet(ndcX, ndcY, 1.0f, 1.0f), invViewProj);
-    pNear = XMVectorScale(pNear, 1.0f / XMVectorGetW(pNear));
-    pFar  = XMVectorScale(pFar,  1.0f / XMVectorGetW(pFar));
-    XMVECTOR rayOrigin = pNear;
-    XMVECTOR rayDir    = XMVector3Normalize(XMVectorSubtract(pFar, pNear));
+    // ヒットをエンティティ単位に畳む（同一エンティティの複数サブメッシュは 1 件扱い）。
+    // 順序は距離（アイコン優先）そのままなので「手前 → 奥」の並びになる。
+    std::vector<entt::entity> chain;
+    chain.reserve(hits.size());
+    for (const ScenePickHit& h : hits)
+        if (std::find(chain.begin(), chain.end(), h.entity) == chain.end())
+            chain.push_back(h.entity);
 
-    f32 closestDist = FLT_MAX;
-    entt::entity closestEntity = entt::null;
+    const bool ctrl = ImGui::GetIO().KeyCtrl;
 
-    XMFLOAT3 orig, dir;
-    XMStoreFloat3(&orig, rayOrigin);
-    XMStoreFloat3(&dir, rayDir);
+    // ---- 重なりの循環選択（Unity と同じ）----
+    // 同じ画面座標（数 px 以内）を短時間に連続クリックすると、手前 → 奥へ選択が進む。
+    // 重なり列が前回と一致していることも条件にする（カメラを動かして中身が変わったら先頭へ戻す）。
+    // Ctrl+クリック（トグル選択）中は循環させず常に最前面を対象にする
+    //   ＝「奥のを意図せず足す/外す」が起きない＝マルチ選択の操作感を壊さない。
+    constexpr f32    kCycleRadiusSq = 4.0f * 4.0f;   // 4px 以内は同じ場所とみなす
+    constexpr double kCycleTimeout  = 1.2;           // 秒。空くと先頭へリセット
+    const double nowSec = ImGui::GetTime();
+    const f32 mdx = mousePos.x - m_cyclePos.x;
+    const f32 mdy = mousePos.y - m_cyclePos.y;
 
-    // AABB レイキャスト関数
-    auto rayTestAABB = [&](XMFLOAT3 worldMin, XMFLOAT3 worldMax) -> f32 {
-        if (worldMin.x > worldMax.x) std::swap(worldMin.x, worldMax.x);
-        if (worldMin.y > worldMax.y) std::swap(worldMin.y, worldMax.y);
-        if (worldMin.z > worldMax.z) std::swap(worldMin.z, worldMax.z);
-
-        f32 tmin = -FLT_MAX, tmax = FLT_MAX;
-        auto slabTest = [&](f32 o, f32 d, f32 bmin, f32 bmax) -> bool {
-            if (std::abs(d) < 1e-8f)
-                return (o >= bmin && o <= bmax);
-            f32 t1 = (bmin - o) / d;
-            f32 t2 = (bmax - o) / d;
-            if (t1 > t2) std::swap(t1, t2);
-            tmin = (std::max)(tmin, t1);
-            tmax = (std::min)(tmax, t2);
-            return tmin <= tmax;
-        };
-        if (slabTest(orig.x, dir.x, worldMin.x, worldMax.x)
-            && slabTest(orig.y, dir.y, worldMin.y, worldMax.y)
-            && slabTest(orig.z, dir.z, worldMin.z, worldMax.z)
-            && tmax > 0.0f)
-        {
-            f32 t = tmin > 0.0f ? tmin : tmax;
-            return t > 0.0f ? t : -1.0f;
-        }
-        return -1.0f;
-    };
-
-    // レイ vs 三角形（Möller–Trumbore, 両面）。ヒットで t(>0)、外れ/背面平行で -1。
-    auto rayTestTri = [&](XMVECTOR v0, XMVECTOR v1, XMVECTOR v2) -> f32 {
-        XMVECTOR e1 = XMVectorSubtract(v1, v0);
-        XMVECTOR e2 = XMVectorSubtract(v2, v0);
-        XMVECTOR p  = XMVector3Cross(rayDir, e2);
-        f32 det = XMVectorGetX(XMVector3Dot(e1, p));
-        if (std::abs(det) < 1e-8f) return -1.0f;          // レイが三角形と平行
-        f32 inv = 1.0f / det;
-        XMVECTOR tv = XMVectorSubtract(rayOrigin, v0);
-        f32 u = XMVectorGetX(XMVector3Dot(tv, p)) * inv;
-        if (u < 0.0f || u > 1.0f) return -1.0f;
-        XMVECTOR q = XMVector3Cross(tv, e1);
-        f32 v = XMVectorGetX(XMVector3Dot(rayDir, q)) * inv;
-        if (v < 0.0f || u + v > 1.0f) return -1.0f;
-        f32 t = XMVectorGetX(XMVector3Dot(e2, q)) * inv;
-        return t > 0.0f ? t : -1.0f;
-    };
-    // ワールド空間スプライトのクアッド（描画と同じ 4 隅）でレイ判定。絵の全面がクリック対象になる。
-    auto rayTestSprite = [&](const Sprite2D& sp, const XMMATRIX& world) -> f32 {
-        const f32 hx = sp.size.x * 0.5f, hy = sp.size.y * 0.5f;
-        XMVECTOR tl, tr, br, bl;
-        if (sp.billboard)
-        {
-            const XMVECTOR ctr = world.r[3];
-            const f32 sx = XMVectorGetX(XMVector3Length(world.r[0]));
-            const f32 sy = XMVectorGetX(XMVector3Length(world.r[1]));
-            const XMVECTOR R = XMVectorScale(camRightV, hx * sx);
-            const XMVECTOR U = XMVectorScale(camUpV,    hy * sy);
-            tl = XMVectorSubtract(XMVectorAdd(ctr, U), R);
-            tr = XMVectorAdd(XMVectorAdd(ctr, U), R);
-            br = XMVectorAdd(XMVectorSubtract(ctr, U), R);
-            bl = XMVectorSubtract(XMVectorSubtract(ctr, U), R);
-        }
-        else
-        {
-            tl = XMVector3Transform(XMVectorSet(-hx,  hy, 0.0f, 1.0f), world);
-            tr = XMVector3Transform(XMVectorSet( hx,  hy, 0.0f, 1.0f), world);
-            br = XMVector3Transform(XMVectorSet( hx, -hy, 0.0f, 1.0f), world);
-            bl = XMVector3Transform(XMVectorSet(-hx, -hy, 0.0f, 1.0f), world);
-        }
-        f32 t0 = rayTestTri(tl, tr, br);
-        f32 t1 = rayTestTri(tl, br, bl);
-        if (t0 < 0.0f) return t1;
-        if (t1 < 0.0f) return t0;
-        return (std::min)(t0, t1);
-    };
-
-    // 全 Transform 持ちエンティティをピッキング対象にする
-    auto pickView = reg.view<const Transform>();
-    for (auto [e, transform] : pickView.each())
+    int index = 0;
+    if (!ctrl && chain.size() > 1
+        && (mdx * mdx + mdy * mdy) <= kCycleRadiusSq
+        && (nowSec - m_cycleTime) <= kCycleTimeout
+        && chain == m_cycleChain)
     {
-        if (reg.all_of<GridPlane>(e)) continue;
-
-        // ワールド空間スプライト: 実際のクアッド全面でレイ判定（固定 AABB だと中央しか反応しない）
-        if (reg.all_of<Sprite2D>(e))
-        {
-            const auto& sp = reg.get<Sprite2D>(e);
-            if (sp.worldSpace && !sp.texturePath.empty())
-            {
-                XMMATRIX world = ComputeWorldMatrix(reg, e);
-                f32 t = rayTestSprite(sp, world);
-                if (t > 0.0f && t < closestDist)
-                {
-                    closestDist = t;
-                    closestEntity = e;
-                }
-                continue;   // AABB 判定はスキップ
-            }
-        }
-
-        XMFLOAT3 worldMin, worldMax;
-
-        if (reg.all_of<MeshRenderer>(e))
-        {
-            // MeshRenderer あり: 統合ローカルAABBの8頂点をワールド行列(回転込み)で変換して
-            // ワールドAABBを再構築する。旧実装は平行移動+スケールのみで回転を無視しており、
-            // 回転させたメッシュで見た目とヒット判定がズレてクリック選択が外れていた
-            // (PickEntityAndSubmesh と同じ修正)。
-            const auto& renderer = reg.get<MeshRenderer>(e);
-            XMFLOAT3 aabbMin = {  FLT_MAX,  FLT_MAX,  FLT_MAX };
-            XMFLOAT3 aabbMax = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
-            for (const auto* mesh : renderer.meshes)
-            {
-                if (!mesh) continue;
-                auto meshMin = mesh->GetAABBMin();
-                auto meshMax = mesh->GetAABBMax();
-                aabbMin.x = (std::min)(aabbMin.x, meshMin.x);
-                aabbMin.y = (std::min)(aabbMin.y, meshMin.y);
-                aabbMin.z = (std::min)(aabbMin.z, meshMin.z);
-                aabbMax.x = (std::max)(aabbMax.x, meshMax.x);
-                aabbMax.y = (std::max)(aabbMax.y, meshMax.y);
-                aabbMax.z = (std::max)(aabbMax.z, meshMax.z);
-            }
-            const XMMATRIX wm = ComputeWorldMatrix(reg, e);
-            worldMin = {  FLT_MAX,  FLT_MAX,  FLT_MAX };
-            worldMax = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
-            for (int ci = 0; ci < 8; ++ci)
-            {
-                XMVECTOR corner = XMVectorSet(
-                    (ci & 1) ? aabbMax.x : aabbMin.x,
-                    (ci & 2) ? aabbMax.y : aabbMin.y,
-                    (ci & 4) ? aabbMax.z : aabbMin.z, 1.0f);
-                XMFLOAT3 c;
-                XMStoreFloat3(&c, XMVector3TransformCoord(corner, wm));
-                worldMin.x = (std::min)(worldMin.x, c.x);
-                worldMin.y = (std::min)(worldMin.y, c.y);
-                worldMin.z = (std::min)(worldMin.z, c.z);
-                worldMax.x = (std::max)(worldMax.x, c.x);
-                worldMax.y = (std::max)(worldMax.y, c.y);
-                worldMax.z = (std::max)(worldMax.z, c.z);
-            }
-        }
-        else
-        {
-            // MeshRenderer なし (Camera/Light/Empty): ワールド位置中心の固定サイズ AABB
-            XMFLOAT3 wpos = transform.position;
-            if (transform.parent != entt::null && reg.valid(transform.parent))
-            {
-                XMMATRIX wm = ComputeWorldMatrix(reg, e);
-                XMFLOAT4X4 wf;
-                XMStoreFloat4x4(&wf, wm);
-                wpos = {wf._41, wf._42, wf._43};
-            }
-            constexpr f32 kIconHalf = 0.5f;
-            worldMin = {
-                wpos.x - kIconHalf,
-                wpos.y - kIconHalf,
-                wpos.z - kIconHalf
-            };
-            worldMax = {
-                wpos.x + kIconHalf,
-                wpos.y + kIconHalf,
-                wpos.z + kIconHalf
-            };
-        }
-
-        f32 t = rayTestAABB(worldMin, worldMax);
-        if (t > 0.0f && t < closestDist)
-        {
-            closestDist = t;
-            closestEntity = e;
-        }
+        index = (m_cycleIndex + 1) % static_cast<int>(chain.size());
     }
 
-    // Ctrl+クリックでマルチ選択
-    bool ctrl = ImGui::GetIO().KeyCtrl;
+    m_cyclePos   = {mousePos.x, mousePos.y};
+    m_cycleTime  = nowSec;
+    m_cycleChain = chain;
+    m_cycleIndex = index;
+
+    const entt::entity picked =
+        chain.empty() ? entt::null : chain[static_cast<size_t>(index)];
+
     if (ctrl)
     {
-        if (closestEntity != entt::null)
-            ctx.ToggleSelection(closestEntity);
+        if (picked != entt::null)
+            ctx.ToggleSelection(picked);
     }
     else
     {
-        ctx.Select(closestEntity);
+        ctx.Select(picked);
     }
 }
 
+bool SceneViewPanel::RunViewportTools(EditorContext& ctx,
+                                      Camera* camera,
+                                      f32 vpX, f32 vpY, f32 vpW, f32 vpH)
+{
+    m_toolConsumed = false;
+    if (ctx.viewportToolHandlers.empty() || !camera || vpW <= 0.0f || vpH <= 0.0f)
+        return false;
+
+    const ImGuiIO& io = ImGui::GetIO();
+
+    ViewportInput in;
+    in.mouseX   = io.MousePos.x;
+    in.mouseY   = io.MousePos.y;
+    in.vpX      = vpX;
+    in.vpY      = vpY;
+    in.vpW      = vpW;
+    in.vpH      = vpH;
+    in.camera   = camera;
+    in.inViewport = !ctx.floatingToolWindowHovered
+        && in.mouseX >= vpX && in.mouseX < vpX + vpW
+        && in.mouseY >= vpY && in.mouseY < vpY + vpH;
+    in.pressed  = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+    in.dragging = ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f);
+    in.released = ImGui::IsMouseReleased(ImGuiMouseButton_Left);
+    ScreenRay(*camera, vpX, vpY, vpW, vpH, in.mouseX, in.mouseY, in.rayOrigin, in.rayDir);
+
+    for (auto& handler : ctx.viewportToolHandlers)
+    {
+        if (handler && handler(in)) { m_toolConsumed = true; break; }
+    }
+    return m_toolConsumed;
+}
+
 SubmeshPickResult SceneViewPanel::PickEntityAndSubmesh(entt::registry& reg,
+                                                       EditorContext& ctx,
                                                        Camera* camera,
                                                        f32 vpX, f32 vpY, f32 vpW, f32 vpH)
 {
     SubmeshPickResult result;
+    if (!camera) return result;
 
-    ImVec2 mousePos = ImGui::GetIO().MousePos;
+    const ImVec2 mousePos = ImGui::GetIO().MousePos;
     if (mousePos.x < vpX || mousePos.x >= vpX + vpW
         || mousePos.y < vpY || mousePos.y >= vpY + vpH)
         return result;
 
-    // NDC → ワールドレイ。HandlePicking と同じ組み立て方（透視/正射どちらでも正しい）。
-    f32 ndcX = ((mousePos.x - vpX) / vpW) * 2.0f - 1.0f;
-    f32 ndcY = 1.0f - ((mousePos.y - vpY) / vpH) * 2.0f;
+    CpuScopeTimer _tPick(ctx.cpuScopeMs ? &ctx.cpuScopeMs[CpuPicking] : nullptr);
 
-    XMMATRIX view = camera->GetViewMatrix();
-    XMMATRIX proj = camera->GetProjectionMatrix();
-    XMMATRIX invViewProj = XMMatrixInverse(nullptr, view * proj);
+    // マテリアル適用先の特定なのでメッシュ限定（アイコン/ワールドスプライトは拾わない）。
+    // 床グリッドの除外は RaycastScene 側で済んでいる（描画リストが GridPlane を含まない／
+    // フォールバック経路も exclude<GridPlane>）。これが無いと巨大な床平面が最近ヒットを奪い、
+    // D&D したマテリアルがグリッドに吸われて「適用したのに何も変わらない」状態になる。
+    ScenePickOptions opt;
+    opt.includeNonMesh = false;
 
-    XMVECTOR pNear = XMVector4Transform(XMVectorSet(ndcX, ndcY, 0.0f, 1.0f), invViewProj);
-    XMVECTOR pFar  = XMVector4Transform(XMVectorSet(ndcX, ndcY, 1.0f, 1.0f), invViewProj);
-    pNear = XMVectorScale(pNear, 1.0f / XMVectorGetW(pNear));
-    pFar  = XMVectorScale(pFar,  1.0f / XMVectorGetW(pFar));
-    XMVECTOR rayOrigin = pNear;
-    XMVECTOR rayDir    = XMVector3Normalize(XMVectorSubtract(pFar, pNear));
-
-    XMFLOAT3 orig, dir;
-    XMStoreFloat3(&orig, rayOrigin);
-    XMStoreFloat3(&dir, rayDir);
-
-    auto rayTestAABB = [&](XMFLOAT3 worldMin, XMFLOAT3 worldMax) -> f32 {
-        if (worldMin.x > worldMax.x) std::swap(worldMin.x, worldMax.x);
-        if (worldMin.y > worldMax.y) std::swap(worldMin.y, worldMax.y);
-        if (worldMin.z > worldMax.z) std::swap(worldMin.z, worldMax.z);
-
-        f32 tmin = -FLT_MAX, tmax = FLT_MAX;
-        auto slabTest = [&](f32 o, f32 d, f32 bmin, f32 bmax) -> bool {
-            if (std::abs(d) < 1e-8f)
-                return (o >= bmin && o <= bmax);
-            f32 t1 = (bmin - o) / d;
-            f32 t2 = (bmax - o) / d;
-            if (t1 > t2) std::swap(t1, t2);
-            tmin = (std::max)(tmin, t1);
-            tmax = (std::min)(tmax, t2);
-            return tmin <= tmax;
-        };
-        if (slabTest(orig.x, dir.x, worldMin.x, worldMax.x)
-            && slabTest(orig.y, dir.y, worldMin.y, worldMax.y)
-            && slabTest(orig.z, dir.z, worldMin.z, worldMax.z)
-            && tmax > 0.0f)
-        {
-            f32 t = tmin > 0.0f ? tmin : tmax;
-            return t > 0.0f ? t : -1.0f;
-        }
-        return -1.0f;
-    };
-
-    f32 closestDist = FLT_MAX;
-
-    // MeshRenderer 持ちエンティティのみ対象。HandlePicking と違い、サブメッシュ単位で
-    // 個別に AABB を作りレイテストする(マージした全体AABBだと「どのサブメッシュか」が分からない)。
-    auto meshView = reg.view<const Transform, const MeshRenderer>();
-    for (auto [e, transform, renderer] : meshView.each())
+    const std::vector<ScenePickHit> hits = RaycastScene(
+        reg, ctx.drawItems, *camera, vpX, vpY, vpW, vpH, mousePos.x, mousePos.y, opt);
+    if (!hits.empty())
     {
-        // 床グリッドはマテリアル適用対象外(HandlePicking と同じ扱い)。これが無いと
-        // 巨大な床平面が最近ヒットを奪い、D&Dしたマテリアルがグリッドに吸われて
-        // 「適用したのに何も変わらない」状態になる(グリッドは専用PSOでmaterialAssetを無視する)。
-        if (reg.all_of<GridPlane>(e)) continue;
-
-        // ローカルAABBの8頂点をワールド行列(回転込み)で変換してワールドAABBを再構築する。
-        // 旧実装は平行移動+スケールのみで回転を無視しており、回転させたメッシュで見た目と
-        // ヒット判定がズレてドロップが外れていた。
-        const XMMATRIX wm = ComputeWorldMatrix(reg, e);
-
-        for (u32 mi = 0; mi < static_cast<u32>(renderer.meshes.size()); ++mi)
-        {
-            const auto* mesh = renderer.meshes[mi];
-            if (!mesh) continue;
-            auto meshMin = mesh->GetAABBMin();
-            auto meshMax = mesh->GetAABBMax();
-
-            XMFLOAT3 worldMin = { FLT_MAX,  FLT_MAX,  FLT_MAX};
-            XMFLOAT3 worldMax = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
-            for (int ci = 0; ci < 8; ++ci)
-            {
-                XMVECTOR corner = XMVectorSet(
-                    (ci & 1) ? meshMax.x : meshMin.x,
-                    (ci & 2) ? meshMax.y : meshMin.y,
-                    (ci & 4) ? meshMax.z : meshMin.z, 1.0f);
-                XMFLOAT3 c;
-                XMStoreFloat3(&c, XMVector3TransformCoord(corner, wm));
-                worldMin.x = (std::min)(worldMin.x, c.x);
-                worldMin.y = (std::min)(worldMin.y, c.y);
-                worldMin.z = (std::min)(worldMin.z, c.z);
-                worldMax.x = (std::max)(worldMax.x, c.x);
-                worldMax.y = (std::max)(worldMax.y, c.y);
-                worldMax.z = (std::max)(worldMax.z, c.z);
-            }
-
-            f32 t = rayTestAABB(worldMin, worldMax);
-            if (t > 0.0f && t < closestDist)
-            {
-                closestDist = t;
-                result.entity = e;
-                result.submeshIndex = mi;
-            }
-        }
+        result.entity       = hits.front().entity;
+        result.submeshIndex = hits.front().submeshIndex;
     }
-
     return result;
 }
 
@@ -909,8 +846,9 @@ void SceneViewPanel::HandleTextureContextMenu(entt::registry& reg,
         ImVec2 mp = io.MousePos;
         bool inViewport = !ctx.floatingToolWindowHovered
             && mp.x >= vpX && mp.x < vpX + vpW && mp.y >= vpY && mp.y < vpY + vpH;
-        m_textureCtxTarget = inViewport ? PickEntityAndSubmesh(reg, camera, vpX, vpY, vpW, vpH)
-                                        : SubmeshPickResult{};
+        m_textureCtxTarget = inViewport
+            ? PickEntityAndSubmesh(reg, ctx, camera, vpX, vpY, vpW, vpH)
+            : SubmeshPickResult{};
     }
 
     if (ImGui::IsMouseReleased(ImGuiMouseButton_Right) && m_textureCtxTarget.entity != entt::null)

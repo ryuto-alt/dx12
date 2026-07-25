@@ -4,17 +4,38 @@
 #include <vector>
 #include <algorithm>
 #include <memory>
+#include <functional>
 #include <entt/entt.hpp>
 #include <DirectXMath.h>
 #include "core/Types.h"
 #include "core/mcp/McpDeferred.h"
 #include "editor/UndoSystem.h"
 #include "editor/EditorIcons.h"
+#include "renderer/DrawItem.h"   // ピッキングのブロードフェーズ候補（Application が毎フレーム構築）
 
 namespace dx12e
 {
 
+class Camera;
+
 enum class GizmoMode { Translate, Rotate, Scale };
+
+// ビューポート上のマウス入力の最小スナップショット。
+// SceneViewPanel が「UI 編集・3D ピッキングより前」に EditorContext::viewportToolHandlers を
+// 順に呼び、true を返したハンドラがそのクリックを消費する（以降のピック/UI編集は行わない）。
+// 地形ブラシ・ライトのハンドル操作など、後から生えるビューポートツールの受け口。
+struct ViewportInput
+{
+    f32 mouseX = 0.0f, mouseY = 0.0f;                    // スクリーン座標（ImGui 座標）
+    f32 vpX = 0.0f, vpY = 0.0f, vpW = 0.0f, vpH = 0.0f;  // ビューポート矩形
+    Camera* camera = nullptr;
+    DirectX::XMFLOAT3 rayOrigin{0.0f, 0.0f, 0.0f};
+    DirectX::XMFLOAT3 rayDir{0.0f, 0.0f, 1.0f};          // 正規化済み
+    bool inViewport = false;
+    bool pressed    = false;   // 今フレーム左ボタンを押した
+    bool dragging   = false;   // 左ボタンを押したまま動かしている
+    bool released   = false;   // 今フレーム左ボタンを離した
+};
 
 // ツールバーのPlayドロップダウンで選ぶマルチプレイのテストロール(フェーズ⑨)。
 // EnterPlayModeがこれを見てnet:host()/net:join()相当を自動実行する(Lua無しでの手早い動作確認用)。
@@ -43,6 +64,34 @@ struct McpPendingDelete
 {
     entt::entity entity = entt::null;
     McpDeferred  mcp;
+};
+
+// MCP 由来の「手続き的メッシュ」生成要求（地形 / スカルプト素体 / モデルの編集可能化）。
+// Scene::SpawnTerrain / SpawnSculpt は GPU へメッシュを載せるので記録中の cmdList が要る＝
+// MCP の受信時点（フレーム先頭）では実行できない。pendingSpawns と同じくフレーム境界で処理し、
+// 本物の entityId を遅延応答で返す。
+struct McpPendingProcCreate
+{
+    enum class Kind { Terrain = 0, Sculpt = 1, SculptFromEntity = 2 };
+
+    Kind              kind = Kind::Terrain;
+    std::string       name;
+    DirectX::XMFLOAT3 position{0.0f, 0.0f, 0.0f};
+
+    // Terrain
+    u32 resolution = 128;
+    f32 worldSize  = 200.0f;
+    f32 maxHeight  = 200.0f;
+
+    // Sculpt（素体）
+    int primitive    = 1;    // SculptPrimitive（0=Box,1=Sphere,2=Plane,3=Cylinder）
+    u32 subdivisions = 16;
+    f32 size         = 2.0f;
+
+    // SculptFromEntity（既存モデルを編集可能にする）
+    entt::entity source = entt::null;
+
+    McpDeferred mcp;
 };
 
 struct PendingScriptAttach
@@ -128,6 +177,26 @@ public:
     // ギズモ
     GizmoMode gizmoMode      = GizmoMode::Translate;
     bool      gizmoLocalSpace = false;
+
+    // ギズモのスナップ量（従来はハードコードやった。エンジン設定ウィンドウで編集する）。
+    // 既定値は元のハードコード値と同じ＝挙動は変わらない。
+    f32  snapTranslate  = 1.0f;    // m
+    f32  snapRotateDeg  = 15.0f;   // degree
+    f32  snapScale      = 0.1f;    // 倍率
+    bool snapAlways     = false;   // true なら Ctrl 押下なしでも常にスナップ
+
+    // ビューポートツールのフック。SceneViewPanel が UI 編集/3D ピッキングより前に
+    // 先頭から順に呼び、true を返した時点で打ち切って以降の編集操作を行わない。
+    // （地形ブラシ、ライトのハンドル操作などがここに登録する。ViewportInput 参照）
+    std::vector<std::function<bool(const ViewportInput&)>> viewportToolHandlers;
+
+    // ---- Application から借りている読み取り専用データ（Application::Initialize が設定）----
+    // 今フレームの描画リスト。精密ピッキングのブロードフェーズ候補に使う（null なら
+    // SceneViewPanel が従来どおり entt 走査へフォールバックする）。
+    const std::vector<DrawItem>* drawItems = nullptr;
+    // Application::m_cpuMs の先頭。CpuPicking / CpuGizmo をここへ加算すると
+    // MCP の dx12_perf_stats の cpuScopeMs に出る。null なら計測しない。
+    f32* cpuScopeMs = nullptr;
 
     // 2D ビューモード（Unity の 2D ボタン相当）。ON 中はエディタカメラを正射＋XY平面正対に固定し、
     // 回転/ドリーを禁止（中ドラッグでパン、ホイールでズーム）。ギズモも正射モードで表示する。
@@ -271,6 +340,8 @@ public:
     std::vector<entt::entity>        pendingDeletions;
     std::vector<McpPendingDelete>    mcpDeletions;         // MCP 由来削除（応答に deletedCount を返す）
     std::vector<McpPendingDelete>    mcpDuplications;      // MCP 由来複製（.entity=複製元。応答に複製先 id を返す）
+    // MCP 由来の地形/スカルプト生成（GPU メッシュ構築に cmdList が要るのでフレーム境界で処理）
+    std::vector<McpPendingProcCreate> mcpProcCreates;
     // Undo/Redo はエンティティ復元（モデル再ロード）を伴う場合があるため
     // cmdList が有効なフレーム境界まで遅延する
     bool pendingUndo = false;
@@ -343,6 +414,27 @@ public:
 
     // エンジン診断パネル（UI 自動テストの実行・結果表示。ツール > エンジン診断）
     bool showEngineDiagnostics = false;
+
+    // 地形ツール窓（ハイトフィールド地形の作成 / スカルプトブラシ / 浸食 / 山の一発生成）。
+    // VfxEditor 等と同じ独立フローティング窓なので AnyToolWindowOpen には含めない。
+    // ヒエラルキー「＋エンティティ追加 → 地形」で開き、Terrain 付きエンティティを選ぶと自動で開く。
+    bool showTerrainEditor = false;
+
+    // ===== ライティング編集（editor/LightHandles.* / editor/panels/LightingPanel.*）=====
+    // ライティング・パネル（シーンの光を1画面で詰める）。VfxEditor 等と同じ独立フローティング窓
+    // として開くので AnyToolWindowOpen には含めない＝右下タブ領域を占有しない。
+    bool showLighting = false;
+    // シーンビューで全ライトの影響範囲（点=半径リング / スポット=コーン）を薄いワイヤで常時表示。
+    // 選択中でなくても見えるので「どこまで光が届くか」を一望できる。
+    bool lightWireAll = false;
+    // ライティング・パネルの「環境マップを適用 / 再ベイク」で立つ。Application がフレーム境界で
+    // 消費し、m_loadedSkyboxPath をクリアして IBL を焼き直す（Skybox / IBL 窓のボタンと同じ動作）。
+    bool pendingSkyboxRebake = false;
+
+    // スカルプト窓（任意メッシュの頂点スカルプト。洞窟・アーチ・岩などの異形）。
+    // 地形ツール窓と同じ独立フローティング窓なので AnyToolWindowOpen には含めない。
+    // ヒエラルキー「＋エンティティ追加 → スカルプト」で開き、SculptMesh 付きを選ぶと自動で開く。
+    bool showSculptEditor = false;
 };
 
 } // namespace dx12e

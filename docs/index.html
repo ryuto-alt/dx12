@@ -523,8 +523,9 @@ cmake --build build/release</code></pre>
             <thead><tr><th>キー</th><th>動作</th></tr></thead>
             <tbody>
               <tr><td><span class="kbd">W</span> / <span class="kbd">E</span> / <span class="kbd">R</span></td><td>ギズモ切替（移動 / 回転 / スケール）</td></tr>
-              <tr><td><span class="kbd">T</span></td><td>ギズモのローカル / ワールド空間切替（<span class="kbd">Ctrl</span> ドラッグでスナップ）</td></tr>
-              <tr><td><span class="kbd">左クリック</span></td><td>ピッキング選択（<span class="kbd">Ctrl</span>+クリックでマルチ選択）</td></tr>
+              <tr><td><span class="kbd">T</span></td><td>ギズモのローカル / ワールド空間切替（<span class="kbd">Ctrl</span> ドラッグでスナップ）。スナップ量と「常にスナップ」は<b>エンジン設定 &gt; ギズモ</b>で変えられる</td></tr>
+              <tr><td><span class="kbd">左クリック</span></td><td><b>三角形単位</b>の精密ピッキングで選択（<span class="kbd">Ctrl</span>+クリックでマルチ選択）。ライト / カメラ / Empty はアイコンのスクリーン半径で判定</td></tr>
+              <tr><td><span class="kbd">同じ場所を連続クリック</span></td><td>重なりの<b>循環選択</b>。手前 → 奥へ1段ずつ進む（Ctrl+クリック中は常に最前面）</td></tr>
               <tr><td><span class="kbd">Ctrl</span>+<span class="kbd">Z</span> / <span class="kbd">Ctrl</span>+<span class="kbd">Y</span></td><td>Undo / Redo（移動・編集・追加削除・複製・リネーム・親子変更を網羅）</td></tr>
               <tr><td><span class="kbd">Ctrl</span>+<span class="kbd">D</span></td><td>複製（<span class="kbd">Ctrl</span>+<span class="kbd">C</span> / <span class="kbd">V</span> でコピー / ペースト、全コンポーネントをディープコピー）</td></tr>
               <tr><td><span class="kbd">Del</span></td><td>削除（子も一括。Undoでサブツリーごと復元）</td></tr>
@@ -544,7 +545,57 @@ cmake --build build/release</code></pre>
             スクロール/連番はルート定数（<code class="inl">b2 uvScaleOffset</code>）経由で <b>頂点バッファ再生成なし</b>＝毎フレーム変えても安価。
             優先順は 連番 &gt; UVスクロール で、タイリングとスクロールは併用可。既定の <code class="inl">Forward</code> /
             <code class="inl">ForwardSkinned</code> でのみ効く（カスタムシェーダーは自前で b2 を読む）。</li>
+          <li><b>ギズモはマルチ選択でも移動 / 回転 / スケールが全部効く</b>（選択群の中心を仮想ピボットにして群ごと変換）。
+            ドラッグ中は増分（<code class="inl">T X +1.234</code> など）が数値でオーバーレイ表示され、掴める軸はホバーで太く光る。</li>
         </ul>
+
+        <h3>地形とスカルプト（ビューポートで彫る）</h3>
+        <p>ステージの地面と岩は<b>エディタの中で彫って作る</b>。Hierarchy の「✚ エンティティ追加」から <b>Terrain</b>（ハイトフィールド地形）と <b>Sculpt</b>（任意メッシュの頂点編集）を選ぶと、それぞれ専用のツール窓が開く。どちらも出来上がるのは<b>普通の Mesh を持つ普通のエンティティ</b>なので、カリング・影・ピッキング・<code class="inl">.dxmat</code> 割当がそのまま効く。</p>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th></th><th>Terrain（地形）</th><th>Sculpt（異形）</th></tr></thead>
+            <tbody>
+              <tr><td>得意なもの</td><td>山 / 谷 / 丘 / 平野。広いステージの地面</td><td>洞窟 / アーチ / せり出した崖 / 岩 / 柱（<b>オーバーハングが作れる</b>）</td></tr>
+              <tr><td>データ</td><td>XZ グリッドの高さ配列（32〜512）</td><td>メッシュの頂点位置（トポロジは変えない）</td></tr>
+              <tr><td>素材</td><td>解像度とサイズを決めて生成。fBm プリセット（なだらかな丘 / 峡谷 / 険しい山脈）で一発生成、熱浸食で山肌を崩せる</td><td>箱 / 球 / 板 / 円柱の素体、または<b>既存モデルを「編集可能にする」</b>（元の <code class="inl">.glb</code> は書き換えない）</td></tr>
+              <tr><td>ブラシ</td><td>盛る / 削る / ならす / 平らに / ノイズ / 浸食（6種）＋ X・Z ミラー</td><td>盛る / 引っぱる / 押し込む / ならす / 平らに / つまむ / ノイズ / 掴む（8種）＋ X・Y・Z ミラー</td></tr>
+              <tr><td>当たり判定</td><td>Jolt <code class="inl">HeightFieldShape</code>。乗る / 滑る / 斜面登坂がそのまま効く</td><td>Jolt <code class="inl">MeshShape</code>＝<b>彫った通りに当たる</b>（洞窟に入れる）。動く剛体に付けた場合だけ凸包へフォールバック</td></tr>
+              <tr><td>保存先</td><td><code class="inl">assets/terrain/*.hf</code></td><td><code class="inl">assets/sculpt/*.smsh</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>ブラシ操作</th><th>動作</th></tr></thead>
+            <tbody>
+              <tr><td><span class="kbd">左ドラッグ</span></td><td>彫る。ブラシの円は地形の起伏 / メッシュ表面に沿って描かれる</td></tr>
+              <tr><td><span class="kbd">Shift</span> + ドラッグ</td><td>逆方向（盛る ↔ 削る）</td></tr>
+              <tr><td><span class="kbd">Ctrl</span> + ドラッグ</td><td>押している間だけ「ならす（Smooth）」</td></tr>
+              <tr><td><span class="kbd">[</span> / <span class="kbd">]</span></td><td>ブラシ半径を縮める / 広げる</td></tr>
+              <tr><td><span class="kbd">Ctrl</span>+<span class="kbd">Z</span></td><td><b>ストローク単位</b>で戻る（押下 〜 離すで1エントリ。触った所の差分だけを持つ）</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>窓を閉じるか「ブラシ有効」を OFF にすると通常の選択に戻る。<b>地形ツール窓とスカルプト窓は同時に開かないこと</b>（ビューポートのクリックは地形ブラシが先に取る）。</p>
+        <div class="note">
+          <span class="ti">i</span>
+          <div>高さ配列と頂点配列は<b>シーン JSON に入らない</b>（数万要素で JSON が破綻するため）。専用のバイナリへ<b>ストロークが終わるたび自動保存</b>され、配布ビルドでは <code class="inl">game.pak</code> から復号して読む。詳しい手順とシーン JSON の書式は <a href="https://github.com/ryuto-alt/dx12/blob/master/docs/AUTHORING.md" target="_blank" rel="noopener">AUTHORING.md</a> の 10.5 / 10.6 節。</div>
+        </div>
+
+        <h3>ライティングを画面で詰める</h3>
+        <p>光は<b>ビューポートで直接つかんで動かす</b>。数値を Inspector に打ち込まなくても、見ながら決められる。</p>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>操作</th><th>動作</th></tr></thead>
+            <tbody>
+              <tr><td><span class="kbd">L</span> 押しっぱなし + マウス移動</td><td>太陽（最初の <code class="inl">DirectionalLight</code>）の向きを回す。方位 / 高度をビュー上端にオーバーレイ表示。離すと Undo が1エントリ積まれる</td></tr>
+              <tr><td>ライトを選択 → 丸ハンドルをドラッグ</td><td>スポット = 外 / 内コーン角・距離、ポイント = 距離、平行光 = 向き</td></tr>
+              <tr><td><b>ツール &gt; ライティング</b></td><td>ライト一覧（灯数の上限警告つき・目玉で一時ミュート）/ 太陽（時刻・方位・高度・色温度）/ 影 / スカイ・IBL / プリセット（昼・夕暮れ・夜・屋内・ホラー・スタジオ）/ 3点ライト設置</td></tr>
+              <tr><td>「全ライトの影響範囲を表示」</td><td>選択していないライトの range / コーンも薄いワイヤで出る＝どこまで光が届くか一望できる</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>パネルの時刻カーブは Lua の <code class="inl">Lighting.setTimeOfDay</code> と<b>同じ式</b>。だからエディタで作った空気感をそのまま <a href="#lua-api">Lua の <code class="inl">Lighting</code> / <code class="inl">Tween</code> / <code class="inl">Flicker</code></a> で動かせる（ロウソクの揺らぎ・時間帯変化・雷）。</p>
 
         <h3>コンソール</h3>
         <p>アセットブラウザの隣タブに常設。エンジン / Lua / ビルド / MCP の全ログが1箇所に集まる（Unity・Unreal のコンソールと同じ位置づけ）。</p>
@@ -706,6 +757,8 @@ properties = {
               <tr><td><code>e:hasComponent("T")</code></td><td>所持判定。T = <code>MeshRenderer / PointLight / DirectionalLight / SpotLight / Camera / AudioSource / ParticleEmitter / Trigger / CharacterController / SkeletalAnimation / RigidBody …</code></td></tr>
               <tr><td><code>e:playAnim(i, blend)</code></td><td>スケルタルアニメ再生（<code>blend</code> 秒でクロスフェード）。<code>e:playAnimByName(name, blend)</code></td></tr>
               <tr><td><code>e:setLooping(b)</code> / <code>e:getAnimCount()</code> / <code>e:getAnimName(i)</code></td><td>ループ設定 / クリップ数 / クリップ名</td></tr>
+              <tr><td><code>e:light()</code> / <code>e:addLight("point")</code> / <code>e:removeLight()</code></td><td><code>Light</code>（Point/Directional/Spot を1つにまとめたプロキシ）を取得 / 後付け / 削除。無ければ <code>light()</code> は nil</td></tr>
+              <tr><td><code>Light</code></td><td><code>.type .intensity .color .direction .range .ambient .innerAngle .outerAngle .castShadows</code>（持っていない型の項目は読むと既定値・書くと無視）</td></tr>
             </tbody>
           </table>
         </div>
@@ -736,6 +789,11 @@ properties = {
               <tr><td><code>scene:setMeshAnimMode(e, mode)</code> / <code>isMeshAnimDone(e)</code></td><td>再生モード（0=ループ 1=単発 2=往復）／単発の再生が終わったか</td></tr>
               <tr><td><code>scene:queryByTag(tag)</code></td><td>タグ一致エンティティの<b>名前配列</b>（RTSの群選択など）</td></tr>
               <tr><td><code>scene:queryInBox(minX,minZ,maxX,maxZ[,tag])</code></td><td>XZ矩形内の名前配列（矩形選択）</td></tr>
+              <tr><td><code>scene:sun()</code></td><td>最初の <code>DirectionalLight</code>（＝太陽）を <code>Light</code> で返す。時間帯演出はこれを駆動する</td></tr>
+              <tr><td><code>scene:lightCount()</code></td><td><code>{point=, spot=, directional=, maxPoint=8, maxSpot=8}</code>。<b>9個目以降は黙って無視される</b>ので確認用</td></tr>
+              <tr><td><code>scene:setAmbient(v)</code> / <code>getAmbient()</code></td><td>環境光＝影部分の明るさ（実体は <code>DirectionalLight.ambient</code>）</td></tr>
+              <tr><td><code>scene:setShadowsEnabled(b)</code> / <code>getShadowsEnabled()</code></td><td>リアルタイム影（CSM）の ON/OFF。false で影パスごとスキップ</td></tr>
+              <tr><td><code>scene:setSkybox{...}</code> / <code>getSkybox()</code></td><td>IBL / スカイボックス強度・描画（<code>iblIntensity</code> / <code>skyboxIntensity</code> / <code>drawSkybox</code>）</td></tr>
             </tbody>
           </table>
         </div>
@@ -820,6 +878,48 @@ FX.<span class="tok-fn">explosion</span>(x, y, z, scale)    <span class="tok-c">
 FX.<span class="tok-fn">supernova</span>(x, y, z)           <span class="tok-c">-- レベルアップ超新星</span>
 FX.<span class="tok-fn">spark</span>(x, y, z)               <span class="tok-c">-- 着弾火花 / FX.lightning / FX.pillar / FX.hit</span>
 vfx.<span class="tok-fn">play</span>(<span class="tok-s">"explosion"</span>, x, y, z, scale) <span class="tok-c">-- 名前で再生する統一窓口</span></code></pre>
+
+        <h3><code class="inl">Lighting</code> / <code class="inl">Tween</code> / <code class="inl">Flicker</code>：ライティング演出</h3>
+        <p>覚えるのは 3 つだけ。<b>プロパティは素直に読み書き</b>、<b>時間変化は汎用 <code class="inl">Tween</code> 1 本</b>、
+        <b>明滅は Quake 由来の lightstyle 文字列</b>。演出は既存の毎フレームフックに乗るので
+        <code class="inl">time.setScale(0)</code> で一緒に止まり、Play 開始で全部クリアされる。</p>
+<pre><code><span class="tok-c">-- ① ライトを掴んで直接いじる（point/directional/spot の区別なく同じプロパティ名）</span>
+<span class="tok-k">local</span> lamp = <span class="tok-fn">findLight</span>(<span class="tok-s">"Lamp"</span>)          <span class="tok-c">-- scene:findEntity("Lamp"):light() と同じ</span>
+lamp.intensity = <span class="tok-n">8</span>
+lamp.color     = Vec3.<span class="tok-fn">new</span>(<span class="tok-n">1</span>, <span class="tok-n">0.7</span>, <span class="tok-n">0.3</span>)
+
+<span class="tok-c">-- ② 汎用トゥイーン（数値でも色でも。target は table/Light/Transform/Post どれでも可）</span>
+<span class="tok-fn">Tween</span>(lamp, <span class="tok-s">"intensity"</span>, <span class="tok-n">0</span>, <span class="tok-n">1.5</span>, { ease=<span class="tok-s">"inOutQuad"</span>, onComplete=fn })
+Lighting.<span class="tok-fn">pulse</span>(lamp, <span class="tok-n">0.8</span>, <span class="tok-n">0.5</span>, <span class="tok-n">4.0</span>)     <span class="tok-c">-- min..max を往復（呼吸/鼓動）</span>
+
+<span class="tok-c">-- ③ 明滅は lightstyle 文字列（1文字=1/10秒、'a'=消灯 'm'=等倍 'z'≒2倍）</span>
+<span class="tok-fn">Flicker</span>(lamp, <span class="tok-s">"candle"</span>)               <span class="tok-c">-- candle/fluorescent/broken/pulse/storm/strobe...</span>
+<span class="tok-fn">Flicker</span>(lamp, <span class="tok-s">"mmnmmommonqnmmo"</span>, <span class="tok-n">14</span>)    <span class="tok-c">-- 生の文字列でも可 / stopFlicker(lamp) で戻す</span>
+
+<span class="tok-c">-- ④ 時間帯（太陽=最初の DirectionalLight の向き/色/強度/環境光を駆動）</span>
+Lighting.<span class="tok-fn">setTimeOfDay</span>(<span class="tok-n">6</span>)                <span class="tok-c">-- 朝</span>
+Lighting.<span class="tok-fn">tweenTimeOfDay</span>(<span class="tok-n">22</span>, <span class="tok-n">20</span>)          <span class="tok-c">-- 20 秒かけて夜へ（最短方向）</span>
+Lighting.<span class="tok-fn">lightningFlash</span>({ power=<span class="tok-n">8</span> })   <span class="tok-c">-- 雷の閃光 / fadeToBlack(1.0) で暗転</span>
+
+<span class="tok-c">-- ⑤ ポストプロセスは文字列キー（項目名は post.names() で一覧）</span>
+post.<span class="tok-fn">setMany</span>{ bloomOn=<span class="tok-k">true</span>, bloom=<span class="tok-n">0.8</span>, vignetteOn=<span class="tok-k">true</span> }
+Post.exposure = <span class="tok-n">1.4</span>                     <span class="tok-c">-- 糖衣。Tween(Post,"exposure",0,1) も可</span></code></pre>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>API</th><th>説明</th></tr></thead>
+            <tbody>
+              <tr><td><code>Tween(target, prop, to, dur[, opts])</code></td><td>汎用プロパティ補間。数値と3要素（色/ベクトル）に対応。<code>opts</code>: <code>ease</code> / <code>delay</code> / <code>loop</code>（true or 回数）/ <code>pingpong</code> / <code>onComplete</code>。戻り値 id は <code>stopTween(id)</code> へ</td></tr>
+              <tr><td><code>ease</code> の種類</td><td><code>linear / inQuad / outQuad / inOutQuad / inCubic / outCubic / inOutSine / outBack / outBounce</code>（既定 <code>outQuad</code>）</td></tr>
+              <tr><td><code>Flicker(light[, style, hz])</code></td><td>lightstyle 明滅。<code>LIGHT_STYLES</code>: <code>normal / candle / fluorescent / broken / pulse / storm / strobe / slowStrobe / gentle</code>。<code>stopFlicker(light)</code> で元の明るさへ</td></tr>
+              <tr><td><code>Lighting.setTimeOfDay(h)</code> / <code>tweenTimeOfDay(h, dur)</code></td><td>0..24 で太陽の向き・色・強度・環境光を駆動 / 補間。日の出/日の入りで絵が飛ばないカーブ</td></tr>
+              <tr><td><code>Lighting.lightningFlash{...}</code></td><td>雷の閃光（<code>power</code> / <code>color</code> / <code>times</code> / <code>gap</code> / <code>dur</code>）</td></tr>
+              <tr><td><code>Lighting.fadeToBlack(sec[, fn])</code> / <code>fadeFromBlack</code></td><td>露出で暗転 / 復帰（全ライトを触らないので確実＆安い）</td></tr>
+              <tr><td><code>Lighting.pulse / tweenColor / tweenIntensity</code></td><td>脈動 / 色変化 / 明るさ変化のワンライナー</td></tr>
+              <tr><td><code>Lighting.dayColor</code> ほか</td><td>作風のノブ（<code>duskColor</code> / <code>nightColor</code> / <code>dayIntensity</code> / <code>nightIntensity</code> / <code>dayAmbient</code> / <code>nightAmbient</code> / <code>duskAmbient</code>）</td></tr>
+              <tr><td><code>post.get/set/setMany/names</code></td><td>ポストプロセスを文字列キーで（名前は MCP の <code>set_post_process</code> と同一）。<code>ssao.*</code> も同じ流儀</td></tr>
+            </tbody>
+          </table>
+        </div>
 
         <h3><code class="inl">ui</code>：ゲーム内 HUD（即時モード・簡易/デバッグ用）</h3>
         <p><code class="inl">OnUpdate</code> 内で毎フレーム呼ぶと描画される（Play 中のみ）。位置は <code class="inl">SCREEN_W</code> / <code class="inl">SCREEN_H</code> で調整。
@@ -1379,6 +1479,25 @@ scene:<span class="tok-fn">hideUi</span>(modalRoot)</code></pre>
   events:<span class="tok-fn">on</span>(<span class="tok-s">"addTime"</span>, <span class="tok-k">function</span>(d) ST.remaining = ST.remaining + (d.value <span class="tok-k">or</span> <span class="tok-n">0</span>) <span class="tok-k">end</span>)
 <span class="tok-k">end</span></code></pre>
 
+        <h3>地形とスカルプトを JSON で置く</h3>
+        <p>彫った形そのもの（高さ配列 / 頂点配列）は<b>バイナリの別ファイル</b>に出るので、シーン JSON にはパスとパラメータだけを書く。だからテキストからでも地形と異形を配置できる。</p>
+<pre><code>{
+  <span class="tok-y">"name"</span>: <span class="tok-s">"Terrain"</span>,
+  <span class="tok-y">"terrain"</span>: {
+    <span class="tok-y">"resolution"</span>: <span class="tok-n">128</span>, <span class="tok-y">"worldSize"</span>: <span class="tok-n">200.0</span>, <span class="tok-y">"maxHeight"</span>: <span class="tok-n">200.0</span>,
+    <span class="tok-y">"heightmapPath"</span>: <span class="tok-s">"terrain/Terrain.hf"</span>, <span class="tok-y">"uvScale"</span>: <span class="tok-n">24.0</span>
+  },
+  <span class="tok-y">"rigidBody"</span>: { <span class="tok-y">"motionType"</span>: <span class="tok-n">0</span> }        <span class="tok-c">// 0 = Static</span>
+}
+{
+  <span class="tok-y">"name"</span>: <span class="tok-s">"Arch"</span>,
+  <span class="tok-y">"sculpt"</span>: {
+    <span class="tok-y">"meshPath"</span>: <span class="tok-s">"sculpt/Arch.smsh"</span>, <span class="tok-y">"uvScale"</span>: <span class="tok-n">1.0</span>, <span class="tok-y">"collision"</span>: <span class="tok-k">true</span>
+  },
+  <span class="tok-y">"rigidBody"</span>: { <span class="tok-y">"motionType"</span>: <span class="tok-n">0</span> }
+}</code></pre>
+        <p><code class="inl">terrain</code> / <code class="inl">sculpt</code> ブロックがあるエンティティに <code class="inl">meshRenderer</code> や <code class="inl">primitive</code> は書かない（メッシュはブロックから作り直される）。パスが空 / 読めない場合も<b>平坦な地形 / 素体の球で復元</b>されるのでシーンは必ず開ける。</p>
+
         <div class="note">
           <span class="ti">i</span>
           <div><b>ヘッドレス検証:</b> <code class="inl">DX12Engine.exe --validate &lt;scene.json&gt;</code> が JSON妥当性・スクリプト不在・エンティティ参照切れ・Trigger の target / filter 不正を <code class="inl">validate_report.txt</code> と標準出力に <code class="inl">RESULT: PASS / FAIL</code> で報告する（終了コード 0/1）。Claude Code はこれを回して GUI なしで参照切れを自己修正できる。</div>
@@ -1548,7 +1667,7 @@ claude mcp add dx12-engine -- node &lt;REPO&gt;/tools/mcp-server/index.ts</code>
               <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/API_REFERENCE.md" target="_blank" rel="noopener"><code>docs/API_REFERENCE.md</code></a></td><td><b>API 完全リファレンス</b>（Lua 全API・コンポーネント・データ駆動・CLI・MCP・C++ モジュール）</td></tr>
               <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/SCRIPTING.md" target="_blank" rel="noopener"><code>docs/SCRIPTING.md</code></a></td><td>Lua スクリプトAPIガイド（高レベル / 低レベル）</td></tr>
               <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/SCRIPT_COMPONENTS.md" target="_blank" rel="noopener"><code>docs/SCRIPT_COMPONENTS.md</code></a></td><td>プロパティ付きコンポーネント / プレハブ</td></tr>
-              <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/AUTHORING.md" target="_blank" rel="noopener"><code>docs/AUTHORING.md</code></a></td><td>ParticleEmitter / Trigger+Action / イベントバス / validate</td></tr>
+              <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/AUTHORING.md" target="_blank" rel="noopener"><code>docs/AUTHORING.md</code></a></td><td>ParticleEmitter / Trigger+Action / イベントバス / validate / 地形（<code>.hf</code>）とスカルプト（<code>.smsh</code>）</td></tr>
               <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/MCP.md" target="_blank" rel="noopener"><code>docs/MCP.md</code></a></td><td>MCP / AIブリッジ 完全リファレンス（全87ツール・error_code）</td></tr>
               <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/ASSET_PROTECTION_DESIGN.md" target="_blank" rel="noopener"><code>docs/ASSET_PROTECTION_DESIGN.md</code></a></td><td>ゲーム専用ランタイム + 暗号化パックの設計</td></tr>
             </tbody>

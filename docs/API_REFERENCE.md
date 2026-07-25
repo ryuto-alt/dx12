@@ -73,6 +73,11 @@ end
 | `ui` | table | 即時モード ゲーム内 UI |
 | `fx` | table | 即時パーティクル放出（burst/ring/beam/pulse） |
 | `vfx` | table | 統一 VFX 窓口（コード or Effekseer） |
+| `post` / `ssao` | table | ポストプロセス / SSAO を**文字列キー**で読み書き（`post.get/set/setMany/names`） |
+| `Post` / `Ssao` | table | 上の糖衣（`Post.bloom = 0.8`。`Tween` の対象にできる） |
+| `Lighting` | table | 時間帯（Time of Day）とライティング演出プリセット |
+| `Tween` / `Flicker` | function | 汎用プロパティ補間 / lightstyle 明滅（演出レイヤの中核） |
+| `Anim` / `Ease` / `LIGHT_STYLES` | table | Tween の実行リスト / イージング関数表 / lightstyle プリセット |
 | `ASSETS` | string | assets ディレクトリの絶対パス |
 | `SCREEN_W` / `SCREEN_H` | int | 画面解像度（`SetScreenSize` で更新） |
 
@@ -106,6 +111,34 @@ t.scale      -- Vec3
 | `:setLooping(loop)` | — | ループ ON/OFF |
 | `:getAnimCount()` | int | クリップ数 |
 | `:getAnimName(index)` | string | クリップ名 |
+| `:light()` | Light \| nil | ライトのプロキシ（持ってなければ nil） |
+| `:addLight(kind?)` | Light | ライトを後付け。`kind`: `"point"`(既定) / `"directional"`(`"dir"`/`"sun"`) / `"spot"` |
+| `:removeLight()` | — | 付いているライト成分を全部外す（消灯ではなく削除） |
+
+### Light（`entity:light()` / `entity:addLight(kind)` / `scene:sun()`）
+`PointLight` / `DirectionalLight` / `SpotLight` を **1 個の型**にまとめたプロキシ。
+持っていない型のプロパティは「読むと既定値・書くと無視」なので、演出側で型分岐を書かなくていい。
+
+| プロパティ | 型 | 説明 |
+|---|---|---|
+| `.type` | string | `"point"` / `"directional"` / `"spot"`（読み取り専用） |
+| `.id` | int | エンティティ ID（読み取り専用。`Flicker` のキー） |
+| `.intensity` | float | 明るさ |
+| `.color` | Vec3 | 色（0..1）。**読みは値コピー**なので、掴んだ開始値が補間中に動かない |
+| `.direction` | Vec3 | 向き（directional / spot のみ。書き込み時に正規化） |
+| `.range` | float | 届く距離（point / spot のみ。directional は 0） |
+| `.ambient` | float | シーン全体の環境光（directional のみ） |
+| `.innerAngle` / `.outerAngle` | float | コーン角・度（spot のみ） |
+| `.castShadows` | bool | 影を落とすか（point / spot のみ。同時上限あり） |
+| `:isValid()` | bool | まだ有効なライトか |
+| `:setColor(r,g,b)` / `:setDirection(x,y,z)` | — | `Vec3` を作らずに書く近道 |
+
+```lua
+local lamp = scene:findEntity("Lamp"):light()   -- または findLight("Lamp")
+lamp.intensity = 8
+lamp.color = Vec3.new(1, 0.7, 0.3)
+lamp.range = 12
+```
 
 ### Scene（`scene`）
 | メソッド | 戻り値 | 説明 |
@@ -163,6 +196,12 @@ t.scale      -- Vec3
 | `:gimmicks()` | table | Gimmick 付き全エンティティを配列で返す（要素: `{e,name,kind,period,phase,amplitude,threshold,solid,deadly}`） |
 | `:queryByTag(tag)` | table | タグ一致エンティティの**名前配列** |
 | `:queryInBox(minX, minZ, maxX, maxZ, tag?)` | table | XZ 矩形内のエンティティ名配列（RTS の矩形選択向け） |
+| `:sun()` | Light \| nil | 最初の `DirectionalLight`（＝太陽）。時間帯演出はこれを駆動する |
+| `:lightCount()` | table | `{point=, spot=, directional=, maxPoint=8, maxSpot=8}`。**CB 上限に引っかかってないかの確認用**（9 個目以降は黙って無視される） |
+| `:getAmbient()` / `:setAmbient(v)` | float / — | 環境光（＝影部分の明るさ）。実体は `DirectionalLight.ambient`。読みは最初の太陽、書きは全太陽へ |
+| `:getShadowsEnabled()` / `:setShadowsEnabled(b)` | bool / — | リアルタイム影（CSM）の ON/OFF。false で影パスごとスキップ |
+| `:getSkybox()` | table | `{envMapPath=, iblIntensity=, skyboxIntensity=, drawSkybox=}` |
+| `:setSkybox{...}` | — | 渡したキーだけ上書き（`iblIntensity` / `skyboxIntensity` / `drawSkybox`）。`envMapPath` の実行時差し替えは非対応 |
 
 ### Input（`input`）
 | メソッド | 戻り値 | 説明 |
@@ -436,6 +475,95 @@ function OnStart(self)
         goToScene("assets/scenes/game.json")
     end)
 end
+```
+
+### post / ssao — ポストプロセス・SSAO（`.` で呼ぶ）
+項目数が 90 近いので個別バインドはせず、**文字列キー**で読み書きする。名前は MCP の
+`dx12_get_post_process` / `dx12_set_post_process` と同一（名前表は `src/renderer/PostProcessSettings.h` に 1 つだけ）。
+
+| 関数 | 戻り値 | 説明 |
+|---|---|---|
+| `post.get(name)` | value \| nil | 1 項目を読む（不明名は nil） |
+| `post.set(name, value)` | bool | 1 項目を書く（不明名/型違いは false + 警告ログ） |
+| `post.setMany{...}` | int | まとめて設定。適用できた個数を返す |
+| `post.names()` | table | 使える項目名の一覧（**分からなくなったらこれを見る**） |
+| `ssao.get/set/setMany/names` | 同上 | `enabled` / `radius` / `bias` / `intensity` / `power` / `sampleCount` / `blur` |
+
+```lua
+post.setMany{ bloomOn = true, bloom = 0.8, vignetteOn = true, vignette = 0.35 }
+Post.exposure = 1.4          -- 糖衣（メタテーブル経由。Tween の対象にもできる）
+ssao.set("enabled", true)
+```
+Play 中に変えた値は **Stop でシーン JSON ごと巻き戻る**ので、エディタで作った絵は壊れない。
+
+### ライティング演出（`Lighting` / `Tween` / `Flicker`）
+「プロパティは素直に読み書き」「時間変化は汎用 Tween 1 本」「明滅は lightstyle 文字列」の 3 本柱。
+実体は prelude（純 Lua）で、既存の毎フレームフック（`__time_tick`）にぶら下がって動く
+＝`time.setScale(0)` で演出も一緒に止まり、**Play 開始で全部クリア**される。
+
+#### Tween — 汎用プロパティ補間
+```lua
+Tween(target, prop, to, duration, opts?) -> id
+```
+`target` は Lua テーブルでも usertype（`Light` / `Transform` / `Post`）でも可。`prop` は文字列。
+**数値**と**3 要素（色/ベクトル）**の両方を補間する（`to` は `Vec3.new(r,g,b)` でも `{r,g,b}` でも可）。
+
+| opts | 既定 | 説明 |
+|---|---|---|
+| `ease` | `"outQuad"` | `linear` / `inQuad` / `outQuad` / `inOutQuad` / `inCubic` / `outCubic` / `inOutSine` / `outBack` / `outBounce` |
+| `delay` | 0 | 開始を遅らせる秒数 |
+| `loop` | なし | `true`=無限、数値=総再生回数 |
+| `pingpong` | false | 終点まで行ったら逆再生で戻る（`loop` と併用で往復し続ける） |
+| `onComplete` | なし | 完了時に 1 回呼ばれる関数 |
+
+`stopTween(id)` で個別停止、`Anim.clear()` で全停止。
+> `self.transform` を直接 tween するときは、対象エンティティが**補間中に消えない**こと（生ポインタを掴むため）。
+> エンティティごと消える可能性があるなら `onComplete` ではなく毎フレーム自前で書くか、先に `stopTween` する。
+
+#### Flicker — Quake 由来の lightstyle 明滅
+```lua
+Flicker(light, style?, hz?) -> light      -- style: プリセット名 or 生の lightstyle 文字列
+stopFlicker(light)                        -- 止めて元の明るさへ戻す
+```
+1 文字 = 1/10 秒（`hz` で変更可）、`'a'`=消灯 / `'m'`=等倍 / `'z'`≒2.08 倍。
+ロウソクも蛍光灯も故障灯も、この**文字列 1 本**で書ける。1 ライトにつき 1 つ（掛け直しは上書き、基準の明るさは保持）。
+
+`LIGHT_STYLES`: `normal` / `candle` / `fluorescent` / `broken` / `pulse` / `storm` / `strobe` / `slowStrobe` / `gentle`
+
+#### Lighting — 時間帯と定番演出
+| 関数 | 説明 |
+|---|---|
+| `Lighting.setTimeOfDay(hour)` | 0..24 で太陽（最初の `DirectionalLight`）の**向き / 色 / 強度 / 環境光**を即反映 |
+| `Lighting.timeOfDay()` | 現在の時刻 |
+| `Lighting.tweenTimeOfDay(hour, dur?, opts?)` | 時刻を補間（既定は最短方向。`opts.forward=true` で必ず前進）。中身は `Tween` |
+| `Lighting.sample(hour)` | `dx,dy,dz, r,g,b, intensity, ambient` を返すだけ（カーブを自前で使いたいとき） |
+| `Lighting.sun()` | `scene:sun()` の別名 |
+| `Lighting.lightningFlash{...}` | 雷の閃光。`{power=6, color={r,g,b}, times=2, gap=0.09, dur=0.06}` |
+| `Lighting.fadeToBlack(sec?, onDone?)` / `fadeFromBlack(sec?, onDone?)` | 露出で暗転 / 復帰（全ライトを触らないので確実＆安い） |
+| `Lighting.pulse(light, hz?, min?, max?)` | `min..max` を往復（呼吸 / 鼓動 / 魔法陣）。`pingpong+loop` の Tween |
+| `Lighting.tweenColor(light, r,g,b, dur?, opts?)` | 色をなめらかに変える |
+| `Lighting.tweenIntensity(light, v, dur?, opts?)` | 明るさをなめらかに変える |
+| `findLight(nameOrEntityOrSelf)` | 名前 / Entity / self からライトを引く近道（無ければ nil） |
+
+作風を変えるノブ（テーブルを書き換えるだけ）:
+`Lighting.dayColor` / `duskColor` / `nightColor` / `dayIntensity` / `nightIntensity` /
+`dayAmbient` / `nightAmbient` / `duskAmbient`
+（日の出・日の入り＝6時/18時では強度 0・環境光 `duskAmbient` に揃えてあるので、昼夜が切り替わる瞬間に絵が飛ばない）
+
+```lua
+-- ロウソクの炎
+local candle = findLight("Candle")
+candle.intensity = 3
+Flicker(candle, "candle")
+
+-- 朝 → 夜を 20 秒かけて
+Lighting.setTimeOfDay(6)
+Lighting.tweenTimeOfDay(22, 20, { onComplete = function() Lighting.lightningFlash() end })
+
+-- 警告灯が赤くゆっくり脈打つ
+local alarm = findLight("Alarm")
+Lighting.tweenColor(alarm, 1, 0.1, 0.1, 0.4)
+Lighting.pulse(alarm, 0.8, 0.5, 4.0)
 ```
 
 ---
@@ -751,6 +879,11 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 | `dx12_ui_audit` | UI崩れ・可読性・入力遮断・過装飾を自動監査 |
 | `dx12_get_scene_settings` | スカイボックス/IBL 設定 |
 | `dx12_screenshot` | スクショ（PNG） |
+| `dx12_pick` | 画面座標（x/y か u/v）→ 三角形精密ヒット列（entityId/submesh/distance/worldPos/worldNormal）|
+| `dx12_raycast_precise` | ワールドのレイ → 描画メッシュの三角形と交差（`dx12_raycast` は物理コライダー基準・Playing 限定）|
+| `dx12_terrain_sample` | 地形の高さ/法線/傾きを座標で問い合わせ（配置の自動化に使う）|
+| `dx12_list_lights` | ライト一覧 + 灯数バジェット（点8/スポット8・影spot4/point2）と超過警告 |
+| `dx12_diagnose` | エンジン診断（`DeepDiag::RunAll`）を JSON で。`summary.errors > 0` だけが失敗 |
 
 ### 編集系（同期）
 | ツール | 説明 |
@@ -769,6 +902,12 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 | `dx12_save_scene` | シーン保存 |
 | `dx12_create_lua_component` | Lua コンポーネント生成（構文検証つき） |
 | `dx12_attach_lua_component` | Lua をエンティティに添付 |
+| `dx12_terrain_generate` | fBm プリセット（hills/canyon/mountains）で地形を一発生成（同 seed で再現＝冪等）|
+| `dx12_terrain_sculpt` | 地形ブラシ（raise/lower/smooth/flatten/noise）。点列でストロークを一気に引ける |
+| `dx12_terrain_erode` | 熱浸食（安息角を超えた斜面を崩す）。region で範囲指定可 |
+| `dx12_sculpt_brush` | 頂点スカルプト（draw/pull/push/smooth/flatten/pinch/noise/grab + 対称）|
+| `dx12_set_sun` | 太陽の向き（timeOfDay か azimuth/elevation）・色（color/kelvin）・強度・環境光を絶対指定 |
+| `dx12_apply_lighting_preset` | 昼/夕暮れ/夜/屋内/ホラー/スタジオ（エディタのプリセットと同じ実装）|
 
 ### 生成・削除・モード遷移（遅延同期）
 | ツール | 説明 |
@@ -780,6 +919,9 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 | `dx12_delete_entity` | 削除 |
 | `dx12_open_scene` / `dx12_new_scene` | シーン操作 |
 | `dx12_play` / `dx12_stop` | Play / Stop |
+| `dx12_terrain_create` | ハイトフィールド地形を作る（同名があれば設定更新＝冪等）|
+| `dx12_sculpt_create` | スカルプト素体（box/sphere/plane/cylinder）を作る（同名なら設定更新）|
+| `dx12_sculpt_make_editable` | 既存モデルから「彫れるコピー」を作る（元アセットは読むだけ）|
 
 ### Node 合成ツール
 | ツール | 説明 |

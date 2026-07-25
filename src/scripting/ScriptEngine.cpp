@@ -57,6 +57,210 @@ entt::entity FindEntityByName(entt::registry& reg, const std::string& name)
     return entt::null;
 }
 
+// Lua から来た値を XMFLOAT3 へ読む。Vec3 usertype でも {r,g,b} / {x=,y=,z=} テーブルでも可。
+// 読めなかったら false（呼び出し側は「未指定」として無視する）。
+bool ReadVec3(const sol::object& v, DirectX::XMFLOAT3& dst)
+{
+    if (v.is<DirectX::XMFLOAT3>()) { dst = v.as<DirectX::XMFLOAT3>(); return true; }
+    if (!v.is<sol::table>()) return false;
+    sol::table t = v.as<sol::table>();
+    sol::optional<float> nx = t["x"], ny = t["y"], nz = t["z"];   // {x=,y=,z=} / Vec3 風
+    sol::optional<float> i1 = t[1],   i2 = t[2],   i3 = t[3];     // {r,g,b} の配列書き
+    dst.x = nx ? *nx : (i1 ? *i1 : dst.x);
+    dst.y = ny ? *ny : (i2 ? *i2 : dst.y);
+    dst.z = nz ? *nz : (i3 ? *i3 : dst.z);
+    return true;
+}
+
+// Lua の値をゆるく bool / float へ読む（数値↔真偽の取り違えでスクリプトが黙って死なないように）。
+bool ToBool(const sol::object& v, bool dflt)
+{
+    if (v.is<bool>())   return v.as<bool>();
+    if (v.is<double>()) return v.as<double>() != 0.0;
+    return dflt;
+}
+float ToNum(const sol::object& v, float dflt)
+{
+    if (v.is<double>()) return static_cast<float>(v.as<double>());
+    if (v.is<bool>())   return v.as<bool>() ? 1.0f : 0.0f;
+    return dflt;
+}
+
+// ── ポストプロセス / SSAO の「文字列キー」アクセス ───────────────────────
+// 90 個近いフィールドを個別バインドすると API が爆発するので、名前表
+// (renderer/PostProcessSettings.h の DX12E_POST_FIELDS / DX12E_SSAO_FIELDS) を
+// 1 本回して get/set/names を生成する。項目を足すときの修正箇所はあの表だけ。
+// 名前は MCP の get_post_process / set_post_process と同一。
+sol::object PostGetField(sol::state_view lua, const PostProcessSettings& p, const std::string& name)
+{
+#define DX12E_PP_G(f) if (name == #f) return sol::make_object(lua, p.f);
+    DX12E_POST_FIELDS(DX12E_PP_G, DX12E_PP_G, DX12E_PP_G, DX12E_PP_G, DX12E_PP_G)
+#undef DX12E_PP_G
+    return sol::make_object(lua, sol::lua_nil);
+}
+
+bool PostSetField(PostProcessSettings& p, const std::string& name, const sol::object& v)
+{
+#define DX12E_PP_B(f) if (name == #f) { p.f = ToBool(v, p.f); return true; }
+#define DX12E_PP_F(f) if (name == #f) { p.f = ToNum(v, p.f); return true; }
+#define DX12E_PP_I(f) if (name == #f) { p.f = static_cast<int>(ToNum(v, static_cast<float>(p.f))); return true; }
+#define DX12E_PP_V(f) if (name == #f) { return ReadVec3(v, p.f); }
+#define DX12E_PP_S(f) if (name == #f) { if (!v.is<std::string>()) return false; p.f = v.as<std::string>(); return true; }
+    DX12E_POST_FIELDS(DX12E_PP_B, DX12E_PP_F, DX12E_PP_I, DX12E_PP_V, DX12E_PP_S)
+#undef DX12E_PP_B
+#undef DX12E_PP_F
+#undef DX12E_PP_I
+#undef DX12E_PP_V
+#undef DX12E_PP_S
+    return false;
+}
+
+sol::table PostFieldNames(sol::state_view lua)
+{
+    sol::table t = lua.create_table();
+    int i = 1;
+#define DX12E_PP_N(f) t[i++] = #f;
+    DX12E_POST_FIELDS(DX12E_PP_N, DX12E_PP_N, DX12E_PP_N, DX12E_PP_N, DX12E_PP_N)
+#undef DX12E_PP_N
+    return t;
+}
+
+sol::object SsaoGetField(sol::state_view lua, const SSAOSettings& s, const std::string& name)
+{
+#define DX12E_SS_G(f) if (name == #f) return sol::make_object(lua, s.f);
+    DX12E_SSAO_FIELDS(DX12E_SS_G, DX12E_SS_G, DX12E_SS_G)
+#undef DX12E_SS_G
+    return sol::make_object(lua, sol::lua_nil);
+}
+
+bool SsaoSetField(SSAOSettings& s, const std::string& name, const sol::object& v)
+{
+#define DX12E_SS_B(f) if (name == #f) { s.f = ToBool(v, s.f); return true; }
+#define DX12E_SS_F(f) if (name == #f) { s.f = ToNum(v, s.f); return true; }
+#define DX12E_SS_I(f) if (name == #f) { s.f = static_cast<int>(ToNum(v, static_cast<float>(s.f))); return true; }
+    DX12E_SSAO_FIELDS(DX12E_SS_B, DX12E_SS_F, DX12E_SS_I)
+#undef DX12E_SS_B
+#undef DX12E_SS_F
+#undef DX12E_SS_I
+    return false;
+}
+
+sol::table SsaoFieldNames(sol::state_view lua)
+{
+    sol::table t = lua.create_table();
+    int i = 1;
+#define DX12E_SS_N(f) t[i++] = #f;
+    DX12E_SSAO_FIELDS(DX12E_SS_N, DX12E_SS_N, DX12E_SS_N)
+#undef DX12E_SS_N
+    return t;
+}
+
+// ── ライトのプロキシ（Lua: entity:light() / entity:addLight(kind) / scene:sun()）──
+// PointLight / DirectionalLight / SpotLight を 1 個の usertype にまとめる。
+// 型ごとに 3 つ生やすと演出側（Tween / Flicker）が型分岐だらけになるので、
+// 「持っている型に書く・無い項目は読むと既定値／書くと無視」の薄いプロキシへ寄せた。
+// color / direction は必ず**値コピー**で返す。参照を返すと Lua が掴んだ「開始値」が
+// 補間中に一緒に動いてしまい、Tween の from が壊れる。
+struct LuaLight
+{
+    entt::registry* reg = nullptr;
+    entt::entity    e   = entt::null;
+
+    bool Valid() const { return reg != nullptr && reg->valid(e); }
+    PointLight*       P() const { return Valid() ? reg->try_get<PointLight>(e) : nullptr; }
+    DirectionalLight* D() const { return Valid() ? reg->try_get<DirectionalLight>(e) : nullptr; }
+    SpotLight*        S() const { return Valid() ? reg->try_get<SpotLight>(e) : nullptr; }
+    bool Any() const { return P() != nullptr || D() != nullptr || S() != nullptr; }
+};
+
+std::string LightTypeName(const LuaLight& l)
+{
+    if (l.P()) return "point";
+    if (l.D()) return "directional";
+    if (l.S()) return "spot";
+    return "none";
+}
+
+float LightGetIntensity(const LuaLight& l)
+{
+    if (auto* p = l.P()) return p->intensity;
+    if (auto* d = l.D()) return d->intensity;
+    if (auto* s = l.S()) return s->intensity;
+    return 0.0f;
+}
+void LightSetIntensity(LuaLight& l, float v)
+{
+    if (auto* p = l.P()) p->intensity = v;
+    if (auto* d = l.D()) d->intensity = v;
+    if (auto* s = l.S()) s->intensity = v;
+}
+
+DirectX::XMFLOAT3 LightGetColor(const LuaLight& l)
+{
+    if (auto* p = l.P()) return p->color;
+    if (auto* d = l.D()) return d->color;
+    if (auto* s = l.S()) return s->color;
+    return DirectX::XMFLOAT3{0.0f, 0.0f, 0.0f};
+}
+void LightSetColor(LuaLight& l, const sol::object& v)
+{
+    DirectX::XMFLOAT3 c = LightGetColor(l);
+    if (!ReadVec3(v, c)) return;
+    if (auto* p = l.P()) p->color = c;
+    if (auto* d = l.D()) d->color = c;
+    if (auto* s = l.S()) s->color = c;
+}
+
+DirectX::XMFLOAT3 LightGetDirection(const LuaLight& l)
+{
+    if (auto* d = l.D()) return d->direction;
+    if (auto* s = l.S()) return s->direction;
+    return DirectX::XMFLOAT3{0.0f, -1.0f, 0.0f};   // PointLight は無指向
+}
+void LightSetDirection(LuaLight& l, const sol::object& v)
+{
+    DirectX::XMFLOAT3 dir = LightGetDirection(l);
+    if (!ReadVec3(v, dir)) return;
+    // 正規化しておく（Lua 側で任意ベクトルを投げても破綻しないように）
+    const float len = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+    if (len > 1e-6f) { dir.x /= len; dir.y /= len; dir.z /= len; }
+    if (auto* d = l.D()) d->direction = dir;
+    if (auto* s = l.S()) s->direction = dir;
+}
+
+float LightGetRange(const LuaLight& l)
+{
+    if (auto* p = l.P()) return p->range;
+    if (auto* s = l.S()) return s->range;
+    return 0.0f;   // DirectionalLight は無限遠
+}
+void LightSetRange(LuaLight& l, float v)
+{
+    if (auto* p = l.P()) p->range = v;
+    if (auto* s = l.S()) s->range = v;
+}
+
+// ── 型固有（持っていない型では読むと既定値・書くと無視）──
+float LightGetAmbient(const LuaLight& l) { auto* d = l.D(); return d ? d->ambient : 0.0f; }
+void  LightSetAmbient(LuaLight& l, float v) { if (auto* d = l.D()) d->ambient = v; }
+
+float LightGetInner(const LuaLight& l) { auto* s = l.S(); return s ? s->innerConeDeg : 0.0f; }
+void  LightSetInner(LuaLight& l, float v) { if (auto* s = l.S()) s->innerConeDeg = v; }
+float LightGetOuter(const LuaLight& l) { auto* s = l.S(); return s ? s->outerConeDeg : 0.0f; }
+void  LightSetOuter(LuaLight& l, float v) { if (auto* s = l.S()) s->outerConeDeg = v; }
+
+bool LightGetShadows(const LuaLight& l)
+{
+    if (auto* p = l.P()) return p->castShadows;
+    if (auto* s = l.S()) return s->castShadows;
+    return l.D() != nullptr;   // 平行光源は CSM が常時担当
+}
+void LightSetShadows(LuaLight& l, bool v)
+{
+    if (auto* p = l.P()) p->castShadows = v;
+    if (auto* s = l.S()) s->castShadows = v;
+}
+
 // 宣言スキーマ + インスタンス値を self テーブルへ注入する。
 // インスタンスに override が無いプロパティは既定値を使う。これで
 // スクリプト側は self.<name> でプロパティを読める（Unity の serialized field 相当）。
@@ -215,6 +419,38 @@ void ScriptEngine::RegisterBindings()
         "position", &Transform::position,
         "rotation", &Transform::rotation,
         "scale",    &Transform::scale
+    );
+
+    // --- Light（PointLight / DirectionalLight / SpotLight の統一プロキシ）---
+    // entity:light() / entity:addLight(kind) / scene:sun() が返す。
+    // プロパティは素直に読み書きする（Unity/Godot と同じ流儀）。時間変化は
+    // prelude の Tween / Flicker が同じプロパティを叩くだけ＝専用 API を増やさない。
+    lua.new_usertype<LuaLight>("Light",
+        "isValid",   [](const LuaLight& l) { return l.Any(); },
+        "id",        sol::property([](const LuaLight& l) { return static_cast<u32>(l.e); }),
+        "type",      sol::property(&LightTypeName),
+        "intensity", sol::property(&LightGetIntensity, &LightSetIntensity),
+        "color",     sol::property(&LightGetColor,     &LightSetColor),
+        "direction", sol::property(&LightGetDirection, &LightSetDirection),
+        "range",     sol::property(&LightGetRange,     &LightSetRange),
+        "ambient",   sol::property(&LightGetAmbient,   &LightSetAmbient),
+        "innerAngle", sol::property(&LightGetInner,    &LightSetInner),
+        "outerAngle", sol::property(&LightGetOuter,    &LightSetOuter),
+        "castShadows", sol::property(&LightGetShadows, &LightSetShadows),
+        // 色を 3 数値で書く近道（Tween/Flicker から Vec3 を作らずに済む）
+        "setColor", [](LuaLight& l, float r, float g, float b) {
+            DirectX::XMFLOAT3 c{r, g, b};
+            if (auto* p = l.P()) p->color = c;
+            if (auto* d = l.D()) d->color = c;
+            if (auto* s = l.S()) s->color = c;
+        },
+        "setDirection", [](LuaLight& l, float x, float y, float z) {
+            DirectX::XMFLOAT3 dir{x, y, z};
+            const float len = std::sqrt(x * x + y * y + z * z);
+            if (len > 1e-6f) { dir.x /= len; dir.y /= len; dir.z /= len; }
+            if (auto* d = l.D()) d->direction = dir;
+            if (auto* s = l.S()) s->direction = dir;
+        }
     );
 
     // --- Entity ---
@@ -379,6 +615,31 @@ void ScriptEngine::RegisterBindings()
             if (index >= 0 && index < static_cast<int>(clips.size()))
                 return clips[index]->GetName();
             return "";
+        },
+
+        // --- ライト（統一プロキシ Light を返す）---
+        // ライトを持っていなければ nil。 例: local l = e:light(); if l then l.intensity = 3 end
+        "light", [this](Entity& e) -> sol::optional<LuaLight> {
+            if (!e.IsValid() || !m_scene) return sol::nullopt;
+            LuaLight l{&m_scene->GetRegistry(), e.GetHandle()};
+            if (!l.Any()) return sol::nullopt;
+            return l;
+        },
+        // ライトを後付けする。kind: "point"(既定) / "directional"("dir"/"sun") / "spot"
+        // 既にその型があればそれを返す（重ね掛けしない）。戻り値は Light プロキシ。
+        "addLight", [this](Entity& e, sol::optional<std::string> kind) -> sol::optional<LuaLight> {
+            if (!e.IsValid() || !m_scene) return sol::nullopt;
+            const std::string k = kind.value_or(std::string("point"));
+            if (k == "directional" || k == "dir" || k == "sun") e.GetOrAddComponent<DirectionalLight>();
+            else if (k == "spot")                               e.GetOrAddComponent<SpotLight>();
+            else                                                e.GetOrAddComponent<PointLight>();
+            return LuaLight{&m_scene->GetRegistry(), e.GetHandle()};
+        },
+        // 付いているライト成分を全部外す（消灯ではなく削除。CB 枠を空けたいとき用）
+        "removeLight", [](Entity& e) {
+            e.RemoveComponent<PointLight>();
+            e.RemoveComponent<DirectionalLight>();
+            e.RemoveComponent<SpotLight>();
         }
     );
 
@@ -947,6 +1208,64 @@ void ScriptEngine::RegisterBindings()
                 if (reg.all_of<NameTag>(e))
                     arr[idx++] = reg.get<NameTag>(e).name;
             return arr;
+        },
+
+        // ── シーン照明 ──────────────────────────────────────────────
+        // 太陽（最初の DirectionalLight）を Light プロキシで返す。無ければ nil。
+        // Lighting.setTimeOfDay 等の時間帯演出はこれを掴んで駆動する。
+        "sun", [](Scene& s) -> sol::optional<LuaLight> {
+            auto& reg = s.GetRegistry();
+            auto view = reg.view<DirectionalLight>();
+            for (auto e : view) return LuaLight{&reg, e};
+            return sol::nullopt;
+        },
+        // ライト本数と CB 上限。演出で光を増やしすぎて「9 個目が無視される」のを
+        // Lua から検知できるようにする（描画側と同じ view の数え方）。
+        // 戻り: { point=, spot=, directional=, maxPoint=8, maxSpot=8 }
+        "lightCount", [this](Scene& s) -> sol::table {
+            auto& reg = s.GetRegistry();
+            int np = 0, ns = 0, nd = 0;
+            for (auto e : reg.view<PointLight, Transform>())       { (void)e; ++np; }
+            for (auto e : reg.view<SpotLight, Transform>())        { (void)e; ++ns; }
+            for (auto e : reg.view<DirectionalLight>())            { (void)e; ++nd; }
+            sol::table t = m_lua->create_table();
+            t["point"]       = np;
+            t["spot"]        = ns;
+            t["directional"] = nd;
+            t["maxPoint"]    = 8;   // = MAX_POINT_LIGHTS (shaders/forward/Lighting.hlsli)
+            t["maxSpot"]     = 8;   // = MAX_SPOT_LIGHTS
+            return t;
+        },
+        // 環境光（影の部分の明るさ）。実体は DirectionalLight.ambient なので
+        // 読みは最初の太陽から、書きは全 DirectionalLight へ（シーン単位の値として扱う）。
+        "getAmbient", [](Scene& s) -> float {
+            auto view = s.GetRegistry().view<const DirectionalLight>();
+            for (auto e : view) return view.get<const DirectionalLight>(e).ambient;
+            return 0.0f;
+        },
+        "setAmbient", [](Scene& s, float v) {
+            auto view = s.GetRegistry().view<DirectionalLight>();
+            for (auto e : view) view.get<DirectionalLight>(e).ambient = v;
+        },
+        // リアルタイム影(CSM)の ON/OFF。false で影パスを丸ごとスキップ（軽量化/演出）。
+        "getShadowsEnabled", [](Scene& s) { return s.GetShadowsEnabled(); },
+        "setShadowsEnabled", [](Scene& s, bool v) { s.SetShadowsEnabled(v); },
+        // スカイボックス / IBL。get は { envMapPath=, iblIntensity=, skyboxIntensity=, drawSkybox= }。
+        // set は渡したキーだけ上書き（envMapPath は差し替えに再ロードが要るので実行時変更は非対応）。
+        "getSkybox", [this](Scene& s) -> sol::table {
+            const auto& sk = s.GetSkyboxSettings();
+            sol::table t = m_lua->create_table();
+            t["envMapPath"]      = sk.envMapPath;
+            t["iblIntensity"]    = sk.iblIntensity;
+            t["skyboxIntensity"] = sk.skyboxIntensity;
+            t["drawSkybox"]      = sk.drawSkybox;
+            return t;
+        },
+        "setSkybox", [](Scene& s, sol::table t) {
+            auto& sk = s.GetSkyboxSettings();
+            if (sol::optional<float> v = t["iblIntensity"])    sk.iblIntensity    = *v;
+            if (sol::optional<float> v = t["skyboxIntensity"]) sk.skyboxIntensity = *v;
+            if (sol::optional<bool>  v = t["drawSkybox"])      sk.drawSkybox      = *v;
         }
     );
 
@@ -1432,6 +1751,73 @@ void ScriptEngine::RegisterBindings()
         tm.set_function("frame",    [this] { return m_timeFrame; });
         tm.set_function("getScale", [this] { return m_timeScale; });
         tm.set_function("setScale", [this](float s) { m_timeScale = (s < 0.0f) ? 0.0f : s; });
+    }
+
+    // --- post / ssao: ポストプロセス・SSAO を文字列キーで読み書き（'.' で呼ぶ）---
+    // 項目名は MCP の get_post_process / set_post_process と同一（名前表は
+    // renderer/PostProcessSettings.h に 1 つだけ）。post.names() で一覧できる。
+    // Play 中の変更は Stop でシーンJSONごと巻き戻る（EnterPlayMode のスナップショット）。
+    {
+        sol::table po = lua.create_named_table("post");
+        po.set_function("get", [this](const std::string& name, sol::this_state ts) -> sol::object {
+            sol::state_view sv(ts);
+            if (!m_scene) return sol::make_object(sv, sol::lua_nil);
+            return PostGetField(sv, m_scene->GetPostSettings(), name);
+        });
+        po.set_function("set", [this](const std::string& name, sol::object v) -> bool {
+            if (!m_scene) return false;
+            if (PostSetField(m_scene->GetPostSettings(), name, v)) return true;
+            Logger::Warn("post.set: 不明または型違いの項目 \"{}\"（post.names() で一覧）", name);
+            return false;
+        });
+        // まとめて設定: post.setMany{ bloomOn=true, bloom=0.8, vignetteOn=true }
+        po.set_function("setMany", [this](sol::table t) -> int {
+            if (!m_scene) return 0;
+            auto& p = m_scene->GetPostSettings();
+            int n = 0;
+            for (auto& kv : t)
+            {
+                if (!kv.first.is<std::string>()) continue;
+                const std::string key = kv.first.as<std::string>();
+                if (PostSetField(p, key, kv.second)) ++n;
+                else Logger::Warn("post.setMany: 不明または型違いの項目 \"{}\"", key);
+            }
+            return n;
+        });
+        po.set_function("names", [](sol::this_state ts) -> sol::table {
+            sol::state_view sv(ts);
+            return PostFieldNames(sv);
+        });
+
+        sol::table so = lua.create_named_table("ssao");
+        so.set_function("get", [this](const std::string& name, sol::this_state ts) -> sol::object {
+            sol::state_view sv(ts);
+            if (!m_scene) return sol::make_object(sv, sol::lua_nil);
+            return SsaoGetField(sv, m_scene->GetSSAOSettings(), name);
+        });
+        so.set_function("set", [this](const std::string& name, sol::object v) -> bool {
+            if (!m_scene) return false;
+            if (SsaoSetField(m_scene->GetSSAOSettings(), name, v)) return true;
+            Logger::Warn("ssao.set: 不明または型違いの項目 \"{}\"（ssao.names() で一覧）", name);
+            return false;
+        });
+        so.set_function("setMany", [this](sol::table t) -> int {
+            if (!m_scene) return 0;
+            auto& s = m_scene->GetSSAOSettings();
+            int n = 0;
+            for (auto& kv : t)
+            {
+                if (!kv.first.is<std::string>()) continue;
+                const std::string key = kv.first.as<std::string>();
+                if (SsaoSetField(s, key, kv.second)) ++n;
+                else Logger::Warn("ssao.setMany: 不明または型違いの項目 \"{}\"", key);
+            }
+            return n;
+        });
+        so.set_function("names", [](sol::this_state ts) -> sol::table {
+            sol::state_view sv(ts);
+            return SsaoFieldNames(sv);
+        });
     }
 
     RegisterPhysicsBindings();
@@ -2099,8 +2485,12 @@ function __time_reset()
   v._active, v._t, v._dur, v._consumed, v._skipCost = false, 0, 0, 0, 1.0
   v._offsets = {}
   time._ent = {}
+  if __anim_reset then __anim_reset() end   -- Tween / Flicker も Play 開始でクリア
 end
 function __time_tick(dt)
+  -- Tween / Flicker（演出レイヤ）を進める。既存の毎フレームフックに1行ぶら下げるだけ。
+  if __anim_tick then __anim_tick(dt) end
+
   -- ビデオ時計・個別時計を進める
   if time.video._active then time.video._t = time.video._t + dt end
   for _, c in pairs(time._ent) do c.t = c.t + dt * c.scale end
@@ -2562,6 +2952,355 @@ function uifx.heartbeat(e, s, dur)
   scene:tweenUi(e, { scale=1.0, duration=dur*0.15, delay=dur*0.15, easing="in" })
   scene:tweenUi(e, { scale=s,   duration=dur*0.2,  delay=dur*0.35, easing="out" })
   scene:tweenUi(e, { scale=1.0, duration=dur*0.45, delay=dur*0.55, easing="out" })
+end
+)LUA"
+R"LUA(
+
+-- ============================================================
+--  Tween: 汎用プロパティ補間（Godot の tween_property 相当）
+--  target[prop] を to まで duration 秒かけて動かすだけ。target は Lua テーブルでも
+--  usertype（Light / Transform / self）でも可。数値と 3 要素（色/ベクトル）の両方を補間する。
+--  「演出ごとの専用 API」を増やさずに、時間変化はこの 1 本で賄うのが方針。
+--    Tween(target, prop, to, duration, { ease=, delay=, loop=, pingpong=, onComplete= }) -> id
+--    stopTween(id) / Anim.clear()
+--  時間はスケール済み dt で進む（time.setScale(0) で止まる）。Play 開始で全部クリア。
+--  注: self.transform を直接 tween する場合は、対象エンティティが補間中に消えないこと。
+-- ============================================================
+Ease = {
+  linear    = function(t) return t end,
+  inQuad    = function(t) return t * t end,
+  outQuad   = function(t) return 1 - (1 - t) * (1 - t) end,
+  inOutQuad = function(t) if t < 0.5 then return 2*t*t else return 1 - ((-2*t + 2)^2) / 2 end end,
+  inCubic   = function(t) return t * t * t end,
+  outCubic  = function(t) return 1 - (1 - t)^3 end,
+  inOutSine = function(t) return -(math.cos(math.pi * t) - 1) / 2 end,
+  outBack   = function(t)
+    local c1 = 1.70158
+    return 1 + (c1 + 1) * (t - 1)^3 + c1 * (t - 1)^2
+  end,
+  outBounce = function(t)
+    local n, d = 7.5625, 2.75
+    if t < 1/d then return n*t*t
+    elseif t < 2/d then t = t - 1.5/d;   return n*t*t + 0.75
+    elseif t < 2.5/d then t = t - 2.25/d;  return n*t*t + 0.9375
+    else t = t - 2.625/d; return n*t*t + 0.984375 end
+  end,
+}
+
+Anim = { _list = {}, _next = 1 }
+
+-- 値を {x,y,z} の3要素へ正規化する。数値/非対応なら nil（= スカラー補間へ）。
+local function _triple(v)
+  local tv = type(v)
+  if tv == "table" then
+    local x, y, z = v.x or v[1], v.y or v[2], v.z or v[3]
+    if type(x) == "number" and type(y) == "number" and type(z) == "number" then
+      return { x, y, z }
+    end
+  elseif tv == "userdata" then
+    local ok, x = pcall(function() return v.x end)
+    if ok and type(x) == "number" then return { x, v.y, v.z } end
+  end
+  return nil
+end
+
+local function _applyTween(tw, k)
+  local f, t = tw.from, tw.to
+  if tw.n == 1 then
+    tw.target[tw.prop] = f[1] + (t[1] - f[1]) * k
+  else
+    local x = f[1] + (t[1] - f[1]) * k
+    local y = f[2] + (t[2] - f[2]) * k
+    local z = f[3] + (t[3] - f[3]) * k
+    -- 元が usertype(Vec3) なら Vec3、テーブルなら配列/名前つき両対応のテーブルで返す
+    if tw.mk then tw.target[tw.prop] = Vec3.new(x, y, z)
+    else tw.target[tw.prop] = { x, y, z, x = x, y = y, z = z } end
+  end
+end
+
+function Tween(target, prop, to, duration, opts)
+  opts = opts or {}
+  if target == nil or prop == nil then return nil end
+  local cur = target[prop]
+  local from, dest, n, mk
+  local ct = _triple(cur)
+  if ct then
+    local tt = _triple(to)
+    if not tt then local v = tonumber(to) or 0; tt = { v, v, v } end
+    from, dest, n, mk = ct, tt, 3, (type(cur) == "userdata")
+  else
+    from, dest, n, mk = { tonumber(cur) or 0 }, { tonumber(to) or 0 }, 1, false
+  end
+
+  -- loop: true=無限 / 数値=総再生回数 / 省略=1回
+  local loops = 0
+  if opts.loop == true then loops = -1
+  elseif type(opts.loop) == "number" then loops = math.max(0, math.floor(opts.loop) - 1) end
+
+  local id = Anim._next
+  Anim._next = id + 1
+  Anim._list[id] = {
+    target = target, prop = prop, from = from, to = dest, n = n, mk = mk,
+    dur = math.max(duration or 0.3, 0.0001),
+    t = -(opts.delay or 0),
+    ease = Ease[opts.ease or "outQuad"] or Ease.outQuad,
+    loops = loops, pingpong = (opts.pingpong == true),
+    onComplete = opts.onComplete, _back = false,
+  }
+  return id
+end
+
+function stopTween(id) if id ~= nil then Anim._list[id] = nil end end
+function Anim.clear() Anim._list, Anim._next = {}, 1 end
+
+-- ============================================================
+--  Flicker: Quake 由来の lightstyle 文字列で明滅させる
+--  1 文字 = 1/10 秒（hz で変更可）。'a'=消灯 / 'm'=通常(1.0) / 'z'≒2.08 倍。
+--  ロウソク・蛍光灯・故障灯・雷が、この文字列 1 本で全部書ける（実装コスト最小・表現力最大）。
+--    Flicker(light, "candle")            プリセット
+--    Flicker(light, "mmnmmommonqnmmo")   生の lightstyle
+--    stopFlicker(light)                  元の明るさへ戻す
+-- ============================================================
+LIGHT_STYLES = {
+  normal      = "m",
+  candle      = "mmmaaaammmaaammmabcdefaaaammmmabcdefmmmaaaa",
+  fluorescent = "mmamammmmammamamaaamammma",
+  broken      = "mmnmmommommnonmmonqnmmo",
+  pulse       = "abcdefghijklmnopqrstuvwxyzyxwvutsrqponmlkjihgfedcba",
+  storm       = "maaaaaaaaaaaaaaazzaaaaaaaaaammaaaaaaaaaaazzzaaaaaa",
+  strobe      = "mamamamamama",
+  slowStrobe  = "aaaaaaaazzzzzzzz",
+  gentle      = "jklmnopqrstuvwxyzyxwvutsrqponmlkj",
+}
+
+Flick = { _list = {} }
+
+function Flicker(light, style, hz)
+  if not (light and light.isValid and light:isValid()) then return nil end
+  local s = LIGHT_STYLES[style or "candle"] or style
+  if type(s) ~= "string" or #s == 0 then s = LIGHT_STYLES.candle end
+  local key = light.id
+  local prev = Flick._list[key]
+  Flick._list[key] = {
+    light = light, style = s, hz = hz or 10,
+    base = prev and prev.base or light.intensity, t = 0,
+  }
+  return light
+end
+
+function stopFlicker(light)
+  if not light then return end
+  local fl = Flick._list[light.id]
+  if not fl then return end
+  Flick._list[light.id] = nil
+  fl.light.intensity = fl.base
+end
+
+-- __time_tick / __time_reset からぶら下がる駆動部（C++ 側の更新フックはそのまま）
+function __anim_reset()
+  Anim._list, Anim._next = {}, 1
+  Flick._list = {}
+  Lighting._hour = nil
+end
+
+function __anim_tick(dt)
+  local dead
+  for id, tw in pairs(Anim._list) do
+    tw.t = tw.t + dt
+    if tw.t >= 0 then
+      local k, fin = tw.t / tw.dur, false
+      if k >= 1 then k, fin = 1, true end
+      local ok, err = pcall(_applyTween, tw, tw.ease(k))
+      if not ok then
+        logWarn("Tween エラー (" .. tostring(tw.prop) .. "): " .. tostring(err))
+        dead = dead or {}; dead[#dead + 1] = id
+      elseif fin then
+        if tw.pingpong and not tw._back then
+          tw._back = true
+          tw.from, tw.to = tw.to, tw.from
+          tw.t = 0
+        elseif tw.loops ~= 0 then
+          tw.loops = tw.loops - 1        -- -1 は減っても 0 にならない = 無限ループ
+          if tw._back then tw._back = false; tw.from, tw.to = tw.to, tw.from end
+          tw.t = 0
+        else
+          dead = dead or {}; dead[#dead + 1] = id
+          if tw.onComplete then
+            local ok2, err2 = pcall(tw.onComplete)
+            if not ok2 then logWarn("Tween onComplete エラー: " .. tostring(err2)) end
+          end
+        end
+      end
+    end
+  end
+  if dead then for _, id in ipairs(dead) do Anim._list[id] = nil end end
+
+  for _, fl in pairs(Flick._list) do
+    fl.t = fl.t + dt
+    local i = (math.floor(fl.t * fl.hz) % #fl.style) + 1
+    local c = string.byte(fl.style, i) - 97      -- 'a' = 0
+    if c < 0 then c = 0 end
+    fl.light.intensity = fl.base * (c / 12.0)    -- 'm'(=12) で等倍
+  end
+end
+)LUA"
+R"LUA(
+
+-- ============================================================
+--  Lighting: 時間帯と定番のライティング演出
+--  新しいシーン設定は増やさず、既存の DirectionalLight(太陽) と post を叩くだけ。
+-- ============================================================
+Lighting = {}
+Lighting.dayColor       = { 1.00, 0.97, 0.92 }
+Lighting.duskColor      = { 1.00, 0.46, 0.18 }
+Lighting.nightColor     = { 0.40, 0.52, 0.85 }
+Lighting.dayIntensity   = 3.0
+Lighting.nightIntensity = 0.35
+Lighting.dayAmbient     = 0.30
+Lighting.nightAmbient   = 0.05
+Lighting.duskAmbient    = 0.12   -- 地平線での環境光。昼側/夜側どちらから来てもこの値＝継ぎ目が出ない
+
+-- hour(0..24) → 太陽の向き / 色 / 強度 / 環境光。上の定数を書き換えれば作風ごと変わる。
+-- 日の出/日の入り（6時/18時）をまたぐ瞬間に絵が飛ばないよう、地平線で強度 0・環境光
+-- duskAmbient に揃えてある（昼夜の切替はここで連続になる）。
+-- 戻り: dx, dy, dz, r, g, b, intensity, ambient
+function Lighting.sample(hour)
+  local h = (hour or 12) % 24
+  local a = (h - 6) / 12 * math.pi          -- 6時=東の地平線 / 12時=天頂 / 18時=西の地平線
+  local sx, sy, sz = -math.cos(a), math.sin(a), 0.35
+  local night = (sy <= 0)
+  if night then sx, sy, sz = -sx, -sy, -sz end   -- 夜は月（太陽の反対側）を光源にする
+  local len = math.sqrt(sx*sx + sy*sy + sz*sz)
+  local t = clamp((sy / len) / 0.35, 0, 1)       -- 地平線=0 → 20度ほど昇れば 1
+  t = t * t * (3 - 2 * t)                        -- smoothstep（薄明の立ち上がりを滑らかに）
+  local lo = night and Lighting.nightColor or Lighting.duskColor
+  local hi = night and Lighting.nightColor or Lighting.dayColor
+  local imax = night and Lighting.nightIntensity or Lighting.dayIntensity
+  local amb1 = night and Lighting.nightAmbient or Lighting.dayAmbient
+  return -sx/len, -sy/len, -sz/len,
+         lerp(lo[1], hi[1], t), lerp(lo[2], hi[2], t), lerp(lo[3], hi[3], t),
+         imax * t,
+         lerp(Lighting.duskAmbient, amb1, t)
+end
+
+function Lighting.sun() return scene:sun() end
+function Lighting.timeOfDay() return Lighting._hour or 12 end
+
+-- 時刻を即反映（太陽が無いシーンでは時刻だけ覚えて何もしない）
+function Lighting.setTimeOfDay(hour)
+  Lighting._hour = (hour or 12) % 24
+  local sun = scene:sun()
+  if not sun then return nil end
+  local dx, dy, dz, r, g, b, i, amb = Lighting.sample(Lighting._hour)
+  sun:setDirection(dx, dy, dz)
+  sun:setColor(r, g, b)
+  sun.intensity = i
+  sun.ambient   = amb
+  return sun
+end
+
+-- 「時刻」を Tween の対象にするためのプロキシ（__newindex で setTimeOfDay を呼ぶ）。
+-- これで時間帯の変化も汎用 Tween 1 本で済む＝専用の補間器を足さない。
+Lighting._tod = setmetatable({}, {
+  __index    = function(_, k) if k == "hour" then return Lighting.timeOfDay() end end,
+  __newindex = function(_, k, v) if k == "hour" then Lighting.setTimeOfDay(v) end end,
+})
+
+-- hour まで duration 秒かけて時間を進める（既定は最短方向。opts.forward=true で必ず前進）
+function Lighting.tweenTimeOfDay(hour, duration, opts)
+  opts = opts or {}
+  local from = Lighting.timeOfDay()
+  local d = ((hour or 12) - from) % 24
+  if d > 12 and not opts.forward then d = d - 24 end
+  return Tween(Lighting._tod, "hour", from + d, duration or 3.0,
+               { ease = opts.ease or "inOutQuad", delay = opts.delay,
+                 onComplete = opts.onComplete })
+end
+
+-- 雷の閃光: 太陽を一瞬だけ白く強くして戻す（既定は 2 連フラッシュ）
+-- opts: { power=6, color={r,g,b}, times=2, gap=0.09, dur=0.06 }
+function Lighting.lightningFlash(opts)
+  opts = opts or {}
+  local sun = scene:sun()
+  if not sun then return end
+  local bc = sun.color
+  local bi, br, bg, bb, ba = sun.intensity, bc.x, bc.y, bc.z, sun.ambient
+  local col   = opts.color or { 0.85, 0.90, 1.00 }
+  local power = opts.power or 6
+  local times = opts.times or 2
+  local gap   = opts.gap or 0.09
+  local dur   = opts.dur or 0.06
+  local function restore()
+    local s = scene:sun()
+    if not s then return end
+    s.intensity = bi; s:setColor(br, bg, bb); s.ambient = ba
+  end
+  for k = 0, times - 1 do
+    local at = k * (dur + gap)
+    time.after(at, function()
+      local s = scene:sun()
+      if not s then return end
+      s.intensity = bi * power
+      s:setColor(col[1], col[2], col[3])
+      s.ambient = ba + 0.25
+    end)
+    time.after(at + dur, restore)
+  end
+end
+
+-- 画面の暗転 / 復帰（露出を落とすだけ。ライトを全部触らないので確実＆安い）
+function Lighting.fadeToBlack(sec, onDone)
+  post.set("exposureOn", true)
+  return Tween(Post, "exposure", 0.0, sec or 1.0, { ease = "inQuad", onComplete = onDone })
+end
+function Lighting.fadeFromBlack(sec, onDone)
+  post.set("exposureOn", true)
+  post.set("exposure", 0.0)
+  return Tween(Post, "exposure", 1.0, sec or 1.0, { ease = "outQuad", onComplete = onDone })
+end
+
+-- ライトを min..max で往復させる（呼吸・鼓動・魔法陣）。hz = 往復の回数/秒
+function Lighting.pulse(light, hz, min, max)
+  if not (light and light.isValid and light:isValid()) then return nil end
+  min = min or 0.4
+  max = max or ((light.intensity > 0) and light.intensity or 2.0)
+  light.intensity = min
+  return Tween(light, "intensity", max, 0.5 / (hz or 1.0),
+               { ease = "inOutSine", loop = true, pingpong = true })
+end
+
+-- 色 / 明るさをなめらかに変える（状態表現のワンライナー）
+function Lighting.tweenColor(light, r, g, b, dur, opts)
+  if not light then return nil end
+  opts = opts or {}
+  return Tween(light, "color", { r, g, b }, dur or 0.5,
+               { ease = opts.ease or "outQuad", onComplete = opts.onComplete })
+end
+function Lighting.tweenIntensity(light, v, dur, opts)
+  if not light then return nil end
+  opts = opts or {}
+  return Tween(light, "intensity", v, dur or 0.5,
+               { ease = opts.ease or "outQuad", onComplete = opts.onComplete })
+end
+
+-- post / ssao の糖衣。Tween の対象にできる（Post.bloom = 0.8 のようにも書ける）
+Post = setmetatable({}, {
+  __index    = function(_, k) return post.get(k) end,
+  __newindex = function(_, k, v) post.set(k, v) end,
+})
+Ssao = setmetatable({}, {
+  __index    = function(_, k) return ssao.get(k) end,
+  __newindex = function(_, k, v) ssao.set(k, v) end,
+})
+
+-- 名前 / Entity / self から Light プロキシを引く近道。無ければ nil。
+function findLight(x)
+  if x == nil then return nil end
+  local e = x
+  if type(x) == "string" then e = scene:findEntity(x)
+  elseif type(x) == "table" then e = scene:findEntity(x.name or "") end
+  if not (e and e.isValid and e:isValid()) then return nil end
+  return e:light()
 end
 )LUA";
 

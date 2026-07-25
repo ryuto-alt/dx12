@@ -21,6 +21,7 @@ target_link_libraries(Scene PUBLIC
     Animation
     Resource
     ECS
+    Terrain
     Microsoft::DirectXMath
     nlohmann_json::nlohmann_json
 )

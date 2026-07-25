@@ -10,7 +10,7 @@
 ```bash
 git clone https://github.com/ryuto-alt/dx12.git
 cd dx12
-git checkout feat/engine-mcp        # 現在の作業ブランチ
+git checkout master                 # 現在の作業ブランチ（feat/engine-mcp から移行済み）
 ```
 
 1. **依存** … vcpkg（`VCPKG_ROOT`）/ VS2026 + Windows SDK / Node v24+（MCP 用）。
@@ -32,6 +32,61 @@ git checkout feat/engine-mcp        # 現在の作業ブランチ
 
 ## 実装履歴
 
+### 2026-07-25 — 精密ピッキング / ギズモ改修 / 地形・スカルプト / ライティング編集 & Lua API / 診断拡張
+ブランチ `master`。**この時点では未コミット**（`git status` で上記一式が M / ?? のまま）。
+`v1.7.0`（`30edee0`）の次に載る変更。
+
+- **三角形精密ピッキング + 重なりの循環選択**（`src/editor/ScenePick.{h,cpp}`, `RayGeometry.h`,
+  `src/editor/panels/SceneViewPanel.cpp`）
+  ブロードフェーズに Application の描画リスト（`DrawItem`）を借りてレイ vs バウンディング球 →
+  ナローフェーズでサブメッシュ単位の三角形判定。`ComputeWorldMatrix` の回し直しがゼロになった。
+  ヒットは距離昇順で返り、**同じ場所を連続クリック（4px / 1.2 秒以内）で手前→奥へ循環選択**。
+  `MeshRenderer` 無しの Light/Camera/Empty はアイコンのスクリーン半径 18px で判定する。
+- **ギズモ改修**（`SceneViewPanel.cpp`, `EditorContext.h`, `InspectorPanel.cpp`）
+  マルチ選択の仮想ピボット（選択群の中心）＋「前フレームとの差分行列」方式にしたので、
+  **移動だけでなく回転/スケールも群全体に効く**。スナップ量（移動/回転/スケール・常にスナップ）を
+  ハードコードから `EditorContext` へ外出しし、**エンジン設定 > ギズモ**で編集可能に。
+  ドラッグ中の増分を数値でオーバーレイ表示、ホバー中の軸を太く/明るく強調。
+- **ビューポートツールのフック**（`EditorContext::viewportToolHandlers`, `SceneViewPanel::RunViewportTools`）
+  UI 編集・3D ピッキングより前に走る `bool(const ViewportInput&)` の配列。`true` を返した時点で打ち切り。
+  地形ブラシ / スカルプトブラシ / ライトハンドルがここに登録している（後から生えるツールの共通受け口）。
+- **ハイトフィールド地形**（`src/terrain/HeightField|TerrainBrush|TerrainMeshBuilder|TerrainIO`,
+  `src/editor/panels/TerrainPanel.cpp`, `src/scene/Scene.cpp` の `SpawnTerrain`/`RebuildTerrainMesh`）
+  ブラシ 6 種 + fBm 一発生成（丘/峡谷/山脈）+ 熱浸食。高さ配列は `assets/terrain/*.hf`（`"DXHF"`）へ
+  ストローク終了時に自動保存。Jolt `HeightFieldShape` コライダー。Undo はタイル差分（64x64）。
+- **メッシュ・スカルプト（異形）**（`src/terrain/SculptMesh.{h,cpp}`, `SculptIO.{h,cpp}`,
+  `src/editor/panels/SculptPanel.cpp`）
+  頂点位置を直接動かす方式（トポロジ不変＝ `Mesh::UploadVertexCache` の部分更新が使える）。
+  ブラシ 8 種 + X/Y/Z ミラー。**位置が一致する頂点を溶接**して代表単位で動かすので、
+  GLB の UV/法線シームで割れた頂点でも継ぎ目が開かない。素体 4 種（箱/球/板/円柱）または
+  「選択中のモデルを編集可能にする」（元の `.glb` は読むだけ）。頂点配列は `assets/sculpt/*.smsh`
+  （`"SMSH"`）へ自動保存。Jolt `MeshShape` コライダー（動く剛体のときだけ凸包へフォールバック）。
+  Undo は「触った代表頂点の差分」だけを持つ。
+- **ライティング編集 UI**（`src/editor/LightHandles.{h,cpp}`, `LightMath.h`,
+  `src/editor/panels/LightingPanel.cpp`）
+  **`L` 押しっぱなし + マウス移動で太陽を回す**（UE の `Ctrl+L` 相当。`Ctrl+L` は新規スクリプトで
+  埋まっているため単独 `L`）。スポットのコーン角 / ポイントの range / 平行光の向きを丸ハンドルで
+  ドラッグ。パネルはライト一覧（灯数の上限警告・目玉でミュート）/ 太陽 / 影 / スカイ・IBL /
+  プリセット 6 種 / 3点ライト設置。純関数は `LightMath.h` に切り出して `tests/light_math_test.cpp` で検証。
+- **ライティング Lua API**（`src/scripting/ScriptEngine.cpp` + prelude）
+  `Light` usertype / `post` / `ssao` / `Tween` / `Flicker`（Quake の lightstyle 文字列）/ `Lighting.*`
+  （`setTimeOfDay` / `tweenTimeOfDay` / `lightningFlash` / `fadeToBlack` / `pulse` …）。
+  サンプルは `assets/components/LightShowDemo.lua`。時刻カーブはライティング・パネルと同式。
+- **エンジン診断の拡張**（`src/gui/DeepDiagnostics.{h,cpp}`）
+  検査に `lighting` / `terrain` / `picking` / `instancing` / `scripts` を追加して計 10 種に。
+  `DeepDiag::RunAll(app, only)` が**機械可読な JSON**（`version`/`engine`/`checks[]`/`summary`）を返すようになり、
+  `only` にカンマ区切りの検査 ID を渡して重い検査（textures/models）を外せる。
+- **CPU 内訳プロファイラにスコープ追加**（`src/core/CpuScope.h`, `Application.cpp`）
+  `picking` / `gizmo` を追加。`dx12_perf_stats` の `cpuScopeMs` に出る（どちらも `editorUi` の内数）。
+- **単体テスト**（`tests/CMakeLists.txt` に追加済み）: `ray_pick_test.cpp`（レイ vs 三角形/AABB）、
+  `terrain_test.cpp`（ハイトフィールド / ブラシ / `.hf` ラウンドトリップ）、
+  `sculpt_test.cpp`（溶接 / ブラシ / `.smsh` ラウンドトリップ）、`light_math_test.cpp`。
+  純ロジックは GPU / entt / vfs / ImGui に依存させていないので、`.cpp` を直接ビルドしてテストできる。
+- **ドキュメント追従**: `CLAUDE.md`（操作方法 / エディタ実装メモ / 超詳細診断）、
+  `docs/AUTHORING.md`（10.5 補足 + **10.6 スカルプト新設** + 「山を作って→彫って→当たり判定を確認」手順）、
+  `docs/SCRIPTING.md`（エディタ → Lua の導線）、`docs/index.html`（エディタ節に地形/スカルプト/
+  ライティング編集、オーサリング節に `terrain`/`sculpt` の JSON ブロック）。
+
 ### 2026-06-29 — テンプレ 2D 追加 / JSON→VSCode / シーンアイコン刷新 / キー固着修正
 ブランチ `feat/engine-mcp`。コミット `b00643b`（コード）, `3c99ba2`（アイコン）。
 
@@ -52,5 +107,10 @@ git checkout feat/engine-mcp        # 現在の作業ブランチ
 
 ## 次にやる候補 / TODO
 
+- **2026-07-25 の一式はまだビルド検証していない**。`build/release` でビルドして PerfTest プロジェクトで
+  実機確認すること（地形/スカルプトを彫る → Play → 当たり判定、ライトハンドル、循環選択）。
+- 地形 / スカルプトを MCP から触るツールは未整備（`DeepDiag::RunAll` の JSON 化は済み）。
+- スカルプトのレイキャストは三角形総当たり（`SculptPanel.cpp` の `RaycastSculptLocal`）。
+  十万三角形級で重くなったら BVH を積む。今は「重い」と言われるまで入れない方針。
 - FPS/TPS/empty の既存アイコンは据え置き。全部の作り直し要望が来たら `tools/gen_icons.ps1` で対応。
 - `WM_SYSKEYDOWN`/`WM_SYSKEYUP`（Alt 系）は未配線。Alt 入力を拾いたくなったら `Window.cpp` に追加。

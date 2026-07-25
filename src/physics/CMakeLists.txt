@@ -13,6 +13,7 @@ target_link_libraries(Physics PUBLIC
     Graphics
     ECS
     Resource
+    Terrain
     Jolt::Jolt
     Microsoft::DirectXMath
 )

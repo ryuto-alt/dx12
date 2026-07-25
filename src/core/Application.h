@@ -25,6 +25,8 @@
 #include "editor/EditorIcons.h"
 #include "engine/core/EventBus.h"   // ヘッダオンリー、GPU 非依存。entt の後に置く
 #include "core/mcp/McpDeferred.h"   // MCP 遅延応答の相関情報（値メンバで持つので完全型が要る）
+#include "core/CpuScope.h"          // CpuScope / CpuScopeTimer（エディタとも共有するので独立ヘッダ）
+#include "renderer/DrawItem.h"      // 描画リストの要素（エディタのピッキングも読むので独立ヘッダ）
 
 // Forward declarations for graphics module
 namespace dx12e
@@ -89,12 +91,6 @@ namespace dx12e
 
 namespace dx12e
 {
-
-// CPU 側の計測ブロック。GPU パス(GpuTimer)と対になる workMs の内訳で、
-// 「GPU は暇なのに fps が出ない」ときの犯人をブロック単位で指す。
-enum CpuScope { CpuUpdate, CpuBuildList, CpuListSort, CpuShadowRec, CpuMainRec, CpuEditorUi,
-                CpuScopeCount };
-const char* CpuScopeName(u32 i);
 
 class Application
 {
@@ -180,6 +176,13 @@ public:
     // 測れていれば valid=true を返し、状態をリセットする（未完了なら valid=false）。
     DiagFrameStats TakeDiagnosticFrameStats();
 
+    // 今フレームの描画リスト（読み取り専用）。BuildDrawList() は Render() の先頭で走り、
+    // エディタ UI（EditorLayer::Render）は同じ Render() の後半で走るので、エディタから
+    // 見た時点で構築済み・有効。エディタの精密ピッキングがブロードフェーズ候補として借り、
+    // ワールド行列と球（center/radius）を再計算せずに済ませる。
+    // Grid / メッシュ無し / park済み(scale≈0) / Pfx* の除外もリスト構築時に済んでいる。
+    const std::vector<DrawItem>& GetDrawItems() const { return m_drawItems; }
+
 private:
     void Update();
     void Render();
@@ -228,23 +231,7 @@ private:
     // Grid/Pfx/park(scale≈0)/メッシュ無しは従来どおり除外。sortKey 順ソート済み＝PSO 切替を最小化。
     // 各パスは自分の視錐台でこのリストを球カリングして消費する（保守的＝偽陰性なし。
     // CSM はタイトフィット正射 + DepthClipEnable=TRUE で今もクリップされる範囲しか落ちない）。
-    struct DrawItem
-    {
-        entt::entity        e;
-        const MeshRenderer* renderer;
-        DirectX::XMFLOAT4X4 world;        // 親階層合成済みワールド行列
-        SkinningBuffer*     skin;         // スキンドなら該当バッファ / 静的は nullptr
-        // 保守的バウンディング球。中心は「メッシュAABBの中心をワールドへ移した点」で、
-        // エンティティ原点ではない（原点からジオメトリがズレたモデルの誤カリング防止）。
-        DirectX::XMFLOAT3   center;
-        f32                 radius;       // 半径（ワールドスケール込み）
-        u32                 lod;          // メインカメラ基準の選択LOD（Mesh 側でクランプされる）
-        bool                hasNodeAnim;
-        u32                 sortKey;      // 0=既定static / 1=カスタム不透明 / 2=skinned / 3=カスタム半透明(最後)
-        // 自動インスタンシングのバッチ鍵。0 = インスタンシング不可（従来の per-object 描画）。
-        // 同一キー同士は「同じメッシュ・同じLOD・同じマテリアル/PBR値」＝1ドローに畳んで良い。
-        u64                 batchKey;
-    };
+    // ※ DrawItem 本体は renderer/DrawItem.h（エディタのピッキングからも読むため独立ヘッダ）。
     std::vector<DrawItem> m_drawItems;
     void BuildDrawList();
     u32 m_statDraws  = 0;   // フレーム内の DrawIndexedInstanced 発行数（ビューポートHUD用）
@@ -259,19 +246,8 @@ private:
 
     // CPU パス別内訳（perf_stats 用）。GPU が暇なのに fps が出ない時、
     // どのブロックが CPU 時間を食っているかを直接指す（workMs の内訳）。
+    // ※ CpuScopeTimer（RAII）は core/CpuScope.h。エディタ側からも同じ配列へ加算する。
     f32 m_cpuMs[CpuScopeCount] = {};
-    // 計測ブロックを囲む RAII。加算式なので同一スコープを複数回通っても合計になる。
-    struct CpuScopeTimer
-    {
-        f32* slot;
-        std::chrono::high_resolution_clock::time_point t0;
-        explicit CpuScopeTimer(f32* s) : slot(s), t0(std::chrono::high_resolution_clock::now()) {}
-        ~CpuScopeTimer()
-        {
-            *slot += std::chrono::duration<f32, std::milli>(
-                std::chrono::high_resolution_clock::now() - t0).count();
-        }
-    };
 
     // ---- パフォーマンス診断（MCP perf_stats / benchmark 用）----
     // GPU パス別タイムスタンプ。Render() 内の各パスを挟んで計測（結果は約3フレーム遅れ）。

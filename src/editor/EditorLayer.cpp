@@ -15,6 +15,9 @@
 #include "resource/MaterialAssetIO.h"
 #include "core/GameClock.h"
 #include "core/Logger.h"
+// シーンビューのライティング編集（太陽ドラッグ / ライトのハンドル / ライティング・パネル）
+#include "editor/LightHandles.h"
+#include "editor/panels/LightingPanel.h"
 
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4201 4244 4267 4996)
@@ -284,6 +287,11 @@ void EditorLayer::Render(bool isPlaying,
                             shadowMapDirty, cascadeSplitLambda, cascadeBlendBand, showCascadeDebug,
                             clock);
 
+    // ライティング・パネル（シーンの光を1画面で詰める独立フローティング窓）。
+    // 影/CSM の実体は Application が持つのでここで参照を渡す（「エンジン設定」窓と同じ値を触る）。
+    RenderLightingPanel(scene, *m_ctx, shadowQualityIndex, shadowMapSize, shadowMapDirty,
+                        cascadeSplitLambda, cascadeBlendBand, showCascadeDebug);
+
     m_assetBrowser->Render(*m_ctx, clock->GetDeltaTime());
 
     // コンソール（アセットブラウザの隣タブに常設。全ログ + Lua 即時実行）
@@ -416,7 +424,7 @@ void EditorLayer::Render(bool isPlaying,
                     // .dxmat は「配置」ではなく、ドロップ先メッシュ(サブメッシュ単位)へのマテリアル適用
                     // (Unity/Unreal と同じ操作感。Inspector のマテリアルスロット D&D と同じ経路)。
                     SubmeshPickResult pick = m_sceneView->PickEntityAndSubmesh(
-                        reg, camera, m_viewportPos.x, m_viewportPos.y,
+                        reg, *m_ctx, camera, m_viewportPos.x, m_viewportPos.y,
                         m_viewportSize.x, m_viewportSize.y);
                     if (pick.entity != entt::null && reg.all_of<MeshRenderer>(pick.entity))
                     {
@@ -511,6 +519,16 @@ void EditorLayer::Render(bool isPlaying,
         m_sceneView->RenderGizmo(reg, *m_ctx, camera,
                                  m_viewportPos.x, m_viewportPos.y,
                                  m_viewportSize.x, m_viewportSize.y);
+        // ライトの直接操作（L+マウスで太陽を回す / コーン角・range・向きのハンドル）と
+        // 影響範囲ワイヤの描画。RunViewportTools より前に呼ぶこと：当たり判定とドラッグ処理を
+        // 「今フレームのマウス位置」で先に済ませ、その結果を viewportToolHandlers 経由で
+        // 「このクリックは食った」として伝えるため（ギズモを先に回すのと同じ理由）。
+        LightHandlesFrame(reg, *m_ctx, camera);
+        // ビューポートツール（地形ブラシ / ライトのハンドル操作など）の受け口。
+        // ギズモの次・UI 編集/3D ピッキングの前に回し、消費されたら以降の編集操作をしない。
+        m_sceneView->RunViewportTools(*m_ctx, camera,
+                                      m_viewportPos.x, m_viewportPos.y,
+                                      m_viewportSize.x, m_viewportSize.y);
         // UI 編集モードの UI 要素編集（選択/移動/リサイズ）はギズモ確定後・3D ピッキング前。
         // UI 要素にヒットしたクリックはここで消費され、HandlePicking へは渡らない。
         m_sceneView->HandleUiEditing(reg, *m_ctx,

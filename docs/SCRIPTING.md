@@ -119,6 +119,55 @@ local c = charge.new("E", { max = 2.0 })
 ```
 詳細は API_REFERENCE.md の time セクションを参照。
 
+### ライティング演出（Lighting / Tween / Flicker）
+ライトは**プロパティを素直に読み書き**する。時間変化は**汎用 `Tween` 1 本**、明滅は **lightstyle 文字列**。
+この 3 つだけ覚えれば、ロウソクも時間帯変化も雷も書ける（Play 開始で全部自動クリアされる）。
+
+```lua
+-- ① ライトを掴んで直接いじる（point/directional/spot の区別なく同じプロパティ名）
+local lamp = findLight("Lamp")        -- scene:findEntity("Lamp"):light() と同じ
+lamp.intensity = 8
+lamp.color     = Vec3.new(1, 0.7, 0.3)
+lamp.range     = 12
+
+-- ② 汎用トゥイーン（数値でも色でも。target はテーブル/Light/Transform/Post どれでも可）
+Tween(lamp, "intensity", 0, 1.5, { ease = "inOutQuad", onComplete = function() log("消えた") end })
+Lighting.pulse(lamp, 0.8, 0.5, 4.0)   -- min..max を往復し続ける（呼吸/鼓動）
+
+-- ③ 明滅は Quake 由来の lightstyle 文字列（1文字=1/10秒、'a'=消灯 'm'=等倍 'z'≒2倍）
+Flicker(lamp, "candle")               -- candle/fluorescent/broken/pulse/storm/strobe...
+Flicker(lamp, "mmnmmommonqnmmo", 14)  -- 生の文字列でも可
+stopFlicker(lamp)                     -- 元の明るさへ戻す
+
+-- ④ 時間帯（太陽 = 最初の DirectionalLight の向き/色/強度/環境光を駆動）
+Lighting.setTimeOfDay(6)              -- 朝
+Lighting.tweenTimeOfDay(22, 20)       -- 20 秒かけて夜へ
+Lighting.lightningFlash({ power = 8 })-- 雷の閃光
+Lighting.fadeToBlack(1.0, function() goToScene("assets/scenes/next.json") end)
+
+-- ⑤ シーン全体・ポストプロセス（項目名は post.names() で一覧できる）
+scene:setAmbient(0.05)                -- 影の明るさ
+scene:setShadowsEnabled(false)        -- 影パスごとスキップ（軽量化）
+post.setMany{ bloomOn = true, bloom = 0.8, vignetteOn = true }
+log(scene:lightCount().point)         -- 8 個を超えたライトは黙って無視されるので確認用
+```
+サンプル: [`assets/components/LightShowDemo.lua`](../assets/components/LightShowDemo.lua)（フリッカ+フェード+時間帯変化）。
+詳細は API_REFERENCE.md の「ライティング演出」セクションを参照。
+
+> **エディタで作った空気感を Lua で動かす流れ**
+> 1. `ツール > ライティング` でプリセット（昼/夕暮れ/夜/屋内/ホラー/スタジオ）を当てて土台を決める。
+>    ビューポートで **`L` 押しっぱなし + マウス移動**（太陽を回す）・**ライトの丸ハンドル**（コーン角/距離）で見ながら詰める
+> 2. その状態を `Ctrl+S` でシーンに保存する（＝ Lua が触る前の「初期値」になる）
+> 3. Lua は**その初期値を動かすだけ**にする。パネルの時刻カーブと `Lighting.setTimeOfDay` は同じ式なので、
+>    パネルで見た絵がそのまま `Lighting.tweenTimeOfDay(22, 20)` の終着点になる
+> 4. `Flicker` / `Tween` / `Lighting.*` は **Play 開始で全部自動クリア**される＝ Stop すれば手で詰めた状態に戻る
+
+**地形（`.hf`）とスカルプト（`.smsh`）の当たり判定も Lua からそのまま使える。**
+地形は Jolt の `HeightFieldShape`、彫った異形は `MeshShape` として登録されるので、
+`physics:raycast` / `physics:overlapSphere` / キャラコンの斜面登坂が普通のコライダーと同じに効く
+（例: `physics:raycast(pos, Vec3.new(0,-1,0), 50).point.y` で足元の地面の高さを取る）。作り方は
+[`AUTHORING.md`](AUTHORING.md) の 10.5 / 10.6 節。
+
 ### その他
 ```lua
 log("hp:", hp)                       -- ログ出力（任意個・任意型を tostring 連結、[Lua] 接頭辞）

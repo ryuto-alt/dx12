@@ -96,6 +96,16 @@
 #include "editor/panels/SpriteSheetEditorPanel.h"
 #include "editor/panels/MaterialEditorPanel.h"
 #include "editor/panels/MaterialLibraryPanel.h"
+#include "editor/panels/TerrainPanel.h"   // 地形ツール（状態は関数ローカル static なので所有しない）
+#include "editor/panels/SculptPanel.h"    // スカルプト窓（同上。ハイトフィールドで作れん異形の担当）
+#include "editor/ScenePick.h"             // MCP dx12_pick / raycast_precise / snap_to_ground（エディタと同じ実装）
+#include "editor/LightingPresets.h"       // MCP dx12_apply_lighting_preset（エディタの窓と同じ表）
+#include "terrain/HeightField.h"          // MCP dx12_terrain_*
+#include "terrain/TerrainBrush.h"
+#include "terrain/TerrainIO.h"
+#include "terrain/SculptMesh.h"           // MCP dx12_sculpt_*
+#include "terrain/SculptIO.h"
+#include "gui/DeepDiagnostics.h"          // MCP dx12_diagnose（機械可読な一括診断）
 #include "project/Project.h"
 #include "project/ProjectManager.h"
 #include "project/GitIntegration.h"
@@ -817,6 +827,12 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
     // エディタコンテキスト初期化
     m_editorCtx = std::make_unique<EditorContext>();
+    // エディタ（別ライブラリ）へ Application 側のフレームデータを読み取り専用で貸す。
+    // どちらも Application の寿命いっぱい生きるメンバなのでアドレスは不変＝ここで一度だけ渡す。
+    //   drawItems  … 精密ピッキングのブロードフェーズ候補（ワールド行列/球が計算済み）
+    //   cpuScopeMs … picking/gizmo の計測を perf_stats の cpuScopeMs に載せるため
+    m_editorCtx->drawItems  = &m_drawItems;
+    m_editorCtx->cpuScopeMs = m_cpuMs;
 
     // ウィンドウ作成（タイトルにエンジンのバージョンを表記＝更新の確認にも使える）
     m_window = std::make_unique<Window>();
@@ -1977,10 +1993,19 @@ namespace McpErr
 }
 
 // error_code を運べる例外。HandleMcpCommand の catch で resp へ写す。
+//
+// hint / validValues は「AI の次の一手」を確定させるための追加情報（任意）。
+// 応答の error_hint / error_values に載り、Node 側が Error.hint / Error.valid_values として
+// 受け取ってツールのエラーメッセージに整形する。付いていない旧来のエラーはそのまま動く。
 struct McpError : std::runtime_error
 {
-    int code;
+    int                      code;
+    std::string              hint;         // 「次にどうすればいいか」を必ず 1 文で
+    std::vector<std::string> validValues;  // 列挙型の引数なら有効値を全部返す（推測させない）
+
     McpError(int c, const std::string& m) : std::runtime_error(m), code(c) {}
+    McpError(int c, const std::string& m, std::string h, std::vector<std::string> v = {})
+        : std::runtime_error(m), code(c), hint(std::move(h)), validValues(std::move(v)) {}
 };
 
 // ---- perf_stats / benchmark 共通の集計・整形 ----
@@ -1996,6 +2021,10 @@ const char* CpuScopeName(u32 i)
     case CpuShadowRec:  return "shadowRec";   // CSM 4カスケードのコマンド記録
     case CpuMainRec:    return "mainRec";     // メインパスのコマンド記録
     case CpuEditorUi:   return "editorUi";    // ImGui エディタUI構築（ゲームでは 0）
+    // picking / gizmo は editorUi の「内訳」。editorUi にも同じ時間が入る二重計上だが、
+    // 「エディタUIが重い」の中身がピッキングなのかギズモなのかを名指しするのが目的。
+    case CpuPicking:    return "picking";     // シーンビューのレイキャスト選択（editorUi の内数）
+    case CpuGizmo:      return "gizmo";       // ImGuizmo の操作・描画（editorUi の内数）
     default:            return "?";
     }
 }
@@ -2108,6 +2137,10 @@ nlohmann::json PerfReportJson(const PerfSummary& s, bool vsync, float fpsLimit)
             notes.push_back("影のコマンド記録が重い: カスケード数削減 or 影用インスタンシング/バッチングを検討"); break;
         case CpuMainRec:
             notes.push_back("メインのコマンド記録が重い: drawCalls を減らす(インスタンシング/マージ)"); break;
+        case CpuPicking:
+            notes.push_back("シーンビューのピッキングが重い: 高ポリメッシュが密集している(editorUi の内数)"); break;
+        case CpuGizmo:
+            notes.push_back("ギズモが重い: マルチ選択の数が多い(editorUi の内数)"); break;
         default:
             notes.push_back("Update が重い: Lua/物理/アニメ更新を確認"); break;
         }
@@ -2251,6 +2284,170 @@ int ParseMcpVk(const nlohmann::json& params)
         if (n >= 1 && n <= 12) return VK_F1 + (n - 1);
     }
     throw McpError(McpErr::InvalidParam, "unknown key name: " + s);
+}
+
+// ════════════════════════════════════════════════════════════════
+//  MCP: 引数パースの共通部品（範囲外・列挙ミスを「次に何をすればいいか」付きで返す）
+// ════════════════════════════════════════════════════════════════
+
+// 小数を短く文字列化する（エラーメッセージ用。std::to_string は "12.000000" になって読みにくい）。
+std::string McpNum(f32 v)
+{
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%g", static_cast<double>(v));
+    return buf;
+}
+
+// 数値パラメータ（省略時 defVal）。範囲外は「有効範囲」を添えて弾く。
+f32 McpFloatParam(const nlohmann::json& p, const char* key, f32 defVal, f32 lo, f32 hi)
+{
+    auto it = p.find(key);
+    if (it == p.end() || it->is_null()) return defVal;
+    if (!it->is_number())
+        throw McpError(McpErr::InvalidParam, std::string(key) + " must be a number");
+    const f32 v = it->get<f32>();
+    if (!(v >= lo && v <= hi))
+        throw McpError(McpErr::InvalidParam,
+                       std::string(key) + " が範囲外: " + McpNum(v),
+                       std::string("有効範囲は ") + McpNum(lo) + " 〜 " + McpNum(hi) + " や");
+    return v;
+}
+
+i32 McpIntParam(const nlohmann::json& p, const char* key, i32 defVal, i32 lo, i32 hi)
+{
+    auto it = p.find(key);
+    if (it == p.end() || it->is_null()) return defVal;
+    if (!it->is_number())
+        throw McpError(McpErr::InvalidParam, std::string(key) + " must be an integer");
+    const i32 v = it->get<i32>();
+    if (v < lo || v > hi)
+        throw McpError(McpErr::InvalidParam,
+                       std::string(key) + " が範囲外: " + std::to_string(v),
+                       std::string("有効範囲は ") + std::to_string(lo) + " 〜 " + std::to_string(hi) + " や");
+    return v;
+}
+
+// 列挙パラメータ。未知の値は「有効値の一覧」を error_values に載せて返す＝AI が推測しない。
+int McpEnumParam(const nlohmann::json& p, const char* key,
+                 const std::vector<std::string>& values, int defIndex, const char* hint = "")
+{
+    auto it = p.find(key);
+    if (it == p.end() || it->is_null()) return defIndex;
+    if (!it->is_string())
+        throw McpError(McpErr::InvalidParam, std::string(key) + " must be a string", hint, values);
+    std::string s = it->get<std::string>();
+    for (auto& c : s) c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
+    for (size_t i = 0; i < values.size(); ++i)
+        if (values[i] == s) return static_cast<int>(i);
+    throw McpError(McpErr::InvalidParam, "unknown " + std::string(key) + ": " + s,
+                   hint[0] ? hint : "有効値のどれかを指定してくれ", values);
+}
+
+// [x,y,z] を読む（必須）。
+DirectX::XMFLOAT3 McpVec3Required(const nlohmann::json& p, const char* key)
+{
+    auto it = p.find(key);
+    if (it == p.end() || !it->is_array() || it->size() != 3)
+        throw McpError(McpErr::InvalidParam, std::string("missing/invalid '") + key + "'",
+                       std::string(key) + " は [x,y,z] の数値3要素で渡す");
+    return { (*it)[0].get<f32>(), (*it)[1].get<f32>(), (*it)[2].get<f32>() };
+}
+
+// [x,y,z] を読む（任意）。無ければ false。
+bool McpTryVec3(const nlohmann::json& p, const char* key, DirectX::XMFLOAT3& out)
+{
+    auto it = p.find(key);
+    if (it == p.end() || it->is_null()) return false;
+    if (!it->is_array() || it->size() != 3)
+        throw McpError(McpErr::InvalidParam, std::string("invalid '") + key + "'",
+                       std::string(key) + " は [x,y,z] の数値3要素で渡す");
+    out = { (*it)[0].get<f32>(), (*it)[1].get<f32>(), (*it)[2].get<f32>() };
+    return true;
+}
+
+// ════════════════════════════════════════════════════════════════
+//  MCP: 精密ピッキング（ScenePick）の結果整形
+// ════════════════════════════════════════════════════════════════
+
+// ヒット 1 件 → JSON。エディタのクリック選択とまったく同じ構造体を出すので、
+// 「MCP が見たもの」と「エディタで選ばれるもの」がズレない。
+nlohmann::json McpPickHitJson(const entt::registry& reg, const ScenePickHit& h)
+{
+    nlohmann::json j{
+        {"entityId",     static_cast<u32>(h.entity)},
+        {"submeshIndex", h.submeshIndex},
+        {"distance",     h.distance},
+        {"worldPos",     {h.worldPos.x, h.worldPos.y, h.worldPos.z}},
+        {"worldNormal",  {h.worldNormal.x, h.worldNormal.y, h.worldNormal.z}},
+        {"isIcon",       h.isIcon},
+    };
+    if (reg.valid(h.entity) && reg.all_of<NameTag>(h.entity))
+        j["name"] = reg.get<NameTag>(h.entity).name;
+    return j;
+}
+
+// ヒット列 → {hits, count, totalHits, truncated}。all=false なら最前面 1 件だけ返す。
+nlohmann::json McpPickHitsJson(const entt::registry& reg,
+                               const std::vector<ScenePickHit>& hits,
+                               bool all, int maxHits)
+{
+    nlohmann::json arr = nlohmann::json::array();
+    const size_t limit = all ? static_cast<size_t>(maxHits) : (hits.empty() ? 0u : 1u);
+    for (size_t i = 0; i < hits.size() && arr.size() < limit; ++i)
+        arr.push_back(McpPickHitJson(reg, hits[i]));
+    return nlohmann::json{
+        {"hits", arr},
+        {"count", arr.size()},
+        {"totalHits", hits.size()},
+        {"truncated", all && hits.size() > arr.size()},
+    };
+}
+
+// ════════════════════════════════════════════════════════════════
+//  MCP: 地形 / スカルプトの対象解決
+// ════════════════════════════════════════════════════════════════
+
+// T(Terrain / SculptMesh) を持つエンティティを解決する。
+// entity/name の指定があればそれを使い、無ければシーンに 1 個だけなら自動採用する
+//（2 個以上あるのに指定が無いのは曖昧なので名指しを促す＝黙って違うものを彫らない）。
+template <typename T>
+entt::entity ResolveMcpComponentEntity(Scene& scene, const nlohmann::json& params,
+                                       const char* jsonKey, const char* createHint)
+{
+    auto& reg = scene.GetRegistry();
+    if (params.contains("entity") || params.contains("name"))
+    {
+        const auto e = ResolveMcpEntity(scene, params);
+        if (!reg.all_of<T>(e))
+            throw McpError(McpErr::InvalidParam,
+                           std::string("entity has no ") + jsonKey + " component", createHint);
+        return e;
+    }
+    entt::entity found = entt::null;
+    int n = 0;
+    for (auto e : reg.view<T>())
+    {
+        if (n == 0) found = e;
+        ++n;
+    }
+    if (n == 1) return found;
+    if (n == 0)
+        throw McpError(McpErr::NotFound,
+                       std::string("no entity with ") + jsonKey + " in this scene", createHint);
+    throw McpError(McpErr::InvalidParam,
+                   std::string("multiple ") + jsonKey + " entities (" + std::to_string(n) + ")",
+                   std::string("entity(id) か name でどれを触るか指定してくれ。一覧は ")
+                       + "dx12_list_entities(component_type:\"" + jsonKey + "\")");
+}
+
+// 地形の原点（ワールド）。ハイトフィールドは XZ グリッド前提なので回転/スケールは無視する
+//（TerrainPanel::TerrainOrigin と同じ規約）。
+DirectX::XMFLOAT3 McpTerrainOrigin(const entt::registry& reg, entt::entity e)
+{
+    DirectX::XMFLOAT3 out{0.0f, 0.0f, 0.0f};
+    if (!reg.all_of<Transform>(e)) return out;
+    DirectX::XMStoreFloat3(&out, ComputeWorldMatrix(reg, e).r[3]);
+    return out;
 }
 
 // エンジン自身(自 exe)を子プロセスとして起動し、終了(または timeoutMs)まで待つ。
@@ -2458,6 +2655,32 @@ nlohmann::json McpComponentSchema()
         F("scriptPath", "string (assets-relative)", ""), F("enabled", "bool", true),
     }), "attach via dx12_attach_lua_component (not set_component). Removable via MCP."));
 
+    // --- 地形 / スカルプト（高さ配列・頂点配列そのものは JSON に載らない。パスだけ持つ）---
+    comps.push_back(C("terrain", false, false, json::array({
+        F("resolution", "int (1 辺のサンプル数。16..512、内部で 4 の倍数へ丸め)", 128),
+        F("worldSize", "float (1 辺のワールド長 m。セル幅 = worldSize/(resolution-1))", 200.0),
+        F("maxHeight", "float (ブラシの高さクランプ ±この値)", 200.0),
+        F("heightmapPath", "string (assets-relative .hf。空=未保存)", ""),
+        F("uvScale", "float (地形全体での UV 繰り返し数)", 24.0),
+        F("color", "float4 rgba (頂点色。マテリアル未割当時の見た目)", json::array({0.42, 0.50, 0.32, 1.0})),
+    }), "read-only via set_component (replacing the component would detach the live height array "
+        "from the mesh and the collider). The height array itself is NOT in the scene JSON — it lives "
+        "in assets/terrain/<name>.hf. Use the dedicated tools: dx12_terrain_create (also updates "
+        "worldSize/maxHeight/uvScale/color on an existing terrain), dx12_terrain_generate (fBm presets), "
+        "dx12_terrain_sculpt (brush strokes), dx12_terrain_erode, dx12_terrain_sample (height/normal "
+        "queries). Collision is a Jolt HeightFieldShape reading the same array, so sculpting moves the "
+        "collision too (a Static RigidBody is added automatically)."));
+    comps.push_back(C("sculptMesh", false, false, json::array({
+        F("meshPath", "string (assets-relative .smsh。空=未保存)", ""),
+        F("uvScale", "float", 1.0),
+        F("collision", "bool (彫った形の MeshShape コライダーを作る)", true),
+        F("color", "float4 rgba (頂点色)", json::array({0.72, 0.70, 0.66, 1.0})),
+    }), "free-form vertex sculpt (caves / arches / rocks — things a height field cannot do). "
+        "read-only via set_component for the same reason as terrain. Vertex array is NOT in the scene "
+        "JSON (assets/sculpt/<name>.smsh). Use dx12_sculpt_create (also updates uvScale/color/collision "
+        "on an existing one) or dx12_sculpt_make_editable on an existing model, then dx12_sculpt_brush. "
+        "Topology never changes (only vertex positions move), so the collider follows the sculpted shape."));
+
     // --- ゲーム内UI(retained-mode)。create は dx12_create_entity type=ui_*(部品構成済みで生成)、
     // 調整はここの jsonKey で set_component。ツリーは dx12_set_parent + uiRect.order(兄弟描画順)。
     comps.push_back(C("uiCanvas", true, true, json::array({
@@ -2643,6 +2866,23 @@ nlohmann::json McpLuaApi()
         "setAnimSpeed(speed:float)  (再生速度倍率。既定1.0、2.0で2倍速、0で一時停止。移動速度と足の同期に)",
         "getAnimCount() -> int",
         "getAnimName(index:int) -> string",
+        "light() -> Light|nil  (PointLight/DirectionalLight/SpotLight の統一プロキシ。無ければ nil)",
+        "addLight(kind:string?) -> Light  (kind: \"point\"(既定)/\"directional\"(\"dir\"/\"sun\")/\"spot\"。既にあればそれを返す)",
+        "removeLight()  (付いているライト成分を全部外す。消灯ではなく削除=CB枠が空く)",
+    })));
+    objects.push_back(O("Light", "entity:light() / entity:addLight(kind) / scene:sun()", json::array({
+        "type  (string, read-only: \"point\"/\"directional\"/\"spot\")",
+        "id  (u32 entity id, read-only。Flicker のキーに使われる)",
+        "isValid() -> bool",
+        "intensity  (float, 読み書き)",
+        "color  (Vec3, 読み書き。読みは**値コピー**なので from を掴んでも補間中に動かない)",
+        "direction  (Vec3, 読み書き。directional/spot のみ。書き込み時に正規化される)",
+        "range  (float, 読み書き。point/spot のみ。directional は 0)",
+        "ambient  (float, 読み書き。directional のみ = シーン全体の環境光)",
+        "innerAngle / outerAngle  (float, 読み書き。spot のみ・度)",
+        "castShadows  (bool, 読み書き。point/spot のみ)",
+        "setColor(r,g,b) / setDirection(x,y,z)  (Vec3 を作らずに書く近道)",
+        "注: 持っていない型のプロパティは「読むと既定値・書くと無視」。型分岐を書かなくていい",
     })));
     objects.push_back(O("transform", "entity.transform / self.transform", json::array({
         "position  (Vec3, 読み書き)", "rotation  (Vec3, euler degrees, 読み書き)", "scale  (Vec3, 読み書き)",
@@ -2684,6 +2924,12 @@ nlohmann::json McpLuaApi()
         "elastic/expo/inBack/inOutBack/quint/sine))",
         "stopUiTweens(e)  (進行中tween全打ち切り+視覚値リセット。連打対策)",
         "showUi(e)", "hideUi(e)",
+        "sun() -> Light|nil  (最初の DirectionalLight。時間帯演出はこれを駆動する)",
+        "lightCount() -> { point=, spot=, directional=, maxPoint=8, maxSpot=8 }  (CB 上限に引っかかってないか確認用)",
+        "getAmbient() / setAmbient(v)  (環境光=影の明るさ。実体は DirectionalLight.ambient、書きは全太陽へ)",
+        "getShadowsEnabled() / setShadowsEnabled(b)  (リアルタイム影(CSM)の ON/OFF。false で影パスごとスキップ)",
+        "getSkybox() -> { envMapPath=, iblIntensity=, skyboxIntensity=, drawSkybox= }",
+        "setSkybox{ iblIntensity=, skyboxIntensity=, drawSkybox= }  (渡したキーだけ上書き。envMapPath の実行時差し替えは非対応)",
     })));
     objects.push_back(O("input", "global", json::array({
         "isKeyDown(vk) -> bool", "isKeyPressed(vk) -> bool", "isAsyncKeyDown(vk) -> bool",
@@ -2742,6 +2988,14 @@ nlohmann::json McpLuaApi()
         "fx:pulse(amt?)  画面全体パルス  /  fx:clear()",
         "例: fx:burst{ x=p.x, y=p.y, z=p.z, kind=\"spark\", count=18, size=0.5, r=1, g=0.78, b=0.18 }  ← scale/radius は無効キー(黙って無視される)",
     })));
+    objects.push_back(O("post / ssao", "global ('.' で呼ぶ)。項目名は MCP の set_post_process と同一", json::array({
+        "post.get(name) -> value|nil  /  post.set(name, value) -> bool",
+        "post.setMany{ bloomOn=true, bloom=0.8, vignetteOn=true } -> 適用数",
+        "post.names() -> table  (使える項目名の一覧。個別バインドは無いのでここで引く)",
+        "ssao.get/set/setMany/names も同じ流儀 (enabled,radius,bias,intensity,power,sampleCount,blur)",
+        "糖衣: Post.bloom = 0.8 / Ssao.enabled = true（メタテーブル経由。Tween の対象にできる）",
+        "Play 中の変更は Stop でシーンJSONごと巻き戻る（エディタの値は壊れない）",
+    })));
     objects.push_back(O("events", "global (Play 中のみ)", json::array({
         "events:on(name,fn) -> id", "events:off(id)", "events:emit(name,data?)", "events:clear()",
     })));
@@ -2761,6 +3015,29 @@ nlohmann::json McpLuaApi()
         "uifx.punch(e,s?,dur?) / flash(e,r?,g?,b?,dur?) / shake(e,amp?,dur?) / hit(e,amp?) / "
         "bounceIn(e,dur?) / flipIn(e,dur?) / popOut(e,dur?) / fadeIn(e,dur?) / fadeOut(e,dur?)"
         "  (ゲーム内UIの定番演出ワンライナー。e は Entity かボタンイベントの e.source)",
+    })));
+    objects.push_back(O("Tween / Flicker / Lighting", "global (prelude。ライティング演出レイヤ)", json::array({
+        "Tween(target, prop, to, duration, opts?) -> id  — 汎用プロパティ補間。target は table でも "
+        "usertype(Light/Transform)でも可。数値と3要素(色/ベクトル)の両方を補間する。"
+        "opts: { ease=, delay=, loop=(true|回数), pingpong=, onComplete= }",
+        "ease: linear/inQuad/outQuad/inOutQuad/inCubic/outCubic/inOutSine/outBack/outBounce（既定 outQuad）",
+        "stopTween(id) / Anim.clear()  — 個別停止 / 全停止（Play 開始で自動クリア）",
+        "Flicker(light, style?, hz?) -> light  — Quake 由来 lightstyle 文字列で明滅。1文字=1/10秒、"
+        "'a'=消灯 'm'=等倍 'z'≒2.08倍。style はプリセット名か生の文字列",
+        "LIGHT_STYLES: normal/candle/fluorescent/broken/pulse/storm/strobe/slowStrobe/gentle",
+        "stopFlicker(light)  — 明滅を止めて元の明るさへ戻す（1ライトにつき1つ・掛け直しは上書き）",
+        "Lighting.setTimeOfDay(hour) / timeOfDay() / sun()  — 0..24 で太陽の向き/色/強度/環境光を駆動",
+        "Lighting.tweenTimeOfDay(hour, duration?, opts?) -> id  — 時刻を補間（既定は最短方向。"
+        "opts.forward=true で必ず前進）",
+        "Lighting.sample(hour) -> dx,dy,dz,r,g,b,intensity,ambient  — カーブだけ取り出す（自前で使う用）",
+        "Lighting.dayColor/duskColor/nightColor/dayIntensity/nightIntensity/dayAmbient/nightAmbient/duskAmbient"
+        "  — 作風を変える調整ノブ（テーブルを書き換えるだけ）",
+        "Lighting.lightningFlash{ power=6, color={r,g,b}, times=2, gap=0.09, dur=0.06 }  — 雷の閃光",
+        "Lighting.fadeToBlack(sec?, onDone?) / fadeFromBlack(sec?, onDone?)  — 露出で暗転/復帰",
+        "Lighting.pulse(light, hz?, min?, max?) -> id  — min..max を往復（呼吸/鼓動）",
+        "Lighting.tweenColor(light, r,g,b, dur?, opts?) / tweenIntensity(light, v, dur?, opts?)",
+        "findLight(nameOrEntityOrSelf) -> Light|nil  — 名前/Entity/self からライトを引く近道",
+        "注: 演出は既存の毎フレームフック(__time_tick)で駆動＝time.setScale(0) で一緒に止まる",
     })));
     return json{
         {"version", 1},
@@ -2801,6 +3078,8 @@ nlohmann::json McpComponentTypesOf(const entt::registry& reg, entt::entity e)
     if (reg.all_of<TrailRenderer>(e))       a.push_back("trailRenderer");
     if (reg.all_of<NetworkIdentity>(e))     a.push_back("networkIdentity");
     if (reg.all_of<NetworkTransform>(e))    a.push_back("networkTransform");
+    if (reg.all_of<Terrain>(e))             a.push_back("terrain");
+    if (reg.all_of<SculptMesh>(e))          a.push_back("sculptMesh");
     if (reg.all_of<SkeletalAnimation>(e))   a.push_back("skeletalAnimation");
     if (reg.all_of<UIAnimPlayer>(e))        a.push_back("uiAnimPlayer");
     if (reg.all_of<SpriteAnimator>(e))      a.push_back("spriteAnimator");
@@ -4979,23 +5258,54 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             const float offset = params.value("offset", 0.0f);
             float groundY = 0.0f;
             entt::entity groundEnt = entt::null;
-            auto view = reg.view<const Transform, const MeshRenderer>();
-            for (auto o : view)
+            const char* snapMethod = "aabb";
+
+            // ① 三角形精密レイキャストで真下の「実際の面」を取る。
+            //    AABB の天面だけを見ていた旧実装は、地形のように 1 メッシュが広く起伏する相手だと
+            //    山頂の高さに吸い付いてしまい「地形の上に浮く」。エディタのピッキングと同じ
+            //    ScenePick を通すので、斜面・階段・彫った岩にもちゃんと乗る。
+            if (params.value("precise", true))
             {
-                if (o == e || McpIsDescendantOf(reg, o, e) || McpIsDescendantOf(reg, e, o)) continue;
-                DirectX::XMFLOAT3 omn, omx;
-                bool ohm = false;
-                if (!McpWorldAabb(reg, o, omn, omx, ohm) || !ohm) continue;
-                if (omx.x < mn.x || omn.x > mx.x || omx.z < mn.z || omn.z > mx.z) continue;  // XZ 非重複
-                if (omx.y > mx.y + 1e-3f) continue;   // 完全に自分より上の床は無視
-                if (groundEnt == entt::null || omx.y > groundY) { groundY = omx.y; groundEnt = o; }
+                const DirectX::XMFLOAT3 rayO{ (mn.x + mx.x) * 0.5f, mx.y + 0.05f, (mn.z + mx.z) * 0.5f };
+                const DirectX::XMFLOAT3 rayD{ 0.0f, -1.0f, 0.0f };
+                ScenePickOptions popt;
+                popt.includeNonMesh  = false;   // アイコン/スプライトは床にしない
+                popt.trianglePrecise = true;
+                popt.maxCandidates   = 256;
+                for (const ScenePickHit& h : RaycastSceneRay(reg, &GetDrawItems(), rayO, rayD, 0.0f, popt))
+                {
+                    // 自分自身・子孫・祖先は床にしない（距離昇順なので最初の他人が直下の面）
+                    if (h.entity == e || McpIsDescendantOf(reg, h.entity, e)
+                        || McpIsDescendantOf(reg, e, h.entity)) continue;
+                    groundY    = h.worldPos.y;
+                    groundEnt  = h.entity;
+                    snapMethod = "raycast";
+                    break;
+                }
+            }
+
+            if (groundEnt == entt::null)
+            {
+                // ② フォールバック: XZ が重なる他メッシュの天面（従来の AABB 判定）。
+                //    真下に三角形が無い（穴の上・メッシュの外）ときはこっちが働く。
+                auto view = reg.view<const Transform, const MeshRenderer>();
+                for (auto o : view)
+                {
+                    if (o == e || McpIsDescendantOf(reg, o, e) || McpIsDescendantOf(reg, e, o)) continue;
+                    DirectX::XMFLOAT3 omn, omx;
+                    bool ohm = false;
+                    if (!McpWorldAabb(reg, o, omn, omx, ohm) || !ohm) continue;
+                    if (omx.x < mn.x || omn.x > mx.x || omx.z < mn.z || omn.z > mx.z) continue;  // XZ 非重複
+                    if (omx.y > mx.y + 1e-3f) continue;   // 完全に自分より上の床は無視
+                    if (groundEnt == entt::null || omx.y > groundY) { groundY = omx.y; groundEnt = o; }
+                }
             }
             const float delta = (groundY + offset) - mn.y;
             auto& t = reg.get<Transform>(e);
             t.position.y += delta;   // 親に回転/スケールがあると厳密でない(ルート配置想定)
             resp["ok"] = true;
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"groundY", groundY},
-                              {"movedBy", delta},
+                              {"movedBy", delta}, {"method", snapMethod},
                               {"position", {t.position.x, t.position.y, t.position.z}}};
             if (groundEnt != entt::null)
                 resp["result"]["groundEntityId"] = static_cast<u32>(groundEnt);
@@ -5214,6 +5524,853 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                               {"wasDirectory", wasDirectory},
                               {"note", "シーン/プレハブ内の参照パスは自動更新されない"}};
         }
+        // ════════════════════════════════════════════════════════════
+        //  精密ピッキング（三角形単位。エディタのクリック選択と同じ実装を共有）
+        // ════════════════════════════════════════════════════════════
+        else if (method == "pick")
+        {
+            if (!m_camera || !m_sceneRT) throw McpError(McpErr::Internal, "renderer not ready");
+            const f32 vw = static_cast<f32>(m_sceneRT->GetWidth());
+            const f32 vh = static_cast<f32>(m_sceneRT->GetHeight());
+            if (!(vw > 1.0f && vh > 1.0f))
+                throw McpError(McpErr::Internal, "scene render target has no size");
+
+            f32 sx = 0.0f, sy = 0.0f;
+            if (params.contains("x") && params.contains("y"))
+            {
+                sx = McpFloatParam(params, "x", 0.0f, 0.0f, vw - 1.0f);
+                sy = McpFloatParam(params, "y", 0.0f, 0.0f, vh - 1.0f);
+            }
+            else if (params.contains("u") && params.contains("v"))
+            {
+                sx = McpFloatParam(params, "u", 0.5f, 0.0f, 1.0f) * (vw - 1.0f);
+                sy = McpFloatParam(params, "v", 0.5f, 0.0f, 1.0f) * (vh - 1.0f);
+            }
+            else
+            {
+                throw McpError(McpErr::InvalidParam, "need x/y (pixels) or u/v (0..1)",
+                    "画面中央なら {u:0.5, v:0.5}。ピクセル指定は dx12_screenshot / "
+                    "dx12_project_world_to_screen と同じ左上原点の座標系（今は "
+                    + std::to_string(m_sceneRT->GetWidth()) + "x"
+                    + std::to_string(m_sceneRT->GetHeight()) + "）");
+            }
+
+            ScenePickOptions opt;
+            opt.includeNonMesh  = params.value("includeIcons", true);
+            opt.trianglePrecise = params.value("trianglePrecise", true);
+            opt.maxCandidates   = static_cast<u32>(McpIntParam(params, "maxCandidates", 64, 1, 4096));
+
+            auto& reg = m_scene->GetRegistry();
+            const std::vector<ScenePickHit> hits = RaycastScene(
+                reg, &GetDrawItems(), *m_camera, 0.0f, 0.0f, vw, vh, sx, sy, opt);
+
+            json result = McpPickHitsJson(reg, hits, params.value("all", false),
+                                          McpIntParam(params, "maxHits", 16, 1, 64));
+            result["screen"]   = {{"x", sx}, {"y", sy}};
+            result["viewport"] = {{"width", m_sceneRT->GetWidth()}, {"height", m_sceneRT->GetHeight()}};
+            result["mode"]     = (m_engineMode == EngineMode::Playing) ? "Playing" : "Editor";
+            result["note"]     = "シーンビューを描いているカメラ基準(Playing 中はゲームカメラ)。"
+                                 "座標系は dx12_screenshot / dx12_project_world_to_screen と同じ。"
+                                 "エディタの左クリック選択と同じ RaycastScene を通すので結果は一致する。"
+                                 "スキンドメッシュはバインドポーズの AABB 止まり。";
+            resp["ok"] = true;
+            resp["result"] = std::move(result);
+        }
+        else if (method == "raycast_precise")
+        {
+            const DirectX::XMFLOAT3 o = McpVec3Required(params, "origin");
+            const DirectX::XMFLOAT3 d = McpVec3Required(params, "direction");
+            const f32 maxDist = McpFloatParam(params, "maxDistance", 1000.0f, 0.0f, 1.0e7f);
+
+            ScenePickOptions opt;
+            opt.includeNonMesh  = false;   // ワールドレイ版はアイコン/ビルボードを見ない
+            opt.trianglePrecise = params.value("trianglePrecise", true);
+            opt.maxCandidates   = static_cast<u32>(McpIntParam(params, "maxCandidates", 256, 1, 4096));
+
+            auto& reg = m_scene->GetRegistry();
+            const std::vector<ScenePickHit> hits =
+                RaycastSceneRay(reg, &GetDrawItems(), o, d, maxDist, opt);
+
+            json result = McpPickHitsJson(reg, hits, params.value("all", false),
+                                          McpIntParam(params, "maxHits", 16, 1, 64));
+            result["origin"]      = {o.x, o.y, o.z};
+            result["direction"]   = {d.x, d.y, d.z};
+            result["maxDistance"] = maxDist;
+            result["note"] = "★描画メッシュの三角形基準（dx12_raycast は物理コライダー基準で Playing 中限定）。"
+                             "こっちは Editor でも動き、地形/スカルプトの実際の表面に当たる。"
+                             "スキンドメッシュだけはバインドポーズの AABB 止まり。";
+            resp["ok"] = true;
+            resp["result"] = std::move(result);
+        }
+        // ════════════════════════════════════════════════════════════
+        //  ハイトフィールド地形
+        // ════════════════════════════════════════════════════════════
+        else if (method == "terrain_create")
+        {
+            if (busyPlaying)
+                throw McpError(McpErr::ModeConflict, "cannot create/modify terrain while Playing",
+                               "先に dx12_stop で Editor へ戻してくれ");
+            auto& reg = m_scene->GetRegistry();
+            std::string name = params.value("name", std::string("Terrain"));
+            if (name.empty()) name = "Terrain";
+
+            const i32 res  = McpIntParam(params, "resolution", 128, 16, 512);
+            const f32 size = McpFloatParam(params, "worldSize", 200.0f, 4.0f, 4000.0f);
+            const f32 maxH = McpFloatParam(params, "maxHeight", 200.0f, 1.0f, 10000.0f);
+
+            // 冪等: 同名エンティティが既にあれば「設定の更新」にする（同じ引数の再実行は無変化）。
+            entt::entity existing = entt::null;
+            for (auto [ent, tag] : reg.view<const NameTag>().each())
+                if (tag.name == name) { existing = ent; break; }
+
+            if (existing != entt::null)
+            {
+                auto* t = reg.try_get<Terrain>(existing);
+                if (!t || !t->_hf)
+                    throw McpError(McpErr::InvalidParam,
+                        "an entity named '" + name + "' already exists and is not a terrain",
+                        "別の name を使うか、先に dx12_delete_entity でどけてくれ");
+
+                const u32 newRes = HeightField::NormalizeResolution(static_cast<u32>(res));
+                const bool reshape = (newRes != t->_hf->Resolution())
+                                  || (std::fabs(t->_hf->WorldSize() - size) > 1e-3f);
+                if (reshape) t->_hf->Create(newRes, size, 0.0f);   // 高さ配列は作り直し＝彫った内容は消える
+
+                t->resolution = t->_hf->Resolution();
+                t->worldSize  = t->_hf->WorldSize();
+                t->maxHeight  = maxH;
+                if (params.contains("uvScale"))
+                    t->uvScale = McpFloatParam(params, "uvScale", t->uvScale, 0.01f, 1000.0f);
+                DirectX::XMFLOAT3 col{};
+                if (McpTryVec3(params, "color", col)) t->color = {col.x, col.y, col.z, 1.0f};
+                DirectX::XMFLOAT3 pos{};
+                if (McpTryVec3(params, "position", pos) && reg.all_of<Transform>(existing))
+                    reg.get<Transform>(existing).position = pos;
+
+                if (reshape)
+                {
+                    const HeightField::Rect full = t->_hf->FullRect();
+                    t->MarkDirty(full.x0, full.z0, full.x1, full.z1);
+                }
+                else
+                {
+                    t->MarkVisualDirty();
+                }
+                resp["ok"] = true;
+                resp["result"] = {
+                    {"entityId", static_cast<u32>(existing)}, {"name", name}, {"created", false},
+                    {"resolution", t->resolution}, {"worldSize", t->worldSize},
+                    {"maxHeight", t->maxHeight}, {"uvScale", t->uvScale},
+                    {"heightsReset", reshape}, {"sceneGeneration", m_sceneGeneration},
+                    {"note", reshape ? "解像度/サイズが変わったので高さ配列を作り直した(彫った内容は消えた)"
+                                     : "同名の地形があったので設定だけ更新した(高さはそのまま)"}};
+            }
+            else
+            {
+                DirectX::XMFLOAT3 pos{0.0f, 0.0f, 0.0f};
+                McpTryVec3(params, "position", pos);
+                McpPendingProcCreate pending;   // 外側の req(JSON) を隠さないよう別名(C4456)
+                pending.kind       = McpPendingProcCreate::Kind::Terrain;
+                pending.name       = name;
+                pending.position   = pos;
+                pending.resolution = static_cast<u32>(res);
+                pending.worldSize  = size;
+                pending.maxHeight  = maxH;
+                pending.mcp        = deferred;
+                m_editorCtx->mcpProcCreates.push_back(std::move(pending));
+                isDeferred = true;
+            }
+        }
+        else if (method == "terrain_generate")
+        {
+            if (busyPlaying)
+                throw McpError(McpErr::ModeConflict, "cannot modify terrain while Playing",
+                               "先に dx12_stop で Editor へ戻してくれ");
+            auto& reg = m_scene->GetRegistry();
+            const auto e = ResolveMcpComponentEntity<Terrain>(
+                *m_scene, params, "terrain", "先に dx12_terrain_create で地形を作ってくれ");
+            Terrain& t = reg.get<Terrain>(e);
+            if (!t._hf || !t._hf->IsValid())
+                throw McpError(McpErr::Internal, "terrain has no valid height field",
+                               "dx12_get_log でロードエラーを確認してくれ");
+            HeightField& hf = *t._hf;
+
+            static const std::vector<std::string> kTerrainPresets{"hills", "canyon", "mountains"};
+            const int presetIdx = McpEnumParam(params, "preset", kTerrainPresets, 0,
+                "hills=なだらかな丘 / canyon=峡谷 / mountains=険しい山脈");
+            const u32 seed = static_cast<u32>(McpIntParam(params, "seed", 1337, 0, 2000000000));
+
+            TerrainGenParams gp = MakeTerrainPreset(
+                static_cast<TerrainPreset>(presetIdx), hf.WorldSize(), seed);
+            gp.frequency   = McpFloatParam(params, "frequency",   gp.frequency,   0.0001f, 1.0f);
+            gp.octaves     = McpIntParam  (params, "octaves",     gp.octaves,     1, 8);
+            gp.amplitude   = McpFloatParam(params, "amplitude",   gp.amplitude,   0.0f, 10000.0f);
+            gp.ridged      = McpFloatParam(params, "ridged",      gp.ridged,      0.0f, 1.0f);
+            gp.baseHeight  = McpFloatParam(params, "baseHeight",  gp.baseHeight,  -10000.0f, 10000.0f);
+            gp.edgeFalloff = McpFloatParam(params, "edgeFalloff", gp.edgeFalloff, 0.0f, 1.0f);
+            gp.valleyDepth = McpFloatParam(params, "valleyDepth", gp.valleyDepth, 0.0f, 10.0f);
+            gp.seed        = seed;
+
+            GenerateTerrain(hf, gp);
+            const HeightField::Rect full = hf.FullRect();
+            t.MarkDirty(full.x0, full.z0, full.x1, full.z1);
+
+            f32 hMin = 0.0f, hMax = 0.0f;
+            hf.MinMaxHeight(hMin, hMax);
+            resp["ok"] = true;
+            resp["result"] = {
+                {"entityId", static_cast<u32>(e)},
+                {"preset", kTerrainPresets[static_cast<size_t>(presetIdx)]},
+                {"params", {{"frequency", gp.frequency}, {"octaves", gp.octaves},
+                            {"amplitude", gp.amplitude}, {"ridged", gp.ridged},
+                            {"baseHeight", gp.baseHeight}, {"edgeFalloff", gp.edgeFalloff},
+                            {"valleyDepth", gp.valleyDepth}, {"seed", gp.seed}}},
+                {"minHeight", hMin}, {"maxHeight", hMax},
+                {"resolution", hf.Resolution()}, {"worldSize", hf.WorldSize()},
+                {"note", "高さ配列を丸ごと作り直した(既存の彫りは消える)。同じ seed/params なら毎回同じ地形＝冪等。"
+                         "メッシュ・コリジョン・.hf の保存は次のフレームで自動反映される。"}};
+        }
+        else if (method == "terrain_sculpt")
+        {
+            if (busyPlaying)
+                throw McpError(McpErr::ModeConflict, "cannot modify terrain while Playing",
+                               "先に dx12_stop で Editor へ戻してくれ");
+            auto& reg = m_scene->GetRegistry();
+            const auto e = ResolveMcpComponentEntity<Terrain>(
+                *m_scene, params, "terrain", "先に dx12_terrain_create で地形を作ってくれ");
+            Terrain& t = reg.get<Terrain>(e);
+            if (!t._hf || !t._hf->IsValid())
+                throw McpError(McpErr::Internal, "terrain has no valid height field");
+            HeightField& hf = *t._hf;
+            const DirectX::XMFLOAT3 origin = McpTerrainOrigin(reg, e);
+
+            static const std::vector<std::string> kTerrainBrushes{
+                "raise", "lower", "smooth", "flatten", "noise"};
+            const int bi = McpEnumParam(params, "brush", kTerrainBrushes, 0,
+                "raise=盛る / lower=削る / smooth=ならす / flatten=平らに / noise=岩肌。"
+                "浸食は dx12_terrain_erode");
+
+            TerrainBrushParams bp;
+            bp.type      = static_cast<TerrainBrushType>(bi);
+            bp.radius    = McpFloatParam(params, "radius",   12.0f, 0.01f, hf.WorldSize());
+            bp.strength  = McpFloatParam(params, "strength",  5.0f, 0.0f, 10000.0f);
+            bp.falloff   = McpFloatParam(params, "falloff",   0.5f, 0.0f, 1.0f);
+            bp.minHeight = -t.maxHeight;
+            bp.maxHeight =  t.maxHeight;
+            bp.mirrorX   = params.value("mirrorX", false);
+            bp.mirrorZ   = params.value("mirrorZ", false);
+            bp.noiseFrequency = McpFloatParam(params, "noiseFrequency", bp.noiseFrequency, 0.0001f, 10.0f);
+            bp.noiseOctaves   = McpIntParam  (params, "noiseOctaves",   bp.noiseOctaves,   1, 8);
+            bp.noiseRidged    = McpFloatParam(params, "noiseRidged",    bp.noiseRidged,    0.0f, 1.0f);
+            bp.noiseSeed      = static_cast<u32>(McpIntParam(params, "seed", 1337, 0, 2000000000));
+
+            // 筆を置く点（ワールド XZ）。1 点は point/worldPos、稜線や道を引くなら points。
+            std::vector<DirectX::XMFLOAT2> pts;
+            auto pushPoint = [&](const json& a) {
+                if (!a.is_array() || (a.size() != 2 && a.size() != 3))
+                    throw McpError(McpErr::InvalidParam, "point must be [x,z] or [x,y,z]",
+                                   "ワールド座標。y は使わない(地形は XZ グリッドなので)");
+                const f32 wx = a[0].get<f32>();
+                const f32 wz = (a.size() == 2) ? a[1].get<f32>() : a[2].get<f32>();
+                pts.push_back({wx - origin.x, wz - origin.z});   // → 地形ローカル
+            };
+            if (params.contains("points"))
+            {
+                if (!params["points"].is_array())
+                    throw McpError(McpErr::InvalidParam, "points must be an array of [x,z]",
+                                   "1 点だけなら point:[x,z] を使う");
+                if (params["points"].size() > 512)
+                    throw McpError(McpErr::InvalidParam, "too many points (max 512)",
+                                   "分割して複数回呼んでくれ");
+                for (const auto& a : params["points"]) pushPoint(a);
+            }
+            if (params.contains("point"))    pushPoint(params["point"]);
+            if (params.contains("worldPos")) pushPoint(params["worldPos"]);
+            if (pts.empty())
+                throw McpError(McpErr::InvalidParam, "missing 'point' / 'points'",
+                    "point:[x,z] か points:[[x,z],...] をワールド座標で渡す。"
+                    "置きたい場所が分からんときは dx12_pick か dx12_terrain_sample で調べる");
+
+            // Flatten の目標高さ: 明示が無ければ最初の点の高さ（エディタのストローク開始と同じ規約）
+            bp.flattenTarget = McpFloatParam(params, "flattenHeight",
+                                             hf.SampleHeight(pts[0].x, pts[0].y) + 0.0f,
+                                             -10000.0f, 10000.0f);
+            if (params.contains("flattenHeight"))
+                bp.flattenTarget -= origin.y;   // 指定はワールド Y。地形ローカルの高さへ直す
+
+            HeightField::Rect changed{};
+            for (const DirectX::XMFLOAT2& p : pts)
+                changed = HeightField::UnionRect(changed, ApplyTerrainBrush(hf, bp, p.x, p.y, 1.0f, false));
+            if (changed.Valid())
+                t.MarkDirty(changed.x0, changed.z0, changed.x1, changed.z1);
+
+            f32 hMin = 0.0f, hMax = 0.0f;
+            hf.MinMaxHeight(hMin, hMax);
+            resp["ok"] = true;
+            resp["result"] = {
+                {"entityId", static_cast<u32>(e)},
+                {"brush", kTerrainBrushes[static_cast<size_t>(bi)]},
+                {"points", pts.size()}, {"radius", bp.radius}, {"strength", bp.strength},
+                {"changed", changed.Valid()},
+                {"minHeight", hMin}, {"maxHeight", hMax},
+                {"note", "★相対操作（同じ呼び出しを2回撃つと2回ぶん盛れる）。絶対値で整地したいときは "
+                         "brush:\"flatten\" + flattenHeight を使うと冪等になる。"
+                         "strength は raise/lower/noise = メートル、smooth/flatten = 寄せ具合(2 でほぼ完全)。"}};
+        }
+        else if (method == "terrain_erode")
+        {
+            if (busyPlaying)
+                throw McpError(McpErr::ModeConflict, "cannot modify terrain while Playing",
+                               "先に dx12_stop で Editor へ戻してくれ");
+            auto& reg = m_scene->GetRegistry();
+            const auto e = ResolveMcpComponentEntity<Terrain>(
+                *m_scene, params, "terrain", "先に dx12_terrain_create で地形を作ってくれ");
+            Terrain& t = reg.get<Terrain>(e);
+            if (!t._hf || !t._hf->IsValid())
+                throw McpError(McpErr::Internal, "terrain has no valid height field");
+            HeightField& hf = *t._hf;
+            const DirectX::XMFLOAT3 origin = McpTerrainOrigin(reg, e);
+
+            const i32 iterations = McpIntParam(params, "iterations", 16, 1, 200);
+            const f32 talusDeg   = McpFloatParam(params, "talusDeg", 34.0f, 1.0f, 89.0f);
+
+            HeightField::Rect rect = hf.FullRect();
+            if (params.contains("region"))
+            {
+                const auto& r = params["region"];
+                if (!r.is_array() || r.size() != 4)
+                    throw McpError(McpErr::InvalidParam, "region must be [minX,minZ,maxX,maxZ]",
+                                   "ワールド座標の XZ 矩形。省略すると地形全面");
+                const f32 cell = hf.CellSize();
+                const f32 half = hf.HalfSize();
+                auto toGrid = [&](f32 world, f32 originAxis) {
+                    return (world - originAxis + half) / ((cell > 1e-6f) ? cell : 1.0f);
+                };
+                HeightField::Rect want;
+                want.x0 = static_cast<i32>(std::floor(toGrid(r[0].get<f32>(), origin.x)));
+                want.z0 = static_cast<i32>(std::floor(toGrid(r[1].get<f32>(), origin.z)));
+                want.x1 = static_cast<i32>(std::ceil (toGrid(r[2].get<f32>(), origin.x)));
+                want.z1 = static_cast<i32>(std::ceil (toGrid(r[3].get<f32>(), origin.z)));
+                rect = hf.ClampRect(want);
+                if (!rect.Valid())
+                    throw McpError(McpErr::InvalidParam, "region is outside the terrain",
+                                   "地形の XZ 範囲は dx12_terrain_sample で確認できる");
+            }
+
+            const HeightField::Rect changed = ApplyThermalErosion(hf, talusDeg, iterations, rect);
+            if (changed.Valid())
+                t.MarkDirty(changed.x0, changed.z0, changed.x1, changed.z1);
+
+            f32 hMin = 0.0f, hMax = 0.0f;
+            hf.MinMaxHeight(hMin, hMax);
+            resp["ok"] = true;
+            resp["result"] = {
+                {"entityId", static_cast<u32>(e)}, {"iterations", iterations},
+                {"talusDeg", talusDeg}, {"changed", changed.Valid()},
+                {"minHeight", hMin}, {"maxHeight", hMax},
+                {"note", "熱浸食(安息角を超えた斜面の土砂を隣へ落とす)。相対操作なので繰り返すほど崩れる。"
+                         "重いので iterations は 16〜40 くらいから試すとええ。"}};
+        }
+        else if (method == "terrain_sample")
+        {
+            // 読み取り専用。木や建物を「地形の上」に置くための高さ/法線問い合わせ。
+            auto& reg = m_scene->GetRegistry();
+            const auto e = ResolveMcpComponentEntity<Terrain>(
+                *m_scene, params, "terrain", "先に dx12_terrain_create で地形を作ってくれ");
+            const Terrain& t = reg.get<Terrain>(e);
+            if (!t._hf || !t._hf->IsValid())
+                throw McpError(McpErr::Internal, "terrain has no valid height field");
+            const HeightField& hf = *t._hf;
+            const DirectX::XMFLOAT3 origin = McpTerrainOrigin(reg, e);
+            const f32 half = hf.HalfSize();
+
+            json samples = json::array();
+            if (params.contains("points"))
+            {
+                const auto& arr = params["points"];
+                if (!arr.is_array())
+                    throw McpError(McpErr::InvalidParam, "points must be an array of [x,z]");
+                if (arr.size() > 512)
+                    throw McpError(McpErr::InvalidParam, "too many points (max 512)",
+                                   "分割して複数回呼んでくれ");
+                for (const auto& a : arr)
+                {
+                    if (!a.is_array() || (a.size() != 2 && a.size() != 3))
+                        throw McpError(McpErr::InvalidParam, "each point must be [x,z] or [x,y,z]");
+                    const f32 wx = a[0].get<f32>();
+                    const f32 wz = (a.size() == 2) ? a[1].get<f32>() : a[2].get<f32>();
+                    const f32 lx = wx - origin.x, lz = wz - origin.z;
+                    const f32 h  = hf.SampleHeight(lx, lz);
+                    const DirectX::XMFLOAT3 n = hf.SampleNormal(lx, lz);
+                    samples.push_back({
+                        {"x", wx}, {"z", wz},
+                        {"height", h}, {"worldY", origin.y + h},
+                        {"normal", {n.x, n.y, n.z}},
+                        {"slopeDeg", DirectX::XMConvertToDegrees(
+                            std::acos(std::clamp(n.y, -1.0f, 1.0f)))},
+                        {"inside", (std::fabs(lx) <= half && std::fabs(lz) <= half)},
+                    });
+                }
+            }
+            f32 hMin = 0.0f, hMax = 0.0f;
+            hf.MinMaxHeight(hMin, hMax);
+            resp["ok"] = true;
+            resp["result"] = {
+                {"entityId", static_cast<u32>(e)},
+                {"name", reg.all_of<NameTag>(e) ? reg.get<NameTag>(e).name : std::string()},
+                {"origin", {origin.x, origin.y, origin.z}},
+                {"resolution", hf.Resolution()}, {"worldSize", hf.WorldSize()},
+                {"cellSize", hf.CellSize()},
+                {"boundsXZ", {origin.x - half, origin.z - half, origin.x + half, origin.z + half}},
+                {"minHeight", hMin}, {"maxHeight", hMax},
+                {"samples", samples}, {"count", samples.size()},
+                {"note", "worldY をそのまま dx12_set_transform の y に使えば地形に接地する"
+                         "(範囲外は端の値。inside=false で判別)。"}};
+        }
+        // ════════════════════════════════════════════════════════════
+        //  頂点スカルプト（洞窟・アーチ・岩みたいな異形）
+        // ════════════════════════════════════════════════════════════
+        else if (method == "sculpt_create")
+        {
+            if (busyPlaying)
+                throw McpError(McpErr::ModeConflict, "cannot create a sculpt mesh while Playing",
+                               "先に dx12_stop で Editor へ戻してくれ");
+            auto& reg = m_scene->GetRegistry();
+            std::string name = params.value("name", std::string("Sculpt"));
+            if (name.empty()) name = "Sculpt";
+
+            static const std::vector<std::string> kSculptPrims{"box", "sphere", "plane", "cylinder"};
+            const int prim   = McpEnumParam(params, "primitive", kSculptPrims, 1,
+                "岩は sphere、アーチ/柱は cylinder、崖は box、地面の一部は plane から彫るのが早い");
+            const i32 subdiv = McpIntParam(params, "subdivisions", 16, 1, 64);
+            const f32 size   = McpFloatParam(params, "size", 2.0f, 0.05f, 500.0f);
+
+            entt::entity existing = entt::null;
+            for (auto [ent, tag] : reg.view<const NameTag>().each())
+                if (tag.name == name) { existing = ent; break; }
+
+            if (existing != entt::null)
+            {
+                auto* sc = reg.try_get<SculptMesh>(existing);
+                if (!sc)
+                    throw McpError(McpErr::InvalidParam,
+                        "an entity named '" + name + "' already exists and is not a sculpt mesh",
+                        "別の name を使うか、先に dx12_delete_entity でどけてくれ");
+                // 冪等: 素体は作り直さない（彫った形を失わない）。見た目設定だけ更新する。
+                if (params.contains("uvScale"))
+                    sc->uvScale = McpFloatParam(params, "uvScale", sc->uvScale, 0.01f, 1000.0f);
+                if (params.contains("collision")) sc->collision = params["collision"].get<bool>();
+                DirectX::XMFLOAT3 col{};
+                if (McpTryVec3(params, "color", col)) sc->color = {col.x, col.y, col.z, 1.0f};
+                DirectX::XMFLOAT3 pos{};
+                if (McpTryVec3(params, "position", pos) && reg.all_of<Transform>(existing))
+                    reg.get<Transform>(existing).position = pos;
+                sc->MarkVisualDirty();
+                resp["ok"] = true;
+                resp["result"] = {
+                    {"entityId", static_cast<u32>(existing)}, {"name", name}, {"created", false},
+                    {"vertexCount", sc->_data ? sc->_data->VertexCount() : size_t{0}},
+                    {"sceneGeneration", m_sceneGeneration},
+                    {"note", "同名のスカルプトがあったので素体は作り直さず設定だけ更新した"
+                             "(彫った形を消さないため)。別物が欲しいときは name を変えてくれ。"}};
+            }
+            else
+            {
+                DirectX::XMFLOAT3 pos{0.0f, 0.0f, 0.0f};
+                McpTryVec3(params, "position", pos);
+                McpPendingProcCreate pending;   // 外側の req(JSON) を隠さないよう別名(C4456)
+                pending.kind         = McpPendingProcCreate::Kind::Sculpt;
+                pending.name         = name;
+                pending.position     = pos;
+                pending.primitive    = prim;
+                pending.subdivisions = static_cast<u32>(subdiv);
+                pending.size         = size;
+                pending.mcp          = deferred;
+                m_editorCtx->mcpProcCreates.push_back(std::move(pending));
+                isDeferred = true;
+            }
+        }
+        else if (method == "sculpt_make_editable")
+        {
+            if (busyPlaying)
+                throw McpError(McpErr::ModeConflict, "cannot convert a model while Playing",
+                               "先に dx12_stop で Editor へ戻してくれ");
+            auto& reg = m_scene->GetRegistry();
+            const auto src = ResolveMcpEntity(*m_scene, params);
+            if (!reg.all_of<MeshRenderer>(src))
+                throw McpError(McpErr::InvalidParam, "entity has no MeshRenderer",
+                               "彫れるのはメッシュを持つエンティティだけや");
+            if (reg.all_of<SculptMesh>(src))
+                throw McpError(McpErr::InvalidParam, "this entity is already a sculpt mesh",
+                               "そのまま dx12_sculpt_brush で彫れる");
+
+            const std::string srcName = reg.all_of<NameTag>(src) ? reg.get<NameTag>(src).name
+                                                                 : std::string("Model");
+            const std::string outName = params.value("name", srcName + "_Sculpt");
+
+            // 冪等: 同名の変換結果が既にあればそれを返す（撃ち直しで増殖しない）。
+            for (auto [ent, tag] : reg.view<const NameTag>().each())
+            {
+                if (tag.name != outName || !reg.all_of<SculptMesh>(ent)) continue;
+                resp["ok"] = true;
+                resp["result"] = {{"entityId", static_cast<u32>(ent)}, {"name", outName},
+                                  {"created", false}, {"sourceEntityId", static_cast<u32>(src)},
+                                  {"sceneGeneration", m_sceneGeneration},
+                                  {"note", "同名の変換結果が既にあったのでそれを返した"}};
+                break;
+            }
+            if (!resp.contains("result"))
+            {
+                McpPendingProcCreate pending;   // 外側の req(JSON) を隠さないよう別名(C4456)
+                pending.kind   = McpPendingProcCreate::Kind::SculptFromEntity;
+                pending.name   = outName;
+                pending.source = src;
+                pending.mcp    = deferred;
+                m_editorCtx->mcpProcCreates.push_back(std::move(pending));
+                isDeferred = true;
+            }
+        }
+        else if (method == "sculpt_brush")
+        {
+            if (busyPlaying)
+                throw McpError(McpErr::ModeConflict, "cannot sculpt while Playing",
+                               "先に dx12_stop で Editor へ戻してくれ");
+            using namespace DirectX;
+            auto& reg = m_scene->GetRegistry();
+            const auto e = ResolveMcpComponentEntity<SculptMesh>(
+                *m_scene, params, "sculptMesh",
+                "dx12_sculpt_create で素体を作るか、dx12_sculpt_make_editable でモデルを変換してくれ");
+            SculptMesh& sc = reg.get<SculptMesh>(e);
+            if (!sc._data || !sc._data->IsValid())
+                throw McpError(McpErr::Internal, "sculpt mesh has no valid vertex data");
+            SculptMeshData& md = *sc._data;
+
+            static const std::vector<std::string> kSculptBrushes{
+                "draw", "pull", "push", "smooth", "flatten", "pinch", "noise", "grab"};
+            const int bi = McpEnumParam(params, "brush", kSculptBrushes, 0,
+                "draw=法線方向に盛る / pull,push=指定方向へ引く・押す / smooth=ならす / "
+                "flatten=平らに / pinch=つまむ / noise=岩肌 / grab=掴んで動かす(grabDelta 必須)");
+
+            SculptBrushParams bp;
+            bp.type     = static_cast<SculptBrushType>(bi);
+            bp.radius   = McpFloatParam(params, "radius",   0.5f, 0.0001f, 10000.0f);
+            bp.strength = McpFloatParam(params, "strength", 0.2f, 0.0f, 10000.0f);
+            bp.falloff  = McpFloatParam(params, "falloff",  0.5f, 0.0f, 1.0f);
+            bp.mirrorX  = params.value("symmetryX", false);
+            bp.mirrorY  = params.value("symmetryY", false);
+            bp.mirrorZ  = params.value("symmetryZ", false);
+            bp.noiseFrequency = McpFloatParam(params, "noiseFrequency", bp.noiseFrequency, 0.0001f, 100.0f);
+            bp.noiseOctaves   = McpIntParam  (params, "noiseOctaves",   bp.noiseOctaves,   1, 8);
+            bp.noiseRidged    = McpFloatParam(params, "noiseRidged",    bp.noiseRidged,    0.0f, 1.0f);
+            bp.noiseSeed      = static_cast<u32>(McpIntParam(params, "seed", 1337, 0, 2000000000));
+
+            // ワールド座標 → メッシュのローカル空間（ブラシはローカルで動く）
+            const XMMATRIX world = ComputeWorldMatrix(reg, e);
+            XMVECTOR det = XMVectorZero();
+            const XMMATRIX inv = XMMatrixInverse(&det, world);
+            if (std::fabs(XMVectorGetX(det)) < 1e-20f)
+                throw McpError(McpErr::InvalidParam, "entity transform is degenerate (scale 0?)",
+                               "dx12_set_transform で scale を 0 以外にしてくれ");
+
+            XMFLOAT3 center{0.0f, 0.0f, 0.0f};
+            XMFLOAT3 tmp{};
+            if (McpTryVec3(params, "localPosition", tmp))
+            {
+                center = tmp;
+            }
+            else
+            {
+                const XMFLOAT3 wp = McpVec3Required(params, "position");
+                XMStoreFloat3(&center, XMVector3TransformCoord(XMLoadFloat3(&wp), inv));
+            }
+            if (McpTryVec3(params, "direction", tmp))
+            {
+                XMVECTOR d = XMVector3TransformNormal(XMLoadFloat3(&tmp), inv);
+                if (XMVectorGetX(XMVector3LengthSq(d)) > 1e-12f) d = XMVector3Normalize(d);
+                else                                             d = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+                XMStoreFloat3(&bp.direction, d);
+            }
+            if (McpTryVec3(params, "grabDelta", tmp))
+                XMStoreFloat3(&bp.grabDelta, XMVector3TransformNormal(XMLoadFloat3(&tmp), inv));
+            if (bp.type == SculptBrushType::Grab
+                && std::fabs(bp.grabDelta.x) + std::fabs(bp.grabDelta.y) + std::fabs(bp.grabDelta.z) < 1e-9f)
+                throw McpError(McpErr::InvalidParam, "brush 'grab' needs a non-zero grabDelta",
+                               "grabDelta:[dx,dy,dz] にワールド空間の移動量を入れてくれ");
+
+            const size_t moved = md.ApplyBrush(bp, center, 1.0f, false, nullptr);
+            if (moved > 0) sc.MarkDirty();
+
+            XMFLOAT3 bmin{}, bmax{};
+            md.Bounds(bmin, bmax);
+            resp["ok"] = true;
+            resp["result"] = {
+                {"entityId", static_cast<u32>(e)},
+                {"brush", kSculptBrushes[static_cast<size_t>(bi)]},
+                {"movedVertices", moved},
+                {"localCenter", {center.x, center.y, center.z}},
+                {"radius", bp.radius}, {"strength", bp.strength},
+                {"vertexCount", md.VertexCount()}, {"triangleCount", md.TriangleCount()},
+                {"localBounds", {{"min", {bmin.x, bmin.y, bmin.z}}, {"max", {bmax.x, bmax.y, bmax.z}}}},
+                {"note", "★相対操作（撃つたびに彫れる）。radius/strength は【メッシュのローカル単位】"
+                         "＝Transform の scale が掛かる前の大きさ。当てる場所は dx12_pick / "
+                         "dx12_raycast_precise の worldPos をそのまま position に渡すのが確実。"}};
+        }
+        // ════════════════════════════════════════════════════════════
+        //  ライティング
+        // ════════════════════════════════════════════════════════════
+        else if (method == "list_lights")
+        {
+            using namespace DirectX;
+            auto& reg = m_scene->GetRegistry();
+            const int limit  = McpIntParam(params, "limit", 50, 1, 200);
+            const int cursor = McpIntParam(params, "cursor", 0, 0, 100000);
+
+            struct Row { entt::entity e; int kind; int slot; };   // kind 0=dir 1=point 2=spot
+            std::vector<Row> rows;
+            int dirN = 0, pointN = 0, spotN = 0, shadowSpotN = 0, shadowPointN = 0;
+            for (auto [ent, dl, tf] : reg.view<const DirectionalLight, const Transform>().each())
+            { (void)dl; (void)tf; rows.push_back({ent, 0, dirN++}); }
+            for (auto [ent, pl, tf] : reg.view<const PointLight, const Transform>().each())
+            { (void)tf; if (pl.castShadows) ++shadowPointN; rows.push_back({ent, 1, pointN++}); }
+            for (auto [ent, sl, tf] : reg.view<const SpotLight, const Transform>().each())
+            { (void)tf; if (sl.castShadows) ++shadowSpotN; rows.push_back({ent, 2, spotN++}); }
+
+            json arr = json::array();
+            const int total = static_cast<int>(rows.size());
+            int i = cursor;
+            for (; i < total && static_cast<int>(arr.size()) < limit; ++i)
+            {
+                const Row& r = rows[static_cast<size_t>(i)];
+                XMFLOAT3 wpos{};
+                XMStoreFloat3(&wpos, ComputeWorldMatrix(reg, r.e).r[3]);
+                json j{
+                    {"entityId", static_cast<u32>(r.e)},
+                    {"name", reg.all_of<NameTag>(r.e) ? reg.get<NameTag>(r.e).name : std::string()},
+                    {"position", {wpos.x, wpos.y, wpos.z}},
+                    {"slot", r.slot},
+                };
+                if (r.kind == 0)
+                {
+                    const DirectionalLight& dl = reg.get<DirectionalLight>(r.e);
+                    const lightmath::SunAngles a = lightmath::DirectionToSunAngles(dl.direction);
+                    j["type"]         = "directional";
+                    j["color"]        = {dl.color.x, dl.color.y, dl.color.z};
+                    j["intensity"]    = dl.intensity;
+                    j["ambient"]      = dl.ambient;
+                    j["direction"]    = {dl.direction.x, dl.direction.y, dl.direction.z};
+                    j["azimuthDeg"]   = a.azimuthDeg;
+                    j["elevationDeg"] = a.elevationDeg;
+                    j["effective"]    = (r.slot == 0);   // 太陽は先頭 1 灯だけが効く
+                    j["overBudget"]   = (r.slot > 0);
+                }
+                else if (r.kind == 1)
+                {
+                    const PointLight& pl = reg.get<PointLight>(r.e);
+                    j["type"]        = "point";
+                    j["color"]       = {pl.color.x, pl.color.y, pl.color.z};
+                    j["intensity"]   = pl.intensity;
+                    j["range"]       = pl.range;
+                    j["castShadows"] = pl.castShadows;
+                    j["overBudget"]  = (r.slot >= kLightBudgetPoint);
+                    j["effective"]   = (r.slot < kLightBudgetPoint) && pl.intensity > 0.0f && pl.range > 0.0f;
+                }
+                else
+                {
+                    const SpotLight& sl = reg.get<SpotLight>(r.e);
+                    j["type"]         = "spot";
+                    j["color"]        = {sl.color.x, sl.color.y, sl.color.z};
+                    j["intensity"]    = sl.intensity;
+                    j["range"]        = sl.range;
+                    j["direction"]    = {sl.direction.x, sl.direction.y, sl.direction.z};
+                    j["innerConeDeg"] = sl.innerConeDeg;
+                    j["outerConeDeg"] = sl.outerConeDeg;
+                    j["castShadows"]  = sl.castShadows;
+                    j["overBudget"]   = (r.slot >= kLightBudgetSpot);
+                    j["effective"]    = (r.slot < kLightBudgetSpot) && sl.intensity > 0.0f && sl.range > 0.0f;
+                    if (sl.innerConeDeg > sl.outerConeDeg)
+                        j["warning"] = "innerConeDeg > outerConeDeg（内外が逆。減衰しない）";
+                }
+                arr.push_back(std::move(j));
+            }
+
+            json warnings = json::array();
+            if (pointN > kLightBudgetPoint)
+                warnings.push_back("ポイントライトが上限超過 (" + std::to_string(pointN) + "/"
+                    + std::to_string(kLightBudgetPoint) + ")。超えた分は【無言で描画されない】"
+                    "。灯を減らすか range を広げてまとめてくれ（パーティクルの発光ライトも枠を使う）");
+            if (spotN > kLightBudgetSpot)
+                warnings.push_back("スポットライトが上限超過 (" + std::to_string(spotN) + "/"
+                    + std::to_string(kLightBudgetSpot) + ")。超えた分は無言で描画されない");
+            if (dirN > 1)
+                warnings.push_back("平行光が " + std::to_string(dirN) + " 灯ある。太陽として効くのは先頭の 1 灯だけ");
+            if (dirN == 0)
+                warnings.push_back("平行光(太陽)が無い。dx12_create_entity(type:\"light_directional\") で作れる");
+            if (shadowSpotN > kLightBudgetShadowSpot)
+                warnings.push_back("影付きスポットが上限超過 (" + std::to_string(shadowSpotN) + "/"
+                    + std::to_string(kLightBudgetShadowSpot) + ")。カメラに近い順で選ばれ、残りは影を落とさない");
+            if (shadowPointN > kLightBudgetShadowPoint)
+                warnings.push_back("影付きポイントが上限超過 (" + std::to_string(shadowPointN) + "/"
+                    + std::to_string(kLightBudgetShadowPoint) + ")。カメラに近い順で選ばれ、残りは影を落とさない");
+
+            resp["ok"] = true;
+            resp["result"] = {
+                {"lights", arr}, {"count", arr.size()}, {"total", total},
+                {"cursor", cursor}, {"nextCursor", i}, {"has_more", i < total},
+                {"budget", {
+                    {"point",       {{"used", pointN},       {"max", kLightBudgetPoint}}},
+                    {"spot",        {{"used", spotN},        {"max", kLightBudgetSpot}}},
+                    {"directional", {{"used", dirN},         {"max", 1}}},
+                    {"shadowSpot",  {{"used", shadowSpotN},  {"max", kLightBudgetShadowSpot}}},
+                    {"shadowPoint", {{"used", shadowPointN}, {"max", kLightBudgetShadowPoint}}},
+                }},
+                {"warnings", warnings},
+                {"note", "Transform を持つライトだけを数える(GPU へ送られる条件と同じ)。"
+                         "太陽の調整は dx12_set_sun、まとめて雰囲気を変えるなら dx12_apply_lighting_preset。"}};
+        }
+        else if (method == "set_sun")
+        {
+            auto& reg = m_scene->GetRegistry();
+            // view.front() は空なら entt::null。break 付きの for だと MSVC が C4702 を出す。
+            const entt::entity sun = reg.view<DirectionalLight>().front();
+            if (sun == entt::null)
+                throw McpError(McpErr::NotFound, "no DirectionalLight (sun) in this scene",
+                    "dx12_create_entity(type:\"light_directional\") で太陽を作ってから呼んでくれ");
+            DirectionalLight& dl = reg.get<DirectionalLight>(sun);
+
+            const bool byTime = params.contains("timeOfDay");
+            f32 hour = -1.0f;
+            if (byTime)
+            {
+                hour = McpFloatParam(params, "timeOfDay", 12.0f, 0.0f, 24.0f);
+                // エディタのスライダ / Lua の Lighting.setTimeOfDay と同じカーブ（LightMath.h）
+                const lightmath::TimeOfDaySample s = lightmath::SampleTimeOfDay(hour);
+                dl.direction = s.direction;
+                dl.color     = s.color;
+                dl.intensity = s.intensity;
+                dl.ambient   = s.ambient;
+            }
+            if (params.contains("azimuth") || params.contains("elevation"))
+            {
+                lightmath::SunAngles a = lightmath::DirectionToSunAngles(dl.direction);
+                a.azimuthDeg   = lightmath::WrapDeg180(
+                    McpFloatParam(params, "azimuth", a.azimuthDeg, -360.0f, 360.0f));
+                a.elevationDeg = McpFloatParam(params, "elevation", a.elevationDeg, -89.0f, 89.0f);
+                dl.direction   = lightmath::SunAnglesToDirection(a);
+            }
+            if (params.contains("kelvin"))
+                dl.color = lightmath::KelvinToRGB(McpFloatParam(params, "kelvin", 6500.0f, 1000.0f, 40000.0f));
+            DirectX::XMFLOAT3 col{};
+            if (McpTryVec3(params, "color", col)) dl.color = col;
+            if (params.contains("intensity"))
+                dl.intensity = McpFloatParam(params, "intensity", dl.intensity, 0.0f, 100.0f);
+            if (params.contains("ambient"))
+                dl.ambient = McpFloatParam(params, "ambient", dl.ambient, 0.0f, 5.0f);
+            dl._prevRotInit = false;   // Transform 回転の差分追従をリセット
+
+            const lightmath::SunAngles now = lightmath::DirectionToSunAngles(dl.direction);
+            resp["ok"] = true;
+            resp["result"] = {
+                {"entityId", static_cast<u32>(sun)},
+                {"name", reg.all_of<NameTag>(sun) ? reg.get<NameTag>(sun).name : std::string()},
+                {"direction", {dl.direction.x, dl.direction.y, dl.direction.z}},
+                {"azimuthDeg", now.azimuthDeg}, {"elevationDeg", now.elevationDeg},
+                {"color", {dl.color.x, dl.color.y, dl.color.z}},
+                {"intensity", dl.intensity}, {"ambient", dl.ambient},
+                {"timeOfDay", byTime ? json(hour) : json(nullptr)},
+                {"note", "絶対指定＝同じ引数の再実行で同じ結果(冪等)。timeOfDay は 0..24 で "
+                         "向き/色/強度/環境光を一括で決める(Lua の Lighting.setTimeOfDay と同じカーブ)。"
+                         "azimuth/elevation は【太陽が見える方向】(方位 +Z=0°,+X=90° / 高度 0=地平線,90=真上)。"}};
+        }
+        else if (method == "apply_lighting_preset")
+        {
+            auto& reg = m_scene->GetRegistry();
+            std::vector<std::string> presetIds;
+            for (int i = 0; i < kLightingPresetCount; ++i) presetIds.push_back(kLightingPresets[i].id);
+            const int idx = McpEnumParam(params, "preset", presetIds, -1,
+                "エディタの「ライティング」窓のプリセットと同じ実装・同じ値");
+            if (idx < 0)
+                throw McpError(McpErr::InvalidParam, "missing 'preset'",
+                               "どれか 1 つを指定してくれ", presetIds);
+            const LightingPreset& p = kLightingPresets[idx];
+
+            // view.front() は空なら entt::null。break 付きの for だと MSVC が C4702 を出す。
+            const entt::entity sun = reg.view<DirectionalLight>().front();
+            json sunJson = nullptr;
+            if (sun != entt::null)
+            {
+                DirectionalLight& dl = reg.get<DirectionalLight>(sun);
+                dl = ApplyLightingPresetToSun(p, dl);
+                sunJson = {{"entityId", static_cast<u32>(sun)},
+                           {"direction", {dl.direction.x, dl.direction.y, dl.direction.z}},
+                           {"color", {dl.color.x, dl.color.y, dl.color.z}},
+                           {"intensity", dl.intensity}, {"ambient", dl.ambient}};
+            }
+            const PostProcessSettings after = ApplyLightingPresetToPost(p, m_scene->GetPostSettings());
+            m_scene->GetPostSettings() = after;
+
+            resp["ok"] = true;
+            resp["result"] = {
+                {"preset", p.id}, {"label", p.label}, {"tip", p.tip},
+                {"sun", sunJson},
+                {"post", {{"exposureOn", after.exposureOn}, {"exposure", after.exposure},
+                          {"bloomOn", after.bloomOn}, {"bloom", after.bloom},
+                          {"bloomThreshold", after.bloomThreshold},
+                          {"vignetteOn", after.vignetteOn}, {"vignette", after.vignette},
+                          {"saturationOn", after.saturationOn}, {"saturation", after.saturation}}},
+                {"note", sun == entt::null
+                    ? "平行光(太陽)が無いのでポストだけ適用した。dx12_create_entity(type:\"light_directional\") で作れる"
+                    : "太陽 + ポストをまとめて適用した(冪等)。細部は dx12_set_sun / dx12_set_post_process で詰める"}};
+        }
+        // ════════════════════════════════════════════════════════════
+        //  エンジン診断（機械可読）
+        // ════════════════════════════════════════════════════════════
+        else if (method == "diagnose")
+        {
+            const std::vector<std::string> allIds = DeepDiag::AllCheckIds();
+            std::string only;
+            if (params.contains("only") && !params["only"].is_null())
+            {
+                const auto& o = params["only"];
+                std::vector<std::string> want;
+                if (o.is_string())
+                {
+                    std::string s = o.get<std::string>(), cur;
+                    std::istringstream ss(s);
+                    while (std::getline(ss, cur, ','))
+                    {
+                        while (!cur.empty() && (cur.front() == ' ')) cur.erase(cur.begin());
+                        while (!cur.empty() && (cur.back() == ' '))  cur.pop_back();
+                        if (!cur.empty()) want.push_back(cur);
+                    }
+                }
+                else if (o.is_array())
+                {
+                    for (const auto& v : o)
+                        if (v.is_string()) want.push_back(v.get<std::string>());
+                }
+                else
+                {
+                    throw McpError(McpErr::InvalidParam, "only must be a string or an array of strings",
+                                   "検査 ID をカンマ区切りか配列で渡す", allIds);
+                }
+                for (const std::string& w : want)
+                {
+                    if (std::find(allIds.begin(), allIds.end(), w) == allIds.end())
+                        throw McpError(McpErr::InvalidParam, "unknown check id: " + w,
+                                       "有効な検査 ID のどれかを指定してくれ", allIds);
+                    if (!only.empty()) only += ",";
+                    only += w;
+                }
+            }
+            json report = DeepDiag::RunAll(*this, only);
+            report["checkIds"] = allIds;
+            report["note"] = "summary.errors > 0 だけが失敗(注意/情報は失敗ではない)。"
+                             "textures/models は assets 全走査で数十秒かかることがあるので、"
+                             "速く見たいときは only:\"lighting,terrain,picking,instancing,scripts\"。"
+                             "instancing は 1 度も描画していないと測れない(skipped に理由が入る)。";
+            resp["ok"] = true;
+            resp["result"] = std::move(report);
+        }
         else
         {
             resp["ok"] = false;
@@ -5227,6 +6384,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         resp["ok"] = false;
         resp["error"] = e.what();
         resp["error_code"] = e.code;
+        // 「次の一手」と有効値。付いているときだけ載せる(旧来のエラー形は変えない)。
+        if (!e.hint.empty())        resp["error_hint"]   = e.hint;
+        if (!e.validValues.empty()) resp["error_values"] = e.validValues;
         isDeferred = false;
     }
     catch (const std::exception& e)
@@ -9217,7 +10377,8 @@ void Application::RenderBuildSettingsWindow()
     ImGui::End();
 }
 
-// フレーム描画リスト構築（Render() 先頭で1回）。詳細は Application.h の DrawItem コメント参照。
+// フレーム描画リスト構築（Render() 先頭で1回）。要素の定義は renderer/DrawItem.h、
+// 呼び出し文脈は Application.h の m_drawItems 直前のコメント参照。
 void Application::BuildDrawList()
 {
     using namespace DirectX;
@@ -10170,6 +11331,25 @@ void Application::Render()
 {
     using namespace DirectX;
 
+    // シーンの Skybox 設定 → ランタイム値を毎フレーム引き直す。
+    // 以前は「Skybox / IBL 窓を開いている間」と再ベイク時しか同期しておらず、
+    // ライティング・パネル / Lua の scene:setSkybox / MCP set_scene_settings で
+    // 強度や背景 ON/OFF を変えても再ベイクするまで絵に出なかった（値の反映だけなので安い）。
+    if (m_scene)
+    {
+        const auto& skyNow = m_scene->GetSkyboxSettings();
+        m_iblIntensity    = skyNow.iblIntensity;
+        m_skyboxIntensity = skyNow.skyboxIntensity;
+        m_drawSkybox      = skyNow.drawSkybox;
+    }
+    // ライティング・パネルの「環境マップを適用 / 再ベイク」要求（envMapPath を変えた時だけ必要）
+    if (m_editorCtx && m_editorCtx->pendingSkyboxRebake)
+    {
+        m_editorCtx->pendingSkyboxRebake = false;
+        m_loadedSkyboxPath.clear();   // 旧パス一致による再ロードスキップを防ぐ
+        m_skyboxDirty = true;
+    }
+
     // Skybox 再ベイク要求（エディタでパス変更時）。専用 cmdList + WaitIdle で安全に処理。
     if (m_skyboxDirty && m_iblBaker)
     {
@@ -10903,6 +12083,131 @@ void Application::Render()
                 {
                     FailMcp(m_mcpBridge.get(), req.mcp, McpErr::Internal,
                             "spawn failed (model load error? check dx12_get_log): " + req.modelPath);
+                }
+            }
+        }
+    }
+
+    // ---- MCP 由来の地形 / スカルプト生成（GPU メッシュ構築に cmdList が要るのでフレーム境界）----
+    // pendingSpawns と同じ流儀。生成後に本物の entityId を遅延応答で返す。
+    if (!m_editorCtx->mcpProcCreates.empty() && m_engineMode == EngineMode::Editor)
+    {
+        auto procReqs = std::move(m_editorCtx->mcpProcCreates);
+        m_editorCtx->mcpProcCreates.clear();
+
+        // Scene の内部 cmdList を今フレームのものに更新（pendingSpawns と同じ理由）
+        m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
+                            m_srvHeap.get(), nativeCmdList);
+        auto& reg = m_scene->GetRegistry();
+
+        for (const auto& req : procReqs)
+        {
+            Entity      created{};
+            std::string err;
+
+            if (req.kind == McpPendingProcCreate::Kind::Terrain)
+            {
+                Terrain tp;
+                tp.resolution = req.resolution;
+                tp.worldSize  = req.worldSize;
+                tp.maxHeight  = req.maxHeight;
+                created = m_scene->SpawnTerrain(req.name, req.position, tp, nativeCmdList);
+            }
+            else if (req.kind == McpPendingProcCreate::Kind::Sculpt)
+            {
+                SculptMesh sp;   // meshPath 空 = 素体から作る
+                created = m_scene->SpawnSculpt(req.name, req.position, sp,
+                                               static_cast<SculptPrimitive>(req.primitive),
+                                               req.subdivisions, req.size, nativeCmdList);
+            }
+            else   // SculptFromEntity: 既存モデルを「彫れるコピー」にする（元アセットは読むだけ）
+            {
+                if (!reg.valid(req.source))
+                {
+                    err = "source entity is gone (シーンを開き直した？ dx12_list_entities で取り直してくれ)";
+                }
+                else
+                {
+                    auto data = std::make_shared<SculptMeshData>();
+                    if (!SculptPanel::MakeEditable(reg, req.source, *data))
+                    {
+                        err = "this model has no CPU vertex cache, so it cannot be made editable "
+                              "(dx12_sculpt_create で素体から彫るか、別のモデルを使ってくれ)";
+                    }
+                    else
+                    {
+                        Transform         srcTf{};
+                        DirectX::XMFLOAT3 pos{0.0f, 0.0f, 0.0f};
+                        if (reg.all_of<Transform>(req.source))
+                        {
+                            srcTf = reg.get<Transform>(req.source);
+                            pos   = srcTf.position;
+                        }
+                        SculptMesh sp;   // 素体は最小で作って直後に差し替える（SculptPanel と同じ手順）
+                        created = m_scene->SpawnSculpt(req.name, pos, sp,
+                                                       SculptPrimitive::Plane, 1u, 1.0f, nativeCmdList);
+                        if (created.IsValid())
+                        {
+                            auto& sc = created.GetComponent<SculptMesh>();
+                            sc._data = data;
+                            sc.MarkDirty();
+                            if (created.HasComponent<Transform>())
+                            {
+                                Transform&         tf          = created.GetComponent<Transform>();
+                                const entt::entity keepParent = tf.parent;
+                                tf        = srcTf;   // 元モデルと同じ姿勢へ（頂点はローカルのまま焼いてある）
+                                tf.parent = keepParent;
+                            }
+                            m_scene->RebuildSculptMesh(created.GetHandle(), nativeCmdList);
+                        }
+                    }
+                }
+            }
+
+            if (created.IsValid())
+            {
+                m_editorCtx->undoSystem.PushCommand(
+                    std::make_unique<SpawnEntityCommand>(
+                        m_scene.get(), PathResolver::AssetsDir(), created.GetHandle()));
+                m_editorCtx->Select(created.GetHandle());
+            }
+
+            if (req.mcp.client != 0)
+            {
+                if (created.IsValid())
+                {
+                    const entt::entity ce = created.GetHandle();
+                    nlohmann::json r{
+                        {"entityId", static_cast<u32>(ce)},
+                        {"name", reg.all_of<NameTag>(ce) ? reg.get<NameTag>(ce).name : req.name},
+                        {"created", true},
+                        {"sceneGeneration", m_sceneGeneration}};
+                    if (req.kind == McpPendingProcCreate::Kind::Terrain)
+                    {
+                        const Terrain& t = reg.get<Terrain>(ce);
+                        r["resolution"] = t.resolution;
+                        r["worldSize"]  = t.worldSize;
+                        r["maxHeight"]  = t.maxHeight;
+                        r["note"] = "平坦な地形を作った(静的コライダー付き)。"
+                                    "次は dx12_terrain_generate で山を作るか dx12_terrain_sculpt で彫る。";
+                    }
+                    else
+                    {
+                        const auto* sc = reg.try_get<SculptMesh>(ce);
+                        r["vertexCount"]   = (sc && sc->_data) ? sc->_data->VertexCount()   : size_t{0};
+                        r["triangleCount"] = (sc && sc->_data) ? sc->_data->TriangleCount() : size_t{0};
+                        if (req.kind == McpPendingProcCreate::Kind::SculptFromEntity)
+                            r["sourceEntityId"] = static_cast<u32>(req.source);
+                        r["note"] = "dx12_sculpt_brush で彫る。当てる場所は dx12_pick / "
+                                    "dx12_raycast_precise が返す worldPos をそのまま position に渡すのが確実。";
+                    }
+                    CompleteMcp(m_mcpBridge.get(), req.mcp, std::move(r));
+                }
+                else
+                {
+                    FailMcp(m_mcpBridge.get(), req.mcp, McpErr::Internal,
+                            err.empty() ? "failed to create the procedural mesh (dx12_get_log を確認してくれ)"
+                                        : err);
                 }
             }
         }
@@ -13163,6 +14468,12 @@ void Application::Render()
             m_materialEditorPanel->RenderWindow(*m_editorCtx, PathResolver::AssetsDir());
         if (m_materialLibraryPanel)
             m_materialLibraryPanel->RenderWindow(*m_editorCtx, PathResolver::AssetsDir());
+        // 地形ツール（ハイトフィールドのスカルプト）。窓が閉じていても呼ぶ＝Undo で戻した
+        // 高さがメッシュへ反映される（中で _meshDirty を見て作り直している）。
+        TerrainPanel::Render(*m_scene, *m_editorCtx, PathResolver::AssetsDir(), nativeCmdList);
+        // スカルプト窓（任意メッシュの頂点スカルプト）。地形ツールと同じ理由で
+        // 窓が閉じていても呼ぶ＝Undo で戻した頂点がメッシュへ反映される。
+        SculptPanel::Render(*m_scene, *m_editorCtx, PathResolver::AssetsDir(), nativeCmdList);
     }
 
     // ---- ゲーム内 UI: テキスト/ボタン（ImGui オーバーレイ・ゲーム/Play 中のみ）----

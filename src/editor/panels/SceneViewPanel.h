@@ -20,8 +20,8 @@ class ResourceManager;
 class DescriptorHeap;
 
 // メッシュ単位(サブメッシュ)のピッキング結果。テクスチャD&Dでどのメッシュに
-// マテリアルを割り当てるか特定するために使う（HandlePicking のエンティティ全体
-// AABBと違い、MeshRenderer::meshes[] の各サブメッシュAABBを個別にレイテストする）。
+// マテリアルを割り当てるか特定するために使う（MeshRenderer::meshes[] のどの要素に
+// 当たったか。実体は editor/ScenePick.h の RaycastScene が返す先頭ヒット）。
 struct SubmeshPickResult
 {
     entt::entity entity = entt::null;
@@ -56,6 +56,14 @@ public:
                          EditorContext& ctx,
                          f32 vpX, f32 vpY, f32 vpW, f32 vpH);
 
+    // ビューポートツール（地形ブラシ / ライトのハンドル操作など）へマウスを先に回す受け口。
+    // EditorContext::viewportToolHandlers を先頭から順に呼び、true を返したものがあれば
+    // 今フレームの UI 編集・3D ピッキングを行わない。EditorLayer が RenderGizmo の後・
+    // HandleUiEditing の前に呼ぶこと。戻り値 = 消費されたか。
+    bool RunViewportTools(EditorContext& ctx,
+                          Camera* camera,
+                          f32 vpX, f32 vpY, f32 vpW, f32 vpH);
+
     void HandlePicking(entt::registry& reg,
                        EditorContext& ctx,
                        Camera* camera,
@@ -63,7 +71,9 @@ public:
 
     // 現在のマウス位置でレイキャストし、ヒットしたエンティティ+サブメッシュ番号を返す
     // (選択状態は変更しない、副作用なしの問い合わせ)。ヒット無しは entity=entt::null。
+    // 中身は HandlePicking と同じ RaycastScene（メッシュ限定モード）。
     SubmeshPickResult PickEntityAndSubmesh(entt::registry& reg,
+                                           EditorContext& ctx,
                                            Camera* camera,
                                            f32 vpX, f32 vpY, f32 vpW, f32 vpH);
 
@@ -92,11 +102,24 @@ public:
                                   f32 vpX, f32 vpY, f32 vpW, f32 vpH);
 
 private:
-    // ギズモ操作中の開始時 Transform（Undo用）
+    // ギズモ操作中か（前フレームの ImGuizmo::IsUsing()）
     bool      m_gizmoWasUsing = false;
-    Transform m_gizmoStartTransform{};
-    // マルチ選択時: 全選択エンティティの開始時 Transform
+    // 全選択エンティティの開始時 Transform（Undo の before。左ボタン押下フレームで採取）
     std::vector<std::pair<entt::entity, Transform>> m_gizmoStartGroup;
+    // マルチ選択時の仮想ピボット（選択群の中心。Manipulate が毎フレーム書き換える）。
+    // 前フレームとの差分行列を各選択のワールドへ右から掛けることで、Translate だけでなく
+    // Rotate/Scale も群全体に効かせる。
+    DirectX::XMFLOAT4X4 m_gizmoPivot{};
+
+    // ---- 重なりの循環選択（同じ場所を連続クリックで手前→奥へ）----
+    DirectX::XMFLOAT2         m_cyclePos{-1e9f, -1e9f};  // 前回クリックのスクリーン座標
+    std::vector<entt::entity> m_cycleChain;              // 前回の重なり列（手前→奥）
+    int                       m_cycleIndex = 0;          // 現在選んでいる段
+    double                    m_cycleTime  = -1.0;       // 前回クリック時刻（ImGui::GetTime）
+
+    // ビューポートツール（EditorContext::viewportToolHandlers）が今フレームの
+    // マウス操作を消費したか。UI 編集・3D ピッキングがこれを見てスキップする。
+    bool m_toolConsumed = false;
 
     // オービット/ドリーの基準点と距離（ドラッグ開始時に確定）
     DirectX::XMFLOAT3 m_orbitPivot    = {0.0f, 0.0f, 0.0f};

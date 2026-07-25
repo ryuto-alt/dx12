@@ -292,6 +292,8 @@ void ToolbarPanel::Render(bool isPlaying,
             // 「ビルド」はまずビルド設定パネルを開く（構成・開始シーン・出力先を決めてから実行）
             if (ImGui::MenuItem("ビルド"))
                 ctx.showBuildSettings = true;
+            // シーンの光を1画面で詰めるパネル（太陽/影/スカイ/プリセット）
+            ImGui::MenuItem("ライティング",             nullptr, &ctx.showLighting);
             ImGui::MenuItem("パーティクルエディタ",     nullptr, &ctx.showVfxEditor);
             ImGui::MenuItem("UIアニメーション",         nullptr, &ctx.showAnimEditor);
             ImGui::MenuItem("スプライトシート",         nullptr, &ctx.showSpriteSheetEditor);
@@ -646,6 +648,7 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::MenuItem("MCP / AI Bridge",        nullptr, &ctx.showMcpBridge);
         ImGui::MenuItem("Network",                nullptr, &ctx.showNetworkStatus);
         ImGui::MenuItem("Network 設定",            nullptr, &ctx.showNetworkSettings);
+        ImGui::MenuItem("ライティング",            nullptr, &ctx.showLighting);
         ImGui::MenuItem("パーティクルエディタ",    nullptr, &ctx.showVfxEditor);
         ImGui::MenuItem("UIエディタ",              nullptr, &ctx.showUiEditor);
         ImGui::MenuItem("UIアニメーション",        nullptr, &ctx.showAnimEditor);
@@ -659,6 +662,7 @@ void ToolbarPanel::Render(bool isPlaying,
                 ctx.showNetworkStatus = ctx.showNetworkSettings =
                 ctx.showVfxEditor = ctx.showUiEditor =
                 ctx.showAnimEditor = ctx.showSpriteSheetEditor = false;
+            ctx.showLighting = false;
         }
         ImGui::EndPopup();
     }
@@ -795,6 +799,7 @@ void ToolbarPanel::Render(bool isPlaying,
                 {"左クリック",    "エンティティ選択（Ctrl+クリックで複数選択）"},
                 {"右クリック+WASD","フライカメラ移動（Space/Shift で上下）"},
                 {"F",             "選択エンティティにフォーカス"},
+                {"L + マウス移動", "太陽（DirectionalLight）の向きを直接回す"},
                 {"F11",           "ボーダレスフルスクリーン切替"},
                 {"Ctrl+Z / Y",   "元に戻す / やり直す"},
                 {"Ctrl+C / V",   "コピー / 貼り付け"},

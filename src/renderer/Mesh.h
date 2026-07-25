@@ -41,6 +41,25 @@ public:
                     const std::vector<u32>& indices,
                     ID3D12GraphicsCommandList* cmd = nullptr);
 
+    // 動的に頂点を書き換えるメッシュ（地形スカルプト等）用の初期化。
+    // Initialize と違い meshoptimizer の頂点並べ替えも自動LOD生成もしない
+    // ＝渡した配列の並びがそのまま GPU と m_verticesCache の並びになるので、
+    // 以後 MutableVertices() で一部だけ書き換えて UploadVertexCache() で送り直せる。
+    // （Initialize は remap+optimizeVertexFetch で頂点順を変えるため、部分更新には使えない）
+    void InitializeDynamic(GraphicsDevice& device,
+                           const std::vector<Vertex>& vertices,
+                           const std::vector<u32>& indices,
+                           ID3D12GraphicsCommandList* cmd = nullptr);
+
+    // CPU 側の頂点キャッシュ（InitializeDynamic で渡した並びのまま）。
+    // 書き換えたら UploadVertexCache() を呼ぶこと。
+    std::vector<Vertex>& MutableVertices() { return m_verticesCache; }
+
+    // 頂点キャッシュを GPU へ送り直し、AABB / 位置キャッシュ（ピッキング用）を取り直す。
+    // インデックスと LOD は触らない。古い頂点バッファは DeferredRelease 経由で
+    // フェンス完了後に解放されるので、描画コマンド記録中に呼んでも安全。
+    void UploadVertexCache(GraphicsDevice& device, ID3D12GraphicsCommandList* cmd = nullptr);
+
     void InitializeAsBox(GraphicsDevice& device);
     void InitializeAsPlane(GraphicsDevice& device, f32 size = 50.0f, u32 subdivisions = 1);
     void InitializeAsSphere(GraphicsDevice& device, f32 radius = 0.5f, u32 slices = 16, u32 stacks = 16);
@@ -84,6 +103,12 @@ public:
                                        : m_verticesCache[0].color;
     }
     const std::vector<DirectX::XMFLOAT3>& GetPositions() const { return m_positions; }
+    // LOD0 のインデックス配列（CPU コピー）。GetPositions() と対で
+    // レイ-三角形判定（エディタの精密ピッキング / ScenePick）に使う。
+    // 【なぜ Initialize 時に丸ごとコピーするか】インデックスは DEFAULT ヒープ(VRAM)へ
+    // アップロードしたら CPU からは二度と読めない＝「初回ピック時に生成」は原理的に不可能。
+    // 252k 三角形でも 3MB で、同じ Mesh を全インスタンスで共有する（アセット単位）ため許容する。
+    const std::vector<u32>& GetIndices() const { return m_indicesCache; }
 
     // UV スケール適用（頂点の texCoord を乗算して VertexBuffer を再作成）
     void ApplyUVScale(GraphicsDevice& device, float scaleU, float scaleV);
@@ -114,6 +139,7 @@ private:
     DirectX::XMFLOAT3 m_aabbMax = { 0, 0, 0 };
     std::vector<DirectX::XMFLOAT3> m_positions; // Convex Hull 用の頂点座標キャッシュ
     std::vector<Vertex> m_verticesCache;         // UV スケール用の頂点データキャッシュ
+    std::vector<u32>    m_indicesCache;          // LOD0 インデックスの CPU コピー（レイ-三角形判定用）
 };
 
 } // namespace dx12e

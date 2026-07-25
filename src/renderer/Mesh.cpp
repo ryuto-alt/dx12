@@ -52,6 +52,11 @@ void Mesh::Initialize(GraphicsDevice& device,
 
     // AABB + 頂点データキャッシュ
     m_verticesCache = vertices;  // UV スケール用に全頂点を保持
+    // レイ-三角形判定（エディタの精密ピッキング）用に LOD0 のインデックスも保持する。
+    // GPU(DEFAULT ヒープ)へ上げた後は CPU から読み戻せないため「必要になってから作る」が
+    // できない＝ここで素直にコピーする。m_positions と同じリマップ後の並びなので対で使える。
+    m_indicesCache = indices;
+    m_positions.clear();
     if (!vertices.empty())
     {
         m_aabbMin = m_aabbMax = vertices[0].position;
@@ -142,6 +147,52 @@ void Mesh::FinishUpload()
     m_indexBuffer.FinishUpload();
     for (u32 i = 1; i < m_lodCount; ++i)
         m_lodIndexBuffers[i - 1].FinishUpload();
+}
+
+void Mesh::InitializeDynamic(GraphicsDevice& device,
+                             const std::vector<Vertex>& vertices,
+                             const std::vector<u32>& indices,
+                             ID3D12GraphicsCommandList* cmd)
+{
+    if (vertices.empty() || indices.empty()) return;
+
+    // 頂点順を保つのが目的なので meshoptimizer は通さない。LOD も作らない
+    // （地形は 1 エンティティなので LOD の得よりも「部分更新できる」ほうが効く）。
+    m_verticesCache = vertices;
+    m_indicesCache  = indices;
+    m_lodCount      = 1;
+
+    m_indexBuffer.Initialize(device, indices.data(), static_cast<u32>(indices.size()), cmd);
+    UploadVertexCache(device, cmd);
+    m_indexBuffer.FinishUpload();
+}
+
+void Mesh::UploadVertexCache(GraphicsDevice& device, ID3D12GraphicsCommandList* cmd)
+{
+    if (m_verticesCache.empty()) return;
+
+    // AABB（フラスタムカリング用）と位置キャッシュ（レイ-三角形ピッキング用）を取り直す。
+    m_positions.clear();
+    m_positions.reserve(m_verticesCache.size());
+    m_aabbMin = m_aabbMax = m_verticesCache[0].position;
+    for (const auto& v : m_verticesCache)
+    {
+        m_positions.push_back(v.position);
+        m_aabbMin.x = (std::min)(m_aabbMin.x, v.position.x);
+        m_aabbMin.y = (std::min)(m_aabbMin.y, v.position.y);
+        m_aabbMin.z = (std::min)(m_aabbMin.z, v.position.z);
+        m_aabbMax.x = (std::max)(m_aabbMax.x, v.position.x);
+        m_aabbMax.y = (std::max)(m_aabbMax.y, v.position.y);
+        m_aabbMax.z = (std::max)(m_aabbMax.z, v.position.z);
+    }
+
+    m_vertexBuffer.Initialize(device,
+                              m_verticesCache.data(),
+                              static_cast<u32>(m_verticesCache.size() * sizeof(Vertex)),
+                              static_cast<u32>(sizeof(Vertex)),
+                              cmd);
+    // ステージングは DeferredRelease 経由（フェンス完了まで生存）なので即返して安全。
+    m_vertexBuffer.FinishUpload();
 }
 
 void Mesh::InitializeAsBox(GraphicsDevice& device)

@@ -16,6 +16,15 @@
 #include "animation/NodeGraph.h"
 #include "animation/NodeAnimationClip.h"
 #include "animation/NodeAnimator.h"
+#include "terrain/HeightField.h"
+#include "terrain/TerrainIO.h"
+#include "terrain/TerrainMeshBuilder.h"
+#include "terrain/SculptMesh.h"
+#include "terrain/SculptIO.h"
+
+#include <cmath>     // BuildSculptVertices の std::fabs
+#include <memory>    // std::make_shared / std::make_unique
+#include <vector>
 
 namespace dx12e
 {
@@ -283,6 +292,98 @@ Entity Scene::SpawnSphere(const std::string& name,
     return entity;
 }
 
+Entity Scene::SpawnTerrain(const std::string& name,
+                           DirectX::XMFLOAT3 position,
+                           const Terrain& params,
+                           ID3D12GraphicsCommandList* cmd)
+{
+    Entity entity = CreateEntityWithTransform(name, position, {0, 0, 0}, {1, 1, 1});
+
+    Terrain t = params;
+    t.resolution = HeightField::NormalizeResolution(t.resolution);
+    if (!(t.worldSize > 1.0f)) t.worldSize = 1.0f;   // NaN も弾く
+    if (!(t.maxHeight > 0.0f)) t.maxHeight = 200.0f;
+    t._hf = std::make_shared<HeightField>();
+    t._hf->Create(t.resolution, t.worldSize, 0.0f);
+
+    if (!t.heightmapPath.empty())
+    {
+        if (terrain::LoadHeightFieldAsset(t.heightmapPath, *t._hf))
+        {
+            // .hf 側の解像度/サイズを正とする（保存後にコンポーネントだけ書き換わっても壊れない）
+            t.resolution = t._hf->Resolution();
+            t.worldSize  = t._hf->WorldSize();
+        }
+        else
+        {
+            // 読めなかった場合は平坦のまま続行（シーンは開ける＝作業内容を失わない）
+            t._hf->Create(t.resolution, t.worldSize, 0.0f);
+        }
+    }
+
+    MeshRenderer& renderer = entity.AddComponent<MeshRenderer>();
+    renderer.modelPath = kTerrainMeshMarker;   // ファイルではない内部マーカー
+    {
+        std::vector<Vertex> vertices;
+        std::vector<u32>    indices;
+        TerrainMeshBuilder::Build(*t._hf, t.uvScale, t.color, vertices, indices);
+
+        auto mesh = std::make_unique<Mesh>();
+        mesh->InitializeDynamic(*m_device, vertices, indices, cmd ? cmd : m_cmdList);
+        renderer.meshes.push_back(mesh.get());
+        m_ownedMeshes.push_back(std::move(mesh));
+    }
+
+    // 静的コライダー。実際の形状は PhysicsSystem::RegisterBody が Terrain を見て
+    // Jolt の HeightFieldShape として作る（高さ配列を共有＝彫れば当たり判定も追従する）。
+    RigidBody& rb = entity.AddComponent<RigidBody>();
+    rb.motionType  = MotionType::Static;
+    rb.friction    = 0.7f;
+    rb.restitution = 0.0f;
+
+    entity.AddComponent<Terrain>(std::move(t));
+
+    Logger::Info("Spawned terrain '{}' (resolution={}, worldSize={:.1f})",
+                 name, entity.GetComponent<Terrain>().resolution,
+                 entity.GetComponent<Terrain>().worldSize);
+    return entity;
+}
+
+void Scene::RebuildTerrainMesh(entt::entity e, ID3D12GraphicsCommandList* cmd)
+{
+    if (!m_device || !m_registry.valid(e)) return;
+    auto* t  = m_registry.try_get<Terrain>(e);
+    auto* mr = m_registry.try_get<MeshRenderer>(e);
+    if (!t || !t->_hf || !t->_hf->IsValid() || !mr || mr->meshes.empty() || !mr->meshes[0]) return;
+
+    Mesh* mesh = mr->meshes[0];
+    ID3D12GraphicsCommandList* useCmd = cmd ? cmd : m_cmdList;
+
+    const size_t expected = static_cast<size_t>(t->_hf->Resolution())
+                          * static_cast<size_t>(t->_hf->Resolution());
+    if (mesh->MutableVertices().size() != expected)
+    {
+        // 解像度が変わった（読み込み直し / 作り直し）→ トポロジごと再構築
+        std::vector<Vertex> vertices;
+        std::vector<u32>    indices;
+        TerrainMeshBuilder::Build(*t->_hf, t->uvScale, t->color, vertices, indices);
+        mesh->InitializeDynamic(*m_device, vertices, indices, useCmd);
+    }
+    else
+    {
+        HeightField::Rect dirty;
+        dirty.x0 = t->_dirtyX0; dirty.z0 = t->_dirtyZ0;
+        dirty.x1 = t->_dirtyX1; dirty.z1 = t->_dirtyZ1;
+        if (!dirty.Valid()) dirty = t->_hf->FullRect();
+        TerrainMeshBuilder::UpdateVertices(*t->_hf, t->uvScale, t->color,
+                                           dirty, mesh->MutableVertices());
+        mesh->UploadVertexCache(*m_device, useCmd);
+    }
+
+    t->_meshDirty = false;
+    t->ClearDirtyRect();
+}
+
 void Scene::Remove(Entity entity)
 {
     if (entity.IsValid())
@@ -423,6 +524,131 @@ std::vector<entt::entity> Scene::QueryInBox(float minX, float minZ, float maxX, 
         result.push_back(handle);
     }
     return result;
+}
+
+// ==========================================================================
+//  頂点スカルプトメッシュ（洞窟・アーチ・岩などの異形）
+// ==========================================================================
+namespace
+{
+
+// SculptMeshData → 描画用の頂点配列。並びは SculptMeshData と 1:1 に保つこと
+//（Mesh::InitializeDynamic は meshoptimizer の並べ替えを通さないので、この並びのまま
+//  GPU と m_verticesCache に乗る＝以後 UploadVertexCache で送り直せる）。
+void BuildSculptVertices(const SculptMeshData& data, f32 uvScale,
+                         const DirectX::XMFLOAT4& color, std::vector<Vertex>& outVertices)
+{
+    using namespace DirectX;
+
+    const std::vector<XMFLOAT3>& pos = data.Positions();
+    const std::vector<XMFLOAT3>& nrm = data.Normals();
+    const std::vector<XMFLOAT2>& uvs = data.UVs();
+
+    outVertices.resize(pos.size());
+    for (size_t i = 0; i < pos.size(); ++i)
+    {
+        Vertex& v = outVertices[i];
+        v.position = pos[i];
+        v.normal   = nrm[i];
+        v.color    = color;
+        v.texCoord = XMFLOAT2{ uvs[i].x * uvScale, uvs[i].y * uvScale };
+
+        // 接線は法線と直交する適当な軸から作る（法線マップ付きの .dxmat を貼っても破綻しない）。
+        const XMVECTOR n  = XMLoadFloat3(&nrm[i]);
+        const XMVECTOR up = (std::fabs(nrm[i].y) > 0.99f) ? XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f)
+                                                          : XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+        XMVECTOR t = XMVector3Cross(up, n);
+        if (XMVectorGetX(XMVector3LengthSq(t)) < 1e-12f) t = XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f);
+        t = XMVector3Normalize(t);
+        XMFLOAT3 t3;
+        XMStoreFloat3(&t3, t);
+        v.tangent     = XMFLOAT4{ t3.x, t3.y, t3.z, 1.0f };
+        v.boneIndices = XMUINT4{ 0, 0, 0, 0 };
+        v.boneWeights = XMFLOAT4{ 0.0f, 0.0f, 0.0f, 0.0f };
+    }
+}
+
+} // anonymous namespace
+
+Entity Scene::SpawnSculpt(const std::string& name,
+                          DirectX::XMFLOAT3 position,
+                          const SculptMesh& params,
+                          SculptPrimitive fallbackPrimitive,
+                          u32 fallbackSubdivisions,
+                          f32 fallbackSize,
+                          ID3D12GraphicsCommandList* cmd)
+{
+    Entity entity = CreateEntityWithTransform(name, position, {0, 0, 0}, {1, 1, 1});
+
+    SculptMesh sc = params;
+    if (!(sc.uvScale > 0.0f)) sc.uvScale = 1.0f;   // NaN も弾く
+    sc._data = std::make_shared<SculptMeshData>();
+
+    bool loaded = false;
+    if (!sc.meshPath.empty())
+        loaded = sculpt::LoadSculptMeshAsset(sc.meshPath, *sc._data);
+    if (!loaded)
+    {
+        // 読めなかった場合も素体で続行（シーンは開ける＝他の作業内容を失わない）
+        sc._data->BuildPrimitive(fallbackPrimitive, fallbackSubdivisions, fallbackSize);
+    }
+
+    MeshRenderer& renderer = entity.AddComponent<MeshRenderer>();
+    renderer.modelPath = kSculptMeshMarker;   // ファイルではない内部マーカー
+    if (m_device)
+    {
+        std::vector<Vertex> vertices;
+        BuildSculptVertices(*sc._data, sc.uvScale, sc.color, vertices);
+
+        auto mesh = std::make_unique<Mesh>();
+        mesh->InitializeDynamic(*m_device, vertices, sc._data->Indices(), cmd ? cmd : m_cmdList);
+        renderer.meshes.push_back(mesh.get());
+        m_ownedMeshes.push_back(std::move(mesh));
+    }
+
+    // 静的コライダー。実際の形状は PhysicsSystem::RegisterBody が SculptMesh を見て
+    // Jolt の MeshShape として作る（頂点配列を共有＝彫れば当たり判定も追従する）。
+    RigidBody& rb = entity.AddComponent<RigidBody>();
+    rb.motionType  = MotionType::Static;
+    rb.friction    = 0.7f;
+    rb.restitution = 0.0f;
+
+    const size_t vcount = sc._data->VertexCount();
+    const size_t tcount = sc._data->TriangleCount();
+    entity.AddComponent<SculptMesh>(std::move(sc));
+
+    Logger::Info("Spawned sculpt mesh '{}' ({} verts / {} tris)", name, vcount, tcount);
+    return entity;
+}
+
+void Scene::RebuildSculptMesh(entt::entity e, ID3D12GraphicsCommandList* cmd)
+{
+    if (!m_device || !m_registry.valid(e)) return;
+    auto* sc = m_registry.try_get<SculptMesh>(e);
+    auto* mr = m_registry.try_get<MeshRenderer>(e);
+    if (!sc || !sc->_data || !sc->_data->IsValid()) return;
+    if (!mr || mr->meshes.empty() || !mr->meshes[0]) return;
+
+    Mesh* mesh = mr->meshes[0];
+    ID3D12GraphicsCommandList* useCmd = cmd ? cmd : m_cmdList;
+
+    if (mesh->MutableVertices().size() != sc->_data->VertexCount())
+    {
+        // 素体を作り直した（＝トポロジごと変わった）→ 丸ごと再初期化
+        std::vector<Vertex> vertices;
+        BuildSculptVertices(*sc->_data, sc->uvScale, sc->color, vertices);
+        mesh->InitializeDynamic(*m_device, vertices, sc->_data->Indices(), useCmd);
+    }
+    else
+    {
+        // トポロジは変わらない（ブラシは位置しか動かさない）ので頂点だけ送り直す。
+        // 頂点配列の作り直し自体は全頂点ぶん走るが、UploadVertexCache が
+        // どのみち VB 全体を上げ直すので、部分更新にしても得は小さい。
+        BuildSculptVertices(*sc->_data, sc->uvScale, sc->color, mesh->MutableVertices());
+        mesh->UploadVertexCache(*m_device, useCmd);
+    }
+
+    sc->_meshDirty = false;
 }
 
 } // namespace dx12e

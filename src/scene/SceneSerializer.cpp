@@ -366,8 +366,17 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
         if (reg.all_of<MeshRenderer>(entity))
         {
             const auto& mr = reg.get<MeshRenderer>(entity);
+            // 地形メッシュ / スカルプトメッシュは CPU 生成で modelPath は内部マーカー
+            //（"__terrain__" / "__sculpt__"）。下の "terrain" / "sculpt" ブロックから作り直すので
+            // meshRenderer/primitive としては書かない（書くと復元時に Box になってしまう）。
+            // シェーダー/マテリアル割当は下でそのまま保存される。
+            const bool isGeneratedMesh = reg.all_of<Terrain>(entity) || reg.all_of<SculptMesh>(entity);
+            if (isGeneratedMesh)
+            {
+                // 何も書かない（"terrain" / "sculpt" ブロックが担当）
+            }
             // プリミティブマーカー（"__primitive_box__" 等）は種別として保存
-            if (mr.modelPath.rfind("__primitive_", 0) == 0)
+            else if (mr.modelPath.rfind("__primitive_", 0) == 0)
             {
                 if      (mr.modelPath == "__primitive_sphere__") ej["primitive"] = "sphere";
                 else if (mr.modelPath == "__primitive_plane__")  ej["primitive"] = "plane";
@@ -488,6 +497,34 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                                   {"cols",   mr.animCols},   {"row", mr.animRow},
                                   {"rows",   mr.animRows},   {"mode", mr.animMode}};
             }
+        }
+
+        // 地形（ハイトフィールド）。高さ配列そのものは assets/terrain/*.hf 側にあり、
+        // ここにはパラメータとパスだけを書く（JSON に数万要素を入れない）。
+        if (reg.all_of<Terrain>(entity))
+        {
+            const auto& tr = reg.get<Terrain>(entity);
+            ej["terrain"] = {
+                {"resolution",    tr.resolution},
+                {"worldSize",     tr.worldSize},
+                {"maxHeight",     tr.maxHeight},
+                {"heightmapPath", tr.heightmapPath},
+                {"uvScale",       tr.uvScale},
+                {"color",         json::array({tr.color.x, tr.color.y, tr.color.z, tr.color.w})}
+            };
+        }
+
+        // スカルプトメッシュ（異形）。頂点配列そのものは assets/sculpt/*.smsh 側にあり、
+        // ここにはパラメータとパスだけを書く（JSON に数万頂点を入れない）。
+        if (reg.all_of<SculptMesh>(entity))
+        {
+            const auto& sc = reg.get<SculptMesh>(entity);
+            ej["sculpt"] = {
+                {"meshPath",  sc.meshPath},
+                {"uvScale",   sc.uvScale},
+                {"collision", sc.collision},
+                {"color",     json::array({sc.color.x, sc.color.y, sc.color.z, sc.color.w})}
+            };
         }
 
         if (reg.all_of<GridPlane>(entity))
@@ -863,6 +900,42 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
         (void)ej["gridPlane"].value("size", kEditorGridSize);
         e = scene.SpawnPlane(name, pos, kEditorGridSize, true).GetHandle();
         OutputDebugStringA(("[Load] SpawnPlane: " + name + "\n").c_str());
+    }
+    else if (ej.contains("terrain"))
+    {
+        // ハイトフィールド地形。高さ配列は heightmapPath の .hf から vfs 経由で読む
+        // （SpawnTerrain の中でロード。読めなければ平坦のまま警告して続行）。
+        const auto& tj = ej["terrain"];
+        Terrain tp;
+        tp.resolution    = tj.value("resolution", 128u);
+        tp.worldSize     = tj.value("worldSize", 200.0f);
+        tp.maxHeight     = tj.value("maxHeight", 200.0f);
+        tp.heightmapPath = tj.value("heightmapPath", std::string{});
+        tp.uvScale       = tj.value("uvScale", 24.0f);
+        if (tj.contains("color") && tj["color"].is_array() && tj["color"].size() >= 4)
+        {
+            tp.color = { tj["color"][0].get<float>(), tj["color"][1].get<float>(),
+                         tj["color"][2].get<float>(), tj["color"][3].get<float>() };
+        }
+        e = scene.SpawnTerrain(name, pos, tp).GetHandle();
+        OutputDebugStringA(("[Load] SpawnTerrain: " + name + "\n").c_str());
+    }
+    else if (ej.contains("sculpt"))
+    {
+        // スカルプトメッシュ（異形）。頂点配列は meshPath の .smsh から vfs 経由で読む
+        //（SpawnSculpt の中でロード。読めなければ素体の球で続行）。
+        const auto& sj = ej["sculpt"];
+        SculptMesh sp;
+        sp.meshPath  = sj.value("meshPath", std::string{});
+        sp.uvScale   = sj.value("uvScale", 1.0f);
+        sp.collision = sj.value("collision", true);
+        if (sj.contains("color") && sj["color"].is_array() && sj["color"].size() >= 4)
+        {
+            sp.color = { sj["color"][0].get<float>(), sj["color"][1].get<float>(),
+                         sj["color"][2].get<float>(), sj["color"][3].get<float>() };
+        }
+        e = scene.SpawnSculpt(name, pos, sp).GetHandle();
+        OutputDebugStringA(("[Load] SpawnSculpt: " + name + "\n").c_str());
     }
     else if (ej.contains("meshRenderer"))
     {

@@ -108,6 +108,24 @@ void RegisterCoreComponentMeta()
         .data<&CharacterController::jumpSpeed>("jumpSpeed")
         .data<&CharacterController::gravityScale>("gravityScale");
 
+    // 地形。高さ配列（_hf）は .hf バイナリ側が正なので登録しない＝JSON には出ない。
+    entt::meta_factory<Terrain>{}
+        .type("Terrain")
+        .data<&Terrain::resolution>("resolution")
+        .data<&Terrain::worldSize>("worldSize")
+        .data<&Terrain::maxHeight>("maxHeight")
+        .data<&Terrain::heightmapPath>("heightmapPath")
+        .data<&Terrain::uvScale>("uvScale")
+        .data<&Terrain::color>("color");
+
+    // スカルプトメッシュ。頂点配列（_data）は .smsh バイナリ側が正なので登録しない＝JSON には出ない。
+    entt::meta_factory<SculptMesh>{}
+        .type("SculptMesh")
+        .data<&SculptMesh::meshPath>("meshPath")
+        .data<&SculptMesh::uvScale>("uvScale")
+        .data<&SculptMesh::collision>("collision")
+        .data<&SculptMesh::color>("color");
+
     entt::meta_factory<AudioSource>{}
         .type("AudioSource")
         .data<&AudioSource::clipPath>("clipPath")
