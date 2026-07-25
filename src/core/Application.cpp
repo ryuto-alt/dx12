@@ -459,6 +459,17 @@ void Application::RecreateDepthPrepassPsos()
 // 深度プリパス PSO との唯一の違いは「RTV に速度バッファ(RG16F)を持つ」ことと VS/PS。
 // 深度をフォワードとビット一致させるため、VS の演算順は ShadowPass / DepthPrepassSkinned と
 // 完全に揃えてある（shaders/velocity/*.hlsl のヘッダコメント参照）。
+// TAA の履歴と、速度の再投影に使う前フレーム情報をまとめて捨てる。
+// シーンロード / Play↔Editor 遷移 / リサイズで呼ぶこと。忘れると「切替直後に
+// 前のシーンの絵が半透明で残る」という気味の悪いバグになる。
+void Application::InvalidateTemporalHistory()
+{
+    if (m_taaPass) m_taaPass->InvalidateHistory();
+    m_prevViewProjNJValid = false;
+    m_prevFrameIndexValid = false;
+    m_prevViewProjValid   = false;   // モーションブラーの速度スパイクも同時に防ぐ
+}
+
 void Application::RecreateVelocityPsos()
 {
     const DXGI_FORMAT rtFormats[] = { TaaPass::kVelocityFormat };
@@ -7046,12 +7057,10 @@ void Application::Run()
                 if (m_dofPass)        m_dofPass->Resize(*m_graphicsDevice, w, h);
                 if (m_motionBlurPass) m_motionBlurPass->Resize(*m_graphicsDevice, w, h);
                 if (m_distortRT)      m_distortRT->Resize(*m_graphicsDevice, w, h);
-                // TAA: 速度RT/履歴RT を作り直し、履歴と前フレーム行列を無効化する
-                // （座標系が変わるので持ち越すと画面が歪んで尾を引く）。
-                if (m_taaPass)      { m_taaPass->Resize(*m_graphicsDevice, w, h); m_taaPass->InvalidateHistory(); }
-                m_prevViewProjNJValid = false;
-                m_prevFrameIndexValid = false;
-                m_prevViewProjValid = false;  // リサイズ直後のMB速度スパイク防止
+                // TAA: 速度RT/履歴RT を作り直す。座標系が変わるので履歴は必ず捨てる
+                // （持ち越すと画面が歪んで尾を引く）。MB の速度スパイク防止も兼ねる。
+                if (m_taaPass) m_taaPass->Resize(*m_graphicsDevice, w, h);
+                InvalidateTemporalHistory();
 
                 // カメラアスペクト比更新（エディタモードではサイドバー分引く）
                 m_camera->SetPerspective(DirectX::XM_PIDIV4,
@@ -9491,6 +9500,9 @@ void Application::UpdateSceneLoadJob(ID3D12GraphicsCommandList* cmdList)
 void Application::FinishSceneLoad(const std::string& fullPath, const std::string& rel, bool runtime,
                                   ID3D12GraphicsCommandList* cmdList)
 {
+    // TAA: 別のシーンの絵を履歴として持ち越さない（持ち越すと切替直後に前のシーンが半透明で残る）。
+    InvalidateTemporalHistory();
+
     if (runtime)
     {
         DoRuntimeSceneLoad(rel, cmdList);
@@ -9681,6 +9693,8 @@ void Application::LaunchNetTestClient()
 
 void Application::EnterPlayMode()
 {
+    InvalidateTemporalHistory();   // Editor の絵を Play の履歴に持ち越さない
+
     // カメラ設置チェック
     {
         auto& reg = m_scene->GetRegistry();
@@ -9924,6 +9938,8 @@ void Application::EnterEditorMode()
 {
     DX_ASSERT(!m_playSceneJson.empty(),
               "EnterEditorMode requires a prior EnterPlayMode snapshot");
+
+    InvalidateTemporalHistory();   // Play の絵を Editor の履歴に持ち越さない
 
     m_commandQueue->WaitIdle();
 
@@ -13470,6 +13486,12 @@ void Application::Render()
     const bool useDepthPrepass = useSSAO || useContactShadow || taaActive;
     // 速度モードで走らせるか（PSO 3 本が揃っていることが条件）。
     const bool velocityPrepass = taaActive && m_velocityPSO && m_velocityPSOSkinned;
+    // TAA 解決まで走らせるか。速度が書かれていないフレームでは絶対に解決しない
+    // （履歴を速度なしで再投影すると全面がゴーストする）。
+    const bool taaResolveActive = velocityPrepass && m_taaPass->IsResolveReady();
+    // 走らないフレームでは履歴を捨てる。TAA を OFF→ON したり 2D ビューを往復したときに
+    // 何十フレームも前の絵が半透明で残るのを防ぐ。
+    if (!taaResolveActive && m_taaPass) m_taaPass->InvalidateHistory();
     u32 aoSrv = m_ssaoWhiteSrvIndex;  // 既定 = 白（AO=1.0 素通し）
     u32 csSrv = m_ssaoWhiteSrvIndex;  // 既定 = 白（遮蔽なし素通し。SSAO と同じ 1x1 白を共用）
 
@@ -13903,22 +13925,49 @@ void Application::Render()
             }
         }
 
-        // ---- 深度依存パス（DoF/モーションブラー/ゴッドレイ）の準備 ----
+        // ---- TAA と FXAA の排他 ----
+        // TAA 解決済みの絵に FXAA を掛けると輪郭が二重にぼける。TAA が走るなら FXAA は落とす。
+        const bool taaResolve = taaResolveActive;
+        if (taaResolve) ppApplied.fxaaOn = false;
+
+        // ---- 深度依存パス（TAA/DoF/モーションブラー/ゴッドレイ）の準備 ----
         // 透視カメラのみ（正射は CoC/再投影/太陽投影が破綻するため無効）
         const bool persp = !m_camera->IsOrthographic();
         const bool wantDepthPost = ppApplied.enabled && persp &&
             m_depthBuffer && m_depthSrvIndex != DescriptorHeap::kInvalidIndex &&
             (ppApplied.dofOn || ppApplied.motionBlurOn || ppApplied.godraysOn);
+        // TAA も深度を読む（空の速度再構成 + closest-depth dilation）。深度の遷移は
+        // 1 箇所にまとめる＝二重遷移で D3D12 の状態追跡が壊れるのを防ぐ。
+        const bool needDepthSrv = wantDepthPost || taaResolve;
         D3D12_GPU_DESCRIPTOR_HANDLE depthSrvGpu{};
-        if (wantDepthPost)
+        if (needDepthSrv)
         {
             m_commandList->TransitionResource(m_depthBuffer.Get(),
                 D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
             depthSrvGpu = m_srvHeap->GetGpuHandle(m_depthSrvIndex);
         }
 
-        // ---- シーン変換チェーン: DoF → モーションブラー（結果を以降の「シーン」として使う）----
+        // ---- シーン変換チェーン: TAA → DoF → モーションブラー（結果を以降の「シーン」として使う）----
         D3D12_GPU_DESCRIPTOR_HANDLE curSceneSrv = sceneSrvGpu;
+
+        // ★TAA はチェーンの先頭。トーンマップ前のリニア HDR に対して解決する。
+        //   露出に依存するアーティファクトを避けるためと、以降の DoF / モーションブラー /
+        //   自動露出 / ブルーム / レンズフレアが「安定した絵」を入力に取れるようにするため
+        //   （ブルームとレンズフレアのちらつきが目に見えて減る）。
+        if (taaResolve)
+        {
+            XMFLOAT4X4 invVpT, prevVpT;
+            XMStoreFloat4x4(&invVpT, XMMatrixTranspose(XMMatrixInverse(nullptr, camVP)));
+            XMStoreFloat4x4(&prevVpT, XMMatrixTranspose(
+                m_prevViewProjNJValid ? XMLoadFloat4x4(&m_prevViewProjNoJitter) : camVP));
+            const u32 o = m_taaPass->Resolve(*m_commandList, curSceneSrv, depthSrvGpu,
+                invVpT, prevVpT, uvOfsX, uvOfsY, uvSclX, uvSclY,
+                vpLeft, vpTop, vpW, vpH, taaCfg);
+            if (o != DescriptorHeap::kInvalidIndex)
+                curSceneSrv = m_srvHeap->GetGpuHandle(o);
+            // TaaPass は自前のルートシグネチャ/PSO を張るので、後段のために SRV ヒープを張り直す。
+            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+        }
         if (wantDepthPost && ppApplied.dofOn && m_dofPass)
         {
             XMFLOAT4X4 projF;
@@ -14019,8 +14068,8 @@ void Application::Render()
         }
         const bool lfReady = (flareSrv != DescriptorHeap::kInvalidIndex);
 
-        // 深度を DSV 用途（エディタアイコン等）へ戻す
-        if (wantDepthPost)
+        // 深度を DSV 用途（エディタアイコン等）へ戻す（遷移した時だけ。needDepthSrv と対で閉じる）
+        if (needDepthSrv)
             m_commandList->TransitionResource(m_depthBuffer.Get(),
                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
 

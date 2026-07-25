@@ -326,6 +326,7 @@ private:
     void RecreateShadowPsos();           // m_shadowPipelineState / m_shadowSkinnedPipelineState
     void RecreateDepthPrepassPsos();     // m_depthPrepassPSO / m_depthPrepassSkinnedPSO
     void RecreateVelocityPsos();         // m_velocityPSO / Inst / Skinned（深度+速度プリパス）
+    void InvalidateTemporalHistory();    // TAA 履歴 + 前フレーム行列を捨てる（シーン切替/Play遷移/リサイズ）
     void EnsureInstancePrevBuffer();     // 速度パス用 per-instance 前ワールドバッファの遅延確保
     void RegisterShaderReloadHandlers(); // 上記全部+PostProcess等を ShaderManager に束ねて登録する(Initialize末尾で1回)
 
