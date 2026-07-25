@@ -10,6 +10,7 @@
 
 #include "terrain/HeightField.h"
 #include "terrain/TerrainBrush.h"
+#include "terrain/TerrainSplatMap.h"
 
 #include <DirectXMath.h>
 #include <cmath>
@@ -303,6 +304,98 @@ int main()
         const float hitY = org.y - th;
         CHECK(Near(hitY, bumpy.SampleHeight(org.x, org.z), 0.01f));
         CHECK(hitY > 0.0f);   // 実際に盛り上がっている場所を撃っている
+    }
+
+    // ================= ⑤ スプラット重み（テクスチャレイヤー）=================
+    {
+        TerrainSplatMap sp;
+        sp.Create(128);
+        CHECK(sp.IsValid());
+        CHECK(sp.Size() == 128);
+        // 2 のべき乗へ丸まる
+        {
+            TerrainSplatMap odd; odd.Create(100);
+            CHECK(odd.Size() == 128);
+        }
+        // 初期状態は全面レイヤー 0
+        CHECK(sp.Pixels()[0] == 255 && sp.Pixels()[1] == 0
+              && sp.Pixels()[2] == 0 && sp.Pixels()[3] == 0);
+
+        // --- 円ブラシ: 中心は塗った層が支配的になり、合計は 255 のまま ---
+        const float worldSize = 128.0f;
+        const u32 v0 = sp.Version();
+        const HeightField::Rect r = sp.PaintCircle(worldSize, 0.0f, 0.0f, 10.0f,
+                                                   /*layer=*/2, /*strength=*/1.0f, /*falloff=*/0.0f);
+        CHECK(r.Valid());
+        CHECK(sp.Version() > v0);            // GPU アップロード判定用の版が上がる
+        {
+            const i32 cx = sp.LocalToTexelX(0.0f, worldSize);
+            const i32 cz = sp.LocalToTexelZ(0.0f, worldSize);
+            const size_t i = (static_cast<size_t>(cz) * sp.Size() + static_cast<size_t>(cx)) * 4;
+            CHECK(sp.Pixels()[i + 2] == 255);          // レイヤー 2 が総取り
+            CHECK(sp.Pixels()[i + 0] == 0);
+            const int sum = sp.Pixels()[i] + sp.Pixels()[i + 1] + sp.Pixels()[i + 2] + sp.Pixels()[i + 3];
+            CHECK(sum >= 254 && sum <= 256);           // 合計 255（丸め誤差 ±1）
+        }
+        // 円の外は不変
+        {
+            const size_t i = 0;   // 左上端（中心から 64m 以上離れている）
+            CHECK(sp.Pixels()[i + 0] == 255 && sp.Pixels()[i + 2] == 0);
+        }
+
+        // --- .splat のラウンドトリップ（1 バイトもズレない）---
+        const std::vector<u8> bytes = sp.Encode();
+        CHECK(bytes.size() == TerrainSplatMap::kHeaderSize
+                            + static_cast<size_t>(sp.Size()) * sp.Size() * 4);
+        TerrainSplatMap back;
+        CHECK(back.Decode(bytes));
+        CHECK(back.Size() == sp.Size());
+        CHECK(back.Pixels() == sp.Pixels());
+        // 壊れた入力を弾く
+        CHECK(!back.Decode(nullptr, 0));
+        {
+            std::vector<u8> broken = bytes;
+            broken[0] ^= 0xFF;                       // マジック破壊
+            TerrainSplatMap bad;
+            CHECK(!bad.Decode(broken));
+        }
+        {
+            std::vector<u8> truncated(bytes.begin(), bytes.begin() + TerrainSplatMap::kHeaderSize + 16);
+            TerrainSplatMap bad;
+            CHECK(!bad.Decode(truncated));           // 画素が足りない
+        }
+
+        // --- ミップチェーン（遠景のジャギ防止。GPU 側で作れないので CPU で焼く）---
+        const auto mips = sp.BuildMipChain();
+        CHECK(mips.size() == TerrainSplatMap::MipCount(sp.Size()));
+        CHECK(mips.front().size() == sp.Pixels().size());
+        CHECK(mips.back().size() == 4);              // 最終 mip は 1x1
+
+        // --- 自動ペイント: 急斜面は岩(2)、平地は草(0) ---
+        HeightField slope;
+        slope.Create(64, 64.0f, 0.0f);
+        {
+            // x が増えるほど高くなる強い斜面を作る（右端で 60m）
+            for (i32 z = 0; z < 64; ++z)
+                for (i32 x = 0; x < 64; ++x)
+                    slope.SetAt(x, z, (x < 32) ? 0.0f : static_cast<f32>(x - 32) * 2.0f);
+        }
+        TerrainSplatMap auto0;
+        auto0.Create(64);
+        TerrainAutoPaintParams ap;
+        ap.noiseStrength = 0.0f;   // 判定を決定的にする
+        auto0.AutoPaintFromHeightField(slope, ap);
+        {
+            // 左半分は完全に平ら → 草が支配的
+            const i32 fx = auto0.LocalToTexelX(-24.0f, 64.0f);
+            const i32 fz = auto0.LocalToTexelZ(0.0f, 64.0f);
+            const size_t i = (static_cast<size_t>(fz) * auto0.Size() + static_cast<size_t>(fx)) * 4;
+            CHECK(auto0.Pixels()[i + 0] > 200);
+            // 右半分は急斜面 → 岩か雪（＝草ではない）
+            const i32 sx = auto0.LocalToTexelX(20.0f, 64.0f);
+            const size_t j = (static_cast<size_t>(fz) * auto0.Size() + static_cast<size_t>(sx)) * 4;
+            CHECK(auto0.Pixels()[j + 0] < 128);
+        }
     }
 
     std::printf("terrain_test: %d checks, %d failures\n", g_checks, g_failures);

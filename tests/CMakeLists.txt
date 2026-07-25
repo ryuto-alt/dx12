@@ -279,7 +279,8 @@ if(TARGET Renderer)
     add_executable(TerrainTests
         terrain_test.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/terrain/HeightField.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/../src/terrain/TerrainBrush.cpp)
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/terrain/TerrainBrush.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/terrain/TerrainSplatMap.cpp)
     target_include_directories(TerrainTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
     target_link_libraries(TerrainTests PRIVATE Microsoft::DirectXMath)
     if(MSVC)

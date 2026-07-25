@@ -6344,6 +6344,106 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                          "brush:\"flatten\" + flattenHeight を使うと冪等になる。"
                          "strength は raise/lower/noise = メートル、smooth/flatten = 寄せ具合(2 でほぼ完全)。"}};
         }
+        else if (method == "terrain_paint" || method == "terrain_autopaint")
+        {
+            // 地形のテクスチャレイヤーを塗る（terrain_sculpt の写経）。
+            //   terrain_paint     … 円ブラシで 1 レイヤーの重みを上げる（相対操作）
+            //   terrain_autopaint … 傾斜と標高から 4 層を焼き直す（冪等）
+            if (busyPlaying)
+                throw McpError(McpErr::ModeConflict, "cannot modify terrain while Playing",
+                               "先に dx12_stop で Editor へ戻してくれ");
+            auto& reg = m_scene->GetRegistry();
+            const auto e = ResolveMcpComponentEntity<Terrain>(
+                *m_scene, params, "terrain", "先に dx12_terrain_create で地形を作ってくれ");
+            Terrain& t = reg.get<Terrain>(e);
+            if (!t._hf || !t._hf->IsValid())
+                throw McpError(McpErr::Internal, "terrain has no valid height field");
+            if (t.layerSetPath.empty())
+                throw McpError(McpErr::InvalidParam, "terrain has no layer set",
+                    "先に地形ツール窓（またはシーン JSON）で terrain.layerSetPath へ "
+                    ".terrainlayers を割り当ててくれ。空のままだと従来の頂点色描画のまま");
+
+            // スプラットが無ければここで作る（シーンを開き直さずに使えるようにする）
+            if (!t._splat)
+            {
+                t._splat = std::make_shared<TerrainSplatMap>();
+                t._splat->Create(t.splatResolution);
+                t._splat->AutoPaintFromHeightField(*t._hf, TerrainAutoPaintParams{});
+                t.splatResolution = t._splat->Size();
+            }
+            TerrainSplatMap& sp = *t._splat;
+            const DirectX::XMFLOAT3 origin = McpTerrainOrigin(reg, e);
+
+            if (method == "terrain_autopaint")
+            {
+                TerrainAutoPaintParams ap;
+                ap.rockSlopeStart  = McpFloatParam(params, "rockSlopeStart",  ap.rockSlopeStart,  0.0f, 1.0f);
+                ap.rockSlopeEnd    = McpFloatParam(params, "rockSlopeEnd",    ap.rockSlopeEnd,    0.0f, 1.0f);
+                ap.dirtSlopeStart  = McpFloatParam(params, "dirtSlopeStart",  ap.dirtSlopeStart,  0.0f, 1.0f);
+                ap.dirtSlopeEnd    = McpFloatParam(params, "dirtSlopeEnd",    ap.dirtSlopeEnd,    0.0f, 1.0f);
+                ap.noiseStrength   = McpFloatParam(params, "noiseStrength",   ap.noiseStrength,   0.0f, 1.0f);
+                if (params.contains("snowHeightStart") || params.contains("snowHeightEnd"))
+                {
+                    ap.autoSnowHeight   = false;
+                    ap.snowHeightStart  = McpFloatParam(params, "snowHeightStart", 0.0f, -10000.0f, 10000.0f) - origin.y;
+                    ap.snowHeightEnd    = McpFloatParam(params, "snowHeightEnd",  50.0f, -10000.0f, 10000.0f) - origin.y;
+                }
+                sp.AutoPaintFromHeightField(*t._hf, ap);
+                t._splatNeedsSave = true;
+
+                resp["ok"] = true;
+                resp["result"] = {
+                    {"entityId", static_cast<u32>(e)}, {"splatSize", sp.Size()},
+                    {"note", "★冪等（何度呼んでも同じ結果）。手で塗った内容は上書きされる。"
+                             "しきい値は傾斜 0=平ら〜1=垂直、標高はワールド Y(m)。"}};
+            }
+            else
+            {
+                const int layer = McpIntParam(params, "layer", 0, 0, 3);
+                const f32 radius   = McpFloatParam(params, "radius",   12.0f, 0.01f, t._hf->WorldSize());
+                const f32 strength = McpFloatParam(params, "strength", 0.7f,  0.0f, 1.0f);
+                const f32 falloff  = McpFloatParam(params, "falloff",  0.5f,  0.0f, 1.0f);
+
+                std::vector<DirectX::XMFLOAT2> pts;
+                auto pushPoint = [&](const nlohmann::json& a) {
+                    if (!a.is_array() || (a.size() != 2 && a.size() != 3))
+                        throw McpError(McpErr::InvalidParam, "point must be [x,z] or [x,y,z]",
+                                       "ワールド座標。y は使わない(地形は XZ グリッドなので)");
+                    const f32 wx = a[0].get<f32>();
+                    const f32 wz = (a.size() == 2) ? a[1].get<f32>() : a[2].get<f32>();
+                    pts.push_back({wx - origin.x, wz - origin.z});
+                };
+                if (params.contains("points"))
+                {
+                    if (!params["points"].is_array())
+                        throw McpError(McpErr::InvalidParam, "points must be an array of [x,z]");
+                    if (params["points"].size() > 512)
+                        throw McpError(McpErr::InvalidParam, "too many points (max 512)");
+                    for (const auto& a : params["points"]) pushPoint(a);
+                }
+                if (params.contains("point"))    pushPoint(params["point"]);
+                if (params.contains("worldPos")) pushPoint(params["worldPos"]);
+                if (pts.empty())
+                    throw McpError(McpErr::InvalidParam, "missing 'point' / 'points'",
+                        "point:[x,z] か points:[[x,z],...] をワールド座標で渡す");
+
+                bool changed = false;
+                for (const DirectX::XMFLOAT2& p : pts)
+                    changed |= sp.PaintCircle(t._hf->WorldSize(), p.x, p.y,
+                                              radius, static_cast<u32>(layer),
+                                              strength, falloff).Valid();
+                if (changed) t._splatNeedsSave = true;
+
+                resp["ok"] = true;
+                resp["result"] = {
+                    {"entityId", static_cast<u32>(e)}, {"layer", layer},
+                    {"points", pts.size()}, {"radius", radius}, {"strength", strength},
+                    {"changed", changed}, {"splatSize", sp.Size()},
+                    {"note", "★相対操作（同じ呼び出しを2回撃つと2回ぶん塗れる）。strength=1 で 1 回塗れば"
+                             "そのレイヤー 100%。他レイヤーは合計 1 を保つよう比例縮小される。"
+                             "全面を傾斜/標高から焼き直すなら dx12_terrain_autopaint。"}};
+            }
+        }
         else if (method == "terrain_erode")
         {
             if (busyPlaying)

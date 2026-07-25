@@ -23,6 +23,7 @@
 #include <DirectXMath.h>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <memory>
 #include <unordered_set>
 #include <vector>
@@ -94,6 +95,56 @@ private:
     const char*                  m_label;
 };
 
+// スプラット重み（RGBA8）のストローク単位 Undo。高さ版とまったく同じタイル方式。
+// 1 タイル 64x64x4 = 16KB なので、履歴 100 段でも現実的なサイズに収まる。
+struct SplatTileEdit
+{
+    i32 x0 = 0, z0 = 0, w = 0, h = 0;
+    std::vector<u8> before;   // RGBA8
+    std::vector<u8> after;
+};
+
+class TerrainPaintCommand final : public IUndoCommand
+{
+public:
+    TerrainPaintCommand(entt::registry* reg, entt::entity entity, std::vector<SplatTileEdit> tiles)
+        : m_reg(reg), m_entity(entity), m_tiles(std::move(tiles)) {}
+
+    void Undo() override { Apply(true); }
+    void Redo() override { Apply(false); }
+    const char* GetName() const override { return "Terrain Paint"; }
+
+private:
+    void Apply(bool useBefore)
+    {
+        if (!m_reg || !m_reg->valid(m_entity)) return;
+        auto* t = m_reg->try_get<Terrain>(m_entity);
+        if (!t || !t->_splat || !t->_splat->IsValid()) return;
+
+        const u32 size = t->_splat->Size();
+        std::vector<u8>& px = t->_splat->Pixels();
+        for (const auto& tile : m_tiles)
+        {
+            const std::vector<u8>& src = useBefore ? tile.before : tile.after;
+            if (src.size() != static_cast<size_t>(tile.w) * tile.h * 4) continue;
+            for (i32 z = 0; z < tile.h; ++z)
+            {
+                const size_t dstRow = (static_cast<size_t>(tile.z0 + z) * size
+                                     + static_cast<size_t>(tile.x0)) * 4;
+                const size_t srcRow = static_cast<size_t>(z) * tile.w * 4;
+                std::memcpy(px.data() + dstRow, src.data() + srcRow,
+                            static_cast<size_t>(tile.w) * 4);
+            }
+        }
+        t->_splat->Touch();
+        t->_splatNeedsSave = true;
+    }
+
+    entt::registry*            m_reg;
+    entt::entity               m_entity;
+    std::vector<SplatTileEdit> m_tiles;
+};
+
 // ==========================================================================
 //  パネル状態（パネルは 1 個で足りるので関数ローカル static で持つ）
 // ==========================================================================
@@ -124,12 +175,23 @@ struct TerrainToolState
     int erodeIterations = 24;
     f32 erodeTalusDeg   = 34.0f;
 
+    // テクスチャペイント（レイヤーセット割当時のみ）
+    bool paintMode     = false;   // true の間、ブラシは高さではなくスプラット重みを塗る
+    int  paintLayer    = 0;       // 0=草 1=土 2=岩 3=雪（レイヤーセットの並び）
+    f32  paintStrength = 0.7f;
+
     // ストローク
     bool         strokeActive = false;
     entt::entity strokeEntity = entt::null;
     std::vector<TerrainTileEdit> strokeTiles;
     std::unordered_set<i64>      strokeTileKeys;
     const char*  strokeLabel = "Terrain Sculpt";
+
+    // ペイントのストローク（高さとは独立に持つ）
+    bool                       paintStrokeActive = false;
+    entt::entity               paintStrokeEntity = entt::null;
+    std::vector<SplatTileEdit> paintTiles;
+    std::unordered_set<i64>    paintTileKeys;
 };
 
 TerrainToolState& State()
@@ -218,6 +280,88 @@ void CaptureTiles(TerrainToolState& s, const HeightField& hf, const HeightField:
             s.strokeTiles.push_back(std::move(tile));
         }
     }
+}
+
+// --- ペイントのストローク（スプラットタイル）---
+void CaptureSplatTiles(TerrainToolState& s, const TerrainSplatMap& sp, const HeightField::Rect& r)
+{
+    if (!r.Valid() || !sp.IsValid()) return;
+    const i32 n = static_cast<i32>(sp.Size());
+    const i32 tilesPerSide = (n + kUndoTileSize - 1) / kUndoTileSize;
+    const std::vector<u8>& px = sp.Pixels();
+
+    for (i32 tz = r.z0 / kUndoTileSize; tz <= r.z1 / kUndoTileSize; ++tz)
+    {
+        for (i32 tx = r.x0 / kUndoTileSize; tx <= r.x1 / kUndoTileSize; ++tx)
+        {
+            const i64 key = static_cast<i64>(tz) * static_cast<i64>(tilesPerSide)
+                          + static_cast<i64>(tx);
+            if (!s.paintTileKeys.insert(key).second) continue;
+
+            SplatTileEdit tile;
+            tile.x0 = tx * kUndoTileSize;
+            tile.z0 = tz * kUndoTileSize;
+            tile.w  = (std::min)(kUndoTileSize, n - tile.x0);
+            tile.h  = (std::min)(kUndoTileSize, n - tile.z0);
+            if (tile.w <= 0 || tile.h <= 0) continue;
+
+            tile.before.resize(static_cast<size_t>(tile.w) * tile.h * 4);
+            for (i32 z = 0; z < tile.h; ++z)
+            {
+                const size_t srcRow = (static_cast<size_t>(tile.z0 + z) * n
+                                     + static_cast<size_t>(tile.x0)) * 4;
+                std::memcpy(tile.before.data() + static_cast<size_t>(z) * tile.w * 4,
+                            px.data() + srcRow, static_cast<size_t>(tile.w) * 4);
+            }
+            s.paintTiles.push_back(std::move(tile));
+        }
+    }
+}
+
+void BeginPaintStroke(TerrainToolState& s, entt::entity e)
+{
+    s.paintStrokeActive = true;
+    s.paintStrokeEntity = e;
+    s.paintTiles.clear();
+    s.paintTileKeys.clear();
+}
+
+void EndPaintStroke(TerrainToolState& s, entt::registry& reg, EditorContext& ctx)
+{
+    if (!s.paintStrokeActive) return;
+    s.paintStrokeActive = false;
+
+    Terrain* t = reg.valid(s.paintStrokeEntity) ? reg.try_get<Terrain>(s.paintStrokeEntity) : nullptr;
+    if (!t || !t->_splat || !t->_splat->IsValid() || s.paintTiles.empty())
+    {
+        s.paintTiles.clear();
+        s.paintTileKeys.clear();
+        return;
+    }
+
+    const i32 n = static_cast<i32>(t->_splat->Size());
+    const std::vector<u8>& px = t->_splat->Pixels();
+    bool changed = false;
+    for (auto& tile : s.paintTiles)
+    {
+        tile.after.resize(tile.before.size());
+        for (i32 z = 0; z < tile.h; ++z)
+        {
+            const size_t srcRow = (static_cast<size_t>(tile.z0 + z) * n
+                                 + static_cast<size_t>(tile.x0)) * 4;
+            std::memcpy(tile.after.data() + static_cast<size_t>(z) * tile.w * 4,
+                        px.data() + srcRow, static_cast<size_t>(tile.w) * 4);
+        }
+        if (!changed && tile.after != tile.before) changed = true;
+    }
+
+    if (changed)
+    {
+        ctx.undoSystem.PushCommand(
+            std::make_unique<TerrainPaintCommand>(&reg, s.paintStrokeEntity, std::move(s.paintTiles)));
+    }
+    s.paintTiles.clear();
+    s.paintTileKeys.clear();
 }
 
 void BeginStroke(TerrainToolState& s, entt::entity e, const char* label)
@@ -411,6 +555,43 @@ bool HandleViewportBrush(const ViewportInput& in)
     const bool invert    = io.KeyShift;   // Shift ドラッグで逆方向（Raise↔Lower）
     const bool smoothMod = io.KeyCtrl;    // Ctrl で一時的に「ならす」
 
+    // --- テクスチャペイント（高さブラシと排他）---
+    // レイヤーセットが割り当たっていてペイントモードのときだけ、高さではなく
+    // スプラット重みを塗る。ストローク単位 Undo・自動保存の作法は高さ側と同じ。
+    if (s.paintMode && t->_splat && t->_splat->IsValid() && !t->layerSetPath.empty())
+    {
+        if (in.pressed && hit) BeginPaintStroke(s, e);
+
+        if (s.paintStrokeActive && hit && (in.pressed || in.dragging))
+        {
+            // Shift で「そのレイヤーを消す」＝他レイヤーを持ち上げる代わりに、
+            // 支配的な別レイヤーへ寄せる（レイヤー 0 へ戻す）。
+            const u32 layer = invert ? 0u : static_cast<u32>(std::clamp(s.paintLayer, 0, 3));
+            const f32 dt = (std::min)(io.DeltaTime, 0.05f);
+            const f32 amount = std::clamp(s.paintStrength * dt * 6.0f, 0.0f, 1.0f);
+
+            // 触ったタイルの before を退避してから塗る
+            TerrainSplatMap& sp = *t->_splat;
+            const f32 ws = hf.WorldSize();
+            HeightField::Rect pre;
+            pre.x0 = sp.LocalToTexelX(lx - s.brush.radius, ws);
+            pre.z0 = sp.LocalToTexelZ(lz - s.brush.radius, ws);
+            pre.x1 = sp.LocalToTexelX(lx + s.brush.radius, ws);
+            pre.z1 = sp.LocalToTexelZ(lz + s.brush.radius, ws);
+            CaptureSplatTiles(s, sp, pre);
+
+            const HeightField::Rect painted =
+                sp.PaintCircle(ws, lx, lz, s.brush.radius, layer, amount, s.brush.falloff);
+            if (painted.Valid()) t->_splatNeedsSave = true;
+        }
+
+        bool consumePaint = false;
+        if (in.pressed && hit) consumePaint = true;
+        if (s.paintStrokeActive && (in.dragging || in.released)) consumePaint = true;
+        if (in.released) EndPaintStroke(s, reg, ctx);
+        return consumePaint;
+    }
+
     // --- ストローク開始 ---
     if (in.pressed && hit)
     {
@@ -494,8 +675,8 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
             t._needsSave = false;
             SaveHeightmap(reg, e, t, assetsDir, /*logSuccess=*/false);
         }
-        // スプラット重み（.splat）も同じ理由で自動保存する。
-        if (t._splatNeedsSave && !s.strokeActive)
+        // スプラット重み（.splat）も同じ理由で自動保存する（ドラッグ中は書かない）。
+        if (t._splatNeedsSave && !s.paintStrokeActive)
         {
             t._splatNeedsSave = false;
             SaveSplat(reg, e, t, assetsDir, /*logSuccess=*/false);
@@ -796,6 +977,22 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
 
         if (!tc->layerSetPath.empty())
         {
+            // --- ペイントブラシ（ビューポートの左ドラッグを高さブラシから横取りする）---
+            if (pg::Begin("##TerrainPaint"))
+            {
+                pg::Group("ペイントブラシ");
+                pg::Checkbox("ペイントモード", &s.paintMode,
+                    "ON の間、ビューポートの左ドラッグは高さではなくレイヤーの重みを塗る。"
+                    "Shift ドラッグでレイヤー 0 へ戻す（消しゴム）");
+                static const char* const kLayerLabels[] = { "0", "1", "2", "3" };
+                pg::Combo("レイヤー", &s.paintLayer, kLayerLabels, 4,
+                          "レイヤーセットの並び順。既定は 0=草 1=土 2=岩 3=雪");
+                pg::SliderFloat("塗る強さ", &s.paintStrength, 0.05f, 1.0f, "%.2f");
+                pg::SliderFloat("ブラシ半径", &s.brush.radius, 0.5f, 200.0f, "%.1f m", nullptr,
+                                "高さブラシと共通（[ ] キーでも変えられる）");
+                pg::End();
+            }
+
             if (ImGui::Button("自動ペイント（傾斜と標高から）", ImVec2(-FLT_MIN, 0.0f)))
             {
                 if (!tc->_splat) tc->_splat = std::make_shared<TerrainSplatMap>();
