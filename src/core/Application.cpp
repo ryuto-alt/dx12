@@ -14198,15 +14198,27 @@ void Application::Render()
     // ★compute は PSO を graphics と共有するので、直後に RootSig/PSO/ヒープを必ず再設定する。
     const VolumetricFogSettings& fogCfg = m_scene->GetVolumetricFogSettings();
     // 透視限定（froxel の Z 分布と深度線形化が透視前提）。正射 / 2D ビューでは丸ごと素通し。
+    // ★クラスタライトリスト（t3..t5）は散乱シェーダが必ず参照する＝テーブルを必ずバインドする
+    //   必要があるので、クラスタードライティングが生きていることをフォグの前提条件にしている。
+    //   （生きていないのは初期化に失敗したときだけ。その場合フォグを諦める方が安全。）
     const bool volFogActive = fogCfg.enabled && fogCfg.density > 0.0f
                             && m_volumetricFogPass && m_volumetricFogPass->IsReady()
+                            && m_clusteredLighting && m_clusteredLighting->IsReady()
                             && viewSupportsScreenSpace;
     bool volFogBuilt = false;
     if (volFogActive)
     {
         m_gpuTimer->Begin(nativeCmdList, GpuTimer::VolumetricFog);
-        // CSM は PIXEL_SHADER_RESOURCE で置かれている。compute から読むには NON_PIXEL が要る。
+        // 影テクスチャは PIXEL_SHADER_RESOURCE で置かれている。compute から読むには NON_PIXEL が要る。
+        // （クラスタのインデックス/カウントは ClusteredLightCulling が最初から
+        //   PIXEL|NON_PIXEL の合成状態で置いているので遷移不要。）
         m_commandList->TransitionResource(m_shadowMap.Get(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        m_commandList->TransitionResource(m_spotShadowMap.Get(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        m_commandList->TransitionResource(m_pointShadowMap.Get(),
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
@@ -14230,15 +14242,26 @@ void Application::Render()
         fv.vpLeft = vpLeft; fv.vpTop = vpTop; fv.vpW = vpW; fv.vpH = vpH;
         fv.nearZ = m_camera->GetNearZ();
         fv.farZ  = m_camera->GetFarZ();
-        fv.csmSrv = m_srvHeap->GetGpuHandle(m_shadowSrvIndex);
-        if (m_clusteredLighting && m_clusteredLighting->IsReady())
-            fv.clusterSrv = m_clusteredLighting->GetSrvTable(frameIndex);
+        fv.numLights     = numClusterLights;
+        fv.maxPerCluster = cluster::kMaxLightsPerCluster;
+        fv.spotShadowMatrixTransposed = fc.spotShadowMatrix;   // ★転置済み（未使用枠は単位行列）
+        fv.spotShadowTexel = fc.spotShadowTexel;
+        fv.pointShadowNear = fc.pointShadowNear;
+        fv.csmSrv          = m_srvHeap->GetGpuHandle(m_shadowSrvIndex);
+        fv.clusterSrv      = m_clusteredLighting->GetSrvTable(frameIndex);
+        // t9,t10 と同じ「スポット影配列 → ポイント影キューブ配列」の 2 本連番。
         fv.punctualShadowSrv = m_srvHeap->GetGpuHandle(m_spotShadowSrvIndex);
 
         m_volumetricFogPass->BuildVolumes(nativeCmdList, *m_graphicsDevice, fogCfg, fv, frameIndex);
         volFogBuilt = m_volumetricFogPass->VolumesAllocated();
 
         m_commandList->TransitionResource(m_shadowMap.Get(),
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        m_commandList->TransitionResource(m_spotShadowMap.Get(),
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        m_commandList->TransitionResource(m_pointShadowMap.Get(),
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         m_gpuTimer->End(nativeCmdList, GpuTimer::VolumetricFog);

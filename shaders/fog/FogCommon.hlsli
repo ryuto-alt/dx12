@@ -39,13 +39,15 @@ cbuffer FogParams : register(b0)
     float3   gAmbient;    float gHeightFalloff; // 480
     float4   gJitter;     // 496  .xyz = サブ froxel ジッタ [-0.5,0.5] / .w = temporalBlend（1=履歴なし）
     float4   gMisc;       // 512  .x=heightRef .y=extendBeyondRange(0/1) .z=debugMode .w=sunIntensity
-    float4   gProjParams; // 528  .xy = (1/proj._11, 1/proj._22) / .zw = 未使用
+    float4   gProjParams; // 528  .xy = (1/proj._11, 1/proj._22) .z=spotShadowTexel .w=pointShadowNear
     float4   gClusterParams; // 544  計画02 と同じ .x=zNear .y=zFarCluster .z=sliceScale .w=sliceBias
     float4   gClusterGrid;   // 560  .xyz = gridX,gridY,gridZ / .w = クラスタード有効(1/0)
     float4   gRect;       // 576  .xy = ビューポート原点(RT px) / .zw = ビューポートサイズ(px)
     float4   gDepthLin;   // 592  .x=nearZ .y=farZ / .zw=未使用
     float4   gExtend;     // 608  .xyz = 遠方フォールバックの in-scatter 色 / .w = 遠方 σ_t
-};
+    float4   gLightCounts;// 624  .x=シーン総灯数 .y=1クラスタ最大灯数 .zw=未使用
+    float4x4 gSpotShadowMatrix[4]; // 640  スポット影の world→clip（転置済み）
+};                        // = 896B
 
 // ---------------------------------------------------------------------------
 // HDR のサニタイズ。

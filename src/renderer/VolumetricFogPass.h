@@ -54,6 +54,13 @@ public:
         // クラスタードライティング（Step F5）。clusterGrid.w == 0 なら点光源散乱は走らない。
         DirectX::XMFLOAT4 clusterParams{};
         DirectX::XMFLOAT4 clusterGrid{};
+        u32   numLights        = 0;      // シーン総灯数（統計用。ループ上限はクラスタのカウント）
+        u32   maxPerCluster    = 128;    // cluster::kMaxLightsPerCluster
+        // スポット影。★Application の FrameConstants::spotShadowMatrix と同じ「転置済み」を渡すこと
+        //   （未使用スロットは単位行列で埋まっている）。cascadeViewProj だけが非転置なので注意。
+        const DirectX::XMFLOAT4X4* spotShadowMatrixTransposed = nullptr;  // 4 本
+        float spotShadowTexel  = 0.0f;   // 1/kSpotShadowMapSize
+        float pointShadowNear  = 0.1f;
         // ビューポート矩形（合成時に使う。BuildVolumes では未使用だが CB を 1 本で済ませるため受ける）
         u32 vpLeft = 0, vpTop = 0, vpW = 1, vpH = 1;
         float nearZ = 0.1f, farZ = 1000.0f;

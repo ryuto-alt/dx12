@@ -39,8 +39,10 @@ struct FogParamsCB
     XMFLOAT4   rect;          // 576
     XMFLOAT4   depthLin;      // 592
     XMFLOAT4   extend;        // 608
+    XMFLOAT4   lightCounts;   // 624
+    XMFLOAT4X4 spotShadowMatrix[4]; // 640（転置済み）
 };
-static_assert(sizeof(FogParamsCB) == 624, "FogParamsCB must match shaders/fog/FogCommon.hlsli");
+static_assert(sizeof(FogParamsCB) == 896, "FogParamsCB must match shaders/fog/FogCommon.hlsli");
 static_assert(sizeof(FogParamsCB) % 16 == 0, "FogParamsCB must be 16B aligned");
 
 constexpr DXGI_FORMAT kVolumeFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -460,11 +462,19 @@ void VolumetricFogPass::BuildVolumes(ID3D12GraphicsCommandList* cmd, GraphicsDev
                static_cast<float>(s.debugMode),
                (std::max)(s.sunIntensity, 0.0f)};
     cb.projParams = {1.0f / ((v.proj11 != 0.0f) ? v.proj11 : 1.0f),
-                     1.0f / ((v.proj22 != 0.0f) ? v.proj22 : 1.0f), 0.0f, 0.0f};
+                     1.0f / ((v.proj22 != 0.0f) ? v.proj22 : 1.0f),
+                     v.spotShadowTexel, v.pointShadowNear};
     cb.clusterParams = v.clusterParams;
     cb.clusterGrid   = v.clusterGrid;
     // クラスタライトの散乱を使わない設定なら .w を落として compute 側の分岐を切る。
     if (!s.lightScattering) cb.clusterGrid.w = 0.0f;
+    cb.lightCounts = {static_cast<float>(v.numLights),
+                      static_cast<float>(v.maxPerCluster), 0.0f, 0.0f};
+    for (u32 i = 0; i < 4; ++i)
+    {
+        if (v.spotShadowMatrixTransposed) cb.spotShadowMatrix[i] = v.spotShadowMatrixTransposed[i];
+        else                              XMStoreFloat4x4(&cb.spotShadowMatrix[i], XMMatrixIdentity());
+    }
     cb.rect     = {static_cast<float>(v.vpLeft), static_cast<float>(v.vpTop),
                    static_cast<float>(v.vpW),    static_cast<float>(v.vpH)};
     cb.depthLin = {v.nearZ, v.farZ, 0.0f, 0.0f};
