@@ -13264,6 +13264,18 @@ void Application::Render()
     if (taaActive) EnsureInstancePrevBuffer();
     m_trackPrevWorld = taaActive;
 
+    // ビューポート矩形が変わったら履歴を捨てる。エディタのパネル分割をドラッグすると
+    // ウィンドウリサイズなしで矩形だけが変わり、履歴のローカル UV 対応が崩れて
+    // 1〜2 フレーム画面が引き伸ばされて見える（リサイズハンドラだけでは拾えない）。
+    if (m_prevVpRectValid && (m_prevVpRect[0] != vpLeft || m_prevVpRect[1] != vpTop ||
+                              m_prevVpRect[2] != vpW    || m_prevVpRect[3] != vpH))
+    {
+        InvalidateTemporalHistory();
+    }
+    m_prevVpRect[0] = vpLeft; m_prevVpRect[1] = vpTop;
+    m_prevVpRect[2] = vpW;    m_prevVpRect[3] = vpH;
+    m_prevVpRectValid = true;
+
     // ===== TAA ジッタ =====
     // ハルトン(2,3)列で投影行列を ±0.5px ずらす。Camera 自体には一切入れない
     //   → エディタのピッキング / ギズモ / MCP project_world_to_screen が影響を受けない。

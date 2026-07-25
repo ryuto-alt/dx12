@@ -722,6 +722,10 @@ private:
     u32                 m_prevFrameIndex = 0;
     bool                m_prevFrameIndexValid = false;
     DirectX::XMFLOAT2   m_taaJitterNdc{};                  // 現フレームの NDC ジッタ
+    // 前フレームのビューポート矩形（px）。エディタのパネル分割をドラッグすると
+    // ウィンドウリサイズなしで矩形だけが変わり、履歴の UV 対応が崩れて一瞬引き伸ばされる。
+    u32 m_prevVpRect[4] = {0, 0, 0, 0};   // left, top, w, h
+    bool m_prevVpRectValid = false;
     // BuildDrawList() が PrevWorldMatrix を更新するか（TAA 有効時のみ。10万体の
     // emplace_or_replace を TAA を使わない人に払わせないため）。
     bool                m_trackPrevWorld = false;
