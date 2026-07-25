@@ -70,7 +70,7 @@ args = ["C:\\Users\\<you>\\dx12-mcp\\index.ts"]
 | コンポーネント | `dx12_describe_components` `dx12_set_component` `dx12_remove_component`（particleEmitter / trailRenderer / networkIdentity / networkTransform 等も対応） |
 | 見た目 | `dx12_material_apply`（PBR 4点セットを1回で。フォルダ名から用途推定 + ORM が効く状態に自動調整） `dx12_set_pbr` `dx12_set_color` `dx12_set_texture` `dx12_create_shader` `dx12_set_mesh_shader` `dx12_set_sprite_shader` `dx12_set_post_process` `dx12_set_ssao` |
 | Lua | `dx12_create_lua_component` `dx12_attach_lua_component` `dx12_set_lua_property` `dx12_eval_lua` `dx12_describe_lua_api` |
-| アニメーション | `dx12_play_anim` `dx12_get_anim_state` |
+| アニメーション | `dx12_play_anim`（クリップ再生 / `state` で .animfsm のステート遷移・`layer` 指定可） `dx12_get_anim_state` `dx12_describe_anim_graph`（.animfsm の構造・ステート名/パラメータ名） `dx12_set_anim_param`（FSM パラメータを外から叩いて遷移を検証） |
 | マルチプレイヤー | `dx12_net_setup` `dx12_net_status` `dx12_net_launch_test_client` |
 | 再生/検証 | `dx12_play` `dx12_stop` `dx12_step_frames` `dx12_key_press` `dx12_raycast` `dx12_get_physics_state` `dx12_screenshot` `dx12_validate_scene` `dx12_build_game` |
 | シーン編集強化 | `dx12_get_bounds` `dx12_look_at` `dx12_snap_to_ground` `dx12_get_hierarchy` `dx12_set_editor_camera` `dx12_screenshot_from` `dx12_scatter` |

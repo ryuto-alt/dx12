@@ -530,6 +530,22 @@ dx12_play_anim(name:"Player", clipName:"Run", blend:0.2)
 ```
 アニメーションの時間進行は Play 中。クリップはモデルロード時に読み込まれたもののみ。
 
+#### ステートマシン(.animfsm / AnimatorController)
+```
+dx12_describe_anim_graph(entity:42)                    # → graph.layers[].states / graph.parameters
+dx12_describe_anim_graph(path:"animations/player.animfsm")   # ファイルを直接読む(エンティティ不要)
+dx12_play_anim(entity:42, state:"Run", blend:0.2)      # FSM のステート遷移(clip 経路ではなく)
+dx12_play_anim(entity:42, state:"Wave", layer:1)       # 上半身レイヤーだけ差し替える
+dx12_get_anim_state(entity:42)                         # → layers[].state / parameters(現在値)
+```
+`state` を渡さなければ従来どおりクリップ経路（完全後方互換）。ステート名は `dx12_describe_anim_graph` で確認する。
+
+> **`dx12_set_anim_param` はエンジン側の不具合で現状使えない。** エンジンの `set_anim_param` は
+> `ResolveMcpEntity(params)` を先に呼ぶので、パラメータ名として渡した `name` を**エンティティ名として**
+> 引きに行って `no entity named '...'` で落ちる。TS 側では回避できない（`name` はワイヤ上のキーが固定）。
+> エンジンが `entity` だけでエンティティを解決するか、パラメータ名を別キー（例 `param`）にすれば直る。
+> それまでの回避策は `dx12_eval_lua` で Lua 側から叩くこと。ツール定義自体は入れてある（直れば即使える）。
+
 ### マルチプレイヤーのローカルテストループ
 ```
 # ①複製したいエンティティに複製マークを付ける(Editor 中)

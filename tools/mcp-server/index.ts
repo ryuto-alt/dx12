@@ -1523,18 +1523,26 @@ reg(
 reg(
   "dx12_play_anim",
   "アニメーション再生",
-  "スケルタルアニメーションのクリップをクロスフェード再生する(Lua の playAnim/playAnimByName と同じ経路)。clipName(名前) か clip(index) で指定、blend はフェード秒(既定 0.3)。loop を渡すとループ設定、speed を渡すと再生速度倍率も変更。クリップ一覧は dx12_get_anim_state で確認。★アニメーションの更新は Play 中に進む。entity(id) か name 指定。",
+  "スケルタルアニメーションを再生する。★2 つの経路がある: "
+    + "(A) state を渡すと .animfsm ステートマシンの遷移(AnimatorController が必要。ステート名は dx12_describe_anim_graph で確認)。layer で対象レイヤーを選ぶ(既定 0=ベース)。"
+    + "(B) state を渡さなければ従来どおりクリップのクロスフェード再生(Lua の playAnim/playAnimByName と同じ経路)。clipName(名前) か clip(index) で指定、loop/speed も変更できる。クリップ一覧は dx12_get_anim_state。"
+    + "blend はどちらの経路でもフェード秒(既定 0.3)。★アニメーションの更新は Play 中に進む。entity(id) か name 指定。",
   {
     ...entityRef,
-    clip: z.number().int().optional().describe("クリップ index。clipName と排他(clipName 優先)。省略時 0。"),
-    clipName: z.string().optional().describe("クリップ名(完全一致)。dx12_get_anim_state の clips から選ぶ。"),
+    clip: z.number().int().optional().describe("クリップ index。clipName と排他(clipName 優先)。省略時 0。state 指定時は無視。"),
+    clipName: z.string().optional().describe("クリップ名(完全一致)。dx12_get_anim_state の clips から選ぶ。state 指定時は無視。"),
     blend: z.number().optional().describe("クロスフェード秒。省略で 0.3。"),
-    loop: z.boolean().optional().describe("ループ再生するか。省略で現状維持。"),
-    speed: z.number().optional().describe("再生速度倍率(1.0=等速、2.0=2倍速、0=一時停止)。省略で現状維持。"),
+    loop: z.boolean().optional().describe("ループ再生するか。省略で現状維持。state 経路では無視。"),
+    speed: z.number().optional().describe("再生速度倍率(1.0=等速、2.0=2倍速、0=一時停止)。省略で現状維持。state 経路では無視。"),
+    state: z.string().optional().describe(
+      ".animfsm のステート名(完全一致)。渡すと clip 経路ではなく FSM の遷移になる。"
+      + "AnimatorController とロード済みグラフが要る。名前一覧は dx12_describe_anim_graph。"),
+    layer: z.number().int().min(0).optional().describe(
+      "state を遷移させるレイヤー index。省略で 0(ベースレイヤー)。上半身だけ差し替える等のマスク付きレイヤーは 1 以降。"),
   },
   {},
-  ({ entity, name, clip, clipName, blend, loop, speed }) =>
-    run(() => engine.call("play_anim", { entity, name, clip, clipName, blend, loop, speed })),
+  ({ entity, name, clip, clipName, blend, loop, speed, state, layer }) =>
+    run(() => engine.call("play_anim", { entity, name, clip, clipName, blend, loop, speed, state, layer })),
 );
 
 reg(
@@ -1544,6 +1552,59 @@ reg(
   { ...entityRef },
   { readOnlyHint: true },
   ({ entity, name }) => run(() => engine.call("get_anim_state", { entity, name })),
+);
+
+reg(
+  "dx12_describe_anim_graph",
+  "アニメグラフ構造取得",
+  ".animfsm(アニメーションステートマシン)の構造を返す。"
+    + "{source, graph:{version, parameters, clipEvents, extraClips, layers:[{name, weight, blend, mask, defaultState, states, transitions}]}}。"
+    + "entity/name を渡すとそのエンティティの AnimatorController がロード済みのグラフを、path を渡すと .animfsm ファイルを直接読む(path が優先)。"
+    + "dx12_play_anim の state 名 / dx12_set_anim_param のパラメータ名を確認するのに使う。",
+  {
+    ...entityRef,
+    path: z.string().optional().describe(
+      ".animfsm の assets 相対パス。渡すとエンティティを見ずにファイルを直接パースする(entity/name より優先)。"),
+  },
+  { readOnlyHint: true },
+  ({ entity, name, path }) => run(() => engine.call("describe_anim_graph", { entity, name, path })),
+);
+
+reg(
+  "dx12_set_anim_param",
+  "アニメパラメータ設定",
+  "アニメーション FSM(.animfsm)のパラメータを外から書き換えて遷移を発火させる。"
+    + "value に数値(Float パラメータ)か真偽値(Bool パラメータ)を渡すか、trigger:true で Trigger を立てる(value と trigger のどちらかが必須)。"
+    + "パラメータ名の一覧は dx12_describe_anim_graph の graph.parameters、現在値は dx12_get_anim_state の parameters で確認。"
+    + "★対象は entity(数値 id)で指定すること。name はパラメータ名として使うので、エンティティ名では指定できない。"
+    + "★遷移が実際に進むのは Play 中(dx12_play)だけ。",
+  {
+    // ★ここだけ entityRef を展開しない。エンジンの set_anim_param は name を
+    //   【パラメータ名】として読むので、entityRef の name(エンティティ名)と衝突する。
+    entity: z.number().int().describe("エンティティ id(int)。dx12_list_entities / dx12_find_entity で取得。"),
+    name: z.string().describe("FSM パラメータ名(完全一致)。dx12_describe_anim_graph の graph.parameters から選ぶ。"),
+    value: z.union([z.number(), z.boolean()]).optional().describe(
+      "設定する値。Float パラメータなら数値、Bool パラメータなら真偽値。trigger と併用不可(trigger:true が優先)。"),
+    trigger: z.boolean().optional().describe(
+      "true で Trigger パラメータを立てる(値は true 固定。消費は FSM 側)。value の代わりに使う。"),
+  },
+  {},
+  ({ entity, name, value, trigger }) => run(async () => {
+    try {
+      return await engine.call("set_anim_param", { entity, name, value, trigger });
+    } catch (e: any) {
+      // エンジンの set_anim_param は先に ResolveMcpEntity(params) を呼ぶため、パラメータ名の
+      // name をエンティティ名として引きに行って NotFound になる(エンジン側の既知の不具合)。
+      // 生の "no entity named 'Speed'" は原因が読み取れないので言い換える。
+      if (typeof e?.message === "string" && e.message.includes(`no entity named '${name}'`)) {
+        e.message = `set_anim_param: エンジンがパラメータ名 '${name}' をエンティティ名として解決しようとして失敗した`
+          + "(エンジン側 ResolveMcpEntity が params.name を先に見る既知の不具合)。"
+          + "回避策は無い。エンジンの Application.cpp 側の修正が要る";
+        e.hint = "dx12_eval_lua で Lua 側の API からパラメータを叩くか、エンジンの修正を待つこと";
+      }
+      throw e;
+    }
+  }),
 );
 
 // ════════════════════════════════════════════════════════════════

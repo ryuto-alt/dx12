@@ -10,8 +10,13 @@
 //
 // ★真実の情報源
 //   src/core/Application.cpp の HandleMcpCommand() 内 `method == "..."` の分岐。
-//   params から読むキーを静的に拾う(params.value / contains / [] / find / Mcp*Param 系)。
-//   キー名リテラルを取らないヘルパ(ResolveMcpEntity=entity/name, ParseMcpVk=key)は別途補う。
+//   params から読むキーを静的に拾う。現在拾える書き方は 5 通り:
+//     1) params.value("k",…) / params.contains("k") / params["k"] / params.at("k") / params.find("k")
+//     2) Mcp*Param(params, "k") 系ヘルパ
+//     3) キー名リテラルを取らないヘルパ(ResolveMcpEntity=entity/name, ParseMcpVk=key) … 別表で補う
+//     4) キー名を引数で受けるローカルなラムダ  vec3("albedo", …) → lambdaParamKeys
+//     5) 入れ子オブジェクト  json sky = params.value("skybox",…); sky.contains("k") → nestedParamKeys
+//   ★4 と 5 は取りこぼしていた(= その引数を TS から消してもテストが気づかなかった)。
 
 /** engine のヘルパ関数のうち、引数にキー名リテラルを持たないもの → 実際に読むキー。 */
 const IMPLICIT_HELPER_KEYS: ReadonlyArray<{ re: RegExp; keys: readonly string[] }> = [
@@ -35,7 +40,62 @@ export type EngineMethod = {
   line: number;
   /** ハンドラが {"applied", true} を返す＝「成功したように見えるだけ」の返り値。 */
   returnsAppliedTrue: boolean;
+  /** 入れ子オブジェクトで読むキー。親キー名 → 子キー名(set_scene_settings の skybox)。 */
+  nested: Record<string, string[]>;
 };
+
+/**
+ * ★穴 1: キー名を引数で受け取るローカルなラムダ経由の読み。
+ *   set_volumetric_fog は `auto vec3 = [&](const char* key, XMFLOAT3& dst){ ... params[key] ... };`
+ *   を定義して `vec3("albedo", f.albedo)` と呼ぶ。params[key] は変数添字なので
+ *   PARAM_READ_PATTERNS では拾えず、albedo / ambient が【エンジンに無いキー扱い】になっていた
+ *   (＝TS からこの 2 つを消してもテストが気づかない)。
+ *   ブロック内で「params を自分の第 1 引数で引くラムダ」を見つけ、その呼び出し実引数を鍵として拾う。
+ */
+function lambdaParamKeys(body: string): string[] {
+  const out: string[] = [];
+  const decl = /\bauto\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\[[^\]]*\]\s*\(([^)]*)\)/g;
+  let m: RegExpExecArray | null;
+  while ((m = decl.exec(body))) {
+    const fn = m[1];
+    // 第 1 引数の変数名(`const char* key` → key)
+    const first = (m[2].split(",")[0] ?? "").match(/([A-Za-z_][A-Za-z0-9_]*)\s*$/);
+    if (!first) continue;
+    const kv = first[1];
+    const readsParams = new RegExp(
+      `params\\s*(?:\\[\\s*${kv}\\s*\\]|\\.\\s*(?:value|contains|at|find)\\s*\\(\\s*${kv}\\b)`,
+    ).test(body);
+    if (!readsParams) continue;
+    for (const c of body.matchAll(new RegExp(`\\b${fn}\\s*\\(\\s*"([A-Za-z0-9_]+)"`, "g"))) out.push(c[1]);
+  }
+  return out;
+}
+
+/**
+ * ★穴 2: 入れ子オブジェクト経由の読み。
+ *   set_scene_settings は `const json sky = params.value("skybox", json::object());` と受けてから
+ *   `sky.contains("envMapPath")` で中を読む。トップレベルには "skybox" しか現れないので、
+ *   中身のフィールド(envMapPath / iblIntensity / …)は【誰とも突き合わされていなかった】。
+ *   `json NAME = params.value("親"...)` / `params["親"]` を見つけて NAME 経由の読みを子キーにする。
+ */
+function nestedParamKeys(body: string): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  const decl =
+    /\b(?:const\s+)?(?:nlohmann::)?(?:json|auto)\s*&?\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*params\s*(?:\.\s*value\s*\(\s*"([A-Za-z0-9_]+)"|\[\s*"([A-Za-z0-9_]+)"\s*\])/g;
+  let m: RegExpExecArray | null;
+  while ((m = decl.exec(body))) {
+    const varName = m[1];
+    const parent = m[2] ?? m[3];
+    const kids = new Set<string>();
+    const reads = [
+      new RegExp(`\\b${varName}\\s*\\.\\s*(?:value|contains|at|find)\\s*\\(\\s*"([A-Za-z0-9_]+)"`, "g"),
+      new RegExp(`\\b${varName}\\s*\\[\\s*"([A-Za-z0-9_]+)"\\s*\\]`, "g"),
+    ];
+    for (const r of reads) for (const c of body.matchAll(r)) kids.add(c[1]);
+    if (kids.size > 0) out[parent] = [...(out[parent] ?? []), ...kids].filter((v, i, a) => a.indexOf(v) === i).sort();
+  }
+  return out;
+}
 
 /**
  * Application.cpp から「method 名 → 受け付ける params キー」を抜く。
@@ -80,8 +140,12 @@ export function parseEngineMethods(cppSource: string): Map<string, EngineMethod>
       while ((m = p.exec(body))) keys.add(m[1]);
     }
     for (const h of IMPLICIT_HELPER_KEYS) if (h.re.test(body)) for (const key of h.keys) keys.add(key);
+    for (const key of lambdaParamKeys(body)) keys.add(key);
+    const nested = nestedParamKeys(body);
     const returnsAppliedTrue = /\{\s*"applied"\s*,\s*true\s*\}/.test(body);
-    for (const n of heads[k].names) out.set(n, { keys: [...keys].sort(), line: from + 1, returnsAppliedTrue });
+    for (const n of heads[k].names) {
+      out.set(n, { keys: [...keys].sort(), line: from + 1, returnsAppliedTrue, nested });
+    }
   }
   return out;
 }
@@ -120,7 +184,24 @@ export function parseStringVector(cppSource: string, varName: string): string[] 
   return [...m[1].matchAll(/"([^"]*)"/g)].map((x) => x[1]);
 }
 
-export type TsTool = { tool: string; schemaKeys: string[]; methods: string[]; line: number };
+export type TsTool = {
+  tool: string; schemaKeys: string[]; methods: string[]; line: number;
+  /** inputSchema のソーステキスト(入れ子 z.object の中身を見るため。zodObjectKeys で使う)。 */
+  schemaSrc: string;
+};
+
+/**
+ * inputSchema のソースから、あるキーの入れ子 z.object({...}) が宣言しているキーを返す。
+ * 例: `skybox: z.object({ envMapPath: ..., }).passthrough()` → ["envMapPath", ...]。
+ * 入れ子が無い/z.object でなければ null。
+ */
+export function zodObjectKeys(schemaSrc: string, prop: string): string[] | null {
+  const expr = extractProperty(schemaSrc, prop);
+  if (expr == null) return null;
+  const i = expr.indexOf("z.object(");
+  if (i < 0) return null;
+  return objectKeys(splitCallArgs(expr, expr.indexOf("(", i))[0] ?? null);
+}
 
 /**
  * index.ts のテキストから reg(...) / regRaw(...) のツール名・引数キー・呼ぶ engine method を抜く。
@@ -152,6 +233,7 @@ export function parseTsTools(indexSource: string): TsTool[] {
       schemaKeys: schemaKeys ?? [],
       methods: [...new Set(methods)],
       line: indexSource.slice(0, m.index).split("\n").length,
+      schemaSrc: (isReg ? schemaArg : extractProperty(schemaArg, "inputSchema")) ?? "",
     });
   }
   return tools;

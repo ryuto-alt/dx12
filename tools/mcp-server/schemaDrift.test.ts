@@ -11,7 +11,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseEngineMethods, parseFieldMacro, parseStringVector, parseTsTools } from "./schemaDrift.ts";
+import {
+  parseEngineMethods, parseFieldMacro, parseStringVector, parseTsTools, zodObjectKeys,
+} from "./schemaDrift.ts";
 import { COMPOSITE_TOOLS, GLOBAL_PARAM_KEYS, METHOD_KEY_ALIASES } from "./paramGuard.ts";
 import {
   SCULPT_BRUSHES, SCULPT_PRIMITIVES, TERRAIN_BRUSHES, TERRAIN_PRESETS,
@@ -82,6 +84,22 @@ check("スプレッドが全部 SPREADS に載っている",
     paint != null && auto != null && paint.line === auto.line
     && paint.keys.includes("layer") && paint.keys.includes("rockSlopeStart"),
     `paint=${JSON.stringify(paint)} / auto=${JSON.stringify(auto)}`);
+
+  // ★穴 1: キー名を引数で受けるローカルなラムダ経由の読み。set_volumetric_fog の
+  //   `auto vec3 = [&](const char* key, ...){ ... params[key] ... }` → vec3("albedo", ...)。
+  //   拾えないと albedo / ambient を TS から消してもテストが素通りする。
+  const fog = engine.get("set_volumetric_fog");
+  check("キー名を引数で受けるラムダ経由の読みを拾える",
+    fog != null && fog.keys.includes("albedo") && fog.keys.includes("ambient"),
+    `set_volumetric_fog keys=${fog?.keys.join(",")}`);
+
+  // ★穴 2: 入れ子オブジェクト経由の読み。set_scene_settings の
+  //   `const json sky = params.value("skybox", ...); sky.contains("envMapPath")`。
+  const scene = engine.get("set_scene_settings");
+  check("入れ子オブジェクト(skybox)の子キーを拾える",
+    scene != null && (scene.nested["skybox"] ?? []).includes("envMapPath")
+    && (scene.nested["skybox"] ?? []).includes("drawSkybox"),
+    `set_scene_settings nested=${JSON.stringify(scene?.nested)}`);
 }
 
 const keysOf = (t: { schemaKeys: string[] }) =>
@@ -226,6 +244,80 @@ console.log("\n[7] 今回追加したツールが宣言を取りこぼしてい�
   check("dx12_material_apply が set_texture / set_pbr / get_entity を使う",
     mat != null && ["set_texture", "set_pbr", "get_entity"].every((m) => mat.methods.includes(m)),
     `methods=${mat?.methods.join(",")}`);
+}
+
+console.log("\n[8] 入れ子オブジェクトのフィールドもドリフトを見る(トップレベルだけでは見えない分)");
+{
+  // [2] はトップレベルのキーしか比べないので、skybox:{...} の中身は誰とも突き合わされていなかった。
+  // エンジンが入れ子で読むキー ⊆ TS の入れ子 z.object が宣言するキー、を見る。
+  const drifted: string[] = [];
+  let checkedPairs = 0;
+  for (const t of tools) {
+    if (COMPOSITE_TOOLS.has(t.tool)) continue;
+    const em = engine.get(t.tool.replace(/^dx12_/, ""));
+    if (!em) continue;
+    for (const [parent, kids] of Object.entries(em.nested)) {
+      if (kids.length === 0) continue;
+      const declared = zodObjectKeys(t.schemaSrc, parent);
+      if (declared == null) {
+        drifted.push(`${t.tool}: エンジンは ${parent} の中を読んでいるが TS 側が z.object で宣言していない`
+          + ` → ${kids.join(", ")}  (Application.cpp:${em.line} / index.ts:${t.line})`);
+        continue;
+      }
+      checkedPairs++;
+      const missing = kids.filter((k) => !declared.includes(k));
+      if (missing.length > 0) {
+        drifted.push(`${t.tool}: ${parent} の中でエンジンにあるのに TS に無い → ${missing.join(", ")}`
+          + `  (Application.cpp:${em.line} / index.ts:${t.line})`);
+      }
+    }
+  }
+  check("入れ子の取りこぼしゼロ", drifted.length === 0, drifted.join("\n      "));
+  check("入れ子の突き合わせが 1 組以上成立している(パーサが黙って 0 件になっていない)",
+    checkedPairs >= 1, `checkedPairs=${checkedPairs}`);
+
+  // set_scene_settings のハンドラは z.object とは別に known[] を持っている(未知キー弾き用)。
+  // ここがズレると「スキーマ上は有効なのにガードが弾く」ので一緒に固定する。
+  const skyboxDecl = zodObjectKeys(tools.find((t) => t.tool === "dx12_set_scene_settings")!.schemaSrc, "skybox") ?? [];
+  const known = indexSrc.match(/const known = \[([^\]]*)\]/);
+  const knownKeys = known ? [...known[1].matchAll(/"([A-Za-z0-9_]+)"/g)].map((x) => x[1]) : [];
+  check("dx12_set_scene_settings の known[] と skybox の z.object が一致",
+    JSON.stringify([...skyboxDecl].sort()) === JSON.stringify([...knownKeys].sort()),
+    `z.object=[${skyboxDecl.join(",")}] / known=[${knownKeys.join(",")}]`);
+}
+
+console.log("\n[9] アニメーション系ツール(エンジンに実装済みで TS 定義が無かった分)");
+{
+  // エンジン側にハンドラがあるのに TS 定義が無いと、そのツールは MCP から一生呼べない。
+  // [1] は「TS → エンジン」しか見ないので、逆向き(エンジン → TS)はここで名指しで押さえる。
+  const want: Record<string, string[]> = {
+    dx12_play_anim: ["entity", "name", "clip", "clipName", "blend", "loop", "speed", "state", "layer"],
+    dx12_set_anim_param: ["entity", "name", "value", "trigger"],
+    dx12_describe_anim_graph: ["entity", "name", "path"],
+  };
+  for (const [tool, keys] of Object.entries(want)) {
+    const t = tools.find((x) => x.tool === tool);
+    if (!t) { check(`${tool} が登録されている`, false); continue; }
+    const declared = keysOf(t);
+    const missing = keys.filter((k) => !declared.has(k));
+    check(`${tool} が engine の引数を全部宣言している`, missing.length === 0, `足りない: ${missing.join(", ")}`);
+  }
+  // dx12_set_anim_param だけは entityRef を展開してはいけない。エンジンが name を
+  // 【FSM パラメータ名】として読むので、エンティティ名の name と衝突する(下の警告も参照)。
+  const sap = tools.find((t) => t.tool === "dx12_set_anim_param");
+  check("dx12_set_anim_param は entityRef を展開していない(name の意味が違う)",
+    sap != null && !sap.schemaKeys.includes("...entityRef"), `schemaKeys=${sap?.schemaKeys.join(",")}`);
+
+  // ★エンジン側の既知の不具合の見張り。set_anim_param は ResolveMcpEntity(params) を先に呼ぶので
+  //   パラメータ名の name をエンティティ名として引きに行って落ちる。C++ が直ったらこの check が
+  //   落ちる → そのときに AGENTS.md の警告書きを消すこと。
+  const sapBody = cpp.slice(cpp.indexOf(`method == "set_anim_param"`));
+  const stillBroken = /ResolveMcpEntity\s*\([^)]*params\s*\)/.test(sapBody.slice(0, 900))
+    && /params\.value\(\s*"name"/.test(sapBody.slice(0, 900));
+  check("engine の set_anim_param が name の二重解釈のままか(直ったらここが落ちる=警告を消す合図)",
+    stillBroken,
+    "Application.cpp の set_anim_param が name をエンティティ名として解決しなくなった模様。"
+    + "AGENTS.md / index.ts の『使えない』警告と、この check を消すこと");
 }
 
 console.log(failed === 0
