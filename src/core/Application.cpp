@@ -14639,7 +14639,7 @@ void Application::Render()
                  "有効にすると FXAA は自動で無視されます（透視ビューのみ。2D 正射では無効）",
                  &taa.enabled,
                     [&]{ int sc = (taa.sampleCount <= 4) ? 0 : (taa.sampleCount >= 16 ? 2 : 1);
-                         if (ImGui::Combo("ジッタ数##taasc", &sc, "4 (シャープ) " "8 (標準) " "16 (滑らか) "))
+                         if (ImGui::Combo("ジッタ数##taasc", &sc, "4 (シャープ)\0" "8 (標準)\0" "16 (滑らか)\0"))
                              taa.sampleCount = (sc == 0) ? 4 : (sc == 2 ? 16 : 8);
                          ImGui::SliderFloat("ジッタ量##taajs", &taa.jitterScale, 0.0f, 1.0f, "%.2f");
                          if (ImGui::IsItemHovered()) ImGui::SetTooltip("1.0 = ±0.5px。ブラーが強すぎるなら下げる");
