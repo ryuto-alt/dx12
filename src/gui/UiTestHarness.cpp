@@ -458,6 +458,7 @@ void T_OpenAllToolWindows(ImGuiTestContext* ctx)
         { &EditorContext::showPostParams,      "//Post Process パラメータ", "Post Process パラメータ", false, true },
         { &EditorContext::showSkybox,          "//Skybox / IBL",            "Skybox / IBL",           false },
         { &EditorContext::showSSAO,            "//SSAO",                    "SSAO",                   false },
+        { &EditorContext::showScreenSpaceGi,   "//SSR / SSGI",              "SSR / SSGI",             false },
         { &EditorContext::showEngineSettings,  "//エンジン設定",            "エンジン設定",           false },
         { &EditorContext::showSceneFlow,       "//Scene Flow",              "Scene Flow",             false },
         { &EditorContext::showProject,         "//Project",                 "Project",                false },

@@ -4388,7 +4388,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["result"] = {{"skybox", {
                                   {"envMapPath", sky.envMapPath}, {"iblIntensity", sky.iblIntensity},
                                   {"skyboxIntensity", sky.skyboxIntensity}, {"drawSkybox", sky.drawSkybox}}},
-                              {"note", "post-process は dx12_get_post_process、SSAO は dx12_get_ssao を使う"}};
+                              {"note", "post-process は dx12_get_post_process、SSAO は dx12_get_ssao、SSR は dx12_get_ssr、SSGI は dx12_get_ssgi を使う"}};
         }
         else if (method == "set_scene_settings")
         {
@@ -4727,6 +4727,8 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"particleEmitters", emitters},
                 {"shadowsEnabled", m_scene->GetShadowsEnabled()},
                 {"ssaoEnabled", m_scene->GetSSAOSettings().enabled},
+                {"ssrEnabled",  m_scene->GetSsrSettings().enabled},
+                {"ssgiEnabled", m_scene->GetSsgiSettings().enabled},
                 {"contactShadowEnabled", m_scene->GetContactShadowSettings().enabled},
                 {"taaEnabled", m_scene->GetTaaSettings().enabled},
                 {"gpuTimerValid", m_gpuTimer && m_gpuTimer->IsValid()},
@@ -5081,6 +5083,56 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             s.power = params.value("power", s.power);
             s.sampleCount = params.value("sampleCount", s.sampleCount);
             s.blur = params.value("blur", s.blur);
+            resp["ok"] = true;
+            resp["result"] = {{"applied", true}};
+        }
+        else if (method == "get_ssr")
+        {
+            const auto& s = m_scene->GetSsrSettings();
+            resp["ok"] = true;
+            resp["result"] = {{"enabled", s.enabled}, {"intensity", s.intensity},
+                              {"maxDistance", s.maxDistance}, {"thickness", s.thickness},
+                              {"maxSteps", s.maxSteps}, {"stride", s.stride},
+                              {"roughnessCutoff", s.roughnessCutoff}, {"edgeFade", s.edgeFade},
+                              {"bias", s.bias}};
+        }
+        else if (method == "set_ssr")
+        {
+            auto& s = m_scene->GetSsrSettings();
+            s.enabled         = params.value("enabled",         s.enabled);
+            s.intensity       = params.value("intensity",       s.intensity);
+            s.maxDistance     = params.value("maxDistance",     s.maxDistance);
+            s.thickness       = params.value("thickness",       s.thickness);
+            s.maxSteps        = params.value("maxSteps",        s.maxSteps);
+            s.stride          = params.value("stride",          s.stride);
+            s.roughnessCutoff = params.value("roughnessCutoff", s.roughnessCutoff);
+            s.edgeFade        = params.value("edgeFade",        s.edgeFade);
+            s.bias            = params.value("bias",            s.bias);
+            resp["ok"] = true;
+            resp["result"] = {{"applied", true}};
+        }
+        else if (method == "get_ssgi")
+        {
+            const auto& s = m_scene->GetSsgiSettings();
+            resp["ok"] = true;
+            resp["result"] = {{"enabled", s.enabled}, {"intensity", s.intensity},
+                              {"radius", s.radius}, {"thickness", s.thickness},
+                              {"rayCount", s.rayCount}, {"stepCount", s.stepCount},
+                              {"clampValue", s.clampValue}, {"feedback", s.feedback},
+                              {"iblFallback", s.iblFallback}};
+        }
+        else if (method == "set_ssgi")
+        {
+            auto& s = m_scene->GetSsgiSettings();
+            s.enabled     = params.value("enabled",     s.enabled);
+            s.intensity   = params.value("intensity",   s.intensity);
+            s.radius      = params.value("radius",      s.radius);
+            s.thickness   = params.value("thickness",   s.thickness);
+            s.rayCount    = params.value("rayCount",    s.rayCount);
+            s.stepCount   = params.value("stepCount",   s.stepCount);
+            s.clampValue  = params.value("clampValue",  s.clampValue);
+            s.feedback    = params.value("feedback",    s.feedback);
+            s.iblFallback = params.value("iblFallback", s.iblFallback);
             resp["ok"] = true;
             resp["result"] = {{"applied", true}};
         }
@@ -13830,6 +13882,7 @@ void Application::Render()
         // --- SSR / SSGI 生成（深度 + G-Buffer + 速度 + 前フレームカラーをレイマーチ）---
         // ★前フレームカラーが無いフレーム（初回 / シーン切替直後 / リサイズ直後）は
         //   ScreenSpaceGiPass::Generate が何もせず kInvalidIndex を返す＝黒ダミーへフォールバック。
+        m_gpuTimer->Begin(nativeCmdList, GpuTimer::ScreenSpaceGI);
         if ((useSsr || useSsgi) && velocityPrepass && m_screenSpaceGi->HasHistory())
         {
             ScreenSpaceGiPass::GenerateDesc gd;
@@ -13851,6 +13904,7 @@ void Application::Render()
             gd.irradianceSrv = m_srvHeap->GetGpuHandle(m_iblBaker->GetIrradianceSrv());
             m_screenSpaceGi->Generate(*m_commandList, gd, ssrSrv, ssgiSrv);
         }
+        m_gpuTimer->End(nativeCmdList, GpuTimer::ScreenSpaceGI);
 
         m_commandList->TransitionResource(m_depthBuffer.Get(),
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
@@ -14268,11 +14322,10 @@ void Application::Render()
     //   m_sceneRT はリニア HDR で露出が焼き込まれていないので、その事故が構造的に起きない。
     //   この位置ならパーティクル / ワールドスプライト / 歪みまで含んだ「見えている絵」が入る。
     // ★m_sceneRT の ping-pong 化は禁止（33 参照あり）。CopyResource 1 発が唯一安全な手段。
-    if (m_screenSpaceGi && (useSsr || useSsgi))
-        m_screenSpaceGi->CaptureSceneColor(*m_commandList, *m_sceneRT);
-
     // ===== ポストプロセス: オフスクリーン RT → バックバッファ =====
     m_gpuTimer->Begin(nativeCmdList, GpuTimer::PostFX);
+    if (m_screenSpaceGi && (useSsr || useSsgi))
+        m_screenSpaceGi->CaptureSceneColor(*m_commandList, *m_sceneRT);
     auto* backBuffer = m_swapChain->GetCurrentBackBuffer();
     auto  rtv        = m_swapChain->GetCurrentRTV();
 
@@ -15154,6 +15207,48 @@ void Application::Render()
                     ss.sampleCount = s16 ? 16 : 8;
             }
             ImGui::Checkbox("ブラー Blur", &ss.blur);
+            ImGui::EndDisabled();
+            ImGui::End();
+        }
+
+        // ---- SSR / SSGI 設定ウィンドウ（シーン単位・グローバルレンダ設定・トグル表示）----
+        if (m_scene && m_editorCtx->showScreenSpaceGi)
+        {
+            auto& sr = m_scene->GetSsrSettings();
+            auto& sg = m_scene->GetSsgiSettings();
+            ImGui::Begin("SSR / SSGI");
+            ImGui::TextWrapped("深度プリパスの G-Buffer（法線/ラフネス/メタリック）と"
+                               "前フレームのシーンカラーをレイマーチする。透視ビューのみ。"
+                               "どちらか有効にすると深度+速度プリパスが常時走る。"
+                               "反射/間接光は 1 フレーム遅れる。");
+            ImGui::Separator();
+
+            ImGui::SeparatorText("SSR（スクリーン空間反射）");
+            ImGui::Checkbox("SSR 有効", &sr.enabled);
+            ImGui::BeginDisabled(!sr.enabled);
+            ImGui::SliderFloat("強度##ssr",        &sr.intensity,       0.0f, 1.0f,   "%.2f");
+            ImGui::SliderFloat("最大距離(m)",       &sr.maxDistance,     1.0f, 200.0f, "%.1f");
+            ImGui::SliderFloat("厚み(m)##ssr",      &sr.thickness,       0.05f, 2.0f,  "%.2f");
+            ImGui::SliderInt  ("ステップ数",         &sr.maxSteps,        16, 128);
+            ImGui::SliderFloat("歩幅(px)",          &sr.stride,          1.0f, 8.0f,   "%.1f");
+            ImGui::SliderFloat("ラフネス上限",       &sr.roughnessCutoff, 0.05f, 1.0f,  "%.2f");
+            ImGui::SliderFloat("画面端フェード",      &sr.edgeFade,        0.0f, 0.5f,   "%.2f");
+            ImGui::SliderFloat("バイアス(m)##ssr",   &sr.bias,            0.0f, 0.5f,   "%.3f");
+            ImGui::TextDisabled("ラフネス上限を超える面はレイを打たず IBL に任せる");
+            ImGui::EndDisabled();
+
+            ImGui::SeparatorText("SSGI（スクリーン空間GI）");
+            ImGui::Checkbox("SSGI 有効", &sg.enabled);
+            ImGui::BeginDisabled(!sg.enabled);
+            ImGui::SliderFloat("強度##ssgi",       &sg.intensity,  0.0f, 2.0f,  "%.2f");
+            ImGui::SliderFloat("到達距離(m)",       &sg.radius,     0.5f, 30.0f, "%.1f");
+            ImGui::SliderFloat("厚み(m)##ssgi",     &sg.thickness,  0.05f, 2.0f, "%.2f");
+            ImGui::SliderInt  ("レイ数/px",         &sg.rayCount,   1, 4);
+            ImGui::SliderInt  ("ステップ数##ssgi",   &sg.stepCount,  4, 24);
+            ImGui::SliderFloat("輝度クランプ",       &sg.clampValue, 0.1f, 20.0f, "%.2f");
+            ImGui::SliderFloat("時間蓄積 Feedback", &sg.feedback,   0.0f, 0.98f, "%.2f");
+            ImGui::Checkbox("画面外は IBL で埋める", &sg.iblFallback);
+            ImGui::TextDisabled("IBL 埋めを切るとカメラを回すたびに明るさが変動する");
             ImGui::EndDisabled();
             ImGui::End();
         }

@@ -986,6 +986,68 @@ reg(
 );
 
 reg(
+  "dx12_get_ssr",
+  "SSR設定取得",
+  "現在のシーンの SSR(スクリーン空間反射)設定を返す。{enabled, intensity, maxDistance, thickness, maxSteps, stride, roughnessCutoff, edgeFade, bias}。★正射カメラ/2Dビューでは自動無効化される。",
+  {},
+  { readOnlyHint: true },
+  () => run(() => engine.call("get_ssr", {})),
+);
+
+reg(
+  "dx12_set_ssr",
+  "SSR設定変更",
+  "SSR(スクリーン空間反射) のフィールドを指定分だけ更新する(未指定は現状維持)。" +
+    "深度プリパスの G-Buffer(法線/ラフネス) と前フレームのシーンカラーをレイマーチして、IBL の鏡面反射を置き換える。" +
+    "★反射は 1 フレーム遅れる。★roughnessCutoff を超えるラフネスの面はレイを打たず prefiltered キューブで近似される。" +
+    "★有効にすると深度+速度プリパスが常時走る(TAA が OFF でも)。",
+  {
+    enabled: z.boolean().optional(),
+    intensity: z.number().optional().describe("0..1。confidence への乗算"),
+    maxDistance: z.number().optional().describe("レイの最大到達距離(m)"),
+    thickness: z.number().optional().describe("ヒットとみなす深度差の上限(m)"),
+    maxSteps: z.number().int().optional().describe("16..128"),
+    stride: z.number().optional().describe("DDA の 1 ステップのピクセル数 1..8"),
+    roughnessCutoff: z.number().optional().describe("これを超えるラフネスは IBL に任せる"),
+    edgeFade: z.number().optional().describe("画面端フェード幅(NDC 比 0..0.5)"),
+    bias: z.number().optional().describe("レイ始点の押し出し(m)"),
+  },
+  { idempotentHint: true },
+  (a) => run(() => engine.call("set_ssr", a)),
+);
+
+reg(
+  "dx12_get_ssgi",
+  "SSGI設定取得",
+  "現在のシーンの SSGI(スクリーン空間GI)設定を返す。{enabled, intensity, radius, thickness, rayCount, stepCount, clampValue, feedback, iblFallback}。★正射カメラ/2Dビューでは自動無効化される。",
+  {},
+  { readOnlyHint: true },
+  () => run(() => engine.call("get_ssgi", {})),
+);
+
+reg(
+  "dx12_set_ssgi",
+  "SSGI設定変更",
+  "SSGI(スクリーン空間GI) のフィールドを指定分だけ更新する(未指定は現状維持)。" +
+    "前フレームのシーンカラーを間接光のソースにして、IBL の拡散(irradiance)を置き換える。" +
+    "★iblFallback を切るとカメラを回すたびに全体の明るさが変動する(既定 ON のままが安全)。" +
+    "★ノイズは時間蓄積(feedback)で落とす。0.98 を超えると TAA と合わせて二重残像になる。",
+  {
+    enabled: z.boolean().optional(),
+    intensity: z.number().optional().describe("間接拡散の強さ。既定 0.8"),
+    radius: z.number().optional().describe("レイの最大到達距離(m)"),
+    thickness: z.number().optional().describe("ヒットとみなす深度差の上限(m)"),
+    rayCount: z.number().int().optional().describe("1..4"),
+    stepCount: z.number().int().optional().describe("4..24"),
+    clampValue: z.number().optional().describe("積分結果の輝度クランプ(firefly/発散対策)"),
+    feedback: z.number().optional().describe("時間蓄積の履歴比率 0.8..0.98"),
+    iblFallback: z.boolean().optional().describe("画面外へ抜けたレイに irradiance キューブを積む"),
+  },
+  { idempotentHint: true },
+  (a) => run(() => engine.call("set_ssgi", a)),
+);
+
+reg(
   "dx12_get_contact_shadow",
   "コンタクトシャドウ設定取得",
   "現在のシーンのコンタクトシャドウ(深度バッファをスクリーン空間でレイマーチする近接遮蔽)設定を返す。{enabled, rayLength, thickness, bias, intensity, steps, maxDistance, fadeDistance}。★太陽(平行光)専用。正射カメラ/2Dビューでは自動無効化される(SSAO と同じ制約)。",

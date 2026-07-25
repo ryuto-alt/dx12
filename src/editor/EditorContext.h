@@ -226,6 +226,7 @@ public:
     bool showPostParams     = false;
     bool showSkybox         = false;   // Skybox / IBL
     bool showSSAO           = false;
+    bool showScreenSpaceGi  = false;   // SSR / SSGI 設定窓
     bool showEngineSettings = false;
     bool showSceneFlow      = false;
     bool showProject        = false;
@@ -272,7 +273,7 @@ public:
 
     bool AnyToolWindowOpen() const
     {
-        return showPostProcess || showPostParams || showSkybox || showSSAO
+        return showPostProcess || showPostParams || showSkybox || showSSAO || showScreenSpaceGi
             || showEngineSettings || showSceneFlow || showProject || showVersionControl
             || showMcpBridge || showBuildSettings || showNetworkStatus || showNetworkSettings;
     }

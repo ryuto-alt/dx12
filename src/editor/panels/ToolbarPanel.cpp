@@ -278,6 +278,7 @@ void ToolbarPanel::Render(bool isPlaying,
             ImGui::MenuItem("Post Process パラメータ",  nullptr, &ctx.showPostParams);
             ImGui::MenuItem("Skybox / IBL",            nullptr, &ctx.showSkybox);
             ImGui::MenuItem("SSAO",                    nullptr, &ctx.showSSAO);
+            ImGui::MenuItem("SSR / SSGI",              nullptr, &ctx.showScreenSpaceGi);
             ImGui::MenuItem("エンジン設定",            nullptr, &ctx.showEngineSettings);
             ImGui::MenuItem("ビルド設定",              nullptr, &ctx.showBuildSettings);
             ImGui::MenuItem("Scene Flow",              nullptr, &ctx.showSceneFlow);
@@ -640,6 +641,7 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::MenuItem("Post Process パラメータ", nullptr, &ctx.showPostParams);
         ImGui::MenuItem("Skybox / IBL",           nullptr, &ctx.showSkybox);
         ImGui::MenuItem("SSAO",                   nullptr, &ctx.showSSAO);
+        ImGui::MenuItem("SSR / SSGI",             nullptr, &ctx.showScreenSpaceGi);
         ImGui::MenuItem("エンジン設定",           nullptr, &ctx.showEngineSettings);
         ImGui::MenuItem("ビルド設定",             nullptr, &ctx.showBuildSettings);
         ImGui::MenuItem("Scene Flow",             nullptr, &ctx.showSceneFlow);
@@ -656,6 +658,7 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::Separator();
         if (ImGui::MenuItem("すべて閉じる"))
         {
+            ctx.showScreenSpaceGi =
             ctx.showPostProcess = ctx.showPostParams = ctx.showSkybox = ctx.showSSAO =
                 ctx.showEngineSettings = ctx.showSceneFlow = ctx.showProject =
                 ctx.showVersionControl = ctx.showMcpBridge = ctx.showBuildSettings =

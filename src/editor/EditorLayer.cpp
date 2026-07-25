@@ -243,7 +243,8 @@ void EditorLayer::Render(bool isPlaying,
         {
             // リセット時はツール窓を全部畳んでスッキリ中核4窓へ戻す
             m_ctx->showPostProcess = m_ctx->showPostParams = m_ctx->showSkybox =
-                m_ctx->showSSAO = m_ctx->showEngineSettings = m_ctx->showSceneFlow =
+                m_ctx->showScreenSpaceGi = m_ctx->showSSAO =
+                m_ctx->showEngineSettings = m_ctx->showSceneFlow =
                 m_ctx->showProject = m_ctx->showVersionControl =
                 m_ctx->showMcpBridge = m_ctx->showBuildSettings =
                 m_ctx->showNetworkStatus = m_ctx->showNetworkSettings =
