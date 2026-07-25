@@ -7,6 +7,7 @@
 #include "scene/SceneSerializer.h"
 #include "core/Window.h"
 #include "core/Logger.h"
+#include "core/Version.h"          // ツールバーの版バッジ（文字列を直書きしない）
 #include "project/ProjectManager.h"
 #include "editor/panels/ShaderTemplates.h"
 
@@ -476,7 +477,9 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, dx12e::theme::GroupBg);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive,  dx12e::theme::GroupBg);
         ImGui::PushStyleColor(ImGuiCol_Text,          dx12e::theme::TextDim);
-        ImGui::SmallButton("v0.9");
+        // 版は Version.cpp が単一ソース。ここに文字列を書くと v0.9 のまま化石になる
+        // （実際 v1.7.0 の配布物まで "v0.9" と出ていた）。
+        ImGui::SmallButton((std::string("v") + kEngineVersion).c_str());
         ImGui::PopStyleColor(4);
         ImGui::SameLine(0, 12);
         ImGui::TextDisabled("|");
