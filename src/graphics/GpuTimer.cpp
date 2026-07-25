@@ -10,6 +10,7 @@ const char* GpuTimer::Name(u32 s)
     {
     case Total:       return "total";
     case Shadows:     return "shadows";
+    case DepthPrepass: return "depthPrepass";
     case PrepassSSAO: return "prepassSsao";
     case ClusterCull: return "clusterCull";
     case Raytracing:  return "raytracing";

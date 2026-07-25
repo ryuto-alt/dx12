@@ -20,7 +20,8 @@ public:
     {
         Total = 0,     // フレーム全体（cmdList 記録範囲）
         Shadows,       // スポット影 + ポイント影 + CSM
-        PrepassSSAO,   // 深度プリパス + SSAO 生成
+        DepthPrepass,  // 深度（+速度/G-Buffer）プリパスの描画そのものだけ（計画10 A2）
+        PrepassSSAO,   // 上の DepthPrepass を含む「プリパス一式」（SSAO / コンタクトシャドウ / SSR/SSGI 生成込み）
         ClusterCull,   // クラスタ AABB 構築 + ライトカリング（compute 2 パス）
         Raytracing,    // DXR: BLAS の遅延構築 + TLAS の毎フレーム再構築（加速構造だけ）
         RtScreen,      // DXR: RT サン影 + RT-AO + RT デバッグ（スクリーン空間パス）

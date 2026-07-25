@@ -1334,6 +1334,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         // クラスタードライティング（Forward+）。0 にすると「先頭 64 灯を総当たり」
         // フォールバックへ倒す（A/B 検証用。旧 8 灯経路そのものは残していない）。
         m_clusteredEnabled  = PersistGet("render_clustered", 1.0) != 0.0;
+        m_forceDepthPrepass = PersistGet("render_depth_prepass", 0.0) != 0.0;
         // BC7/BC5 テクスチャ圧縮（0=無圧縮 / 1=高速 / 2=高品質）。既定 1。
         TextureLoader::SetCompressionMode(static_cast<int>(PersistGet("texture_compression", 1.0)));
         const int mode = static_cast<int>(PersistGet("video_mode", 0));
@@ -5647,6 +5648,7 @@ void Application::RegisterMcpEditorMethods()
                 u32 dvx = 0, dvy = 0, dvw = 0, dvh = 0;
                 GetDisplayViewport(dvx, dvy, dvw, dvh);
                 rep["renderScale"]       = m_renderScale;
+                rep["depthPrepass"]      = m_forceDepthPrepass;   // 計画10 A2 の A/B スイッチ
                 rep["renderResolution"]  = {{"width", m_renderW}, {"height", m_renderH}};
                 rep["displayResolution"] = {{"width", dvw},       {"height", dvh}};
             }
@@ -6164,6 +6166,26 @@ void Application::RegisterMcpRenderMethods()
                 {"note", "シーン系 RT（sceneRT/深度/SSAO/TAA/SSR/SSGI/ブルーム/DoF/ゴッドレイ）の"
                          "解像度。UI と ImGui は常に表示解像度。dx12_screenshot はレンダー解像度、"
                          "dx12_screenshot_final は表示解像度で返る"}};
+        });
+
+    // ---- 深度プリパスの単独トグル（計画10 A2）----
+    // 「そのシーンにオーバードローがどれだけあるか」を SSAO 生成のコストを混ぜずに測る道具。
+    // gpuPassMs.depthPrepass（プリパス描画だけ）と gpuPassMs.mainScene の増減を突き合わせる。
+    McpDefine("get_depth_prepass|set_depth_prepass", "enabled:bool", DX12E_MCP_HANDLER
+        {
+            if (method == "set_depth_prepass")
+            {
+                if (!params.contains("enabled"))
+                    throw McpError(McpErr::InvalidParam, "need enabled (bool)");
+                m_forceDepthPrepass = params.value("enabled", false);
+                PersistSet("render_depth_prepass", m_forceDepthPrepass ? 1.0 : 0.0);
+            }
+            resp["ok"] = true;
+            resp["result"] = {
+                {"enabled", m_forceDepthPrepass},
+                {"note", "深度プリパスを SSAO / コンタクトシャドウ / TAA / SSR / SSGI / DXR と"
+                         "無関係に単独で走らせる。gpuPassMs.depthPrepass が描画だけの実測値、"
+                         "prepassSsao はそれを含むプリパス一式。正射 / 2D ビューでは自動的に無効"}};
         });
 
     McpDefine("get_taa", "", DX12E_MCP_HANDLER
@@ -10859,6 +10881,10 @@ void Application::LoadProject(const ProjectInfo& info)
     m_clusteredEnabled = PersistGet("render_clustered", 1.0) != 0.0;
     Logger::Info("クラスタードライティング: {}", m_clusteredEnabled ? "ON" : "OFF");
 
+    // 深度プリパスの単独強制（計画10 A2）。既定 OFF。
+    m_forceDepthPrepass = PersistGet("render_depth_prepass", 0.0) != 0.0;
+    if (m_forceDepthPrepass) Logger::Info("深度プリパス: 強制 ON（render_depth_prepass=1）");
+
     // 内部解像度スケール（#16）。1.0 で従来と完全に同じ絵。0.5 なら 3D だけ半解像度で
     // 描いて表示解像度へ引き伸ばす（UI / ImGui は表示解像度のまま鮮明）。
     {
@@ -13319,6 +13345,7 @@ void Application::RecordPerfFrame()
             rep["instancing"] = m_instancingEnabled;
             rep["clustered"]  = m_clusteredEnabled;
             rep["renderScale"]      = m_renderScale;      // #16。GPU 時間の A/B ではここも見ること
+            rep["depthPrepass"]     = m_forceDepthPrepass;
             rep["renderResolution"] = {{"width", m_renderW}, {"height", m_renderH}};
             // uncap で外していた FPS 上限/VSync を元に戻す（レポートには計測時の値=解除後を載せる）
             if (m_benchRestore)
@@ -16348,8 +16375,13 @@ void Application::Render()
 
     // ★TAA 有効時は SSAO/コンタクトシャドウが無効でも必ずプリパスを走らせる（速度バッファのため）。
     //   新しく深度を要求するパスを足したら、この行に OR で足すこと（00-COORDINATION §2 H2）。
+    // ★m_forceDepthPrepass（settings.json "render_depth_prepass" / MCP set_depth_prepass）は
+    //   「深度プリパス単独の損得」を測るための A/B スイッチ（計画10 A2）。
+    //   viewSupportsScreenSpace を必ず掛けること（正射 / 2D ビューでプリパスを走らせても
+    //   意味が無く、LESS_EQUAL の PSO 選択だけが変わって z-fight の温床になる）。
     const bool useDepthPrepass = useSSAO || useContactShadow || taaActive || useSsr || useSsgi
-                               || useRtShadow || useRtAo || useRtDebug;
+                               || useRtShadow || useRtAo || useRtDebug
+                               || (m_forceDepthPrepass && viewSupportsScreenSpace);
     // 速度＋G-Buffer モードで走らせるか（PSO 3 本が揃っていることが条件）。
     // ★SSR/SSGI は G-Buffer が必要なので TAA が OFF でもこのモードで走らせる。
     //   速度バッファは書かれるが TAA が読まないだけ（fp16×2ch のフィル 1 枚ぶん ≒ 0.05ms）。
@@ -16397,9 +16429,11 @@ void Application::Render()
             m_commandList->ClearRenderTarget(m_gbufferRT->GetRtv(), gbufZero);
             m_taaPass->BeginVelocity(*m_commandList, m_dsvHandle, m_gbufferRT->GetRtv(),
                                      0u, 0u, rW, rH);
+            m_gpuTimer->Begin(nativeCmdList, GpuTimer::DepthPrepass);
             RenderDepthOnlyScene(camVPJ, *m_velocityPSO, *m_velocityPSOSkinned,
                                  /*updateSkinning*/ false, frameIndex, /*lodBias*/ 0,
                                  m_velocityPSOInst.get(), &pp);
+            m_gpuTimer->End(nativeCmdList, GpuTimer::DepthPrepass);
             m_taaPass->EndVelocity(*m_commandList);
             m_gbufferRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         }
@@ -16408,9 +16442,11 @@ void Application::Render()
             nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_dsvHandle);
             // skinningBuffer は毎フレーム1回どこかで Update されていれば良い（このプリパスより前に
             // シャドウパスの ci==0 で更新済み＝ここでは false）。
+            m_gpuTimer->Begin(nativeCmdList, GpuTimer::DepthPrepass);
             RenderDepthOnlyScene(camVPJ, *m_depthPrepassPSO, *m_depthPrepassSkinnedPSO,
                                  /*updateSkinning*/ false, frameIndex, /*lodBias*/ 0,
                                  m_depthPrepassPSOInst.get(), &pp);
+            m_gpuTimer->End(nativeCmdList, GpuTimer::DepthPrepass);
         }
 
         m_commandList->TransitionResource(m_depthBuffer.Get(),

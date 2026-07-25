@@ -980,6 +980,11 @@ private:
     // 「先頭 64 灯を総当たり」フォールバックで動く（旧 8 灯より緩い）。
     std::unique_ptr<ClusteredLightCulling> m_clusteredLighting;
     bool m_clusteredEnabled  = true;   // settings.json "render_clustered" で A/B 可
+    // 深度プリパスを他機能と無関係に単独で ON にする A/B スイッチ（計画10 A2）。
+    // settings.json "render_depth_prepass" / MCP dx12_set_depth_prepass。
+    // 「そのシーンでオーバードローがどれだけあるか（＝オクルージョンの余地）」を
+    // SSAO 生成コストを混ぜずに測るためだけに存在する。既定 OFF ＝従来と完全に同じ経路。
+    bool m_forceDepthPrepass = false;
     u32  m_clusterDebugMode  = 0;      // 0=off / 1=ライト複雑度ヒートマップ / 2=クラスタ境界
     // 毎フレームのライト収集バッファ（再確保を避けるためメンバで使い回す）
     std::vector<ClusteredLightCulling::LightGPU> m_clusterLights;
