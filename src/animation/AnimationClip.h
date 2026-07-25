@@ -48,6 +48,10 @@ public:
 private:
     std::string m_name;
     std::vector<BoneTrack> m_tracks;
+    // boneIndex → m_tracks の添字（-1 = トラック無し）。FindTrackForBone を O(1) にする。
+    // 以前は全トラックの線形探索だったので、ボーン数 × トラック数 の総当たりが
+    // クロスフェード中はフレームあたり 2 回走っていた。
+    std::vector<i32> m_boneToTrack;
     float m_duration       = 0.0f;
     float m_ticksPerSecond = 25.0f;
 };

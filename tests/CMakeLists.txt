@@ -209,6 +209,7 @@ if(TARGET Renderer)
     add_executable(AnimatorSpeedTests
         animator_speed_test.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/Animator.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/AnimPose.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/AnimationClip.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/Skeleton.cpp)
     target_include_directories(AnimatorSpeedTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
@@ -218,6 +219,23 @@ if(TARGET Renderer)
         target_compile_definitions(AnimatorSpeedTests PRIVATE ${DX12_COMPILE_DEFS})
     endif()
     add_test(NAME AnimatorSpeedTests COMMAND AnimatorSpeedTests)
+
+    # ポーズ空間ブレンド（animation/AnimPose.h）テスト。クロスフェードのバグ B1
+    # 「最終スキニング行列を要素ごとに lerp すると骨が縮む」の回帰テストが本体。
+    # AnimPose/Animator/Skeleton/AnimationClip は純ロジック（GPU非依存）なので直接ビルド。
+    add_executable(AnimPoseTests
+        anim_pose_test.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/AnimPose.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/Animator.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/AnimationClip.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/Skeleton.cpp)
+    target_include_directories(AnimPoseTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(AnimPoseTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(AnimPoseTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(AnimPoseTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME AnimPoseTests COMMAND AnimPoseTests)
 
     # Frustum（視錐台抽出＋球カリング）テスト。ヘッダオンリー・純 DirectXMath。
     add_executable(FrustumTests frustum_test.cpp)

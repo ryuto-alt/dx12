@@ -5,19 +5,22 @@ namespace dx12e
 
 void AnimationClip::AddTrack(BoneTrack track)
 {
+    const u32 bone = track.boneIndex;
+    const i32 slot = static_cast<i32>(m_tracks.size());
     m_tracks.push_back(std::move(track));
+
+    if (bone >= m_boneToTrack.size())
+        m_boneToTrack.resize(static_cast<size_t>(bone) + 1, -1);
+    // 同じボーンに複数トラックが来たら「最初のもの」を残す（旧・線形探索と同じ勝ち方）。
+    if (m_boneToTrack[bone] < 0)
+        m_boneToTrack[bone] = slot;
 }
 
 const BoneTrack* AnimationClip::FindTrackForBone(u32 boneIndex) const
 {
-    for (const auto& track : m_tracks)
-    {
-        if (track.boneIndex == boneIndex)
-        {
-            return &track;
-        }
-    }
-    return nullptr;
+    if (boneIndex >= m_boneToTrack.size()) return nullptr;
+    const i32 slot = m_boneToTrack[boneIndex];
+    return (slot >= 0) ? &m_tracks[static_cast<size_t>(slot)] : nullptr;
 }
 
 void AnimationClip::NormalizeToSeconds()

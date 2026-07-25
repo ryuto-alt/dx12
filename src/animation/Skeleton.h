@@ -15,6 +15,15 @@ struct BoneNode
     i32 parentIndex = -1;
     DirectX::XMFLOAT4X4 inverseBindPose;
     DirectX::XMFLOAT4X4 localBindPose;
+
+    // localBindPose を TRS へ分解したもの（Skeleton::AddBone が自動で埋める）。
+    // AnimPose がトラックの無いボーンを埋めるのに使う。行列を毎フレーム分解する
+    // コストを避けるためのキャッシュであり、S*R*T で localBindPose を再構成できる。
+    // 分解できない（せん断を含む）行列だと bindDecomposed=false になる。
+    DirectX::XMFLOAT3 bindT{0.0f, 0.0f, 0.0f};
+    DirectX::XMFLOAT4 bindR{0.0f, 0.0f, 0.0f, 1.0f};
+    DirectX::XMFLOAT3 bindS{1.0f, 1.0f, 1.0f};
+    bool bindDecomposed = true;
 };
 
 class Skeleton
@@ -22,9 +31,23 @@ class Skeleton
 public:
     static constexpr u32 kMaxBones = 256;
 
+    // localBindPose から bindT/bindR/bindS を計算して追加する。
     void AddBone(BoneNode bone);
     i32  FindBoneIndex(std::string_view name) const;
     u32  GetBoneCount() const { return static_cast<u32>(m_bones.size()); }
+
+    // 親が子より前に並んでいるか（FK の単一ループが前提にしている性質。
+    // JPH::Skeleton::AreJointsCorrectlyOrdered と同趣旨）。
+    // false なら ComputeGlobalMatrices が「まだ計算していない親」を読んでしまう。
+    bool AreBonesCorrectlyOrdered() const;
+
+    // localBindPose の TRS 分解に失敗したボーンがあるか（AddBone が検証済み）。
+    // true のとき、トラックの無いボーンのバインドポーズが元の行列と一致しない。
+    bool HasUndecomposableBind() const { return m_hasUndecomposableBind; }
+
+    // ボーン名の部分一致検索（フット IK のボーン自動特定用。大文字小文字を無視）。
+    // 複数一致したら「最初に見つかったもの」。見つからなければ -1。
+    i32 FindBoneIndexContaining(std::string_view fragment) const;
 
     const BoneNode&              GetBone(u32 index) const { return m_bones[index]; }
     const std::vector<BoneNode>& GetBones() const         { return m_bones; }
@@ -32,6 +55,7 @@ public:
 private:
     std::vector<BoneNode>                m_bones;
     std::unordered_map<std::string, i32> m_boneIndexMap;
+    bool                                 m_hasUndecomposableBind = false;
 };
 
 } // namespace dx12e

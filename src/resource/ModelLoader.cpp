@@ -158,6 +158,28 @@ std::unique_ptr<Skeleton> BuildSkeleton(const aiScene* scene)
     BuildSkeletonRecursive(scene->mRootNode, -1, boneMap, *skeleton);
 
     Logger::Info("Skeleton built: {} bones", skeleton->GetBoneCount());
+
+    // FK（ComputeGlobalMatrices）の単一ループは「親が子より前に並んでいる」ことを前提にしている。
+    // assimp のノード階層を前順走査で積んでいるので通常は必ず成立するが、
+    // 破れたら全ボーンが静かに壊れる（親のグローバル行列が未計算のまま読まれる）ので検証する。
+    if (!skeleton->AreBonesCorrectlyOrdered())
+    {
+        Logger::Warn("Skeleton bones are NOT in parent-before-child order. "
+                     "FK will read uninitialized parent matrices and the character will be deformed.");
+    }
+    // トラックの無いボーンは localBindPose を TRS 分解した値でポーズを埋める。
+    // せん断を含む行列は分解できないので、その場合だけバインドポーズがずれる。
+    if (skeleton->HasUndecomposableBind())
+    {
+        Logger::Warn("Skeleton has bone(s) whose localBindPose cannot be decomposed into TRS "
+                     "(shear?). Bones without animation tracks may be posed incorrectly.");
+    }
+    if (skeleton->GetBoneCount() > Skeleton::kMaxBones)
+    {
+        Logger::Warn("Skeleton has {} bones but the skinning buffer holds only {}. "
+                     "Bones beyond the limit will not be uploaded.",
+                     skeleton->GetBoneCount(), Skeleton::kMaxBones);
+    }
     return skeleton;
 }
 
