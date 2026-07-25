@@ -18,7 +18,7 @@ import {
 import { compareLook, roundDelta, roundStats } from "./lookCompare.ts";
 import { buildContactSheet, planCameraPath, type PathMode } from "./contactSheet.ts";
 import {
-  assetsDirCandidatesFromLog, assetsDirFromScenePath, checkScenePath,
+  assetsDirFromScenePath, checkScenePath,
   summarizeScene, validateSceneJson,
 } from "./sceneWrite.ts";
 import {
@@ -219,7 +219,9 @@ const entityRef = {
 reg(
   "dx12_ping",
   "疎通確認",
-  "エディタとの疎通確認。mode(Editor/Playing)・entityCount・sceneGeneration・currentScene・protocolVersion を返す。まず最初に叩いて生きてるか確認するのに使う。",
+  "エディタとの疎通確認。mode(Editor/Playing)・entityCount・sceneGeneration・currentScene・protocolVersion を返す。まず最初に叩いて生きてるか確認するのに使う。"
+  + "★protocolVersion 4 からパス一式も返る: assetsDir / scriptsDir / baseDir / projectShaderDir / cwd(すべて絶対パス)。"
+  + "assets 相対パスを絶対パスへ直したい時・シーン JSON を直接書きたい時は、ログから推測せずここを正とすること。",
   {},
   { readOnlyHint: true },
   () => run(() => engine.call("ping", {})),
@@ -815,15 +817,19 @@ reg(
 reg(
   "dx12_spawn_prefab",
   "プレハブ生成",
-  "プレハブ(.prefab)を assets 相対パスから生成する。フレーム境界で実処理され、Node が完了を待って【本物の {entityId, rootEntityId, entityIds:[...], name, sceneGeneration} を同期で返す】。",
+  "プレハブ(.prefab)を assets 相対パスから生成する。フレーム境界で実処理され、Node が完了を待って【本物の {entityId, rootEntityId, entityIds:[...], name, sceneGeneration} を同期で返す】。"
+  + "★idempotency_key を付けると再送で二重生成されない。2 回目は生成せず 1 回目のサブツリーを "
+  + "{idempotentReplay:true, rootEntityId, entityIds:[...]} で返す(リプレイでも entityIds は全部揃う)。"
+  + "キーはシーンをまたがない(dx12_open_scene / dx12_new_scene で捨てられる)し、記録した entity が削除済みなら普通に生成し直す。",
   {
     path: z.string().describe("assets 相対パス。例: prefabs/enemy.prefab"),
     position: v3().optional().describe("[x,y,z]。省略時 [0,0,0]。"),
     name: z.string().optional().describe("ルートエンティティ名。省略時はプレハブ名。"),
+    idempotency_key: z.string().optional().describe("再試行の重複防止キー。同じキーの再送は二重生成されず、1 回目の {rootEntityId, entityIds} が idempotentReplay:true 付きで返る。"),
   },
   {},
-  ({ path, position, name }) =>
-    run(() => engine.call("spawn_prefab", { path, position, name })),
+  ({ path, position, name, idempotency_key }) =>
+    run(() => engine.call("spawn_prefab", { path, position, name, idempotency_key })),
 );
 
 reg(
@@ -1831,25 +1837,34 @@ reg(
 reg(
   "dx12_get_editor_camera",
   "エディタカメラ取得",
-  "シーンビューを描いてるカメラの状態を返す。{position, forward, yawDeg, pitchDeg, fovYDeg, orthographic, mode}。Editor 中はフライカメラ、Playing 中はゲームカメラ。dx12_set_editor_camera で戻す時の保存用にも。",
-  {},
+  "シーンビューを描いてるカメラの状態を返す。{position, forward, target, targetDistance, yawDeg, pitchDeg, fovYDeg, aspect, nearZ, farZ, orthographic, overridden, mode}。"
+  + "Editor 中はフライカメラ、Playing 中はゲームカメラ。"
+  + "★target は position + forward * targetDistance。そのまま dx12_set_editor_camera {position, target} へ渡すと同じ yaw/pitch に戻るので、視点の保存 → 復元 → 読み返し検証がこれ 1 組でできる。"
+  + "★overridden:true は dx12_set_editor_camera が Play 中のゲームカメラ同期を止めて視点を固定している状態(release で解除)。",
+  {
+    targetDistance: z.number().optional().describe("target を再構成する距離(m)。既定 10。0.001〜100000。被写体までの距離を入れると target が実際の注視点に近くなる。"),
+  },
   { readOnlyHint: true },
-  () => run(() => engine.call("get_editor_camera", {})),
+  ({ targetDistance }) => run(() => engine.call("get_editor_camera", { targetDistance })),
 );
 
 reg(
   "dx12_set_editor_camera",
   "エディタカメラ設定",
-  "エディタのフライカメラを任意視点に置く(focus_camera より自由。俯瞰・引き構図・特定アングルの確認用)。position で位置、target で注視点(yaw/pitch を自動逆算)、または yawDeg/pitchDeg を直接指定。★Editor 限定(Playing 中は MODE_CONFLICT)。この後 dx12_screenshot でその視点の絵が撮れる(dx12_screenshot_from が一発でやる)。",
+  "シーンビューのカメラを任意視点に置く(focus_camera より自由。俯瞰・引き構図・特定アングルの確認用)。position で位置、target で注視点(yaw/pitch を自動逆算)、または yawDeg/pitchDeg を直接指定。"
+  + "★Play 中も使える(以前は MODE_CONFLICT だったが解消済み)。Playing 中に呼ぶとアクティブな CameraComponent の毎フレーム同期を止めて視点を固定する(返り値 overridden:true)。"
+  + "ゲームカメラへ返すには {release:true}。Play/Stop の遷移でも自動解除されるので、撮影用の固定を持ち越す事故は無い。"
+  + "この後 dx12_screenshot_final でその視点の最終画が撮れる(dx12_screenshot_from が一発でやる)。",
   {
     position: v3().optional().describe("カメラ位置 [x,y,z]。省略で現在位置のまま。"),
     target: v3().optional().describe("注視点 [x,y,z]。指定すると yaw/pitch を自動計算(yawDeg/pitchDeg より優先)。"),
     yawDeg: z.number().optional().describe("Y軸回転(度)。target 指定時は無視。"),
     pitchDeg: z.number().optional().describe("X軸回転(度、±89 でクランプ)。target 指定時は無視。"),
+    release: z.boolean().optional().describe("true で Play 中のカメラ固定(overridden)を解除してゲームカメラへ返す。他の引数は無視され {released:true, overridden:false} が返る。"),
   },
   { idempotentHint: true },
-  ({ position, target, yawDeg, pitchDeg }) =>
-    run(() => engine.call("set_editor_camera", { position, target, yawDeg, pitchDeg })),
+  ({ position, target, yawDeg, pitchDeg, release }) =>
+    run(() => engine.call("set_editor_camera", { position, target, yawDeg, pitchDeg, release })),
 );
 
 reg(
@@ -2106,36 +2121,101 @@ regRaw(
   "dx12_focus_and_screenshot",
   {
     title: "寄せて撮影",
-    description: "カメラを対象エンティティに寄せてから(1フレーム描画を挟んで)スクショを撮り、PNG 画像で返す。entity(id) か name 指定。配置や見た目を自分の目で確認するのに使う(エディタカメラ。Playing 中のゲーム画面は dx12_screenshot がアクティブなゲームカメラの絵を返す)。image ブロック + text(path/サイズ)を返す。",
+    description: "カメラを対象エンティティに寄せてからスクショを撮り、PNG 画像で返す(dx12_focus_camera + dx12_screenshot_final の合成)。entity(id) か name 指定。配置や見た目を自分の目で確認するのに使う。"
+      + "★撮るのは【ポスト適用後の最終画】なのでグレーディング/ブルーム/TAA 込みの見た目が確認できる。image ブロック + text(path/サイズ)を返す。",
     inputSchema: { ...entityRef },
     annotations: { title: "寄せて撮影", openWorldHint: false, idempotentHint: true },
   },
   async ({ entity, name }) => {
     try {
       await engine.call("focus_camera", { entity, name });
-      const shot = await engine.call("screenshot", {});
-      if (!shot || !shot.path) throw new Error("screenshot が path を返さんかった");
-      return imageResult(shot.path, { entity, width: shot.width, height: shot.height });
+      const shot = await engine.call("screenshot_final", {});
+      if (!shot || !shot.path) throw new Error("screenshot_final が path を返さなかった");
+      return imageResult(shot.path, {
+        entity, width: shot.width, height: shot.height,
+        source: shot.source ?? "backbuffer", postApplied: shot.postApplied,
+      });
     } catch (e: any) {
       return errResult(e);
     }
   },
 );
 
+// ── スクショ 2 種の共通引数 ────────────────────────────────────────
+// ★zod の同一インスタンスを 2 つのツールで共有すると JSON Schema が $ref に畳まれ、
+//   $ref を解決しないクライアントではスキーマが空に見える。v3() と同じく
+//   【呼ぶたびに新しいインスタンスを作るファクトリ】にすること。
+const captureParams = () => ({
+  path: z.string().optional().describe(
+    "出力先の PNG パス(エンジンの CWD からの相対 or 絶対)。拡張子 .png は自動補完、親フォルダは自動生成、'..' は拒否。"
+    + "★省略すると毎回【同じ既定ファイル】を上書きする。連写・並行実行するときは必ず別々の path を指定すること。"),
+  deterministic: z.boolean().optional().describe(
+    "true でピクセル完全再現モード。既定 false。time を固定(deband ディザ/グレイン/wave/glitch/パーティクルが止まる)し、"
+    + "TAA・ボリュメトリックフォグ・SSGI の時間ジッタ位相を 0 に固定、時間蓄積の履歴を捨ててから settleFrames ぶん回して撮る。"
+    + "★A/B のピクセル差分を取るなら必須(付けないと同じ設定でも 2 枚は一致しない: deband/グレインで画面の 66%、TAA で 9.4% が動く)。"
+    + "★止まるのはレンダラの時間依存だけ。Play 中のゲームシミュレーション(移動/物理/アニメ)は止まらないので、厳密に比べるなら dx12_stop してから撮る。"),
+  settleFrames: z.number().int().optional().describe(
+    "deterministic:true のとき履歴を捨ててから回すフレーム数(1..240)。既定 8。増やすと TAA / SSGI の収束が進む(決定性そのものは 8 で得られる)。deterministic:false のときは無視される。"),
+});
+
 // スクショ単体も画像ブロックで返す。
 regRaw(
   "dx12_screenshot",
   {
-    title: "スクリーンショット",
-    description: "今シーンビューに映ってる絵を PNG に書き出して画像で返す(+text に path/width/height)。AI が自分の操作結果(配置・見た目)を目で確認して直すのに使う。引数なし。★Playing 中はアクティブなゲームカメラの絵になる(=実際のゲーム画面)。Editor 中はエディタのフライカメラ。dx12_project_world_to_screen と同じカメラなので「player が画面中央/画面内か」を数値+絵の両方で確認できる。",
-    inputSchema: {},
-    annotations: { title: "スクリーンショット", openWorldHint: false, readOnlyHint: true },
+    title: "スクリーンショット(ポスト前)",
+    description: "今シーンビューに映ってる絵を PNG に書き出して画像で返す(+text に path/width/height/source)。"
+      + "★★これは【ポストプロセス前の m_sceneRT】。カラーグレーディング(contrast/brightness/saturation/warmth/hueShift/tint)・"
+      + "ブルーム・ゴッドレイ・ビネット・LUT・FXAA・デバンド・TAA の解決結果が【1 つも写らない】。"
+      + "見た目を判断する / 参照画像と比べる / ポストを触った結果を確かめるなら必ず dx12_screenshot_final を使うこと。"
+      + "こちらは『幾何とライティングの素の値』を見たいとき(ポストの化粧を剥がして原因を切り分けたいとき)に使う。"
+      + "★Playing 中はアクティブなゲームカメラの絵になる。Editor 中はエディタのフライカメラ。"
+      + "dx12_project_world_to_screen と同じカメラなので「player が画面中央/画面内か」を数値+絵の両方で確認できる。",
+    inputSchema: { ...captureParams() },
+    annotations: { title: "スクリーンショット(ポスト前)", openWorldHint: false, readOnlyHint: true },
   },
-  async () => {
+  async ({ path: outPath, deterministic, settleFrames }) => {
     try {
-      const shot = await engine.call("screenshot", {});
-      if (!shot || !shot.path) throw new Error("screenshot が path を返さんかった");
-      return imageResult(shot.path, { width: shot.width, height: shot.height });
+      const shot = await engine.call("screenshot", { path: outPath, deterministic, settleFrames });
+      if (!shot || !shot.path) throw new Error("screenshot が path を返さなかった");
+      return imageResult(shot.path, {
+        width: shot.width, height: shot.height,
+        source: shot.source ?? "sceneRT(pre-post)",
+        deterministic: shot.deterministic ?? false,
+      });
+    } catch (e: any) {
+      return errResult(e);
+    }
+  },
+);
+
+// ★測定と目視の食い違いを断つ本命。バックバッファ(＝ポスト適用後の最終画)を撮る。
+regRaw(
+  "dx12_screenshot_final",
+  {
+    title: "最終画スクリーンショット(ポスト後)",
+    description: "★見た目を判断するときの既定の撮り方。バックバッファ(ポスト適用後の最終画)のビューポート矩形を PNG で返す。"
+      + "dx12_screenshot(ポスト前の m_sceneRT)と違い、カラーグレーディング・ブルーム・ゴッドレイ・ビネット・LUT・FXAA・デバンド・TAA の解決結果が【全部写る】"
+      + "= 人間がビューポートで見ている絵と同じ。ImGui を描く前にコピーするので【エディタのパネル/ギズモは写らない】＝ゲームと同じ絵になる。"
+      + "サイズはウィンドウ全体ではなくシーンビューの矩形。"
+      + "★遅延同期(1 フレーム描いてから返る。deterministic:true なら settleFrames ぶん回してから返る)。"
+      + "★エディタのパネル込みが欲しいなら dx12_ui_screenshot、中間バッファの可視化は dx12_render_debug。"
+      + "★Playing 中はアクティブなゲームカメラの絵になる(= 実際のゲーム画面のポスト後)。",
+    inputSchema: { ...captureParams() },
+    annotations: { title: "最終画スクリーンショット(ポスト後)", openWorldHint: false, readOnlyHint: true },
+  },
+  async ({ path: outPath, deterministic, settleFrames }) => {
+    try {
+      const shot = await engine.call("screenshot_final", { path: outPath, deterministic, settleFrames });
+      if (!shot || !shot.path) throw new Error("screenshot_final が path を返さなかった");
+      return imageResult(shot.path, {
+        width: shot.width, height: shot.height,
+        source: shot.source ?? "backbuffer",
+        postApplied: shot.postApplied,
+        deterministic: shot.deterministic ?? false,
+        taa: shot.taa,
+        mode: shot.mode,
+        note: shot.note,
+      });
     } catch (e: any) {
       return errResult(e);
     }
@@ -2317,7 +2397,9 @@ regRaw(
   "dx12_screenshot_from",
   {
     title: "任意視点スクショ",
-    description: "エディタカメラを指定の位置・注視点へ動かしてからスクショを撮り、PNG 画像で返す(dx12_set_editor_camera + dx12_screenshot の合成)。俯瞰でレイアウト全体を見る、プレイヤー視点の高さで見る等。★Editor 限定。image ブロック + text(path/サイズ)を返す。",
+    description: "カメラを指定の位置・注視点へ動かしてからスクショを撮り、PNG 画像で返す(dx12_set_editor_camera + dx12_screenshot_final の合成)。俯瞰でレイアウト全体を見る、プレイヤー視点の高さで見る等。"
+      + "★撮るのは【ポスト適用後の最終画】なのでグレーディング/ブルーム/TAA 込みの見た目が確認できる。"
+      + "★Play 中も使える(カメラを固定して撮る。dx12_set_editor_camera {release:true} でゲームカメラへ返す)。image ブロック + text(path/サイズ)を返す。",
     inputSchema: {
       position: v3().describe("カメラ位置 [x,y,z]。"),
       target: v3().optional().describe("注視点 [x,y,z]。省略で現在の向きのまま位置だけ移動。"),
@@ -2327,9 +2409,12 @@ regRaw(
   async ({ position, target }) => {
     try {
       await engine.call("set_editor_camera", { position, target });
-      const shot = await engine.call("screenshot", {});
-      if (!shot || !shot.path) throw new Error("screenshot が path を返さんかった");
-      return imageResult(shot.path, { position, target, width: shot.width, height: shot.height });
+      const shot = await engine.call("screenshot_final", {});
+      if (!shot || !shot.path) throw new Error("screenshot_final が path を返さなかった");
+      return imageResult(shot.path, {
+        position, target, width: shot.width, height: shot.height,
+        source: shot.source ?? "backbuffer", postApplied: shot.postApplied,
+      });
     } catch (e: any) {
       return errResult(e);
     }
@@ -2861,13 +2946,36 @@ reg(
 //   ③ dx12_scene_write   … 1 体 1 フレームの spawn を捨ててシーン JSON ごと差し替える
 // が担当する。①②は【エンジン側の既存 method の組み合わせだけ】で作ってある(再ビルド不要)。
 
-// エンジンの screenshot は毎回 CWD の同じファイル(mcp_screenshot.png)へ上書きする。
+// ★どちらの絵を測るか。既定は "final"(バックバッファ＝ポスト適用後の最終画)。
+//   "sceneRT" は従来どおりポスト前。ポストの化粧を剥がして幾何/ライティングだけ見たいとき用。
+//   zod スキーマは毎回新規インスタンスを作る($ref 回避の流儀)。
+const CAPTURE_SOURCES = ["final", "sceneRT"] as const;
+type CaptureSource = (typeof CAPTURE_SOURCES)[number];
+const captureSourceSchema = () =>
+  z.enum(CAPTURE_SOURCES).optional().describe(
+    "測る絵をどちらから撮るか。'final'(既定)=バックバッファ(ポスト適用後の最終画。人間が見ている絵と同一。"
+    + "グレーディング/ブルーム/ビネット/LUT/FXAA/TAA 解決が全部乗る) / "
+    + "'sceneRT'=ポスト前のシーン RT(ポストの化粧を剥がして幾何とライティングの素の値だけ見たいとき)。");
+
+// エンジンの screenshot / screenshot_final は path 省略時、毎回 CWD の同じファイルへ上書きする。
 // 連写するときは【次の撮影前に】必ず読み切ること(下の撮影ヘルパは即 readFileSync している)。
-async function captureScene(settleFrames?: number): Promise<{ buf: Buffer; width: number; height: number }> {
+//
+// ★settleFrames について:
+//   sceneRT 側は step_frames で先に進めてから撮る(従来どおり)。final 側も同じ扱いにする。
+//   engine の {deterministic:true, settleFrames} は「履歴を捨ててから固定 N フレーム」なので
+//   意味が違う(ピクセル完全再現用)。ここでは「収束を待つ」だけが欲しいので step_frames を使う。
+async function captureScene(
+  settleFrames?: number, source: CaptureSource = "final",
+): Promise<{ buf: Buffer; width: number; height: number; source: string; postApplied?: boolean }> {
   if (settleFrames && settleFrames > 0) await engine.call("step_frames", { frames: settleFrames });
-  const shot = await engine.call("screenshot", {});
-  if (!shot || !shot.path) throw new Error("screenshot が path を返さんかった");
-  return { buf: fs.readFileSync(shot.path), width: shot.width, height: shot.height };
+  const method = source === "sceneRT" ? "screenshot" : "screenshot_final";
+  const shot = await engine.call(method, {});
+  if (!shot || !shot.path) throw new Error(`${method} が path を返さなかった`);
+  return {
+    buf: fs.readFileSync(shot.path), width: shot.width, height: shot.height,
+    source: shot.source ?? (source === "sceneRT" ? "sceneRT(pre-post)" : "backbuffer"),
+    postApplied: shot.postApplied,
+  };
 }
 
 function readReference(referencePath: string): Buffer {
@@ -2892,16 +3000,22 @@ regRaw(
       + "相関色温度 CCT(McCamy 近似)、平均彩度(HSV S と CIELAB C*)、黒潰れ率 / 白飛び率。"
       + "suggestions に『参照より平均輝度が -0.8EV 暗い → 太陽の intensity を ×1.74』の形で具体的な次の一手が入る。"
       + "★使い方: suggestions のとおりノブを 1 つだけ動かして撮り直す、を繰り返す(同時に触ると何が効いたか分からない)。"
-      + "★★測っているのは dx12_screenshot(シーン RT を CPU で露出+トーンマップ+ガンマした絵)なので、"
-      + "ライト・環境光・材質・IBL・影・SSAO と post の exposure / tonemapper は反映されるが、"
-      + "カラーグレーディング(contrast/saturation/warmth/tint)・ブルーム・ビネットは【反映されない】。"
-      + "それらを触った結果は dx12_ui_screenshot でビューポートを目視して確認すること。"
-      + "position/target を渡すとその視点へカメラを動かしてから撮る(★Editor 限定)。",
+      + "★★測っているのは既定で dx12_screenshot_final(バックバッファ＝ポスト適用後の最終画)なので、"
+      + "ライト・環境光・材質・IBL・影・SSAO に加えて post のグレーディング(contrast/saturation/warmth/tint)・"
+      + "ブルーム・ビネット・LUT・FXAA・TAA 解決まで【全部反映される】= 人間が見ている絵と同じものを測る。"
+      + "source:'sceneRT' にするとポスト前のシーン RT を測る(ポストの化粧を剥がして幾何とライティングだけ見たいとき。"
+      + "そのときはポストのノブが数値に効かないので suggestions に但し書きが付く)。"
+      + "position/target を渡すとその視点へカメラを動かしてから撮る(★Play 中も可。撮影後もカメラは固定されたままなので、"
+      + "ゲームカメラへ返すには dx12_set_editor_camera {release:true})。",
     inputSchema: {
       referencePath: z.string().describe("参照画像(PNG)の絶対パス。実写写真や参考ゲームのスクショ。"),
-      position: v3().optional().describe("撮影カメラ位置 [x,y,z]。省略で現在のカメラのまま。★Editor 限定。"),
+      source: captureSourceSchema(),
+      position: v3().optional().describe("撮影カメラ位置 [x,y,z]。省略で現在のカメラのまま。"),
       target: v3().optional().describe("注視点 [x,y,z]。position と併用。"),
-      gameView: z.boolean().optional().describe("true でアクティブな CameraComponent(ゲームカメラ)視点で撮る。position/target は無視。"),
+      gameView: z.boolean().optional().describe(
+        "true でアクティブな CameraComponent(ゲームカメラ)視点で撮る。position/target は無視。"
+        + "★これは screenshot_game_view = 常に【ポスト前】のシーン RT なので source は無視され、ポストのノブは測れない。"
+        + "ポスト込みのゲーム画面を測りたいなら dx12_play してから gameView なしで呼ぶこと(Playing 中の最終画はゲームカメラの絵そのもの)。"),
       settleFrames: z.number().int().optional().describe("撮る前に進めるフレーム数(0..60)。TAA / 露出順応を収束させたい時に 4〜8。既定 0。"),
       bins: z.number().int().optional().describe("対数輝度ヒストグラムのビン数(8..64)。既定 24。"),
       minEV: z.number().optional().describe("ヒストグラム下限 EV。既定 -10(相対輝度 2^-10)。"),
@@ -2912,21 +3026,31 @@ regRaw(
     },
     annotations: { title: "参照画像との絵づくり比較(測光)", openWorldHint: false, readOnlyHint: true },
   },
-  async ({ referencePath, position, target, gameView, settleFrames, bins, minEV, maxEV, blackLevel, whiteLevel, diffThreshold }) => {
+  async ({ referencePath, source, position, target, gameView, settleFrames, bins, minEV, maxEV, blackLevel, whiteLevel, diffThreshold }) => {
     try {
       const ref = readReference(referencePath);
+      // ★gameView(screenshot_game_view)だけは常にポスト前のシーン RT。エンジンに
+      //   「ゲームカメラ視点のバックバッファ」を撮る method が無いため、ここは source を無視する。
+      const src: CaptureSource = gameView ? "sceneRT" : ((source as CaptureSource | undefined) ?? "final");
+      const postVisible = src === "final";
       let cur: Buffer;
+      let measuredOn: string;
       if (gameView) {
         if (settleFrames && settleFrames > 0) await engine.call("step_frames", { frames: settleFrames });
         const shot = await engine.call("screenshot_game_view", {});
-        if (!shot || !shot.path) throw new Error("screenshot_game_view が path を返さんかった");
+        if (!shot || !shot.path) throw new Error("screenshot_game_view が path を返さなかった");
         cur = fs.readFileSync(shot.path);
+        measuredOn = "screenshot_game_view(ゲームカメラ視点のシーン RT。★ポスト前)";
       } else {
         if (position) await engine.call("set_editor_camera", { position, target });
-        cur = (await captureScene(settleFrames)).buf;
+        const shot = await captureScene(settleFrames, src);
+        cur = shot.buf;
+        measuredOn = postVisible
+          ? `screenshot_final(バックバッファ = ポスト適用後の最終画。postApplied=${shot.postApplied})`
+          : "screenshot(シーン RT を CPU で 露出→トーンマップ→ガンマ した絵。★ポスト前)";
       }
 
-      const r = compareLook(ref, cur, { bins, minEV, maxEV, blackLevel, whiteLevel, diffThreshold });
+      const r = compareLook(ref, cur, { bins, minEV, maxEV, blackLevel, whiteLevel, diffThreshold, postVisible });
       const outPath = path.join(os.tmpdir(), `dx12_look_compare_${Date.now()}.png`);
       fs.writeFileSync(outPath, r.compositePng);
       return imageResult(outPath, {
@@ -2937,11 +3061,11 @@ regRaw(
         suggestions: r.suggestions,
         cctFormula: "McCamy 1992: n=(x-0.3320)/(0.1858-y), CCT=449n^3+3525n^2+6823.3n+5520.33"
           + "（黒体軌跡からの距離 Duv > 0.05 なら CCT は null。理由は cctNote）",
-        measuredOn: gameView
-          ? "screenshot_game_view(ゲームカメラ視点のシーン RT)"
-          : "screenshot(シーン RT を CPU で 露出→トーンマップ→ガンマ した絵)",
-        notReflected: "post のグレーディング(contrast/brightness/saturation/warmth/hueShift/tint)・"
-          + "ブルーム・ビネット・グレインはこの絵に映らない。触ったら dx12_ui_screenshot で目視すること。",
+        measuredOn,
+        notReflected: postVisible
+          ? null   // 最終画なので「映らないもの」は無い(ImGui のパネル/ギズモだけ)
+          : "post のグレーディング(contrast/brightness/saturation/warmth/hueShift/tint)・"
+            + "ブルーム・ビネット・グレインはこの絵に映らない。測りながら追い込むなら source:'final' で呼び直すこと。",
       });
     } catch (e: any) {
       return errResult(e);
@@ -2955,14 +3079,19 @@ regRaw(
   {
     title: "カメラを動かして連写(コンタクトシート)",
     description:
-      "エディタカメラを経路に沿って動かしながら N 枚撮り、格子状の 1 枚(コンタクトシート)にして返す。"
+      "カメラを経路に沿って動かしながら N 枚撮り、格子状の 1 枚(コンタクトシート)にして返す。"
       + "★静止画 1 枚では TAA のゴースト・LOD ポップ・影のちらつき・カリング抜けが分からない。動かして初めて出る。"
+      + "★★撮るのは既定で dx12_screenshot_final(バックバッファ)。TAA の【解決結果】はポスト前のシーン RT には出ないので、"
+      + "ゴーストを探すならこちらでないと見えない。source:'sceneRT' でポスト前に切り替えられる"
+      + "(ゴーストがポストのせいか本体のせいかを切り分けたいとき)。"
       + "各タイルに『何枚目/全体』を焼き込み、連続フレーム間の画素差分率 frameDiffs(%) も返すので、"
       + "『4→5 だけ差分 18%』のように目で探す前に当たりを付けられる(周りが 3% 前後なのに 1 箇所だけ跳ねていたらポップかちらつき)。"
       + "mode:'line' は from → to を直線補間、mode:'orbit' は target を中心に radius/height の円周を回る。"
-      + "★Editor 限定(dx12_set_editor_camera を使うため)。撮り終わったら元のカメラへ戻す(restore:false で戻さない)。",
+      + "★Play 中も使える(dx12_set_editor_camera が Play 中のカメラを固定できるようになったため)。"
+      + "撮り終わったら元のカメラへ戻す(restore:false で戻さない)。Play 中に使った後は dx12_set_editor_camera {release:true} でゲームカメラへ返すこと。",
     inputSchema: {
       mode: z.enum(["line", "orbit"]).optional().describe("'line'=直線移動(既定) / 'orbit'=注視点まわりを周回。"),
+      source: captureSourceSchema(),
       frames: z.number().int().optional().describe("撮影枚数(2..24)。既定 6。多いほど遅い(1 枚につき 2 往復 + 1 フレーム)。"),
       columns: z.number().int().optional().describe("格子の列数(1..8)。既定 3。"),
       from: v3().optional().describe("line: 始点カメラ位置 [x,y,z]。"),
@@ -2996,10 +3125,14 @@ regRaw(
       // 元のカメラを覚えておく(撮影は「見に行く」操作なので、勝手に視点を変えたまま返さない)。
       const before = restore ? await engine.call("get_editor_camera", {}).catch(() => null) : null;
 
+      const src: CaptureSource = (a.source as CaptureSource | undefined) ?? "final";
       const shots: Buffer[] = [];
+      let measuredOn = "";
       for (const p of poses) {
         await engine.call("set_editor_camera", { position: p.position, target: p.target });
-        shots.push((await captureScene(settle)).buf);   // ★次の撮影で上書きされる前に読み切る
+        const shot = await captureScene(settle, src);   // ★次の撮影で上書きされる前に読み切る
+        measuredOn = shot.source;
+        shots.push(shot.buf);
       }
 
       if (before && before.position) {
@@ -3015,6 +3148,8 @@ regRaw(
       fs.writeFileSync(outPath, sheet.sheetPng);
       return imageResult(outPath, {
         mode: a.mode ?? "line",
+        source: src,
+        measuredOn,
         frames: shots.length,
         columns: sheet.columns,
         rows: sheet.rows,
@@ -3023,7 +3158,11 @@ regRaw(
         maxDiff: sheet.maxDiff,
         poses: poses.map((p) => ({ position: p.position.map((v) => Number(v.toFixed(3))), target: p.target })),
         note: "frameDiffs[i] は フレーム i+1 → i+2 の画素差分率(%)。カメラ移動量に比例するので、"
-            + "周囲より突出した山だけがちらつき/ポップの候補。",
+            + "周囲より突出した山だけがちらつき/ポップの候補。"
+            + (src === "final"
+                ? "★最終画(ポスト後)で撮っているので TAA の解決結果・グレーディング・ブルームも差分に乗る。"
+                  + "デバンドのディザ/グレインは ±1〜2 LSB なので既定の閾値 30 では拾わない。"
+                : "★ポスト前のシーン RT で撮っているので TAA の解決結果は差分に出ない。"),
       });
     } catch (e: any) {
       return errResult(e);
@@ -3032,8 +3171,13 @@ regRaw(
 );
 
 // ── ③ シーン JSON の直接書き出し ─────────────────────────────
-// assets ディレクトリはエンジンが MCP で公開していない(PathResolver::AssetsDir は C++ 内部)。
-// 引数 → 環境変数 → エンジンログ(絶対パスが混ざる)の順で解決し、list_scenes で裏取りする。
+// assets ディレクトリは【エンジンが dx12_ping で返す】(protocolVersion 4 以降。
+// PathResolver::AssetsDir をそのまま載せている)。引数 → 環境変数 → ping の順で解決する。
+//
+// ★以前はここで get_log を 500 行引いて「ログに混ざる絶対パスから assets らしき祖先を推定し、
+//   list_scenes の相対パスが実在するかで裏取りする」という回避コードを持っていた(#20-3)。
+//   別プロジェクトの古いログを掴む・ログが流れていると失敗する・裏取りできない時は
+//   当てずっぽうを返す、という三重に不確かなものだった。エンジンが正を返すようになったので削除。
 async function resolveAssetsDir(explicit?: string): Promise<{ dir: string; how: string }> {
   const ok = (d: string) => { try { return fs.statSync(d).isDirectory(); } catch { return false; } };
   const norm = (d: string) => d.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -3046,23 +3190,16 @@ async function resolveAssetsDir(explicit?: string): Promise<{ dir: string; how: 
   const env = process.env.DX12_ASSETS_DIR;
   if (env && ok(norm(env))) return { dir: norm(env), how: "環境変数 DX12_ASSETS_DIR" };
 
-  // エンジンのログにはモデル/シーンの絶対パスが出るので、そこから assets ディレクトリを拾う。
-  const lines = await engine.call("get_log", { lines: 500 }).catch(() => []);
-  const cands = assetsDirCandidatesFromLog(Array.isArray(lines) ? lines : []).filter(ok);
-  if (cands.length > 0) {
-    // list_scenes の相対パスが実在する候補を優先(別プロジェクトの古いログを掴むのを防ぐ)。
-    const scenes = await engine.call("list_scenes", {}).catch(() => []);
-    if (Array.isArray(scenes) && scenes.length > 0) {
-      for (const c of cands) {
-        if (scenes.some((s: any) => s?.path && fs.existsSync(path.join(c, s.path)))) {
-          return { dir: c, how: "エンジンログ(dx12_list_scenes で裏取り済み)" };
-        }
-      }
-    }
-    return { dir: cands[0], how: "エンジンログ(裏取りできず。assetsDir を明示した方が確実)" };
-  }
+  // エンジンに聞く(唯一の正)。protocolVersion 4 未満のエンジンは assetsDir を返さない。
+  const pong = await engine.call("ping", {}).catch(() => null);
+  const fromEngine = typeof pong?.assetsDir === "string" ? norm(pong.assetsDir) : "";
+  if (fromEngine && ok(fromEngine)) return { dir: fromEngine, how: "dx12_ping の assetsDir(エンジンが返す正)" };
+
   throw argError(
-    "assets ディレクトリを特定できなかった",
+    fromEngine
+      ? `エンジンが返した assetsDir が存在しない: ${fromEngine}`
+      : "assets ディレクトリを特定できなかった"
+        + (pong ? `(エンジンの protocolVersion=${pong.protocolVersion ?? "不明"}。4 未満は assetsDir を返さない)` : "(エンジンに繋がらない)"),
     "assetsDir にプロジェクトの assets フォルダの絶対パス(例 C:/Users/me/game/MyGame/assets)を渡すか、"
     + "path 自体を絶対パスで渡す。環境変数 DX12_ASSETS_DIR でも指定できる",
   );
@@ -3089,7 +3226,7 @@ regRaw(
     inputSchema: {
       path: z.string().describe("書き出し先。assets 相対(推奨、例 'scenes/level1.json')か絶対パス。dx12_open_scene が開けるのは assets 配下の .json だけ。"),
       sceneJson: z.union([z.record(z.any()), z.string()]).describe("シーン JSON 本体(オブジェクト、または その JSON 文字列)。{version:1, entities:[...]}"),
-      assetsDir: z.string().optional().describe("assets フォルダの絶対パス。省略時は 環境変数 DX12_ASSETS_DIR → エンジンログ から自動解決する。"),
+      assetsDir: z.string().optional().describe("assets フォルダの絶対パス。省略時は 環境変数 DX12_ASSETS_DIR → dx12_ping の assetsDir(エンジンが返す正) の順で自動解決する。"),
       open: z.boolean().optional().describe("true で書いた後に dx12_open_scene して読み込む(★Editor 限定)。既定 false。"),
       overwrite: z.boolean().optional().describe("false にすると既存ファイルがある場合に書かずにエラー。既定 true(上書きするが要約とバックアップを返す)。"),
       skipAssetCheck: z.boolean().optional().describe("true で modelPath/scriptPath の実在確認を省く(これから import するアセットを先に書く時)。既定 false。"),

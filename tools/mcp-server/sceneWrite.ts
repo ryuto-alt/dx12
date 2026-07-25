@@ -437,26 +437,10 @@ export function assetsDirFromScenePath(absScenePath: string): string | null {
   return m ? m[1] : null;
 }
 
-/**
- * エンジンのログ行から assets ディレクトリの候補を拾う(新しい行を優先)。
- * get_log は末尾 N 行を古い順で返すので、走査は後ろから行う。
- * ★エンジンは assets ディレクトリを MCP で公開していないため、これが唯一の自動検出手段。
- */
-export function assetsDirCandidatesFromLog(lines: readonly string[]): string[] {
-  const re = /([A-Za-z]:[\\/](?:[^\s"'<>|*?]*?[\\/])?assets)[\\/]/g;
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = String(lines[i]);
-    re.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(line)) !== null) {
-      const dir = m[1].replace(/\\/g, "/");
-      if (!seen.has(dir)) { seen.add(dir); out.push(dir); }
-    }
-  }
-  return out;
-}
+// ★削除: assetsDirCandidatesFromLog(エンジンログの絶対パスから assets を推定するハック)。
+//   エンジンが dx12_ping で assetsDir を返すようになった(protocolVersion 4 / #20-3)ので不要。
+//   ログ由来の推定は「別プロジェクトの古い行を掴む」「ログが流れると失敗する」
+//   「裏取りできない時に当てずっぽうを返す」の三重に不確かで、置き換えるべきものだった。
 
 /** シーンの書き出し先として妥当な相対パスか(scenes/ 配下の .json を推奨)。 */
 export function checkScenePath(rel: string): { ok: boolean; error?: string; warning?: string } {

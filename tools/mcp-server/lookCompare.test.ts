@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { PNG } from "pngjs";
 import {
   analyzeLook, cctFromXy, cctFromLinearRgb, compareLook, histogramEmd, histogramL1,
-  planckianUv, xyToUv1960,
+  planckianUv, roundDelta, xyToUv1960,
 } from "./lookCompare.ts";
 
 let passed = 0;
@@ -197,22 +197,43 @@ console.log("\n[13-16] compareLook — 差分と『次の一手』");
   assert.equal(sheet.width, 32 + 4 + 32);
   pass(`暖色ズレ ${Math.round(r2.delta.cctDeltaK!)}K を検出し kelvin を名指しできる`);
 
-  // 16. ★回帰防止: post のグレーディング(contrast/saturation/warmth)は dx12_screenshot に
-  //     映らない。それらを勧める示唆には必ず「目視で確認」の但し書きが付くこと。
-  //     これが無いと「下げた → スクショが変わらない → もう一度下げる」の無限ループになる。
+  // 16. ★回帰防止(postVisible=false): ポスト前のシーン RT を測っているときは、post の
+  //     グレーディング(contrast/saturation/warmth)は測定値に映らない。それらを勧める示唆には
+  //     必ず「この数値では追い込めない」の但し書きが付くこと。
+  //     これが無いと「下げた → 数値が変わらない → もう一度下げる」の無限ループになる。
   const softRef = halves(32, 24, [250, 250, 250], [5, 5, 5]);      // 硬い参照
   const flatCur = halves(32, 24, [150, 150, 150], [120, 120, 120]); // 眠い現在
-  const r3 = compareLook(softRef, flatCur);
+  const r3 = compareLook(softRef, flatCur, { postVisible: false });
   for (const s of r3.suggestions) {
     if (/dx12_set_post_process の (contrast|saturation|warmth)/.test(s)) {
-      assert.match(s, /dx12_ui_screenshot/, `post ノブの示唆に目視の但し書きが無い: ${s}`);
+      assert.match(s, /この数値では追い込めない/, `post ノブの示唆に但し書きが無い: ${s}`);
+      assert.match(s, /source:'final'|dx12_screenshot_final|dx12_ui_screenshot/,
+        `post ノブの示唆に「ではどうするか」が無い: ${s}`);
     }
   }
   const con = r3.suggestions.find((s) => s.startsWith("コントラスト:"));
   assert.ok(con, "コントラストの示唆が無い");
-  assert.match(con!, /ambient/);            // 先に「光で作る」を勧める
-  assert.match(con!, /dx12_ui_screenshot/);  // post を出すなら但し書きつき
-  pass("post グレーディングを勧める示唆には必ず『dx12_ui_screenshot で目視』が付く");
+  assert.match(con!, /ambient/);                    // 先に「光で作る」を勧める
+  assert.match(con!, /この数値では追い込めない/);      // post を出すなら但し書きつき
+  pass("source:'sceneRT' で測るときは post グレーディングの示唆に『この数値では追い込めない』が付く");
+
+  // 17. ★本来あるべき形(postVisible=true / 既定): dx12_screenshot_final はバックバッファ
+  //     ＝ポスト適用後の最終画なので、グレーディングも測定値に乗る。
+  //     d993d5a で入れた「映らないから勧めるな」の歪みは外れていること。
+  const r4 = compareLook(softRef, flatCur);   // 既定 = postVisible: true
+  assert.deepEqual(r4.suggestions.length > 0, true);
+  for (const s of r4.suggestions) {
+    assert.doesNotMatch(s, /映らない|この数値では追い込めない/,
+      `最終画を測っているのに「映らない」制約が残っている: ${s}`);
+  }
+  const con4 = r4.suggestions.find((s) => s.startsWith("コントラスト:"));
+  assert.ok(con4, "コントラストの示唆が無い");
+  assert.match(con4!, /ambient/);                       // ★絵作りの順序は変えない(まず光で作る)
+  assert.match(con4!, /dx12_set_post_process の contrast/);  // post も素直に勧めてよい
+  assert.match(con4!, /撮り直せばこの数値がそのまま動く/);      // 追い込めることを伝える
+  // 統計そのものは撮り方に依存しない(変わるのは示唆の文面だけ)。
+  assert.deepEqual(roundDelta(r4.delta), roundDelta(r3.delta));
+  pass("既定(最終画)では post グレーディングを但し書き無しで勧められる＝示唆が本来の形に戻っている");
 }
 
 console.log(`\nOK: lookCompare テスト ${passed} 項目すべて通過`);

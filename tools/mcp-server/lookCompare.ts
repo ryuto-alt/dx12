@@ -6,19 +6,30 @@
 //
 // 依存は pngjs のみ(uiCompare.ts と同じ)。横並び合成そのものは compareUiImages を再利用する。
 //
-// ★★ 測定対象が「何の絵」なのかの注意（示唆の作り方がここに縛られる）★★
-//   engine の screenshot は m_sceneRT(リニア HDR)を読み戻し、CPU 側で
-//   【露出 → トーンマップ → ガンマ 1/2.2】だけを掛けて 8bit にしている
-//   (Application::ReadbackSceneBgra。PostProcess.hlsl の ToneMapGamma の写し)。
-//   つまりスクショに映るのは:
-//     ○ 映る … ライト(intensity/color/kelvin)・環境光・材質・IBL・影・SSAO・
-//               dx12_set_post_process の exposure と tonemapper
-//     × 映らない … カラーグレーディング(contrast/brightness/saturation/warmth/hueShift/tint)、
-//               ブルーム・ビネット・グレイン等のポスト効果全般
-//   ビューポート(バックバッファ)にはポストが全部乗るので、目で見える絵とスクショは別物。
-//   したがって示唆は【スクショに映るノブ】を第一候補にし、映らないノブは
-//   「dx12_ui_screenshot で目視」と断ってから出すこと。ここを外すと
-//   「saturation を下げた → スクショが変わらない → もう一度下げる」の無限ループになる。
+// ★★ 測定対象が「何の絵」なのか（示唆の作り方がこれに縛られる）★★
+//
+//   2026-07-26 に engine へ `screenshot_final`（バックバッファ＝ポスト適用後の最終画）が
+//   入り、**ポストのノブも測れるようになった**。撮り方が 2 種類あるので postVisible で分ける。
+//
+//   ① dx12_screenshot_final（既定。postVisible = true）
+//      バックバッファをそのまま読む。**人間がビューポートで見ている絵と同一**。
+//      グレーディング / ブルーム / ゴッドレイ / ビネット / LUT / FXAA / デバンド /
+//      TAA の解決結果まで全部乗るので、**どのノブを動かしても測定値が動く**。
+//      → 示唆に「映らないから勧めるな」の制約は要らない。素直に効くノブを勧めてよい。
+//
+//   ② dx12_screenshot（postVisible = false）
+//      m_sceneRT(リニア HDR)を読み戻し、CPU 側で【露出 → トーンマップ → ガンマ 1/2.2】
+//      だけを掛けた絵(Application::ReadbackSceneBgra。PostProcess.hlsl の ToneMapGamma の写し)。
+//        ○ 映る … ライト(intensity/color/kelvin)・環境光・材質・IBL・影・SSAO・
+//                  dx12_set_post_process の exposure と tonemapper
+//        × 映らない … カラーグレーディング(contrast/brightness/saturation/warmth/hueShift/tint)、
+//                  ブルーム・ビネット・グレイン等のポスト効果全般
+//      → こちらで測っている間だけは、映らないノブに「目視で確認」の但し書きを付ける。
+//        付けないと「saturation を下げた → 測定値が変わらない → もう一度下げる」の無限ループになる。
+//
+//   ★どちらで測っても【まず光で作る】順序そのものは変えない。ライティングの破綻を
+//     グレーディングで塗り潰すのは絵作りとして間違いで、それは測定手段とは無関係だから。
+//     変えたのは「ポストのノブを出してよいか」ではなく「出すときに但し書きが要るか」。
 //
 //   なお engine 側のガンマは純 2.2、こちらの逆変換は sRGB の折れ線(参照が写真＝sRGB のため)。
 //   中間調のズレは 0.03EV 程度で許容差(0.15EV)より十分小さい。両者を同じ曲線で戻すので
@@ -90,6 +101,11 @@ export type LookOptions = {
   whiteLevel?: number;
   /** 横並び合成の差分判定 RGB 距離閾値。既定 30(uiCompare と同じ)。 */
   diffThreshold?: number;
+  /**
+   * 比較対象の絵にポストプロセスが乗っているか(示唆の但し書きが変わる)。
+   * dx12_screenshot_final(バックバッファ)なら true、dx12_screenshot(シーン RT)なら false。既定 true。
+   */
+  postVisible?: boolean;
 };
 
 export type LookStats = {
@@ -416,24 +432,48 @@ function fixed(v: number, n = 2): string {
   return v.toFixed(n);
 }
 
-/** スクショ(シーン RT)に映らないポストのノブを触らせる時に必ず添える但し書き。 */
-const POST_ONLY =
-  "★ポストのグレーディングは dx12_screenshot(シーン RT)に映らないため、この数値では追い込めない。" +
-  "触ったら dx12_ui_screenshot でビューポートを目視して確認すること";
+/**
+ * ポストのノブを勧める行に添える但し書き。
+ * - postVisible=false（dx12_screenshot で測っている）… 「この数値では追い込めない」と断る。
+ * - postVisible=true （dx12_screenshot_final で測っている）… ポストも測定値に乗るので
+ *   但し書きは不要。代わりに「そのまま撮り直せば数値で追える」ことを伝える。
+ */
+function postCaveat(postVisible: boolean): string {
+  return postVisible
+    ? "(ポストも最終画に乗っているので、動かして dx12_screenshot_final で撮り直せばこの数値がそのまま動く)"
+    : "★ポストのグレーディングは dx12_screenshot(シーン RT)に映らないため、この数値では追い込めない。"
+      + "測りながら追い込むなら dx12_look_compare を source:'final' で呼び直すこと"
+      + "(または触った後に dx12_screenshot_final / dx12_ui_screenshot で目視して確認する)";
+}
+
+/** 示唆の作り方を変えるスイッチ。 */
+export type SuggestionOptions = {
+  /**
+   * 測っている絵にポストプロセスが乗っているか。
+   * dx12_screenshot_final(バックバッファ)なら true、dx12_screenshot(シーン RT)なら false。
+   * 既定 true（screenshot_final が既定の撮り方になったため）。
+   */
+  postVisible?: boolean;
+};
 
 /**
  * 統計の差から「何をどっちへ動かすか」の日本語の示唆を作る。
  * エンジン側のノブ名(dx12_set_sun / dx12_set_post_process のフィールド)を必ず添える。
  *
- * ★順序が命: スクショに映るノブ(ライト・環境光・材質・exposure・tonemapper)を第一候補にする。
- *   ポストのグレーディング(contrast/saturation/warmth/tint)はシーン RT に乗らないので、
- *   出すとしても必ず POST_ONLY の但し書きとセットで後ろに置く。
- *   (これを守らないと「下げた→スクショが変わらない→もう一度下げる」の無限ループになる)
+ * ★順序: ライト・環境光・材質(＝絵の作りとして正しい直し方)を第一候補にし、
+ *   ポストのグレーディングは「一律に効かせる最後の手段」として後ろに置く。これは
+ *   測定手段とは無関係の絵作りの原則なので、postVisible に関わらず変えない。
+ * ★postVisible=false のときだけ、ポストのノブに「この数値では追い込めない」但し書きを足す
+ *   (これが無いと「下げた→数値が変わらない→もう一度下げる」の無限ループになる)。
  * ※ exposure / contrast / saturation は【現在値への倍率】で書く(シェーダがそれぞれ乗算・
  *    ピボット 0.5 の乗算・luma との lerp なので、倍率で指示するのが一番外さない)。
  */
-export function buildSuggestions(ref: LookStats, cur: LookStats, delta: LookDelta): string[] {
+export function buildSuggestions(
+  ref: LookStats, cur: LookStats, delta: LookDelta, opts: SuggestionOptions = {},
+): string[] {
   const out: string[] = [];
+  const postVisible = opts.postVisible !== false;
+  const POST_ONLY = postCaveat(postVisible);
 
   if (Math.abs(delta.exposureEV) >= TOL_EV) {
     const dir = delta.exposureEV < 0 ? "暗い" : "明るい";
@@ -442,7 +482,7 @@ export function buildSuggestions(ref: LookStats, cur: LookStats, delta: LookDelt
       `露出: 参照より平均輝度が ${delta.exposureEV >= 0 ? "+" : ""}${fixed(delta.exposureEV)}EV ${dir}。` +
       `dx12_set_sun の intensity を現在値の ×${fixed(mul)} にする(絵の作りとして正しい直し方)。` +
       `全体を一律に持ち上げるだけなら dx12_set_post_process の exposure を ×${fixed(mul)}` +
-      `(exposureOn:true。exposure と tonemapper だけはスクショにも反映される)。`,
+      `(exposureOn:true。${postVisible ? "測っている最終画に反映される" : "exposure と tonemapper だけはスクショにも反映される"})。`,
     );
   }
 
@@ -479,8 +519,8 @@ export function buildSuggestions(ref: LookStats, cur: LookStats, delta: LookDelt
     out.push(
       `色温度: 参照より ${Math.abs(Math.round(delta.cctDeltaK))}K ${dir}寄り` +
       `(参照 ${Math.round(ref.cct!)}K / 現在 ${Math.round(cur.cct!)}K)。` +
-      `dx12_set_sun の kelvin を ${Math.round(ref.cct!)} にする(これはスクショにも反映される)。` +
-      `dx12_set_post_process の warmth でも寄せられる。${POST_ONLY}。`,
+      `dx12_set_sun の kelvin を ${Math.round(ref.cct!)} にする(光源そのものを直すので一番外さない)。` +
+      `dx12_set_post_process の warmth / tint でも寄せられる。${POST_ONLY}。`,
     );
   } else if (ref.cct == null || cur.cct == null) {
     const why = [
@@ -514,13 +554,14 @@ export function buildSuggestions(ref: LookStats, cur: LookStats, delta: LookDelt
       out.push(
         `白飛び: 現在 ${fixed(cur.whiteClipPercent, 1)}% / 参照 ${fixed(ref.whiteClipPercent, 1)}% で飛びすぎ。` +
         `dx12_set_sun の intensity か dx12_set_post_process の exposure を下げる。` +
-        `トーンマッパーを ACES / AgX にするとハイライトの粘りが出る(tonemapper もスクショに反映される)。`,
+        `トーンマッパーを ACES / AgX にするとハイライトの粘りが出る` +
+        `(tonemapper は${postVisible ? "最終画に" : "スクショにも"}反映される)。`,
       );
     } else {
       out.push(
         `白飛び: 現在 ${fixed(cur.whiteClipPercent, 1)}% / 参照 ${fixed(ref.whiteClipPercent, 1)}% でハイライトが伸びていない。` +
         `参照はもっと光っている。光源の intensity を上げる / 鏡面の強い材質(roughness を下げる)を置く。` +
-        `ブルームで伸ばす手もある。${POST_ONLY}。`,
+        `dx12_set_post_process の bloom(bloomOn:true)で伸ばす手もある。${POST_ONLY}。`,
       );
     }
   }
@@ -578,7 +619,7 @@ export function compareLook(
     reference,
     current,
     delta,
-    suggestions: buildSuggestions(reference, current, delta),
+    suggestions: buildSuggestions(reference, current, delta, { postVisible: opts.postVisible }),
   };
 }
 

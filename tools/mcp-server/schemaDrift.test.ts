@@ -48,7 +48,11 @@ const engine = parseEngineMethods(cpp);
 const tools = parseTsTools(indexSrc);
 
 // index.ts の共通スプレッド部品 → 実キー。増えたらここに足す(足し忘れは下の [0] が気づく)。
-const SPREADS: Record<string, string[]> = { "...entityRef": ["entity", "name"] };
+const SPREADS: Record<string, string[]> = {
+  "...entityRef": ["entity", "name"],
+  // dx12_screenshot / dx12_screenshot_final の共通引数($ref 回避でファクトリにしてある)。
+  "...captureParams()": ["path", "deterministic", "settleFrames"],
+};
 
 /**
  * 同じ if 分岐が 2 つの method を受けているせいで、相手側のキーまで拾ってしまう分。
@@ -530,6 +534,62 @@ console.log("\n[12] シーン JSON のルートキー(SceneSerializer.cpp が書
     check("SCENE_ROOT_KEYS がエンジンの書くルートキーを網羅している", missing.length === 0,
       `足りない: ${missing.join(", ")}  → sceneWrite.ts の SCENE_ROOT_KEYS に足すこと`);
   }
+}
+
+console.log("\n[13] 遅延同期 method のタイムアウトが engine の待ち時間に足りている");
+{
+  // ★ドリフトの別の形: スキーマは合っているのに【待ち時間】が合っていないと、
+  //   エンジンは撮り続けているのに TS 側だけタイムアウトして「失敗」に見える。
+  //   screenshot / screenshot_final の deterministic は settleFrames(最大 240)ぶん
+  //   描いてから返るので、8000ms の読み取り系グループに置いてはいけない。
+  const clientSrc = fs.readFileSync(path.join(here, "engineClient.ts"), "utf8");
+  const timeoutOf = (m: string): number | null => {
+    const hit = clientSrc.match(new RegExp(`TIMEOUT_BY_METHOD\\["${m}"\\]\\s*=\\s*(\\d+)`));
+    return hit ? Number(hit[1]) : null;
+  };
+  // render_debug(最大 120 フレームで 60s)が先例。同じ桁を下限にする。
+  const baseline = timeoutOf("render_debug") ?? 60000;
+  for (const m of ["screenshot", "screenshot_final"]) {
+    const t = timeoutOf(m);
+    check(`${m} のタイムアウトが遅延同期に足りている(>= render_debug の ${baseline}ms)`,
+      t != null && t >= baseline,
+      `${m} = ${t ?? "未設定(既定 10000ms)"}  → engineClient.ts の TIMEOUT_BY_METHOD に足すこと。`
+      + "deterministic:true は settleFrames(最大 240)フレーム描いてから返る");
+  }
+  // 8000ms の一括グループへ書き戻されていないこと(上書き順で救われている状態を許さない)。
+  const fastGroup = clientSrc.slice(0, clientSrc.indexOf("]) TIMEOUT_BY_METHOD[m] = 8000;"));
+  for (const m of ["screenshot", "screenshot_final"]) {
+    check(`${m} が 8000ms の読み取り系グループに入っていない`,
+      !new RegExp(`"${m}"`).test(fastGroup),
+      `${m} が 8000ms グループに残っている`);
+  }
+
+  // ★絵を「見る/測る」ツールは最終画(ポスト後)を撮ること。ここが screenshot に戻ると
+  //   「MCP の測定と目視が食い違う」問題(§6 B5)がそのまま再発する。
+  //   実際の呼び出しは captureTools.test.ts が偽エンジンで見ているので、ここは
+  //   「エンジン method 名が index.ts に存在するか」の静的な裏取り。
+  check("index.ts が engine の screenshot_final を呼んでいる",
+    /engine\.call\("screenshot_final"/.test(indexSrc),
+    "screenshot_final の呼び出しが消えている");
+  check("dx12_screenshot_final がツールとして登録されている",
+    tools.some((t) => t.tool === "dx12_screenshot_final"),
+    "index.ts に dx12_screenshot_final が無い");
+
+  // ★assetsDir はエンジンが返す正を使う(ログからの推定ハックは撤去済み)。
+  //   撤去した理由を書き残した墓標コメントには名前が残るので、コメントを剥がしてから見る。
+  const stripComments = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const liveCode = stripComments(indexSrc) + stripComments(fs.readFileSync(path.join(here, "sceneWrite.ts"), "utf8"));
+  check("ログからの assetsDir 推定ハックが復活していない",
+    !/assetsDirCandidatesFromLog/.test(liveCode),
+    "assetsDirCandidatesFromLog が戻っている → assets の正は dx12_ping の assetsDir(protocolVersion 4)");
+  check("assetsDir の解決が dx12_ping を見ている",
+    /resolveAssetsDir[\s\S]{0,900}?engine\.call\("ping"/.test(indexSrc),
+    "resolveAssetsDir が ping を呼んでいない");
+  // エンジンが本当に ping で返しているかの裏取り(片側だけ消すと壊れる)。
+  const ping = cpp.match(/McpDefine\("ping"[\s\S]{0,1200}?\}\);/);
+  check("engine の ping が assetsDir を返している",
+    ping != null && /"assetsDir"/.test(ping[0]) && /"protocolVersion"\s*,\s*4/.test(ping[0]),
+    "Application.cpp の ping に assetsDir / protocolVersion 4 が無い");
 }
 
 console.log(failed === 0

@@ -8,16 +8,18 @@
  *   [9-12]  「無言で無視される」系 — 未知キーの検出と打ち間違い候補 / 生成キーの競合 /
  *           反射コンポーネントが非オブジェクト / tags の形式
  *   [13-15] 参照切れ — modelPath / scriptPath を dx12_list_assets と突き合わせる
- *   [16-18] パス解決 — checkScenePath / assetsDirFromScenePath / ログからの候補抽出
+ *   [16-18] パス解決 — checkScenePath / assetsDirFromScenePath / ログ推定ハックの不在確認
  *
  * 実行: node sceneWrite.test.ts
  */
 
 import assert from "node:assert/strict";
 import {
-  assetsDirCandidatesFromLog, assetsDirFromScenePath, checkScenePath, entityKind,
+  assetsDirFromScenePath, checkScenePath, entityKind,
   isSafeAssetRelPath, nearestAsset, nearestKey, summarizeScene, validateSceneJson,
 } from "./sceneWrite.ts";
+// 名前空間ごと取るのは「削除した export が復活していないか」を [18] で見るため。
+import * as sceneWrite from "./sceneWrite.ts";
 
 let passed = 0;
 function pass(label: string): void {
@@ -224,20 +226,14 @@ console.log("\n[16-18] 書き出し先の解決");
   assert.equal(assetsDirFromScenePath("C:/tmp/a.json"), null);
   pass("絶対パスの .../assets/ から assets ディレクトリを推定する");
 
-  // 18. エンジンログから assets ディレクトリの候補を拾う（新しい行が先頭）
-  const log = [
-    "[info] Scene loaded (12 entities): C:/Users/me/game/Old/assets/scenes/old.json",
-    "[info] loading model C:/Users/me/game/New/assets/model/char.fbx",
-    "[info] nothing here",
-  ];
-  const cands = assetsDirCandidatesFromLog(log);
-  assert.equal(cands[0], "C:/Users/me/game/New/assets");
-  assert.equal(cands[1], "C:/Users/me/game/Old/assets");
-  assert.deepEqual(assetsDirCandidatesFromLog(["no path at all"]), []);
+  // 18. ★assetsDirCandidatesFromLog は削除済み(エンジンが dx12_ping で assetsDir を返すため)。
+  //     「もう存在しない」ことを検査して、うっかり復活させたら気づけるようにしておく。
+  assert.equal((sceneWrite as Record<string, unknown>).assetsDirCandidatesFromLog, undefined,
+    "assetsDirCandidatesFromLog が復活している。assets の正は dx12_ping の assetsDir(#20-3)");
   // 要約はパースできない/空の入力でも落ちない
   assert.equal(summarizeScene(undefined).entityCount, 0);
   assert.equal(summarizeScene({ entities: [1, "x", null] }).entityCount, 3);
-  pass("ログから assets ディレクトリ候補を新しい順に抽出する");
+  pass("ログからの assetsDir 推定ハックが削除されたままである");
 }
 
 console.log(`\nOK: sceneWrite テスト ${passed} 項目すべて通過`);

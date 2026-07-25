@@ -209,24 +209,50 @@ dx12_look_compare(referencePath:"C:/ref/forest_dusk.png", position:[0,2,-8], tar
 
 #### ★ 何が映る絵を測っているのかを絶対に間違えないこと
 
-`dx12_screenshot` は**シーン RT(ポスト前のリニア HDR)**を読み戻して、CPU 側で
-**露出 → トーンマップ → ガンマ**だけを掛けた絵を返す(`Application::ReadbackSceneBgra`)。
+スクショは 3 種類あり、**撮る先が違う**。ここを間違えると「測定と目視が食い違う」。
 
-| | `dx12_screenshot` / `dx12_look_compare` | エディタのビューポート(`dx12_ui_screenshot`) |
+| | `dx12_screenshot`<br>(シーン RT・ポスト前) | `dx12_screenshot_final`<br>(バックバッファ・ポスト後) | `dx12_ui_screenshot`<br>(ウィンドウ全体) |
+|---|---|---|---|
+| ライト・環境光・材質・IBL・影・SSAO | ○ | ○ | ○ |
+| post の `exposure` / `tonemapper` | ○ | ○ | ○ |
+| post のグレーディング(`contrast` `brightness` `saturation` `warmth` `hueShift` `tint`) | **× 映らない** | ○ | ○ |
+| ブルーム・ゴッドレイ・ビネット・LUT・FXAA・デバンド | **× 映らない** | ○ | ○ |
+| **TAA の解決結果**(ゴースト) | **× 映らない** | ○ | ○ |
+| ImGui のパネル / ギズモ | × | × | ○ |
+
+**`dx12_look_compare` / `dx12_camera_path` / `dx12_screenshot_from` /
+`dx12_focus_and_screenshot` は既定で `screenshot_final`(ポスト後)を撮る。**
+＝人間がビューポートで見ている絵と同じものを測るので、**どのノブを動かしても数値が動く**。
+
+- 数値で追い込むノブに制限は無い。ただし**順序は変えない**: まずライト側
+  (`dx12_set_sun` の intensity / kelvin / ambient、ライトの色、材質の albedo / roughness、IBL)
+  で作り、post のグレーディングは「一律に効かせる最後の手段」。
+  ライティングの破綻をグレーディングで塗り潰すのは絵作りとして間違い。
+- `source:"sceneRT"` に切り替えると従来のポスト前を測る。**ポストの化粧を剥がして
+  幾何とライティングの素の値だけ見たいとき**に使う。このときだけ suggestions の post 案に
+  「この数値では追い込めない」の但し書きが付く。
+- 例外: `gameView:true` は `screenshot_game_view` = **常にポスト前**(エンジンに
+  「ゲームカメラ視点のバックバッファ」を撮る method が無いため)。ポスト込みのゲーム画面を
+  測りたいなら `dx12_play` してから `gameView` なしで呼ぶ(Playing 中の最終画はゲームカメラの絵そのもの)。
+
+> ⚠️ 2026-07-26 より前は `dx12_screenshot`(ポスト前)しか無く、
+> 「`saturation` を下げても数値が 1 ミリも動かない → もっと下げる」の無限ループを避けるため
+> **suggestions が post のノブを勧めないよう歪めてあった**。`screenshot_final` の追加で解消済み。
+
+#### ★ ピクセル差分で A/B を取るなら `deterministic:true`
+
+**同じ設定で 2 回撮っても絵は一致しない。** 犯人は実測で 3 つ:
+
+| 原因 | 効く先 | 実測(1920x1032・同一設定 2 枚) |
 |---|---|---|
-| ライト・環境光・材質・IBL・影・SSAO | ○ 映る | ○ |
-| post の `exposure` / `tonemapper` | ○ 映る | ○ |
-| post のグレーディング(`contrast` `brightness` `saturation` `warmth` `hueShift` `tint`) | **× 映らない** | ○ |
-| ブルーム・ビネット・グレイン・歪み | **× 映らない** | ○ |
+| deband ディザ / フィルムグレイン(`time` 依存の TPDF ノイズ) | `screenshot_final` のみ | 画面の **66%** が ±1〜2 LSB |
+| TAA のジッタ | 両方 | `screenshot` で **9.4%** / max 140 |
+| SSGI・ボリュメトリックフォグの時間ジッタ + 履歴蓄積 | 両方 | SSGI 1.5% / フォグ 5.9% |
 
-つまり **`saturation` を下げても `dx12_look_compare` の数値は 1 ミリも動かない**。
-「下げた → 変わらない → もっと下げる」の無限ループに入るので、
-
-- 数値で追い込むのは**ライト側**(`dx12_set_sun` の intensity / kelvin / ambient、ライトの色、
-  材質の albedo / roughness、IBL)と **`exposure` / `tonemapper`** だけ。
-- グレーディングを触った結果は必ず `dx12_ui_screenshot` でビューポートを目視して確認する。
-
-suggestions もこの順で書いてある(光で作る案が先、post 案は「目視で確認」の但し書きつき)。
+`{"deterministic": true, "settleFrames": 8}` で time を固定し、TAA/フォグ/SSGI の位相を 0 に、
+履歴を捨ててから固定フレーム数回してから撮る → **2 枚が完全一致(diff 0.00%)**。
+止まるのは**レンダラの時間依存だけ**なので、Play 中のゲームシミュレーション(移動/物理/アニメ)は
+止まらない。厳密に比べるなら `dx12_stop` してから撮ること。
 
 #### そのほかの読み方
 
@@ -292,8 +318,11 @@ dx12_scene_write(
 `%TEMP%` に取った `backupPath` を返す。**何を壊したかが返り値に残る。**
 
 - `path` は assets 相対(`scenes/xxx.json`)推奨。絶対パスも可。
-- assets ディレクトリはエンジンが MCP で公開していないので、`assetsDir` 引数 → 環境変数 `DX12_ASSETS_DIR`
-  → エンジンログからの自動検出、の順で解決する。**自動検出が外れたら `assetsDir` を明示すること。**
+- assets ディレクトリは **`dx12_ping` がエンジンの正を返す**(`protocolVersion 4` 以降。
+  `assetsDir` / `scriptsDir` / `baseDir` / `projectShaderDir` / `cwd`)。
+  解決順は `assetsDir` 引数 → 環境変数 `DX12_ASSETS_DIR` → `dx12_ping`。
+  以前あった「エンジンログの絶対パスから推定する」ハックは**撤去済み**(別プロジェクトの古いログを
+  掴む事故があった)。絶対パスが要るときはログを漁らず `dx12_ping` を引くこと。
 - 書いた後は `dx12_open_scene`(または `open:true`)で読み込む。開くまでエディタの絵は変わらない。
 
 ---
@@ -341,8 +370,14 @@ dx12_set_lua_property(name:"MainCamera", key:"height", value:5.0)
 - `dx12_screenshot_game_view` は **Editor 中でも Play せずにアクティブなゲームカメラの絵**を返す
   (内部で1フレームだけゲームカメラに切り替えて撮影→編集カメラに復元)。カメラ配置・構図の確認に最適。
   アクティブな CameraComponent が無いとエラー(`camera` の `isActive=true` にする)。
-- `dx12_screenshot` は **Playing 中はゲームカメラの絵**、Editor 中はエディタのフライカメラ。
-  `dx12_focus_and_screenshot` は寄せて撮る用(エディタカメラ)。
+- `dx12_screenshot_final` は **Playing 中はゲームカメラの絵**、Editor 中はエディタのフライカメラ。
+  どちらも**ポスト適用後**なので「実際にプレイヤーが見る絵」の判断はこれで行う。
+  `dx12_screenshot`(ポスト前)は幾何/ライティングの素の値を見たいときだけ。
+  `dx12_focus_and_screenshot` は寄せて撮る用。
+- `dx12_set_editor_camera` は **Play 中も使える**(アクティブな `CameraComponent` の毎フレーム
+  同期を止めて視点を固定する = `overridden:true`)。撮り終わったら `{"release":true}` で
+  ゲームカメラへ返す(Play/Stop の遷移でも自動解除)。Play 中の絵で `dx12_look_compare` /
+  `dx12_camera_path` を回すための機能。
 - `dx12_project_world_to_screen(name:"Player")` で player のワールド座標を画面ピクセルへ投影。
   `{x, y, visible, depth, width, height}`。`x≈width/2, y≈height/2` なら画面中央。`visible=false` は画面外。
 
@@ -477,7 +512,7 @@ dx12_set_shadow_pcss(enabled:true, lightTanAngle:0.02)
 最終画だけ見て原因を当てにいかないこと。**中間バッファを 1 枚ずつ見るのが最短**。
 呼ぶ前と後でシーンの設定は**完全に同じ**（一時的に ON にした機能は必ず戻る）ので、
 何度撃っても副作用が残らない。可視化はポスト前の `m_sceneRT` へ描くので、
-`dx12_screenshot` の「TAA/可視化が写らない」罠を踏まない。
+`dx12_screenshot` でも必ず写る（この 1 点だけは `screenshot_final` でなくてよい）。
 
 ```
 dx12_render_debug(mode:"normal")                       # 法線が飛んでないか
@@ -500,7 +535,7 @@ dx12_render_debug(mode:"off")                          # 撮らずに全部戻�
   **PNG のピクセル値がそのままバッファの値**として読める。
 - **`albedo` と `overdraw` は意図的に非対応**。撃つと「なぜ無いか + 代わりに何を見ればいいか」を
   添えて弾かれる（`albedo` は前方レンダラなので G-Buffer が存在しない。`overdraw` は専用パスが要る）。
-  代わりに最終画は `dx12_screenshot`、描画負荷は `dx12_perf_stats` の `draws`/`tris`、
+  代わりに最終画は `dx12_screenshot_final`、描画負荷は `dx12_perf_stats` の `draws`/`tris`、
   ライトの重なりは `mode:"lightComplexity"` を見ること。
 - **`rt` / `rtDiff` は DXR 用**。`rt` はプライマリレイのヒット距離（空/ミスは黒、`depthRange` で正規化）、
   `rtDiff` は **|RT のヒット距離 − ラスタの距離|**（**黒 = 完全一致**、マゼンタ = 片方だけヒット）。
@@ -849,7 +884,7 @@ dx12_set_transform(name:"Player", position:[0,1,0])
 3. `dx12_set_component(component: "uiRect", data: {anchorMin:[0.5,0.5], anchorMax:[0.5,0.5], offsetMin:[-110,-32], offsetMax:[110,32]})` — 配置。
    解決式は `rectMin = parentMin + parentSize*anchorMin + offsetMin`。全面ストレッチ = anchor [0,0]-[1,1] + offset 0
 4. `dx12_ui_tree` — 全要素の解決済み矩形（キャンバス空間 px）を数値で確認。重なり/はみ出しはここで分かる
-5. `dx12_ui_screenshot` — エディタウィンドウごと撮って見た目を確認（`dx12_screenshot` には UI は写らない）
+5. `dx12_ui_screenshot` — エディタウィンドウごと撮って見た目を確認（ゲーム内 UI は `dx12_screenshot`(シーン RT) には写らない。`dx12_screenshot_final` にはゲーム内 UI 画像は写るが ImGui のパネルは写らない）
 
 - ラベル文言は子の `uiText` を `set_component`（子の id と現在の文言は `dx12_ui_tree` の `children` / `text` で分かる）
 - クリック/値変更は Lua の `events:on(イベント名, fn)` で受ける（`uiButton.onClickEvent` / `uiSlider.onChangeEvent`。`e.value` に実値）
@@ -911,7 +946,7 @@ colorGroups は近似色(RGB 1/8刻み)をまとめた代表色・使用回数�
 同じ実装（`RaycastScene`）**を通るので、AI が見たものと人が選ぶものが一致する。
 
 ```
-dx12_screenshot()                       # 1280x720 の絵が返る
+dx12_screenshot_final()                 # 1280x720 の絵が返る
 dx12_pick(x: 640, y: 400)               # そのピクセルに何があるか
 # → {hits:[{entityId:42, name:"Rock", submeshIndex:0, distance:12.3,
 #           worldPos:[3.2,1.1,-8.0], worldNormal:[0,1,0], isIcon:false}], count:1}

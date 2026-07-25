@@ -20,7 +20,7 @@ for (const m of [
   "ping", "list_entities", "get_entity", "find_entity", "query_entities",
   "list_scenes", "list_assets", "get_mode", "get_log", "describe_components",
   "describe_lua_api", "get_scene_settings", "get_lua_component_state",
-  "project_world_to_screen", "screenshot", "screenshot_game_view", "perf_stats",
+  "project_world_to_screen", "screenshot_game_view", "perf_stats",
   // 同期編集
   "set_transform", "set_component", "remove_component", "set_parent",
   "rename_entity", "select_entity", "focus_camera", "set_pbr", "set_color", "set_lua_property",
@@ -58,6 +58,14 @@ TIMEOUT_BY_METHOD["terrain_autopaint"] = 30000;
 TIMEOUT_BY_METHOD["terrain_set_layers"] = 30000;
 // render_debug は最大 120 フレーム描いてからスクショを撮る遅延応答(重い可視化だと 1 フレームが伸びる)。
 TIMEOUT_BY_METHOD["render_debug"] = 60000;
+// ★screenshot / screenshot_final は【遅延同期】。
+//   - screenshot_final は素で 1 フレーム待つ(ImGui を描く前にバックバッファをコピーする)。
+//   - deterministic:true だと履歴を捨ててから settleFrames(最大 240)ぶん回してから撮る。
+//     240 フレームは重いシーンだと数十秒かかるので、render_debug(最大 120 フレームで 60s)と
+//     同じ桁を確保する。ここを 8000ms のままにすると settleFrames を上げた瞬間に
+//     「エンジンは撮り続けているのに TS 側だけタイムアウト」になる。
+TIMEOUT_BY_METHOD["screenshot"]       = 60000;
+TIMEOUT_BY_METHOD["screenshot_final"] = 60000;
 // 遅延同期(地形/スカルプトの生成。CPU メッシュ生成 + GPU アップロードをフレーム境界で行う)。
 for (const m of ["terrain_create", "sculpt_create", "sculpt_make_editable"])
   TIMEOUT_BY_METHOD[m] = 45000;
