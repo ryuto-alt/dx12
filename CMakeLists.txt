@@ -281,6 +281,12 @@ if(DXC_EXECUTABLE)
     # スクリーン空間共通ヘッダ（oct 法線 / ビューポート UV↔NDC / レイマーチ）。
     # 深度プリパスの PS（G-Buffer 書き出し）と SSR/SSGI の両方が include する。
     set(SHADER_SS_INC        "${CMAKE_SOURCE_DIR}/shaders/screenspace/ScreenSpaceCommon.hlsli")
+    # SSR / SSGI（計画04）。VS は SSR.hlsl の FSTriVS を全パスで共有する。
+    set(SHADER_SSR           "${CMAKE_SOURCE_DIR}/shaders/screenspace/SSR.hlsl")
+    set(SHADER_SSGI          "${CMAKE_SOURCE_DIR}/shaders/screenspace/SSGI.hlsl")
+    set(SHADER_SSGI_INC      "${SHADER_SS_INC}"
+                             "${CMAKE_SOURCE_DIR}/shaders/screenspace/ScreenSpaceParams.hlsli"
+                             "${CMAKE_SOURCE_DIR}/shaders/post/FullscreenTri.hlsli")
     set(SHADER_VELOCITY_INC  "${CMAKE_SOURCE_DIR}/shaders/velocity/VelocityCommon.hlsli"
                              "${SHADER_SS_INC}")
     set(SHADER_TAA           "${CMAKE_SOURCE_DIR}/shaders/post/TAA.hlsl")
@@ -356,6 +362,57 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/VelocityDebug_PS.cso"
         "${SHADER_OUTPUT_DIR}/ClusterBuild_CS.cso"
         "${SHADER_OUTPUT_DIR}/ClusterCull_CS.cso"
+        "${SHADER_OUTPUT_DIR}/ScreenSpace_VS.cso"
+        "${SHADER_OUTPUT_DIR}/SsrTrace_PS.cso"
+        "${SHADER_OUTPUT_DIR}/SsrUpsample_PS.cso"
+        "${SHADER_OUTPUT_DIR}/SsgiTrace_PS.cso"
+        "${SHADER_OUTPUT_DIR}/SsgiTemporal_PS.cso"
+        "${SHADER_OUTPUT_DIR}/SsgiUpsample_PS.cso"
+        "${SHADER_OUTPUT_DIR}/ColorDownsample_PS.cso"
+    )
+
+    # --- SSR / SSGI（スクリーン空間反射 + スクリーン空間GI）---
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ScreenSpace_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E FSTriVS -Fo "${SHADER_OUTPUT_DIR}/ScreenSpace_VS.cso" "${SHADER_SSR}"
+        DEPENDS "${SHADER_SSR}" ${SHADER_SSGI_INC}
+        COMMENT "Compiling SSR.hlsl -> ScreenSpace_VS.cso (vs_6_0)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/SsrTrace_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E TracePS -Fo "${SHADER_OUTPUT_DIR}/SsrTrace_PS.cso" "${SHADER_SSR}"
+        DEPENDS "${SHADER_SSR}" ${SHADER_SSGI_INC}
+        COMMENT "Compiling SSR.hlsl -> SsrTrace_PS.cso (ps_6_0)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/SsrUpsample_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E UpsamplePS -Fo "${SHADER_OUTPUT_DIR}/SsrUpsample_PS.cso" "${SHADER_SSR}"
+        DEPENDS "${SHADER_SSR}" ${SHADER_SSGI_INC}
+        COMMENT "Compiling SSR.hlsl -> SsrUpsample_PS.cso (ps_6_0)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/SsgiTrace_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E TracePS -Fo "${SHADER_OUTPUT_DIR}/SsgiTrace_PS.cso" "${SHADER_SSGI}"
+        DEPENDS "${SHADER_SSGI}" ${SHADER_SSGI_INC}
+        COMMENT "Compiling SSGI.hlsl -> SsgiTrace_PS.cso (ps_6_0)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/SsgiTemporal_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E TemporalPS -Fo "${SHADER_OUTPUT_DIR}/SsgiTemporal_PS.cso" "${SHADER_SSGI}"
+        DEPENDS "${SHADER_SSGI}" ${SHADER_SSGI_INC}
+        COMMENT "Compiling SSGI.hlsl -> SsgiTemporal_PS.cso (ps_6_0)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/SsgiUpsample_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E UpsamplePS -Fo "${SHADER_OUTPUT_DIR}/SsgiUpsample_PS.cso" "${SHADER_SSGI}"
+        DEPENDS "${SHADER_SSGI}" ${SHADER_SSGI_INC}
+        COMMENT "Compiling SSGI.hlsl -> SsgiUpsample_PS.cso (ps_6_0)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ColorDownsample_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E DownsamplePS -Fo "${SHADER_OUTPUT_DIR}/ColorDownsample_PS.cso" "${SHADER_SSGI}"
+        DEPENDS "${SHADER_SSGI}" ${SHADER_SSGI_INC}
+        COMMENT "Compiling SSGI.hlsl -> ColorDownsample_PS.cso (ps_6_0)"
     )
 
     # --- クラスタードライティング（Forward+）のライトカリング compute 2 パス ---

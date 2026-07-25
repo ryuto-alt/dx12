@@ -35,6 +35,7 @@
 #include "renderer/SSAOPass.h"
 #include "renderer/ContactShadowPass.h"
 #include "renderer/TaaPass.h"
+#include "renderer/ScreenSpaceGiPass.h"
 #include "renderer/PrevWorldComponent.h"
 #include "renderer/ParticleSystem.h"
 #include "renderer/SpriteRenderer.h"
@@ -477,6 +478,9 @@ void Application::RecreateDepthPrepassPsos()
 void Application::InvalidateTemporalHistory()
 {
     if (m_taaPass) m_taaPass->InvalidateHistory();
+    // SSR/SSGI も「前フレームカラー」と時間蓄積の履歴を持っている。捨てないと
+    // シーン切替直後の 1 フレームだけ前のシーンの色が反射/間接光として写り込む。
+    if (m_screenSpaceGi) m_screenSpaceGi->InvalidateHistory();
     m_prevViewProjNJValid = false;
     m_prevFrameIndexValid = false;
     m_prevViewProjValid   = false;   // モーションブラーの速度スパイクも同時に防ぐ
@@ -595,6 +599,14 @@ void Application::RegisterShaderReloadHandlers()
         m_shaderManager->RegisterReloadHandler(
             { L"ContactShadow_VS.cso", L"ContactShadow_PS.cso" },
             [this]() { m_contactShadowPass->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_screenSpaceGi)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"ScreenSpace_VS.cso", L"SsrTrace_PS.cso", L"SsrUpsample_PS.cso",
+              L"SsgiTrace_PS.cso", L"SsgiTemporal_PS.cso", L"SsgiUpsample_PS.cso",
+              L"ColorDownsample_PS.cso" },
+            [this]() { m_screenSpaceGi->RecreatePipelines(*m_graphicsDevice); });
     }
     if (m_bloomPass)
     {
@@ -1201,6 +1213,28 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             m_ssaoWhiteTex->CreateSRV(*m_graphicsDevice, m_srvHeap->GetCpuHandle(m_ssaoWhiteSrvIndex));
         }
 
+        // SSR/SSGI 無効時の 1x1 黒 RGBA16F ダミー（forward の g_ssr / g_ssgi 用）。
+        // ★白ダミー(R8_UNORM)の流用は不可。Texture2D<float4> に R8_UNORM を貼ると
+        //   デバッグレイヤがフォーマット不一致で警告する。1x1 なので Load(画面座標) は
+        //   範囲外＝0 を返し、SSR の confidence 0 / SSGI 寄与 0 に自動的に落ちる。
+        {
+            const u16 black[4] = {0, 0, 0, 0};   // half の 0 はビットパターンも 0
+            D3D12_RESOURCE_DESC desc{};
+            desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+            desc.Width = 1; desc.Height = 1; desc.DepthOrArraySize = 1; desc.MipLevels = 1;
+            desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            desc.SampleDesc = {1, 0};
+
+            D3D12_SUBRESOURCE_DATA subData{};
+            subData.pData = black; subData.RowPitch = 8; subData.SlicePitch = 8;
+
+            m_ssBlackTex = std::make_unique<Texture>();
+            m_ssBlackTex->Initialize(*m_graphicsDevice, cmdList, desc, &subData, 1);
+            m_ssBlackSrvIndex = m_srvHeap->AllocateIndex();
+            m_ssBlackTex->SetSrvIndex(m_ssBlackSrvIndex);
+            m_ssBlackTex->CreateSRV(*m_graphicsDevice, m_srvHeap->GetCpuHandle(m_ssBlackSrvIndex));
+        }
+
         // エディタUIアイコンを読み込み（エンジン側assets基準。プロジェクト切替前に1度）
         if (!m_isGameMode)
             LoadEditorIcons(cmdList);
@@ -1339,6 +1373,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         // アップロードバッファ解放
         m_resourceManager->FinishUploads();
         if (m_ssaoWhiteTex) m_ssaoWhiteTex->FinishUpload();
+        if (m_ssBlackTex)   m_ssBlackTex->FinishUpload();
 
         // スキニング PSO 作成
         RecreateSkinnedPsos();
@@ -1636,6 +1671,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                                 m_resourceManager.get(), m_rootSignature.get(),
                                 m_pipelineStateThumb.get());
     m_thumbRenderer->SetAOWhiteSrv(m_ssaoWhiteSrvIndex);  // forward PS の t8 を白ダミーで満たす
+    m_thumbRenderer->SetScreenSpaceBlackSrv(m_ssBlackSrvIndex);  // t16/t17 を黒ダミーで満たす
     m_editorLayer->SetThumbnailRenderer(m_thumbRenderer.get());
 
     // Physics Debug Renderer
@@ -1728,6 +1764,13 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_gbufferRT->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
                                 m_window->GetWidth(), m_window->GetHeight(),
                                 kGBufferFormat, gbufClear);
+
+        // SSR / SSGI（前フレームカラー退避 + ハーフトレース + 時間蓄積 + アップサンプル）。
+        // RTV は 8 枚使う（フル 3 + ハーフ 5）。既定 OFF なのでパスは走らない。
+        m_screenSpaceGi = std::make_unique<ScreenSpaceGiPass>();
+        m_screenSpaceGi->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
+                                    m_window->GetWidth(), m_window->GetHeight(),
+                                    PathResolver::ShaderDirW());
 
         // クラスタードライティング（Forward+）。ライトカリング compute 2 パス + SRV テーブル。
         // 旧「点光源 8 / スポット 8」の cbuffer 固定配列を置き換える本体。
@@ -7136,6 +7179,7 @@ void Application::Run()
                 // （持ち越すと画面が歪んで尾を引く）。MB の速度スパイク防止も兼ねる。
                 if (m_taaPass) m_taaPass->Resize(*m_graphicsDevice, w, h);
                 if (m_gbufferRT) m_gbufferRT->Resize(*m_graphicsDevice, w, h);
+                if (m_screenSpaceGi) m_screenSpaceGi->Resize(*m_graphicsDevice, w, h);
                 InvalidateTemporalHistory();
 
                 // カメラアスペクト比更新（エディタモードではサイドバー分引く）
@@ -7380,7 +7424,9 @@ void Application::Shutdown()
     m_contactShadowPass.reset();
     m_taaPass.reset();
     m_gbufferRT.reset();
+    m_screenSpaceGi.reset();
     m_ssaoWhiteTex.reset();
+    m_ssBlackTex.reset();
     m_depthPrepassPSO.reset();
     m_depthPrepassSkinnedPSO.reset();
     m_velocityPSO.reset();
@@ -10910,7 +10956,8 @@ void Application::RecordPerfFrame()
 
 void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u32 frameIndex,
                                    DirectX::XMMATRIX viewProj, bool isGameView, u32 aoSrvIndex,
-                                   bool depthPrepassActive, u32 contactShadowSrvIndex)
+                                   bool depthPrepassActive, u32 contactShadowSrvIndex,
+                                   u32 ssrSrvIndex, u32 ssgiSrvIndex)
 {
     using namespace DirectX;
     auto& reg = m_scene->GetRegistry();
@@ -10941,6 +10988,17 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
         if (csIdx != DescriptorHeap::kInvalidIndex)
             m_commandList->SetSRVTable(RootSignature::kSlotContactShadowSRV,
                 m_srvHeap->GetGpuHandle(csIdx));
+    }
+
+    // SSR(t16) / SSGI(t17) も同形。PS が無条件で Load するので、無効時は必ず
+    // 1x1 黒ダミー(RGBA16F)を張ること（1x1 なので範囲外 Load=0 ＝ 寄与ゼロになる）。
+    {
+        const u32 ssr  = (ssrSrvIndex  != DescriptorHeap::kInvalidIndex) ? ssrSrvIndex  : m_ssBlackSrvIndex;
+        const u32 ssgi = (ssgiSrvIndex != DescriptorHeap::kInvalidIndex) ? ssgiSrvIndex : m_ssBlackSrvIndex;
+        if (ssr != DescriptorHeap::kInvalidIndex)
+            m_commandList->SetSRVTable(RootSignature::kSlotSsrSRV, m_srvHeap->GetGpuHandle(ssr));
+        if (ssgi != DescriptorHeap::kInvalidIndex)
+            m_commandList->SetSRVTable(RootSignature::kSlotSsgiSRV, m_srvHeap->GetGpuHandle(ssgi));
     }
 
     // パーティクル判定（名前が "Pfx" で始まる＝加算発光で描く。パス3の instancing 集約用）
@@ -13402,8 +13460,15 @@ void Application::Render()
     const TaaSettings& taaCfg = m_scene->GetTaaSettings();
     const bool taaViewOk = !(m_editorCtx && m_editorCtx->view2D) && !m_camera->IsOrthographic();
     const bool taaActive = taaCfg.enabled && m_taaPass && m_taaPass->IsReady() && taaViewOk;
-    if (taaActive) EnsureInstancePrevBuffer();
-    m_trackPrevWorld = taaActive;
+    // SSR/SSGI も速度+G-Buffer プリパスを要求する（TAA が OFF でも）。速度バッファはヒット点の
+    // 再投影に使うので、前フレームのワールド行列の追跡もインスタンス用の前ワールド VB も要る。
+    // ★ここを taaActive だけにすると、SSR だけ ON のときに動く物体の速度が 0 になり、
+    //   プリパスのインスタンシング経路も無効化されて無駄に遅くなる。
+    const bool ssGiWantsPrepass =
+        m_screenSpaceGi && m_screenSpaceGi->IsReady() && taaViewOk
+        && (m_scene->GetSsrSettings().enabled || m_scene->GetSsgiSettings().enabled);
+    if (taaActive || ssGiWantsPrepass) EnsureInstancePrevBuffer();
+    m_trackPrevWorld = taaActive || ssGiWantsPrepass;
 
     // ビューポート矩形が変わったら履歴を捨てる。エディタのパネル分割をドラッグすると
     // ウィンドウリサイズなしで矩形だけが変わり、履歴のローカル UV 対応が崩れて
@@ -13661,19 +13726,36 @@ void Application::Render()
     const bool useContactShadow = csCfg.enabled && m_contactShadowPass
                                 && m_contactShadowPass->IsReady()
                                 && viewSupportsScreenSpace;
+    // SSR / SSGI（計画04）。G-Buffer と前フレームカラーが要るので、有効なら速度プリパスを走らせる。
+    const SsrSettings&  ssrCfg  = m_scene->GetSsrSettings();
+    const SsgiSettings& ssgiCfg = m_scene->GetSsgiSettings();
+    // m_iblBaker は SSGI のミス時フォールバック（TextureCube t5）のバインドに必須。
+    // 未ベイクでも SRV ブロックは有効なので、居るかどうかだけ見る。
+    const bool ssGiReady = m_screenSpaceGi && m_screenSpaceGi->IsReady()
+                         && viewSupportsScreenSpace && m_iblBaker != nullptr;
+    const bool useSsr    = ssrCfg.enabled  && ssGiReady;
+    const bool useSsgi   = ssgiCfg.enabled && ssGiReady;
+
     // ★TAA 有効時は SSAO/コンタクトシャドウが無効でも必ずプリパスを走らせる（速度バッファのため）。
     //   新しく深度を要求するパスを足したら、この行に OR で足すこと（00-COORDINATION §2 H2）。
-    const bool useDepthPrepass = useSSAO || useContactShadow || taaActive;
-    // 速度モードで走らせるか（PSO 3 本が揃っていることが条件）。
-    const bool velocityPrepass = taaActive && m_velocityPSO && m_velocityPSOSkinned;
+    const bool useDepthPrepass = useSSAO || useContactShadow || taaActive || useSsr || useSsgi;
+    // 速度＋G-Buffer モードで走らせるか（PSO 3 本が揃っていることが条件）。
+    // ★SSR/SSGI は G-Buffer が必要なので TAA が OFF でもこのモードで走らせる。
+    //   速度バッファは書かれるが TAA が読まないだけ（fp16×2ch のフィル 1 枚ぶん ≒ 0.05ms）。
+    //   PSO を 3 モードに分けるより安い（00-COORDINATION §5.5）。
+    const bool velocityPrepass = (taaActive || useSsr || useSsgi)
+                               && m_velocityPSO && m_velocityPSOSkinned;
     // TAA 解決まで走らせるか。速度が書かれていないフレームでは絶対に解決しない
     // （履歴を速度なしで再投影すると全面がゴーストする）。
-    const bool taaResolveActive = velocityPrepass && m_taaPass->IsResolveReady();
+    // ★taaActive を必ず併記すること。SSR だけ ON のときに TAA が勝手に効いてしまう。
+    const bool taaResolveActive = taaActive && velocityPrepass && m_taaPass->IsResolveReady();
     // 走らないフレームでは履歴を捨てる。TAA を OFF→ON したり 2D ビューを往復したときに
     // 何十フレームも前の絵が半透明で残るのを防ぐ。
     if (!taaResolveActive && m_taaPass) m_taaPass->InvalidateHistory();
     u32 aoSrv = m_ssaoWhiteSrvIndex;  // 既定 = 白（AO=1.0 素通し）
     u32 csSrv = m_ssaoWhiteSrvIndex;  // 既定 = 白（遮蔽なし素通し。SSAO と同じ 1x1 白を共用）
+    u32 ssrSrv  = DescriptorHeap::kInvalidIndex;   // 無効 = 黒ダミー（RenderSceneMeshes が差し替える）
+    u32 ssgiSrv = DescriptorHeap::kInvalidIndex;
 
     m_gpuTimer->Begin(nativeCmdList, GpuTimer::PrepassSSAO);
     if (useDepthPrepass)
@@ -13745,10 +13827,35 @@ void Application::Render()
                 csSrv = m_ssaoWhiteSrvIndex;
         }
 
+        // --- SSR / SSGI 生成（深度 + G-Buffer + 速度 + 前フレームカラーをレイマーチ）---
+        // ★前フレームカラーが無いフレーム（初回 / シーン切替直後 / リサイズ直後）は
+        //   ScreenSpaceGiPass::Generate が何もせず kInvalidIndex を返す＝黒ダミーへフォールバック。
+        if ((useSsr || useSsgi) && velocityPrepass && m_screenSpaceGi->HasHistory())
+        {
+            ScreenSpaceGiPass::GenerateDesc gd;
+            gd.ssr        = useSsr  ? &ssrCfg  : nullptr;
+            gd.ssgi       = useSsgi ? &ssgiCfg : nullptr;
+            gd.view       = m_camera->GetViewMatrix();
+            gd.proj       = m_camera->GetProjectionMatrix();   // ジッタなし（深度線形化は無誤差）
+            gd.zNear      = m_camera->GetNearZ();
+            gd.zFar       = m_camera->GetFarZ();
+            gd.vpLeft = vpLeft; gd.vpTop = vpTop; gd.vpW = vpW; gd.vpH = vpH;
+            gd.frameIndex = frameIndex;
+            gd.hasIbl     = (m_iblReady && m_iblBaker != nullptr);
+            gd.depthSrv     = m_srvHeap->GetGpuHandle(m_depthSrvIndex);
+            gd.gbufferSrv   = m_srvHeap->GetGpuHandle(m_gbufferRT->GetSrvIndex());
+            gd.velocitySrv  = m_srvHeap->GetGpuHandle(m_taaPass->GetVelocitySrvIndex());
+            // irradiance キューブ(t5)。IBLBaker が居れば SRV ブロックは常に有効なので
+            // 未ベイクでも型の合った TextureCube を張れる（中身は hasIbl=0 で読まれない）。
+            // ★ここに Texture2D の黒ダミーを張ってはいけない（TextureCube 宣言と型不一致）。
+            gd.irradianceSrv = m_srvHeap->GetGpuHandle(m_iblBaker->GetIrradianceSrv());
+            m_screenSpaceGi->Generate(*m_commandList, gd, ssrSrv, ssgiSrv);
+        }
+
         m_commandList->TransitionResource(m_depthBuffer.Get(),
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
 
-        // プリパス/SSAO/コンタクトシャドウで RootSig/PSO/RT/ヒープを切り替えたので forward 用に再設定
+        // プリパス/SSAO/コンタクトシャドウ/SSR/SSGI で RootSig/PSO/RT/ヒープを切り替えたので forward 用に再設定
         m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
         m_commandList->SetRootSignature(*m_rootSignature);
     }
@@ -14060,7 +14167,7 @@ void Application::Render()
         CpuScopeTimer _tMain(&m_cpuMs[CpuMainRec]);
         RenderSceneMeshes(nativeCmdList, frameIndex, viewProj,
                           (m_isGameMode || m_engineMode == EngineMode::Playing), aoSrv,
-                          useDepthPrepass, csSrv);
+                          useDepthPrepass, csSrv, ssrSrv, ssgiSrv);
     }
     m_passBucket = &m_passOther;
     m_gpuTimer->End(nativeCmdList, GpuTimer::MainScene);
@@ -14154,6 +14261,15 @@ void Application::Render()
         DrawWorldSprites(nativeCmdList, camVPJ, camRight, camUp,
                          m_sceneRT->GetRtv(), m_dsvHandle, vpLeft, vpTop, vpW, vpH, totalTime);
     }
+
+    // ===== 次フレームの SSR/SSGI 用に、このフレームの HDR シーンカラーを退避 =====
+    // ★ポストチェーン（DoF/モーションブラー/ブルーム/トーンマップ）より前でなければならない。
+    //   トーンマップ後の絵を GI ソースにすると露出変動でフィードバックが暴れる。
+    //   m_sceneRT はリニア HDR で露出が焼き込まれていないので、その事故が構造的に起きない。
+    //   この位置ならパーティクル / ワールドスプライト / 歪みまで含んだ「見えている絵」が入る。
+    // ★m_sceneRT の ping-pong 化は禁止（33 参照あり）。CopyResource 1 発が唯一安全な手段。
+    if (m_screenSpaceGi && (useSsr || useSsgi))
+        m_screenSpaceGi->CaptureSceneColor(*m_commandList, *m_sceneRT);
 
     // ===== ポストプロセス: オフスクリーン RT → バックバッファ =====
     m_gpuTimer->Begin(nativeCmdList, GpuTimer::PostFX);

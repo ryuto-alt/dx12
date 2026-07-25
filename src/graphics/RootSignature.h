@@ -32,6 +32,10 @@ public:
     // ＋ t18,t19,t20,t21 (デカール予約。同一テーブルに相乗り＝ヒープ上は 7 本連続)。
     // t16,t17 は SSR/SSGI（計画04）が別スロットで取るのでレンジを 2 本に割ってある。
     static constexpr u32 kSlotClusterSRV        = 11;
+    // DescriptorTable t16 (SSR 結果 rgb=反射放射輝度 a=confidence、スクリーン空間・フル解像度)
+    static constexpr u32 kSlotSsrSRV            = 12;
+    // DescriptorTable t17 (SSGI 結果 rgb=間接放射照度、スクリーン空間・フル解像度)
+    static constexpr u32 kSlotSsgiSRV           = 13;
 
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;

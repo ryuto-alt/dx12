@@ -792,6 +792,34 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
         };
     }
 
+    // SSR / SSGI 設定（シーン単位）。どちらも既定 OFF なので旧シーンは無変更で開く。
+    {
+        const auto& sr = scene.GetSsrSettings();
+        root["ssr"] = {
+            {"enabled",         sr.enabled},
+            {"intensity",       sr.intensity},
+            {"maxDistance",     sr.maxDistance},
+            {"thickness",       sr.thickness},
+            {"maxSteps",        sr.maxSteps},
+            {"stride",          sr.stride},
+            {"roughnessCutoff", sr.roughnessCutoff},
+            {"edgeFade",        sr.edgeFade},
+            {"bias",            sr.bias},
+        };
+        const auto& sg = scene.GetSsgiSettings();
+        root["ssgi"] = {
+            {"enabled",     sg.enabled},
+            {"intensity",   sg.intensity},
+            {"radius",      sg.radius},
+            {"thickness",   sg.thickness},
+            {"rayCount",    sg.rayCount},
+            {"stepCount",   sg.stepCount},
+            {"clampValue",  sg.clampValue},
+            {"feedback",    sg.feedback},
+            {"iblFallback", sg.iblFallback},
+        };
+    }
+
     // TAA 設定（シーン単位）。debugVelocity は目視検証用の一時トグルなので保存しない。
     {
         const auto& ta = scene.GetTaaSettings();
@@ -916,6 +944,42 @@ static void LoadContactShadowSettings(Scene& scene, const json& root)
         cs.fadeDistance = cj.value("fadeDistance", cs.fadeDistance);
     }
     scene.GetContactShadowSettings() = cs;
+}
+
+// JSON から SSR / SSGI 設定を復元（キーが無ければデフォルト OFF = 後方互換）
+static void LoadScreenSpaceGiSettings(Scene& scene, const json& root)
+{
+    SsrSettings sr;
+    if (root.contains("ssr"))
+    {
+        const auto& j = root["ssr"];
+        sr.enabled         = j.value("enabled",         sr.enabled);
+        sr.intensity       = j.value("intensity",       sr.intensity);
+        sr.maxDistance     = j.value("maxDistance",     sr.maxDistance);
+        sr.thickness       = j.value("thickness",       sr.thickness);
+        sr.maxSteps        = j.value("maxSteps",        sr.maxSteps);
+        sr.stride          = j.value("stride",          sr.stride);
+        sr.roughnessCutoff = j.value("roughnessCutoff", sr.roughnessCutoff);
+        sr.edgeFade        = j.value("edgeFade",        sr.edgeFade);
+        sr.bias            = j.value("bias",            sr.bias);
+    }
+    scene.GetSsrSettings() = sr;
+
+    SsgiSettings sg;
+    if (root.contains("ssgi"))
+    {
+        const auto& j = root["ssgi"];
+        sg.enabled     = j.value("enabled",     sg.enabled);
+        sg.intensity   = j.value("intensity",   sg.intensity);
+        sg.radius      = j.value("radius",      sg.radius);
+        sg.thickness   = j.value("thickness",   sg.thickness);
+        sg.rayCount    = j.value("rayCount",    sg.rayCount);
+        sg.stepCount   = j.value("stepCount",   sg.stepCount);
+        sg.clampValue  = j.value("clampValue",  sg.clampValue);
+        sg.feedback    = j.value("feedback",    sg.feedback);
+        sg.iblFallback = j.value("iblFallback", sg.iblFallback);
+    }
+    scene.GetSsgiSettings() = sg;
 }
 
 // JSON から TAA 設定を復元（taa が無ければデフォルト = 後方互換。旧シーンは既定 OFF で開く）
@@ -1359,6 +1423,8 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
     catch (const json::exception& e) { Logger::Warn("contactShadow 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadTaaSettings(scene, root); }
     catch (const json::exception& e) { Logger::Warn("taa 設定をスキップしました（型不正）: {}", e.what()); }
+    try { LoadScreenSpaceGiSettings(scene, root); }
+    catch (const json::exception& e) { Logger::Warn("ssr/ssgi 設定をスキップしました（型不正）: {}", e.what()); }
 
     // リアルタイム影 ON/OFF（キーが無ければ既定 ON ＝後方互換）
     scene.SetShadowsEnabled(root.value("shadows", true));

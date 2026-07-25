@@ -433,6 +433,18 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
             m_srvHeap->GetGpuHandle(m_aoWhiteSrvIndex));
     }
 
+    // SSR SRV (t16) / SSGI SRV (t17): forward PS が無条件で Load するので黒ダミーを必ず張る。
+    // サムネイルはメインカメラと別視点なので、本物の SSR/SSGI を渡してはいけない。
+    if (m_ssBlackSrvIndex != 0xFFFFFFFFu)
+    {
+        cmdList->SetGraphicsRootDescriptorTable(
+            RootSignature::kSlotSsrSRV,
+            m_srvHeap->GetGpuHandle(m_ssBlackSrvIndex));
+        cmdList->SetGraphicsRootDescriptorTable(
+            RootSignature::kSlotSsgiSRV,
+            m_srvHeap->GetGpuHandle(m_ssBlackSrvIndex));
+    }
+
     // クラスタライトテーブル (t13,t14,t15 + デカール予約 t18..t21)。
     // 灯数 0 + clusterGrid.w=0 なので実際には読まれないが、テーブルは必ずバインドする。
     if (m_clusterSrvIndex != 0xFFFFFFFFu)

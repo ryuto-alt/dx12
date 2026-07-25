@@ -285,6 +285,29 @@ const std::vector<ShaderSource>& BuildRegistry()
             { { L"VelocityDebug_PS.cso", L"VelocityDebugPS", L"ps_6_0" } },
             { "post/FullscreenTri.hlsli" },
         },
+        {
+            // SSR（スクリーン空間反射）。VS は SSR.hlsl の FSTriVS を SSGI 側とも共有する。
+            "screenspace/SSR.hlsl",
+            {
+                { L"ScreenSpace_VS.cso",  L"FSTriVS",    L"vs_6_0" },
+                { L"SsrTrace_PS.cso",     L"TracePS",    L"ps_6_0" },
+                { L"SsrUpsample_PS.cso",  L"UpsamplePS", L"ps_6_0" },
+            },
+            { "screenspace/ScreenSpaceCommon.hlsli", "screenspace/ScreenSpaceParams.hlsli",
+              "post/FullscreenTri.hlsli" },
+        },
+        {
+            // SSGI（スクリーン空間GI）+ 前フレームカラーのハーフ縮小。
+            "screenspace/SSGI.hlsl",
+            {
+                { L"SsgiTrace_PS.cso",      L"TracePS",       L"ps_6_0" },
+                { L"SsgiTemporal_PS.cso",   L"TemporalPS",    L"ps_6_0" },
+                { L"SsgiUpsample_PS.cso",   L"UpsamplePS",    L"ps_6_0" },
+                { L"ColorDownsample_PS.cso",L"DownsamplePS",  L"ps_6_0" },
+            },
+            { "screenspace/ScreenSpaceCommon.hlsli", "screenspace/ScreenSpaceParams.hlsli",
+              "post/FullscreenTri.hlsli" },
+        },
     };
     return registry;
 }

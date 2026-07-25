@@ -61,6 +61,8 @@ public:
     // サムネイルは灯数 0 なので中身は読まれないが、forward PS が t13..t15 を参照する以上
     // テーブルのバインド自体は必要（未バインドはルートシグネチャ検証違反）。
     void SetClusterSrv(u32 srvIndex) { m_clusterSrvIndex = srvIndex; }
+    // SSR(t16)/SSGI(t17) の 1x1 黒ダミー(RGBA16F)。サムネイルは常にこれを張る。
+    void SetScreenSpaceBlackSrv(u32 srvIndex) { m_ssBlackSrvIndex = srvIndex; }
 
 private:
     static constexpr u32 kThumbSize     = 128;
@@ -85,6 +87,7 @@ private:
     PipelineState*    m_pso           = nullptr;
     u32               m_aoWhiteSrvIndex = 0xFFFFFFFFu;  // SSAO 白ダミー(t8) SRV index
     u32               m_clusterSrvIndex = 0xFFFFFFFFu;  // クラスタライトテーブル(t13..) 先頭 index
+    u32               m_ssBlackSrvIndex = 0xFFFFFFFFu;  // SSR/SSGI 黒ダミー(t16,t17) SRV index
 
     // 共有リソース
     Microsoft::WRL::ComPtr<ID3D12Resource>         m_depthBuffer;

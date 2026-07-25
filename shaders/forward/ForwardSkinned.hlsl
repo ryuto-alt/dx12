@@ -27,6 +27,10 @@ SamplerState     g_ssaoSampler : register(s4);  // POINT CLAMP（未使用だが
 // コンタクトシャドウ（深度バッファのスクリーン空間レイマーチ。1=遮蔽なし）。太陽の寄与へ乗算する。
 Texture2D<float> g_contactShadow : register(t11);
 
+// SSR / SSGI（Forward.hlsl と同じ規約。無効時は 1x1 黒ダミー → Load が範囲外で 0 = 寄与ゼロ）
+Texture2D<float4> g_ssr  : register(t16);
+Texture2D<float4> g_ssgi : register(t17);
+
 // PerObject constants (b0)
 cbuffer PerObjectConstants : register(b0)
 {
@@ -206,6 +210,14 @@ float4 PSMain(PSInput input) : SV_TARGET
     // aoEnabled=0（SSAO無効/正射カメラ/編集2Dビュー）のときは AO を読まず 1.0（白ダミー1x1の範囲外Load=0対策）。
     float ao = (aoEnabled > 0.5) ? g_ssao.Load(int3(input.positionSV.xy, 0)) : 1.0;
 
+    // SSR / SSGI（無効時は 1x1 黒ダミー → Load が範囲外で 0 = 寄与ゼロ）
+    //   ssr .rgb=反射放射輝度 / .a=confidence
+    //   ssgi.rgb=半球の間接放射照度（IBL ミスフォールバック込み） / .a=有効度
+    float4 ssr  = g_ssr.Load(int3(input.positionSV.xy, 0));
+    float4 ssgi = g_ssgi.Load(int3(input.positionSV.xy, 0));
+    float  ssrConf  = saturate(ssr.a);
+    float  ssgiConf = saturate(ssgi.a);
+
     // ===== Ambient / IBL =====
     float3 ambient;
     if (hasIBL != 0u)
@@ -216,27 +228,35 @@ float4 PSMain(PSInput input) : SV_TARGET
         float3 kD  = (1.0 - F) * (1.0 - metallic);
 
         // 拡散 IBL（irradiance）
+        // ★SSGI は irradiance を「置き換える」（足さない）。SSGI はミスしたレイに
+        //   IBL の irradiance を積んでいるので、足すと同じ光を二重に数えて全体が倍明るくなる。
+        //   SSGI が無効/無効ピクセルでは ssgiConf=0 で完全に従来どおり。
         float3 irradiance = g_irradianceMap.SampleLevel(g_iblSampler, N, 0).rgb;
+        irradiance = lerp(irradiance, ssgi.rgb, ssgiConf);
         float3 diffuseIBL = irradiance * albedo;
 
-        // 鏡面 IBL（split-sum: prefiltered * (F*scale + bias)）
+        // 鏡面 IBL（split-sum: prefiltered * (F*scale + bias)）。SSR がヒットしていれば置換。
         float  mip = roughness * maxPrefilterMip;
         float3 prefiltered = g_prefilteredMap.SampleLevel(g_iblSampler, R, mip).rgb;
+        prefiltered = lerp(prefiltered, ssr.rgb, ssrConf);
         float2 envBRDF = g_brdfLUT.SampleLevel(g_brdfSampler, float2(NoV, roughness), 0).rg;
         float3 specularIBL = prefiltered * (F * envBRDF.x + envBRDF.y);
 
-        ambient = (kD * diffuseIBL + specularIBL) * iblIntensity;
+        // AO は SSGI/SSR が担当していない分にだけ掛ける（Forward.hlsl と同じ規則）。
+        float aoDiff = lerp(ao, 1.0, ssgiConf);
+        float aoSpec = lerp(ao, 1.0, ssrConf);
+        ambient = (kD * diffuseIBL * aoDiff + specularIBL * aoSpec) * iblIntensity;
     }
     else
     {
         // 従来フォールバック（ライト ambient のみ）
         float3 ambientDiffuse  = albedo * (1.0 - metallic);
-        float3 ambientSpecular = F0;
-        ambient = ambientStrength * (ambientDiffuse + ambientSpecular);
+        float3 ambientSpecular = lerp(F0, ssr.rgb, ssrConf);
+        ambient = ambientStrength * (ambientDiffuse + ambientSpecular) * ao;
+        ambient = lerp(ambient,
+                       ssgi.rgb * ambientDiffuse + ambientStrength * ambientSpecular * ao,
+                       ssgiConf);
     }
-
-    // 環境光(IBL/ambient)へ AO を乗算（直接光は遮蔽しない）。
-    ambient *= ao;
 
     float3 color = ambient + Lo;
 

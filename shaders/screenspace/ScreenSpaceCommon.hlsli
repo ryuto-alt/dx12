@@ -48,6 +48,23 @@ bool SS_InViewport(float2 px, float4 viewport)
 }
 
 // ---------------------------------------------------------------------------
+// HDR ソースの非有限値を落とす。
+// ★これを省くと画面が丸ごと真っ黒になる（実際に踏んだ）:
+//   環境キューブや前フレームカラーに Inf が 1 テクセルでも混ざると
+//   （fp16 の上限 65504 を超える太陽など）、SSR/SSGI の値が Inf → フォワードの
+//   ambient が Inf → ACES トーンマップで Inf/Inf = NaN → 全ジオメトリが黒。
+//   NaN は 0 へ、Inf は fp16 で表せる大きな有限値へ丸める（反射の明るさは残す）。
+// ---------------------------------------------------------------------------
+float SS_SanitizeF(float v)
+{
+    return isnan(v) ? 0.0 : min(max(v, 0.0), 60000.0);
+}
+float3 SS_Sanitize(float3 c)
+{
+    return float3(SS_SanitizeF(c.x), SS_SanitizeF(c.y), SS_SanitizeF(c.z));
+}
+
+// ---------------------------------------------------------------------------
 // 八面体エンコード（Krzysztof Narkowicz 版）
 //   https://knarkowicz.wordpress.com/2014/04/16/octahedron-normal-vector-encoding/
 //   G-Buffer は fp16 なので量子化ノイズ（8bit だと specular がウォブルする）は出ない。

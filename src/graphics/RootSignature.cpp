@@ -8,19 +8,19 @@ namespace dx12e
 
 void RootSignature::Initialize(GraphicsDevice& device)
 {
-    // Root parameters: 12
+    // Root parameters: 14
     //
     // ★ルート定数の予算（上限 64 DWORD。超えると D3D12SerializeVersionedRootSignature が
     //   失敗して全描画が死ぬ）:
     //     slot0  32bit定数          40 DWORD
     //     slot1  CBV                 2 DWORD
     //     slot5  32bit定数           8 DWORD
-    //     slot2,3,4,6,7,8,9,10,11 テーブル × 9 = 9 DWORD
-    //     -------------------------------------- 合計 59 / 64
-    //   残り 5 DWORD。ディスクリプタテーブルはレンジを何本持っても 1 DWORD なので、
+    //     slot2,3,4,6,7,8,9,10,11,12,13 テーブル × 11 = 11 DWORD
+    //     -------------------------------------- 合計 61 / 64
+    //   残り 3 DWORD。ディスクリプタテーブルはレンジを何本持っても 1 DWORD なので、
     //   これ以降 SRV を足す機能は新規スロットを取らず、既存テーブルへレンジを足して
     //   相乗りすること（slot11 が既にその例＝クラスタ 3 本 + デカール予約 4 本）。
-    D3D12_ROOT_PARAMETER1 rootParams[12]{};
+    D3D12_ROOT_PARAMETER1 rootParams[14]{};
 
     // [0] Per-Object: 32bit constants (40 DWORDs = MVP(16) + Model(16) + CustomEffect(1) + pad(3) + CustomParams(4))
     // CustomEffect は MeshRenderer::effectValue（カスタムシェーダー向けの汎用進捗値、Sprite2D::effectValue
@@ -198,6 +198,32 @@ void RootSignature::Initialize(GraphicsDevice& device)
     rootParams[11].DescriptorTable.pDescriptorRanges   = clusterRanges;
     rootParams[11].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
 
+    // [12] SSR 結果 SRV DescriptorTable (t16) / [13] SSGI 結果 SRV DescriptorTable (t17)
+    // どちらも SSAO(t8) / コンタクトシャドウ(t11) と同じ「フル解像度のスクリーン空間補助
+    // テクスチャを PS が Load(SV_Position.xy) で直読みする」流儀。
+    // ★無効時も 1x1 黒ダミー(RGBA16F)を必ずバインドすること。1x1 なので Load(画面座標) が
+    //   範囲外で 0 を返し、SSR の confidence=0 / SSGI の寄与=0 に自動的に落ちる。
+    D3D12_DESCRIPTOR_RANGE1 ssrRange{};
+    ssrRange.RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    ssrRange.NumDescriptors                    = 1;
+    ssrRange.BaseShaderRegister                = 16;  // t16
+    ssrRange.RegisterSpace                     = 0;
+    ssrRange.Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    ssrRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    rootParams[12].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParams[12].DescriptorTable.NumDescriptorRanges = 1;
+    rootParams[12].DescriptorTable.pDescriptorRanges   = &ssrRange;
+    rootParams[12].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_DESCRIPTOR_RANGE1 ssgiRange = ssrRange;
+    ssgiRange.BaseShaderRegister                = 17;  // t17
+
+    rootParams[13].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParams[13].DescriptorTable.NumDescriptorRanges = 1;
+    rootParams[13].DescriptorTable.pDescriptorRanges   = &ssgiRange;
+    rootParams[13].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
+
     // Static Samplers (s0=albedo wrap, s1=shadow PCF, s2=IBL linear-clamp mip有,
     //                  s3=BRDF linear-clamp mipなし, s4=AO point-clamp スクリーンサンプル)
     D3D12_STATIC_SAMPLER_DESC staticSamplers[5]{};
@@ -281,7 +307,7 @@ void RootSignature::Initialize(GraphicsDevice& device)
         serializedBlob->GetBufferSize(),
         IID_PPV_ARGS(&m_rootSignature)));
 
-    Logger::Info("RootSignature created (PBR: 12 slots, 59/64 DWORD)");
+    Logger::Info("RootSignature created (PBR: 14 slots, 61/64 DWORD)");
 }
 
 } // namespace dx12e

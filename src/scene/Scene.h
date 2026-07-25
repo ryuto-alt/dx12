@@ -13,6 +13,8 @@
 #include "renderer/PostProcessSettings.h"
 #include "renderer/SSAOSettings.h"
 #include "renderer/ContactShadowSettings.h"
+#include "renderer/SsrSettings.h"
+#include "renderer/SsgiSettings.h"
 #include "renderer/TaaSettings.h"
 // SpawnSculpt の既定引数で SculptPrimitive の列挙子を使うため（前方宣言では足りない）。
 #include "terrain/SculptMesh.h"
@@ -140,6 +142,12 @@ public:
     ContactShadowSettings&       GetContactShadowSettings()       { return m_contactShadow; }
     const ContactShadowSettings& GetContactShadowSettings() const { return m_contactShadow; }
 
+    // スクリーン空間反射 / スクリーン空間GI（どちらも既定 OFF。深度プリパスの G-Buffer を使う）
+    SsrSettings&        GetSsrSettings()        { return m_ssr; }
+    const SsrSettings&  GetSsrSettings() const  { return m_ssr; }
+    SsgiSettings&       GetSsgiSettings()       { return m_ssgi; }
+    const SsgiSettings& GetSsgiSettings() const { return m_ssgi; }
+
     TaaSettings&       GetTaaSettings()       { return m_taa; }
     const TaaSettings& GetTaaSettings() const { return m_taa; }
 
@@ -165,6 +173,8 @@ private:
     SkyboxSettings      m_skybox;
     SSAOSettings        m_ssao;
     ContactShadowSettings m_contactShadow;
+    SsrSettings         m_ssr;
+    SsgiSettings        m_ssgi;
     TaaSettings         m_taa;
     bool                m_shadowsEnabled = true;  // 既定 ON（エディタ/従来シーン互換）
 

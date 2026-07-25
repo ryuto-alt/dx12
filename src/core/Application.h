@@ -52,6 +52,7 @@ namespace dx12e
     class SSAOPass;
     class ContactShadowPass;
     class TaaPass;
+    class ScreenSpaceGiPass;
     class ParticleSystem;
     class GpuParticleSystem;
     class SpriteRenderer;
@@ -212,10 +213,15 @@ private:
     // depthPrepassActive=true のときだけ深度プリパス併用用の LESS_EQUAL forward PSO を使う
     // （プリパスが書いた深度を再利用するため）。false の通常経路は LESS PSO（既存 z-fight 挙動を維持）。
     // contactShadowSrvIndex は t11 に張るスクリーン空間の近接遮蔽（無効時は白ダミー）。
+    // ssrSrvIndex(t16) / ssgiSrvIndex(t17) は SSR/SSGI の結果（無効時は 1x1 黒ダミー）。
+    // ★カメラプレビュー / サムネイルなど「メインカメラ以外の視点」では必ず既定値（＝黒ダミー）
+    //   のままにすること。メインカメラの G-Buffer を別視点で読むと完全に間違った絵になる。
     void RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u32 frameIndex,
                            DirectX::XMMATRIX viewProj, bool isGameView, u32 aoSrvIndex,
                            bool depthPrepassActive = false,
-                           u32 contactShadowSrvIndex = 0xFFFFFFFFu);
+                           u32 contactShadowSrvIndex = 0xFFFFFFFFu,
+                           u32 ssrSrvIndex = 0xFFFFFFFFu,
+                           u32 ssgiSrvIndex = 0xFFFFFFFFu);
     // Sprite2D(worldSpace=true) を指定 viewProj/RT/DSV へ描画（メインパスとカメラプレビューで共用）。
     // camRight/camUp はビルボード展開用。billboard でないものはエンティティのワールド行列で配置。
     void DrawWorldSprites(ID3D12GraphicsCommandList* cmd, DirectX::XMMATRIX viewProj,
@@ -724,6 +730,13 @@ private:
     // 速度 RT と同じ MRT に書くので、速度プリパスが走るときは必ず一緒に書かれる
     // （PSO の RTV 本数を分岐させないため。00-COORDINATION §5.5 の契約）。
     std::unique_ptr<RenderTarget>  m_gbufferRT;
+
+    // ---- SSR / SSGI（スクリーン空間反射 + スクリーン空間GI。計画04）----
+    // G-Buffer + 深度 + 速度 + 前フレームカラーをレイマーチして、フォワード PS の
+    // IBL ブロックで合成する。無効時は 1x1 黒ダミー(RGBA16F)を t16/t17 に貼れば寄与ゼロ。
+    std::unique_ptr<ScreenSpaceGiPass> m_screenSpaceGi;
+    std::unique_ptr<Texture>       m_ssBlackTex;                    // 1x1 黒 RGBA16F ダミー
+    u32                            m_ssBlackSrvIndex = 0xFFFFFFFFu;
     std::unique_ptr<PipelineState> m_velocityPSO;          // 深度+速度（static）
     std::unique_ptr<PipelineState> m_velocityPSOInst;      // 深度+速度（instanced）
     std::unique_ptr<PipelineState> m_velocityPSOSkinned;   // 深度+速度（skinned, t12=前ボーン）
