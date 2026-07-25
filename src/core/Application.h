@@ -440,6 +440,17 @@ private:
     void RecreateDepthPrepassPsos();     // m_depthPrepassPSO / m_depthPrepassSkinnedPSO
     void RecreateVelocityPsos();         // m_velocityPSO / Inst / Skinned（深度+速度プリパス）
     void InvalidateTemporalHistory();    // TAA 履歴 + 前フレーム行列を捨てる（シーン切替/Play遷移/リサイズ）
+
+    // ---- レンダー解像度と表示解像度の分離（#16）----
+    // 表示側（バックバッファ上の矩形）。エディタは ImGui のシーンビュー矩形、
+    // 単体ゲーム / ゲームモードはウィンドウ全面。
+    void GetDisplayViewport(u32& x, u32& y, u32& w, u32& h) const;
+    // シーン系 RT を丸ごと (w,h) へ作り直す（WaitIdle 込み・時間履歴は必ず捨てる）。
+    void ApplyRenderResolution(u32 w, u32 h);
+    // 毎フレーム Run ループの先頭で呼ぶ。表示矩形 × renderScale と現状がズレていたら追従する。
+    void UpdateRenderResolution();
+    void SetRenderScale(f32 s);          // settings.json へ保存し、次フレームで即反映
+    f32  GetRenderScale() const { return m_renderScale; }
     void EnsureInstancePrevBuffer();     // 速度パス用 per-instance 前ワールドバッファの遅延確保
     void RegisterShaderReloadHandlers(); // 上記全部+PostProcess等を ShaderManager に束ねて登録する(Initialize末尾で1回)
 
@@ -782,6 +793,10 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> m_depthBuffer;
     D3D12_CPU_DESCRIPTOR_HANDLE        m_dsvHandle{};
     u32                                m_depthSrvIndex = 0xFFFFFFFFu;  // soft particles 用シーン深度SRV
+    // カメラプレビュー専用の深度（固定 480x270）。メインの深度はレンダー解像度に追従して
+    // 縮むので、480x270 のプレビューを描くには足りなくなり得る（#16）。
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_previewDepthBuffer;
+    D3D12_CPU_DESCRIPTOR_HANDLE        m_previewDsvHandle{};
     std::unique_ptr<InputSystem>       m_inputSystem;
     std::unique_ptr<Scene>             m_scene;
     // ゲームプレイ中のエンジン汎用イベントバス。Play 開始時 Clear、Update 末尾 Flush。
@@ -936,10 +951,24 @@ private:
     u32                 m_prevFrameIndex = 0;
     bool                m_prevFrameIndexValid = false;
     DirectX::XMFLOAT2   m_taaJitterNdc{};                  // 現フレームの NDC ジッタ
-    // 前フレームのビューポート矩形（px）。エディタのパネル分割をドラッグすると
-    // ウィンドウリサイズなしで矩形だけが変わり、履歴の UV 対応が崩れて一瞬引き伸ばされる。
-    u32 m_prevVpRect[4] = {0, 0, 0, 0};   // left, top, w, h
-    bool m_prevVpRectValid = false;
+
+    // ---- レンダー解像度 / 表示解像度の分離（#16）--------------------------------
+    // シーン系の RT（sceneRT / 深度 / SSAO / コンタクトシャドウ / TAA / G-Buffer /
+    // SSR・SSGI / ブルーム / DoF / ゴッドレイ / 歪み）は **すべて m_renderW x m_renderH**。
+    // シーンは常に「その RT の全面 (0,0,renderW,renderH)」へ描く（サブ矩形描画は廃止）。
+    // 表示位置＝エディタのビューポート矩形は uber パス以降だけの関心事。
+    //   → ポストの uvOfs/uvScl が定数 0,0,1,1 になり、7 パスから引数が消えた。
+    //   → DoF / ゴッドレイの「半解像度サブ矩形を vpLeft/2 で作る」オフバイワンも消えた。
+    f32  m_renderScale = 1.0f;      // settings.json "render_scale"（0.25〜1.0）。1.0 で従来と同一
+    u32  m_renderW = 0;             // 現在確保されているレンダー解像度（0 = 未初期化）
+    u32  m_renderH = 0;
+    // ドッキング分割のドラッグ中に毎フレーム RT を作り直すと WaitIdle でカクつくので、
+    // 「同じサイズが数フレーム続いたら」確定させる（renderScale 変更とウィンドウリサイズは即時）。
+    u32  m_pendingRenderW = 0;
+    u32  m_pendingRenderH = 0;
+    u32  m_renderResizeSettle = 0;
+    bool m_renderResFlush = false;
+    static constexpr u32 kRenderResizeSettleFrames = 3;
     // BuildDrawList() が PrevWorldMatrix を更新するか（TAA 有効時のみ。10万体の
     // emplace_or_replace を TAA を使わない人に払わせないため）。
     bool                m_trackPrevWorld = false;

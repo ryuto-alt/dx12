@@ -34,13 +34,11 @@ public:
     // sceneRT と同タイミングでチェーン RT を作り直す。
     void Resize(GraphicsDevice& device, u32 width, u32 height);
 
-    // sceneSrvGpu: PIXEL_SHADER_RESOURCE 状態のシーンHDR。
-    // uvOfs/uvScale: シーンRT内の可視サブ矩形（エディタのビューポート対応）。
+    // sceneSrvGpu: PIXEL_SHADER_RESOURCE 状態のシーンHDR（★#16 で全面が有効領域になった）。
     // 戻り値 = ブルーム結果(mip0, PIXEL_SHADER_RESOURCE 状態) の SRV index。
     // 未準備なら DescriptorHeap::kInvalidIndex。RT/ビューポートは呼び出し側で再設定すること。
     u32 Generate(CommandList& cmd, DescriptorHeap* srvHeap,
                  D3D12_GPU_DESCRIPTOR_HANDLE sceneSrvGpu,
-                 float uvOfsX, float uvOfsY, float uvScaleX, float uvScaleY,
                  float sceneTexelW, float sceneTexelH,
                  const PostProcessSettings& s);
 

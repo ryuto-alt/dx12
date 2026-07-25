@@ -233,8 +233,6 @@ void PostProcess::RecreatePipelines(GraphicsDevice& device)
 void PostProcess::Apply(ID3D12GraphicsCommandList* cmd,
                         const Inputs& in,
                         const PostProcessSettings& s,
-                        float uvOffsetX, float uvOffsetY,
-                        float uvScaleX, float uvScaleY,
                         float texelW, float texelH,
                         float timeSeconds,
                         u32 frameIndex)
@@ -242,8 +240,9 @@ void PostProcess::Apply(ID3D12GraphicsCommandList* cmd,
     if (!m_pso || !m_cb) return;
 
     PostCB cb{};
-    cb.uvOffset[0] = uvOffsetX; cb.uvOffset[1] = uvOffsetY;
-    cb.uvScale[0]  = uvScaleX;  cb.uvScale[1]  = uvScaleY;
+    // ★#16: シーンは RT 全面。参照範囲は常に (0,0)-(1,1)。
+    cb.uvOffset[0] = 0.0f; cb.uvOffset[1] = 0.0f;
+    cb.uvScale[0]  = 1.0f; cb.uvScale[1]  = 1.0f;
     cb.texel[0]    = texelW;    cb.texel[1]    = texelH;
     cb.time        = timeSeconds;
     cb.tonemapper  = s.tonemapper;  // 表示変換はマスターOFF でも常に適用

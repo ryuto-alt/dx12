@@ -44,8 +44,8 @@ public:
               bool useVelocityBuffer,
               const DirectX::XMFLOAT4X4& invViewProjT,
               const DirectX::XMFLOAT4X4& prevViewProjT,
-              float uvOfsX, float uvOfsY, float uvScaleX, float uvScaleY,
-              u32 vpLeft, u32 vpTop, u32 vpW, u32 vpH,
+              // ★#16: シーンは RT 全面。可視サブ矩形の UV は要らなくなった。
+              u32 sceneW, u32 sceneH,
               const PostProcessSettings& s);
 
     bool IsReady() const { return m_pso != nullptr; }

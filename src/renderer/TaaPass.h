@@ -64,21 +64,21 @@ public:
     // 未準備なら DescriptorHeap::kInvalidIndex（呼び出し側は入力をそのまま使うこと）。
     // depthSrv は事前に PIXEL_SHADER_RESOURCE へ遷移しておくこと。
     // invViewProjT / prevViewProjT はどちらも「ジッタなし」行列の転置。
+    // ★#16: シーンは RT 全面に描かれるので、可視サブ矩形の UV は要らなくなった。
     u32 Resolve(CommandList& cmd,
                 D3D12_GPU_DESCRIPTOR_HANDLE sceneSrv,
                 D3D12_GPU_DESCRIPTOR_HANDLE depthSrv,
                 const DirectX::XMFLOAT4X4& invViewProjT,
                 const DirectX::XMFLOAT4X4& prevViewProjT,
-                float uvOfsX, float uvOfsY, float uvSclX, float uvSclY,
-                u32 vpLeft, u32 vpTop, u32 vpW, u32 vpH,
+                u32 sceneW, u32 sceneH,
                 const TaaSettings& s);
 
     // ---- デバッグ可視化 ----
     // 現在バインドされている RT（バックバッファ想定）へ速度バッファを塗る。
     // 静止時に全面 (0.5,0.5,0.5) の均一グレーになるのが「ジッタが正しく除去されている」証拠。
+    // ★これだけは**表示側**の矩形を受け取る（バックバッファへ描くため）。
     void DrawVelocityDebug(CommandList& cmd,
                            D3D12_GPU_DESCRIPTOR_HANDLE velocitySrv,
-                           float uvOfsX, float uvOfsY, float uvSclX, float uvSclY,
                            u32 vpLeft, u32 vpTop, u32 vpW, u32 vpH, float scale);
 
     // ---- ジッタ ----

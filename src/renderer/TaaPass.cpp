@@ -271,8 +271,7 @@ u32 TaaPass::Resolve(CommandList& cmd,
                      D3D12_GPU_DESCRIPTOR_HANDLE depthSrv,
                      const XMFLOAT4X4& invViewProjT,
                      const XMFLOAT4X4& prevViewProjT,
-                     float uvOfsX, float uvOfsY, float uvSclX, float uvSclY,
-                     u32 vpLeft, u32 vpTop, u32 vpW, u32 vpH,
+                     u32 sceneW, u32 sceneH,
                      const TaaSettings& s)
 {
     if (!m_resolvePso || !m_history[0] || !m_history[1] || !m_velocityRT || !m_srvHeap)
@@ -284,12 +283,12 @@ u32 TaaPass::Resolve(CommandList& cmd,
     TaaCB cb{};
     std::memcpy(cb.invViewProj,  &invViewProjT,  sizeof(cb.invViewProj));
     std::memcpy(cb.prevViewProj, &prevViewProjT, sizeof(cb.prevViewProj));
-    cb.rectP[0] = uvOfsX; cb.rectP[1] = uvOfsY; cb.rectP[2] = uvSclX; cb.rectP[3] = uvSclY;
+    // ★#16: シーンは RT 全面。参照範囲は常に (0,0)-(1,1)。
+    cb.rectP[0] = 0.0f; cb.rectP[1] = 0.0f; cb.rectP[2] = 1.0f; cb.rectP[3] = 1.0f;
     cb.texel[0] = 1.0f / static_cast<float>(m_width);
     cb.texel[1] = 1.0f / static_cast<float>(m_height);
     cb.rtSize[0] = static_cast<float>(m_width);
     cb.rtSize[1] = static_cast<float>(m_height);
-    (void)vpW; (void)vpH;   // 矩形は rectP に入っている（ビューポート設定にのみ使う）
     cb.params[0] = m_historyValid ? 1.0f : 0.0f;
     cb.params[1] = std::clamp(s.feedbackMin, 0.0f, 0.99f);
     cb.params[2] = std::clamp(s.feedbackMax, cb.params[1], 0.995f);
@@ -311,7 +310,7 @@ u32 TaaPass::Resolve(CommandList& cmd,
     auto* native = cmd.GetNative();
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = dst->GetRtv();
     native->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-    cmd.SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+    cmd.SetViewportAndScissor(sceneW, sceneH);
 
     native->SetGraphicsRootSignature(m_resolveRootSig.Get());
     native->SetPipelineState(m_resolvePso.Get());
@@ -340,13 +339,13 @@ u32 TaaPass::Resolve(CommandList& cmd,
 // ---------------------------------------------------------------------------
 void TaaPass::DrawVelocityDebug(CommandList& cmd,
                                 D3D12_GPU_DESCRIPTOR_HANDLE velocitySrv,
-                                float uvOfsX, float uvOfsY, float uvSclX, float uvSclY,
                                 u32 vpLeft, u32 vpTop, u32 vpW, u32 vpH, float scale)
 {
     if (!m_debugPso) return;
 
     TaaDebugCB cb{};
-    cb.rectP[0] = uvOfsX; cb.rectP[1] = uvOfsY; cb.rectP[2] = uvSclX; cb.rectP[3] = uvSclY;
+    // ★#16: 速度バッファも RT 全面が有効領域（描く先だけが表示矩形）。
+    cb.rectP[0] = 0.0f; cb.rectP[1] = 0.0f; cb.rectP[2] = 1.0f; cb.rectP[3] = 1.0f;
     cb.scale[0] = scale;
 
     auto* native = cmd.GetNative();

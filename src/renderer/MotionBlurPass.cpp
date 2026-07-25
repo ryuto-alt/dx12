@@ -136,8 +136,7 @@ u32 MotionBlurPass::Apply(CommandList& cmd, DescriptorHeap* /*srvHeap*/,
                           bool useVelocityBuffer,
                           const DirectX::XMFLOAT4X4& invViewProjT,
                           const DirectX::XMFLOAT4X4& prevViewProjT,
-                          float uvOfsX, float uvOfsY, float uvScaleX, float uvScaleY,
-                          u32 vpLeft, u32 vpTop, u32 vpW, u32 vpH,
+                          u32 sceneW, u32 sceneH,
                           const PostProcessSettings& s)
 {
     if (!m_pso || !m_outRT) return DescriptorHeap::kInvalidIndex;
@@ -146,8 +145,8 @@ u32 MotionBlurPass::Apply(CommandList& cmd, DescriptorHeap* /*srvHeap*/,
     MBCB cb{};
     std::memcpy(cb.invViewProj,  &invViewProjT,  sizeof(cb.invViewProj));
     std::memcpy(cb.prevViewProj, &prevViewProjT, sizeof(cb.prevViewProj));
-    cb.rectP[0] = uvOfsX;   cb.rectP[1] = uvOfsY;
-    cb.rectP[2] = uvScaleX; cb.rectP[3] = uvScaleY;
+    cb.rectP[0] = 0.0f; cb.rectP[1] = 0.0f;   // ★#16: シーンは RT 全面
+    cb.rectP[2] = 1.0f; cb.rectP[3] = 1.0f;
     cb.params[0] = (std::min)((std::max)(s.mbStrength, 0.0f), 2.0f);
     cb.params[1] = static_cast<float>((std::min)((std::max)(s.mbSamples, 4), 16));
     cb.params[2] = 0.06f;   // 最大ブラー（ローカルUV。画面の約6%）
@@ -157,7 +156,7 @@ u32 MotionBlurPass::Apply(CommandList& cmd, DescriptorHeap* /*srvHeap*/,
     m_outRT->Transition(cmd, D3D12_RESOURCE_STATE_RENDER_TARGET);
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_outRT->GetRtv();
     native->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-    cmd.SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+    cmd.SetViewportAndScissor(sceneW, sceneH);
 
     native->SetGraphicsRootSignature(m_rootSig.Get());
     native->SetPipelineState(m_pso.Get());

@@ -32,11 +32,11 @@ public:
     // sceneSrvGpu/depthSrvGpu は PIXEL_SHADER_RESOURCE 状態で渡すこと。
     // projA=proj._33 / projB=proj._43（深度線形化）。
     // 戻り値 = ボケ合成済みフル解像度シーン(PIXEL_SHADER_RESOURCE)の SRV index。未準備は kInvalidIndex。
+    // ★#16: シーンは RT 全面に描かれるので、可視サブ矩形の UV も描画先の矩形も要らなくなった
+    //   （半解像度チェーンを vpLeft/2, vpW/2 と整数半減で作るオフバイワンも同時に消えた）。
     u32 Apply(CommandList& cmd, DescriptorHeap* srvHeap,
               D3D12_GPU_DESCRIPTOR_HANDLE sceneSrvGpu,
               D3D12_GPU_DESCRIPTOR_HANDLE depthSrvGpu,
-              float uvOfsX, float uvOfsY, float uvScaleX, float uvScaleY,
-              u32 vpLeft, u32 vpTop, u32 vpW, u32 vpH,
               float projA, float projB,
               const PostProcessSettings& s);
 

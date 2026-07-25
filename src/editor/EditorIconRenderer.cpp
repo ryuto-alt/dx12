@@ -174,7 +174,10 @@ void EditorIconRenderer::RecreatePipelines(GraphicsDevice& device)
         psoDesc.SampleMask = UINT_MAX;
         psoDesc.NumRenderTargets = 1;
         psoDesc.RTVFormats[0] = m_rtvFormat;
-        psoDesc.DSVFormat = m_dsvFormat;
+        // ★DepthEnable=FALSE なので DSV は使わない。UNKNOWN にしておけば呼び出し側が
+        //   DSV を張らずに済む（#16 でメイン深度がレンダー解像度に縮み、表示解像度の
+        //   バックバッファと束ねられなくなったため）。ビルボード PSO は元から UNKNOWN。
+        psoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
         psoDesc.SampleDesc = { 1, 0 };
 
         ThrowIfFailed(dev->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_pso)));

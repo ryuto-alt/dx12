@@ -529,6 +529,167 @@ void Application::InvalidateTemporalHistory()
     m_prevViewProjValid   = false;   // モーションブラーの速度スパイクも同時に防ぐ
 }
 
+// ============================================================================
+//  レンダー解像度と表示解像度の分離（#16）
+// ============================================================================
+// 表示側 = バックバッファ上の矩形。エディタは ImGui のシーンビュー矩形、
+// 単体ゲーム / ゲームモードはウィンドウ全面。**ここだけが「画面上の位置」を知っている。**
+void Application::GetDisplayViewport(u32& x, u32& y, u32& w, u32& h) const
+{
+    // 全画面は「単体ゲーム（エディタ UI なし）」のみ。エディタは編集中も Play 中も
+    // 中央の 16:9 ビューポート矩形に描く（パネル下に潜り込ませない）。
+    if (m_isGameMode || !m_editorLayer)
+    {
+        x = 0; y = 0;
+        w = m_window ? m_window->GetWidth()  : 1u;
+        h = m_window ? m_window->GetHeight() : 1u;
+    }
+    else
+    {
+        const auto vp = m_editorLayer->GetViewportPos();
+        const auto vs = m_editorLayer->GetViewportSize();
+        // 負座標(パネルのドラッグ中/画面外)を u32 へキャストすると巨大値にラップし、
+        // ビューポートが RT 外へ飛んで描画が全滅する(クリアだけ残り真っ青)ため 0 で下限。
+        x = static_cast<u32>((std::max)(0.0f, vp.x));
+        y = static_cast<u32>((std::max)(0.0f, vp.y));
+        w = static_cast<u32>((std::max)(0.0f, vs.x));
+        h = static_cast<u32>((std::max)(0.0f, vs.y));
+    }
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+}
+
+// シーン系 RT を丸ごと (w,h) へ作り直す。**呼び出し側はフレーム外（Run ループ）であること。**
+// スワップチェイン（表示解像度）はここでは触らない。
+void Application::ApplyRenderResolution(u32 w, u32 h)
+{
+    if (w == 0 || h == 0) return;
+    if (w == m_renderW && h == m_renderH) return;
+    if (!m_graphicsDevice || !m_commandQueue) return;
+
+    m_commandQueue->WaitIdle();
+
+    // 深度バッファ（DSV + SRV は既存ハンドルへ張り直す＝ヒープは消費しない）
+    if (m_dsvHandle.ptr != 0)
+    {
+        m_depthBuffer.Reset();
+        D3D12_RESOURCE_DESC depthDesc{};
+        depthDesc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        depthDesc.Width            = w;
+        depthDesc.Height           = h;
+        depthDesc.DepthOrArraySize = 1;
+        depthDesc.MipLevels        = 1;
+        depthDesc.Format           = DXGI_FORMAT_R32_TYPELESS;
+        depthDesc.SampleDesc       = {1, 0};
+        depthDesc.Flags            = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+        D3D12_CLEAR_VALUE clearValue{};
+        clearValue.Format       = DXGI_FORMAT_D32_FLOAT;
+        clearValue.DepthStencil = {1.0f, 0};
+
+        D3D12_HEAP_PROPERTIES heapProps{};
+        heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+        ThrowIfFailed(m_graphicsDevice->GetDevice()->CreateCommittedResource(
+            &heapProps, D3D12_HEAP_FLAG_NONE,
+            &depthDesc, D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            &clearValue, IID_PPV_ARGS(&m_depthBuffer)));
+
+        D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc{};
+        dsvDesc.Format        = DXGI_FORMAT_D32_FLOAT;
+        dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+        m_graphicsDevice->GetDevice()->CreateDepthStencilView(
+            m_depthBuffer.Get(), &dsvDesc, m_dsvHandle);
+
+        if (m_depthSrvIndex != 0xFFFFFFFFu)
+        {
+            D3D12_SHADER_RESOURCE_VIEW_DESC depthSrvDesc{};
+            depthSrvDesc.Format                  = DXGI_FORMAT_R32_FLOAT;
+            depthSrvDesc.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
+            depthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            depthSrvDesc.Texture2D.MipLevels     = 1;
+            m_graphicsDevice->GetDevice()->CreateShaderResourceView(
+                m_depthBuffer.Get(), &depthSrvDesc, m_srvHeap->GetCpuHandle(m_depthSrvIndex));
+        }
+    }
+
+    // シーン系 RT（★ここに載っていないものは表示解像度のまま = スワップチェインだけ）
+    if (m_sceneRT)          m_sceneRT->Resize(*m_graphicsDevice, w, h);
+    if (m_ssaoPass)         m_ssaoPass->Resize(*m_graphicsDevice, w, h);
+    if (m_contactShadowPass)m_contactShadowPass->Resize(*m_graphicsDevice, w, h);
+    if (m_bloomPass)        m_bloomPass->Resize(*m_graphicsDevice, w, h);
+    if (m_godRaysPass)      m_godRaysPass->Resize(*m_graphicsDevice, w, h);
+    if (m_lensFlarePass)    m_lensFlarePass->Resize(*m_graphicsDevice, w, h);
+    if (m_dofPass)          m_dofPass->Resize(*m_graphicsDevice, w, h);
+    if (m_motionBlurPass)   m_motionBlurPass->Resize(*m_graphicsDevice, w, h);
+    if (m_distortRT)        m_distortRT->Resize(*m_graphicsDevice, w, h);
+    if (m_taaPass)          m_taaPass->Resize(*m_graphicsDevice, w, h);
+    if (m_gbufferRT)        m_gbufferRT->Resize(*m_graphicsDevice, w, h);
+    if (m_screenSpaceGi)    m_screenSpaceGi->Resize(*m_graphicsDevice, w, h);
+    if (m_rtScreenPass)     m_rtScreenPass->Resize(*m_graphicsDevice, w, h);
+
+    // ★時間履歴は必ず捨てる。座標系が変わった履歴を持ち越すと TAA / SSR / SSGI /
+    //   ボリュメトリックフォグが揃ってゴーストする（引き伸ばされた前フレームが尾を引く）。
+    InvalidateTemporalHistory();
+
+    m_renderW = w;
+    m_renderH = h;
+    m_pendingRenderW = w;
+    m_pendingRenderH = h;
+    m_renderResizeSettle = 0;
+    Logger::Info("レンダー解像度: {}x{}（scale {:.2f}）", w, h, m_renderScale);
+}
+
+// 毎フレーム Run ループの先頭で呼ぶ。表示矩形 × renderScale へ追従する。
+void Application::UpdateRenderResolution()
+{
+    u32 dx = 0, dy = 0, dw = 0, dh = 0;
+    GetDisplayViewport(dx, dy, dw, dh);
+    const f32 s = std::clamp(m_renderScale, 0.25f, 1.0f);
+    // ★アスペクトは表示側の値を使い続ける（Render() の renderAspect）。ここは丸めるだけ。
+    const u32 want = (std::max)(16u, static_cast<u32>(std::lround(static_cast<double>(dw) * s)));
+    const u32 wantH = (std::max)(16u, static_cast<u32>(std::lround(static_cast<double>(dh) * s)));
+
+    if (want == m_renderW && wantH == m_renderH)
+    {
+        m_pendingRenderW = want; m_pendingRenderH = wantH;
+        m_renderResizeSettle = 0;
+        m_renderResFlush = false;
+        return;
+    }
+
+    if (m_renderResFlush || m_renderW == 0)
+    {
+        m_renderResFlush = false;
+        ApplyRenderResolution(want, wantH);
+        return;
+    }
+
+    // ドッキング分割のドラッグ中は毎フレーム矩形が変わる。そのたびに RT を作り直すと
+    // WaitIdle でカクつくので、同じサイズが数フレーム続いてから確定させる。
+    // 待っている間は「1 つ前のレンダー解像度の絵を表示矩形へ拡大」して出るだけ＝破綻しない。
+    if (want == m_pendingRenderW && wantH == m_pendingRenderH)
+    {
+        if (++m_renderResizeSettle >= kRenderResizeSettleFrames)
+            ApplyRenderResolution(want, wantH);
+    }
+    else
+    {
+        m_pendingRenderW = want;
+        m_pendingRenderH = wantH;
+        m_renderResizeSettle = 0;
+    }
+}
+
+void Application::SetRenderScale(f32 s)
+{
+    const f32 v = std::clamp(s, 0.25f, 1.0f);
+    if (v == m_renderScale) return;
+    m_renderScale    = v;
+    m_renderResFlush = true;          // 次の Run ループ先頭で即反映（デバウンスしない）
+    PersistSet("render_scale", static_cast<double>(v));
+}
+
 void Application::RecreateVelocityPsos()
 {
     // MRT=2: RTV0=速度(RG16F) / RTV1=G-Buffer(RGBA16F: xy=oct(worldN) z=rough w=metal)。
@@ -1262,7 +1423,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
     // DSV ヒープ
     m_dsvHeap = std::make_unique<DescriptorHeap>();
-    m_dsvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1, false);
+    // [0] = メイン深度（レンダー解像度に追従して縮む）/ [1] = カメラプレビュー専用（固定 480x270）
+    m_dsvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 4, false);
 
     // デプスバッファ作成
     {
@@ -1870,6 +2032,38 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_cameraPreviewRT->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
                                       480, 270, kSceneColorFormat, sceneClear);
 
+        // プレビュー専用の深度（固定 480x270）。#16 でメイン深度がレンダー解像度に追従して
+        // 縮むようになったため、480x270 のプレビューには足りなくなり得る（RTV > DSV は違反）。
+        {
+            D3D12_RESOURCE_DESC pd{};
+            pd.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+            pd.Width            = 480;
+            pd.Height           = 270;
+            pd.DepthOrArraySize = 1;
+            pd.MipLevels        = 1;
+            pd.Format           = DXGI_FORMAT_D32_FLOAT;
+            pd.SampleDesc       = {1, 0};
+            pd.Flags            = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+            D3D12_CLEAR_VALUE pcv{};
+            pcv.Format = DXGI_FORMAT_D32_FLOAT;
+            pcv.DepthStencil = {1.0f, 0};
+
+            D3D12_HEAP_PROPERTIES ph{};
+            ph.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+            ThrowIfFailed(m_graphicsDevice->GetDevice()->CreateCommittedResource(
+                &ph, D3D12_HEAP_FLAG_NONE, &pd, D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                &pcv, IID_PPV_ARGS(&m_previewDepthBuffer)));
+
+            m_previewDsvHandle = m_dsvHeap->Allocate();
+            D3D12_DEPTH_STENCIL_VIEW_DESC pdv{};
+            pdv.Format        = DXGI_FORMAT_D32_FLOAT;
+            pdv.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+            m_graphicsDevice->GetDevice()->CreateDepthStencilView(
+                m_previewDepthBuffer.Get(), &pdv, m_previewDsvHandle);
+        }
+
         // プレビュー表示用 LDR RT。プレビューRT(リニアHDR)をトーンマップして解決し、
         // ImGui にはこちらの SRV を渡す（FP16 を直接表示すると暗く見えるため）
         m_cameraPreviewLdrRT = std::make_unique<RenderTarget>();
@@ -2028,6 +2222,14 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_distortRT->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
                                 m_window->GetWidth(), m_window->GetHeight(),
                                 DXGI_FORMAT_R16G16_FLOAT, distortClear);
+
+        // ここまでで確保したシーン系 RT のサイズ＝現在のレンダー解像度（#16）。
+        // 実際の値は次フレーム先頭の UpdateRenderResolution() が
+        // 「表示矩形 × render_scale」へ合わせ直す。
+        m_renderW = m_window->GetWidth();
+        m_renderH = m_window->GetHeight();
+        m_renderScale = static_cast<f32>(PersistGet("render_scale", 1.0));
+        m_renderScale = std::clamp(m_renderScale, 0.25f, 1.0f);
 
         // 加算ビルボードパーティクル（HDR scene RT + 深度へ描く / Lua fx API）
         m_particleSystem = std::make_unique<ParticleSystem>();
@@ -5021,8 +5223,11 @@ void Application::RegisterMcpEditorMethods()
                               {"width", m_sceneRT->GetWidth()},
                               {"height", m_sceneRT->GetHeight()},
                               {"source", "sceneRT(pre-post)"},
-                              {"note", "ポストプロセス前のシーン RT。グレーディング/ブルーム/ビネット/TAA は"
-                                       "写らない。最終画は dx12_screenshot_final"}};
+                              // ★#16: シーン RT は「レンダー解像度」そのもの。renderScale<1 なら
+                              //   表示解像度より小さい絵が返る（拡大前）。表示解像度で見たいなら final。
+                              {"renderScale", m_renderScale},
+                              {"note", "ポストプロセス前のシーン RT（レンダー解像度）。グレーディング/"
+                                       "ブルーム/ビネット/TAA は写らない。最終画は dx12_screenshot_final"}};
         });
 
     // ★§6 B5 の根治。バックバッファ（ポスト適用後の最終画）のビューポート矩形を撮る。
@@ -5086,6 +5291,9 @@ void Application::RegisterMcpEditorMethods()
             const float ndcX = (w != 0.0f) ? XMVectorGetX(clip) / w : 0.0f;
             const float ndcY = (w != 0.0f) ? XMVectorGetY(clip) / w : 0.0f;
             const float ndcZ = (w != 0.0f) ? XMVectorGetZ(clip) / w : 0.0f;
+            // ★#16: シーンは RT 全面に描かれるので、RT サイズ＝スクリーン空間そのもの
+            //   （かつては RT がウィンドウ全面でシーンはサブ矩形だったため、
+            //     エディタでは vpLeft ぶん系統的にずれていた）。
             const float vw = static_cast<float>(m_sceneRT->GetWidth());
             const float vh = static_cast<float>(m_sceneRT->GetHeight());
             const float px = (ndcX * 0.5f + 0.5f) * vw;
@@ -5433,6 +5641,15 @@ void Application::RegisterMcpEditorMethods()
             // クラスタードライティング（Forward+）。settings.json "render_clustered" で A/B 可。
             // OFF / 正射カメラのときは「先頭 64 灯を総当たり」フォールバックで走る。
             rep["clustered"]  = m_clusteredEnabled;
+            // 内部解像度スケール（#16）。GPU 時間を読むときは必ずこれも見ること
+            // （renderScale=0.5 なら画素数が 1/4 になっているので単純比較できない）。
+            {
+                u32 dvx = 0, dvy = 0, dvw = 0, dvh = 0;
+                GetDisplayViewport(dvx, dvy, dvw, dvh);
+                rep["renderScale"]       = m_renderScale;
+                rep["renderResolution"]  = {{"width", m_renderW}, {"height", m_renderH}};
+                rep["displayResolution"] = {{"width", dvw},       {"height", dvh}};
+            }
 
             // パス別内訳（平均/フレーム）。other = 深度プリパス/エディタプレビュー等
             rep["passes"] = {
@@ -5920,6 +6137,33 @@ void Application::RegisterMcpRenderMethods()
             c.fadeDistance = params.value("fadeDistance", c.fadeDistance);
             resp["ok"] = true;
             resp["result"] = {{"applied", true}};
+        });
+
+    // ---- 内部解像度スケール（#16。レンダー解像度と表示解像度の分離）----
+    // 3D シーンだけを scale 倍の解像度で描き、最終パスで表示解像度へ引き伸ばす。
+    // UI / ImGui / エディタのギズモは常に表示解像度のまま＝文字がボケない。
+    McpDefine("get_render_scale|set_render_scale", "scale:number", DX12E_MCP_HANDLER
+        {
+            if (method == "set_render_scale")
+            {
+                if (!params.contains("scale"))
+                    throw McpError(McpErr::InvalidParam, "need scale (0.25..1.0)");
+                SetRenderScale(static_cast<f32>(McpFloatParam(params, "scale", 1.0f, 0.25f, 1.0f)));
+            }
+            u32 dvx = 0, dvy = 0, dvw = 0, dvh = 0;
+            GetDisplayViewport(dvx, dvy, dvw, dvh);
+            resp["ok"] = true;
+            resp["result"] = {
+                {"scale", m_renderScale},
+                // ★set 直後は「次フレームの Run ループ先頭」で反映されるので、
+                //   ここで返る renderResolution はまだ 1 フレーム前の値であり得る。
+                {"renderResolution",  {{"width", m_renderW}, {"height", m_renderH}}},
+                {"displayResolution", {{"width", dvw},       {"height", dvh}}},
+                {"pending", (m_renderW != 0) &&
+                            (static_cast<u32>(std::lround(dvw * static_cast<double>(m_renderScale))) != m_renderW)},
+                {"note", "シーン系 RT（sceneRT/深度/SSAO/TAA/SSR/SSGI/ブルーム/DoF/ゴッドレイ）の"
+                         "解像度。UI と ImGui は常に表示解像度。dx12_screenshot はレンダー解像度、"
+                         "dx12_screenshot_final は表示解像度で返る"}};
         });
 
     McpDefine("get_taa", "", DX12E_MCP_HANDLER
@@ -7088,8 +7332,10 @@ void Application::RegisterMcpAssetMethods()
             result["screen"]   = {{"x", sx}, {"y", sy}};
             result["viewport"] = {{"width", m_sceneRT->GetWidth()}, {"height", m_sceneRT->GetHeight()}};
             result["mode"]     = (m_engineMode == EngineMode::Playing) ? "Playing" : "Editor";
+            result["renderScale"] = m_renderScale;
             result["note"]     = "シーンビューを描いているカメラ基準(Playing 中はゲームカメラ)。"
-                                 "座標系は dx12_screenshot / dx12_project_world_to_screen と同じ。"
+                                 "座標系は dx12_screenshot / dx12_project_world_to_screen と同じ"
+                                 "（= レンダー解像度。renderScale<1 なら表示ピクセルより小さい）。"
                                  "エディタの左クリック選択と同じ RaycastScene を通すので結果は一致する。"
                                  "スキンドメッシュはバインドポーズの AABB 止まり。";
             resp["ok"] = true;
@@ -9037,7 +9283,8 @@ void Application::Run()
         if (m_window->ShouldClose())
             break;
 
-        // リサイズ処理
+        // リサイズ処理（★ここで作り直すのはスワップチェイン＝表示解像度だけ。
+        //   シーン系 RT は下の UpdateRenderResolution() が renderScale 込みで面倒を見る）
         if (m_window->WasResized())
         {
             m_window->ResetResizedFlag();
@@ -9047,72 +9294,7 @@ void Application::Run()
             {
                 m_commandQueue->WaitIdle();
                 m_swapChain->Resize(w, h, *m_descriptorHeap);
-
-                // デプスバッファ再作成
-                m_depthBuffer.Reset();
-                D3D12_RESOURCE_DESC depthDesc{};
-                depthDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-                depthDesc.Width = w;
-                depthDesc.Height = h;
-                depthDesc.DepthOrArraySize = 1;
-                depthDesc.MipLevels = 1;
-                depthDesc.Format = DXGI_FORMAT_R32_TYPELESS;
-                depthDesc.SampleDesc = {1, 0};
-                depthDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
-
-                D3D12_CLEAR_VALUE clearValue{};
-                clearValue.Format = DXGI_FORMAT_D32_FLOAT;
-                clearValue.DepthStencil = {1.0f, 0};
-
-                D3D12_HEAP_PROPERTIES heapProps{};
-                heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-
-                ThrowIfFailed(m_graphicsDevice->GetDevice()->CreateCommittedResource(
-                    &heapProps, D3D12_HEAP_FLAG_NONE,
-                    &depthDesc, D3D12_RESOURCE_STATE_DEPTH_WRITE,
-                    &clearValue, IID_PPV_ARGS(&m_depthBuffer)));
-
-                D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc{};
-                dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
-                dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
-                m_graphicsDevice->GetDevice()->CreateDepthStencilView(
-                    m_depthBuffer.Get(), &dsvDesc, m_dsvHandle);
-
-                if (m_depthSrvIndex != 0xFFFFFFFFu)
-                {
-                    D3D12_SHADER_RESOURCE_VIEW_DESC depthSrvDesc{};
-                    depthSrvDesc.Format                  = DXGI_FORMAT_R32_FLOAT;
-                    depthSrvDesc.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
-                    depthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-                    depthSrvDesc.Texture2D.MipLevels     = 1;
-                    m_graphicsDevice->GetDevice()->CreateShaderResourceView(
-                        m_depthBuffer.Get(), &depthSrvDesc, m_srvHeap->GetCpuHandle(m_depthSrvIndex));
-                }
-
-                // オフスクリーン RT もウィンドウサイズへ作り直す
-                if (m_sceneRT)
-                    m_sceneRT->Resize(*m_graphicsDevice, w, h);
-                // SSAO の AO/Blur RT も同寸へ（深度と同じフル解像度）
-                if (m_ssaoPass)
-                    m_ssaoPass->Resize(*m_graphicsDevice, w, h);
-                // コンタクトシャドウの RT も同寸へ（同じ深度を読むのでフル解像度）
-                if (m_contactShadowPass)
-                    m_contactShadowPass->Resize(*m_graphicsDevice, w, h);
-                // ブルームチェーン（1/2〜1/64）も追従
-                if (m_bloomPass)
-                    m_bloomPass->Resize(*m_graphicsDevice, w, h);
-                if (m_godRaysPass)    m_godRaysPass->Resize(*m_graphicsDevice, w, h);
-                if (m_lensFlarePass)  m_lensFlarePass->Resize(*m_graphicsDevice, w, h);
-                if (m_dofPass)        m_dofPass->Resize(*m_graphicsDevice, w, h);
-                if (m_motionBlurPass) m_motionBlurPass->Resize(*m_graphicsDevice, w, h);
-                if (m_distortRT)      m_distortRT->Resize(*m_graphicsDevice, w, h);
-                // TAA: 速度RT/履歴RT を作り直す。座標系が変わるので履歴は必ず捨てる
-                // （持ち越すと画面が歪んで尾を引く）。MB の速度スパイク防止も兼ねる。
-                if (m_taaPass) m_taaPass->Resize(*m_graphicsDevice, w, h);
-                if (m_gbufferRT) m_gbufferRT->Resize(*m_graphicsDevice, w, h);
-                if (m_screenSpaceGi) m_screenSpaceGi->Resize(*m_graphicsDevice, w, h);
-                if (m_rtScreenPass) m_rtScreenPass->Resize(*m_graphicsDevice, w, h);
-                InvalidateTemporalHistory();
+                m_renderResFlush = true;   // レンダー解像度はデバウンスせず即時追従させる
 
                 // カメラアスペクト比更新（エディタモードではサイドバー分引く）
                 m_camera->SetPerspective(DirectX::XM_PIDIV4,
@@ -9121,6 +9303,10 @@ void Application::Run()
                 Logger::Info("Resized to {}x{}", w, h);
             }
         }
+
+        // 表示矩形 × renderScale へシーン系 RT を追従させる（#16）。
+        // ★必ず Render() より前・フレーム外で呼ぶこと（内部で WaitIdle する）。
+        UpdateRenderResolution();
 
         m_gameClock.Tick();
 
@@ -10672,6 +10858,14 @@ void Application::LoadProject(const ProjectInfo& info)
     // クラスタードライティング（Forward+）。0 で「先頭 64 灯を総当たり」フォールバックへ倒す。
     m_clusteredEnabled = PersistGet("render_clustered", 1.0) != 0.0;
     Logger::Info("クラスタードライティング: {}", m_clusteredEnabled ? "ON" : "OFF");
+
+    // 内部解像度スケール（#16）。1.0 で従来と完全に同じ絵。0.5 なら 3D だけ半解像度で
+    // 描いて表示解像度へ引き伸ばす（UI / ImGui は表示解像度のまま鮮明）。
+    {
+        const f32 s = std::clamp(static_cast<f32>(PersistGet("render_scale", 1.0)), 0.25f, 1.0f);
+        if (s != m_renderScale) { m_renderScale = s; m_renderResFlush = true; }
+        Logger::Info("レンダー解像度スケール: {:.2f}", m_renderScale);
+    }
 
     // BC7/BC5 テクスチャ圧縮（settings.json "texture_compression"、既定 1）。
     //   0 = 無圧縮（ハードウェア/ツール差で絵が壊れた時に従来の R8G8B8A8 へ戻す逃げ道）
@@ -13124,6 +13318,8 @@ void Application::RecordPerfFrame()
             rep["frames"] = static_cast<int>(n);
             rep["instancing"] = m_instancingEnabled;
             rep["clustered"]  = m_clusteredEnabled;
+            rep["renderScale"]      = m_renderScale;      // #16。GPU 時間の A/B ではここも見ること
+            rep["renderResolution"] = {{"width", m_renderW}, {"height", m_renderH}};
             // uncap で外していた FPS 上限/VSync を元に戻す（レポートには計測時の値=解除後を載せる）
             if (m_benchRestore)
             {
@@ -15598,28 +15794,16 @@ void Application::Render()
     // 以降の CSM / SSAO / forward はすべてこの同じカメラ状態を前提にする。
     // ここがシャドウ計算より後だと、Scene カメラの投影で影を作って GameCamera で描くなどの
     // 経路差が起き、Scene/Game で光の強さが違って見える。
+    // ★#16: 「表示（display）」と「レンダー（render）」の 2 つに分かれている。混ぜないこと。
+    //   vpLeft/vpTop/vpW/vpH … バックバッファ上の矩形。uber パス以降だけが使う
+    //   rW/rH               … シーン系 RT のサイズ。シーンは必ずその全面 (0,0,rW,rH) に描く
     u32 vpLeft, vpTop, vpW, vpH;
-    {
-        auto vp = m_editorLayer->GetViewportPos();
-        auto vs = m_editorLayer->GetViewportSize();
-        // 負座標(パネルのドラッグ中/画面外)を u32 へキャストすると巨大値にラップし、
-        // ビューポートが RT 外へ飛んで描画が全滅する(クリアだけ残り真っ青)ため 0 で下限。
-        vpLeft = static_cast<u32>((std::max)(0.0f, vp.x));
-        vpTop  = static_cast<u32>((std::max)(0.0f, vp.y));
-        vpW    = static_cast<u32>((std::max)(0.0f, vs.x));
-        vpH    = static_cast<u32>((std::max)(0.0f, vs.y));
-        if (vpW < 1) vpW = 1;
-        if (vpH < 1) vpH = 1;
-        // 全画面は「単体ゲーム（エディタUIなし）」のみ。エディタは編集中も Play 中も
-        // 中央の 16:9 ビューポート矩形に描く（パネル下に潜り込ませない）。
-        if (m_isGameMode)
-        {
-            vpLeft = 0; vpTop = 0;
-            vpW = m_window->GetWidth();
-            vpH = m_window->GetHeight();
-        }
-    }
+    GetDisplayViewport(vpLeft, vpTop, vpW, vpH);
+    const u32 rW = (m_renderW > 0) ? m_renderW : vpW;
+    const u32 rH = (m_renderH > 0) ? m_renderH : vpH;
 
+    // アスペクトは**表示側**を使う（レンダー解像度は同じアスペクトで縮めるだけ。
+    // ここをレンダー側にすると renderScale の丸め誤差で絵が伸びる）。
     const f32 renderAspect = static_cast<f32>(vpW) / static_cast<f32>(vpH);
 
     // ===== 2D ビューモード: エディタカメラを正射＋XY平面正対(forward +Z)へ固定 =====
@@ -15799,17 +15983,9 @@ void Application::Render()
     if (taaActive || ssGiWantsPrepass) EnsureInstancePrevBuffer();
     m_trackPrevWorld = taaActive || ssGiWantsPrepass;
 
-    // ビューポート矩形が変わったら履歴を捨てる。エディタのパネル分割をドラッグすると
-    // ウィンドウリサイズなしで矩形だけが変わり、履歴のローカル UV 対応が崩れて
-    // 1〜2 フレーム画面が引き伸ばされて見える（リサイズハンドラだけでは拾えない）。
-    if (m_prevVpRectValid && (m_prevVpRect[0] != vpLeft || m_prevVpRect[1] != vpTop ||
-                              m_prevVpRect[2] != vpW    || m_prevVpRect[3] != vpH))
-    {
-        InvalidateTemporalHistory();
-    }
-    m_prevVpRect[0] = vpLeft; m_prevVpRect[1] = vpTop;
-    m_prevVpRect[2] = vpW;    m_prevVpRect[3] = vpH;
-    m_prevVpRectValid = true;
+    // ★かつてここに「ビューポート矩形が変わったら履歴を捨てる」ブロックがあったが、
+    //   #16 でシーンは常に RT 全面に描くようになり、履歴の UV 対応が表示矩形に依存しなくなった。
+    //   レンダー解像度が変わったときは ApplyRenderResolution() が履歴を捨てる。
 
     // ===== TAA ジッタ =====
     // ハルトン(2,3)列で投影行列を ±0.5px ずらす。Camera 自体には一切入れない
@@ -15819,8 +15995,9 @@ void Application::Render()
     //   clip' = clip * T で clip'.x = clip.x + clip.w * jx。
     //   透視では clip.w = z_view、正射では clip.w = 1 なので、どちらでも NDC が jx 平行移動する
     //   （_31/_32 を直接いじる透視専用の方法より汎用で安全）。
+    // ★ジッタ幅は「レンダー解像度の 1px」基準（ラスタライズするのはレンダー解像度）。
     if (taaActive) m_taaJitterNdc = m_taaPass->NextJitterNdc(
-        static_cast<u32>(taaCfg.sampleCount), vpW, vpH, taaCfg.jitterScale);
+        static_cast<u32>(taaCfg.sampleCount), rW, rH, taaCfg.jitterScale);
     else           m_taaJitterNdc = {0.0f, 0.0f};
     const XMFLOAT2 jitterNdc = m_taaJitterNdc;
 
@@ -16199,7 +16376,7 @@ void Application::Render()
         // ★ラスタライズは camVPJ（ジッタあり）。ここをジッタなしにするとフォワードと
         //   深度がビット一致せず LESS_EQUAL で面が欠落する。
         m_commandList->ClearDepthStencil(m_dsvHandle);
-        m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+        m_commandList->SetViewportAndScissor(rW, rH);
 
         // 半透明（sortKey==3）はカメラのプリパスから除外する（00-COORDINATION §6 B3）。
         // 影パスは従来どおり半透明も描く＝影の見た目は不変。
@@ -16219,7 +16396,7 @@ void Application::Render()
             constexpr float gbufZero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
             m_commandList->ClearRenderTarget(m_gbufferRT->GetRtv(), gbufZero);
             m_taaPass->BeginVelocity(*m_commandList, m_dsvHandle, m_gbufferRT->GetRtv(),
-                                     vpLeft, vpTop, vpW, vpH);
+                                     0u, 0u, rW, rH);
             RenderDepthOnlyScene(camVPJ, *m_velocityPSO, *m_velocityPSOSkinned,
                                  /*updateSkinning*/ false, frameIndex, /*lodBias*/ 0,
                                  m_velocityPSOInst.get(), &pp);
@@ -16245,7 +16422,7 @@ void Application::Render()
             aoSrv = m_ssaoPass->Generate(nativeCmdList, m_srvHeap.get(),
                 m_srvHeap->GetGpuHandle(m_depthSrvIndex), ssaoCfg,
                 m_camera->GetProjectionMatrix(), m_camera->GetNearZ(), m_camera->GetFarZ(),
-                vpLeft, vpTop, vpW, vpH, frameIndex);
+                0u, 0u, rW, rH, frameIndex);
             // 生成失敗（未準備）時は白ダミー(AO=1.0)へフォールバック。誤テクスチャの読み出しを防ぐ。
             if (aoSrv == DescriptorHeap::kInvalidIndex)
                 aoSrv = m_ssaoWhiteSrvIndex;
@@ -16257,7 +16434,7 @@ void Application::Render()
             csSrv = m_contactShadowPass->Generate(nativeCmdList,
                 m_srvHeap->GetGpuHandle(m_depthSrvIndex), csCfg,
                 m_camera->GetViewMatrix(), m_camera->GetProjectionMatrix(), lightDirF3,
-                vpLeft, vpTop, vpW, vpH, frameIndex);
+                0u, 0u, rW, rH, frameIndex);
             if (csSrv == DescriptorHeap::kInvalidIndex)
                 csSrv = m_ssaoWhiteSrvIndex;
         }
@@ -16282,7 +16459,7 @@ void Application::Render()
             rd.lightDir  = lightDirF3;
             rd.zNear     = m_camera->GetNearZ();
             rd.zFar      = m_camera->GetFarZ();
-            rd.vpLeft = vpLeft; rd.vpTop = vpTop; rd.vpW = vpW; rd.vpH = vpH;
+            rd.vpLeft = 0; rd.vpTop = 0; rd.vpW = rW; rd.vpH = rH;
             rd.frameIndex  = frameIndex;
             // 時間ディザは TAA が有効なときだけ回す（無効時に回すとチラつくだけ。PCSS と同じ方針）。
             rd.frameJitter = taaActive
@@ -16319,7 +16496,7 @@ void Application::Render()
             gd.proj       = m_camera->GetProjectionMatrix();   // ジッタなし（深度線形化は無誤差）
             gd.zNear      = m_camera->GetNearZ();
             gd.zFar       = m_camera->GetFarZ();
-            gd.vpLeft = vpLeft; gd.vpTop = vpTop; gd.vpW = vpW; gd.vpH = vpH;
+            gd.vpLeft = 0; gd.vpTop = 0; gd.vpW = rW; gd.vpH = rH;
             gd.frameIndex = frameIndex;
             gd.hasIbl     = (m_iblReady && m_iblBaker != nullptr);
             gd.depthSrv     = m_srvHeap->GetGpuHandle(m_depthSrvIndex);
@@ -16350,7 +16527,7 @@ void Application::Render()
     if (!useDepthPrepass)
         m_commandList->ClearDepthStencil(m_dsvHandle);
     m_commandList->SetRenderTarget(m_sceneRT->GetRtv(), m_dsvHandle);
-    m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+    m_commandList->SetViewportAndScissor(rW, rH);
 
     m_commandList->SetPipelineState(*m_pipelineState);
 
@@ -16618,10 +16795,11 @@ void Application::Render()
                             static_cast<f32>(cluster::kGridY),
                             static_cast<f32>(cluster::kGridZ),
                             clusterOn ? 1.0f : 0.0f};
-        // SV_Position.xy は RT 座標。シーンは m_sceneRT のサブ矩形に描かれるので原点を引く。
-        fc.clusterViewport = {static_cast<f32>(vpLeft), static_cast<f32>(vpTop),
-                              static_cast<f32>(cluster::kGridX) / static_cast<f32>(vpW),
-                              static_cast<f32>(cluster::kGridY) / static_cast<f32>(vpH)};
+        // SV_Position.xy は RT 座標。#16 でシーンは RT 全面に描くようになったので原点は常に 0
+        // （かつては m_sceneRT のサブ矩形に描いていたので vpLeft/vpTop を引いていた）。
+        fc.clusterViewport = {0.0f, 0.0f,
+                              static_cast<f32>(cluster::kGridX) / static_cast<f32>(rW),
+                              static_cast<f32>(cluster::kGridY) / static_cast<f32>(rH)};
         // デバッグ表示はエディタのライティング窓から（ゲームモードは常に 0）
         m_clusterDebugMode = m_editorCtx ? m_editorCtx->clusterDebugMode : 0u;
         // ★clusterExtra.w は計画02 が「予約」として空けておいた枠。
@@ -16776,7 +16954,7 @@ void Application::Render()
         fv.shadowParams     = fc.shadowParams;
         fv.clusterParams    = fc.clusterParams;
         fv.clusterGrid      = fc.clusterGrid;
-        fv.vpLeft = vpLeft; fv.vpTop = vpTop; fv.vpW = vpW; fv.vpH = vpH;
+        fv.vpLeft = 0; fv.vpTop = 0; fv.vpW = rW; fv.vpH = rH;
         fv.nearZ = m_camera->GetNearZ();
         fv.farZ  = m_camera->GetFarZ();
         fv.numLights     = numClusterLights;
@@ -16808,7 +16986,7 @@ void Application::Render()
         m_commandList->SetRootSignature(*m_rootSignature);
         m_commandList->SetPipelineState(*m_pipelineState);
         m_commandList->SetRenderTarget(m_sceneRT->GetRtv(), m_dsvHandle);
-        m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+        m_commandList->SetViewportAndScissor(rW, rH);
     }
 
     // ===== Skybox（不透明描画の前に全画面塗り。深度テスト OFF なので後続不透明が上書き）=====
@@ -16890,7 +17068,7 @@ void Application::Render()
 
         auto srtv = m_sceneRT->GetRtv();
         nativeCmdList->OMSetRenderTargets(1, &srtv, FALSE, nullptr);
-        m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+        m_commandList->SetViewportAndScissor(rW, rH);
         m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
 
         // ---- ボリュメトリックフォグの合成（フルスクリーン 1 枚をブレンドで scene RT へ）----
@@ -16905,10 +17083,10 @@ void Application::Render()
         {
             m_volumetricFogPass->Composite(nativeCmdList,
                 m_srvHeap->GetGpuHandle(m_depthSrvIndex),
-                vpLeft, vpTop, vpW, vpH, frameIndex);
+                0u, 0u, rW, rH, frameIndex);
             // フォグ用の RootSig/PSO を張ったので、後続（パーティクル）のために作法どおり戻す。
             nativeCmdList->OMSetRenderTargets(1, &srtv, FALSE, nullptr);
-            m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+            m_commandList->SetViewportAndScissor(rW, rH);
             m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
         }
 
@@ -16953,7 +17131,7 @@ void Application::Render()
             m_commandList->ClearRenderTarget(m_distortRT->GetRtv(), distClear);
             auto drtv = m_distortRT->GetRtv();
             nativeCmdList->OMSetRenderTargets(1, &drtv, FALSE, nullptr);
-            m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+            m_commandList->SetViewportAndScissor(rW, rH);
             m_particleSystem->RenderDistortion(nativeCmdList, camVPJ, camRight, camUp);
             m_distortRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
             particleDistortDrawn = true;
@@ -16975,7 +17153,7 @@ void Application::Render()
         XMStoreFloat3(&camRight, invView.r[0]);
         XMStoreFloat3(&camUp,    invView.r[1]);
         DrawWorldSprites(nativeCmdList, camVPJ, camRight, camUp,
-                         m_sceneRT->GetRtv(), m_dsvHandle, vpLeft, vpTop, vpW, vpH, totalTime);
+                         m_sceneRT->GetRtv(), m_dsvHandle, 0u, 0u, rW, rH, totalTime);
     }
 
     // ===== 中間バッファ可視化（dx12_render_debug）=====
@@ -17018,18 +17196,12 @@ void Application::Render()
             m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
 
             XMFLOAT4X4 dbgProj; XMStoreFloat4x4(&dbgProj, m_camera->GetProjectionMatrix());
-            const f32 fullWDbg = static_cast<f32>(m_sceneRT->GetWidth());
-            const f32 fullHDbg = static_cast<f32>(m_sceneRT->GetHeight());
 
             RenderDebugPass::DrawDesc dd{};
             dd.mode       = dbgMode;
             dd.sourceSrv  = m_srvHeap->GetGpuHandle(srcIdx);
             dd.depthSrv   = m_srvHeap->GetGpuHandle(m_depthSrvIndex);
-            dd.uvOfsX     = static_cast<f32>(vpLeft) / fullWDbg;
-            dd.uvOfsY     = static_cast<f32>(vpTop)  / fullHDbg;
-            dd.uvSclX     = static_cast<f32>(vpW)    / fullWDbg;
-            dd.uvSclY     = static_cast<f32>(vpH)    / fullHDbg;
-            dd.vpLeft = vpLeft; dd.vpTop = vpTop; dd.vpW = vpW; dd.vpH = vpH;
+            dd.vpLeft = 0; dd.vpTop = 0; dd.vpW = rW; dd.vpH = rH;
             dd.gain       = m_renderDebugGain;
             dd.projA      = dbgProj._33;
             dd.projB      = dbgProj._43;
@@ -17064,12 +17236,11 @@ void Application::Render()
     {
         m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
 
+        // ★#16: シーンは RT 全面に描かれているので「サブ矩形の UV」は常に (0,0,1,1)。
+        //   かつてここで計算していた uvOfs/uvScl は 7 パスから丸ごと消えた。
+        //   fullW/fullH ＝ レンダー解像度（テクセルサイズの供給元）。
         const f32 fullW = static_cast<f32>(m_sceneRT->GetWidth());
         const f32 fullH = static_cast<f32>(m_sceneRT->GetHeight());
-        const f32 uvOfsX = static_cast<f32>(vpLeft) / fullW;
-        const f32 uvOfsY = static_cast<f32>(vpTop)  / fullH;
-        const f32 uvSclX = static_cast<f32>(vpW)    / fullW;
-        const f32 uvSclY = static_cast<f32>(vpH)    / fullH;
         const auto sceneSrvGpu = m_srvHeap->GetGpuHandle(m_sceneRT->GetSrvIndex());
 
         // ポストエフェクトも Scene/Game で同じ設定を適用する。
@@ -17126,8 +17297,7 @@ void Application::Render()
             XMStoreFloat4x4(&prevVpT, XMMatrixTranspose(
                 m_prevViewProjNJValid ? XMLoadFloat4x4(&m_prevViewProjNoJitter) : camVP));
             const u32 o = m_taaPass->Resolve(*m_commandList, curSceneSrv, depthSrvGpu,
-                invVpT, prevVpT, uvOfsX, uvOfsY, uvSclX, uvSclY,
-                vpLeft, vpTop, vpW, vpH, taaCfg);
+                invVpT, prevVpT, rW, rH, taaCfg);
             if (o != DescriptorHeap::kInvalidIndex)
                 curSceneSrv = m_srvHeap->GetGpuHandle(o);
             // TaaPass は自前のルートシグネチャ/PSO を張るので、後段のために SRV ヒープを張り直す。
@@ -17138,9 +17308,7 @@ void Application::Render()
             XMFLOAT4X4 projF;
             XMStoreFloat4x4(&projF, m_camera->GetProjectionMatrix());
             const u32 o = m_dofPass->Apply(*m_commandList, m_srvHeap.get(),
-                curSceneSrv, depthSrvGpu,
-                uvOfsX, uvOfsY, uvSclX, uvSclY, vpLeft, vpTop, vpW, vpH,
-                projF._33, projF._43, ppApplied);
+                curSceneSrv, depthSrvGpu, projF._33, projF._43, ppApplied);
             if (o != DescriptorHeap::kInvalidIndex)
                 curSceneSrv = m_srvHeap->GetGpuHandle(o);
         }
@@ -17161,14 +17329,14 @@ void Application::Render()
             const auto velSrvGpu = mbUseVelocity ? m_srvHeap->GetGpuHandle(velIdx) : depthSrvGpu;
             const u32 o = m_motionBlurPass->Apply(*m_commandList, m_srvHeap.get(),
                 curSceneSrv, depthSrvGpu, velSrvGpu, mbUseVelocity, invT, prevT,
-                uvOfsX, uvOfsY, uvSclX, uvSclY, vpLeft, vpTop, vpW, vpH, ppApplied);
+                rW, rH, ppApplied);
             if (o != DescriptorHeap::kInvalidIndex)
                 curSceneSrv = m_srvHeap->GetGpuHandle(o);
         }
 
         // ---- 自動露出（compute。ビューポート矩形のヒストグラム→露出値を GPU 内バッファへ）----
         if (m_autoExposure && ppApplied.enabled && ppApplied.autoExposureOn)
-            m_autoExposure->Generate(nativeCmdList, curSceneSrv, vpLeft, vpTop, vpW, vpH,
+            m_autoExposure->Generate(nativeCmdList, curSceneSrv, 0u, 0u, rW, rH,
                                      m_gameClock.GetDeltaTime(), ppApplied);
         D3D12_GPU_VIRTUAL_ADDRESS exposureVA = 0;
         if (m_autoExposure)
@@ -17181,7 +17349,6 @@ void Application::Render()
         u32 bloomSrv = DescriptorHeap::kInvalidIndex;
         if (m_bloomPass && ppApplied.enabled && (ppApplied.bloomOn || ppApplied.lensflareOn))
             bloomSrv = m_bloomPass->Generate(*m_commandList, m_srvHeap.get(), curSceneSrv,
-                                             uvOfsX, uvOfsY, uvSclX, uvSclY,
                                              1.0f / fullW, 1.0f / fullH, ppApplied);
         const bool bloomReady = (bloomSrv != DescriptorHeap::kInvalidIndex);
         const auto bloomSrvGpu = m_srvHeap->GetGpuHandle(bloomReady ? bloomSrv : m_ssaoWhiteSrvIndex);
@@ -17219,10 +17386,10 @@ void Application::Render()
                     const f32 fade = (std::min)((std::max)((1.1f - dc) / 0.4f, 0.0f), 1.0f);
                     if (fade > 0.001f)
                     {
+                        // ★#16: シーンは RT 全面なので、ローカル UV がそのまま RT の UV。
+                        //   （かつては lu * uvScl + uvOfs でサブ矩形へ写していた）
                         godraysSrv = m_godRaysPass->Generate(*m_commandList, m_srvHeap.get(),
-                            depthSrvGpu,
-                            uvOfsX, uvOfsY, uvSclX, uvSclY, vpLeft, vpTop, vpW, vpH,
-                            lu * uvSclX + uvOfsX, lv * uvSclY + uvOfsY, fade, sunColI, ppApplied);
+                            depthSrvGpu, rW, rH, lu, lv, fade, sunColI, ppApplied);
                     }
                 }
             }
@@ -17285,8 +17452,9 @@ void Application::Render()
         pin.flareReady   = lfReady;
         pin.distortReady = particleDistortDrawn;
 
+        // ★ここが唯一の「レンダー解像度 → 表示解像度」の橋渡し。ビューポートが表示矩形で、
+        //   シーン RT の全面をサンプルする＝renderScale < 1 なら自動的にバイリニア拡大になる。
         m_postProcess->Apply(nativeCmdList, pin, ppApplied,
-            uvOfsX, uvOfsY, uvSclX, uvSclY,
             1.0f / fullW, 1.0f / fullH, totalTime, frameIndex);
 
         // ---- 速度バッファのデバッグ可視化（ポスト後のバックバッファを上書き）----
@@ -17298,8 +17466,7 @@ void Application::Render()
             {
                 nativeCmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
                 m_taaPass->DrawVelocityDebug(*m_commandList, m_srvHeap->GetGpuHandle(velSrv),
-                    uvOfsX, uvOfsY, uvSclX, uvSclY, vpLeft, vpTop, vpW, vpH,
-                    /*scale*/ 20.0f);
+                    vpLeft, vpTop, vpW, vpH, /*scale*/ 20.0f);
             }
         }
 
@@ -17320,7 +17487,10 @@ void Application::Render()
     // ---- Editor Icon Draw（ポスト後のバックバッファへ, エディタモードのみ）----
     if (m_engineMode == EngineMode::Editor && !m_isGameMode)
     {
-        m_commandList->SetRenderTarget(rtv, m_dsvHandle);
+        // ★DSV は張らない。アイコンは DepthEnable=FALSE で深度テストをしないうえ、
+        //   #16 でメイン深度はレンダー解像度に縮んだので、表示解像度のバックバッファへ
+        //   束ねると RTV より小さい DSV になる（PSO 側も DSVFormat=UNKNOWN にしてある）。
+        m_commandList->SetRenderTarget(rtv);
         m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
 
         m_editorIconRenderer->BeginFrame();
@@ -17465,8 +17635,8 @@ void Application::Render()
             m_cameraPreviewRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
             constexpr float pvClear[4] = {0.127f, 0.306f, 0.850f, 1.0f};  // リニア空間のコーンフラワーブルー
             m_commandList->ClearRenderTarget(m_cameraPreviewRT->GetRtv(), pvClear);
-            m_commandList->ClearDepthStencil(m_dsvHandle);
-            m_commandList->SetRenderTarget(m_cameraPreviewRT->GetRtv(), m_dsvHandle);
+            m_commandList->ClearDepthStencil(m_previewDsvHandle);
+            m_commandList->SetRenderTarget(m_cameraPreviewRT->GetRtv(), m_previewDsvHandle);
             m_commandList->SetViewportAndScissor(pw, ph);
 
             m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
@@ -17492,7 +17662,7 @@ void Application::Render()
             XMStoreFloat3(&pvRight, rot.r[0]);
             XMStoreFloat3(&pvUp,    rot.r[1]);
             DrawWorldSprites(nativeCmdList, camViewProj, pvRight, pvUp,
-                             m_cameraPreviewRT->GetRtv(), m_dsvHandle, 0u, 0u, pw, ph, totalTime);
+                             m_cameraPreviewRT->GetRtv(), m_previewDsvHandle, 0u, 0u, pw, ph, totalTime);
 
             m_cameraPreviewRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
@@ -17520,7 +17690,6 @@ void Application::Render()
                 pvIn.distortSrv = pvDummy;
                 pvIn.exposureVA = m_autoExposure ? m_autoExposure->GetExposureBufferVA() : 0;
                 m_postProcess->Apply(nativeCmdList, pvIn, pvPost,
-                    0.0f, 0.0f, 1.0f, 1.0f,
                     1.0f / static_cast<f32>(pw), 1.0f / static_cast<f32>(ph), totalTime, frameIndex);
 
                 m_cameraPreviewLdrRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -17535,7 +17704,7 @@ void Application::Render()
 
             // プレビュー描画でRT/ビューポートを切り替えたので、バックバッファへ戻す。
             // これをしないと直後の ImGui がプレビューRTへ描かれ、画面に出なくなる。
-            m_commandList->SetRenderTarget(rtv, m_dsvHandle);
+            m_commandList->SetRenderTarget(rtv);   // 深度は張らない（#16: メイン深度はレンダー解像度）
             m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
         }
     }
@@ -17545,7 +17714,7 @@ void Application::Render()
     {
         m_vfxEditorPanel->RenderPreview3D(*m_editorCtx, *m_commandList, m_gameClock.GetDeltaTime());
         // プレビュー描画でRT/ビューポートを切り替えたので、バックバッファへ戻す。
-        m_commandList->SetRenderTarget(rtv, m_dsvHandle);
+        m_commandList->SetRenderTarget(rtv);   // 深度は張らない（#16: メイン深度はレンダー解像度）
         m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
     }
 
@@ -17554,7 +17723,7 @@ void Application::Render()
     {
         m_materialEditorPanel->RenderPreview3D(*m_editorCtx, *m_commandList);
         // プレビュー描画でRT/ビューポートを切り替えたので、バックバッファへ戻す。
-        m_commandList->SetRenderTarget(rtv, m_dsvHandle);
+        m_commandList->SetRenderTarget(rtv);   // 深度は張らない（#16: メイン深度はレンダー解像度）
         m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
     }
 

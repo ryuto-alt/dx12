@@ -67,8 +67,7 @@ public:
         RenderDebugMode mode = RenderDebugMode::Off;
         D3D12_GPU_DESCRIPTOR_HANDLE sourceSrv{};   // t0（モードごとに差し替わる Texture2D）
         D3D12_GPU_DESCRIPTOR_HANDLE depthSrv{};    // t1（常に有効なものを渡すこと）
-        f32 uvOfsX = 0.0f, uvOfsY = 0.0f;          // シーン RT 内のビューポート矩形（UV）
-        f32 uvSclX = 1.0f, uvSclY = 1.0f;
+        // ★#16: シーンは RT 全面に描かれるので参照 UV は常に (0,0)-(1,1)。矩形だけ受け取る。
         u32 vpLeft = 0, vpTop = 0, vpW = 1, vpH = 1;
         f32 gain      = 1.0f;    // 表示倍率（velocity / roughness / metallic）
         f32 projA     = 0.0f;    // proj._33

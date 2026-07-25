@@ -114,8 +114,8 @@ void RenderDebugPass::Draw(CommandList& cmd, const DrawDesc& d)
     if (d.sourceSrv.ptr == 0 || d.depthSrv.ptr == 0) return;
 
     RenderDebugCB cb{};
-    cb.rectP[0]  = d.uvOfsX; cb.rectP[1] = d.uvOfsY;
-    cb.rectP[2]  = d.uvSclX; cb.rectP[3] = d.uvSclY;
+    cb.rectP[0]  = 0.0f; cb.rectP[1] = 0.0f;   // ★#16: シーンは RT 全面
+    cb.rectP[2]  = 1.0f; cb.rectP[3] = 1.0f;
     cb.modeP[0]  = static_cast<float>(static_cast<u32>(d.mode));
     cb.modeP[1]  = d.gain;
     cb.modeP[2]  = d.projA;
