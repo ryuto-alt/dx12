@@ -99,25 +99,87 @@ void GraphicsDevice::Initialize(Window& /*window*/)
         Logger::Info("D3D12 Memory Allocator initialized");
     }
 
-    // --- DXR Support Check ---
+    QueryCapabilities();
+}
+
+// DXR ケーパビリティの一括問い合わせ（計画09 Step 0）。
+// 「この GPU で何ができるか」をここ 1 箇所に集約し、以後の全パスが
+// SupportsInlineRaytracing() だけを見て安全に分岐できるようにする。
+void GraphicsDevice::QueryCapabilities()
+{
+    // --- ① レイトレーシング Tier の実値 ---
     {
         D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5{};
         HRESULT hr = m_device->CheckFeatureSupport(
-            D3D12_FEATURE_D3D12_OPTIONS5,
-            &options5,
-            sizeof(options5));
+            D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5));
+        if (SUCCEEDED(hr))
+            m_raytracingTier = options5.RaytracingTier;
+        m_dxrSupported = (m_raytracingTier != D3D12_RAYTRACING_TIER_NOT_SUPPORTED);
+    }
 
-        if (SUCCEEDED(hr) && options5.RaytracingTier != D3D12_RAYTRACING_TIER_NOT_SUPPORTED)
+    // --- ② 最高シェーダモデル ---
+    // CheckFeatureSupport は「ランタイムが知らない SM 値」を渡すと E_INVALIDARG を返す。
+    // 公式ドキュメントの推奨どおり、高い方から 1 段ずつ下げて再試行する
+    // （成功時は「渡した値以下で、かつデバイスが対応する最高値」が書き戻される）。
+    {
+        static constexpr D3D_SHADER_MODEL kProbe[] = {
+            D3D_SHADER_MODEL_6_9, D3D_SHADER_MODEL_6_8, D3D_SHADER_MODEL_6_7,
+            D3D_SHADER_MODEL_6_6, D3D_SHADER_MODEL_6_5, D3D_SHADER_MODEL_6_4,
+            D3D_SHADER_MODEL_6_3, D3D_SHADER_MODEL_6_2, D3D_SHADER_MODEL_6_1,
+            D3D_SHADER_MODEL_6_0,
+        };
+        for (D3D_SHADER_MODEL sm : kProbe)
         {
-            m_dxrSupported = true;
-            Logger::Info("DXR supported (Tier {})",
-                static_cast<int>(options5.RaytracingTier));
+            D3D12_FEATURE_DATA_SHADER_MODEL data{};
+            data.HighestShaderModel = sm;
+            if (SUCCEEDED(m_device->CheckFeatureSupport(
+                    D3D12_FEATURE_SHADER_MODEL, &data, sizeof(data))))
+            {
+                m_highestShaderModel = data.HighestShaderModel;
+                break;
+            }
         }
-        else
+    }
+
+    // --- ③ DXR 1.2（SER）。今は使わないがログに出しておく（計画09 §3.3 / R18）---
+    if (m_raytracingTier >= D3D12_RAYTRACING_TIER_1_2)
+    {
+        D3D12_FEATURE_DATA_D3D12_OPTIONS22 options22{};
+        if (SUCCEEDED(m_device->CheckFeatureSupport(
+                D3D12_FEATURE_D3D12_OPTIONS22, &options22, sizeof(options22))))
         {
-            m_dxrSupported = false;
-            Logger::Warn("この GPU は DXR（レイトレーシング）非対応です");
+            m_serActuallyReorders = (options22.ShaderExecutionReorderingActuallyReorders != FALSE);
         }
+    }
+
+    // --- ④ 起動ログ 1 行（dx12_get_log / DeepDiagnostics `dxr` の一次情報）---
+    const int tierMajor = (m_raytracingTier >= D3D12_RAYTRACING_TIER_1_0)
+                        ? static_cast<int>(m_raytracingTier) / 10 : 0;
+    const int tierMinor = (m_raytracingTier >= D3D12_RAYTRACING_TIER_1_0)
+                        ? static_cast<int>(m_raytracingTier) % 10 : 0;
+    const int smMajor = static_cast<int>(m_highestShaderModel) >> 4;
+    const int smMinor = static_cast<int>(m_highestShaderModel) & 0xF;
+
+    if (m_dxrSupported)
+    {
+        Logger::Info("DXR: Tier {}.{} / ShaderModel {}.{} / InlineRT={} / Bindless(SM6.6)={} / DXR1.2={} / SER={}",
+            tierMajor, tierMinor, smMajor, smMinor,
+            SupportsInlineRaytracing() ? "yes" : "no",
+            SupportsBindlessSm66()     ? "yes" : "no",
+            SupportsDxr12()            ? "yes" : "no",
+            m_serActuallyReorders      ? "yes" : "no");
+    }
+    else
+    {
+        Logger::Info("DXR: Tier none / ShaderModel {}.{} / InlineRT=no", smMajor, smMinor);
+    }
+
+    if (!SupportsInlineRaytracing())
+    {
+        // ★Error にしない。エラーではなく「機能の不在」（計画09 §5.3）。
+        Logger::Warn("この GPU では inline raytracing (RayQuery) が使えません "
+                     "（要 DXR Tier 1.1 かつ Shader Model 6.5。RTX 20 系 / RX 6000 系以降）。"
+                     "レイトレーシング機能は無効のまま従来の描画で動作します");
     }
 }
 
