@@ -7,6 +7,8 @@
 #include "core/Logger.h"
 #include "core/vfs/Vfs.h"
 #include "engine/ecs/ComponentRegistry.h"  // Phase 1: コア部品の直列化をレジストリ走査へ
+#include "terrain/TerrainIO.h"             // 複製時に .hf のパスを振り直す
+#include "terrain/SculptIO.h"              // 複製時に .smsh のパスを振り直す
 
 #pragma warning(push)
 #pragma warning(disable: 4189 4456 4458 4267 4996)
@@ -1804,10 +1806,51 @@ entt::entity SceneSerializer::DuplicateEntity(Scene& scene, entt::entity src,
         return entt::null;
 
     json ej = SerializeEntityJson(reg, src, assetsDir);
-    ej["name"] = MakeUniqueName(scene, reg.get<NameTag>(src).name);
+    const std::string uniqueName = MakeUniqueName(scene, reg.get<NameTag>(src).name);
+    ej["name"] = uniqueName;
+
+    // 地形(.hf) / スカルプト(.smsh) の実データはシーン JSON に入らず assets 配下の外部ファイルにある。
+    // JSON を素通しでコピーすると複製元と複製先が同じファイルを指し、どちらを彫っても
+    // 両方が同じ .hf へ自動保存されて壊れる。→ 複製先には固有のパスを振る。
+    // 実データはこの時点でまだ存在しないので、下で複製元の中身をメモリ上でコピーし、
+    // _needsSave を立てて TerrainPanel / SculptPanel に書き出させる。
+    if (ej.contains("terrain") && ej["terrain"].is_object())
+        ej["terrain"]["heightmapPath"] = terrain::MakeHeightFieldRelPath(uniqueName);
+    if (ej.contains("sculpt") && ej["sculpt"].is_object())
+        ej["sculpt"]["meshPath"] = sculpt::MakeSculptMeshRelPath(uniqueName);
 
     entt::entity copy = InstantiateEntityJson(scene, ej, assetsDir);
     if (copy == entt::null) return entt::null;
+
+    // 実データのコピー。Spawn* は「新パスのファイルが無い」ので平坦 / 素体へフォールバック
+    // しているため、ここで複製元の中身を流し込んで見た目とコリジョンを一致させる。
+    // 注: InstantiateEntityJson でコンポーネントプールが再確保されうるので、
+    //     複製元側のポインタもここで取り直すこと。
+    if (auto* dstT = reg.try_get<Terrain>(copy))
+    {
+        const auto* srcT = reg.try_get<Terrain>(src);
+        if (srcT && srcT->_hf && dstT->_hf && srcT->_hf->IsValid())
+        {
+            *dstT->_hf     = *srcT->_hf;
+            dstT->resolution = dstT->_hf->Resolution();
+            dstT->worldSize  = dstT->_hf->WorldSize();
+            dstT->ClearDirtyRect();          // 矩形無効 = 全面再構築
+            dstT->_meshDirty     = true;
+            dstT->_colliderDirty = true;
+            dstT->_needsSave     = true;     // 新しい .hf を書き出させる
+        }
+    }
+    if (auto* dstS = reg.try_get<SculptMesh>(copy))
+    {
+        const auto* srcS = reg.try_get<SculptMesh>(src);
+        if (srcS && srcS->_data && dstS->_data && srcS->_data->IsValid())
+        {
+            *dstS->_data = *srcS->_data;
+            dstS->_meshDirty     = true;
+            dstS->_colliderDirty = true;
+            dstS->_needsSave     = true;     // 新しい .smsh を書き出させる
+        }
+    }
 
     // 親は元エンティティと同じにする
     reg.get<Transform>(copy).parent = reg.get<Transform>(src).parent;
