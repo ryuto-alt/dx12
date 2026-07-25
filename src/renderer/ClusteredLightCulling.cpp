@@ -313,6 +313,28 @@ void ClusteredLightCulling::Dispatch(ID3D12GraphicsCommandList* cmd, FXMMATRIX v
     }
 }
 
+void ClusteredLightCulling::EnsureReadable(ID3D12GraphicsCommandList* cmd)
+{
+    if (!cmd || !m_indexBuf || !m_countBuf) return;
+
+    D3D12_RESOURCE_BARRIER b[2]{};
+    u32 n = 0;
+    auto push = [&](ID3D12Resource* res, D3D12_RESOURCE_STATES& state)
+    {
+        if (state == D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) return;
+        b[n].Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b[n].Transition.pResource   = res;
+        b[n].Transition.StateBefore = state;
+        b[n].Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        b[n].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        ++n;
+    };
+    push(m_indexBuf.Get(), m_indexState);
+    push(m_countBuf.Get(), m_countState);
+    if (n > 0) cmd->ResourceBarrier(n, b);
+}
+
 D3D12_GPU_DESCRIPTOR_HANDLE ClusteredLightCulling::GetSrvTable(u32 frameIndex) const
 {
     const u32 f = (frameIndex < kFrameCount) ? frameIndex : 0;

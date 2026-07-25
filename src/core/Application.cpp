@@ -617,6 +617,12 @@ void Application::RegisterShaderReloadHandlers()
             { L"ExposureHistogram_CS.cso", L"ExposureAdapt_CS.cso" },
             [this]() { m_autoExposure->RecreatePipelines(*m_graphicsDevice); });
     }
+    if (m_clusteredLighting)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"ClusterBuild_CS.cso", L"ClusterCull_CS.cso" },
+            [this]() { m_clusteredLighting->RecreatePipelines(*m_graphicsDevice); });
+    }
     if (m_skyboxRenderer)
     {
         m_shaderManager->RegisterReloadHandler(
@@ -983,6 +989,9 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_useVsync = PersistGet("video_vsync", m_useVsync ? 1.0 : 0.0) != 0.0;
         m_fpsLimit = static_cast<f32>(PersistGet("video_fps", m_fpsLimit));
         m_instancingEnabled = PersistGet("render_instancing", 1.0) != 0.0;
+        // クラスタードライティング（Forward+）。0 にすると「先頭 64 灯を総当たり」
+        // フォールバックへ倒す（A/B 検証用。旧 8 灯経路そのものは残していない）。
+        m_clusteredEnabled  = PersistGet("render_clustered", 1.0) != 0.0;
         // BC7/BC5 テクスチャ圧縮の逃げ道（0 で無圧縮のまま読む）。既定 1。
         TextureLoader::SetCompressionEnabled(PersistGet("texture_compression", 1.0) != 0.0);
         const int mode = static_cast<int>(PersistGet("video_mode", 0));
@@ -1536,22 +1545,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                     kPointShadowMapSize, kPointShadowMapSize, kMaxShadowPoint);
     }
 
-    // PerFrame Constant Buffer（PointLight / SpotLight 各最大8灯対応）
+    // PerFrame Constant Buffer（ライトはクラスタードライティングの StructuredBuffer 側へ移動済み）
     // レイアウトは shaders/forward/Lighting.hlsli の PerFrameConstants と完全一致させること。
-    static constexpr u32 kMaxPointLights = 8;
-    static constexpr u32 kMaxSpotLights  = 8;
-    struct PointLightGPU {
-        DirectX::XMFLOAT3 position;
-        float range;
-        DirectX::XMFLOAT3 color;  // color * intensity
-        float shadowIndex;        // -1=影なし、それ以外はポイント影キューブ配列のインデックス
-    };
-    struct SpotLightGPU {
-        DirectX::XMFLOAT3 position;   float range;
-        DirectX::XMFLOAT3 direction;  float cosInner;
-        DirectX::XMFLOAT3 color;      float cosOuter;  // color * intensity
-        float shadowIndex; DirectX::XMFLOAT3 _spad;    // -1=影なし、それ以外は spotShadowMatrix[] のインデックス
-    };
     struct FrameConstants {
         DirectX::XMFLOAT4X4 view;            // 64B  (offset   0)
         DirectX::XMFLOAT4X4 proj;            // 64B  (offset  64)
@@ -1564,12 +1559,16 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         DirectX::XMFLOAT4   shadowParams;      // 16B (offset 432)
         DirectX::XMFLOAT3   cameraPos;       // 12B
         float                _pad;            // 4B  → 16B (offset 448)
-        u32                  numPointLights;  // 4B
+        u32                  numPointLights;  // 4B  ← 統計/デバッグ用（シェーダは読まない）
         u32                  numSpotLights;   // 4B
         float                spotShadowTexel; // 4B
         float                pointShadowNear; // 4B  → 16B (offset 464)
-        PointLightGPU        pointLights[kMaxPointLights]; // 256B (offset 480)
-        SpotLightGPU         spotLights[kMaxSpotLights];   // 512B (offset 736)
+        // ▼ クラスタードライティング 64B (offset 480)。旧 pointLights[8]/spotLights[8] の跡地。
+        DirectX::XMFLOAT4    clusterParams;   // (offset 480)
+        DirectX::XMFLOAT4    clusterGrid;     // (offset 496)
+        DirectX::XMFLOAT4    clusterViewport; // (offset 512)
+        DirectX::XMFLOAT4    clusterExtra;    // (offset 528)
+        DirectX::XMFLOAT4    _clusterReserved[44];             // 704B (offset 544..1247)
         DirectX::XMFLOAT4X4  spotShadowMatrix[kMaxShadowSpot]; // 256B (offset 1248)
         // ▼ IBL 制御 16B (offset 1504)
         float                iblIntensity;
@@ -1706,6 +1705,15 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_taaPass->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
                               m_window->GetWidth(), m_window->GetHeight(),
                               kSceneColorFormat, m_swapChain->GetFormat(), PathResolver::ShaderDirW());
+
+        // クラスタードライティング（Forward+）。ライトカリング compute 2 パス + SRV テーブル。
+        // 旧「点光源 8 / スポット 8」の cbuffer 固定配列を置き換える本体。
+        m_clusteredLighting = std::make_unique<ClusteredLightCulling>();
+        m_clusteredLighting->Initialize(*m_graphicsDevice, m_srvHeap.get(), PathResolver::ShaderDirW());
+        // サムネイルレンダラもメインの RootSig / Forward PSO を流用するのでテーブルが要る
+        // （灯数 0 なので中身は読まれない。frameIndex 0 のブロックで十分）。
+        if (m_thumbRenderer)
+            m_thumbRenderer->SetClusterSrv(m_clusteredLighting->GetSrvTableIndex(0));
 
         // 2D スプライト（バックバッファ＝スワップチェイン形式へ描く）
         m_spriteRenderer = std::make_unique<SpriteRenderer>();
@@ -7355,6 +7363,12 @@ void Application::Shutdown()
     m_cameraPreviewRT.reset();
     m_sceneRT.reset();
     m_offscreenRtvHeap.reset();
+    // クラスタードライティング: SRV ブロックを返してから（m_srvHeap の破棄より前に）解放する。
+    if (m_clusteredLighting)
+    {
+        m_clusteredLighting->Shutdown();
+        m_clusteredLighting.reset();
+    }
     m_sceneFlow.reset();
     if (m_physicsSystem)
     {
@@ -8384,6 +8398,10 @@ void Application::LoadProject(const ProjectInfo& info)
     // ※ SetProjectRoot の後でないと PersistPath がエンジン側を指してしまう。
     m_instancingEnabled = PersistGet("render_instancing", 1.0) != 0.0;
     Logger::Info("自動インスタンシング: {}", m_instancingEnabled ? "ON" : "OFF");
+
+    // クラスタードライティング（Forward+）。0 で「先頭 64 灯を総当たり」フォールバックへ倒す。
+    m_clusteredEnabled = PersistGet("render_clustered", 1.0) != 0.0;
+    Logger::Info("クラスタードライティング: {}", m_clusteredEnabled ? "ON" : "OFF");
 
     // BC7/BC5 テクスチャ圧縮（settings.json "texture_compression" 0/1、既定 1）。
     // ハードウェア/ツール差で絵が壊れた時に 0 で従来の R8G8B8A8 へ戻せる逃げ道。
@@ -13624,22 +13642,8 @@ void Application::Render()
 
     m_commandList->SetPipelineState(*m_pipelineState);
 
-    // PerFrame CB（PointLight / SpotLight 各最大8灯対応）
+    // PerFrame CB（ライト本体はクラスタードライティングの StructuredBuffer(t13) 側）
     // レイアウトは shaders/forward/Lighting.hlsli の PerFrameConstants と完全一致させること。
-    static constexpr u32 kMaxPointLightsR = 8;
-    static constexpr u32 kMaxSpotLightsR  = 8;
-    struct PointLightGPU {
-        XMFLOAT3 position;
-        float range;
-        XMFLOAT3 color;
-        float shadowIndex;   // -1=影なし、それ以外はポイント影キューブ配列のインデックス
-    };
-    struct SpotLightGPU {
-        XMFLOAT3 position;   float range;
-        XMFLOAT3 direction;  float cosInner;
-        XMFLOAT3 color;      float cosOuter;
-        float shadowIndex;   XMFLOAT3 _spad;  // -1=影なし、それ以外は spotShadowMatrix[] のインデックス
-    };
     struct FrameConstants {
         XMFLOAT4X4 view;
         XMFLOAT4X4 proj;
@@ -13652,13 +13656,17 @@ void Application::Render()
         XMFLOAT4   shadowParams;                  // 16B
         XMFLOAT3   cameraPos;
         float      aoEnabled;   // 1=実AOを読む / 0=AO読まず ao=1（白ダミー1x1の範囲外Load=0で環境光が消えるのを防ぐ）
-        u32        numPointLights;
+        u32        numPointLights;   // 統計/デバッグ用（シェーダは読まない）
         u32        numSpotLights;
         float      spotShadowTexel;   // 1/kSpotShadowMapSize
         float      pointShadowNear;
-        PointLightGPU pointLights[kMaxPointLightsR];
-        SpotLightGPU  spotLights[kMaxSpotLightsR];
-        XMFLOAT4X4 spotShadowMatrix[kMaxShadowSpot]; // 256B
+        // ▼ クラスタードライティング 64B (offset 480)。旧 pointLights[8]/spotLights[8] の跡地。
+        XMFLOAT4   clusterParams;    // .x=zNear .y=zFar(クラスタ用) .z=sliceScale .w=sliceBias
+        XMFLOAT4   clusterGrid;      // .x=gridX .y=gridY .z=gridZ .w=クラスタード有効(1/0)
+        XMFLOAT4   clusterViewport;  // .xy=ビューポート原点(RT px) .zw=(gridX/vpW, gridY/vpH)
+        XMFLOAT4   clusterExtra;     // .x=総灯数 .y=maxLightsPerCluster .z=デバッグ表示 .w=予約
+        XMFLOAT4   _clusterReserved[44];             // 704B (offset 544..1247)
+        XMFLOAT4X4 spotShadowMatrix[kMaxShadowSpot]; // 256B (offset 1248)
         // ▼ IBL 制御 16B
         float iblIntensity;
         float maxPrefilterMip;
@@ -13706,15 +13714,23 @@ void Application::Render()
     // コンタクトシャドウも同じ規約（白ダミーが張られている時はシェーダ側で読まない）。
     fc.contactShadowEnabled = (csSrv != m_ssaoWhiteSrvIndex) ? 1.0f : 0.0f;
 
-    // PointLight を ECS から収集
+    // ===== ライト収集（point / spot を 1 本の配列へ統合してクラスタード用 SB へ送る）=====
+    // 旧 8 灯固定配列は撤廃。上限は ClusteredLightCulling::kMaxSceneLights（1024）。
+    // m_clusterLights はフレーム間で使い回すメンバ（毎フレーム malloc しない）。
+    using ClusterLightGPU = ClusteredLightCulling::LightGPU;
+    m_clusterLights.clear();
+    m_clusterLights.reserve(64);
     fc.numPointLights = 0;
+    fc.numSpotLights  = 0;
+
+    // PointLight を ECS から収集
     {
         auto& reg = m_scene->GetRegistry();
         auto plView = reg.view<const dx12e::PointLight, const Transform>();
         for (auto [e, pl, tf] : plView.each())
         {
-            if (fc.numPointLights >= kMaxPointLightsR) break;
-            auto& pld = fc.pointLights[fc.numPointLights];
+            if (m_clusterLights.size() >= ClusteredLightCulling::kMaxSceneLights) break;
+            ClusterLightGPU pld{};
             XMMATRIX world = (tf.parent != entt::null)
                 ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
             XMStoreFloat3(&pld.position, world.r[3]);
@@ -13722,6 +13738,11 @@ void Application::Render()
             pld.color = {pl.color.x * pl.intensity,
                          pl.color.y * pl.intensity,
                          pl.color.z * pl.intensity};
+            pld.type      = 0.0f;   // point
+            pld.direction = {0.0f, 0.0f, 1.0f};
+            pld.cosOuter  = -1.0f;
+            pld.cosInner  = 1.0f;
+            pld.sinOuter  = 0.0f;
 
             // 影スロット割当（上で計算済みの m_pointShadowEntity[]）と突合
             pld.shadowIndex = -1.0f;
@@ -13730,23 +13751,24 @@ void Application::Render()
                 if (m_pointShadowEntity[si] == e) { pld.shadowIndex = static_cast<f32>(si); break; }
             }
 
+            m_clusterLights.push_back(pld);
             fc.numPointLights++;
         }
     }
 
     // SpotLight を ECS から収集（位置=Transform、軸=direction、内外コーン角を cos へ）
-    fc.numSpotLights = 0;
     {
         auto& reg = m_scene->GetRegistry();
         auto slView = reg.view<const dx12e::SpotLight, const Transform>();
         for (auto [e, sl, tf] : slView.each())
         {
-            if (fc.numSpotLights >= kMaxSpotLightsR) break;
-            auto& sld = fc.spotLights[fc.numSpotLights];
+            if (m_clusterLights.size() >= ClusteredLightCulling::kMaxSceneLights) break;
+            ClusterLightGPU sld{};
             XMMATRIX world = (tf.parent != entt::null)
                 ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
             XMStoreFloat3(&sld.position, world.r[3]);
-            sld.range    = sl.range;
+            sld.range = sl.range;
+            sld.type  = 1.0f;   // spot
 
             XMVECTOR dir = XMVector3Normalize(XMLoadFloat3(&sl.direction));
             XMStoreFloat3(&sld.direction, dir);
@@ -13755,6 +13777,8 @@ void Application::Render()
             float outerDeg = (std::max)(sl.outerConeDeg, sl.innerConeDeg);
             sld.cosInner = std::cos(XMConvertToRadians(sl.innerConeDeg));
             sld.cosOuter = std::cos(XMConvertToRadians(outerDeg));
+            // 円錐カリング用の sin（GPU で acos を回さないよう CPU で 1 回だけ）
+            sld.sinOuter = std::sqrt((std::max)(0.0f, 1.0f - sld.cosOuter * sld.cosOuter));
 
             sld.color = {sl.color.x * sl.intensity,
                          sl.color.y * sl.intensity,
@@ -13767,28 +13791,97 @@ void Application::Render()
                 if (m_spotShadowEntity[si] == e) { sld.shadowIndex = static_cast<f32>(si); break; }
             }
 
+            m_clusterLights.push_back(sld);
             fc.numSpotLights++;
         }
     }
 
-    // パーティクルライト: light=true の明るい粒子上位を、ポイントライトの空き枠へ注ぐ
+    // パーティクルライト: light=true の明るい粒子上位を空き枠へ注ぐ
     // （炎や魔法が実際に周囲を照らす。シーン配置のライトが優先）
-    if (m_particleSystem && fc.numPointLights < kMaxPointLightsR)
+    if (m_particleSystem && m_clusterLights.size() < ClusteredLightCulling::kMaxSceneLights)
     {
-        ParticleSystem::LightInfo pls[kMaxPointLightsR];
-        const u32 got = m_particleSystem->CollectLights(kMaxPointLightsR - fc.numPointLights, pls);
+        const u32 room = ClusteredLightCulling::kMaxSceneLights
+                       - static_cast<u32>(m_clusterLights.size());
+        // 粒子ライトは実用上せいぜい数十灯。1024 枠ぶんの一時配列をスタックへ積むのは
+        // 無駄なので受け皿は 64 で頭打ちにする（従来は 8 だった）。
+        constexpr u32 kMaxParticleLights = 64;
+        ParticleSystem::LightInfo pls[kMaxParticleLights];
+        const u32 want = (std::min)(room, kMaxParticleLights);
+        const u32 got = m_particleSystem->CollectLights(want, pls);
         for (u32 li = 0; li < got; ++li)
         {
-            auto& pld = fc.pointLights[fc.numPointLights];
-            pld.position = pls[li].pos;
-            pld.range    = pls[li].range;
-            pld.color    = pls[li].color;
+            ClusterLightGPU pld{};
+            pld.position    = pls[li].pos;
+            pld.range       = pls[li].range;
+            pld.color       = pls[li].color;
+            pld.type        = 0.0f;
+            pld.direction   = {0.0f, 0.0f, 1.0f};
+            pld.cosOuter    = -1.0f;
+            pld.cosInner    = 1.0f;
+            pld.sinOuter    = 0.0f;
             pld.shadowIndex = -1.0f;
+            m_clusterLights.push_back(pld);
             fc.numPointLights++;
         }
     }
 
+    // ===== クラスタードライティングのパラメータ =====
+    // クラスタ AABB の構築が透視前提なので、正射カメラ（俯瞰ゲーム / 2D ビュー）と
+    // 設定 OFF のときは「先頭 64 灯の総当たり」フォールバックへ倒す（旧 8 灯より緩い）。
+    const u32 numClusterLights = static_cast<u32>(m_clusterLights.size());
+    const bool clusterOn = m_clusteredEnabled && m_clusteredLighting
+                        && m_clusteredLighting->IsReady() && !m_camera->IsOrthographic();
+    {
+        const float zN    = (std::max)(m_camera->GetNearZ(), 0.001f);
+        const float zFcam = (std::max)(m_camera->GetFarZ(), zN + 1.0f);
+        const float zFcl  = (std::max)((std::min)(zFcam, cluster::kClusterFarLimit), zN + 1.0f);
+
+        fc.clusterParams = {zN, zFcl,
+                            cluster::SliceScale(zN, zFcl), cluster::SliceBias(zN, zFcl)};
+        fc.clusterGrid   = {static_cast<f32>(cluster::kGridX),
+                            static_cast<f32>(cluster::kGridY),
+                            static_cast<f32>(cluster::kGridZ),
+                            clusterOn ? 1.0f : 0.0f};
+        // SV_Position.xy は RT 座標。シーンは m_sceneRT のサブ矩形に描かれるので原点を引く。
+        fc.clusterViewport = {static_cast<f32>(vpLeft), static_cast<f32>(vpTop),
+                              static_cast<f32>(cluster::kGridX) / static_cast<f32>(vpW),
+                              static_cast<f32>(cluster::kGridY) / static_cast<f32>(vpH)};
+        fc.clusterExtra    = {static_cast<f32>(numClusterLights),
+                              static_cast<f32>(cluster::kMaxLightsPerCluster),
+                              static_cast<f32>(m_clusterDebugMode), 0.0f};
+    }
+
     m_perFrameCB->Update(&fc, sizeof(fc), frameIndex);
+
+    // ===== クラスタライトカリング（compute 2 パス）=====
+    // ライトを UPLOAD リングへ書いてから AABB 構築 → カリング。呼び出し後は
+    // インデックス/カウントが PIXEL_SHADER_RESOURCE 状態になる。
+    // ★compute は PSO を共有するので、直後にグラフィクスの RootSig/PSO を必ず再設定する。
+    if (m_clusteredLighting && m_clusteredLighting->IsReady())
+    {
+        const u32 uploaded = m_clusteredLighting->UploadLights(
+            m_clusterLights.data(), numClusterLights, frameIndex);
+        if (clusterOn)
+        {
+            XMFLOAT4X4 projF;
+            XMStoreFloat4x4(&projF, m_camera->GetProjectionMatrix());
+            m_gpuTimer->Begin(nativeCmdList, GpuTimer::ClusterCull);
+            m_clusteredLighting->Dispatch(nativeCmdList, m_camera->GetViewMatrix(),
+                                          projF._11, projF._22,
+                                          fc.clusterParams.x, fc.clusterParams.y,
+                                          m_camera->GetFarZ(), uploaded, frameIndex);
+            m_gpuTimer->End(nativeCmdList, GpuTimer::ClusterCull);
+            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+            m_commandList->SetRootSignature(*m_rootSignature);
+            m_commandList->SetPipelineState(*m_pipelineState);
+        }
+        else
+        {
+            // フォールバック（正射 / 設定 OFF）でもテーブルはバインドするので、
+            // インデックス/カウントは読取状態にしておく（中身は読まれない）。
+            m_clusteredLighting->EnsureReadable(nativeCmdList);
+        }
+    }
 
     // ===== Skybox（不透明描画の前に全画面塗り。深度テスト OFF なので後続不透明が上書き）=====
     // skybox は自前 RootSig/PSO を bind するため、直後にメイン RootSig/PSO を再設定してから
@@ -13821,6 +13914,13 @@ void Application::Render()
     if (m_iblReady && m_iblBaker)
         m_commandList->SetSRVTable(RootSignature::kSlotIBLTable,
             m_srvHeap->GetGpuHandle(m_iblBaker->GetIrradianceSrv()));
+
+    // クラスタライト テーブル(t13,t14,t15 + デカール予約 t18..t21)をバインド。
+    // フォワード PS が t13..t15 を参照する以上、クラスタード無効時（フォールバック経路）でも
+    // 必ずバインドが要る（未バインドのテーブルはデバッグレイヤ違反）。
+    if (m_clusteredLighting && m_clusteredLighting->IsReady())
+        m_commandList->SetSRVTable(RootSignature::kSlotClusterSRV,
+            m_clusteredLighting->GetSrvTable(frameIndex));
 
     // フォワード本体はジッタあり（深度プリパスとビット一致させる）。
     XMMATRIX viewProj = camVPJ;
@@ -14333,6 +14433,10 @@ void Application::Render()
             fcp.cameraPos = tf.position;
             fcp.aoEnabled = 0.0f;   // プレビューは白ダミー AO（SSAO 非対応）なので AO を読まない
             fcp.contactShadowEnabled = 0.0f;   // 同上（コンタクトシャドウもプレビューでは作らない）
+            // クラスタは「メインカメラ視点」で作ってあるので、別視点のプレビューで引くと
+            // 完全に間違ったライトリストになる。総当たりフォールバックへ倒す。
+            fcp.clusterGrid.w  = 0.0f;
+            fcp.clusterExtra.z = 0.0f;   // デバッグ可視化もプレビューでは出さない
             m_previewFrameCB->Update(&fcp, sizeof(fcp), frameIndex);
 
             m_cameraPreviewRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
@@ -14351,6 +14455,10 @@ void Application::Render()
             if (m_iblReady && m_iblBaker)
                 m_commandList->SetSRVTable(RootSignature::kSlotIBLTable,
                     m_srvHeap->GetGpuHandle(m_iblBaker->GetIrradianceSrv()));
+            // クラスタテーブルはフォールバック時も必ずバインドする（PS が t13..t15 を参照するため）
+            if (m_clusteredLighting && m_clusteredLighting->IsReady())
+                m_commandList->SetSRVTable(RootSignature::kSlotClusterSRV,
+                    m_clusteredLighting->GetSrvTable(frameIndex));
 
             // グリッドは出さない＝isGameView=true。プレビューは SSAO 非対応＝白ダミー。
             RenderSceneMeshes(nativeCmdList, frameIndex, camViewProj, true, m_ssaoWhiteSrvIndex,

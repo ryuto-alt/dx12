@@ -21,6 +21,7 @@ public:
         Total = 0,     // フレーム全体（cmdList 記録範囲）
         Shadows,       // スポット影 + ポイント影 + CSM
         PrepassSSAO,   // 深度プリパス + SSAO 生成
+        ClusterCull,   // クラスタ AABB 構築 + ライトカリング（compute 2 パス）
         MainScene,     // 不透明メッシュ（RenderSceneMeshes メインビュー）
         Particles,     // CPU/GPU パーティクル + 歪み
         PostFX,        // ブルーム/DoF/自動露出/uber 等ポスト一式

@@ -28,6 +28,10 @@ public:
     static constexpr u32 kSlotPunctualShadowSRV = 8;  // DescriptorTable t9,t10 (spot shadow array, point shadow cube array)
     static constexpr u32 kSlotContactShadowSRV  = 9;  // DescriptorTable t11 (contact shadow, screen-space)
     static constexpr u32 kSlotPrevBonesSRV      = 10; // DescriptorTable t12 (前フレームのボーン行列。速度パス専用)
+    // DescriptorTable t13,t14,t15 (クラスタライト / インデックスリスト / クラスタ毎カウント)
+    // ＋ t18,t19,t20,t21 (デカール予約。同一テーブルに相乗り＝ヒープ上は 7 本連続)。
+    // t16,t17 は SSR/SSGI（計画04）が別スロットで取るのでレンジを 2 本に割ってある。
+    static constexpr u32 kSlotClusterSRV        = 11;
 
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;

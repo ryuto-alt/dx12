@@ -8,18 +8,19 @@ namespace dx12e
 
 void RootSignature::Initialize(GraphicsDevice& device)
 {
-    // Root parameters: 11
+    // Root parameters: 12
     //
     // ★ルート定数の予算（上限 64 DWORD。超えると D3D12SerializeVersionedRootSignature が
     //   失敗して全描画が死ぬ）:
     //     slot0  32bit定数          40 DWORD
     //     slot1  CBV                 2 DWORD
     //     slot5  32bit定数           8 DWORD
-    //     slot2,3,4,6,7,8,9,10 テーブル × 8 = 8 DWORD
-    //     -------------------------------------- 合計 58 / 64
-    //   残り 6 DWORD。これ以降 SRV を足す機能は新規スロットを取らず、既存テーブルへ
-    //   相乗りするか複数リソースを 1 テーブルに統合すること。
-    D3D12_ROOT_PARAMETER1 rootParams[11]{};
+    //     slot2,3,4,6,7,8,9,10,11 テーブル × 9 = 9 DWORD
+    //     -------------------------------------- 合計 59 / 64
+    //   残り 5 DWORD。ディスクリプタテーブルはレンジを何本持っても 1 DWORD なので、
+    //   これ以降 SRV を足す機能は新規スロットを取らず、既存テーブルへレンジを足して
+    //   相乗りすること（slot11 が既にその例＝クラスタ 3 本 + デカール予約 4 本）。
+    D3D12_ROOT_PARAMETER1 rootParams[12]{};
 
     // [0] Per-Object: 32bit constants (40 DWORDs = MVP(16) + Model(16) + CustomEffect(1) + pad(3) + CustomParams(4))
     // CustomEffect は MeshRenderer::effectValue（カスタムシェーダー向けの汎用進捗値、Sprite2D::effectValue
@@ -165,6 +166,38 @@ void RootSignature::Initialize(GraphicsDevice& device)
     rootParams[10].DescriptorTable.pDescriptorRanges   = &prevBoneRange;
     rootParams[10].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_VERTEX;
 
+    // [11] クラスタードライティング SRV DescriptorTable。ヒープ上は 7 本連続だが、
+    // シェーダレジスタは t13,t14,t15（クラスタ）と t18..t21（デカール予約）に割れている。
+    //   t13 = StructuredBuffer<ClusterLight>（フレーム毎に切り替わる）
+    //   t14 = クラスタ別ライトインデックスリスト（固定ストライド 128/クラスタ）
+    //   t15 = クラスタ毎のライト数
+    //   t18..t21 = デカール（計画06）が同じテーブルへ相乗りするための予約枠
+    // t16/t17 は SSR/SSGI（計画04）が別スロットで取るのでレンジを 2 本に割ってある。
+    // ★ディスクリプタテーブルはレンジを何本持っても 1 DWORD。
+    // ★OFFSET_APPEND なので 2 本目はヒープ上でオフセット 3 から始まる（レジスタの穴は
+    //   ヒープを消費しない）。DATA_VOLATILE でも「ディスクリプタ自体」は静的扱いなので、
+    //   予約枠 4 本も有効なディスクリプタで埋めてから SetGraphicsRootDescriptorTable すること
+    //   （ClusteredLightCulling::Initialize がカウントバッファの SRV で埋めている）。
+    D3D12_DESCRIPTOR_RANGE1 clusterRanges[2]{};
+    clusterRanges[0].RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    clusterRanges[0].NumDescriptors                    = 3;   // t13,t14,t15
+    clusterRanges[0].BaseShaderRegister                = 13;
+    clusterRanges[0].RegisterSpace                     = 0;
+    clusterRanges[0].Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    clusterRanges[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    clusterRanges[1].RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    clusterRanges[1].NumDescriptors                    = 4;   // t18,t19,t20,t21（デカール予約）
+    clusterRanges[1].BaseShaderRegister                = 18;
+    clusterRanges[1].RegisterSpace                     = 0;
+    clusterRanges[1].Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    clusterRanges[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    rootParams[11].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParams[11].DescriptorTable.NumDescriptorRanges = _countof(clusterRanges);
+    rootParams[11].DescriptorTable.pDescriptorRanges   = clusterRanges;
+    rootParams[11].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
+
     // Static Samplers (s0=albedo wrap, s1=shadow PCF, s2=IBL linear-clamp mip有,
     //                  s3=BRDF linear-clamp mipなし, s4=AO point-clamp スクリーンサンプル)
     D3D12_STATIC_SAMPLER_DESC staticSamplers[5]{};
@@ -248,7 +281,7 @@ void RootSignature::Initialize(GraphicsDevice& device)
         serializedBlob->GetBufferSize(),
         IID_PPV_ARGS(&m_rootSignature)));
 
-    Logger::Info("RootSignature created (PBR: 11 slots)");
+    Logger::Info("RootSignature created (PBR: 12 slots, 59/64 DWORD)");
 }
 
 } // namespace dx12e

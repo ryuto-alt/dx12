@@ -67,6 +67,10 @@ public:
                   float zNear, float zFarCluster, float zFarCamera,
                   u32 numLights, u32 frameIndex);
 
+    // Dispatch をスキップしたフレームでも、テーブルをバインドする前に呼ぶ
+    // （UAV → PIXEL_SHADER_RESOURCE 遷移。既に読取状態なら no-op）。
+    void EnsureReadable(ID3D12GraphicsCommandList* cmd);
+
     // フォワードパスの kSlotClusterSRV へ渡す GPU ハンドル（テーブル先頭 = t13）。
     D3D12_GPU_DESCRIPTOR_HANDLE GetSrvTable(u32 frameIndex) const;
     // 上と同じものの SRV index 版（ダミーバインドしたい呼び出し側用）。

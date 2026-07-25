@@ -197,8 +197,9 @@ float4 PSMain(PSInput input) : SV_TARGET
     // Directional Light（影付き）
     float3 Lo = ShadePunctual(N, V, L, lightColor * shadow, albedo, F0, metallic, roughness);
 
-    // Point Lights + Spot Lights
-    Lo += AccumulatePunctualLights(N, V, input.worldPos, albedo, F0, metallic, roughness);
+    // Point Lights + Spot Lights（クラスタードライティング / Forward+。灯数上限なし）
+    Lo += AccumulatePunctualLights(N, V, input.worldPos, albedo, F0, metallic, roughness,
+                                   input.positionSV.xy);
 
     // SSAO（スクリーン空間 AO）: フル解像度・同一ビューポートなのでピクセル直読み。
     // aoEnabled=0（SSAO無効/正射カメラ/編集2Dビュー）のときは AO を読まず 1.0。
@@ -246,6 +247,9 @@ float4 PSMain(PSInput input) : SV_TARGET
         float3 tint[4] = { float3(1,0.4,0.4), float3(0.4,1,0.4), float3(0.4,0.4,1), float3(1,1,0.4) };
         color *= tint[SelectCascade(input.viewDepth)];
     }
+
+    // クラスタ可視化デバッグ（clusterExtra.z: 1=ライト複雑度ヒートマップ / 2=クラスタ境界）
+    color = ApplyClusterDebug(color, input.positionSV.xy, input.worldPos);
 
 #ifdef LDR_OUTPUT
     // LDR 直出力バリアント（サムネイル等、ポストプロセスを通らない R8G8B8A8 RT 用）

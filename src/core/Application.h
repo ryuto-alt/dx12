@@ -27,6 +27,7 @@
 #include "core/mcp/McpDeferred.h"   // MCP 遅延応答の相関情報（値メンバで持つので完全型が要る）
 #include "core/CpuScope.h"          // CpuScope / CpuScopeTimer（エディタとも共有するので独立ヘッダ）
 #include "renderer/DrawItem.h"      // 描画リストの要素（エディタのピッキングも読むので独立ヘッダ）
+#include "renderer/ClusteredLightCulling.h"  // LightGPU を値で持つので完全型が要る（軽量ヘッダ）
 
 // Forward declarations for graphics module
 namespace dx12e
@@ -281,7 +282,8 @@ private:
     // ---- パフォーマンス診断（MCP perf_stats / benchmark 用）----
     // GPU パス別タイムスタンプ。Render() 内の各パスを挟んで計測（結果は約3フレーム遅れ）。
     std::unique_ptr<GpuTimer> m_gpuTimer;
-    static constexpr u32 kPerfGpuScopes = 8;   // >= GpuTimer::Scope::Count（cpp で static_assert）
+    static constexpr u32 kPerfGpuScopes = 12;  // >= GpuTimer::Scope::Count（cpp で static_assert）
+                                               // 現在 8 使用（ClusterCull 追加）。SSR/SSGI/フォグ用に余裕を持たせてある。
     struct PerfFrame
     {
         f32 frameMs;       // フレーム間隔（リミッター/VSync 込み＝実 FPS の逆数）
@@ -729,6 +731,17 @@ private:
     // BuildDrawList() が PrevWorldMatrix を更新するか（TAA 有効時のみ。10万体の
     // emplace_or_replace を TAA を使わない人に払わせないため）。
     bool                m_trackPrevWorld = false;
+
+    // ---- クラスタードライティング（Forward+）----
+    // 旧「点光源 8 灯 / スポット 8 灯」の cbuffer 固定配列を撤廃し、
+    // StructuredBuffer + クラスタ別ライトリスト（16x9x24=3456 クラスタ）へ移行した。
+    // 無効時（正射カメラ / カメラプレビュー / render_clustered=0）は
+    // 「先頭 64 灯を総当たり」フォールバックで動く（旧 8 灯より緩い）。
+    std::unique_ptr<ClusteredLightCulling> m_clusteredLighting;
+    bool m_clusteredEnabled  = true;   // settings.json "render_clustered" で A/B 可
+    u32  m_clusterDebugMode  = 0;      // 0=off / 1=ライト複雑度ヒートマップ / 2=クラスタ境界
+    // 毎フレームのライト収集バッファ（再確保を避けるためメンバで使い回す）
+    std::vector<ClusteredLightCulling::LightGPU> m_clusterLights;
 
     // IBL 環境マップ（irradiance/prefiltered/BRDF LUT）+ 任意スカイボックス
     std::unique_ptr<IBLBaker>       m_iblBaker;

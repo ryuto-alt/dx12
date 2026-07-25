@@ -11,6 +11,7 @@ const char* GpuTimer::Name(u32 s)
     case Total:       return "total";
     case Shadows:     return "shadows";
     case PrepassSSAO: return "prepassSsao";
+    case ClusterCull: return "clusterCull";
     case MainScene:   return "mainScene";
     case Particles:   return "particles";
     case PostFX:      return "postFx";
