@@ -1008,6 +1008,17 @@ u32 Application::EnsureTerrainSrv(entt::entity e, const Terrain& terrain,
     if (!layers || !layers->valid || !layers->albedoArray || !layers->surfaceArray)
         return 0xFFFFFFFF;
 
+    // ★シーンが作り直されたら（Play→Stop / シーン切替）キャッシュを丸ごと捨てる。
+    //   entt は entity id を再利用するので、放置すると別の地形へ前のスプラットが張られる。
+    const u32 sceneGen = static_cast<u32>(m_sceneGeneration);
+    if (m_terrainSrvGeneration != sceneGen)
+    {
+        for (auto& kv : m_terrainSrvCache)
+            if (kv.second.blockStart != 0xFFFFFFFF) m_srvHeap->FreeBlock(kv.second.blockStart, 3);
+        m_terrainSrvCache.clear();
+        m_terrainSrvGeneration = sceneGen;
+    }
+
     TerrainSrvEntry& entry = m_terrainSrvCache[static_cast<u32>(e)];
 
     // ---- スプラットの GPU テクスチャ（CPU 側でミップまで焼いてから 1 回でアップロード）----

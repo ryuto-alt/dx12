@@ -415,9 +415,11 @@ private:
         u32 layerGeneration = 0xFFFFFFFF;       // レイヤーセットのホットリロード検知
         std::string layerSetPath;
     };
-    // key = entityID。MaterialOverrideSrv と同じで、エンティティ削除時の明示破棄は行わない
-    // （無効エンティティは次回描画されない = 実害なし。SRV ヒープを僅かに消費し続ける既知の制約）。
+    // key = entityID。★シーン世代が変わったら丸ごと捨てる（Play→Stop / シーン切替で
+    //   entt が entity id を再利用するため、放置すると「別の地形が前の地形のスプラットを
+    //   使い回す」事故になる。ブロックも FreeBlock で返すのでヒープも漏れない）。
     std::unordered_map<u32, TerrainSrvEntry> m_terrainSrvCache;
+    u32 m_terrainSrvGeneration = 0xFFFFFFFF;
     // 地形の SRV ブロックを用意して先頭インデックスを返す。使えなければ 0xFFFFFFFF。
     u32 EnsureTerrainSrv(entt::entity e, const Terrain& terrain,
                          ID3D12GraphicsCommandList* cmdList);
