@@ -366,6 +366,7 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
         fc.numSpotLights   = 0;
         // クラスタードは無効（clusterGrid.w=0）+ 灯数 0 なので PS のライトループは 0 周。
         // clusterParams は log2 に食わせないので 0 のままで安全。
+        // ★clusterExtra.w = デカール数（計画06）。サムネイルは 0 = デカール無効。
         fc.clusterGrid  = {16.0f, 9.0f, 24.0f, 0.0f};
         fc.clusterExtra = {0.0f, 128.0f, 0.0f, 0.0f};
         fc.iblIntensity    = 0.0f;

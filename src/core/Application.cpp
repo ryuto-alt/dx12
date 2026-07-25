@@ -1807,6 +1807,18 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         // テーブル（7 本）の +3..+6 を借りるので、自前のディスクリプタは 1 本も取らない。
         m_decalSystem = std::make_unique<DecalSystem>();
         m_decalSystem->Initialize(*m_graphicsDevice, m_srvHeap.get(), PathResolver::ShaderDirW());
+        // ★ここで即座に t18..t21 を「正しい型の」ディスクリプタで埋める。
+        //   ClusteredLightCulling が置いた仮埋め（カウントバッファの SRV の複製）のままだと、
+        //   フォワード PS が t21 を Texture2D として宣言している以上、最初のサムネイル描画などで
+        //   型不一致になる（GPU ベース検証が騒ぐ）。アトラスは 1x1 黒ダミー＝アルファ 0 で不可視。
+        if (m_clusteredLighting && m_clusteredLighting->IsReady()
+            && m_ssBlackSrvIndex != DescriptorHeap::kInvalidIndex)
+        {
+            for (u32 f = 0; f < DecalSystem::kFrameCount; ++f)
+                m_decalSystem->WriteSrvsInto(*m_graphicsDevice, *m_srvHeap,
+                                             m_clusteredLighting->GetSrvTableIndex(f), f,
+                                             m_srvHeap->GetCpuHandle(m_ssBlackSrvIndex));
+        }
         m_decalSrvDirty = true;
 
         // 2D スプライト（バックバッファ＝スワップチェイン形式へ描く）
@@ -15066,6 +15078,8 @@ void Application::Render()
             fcp.contactShadowEnabled = 0.0f;   // 同上（コンタクトシャドウもプレビューでは作らない）
             // クラスタは「メインカメラ視点」で作ってあるので、別視点のプレビューで引くと
             // 完全に間違ったライトリストになる。総当たりフォールバックへ倒す。
+            // ★これでデカール（計画06）もプレビューでは無効になる（ApplyDecals が
+            //   clusterGrid.w <= 0.5 で丸ごと return する）。ビニングが別視点なので正しい挙動。
             fcp.clusterGrid.w  = 0.0f;
             fcp.clusterExtra.z = 0.0f;   // デバッグ可視化もプレビューでは出さない
             m_previewFrameCB->Update(&fcp, sizeof(fcp), frameIndex);
