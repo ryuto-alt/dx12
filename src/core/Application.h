@@ -90,6 +90,12 @@ namespace dx12e
 namespace dx12e
 {
 
+// CPU 側の計測ブロック。GPU パス(GpuTimer)と対になる workMs の内訳で、
+// 「GPU は暇なのに fps が出ない」ときの犯人をブロック単位で指す。
+enum CpuScope { CpuUpdate, CpuBuildList, CpuListSort, CpuShadowRec, CpuMainRec, CpuEditorUi,
+                CpuScopeCount };
+const char* CpuScopeName(u32 i);
+
 class Application
 {
 public:
@@ -211,9 +217,11 @@ private:
     // updateSkinning=true の時だけ skinningBuffer->Update を呼ぶ（1フレームに1回で十分なため）。
     // lodBias: 影パスは +1（1段粗いLOD）で呼ぶ。SSAO深度プリパスは 0 =
     // メインパスと同一LOD必須（LESS_EQUAL で同一深度を通すため）。
+    // instPSO を渡すと、batchKey が同じ静的メッシュ群を DrawIndexedInstanced に畳む
+    // （nullptr なら従来どおり per-object 描画）。
     void RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState& staticPSO,
                               PipelineState& skinnedPSO, bool updateSkinning, u32 frameIndex,
-                              u32 lodBias = 0);
+                              u32 lodBias = 0, PipelineState* instPSO = nullptr);
     // フレーム描画リスト: Transform+MeshRenderer の走査・ワールド行列合成を1フレーム1回だけ行い、
     // メイン/深度プリパス/CSM各カスケード/スポット影/ポイント影の全パスで共有する
     // （従来は最悪 ~20 パス × entt 全走査 + ComputeWorldMatrix 再計算）。
@@ -226,10 +234,16 @@ private:
         const MeshRenderer* renderer;
         DirectX::XMFLOAT4X4 world;        // 親階層合成済みワールド行列
         SkinningBuffer*     skin;         // スキンドなら該当バッファ / 静的は nullptr
-        f32                 radius;       // 保守的バウンディング球半径（ワールドスケール込み）
+        // 保守的バウンディング球。中心は「メッシュAABBの中心をワールドへ移した点」で、
+        // エンティティ原点ではない（原点からジオメトリがズレたモデルの誤カリング防止）。
+        DirectX::XMFLOAT3   center;
+        f32                 radius;       // 半径（ワールドスケール込み）
         u32                 lod;          // メインカメラ基準の選択LOD（Mesh 側でクランプされる）
         bool                hasNodeAnim;
         u32                 sortKey;      // 0=既定static / 1=カスタム不透明 / 2=skinned / 3=カスタム半透明(最後)
+        // 自動インスタンシングのバッチ鍵。0 = インスタンシング不可（従来の per-object 描画）。
+        // 同一キー同士は「同じメッシュ・同じLOD・同じマテリアル/PBR値」＝1ドローに畳んで良い。
+        u64                 batchKey;
     };
     std::vector<DrawItem> m_drawItems;
     void BuildDrawList();
@@ -242,6 +256,22 @@ private:
     struct PassStats { u32 draws = 0, tris = 0; };
     PassStats  m_passMain, m_passShadow, m_passOther;
     PassStats* m_passBucket = &m_passOther;
+
+    // CPU パス別内訳（perf_stats 用）。GPU が暇なのに fps が出ない時、
+    // どのブロックが CPU 時間を食っているかを直接指す（workMs の内訳）。
+    f32 m_cpuMs[CpuScopeCount] = {};
+    // 計測ブロックを囲む RAII。加算式なので同一スコープを複数回通っても合計になる。
+    struct CpuScopeTimer
+    {
+        f32* slot;
+        std::chrono::high_resolution_clock::time_point t0;
+        explicit CpuScopeTimer(f32* s) : slot(s), t0(std::chrono::high_resolution_clock::now()) {}
+        ~CpuScopeTimer()
+        {
+            *slot += std::chrono::duration<f32, std::milli>(
+                std::chrono::high_resolution_clock::now() - t0).count();
+        }
+    };
 
     // ---- パフォーマンス診断（MCP perf_stats / benchmark 用）----
     // GPU パス別タイムスタンプ。Render() 内の各パスを挟んで計測（結果は約3フレーム遅れ）。
@@ -256,6 +286,7 @@ private:
         u32 draws, culled, tris;
         PassStats passMain, passShadow;   // パス別内訳（other = 全体との差分で出せるので持たない）
         f32 gpuMs[kPerfGpuScopes];
+        f32 cpuMs[CpuScopeCount];         // CPU ブロック別内訳（workMs の中身）
     };
     static constexpr u32 kPerfHistory = 240;   // 直近 240 フレーム（60fps で 4 秒）
     std::array<PerfFrame, kPerfHistory> m_perfHistory{};
@@ -273,6 +304,11 @@ private:
     f64 m_benchDraws = 0, m_benchCulled = 0, m_benchTris = 0;
     f64 m_benchWork = 0, m_benchFence = 0, m_benchPresent = 0;
     f64 m_benchGpu[kPerfGpuScopes] = {};
+    f64 m_benchCpu[CpuScopeCount] = {};
+    // uncap: 計測中だけ FPS 上限/VSync を外す（既定 true）。終了時に元へ戻す。
+    bool m_benchRestore = false;
+    f32  m_benchSavedFpsLimit = 0.0f;
+    bool m_benchSavedVsync = false;
     void RebuildScene();
     // シェーダーホットリロード用 PSO 再生成。初回(Initialize)と再生成(hot-reload)の両方から呼ぶ。
     // 既存 unique_ptr が非 null ならその場で Initialize() し直す(オブジェクトの住所は変えない=
@@ -399,6 +435,10 @@ private:
     std::unique_ptr<PipelineState>     m_pipelineState;        // 通常 forward(static, DepthFunc=LESS)
     std::unique_ptr<PipelineState>     m_pipelineStateLEqual;  // SSAO 深度プリパス併用時(static, LESS_EQUAL)
     std::unique_ptr<PipelineState>     m_pipelineStateThumb;   // サムネイル用(static, LESS, R8G8B8A8)
+    // 自動インスタンシング用(slot1=MeshInstanceData)。同一メッシュ+同一マテリアルの
+    // 連続ドローを 1 回の DrawIndexedInstanced に畳む。PS は Forward_PS を共用。
+    std::unique_ptr<PipelineState>     m_pipelineStateInst;
+    std::unique_ptr<PipelineState>     m_pipelineStateInstLEqual;
     std::unique_ptr<DescriptorHeap>    m_srvHeap;
     std::unique_ptr<ResourceManager>   m_resourceManager;
     // プロジェクト独自HLSL(上書き/自作)の実行時コンパイル+ホットリロード。エディタモードのみ生成。
@@ -419,12 +459,16 @@ private:
     std::unique_ptr<PipelineState>     m_gridPipelineState;
     std::unique_ptr<PipelineState>     m_emissivePipelineState;  // 加算発光（Pfx）GPU instancing 用
     // ---- 発光メッシュ instancing 用 per-instance バッファ（リング=FrameResources::kFrameCount=3）----
-    static constexpr u32 kMaxInstances = 4096;
+    // 自動インスタンシングは 1 フレームで「メイン+深度プリパス+影4カスケード」ぶんの
+    // インスタンスを同じリングへ連番で書くので、可視物量 × 6 くらいの余裕が要る。
+    static constexpr u32 kMaxInstances = 262144;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_instanceBuffer[3];
     uint8_t*                               m_instanceMapped[3] = {};
     D3D12_VERTEX_BUFFER_VIEW               m_instanceVbView[3] = {};
     u32                                    m_instanceCursor = 0;  // フレーム内 instance 連番（メイン＋プレビュー共有）
     std::unique_ptr<PipelineState>     m_shadowPipelineState;
+    std::unique_ptr<PipelineState>     m_shadowPipelineStateInst;   // 影パスのインスタンシング版
+    std::unique_ptr<PipelineState>     m_depthPrepassPSOInst;       // 深度プリパスのインスタンシング版
     std::unique_ptr<PipelineState>     m_shadowSkinnedPipelineState;
     // ---- CSM (Cascaded Shadow Maps, 4分割) ----
     static constexpr u32 kNumCascades = 4;
@@ -721,6 +765,9 @@ private:
     static constexpr f32 kScriptPollInterval = 0.5f;
 
     // フレームレートリミッター（VSync OFF 時のみ有効。0=無制限。オプション画面から変更可能）
+    // 自動インスタンシングの ON/OFF。settings.json の "render_instancing"(0/1) で切替。
+    // 最適化の効果測定(A/B)用。既定 ON。
+    bool m_instancingEnabled = true;
     f32  m_fpsLimit = 144.0f;
     bool m_useVsync = false;
     std::chrono::high_resolution_clock::time_point m_frameStart{};

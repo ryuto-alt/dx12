@@ -231,6 +231,30 @@ void Application::RecreateForwardPsos()
     if (!m_pipelineStateLEqual) m_pipelineStateLEqual = std::make_unique<PipelineState>();
     m_pipelineStateLEqual->Initialize(*m_graphicsDevice, builder);
 
+    // 自動インスタンシング版（VS だけ差し替え、slot1 に per-instance world を足す）。
+    // LESS / LESS_EQUAL の 2 種を通常版と対にして作る。
+    {
+        auto vsInst = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ForwardInstanced_VS.cso");
+        if (vsInst.GetSize() > 0)
+        {
+            PipelineStateBuilder ib;
+            ib.SetRootSignature(m_rootSignature->Get())
+              .SetVertexShader(vsInst.GetData(), vsInst.GetSize())
+              .SetPixelShader(ps.GetData(), ps.GetSize())
+              .SetInputLayout(Mesh::GetInstancedInputLayout(), Mesh::GetInstancedInputLayoutCount())
+              .SetRenderTargetFormat(kSceneColorFormat)
+              .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+              .SetDepthEnabled(true)
+              .SetCullMode(D3D12_CULL_MODE_NONE);
+            if (!m_pipelineStateInst) m_pipelineStateInst = std::make_unique<PipelineState>();
+            m_pipelineStateInst->Initialize(*m_graphicsDevice, ib);
+
+            ib.SetDepthFunc(D3D12_COMPARISON_FUNC_LESS_EQUAL);
+            if (!m_pipelineStateInstLEqual) m_pipelineStateInstLEqual = std::make_unique<PipelineState>();
+            m_pipelineStateInstLEqual->Initialize(*m_graphicsDevice, ib);
+        }
+    }
+
     // サムネイル描画用バリアント。ModelThumbnailRenderer の RT は R8G8B8A8 で
     // ポストプロセス(トーンマップ)を通らないため、シェーダー内で ACES+ガンマまで
     // 済ませる LDR 直出力の PS を使う。
@@ -329,6 +353,24 @@ void Application::RecreateShadowPsos()
         m_shadowPipelineState->Initialize(*m_graphicsDevice, builder);
     }
 
+    // Shadow インスタンシング版（slot1=per-instance world）。b0 には transpose(lightVP) を入れる。
+    {
+        auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ShadowPassInstanced_VS.cso");
+        if (vs.GetSize() > 0)
+        {
+            PipelineStateBuilder builder;
+            builder.SetRootSignature(m_rootSignature->Get())
+                   .SetVertexShader(vs.GetData(), vs.GetSize())
+                   .SetInputLayout(Mesh::GetInstancedInputLayout(), Mesh::GetInstancedInputLayoutCount())
+                   .SetRenderTargetFormat(DXGI_FORMAT_UNKNOWN)
+                   .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+                   .SetDepthEnabled(true)
+                   .SetDepthBias(8000, 2.0f);
+            if (!m_shadowPipelineStateInst) m_shadowPipelineStateInst = std::make_unique<PipelineState>();
+            m_shadowPipelineStateInst->Initialize(*m_graphicsDevice, builder);
+        }
+    }
+
     // Shadow Skinned PSO
     {
         auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ShadowPassSkinned_VS.cso");
@@ -364,6 +406,23 @@ void Application::RecreateDepthPrepassPsos()
         m_depthPrepassPSO->Initialize(*m_graphicsDevice, builder);
     }
     {
+        // 深度プリパスのインスタンシング版（bias なし・その他は影版と同条件）
+        auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ShadowPassInstanced_VS.cso");
+        if (vs.GetSize() > 0)
+        {
+            PipelineStateBuilder builder;
+            builder.SetRootSignature(m_rootSignature->Get())
+                   .SetVertexShader(vs.GetData(), vs.GetSize())
+                   .SetInputLayout(Mesh::GetInstancedInputLayout(), Mesh::GetInstancedInputLayoutCount())
+                   .SetRenderTargetFormat(DXGI_FORMAT_UNKNOWN)
+                   .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+                   .SetDepthEnabled(true)
+                   .SetCullMode(D3D12_CULL_MODE_NONE);
+            if (!m_depthPrepassPSOInst) m_depthPrepassPSOInst = std::make_unique<PipelineState>();
+            m_depthPrepassPSOInst->Initialize(*m_graphicsDevice, builder);
+        }
+    }
+    {
         // forward(ForwardSkinned) とクリップ Z をビット一致させる専用スキンド深度プリパス。
         // ShadowPassSkinned はスキニング演算順(sum(w*mul(pos,B))) と totalWeight==0 フォールバックが
         // forward(mul(pos,sum(w*B)) / フォールバック無し) と違い、SSAO の深度再利用で z-fight/欠落を招く。
@@ -387,7 +446,7 @@ void Application::RegisterShaderReloadHandlers()
         return;
 
     m_shaderManager->RegisterReloadHandler(
-        { L"Forward_VS.cso", L"Forward_PS.cso", L"ForwardLdr_PS.cso" },
+        { L"Forward_VS.cso", L"Forward_PS.cso", L"ForwardLdr_PS.cso", L"ForwardInstanced_VS.cso" },
         [this]() { RecreateForwardPsos(); });
     m_shaderManager->RegisterReloadHandler(
         { L"ForwardSkinned_VS.cso", L"Forward_PS.cso" },
@@ -399,7 +458,7 @@ void Application::RegisterShaderReloadHandlers()
         { L"Emissive_VS.cso", L"Emissive_PS.cso" },
         [this]() { RecreateEmissivePso(); });
     m_shaderManager->RegisterReloadHandler(
-        { L"ShadowPass_VS.cso", L"ShadowPassSkinned_VS.cso" },
+        { L"ShadowPass_VS.cso", L"ShadowPassSkinned_VS.cso", L"ShadowPassInstanced_VS.cso" },
         [this]() { RecreateShadowPsos(); RecreateDepthPrepassPsos(); });  // ShadowPass_VS は深度プリパスにも流用
     m_shaderManager->RegisterReloadHandler(
         { L"DepthPrepassSkinned_VS.cso" },
@@ -810,6 +869,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     {
         m_useVsync = PersistGet("video_vsync", m_useVsync ? 1.0 : 0.0) != 0.0;
         m_fpsLimit = static_cast<f32>(PersistGet("video_fps", m_fpsLimit));
+        m_instancingEnabled = PersistGet("render_instancing", 1.0) != 0.0;
         const int mode = static_cast<int>(PersistGet("video_mode", 0));
         const u32 w = static_cast<u32>(PersistGet("video_w", 0));
         const u32 h = static_cast<u32>(PersistGet("video_h", 0));
@@ -1924,12 +1984,27 @@ struct McpError : std::runtime_error
 // ---- perf_stats / benchmark 共通の集計・整形 ----
 // 平均値を詰めた PerfSummary を JSON レポート（数値 + 簡易ボトルネック解析）へ変換する。
 // 解析はヒューリスティック: フレーム時間に対する GPU 合計・CPU 実働・待ち時間の比率で分類。
+const char* CpuScopeName(u32 i)
+{
+    switch (i)
+    {
+    case CpuUpdate:     return "update";      // スクリプト/物理/アニメ/エディタ入力
+    case CpuBuildList:  return "buildList";   // BuildDrawList の走査部（ワールド行列・LOD・鍵計算）
+    case CpuListSort:   return "listSort";    // 描画リストのソート（buildList の内数ではなく別計上）
+    case CpuShadowRec:  return "shadowRec";   // CSM 4カスケードのコマンド記録
+    case CpuMainRec:    return "mainRec";     // メインパスのコマンド記録
+    case CpuEditorUi:   return "editorUi";    // ImGui エディタUI構築（ゲームでは 0）
+    default:            return "?";
+    }
+}
+
 struct PerfSummary
 {
     double fps = 0, frameMs = 0, frameMsMin = 0, frameMsMax = 0, frameMsP95 = 0;
     double workMs = 0, fenceWaitMs = 0, presentMs = 0;   // 平均
     double draws = 0, culled = 0, tris = 0;              // 平均
     double gpuMs[GpuTimer::Count] = {};                  // 平均
+    double cpuMs[CpuScopeCount] = {};                    // 平均（workMs の内訳）
     int    samples = 0;
 };
 
@@ -1957,6 +2032,13 @@ nlohmann::json PerfReportJson(const PerfSummary& s, bool vsync, float fpsLimit)
                      {"max", r2(s.frameMsMax)}, {"p95", r2(s.frameMsP95)}}},
         {"cpu", {{"workMs", r2(s.workMs)}, {"fenceWaitMs", r2(s.fenceWaitMs)},
                  {"presentMs", r2(s.presentMs)}}},
+        {"cpuScopeMs", [&] {
+            nlohmann::json c = nlohmann::json::object();
+            double named = 0;
+            for (u32 i = 0; i < CpuScopeCount; ++i) { c[CpuScopeName(i)] = r2(s.cpuMs[i]); named += s.cpuMs[i]; }
+            c["other"] = r2((std::max)(0.0, s.workMs - named));   // 計測外（MCP/Present準備等）
+            return c;
+        }()},
         {"gpuPassMs", gpu},
         {"drawCalls", r2(s.draws)},
         {"culled", r2(s.culled)},
@@ -2005,7 +2087,29 @@ nlohmann::json PerfReportJson(const PerfSummary& s, bool vsync, float fpsLimit)
         }
     }
     if (verdict == "cpu-bound")
-        notes.push_back("CPUバウンド: drawCalls が多ければバッチング/カリング強化。Lua/物理/アニメ更新も確認");
+    {
+        // どの CPU ブロックが食っているかまで名指しする（cpuScopeMs の最大値）。
+        u32 cw = 0;
+        for (u32 i = 1; i < CpuScopeCount; ++i)
+            if (s.cpuMs[i] > s.cpuMs[cw]) cw = i;
+        char buf[160];
+        std::snprintf(buf, sizeof(buf), "CPUバウンド: 最大ブロック %s (%.2fms / work %.2fms)",
+                      CpuScopeName(cw), s.cpuMs[cw], s.workMs);
+        notes.push_back(buf);
+        switch (cw)
+        {
+        case CpuEditorUi:
+            notes.push_back("エディタUIが重い: 階層パネルの項目数が多い。ゲーム実行時は掛からない"); break;
+        case CpuBuildList:
+            notes.push_back("描画リスト構築が重い: エンティティ数を減らすか、静的物の事前計算を検討"); break;
+        case CpuShadowRec:
+            notes.push_back("影のコマンド記録が重い: カスケード数削減 or 影用インスタンシング/バッチングを検討"); break;
+        case CpuMainRec:
+            notes.push_back("メインのコマンド記録が重い: drawCalls を減らす(インスタンシング/マージ)"); break;
+        default:
+            notes.push_back("Update が重い: Lua/物理/アニメ更新を確認"); break;
+        }
+    }
     if (s.draws > 3000)
         notes.push_back("drawCalls が多い(平均" + std::to_string(static_cast<int>(s.draws)) + "/フレーム)");
     if (s.tris > 5e6)
@@ -4005,11 +4109,13 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 mainDraws += f.passMain.draws; mainTris += f.passMain.tris;
                 shadowDraws += f.passShadow.draws; shadowTris += f.passShadow.tris;
                 for (u32 g = 0; g < GpuTimer::Count; ++g) s.gpuMs[g] += f.gpuMs[g];
+                for (u32 c = 0; c < CpuScopeCount; ++c)   s.cpuMs[c] += f.cpuMs[c];
             }
             const double inv = 1.0 / static_cast<double>(n);
             s.workMs *= inv; s.fenceWaitMs *= inv; s.presentMs *= inv;
             s.draws *= inv; s.culled *= inv; s.tris *= inv;
             for (u32 g = 0; g < GpuTimer::Count; ++g) s.gpuMs[g] *= inv;
+            for (u32 c = 0; c < CpuScopeCount; ++c)   s.cpuMs[c] *= inv;
             s.samples = static_cast<int>(fm.size());
             if (!fm.empty())
             {
@@ -4021,6 +4127,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 s.frameMsMax = fm.back();
             }
             nlohmann::json rep = PerfReportJson(s, m_useVsync, m_fpsLimit);
+            rep["instancing"] = m_instancingEnabled;   // settings.json "render_instancing" で A/B 可
 
             // パス別内訳（平均/フレーム）。other = 深度プリパス/エディタプレビュー等
             rep["passes"] = {
@@ -4068,6 +4175,17 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             m_benchDraws = m_benchCulled = m_benchTris = 0;
             m_benchWork = m_benchFence = m_benchPresent = 0;
             for (auto& g : m_benchGpu) g = 0;
+            for (auto& c : m_benchCpu) c = 0;
+            // 既定で FPS 上限/VSync を計測中だけ外す(=真のスループットを測る)。
+            // uncap:false を渡せば普段の設定のまま測れる。終了時に必ず戻す。
+            if (params.value("uncap", true))
+            {
+                m_benchRestore = true;
+                m_benchSavedFpsLimit = m_fpsLimit;
+                m_benchSavedVsync    = m_useVsync;
+                m_fpsLimit = 0.0f;
+                m_useVsync = false;
+            }
             m_benchFramesLeft = static_cast<u32>(n);
             m_benchReply = deferred;
             isDeferred = true;
@@ -5607,7 +5725,7 @@ void Application::Run()
 
         try
         {
-            Update();
+            { CpuScopeTimer _t(&m_cpuMs[CpuUpdate]); Update(); }
             if (gvOverride) SyncActiveCameraToGlobal();   // Update の後に上書き(編集カメラ操作に勝つ)
             Render();
         }
@@ -6819,6 +6937,11 @@ void Application::LoadProject(const ProjectInfo& info)
 
     // 1) パスをプロジェクト配下へ再ポイント（shaders はエンジン側を維持）
     PathResolver::SetProjectRoot(info.rootDir);
+
+    // プロジェクトの settings.json で描画オプションを上書き（A/B 計測用。既定 ON）。
+    // ※ SetProjectRoot の後でないと PersistPath がエンジン側を指してしまう。
+    m_instancingEnabled = PersistGet("render_instancing", 1.0) != 0.0;
+    Logger::Info("自動インスタンシング: {}", m_instancingEnabled ? "ON" : "OFF");
 
     // 1.5) プロジェクト独自シェーダー(上書き/自作)を再走査。切替前の PSO が残っている可能性があるので
     //      WaitIdle 後に全リロードキーを差分無視で作り直す(Poll() の逐次差分検知とは別経路)。
@@ -8793,16 +8916,24 @@ void Application::BuildDrawList()
     }
 
     auto& reg = m_scene->GetRegistry();
-    auto renderView = reg.view<const Transform, const MeshRenderer>();
+    // GridPlane は view の exclude で弾く（1体ごとの all_of プローブぶんの
+    // スパースセット参照が丸ごと消える。10万体規模では効く）。
+    auto renderView = reg.view<const Transform, const MeshRenderer>(entt::exclude<GridPlane>);
+    {
+    CpuScopeTimer _scan(&m_cpuMs[CpuBuildList]);   // 走査部（ソートは listSort で別計上）
     for (auto [e, transform, renderer] : renderView.each())
     {
         if (renderer.meshes.empty()) continue;
-        if (reg.all_of<GridPlane>(e)) continue;
         // park 済み（scale≈0 で退避したプール要素）は全パスで不可視＝リストから除外。
         const auto& sc = transform.scale;
         if (sc.x * sc.x + sc.y * sc.y + sc.z * sc.z < 1e-8f) continue;
         // 発光弾(Pfx*) はメインのパス3で instancing 描画・影/深度は落とさない（従来挙動）。
-        if (auto* nt = reg.try_get<NameTag>(e); nt && nt->name.rfind("Pfx", 0) == 0) continue;
+        // rfind より先頭3文字の直接比較の方が速い（10万体×毎フレームなので効く）。
+        if (const auto* nt = reg.try_get<NameTag>(e))
+        {
+            const std::string& nm = nt->name;
+            if (nm.size() >= 3 && nm[0] == 'P' && nm[1] == 'f' && nm[2] == 'x') continue;
+        }
 
         XMMATRIX world = (transform.parent != entt::null)
             ? ComputeWorldMatrix(reg, e) : transform.GetWorldMatrix();
@@ -8822,9 +8953,30 @@ void Application::BuildDrawList()
             XMVectorGetX(XMVector3Length(world.r[0])),
             XMVectorGetX(XMVector3Length(world.r[1]))),
             XMVectorGetX(XMVector3Length(world.r[2])));
-        f32 meshRadius = 1.0f;
+        // 全サブメッシュのローカル AABB を合成し、その中心を球の中心にする。
+        // 原点にエンティティ位置を使うと、ジオメトリが原点から離れたモデル
+        // (例: Stanford Dragon のように bake で位置がベイクされた glb)で
+        // 球が実体を覆わず「近づくと消える」誤カリングが起きる。
+        XMVECTOR lmn = XMVectorReplicate( FLT_MAX);
+        XMVECTOR lmx = XMVectorReplicate(-FLT_MAX);
+        bool hasAabb = false;
         for (const auto* m : renderer.meshes)
-            if (m) meshRadius = (std::max)(meshRadius, m->GetBoundingRadius());
+        {
+            if (!m) continue;
+            XMFLOAT3 a = m->GetAABBMin(), b = m->GetAABBMax();
+            lmn = XMVectorMin(lmn, XMLoadFloat3(&a));
+            lmx = XMVectorMax(lmx, XMLoadFloat3(&b));
+            hasAabb = true;
+        }
+        f32 meshRadius = 1.0f;
+        XMVECTOR localCenter = XMVectorZero();
+        if (hasAabb)
+        {
+            localCenter = XMVectorScale(XMVectorAdd(lmn, lmx), 0.5f);
+            meshRadius  = (std::max)(1.0f,
+                0.5f * XMVectorGetX(XMVector3Length(XMVectorSubtract(lmx, lmn))));
+        }
+        XMStoreFloat3(&item.center, XMVector3Transform(localCenter, world));
         // スキンド/ノードアニメは変形でバインドポーズ球を超え得るので余裕を大きめに取る。
         const f32 bias = (item.skin || item.hasNodeAnim) ? 2.0f : 1.25f;
         item.radius = meshRadius * ms * bias;
@@ -8833,7 +8985,10 @@ void Application::BuildDrawList()
         // LOD1 の簡略化誤差は実測 0.1% 未満なので半画面未満は迷わず落とす。
         // トライアングルが数px未満になる領域はラスタ効率が崩壊するため遠距離は強めに削る。
         // LODが無い/浅いメッシュは Mesh 側で最終LODへクランプされる。
-        const f32 dist = XMVectorGetX(XMVector3Length(XMVectorSubtract(world.r[3], camPos)));
+        // 距離もエンティティ原点ではなくバウンディング球の中心から測る
+        // （原点からズレたモデルで LOD が不当に粗く選ばれるのを防ぐ）。
+        const f32 dist = XMVectorGetX(XMVector3Length(
+            XMVectorSubtract(XMLoadFloat3(&item.center), camPos)));
         const f32 apparent = item.radius / (std::max)(dist, 1e-3f);
         item.lod = (apparent < 0.04f) ? 4u
                  : (apparent < 0.10f) ? 3u
@@ -8845,10 +9000,40 @@ void Application::BuildDrawList()
         if (item.skin)                          item.sortKey = 2u;
         else if (renderer.shaderPath.empty())   item.sortKey = 0u;
         else                                    item.sortKey = renderer.shaderAlphaBlend ? 3u : 1u;
+
+        // ---- 自動インスタンシングの適格判定 ----
+        // 「per-object 定数を一切必要としない静的メッシュ」だけを畳む。
+        // アニメ/スキン/カスタムシェーダ/マテリアル差し替え/UVアニメがあると
+        // インスタンス間で定数が違うので対象外（従来経路にフォールバック）。
+        item.batchKey = 0;
+        if (item.sortKey == 0u && !item.skin && !item.hasNodeAnim
+            && renderer.meshes.size() == 1 && renderer.meshes[0]
+            && !renderer.HasMaterialAsset(0) && !renderer.HasAnyTextureOverride(0)
+            && renderer.animFrames == 0
+            && renderer.uvScrollU == 0.0f && renderer.uvScrollV == 0.0f)
+        {
+            // FNV-1a でメッシュ/LOD/PBR値/シェーダパラメータを 1 本の鍵に潰す。
+            u64 k = 1469598103934665603ull;
+            auto mix = [&k](u64 v) { k ^= v; k *= 1099511628211ull; };
+            mix(reinterpret_cast<u64>(renderer.meshes[0]));
+            mix(item.lod);
+            auto bits = [](f32 f) { u32 u; std::memcpy(&u, &f, 4); return static_cast<u64>(u); };
+            mix(bits(renderer.overrideMetallic));
+            mix(bits(renderer.overrideRoughness));
+            mix(bits(renderer.effectValue));
+            mix(bits(renderer.shaderParams.x)); mix(bits(renderer.shaderParams.y));
+            mix(bits(renderer.shaderParams.z)); mix(bits(renderer.shaderParams.w));
+            item.batchKey = k | 1ull;   // 0 は「不可」の予約値なので必ず非 0 にする
+        }
         m_drawItems.push_back(item);
     }
+    }   // _scan
 
-    // PSO バケツ → シェーダ → メッシュ順に整列＝パイプライン/マテリアル/VB の切替回数を最小化。
+    CpuScopeTimer _sort(&m_cpuMs[CpuListSort]);
+    // PSO バケツ → シェーダ → メッシュ → LOD → バッチ鍵 の順に整列。
+    // 前半はパイプライン/マテリアル/VB の切替最小化（従来通り）、
+    // 末尾の LOD/batchKey は「同一キーが連続する」ことを保証してインスタンシングの
+    // ラン検出を O(n) の 1 パスにするため（ハッシュマップ不要）。
     std::sort(m_drawItems.begin(), m_drawItems.end(),
         [](const DrawItem& a, const DrawItem& b) {
             if (a.sortKey != b.sortKey) return a.sortKey < b.sortKey;
@@ -8856,7 +9041,10 @@ void Application::BuildDrawList()
                 const int c = a.renderer->shaderPath.compare(b.renderer->shaderPath);
                 if (c != 0) return c < 0;
             }
-            return a.renderer->meshes[0] < b.renderer->meshes[0];
+            if (a.renderer->meshes[0] != b.renderer->meshes[0])
+                return a.renderer->meshes[0] < b.renderer->meshes[0];
+            if (a.lod != b.lod) return a.lod < b.lod;
+            return a.batchKey < b.batchKey;
         });
 }
 
@@ -8879,6 +9067,7 @@ void Application::RecordPerfFrame()
     f.passShadow = m_passShadow;
     for (u32 s = 0; s < GpuTimer::Count; ++s)
         f.gpuMs[s] = m_gpuTimer ? m_gpuTimer->GetMs(static_cast<GpuTimer::Scope>(s)) : 0.0f;
+    for (u32 s = 0; s < CpuScopeCount; ++s) { f.cpuMs[s] = m_cpuMs[s]; m_cpuMs[s] = 0.0f; }
     m_perfHistory[static_cast<size_t>(m_perfTotalFrames % kPerfHistory)] = f;
     ++m_perfTotalFrames;
 
@@ -8889,6 +9078,7 @@ void Application::RecordPerfFrame()
         m_benchDraws += f.draws; m_benchCulled += f.culled; m_benchTris += f.tris;
         m_benchWork += f.workMs; m_benchFence += f.fenceWaitMs; m_benchPresent += f.presentMs;
         for (u32 s = 0; s < GpuTimer::Count; ++s) m_benchGpu[s] += f.gpuMs[s];
+        for (u32 s = 0; s < CpuScopeCount; ++s)  m_benchCpu[s] += f.cpuMs[s];
 
         if (--m_benchFramesLeft == 0)
         {
@@ -8910,9 +9100,19 @@ void Application::RecordPerfFrame()
                 sum.draws = m_benchDraws * inv; sum.culled = m_benchCulled * inv;
                 sum.tris = m_benchTris * inv;
                 for (u32 s = 0; s < GpuTimer::Count; ++s) sum.gpuMs[s] = m_benchGpu[s] * inv;
+                for (u32 s = 0; s < CpuScopeCount; ++s)  sum.cpuMs[s] = m_benchCpu[s] * inv;
             }
             nlohmann::json rep = PerfReportJson(sum, m_useVsync, m_fpsLimit);
             rep["frames"] = static_cast<int>(n);
+            rep["instancing"] = m_instancingEnabled;
+            // uncap で外していた FPS 上限/VSync を元に戻す（レポートには計測時の値=解除後を載せる）
+            if (m_benchRestore)
+            {
+                m_benchRestore = false;
+                m_fpsLimit = m_benchSavedFpsLimit;
+                m_useVsync = m_benchSavedVsync;
+                rep["uncapped"] = true;
+            }
             // 1% low FPS（p99 フレーム時間の逆数。スパイクの体感指標）
             {
                 std::vector<f32> tmp = m_benchSamples;
@@ -9121,11 +9321,129 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
 
     // パス1: 不透明（グリッド・パーティクル以外）＝フレーム描画リスト（ソート済み）を
     // カメラ視錐台でカリングしながら描く。リストは Render() 先頭の BuildDrawList() で構築済み。
-    for (const DrawItem& item : m_drawItems)
+    //
+    // ★自動インスタンシング: batchKey が同じ連続ラン（= 同メッシュ・同LOD・同マテリアル）は
+    //   1 回の DrawIndexedInstanced に畳む。リストは batchKey が連続するようソート済みなので
+    //   ハッシュマップ無しの 1 パスで検出できる。適格外(batchKey==0)は従来の per-object 描画。
+    PipelineState* instPso = !m_instancingEnabled ? nullptr
+                           : depthPrepassActive   ? m_pipelineStateInstLEqual.get()
+                                                  : m_pipelineStateInst.get();
+    const XMMATRIX passVpT = XMMatrixTranspose(viewProj);   // cbuffer 列優先再解釈で hlsl 上は VP
+
+    // 描画は単一スレッドなので関数ローカル static で使い回す（毎フレームの再確保を避ける）。
+    static std::vector<MeshInstanceData> instScratch;
+
+    const size_t itemCount = m_drawItems.size();
+    for (size_t i = 0; i < itemCount; )
     {
-        XMMATRIX world = XMLoadFloat4x4(&item.world);
-        if (!camFrustum.SphereVisible(world.r[3], item.radius)) { ++m_statCulled; continue; }
-        drawEntity(item.e, *item.renderer, world, item.skin, item.hasNodeAnim, /*isGrid*/ false, item.lod);
+        const DrawItem& head = m_drawItems[i];
+        if (head.batchKey == 0 || !instPso)
+        {
+            XMMATRIX world = XMLoadFloat4x4(&head.world);
+            if (!camFrustum.SphereVisible(XMLoadFloat3(&head.center), head.radius)) ++m_statCulled;
+            else drawEntity(head.e, *head.renderer, world, head.skin, head.hasNodeAnim,
+                            /*isGrid*/ false, head.lod);
+            ++i;
+            continue;
+        }
+
+        // 同一 batchKey のランのうち「見えている物」だけインスタンスへ積む
+        instScratch.clear();
+        size_t j = i;
+        for (; j < itemCount && m_drawItems[j].batchKey == head.batchKey; ++j)
+        {
+            XMMATRIX w = XMLoadFloat4x4(&m_drawItems[j].world);
+            if (!camFrustum.SphereVisible(XMLoadFloat3(&m_drawItems[j].center), m_drawItems[j].radius)) { ++m_statCulled; continue; }
+            XMMATRIX t = XMMatrixTranspose(w);
+            MeshInstanceData d;
+            XMStoreFloat4(&d.r0, t.r[0]);
+            XMStoreFloat4(&d.r1, t.r[1]);
+            XMStoreFloat4(&d.r2, t.r[2]);
+            d.color = {1.0f, 1.0f, 1.0f, 1.0f};   // 非インスタンシング経路と同じ＝頂点色のみ
+            instScratch.push_back(d);
+        }
+
+        const u32 n = static_cast<u32>(instScratch.size());
+        if (n == 0) { i = j; continue; }
+
+        if (m_instanceCursor + n > kMaxInstances)
+        {
+            // リング溢れ: 見た目を保つため従来経路で描き切る（起きたら kMaxInstances を上げる）
+            for (size_t k = i; k < j; ++k)
+            {
+                const DrawItem& it = m_drawItems[k];
+                XMMATRIX w = XMLoadFloat4x4(&it.world);
+                if (!camFrustum.SphereVisible(XMLoadFloat3(&it.center), it.radius)) continue;
+                drawEntity(it.e, *it.renderer, w, it.skin, it.hasNodeAnim, false, it.lod);
+            }
+            i = j;
+            continue;
+        }
+
+        const u32 base = m_instanceCursor;
+        std::memcpy(m_instanceMapped[frameIndex] + static_cast<size_t>(base) * sizeof(MeshInstanceData),
+                    instScratch.data(), static_cast<size_t>(n) * sizeof(MeshInstanceData));
+        m_instanceCursor += n;
+
+        if (instPso->Get() != lastPso)
+        {
+            m_commandList->SetPipelineState(*instPso);
+            lastPso = instPso->Get();
+        }
+        m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 16, &passVpT);
+
+        const Mesh*     mesh = head.renderer->meshes[0];
+        const Material* mat  = mesh->GetMaterial();
+        D3D12_GPU_DESCRIPTOR_HANDLE matSrv;
+        if (mat && mat->srvBlockIndex != 0xFFFFFFFF)
+            matSrv = m_srvHeap->GetGpuHandle(mat->srvBlockIndex);
+        else
+        {
+            Texture* tex = (mat && mat->albedoTexture) ? mat->albedoTexture
+                                                       : m_resourceManager->GetDefaultWhiteTexture();
+            matSrv = m_srvHeap->GetGpuHandle(tex->GetSrvIndex());
+        }
+        if (matSrv.ptr != lastMatSrv)
+        {
+            m_commandList->SetSRVTable(RootSignature::kSlotSRVTable, matSrv);
+            lastMatSrv = matSrv.ptr;
+        }
+
+        // 適格判定で materialAsset/上書きテクスチャ/UVアニメは除外済みなので単純形でよい
+        struct { float metallic; float roughness; u32 flags; float pad;
+                 float uvScaleX, uvScaleY, uvOffsetX, uvOffsetY; } pbrParams;
+        const MeshRenderer& r = *head.renderer;
+        pbrParams.metallic  = (r.overrideMetallic  >= 0.0f) ? r.overrideMetallic
+                                                            : (mat ? mat->defaultMetallic : 0.0f);
+        pbrParams.roughness = (r.overrideRoughness >= 0.0f) ? r.overrideRoughness
+                                                            : (mat ? mat->defaultRoughness : 0.5f);
+        pbrParams.flags = 0;
+        if (mat && mat->normalMapTexture) pbrParams.flags |= 1u;
+        const bool hasOverride = (r.overrideMetallic >= 0.0f || r.overrideRoughness >= 0.0f);
+        if (!hasOverride && mat && mat->metalRoughnessTexture) pbrParams.flags |= 2u;
+        pbrParams.pad = 0.0f;
+        pbrParams.uvScaleX = 1.0f; pbrParams.uvScaleY = 1.0f;
+        pbrParams.uvOffsetX = 0.0f; pbrParams.uvOffsetY = 0.0f;
+        nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPBRMaterial, 8, &pbrParams, 0);
+
+        m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());              // slot0
+        m_commandList->SetIndexBuffer(mesh->GetIndexBufferLod(head.lod).GetView());
+        D3D12_VERTEX_BUFFER_VIEW iv = m_instanceVbView[frameIndex];
+        iv.BufferLocation += static_cast<u64>(base) * sizeof(MeshInstanceData);
+        iv.SizeInBytes     = n * sizeof(MeshInstanceData);
+        nativeCmdList->IASetVertexBuffers(1, 1, &iv);                                   // slot1
+        lastVbMesh = mesh;
+        lastLod    = head.lod;
+
+        const u32 idx = mesh->GetIndexCountLod(head.lod);
+        m_commandList->DrawIndexedInstanced(idx, n);
+        ++m_statDraws;
+        m_statTris += idx / 3 * n;
+        ++m_passBucket->draws;
+        m_passBucket->tris += idx / 3 * n;
+
+        i = j;
     }
 
     // パス2: エディタ用グリッド。線だけを後描きする（ForwardGrid 側で線以外 alpha=0）。
@@ -9273,7 +9591,7 @@ void Application::DrawWorldSprites(ID3D12GraphicsCommandList* cmd, DirectX::XMMA
 // GridPlane・park済み(scale≈0)・発光弾(Pfx*)は除外（元のシャドウパスのフィルタをそのまま踏襲）。
 void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState& staticPSO,
                                        PipelineState& skinnedPSO, bool updateSkinning, u32 frameIndex,
-                                       u32 lodBias)
+                                       u32 lodBias, PipelineState* instPSO)
 {
     using namespace DirectX;
 
@@ -9288,10 +9606,78 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
     const Mesh*          lastVbMesh = nullptr;
     u32                  lastLod    = ~0u;
 
-    for (const DrawItem& item : m_drawItems)
+    const size_t itemCount = m_drawItems.size();
+    const XMMATRIX passVpT = XMMatrixTranspose(viewProj);   // instanced VS の b0 用
+    // 描画は単一スレッドなので関数ローカル static で使い回す。
+    static std::vector<MeshInstanceData> depthInstScratch;
+    bool instOverflow = false;   // リングが尽きたら以降このパスは従来経路のみ
+
+    for (size_t i = 0; i < itemCount; ++i)
     {
+        const DrawItem& item = m_drawItems[i];
+
+        // ★自動インスタンシング: 同一 batchKey の連続ランを 1 ドローに畳む。
+        //   batchKey は LOD 込みなので、このパスの lodBias を足しても run 内は同一 LOD。
+        if (instPSO && m_instancingEnabled && item.batchKey != 0 && !instOverflow)
+        {
+            depthInstScratch.clear();
+            size_t j = i;
+            for (; j < itemCount && m_drawItems[j].batchKey == item.batchKey; ++j)
+            {
+                XMMATRIX w = XMLoadFloat4x4(&m_drawItems[j].world);
+                if (!frustum.SphereVisible(XMLoadFloat3(&m_drawItems[j].center), m_drawItems[j].radius)) { ++m_statCulled; continue; }
+                XMMATRIX t = XMMatrixTranspose(w);
+                MeshInstanceData d;
+                XMStoreFloat4(&d.r0, t.r[0]);
+                XMStoreFloat4(&d.r1, t.r[1]);
+                XMStoreFloat4(&d.r2, t.r[2]);
+                d.color = {1.0f, 1.0f, 1.0f, 1.0f};
+                depthInstScratch.push_back(d);
+            }
+            const u32 n = static_cast<u32>(depthInstScratch.size());
+            if (n == 0) { i = j - 1; continue; }
+
+            if (m_instanceCursor + n <= kMaxInstances)
+            {
+                const u32 base = m_instanceCursor;
+                std::memcpy(m_instanceMapped[frameIndex] + static_cast<size_t>(base) * sizeof(MeshInstanceData),
+                            depthInstScratch.data(), static_cast<size_t>(n) * sizeof(MeshInstanceData));
+                m_instanceCursor += n;
+
+                if (instPSO->Get() != lastPso)
+                {
+                    m_commandList->SetPipelineState(*instPSO);
+                    lastPso = instPSO->Get();
+                }
+                m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 16, &passVpT);
+
+                const Mesh* mesh = item.renderer->meshes[0];
+                const u32   lodI = item.lod + lodBias;
+                m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
+                m_commandList->SetIndexBuffer(mesh->GetIndexBufferLod(lodI).GetView());
+                D3D12_VERTEX_BUFFER_VIEW iv = m_instanceVbView[frameIndex];
+                iv.BufferLocation += static_cast<u64>(base) * sizeof(MeshInstanceData);
+                iv.SizeInBytes     = n * sizeof(MeshInstanceData);
+                m_commandList->GetNative()->IASetVertexBuffers(1, 1, &iv);
+                lastVbMesh = mesh;
+                lastLod    = lodI;
+
+                const u32 idx = mesh->GetIndexCountLod(lodI);
+                m_commandList->DrawIndexedInstanced(idx, n);
+                ++m_statDraws;
+                m_statTris += idx / 3 * n;
+                ++m_passBucket->draws;
+                m_passBucket->tris += idx / 3 * n;
+
+                i = j - 1;
+                continue;
+            }
+            instOverflow = true;   // 以降は従来経路（見た目は同じ）
+        }
+
         XMMATRIX world = XMLoadFloat4x4(&item.world);
-        if (!frustum.SphereVisible(world.r[3], item.radius)) { ++m_statCulled; continue; }
+        if (!frustum.SphereVisible(XMLoadFloat3(&item.center), item.radius)) { ++m_statCulled; continue; }
         const u32 lod = item.lod + lodBias;   // Mesh 側で最終LODへクランプ
 
         if (item.skin)
@@ -10888,7 +11274,11 @@ void Application::Render()
     m_commandList->SetRootSignature(*m_rootSignature);
 
     // フレーム描画リストを構築（1回）。以降の影/プリパス/メイン/プレビューの全パスで共有する。
-    BuildDrawList();
+    BuildDrawList();   // 内部で buildList / listSort を別々に計時する
+
+    // instancing リングのカーソルをフレーム先頭でリセット。
+    // 影4カスケード → 深度プリパス → メイン → プレビューの順に連番で追記していく。
+    m_instanceCursor = 0;
 
     // ===== スポットライト影スロット割当（castShadows なライトをカメラに近い順で最大kMaxShadowSpot灯）=====
     // 結果は m_spotShadowViewProj[] / m_spotShadowEntity[] に格納し、直後の影パス描画と
@@ -10961,7 +11351,8 @@ void Application::Render()
             m_commandList->ClearDepthStencil(m_spotShadowDsvHandles[i]);
             nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_spotShadowDsvHandles[i]);
             RenderDepthOnlyScene(lvp, *m_shadowPipelineState, *m_shadowSkinnedPipelineState,
-                                 /*updateSkinning*/ false, frameIndex, /*lodBias*/ 1);
+                                 /*updateSkinning*/ false, frameIndex, /*lodBias*/ 1,
+                                 m_shadowPipelineStateInst.get());
         }
 
         m_commandList->TransitionResource(m_spotShadowMap.Get(),
@@ -11034,7 +11425,8 @@ void Application::Render()
                 m_commandList->ClearDepthStencil(m_pointShadowDsvHandles[slice]);
                 nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_pointShadowDsvHandles[slice]);
                 RenderDepthOnlyScene(faceView * faceProj, *m_shadowPipelineState, *m_shadowSkinnedPipelineState,
-                                     /*updateSkinning*/ false, frameIndex, /*lodBias*/ 1);
+                                     /*updateSkinning*/ false, frameIndex, /*lodBias*/ 1,
+                                     m_shadowPipelineStateInst.get());
             }
         }
 
@@ -11062,6 +11454,7 @@ void Application::Render()
         nativeCmdList->RSSetViewports(1, &shadowVp);
         nativeCmdList->RSSetScissorRects(1, &shadowScissor);
 
+        CpuScopeTimer _tShadow(&m_cpuMs[CpuShadowRec]);
         for (u32 ci = 0; ci < kNumCascades; ++ci)
         {
             XMMATRIX cascadeVP = XMLoadFloat4x4(&m_cascadeViewProj[ci]);
@@ -11073,7 +11466,8 @@ void Application::Render()
             // skinningBuffer はフレーム先頭で全 SkeletalAnimation を一括 Update 済み
             // （シャドウパスは影OFF/正射カメラでスキップされるため、ここでは更新しない）。
             RenderDepthOnlyScene(cascadeVP, *m_shadowPipelineState, *m_shadowSkinnedPipelineState,
-                                 /*updateSkinning*/ false, frameIndex, /*lodBias*/ 1);
+                                 /*updateSkinning*/ false, frameIndex, /*lodBias*/ 1,
+                                 m_shadowPipelineStateInst.get());
         }
 
         m_commandList->TransitionResource(m_shadowMap.Get(),
@@ -11108,7 +11502,8 @@ void Application::Render()
         // skinningBuffer は毎フレーム1回どこかで Update されていれば良い（このプリパスより前に
         // シャドウパスの ci==0 で更新済み＝ここでは false）。
         RenderDepthOnlyScene(camVP, *m_depthPrepassPSO, *m_depthPrepassSkinnedPSO,
-                             /*updateSkinning*/ false, frameIndex);
+                             /*updateSkinning*/ false, frameIndex, /*lodBias*/ 0,
+                             m_depthPrepassPSOInst.get());
 
         // --- SSAO 生成（depth SRV を読み AO→Blur）---
         m_commandList->TransitionResource(m_depthBuffer.Get(),
@@ -11335,14 +11730,15 @@ void Application::Render()
 
     XMMATRIX viewProj = m_camera->GetViewProjMatrix();
 
-    m_instanceCursor = 0;   // フレーム先頭で instancing バッファのカーソルをリセット（メイン→プレビューで連番追記）
-
     // 全Entityを描画（メインパス: 編集カメラ視点）。AO は SSAO 有効時のみ実テクスチャ、無効時は白。
     // useSSAO=true のときだけ深度プリパスで深度が完成済み → LESS_EQUAL forward PSO で再利用する。
     m_gpuTimer->Begin(nativeCmdList, GpuTimer::MainScene);
     m_passBucket = &m_passMain;
-    RenderSceneMeshes(nativeCmdList, frameIndex, viewProj,
-                      (m_isGameMode || m_engineMode == EngineMode::Playing), aoSrv, useSSAO);
+    {
+        CpuScopeTimer _tMain(&m_cpuMs[CpuMainRec]);
+        RenderSceneMeshes(nativeCmdList, frameIndex, viewProj,
+                          (m_isGameMode || m_engineMode == EngineMode::Playing), aoSrv, useSSAO);
+    }
     m_passBucket = &m_passOther;
     m_gpuTimer->End(nativeCmdList, GpuTimer::MainScene);
 
@@ -11971,6 +12367,7 @@ void Application::Render()
     else if (!m_isGameMode)
     {
         bool pendingPlayMode = false;
+        CpuScopeTimer _tUi(&m_cpuMs[CpuEditorUi]);
         m_editorLayer->Render(
             m_engineMode == EngineMode::Playing,
             m_scene.get(), m_camera.get(), m_window.get(),

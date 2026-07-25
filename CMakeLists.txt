@@ -234,6 +234,8 @@ if(DXC_EXECUTABLE)
         "${CMAKE_SOURCE_DIR}/shaders/forward/PBR.hlsli"
         "${CMAKE_SOURCE_DIR}/shaders/forward/Lighting.hlsli")
     set(SHADER_GRID          "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardGrid.hlsl")
+    set(SHADER_FWD_INST      "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardInstanced.hlsl")
+    set(SHADER_SHADOW_INST   "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPassInstanced.hlsl")
     set(SHADER_SHADOW        "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPass.hlsl")
     set(SHADER_SHADOW_SKIN   "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPassSkinned.hlsl")
     set(SHADER_DEPTHPRE_SKIN "${CMAKE_SOURCE_DIR}/shaders/shadow/DepthPrepassSkinned.hlsl")
@@ -271,6 +273,8 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/ForwardSkinned_PS.cso"
         "${SHADER_OUTPUT_DIR}/ForwardGrid_VS.cso"
         "${SHADER_OUTPUT_DIR}/ForwardGrid_PS.cso"
+        "${SHADER_OUTPUT_DIR}/ForwardInstanced_VS.cso"
+        "${SHADER_OUTPUT_DIR}/ShadowPassInstanced_VS.cso"
         "${SHADER_OUTPUT_DIR}/ShadowPass_VS.cso"
         "${SHADER_OUTPUT_DIR}/ShadowPassSkinned_VS.cso"
         "${SHADER_OUTPUT_DIR}/DepthPrepassSkinned_VS.cso"
@@ -333,6 +337,22 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/Forward_PS.cso" "${SHADER_FORWARD}"
         DEPENDS "${SHADER_FORWARD}" ${SHADER_FWD_INC}
         COMMENT "Compiling Forward.hlsl -> Forward_PS.cso (ps_6_0)"
+    )
+
+    # インスタンシング版 forward VS（PS は Forward_PS.cso を共用）
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ForwardInstanced_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/ForwardInstanced_VS.cso" "${SHADER_FWD_INST}"
+        DEPENDS "${SHADER_FWD_INST}" ${SHADER_FWD_INC}
+        COMMENT "Compiling ForwardInstanced.hlsl -> ForwardInstanced_VS.cso (vs_6_0)"
+    )
+
+    # インスタンシング版 深度onlyパス VS（シャドウ/深度プリパス共用）
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ShadowPassInstanced_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/ShadowPassInstanced_VS.cso" "${SHADER_SHADOW_INST}"
+        DEPENDS "${SHADER_SHADOW_INST}"
+        COMMENT "Compiling ShadowPassInstanced.hlsl -> ShadowPassInstanced_VS.cso (vs_6_0)"
     )
 
     # LDR 直出力バリアント（サムネイル等、ポストプロセスを通らない R8G8B8A8 RT 用）

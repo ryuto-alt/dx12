@@ -59,18 +59,7 @@ static bool ContainsCI(const std::string& haystack, const char* needle)
     return h.find(n) != std::string::npos;
 }
 
-// 子エンティティ列挙ヘルパー
-static std::vector<entt::entity> GetChildren(entt::registry& reg, entt::entity parent)
-{
-    std::vector<entt::entity> children;
-    auto view = reg.view<const Transform>();
-    for (auto [e, t] : view.each())
-    {
-        if (t.parent == parent)
-            children.push_back(e);
-    }
-    return children;
-}
+const std::vector<entt::entity> HierarchyPanel::s_noChildren;
 
 void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, entt::entity e)
 {
@@ -80,7 +69,9 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
     // ID スコープを明示分離 (ImGui 1.92 の TreeNode + D&D + popup 衝突対策)
     ImGui::PushID(static_cast<int>(static_cast<u32>(e)));
 
-    auto children = GetChildren(reg, e);
+    auto itKids = m_childIndex.find(e);
+    const std::vector<entt::entity>& children =
+        (itKids == m_childIndex.end()) ? s_noChildren : itKids->second;
     bool hasChildren = !children.empty();
     bool selected = ctx.IsSelected(e);
 
@@ -144,9 +135,14 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
         return;  // リネーム中はツリーノード描画しない
     }
 
-    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnArrow;
+    // NoTreePushOnOpen: 子はこの関数から再帰せず、Render() の平坦化行リスト側で描く
+    //（ListClipper で画面外の行を丸ごと省くため）。よって TreePop も不要。
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnArrow
+                             | ImGuiTreeNodeFlags_NoTreePushOnOpen;
     if (!hasChildren) flags |= ImGuiTreeNodeFlags_Leaf;
     if (selected) flags |= ImGuiTreeNodeFlags_Selected;
+    const bool wasOpen = hasChildren && m_openNodes.count(e) != 0;
+    ImGui::SetNextItemOpen(wasOpen, ImGuiCond_Always);
 
     // 種別アイコンをノード頭に表示（クリック判定は直後の TreeNodeEx が担う）
     // 単色 PNG を種別カラーで tint して Nebula のカラフルなアイコンを再現。
@@ -165,6 +161,11 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
 
     // ID は PushID で一意化済みなので TreeNodeEx は固定文字列でOK
     bool open = ImGui::TreeNodeEx("##node", flags, "%s", tag.name.c_str());
+    if (hasChildren && open != wasOpen)
+    {
+        if (open) m_openNodes.insert(e);
+        else      m_openNodes.erase(e);
+    }
 
     bool itemHov = ImGui::IsItemHovered();
 
@@ -305,14 +306,7 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
         ImGui::EndPopup();
     }
 
-    // 子ノード描画
-    if (open)
-    {
-        for (auto child : children)
-            DrawEntityNode(reg, ctx, child);
-        ImGui::TreePop();
-    }
-
+    // 子は Render() の行リストが続けて描く（ここでは再帰しない）。
     ImGui::PopID();
 }
 
@@ -321,6 +315,12 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
     ImGui::Begin("\xe3\x83\x92\xe3\x82\xa8\xe3\x83\xa9\xe3\x83\xab\xe3\x82\xad\xe3\x83\xbc");  // Hierarchy
 
     auto nameView = reg.view<const NameTag>();
+
+    // 親→子の索引をこのフレームぶん作り直す（1パス）。DrawEntityNode はここだけ見る。
+    m_childIndex.clear();
+    for (auto [e, t] : reg.view<const Transform>().each())
+        if (t.parent != entt::null)
+            m_childIndex[t.parent].push_back(e);
 
     // オブジェクト数（GridPlane は内部用なので除外）
     size_t objCount = 0;
@@ -341,11 +341,21 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
 
     if (s_filterBuf[0] != '\0')
     {
-        // フィルタ中はツリーを畳んで、名前一致のフラットリストを表示
+        // フィルタ中はツリーを畳んで、名前一致のフラットリストを表示（こちらも clipper で間引く）
+        m_rows.clear();
         for (auto [e, tag] : nameView.each())
         {
             if (reg.all_of<GridPlane>(e)) continue;
             if (!ContainsCI(tag.name, s_filterBuf)) continue;
+            m_rows.push_back({e, 0});
+        }
+        ImGuiListClipper fclip;
+        fclip.Begin(static_cast<int>(m_rows.size()));
+        while (fclip.Step())
+        for (int fi = fclip.DisplayStart; fi < fclip.DisplayEnd; ++fi)
+        {
+            const entt::entity e = m_rows[static_cast<size_t>(fi)].e;
+            const auto& tag = reg.get<NameTag>(e);
 
             ImGui::PushID(static_cast<int>(static_cast<u32>(e)));
             if (ctx.icons)
@@ -370,20 +380,43 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
     }
     else
     {
-        // ルートノードのみ列挙（parent が null、GridPlane は非表示）
+        // ツリーを「見えている行」だけの平坦なリストに畳んでから ImGuiListClipper で
+        // 画面外を丸ごと省く。ImGui へ全ノードを積むと 5万体で ~7ms 溶ける（実測）。
+        m_rows.clear();
+        std::vector<Row> stack;
         for (auto [e, tag] : nameView.each())
         {
             if (reg.all_of<GridPlane>(e)) continue;
+            if (const auto* t = reg.try_get<Transform>(e);
+                t && t->parent != entt::null && reg.valid(t->parent))
+                continue;   // ルートのみ
+            stack.push_back({e, 0});
+        }
+        // 明示スタックの DFS（深い階層でも再帰爆発しない）。開いてる親の子だけ展開。
+        while (!stack.empty())
+        {
+            Row r = stack.back();
+            stack.pop_back();
+            m_rows.push_back(r);
+            if (!m_openNodes.count(r.e)) continue;
+            auto it = m_childIndex.find(r.e);
+            if (it == m_childIndex.end()) continue;
+            for (auto cit = it->second.rbegin(); cit != it->second.rend(); ++cit)
+                stack.push_back({*cit, r.depth + 1});
+        }
 
-            bool isRoot = true;
-            if (reg.all_of<Transform>(e))
+        const float indentW = ImGui::GetStyle().IndentSpacing;
+        ImGuiListClipper clipper;
+        clipper.Begin(static_cast<int>(m_rows.size()));
+        while (clipper.Step())
+        {
+            for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
             {
-                auto& t = reg.get<Transform>(e);
-                if (t.parent != entt::null && reg.valid(t.parent))
-                    isRoot = false;
+                const Row& r = m_rows[static_cast<size_t>(i)];
+                if (r.depth > 0) ImGui::Indent(indentW * r.depth);
+                DrawEntityNode(reg, ctx, r.e);
+                if (r.depth > 0) ImGui::Unindent(indentW * r.depth);
             }
-            if (isRoot)
-                DrawEntityNode(reg, ctx, e);
         }
     }
 

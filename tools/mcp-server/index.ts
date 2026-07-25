@@ -774,14 +774,17 @@ reg(
 reg(
   "dx12_benchmark",
   "ベンチマーク実行",
-  "N フレーム(既定300, 30..3600)計測してから統計を返す遅延同期ベンチ。返り値は dx12_perf_stats と同形式 + frames / fps1PercentLow(p99フレーム時間の逆数=スパイク体感指標)。カメラ位置・シーン・Play/Editor 状態は呼び出し側が事前に整えること。最適化の前後で同条件で回して比較するのが正しい使い方。実行中の重複呼び出しはエラー。",
-  { frames: z.number().int().optional().describe("計測フレーム数(既定 300)。30..3600。") },
+  "N フレーム(既定300, 30..3600)計測してから統計を返す遅延同期ベンチ。返り値は dx12_perf_stats と同形式 + frames / fps1PercentLow(p99フレーム時間の逆数=スパイク体感指標)。★既定で計測中だけ FPS上限/VSync を外す(uncap)ので、fpsLimit に張り付かない真のスループットが出る。カメラ位置・シーン・Play/Editor 状態は呼び出し側が事前に整えること。最適化の前後で同条件で回して比較するのが正しい使い方。実行中の重複呼び出しはエラー。",
+  {
+    frames: z.number().int().optional().describe("計測フレーム数(既定 300)。30..3600。"),
+    uncap: z.boolean().optional().describe("計測中だけ FPS上限/VSync を外す(既定 true)。false で普段の設定のまま測る。"),
+  },
   { readOnlyHint: true },
-  ({ frames }) =>
+  ({ frames, uncap }) =>
     run(() =>
-      engine.call("benchmark", { frames }, {
+      engine.call("benchmark", { frames, uncap }, {
         // 30fps まで落ちてても間に合う余裕: frames×34ms + 10s
-        timeout: (frames ?? 300) * 34 + 10000,
+        timeout: (frames ?? 300) * 67 + 10000,
       })),
 );
 
