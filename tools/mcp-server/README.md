@@ -58,7 +58,7 @@ args = ["C:\\Users\\<you>\\dx12-mcp\\index.ts"]
 
 | カテゴリ | 主なツール |
 |---|---|
-| エンティティ | `dx12_list_entities` `dx12_get_entity` `dx12_create_entity` `dx12_delete_entity` `dx12_set_transform` `dx12_set_parent` `dx12_duplicate_entity` |
+| エンティティ | `dx12_list_entities` `dx12_get_entity` `dx12_create_entity` `dx12_delete_entity` `dx12_set_transform` `dx12_set_parent` `dx12_group_entities` `dx12_duplicate_entity` |
 | コンポーネント | `dx12_describe_components` `dx12_set_component` `dx12_remove_component`（particleEmitter / trailRenderer / networkIdentity / networkTransform 等も対応） |
 | 見た目 | `dx12_set_pbr` `dx12_set_color` `dx12_set_texture` `dx12_create_shader` `dx12_set_mesh_shader` `dx12_set_sprite_shader` `dx12_set_post_process` `dx12_set_ssao` |
 | Lua | `dx12_create_lua_component` `dx12_attach_lua_component` `dx12_set_lua_property` `dx12_eval_lua` `dx12_describe_lua_api` |

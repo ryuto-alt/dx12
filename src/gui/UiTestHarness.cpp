@@ -1720,7 +1720,7 @@ std::string UiTestHarness::BuildReport() const
     return report;
 }
 
-void UiTestHarness::DrawDiagnosticsPanel(bool* show)
+void UiTestHarness::DrawDiagnosticsPanel(bool* show, bool* hoveredOut)
 {
     if (!m_engine) return;
 
@@ -1754,6 +1754,14 @@ void UiTestHarness::DrawDiagnosticsPanel(bool* show)
         ImGui::End();
         return;
     }
+
+    // この窓は3Dビューポートの上に浮かぶ。ホバー中は背後のシーンカメラがホイールに
+    // 反応しないよう呼び出し側へ伝える（他のツール窓と同じ2値ラッチ）。
+    // 結果一覧を BeginChild でスクロールするので RootAndChildWindows で拾う。
+    if (hoveredOut && ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows
+                                             | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem
+                                             | ImGuiHoveredFlags_AllowWhenBlockedByPopup))
+        *hoveredOut = true;
 
     // 検査していない間の位置を覚えておく（検査中はこの位置に固定する）
     if (!m_running)

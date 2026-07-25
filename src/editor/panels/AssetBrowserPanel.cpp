@@ -1,5 +1,6 @@
 #include "editor/panels/AssetBrowserPanel.h"
 #include "editor/EditorContext.h"
+#include "editor/EditorTheme.h"
 #include "editor/ModelThumbnailRenderer.h"
 #include "editor/panels/MaterialPreviewRenderer.h"
 #include "resource/ResourceManager.h"
@@ -11,6 +12,7 @@
 #include "core/Logger.h"
 
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <Windows.h>
 #include <ShlObj.h>
@@ -384,24 +386,43 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
 
     bool needRefresh = false;
 
-    // ===== 上部: フィルタタブ + サイズスライダー =====
+    // ===== 上部: 検索 + 種別フィルタ + サイズスライダー =====
     {
+        // 検索が一番よく使うので左端・幅広に置く（フォルダを掘らずに名前で辿り着ける）
+        ImGui::SetNextItemWidth(200);
+        if (ImGui::InputTextWithHint("##Search", "検索（このフォルダ以下）",
+                                     m_searchBuf, sizeof(m_searchBuf)))
+            needRefresh = true;
+        if (m_searchBuf[0] != '\0')
+        {
+            ImGui::SameLine(0, 4);
+            if (ImGui::SmallButton("×"))
+            {
+                m_searchBuf[0] = '\0';
+                needRefresh = true;
+            }
+        }
+
+        ImGui::SameLine(0, 12);
         const char* filterNames[] = {"All", "3D Models", "Scenes", "Textures", "Scripts", "Audio", "Materials"};
         for (int i = 0; i < 7; ++i)
         {
-            if (i > 0) ImGui::SameLine();
+            if (i > 0) ImGui::SameLine(0, 3);
             bool active = (m_filterIndex == i);
-            if (active)
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.5f, 0.8f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                active ? dx12e::theme::Accent : dx12e::theme::GroupBg);
+            ImGui::PushStyleColor(ImGuiCol_Text,
+                active ? dx12e::theme::TextHi : dx12e::theme::TextDim);
             if (ImGui::SmallButton(filterNames[i]))
                 m_filterIndex = i;
-            if (active)
-                ImGui::PopStyleColor();
+            ImGui::PopStyleColor(2);
         }
 
-        ImGui::SameLine(0, 16);
-        ImGui::SetNextItemWidth(100);
-        ImGui::SliderFloat("##Size", &m_cellSize, 48.0f, 192.0f, "%.0f");
+        // サイズスライダーは右端へ（普段触らないものが左にあると検索/フィルタが探しにくい）
+        const float sliderW = 110.0f;
+        ImGui::SameLine(ImGui::GetContentRegionMax().x - sliderW);
+        ImGui::SetNextItemWidth(sliderW);
+        ImGui::SliderFloat("##Size", &m_cellSize, 56.0f, 192.0f, "%.0f px");
     }
 
     ImGui::Separator();
@@ -500,6 +521,16 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                         ImGui::PopID();
                     }
                 }
+            }
+
+            // 検索中はそれを明示（今見ているのがフォルダの中身ではないと分かるように）
+            if (m_searchBuf[0] != '\0')
+            {
+                ImGui::SameLine(0, 10);
+                ImGui::PushStyleColor(ImGuiCol_Text, dx12e::theme::AccentLight);
+                ImGui::Text("→ \"%s\" の検索結果 %zu 件%s",
+                            m_searchBuf, m_entries.size(), m_searchTruncated ? "+" : "");
+                ImGui::PopStyleColor();
             }
         }
 
@@ -685,21 +716,25 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                     }
                 }
 
-                // --- ファイル名 ---
+                // --- ファイル名（必ず1行。折り返すとセルの高さが揃わず、グリッドが
+                //     ガタついて目が滑る。全文はツールチップで読める）---
                 {
                     std::string name = entry.displayName;
-                    float textWidth = ImGui::CalcTextSize(name.c_str()).x;
-                    float maxWidth = m_cellSize - 4.0f;
-                    if (textWidth > maxWidth)
+                    const float maxWidth = thumbnailSize;
+                    if (ImGui::CalcTextSize(name.c_str()).x > maxWidth)
                     {
-                        while (name.size() > 4 && ImGui::CalcTextSize((name + "..").c_str()).x > maxWidth)
+                        while (name.size() > 2 && ImGui::CalcTextSize((name + "…").c_str()).x > maxWidth)
                             name.pop_back();
-                        name += "..";
+                        name += "…";
                     }
-                    float nameW = ImGui::CalcTextSize(name.c_str()).x;
-                    float offset = (m_cellSize - nameW) * 0.5f;
+                    const float nameW  = ImGui::CalcTextSize(name.c_str()).x;
+                    const float offset = (thumbnailSize - nameW) * 0.5f;
                     if (offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
-                    ImGui::TextWrapped("%s", name.c_str());
+                    // フォルダは白、ファイルは少し落として「入れ物」と「中身」を見分けやすくする
+                    ImGui::PushStyleColor(ImGuiCol_Text,
+                        entry.isDirectory ? dx12e::theme::TextHi : dx12e::theme::TextMid);
+                    ImGui::TextUnformatted(name.c_str());
+                    ImGui::PopStyleColor();
                 }
 
                 ImGui::EndGroup();
@@ -954,12 +989,61 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
 void AssetBrowserPanel::Refresh()
 {
     m_entries.clear();
+    m_searchTruncated = false;
 
     if (!std::filesystem::exists(m_currentDir))
     {
         m_currentDir = m_assetsRoot;
         if (!std::filesystem::exists(m_currentDir))
             return;
+    }
+
+    // ---- 検索中: 現在フォルダ以下を再帰的に探す（フォルダを掘らずに辿り着けるように）----
+    // 件数上限つき。0.5 秒ごとの Refresh で巨大ツリーを毎回全走査しないための保険。
+    if (m_searchBuf[0] != '\0')
+    {
+        namespace fs = std::filesystem;
+        std::string needle = m_searchBuf;
+        std::transform(needle.begin(), needle.end(), needle.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        std::error_code ec;
+        // ponytail: 走査数にも上限を置く。ヒット数だけの制限だと「1件も一致しない巨大ツリー」で
+        // 0.5 秒ごとに全走査してしまう。足りなくなったら差分監視に置き換える。
+        size_t visited = 0;
+        constexpr size_t kMaxVisit = 20000;
+        for (fs::recursive_directory_iterator it(m_currentDir, ec), end; it != end; it.increment(ec))
+        {
+            if (ec) break;
+            if (++visited > kMaxVisit) { m_searchTruncated = true; break; }
+            const auto& p = it->path();
+            std::string fileName = p.filename().string();
+            if (!fileName.empty() && fileName[0] == '.')
+            {
+                if (it->is_directory(ec)) it.disable_recursion_pending();   // .thumbcache 等は覗かない
+                continue;
+            }
+            std::string lower = fileName;
+            std::transform(lower.begin(), lower.end(), lower.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (lower.find(needle) == std::string::npos) continue;
+
+            if (m_entries.size() >= kMaxSearchHits) { m_searchTruncated = true; break; }
+
+            AssetEntry entry;
+            entry.path        = p;
+            entry.displayName = fileName;
+            entry.isDirectory = it->is_directory(ec);
+            entry.type = entry.isDirectory ? AssetType::Folder
+                                           : ClassifyExtension(p.extension().string());
+            m_entries.push_back(entry);
+        }
+        std::sort(m_entries.begin(), m_entries.end(),
+            [](const AssetEntry& a, const AssetEntry& b) {
+                if (a.isDirectory != b.isDirectory) return a.isDirectory;   // フォルダ優先
+                return a.displayName < b.displayName;
+            });
+        return;
     }
 
     if (m_currentDir != m_assetsRoot && m_currentDir != m_scriptsRoot)

@@ -207,7 +207,9 @@ void EditorLayer::Render(bool isPlaying,
         f32 displayH = mainVp->Size.y;
 
         ImGui::SetNextWindowPos(ImVec2(mainVp->Pos.x, mainVp->Pos.y + toolbarHeight), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(displayW, displayH - toolbarHeight), ImGuiCond_Always);
+        // 下端はステータスバーぶん空ける（ドックのパネルが帯に潜り込まないように）
+        ImGui::SetNextWindowSize(ImVec2(displayW, displayH - toolbarHeight - kStatusBarHeight),
+                                 ImGuiCond_Always);
         ImGui::SetNextWindowViewport(mainVp->ID);
 
         ImGuiWindowFlags hostFlags =
@@ -301,7 +303,7 @@ void EditorLayer::Render(bool isPlaying,
             const ImGuiViewport* mainVp = ImGui::GetMainViewport();
             nodePos  = ImVec2(mainVp->Pos.x, mainVp->Pos.y + toolbarHeight);
             nodeSize = mainVp->Size;
-            nodeSize.y -= toolbarHeight;
+            nodeSize.y -= toolbarHeight + kStatusBarHeight;
         }
         if (nodeSize.x < 1.0f) nodeSize.x = 1.0f;
         if (nodeSize.y < 1.0f) nodeSize.y = 1.0f;
@@ -326,82 +328,9 @@ void EditorLayer::Render(bool isPlaying,
         m_ctx->viewportH = m_viewportSize.y;
     }
 
-    // ===== ビューポート HUD オーバーレイ（Nebula 風の半透明ピル）=====
-    // 左下に FPS / オブジェクト数、下中央に選択オブジェクトのラベルを重ねる。
-    // NoInputs でカメラ操作・ピッキングを一切ブロックしない。
-    if (!isPlaying && m_viewportSize.x > 1.0f)
-    {
-        const ImGuiWindowFlags ovFlags =
-            ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoNav |
-            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDocking |
-            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
-            ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs;
-
-        // ---- 左下: 統計（FPS + オブジェクト数）----
-        size_t objCount = 0;
-        for (auto [e, tag] : reg.view<const NameTag>().each())
-        {
-            (void)tag;
-            if (!reg.all_of<GridPlane>(e)) ++objCount;
-        }
-
-        // 右上に配置（左下/中央/右下は既存のカメラヒント・プレビュー・選択ラベルで使用済み）
-        ImGui::SetNextWindowPos(
-            ImVec2(m_viewportPos.x + m_viewportSize.x - 10.0f, m_viewportPos.y + 10.0f),
-            ImGuiCond_Always, ImVec2(1.0f, 0.0f));
-        ImGui::SetNextWindowBgAlpha(0.78f);
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::AppBg);
-        ImGui::PushStyleColor(ImGuiCol_Border,   theme::Border);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(11, 6));
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 7.0f);
-        if (ImGui::Begin("##VPStats", nullptr, ovFlags))
-        {
-            ImGui::PushStyleColor(ImGuiCol_Text, theme::Good);
-            ImGui::Text("%.0f", clock->GetFPS());
-            ImGui::PopStyleColor();
-            ImGui::SameLine(0, 4); ImGui::TextDisabled("FPS");
-            ImGui::SameLine(0, 14); ImGui::TextUnformatted(std::to_string(objCount).c_str());
-            ImGui::SameLine(0, 4); ImGui::TextDisabled("objects");
-            // 描画統計（前フレーム。影/プリパス/メイン全パスの合計。カリング効果の確認用）
-            ImGui::SameLine(0, 14); ImGui::Text("%u", m_ctx->statDraws);
-            ImGui::SameLine(0, 4); ImGui::TextDisabled("draws");
-            ImGui::SameLine(0, 14); ImGui::Text("%u", m_ctx->statCulled);
-            ImGui::SameLine(0, 4); ImGui::TextDisabled("culled");
-        }
-        ImGui::End();
-        ImGui::PopStyleVar(2);
-        ImGui::PopStyleColor(2);
-
-        // ---- 画面左下: 選択オブジェクトのラベル（Unreal Engine 方式）----
-        // シーンビュー内に重ねると作業の邪魔になるため、シーンビューではなく
-        // エディタウィンドウ全体の左下隅に固定表示する。
-        if (m_ctx->HasSelection() && reg.valid(m_ctx->selectedEntity)
-            && reg.all_of<NameTag>(m_ctx->selectedEntity))
-        {
-            const std::string& selName = reg.get<NameTag>(m_ctx->selectedEntity).name;
-            const ImGuiViewport* mainVp = ImGui::GetMainViewport();
-            ImGui::SetNextWindowPos(
-                ImVec2(mainVp->Pos.x + 10.0f,
-                       mainVp->Pos.y + mainVp->Size.y - 10.0f),
-                ImGuiCond_Always, ImVec2(0.0f, 1.0f));
-            ImGui::SetNextWindowBgAlpha(0.82f);
-            ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::AppBg);
-            ImGui::PushStyleColor(ImGuiCol_Border,   theme::AccentDim2);
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12, 5));
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 13.0f);
-            if (ImGui::Begin("##VPSelLabel", nullptr, ovFlags))
-            {
-                ImGui::PushStyleColor(ImGuiCol_Text, theme::AccentLight);
-                ImGui::TextUnformatted(selName.c_str());
-                ImGui::PopStyleColor();
-                ImGui::SameLine(0, 6);
-                ImGui::TextDisabled("selected");
-            }
-            ImGui::End();
-            ImGui::PopStyleVar(2);
-            ImGui::PopStyleColor(2);
-        }
-    }
+    // ※ ビューポートに重ねていた HUD（FPS/objects/draws/culled のピルと選択名ラベル）は
+    //    下部ステータスバーへ移設した。3D ビューの上には何も置かない
+    //    ＝ゲーム UI の見た目を作るとき、エディタの表示物が絵に混ざらない。
 
     // ===== カメラプレビュー小窓（選択カメラ視点。Application が描画してハンドル共有）=====
     // カメラを選択すると、その視点の映像をシーンビュー右下に表示（Play 不要）。
@@ -597,6 +526,134 @@ void EditorLayer::Render(bool isPlaying,
                                               m_viewportPos.x, m_viewportPos.y,
                                               m_viewportSize.x, m_viewportSize.y);
     }
+
+    // ===== 最下部のステータスバー（3D ビューに重ねない情報の置き場）=====
+    RenderStatusBar(scene, camera, clock, isPlaying);
+}
+
+void EditorLayer::RenderStatusBar(Scene* scene, Camera* camera, GameClock* clock, bool isPlaying)
+{
+    auto& reg = scene->GetRegistry();
+
+    const ImGuiViewport* mainVp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(mainVp->Pos.x, mainVp->Pos.y + mainVp->Size.y - kStatusBarHeight),
+                            ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(mainVp->Size.x, kStatusBarHeight), ImGuiCond_Always);
+    ImGui::SetNextWindowViewport(mainVp->ID);
+    // パネルより一段暗くして「窓の外の帯」に見せる（同色だとパネルの続きに見えて読みにくい）
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::AppBg);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 4));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    // グローバルの FramePadding はツールバー用に縦 9px と大きい。帯の中のボタンが
+    // そのままだと帯より高くなるので、ここだけ小さくする。
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 2));
+    ImGui::Begin("##StatusBar", nullptr,
+        ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoDocking   | ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoNav       | ImGuiWindowFlags_NoScrollWithMouse |
+        ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+    // 上辺の区切り線（ドックのパネルとの境目）
+    {
+        const ImVec2 p = ImGui::GetWindowPos();
+        ImGui::GetWindowDrawList()->AddLine(
+            p, ImVec2(p.x + ImGui::GetWindowSize().x, p.y),
+            ImGui::GetColorU32(theme::Border));
+    }
+
+    // 行を帯の中央に置く。AlignTextToFramePadding はグローバルの FramePadding(縦9px)を
+    // 足すので帯からはみ出す＝文字の下が切れる。ここは自前で中央に寄せる。
+    ImGui::SetCursorPosY((kStatusBarHeight - ImGui::GetTextLineHeight()) * 0.5f);
+
+    // ---- 左: 選択中の名前（複数選択なら件数）/ シーンのロード進捗 ----
+    if (m_ctx->sceneLoadProgress >= 0.0f)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::AccentLight);
+        ImGui::Text("シーン読み込み中 %.0f%%", m_ctx->sceneLoadProgress * 100.0f);
+        ImGui::PopStyleColor();
+    }
+    else if (m_ctx->HasSelection() && reg.valid(m_ctx->selectedEntity)
+             && reg.all_of<NameTag>(m_ctx->selectedEntity))
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::AccentLight);
+        ImGui::TextUnformatted(reg.get<NameTag>(m_ctx->selectedEntity).name.c_str());
+        ImGui::PopStyleColor();
+        if (m_ctx->selectedEntities.size() > 1)
+        {
+            ImGui::SameLine(0, 6);
+            ImGui::TextDisabled("+%zu 件", m_ctx->selectedEntities.size() - 1);
+        }
+    }
+    else
+    {
+        ImGui::TextDisabled("選択なし");
+    }
+
+    // ---- 右: カメラ速度 → 描画統計。右端から逆算して配置 ----
+    size_t objCount = 0;
+    for (auto [e, tag] : reg.view<const NameTag>().each())
+    {
+        (void)tag;
+        if (!reg.all_of<GridPlane>(e)) ++objCount;
+    }
+
+    char stats[128];
+    snprintf(stats, sizeof(stats), "%.0f FPS    %zu obj    %u draws    %u culled",
+             clock->GetFPS(), objCount, m_ctx->statDraws, m_ctx->statCulled);
+    char camLabel[64];
+    snprintf(camLabel, sizeof(camLabel), "カメラ速度 %.1f", camera->GetMoveSpeed());
+
+    const float statsW = ImGui::CalcTextSize(stats).x;
+    const float camW   = ImGui::CalcTextSize(camLabel).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    ImGui::SameLine(ImGui::GetContentRegionMax().x - statsW - camW - 20.0f);
+
+    // カメラ設定（速度・感度・グリッド表示）。ツール窓を開かず1クリックで触れる場所に置く。
+    if (ImGui::SmallButton(camLabel))
+        ImGui::OpenPopup("##CamQuickSettings");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("カメラの移動速度（右ドラッグ中にホイールでも変えられます）");
+    if (ImGui::BeginPopup("##CamQuickSettings"))
+    {
+        ImGui::TextDisabled("カメラ");
+        f32 speed = camera->GetMoveSpeed();
+        ImGui::SetNextItemWidth(200);
+        // 対数目盛り: 遅い側(1〜10)を細かく、速い側(〜200)をざっくり動かせる
+        if (ImGui::SliderFloat("移動速度", &speed, 0.2f, 200.0f, "%.1f m/s",
+                               ImGuiSliderFlags_Logarithmic))
+            camera->SetMoveSpeed(speed);
+
+        struct Preset { const char* label; f32 speed; };
+        static const Preset presets[] = {
+            {"精密 1",  1.0f}, {"標準 5",  5.0f}, {"広域 20", 20.0f}, {"最速 80", 80.0f}};
+        for (int i = 0; i < 4; ++i)
+        {
+            if (i > 0) ImGui::SameLine();
+            if (ImGui::SmallButton(presets[i].label)) camera->SetMoveSpeed(presets[i].speed);
+        }
+
+        f32 sens = camera->GetMouseSensitivity();
+        ImGui::SetNextItemWidth(200);
+        if (ImGui::SliderFloat("マウス感度", &sens, 0.0005f, 0.02f, "%.4f"))
+            camera->SetMouseSensitivity(sens);
+
+        // グリッド床の表示/非表示。UI やライティングを見るとき邪魔になるので手元に置く。
+        ImGui::Separator();
+        for (auto [e, gp] : reg.view<GridPlane>().each())
+        {
+            ImGui::Checkbox("グリッドを表示", &gp.enabled);
+            break;   // グリッドは1枚だけ
+        }
+        ImGui::EndPopup();
+    }
+
+    ImGui::SameLine(0, 20);
+    ImGui::PushStyleColor(ImGuiCol_Text, isPlaying ? theme::TextDim : theme::TextFaint);
+    ImGui::TextUnformatted(stats);
+    ImGui::PopStyleColor();
+
+    ImGui::End();
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor();
 }
 
 void EditorLayer::LoadPendingThumbnails(ID3D12GraphicsCommandList* cmdList)

@@ -69,6 +69,8 @@
 #include <cctype>     // std::isalnum（ビルド出力フォルダ名のサニタイズ）
 #include <cmath>      // sin/cos/atan2/asin（カメラのワールド変換→yaw/pitch 逆算）
 #include <map>        // 変更ファイルツリーの構築
+#include <chrono>     // 段階的シーンロードの時間予算
+#include <unordered_set>  // 先読みアセットの重複除去
 #include "audio/AudioSystem.h"
 #include "physics/PhysicsSystem.h"
 #include "network/NetworkSystem.h"
@@ -3621,6 +3623,98 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             t.parent = parent;   // 階層は Transform.parent が駆動。SerializeEntity に自動反映。
             resp["ok"] = true;
         }
+        else if (method == "group_entities")
+        {
+            // 複数エンティティを空の親(グループ)へまとめる。ヒエラルキーの Ctrl+G と同じ動作。
+            // 親は原点・無回転・スケール1で作るので、子のワールド行列は変わらない＝見た目は動かない。
+            auto& reg = m_scene->GetRegistry();
+
+            // entities(id 配列) と names(名前配列) の両方を受ける
+            std::vector<entt::entity> targets;
+            if (params.contains("entities"))
+                for (const auto& v : params["entities"])
+                {
+                    auto e = static_cast<entt::entity>(v.get<u32>());
+                    if (!reg.valid(e)) throw McpError(McpErr::NotFound,
+                        "invalid entity id: " + std::to_string(v.get<u32>()));
+                    targets.push_back(e);
+                }
+            if (params.contains("names"))
+                for (const auto& v : params["names"])
+                {
+                    const std::string want = v.get<std::string>();
+                    entt::entity found = entt::null;
+                    for (auto [oe, tag] : reg.view<NameTag>().each())
+                        if (tag.name == want) { found = oe; break; }
+                    if (found == entt::null) throw McpError(McpErr::NotFound, "entity not found: " + want);
+                    targets.push_back(found);
+                }
+            if (targets.empty()) throw std::runtime_error("missing 'entities' or 'names'");
+
+            // 祖先も対象に含まれている子は除く(親ごと動くので二重に付け替えない)
+            auto inTargets = [&](entt::entity e) {
+                return std::find(targets.begin(), targets.end(), e) != targets.end();
+            };
+            std::vector<std::pair<entt::entity, entt::entity>> members;   // (子, 元の親)
+            for (entt::entity e : targets)
+            {
+                if (!reg.all_of<Transform>(e)) continue;
+                if (reg.all_of<GridPlane>(e)) continue;    // 内部用グリッドは巻き込まない
+                bool ancestorIncluded = false;
+                entt::entity cur = reg.get<Transform>(e).parent;
+                for (int d = 0; cur != entt::null && reg.valid(cur) && d < 4096; ++d)
+                {
+                    if (inTargets(cur)) { ancestorIncluded = true; break; }
+                    auto* pt = reg.try_get<Transform>(cur);
+                    cur = pt ? pt->parent : entt::null;
+                }
+                if (ancestorIncluded) continue;
+                if (std::find_if(members.begin(), members.end(),
+                        [&](const auto& m) { return m.first == e; }) != members.end()) continue;  // 重複指定
+                members.emplace_back(e, reg.get<Transform>(e).parent);
+            }
+            if (members.empty()) throw std::runtime_error("no groupable entities (all nested under each other?)");
+
+            // 名前は重複したら連番(後から name 指定で引けるように)
+            std::string base = params.value("name", std::string("Group"));
+            if (base.empty()) base = "Group";
+            auto taken = [&](const std::string& s) {
+                for (auto [oe, tag] : reg.view<NameTag>().each()) if (tag.name == s) return true;
+                return false;
+            };
+            std::string gname = base;
+            for (int n = 2; taken(gname); ++n) gname = base + "_" + std::to_string(n);
+
+            // 元の親が全員同じならグループもそこへ入れる(階層の位置を保つ)
+            const entt::entity commonParent = members.front().second;
+            const bool sameParent = std::all_of(members.begin(), members.end(),
+                [&](const auto& m) { return m.second == commonParent; });
+
+            entt::entity group = reg.create();
+            reg.emplace<NameTag>(group, NameTag{gname});
+            Transform gt{};
+            if (sameParent) gt.parent = commonParent;
+            reg.emplace<Transform>(group, gt);
+            for (const auto& m : members)
+                reg.get<Transform>(m.first).parent = group;
+
+            // エディタの Ctrl+G と同じく Undo 可能にする(AI がまとめた整理を取り消せる)
+            if (m_editorCtx)
+            {
+                m_editorCtx->undoSystem.PushCommand(std::make_unique<GroupCommand>(
+                    &reg, gname, group, sameParent ? commonParent : entt::null, members));
+                m_editorCtx->Select(group);
+            }
+
+            resp["ok"] = true;
+            resp["result"] = nlohmann::json{
+                {"groupId", static_cast<u32>(group)},
+                {"name", gname},
+                {"count", members.size()},
+                {"sceneGeneration", m_sceneGeneration},
+            };
+            Logger::Info("MCP group_entities: '{}' に {} 件をまとめました", gname, members.size());
+        }
         else if (method == "rename_entity")
         {
             // ここの "name" は新しい名前。エンティティ指定は entity(id) のみ(name 引きは曖昧なので不可)。
@@ -5669,8 +5763,13 @@ void Application::Run()
         m_gameClock.Tick();
 
         // シーントランジション更新（WP9）
+        // 段階ロード中は中間点（画面が隠れきった状態）で止める＝ロードが終わる前に
+        // 開き始めて、まだ構築されていないシーンが見えてしまうのを防ぐ。
         if (m_sceneTransition)
+        {
+            m_sceneTransition->SetHold(m_sceneLoadJob != nullptr);
             m_sceneTransition->Update(m_gameClock.GetDeltaTime());
+        }
 
         // Luaホットリロード（0.5秒ごとにファイル変更チェック）
         m_scriptPollTimer += m_gameClock.GetDeltaTime();
@@ -6733,8 +6832,9 @@ void Application::UpdateProjectLoad(f32 dt)
         return;
     }
 
-    // フェーズ3: シーンロード（pending*）が消化されたら次へ
-    bool pendingScene = !m_editorCtx->pendingLoadPath.empty() || m_editorCtx->pendingNewScene;
+    // フェーズ3: シーンロード（pending* と段階ロードのジョブ）が消化されたら次へ
+    bool pendingScene = !m_editorCtx->pendingLoadPath.empty() || m_editorCtx->pendingNewScene
+                     || m_sceneLoadJob != nullptr;
     if (m_loadSceneWaitFrames > 0) --m_loadSceneWaitFrames;
     if (m_loadSceneWaitFrames == 0 && !pendingScene)
     {
@@ -7932,46 +8032,41 @@ void Application::DoRuntimeSceneLoad(const std::string& rel, ID3D12GraphicsComma
     Logger::Info("Runtime scene loaded: {}", rel);
 }
 
-// シーン JSON を走査し、参照されているテクスチャ/モデルをキャッシュへ先読みする。
-// シーンは構築しない(エンティティ/物理/スクリプトに影響なし)。キャッシュキーは実ロード経路と
-// 同一の絶対パス形式(テクスチャ=wide絶対+srgb既定true / モデル=assetsDir+相対)に合わせる。
-void Application::DoScenePreload(const std::string& rel, ID3D12GraphicsCommandList* cmdList)
+// ===== シーンの参照アセット（先読み／段階ロード共通）=====
+namespace
 {
-    auto bytes = dx12e::vfs::ReadAsset(rel);
-    if (bytes.empty())
-    {
-        Logger::Warn("preloadScene: シーンが見つかりません: {}", rel);
-        return;
-    }
-    nlohmann::json j = nlohmann::json::parse(bytes.begin(), bytes.end(), nullptr, false);
-    if (j.is_discarded())
-    {
-        Logger::Warn("preloadScene: JSON 解析に失敗: {}", rel);
-        return;
-    }
+bool EndsWithCI(const std::string& s, const char* suf)
+{
+    const size_t n = std::strlen(suf);
+    return s.size() >= n && _stricmp(s.c_str() + s.size() - n, suf) == 0;
+}
+bool IsTextureRef(const std::string& s)
+{
+    return EndsWithCI(s, ".png") || EndsWithCI(s, ".jpg") || EndsWithCI(s, ".jpeg")
+        || EndsWithCI(s, ".dds") || EndsWithCI(s, ".tga");
+}
+bool IsModelRef(const std::string& s)
+{
+    return EndsWithCI(s, ".obj") || EndsWithCI(s, ".fbx")
+        || EndsWithCI(s, ".gltf") || EndsWithCI(s, ".glb");
+}
 
-    int nTex = 0, nMdl = 0;
-    auto endsWith = [](const std::string& s, const char* suf) {
-        const size_t n = std::strlen(suf);
-        return s.size() >= n && _stricmp(s.c_str() + s.size() - n, suf) == 0;
-    };
+// シーン JSON を走査して、参照されているテクスチャ/モデルの assets 相対パスを集める（重複除去）。
+std::vector<std::string> CollectSceneAssetRefs(const std::string& rel)
+{
+    std::vector<std::string> out;
+    auto bytes = dx12e::vfs::ReadAsset(rel);
+    if (bytes.empty()) return out;
+    nlohmann::json j = nlohmann::json::parse(bytes.begin(), bytes.end(), nullptr, false);
+    if (j.is_discarded()) return out;
+
+    std::unordered_set<std::string> seen;
     std::function<void(const nlohmann::json&)> walk = [&](const nlohmann::json& node) {
         if (node.is_string())
         {
             const std::string s = node.get<std::string>();
-            if (endsWith(s, ".png") || endsWith(s, ".jpg") || endsWith(s, ".jpeg")
-                || endsWith(s, ".dds") || endsWith(s, ".tga"))
-            {
-                if (m_resourceManager->GetOrLoadTexture(
-                        PathResolver::Utf8ToWide(PathResolver::AssetsDir() + s), cmdList))
-                    ++nTex;
-            }
-            else if (endsWith(s, ".obj") || endsWith(s, ".fbx") || endsWith(s, ".gltf")
-                     || endsWith(s, ".glb"))
-            {
-                if (m_resourceManager->GetOrLoadModel(PathResolver::AssetsDir() + s, cmdList))
-                    ++nMdl;
-            }
+            if ((IsTextureRef(s) || IsModelRef(s)) && seen.insert(s).second)
+                out.push_back(s);
         }
         else if (node.is_object() || node.is_array())
         {
@@ -7979,7 +8074,242 @@ void Application::DoScenePreload(const std::string& rel, ID3D12GraphicsCommandLi
         }
     };
     walk(j);
-    Logger::Info("preloadScene: {} (テクスチャ{}件 / モデル{}件)", rel, nTex, nMdl);
+    return out;
+}
+} // namespace
+
+// 参照 1 件をキャッシュへ載せる。キャッシュキーは実ロード経路と同一の絶対パス形式
+// (テクスチャ=wide絶対+srgb既定true / モデル=assetsDir+相対)に合わせる。
+void Application::WarmSceneAssetRef(const std::string& s, ID3D12GraphicsCommandList* cmdList)
+{
+    if (!m_resourceManager || !cmdList) return;
+    if (IsTextureRef(s))
+        m_resourceManager->GetOrLoadTexture(
+            PathResolver::Utf8ToWide(PathResolver::AssetsDir() + s), cmdList);
+    else if (IsModelRef(s))
+        m_resourceManager->GetOrLoadModel(PathResolver::AssetsDir() + s, cmdList);
+}
+
+// シーン JSON を走査し、参照されているテクスチャ/モデルをキャッシュへ先読みする。
+// シーンは構築しない(エンティティ/物理/スクリプトに影響なし)。
+void Application::DoScenePreload(const std::string& rel, ID3D12GraphicsCommandList* cmdList)
+{
+    const auto refs = CollectSceneAssetRefs(rel);
+    if (refs.empty())
+    {
+        Logger::Warn("preloadScene: シーンが見つからないか参照アセットがありません: {}", rel);
+        return;
+    }
+    for (const auto& s : refs) WarmSceneAssetRef(s, cmdList);
+    Logger::Info("preloadScene: {} (アセット{}件)", rel, refs.size());
+}
+
+// ===== 段階的シーンロード =====
+// 重いシーンを1フレームで読むとメッセージポンプが止まり「エンジンが固まった」ように見える。
+// 参照アセットの読み込みをフレームに分散し、その間はローディング UI を出し続ける。
+void Application::BeginSceneLoadJob(const std::string& fullPath, const std::string& rel, bool runtime)
+{
+    if (m_sceneLoadJob) return;   // 同時に1本だけ
+
+    // 「重い」の判定は参照アセット数だけでは足りない。エンティティが数万あるシーンは
+    // 参照アセットが数件でも SceneSerializer::Load 自体に秒単位かかる（＝固まって見える）。
+    // JSON のサイズも見て、大きいシーンは必ずローディング UI を出す経路に乗せる。
+    std::error_code sizeEc;
+    const auto bytes = std::filesystem::file_size(fullPath, sizeEc);
+    const bool bigFile = !sizeEc && bytes >= kSceneLoadBigFileBytes;
+
+    // 巨大な JSON では参照アセットの走査自体が重い（12MB で ~1 秒）。ここで走らせると
+    // ローディング UI が出る前に固まるので、大きいシーンは走査せずに UI を出して
+    // そのまま実体化へ回す（アセットは SceneSerializer::Load が構築中に読む）。
+    auto refs = bigFile ? std::vector<std::string>{} : CollectSceneAssetRefs(rel);
+
+    // 軽いシーンは分割しない（オーバーレイが1フレームだけ光って見えるのを避ける）
+    if (!bigFile && refs.size() < kSceneLoadAsyncThreshold) return;
+
+    m_sceneLoadJob = std::make_unique<SceneLoadJob>();
+    m_sceneLoadJob->fullPath = fullPath;
+    m_sceneLoadJob->rel      = rel;
+    m_sceneLoadJob->runtime  = runtime;
+    m_sceneLoadJob->assets   = std::move(refs);
+    Logger::Info("シーンを分割ロード: {} (アセット{}件)", rel, m_sceneLoadJob->assets.size());
+}
+
+void Application::UpdateSceneLoadJob(ID3D12GraphicsCommandList* cmdList)
+{
+    if (!m_sceneLoadJob || !cmdList) return;
+    SceneLoadJob& job = *m_sceneLoadJob;
+    job.spin += m_gameClock.GetDeltaTime();
+
+    // 最初の1フレームは何もしない＝ローディング UI が必ず1回 Present される。
+    // これをしないと、参照アセットが少ない（けどエンティティが多い）シーンで
+    // 同じフレーム内に実体化まで走り、画面には何も出ないまま固まって見える。
+    if (job.frames++ == 0)
+    {
+        if (m_editorCtx) m_editorCtx->sceneLoadProgress = 0.0f;
+        return;
+    }
+
+    // 時間予算ぶんだけ進める。1件も進まないと永久に終わらないので必ず1件は処理してから測る。
+    const auto t0 = std::chrono::steady_clock::now();
+    while (job.next < job.assets.size())
+    {
+        WarmSceneAssetRef(job.assets[job.next++], cmdList);
+        const f64 ms = std::chrono::duration<f64, std::milli>(
+                           std::chrono::steady_clock::now() - t0).count();
+        if (ms >= kSceneLoadBudgetMs) break;
+    }
+
+    // ステータスバー用の進捗（ローディングオーバーレイと同じ割合）
+    if (m_editorCtx && !job.assets.empty())
+        m_editorCtx->sceneLoadProgress =
+            static_cast<f32>(job.next) / static_cast<f32>(job.assets.size());
+
+    if (job.next < job.assets.size()) return;   // 続きは次フレーム（この間もUIは動く）
+
+    // 先読み完了 → 実体化。参照アセットは全てキャッシュ済みなのでここは短時間で終わる。
+    const std::string full = job.fullPath;
+    const std::string rel  = job.rel;
+    const bool runtime     = job.runtime;
+    m_sceneLoadJob.reset();
+    if (m_editorCtx) m_editorCtx->sceneLoadProgress = -1.0f;
+    FinishSceneLoad(full, rel, runtime, cmdList);
+}
+
+// 先読みが済んだ（または軽くて分割不要だった）シーンを実際に構築する。
+// 同期ロードと段階ロードの共通後段。runtime=true は Play 中の切替（物理/スクリプト再構築込み）。
+void Application::FinishSceneLoad(const std::string& fullPath, const std::string& rel, bool runtime,
+                                  ID3D12GraphicsCommandList* cmdList)
+{
+    if (runtime)
+    {
+        DoRuntimeSceneLoad(rel, cmdList);
+        return;
+    }
+
+    // ---- エディタでシーンを開く ----
+    m_editorCtx->ClearSelection();
+    m_editorCtx->undoSystem.Clear();
+
+    m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(), m_srvHeap.get(), cmdList);
+    const bool loaded = SceneSerializer::Load(*m_scene, fullPath, PathResolver::AssetsDir());
+    if (loaded)
+    {
+        m_editorCtx->currentScenePath = fullPath;
+        m_currentSceneRel = rel;
+        ProjectManager::SaveLastOpenedScene(fullPath);
+        m_editorCtx->hotReloadFlash = 1.5f;
+        m_editorLayer->RefreshAssetBrowser();
+        // 開いたシーン(既存ゲーム / プロジェクト / Grid 無しテンプレ)に Grid が無ければ補う。
+        // Scene::Initialize 済み(有効 cmdList)なのでここでメッシュ生成して安全。
+        EnsureEditorGrid();
+        // ロードしたシーンの SkyboxSettings(envMapPath/iblIntensity 等) を反映するため
+        // 次フレーム冒頭で再ベイクを要求。別 envMapPath のシーンを開いても自動追従する。
+        // 差分判定の取りこぼし防止に m_loadedSkyboxPath をクリア。
+        m_loadedSkyboxPath.clear();
+        m_skyboxDirty = true;
+        ++m_sceneGeneration;   // 古い entity id を無効化(MCP の STALE_SCENE 検出用)
+        m_mcpIdempotency.clear();   // 別シーンの entity を idempotentReplay で誤返却しないようクリア
+        Logger::Info("Scene loaded: {}", fullPath);
+    }
+
+    // MCP open_scene の遅延応答。
+    if (m_mcpLoadReply.client != 0)
+    {
+        if (loaded)
+        {
+            auto& reg = m_scene->GetRegistry();
+            int entityCount = 0;
+            for (auto e : reg.view<NameTag>()) { (void)e; ++entityCount; }
+            CompleteMcp(m_mcpBridge.get(), m_mcpLoadReply,
+                nlohmann::json{{"sceneName", std::filesystem::path(fullPath).stem().string()},
+                               {"path", rel},
+                               {"entityCount", entityCount},
+                               {"sceneGeneration", m_sceneGeneration}});
+        }
+        else
+        {
+            FailMcp(m_mcpBridge.get(), m_mcpLoadReply, McpErr::Internal,
+                    "scene load failed: " + fullPath);
+        }
+        m_mcpLoadReply = {};
+    }
+}
+
+void Application::RenderSceneLoadingOverlay()
+{
+    if (!m_sceneLoadJob) return;
+    const SceneLoadJob& job = *m_sceneLoadJob;
+
+    // ゲームは全画面、エディタは3Dビューポート矩形だけ覆う（パネルは操作できるまま）。
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImVec2 pos = vp->Pos, size = vp->Size;
+    if (!m_isGameMode && m_editorLayer && m_editorLayer->GetViewportSize().x > 1.0f)
+    {
+        pos  = m_editorLayer->GetViewportPos();
+        size = m_editorLayer->GetViewportSize();
+    }
+
+    ImGui::SetNextWindowPos(pos);
+    ImGui::SetNextWindowSize(size);
+    ImGui::SetNextWindowViewport(vp->ID);
+    // 不透明: トランジション（ImGui より後に描かれる）をロード中は止めているので、
+    // 旧シーンを隠す役目はこのオーバーレイが全部持つ。
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.04f, 0.05f, 0.07f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::Begin("##SceneLoadingOverlay", nullptr,
+        ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings
+        | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing);
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 c(pos.x + size.x * 0.5f, pos.y + size.y * 0.5f);
+
+    // スピナー（プロジェクト読込のオーバーレイと同じ意匠）
+    const float r = 30.0f;
+    const int   segs = 28;
+    const float t = job.spin * 3.2f;
+    for (int i = 0; i < segs; ++i)
+    {
+        const float a0 = t + static_cast<float>(i) / segs * 6.2831853f;
+        const float a1 = t + static_cast<float>(i + 1) / segs * 6.2831853f;
+        const ImU32 col = ImGui::ColorConvertFloat4ToU32(
+            ImVec4(0.39f, 0.58f, 0.93f, static_cast<float>(i) / segs));
+        dl->AddLine(ImVec2(c.x + cosf(a0) * r, c.y + sinf(a0) * r),
+                    ImVec2(c.x + cosf(a1) * r, c.y + sinf(a1) * r), col, 5.0f);
+    }
+
+    auto centerText = [&](const char* s, float dy, ImU32 col) {
+        const ImVec2 ts = ImGui::CalcTextSize(s);
+        dl->AddText(ImVec2(c.x - ts.x * 0.5f, c.y + dy), col, s);
+    };
+    const bool warming = job.next < job.assets.size();
+    centerText(warming ? "シーンを読み込み中..." : "シーンを構築中...",
+               r + 22.0f, IM_COL32(235, 235, 235, 255));
+    centerText(job.rel.c_str(), r + 44.0f, IM_COL32(140, 143, 152, 255));
+
+    // 進捗バー（アセット先読みの消化率）。件数が分かるのは先読みフェーズだけなので、
+    // 構築フェーズでは端から端へ往復するバーにする＝満タンのまま止まって見せない。
+    const float barW = (std::min)(size.x * 0.5f, 320.0f), barH = 6.0f;
+    const float y    = c.y + r + 72.0f;
+    const float x0   = c.x - barW * 0.5f;
+    dl->AddRectFilled(ImVec2(x0, y), ImVec2(x0 + barW, y + barH),
+                      IM_COL32(40, 42, 50, 255), barH * 0.5f);
+    if (!job.assets.empty())
+    {
+        const float frac = static_cast<float>(job.next) / static_cast<float>(job.assets.size());
+        dl->AddRectFilled(ImVec2(x0, y), ImVec2(x0 + barW * frac, y + barH),
+                          IM_COL32(76, 141, 255, 255), barH * 0.5f);
+    }
+    else
+    {
+        const float segW = barW * 0.3f;
+        const float sx   = x0 + (barW - segW) * (0.5f - 0.5f * cosf(job.spin * 3.0f));
+        dl->AddRectFilled(ImVec2(sx, y), ImVec2(sx + segW, y + barH),
+                          IM_COL32(76, 141, 255, 255), barH * 0.5f);
+    }
+
+    ImGui::End();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
 }
 
 void Application::EnsureEditorGrid()
@@ -9924,56 +10254,17 @@ void Application::Render()
     }
 
     // Deferred: scene load（描画前に処理）
-    if (!m_editorCtx->pendingLoadPath.empty() && m_engineMode == EngineMode::Editor)
+    // 参照アセットが多いシーンはここで一気に読まず、段階ロードのジョブへ積む。
+    // （同期のまま読むとメッセージポンプが止まり「エンジンが固まった」ように見える）
+    if (!m_editorCtx->pendingLoadPath.empty() && m_engineMode == EngineMode::Editor
+        && !m_sceneLoadJob)
     {
         std::string loadPath = std::move(m_editorCtx->pendingLoadPath);
         m_editorCtx->pendingLoadPath.clear();
-        m_editorCtx->ClearSelection();
-        m_editorCtx->undoSystem.Clear();
 
-        m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
-                            m_srvHeap.get(), nativeCmdList);
-        const bool loaded = SceneSerializer::Load(*m_scene, loadPath, PathResolver::AssetsDir());
-        if (loaded)
-        {
-            m_editorCtx->currentScenePath = loadPath;
-            m_currentSceneRel = ToAssetRel(loadPath);
-            ProjectManager::SaveLastOpenedScene(loadPath);
-            m_editorCtx->hotReloadFlash = 1.5f;
-            m_editorLayer->RefreshAssetBrowser();
-            // 開いたシーン(既存ゲーム / プロジェクト / Grid 無しテンプレ)に Grid が無ければ補う。
-            // Scene::Initialize 済み(有効 cmdList)なのでここでメッシュ生成して安全。
-            EnsureEditorGrid();
-            // ロードしたシーンの SkyboxSettings(envMapPath/iblIntensity 等) を反映するため
-            // 次フレーム冒頭で再ベイクを要求。別 envMapPath のシーンを開いても自動追従する。
-            // 差分判定の取りこぼし防止に m_loadedSkyboxPath をクリア。
-            m_loadedSkyboxPath.clear();
-            m_skyboxDirty = true;
-            ++m_sceneGeneration;   // 古い entity id を無効化(MCP の STALE_SCENE 検出用)
-            m_mcpIdempotency.clear();   // 別シーンの entity を idempotentReplay で誤返却しないようクリア
-            Logger::Info("Scene loaded: {}", loadPath);
-        }
-        // MCP open_scene の遅延応答。
-        if (m_mcpLoadReply.client != 0)
-        {
-            if (loaded)
-            {
-                auto& reg = m_scene->GetRegistry();
-                int entityCount = 0;
-                for (auto e : reg.view<NameTag>()) { (void)e; ++entityCount; }
-                CompleteMcp(m_mcpBridge.get(), m_mcpLoadReply,
-                    nlohmann::json{{"sceneName", std::filesystem::path(loadPath).stem().string()},
-                                   {"path", ToAssetRel(loadPath)},
-                                   {"entityCount", entityCount},
-                                   {"sceneGeneration", m_sceneGeneration}});
-            }
-            else
-            {
-                FailMcp(m_mcpBridge.get(), m_mcpLoadReply, McpErr::Internal,
-                        "scene load failed: " + loadPath);
-            }
-            m_mcpLoadReply = {};
-        }
+        BeginSceneLoadJob(loadPath, ToAssetRel(loadPath), false);
+        if (!m_sceneLoadJob)   // 軽いシーンは従来どおり即ロード
+            FinishSceneLoad(loadPath, ToAssetRel(loadPath), false, nativeCmdList);
     }
 
     // Lua preloadScene: 次シーンが参照するテクスチャ/モデルをキャッシュへ先読み
@@ -9996,9 +10287,15 @@ void Application::Render()
 
         if (!m_editorCtx->pendingGameLoadPath.empty() && m_engineMode == EngineMode::Playing)
         {
-            std::string rel = std::move(m_editorCtx->pendingGameLoadPath);
-            m_editorCtx->pendingGameLoadPath.clear();
-            DoRuntimeSceneLoad(rel, nativeCmdList);
+            if (!m_sceneLoadJob)   // ロード中なら消化後に拾う
+            {
+                std::string rel = std::move(m_editorCtx->pendingGameLoadPath);
+                m_editorCtx->pendingGameLoadPath.clear();
+                // 重いシーンは段階ロード（ローディング UI を出しながら数フレームに分ける）
+                BeginSceneLoadJob(PathResolver::AssetsDir() + rel, rel, true);
+                if (!m_sceneLoadJob)
+                    DoRuntimeSceneLoad(rel, nativeCmdList);
+            }
         }
         else if (!m_editorCtx->pendingGameLoadPath.empty())
         {
@@ -10006,6 +10303,9 @@ void Application::Render()
             m_editorCtx->pendingGameLoadPath.clear();
         }
     }
+
+    // 段階ロードのジョブを1フレームぶん進める（先読み完了で実体化まで済ませる）。
+    UpdateSceneLoadJob(nativeCmdList);
 
     // ネットワーク複製: サーバーが RequestSpawn した(またはクライアントが Spawn パケットを
     // 受信した)エンティティをフレーム境界で実体化する。InstantiatePrefab はモデルロードに
@@ -10605,6 +10905,63 @@ void Application::Render()
                             "spawn failed (model load error? check dx12_get_log): " + req.modelPath);
                 }
             }
+        }
+    }
+
+    // グループ化（Ctrl+G / 右クリック）: 選択をまとめる空の親を作ってぶら下げる。
+    // 親は原点・無回転・スケール1なので子のワールド行列は変わらない＝見た目は一切動かない。
+    if (m_editorCtx->pendingGroupSelection && m_engineMode == EngineMode::Editor)
+    {
+        m_editorCtx->pendingGroupSelection = false;
+        auto& reg = m_scene->GetRegistry();
+
+        // 祖先も一緒に選ばれている子は除く（親ごと動くので二重に付け替えない）
+        auto ancestorSelected = [&](entt::entity e) {
+            const auto* t = reg.try_get<Transform>(e);
+            entt::entity cur = t ? t->parent : entt::null;
+            for (int d = 0; cur != entt::null && reg.valid(cur) && d < 4096; ++d)
+            {
+                if (m_editorCtx->IsSelected(cur)) return true;
+                const auto* pt = reg.try_get<Transform>(cur);
+                cur = pt ? pt->parent : entt::null;
+            }
+            return false;
+        };
+
+        std::vector<std::pair<entt::entity, entt::entity>> members;   // (子, 元の親)
+        for (entt::entity e : m_editorCtx->selectedEntities)
+        {
+            if (!reg.valid(e) || !reg.all_of<Transform>(e)) continue;
+            if (reg.all_of<GridPlane>(e)) continue;      // 内部用グリッドは巻き込まない
+            if (ancestorSelected(e)) continue;
+            members.emplace_back(e, reg.get<Transform>(e).parent);
+        }
+
+        if (!members.empty())
+        {
+            // 元の親が全員同じならグループもそこへ入れる（階層の位置を保つ）
+            const entt::entity commonParent = members.front().second;
+            const bool sameParent = std::all_of(members.begin(), members.end(),
+                [&](const auto& m) { return m.second == commonParent; });
+
+            entt::entity group = reg.create();
+            reg.emplace<NameTag>(group, NameTag{"Group"});
+            Transform gt{};
+            if (sameParent) gt.parent = commonParent;
+            reg.emplace<Transform>(group, gt);
+
+            for (const auto& [child, oldParent] : members)
+            {
+                (void)oldParent;
+                reg.get<Transform>(child).parent = group;
+            }
+
+            m_editorCtx->undoSystem.PushCommand(
+                std::make_unique<GroupCommand>(&reg, "Group", group,
+                                               sameParent ? commonParent : entt::null, members));
+            m_editorCtx->Select(group);
+            m_editorCtx->requestRenameEntity = group;   // その場で名前を入力させる
+            Logger::Info("グループ化: {} 件をまとめました", members.size());
         }
     }
 
@@ -12901,8 +13258,12 @@ void Application::Render()
     }
     m_uiCommands.clear();
 
+    // 段階ロード中のローディング UI。パネルより手前に出すため ImGui の最後に描く。
+    RenderSceneLoadingOverlay();
+
     // エンジン診断パネル(ツール > エンジン診断)。ImGui の最後に描く
-    if (m_uiTests) m_uiTests->DrawDiagnosticsPanel(&m_editorCtx->showEngineDiagnostics);
+    if (m_uiTests) m_uiTests->DrawDiagnosticsPanel(&m_editorCtx->showEngineDiagnostics,
+                                                   &m_editorCtx->floatingToolWindowHoveredThisFrame);
 
     m_imguiManager->EndFrame(nativeCmdList);
 
@@ -12911,7 +13272,9 @@ void Application::Render()
     //   エディタ/Play 中 … 中央ビューポート矩形だけにスシザーを絞り、周りの
     //                      エディタUI（パネル/ツールバー）には掛からないようにする。
     //   ゲーム単体       … ウィンドウ全体。
-    if (m_sceneTransition && m_sceneTransition->IsActive())
+    // 段階ロード中は描かない: このオーバーレイは ImGui より後＝ローディング UI を塗り潰して
+    // しまう。ロード中の画面はローディング UI 自身が不透明に覆っているので目隠しは足りている。
+    if (m_sceneTransition && m_sceneTransition->IsActive() && !m_sceneLoadJob)
     {
         u32 tLeft = 0, tTop = 0;
         u32 tW = m_window->GetWidth(), tH = m_window->GetHeight();

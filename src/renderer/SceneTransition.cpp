@@ -97,6 +97,9 @@ void SceneTransition::Update(float dt)
     const float half = m_dur * 0.5f;
     if (prev < half && m_t >= half)
         m_halfwayPending = true;     // 画面が隠れた瞬間
+    // ロード待ちの間は中間点で足踏みする（隠れたまま＝進捗は呼び出し側の UI が出す）
+    if (m_hold && m_t > half)
+        m_t = half;
     if (m_t >= m_dur)
         m_active = false;
 }

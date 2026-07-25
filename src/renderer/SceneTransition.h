@@ -32,6 +32,10 @@ public:
     void Start(TransitionType type, float totalDuration);
     void Update(float dt);
 
+    // true の間は中間点（画面が隠れきった状態）で進行を止める。
+    // シーンのロードが複数フレームに分かれるとき、終わるまで開かせないために使う。
+    void SetHold(bool hold) { m_hold = hold; }
+
     bool IsActive() const { return m_active; }
     // 中間点（画面が隠れた瞬間）に一度だけ true を返す。シーンロードのトリガに使う。
     bool ConsumeHalfway();
@@ -50,6 +54,7 @@ private:
     DXGI_FORMAT  m_outFormat = DXGI_FORMAT_UNKNOWN;
 
     bool  m_active        = false;
+    bool  m_hold          = false;   // 中間点で待機（ロード完了待ち）
     bool  m_halfwayPending = false;
     bool  m_halfwayFired   = false;
     float m_t   = 0.0f;

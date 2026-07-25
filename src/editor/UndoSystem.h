@@ -152,6 +152,60 @@ private:
     entt::entity m_externalParent = entt::null;       // ルートの親（サブツリー外）。Undo 時に捕捉
 };
 
+// ── グループ化コマンド（空の親を作って選択をぶら下げる / Undo で親を消して元へ戻す） ──
+// SpawnEntityCommand + TransformCommand の合成では作れない: SpawnEntityCommand の Redo は
+// スナップショットから作り直すため entity ID が変わり、子が古い ID を指してしまう。
+// ここでは Redo のたびに親を作り直し、その場で子へ配り直す。子自体は消さないので
+// 「グループを解いただけ」で中身が消える事故も起きない。
+class GroupCommand : public IUndoCommand
+{
+public:
+    GroupCommand(entt::registry* reg, std::string name, entt::entity group,
+                 entt::entity groupParent,
+                 std::vector<std::pair<entt::entity, entt::entity>> children)
+        : m_reg(reg), m_name(std::move(name)), m_group(group),
+          m_groupParent(groupParent), m_children(std::move(children)) {}
+
+    void Undo() override
+    {
+        for (const auto& [child, oldParent] : m_children)
+            if (m_reg->valid(child) && m_reg->all_of<Transform>(child))
+                m_reg->get<Transform>(child).parent = oldParent;
+        if (m_reg->valid(m_group)) m_reg->destroy(m_group);
+        m_group = entt::null;
+    }
+
+    void Redo() override
+    {
+        if (!m_reg->valid(m_group))   // Undo 後: 空の親を作り直す
+        {
+            m_group = m_reg->create();
+            m_reg->emplace<NameTag>(m_group, NameTag{m_name});
+            Transform gt{};
+            // 元の入れ子位置を保つ。親が消えていればルートへ（安全側）。
+            if (m_groupParent != entt::null && m_reg->valid(m_groupParent))
+                gt.parent = m_groupParent;
+            m_reg->emplace<Transform>(m_group, gt);
+        }
+        for (const auto& [child, oldParent] : m_children)
+        {
+            (void)oldParent;
+            if (m_reg->valid(child) && m_reg->all_of<Transform>(child))
+                m_reg->get<Transform>(child).parent = m_group;
+        }
+    }
+
+    const char* GetName() const override { return "Group"; }
+
+private:
+    entt::registry* m_reg;
+    std::string     m_name;
+    entt::entity    m_group;
+    entt::entity    m_groupParent;   // グループ自身の親（全員同じ親だった場合のみ非 null）
+    // (子, グループ化する前の親)。Undo で元の親へ戻すために両方持つ。
+    std::vector<std::pair<entt::entity, entt::entity>> m_children;
+};
+
 // ── プレハブ生成コマンド（サブツリー対応。Undo で全エンティティ削除 / Redo で再生成） ──
 // プレハブは複数エンティティ（親 + 子）を生成しうるため SpawnEntityCommand では
 // 子が復元されない。Undo 時にサブツリー全体を JSON 化して保持し、root + 子孫を

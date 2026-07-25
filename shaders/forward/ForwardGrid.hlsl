@@ -92,62 +92,61 @@ float4 PSMain(PSInput input) : SV_TARGET
 {
     float3 worldPos = input.worldPos;
 
-    // グリッド線の太さ（ワールド単位）
-    float lineWidth = 0.02f;
-    float lineWidthMajor = 0.04f;
+    // 1 ワールド単位あたりの画面変化量。これで割ると「線までの距離(ピクセル)」になる。
+    float2 dW = max(fwidth(worldPos.xz), 1e-5f);
 
-    // 1m間隔のマイナーグリッド
-    float2 gridPos = frac(abs(worldPos.xz));
-    gridPos = min(gridPos, 1.0f - gridPos);
+    // 線幅はワールド単位ではなくピクセル固定にする。ワールド幅の smoothstep だと
+    // 遠距離/低角度で線がサブピクセルになり薄れて消えていた（グリッドが見えない主因）。
+    const float kFinePx   = 1.0f;
+    const float kCoarsePx = 1.5f;
+    const float kAxisPx   = 2.0f;
 
-    // 5m間隔のメジャーグリッド
-    float2 majorGridPos = frac(abs(worldPos.xz) / 5.0f);
-    majorGridPos = min(majorGridPos, 1.0f - majorGridPos) * 5.0f;
+    // セル間隔を 10 倍刻みで自動切替する（Blender/Unity と同じ考え方）。
+    // 1セルが画面上で kTargetPx を切らないよう桁を上げる ＝ 遠くでも高空でも
+    // 格子が詰まってモアレにならず、逆にグリッドが消えることもない＝実質無限グリッド。
+    const float kTargetPx = 14.0f;
+    float pxPerMeter = 1.0f / max(dW.x, dW.y);
+    float level      = max(0.0f, log10(kTargetPx / pxPerMeter));   // 0=1m, 1=10m, 2=100m...
+    float fineCell   = pow(10.0f, floor(level));
+    float coarseCell = fineCell * 10.0f;
+    float blend      = frac(level);   // 1 に近づくほど細い方を消して桁上がりする
 
-    // アンチエイリアス。低角度/遠距離で fwidth が肥大化し線が完全に消える(描画抜け)のを防ぐため上限を設ける。
-    float2 dGrid = min(fwidth(worldPos.xz), 0.5f);
+    // cell 間隔の格子線。frac(p/cell+0.5)-0.5 で最寄りの線までの距離(セル比) → m → px。
+    float2 dFine   = abs(frac(worldPos.xz / fineCell   + 0.5f) - 0.5f) * fineCell   / dW;
+    float2 dCoarse = abs(frac(worldPos.xz / coarseCell + 0.5f) - 0.5f) * coarseCell / dW;
+    float  minor   = (1.0f - saturate(min(dFine.x,   dFine.y)   / kFinePx))   * (1.0f - blend);
+    float  major   =  1.0f - saturate(min(dCoarse.x, dCoarse.y) / kCoarsePx);
 
-    float2 minorLine = smoothstep(lineWidth - dGrid, lineWidth + dGrid, gridPos);
-    float minor = 1.0f - min(minorLine.x, minorLine.y);
+    float axisX = 1.0f - saturate(abs(worldPos.z) / dW.y / kAxisPx);
+    float axisZ = 1.0f - saturate(abs(worldPos.x) / dW.x / kAxisPx);
 
-    float2 majorLine = smoothstep(lineWidthMajor - dGrid, lineWidthMajor + dGrid, majorGridPos);
-    float major = 1.0f - min(majorLine.x, majorLine.y);
+    // 表示色は「線そのものの色」。ライティング/シャドウは掛けない＝ライトの当たり方や
+    // 影で線が沈まない（暗いシーン・逆光でも同じ濃さで見える）。
+    // 濃さは「あることが分かる」程度に抑える(以前は白くて配置物より目立っていた)。
+    float3 minorColor = float3(0.52f, 0.53f, 0.56f);
+    float3 majorColor = float3(0.68f, 0.69f, 0.73f);
+    float3 axisXColor = float3(0.76f, 0.30f, 0.32f);
+    float3 axisZColor = float3(0.30f, 0.46f, 0.80f);
 
-    float axisX = 1.0f - smoothstep(lineWidthMajor - dGrid.y, lineWidthMajor + dGrid.y, abs(worldPos.z));
-    float axisZ = 1.0f - smoothstep(lineWidthMajor - dGrid.x, lineWidthMajor + dGrid.x, abs(worldPos.x));
+    float3 color = minorColor;
+    float  alpha = minor * 0.20f;
 
-    float3 groundColor = float3(0.15f, 0.15f, 0.15f);
-    float3 minorColor  = float3(0.3f, 0.3f, 0.3f);
-    float3 majorColor  = float3(0.45f, 0.45f, 0.45f);
-    float3 axisXColor  = float3(0.8f, 0.2f, 0.2f);
-    float3 axisZColor  = float3(0.2f, 0.2f, 0.8f);
+    color = lerp(color, majorColor, major);
+    alpha = max(alpha, major * 0.34f);
 
-    float3 color = groundColor;
-    color = lerp(color, minorColor, minor * 0.6f);
-    color = lerp(color, majorColor, major * 0.8f);
     color = lerp(color, axisXColor, axisX);
     color = lerp(color, axisZColor, axisZ);
+    alpha = max(alpha, max(axisX, axisZ) * 0.55f);
 
-    // 距離フェード: グリッド平面(±250m, kEditorGridSize/2)のフチに達する前(=230m)に滑らかに 0 へ落とす。
-    // これで平面の矩形エッジが見えず、無限グリッド風に広く表示される(以前は 50m で途切れて抜けて見えた)。
-    float dist = length(worldPos.xz);
-    float fade = 1.0f - saturate((dist - 120.0f) / 110.0f);
+    // 距離フェード: 原点からではなく「カメラの真下」から測る＝カメラと一緒にグリッドが
+    // ついてくる。板は ±10km(kEditorGridSize/2)あるので、どこへ飛んでも足元に線がある。
+    // フェード半径はカメラ高度に比例させる: 地面に近いほど手元だけ、上へ引くほど広く出す。
+    float fadeEnd   = clamp(abs(cameraPos.y - worldPos.y) * 14.0f, 400.0f, 9000.0f);
+    float fadeStart = fadeEnd * 0.45f;
+    float dist = length(worldPos.xz - cameraPos.xz);
+    alpha *= 1.0f - saturate((dist - fadeStart) / max(fadeEnd - fadeStart, 1e-3f));
 
-    float gridMask = max(max(minor, major), max(axisX, axisZ));
-    // 線以外を透明にする。床全体へ薄い色を重ねると Scene ビューだけ明るさが変わって見える。
-    // 0.4 = グリッドを薄めにして配置オブジェクトを見やすくする(以前は 0.7 で濃かった)。
-    float alpha = gridMask * 0.4f * fade;
-
-    // シャドウ（CSM カスケード選択）
-    float shadow = CalcShadow(input.worldPos, input.viewDepth);
-
-    // ライティング
-    float3 N = normalize(input.worldNormal);
-    float3 L = normalize(-lightDir);
-    float NdotL = max(dot(N, L), 0.0f);
-    float3 lighting = ambientStrength * lightColor + NdotL * lightColor * 0.3f * shadow;
-
-    // グリッド色は表示基準(sRGB風)で調整されている。シーンRTはリニアHDRになった
-    // (最終段でACES+ガンマが掛かる)ため、リニアへ変換して見た目を従来と揃える。
-    return float4(pow(max(color * lighting, 0.0f), 2.2f), alpha);
+    // グリッド色は表示基準(sRGB風)で調整されている。シーンRTはリニアHDRなので
+    // (最終段でACES+ガンマが掛かる)リニアへ変換して見た目を揃える。
+    return float4(pow(max(color, 0.0f), 2.2f), alpha);
 }

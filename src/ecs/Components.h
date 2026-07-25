@@ -211,10 +211,13 @@ struct GridPlane
     bool enabled = true;
 };
 
-// エディタ用グリッド床の一辺の長さ(m)。原点中心に ±kEditorGridSize/2(=250m) をカバーする。
-// シェーダ(ForwardGrid.hlsl)の距離フェードはこの半分より内側で 0 になるよう調整してあるので、
-// 平面のフチが矩形に途切れて見えない(無限グリッド風)。spawn/save/load で必ず同じ値を使うこと。
-inline constexpr f32 kEditorGridSize = 500.0f;
+// エディタ用グリッド床の一辺の長さ(m)。原点中心に ±kEditorGridSize/2(=10km) をカバーする。
+// 以前は 500m で、遠くへ飛ぶとグリッドが「終わって」しまっていた。板を最初から
+// 実用上無限のサイズにし、シェーダ(ForwardGrid.hlsl)側が「カメラの周りだけ」線を出す
+// (フェード半径はカメラ高度に比例)＝どこまで飛んでも足元にグリッドがある。
+// 板は2三角形・深度書き込み無し・線以外 alpha=0 なので、大きくしても描画コストは変わらない。
+// spawn/save/load で必ず同じ値を使うこと。
+inline constexpr f32 kEditorGridSize = 20000.0f;
 
 struct PointLight
 {

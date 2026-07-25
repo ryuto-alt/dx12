@@ -759,6 +759,7 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 | `dx12_set_component` | コンポーネント設定（jsonKey + data） |
 | `dx12_remove_component` | コンポーネント削除 |
 | `dx12_set_parent` | 親子付け（省略で解除） |
+| `dx12_group_entities` | 複数をまとめて空の親（グループ）へ。見た目は動かない |
 | `dx12_rename_entity` | リネーム |
 | `dx12_select_entity` | 選択 |
 | `dx12_focus_camera` | カメラフォーカス |

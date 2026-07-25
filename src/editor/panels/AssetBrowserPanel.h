@@ -92,6 +92,11 @@ private:
 
     // フィルタ
     int m_filterIndex = 0;  // 0=All, 1=Models, 2=Scenes, 3=Textures, 4=Scripts, 5=Audio
+    // 名前検索。空でない間は「現在フォルダ以下」を再帰的に探して結果を並べる。
+    char m_searchBuf[64] = {};
+    // 検索結果の上限（巨大なツリーで Refresh が重くならないように打ち切る）
+    static constexpr size_t kMaxSearchHits = 400;
+    bool m_searchTruncated = false;
 
     // サムネイル
     ResourceManager* m_resourceManager = nullptr;

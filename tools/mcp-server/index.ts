@@ -360,6 +360,20 @@ reg(
 );
 
 reg(
+  "dx12_group_entities",
+  "グループ化",
+  "複数エンティティを空の親(グループ)へまとめる。ヒエラルキーの Ctrl+G と同じ。★親は原点・無回転・スケール1で作るので子のワールド位置は動かない(見た目は完全に同じまま)。以後はグループを dx12_set_transform で動かせば中身ごと移動/回転/拡縮できる。指定した中に親子関係があれば子側は自動で除外(親ごと動くため)。全員が同じ親の下にいたらグループもその親の下に入る。エディタと同じく Undo 可能。{groupId, name, count} を返す。エンティティが増えてヒエラルキーが膨れた時の整理に使う。",
+  {
+    entities: z.array(z.number().int()).optional().describe("まとめる エンティティ id の配列。names と併用可。"),
+    names: z.array(z.string()).optional().describe("まとめる エンティティ名(完全一致)の配列。entities と併用可。"),
+    name: z.string().optional().describe("グループ名。省略時 'Group'。重複したら連番が付く。"),
+  },
+  {},
+  ({ entities, names, name }) =>
+    run(() => engine.call("group_entities", { entities, names, name })),
+);
+
+reg(
   "dx12_rename_entity",
   "リネーム",
   "エンティティ名を変更する。重複名は連番(name_2 など)が付与され、確定した {name} を返す。",

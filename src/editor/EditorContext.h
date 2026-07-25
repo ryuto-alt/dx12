@@ -221,6 +221,10 @@ public:
     u32 statDraws  = 0;
     u32 statCulled = 0;
 
+    // シーンの段階ロードの進捗 0..1（Application が毎フレーム書く。-1 = ロード中でない）。
+    // ステータスバーが読む＝重いシーンでも「止まった」ではなく「読んでいる」と分かる。
+    f32 sceneLoadProgress = -1.0f;
+
     // フローティングツール窓(マテリアルエディタ/マテリアルライブラリ/パーティクルエディタ等、
     // ImGuiWindowFlags_NoDockingで浮かぶ独立窓)がホバーされているか。
     // これらの窓は 3D ビューポート矩形の上に重なって浮かぶことがあるため、IsCursorInViewport が
@@ -275,6 +279,12 @@ public:
     std::vector<PendingMaterialTextureDrop> pendingMaterialTextureDrops;
     // 選択エンティティ（+子孫）を .prefab として書き出す要求。Application がフレーム境界で処理。
     entt::entity pendingCreatePrefab = entt::null;
+    // ヒエラルキーの「グループ化」(Ctrl+G)。選択をまとめる空の親を作る要求。
+    // 空の親は原点・無回転・スケール1で作るので、子のワールド位置は一切動かない。
+    bool pendingGroupSelection = false;
+    // 生成直後のエンティティ名をその場で入力させたいときに Application が入れる。
+    // HierarchyPanel が拾ってインライン編集を開始し、null に戻す。
+    entt::entity requestRenameEntity = entt::null;
     std::string pendingLoadPath;
     std::string pendingGameLoadPath;  // Play 中の loadScene()（assets 相対）。フレーム境界で安全にロード
     bool pendingBuildGame = false;     // ビルド設定パネルの「ビルド」で立つ＝実行要求

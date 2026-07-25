@@ -172,6 +172,7 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_set_component` | `{entity:int, component:string(jsonKey), data:object\|array}` | `{entityId, component}` |
 | `dx12_remove_component` | `{entity:int, component:string}` | `{entityId, removed}` |
 | `dx12_set_parent` | `{entity:int, parent?:int}` | `ok` ※parent 省略で親解除 |
+| `dx12_group_entities` | `{entities?:int[], names?:string[], name?:string}` | `{groupId, name, count}` ※空の親にまとめる（原点・単位スケール＝見た目は不変）。入れ子の子は自動除外、Undo 可 |
 | `dx12_rename_entity` | `{entity:int, name:string}` | `{name}` ※重複は連番付与 |
 | `dx12_select_entity` | `{entity:int}` | `{selected}` |
 | `dx12_focus_camera` | `{entity:int}` | `{cameraPos:[x,y,z], target, distance}` |

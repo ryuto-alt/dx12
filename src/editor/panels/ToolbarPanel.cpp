@@ -769,10 +769,8 @@ void ToolbarPanel::Render(bool isPlaying,
         ctx.hotReloadFlash -= clock->GetDeltaTime();
     }
 
-    // ===== FPS =====
-    ImGui::SameLine(displayW - 100);
-    ImGui::AlignTextToFramePadding();
-    ImGui::Text("%.0f FPS", clock->GetFPS());
+    // ※ FPS/描画統計は下部ステータスバー(EditorLayer::RenderStatusBar)に集約した。
+    //    ここに出すと同じ数字が2箇所に並ぶだけなので置かない。
 
     ImGui::PopStyleVar(2);  // FramePadding + FrameRounding
     ImGui::End();

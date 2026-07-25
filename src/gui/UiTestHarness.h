@@ -35,8 +35,11 @@ public:
 
     // 毎フレーム Present の後に呼ぶ（テストのコルーチンを進める）
     void PostRender();
-    // 診断パネル（実行ボタン + 結果一覧 + ログ）を描画する。show=false なら何も出さない
-    void DrawDiagnosticsPanel(bool* show);
+    // 診断パネル（実行ボタン + 結果一覧 + ログ）を描画する。show=false なら何も出さない。
+    // hoveredOut … この窓（と子窓）にカーソルがあるフレームは true を書き込む。呼び出し側は
+    //              EditorContext::floatingToolWindowHoveredThisFrame を渡し、パネル上の
+    //              ホイール操作が背後のシーンビューのカメラ操作へ漏れるのを防ぐ。
+    void DrawDiagnosticsPanel(bool* show, bool* hoveredOut = nullptr);
 
     void Shutdown();
 

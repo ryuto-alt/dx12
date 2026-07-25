@@ -385,6 +385,20 @@ private:
     void BeginProjectLoad(const ProjectInfo& info, bool isNew);
     void UpdateProjectLoad(f32 dt);   // 毎フレーム状態機械を進める（!m_loading なら何もしない）
     void RenderLoadingOverlay();      // ローディングオーバーレイ描画
+
+    // ---- 段階的シーンロード（重いシーンでウィンドウが固まらないようにする）----
+    // シーンが参照するテクスチャ/モデルのロードを複数フレームへ分割し、その間ずっと
+    // ローディング UI を描く。全部キャッシュに載ってから SceneSerializer::Load を
+    // 走らせるので、実体化フェーズは一瞬で終わる。
+    // 軽いシーン（参照アセットが kSceneLoadAsyncThreshold 未満）は従来どおり同期ロード。
+    void BeginSceneLoadJob(const std::string& fullPath, const std::string& rel, bool runtime);
+    void UpdateSceneLoadJob(ID3D12GraphicsCommandList* cmdList);  // 毎フレーム少しずつ進める
+    void RenderSceneLoadingOverlay();  // ロード中のオーバーレイ（進捗バー付き）
+    // 参照アセット1件をキャッシュへ載せる（先読み / 段階ロードの両方から使う）
+    void WarmSceneAssetRef(const std::string& rel, ID3D12GraphicsCommandList* cmdList);
+    void FinishSceneLoad(const std::string& fullPath, const std::string& rel, bool runtime,
+                         ID3D12GraphicsCommandList* cmdList);  // 実体化（同期/非同期の共通後段）
+    bool IsSceneLoadJobActive() const { return m_sceneLoadJob != nullptr; }
     void RenderWhatsNewPopup();       // 版が変わった初回起動だけ「更新内容」モーダルを出す
     // エディタの「Project」「Version Control」ウィンドウ描画（ランチャー閉後）
     void RenderProjectWindow();
@@ -587,6 +601,27 @@ private:
     f32                m_loadSpinTime      = 0.0f;
     std::string        m_loadStatus;
     ProjectInfo        m_loadInfo;
+
+    // ---- 段階的シーンロード ----
+    struct SceneLoadJob
+    {
+        std::string              fullPath;    // シーンの絶対パス
+        std::string              rel;         // assets 相対パス
+        bool                     runtime = false;  // true=Play中の切替 / false=エディタで開く
+        std::vector<std::string> assets;      // 先読み対象（assets 相対）
+        size_t                   next  = 0;   // assets の消化位置
+        f32                      spin  = 0.0f;
+        int                      frames = 0;  // ジョブ開始から進めたフレーム数（0 = UI を出すだけ）
+    };
+    std::unique_ptr<SceneLoadJob> m_sceneLoadJob;   // null = ロード中でない
+    // 参照アセットがこれ以上あるシーンは分割ロード＋ローディング UI に切り替える。
+    // これ未満なら1フレームで終わるので従来どおり同期ロード（画面の一瞬のチラつきを避ける）。
+    static constexpr size_t kSceneLoadAsyncThreshold = 8;
+    // シーン JSON がこのサイズ以上なら、参照アセットが少なくてもローディング UI を出す
+    // （エンティティ数が多いシーンは実体化そのものが重く、無言で固まって見えるため）。
+    static constexpr uintmax_t kSceneLoadBigFileBytes = 512 * 1024;
+    // 1フレームで先読みに使ってよい時間(ms)。超えたら残りは次フレームへ回す＝UIが動き続ける。
+    static constexpr f64    kSceneLoadBudgetMs       = 6.0;
     std::unique_ptr<Camera>            m_camera;
     std::unique_ptr<ConstantBuffer>    m_perFrameCB;
     std::unique_ptr<CommandList>       m_commandList;

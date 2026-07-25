@@ -61,6 +61,44 @@ static bool ContainsCI(const std::string& haystack, const char* needle)
 
 const std::vector<entt::entity> HierarchyPanel::s_noChildren;
 
+// m_rows（今フレームに実際に並んでいる行）の上で a〜b を範囲選択する。
+// 「画面に見えている並び順」で選ぶので、畳んだグループの中身は巻き込まない（Unity と同じ）。
+void HierarchyPanel::SelectRange(EditorContext& ctx, entt::entity a, entt::entity b, bool additive)
+{
+    size_t ia = m_rows.size(), ib = m_rows.size();
+    for (size_t i = 0; i < m_rows.size(); ++i)
+    {
+        if (m_rows[i].e == a) ia = i;
+        if (m_rows[i].e == b) ib = i;
+    }
+    if (ia == m_rows.size() || ib == m_rows.size())   // 起点が畳まれた/消えた → 単独選択へ退避
+    {
+        ctx.Select(b);
+        return;
+    }
+    if (ia > ib) std::swap(ia, ib);
+
+    if (!additive) ctx.ClearSelection();
+    for (size_t i = ia; i <= ib; ++i)
+        ctx.AddToSelection(m_rows[i].e);
+    ctx.selectedEntity = b;   // プライマリはクリックした行（Inspector にはこれが出る）
+}
+
+// 行クリックの選択規則: Shift=範囲 / Ctrl=トグル / それ以外=単独。
+// Ctrl+Shift は既存の選択を残したまま範囲を足す。
+void HierarchyPanel::HandleRowClick(EditorContext& ctx, entt::entity e)
+{
+    const ImGuiIO& io = ImGui::GetIO();
+    if (io.KeyShift && m_selectAnchor != entt::null && m_selectAnchor != e)
+    {
+        SelectRange(ctx, m_selectAnchor, e, io.KeyCtrl);
+        return;   // 起点は動かさない（続けて Shift+クリックで範囲を伸ばせる）
+    }
+    if (io.KeyCtrl) ctx.ToggleSelection(e);
+    else            ctx.Select(e);
+    m_selectAnchor = e;
+}
+
 void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, entt::entity e)
 {
     if (!reg.all_of<NameTag>(e)) return;
@@ -142,7 +180,6 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
     if (!hasChildren) flags |= ImGuiTreeNodeFlags_Leaf;
     if (selected) flags |= ImGuiTreeNodeFlags_Selected;
     const bool wasOpen = hasChildren && m_openNodes.count(e) != 0;
-    ImGui::SetNextItemOpen(wasOpen, ImGuiCond_Always);
 
     // 種別アイコンをノード頭に表示（クリック判定は直後の TreeNodeEx が担う）
     // 単色 PNG を種別カラーで tint して Nebula のカラフルなアイコンを再現。
@@ -159,12 +196,32 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
         }
     }
 
+    // 開閉状態の指定は「TreeNodeEx の直前」でないと効かない。SetNextItemOpen が積む
+    // NextItemData は次に出す 1 アイテムで消費されるので、上のアイコン画像が先に食べてしまい
+    // 全展開/全折りたたみや「選択行を露出」が一切効かなくなっていた（ImGui 内部の
+    // 保存状態だけが真になり、m_openNodes は見た目に反映されない鏡だった）。
+    ImGui::SetNextItemOpen(wasOpen, ImGuiCond_Always);
+
     // ID は PushID で一意化済みなので TreeNodeEx は固定文字列でOK
     bool open = ImGui::TreeNodeEx("##node", flags, "%s", tag.name.c_str());
     if (hasChildren && open != wasOpen)
     {
         if (open) m_openNodes.insert(e);
         else      m_openNodes.erase(e);
+    }
+
+    // 折りたたんだ親は「中に何個いるか」を行の右端に出す（畳んだままでも規模が分かる）。
+    // SpanAvailWidth なので SameLine は行外へ飛ぶ。DrawList で右寄せに直接描く。
+    if (hasChildren && !open)
+    {
+        char cntBuf[16];
+        snprintf(cntBuf, sizeof(cntBuf), "%zu", children.size());
+        const ImVec2 mn = ImGui::GetItemRectMin();
+        const ImVec2 mx = ImGui::GetItemRectMax();
+        const ImVec2 ts = ImGui::CalcTextSize(cntBuf);
+        ImGui::GetWindowDrawList()->AddText(
+            ImVec2(mx.x - ts.x - 8.0f, mn.y),
+            ImGui::GetColorU32(dx12e::theme::TextFaint), cntBuf);
     }
 
     bool itemHov = ImGui::IsItemHovered();
@@ -177,14 +234,27 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
         std::memset(m_renameBuf, 0, sizeof(m_renameBuf));
         strncpy_s(m_renameBuf, tag.name.c_str(), _TRUNCATE);
     }
-    // シングルクリック選択（Ctrl でマルチ選択）— ダブルクリック時は選択処理をスキップ
+    // シングルクリック選択（Ctrl=トグル / Shift=範囲）— ダブルクリック時は選択処理をスキップ
     else if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
     {
-        bool ctrl = ImGui::GetIO().KeyCtrl;
-        if (ctrl)
-            ctx.ToggleSelection(e);
+        const ImGuiIO& io = ImGui::GetIO();
+        // 複数選択したうちの1行を「掴んだ」だけの時点で単独選択に潰さない。
+        // IsItemClicked は押した瞬間に true なので、ここで Select すると
+        // ドラッグ開始前に選択が1件になり、まとめてのドラッグ移動ができなくなる。
+        // 離した時にドラッグしていなければ単独選択へ確定する（エクスプローラと同じ規律）。
+        if (!io.KeyCtrl && !io.KeyShift && ctx.IsSelected(e) && ctx.selectedEntities.size() > 1)
+            m_clickPendingEntity = e;
         else
-            ctx.Select(e);
+            HandleRowClick(ctx, e);
+    }
+
+    // 掴んだだけで終わった（ドラッグしなかった）場合の選択確定
+    if (m_clickPendingEntity == e && ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+    {
+        // GetDragDropPayload() != null が「今ドラッグ中」の公開 API 版（IsDragDropActive は内部）
+        if (ImGui::GetDragDropPayload() == nullptr && ImGui::IsItemHovered())
+            HandleRowClick(ctx, e);
+        m_clickPendingEntity = entt::null;
     }
 
     // D&D ソース（親子設定用）
@@ -192,7 +262,10 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
     if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceNoHoldToOpenOthers))
     {
         ImGui::SetDragDropPayload("HIERARCHY_ENTITY", &e, sizeof(entt::entity));
-        ImGui::Text("%s", tag.name.c_str());
+        // 複数選択を掴んでいるときは件数を出す（ドロップ先は選択ぜんぶを受け取る）
+        const size_t n = ctx.IsSelected(e) ? ctx.selectedEntities.size() : 1;
+        if (n > 1) ImGui::Text("%s ほか %zu 件", tag.name.c_str(), n - 1);
+        else       ImGui::Text("%s", tag.name.c_str());
         ImGui::EndDragDropSource();
     }
 
@@ -201,28 +274,51 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
     {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("HIERARCHY_ENTITY"))
         {
-            entt::entity droppedEntity = *static_cast<const entt::entity*>(payload->Data);
-            if (droppedEntity != e && reg.valid(droppedEntity) && reg.all_of<Transform>(droppedEntity))
+            const entt::entity droppedEntity = *static_cast<const entt::entity*>(payload->Data);
+            // 掴んだ行が選択に含まれていれば選択ぜんぶを一度に移す（1個ずつ引っ張らなくていい）。
+            std::vector<entt::entity> moving;
+            if (ctx.IsSelected(droppedEntity))
+                moving = ctx.selectedEntities;
+            else
+                moving.push_back(droppedEntity);
+
+            // 祖先も一緒に掴んでいる子は除く（親ごと動くので、ここで付け替えると入れ子が壊れる）
+            auto ancestorAlsoMoving = [&](entt::entity d) {
+                const auto* t = reg.try_get<Transform>(d);
+                entt::entity cur = t ? t->parent : entt::null;
+                for (int depth = 0; cur != entt::null && reg.valid(cur) && depth < 4096; ++depth)
+                {
+                    if (std::find(moving.begin(), moving.end(), cur) != moving.end()) return true;
+                    const auto* pt = reg.try_get<Transform>(cur);
+                    cur = pt ? pt->parent : entt::null;
+                }
+                return false;
+            };
+
+            auto composite = std::make_unique<CompositeCommand>("Reparent");
+            for (entt::entity d : moving)
             {
-                // 循環防止: e が droppedEntity の子孫でないかチェック。
+                if (d == e || !reg.valid(d) || !reg.all_of<Transform>(d)) continue;
+                if (ancestorAlsoMoving(d)) continue;
+                // 循環防止: e が d の子孫でないかチェック。
                 // 祖先鎖が既にサイクル化した壊れデータでも無限ループしないよう深さ上限付き。
                 bool isCyclic = false;
                 entt::entity check = e;
                 int depth = 0;
                 while (check != entt::null && reg.valid(check) && reg.all_of<Transform>(check))
                 {
-                    if (check == droppedEntity || ++depth >= 4096) { isCyclic = true; break; }
+                    if (check == d || ++depth >= 4096) { isCyclic = true; break; }
                     check = reg.get<Transform>(check).parent;
                 }
-                if (!isCyclic)
-                {
-                    auto& dt = reg.get<Transform>(droppedEntity);
-                    Transform before = dt;
-                    dt.parent = e;
-                    ctx.undoSystem.PushCommand(std::make_unique<TransformCommand>(
-                        &reg, droppedEntity, before, dt));
-                }
+                if (isCyclic) continue;
+
+                auto& dt = reg.get<Transform>(d);
+                Transform before = dt;
+                dt.parent = e;
+                composite->Add(std::make_unique<TransformCommand>(&reg, d, before, dt));
             }
+            if (!composite->Empty())
+                ctx.undoSystem.PushCommand(std::move(composite));
         }
         if (const ImGuiPayload* scriptPayload = ImGui::AcceptDragDropPayload("DND_SCRIPT"))
         {
@@ -266,6 +362,12 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
         if (ImGui::MenuItem("プレハブにする"))  // Prefab 化（assets/prefabs へ保存）
         {
             ctx.pendingCreatePrefab = e;
+        }
+        // 選択をまとめる空の親を作る。親は原点・無回転なので見た目は一切動かない。
+        if (ImGui::MenuItem("選択をグループ化", "Ctrl+G", false, ctx.HasSelection()))
+        {
+            if (!ctx.IsSelected(e)) ctx.Select(e);   // 右クリックした行だけの場合
+            ctx.pendingGroupSelection = true;
         }
         if (ImGui::MenuItem("\xe5\x89\x8a\xe9\x99\xa4"))  // 削除
         {
@@ -316,28 +418,121 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
 
     auto nameView = reg.view<const NameTag>();
 
+    // 生成直後の名前入力要求（グループ化など）。作った親は開いた状態にして中身を見せる。
+    if (ctx.requestRenameEntity != entt::null)
+    {
+        if (reg.valid(ctx.requestRenameEntity) && reg.all_of<NameTag>(ctx.requestRenameEntity))
+        {
+            m_renamingEntity = ctx.requestRenameEntity;
+            m_renameWarmup   = 3;
+            m_openNodes.insert(ctx.requestRenameEntity);
+            std::memset(m_renameBuf, 0, sizeof(m_renameBuf));
+            strncpy_s(m_renameBuf, reg.get<NameTag>(ctx.requestRenameEntity).name.c_str(), _TRUNCATE);
+        }
+        ctx.requestRenameEntity = entt::null;
+    }
+
     // 親→子の索引をこのフレームぶん作り直す（1パス）。DrawEntityNode はここだけ見る。
     m_childIndex.clear();
     for (auto [e, t] : reg.view<const Transform>().each())
         if (t.parent != entt::null)
             m_childIndex[t.parent].push_back(e);
+    // entt のプール順は生成順とは限らない（グループ化直後は逆順に並んで見えた）。
+    // id 昇順＝おおむね生成順にそろえて、ルート行の並びと感覚を合わせる。
+    for (auto& kv : m_childIndex)
+        std::sort(kv.second.begin(), kv.second.end());
+
+    // 選択が外から変わった（3Dビューでクリック / MCP / F フォーカス）なら、その行を露出する。
+    // 祖先グループを開き、次の描画でスクロールして見せる＝畳んだ階層の中でも迷子にならない。
+    if (ctx.selectedEntity != m_lastRevealed)
+    {
+        m_lastRevealed = ctx.selectedEntity;
+        if (reg.valid(ctx.selectedEntity) && reg.all_of<Transform>(ctx.selectedEntity))
+        {
+            entt::entity p = reg.get<Transform>(ctx.selectedEntity).parent;
+            for (int d = 0; p != entt::null && reg.valid(p) && d < 4096; ++d)
+            {
+                m_openNodes.insert(p);
+                const auto* pt = reg.try_get<Transform>(p);
+                p = pt ? pt->parent : entt::null;
+            }
+            m_scrollToEntity = ctx.selectedEntity;
+        }
+    }
 
     // オブジェクト数（GridPlane は内部用なので除外）
     size_t objCount = 0;
     for (auto [e, tag] : nameView.each())
         if (!reg.all_of<GridPlane>(e)) ++objCount;
 
-    // ---- ヘッダ（件数 + フィルタ。Nebula のヒエラルキー上部に倣う）----
+    // ---- ヘッダ（件数 + 全展開/全折りたたみ + フィルタ）----
+    // オブジェクトが増えると縦に膨れて目的の行が探せなくなるので、
+    // 「一発で全部畳む」と「名前で絞る」を常に手元に置く。
     static char s_filterBuf[64] = {};
     {
         ImGui::PushStyleColor(ImGuiCol_Text, dx12e::theme::TextFaint);
         ImGui::Text("%zu objects", objCount);
         ImGui::PopStyleColor();
 
+        // 右端に畳む/展開ボタン（日本語フォントしか無いので記号ではなく漢字ラベル）
+        const float btnW = ImGui::CalcTextSize("閉").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+        ImGui::SameLine(ImGui::GetContentRegionMax().x - btnW * 2.0f - ImGui::GetStyle().ItemSpacing.x);
+        if (ImGui::SmallButton("閉"))
+            m_openNodes.clear();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("全て折りたたむ");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("開"))
+            for (const auto& kv : m_childIndex) m_openNodes.insert(kv.first);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("全て展開");
+
         ImGui::SetNextItemWidth(-1.0f);
         ImGui::InputTextWithHint("##HierFilter", "Filter", s_filterBuf, sizeof(s_filterBuf));
     }
     ImGui::Spacing();
+
+    // ---- 行の見やすさ（縞模様 + 行間 + 階層ガイド線）----
+    // 行間を少し広げる: 詰まった行は名前が塊に見えて目的の行を探しにくい。
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
+        ImVec2(ImGui::GetStyle().ItemSpacing.x, 5.0f));
+    // ツリーの矢印スペースは FontSize + FramePadding.x*2。グローバル値(8)のままだと
+    // 種別アイコンと名前の間に 30px 以上の空白ができて視線が飛ぶ。詰めて1つの行に見せる。
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(3.0f, 2.0f));
+    // 選択行をはっきり見せる（既定の淡いヘッダ色だと縞模様に埋もれる）
+    ImGui::PushStyleColor(ImGuiCol_Header,        dx12e::theme::AccentDim2);
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, dx12e::theme::AccentDim);
+
+    const float rowH = ImGui::GetTextLineHeightWithSpacing();
+
+    // 行の縞模様。長いリストで「どの名前がどの行か」を目で追えるようにする。
+    // 行を描く直前に呼び、窓幅いっぱいの帯を1本敷く。
+    auto zebra = [rowH](int index)
+    {
+        if ((index & 1) == 0) return;
+        const ImVec2 p  = ImGui::GetCursorScreenPos();
+        const ImVec2 wp = ImGui::GetWindowPos();
+        ImGui::GetWindowDrawList()->AddRectFilled(
+            ImVec2(wp.x, p.y - 2.0f),
+            ImVec2(wp.x + ImGui::GetWindowSize().x, p.y + rowH - 3.0f),
+            IM_COL32(255, 255, 255, 12));
+    };
+
+    // 階層ガイド線。どの行がどの親の下にいるのか、インデント量を数えずに追えるようにする。
+    // rowStart = インデント適用後の行頭スクリーン座標。
+    auto indentGuides = [rowH](ImVec2 rowStart, int depth, float indentW)
+    {
+        if (depth <= 0) return;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImU32 col = IM_COL32(255, 255, 255, 26);
+        for (int j = 1; j <= depth; ++j)
+        {
+            const float x = rowStart.x - indentW * static_cast<float>(j) + 7.0f;
+            dl->AddLine(ImVec2(x, rowStart.y - 2.0f), ImVec2(x, rowStart.y + rowH - 3.0f), col);
+        }
+        // 一番内側だけ横に伸ばして「この親の子」と分かるようにする
+        const float xIn = rowStart.x - indentW + 7.0f;
+        const float yMid = rowStart.y + rowH * 0.4f;
+        dl->AddLine(ImVec2(xIn, yMid), ImVec2(rowStart.x - 3.0f, yMid), col);
+    };
 
     if (s_filterBuf[0] != '\0')
     {
@@ -357,6 +552,7 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
             const entt::entity e = m_rows[static_cast<size_t>(fi)].e;
             const auto& tag = reg.get<NameTag>(e);
 
+            zebra(fi);
             ImGui::PushID(static_cast<int>(static_cast<u32>(e)));
             if (ctx.icons)
             {
@@ -371,10 +567,7 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
                 }
             }
             if (ImGui::Selectable(tag.name.c_str(), ctx.IsSelected(e)))
-            {
-                if (ImGui::GetIO().KeyCtrl) ctx.ToggleSelection(e);
-                else                        ctx.Select(e);
-            }
+                HandleRowClick(ctx, e);   // フィルタ中も Shift 範囲 / Ctrl トグルが効く
             ImGui::PopID();
         }
     }
@@ -408,33 +601,60 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
         const float indentW = ImGui::GetStyle().IndentSpacing;
         ImGuiListClipper clipper;
         clipper.Begin(static_cast<int>(m_rows.size()));
+        // 画面外の行は clipper が省くので、スクロール先の行だけは強制的に描かせる
+        // （でないと SetScrollHereY を呼ぶ機会が来ない）。
+        if (m_scrollToEntity != entt::null)
+            for (size_t si = 0; si < m_rows.size(); ++si)
+                if (m_rows[si].e == m_scrollToEntity)
+                {
+                    clipper.IncludeItemByIndex(static_cast<int>(si));
+                    break;
+                }
         while (clipper.Step())
         {
             for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
             {
                 const Row& r = m_rows[static_cast<size_t>(i)];
+                zebra(i);
                 if (r.depth > 0) ImGui::Indent(indentW * r.depth);
+                indentGuides(ImGui::GetCursorScreenPos(), r.depth, indentW);
+                if (r.e == m_scrollToEntity)
+                {
+                    ImGui::SetScrollHereY(0.5f);
+                    m_scrollToEntity = entt::null;
+                }
                 DrawEntityNode(reg, ctx, r.e);
                 if (r.depth > 0) ImGui::Unindent(indentW * r.depth);
             }
         }
     }
 
+    ImGui::PopStyleColor(2);   // Header / HeaderHovered
+    ImGui::PopStyleVar(2);     // ItemSpacing / FramePadding
+
     // ヒエラルキーの空白部分への D&D（親子解除）
     if (ImGui::BeginDragDropTarget())
     {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("HIERARCHY_ENTITY"))
         {
-            entt::entity droppedEntity = *static_cast<const entt::entity*>(payload->Data);
-            if (reg.valid(droppedEntity) && reg.all_of<Transform>(droppedEntity)
-                && reg.get<Transform>(droppedEntity).parent != entt::null)
+            const entt::entity droppedEntity = *static_cast<const entt::entity*>(payload->Data);
+            // 行の上と同じく、掴んだ行が選択に含まれていれば選択ぜんぶをルートへ出す（グループ解除）。
+            std::vector<entt::entity> moving;
+            if (ctx.IsSelected(droppedEntity)) moving = ctx.selectedEntities;
+            else                               moving.push_back(droppedEntity);
+
+            auto composite = std::make_unique<CompositeCommand>("Unparent");
+            for (entt::entity d : moving)
             {
-                auto& t = reg.get<Transform>(droppedEntity);
+                if (!reg.valid(d) || !reg.all_of<Transform>(d)) continue;
+                auto& t = reg.get<Transform>(d);
+                if (t.parent == entt::null) continue;
                 Transform before = t;
                 t.parent = entt::null;
-                ctx.undoSystem.PushCommand(std::make_unique<TransformCommand>(
-                    &reg, droppedEntity, before, t));
+                composite->Add(std::make_unique<TransformCommand>(&reg, d, before, t));
             }
+            if (!composite->Empty())
+                ctx.undoSystem.PushCommand(std::move(composite));
         }
         ImGui::EndDragDropTarget();
     }
@@ -449,6 +669,16 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
         for (auto e : ctx.selectedEntities)
             if (reg.valid(e)) ctx.pendingDeletions.push_back(e);
         ctx.ClearSelection();
+    }
+
+    // Ctrl+G: 選択をグループ化（空の親にまとめる）。実処理は Application のフレーム境界。
+    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)
+        && m_renamingEntity == entt::null
+        && ctx.HasSelection()
+        && ImGui::GetIO().KeyCtrl
+        && ImGui::IsKeyPressed(ImGuiKey_G, false))
+    {
+        ctx.pendingGroupSelection = true;
     }
 
     ImGui::Separator();

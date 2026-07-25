@@ -102,8 +102,14 @@ public:
     // サムネイルキャッシュを使い回すためのアクセサ(InspectorPanelと同じ理由)。
     AssetBrowserPanel* GetAssetBrowser() const { return m_assetBrowser.get(); }
 
+    // 下部ステータスバーの高さ。DockSpace はこのぶん短くする（重なると下端のパネルが隠れる）。
+    static constexpr f32 kStatusBarHeight = 30.0f;
+
 private:
     void BuildDefaultLayout(ImGuiID dockspaceId, f32 toolbarHeight);
+    // 画面最下部の細い帯。FPS/描画統計・選択中の名前・カメラ速度をここへ集約する
+    //（3D ビューに重ねるとゲーム UI を作るとき邪魔になるため）。
+    void RenderStatusBar(Scene* scene, Camera* camera, GameClock* clock, bool isPlaying);
 
     EditorContext* m_ctx = nullptr;
     bool m_dockspaceBuilt = false;
