@@ -277,6 +277,8 @@ float4 PSMain(PSInput input) : SV_TARGET
 
     // クラスタ可視化デバッグ（clusterExtra.z: 1=ライト複雑度ヒートマップ / 2=クラスタ境界）
     color = ApplyClusterDebug(color, input.positionSV.xy, input.worldPos);
+    // デカール枚数ヒートマップ（clusterExtra.z == 3。dx12_render_debug decalCount）
+    color = ApplyDecalDebug(color, input.positionSV.xy, input.worldPos);
 
     // リニア HDR のまま scene RT へ出力（トーンマップ+ガンマは PostProcess 最終段）
     return float4(color, albedo4.a);

@@ -35,6 +35,7 @@
 #include "renderer/SSAOPass.h"
 #include "renderer/ContactShadowPass.h"
 #include "renderer/TaaPass.h"
+#include "renderer/RenderDebugPass.h"
 #include "renderer/ScreenSpaceGiPass.h"
 #include "renderer/VolumetricFogPass.h"
 #include "renderer/DecalSystem.h"
@@ -624,6 +625,12 @@ void Application::RegisterShaderReloadHandlers()
         m_shaderManager->RegisterReloadHandler(
             { L"TaaResolve_PS.cso", L"VelocityDebug_PS.cso" },
             [this]() { m_taaPass->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_renderDebugPass)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"RenderDebug_PS.cso" },
+            [this]() { m_renderDebugPass->RecreatePipelines(*m_graphicsDevice); });
     }
     if (m_postProcess)
     {
@@ -1911,6 +1918,11 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_gbufferRT->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
                                 m_window->GetWidth(), m_window->GetHeight(),
                                 kGBufferFormat, gbufClear);
+
+        // 中間バッファ可視化（dx12_render_debug）。RTV / SRV / ディスクリプタを 1 枚も消費しない
+        // （既存バッファを読んでシーン RT へ描くだけ）。既定 OFF ＝ Draw が 1 回も呼ばれない。
+        m_renderDebugPass = std::make_unique<RenderDebugPass>();
+        m_renderDebugPass->Initialize(*m_graphicsDevice, kSceneColorFormat, PathResolver::ShaderDirW());
 
         // SSR / SSGI（前フレームカラー退避 + ハーフトレース + 時間蓄積 + アップサンプル）。
         // RTV は 8 枚使う（フル 3 + ハーフ 5）。既定 OFF なのでパスは走らない。
@@ -4893,6 +4905,145 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"key", vk}, {"pressed", true}};
         }
+        else if (method == "render_debug")
+        {
+            // 中間バッファ可視化。mode を受けて必要な機能を一時的に ON にし、N フレーム描いてから
+            // スクリーンショットを撮って返し、設定を元へ戻す（＝呼ぶ前と完全に同じ状態に戻る）。
+            //
+            // ★実装は 2 系統に分かれる（重複実装を避けるため）:
+            //   (A) 専用フルスクリーンパス RenderDebugPass … 可視化が無かったバッファ
+            //   (B) 既存のデバッグ表示トグルへの振り分け     … 既に実装済みのもの
+            //       shadowCascade = shadowParams.w / lightComplexity,clusterGrid,decalCount =
+            //       clusterExtra.z / fog* = FogParams.gMisc.z
+            if (m_mcpRenderDebugReply.client != 0)
+                throw McpError(McpErr::ModeConflict, "a render_debug capture is already pending; retry shortly");
+            if (!m_scene) throw McpError(McpErr::Internal, "no scene");
+
+            const std::string mode = params.value("mode", std::string());
+            // (mode, パスモード(0=既存トグル), 説明)
+            struct DbgEntry { const char* name; u32 passMode; };
+            static const DbgEntry kEntries[] = {
+                {"off",              0},
+                {"normal",           static_cast<u32>(RenderDebugMode::Normal)},
+                {"roughness",        static_cast<u32>(RenderDebugMode::Roughness)},
+                {"metallic",         static_cast<u32>(RenderDebugMode::Metallic)},
+                {"depth",            static_cast<u32>(RenderDebugMode::Depth)},
+                {"ao",               static_cast<u32>(RenderDebugMode::Ao)},
+                {"contactShadow",    static_cast<u32>(RenderDebugMode::ContactShadow)},
+                {"velocity",         static_cast<u32>(RenderDebugMode::Velocity)},
+                {"ssr",              static_cast<u32>(RenderDebugMode::Ssr)},
+                {"ssgi",             static_cast<u32>(RenderDebugMode::Ssgi)},
+                {"shadowCascade",    0},
+                {"lightComplexity",  0},
+                {"clusterGrid",      0},
+                {"decalCount",       0},
+                {"fogScattering",    0},
+                {"fogTransmittance", 0},
+                {"fogSlice",         0},
+            };
+            const DbgEntry* entry = nullptr;
+            for (const DbgEntry& e : kEntries)
+                if (mode == e.name) { entry = &e; break; }
+            if (!entry)
+            {
+                std::string list;
+                for (const DbgEntry& e : kEntries) { if (!list.empty()) list += ", "; list += e.name; }
+                throw McpError(McpErr::InvalidParam, "unknown mode '" + mode + "'",
+                    "有効な mode: " + list +
+                    "。albedo と overdraw は非対応（前方レンダラなので albedo の G-Buffer が無く、"
+                    "overdraw は加算カウント用の専用パスが要るため）");
+            }
+
+            // ---- 現在の状態を退避（返す直前に必ず戻す）----
+            auto& taaS  = m_scene->GetTaaSettings();
+            auto& ssaoS = m_scene->GetSSAOSettings();
+            auto& csS   = m_scene->GetContactShadowSettings();
+            auto& ssrS  = m_scene->GetSsrSettings();
+            auto& ssgiS = m_scene->GetSsgiSettings();
+            auto& fogS  = m_scene->GetVolumetricFogSettings();
+            m_renderDebugRestore.valid         = true;
+            m_renderDebugRestore.taa           = taaS.enabled;
+            m_renderDebugRestore.ssao          = ssaoS.enabled;
+            m_renderDebugRestore.contactShadow = csS.enabled;
+            m_renderDebugRestore.ssr           = ssrS.enabled;
+            m_renderDebugRestore.ssgi          = ssgiS.enabled;
+            m_renderDebugRestore.clusterDebug  = m_editorCtx ? m_editorCtx->clusterDebugMode : 0u;
+            m_renderDebugRestore.cascadeDebug  = m_showCascadeDebug;
+            m_renderDebugRestore.fogDebug      = fogS.debugMode;
+
+            // ---- 必要な機能を一時的に ON ----
+            json warn = json::array();
+            m_renderDebugMode        = entry->passMode;
+            m_renderDebugModeName    = mode;
+            m_renderDebugGain        = static_cast<f32>(params.value("gain", 1.0));
+            m_renderDebugDepthRange  = McpFloatParam(params, "depthRange", 100.0f, 0.1f, 100000.0f);
+            m_renderDebugExposure    = McpFloatParam(params, "exposure", 1.0f, 0.001f, 1000.0f);
+            m_renderDebugRawReadback = (entry->passMode != 0);
+
+            if (mode == "normal" || mode == "roughness" || mode == "metallic" || mode == "velocity")
+            {
+                // G-Buffer / 速度バッファは深度プリパスの MRT にしか書かれない
+                //（＝TAA か SSR/SSGI が有効なときだけ）。
+                if (!taaS.enabled && !ssrS.enabled && !ssgiS.enabled)
+                {
+                    taaS.enabled = true;
+                    warn.push_back("G-Buffer/速度は速度プリパスでしか書かれないので TAA を一時的に ON にした");
+                }
+            }
+            else if (mode == "ao")
+            {
+                if (!ssaoS.enabled) { ssaoS.enabled = true; warn.push_back("SSAO を一時的に ON にした"); }
+            }
+            else if (mode == "contactShadow")
+            {
+                if (!csS.enabled) { csS.enabled = true; warn.push_back("コンタクトシャドウを一時的に ON にした"); }
+            }
+            else if (mode == "ssr")
+            {
+                if (!ssrS.enabled) { ssrS.enabled = true; warn.push_back("SSR を一時的に ON にした（時間蓄積があるので frames を増やすと安定する）"); }
+            }
+            else if (mode == "ssgi")
+            {
+                if (!ssgiS.enabled) { ssgiS.enabled = true; warn.push_back("SSGI を一時的に ON にした（同上）"); }
+            }
+            else if (mode == "shadowCascade")
+            {
+                m_showCascadeDebug = true;
+            }
+            else if (mode == "lightComplexity" || mode == "clusterGrid" || mode == "decalCount")
+            {
+                if (!m_editorCtx)
+                    throw McpError(McpErr::Internal, "editor context not available");
+                m_editorCtx->clusterDebugMode = (mode == "lightComplexity") ? 1u
+                                              : (mode == "clusterGrid")     ? 2u : 3u;
+                if (!m_clusteredEnabled)
+                    warn.push_back("クラスタードライティングが無効（settings.json render_clustered=0 / 正射カメラ）なので何も出ない");
+                if (mode == "decalCount")
+                {
+                    u32 nDecals = 0;
+                    for (auto de : m_scene->GetRegistry().view<const DecalComponent>()) { (void)de; ++nDecals; }
+                    if (nDecals == 0)
+                        warn.push_back("シーンにデカールが 1 枚も無いので全面がほぼ黒になる");
+                }
+            }
+            else if (mode == "fogScattering" || mode == "fogTransmittance" || mode == "fogSlice")
+            {
+                if (!fogS.enabled)
+                    warn.push_back("ボリュメトリックフォグが無効なので何も出ない（先に dx12_set_volumetric_fog で ON にすること）");
+                fogS.debugMode = (mode == "fogScattering") ? 1 : (mode == "fogTransmittance") ? 2 : 3;
+            }
+            else if (mode == "off")
+            {
+                // 何も ON にしない（退避した値をそのまま書き戻して終わる）
+            }
+
+            int frames = params.value("frames", 3);
+            frames = std::clamp(frames, 1, 120);
+            m_mcpRenderDebugFramesLeft = frames;
+            m_mcpRenderDebugReply      = deferred;
+            m_renderDebugWarnings      = warn.dump();
+            isDeferred = true;
+        }
         else if (method == "step_frames")
         {
             // N フレーム進めてから応答する同期バリア(遅延応答)。key_down/press の後に呼ぶと
@@ -7826,11 +7977,14 @@ bool Application::ReadbackSceneBgra(std::vector<u8>& outBgra, u32& outW, u32& ou
         uint8_t*    out = &outBgra[static_cast<size_t>(w) * 4 * y];
         for (UINT x = 0; x < w; ++x)
         {
+            // ★render debug 中はトーンマップも露出も掛けない（RenderDebug.hlsl が
+            //   「表示したい色」をそのまま書いているので、加工すると偽色の意味が壊れる）。
+            const float ex = m_renderDebugRawReadback ? 1.0f : exposure;
             float rgb[3] = {
-                DirectX::PackedVector::XMConvertHalfToFloat(in[x * 4 + 0]) * exposure,
-                DirectX::PackedVector::XMConvertHalfToFloat(in[x * 4 + 1]) * exposure,
-                DirectX::PackedVector::XMConvertHalfToFloat(in[x * 4 + 2]) * exposure };
-            toneMapGamma(rgb);
+                DirectX::PackedVector::XMConvertHalfToFloat(in[x * 4 + 0]) * ex,
+                DirectX::PackedVector::XMConvertHalfToFloat(in[x * 4 + 1]) * ex,
+                DirectX::PackedVector::XMConvertHalfToFloat(in[x * 4 + 2]) * ex };
+            if (!m_renderDebugRawReadback) toneMapGamma(rgb);
             out[x * 4 + 0] = toByte(rgb[2]);   // BGRA 順
             out[x * 4 + 1] = toByte(rgb[1]);
             out[x * 4 + 2] = toByte(rgb[0]);
@@ -8205,6 +8359,58 @@ void Application::Run()
                 if (gvOrtho) m_camera->SetOrthographic(gvOrthoH, gvAsp, gvNear, gvFar);
                 else         m_camera->SetPerspective(gvFov, gvAsp, gvNear, gvFar);
             }
+        }
+
+        // MCP render_debug: N フレーム描いたらスクショを撮って返し、必ず元の設定へ戻す。
+        if (m_mcpRenderDebugFramesLeft > 0 && --m_mcpRenderDebugFramesLeft == 0
+            && m_mcpRenderDebugReply.client != 0)
+        {
+            std::string rerr;
+            const std::string rpath = (m_renderDebugModeName == "off")
+                                    ? std::string("(no capture)")
+                                    : CaptureSceneScreenshot(rerr);
+
+            nlohmann::json warnJson = nlohmann::json::array();
+            if (!m_renderDebugWarnings.empty())
+            {
+                try { warnJson = nlohmann::json::parse(m_renderDebugWarnings); }
+                catch (...) { warnJson = nlohmann::json::array(); }
+            }
+
+            if (rpath.empty())
+            {
+                FailMcp(m_mcpBridge.get(), m_mcpRenderDebugReply, McpErr::Internal,
+                        rerr.empty() ? "render_debug screenshot failed" : rerr);
+            }
+            else
+            {
+                CompleteMcp(m_mcpBridge.get(), m_mcpRenderDebugReply,
+                    nlohmann::json{{"path", rpath},
+                                   {"mode", m_renderDebugModeName},
+                                   {"width",  m_sceneRT ? m_sceneRT->GetWidth()  : 0u},
+                                   {"height", m_sceneRT ? m_sceneRT->GetHeight() : 0u},
+                                   {"toneMapped", !m_renderDebugRawReadback},
+                                   {"warnings", warnJson},
+                                   {"mode_engine", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"}});
+            }
+            m_mcpRenderDebugReply = {};
+
+            // ---- 退避した設定を必ず戻す（デバッグ表示を残さない）----
+            if (m_renderDebugRestore.valid && m_scene)
+            {
+                m_scene->GetTaaSettings().enabled           = m_renderDebugRestore.taa;
+                m_scene->GetSSAOSettings().enabled          = m_renderDebugRestore.ssao;
+                m_scene->GetContactShadowSettings().enabled = m_renderDebugRestore.contactShadow;
+                m_scene->GetSsrSettings().enabled           = m_renderDebugRestore.ssr;
+                m_scene->GetSsgiSettings().enabled          = m_renderDebugRestore.ssgi;
+                m_scene->GetVolumetricFogSettings().debugMode = m_renderDebugRestore.fogDebug;
+                if (m_editorCtx) m_editorCtx->clusterDebugMode = m_renderDebugRestore.clusterDebug;
+                m_showCascadeDebug = m_renderDebugRestore.cascadeDebug;
+                m_renderDebugRestore.valid = false;
+            }
+            m_renderDebugMode        = 0;
+            m_renderDebugRawReadback = false;
+            m_renderDebugWarnings.clear();
         }
 
         // MCP step_frames: 1フレーム回り切ったらカウントダウン。0 になったら遅延応答を返す。
@@ -15650,6 +15856,68 @@ void Application::Render()
         XMStoreFloat3(&camUp,    invView.r[1]);
         DrawWorldSprites(nativeCmdList, camVPJ, camRight, camUp,
                          m_sceneRT->GetRtv(), m_dsvHandle, vpLeft, vpTop, vpW, vpH, totalTime);
+    }
+
+    // ===== 中間バッファ可視化（dx12_render_debug）=====
+    // ★ここに挿す理由: シーン RT がまだ RENDER_TARGET で、ポストチェーンより前。
+    //   readback（CaptureSceneScreenshot）は m_sceneRT を読むので必ず絵に写る（B5 の罠を回避）。
+    //   フォワード PS には 1 行も足していない（N24: [branch] でも occupancy が落ちる）。
+    if (m_renderDebugMode != 0 && m_renderDebugPass && m_renderDebugPass->IsReady()
+        && m_depthSrvIndex != DescriptorHeap::kInvalidIndex)
+    {
+        const auto dbgMode = static_cast<RenderDebugMode>(m_renderDebugMode);
+        u32 srcIdx = DescriptorHeap::kInvalidIndex;
+        switch (dbgMode)
+        {
+        case RenderDebugMode::Normal:
+        case RenderDebugMode::Roughness:
+        case RenderDebugMode::Metallic:
+            if (velocityPrepass && m_gbufferRT) srcIdx = m_gbufferRT->GetSrvIndex();
+            break;
+        case RenderDebugMode::Depth:          srcIdx = m_depthSrvIndex; break;   // t0 は使わないが有効な物を渡す
+        case RenderDebugMode::Ao:             srcIdx = aoSrv; break;
+        case RenderDebugMode::ContactShadow:  srcIdx = csSrv; break;
+        case RenderDebugMode::Velocity:
+            if (velocityPrepass && m_taaPass) srcIdx = m_taaPass->GetVelocitySrvIndex();
+            break;
+        case RenderDebugMode::Ssr:            srcIdx = ssrSrv;  break;
+        case RenderDebugMode::Ssgi:           srcIdx = ssgiSrv; break;
+        default: break;
+        }
+
+        if (srcIdx != DescriptorHeap::kInvalidIndex)
+        {
+            // 深度は DEPTH_WRITE のままなので PS から読める状態へ往復させる。
+            m_commandList->TransitionResource(m_depthBuffer.Get(),
+                D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+            auto drtv = m_sceneRT->GetRtv();
+            nativeCmdList->OMSetRenderTargets(1, &drtv, FALSE, nullptr);   // DSV は張らない
+            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+
+            XMFLOAT4X4 dbgProj; XMStoreFloat4x4(&dbgProj, m_camera->GetProjectionMatrix());
+            const f32 fullWDbg = static_cast<f32>(m_sceneRT->GetWidth());
+            const f32 fullHDbg = static_cast<f32>(m_sceneRT->GetHeight());
+
+            RenderDebugPass::DrawDesc dd{};
+            dd.mode       = dbgMode;
+            dd.sourceSrv  = m_srvHeap->GetGpuHandle(srcIdx);
+            dd.depthSrv   = m_srvHeap->GetGpuHandle(m_depthSrvIndex);
+            dd.uvOfsX     = static_cast<f32>(vpLeft) / fullWDbg;
+            dd.uvOfsY     = static_cast<f32>(vpTop)  / fullHDbg;
+            dd.uvSclX     = static_cast<f32>(vpW)    / fullWDbg;
+            dd.uvSclY     = static_cast<f32>(vpH)    / fullHDbg;
+            dd.vpLeft = vpLeft; dd.vpTop = vpTop; dd.vpW = vpW; dd.vpH = vpH;
+            dd.gain       = m_renderDebugGain;
+            dd.projA      = dbgProj._33;
+            dd.projB      = dbgProj._43;
+            dd.depthRange = m_renderDebugDepthRange;
+            dd.exposure   = m_renderDebugExposure;
+            m_renderDebugPass->Draw(*m_commandList, dd);
+
+            m_commandList->TransitionResource(m_depthBuffer.Get(),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        }
     }
 
     // ===== 次フレームの SSR/SSGI 用に、このフレームの HDR シーンカラーを退避 =====

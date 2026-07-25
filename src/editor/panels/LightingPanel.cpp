@@ -711,16 +711,18 @@ void RenderLightingPanel(Scene* scene,
             // 1 クラスタ 128 灯の切り捨ては CPU 側からは検出できないので、
             // 「どこが上限に張り付いているか」を見るにはこれしか手が無い。
             static const char* const kClusterDebugItems[] = {
-                "オフ", "ライト複雑度（ヒートマップ）", "クラスタ境界",
+                "オフ", "ライト複雑度（ヒートマップ）", "クラスタ境界", "デカール枚数（ヒートマップ）",
             };
             int clusterDebug = static_cast<int>(ctx.clusterDebugMode);
-            if (pg::Combo("クラスタデバッグ表示", &clusterDebug, kClusterDebugItems, 3,
+            if (pg::Combo("クラスタデバッグ表示", &clusterDebug, kClusterDebugItems, 4,
                           "クラスタードライティングの内部状態を可視化します。\n"
                           "・ライト複雑度: そのピクセルのクラスタが評価しているライト数。\n"
                           "  青(0灯) → 緑 → 赤 と増え、【白は上限 128 灯に張り付いて\n"
                           "  無言で切り捨てが起きている】場所です。\n"
                           "・クラスタ境界: 画面の分割（16x9 タイル x 24 スライス）を市松で確認。\n"
-                          "透視ビューのみ（2D 正射ではクラスタード自体が無効）。"))
+                          "・デカール枚数: そのクラスタに割り当てられたデカール数（上限 16 で白）。\n"
+                          "透視ビューのみ（2D 正射ではクラスタード自体が無効）。\n"
+                          "MCP からは dx12_render_debug の lightComplexity / clusterGrid / decalCount。"))
             {
                 ctx.clusterDebugMode = static_cast<u32>(clusterDebug);
             }

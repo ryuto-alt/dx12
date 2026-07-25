@@ -53,6 +53,8 @@ namespace dx12e
     class SSAOPass;
     class ContactShadowPass;
     class TaaPass;
+    class RenderDebugPass;
+    enum class RenderDebugMode : u32;   // renderer/RenderDebugPass.h（前方宣言可能な scoped enum）
     class ScreenSpaceGiPass;
     class VolumetricFogPass;
     class DecalSystem;
@@ -766,6 +768,34 @@ private:
     // 速度 RT と同じ MRT に書くので、速度プリパスが走るときは必ず一緒に書かれる
     // （PSO の RTV 本数を分岐させないため。00-COORDINATION §5.5 の契約）。
     std::unique_ptr<RenderTarget>  m_gbufferRT;
+
+    // ---- 中間バッファ可視化（dx12_render_debug）----
+    // ★フォワード PS には 1 行も足していない完全に独立したフルスクリーンパス（N24 対策）。
+    //   ポスト前の m_sceneRT へ後掛けするので、dx12_screenshot / render_debug の
+    //   readback（= m_sceneRT を読む）に必ず写る（B5 の罠を踏まない）。
+    //   カスケード境界 / クラスタのライト複雑度 / フォグの各表示は既存実装があるので
+    //   重複させず、render_debug が既存トグルへ振り分ける（入口だけ 1 本化する）。
+    std::unique_ptr<RenderDebugPass> m_renderDebugPass;
+    u32  m_renderDebugMode       = 0;      // RenderDebugMode（0 = 無効）
+    f32  m_renderDebugGain       = 1.0f;
+    f32  m_renderDebugDepthRange = 100.0f; // depth 表示のレンジ(m)
+    f32  m_renderDebugExposure   = 1.0f;   // ssr/ssgi 表示の露出
+    // readback（PNG 化）でトーンマップ/ガンマを掛けない。デバッグ色をそのまま出すため。
+    bool m_renderDebugRawReadback = false;
+    // render_debug の遅延応答（N フレーム描いてからスクショを撮って返す）
+    McpDeferred m_mcpRenderDebugReply;
+    int         m_mcpRenderDebugFramesLeft = 0;
+    // 一時的に ON にした機能を元へ戻すためのスナップショット
+    struct RenderDebugRestore
+    {
+        bool valid = false;
+        bool taa = false, ssao = false, contactShadow = false, ssr = false, ssgi = false;
+        u32  clusterDebug = 0;
+        bool cascadeDebug = false;
+        int  fogDebug = 0;
+    } m_renderDebugRestore;
+    std::string m_renderDebugModeName;
+    std::string m_renderDebugWarnings;   // JSON 配列（応答へそのまま埋める）
 
     // ---- SSR / SSGI（スクリーン空間反射 + スクリーン空間GI。計画04）----
     // G-Buffer + 深度 + 速度 + 前フレームカラーをレイマーチして、フォワード PS の

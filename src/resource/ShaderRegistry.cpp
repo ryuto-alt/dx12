@@ -298,6 +298,12 @@ const std::vector<ShaderSource>& BuildRegistry()
             { "post/FullscreenTri.hlsli" },
         },
         {
+            // 中間バッファ可視化（dx12_render_debug）。フォワード PS には足さない独立パス。
+            "renderdebug/RenderDebug.hlsl",
+            { { L"RenderDebug_PS.cso", L"RenderDebugPS", L"ps_6_0" } },
+            { "post/FullscreenTri.hlsli", "screenspace/ScreenSpaceCommon.hlsli" },
+        },
+        {
             // SSR（スクリーン空間反射）。VS は SSR.hlsl の FSTriVS を SSGI 側とも共有する。
             "screenspace/SSR.hlsl",
             {

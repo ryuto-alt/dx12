@@ -160,6 +160,7 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_net_status` | `{}` | `{available, role:"Offline"\|"Host"\|"Client", isConnected, localClientId, tick, syncedEntityCount, players:[{id,rttMs,bytesSent,bytesReceived}], config:{tickRate,snapshotRate,maxPlayers,defaultPort}, testRole, testJoinAddress}` |
 | `dx12_screenshot` | `{}` | PNG 画像ブロック + text(`{path(絶対パス), width, height}`) |
 | `dx12_ui_screenshot` | `{}` | PNG 画像ブロック ※エディタウィンドウ全体(ImGuiパネル込み)。ゲーム内UI/UIエディタの見た目確認用(scene RT には UI が写らない) |
+| `dx12_render_debug` | `{mode:string, frames?:int=3(1..120), gain?:number=1, depthRange?:number=100, exposure?:number=1}` | `{path(絶対パス), mode, width, height, toneMapped:bool, warnings:[string], mode_engine:"Editor"\|"Playing"}` ※**中間バッファの可視化**（「なぜ変に見えるか」の切り分け用）。`frames` フレーム描いてからスクショを撮り、**必ず元の設定へ戻す**。必要な機能（TAA/SSAO/コンタクトシャドウ/SSR/SSGI）は一時的に自動で ON にし、その旨を `warnings` に返す。返り値の `path` を画像として読むこと |
 | `dx12_ui_tree` | `{}` | `{canvases:[{entityId, name, uiCanvas:{refWidth,refHeight,...}, children:[{entityId, name, components, uiRect, resolvedRect:[x,y,w,h](キャンバス空間px), text?, children}]}]}` ※UIレイアウトの数値確認 |
 | `dx12_ui_design_brief` | `{genre:"cinematic"\|"tactical"\|"fantasy"\|"horror"\|"arcade"\|"cozy", screen:"title"\|"hud"\|"inventory"\|"settings"\|"result"\|"dialog"\|"other", tone?}` | 画面固有の構図・階層・制約・アンチパターン。UI生成前に呼ぶ |
 | `dx12_ui_audit` | `{strictness?:"balanced"\|"strict"}` | 現在のUIを数値監査。`{pass,score,grade,summary,issues[]}`。崩れ/重なり/可読性/入力遮断/過装飾を検出 |
@@ -200,6 +201,38 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_set_volumetric_fog` | `{enabled?, density?, albedo?, anisotropy?, heightFalloff?, heightRef?, distance?, depthDistribution?, ambient?, sunIntensity?, lightScattering?, temporal?, temporalBlend?, extendBeyondRange?, debugMode?}` | `{applied}` ※froxel ボリュメトリックフォグ。視錐台に沿った 3D テクスチャ(160x90x64)へ散乱を焼いて合成する＝光の筋が立体的に見える。有効にすると VRAM を 28MB 確保する。GodRays と同時に有効にすると太陽の散乱が二重計上される。正射/2Dビューでは自動無効 |
 
 > **TAA の効果確認は `dx12_ui_screenshot` を使うこと。** `dx12_screenshot` はポスト前の `m_sceneRT` を読むので、TAA の解決結果も `debugVelocity` の可視化も写らない（どちらもその後段で出力される）。
+
+### 4-2-1. `dx12_render_debug` の mode 一覧
+
+「絵が変」の原因を切り分けるための唯一の入口。**呼ぶ前と後でシーンの設定は完全に同じ**（一時的に ON にした機能は必ず戻す）。
+可視化はポスト前の `m_sceneRT` へ描くので、返ってくる PNG には**必ず写る**（`dx12_screenshot` の B5 の罠を踏まない）。
+`toneMapped:false` のモードはトーンマップ/露出を掛けずに 8bit へ落とすので、**PNG のピクセル値がそのままバッファの値**として読める。
+
+| mode | 出るもの | 実装 | 備考 |
+|---|---|---|---|
+| `normal` | ワールド法線 `0.5+0.5*N`（+X=赤 +Y=緑 +Z=青） | 専用パス | **G-Buffer は幾何法線**。法線マップは載っていない（SSR/SSGI が見ているのもこれ） |
+| `roughness` | G-Buffer の roughness（白 = 1） | 専用パス | **スカラー値のみ**。ORM テクスチャは載っていない |
+| `metallic` | G-Buffer の metallic（白 = 1） | 専用パス | 同上 |
+| `depth` | ビュー空間 Z をヒートマップ（青=近 → 赤=遠、空は黒） | 専用パス | `depthRange`(m) で正規化。既定 100 |
+| `ao` | SSAO（白 = 遮蔽なし） | 専用パス | SSAO を一時 ON |
+| `contactShadow` | コンタクトシャドウ（白 = 遮蔽なし） | 専用パス | コンタクトシャドウを一時 ON |
+| `velocity` | 速度バッファ（R=+X G=+画面下、**静止していれば一様な (0.5,0.5,0.5)**） | 専用パス | `gain` で強調（既定 1、20 くらいが見やすい） |
+| `ssr` | SSR の結果（リニア HDR にガンマのみ） | 専用パス | SSR を一時 ON。時間蓄積があるので `frames` を 8〜16 に |
+| `ssgi` | SSGI の結果 | 専用パス | 同上 |
+| `shadowCascade` | CSM のカスケードを色分け（赤/緑/青/黄の色掛け） | 既存 `shadowParams.w` | フォワード PS の既存実装をそのまま使う |
+| `lightComplexity` | クラスタごとのライト数ヒートマップ（青0 → 緑 → 赤、**白 = 128 灯で切り捨て中**） | 既存 `clusterExtra.z=1` | 正射/2D ではクラスタード自体が無効 |
+| `clusterGrid` | クラスタ境界の市松 | 既存 `clusterExtra.z=2` | |
+| `decalCount` | クラスタごとのデカール枚数ヒートマップ（**白 = 16 枚で切り捨て中**） | 既存 `clusterExtra.z=3` | デカール 0 枚のクラスタはほぼ黒 |
+| `fogScattering` / `fogTransmittance` / `fogSlice` | ボリュメトリックフォグの散乱 / 透過率 / froxel スライス | 既存 `FogParams.gMisc.z` | フォグが無効なら何も出ない（`warnings` で通知） |
+| `off` | 何もせず全部を戻すだけ（スクショも撮らない） | — | 途中で失敗したときのリセット用 |
+
+**非対応（作っていない。理由つき）**
+- `albedo` … 前方レンダラなのでアルベドの G-Buffer が存在しない。作るには深度プリパスに RT をもう 1 枚足す必要があり、
+  速度 PSO の RTV 本数（＝00-COORDINATION §5.5 の契約）に手を入れることになるので見送った。
+- `overdraw` … 加算カウント用の専用パス（全メッシュを再描画してブレンド加算）が要る。既存のどのバッファにも無い。
+
+**⚠️ `normal` / `roughness` / `metallic` / `velocity` は「深度+速度プリパス」でしか書かれない**ので、TAA も SSR も SSGI も
+OFF のときは TAA を一時的に ON にして撮る（`warnings` に出る）。この 4 モードが「ジオメトリだけの粗い絵」に見えるのは仕様。
 | `dx12_undo` | `{}` | `{queuedUndo}` |
 | `dx12_redo` | `{}` | `{queuedRedo}` |
 | `dx12_save_scene` | `{path?:string}` | `{path}` ※省略で現在シーンへ上書き |

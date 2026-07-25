@@ -12,6 +12,7 @@ add_library(Renderer STATIC
     SSAOPass.cpp
     ContactShadowPass.cpp
     TaaPass.cpp
+    RenderDebugPass.cpp
     ScreenSpaceGiPass.cpp
     ClusteredLightCulling.cpp
     VolumetricFogPass.cpp

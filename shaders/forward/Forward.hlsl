@@ -292,6 +292,8 @@ float4 PSMain(PSInput input) : SV_TARGET
 
     // クラスタ可視化デバッグ（clusterExtra.z: 1=ライト複雑度ヒートマップ / 2=クラスタ境界）
     color = ApplyClusterDebug(color, input.positionSV.xy, input.worldPos);
+    // デカール枚数ヒートマップ（clusterExtra.z == 3。dx12_render_debug decalCount）
+    color = ApplyDecalDebug(color, input.positionSV.xy, input.worldPos);
 
 #ifdef LDR_OUTPUT
     // LDR 直出力バリアント（サムネイル等、ポストプロセスを通らない R8G8B8A8 RT 用）

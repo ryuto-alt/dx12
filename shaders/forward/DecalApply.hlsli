@@ -103,4 +103,25 @@ void ApplyDecals(float3 worldPos, float2 svPosXY, float viewZ,
     }
 }
 
+// クラスタごとのデカール枚数ヒートマップ（clusterExtra.z == 3。dx12_render_debug decalCount）。
+// ★ApplyClusterDebug（Lighting.hlsli）と同じ流儀の後掛け。デカールのカウントバッファは
+//   ApplyDecals が既に参照しているので、リソース宣言も register も増えない。
+// ★分岐条件は cbuffer 由来＝ドロー内で完全に一様。デバッグ OFF のときは 1 命令も走らない。
+float3 ApplyDecalDebug(float3 color, float2 svPosXY, float3 worldPos)
+{
+    [branch]
+    if (clusterExtra.z < 2.5 || clusterGrid.w <= 0.5) return color;
+
+    float viewZ = mul(float4(worldPos, 1.0), view).z;
+    uint  ci    = ClusterIndexFromPixel(svPosXY, viewZ);
+    float n     = (float)min(g_decalCount[ci], (uint)DECAL_MAX_PER_CLUSTER);
+    if (n < 0.5) return float3(0.05, 0.05, 0.08);   // 0 枚 = ほぼ黒
+
+    float t = saturate(n / (float)DECAL_MAX_PER_CLUSTER);
+    float3 heat = (t < 0.5) ? lerp(float3(0.0, 0.0, 0.5), float3(0.1, 0.9, 0.1), t * 2.0)
+                            : lerp(float3(0.1, 0.9, 0.1), float3(1.0, 0.05, 0.0), (t - 0.5) * 2.0);
+    if (n >= (float)DECAL_MAX_PER_CLUSTER - 0.5) heat = float3(1.0, 1.0, 1.0);  // 上限で切り捨て中
+    return heat;
+}
+
 #endif // DECAL_APPLY_HLSLI

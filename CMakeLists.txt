@@ -309,6 +309,8 @@ if(DXC_EXECUTABLE)
     # ★ shaders/debug/ は .gitignore の "Debug/" に食われて新規ファイルが追跡されない。
     #    velocity/ 配下に置くこと（DebugLine.hlsl は昔から追跡済みなので生き残っているだけ）。
     set(SHADER_VEL_DEBUG     "${CMAKE_SOURCE_DIR}/shaders/velocity/VelocityDebug.hlsl")
+    # dx12_render_debug（中間バッファ可視化）。同じ理由で shaders/debug/ には置けない。
+    set(SHADER_RENDER_DEBUG  "${CMAKE_SOURCE_DIR}/shaders/renderdebug/RenderDebug.hlsl")
 
     set(SHADER_OUTPUTS
         "${SHADER_OUTPUT_DIR}/Forward_VS.cso"
@@ -378,6 +380,7 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/VelocityPrepassSkinned_VS.cso"
         "${SHADER_OUTPUT_DIR}/TaaResolve_PS.cso"
         "${SHADER_OUTPUT_DIR}/VelocityDebug_PS.cso"
+        "${SHADER_OUTPUT_DIR}/RenderDebug_PS.cso"
         "${SHADER_OUTPUT_DIR}/ClusterBuild_CS.cso"
         "${SHADER_OUTPUT_DIR}/ClusterCull_CS.cso"
         "${SHADER_OUTPUT_DIR}/ScreenSpace_VS.cso"
@@ -956,6 +959,13 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E VelocityDebugPS -Fo "${SHADER_OUTPUT_DIR}/VelocityDebug_PS.cso" "${SHADER_VEL_DEBUG}"
         DEPENDS "${SHADER_VEL_DEBUG}" "${SHADER_POST_INC}"
         COMMENT "Compiling VelocityDebug.hlsl -> VelocityDebug_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/RenderDebug_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E RenderDebugPS -Fo "${SHADER_OUTPUT_DIR}/RenderDebug_PS.cso" "${SHADER_RENDER_DEBUG}"
+        DEPENDS "${SHADER_RENDER_DEBUG}" "${SHADER_POST_INC}" "${SHADER_SS_INC}"
+        COMMENT "Compiling RenderDebug.hlsl -> RenderDebug_PS.cso (ps_6_0)"
     )
 
     add_custom_target(Shaders ALL DEPENDS ${SHADER_OUTPUTS})

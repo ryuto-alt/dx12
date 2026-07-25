@@ -594,6 +594,8 @@ float4 PSMain(PSInput input) : SV_TARGET
         color *= tint[SelectCascade(input.viewDepth)];
     }
     color = ApplyClusterDebug(color, input.positionSV.xy, input.worldPos);
+    // デカール枚数ヒートマップ（clusterExtra.z == 3。dx12_render_debug decalCount）
+    color = ApplyDecalDebug(color, input.positionSV.xy, input.worldPos);
 
     return float4(color, 1.0);
 }
