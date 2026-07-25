@@ -14,6 +14,9 @@ add_library(Renderer STATIC
     TaaPass.cpp
     RenderDebugPass.cpp
     ScreenSpaceGiPass.cpp
+    AccelerationStructure.cpp
+    RaytracingScene.cpp
+    RtScreenPass.cpp
     ClusteredLightCulling.cpp
     VolumetricFogPass.cpp
     DecalSystem.cpp

@@ -14,6 +14,7 @@
 #include "renderer/SSAOSettings.h"
 #include "renderer/ContactShadowSettings.h"
 #include "renderer/ShadowPcssSettings.h"
+#include "renderer/RtSettings.h"
 #include "renderer/SsrSettings.h"
 #include "renderer/SsgiSettings.h"
 #include "renderer/TaaSettings.h"
@@ -168,6 +169,11 @@ public:
     SsgiSettings&       GetSsgiSettings()       { return m_ssgi; }
     const SsgiSettings& GetSsgiSettings() const { return m_ssgi; }
 
+    // DXR レイトレーシング（RT サン影 → t11 / RT-AO → t8）。既定 OFF。
+    // DXR 非対応 GPU では Application が黙って無視する（ルートシグネチャは 1 DWORD も増えない）。
+    RtSettings&         GetRtSettings()        { return m_rt; }
+    const RtSettings&   GetRtSettings() const  { return m_rt; }
+
     TaaSettings&       GetTaaSettings()       { return m_taa; }
     const TaaSettings& GetTaaSettings() const { return m_taa; }
 
@@ -214,6 +220,7 @@ private:
     ShadowPcssSettings    m_shadowPcss;
     SsrSettings         m_ssr;
     SsgiSettings        m_ssgi;
+    RtSettings          m_rt;
     TaaSettings         m_taa;
     VolumetricFogSettings m_volFog;
     std::string         m_decalAtlasPath;         // assets 相対。空 = デカール無効

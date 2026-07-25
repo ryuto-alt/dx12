@@ -43,6 +43,13 @@ enum class RenderDebugMode : u32
     Velocity      = 7,
     Ssr           = 8,
     Ssgi          = 9,
+    // DXR（計画09 Step 1）: TLAS が正しく建っているかの目視確認。
+    //   RtHit  … プライマリレイのヒット距離のヒートマップ（シルエットがラスタと一致すること）
+    //   RtDiff … |RT のヒット距離 - ラスタの距離| のヒートマップ（黒＝完全一致）
+    // ★rtDiff が本命。行列の転置ミス / ノード変換の付け忘れ / LOD 違いを一発で炙り出す。
+    //   スキンドと半透明は TLAS に入っていないので必ず不一致になる（仕様）。
+    RtHit         = 10,
+    RtDiff        = 11,
 };
 
 class RenderDebugPass

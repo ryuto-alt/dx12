@@ -193,6 +193,7 @@ void Mesh::UploadVertexCache(GraphicsDevice& device, ID3D12GraphicsCommandList* 
                               cmd);
     // ステージングは DeferredRelease 経由（フェンス完了まで生存）なので即返して安全。
     m_vertexBuffer.FinishUpload();
+    ++m_geometryVersion;   // GPU VA が変わった → DXR の BLAS キャッシュを無効化させる
 }
 
 void Mesh::InitializeAsBox(GraphicsDevice& device)
@@ -450,6 +451,7 @@ void Mesh::ApplyUVScale(GraphicsDevice& device, float scaleU, float scaleV)
                               scaled.data(),
                               static_cast<u32>(scaled.size() * sizeof(Vertex)),
                               static_cast<u32>(sizeof(Vertex)));
+    ++m_geometryVersion;
 }
 
 void Mesh::SetVertexColor(GraphicsDevice& device, float r, float g, float b, float a)
@@ -464,6 +466,7 @@ void Mesh::SetVertexColor(GraphicsDevice& device, float r, float g, float b, flo
                               m_verticesCache.data(),
                               static_cast<u32>(m_verticesCache.size() * sizeof(Vertex)),
                               static_cast<u32>(sizeof(Vertex)));
+    ++m_geometryVersion;
 }
 
 } // namespace dx12e

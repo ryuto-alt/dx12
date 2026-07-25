@@ -56,6 +56,8 @@ namespace dx12e
     class RenderDebugPass;
     enum class RenderDebugMode : u32;   // renderer/RenderDebugPass.h（前方宣言可能な scoped enum）
     class ScreenSpaceGiPass;
+    class RaytracingScene;
+    class RtScreenPass;
     class VolumetricFogPass;
     class DecalSystem;
     class ParticleSystem;
@@ -174,6 +176,24 @@ public:
     };
     DiagRenderInfo GetDiagRenderInfo() const;
 
+    // DXR（レイトレーシング）の状態一式。DeepDiagnostics の `dxr` 検査と
+    // エディタの「レイトレーシング」窓が読む（計画09 §5.3）。
+    struct DiagDxrInfo
+    {
+        bool supported      = false;   // 6 段ゲートを全部通り、パスが生きているか
+        int  tier           = 0;       // D3D12_RAYTRACING_TIER の実値（0 = 非対応 / 10 / 11 / 12）
+        int  shaderModel    = 0;       // D3D_SHADER_MODEL の実値（0x65 = SM 6.5）
+        bool inlineRt       = false;   // Tier>=1.1 かつ SM>=6.5
+        bool shadowEnabled  = false;
+        bool aoEnabled      = false;
+        bool shadowActive   = false;   // 直近フレームで RT サン影が実際に走ったか
+        bool tlasReady      = false;
+        u32  instances = 0, blasCount = 0;
+        u32  skippedSkinned = 0, skippedTransparent = 0, droppedOverLimit = 0;
+        u64  blasBytes = 0, blasTriangles = 0, tlasBytes = 0, scratchBytes = 0, instanceDescBytes = 0;
+    };
+    DiagDxrInfo GetDiagDxrInfo() const;
+
     // 直近フレームの絵そのものを数値で受け取る。「配置したのに何も映らない」
     // 「ポスト処理が実は走っていない」をピクセルで確かめるため。
     struct DiagFrameStats
@@ -206,6 +226,13 @@ private:
     // 戻り値が空文字列なら「遅延応答」(フレーム境界で結果確定後に SendToClient で送る)。
     // client は遅延応答を送り返すための McpBridge クライアントトークン。
     std::string HandleMcpCommand(uint64_t client, const std::string& line);
+    // ★N37 の受け皿。HandleMcpCommand の else-if チェーンは MSVC の C1061
+    //   （ブロック入れ子上限）に張り付いており、1 本足すとコンパイルが落ちる。
+    //   レンダリング設定系の MCP method は**チェーンではなくこちらへ足すこと**。
+    //   処理したら true を返す（呼び出し側はそのまま応答して return する）。
+    bool HandleMcpRenderCommand(const std::string& method,
+                                const nlohmann::json& params,
+                                nlohmann::json& resp);
     // 直近フレームのシーン描画(m_sceneRT)を PNG に書き出す。成功=絶対パス / 失敗=空文字列+err。
     // MCP の screenshot 用。同期 readback(WaitIdle×2)＝低頻度のエディタ操作として割り切る。
     std::string CaptureSceneScreenshot(std::string& err);
@@ -268,10 +295,18 @@ private:
         // 影パスでは false のまま＝半透明も従来どおり影を落とす。
         bool                skipTransparent = false;
     };
+    // skipRtCovered: DXR の TLAS に入っているもの（IsRaytracedItem）を描かない。
+    //   ★CSM（太陽の影）のパスだけに渡す。RT サン影が有効なとき、CSM は
+    //     「RT が担当できないもの（スキンド / 半透明）」だけを描く排他ハイブリッドになる。
+    //     フォワードの shadow = min(csm, contactShadowTex) が過不足なく合成する。
+    //     これをやらずに CSM を全部描くと min() は暗い方を採るので、CSM のアクネと
+    //     カスケード境界の段差が残ってしまう（RT 影の価値の半分がここ）。
+    //   スポット影 / ポイント影は太陽ではないので必ず false のまま。
     void RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState& staticPSO,
                               PipelineState& skinnedPSO, bool updateSkinning, u32 frameIndex,
                               u32 lodBias = 0, PipelineState* instPSO = nullptr,
-                              const PrepassParams* prepass = nullptr);
+                              const PrepassParams* prepass = nullptr,
+                              bool skipRtCovered = false);
     // フレーム描画リスト: Transform+MeshRenderer の走査・ワールド行列合成を1フレーム1回だけ行い、
     // メイン/深度プリパス/CSM各カスケード/スポット影/ポイント影の全パスで共有する
     // （従来は最悪 ~20 パス × entt 全走査 + ComputeWorldMatrix 再計算）。
@@ -299,7 +334,9 @@ private:
     // ---- パフォーマンス診断（MCP perf_stats / benchmark 用）----
     // GPU パス別タイムスタンプ。Render() 内の各パスを挟んで計測（結果は約3フレーム遅れ）。
     std::unique_ptr<GpuTimer> m_gpuTimer;
-    static constexpr u32 kPerfGpuScopes = 12;  // >= GpuTimer::Scope::Count（cpp で static_assert）
+    // >= GpuTimer::Scope::Count（cpp で static_assert）。
+    // 12 → 14（計画09 が raytracing / rtScreen の 2 スコープを足して 12 使用。残り 2）。
+    static constexpr u32 kPerfGpuScopes = 14;
                                                // 現在 8 使用（ClusterCull 追加）。SSR/SSGI/フォグ用に余裕を持たせてある。
     struct PerfFrame
     {
@@ -793,6 +830,7 @@ private:
         u32  clusterDebug = 0;
         bool cascadeDebug = false;
         int  fogDebug = 0;
+        bool rtForceTlas = false;
     } m_renderDebugRestore;
     std::string m_renderDebugModeName;
     std::string m_renderDebugWarnings;   // JSON 配列（応答へそのまま埋める）
@@ -801,6 +839,20 @@ private:
     // G-Buffer + 深度 + 速度 + 前フレームカラーをレイマーチして、フォワード PS の
     // IBL ブロックで合成する。無効時は 1x1 黒ダミー(RGBA16F)を t16/t17 に貼れば寄与ゼロ。
     std::unique_ptr<ScreenSpaceGiPass> m_screenSpaceGi;
+
+    // ---- DXR レイトレーシング（計画09 Step 1〜3）----
+    // ★ルートシグネチャ / b1 / RTV ヒープの増分はゼロ。
+    //   RT サン影は既存のコンタクトシャドウ枠(t11)、RT-AO は既存の SSAO 枠(t8) へ書くだけ。
+    //   DXR 非対応 GPU では m_dxrEnabled=false のままで、既存の白 1x1 ダミーが貼られる
+    //   ＝フォワード PS は 1 行も変わらない。
+    std::unique_ptr<RaytracingScene> m_rtScene;      // BLAS キャッシュ + TLAS
+    std::unique_ptr<RtScreenPass>    m_rtScreenPass; // RT影 / RT-AO / RTデバッグ
+    bool m_dxrEnabled = false;                       // 6 段ゲートを全部通ったか
+    int  m_rtSceneGenSeen = -1;                      // BLAS キャッシュ無効化用（N30 と同じ理由）
+    // このフレームで RT サン影が実際に走ったか。CSM 側の排他描画（skipRtCovered）と
+    // フォワードの min() 合成が食い違わないよう、判定は必ずこの 1 変数を見ること。
+    bool m_rtShadowActiveThisFrame = false;
+
     std::unique_ptr<Texture>       m_ssBlackTex;                    // 1x1 黒 RGBA16F ダミー
     u32                            m_ssBlackSrvIndex = 0xFFFFFFFFu;
     std::unique_ptr<PipelineState> m_velocityPSO;          // 深度+速度（static）

@@ -104,6 +104,13 @@ DeepDiagReport Instancing(Application& app);
 // 式の文法までは見ない（誤検知で狼少年にしないため）。
 DeepDiagReport Scripts();
 
+// DXR（レイトレーシング）。GPU の Tier / シェーダモデル、6 段ゲートの通過状況、
+// TLAS のインスタンス数と加速構造の VRAM 使用量、そして「TLAS に入らなかったもの」
+// （スキンド / 半透明 / 上限超過）を出す。
+// 「RT 影を ON にしたのにキャラの影が変わらない」「なぜか一部の物だけ影が出ない」を
+// 説明できる唯一の場所（スキンドは仕様として CSM が担当する）。
+DeepDiagReport Dxr(Application& app);
+
 // ===================== 機械可読な一括実行（MCP: dx12_diagnose 用）=====================
 //
 // 全検査をまとめて回して JSON を返す。JUnit XML / 終了コード / 診断パネルの表示とは

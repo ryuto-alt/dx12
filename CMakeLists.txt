@@ -312,6 +312,13 @@ if(DXC_EXECUTABLE)
     set(SHADER_VEL_DEBUG     "${CMAKE_SOURCE_DIR}/shaders/velocity/VelocityDebug.hlsl")
     # dx12_render_debug（中間バッファ可視化）。同じ理由で shaders/debug/ には置けない。
     set(SHADER_RENDER_DEBUG  "${CMAKE_SOURCE_DIR}/shaders/renderdebug/RenderDebug.hlsl")
+    # DXR 1.1 inline raytracing（計画09 Step 1〜3）。★プロファイルは ps_6_5（RayQuery は SM 6.5 必須）。
+    # VS だけは RayQuery を含まないので vs_6_0 のままでよい。
+    set(SHADER_RT_SHADOW     "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtShadow.hlsl")
+    set(SHADER_RT_AO         "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtAo.hlsl")
+    set(SHADER_RT_DEBUG      "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtDebug.hlsl")
+    set(SHADER_RT_INC        "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtCommon.hlsli"
+                             "${CMAKE_SOURCE_DIR}/shaders/post/FullscreenTri.hlsli")
 
     set(SHADER_OUTPUTS
         "${SHADER_OUTPUT_DIR}/Forward_VS.cso"
@@ -397,6 +404,10 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/FogComposite_VS.cso"
         "${SHADER_OUTPUT_DIR}/FogComposite_PS.cso"
         "${SHADER_OUTPUT_DIR}/ClusterCullDecals_CS.cso"
+        "${SHADER_OUTPUT_DIR}/Rt_VS.cso"
+        "${SHADER_OUTPUT_DIR}/RtShadow_PS.cso"
+        "${SHADER_OUTPUT_DIR}/RtAo_PS.cso"
+        "${SHADER_OUTPUT_DIR}/RtDebug_PS.cso"
     )
 
     # --- デカールのクラスタカリング ---
@@ -967,6 +978,34 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E RenderDebugPS -Fo "${SHADER_OUTPUT_DIR}/RenderDebug_PS.cso" "${SHADER_RENDER_DEBUG}"
         DEPENDS "${SHADER_RENDER_DEBUG}" "${SHADER_POST_INC}" "${SHADER_SS_INC}"
         COMMENT "Compiling RenderDebug.hlsl -> RenderDebug_PS.cso (ps_6_0)"
+    )
+
+    # --- DXR 1.1 inline raytracing（計画09 Step 1〜3）---
+    # VS は 3 パス共有（RtShadow.hlsl の中の FSTriVS）。PS は必ず ps_6_5 以上でビルドすること。
+    # ps_6_4 以下だと "Opcode AllocateRayQuery not valid in shader model ps_6_4" で落ちる。
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/Rt_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E FSTriVS -Fo "${SHADER_OUTPUT_DIR}/Rt_VS.cso" "${SHADER_RT_SHADOW}"
+        DEPENDS "${SHADER_RT_SHADOW}" ${SHADER_RT_INC}
+        COMMENT "Compiling RtShadow.hlsl -> Rt_VS.cso (vs_6_0)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/RtShadow_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_5 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/RtShadow_PS.cso" "${SHADER_RT_SHADOW}"
+        DEPENDS "${SHADER_RT_SHADOW}" ${SHADER_RT_INC}
+        COMMENT "Compiling RtShadow.hlsl -> RtShadow_PS.cso (ps_6_5)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/RtAo_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_5 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/RtAo_PS.cso" "${SHADER_RT_AO}"
+        DEPENDS "${SHADER_RT_AO}" ${SHADER_RT_INC}
+        COMMENT "Compiling RtAo.hlsl -> RtAo_PS.cso (ps_6_5)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/RtDebug_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_5 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/RtDebug_PS.cso" "${SHADER_RT_DEBUG}"
+        DEPENDS "${SHADER_RT_DEBUG}" ${SHADER_RT_INC}
+        COMMENT "Compiling RtDebug.hlsl -> RtDebug_PS.cso (ps_6_5)"
     )
 
     add_custom_target(Shaders ALL DEPENDS ${SHADER_OUTPUTS})

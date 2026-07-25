@@ -1694,10 +1694,104 @@ nlohmann::json ReportToJson(const char* id, const DeepDiagReport& rep)
 
 } // namespace
 
+DeepDiagReport DeepDiag::Dxr(Application& app)
+{
+    DeepDiagReport r;
+    r.title = "DXR レイトレーシング";
+
+    const Application::DiagDxrInfo d = app.GetDiagDxrInfo();
+
+    auto fmtTier = [](int t) -> std::string
+    {
+        if (t < 10) return "非対応";
+        return std::to_string(t / 10) + "." + std::to_string(t % 10);
+    };
+    auto fmtSm = [](int s) -> std::string
+    {
+        return std::to_string(s >> 4) + "." + std::to_string(s & 0xF);
+    };
+    auto mb = [](uint64_t b) { return static_cast<double>(b) / (1024.0 * 1024.0); };
+
+    ++r.checked;
+    if (!d.inlineRt)
+    {
+        // エラーではなく「機能の不在」。DXR 非対応 GPU でも従来どおり動くのが正しい。
+        r.Add(1, "この GPU では inline raytracing (RayQuery) が使えません（Tier "
+                 + fmtTier(d.tier) + " / ShaderModel " + fmtSm(d.shaderModel)
+                 + "）。要 DXR Tier 1.1 かつ SM 6.5。RT 影 / RT-AO は無効のまま従来の "
+                   "CSM + SSAO で描画されます");
+        return r;
+    }
+    r.Add(0, "DXR: Tier " + fmtTier(d.tier) + " / ShaderModel " + fmtSm(d.shaderModel)
+             + " / inline raytracing 可");
+
+    ++r.checked;
+    if (!d.supported)
+        r.Add(2, "GPU は対応しているのにレイトレーシングのパスが初期化されていません"
+                 "（.cso の欠落か加速構造バッファの確保失敗）。起動ログの \"DXR\" 行を確認すること");
+
+    ++r.checked;
+    if (!d.shadowEnabled && !d.aoEnabled)
+        r.Add(0, "RT サン影 / RT-AO はどちらも OFF（シーンの \"raytracing\" 設定。既定 OFF）");
+    else
+    {
+        r.Add(0, std::string("RT サン影=") + (d.shadowEnabled ? "ON" : "OFF")
+                 + " / RT-AO=" + (d.aoEnabled ? "ON" : "OFF"));
+        if (d.shadowEnabled && !d.shadowActive)
+            r.Add(1, "RT サン影が ON なのに直近フレームで走っていません"
+                     "（正射カメラ / 2D ビュー / TLAS 未構築のいずれか）");
+    }
+
+    ++r.checked;
+    if (d.tlasReady)
+    {
+        char buf[256];
+        std::snprintf(buf, sizeof(buf),
+            "TLAS: %u インスタンス / BLAS %u 個 / %llu 三角形 — 加速構造 %.1f MB "
+            "(BLAS %.1f + TLAS %.2f + スクラッチ %.1f + インスタンス記述 %.2f) = %.1f B/三角形",
+            d.instances, d.blasCount, static_cast<unsigned long long>(d.blasTriangles),
+            mb(d.blasBytes + d.tlasBytes + d.scratchBytes + d.instanceDescBytes),
+            mb(d.blasBytes), mb(d.tlasBytes), mb(d.scratchBytes), mb(d.instanceDescBytes),
+            d.blasTriangles ? static_cast<double>(d.blasBytes) / static_cast<double>(d.blasTriangles) : 0.0);
+        r.Add(0, buf);
+    }
+    else if (d.shadowEnabled || d.aoEnabled)
+    {
+        r.Add(2, "TLAS が構築されていません（TLAS に入るジオメトリが 0 件）。"
+                 "シーンが空か、全部スキンド / 半透明の可能性があります");
+    }
+
+    // 「なぜキャラの影が RT に出ないのか」への回答をここに集約する。
+    ++r.checked;
+    if (d.skippedSkinned > 0)
+        r.Add(0, "スキンドメッシュ " + std::to_string(d.skippedSkinned)
+                 + " 体は TLAS に入りません（頂点シェーダ内スキニングなので変形後の頂点が "
+                   "GPU に存在しないため。仕様）。影は従来どおり CSM が担当し、"
+                   "フォワードの min() で RT 影と合成されます");
+    if (d.skippedTransparent > 0)
+        r.Add(0, "半透明メッシュ " + std::to_string(d.skippedTransparent)
+                 + " 個は TLAS に入りません（any-hit が必要になり 2〜10 倍遅くなるため。仕様）");
+
+    ++r.checked;
+    if (d.droppedOverLimit > 0)
+        r.Add(1, std::to_string(d.droppedOverLimit)
+                 + " 個のインスタンスが上限超過で TLAS から外れました"
+                   "（カメラから遠い順に切っています）。シーンの raytracing.maxInstances を上げるか、"
+                   "そのぶん影 / AO が欠けることを許容すること");
+
+    // 4GB クラスの GPU で問題になる水準を注意として出す（コンパクション未実装）。
+    ++r.checked;
+    if (d.blasBytes > (512ull << 20))
+        r.Add(1, "BLAS の VRAM が 512MB を超えています（コンパクションは未実装）。"
+                 "低 VRAM の GPU では厳しいので、シーンの三角形数を見直すこと");
+
+    return r;
+}
+
 std::vector<std::string> DeepDiag::AllCheckIds()
 {
     return { "shaders", "textures", "models", "gamma", "scene_assets",
-             "lighting", "terrain", "picking", "instancing", "scripts" };
+             "lighting", "terrain", "picking", "instancing", "scripts", "dxr" };
 }
 
 nlohmann::json DeepDiag::RunAll(Application& app, const std::string& only)
@@ -1750,6 +1844,7 @@ nlohmann::json DeepDiag::RunAll(Application& app, const std::string& only)
     if (pick("picking"))      add("picking",      DeepDiag::Picking(app));
     if (pick("instancing"))   add("instancing",   DeepDiag::Instancing(app));
     if (pick("scripts"))      add("scripts",      DeepDiag::Scripts());
+    if (pick("dxr"))          add("dxr",          DeepDiag::Dxr(app));
 
     nlohmann::json summary;
     summary["checks"]     = ran;

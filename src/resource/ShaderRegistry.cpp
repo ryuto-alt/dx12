@@ -304,6 +304,28 @@ const std::vector<ShaderSource>& BuildRegistry()
             { "post/FullscreenTri.hlsli", "screenspace/ScreenSpaceCommon.hlsli" },
         },
         {
+            // DXR 1.1 inline raytracing の RT サン影（計画09 Step 2）。VS は 3 パス共有。
+            // ★PS は必ず ps_6_5 以上。RayQuery は SM 6.5 必須で 6.4 以下はコンパイルできない。
+            "raytracing/RtShadow.hlsl",
+            {
+                { L"Rt_VS.cso",       L"FSTriVS", L"vs_6_0" },
+                { L"RtShadow_PS.cso", L"PSMain",  L"ps_6_5" },
+            },
+            { "raytracing/RtCommon.hlsli", "post/FullscreenTri.hlsli" },
+        },
+        {
+            // RT-AO（計画09 Step 3）
+            "raytracing/RtAo.hlsl",
+            { { L"RtAo_PS.cso", L"PSMain", L"ps_6_5" } },
+            { "raytracing/RtCommon.hlsli", "post/FullscreenTri.hlsli" },
+        },
+        {
+            // TLAS の目視確認用プライマリレイ（計画09 Step 1）。dx12_render_debug の rt / rtDiff。
+            "raytracing/RtDebug.hlsl",
+            { { L"RtDebug_PS.cso", L"PSMain", L"ps_6_5" } },
+            { "raytracing/RtCommon.hlsli", "post/FullscreenTri.hlsli" },
+        },
+        {
             // SSR（スクリーン空間反射）。VS は SSR.hlsl の FSTriVS を SSGI 側とも共有する。
             "screenspace/SSR.hlsl",
             {

@@ -874,6 +874,26 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
         };
     }
 
+    // DXR レイトレーシング（シーン単位）。既定 OFF なので、未設定シーンは従来どおり。
+    // forceBuildTlas は目視検証用の一時トグルなので保存しない。
+    {
+        const auto& rt = scene.GetRtSettings();
+        root["raytracing"] = {
+            {"shadowEnabled",      rt.shadowEnabled},
+            {"shadowSunAngle",     rt.shadowSunAngle},
+            {"shadowNormalBias",   rt.shadowNormalBias},
+            {"shadowMaxDistance",  rt.shadowMaxDistance},
+            {"shadowIntensity",    rt.shadowIntensity},
+            {"aoEnabled",          rt.aoEnabled},
+            {"aoRadius",           rt.aoRadius},
+            {"aoRayCount",         rt.aoRayCount},
+            {"aoIntensity",        rt.aoIntensity},
+            {"aoPower",            rt.aoPower},
+            {"aoCombineWithSsao",  rt.aoCombineWithSsao},
+            {"maxInstances",       rt.maxInstances},
+        };
+    }
+
     // ボリュメトリックフォグ（シーン単位）。debugMode は目視検証用の一時トグルなので保存しない。
     {
         const auto& vf = scene.GetVolumetricFogSettings();
@@ -1079,6 +1099,29 @@ static void LoadShadowPcssSettings(Scene& scene, const json& root)
         pc.temporalDither      = pj.value("temporalDither",      pc.temporalDither);
     }
     scene.GetShadowPcssSettings() = pc;
+}
+
+// JSON から DXR 設定を復元（raytracing が無ければデフォルト OFF = 後方互換）
+static void LoadRtSettings(Scene& scene, const json& root)
+{
+    RtSettings rt;
+    if (root.contains("raytracing"))
+    {
+        const auto& j = root["raytracing"];
+        rt.shadowEnabled     = j.value("shadowEnabled",     rt.shadowEnabled);
+        rt.shadowSunAngle    = j.value("shadowSunAngle",    rt.shadowSunAngle);
+        rt.shadowNormalBias  = j.value("shadowNormalBias",  rt.shadowNormalBias);
+        rt.shadowMaxDistance = j.value("shadowMaxDistance", rt.shadowMaxDistance);
+        rt.shadowIntensity   = j.value("shadowIntensity",   rt.shadowIntensity);
+        rt.aoEnabled         = j.value("aoEnabled",         rt.aoEnabled);
+        rt.aoRadius          = j.value("aoRadius",          rt.aoRadius);
+        rt.aoRayCount        = j.value("aoRayCount",        rt.aoRayCount);
+        rt.aoIntensity       = j.value("aoIntensity",       rt.aoIntensity);
+        rt.aoPower           = j.value("aoPower",           rt.aoPower);
+        rt.aoCombineWithSsao = j.value("aoCombineWithSsao", rt.aoCombineWithSsao);
+        rt.maxInstances      = j.value("maxInstances",      rt.maxInstances);
+    }
+    scene.GetRtSettings() = rt;   // forceBuildTlas は常に既定 OFF（保存対象外）
 }
 
 // JSON から ボリュメトリックフォグ設定を復元（volumetricFog が無ければデフォルト OFF = 後方互換）
@@ -1565,6 +1608,8 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
     catch (const json::exception& e) { Logger::Warn("shadowPcss 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadVolumetricFogSettings(scene, root); }
     catch (const json::exception& e) { Logger::Warn("volumetricFog 設定をスキップしました（型不正）: {}", e.what()); }
+    try { LoadRtSettings(scene, root); }
+    catch (const json::exception& e) { Logger::Warn("raytracing 設定をスキップしました（型不正）: {}", e.what()); }
 
     // リアルタイム影 ON/OFF（キーが無ければ既定 ON ＝後方互換）
     scene.SetShadowsEnabled(root.value("shadows", true));

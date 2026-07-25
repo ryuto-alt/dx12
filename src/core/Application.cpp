@@ -37,6 +37,8 @@
 #include "renderer/TaaPass.h"
 #include "renderer/RenderDebugPass.h"
 #include "renderer/ScreenSpaceGiPass.h"
+#include "renderer/RaytracingScene.h"
+#include "renderer/RtScreenPass.h"
 #include "renderer/VolumetricFogPass.h"
 #include "renderer/DecalSystem.h"
 #include "renderer/PrevWorldComponent.h"
@@ -657,6 +659,12 @@ void Application::RegisterShaderReloadHandlers()
               L"SsgiTrace_PS.cso", L"SsgiTemporal_PS.cso", L"SsgiUpsample_PS.cso",
               L"ColorDownsample_PS.cso" },
             [this]() { m_screenSpaceGi->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_rtScreenPass)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"Rt_VS.cso", L"RtShadow_PS.cso", L"RtAo_PS.cso", L"RtDebug_PS.cso" },
+            [this]() { m_rtScreenPass->RecreatePipelines(*m_graphicsDevice); });
     }
     if (m_bloomPass)
     {
@@ -1931,6 +1939,41 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_screenSpaceGi->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
                                     m_window->GetWidth(), m_window->GetHeight(),
                                     PathResolver::ShaderDirW());
+
+        // DXR レイトレーシング（計画09 Step 1〜3）。6 段ゲートを全部通ったときだけ作る。
+        //   Gate 1/2: Tier >= 1.1 かつ SM >= 6.5（GraphicsDevice::SupportsInlineRaytracing）
+        //   Gate 3/6: Device5 と加速構造バッファの確保（RaytracingScene::Initialize）
+        //   Gate 5  : .cso の読み込み（RtScreenPass::Initialize → ShaderCompiler が throw）
+        //   Gate 4  : ID3D12GraphicsCommandList4（初回 Build 時）
+        // どれかが落ちたら m_dxrEnabled=false のままで、以後 DXR のパスは 1 つも走らない。
+        // 既存の白 1x1 ダミーがそのまま t8/t11 に貼られる＝フォワード PS は 1 行も変わらない。
+        if (m_graphicsDevice->SupportsInlineRaytracing())
+        {
+            m_rtScene = std::make_unique<RaytracingScene>();
+            if (m_rtScene->Initialize(*m_graphicsDevice))
+            {
+                try
+                {
+                    m_rtScreenPass = std::make_unique<RtScreenPass>();
+                    m_rtScreenPass->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
+                                               m_window->GetWidth(), m_window->GetHeight(),
+                                               PathResolver::ShaderDirW());
+                    m_dxrEnabled = m_rtScreenPass->IsReady();
+                }
+                catch (const std::exception& e)
+                {
+                    // .cso が無い / 壊れている（Gate 5）。エラーではなく機能の不在として扱う。
+                    Logger::Warn("レイトレーシングのシェーダを読めませんでした: {}", e.what());
+                    m_rtScreenPass.reset();
+                    m_dxrEnabled = false;
+                }
+            }
+            if (!m_dxrEnabled)
+            {
+                m_rtScene.reset();
+                m_rtScreenPass.reset();
+            }
+        }
 
         // クラスタードライティング（Forward+）。ライトカリング compute 2 パス + SRV テーブル。
         // 旧「点光源 8 / スポット 8」の cbuffer 固定配列を置き換える本体。
@@ -3549,6 +3592,144 @@ nlohmann::json McpComponentTypesOf(const entt::registry& reg, entt::entity e)
 // エディタウィンドウ全体を PNG へ(定義は CaptureSceneScreenshot の手前)。MCP ui_screenshot 用。
 static std::string CaptureWindowScreenshot(HWND hwnd, std::string& err);
 
+
+// ---------------------------------------------------------------------------
+// MCP: レンダリング設定系の method（HandleMcpCommand の巨大な else-if チェーンの外）
+// ---------------------------------------------------------------------------
+// ★N37 対策の受け皿。HandleMcpCommand の else-if チェーンは MSVC の
+//   「ブロックの入れ子のレベルが深すぎます (C1061)」上限に張り付いており、
+//   1 本足しただけでコンパイルが落ちる（実際に落ちた）。
+//   **新しいレンダリング設定の method はチェーンではなくこの関数へ足すこと。**
+//   ここは平坦な if / else if なので、いくら足しても入れ子が深くならない。
+//
+// 戻り値: この関数が method を処理したら true（呼び出し側はそのまま応答を返す）。
+// 例外は呼び出し側（HandleMcpCommand の try/catch）が受ける。
+bool Application::HandleMcpRenderCommand(const std::string& method,
+                                         const nlohmann::json& params,
+                                         nlohmann::json& resp)
+{
+    using json = nlohmann::json;
+    if (!m_scene) return false;
+
+    if (method == "get_shadow_pcss" || method == "set_shadow_pcss")
+    {
+        // ★get/set を 1 つの else-if に畳んである。MCP のディスパッチは巨大な
+        //   else-if チェーンで、MSVC の「ブロックの入れ子が深すぎます(C1061)」上限に
+        //   既に張り付いているため（N37）。新しい method を足す人は get/set を必ず束ねること。
+        auto& p = m_scene->GetShadowPcssSettings();
+        if (method == "set_shadow_pcss")
+        {
+            p.enabled = params.value("enabled", p.enabled);
+            if (params.contains("lightTanAngle"))
+                p.lightTanAngle = McpFloatParam(params, "lightTanAngle", p.lightTanAngle, 0.001f, 0.5f);
+            if (params.contains("maxPenumbraTexels"))
+                p.maxPenumbraTexels = McpFloatParam(params, "maxPenumbraTexels", p.maxPenumbraTexels, 1.0f, 64.0f);
+            if (params.contains("blockerSearchTexels"))
+                p.blockerSearchTexels = McpFloatParam(params, "blockerSearchTexels", p.blockerSearchTexels, 1.0f, 64.0f);
+            p.temporalDither = params.value("temporalDither", p.temporalDither);
+        }
+        resp["ok"] = true;
+        resp["result"] = {{"enabled", p.enabled},
+                          {"lightTanAngle", p.lightTanAngle},
+                          {"maxPenumbraTexels", p.maxPenumbraTexels},
+                          {"blockerSearchTexels", p.blockerSearchTexels},
+                          {"temporalDither", p.temporalDither},
+                          // ON でも実際に走らない条件を明示する（誤診断を防ぐ）
+                          {"active", p.enabled && m_scene->GetShadowsEnabled()
+                                     && !m_camera->IsOrthographic()},
+                          {"temporalDitherActive", p.enabled && p.temporalDither
+                                     && m_scene->GetTaaSettings().enabled},
+                          {"applied", method == "set_shadow_pcss"},
+                          {"note", "OFF にすると従来の 3x3 PCF に戻る（絵はビット一致）。"
+                                   "時間ディザは TAA 有効時のみ効く"}};
+    }
+    // --- DXR レイトレーシング（計画09）---
+    else if (method == "get_dxr" || method == "set_dxr")
+    {
+        // ★get/set を 1 つの else-if に畳んである（N37。C1061 の入れ子上限対策）。
+        //   RT サン影は既存のコンタクトシャドウ枠(t11)、RT-AO は既存の SSAO 枠(t8) へ書く。
+        //   ルートシグネチャは 1 DWORD も増えない。
+        auto& r = m_scene->GetRtSettings();
+        if (method == "set_dxr")
+        {
+            if (!m_dxrEnabled)
+                throw McpError(McpErr::InvalidParam,
+                    "this GPU does not support inline raytracing",
+                    "DXR Tier 1.1 かつ Shader Model 6.5 が必要（RTX 20 系 / RX 6000 系以降）。"
+                    "起動ログの \"DXR:\" 行に実際の Tier と SM が出る");
+            r.shadowEnabled = params.value("shadowEnabled", r.shadowEnabled);
+            if (params.contains("shadowSunAngle"))
+                r.shadowSunAngle = McpFloatParam(params, "shadowSunAngle", r.shadowSunAngle, 0.0f, 20.0f);
+            if (params.contains("shadowNormalBias"))
+                r.shadowNormalBias = McpFloatParam(params, "shadowNormalBias", r.shadowNormalBias, 0.0f, 1.0f);
+            if (params.contains("shadowMaxDistance"))
+                r.shadowMaxDistance = McpFloatParam(params, "shadowMaxDistance", r.shadowMaxDistance, 0.0f, 100000.0f);
+            if (params.contains("shadowIntensity"))
+                r.shadowIntensity = McpFloatParam(params, "shadowIntensity", r.shadowIntensity, 0.0f, 1.0f);
+            r.aoEnabled = params.value("aoEnabled", r.aoEnabled);
+            if (params.contains("aoRadius"))
+                r.aoRadius = McpFloatParam(params, "aoRadius", r.aoRadius, 0.01f, 100.0f);
+            if (params.contains("aoRayCount"))
+                r.aoRayCount = std::clamp(params.value("aoRayCount", r.aoRayCount), 1, 8);
+            if (params.contains("aoIntensity"))
+                r.aoIntensity = McpFloatParam(params, "aoIntensity", r.aoIntensity, 0.0f, 1.0f);
+            if (params.contains("aoPower"))
+                r.aoPower = McpFloatParam(params, "aoPower", r.aoPower, 0.01f, 8.0f);
+            r.aoCombineWithSsao = params.value("aoCombineWithSsao", r.aoCombineWithSsao);
+            if (params.contains("maxInstances"))
+                r.maxInstances = std::clamp(params.value("maxInstances", r.maxInstances), 0, 32768);
+            r.forceBuildTlas = params.value("forceBuildTlas", r.forceBuildTlas);
+        }
+        const auto* gd = m_graphicsDevice.get();
+        const int tier = gd ? static_cast<int>(gd->GetRaytracingTier()) : 0;
+        const int sm   = gd ? static_cast<int>(gd->GetHighestShaderModel()) : 0;
+        json stats = json::object();
+        if (m_rtScene)
+        {
+            const auto& s = m_rtScene->GetStats();
+            stats = {{"instances", s.instances}, {"blasCount", s.blasCount},
+                     {"blasBytes", s.blasBytes}, {"blasTriangles", s.blasTriangles},
+                     {"tlasBytes", s.tlasBytes}, {"scratchBytes", s.scratchBytes},
+                     {"instanceDescBytes", s.instanceDescBytes},
+                     {"skippedSkinned", s.skippedSkinned},
+                     {"skippedTransparent", s.skippedTransparent},
+                     {"droppedOverLimit", s.droppedOverLimit},
+                     {"bytesPerTriangle", s.blasTriangles
+                          ? static_cast<double>(s.blasBytes) / static_cast<double>(s.blasTriangles) : 0.0}};
+        }
+        resp["ok"] = true;
+        resp["result"] = {{"supported", m_dxrEnabled},
+                          {"raytracingTier", tier == 0 ? std::string("none")
+                               : std::to_string(tier / 10) + "." + std::to_string(tier % 10)},
+                          {"highestShaderModel", std::to_string(sm >> 4) + "." + std::to_string(sm & 0xF)},
+                          {"shadowEnabled", r.shadowEnabled},
+                          {"shadowSunAngle", r.shadowSunAngle},
+                          {"shadowNormalBias", r.shadowNormalBias},
+                          {"shadowMaxDistance", r.shadowMaxDistance},
+                          {"shadowIntensity", r.shadowIntensity},
+                          {"aoEnabled", r.aoEnabled},
+                          {"aoRadius", r.aoRadius},
+                          {"aoRayCount", r.aoRayCount},
+                          {"aoIntensity", r.aoIntensity},
+                          {"aoPower", r.aoPower},
+                          {"aoCombineWithSsao", r.aoCombineWithSsao},
+                          {"maxInstances", r.maxInstances},
+                          {"forceBuildTlas", r.forceBuildTlas},
+                          // ON でも実際に走らない条件を明示する（誤診断を防ぐ）
+                          {"shadowActive", m_rtShadowActiveThisFrame},
+                          {"tlasReady", m_rtScene && m_rtScene->IsReady()},
+                          {"stats", stats},
+                          {"applied", method == "set_dxr"},
+                          {"note", "RT 影は t11(コンタクトシャドウ枠)、RT-AO は t8(SSAO枠)へ書く。"
+                                   "ルートシグネチャ増分ゼロ。スキンドと半透明は TLAS に入らないので "
+                                   "CSM が担当する（min 合成）"}};
+    }
+
+    else
+        return false;   // 未対応の method（呼び出し側の else-if チェーンへ落とす）
+
+    return true;
+}
 std::string Application::HandleMcpCommand(uint64_t client, const std::string& line)
 {
     using json = nlohmann::json;
@@ -3582,6 +3763,19 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         // 遅延応答が宙吊り(クライアント timeout)になるのを防ぐ。
         const bool busyPlaying = (m_engineMode == EngineMode::Playing) ||
                                  (m_modeChangeRequested && m_pendingMode == EngineMode::Playing);
+
+        // ★N37: 下の else-if チェーンは MSVC の C1061（ブロック入れ子上限）に張り付いていて、
+        //   1 本足しただけでコンパイルが落ちる。レンダリング設定系はチェーンの外の
+        //   HandleMcpRenderCommand() で先に処理して早期 return する
+        //   （**この if は else if ではないのでチェーンの深さを 1 も増やさない**）。
+        //   新しいレンダリング設定の method はそちらへ足すこと。
+        if (HandleMcpRenderCommand(method, params, resp))
+        {
+            if (m_mcpBridge)
+                m_mcpBridge->RecordCommand(method, resp.value("ok", false),
+                                           resp.value("error", std::string()));
+            return resp.dump();
+        }
 
         if (method == "list_entities")
         {
@@ -4934,6 +5128,8 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"velocity",         static_cast<u32>(RenderDebugMode::Velocity)},
                 {"ssr",              static_cast<u32>(RenderDebugMode::Ssr)},
                 {"ssgi",             static_cast<u32>(RenderDebugMode::Ssgi)},
+                {"rt",               static_cast<u32>(RenderDebugMode::RtHit)},
+                {"rtDiff",           static_cast<u32>(RenderDebugMode::RtDiff)},
                 {"shadowCascade",    0},
                 {"lightComplexity",  0},
                 {"clusterGrid",      0},
@@ -5006,6 +5202,18 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             else if (mode == "ssgi")
             {
                 if (!ssgiS.enabled) { ssgiS.enabled = true; warn.push_back("SSGI を一時的に ON にした（同上）"); }
+            }
+            else if (mode == "rt" || mode == "rtDiff")
+            {
+                // TLAS を建てさせる（RT 影 / RT-AO が両方 OFF でも見られるようにする）。
+                // forceBuildTlas はシーン JSON に保存しない一時トグル。
+                if (!m_dxrEnabled)
+                    warn.push_back("この GPU では inline raytracing が使えないので何も出ない"
+                                   "（要 DXR Tier 1.1 / Shader Model 6.5）");
+                m_renderDebugRestore.rtForceTlas = m_scene->GetRtSettings().forceBuildTlas;
+                m_scene->GetRtSettings().forceBuildTlas = true;
+                if (mode == "rtDiff")
+                    warn.push_back("スキンドと半透明は TLAS に入らない仕様なので、そこはマゼンタになる");
             }
             else if (mode == "shadowCascade")
             {
@@ -5561,38 +5769,6 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             c.fadeDistance = params.value("fadeDistance", c.fadeDistance);
             resp["ok"] = true;
             resp["result"] = {{"applied", true}};
-        }
-        else if (method == "get_shadow_pcss" || method == "set_shadow_pcss")
-        {
-            // ★get/set を 1 つの else-if に畳んである。MCP のディスパッチは巨大な
-            //   else-if チェーンで、MSVC の「ブロックの入れ子が深すぎます(C1061)」上限に
-            //   既に張り付いているため（N37）。新しい method を足す人は get/set を必ず束ねること。
-            auto& p = m_scene->GetShadowPcssSettings();
-            if (method == "set_shadow_pcss")
-            {
-                p.enabled = params.value("enabled", p.enabled);
-                if (params.contains("lightTanAngle"))
-                    p.lightTanAngle = McpFloatParam(params, "lightTanAngle", p.lightTanAngle, 0.001f, 0.5f);
-                if (params.contains("maxPenumbraTexels"))
-                    p.maxPenumbraTexels = McpFloatParam(params, "maxPenumbraTexels", p.maxPenumbraTexels, 1.0f, 64.0f);
-                if (params.contains("blockerSearchTexels"))
-                    p.blockerSearchTexels = McpFloatParam(params, "blockerSearchTexels", p.blockerSearchTexels, 1.0f, 64.0f);
-                p.temporalDither = params.value("temporalDither", p.temporalDither);
-            }
-            resp["ok"] = true;
-            resp["result"] = {{"enabled", p.enabled},
-                              {"lightTanAngle", p.lightTanAngle},
-                              {"maxPenumbraTexels", p.maxPenumbraTexels},
-                              {"blockerSearchTexels", p.blockerSearchTexels},
-                              {"temporalDither", p.temporalDither},
-                              // ON でも実際に走らない条件を明示する（誤診断を防ぐ）
-                              {"active", p.enabled && m_scene->GetShadowsEnabled()
-                                         && !m_camera->IsOrthographic()},
-                              {"temporalDitherActive", p.enabled && p.temporalDither
-                                         && m_scene->GetTaaSettings().enabled},
-                              {"applied", method == "set_shadow_pcss"},
-                              {"note", "OFF にすると従来の 3x3 PCF に戻る（絵はビット一致）。"
-                                       "時間ディザは TAA 有効時のみ効く"}};
         }
         else if (method == "get_taa")
         {
@@ -8064,6 +8240,41 @@ Application::DiagRenderInfo Application::GetDiagRenderInfo() const
     return info;
 }
 
+Application::DiagDxrInfo Application::GetDiagDxrInfo() const
+{
+    DiagDxrInfo d;
+    d.supported = m_dxrEnabled;
+    if (m_graphicsDevice)
+    {
+        d.tier        = static_cast<int>(m_graphicsDevice->GetRaytracingTier());
+        d.shaderModel = static_cast<int>(m_graphicsDevice->GetHighestShaderModel());
+        d.inlineRt    = m_graphicsDevice->SupportsInlineRaytracing();
+    }
+    if (m_scene)
+    {
+        const RtSettings& r = m_scene->GetRtSettings();
+        d.shadowEnabled = r.shadowEnabled;
+        d.aoEnabled     = r.aoEnabled;
+    }
+    d.shadowActive = m_rtShadowActiveThisFrame;
+    if (m_rtScene)
+    {
+        const auto& s = m_rtScene->GetStats();
+        d.tlasReady          = m_rtScene->IsReady();
+        d.instances          = s.instances;
+        d.blasCount          = s.blasCount;
+        d.skippedSkinned     = s.skippedSkinned;
+        d.skippedTransparent = s.skippedTransparent;
+        d.droppedOverLimit   = s.droppedOverLimit;
+        d.blasBytes          = s.blasBytes;
+        d.blasTriangles      = s.blasTriangles;
+        d.tlasBytes          = s.tlasBytes;
+        d.scratchBytes       = s.scratchBytes;
+        d.instanceDescBytes  = s.instanceDescBytes;
+    }
+    return d;
+}
+
 Application::DiagFrameStats Application::TakeDiagnosticFrameStats()
 {
     const DiagFrameStats out = m_diagFrameStats;
@@ -8266,6 +8477,7 @@ void Application::Run()
                 if (m_taaPass) m_taaPass->Resize(*m_graphicsDevice, w, h);
                 if (m_gbufferRT) m_gbufferRT->Resize(*m_graphicsDevice, w, h);
                 if (m_screenSpaceGi) m_screenSpaceGi->Resize(*m_graphicsDevice, w, h);
+                if (m_rtScreenPass) m_rtScreenPass->Resize(*m_graphicsDevice, w, h);
                 InvalidateTemporalHistory();
 
                 // カメラアスペクト比更新（エディタモードではサイドバー分引く）
@@ -8439,6 +8651,7 @@ void Application::Run()
                 m_scene->GetSsrSettings().enabled           = m_renderDebugRestore.ssr;
                 m_scene->GetSsgiSettings().enabled          = m_renderDebugRestore.ssgi;
                 m_scene->GetVolumetricFogSettings().debugMode = m_renderDebugRestore.fogDebug;
+                m_scene->GetRtSettings().forceBuildTlas       = m_renderDebugRestore.rtForceTlas;
                 if (m_editorCtx) m_editorCtx->clusterDebugMode = m_renderDebugRestore.clusterDebug;
                 m_showCascadeDebug = m_renderDebugRestore.cascadeDebug;
                 m_renderDebugRestore.valid = false;
@@ -8566,6 +8779,10 @@ void Application::Shutdown()
     m_taaPass.reset();
     m_gbufferRT.reset();
     m_screenSpaceGi.reset();
+    // DXR（加速構造 + RT パス）。デバイス解放より前に確実に落とす。
+    m_rtScreenPass.reset();
+    if (m_rtScene) m_rtScene->Shutdown();
+    m_rtScene.reset();
     m_ssaoWhiteTex.reset();
     m_ssBlackTex.reset();
     m_depthPrepassPSO.reset();
@@ -12832,7 +13049,8 @@ void Application::DrawWorldSprites(ID3D12GraphicsCommandList* cmd, DirectX::XMMA
 void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState& staticPSO,
                                        PipelineState& skinnedPSO, bool updateSkinning, u32 frameIndex,
                                        u32 lodBias, PipelineState* instPSO,
-                                       const PrepassParams* prepass)
+                                       const PrepassParams* prepass,
+                                       bool skipRtCovered)
 {
     using namespace DirectX;
 
@@ -12939,6 +13157,14 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
         // 影パスでは skipTransparent=false のままなので、半透明の影は従来どおり落ちる。
         // 半透明は velocity も書かない（TAA は背後の不透明の速度で再投影する＝標準的な扱い）。
         if (skipTransparent && item.sortKey == 3u) continue;
+
+        // ★RT サン影が有効なとき、CSM は「DXR の TLAS に入っていないもの」だけを描く。
+        //   CSM と RT で担当を排他にしておかないと、フォワードの
+        //     shadow = min(csmShadow, contactShadowTex)
+        //   が暗い方を採るせいで CSM のアクネ（本来明るいのに縞状に暗い）と
+        //   カスケード境界の段差が残ってしまう（RT 影を入れる意味の半分がここ）。
+        //   判定は必ず IsRaytracedItem()（renderer/DrawItem.h）に一本化すること。
+        if (skipRtCovered && IsRaytracedItem(item)) continue;
 
         // ★自動インスタンシング: 同一 batchKey の連続ランを 1 ドローに畳む。
         //   batchKey は LOD 込みなので、このパスの lodBias を足しても run 内は同一 LOD。
@@ -14927,6 +15153,91 @@ void Application::Render()
     // 影4カスケード → 深度プリパス → メイン → プレビューの順に連番で追記していく。
     m_instanceCursor = 0;
 
+    // ===== DXR: BLAS の遅延構築 + TLAS の再構築（計画09 Step 1）=====
+    // ★CSM のパスより前に建てる。RT サン影が有効かどうかが決まらないと、
+    //   CSM が「RT の担当ぶんを描かない」排他モードに入れないため。
+    m_rtShadowActiveThisFrame = false;
+    bool rtAoActive = false;
+    if (m_dxrEnabled && m_rtScene && m_rtScreenPass && m_rtScreenPass->IsReady() && m_scene)
+    {
+        const RtSettings& rtCfg = m_scene->GetRtSettings();
+        // 深度からワールドを復元する都合で透視カメラ限定（SSAO / コンタクトシャドウと同じ条件）。
+        const bool rtViewOk = !(m_editorCtx && m_editorCtx->view2D) && !m_camera->IsOrthographic();
+        const bool wantDebug = (m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtHit)
+                             || m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtDiff));
+        const bool want = rtViewOk
+                        && (rtCfg.shadowEnabled || rtCfg.aoEnabled || rtCfg.forceBuildTlas || wantDebug);
+        if (want)
+        {
+            // シーンを作り直したら BLAS キャッシュを丸ごと捨てる。Mesh* は解放後に
+            // 同じアドレスへ再確保され得るので、内容比較だけでは検出できない（N30 と同じ話）。
+            if (m_rtSceneGenSeen != m_sceneGeneration)
+            {
+                m_rtScene->Invalidate();
+                m_rtSceneGenSeen = m_sceneGeneration;
+            }
+
+            m_gpuTimer->Begin(nativeCmdList, GpuTimer::Raytracing);
+            const XMFLOAT3 camP = m_camera->GetPosition();
+            // 除外された数は診断（dx12_diagnose の dxr 検査）で「なぜキャラの影が
+            // RT に出ないのか」を説明するために数えておく。
+            u32 skippedSkin = 0, skippedTransp = 0;
+            for (const DrawItem& it : m_drawItems)
+            {
+                if (it.skin)             ++skippedSkin;
+                else if (it.sortKey == 3u) ++skippedTransp;
+            }
+            m_rtScene->BeginFrame(camP, skippedSkin, skippedTransp);
+            for (const DrawItem& it : m_drawItems)
+            {
+                if (!IsRaytracedItem(it)) continue;
+                const MeshRenderer& r = *it.renderer;
+                const XMMATRIX world = XMLoadFloat4x4(&it.world);
+                for (u32 mi = 0; mi < static_cast<u32>(r.meshes.size()); ++mi)
+                {
+                    if (!r.meshes[mi]) continue;
+                    // ノードアニメのメッシュ単位変換はラスタ側と同じ式で合成する
+                    // （RenderSceneMeshes の meshWorld = nodeMat * world）。ここがズレると
+                    // render_debug の rtDiff で一発で分かる。
+                    XMMATRIX meshWorld = world;
+                    if (it.hasNodeAnim && mi < static_cast<u32>(r.meshNodeTransforms.size()))
+                        meshWorld = XMLoadFloat4x4(&r.meshNodeTransforms[mi]) * world;
+                    m_rtScene->AddInstance(r.meshes[mi], meshWorld, it.center);
+                }
+            }
+
+            RaytracingScene::BuildDesc bd;
+            bd.frameIndex   = frameIndex;
+            bd.maxInstances = (rtCfg.maxInstances > 0)
+                            ? static_cast<u32>(rtCfg.maxInstances) : RaytracingScene::kMaxRtInstances;
+            const bool tlasOk = m_rtScene->Build(*m_graphicsDevice, nativeCmdList, bd);
+            m_gpuTimer->End(nativeCmdList, GpuTimer::Raytracing);
+
+            if (tlasOk)
+            {
+                m_rtShadowActiveThisFrame = rtCfg.shadowEnabled;
+                rtAoActive                = rtCfg.aoEnabled;
+            }
+        }
+    }
+    // エディタのライティング窓へ実行時状態を流す（非対応 GPU で理由を出すため）。
+    if (m_editorCtx)
+    {
+        m_editorCtx->dxrSupported   = m_dxrEnabled;
+        m_editorCtx->dxrTier        = m_graphicsDevice
+                                    ? static_cast<int>(m_graphicsDevice->GetRaytracingTier()) : 0;
+        m_editorCtx->dxrShaderModel = m_graphicsDevice
+                                    ? static_cast<int>(m_graphicsDevice->GetHighestShaderModel()) : 0;
+        if (m_rtScene)
+        {
+            const auto& st = m_rtScene->GetStats();
+            m_editorCtx->dxrInstances      = st.instances;
+            m_editorCtx->dxrSkippedSkinned = st.skippedSkinned;
+            m_editorCtx->dxrAsBytes        = st.blasBytes + st.tlasBytes
+                                           + st.scratchBytes + st.instanceDescBytes;
+        }
+    }
+
     // ===== スポットライト影スロット割当（castShadows なライトをカメラに近い順で最大kMaxShadowSpot灯）=====
     // 結果は m_spotShadowViewProj[] / m_spotShadowEntity[] に格納し、直後の影パス描画と
     // 後段のライト収集(shadowIndex書き込み)の両方で使う。
@@ -15112,9 +15423,14 @@ void Application::Render()
 
             // skinningBuffer はフレーム先頭で全 SkeletalAnimation を一括 Update 済み
             // （シャドウパスは影OFF/正射カメラでスキップされるため、ここでは更新しない）。
+            // ★RT サン影が有効なフレームは、CSM は「RT が担当できないもの」だけを描く
+            //   （スキンド / 半透明）。担当を排他にすることで、フォワードの min() 合成が
+            //   静的ジオメトリのアクネ・peter-panning・カスケード境界を完全に消す。
+            //   副産物として CSM のドロー数も大きく減る。
             RenderDepthOnlyScene(cascadeVP, *m_shadowPipelineState, *m_shadowSkinnedPipelineState,
                                  /*updateSkinning*/ false, frameIndex, /*lodBias*/ 1,
-                                 m_shadowPipelineStateInst.get());
+                                 m_shadowPipelineStateInst.get(), /*prepass*/ nullptr,
+                                 /*skipRtCovered*/ m_rtShadowActiveThisFrame);
         }
 
         m_commandList->TransitionResource(m_shadowMap.Get(),
@@ -15136,11 +15452,25 @@ void Application::Render()
     // コンタクトシャドウもビュー空間でレイを飛ばす＝同じ理由で透視限定。
     const bool viewSupportsScreenSpace = !(m_editorCtx && m_editorCtx->view2D)
                                        && !m_camera->IsOrthographic();
+    // DXR（計画09）。深度からワールドを復元してレイを飛ばすので、こちらも深度プリパスが要る。
+    // ★m_rtShadowActiveThisFrame / rtAoActive は BuildDrawList 直後の TLAS 構築ブロックで
+    //   既に確定している（CSM の排他描画の判定に先に必要だったため）。ここで作り直さないこと。
+    const bool useRtShadow = m_rtShadowActiveThisFrame && m_rtScene && m_rtScene->IsReady();
+    const bool useRtAo     = rtAoActive && m_rtScene && m_rtScene->IsReady();
+    const bool useRtDebug  = m_rtScene && m_rtScene->IsReady() && m_rtScreenPass
+                           && (m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtHit)
+                            || m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtDiff));
+
+    // ★RT-AO が走るフレームは SSAO を走らせない（どちらも同じ t8 枠へ書くので後勝ちになるだけ）。
+    //   ただし aoCombineWithSsao のときは min 合成の相手として SSAO の結果が要るので走らせる。
     const bool useSSAO = ssaoCfg.enabled && m_ssaoPass && m_ssaoPass->IsReady()
-                       && viewSupportsScreenSpace;
+                       && viewSupportsScreenSpace
+                       && (!useRtAo || m_scene->GetRtSettings().aoCombineWithSsao);
+    // ★RT 影が走るフレームはコンタクトシャドウを走らせない。どちらも同じ t11 枠へ書くので
+    //   先に書いた方が捨てられるだけ（RT 影は接地の遮蔽も正しく拾うので上位互換）。
     const bool useContactShadow = csCfg.enabled && m_contactShadowPass
                                 && m_contactShadowPass->IsReady()
-                                && viewSupportsScreenSpace;
+                                && viewSupportsScreenSpace && !useRtShadow;
     // SSR / SSGI（計画04）。G-Buffer と前フレームカラーが要るので、有効なら速度プリパスを走らせる。
     const SsrSettings&  ssrCfg  = m_scene->GetSsrSettings();
     const SsgiSettings& ssgiCfg = m_scene->GetSsgiSettings();
@@ -15153,7 +15483,8 @@ void Application::Render()
 
     // ★TAA 有効時は SSAO/コンタクトシャドウが無効でも必ずプリパスを走らせる（速度バッファのため）。
     //   新しく深度を要求するパスを足したら、この行に OR で足すこと（00-COORDINATION §2 H2）。
-    const bool useDepthPrepass = useSSAO || useContactShadow || taaActive || useSsr || useSsgi;
+    const bool useDepthPrepass = useSSAO || useContactShadow || taaActive || useSsr || useSsgi
+                               || useRtShadow || useRtAo || useRtDebug;
     // 速度＋G-Buffer モードで走らせるか（PSO 3 本が揃っていることが条件）。
     // ★SSR/SSGI は G-Buffer が必要なので TAA が OFF でもこのモードで走らせる。
     //   速度バッファは書かれるが TAA が読まないだけ（fp16×2ch のフィル 1 枚ぶん ≒ 0.05ms）。
@@ -15171,6 +15502,7 @@ void Application::Render()
     u32 csSrv = m_ssaoWhiteSrvIndex;  // 既定 = 白（遮蔽なし素通し。SSAO と同じ 1x1 白を共用）
     u32 ssrSrv  = DescriptorHeap::kInvalidIndex;   // 無効 = 黒ダミー（RenderSceneMeshes が差し替える）
     u32 ssgiSrv = DescriptorHeap::kInvalidIndex;
+    u32 rtDebugSrv = DescriptorHeap::kInvalidIndex;   // render_debug の rt / rtDiff 用
 
     m_gpuTimer->Begin(nativeCmdList, GpuTimer::PrepassSSAO);
     if (useDepthPrepass)
@@ -15240,6 +15572,50 @@ void Application::Render()
                 vpLeft, vpTop, vpW, vpH, frameIndex);
             if (csSrv == DescriptorHeap::kInvalidIndex)
                 csSrv = m_ssaoWhiteSrvIndex;
+        }
+
+        // --- DXR: RT サン影 / RT-AO / RT デバッグ（同じ深度 + TLAS）---
+        // ★出力先は既存の枠。RT 影 → コンタクトシャドウ枠(t11)、RT-AO → SSAO 枠(t8)。
+        //   ルートシグネチャも b1 も 1 ビットも増えない。フォワード PS は無改造のまま。
+        if (useRtShadow || useRtAo || useRtDebug)
+        {
+            m_gpuTimer->Begin(nativeCmdList, GpuTimer::RtScreen);
+            RtScreenPass::GenerateDesc rd;
+            rd.depthSrv  = m_srvHeap->GetGpuHandle(m_depthSrvIndex);
+            // SSAO が実際に生成されていれば min 合成の相手にする。
+            // 白 1x1 ダミーのままだと範囲外 Load が 0 を返して画面が真っ黒になるので、
+            // ssaoValid を必ず添えること。
+            rd.ssaoSrv   = m_srvHeap->GetGpuHandle(aoSrv);
+            rd.ssaoValid = (aoSrv != m_ssaoWhiteSrvIndex);
+            rd.tlas      = m_rtScene->GetTlasAddress();
+            rd.view      = m_camera->GetViewMatrix();
+            rd.proj      = m_camera->GetProjectionMatrix();   // ★ジッタなし
+            rd.cameraPos = m_camera->GetPosition();
+            rd.lightDir  = lightDirF3;
+            rd.zNear     = m_camera->GetNearZ();
+            rd.zFar      = m_camera->GetFarZ();
+            rd.vpLeft = vpLeft; rd.vpTop = vpTop; rd.vpW = vpW; rd.vpH = vpH;
+            rd.frameIndex  = frameIndex;
+            // 時間ディザは TAA が有効なときだけ回す（無効時に回すとチラつくだけ。PCSS と同じ方針）。
+            rd.frameJitter = taaActive
+                ? std::fmod(static_cast<f32>(m_perfTotalFrames & 0xFFFFull) * 0.61803398875f, 1.0f)
+                : 0.0f;
+            rd.debugRange  = m_renderDebugDepthRange;
+
+            const RtSettings& rtCfg = m_scene->GetRtSettings();
+            if (useRtShadow)
+            {
+                const u32 s = m_rtScreenPass->GenerateShadow(nativeCmdList, rd, rtCfg);
+                if (s != DescriptorHeap::kInvalidIndex) csSrv = s;
+            }
+            if (useRtAo)
+            {
+                const u32 s = m_rtScreenPass->GenerateAo(nativeCmdList, rd, rtCfg);
+                if (s != DescriptorHeap::kInvalidIndex) aoSrv = s;
+            }
+            if (useRtDebug)
+                rtDebugSrv = m_rtScreenPass->GenerateDebug(nativeCmdList, rd);
+            m_gpuTimer->End(nativeCmdList, GpuTimer::RtScreen);
         }
 
         // --- SSR / SSGI 生成（深度 + G-Buffer + 速度 + 前フレームカラーをレイマーチ）---
@@ -15936,6 +16312,8 @@ void Application::Render()
             break;
         case RenderDebugMode::Ssr:            srcIdx = ssrSrv;  break;
         case RenderDebugMode::Ssgi:           srcIdx = ssgiSrv; break;
+        case RenderDebugMode::RtHit:
+        case RenderDebugMode::RtDiff:         srcIdx = rtDebugSrv; break;
         default: break;
         }
 

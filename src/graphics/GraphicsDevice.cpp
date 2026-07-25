@@ -117,6 +117,21 @@ void GraphicsDevice::QueryCapabilities()
         m_dxrSupported = (m_raytracingTier != D3D12_RAYTRACING_TIER_NOT_SUPPORTED);
     }
 
+    // --- ①' DXR 非対応 GPU のシミュレーション（環境変数 DX12_DISABLE_DXR=1）---
+    // ★フォールバック経路（計画09 §5.3）を対応 GPU 上で実際に踏むための逃げ道。
+    //   Tier を丸ごと NOT_SUPPORTED に落とすので、ログ・エディタ UI・診断・
+    //   レンダリングの全経路が「本当に非対応な GPU」とまったく同じ挙動になる。
+    {
+        char buf[8]{};
+        size_t len = 0;
+        if (::getenv_s(&len, buf, sizeof(buf), "DX12_DISABLE_DXR") == 0 && len > 0 && buf[0] == '1')
+        {
+            m_raytracingTier = D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
+            m_dxrSupported   = false;
+            Logger::Warn("DX12_DISABLE_DXR=1 のため DXR を非対応として扱います（フォールバック検証用）");
+        }
+    }
+
     // --- ② 最高シェーダモデル ---
     // CheckFeatureSupport は「ランタイムが知らない SM 値」を渡すと E_INVALIDARG を返す。
     // 公式ドキュメントの推奨どおり、高い方から 1 段ずつ下げて再試行する

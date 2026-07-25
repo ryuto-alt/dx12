@@ -623,6 +623,71 @@ void RenderLightingPanel(Scene* scene,
             ImGui::EndDisabled();
             pg::End();
         }
+
+        // ---- レイトレーシング（DXR）----
+        // 太陽の影を BVH のレイで解く。CSM のアクネ / peter-panning / カスケード境界が消える。
+        // ★出力先は既存のコンタクトシャドウ枠なので、ルートシグネチャは 1 DWORD も増えていない。
+        if (pg::Begin("LightRt"))
+        {
+            auto& rt = scene->GetRtSettings();
+            pg::Group("レイトレーシング (DXR)");
+
+            // 非対応 GPU で「押せるのに何も起きない」のが最悪なので、必ず理由を出す。
+            if (!ctx.dxrSupported)
+            {
+                const int t = ctx.dxrTier, sm = ctx.dxrShaderModel;
+                ImGui::TextWrapped(
+                    "この GPU では使えません（DXR Tier %s / ShaderModel %d.%d）。\n"
+                    "inline raytracing には DXR Tier 1.1 かつ Shader Model 6.5 が必要です"
+                    "（RTX 20 系 / RX 6000 系以降）。",
+                    (t < 10) ? "非対応" : (std::to_string(t / 10) + "." + std::to_string(t % 10)).c_str(),
+                    sm >> 4, sm & 0xF);
+            }
+            ImGui::BeginDisabled(!ctx.dxrSupported);
+
+            pg::Checkbox("RT サン影", &rt.shadowEnabled,
+                         "太陽の影をレイで解きます。シャドウマップ由来のアクネ・接地部の隙間"
+                         "（peter-panning）・カスケード境界の段差が消えます。\n"
+                         "★スキンドキャラと半透明は加速構造に入らないので従来どおり CSM が担当し、"
+                         "両者は自動で合成されます（PCSS と併用して構いません）");
+            ImGui::BeginDisabled(!rt.shadowEnabled);
+            pg::SliderFloat("太陽の角直径 (度)", &rt.shadowSunAngle, 0.0f, 5.0f, "%.2f", nullptr,
+                            "0 で完全なハードシャドウ（ノイズゼロ）。実際の太陽は 0.53 度。"
+                            "大きくすると半影が出ますが 1px 1 レイなのでノイズが増えます");
+            pg::SliderFloat("法線バイアス (m)", &rt.shadowNormalBias, 0.0f, 0.2f, "%.3f", nullptr,
+                            "レイ始点を法線方向へ押し出す距離。シャドウマップの深度バイアスと違い"
+                            "ワールド空間の実距離なので、影が浮く現象は起きません");
+            pg::SliderFloat("最大距離 (m)", &rt.shadowMaxDistance, 0.0f, 2000.0f, "%.0f", nullptr,
+                            "0 で無限。短くすると遠くの遮蔽物を追わないぶん速くなります");
+            pg::SliderFloat("強さ", &rt.shadowIntensity, 0.0f, 1.0f, "%.2f");
+            ImGui::EndDisabled();
+
+            pg::Checkbox("RT-AO", &rt.aoEnabled,
+                         "環境遮蔽をレイで解きます。SSAO と違い画面外のジオメトリも遮蔽に数えるので、"
+                         "カメラを回しても AO が変動しません");
+            ImGui::BeginDisabled(!rt.aoEnabled);
+            pg::SliderFloat("AO 半径 (m)", &rt.aoRadius, 0.05f, 10.0f, "%.2f");
+            pg::SliderInt("AO レイ本数", &rt.aoRayCount, 1, 8, nullptr,
+                          "1px あたりの本数。増やすほど滑らかになりますが線形に重くなります");
+            pg::SliderFloat("AO 強さ", &rt.aoIntensity, 0.0f, 1.0f, "%.2f");
+            pg::SliderFloat("AO コントラスト", &rt.aoPower, 0.1f, 4.0f, "%.2f");
+            pg::Checkbox("SSAO と合成 (min)", &rt.aoCombineWithSsao,
+                         "大きな遮蔽は RT、1px 単位の細かい皺は SSAO、と役割を分けます"
+                         "（SSAO も ON にしておくこと）");
+            ImGui::EndDisabled();
+
+            ImGui::EndDisabled();
+
+            if (ctx.dxrSupported)
+            {
+                ImGui::TextDisabled("TLAS %u インスタンス / 加速構造 %.1f MB",
+                                    ctx.dxrInstances,
+                                    static_cast<double>(ctx.dxrAsBytes) / (1024.0 * 1024.0));
+                if (ctx.dxrSkippedSkinned > 0)
+                    ImGui::TextDisabled("スキンド %u 体は CSM が担当（仕様）", ctx.dxrSkippedSkinned);
+            }
+            pg::End();
+        }
     }
 
     // =====================================================================

@@ -12,6 +12,8 @@ const char* GpuTimer::Name(u32 s)
     case Shadows:     return "shadows";
     case PrepassSSAO: return "prepassSsao";
     case ClusterCull: return "clusterCull";
+    case Raytracing:  return "raytracing";
+    case RtScreen:    return "rtScreen";
     case ScreenSpaceGI: return "screenSpaceGi";
     case VolumetricFog: return "volFog";
     case MainScene:   return "mainScene";

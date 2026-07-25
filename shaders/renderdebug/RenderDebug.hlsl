@@ -23,6 +23,8 @@
 #define DBG_VELOCITY        7
 #define DBG_SSR             8
 #define DBG_SSGI            9
+#define DBG_RT_HIT          10
+#define DBG_RT_DIFF         11
 
 cbuffer RenderDebugCB : register(b0)
 {
@@ -98,6 +100,26 @@ float4 RenderDebugPS(FSQuadVSOut i) : SV_TARGET
         // R = +X, G = +Y(画面下)。静止していれば全面が均一な (0.5,0.5,0.5)。
         float2 v = gSource.SampleLevel(gPoint, uv, 0).rg * gain;
         outColor = float3(saturate(0.5 + v.x), saturate(0.5 + v.y), 0.5);
+    }
+    else if (mode == DBG_RT_HIT || mode == DBG_RT_DIFF)
+    {
+        // RtDebug.hlsl の出力: .r = レイのヒット距離(m) / .g = ラスタの距離(m)。どちらもミスは -1。
+        float2 t = gSource.SampleLevel(gPoint, uv, 0).rg;
+        if (mode == DBG_RT_HIT)
+        {
+            // TLAS のシルエットがラスタライズした絵と一致するかを見る。
+            outColor = (t.x < 0.0) ? float3(0.0, 0.0, 0.0)     // ミス = 黒
+                                   : Heat(t.x / max(rangeP.x, 1e-3));
+        }
+        else
+        {
+            // ★|RT − ラスタ| のヒートマップ。ジオメトリがある所が黒なら加速構造は完全に正しい。
+            //   マゼンタ = 「片方だけヒット」＝TLAS に入っていない（スキンド / 半透明）か
+            //   加速構造の取りこぼし。gain で感度を上げられる（既定 1 = 1m でフルスケール）。
+            if (t.x < 0.0 && t.y < 0.0)      outColor = float3(0.0, 0.0, 0.0);  // どちらも空
+            else if (t.x < 0.0 || t.y < 0.0) outColor = float3(1.0, 0.0, 1.0);  // 片方だけヒット
+            else                             outColor = Heat(abs(t.x - t.y) * gain);
+        }
     }
     else if (mode == DBG_SSR || mode == DBG_SSGI)
     {
