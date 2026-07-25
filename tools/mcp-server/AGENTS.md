@@ -188,6 +188,92 @@ dx12_save_scene()   # 現在のシーンへ上書き
 
 ---
 
+## 品質判断系(絵を「見る」のではなく「測る」)
+
+スクショを 1 枚見て「いい感じ」と言うのは当てにならない。数値で差を出して、数値で詰める。
+
+### 参照画像に寄せる — `dx12_look_compare`
+
+`dx12_ui_compare` の 3D 版。参照(実写写真 / 参考ゲームのスクショ)と今の絵を横並びにするだけでなく、
+**何をどっちへ何倍動かせばいいか**を返す。リアル系のライティング詰めはこれが本体。
+
+```
+dx12_look_compare(referencePath:"C:/ref/forest_dusk.png", position:[0,2,-8], target:[0,1,0])
+# → 画像(左=参照 / 右=現在) +
+#   delta: {exposureEV:-0.83, contrastRatio:0.78, saturationRatio:1.31, cctDeltaK:-1200, histogramEmdEV:0.62, ...}
+#   suggestions: [
+#     "露出: 参照より平均輝度が -0.83EV 暗い。dx12_set_post_process の exposure を現在値の ×1.78 に…",
+#     "彩度: 参照より 1.31 倍 高い。… saturation を現在値の ×0.76 に…",
+#     "色温度: 参照より 1200K 暖色寄り。dx12_set_sun の kelvin を 6100 にする…" ]
+```
+
+- **1 回で寄せきろうとしない。** suggestions のうち**露出 → コントラスト → 色温度 → 彩度**の順で
+  1 つずつ動かして撮り直す(同時に触ると何が効いたか分からなくなる)。
+- `exposure` / `contrast` / `saturation` の示唆は**現在値への倍率**で出る。`dx12_get_post_process` で
+  現在値を読んでから掛ける。各エフェクトは `<name>On:true` にしないと効かない。
+- `cct` が `null` で返ることがある。これは**推定できなかった**という意味で、`cctNote` に理由が入る
+  (強いカラーライトで黒体軌跡から離れている / 絵が暗すぎる)。null の時に色温度をいじっても迷走する。
+- 数値が全部許容内なら suggestions は「ほぼ一致」1 本になる。そこから先は合成画像を見て
+  構図・素材・法線マップの差を探す仕事。
+
+### 動かして初めて出るアラ — `dx12_camera_path`
+
+静止画では TAA のゴースト・LOD ポップ・影のちらつき・カリング抜けが**絶対に**分からない。
+
+```
+# 被写体のまわりを 1 周(8 枚を 4 列の格子で)
+dx12_get_bounds(name:"Boss", includeChildren:true)      # → center と size を先に測る
+dx12_camera_path(mode:"orbit", target:[0,1,0], radius:12, height:4, frames:8, columns:4)
+# → 格子画像 + frameDiffs:[3.1, 2.9, 3.4, 18.7, 3.0, 2.8, 3.2]
+#   → 4→5 だけ突出 = そこで何かがポップした。その視点を dx12_screenshot_from で撮り直して確認
+```
+
+- `frameDiffs` はカメラ移動量に比例するので、**絶対値ではなく周囲との差**を見る。
+- `settleFrames` は既定 0。**TAA のゴーストを見たいなら 0 のまま**(進めると収束して消える)。
+  逆に「収束後の最終画質」を見たい時だけ 4〜8 にする。
+- Editor 限定。撮り終わると元のカメラ位置へ戻す(`restore:false` で戻さない)。
+
+---
+
+## 大量配置はシーン JSON を直接書く — `dx12_scene_write`
+
+`dx12_create_entity` / `dx12_spawn_model` は**遅延同期＝1 体につき 1 フレーム**かかる。
+数十体以上を並べるなら JSON を書いて `open_scene` 1 回の方が桁違いに速い。
+
+```
+dx12_scene_write(
+  path: "scenes/level1.json",
+  open: true,
+  sceneJson: {
+    version: 1,
+    entities: [
+      {name:"Floor", transform:{position:[0,0,0],rotation:[0,0,0],scale:[40,1,40]}, primitive:"plane"},
+      {name:"Sun",   transform:{position:[0,20,0],rotation:[0,0,0],scale:[1,1,1]},
+       directionalLight:{color:[1,0.95,0.9], intensity:3}},
+      {name:"Tree_00", transform:{position:[3,0,5],rotation:[0,0,0],scale:[1,1,1]},
+       meshRenderer:{modelPath:"models/tree.gltf"}, parent:0}
+    ]
+  })
+```
+
+**書く前に必ず検証が走る**(エラーが 1 つでもあれば書かずに全部返す):
+
+- `entities` の有無 / `name` 欠落 / `transform` の要素型
+- `parent` は **entities 配列のインデックス**(entityId でも name でもない)。範囲外・自己参照・循環を弾く
+- `meshRenderer.modelPath` / `luaScript.scriptPath` を `dx12_list_assets` と突き合わせて実在確認
+  (**参照切れのモデルはエンティティごと消える**ので、これを黙って通すと「置いたはずの木が無い」になる)
+- **エンジンが無言で無視するキーの打ち間違い**(`meshrenderer` / `rotaton` / `shadow` …)を近い正解つきで警告
+
+上書き時は既存内容を読んでから書き、`replaced.summary`(上書き前のエンティティ数など)と
+`%TEMP%` に取った `backupPath` を返す。**何を壊したかが返り値に残る。**
+
+- `path` は assets 相対(`scenes/xxx.json`)推奨。絶対パスも可。
+- assets ディレクトリはエンジンが MCP で公開していないので、`assetsDir` 引数 → 環境変数 `DX12_ASSETS_DIR`
+  → エンジンログからの自動検出、の順で解決する。**自動検出が外れたら `assetsDir` を明示すること。**
+- 書いた後は `dx12_open_scene`(または `open:true`)で読み込む。開くまでエディタの絵は変わらない。
+
+---
+
 ## batch でまとめ作成(往復削減)
 
 複数のエンティティや設定を一気に送る場合は `dx12_batch` を使う。

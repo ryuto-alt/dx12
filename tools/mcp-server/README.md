@@ -50,10 +50,13 @@ args = ["C:\\Users\\<you>\\dx12-mcp\\index.ts"]
 
 ## 構成
 - `engineClient.ts` … TCP フレーミング + id 相関の薄いクライアント（ポートは env `DX12_MCP_PORT` → `%TEMP%/dx12_mcp.port` → 8787 の順で自動解決。別マシンは `DX12_MCP_HOST`）
-- `index.ts` … MCP サーバ本体(stdio)。112 ツールを公開（全量はエンジンリポジトリの [docs/MCP.md](https://github.com/ryuto-alt/dx12/blob/main/docs/MCP.md) 参照）
+- `index.ts` … MCP サーバ本体(stdio)。115 ツールを公開（全量はエンジンリポジトリの [docs/MCP.md](https://github.com/ryuto-alt/dx12/blob/main/docs/MCP.md) 参照）
 - `sceneTools.ts` … 地形/スカルプト/診断の引数正規化と共通 zod 部品（純ロジック・エンジン非依存）
+- `lookCompare.ts` … 3D の絵の測光（対数輝度ヒストグラム/CCT/彩度/黒潰れ）と参照画像との差分・示唆生成
+- `contactSheet.ts` … カメラ経路の生成とコンタクトシート合成（連続フレーム差分つき）
+- `sceneWrite.ts` … シーン JSON の検証・要約・書き出し先の解決（`SceneSerializer.cpp` のスキーマと 1:1）
 - `test.ts` … mock エンジンで framing/相関/エラーを検証(`node test.ts`)
-- `sceneTools.test.ts` … 引数正規化・列挙定数・zod スキーマの回帰テスト(`node sceneTools.test.ts`)
+- `*.test.ts` … 各純ロジックの回帰テスト。`npm test` で全部、`npm run test:offline` でネット不要分のみ
 - `AGENTS.md` … AI エージェント向け運用ガイド（典型ワークフロー・禁止パターン）
 
 ## ツール(抜粋)
@@ -74,6 +77,7 @@ args = ["C:\\Users\\<you>\\dx12-mcp\\index.ts"]
 | スカルプト | `dx12_sculpt_create` `dx12_sculpt_make_editable` `dx12_sculpt_brush` |
 | ライティング | `dx12_list_lights`（灯数バジェット警告つき） `dx12_set_sun` `dx12_apply_lighting_preset` |
 | 診断 | `dx12_diagnose`（シェーダー/テクスチャ/シーン参照/ライト/地形/ピッキング/Lua を一括検査） |
+| 品質判断 | `dx12_look_compare`（参照画像との測光比較: EV/コントラスト/CCT/彩度/黒潰れ + 具体的な示唆） `dx12_camera_path`（動かして連写 → コンタクトシート + フレーム間差分） `dx12_scene_write`（シーン JSON を検証つきで直接書く） |
 
 生成/削除/シーン読込/Play/Stop は**遅延同期**: エンジンはフレーム境界で実処理し、完了後に
 本物の結果(`entityId` 等)を同期で返す。「name で list して探す」旧パターンは不要。
