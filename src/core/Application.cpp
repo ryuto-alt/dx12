@@ -13221,6 +13221,29 @@ void Application::Render()
     if (taaActive) EnsureInstancePrevBuffer();
     m_trackPrevWorld = taaActive;
 
+    // ===== TAA ジッタ =====
+    // ハルトン(2,3)列で投影行列を ±0.5px ずらす。Camera 自体には一切入れない
+    //   → エディタのピッキング / ギズモ / MCP project_world_to_screen が影響を受けない。
+    // ★ジッタ行列の数学（DirectXMath は行ベクトル規約 v' = v * M）:
+    //   clip = v * P の後に T = XMMatrixTranslation(jx, jy, 0) を掛けると
+    //   clip' = clip * T で clip'.x = clip.x + clip.w * jx。
+    //   透視では clip.w = z_view、正射では clip.w = 1 なので、どちらでも NDC が jx 平行移動する
+    //   （_31/_32 を直接いじる透視専用の方法より汎用で安全）。
+    if (taaActive) m_taaJitterNdc = m_taaPass->NextJitterNdc(
+        static_cast<u32>(taaCfg.sampleCount), vpW, vpH, taaCfg.jitterScale);
+    else           m_taaJitterNdc = {0.0f, 0.0f};
+    const XMFLOAT2 jitterNdc = m_taaJitterNdc;
+
+    // ラスタライズ用（ジッタあり）と、計算用（ジッタなし）を明確に分ける。
+    //   camVPJ … 深度プリパス/フォワード/パーティクル/スプライト＝実際に画を出すもの全部
+    //   camVP  … 再投影・深度線形化・太陽投影・カスケード分割・ピッキング＝ジッタ厳禁のもの
+    const XMMATRIX camVP  = m_camera->GetViewProjMatrix();
+    const XMMATRIX camVPJ = taaActive
+        ? XMMatrixMultiply(m_camera->GetViewMatrix(),
+              XMMatrixMultiply(m_camera->GetProjectionMatrix(),
+                               XMMatrixTranslation(jitterNdc.x, jitterNdc.y, 0.0f)))
+        : camVP;
+
     // フレーム描画リストを構築（1回）。以降の影/プリパス/メイン/プレビューの全パスで共有する。
     BuildDrawList();   // 内部で buildList / listSort を別々に計時する
 
@@ -13453,26 +13476,27 @@ void Application::Render()
     m_gpuTimer->Begin(nativeCmdList, GpuTimer::PrepassSSAO);
     if (useDepthPrepass)
     {
-        XMMATRIX camVP = m_camera->GetViewProjMatrix();
-
         // --- 深度プリパス（カメラ視点で m_depthBuffer/m_dsvHandle へ書く）---
+        // ★ラスタライズは camVPJ（ジッタあり）。ここをジッタなしにするとフォワードと
+        //   深度がビット一致せず LESS_EQUAL で面が欠落する。
         m_commandList->ClearDepthStencil(m_dsvHandle);
         m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
 
         // 半透明（sortKey==3）はカメラのプリパスから除外する（00-COORDINATION §6 B3）。
         // 影パスは従来どおり半透明も描く＝影の見た目は不変。
-        Application::PrepassParams pp{};
+        PrepassParams pp{};
         pp.skipTransparent = true;
-        pp.jitterNdc       = {0.0f, 0.0f};
+        pp.jitterNdc       = jitterNdc;
 
         if (velocityPrepass)
         {
             // 深度 + 速度を同時に書く（RTV=速度RT / DSV=m_dsvHandle）。
+            // 前フレームは「ジッタなし」viewProj。履歴が無い初回は現フレームを使う＝速度0。
             pp.mode = PrepassMode::DepthVelocityGBuffer;
             XMStoreFloat4x4(&pp.prevViewProj,
                 m_prevViewProjNJValid ? XMLoadFloat4x4(&m_prevViewProjNoJitter) : camVP);
             m_taaPass->BeginVelocity(*m_commandList, m_dsvHandle, vpLeft, vpTop, vpW, vpH);
-            RenderDepthOnlyScene(camVP, *m_velocityPSO, *m_velocityPSOSkinned,
+            RenderDepthOnlyScene(camVPJ, *m_velocityPSO, *m_velocityPSOSkinned,
                                  /*updateSkinning*/ false, frameIndex, /*lodBias*/ 0,
                                  m_velocityPSOInst.get(), &pp);
             m_taaPass->EndVelocity(*m_commandList);
@@ -13482,7 +13506,7 @@ void Application::Render()
             nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_dsvHandle);
             // skinningBuffer は毎フレーム1回どこかで Update されていれば良い（このプリパスより前に
             // シャドウパスの ci==0 で更新済み＝ここでは false）。
-            RenderDepthOnlyScene(camVP, *m_depthPrepassPSO, *m_depthPrepassSkinnedPSO,
+            RenderDepthOnlyScene(camVPJ, *m_depthPrepassPSO, *m_depthPrepassSkinnedPSO,
                                  /*updateSkinning*/ false, frameIndex, /*lodBias*/ 0,
                                  m_depthPrepassPSOInst.get(), &pp);
         }
@@ -13707,9 +13731,9 @@ void Application::Render()
         m_iblBaker && m_iblBaker->HasEnvironment() &&
         m_envCubeSrvIndex != DescriptorHeap::kInvalidIndex)
     {
+        // スカイボックスもジッタさせる（させないと TAA で空だけ滲む）。
         XMFLOAT4X4 invVP;
-        XMStoreFloat4x4(&invVP, XMMatrixTranspose(
-            XMMatrixInverse(nullptr, m_camera->GetViewProjMatrix())));
+        XMStoreFloat4x4(&invVP, XMMatrixTranspose(XMMatrixInverse(nullptr, camVPJ)));
         m_skyboxRenderer->Render(nativeCmdList, m_srvHeap->GetGpuHandle(m_envCubeSrvIndex),
                                  invVP, m_skyboxIntensity);
         // メイン RootSig / PSO を再設定
@@ -13732,7 +13756,8 @@ void Application::Render()
         m_commandList->SetSRVTable(RootSignature::kSlotIBLTable,
             m_srvHeap->GetGpuHandle(m_iblBaker->GetIrradianceSrv()));
 
-    XMMATRIX viewProj = m_camera->GetViewProjMatrix();
+    // フォワード本体はジッタあり（深度プリパスとビット一致させる）。
+    XMMATRIX viewProj = camVPJ;
 
     // 全Entityを描画（メインパス: 編集カメラ視点）。AO / コンタクトシャドウは有効時のみ実テクスチャ、
     // 無効時は白（＝素通し）。深度プリパスが走ったときだけ深度が完成済み →
@@ -13755,7 +13780,7 @@ void Application::Render()
         m_physicsDebugRenderer->CollectFromRegistry(m_scene->GetRegistry());
 
         XMFLOAT4X4 vp;
-        XMStoreFloat4x4(&vp, XMMatrixTranspose(m_camera->GetViewProjMatrix()));
+        XMStoreFloat4x4(&vp, XMMatrixTranspose(camVPJ));
         m_physicsDebugRenderer->Render(nativeCmdList, vp);
     }
 
@@ -13789,7 +13814,8 @@ void Application::Render()
         else
             m_particleSystem->DisableSceneDepth();
         m_particleSystem->SetTime(totalTime);
-        m_particleSystem->Render(nativeCmdList, m_camera->GetViewProjMatrix(), camRight, camUp, camPos);
+        // ラスタライズ系はジッタあり（TAA でアンチエイリアスされる）。
+        m_particleSystem->Render(nativeCmdList, camVPJ, camRight, camUp, camPos);
 
         // ---- GPUパーティクル（compute シム + ExecuteIndirect）: 同じ HDR RT へ加算 ----
         if (m_gpuParticles)
@@ -13800,7 +13826,7 @@ void Application::Render()
             else
                 m_gpuParticles->DisableSceneDepth();
             m_gpuParticles->SimulateAndRender(nativeCmdList, m_gameClock.GetDeltaTime(), totalTime,
-                                              m_camera->GetViewProjMatrix(), camRight, camUp);
+                                              camVPJ, camRight, camUp);
         }
 
         // ---- 歪みパーティクル（熱ゆらぎ/衝撃波）: 歪みバッファ(RG16F)へ ----
@@ -13813,8 +13839,7 @@ void Application::Render()
             auto drtv = m_distortRT->GetRtv();
             nativeCmdList->OMSetRenderTargets(1, &drtv, FALSE, nullptr);
             m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
-            m_particleSystem->RenderDistortion(nativeCmdList, m_camera->GetViewProjMatrix(),
-                                               camRight, camUp);
+            m_particleSystem->RenderDistortion(nativeCmdList, camVPJ, camRight, camUp);
             m_distortRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
             particleDistortDrawn = true;
         }
@@ -13834,7 +13859,7 @@ void Application::Render()
         XMFLOAT3 camRight, camUp;
         XMStoreFloat3(&camRight, invView.r[0]);
         XMStoreFloat3(&camUp,    invView.r[1]);
-        DrawWorldSprites(nativeCmdList, m_camera->GetViewProjMatrix(), camRight, camUp,
+        DrawWorldSprites(nativeCmdList, camVPJ, camRight, camUp,
                          m_sceneRT->GetRtv(), m_dsvHandle, vpLeft, vpTop, vpW, vpH, totalTime);
     }
 
@@ -13907,7 +13932,8 @@ void Application::Render()
         }
         if (wantDepthPost && ppApplied.motionBlurOn && m_motionBlurPass && m_prevViewProjValid)
         {
-            const XMMATRIX vp  = m_camera->GetViewProjMatrix();
+            // モーションブラーの再投影はジッタなし（ジッタ込みだと毎フレーム微ブラーが乗る）。
+            const XMMATRIX vp  = camVP;
             const XMMATRIX inv = XMMatrixInverse(nullptr, vp);
             XMFLOAT4X4 invT, prevT;
             XMStoreFloat4x4(&invT,  XMMatrixTranspose(inv));
@@ -13961,7 +13987,7 @@ void Application::Render()
                 const XMFLOAT3 camPos = m_camera->GetPosition();
                 XMVECTOR d  = XMVector3Normalize(XMLoadFloat3(&sunDir));
                 XMVECTOR wp = XMVectorSubtract(XMLoadFloat3(&camPos), XMVectorScale(d, 5000.0f));
-                XMVECTOR clip = XMVector4Transform(XMVectorSetW(wp, 1.0f), m_camera->GetViewProjMatrix());
+                XMVECTOR clip = XMVector4Transform(XMVectorSetW(wp, 1.0f), camVP);  // 太陽投影はジッタなし
                 const f32 cw = XMVectorGetW(clip);
                 if (cw > 0.01f)
                 {
@@ -14057,12 +14083,12 @@ void Application::Render()
         }
 
         // 次フレームのモーションブラー用に今フレームの viewProj を保存
-        XMStoreFloat4x4(&m_prevViewProj, m_camera->GetViewProjMatrix());
+        XMStoreFloat4x4(&m_prevViewProj, camVP);   // ジッタなし（従来より正確になる）
         m_prevViewProjValid = true;
         // 速度バッファ/TAA 用に「ジッタなし」viewProj と frameIndex を保存する。
         // frameIndex は SkinningBuffer の前フレームスロットを指すため
         //（GetCurrentBackBufferIndex() の巡回順は DXGI 仕様上保証されないので明示記録）。
-        XMStoreFloat4x4(&m_prevViewProjNoJitter, m_camera->GetViewProjMatrix());
+        XMStoreFloat4x4(&m_prevViewProjNoJitter, camVP);
         m_prevViewProjNJValid = true;
         m_prevFrameIndex      = frameIndex;
         m_prevFrameIndexValid = true;
@@ -14080,7 +14106,9 @@ void Application::Render()
         m_editorIconRenderer->CollectFromRegistry(m_scene->GetRegistry(), *m_editorCtx);
 
         XMFLOAT4X4 vpIcon;
-        XMStoreFloat4x4(&vpIcon, XMMatrixTranspose(m_camera->GetViewProjMatrix()));
+        // エディタアイコンはポスト後のバックバッファ＝TAA の対象外なのでジッタなし
+        // （ジッタさせると選択アイコンだけが 1px 揺れる）。
+        XMStoreFloat4x4(&vpIcon, XMMatrixTranspose(camVP));
         m_editorIconRenderer->Render(nativeCmdList, vpIcon, vpW, vpH);
     }
 

@@ -166,6 +166,18 @@ if(TARGET Renderer)
     endif()
     add_test(NAME CameraProjectionTests COMMAND CameraProjectionTests)
 
+    # 速度バッファ（モーションベクター）と TAA ジッタの数式テスト。
+    # 「静止時に速度が 0」「ジッタは NDC の平行移動」を守る。
+    # renderer/TaaJitter.h はヘッダオンリー・GPU 非依存なので .cpp のビルドは不要。
+    add_executable(VelocityMathTests velocity_math_test.cpp)
+    target_include_directories(VelocityMathTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(VelocityMathTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(VelocityMathTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(VelocityMathTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME VelocityMathTests COMMAND VelocityMathTests)
+
     # AnimationClip::NormalizeToSeconds（ticks→秒正規化。glTF=1000ticks/s 由来の
     # ポーズ凍結/スロー再生の再発防止）テスト。AnimationClip.cpp は純ロジックなので直接ビルド。
     add_executable(AnimClipNormalizeTests

@@ -1,4 +1,5 @@
 #include "renderer/TaaPass.h"
+#include "renderer/TaaJitter.h"
 #include "graphics/GraphicsDevice.h"
 #include "graphics/DescriptorHeap.h"
 #include "graphics/RenderTarget.h"
@@ -36,37 +37,19 @@ struct TaaDebugCB
 static constexpr UINT kTaaDebugCBNum32 = 8;
 
 // ---------------------------------------------------------------------------
-// ハルトン列
+// ハルトン列（実体は TaaJitter.h の純関数。tests/velocity_math_test.cpp で検証済み）
 // ---------------------------------------------------------------------------
 float TaaPass::Halton(u32 i, u32 b)
 {
-    float f = 1.0f;
-    float r = 0.0f;
-    while (i > 0)
-    {
-        f /= static_cast<float>(b);
-        r += f * static_cast<float>(i % b);
-        i /= b;
-    }
-    return r;
+    return HaltonRadicalInverse(i, b);
 }
 
 XMFLOAT2 TaaPass::NextJitterNdc(u32 sampleCount, u32 vpW, u32 vpH, float jitterScale)
 {
     const u32 n = std::clamp(sampleCount, 2u, 64u);
     m_jitterIndex = (m_jitterIndex + 1) % n;
-
-    // Halton(i+1) は (0,1)。-0.5 して [-0.5, 0.5) の「サブピクセルオフセット(px)」にする。
-    const float hx = Halton(m_jitterIndex + 1, 2) - 0.5f;
-    const float hy = Halton(m_jitterIndex + 1, 3) - 0.5f;
-
-    // NDC は幅 2.0 に vpW ピクセルが並ぶので 1px = 2/vpW。
-    // ★ここで作った値は「NDC 平行移動」であり、速度シェーダが clip.xy -= jitter*w で
-    //   引き算する値と完全に同一でなければならない（片方だけ符号を変えると静止時に速度が乗る）。
-    XMFLOAT2 j{};
-    j.x =  2.0f * hx * jitterScale / static_cast<float>((vpW > 0) ? vpW : 1);
-    j.y = -2.0f * hy * jitterScale / static_cast<float>((vpH > 0) ? vpH : 1);  // NDC y は上が +、画面 y は下が +
-    return j;
+    const TaaJitterNdc j = ComputeTaaJitterNdc(m_jitterIndex, vpW, vpH, jitterScale);
+    return XMFLOAT2{j.x, j.y};
 }
 
 // ---------------------------------------------------------------------------
