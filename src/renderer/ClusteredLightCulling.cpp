@@ -137,6 +137,8 @@ void ClusteredLightCulling::Initialize(GraphicsDevice& device, DescriptorHeap* s
     //   なのでカウントバッファの SRV を仮で複製して埋めておく。デカール実装時に上書きすること。
     for (u32 f = 0; f < kFrameCount; ++f)
     {
+        // 枯渇時は AllocateBlock 自身が Logger::Error + throw で fail-fast する（DescriptorHeap.cpp）。
+        // 念のためセンチネルも見て、取れていなければ IsReady() が false になるようにしておく。
         const u32 base = m_srvHeap->AllocateBlock(kSrvTableSize);
         if (base == DescriptorHeap::kInvalidIndex)
         {

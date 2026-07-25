@@ -76,7 +76,13 @@ public:
     // 上と同じものの SRV index 版（ダミーバインドしたい呼び出し側用）。
     u32 GetSrvTableIndex(u32 frameIndex) const;
 
-    bool IsReady() const { return m_psoCull != nullptr && m_srvBlock[0] != 0xFFFFFFFFu; }
+    bool IsReady() const
+    {
+        if (!m_psoCull || !m_psoBuild) return false;
+        for (u32 f = 0; f < kFrameCount; ++f)
+            if (m_srvBlock[f] == 0xFFFFFFFFu) return false;
+        return true;
+    }
 
 private:
     void EnsureUavState(ID3D12GraphicsCommandList* cmd);
