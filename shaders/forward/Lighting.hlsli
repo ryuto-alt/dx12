@@ -167,7 +167,11 @@ float3 AccumulatePunctualLights(float3 N, float3 V, float3 worldPos,
     [loop]
     for (uint k = 0; k < count; ++k)
     {
-        uint li = (first == 0xFFFFFFFFu) ? k : g_clusterLightIndex[first + k];
+        // ★HLSL の ?: は短絡しない（両辺が評価され得る）ので、フォールバック時に
+        //   g_clusterLightIndex[0xFFFFFFFF + k] を踏まないよう添字の方を先に丸める。
+        //   構造化バッファは範囲外読みが 0 を返すだけだが、GPU ベース検証が騒ぐので避ける。
+        uint listIdx = (first == 0xFFFFFFFFu) ? 0u : (first + k);
+        uint li      = (first == 0xFFFFFFFFu) ? k  : g_clusterLightIndex[listIdx];
         ClusterLight L = g_clusterLights[li];
 
         float3 d    = L.position - worldPos;
