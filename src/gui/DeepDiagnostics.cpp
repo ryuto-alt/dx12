@@ -1061,6 +1061,25 @@ DeepDiagReport DeepDiag::Lighting(Application& app)
                      + "。IBL が効いていない");
     }
 
+    // ---- ボリュメトリックフォグ ----
+    {
+        const VolumetricFogSettings& fog = scene->GetVolumetricFogSettings();
+        if (fog.enabled)
+        {
+            if (fog.density <= 0.0f)
+                r.Add(1, "ボリュメトリックフォグが有効だが濃度が 0。3D テクスチャ 28MB を確保して"
+                         "compute 3 パスを回すだけで絵は一切変わらない");
+            // GodRays（スクリーン空間の太陽シャフト）と役割が重なる。両方 ON だと
+            // 太陽が画面内にあるとき散乱が二重計上される。
+            if (scene->GetPostSettings().godraysOn)
+                r.Add(1, "ボリュメトリックフォグと GodRays が同時に有効。どちらも太陽の散乱を描くので、"
+                         "太陽が画面内にあるとき二重計上されて白飛びする。通常はフォグ側だけで足りる");
+            if (fog.temporal && fog.temporalBlend >= 0.5f)
+                r.Add(0, "フォグの時間再投影の現フレーム比率が " + Fmt(fog.temporalBlend)
+                         + "。大きいとノイズが収束しない（既定 0.08）");
+        }
+    }
+
     return r;
 }
 

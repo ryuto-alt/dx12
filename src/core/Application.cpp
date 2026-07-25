@@ -2323,6 +2323,9 @@ nlohmann::json PerfReportJson(const PerfSummary& s, bool vsync, float fpsLimit)
             notes.push_back("SSAO が重い: sampleCount 削減か SSAO OFF で切り分け"); break;
         case GpuTimer::PostFX:
             notes.push_back("ポストが重い: bloom/DoF/motionBlur/godRays を個別 OFF で切り分け"); break;
+        case GpuTimer::VolumetricFog:
+            notes.push_back("ボリュメトリックフォグが重い: distance を縮めるか lightScattering を OFF。"
+                            "灯数が多いシーンでは散乱パスが 1 froxel あたり最大 128 灯を舐める"); break;
         default: break;
         }
     }
@@ -4403,7 +4406,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["result"] = {{"skybox", {
                                   {"envMapPath", sky.envMapPath}, {"iblIntensity", sky.iblIntensity},
                                   {"skyboxIntensity", sky.skyboxIntensity}, {"drawSkybox", sky.drawSkybox}}},
-                              {"note", "post-process は dx12_get_post_process、SSAO は dx12_get_ssao、SSR は dx12_get_ssr、SSGI は dx12_get_ssgi を使う"}};
+                              {"note", "post-process は dx12_get_post_process、SSAO は dx12_get_ssao、SSR は dx12_get_ssr、SSGI は dx12_get_ssgi、ボリュメトリックフォグは dx12_get_volumetric_fog を使う"}};
         }
         else if (method == "set_scene_settings")
         {
@@ -5197,6 +5200,55 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             t.varianceGamma = params.value("varianceGamma", t.varianceGamma);
             t.jitterScale   = params.value("jitterScale",   t.jitterScale);
             t.debugVelocity = params.value("debugVelocity", t.debugVelocity);
+            resp["ok"] = true;
+            resp["result"] = {{"applied", true}};
+        }
+        else if (method == "get_volumetric_fog")
+        {
+            const auto& f = m_scene->GetVolumetricFogSettings();
+            resp["ok"] = true;
+            resp["result"] = {
+                {"enabled", f.enabled}, {"density", f.density},
+                {"albedo", {f.albedo.x, f.albedo.y, f.albedo.z}},
+                {"anisotropy", f.anisotropy},
+                {"heightFalloff", f.heightFalloff}, {"heightRef", f.heightRef},
+                {"distance", f.distance}, {"depthDistribution", f.depthDistribution},
+                {"ambient", {f.ambient.x, f.ambient.y, f.ambient.z}},
+                {"sunIntensity", f.sunIntensity}, {"lightScattering", f.lightScattering},
+                {"temporal", f.temporal}, {"temporalBlend", f.temporalBlend},
+                {"extendBeyondRange", f.extendBeyondRange}, {"debugMode", f.debugMode},
+                // ON でも実際に走らない条件を明示する（誤診断を防ぐ）
+                {"active", f.enabled && f.density > 0.0f && m_volumetricFogPass
+                           && !m_camera->IsOrthographic()
+                           && !(m_editorCtx && m_editorCtx->view2D)}};
+        }
+        else if (method == "set_volumetric_fog")
+        {
+            auto& f = m_scene->GetVolumetricFogSettings();
+            auto vec3 = [&](const char* key, DirectX::XMFLOAT3& dst)
+            {
+                if (params.contains(key) && params[key].is_array() && params[key].size() >= 3)
+                {
+                    dst.x = params[key][0].get<float>();
+                    dst.y = params[key][1].get<float>();
+                    dst.z = params[key][2].get<float>();
+                }
+            };
+            f.enabled           = params.value("enabled",           f.enabled);
+            f.density           = params.value("density",           f.density);
+            vec3("albedo", f.albedo);
+            f.anisotropy        = params.value("anisotropy",        f.anisotropy);
+            f.heightFalloff     = params.value("heightFalloff",     f.heightFalloff);
+            f.heightRef         = params.value("heightRef",         f.heightRef);
+            f.distance          = params.value("distance",          f.distance);
+            f.depthDistribution = params.value("depthDistribution", f.depthDistribution);
+            vec3("ambient", f.ambient);
+            f.sunIntensity      = params.value("sunIntensity",      f.sunIntensity);
+            f.lightScattering   = params.value("lightScattering",   f.lightScattering);
+            f.temporal          = params.value("temporal",          f.temporal);
+            f.temporalBlend     = params.value("temporalBlend",     f.temporalBlend);
+            f.extendBeyondRange = params.value("extendBeyondRange", f.extendBeyondRange);
+            f.debugMode         = params.value("debugMode",         f.debugMode);
             resp["ok"] = true;
             resp["result"] = {{"applied", true}};
         }
@@ -15372,6 +15424,53 @@ void Application::Render()
             ImGui::SliderFloat("時間蓄積 Feedback", &sg.feedback,   0.0f, 0.98f, "%.2f");
             ImGui::Checkbox("画面外は IBL で埋める", &sg.iblFallback);
             ImGui::TextDisabled("IBL 埋めを切るとカメラを回すたびに明るさが変動する");
+            ImGui::EndDisabled();
+            ImGui::End();
+        }
+
+        // ---- ボリュメトリックフォグ設定ウィンドウ（シーン単位・グローバルレンダ設定・トグル表示）----
+        if (m_scene && m_editorCtx->showVolumetricFog)
+        {
+            auto& f = m_scene->GetVolumetricFogSettings();
+            ImGui::Begin("Volumetric Fog");
+            ImGui::TextWrapped("視錐台に沿った 3D テクスチャ（160x90x64）へ散乱を焼いてから "
+                               "画面へ合成する。空気そのものが光る＝光の筋（ゴッドレイ）が "
+                               "立体的に見える。透視ビューのみ。有効にした時点で 28MB 確保する。");
+            ImGui::Separator();
+
+            ImGui::Checkbox("有効", &f.enabled);
+            ImGui::BeginDisabled(!f.enabled);
+
+            ImGui::SeparatorText("媒質");
+            ImGui::SliderFloat("濃度##fog",     &f.density,       0.0f, 0.3f,  "%.4f");
+            ImGui::ColorEdit3 ("散乱アルベド",   &f.albedo.x);
+            ImGui::SliderFloat("異方性 g",      &f.anisotropy,   -0.9f, 0.9f,  "%.2f");
+            ImGui::TextDisabled("g>0 = 前方散乱（太陽の方を向くと明るい）。0.6-0.8 で強いシャフト");
+            ImGui::SliderFloat("高さ減衰(1/m)", &f.heightFalloff, 0.0f, 0.5f,  "%.3f");
+            ImGui::DragFloat  ("基準高さ(Y)",   &f.heightRef,     0.1f, -500.0f, 500.0f, "%.1f");
+
+            ImGui::SeparatorText("ボリューム");
+            ImGui::SliderFloat("到達距離(m)",   &f.distance,        10.0f, 500.0f, "%.0f");
+            ImGui::SliderFloat("深度分布 k",    &f.depthDistribution, 1.0f, 4.0f, "%.2f");
+            ImGui::TextDisabled("z = 距離 * w^k。1=線形 / 大きいほど手前が細かい");
+            ImGui::Checkbox("到達距離の外を解析フォグで延長", &f.extendBeyondRange);
+
+            ImGui::SeparatorText("ライティング");
+            ImGui::ColorEdit3 ("環境散乱",      &f.ambient.x);
+            ImGui::SliderFloat("太陽の寄与",    &f.sunIntensity, 0.0f, 5.0f, "%.2f");
+            ImGui::Checkbox("点光源/スポットも散乱させる", &f.lightScattering);
+            ImGui::TextDisabled("クラスタライトリストを引く（クラスタード無効時はスキップ）");
+
+            ImGui::SeparatorText("時間再投影");
+            ImGui::Checkbox("有効##fogTemporal", &f.temporal);
+            ImGui::BeginDisabled(!f.temporal);
+            ImGui::SliderFloat("現フレーム比率", &f.temporalBlend, 0.01f, 1.0f, "%.3f");
+            ImGui::TextDisabled("小さいほど滑らかだがゴーストが増える（既定 0.08）");
+            ImGui::EndDisabled();
+
+            ImGui::SeparatorText("デバッグ表示（保存されない）");
+            ImGui::Combo("表示##fogDebug", &f.debugMode,
+                         "オフ\0散乱だけ\0透過率だけ\0froxel スライス\0\0");
             ImGui::EndDisabled();
             ImGui::End();
         }

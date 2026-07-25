@@ -1100,6 +1100,40 @@ reg(
   (a) => run(() => engine.call("set_taa", a)),
 );
 
+reg(
+  "dx12_get_volumetric_fog",
+  "ボリュメトリックフォグ設定取得",
+  "現在のシーンのボリュメトリックフォグ(froxel)設定を返す。{enabled, density, albedo, anisotropy, heightFalloff, heightRef, distance, depthDistribution, ambient, sunIntensity, lightScattering, temporal, temporalBlend, extendBeyondRange, debugMode} に加え、実際に走っているかの active を返す。★正射カメラ/2Dビューでは自動無効化される(SSAO/TAA と同じ制約)。",
+  {},
+  { readOnlyHint: true },
+  () => run(() => engine.call("get_volumetric_fog", {})),
+);
+
+reg(
+  "dx12_set_volumetric_fog",
+  "ボリュメトリックフォグ設定変更",
+  "ボリュメトリックフォグのフィールドを指定分だけ更新する(未指定は現状維持)。視錐台に沿った 3D テクスチャ(160x90x64)へ散乱を焼いてから画面へ合成する方式で、空気そのものが光る=光の筋(ゴッドレイ)が立体的に見える。有効にした時点で VRAM を 28MB 確保する(以後 OFF にしても解放しない)。太陽 + CSM に加えて点光源/スポットの散乱もクラスタライトリストから引く。★GodRays(ポストの擬似シャフト)と同時に有効にすると太陽の散乱が二重計上される。",
+  {
+    enabled: z.boolean().optional(),
+    density: z.number().optional().describe("消散係数 σ_t(1/m 相当)。既定 0.02。0.05 で濃い霧、0.2 でほぼ視界ゼロ。"),
+    albedo: z.array(z.number()).length(3).optional().describe("散乱アルベド [r,g,b]。σ_s = density * albedo。"),
+    anisotropy: z.number().optional().describe("Henyey-Greenstein の g(-0.9..0.9)。既定 0.3。0=等方 / 0.6-0.8 で太陽方向に強いシャフト。負にすると後方散乱。"),
+    heightFalloff: z.number().optional().describe("高さ方向の指数減衰(1/m)。既定 0.1。0 で高さ無依存。"),
+    heightRef: z.number().optional().describe("高さ減衰の基準高さ(world Y)。既定 0。"),
+    distance: z.number().optional().describe("froxel ボリュームの到達距離(m)。既定 150。ここから先は解析フォグへ引き継ぐ。"),
+    depthDistribution: z.number().optional().describe("Z 分布の冪 k(1..4)。z = distance * w^k。既定 2。1=線形 / 大きいほど手前が細かい。"),
+    ambient: z.array(z.number()).length(3).optional().describe("環境散乱(等方) [r,g,b]。影の中の霧の明るさ。"),
+    sunIntensity: z.number().optional().describe("太陽の散乱寄与スケール。既定 1。"),
+    lightScattering: z.boolean().optional().describe("点光源/スポットも散乱させるか(クラスタライトリストを引く)。既定 true。"),
+    temporal: z.boolean().optional().describe("時間再投影。既定 true。false にするとサブfroxelジッタも自動で切れる。"),
+    temporalBlend: z.number().optional().describe("現フレームの比率(0.01..1)。既定 0.08。小さいほど滑らかだがゴーストが増える。"),
+    extendBeyondRange: z.boolean().optional().describe("distance より遠方を解析的な指数フォグで延長する。既定 true。切ると遠景に『フォグが止まる帯』が出る。"),
+    debugMode: z.number().int().optional().describe("0=オフ / 1=散乱だけ / 2=透過率だけ / 3=froxel スライスの縞。保存されない検証用。"),
+  },
+  { idempotentHint: true },
+  (a) => run(() => engine.call("set_volumetric_fog", a)),
+);
+
 // ════════════════════════════════════════════════════════════════
 //  ビルド/検証パイプライン連携
 // ════════════════════════════════════════════════════════════════
