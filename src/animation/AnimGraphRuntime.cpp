@@ -1,6 +1,7 @@
 #include "animation/AnimGraphRuntime.h"
 #include "animation/AnimationClip.h"
 #include "animation/Animator.h"
+#include "animation/BlendTree.h"
 #include "animation/Skeleton.h"
 
 #include <algorithm>
@@ -13,6 +14,9 @@ namespace anim_graph
 
 namespace
 {
+
+// ブレンドツリー 1 個あたりのサンプル数の上限（毎フレームのヒープ確保を避けるため固定長）。
+constexpr size_t kMaxBlendSamples = 16;
 
 // 再生位置を [0, duration] に畳む。戻り値 = 折り返したか。
 bool WrapStateTime(f32& time, f32 duration, bool loop)
@@ -36,20 +40,138 @@ const AnimationClip* ClipAt(const std::vector<std::unique_ptr<AnimationClip>>& c
     return clips[static_cast<size_t>(index)].get();
 }
 
-// ステートの「合成 duration」。Step 3 は単一クリップのみ（ブレンドツリーは Step 4）。
-f32 StateDuration(const AnimStateDef& st, const std::vector<std::unique_ptr<AnimationClip>>& clips)
+// ブレンドツリーの入力パラメータ値。
+f32 BlendTreeInput(const AnimBlendTree& bt, const AnimParamMap& params)
 {
+    auto it = params.find(bt.param);
+    return (it == params.end()) ? 0.0f : it->second.f;
+}
+
+// ブレンドツリーの重みを計算して out（要素数 kMaxBlendSamples）へ書く。
+// 返り値 = 実際に使ったサンプル数。ヒープを触らないよう固定長で持つ。
+size_t EvalBlendTreeWeights(const AnimBlendTree& bt, const AnimParamMap& params,
+                            f32 (&out)[kMaxBlendSamples])
+{
+    const size_t n = (std::min)(bt.samples.size(), kMaxBlendSamples);
+    for (size_t i = 0; i < kMaxBlendSamples; ++i) out[i] = 0.0f;
+    if (n == 0) return 0;
+
+    f32 axis[kMaxBlendSamples];
+    for (size_t i = 0; i < n; ++i) axis[i] = bt.samples[i].value;
+
+    Eval1DBlend(axis, n, BlendTreeInput(bt, params), out);
+    return n;
+}
+
+// ステートの「合成 duration」。
+// ブレンドツリーでは、重み付き平均した duration を「合成クリップの長さ」として扱う。
+// 位相同期はこの合成 duration に対する正規化時間で行う。
+f32 StateDuration(const AnimStateDef& st, const std::vector<std::unique_ptr<AnimationClip>>& clips,
+                  const AnimParamMap& params)
+{
+    if (st.blendTree.type == AnimBlendTreeType::OneD)
+    {
+        f32 w[kMaxBlendSamples];
+        const size_t n = EvalBlendTreeWeights(st.blendTree, params, w);
+        f32 dur = 0.0f, wsum = 0.0f;
+        for (size_t i = 0; i < n; ++i)
+        {
+            if (w[i] <= 0.0f) continue;
+            const AnimationClip* c = ClipAt(clips, st.blendTree.samples[i]._clipIndex);
+            if (!c || c->GetDuration() <= 0.0f) continue;
+            dur  += w[i] * c->GetDuration();
+            wsum += w[i];
+        }
+        return (wsum > 1e-5f) ? (dur / wsum) : 0.0f;
+    }
     const AnimationClip* c = ClipAt(clips, st._clipIndex);
     return c ? c->GetDuration() : 0.0f;
 }
 
+// ステートの再生レート倍率。
+// speedMatch: 実パラメータ値 ÷ 補間された基準速度。
+//   サンプルの value を「そのクリップ本来の移動速度(m/s)」にしてあれば、
+//   **サンプル範囲の内側では Σw·value == x になるので倍率は 1** になる
+//   （ブレンド自体が既に速度を合わせているため）。効くのは範囲外へ出たときで、
+//   「一番速い走りより速く動く」ときに脚の回転が追従する。
+f32 StateRate(const AnimStateDef& st, const AnimParamMap& params,
+              const f32 (&weights)[kMaxBlendSamples], size_t n)
+{
+    if (st.blendTree.type != AnimBlendTreeType::OneD || !st.blendTree.speedMatch) return 1.0f;
+
+    f32 base = 0.0f;
+    for (size_t i = 0; i < n; ++i)
+        base += weights[i] * st.blendTree.samples[i].value;
+
+    if (base <= 1e-4f) return 1.0f;
+    const f32 x = BlendTreeInput(st.blendTree, params);
+    if (x <= 0.0f) return 1.0f;
+    return std::clamp(x / base, 0.1f, 4.0f);
+}
+
 // ステートのポーズを out へ書き、同時に「イベント収集に使う代表クリップ」を返す。
+// ブレンドツリーの場合は最大重みのサンプルが代表になる。
+//
+// ★位相同期（syncPhase）★
+//   全クリップを「合成 duration に対する正規化時間」で同じ位相にしてサンプルする。
+//   これをやらないと walk と run の接地タイミングがずれ、足が 2 本に見える
+//   （ブレンドツリーで最も出やすい見た目の破綻）。
+// eventTimeScale には「ステートの時間軸 → 代表クリップの時間軸」の倍率を返す
+// （イベント収集の (prev, cur] を代表クリップの時刻に直すため）。
 const AnimationClip* SampleStatePose(const AnimStateDef& st, f32 time,
                                      const std::vector<std::unique_ptr<AnimationClip>>& clips,
                                      const Skeleton& skeleton,
-                                     const AnimParamMap& /*params*/,
-                                     AnimPose& out, AnimPose& /*scratch*/)
+                                     const AnimParamMap& params,
+                                     f32 synthDuration,
+                                     AnimPose& out, AnimPose& scratch,
+                                     f32& eventTimeScale)
 {
+    eventTimeScale = 1.0f;
+
+    if (st.blendTree.type == AnimBlendTreeType::OneD)
+    {
+        f32 w[kMaxBlendSamples];
+        const size_t n = EvalBlendTreeWeights(st.blendTree, params, w);
+        const f32 phase = (synthDuration > 0.0f) ? (time / synthDuration) : 0.0f;
+
+        const AnimationClip* dominant = nullptr;
+        f32 dominantW = 0.0f;
+        f32 accum = 0.0f;
+        bool first = true;
+
+        for (size_t i = 0; i < n; ++i)
+        {
+            if (w[i] <= 1e-4f) continue;
+            const AnimationClip* c = ClipAt(clips, st.blendTree.samples[i]._clipIndex);
+            if (!c) continue;
+
+            // ★位相同期★ 合成 duration に対する正規化時間で全クリップを揃える
+            const f32 t = st.blendTree.syncPhase ? (phase * c->GetDuration()) : time;
+
+            if (first)
+            {
+                SamplePose(*c, t, skeleton, out);
+                accum = w[i];
+                first = false;
+            }
+            else
+            {
+                SamplePose(*c, t, skeleton, scratch);
+                accum += w[i];
+                // 逐次ブレンド: acc = lerp(acc, p_i, w_i / Σ_{k<=i} w_k)
+                BlendPoseAccum(out, scratch, w[i] / accum);
+            }
+
+            if (w[i] > dominantW) { dominantW = w[i]; dominant = c; }
+        }
+
+        if (first) { MakeBindPose(skeleton, out); return nullptr; }
+
+        if (dominant && st.blendTree.syncPhase && synthDuration > 0.0f)
+            eventTimeScale = dominant->GetDuration() / synthDuration;
+        return dominant;
+    }
+
     const AnimationClip* c = ClipAt(clips, st._clipIndex);
     if (!c)
     {
@@ -179,7 +301,7 @@ f32 NormalizedTime(const AnimGraphRuntimeState& rt, u32 layer,
     const AnimLayerRuntime& lr = rt.layers[layer];
     const AnimLayerDef& def = rt.asset.layers[layer];
     if (lr.curState < 0 || lr.curState >= static_cast<i32>(def.states.size())) return 0.0f;
-    const f32 dur = StateDuration(def.states[static_cast<size_t>(lr.curState)], clips);
+    const f32 dur = StateDuration(def.states[static_cast<size_t>(lr.curState)], clips, rt.params);
     return (dur > 0.0f) ? std::clamp(lr.stateTime / dur, 0.0f, 1.0f) : 0.0f;
 }
 
@@ -265,20 +387,33 @@ void Update(AnimGraphRuntimeState& rt,
         const AnimStateDef& cur = def.states[static_cast<size_t>(lr.curState)];
 
         // ---- 現ステートの時間を進める --------------------------------------
+        // ブレンドツリーでは「重み付き平均した duration」を合成クリップの長さとして扱い、
+        // speedMatch が有効なら実パラメータ値に合わせて再生レートを補正する。
+        f32 curW[kMaxBlendSamples];
+        const size_t curN = EvalBlendTreeWeights(cur.blendTree, rt.params, curW);
+        const f32 curDur  = StateDuration(cur, clips, rt.params);
+        const f32 curRate = StateRate(cur, rt.params, curW, curN);
+
         lr.prevStateTime = lr.stateTime;
-        lr.stateTime += dt * cur.speed;
-        lr.wrapped = WrapStateTime(lr.stateTime, StateDuration(cur, clips), cur.loop);
+        lr.stateTime += dt * cur.speed * curRate;
+        lr.wrapped = WrapStateTime(lr.stateTime, curDur, cur.loop);
 
         // ---- 遷移先の時間 + ブレンド率 --------------------------------------
         f32 blend = 0.0f;
         const AnimStateDef* next = nullptr;
+        f32 nextDur = 0.0f;
         if (lr.inTransition && lr.transTo >= 0 && lr.transTo < static_cast<i32>(def.states.size()))
         {
             next = &def.states[static_cast<size_t>(lr.transTo)];
+            f32 nW[kMaxBlendSamples];
+            const size_t nN = EvalBlendTreeWeights(next->blendTree, rt.params, nW);
+            nextDur = StateDuration(*next, clips, rt.params);
+            const f32 nextRate = StateRate(*next, rt.params, nW, nN);
+
             lr.transPrevTime = lr.transTime;
-            lr.transTime += dt * next->speed;
+            lr.transTime += dt * next->speed * nextRate;
             // 遷移中の先クリップは常にループで畳む（現クリップの loop フラグを流用しない）
-            lr.transWrapped = WrapStateTime(lr.transTime, StateDuration(*next, clips), true);
+            lr.transWrapped = WrapStateTime(lr.transTime, nextDur, true);
 
             lr.transElapsed += dt;
             blend = std::clamp(lr.transElapsed / lr.transDuration, 0.0f, 1.0f);
@@ -299,23 +434,30 @@ void Update(AnimGraphRuntimeState& rt,
 
         // ---- ポーズ生成 ------------------------------------------------------
         const AnimStateDef& active = def.states[static_cast<size_t>(lr.curState)];
+        const f32 activeDur = next ? curDur : StateDuration(active, clips, rt.params);
+        f32 evScale = 1.0f;
         const AnimationClip* eventClip =
-            SampleStatePose(active, lr.stateTime, clips, skeleton, rt.params, rt.layerPose, rt.poseB);
-        f32 eventPrev = lr.prevStateTime, eventCur = lr.stateTime;
+            SampleStatePose(active, lr.stateTime, clips, skeleton, rt.params, activeDur,
+                            rt.layerPose, rt.poseB, evScale);
+        f32 eventPrev = lr.prevStateTime * evScale;
+        f32 eventCur  = lr.stateTime * evScale;
         bool eventWrapped = lr.wrapped;
 
         if (next && blend > 0.0f)
         {
-            SampleStatePose(*next, lr.transTime, clips, skeleton, rt.params, rt.poseB, rt.refPose);
+            f32 nextEvScale = 1.0f;
+            const AnimationClip* nextClip =
+                SampleStatePose(*next, lr.transTime, clips, skeleton, rt.params, nextDur,
+                                rt.poseB, rt.refPose, nextEvScale);
             BlendPoseInPlace(rt.layerPose, rt.poseB, blend);
 
             // イベントは「重みが優勢な側」からだけ拾う。
             // 両方から拾うとクロスフェード中だけ足音が二重に鳴る。
             if (blend >= 0.5f)
             {
-                eventClip    = ClipAt(clips, next->_clipIndex);
-                eventPrev    = lr.transPrevTime;
-                eventCur     = lr.transTime;
+                eventClip    = nextClip;
+                eventPrev    = lr.transPrevTime * nextEvScale;
+                eventCur     = lr.transTime * nextEvScale;
                 eventWrapped = lr.transWrapped;
             }
         }

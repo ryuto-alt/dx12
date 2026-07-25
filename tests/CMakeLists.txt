@@ -73,6 +73,18 @@ else()
 endif()
 add_test(NAME SpriteAnimTests COMMAND SpriteAnimTests)
 
+# ブレンドツリーの重み計算(animation/BlendTree.h)テスト。
+# 1D 区間線形補間 + 2D Gradient Band（Johansen 論文 §6.3/§6.3.1）。
+# ヘッダオンリー・依存ゼロなのでスタンドアロン構成でも動く。
+add_executable(BlendTreeTests blend_tree_test.cpp)
+target_include_directories(BlendTreeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(BlendTreeTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(BlendTreeTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME BlendTreeTests COMMAND BlendTreeTests)
+
 # UIアニメクリップ(animation/UiAnimAsset.h)の評価テスト。
 # 評価とイージングは純関数(nlohmann も entt も要らない)なのでスタンドアロンでも動く。
 add_executable(UiAnimTests ui_anim_test.cpp)
