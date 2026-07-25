@@ -356,9 +356,13 @@ void Update(AnimGraphRuntimeState& rt,
 
         // ---- 遷移の判定 ----------------------------------------------------
         {
-            const f32 nt = NormalizedTime(rt, static_cast<u32>(li), clips);
-            const i32 pick = PickTransition(def, lr.curState, nt,
-                                            lr.inTransition, lr.transInterruptible, rt.params);
+            AnimTransitionQuery q;
+            q.curState             = lr.curState;
+            q.normalizedTime       = NormalizedTime(rt, static_cast<u32>(li), clips);
+            q.inTransition         = lr.inTransition;
+            q.currentInterruptible = lr.transInterruptible;
+            q.curTransitionTo      = lr.transTo;
+            const i32 pick = PickTransition(def, q, rt.params);
             if (pick >= 0)
             {
                 const AnimTransitionDef& tr = def.transitions[static_cast<size_t>(pick)];

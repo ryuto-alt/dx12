@@ -15,8 +15,10 @@
 #include "animation/Skeleton.h"
 
 #include <DirectXMath.h>
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <string>
 #include <vector>
 
 using namespace dx12e;
@@ -97,6 +99,180 @@ static float BoneLength(const Skeleton& sk, const std::vector<XMFLOAT4X4>& skinT
     const XMVECTOR pa = SkinnedBoneOrigin(sk, skinT, a);
     const XMVECTOR pb = SkinnedBoneOrigin(sk, skinT, b);
     return XMVectorGetX(XMVector3Length(XMVectorSubtract(pb, pa)));
+}
+
+// ---------------------------------------------------------------------------
+// ★ 後方互換の保証（計画05 R1「行列規約を崩す」対策）
+//
+// 2026-07-26 以前の Animator::ComputeBoneMatrices を**逐語で**再現し、
+// 新しい経路（SamplePose → ComputeGlobalMatrices → GlobalToSkinning）の結果が
+// 一致することを確認する。単一クリップ再生の見た目が 1 ピクセルも変わらないことの保証。
+//
+// 「トラックのあるボーン」と「トラックの無いボーン（localBindPose を TRS 分解して使う）」
+// の両方を含むクリップで検証する。後者が新旧で唯一数式の違う箇所。
+// ---------------------------------------------------------------------------
+static void LegacyComputeBoneMatrices(const Skeleton& skeleton, const AnimationClip& clip,
+                                      float time, std::vector<XMFLOAT4X4>& out)
+{
+    const u32 boneCount = skeleton.GetBoneCount();
+    out.resize(boneCount);
+    std::vector<XMMATRIX> globalMatrices(boneCount);
+
+    for (u32 i = 0; i < boneCount; ++i)
+    {
+        const BoneNode&  bone  = skeleton.GetBone(i);
+        const BoneTrack* track = clip.FindTrackForBone(i);
+
+        XMMATRIX localMatrix;
+        if (track)
+        {
+            const XMFLOAT3 pos   = SampleVec3Track(track->positionKeys, time, XMFLOAT3(0, 0, 0));
+            const XMFLOAT4 rot   = SampleQuatTrack(track->rotationKeys, time);
+            const XMFLOAT3 scale = SampleVec3Track(track->scaleKeys, time, XMFLOAT3(1, 1, 1));
+
+            const XMMATRIX S = XMMatrixScalingFromVector(XMLoadFloat3(&scale));
+            const XMMATRIX R = XMMatrixRotationQuaternion(XMLoadFloat4(&rot));
+            const XMMATRIX T = XMMatrixTranslationFromVector(XMLoadFloat3(&pos));
+            localMatrix = S * R * T;
+        }
+        else
+        {
+            // ★旧実装はここで localBindPose の行列を「そのまま」使っていた★
+            localMatrix = XMLoadFloat4x4(&bone.localBindPose);
+        }
+
+        if (bone.parentIndex >= 0)
+            globalMatrices[i] = localMatrix * globalMatrices[static_cast<u32>(bone.parentIndex)];
+        else
+            globalMatrices[i] = localMatrix;
+    }
+
+    for (u32 i = 0; i < boneCount; ++i)
+    {
+        const XMMATRIX invBind  = XMLoadFloat4x4(&skeleton.GetBone(i).inverseBindPose);
+        const XMMATRIX skinning = invBind * globalMatrices[i];
+        XMStoreFloat4x4(&out[i], XMMatrixTranspose(skinning));
+    }
+}
+
+static void ExpectMatricesMatch(const std::vector<XMFLOAT4X4>& a, const std::vector<XMFLOAT4X4>& b,
+                                float eps, const char* what)
+{
+    CHECK(a.size() == b.size());
+    float worst = 0.0f;
+    for (size_t i = 0; i < a.size() && i < b.size(); ++i)
+    {
+        const float* pa = &a[i]._11;
+        const float* pb = &b[i]._11;
+        for (int k = 0; k < 16; ++k) worst = (std::max)(worst, std::fabs(pa[k] - pb[k]));
+    }
+    std::printf("  [compat] %-34s max |new - old| = %.9f\n", what, worst);
+    CHECK(worst < eps);
+}
+
+// 一部のボーンにだけトラックを持つクリップ（残りはバインドポーズを使う）
+static void BuildPartialClip(AnimationClip& clip, const Skeleton& skeleton)
+{
+    clip.SetTicksPerSecond(1.0f);
+    clip.SetDuration(2.0f);
+
+    // ボーン 0 と 2 にだけトラックを置く（ボーン 1 は localBindPose 経路になる）
+    for (u32 i : {0u, 2u})
+    {
+        BoneTrack track;
+        track.boneIndex = i;
+        const float y = (i == 0) ? 0.0f : 1.0f;
+        track.positionKeys = {{0.0f, {0.0f, y, 0.0f}}, {2.0f, {0.3f, y + 0.2f, -0.1f}}};
+        XMFLOAT4 q0, q1;
+        XMStoreFloat4(&q0, XMQuaternionRotationRollPitchYaw(0.1f, 0.2f, -0.3f));
+        XMStoreFloat4(&q1, XMQuaternionRotationRollPitchYaw(-0.7f, 1.1f, 0.4f));
+        track.rotationKeys = {{0.0f, q0}, {2.0f, q1}};
+        track.scaleKeys    = {{0.0f, {1, 1, 1}}, {2.0f, {1.2f, 0.9f, 1.05f}}};
+        clip.AddTrack(std::move(track));
+    }
+    (void)skeleton;
+}
+
+static void TestBackwardCompatWithLegacyPath()
+{
+    Skeleton skeleton;
+    BuildLegSkeleton(skeleton);
+
+    // (a) 全ボーンにトラックがあるクリップ → 数式が完全に同一なので厳密一致するはず
+    {
+        AnimationClip clip;
+        BuildRotationClip(clip, 1, XMQuaternionRotationRollPitchYaw(0.4f, -0.8f, 1.2f));
+
+        for (float t : {0.0f, 0.25f, 0.5f, 0.9f, 1.0f})
+        {
+            std::vector<XMFLOAT4X4> legacy, modern, globals;
+            LegacyComputeBoneMatrices(skeleton, clip, t, legacy);
+
+            AnimPose pose;
+            SamplePose(clip, t, skeleton, pose);
+            ComputeGlobalMatrices(skeleton, pose, globals);
+            GlobalToSkinning(skeleton, globals, modern);
+
+            ExpectMatricesMatch(legacy, modern, 1e-6f, "all bones have tracks");
+        }
+    }
+
+    // (b) トラックの無いボーンを含むクリップ → 新実装は localBindPose を TRS 分解して
+    //     S*R*T で組み直すので、分解の往復誤差ぶんだけズレ得る。実用上無視できる範囲に収まること。
+    {
+        AnimationClip clip;
+        BuildPartialClip(clip, skeleton);
+        CHECK(clip.FindTrackForBone(1) == nullptr);   // ボーン 1 はバインドポーズ経路
+
+        for (float t : {0.0f, 0.7f, 1.9f})
+        {
+            std::vector<XMFLOAT4X4> legacy, modern, globals;
+            LegacyComputeBoneMatrices(skeleton, clip, t, legacy);
+
+            AnimPose pose;
+            SamplePose(clip, t, skeleton, pose);
+            ComputeGlobalMatrices(skeleton, pose, globals);
+            GlobalToSkinning(skeleton, globals, modern);
+
+            ExpectMatricesMatch(legacy, modern, 1e-5f, "some bones use bind pose");
+        }
+    }
+
+    // (c) 非一様スケール + 回転を含むバインドポーズでも同じこと
+    {
+        Skeleton sk;
+        for (int i = 0; i < 3; ++i)
+        {
+            BoneNode bone;
+            bone.name = "b" + std::to_string(i);
+            bone.parentIndex = (i == 0) ? -1 : (i - 1);
+            const XMMATRIX local = XMMatrixScaling(1.3f, 0.7f, 1.1f) *
+                                   XMMatrixRotationRollPitchYaw(0.2f * i, -0.5f * i, 0.9f) *
+                                   XMMatrixTranslation(0.0f, 1.0f, 0.2f);
+            XMStoreFloat4x4(&bone.localBindPose, local);
+            XMStoreFloat4x4(&bone.inverseBindPose, XMMatrixInverse(nullptr, local));
+            sk.AddBone(std::move(bone));
+        }
+        CHECK(!sk.HasUndecomposableBind());
+
+        AnimationClip clip;
+        clip.SetTicksPerSecond(1.0f);
+        clip.SetDuration(1.0f);
+        BoneTrack track;   // ボーン 0 だけにトラック
+        track.boneIndex = 0;
+        track.positionKeys = {{0.0f, {0, 0, 0}}, {1.0f, {1, 2, 3}}};
+        track.rotationKeys = {{0.0f, {0, 0, 0, 1}}, {1.0f, {0, 0.3826834f, 0, 0.9238795f}}};
+        track.scaleKeys    = {{0.0f, {1, 1, 1}}, {1.0f, {1, 1, 1}}};
+        clip.AddTrack(std::move(track));
+
+        std::vector<XMFLOAT4X4> legacy, modern, globals;
+        LegacyComputeBoneMatrices(sk, clip, 0.6f, legacy);
+        AnimPose pose;
+        SamplePose(clip, 0.6f, sk, pose);
+        ComputeGlobalMatrices(sk, pose, globals);
+        GlobalToSkinning(sk, globals, modern);
+        ExpectMatricesMatch(legacy, modern, 1e-4f, "non-uniform scaled bind pose");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -487,6 +663,7 @@ static void TestNonUniformScaleBind()
 
 int main()
 {
+    TestBackwardCompatWithLegacyPath();
     TestBoneLengthPreserved();
     TestBlendedQuaternionIsUnit();
     TestQuaternionNeighborhood();

@@ -205,37 +205,52 @@ inline bool EvalConditions(const std::vector<AnimCondition>& conds, const AnimPa
     return true;
 }
 
+// PickTransition への入力（レイヤーの実行状態のうち遷移判定に要るものだけ）。
+struct AnimTransitionQuery
+{
+    i32  curState             = -1;     // 現在のステート添字（-1 なら Any State 遷移のみ対象）
+    f32  normalizedTime       = 0.0f;   // 現ステートの正規化時間（0..1）
+    bool inTransition         = false;  // いま遷移中か
+    bool currentInterruptible = true;   // 進行中の遷移が割り込み可能か（inTransition のときだけ見る）
+    i32  curTransitionTo      = -1;     // 進行中の遷移の行き先ステート（inTransition のときだけ見る）
+};
+
 // 発火できる遷移の添字を返す（-1 = なし）。
-//   curState             現在のステート添字（-1 なら Any State 遷移のみ対象）
-//   normalizedTime       現ステートの正規化時間（0..1）
-//   inTransition         いま遷移中か
-//   currentInterruptible いま進行中の遷移が割り込み可能か（inTransition のときだけ見る）
+//
 // 評価順は**宣言順**（最初に成立したものが勝つ）。Any State（from="*"）は
 // 自分自身へは遷移しない。「被弾やジャンプのトリガを必ず勝たせたい」場合は、
 // .animfsm の transitions 配列でその遷移を**先に**書くこと（優先度はデータ側の責任）。
-inline i32 PickTransition(const AnimLayerDef& layer, i32 curState, f32 normalizedTime,
-                          bool inTransition, bool currentInterruptible,
+//
+// ⚠️ **進行中の遷移と同じ行き先の遷移は選び直さない。**
+//    遷移が完了するまで curState は元のステートのままなので、そうしないと同じ遷移が
+//    毎フレーム再発火して経過時間が 0 に戻り続け、遷移が永久に完了しない
+//    （実機で踏んだ。ユニットテスト TestTransitionDoesNotRestartItself で固定した）。
+//    行き先が違う遷移なら割り込みとして成立する（interruptible が true の場合）。
+inline i32 PickTransition(const AnimLayerDef& layer, const AnimTransitionQuery& q,
                           const AnimParamMap& params)
 {
     // 割り込み不可の遷移が進行中なら何も選ばない
-    if (inTransition && !currentInterruptible) return -1;
+    if (q.inTransition && !q.currentInterruptible) return -1;
 
     for (size_t i = 0; i < layer.transitions.size(); ++i)
     {
         const AnimTransitionDef& tr = layer.transitions[i];
         if (tr._to < 0) continue;                       // 解決できなかった遷移は無視
 
+        // 進行中の遷移と同じ行き先へは選び直さない（自己再発火の防止）
+        if (q.inTransition && tr._to == q.curTransitionTo) continue;
+
         if (tr._fromAny)
         {
-            if (tr._to == curState) continue;            // Any State は自分自身へは行かない
+            if (tr._to == q.curState) continue;          // Any State は自分自身へは行かない
         }
         else
         {
-            if (tr._from < 0 || tr._from != curState) continue;
+            if (tr._from < 0 || tr._from != q.curState) continue;
         }
 
         // exitTime: 現ステートの正規化時間がここに達するまで遷移しない
-        if (tr.hasExitTime && normalizedTime < tr.exitTime) continue;
+        if (tr.hasExitTime && q.normalizedTime < tr.exitTime) continue;
 
         if (!EvalConditions(tr.conditions, params)) continue;
 

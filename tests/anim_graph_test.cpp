@@ -223,6 +223,19 @@ static AnimLayerDef BuildLocomotionLayer()
     return layer;
 }
 
+// PickTransition の入力を組む小ヘルパ
+static AnimTransitionQuery Q(i32 curState, f32 nt, bool inTransition, bool interruptible,
+                             i32 curTransitionTo = -1)
+{
+    AnimTransitionQuery q;
+    q.curState             = curState;
+    q.normalizedTime       = nt;
+    q.inTransition         = inTransition;
+    q.currentInterruptible = interruptible;
+    q.curTransitionTo      = curTransitionTo;
+    return q;
+}
+
 static AnimParamMap BuildParams()
 {
     AnimParamMap p;
@@ -270,18 +283,18 @@ static void TestTransitionFiresOnlyWhenConditionsMet()
     AnimParamMap p = BuildParams();
 
     // speed=0 → Idle から動かない
-    CHECK(PickTransition(layer, 0, 0.5f, false, true, p) == -1);
+    CHECK(PickTransition(layer, Q(0, 0.5f, false, true), p) == -1);
 
     // speed=3 → Idle → Locomotion（遷移 0）
     p["speed"].f = 3.0f;
-    CHECK(PickTransition(layer, 0, 0.5f, false, true, p) == 0);
+    CHECK(PickTransition(layer, Q(0, 0.5f, false, true), p) == 0);
 
     // Locomotion に居るときは戻らない
-    CHECK(PickTransition(layer, 1, 0.5f, false, true, p) == -1);
+    CHECK(PickTransition(layer, Q(1, 0.5f, false, true), p) == -1);
 
     // speed が落ちたら Locomotion → Idle（遷移 1）
     p["speed"].f = 0.0f;
-    CHECK(PickTransition(layer, 1, 0.5f, false, true, p) == 1);
+    CHECK(PickTransition(layer, Q(1, 0.5f, false, true), p) == 1);
 }
 
 static void TestExitTime()
@@ -291,14 +304,14 @@ static void TestExitTime()
     p["grounded"].b = true;
 
     // Jump → Idle は exitTime 0.8。手前では遷移しない
-    CHECK(PickTransition(layer, 2, 0.0f, false, true, p) == -1);
-    CHECK(PickTransition(layer, 2, 0.79f, false, true, p) == -1);
-    CHECK(PickTransition(layer, 2, 0.80f, false, true, p) == 3);
-    CHECK(PickTransition(layer, 2, 1.00f, false, true, p) == 3);
+    CHECK(PickTransition(layer, Q(2, 0.0f, false, true), p) == -1);
+    CHECK(PickTransition(layer, Q(2, 0.79f, false, true), p) == -1);
+    CHECK(PickTransition(layer, Q(2, 0.80f, false, true), p) == 3);
+    CHECK(PickTransition(layer, Q(2, 1.00f, false, true), p) == 3);
 
     // 条件（grounded）が偽なら exitTime を過ぎても遷移しない
     p["grounded"].b = false;
-    CHECK(PickTransition(layer, 2, 1.00f, false, true, p) == -1);
+    CHECK(PickTransition(layer, Q(2, 1.00f, false, true), p) == -1);
 }
 
 static void TestAnyStateTransition()
@@ -313,11 +326,11 @@ static void TestAnyStateTransition()
     //   宣言順で 0 が先なのでそちらが勝つ。ここでは Any State だけを見たいので
     //   Idle は speed を落として評価する。
     p["speed"].f = 0.0f;
-    CHECK(PickTransition(layer, 0, 0.0f, false, true, p) == 2);
+    CHECK(PickTransition(layer, Q(0, 0.0f, false, true), p) == 2);
     p["speed"].f = 3.0f;
-    CHECK(PickTransition(layer, 1, 0.0f, false, true, p) == 2);
+    CHECK(PickTransition(layer, Q(1, 0.0f, false, true), p) == 2);
     // ただし Jump 自身からは飛ばない（Any State は自分自身へは行かない）
-    CHECK(PickTransition(layer, 2, 0.0f, false, true, p) == -1);
+    CHECK(PickTransition(layer, Q(2, 0.0f, false, true), p) == -1);
 }
 
 // 複数の遷移が同時に成立したら「宣言順で先のもの」が勝つ（＝データ側で優先度を決められる）
@@ -329,12 +342,12 @@ static void TestDeclarationOrderWins()
     p["jump"].b  = true;   // Any State → Jump も成立
 
     // 宣言順では Locomotion→Idle（添字 1）が Any→Jump（添字 2）より先
-    CHECK(PickTransition(layer, 1, 0.5f, false, true, p) == 1);
+    CHECK(PickTransition(layer, Q(1, 0.5f, false, true), p) == 1);
 
     // 「トリガを必ず勝たせたい」なら .animfsm 側で Any State の遷移を先に書く。
     AnimLayerDef reordered = layer;
     std::swap(reordered.transitions[1], reordered.transitions[2]);
-    CHECK(PickTransition(reordered, 1, 0.5f, false, true, p) == 1);   // 入れ替え後は添字 1 が Any→Jump
+    CHECK(PickTransition(reordered, Q(1, 0.5f, false, true), p) == 1);   // 入れ替え後は添字 1 が Any→Jump
     CHECK(reordered.transitions[1].to == "Jump");
 }
 
@@ -344,17 +357,17 @@ static void TestTriggerConsumedOnce()
     AnimParamMap p = BuildParams();
     p["jump"].b = true;
 
-    const i32 pick = PickTransition(layer, 0, 0.0f, false, true, p);
+    const i32 pick = PickTransition(layer, Q(0, 0.0f, false, true), p);
     CHECK(pick == 2);
     ConsumeTriggers(layer.transitions[static_cast<size_t>(pick)], p);
     CHECK(!p["jump"].b);
 
     // 消費済みなので 2 回目は発火しない
-    CHECK(PickTransition(layer, 0, 0.0f, false, true, p) == -1);
+    CHECK(PickTransition(layer, Q(0, 0.0f, false, true), p) == -1);
 
     // ConsumeTriggers は float/bool パラメータには触らない
     p["speed"].f = 3.0f;
-    const i32 pick2 = PickTransition(layer, 0, 0.0f, false, true, p);
+    const i32 pick2 = PickTransition(layer, Q(0, 0.0f, false, true), p);
     CHECK(pick2 == 0);
     ConsumeTriggers(layer.transitions[static_cast<size_t>(pick2)], p);
     CHECK(p["speed"].f == 3.0f);
@@ -367,9 +380,33 @@ static void TestInterruptible()
     p["jump"].b = true;
 
     // 割り込み可の遷移が進行中なら、新しい遷移を選べる
-    CHECK(PickTransition(layer, 0, 0.0f, /*inTransition*/ true, /*interruptible*/ true, p) == 2);
+    CHECK(PickTransition(layer, Q(0, 0.0f, true, true), p) == 2);
     // 割り込み不可なら何も選ばない
-    CHECK(PickTransition(layer, 0, 0.0f, /*inTransition*/ true, /*interruptible*/ false, p) == -1);
+    CHECK(PickTransition(layer, Q(0, 0.0f, true, false), p) == -1);
+}
+
+// ★実機で踏んだバグの回帰テスト★
+// 遷移が完了するまで curState は元のステートのままなので、対策しないと
+// 同じ遷移が毎フレーム再発火して経過時間が 0 に戻り続け、遷移が永久に完了しない。
+static void TestTransitionDoesNotRestartItself()
+{
+    const AnimLayerDef layer = BuildLocomotionLayer();
+    AnimParamMap p = BuildParams();
+    p["speed"].f = 2.0f;
+
+    // Idle から Idle→Locomotion（添字 0）が発火する
+    CHECK(PickTransition(layer, Q(0, 0.5f, false, true), p) == 0);
+
+    // その遷移が進行中（行き先 = Locomotion=1）の間は、同じ遷移を選び直さない
+    CHECK(PickTransition(layer, Q(0, 0.5f, /*inTransition*/ true, /*interruptible*/ true,
+                                  /*curTransitionTo*/ 1), p) == -1);
+
+    // 行き先が違う遷移なら割り込みとして成立する（Any State → Jump）
+    p["jump"].b = true;
+    CHECK(PickTransition(layer, Q(0, 0.5f, true, true, /*curTransitionTo*/ 1), p) == 2);
+
+    // 進行中の遷移が割り込み不可なら、行き先が違っても選ばない
+    CHECK(PickTransition(layer, Q(0, 0.5f, true, false, 1), p) == -1);
 }
 
 static void TestUnresolvedTransitionIgnored()
@@ -384,7 +421,7 @@ static void TestUnresolvedTransitionIgnored()
 
     AnimParamMap p;
     // 解決できなかった遷移は黙って無視される（クラッシュも無限ループもしない）
-    CHECK(PickTransition(layer, 0, 1.0f, false, true, p) == -1);
+    CHECK(PickTransition(layer, Q(0, 1.0f, false, true), p) == -1);
 }
 
 static void TestInitAnimParams()
@@ -420,6 +457,7 @@ int main()
     TestDeclarationOrderWins();
     TestTriggerConsumedOnce();
     TestInterruptible();
+    TestTransitionDoesNotRestartItself();
     TestUnresolvedTransitionIgnored();
     TestInitAnimParams();
 
