@@ -11,6 +11,7 @@
 #include "terrain/HeightField.h"
 #include "terrain/TerrainBrush.h"
 #include "terrain/TerrainIO.h"
+#include "terrain/TerrainSplatMap.h"
 
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4201 4244 4267 4996)
@@ -303,6 +304,24 @@ bool SaveHeightmap(entt::registry& reg, entt::entity e, Terrain& t,
     return true;
 }
 
+// スプラット重み(.splat)を書き出す。.hf とまったく同じ流儀（パス未設定なら名前から決める）。
+// これを通さないと Play→Stop のシーン再構築でペイントが巻き戻る。
+bool SaveSplat(entt::registry& reg, entt::entity e, Terrain& t,
+               const std::string& assetsDir, bool logSuccess)
+{
+    if (!t._splat || !t._splat->IsValid()) return false;
+    if (t.splatPath.empty())
+    {
+        const std::string nm = reg.all_of<NameTag>(e) ? reg.get<NameTag>(e).name
+                                                      : std::string("Terrain");
+        t.splatPath = terrain::MakeSplatRelPath(nm);
+    }
+    const std::string base = assetsDir.empty() ? PathResolver::AssetsDir() : assetsDir;
+    if (!terrain::SaveSplatMapFile(base + t.splatPath, *t._splat)) return false;
+    if (logSuccess) Logger::Info("地形スプラットマップを保存しました: {}", t.splatPath);
+    return true;
+}
+
 // 地形の上にブラシの円と中心十字を描く。
 // 描画先は必ず「メインビューポートの」背景 DrawList を明示指定すること。
 // 引数無しの GetBackgroundDrawList() はマルチビューポート有効時に別 OS ウィンドウへ描かれる。
@@ -474,6 +493,12 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
         {
             t._needsSave = false;
             SaveHeightmap(reg, e, t, assetsDir, /*logSuccess=*/false);
+        }
+        // スプラット重み（.splat）も同じ理由で自動保存する。
+        if (t._splatNeedsSave && !s.strokeActive)
+        {
+            t._splatNeedsSave = false;
+            SaveSplat(reg, e, t, assetsDir, /*logSuccess=*/false);
         }
     }
 
@@ -693,6 +718,102 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
             SaveHeightmap(reg, active, *tc, assetsDir, /*logSuccess=*/true);
         }
         ImGui::TextDisabled("彫り終わるたびに自動保存される（このボタンは手動の念押し）");
+    }
+
+    // ---------------- テクスチャ（4 レイヤースプラット）----------------
+    if (ImGui::CollapsingHeader("テクスチャ（レイヤー）", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        const std::string prevLayerSet = tc->layerSetPath;
+        bool flagsChanged = false;
+
+        if (pg::Begin("##TerrainLayers"))
+        {
+            pg::InputTextStr("レイヤーセット", tc->layerSetPath, nullptr,
+                             "assets 相対の .terrainlayers。空にすると従来の見た目（頂点色/.dxmat）に戻る");
+            pg::Text("スプラット", "%s",
+                     tc->splatPath.empty() ? "(未保存)" : tc->splatPath.c_str());
+
+            if (!tc->layerSetPath.empty())
+            {
+                bool triplanar  = (tc->terrainMatFlags & 0x1u) != 0;
+                bool pom        = (tc->terrainMatFlags & 0x2u) != 0;
+                bool macro      = (tc->terrainMatFlags & 0x4u) != 0;
+                bool distTiling = (tc->terrainMatFlags & 0x8u) != 0;
+                pg::Group("繰り返し感の除去");
+                flagsChanged |= pg::Checkbox("マクロ変化", &macro,
+                    "低周波ノイズをアルベドに掛けて広い面の単調さを消す（タップ 0）");
+                pg::SliderFloat("マクロ周期(m)", &tc->macroScale, 10.0f, 400.0f, "%.0f");
+                pg::SliderFloat("マクロ強さ", &tc->macroStrength, 0.0f, 1.0f, "%.2f");
+                flagsChanged |= pg::Checkbox("距離タイリング", &distTiling,
+                    "遠景を粗いタイリングで重ねて格子模様を消す");
+                pg::SliderFloat("距離開始(m)", &tc->distTilingStart, 5.0f, 200.0f, "%.0f");
+                pg::SliderFloat("遠景の粗さ", &tc->distTilingFarScale, 2.0f, 16.0f, "%.1f");
+
+                pg::Group("ブレンド / 投影");
+                pg::SliderFloat("高さブレンド深さ", &tc->heightBlendDepth, 0.01f, 1.0f, "%.3f",
+                                nullptr, "小さいほど境界がシャープ（1.0 でほぼ線形ブレンド）");
+                flagsChanged |= pg::Checkbox("トライプラナー", &triplanar,
+                    "急斜面のテクスチャ引き伸ばしを消す（急斜面のピクセルだけ 3 投影）");
+                pg::SliderFloat("投影の鋭さ", &tc->triplanarSharpness, 1.0f, 16.0f, "%.1f");
+                pg::SliderFloat("法線の強さ", &tc->normalStrength, 0.0f, 2.0f, "%.2f");
+
+                pg::Group("パララックス（POM・既定 OFF）");
+                flagsChanged |= pg::Checkbox("POM", &pom,
+                    "寄った時だけ目地に立体感が出る。面積が広いのでコストは素直に効く");
+                pg::SliderFloat("POM 高さ(m)", &tc->pomHeightScale, 0.0f, 0.3f, "%.3f");
+                pg::SliderFloat("POM 開始(m)", &tc->pomFadeStart, 0.0f, 40.0f, "%.0f");
+                pg::SliderFloat("POM 終了(m)", &tc->pomFadeEnd, 1.0f, 120.0f, "%.0f");
+
+                if (flagsChanged)
+                {
+                    tc->terrainMatFlags = (triplanar  ? 0x1u : 0u) | (pom        ? 0x2u : 0u)
+                                        | (macro      ? 0x4u : 0u) | (distTiling ? 0x8u : 0u);
+                }
+            }
+            pg::End();
+        }
+
+        // レイヤーセットを付け外ししたら、スプラットを用意/破棄する（描画のゲートと同じ条件）。
+        if (tc->layerSetPath != prevLayerSet)
+        {
+            if (tc->layerSetPath.empty())
+            {
+                tc->_splat.reset();   // 従来経路へ戻る
+            }
+            else if (!tc->_splat && tc->_hf)
+            {
+                tc->_splat = std::make_shared<TerrainSplatMap>();
+                if (tc->splatPath.empty()
+                    || !terrain::LoadSplatMapAsset(tc->splatPath, *tc->_splat))
+                {
+                    tc->_splat->Create(tc->splatResolution);
+                    tc->_splat->AutoPaintFromHeightField(*tc->_hf, TerrainAutoPaintParams{});
+                    tc->_splatNeedsSave = true;
+                }
+                tc->splatResolution = tc->_splat->Size();
+            }
+        }
+
+        if (!tc->layerSetPath.empty())
+        {
+            if (ImGui::Button("自動ペイント（傾斜と標高から）", ImVec2(-FLT_MIN, 0.0f)))
+            {
+                if (!tc->_splat) tc->_splat = std::make_shared<TerrainSplatMap>();
+                if (!tc->_splat->IsValid()) tc->_splat->Create(tc->splatResolution);
+                if (tc->_hf) tc->_splat->AutoPaintFromHeightField(*tc->_hf, TerrainAutoPaintParams{});
+                tc->_splatNeedsSave = true;
+            }
+            if (ImGui::Button("スプラットを保存 (.splat)", ImVec2(-FLT_MIN, 0.0f)))
+            {
+                tc->_splatNeedsSave = false;
+                SaveSplat(reg, active, *tc, assetsDir, /*logSuccess=*/true);
+            }
+            ImGui::TextDisabled("レイヤー 0=草 / 1=土 / 2=岩 / 3=雪 の並びを想定");
+        }
+        else
+        {
+            ImGui::TextDisabled("レイヤーセットを設定すると 4 層のテクスチャスプラットになる");
+        }
     }
 
     ImGui::End();

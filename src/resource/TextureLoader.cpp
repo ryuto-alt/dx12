@@ -212,8 +212,11 @@ bool ConvertForCompression(DirectX::ScratchImage& scratch, DXGI_FORMAT dstFormat
 // scratch を BC へ圧縮する（成功したら scratch を差し替える）。
 // contentHash: 元データのハッシュ。cacheKey: キャッシュ名の衝突ドメインを分ける識別子（通常は元パス）。
 // 失敗しても品質/VRAM が従来どおりになるだけなので、常に「何もしない」でフォールバックする。
+// allowArray: 配列テクスチャ（地形レイヤー配列）も圧縮対象にする。既定は false ＝従来どおり
+//   arraySize>1 は圧縮しない（IBL の焼き済み .dds を二重圧縮しないため）。
 void CompressInPlace(DirectX::ScratchImage& scratch, TextureUsage usage, bool srgb,
-                     uint64_t contentHash, const std::string& cacheKey)
+                     uint64_t contentHash, const std::string& cacheKey,
+                     bool allowArray = false)
 {
     using namespace DirectX;
     const int quality = g_compressionMode.load();
@@ -223,7 +226,11 @@ void CompressInPlace(DirectX::ScratchImage& scratch, TextureUsage usage, bool sr
     const TexMetadata& meta = scratch.GetMetadata();
     if (IsCompressed(meta.format))
         return;   // 既に BC（DDS 入力 or キャッシュ読み込み済み）
-    if (!TextureLoader::IsCompressibleSize(meta.width, meta.height, meta.arraySize, meta.depth))
+    const bool sizeOk = allowArray
+        ? (meta.depth == 1 && meta.width >= 4 && meta.height >= 4
+           && (meta.width % 4) == 0 && (meta.height % 4) == 0)
+        : TextureLoader::IsCompressibleSize(meta.width, meta.height, meta.arraySize, meta.depth);
+    if (!sizeOk)
         return;
 
     const DXGI_FORMAT dst = TextureLoader::SelectCompressedFormat(usage, meta.format, srgb);
@@ -242,6 +249,7 @@ void CompressInPlace(DirectX::ScratchImage& scratch, TextureUsage usage, bool sr
             const std::string key = cacheKey + "|" + std::to_string(contentHash)
                                   + "|u" + std::to_string(static_cast<int>(usage))
                                   + "|f" + std::to_string(static_cast<int>(dst))
+                                  + "|a" + std::to_string(static_cast<unsigned>(meta.arraySize))
                                   + "|q" + std::to_string(quality) + "|v2";
             char name[40];
             snprintf(name, sizeof(name), "t%016llx.dds",
@@ -254,9 +262,10 @@ void CompressInPlace(DirectX::ScratchImage& scratch, TextureUsage usage, bool sr
                 ScratchImage cached;
                 if (SUCCEEDED(LoadFromDDSFile(PathResolver::Utf8ToWide(cachePath).c_str(),
                                               DDS_FLAGS_NONE, nullptr, cached))
-                    && cached.GetMetadata().format == dst
-                    && cached.GetMetadata().width  == meta.width
-                    && cached.GetMetadata().height == meta.height)
+                    && cached.GetMetadata().format    == dst
+                    && cached.GetMetadata().width     == meta.width
+                    && cached.GetMetadata().height    == meta.height
+                    && cached.GetMetadata().arraySize == meta.arraySize)
                 {
                     scratch = std::move(cached);
                     return;
@@ -693,6 +702,79 @@ std::unique_ptr<Texture> TextureLoader::LoadFromMemory(
                  static_cast<u32>(meta.width), static_cast<u32>(meta.height),
                  static_cast<u32>(meta.mipLevels), hint);
 
+    return texture;
+}
+
+std::unique_ptr<Texture> TextureLoader::CreateArrayFromRGBA(
+    GraphicsDevice& device,
+    ID3D12GraphicsCommandList* cmdList,
+    const std::vector<const uint8_t*>& slices,
+    uint32_t width, uint32_t height,
+    bool srgb,
+    TextureUsage usage,
+    const std::string& cacheKey,
+    uint64_t contentHash)
+{
+    using namespace DirectX;
+    if (slices.empty() || width == 0 || height == 0) return nullptr;
+
+    // 1. RGBA8 の配列 ScratchImage を組む（mip0 のみ）
+    ScratchImage scratch;
+    if (FAILED(scratch.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM, width, height,
+                                    slices.size(), 1)))
+    {
+        Logger::Error("テクスチャ配列の確保に失敗しました ({}x{} x{})", width, height,
+                      static_cast<u32>(slices.size()));
+        return nullptr;
+    }
+    const size_t rowBytes = static_cast<size_t>(width) * 4;
+    for (size_t i = 0; i < slices.size(); ++i)
+    {
+        const Image* img = scratch.GetImage(0, i, 0);
+        if (!img || !slices[i]) return nullptr;
+        for (uint32_t y = 0; y < height; ++y)
+        {
+            std::memcpy(img->pixels + static_cast<size_t>(y) * img->rowPitch,
+                        slices[i] + static_cast<size_t>(y) * rowBytes, rowBytes);
+        }
+    }
+
+    // 2. ミップチェーン生成（配列でも一括で作れる）。sRGB はガンマ考慮フィルタで縮小する。
+    {
+        ScratchImage mipChain;
+        const TEX_FILTER_FLAGS filter = srgb ? TEX_FILTER_SRGB : TEX_FILTER_DEFAULT;
+        if (SUCCEEDED(GenerateMipMaps(scratch.GetImages(), scratch.GetImageCount(),
+                                      scratch.GetMetadata(), filter, 0, mipChain)))
+            scratch = std::move(mipChain);
+    }
+
+    // 3. BC 圧縮（.texcache 経由）。配列でも 1 枚の .dds にまとまる。
+    if (contentHash != 0)
+        CompressInPlace(scratch, usage, srgb, contentHash, cacheKey, /*allowArray=*/true);
+
+    const TexMetadata meta = scratch.GetMetadata();
+    const DXGI_FORMAT format = (srgb && !IsSRGB(meta.format)) ? MakeSRGB(meta.format) : meta.format;
+
+    D3D12_RESOURCE_DESC resourceDesc{};
+    resourceDesc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    resourceDesc.Width            = static_cast<UINT64>(meta.width);
+    resourceDesc.Height           = static_cast<UINT>(meta.height);
+    resourceDesc.DepthOrArraySize = static_cast<UINT16>(meta.arraySize);
+    resourceDesc.MipLevels        = static_cast<UINT16>(meta.mipLevels);
+    resourceDesc.Format           = format;
+    resourceDesc.SampleDesc.Count = 1;
+    resourceDesc.Layout           = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+
+    auto subs = BuildSubresources(scratch);
+    if (subs.empty()) return nullptr;
+
+    auto texture = std::make_unique<Texture>();
+    texture->Initialize(device, cmdList, resourceDesc, subs.data(), static_cast<u32>(subs.size()));
+
+    Logger::Info("Texture array created: {}x{} x{} mips={} format={} ({})",
+                 static_cast<u32>(meta.width), static_cast<u32>(meta.height),
+                 static_cast<u32>(meta.arraySize), static_cast<u32>(meta.mipLevels),
+                 static_cast<u32>(format), cacheKey);
     return texture;
 }
 

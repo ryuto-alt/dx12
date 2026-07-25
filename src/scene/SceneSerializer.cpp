@@ -515,6 +515,27 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                 {"uvScale",       tr.uvScale},
                 {"color",         json::array({tr.color.x, tr.color.y, tr.color.z, tr.color.w})}
             };
+            // テクスチャスプラット。layerSetPath が空のときは 1 つも書かない
+            // ＝既存シーンの JSON が 1 バイトも変わらない（完全後方互換）。
+            if (!tr.layerSetPath.empty())
+            {
+                auto& tj = ej["terrain"];
+                tj["layerSetPath"]       = tr.layerSetPath;
+                tj["splatPath"]          = tr.splatPath;
+                tj["heightBlendDepth"]   = tr.heightBlendDepth;
+                tj["triplanarSharpness"] = tr.triplanarSharpness;
+                tj["terrainMatFlags"]    = tr.terrainMatFlags;
+                tj["macroScale"]         = tr.macroScale;
+                tj["macroStrength"]      = tr.macroStrength;
+                tj["distTilingStart"]    = tr.distTilingStart;
+                tj["distTilingFarScale"] = tr.distTilingFarScale;
+                tj["normalStrength"]     = tr.normalStrength;
+                tj["pomHeightScale"]     = tr.pomHeightScale;
+                tj["pomFadeStart"]       = tr.pomFadeStart;
+                tj["pomFadeEnd"]         = tr.pomFadeEnd;
+                tj["pomMaxSteps"]        = tr.pomMaxSteps;
+                tj["splatResolution"]    = tr.splatResolution;
+            }
         }
 
         // スカルプトメッシュ（異形）。頂点配列そのものは assets/sculpt/*.smsh 側にあり、
@@ -1111,6 +1132,22 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
             tp.color = { tj["color"][0].get<float>(), tj["color"][1].get<float>(),
                          tj["color"][2].get<float>(), tj["color"][3].get<float>() };
         }
+        // テクスチャスプラット（無ければ既定値のまま = layerSetPath 空 = 従来経路）
+        tp.layerSetPath       = tj.value("layerSetPath", std::string{});
+        tp.splatPath          = tj.value("splatPath", std::string{});
+        tp.heightBlendDepth   = tj.value("heightBlendDepth", 0.2f);
+        tp.triplanarSharpness = tj.value("triplanarSharpness", 4.0f);
+        tp.terrainMatFlags    = tj.value("terrainMatFlags", 0x0Du);
+        tp.macroScale         = tj.value("macroScale", 90.0f);
+        tp.macroStrength      = tj.value("macroStrength", 0.45f);
+        tp.distTilingStart    = tj.value("distTilingStart", 40.0f);
+        tp.distTilingFarScale = tj.value("distTilingFarScale", 7.0f);
+        tp.normalStrength     = tj.value("normalStrength", 1.0f);
+        tp.pomHeightScale     = tj.value("pomHeightScale", 0.05f);
+        tp.pomFadeStart       = tj.value("pomFadeStart", 8.0f);
+        tp.pomFadeEnd         = tj.value("pomFadeEnd", 25.0f);
+        tp.pomMaxSteps        = tj.value("pomMaxSteps", 24u);
+        tp.splatResolution    = tj.value("splatResolution", 512u);
         e = scene.SpawnTerrain(name, pos, tp).GetHandle();
         OutputDebugStringA(("[Load] SpawnTerrain: " + name + "\n").c_str());
     }
@@ -1815,7 +1852,12 @@ entt::entity SceneSerializer::DuplicateEntity(Scene& scene, entt::entity src,
     // 実データはこの時点でまだ存在しないので、下で複製元の中身をメモリ上でコピーし、
     // _needsSave を立てて TerrainPanel / SculptPanel に書き出させる。
     if (ej.contains("terrain") && ej["terrain"].is_object())
+    {
         ej["terrain"]["heightmapPath"] = terrain::MakeHeightFieldRelPath(uniqueName);
+        if (ej["terrain"].contains("splatPath")
+            && !ej["terrain"]["splatPath"].get<std::string>().empty())
+            ej["terrain"]["splatPath"] = terrain::MakeSplatRelPath(uniqueName);
+    }
     if (ej.contains("sculpt") && ej["sculpt"].is_object())
         ej["sculpt"]["meshPath"] = sculpt::MakeSculptMeshRelPath(uniqueName);
 
@@ -1838,6 +1880,13 @@ entt::entity SceneSerializer::DuplicateEntity(Scene& scene, entt::entity src,
             dstT->_meshDirty     = true;
             dstT->_colliderDirty = true;
             dstT->_needsSave     = true;     // 新しい .hf を書き出させる
+        }
+        if (srcT && srcT->_splat && srcT->_splat->IsValid())
+        {
+            if (!dstT->_splat) dstT->_splat = std::make_shared<TerrainSplatMap>();
+            *dstT->_splat = *srcT->_splat;
+            dstT->_splat->Touch();
+            dstT->_splatNeedsSave = true;    // 新しい .splat を書き出させる
         }
     }
     if (auto* dstS = reg.try_get<SculptMesh>(copy))

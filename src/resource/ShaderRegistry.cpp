@@ -64,6 +64,18 @@ const std::vector<ShaderSource>& BuildRegistry()
             { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ClusterCommon.hlsli" },
         },
         {
+            // 地形マテリアル（4 レイヤースプラット）。t0/t1 を Texture2DArray として読む。
+            // DecalApply.hlsli も include しているので依存に入れる（.hlsli を直しても
+            // ホットリロードで拾われるように）。
+            "forward/Terrain.hlsl",
+            {
+                { L"Terrain_VS.cso", L"VSMain", L"vs_6_0" },
+                { L"Terrain_PS.cso", L"PSMain", L"ps_6_0" },
+            },
+            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ClusterCommon.hlsli",
+              "forward/DecalCommon.hlsli", "forward/DecalApply.hlsli" },
+        },
+        {
             "shadow/ShadowPass.hlsl",
             { { L"ShadowPass_VS.cso", L"VSMain", L"vs_6_0" } },
             {},

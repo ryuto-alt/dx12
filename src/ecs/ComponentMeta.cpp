@@ -116,7 +116,24 @@ void RegisterCoreComponentMeta()
         .data<&Terrain::maxHeight>("maxHeight")
         .data<&Terrain::heightmapPath>("heightmapPath")
         .data<&Terrain::uvScale>("uvScale")
-        .data<&Terrain::color>("color");
+        .data<&Terrain::color>("color")
+        // テクスチャスプラット。layerSetPath が空なら従来経路（完全後方互換）。
+        // スプラット重みの実体（_splat）は .splat バイナリ側が正なので登録しない。
+        .data<&Terrain::layerSetPath>("layerSetPath")
+        .data<&Terrain::splatPath>("splatPath")
+        .data<&Terrain::heightBlendDepth>("heightBlendDepth")
+        .data<&Terrain::triplanarSharpness>("triplanarSharpness")
+        .data<&Terrain::terrainMatFlags>("terrainMatFlags")
+        .data<&Terrain::macroScale>("macroScale")
+        .data<&Terrain::macroStrength>("macroStrength")
+        .data<&Terrain::distTilingStart>("distTilingStart")
+        .data<&Terrain::distTilingFarScale>("distTilingFarScale")
+        .data<&Terrain::normalStrength>("normalStrength")
+        .data<&Terrain::pomHeightScale>("pomHeightScale")
+        .data<&Terrain::pomFadeStart>("pomFadeStart")
+        .data<&Terrain::pomFadeEnd>("pomFadeEnd")
+        .data<&Terrain::pomMaxSteps>("pomMaxSteps")
+        .data<&Terrain::splatResolution>("splatResolution");
 
     // スカルプトメッシュ。頂点配列（_data）は .smsh バイナリ側が正なので登録しない＝JSON には出ない。
     entt::meta_factory<SculptMesh>{}

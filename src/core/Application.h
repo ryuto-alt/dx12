@@ -91,6 +91,7 @@ namespace dx12e
     class NetworkPanel;
     class ShaderManager;
     class MaterialAssetManager;
+    class TerrainLayerSetManager;
     class MaterialEditorPanel;
     class MaterialLibraryPanel;
     struct Material;
@@ -338,6 +339,7 @@ private:
     void RecreateForwardPsos();          // m_pipelineState / LEqual / Thumb (Forward_VS/PS, ForwardLdr_PS)
     void RecreateSkinnedPsos();          // m_skinnedPipelineState / LEqual (ForwardSkinned_VS, Forward_PS)
     void RecreateGridPso();              // m_gridPipelineState (ForwardGrid_VS/PS)
+    void RecreateTerrainPsos();          // m_terrainPipelineState / LEqual (Terrain_VS/PS)
     void RecreateEmissivePso();          // m_emissivePipelineState (Emissive_VS/PS)
     void RecreateShadowPsos();           // m_shadowPipelineState / m_shadowSkinnedPipelineState
     void RecreateDepthPrepassPsos();     // m_depthPrepassPSO / m_depthPrepassSkinnedPSO
@@ -397,6 +399,28 @@ private:
     // .dxmat マテリアルアセット(assets/materials/*.dxmat)のロード/SRV/ホットリロード管理。
     // MeshRenderer::materialAsset が割当てられているサブメッシュはこちらが overrideXxxTexture より優先される。
     std::unique_ptr<MaterialAssetManager> m_materialAssetManager;
+
+    // 地形レイヤーセット(.terrainlayers)のロード/Texture2DArray ビルド/ホットリロード管理。
+    std::unique_ptr<TerrainLayerSetManager> m_terrainLayerSets;
+
+    // 地形 1 体ぶんの t0,t1,t2 連続 3 ディスクリプタ + スプラットの GPU テクスチャ。
+    //   [0] レイヤーアルベド配列 / [1] レイヤーサーフェス配列 / [2] この地形のスプラット
+    // レイヤー配列はレイヤーセット共有だが、スプラットは地形ごとに違うのでブロックは地形ごとに要る。
+    struct TerrainSrvEntry
+    {
+        u32 blockStart = 0xFFFFFFFF;
+        std::unique_ptr<Texture> splatTex;      // R8G8B8A8_UNORM + CPU 焼きミップ
+        u32 splatVersion   = 0xFFFFFFFF;        // TerrainSplatMap::Version() の追跡
+        u32 splatSize      = 0;
+        u32 layerGeneration = 0xFFFFFFFF;       // レイヤーセットのホットリロード検知
+        std::string layerSetPath;
+    };
+    // key = entityID。MaterialOverrideSrv と同じで、エンティティ削除時の明示破棄は行わない
+    // （無効エンティティは次回描画されない = 実害なし。SRV ヒープを僅かに消費し続ける既知の制約）。
+    std::unordered_map<u32, TerrainSrvEntry> m_terrainSrvCache;
+    // 地形の SRV ブロックを用意して先頭インデックスを返す。使えなければ 0xFFFFFFFF。
+    u32 EnsureTerrainSrv(entt::entity e, const Terrain& terrain,
+                         ID3D12GraphicsCommandList* cmdList);
 
     // ランチャーで選んだ/作成したプロジェクトを実行時に読み込む（パス再ポイント + シーンロード）
     void LoadProject(const ProjectInfo& info);
@@ -495,6 +519,9 @@ private:
     std::unique_ptr<PipelineState>     m_skinnedPipelineState;        // 通常 forward(skinned, LESS)
     std::unique_ptr<PipelineState>     m_skinnedPipelineStateLEqual;  // SSAO 深度プリパス併用時(skinned, LESS_EQUAL)
     std::unique_ptr<PipelineState>     m_gridPipelineState;
+    // 地形マテリアル（4 レイヤースプラット）。layerSetPath が空でない Terrain だけが使う。
+    std::unique_ptr<PipelineState>     m_terrainPipelineState;        // 通常 forward(LESS)
+    std::unique_ptr<PipelineState>     m_terrainPipelineStateLEqual;  // 深度プリパス併用時(LESS_EQUAL)
     std::unique_ptr<PipelineState>     m_emissivePipelineState;  // 加算発光（Pfx）GPU instancing 用
     // ---- 発光メッシュ instancing 用 per-instance バッファ（リング=FrameResources::kFrameCount=3）----
     // 自動インスタンシングは 1 フレームで「メイン+深度プリパス+影4カスケード」ぶんの

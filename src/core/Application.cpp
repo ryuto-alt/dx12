@@ -51,6 +51,7 @@
 #include "resource/ResourceManager.h"
 #include "resource/TextureLoader.h"
 #include "resource/MaterialAssetManager.h"
+#include "resource/TerrainLayerSet.h"
 #include "graphics/Texture.h"
 #include "animation/Skeleton.h"
 #include "animation/AnimationClip.h"
@@ -343,6 +344,39 @@ void Application::RecreateGridPso()
     m_gridPipelineState->Initialize(*m_graphicsDevice, builder);
 }
 
+void Application::RecreateTerrainPsos()
+{
+    // 地形マテリアル（4 レイヤースプラット）。ルートシグネチャ・入力レイアウト・RT 形式は
+    // 通常 forward とまったく同じで、VS/PS だけ差し替える。
+    // ★t0/t1 に Texture2DArray を張るのはここではなく EnsureTerrainSrv（PSO には関係しない）。
+    auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Terrain_VS.cso");
+    auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Terrain_PS.cso");
+    if (vs.GetSize() == 0 || ps.GetSize() == 0)
+    {
+        // .cso が無い＝ビルドし忘れ。地形は layerSetPath 空なら従来経路で描けるので致命ではない。
+        Logger::Warn("Terrain_VS/PS.cso が読めません（地形スプラットは無効。従来経路で描画します）");
+        return;
+    }
+
+    PipelineStateBuilder builder;
+    builder.SetRootSignature(m_rootSignature->Get())
+           .SetVertexShader(vs.GetData(), vs.GetSize())
+           .SetPixelShader(ps.GetData(), ps.GetSize())
+           .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
+           .SetRenderTargetFormat(kSceneColorFormat)
+           .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+           .SetDepthEnabled(true)
+           .SetCullMode(D3D12_CULL_MODE_NONE);
+
+    if (!m_terrainPipelineState) m_terrainPipelineState = std::make_unique<PipelineState>();
+    m_terrainPipelineState->Initialize(*m_graphicsDevice, builder);
+
+    // 深度プリパス併用時の LESS_EQUAL バリアント（地形は不透明なのでプリパスに乗る）。
+    builder.SetDepthFunc(D3D12_COMPARISON_FUNC_LESS_EQUAL);
+    if (!m_terrainPipelineStateLEqual) m_terrainPipelineStateLEqual = std::make_unique<PipelineState>();
+    m_terrainPipelineStateLEqual->Initialize(*m_graphicsDevice, builder);
+}
+
 void Application::RecreateEmissivePso()
 {
     auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Emissive_VS.cso");
@@ -567,6 +601,9 @@ void Application::RegisterShaderReloadHandlers()
     m_shaderManager->RegisterReloadHandler(
         { L"ForwardGrid_VS.cso", L"ForwardGrid_PS.cso" },
         [this]() { RecreateGridPso(); });
+    m_shaderManager->RegisterReloadHandler(
+        { L"Terrain_VS.cso", L"Terrain_PS.cso" },
+        [this]() { RecreateTerrainPsos(); });
     m_shaderManager->RegisterReloadHandler(
         { L"Emissive_VS.cso", L"Emissive_PS.cso" },
         [this]() { RecreateEmissivePso(); });
@@ -959,6 +996,78 @@ u32 Application::EnsureMaterialOverrideSrv(entt::entity e, u32 submeshIndex, con
     return entry.blockStart;
 }
 
+u32 Application::EnsureTerrainSrv(entt::entity e, const Terrain& terrain,
+                                  ID3D12GraphicsCommandList* cmdList)
+{
+    // レイヤーセット未設定 = 従来経路（この関数は呼ばれない想定だが二重に守る）
+    if (terrain.layerSetPath.empty() || !m_terrainLayerSets || !terrain._splat
+        || !terrain._splat->IsValid())
+        return 0xFFFFFFFF;
+
+    const auto* layers = m_terrainLayerSets->GetOrLoad(terrain.layerSetPath, cmdList);
+    if (!layers || !layers->valid || !layers->albedoArray || !layers->surfaceArray)
+        return 0xFFFFFFFF;
+
+    TerrainSrvEntry& entry = m_terrainSrvCache[static_cast<u32>(e)];
+
+    // ---- スプラットの GPU テクスチャ（CPU 側でミップまで焼いてから 1 回でアップロード）----
+    // 解像度 512 で全ミップ込み 1.3MB。ペイント中に毎フレーム作り直しても実測で無視できる。
+    const u32 splatVersion = terrain._splat->Version();
+    const u32 splatSize    = terrain._splat->Size();
+    const bool splatStale  = (!entry.splatTex) || entry.splatVersion != splatVersion
+                          || entry.splatSize != splatSize;
+    if (splatStale)
+    {
+        const std::vector<std::vector<u8>> mips = terrain._splat->BuildMipChain();
+        if (mips.empty()) return 0xFFFFFFFF;
+
+        D3D12_RESOURCE_DESC desc{};
+        desc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        desc.Width            = splatSize;
+        desc.Height           = splatSize;
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels        = static_cast<UINT16>(mips.size());
+        desc.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;   // 重みは linear（sRGB にしない）
+        desc.SampleDesc.Count = 1;
+        desc.Layout           = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+
+        std::vector<D3D12_SUBRESOURCE_DATA> subs(mips.size());
+        u32 w = splatSize;
+        for (size_t m = 0; m < mips.size(); ++m)
+        {
+            subs[m].pData      = mips[m].data();
+            subs[m].RowPitch   = static_cast<LONG_PTR>(w) * 4;
+            subs[m].SlicePitch = subs[m].RowPitch * static_cast<LONG_PTR>(w);
+            w = (w > 1) ? (w >> 1) : 1;
+        }
+
+        auto tex = std::make_unique<Texture>();
+        tex->Initialize(*m_graphicsDevice, cmdList, desc, subs.data(), static_cast<u32>(subs.size()));
+        entry.splatTex     = std::move(tex);
+        entry.splatVersion = splatVersion;
+        entry.splatSize    = splatSize;
+    }
+
+    // ---- t0,t1,t2 の連続 3 ディスクリプタ ----
+    if (entry.blockStart == 0xFFFFFFFF)
+        entry.blockStart = m_srvHeap->AllocateBlock(3);
+
+    // レイヤーセットが差し替わった / ホットリロードされた / スプラットを作り直した時だけ張り直す。
+    if (splatStale || entry.layerGeneration != layers->generation
+        || entry.layerSetPath != terrain.layerSetPath)
+    {
+        // ★同じテーブルへ Texture2DArray（t0/t1）と Texture2D（t2）を混ぜて張る。
+        //   次元はルートシグネチャに書かれていないので合法。Terrain.hlsl の宣言と一致している。
+        layers->albedoArray ->CreateArraySRV(*m_graphicsDevice, m_srvHeap->GetCpuHandle(entry.blockStart));
+        layers->surfaceArray->CreateArraySRV(*m_graphicsDevice, m_srvHeap->GetCpuHandle(entry.blockStart + 1));
+        entry.splatTex      ->CreateSRV     (*m_graphicsDevice, m_srvHeap->GetCpuHandle(entry.blockStart + 2));
+        entry.layerGeneration = layers->generation;
+        entry.layerSetPath    = terrain.layerSetPath;
+    }
+
+    return entry.blockStart;
+}
+
 void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                              const ProjectInfo* /*projectInfo*/, bool buildMode)
 {
@@ -1211,6 +1320,11 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_materialAssetManager = std::make_unique<MaterialAssetManager>();
         m_materialAssetManager->Initialize(m_resourceManager.get(), m_graphicsDevice.get(), m_srvHeap.get());
 
+        // 地形レイヤーセット（.terrainlayers → Texture2DArray ×2）。
+        // SRV ディスクリプタは地形ごとに違う（t2 = スプラット）ので、ここでは確保しない。
+        m_terrainLayerSets = std::make_unique<TerrainLayerSetManager>();
+        m_terrainLayerSets->Initialize(m_graphicsDevice.get());
+
         // SSAO 無効/編集ビュー用の 1x1 白 R8_UNORM ダミー（forward の g_ssao が常に 1.0 を返す）。
         {
             u8 white = 0xFF;
@@ -1397,6 +1511,9 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
         // グリッド PSO 作成（アルファブレンド + 両面描画）
         RecreateGridPso();
+
+        // 地形マテリアル PSO（4 レイヤースプラット。layerSetPath が空でない Terrain だけが使う）
+        RecreateTerrainPsos();
 
         // 加算発光 PSO（パーティクル用）：ライティング無視・加算合成・深度書き込みOFF
         {
@@ -7563,6 +7680,9 @@ void Application::Shutdown()
     m_materialEditorPanel.reset();
     m_materialLibraryPanel.reset();
     m_materialAssetManager.reset();
+    // 地形レイヤー配列とスプラットテクスチャ（GPU リソース）もデバイス解放より前に明示破棄する。
+    m_terrainSrvCache.clear();
+    m_terrainLayerSets.reset();
     m_editorCtx.reset();
     m_physicsDebugRenderer.reset();
     // 新規レンダラ群（GPU リソース）をデバイス解放より前に明示破棄
@@ -7660,6 +7780,8 @@ void Application::Shutdown()
     m_shadowMap.Reset();
     m_shadowDsvHeap.reset();
     m_gridPipelineState.reset();
+    m_terrainPipelineStateLEqual.reset();
+    m_terrainPipelineState.reset();
     m_skinnedPipelineStateLEqual.reset();
     m_skinnedPipelineState.reset();
     m_scene.reset();
@@ -10996,8 +11118,16 @@ void Application::BuildDrawList()
         // 「per-object 定数を一切必要としない静的メッシュ」だけを畳む。
         // アニメ/スキン/カスタムシェーダ/マテリアル差し替え/UVアニメがあると
         // インスタンス間で定数が違うので対象外（従来経路にフォールバック）。
+        // ★レイヤーセット付きの地形は専用 PSO（Terrain.hlsl）で描くので、インスタンシングの
+        //   対象から外す（インスタンス経路は ForwardInstanced_VS + Forward_PS 固定のため）。
+        //   地形は 1 体 1 メッシュでバッチが 1 件しか集まらず、外しても性能は落ちない。
+        //   レイヤーセット未設定の地形は判定に掛からない＝従来どおりインスタンス経路のまま。
+        bool splatTerrain = false;
+        if (const auto* tc = reg.try_get<Terrain>(e))
+            splatTerrain = !tc->layerSetPath.empty();
+
         item.batchKey = 0;
-        if (item.sortKey == 0u && !item.skin && !item.hasNodeAnim
+        if (item.sortKey == 0u && !item.skin && !item.hasNodeAnim && !splatTerrain
             && renderer.meshes.size() == 1 && renderer.meshes[0]
             && !renderer.HasMaterialAsset(0) && !renderer.HasAnyTextureOverride(0)
             && renderer.animFrames == 0
@@ -11186,11 +11316,32 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
     auto drawEntity = [&](entt::entity e, const MeshRenderer& renderer, XMMATRIX world,
                           SkinningBuffer* skin, bool hasNodeAnim, bool isGrid, u32 lod)
     {
+        // ★地形マテリアル（4 レイヤースプラット）のゲートはここ 1 箇所だけ。
+        //   layerSetPath が空でなく、レイヤー配列とスプラットが両方揃った時にだけ地形経路へ入る。
+        //   b2 の意味を読み替えているので「地形 PSO ではないのに地形の定数を詰める」
+        //   逆条件が絶対に起きない書き方にしてある（terrainSrv が 0xFFFFFFFF なら丸ごと従来経路）。
+        const Terrain* terrainMat = nullptr;
+        u32 terrainSrv = 0xFFFFFFFF;
+        if (!isGrid && !skin && m_terrainPipelineState)
+        {
+            const Terrain* tc = reg.try_get<Terrain>(e);
+            if (tc && !tc->layerSetPath.empty())
+            {
+                terrainSrv = EnsureTerrainSrv(e, *tc, nativeCmdList);
+                if (terrainSrv != 0xFFFFFFFF) terrainMat = tc;
+            }
+        }
+
         // PSO 選択。同一 PSO が連続する間はバインドをスキップ（リストはソート済み）。
         PipelineState* psoSel;
         if (isGrid)
         {
             psoSel = m_gridPipelineState.get();
+        }
+        else if (terrainMat)
+        {
+            psoSel = depthPrepassActive ? m_terrainPipelineStateLEqual.get()
+                                        : m_terrainPipelineState.get();
         }
         else if (skin)
         {
@@ -11232,9 +11383,24 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             struct PerObjectData { XMMATRIX mvp; XMMATRIX mdl; float effect; XMFLOAT3 _pad; XMFLOAT4 params; } objData;
             objData.mvp = XMMatrixTranspose(meshWorld * viewProj);
             objData.mdl = XMMatrixTranspose(meshWorld);
-            objData.effect = renderer.effectValue;
-            objData._pad   = {};
-            objData.params = renderer.shaderParams;
+            if (terrainMat)
+            {
+                // ★b0 の余り 8 float を地形用に読み替える（バイトレイアウトは 1 バイトも変えない）。
+                //   effect → pomHeightScale / _pad(3) → pomFadeStart,End,normalStrength /
+                //   params → terrainParams(.x=1/uvScale .y=distTilingStart .z=distTilingFarScale .w=macroStrength)
+                objData.effect = terrainMat->pomHeightScale;
+                objData._pad   = { terrainMat->pomFadeStart, terrainMat->pomFadeEnd,
+                                   terrainMat->normalStrength };
+                const f32 uvS  = (terrainMat->uvScale > 1e-4f) ? terrainMat->uvScale : 1.0f;
+                objData.params = { 1.0f / uvS, terrainMat->distTilingStart,
+                                   terrainMat->distTilingFarScale, terrainMat->macroStrength };
+            }
+            else
+            {
+                objData.effect = renderer.effectValue;
+                objData._pad   = {};
+                objData.params = renderer.shaderParams;
+            }
             m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 40, &objData);
 
             const Material* mat = mesh->GetMaterial();
@@ -11254,7 +11420,9 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             // 専用ブロックを優先する(mat は同一モデルの全インスタンスで共有されるため直接は触らない)。
             u32 overrideBlock = EnsureMaterialOverrideSrv(e, mi, renderer, mat, nativeCmdList);
             D3D12_GPU_DESCRIPTOR_HANDLE matSrv;
-            if (matAsset)
+            if (terrainMat)
+                matSrv = m_srvHeap->GetGpuHandle(terrainSrv);   // t0/t1=レイヤー配列, t2=スプラット
+            else if (matAsset)
                 matSrv = m_srvHeap->GetGpuHandle(matAsset->srvBlockStart);
             else if (overrideBlock != 0xFFFFFFFF)
                 matSrv = m_srvHeap->GetGpuHandle(overrideBlock);
@@ -11270,6 +11438,45 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             {
                 m_commandList->SetSRVTable(RootSignature::kSlotSRVTable, matSrv);
                 lastMatSrv = matSrv.ptr;
+            }
+
+            // ★地形は b2（8 DWORD）をまるごと TerrainMaterial として読み替える。
+            //   Terrain.hlsl の cbuffer TerrainMaterial とバイト単位で一致させること。
+            if (terrainMat)
+            {
+                const auto* ls = m_terrainLayerSets->GetOrLoad(terrainMat->layerSetPath, nativeCmdList);
+                const u32 layerCount = (ls && ls->valid) ? ls->layerCount : 1u;
+                u32 flags = terrainMat->terrainMatFlags & 0xFFu;
+                flags |= (layerCount & 0xFu) << 8;
+                flags |= (std::min)(terrainMat->pomMaxSteps, 255u) << 16;
+
+                struct { float heightBlendDepth; float triplanarSharpness; u32 flags; float macroScale;
+                         float tile0, tile1, tile2, tile3; } tp;
+                tp.heightBlendDepth   = terrainMat->heightBlendDepth;
+                tp.triplanarSharpness = (terrainMat->triplanarSharpness > 0.1f)
+                                      ? terrainMat->triplanarSharpness : 4.0f;
+                tp.flags              = flags;
+                tp.macroScale         = (terrainMat->macroScale > 1e-3f) ? terrainMat->macroScale : 90.0f;
+                tp.tile0 = ls ? ls->tiling[0] : 0.35f;
+                tp.tile1 = ls ? ls->tiling[1] : 0.35f;
+                tp.tile2 = ls ? ls->tiling[2] : 0.35f;
+                tp.tile3 = ls ? ls->tiling[3] : 0.35f;
+                nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPBRMaterial, 8, &tp, 0);
+
+                if (mesh != lastVbMesh || lod != lastLod)
+                {
+                    m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                    m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
+                    m_commandList->SetIndexBuffer(mesh->GetIndexBufferLod(lod).GetView());
+                    lastVbMesh = mesh;
+                    lastLod    = lod;
+                }
+                m_commandList->DrawIndexedInstanced(mesh->GetIndexCountLod(lod));
+                ++m_statDraws;
+                m_statTris += mesh->GetIndexCountLod(lod) / 3;
+                ++m_passBucket->draws;
+                m_passBucket->tris += mesh->GetIndexCountLod(lod) / 3;
+                continue;
             }
 
             // PBR Material Constants (Slot 5)
@@ -12071,6 +12278,9 @@ void Application::Render()
     // マテリアルアセット(.dxmat)のホットリロード監視。エディタのみ(内部で0.5秒間隔にスロットリング)。
     if (!m_isGameMode && m_materialAssetManager)
         m_materialAssetManager->PollHotReload(m_gameClock.GetDeltaTime(), nativeCmdList);
+    // 地形レイヤーセット(.terrainlayers)のホットリロード監視（同上）。
+    if (!m_isGameMode && m_terrainLayerSets)
+        m_terrainLayerSets->PollHotReload(m_gameClock.GetDeltaTime(), nativeCmdList);
 
     // Deferred: new scene（描画前に処理しないと GPU リソース解放でクラッシュする）
     if (m_editorCtx->pendingNewScene && m_engineMode == EngineMode::Editor)

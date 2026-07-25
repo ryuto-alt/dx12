@@ -250,6 +250,10 @@ if(DXC_EXECUTABLE)
     set(SHADER_DECAL_INC     "${CMAKE_SOURCE_DIR}/shaders/forward/DecalCommon.hlsli"
                              "${CMAKE_SOURCE_DIR}/shaders/forward/DecalApply.hlsli")
     set(SHADER_GRID          "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardGrid.hlsl")
+    # 地形マテリアル（4 レイヤースプラット + 高さブレンド + トライプラナー）。
+    # Lighting.hlsli / PBR.hlsli / ClusterCommon.hlsli / DecalApply.hlsli を include するので
+    # DEPENDS に ${SHADER_FWD_INC} を必ず入れる（入れ忘れると古い .cso が残ってレイアウトがズレる）。
+    set(SHADER_TERRAIN       "${CMAKE_SOURCE_DIR}/shaders/forward/Terrain.hlsl")
     set(SHADER_FWD_INST      "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardInstanced.hlsl")
     set(SHADER_SHADOW_INST   "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPassInstanced.hlsl")
     set(SHADER_SHADOW        "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPass.hlsl")
@@ -314,6 +318,8 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/ForwardSkinned_PS.cso"
         "${SHADER_OUTPUT_DIR}/ForwardGrid_VS.cso"
         "${SHADER_OUTPUT_DIR}/ForwardGrid_PS.cso"
+        "${SHADER_OUTPUT_DIR}/Terrain_VS.cso"
+        "${SHADER_OUTPUT_DIR}/Terrain_PS.cso"
         "${SHADER_OUTPUT_DIR}/ForwardInstanced_VS.cso"
         "${SHADER_OUTPUT_DIR}/ShadowPassInstanced_VS.cso"
         "${SHADER_OUTPUT_DIR}/ShadowPass_VS.cso"
@@ -557,6 +563,20 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/ForwardGrid_PS.cso" "${SHADER_GRID}"
         DEPENDS "${SHADER_GRID}" ${SHADER_FWD_INC}   # Lighting.hlsli/PBR.hlsli を include している
         COMMENT "Compiling ForwardGrid.hlsl -> ForwardGrid_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/Terrain_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/Terrain_VS.cso" "${SHADER_TERRAIN}"
+        DEPENDS "${SHADER_TERRAIN}" ${SHADER_FWD_INC}
+        COMMENT "Compiling Terrain.hlsl -> Terrain_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/Terrain_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/Terrain_PS.cso" "${SHADER_TERRAIN}"
+        DEPENDS "${SHADER_TERRAIN}" ${SHADER_FWD_INC}
+        COMMENT "Compiling Terrain.hlsl -> Terrain_PS.cso (ps_6_0)"
     )
 
     add_custom_command(

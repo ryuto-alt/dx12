@@ -4,6 +4,7 @@
 
 #include <string>
 #include <memory>
+#include <vector>
 #include <cstdint>
 
 struct ID3D12GraphicsCommandList;
@@ -90,6 +91,21 @@ public:
         bool srgb = true,
         TextureUsage usage = TextureUsage::Unknown,
         const std::string& cacheKey = std::string());
+
+    // 地形レイヤー配列用：CPU 側で組み上げた RGBA8 スライス列から Texture2DArray を作る。
+    //   ミップ生成 → BC 圧縮（.texcache にキャッシュ）→ GPU アップロードまで一括で行う。
+    // slices の各要素は width*height*4 バイトの RGBA8（先頭 = スライス 0）。
+    // SRV は呼び出し側が Texture::CreateArraySRV で張ること。
+    // contentHash は「元素材が変わったらキャッシュを捨てる」ための識別子（0 ならキャッシュしない）。
+    static std::unique_ptr<Texture> CreateArrayFromRGBA(
+        GraphicsDevice& device,
+        ID3D12GraphicsCommandList* cmdList,
+        const std::vector<const uint8_t*>& slices,
+        uint32_t width, uint32_t height,
+        bool srgb,
+        TextureUsage usage,
+        const std::string& cacheKey,
+        uint64_t contentHash);
 
     // VFS / pak 経由キューブマップ用：メモリバッファから .dds キューブマップを読み込む。
     // IsCubemap() && arraySize==6 でなければ nullptr を返す。

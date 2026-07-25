@@ -25,6 +25,8 @@ void Texture::Initialize(
     m_height = desc.Height;
     m_format = desc.Format;
     m_mipLevels = desc.MipLevels;
+    m_arraySize = (desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+                ? desc.DepthOrArraySize : 1;
 
     // 1. D3D12MA で DEFAULT ヒープにリソース確保 (COPY_DEST state)
     D3D12MA::ALLOCATION_DESC allocDesc{};
@@ -163,6 +165,24 @@ void Texture::CreateCubeSRV(GraphicsDevice& device, D3D12_CPU_DESCRIPTOR_HANDLE 
     srvDesc.TextureCube.MostDetailedMip     = 0;
     srvDesc.TextureCube.MipLevels           = mipLevels;
     srvDesc.TextureCube.ResourceMinLODClamp = 0.0f;
+
+    device.GetDevice()->CreateShaderResourceView(m_resource.Get(), &srvDesc, cpuHandle);
+}
+
+void Texture::CreateArraySRV(GraphicsDevice& device, D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle)
+{
+    DX_ASSERT(m_resource.Get(), "Resource must be initialized before creating array SRV");
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+    srvDesc.Format                              = m_format;
+    srvDesc.ViewDimension                       = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+    srvDesc.Shader4ComponentMapping             = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Texture2DArray.MostDetailedMip      = 0;
+    srvDesc.Texture2DArray.MipLevels            = (m_mipLevels > 0) ? m_mipLevels : 1;
+    srvDesc.Texture2DArray.FirstArraySlice      = 0;
+    srvDesc.Texture2DArray.ArraySize            = (m_arraySize > 0) ? m_arraySize : 1;
+    srvDesc.Texture2DArray.PlaneSlice           = 0;
+    srvDesc.Texture2DArray.ResourceMinLODClamp  = 0.0f;
 
     device.GetDevice()->CreateShaderResourceView(m_resource.Get(), &srvDesc, cpuHandle);
 }

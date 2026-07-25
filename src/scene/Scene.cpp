@@ -321,6 +321,20 @@ Entity Scene::SpawnTerrain(const std::string& name,
         }
     }
 
+    // スプラット重み（レイヤーセットを使うときだけ）。ファイルが無いのは正常（未ペイント）で、
+    // その場合は傾斜と標高から自動生成して即座に見た目が出るようにする。
+    if (!t.layerSetPath.empty())
+    {
+        t._splat = std::make_shared<TerrainSplatMap>();
+        if (t.splatPath.empty() || !terrain::LoadSplatMapAsset(t.splatPath, *t._splat))
+        {
+            t._splat->Create(t.splatResolution);
+            t._splat->AutoPaintFromHeightField(*t._hf, TerrainAutoPaintParams{});
+            t._splatNeedsSave = true;   // TerrainPanel が .splat を書き出す
+        }
+        t.splatResolution = t._splat->Size();
+    }
+
     MeshRenderer& renderer = entity.AddComponent<MeshRenderer>();
     renderer.modelPath = kTerrainMeshMarker;   // ファイルではない内部マーカー
     {

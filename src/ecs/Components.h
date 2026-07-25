@@ -15,6 +15,7 @@ namespace dx12e
 
 class Mesh;
 class HeightField;   // terrain/HeightField.h（Terrain コンポーネントが shared_ptr で持つ）
+class TerrainSplatMap;  // terrain/TerrainSplatMap.h（同上。4 レイヤーのスプラット重み）
 struct Material;
 class Skeleton;
 class AnimationClip;
@@ -240,9 +241,32 @@ struct Terrain
     f32  uvScale    = 24.0f;     // 地形全体で UV が何回繰り返すか（タイリングテクスチャ用）
     DirectX::XMFLOAT4 color{0.42f, 0.50f, 0.32f, 1.0f};  // 頂点色（マテリアル未割当時の見た目）
 
+    // ---- テクスチャスプラット（4 レイヤー）----
+    // ★layerSetPath が空なら従来経路（Forward.hlsl + .dxmat / 頂点色）へ落ちる＝完全後方互換。
+    //   空でないときだけ地形専用 PSO（Terrain.hlsl）が選ばれる。
+    std::string layerSetPath;      // assets 相対 ".terrainlayers"。空 = スプラットを使わない
+    std::string splatPath;         // assets 相対 ".splat"。空 = 未保存
+    f32  heightBlendDepth   = 0.2f;   // Mishkinis の depth（小さいほど境界がシャープ）
+    f32  triplanarSharpness = 4.0f;   // トライプラナー重みの指数
+    // bit0=triplanar bit1=POM bit2=macro bit3=distTiling。既定: トライプラナー/マクロ/距離タイリング ON
+    u32  terrainMatFlags    = 0x0Du;
+    f32  macroScale         = 90.0f;  // マクロバリエーションの周期(m)
+    f32  macroStrength      = 0.45f;
+    f32  distTilingStart    = 40.0f;  // ここから遠距離タイリングへブレンドし始める(m)
+    f32  distTilingFarScale = 7.0f;   // 遠距離側は 1/この値のタイリング（粗くする）
+    f32  normalStrength     = 1.0f;
+    f32  pomHeightScale     = 0.05f;  // POM の高さ(m)。既定 OFF なので効かない
+    f32  pomFadeStart       = 8.0f;
+    f32  pomFadeEnd         = 25.0f;
+    u32  pomMaxSteps        = 24;
+    u32  splatResolution    = 512;    // .splat の 1 辺（2 のべき乗へ丸まる）
+
     // ---- ランタイム専有（非シリアライズ・meta 未登録）----
     // 高さ配列の実体。描画メッシュ生成・コリジョン・ブラシが同じインスタンスを見る。
     std::shared_ptr<HeightField> _hf;
+    // スプラット重みの実体（4 レイヤー RGBA8）。描画とペイントが同じインスタンスを見る。
+    std::shared_ptr<TerrainSplatMap> _splat;
+    bool _splatNeedsSave = false;  // .splat を書き出す必要がある（TerrainPanel が消化）
     bool _meshDirty     = false;   // 高さが変わった → メッシュを作り直す
     bool _colliderDirty = false;   // 高さが変わった → 物理形状を作り直す（Play 中の追従用）
     // 高さが変わった → .hf を書き出す必要がある。高さ配列はシーン JSON に入らないので、

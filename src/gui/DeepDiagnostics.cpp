@@ -15,6 +15,7 @@
 //    （IsValid / Resolution / WorldSize）。Gui は Terrain ライブラリをリンクしていないので、
 //    .cpp 側にある関数（Create / Decode / NormalizeResolution 等）を呼ぶとリンクエラーになる。
 #include "terrain/HeightField.h"
+#include "terrain/TerrainSplatMap.h"   // Terrain::_splat の IsValid()（ヘッダ内 inline のみ）
 
 #include <nlohmann/json.hpp>
 
@@ -834,7 +835,12 @@ DeepDiagReport DeepDiag::SceneAssets(Application& app)
         if (mr.meshes.empty())
             r.Add(2, who + " にメッシュがロードされていない（modelPath=" + mr.modelPath + "）");
         else if (mr.materials.empty())
-            r.Add(1, who + " にマテリアルが無い。既定の白テクスチャで描かれる");
+        {
+            // 地形レイヤーセット割当があるならマテリアルは要らない（t0/t1/t2 を地形が自前で張る）
+            const TerrainComp* tc = reg.try_get<TerrainComp>(e);
+            if (!tc || tc->layerSetPath.empty())
+                r.Add(1, who + " にマテリアルが無い。既定の白テクスチャで描かれる");
+        }
 
         for (const std::string& p : mr.overrideAlbedoTexture)        checkFile(p, who, "アルベド");
         for (const std::string& p : mr.overrideNormalTexture)        checkFile(p, who, "法線マップ");
@@ -1141,7 +1147,8 @@ DeepDiagReport DeepDiag::Terrain(Application& app)
     }
     entt::registry& reg = scene->GetRegistry();
 
-    std::map<std::string, std::string> pathOwner;   // heightmapPath → 最初に使ったエンティティ名
+    std::map<std::string, std::string> pathOwner;    // heightmapPath → 最初に使ったエンティティ名
+    std::map<std::string, std::string> splatOwner;   // splatPath     → 同上（.hf と同じ共有バグ検出）
     int terrainCount = 0;
 
     for (auto [e, t] : reg.view<TerrainComp>().each())
@@ -1269,6 +1276,40 @@ DeepDiagReport DeepDiag::Terrain(Application& app)
                     }
                 }
             }
+        }
+
+        // ---- テクスチャスプラット（.terrainlayers / .splat）----
+        if (!t.layerSetPath.empty())
+        {
+            fs::path lsAbs;
+            std::error_code lsEc;
+            if (!ResolveAssetPath(t.layerSetPath, lsAbs) || !fs::exists(lsAbs, lsEc))
+                r.Add(2, who + " のレイヤーセットが見つからない: " + t.layerSetPath
+                         + "（テクスチャスプラットが効かず従来の見た目に戻る）");
+
+            if (t.splatPath.empty())
+            {
+                r.Add(1, who + " のスプラット重みが未保存（splatPath が空）。"
+                               "シーンを開き直すと自動ペイントし直しになる");
+            }
+            else
+            {
+                // .hf と同じ構造の同じバグ（複製で共有）を .splat でも検出する
+                auto sowner = splatOwner.find(t.splatPath);
+                if (sowner != splatOwner.end())
+                    r.Add(2, who + " と " + sowner->second + " が同じスプラット " + t.splatPath
+                             + " を共有している。片方を塗るともう片方も書き換わる（別名で保存し直すこと）");
+                else
+                    splatOwner.emplace(t.splatPath, who);
+            }
+
+            if (!t._splat || !t._splat->IsValid())
+                r.Add(1, who + " のスプラット重みが読み込まれていない（レイヤー 0 だけで描かれる）");
+        }
+        else if (!t.splatPath.empty())
+        {
+            r.Add(0, who + " は splatPath を持っているが layerSetPath が空なので"
+                           "テクスチャスプラットは効いていない（従来の見た目）");
         }
 
         // ---- コライダー（PhysicsSystem::RegisterBody が RigidBody を見て作る）----
@@ -1461,6 +1502,7 @@ DeepDiagReport DeepDiag::Instancing(Application& app)
         { "テクスチャ上書き（アルベド/法線/MR）",              0 },
         { "連番アニメ（animFrames > 0）",                      0 },
         { "UV スクロール",                                     0 },
+        { "地形マテリアル割当（専用 PSO で描くため対象外）",   0 },
         { "分類不能（適格条件の変更漏れの疑い）",              0 },
     };
 
@@ -1484,11 +1526,13 @@ DeepDiagReport DeepDiag::Instancing(Application& app)
         }
 
         const MeshRenderer* mr = item.renderer;
-        int idx = 9;
+        const TerrainComp* tc = (reg != nullptr) ? reg->try_get<TerrainComp>(item.e) : nullptr;
+        int idx = 10;
         if      (item.skin != nullptr)                            idx = 0;
         else if (item.hasNodeAnim)                                idx = 1;
         else if (mr == nullptr)                                   idx = 4;
         else if (item.sortKey != 0u || !mr->shaderPath.empty())   idx = 2;
+        else if (tc != nullptr && !tc->layerSetPath.empty())      idx = 9;
         else if (mr->meshes.size() != 1u)                         idx = 3;
         else if (mr->meshes[0] == nullptr)                        idx = 4;
         else if (mr->HasMaterialAsset(0u))                        idx = 5;
@@ -1535,8 +1579,8 @@ DeepDiagReport DeepDiag::Instancing(Application& app)
         r.Add(0, "不適格 " + std::to_string(rank) + " 位: " + reason->label + " … "
                  + std::to_string(reason->count) + " 件 (" + std::to_string(p) + "%)");
     }
-    if (reasons[9].count > 0)
-        r.Add(1, "適格条件のどれにも当てはまらない不適格ドローが " + std::to_string(reasons[9].count)
+    if (reasons[10].count > 0)
+        r.Add(1, "適格条件のどれにも当てはまらない不適格ドローが " + std::to_string(reasons[10].count)
                  + " 件ある。BuildDrawList() の条件が変わってこの診断が追いついていない可能性");
 
     if (total >= 200 && eligible * 2 < total)
