@@ -278,7 +278,11 @@ if(DXC_EXECUTABLE)
     set(SHADER_VELOCITY      "${CMAKE_SOURCE_DIR}/shaders/velocity/VelocityPrepass.hlsl")
     set(SHADER_VELOCITY_INST "${CMAKE_SOURCE_DIR}/shaders/velocity/VelocityPrepassInstanced.hlsl")
     set(SHADER_VELOCITY_SKIN "${CMAKE_SOURCE_DIR}/shaders/velocity/VelocityPrepassSkinned.hlsl")
-    set(SHADER_VELOCITY_INC  "${CMAKE_SOURCE_DIR}/shaders/velocity/VelocityCommon.hlsli")
+    # スクリーン空間共通ヘッダ（oct 法線 / ビューポート UV↔NDC / レイマーチ）。
+    # 深度プリパスの PS（G-Buffer 書き出し）と SSR/SSGI の両方が include する。
+    set(SHADER_SS_INC        "${CMAKE_SOURCE_DIR}/shaders/screenspace/ScreenSpaceCommon.hlsli")
+    set(SHADER_VELOCITY_INC  "${CMAKE_SOURCE_DIR}/shaders/velocity/VelocityCommon.hlsli"
+                             "${SHADER_SS_INC}")
     set(SHADER_TAA           "${CMAKE_SOURCE_DIR}/shaders/post/TAA.hlsl")
     # ★ shaders/debug/ は .gitignore の "Debug/" に食われて新規ファイルが追跡されない。
     #    velocity/ 配下に置くこと（DebugLine.hlsl は昔から追跡済みなので生き残っているだけ）。
@@ -774,28 +778,28 @@ if(DXC_EXECUTABLE)
     add_custom_command(
         OUTPUT "${SHADER_OUTPUT_DIR}/VelocityPrepass_VS.cso"
         COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/VelocityPrepass_VS.cso" "${SHADER_VELOCITY}"
-        DEPENDS "${SHADER_VELOCITY}" "${SHADER_VELOCITY_INC}"
+        DEPENDS "${SHADER_VELOCITY}" ${SHADER_VELOCITY_INC}
         COMMENT "Compiling VelocityPrepass.hlsl -> VelocityPrepass_VS.cso (vs_6_0)"
     )
 
     add_custom_command(
         OUTPUT "${SHADER_OUTPUT_DIR}/VelocityPrepass_PS.cso"
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E VelocityPS -Fo "${SHADER_OUTPUT_DIR}/VelocityPrepass_PS.cso" "${SHADER_VELOCITY}"
-        DEPENDS "${SHADER_VELOCITY}" "${SHADER_VELOCITY_INC}"
+        DEPENDS "${SHADER_VELOCITY}" ${SHADER_VELOCITY_INC}
         COMMENT "Compiling VelocityPrepass.hlsl -> VelocityPrepass_PS.cso (ps_6_0)"
     )
 
     add_custom_command(
         OUTPUT "${SHADER_OUTPUT_DIR}/VelocityPrepassInstanced_VS.cso"
         COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/VelocityPrepassInstanced_VS.cso" "${SHADER_VELOCITY_INST}"
-        DEPENDS "${SHADER_VELOCITY_INST}" "${SHADER_VELOCITY_INC}"
+        DEPENDS "${SHADER_VELOCITY_INST}" ${SHADER_VELOCITY_INC}
         COMMENT "Compiling VelocityPrepassInstanced.hlsl -> VelocityPrepassInstanced_VS.cso (vs_6_0)"
     )
 
     add_custom_command(
         OUTPUT "${SHADER_OUTPUT_DIR}/VelocityPrepassSkinned_VS.cso"
         COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/VelocityPrepassSkinned_VS.cso" "${SHADER_VELOCITY_SKIN}"
-        DEPENDS "${SHADER_VELOCITY_SKIN}" "${SHADER_VELOCITY_INC}"
+        DEPENDS "${SHADER_VELOCITY_SKIN}" ${SHADER_VELOCITY_INC}
         COMMENT "Compiling VelocityPrepassSkinned.hlsl -> VelocityPrepassSkinned_VS.cso (vs_6_0)"
     )
 

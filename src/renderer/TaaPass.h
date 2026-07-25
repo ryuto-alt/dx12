@@ -47,10 +47,13 @@ public:
     bool IsReady() const { return m_velocityRT != nullptr; }
     bool IsResolveReady() const { return m_resolvePso != nullptr && m_history[0] != nullptr; }
 
-    // ---- 速度バッファ（深度+速度プリパス）----
-    // RTV=速度RT / DSV=呼び出し側の深度 をバインドし、速度RTを 0 でクリアする。
-    // 深度のクリアは呼び出し側の責任（従来の深度プリパスと同じ）。
+    // ---- 速度バッファ + G-Buffer（深度プリパスの MRT）----
+    // RTV0=速度RT / RTV1=G-Buffer / DSV=呼び出し側の深度 をバインドし、速度RTを 0 でクリアする。
+    // 深度と G-Buffer のクリア/遷移は呼び出し側の責任（G-Buffer の所有は Application）。
+    // ★ 速度 PSO は常に RTV 2 本で作られている。gbufferRtv を省略すると PSO 不一致になるので
+    //   必ず有効なハンドルを渡すこと（00-COORDINATION §5.5）。
     void BeginVelocity(CommandList& cmd, D3D12_CPU_DESCRIPTOR_HANDLE dsv,
+                       D3D12_CPU_DESCRIPTOR_HANDLE gbufferRtv,
                        u32 vpLeft, u32 vpTop, u32 vpW, u32 vpH);
     // 速度RTを PIXEL_SHADER_RESOURCE へ遷移する。
     void EndVelocity(CommandList& cmd);

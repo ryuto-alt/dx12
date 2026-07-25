@@ -236,6 +236,7 @@ void TaaPass::Resize(GraphicsDevice& device, u32 width, u32 height)
 // 速度バッファ
 // ---------------------------------------------------------------------------
 void TaaPass::BeginVelocity(CommandList& cmd, D3D12_CPU_DESCRIPTOR_HANDLE dsv,
+                            D3D12_CPU_DESCRIPTOR_HANDLE gbufferRtv,
                             u32 vpLeft, u32 vpTop, u32 vpW, u32 vpH)
 {
     if (!m_velocityRT) return;
@@ -245,8 +246,9 @@ void TaaPass::BeginVelocity(CommandList& cmd, D3D12_CPU_DESCRIPTOR_HANDLE dsv,
     constexpr float zero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     cmd.ClearRenderTarget(m_velocityRT->GetRtv(), zero);
 
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_velocityRT->GetRtv();
-    cmd.GetNative()->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+    // RTV0=速度 / RTV1=G-Buffer。PSO は常に 2 本で作られているので本数を分岐させない。
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvs[2] = { m_velocityRT->GetRtv(), gbufferRtv };
+    cmd.GetNative()->OMSetRenderTargets(2, rtvs, FALSE, &dsv);
     cmd.SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
 }
 

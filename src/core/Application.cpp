@@ -152,6 +152,11 @@ namespace dx12e
 // （バックバッファ＝スワップチェインは従来どおりスワップ形式のまま）
 static constexpr DXGI_FORMAT kSceneColorFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
+// G-Buffer（深度+速度プリパスの RTV1）。xy=oct(ワールド法線) z=roughness w=metallic。
+// 8bit だとカメラが動くたびに specular がウォブルするので fp16。
+// ScreenSpaceGiPass::kGBufferFormat と同じ値であること。
+static constexpr DXGI_FORMAT kGBufferFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+
 // フルパスを assets ディレクトリ相対へ（シーンフロー / loadScene 用）
 static std::string ToAssetRel(const std::string& full)
 {
@@ -479,7 +484,10 @@ void Application::InvalidateTemporalHistory()
 
 void Application::RecreateVelocityPsos()
 {
-    const DXGI_FORMAT rtFormats[] = { TaaPass::kVelocityFormat };
+    // MRT=2: RTV0=速度(RG16F) / RTV1=G-Buffer(RGBA16F: xy=oct(worldN) z=rough w=metal)。
+    // ★ 本数を条件で変えないこと。G-Buffer が要らないフレームでも同じ PSO で走らせて
+    //   RTV を張らない、をやると PSO 不一致になる（00-COORDINATION §5.5）。
+    const DXGI_FORMAT rtFormats[] = { TaaPass::kVelocityFormat, kGBufferFormat };
 
     auto build = [&](const wchar_t* vsName, const D3D12_INPUT_ELEMENT_DESC* layout, u32 layoutCount,
                      std::unique_ptr<PipelineState>& out)
@@ -1712,6 +1720,14 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_taaPass->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
                               m_window->GetWidth(), m_window->GetHeight(),
                               kSceneColorFormat, m_swapChain->GetFormat(), PathResolver::ShaderDirW());
+
+        // G-Buffer（速度プリパスの RTV1）。速度 PSO は常に MRT=2 なので、速度プリパスが
+        // 走るときは必ずここへも書かれる＝常に確保しておく（分岐を作らない）。
+        const float gbufClear[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        m_gbufferRT = std::make_unique<RenderTarget>();
+        m_gbufferRT->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
+                                m_window->GetWidth(), m_window->GetHeight(),
+                                kGBufferFormat, gbufClear);
 
         // クラスタードライティング（Forward+）。ライトカリング compute 2 パス + SRV テーブル。
         // 旧「点光源 8 / スポット 8」の cbuffer 固定配列を置き換える本体。
@@ -7119,6 +7135,7 @@ void Application::Run()
                 // TAA: 速度RT/履歴RT を作り直す。座標系が変わるので履歴は必ず捨てる
                 // （持ち越すと画面が歪んで尾を引く）。MB の速度スパイク防止も兼ねる。
                 if (m_taaPass) m_taaPass->Resize(*m_graphicsDevice, w, h);
+                if (m_gbufferRT) m_gbufferRT->Resize(*m_graphicsDevice, w, h);
                 InvalidateTemporalHistory();
 
                 // カメラアスペクト比更新（エディタモードではサイドバー分引く）
@@ -7362,6 +7379,7 @@ void Application::Shutdown()
     m_ssaoPass.reset();
     m_contactShadowPass.reset();
     m_taaPass.reset();
+    m_gbufferRT.reset();
     m_ssaoWhiteTex.reset();
     m_depthPrepassPSO.reset();
     m_depthPrepassSkinnedPSO.reset();
@@ -11380,11 +11398,71 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
     const bool skipTransparent = prepass && prepass->skipTransparent;
     if (velocityMode && !m_instancePrevMapped[frameIndex]) instPSO = nullptr;  // 前ワールドVBが無ければ従来経路
 
-    // 速度パスの b0(36 DWORD)。静的/スキンドは mvp 版、インスタンシングは vp 版。
-    struct VelocityObjCB { XMMATRIX a; XMMATRIX b; XMFLOAT2 jitter; XMFLOAT2 pad; };
-    static constexpr u32 kVelocityObjNum32 = 36;
+    // 速度+G-Buffer パスの b0。静的/スキンドは 40 DWORD（ルート定数の上限ぴったり）、
+    // インスタンシングは 36 DWORD（法線はインスタンスデータから取れるので行列を送らない）。
+    // ★ 静的/スキンド版で prevMvp の z 列を送っていないのは、そこで浮いた 4 DWORD を
+    //   法線行列(3x3=9)に回すため。prevClip は x/y/w しか使わないので情報は落ちていない。
+    struct VelocityObjCB
+    {
+        XMMATRIX mvpJ;                        // 16  transpose(world * viewProjJittered)
+        XMFLOAT4 prevC0, prevC1, prevC3;      // 12  transpose(prevWorld*prevVP) の row0/1/3
+        XMFLOAT3 nrm0; float jitterX;         //  4  transpose(world).row0.xyz
+        XMFLOAT3 nrm1; float jitterY;         //  4
+        XMFLOAT3 nrm2; float matPacked;       //  4  round(rough*255)+round(metal*255)*256
+    };
+    static constexpr u32 kVelocityObjNum32 = 40;
     static_assert(sizeof(VelocityObjCB) == kVelocityObjNum32 * sizeof(float),
-                  "VelocityObjCB は shaders/velocity/*.hlsl の cbuffer と一致させること");
+                  "VelocityObjCB は shaders/velocity/VelocityPrepass{,Skinned}.hlsl の cbuffer と一致させること");
+
+    struct VelocityInstObjCB { XMMATRIX vpJ; XMMATRIX prevVp; XMFLOAT2 jitter; float matPacked; float pad; };
+    static constexpr u32 kVelocityInstObjNum32 = 36;
+    static_assert(sizeof(VelocityInstObjCB) == kVelocityInstObjNum32 * sizeof(float),
+                  "VelocityInstObjCB は shaders/velocity/VelocityPrepassInstanced.hlsl と一致させること");
+
+    // b0 の 1 float に roughness/metallic を詰める（ScreenSpaceCommon.hlsli の SS_UnpackMaterial と対）。
+    auto packMaterial = [](float roughness, float metallic) -> float
+    {
+        const float r = std::round(std::clamp(roughness, 0.0f, 1.0f) * 255.0f);
+        const float m = std::round(std::clamp(metallic,  0.0f, 1.0f) * 255.0f);
+        return r + m * 256.0f;
+    };
+    // transpose(world) の row0/1/2 の xyz を取り出す（= world 3x3 の列）。
+    // forward の mul(normal, (float3x3)model) と同じ値になる並び。
+    auto fillNormalRows = [](VelocityObjCB& c, const XMMATRIX& worldT)
+    {
+        XMFLOAT4 r0, r1, r2;
+        XMStoreFloat4(&r0, worldT.r[0]);
+        XMStoreFloat4(&r1, worldT.r[1]);
+        XMStoreFloat4(&r2, worldT.r[2]);
+        c.nrm0 = {r0.x, r0.y, r0.z};
+        c.nrm1 = {r1.x, r1.y, r1.z};
+        c.nrm2 = {r2.x, r2.y, r2.z};
+    };
+    // transpose(prevMvp) の row0/1/3（= prevMvp の col0/1/3）。row2(z) は prevClip で使わない。
+    auto fillPrevCols = [](VelocityObjCB& c, const XMMATRIX& prevMvpT)
+    {
+        XMStoreFloat4(&c.prevC0, prevMvpT.r[0]);
+        XMStoreFloat4(&c.prevC1, prevMvpT.r[1]);
+        XMStoreFloat4(&c.prevC3, prevMvpT.r[3]);
+    };
+    // G-Buffer に書く roughness/metallic。RenderSceneMeshes の PBR ルート定数と同じ優先順
+    // （materialAsset > MeshRenderer のスカラー上書き > モデル焼き込み Material）。
+    // v1 では metalRoughness テクスチャは読まない（プリパスで t0-t2 を毎ドロー貼らないため）。
+    auto resolvePbr = [&](const MeshRenderer& r, const Mesh* m, u32 mi, float& rough, float& metal)
+    {
+        const Material* mat = m ? m->GetMaterial() : nullptr;
+        float baseM = mat ? mat->defaultMetallic  : 0.0f;
+        float baseR = mat ? mat->defaultRoughness : 0.5f;
+        if (m_materialAssetManager && r.HasMaterialAsset(mi))
+        {
+            const MaterialAssetManager::Entry* loaded = m_materialAssetManager->GetOrLoad(
+                MeshRenderer::SafeGetOverride(r.materialAsset, mi), m_commandList->GetNative());
+            if (loaded && loaded->valid) { baseM = loaded->data.metallic; baseR = loaded->data.roughness; }
+        }
+        metal = (r.overrideMetallic  >= 0.0f) ? r.overrideMetallic  : baseM;
+        rough = (r.overrideRoughness >= 0.0f) ? r.overrideRoughness : baseR;
+        rough = (std::max)(rough, 0.04f);   // Forward.hlsl:179 と同じ下限
+    };
 
     // このパスの視錐台（ライト/カメラ視点）で描画リストを球カリングする。
     // CSM はタイトフィット正射 + DepthClipEnable=TRUE のため、落とすのは
@@ -11466,12 +11544,17 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
                 }
                 if (velocityMode)
                 {
-                    VelocityObjCB vc;
-                    vc.a      = passVpT;                              // transpose(jittered VP)
-                    vc.b      = XMMatrixTranspose(prevViewProj);      // transpose(prev non-jittered VP)
-                    vc.jitter = jitterNdc;
-                    vc.pad    = {0.0f, 0.0f};
-                    m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, kVelocityObjNum32, &vc);
+                    // batchKey にマテリアルが含まれているので、バッチ単位で 1 回貼れば正しい。
+                    float rough = 0.5f, metal = 0.0f;
+                    resolvePbr(*item.renderer, item.renderer->meshes[0], 0, rough, metal);
+
+                    VelocityInstObjCB vc;
+                    vc.vpJ       = passVpT;                            // transpose(jittered VP)
+                    vc.prevVp    = XMMatrixTranspose(prevViewProj);    // transpose(prev non-jittered VP)
+                    vc.jitter    = jitterNdc;
+                    vc.matPacked = packMaterial(rough, metal);
+                    vc.pad       = 0.0f;
+                    m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, kVelocityInstObjNum32, &vc);
                 }
                 else
                 {
@@ -11565,11 +11648,16 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
                 if (item.hasNodeAnim && mi < static_cast<u32>(renderer.meshNodeTransforms.size()))
                     prevMeshWorld = XMLoadFloat4x4(&renderer.meshNodeTransforms[mi]) * prevMeshWorld;
 
+                float rough = 0.5f, metal = 0.0f;
+                resolvePbr(renderer, mesh, mi, rough, metal);
+
                 VelocityObjCB vc;
-                vc.a      = XMMatrixTranspose(meshWorld * viewProj);        // viewProj はジッタ込み
-                vc.b      = XMMatrixTranspose(prevMeshWorld * prevViewProj); // 前は非ジッタ
-                vc.jitter = jitterNdc;
-                vc.pad    = {0.0f, 0.0f};
+                vc.mvpJ    = XMMatrixTranspose(meshWorld * viewProj);   // viewProj はジッタ込み
+                fillPrevCols(vc, XMMatrixTranspose(prevMeshWorld * prevViewProj)); // 前は非ジッタ
+                fillNormalRows(vc, XMMatrixTranspose(meshWorld));
+                vc.jitterX   = jitterNdc.x;
+                vc.jitterY   = jitterNdc.y;
+                vc.matPacked = packMaterial(rough, metal);
                 m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, kVelocityObjNum32, &vc);
             }
             else
@@ -13609,11 +13697,17 @@ void Application::Render()
             pp.mode = PrepassMode::DepthVelocityGBuffer;
             XMStoreFloat4x4(&pp.prevViewProj,
                 m_prevViewProjNJValid ? XMLoadFloat4x4(&m_prevViewProjNoJitter) : camVP);
-            m_taaPass->BeginVelocity(*m_commandList, m_dsvHandle, vpLeft, vpTop, vpW, vpH);
+            // RTV1 = G-Buffer。全面 0 クリア（背景は深度 1.0 で弾かれるので中身は問われない）。
+            m_gbufferRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            constexpr float gbufZero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+            m_commandList->ClearRenderTarget(m_gbufferRT->GetRtv(), gbufZero);
+            m_taaPass->BeginVelocity(*m_commandList, m_dsvHandle, m_gbufferRT->GetRtv(),
+                                     vpLeft, vpTop, vpW, vpH);
             RenderDepthOnlyScene(camVPJ, *m_velocityPSO, *m_velocityPSOSkinned,
                                  /*updateSkinning*/ false, frameIndex, /*lodBias*/ 0,
                                  m_velocityPSOInst.get(), &pp);
             m_taaPass->EndVelocity(*m_commandList);
+            m_gbufferRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         }
         else
         {

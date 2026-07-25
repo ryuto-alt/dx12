@@ -263,17 +263,17 @@ const std::vector<ShaderSource>& BuildRegistry()
                 { L"VelocityPrepass_VS.cso", L"VSMain",     L"vs_6_0" },
                 { L"VelocityPrepass_PS.cso", L"VelocityPS", L"ps_6_0" },
             },
-            { "velocity/VelocityCommon.hlsli" },
+            { "velocity/VelocityCommon.hlsli", "screenspace/ScreenSpaceCommon.hlsli" },
         },
         {
             "velocity/VelocityPrepassInstanced.hlsl",
             { { L"VelocityPrepassInstanced_VS.cso", L"VSMain", L"vs_6_0" } },
-            { "velocity/VelocityCommon.hlsli" },
+            { "velocity/VelocityCommon.hlsli", "screenspace/ScreenSpaceCommon.hlsli" },
         },
         {
             "velocity/VelocityPrepassSkinned.hlsl",
             { { L"VelocityPrepassSkinned_VS.cso", L"VSMain", L"vs_6_0" } },
-            { "velocity/VelocityCommon.hlsli" },
+            { "velocity/VelocityCommon.hlsli", "screenspace/ScreenSpaceCommon.hlsli" },
         },
         {
             "post/TAA.hlsl",

@@ -1,4 +1,4 @@
-// VelocityPrepassSkinned.hlsl - スキンドメッシュの速度バッファ生成。
+// VelocityPrepassSkinned.hlsl - スキンドメッシュの速度 + G-Buffer 生成。
 //
 // ★ DepthPrepassSkinned.hlsl / ForwardSkinned.hlsl と完全に同じスキニング式にすること
 //   （skinMatrix = sum(w*B) を作ってから mul(pos, skinMatrix)。totalWeight==0 のフォールバックは無し）。
@@ -7,6 +7,8 @@
 // 前フレームのボーンは SkinningBuffer の「前フレームのスロット」の SRV を t12 にバインドしたもの。
 //   SkinningBuffer は frameCount(=3) 枚を多重化していて、毎フレーム frameIndex のスロットだけを
 //   書く＝前フレームのスロットには前フレームの行列がそのまま残っている。追加のGPUメモリ不要。
+//
+// b0 レイアウトは VelocityPrepass.hlsl と同一（40 DWORD）。ヘッダのコメント参照。
 #include "VelocityCommon.hlsli"
 
 StructuredBuffer<float4x4> g_bones     : register(t3);
@@ -14,10 +16,16 @@ StructuredBuffer<float4x4> g_prevBones : register(t12);
 
 cbuffer PerObjectConstants : register(b0)
 {
-    float4x4 gMvpJ;        // transpose(world * viewProjJittered)
-    float4x4 gPrevMvp;     // transpose(prevWorld * prevViewProjNoJitter)
-    float2   gJitterNdc;
-    float2   _vpad;
+    float4x4 gMvpJ;
+    float4   gPrevC0;
+    float4   gPrevC1;
+    float4   gPrevC3;
+    float3   gNrm0;
+    float    gJitterX;
+    float3   gNrm1;
+    float    gJitterY;
+    float3   gNrm2;
+    float    gMatPacked;
 };
 
 struct VSInput
@@ -53,7 +61,15 @@ VelocityVSOut VSMain(VSInput input)
 
     o.posSV       = mul(sp, gMvpJ);
     o.curClip     = o.posSV;
-    o.curClip.xy -= gJitterNdc * o.posSV.w;
-    o.prevClip    = mul(prevSp, gPrevMvp);
+    o.curClip.xy -= float2(gJitterX, gJitterY) * o.posSV.w;
+    o.prevClip    = float4(dot(prevSp, gPrevC0), dot(prevSp, gPrevC1), 0.0f, dot(prevSp, gPrevC3));
+
+    // 法線もスキニング行列で回してからワールドへ（ForwardSkinned.hlsl:83,89 と同じ順序）。
+    float3 sn = normalize(mul(input.normal, (float3x3)skinMatrix));
+    o.worldNormal = float3(dot(sn, gNrm0), dot(sn, gNrm1), dot(sn, gNrm2));
+
+    float rough, metal;
+    SS_UnpackMaterial(gMatPacked, rough, metal);
+    o.material = float2(rough, metal);
     return o;
 }

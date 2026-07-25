@@ -719,6 +719,11 @@ private:
     // 深度プリパスを MRT 化して速度(RG16F)を書き、ポストチェーンの先頭（トーンマップ前の
     // HDR）で解決する。ジッタは Camera には一切入れない（ピッキング/MCP 投影を壊さないため）。
     std::unique_ptr<TaaPass>       m_taaPass;
+    // ---- G-Buffer（深度+速度プリパスに相乗り。SSR/SSGI が読む）----
+    // R16G16B16A16_FLOAT: xy=oct(ワールド法線) z=roughness w=metallic。
+    // 速度 RT と同じ MRT に書くので、速度プリパスが走るときは必ず一緒に書かれる
+    // （PSO の RTV 本数を分岐させないため。00-COORDINATION §5.5 の契約）。
+    std::unique_ptr<RenderTarget>  m_gbufferRT;
     std::unique_ptr<PipelineState> m_velocityPSO;          // 深度+速度（static）
     std::unique_ptr<PipelineState> m_velocityPSOInst;      // 深度+速度（instanced）
     std::unique_ptr<PipelineState> m_velocityPSOSkinned;   // 深度+速度（skinned, t12=前ボーン）
