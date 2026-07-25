@@ -24,6 +24,7 @@ find_package(spdlog CONFIG REQUIRED)
 # ルートで find_package する（サブディレクトリで呼ぶと IMPORTED ターゲットがそのディレクトリ以下にしか
 # 見えず、後段の POST_BUILD DLL コピー(DX12Engine/GameRuntime、ルート scope)から参照できないため）。
 find_package(directx-dxc CONFIG REQUIRED)
+find_package(meshoptimizer CONFIG REQUIRED)   # 自動LOD生成（Renderer がリンク、DLL はルートで同梱）
 
 # Sub-projects
 add_subdirectory(src/core)
@@ -190,6 +191,22 @@ foreach(DX12_SHADERC_TARGET DX12Engine GameRuntime)
             "$<TARGET_FILE_DIR:${DX12_SHADERC_TARGET}>"
         COMMENT "Bundling dxcompiler.dll / dxil.dll next to ${DX12_SHADERC_TARGET}.exe")
 endforeach()
+
+# --- meshoptimizer.dll 同梱（自動LOD）---
+# vcpkg applocal が拾わない環境があるため dxil.dll と同様に明示コピーする。
+# tests/ 配下の Renderer リンクなテスト exe 用にも1部コピーしておく。
+foreach(DX12_MESHOPT_TARGET DX12Engine GameRuntime)
+    add_custom_command(TARGET ${DX12_MESHOPT_TARGET} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:meshoptimizer::meshoptimizer>"
+            "$<TARGET_FILE_DIR:${DX12_MESHOPT_TARGET}>"
+        COMMENT "Bundling meshoptimizer.dll next to ${DX12_MESHOPT_TARGET}.exe")
+endforeach()
+add_custom_command(TARGET DX12Engine POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/tests"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:meshoptimizer::meshoptimizer>" "${CMAKE_BINARY_DIR}/tests"
+    COMMENT "Bundling meshoptimizer.dll next to tests")
 
 # --- DXC Shader Compilation ---
 find_program(DXC_EXECUTABLE dxc

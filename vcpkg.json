@@ -18,6 +18,7 @@
     "entt",
     "nlohmann-json",
     "joltphysics",
-    "enet"
+    "enet",
+    "meshoptimizer"
   ]
 }

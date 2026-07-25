@@ -362,6 +362,11 @@ void EditorLayer::Render(bool isPlaying,
             ImGui::SameLine(0, 4); ImGui::TextDisabled("FPS");
             ImGui::SameLine(0, 14); ImGui::TextUnformatted(std::to_string(objCount).c_str());
             ImGui::SameLine(0, 4); ImGui::TextDisabled("objects");
+            // 描画統計（前フレーム。影/プリパス/メイン全パスの合計。カリング効果の確認用）
+            ImGui::SameLine(0, 14); ImGui::Text("%u", m_ctx->statDraws);
+            ImGui::SameLine(0, 4); ImGui::TextDisabled("draws");
+            ImGui::SameLine(0, 14); ImGui::Text("%u", m_ctx->statCulled);
+            ImGui::SameLine(0, 4); ImGui::TextDisabled("culled");
         }
         ImGui::End();
         ImGui::PopStyleVar(2);

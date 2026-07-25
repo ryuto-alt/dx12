@@ -1410,6 +1410,11 @@ function loadPersist(key, def) end
 ---@param rel string assets/ からの相対パス（例: "scenes/level1.json"）
 function loadScene(rel) end
 
+---シーンが参照するテクスチャ/モデルをキャッシュへ先読み（シーン切替はしない）
+---タイトル等で次シーンを先読みしておくと遷移時のカクつきが消える
+---@param rel string assets/ からの相対パス（例: "scenes/stage_select.json"）
+function preloadScene(rel) end
+
 ---SceneFlow（sceneflow.json）の「次のシーン」へ
 function nextScene() end
 

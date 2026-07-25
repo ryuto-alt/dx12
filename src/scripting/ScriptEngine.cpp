@@ -1190,6 +1190,9 @@ void ScriptEngine::RegisterBindings()
 
     // --- ゲーム制御（Application が注入したコールバック経由）---
     lua["loadScene"] = [this](const std::string& rel) { if (m_loadSceneCb) m_loadSceneCb(rel); };
+    // シーンが参照するテクスチャ/モデルをキャッシュへ先読み(シーン切替時のカクつき対策)。
+    // シーン自体は切り替えない。例: title の OnStart で preloadScene("scenes/stage_select.json")
+    lua["preloadScene"] = [this](const std::string& rel) { if (m_preloadSceneCb) m_preloadSceneCb(rel); };
     lua["nextScene"] = [this]() { if (m_nextSceneCb) m_nextSceneCb(); };
     lua["quit"]      = [this]() { if (m_quitCb) m_quitCb(); };
     // フェード等のトランジション付きシーン切替（type: 0=Fade,1=Wipe,2=Circle,3=縦Wipe,4=シークバー早送り）

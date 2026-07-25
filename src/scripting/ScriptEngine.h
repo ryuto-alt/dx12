@@ -133,6 +133,7 @@ public:
     using UiFocusCb = std::function<void(std::uint32_t id)>;
 
     void SetLoadSceneCallback(LoadSceneCb cb) { m_loadSceneCb = std::move(cb); }
+    void SetPreloadSceneCallback(LoadSceneCb cb) { m_preloadSceneCb = std::move(cb); }
     void SetNextSceneCallback(VoidCb cb)      { m_nextSceneCb = std::move(cb); }
     void SetQuitCallback(VoidCb cb)           { m_quitCb = std::move(cb); }
     void SetTransitionCallback(TransitionCb cb) { m_transitionCb = std::move(cb); }
@@ -207,6 +208,7 @@ private:
     std::unordered_map<std::string, std::vector<ScriptPropDef>> m_propSchemaCache;
 
     LoadSceneCb  m_loadSceneCb;
+    LoadSceneCb  m_preloadSceneCb;
     VoidCb       m_nextSceneCb;
     VoidCb       m_quitCb;
     TransitionCb m_transitionCb;

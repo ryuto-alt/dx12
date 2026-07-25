@@ -215,6 +215,12 @@ public:
     f32 viewportW = 0.0f;
     f32 viewportH = 0.0f;
 
+    // 描画統計（前フレーム。Application::BuildDrawList が書く。ビューポートHUD表示用）。
+    // statDraws = 全シーンパス(影/プリパス/メイン/プレビュー)の DrawIndexedInstanced 発行数、
+    // statCulled = 同パス群でフラスタムカリングにより省いたエンティティ描画の延べ数。
+    u32 statDraws  = 0;
+    u32 statCulled = 0;
+
     // フローティングツール窓(マテリアルエディタ/マテリアルライブラリ/パーティクルエディタ等、
     // ImGuiWindowFlags_NoDockingで浮かぶ独立窓)がホバーされているか。
     // これらの窓は 3D ビューポート矩形の上に重なって浮かぶことがあるため、IsCursorInViewport が
