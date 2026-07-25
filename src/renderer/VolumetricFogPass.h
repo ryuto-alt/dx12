@@ -91,6 +91,10 @@ public:
                    u32 vpLeft, u32 vpTop, u32 vpW, u32 vpH, u32 frameIndex);
 
     bool IsReady() const { return m_psoInject && m_psoScatter && m_psoIntegrate && m_psoComposite; }
+
+    // 決定論キャプチャ（#31）用。時間ジッタの位相を 0 へ戻す。毎フレーム呼べばジッタが固定され、
+    // 時間再投影の履歴が不動点へ収束する＝同じ設定で撮れば同じ絵になる。
+    void ResetTemporalPhase() { m_frameCounter = 0; }
     // 3D テクスチャが確保済みか（＝一度でも enabled で BuildVolumes が走ったか）。
     // 「今フレーム BuildVolumes を呼んだか」は呼び出し側がローカルのフラグで持つこと。
     bool VolumesAllocated() const { return m_integrated != nullptr; }

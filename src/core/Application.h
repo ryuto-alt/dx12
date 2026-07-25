@@ -261,7 +261,33 @@ private:
     void RegisterMcpLightingMethods();    // ライティング / 診断
     // 直近フレームのシーン描画(m_sceneRT)を PNG に書き出す。成功=絶対パス / 失敗=空文字列+err。
     // MCP の screenshot 用。同期 readback(WaitIdle×2)＝低頻度のエディタ操作として割り切る。
-    std::string CaptureSceneScreenshot(std::string& err);
+    // outPath が空なら従来どおり CWD の mcp_screenshot.png（後方互換）。
+    std::string CaptureSceneScreenshot(std::string& err, const std::string& outPath = std::string());
+
+    // ---- screenshot_final（バックバッファ＝ポスト適用後の最終画を読む。§6 B5 の根治）------
+    // ReadbackSceneBgra はポスト前の m_sceneRT を読むので、グレーディング / ブルーム /
+    // ビネット / TAA 解決結果が一切写らない。ここはバックバッファのビューポート矩形を
+    // 「ImGui を描く前に」コピーするので、エディタのパネルは写らず絵だけが撮れる。
+    struct McpFinalShot
+    {
+        McpDeferred reply;              // client == 0 で非アクティブ
+        std::string path;               // 出力先（空なら CWD/mcp_screenshot_final.png）
+        bool        pending  = false;   // 次に描くフレームでコピーする
+        bool        captured = false;   // コピー済み → Run ループが PNG 化して応答する
+        bool        wantSceneRt = false;// true なら m_sceneRT を撮る（dx12_screenshot の決定論モード）
+        bool        deterministic = false;   // 応答に載せる印
+        u32         w = 0, h = 0;       // 撮った矩形（ビューポート）
+        u32         rowPitch = 0;
+        u64         bytes    = 0;       // readback バッファの実サイズ（Map の read range に使う。
+                                        // pitch*h ではない＝最終行はパディングされないので超えると E_INVALIDARG）
+        u32         format   = 0;       // DXGI_FORMAT（RGBA/BGRA の入れ替え判定用）
+        Microsoft::WRL::ComPtr<ID3D12Resource> readback;
+    };
+    // Render() の ImGui フレーム直前で呼ぶ。pending が立っていなければ何もしない。
+    void CaptureFinalBackBufferRegion(ID3D12GraphicsCommandList* cmd, ID3D12Resource* backBuffer,
+                                      u32 vpX, u32 vpY, u32 vpW, u32 vpH);
+    // Run ループの Render() 直後で呼ぶ。captured が立っていれば PNG 化して遅延応答を返す。
+    void FinishFinalScreenshot();
     // m_sceneRT を CPU へ読み戻し、現在のポスト設定と同じ表示変換を掛けて BGRA8 にする。
     // CaptureSceneScreenshot と超詳細診断のフレーム統計で共用する実体。
     // フレーム境界からのみ呼ぶこと(内部で BeginFrame/WaitIdle する)。
@@ -779,6 +805,23 @@ private:
     McpDeferred m_mcpStepReply;          // step_frames の遅延応答（N フレーム経過後に送る）。client=0 で無効。
     int         m_mcpStepFramesLeft = 0; // step_frames で残り何フレーム回すか。0 で非アクティブ。
     McpDeferred m_mcpGameViewReply;      // screenshot_game_view の遅延応答（1フレーム描画後に送る）。client=0 で無効。
+    McpFinalShot m_mcpFinalShot;         // screenshot_final の状態（バックバッファ読み戻し）。
+    // dx12_set_editor_camera が Play 中にカメラを固定している間 true（アクティブ CameraComponent の
+    // 毎フレーム同期を止める）。Play/Stop の遷移と {"release":true} で解除。
+    bool m_mcpCameraOverride = false;
+
+    // ---- 決定論キャプチャ（#31）------------------------------------------------
+    // 「設定を変えずに 2 回撮ると絵が違う」を潰すための一時モード。実測した犯人は 3 つ:
+    //   ① ポストの deband ディザ / フィルムグレイン（time 依存。バックバッファの ±1LSB が画面の 66%）
+    //   ② TAA のジッタ（毎フレーム位相が回るので m_sceneRT のラスタ結果そのものが動く）
+    //   ③ SSGI / ボリュメトリックフォグの時間ジッタ + 履歴蓄積
+    // このモード中は time を固定し、②③ の位相カウンタを毎フレーム 0 に戻す。
+    // 位相が固定されれば履歴は不動点へ収束するので、N フレーム回してから撮れば再現する。
+    // ★止めるのは「レンダラの時間依存」だけ。ゲームのシミュレーション（Play 中の移動 / 物理 /
+    //   アニメーション）は止まらないので、厳密に比べたいときは dx12_stop してから撮ること。
+    bool m_deterministicCapture   = false;
+    int  m_deterministicFramesLeft = 0;
+    static constexpr f32 kDeterministicTime = 8.0f;   // 固定する totalTime（0 は「未初期化」と紛れるので避ける）
     std::unordered_map<std::string, uint32_t> m_mcpIdempotency;  // idempotency_key -> 生成済み entityId
     // method 名 → ハンドラ。EnsureMcpMethodTable() が初回に 1 度だけ組む（#30 / N37 の根治）。
     std::unordered_map<std::string, McpMethodEntry> m_mcpMethods;

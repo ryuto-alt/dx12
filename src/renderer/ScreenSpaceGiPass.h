@@ -51,6 +51,10 @@ public:
     void Resize(GraphicsDevice& device, u32 width, u32 height);
 
     bool IsReady()    const { return m_psoSsrTrace != nullptr; }
+
+    // 決定論キャプチャ（#31）用。時間ジッタの位相を 0 へ戻す。毎フレーム呼べばジッタが固定され、
+    // SSGI の時間蓄積が不動点へ収束する＝同じ設定で撮れば同じ絵になる。
+    void ResetTemporalPhase() { m_frameCounter = 0; }
     // 前フレームのシーンカラーを持っているか（初回フレーム / シーン切替直後は false）。
     bool HasHistory() const { return m_colorValid; }
 

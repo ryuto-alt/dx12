@@ -4636,7 +4636,14 @@ void Application::RegisterMcpEntityMethods()
                 {"entityCount", entityCount},
                 {"sceneGeneration", m_sceneGeneration},
                 {"currentScene", ToAssetRel(m_editorCtx->currentScenePath)},
-                {"protocolVersion", 3}
+                // ★TS 側はこれまで「エンジンログに混ざる絶対パス」から assets ディレクトリを
+                //   推定していた（#20-3）。ここで正確に返すので推定は不要。
+                {"assetsDir", PathResolver::AssetsDir()},
+                {"scriptsDir", PathResolver::ScriptsDir()},
+                {"baseDir", PathResolver::BaseDir()},
+                {"projectShaderDir", PathResolver::ProjectShaderDir()},
+                {"cwd", std::filesystem::current_path().string()},
+                {"protocolVersion", 4}
             };
         });
 
@@ -4798,6 +4805,31 @@ void Application::RegisterMcpEntityMethods()
                 throw McpError(McpErr::NotFound, "prefab not found: " + path);
             const auto pos = params.value("position", std::vector<float>{0.0f, 0.0f, 0.0f});
             if (pos.size() != 3) throw McpError(McpErr::InvalidParam, "position must be [x,y,z]");
+            // ★idempotency のリプレイ判定（#20-4。ここが無かったので実バグだった）。
+            //   スポーン完了時に root id を m_mcpIdempotency へ記録してはいたが、
+            //   **再送されたときに参照する側が無く、同じ key で何度でも重複生成できた**。
+            //   create_entity / spawn_model と同じ規律に揃える。
+            if (!deferred.idempotencyKey.empty())
+            {
+                auto& reg = m_scene->GetRegistry();
+                auto it = m_mcpIdempotency.find(deferred.idempotencyKey);
+                if (it != m_mcpIdempotency.end() &&
+                    reg.valid(static_cast<entt::entity>(it->second)))
+                {
+                    const auto root = static_cast<entt::entity>(it->second);
+                    json ids = json::array();
+                    ids.push_back(static_cast<u32>(root));
+                    for (auto c : reg.view<const Transform>())
+                        if (c != root && McpIsDescendantOf(reg, c, root)) ids.push_back(static_cast<u32>(c));
+                    resp["ok"] = true;
+                    resp["result"] = {{"entityId", it->second}, {"rootEntityId", it->second},
+                                      {"entityIds", ids},
+                                      {"name", reg.all_of<NameTag>(root) ? reg.get<NameTag>(root).name
+                                                                         : std::string()},
+                                      {"sceneGeneration", m_sceneGeneration}, {"idempotentReplay", true}};
+                    return;
+                }
+            }
             PendingSpawnRequest sreq;
             sreq.modelPath = path;          // 拡張子 .prefab で spawn ループが展開し root+ids を返す
             sreq.position  = { pos[0], pos[1], pos[2] };
@@ -4956,16 +4988,73 @@ void Application::RegisterMcpEditorMethods()
             resp["result"] = arr;   // ファイル無しは空配列(grace)
         });
 
-    McpDefine("screenshot", "", DX12E_MCP_HANDLER
+    McpDefine("screenshot", "deterministic:bool,path:string,settleFrames:int", DX12E_MCP_HANDLER
         {
             // 直近フレームのシーン描画を PNG にして絶対パスを返す。AI 側はそのパスを画像として読む。
+            // ★これは【ポスト前】の m_sceneRT。グレーディング/ブルーム/ビネット/TAA は写らない（§6 B5）。
+            //   見た目を判断したいときは dx12_screenshot_final を使うこと。
+            if (params.value("deterministic", false))
+            {
+                if (m_deterministicCapture || m_mcpFinalShot.reply.client != 0)
+                    throw McpError(McpErr::ModeConflict,
+                        "another deterministic screenshot is in flight; retry shortly");
+                m_mcpFinalShot = {};
+                m_mcpFinalShot.path          = params.value("path", std::string());
+                m_mcpFinalShot.reply         = deferred;
+                m_mcpFinalShot.wantSceneRt   = true;
+                m_mcpFinalShot.deterministic = true;
+                // ★履歴を捨ててから固定フレーム数だけ回す（#31）。
+                //   位相を固定しただけでは「ピンポンの偶奇」と「撮る前に何フレーム回っていたか」で
+                //   結果がわずかに残るので（実測 240 フレーム回しても 1% 残った）、
+                //   **同じ初期状態 + 同じフレーム数** にして完全に再現させる。
+                InvalidateTemporalHistory();
+                m_deterministicFramesLeft = std::clamp(params.value("settleFrames", 8), 1, 240);
+                m_deterministicCapture    = true;
+                isDeferred = true;
+                return;
+            }
             std::string serr;
-            const std::string path = CaptureSceneScreenshot(serr);
+            const std::string path = CaptureSceneScreenshot(serr, params.value("path", std::string()));
             if (path.empty()) throw std::runtime_error(serr.empty() ? "screenshot failed" : serr);
             resp["ok"] = true;
             resp["result"] = {{"path", path},
                               {"width", m_sceneRT->GetWidth()},
-                              {"height", m_sceneRT->GetHeight()}};
+                              {"height", m_sceneRT->GetHeight()},
+                              {"source", "sceneRT(pre-post)"},
+                              {"note", "ポストプロセス前のシーン RT。グレーディング/ブルーム/ビネット/TAA は"
+                                       "写らない。最終画は dx12_screenshot_final"}};
+        });
+
+    // ★§6 B5 の根治。バックバッファ（ポスト適用後の最終画）のビューポート矩形を撮る。
+    //   ImGui を描く前にコピーするのでエディタのパネルは写らない＝ゲームと同じ絵になる。
+    //   1 フレーム描いてから撮るので遅延応答。
+    McpDefine("screenshot_final", "deterministic:bool,path:string,settleFrames:int", DX12E_MCP_HANDLER
+        {
+            if (m_mcpFinalShot.reply.client != 0 || m_mcpFinalShot.pending || m_deterministicCapture)
+                throw McpError(McpErr::ModeConflict,
+                    "a final screenshot is already pending; retry shortly");
+            const bool det = params.value("deterministic", false);
+            m_mcpFinalShot = {};
+            m_mcpFinalShot.path          = params.value("path", std::string());
+            m_mcpFinalShot.reply         = deferred;
+            m_mcpFinalShot.deterministic = det;
+            if (det)
+            {
+                // ★#31: time / TAA ジッタ / フォグ・SSGI の位相を固定して N フレーム回し、
+                //   時間蓄積が収束してから撮る。pending は収束後に Run ループが立てる。
+                // ★履歴を捨ててから固定フレーム数だけ回す（#31）。
+                //   位相を固定しただけでは「ピンポンの偶奇」と「撮る前に何フレーム回っていたか」で
+                //   結果がわずかに残るので（実測 240 フレーム回しても 1% 残った）、
+                //   **同じ初期状態 + 同じフレーム数** にして完全に再現させる。
+                InvalidateTemporalHistory();
+                m_deterministicFramesLeft = std::clamp(params.value("settleFrames", 8), 1, 240);
+                m_deterministicCapture    = true;
+            }
+            else
+            {
+                m_mcpFinalShot.pending = true;   // 次に描くフレームの ImGui 直前でコピーされる
+            }
+            isDeferred = true;
         });
 
     McpDefine("ui_screenshot", "", DX12E_MCP_HANDLER
@@ -6480,30 +6569,60 @@ void Application::RegisterMcpAssetMethods()
     using json = nlohmann::json;
     namespace fs = std::filesystem;
 
-    McpDefine("get_editor_camera", "", DX12E_MCP_HANDLER
+    McpDefine("get_editor_camera", "targetDistance:number", DX12E_MCP_HANDLER
         {
             // シーンビューを描いているカメラ(Editor=フライカメラ / Playing=ゲームカメラ)の状態。
             const auto pos = m_camera->GetPosition();
             const auto fwd = m_camera->GetForward();
+            // ★target を返す（#20-5）。カメラは yaw/pitch しか持たないので target は
+            //   `position + forward * targetDistance` で再構成する。
+            //   これを dx12_set_editor_camera {position, target} へそのまま渡すと
+            //   **同じ yaw/pitch に戻る**（LookAt が逆算する値が一致する）＝読み返し検証ができる。
+            const float td = params.contains("targetDistance")
+                           ? McpFloatParam(params, "targetDistance", 10.0f, 0.001f, 100000.0f) : 10.0f;
             resp["ok"] = true;
             resp["result"] = {
                 {"position", {pos.x, pos.y, pos.z}},
                 {"forward",  {fwd.x, fwd.y, fwd.z}},
+                {"target",   {pos.x + fwd.x * td, pos.y + fwd.y * td, pos.z + fwd.z * td}},
+                {"targetDistance", td},
                 {"yawDeg",   DirectX::XMConvertToDegrees(m_camera->GetYaw())},
                 {"pitchDeg", DirectX::XMConvertToDegrees(m_camera->GetPitch())},
                 {"fovYDeg",  DirectX::XMConvertToDegrees(m_camera->GetFovY())},
+                {"aspect",   m_camera->GetAspect()},
+                {"nearZ",    m_camera->GetNearZ()},
+                {"farZ",     m_camera->GetFarZ()},
                 {"orthographic", m_camera->IsOrthographic()},
+                {"overridden", m_mcpCameraOverride},
                 {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"},
             };
         });
 
-    McpDefine("set_editor_camera", "pitchDeg:any,position:any,target:any,yawDeg:any", DX12E_MCP_HANDLER
+    McpDefine("set_editor_camera", "pitchDeg:any,position:any,release:bool,target:any,yawDeg:any",
+              DX12E_MCP_HANDLER
         {
-            // エディタのフライカメラを任意視点へ(focus_camera より自由。俯瞰や引きの構図撮影用)。
-            // Playing 中の m_camera はゲームカメラでゲームロジックと取り合いになるため Editor 限定。
+            // シーンビューのカメラを任意視点へ(focus_camera より自由。俯瞰や引きの構図撮影用)。
+            //
+            // ★Play 中も使える（#20-6）。Playing 中の m_camera はアクティブな CameraComponent と
+            //   毎フレーム同期されるので、そのままでは次のフレームで上書きされてしまう。
+            //   そこで **MCP カメラ上書き** を立てて同期を止め、指定した視点を保持する。
+            //   `release: true` で上書きを解除するとゲームカメラが再び主導権を持つ。
+            //   Play/Stop の遷移でも自動的に解除される（撮影用の一時状態を持ち越さない）。
+            if (params.value("release", false))
+            {
+                m_mcpCameraOverride = false;
+                if (m_engineMode == EngineMode::Playing) SyncActiveCameraToGlobal();
+                const auto rpos = m_camera->GetPosition();
+                const auto rfwd = m_camera->GetForward();
+                resp["ok"] = true;
+                resp["result"] = {{"released", true},
+                                  {"overridden", false},
+                                  {"position", {rpos.x, rpos.y, rpos.z}},
+                                  {"forward",  {rfwd.x, rfwd.y, rfwd.z}}};
+                return;
+            }
             if (m_engineMode == EngineMode::Playing)
-                throw McpError(McpErr::ModeConflict,
-                    "editor camera is only adjustable in Editor mode (dx12_stop first)");
+                m_mcpCameraOverride = true;   // ゲームカメラの毎フレーム同期を止める
             DirectX::XMFLOAT3 pos = m_camera->GetPosition();
             if (params.contains("position"))
             {
@@ -6536,6 +6655,12 @@ void Application::RegisterMcpAssetMethods()
                 {"forward",  {nfwd.x, nfwd.y, nfwd.z}},
                 {"yawDeg",   DirectX::XMConvertToDegrees(m_camera->GetYaw())},
                 {"pitchDeg", DirectX::XMConvertToDegrees(m_camera->GetPitch())},
+                {"overridden", m_mcpCameraOverride},
+                {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"},
+                {"note", m_mcpCameraOverride
+                             ? "Play 中のゲームカメラ同期を止めて視点を固定した。"
+                               "dx12_set_editor_camera {\"release\":true} で解除（Stop でも自動解除）"
+                             : ""},
             };
         });
 
@@ -8523,7 +8648,27 @@ bool Application::ReadbackSceneBgra(std::vector<u8>& outBgra, u32& outW, u32& ou
     return true;
 }
 
-std::string Application::CaptureSceneScreenshot(std::string& err)
+// MCP のスクショ系が共有する出力先の解決。
+//   省略 → CWD の defName（＝従来の挙動。dx12_engine.log と同じ場所へ上書き）
+//   相対 → CWD 基準 / 絶対 → そのまま。拡張子が .png でなければ足す。
+// ".." は弾く（ブリッジは localhost 専用だが、AI が誤って上位ディレクトリへ書くのを防ぐ）。
+static std::filesystem::path McpScreenshotPath(const std::string& rel, const char* defName)
+{
+    namespace fs = std::filesystem;
+    if (rel.empty()) return fs::absolute(defName);
+    fs::path p(rel);
+    for (const auto& part : p)
+        if (part == "..")
+            throw McpError(McpErr::InvalidParam, "path must not contain '..'",
+                           "CWD からの相対パスか絶対パスで指定する");
+    if (p.extension() != ".png") p += ".png";
+    p = fs::absolute(p);
+    std::error_code ec;
+    if (p.has_parent_path()) fs::create_directories(p.parent_path(), ec);
+    return p;
+}
+
+std::string Application::CaptureSceneScreenshot(std::string& err, const std::string& outPathRel)
 {
     namespace fs = std::filesystem;
 
@@ -8531,9 +8676,176 @@ std::string Application::CaptureSceneScreenshot(std::string& err)
     u32 w = 0, h = 0;
     if (!ReadbackSceneBgra(bgra, w, h, err)) return {};
 
-    const fs::path outPath = fs::absolute("mcp_screenshot.png");   // CWD(= dx12_engine.log と同じ場所)へ上書き
+    const fs::path outPath = McpScreenshotPath(outPathRel, "mcp_screenshot.png");
     if (!WriteBgraPng(outPath.wstring(), bgra.data(), w, h, err)) return {};
     return outPath.string();
+}
+
+// ---------------------------------------------------------------------------
+// screenshot_final — バックバッファ（ポスト適用後の最終画）の読み戻し（§6 B5 の根治）
+// ---------------------------------------------------------------------------
+// ★なぜ別経路が要るのか
+//   ReadbackSceneBgra が読む m_sceneRT は **ポストプロセスの入力** なので、
+//   グレーディング / ブルーム / ゴッドレイ / ビネット / LUT / FXAA / デバンド、
+//   そして TAA の解決結果（履歴 RT 側に出る）が 1 つも写らない。
+//   MCP の測定と目視が食い違う根本原因がこれ。バックバッファを読めば全部解決する。
+//
+// ★撮る位置
+//   Render() の中、**ImGui フレームを始める前**。この時点のバックバッファには
+//   「ポスト適用後のシーン + エディタアイコン + ゲーム内 UI 画像」が入っており、
+//   ImGui のパネル / ギズモ / オーバーレイはまだ 1 ピクセルも乗っていない。
+//   ＝エディタで撮ってもゲームと同じ絵になる。パネル込みが欲しいときは ui_screenshot。
+void Application::CaptureFinalBackBufferRegion(ID3D12GraphicsCommandList* cmd, ID3D12Resource* backBuffer,
+                                               u32 vpX, u32 vpY, u32 vpW, u32 vpH)
+{
+    if (!m_mcpFinalShot.pending || !cmd || !backBuffer) return;
+    m_mcpFinalShot.pending  = false;
+    m_mcpFinalShot.captured = false;
+
+    auto* dev = m_graphicsDevice ? m_graphicsDevice->GetDevice() : nullptr;
+    if (!dev) return;
+
+    const D3D12_RESOURCE_DESC bbDesc = backBuffer->GetDesc();
+    const u32 fullW = static_cast<u32>(bbDesc.Width);
+    const u32 fullH = bbDesc.Height;
+    if (vpW == 0 || vpH == 0 || fullW == 0 || fullH == 0) return;
+    // ビューポートがバックバッファをはみ出していたらクランプ（リサイズ直後の 1 フレームで起きる）。
+    if (vpX >= fullW || vpY >= fullH) return;
+    vpW = (std::min)(vpW, fullW - vpX);
+    vpH = (std::min)(vpH, fullH - vpY);
+
+    // コピー先のレイアウトは「切り出す矩形と同じサイズのテクスチャ」で計算する。
+    D3D12_RESOURCE_DESC regionDesc = bbDesc;
+    regionDesc.Width  = vpW;
+    regionDesc.Height = vpH;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
+    UINT   rowCount = 0;
+    UINT64 rowSize = 0, totalBytes = 0;
+    dev->GetCopyableFootprints(&regionDesc, 0, 1, 0, &fp, &rowCount, &rowSize, &totalBytes);
+
+    D3D12_HEAP_PROPERTIES heap{ D3D12_HEAP_TYPE_READBACK };
+    D3D12_RESOURCE_DESC bd{};
+    bd.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bd.Width            = totalBytes;
+    bd.Height           = 1;
+    bd.DepthOrArraySize = 1;
+    bd.MipLevels        = 1;
+    bd.Format           = DXGI_FORMAT_UNKNOWN;
+    bd.SampleDesc.Count = 1;
+    bd.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    Microsoft::WRL::ComPtr<ID3D12Resource> readback;
+    if (FAILED(dev->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &bd,
+            D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&readback))))
+        return;
+
+    // バックバッファはこの時点で RENDER_TARGET（呼び出し側の契約）。COPY_SOURCE へ往復させる。
+    auto barrier = [&](D3D12_RESOURCE_STATES a, D3D12_RESOURCE_STATES b)
+    {
+        D3D12_RESOURCE_BARRIER br{};
+        br.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        br.Transition.pResource   = backBuffer;
+        br.Transition.StateBefore = a;
+        br.Transition.StateAfter  = b;
+        br.Transition.Subresource = 0;
+        cmd->ResourceBarrier(1, &br);
+    };
+    barrier(D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
+
+    D3D12_TEXTURE_COPY_LOCATION src{};
+    src.pResource        = backBuffer;
+    src.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    src.SubresourceIndex = 0;
+    D3D12_TEXTURE_COPY_LOCATION dst{};
+    dst.pResource       = readback.Get();
+    dst.Type            = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dst.PlacedFootprint = fp;
+    const D3D12_BOX box{ vpX, vpY, 0, vpX + vpW, vpY + vpH, 1 };
+    cmd->CopyTextureRegion(&dst, 0, 0, 0, &src, &box);
+
+    barrier(D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+    m_mcpFinalShot.readback = readback;
+    m_mcpFinalShot.w        = vpW;
+    m_mcpFinalShot.h        = vpH;
+    m_mcpFinalShot.rowPitch = fp.Footprint.RowPitch;
+    m_mcpFinalShot.bytes    = totalBytes;
+    m_mcpFinalShot.format   = static_cast<u32>(bbDesc.Format);
+    m_mcpFinalShot.captured = true;
+}
+
+void Application::FinishFinalScreenshot()
+{
+    if (!m_mcpFinalShot.captured) return;
+    m_mcpFinalShot.captured = false;
+    const bool wasDeterministic = m_mcpFinalShot.deterministic;
+    m_deterministicCapture = false;   // 撮り終わったら必ず通常の時間へ戻す
+
+    McpDeferred reply = m_mcpFinalShot.reply;
+    m_mcpFinalShot.reply = {};
+    auto readback = m_mcpFinalShot.readback;
+    m_mcpFinalShot.readback.Reset();
+    if (!readback || reply.client == 0) return;
+
+    // コピーは Present と同じコマンドリストに積んである。読む前に GPU の完了を待つ。
+    m_commandQueue->WaitIdle();
+
+    const u32 w = m_mcpFinalShot.w, h = m_mcpFinalShot.h, pitch = m_mcpFinalShot.rowPitch;
+    // バックバッファは既に表示色（トーンマップ + ガンマ済み）。並びだけ BGRA へ揃える。
+    const bool bgraSrc = (m_mcpFinalShot.format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+                          m_mcpFinalShot.format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB);
+
+    void* mapped = nullptr;
+    // ★read range は必ず GetCopyableFootprints の totalBytes。pitch*h を渡すと最終行の
+    //   パディング分だけリソースを超えて E_INVALIDARG になる（実際に踏んだ）。
+    D3D12_RANGE rr{ 0, static_cast<SIZE_T>(m_mcpFinalShot.bytes) };
+    if (FAILED(readback->Map(0, &rr, &mapped)))
+    {
+        FailMcp(m_mcpBridge.get(), reply, McpErr::Internal, "readback map failed");
+        return;
+    }
+    std::vector<u8> bgra(static_cast<size_t>(w) * h * 4);
+    const auto* base = static_cast<const uint8_t*>(mapped);
+    for (u32 y = 0; y < h; ++y)
+    {
+        const uint8_t* in  = base + static_cast<size_t>(pitch) * y;
+        uint8_t*       out = &bgra[static_cast<size_t>(w) * 4 * y];
+        for (u32 x = 0; x < w; ++x)
+        {
+            const uint8_t c0 = in[x * 4 + 0], c1 = in[x * 4 + 1], c2 = in[x * 4 + 2];
+            out[x * 4 + 0] = bgraSrc ? c0 : c2;   // B
+            out[x * 4 + 1] = c1;                  // G
+            out[x * 4 + 2] = bgraSrc ? c2 : c0;   // R
+            out[x * 4 + 3] = 255;
+        }
+    }
+    D3D12_RANGE wr{ 0, 0 };
+    readback->Unmap(0, &wr);
+
+    std::string err;
+    std::filesystem::path outPath;
+    try { outPath = McpScreenshotPath(m_mcpFinalShot.path, "mcp_screenshot_final.png"); }
+    catch (const std::exception& e)
+    {
+        FailMcp(m_mcpBridge.get(), reply, McpErr::InvalidParam, e.what());
+        return;
+    }
+    if (!WriteBgraPng(outPath.wstring(), bgra.data(), w, h, err))
+    {
+        FailMcp(m_mcpBridge.get(), reply, McpErr::Internal, err.empty() ? "png write failed" : err);
+        return;
+    }
+    const PostProcessSettings& pp = m_scene->GetPostSettings();
+    CompleteMcp(m_mcpBridge.get(), reply,
+        nlohmann::json{{"path", outPath.string()},
+                       {"width", w}, {"height", h},
+                       {"source", "backbuffer"},
+                       {"postApplied", pp.enabled},
+                       {"deterministic", wasDeterministic},
+                       {"taa", m_scene->GetTaaSettings().enabled},
+                       {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"},
+                       {"note", "ポスト適用後のバックバッファ。ImGui を描く前に撮るので"
+                                "エディタのパネル/ギズモは写らない。dx12_screenshot（ポスト前の "
+                                "m_sceneRT）とは別物なので、見た目の判断はこちらを使う"}});
 }
 
 Application::DiagRenderInfo Application::GetDiagRenderInfo() const
@@ -8898,6 +9210,39 @@ void Application::Run()
             m_window->Show();       // 最大化。直後の微小リサイズは描画継続中に処理される
             SplashScreen::Close();
         }
+
+        // ★決定論キャプチャ（#31）: 時間依存を固定したまま N フレーム回して履歴を収束させ、
+        //   0 になった時点で撮る。sceneRT はここで直接読めるが、バックバッファは Render() の
+        //   中でしかコピーできないので pending を立てて次フレームに撮らせる。
+        if (m_deterministicCapture && m_deterministicFramesLeft > 0 && --m_deterministicFramesLeft == 0)
+        {
+            if (m_mcpFinalShot.wantSceneRt)
+            {
+                std::string derr;
+                const std::string dpath = CaptureSceneScreenshot(derr, m_mcpFinalShot.path);
+                if (dpath.empty())
+                    FailMcp(m_mcpBridge.get(), m_mcpFinalShot.reply, McpErr::Internal,
+                            derr.empty() ? "screenshot failed" : derr);
+                else
+                    CompleteMcp(m_mcpBridge.get(), m_mcpFinalShot.reply,
+                        nlohmann::json{{"path", dpath},
+                                       {"width",  m_sceneRT ? m_sceneRT->GetWidth()  : 0u},
+                                       {"height", m_sceneRT ? m_sceneRT->GetHeight() : 0u},
+                                       {"source", "sceneRT(pre-post)"},
+                                       {"deterministic", true},
+                                       {"note", "決定論モード: time / TAA ジッタ / フォグ・SSGI の位相を固定し、"
+                                                "履歴を収束させてから撮った。ゲームのシミュレーションは止まらない"}});
+                m_mcpFinalShot = {};
+                m_deterministicCapture = false;
+            }
+            else
+            {
+                m_mcpFinalShot.pending = true;   // 次フレームの Render がバックバッファをコピーする
+            }
+        }
+
+        // screenshot_final: Render() 内でバックバッファをコピー済みなら PNG 化して遅延応答を返す。
+        FinishFinalScreenshot();
 
         // screenshot_game_view: このフレームの描画(ゲームカメラ視点)を撮って遅延応答 → 編集カメラ復元。
         if (gvShot)
@@ -9525,13 +9870,18 @@ void Application::Update()
         // アクティブカメラの Transform をグローバル Camera に同期。
         // 親階層込みのワールド変換で反映するので、親オブジェクトにアタッチした
         // カメラが親の移動・回転に追従する。
-        auto& reg = m_scene->GetRegistry();
-        auto camSyncView = reg.view<const CameraComponent>();
-        for (auto [e, cam] : camSyncView.each())
+        // ★MCP が dx12_set_editor_camera で視点を固定している間は同期しない（#20-6）。
+        //   Play 中の絵で look_compare / camera_path を回すための一時上書き。
+        if (!m_mcpCameraOverride)
         {
-            if (!cam.isActive) continue;
-            ApplyCameraTransformToGlobal(e);
-            break;
+            auto& reg = m_scene->GetRegistry();
+            auto camSyncView = reg.view<const CameraComponent>();
+            for (auto [e, cam] : camSyncView.each())
+            {
+                if (!cam.isActive) continue;
+                ApplyCameraTransformToGlobal(e);
+                break;
+            }
         }
     }
 
@@ -9627,8 +9977,9 @@ void Application::Update()
     }
 
     // パーティクル更新（配置エミッタのプレビューのため、エディタでも実 dt で前進）
+    // ★決定論キャプチャ中は前進させない（#31。粒子が動くと 2 枚が一致しない）。
     if (m_particleSystem)
-        m_particleSystem->Update(dt);
+        m_particleSystem->Update(m_deterministicCapture ? 0.0f : dt);
 
     // 物理更新（プレイモードのみ）
     if (m_engineMode == EngineMode::Playing && m_physicsSystem->IsInitialized())
@@ -11654,6 +12005,7 @@ void Application::LaunchNetTestClient()
 void Application::EnterPlayMode()
 {
     InvalidateTemporalHistory();   // Editor の絵を Play の履歴に持ち越さない
+    m_mcpCameraOverride = false;   // MCP の撮影用カメラ固定はモード遷移で必ず解除する
 
     // カメラ設置チェック
     {
@@ -11900,6 +12252,7 @@ void Application::EnterEditorMode()
               "EnterEditorMode requires a prior EnterPlayMode snapshot");
 
     InvalidateTemporalHistory();   // Play の絵を Editor の履歴に持ち越さない
+    m_mcpCameraOverride = false;   // MCP の撮影用カメラ固定はモード遷移で必ず解除する
 
     m_commandQueue->WaitIdle();
 
@@ -15147,6 +15500,19 @@ void Application::Render()
     u32 frameIndex = m_swapChain->GetCurrentBackBufferIndex();
     f32 totalTime = m_gameClock.GetTotalTime();
 
+    // ★決定論キャプチャ（#31）: 時間依存の要素を全部固定する。
+    //   totalTime は deband ディザ / フィルムグレイン / ウェーブ / グリッチ / パーティクル /
+    //   カスタムシェーダの time が全部見ているので、ここ 1 箇所で止まる。
+    //   TAA / フォグ / SSGI は位相カウンタを毎フレーム 0 へ戻して「常に同じジッタ」にする
+    //   （＝時間蓄積は不動点へ収束する。数フレーム回してから撮ればビット再現する）。
+    if (m_deterministicCapture)
+    {
+        totalTime = kDeterministicTime;
+        if (m_taaPass)           m_taaPass->ResetJitter();
+        if (m_volumetricFogPass) m_volumetricFogPass->ResetTemporalPhase();
+        if (m_screenSpaceGi)     m_screenSpaceGi->ResetTemporalPhase();
+    }
+
     // ===== フット IK（接地補正）=====
     // 物理ステップが終わった後・スキニングバッファのアップロード前に走らせる
     // （IK 後のボーン行列がアップロードされるように）。
@@ -16563,8 +16929,10 @@ void Application::Render()
                     proj._33, proj._43, 1.0f / rtw, 1.0f / rth);
             else
                 m_gpuParticles->DisableSceneDepth();
-            m_gpuParticles->SimulateAndRender(nativeCmdList, m_gameClock.GetDeltaTime(), totalTime,
-                                              camVPJ, camRight, camUp);
+            // 決定論キャプチャ中は dt=0（#31。GPU 粒子が前進すると 2 枚が一致しない）。
+            m_gpuParticles->SimulateAndRender(nativeCmdList,
+                                              m_deterministicCapture ? 0.0f : m_gameClock.GetDeltaTime(),
+                                              totalTime, camVPJ, camRight, camUp);
         }
 
         // ---- 歪みパーティクル（熱ゆらぎ/衝撃波）: 歪みバッファ(RG16F)へ ----
@@ -17180,6 +17548,10 @@ void Application::Render()
         m_commandList->SetRenderTarget(rtv, m_dsvHandle);
         m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
     }
+
+    // ---- MCP screenshot_final: ImGui を描く前のバックバッファ（＝ポスト適用後の絵だけ）を撮る ----
+    //   ここより後は ImGui のパネル / ギズモ / オーバーレイが乗るので、必ずこの位置で撮ること（§6 B5）。
+    CaptureFinalBackBufferRegion(nativeCmdList, backBuffer, vpLeft, vpTop, vpW, vpH);
 
     // ---- ImGui フレーム ----
     m_imguiManager->BeginFrame();

@@ -130,7 +130,8 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 
 | ツール | params | 返り値 |
 |--------|--------|--------|
-| `dx12_ping` | `{}` | `{pong, mode, entityCount, sceneGeneration, currentScene, protocolVersion}` |
+| `dx12_ping` | `{}` | `{pong, mode, entityCount, sceneGeneration, currentScene, assetsDir, scriptsDir, baseDir, projectShaderDir, cwd, protocolVersion:4}` ※**`assetsDir` はエンジンが返す正**（`protocolVersion 4` から）。ログの絶対パスから推定する必要はもう無い |
+| `dx12_describe_mcp_params` | `{method?:string}` | `{methods:{<method名>:[{key,type}]}, count, globalKeys:["idempotency_key"], note}` ※**エンジンのディスパッチ表そのもの**。`type` は `bool`/`int`/`number`/`string`/`vec3`/`object`/`any`。`"親.子"` は入れ子オブジェクトのキー（例 `skybox.envMapPath`）。TS スキーマとのドリフト検出はこれを正にすること |
 | `dx12_list_entities` | `{verbose?:bool, name_prefix?:string, component_type?:string}` | `{entities:[{entityId,id,name,componentTypes?}], count, sceneGeneration}` |
 | `dx12_get_entity` | `{entity:int}` | `{entityId, componentTypes:[...], sceneGeneration, ...(全コンポーネント値)...}` |
 | `dx12_find_entity` | `{name:string}` | `{entityId, name}` または `null` |
@@ -158,14 +159,15 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_get_anim_state` | `{entity:int}` | `{hasSkeletalAnimation, clips:[クリップ名...], boneCount, currentClip, clipTime, speed, looping, blending, hasController, graphPath, graphLoaded, layers:[{name,weight,state,normalizedTime,transitioning,transitionTo,transitionProgress,masked}], parameters:{名前:値}, footIK:{enabled,weight,resolved,bones,boneNames,leftContact,rightContact,leftLift,rightLift,pelvisOffset,leftNormal,rightNormal}}` ※`dx12_play_anim` の clipName 選びと、接地の破綻をスクショ無しで検知するのに使う |
 | `dx12_describe_anim_graph` | `{entity:int}` または `{path:string}` | `{source, graph:{version,parameters,clipEvents,extraClips,layers:[{name,weight,blend,mask,defaultState,states,transitions}]}}` ※`.animfsm` の構造を返す。ステート名/パラメータ名の確認に。**TS 側未定義**（B12 と同様） |
 | `dx12_net_status` | `{}` | `{available, role:"Offline"\|"Host"\|"Client", isConnected, localClientId, tick, syncedEntityCount, players:[{id,rttMs,bytesSent,bytesReceived}], config:{tickRate,snapshotRate,maxPlayers,defaultPort}, testRole, testJoinAddress}` |
-| `dx12_screenshot` | `{}` | PNG 画像ブロック + text(`{path(絶対パス), width, height}`) |
+| `dx12_screenshot` | `{path?:string, deterministic?:bool=false, settleFrames?:int=8(1..240)}` | PNG 画像ブロック + text(`{path(絶対パス), width, height, source:"sceneRT(pre-post)", note}`) ※**ポストプロセス前の `m_sceneRT`**。グレーディング / ブルーム / ゴッドレイ / ビネット / LUT / FXAA / デバンド / **TAA の解決結果が一切写らない**。見た目を判断するなら `dx12_screenshot_final` を使うこと |
+| `dx12_screenshot_final` | `{path?:string, deterministic?:bool=false, settleFrames?:int=8(1..240)}` | **遅延同期**。`{path, width, height, source:"backbuffer", postApplied, deterministic, taa, mode, note}` ※**バックバッファ（＝ポスト適用後の最終画）のビューポート矩形**。ImGui を描く前にコピーするので**エディタのパネル / ギズモは写らない**＝ゲームと同じ絵。サイズはウィンドウ全体ではなく**シーンビューの矩形** |
 | `dx12_ui_screenshot` | `{}` | PNG 画像ブロック ※エディタウィンドウ全体(ImGuiパネル込み)。ゲーム内UI/UIエディタの見た目確認用(scene RT には UI が写らない) |
 | `dx12_render_debug` | `{mode:string, frames?:int=3(1..120), gain?:number=1, depthRange?:number=100, exposure?:number=1}` | `{path(絶対パス), mode, width, height, toneMapped:bool, warnings:[string], mode_engine:"Editor"\|"Playing"}` ※**中間バッファの可視化**（「なぜ変に見えるか」の切り分け用）。`frames` フレーム描いてからスクショを撮り、**必ず元の設定へ戻す**。必要な機能（TAA/SSAO/コンタクトシャドウ/SSR/SSGI）は一時的に自動で ON にし、その旨を `warnings` に返す。返り値の `path` を画像として読むこと |
 | `dx12_ui_tree` | `{}` | `{canvases:[{entityId, name, uiCanvas:{refWidth,refHeight,...}, children:[{entityId, name, components, uiRect, resolvedRect:[x,y,w,h](キャンバス空間px), text?, children}]}]}` ※UIレイアウトの数値確認 |
 | `dx12_ui_design_brief` | `{genre:"cinematic"\|"tactical"\|"fantasy"\|"horror"\|"arcade"\|"cozy", screen:"title"\|"hud"\|"inventory"\|"settings"\|"result"\|"dialog"\|"other", tone?}` | 画面固有の構図・階層・制約・アンチパターン。UI生成前に呼ぶ |
 | `dx12_ui_audit` | `{strictness?:"balanced"\|"strict"}` | 現在のUIを数値監査。`{pass,score,grade,summary,issues[]}`。崩れ/重なり/可読性/入力遮断/過装飾を検出 |
 | `dx12_ui_compose` | `{blueprint:{theme,prefix,root}}` | dock/stack/grid と意味的roleからUI一式を制約付き生成。失敗時ロールバック。生成後はaudit→screenshot必須 |
-| `dx12_get_editor_camera` | `{}` | `{position, forward, yawDeg, pitchDeg, fovYDeg, orthographic, mode}` ※シーンビューを描いてるカメラの状態 |
+| `dx12_get_editor_camera` | `{targetDistance?:number=10}` | `{position, forward, target, targetDistance, yawDeg, pitchDeg, fovYDeg, aspect, nearZ, farZ, orthographic, overridden, mode}` ※シーンビューを描いてるカメラの状態。**`target` は `position + forward * targetDistance`**。そのまま `dx12_set_editor_camera {position, target}` へ渡すと同じ yaw/pitch に戻る＝読み返し検証ができる |
 | `dx12_get_bounds` | `{entity:int, includeChildren?:bool}` | `{min, max, center, size, hasMesh}` ※ワールド空間 AABB(回転/親子変換込み)。配置座標の計算に |
 | `dx12_get_hierarchy` | `{}` | `{roots:[{entityId, name, children:[...]}], count, sceneGeneration}` ※シーンの親子ツリー |
 | `dx12_asset_info` | `{path}` | モデル: `{meshCount, totalVertices, totalFaces, materialCount, boneCount, hasSkeleton, animations:[{name,durationSec}], aabbMin/Max(メッシュローカル近似)}`、テクスチャ: `{width, height, mipLevels, format, isCubemap}`、他: `{type, fileSizeBytes}` |
@@ -253,7 +255,7 @@ OFF のときは TAA を一時的に ON にして撮る（`warnings` に出る�
 | `dx12_set_anim_param` | `{entity?:int / name?:string(エンティティ名), param:string(FSM パラメータ名), value?:number\|bool, trigger?:bool}` | `{entityId, param, name(=param。後方互換), value}` ※アニメ FSM のパラメータを外から叩いて遷移を検証する。**★パラメータ名は `param`**。`name` は他ツールと同じく「エンティティ名」。`param` を省略したときだけ `name` をパラメータ名として読む後方互換がある（`{entity, name:"Speed"}` も通る）が、**新しいコードは必ず `param` を使うこと** |
 | `dx12_net_setup` | `{role:"host"\|"client"\|"offline", address?:string, port?:int}` | `{testRole, address, port}` ※次の `dx12_play` で自動 Host/Join(ツールバーの Play ロールと同じ) |
 | `dx12_net_launch_test_client` | `{}` | `{requested}` ※ホスト Playing 中のみ。同エンジンをもう1プロセス起動し 127.0.0.1 へ自動接続(フレーム境界) |
-| `dx12_set_editor_camera` | `{position?:[x,y,z], target?:[x,y,z], yawDeg?:f, pitchDeg?:f}` | `{position, forward, yawDeg, pitchDeg}` ※エディタのフライカメラを任意視点へ。target 指定で yaw/pitch 自動逆算。**Editor 限定**(Playing 中は MODE_CONFLICT) |
+| `dx12_set_editor_camera` | `{position?:[x,y,z], target?:[x,y,z], yawDeg?:f, pitchDeg?:f, release?:bool}` | `{position, forward, yawDeg, pitchDeg, overridden, mode, note}` ※シーンビューのカメラを任意視点へ。target 指定で yaw/pitch 自動逆算。**Play 中も使える**: Playing 中に呼ぶとアクティブ `CameraComponent` の毎フレーム同期を止めて視点を固定する（`overridden:true`）。`{"release":true}` でゲームカメラへ返す。**Play/Stop の遷移でも自動解除**。Play 中の絵で `look_compare` / `camera_path` を回すための機能 |
 | `dx12_look_at` | `{entity:int, target?:[x,y,z], targetEntity?:int, targetName?:string, upright?:bool}` | `{entityId, rotation, target}` ※+Z 正面の想定で rotation(Euler) を書く。upright=true でピッチ0。親が回転してると厳密でない |
 | `dx12_snap_to_ground` | `{entity:int, offset?:f, precise?:bool=true}` | `{groundY, movedBy, method:"raycast"\|"aabb", position, groundEntityId?}` ※**三角形精密レイキャストで真下の実際の面へ接地**(地形の起伏・斜面・彫った岩に乗る)。真下に三角形が無ければ従来の AABB 天面判定へフォールバック(`method:"aabb"`)。床なしは y=0。Editor 中でも動く |
 | `dx12_import_asset` | `{sourcePath:string(絶対パス可), destPath:string(assets相対), overwrite?:bool}` | `{imported:[相対パス...], count}` ※外部ファイル/フォルダを assets へコピー。.gltf はフォルダごと |
@@ -387,13 +389,19 @@ dx12_set_component({entity: 42, component: "pointLight", data: {color:[1,0.8,0.6
 
 ## 6. idempotency_key
 
-`create_entity` と `spawn_model` は `idempotency_key` を受け付ける。
-同じキーで2回送った場合、2回目は処理をスキップして1回目の `entityId` を返す。
-AI がリトライしたときに重複エンティティを防ぐ用途。
+`create_entity` / `spawn_model` / `spawn_prefab` は `idempotency_key` を受け付ける。
+同じキーで2回送った場合、2回目は処理をスキップして1回目の `entityId` を
+`{"idempotentReplay": true}` 付きで返す。AI がリトライしたときに重複エンティティを防ぐ用途。
 
 ```json
 {"method":"create_entity", "params":{"type":"box","idempotency_key":"floor-001"}}
 ```
+
+- `spawn_prefab` は**リプレイ時も `rootEntityId` / `entityIds`（サブツリー全部）を返す**。
+- キーはシーンをまたがない（`open_scene` / `new_scene` で表ごと捨てる）。
+- 記録された entity が削除済みなら「無かったこと」にして普通に生成する。
+- ⚠️ **`spawn_prefab` は 2026-07-26 まで記録だけしてリプレイ判定を持っておらず、
+  再送で毎回サブツリーが増えていた**（#20-4 の実バグ。修正済み）。
 
 ---
 
@@ -460,6 +468,36 @@ dx12_play → (ゲームロジック動作) → dx12_stop
 → dx12_get_log でランタイムエラー確認
 ```
 
+### 9-1. どのスクショを使うか（絵を判断するときの必読）
+
+| ツール | 撮る先 | 写るもの | 用途 |
+|---|---|---|---|
+| `dx12_screenshot` | `m_sceneRT`（**ポスト前**） | シーン本体だけ | 幾何 / ライティングの素の値を見たいとき |
+| `dx12_screenshot_final` | **バックバッファ**（ポスト後・ImGui 前） | グレーディング / ブルーム / ゴッドレイ / ビネット / LUT / FXAA / デバンド / **TAA 解決結果** | **見た目の判断は必ずこちら** |
+| `dx12_ui_screenshot` | ウィンドウ全体（`PrintWindow`） | 上に加えて ImGui のパネル / ギズモ | エディタ UI・ゲーム内 UI の確認 |
+
+### 9-2. `deterministic` — ピクセル差分で A/B を取るとき（#31）
+
+**同じ設定で 2 回撮っても絵は一致しない。** 実測した原因は 3 つ:
+
+| 原因 | 効く先 | 実測（1920x1032・同一設定 2 枚） |
+|---|---|---|
+| ポストの **deband ディザ / フィルムグレイン**（`time` 依存の TPDF ノイズ） | `screenshot_final` のみ | 画面の **66%** のピクセルが ±1〜2 LSB |
+| **TAA のジッタ**（毎フレーム位相が回るのでラスタ結果そのものが動く） | 両方 | `screenshot` で **9.4%** / max 140 |
+| **SSGI・ボリュメトリックフォグの時間ジッタ + 履歴蓄積** | 両方 | SSGI 1.5% / フォグ 5.9% |
+
+`{"deterministic": true}` を付けると:
+1. `time` を固定（deband / grain / wave / glitch / パーティクル / カスタムシェーダの time が全部止まる）
+2. TAA・フォグ・SSGI の**時間ジッタ位相を毎フレーム 0 に固定**
+3. パーティクルの前進を止める（dt=0）
+4. **時間蓄積の履歴を捨ててから** `settleFrames`（既定 8）フレーム回し、そこで撮る
+
+→ 実測: 上の全構成（TAA / SSGI / フォグを個別 ON・全部 ON）で **2 枚が完全一致（diff 0.00%）**。
+
+> ⚠️ 止まるのは**レンダラの時間依存だけ**。Play 中のゲームシミュレーション（移動 / 物理 /
+> アニメーション）は止まらないので、厳密に比べたいときは `dx12_stop` してから撮ること。
+> `settleFrames` を増やすと TAA / SSGI の収束が進む（決定性は 8 でも得られる）。
+
 ---
 
 ## 10. セキュリティモデル
@@ -512,6 +550,37 @@ dx12_play → (ゲームロジック動作) → dx12_stop
   "error_hint":<string 任意>, "error_values":<string[] 任意>}\n`
 
 遅延同期 method は受信時は何も返さず、フレーム境界で実処理後に同じ id でレスポンスを送る。
+
+### 12-1. エンジン側に method を足す（実装者向け）
+
+`Application::HandleMcpCommand` は **`std::unordered_map<std::string, McpMethodEntry>` の表引き**。
+以前は `else if (method == "...")` の 118 本連鎖で、MSVC の
+**「ブロックの入れ子のレベルが深すぎます (C1061)」上限に張り付いていた**（1 本足すとコンパイルが落ちた）。
+表引きなので **method を何本足しても入れ子は 1 段も深くならない**。
+
+足し方は 3 つだけ:
+
+1. `src/core/Application.cpp` の `Register***McpMethods()` のどれか（テーマで選ぶ。順序に意味は無い）へ
+   ```cpp
+   McpDefine("名前", "キー:型,キー:型", DX12E_MCP_HANDLER
+       {
+           // params / resp / method / deferred / isDeferred / busyPlaying がそのまま使える
+           resp["ok"] = true;
+           resp["result"] = { ... };
+       });
+   ```
+   `"a|b"` と書くと 1 本のハンドラで 2 つの method を受ける（本文で `method ==` を見て分ける）。
+2. 第 2 引数のキー表は **`dx12_describe_mcp_params` がそのまま返す**。型は
+   `bool` / `int` / `number` / `string` / `vec3` / `object` / `any`、入れ子は `"親.子"`。
+   **本文で読むキーと必ず一致させること。**
+   ポスト / SSAO だけは `DX12E_POST_FIELDS` / `DX12E_SSAO_FIELDS`（X マクロ）から自動生成している。
+3. `tools/mcp-server/index.ts` の zod スキーマとこのドキュメントにも同じキーを足す
+   （**足し忘れると zod が黙って引数を捨てる**。`schemaDrift.test.ts` が見張っている）。
+
+- 例外は `throw McpError(McpErr::…, msg, hint, validValues)`。呼び出し側の try/catch が拾う。
+- 遅延応答は `deferred` を保存して `isDeferred = true`。
+- ハンドラの中で `return;` してよい（旧 else-if 連鎖では `HandleMcpCommand` ごと抜けてしまい
+  `RecordCommand` を飛ばしていたので使えなかった）。
 
 ---
 
