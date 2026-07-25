@@ -279,6 +279,64 @@ float3 UnpackTangentNormal(float2 nxy01, float strength)
 }
 
 // ---------------------------------------------------------------------------
+//  パララックスオクルージョンマッピング（POM・既定 OFF）
+//
+//  視線を面へ投影し、高さを N スライスに割って進みながらハイトマップを引く。
+//  レイの深さがハイト値を下回った時点で交差 → 直前 2 ステップ間を線形補間して交点を出す
+//  （Steep Parallax にこの補間を足したものが POM）。
+//    出典: https://gamedev.net/tutorials/programming/graphics/a-closer-look-at-parallax-occlusion-mapping-r3262
+//
+//  ★4 層ぶんの合成高さを毎ステップ作るとステップあたり 4 タップになるので、
+//    「スプラットの重みが最大のレイヤー 1 枚」の高さだけでレイマーチする（1 タップ/ステップ）。
+//  ★SV_Depth は書かない。書くと深度プリパスの平らな深度と食い違って LEQUAL で全部落ちる。
+//    したがってシルエットは平ら＝仕様として受け入れる。
+//  ★セルフシャドウは入れない（コストがほぼ倍で、屋外の地形では寄与が小さい）。
+// ---------------------------------------------------------------------------
+float SampleLayerHeight(uint dom, float2 uv, float2 dx, float2 dy)
+{
+    return g_layerAlbedo.SampleGrad(g_sampler, float3(uv, (float)dom), dx, dy).a;
+}
+
+// 戻り値は「支配レイヤーの UV 空間でのオフセット」。呼び出し側でタイリングを割ってメートルへ戻す。
+float2 ParallaxOcclusionOffset(uint dom, float2 uv, float2 dx, float2 dy,
+                               float3 viewTS, float heightScaleUv, int steps)
+{
+    const float layerDepth = 1.0 / max((float)steps, 1.0);
+    // 視線が寝るほど大きくずらす。z のクランプで斜め見のときの発散を抑える。
+    const float2 deltaUV = (viewTS.xy / max(viewTS.z, 0.25)) * heightScaleUv * layerDepth;
+
+    float2 curUV        = uv;
+    float  curLayer     = 0.0;
+    float  curDepthMap  = 1.0 - SampleLayerHeight(dom, curUV, dx, dy);
+
+    [loop]
+    for (int i = 0; i < steps; ++i)
+    {
+        if (curLayer >= curDepthMap) break;
+        curUV      -= deltaUV;
+        curLayer   += layerDepth;
+        curDepthMap = 1.0 - SampleLayerHeight(dom, curUV, dx, dy);
+    }
+
+    // 直前 2 ステップの線形補間で交点を出す（ここが「POM」の定義）
+    const float2 prevUV = curUV + deltaUV;
+    const float  after  = curDepthMap - curLayer;
+    const float  before = (1.0 - SampleLayerHeight(dom, prevUV, dx, dy)) - (curLayer - layerDepth);
+    const float  wgt    = after / max(after - before, 1e-5);
+    return lerp(curUV, prevUV, saturate(wgt)) - uv;
+}
+
+uint ArgMax4(float4 v)
+{
+    uint  i = 0;
+    float m = v.x;
+    if (v.y > m) { m = v.y; i = 1; }
+    if (v.z > m) { m = v.z; i = 2; }
+    if (v.w > m) {          i = 3; }
+    return i;
+}
+
+// ---------------------------------------------------------------------------
 //  マクロバリエーション（タップ 0 の算術 value noise）
 //  t0/t1/t2 が埋まっていてノイズテクスチャ用のディスクリプタが無いので算術で作る。
 //  50〜200m スケールの低周波を 1 枚アルベドに掛けるだけで、広い面の「同じ色がずっと続く」
@@ -348,12 +406,43 @@ float4 PSMain(PSInput input) : SV_TARGET
                              gN.y < 0.0 ? -1.0 : 1.0,
                              gN.z < 0.0 ? -1.0 : 1.0);
 
-    // ★高さブレンドは CompositeLayers の中（4 レイヤーぶんの合成もそこ）
-    Surface S = CompositeLayers(input.worldPos.xz * float2(axisSign.y, 1.0),
-                                dWdx.xz * float2(axisSign.y, 1.0),
-                                dWdy.xz * float2(axisSign.y, 1.0), w, 1.0);
-
     const float dist = length(cameraPos - input.worldPos);
+
+    // ===== POM（既定 OFF）=====
+    // Y 投影の UV（ワールド XZ、メートル）をずらす量を先に決めてから全レイヤーへ適用する。
+    // ★トライプラナー分岐に入るピクセルでは切る（3 投影ぶん回すと 3 倍になるため）。
+    float2 uvY = input.worldPos.xz * float2(axisSign.y, 1.0);
+    float2 dxY = dWdx.xz * float2(axisSign.y, 1.0);
+    float2 dyY = dWdy.xz * float2(axisSign.y, 1.0);
+    {
+        // 距離フェード: pomFadeEnd を跨いでスケールが 0 に落ちるのでポップしない
+        const float fade  = 1.0 - saturate((dist - pomFadeStart)
+                                         / max(pomFadeEnd - pomFadeStart, 1e-3));
+        const float scale = pomHeightScale * fade;
+        const bool  flat  = !(terrainFlags & TF_TRIPLANAR) || tb.y >= 0.98;
+
+        [branch]
+        if ((terrainFlags & TF_POM) && scale > 1e-4 && flat)
+        {
+            const uint  dom = ArgMax4(w);
+            const float t   = layerTiling[dom];
+            // 接空間の視線（Y 投影の基底は T=+X / B=+Z / N=+Y。axisSign で U のミラーも合わせる）
+            const float3 V0 = normalize(cameraPos - input.worldPos);
+            const float3 viewTS = normalize(float3(V0.x * axisSign.y, V0.z, max(V0.y, 1e-3)));
+            const float  ndv    = saturate(viewTS.z);
+            const int    steps  = (int)max(lerp(2.0, (float)TF_POMSTEPS(terrainFlags),
+                                                (1.0 - ndv) * fade), 2.0);
+
+            const float2 off = ParallaxOcclusionOffset(dom, uvY * t, dxY * t, dyY * t,
+                                                       viewTS, scale * t, steps);
+            const float2 offM = off / max(t, 1e-4);   // レイヤー UV → メートルへ戻す
+            uvY += offM;
+            // ★導関数はずらさない（ずらすとミップが暴れる。ずれ量は連続なので問題ない）
+        }
+    }
+
+    // ★高さブレンドは CompositeLayers の中（4 レイヤーぶんの合成もそこ）
+    Surface S = CompositeLayers(uvY, dxY, dyY, w, 1.0);
 
     // ===== 距離タイリング =====
     // 同じテクスチャを「遠距離用の粗いタイリング」でもう一度引いて距離で lerp する。
@@ -366,9 +455,7 @@ float4 PSMain(PSInput input) : SV_TARGET
         if ((terrainFlags & TF_DISTTILE) && distBlend > 0.001)
         {
             float far = 1.0 / max(terrainParams.z, 1.0);
-            Surface F = CompositeLayers(input.worldPos.xz * float2(axisSign.y, 1.0),
-                                        dWdx.xz * float2(axisSign.y, 1.0),
-                                        dWdy.xz * float2(axisSign.y, 1.0), w, far);
+            Surface F = CompositeLayers(uvY, dxY, dyY, w, far);
             S.albedo    = lerp(S.albedo,    F.albedo,    distBlend);
             S.nxy01     = lerp(S.nxy01,     F.nxy01,     distBlend);
             S.roughness = lerp(S.roughness, F.roughness, distBlend);
