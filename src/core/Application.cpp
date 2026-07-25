@@ -165,6 +165,13 @@ static std::string ToAssetRel(const std::string& full)
 
 Application::Application() = default;
 
+// ★この関数は必ず Application.cpp（= Application 本体と同じ TU）で定義すること。
+// インライン化されるとチェックの意味が消える。詳細は main.cpp のビルド健全性チェック。
+size_t Application::CompiledLayoutSize()
+{
+    return sizeof(Application);
+}
+
 Application::~Application()
 {
     if (m_isRunning)

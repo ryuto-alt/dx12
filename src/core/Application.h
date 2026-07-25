@@ -104,6 +104,11 @@ public:
     Application(const Application&) = delete;
     Application& operator=(const Application&) = delete;
 
+    // Application.cpp 側でコンパイルされた sizeof(Application) を返す（必ず .cpp で定義する）。
+    // 呼び出し側の TU が持つ sizeof と突き合わせて「.obj の再コンパイル漏れ」を検出するための穴。
+    // 詳しくは main.cpp のビルド健全性チェックを参照。
+    static size_t CompiledLayoutSize();
+
     void Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode = false,
                     const ProjectInfo* projectInfo = nullptr, bool buildMode = false);
     void Run();
