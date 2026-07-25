@@ -3053,7 +3053,8 @@ nlohmann::json McpLuaApi()
         "stopUiTweens(e)  (進行中tween全打ち切り+視覚値リセット。連打対策)",
         "showUi(e)", "hideUi(e)",
         "sun() -> Light|nil  (最初の DirectionalLight。時間帯演出はこれを駆動する)",
-        "lightCount() -> { point=, spot=, directional=, maxPoint=8, maxSpot=8 }  (CB 上限に引っかかってないか確認用)",
+        "lightCount() -> { point=, spot=, directional=, total=, maxTotal=1024, maxPerCluster=128 }"
+        "  (クラスタードライティング。点/スポットの個別上限は無く合計 1024 灯。1クラスタ 128 灯超は無言で切り捨て)",
         "getAmbient() / setAmbient(v)  (環境光=影の明るさ。実体は DirectionalLight.ambient、書きは全太陽へ)",
         "getShadowsEnabled() / setShadowsEnabled(b)  (リアルタイム影(CSM)の ON/OFF。false で影パスごとスキップ)",
         "getSkybox() -> { envMapPath=, iblIntensity=, skyboxIntensity=, drawSkybox= }",
@@ -6350,8 +6351,10 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                     j["intensity"]   = pl.intensity;
                     j["range"]       = pl.range;
                     j["castShadows"] = pl.castShadows;
-                    j["overBudget"]  = (r.slot >= kLightBudgetPoint);
-                    j["effective"]   = (r.slot < kLightBudgetPoint) && pl.intensity > 0.0f && pl.range > 0.0f;
+                    // クラスタード化で個別上限は撤廃。overBudget は point+spot 合計の枠で判定する。
+                    // Application は「点光源を先、スポットを後」の順で 1 本の配列へ積む。
+                    j["overBudget"]  = (r.slot >= kLightBudgetTotal);
+                    j["effective"]   = (r.slot < kLightBudgetTotal) && pl.intensity > 0.0f && pl.range > 0.0f;
                 }
                 else
                 {
@@ -6364,8 +6367,10 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                     j["innerConeDeg"] = sl.innerConeDeg;
                     j["outerConeDeg"] = sl.outerConeDeg;
                     j["castShadows"]  = sl.castShadows;
-                    j["overBudget"]   = (r.slot >= kLightBudgetSpot);
-                    j["effective"]    = (r.slot < kLightBudgetSpot) && sl.intensity > 0.0f && sl.range > 0.0f;
+                    // スポットは点光源の後ろに積まれるので通し番号は pointN + slot
+                    j["overBudget"]   = (pointN + r.slot >= kLightBudgetTotal);
+                    j["effective"]    = (pointN + r.slot < kLightBudgetTotal)
+                                      && sl.intensity > 0.0f && sl.range > 0.0f;
                     if (sl.innerConeDeg > sl.outerConeDeg)
                         j["warning"] = "innerConeDeg > outerConeDeg（内外が逆。減衰しない）";
                 }
@@ -6373,13 +6378,17 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
 
             json warnings = json::array();
-            if (pointN > kLightBudgetPoint)
-                warnings.push_back("ポイントライトが上限超過 (" + std::to_string(pointN) + "/"
-                    + std::to_string(kLightBudgetPoint) + ")。超えた分は【無言で描画されない】"
-                    "。灯を減らすか range を広げてまとめてくれ（パーティクルの発光ライトも枠を使う）");
-            if (spotN > kLightBudgetSpot)
-                warnings.push_back("スポットライトが上限超過 (" + std::to_string(spotN) + "/"
-                    + std::to_string(kLightBudgetSpot) + ")。超えた分は無言で描画されない");
+            // クラスタードライティング（Forward+）化で「点 8 / スポット 8」の個別上限は撤廃。
+            // 今の上限は point + spot の合計 1024 灯。
+            if (pointN + spotN > kLightBudgetTotal)
+                warnings.push_back("ライトの合計が上限超過 (" + std::to_string(pointN + spotN) + "/"
+                    + std::to_string(kLightBudgetTotal) + ")。超えた分は【無言で描画されない】"
+                    "（パーティクルの発光ライトも枠を使う）");
+            if (pointN + spotN > kLightBudgetPerCluster)
+                warnings.push_back("ライトが " + std::to_string(pointN + spotN) + " 灯ある。1 クラスタ("
+                    + std::to_string(kLightBudgetPerCluster) + "灯) を超えて重なった所は無言で切り捨てられる。"
+                    "密集していないかは【ツール > ライティング > クラスタデバッグ表示】の"
+                    "ライト複雑度ヒートマップ(白＝上限に張り付き)で確認すること");
             if (dirN > 1)
                 warnings.push_back("平行光が " + std::to_string(dirN) + " 灯ある。太陽として効くのは先頭の 1 灯だけ");
             if (dirN == 0)
@@ -6396,14 +6405,19 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"lights", arr}, {"count", arr.size()}, {"total", total},
                 {"cursor", cursor}, {"nextCursor", i}, {"has_more", i < total},
                 {"budget", {
-                    {"point",       {{"used", pointN},       {"max", kLightBudgetPoint}}},
-                    {"spot",        {{"used", spotN},        {"max", kLightBudgetSpot}}},
+                    // クラスタードライティング(Forward+)。point/spot に個別上限は無く、合計 1024 灯。
+                    {"total",       {{"used", pointN + spotN}, {"max", kLightBudgetTotal}}},
+                    {"perCluster",  {{"max", kLightBudgetPerCluster}}},
+                    {"point",       {{"used", pointN},       {"max", kLightBudgetTotal}}},
+                    {"spot",        {{"used", spotN},        {"max", kLightBudgetTotal}}},
                     {"directional", {{"used", dirN},         {"max", 1}}},
                     {"shadowSpot",  {{"used", shadowSpotN},  {"max", kLightBudgetShadowSpot}}},
                     {"shadowPoint", {{"used", shadowPointN}, {"max", kLightBudgetShadowPoint}}},
                 }},
                 {"warnings", warnings},
                 {"note", "Transform を持つライトだけを数える(GPU へ送られる条件と同じ)。"
+                         "灯数はクラスタードライティングで合計 1024 灯まで(点/スポットの個別上限は無い)。"
+                         "ただし影が落ちるのは spot 4 / point 2 のまま。"
                          "太陽の調整は dx12_set_sun、まとめて雰囲気を変えるなら dx12_apply_lighting_preset。"}};
         }
         else if (method == "set_sun")

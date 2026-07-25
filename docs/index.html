@@ -790,7 +790,7 @@ properties = {
               <tr><td><code>scene:queryByTag(tag)</code></td><td>タグ一致エンティティの<b>名前配列</b>（RTSの群選択など）</td></tr>
               <tr><td><code>scene:queryInBox(minX,minZ,maxX,maxZ[,tag])</code></td><td>XZ矩形内の名前配列（矩形選択）</td></tr>
               <tr><td><code>scene:sun()</code></td><td>最初の <code>DirectionalLight</code>（＝太陽）を <code>Light</code> で返す。時間帯演出はこれを駆動する</td></tr>
-              <tr><td><code>scene:lightCount()</code></td><td><code>{point=, spot=, directional=, maxPoint=8, maxSpot=8}</code>。<b>9個目以降は黙って無視される</b>ので確認用</td></tr>
+              <tr><td><code>scene:lightCount()</code></td><td><code>{point=, spot=, directional=, total=, maxTotal=1024, maxPerCluster=128}</code>。クラスタードライティング(Forward+)で点/スポットの個別上限は撤廃済み。<b>合計 1024 灯・1クラスタ 128 灯</b>を超えた分は黙って消える。影は spot 4 / point 2 のまま</td></tr>
               <tr><td><code>scene:setAmbient(v)</code> / <code>getAmbient()</code></td><td>環境光＝影部分の明るさ（実体は <code>DirectionalLight.ambient</code>）</td></tr>
               <tr><td><code>scene:setShadowsEnabled(b)</code> / <code>getShadowsEnabled()</code></td><td>リアルタイム影（CSM）の ON/OFF。false で影パスごとスキップ</td></tr>
               <tr><td><code>scene:setSkybox{...}</code> / <code>getSkybox()</code></td><td>IBL / スカイボックス強度・描画（<code>iblIntensity</code> / <code>skyboxIntensity</code> / <code>drawSkybox</code>）</td></tr>

@@ -35,11 +35,12 @@ namespace lm = lightmath;
 namespace
 {
 
-// shaders/forward/Lighting.hlsli の MAX_POINT_LIGHTS / MAX_SPOT_LIGHTS。
-// Application::UpdateFrameConstants がこの数で打ち切る（超えた分は無言で描画されない）。
+// クラスタードライティング（Forward+）の灯数バジェット。
+// 「点 8 / スポット 8」の個別上限は撤廃済みで、今は point + spot 合計 1024 灯。
+// 1 クラスタあたりは 128 灯（超えた分は無言で消えるが CPU からは検出できない）。
 // 実体は editor/LightingPresets.h（MCP の dx12_list_lights と同じ数字を出すため 1 箇所に集約）。
-constexpr int kMaxPointLights = kLightBudgetPoint;
-constexpr int kMaxSpotLights  = kLightBudgetSpot;
+constexpr int kMaxTotalLights  = kLightBudgetTotal;
+constexpr int kMaxPerCluster   = kLightBudgetPerCluster;
 
 // ── InspectorPanel の IconHeader と同じ流儀のカテゴリ帯 ──
 bool SectionHeader(const EditorUiIcons* ic, u64 tex, const char* label,
@@ -324,30 +325,34 @@ void RenderLightingPanel(Scene* scene,
             rows.push_back({e, 2, spotCount++});
         }
 
-        // 上限表示（超過は赤。超えた分はシェーダへ渡らず「無言で消える」ので必ず出す）
-        auto budget = [&](const char* label, int used, int cap)
+        // 灯数表示。クラスタードライティングで個別上限は消えたので「合計 / 1024」を出す。
+        // 1 クラスタ 128 灯の切り捨ては CPU からは見えないので、ヒートマップへ誘導する。
         {
-            const bool over = used > cap;
-            ImGui::TextUnformatted(label);
+            const int totalPunctual = pointCount + spotCount;
+            const bool over = totalPunctual > kMaxTotalLights;
+            ImGui::TextUnformatted("ライト");
             ImGui::SameLine(0.0f, 4.0f);
             ImGui::PushStyleColor(ImGuiCol_Text, over ? theme::Bad : theme::TextDim);
-            ImGui::Text("%d / %d", used, cap);
+            ImGui::Text("%d / %d", totalPunctual, kMaxTotalLights);
             ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("クラスタードライティング（Forward+）。\n"
+                                  "点光源とスポットに個別の上限はなく、合計 %d 灯まで GPU へ送れます。\n"
+                                  "ただし画面を分割したクラスタ 1 マスあたりで評価できるのは %d 灯まで。\n"
+                                  "ライトが密集して超えた所は無言で切り捨てられます（下の\n"
+                                  "「クラスタデバッグ表示 > ライト複雑度」で白くなる所がそれ）。\n"
+                                  "パーティクルの発光ライトも枠を使います。",
+                                  kMaxTotalLights, kMaxPerCluster);
             if (over)
             {
                 ImGui::SameLine(0.0f, 6.0f);
                 ImGui::PushStyleColor(ImGuiCol_Text, theme::Bad);
                 ImGui::TextUnformatted("超過");
                 ImGui::PopStyleColor();
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("GPU へ送れるのは先頭 %d 灯だけです。\n"
-                                      "超えた分は無言で描画されません（灯を減らすか range を広げてまとめてください）。\n"
-                                      "パーティクルの発光ライトも空き枠を使います。", cap);
             }
-        };
-        budget("ポイント", pointCount, kMaxPointLights);
-        ImGui::SameLine(0.0f, 18.0f);
-        budget("スポット", spotCount, kMaxSpotLights);
+            ImGui::SameLine(0.0f, 18.0f);
+            ImGui::TextDisabled("点 %d / スポット %d", pointCount, spotCount);
+        }
         ImGui::SameLine(0.0f, 18.0f);
         ImGui::TextDisabled("平行光 %d（太陽は先頭の1灯のみ有効）", dirCount);
 
@@ -422,8 +427,12 @@ void RenderLightingPanel(Scene* scene,
                 ctx.Select(r.e);
 
             ImGui::SameLine();
-            const bool over = (r.kind == 1 && r.slot >= kMaxPointLights)
-                           || (r.kind == 2 && r.slot >= kMaxSpotLights);
+            // 個別上限は撤廃済み。合計 1024 灯を超えた分だけが「無言で消える」。
+            // Application は「点光源を先、スポットを後」の順で 1 本の配列へ積むので、
+            // スポットの通し番号は pointCount + slot になる。
+            const int combinedIdx = (r.kind == 1) ? r.slot
+                                  : (r.kind == 2) ? pointCount + r.slot : -1;
+            const bool over = (combinedIdx >= kMaxTotalLights);
             ImGui::PushStyleColor(ImGuiCol_Text, over ? theme::Bad : theme::TextFaint);
             if (over) ImGui::Text("%.2f  (上限超過)", static_cast<double>(intensity));
             else      ImGui::Text("%.2f", static_cast<double>(intensity));
@@ -685,8 +694,7 @@ void RenderLightingPanel(Scene* scene,
                 &reg, std::move(recs), std::move(created)));
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("選択物（無ければ原点）の周りにキー/フィル/リムのポイントライトを 3 灯置きます。\n"
-                              "ポイントライトの枠を 3 つ使うので上限に注意");
+            ImGui::SetTooltip("選択物（無ければ原点）の周りにキー/フィル/リムのポイントライトを 3 灯置きます。");
     }
 
     // =====================================================================

@@ -50,10 +50,13 @@ constexpr int kMaxModels   = 80;
 constexpr uint32_t kMaxBonesRef = 256;
 
 // 1 フレームに GPU へ送れるライトの数。超えたぶんは *無言で* 描画されない。
-// 出所は shaders/forward/Lighting.hlsli の MAX_POINT_LIGHTS / MAX_SPOT_LIGHTS
-// （= Application.cpp の kMaxPointLightsR / kMaxSpotLightsR）。private 定数なので写している。
-constexpr int kMaxPointLightsRef = 8;
-constexpr int kMaxSpotLightsRef  = 8;
+// クラスタードライティング（Forward+）化で「点 8 / スポット 8」の個別上限は撤廃され、
+// 今は point + spot の合計 1024 灯。ただし 1 クラスタ（画面を 16x9x24 に割った 1 マス）で
+// 評価できるのは 128 灯までで、そこを超えた分も無言で消える（CPU からは検出できない）。
+// 出所は src/renderer/ClusterMath.h の kMaxSceneLights / kMaxLightsPerCluster
+// （= src/editor/LightingPresets.h の kLightBudgetTotal / kLightBudgetPerCluster）。写している。
+constexpr int kMaxTotalLightsRef  = 1024;
+constexpr int kMaxPerClusterRef   = 128;
 // 影スロットの同時上限。出所は Application.h の kMaxShadowSpot / kMaxShadowPoint。
 // あぶれたライトは「影だけ」落ちる（ライト自体は出る）＝気付きにくいので注意で出す。
 constexpr int kMaxShadowSpotRef  = 4;
@@ -995,19 +998,21 @@ DeepDiagReport DeepDiag::Lighting(Application& app)
                  + " 個ある。実際に使われるのは先頭の 1 灯だけで、残りは無言で無視される"
                    "（要らない方を消すか、影響を確認すること）");
 
-    if (pointCount > kMaxPointLightsRef)
-        r.Add(2, "ポイントライトが " + std::to_string(pointCount) + " 灯ある。GPU へ送れるのは先頭 "
-                 + std::to_string(kMaxPointLightsRef) + " 灯だけで、残り "
-                 + std::to_string(pointCount - kMaxPointLightsRef)
+    // クラスタードライティング（Forward+）: 個別上限は無く、point + spot の合計で判定する。
+    const int punctualCount = pointCount + spotCount;
+    if (punctualCount > kMaxTotalLightsRef)
+        r.Add(2, "ライト（点+スポット）が " + std::to_string(punctualCount) + " 灯ある。GPU へ送れるのは先頭 "
+                 + std::to_string(kMaxTotalLightsRef) + " 灯だけで、残り "
+                 + std::to_string(punctualCount - kMaxTotalLightsRef)
                  + " 灯は無言で描画されない（灯を減らすか range を広げてまとめること）");
-    else if (pointCount == kMaxPointLightsRef)
-        r.Add(0, "ポイントライトが上限ちょうど " + std::to_string(kMaxPointLightsRef)
-                 + " 灯。パーティクルの発光ライトは空き枠を使うので、これ以上は光らない");
-
-    if (spotCount > kMaxSpotLightsRef)
-        r.Add(2, "スポットライトが " + std::to_string(spotCount) + " 灯ある。GPU へ送れるのは先頭 "
-                 + std::to_string(kMaxSpotLightsRef) + " 灯だけで、残り "
-                 + std::to_string(spotCount - kMaxSpotLightsRef) + " 灯は無言で描画されない");
+    else if (punctualCount > kMaxPerClusterRef)
+        // 1 クラスタ 128 灯の切り捨ては GPU 側でしか分からないので、注意止まりで誘導する。
+        r.Add(1, "ライト（点+スポット）が " + std::to_string(punctualCount) + " 灯ある。合計の上限 "
+                 + std::to_string(kMaxTotalLightsRef) + " 灯には収まっているが、画面を割った"
+                   "クラスタ 1 マスで評価できるのは " + std::to_string(kMaxPerClusterRef)
+                 + " 灯まで。密集した所は無言で切り捨てられるので、"
+                   "「ツール > ライティング > クラスタデバッグ表示 > ライト複雑度」で"
+                   "白く飽和している場所が無いか確認すること");
 
     if (droppedNoTransform > 0)
         r.Add(1, "Transform を持たないライトが " + std::to_string(droppedNoTransform)

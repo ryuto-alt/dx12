@@ -197,7 +197,7 @@ lamp.range = 12
 | `:queryByTag(tag)` | table | タグ一致エンティティの**名前配列** |
 | `:queryInBox(minX, minZ, maxX, maxZ, tag?)` | table | XZ 矩形内のエンティティ名配列（RTS の矩形選択向け） |
 | `:sun()` | Light \| nil | 最初の `DirectionalLight`（＝太陽）。時間帯演出はこれを駆動する |
-| `:lightCount()` | table | `{point=, spot=, directional=, maxPoint=8, maxSpot=8}`。**CB 上限に引っかかってないかの確認用**（9 個目以降は黙って無視される） |
+| `:lightCount()` | table | `{point=, spot=, directional=, total=, maxTotal=1024, maxPerCluster=128}`。**上限に引っかかってないかの確認用**。クラスタードライティング(Forward+)なので点/スポットの個別上限は無く合計 1024 灯まで。ただし画面を割ったクラスタ 1 マスで評価できるのは 128 灯までで、密集して超えた所は黙って消える。**影が落ちるのは spot 4 / point 2 のまま** |
 | `:getAmbient()` / `:setAmbient(v)` | float / — | 環境光（＝影部分の明るさ）。実体は `DirectionalLight.ambient`。読みは最初の太陽、書きは全太陽へ |
 | `:getShadowsEnabled()` / `:setShadowsEnabled(b)` | bool / — | リアルタイム影（CSM）の ON/OFF。false で影パスごとスキップ |
 | `:getSkybox()` | table | `{envMapPath=, iblIntensity=, skyboxIntensity=, drawSkybox=}` |

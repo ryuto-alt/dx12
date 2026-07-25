@@ -1219,9 +1219,12 @@ void ScriptEngine::RegisterBindings()
             for (auto e : view) return LuaLight{&reg, e};
             return sol::nullopt;
         },
-        // ライト本数と CB 上限。演出で光を増やしすぎて「9 個目が無視される」のを
-        // Lua から検知できるようにする（描画側と同じ view の数え方）。
-        // 戻り: { point=, spot=, directional=, maxPoint=8, maxSpot=8 }
+        // ライト本数と上限。演出で光を増やしすぎて「無言で消える」のを Lua から
+        // 検知できるようにする（描画側と同じ view の数え方）。
+        // クラスタードライティング（Forward+）化で点/スポットの個別上限は撤廃され、
+        // 今は point + spot の合計 1024 灯（1 クラスタあたりは 128 灯）。
+        // 戻り: { point=, spot=, directional=, total=, maxTotal=1024, maxPerCluster=128,
+        //         maxPoint=1024, maxSpot=1024 }  ※maxPoint/maxSpot は後方互換の別名
         "lightCount", [this](Scene& s) -> sol::table {
             auto& reg = s.GetRegistry();
             int np = 0, ns = 0, nd = 0;
@@ -1232,8 +1235,11 @@ void ScriptEngine::RegisterBindings()
             t["point"]       = np;
             t["spot"]        = ns;
             t["directional"] = nd;
-            t["maxPoint"]    = 8;   // = MAX_POINT_LIGHTS (shaders/forward/Lighting.hlsli)
-            t["maxSpot"]     = 8;   // = MAX_SPOT_LIGHTS
+            t["total"]         = np + ns;
+            t["maxTotal"]      = 1024;  // = ClusterMath.h の kMaxSceneLights
+            t["maxPerCluster"] = 128;   // = ClusterMath.h の kMaxLightsPerCluster
+            t["maxPoint"]      = 1024;  // 後方互換の別名（個別上限は撤廃済み）
+            t["maxSpot"]       = 1024;
             return t;
         },
         // 環境光（影の部分の明るさ）。実体は DirectionalLight.ambient なので
