@@ -55,7 +55,12 @@ cbuffer PerFrameConstants : register(b1)
     float4   clusterGrid;      // (offset 496) .x=gridX .y=gridY .z=gridZ .w=クラスタード有効(1/0)
     float4   clusterViewport;  // (offset 512) .xy=ビューポート原点(RT px) .zw=(gridX/vpW, gridY/vpH)
     float4   clusterExtra;     // (offset 528) .x=総灯数 .y=maxLightsPerCluster .z=デバッグ表示 .w=予約
-    float4   _clusterReserved[44];                // 704B (offset 544..1247) 予約（総サイズ 1536B 維持のため）
+    // ▼ PCSS（ソフトシャドウ。計画03）16B (offset 544)。_clusterReserved の先頭 1 本を削って作った。
+    //   .x = tan(太陽の角半径)。**0 なら PCSS 無効＝従来の 3x3 PCF**（絵はビット一致）
+    //   .y = 半影の上限（テクセル数）  .z = 時間ディザの位相（TAA 無効時は 0）
+    //   .w = ブロッカー探索半径（テクセル数）
+    float4   pcssParams;                          // 16B  (offset 544)
+    float4   _clusterReserved[43];                // 688B (offset 560..1247) 予約（総サイズ 1536B 維持のため）
     float4x4 spotShadowMatrix[MAX_SHADOW_SPOT];   // 256B (offset 1248)
     // ▼ IBL 制御 16B (offset 1504)
     float  iblIntensity;     // IBL 拡散/反射の全体スケール

@@ -30,7 +30,7 @@ const std::vector<ShaderSource>& BuildRegistry()
                 { L"Forward_PS.cso", L"PSMain", L"ps_6_0" },
                 { L"ForwardLdr_PS.cso", L"PSMain", L"ps_6_0", L"LDR_OUTPUT=1" },
             },
-            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ClusterCommon.hlsli" },
+            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli" },
         },
         {
             "forward/ForwardSkinned.hlsl",
@@ -38,7 +38,7 @@ const std::vector<ShaderSource>& BuildRegistry()
                 { L"ForwardSkinned_VS.cso", L"VSMain", L"vs_6_0" },
                 { L"ForwardSkinned_PS.cso", L"PSMain", L"ps_6_0" },
             },
-            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ClusterCommon.hlsli" },
+            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli" },
         },
         {
             // クラスタードライティング（Forward+）のライトカリング compute。
@@ -61,7 +61,7 @@ const std::vector<ShaderSource>& BuildRegistry()
                 { L"ForwardGrid_VS.cso", L"VSMain", L"vs_6_0" },
                 { L"ForwardGrid_PS.cso", L"PSMain", L"ps_6_0" },
             },
-            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ClusterCommon.hlsli" },
+            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli" },
         },
         {
             // 地形マテリアル（4 レイヤースプラット）。t0/t1 を Texture2DArray として読む。
@@ -72,7 +72,7 @@ const std::vector<ShaderSource>& BuildRegistry()
                 { L"Terrain_VS.cso", L"VSMain", L"vs_6_0" },
                 { L"Terrain_PS.cso", L"PSMain", L"ps_6_0" },
             },
-            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ClusterCommon.hlsli",
+            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli",
               "forward/DecalCommon.hlsli", "forward/DecalApply.hlsli" },
         },
         {

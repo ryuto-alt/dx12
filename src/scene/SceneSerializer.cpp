@@ -862,6 +862,18 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
         };
     }
 
+    // PCSS（ソフトシャドウ・シーン単位）。既定 OFF なので、未設定シーンは従来どおり。
+    {
+        const auto& pc = scene.GetShadowPcssSettings();
+        root["shadowPcss"] = {
+            {"enabled",             pc.enabled},
+            {"lightTanAngle",       pc.lightTanAngle},
+            {"maxPenumbraTexels",   pc.maxPenumbraTexels},
+            {"blockerSearchTexels", pc.blockerSearchTexels},
+            {"temporalDither",      pc.temporalDither},
+        };
+    }
+
     // ボリュメトリックフォグ（シーン単位）。debugMode は目視検証用の一時トグルなので保存しない。
     {
         const auto& vf = scene.GetVolumetricFogSettings();
@@ -1051,6 +1063,22 @@ static void LoadTaaSettings(Scene& scene, const json& root)
         ta.jitterScale   = tj.value("jitterScale",   ta.jitterScale);
     }
     scene.GetTaaSettings() = ta;   // debugVelocity は常に既定 OFF（保存対象外）
+}
+
+// JSON から PCSS 設定を復元（shadowPcss が無ければデフォルト OFF = 後方互換）
+static void LoadShadowPcssSettings(Scene& scene, const json& root)
+{
+    ShadowPcssSettings pc;
+    if (root.contains("shadowPcss"))
+    {
+        const auto& pj = root["shadowPcss"];
+        pc.enabled             = pj.value("enabled",             pc.enabled);
+        pc.lightTanAngle       = pj.value("lightTanAngle",       pc.lightTanAngle);
+        pc.maxPenumbraTexels   = pj.value("maxPenumbraTexels",   pc.maxPenumbraTexels);
+        pc.blockerSearchTexels = pj.value("blockerSearchTexels", pc.blockerSearchTexels);
+        pc.temporalDither      = pj.value("temporalDither",      pc.temporalDither);
+    }
+    scene.GetShadowPcssSettings() = pc;
 }
 
 // JSON から ボリュメトリックフォグ設定を復元（volumetricFog が無ければデフォルト OFF = 後方互換）
@@ -1533,6 +1561,8 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
     catch (const json::exception& e) { Logger::Warn("taa 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadScreenSpaceGiSettings(scene, root); }
     catch (const json::exception& e) { Logger::Warn("ssr/ssgi 設定をスキップしました（型不正）: {}", e.what()); }
+    try { LoadShadowPcssSettings(scene, root); }
+    catch (const json::exception& e) { Logger::Warn("shadowPcss 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadVolumetricFogSettings(scene, root); }
     catch (const json::exception& e) { Logger::Warn("volumetricFog 設定をスキップしました（型不正）: {}", e.what()); }
 

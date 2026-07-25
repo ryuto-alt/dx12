@@ -13,6 +13,7 @@
 #include "renderer/PostProcessSettings.h"
 #include "renderer/SSAOSettings.h"
 #include "renderer/ContactShadowSettings.h"
+#include "renderer/ShadowPcssSettings.h"
 #include "renderer/SsrSettings.h"
 #include "renderer/SsgiSettings.h"
 #include "renderer/TaaSettings.h"
@@ -157,6 +158,10 @@ public:
     ContactShadowSettings&       GetContactShadowSettings()       { return m_contactShadow; }
     const ContactShadowSettings& GetContactShadowSettings() const { return m_contactShadow; }
 
+    // PCSS（ソフトシャドウ）。既定 OFF ＝ 従来の 3x3 PCF とビット一致。
+    ShadowPcssSettings&       GetShadowPcssSettings()       { return m_shadowPcss; }
+    const ShadowPcssSettings& GetShadowPcssSettings() const { return m_shadowPcss; }
+
     // スクリーン空間反射 / スクリーン空間GI（どちらも既定 OFF。深度プリパスの G-Buffer を使う）
     SsrSettings&        GetSsrSettings()        { return m_ssr; }
     const SsrSettings&  GetSsrSettings() const  { return m_ssr; }
@@ -206,6 +211,7 @@ private:
     SkyboxSettings      m_skybox;
     SSAOSettings        m_ssao;
     ContactShadowSettings m_contactShadow;
+    ShadowPcssSettings    m_shadowPcss;
     SsrSettings         m_ssr;
     SsgiSettings        m_ssgi;
     TaaSettings         m_taa;

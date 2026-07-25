@@ -1772,7 +1772,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         DirectX::XMFLOAT4    clusterGrid;     // (offset 496)
         DirectX::XMFLOAT4    clusterViewport; // (offset 512)
         DirectX::XMFLOAT4    clusterExtra;    // (offset 528)
-        DirectX::XMFLOAT4    _clusterReserved[44];             // 704B (offset 544..1247)
+        DirectX::XMFLOAT4    pcssParams;                       // 16B  (offset 544) PCSS（計画03）
+        DirectX::XMFLOAT4    _clusterReserved[43];             // 688B (offset 560..1247)
         DirectX::XMFLOAT4X4  spotShadowMatrix[kMaxShadowSpot]; // 256B (offset 1248)
         // ▼ IBL 制御 16B (offset 1504)
         float                iblIntensity;
@@ -5561,6 +5562,38 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"applied", true}};
         }
+        else if (method == "get_shadow_pcss" || method == "set_shadow_pcss")
+        {
+            // ★get/set を 1 つの else-if に畳んである。MCP のディスパッチは巨大な
+            //   else-if チェーンで、MSVC の「ブロックの入れ子が深すぎます(C1061)」上限に
+            //   既に張り付いているため（N37）。新しい method を足す人は get/set を必ず束ねること。
+            auto& p = m_scene->GetShadowPcssSettings();
+            if (method == "set_shadow_pcss")
+            {
+                p.enabled = params.value("enabled", p.enabled);
+                if (params.contains("lightTanAngle"))
+                    p.lightTanAngle = McpFloatParam(params, "lightTanAngle", p.lightTanAngle, 0.001f, 0.5f);
+                if (params.contains("maxPenumbraTexels"))
+                    p.maxPenumbraTexels = McpFloatParam(params, "maxPenumbraTexels", p.maxPenumbraTexels, 1.0f, 64.0f);
+                if (params.contains("blockerSearchTexels"))
+                    p.blockerSearchTexels = McpFloatParam(params, "blockerSearchTexels", p.blockerSearchTexels, 1.0f, 64.0f);
+                p.temporalDither = params.value("temporalDither", p.temporalDither);
+            }
+            resp["ok"] = true;
+            resp["result"] = {{"enabled", p.enabled},
+                              {"lightTanAngle", p.lightTanAngle},
+                              {"maxPenumbraTexels", p.maxPenumbraTexels},
+                              {"blockerSearchTexels", p.blockerSearchTexels},
+                              {"temporalDither", p.temporalDither},
+                              // ON でも実際に走らない条件を明示する（誤診断を防ぐ）
+                              {"active", p.enabled && m_scene->GetShadowsEnabled()
+                                         && !m_camera->IsOrthographic()},
+                              {"temporalDitherActive", p.enabled && p.temporalDither
+                                         && m_scene->GetTaaSettings().enabled},
+                              {"applied", method == "set_shadow_pcss"},
+                              {"note", "OFF にすると従来の 3x3 PCF に戻る（絵はビット一致）。"
+                                       "時間ディザは TAA 有効時のみ効く"}};
+        }
         else if (method == "get_taa")
         {
             const auto& t = m_scene->GetTaaSettings();
@@ -6995,6 +7028,8 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         }
         else if (method == "terrain_splat_info")
         {
+            // ★MSVC の C1061（else-if の入れ子上限）に張り付いているので、
+            //   新しい method を足す人は get/set を 1 ブロックへ束ねること（N37）。
             // スプラット（レイヤー重み）の要約を返す読み取り専用メソッド。
             // terrain_paint / autopaint の結果を「絵を見ずに」検証するために使う。
             auto& reg = m_scene->GetRegistry();
@@ -15278,7 +15313,8 @@ void Application::Render()
         XMFLOAT4   clusterGrid;      // .x=gridX .y=gridY .z=gridZ .w=クラスタード有効(1/0)
         XMFLOAT4   clusterViewport;  // .xy=ビューポート原点(RT px) .zw=(gridX/vpW, gridY/vpH)
         XMFLOAT4   clusterExtra;     // .x=総灯数 .y=maxLightsPerCluster .z=デバッグ表示 .w=予約
-        XMFLOAT4   _clusterReserved[44];             // 704B (offset 544..1247)
+        XMFLOAT4   pcssParams;                       // 16B  (offset 544) PCSS: .x=tanTheta(0で無効) .y=maxPenumbraTexels .z=時間ディザ位相 .w=探索半径texel
+        XMFLOAT4   _clusterReserved[43];             // 688B (offset 560..1247)
         XMFLOAT4X4 spotShadowMatrix[kMaxShadowSpot]; // 256B (offset 1248)
         // ▼ IBL 制御 16B
         float iblIntensity;
@@ -15309,6 +15345,24 @@ void Application::Render()
     fc.cameraPos = m_camera->GetPosition();
     fc.spotShadowTexel = 1.0f / static_cast<f32>(kSpotShadowMapSize);
     fc.pointShadowNear = 0.1f;
+
+    // ---- PCSS（ソフトシャドウ）----
+    // .x = 0 なら HLSL 側は従来の 3x3 PCF 経路を通る＝絵はビット一致。
+    // 時間ディザはフレーム連番 × 黄金比。★TAA が無効なときに回すとチラつくだけなので 0 にする
+    //  （時間蓄積を持つパスはディザをフレーム連番×黄金比で回さないと収束しない、の裏返し）。
+    {
+        const ShadowPcssSettings& pcss = m_scene->GetShadowPcssSettings();
+        const bool pcssOn = pcss.enabled && !m_camera->IsOrthographic()
+                         && m_scene->GetShadowsEnabled();
+        f32 phase = 0.0f;
+        if (pcssOn && pcss.temporalDither && taaActive)
+            phase = std::fmod(static_cast<f32>(m_perfTotalFrames & 0xFFFFull) * 0.61803398875f, 1.0f);
+        fc.pcssParams = {
+            pcssOn ? (std::max)(pcss.lightTanAngle, 1e-4f) : 0.0f,
+            (std::max)(pcss.maxPenumbraTexels,   1.0f),
+            phase,
+            (std::max)(pcss.blockerSearchTexels, 1.0f)};
+    }
     // スポット影行列（HLSL は列優先 mul(row,mat) なので転置して格納。上で割り当てたスロット分だけ埋める）
     for (u32 i = 0; i < kMaxShadowSpot; ++i)
         XMStoreFloat4x4(&fc.spotShadowMatrix[i],

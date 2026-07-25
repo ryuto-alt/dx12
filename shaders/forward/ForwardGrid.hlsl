@@ -12,6 +12,8 @@ SamplerState g_sampler : register(s0);
 
 // Shadow map (CSM: Texture2DArray, 1スライス=1カスケード)。g_shadowSampler(s1)は Lighting.hlsli で共有宣言。
 Texture2DArray         g_shadowMap      : register(t4);
+// PCSS / 3x3 PCF の共有実装（g_shadowMap と Lighting.hlsli の後で include すること）
+#include "ShadowPcss.hlsli"
 
 // PerObject constants (b0) - MVP + Model matrix as RootConstants (32 DWORD)
 cbuffer PerObjectConstants : register(b0)
@@ -62,30 +64,16 @@ int SelectCascade(float viewDepth)
     return c;
 }
 
-float SampleCascade(int cascade, float3 worldPos)
+float SampleCascade(int cascade, float3 worldPos, float2 svPos)
 {
-    float4 lc = mul(float4(worldPos, 1.0f), cascadeViewProj[cascade]);
-    float3 proj = lc.xyz / lc.w;
-    float2 uv = proj.xy * 0.5f + 0.5f;
-    uv.y = 1.0f - uv.y;
-    if (uv.x < 0 || uv.x > 1 || uv.y < 0 || uv.y > 1) return 1.0f;
-
-    float current = proj.z;
-    float texel = shadowParams.x;
-    float s = 0.0f;
-    [unroll]
-    for (int y = -1; y <= 1; ++y)
-    [unroll]
-    for (int x = -1; x <= 1; ++x)
-        s += g_shadowMap.SampleCmpLevelZero(g_shadowSampler,
-                 float3(uv + float2(x, y) * texel, (float)cascade), current);
-    return s / 9.0f;
+    // ★実体は ShadowPcss.hlsli（PCSS / 3x3 PCF の切替込み。4 つの PS で共有）
+    return SampleShadowCascadeCommon(g_shadowMap, cascade, worldPos, svPos, 0.0f);
 }
 
-float CalcShadow(float3 worldPos, float viewDepth)
+float CalcShadow(float3 worldPos, float viewDepth, float2 svPos)
 {
     int c = SelectCascade(viewDepth);
-    return SampleCascade(c, worldPos);
+    return SampleCascade(c, worldPos, svPos);
 }
 
 float4 PSMain(PSInput input) : SV_TARGET

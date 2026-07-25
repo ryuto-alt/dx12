@@ -25,6 +25,8 @@ Texture2D      g_splat        : register(t2);   // RGBA=レイヤー重み
 SamplerState   g_sampler      : register(s0);   // LINEAR WRAP（レイヤーのタイリング用）
 
 Texture2DArray g_shadowMap    : register(t4);
+// PCSS / 3x3 PCF の共有実装（g_shadowMap と Lighting.hlsli の後で include すること）
+#include "ShadowPcss.hlsli"
 
 TextureCube  g_irradianceMap  : register(t5);
 TextureCube  g_prefilteredMap : register(t6);
@@ -145,38 +147,24 @@ int SelectCascade(float viewDepth)
     return c;
 }
 
-float SampleCascade(int cascade, float3 worldPos)
+float SampleCascade(int cascade, float3 worldPos, float2 svPos)
 {
-    float4 lc = mul(float4(worldPos, 1.0f), cascadeViewProj[cascade]);
-    float3 proj = lc.xyz / lc.w;
-    float2 uv = proj.xy * 0.5f + 0.5f;
-    uv.y = 1.0f - uv.y;
-    if (uv.x < 0 || uv.x > 1 || uv.y < 0 || uv.y > 1) return 1.0f;
-
-    float current = proj.z - shadowParams.y;
-    float texel = shadowParams.x;
-    float s = 0.0f;
-    [unroll]
-    for (int y = -1; y <= 1; ++y)
-    [unroll]
-    for (int x = -1; x <= 1; ++x)
-        s += g_shadowMap.SampleCmpLevelZero(g_shadowSampler,
-                 float3(uv + float2(x, y) * texel, (float)cascade), current);
-    return s / 9.0f;
+    // ★実体は ShadowPcss.hlsli（PCSS / 3x3 PCF の切替込み。4 つの PS で共有）
+    return SampleShadowCascadeCommon(g_shadowMap, cascade, worldPos, svPos, shadowParams.y);
 }
 
-float CalcShadow(float3 worldPos, float viewDepth)
+float CalcShadow(float3 worldPos, float viewDepth, float2 svPos)
 {
     if (cascadeSplitsView.x > 1.0e8) return 1.0f;
     int c = SelectCascade(viewDepth);
-    float shadow = SampleCascade(c, worldPos);
+    float shadow = SampleCascade(c, worldPos, svPos);
     float band = shadowParams.z;
     if (band > 0.0f && c < NUM_CASCADES - 1)
     {
         float edge = cascadeSplitsView[c];
         float t = saturate((edge - viewDepth) / max(band, 1e-4));
         if (t < 1.0f)
-            shadow = lerp(SampleCascade(c + 1, worldPos), shadow, t);
+            shadow = lerp(SampleCascade(c + 1, worldPos, svPos), shadow, t);
     }
     return shadow;
 }
@@ -536,7 +524,7 @@ float4 PSMain(PSInput input) : SV_TARGET
     float3 Ldir = normalize(-lightDir);
     float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
 
-    float shadow = CalcShadow(input.worldPos, input.viewDepth);
+    float shadow = CalcShadow(input.worldPos, input.viewDepth, input.positionSV.xy);
     if (contactShadowEnabled > 0.5)
         shadow = min(shadow, g_contactShadow.Load(int3(input.positionSV.xy, 0)));
 

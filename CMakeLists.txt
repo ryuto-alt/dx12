@@ -240,6 +240,7 @@ if(DXC_EXECUTABLE)
         "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterCommon.hlsli"
         "${CMAKE_SOURCE_DIR}/shaders/forward/DecalCommon.hlsli"
         "${CMAKE_SOURCE_DIR}/shaders/forward/DecalApply.hlsli"
+        "${CMAKE_SOURCE_DIR}/shaders/forward/ShadowPcss.hlsli"
         "${CMAKE_SOURCE_DIR}/shaders/forward/Lighting.hlsli")
     # クラスタードライティング（Forward+）のライトカリング compute 2 本
     set(SHADER_CLUSTER_BUILD "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterBuild.hlsl")

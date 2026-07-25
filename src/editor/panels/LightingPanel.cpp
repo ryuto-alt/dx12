@@ -597,6 +597,32 @@ void RenderLightingPanel(Scene* scene,
             ImGui::EndDisabled();
             pg::End();
         }
+
+        // ---- PCSS（ソフトシャドウ）----
+        // CSM の固定幅 PCF を「ブロッカー探索 → 可変ペナンブラ」へ置き換える。
+        // OFF のときシェーダは従来の 3x3 PCF 経路をそのまま通る＝絵はビット一致。
+        if (pg::Begin("LightPcss"))
+        {
+            auto& pc = scene->GetShadowPcssSettings();
+            pg::Group("ソフトシャドウ (PCSS)");
+            pg::Checkbox("有効", &pc.enabled,
+                         "接地部は鋭く、遮蔽物から離れるほど柔らかい影にします"
+                         "（太陽を面光源とみなす）。OFF で従来の 3x3 PCF に戻ります");
+            ImGui::BeginDisabled(!pc.enabled);
+            pg::SliderFloat("太陽の大きさ", &pc.lightTanAngle, 0.001f, 0.3f, "%.3f", nullptr,
+                            "太陽の角半径の tan。実際の太陽は 0.0044（ほぼ硬い影）。"
+                            "大きくするほど半影が急に太くなります");
+            pg::SliderFloat("半影の上限 (texel)", &pc.maxPenumbraTexels, 1.0f, 64.0f, "%.0f", nullptr,
+                            "ぼかし半径の上限。塗り面積＝コストの上限を決めます");
+            pg::SliderFloat("探索半径 (texel)", &pc.blockerSearchTexels, 1.0f, 64.0f, "%.0f", nullptr,
+                            "遮蔽物を探す範囲。大きすぎると重要な遮蔽物を飛ばして影に穴が開き、"
+                            "小さすぎると遠くの遮蔽物を拾えず半影が伸びません");
+            pg::Checkbox("時間ディザ (TAA 有効時のみ)", &pc.temporalDither,
+                         "フレームごとにサンプルの回転位相を黄金比で回して、TAA の蓄積で"
+                         "ノイズを消します。TAA が無効なときは自動で切れます（チラつくだけなので）");
+            ImGui::EndDisabled();
+            pg::End();
+        }
     }
 
     // =====================================================================

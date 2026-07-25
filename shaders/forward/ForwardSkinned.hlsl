@@ -12,6 +12,8 @@ StructuredBuffer<float4x4> g_bones : register(t3);
 
 // Shadow (CSM: Texture2DArray, 1スライス=1カスケード)。g_shadowSampler(s1)は Lighting.hlsli で共有宣言。
 Texture2DArray         g_shadowMap     : register(t4);
+// PCSS / 3x3 PCF の共有実装（g_shadowMap と Lighting.hlsli の後で include すること）
+#include "ShadowPcss.hlsli"
 
 // IBL (t5,t6,t7 / s2=linear-clamp(mip有), s3=linear-clamp(mipなし))
 TextureCube  g_irradianceMap  : register(t5);
@@ -117,35 +119,19 @@ int SelectCascade(float viewDepth)
     return c;
 }
 
-float SampleCascade(int cascade, float3 worldPos)
+float SampleCascade(int cascade, float3 worldPos, float2 svPos)
 {
-    float4 lc = mul(float4(worldPos, 1.0f), cascadeViewProj[cascade]);
-    float3 proj = lc.xyz / lc.w;
-    float2 uv = proj.xy * 0.5f + 0.5f;
-    uv.y = 1.0f - uv.y;
-    if (uv.x < 0 || uv.x > 1 || uv.y < 0 || uv.y > 1) return 1.0f;
-
-    // 受光面のシャドウアクネ/ピーターパン調整用の深度バイアス（shadowParams.y）。
-    // 比較深度を手前へずらして自己遮蔽を抑える。
-    float current = proj.z - shadowParams.y;
-    float texel = shadowParams.x;  // 1/shadowMapSize
-    float s = 0.0f;
-    [unroll]
-    for (int y = -2; y <= 2; ++y)
-    [unroll]
-    for (int x = -2; x <= 2; ++x)
-        s += g_shadowMap.SampleCmpLevelZero(g_shadowSampler,
-                 float3(uv + float2(x, y) * texel, (float)cascade), current);
-    return s / 25.0f;
+    // ★実体は ShadowPcss.hlsli（PCSS / 3x3 PCF の切替込み。4 つの PS で共有）
+    return SampleShadowCascadeCommon(g_shadowMap, cascade, worldPos, svPos, shadowParams.y);
 }
 
-float CalcShadow(float3 worldPos, float viewDepth)
+float CalcShadow(float3 worldPos, float viewDepth, float2 svPos)
 {
     // 正射カメラでは CSM 無効（cascadeSplitsView=1e9 センチネル）。identity フォールバックが
     // 原点付近でゴミ影を落とすため、明示的に無影(1.0)を返す。
     if (cascadeSplitsView.x > 1.0e8) return 1.0f;
     int c = SelectCascade(viewDepth);
-    float shadow = SampleCascade(c, worldPos);
+    float shadow = SampleCascade(c, worldPos, svPos);
     // カスケード境界ブレンド(任意): 次カスケードと線形混合
     float band = shadowParams.z;
     if (band > 0.0f && c < NUM_CASCADES - 1)
@@ -153,7 +139,7 @@ float CalcShadow(float3 worldPos, float viewDepth)
         float edge = cascadeSplitsView[c];
         float t = saturate((edge - viewDepth) / max(band, 1e-4));
         if (t < 1.0f)
-            shadow = lerp(SampleCascade(c + 1, worldPos), shadow, t);
+            shadow = lerp(SampleCascade(c + 1, worldPos, svPos), shadow, t);
     }
     return shadow;
 }
@@ -201,7 +187,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 
     float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
 
-    float shadow = CalcShadow(input.worldPos, input.viewDepth);
+    float shadow = CalcShadow(input.worldPos, input.viewDepth, input.positionSV.xy);
 
     // コンタクトシャドウ（Forward.hlsl と同じ規約。無効時は読まず 1.0）。
     if (contactShadowEnabled > 0.5)
