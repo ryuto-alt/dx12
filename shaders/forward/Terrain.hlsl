@@ -205,6 +205,21 @@ struct LayerSample
     float  ao;
 };
 
+// 高さブレンド（Mishkinis "Advanced Terrain Texture Splatting" の 4 層一般化）。
+//   出典: https://www.gamedeveloper.com/programming/advanced-terrain-texture-splatting
+// h = 各レイヤーのハイトマップ / a = スプラットの重み / depth = 遷移帯の厚み。
+// depth を 0 に近づけるほど「高い方が総取り」で境界がシャープ、大きくすると線形ブレンドに近づく。
+//
+// ★重み 0 のレイヤーが高さだけで勝って滲み出さないよう、a≈0 の層は競争から外す
+//   （2 層版の原文は a1+a2=1 前提なのでこの保護が要らないだけ）。
+float4 HeightBlend4(float4 h, float4 a, float depth)
+{
+    float4 hw = lerp(-1.0, h + a, step(1e-4, a));
+    float  ma = max(max(hw.x, hw.y), max(hw.z, hw.w)) - depth;
+    float4 b  = max(hw - ma, 0.0);
+    return b / max(b.x + b.y + b.z + b.w, 1e-5);
+}
+
 LayerSample SampleLayerPlanar(uint i, float2 uv, float2 dx, float2 dy)
 {
     float4 a = g_layerAlbedo .SampleGrad(g_sampler, float3(uv, (float)i), dx, dy);
@@ -249,8 +264,11 @@ float4 PSMain(PSInput input) : SV_TARGET
         L[i] = SampleLayerPlanar(i, uv, dWdx.xz * t, dWdy.xz * t);
     }
 
-    // ===== 重みの決定（Step 1 は線形ブレンド）=====
-    float4 bw = w;
+    // ===== 重みの決定（高さブレンド）=====
+    // 線形ブレンドは境界が必ずぼやける。高さの高い方を勝たせると
+    // 「砂利の隙間に砂が入る」形の鋭い境界になる。
+    float4 h = float4(L[0].height, L[1].height, L[2].height, L[3].height);
+    float4 bw = HeightBlend4(h, w, heightBlendDepth);
 
     float3 albedo = L[0].albedo * bw.x + L[1].albedo * bw.y
                   + L[2].albedo * bw.z + L[3].albedo * bw.w;
