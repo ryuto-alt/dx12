@@ -515,6 +515,81 @@ Ctrl+Z / Ctrl+Y = パネル内 Undo（ECS の Undo とは別勘定）。
 > 地形の Transform は**平行移動だけ**が効く（回転・スケールはハイトフィールドの前提として無視）。
 > `.dxmat` を割り当てたい場合は Inspector の Material Asset 欄（サブメッシュ 0）へ D&D する。
 
+### 10.5.1 地形のテクスチャ（4 レイヤースプラット / `.terrainlayers` + `.splat`）
+
+`.dxmat` を 1 枚割り当てるだけだと地形は「同じ絵が一面に並んだ単色の面」になり、屋外が一瞬で作り物に見える。
+**レイヤーセット**を割り当てると、草 / 土 / 岩 / 雪 のような 4 種類の PBR 素材を**重みマップで混ぜて**描く
+（Unity Terrain のレイヤー、UE の Landscape Layer Blend 相当）。
+
+**作り方**（地形ツール窓の「テクスチャ（レイヤー）」節）:
+1. `assets/terrain/<名前>.terrainlayers` を作る（下の JSON）
+2. 「レイヤーセット」欄へ assets 相対のパスを入れる → その場で**自動ペイント**が走り、
+   傾斜と標高から草/土/岩/雪が振り分けられる
+3. 手で直したいところは「ペイントモード」を ON にしてビューポートを左ドラッグ
+   （**Shift** ドラッグでレイヤー 0 へ戻す消しゴム。半径は高さブラシと共通 = `[` `]`）
+4. スライダーで繰り返し感の除去（マクロ変化 / 距離タイリング）、境界の鋭さ（高さブレンド深さ）、
+   急斜面の引き伸ばし対策（トライプラナー）を調整する
+
+**レイヤーセット `.terrainlayers`**（`.dxmat` と同じ流儀の JSON。**最大 4 層**）:
+```json
+{
+  "version": 1,
+  "name": "alpine",
+  "size": 1024,
+  "layers": [
+    { "name": "grass", "albedo": "textures/terrain/grass/diff.jpg",
+      "normal": "textures/terrain/grass/nor_gl.png",
+      "arm":    "textures/terrain/grass/arm.png",
+      "height": "textures/terrain/grass/disp.png",
+      "tiling": 0.5, "heightBias": 0.0 },
+    { "name": "dirt", "...": "..." },
+    { "name": "rock", "...": "..." },
+    { "name": "snow", "...": "..." }
+  ]
+}
+```
+- `size` … 配列 1 スライスの解像度。**全レイヤーがここへ強制リサイズ**される（配列は同一サイズ必須）
+- `tiling` … **1m あたり何回タイルするか**（0.5 なら 2m で 1 周）
+- `arm` … Poly Haven 互換の **R=AO / G=Roughness / B=Metallic**（地形は非金属なので B は捨てる）
+- `height` … 変位(disp)。**空でもよい**（アルベドの輝度から合成する。高さブレンドと POM の品質は落ちる）。
+  Poly Haven のダウンロード（マテリアルライブラリ）は diff / nor_gl / arm の 3 枚だけで disp を落としていないので、
+  現状は「輝度から合成」が既定の経路になる
+- 起動時に BC7 の `Texture2DArray` を 2 本焼き、`assets/.texcache/` へキャッシュする
+  （初回だけ数秒。`.terrainlayers` を保存し直すと**ホットリロード**で焼き直す）
+
+**重みマップ `.splat`**: `assets/terrain/<名前>.splat`（`"DXSP"` + 版 + 幅 + 高さ + 層数 + 予約、
+以後 RGBA8 で R=レイヤー0 … A=レイヤー3）。`.hf` と同じく**ストロークが終わるたび自動保存**される。
+`.hf` のフォーマット版は**1 バイトも変えていない**（旧エンジンでも `.hf` はそのまま読める）。
+
+シーン JSON の `terrain` ブロックへ足すフィールド（**`layerSetPath` が空なら 1 つも書かれず、
+描画も従来どおり**＝既存シーンは 1 ピクセルも変わらない）:
+
+| フィールド | 意味 | 既定 |
+|---|---|---|
+| `layerSetPath` | assets 相対の `.terrainlayers`。**空 = 従来の頂点色 / `.dxmat` 経路** | "" |
+| `splatPath` | assets 相対の `.splat`。空 = 未保存（開くたび自動ペイント） | "" |
+| `splatResolution` | `.splat` の 1 辺（2 のべき乗へ丸まる） | 512 |
+| `terrainMatFlags` | bit0=トライプラナー bit1=POM bit2=マクロ変化 bit3=距離タイリング | 13 |
+| `heightBlendDepth` | 高さブレンドの遷移帯。**小さいほど境界がシャープ**、1.0 でほぼ線形 | 0.2 |
+| `macroScale` / `macroStrength` | マクロ変化の周期(m) / 強さ | 90 / 0.45 |
+| `distTilingStart` / `distTilingFarScale` | 遠景タイリングの開始距離(m) / 粗さ倍率 | 40 / 7 |
+| `triplanarSharpness` | トライプラナー重みの指数 | 4 |
+| `normalStrength` | 法線マップの強さ（遠景では自動で最大 50% まで弱まる） | 1 |
+| `pomHeightScale` / `pomFadeStart` / `pomFadeEnd` / `pomMaxSteps` | POM（**既定 OFF**） | 0.05 / 8 / 25 / 24 |
+
+**性能**（実測。1050x590 ビューポート・地形が画面の約 2/3・210 万三角形のシーン）:
+`mainScene` は従来経路 0.13ms → スプラット(効果全 OFF) 0.14ms → マクロ+距離タイリング+トライプラナー 0.23ms。
+POM は ON でも +0.01ms（距離フェードが効いている前提）。重ければ順に POM →
+トライプラナーのゲート（`triplanarSharpness` を上げる）→ 距離タイリング の順で切る。
+
+> **制限**
+> - レイヤーは **4 層まで**（RGBA 1 枚のスプラット）。`.splat` のヘッダに層数を持たせてあるので、
+>   将来 8 層にするときは版を上げて `Texture2DArray` 化する（ディスクリプタ数は 3 のまま）
+> - レイヤー UV は**ワールド XZ**基準。地形を移動するとテクスチャがずれて見える
+>   （地形は平行移動しか効かない前提なので許容している）
+> - 頂点色（`color`）はレイヤーセット割当時は使われない
+> - POM は `SV_Depth` を書かないのでシルエットは平ら（深度プリパスとの整合のため意図的）
+
 ## 10.6 スカルプト・異形（メッシュ頂点編集 / `.smsh`）
 
 ハイトフィールド地形は「XZ グリッドの高さ」しか持てない＝**オーバーハングが作れない**。

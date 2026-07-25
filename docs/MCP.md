@@ -221,6 +221,8 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_terrain_generate` | `{entity?/name?, preset?:"hills"\|"canyon"\|"mountains", seed?:int, frequency?, octaves?, amplitude?, ridged?, baseHeight?, edgeFalloff?, valleyDepth?}` | `{entityId, preset, params:{...}, minHeight, maxHeight, resolution, worldSize}` ※高さ配列を丸ごと作り直す(既存の彫りは消える)。**同じ seed/params なら毎回同じ地形=冪等**。★Editor 限定 |
 | `dx12_terrain_sculpt` | `{entity?/name?, brush?:"raise"\|"lower"\|"smooth"\|"flatten"\|"noise", point?:[x,z] \| points?:[[x,z]...](最大512) \| worldPos?:[x,y,z], radius?=12, strength?=5, falloff?=0.5, flattenHeight?, mirrorX?, mirrorZ?, noiseFrequency?, noiseOctaves?, noiseRidged?, seed?}` | `{entityId, brush, points, radius, strength, changed, minHeight, maxHeight}` ※座標は**ワールド XZ**。相対操作(2回撃つと2回ぶん)。`flatten`+`flattenHeight` は絶対値なので冪等寄り。★Editor 限定 |
 | `dx12_terrain_erode` | `{entity?/name?, iterations?:int=16, talusDeg?:f=34, region?:[minX,minZ,maxX,maxZ]}` | `{entityId, iterations, talusDeg, changed, minHeight, maxHeight}` ※熱浸食。相対操作。★Editor 限定 |
+| `dx12_terrain_paint` | `{entity?/name?, layer?:0..3, point?:[x,z] \| points?:[[x,z]...](最大512) \| worldPos?:[x,y,z], radius?=12, strength?=0.7, falloff?=0.5}` | `{entityId, layer, points, radius, strength, changed, splatSize}` ※**テクスチャレイヤーの重み**を円ブラシで塗る。座標は**ワールド XZ**。相対操作。`terrain.layerSetPath` 未設定だと `INVALID_PARAM`。★Editor 限定 |
+| `dx12_terrain_autopaint` | `{entity?/name?, rockSlopeStart?, rockSlopeEnd?, dirtSlopeStart?, dirtSlopeEnd?, snowHeightStart?, snowHeightEnd?, noiseStrength?}` | `{entityId, splatSize}` ※傾斜と標高から 4 層を焼き直す（**冪等**。手で塗った内容は消える）。傾斜は 0=平ら〜1=垂直、標高はワールド Y(m)。★Editor 限定 |
 | `dx12_sculpt_brush` | `{entity?/name?, brush?:"draw"\|"pull"\|"push"\|"smooth"\|"flatten"\|"pinch"\|"noise"\|"grab", position?:[x,y,z](ワールド) \| localPosition?, radius?=0.5, strength?=0.2, falloff?=0.5, direction?, grabDelta?, symmetryX/Y/Z?, noise*?, seed?}` | `{entityId, brush, movedVertices, localCenter, radius, strength, vertexCount, triangleCount, localBounds}` ※radius/strength は**メッシュのローカル単位**(Transform の scale が掛かる前)。相対操作。★Editor 限定 |
 | `dx12_set_sun` | `{timeOfDay?:0..24, azimuth?:deg, elevation?:deg, color?:[r,g,b], kelvin?:1000..40000, intensity?, ambient?}` | `{entityId, name, direction, azimuthDeg, elevationDeg, color, intensity, ambient, timeOfDay}` ※最初の DirectionalLight を**絶対指定**で更新(冪等)。方位/高度は「太陽が見える方向」(+Z=0°, +X=90° / 高度 0=地平線) |
 | `dx12_apply_lighting_preset` | `{preset:"day"\|"dusk"\|"night"\|"indoor"\|"horror"\|"studio"}` | `{preset, label, tip, sun:{...}\|null, post:{exposure/bloom/vignette/saturation...}}` ※**エディタの「ライティング」窓と同じ表・同じ式**(`src/editor/LightingPresets.h` に 1 本化)。太陽が無ければポストのみ適用 |
@@ -287,6 +289,12 @@ MCP で見えるものとエディタで選ばれるものが食い違わない�
 - 回転・スケールは効かない（XZ グリッドの前提）。位置だけが意味を持つ。
 - 手順は「① `dx12_terrain_create` → ② `dx12_terrain_generate`（土台）→ ③ `dx12_terrain_sculpt`/`dx12_terrain_erode`（詰め）」。
   ②は高さを丸ごと作り直すので、**必ず③より先**にやること。
+- **テクスチャレイヤー**（4 層スプラット）は `terrain.layerSetPath` に `.terrainlayers` を割り当てた地形だけ。
+  割り当てはシーン JSON か地形ツール窓から行う（MCP からコンポーネントは触れない）。
+  割当後は `dx12_terrain_autopaint`（傾斜と標高から焼き直す・冪等）と
+  `dx12_terrain_paint`（円ブラシで 1 層を塗る・相対）が使える。詳細は
+  [`AUTHORING.md` §10.5.1](AUTHORING.md)。**高さを彫り直したら autopaint をやり直すこと**
+  （重みは高さに自動追従しない）。
 
 **スカルプト（異形メッシュ）**
 
