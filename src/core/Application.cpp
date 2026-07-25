@@ -4650,6 +4650,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"shadowsEnabled", m_scene->GetShadowsEnabled()},
                 {"ssaoEnabled", m_scene->GetSSAOSettings().enabled},
                 {"contactShadowEnabled", m_scene->GetContactShadowSettings().enabled},
+                {"taaEnabled", m_scene->GetTaaSettings().enabled},
                 {"gpuTimerValid", m_gpuTimer && m_gpuTimer->IsValid()},
                 {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"},
             };
@@ -5025,6 +5026,32 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             c.steps        = params.value("steps",        c.steps);
             c.maxDistance  = params.value("maxDistance",  c.maxDistance);
             c.fadeDistance = params.value("fadeDistance", c.fadeDistance);
+            resp["ok"] = true;
+            resp["result"] = {{"applied", true}};
+        }
+        else if (method == "get_taa")
+        {
+            const auto& t = m_scene->GetTaaSettings();
+            resp["ok"] = true;
+            resp["result"] = {{"enabled", t.enabled}, {"sampleCount", t.sampleCount},
+                              {"feedbackMin", t.feedbackMin}, {"feedbackMax", t.feedbackMax},
+                              {"varianceGamma", t.varianceGamma}, {"jitterScale", t.jitterScale},
+                              {"debugVelocity", t.debugVelocity},
+                              // TAA が ON でも実際に走らない条件を明示する（誤診断を防ぐ）
+                              {"active", t.enabled && m_taaPass && !m_camera->IsOrthographic()
+                                         && !(m_editorCtx && m_editorCtx->view2D)},
+                              {"fxaaSuppressed", t.enabled}};
+        }
+        else if (method == "set_taa")
+        {
+            auto& t = m_scene->GetTaaSettings();
+            t.enabled       = params.value("enabled",       t.enabled);
+            t.sampleCount   = params.value("sampleCount",   t.sampleCount);
+            t.feedbackMin   = params.value("feedbackMin",   t.feedbackMin);
+            t.feedbackMax   = params.value("feedbackMax",   t.feedbackMax);
+            t.varianceGamma = params.value("varianceGamma", t.varianceGamma);
+            t.jitterScale   = params.value("jitterScale",   t.jitterScale);
+            t.debugVelocity = params.value("debugVelocity", t.debugVelocity);
             resp["ok"] = true;
             resp["result"] = {{"applied", true}};
         }
@@ -14491,7 +14518,8 @@ void Application::Render()
 
         // ---- ポストプロセス: ON/OFF ウィンドウ と パラメータ ウィンドウ ----
         {
-            auto& pp = m_scene->GetPostSettings();
+            auto& pp  = m_scene->GetPostSettings();
+            auto& taa = m_scene->GetTaaSettings();   // TAA は PostProcessSettings とは別（下の注記参照）
 
             // 全エフェクトのメタ情報（トグルとパラメータ描画を一元定義）
             struct PostFx {
@@ -14595,7 +14623,27 @@ void Application::Render()
                     [&]{ ImGui::SliderFloat("強度##outl", &pp.outline, 0.0f, 4.0f, "%.2f");
                          ImGui::ColorEdit3("線の色##outlc", &pp.outlineColor.x); }},
 
-                {"アンチエイリアス", "FXAA", "簡易アンチエイリアス", &pp.fxaaOn, {}},
+                {"アンチエイリアス", "FXAA", "簡易アンチエイリアス（TAA が有効なら無視されます）", &pp.fxaaOn, {}},
+                // TAA は PostProcessSettings ではなく TaaSettings（シーン単位の独立設定）に住む。
+                // uber パスの「マスク付きエフェクト」ではなく、チェーンの構造そのものを変える
+                // （深度+速度プリパスの強制・投影行列のジッタ・FXAA 排他）ため。
+                {"アンチエイリアス", "TAA (テンポラル)",
+                 "速度バッファ + 前フレームの履歴でサブピクセル AA。動くものもぼけません。"
+                 "有効にすると FXAA は自動で無視されます（透視ビューのみ。2D 正射では無効）",
+                 &taa.enabled,
+                    [&]{ int sc = (taa.sampleCount <= 4) ? 0 : (taa.sampleCount >= 16 ? 2 : 1);
+                         if (ImGui::Combo("ジッタ数##taasc", &sc, "4 (シャープ) " "8 (標準) " "16 (滑らか) "))
+                             taa.sampleCount = (sc == 0) ? 4 : (sc == 2 ? 16 : 8);
+                         ImGui::SliderFloat("ジッタ量##taajs", &taa.jitterScale, 0.0f, 1.0f, "%.2f");
+                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("1.0 = ±0.5px。ブラーが強すぎるなら下げる");
+                         ImGui::SliderFloat("履歴 最小##taafbmin", &taa.feedbackMin, 0.5f, 0.98f, "%.3f");
+                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("現フレームと食い違うピクセルで使う履歴の比率");
+                         ImGui::SliderFloat("履歴 最大##taafbmax", &taa.feedbackMax, 0.5f, 0.995f, "%.3f");
+                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("安定しているピクセルで使う履歴の比率。高いほど滑らかだがゴーストしやすい");
+                         ImGui::SliderFloat("クリップ幅##taavg", &taa.varianceGamma, 0.25f, 3.0f, "%.2f");
+                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("近傍色の許容幅 (μ±γσ)。下げるとゴーストが減りチラつきが増える");
+                         ImGui::Checkbox("速度バッファを可視化##taadbg", &taa.debugVelocity);
+                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("静止時に全面が均一なグレーになるのが正常"); }},
 
                 {"仕上げ", "デバンディング Deband", "TPDFディザで空/ビネットの縞(バンディング)を除去", &pp.debandOn, {}},
             };

@@ -792,6 +792,19 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
         };
     }
 
+    // TAA 設定（シーン単位）。debugVelocity は目視検証用の一時トグルなので保存しない。
+    {
+        const auto& ta = scene.GetTaaSettings();
+        root["taa"] = {
+            {"enabled",       ta.enabled},
+            {"sampleCount",   ta.sampleCount},
+            {"feedbackMin",   ta.feedbackMin},
+            {"feedbackMax",   ta.feedbackMax},
+            {"varianceGamma", ta.varianceGamma},
+            {"jitterScale",   ta.jitterScale},
+        };
+    }
+
     return root;
 }
 
@@ -903,6 +916,23 @@ static void LoadContactShadowSettings(Scene& scene, const json& root)
         cs.fadeDistance = cj.value("fadeDistance", cs.fadeDistance);
     }
     scene.GetContactShadowSettings() = cs;
+}
+
+// JSON から TAA 設定を復元（taa が無ければデフォルト = 後方互換。旧シーンは既定 OFF で開く）
+static void LoadTaaSettings(Scene& scene, const json& root)
+{
+    TaaSettings ta;  // デフォルト（未指定キーは既定値を維持）
+    if (root.contains("taa"))
+    {
+        const auto& tj = root["taa"];
+        ta.enabled       = tj.value("enabled",       ta.enabled);
+        ta.sampleCount   = tj.value("sampleCount",   ta.sampleCount);
+        ta.feedbackMin   = tj.value("feedbackMin",   ta.feedbackMin);
+        ta.feedbackMax   = tj.value("feedbackMax",   ta.feedbackMax);
+        ta.varianceGamma = tj.value("varianceGamma", ta.varianceGamma);
+        ta.jitterScale   = tj.value("jitterScale",   ta.jitterScale);
+    }
+    scene.GetTaaSettings() = ta;   // debugVelocity は常に既定 OFF（保存対象外）
 }
 
 // JSON ノードから 1 エンティティを既存シーンに追加生成（Clear しない）
@@ -1327,6 +1357,8 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
     catch (const json::exception& e) { Logger::Warn("ssao 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadContactShadowSettings(scene, root); }
     catch (const json::exception& e) { Logger::Warn("contactShadow 設定をスキップしました（型不正）: {}", e.what()); }
+    try { LoadTaaSettings(scene, root); }
+    catch (const json::exception& e) { Logger::Warn("taa 設定をスキップしました（型不正）: {}", e.what()); }
 
     // リアルタイム影 ON/OFF（キーが無ければ既定 ON ＝後方互換）
     scene.SetShadowsEnabled(root.value("shadows", true));
