@@ -289,6 +289,12 @@ if(DXC_EXECUTABLE)
                              "${CMAKE_SOURCE_DIR}/shaders/post/FullscreenTri.hlsli")
     set(SHADER_VELOCITY_INC  "${CMAKE_SOURCE_DIR}/shaders/velocity/VelocityCommon.hlsli"
                              "${SHADER_SS_INC}")
+    # ボリュメトリックフォグ（froxel）。compute 3 本 + 合成 VS/PS。
+    set(SHADER_FOG_INC       "${CMAKE_SOURCE_DIR}/shaders/fog/FogCommon.hlsli")
+    set(SHADER_FOG_INJECT    "${CMAKE_SOURCE_DIR}/shaders/fog/FogInject.hlsl")
+    set(SHADER_FOG_SCATTER   "${CMAKE_SOURCE_DIR}/shaders/fog/FogScatter.hlsl")
+    set(SHADER_FOG_INTEGRATE "${CMAKE_SOURCE_DIR}/shaders/fog/FogIntegrate.hlsl")
+    set(SHADER_FOG_COMPOSITE "${CMAKE_SOURCE_DIR}/shaders/fog/FogComposite.hlsl")
     set(SHADER_TAA           "${CMAKE_SOURCE_DIR}/shaders/post/TAA.hlsl")
     # ★ shaders/debug/ は .gitignore の "Debug/" に食われて新規ファイルが追跡されない。
     #    velocity/ 配下に置くこと（DebugLine.hlsl は昔から追跡済みなので生き残っているだけ）。
@@ -369,6 +375,48 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/SsgiTemporal_PS.cso"
         "${SHADER_OUTPUT_DIR}/SsgiUpsample_PS.cso"
         "${SHADER_OUTPUT_DIR}/ColorDownsample_PS.cso"
+        "${SHADER_OUTPUT_DIR}/FogInject_CS.cso"
+        "${SHADER_OUTPUT_DIR}/FogScatter_CS.cso"
+        "${SHADER_OUTPUT_DIR}/FogIntegrate_CS.cso"
+        "${SHADER_OUTPUT_DIR}/FogComposite_VS.cso"
+        "${SHADER_OUTPUT_DIR}/FogComposite_PS.cso"
+    )
+
+    # --- ボリュメトリックフォグ（froxel）---
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/FogInject_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSInject -Fo "${SHADER_OUTPUT_DIR}/FogInject_CS.cso" "${SHADER_FOG_INJECT}"
+        DEPENDS "${SHADER_FOG_INJECT}" "${SHADER_FOG_INC}"
+        COMMENT "Compiling FogInject.hlsl -> FogInject_CS.cso (cs_6_0)"
+        VERBATIM
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/FogScatter_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSScatter -Fo "${SHADER_OUTPUT_DIR}/FogScatter_CS.cso" "${SHADER_FOG_SCATTER}"
+        DEPENDS "${SHADER_FOG_SCATTER}" "${SHADER_FOG_INC}" "${SHADER_CLUSTER_INC}"
+        COMMENT "Compiling FogScatter.hlsl -> FogScatter_CS.cso (cs_6_0)"
+        VERBATIM
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/FogIntegrate_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSIntegrate -Fo "${SHADER_OUTPUT_DIR}/FogIntegrate_CS.cso" "${SHADER_FOG_INTEGRATE}"
+        DEPENDS "${SHADER_FOG_INTEGRATE}" "${SHADER_FOG_INC}"
+        COMMENT "Compiling FogIntegrate.hlsl -> FogIntegrate_CS.cso (cs_6_0)"
+        VERBATIM
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/FogComposite_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E FSTriVS -Fo "${SHADER_OUTPUT_DIR}/FogComposite_VS.cso" "${SHADER_FOG_COMPOSITE}"
+        DEPENDS "${SHADER_FOG_COMPOSITE}" "${SHADER_FOG_INC}" "${SHADER_POST_INC}"
+        COMMENT "Compiling FogComposite.hlsl -> FogComposite_VS.cso (vs_6_0)"
+        VERBATIM
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/FogComposite_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/FogComposite_PS.cso" "${SHADER_FOG_COMPOSITE}"
+        DEPENDS "${SHADER_FOG_COMPOSITE}" "${SHADER_FOG_INC}" "${SHADER_POST_INC}"
+        COMMENT "Compiling FogComposite.hlsl -> FogComposite_PS.cso (ps_6_0)"
+        VERBATIM
     )
 
     # --- SSR / SSGI（スクリーン空間反射 + スクリーン空間GI）---

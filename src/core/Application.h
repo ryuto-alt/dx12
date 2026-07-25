@@ -53,6 +53,7 @@ namespace dx12e
     class ContactShadowPass;
     class TaaPass;
     class ScreenSpaceGiPass;
+    class VolumetricFogPass;
     class ParticleSystem;
     class GpuParticleSystem;
     class SpriteRenderer;
@@ -765,6 +766,12 @@ private:
     u32  m_clusterDebugMode  = 0;      // 0=off / 1=ライト複雑度ヒートマップ / 2=クラスタ境界
     // 毎フレームのライト収集バッファ（再確保を避けるためメンバで使い回す）
     std::vector<ClusteredLightCulling::LightGPU> m_clusterLights;
+
+    // ---- ボリュメトリックフォグ（froxel。計画06）----
+    // シャドウ + クラスタカリングの直後に compute 3 パスで 160x90x64 の 3D テクスチャを作り、
+    // パーティクル描画の直前にフルスクリーン 1 枚をブレンド合成する。
+    // メインのルートシグネチャにも PerFrameConstants(b1) にも触らない ＝ RTV 消費 0。
+    std::unique_ptr<VolumetricFogPass> m_volumetricFogPass;
 
     // IBL 環境マップ（irradiance/prefiltered/BRDF LUT）+ 任意スカイボックス
     std::unique_ptr<IBLBaker>       m_iblBaker;

@@ -36,6 +36,7 @@
 #include "renderer/ContactShadowPass.h"
 #include "renderer/TaaPass.h"
 #include "renderer/ScreenSpaceGiPass.h"
+#include "renderer/VolumetricFogPass.h"
 #include "renderer/PrevWorldComponent.h"
 #include "renderer/ParticleSystem.h"
 #include "renderer/SpriteRenderer.h"
@@ -481,6 +482,8 @@ void Application::InvalidateTemporalHistory()
     // SSR/SSGI も「前フレームカラー」と時間蓄積の履歴を持っている。捨てないと
     // シーン切替直後の 1 フレームだけ前のシーンの色が反射/間接光として写り込む。
     if (m_screenSpaceGi) m_screenSpaceGi->InvalidateHistory();
+    // ボリュメトリックフォグの froxel ボリュームも時間再投影の履歴を持っている。
+    if (m_volumetricFogPass) m_volumetricFogPass->InvalidateHistory();
     m_prevViewProjNJValid = false;
     m_prevFrameIndexValid = false;
     m_prevViewProjValid   = false;   // モーションブラーの速度スパイクも同時に防ぐ
@@ -649,6 +652,13 @@ void Application::RegisterShaderReloadHandlers()
         m_shaderManager->RegisterReloadHandler(
             { L"ClusterBuild_CS.cso", L"ClusterCull_CS.cso" },
             [this]() { m_clusteredLighting->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_volumetricFogPass)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"FogInject_CS.cso", L"FogScatter_CS.cso", L"FogIntegrate_CS.cso",
+              L"FogComposite_VS.cso", L"FogComposite_PS.cso" },
+            [this]() { m_volumetricFogPass->RecreatePipelines(*m_graphicsDevice); });
     }
     if (m_skyboxRenderer)
     {
@@ -1780,6 +1790,11 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         // （灯数 0 なので中身は読まれない。frameIndex 0 のブロックで十分）。
         if (m_thumbRenderer)
             m_thumbRenderer->SetClusterSrv(m_clusteredLighting->GetSrvTableIndex(0));
+
+        // ボリュメトリックフォグ（froxel）。3D テクスチャ 28MB は「初めて有効になったフレーム」まで
+        // 確保しない（既定 OFF）。ディスクリプタブロックだけは断片化前のここで押さえておく。
+        m_volumetricFogPass = std::make_unique<VolumetricFogPass>();
+        m_volumetricFogPass->Initialize(*m_graphicsDevice, m_srvHeap.get(), PathResolver::ShaderDirW());
 
         // 2D スプライト（バックバッファ＝スワップチェイン形式へ描く）
         m_spriteRenderer = std::make_unique<SpriteRenderer>();
@@ -7508,6 +7523,12 @@ void Application::Shutdown()
     {
         m_clusteredLighting->Shutdown();
         m_clusteredLighting.reset();
+    }
+    // ボリュメトリックフォグも SRV/UAV ブロックを持っている（同上）。
+    if (m_volumetricFogPass)
+    {
+        m_volumetricFogPass->Shutdown();
+        m_volumetricFogPass.reset();
     }
     m_sceneFlow.reset();
     if (m_physicsSystem)
@@ -14170,6 +14191,66 @@ void Application::Render()
         }
     }
 
+    // ===== ボリュメトリックフォグ: froxel ボリュームの構築（compute 3 パス）=====
+    // クラスタカリングの直後に置く理由: 散乱パスがクラスタライトリストを読むため。
+    // ここは (1) CSM が完成済み・(2) カスケード行列/分割が確定済み・(3) 深度は DEPTH_WRITE のまま
+    // ＝ フォグの compute が誰の状態も壊さない位置。合成はパーティクル直前で行う（下）。
+    // ★compute は PSO を graphics と共有するので、直後に RootSig/PSO/ヒープを必ず再設定する。
+    const VolumetricFogSettings& fogCfg = m_scene->GetVolumetricFogSettings();
+    // 透視限定（froxel の Z 分布と深度線形化が透視前提）。正射 / 2D ビューでは丸ごと素通し。
+    const bool volFogActive = fogCfg.enabled && fogCfg.density > 0.0f
+                            && m_volumetricFogPass && m_volumetricFogPass->IsReady()
+                            && viewSupportsScreenSpace;
+    bool volFogBuilt = false;
+    if (volFogActive)
+    {
+        m_gpuTimer->Begin(nativeCmdList, GpuTimer::VolumetricFog);
+        // CSM は PIXEL_SHADER_RESOURCE で置かれている。compute から読むには NON_PIXEL が要る。
+        m_commandList->TransitionResource(m_shadowMap.Get(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+        VolumetricFogPass::ViewParams fv{};
+        fv.view         = m_camera->GetViewMatrix();          // ジッタなし
+        fv.prevViewProj = m_prevViewProjNJValid ? XMLoadFloat4x4(&m_prevViewProjNoJitter) : camVP;
+        {
+            XMFLOAT4X4 projF;
+            XMStoreFloat4x4(&projF, m_camera->GetProjectionMatrix());
+            fv.proj11 = projF._11;
+            fv.proj22 = projF._22;
+        }
+        fv.cameraPos        = fc.cameraPos;
+        fv.sunDir           = lightDirF3;
+        fv.sunColor         = lightColorF3;
+        fv.cascadeViewProj  = m_cascadeViewProj;              // 非転置（パス内で転置する）
+        fv.cascadeSplits    = fc.cascadeSplitsView;
+        fv.shadowParams     = fc.shadowParams;
+        fv.clusterParams    = fc.clusterParams;
+        fv.clusterGrid      = fc.clusterGrid;
+        fv.vpLeft = vpLeft; fv.vpTop = vpTop; fv.vpW = vpW; fv.vpH = vpH;
+        fv.nearZ = m_camera->GetNearZ();
+        fv.farZ  = m_camera->GetFarZ();
+        fv.csmSrv = m_srvHeap->GetGpuHandle(m_shadowSrvIndex);
+        if (m_clusteredLighting && m_clusteredLighting->IsReady())
+            fv.clusterSrv = m_clusteredLighting->GetSrvTable(frameIndex);
+        fv.punctualShadowSrv = m_srvHeap->GetGpuHandle(m_spotShadowSrvIndex);
+
+        m_volumetricFogPass->BuildVolumes(nativeCmdList, *m_graphicsDevice, fogCfg, fv, frameIndex);
+        volFogBuilt = m_volumetricFogPass->VolumesAllocated();
+
+        m_commandList->TransitionResource(m_shadowMap.Get(),
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        m_gpuTimer->End(nativeCmdList, GpuTimer::VolumetricFog);
+
+        // compute で PSO/RootSig を奪ったので forward 用に戻す（クラスタカリング直後と同じ作法）。
+        m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+        m_commandList->SetRootSignature(*m_rootSignature);
+        m_commandList->SetPipelineState(*m_pipelineState);
+        m_commandList->SetRenderTarget(m_sceneRT->GetRtv(), m_dsvHandle);
+        m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+    }
+
     // ===== Skybox（不透明描画の前に全画面塗り。深度テスト OFF なので後続不透明が上書き）=====
     // skybox は自前 RootSig/PSO を bind するため、直後にメイン RootSig/PSO を再設定してから
     // per-frame CBV / shadow / IBL を bind し直す。
@@ -14251,6 +14332,25 @@ void Application::Render()
         nativeCmdList->OMSetRenderTargets(1, &srtv, FALSE, nullptr);
         m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
         m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+
+        // ---- ボリュメトリックフォグの合成（フルスクリーン 1 枚をブレンドで scene RT へ）----
+        // ★ここに挿すのは偶然ではない。(1) 深度が既に PIXEL_SHADER_RESOURCE、
+        //   (2) OMSetRenderTargets が DSV を意図的にバインドしていない、
+        //   (3) scene RT がまだ RENDER_TARGET —— の 3 条件が同時に揃う唯一の場所で、
+        //   深度の遷移を 1 回も追加せずに済む。
+        // パーティクルより「前」なので、加算合成のパーティクルにはフォグがかからない（意図どおり）。
+        // ★合成の GPU 時間は GpuTimer::Particles の内数になる（GpuTimer は 1 スコープにつき
+        //   フレーム 1 回の Begin/End しか記録できないので、volFog スコープは compute 3 パス専用）。
+        if (volFogBuilt)
+        {
+            m_volumetricFogPass->Composite(nativeCmdList,
+                m_srvHeap->GetGpuHandle(m_depthSrvIndex),
+                vpLeft, vpTop, vpW, vpH, frameIndex);
+            // フォグ用の RootSig/PSO を張ったので、後続（パーティクル）のために作法どおり戻す。
+            nativeCmdList->OMSetRenderTargets(1, &srtv, FALSE, nullptr);
+            m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+        }
 
         XMMATRIX invView = XMMatrixInverse(nullptr, m_camera->GetViewMatrix());
         XMFLOAT3 camRight, camUp, camPos;

@@ -37,6 +37,13 @@ constexpr u64 kIndexBytes = static_cast<u64>(cluster::kClusterCount)
 constexpr u64 kCountBytes = static_cast<u64>(cluster::kClusterCount) * sizeof(u32);      // 13.5 KB
 constexpr u64 kLightBytes = static_cast<u64>(cluster::kMaxSceneLights) * 64;             // 64 KB
 
+// カリング結果の「読める状態」。フォワード PS だけでなく **compute からも読まれる**
+// （ボリュメトリックフォグの散乱パスがクラスタライトリストを引く。計画06 F5）ので、
+// PIXEL 単独ではなく読み取り状態の合成にしておく。こうしておけばフォグ側で
+// 追加の遷移を書かずに済む（m_sceneRT が既に同じ流儀）。
+constexpr D3D12_RESOURCE_STATES kReadState =
+    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+
 } // namespace
 
 void ClusteredLightCulling::Initialize(GraphicsDevice& device, DescriptorHeap* srvHeap,
@@ -297,21 +304,21 @@ void ClusteredLightCulling::Dispatch(ID3D12GraphicsCommandList* cmd, FXMMATRIX v
     cmd->SetPipelineState(m_psoCull.Get());
     cmd->Dispatch(kGroupCount, 1, 1);
 
-    // PS が読める状態へ
+    // PS / CS が読める状態へ
     {
         D3D12_RESOURCE_BARRIER b[2]{};
         for (u32 i = 0; i < 2; ++i)
         {
             b[i].Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
             b[i].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-            b[i].Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            b[i].Transition.StateAfter  = kReadState;
             b[i].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         }
         b[0].Transition.pResource = m_indexBuf.Get();
         b[1].Transition.pResource = m_countBuf.Get();
         cmd->ResourceBarrier(2, b);
-        m_indexState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-        m_countState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        m_indexState = kReadState;
+        m_countState = kReadState;
     }
 }
 
@@ -323,13 +330,13 @@ void ClusteredLightCulling::EnsureReadable(ID3D12GraphicsCommandList* cmd)
     u32 n = 0;
     auto push = [&](ID3D12Resource* res, D3D12_RESOURCE_STATES& state)
     {
-        if (state == D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) return;
+        if (state == kReadState) return;
         b[n].Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         b[n].Transition.pResource   = res;
         b[n].Transition.StateBefore = state;
-        b[n].Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        b[n].Transition.StateAfter  = kReadState;
         b[n].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        state = kReadState;
         ++n;
     };
     push(m_indexBuf.Get(), m_indexState);

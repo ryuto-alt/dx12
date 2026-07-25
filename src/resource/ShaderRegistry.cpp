@@ -308,6 +308,33 @@ const std::vector<ShaderSource>& BuildRegistry()
             { "screenspace/ScreenSpaceCommon.hlsli", "screenspace/ScreenSpaceParams.hlsli",
               "post/FullscreenTri.hlsli" },
         },
+        {
+            // ボリュメトリックフォグ（froxel）: 媒質注入 compute。
+            "fog/FogInject.hlsl",
+            { { L"FogInject_CS.cso", L"CSInject", L"cs_6_0" } },
+            { "fog/FogCommon.hlsli" },
+        },
+        {
+            // 散乱ライティング + 時間再投影 compute。ClusterCommon.hlsli はクラスタライトの散乱で使う。
+            "fog/FogScatter.hlsl",
+            { { L"FogScatter_CS.cso", L"CSScatter", L"cs_6_0" } },
+            { "fog/FogCommon.hlsli", "forward/ClusterCommon.hlsli" },
+        },
+        {
+            // Z 方向の解析積分 compute。
+            "fog/FogIntegrate.hlsl",
+            { { L"FogIntegrate_CS.cso", L"CSIntegrate", L"cs_6_0" } },
+            { "fog/FogCommon.hlsli" },
+        },
+        {
+            // シーン RT への合成（フルスクリーン三角形）。
+            "fog/FogComposite.hlsl",
+            {
+                { L"FogComposite_VS.cso", L"FSTriVS", L"vs_6_0" },
+                { L"FogComposite_PS.cso", L"PSMain",  L"ps_6_0" },
+            },
+            { "fog/FogCommon.hlsli", "post/FullscreenTri.hlsli" },
+        },
     };
     return registry;
 }

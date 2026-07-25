@@ -16,6 +16,7 @@
 #include "renderer/SsrSettings.h"
 #include "renderer/SsgiSettings.h"
 #include "renderer/TaaSettings.h"
+#include "renderer/VolumetricFogSettings.h"
 // SpawnSculpt の既定引数で SculptPrimitive の列挙子を使うため（前方宣言では足りない）。
 #include "terrain/SculptMesh.h"
 
@@ -151,6 +152,10 @@ public:
     TaaSettings&       GetTaaSettings()       { return m_taa; }
     const TaaSettings& GetTaaSettings() const { return m_taa; }
 
+    // froxel ボリュメトリックフォグ（既定 OFF。有効時のみ 3D テクスチャ 28MB を確保する）
+    VolumetricFogSettings&       GetVolumetricFogSettings()       { return m_volFog; }
+    const VolumetricFogSettings& GetVolumetricFogSettings() const { return m_volFog; }
+
     // リアルタイム影(CSM)をこのシーンで描くか。false なら影パスを丸ごとスキップ
     // （トップダウン等で影が要らないシーンの FPS 向上用。シェーダは無影センチネルで全面ライト）。
     bool GetShadowsEnabled() const { return m_shadowsEnabled; }
@@ -176,6 +181,7 @@ private:
     SsrSettings         m_ssr;
     SsgiSettings        m_ssgi;
     TaaSettings         m_taa;
+    VolumetricFogSettings m_volFog;
     bool                m_shadowsEnabled = true;  // 既定 ON（エディタ/従来シーン互換）
 
     ResourceManager*  m_resourceManager = nullptr;

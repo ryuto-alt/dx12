@@ -833,6 +833,27 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
         };
     }
 
+    // ボリュメトリックフォグ（シーン単位）。debugMode は目視検証用の一時トグルなので保存しない。
+    {
+        const auto& vf = scene.GetVolumetricFogSettings();
+        root["volumetricFog"] = {
+            {"enabled",           vf.enabled},
+            {"density",           vf.density},
+            {"albedo",            {vf.albedo.x, vf.albedo.y, vf.albedo.z}},
+            {"anisotropy",        vf.anisotropy},
+            {"heightFalloff",     vf.heightFalloff},
+            {"heightRef",         vf.heightRef},
+            {"distance",          vf.distance},
+            {"depthDistribution", vf.depthDistribution},
+            {"ambient",           {vf.ambient.x, vf.ambient.y, vf.ambient.z}},
+            {"sunIntensity",      vf.sunIntensity},
+            {"lightScattering",   vf.lightScattering},
+            {"temporal",          vf.temporal},
+            {"temporalBlend",     vf.temporalBlend},
+            {"extendBeyondRange", vf.extendBeyondRange},
+        };
+    }
+
     return root;
 }
 
@@ -997,6 +1018,40 @@ static void LoadTaaSettings(Scene& scene, const json& root)
         ta.jitterScale   = tj.value("jitterScale",   ta.jitterScale);
     }
     scene.GetTaaSettings() = ta;   // debugVelocity は常に既定 OFF（保存対象外）
+}
+
+// JSON から ボリュメトリックフォグ設定を復元（volumetricFog が無ければデフォルト OFF = 後方互換）
+static void LoadVolumetricFogSettings(Scene& scene, const json& root)
+{
+    VolumetricFogSettings vf;  // デフォルト（未指定キーは既定値を維持）
+    if (root.contains("volumetricFog"))
+    {
+        const auto& j = root["volumetricFog"];
+        auto readVec3 = [&](const char* key, DirectX::XMFLOAT3& dst)
+        {
+            if (j.contains(key) && j[key].is_array() && j[key].size() >= 3)
+            {
+                dst.x = j[key][0].get<float>();
+                dst.y = j[key][1].get<float>();
+                dst.z = j[key][2].get<float>();
+            }
+        };
+        vf.enabled           = j.value("enabled",           vf.enabled);
+        vf.density           = j.value("density",           vf.density);
+        readVec3("albedo", vf.albedo);
+        vf.anisotropy        = j.value("anisotropy",        vf.anisotropy);
+        vf.heightFalloff     = j.value("heightFalloff",     vf.heightFalloff);
+        vf.heightRef         = j.value("heightRef",         vf.heightRef);
+        vf.distance          = j.value("distance",          vf.distance);
+        vf.depthDistribution = j.value("depthDistribution", vf.depthDistribution);
+        readVec3("ambient", vf.ambient);
+        vf.sunIntensity      = j.value("sunIntensity",      vf.sunIntensity);
+        vf.lightScattering   = j.value("lightScattering",   vf.lightScattering);
+        vf.temporal          = j.value("temporal",          vf.temporal);
+        vf.temporalBlend     = j.value("temporalBlend",     vf.temporalBlend);
+        vf.extendBeyondRange = j.value("extendBeyondRange", vf.extendBeyondRange);
+    }
+    scene.GetVolumetricFogSettings() = vf;   // debugMode は常に 0（保存対象外）
 }
 
 // JSON ノードから 1 エンティティを既存シーンに追加生成（Clear しない）
@@ -1425,6 +1480,8 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
     catch (const json::exception& e) { Logger::Warn("taa 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadScreenSpaceGiSettings(scene, root); }
     catch (const json::exception& e) { Logger::Warn("ssr/ssgi 設定をスキップしました（型不正）: {}", e.what()); }
+    try { LoadVolumetricFogSettings(scene, root); }
+    catch (const json::exception& e) { Logger::Warn("volumetricFog 設定をスキップしました（型不正）: {}", e.what()); }
 
     // リアルタイム影 ON/OFF（キーが無ければ既定 ON ＝後方互換）
     scene.SetShadowsEnabled(root.value("shadows", true));

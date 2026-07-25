@@ -14,6 +14,7 @@ add_library(Renderer STATIC
     TaaPass.cpp
     ScreenSpaceGiPass.cpp
     ClusteredLightCulling.cpp
+    VolumetricFogPass.cpp
     SpriteRenderer.cpp
     SceneTransition.cpp
     ParticleSystem.cpp
