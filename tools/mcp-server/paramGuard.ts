@@ -155,6 +155,8 @@ export const COMPOSITE_TOOLS: ReadonlySet<string> = new Set([
   "dx12_batch", "dx12_install_font", "dx12_diagnose",
   "dx12_focus_and_screenshot", "dx12_screenshot_from", "dx12_view_texture",
   "dx12_preview_model", "dx12_look_compare", "dx12_camera_path", "dx12_scene_write",
+  // set_texture ×3 + set_pbr + get_entity を畳んだ合成ツール(engine に material_apply は無い)
+  "dx12_material_apply",
 ]);
 
 /**

@@ -6,6 +6,8 @@
  *   [8-12]  normalizeDiagnoseOnly / fastDiagnoseOnly — 検査 ID の検証と有効値の提示
  *   [13-15] 列挙定数がエンジン側の enum と同じ並びであること（順序がズレると別のブラシになる）
  *   [16-18] zod の $ref 回帰防止 — v3() が毎回新インスタンスを返し、JSON Schema に $ref が出ない
+ *   [19-21] nonSettableComponentError — terrain / sculptMesh / gridPlane を「unknown」ではなく
+ *           「専用ツールの担当」として弾く（B11）
  *
  * 実行: node sceneTools.test.ts（Node v24 型ストリップ・エンジン不要）
  */
@@ -15,7 +17,8 @@ import { z } from "zod";
 import {
   DIAG_CHECKS, LIGHTING_PRESETS, SCULPT_BRUSHES, SCULPT_PRIMITIVES,
   TERRAIN_BRUSHES, TERRAIN_PRESETS,
-  fastDiagnoseOnly, normalizeDiagnoseOnly, normalizeStrokePoints, v2, v3, v4,
+  fastDiagnoseOnly, nonSettableComponentError, normalizeDiagnoseOnly, normalizeStrokePoints,
+  v2, v3, v4,
 } from "./sceneTools.ts";
 
 let passed = 0;
@@ -168,6 +171,29 @@ console.log("\n[16-18] zod の $ref 回帰防止（vec の使い回し禁止）"
   } else {
     console.log("  --  zod-to-json-schema を解決できないため $ref 検査はスキップ");
   }
+}
+
+// 19-21. set_component で触れないコンポーネント（B11）— 「unknown」ではなく
+//        「専用ツールの担当」だと言い切れているか。名前を推測して撃ち直させない。
+{
+  const t = nonSettableComponentError("terrain")!;
+  assert.ok(t, "terrain は set_component 非対応として弾く");
+  assert.equal(t.code, 6, "UNKNOWN_COMPONENT(6) を名乗る（エンジンと同じ code）");
+  assert.ok(t.hint!.includes("dx12_terrain_sculpt") && t.hint!.includes("dx12_terrain_paint"),
+    "代わりに使う専用ツールが hint に並ぶ");
+  pass("terrain は理由 + 代替ツール付きで弾かれる");
+
+  for (const key of ["sculptMesh", "sculpt", "gridPlane", "meshRenderer", "skeletalAnimation"]) {
+    const e = nonSettableComponentError(key);
+    assert.ok(e && e.hint && e.hint.length > 0, `${key} も弾かれ、代替手段が示される`);
+  }
+  pass("sculptMesh / sculpt / gridPlane / meshRenderer / skeletalAnimation も同様");
+
+  for (const key of ["pointLight", "uiRect", "trigger", "tags", "transform", "", "  ", "unknownThing"]) {
+    assert.equal(nonSettableComponentError(key), null, `${key} は素通りしてエンジンへ届く`);
+  }
+  assert.equal(nonSettableComponentError(undefined), null);
+  pass("触れるコンポーネント / 未知の名前は素通り（エンジンの判断を奪わない）");
 }
 
 console.log(`\nOK: sceneTools テスト ${passed} 件通過`);

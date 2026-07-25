@@ -43,13 +43,31 @@ export type EngineMethod = {
  */
 export function parseEngineMethods(cppSource: string): Map<string, EngineMethod> {
   const lines = cppSource.split(/\r?\n/);
-  const heads: { line: number; names: string[] }[] = [];
+  const all: { line: number; names: string[]; indent: number }[] = [];
   for (let i = 0; i < lines.length; i++) {
     const m = lines[i].match(
       /(?:^|\s)(?:else\s+)?if\s*\(method\s*==\s*"([a-z0-9_]+)"(?:\s*\|\|\s*method\s*==\s*"([a-z0-9_]+)")?\s*\)/,
     );
-    if (m) heads.push({ line: i, names: [m[1], m[2]].filter(Boolean) as string[] });
+    if (m) {
+      all.push({
+        line: i,
+        names: [m[1], m[2]].filter(Boolean) as string[],
+        indent: (lines[i].match(/^[ \t]*/) as RegExpMatchArray)[0].length,
+      });
+    }
   }
+  // ★入れ子の `if (method == "...")` を分岐の頭と誤認しない。
+  //   1 ブロックで 2 method を捌く所は中でもう一度 method を見る
+  //   (overlap_box||overlap_sphere / terrain_paint||terrain_autopaint)。
+  //   これを頭と数えるとブロックが途中で切れ、前半のキーが落ちて【ドリフトを見逃す】。
+  //   本物の else-if 連鎖は全部同じインデントに並ぶので、最頻インデントだけを採用する。
+  const histogram = new Map<number, number>();
+  for (const h of all) histogram.set(h.indent, (histogram.get(h.indent) ?? 0) + 1);
+  let topIndent = 0, topCount = -1;
+  for (const [indent, count] of histogram) {
+    if (count > topCount || (count === topCount && indent < topIndent)) { topIndent = indent; topCount = count; }
+  }
+  const heads = all.filter((h) => h.indent === topIndent);
   const out = new Map<string, EngineMethod>();
   for (let k = 0; k < heads.length; k++) {
     const from = heads[k].line;

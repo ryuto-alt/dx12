@@ -38,12 +38,16 @@ for (const m of [
   "pick", "raycast_precise",
   // 地形・スカルプトの問い合わせ / 軽い編集(同期)
   "terrain_sample", "terrain_sculpt", "sculpt_brush",
+  // 地形レイヤーの円ブラシ塗り(スプラットの一部だけ触るので軽い)
+  "terrain_paint",
   // ライティング(同期)
   "list_lights", "set_sun", "apply_lighting_preset",
 ]) TIMEOUT_BY_METHOD[m] = 8000;
 // 地形の一発生成 / 浸食は解像度 512 だと数十万セルを何周もするので長め。
 TIMEOUT_BY_METHOD["terrain_generate"] = 30000;
 TIMEOUT_BY_METHOD["terrain_erode"]    = 60000;
+// autopaint は解像度 512 のスプラット全面を高さ/傾斜から焼き直す(terrain_generate と同じ桁)。
+TIMEOUT_BY_METHOD["terrain_autopaint"] = 30000;
 // 遅延同期(地形/スカルプトの生成。CPU メッシュ生成 + GPU アップロードをフレーム境界で行う)。
 for (const m of ["terrain_create", "sculpt_create", "sculpt_make_editable"])
   TIMEOUT_BY_METHOD[m] = 45000;

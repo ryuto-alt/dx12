@@ -61,6 +61,66 @@ export const DIAG_CHECKS = [
 /** 重い検査（assets 全走査）。速く回したいときはこれを外す。 */
 export const DIAG_SLOW_CHECKS = ["textures", "models"] as const;
 
+// ── set_component で触れないコンポーネント（B11）────────────────────────────
+//
+// ★エンジン側の事実（src/core/Application.cpp を読んで確認）
+//   set_component は transform → ApplyOrphanComponent(gimmick/audioSource/particleEmitter/trigger
+//   の 4 つだけ) → RemoveRegisteredComponent + 登録済みデシリアライザ、の順で処理する
+//   (Application.cpp:4023-4079)。terrain / sculptMesh / gridPlane はそのどれにも載っていないので
+//   RemoveRegisteredComponent(:2223-2259) が false を返し、UNKNOWN_COMPONENT
+//   「unknown/unsupported component」で落ちる。
+//   これは事故ではなく設計で、describe_components も settable:false と申告している
+//   (:3039 terrain / :3053 sculptMesh / :2894 meshRenderer / :3021 skeletalAnimation)。
+//   コンポーネントを作り直すと、生きている高さ配列・頂点配列とメッシュ/コライダーの結び付きが切れるため。
+//
+//   問題は【エラー文が "unknown"】なこと。実際は「知らない」のではなく「専用ツールを使え」なので、
+//   AI は名前を推測して撃ち直す(sculpt / sculptMesh / Terrain …)。ここでエンジンへ送る前に
+//   本当の理由と代わりの手段を返す。
+export const NON_SETTABLE_COMPONENTS: Readonly<Record<string, { why: string; use: string }>> = {
+  terrain: {
+    why: "高さ配列(assets/terrain/*.hf)を持つ生きたコンポーネントで、作り直すとメッシュとコライダーとの結び付きが切れる",
+    use: "dx12_terrain_create(worldSize/maxHeight/uvScale/color の更新も兼ねる冪等ツール) / "
+      + "dx12_terrain_generate / dx12_terrain_sculpt / dx12_terrain_erode / dx12_terrain_sample / "
+      + "dx12_terrain_paint / dx12_terrain_autopaint",
+  },
+  sculptMesh: {
+    why: "頂点配列(assets/sculpt/*.smsh)を持つ生きたコンポーネントで、terrain と同じ理由で作り直せない",
+    use: "dx12_sculpt_create(uvScale/color/collision の更新も兼ねる) / dx12_sculpt_make_editable / dx12_sculpt_brush",
+  },
+  sculpt: {
+    why: "シーン JSON 上のキー名。get_entity / describe_components が使う jsonKey は sculptMesh。どちらにせよ set_component では触れない",
+    use: "dx12_sculpt_create / dx12_sculpt_make_editable / dx12_sculpt_brush",
+  },
+  gridPlane: {
+    why: "エディタの参照グリッド専用マーカー。シーン読み込み時に size を無視して常に最新値で作り直す実装なので、書いても意味が無い(SceneSerializer.cpp:1112-1118)",
+    use: "触る必要は無い。床が欲しいなら dx12_create_entity type:\"plane\" か dx12_terrain_create",
+  },
+  meshRenderer: {
+    why: "メッシュ実体(GPU バッファ)の所有整合が要るため set_component 非対応",
+    use: "モデル差し替えは dx12_spawn_model / 見た目は dx12_material_apply・dx12_set_texture・dx12_set_pbr・dx12_set_color・dx12_set_mesh_shader",
+  },
+  skeletalAnimation: {
+    why: "モデルロード時に作られる読み取り専用コンポーネント",
+    use: "dx12_get_anim_state で一覧、dx12_play_anim で再生",
+  },
+};
+
+/**
+ * set_component に渡された component が「専用ツール側の担当」なら、その旨のエラーを返す。
+ * 触れるコンポーネントなら null（＝そのままエンジンへ流す）。
+ */
+export function nonSettableComponentError(component: unknown): ToolError | null {
+  const key = typeof component === "string" ? component.trim() : "";
+  const info = NON_SETTABLE_COMPONENTS[key];
+  if (!info) return null;
+  const e = new Error(
+    `${key} は dx12_set_component では設定できない(describe_components も settable:false と申告している)。理由: ${info.why}`,
+  ) as ToolError;
+  e.code = ERR.UNKNOWN_COMPONENT;
+  e.hint = `代わりに ${info.use} を使う。同じ名前で撃ち直しても結果は変わらない`;
+  return e;
+}
+
 /** 地形ブラシのストローク点。ワールド XZ 座標の配列へ正規化する。 */
 export type StrokePoint = [number, number];
 

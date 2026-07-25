@@ -50,8 +50,11 @@ args = ["C:\\Users\\<you>\\dx12-mcp\\index.ts"]
 
 ## 構成
 - `engineClient.ts` … TCP フレーミング + id 相関の薄いクライアント（ポートは env `DX12_MCP_PORT` → `%TEMP%/dx12_mcp.port` → 8787 の順で自動解決。別マシンは `DX12_MCP_HOST`）
-- `index.ts` … MCP サーバ本体(stdio)。115 ツールを公開（全量はエンジンリポジトリの [docs/MCP.md](https://github.com/ryuto-alt/dx12/blob/main/docs/MCP.md) 参照）
+- `index.ts` … MCP サーバ本体(stdio)。128 ツールを公開（全量はエンジンリポジトリの [docs/MCP.md](https://github.com/ryuto-alt/dx12/blob/main/docs/MCP.md) 参照）
 - `sceneTools.ts` … 地形/スカルプト/診断の引数正規化と共通 zod 部品（純ロジック・エンジン非依存）
+- `materialApply.ts` … `dx12_material_apply` の純ロジック（ファイル名からのテクスチャ用途推定、`hasOverride` の罠の回避）
+- `paramGuard.ts` … 未知の引数を黙って捨てず「近い正解」を返す共通部品 + 適用後の読み返し照合
+- `schemaDrift.ts` … `Application.cpp` と TS スキーマの食い違いを検出するパーサ（`schemaDrift.test.ts` が使う）
 - `lookCompare.ts` … 3D の絵の測光（対数輝度ヒストグラム/CCT/彩度/黒潰れ）と参照画像との差分・示唆生成
 - `contactSheet.ts` … カメラ経路の生成とコンタクトシート合成（連続フレーム差分つき）
 - `sceneWrite.ts` … シーン JSON の検証・要約・書き出し先の解決（`SceneSerializer.cpp` のスキーマと 1:1）
@@ -65,7 +68,7 @@ args = ["C:\\Users\\<you>\\dx12-mcp\\index.ts"]
 |---|---|
 | エンティティ | `dx12_list_entities` `dx12_get_entity` `dx12_create_entity` `dx12_delete_entity` `dx12_set_transform` `dx12_set_parent` `dx12_group_entities` `dx12_duplicate_entity` |
 | コンポーネント | `dx12_describe_components` `dx12_set_component` `dx12_remove_component`（particleEmitter / trailRenderer / networkIdentity / networkTransform 等も対応） |
-| 見た目 | `dx12_set_pbr` `dx12_set_color` `dx12_set_texture` `dx12_create_shader` `dx12_set_mesh_shader` `dx12_set_sprite_shader` `dx12_set_post_process` `dx12_set_ssao` |
+| 見た目 | `dx12_material_apply`（PBR 4点セットを1回で。フォルダ名から用途推定 + ORM が効く状態に自動調整） `dx12_set_pbr` `dx12_set_color` `dx12_set_texture` `dx12_create_shader` `dx12_set_mesh_shader` `dx12_set_sprite_shader` `dx12_set_post_process` `dx12_set_ssao` |
 | Lua | `dx12_create_lua_component` `dx12_attach_lua_component` `dx12_set_lua_property` `dx12_eval_lua` `dx12_describe_lua_api` |
 | アニメーション | `dx12_play_anim` `dx12_get_anim_state` |
 | マルチプレイヤー | `dx12_net_setup` `dx12_net_status` `dx12_net_launch_test_client` |
@@ -73,7 +76,7 @@ args = ["C:\\Users\\<you>\\dx12-mcp\\index.ts"]
 | シーン編集強化 | `dx12_get_bounds` `dx12_look_at` `dx12_snap_to_ground` `dx12_get_hierarchy` `dx12_set_editor_camera` `dx12_screenshot_from` `dx12_scatter` |
 | アセット操作 | `dx12_import_asset` `dx12_asset_info` `dx12_move_asset` `dx12_delete_asset` `dx12_view_texture` `dx12_preview_model` |
 | 精密ピック | `dx12_pick`（画面座標→三角形精密ヒット列） `dx12_raycast_precise`（描画メッシュ基準のワールドレイ） |
-| 地形 | `dx12_terrain_create` `dx12_terrain_generate` `dx12_terrain_sculpt` `dx12_terrain_erode` `dx12_terrain_sample` |
+| 地形 | `dx12_terrain_create` `dx12_terrain_generate` `dx12_terrain_sculpt` `dx12_terrain_erode` `dx12_terrain_sample` `dx12_terrain_autopaint`（傾斜/標高から4層を焼き直す・冪等） `dx12_terrain_paint`（円ブラシで1層を塗る・相対） |
 | スカルプト | `dx12_sculpt_create` `dx12_sculpt_make_editable` `dx12_sculpt_brush` |
 | ライティング | `dx12_list_lights`（灯数バジェット警告つき） `dx12_set_sun` `dx12_apply_lighting_preset` |
 | 診断 | `dx12_diagnose`（シェーダー/テクスチャ/シーン参照/ライト/地形/ピッキング/Lua を一括検査） |

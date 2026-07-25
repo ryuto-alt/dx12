@@ -11,8 +11,8 @@ import { compareUiImages } from "./uiCompare.ts";
 import { downloadFont } from "./uiAssets.ts";
 import {
   LIGHTING_PRESETS, SCULPT_BRUSHES, SCULPT_PRIMITIVES, TERRAIN_BRUSHES, TERRAIN_PRESETS,
-  DIAG_CHECKS, fastDiagnoseOnly, normalizeDiagnoseOnly, normalizeStrokePoints,
-  argError, v2, v3, v4,
+  DIAG_CHECKS, fastDiagnoseOnly, nonSettableComponentError, normalizeDiagnoseOnly,
+  normalizeStrokePoints, argError, v2, v3, v4,
 } from "./sceneTools.ts";
 import { compareLook, roundDelta, roundStats } from "./lookCompare.ts";
 import { buildContactSheet, planCameraPath, type PathMode } from "./contactSheet.ts";
@@ -24,6 +24,10 @@ import {
   COMPOSITE_TOOLS, METHOD_KEY_ALIASES, definedOnly, unknownKeyError, unknownParamKeys,
   verifyApplied,
 } from "./paramGuard.ts";
+import {
+  HEIGHT_UNSUPPORTED_REASON, ROLE_TO_SLOT,
+  filesDirectlyUnder, planPbr, resolveTextureSet, validateScalar, verifyTextureOverrides,
+} from "./materialApply.ts";
 
 // DX12 ゲームエンジン用 MCP サーバ。Codex / Claude Code から接続し、
 // 起動中のエディタ(TCP 127.0.0.1:<port>)を叩いてゲームを作っていくための入口。
@@ -434,7 +438,14 @@ reg(
   },
   { idempotentHint: true },
   ({ entity, name, component, data }) =>
-    run(() => engine.call("set_component", { entity, name, component, data })),
+    run(() => {
+      // ★B11: terrain / sculptMesh / gridPlane 等はエンジンが UNKNOWN_COMPONENT で弾く
+      //   (専用ツールの担当だから。詳細は sceneTools.ts の NON_SETTABLE_COMPONENTS)。
+      //   "unknown" と言われると AI が名前を推測して撃ち直すので、送る前に本当の理由を返す。
+      const blocked = nonSettableComponentError(component);
+      if (blocked) throw blocked;
+      return engine.call("set_component", { entity, name, component, data });
+    }),
 );
 
 reg(
@@ -1324,6 +1335,192 @@ reg(
 );
 
 reg(
+  "dx12_material_apply",
+  "PBRマテリアル一括割当",
+  "PBR の 4 点セット(BaseColor / Normal / ORM / Height)を 1 回でエンティティへ割り当てる合成ツール。"
+  + "dx12_set_texture を 3 回 + dx12_set_pbr を叩く手間を畳んだもの。★dir に素材フォルダ(assets 相対)を "
+  + "渡すと中のファイル名から用途を推定する(Poly Haven 系の diff / nor_gl / arm / disp、および "
+  + "albedo / basecolor / ORM / RMA / displacement 等)。推定できなかったファイルは黙って捨てず "
+  + "ignored に理由付きで返す。個別に baseColor / normal / orm / height を渡せば推定より優先される。"
+  + "★重要(既知の罠): エンジンは metallic/roughness の数値上書きが 1 つでも残っていると ORM テクスチャを "
+  + "無効化する(Application.cpp:11617 の hasOverride が PBR flags から 2u を落とす)。dx12_spawn_model 経由の "
+  + "モデルはシーン JSON の material.metallic/roughness からこの上書きが入っていることが多い。このツールは "
+  + "ORM を割り当てるとき自動で metallic/roughness を -1(=上書き解除)へ戻すので、そのままで ORM が効く。"
+  + "metallic/roughness を明示指定した場合はその指定を尊重するが、ORM が無効化されることを warnings で返す。"
+  + "★height(disp) はメッシュに割当先が無い(set_texture の slot は albedo/normal/metalRoughness だけ)。"
+  + "渡しても ignored に理由付きで出る。変位が使えるのは地形の .terrainlayers だけ。"
+  + "★適用後に dx12_get_entity で読み返して照合し、食い違いがあれば applied:false + mismatched を返す。"
+  + "返り値 {applied, resolved, source, ignored, warnings, targets:[{entityId, name, textures, pbr, applied, mismatched?}]}。",
+  {
+    ...entityRef,
+    entities: z.array(z.union([z.number().int(), z.string()])).optional()
+      .describe("複数対象。エンティティ id(int) と 名前(string) を混ぜて渡せる。entity/name と併用可。"),
+    dir: z.string().optional()
+      .describe("素材フォルダの assets 相対パス(例 textures/red_brick_03)。直下のテクスチャをファイル名から用途推定して割り当てる。サブフォルダは見ない。"),
+    baseColor: z.string().optional().describe("BaseColor/Albedo の assets 相対パス。dir の推定より優先。"),
+    normal: z.string().optional().describe("法線マップの assets 相対パス。★OpenGL 規約(nor_gl)のみ。nor_dx は使えない。"),
+    orm: z.string().optional().describe("ORM/ARM(R=AO 未使用 / G=Roughness / B=Metallic)の assets 相対パス。set_texture の metalRoughness スロットへ入る。"),
+    metalRoughness: z.string().optional().describe("orm の別名(glTF 語彙で書きたいとき用)。orm と同時指定なら orm が勝つ。"),
+    height: z.string().optional().describe("変位(disp/height)。★メッシュには割当先が無いので ignored に理由付きで返るだけ。地形のレイヤー用。"),
+    submesh: z.number().int().optional().describe("サブメッシュ index(既定 0)。モデルのサブメッシュ数は dx12_get_entity の materialTextureOverrides で分かる。"),
+    uvScale: z.number().optional().describe("UV タイリング倍率(U/V 両方に入る)。タイル素材を広い床に貼るときに上げる。"),
+    uvScaleU: z.number().optional().describe("U 方向だけ個別指定(uvScale より優先)。"),
+    uvScaleV: z.number().optional().describe("V 方向だけ個別指定(uvScale より優先)。"),
+    metallic: z.number().optional().describe("金属度 0..1 の数値上書き、または -1 で上書き解除。★ORM を割り当てるなら省略が正解(省略時は自動で -1 にする)。"),
+    roughness: z.number().optional().describe("粗さ 0..1 の数値上書き、または -1 で上書き解除。★ORM を割り当てるなら省略が正解。"),
+  },
+  { idempotentHint: true },
+  (args: any) => run(async () => {
+    const { dir, submesh = 0 } = args;
+
+    // 1) 対象エンティティ(id / 名前を混ぜて受ける)。set_texture / get_entity はどちらも受け付ける。
+    //    entity と name は他ツールと同じく排他(両方来たら id を採る)。重複指定は畳んで二重適用を防ぐ。
+    const refs: { entity?: number; name?: string }[] = [];
+    const seen = new Set<string>();
+    const pushRef = (r: { entity?: number; name?: string }) => {
+      const key = r.entity !== undefined ? `#${r.entity}` : `@${r.name}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      refs.push(r);
+    };
+    if (args.entity !== undefined) pushRef({ entity: args.entity });
+    else if (args.name !== undefined) pushRef({ name: args.name });
+    for (const t of args.entities ?? []) {
+      pushRef(typeof t === "number" ? { entity: t } : { name: t });
+    }
+    if (refs.length === 0) {
+      throw argError("対象エンティティが指定されていない",
+        "entity(id) / name / entities:[id か 名前の配列] のどれかを渡す。id は dx12_list_entities で分かる");
+    }
+
+    // 2) 数値の範囲は投げる前に見る(エンジンはクランプせずそのまま入れるので -1 以外の負値は事故)。
+    for (const [k, v] of [["metallic", args.metallic], ["roughness", args.roughness]] as const) {
+      const msg = validateScalar(k, v as number | undefined);
+      if (msg) throw argError(msg, "ORM テクスチャを効かせたいなら metallic/roughness は省略する(自動で -1 にする)");
+    }
+
+    // 3) dir を展開してファイル名から用途を推定 → 明示指定と突き合わせる。
+    let files: string[] = [];
+    if (dir) {
+      const assets = await engine.call("list_assets", { type: "texture" });
+      files = filesDirectlyUnder(dir, Array.isArray(assets) ? assets as { path: string }[] : []);
+      if (files.length === 0) {
+        throw argError(`dir "${dir}" の直下にテクスチャが 1 枚も無い`,
+          "assets 相対のフォルダを渡す(例 textures/red_brick_03)。中身は dx12_list_assets type:\"texture\" で確認できる");
+      }
+    }
+    const resolved = resolveTextureSet({
+      files,
+      explicit: {
+        baseColor: args.baseColor,
+        normal: args.normal,
+        orm: args.orm ?? args.metalRoughness,
+        height: args.height,
+      },
+    });
+    const ignored = [...resolved.ignored];
+
+    // height はメッシュに割当先が無い。捨てるが【何を捨てたか】は必ず返す。
+    if (resolved.textures.height) {
+      ignored.push({ path: resolved.textures.height, reason: HEIGHT_UNSUPPORTED_REASON });
+      delete resolved.textures.height;
+      delete resolved.source.height;
+    }
+
+    const slots: Record<string, string> = {};
+    for (const role of ["baseColor", "normal", "orm"] as const) {
+      const p = resolved.textures[role];
+      const slot = ROLE_TO_SLOT[role];
+      if (p && slot) slots[slot] = p;
+    }
+    const plan = planPbr({
+      hasOrm: slots.metalRoughness !== undefined,
+      metallic: args.metallic, roughness: args.roughness,
+      uvScale: args.uvScale, uvScaleU: args.uvScaleU, uvScaleV: args.uvScaleV,
+    });
+    if (Object.keys(slots).length === 0 && plan.call === null) {
+      throw argError("割り当てるものが 1 つも無い",
+        "dir で素材フォルダを渡すか、baseColor / normal / orm のどれかを直接指定する",
+      );
+    }
+
+    const warnings = [...plan.warnings];
+    if (plan.clearedScalarOverride) {
+      warnings.push("ORM を有効にするため metallic/roughness の数値上書きを -1(=Material の値を使う)へ戻した。"
+        + "数値で金属感を作りたい場合は metallic/roughness を明示指定すること(ただし ORM は効かなくなる)");
+    }
+
+    // 4) 適用 → 読み返して照合。エンジンは set_texture に対し applied:true 相当を返すだけなので鵜呑みにしない。
+    const targets: any[] = [];
+    for (const ref of refs) {
+      const t: any = { ...ref, textures: {}, applied: false };
+      try {
+        for (const [slot, path] of Object.entries(slots)) {
+          const r = await engine.call("set_texture", { ...ref, path, slot, submesh });
+          t.entityId = (r as any)?.entityId ?? t.entityId;
+          t.textures[slot] = path;
+        }
+        if (plan.call) {
+          const r: any = await engine.call("set_pbr", { ...ref, ...plan.call });
+          t.entityId = r?.entityId ?? t.entityId;
+          // set_pbr は上書きの【生値】(-1 込み)を返す。get_entity の material.metallic は
+          // 上書きを解決した後の実効値なので -1 に戻したことを確認できない ＝ ここで照合する。
+          t.pbr = { metallic: r?.metallic, roughness: r?.roughness, uvScaleU: r?.uvScaleU, uvScaleV: r?.uvScaleV };
+          t.mismatched = verifyApplied(plan.call as Record<string, unknown>, r);
+        } else {
+          t.mismatched = [];
+        }
+
+        const ent: any = await engine.call("get_entity", ref);
+        t.entityId = ent?.entityId ?? t.entityId;
+        if (ent?.name) t.name = ent.name;
+        const entry = Array.isArray(ent?.materialTextureOverrides)
+          ? ent.materialTextureOverrides[submesh] : undefined;
+        t.mismatched = [...t.mismatched, ...verifyTextureOverrides(slots, entry)];
+
+        // 「割り当てたのに絵が変わらない」を先回りして名指しする。どちらもエンジンの仕様。
+        const assigned = Array.isArray(ent?.materialAssets) ? ent.materialAssets[submesh] : undefined;
+        if (assigned) {
+          t.warning = `.dxmat(${assigned}) が割り当たっているので、このテクスチャ上書きは描画に使われない`
+            + "(優先度: materialAsset > テクスチャ上書き > モデル焼き込み Material)。"
+            + "上書きを効かせたいならシーン JSON の materialAssets を空にする(dx12_scene_write)";
+        } else if (ent?.primitive && (slots.normal || slots.metalRoughness)) {
+          t.warning = `プリミティブ(${ent.primitive})の焼き込み Material は法線/metalRoughness テクスチャを持たないため、`
+            + "描画側が PBR flags を立てず normal / ORM は無視される可能性が高い"
+            + "(Application.cpp:11615-11618 が mat->normalMapTexture / mat->metalRoughnessTexture しか見ていない)。"
+            + "法線と ORM を効かせたいならモデル(.gltf)へ貼るか .dxmat を使う";
+        }
+        t.applied = t.mismatched.length === 0;
+        if (t.mismatched.length === 0) delete t.mismatched;
+      } catch (e: any) {
+        t.error = e.message;
+        if (e.code != null) t.error_code = e.code;
+      }
+      targets.push(t);
+    }
+
+    const applied = targets.length > 0 && targets.every((t) => t.applied);
+    const out: any = {
+      applied,
+      resolved: resolved.textures,
+      source: resolved.source,
+      slots,
+      submesh,
+      targets,
+    };
+    if (plan.call) out.pbrRequested = plan.call;
+    if (ignored.length > 0) out.ignored = ignored;
+    if (warnings.length > 0) out.warnings = warnings;
+    if (!applied) {
+      out.hint = "要求したパスがエンティティに入っていない。targets[].mismatched / error を見ること。"
+        + "同じ呼び出しを繰り返しても変わらない(パスが assets 相対で実在するか、対象に meshRenderer があるかを疑う)";
+    }
+    out.nextStep = "dx12_focus_and_screenshot で絵を確認する(テクスチャは即時反映される)";
+    return out;
+  }),
+);
+
+reg(
   "dx12_play_anim",
   "アニメーション再生",
   "スケルタルアニメーションのクリップをクロスフェード再生する(Lua の playAnim/playAnimByName と同じ経路)。clipName(名前) か clip(index) で指定、blend はフェード秒(既定 0.3)。loop を渡すとループ設定、speed を渡すと再生速度倍率も変更。クリップ一覧は dx12_get_anim_state で確認。★アニメーションの更新は Play 中に進む。entity(id) か name 指定。",
@@ -2023,6 +2220,67 @@ reg(
   },
   { idempotentHint: false },
   (a) => run(() => engine.call("terrain_erode", a)),
+);
+
+// ── 地形のテクスチャレイヤー（4 層スプラット。terrain.layerSetPath 必須）──────────
+// ★エンジン側は Application.cpp:6358 の 1 ブロックで terrain_paint / terrain_autopaint の
+//   両方を捌いている。受け付ける引数はそこを読んで写した(憶測なし)。
+//   共通の前提: layerSetPath が空なら INVALID_PARAM、Playing 中は MODE_CONFLICT。
+
+reg(
+  "dx12_terrain_paint",
+  "地形レイヤーを塗る",
+  "地形のテクスチャレイヤー(4 層スプラット)の重みを円ブラシで塗る。layer は 0..3 で "
+  + ".terrainlayers の並び順(既定は 0=草 / 1=土 / 2=岩 / 3=雪)。座標は【ワールド XZ】で "
+  + "point:[x,z] が 1 点、points:[[x,z],...] が連続ストローク(最大 512 点。道や崖の帯を一気に引ける)。"
+  + "★相対操作: 同じ呼び出しを 2 回撃つと 2 回ぶん塗れる。strength:1 で 1 回塗ればそのレイヤー 100%、"
+  + "他レイヤーは合計 1 を保つよう比例縮小される。全面を傾斜/標高から焼き直すなら dx12_terrain_autopaint。"
+  + "★高さを彫り直しても重みは追従しない(彫った後は autopaint し直すか、ここで塗り直す)。"
+  + "★前提: terrain.layerSetPath に .terrainlayers が割り当たっていること(未設定なら INVALID_PARAM)。"
+  + "割当は地形ツール窓かシーン JSON(dx12_scene_write)から — set_component では触れない。"
+  + "返り値 {entityId, layer, points, radius, strength, changed, splatSize}。★Editor 限定。",
+  {
+    ...entityRef,
+    layer: z.number().int().optional().describe("塗るレイヤー index 0..3(既定 0)。.terrainlayers の並び順。"),
+    point: v2().optional().describe("[x,z] ワールド座標の 1 点。"),
+    points: z.array(z.array(z.number())).optional().describe("[[x,z],...] 連続ストローク(最大 512 点)。[x,y,z] でも可(y は無視)。"),
+    worldPos: v3().optional().describe("[x,y,z] ワールド座標(y は無視)。dx12_pick の worldPos をそのまま渡せる。"),
+    radius: z.number().optional().describe("ブラシ半径 m(既定 12、0.01..地形の worldSize)。"),
+    strength: z.number().optional().describe("1 ストロークぶんの塗り量 0..1(既定 0.7)。1 なら一発でそのレイヤー 100%。"),
+    falloff: z.number().optional().describe("縁のぼかし 0..1(既定 0.5)。0=硬い縁 / 1=とろけるように滑らか。"),
+  },
+  { idempotentHint: false },
+  ({ point, points, worldPos, ...rest }) =>
+    run(() => {
+      // 点の形は Node 側で畳んでから渡す(dx12_terrain_sculpt と同じ流儀)。
+      // エンジンは point / points / worldPos を【全部足し込む】ので、そのまま流すと二度塗りになる。
+      const pts = normalizeStrokePoints({ point, points, worldPos });
+      return engine.call("terrain_paint", { ...rest, points: pts });
+    }),
+);
+
+reg(
+  "dx12_terrain_autopaint",
+  "地形レイヤーを自動で焼き直す",
+  "傾斜と標高から 4 層のスプラット重みを全面焼き直す(草→土→岩→雪)。★冪等: 何度呼んでも同じ結果になり、"
+  + "手で塗った内容(dx12_terrain_paint)は上書きされて消える。しきい値の傾斜は 0=平ら 〜 1=垂直、"
+  + "標高は【ワールド Y(m)】。rock*/dirt* は Start で混ざり始め End で完全に置き換わる。"
+  + "snowHeightStart/End はどちらか渡した時点で自動雪線を切って手動になる(両方渡すのが安全)。"
+  + "★地形を作った/彫った直後の基本手順は「terrain_generate → terrain_erode → autopaint → 仕上げに terrain_paint」。"
+  + "★前提: terrain.layerSetPath に .terrainlayers が割り当たっていること(未設定なら INVALID_PARAM)。"
+  + "返り値 {entityId, splatSize}。★Editor 限定。",
+  {
+    ...entityRef,
+    rockSlopeStart: z.number().optional().describe("岩が混ざり始める傾斜 0..1(0=平ら, 1=垂直)。"),
+    rockSlopeEnd: z.number().optional().describe("岩だけになる傾斜 0..1。Start より大きくする。"),
+    dirtSlopeStart: z.number().optional().describe("土が混ざり始める傾斜 0..1。岩より緩い側。"),
+    dirtSlopeEnd: z.number().optional().describe("土だけになる傾斜 0..1。"),
+    snowHeightStart: z.number().optional().describe("雪が積もり始める標高(ワールド Y, m)。指定すると自動雪線が切れる。"),
+    snowHeightEnd: z.number().optional().describe("完全に雪になる標高(ワールド Y, m)。Start と対で渡す。"),
+    noiseStrength: z.number().optional().describe("境界を乱すノイズ量 0..1。0 だと帯が定規で引いたようになる。"),
+  },
+  { idempotentHint: true, destructiveHint: true },
+  (a) => run(() => engine.call("terrain_autopaint", a)),
 );
 
 reg(

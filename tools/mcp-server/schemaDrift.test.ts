@@ -48,11 +48,18 @@ const SPREADS: Record<string, string[]> = { "...entityRef": ["entity", "name"] }
 
 /**
  * 同じ if 分岐が 2 つの method を受けているせいで、相手側のキーまで拾ってしまう分。
- * (overlap_box / overlap_sphere は 1 ブロックで両方を処理している)
+ * (`method == "a" || method == "b"` の形。パーサはブロックを分けられないので両方に同じ集合が付く)
+ * ★ここに書くのは「相手 method のキー」だけ。自分のキーを書くと本物のドリフトを見逃す。
  */
 const SHARED_BLOCK_KEYS: Record<string, string[]> = {
   overlap_box: ["radius"],
   overlap_sphere: ["halfExtents"],
+  // Application.cpp:6358 `terrain_paint || terrain_autopaint`
+  terrain_paint: [
+    "rockSlopeStart", "rockSlopeEnd", "dirtSlopeStart", "dirtSlopeEnd",
+    "snowHeightStart", "snowHeightEnd", "noiseStrength",
+  ],
+  terrain_autopaint: ["layer", "radius", "strength", "falloff", "point", "points", "worldPos"],
 };
 
 console.log("[0] パーサ自体が壊れていないこと");
@@ -65,6 +72,17 @@ check("代表的な method / ツールが取れている",
 check("スプレッドが全部 SPREADS に載っている",
   tools.every((t) => t.schemaKeys.every((k) => !k.startsWith("...") || k in SPREADS)),
   tools.flatMap((t) => t.schemaKeys.filter((k) => k.startsWith("...") && !(k in SPREADS))).join(","));
+{
+  // 入れ子の `if (method == "...")` を分岐の頭と誤認しないこと。誤認するとブロックが途中で切れ、
+  // 前半で読んでいるキーが丸ごと落ちて【ドリフトを検出できなくなる】(terrain_paint が
+  // entity/name しか持たない状態になっていた)。両 method が同じ行・同じ全部入りの集合になるのが正。
+  const paint = engine.get("terrain_paint");
+  const auto = engine.get("terrain_autopaint");
+  check("`a || b` の分岐は 1 ブロックとして両 method に同じ集合が付く",
+    paint != null && auto != null && paint.line === auto.line
+    && paint.keys.includes("layer") && paint.keys.includes("rockSlopeStart"),
+    `paint=${JSON.stringify(paint)} / auto=${JSON.stringify(auto)}`);
+}
 
 const keysOf = (t: { schemaKeys: string[] }) =>
   new Set(t.schemaKeys.flatMap((k) => (k.startsWith("...") ? (SPREADS[k] ?? []) : [k])));
@@ -167,6 +185,47 @@ console.log("\n[5] 列挙値(sceneTools.ts の定数 ⇔ engine の表)");
       JSON.stringify(engineValues) === JSON.stringify([...tsValues]),
       `engine=[${engineValues.join(",")}] / ts=[${tsValues.join(",")}]`);
   }
+}
+
+console.log("\n[6] SHARED_BLOCK_KEYS が本物のドリフトを隠していないこと");
+{
+  // ここに自分のキーを書くと [2] が素通りしてしまう。載せていいのは「相方 method のキー」だけ。
+  const leaks: string[] = [];
+  for (const [method, keys] of Object.entries(SHARED_BLOCK_KEYS)) {
+    const t = tools.find((x) => x.tool === `dx12_${method}`);
+    if (!t) { leaks.push(`dx12_${method} が index.ts に無い`); continue; }
+    const declared = keysOf(t);
+    const own = keys.filter((k) => declared.has(k));
+    if (own.length > 0) leaks.push(`${method}: 自分で宣言しているキーを除外している → ${own.join(", ")}`);
+  }
+  check("除外リストは相方 method のキーだけ", leaks.length === 0, leaks.join("\n      "));
+}
+
+console.log("\n[7] 今回追加したツールが宣言を取りこぼしていないこと");
+{
+  // [2] は「エンジン ⊇ TS」しか見ない(共有ブロックのぶんは除外される)ので、
+  // 地形ペイント 2 本については「TS が実際に何を宣言しているか」も名指しで固定する。
+  const want: Record<string, string[]> = {
+    dx12_terrain_paint: ["entity", "name", "layer", "point", "points", "worldPos", "radius", "strength", "falloff"],
+    dx12_terrain_autopaint: ["entity", "name", "rockSlopeStart", "rockSlopeEnd", "dirtSlopeStart",
+      "dirtSlopeEnd", "snowHeightStart", "snowHeightEnd", "noiseStrength"],
+  };
+  for (const [tool, keys] of Object.entries(want)) {
+    const t = tools.find((x) => x.tool === tool);
+    if (!t) { check(`${tool} が登録されている`, false); continue; }
+    const declared = keysOf(t);
+    const missing = keys.filter((k) => !declared.has(k));
+    check(`${tool} が engine の引数を全部宣言している`, missing.length === 0, `足りない: ${missing.join(", ")}`);
+  }
+  const mat = tools.find((t) => t.tool === "dx12_material_apply");
+  check("dx12_material_apply が登録されている & 合成ツール扱い",
+    mat != null && COMPOSITE_TOOLS.has("dx12_material_apply"));
+  check("dx12_material_apply は既存 method だけで組んである(新しい C++ method を要求しない)",
+    mat != null && mat.methods.every((m) => engine.has(m)) && mat.methods.length > 0,
+    `methods=${mat?.methods.join(",")}`);
+  check("dx12_material_apply が set_texture / set_pbr / get_entity を使う",
+    mat != null && ["set_texture", "set_pbr", "get_entity"].every((m) => mat.methods.includes(m)),
+    `methods=${mat?.methods.join(",")}`);
 }
 
 console.log(failed === 0

@@ -471,6 +471,58 @@ dx12_set_texture(name:"Wall", path:"")                 # 解除(Material 既定�
 Inspector の D&D と同じインスタンス単位 override。Material は共有なので他インスタンスに波及しない。
 スプライトのテクスチャは `dx12_set_component(component:"sprite2d", data:{texturePath:...})` の方。
 
+### ★PBR マテリアルは 1 発で当てる — `dx12_material_apply`
+
+`set_texture` を 3 回叩くのは往復が多いうえ、**後述の罠を踏むと ORM が効かない**。
+素材フォルダを渡せば用途を推定して全部やってくれるこちらを既定にする。
+
+```
+dx12_material_apply(name:"Wall", dir:"textures/red_brick_03", uvScale:4)
+# → {applied:true,
+#     slots:{albedo:".../red_brick_03_diff.jpg",
+#            normal:".../red_brick_03_nor_gl.png",
+#            metalRoughness:".../red_brick_03_arm.png"},
+#     pbrRequested:{metallic:-1, roughness:-1, uvScaleU:4, uvScaleV:4},
+#     ignored:[{path:".../red_brick_03_disp.png", reason:"メッシュに高さ/変位テクスチャのスロットが無い…"}],
+#     warnings:["ORM を有効にするため metallic/roughness の数値上書きを -1 へ戻した"]}
+
+# 複数エンティティ / 個別指定 / サブメッシュ
+dx12_material_apply(entities:[12,"Floor","Wall_02"], dir:"textures/concrete_02")
+dx12_material_apply(entity:12, baseColor:"textures/a_diff.jpg", orm:"textures/a_arm.png", submesh:1)
+```
+
+**用途の推定規則**（`dir` を渡したとき。ファイル名を `_` `-` `.` で割って**最後に**当たった語を採る）:
+
+| 用途 | 拾う語 | set_texture の slot |
+|---|---|---|
+| BaseColor | `diff` `diffuse` `albedo` `basecolor` `color` `col` | `albedo` |
+| Normal | `nor` `normal` `norm` `nrm`（`nor_gl` を含む） | `normal` |
+| ORM/ARM | `arm` `orm` `rma` `mra` `metalroughness` … | `metalRoughness` |
+| Height | `disp` `displacement` `height` `bump` | **無し**（後述） |
+
+推定できなかったファイルは**黙って捨てず** `ignored:[{path, reason}]` に理由付きで返る。
+`nor_dx`（DirectX 規約の法線）は理由付きで**弾く** — このエンジンのシェーダは OpenGL 規約なので
+`nor_gl` を使うこと。`ao` / `rough` / `metal` 単体も「ORM にパックしたものを使え」と理由が出る。
+`disp`(height) はメッシュに割当先が無い（`set_texture` の slot は 3 つだけ）。変位を使えるのは
+地形の `.terrainlayers` だけ。
+
+**★踏みやすい罠: metallic/roughness の数値上書きが ORM テクスチャを殺す**
+
+エンジンは `overrideMetallic >= 0 || overrideRoughness >= 0` のときに PBR flags から
+metalRoughness テクスチャのビットを落とす（`Application.cpp` の `hasOverride`）。
+`dx12_spawn_model` で読み込んだモデルはシーン JSON の `material.metallic/roughness` から
+この上書きが入っていることが多く、**ORM を貼っても絵が変わらない**。
+
+- `dx12_material_apply` は ORM を割り当てるとき **自動で `metallic:-1 / roughness:-1`**（= 上書き解除）
+  を書くので、そのままで ORM が効く。`warnings` に何をしたか出る。
+- 逆に `metallic` / `roughness` を**明示指定すると ORM は無効になる**。指定は尊重するが警告が出る。
+  数値で金属感を作るか、テクスチャに任せるかのどちらかで、両取りはできない。
+- `dx12_set_texture` を手で叩くときは、**自分で `dx12_set_pbr(metallic:-1, roughness:-1)` を撃つこと**。
+
+適用後は `dx12_get_entity` で読み返して照合し、食い違えば `applied:false` + `mismatched` を返す。
+`.dxmat` が割り当たっているエンティティや、法線/ORM を貼ったプリミティブには
+`targets[].warning` で「割り当てても絵が変わらない理由」が付く。
+
 ### スケルタルアニメーション
 ```
 dx12_get_anim_state(name:"Player")                     # → {clips:["Idle","Walk","Run"]}
@@ -580,6 +632,22 @@ transform の変更は `dx12_set_transform` または `dx12_set_component(compon
 
 メッシュは `dx12_spawn_model` でモデルごとスポーンする。
 既存の meshRenderer を差し替えたい場合は `delete_entity` → `spawn_model` の手順で。
+
+### terrain / sculptMesh / gridPlane も set_component 不可（B11）
+
+`UNKNOWN_COMPONENT(6)` になるが、これは「知らない名前」ではなく**設計上そうしてある**。
+コンポーネントを作り直すと、生きている高さ配列（`.hf`）／頂点配列（`.smsh`）とメッシュ・
+コライダーの結び付きが切れるため。`dx12_describe_components` も `settable:false` と申告している。
+名前を変えて撃ち直しても通らないので、**専用ツールを使うこと**。
+
+| jsonKey | 代わりに使うもの |
+|---|---|
+| `terrain` | `dx12_terrain_create`（worldSize/maxHeight/uvScale/color の更新も兼ねる冪等ツール）/ `dx12_terrain_generate` / `dx12_terrain_sculpt` / `dx12_terrain_erode` / `dx12_terrain_paint` / `dx12_terrain_autopaint` / `dx12_terrain_sample` |
+| `sculptMesh`（JSON 上のキーは `sculpt`） | `dx12_sculpt_create` / `dx12_sculpt_make_editable` / `dx12_sculpt_brush` |
+| `gridPlane` | 触る必要が無い（読み込み時に `size` を無視して常に最新値で作り直す）。床が欲しいなら `dx12_create_entity(type:"plane")` か `dx12_terrain_create` |
+
+**どうしても JSON のフィールドを書きたい場合**（例: `terrain.layerSetPath` に `.terrainlayers` を
+割り当てる）は `dx12_scene_write` でシーン JSON を直接書いて `dx12_open_scene` で開き直す。
 
 ### tags は文字列配列で渡す
 
@@ -781,6 +849,35 @@ dx12_save_scene()
 ★地形の編集は**すべて Editor 限定**（Playing 中は `MODE_CONFLICT(3)` → 先に `dx12_stop`）。
 高さ配列は `assets/terrain/<name>.hf` に自動保存され、Jolt の当たり判定も同じ配列を読むので
 彫れば衝突も一緒に動く。
+
+### ワークフロー: 地形にテクスチャを塗る（4 層スプラット）
+
+`terrain.layerSetPath` に `.terrainlayers`（4 層の PBR 素材）が割り当たっている地形だけが対象。
+**未割当なら `INVALID_PARAM(2)`** で、割当は地形ツール窓かシーン JSON からしかできない
+（`dx12_set_component(component:"terrain")` は使えない → 後述の B11）。JSON から入れるなら
+`dx12_scene_write` でエンティティの `terrain.layerSetPath` を書く。
+
+```
+# ① 傾斜と標高から全面を焼き直す（★冪等。まずこれ。手で塗った内容は消える）
+dx12_terrain_autopaint(entity:88, rockSlopeStart:0.35, rockSlopeEnd:0.6,
+                       snowHeightStart:45, snowHeightEnd:70, noiseStrength:0.25)
+# → {entityId:88, splatSize:512}
+
+# ② 道・崖・広場だけ手で上書き（★相対操作。2 回撃つと 2 回ぶん塗れる）
+dx12_terrain_paint(entity:88, layer:1, points:[[-40,-20],[-10,0],[20,25]],
+                   radius:8, strength:1, falloff:0.3)
+# → {layer:1, points:3, changed:true, splatSize:512}
+
+dx12_step_frames(frames:2)
+dx12_screenshot_from(position:[0,180,-260], target:[0,0,0])
+```
+
+- `layer` は `.terrainlayers` の並び順（既定は 0=草 / 1=土 / 2=岩 / 3=雪）。
+- 座標は**ワールド XZ**。`dx12_pick` の `worldPos:[x,y,z]` をそのまま渡してよい（y は無視）。
+  `point` / `points` / `worldPos` は MCP 側で `points` に畳んでから送るので**二度塗りにならない**。
+- `strength:1` を 1 回でそのレイヤー 100%。他レイヤーは合計 1 を保つよう比例縮小される。
+- **高さを彫り直したら重みは追従しない**。`terrain_generate` / `terrain_sculpt` / `terrain_erode` の
+  後は `autopaint` をやり直すこと。順序は「generate → erode → autopaint → paint」。
 
 ### ワークフロー: 洞窟・アーチ・岩みたいな異形を作る（スカルプト）
 
