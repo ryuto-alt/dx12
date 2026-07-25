@@ -1,0 +1,111 @@
+#pragma once
+// ---------------------------------------------------------------------------
+// AnimGraphRuntime — `.animfsm` を 1 体ぶん回す実行器。
+//
+// ⚠️ ここに entt / GPU / Jolt は入れない。
+//    ECS ライブラリが Animation に依存しているので、逆向きの依存は循環になる。
+//    エンティティの走査は Scene 側（Scene::Update）が行い、ここへは
+//    「そのエンティティのクリップ配列・スケルトン・Animator」を渡すだけにする。
+//
+// 1 フレームの流れ:
+//    パラメータ評価 → PickTransition → ステート時間の進行 → イベント収集
+//    → 各レイヤーのポーズ生成 → レイヤー合成 → Animator::SetPoseOverride
+// ---------------------------------------------------------------------------
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "core/Types.h"
+#include "animation/AnimGraphAsset.h"
+#include "animation/AnimPose.h"
+
+namespace dx12e
+{
+
+class Skeleton;
+class AnimationClip;
+class Animator;
+
+// レイヤー 1 枚ぶんの実行状態。
+struct AnimLayerRuntime
+{
+    i32  curState      = -1;
+    f32  stateTime     = 0.0f;   // 現ステートの再生位置（秒）
+    f32  prevStateTime = 0.0f;
+    bool wrapped       = false;  // 今フレームでループを折り返したか
+
+    bool inTransition       = false;
+    i32  transTo            = -1;
+    f32  transElapsed       = 0.0f;
+    f32  transDuration      = 0.0f;
+    f32  transTime          = 0.0f;   // 遷移先ステートの再生位置（秒）
+    f32  transPrevTime      = 0.0f;
+    bool transWrapped       = false;
+    bool transInterruptible = true;
+
+    f32  weight = 1.0f;              // 実行時に動かせるレイヤー重み（Lua/MCP から）
+    std::vector<f32> maskWeights;    // ボーンごとのマスク（空 = マスク無し。Step 5）
+};
+
+// 今フレームに発火したイベント（Scene 側が EventBus へ流す）。
+struct AnimFiredEvent
+{
+    std::string name;
+    std::string stringParam;
+    f32         floatParam = 0.0f;
+    std::string clip;
+    f32         time = 0.0f;
+    i32         layer = 0;
+};
+
+// AnimatorController が unique_ptr で持つ実行状態。
+struct AnimGraphRuntimeState
+{
+    AnimGraphAsset                asset;    // ロード済み（クリップ index 解決済み）
+    std::vector<AnimLayerRuntime> layers;
+    AnimParamMap                  params;
+    bool                          valid = false;
+
+    // 毎フレームの再確保を避けるための一時バッファ
+    AnimPose poseA, poseB, layerPose, refPose;
+    std::vector<u32> eventHits;
+};
+
+// ---------------------------------------------------------------------------
+namespace anim_graph
+{
+
+// クリップ名 → 添字。見つからなければ -1。
+i32 FindClipIndex(const std::vector<std::unique_ptr<AnimationClip>>& clips, const std::string& name);
+
+// asset 内のクリップ名参照（ステート / ブレンドツリー / 加算の参照ポーズ）と
+// 遷移の from/to をすべて解決する。解決できなかったものは名前を missing へ積む。
+void ResolveAsset(AnimGraphAsset& asset,
+                  const std::vector<std::unique_ptr<AnimationClip>>& clips,
+                  std::vector<std::string>& missing);
+
+// asset の clipEvents を該当クリップへ流し込む（既存のイベントは置き換える）。
+void ApplyClipEvents(const AnimGraphAsset& asset,
+                     std::vector<std::unique_ptr<AnimationClip>>& clips);
+
+// 実行状態を asset から初期化する（既定ステートへ入る）。
+void InitRuntime(AnimGraphRuntimeState& rt, const Skeleton& skeleton);
+
+// 1 体ぶんを dt 進める。ポーズは animator へ SetPoseOverride で注入する。
+// outEvents へは今フレーム発火したイベントを push_back する（呼び出し側が clear）。
+void Update(AnimGraphRuntimeState& rt,
+            const std::vector<std::unique_ptr<AnimationClip>>& clips,
+            const Skeleton& skeleton,
+            Animator& animator,
+            f32 dt,
+            std::vector<AnimFiredEvent>& outEvents);
+
+// 現ステートの正規化時間（0..1）。ステート未設定なら 0。
+f32 NormalizedTime(const AnimGraphRuntimeState& rt, u32 layer,
+                   const std::vector<std::unique_ptr<AnimationClip>>& clips);
+
+// ステート名で強制遷移（デバッグ / カットシーン用）。成功したら true。
+bool PlayState(AnimGraphRuntimeState& rt, u32 layer, const std::string& stateName, f32 blendDuration);
+
+} // namespace anim_graph
+} // namespace dx12e

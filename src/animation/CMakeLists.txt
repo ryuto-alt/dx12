@@ -2,6 +2,8 @@ add_library(Animation STATIC
     Skeleton.cpp
     AnimationClip.cpp
     AnimPose.cpp
+    AnimGraphAsset.cpp
+    AnimGraphRuntime.cpp
     Animator.cpp
     SkinningBuffer.cpp
     NodeGraph.cpp

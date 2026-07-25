@@ -385,6 +385,15 @@ void RegisterCoreComponentMeta()
         .data<&SpriteAnimator::speed>("speed")
         .data<&SpriteAnimator::applyTexture>("applyTexture");
 
+    // AnimatorController: _state / _loaded はランタイム状態なので登録しない
+    entt::meta_factory<AnimatorController>{}
+        .type("AnimatorController")
+        .data<&AnimatorController::graphPath>("graphPath")
+        .data<&AnimatorController::playOnStart>("playOnStart")
+        .data<&AnimatorController::speed>("speed")
+        .data<&AnimatorController::applyRootMotion>("applyRootMotion")
+        .data<&AnimatorController::eventChannel>("eventChannel");
+
     entt::meta_factory<PrefabLink>{}
         .type("PrefabLink")
         .data<&PrefabLink::sourcePath>("sourcePath");

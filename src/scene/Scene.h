@@ -39,6 +39,20 @@ struct SkyboxSettings
     bool        drawSkybox     = true; // false=IBL のみ（背景は塗らない）
 };
 
+// .animfsm のクリップイベント（足音等）が発火したときの通知。
+// Scene::Update が積み、Application が EventBus へ流してから Clear する
+// （Scene は EventBus を知らないので、UI アニメと同じく「積んで渡す」形にしている）。
+struct SceneAnimEvent
+{
+    entt::entity entity = entt::null;
+    std::string  name;          // EventBus のイベント名（eventChannel が付いた後の最終名）
+    std::string  stringParam;
+    f32          floatParam = 0.0f;
+    std::string  clip;
+    i32          layer = 0;
+    f32          time = 0.0f;
+};
+
 class Scene
 {
 public:
@@ -166,11 +180,20 @@ public:
     bool GetShadowsEnabled() const { return m_shadowsEnabled; }
     void SetShadowsEnabled(bool v) { m_shadowsEnabled = v; }
 
+    // 今フレームの Update で発火したアニメイベント。Application が EventBus へ流したら
+    // clear すること（Scene 自身は毎フレーム先頭で clear しない＝取りこぼしを見えるようにする）。
+    std::vector<SceneAnimEvent>&       GetPendingAnimEvents()       { return m_pendingAnimEvents; }
+    const std::vector<SceneAnimEvent>& GetPendingAnimEvents() const { return m_pendingAnimEvents; }
+
 private:
     Entity CreateEntityWithTransform(const std::string& name,
                                      DirectX::XMFLOAT3 position,
                                      DirectX::XMFLOAT3 rotation,
                                      DirectX::XMFLOAT3 scale);
+
+    // AnimatorController を持つエンティティの .animfsm を進める（Update の先頭で呼ぶ）。
+    // 未ロードならここで vfs からアセットを読み、クリップ名の解決とイベントの流し込みを行う。
+    void UpdateAnimGraphs(f32 dt);
 
     // 発光弾(Pfx)など「同一形状を大量に出すプリミティブ」をサイズ別に共有して
     // インスタンシング可能にするキャッシュ。値は m_ownedMeshes が所有する Mesh*。
@@ -189,6 +212,7 @@ private:
     VolumetricFogSettings m_volFog;
     std::string         m_decalAtlasPath;         // assets 相対。空 = デカール無効
     bool                m_shadowsEnabled = true;  // 既定 ON（エディタ/従来シーン互換）
+    std::vector<SceneAnimEvent> m_pendingAnimEvents;
 
     ResourceManager*  m_resourceManager = nullptr;
     GraphicsDevice*   m_device          = nullptr;

@@ -263,6 +263,8 @@ static void RegisterCoreComponentSerializers()
     // タイムライン製クリップ(.uianim) / スプライトシート(.spranim) の再生器
     R.Register(MakeReflectedInfo<UIAnimPlayer>("UIAnimPlayer", "uiAnimPlayer", true));
     R.Register(MakeReflectedInfo<SpriteAnimator>("SpriteAnimator", "spriteAnimator", true));
+    // スケルタルアニメのステートマシン(.animfsm)。構造はアセット側、ここはパスとパラメータだけ
+    R.Register(MakeReflectedInfo<AnimatorController>("AnimatorController", "animatorController", true));
     // プレハブインスタンスの紐付け。.prefab 側へ書き出す時だけ StripPrefabLinks で落とす
     R.Register(MakeReflectedInfo<PrefabLink>("PrefabLink", "prefabLink", true));
 

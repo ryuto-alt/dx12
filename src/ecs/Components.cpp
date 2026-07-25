@@ -6,6 +6,7 @@
 #include "animation/NodeGraph.h"
 #include "animation/NodeAnimationClip.h"
 #include "animation/NodeAnimator.h"
+#include "animation/AnimGraphRuntime.h"
 
 using namespace DirectX;
 
@@ -54,6 +55,41 @@ XMMATRIX ComputeWorldMatrix(const entt::registry& reg, entt::entity e)
 SkeletalAnimation::~SkeletalAnimation() = default;
 SkeletalAnimation::SkeletalAnimation(SkeletalAnimation&&) noexcept = default;
 SkeletalAnimation& SkeletalAnimation::operator=(SkeletalAnimation&&) noexcept = default;
+
+// AnimGraphRuntimeState は Components.h では前方宣言なので、
+// 特殊メンバは全部ここ（完全型が見える TU）で定義する。
+AnimatorController::AnimatorController() = default;
+AnimatorController::~AnimatorController() = default;
+AnimatorController::AnimatorController(AnimatorController&&) noexcept = default;
+AnimatorController& AnimatorController::operator=(AnimatorController&&) noexcept = default;
+
+// コピーは「永続フィールドだけ」。_state / _loaded は既定のままにして、
+// コピー先が次の Update で .animfsm を読み直すようにする。
+AnimatorController::AnimatorController(const AnimatorController& other)
+    : graphPath(other.graphPath)
+    , playOnStart(other.playOnStart)
+    , speed(other.speed)
+    , applyRootMotion(other.applyRootMotion)
+    , eventChannel(other.eventChannel)
+{
+}
+
+AnimatorController& AnimatorController::operator=(const AnimatorController& other)
+{
+    if (this != &other)
+    {
+        graphPath       = other.graphPath;
+        playOnStart     = other.playOnStart;
+        speed           = other.speed;
+        applyRootMotion = other.applyRootMotion;
+        eventChannel    = other.eventChannel;
+        _state.reset();
+        _loaded = false;
+        _failed = false;
+        _loadedPath.clear();
+    }
+    return *this;
+}
 
 NodeAnimationComp::~NodeAnimationComp() = default;
 NodeAnimationComp::NodeAnimationComp(NodeAnimationComp&&) noexcept = default;

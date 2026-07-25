@@ -67,6 +67,7 @@
 #include "scripting/ScriptEngine.h"
 #include "ui/UISystem.h"
 #include "ui/UiAnimRuntime.h"
+#include "animation/AnimGraphRuntime.h"
 #include "core/mcp/McpBridge.h"
 #include <nlohmann/json.hpp>
 #include <filesystem>
@@ -2254,6 +2255,9 @@ bool RemoveRegisteredComponent(entt::registry& reg, entt::entity e, const std::s
     else if (key == "uiScrollView")        reg.remove<UIScrollView>(e);
     else if (key == "uiLayout")            reg.remove<UILayout>(e);
     else if (key == "uiAnimator")          reg.remove<UIAnimator>(e);
+    else if (key == "uiAnimPlayer")        reg.remove<UIAnimPlayer>(e);
+    else if (key == "spriteAnimator")      reg.remove<SpriteAnimator>(e);
+    else if (key == "animatorController")  reg.remove<AnimatorController>(e);
     else return false;
     return true;
 }
@@ -3020,6 +3024,16 @@ nlohmann::json McpComponentSchema()
     }), "replicates Transform snapshots. Requires networkIdentity on the same entity."));
     comps.push_back(C("skeletalAnimation", false, false, json::array({}),
         "read-only via MCP (created by model load). Control playback with dx12_play_anim / dx12_get_anim_state."));
+    comps.push_back(C("animatorController", true, true, json::array({
+        F("graphPath", "string (assets-relative .animfsm)", ""),
+        F("playOnStart", "bool", true),
+        F("speed", "float (graph-wide playback rate)", 1.0),
+        F("applyRootMotion", "bool (not implemented yet; keep false)", false),
+        F("eventChannel", "string (prefix prepended to clip event names)", ""),
+    }), "Animation state machine driving the Animator. Requires skeletalAnimation on the same entity. "
+        "The graph structure (states/transitions/blend trees/layers/masks/clipEvents) lives in the .animfsm "
+        "JSON asset - edit it with Write/Edit, then dx12_open_scene to reload. Inspect with "
+        "dx12_describe_anim_graph, drive with dx12_set_anim_param, force a state with dx12_play_anim {state}."));
     comps.push_back(C("trigger", true, true, json::array({
         F("shape", "int (0=Box,1=Sphere)", 0), F("halfExtents", "float3", json::array({1, 1, 1})),
         F("radius", "float", 1.0), F("offset", "float3", json::array({0, 0, 0})),
@@ -3239,13 +3253,33 @@ nlohmann::json McpLuaApi()
         "isValid() -> bool",
         "name  (string, read-only property)",
         "transform  (Transform getter。フィールドは書込可: entity.transform.position = Vec3.new(x,y,z)。ただし entity.transform 自体の再代入は read-only) — 唯一直接読めるコンポーネントデータ",
-        "hasComponent(type:string) -> bool  (type: Transform,MeshRenderer,SkeletalAnimation,NodeAnimation,GridPlane,PointLight,DirectionalLight,SpotLight,Camera,AudioSource,Gimmick,ParticleEmitter,Trigger,CharacterController,UICanvas,UIRect,UIImage,UIText,UIButton,UISlider,UIToggle,UIScrollView,UILayout,UIAnimator)",
+        "hasComponent(type:string) -> bool  (type: Transform,MeshRenderer,SkeletalAnimation,AnimatorController,NodeAnimation,GridPlane,PointLight,DirectionalLight,SpotLight,Camera,AudioSource,Gimmick,ParticleEmitter,Trigger,CharacterController,UICanvas,UIRect,UIImage,UIText,UIButton,UISlider,UIToggle,UIScrollView,UILayout,UIAnimator)",
         "playAnim(clipIndex:int, blend:float)",
         "playAnimByName(name:string, blend:float)",
         "setLooping(loop:bool)",
         "setAnimSpeed(speed:float)  (再生速度倍率。既定1.0、2.0で2倍速、0で一時停止。移動速度と足の同期に)",
         "getAnimCount() -> int",
         "getAnimName(index:int) -> string",
+        "-- アニメFSM(.animfsm / AnimatorController)。構造はアセット側、Lua はパラメータだけ触る --",
+        "setAnimFloat(name:string, value:float)  (FSM の float パラメータ。例 setAnimFloat(\"speed\", 3.2))",
+        "setAnimBool(name:string, value:bool)",
+        "setAnimTrigger(name:string)  (1回だけ立つトリガ。条件を満たした遷移が消費する)",
+        "getAnimFloat(name:string) -> float  (無ければ 0)",
+        "getAnimBool(name:string) -> bool  (無ければ false)",
+        "getAnimStateName(layer:int?) -> string  (現在のステート名。layer 省略で 0。無ければ \"\")",
+        "getAnimNormalizedTime(layer:int?) -> float  (現ステートの正規化時間 0..1。攻撃の当たり判定窓などに)",
+        "playAnimState(stateName:string, blend:float?)  (ステートへ強制遷移。デバッグ/カットシーン用)",
+        "setAnimLayerWeight(layer:int, w:float)  (レイヤー重み 0..1。上半身レイヤーのフェードイン等)",
+        "getAnimLayerWeight(layer:int) -> float",
+        "注: アニメイベント(足音)は EventBus に流れる。events:on(\"footstep\", function(ev) ... end) で受ける",
+        "-- UI アニメ(.uianim) / スプライトシート(.spranim) --",
+        "playUiAnim(clipPath:string?)  (UIAnimPlayer が無ければ付ける。clipPath 省略で現在のクリップを再生)",
+        "stopUiAnim()",
+        "setUiAnimTime(t:float)  (再生位置を秒で直接指定。スクラブ/ポーズ用)",
+        "setUiAnimSpeed(speed:float)",
+        "playSprite(seqName:string)  (SpriteAnimator が無ければ付ける。シート内のシーケンス名を再生)",
+        "stopSprite()",
+        "setSpriteSheet(sheetPath:string)  (assets 相対の .spranim。SpriteAnimator が無ければ付ける)",
         "light() -> Light|nil  (PointLight/DirectionalLight/SpotLight の統一プロキシ。無ければ nil)",
         "addLight(kind:string?) -> Light  (kind: \"point\"(既定)/\"directional\"(\"dir\"/\"sun\")/\"spot\"。既にあればそれを返す)",
         "removeLight()  (付いているライト成分を全部外す。消灯ではなく削除=CB枠が空く)",
@@ -3465,6 +3499,7 @@ nlohmann::json McpComponentTypesOf(const entt::registry& reg, entt::entity e)
     if (reg.all_of<SkeletalAnimation>(e))   a.push_back("skeletalAnimation");
     if (reg.all_of<UIAnimPlayer>(e))        a.push_back("uiAnimPlayer");
     if (reg.all_of<SpriteAnimator>(e))      a.push_back("spriteAnimator");
+    if (reg.all_of<AnimatorController>(e))  a.push_back("animatorController");
     if (reg.all_of<PrefabLink>(e))          a.push_back("prefabLink");
     return a;
 }
@@ -5538,28 +5573,52 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             auto& sa = reg.get<SkeletalAnimation>(e);
             if (!sa.animator) throw McpError(McpErr::Internal, "animator not initialized");
             const float blend = params.value("blend", 0.3f);
-            int idx = -1;
-            if (params.contains("clipName"))
+
+            // state を渡された場合は FSM の遷移（AnimatorController が必要）。
+            // 渡さなければ従来どおり clip / clipName の CrossFadeTo（完全後方互換）。
+            if (params.contains("state"))
             {
-                const std::string want = params["clipName"].get<std::string>();
-                for (int i = 0; i < static_cast<int>(sa.clips.size()); ++i)
-                    if (sa.clips[i]->GetName() == want) { idx = i; break; }
-                if (idx < 0) throw McpError(McpErr::NotFound, "no clip named '" + want + "' (dx12_get_anim_state で一覧を確認)");
+                const std::string want = params["state"].get<std::string>();
+                if (!reg.all_of<AnimatorController>(e))
+                    throw McpError(McpErr::InvalidParam, "entity has no animatorController");
+                auto& ac = reg.get<AnimatorController>(e);
+                if (!ac._state || !ac._state->valid)
+                    throw McpError(McpErr::Internal,
+                        "animatorController graph not loaded (graphPath='" + ac.graphPath + "')");
+                const u32 layer = params.value("layer", 0u);
+                if (!anim_graph::PlayState(*ac._state, layer, want, blend))
+                    throw McpError(McpErr::NotFound,
+                        "no state named '" + want + "' on layer " + std::to_string(layer)
+                        + " (dx12_describe_anim_graph で一覧を確認)");
+                resp["ok"] = true;
+                resp["result"] = {{"entityId", static_cast<u32>(e)}, {"state", want},
+                                  {"layer", layer}, {"blend", blend}};
             }
             else
             {
-                idx = params.value("clip", 0);
-                if (idx < 0 || idx >= static_cast<int>(sa.clips.size()))
-                    throw McpError(McpErr::InvalidParam, "clip index out of range (0.." +
-                        std::to_string(sa.clips.empty() ? 0 : sa.clips.size() - 1) + ")");
+                int idx = -1;
+                if (params.contains("clipName"))
+                {
+                    const std::string want = params["clipName"].get<std::string>();
+                    for (int i = 0; i < static_cast<int>(sa.clips.size()); ++i)
+                        if (sa.clips[i]->GetName() == want) { idx = i; break; }
+                    if (idx < 0) throw McpError(McpErr::NotFound, "no clip named '" + want + "' (dx12_get_anim_state で一覧を確認)");
+                }
+                else
+                {
+                    idx = params.value("clip", 0);
+                    if (idx < 0 || idx >= static_cast<int>(sa.clips.size()))
+                        throw McpError(McpErr::InvalidParam, "clip index out of range (0.." +
+                            std::to_string(sa.clips.empty() ? 0 : sa.clips.size() - 1) + ")");
+                }
+                sa.animator->CrossFadeTo(sa.clips[idx].get(), blend);
+                if (params.contains("loop")) sa.animator->SetLooping(params["loop"].get<bool>());
+                if (params.contains("speed")) sa.animator->SetSpeed(params["speed"].get<float>());
+                resp["ok"] = true;
+                resp["result"] = {{"entityId", static_cast<u32>(e)}, {"clip", idx},
+                                  {"clipName", sa.clips[idx]->GetName()}, {"blend", blend},
+                                  {"speed", sa.animator->GetSpeed()}};
             }
-            sa.animator->CrossFadeTo(sa.clips[idx].get(), blend);
-            if (params.contains("loop")) sa.animator->SetLooping(params["loop"].get<bool>());
-            if (params.contains("speed")) sa.animator->SetSpeed(params["speed"].get<float>());
-            resp["ok"] = true;
-            resp["result"] = {{"entityId", static_cast<u32>(e)}, {"clip", idx},
-                              {"clipName", sa.clips[idx]->GetName()}, {"blend", blend},
-                              {"speed", sa.animator->GetSpeed()}};
         }
         else if (method == "get_anim_state")
         {
@@ -5569,9 +5628,139 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             result["hasSkeletalAnimation"] = reg.all_of<SkeletalAnimation>(e);
             json clips = json::array();
             if (reg.all_of<SkeletalAnimation>(e))
-                for (const auto& c : reg.get<SkeletalAnimation>(e).clips)
-                    clips.push_back(c->GetName());
+            {
+                auto& sa = reg.get<SkeletalAnimation>(e);
+                for (const auto& c : sa.clips) clips.push_back(c->GetName());
+                if (sa.skeleton) result["boneCount"] = sa.skeleton->GetBoneCount();
+                if (sa.animator)
+                {
+                    result["clipTime"]   = sa.animator->GetClipTime();
+                    result["speed"]      = sa.animator->GetSpeed();
+                    result["looping"]    = sa.animator->GetLooping();
+                    result["blending"]   = sa.animator->IsBlending();
+                    if (sa.animator->GetClip())
+                        result["currentClip"] = sa.animator->GetClip()->GetName();
+                }
+            }
             result["clips"] = std::move(clips);
+
+            // ---- AnimatorController（.animfsm）の状態 ----
+            const bool hasCtrl = reg.all_of<AnimatorController>(e);
+            result["hasController"] = hasCtrl;
+            if (hasCtrl)
+            {
+                auto& ac = reg.get<AnimatorController>(e);
+                result["graphPath"] = ac.graphPath;
+                result["graphLoaded"] = (ac._state && ac._state->valid);
+                if (ac._failed) result["graphError"] = "load or parse failed (see engine log)";
+                if (ac._state && ac._state->valid)
+                {
+                    auto& sa = reg.get<SkeletalAnimation>(e);
+                    json layers = json::array();
+                    for (size_t li = 0; li < ac._state->layers.size(); ++li)
+                    {
+                        const auto& lr  = ac._state->layers[li];
+                        const auto& def = ac._state->asset.layers[li];
+                        json lj;
+                        lj["name"]   = def.name;
+                        lj["weight"] = lr.weight;
+                        lj["state"]  = (lr.curState >= 0 && lr.curState < static_cast<i32>(def.states.size()))
+                                     ? def.states[static_cast<size_t>(lr.curState)].name : std::string();
+                        lj["normalizedTime"] = anim_graph::NormalizedTime(*ac._state, static_cast<u32>(li), sa.clips);
+                        lj["transitioning"]  = lr.inTransition;
+                        if (lr.inTransition && lr.transTo >= 0 && lr.transTo < static_cast<i32>(def.states.size()))
+                        {
+                            lj["transitionTo"] = def.states[static_cast<size_t>(lr.transTo)].name;
+                            lj["transitionProgress"] = (lr.transDuration > 0.0f)
+                                                     ? (lr.transElapsed / lr.transDuration) : 1.0f;
+                        }
+                        lj["masked"] = !lr.maskWeights.empty();
+                        layers.push_back(std::move(lj));
+                    }
+                    result["layers"] = std::move(layers);
+
+                    json ps = json::object();
+                    for (const auto& [name, v] : ac._state->params)
+                    {
+                        if (v.type == AnimParamType::Float) ps[name] = v.f;
+                        else                                ps[name] = v.b;
+                    }
+                    result["parameters"] = std::move(ps);
+                }
+            }
+            resp["ok"] = true;
+            resp["result"] = std::move(result);
+        }
+        else if (method == "set_anim_param")
+        {
+            const auto e = ResolveMcpEntity(*m_scene, params);
+            auto& reg = m_scene->GetRegistry();
+            if (!reg.all_of<AnimatorController>(e))
+                throw McpError(McpErr::InvalidParam, "entity has no animatorController");
+            auto& ac = reg.get<AnimatorController>(e);
+            if (!ac._state || !ac._state->valid)
+                throw McpError(McpErr::Internal,
+                    "animatorController graph not loaded (graphPath='" + ac.graphPath + "')");
+            const std::string name = params.value("name", std::string());
+            auto it = ac._state->params.find(name);
+            if (it == ac._state->params.end())
+                throw McpError(McpErr::NotFound,
+                    "no parameter named '" + name + "' (dx12_describe_anim_graph で一覧を確認)");
+
+            if (params.value("trigger", false))
+            {
+                it->second.b = true;
+            }
+            else if (params.contains("value"))
+            {
+                const json& v = params["value"];
+                if (v.is_boolean())     it->second.b = v.get<bool>();
+                else if (v.is_number()) it->second.f = v.get<float>();
+                else throw McpError(McpErr::InvalidParam, "value must be a number or a boolean");
+            }
+            else
+            {
+                throw McpError(McpErr::InvalidParam, "either 'value' or 'trigger' is required");
+            }
+
+            json out;
+            out["entityId"] = static_cast<u32>(e);
+            out["name"] = name;
+            if (it->second.type == AnimParamType::Float) out["value"] = it->second.f;
+            else                                         out["value"] = it->second.b;
+            resp["ok"] = true;
+            resp["result"] = std::move(out);
+        }
+        else if (method == "describe_anim_graph")
+        {
+            // entity 指定ならロード済みのグラフを、path 指定なら .animfsm を直接読んで返す。
+            AnimGraphAsset asset;
+            std::string source;
+            if (params.contains("path"))
+            {
+                source = params["path"].get<std::string>();
+                const std::vector<uint8_t> bytes = vfs::ReadAsset(source);
+                if (bytes.empty()) throw McpError(McpErr::NotFound, "cannot read " + source);
+                std::string err;
+                if (!ParseAnimGraphAsset(bytes, asset, err))
+                    throw McpError(McpErr::InvalidParam, "invalid .animfsm: " + err);
+            }
+            else
+            {
+                const auto e = ResolveMcpEntity(*m_scene, params);
+                auto& reg = m_scene->GetRegistry();
+                if (!reg.all_of<AnimatorController>(e))
+                    throw McpError(McpErr::InvalidParam, "entity has no animatorController");
+                auto& ac = reg.get<AnimatorController>(e);
+                if (!ac._state || !ac._state->valid)
+                    throw McpError(McpErr::Internal,
+                        "animatorController graph not loaded (graphPath='" + ac.graphPath + "')");
+                asset  = ac._state->asset;
+                source = ac.graphPath;
+            }
+            json result;
+            result["source"] = source;
+            result["graph"]  = json::parse(SerializeAnimGraphAsset(asset));
             resp["ok"] = true;
             resp["result"] = std::move(result);
         }
@@ -7958,6 +8147,26 @@ void Application::Update()
                 m_eventBus.Emit(ev);
             }
         }
+    }
+
+    // スケルタルアニメのクリップイベント（.animfsm の clipEvents。足音等）を EventBus へ。
+    // Scene::Update が積んだものをここで流し切る（Lua は events:on("footstep", fn) で受ける）。
+    if (m_scene)
+    {
+        auto& animEvents = m_scene->GetPendingAnimEvents();
+        for (const auto& ae : animEvents)
+        {
+            EngineEvent ev;
+            ev.name   = ae.name;
+            ev.source = ae.entity;
+            if (!ae.stringParam.empty()) ev.set("string", ae.stringParam);
+            ev.set("float", static_cast<double>(ae.floatParam));
+            ev.set("clip",  ae.clip);
+            ev.set("layer", static_cast<double>(ae.layer));
+            ev.set("time",  static_cast<double>(ae.time));
+            m_eventBus.Emit(ev);
+        }
+        animEvents.clear();
     }
 
     // 非同期プロジェクトロードの状態機械を進める

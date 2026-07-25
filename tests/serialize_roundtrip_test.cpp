@@ -458,6 +458,32 @@ static void Test_Decal()
         });
 }
 
+// アニメーションステートマシン（.animfsm へのパス + 実行時パラメータ）。
+// _state / _loaded はランタイム専有なので meta 未登録＝往復に出てこないこと。
+static void Test_AnimatorController()
+{
+    Case<AnimatorController>(
+        [](entt::registry& r, entt::entity e) {
+            AnimatorController ac;
+            ac.graphPath       = "animfsm/humanoid_locomotion.animfsm";
+            ac.playOnStart     = false;
+            ac.speed           = 1.25f;
+            ac.applyRootMotion = true;
+            ac.eventChannel    = "player.";
+            r.emplace<AnimatorController>(e, std::move(ac));
+        },
+        [](const AnimatorController& ac) {
+            CHECK(ac.graphPath == "animfsm/humanoid_locomotion.animfsm");
+            CHECK(ac.playOnStart == false);
+            CHECK_F(ac.speed, 1.25f);
+            CHECK(ac.applyRootMotion == true);
+            CHECK(ac.eventChannel == "player.");
+            // 復元直後は必ず未ロード（複製先が元の FSM 実行状態を引き継がないこと）
+            CHECK(ac._state == nullptr);
+            CHECK(ac._loaded == false);
+        });
+}
+
 static void Test_BoxCollider()
 {
     Case<BoxCollider>(
@@ -1192,6 +1218,7 @@ int main()
     Test_NetworkIdentity();
     Test_NetworkTransform();
     Test_Decal();
+    Test_AnimatorController();
     Test_BoxCollider();
     Test_SphereCollider();
     Test_CapsuleCollider();

@@ -30,6 +30,7 @@
 #include "animation/NodeAnimationClip.h"
 #include "animation/NodeAnimator.h"
 #include "animation/NodeGraph.h"
+#include "animation/AnimGraphRuntime.h"
 
 #include <DirectXMath.h>
 #include <algorithm>
@@ -46,6 +47,17 @@ namespace dx12e
 {
 
 namespace {
+
+// AnimatorController の実行状態を取り出す（未ロード / 無効なら nullptr）。
+// アニメ FSM の Lua API は全部これを通す。無ければ黙って no-op / 既定値を返すのが
+// 既存の playAnim 等と揃った流儀（エラーは上げない）。
+AnimGraphRuntimeState* AnimStateOf(Entity& e)
+{
+    if (!e.HasComponent<AnimatorController>()) return nullptr;
+    AnimatorController& ctrl = e.GetComponent<AnimatorController>();
+    if (!ctrl._state || !ctrl._state->valid) return nullptr;
+    return ctrl._state.get();
+}
 
 // 名前からエンティティを引く（NameTag 一致。先頭一致を返す）。見つからなければ entt::null。
 entt::entity FindEntityByName(entt::registry& reg, const std::string& name)
@@ -507,6 +519,7 @@ void ScriptEngine::RegisterBindings()
             if (type == "UIScrollView")       return e.HasComponent<UIScrollView>();
             if (type == "UILayout")           return e.HasComponent<UILayout>();
             if (type == "UIAnimator")         return e.HasComponent<UIAnimator>();
+            if (type == "AnimatorController") return e.HasComponent<AnimatorController>();
             // タイプミスや未対応型を「持ってない」と誤認させない（デバッグ困難の元）。
             // 毎フレーム呼ばれてもスパムしないよう型名ごとに1回だけ警告する。
             {
@@ -548,6 +561,85 @@ void ScriptEngine::RegisterBindings()
         "setAnimSpeed", [](Entity& e, float speed) {
             if (!e.HasComponent<SkeletalAnimation>()) return;
             e.GetComponent<SkeletalAnimation>().animator->SetSpeed(speed);
+        },
+
+        // --- アニメーションステートマシン(.animfsm / AnimatorController) ---
+        // FSM の「構造」はアセット側にあり、Lua が触るのは**パラメータだけ**。
+        // AnimatorController が無いときは黙って no-op / 既定値（既存 API と同じ流儀）。
+        "setAnimFloat", [](Entity& e, const std::string& name, float value) {
+            AnimGraphRuntimeState* st = AnimStateOf(e);
+            if (!st) return;
+            auto it = st->params.find(name);
+            if (it == st->params.end()) return;
+            it->second.f = value;
+        },
+
+        "setAnimBool", [](Entity& e, const std::string& name, bool value) {
+            AnimGraphRuntimeState* st = AnimStateOf(e);
+            if (!st) return;
+            auto it = st->params.find(name);
+            if (it == st->params.end()) return;
+            it->second.b = value;
+        },
+
+        "setAnimTrigger", [](Entity& e, const std::string& name) {
+            AnimGraphRuntimeState* st = AnimStateOf(e);
+            if (!st) return;
+            auto it = st->params.find(name);
+            if (it == st->params.end()) return;
+            it->second.b = true;   // 次に条件を満たした遷移が消費する
+        },
+
+        "getAnimFloat", [](Entity& e, const std::string& name) -> float {
+            AnimGraphRuntimeState* st = AnimStateOf(e);
+            if (!st) return 0.0f;
+            auto it = st->params.find(name);
+            return (it == st->params.end()) ? 0.0f : it->second.f;
+        },
+
+        "getAnimBool", [](Entity& e, const std::string& name) -> bool {
+            AnimGraphRuntimeState* st = AnimStateOf(e);
+            if (!st) return false;
+            auto it = st->params.find(name);
+            return (it == st->params.end()) ? false : it->second.b;
+        },
+
+        "getAnimStateName", [](Entity& e, sol::optional<int> layer) -> std::string {
+            AnimGraphRuntimeState* st = AnimStateOf(e);
+            const u32 li = static_cast<u32>((std::max)(0, layer.value_or(0)));
+            if (!st || li >= st->layers.size()) return std::string();
+            const i32 s = st->layers[li].curState;
+            const auto& states = st->asset.layers[li].states;
+            if (s < 0 || s >= static_cast<i32>(states.size())) return std::string();
+            return states[static_cast<size_t>(s)].name;
+        },
+
+        "getAnimNormalizedTime", [](Entity& e, sol::optional<int> layer) -> float {
+            AnimGraphRuntimeState* st = AnimStateOf(e);
+            if (!st || !e.HasComponent<SkeletalAnimation>()) return 0.0f;
+            const u32 li = static_cast<u32>((std::max)(0, layer.value_or(0)));
+            return anim_graph::NormalizedTime(*st, li, e.GetComponent<SkeletalAnimation>().clips);
+        },
+
+        "playAnimState", [](Entity& e, const std::string& stateName, sol::optional<float> blend) {
+            AnimGraphRuntimeState* st = AnimStateOf(e);
+            if (!st) return;
+            anim_graph::PlayState(*st, 0, stateName, blend.value_or(0.2f));
+        },
+
+        "setAnimLayerWeight", [](Entity& e, int layer, float w) {
+            AnimGraphRuntimeState* st = AnimStateOf(e);
+            if (!st) return;
+            const u32 li = static_cast<u32>((std::max)(0, layer));
+            if (li >= st->layers.size()) return;
+            st->layers[li].weight = std::clamp(w, 0.0f, 1.0f);
+        },
+
+        "getAnimLayerWeight", [](Entity& e, int layer) -> float {
+            AnimGraphRuntimeState* st = AnimStateOf(e);
+            const u32 li = static_cast<u32>((std::max)(0, layer));
+            if (!st || li >= st->layers.size()) return 0.0f;
+            return st->layers[li].weight;
         },
 
         // --- タイムライン製 UI アニメ(.uianim) ---

@@ -24,6 +24,7 @@ class SkinningBuffer;
 class NodeGraph;
 class NodeAnimationClip;
 class NodeAnimator;
+struct AnimGraphRuntimeState;   // animation/AnimGraphRuntime.h（AnimatorController が持つ）
 
 struct NameTag
 {
@@ -194,6 +195,46 @@ struct SkeletalAnimation
     ~SkeletalAnimation();
     SkeletalAnimation(SkeletalAnimation&&) noexcept;
     SkeletalAnimation& operator=(SkeletalAnimation&&) noexcept;
+};
+
+// -------------------------------------------------------------------------
+// アニメーションステートマシン。SkeletalAnimation と同居して Animator を上書き駆動する。
+//
+// グラフの構造（ステート・遷移・条件・ブレンドツリー・レイヤー・マスク・イベント）は
+// すべて .animfsm（JSON アセット）側にあり、ここはパスと実行時パラメータだけを持つ。
+// 反射シリアライズが std::vector を扱えないことへの対応であり、同時に
+// 「ゲームの中身は全部データ」という設計思想への整合でもある（.uianim / .spranim と同型）。
+//
+// このコンポーネントが無ければ Animator は従来どおり単一クリップ + CrossFadeTo で動く
+// （＝既存シーンは一切壊れない）。
+// -------------------------------------------------------------------------
+struct AnimatorController
+{
+    std::string graphPath;            // assets 相対（例 "animfsm/humanoid_locomotion.animfsm"）。空 = 無効
+    bool        playOnStart = true;
+    f32         speed       = 1.0f;   // グラフ全体の再生速度倍率
+    bool        applyRootMotion = false;  // 計画05 Step 9（未実装。既定 false のまま）
+    std::string eventChannel;         // アニメイベント名の前置き（空なら素の名前で EventBus へ）
+
+    // ランタイム専有（非シリアライズ・meta 未登録・複製時に必ず無効化）
+    std::unique_ptr<AnimGraphRuntimeState> _state;
+    bool _loaded = false;   // graphPath のロードを試したか（毎フレームの I/O を防ぐ）
+    bool _failed = false;   // ロードに失敗した（再試行しない。パスを変えると再試行する）
+    std::string _loadedPath;
+
+    // ⚠️ 特殊メンバは**全部**アウトオブライン定義（Components.cpp）にすること。
+    //    AnimGraphRuntimeState はここでは前方宣言なので、インラインで = default にすると
+    //    「例外時に unique_ptr メンバを破棄するコード」を各 TU が実体化しようとして
+    //    `can't delete an incomplete type` になる（ComponentMeta.cpp が実際に踏んだ）。
+    AnimatorController();
+    ~AnimatorController();
+    AnimatorController(AnimatorController&&) noexcept;
+    AnimatorController& operator=(AnimatorController&&) noexcept;
+
+    // 複製（Ctrl+D / プレハブ展開 / シリアライズの値コピー）では実行状態を引き継がない。
+    // _state を共有すると 2 体が同じ FSM を回して壊れる。コピー先は次の Update で読み直す。
+    AnimatorController(const AnimatorController& other);
+    AnimatorController& operator=(const AnimatorController& other);
 };
 
 struct NodeAnimationComp

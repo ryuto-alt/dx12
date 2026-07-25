@@ -18,6 +18,7 @@
 #include "animation/NodeAnimationClip.h"
 #include "animation/NodeAnimator.h"
 #include "animation/SkinningBuffer.h"
+#include "animation/AnimGraphRuntime.h"
 #include "scripting/ScriptEngine.h"
 #include "resource/ShaderRegistry.h"
 #include "resource/MaterialAssetIO.h"
@@ -1698,6 +1699,74 @@ void InspectorPanel::Render(entt::registry& reg,
             }
         }
 
+        // AnimatorController（.animfsm ステートマシン）。
+        // 編集できるのはパスとパラメータだけ。グラフの構造は JSON アセット側にあるので
+        // ここは「現在の状態を見せるライブ表示」に徹する（決定 2: グラフエディタは作らない）。
+        if (reg.all_of<AnimatorController>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entMesh : 0, "AnimatorController");
+            bool removed = ComponentRemoveMenu<AnimatorController>(reg, ctx, ctx.selectedEntity,
+                                                                   "AnimatorController");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_animatorControllerEdit);
+                auto& ac = reg.get<AnimatorController>(ctx.selectedEntity);
+                bool changed = false, active = false;
+
+                if (pg::Begin("AnimatorController"))
+                {
+                    changed |= pg::InputTextStr("グラフ Graph", ac.graphPath, &active,
+                        "assets 相対の .animfsm パス（例 animfsm/humanoid_locomotion.animfsm）。"
+                        "中身はテキストエディタで編集する");
+                    changed |= AcceptAssetPathDrop(ac.graphPath, ".animfsm", m_assetsDir);
+                    changed |= pg::Checkbox("開始時に再生 Play On Start", &ac.playOnStart);
+                    changed |= pg::Float("速度 Speed", &ac.speed, 0.01f, 0.0f, 4.0f, "%.2f", &active,
+                        "グラフ全体の再生速度倍率");
+                    changed |= pg::InputTextStr("イベント接頭辞 Event Channel", ac.eventChannel, &active,
+                        "クリップイベント名の前に付ける文字列（空 = 素の名前で EventBus へ）");
+                    pg::End();
+                }
+
+                if (!reg.all_of<SkeletalAnimation>(ctx.selectedEntity))
+                    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f),
+                                       "SkeletalAnimation が無いと動きません");
+
+                // --- 読み取り専用のライブ表示 ---
+                if (ac._failed)
+                {
+                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+                                       ".animfsm の読み込みに失敗（ログを確認）");
+                }
+                else if (ac._state && ac._state->valid && reg.all_of<SkeletalAnimation>(ctx.selectedEntity))
+                {
+                    auto& sa = reg.get<SkeletalAnimation>(ctx.selectedEntity);
+                    if (pg::Begin("実行状態 Runtime"))
+                    {
+                        for (size_t li = 0; li < ac._state->layers.size(); ++li)
+                        {
+                            const auto& lr  = ac._state->layers[li];
+                            const auto& def = ac._state->asset.layers[li];
+                            const char* stateName =
+                                (lr.curState >= 0 && lr.curState < static_cast<i32>(def.states.size()))
+                                ? def.states[static_cast<size_t>(lr.curState)].name.c_str() : "-";
+                            pg::Text(def.name.c_str(), "%s  (w=%.2f, t=%.2f)%s",
+                                     stateName, lr.weight,
+                                     anim_graph::NormalizedTime(*ac._state, static_cast<u32>(li), sa.clips),
+                                     lr.inTransition ? "  →遷移中" : "");
+                        }
+                        for (const auto& [name, v] : ac._state->params)
+                        {
+                            if (v.type == AnimParamType::Float) pg::Text(name.c_str(), "%.3f", v.f);
+                            else                                pg::Text(name.c_str(), "%s", v.b ? "true" : "false");
+                        }
+                        pg::End();
+                    }
+                }
+                EndEdit(reg, ctx, ctx.selectedEntity, m_animatorControllerEdit, changed, active,
+                        "AnimatorController");
+            }
+        }
+
         // NodeAnimation
         if (reg.all_of<NodeAnimationComp>(ctx.selectedEntity))
         {
@@ -2836,6 +2905,8 @@ void InspectorPanel::Render(entt::registry& reg,
                                                "UI Anim Player (.uianim クリップ)");
             AddComponentMenuItem<SpriteAnimator>(reg, ctx, ctx.selectedEntity,
                                                  "Sprite Animator (.spranim シート)");
+            AddComponentMenuItem<AnimatorController>(reg, ctx, ctx.selectedEntity,
+                                                     "Animator Controller (.animfsm ステートマシン)");
             ImGui::Separator();
             AddComponentMenuItem<RigidBody>(reg, ctx, ctx.selectedEntity, "RigidBody");
             AddComponentMenuItem<BoxCollider>(reg, ctx, ctx.selectedEntity, "Box Collider");

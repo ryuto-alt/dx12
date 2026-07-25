@@ -85,6 +85,9 @@ int main()
     Expect<DecalComponent>({ "atlasUV", "atlasUVNormal", "tint", "opacity", "emissive",
                              "normalStrength", "roughness", "metallic", "angleFadeDeg",
                              "fadeEdge", "sortOrder" });
+    Expect<AnimatorController>({ "graphPath", "playOnStart", "speed", "applyRootMotion", "eventChannel" });
+    // _state / _loaded / _failed / _loadedPath はランタイム専有なので meta に出てはいけない
+    CHECK(FieldNames<AnimatorController>().size() == 5);
 
     // 反映は冪等（2回呼んでも壊れない）
     RegisterCoreComponentMeta();
