@@ -495,6 +495,7 @@ void ScriptEngine::RegisterBindings()
             if (type == "LuaScript")          return e.HasComponent<LuaScript>();
             if (type == "ParticleEmitter")    return e.HasComponent<ParticleEmitter>();
             if (type == "TrailRenderer")      return e.HasComponent<TrailRenderer>();
+            if (type == "DecalComponent")     return e.HasComponent<DecalComponent>();
             if (type == "Trigger")            return e.HasComponent<Trigger>();
             if (type == "UICanvas")           return e.HasComponent<UICanvas>();
             if (type == "UIRect")             return e.HasComponent<UIRect>();

@@ -82,6 +82,9 @@ int main()
     Expect<NetworkIdentity>({ "interestRadius", "serverAuthority" });
     Expect<NetworkTransform>({ "syncMode", "sendRate", "syncPosition", "syncRotation", "syncScale",
                                 "interpDelayMs", "snapDistance" });
+    Expect<DecalComponent>({ "atlasUV", "atlasUVNormal", "tint", "opacity", "emissive",
+                             "normalStrength", "roughness", "metallic", "angleFadeDeg",
+                             "fadeEdge", "sortOrder" });
 
     // 反映は冪等（2回呼んでも壊れない）
     RegisterCoreComponentMeta();

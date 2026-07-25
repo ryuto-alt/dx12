@@ -243,6 +243,7 @@ static void RegisterCoreComponentSerializers()
     R.Register(MakeReflectedInfo<CharacterController>("CharacterController", "characterController", true));
     R.Register(MakeReflectedInfo<Sprite2D>("Sprite2D", "sprite2d", true));
     R.Register(MakeReflectedInfo<TrailRenderer>("TrailRenderer", "trailRenderer", true));
+    R.Register(MakeReflectedInfo<DecalComponent>("DecalComponent", "decal", true));
     R.Register(MakeReflectedInfo<NetworkIdentity>("NetworkIdentity", "networkIdentity", true));
     R.Register(MakeReflectedInfo<NetworkTransform>("NetworkTransform", "networkTransform", true));
     // ゲーム内UI（retained-mode）。ランタイム状態（_付き）は ComponentMeta 未登録なので保存されない
@@ -854,6 +855,10 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
         };
     }
 
+    // デカールアトラス（assets 相対の 1 枚）。空のときは書かない＝旧シーンと差分ゼロ。
+    if (!scene.GetDecalAtlasPath().empty())
+        root["decalAtlas"] = scene.GetDecalAtlasPath();
+
     return root;
 }
 
@@ -1052,6 +1057,10 @@ static void LoadVolumetricFogSettings(Scene& scene, const json& root)
         vf.extendBeyondRange = j.value("extendBeyondRange", vf.extendBeyondRange);
     }
     scene.GetVolumetricFogSettings() = vf;   // debugMode は常に 0（保存対象外）
+
+    // デカールアトラス（assets 相対）。キーが無ければ空＝デカール無効。
+    scene.SetDecalAtlasPath(root.contains("decalAtlas") && root["decalAtlas"].is_string()
+                            ? root["decalAtlas"].get<std::string>() : std::string());
 }
 
 // JSON ノードから 1 エンティティを既存シーンに追加生成（Clear しない）

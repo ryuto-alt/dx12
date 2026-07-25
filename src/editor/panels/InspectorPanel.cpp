@@ -1885,6 +1885,47 @@ void InspectorPanel::Render(entt::registry& reg,
             }
         }
 
+        // Decal（投影デカール: 弾痕/血/汚れ/水たまり）
+        if (reg.all_of<DecalComponent>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entMesh : 0, "Decal");
+            bool removed = ComponentRemoveMenu<DecalComponent>(reg, ctx, ctx.selectedEntity, "Decal");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_decalEdit);
+                auto& dc = reg.get<DecalComponent>(ctx.selectedEntity);
+                bool changed = false, active = false;
+                if (pg::Begin("Decal"))
+                {
+                    pg::Group("アトラス");
+                    changed |= pg::Float4("カラー矩形 UV", &dc.atlasUV.x, 0.005f, 0.0f, 1.0f, "%.4f", &active,
+                        "シーン設定のデカールアトラスの中の (u0, v0, 幅, 高さ)。既定は全面");
+                    changed |= pg::Float4("法線矩形 UV", &dc.atlasUVNormal.x, 0.005f, 0.0f, 1.0f, "%.4f", &active,
+                        "同アトラス内の法線マップ領域。高さ(4番目)を 0 にすると法線ブレンド無し");
+
+                    pg::Group("見た目");
+                    changed |= pg::Color3("色 Tint", &dc.tint.x);
+                    changed |= pg::SliderFloat("不透明度 Opacity", &dc.opacity, 0.0f, 1.0f, "%.2f", &active);
+                    changed |= pg::Color3("自己発光 Emissive", &dc.emissive.x);
+                    changed |= pg::SliderFloat("法線の強さ", &dc.normalStrength, 0.0f, 2.0f, "%.2f", &active);
+                    changed |= pg::Float("粗さ上書き Roughness", &dc.roughness, 0.01f, -1.0f, 1.0f, "%.2f", &active,
+                        "-1 で「変更しない」。0..1 で受け面のラフネスを上書きする（濡れた床など）");
+                    changed |= pg::Float("金属度上書き Metallic", &dc.metallic, 0.01f, -1.0f, 1.0f, "%.2f", &active,
+                        "-1 で「変更しない」");
+
+                    pg::Group("投影");
+                    changed |= pg::SliderFloat("角度フェード(度)", &dc.angleFadeDeg, 0.0f, 89.0f, "%.0f", &active);
+                    changed |= pg::SliderFloat("縁フェード", &dc.fadeEdge, 0.001f, 0.5f, "%.3f", &active);
+                    changed |= pg::Int("重ね順 SortOrder", &dc.sortOrder, 1.0f, -999, 999, &active,
+                        "小さいものから下に重なる");
+                    pg::End();
+                }
+                ImGui::TextDisabled("Transform の scale が投影ボックスの大きさ。ローカル -Y 方向へ投影します");
+                ImGui::TextDisabled("アトラスは「ツール > ライティング」ではなくシーン設定 decalAtlas で指定します");
+                EndEdit(reg, ctx, ctx.selectedEntity, m_decalEdit, changed, active, "Decal");
+            }
+        }
+
         // NetworkIdentity（マルチプレイ複製対象の印。netId/owner はランタイム表示のみ）
         if (reg.all_of<NetworkIdentity>(ctx.selectedEntity))
         {
@@ -2778,6 +2819,7 @@ void InspectorPanel::Render(entt::registry& reg,
             AddComponentMenuItem<Gimmick>(reg, ctx, ctx.selectedEntity, "Gimmick");
             AddComponentMenuItem<ParticleEmitter>(reg, ctx, ctx.selectedEntity, "Particle Emitter");
             AddComponentMenuItem<TrailRenderer>(reg, ctx, ctx.selectedEntity, "Trail Renderer");
+            AddComponentMenuItem<DecalComponent>(reg, ctx, ctx.selectedEntity, "Decal");
             AddComponentMenuItem<Trigger>(reg, ctx, ctx.selectedEntity, "Trigger");
             ImGui::Separator();
             AddComponentMenuItem<UICanvas>(reg, ctx, ctx.selectedEntity, "UI Canvas");

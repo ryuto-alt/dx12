@@ -425,6 +425,39 @@ static void Test_NetworkTransform()
         });
 }
 
+static void Test_Decal()
+{
+    Case<DecalComponent>(
+        [](entt::registry& r, entt::entity e) {
+            DecalComponent d;
+            d.atlasUV       = {0.25f, 0.5f, 0.25f, 0.5f};
+            d.atlasUVNormal = {0.75f, 0.5f, 0.25f, 0.5f};
+            d.tint          = {0.9f, 0.2f, 0.1f};
+            d.opacity       = 0.75f;
+            d.emissive      = {0.0f, 1.5f, 0.25f};
+            d.normalStrength = 0.5f;
+            d.roughness     = 0.2f;
+            d.metallic      = 0.0f;
+            d.angleFadeDeg  = 45.0f;
+            d.fadeEdge      = 0.2f;
+            d.sortOrder     = 7;
+            r.emplace<DecalComponent>(e, d);
+        },
+        [](const DecalComponent& d) {
+            CHECK_F(d.atlasUV.x, 0.25f);       CHECK_F(d.atlasUV.w, 0.5f);
+            CHECK_F(d.atlasUVNormal.x, 0.75f); CHECK_F(d.atlasUVNormal.z, 0.25f);
+            CHECK_V3(d.tint, 0.9f, 0.2f, 0.1f);
+            CHECK_F(d.opacity, 0.75f);
+            CHECK_V3(d.emissive, 0.0f, 1.5f, 0.25f);
+            CHECK_F(d.normalStrength, 0.5f);
+            CHECK_F(d.roughness, 0.2f);
+            CHECK_F(d.metallic, 0.0f);
+            CHECK_F(d.angleFadeDeg, 45.0f);
+            CHECK_F(d.fadeEdge, 0.2f);
+            CHECK(d.sortOrder == 7);
+        });
+}
+
 static void Test_BoxCollider()
 {
     Case<BoxCollider>(
@@ -1158,6 +1191,7 @@ int main()
     Test_RigidBody();
     Test_NetworkIdentity();
     Test_NetworkTransform();
+    Test_Decal();
     Test_BoxCollider();
     Test_SphereCollider();
     Test_CapsuleCollider();

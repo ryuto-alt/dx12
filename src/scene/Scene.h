@@ -156,6 +156,11 @@ public:
     VolumetricFogSettings&       GetVolumetricFogSettings()       { return m_volFog; }
     const VolumetricFogSettings& GetVolumetricFogSettings() const { return m_volFog; }
 
+    // デカールアトラス（assets 相対）。DecalComponent の atlasUV はこの 1 枚の中の矩形を指す。
+    // 空なら 1x1 の透明ダミーが貼られる＝デカールは描かれない。
+    const std::string& GetDecalAtlasPath() const { return m_decalAtlasPath; }
+    void SetDecalAtlasPath(const std::string& p) { m_decalAtlasPath = p; }
+
     // リアルタイム影(CSM)をこのシーンで描くか。false なら影パスを丸ごとスキップ
     // （トップダウン等で影が要らないシーンの FPS 向上用。シェーダは無影センチネルで全面ライト）。
     bool GetShadowsEnabled() const { return m_shadowsEnabled; }
@@ -182,6 +187,7 @@ private:
     SsgiSettings        m_ssgi;
     TaaSettings         m_taa;
     VolumetricFogSettings m_volFog;
+    std::string         m_decalAtlasPath;         // assets 相対。空 = デカール無効
     bool                m_shadowsEnabled = true;  // 既定 ON（エディタ/従来シーン互換）
 
     ResourceManager*  m_resourceManager = nullptr;

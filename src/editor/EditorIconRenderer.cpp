@@ -632,6 +632,44 @@ void EditorIconRenderer::CollectFromRegistry(entt::registry& registry,
             }
         }
     }
+
+    // --- Decal（投影デカール）: 投影ボックスの OBB ワイヤーフレーム + 投影方向の矢印 ---
+    // これが無いと「どこにデカールがあるか」が全く見えない（テクスチャが貼れるまでは特に）。
+    // ★Trigger と違い回転を反映する必要があるので、単位立方体の 8 頂点をワールド行列で変換する。
+    {
+        const XMFLOAT3 colorDecal = { 1.0f, 0.45f, 0.85f };
+        auto view = registry.view<const Transform, const DecalComponent>();
+        for (auto [entity, tf, dc] : view.each())
+        {
+            (void)dc;
+            bool selected = ctx.IsSelected(entity);
+            XMFLOAT3 col = selected ? colorSelected : colorDecal;
+
+            XMMATRIX world = tf.GetWorldMatrix();
+            XMFLOAT3 p[8];
+            for (int i = 0; i < 8; ++i)
+            {
+                XMVECTOR v = XMVectorSet((i & 1) ? 0.5f : -0.5f,
+                                         (i & 2) ? 0.5f : -0.5f,
+                                         (i & 4) ? 0.5f : -0.5f, 1.0f);
+                XMStoreFloat3(&p[i], XMVector3TransformCoord(v, world));
+            }
+            const int edges[12][2] = {
+                {0,1},{1,3},{3,2},{2,0},{4,5},{5,7},{7,6},{6,4},{0,4},{1,5},{2,6},{3,7}
+            };
+            for (const auto& ed : edges) AddLine(p[ed[0]], p[ed[1]], col);
+
+            // 投影軸（ローカル -Y 方向へ投影する）。上面の中心から下向きの矢印を出す。
+            XMFLOAT3 top{}, dirDown{};
+            XMStoreFloat3(&top, XMVector3TransformCoord(XMVectorSet(0.0f, 0.5f, 0.0f, 1.0f), world));
+            XMStoreFloat3(&dirDown,
+                XMVector3Normalize(XMVector3TransformNormal(XMVectorSet(0.0f, -1.0f, 0.0f, 0.0f), world)));
+            const f32 len = (std::max)(tf.scale.y, 0.01f) * 0.6f;
+            AddDirectionalArrow(top, dirDown, len, col);
+
+            AddPointLightIcon(top, col);
+        }
+    }
 }
 
 // ========== Render ==========

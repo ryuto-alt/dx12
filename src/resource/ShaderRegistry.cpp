@@ -309,6 +309,12 @@ const std::vector<ShaderSource>& BuildRegistry()
               "post/FullscreenTri.hlsli" },
         },
         {
+            // デカールのクラスタカリング compute（計画06 D2）。
+            "forward/ClusterCullDecals.hlsl",
+            { { L"ClusterCullDecals_CS.cso", L"CSMain", L"cs_6_0" } },
+            { "forward/ClusterCommon.hlsli", "forward/DecalCommon.hlsli" },
+        },
+        {
             // ボリュメトリックフォグ（froxel）: 媒質注入 compute。
             "fog/FogInject.hlsl",
             { { L"FogInject_CS.cso", L"CSInject", L"cs_6_0" } },

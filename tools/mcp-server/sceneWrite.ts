@@ -18,14 +18,14 @@ export const SCENE_ROOT_KEYS = [
   "version", "entities", "postProcess", "skybox", "shadows", "ssao", "prefab",
   // ↓ BuildSceneJson は昔から書いているのにここに無く、エンジン自身が書いたシーンに対して
   //   「ルートの未知キー」警告を出していた（取りこぼし。まとめて追加）。
-  "contactShadow", "taa", "ssr", "ssgi", "volumetricFog",
+  "contactShadow", "taa", "ssr", "ssgi", "volumetricFog", "decalAtlas",
 ] as const;
 
 /** 反射登録されたコア部品の JSON キー(RegisterCoreComponentSerializers の登録順)。 */
 export const REFLECTED_COMPONENT_KEYS = [
   "pointLight", "directionalLight", "spotLight",
   "rigidBody", "boxCollider", "sphereCollider", "capsuleCollider", "characterController",
-  "sprite2d", "trailRenderer", "networkIdentity", "networkTransform",
+  "sprite2d", "trailRenderer", "decal", "networkIdentity", "networkTransform",
   "uiCanvas", "uiRect", "uiImage", "uiText", "uiButton", "uiSlider", "uiToggle",
   "uiScrollView", "uiLayout", "uiAnimator", "uiAnimPlayer", "spriteAnimator",
   "prefabLink", "camera",

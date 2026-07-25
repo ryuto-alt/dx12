@@ -74,6 +74,7 @@ private:
     EditState<ParticleEmitter>  m_emitterEdit;
     EditState<Sprite2D>        m_spriteEdit;
     EditState<TrailRenderer>    m_trailEdit;
+    EditState<DecalComponent>   m_decalEdit;
     EditState<RigidBody>        m_rbEdit;
     EditState<BoxCollider>      m_boxColEdit;
     EditState<SphereCollider>   m_sphereColEdit;

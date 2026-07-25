@@ -238,11 +238,17 @@ if(DXC_EXECUTABLE)
     set(SHADER_FWD_INC
         "${CMAKE_SOURCE_DIR}/shaders/forward/PBR.hlsli"
         "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterCommon.hlsli"
+        "${CMAKE_SOURCE_DIR}/shaders/forward/DecalCommon.hlsli"
+        "${CMAKE_SOURCE_DIR}/shaders/forward/DecalApply.hlsli"
         "${CMAKE_SOURCE_DIR}/shaders/forward/Lighting.hlsli")
     # クラスタードライティング（Forward+）のライトカリング compute 2 本
     set(SHADER_CLUSTER_BUILD "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterBuild.hlsl")
     set(SHADER_CLUSTER_CULL  "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterCull.hlsl")
     set(SHADER_CLUSTER_INC   "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterCommon.hlsli")
+    # デカール（クラスタードフォワードデカール）。カリング compute 1 本 + 共有 .hlsli 2 本。
+    set(SHADER_DECAL_CULL    "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterCullDecals.hlsl")
+    set(SHADER_DECAL_INC     "${CMAKE_SOURCE_DIR}/shaders/forward/DecalCommon.hlsli"
+                             "${CMAKE_SOURCE_DIR}/shaders/forward/DecalApply.hlsli")
     set(SHADER_GRID          "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardGrid.hlsl")
     set(SHADER_FWD_INST      "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardInstanced.hlsl")
     set(SHADER_SHADOW_INST   "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPassInstanced.hlsl")
@@ -380,6 +386,15 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/FogIntegrate_CS.cso"
         "${SHADER_OUTPUT_DIR}/FogComposite_VS.cso"
         "${SHADER_OUTPUT_DIR}/FogComposite_PS.cso"
+        "${SHADER_OUTPUT_DIR}/ClusterCullDecals_CS.cso"
+    )
+
+    # --- デカールのクラスタカリング ---
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ClusterCullDecals_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSMain -Fo "${SHADER_OUTPUT_DIR}/ClusterCullDecals_CS.cso" "${SHADER_DECAL_CULL}"
+        DEPENDS "${SHADER_DECAL_CULL}" "${SHADER_CLUSTER_INC}" ${SHADER_DECAL_INC}
+        COMMENT "Compiling ClusterCullDecals.hlsl -> ClusterCullDecals_CS.cso (cs_6_0)"
     )
 
     # --- ボリュメトリックフォグ（froxel）---

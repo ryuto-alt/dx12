@@ -31,6 +31,9 @@ Texture2D<float> g_contactShadow : register(t11);
 Texture2D<float4> g_ssr  : register(t16);
 Texture2D<float4> g_ssgi : register(t17);
 
+// デカール（t18..t21）。★g_sampler(s0) と Lighting.hlsli より後に include すること。
+#include "DecalApply.hlsli"
+
 // PerObject constants (b0)
 cbuffer PerObjectConstants : register(b0)
 {
@@ -188,6 +191,11 @@ float4 PSMain(PSInput input) : SV_TARGET
     }
     roughness = max(roughness, 0.04);
 
+    // ===== デカール（Forward.hlsl と同一ブロック。片方を直したら必ず両方直す）=====
+    float3 decalEmissive = 0.0;
+    ApplyDecals(input.worldPos, input.positionSV.xy, input.viewDepth,
+                albedo, N, metallic, roughness, decalEmissive);
+
     float3 V = normalize(cameraPos - input.worldPos);
     float3 L = normalize(-lightDir);
 
@@ -258,7 +266,7 @@ float4 PSMain(PSInput input) : SV_TARGET
                        ssgiConf);
     }
 
-    float3 color = ambient + Lo;
+    float3 color = ambient + Lo + decalEmissive;
 
     // カスケード可視化デバッグ（shadowParams.w>0.5）
     if (shadowParams.w > 0.5f)

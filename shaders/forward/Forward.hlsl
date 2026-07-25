@@ -33,6 +33,9 @@ Texture2D<float> g_contactShadow : register(t11);
 Texture2D<float4> g_ssr  : register(t16);
 Texture2D<float4> g_ssgi : register(t17);
 
+// デカール（t18..t21）。★g_sampler(s0) と Lighting.hlsli より後に include すること。
+#include "DecalApply.hlsli"
+
 // PerObject constants (b0)
 cbuffer PerObjectConstants : register(b0)
 {
@@ -186,6 +189,15 @@ float4 PSMain(PSInput input) : SV_TARGET
     }
     roughness = max(roughness, 0.04);
 
+    // ===== デカール（クラスタードフォワードデカール）=====
+    // ★マテリアル確定直後・ライティング開始前に適用する。こうすると後続の
+    //   ShadePunctual / AccumulatePunctualLights / IBL / 影が一切の変更なしに
+    //   デカールの法線とマテリアルで動く。
+    // ★デカールが 0 個のシーンでは [branch] で丸ごと飛ぶ（ddx/ddy も関数の中）。
+    float3 decalEmissive = 0.0;
+    ApplyDecals(input.worldPos, input.positionSV.xy, input.viewDepth,
+                albedo, N, metallic, roughness, decalEmissive);
+
     // View & Light
     float3 V = normalize(cameraPos - input.worldPos);
     float3 L = normalize(-lightDir);
@@ -269,7 +281,7 @@ float4 PSMain(PSInput input) : SV_TARGET
                        ssgiConf);
     }
 
-    float3 color = ambient + Lo;
+    float3 color = ambient + Lo + decalEmissive;
 
     // カスケード可視化デバッグ（shadowParams.w>0.5）
     if (shadowParams.w > 0.5f)

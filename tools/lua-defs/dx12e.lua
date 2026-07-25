@@ -67,6 +67,7 @@ function Vec3.new(x, y, z) end
 ---| "LuaScript"
 ---| "ParticleEmitter"
 ---| "TrailRenderer"
+---| "DecalComponent"
 ---| "Trigger"
 ---| "NetworkIdentity"
 ---| "NetworkTransform"

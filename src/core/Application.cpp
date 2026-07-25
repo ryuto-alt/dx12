@@ -37,6 +37,7 @@
 #include "renderer/TaaPass.h"
 #include "renderer/ScreenSpaceGiPass.h"
 #include "renderer/VolumetricFogPass.h"
+#include "renderer/DecalSystem.h"
 #include "renderer/PrevWorldComponent.h"
 #include "renderer/ParticleSystem.h"
 #include "renderer/SpriteRenderer.h"
@@ -652,6 +653,12 @@ void Application::RegisterShaderReloadHandlers()
         m_shaderManager->RegisterReloadHandler(
             { L"ClusterBuild_CS.cso", L"ClusterCull_CS.cso" },
             [this]() { m_clusteredLighting->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_decalSystem)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"ClusterCullDecals_CS.cso" },
+            [this]() { m_decalSystem->RecreatePipelines(*m_graphicsDevice); });
     }
     if (m_volumetricFogPass)
     {
@@ -1796,6 +1803,12 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_volumetricFogPass = std::make_unique<VolumetricFogPass>();
         m_volumetricFogPass->Initialize(*m_graphicsDevice, m_srvHeap.get(), PathResolver::ShaderDirW());
 
+        // デカール（クラスタードフォワードデカール）。SRV は ClusteredLightCulling の
+        // テーブル（7 本）の +3..+6 を借りるので、自前のディスクリプタは 1 本も取らない。
+        m_decalSystem = std::make_unique<DecalSystem>();
+        m_decalSystem->Initialize(*m_graphicsDevice, m_srvHeap.get(), PathResolver::ShaderDirW());
+        m_decalSrvDirty = true;
+
         // 2D スプライト（バックバッファ＝スワップチェイン形式へ描く）
         m_spriteRenderer = std::make_unique<SpriteRenderer>();
         m_spriteRenderer->Initialize(*m_graphicsDevice, m_srvHeap.get(),
@@ -2088,6 +2101,7 @@ bool RemoveRegisteredComponent(entt::registry& reg, entt::entity e, const std::s
     else if (key == "convexHullCollider")  reg.remove<ConvexHullCollider>(e);
     else if (key == "luaScript")           reg.remove<LuaScript>(e);
     else if (key == "trailRenderer")       reg.remove<TrailRenderer>(e);
+    else if (key == "decal")               reg.remove<DecalComponent>(e);
     else if (key == "networkIdentity")     reg.remove<NetworkIdentity>(e);
     else if (key == "networkTransform")    reg.remove<NetworkTransform>(e);
     else if (key == "uiCanvas")            reg.remove<UICanvas>(e);
@@ -2839,6 +2853,20 @@ nlohmann::json McpComponentSchema()
         F("intensity", "float (HDR, >1 blooms)", 2.0), F("blend", "int (0=Additive,1=Alpha)", 0),
         F("minDist", "float (min movement to drop a point)", 0.03),
     }), "camera-facing ribbon trail (sword slash / projectile / magic tail). Follows the entity's world position."));
+    comps.push_back(C("decal", true, true, json::array({
+        F("atlasUV", "float4 (u0,v0,du,dv) rect inside the scene decal atlas", json::array({0, 0, 1, 1})),
+        F("atlasUVNormal", "float4 rect for the normal map (dv<=0 = no normal map)", json::array({0, 0, 0, 0})),
+        F("tint", "float3", json::array({1, 1, 1})), F("opacity", "float 0..1", 1.0),
+        F("emissive", "float3 (HDR, added)", json::array({0, 0, 0})),
+        F("normalStrength", "float", 1.0),
+        F("roughness", "float (<0 = keep receiver's)", -1.0),
+        F("metallic", "float (<0 = keep receiver's)", -1.0),
+        F("angleFadeDeg", "float (fade out on slopes steeper than this)", 60.0),
+        F("fadeEdge", "float (edge fade width in local units)", 0.1),
+        F("sortOrder", "int (lower = underneath)", 0),
+    }), "projected decal (bullet hole / blood / dirt / puddle). The Transform's scale is the projection box; "
+        "it projects along local -Y so an unrotated decal lands on the floor. The texture comes from the "
+        "scene-level 'decalAtlas' + this atlasUV rect. Max 256 per scene / 16 per cluster."));
     comps.push_back(C("networkIdentity", true, true, json::array({
         F("interestRadius", "float (0 = always relevant, no distance culling)", 0.0),
         F("serverAuthority", "bool", true),
@@ -3289,6 +3317,7 @@ nlohmann::json McpComponentTypesOf(const entt::registry& reg, entt::entity e)
     if (reg.all_of<Gimmick>(e))             a.push_back("gimmick");
     if (reg.all_of<LuaScript>(e))           a.push_back("luaScript");
     if (reg.all_of<TrailRenderer>(e))       a.push_back("trailRenderer");
+    if (reg.all_of<DecalComponent>(e))      a.push_back("decal");
     if (reg.all_of<NetworkIdentity>(e))     a.push_back("networkIdentity");
     if (reg.all_of<NetworkTransform>(e))    a.push_back("networkTransform");
     if (reg.all_of<Terrain>(e))             a.push_back("terrain");
@@ -3535,6 +3564,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             else if (type == "light_spot")        marker = "__spot_light__";
             else if (type == "particle_emitter")  marker = "__particle_emitter__";
             else if (type == "trigger")           marker = "__trigger__";
+            else if (type == "decal")             marker = "__decal__";
             else if (type == "ui_canvas")     marker = "__ui_canvas__";
             else if (type == "ui_image")      marker = "__ui_image__";
             else if (type == "ui_text")       marker = "__ui_text__";
@@ -3544,7 +3574,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             else if (type == "ui_scrollview") marker = "__ui_scrollview__";
             else throw McpError(McpErr::InvalidParam,
                 "type must be one of: box, sphere, plane, empty, camera, light_directional, "
-                "light_point, light_spot, particle_emitter, trigger, ui_canvas, ui_image, "
+                "light_point, light_spot, particle_emitter, trigger, decal, ui_canvas, ui_image, "
                 "ui_text, ui_button, ui_slider, ui_toggle, ui_scrollview");
 
             // UI 要素の親の明示指定(id か名前)。ui_canvas はルート生成なので対象外。
@@ -7581,6 +7611,13 @@ void Application::Shutdown()
     {
         m_volumetricFogPass->Shutdown();
         m_volumetricFogPass.reset();
+    }
+    // デカールは自前のディスクリプタを持たない（クラスタのブロックを借りるだけ）が、
+    // UPLOAD バッファの Unmap があるので明示的に落とす。
+    if (m_decalSystem)
+    {
+        m_decalSystem->Shutdown();
+        m_decalSystem.reset();
     }
     m_sceneFlow.reset();
     if (m_physicsSystem)
@@ -12192,6 +12229,7 @@ void Application::Render()
                 else if (req.modelPath == "__spot_light__")       name = "SpotLight";
                 else if (req.modelPath == "__particle_emitter__") name = "ParticleEmitter";
                 else if (req.modelPath == "__trigger__")          name = "Trigger";
+                else if (req.modelPath == "__decal__")            name = "Decal";
             }
             // 同名エンティティがいると Trigger / Lua の名前参照が区別できず、
             // コピペ時の参照リマップも誤った相手に付く。生成時点で連番ユニーク化する。
@@ -12338,6 +12376,17 @@ void Application::Render()
                 reg.emplace<NameTag>(e, NameTag{name});
                 reg.emplace<Transform>(e, Transform{req.position, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
                 reg.emplace<Trigger>(e, Trigger{});
+                spawnedEntity = e;
+            }
+            else if (req.modelPath == "__decal__")
+            {
+                // 投影デカール: 空エンティティ + DecalComponent。
+                // scale が投影ボックスなので、床向けに「広く薄く」を既定にする。
+                auto& reg = m_scene->GetRegistry();
+                auto e = reg.create();
+                reg.emplace<NameTag>(e, NameTag{name});
+                reg.emplace<Transform>(e, Transform{req.position, {0.0f, 0.0f, 0.0f}, {1.0f, 2.0f, 1.0f}});
+                reg.emplace<DecalComponent>(e, DecalComponent{});
                 spawnedEntity = e;
             }
             else if (req.modelPath == "__ui_canvas__" || req.modelPath == "__ui_image__" ||
@@ -14183,6 +14232,51 @@ void Application::Render()
         }
     }
 
+    // ===== デカールの収集（sortOrder 昇順）=====
+    // ★クラスタのフォールバック経路（正射 / プレビュー / 設定 OFF）にはデカールリストが無いので、
+    //   そのときは 0 個扱いにしてフォワード PS の分岐ごと切る。
+    m_decalEntries.clear();
+    if (m_decalSystem && m_decalSystem->IsReady())
+    {
+        auto& reg = m_scene->GetRegistry();
+        auto dView = reg.view<const Transform, const DecalComponent>();
+        for (auto [e, tf, dc] : dView.each())
+        {
+            if (m_decalEntries.size() >= DecalSystem::kMaxDecals) break;
+            if (dc.opacity <= 0.0f) continue;
+
+            XMMATRIX world = (tf.parent != entt::null)
+                ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
+
+            DecalEntry entry{};
+            entry.sortOrder = dc.sortOrder;
+            auto& d = entry.gpu;
+            XMStoreFloat4x4(&d.invWorld, XMMatrixTranspose(XMMatrixInverse(nullptr, world)));
+            // 投影軸 = ローカル +Y のワールド方向 / 接線 = ローカル +X のワールド方向。
+            // invWorld から逆算せずここで直接送る（PS 側の逆行列計算を丸ごと省ける）。
+            XMStoreFloat3(&d.axisW,    XMVector3Normalize(world.r[1]));
+            XMStoreFloat3(&d.tangentW, XMVector3Normalize(world.r[0]));
+            d.atlasUV        = dc.atlasUV;
+            d.atlasUVNormal  = dc.atlasUVNormal;
+            d.tint           = dc.tint;
+            d.opacity        = dc.opacity;
+            d.emissive       = dc.emissive;
+            d.normalStrength = dc.normalStrength;
+            d.roughness      = dc.roughness;
+            d.metallic       = dc.metallic;
+            // cos は CPU で 1 回だけ（GPU で acos/cos を回さない。クラスタライトの sinOuter と同じ流儀）
+            const f32 fadeDeg = (std::min)((std::max)(dc.angleFadeDeg, 0.0f), 89.0f);
+            d.cosAngleFade   = std::cos(XMConvertToRadians(fadeDeg));
+            d.fadeEdge       = (std::max)(dc.fadeEdge, 0.001f);
+            m_decalEntries.push_back(entry);
+        }
+        std::stable_sort(m_decalEntries.begin(), m_decalEntries.end(),
+                         [](const DecalEntry& a, const DecalEntry& b) { return a.sortOrder < b.sortOrder; });
+        m_decalGpu.clear();
+        m_decalGpu.reserve(m_decalEntries.size());
+        for (const auto& en : m_decalEntries) m_decalGpu.push_back(en.gpu);
+    }
+
     // ===== クラスタードライティングのパラメータ =====
     // クラスタ AABB の構築が透視前提なので、正射カメラ（俯瞰ゲーム / 2D ビュー）と
     // 設定 OFF のときは「先頭 64 灯の総当たり」フォールバックへ倒す（旧 8 灯より緩い）。
@@ -14206,9 +14300,13 @@ void Application::Render()
                               static_cast<f32>(cluster::kGridY) / static_cast<f32>(vpH)};
         // デバッグ表示はエディタのライティング窓から（ゲームモードは常に 0）
         m_clusterDebugMode = m_editorCtx ? m_editorCtx->clusterDebugMode : 0u;
+        // ★clusterExtra.w は計画02 が「予約」として空けておいた枠。
+        //   計画06 のデカール数がここに入る（PerFrameConstants のレイアウトは 1 バイトも動かない）。
+        //   0 ならフォワード PS のデカールブロックが [branch] で丸ごと飛ぶ。
         fc.clusterExtra    = {static_cast<f32>(numClusterLights),
                               static_cast<f32>(cluster::kMaxLightsPerCluster),
-                              static_cast<f32>(m_clusterDebugMode), 0.0f};
+                              static_cast<f32>(m_clusterDebugMode),
+                              clusterOn ? static_cast<f32>(m_decalGpu.size()) : 0.0f};
     }
 
     m_perFrameCB->Update(&fc, sizeof(fc), frameIndex);
@@ -14240,6 +14338,69 @@ void Application::Render()
             // フォールバック（正射 / 設定 OFF）でもテーブルはバインドするので、
             // インデックス/カウントは読取状態にしておく（中身は読まれない）。
             m_clusteredLighting->EnsureReadable(nativeCmdList);
+        }
+    }
+
+    // ===== デカール: アトラス解決 → アップロード → クラスタへビニング =====
+    // ★クラスタカリングの直後（同じ compute のかたまり）に置く。
+    //   フォワード PS は t18..t21 を kSlotClusterSRV のテーブル越しに読むので、
+    //   バインドはクラスタライトと同じ 1 本のままで増えない。
+    if (m_decalSystem && m_decalSystem->IsReady()
+        && m_clusteredLighting && m_clusteredLighting->IsReady())
+    {
+        // アトラスの解決（パスが変わったときだけ。空なら 1x1 黒ダミー＝アルファ 0 で不可視）。
+        const std::string& atlasPath = m_scene->GetDecalAtlasPath();
+        if (atlasPath != m_decalAtlasLoaded)
+        {
+            m_decalAtlasLoaded   = atlasPath;
+            m_decalAtlasSrvIndex = DescriptorHeap::kInvalidIndex;
+            if (!atlasPath.empty() && m_resourceManager)
+            {
+                const std::wstring wpath =
+                    PathResolver::Utf8ToWide(PathResolver::AssetsDir() + atlasPath);
+                if (Texture* tex = m_resourceManager->GetOrLoadTexture(
+                        wpath, nativeCmdList, /*srgb*/ true, TextureUsage::BaseColor))
+                    m_decalAtlasSrvIndex = tex->GetSrvIndex();
+                if (m_decalAtlasSrvIndex == DescriptorHeap::kInvalidIndex)
+                    Logger::Warn("デカールアトラスを読めませんでした: {}", atlasPath);
+            }
+            m_decalSrvDirty = true;
+        }
+        if (m_decalSrvDirty)
+        {
+            const u32 atlasIdx = (m_decalAtlasSrvIndex != DescriptorHeap::kInvalidIndex)
+                               ? m_decalAtlasSrvIndex : m_ssBlackSrvIndex;
+            if (atlasIdx != DescriptorHeap::kInvalidIndex)
+            {
+                for (u32 f = 0; f < DecalSystem::kFrameCount; ++f)
+                {
+                    const u32 block = m_clusteredLighting->GetSrvTableIndex(f);
+                    m_decalSystem->WriteSrvsInto(*m_graphicsDevice, *m_srvHeap, block, f,
+                                                 m_srvHeap->GetCpuHandle(atlasIdx));
+                }
+                m_decalSrvDirty = false;
+            }
+        }
+
+        const u32 uploadedDecals =
+            m_decalSystem->Upload(m_decalGpu.data(), static_cast<u32>(m_decalGpu.size()), frameIndex);
+        if (clusterOn && uploadedDecals > 0)
+        {
+            XMFLOAT4X4 projF;
+            XMStoreFloat4x4(&projF, m_camera->GetProjectionMatrix());
+            m_decalSystem->Cull(nativeCmdList, m_camera->GetViewMatrix(),
+                                projF._11, projF._22,
+                                fc.clusterParams.x, fc.clusterParams.y,
+                                m_camera->GetFarZ(), uploadedDecals, frameIndex);
+            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+            m_commandList->SetRootSignature(*m_rootSignature);
+            m_commandList->SetPipelineState(*m_pipelineState);
+        }
+        else
+        {
+            // デカール 0 個でもテーブルはバインドするので読取状態にしておく
+            // （フォワード PS は clusterExtra.w==0 で読まないが、状態は正しく保つ）。
+            m_decalSystem->EnsureReadable(nativeCmdList);
         }
     }
 

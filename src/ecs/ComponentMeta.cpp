@@ -174,6 +174,20 @@ void RegisterCoreComponentMeta()
         .data<&TrailRenderer::blend>("blend")
         .data<&TrailRenderer::minDist>("minDist");
 
+    entt::meta_factory<DecalComponent>{}
+        .type("DecalComponent")
+        .data<&DecalComponent::atlasUV>("atlasUV")
+        .data<&DecalComponent::atlasUVNormal>("atlasUVNormal")
+        .data<&DecalComponent::tint>("tint")
+        .data<&DecalComponent::opacity>("opacity")
+        .data<&DecalComponent::emissive>("emissive")
+        .data<&DecalComponent::normalStrength>("normalStrength")
+        .data<&DecalComponent::roughness>("roughness")
+        .data<&DecalComponent::metallic>("metallic")
+        .data<&DecalComponent::angleFadeDeg>("angleFadeDeg")
+        .data<&DecalComponent::fadeEdge>("fadeEdge")
+        .data<&DecalComponent::sortOrder>("sortOrder");
+
     entt::meta_factory<NetworkIdentity>{}
         .type("NetworkIdentity")
         .data<&NetworkIdentity::interestRadius>("interestRadius")

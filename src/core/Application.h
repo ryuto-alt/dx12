@@ -28,6 +28,7 @@
 #include "core/CpuScope.h"          // CpuScope / CpuScopeTimer（エディタとも共有するので独立ヘッダ）
 #include "renderer/DrawItem.h"      // 描画リストの要素（エディタのピッキングも読むので独立ヘッダ）
 #include "renderer/ClusteredLightCulling.h"  // LightGPU を値で持つので完全型が要る（軽量ヘッダ）
+#include "renderer/DecalSystem.h"            // DecalGPU を値で持つので同上
 
 // Forward declarations for graphics module
 namespace dx12e
@@ -54,6 +55,7 @@ namespace dx12e
     class TaaPass;
     class ScreenSpaceGiPass;
     class VolumetricFogPass;
+    class DecalSystem;
     class ParticleSystem;
     class GpuParticleSystem;
     class SpriteRenderer;
@@ -772,6 +774,20 @@ private:
     // パーティクル描画の直前にフルスクリーン 1 枚をブレンド合成する。
     // メインのルートシグネチャにも PerFrameConstants(b1) にも触らない ＝ RTV 消費 0。
     std::unique_ptr<VolumetricFogPass> m_volumetricFogPass;
+
+    // ---- デカール（クラスタードフォワードデカール。計画06 D1〜D5）----
+    // クラスタカリングの直後にデカールをビニングし、フォワード PS が
+    // kSlotClusterSRV テーブルの t18..t21 から読む（ルートシグネチャの増分 0）。
+    std::unique_ptr<DecalSystem> m_decalSystem;
+    // シーン設定 decalAtlas の解決キャッシュ。パスが変わったときだけ SRV を貼り直す。
+    std::string m_decalAtlasLoaded;
+    u32         m_decalAtlasSrvIndex = 0xFFFFFFFFu;
+    bool        m_decalSrvDirty      = true;
+    // 毎フレームのデカール収集バッファ（再確保を避けるためメンバで使い回す）。
+    // sortOrder 昇順に並べてから GPU へ送る＝重ね順が「下から上へ」で決まる。
+    struct DecalEntry { int sortOrder; DecalSystem::DecalGPU gpu; };
+    std::vector<DecalEntry>            m_decalEntries;
+    std::vector<DecalSystem::DecalGPU> m_decalGpu;
 
     // IBL 環境マップ（irradiance/prefiltered/BRDF LUT）+ 任意スカイボックス
     std::unique_ptr<IBLBaker>       m_iblBaker;

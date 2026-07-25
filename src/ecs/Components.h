@@ -1064,6 +1064,34 @@ struct TrailRenderer
     f32  minDist   = 0.03f;    // この距離以上動いたら点を打つ
 };
 
+// 投影デカール（弾痕/血/汚れ/水たまり/落書き）。
+// エンティティの Transform が作る箱（ローカル単位立方体 [-0.5,0.5] を scale で拡縮）の中に入った
+// 面へ、ローカル +Y から下向きに 1 枚テクスチャを投影する。無回転で置けばそのまま床に落ちる。
+//
+// 方式は「クラスタードフォワードデカール」。クラスタごとのデカールリストを作り、フォワード PS の
+// マテリアル確定直後に albedo/normal/roughness/metallic を書き換える（src/renderer/DecalSystem.h）。
+//
+// ★テクスチャは「シーン設定のアトラス 1 枚 + ここの UV 矩形」で指す。
+//   コンポーネントに std::string を持たせないのは意図的な設計判断:
+//   InspectorPanel の EndEdit が std::memcmp でスナップショット比較しているので、
+//   std::string メンバがあると SSO 境界をまたぐ変更を取りこぼす/誤検知する。
+struct DecalComponent
+{
+    // アトラス内のカラー矩形（UV 0..1）。(u0, v0, du, dv)。既定はアトラス全面。
+    DirectX::XMFLOAT4 atlasUV{0.0f, 0.0f, 1.0f, 1.0f};
+    // アトラス内の法線矩形。dv <= 0（既定）なら法線マップ無し＝受け面の法線をそのまま使う。
+    DirectX::XMFLOAT4 atlasUVNormal{0.0f, 0.0f, 0.0f, 0.0f};
+    DirectX::XMFLOAT3 tint{1.0f, 1.0f, 1.0f};   // カラーへの乗算
+    f32  opacity        = 1.0f;   // 全体の不透明度
+    DirectX::XMFLOAT3 emissive{0.0f, 0.0f, 0.0f};  // 加算する自己発光（HDR）
+    f32  normalStrength = 1.0f;   // 法線ブレンドの強さ（atlasUVNormal がある時だけ効く）
+    f32  roughness      = -1.0f;  // 受け面のラフネスを上書き。< 0 で変更しない
+    f32  metallic       = -1.0f;  // 同メタリック。< 0 で変更しない
+    f32  angleFadeDeg   = 60.0f;  // 投影軸と受け面法線の角度がこれを超えたら消える（引き伸ばし防止）
+    f32  fadeEdge       = 0.1f;   // 箱の縁からのフェード幅（ローカル座標。0=硬い縁）
+    int  sortOrder      = 0;      // 小さいものから下に重なる（同値なら不定）
+};
+
 // --- Trigger（イベント）: 範囲に入った/出た/居る ときに宣言的なアクションを実行する部品 ---
 // エディタで箱/球を置き、Inspector でアクション列を組むだけで「X したら Y する」を配線できる。
 // データのみ（評価は ScriptEngine::UpdateTriggers が Play 中に駆動）。JSON 保存なので Claude も書ける。

@@ -1080,6 +1080,47 @@ DeepDiagReport DeepDiag::Lighting(Application& app)
         }
     }
 
+    // ---- デカール ----
+    {
+        int decalCount = 0, alwaysHidden = 0;
+        for (auto [e, dc] : reg.view<DecalComponent>().each())
+        {
+            (void)e;
+            ++decalCount;
+            if (dc.opacity <= 0.0f || dc.angleFadeDeg >= 89.0f) ++alwaysHidden;
+        }
+        if (decalCount > 0)
+        {
+            const std::string& atlas = scene->GetDecalAtlasPath();
+            if (atlas.empty())
+            {
+                r.Add(1, "デカールが " + std::to_string(decalCount)
+                         + " 個あるがシーンの decalAtlas が未設定。"
+                           "テクスチャが無いので 1 枚も描かれない（アルファ 0 のダミーが貼られる）");
+            }
+            else
+            {
+                fs::path abs;
+                if (ResolveAssetPath(atlas, abs))
+                {
+                    std::error_code ec;
+                    if (!fs::exists(abs, ec))
+                        r.Add(2, "デカールアトラスが見つからない: " + atlas + "（デカールが全部消える）");
+                }
+            }
+            if (decalCount > 256)
+                r.Add(1, "デカールが " + std::to_string(decalCount)
+                         + " 個ある。GPU へ送れるのは 256 個までで、超過分は無言で描画されない");
+            if (alwaysHidden > 0)
+                r.Add(0, "opacity=0 か angleFadeDeg>=89 で絶対に見えないデカールが "
+                         + std::to_string(alwaysHidden) + " 個ある");
+            // ★クラスタードライティングが無効（正射カメラ / settings.json の render_clustered=0）だと
+            //   デカールのビニング先が無いので 1 枚も描かれない。設定は dx12_perf_stats の clustered で見える。
+            r.Add(0, "デカール " + std::to_string(decalCount)
+                     + " 個（クラスタード有効時のみ描画。正射カメラ/カメラプレビューでは出ない）");
+        }
+    }
+
     return r;
 }
 
