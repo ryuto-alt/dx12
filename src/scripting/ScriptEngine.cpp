@@ -30,6 +30,7 @@
 #include "animation/NodeAnimationClip.h"
 #include "animation/NodeAnimator.h"
 #include "animation/NodeGraph.h"
+#include "animation/AnimGraphRuntime.h"
 
 #include <DirectXMath.h>
 #include <algorithm>
@@ -46,6 +47,17 @@ namespace dx12e
 {
 
 namespace {
+
+// AnimatorController の実行状態を取り出す（未ロード / 無効なら nullptr）。
+// アニメ FSM の Lua API は全部これを通す。無ければ黙って no-op / 既定値を返すのが
+// 既存の playAnim 等と揃った流儀（エラーは上げない）。
+AnimGraphRuntimeState* AnimStateOf(Entity& e)
+{
+    if (!e.HasComponent<AnimatorController>()) return nullptr;
+    AnimatorController& ctrl = e.GetComponent<AnimatorController>();
+    if (!ctrl._state || !ctrl._state->valid) return nullptr;
+    return ctrl._state.get();
+}
 
 // 名前からエンティティを引く（NameTag 一致。先頭一致を返す）。見つからなければ entt::null。
 entt::entity FindEntityByName(entt::registry& reg, const std::string& name)
@@ -495,6 +507,7 @@ void ScriptEngine::RegisterBindings()
             if (type == "LuaScript")          return e.HasComponent<LuaScript>();
             if (type == "ParticleEmitter")    return e.HasComponent<ParticleEmitter>();
             if (type == "TrailRenderer")      return e.HasComponent<TrailRenderer>();
+            if (type == "DecalComponent")     return e.HasComponent<DecalComponent>();
             if (type == "Trigger")            return e.HasComponent<Trigger>();
             if (type == "UICanvas")           return e.HasComponent<UICanvas>();
             if (type == "UIRect")             return e.HasComponent<UIRect>();
@@ -506,6 +519,8 @@ void ScriptEngine::RegisterBindings()
             if (type == "UIScrollView")       return e.HasComponent<UIScrollView>();
             if (type == "UILayout")           return e.HasComponent<UILayout>();
             if (type == "UIAnimator")         return e.HasComponent<UIAnimator>();
+            if (type == "AnimatorController") return e.HasComponent<AnimatorController>();
+            if (type == "FootIK")             return e.HasComponent<FootIK>();
             // タイプミスや未対応型を「持ってない」と誤認させない（デバッグ困難の元）。
             // 毎フレーム呼ばれてもスパムしないよう型名ごとに1回だけ警告する。
             {
@@ -547,6 +562,102 @@ void ScriptEngine::RegisterBindings()
         "setAnimSpeed", [](Entity& e, float speed) {
             if (!e.HasComponent<SkeletalAnimation>()) return;
             e.GetComponent<SkeletalAnimation>().animator->SetSpeed(speed);
+        },
+
+        // --- アニメーションステートマシン(.animfsm / AnimatorController) ---
+        // FSM の「構造」はアセット側にあり、Lua が触るのは**パラメータだけ**。
+        // AnimatorController が無いときは黙って no-op / 既定値（既存 API と同じ流儀）。
+        "setAnimFloat", [](Entity& e, const std::string& name, float value) {
+            AnimGraphRuntimeState* st = AnimStateOf(e);
+            if (!st) return;
+            auto it = st->params.find(name);
+            if (it == st->params.end()) return;
+            it->second.f = value;
+        },
+
+        "setAnimBool", [](Entity& e, const std::string& name, bool value) {
+            AnimGraphRuntimeState* st = AnimStateOf(e);
+            if (!st) return;
+            auto it = st->params.find(name);
+            if (it == st->params.end()) return;
+            it->second.b = value;
+        },
+
+        "setAnimTrigger", [](Entity& e, const std::string& name) {
+            AnimGraphRuntimeState* st = AnimStateOf(e);
+            if (!st) return;
+            auto it = st->params.find(name);
+            if (it == st->params.end()) return;
+            it->second.b = true;   // 次に条件を満たした遷移が消費する
+        },
+
+        "getAnimFloat", [](Entity& e, const std::string& name) -> float {
+            AnimGraphRuntimeState* st = AnimStateOf(e);
+            if (!st) return 0.0f;
+            auto it = st->params.find(name);
+            return (it == st->params.end()) ? 0.0f : it->second.f;
+        },
+
+        "getAnimBool", [](Entity& e, const std::string& name) -> bool {
+            AnimGraphRuntimeState* st = AnimStateOf(e);
+            if (!st) return false;
+            auto it = st->params.find(name);
+            return (it == st->params.end()) ? false : it->second.b;
+        },
+
+        "getAnimStateName", [](Entity& e, sol::optional<int> layer) -> std::string {
+            AnimGraphRuntimeState* st = AnimStateOf(e);
+            const u32 li = static_cast<u32>((std::max)(0, layer.value_or(0)));
+            if (!st || li >= st->layers.size()) return std::string();
+            const i32 s = st->layers[li].curState;
+            const auto& states = st->asset.layers[li].states;
+            if (s < 0 || s >= static_cast<i32>(states.size())) return std::string();
+            return states[static_cast<size_t>(s)].name;
+        },
+
+        "getAnimNormalizedTime", [](Entity& e, sol::optional<int> layer) -> float {
+            AnimGraphRuntimeState* st = AnimStateOf(e);
+            if (!st || !e.HasComponent<SkeletalAnimation>()) return 0.0f;
+            const u32 li = static_cast<u32>((std::max)(0, layer.value_or(0)));
+            return anim_graph::NormalizedTime(*st, li, e.GetComponent<SkeletalAnimation>().clips);
+        },
+
+        "playAnimState", [](Entity& e, const std::string& stateName, sol::optional<float> blend) {
+            AnimGraphRuntimeState* st = AnimStateOf(e);
+            if (!st) return;
+            anim_graph::PlayState(*st, 0, stateName, blend.value_or(0.2f));
+        },
+
+        "setAnimLayerWeight", [](Entity& e, int layer, float w) {
+            AnimGraphRuntimeState* st = AnimStateOf(e);
+            if (!st) return;
+            const u32 li = static_cast<u32>((std::max)(0, layer));
+            if (li >= st->layers.size()) return;
+            st->layers[li].weight = std::clamp(w, 0.0f, 1.0f);
+        },
+
+        "getAnimLayerWeight", [](Entity& e, int layer) -> float {
+            AnimGraphRuntimeState* st = AnimStateOf(e);
+            const u32 li = static_cast<u32>((std::max)(0, layer));
+            if (!st || li >= st->layers.size()) return 0.0f;
+            return st->layers[li].weight;
+        },
+
+        // --- フット IK（接地補正）---
+        "setFootIKWeight", [](Entity& e, float w) {
+            if (!e.HasComponent<FootIK>()) return;
+            e.GetComponent<FootIK>().weight = std::clamp(w, 0.0f, 1.0f);
+        },
+
+        "getFootIKWeight", [](Entity& e) -> float {
+            if (!e.HasComponent<FootIK>()) return 0.0f;
+            return e.GetComponent<FootIK>().weight;
+        },
+
+        "isFootGrounded", [](Entity& e, sol::optional<bool> rightFoot) -> bool {
+            if (!e.HasComponent<FootIK>()) return false;
+            const FootIK& ik = e.GetComponent<FootIK>();
+            return rightFoot.value_or(false) ? ik._rContact : ik._lContact;
         },
 
         // --- タイムライン製 UI アニメ(.uianim) ---
@@ -1219,9 +1330,12 @@ void ScriptEngine::RegisterBindings()
             for (auto e : view) return LuaLight{&reg, e};
             return sol::nullopt;
         },
-        // ライト本数と CB 上限。演出で光を増やしすぎて「9 個目が無視される」のを
-        // Lua から検知できるようにする（描画側と同じ view の数え方）。
-        // 戻り: { point=, spot=, directional=, maxPoint=8, maxSpot=8 }
+        // ライト本数と上限。演出で光を増やしすぎて「無言で消える」のを Lua から
+        // 検知できるようにする（描画側と同じ view の数え方）。
+        // クラスタードライティング（Forward+）化で点/スポットの個別上限は撤廃され、
+        // 今は point + spot の合計 1024 灯（1 クラスタあたりは 128 灯）。
+        // 戻り: { point=, spot=, directional=, total=, maxTotal=1024, maxPerCluster=128,
+        //         maxPoint=1024, maxSpot=1024 }  ※maxPoint/maxSpot は後方互換の別名
         "lightCount", [this](Scene& s) -> sol::table {
             auto& reg = s.GetRegistry();
             int np = 0, ns = 0, nd = 0;
@@ -1232,8 +1346,11 @@ void ScriptEngine::RegisterBindings()
             t["point"]       = np;
             t["spot"]        = ns;
             t["directional"] = nd;
-            t["maxPoint"]    = 8;   // = MAX_POINT_LIGHTS (shaders/forward/Lighting.hlsli)
-            t["maxSpot"]     = 8;   // = MAX_SPOT_LIGHTS
+            t["total"]         = np + ns;
+            t["maxTotal"]      = 1024;  // = ClusterMath.h の kMaxSceneLights
+            t["maxPerCluster"] = 128;   // = ClusterMath.h の kMaxLightsPerCluster
+            t["maxPoint"]      = 1024;  // 後方互換の別名（個別上限は撤廃済み）
+            t["maxSpot"]       = 1024;
             return t;
         },
         // 環境光（影の部分の明るさ）。実体は DirectionalLight.ambient なので

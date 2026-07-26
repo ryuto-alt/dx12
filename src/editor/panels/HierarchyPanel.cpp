@@ -789,6 +789,13 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
             req.position = {0.0f, 1.0f, 0.0f};
             ctx.pendingSpawns.push_back(req);
         }
+        if (ImGui::MenuItem("Decal（投影デカール・弾痕/汚れ）"))
+        {
+            PendingSpawnRequest req;
+            req.modelPath = "__decal__";
+            req.position = {0.0f, 1.0f, 0.0f};
+            ctx.pendingSpawns.push_back(req);
+        }
         ImGui::Separator();
         if (ImGui::BeginMenu("UI（ゲーム内UI）"))
         {

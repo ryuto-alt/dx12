@@ -59,6 +59,11 @@ float3 ACESFilm(float3 x)
 }
 
 // Normal map decoding: tangent space -> world space
+//
+// z は xy から再構成する（z = sqrt(1 - x^2 - y^2)）。
+// 法線マップは BC5_UNORM（RG 2ch）で圧縮して読み込むため、サンプルの b は常に 0 になる。
+// 単位長のタンジェント空間法線なら z は xy から一意に決まるので、
+// 非圧縮(RGB)テクスチャでも同じ結果になり、経路を分ける必要がない。
 float3 PerturbNormal(float3 worldNormal, float3 worldTangent, float tangentW,
                      float3 normalMapSample)
 {
@@ -67,7 +72,9 @@ float3 PerturbNormal(float3 worldNormal, float3 worldTangent, float tangentW,
     float3 B = cross(N, T) * tangentW;
     float3x3 TBN = float3x3(T, B, N);
 
-    float3 tangentNormal = normalMapSample * 2.0 - 1.0;
+    float2 xy = normalMapSample.xy * 2.0 - 1.0;
+    float  z  = sqrt(saturate(1.0 - dot(xy, xy)));
+    float3 tangentNormal = float3(xy, z);
     return normalize(mul(tangentNormal, TBN));
 }
 

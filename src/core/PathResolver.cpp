@@ -72,6 +72,20 @@ std::wstring PathResolver::Utf8ToWide(const std::string& utf8)
     return result;
 }
 
+std::string PathResolver::WideToUtf8(const std::wstring& w)
+{
+    if (w.empty())
+        return {};
+    const int len = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()),
+                                        nullptr, 0, nullptr, nullptr);
+    if (len <= 0)
+        return {};
+    std::string result(static_cast<size_t>(len), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()),
+                        result.data(), len, nullptr, nullptr);
+    return result;
+}
+
 void PathResolver::SetProjectRoot(const std::string& rootDir)
 {
     if (rootDir.empty())

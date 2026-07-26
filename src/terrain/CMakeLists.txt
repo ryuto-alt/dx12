@@ -2,6 +2,7 @@ add_library(Terrain STATIC
     HeightField.cpp
     TerrainBrush.cpp
     TerrainMeshBuilder.cpp
+    TerrainSplatMap.cpp
     TerrainIO.cpp
 )
 target_include_directories(Terrain PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)

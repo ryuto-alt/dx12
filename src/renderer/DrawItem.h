@@ -23,6 +23,9 @@ struct DrawItem
     entt::entity        e;
     const MeshRenderer* renderer;
     DirectX::XMFLOAT4X4 world;        // 親階層合成済みワールド行列
+    // 前フレームのワールド行列（速度バッファ生成用）。TAA 無効時は world と同値のまま
+    // （＝速度 0）。新規スポーンしたエンティティも world と同値にして初回のゴーストを防ぐ。
+    DirectX::XMFLOAT4X4 prevWorld;
     SkinningBuffer*     skin;         // スキンドなら該当バッファ / 静的は nullptr
     // 保守的バウンディング球。中心は「メッシュAABBの中心をワールドへ移した点」で、
     // エンティティ原点ではない（原点からジオメトリがズレたモデルの誤カリング防止）。
@@ -35,5 +38,22 @@ struct DrawItem
     // 同一キー同士は「同じメッシュ・同じLOD・同じマテリアル/PBR値」＝1ドローに畳んで良い。
     u64                 batchKey;
 };
+
+// この DrawItem が DXR の TLAS に入るか（＝RT 影 / RT-AO が担当する範囲か）。
+//
+// ★CSM 側で「RT が担当するぶんを除外する」ときも必ずこの関数を使うこと。
+//   判定が 2 箇所に分かれると、影が二重に出るか、どこにも出なくなる。
+//   RT 影が有効なとき、CSM と RT は**担当が排他**になり、フォワード PS の
+//     shadow = min(csmShadow, contactShadowTex)
+//   が過不足なく合成する。CSM を全部描いたままにすると min() は暗い方を採るので
+//   CSM のアクネ（本来明るいのに縞状に暗い）とカスケード境界の段差が残ってしまう。
+//
+//  - skin != nullptr … スキンド。変形後の頂点が GPU のどこにも無い（VS 内スキニング）ので
+//                      compute スキニング（計画09 Step 4）を作るまで BLAS を建てられない。
+//  - sortKey == 3    … 半透明。TLAS に入れると any-hit が必要になり 2〜10 倍遅くなる。
+inline bool IsRaytracedItem(const DrawItem& it)
+{
+    return it.renderer != nullptr && it.skin == nullptr && it.sortKey != 3u;
+}
 
 } // namespace dx12e

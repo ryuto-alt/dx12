@@ -9,6 +9,8 @@ SamplerState g_sampler        : register(s0);
 
 // Shadow (CSM: Texture2DArray, 1スライス=1カスケード)。g_shadowSampler(s1)は Lighting.hlsli で共有宣言。
 Texture2DArray         g_shadowMap     : register(t4);
+// PCSS / 3x3 PCF の共有実装（g_shadowMap と Lighting.hlsli の後で include すること）
+#include "ShadowPcss.hlsli"
 
 // IBL (t5,t6,t7 / s2=linear-clamp(mip有), s3=linear-clamp(mipなし))
 TextureCube  g_irradianceMap  : register(t5);
@@ -20,6 +22,21 @@ SamplerState g_brdfSampler    : register(s3);  // LINEAR CLAMP（mipなし, LUT 
 // SSAO（スクリーン空間 AO。フル解像度・同一ビューポート前提でピクセル直読み）
 Texture2D<float> g_ssao        : register(t8);
 SamplerState     g_ssaoSampler : register(s4);  // POINT CLAMP（未使用だが RootSig 整合のため宣言）
+
+// コンタクトシャドウ（深度バッファのスクリーン空間レイマーチ。1=遮蔽なし）。
+// CSM が解像度不足で落とせない接地部の細かい影を補うため、太陽の寄与へ乗算する。
+Texture2D<float> g_contactShadow : register(t11);
+
+// SSR（スクリーン空間反射。rgb=反射放射輝度 / a=confidence）と
+// SSGI（スクリーン空間GI。rgb=間接放射照度＝albedo を掛ける前）。
+// どちらもフル解像度・同一ビューポートなのでピクセル直読み。
+// ★無効時は 1x1 黒ダミーが貼られる → Load(画面座標) が範囲外で 0 を返し、
+//   SSR は confidence=0（＝完全に IBL）、SSGI は寄与 0 になる。分岐フラグは不要。
+Texture2D<float4> g_ssr  : register(t16);
+Texture2D<float4> g_ssgi : register(t17);
+
+// デカール（t18..t21）。★g_sampler(s0) と Lighting.hlsli より後に include すること。
+#include "DecalApply.hlsli"
 
 // PerObject constants (b0)
 cbuffer PerObjectConstants : register(b0)
@@ -94,38 +111,20 @@ int SelectCascade(float viewDepth)
     return c;
 }
 
-float SampleCascade(int cascade, float3 worldPos)
+float SampleCascade(int cascade, float3 worldPos, float2 svPos)
 {
-    float4 lc = mul(float4(worldPos, 1.0f), cascadeViewProj[cascade]);
-    float3 proj = lc.xyz / lc.w;
-    float2 uv = proj.xy * 0.5f + 0.5f;
-    uv.y = 1.0f - uv.y;
-    if (uv.x < 0 || uv.x > 1 || uv.y < 0 || uv.y > 1) return 1.0f;
-
-    // 受光面のシャドウアクネ/ピーターパン調整用の深度バイアス（shadowParams.y）。
-    // 比較深度を手前へずらして自己遮蔽を抑える。
-    float current = proj.z - shadowParams.y;
-    float texel = shadowParams.x;  // 1/shadowMapSize
-    // 3x3 PCF（9タップ）。床は全画面なのでタップ数が直接 fill コスト。5x5(25)→3x3(9)で約64%削減。
-    // 影の縁が僅かに硬くなるだけ（minimal画質方針で許容）。
-    float s = 0.0f;
-    [unroll]
-    for (int y = -1; y <= 1; ++y)
-    [unroll]
-    for (int x = -1; x <= 1; ++x)
-        s += g_shadowMap.SampleCmpLevelZero(g_shadowSampler,
-                 float3(uv + float2(x, y) * texel, (float)cascade), current);
-    return s / 9.0f;
+    // ★実体は ShadowPcss.hlsli（PCSS / 3x3 PCF の切替込み。4 つの PS で共有）
+    return SampleShadowCascadeCommon(g_shadowMap, cascade, worldPos, svPos, shadowParams.y);
 }
 
-float CalcShadow(float3 worldPos, float viewDepth)
+float CalcShadow(float3 worldPos, float viewDepth, float2 svPos)
 {
     // 正射カメラでは CSM 無効（ComputeCascades が cascadeSplitsView=1e9・identity を設定）。
     // identity フォールバックは原点付近(uv∈[0,1])でクリップ済みシャドウマップ(クリア1.0)と
     // 比較してゴミ影を落とすため、明示的に無影(1.0)を返す。
     if (cascadeSplitsView.x > 1.0e8) return 1.0f;
     int c = SelectCascade(viewDepth);
-    float shadow = SampleCascade(c, worldPos);
+    float shadow = SampleCascade(c, worldPos, svPos);
     // カスケード境界ブレンド(任意): 次カスケードと線形混合
     float band = shadowParams.z;
     if (band > 0.0f && c < NUM_CASCADES - 1)
@@ -133,7 +132,7 @@ float CalcShadow(float3 worldPos, float viewDepth)
         float edge = cascadeSplitsView[c];
         float t = saturate((edge - viewDepth) / max(band, 1e-4));
         if (t < 1.0f)
-            shadow = lerp(SampleCascade(c + 1, worldPos), shadow, t);
+            shadow = lerp(SampleCascade(c + 1, worldPos, svPos), shadow, t);
     }
     return shadow;
 }
@@ -174,6 +173,15 @@ float4 PSMain(PSInput input) : SV_TARGET
     }
     roughness = max(roughness, 0.04);
 
+    // ===== デカール（クラスタードフォワードデカール）=====
+    // ★マテリアル確定直後・ライティング開始前に適用する。こうすると後続の
+    //   ShadePunctual / AccumulatePunctualLights / IBL / 影が一切の変更なしに
+    //   デカールの法線とマテリアルで動く。
+    // ★デカールが 0 個のシーンでは [branch] で丸ごと飛ぶ（ddx/ddy も関数の中）。
+    float3 decalEmissive = 0.0;
+    ApplyDecals(input.worldPos, input.positionSV.xy, input.viewDepth,
+                albedo, N, metallic, roughness, decalEmissive);
+
     // View & Light
     float3 V = normalize(cameraPos - input.worldPos);
     float3 L = normalize(-lightDir);
@@ -182,18 +190,33 @@ float4 PSMain(PSInput input) : SV_TARGET
     float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
 
     // Shadow (CSM カスケード選択 PCF)
-    float shadow = CalcShadow(input.worldPos, input.viewDepth);
+    float shadow = CalcShadow(input.worldPos, input.viewDepth, input.positionSV.xy);
+
+    // コンタクトシャドウ（スクリーン空間・フル解像度・同一ビューポートなのでピクセル直読み）。
+    // contactShadowEnabled=0（無効/正射/フォールバック）のときは読まず 1.0。
+    // 白ダミーは 1x1 のため Load(画面座標) が範囲外で 0 を返し、太陽光を全消しするのを防ぐ。
+    if (contactShadowEnabled > 0.5)
+        shadow = min(shadow, g_contactShadow.Load(int3(input.positionSV.xy, 0)));
 
     // Directional Light（影付き）
     float3 Lo = ShadePunctual(N, V, L, lightColor * shadow, albedo, F0, metallic, roughness);
 
-    // Point Lights + Spot Lights
-    Lo += AccumulatePunctualLights(N, V, input.worldPos, albedo, F0, metallic, roughness);
+    // Point Lights + Spot Lights（クラスタードライティング / Forward+。灯数上限なし）
+    Lo += AccumulatePunctualLights(N, V, input.worldPos, albedo, F0, metallic, roughness,
+                                   input.positionSV.xy);
 
     // SSAO（スクリーン空間 AO）: フル解像度・同一ビューポートなのでピクセル直読み。
     // aoEnabled=0（SSAO無効/正射カメラ/編集2Dビュー）のときは AO を読まず 1.0。
     // 白ダミーは 1x1 のため Load(画面座標) が範囲外で 0 を返し、環境光を黒く潰してしまうのを防ぐ。
     float ao = (aoEnabled > 0.5) ? g_ssao.Load(int3(input.positionSV.xy, 0)) : 1.0;
+
+    // SSR / SSGI（無効時は 1x1 黒ダミー → Load が範囲外で 0 = 寄与ゼロ）
+    //   ssr .rgb=反射放射輝度 / .a=confidence
+    //   ssgi.rgb=半球の間接放射照度（IBL ミスフォールバック込み） / .a=有効度
+    float4 ssr  = g_ssr.Load(int3(input.positionSV.xy, 0));
+    float4 ssgi = g_ssgi.Load(int3(input.positionSV.xy, 0));
+    float  ssrConf  = saturate(ssr.a);
+    float  ssgiConf = saturate(ssgi.a);
 
     // ===== Ambient / IBL =====
     float3 ambient;
@@ -205,30 +228,44 @@ float4 PSMain(PSInput input) : SV_TARGET
         float3 kD  = (1.0 - F) * (1.0 - metallic);
 
         // 拡散 IBL（irradiance）
+        // ★SSGI は irradiance を「置き換える」（足さない）。SSGI はミスしたレイに
+        //   IBL の irradiance を積んでいるので、足すと同じ光を二重に数えて全体が倍明るくなる。
+        //   SSGI が無効/無効ピクセルでは ssgiConf=0 で完全に従来どおり。
         float3 irradiance = g_irradianceMap.SampleLevel(g_iblSampler, N, 0).rgb;
+        irradiance = lerp(irradiance, ssgi.rgb, ssgiConf);
         float3 diffuseIBL = irradiance * albedo;
 
         // 鏡面 IBL（split-sum: prefiltered * (F*scale + bias)）
+        // ★SSR がヒットしていれば prefiltered をその放射輝度で置き換える（confidence で連続に）。
         float  mip = roughness * maxPrefilterMip;
         float3 prefiltered = g_prefilteredMap.SampleLevel(g_iblSampler, R, mip).rgb;
+        prefiltered = lerp(prefiltered, ssr.rgb, ssrConf);
         float2 envBRDF = g_brdfLUT.SampleLevel(g_brdfSampler, float2(NoV, roughness), 0).rg;
         float3 specularIBL = prefiltered * (F * envBRDF.x + envBRDF.y);
 
-        ambient = (kD * diffuseIBL + specularIBL) * iblIntensity;
+        // ★AO の掛け方（二重計上の解消）:
+        //   SSGI/SSR が担当していない分にだけ AO を掛ける。どちらも「実際に届いた光」を
+        //   画面空間で積分した結果なので遮蔽は織り込み済み。そこへ AO を重ねると
+        //   窪みが二重に暗くなる。
+        float aoDiff = lerp(ao, 1.0, ssgiConf);
+        float aoSpec = lerp(ao, 1.0, ssrConf);
+        ambient = (kD * diffuseIBL * aoDiff + specularIBL * aoSpec) * iblIntensity;
     }
     else
     {
         // 従来フォールバック（ライト ambient のみ）
         // metallic は拡散反射を持たない → (1-metallic) でスケール。F0 項は環境反射の簡易近似。
         float3 ambientDiffuse  = albedo * (1.0 - metallic);
-        float3 ambientSpecular = F0;
-        ambient = ambientStrength * (ambientDiffuse + ambientSpecular);
+        float3 ambientSpecular = lerp(F0, ssr.rgb, ssrConf);
+        // 環境光へ AO を乗算（直接光は遮蔽しない）。
+        ambient = ambientStrength * (ambientDiffuse + ambientSpecular) * ao;
+        // SSGI があるなら拡散側をその放射照度で置き換える（AO は掛けない）。
+        ambient = lerp(ambient,
+                       ssgi.rgb * ambientDiffuse + ambientStrength * ambientSpecular * ao,
+                       ssgiConf);
     }
 
-    // 環境光(IBL/ambient)へ AO を乗算（直接光は遮蔽しない）。
-    ambient *= ao;
-
-    float3 color = ambient + Lo;
+    float3 color = ambient + Lo + decalEmissive;
 
     // カスケード可視化デバッグ（shadowParams.w>0.5）
     if (shadowParams.w > 0.5f)
@@ -236,6 +273,11 @@ float4 PSMain(PSInput input) : SV_TARGET
         float3 tint[4] = { float3(1,0.4,0.4), float3(0.4,1,0.4), float3(0.4,0.4,1), float3(1,1,0.4) };
         color *= tint[SelectCascade(input.viewDepth)];
     }
+
+    // クラスタ可視化デバッグ（clusterExtra.z: 1=ライト複雑度ヒートマップ / 2=クラスタ境界）
+    color = ApplyClusterDebug(color, input.positionSV.xy, input.worldPos);
+    // デカール枚数ヒートマップ（clusterExtra.z == 3。dx12_render_debug decalCount）
+    color = ApplyDecalDebug(color, input.positionSV.xy, input.worldPos);
 
 #ifdef LDR_OUTPUT
     // LDR 直出力バリアント（サムネイル等、ポストプロセスを通らない R8G8B8A8 RT 用）

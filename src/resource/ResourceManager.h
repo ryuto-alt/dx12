@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include "resource/TextureLoader.h"   // TextureUsage（BC 圧縮の形式選択に使う）
+
 struct ID3D12GraphicsCommandList;
 
 namespace dx12e
@@ -39,22 +41,28 @@ public:
     void Initialize(GraphicsDevice* device, DescriptorHeap* srvHeap,
                     ID3D12GraphicsCommandList* cmdList);
 
+    // usage は BC 圧縮の形式選択に使う（既定 Unknown = 圧縮しない＝従来どおり）。
+    // マテリアルのスロットが分かっている呼び出し側（ModelLoader / .dxmat / Inspector の上書き）
+    // だけが BaseColor / Normal / NonColor を渡すこと。
     Texture* GetOrLoadTexture(
         const std::wstring& filePath,
         ID3D12GraphicsCommandList* cmdList,
-        bool srgb = true);
+        bool srgb = true,
+        TextureUsage usage = TextureUsage::Unknown);
 
     // モデル読み込み（キャッシュ付き）
     const CachedModel* GetOrLoadModel(
         const std::string& filePath,
         ID3D12GraphicsCommandList* cmdList);
 
-    // 埋め込みテクスチャ用
+    // 埋め込みテクスチャ用（usage は GetOrLoadTexture と同じ意味＝BC 圧縮の形式選択）
     Texture* GetOrLoadEmbeddedTexture(
         const std::string& key,
         const uint8_t* data, size_t dataSize,
         const char* formatHint,
-        ID3D12GraphicsCommandList* cmdList);
+        ID3D12GraphicsCommandList* cmdList,
+        bool srgb = true,
+        TextureUsage usage = TextureUsage::Unknown);
 
     Texture* GetDefaultWhiteTexture() const { return m_defaultWhite.get(); }
     Texture* GetDefaultNormalTexture() const { return m_defaultNormal.get(); }

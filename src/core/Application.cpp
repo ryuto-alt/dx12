@@ -33,6 +33,15 @@
 #include "renderer/MotionBlurPass.h"
 #include "renderer/GpuParticleSystem.h"
 #include "renderer/SSAOPass.h"
+#include "renderer/ContactShadowPass.h"
+#include "renderer/TaaPass.h"
+#include "renderer/RenderDebugPass.h"
+#include "renderer/ScreenSpaceGiPass.h"
+#include "renderer/RaytracingScene.h"
+#include "renderer/RtScreenPass.h"
+#include "renderer/VolumetricFogPass.h"
+#include "renderer/DecalSystem.h"
+#include "renderer/PrevWorldComponent.h"
 #include "renderer/ParticleSystem.h"
 #include "renderer/SpriteRenderer.h"
 #include "renderer/SpriteAnim.h"
@@ -45,6 +54,7 @@
 #include "resource/ResourceManager.h"
 #include "resource/TextureLoader.h"
 #include "resource/MaterialAssetManager.h"
+#include "resource/TerrainLayerSet.h"
 #include "graphics/Texture.h"
 #include "animation/Skeleton.h"
 #include "animation/AnimationClip.h"
@@ -60,6 +70,8 @@
 #include "scripting/ScriptEngine.h"
 #include "ui/UISystem.h"
 #include "ui/UiAnimRuntime.h"
+#include "animation/AnimGraphRuntime.h"
+#include "animation/FootIK.h"
 #include "core/mcp/McpBridge.h"
 #include <nlohmann/json.hpp>
 #include <filesystem>
@@ -149,6 +161,11 @@ namespace dx12e
 // （バックバッファ＝スワップチェインは従来どおりスワップ形式のまま）
 static constexpr DXGI_FORMAT kSceneColorFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
+// G-Buffer（深度+速度プリパスの RTV1）。xy=oct(ワールド法線) z=roughness w=metallic。
+// 8bit だとカメラが動くたびに specular がウォブルするので fp16。
+// ScreenSpaceGiPass::kGBufferFormat と同じ値であること。
+static constexpr DXGI_FORMAT kGBufferFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+
 // フルパスを assets ディレクトリ相対へ（シーンフロー / loadScene 用）
 static std::string ToAssetRel(const std::string& full)
 {
@@ -161,6 +178,13 @@ static std::string ToAssetRel(const std::string& full)
 }
 
 Application::Application() = default;
+
+// ★この関数は必ず Application.cpp（= Application 本体と同じ TU）で定義すること。
+// インライン化されるとチェックの意味が消える。詳細は main.cpp のビルド健全性チェック。
+size_t Application::CompiledLayoutSize()
+{
+    return sizeof(Application);
+}
 
 Application::~Application()
 {
@@ -325,6 +349,39 @@ void Application::RecreateGridPso()
     m_gridPipelineState->Initialize(*m_graphicsDevice, builder);
 }
 
+void Application::RecreateTerrainPsos()
+{
+    // 地形マテリアル（4 レイヤースプラット）。ルートシグネチャ・入力レイアウト・RT 形式は
+    // 通常 forward とまったく同じで、VS/PS だけ差し替える。
+    // ★t0/t1 に Texture2DArray を張るのはここではなく EnsureTerrainSrv（PSO には関係しない）。
+    auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Terrain_VS.cso");
+    auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Terrain_PS.cso");
+    if (vs.GetSize() == 0 || ps.GetSize() == 0)
+    {
+        // .cso が無い＝ビルドし忘れ。地形は layerSetPath 空なら従来経路で描けるので致命ではない。
+        Logger::Warn("Terrain_VS/PS.cso が読めません（地形スプラットは無効。従来経路で描画します）");
+        return;
+    }
+
+    PipelineStateBuilder builder;
+    builder.SetRootSignature(m_rootSignature->Get())
+           .SetVertexShader(vs.GetData(), vs.GetSize())
+           .SetPixelShader(ps.GetData(), ps.GetSize())
+           .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
+           .SetRenderTargetFormat(kSceneColorFormat)
+           .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+           .SetDepthEnabled(true)
+           .SetCullMode(D3D12_CULL_MODE_NONE);
+
+    if (!m_terrainPipelineState) m_terrainPipelineState = std::make_unique<PipelineState>();
+    m_terrainPipelineState->Initialize(*m_graphicsDevice, builder);
+
+    // 深度プリパス併用時の LESS_EQUAL バリアント（地形は不透明なのでプリパスに乗る）。
+    builder.SetDepthFunc(D3D12_COMPARISON_FUNC_LESS_EQUAL);
+    if (!m_terrainPipelineStateLEqual) m_terrainPipelineStateLEqual = std::make_unique<PipelineState>();
+    m_terrainPipelineStateLEqual->Initialize(*m_graphicsDevice, builder);
+}
+
 void Application::RecreateEmissivePso()
 {
     auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Emissive_VS.cso");
@@ -452,6 +509,250 @@ void Application::RecreateDepthPrepassPsos()
     }
 }
 
+// 深度+速度プリパス（PrepassMode::DepthVelocityGBuffer）の PSO 3 本。
+// 深度プリパス PSO との唯一の違いは「RTV に速度バッファ(RG16F)を持つ」ことと VS/PS。
+// 深度をフォワードとビット一致させるため、VS の演算順は ShadowPass / DepthPrepassSkinned と
+// 完全に揃えてある（shaders/velocity/*.hlsl のヘッダコメント参照）。
+// TAA の履歴と、速度の再投影に使う前フレーム情報をまとめて捨てる。
+// シーンロード / Play↔Editor 遷移 / リサイズで呼ぶこと。忘れると「切替直後に
+// 前のシーンの絵が半透明で残る」という気味の悪いバグになる。
+void Application::InvalidateTemporalHistory()
+{
+    if (m_taaPass) m_taaPass->InvalidateHistory();
+    // SSR/SSGI も「前フレームカラー」と時間蓄積の履歴を持っている。捨てないと
+    // シーン切替直後の 1 フレームだけ前のシーンの色が反射/間接光として写り込む。
+    if (m_screenSpaceGi) m_screenSpaceGi->InvalidateHistory();
+    // ボリュメトリックフォグの froxel ボリュームも時間再投影の履歴を持っている。
+    if (m_volumetricFogPass) m_volumetricFogPass->InvalidateHistory();
+    m_prevViewProjNJValid = false;
+    m_prevFrameIndexValid = false;
+    m_prevViewProjValid   = false;   // モーションブラーの速度スパイクも同時に防ぐ
+}
+
+// ============================================================================
+//  レンダー解像度と表示解像度の分離（#16）
+// ============================================================================
+// 表示側 = バックバッファ上の矩形。エディタは ImGui のシーンビュー矩形、
+// 単体ゲーム / ゲームモードはウィンドウ全面。**ここだけが「画面上の位置」を知っている。**
+void Application::GetDisplayViewport(u32& x, u32& y, u32& w, u32& h) const
+{
+    // 全画面は「単体ゲーム（エディタ UI なし）」のみ。エディタは編集中も Play 中も
+    // 中央の 16:9 ビューポート矩形に描く（パネル下に潜り込ませない）。
+    if (m_isGameMode || !m_editorLayer)
+    {
+        x = 0; y = 0;
+        w = m_window ? m_window->GetWidth()  : 1u;
+        h = m_window ? m_window->GetHeight() : 1u;
+    }
+    else
+    {
+        const auto vp = m_editorLayer->GetViewportPos();
+        const auto vs = m_editorLayer->GetViewportSize();
+        // 負座標(パネルのドラッグ中/画面外)を u32 へキャストすると巨大値にラップし、
+        // ビューポートが RT 外へ飛んで描画が全滅する(クリアだけ残り真っ青)ため 0 で下限。
+        x = static_cast<u32>((std::max)(0.0f, vp.x));
+        y = static_cast<u32>((std::max)(0.0f, vp.y));
+        w = static_cast<u32>((std::max)(0.0f, vs.x));
+        h = static_cast<u32>((std::max)(0.0f, vs.y));
+    }
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+}
+
+// シーン系 RT を丸ごと (w,h) へ作り直す。**呼び出し側はフレーム外（Run ループ）であること。**
+// スワップチェイン（表示解像度）はここでは触らない。
+void Application::ApplyRenderResolution(u32 w, u32 h)
+{
+    if (w == 0 || h == 0) return;
+    if (w == m_renderW && h == m_renderH) return;
+    if (!m_graphicsDevice || !m_commandQueue) return;
+
+    m_commandQueue->WaitIdle();
+
+    // 深度バッファ（DSV + SRV は既存ハンドルへ張り直す＝ヒープは消費しない）
+    if (m_dsvHandle.ptr != 0)
+    {
+        m_depthBuffer.Reset();
+        D3D12_RESOURCE_DESC depthDesc{};
+        depthDesc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        depthDesc.Width            = w;
+        depthDesc.Height           = h;
+        depthDesc.DepthOrArraySize = 1;
+        depthDesc.MipLevels        = 1;
+        depthDesc.Format           = DXGI_FORMAT_R32_TYPELESS;
+        depthDesc.SampleDesc       = {1, 0};
+        depthDesc.Flags            = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+        D3D12_CLEAR_VALUE clearValue{};
+        clearValue.Format       = DXGI_FORMAT_D32_FLOAT;
+        clearValue.DepthStencil = {1.0f, 0};
+
+        D3D12_HEAP_PROPERTIES heapProps{};
+        heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+        ThrowIfFailed(m_graphicsDevice->GetDevice()->CreateCommittedResource(
+            &heapProps, D3D12_HEAP_FLAG_NONE,
+            &depthDesc, D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            &clearValue, IID_PPV_ARGS(&m_depthBuffer)));
+
+        D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc{};
+        dsvDesc.Format        = DXGI_FORMAT_D32_FLOAT;
+        dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+        m_graphicsDevice->GetDevice()->CreateDepthStencilView(
+            m_depthBuffer.Get(), &dsvDesc, m_dsvHandle);
+
+        if (m_depthSrvIndex != 0xFFFFFFFFu)
+        {
+            D3D12_SHADER_RESOURCE_VIEW_DESC depthSrvDesc{};
+            depthSrvDesc.Format                  = DXGI_FORMAT_R32_FLOAT;
+            depthSrvDesc.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
+            depthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            depthSrvDesc.Texture2D.MipLevels     = 1;
+            m_graphicsDevice->GetDevice()->CreateShaderResourceView(
+                m_depthBuffer.Get(), &depthSrvDesc, m_srvHeap->GetCpuHandle(m_depthSrvIndex));
+        }
+    }
+
+    // シーン系 RT（★ここに載っていないものは表示解像度のまま = スワップチェインだけ）
+    if (m_sceneRT)          m_sceneRT->Resize(*m_graphicsDevice, w, h);
+    if (m_ssaoPass)         m_ssaoPass->Resize(*m_graphicsDevice, w, h);
+    if (m_contactShadowPass)m_contactShadowPass->Resize(*m_graphicsDevice, w, h);
+    if (m_bloomPass)        m_bloomPass->Resize(*m_graphicsDevice, w, h);
+    if (m_godRaysPass)      m_godRaysPass->Resize(*m_graphicsDevice, w, h);
+    if (m_lensFlarePass)    m_lensFlarePass->Resize(*m_graphicsDevice, w, h);
+    if (m_dofPass)          m_dofPass->Resize(*m_graphicsDevice, w, h);
+    if (m_motionBlurPass)   m_motionBlurPass->Resize(*m_graphicsDevice, w, h);
+    if (m_distortRT)        m_distortRT->Resize(*m_graphicsDevice, w, h);
+    if (m_taaPass)          m_taaPass->Resize(*m_graphicsDevice, w, h);
+    if (m_gbufferRT)        m_gbufferRT->Resize(*m_graphicsDevice, w, h);
+    if (m_screenSpaceGi)    m_screenSpaceGi->Resize(*m_graphicsDevice, w, h);
+    if (m_rtScreenPass)     m_rtScreenPass->Resize(*m_graphicsDevice, w, h);
+
+    // ★時間履歴は必ず捨てる。座標系が変わった履歴を持ち越すと TAA / SSR / SSGI /
+    //   ボリュメトリックフォグが揃ってゴーストする（引き伸ばされた前フレームが尾を引く）。
+    InvalidateTemporalHistory();
+
+    m_renderW = w;
+    m_renderH = h;
+    m_pendingRenderW = w;
+    m_pendingRenderH = h;
+    m_renderResizeSettle = 0;
+    Logger::Info("レンダー解像度: {}x{}（scale {:.2f}）", w, h, m_renderScale);
+}
+
+// 毎フレーム Run ループの先頭で呼ぶ。表示矩形 × renderScale へ追従する。
+void Application::UpdateRenderResolution()
+{
+    u32 dx = 0, dy = 0, dw = 0, dh = 0;
+    GetDisplayViewport(dx, dy, dw, dh);
+    const f32 s = std::clamp(m_renderScale, 0.25f, 1.0f);
+    // ★アスペクトは表示側の値を使い続ける（Render() の renderAspect）。ここは丸めるだけ。
+    const u32 want = (std::max)(16u, static_cast<u32>(std::lround(static_cast<double>(dw) * s)));
+    const u32 wantH = (std::max)(16u, static_cast<u32>(std::lround(static_cast<double>(dh) * s)));
+
+    if (want == m_renderW && wantH == m_renderH)
+    {
+        m_pendingRenderW = want; m_pendingRenderH = wantH;
+        m_renderResizeSettle = 0;
+        m_renderResFlush = false;
+        return;
+    }
+
+    if (m_renderResFlush || m_renderW == 0)
+    {
+        m_renderResFlush = false;
+        ApplyRenderResolution(want, wantH);
+        return;
+    }
+
+    // ドッキング分割のドラッグ中は毎フレーム矩形が変わる。そのたびに RT を作り直すと
+    // WaitIdle でカクつくので、同じサイズが数フレーム続いてから確定させる。
+    // 待っている間は「1 つ前のレンダー解像度の絵を表示矩形へ拡大」して出るだけ＝破綻しない。
+    if (want == m_pendingRenderW && wantH == m_pendingRenderH)
+    {
+        if (++m_renderResizeSettle >= kRenderResizeSettleFrames)
+            ApplyRenderResolution(want, wantH);
+    }
+    else
+    {
+        m_pendingRenderW = want;
+        m_pendingRenderH = wantH;
+        m_renderResizeSettle = 0;
+    }
+}
+
+void Application::SetRenderScale(f32 s)
+{
+    const f32 v = std::clamp(s, 0.25f, 1.0f);
+    if (v == m_renderScale) return;
+    m_renderScale    = v;
+    m_renderResFlush = true;          // 次の Run ループ先頭で即反映（デバウンスしない）
+    PersistSet("render_scale", static_cast<double>(v));
+}
+
+void Application::RecreateVelocityPsos()
+{
+    // MRT=2: RTV0=速度(RG16F) / RTV1=G-Buffer(RGBA16F: xy=oct(worldN) z=rough w=metal)。
+    // ★ 本数を条件で変えないこと。G-Buffer が要らないフレームでも同じ PSO で走らせて
+    //   RTV を張らない、をやると PSO 不一致になる（00-COORDINATION §5.5）。
+    const DXGI_FORMAT rtFormats[] = { TaaPass::kVelocityFormat, kGBufferFormat };
+
+    auto build = [&](const wchar_t* vsName, const D3D12_INPUT_ELEMENT_DESC* layout, u32 layoutCount,
+                     std::unique_ptr<PipelineState>& out)
+    {
+        auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + vsName);
+        auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"VelocityPrepass_PS.cso");
+        if (vs.GetSize() == 0 || ps.GetSize() == 0) return;
+        PipelineStateBuilder builder;
+        builder.SetRootSignature(m_rootSignature->Get())
+               .SetVertexShader(vs.GetData(), vs.GetSize())
+               .SetPixelShader(ps.GetData(), ps.GetSize())
+               .SetInputLayout(layout, layoutCount)
+               .SetRenderTargetFormats(static_cast<u32>(std::size(rtFormats)), rtFormats)
+               .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+               .SetDepthEnabled(true)
+               .SetCullMode(D3D12_CULL_MODE_NONE);  // 深度バイアスなし（深度プリパスと同条件）
+        if (!out) out = std::make_unique<PipelineState>();
+        out->Initialize(*m_graphicsDevice, builder);
+    };
+
+    build(L"VelocityPrepass_VS.cso", Mesh::GetInputLayout(), Mesh::GetInputLayoutCount(),
+          m_velocityPSO);
+    build(L"VelocityPrepassInstanced_VS.cso",
+          Mesh::GetVelocityInstancedInputLayout(), Mesh::GetVelocityInstancedInputLayoutCount(),
+          m_velocityPSOInst);
+    build(L"VelocityPrepassSkinned_VS.cso", Mesh::GetInputLayout(), Mesh::GetInputLayoutCount(),
+          m_velocityPSOSkinned);
+}
+
+// 速度パス用の per-instance「前フレームのワールド行列」バッファ（slot2）を必要になった時だけ確保する。
+// 既存の m_instanceBuffer と同じリング構成・同じ base/count で使う（stride だけ 48B）。
+void Application::EnsureInstancePrevBuffer()
+{
+    if (m_instancePrevBuffer[0]) return;   // 確保済み
+
+    for (u32 fi = 0; fi < FrameResources::kFrameCount; ++fi)
+    {
+        const UINT bytes = kMaxInstances * sizeof(MeshInstancePrevData);
+        D3D12_HEAP_PROPERTIES hp{}; hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+        D3D12_RESOURCE_DESC rd{};
+        rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        rd.Width = bytes; rd.Height = 1; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
+        rd.SampleDesc = {1, 0}; rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        ThrowIfFailed(m_graphicsDevice->GetDevice()->CreateCommittedResource(
+            &hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr, IID_PPV_ARGS(&m_instancePrevBuffer[fi])));
+        void* mapped = nullptr; D3D12_RANGE rr{0, 0};
+        ThrowIfFailed(m_instancePrevBuffer[fi]->Map(0, &rr, &mapped));
+        m_instancePrevMapped[fi] = static_cast<uint8_t*>(mapped);
+        m_instancePrevVbView[fi].BufferLocation = m_instancePrevBuffer[fi]->GetGPUVirtualAddress();
+        m_instancePrevVbView[fi].StrideInBytes  = sizeof(MeshInstancePrevData);
+        m_instancePrevVbView[fi].SizeInBytes    = bytes;
+    }
+    Logger::Info("速度パス用の per-instance 前ワールドバッファを確保しました ({} MB)",
+                 kMaxInstances * sizeof(MeshInstancePrevData) * FrameResources::kFrameCount / (1024 * 1024));
+}
+
 void Application::RegisterShaderReloadHandlers()
 {
     if (!m_shaderManager)
@@ -467,6 +768,9 @@ void Application::RegisterShaderReloadHandlers()
         { L"ForwardGrid_VS.cso", L"ForwardGrid_PS.cso" },
         [this]() { RecreateGridPso(); });
     m_shaderManager->RegisterReloadHandler(
+        { L"Terrain_VS.cso", L"Terrain_PS.cso" },
+        [this]() { RecreateTerrainPsos(); });
+    m_shaderManager->RegisterReloadHandler(
         { L"Emissive_VS.cso", L"Emissive_PS.cso" },
         [this]() { RecreateEmissivePso(); });
     m_shaderManager->RegisterReloadHandler(
@@ -475,6 +779,22 @@ void Application::RegisterShaderReloadHandlers()
     m_shaderManager->RegisterReloadHandler(
         { L"DepthPrepassSkinned_VS.cso" },
         [this]() { RecreateDepthPrepassPsos(); });
+    m_shaderManager->RegisterReloadHandler(
+        { L"VelocityPrepass_VS.cso", L"VelocityPrepass_PS.cso",
+          L"VelocityPrepassInstanced_VS.cso", L"VelocityPrepassSkinned_VS.cso" },
+        [this]() { RecreateVelocityPsos(); });
+    if (m_taaPass)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"TaaResolve_PS.cso", L"VelocityDebug_PS.cso" },
+            [this]() { m_taaPass->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_renderDebugPass)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"RenderDebug_PS.cso" },
+            [this]() { m_renderDebugPass->RecreatePipelines(*m_graphicsDevice); });
+    }
     if (m_postProcess)
     {
         m_shaderManager->RegisterReloadHandler(
@@ -486,6 +806,26 @@ void Application::RegisterShaderReloadHandlers()
         m_shaderManager->RegisterReloadHandler(
             { L"SSAO_VS.cso", L"SSAO_PS.cso", L"SSAOBlur_PS.cso" },
             [this]() { m_ssaoPass->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_contactShadowPass)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"ContactShadow_VS.cso", L"ContactShadow_PS.cso" },
+            [this]() { m_contactShadowPass->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_screenSpaceGi)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"ScreenSpace_VS.cso", L"SsrTrace_PS.cso", L"SsrUpsample_PS.cso",
+              L"SsgiTrace_PS.cso", L"SsgiTemporal_PS.cso", L"SsgiUpsample_PS.cso",
+              L"ColorDownsample_PS.cso" },
+            [this]() { m_screenSpaceGi->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_rtScreenPass)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"Rt_VS.cso", L"RtShadow_PS.cso", L"RtAo_PS.cso", L"RtDebug_PS.cso" },
+            [this]() { m_rtScreenPass->RecreatePipelines(*m_graphicsDevice); });
     }
     if (m_bloomPass)
     {
@@ -522,6 +862,25 @@ void Application::RegisterShaderReloadHandlers()
         m_shaderManager->RegisterReloadHandler(
             { L"ExposureHistogram_CS.cso", L"ExposureAdapt_CS.cso" },
             [this]() { m_autoExposure->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_clusteredLighting)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"ClusterBuild_CS.cso", L"ClusterCull_CS.cso" },
+            [this]() { m_clusteredLighting->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_decalSystem)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"ClusterCullDecals_CS.cso" },
+            [this]() { m_decalSystem->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_volumetricFogPass)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"FogInject_CS.cso", L"FogScatter_CS.cso", L"FogIntegrate_CS.cso",
+              L"FogComposite_VS.cso", L"FogComposite_PS.cso" },
+            [this]() { m_volumetricFogPass->RecreatePipelines(*m_graphicsDevice); });
     }
     if (m_skyboxRenderer)
     {
@@ -778,7 +1137,8 @@ u32 Application::EnsureMaterialOverrideSrv(entt::entity e, u32 submeshIndex, con
 
     // 上書き指定があればロードして使い、無ければ Material 既定→ResourceManager デフォルトの順に
     // フォールバック（ModelLoader が SRV ブロックを組む時と同じ解決順）。
-    auto resolve = [&](const std::string& overridePath, Texture* fallback, bool srgb) -> Texture* {
+    auto resolve = [&](const std::string& overridePath, Texture* fallback, bool srgb,
+                       TextureUsage usage) -> Texture* {
         if (overridePath.empty())
             return fallback;
         if (!dx12e::vfs::Exists(overridePath))  // pak/ディスク両対応(std::filesystem::exists は pak モードで常に false)
@@ -787,16 +1147,16 @@ u32 Application::EnsureMaterialOverrideSrv(entt::entity e, u32 submeshIndex, con
             return fallback;
         }
         std::string fullPath = PathResolver::AssetsDir() + overridePath;
-        return m_resourceManager->GetOrLoadTexture(PathResolver::Utf8ToWide(fullPath), cmdList, srgb);
+        return m_resourceManager->GetOrLoadTexture(PathResolver::Utf8ToWide(fullPath), cmdList, srgb, usage);
     };
 
     Texture* albedoFallback = (mat && mat->albedoTexture) ? mat->albedoTexture : m_resourceManager->GetDefaultWhiteTexture();
     Texture* normalFallback = (mat && mat->normalMapTexture) ? mat->normalMapTexture : m_resourceManager->GetDefaultNormalTexture();
     Texture* mrFallback     = (mat && mat->metalRoughnessTexture) ? mat->metalRoughnessTexture : m_resourceManager->GetDefaultMetalRoughnessTexture();
 
-    Texture* albedo = resolve(albedoPath, albedoFallback, /*srgb=*/true);
-    Texture* normal = resolve(normalPath, normalFallback, /*srgb=*/false);
-    Texture* mr     = resolve(mrPath,     mrFallback,     /*srgb=*/false);
+    Texture* albedo = resolve(albedoPath, albedoFallback, /*srgb=*/true,  TextureUsage::BaseColor);
+    Texture* normal = resolve(normalPath, normalFallback, /*srgb=*/false, TextureUsage::Normal);
+    Texture* mr     = resolve(mrPath,     mrFallback,     /*srgb=*/false, TextureUsage::NonColor);
     if (!albedo || !normal || !mr)
         return 0xFFFFFFFF;
 
@@ -811,6 +1171,89 @@ u32 Application::EnsureMaterialOverrideSrv(entt::entity e, u32 submeshIndex, con
     entry.albedoPath = albedoPath;
     entry.normalPath = normalPath;
     entry.mrPath = mrPath;
+    return entry.blockStart;
+}
+
+u32 Application::EnsureTerrainSrv(entt::entity e, const Terrain& terrain,
+                                  ID3D12GraphicsCommandList* cmdList)
+{
+    // レイヤーセット未設定 = 従来経路（この関数は呼ばれない想定だが二重に守る）
+    if (terrain.layerSetPath.empty() || !m_terrainLayerSets || !terrain._splat
+        || !terrain._splat->IsValid())
+        return 0xFFFFFFFF;
+
+    const auto* layers = m_terrainLayerSets->GetOrLoad(terrain.layerSetPath, cmdList);
+    if (!layers || !layers->valid || !layers->albedoArray || !layers->surfaceArray)
+        return 0xFFFFFFFF;
+
+    // ★シーンが作り直されたら（Play→Stop / シーン切替）キャッシュを丸ごと捨てる。
+    //   entt は entity id を再利用するので、放置すると別の地形へ前のスプラットが張られる。
+    const u32 sceneGen = static_cast<u32>(m_sceneGeneration);
+    if (m_terrainSrvGeneration != sceneGen)
+    {
+        for (auto& kv : m_terrainSrvCache)
+            if (kv.second.blockStart != 0xFFFFFFFF) m_srvHeap->FreeBlock(kv.second.blockStart, 3);
+        m_terrainSrvCache.clear();
+        m_terrainSrvGeneration = sceneGen;
+    }
+
+    TerrainSrvEntry& entry = m_terrainSrvCache[static_cast<u32>(e)];
+
+    // ---- スプラットの GPU テクスチャ（CPU 側でミップまで焼いてから 1 回でアップロード）----
+    // 解像度 512 で全ミップ込み 1.3MB。ペイント中に毎フレーム作り直しても実測で無視できる。
+    const u32 splatVersion = terrain._splat->Version();
+    const u32 splatSize    = terrain._splat->Size();
+    const bool splatStale  = (!entry.splatTex) || entry.splatVersion != splatVersion
+                          || entry.splatSize != splatSize;
+    if (splatStale)
+    {
+        const std::vector<std::vector<u8>> mips = terrain._splat->BuildMipChain();
+        if (mips.empty()) return 0xFFFFFFFF;
+
+        D3D12_RESOURCE_DESC desc{};
+        desc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        desc.Width            = splatSize;
+        desc.Height           = splatSize;
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels        = static_cast<UINT16>(mips.size());
+        desc.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;   // 重みは linear（sRGB にしない）
+        desc.SampleDesc.Count = 1;
+        desc.Layout           = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+
+        std::vector<D3D12_SUBRESOURCE_DATA> subs(mips.size());
+        u32 w = splatSize;
+        for (size_t m = 0; m < mips.size(); ++m)
+        {
+            subs[m].pData      = mips[m].data();
+            subs[m].RowPitch   = static_cast<LONG_PTR>(w) * 4;
+            subs[m].SlicePitch = subs[m].RowPitch * static_cast<LONG_PTR>(w);
+            w = (w > 1) ? (w >> 1) : 1;
+        }
+
+        auto tex = std::make_unique<Texture>();
+        tex->Initialize(*m_graphicsDevice, cmdList, desc, subs.data(), static_cast<u32>(subs.size()));
+        entry.splatTex     = std::move(tex);
+        entry.splatVersion = splatVersion;
+        entry.splatSize    = splatSize;
+    }
+
+    // ---- t0,t1,t2 の連続 3 ディスクリプタ ----
+    if (entry.blockStart == 0xFFFFFFFF)
+        entry.blockStart = m_srvHeap->AllocateBlock(3);
+
+    // レイヤーセットが差し替わった / ホットリロードされた / スプラットを作り直した時だけ張り直す。
+    if (splatStale || entry.layerGeneration != layers->generation
+        || entry.layerSetPath != terrain.layerSetPath)
+    {
+        // ★同じテーブルへ Texture2DArray（t0/t1）と Texture2D（t2）を混ぜて張る。
+        //   次元はルートシグネチャに書かれていないので合法。Terrain.hlsl の宣言と一致している。
+        layers->albedoArray ->CreateArraySRV(*m_graphicsDevice, m_srvHeap->GetCpuHandle(entry.blockStart));
+        layers->surfaceArray->CreateArraySRV(*m_graphicsDevice, m_srvHeap->GetCpuHandle(entry.blockStart + 1));
+        entry.splatTex      ->CreateSRV     (*m_graphicsDevice, m_srvHeap->GetCpuHandle(entry.blockStart + 2));
+        entry.layerGeneration = layers->generation;
+        entry.layerSetPath    = terrain.layerSetPath;
+    }
+
     return entry.blockStart;
 }
 
@@ -888,6 +1331,12 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_useVsync = PersistGet("video_vsync", m_useVsync ? 1.0 : 0.0) != 0.0;
         m_fpsLimit = static_cast<f32>(PersistGet("video_fps", m_fpsLimit));
         m_instancingEnabled = PersistGet("render_instancing", 1.0) != 0.0;
+        // クラスタードライティング（Forward+）。0 にすると「先頭 64 灯を総当たり」
+        // フォールバックへ倒す（A/B 検証用。旧 8 灯経路そのものは残していない）。
+        m_clusteredEnabled  = PersistGet("render_clustered", 1.0) != 0.0;
+        m_forceDepthPrepass = PersistGet("render_depth_prepass", 0.0) != 0.0;
+        // BC7/BC5 テクスチャ圧縮（0=無圧縮 / 1=高速 / 2=高品質）。既定 1。
+        TextureLoader::SetCompressionMode(static_cast<int>(PersistGet("texture_compression", 1.0)));
         const int mode = static_cast<int>(PersistGet("video_mode", 0));
         const u32 w = static_cast<u32>(PersistGet("video_w", 0));
         const u32 h = static_cast<u32>(PersistGet("video_h", 0));
@@ -975,7 +1424,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
     // DSV ヒープ
     m_dsvHeap = std::make_unique<DescriptorHeap>();
-    m_dsvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1, false);
+    // [0] = メイン深度（レンダー解像度に追従して縮む）/ [1] = カメラプレビュー専用（固定 480x270）
+    m_dsvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 4, false);
 
     // デプスバッファ作成
     {
@@ -1061,6 +1511,11 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_materialAssetManager = std::make_unique<MaterialAssetManager>();
         m_materialAssetManager->Initialize(m_resourceManager.get(), m_graphicsDevice.get(), m_srvHeap.get());
 
+        // 地形レイヤーセット（.terrainlayers → Texture2DArray ×2）。
+        // SRV ディスクリプタは地形ごとに違う（t2 = スプラット）ので、ここでは確保しない。
+        m_terrainLayerSets = std::make_unique<TerrainLayerSetManager>();
+        m_terrainLayerSets->Initialize(m_graphicsDevice.get());
+
         // SSAO 無効/編集ビュー用の 1x1 白 R8_UNORM ダミー（forward の g_ssao が常に 1.0 を返す）。
         {
             u8 white = 0xFF;
@@ -1078,6 +1533,28 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             m_ssaoWhiteSrvIndex = m_srvHeap->AllocateIndex();
             m_ssaoWhiteTex->SetSrvIndex(m_ssaoWhiteSrvIndex);
             m_ssaoWhiteTex->CreateSRV(*m_graphicsDevice, m_srvHeap->GetCpuHandle(m_ssaoWhiteSrvIndex));
+        }
+
+        // SSR/SSGI 無効時の 1x1 黒 RGBA16F ダミー（forward の g_ssr / g_ssgi 用）。
+        // ★白ダミー(R8_UNORM)の流用は不可。Texture2D<float4> に R8_UNORM を貼ると
+        //   デバッグレイヤがフォーマット不一致で警告する。1x1 なので Load(画面座標) は
+        //   範囲外＝0 を返し、SSR の confidence 0 / SSGI 寄与 0 に自動的に落ちる。
+        {
+            const u16 black[4] = {0, 0, 0, 0};   // half の 0 はビットパターンも 0
+            D3D12_RESOURCE_DESC desc{};
+            desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+            desc.Width = 1; desc.Height = 1; desc.DepthOrArraySize = 1; desc.MipLevels = 1;
+            desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            desc.SampleDesc = {1, 0};
+
+            D3D12_SUBRESOURCE_DATA subData{};
+            subData.pData = black; subData.RowPitch = 8; subData.SlicePitch = 8;
+
+            m_ssBlackTex = std::make_unique<Texture>();
+            m_ssBlackTex->Initialize(*m_graphicsDevice, cmdList, desc, &subData, 1);
+            m_ssBlackSrvIndex = m_srvHeap->AllocateIndex();
+            m_ssBlackTex->SetSrvIndex(m_ssBlackSrvIndex);
+            m_ssBlackTex->CreateSRV(*m_graphicsDevice, m_srvHeap->GetCpuHandle(m_ssBlackSrvIndex));
         }
 
         // エディタUIアイコンを読み込み（エンジン側assets基準。プロジェクト切替前に1度）
@@ -1218,12 +1695,16 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         // アップロードバッファ解放
         m_resourceManager->FinishUploads();
         if (m_ssaoWhiteTex) m_ssaoWhiteTex->FinishUpload();
+        if (m_ssBlackTex)   m_ssBlackTex->FinishUpload();
 
         // スキニング PSO 作成
         RecreateSkinnedPsos();
 
         // グリッド PSO 作成（アルファブレンド + 両面描画）
         RecreateGridPso();
+
+        // 地形マテリアル PSO（4 レイヤースプラット。layerSetPath が空でない Terrain だけが使う）
+        RecreateTerrainPsos();
 
         // 加算発光 PSO（パーティクル用）：ライティング無視・加算合成・深度書き込みOFF
         {
@@ -1329,6 +1810,9 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
         // 深度プリパス PSO（SSAO 用カメラ深度）+ Skinned版
         RecreateDepthPrepassPsos();
+
+        // 深度+速度プリパス PSO（TAA 用モーションベクター）。static / instanced / skinned の3本。
+        RecreateVelocityPsos();
 
         Logger::Info("Shadow map initialized ({}x{})", m_shadowMapSize, m_shadowMapSize);
     }
@@ -1436,22 +1920,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                     kPointShadowMapSize, kPointShadowMapSize, kMaxShadowPoint);
     }
 
-    // PerFrame Constant Buffer（PointLight / SpotLight 各最大8灯対応）
+    // PerFrame Constant Buffer（ライトはクラスタードライティングの StructuredBuffer 側へ移動済み）
     // レイアウトは shaders/forward/Lighting.hlsli の PerFrameConstants と完全一致させること。
-    static constexpr u32 kMaxPointLights = 8;
-    static constexpr u32 kMaxSpotLights  = 8;
-    struct PointLightGPU {
-        DirectX::XMFLOAT3 position;
-        float range;
-        DirectX::XMFLOAT3 color;  // color * intensity
-        float shadowIndex;        // -1=影なし、それ以外はポイント影キューブ配列のインデックス
-    };
-    struct SpotLightGPU {
-        DirectX::XMFLOAT3 position;   float range;
-        DirectX::XMFLOAT3 direction;  float cosInner;
-        DirectX::XMFLOAT3 color;      float cosOuter;  // color * intensity
-        float shadowIndex; DirectX::XMFLOAT3 _spad;    // -1=影なし、それ以外は spotShadowMatrix[] のインデックス
-    };
     struct FrameConstants {
         DirectX::XMFLOAT4X4 view;            // 64B  (offset   0)
         DirectX::XMFLOAT4X4 proj;            // 64B  (offset  64)
@@ -1464,20 +1934,30 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         DirectX::XMFLOAT4   shadowParams;      // 16B (offset 432)
         DirectX::XMFLOAT3   cameraPos;       // 12B
         float                _pad;            // 4B  → 16B (offset 448)
-        u32                  numPointLights;  // 4B
+        u32                  numPointLights;  // 4B  ← 統計/デバッグ用（シェーダは読まない）
         u32                  numSpotLights;   // 4B
         float                spotShadowTexel; // 4B
         float                pointShadowNear; // 4B  → 16B (offset 464)
-        PointLightGPU        pointLights[kMaxPointLights]; // 256B (offset 480)
-        SpotLightGPU         spotLights[kMaxSpotLights];   // 512B (offset 736)
+        // ▼ クラスタードライティング 64B (offset 480)。旧 pointLights[8]/spotLights[8] の跡地。
+        DirectX::XMFLOAT4    clusterParams;   // (offset 480)
+        DirectX::XMFLOAT4    clusterGrid;     // (offset 496)
+        DirectX::XMFLOAT4    clusterViewport; // (offset 512)
+        DirectX::XMFLOAT4    clusterExtra;    // (offset 528)
+        DirectX::XMFLOAT4    pcssParams;                       // 16B  (offset 544) PCSS（計画03）
+        DirectX::XMFLOAT4    _clusterReserved[43];             // 688B (offset 560..1247)
         DirectX::XMFLOAT4X4  spotShadowMatrix[kMaxShadowSpot]; // 256B (offset 1248)
         // ▼ IBL 制御 16B (offset 1504)
         float                iblIntensity;
         float                maxPrefilterMip;
         u32                  hasIBL;
         float                skyboxIntensity;
-    };  // total = 1520B
-    static_assert(sizeof(FrameConstants) == 1520, "FrameConstants must be 1520 bytes");
+        // ▼ コンタクトシャドウ制御 16B (offset 1520)
+        float                contactShadowEnabled;
+        DirectX::XMFLOAT3    _csPad;
+    };  // total = 1536B
+    // ここは CB の確保サイズを決めるためだけの定義。Render() 内の同名構造体・
+    // ModelThumbnailRenderer・Lighting.hlsli の PerFrameConstants と必ず揃えること。
+    static_assert(sizeof(FrameConstants) == 1536, "FrameConstants must be 1536 bytes");
     m_perFrameCB = std::make_unique<ConstantBuffer>();
     m_perFrameCB->Initialize(*m_graphicsDevice, sizeof(FrameConstants), FrameResources::kFrameCount);
 
@@ -1517,6 +1997,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                                 m_resourceManager.get(), m_rootSignature.get(),
                                 m_pipelineStateThumb.get());
     m_thumbRenderer->SetAOWhiteSrv(m_ssaoWhiteSrvIndex);  // forward PS の t8 を白ダミーで満たす
+    m_thumbRenderer->SetScreenSpaceBlackSrv(m_ssBlackSrvIndex);  // t16/t17 を黒ダミーで満たす
     m_editorLayer->SetThumbnailRenderer(m_thumbRenderer.get());
 
     // Physics Debug Renderer
@@ -1531,10 +2012,13 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     // オフスクリーン描画用 RT + ポストプロセス（WP3）
     SplashScreen::SetStatus("レンダラーを初期化中...");
     {
-        // 容量 32: sceneRT(1)+cameraPreview(2)+SSAO(2)+ブルームチェーン(6) = 11 使用。
-        // 今後のポスト追加パス（ゴッドレイ/DoF 等）用に余裕を持たせる（RTV は非シェーダ可視で安価）。
+        // sceneRT(1)+cameraPreview(2)+ブルームチェーン(6)+ゴッドレイ/レンズフレア/DoF/
+        // モーションブラー+SSAO(2)+コンタクトシャドウ(1)+歪みRT で 20 個ほど使う。
+        // 容量 64: 今後の深度依存パス（モーションベクター/SSGI/SSR/ボリュメトリック等）を
+        // 足しても枯渇しない余裕を先に取っておく（RTV は非シェーダ可視で安価。
+        // 枯渇時は DescriptorHeap::Allocate が Logger::Error + throw で fail-fast する）。
         m_offscreenRtvHeap = std::make_unique<DescriptorHeap>();
-        m_offscreenRtvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 32, false);
+        m_offscreenRtvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 64, false);
 
         // シーンは HDR(kSceneColorFormat) の中間RTへ描き、ポストで backbuffer へ解決する。
         // クリア色はリニア空間の値（最終段のACES+ガンマ後にコーンフラワーブルーに見える値）
@@ -1548,6 +2032,38 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_cameraPreviewRT = std::make_unique<RenderTarget>();
         m_cameraPreviewRT->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
                                       480, 270, kSceneColorFormat, sceneClear);
+
+        // プレビュー専用の深度（固定 480x270）。#16 でメイン深度がレンダー解像度に追従して
+        // 縮むようになったため、480x270 のプレビューには足りなくなり得る（RTV > DSV は違反）。
+        {
+            D3D12_RESOURCE_DESC pd{};
+            pd.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+            pd.Width            = 480;
+            pd.Height           = 270;
+            pd.DepthOrArraySize = 1;
+            pd.MipLevels        = 1;
+            pd.Format           = DXGI_FORMAT_D32_FLOAT;
+            pd.SampleDesc       = {1, 0};
+            pd.Flags            = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+            D3D12_CLEAR_VALUE pcv{};
+            pcv.Format = DXGI_FORMAT_D32_FLOAT;
+            pcv.DepthStencil = {1.0f, 0};
+
+            D3D12_HEAP_PROPERTIES ph{};
+            ph.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+            ThrowIfFailed(m_graphicsDevice->GetDevice()->CreateCommittedResource(
+                &ph, D3D12_HEAP_FLAG_NONE, &pd, D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                &pcv, IID_PPV_ARGS(&m_previewDepthBuffer)));
+
+            m_previewDsvHandle = m_dsvHeap->Allocate();
+            D3D12_DEPTH_STENCIL_VIEW_DESC pdv{};
+            pdv.Format        = DXGI_FORMAT_D32_FLOAT;
+            pdv.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+            m_graphicsDevice->GetDevice()->CreateDepthStencilView(
+                m_previewDepthBuffer.Get(), &pdv, m_previewDsvHandle);
+        }
 
         // プレビュー表示用 LDR RT。プレビューRT(リニアHDR)をトーンマップして解決し、
         // ImGui にはこちらの SRV を渡す（FP16 を直接表示すると暗く見えるため）
@@ -1587,6 +2103,105 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_ssaoPass->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
                                m_window->GetWidth(), m_window->GetHeight(), PathResolver::ShaderDirW());
 
+        // コンタクトシャドウ（SSAO と同じ深度プリパスの結果を使う 1 パス。RT も同じヒープから）。
+        m_contactShadowPass = std::make_unique<ContactShadowPass>();
+        m_contactShadowPass->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
+                                        m_window->GetWidth(), m_window->GetHeight(), PathResolver::ShaderDirW());
+
+        // TAA（速度RT 1 + 履歴RT 2 = RTV 3 枚。履歴はシーンと同じ HDR フォーマット、
+        // デバッグ可視化だけバックバッファ形式へ直接描く）。
+        m_taaPass = std::make_unique<TaaPass>();
+        m_taaPass->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
+                              m_window->GetWidth(), m_window->GetHeight(),
+                              kSceneColorFormat, m_swapChain->GetFormat(), PathResolver::ShaderDirW());
+
+        // G-Buffer（速度プリパスの RTV1）。速度 PSO は常に MRT=2 なので、速度プリパスが
+        // 走るときは必ずここへも書かれる＝常に確保しておく（分岐を作らない）。
+        const float gbufClear[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        m_gbufferRT = std::make_unique<RenderTarget>();
+        m_gbufferRT->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
+                                m_window->GetWidth(), m_window->GetHeight(),
+                                kGBufferFormat, gbufClear);
+
+        // 中間バッファ可視化（dx12_render_debug）。RTV / SRV / ディスクリプタを 1 枚も消費しない
+        // （既存バッファを読んでシーン RT へ描くだけ）。既定 OFF ＝ Draw が 1 回も呼ばれない。
+        m_renderDebugPass = std::make_unique<RenderDebugPass>();
+        m_renderDebugPass->Initialize(*m_graphicsDevice, kSceneColorFormat, PathResolver::ShaderDirW());
+
+        // SSR / SSGI（前フレームカラー退避 + ハーフトレース + 時間蓄積 + アップサンプル）。
+        // RTV は 8 枚使う（フル 3 + ハーフ 5）。既定 OFF なのでパスは走らない。
+        m_screenSpaceGi = std::make_unique<ScreenSpaceGiPass>();
+        m_screenSpaceGi->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
+                                    m_window->GetWidth(), m_window->GetHeight(),
+                                    PathResolver::ShaderDirW());
+
+        // DXR レイトレーシング（計画09 Step 1〜3）。6 段ゲートを全部通ったときだけ作る。
+        //   Gate 1/2: Tier >= 1.1 かつ SM >= 6.5（GraphicsDevice::SupportsInlineRaytracing）
+        //   Gate 3/6: Device5 と加速構造バッファの確保（RaytracingScene::Initialize）
+        //   Gate 5  : .cso の読み込み（RtScreenPass::Initialize → ShaderCompiler が throw）
+        //   Gate 4  : ID3D12GraphicsCommandList4（初回 Build 時）
+        // どれかが落ちたら m_dxrEnabled=false のままで、以後 DXR のパスは 1 つも走らない。
+        // 既存の白 1x1 ダミーがそのまま t8/t11 に貼られる＝フォワード PS は 1 行も変わらない。
+        if (m_graphicsDevice->SupportsInlineRaytracing())
+        {
+            m_rtScene = std::make_unique<RaytracingScene>();
+            if (m_rtScene->Initialize(*m_graphicsDevice))
+            {
+                try
+                {
+                    m_rtScreenPass = std::make_unique<RtScreenPass>();
+                    m_rtScreenPass->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
+                                               m_window->GetWidth(), m_window->GetHeight(),
+                                               PathResolver::ShaderDirW());
+                    m_dxrEnabled = m_rtScreenPass->IsReady();
+                }
+                catch (const std::exception& e)
+                {
+                    // .cso が無い / 壊れている（Gate 5）。エラーではなく機能の不在として扱う。
+                    Logger::Warn("レイトレーシングのシェーダを読めませんでした: {}", e.what());
+                    m_rtScreenPass.reset();
+                    m_dxrEnabled = false;
+                }
+            }
+            if (!m_dxrEnabled)
+            {
+                m_rtScene.reset();
+                m_rtScreenPass.reset();
+            }
+        }
+
+        // クラスタードライティング（Forward+）。ライトカリング compute 2 パス + SRV テーブル。
+        // 旧「点光源 8 / スポット 8」の cbuffer 固定配列を置き換える本体。
+        m_clusteredLighting = std::make_unique<ClusteredLightCulling>();
+        m_clusteredLighting->Initialize(*m_graphicsDevice, m_srvHeap.get(), PathResolver::ShaderDirW());
+        // サムネイルレンダラもメインの RootSig / Forward PSO を流用するのでテーブルが要る
+        // （灯数 0 なので中身は読まれない。frameIndex 0 のブロックで十分）。
+        if (m_thumbRenderer)
+            m_thumbRenderer->SetClusterSrv(m_clusteredLighting->GetSrvTableIndex(0));
+
+        // ボリュメトリックフォグ（froxel）。3D テクスチャ 28MB は「初めて有効になったフレーム」まで
+        // 確保しない（既定 OFF）。ディスクリプタブロックだけは断片化前のここで押さえておく。
+        m_volumetricFogPass = std::make_unique<VolumetricFogPass>();
+        m_volumetricFogPass->Initialize(*m_graphicsDevice, m_srvHeap.get(), PathResolver::ShaderDirW());
+
+        // デカール（クラスタードフォワードデカール）。SRV は ClusteredLightCulling の
+        // テーブル（7 本）の +3..+6 を借りるので、自前のディスクリプタは 1 本も取らない。
+        m_decalSystem = std::make_unique<DecalSystem>();
+        m_decalSystem->Initialize(*m_graphicsDevice, m_srvHeap.get(), PathResolver::ShaderDirW());
+        // ★ここで即座に t18..t21 を「正しい型の」ディスクリプタで埋める。
+        //   ClusteredLightCulling が置いた仮埋め（カウントバッファの SRV の複製）のままだと、
+        //   フォワード PS が t21 を Texture2D として宣言している以上、最初のサムネイル描画などで
+        //   型不一致になる（GPU ベース検証が騒ぐ）。アトラスは 1x1 黒ダミー＝アルファ 0 で不可視。
+        if (m_clusteredLighting && m_clusteredLighting->IsReady()
+            && m_ssBlackSrvIndex != DescriptorHeap::kInvalidIndex)
+        {
+            for (u32 f = 0; f < DecalSystem::kFrameCount; ++f)
+                m_decalSystem->WriteSrvsInto(*m_graphicsDevice, *m_srvHeap,
+                                             m_clusteredLighting->GetSrvTableIndex(f), f,
+                                             m_srvHeap->GetCpuHandle(m_ssBlackSrvIndex));
+        }
+        m_decalSrvDirty = true;
+
         // 2D スプライト（バックバッファ＝スワップチェイン形式へ描く）
         m_spriteRenderer = std::make_unique<SpriteRenderer>();
         m_spriteRenderer->Initialize(*m_graphicsDevice, m_srvHeap.get(),
@@ -1608,6 +2223,14 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_distortRT->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
                                 m_window->GetWidth(), m_window->GetHeight(),
                                 DXGI_FORMAT_R16G16_FLOAT, distortClear);
+
+        // ここまでで確保したシーン系 RT のサイズ＝現在のレンダー解像度（#16）。
+        // 実際の値は次フレーム先頭の UpdateRenderResolution() が
+        // 「表示矩形 × render_scale」へ合わせ直す。
+        m_renderW = m_window->GetWidth();
+        m_renderH = m_window->GetHeight();
+        m_renderScale = static_cast<f32>(PersistGet("render_scale", 1.0));
+        m_renderScale = std::clamp(m_renderScale, 0.25f, 1.0f);
 
         // 加算ビルボードパーティクル（HDR scene RT + 深度へ描く / Lua fx API）
         m_particleSystem = std::make_unique<ParticleSystem>();
@@ -1879,6 +2502,7 @@ bool RemoveRegisteredComponent(entt::registry& reg, entt::entity e, const std::s
     else if (key == "convexHullCollider")  reg.remove<ConvexHullCollider>(e);
     else if (key == "luaScript")           reg.remove<LuaScript>(e);
     else if (key == "trailRenderer")       reg.remove<TrailRenderer>(e);
+    else if (key == "decal")               reg.remove<DecalComponent>(e);
     else if (key == "networkIdentity")     reg.remove<NetworkIdentity>(e);
     else if (key == "networkTransform")    reg.remove<NetworkTransform>(e);
     else if (key == "uiCanvas")            reg.remove<UICanvas>(e);
@@ -1891,6 +2515,10 @@ bool RemoveRegisteredComponent(entt::registry& reg, entt::entity e, const std::s
     else if (key == "uiScrollView")        reg.remove<UIScrollView>(e);
     else if (key == "uiLayout")            reg.remove<UILayout>(e);
     else if (key == "uiAnimator")          reg.remove<UIAnimator>(e);
+    else if (key == "uiAnimPlayer")        reg.remove<UIAnimPlayer>(e);
+    else if (key == "spriteAnimator")      reg.remove<SpriteAnimator>(e);
+    else if (key == "animatorController")  reg.remove<AnimatorController>(e);
+    else if (key == "footIK")              reg.remove<FootIK>(e);
     else return false;
     return true;
 }
@@ -2114,6 +2742,9 @@ nlohmann::json PerfReportJson(const PerfSummary& s, bool vsync, float fpsLimit)
             notes.push_back("SSAO が重い: sampleCount 削減か SSAO OFF で切り分け"); break;
         case GpuTimer::PostFX:
             notes.push_back("ポストが重い: bloom/DoF/motionBlur/godRays を個別 OFF で切り分け"); break;
+        case GpuTimer::VolumetricFog:
+            notes.push_back("ボリュメトリックフォグが重い: distance を縮めるか lightScattering を OFF。"
+                            "灯数が多いシーンでは散乱パスが 1 froxel あたり最大 128 灯を舐める"); break;
         default: break;
         }
     }
@@ -2627,6 +3258,20 @@ nlohmann::json McpComponentSchema()
         F("intensity", "float (HDR, >1 blooms)", 2.0), F("blend", "int (0=Additive,1=Alpha)", 0),
         F("minDist", "float (min movement to drop a point)", 0.03),
     }), "camera-facing ribbon trail (sword slash / projectile / magic tail). Follows the entity's world position."));
+    comps.push_back(C("decal", true, true, json::array({
+        F("atlasUV", "float4 (u0,v0,du,dv) rect inside the scene decal atlas", json::array({0, 0, 1, 1})),
+        F("atlasUVNormal", "float4 rect for the normal map (dv<=0 = no normal map)", json::array({0, 0, 0, 0})),
+        F("tint", "float3", json::array({1, 1, 1})), F("opacity", "float 0..1", 1.0),
+        F("emissive", "float3 (HDR, added)", json::array({0, 0, 0})),
+        F("normalStrength", "float", 1.0),
+        F("roughness", "float (<0 = keep receiver's)", -1.0),
+        F("metallic", "float (<0 = keep receiver's)", -1.0),
+        F("angleFadeDeg", "float (fade out on slopes steeper than this)", 60.0),
+        F("fadeEdge", "float (edge fade width in local units)", 0.1),
+        F("sortOrder", "int (lower = underneath)", 0),
+    }), "projected decal (bullet hole / blood / dirt / puddle). The Transform's scale is the projection box; "
+        "it projects along local -Y so an unrotated decal lands on the floor. The texture comes from the "
+        "scene-level 'decalAtlas' + this atlasUV rect. Max 256 per scene / 16 per cluster."));
     comps.push_back(C("networkIdentity", true, true, json::array({
         F("interestRadius", "float (0 = always relevant, no distance culling)", 0.0),
         F("serverAuthority", "bool", true),
@@ -2640,6 +3285,38 @@ nlohmann::json McpComponentSchema()
     }), "replicates Transform snapshots. Requires networkIdentity on the same entity."));
     comps.push_back(C("skeletalAnimation", false, false, json::array({}),
         "read-only via MCP (created by model load). Control playback with dx12_play_anim / dx12_get_anim_state."));
+    comps.push_back(C("animatorController", true, true, json::array({
+        F("graphPath", "string (assets-relative .animfsm)", ""),
+        F("playOnStart", "bool", true),
+        F("speed", "float (graph-wide playback rate)", 1.0),
+        F("applyRootMotion", "bool (not implemented yet; keep false)", false),
+        F("eventChannel", "string (prefix prepended to clip event names)", ""),
+    }), "Animation state machine driving the Animator. Requires skeletalAnimation on the same entity. "
+        "The graph structure (states/transitions/blend trees/layers/masks/clipEvents) lives in the .animfsm "
+        "JSON asset - edit it with Write/Edit, then dx12_open_scene to reload. Inspect with "
+        "dx12_describe_anim_graph, drive with dx12_set_anim_param, force a state with dx12_play_anim {state}."));
+    comps.push_back(C("footIK", true, true, json::array({
+        F("enabled", "bool", true),
+        F("weight", "float (0..1 overall strength)", 1.0),
+        F("leftHipBone", "string (empty = auto-detect from common naming)", ""),
+        F("leftKneeBone", "string", ""), F("leftFootBone", "string", ""), F("leftToeBone", "string", ""),
+        F("rightHipBone", "string", ""), F("rightKneeBone", "string", ""),
+        F("rightFootBone", "string", ""), F("rightToeBone", "string", ""),
+        F("pelvisBone", "string (empty = root bone)", ""),
+        F("rayUpOffset", "float (metres above the ankle to start the ray)", 0.5),
+        F("rayLength", "float (total ray length in metres)", 1.0),
+        F("footHeight", "float (ankle height above ground in the rest pose)", 0.1),
+        F("maxPelvisDrop", "float (metres)", 0.5),
+        F("maxFootPitchDeg", "float (degrees)", 45.0),
+        F("smoothTime", "float (seconds, exponential smoothing time constant)", 0.1),
+        F("fadeOutTime", "float (seconds)", 0.15),
+        F("alignToNormal", "bool", true),
+        F("kneeForward", "float3 (model space direction the knee points)", json::array({0, 0, 1})),
+    }), "Foot placement IK. Requires skeletalAnimation on the same entity. Raycasts the ground, "
+        "matches ankle height and orientation, and drops the pelvis to reach the lower foot. "
+        "ONLY RUNS IN PLAY MODE (physics bodies exist only while playing). Bone names left empty "
+        "are auto-detected from common rig naming; check the resolved result in dx12_get_anim_state's "
+        "footIK block. Uses PhysicsSystem::RaycastEx for true surface normals."));
     comps.push_back(C("trigger", true, true, json::array({
         F("shape", "int (0=Box,1=Sphere)", 0), F("halfExtents", "float3", json::array({1, 1, 1})),
         F("radius", "float", 1.0), F("offset", "float3", json::array({0, 0, 0})),
@@ -2859,13 +3536,36 @@ nlohmann::json McpLuaApi()
         "isValid() -> bool",
         "name  (string, read-only property)",
         "transform  (Transform getter。フィールドは書込可: entity.transform.position = Vec3.new(x,y,z)。ただし entity.transform 自体の再代入は read-only) — 唯一直接読めるコンポーネントデータ",
-        "hasComponent(type:string) -> bool  (type: Transform,MeshRenderer,SkeletalAnimation,NodeAnimation,GridPlane,PointLight,DirectionalLight,SpotLight,Camera,AudioSource,Gimmick,ParticleEmitter,Trigger,CharacterController,UICanvas,UIRect,UIImage,UIText,UIButton,UISlider,UIToggle,UIScrollView,UILayout,UIAnimator)",
+        "hasComponent(type:string) -> bool  (type: Transform,MeshRenderer,SkeletalAnimation,AnimatorController,NodeAnimation,GridPlane,PointLight,DirectionalLight,SpotLight,Camera,AudioSource,Gimmick,ParticleEmitter,Trigger,CharacterController,UICanvas,UIRect,UIImage,UIText,UIButton,UISlider,UIToggle,UIScrollView,UILayout,UIAnimator)",
         "playAnim(clipIndex:int, blend:float)",
         "playAnimByName(name:string, blend:float)",
         "setLooping(loop:bool)",
         "setAnimSpeed(speed:float)  (再生速度倍率。既定1.0、2.0で2倍速、0で一時停止。移動速度と足の同期に)",
         "getAnimCount() -> int",
         "getAnimName(index:int) -> string",
+        "-- アニメFSM(.animfsm / AnimatorController)。構造はアセット側、Lua はパラメータだけ触る --",
+        "setAnimFloat(name:string, value:float)  (FSM の float パラメータ。例 setAnimFloat(\"speed\", 3.2))",
+        "setAnimBool(name:string, value:bool)",
+        "setAnimTrigger(name:string)  (1回だけ立つトリガ。条件を満たした遷移が消費する)",
+        "getAnimFloat(name:string) -> float  (無ければ 0)",
+        "getAnimBool(name:string) -> bool  (無ければ false)",
+        "getAnimStateName(layer:int?) -> string  (現在のステート名。layer 省略で 0。無ければ \"\")",
+        "getAnimNormalizedTime(layer:int?) -> float  (現ステートの正規化時間 0..1。攻撃の当たり判定窓などに)",
+        "playAnimState(stateName:string, blend:float?)  (ステートへ強制遷移。デバッグ/カットシーン用)",
+        "setAnimLayerWeight(layer:int, w:float)  (レイヤー重み 0..1。上半身レイヤーのフェードイン等)",
+        "getAnimLayerWeight(layer:int) -> float",
+        "setFootIKWeight(w:float)  (フット IK の効きを実行時に変える 0..1。FootIK コンポーネントが要る)",
+        "getFootIKWeight() -> float",
+        "isFootGrounded(rightFoot:bool?) -> bool  (フット IK のレイが地面に当たっているか。省略で左足)",
+        "注: アニメイベント(足音)は EventBus に流れる。events:on(\"footstep\", function(ev) ... end) で受ける",
+        "-- UI アニメ(.uianim) / スプライトシート(.spranim) --",
+        "playUiAnim(clipPath:string?)  (UIAnimPlayer が無ければ付ける。clipPath 省略で現在のクリップを再生)",
+        "stopUiAnim()",
+        "setUiAnimTime(t:float)  (再生位置を秒で直接指定。スクラブ/ポーズ用)",
+        "setUiAnimSpeed(speed:float)",
+        "playSprite(seqName:string)  (SpriteAnimator が無ければ付ける。シート内のシーケンス名を再生)",
+        "stopSprite()",
+        "setSpriteSheet(sheetPath:string)  (assets 相対の .spranim。SpriteAnimator が無ければ付ける)",
         "light() -> Light|nil  (PointLight/DirectionalLight/SpotLight の統一プロキシ。無ければ nil)",
         "addLight(kind:string?) -> Light  (kind: \"point\"(既定)/\"directional\"(\"dir\"/\"sun\")/\"spot\"。既にあればそれを返す)",
         "removeLight()  (付いているライト成分を全部外す。消灯ではなく削除=CB枠が空く)",
@@ -2925,7 +3625,8 @@ nlohmann::json McpLuaApi()
         "stopUiTweens(e)  (進行中tween全打ち切り+視覚値リセット。連打対策)",
         "showUi(e)", "hideUi(e)",
         "sun() -> Light|nil  (最初の DirectionalLight。時間帯演出はこれを駆動する)",
-        "lightCount() -> { point=, spot=, directional=, maxPoint=8, maxSpot=8 }  (CB 上限に引っかかってないか確認用)",
+        "lightCount() -> { point=, spot=, directional=, total=, maxTotal=1024, maxPerCluster=128 }"
+        "  (クラスタードライティング。点/スポットの個別上限は無く合計 1024 灯。1クラスタ 128 灯超は無言で切り捨て)",
         "getAmbient() / setAmbient(v)  (環境光=影の明るさ。実体は DirectionalLight.ambient、書きは全太陽へ)",
         "getShadowsEnabled() / setShadowsEnabled(b)  (リアルタイム影(CSM)の ON/OFF。false で影パスごとスキップ)",
         "getSkybox() -> { envMapPath=, iblIntensity=, skyboxIntensity=, drawSkybox= }",
@@ -3076,6 +3777,7 @@ nlohmann::json McpComponentTypesOf(const entt::registry& reg, entt::entity e)
     if (reg.all_of<Gimmick>(e))             a.push_back("gimmick");
     if (reg.all_of<LuaScript>(e))           a.push_back("luaScript");
     if (reg.all_of<TrailRenderer>(e))       a.push_back("trailRenderer");
+    if (reg.all_of<DecalComponent>(e))      a.push_back("decal");
     if (reg.all_of<NetworkIdentity>(e))     a.push_back("networkIdentity");
     if (reg.all_of<NetworkTransform>(e))    a.push_back("networkTransform");
     if (reg.all_of<Terrain>(e))             a.push_back("terrain");
@@ -3083,6 +3785,8 @@ nlohmann::json McpComponentTypesOf(const entt::registry& reg, entt::entity e)
     if (reg.all_of<SkeletalAnimation>(e))   a.push_back("skeletalAnimation");
     if (reg.all_of<UIAnimPlayer>(e))        a.push_back("uiAnimPlayer");
     if (reg.all_of<SpriteAnimator>(e))      a.push_back("spriteAnimator");
+    if (reg.all_of<AnimatorController>(e))  a.push_back("animatorController");
+    if (reg.all_of<FootIK>(e))              a.push_back("footIK");
     if (reg.all_of<PrefabLink>(e))          a.push_back("prefabLink");
     return a;
 }
@@ -3091,41 +3795,124 @@ nlohmann::json McpComponentTypesOf(const entt::registry& reg, entt::entity e)
 // エディタウィンドウ全体を PNG へ(定義は CaptureSceneScreenshot の手前)。MCP ui_screenshot 用。
 static std::string CaptureWindowScreenshot(HWND hwnd, std::string& err);
 
-std::string Application::HandleMcpCommand(uint64_t client, const std::string& line)
+
+// ---------------------------------------------------------------------------
+// MCP: method 名 → ハンドラのディスパッチ表（#30。N37 / N43 の根治）
+// ---------------------------------------------------------------------------
+// ★以前は HandleMcpCommand の中に `else if (method == "...")` が 118 本並んでいて、
+//   MSVC の「ブロックの入れ子のレベルが深すぎます (C1061)」上限に張り付いていた。
+//   1 本足すだけでコンパイルが落ち、逃げ道として get/set を 1 ブロックへ束ねたり
+//   HandleMcpRenderCommand() へ早期 return させたりしていた（N37 / N43）。
+//   **表引きにしたので method を何本足しても入れ子は 1 段も深くならない。**
+//   HandleMcpRenderCommand() は役目を終えたので削除した。
+//
+// 新しい method の足し方（これだけ）:
+//   1. 下の Register***McpMethods() のどれかへ
+//        McpDefine("名前", "キー:型,...", DX12E_MCP_HANDLER { ... });
+//      を 1 本足す（置く場所はテーマで選ぶ。順序に意味は無い＝表引きなので）。
+//   2. 第 2 引数のキー表は `dx12_describe_mcp_params` がそのまま返す。
+//      **本文で読むキーと必ず一致させること**（tests/mcp_param_spec_test が機械的に見張る）。
+//   3. docs/MCP.md と tools/mcp-server/index.ts の zod スキーマにも同じキーを足す
+//      （足し忘れると zod が黙って引数を捨てる。N21）。
+//
+// ★ハンドラの引数名は旧チェーンのローカル変数と同じ（params / resp / method /
+//   deferred / isDeferred / busyPlaying）。おかげで 118 本の本文を 1 行も書き換えずに移設できた。
+//   使わない引数があっても警告が出ないよう [[maybe_unused]] を付けてある。
+#define DX12E_MCP_HANDLER                                                    \
+    [this]([[maybe_unused]] const nlohmann::json& params,                    \
+           [[maybe_unused]] nlohmann::json&       resp,                      \
+           [[maybe_unused]] const std::string&    method,                    \
+           [[maybe_unused]] McpDeferred&          deferred,                  \
+           [[maybe_unused]] bool&                 isDeferred,                \
+           [[maybe_unused]] bool                  busyPlaying) -> void
+
+namespace
+{
+// ポスト / SSAO のキー表は本文に書かず、**唯一の名前表**である X マクロから組み立てる
+// （計画03 Phase 3。`PostProcessSettings.h` のコメントが予告していたもの）。
+// フィールドを足したら X マクロ 1 箇所を直すだけで MCP のキー表も追従する。
+const char* McpPostParamSpec()
+{
+    static const std::string spec = []
+    {
+        std::string t;
+#define DX12E_MCP_PP_B(f) t += #f ":bool,";
+#define DX12E_MCP_PP_F(f) t += #f ":number,";
+#define DX12E_MCP_PP_I(f) t += #f ":int,";
+#define DX12E_MCP_PP_V(f) t += #f ":vec3,";
+#define DX12E_MCP_PP_S(f) t += #f ":string,";
+        DX12E_POST_FIELDS(DX12E_MCP_PP_B, DX12E_MCP_PP_F, DX12E_MCP_PP_I,
+                          DX12E_MCP_PP_V, DX12E_MCP_PP_S)
+#undef DX12E_MCP_PP_B
+#undef DX12E_MCP_PP_F
+#undef DX12E_MCP_PP_I
+#undef DX12E_MCP_PP_V
+#undef DX12E_MCP_PP_S
+        if (!t.empty()) t.pop_back();
+        return t;
+    }();
+    return spec.c_str();
+}
+
+const char* McpSsaoParamSpec()
+{
+    static const std::string spec = []
+    {
+        std::string t;
+#define DX12E_MCP_SS_B(f) t += #f ":bool,";
+#define DX12E_MCP_SS_F(f) t += #f ":number,";
+#define DX12E_MCP_SS_I(f) t += #f ":int,";
+        DX12E_SSAO_FIELDS(DX12E_MCP_SS_B, DX12E_MCP_SS_F, DX12E_MCP_SS_I)
+#undef DX12E_MCP_SS_B
+#undef DX12E_MCP_SS_F
+#undef DX12E_MCP_SS_I
+        if (!t.empty()) t.pop_back();
+        return t;
+    }();
+    return spec.c_str();
+}
+} // namespace
+
+// names は "a" または "a|b"（get/set を 1 本のハンドラで捌く場合。本文が method を見て分ける）。
+void Application::McpDefine(const char* names, const char* paramSpec, McpHandler fn)
+{
+    const std::string all(names);
+    size_t pos = 0;
+    for (;;)
+    {
+        const size_t bar = all.find('|', pos);
+        const std::string one = all.substr(pos, bar == std::string::npos ? std::string::npos : bar - pos);
+        if (!one.empty())
+        {
+            if (!m_mcpMethods.emplace(one, McpMethodEntry{paramSpec, fn}).second)
+                Logger::Error("MCP: duplicate method name '{}' (dispatch table)", one);
+        }
+        if (bar == std::string::npos) break;
+        pos = bar + 1;
+    }
+}
+
+// 表は初回の MCP コマンドで 1 度だけ組む（起動時コストをエディタ操作に持ち込まない）。
+void Application::EnsureMcpMethodTable()
+{
+    if (!m_mcpMethods.empty()) return;
+    m_mcpMethods.reserve(192);
+    RegisterMcpEntityMethods();
+    RegisterMcpEditorMethods();
+    RegisterMcpRenderMethods();
+    RegisterMcpToolingMethods();
+    RegisterMcpAssetMethods();
+    RegisterMcpTerrainMethods();
+    RegisterMcpLightingMethods();
+}
+
+// ---- エンティティ / コンポーネント / シーン入出力 ----
+void Application::RegisterMcpEntityMethods()
 {
     using json = nlohmann::json;
     namespace fs = std::filesystem;
 
-    json req;
-    try { req = json::parse(line); }
-    catch (const std::exception& e)
-    {
-        return json{{"id", nullptr}, {"ok", false}, {"error_code", McpErr::InvalidParam},
-                    {"error", std::string("parse error: ") + e.what()}}.dump();
-    }
-
-    json resp;
-    resp["id"] = req.value("id", json(nullptr));
-    const std::string method = req.value("method", std::string());
-    const json params = req.value("params", json::object());
-
-    // 遅延応答(create/spawn/delete/open_scene/play/stop)の相関情報。
-    // 該当ブランチで deferred=true にし、保留キューへ mcp を積んで空文字列を返す。
-    McpDeferred deferred{ client, req.value("id", 0LL), params.value("idempotency_key", std::string()) };
-    bool isDeferred = false;
-
-    try
-    {
-        if (!m_scene || !m_scriptEngine)
-            throw std::runtime_error("engine not ready");
-
-        // 生成/削除/シーン系を弾く判定。Playing 中はもちろん、同一 Poll バッチで先に play が
-        // 積まれた(モード遷移保留)場合も弾く＝そのフレームで spawn ドレインが skip されて
-        // 遅延応答が宙吊り(クライアント timeout)になるのを防ぐ。
-        const bool busyPlaying = (m_engineMode == EngineMode::Playing) ||
-                                 (m_modeChangeRequested && m_pendingMode == EngineMode::Playing);
-
-        if (method == "list_entities")
+    McpDefine("list_entities", "component_type:string,name_prefix:string,verbose:bool", DX12E_MCP_HANDLER
         {
             const bool verbose = params.value("verbose", false);
             const std::string namePrefix = params.value("name_prefix", std::string());
@@ -3152,8 +3939,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"entities", arr}, {"count", arr.size()},
                               {"sceneGeneration", m_sceneGeneration}};
-        }
-        else if (method == "create_lua_component")
+        });
+
+    McpDefine("create_lua_component", "code:string,name:string", DX12E_MCP_HANDLER
         {
             const std::string name = params.value("name", std::string());
             const std::string code = params.value("code", std::string());
@@ -3174,8 +3962,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             ofs.write(code.data(), static_cast<std::streamsize>(code.size()));
             resp["ok"] = true;
             resp["result"] = {{"path", rel}};
-        }
-        else if (method == "create_shader")
+        });
+
+    McpDefine("create_shader", "code:string,name:string", DX12E_MCP_HANDLER
         {
             // カスタムシェーダー(MeshRenderer::shaderPath 割当用)を assets/shaders/ に作成/上書きする。
             // Lua と違い、書く前の静的検証ができない(DXC はファイルからしかコンパイルできない)ため、
@@ -3206,8 +3995,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"path", rel}, {"compiled", compiled}};
             if (!compiled) resp["result"]["error"] = error.empty() ? "shader manager unavailable" : error;
-        }
-        else if (method == "read_shader")
+        });
+
+    McpDefine("read_shader", "path:string", DX12E_MCP_HANDLER
         {
             const std::string rel = params.value("path", std::string());
             if (rel.empty()) throw McpError(McpErr::InvalidParam, "missing 'path'");
@@ -3224,8 +4014,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"path", rel}, {"code", oss.str()},
                                {"compiled", m_shaderManager && m_shaderManager->HasValidCustomShader(rel)}};
-        }
-        else if (method == "set_mesh_shader")
+        });
+
+    McpDefine("set_mesh_shader", "alphaBlend:bool,entity:int,name:string,shaderPath:string", DX12E_MCP_HANDLER
         {
             // MeshRenderer::shaderPath の割当/解除。Inspector の「Shader」コンボと同じ操作を MCP から。
             // modelPath と違いメッシュ再ロードを伴わない(PSO 選択が変わるだけ)ので即時反映して安全。
@@ -3255,8 +4046,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"shaderPath", mr.shaderPath},
                                {"alphaBlend", mr.shaderAlphaBlend},
                                {"skinnedFallbackWarning", reg.all_of<SkeletalAnimation>(e) && !mr.shaderPath.empty()}};
-        }
-        else if (method == "set_sprite_shader")
+        });
+
+    McpDefine("set_sprite_shader", "alphaBlend:bool,entity:int,name:string,shaderPath:string", DX12E_MCP_HANDLER
         {
             // Sprite2D::shaderPath の割当/解除。set_mesh_shader と同型だが、対象はworld-spaceスプライトのみ
             // (ルートシグネチャ/頂点フォーマットがメッシュ用と異なる別キャッシュ。docs/AUTHORING.md参照)。
@@ -3286,8 +4078,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"shaderPath", sp.shaderPath},
                                {"alphaBlend", sp.shaderAlphaBlend},
                                {"worldSpaceWarning", !sp.worldSpace && !sp.shaderPath.empty()}};
-        }
-        else if (method == "attach_lua_component")
+        });
+
+    McpDefine("attach_lua_component", "entity:int,name:string,script:string", DX12E_MCP_HANDLER
         {
             const std::string script = params.value("script", std::string());
             if (script.empty()) throw std::runtime_error("missing 'script'");
@@ -3300,8 +4093,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             m_scriptEngine->AttachScriptToEntity(e, script);
             m_scriptEngine->ReloadScript(e);
             resp["ok"] = true;
-        }
-        else if (method == "create_entity")
+        });
+
+    McpDefine("create_entity", "name:string,parent:any,parentName:any,position:any,type:string", DX12E_MCP_HANDLER
         {
             // 生成はメッシュ構築に cmdList が要るためフレーム境界で遅延処理。本物の entityId は
             // 生成後に SendToClient で返す(遅延同期)。Play 中は spawn キューが drain されないため拒否。
@@ -3322,6 +4116,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             else if (type == "light_spot")        marker = "__spot_light__";
             else if (type == "particle_emitter")  marker = "__particle_emitter__";
             else if (type == "trigger")           marker = "__trigger__";
+            else if (type == "decal")             marker = "__decal__";
             else if (type == "ui_canvas")     marker = "__ui_canvas__";
             else if (type == "ui_image")      marker = "__ui_image__";
             else if (type == "ui_text")       marker = "__ui_text__";
@@ -3331,7 +4126,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             else if (type == "ui_scrollview") marker = "__ui_scrollview__";
             else throw McpError(McpErr::InvalidParam,
                 "type must be one of: box, sphere, plane, empty, camera, light_directional, "
-                "light_point, light_spot, particle_emitter, trigger, ui_canvas, ui_image, "
+                "light_point, light_spot, particle_emitter, trigger, decal, ui_canvas, ui_image, "
                 "ui_text, ui_button, ui_slider, ui_toggle, ui_scrollview");
 
             // UI 要素の親の明示指定(id か名前)。ui_canvas はルート生成なので対象外。
@@ -3397,8 +4192,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 m_editorCtx->pendingSpawns.push_back(std::move(sreq));
                 isDeferred = true;
             }
-        }
-        else if (method == "delete_entity")
+        });
+
+    McpDefine("delete_entity", "entity:int,name:string", DX12E_MCP_HANDLER
         {
             // 削除ドレイン(Render)は Editor モード限定。Play 中に積むと drain されず未応答ハングするため弾く。
             if (busyPlaying)
@@ -3407,8 +4203,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             // 子ごと削除+Undo はフレーム境界で処理し、deletedCount を遅延応答で返す。
             m_editorCtx->mcpDeletions.push_back(McpPendingDelete{ e, deferred });
             isDeferred = true;
-        }
-        else if (method == "set_transform")
+        });
+
+    McpDefine("set_transform", "entity:int,name:string,position:any,quaternion:any,rotation:any,scale:any", DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);   // 無効 id は "invalid entity id" を投げる
             auto& reg = m_scene->GetRegistry();
@@ -3443,8 +4240,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             resp["ok"] = true;
             resp["result"] = {{"entityId", static_cast<u32>(e)}};
-        }
-        else if (method == "get_entity")
+        });
+
+    McpDefine("get_entity", "entity:int,name:string", DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
@@ -3462,8 +4260,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             result["sceneGeneration"] = m_sceneGeneration;
             resp["ok"] = true;
             resp["result"] = std::move(result);
-        }
-        else if (method == "save_scene")
+        });
+
+    McpDefine("save_scene", "path:string", DX12E_MCP_HANDLER
         {
             std::string rel = params.value("path", std::string());
             std::string full;
@@ -3485,8 +4284,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 throw std::runtime_error("save failed");
             resp["ok"] = true;
             resp["result"] = {{"path", rel.empty() ? m_editorCtx->currentScenePath : rel}};
-        }
-        else if (method == "open_scene")
+        });
+
+    McpDefine("open_scene", "path:string", DX12E_MCP_HANDLER
         {
             std::string rel = params.value("path", std::string());
             if (rel.empty()) throw McpError(McpErr::InvalidParam, "missing 'path'");
@@ -3506,8 +4306,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             m_editorCtx->pendingLoadPath = full;
             m_mcpLoadReply = deferred;
             isDeferred = true;
-        }
-        else if (method == "open_project")
+        });
+
+    McpDefine("open_project", "path:string", DX12E_MCP_HANDLER
         {
             // プロジェクトを開く(ランチャーのクリックと同等)。path はプロジェクトルート絶対パス。
             // BeginProjectLoad は数フレームかけて非同期にロードする(スプラッシュ表示→シーン差替)ので、
@@ -3529,8 +4330,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"name", info.name}, {"rootDir", info.rootDir},
                               {"defaultScene", info.defaultScene}, {"loading", true}};
-        }
-        else if (method == "list_scenes")
+        });
+
+    McpDefine("list_scenes", "", DX12E_MCP_HANDLER
         {
             json arr = json::array();
             const std::string root = PathResolver::AssetsDir();      // 末尾 '/'
@@ -3546,8 +4348,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             resp["ok"] = true;
             resp["result"] = std::move(arr);
-        }
-        else if (method == "list_assets")
+        });
+
+    McpDefine("list_assets", "type:string", DX12E_MCP_HANDLER
         {
             const std::string filter = params.value("type", std::string());
             json arr = json::array();
@@ -3580,8 +4383,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             resp["ok"] = true;
             resp["result"] = std::move(arr);
-        }
-        else if (method == "spawn_model")
+        });
+
+    McpDefine("spawn_model", "name:string,path:string,position:any", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot spawn while Playing; call dx12_stop first");
@@ -3621,8 +4425,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 m_editorCtx->pendingSpawns.push_back(std::move(sreq));
                 isDeferred = true;
             }
-        }
-        else if (method == "set_component")
+        });
+
+    McpDefine("set_component", "component:string,data:any,entity:int,name:string,values:any", DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
@@ -3696,8 +4501,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             resp["ok"] = true;
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"component", comp}};
-        }
-        else if (method == "remove_component")
+        });
+
+    McpDefine("remove_component", "component:string,entity:int,name:string", DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
@@ -3709,8 +4515,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                     "unknown/unsupported component: " + comp + " (call dx12_describe_components)");
             resp["ok"] = true;
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"removed", comp}};
-        }
-        else if (method == "ui_tree")
+        });
+
+    McpDefine("ui_tree", "", DX12E_MCP_HANDLER
         {
             // ゲーム内 UI ツリーを丸ごと JSON で返す（AI が UI 構造を「見る」ための読み取り API）。
             // 座標はキャンバス空間 px（= uiRect で指定する単位。ビューポート非依存）。
@@ -3849,8 +4656,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["result"] = {{"canvases", std::move(arr)},
                               {"note", "coordinates are canvas-space px (same units as uiRect offsets); "
                                        "resolvedRect = [x, y, w, h] from canvas top-left"}};
-        }
-        else if (method == "describe_components")
+        });
+
+    McpDefine("describe_components", "component:string", DX12E_MCP_HANDLER
         {
             const std::string only = params.value("component", std::string());
             json all = McpComponentSchema();
@@ -3869,15 +4677,17 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 resp["ok"] = true;
                 resp["result"] = {{"components", std::move(filtered)}};
             }
-        }
-        else if (method == "describe_lua_api")
+        });
+
+    McpDefine("describe_lua_api", "", DX12E_MCP_HANDLER
         {
             // Lua スクリプトから使えるバインディング一覧(静的)。MCP のコンポーネントと
             // Lua から読める API のズレ(entity.boxCollider は nil 等)を AI に伝えるため。
             resp["ok"] = true;
             resp["result"] = McpLuaApi();
-        }
-        else if (method == "set_parent")
+        });
+
+    McpDefine("set_parent", "entity:int,name:string,parent:any", DX12E_MCP_HANDLER
         {
             auto& reg = m_scene->GetRegistry();
             const auto child = ResolveMcpEntity(*m_scene, params);   // entity か name で子を指定
@@ -3901,8 +4711,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             auto& t = reg.get_or_emplace<Transform>(child);
             t.parent = parent;   // 階層は Transform.parent が駆動。SerializeEntity に自動反映。
             resp["ok"] = true;
-        }
-        else if (method == "group_entities")
+        });
+
+    McpDefine("group_entities", "entities:any,name:string,names:any", DX12E_MCP_HANDLER
         {
             // 複数エンティティを空の親(グループ)へまとめる。ヒエラルキーの Ctrl+G と同じ動作。
             // 親は原点・無回転・スケール1で作るので、子のワールド行列は変わらない＝見た目は動かない。
@@ -3993,8 +4804,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"sceneGeneration", m_sceneGeneration},
             };
             Logger::Info("MCP group_entities: '{}' に {} 件をまとめました", gname, members.size());
-        }
-        else if (method == "rename_entity")
+        });
+
+    McpDefine("rename_entity", "entity:any,name:string", DX12E_MCP_HANDLER
         {
             // ここの "name" は新しい名前。エンティティ指定は entity(id) のみ(name 引きは曖昧なので不可)。
             const auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
@@ -4014,8 +4826,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             reg.get<NameTag>(e).name = name;
             resp["ok"] = true;
             resp["result"] = {{"name", name}};
-        }
-        else if (method == "ping")
+        });
+
+    McpDefine("ping", "", DX12E_MCP_HANDLER
         {
             int entityCount = 0;
             for (auto e : m_scene->GetRegistry().view<NameTag>()) { (void)e; ++entityCount; }
@@ -4026,10 +4839,18 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"entityCount", entityCount},
                 {"sceneGeneration", m_sceneGeneration},
                 {"currentScene", ToAssetRel(m_editorCtx->currentScenePath)},
-                {"protocolVersion", 3}
+                // ★TS 側はこれまで「エンジンログに混ざる絶対パス」から assets ディレクトリを
+                //   推定していた（#20-3）。ここで正確に返すので推定は不要。
+                {"assetsDir", PathResolver::AssetsDir()},
+                {"scriptsDir", PathResolver::ScriptsDir()},
+                {"baseDir", PathResolver::BaseDir()},
+                {"projectShaderDir", PathResolver::ProjectShaderDir()},
+                {"cwd", std::filesystem::current_path().string()},
+                {"protocolVersion", 4}
             };
-        }
-        else if (method == "find_entity")
+        });
+
+    McpDefine("find_entity", "name:string", DX12E_MCP_HANDLER
         {
             const std::string name = params.value("name", std::string());
             if (name.empty()) throw McpError(McpErr::InvalidParam, "missing 'name'");
@@ -4039,8 +4860,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 resp["result"] = {{"entityId", static_cast<u32>(ent.GetHandle())}, {"name", name}};
             else
                 resp["result"] = nullptr;
-        }
-        else if (method == "query_entities")
+        });
+
+    McpDefine("query_entities", "box:any,tag:string", DX12E_MCP_HANDLER
         {
             auto& reg = m_scene->GetRegistry();
             const std::string tag = params.value("tag", std::string());
@@ -4067,15 +4889,17 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             resp["ok"] = true;
             resp["result"] = {{"entities", arr}, {"count", arr.size()}};
-        }
-        else if (method == "select_entity")
+        });
+
+    McpDefine("select_entity", "entity:int,name:string", DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);
             m_editorCtx->Select(e);
             resp["ok"] = true;
             resp["result"] = {{"selected", static_cast<u32>(e)}};
-        }
-        else if (method == "focus_camera")
+        });
+
+    McpDefine("focus_camera", "entity:int,name:string", DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
@@ -4110,8 +4934,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"cameraPos", {camPos.x, camPos.y, camPos.z}},
                               {"target", {wpos.x, wpos.y, wpos.z}}, {"distance", dist}};
-        }
-        else if (method == "set_pbr")
+        });
+
+    McpDefine("set_pbr", "entity:int,metallic:any,name:string,roughness:any,uvScaleU:any,uvScaleV:any", DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
@@ -4126,28 +4951,32 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["result"] = {{"entityId", static_cast<u32>(e)},
                               {"metallic", mr.overrideMetallic}, {"roughness", mr.overrideRoughness},
                               {"uvScaleU", mr.uvScaleU}, {"uvScaleV", mr.uvScaleV}};
-        }
-        else if (method == "duplicate_entity")
+        });
+
+    McpDefine("duplicate_entity", "entity:int,name:string", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot duplicate while Playing; call dx12_stop first");
             const auto e = ResolveMcpEntity(*m_scene, params);
             m_editorCtx->mcpDuplications.push_back(McpPendingDelete{ e, deferred });  // .entity=複製元
             isDeferred = true;
-        }
-        else if (method == "undo")
+        });
+
+    McpDefine("undo", "", DX12E_MCP_HANDLER
         {
             m_editorCtx->pendingUndo = true;   // フレーム境界で適用
             resp["ok"] = true;
             resp["result"] = {{"queuedUndo", true}};
-        }
-        else if (method == "redo")
+        });
+
+    McpDefine("redo", "", DX12E_MCP_HANDLER
         {
             m_editorCtx->pendingRedo = true;
             resp["ok"] = true;
             resp["result"] = {{"queuedRedo", true}};
-        }
-        else if (method == "new_scene")
+        });
+
+    McpDefine("new_scene", "savePath:string", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot create a new scene while Playing");
@@ -4162,8 +4991,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             m_editorCtx->pendingNewScene = true;   // フレーム境界で空シーン生成 + sceneGeneration++
             resp["ok"] = true;
             resp["result"] = {{"applied", "next frame"}};
-        }
-        else if (method == "spawn_prefab")
+        });
+
+    McpDefine("spawn_prefab", "name:string,path:string,position:any", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot spawn while Playing; call dx12_stop first");
@@ -4178,6 +5008,31 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 throw McpError(McpErr::NotFound, "prefab not found: " + path);
             const auto pos = params.value("position", std::vector<float>{0.0f, 0.0f, 0.0f});
             if (pos.size() != 3) throw McpError(McpErr::InvalidParam, "position must be [x,y,z]");
+            // ★idempotency のリプレイ判定（#20-4。ここが無かったので実バグだった）。
+            //   スポーン完了時に root id を m_mcpIdempotency へ記録してはいたが、
+            //   **再送されたときに参照する側が無く、同じ key で何度でも重複生成できた**。
+            //   create_entity / spawn_model と同じ規律に揃える。
+            if (!deferred.idempotencyKey.empty())
+            {
+                auto& reg = m_scene->GetRegistry();
+                auto it = m_mcpIdempotency.find(deferred.idempotencyKey);
+                if (it != m_mcpIdempotency.end() &&
+                    reg.valid(static_cast<entt::entity>(it->second)))
+                {
+                    const auto root = static_cast<entt::entity>(it->second);
+                    json ids = json::array();
+                    ids.push_back(static_cast<u32>(root));
+                    for (auto c : reg.view<const Transform>())
+                        if (c != root && McpIsDescendantOf(reg, c, root)) ids.push_back(static_cast<u32>(c));
+                    resp["ok"] = true;
+                    resp["result"] = {{"entityId", it->second}, {"rootEntityId", it->second},
+                                      {"entityIds", ids},
+                                      {"name", reg.all_of<NameTag>(root) ? reg.get<NameTag>(root).name
+                                                                         : std::string()},
+                                      {"sceneGeneration", m_sceneGeneration}, {"idempotentReplay", true}};
+                    return;
+                }
+            }
             PendingSpawnRequest sreq;
             sreq.modelPath = path;          // 拡張子 .prefab で spawn ループが展開し root+ids を返す
             sreq.position  = { pos[0], pos[1], pos[2] };
@@ -4185,17 +5040,69 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             sreq.mcp       = deferred;
             m_editorCtx->pendingSpawns.push_back(std::move(sreq));
             isDeferred = true;
-        }
-        else if (method == "get_scene_settings")
+        });
+}
+
+// ---- エディタ操作（設定・Play/Stop・入力・スクショ・計測・物理クエリ） ----
+void Application::RegisterMcpEditorMethods()
+{
+    using json = nlohmann::json;
+    namespace fs = std::filesystem;
+
+    // ディスパッチ表そのものを機械可読で返す（#20-7）。TS 側が Application.cpp を
+    // テキスト解析しなくてもスキーマのドリフトを検出できるようにするための唯一の入口。
+    // 表が正なので「実装にあるのに describe に出ない」は原理的に起きない。
+    McpDefine("describe_mcp_params", "method:string", DX12E_MCP_HANDLER
+        {
+            const std::string only = params.value("method", std::string());
+            json methods = json::object();
+            for (const auto& [name, entry] : m_mcpMethods)
+            {
+                if (!only.empty() && name != only) continue;
+                json keys = json::array();
+                const std::string spec(entry.paramSpec ? entry.paramSpec : "");
+                size_t pos = 0;
+                while (pos <= spec.size() && !spec.empty())
+                {
+                    const size_t comma = spec.find(',', pos);
+                    const std::string one =
+                        spec.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+                    if (!one.empty())
+                    {
+                        const size_t colon = one.find(':');
+                        keys.push_back({{"key",  one.substr(0, colon)},
+                                        {"type", colon == std::string::npos ? std::string("any")
+                                                                            : one.substr(colon + 1)}});
+                    }
+                    if (comma == std::string::npos) break;
+                    pos = comma + 1;
+                }
+                methods[name] = std::move(keys);
+            }
+            if (!only.empty() && methods.empty())
+                throw McpError(McpErr::InvalidParam, "unknown method: " + only,
+                               "method を省くと全 method を返す");
+            resp["ok"] = true;
+            resp["result"] = {{"methods", methods},
+                              {"count", methods.size()},
+                              {"globalKeys", json::array({"idempotency_key"})},
+                              {"note", "type は bool/int/number/string/vec3/object/any。"
+                                       "\"親.子\" は入れ子オブジェクトのキー（例 skybox.envMapPath）。"
+                                       "any は C++ 側で型を静的に決められなかったもので、値の型制約が無い意味ではない"}};
+        });
+
+    McpDefine("get_scene_settings", "", DX12E_MCP_HANDLER
         {
             const auto& sky = m_scene->GetSkyboxSettings();
             resp["ok"] = true;
             resp["result"] = {{"skybox", {
                                   {"envMapPath", sky.envMapPath}, {"iblIntensity", sky.iblIntensity},
                                   {"skyboxIntensity", sky.skyboxIntensity}, {"drawSkybox", sky.drawSkybox}}},
-                              {"note", "post-process は dx12_get_post_process、SSAO は dx12_get_ssao を使う"}};
-        }
-        else if (method == "set_scene_settings")
+                              {"note", "post-process は dx12_get_post_process、SSAO は dx12_get_ssao、SSR は dx12_get_ssr、SSGI は dx12_get_ssgi、ボリュメトリックフォグは dx12_get_volumetric_fog を使う"}};
+        });
+
+    McpDefine("set_scene_settings", "skybox:object,skybox.drawSkybox:any,skybox.envMapPath:any,skybox.iblIntensity:any,"
+              "skybox.skyboxIntensity:any", DX12E_MCP_HANDLER
         {
             const json sky = params.value("skybox", json::object());
             auto& s = m_scene->GetSkyboxSettings();
@@ -4214,8 +5121,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             if (envChanged) { m_loadedSkyboxPath.clear(); m_skyboxDirty = true; }  // 環境マップ再ベイク要求
             resp["ok"] = true;
             resp["result"] = {{"applied", true}, {"envMapRebake", envChanged}};
-        }
-        else if (method == "play")
+        });
+
+    McpDefine("play", "", DX12E_MCP_HANDLER
         {
             if (m_engineMode == EngineMode::Playing)
             {
@@ -4234,8 +5142,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 m_mcpModeReply = deferred;
                 isDeferred = true;
             }
-        }
-        else if (method == "stop")
+        });
+
+    McpDefine("stop", "", DX12E_MCP_HANDLER
         {
             if (m_engineMode == EngineMode::Editor)
             {
@@ -4251,13 +5160,15 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 m_mcpModeReply = deferred;
                 isDeferred = true;
             }
-        }
-        else if (method == "get_mode")
+        });
+
+    McpDefine("get_mode", "", DX12E_MCP_HANDLER
         {
             resp["ok"] = true;
             resp["result"] = {{"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"}};
-        }
-        else if (method == "get_log")
+        });
+
+    McpDefine("get_log", "lines:int", DX12E_MCP_HANDLER
         {
             int lines = params.value("lines", 50);
             if (lines < 1) lines = 1;
@@ -4278,19 +5189,81 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             resp["ok"] = true;
             resp["result"] = arr;   // ファイル無しは空配列(grace)
-        }
-        else if (method == "screenshot")
+        });
+
+    McpDefine("screenshot", "deterministic:bool,path:string,settleFrames:int", DX12E_MCP_HANDLER
         {
             // 直近フレームのシーン描画を PNG にして絶対パスを返す。AI 側はそのパスを画像として読む。
+            // ★これは【ポスト前】の m_sceneRT。グレーディング/ブルーム/ビネット/TAA は写らない（§6 B5）。
+            //   見た目を判断したいときは dx12_screenshot_final を使うこと。
+            if (params.value("deterministic", false))
+            {
+                if (m_deterministicCapture || m_mcpFinalShot.reply.client != 0)
+                    throw McpError(McpErr::ModeConflict,
+                        "another deterministic screenshot is in flight; retry shortly");
+                m_mcpFinalShot = {};
+                m_mcpFinalShot.path          = params.value("path", std::string());
+                m_mcpFinalShot.reply         = deferred;
+                m_mcpFinalShot.wantSceneRt   = true;
+                m_mcpFinalShot.deterministic = true;
+                // ★履歴を捨ててから固定フレーム数だけ回す（#31）。
+                //   位相を固定しただけでは「ピンポンの偶奇」と「撮る前に何フレーム回っていたか」で
+                //   結果がわずかに残るので（実測 240 フレーム回しても 1% 残った）、
+                //   **同じ初期状態 + 同じフレーム数** にして完全に再現させる。
+                InvalidateTemporalHistory();
+                m_deterministicFramesLeft = std::clamp(params.value("settleFrames", 8), 1, 240);
+                m_deterministicCapture    = true;
+                isDeferred = true;
+                return;
+            }
             std::string serr;
-            const std::string path = CaptureSceneScreenshot(serr);
+            const std::string path = CaptureSceneScreenshot(serr, params.value("path", std::string()));
             if (path.empty()) throw std::runtime_error(serr.empty() ? "screenshot failed" : serr);
             resp["ok"] = true;
             resp["result"] = {{"path", path},
                               {"width", m_sceneRT->GetWidth()},
-                              {"height", m_sceneRT->GetHeight()}};
-        }
-        else if (method == "ui_screenshot")
+                              {"height", m_sceneRT->GetHeight()},
+                              {"source", "sceneRT(pre-post)"},
+                              // ★#16: シーン RT は「レンダー解像度」そのもの。renderScale<1 なら
+                              //   表示解像度より小さい絵が返る（拡大前）。表示解像度で見たいなら final。
+                              {"renderScale", m_renderScale},
+                              {"note", "ポストプロセス前のシーン RT（レンダー解像度）。グレーディング/"
+                                       "ブルーム/ビネット/TAA は写らない。最終画は dx12_screenshot_final"}};
+        });
+
+    // ★§6 B5 の根治。バックバッファ（ポスト適用後の最終画）のビューポート矩形を撮る。
+    //   ImGui を描く前にコピーするのでエディタのパネルは写らない＝ゲームと同じ絵になる。
+    //   1 フレーム描いてから撮るので遅延応答。
+    McpDefine("screenshot_final", "deterministic:bool,path:string,settleFrames:int", DX12E_MCP_HANDLER
+        {
+            if (m_mcpFinalShot.reply.client != 0 || m_mcpFinalShot.pending || m_deterministicCapture)
+                throw McpError(McpErr::ModeConflict,
+                    "a final screenshot is already pending; retry shortly");
+            const bool det = params.value("deterministic", false);
+            m_mcpFinalShot = {};
+            m_mcpFinalShot.path          = params.value("path", std::string());
+            m_mcpFinalShot.reply         = deferred;
+            m_mcpFinalShot.deterministic = det;
+            if (det)
+            {
+                // ★#31: time / TAA ジッタ / フォグ・SSGI の位相を固定して N フレーム回し、
+                //   時間蓄積が収束してから撮る。pending は収束後に Run ループが立てる。
+                // ★履歴を捨ててから固定フレーム数だけ回す（#31）。
+                //   位相を固定しただけでは「ピンポンの偶奇」と「撮る前に何フレーム回っていたか」で
+                //   結果がわずかに残るので（実測 240 フレーム回しても 1% 残った）、
+                //   **同じ初期状態 + 同じフレーム数** にして完全に再現させる。
+                InvalidateTemporalHistory();
+                m_deterministicFramesLeft = std::clamp(params.value("settleFrames", 8), 1, 240);
+                m_deterministicCapture    = true;
+            }
+            else
+            {
+                m_mcpFinalShot.pending = true;   // 次に描くフレームの ImGui 直前でコピーされる
+            }
+            isDeferred = true;
+        });
+
+    McpDefine("ui_screenshot", "", DX12E_MCP_HANDLER
         {
             // エディタウィンドウ全体(ImGui パネル込み = UIエディタ/ゲーム内 UI プレビューが写る)を
             // PNG にして返す。scene RT には ImGui 描画が乗らないため screenshot とは別経路。
@@ -4303,8 +5276,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["result"] = {{"path", path},
                               {"width", rc.right - rc.left}, {"height", rc.bottom - rc.top},
                               {"note", "editor window capture (includes UI editor panel & game UI preview)"}};
-        }
-        else if (method == "project_world_to_screen")
+        });
+
+    McpDefine("project_world_to_screen", "entity:int,name:string", DX12E_MCP_HANDLER
         {
             // エンティティのワールド座標を、今シーンビューを描いているカメラ(m_camera)の
             // ビュー*射影で画面ピクセルへ投影する。Playing 中は m_camera = アクティブなゲームカメラ
@@ -4318,6 +5292,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             const float ndcX = (w != 0.0f) ? XMVectorGetX(clip) / w : 0.0f;
             const float ndcY = (w != 0.0f) ? XMVectorGetY(clip) / w : 0.0f;
             const float ndcZ = (w != 0.0f) ? XMVectorGetZ(clip) / w : 0.0f;
+            // ★#16: シーンは RT 全面に描かれるので、RT サイズ＝スクリーン空間そのもの
+            //   （かつては RT がウィンドウ全面でシーンはサブ矩形だったため、
+            //     エディタでは vpLeft ぶん系統的にずれていた）。
             const float vw = static_cast<float>(m_sceneRT->GetWidth());
             const float vh = static_cast<float>(m_sceneRT->GetHeight());
             const float px = (ndcX * 0.5f + 0.5f) * vw;
@@ -4329,8 +5306,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                               {"visible", visible}, {"depth", ndcZ}, {"w", w},
                               {"width", m_sceneRT->GetWidth()}, {"height", m_sceneRT->GetHeight()},
                               {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"}};
-        }
-        else if (method == "get_lua_component_state")
+        });
+
+    McpDefine("get_lua_component_state", "entity:int,name:string", DX12E_MCP_HANDLER
         {
             // LuaScript の現在のプロパティ値(オーバーライド+スキーマ既定)を全部返す。
             // get_entity は保存済みオーバーライドしか出さないので、スキーマを基準に既定も含めて出す。
@@ -4375,8 +5353,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                               {"enabled", ls.enabled}, {"started", ls.started},
                               {"loadError", ls.loadError}, {"errorMessage", ls.errorMessage},
                               {"properties", std::move(props)}};
-        }
-        else if (method == "set_lua_property")
+        });
+
+    McpDefine("set_lua_property", "entity:int,key:string,name:string,value:any", DX12E_MCP_HANDLER
         {
             // LuaScript のプロパティを1つ書き換える。スキーマで型を確認して検証。
             // 実行中(Playing)なら ReloadScript で再注入、Editor では保存だけ(次 Play で反映)。
@@ -4422,8 +5401,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             if (ls.started) m_scriptEngine->ReloadScript(e);  // 実行中のみ再注入(Editor は保存のみ)
             resp["ok"] = true;
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"key", key}, {"reloaded", ls.started}};
-        }
-        else if (method == "key_down")
+        });
+
+    McpDefine("key_down", "key:string", DX12E_MCP_HANDLER
         {
             // 合成キー押下(押しっぱなし)。次フレーム以降の Lua input:isKeyDown / keyDown() が true になる。
             // key_up を呼ぶまで保持。Playing 中の移動などの確認用(isAsyncKeyDown 系には効かない)。
@@ -4431,23 +5411,180 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             m_inputSystem->OnKeyDown(vk);
             resp["ok"] = true;
             resp["result"] = {{"key", vk}, {"down", true}};
-        }
-        else if (method == "key_up")
+        });
+
+    McpDefine("key_up", "key:string", DX12E_MCP_HANDLER
         {
             const int vk = ParseMcpVk(params);
             m_inputSystem->OnKeyUp(vk);
             resp["ok"] = true;
             resp["result"] = {{"key", vk}, {"down", false}};
-        }
-        else if (method == "key_press")
+        });
+
+    McpDefine("key_press", "key:string", DX12E_MCP_HANDLER
         {
             // 1フレームだけ押す(isKeyPressed が立つ)。ジャンプ等のタップ操作の確認用。
             const int vk = ParseMcpVk(params);
             m_inputSystem->InjectKeyPress(vk);
             resp["ok"] = true;
             resp["result"] = {{"key", vk}, {"pressed", true}};
-        }
-        else if (method == "step_frames")
+        });
+
+    McpDefine("render_debug", "depthRange:number,exposure:number,frames:int,gain:number,mode:string", DX12E_MCP_HANDLER
+        {
+            // 中間バッファ可視化。mode を受けて必要な機能を一時的に ON にし、N フレーム描いてから
+            // スクリーンショットを撮って返し、設定を元へ戻す（＝呼ぶ前と完全に同じ状態に戻る）。
+            //
+            // ★実装は 2 系統に分かれる（重複実装を避けるため）:
+            //   (A) 専用フルスクリーンパス RenderDebugPass … 可視化が無かったバッファ
+            //   (B) 既存のデバッグ表示トグルへの振り分け     … 既に実装済みのもの
+            //       shadowCascade = shadowParams.w / lightComplexity,clusterGrid,decalCount =
+            //       clusterExtra.z / fog* = FogParams.gMisc.z
+            if (m_mcpRenderDebugReply.client != 0)
+                throw McpError(McpErr::ModeConflict, "a render_debug capture is already pending; retry shortly");
+            if (!m_scene) throw McpError(McpErr::Internal, "no scene");
+
+            const std::string mode = params.value("mode", std::string());
+            // (mode, パスモード(0=既存トグル), 説明)
+            struct DbgEntry { const char* name; u32 passMode; };
+            static const DbgEntry kEntries[] = {
+                {"off",              0},
+                {"normal",           static_cast<u32>(RenderDebugMode::Normal)},
+                {"roughness",        static_cast<u32>(RenderDebugMode::Roughness)},
+                {"metallic",         static_cast<u32>(RenderDebugMode::Metallic)},
+                {"depth",            static_cast<u32>(RenderDebugMode::Depth)},
+                {"ao",               static_cast<u32>(RenderDebugMode::Ao)},
+                {"contactShadow",    static_cast<u32>(RenderDebugMode::ContactShadow)},
+                {"velocity",         static_cast<u32>(RenderDebugMode::Velocity)},
+                {"ssr",              static_cast<u32>(RenderDebugMode::Ssr)},
+                {"ssgi",             static_cast<u32>(RenderDebugMode::Ssgi)},
+                {"rt",               static_cast<u32>(RenderDebugMode::RtHit)},
+                {"rtDiff",           static_cast<u32>(RenderDebugMode::RtDiff)},
+                {"shadowCascade",    0},
+                {"lightComplexity",  0},
+                {"clusterGrid",      0},
+                {"decalCount",       0},
+                {"fogScattering",    0},
+                {"fogTransmittance", 0},
+                {"fogSlice",         0},
+            };
+            const DbgEntry* entry = nullptr;
+            for (const DbgEntry& e : kEntries)
+                if (mode == e.name) { entry = &e; break; }
+            if (!entry)
+            {
+                std::string list;
+                for (const DbgEntry& e : kEntries) { if (!list.empty()) list += ", "; list += e.name; }
+                throw McpError(McpErr::InvalidParam, "unknown mode '" + mode + "'",
+                    "有効な mode: " + list +
+                    "。albedo と overdraw は非対応（前方レンダラなので albedo の G-Buffer が無く、"
+                    "overdraw は加算カウント用の専用パスが要るため）");
+            }
+
+            // ---- 現在の状態を退避（返す直前に必ず戻す）----
+            auto& taaS  = m_scene->GetTaaSettings();
+            auto& ssaoS = m_scene->GetSSAOSettings();
+            auto& csS   = m_scene->GetContactShadowSettings();
+            auto& ssrS  = m_scene->GetSsrSettings();
+            auto& ssgiS = m_scene->GetSsgiSettings();
+            auto& fogS  = m_scene->GetVolumetricFogSettings();
+            m_renderDebugRestore.valid         = true;
+            m_renderDebugRestore.taa           = taaS.enabled;
+            m_renderDebugRestore.ssao          = ssaoS.enabled;
+            m_renderDebugRestore.contactShadow = csS.enabled;
+            m_renderDebugRestore.ssr           = ssrS.enabled;
+            m_renderDebugRestore.ssgi          = ssgiS.enabled;
+            m_renderDebugRestore.clusterDebug  = m_editorCtx ? m_editorCtx->clusterDebugMode : 0u;
+            m_renderDebugRestore.cascadeDebug  = m_showCascadeDebug;
+            m_renderDebugRestore.fogDebug      = fogS.debugMode;
+
+            // ---- 必要な機能を一時的に ON ----
+            json warn = json::array();
+            m_renderDebugMode        = entry->passMode;
+            m_renderDebugModeName    = mode;
+            m_renderDebugGain        = static_cast<f32>(params.value("gain", 1.0));
+            m_renderDebugDepthRange  = McpFloatParam(params, "depthRange", 100.0f, 0.1f, 100000.0f);
+            m_renderDebugExposure    = McpFloatParam(params, "exposure", 1.0f, 0.001f, 1000.0f);
+            m_renderDebugRawReadback = (entry->passMode != 0);
+
+            if (mode == "normal" || mode == "roughness" || mode == "metallic" || mode == "velocity")
+            {
+                // G-Buffer / 速度バッファは深度プリパスの MRT にしか書かれない
+                //（＝TAA か SSR/SSGI が有効なときだけ）。
+                if (!taaS.enabled && !ssrS.enabled && !ssgiS.enabled)
+                {
+                    taaS.enabled = true;
+                    warn.push_back("G-Buffer/速度は速度プリパスでしか書かれないので TAA を一時的に ON にした");
+                }
+            }
+            else if (mode == "ao")
+            {
+                if (!ssaoS.enabled) { ssaoS.enabled = true; warn.push_back("SSAO を一時的に ON にした"); }
+            }
+            else if (mode == "contactShadow")
+            {
+                if (!csS.enabled) { csS.enabled = true; warn.push_back("コンタクトシャドウを一時的に ON にした"); }
+            }
+            else if (mode == "ssr")
+            {
+                if (!ssrS.enabled) { ssrS.enabled = true; warn.push_back("SSR を一時的に ON にした（時間蓄積があるので frames を増やすと安定する）"); }
+            }
+            else if (mode == "ssgi")
+            {
+                if (!ssgiS.enabled) { ssgiS.enabled = true; warn.push_back("SSGI を一時的に ON にした（同上）"); }
+            }
+            else if (mode == "rt" || mode == "rtDiff")
+            {
+                // TLAS を建てさせる（RT 影 / RT-AO が両方 OFF でも見られるようにする）。
+                // forceBuildTlas はシーン JSON に保存しない一時トグル。
+                if (!m_dxrEnabled)
+                    warn.push_back("この GPU では inline raytracing が使えないので何も出ない"
+                                   "（要 DXR Tier 1.1 / Shader Model 6.5）");
+                m_renderDebugRestore.rtForceTlas = m_scene->GetRtSettings().forceBuildTlas;
+                m_scene->GetRtSettings().forceBuildTlas = true;
+                if (mode == "rtDiff")
+                    warn.push_back("スキンドと半透明は TLAS に入らない仕様なので、そこはマゼンタになる");
+            }
+            else if (mode == "shadowCascade")
+            {
+                m_showCascadeDebug = true;
+            }
+            else if (mode == "lightComplexity" || mode == "clusterGrid" || mode == "decalCount")
+            {
+                if (!m_editorCtx)
+                    throw McpError(McpErr::Internal, "editor context not available");
+                m_editorCtx->clusterDebugMode = (mode == "lightComplexity") ? 1u
+                                              : (mode == "clusterGrid")     ? 2u : 3u;
+                if (!m_clusteredEnabled)
+                    warn.push_back("クラスタードライティングが無効（settings.json render_clustered=0 / 正射カメラ）なので何も出ない");
+                if (mode == "decalCount")
+                {
+                    u32 nDecals = 0;
+                    for (auto de : m_scene->GetRegistry().view<const DecalComponent>()) { (void)de; ++nDecals; }
+                    if (nDecals == 0)
+                        warn.push_back("シーンにデカールが 1 枚も無いので全面がほぼ黒になる");
+                }
+            }
+            else if (mode == "fogScattering" || mode == "fogTransmittance" || mode == "fogSlice")
+            {
+                if (!fogS.enabled)
+                    warn.push_back("ボリュメトリックフォグが無効なので何も出ない（先に dx12_set_volumetric_fog で ON にすること）");
+                fogS.debugMode = (mode == "fogScattering") ? 1 : (mode == "fogTransmittance") ? 2 : 3;
+            }
+            else if (mode == "off")
+            {
+                // 何も ON にしない（退避した値をそのまま書き戻して終わる）
+            }
+
+            int frames = params.value("frames", 3);
+            frames = std::clamp(frames, 1, 120);
+            m_mcpRenderDebugFramesLeft = frames;
+            m_mcpRenderDebugReply      = deferred;
+            m_renderDebugWarnings      = warn.dump();
+            isDeferred = true;
+        });
+
+    McpDefine("step_frames", "frames:any,n:int", DX12E_MCP_HANDLER
         {
             // N フレーム進めてから応答する同期バリア(遅延応答)。key_down/press の後に呼ぶと
             // 入力がシミュレーションに効いてから get_entity/project_world_to_screen で結果を見られる。
@@ -4460,8 +5597,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             m_mcpStepFramesLeft = n;
             m_mcpStepReply = deferred;
             isDeferred = true;
-        }
-        else if (method == "perf_stats")
+        });
+
+    McpDefine("perf_stats", "window:int", DX12E_MCP_HANDLER
         {
             // 直近 window フレームのリングバッファを平均して即答（ベンチ不要の現状把握用）。
             const u32 have = static_cast<u32>((std::min<u64>)(m_perfTotalFrames, kPerfHistory));
@@ -4501,6 +5639,19 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             nlohmann::json rep = PerfReportJson(s, m_useVsync, m_fpsLimit);
             rep["instancing"] = m_instancingEnabled;   // settings.json "render_instancing" で A/B 可
+            // クラスタードライティング（Forward+）。settings.json "render_clustered" で A/B 可。
+            // OFF / 正射カメラのときは「先頭 64 灯を総当たり」フォールバックで走る。
+            rep["clustered"]  = m_clusteredEnabled;
+            // 内部解像度スケール（#16）。GPU 時間を読むときは必ずこれも見ること
+            // （renderScale=0.5 なら画素数が 1/4 になっているので単純比較できない）。
+            {
+                u32 dvx = 0, dvy = 0, dvw = 0, dvh = 0;
+                GetDisplayViewport(dvx, dvy, dvw, dvh);
+                rep["renderScale"]       = m_renderScale;
+                rep["depthPrepass"]      = m_forceDepthPrepass;   // 計画10 A2 の A/B スイッチ
+                rep["renderResolution"]  = {{"width", m_renderW}, {"height", m_renderH}};
+                rep["displayResolution"] = {{"width", dvw},       {"height", dvh}};
+            }
 
             // パス別内訳（平均/フレーム）。other = 深度プリパス/エディタプレビュー等
             rep["passes"] = {
@@ -4529,13 +5680,18 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"particleEmitters", emitters},
                 {"shadowsEnabled", m_scene->GetShadowsEnabled()},
                 {"ssaoEnabled", m_scene->GetSSAOSettings().enabled},
+                {"ssrEnabled",  m_scene->GetSsrSettings().enabled},
+                {"ssgiEnabled", m_scene->GetSsgiSettings().enabled},
+                {"contactShadowEnabled", m_scene->GetContactShadowSettings().enabled},
+                {"taaEnabled", m_scene->GetTaaSettings().enabled},
                 {"gpuTimerValid", m_gpuTimer && m_gpuTimer->IsValid()},
                 {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"},
             };
             resp["ok"] = true;
             resp["result"] = rep;
-        }
-        else if (method == "benchmark")
+        });
+
+    McpDefine("benchmark", "frames:int,uncap:bool", DX12E_MCP_HANDLER
         {
             // N フレーム計測してから応答する遅延同期。カメラ/シーンは呼び出し側が事前に整えること。
             int n = params.value("frames", 300);
@@ -4562,8 +5718,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             m_benchFramesLeft = static_cast<u32>(n);
             m_benchReply = deferred;
             isDeferred = true;
-        }
-        else if (method == "set_color")
+        });
+
+    McpDefine("set_color", "color:any,entity:int,name:string", DX12E_MCP_HANDLER
         {
             // メッシュの頂点色(基本色の乗算)を設定する。scene:setColor(Lua) と同じ。
             // 足場やコインの色付けに。色は [r,g,b](0..1)。
@@ -4580,8 +5737,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             for (auto* mesh : mr.meshes) if (mesh) mesh->SetVertexColor(*device, c[0], c[1], c[2], 1.0f);
             resp["ok"] = true;
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"color", {c[0], c[1], c[2]}}};
-        }
-        else if (method == "screenshot_game_view")
+        });
+
+    McpDefine("screenshot_game_view", "", DX12E_MCP_HANDLER
         {
             // アクティブな CameraComponent 視点でシーンを1フレーム描いて撮る(遅延応答)。
             // Editor 中でもゲームカメラの画角を確認できる。Playing 中は通常 screenshot と同じ絵。
@@ -4596,13 +5754,14 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 throw McpError(McpErr::ModeConflict, "a game-view screenshot is already pending; retry shortly");
             m_mcpGameViewReply = deferred;   // フレーム境界で描画→撮影→応答(Run ループ側)
             isDeferred = true;
-        }
-        // ════════════════════════════════════════════════════════════
-        //  ランタイム物理検証(raycast/overlap/velocity) — 全て同期・読み取り系。
-        //  bodies は Play 中のみ登録される(RegisterBody は Play 開始/loadScene 時)。
-        //  Editor 中に呼んでもエラーにはせず hit=false / entities=[] / velocity=[0,0,0] を返す。
-        // ════════════════════════════════════════════════════════════
-        else if (method == "raycast")
+        });
+
+    // ════════════════════════════════════════════════════════════
+    //  ランタイム物理検証(raycast/overlap/velocity) — 全て同期・読み取り系。
+    //  bodies は Play 中のみ登録される(RegisterBody は Play 開始/loadScene 時)。
+    //  Editor 中に呼んでもエラーにはせず hit=false / entities=[] / velocity=[0,0,0] を返す。
+    // ════════════════════════════════════════════════════════════
+    McpDefine("raycast", "direction:any,maxDistance:number,origin:any", DX12E_MCP_HANDLER
         {
             auto originV = params.value("origin", std::vector<float>{});
             auto dirV = params.value("direction", std::vector<float>{});
@@ -4628,8 +5787,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             resp["ok"] = true;
             resp["result"] = std::move(result);
-        }
-        else if (method == "overlap_box" || method == "overlap_sphere")
+        });
+
+    McpDefine("overlap_box|overlap_sphere", "center:any,halfExtents:any,maxResults:int,radius:number", DX12E_MCP_HANDLER
         {
             int maxResults = params.value("maxResults", 32);
             if (maxResults < 1) maxResults = 1;
@@ -4664,8 +5824,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             resp["ok"] = true;
             resp["result"] = {{"entities", arr}, {"count", arr.size()}};
-        }
-        else if (method == "get_physics_state")
+        });
+
+    McpDefine("get_physics_state", "entity:int,name:string", DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
@@ -4689,11 +5850,12 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             resp["ok"] = true;
             resp["result"] = std::move(result);
-        }
-        // ════════════════════════════════════════════════════════════
-        //  コンテンツ制作ヘルパー拡充
-        // ════════════════════════════════════════════════════════════
-        else if (method == "read_lua_component")
+        });
+
+    // ════════════════════════════════════════════════════════════
+    //  コンテンツ制作ヘルパー拡充
+    // ════════════════════════════════════════════════════════════
+    McpDefine("read_lua_component", "path:string", DX12E_MCP_HANDLER
         {
             std::string rel = params.value("path", std::string());
             if (rel.empty()) throw McpError(McpErr::InvalidParam, "missing 'path'");
@@ -4707,8 +5869,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             std::ostringstream ss; ss << ifs.rdbuf();
             resp["ok"] = true;
             resp["result"] = {{"path", rel}, {"code", ss.str()}};
-        }
-        else if (method == "create_prefab")
+        });
+
+    McpDefine("create_prefab", "entity:int,name:string,path:string", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot create a prefab while Playing; call dx12_stop first");
@@ -4741,11 +5904,19 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 throw McpError(McpErr::Internal, "failed to save prefab");
             resp["ok"] = true;
             resp["result"] = {{"path", rel}, {"entityId", static_cast<u32>(e)}};
-        }
-        // ════════════════════════════════════════════════════════════
-        //  ビジュアル/ポスト設定の操作(ポストプロセス・SSAO)
-        // ════════════════════════════════════════════════════════════
-        else if (method == "get_post_process")
+        });
+}
+
+// ---- 描画設定（ポスト / SSAO / SSR / SSGI / コンタクトシャドウ / TAA / フォグ） ----
+void Application::RegisterMcpRenderMethods()
+{
+    using json = nlohmann::json;
+    namespace fs = std::filesystem;
+
+    // ════════════════════════════════════════════════════════════
+    //  ビジュアル/ポスト設定の操作(ポストプロセス・SSAO)
+    // ════════════════════════════════════════════════════════════
+    McpDefine("get_post_process", "", DX12E_MCP_HANDLER
         {
             const auto& pp = m_scene->GetPostSettings();
             resp["ok"] = true;
@@ -4793,8 +5964,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"motionBlurOn", pp.motionBlurOn}, {"mbStrength", pp.mbStrength},
                 {"mbSamples", pp.mbSamples},
             };
-        }
-        else if (method == "set_post_process")
+        });
+
+    McpDefine("set_post_process", McpPostParamSpec(), DX12E_MCP_HANDLER
         {
             auto& pp = m_scene->GetPostSettings();
             pp.enabled = params.value("enabled", pp.enabled);
@@ -4862,16 +6034,18 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             pp.fxaaOn = params.value("fxaaOn", pp.fxaaOn);
             resp["ok"] = true;
             resp["result"] = {{"applied", true}};
-        }
-        else if (method == "get_ssao")
+        });
+
+    McpDefine("get_ssao", "", DX12E_MCP_HANDLER
         {
             const auto& s = m_scene->GetSSAOSettings();
             resp["ok"] = true;
             resp["result"] = {{"enabled", s.enabled}, {"radius", s.radius}, {"bias", s.bias},
                               {"intensity", s.intensity}, {"power", s.power},
                               {"sampleCount", s.sampleCount}, {"blur", s.blur}};
-        }
-        else if (method == "set_ssao")
+        });
+
+    McpDefine("set_ssao", McpSsaoParamSpec(), DX12E_MCP_HANDLER
         {
             auto& s = m_scene->GetSSAOSettings();
             s.enabled = params.value("enabled", s.enabled);
@@ -4883,11 +6057,347 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             s.blur = params.value("blur", s.blur);
             resp["ok"] = true;
             resp["result"] = {{"applied", true}};
-        }
-        // ════════════════════════════════════════════════════════════
-        //  ビルド/検証パイプライン連携
-        // ════════════════════════════════════════════════════════════
-        else if (method == "validate_scene")
+        });
+
+    McpDefine("get_ssr", "", DX12E_MCP_HANDLER
+        {
+            const auto& s = m_scene->GetSsrSettings();
+            resp["ok"] = true;
+            resp["result"] = {{"enabled", s.enabled}, {"intensity", s.intensity},
+                              {"maxDistance", s.maxDistance}, {"thickness", s.thickness},
+                              {"maxSteps", s.maxSteps}, {"stride", s.stride},
+                              {"roughnessCutoff", s.roughnessCutoff}, {"edgeFade", s.edgeFade},
+                              {"bias", s.bias}};
+        });
+
+    McpDefine("set_ssr", "bias:any,edgeFade:any,enabled:any,intensity:any,maxDistance:any,maxSteps:any,"
+              "roughnessCutoff:any,stride:any,thickness:any", DX12E_MCP_HANDLER
+        {
+            auto& s = m_scene->GetSsrSettings();
+            s.enabled         = params.value("enabled",         s.enabled);
+            s.intensity       = params.value("intensity",       s.intensity);
+            s.maxDistance     = params.value("maxDistance",     s.maxDistance);
+            s.thickness       = params.value("thickness",       s.thickness);
+            s.maxSteps        = params.value("maxSteps",        s.maxSteps);
+            s.stride          = params.value("stride",          s.stride);
+            s.roughnessCutoff = params.value("roughnessCutoff", s.roughnessCutoff);
+            s.edgeFade        = params.value("edgeFade",        s.edgeFade);
+            s.bias            = params.value("bias",            s.bias);
+            resp["ok"] = true;
+            resp["result"] = {{"applied", true}};
+        });
+
+    McpDefine("get_ssgi", "", DX12E_MCP_HANDLER
+        {
+            const auto& s = m_scene->GetSsgiSettings();
+            resp["ok"] = true;
+            resp["result"] = {{"enabled", s.enabled}, {"intensity", s.intensity},
+                              {"radius", s.radius}, {"thickness", s.thickness},
+                              {"rayCount", s.rayCount}, {"stepCount", s.stepCount},
+                              {"clampValue", s.clampValue}, {"feedback", s.feedback},
+                              {"iblFallback", s.iblFallback}};
+        });
+
+    McpDefine("set_ssgi", "clampValue:any,enabled:any,feedback:any,iblFallback:any,intensity:any,radius:any,"
+              "rayCount:any,stepCount:any,thickness:any", DX12E_MCP_HANDLER
+        {
+            auto& s = m_scene->GetSsgiSettings();
+            s.enabled     = params.value("enabled",     s.enabled);
+            s.intensity   = params.value("intensity",   s.intensity);
+            s.radius      = params.value("radius",      s.radius);
+            s.thickness   = params.value("thickness",   s.thickness);
+            s.rayCount    = params.value("rayCount",    s.rayCount);
+            s.stepCount   = params.value("stepCount",   s.stepCount);
+            s.clampValue  = params.value("clampValue",  s.clampValue);
+            s.feedback    = params.value("feedback",    s.feedback);
+            s.iblFallback = params.value("iblFallback", s.iblFallback);
+            resp["ok"] = true;
+            resp["result"] = {{"applied", true}};
+        });
+
+    McpDefine("get_contact_shadow", "", DX12E_MCP_HANDLER
+        {
+            const auto& c = m_scene->GetContactShadowSettings();
+            resp["ok"] = true;
+            resp["result"] = {{"enabled", c.enabled}, {"rayLength", c.rayLength},
+                              {"thickness", c.thickness}, {"bias", c.bias},
+                              {"intensity", c.intensity}, {"steps", c.steps},
+                              {"maxDistance", c.maxDistance}, {"fadeDistance", c.fadeDistance}};
+        });
+
+    McpDefine("set_contact_shadow", "bias:any,enabled:any,fadeDistance:any,intensity:any,maxDistance:any,rayLength:any,"
+              "steps:any,thickness:any", DX12E_MCP_HANDLER
+        {
+            auto& c = m_scene->GetContactShadowSettings();
+            c.enabled      = params.value("enabled",      c.enabled);
+            c.rayLength    = params.value("rayLength",    c.rayLength);
+            c.thickness    = params.value("thickness",    c.thickness);
+            c.bias         = params.value("bias",         c.bias);
+            c.intensity    = params.value("intensity",    c.intensity);
+            c.steps        = params.value("steps",        c.steps);
+            c.maxDistance  = params.value("maxDistance",  c.maxDistance);
+            c.fadeDistance = params.value("fadeDistance", c.fadeDistance);
+            resp["ok"] = true;
+            resp["result"] = {{"applied", true}};
+        });
+
+    // ---- 内部解像度スケール（#16。レンダー解像度と表示解像度の分離）----
+    // 3D シーンだけを scale 倍の解像度で描き、最終パスで表示解像度へ引き伸ばす。
+    // UI / ImGui / エディタのギズモは常に表示解像度のまま＝文字がボケない。
+    McpDefine("get_render_scale|set_render_scale", "scale:number", DX12E_MCP_HANDLER
+        {
+            if (method == "set_render_scale")
+            {
+                if (!params.contains("scale"))
+                    throw McpError(McpErr::InvalidParam, "need scale (0.25..1.0)");
+                SetRenderScale(static_cast<f32>(McpFloatParam(params, "scale", 1.0f, 0.25f, 1.0f)));
+            }
+            u32 dvx = 0, dvy = 0, dvw = 0, dvh = 0;
+            GetDisplayViewport(dvx, dvy, dvw, dvh);
+            resp["ok"] = true;
+            resp["result"] = {
+                {"scale", m_renderScale},
+                // ★set 直後は「次フレームの Run ループ先頭」で反映されるので、
+                //   ここで返る renderResolution はまだ 1 フレーム前の値であり得る。
+                {"renderResolution",  {{"width", m_renderW}, {"height", m_renderH}}},
+                {"displayResolution", {{"width", dvw},       {"height", dvh}}},
+                {"pending", (m_renderW != 0) &&
+                            (static_cast<u32>(std::lround(dvw * static_cast<double>(m_renderScale))) != m_renderW)},
+                {"note", "シーン系 RT（sceneRT/深度/SSAO/TAA/SSR/SSGI/ブルーム/DoF/ゴッドレイ）の"
+                         "解像度。UI と ImGui は常に表示解像度。dx12_screenshot はレンダー解像度、"
+                         "dx12_screenshot_final は表示解像度で返る"}};
+        });
+
+    // ---- 深度プリパスの単独トグル（計画10 A2）----
+    // 「そのシーンにオーバードローがどれだけあるか」を SSAO 生成のコストを混ぜずに測る道具。
+    // gpuPassMs.depthPrepass（プリパス描画だけ）と gpuPassMs.mainScene の増減を突き合わせる。
+    McpDefine("get_depth_prepass|set_depth_prepass", "enabled:bool", DX12E_MCP_HANDLER
+        {
+            if (method == "set_depth_prepass")
+            {
+                if (!params.contains("enabled"))
+                    throw McpError(McpErr::InvalidParam, "need enabled (bool)");
+                m_forceDepthPrepass = params.value("enabled", false);
+                PersistSet("render_depth_prepass", m_forceDepthPrepass ? 1.0 : 0.0);
+            }
+            resp["ok"] = true;
+            resp["result"] = {
+                {"enabled", m_forceDepthPrepass},
+                {"note", "深度プリパスを SSAO / コンタクトシャドウ / TAA / SSR / SSGI / DXR と"
+                         "無関係に単独で走らせる。gpuPassMs.depthPrepass が描画だけの実測値、"
+                         "prepassSsao はそれを含むプリパス一式。正射 / 2D ビューでは自動的に無効"}};
+        });
+
+    McpDefine("get_taa", "", DX12E_MCP_HANDLER
+        {
+            const auto& t = m_scene->GetTaaSettings();
+            resp["ok"] = true;
+            resp["result"] = {{"enabled", t.enabled}, {"sampleCount", t.sampleCount},
+                              {"feedbackMin", t.feedbackMin}, {"feedbackMax", t.feedbackMax},
+                              {"varianceGamma", t.varianceGamma}, {"jitterScale", t.jitterScale},
+                              {"debugVelocity", t.debugVelocity},
+                              // TAA が ON でも実際に走らない条件を明示する（誤診断を防ぐ）
+                              {"active", t.enabled && m_taaPass && !m_camera->IsOrthographic()
+                                         && !(m_editorCtx && m_editorCtx->view2D)},
+                              {"fxaaSuppressed", t.enabled}};
+        });
+
+    McpDefine("set_taa", "debugVelocity:any,enabled:any,feedbackMax:any,feedbackMin:any,jitterScale:any,"
+              "sampleCount:any,varianceGamma:any", DX12E_MCP_HANDLER
+        {
+            auto& t = m_scene->GetTaaSettings();
+            t.enabled       = params.value("enabled",       t.enabled);
+            t.sampleCount   = params.value("sampleCount",   t.sampleCount);
+            t.feedbackMin   = params.value("feedbackMin",   t.feedbackMin);
+            t.feedbackMax   = params.value("feedbackMax",   t.feedbackMax);
+            t.varianceGamma = params.value("varianceGamma", t.varianceGamma);
+            t.jitterScale   = params.value("jitterScale",   t.jitterScale);
+            t.debugVelocity = params.value("debugVelocity", t.debugVelocity);
+            resp["ok"] = true;
+            resp["result"] = {{"applied", true}};
+        });
+
+    McpDefine("get_volumetric_fog", "", DX12E_MCP_HANDLER
+        {
+            const auto& f = m_scene->GetVolumetricFogSettings();
+            resp["ok"] = true;
+            resp["result"] = {
+                {"enabled", f.enabled}, {"density", f.density},
+                {"albedo", {f.albedo.x, f.albedo.y, f.albedo.z}},
+                {"anisotropy", f.anisotropy},
+                {"heightFalloff", f.heightFalloff}, {"heightRef", f.heightRef},
+                {"distance", f.distance}, {"depthDistribution", f.depthDistribution},
+                {"ambient", {f.ambient.x, f.ambient.y, f.ambient.z}},
+                {"sunIntensity", f.sunIntensity}, {"lightScattering", f.lightScattering},
+                {"temporal", f.temporal}, {"temporalBlend", f.temporalBlend},
+                {"extendBeyondRange", f.extendBeyondRange}, {"debugMode", f.debugMode},
+                // ON でも実際に走らない条件を明示する（誤診断を防ぐ）
+                {"active", f.enabled && f.density > 0.0f && m_volumetricFogPass
+                           && !m_camera->IsOrthographic()
+                           && !(m_editorCtx && m_editorCtx->view2D)}};
+        });
+
+    McpDefine("set_volumetric_fog", "albedo:any,ambient:any,anisotropy:any,debugMode:any,density:any,depthDistribution:any,"
+              "distance:any,enabled:any,extendBeyondRange:any,heightFalloff:any,heightRef:any,"
+              "lightScattering:any,sunIntensity:any,temporal:any,temporalBlend:any", DX12E_MCP_HANDLER
+        {
+            auto& f = m_scene->GetVolumetricFogSettings();
+            auto vec3 = [&](const char* key, DirectX::XMFLOAT3& dst)
+            {
+                if (params.contains(key) && params[key].is_array() && params[key].size() >= 3)
+                {
+                    dst.x = params[key][0].get<float>();
+                    dst.y = params[key][1].get<float>();
+                    dst.z = params[key][2].get<float>();
+                }
+            };
+            f.enabled           = params.value("enabled",           f.enabled);
+            f.density           = params.value("density",           f.density);
+            vec3("albedo", f.albedo);
+            f.anisotropy        = params.value("anisotropy",        f.anisotropy);
+            f.heightFalloff     = params.value("heightFalloff",     f.heightFalloff);
+            f.heightRef         = params.value("heightRef",         f.heightRef);
+            f.distance          = params.value("distance",          f.distance);
+            f.depthDistribution = params.value("depthDistribution", f.depthDistribution);
+            vec3("ambient", f.ambient);
+            f.sunIntensity      = params.value("sunIntensity",      f.sunIntensity);
+            f.lightScattering   = params.value("lightScattering",   f.lightScattering);
+            f.temporal          = params.value("temporal",          f.temporal);
+            f.temporalBlend     = params.value("temporalBlend",     f.temporalBlend);
+            f.extendBeyondRange = params.value("extendBeyondRange", f.extendBeyondRange);
+            f.debugMode         = params.value("debugMode",         f.debugMode);
+            resp["ok"] = true;
+            resp["result"] = {{"applied", true}};
+        });
+
+    McpDefine("get_shadow_pcss|set_shadow_pcss", "blockerSearchTexels:number,enabled:any,lightTanAngle:number,maxPenumbraTexels:number,"
+              "temporalDither:any", DX12E_MCP_HANDLER
+        {
+            // get/set を 1 本のハンドラで捌く（"a|b" 登録）。束ねる義務はもう無い（C1061 は根治済み）が、
+            // 返り値が同一なのでこの形の方が読みやすい。
+            auto& p = m_scene->GetShadowPcssSettings();
+            if (method == "set_shadow_pcss")
+            {
+                p.enabled = params.value("enabled", p.enabled);
+                if (params.contains("lightTanAngle"))
+                    p.lightTanAngle = McpFloatParam(params, "lightTanAngle", p.lightTanAngle, 0.001f, 0.5f);
+                if (params.contains("maxPenumbraTexels"))
+                    p.maxPenumbraTexels = McpFloatParam(params, "maxPenumbraTexels", p.maxPenumbraTexels, 1.0f, 64.0f);
+                if (params.contains("blockerSearchTexels"))
+                    p.blockerSearchTexels = McpFloatParam(params, "blockerSearchTexels", p.blockerSearchTexels, 1.0f, 64.0f);
+                p.temporalDither = params.value("temporalDither", p.temporalDither);
+            }
+            resp["ok"] = true;
+            resp["result"] = {{"enabled", p.enabled},
+                              {"lightTanAngle", p.lightTanAngle},
+                              {"maxPenumbraTexels", p.maxPenumbraTexels},
+                              {"blockerSearchTexels", p.blockerSearchTexels},
+                              {"temporalDither", p.temporalDither},
+                              // ON でも実際に走らない条件を明示する（誤診断を防ぐ）
+                              {"active", p.enabled && m_scene->GetShadowsEnabled()
+                                         && !m_camera->IsOrthographic()},
+                              {"temporalDitherActive", p.enabled && p.temporalDither
+                                         && m_scene->GetTaaSettings().enabled},
+                              {"applied", method == "set_shadow_pcss"},
+                              {"note", "OFF にすると従来の 3x3 PCF に戻る（絵はビット一致）。"
+                                       "時間ディザは TAA 有効時のみ効く"}};
+        });
+
+    McpDefine("get_dxr|set_dxr", "aoCombineWithSsao:any,aoEnabled:any,aoIntensity:number,aoPower:number,aoRadius:number,"
+              "aoRayCount:any,forceBuildTlas:any,maxInstances:any,shadowEnabled:any,"
+              "shadowIntensity:number,shadowMaxDistance:number,shadowNormalBias:number,"
+              "shadowSunAngle:number", DX12E_MCP_HANDLER
+        {
+            // get/set を 1 本のハンドラで捌く（"a|b" 登録）。
+            //   RT サン影は既存のコンタクトシャドウ枠(t11)、RT-AO は既存の SSAO 枠(t8) へ書く。
+            //   ルートシグネチャは 1 DWORD も増えない。
+            auto& r = m_scene->GetRtSettings();
+            if (method == "set_dxr")
+            {
+                if (!m_dxrEnabled)
+                    throw McpError(McpErr::InvalidParam,
+                        "this GPU does not support inline raytracing",
+                        "DXR Tier 1.1 かつ Shader Model 6.5 が必要（RTX 20 系 / RX 6000 系以降）。"
+                        "起動ログの \"DXR:\" 行に実際の Tier と SM が出る");
+                r.shadowEnabled = params.value("shadowEnabled", r.shadowEnabled);
+                if (params.contains("shadowSunAngle"))
+                    r.shadowSunAngle = McpFloatParam(params, "shadowSunAngle", r.shadowSunAngle, 0.0f, 20.0f);
+                if (params.contains("shadowNormalBias"))
+                    r.shadowNormalBias = McpFloatParam(params, "shadowNormalBias", r.shadowNormalBias, 0.0f, 1.0f);
+                if (params.contains("shadowMaxDistance"))
+                    r.shadowMaxDistance = McpFloatParam(params, "shadowMaxDistance", r.shadowMaxDistance, 0.0f, 100000.0f);
+                if (params.contains("shadowIntensity"))
+                    r.shadowIntensity = McpFloatParam(params, "shadowIntensity", r.shadowIntensity, 0.0f, 1.0f);
+                r.aoEnabled = params.value("aoEnabled", r.aoEnabled);
+                if (params.contains("aoRadius"))
+                    r.aoRadius = McpFloatParam(params, "aoRadius", r.aoRadius, 0.01f, 100.0f);
+                if (params.contains("aoRayCount"))
+                    r.aoRayCount = std::clamp(params.value("aoRayCount", r.aoRayCount), 1, 8);
+                if (params.contains("aoIntensity"))
+                    r.aoIntensity = McpFloatParam(params, "aoIntensity", r.aoIntensity, 0.0f, 1.0f);
+                if (params.contains("aoPower"))
+                    r.aoPower = McpFloatParam(params, "aoPower", r.aoPower, 0.01f, 8.0f);
+                r.aoCombineWithSsao = params.value("aoCombineWithSsao", r.aoCombineWithSsao);
+                if (params.contains("maxInstances"))
+                    r.maxInstances = std::clamp(params.value("maxInstances", r.maxInstances), 0, 32768);
+                r.forceBuildTlas = params.value("forceBuildTlas", r.forceBuildTlas);
+            }
+            const auto* gd = m_graphicsDevice.get();
+            const int tier = gd ? static_cast<int>(gd->GetRaytracingTier()) : 0;
+            const int sm   = gd ? static_cast<int>(gd->GetHighestShaderModel()) : 0;
+            json stats = json::object();
+            if (m_rtScene)
+            {
+                const auto& s = m_rtScene->GetStats();
+                stats = {{"instances", s.instances}, {"blasCount", s.blasCount},
+                         {"blasBytes", s.blasBytes}, {"blasTriangles", s.blasTriangles},
+                         {"tlasBytes", s.tlasBytes}, {"scratchBytes", s.scratchBytes},
+                         {"instanceDescBytes", s.instanceDescBytes},
+                         {"skippedSkinned", s.skippedSkinned},
+                         {"skippedTransparent", s.skippedTransparent},
+                         {"droppedOverLimit", s.droppedOverLimit},
+                         {"bytesPerTriangle", s.blasTriangles
+                              ? static_cast<double>(s.blasBytes) / static_cast<double>(s.blasTriangles) : 0.0}};
+            }
+            resp["ok"] = true;
+            resp["result"] = {{"supported", m_dxrEnabled},
+                              {"raytracingTier", tier == 0 ? std::string("none")
+                                   : std::to_string(tier / 10) + "." + std::to_string(tier % 10)},
+                              {"highestShaderModel", std::to_string(sm >> 4) + "." + std::to_string(sm & 0xF)},
+                              {"shadowEnabled", r.shadowEnabled},
+                              {"shadowSunAngle", r.shadowSunAngle},
+                              {"shadowNormalBias", r.shadowNormalBias},
+                              {"shadowMaxDistance", r.shadowMaxDistance},
+                              {"shadowIntensity", r.shadowIntensity},
+                              {"aoEnabled", r.aoEnabled},
+                              {"aoRadius", r.aoRadius},
+                              {"aoRayCount", r.aoRayCount},
+                              {"aoIntensity", r.aoIntensity},
+                              {"aoPower", r.aoPower},
+                              {"aoCombineWithSsao", r.aoCombineWithSsao},
+                              {"maxInstances", r.maxInstances},
+                              {"forceBuildTlas", r.forceBuildTlas},
+                              // ON でも実際に走らない条件を明示する（誤診断を防ぐ）
+                              {"shadowActive", m_rtShadowActiveThisFrame},
+                              {"tlasReady", m_rtScene && m_rtScene->IsReady()},
+                              {"stats", stats},
+                              {"applied", method == "set_dxr"},
+                              {"note", "RT 影は t11(コンタクトシャドウ枠)、RT-AO は t8(SSAO枠)へ書く。"
+                                       "ルートシグネチャ増分ゼロ。スキンドと半透明は TLAS に入らないので "
+                                       "CSM が担当する（min 合成）"}};
+        });
+}
+
+// ---- ビルド検証 / Lua / テクスチャ / アニメーション / マルチプレイ ----
+void Application::RegisterMcpToolingMethods()
+{
+    using json = nlohmann::json;
+    namespace fs = std::filesystem;
+
+    // ════════════════════════════════════════════════════════════
+    //  ビルド/検証パイプライン連携
+    // ════════════════════════════════════════════════════════════
+    McpDefine("validate_scene", "path:string", DX12E_MCP_HANDLER
         {
             std::string rel = params.value("path", std::string());
             fs::path scenePath;
@@ -4928,8 +6438,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"pass", code == 0}, {"exitCode", code}, {"report", report},
                               {"scenePath", scenePath.string()}};
-        }
-        else if (method == "build_game")
+        });
+
+    McpDefine("build_game", "", DX12E_MCP_HANDLER
         {
             const bool ok = BuildGame();
             json result{{"success", ok}};
@@ -4941,13 +6452,14 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             resp["ok"] = true;
             resp["result"] = std::move(result);
-        }
-        // ════════════════════════════════════════════════════════════
-        //  Lua 即時実行(eval) — デバッグ用。globals フォールバック環境で実行するため
-        //  scene/physics/camera/audio 等の既存グローバルバインディングがそのまま使える。
-        //  print() は捕捉されない(log() を使うと dx12_get_log で見える)。
-        // ════════════════════════════════════════════════════════════
-        else if (method == "eval_lua")
+        });
+
+    // ════════════════════════════════════════════════════════════
+    //  Lua 即時実行(eval) — デバッグ用。globals フォールバック環境で実行するため
+    //  scene/physics/camera/audio 等の既存グローバルバインディングがそのまま使える。
+    //  print() は捕捉されない(log() を使うと dx12_get_log で見える)。
+    // ════════════════════════════════════════════════════════════
+    McpDefine("eval_lua", "code:string", DX12E_MCP_HANDLER
         {
             const std::string code = params.value("code", std::string());
             if (code.empty()) throw McpError(McpErr::InvalidParam, "missing 'code'");
@@ -4956,11 +6468,12 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             if (!ok) throw McpError(McpErr::Internal, "Lua error: " + err);
             resp["ok"] = true;
             resp["result"] = {{"result", resultStr}};
-        }
-        // ════════════════════════════════════════════════════════════
-        //  マテリアルテクスチャ上書き(Inspector の D&D 割当と同じ経路)
-        // ════════════════════════════════════════════════════════════
-        else if (method == "set_texture")
+        });
+
+    // ════════════════════════════════════════════════════════════
+    //  マテリアルテクスチャ上書き(Inspector の D&D 割当と同じ経路)
+    // ════════════════════════════════════════════════════════════
+    McpDefine("set_texture", "entity:int,name:string,path:string,slot:string,submesh:int", DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
@@ -4987,11 +6500,13 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"slot", slot},
                               {"submesh", submesh}, {"path", rel}};
-        }
-        // ════════════════════════════════════════════════════════════
-        //  スケルタルアニメーション制御(Lua playAnim/playAnimByName と同じ経路)
-        // ════════════════════════════════════════════════════════════
-        else if (method == "play_anim")
+        });
+
+    // ════════════════════════════════════════════════════════════
+    //  スケルタルアニメーション制御(Lua playAnim/playAnimByName と同じ経路)
+    // ════════════════════════════════════════════════════════════
+    McpDefine("play_anim", "blend:number,clip:int,clipName:any,entity:int,layer:int,loop:any,name:string,"
+              "speed:any,state:any", DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
@@ -5000,30 +6515,55 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             auto& sa = reg.get<SkeletalAnimation>(e);
             if (!sa.animator) throw McpError(McpErr::Internal, "animator not initialized");
             const float blend = params.value("blend", 0.3f);
-            int idx = -1;
-            if (params.contains("clipName"))
+
+            // state を渡された場合は FSM の遷移（AnimatorController が必要）。
+            // 渡さなければ従来どおり clip / clipName の CrossFadeTo（完全後方互換）。
+            if (params.contains("state"))
             {
-                const std::string want = params["clipName"].get<std::string>();
-                for (int i = 0; i < static_cast<int>(sa.clips.size()); ++i)
-                    if (sa.clips[i]->GetName() == want) { idx = i; break; }
-                if (idx < 0) throw McpError(McpErr::NotFound, "no clip named '" + want + "' (dx12_get_anim_state で一覧を確認)");
+                const std::string want = params["state"].get<std::string>();
+                if (!reg.all_of<AnimatorController>(e))
+                    throw McpError(McpErr::InvalidParam, "entity has no animatorController");
+                auto& ac = reg.get<AnimatorController>(e);
+                if (!ac._state || !ac._state->valid)
+                    throw McpError(McpErr::Internal,
+                        "animatorController graph not loaded (graphPath='" + ac.graphPath + "')");
+                const u32 layer = params.value("layer", 0u);
+                if (!anim_graph::PlayState(*ac._state, layer, want, blend))
+                    throw McpError(McpErr::NotFound,
+                        "no state named '" + want + "' on layer " + std::to_string(layer)
+                        + " (dx12_describe_anim_graph で一覧を確認)");
+                resp["ok"] = true;
+                resp["result"] = {{"entityId", static_cast<u32>(e)}, {"state", want},
+                                  {"layer", layer}, {"blend", blend}};
             }
             else
             {
-                idx = params.value("clip", 0);
-                if (idx < 0 || idx >= static_cast<int>(sa.clips.size()))
-                    throw McpError(McpErr::InvalidParam, "clip index out of range (0.." +
-                        std::to_string(sa.clips.empty() ? 0 : sa.clips.size() - 1) + ")");
+                int idx = -1;
+                if (params.contains("clipName"))
+                {
+                    const std::string want = params["clipName"].get<std::string>();
+                    for (int i = 0; i < static_cast<int>(sa.clips.size()); ++i)
+                        if (sa.clips[i]->GetName() == want) { idx = i; break; }
+                    if (idx < 0) throw McpError(McpErr::NotFound, "no clip named '" + want + "' (dx12_get_anim_state で一覧を確認)");
+                }
+                else
+                {
+                    idx = params.value("clip", 0);
+                    if (idx < 0 || idx >= static_cast<int>(sa.clips.size()))
+                        throw McpError(McpErr::InvalidParam, "clip index out of range (0.." +
+                            std::to_string(sa.clips.empty() ? 0 : sa.clips.size() - 1) + ")");
+                }
+                sa.animator->CrossFadeTo(sa.clips[idx].get(), blend);
+                if (params.contains("loop")) sa.animator->SetLooping(params["loop"].get<bool>());
+                if (params.contains("speed")) sa.animator->SetSpeed(params["speed"].get<float>());
+                resp["ok"] = true;
+                resp["result"] = {{"entityId", static_cast<u32>(e)}, {"clip", idx},
+                                  {"clipName", sa.clips[idx]->GetName()}, {"blend", blend},
+                                  {"speed", sa.animator->GetSpeed()}};
             }
-            sa.animator->CrossFadeTo(sa.clips[idx].get(), blend);
-            if (params.contains("loop")) sa.animator->SetLooping(params["loop"].get<bool>());
-            if (params.contains("speed")) sa.animator->SetSpeed(params["speed"].get<float>());
-            resp["ok"] = true;
-            resp["result"] = {{"entityId", static_cast<u32>(e)}, {"clip", idx},
-                              {"clipName", sa.clips[idx]->GetName()}, {"blend", blend},
-                              {"speed", sa.animator->GetSpeed()}};
-        }
-        else if (method == "get_anim_state")
+        });
+
+    McpDefine("get_anim_state", "entity:int,name:string", DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
@@ -5031,16 +6571,203 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             result["hasSkeletalAnimation"] = reg.all_of<SkeletalAnimation>(e);
             json clips = json::array();
             if (reg.all_of<SkeletalAnimation>(e))
-                for (const auto& c : reg.get<SkeletalAnimation>(e).clips)
-                    clips.push_back(c->GetName());
+            {
+                auto& sa = reg.get<SkeletalAnimation>(e);
+                for (const auto& c : sa.clips) clips.push_back(c->GetName());
+                if (sa.skeleton) result["boneCount"] = sa.skeleton->GetBoneCount();
+                if (sa.animator)
+                {
+                    result["clipTime"]   = sa.animator->GetClipTime();
+                    result["speed"]      = sa.animator->GetSpeed();
+                    result["looping"]    = sa.animator->GetLooping();
+                    result["blending"]   = sa.animator->IsBlending();
+                    if (sa.animator->GetClip())
+                        result["currentClip"] = sa.animator->GetClip()->GetName();
+                }
+            }
             result["clips"] = std::move(clips);
+
+            // ---- AnimatorController（.animfsm）の状態 ----
+            const bool hasCtrl = reg.all_of<AnimatorController>(e);
+            result["hasController"] = hasCtrl;
+            if (hasCtrl)
+            {
+                auto& ac = reg.get<AnimatorController>(e);
+                result["graphPath"] = ac.graphPath;
+                result["graphLoaded"] = (ac._state && ac._state->valid);
+                if (ac._failed) result["graphError"] = "load or parse failed (see engine log)";
+                if (ac._state && ac._state->valid)
+                {
+                    auto& sa = reg.get<SkeletalAnimation>(e);
+                    json layers = json::array();
+                    for (size_t li = 0; li < ac._state->layers.size(); ++li)
+                    {
+                        const auto& lr  = ac._state->layers[li];
+                        const auto& def = ac._state->asset.layers[li];
+                        json lj;
+                        lj["name"]   = def.name;
+                        lj["weight"] = lr.weight;
+                        lj["state"]  = (lr.curState >= 0 && lr.curState < static_cast<i32>(def.states.size()))
+                                     ? def.states[static_cast<size_t>(lr.curState)].name : std::string();
+                        lj["normalizedTime"] = anim_graph::NormalizedTime(*ac._state, static_cast<u32>(li), sa.clips);
+                        lj["transitioning"]  = lr.inTransition;
+                        if (lr.inTransition && lr.transTo >= 0 && lr.transTo < static_cast<i32>(def.states.size()))
+                        {
+                            lj["transitionTo"] = def.states[static_cast<size_t>(lr.transTo)].name;
+                            lj["transitionProgress"] = (lr.transDuration > 0.0f)
+                                                     ? (lr.transElapsed / lr.transDuration) : 1.0f;
+                        }
+                        lj["masked"] = !lr.maskWeights.empty();
+                        layers.push_back(std::move(lj));
+                    }
+                    result["layers"] = std::move(layers);
+
+                    json ps = json::object();
+                    for (const auto& [name, v] : ac._state->params)
+                    {
+                        if (v.type == AnimParamType::Float) ps[name] = v.f;
+                        else                                ps[name] = v.b;
+                    }
+                    result["parameters"] = std::move(ps);
+                }
+            }
+
+            // ---- FootIK（接地の破綻をスクショ無しで検知できるようにする）----
+            if (reg.all_of<FootIK>(e))
+            {
+                const auto& ik = reg.get<FootIK>(e);
+                json fj;
+                fj["enabled"]       = ik.enabled;
+                fj["weight"]        = ik.weight;
+                fj["resolved"]      = ik._resolved;
+                fj["resolveFailed"] = ik._resolveFailed;
+                fj["bones"] = {{"leftHip", ik._lHip}, {"leftKnee", ik._lKnee}, {"leftFoot", ik._lFoot},
+                               {"rightHip", ik._rHip}, {"rightKnee", ik._rKnee}, {"rightFoot", ik._rFoot},
+                               {"pelvis", ik._pelvis}};
+                if (ik._resolved && reg.all_of<SkeletalAnimation>(e))
+                {
+                    const auto& sk = reg.get<SkeletalAnimation>(e).skeleton;
+                    auto boneName = [&](i32 b) -> std::string {
+                        return (sk && b >= 0 && static_cast<u32>(b) < sk->GetBoneCount())
+                             ? sk->GetBone(static_cast<u32>(b)).name : std::string();
+                    };
+                    fj["boneNames"] = {{"leftHip", boneName(ik._lHip)}, {"leftKnee", boneName(ik._lKnee)},
+                                       {"leftFoot", boneName(ik._lFoot)}, {"rightHip", boneName(ik._rHip)},
+                                       {"rightKnee", boneName(ik._rKnee)}, {"rightFoot", boneName(ik._rFoot)},
+                                       {"pelvis", boneName(ik._pelvis)}};
+                }
+                fj["leftContact"]  = ik._lContact;
+                fj["rightContact"] = ik._rContact;
+                fj["leftWeight"]   = ik._lWeight;
+                fj["rightWeight"]  = ik._rWeight;
+                fj["leftLift"]     = ik._lLift;
+                fj["rightLift"]    = ik._rLift;
+                fj["pelvisOffset"] = ik._pelvisDrop;
+                fj["leftNormal"]   = json::array({ik._lNormal.x, ik._lNormal.y, ik._lNormal.z});
+                fj["rightNormal"]  = json::array({ik._rNormal.x, ik._rNormal.y, ik._rNormal.z});
+                result["footIK"] = std::move(fj);
+            }
+
             resp["ok"] = true;
             resp["result"] = std::move(result);
-        }
-        // ════════════════════════════════════════════════════════════
-        //  マルチプレイヤー(フェーズ⑨のローカルテストループを AI から回す)
-        // ════════════════════════════════════════════════════════════
-        else if (method == "net_status")
+        });
+
+    McpDefine("set_anim_param", "entity:int,name:string,param:string,trigger:bool,value:any", DX12E_MCP_HANDLER
+        {
+            // ★このメソッドだけ 'name' が二重の意味を持っていた（エンティティ名 / FSM パラメータ名）。
+            //   ResolveMcpEntity は params["name"] を最優先でエンティティ名として引くので、
+            //   {entity:7, name:"Speed"} が必ず "no entity named 'Speed'" で落ちていた。
+            //   → パラメータ名は 'param' を正とし、'name' は後方互換のフォールバックにする。
+            //     エンティティ解決は「entity(id) が有効ならそれを使い、無ければ従来どおり
+            //     ResolveMcpEntity（= name をエンティティ名として引く）」。
+            //     こうすると {entity, name} も {name, param} も {entity, param} も全部通る。
+            auto& reg = m_scene->GetRegistry();
+            entt::entity e = entt::null;
+            {
+                const auto idParam = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
+                if (params.contains("entity") && reg.valid(idParam)) e = idParam;
+                else                                                e = ResolveMcpEntity(*m_scene, params);
+            }
+            if (!reg.all_of<AnimatorController>(e))
+                throw McpError(McpErr::InvalidParam, "entity has no animatorController");
+            auto& ac = reg.get<AnimatorController>(e);
+            if (!ac._state || !ac._state->valid)
+                throw McpError(McpErr::Internal,
+                    "animatorController graph not loaded (graphPath='" + ac.graphPath + "')");
+            std::string name = params.value("param", std::string());
+            if (name.empty()) name = params.value("name", std::string());
+            if (name.empty())
+                throw McpError(McpErr::InvalidParam, "missing 'param' (FSM パラメータ名)",
+                    "param にパラメータ名、entity か name でエンティティを指定する");
+            auto it = ac._state->params.find(name);
+            if (it == ac._state->params.end())
+                throw McpError(McpErr::NotFound,
+                    "no parameter named '" + name + "' (dx12_describe_anim_graph で一覧を確認)");
+
+            if (params.value("trigger", false))
+            {
+                it->second.b = true;
+            }
+            else if (params.contains("value"))
+            {
+                const json& v = params["value"];
+                if (v.is_boolean())     it->second.b = v.get<bool>();
+                else if (v.is_number()) it->second.f = v.get<float>();
+                else throw McpError(McpErr::InvalidParam, "value must be a number or a boolean");
+            }
+            else
+            {
+                throw McpError(McpErr::InvalidParam, "either 'value' or 'trigger' is required");
+            }
+
+            json out;
+            out["entityId"] = static_cast<u32>(e);
+            out["param"] = name;
+            out["name"]  = name;   // 後方互換（TS 側が 'param' へ移るまで）
+            if (it->second.type == AnimParamType::Float) out["value"] = it->second.f;
+            else                                         out["value"] = it->second.b;
+            resp["ok"] = true;
+            resp["result"] = std::move(out);
+        });
+
+    McpDefine("describe_anim_graph", "entity:int,name:string,path:any", DX12E_MCP_HANDLER
+        {
+            // entity 指定ならロード済みのグラフを、path 指定なら .animfsm を直接読んで返す。
+            AnimGraphAsset asset;
+            std::string source;
+            if (params.contains("path"))
+            {
+                source = params["path"].get<std::string>();
+                const std::vector<uint8_t> bytes = vfs::ReadAsset(source);
+                if (bytes.empty()) throw McpError(McpErr::NotFound, "cannot read " + source);
+                std::string err;
+                if (!ParseAnimGraphAsset(bytes, asset, err))
+                    throw McpError(McpErr::InvalidParam, "invalid .animfsm: " + err);
+            }
+            else
+            {
+                const auto e = ResolveMcpEntity(*m_scene, params);
+                auto& reg = m_scene->GetRegistry();
+                if (!reg.all_of<AnimatorController>(e))
+                    throw McpError(McpErr::InvalidParam, "entity has no animatorController");
+                auto& ac = reg.get<AnimatorController>(e);
+                if (!ac._state || !ac._state->valid)
+                    throw McpError(McpErr::Internal,
+                        "animatorController graph not loaded (graphPath='" + ac.graphPath + "')");
+                asset  = ac._state->asset;
+                source = ac.graphPath;
+            }
+            json result;
+            result["source"] = source;
+            result["graph"]  = json::parse(SerializeAnimGraphAsset(asset));
+            resp["ok"] = true;
+            resp["result"] = std::move(result);
+        });
+
+    // ════════════════════════════════════════════════════════════
+    //  マルチプレイヤー(フェーズ⑨のローカルテストループを AI から回す)
+    // ════════════════════════════════════════════════════════════
+    McpDefine("net_status", "", DX12E_MCP_HANDLER
         {
             json result;
             result["available"] = (m_networkSystem != nullptr);
@@ -5068,8 +6795,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             result["testJoinAddress"] = m_editorCtx->netTestJoinAddress;
             resp["ok"] = true;
             resp["result"] = std::move(result);
-        }
-        else if (method == "net_setup")
+        });
+
+    McpDefine("net_setup", "address:any,port:int,role:string", DX12E_MCP_HANDLER
         {
             // ツールバーの Play ロールドロップダウンと同じ状態を書く。次の play で
             // EnterPlayMode が Host/Join を自動実行する(直接 Host/Join は EnterPlayMode の
@@ -5086,8 +6814,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"testRole", role}, {"address", m_editorCtx->netTestJoinAddress},
                               {"port", m_editorCtx->netTestJoinPort}};
-        }
-        else if (method == "net_launch_test_client")
+        });
+
+    McpDefine("net_launch_test_client", "", DX12E_MCP_HANDLER
         {
             if (!m_networkSystem || !m_networkSystem->IsServer())
                 throw McpError(McpErr::ModeConflict,
@@ -5097,30 +6826,69 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"requested", true},
                               {"note", "second engine process launches at next frame boundary and auto-joins 127.0.0.1"}};
-        }
-        else if (method == "get_editor_camera")
+        });
+}
+
+// ---- カメラ / 空間クエリ / アセット入出力 / ピッキング ----
+void Application::RegisterMcpAssetMethods()
+{
+    using json = nlohmann::json;
+    namespace fs = std::filesystem;
+
+    McpDefine("get_editor_camera", "targetDistance:number", DX12E_MCP_HANDLER
         {
             // シーンビューを描いているカメラ(Editor=フライカメラ / Playing=ゲームカメラ)の状態。
             const auto pos = m_camera->GetPosition();
             const auto fwd = m_camera->GetForward();
+            // ★target を返す（#20-5）。カメラは yaw/pitch しか持たないので target は
+            //   `position + forward * targetDistance` で再構成する。
+            //   これを dx12_set_editor_camera {position, target} へそのまま渡すと
+            //   **同じ yaw/pitch に戻る**（LookAt が逆算する値が一致する）＝読み返し検証ができる。
+            const float td = params.contains("targetDistance")
+                           ? McpFloatParam(params, "targetDistance", 10.0f, 0.001f, 100000.0f) : 10.0f;
             resp["ok"] = true;
             resp["result"] = {
                 {"position", {pos.x, pos.y, pos.z}},
                 {"forward",  {fwd.x, fwd.y, fwd.z}},
+                {"target",   {pos.x + fwd.x * td, pos.y + fwd.y * td, pos.z + fwd.z * td}},
+                {"targetDistance", td},
                 {"yawDeg",   DirectX::XMConvertToDegrees(m_camera->GetYaw())},
                 {"pitchDeg", DirectX::XMConvertToDegrees(m_camera->GetPitch())},
                 {"fovYDeg",  DirectX::XMConvertToDegrees(m_camera->GetFovY())},
+                {"aspect",   m_camera->GetAspect()},
+                {"nearZ",    m_camera->GetNearZ()},
+                {"farZ",     m_camera->GetFarZ()},
                 {"orthographic", m_camera->IsOrthographic()},
+                {"overridden", m_mcpCameraOverride},
                 {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"},
             };
-        }
-        else if (method == "set_editor_camera")
+        });
+
+    McpDefine("set_editor_camera", "pitchDeg:any,position:any,release:bool,target:any,yawDeg:any",
+              DX12E_MCP_HANDLER
         {
-            // エディタのフライカメラを任意視点へ(focus_camera より自由。俯瞰や引きの構図撮影用)。
-            // Playing 中の m_camera はゲームカメラでゲームロジックと取り合いになるため Editor 限定。
+            // シーンビューのカメラを任意視点へ(focus_camera より自由。俯瞰や引きの構図撮影用)。
+            //
+            // ★Play 中も使える（#20-6）。Playing 中の m_camera はアクティブな CameraComponent と
+            //   毎フレーム同期されるので、そのままでは次のフレームで上書きされてしまう。
+            //   そこで **MCP カメラ上書き** を立てて同期を止め、指定した視点を保持する。
+            //   `release: true` で上書きを解除するとゲームカメラが再び主導権を持つ。
+            //   Play/Stop の遷移でも自動的に解除される（撮影用の一時状態を持ち越さない）。
+            if (params.value("release", false))
+            {
+                m_mcpCameraOverride = false;
+                if (m_engineMode == EngineMode::Playing) SyncActiveCameraToGlobal();
+                const auto rpos = m_camera->GetPosition();
+                const auto rfwd = m_camera->GetForward();
+                resp["ok"] = true;
+                resp["result"] = {{"released", true},
+                                  {"overridden", false},
+                                  {"position", {rpos.x, rpos.y, rpos.z}},
+                                  {"forward",  {rfwd.x, rfwd.y, rfwd.z}}};
+                return;
+            }
             if (m_engineMode == EngineMode::Playing)
-                throw McpError(McpErr::ModeConflict,
-                    "editor camera is only adjustable in Editor mode (dx12_stop first)");
+                m_mcpCameraOverride = true;   // ゲームカメラの毎フレーム同期を止める
             DirectX::XMFLOAT3 pos = m_camera->GetPosition();
             if (params.contains("position"))
             {
@@ -5153,9 +6921,16 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"forward",  {nfwd.x, nfwd.y, nfwd.z}},
                 {"yawDeg",   DirectX::XMConvertToDegrees(m_camera->GetYaw())},
                 {"pitchDeg", DirectX::XMConvertToDegrees(m_camera->GetPitch())},
+                {"overridden", m_mcpCameraOverride},
+                {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"},
+                {"note", m_mcpCameraOverride
+                             ? "Play 中のゲームカメラ同期を止めて視点を固定した。"
+                               "dx12_set_editor_camera {\"release\":true} で解除（Stop でも自動解除）"
+                             : ""},
             };
-        }
-        else if (method == "get_bounds")
+        });
+
+    McpDefine("get_bounds", "entity:int,includeChildren:bool,name:string", DX12E_MCP_HANDLER
         {
             // ワールド AABB。AI が「どこに何を置くか」を数値で決めるための基礎情報。
             const auto e = ResolveMcpEntity(*m_scene, params);
@@ -5186,8 +6961,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"size", {mx.x - mn.x, mx.y - mn.y, mx.z - mn.z}},
                 {"hasMesh", hasMesh},
             };
-        }
-        else if (method == "look_at")
+        });
+
+    McpDefine("look_at", "entity:int,name:string,target:any,targetEntity:any,targetName:any,upright:bool", DX12E_MCP_HANDLER
         {
             // エンティティを目標(座標 or 別エンティティ)へ向ける。+Z が正面の想定(rotation Euler を書く)。
             // 注: rotation はローカル値なので、親が回転していると厳密なワールド向きからずれる。
@@ -5231,8 +7007,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["result"] = {{"entityId", static_cast<u32>(e)},
                               {"rotation", {pitchDeg, yawDeg, 0.0f}},
                               {"target", {tgt.x, tgt.y, tgt.z}}};
-        }
-        else if (method == "snap_to_ground")
+        });
+
+    McpDefine("snap_to_ground", "entity:int,name:string,offset:number,precise:bool", DX12E_MCP_HANDLER
         {
             // Editor 中でも使える AABB ベースの接地。XZ が重なる他メッシュの天面のうち
             // 自分の天面以下で最も高いものに底面を合わせる。無ければ y=0 平面へ。
@@ -5311,8 +7088,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 resp["result"]["groundEntityId"] = static_cast<u32>(groundEnt);
             else
                 resp["result"]["note"] = "no ground mesh found; snapped to y=0 plane";
-        }
-        else if (method == "get_hierarchy")
+        });
+
+    McpDefine("get_hierarchy", "", DX12E_MCP_HANDLER
         {
             // シーン全体の親子ツリー。list_entities のフラット一覧と違い構造が分かる。
             auto& reg = m_scene->GetRegistry();
@@ -5349,8 +7127,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"roots", std::move(rootsJson)}, {"count", total},
                               {"sceneGeneration", m_sceneGeneration}};
-        }
-        else if (method == "import_asset")
+        });
+
+    McpDefine("import_asset", "destPath:string,overwrite:bool,sourcePath:string", DX12E_MCP_HANDLER
         {
             // 外部ファイル/フォルダを assets へコピーする(唯一 assets 外を「読む」ツール。
             // 書き先は assets 限定)。/asset コマンド等で落とした素材の取り込みに使う。
@@ -5398,8 +7177,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                     resp["result"]["note"] =
                         ".gltf は同階層の .bin / テクスチャを参照する。ロードに失敗したらフォルダごと import する";
             }
-        }
-        else if (method == "asset_info")
+        });
+
+    McpDefine("asset_info", "path:string", DX12E_MCP_HANDLER
         {
             // アセットのメタ情報。モデルは Assimp、テクスチャは DirectXTex で GPU を使わず読む。
             const std::string rel = ValidateMcpAssetRelPath(params.value("path", std::string()));
@@ -5426,7 +7206,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 result["animations"] = std::move(anims);
                 result["aabbMin"] = {info.aabbMin[0], info.aabbMin[1], info.aabbMin[2]};
                 result["aabbMax"] = {info.aabbMax[0], info.aabbMax[1], info.aabbMax[2]};
-                result["aabbNote"] = "メッシュローカル(ノード変換未適用)の近似 AABB";
+                result["aabbNote"] = "ノード変換込みのワールド AABB(スケール1で spawn した時の実サイズ)";
             }
             else if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".dds" ||
                      ext == ".tga" || ext == ".bmp" || ext == ".hdr")
@@ -5452,8 +7232,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
             resp["ok"] = true;
             resp["result"] = std::move(result);
-        }
-        else if (method == "read_texture")
+        });
+
+    McpDefine("read_texture", "maxSize:int,path:string", DX12E_MCP_HANDLER
         {
             // 任意対応形式(dds/tga 含む)のテクスチャを PNG に変換して絶対パスを返す。
             // Node 側が画像ブロックとして AI に見せる(dx12_view_texture)。
@@ -5472,8 +7253,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"path", outPath.string()}, {"width", w}, {"height", h},
                               {"sourcePath", rel}};
-        }
-        else if (method == "move_asset")
+        });
+
+    McpDefine("move_asset", "from:string,overwrite:bool,to:string", DX12E_MCP_HANDLER
         {
             // assets 内のファイル/フォルダの移動・リネーム。参照パスは自動更新しない。
             const std::string fromRel =
@@ -5498,8 +7280,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["ok"] = true;
             resp["result"] = {{"from", fromRel}, {"to", toRel},
                               {"note", "シーン/プレハブ内の参照パスは自動更新されない(必要なら開き直して保存)"}};
-        }
-        else if (method == "delete_asset")
+        });
+
+    McpDefine("delete_asset", "path:string,recursive:bool", DX12E_MCP_HANDLER
         {
             // assets 内のファイル削除。ディレクトリは recursive:true 必須(誤爆防止)。
             const std::string rel = ValidateMcpAssetRelPath(params.value("path", std::string()));
@@ -5523,11 +7306,13 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             resp["result"] = {{"deleted", rel}, {"removedCount", removed},
                               {"wasDirectory", wasDirectory},
                               {"note", "シーン/プレハブ内の参照パスは自動更新されない"}};
-        }
-        // ════════════════════════════════════════════════════════════
-        //  精密ピッキング（三角形単位。エディタのクリック選択と同じ実装を共有）
-        // ════════════════════════════════════════════════════════════
-        else if (method == "pick")
+        });
+
+    // ════════════════════════════════════════════════════════════
+    //  精密ピッキング（三角形単位。エディタのクリック選択と同じ実装を共有）
+    // ════════════════════════════════════════════════════════════
+    McpDefine("pick", "all:bool,includeIcons:bool,maxCandidates:int,maxHits:int,trianglePrecise:bool,"
+              "u:number,v:number,x:number,y:number", DX12E_MCP_HANDLER
         {
             if (!m_camera || !m_sceneRT) throw McpError(McpErr::Internal, "renderer not ready");
             const f32 vw = static_cast<f32>(m_sceneRT->GetWidth());
@@ -5569,14 +7354,18 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             result["screen"]   = {{"x", sx}, {"y", sy}};
             result["viewport"] = {{"width", m_sceneRT->GetWidth()}, {"height", m_sceneRT->GetHeight()}};
             result["mode"]     = (m_engineMode == EngineMode::Playing) ? "Playing" : "Editor";
+            result["renderScale"] = m_renderScale;
             result["note"]     = "シーンビューを描いているカメラ基準(Playing 中はゲームカメラ)。"
-                                 "座標系は dx12_screenshot / dx12_project_world_to_screen と同じ。"
+                                 "座標系は dx12_screenshot / dx12_project_world_to_screen と同じ"
+                                 "（= レンダー解像度。renderScale<1 なら表示ピクセルより小さい）。"
                                  "エディタの左クリック選択と同じ RaycastScene を通すので結果は一致する。"
                                  "スキンドメッシュはバインドポーズの AABB 止まり。";
             resp["ok"] = true;
             resp["result"] = std::move(result);
-        }
-        else if (method == "raycast_precise")
+        });
+
+    McpDefine("raycast_precise", "all:bool,direction:vec3,maxCandidates:int,maxDistance:number,maxHits:int,origin:vec3,"
+              "trianglePrecise:bool", DX12E_MCP_HANDLER
         {
             const DirectX::XMFLOAT3 o = McpVec3Required(params, "origin");
             const DirectX::XMFLOAT3 d = McpVec3Required(params, "direction");
@@ -5601,11 +7390,20 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                              "スキンドメッシュだけはバインドポーズの AABB 止まり。";
             resp["ok"] = true;
             resp["result"] = std::move(result);
-        }
-        // ════════════════════════════════════════════════════════════
-        //  ハイトフィールド地形
-        // ════════════════════════════════════════════════════════════
-        else if (method == "terrain_create")
+        });
+}
+
+// ---- 地形 / スカルプト ----
+void Application::RegisterMcpTerrainMethods()
+{
+    using json = nlohmann::json;
+    namespace fs = std::filesystem;
+
+    // ════════════════════════════════════════════════════════════
+    //  ハイトフィールド地形
+    // ════════════════════════════════════════════════════════════
+    McpDefine("terrain_create", "color:vec3,maxHeight:number,name:string,position:vec3,resolution:int,uvScale:number,"
+              "worldSize:number", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot create/modify terrain while Playing",
@@ -5680,8 +7478,10 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 m_editorCtx->mcpProcCreates.push_back(std::move(pending));
                 isDeferred = true;
             }
-        }
-        else if (method == "terrain_generate")
+        });
+
+    McpDefine("terrain_generate", "amplitude:number,baseHeight:number,edgeFalloff:number,entity:int,frequency:number,"
+              "name:string,octaves:int,preset:string,ridged:number,seed:int,valleyDepth:number", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot modify terrain while Playing",
@@ -5729,8 +7529,11 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"resolution", hf.Resolution()}, {"worldSize", hf.WorldSize()},
                 {"note", "高さ配列を丸ごと作り直した(既存の彫りは消える)。同じ seed/params なら毎回同じ地形＝冪等。"
                          "メッシュ・コリジョン・.hf の保存は次のフレームで自動反映される。"}};
-        }
-        else if (method == "terrain_sculpt")
+        });
+
+    McpDefine("terrain_sculpt", "brush:string,entity:int,falloff:number,flattenHeight:number,mirrorX:bool,mirrorZ:bool,"
+              "name:string,noiseFrequency:number,noiseOctaves:int,noiseRidged:number,point:any,"
+              "points:any,radius:number,seed:int,strength:number,worldPos:any", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot modify terrain while Playing",
@@ -5816,8 +7619,356 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"note", "★相対操作（同じ呼び出しを2回撃つと2回ぶん盛れる）。絶対値で整地したいときは "
                          "brush:\"flatten\" + flattenHeight を使うと冪等になる。"
                          "strength は raise/lower/noise = メートル、smooth/flatten = 寄せ具合(2 でほぼ完全)。"}};
-        }
-        else if (method == "terrain_erode")
+        });
+
+    McpDefine("terrain_paint|terrain_autopaint", "dirtSlopeEnd:number,dirtSlopeStart:number,entity:int,falloff:number,layer:int,"
+              "name:string,noiseStrength:number,point:any,points:any,radius:number,"
+              "rockSlopeEnd:number,rockSlopeStart:number,snowHeightEnd:number,snowHeightStart:number,"
+              "strength:number,worldPos:any", DX12E_MCP_HANDLER
+        {
+            // 地形のテクスチャレイヤーを塗る（terrain_sculpt の写経）。
+            //   terrain_paint     … 円ブラシで 1 レイヤーの重みを上げる（相対操作）
+            //   terrain_autopaint … 傾斜と標高から 4 層を焼き直す（冪等）
+            if (busyPlaying)
+                throw McpError(McpErr::ModeConflict, "cannot modify terrain while Playing",
+                               "先に dx12_stop で Editor へ戻してくれ");
+            auto& reg = m_scene->GetRegistry();
+            const auto e = ResolveMcpComponentEntity<Terrain>(
+                *m_scene, params, "terrain", "先に dx12_terrain_create で地形を作ってくれ");
+            Terrain& t = reg.get<Terrain>(e);
+            if (!t._hf || !t._hf->IsValid())
+                throw McpError(McpErr::Internal, "terrain has no valid height field");
+            if (t.layerSetPath.empty())
+                throw McpError(McpErr::InvalidParam, "terrain has no layer set",
+                    "先に地形ツール窓（またはシーン JSON）で terrain.layerSetPath へ "
+                    ".terrainlayers を割り当ててくれ。空のままだと従来の頂点色描画のまま");
+
+            // スプラットが無ければここで作る（シーンを開き直さずに使えるようにする）
+            if (!t._splat)
+            {
+                t._splat = std::make_shared<TerrainSplatMap>();
+                t._splat->Create(t.splatResolution);
+                t._splat->AutoPaintFromHeightField(*t._hf, TerrainAutoPaintParams{});
+                t.splatResolution = t._splat->Size();
+            }
+            TerrainSplatMap& sp = *t._splat;
+            const DirectX::XMFLOAT3 origin = McpTerrainOrigin(reg, e);
+
+            if (method == "terrain_autopaint")
+            {
+                TerrainAutoPaintParams ap;
+                ap.rockSlopeStart  = McpFloatParam(params, "rockSlopeStart",  ap.rockSlopeStart,  0.0f, 1.0f);
+                ap.rockSlopeEnd    = McpFloatParam(params, "rockSlopeEnd",    ap.rockSlopeEnd,    0.0f, 1.0f);
+                ap.dirtSlopeStart  = McpFloatParam(params, "dirtSlopeStart",  ap.dirtSlopeStart,  0.0f, 1.0f);
+                ap.dirtSlopeEnd    = McpFloatParam(params, "dirtSlopeEnd",    ap.dirtSlopeEnd,    0.0f, 1.0f);
+                ap.noiseStrength   = McpFloatParam(params, "noiseStrength",   ap.noiseStrength,   0.0f, 1.0f);
+                if (params.contains("snowHeightStart") || params.contains("snowHeightEnd"))
+                {
+                    ap.autoSnowHeight   = false;
+                    ap.snowHeightStart  = McpFloatParam(params, "snowHeightStart", 0.0f, -10000.0f, 10000.0f) - origin.y;
+                    ap.snowHeightEnd    = McpFloatParam(params, "snowHeightEnd",  50.0f, -10000.0f, 10000.0f) - origin.y;
+                }
+                sp.AutoPaintFromHeightField(*t._hf, ap);
+                t._splatNeedsSave = true;
+
+                resp["ok"] = true;
+                resp["result"] = {
+                    {"entityId", static_cast<u32>(e)}, {"splatSize", sp.Size()},
+                    {"note", "★冪等（何度呼んでも同じ結果）。手で塗った内容は上書きされる。"
+                             "しきい値は傾斜 0=平ら〜1=垂直、標高はワールド Y(m)。"}};
+            }
+            else
+            {
+                const int layer = McpIntParam(params, "layer", 0, 0, 3);
+                const f32 radius   = McpFloatParam(params, "radius",   12.0f, 0.01f, t._hf->WorldSize());
+                const f32 strength = McpFloatParam(params, "strength", 0.7f,  0.0f, 1.0f);
+                const f32 falloff  = McpFloatParam(params, "falloff",  0.5f,  0.0f, 1.0f);
+
+                std::vector<DirectX::XMFLOAT2> pts;
+                auto pushPoint = [&](const nlohmann::json& a) {
+                    if (!a.is_array() || (a.size() != 2 && a.size() != 3))
+                        throw McpError(McpErr::InvalidParam, "point must be [x,z] or [x,y,z]",
+                                       "ワールド座標。y は使わない(地形は XZ グリッドなので)");
+                    const f32 wx = a[0].get<f32>();
+                    const f32 wz = (a.size() == 2) ? a[1].get<f32>() : a[2].get<f32>();
+                    pts.push_back({wx - origin.x, wz - origin.z});
+                };
+                if (params.contains("points"))
+                {
+                    if (!params["points"].is_array())
+                        throw McpError(McpErr::InvalidParam, "points must be an array of [x,z]");
+                    if (params["points"].size() > 512)
+                        throw McpError(McpErr::InvalidParam, "too many points (max 512)");
+                    for (const auto& a : params["points"]) pushPoint(a);
+                }
+                if (params.contains("point"))    pushPoint(params["point"]);
+                if (params.contains("worldPos")) pushPoint(params["worldPos"]);
+                if (pts.empty())
+                    throw McpError(McpErr::InvalidParam, "missing 'point' / 'points'",
+                        "point:[x,z] か points:[[x,z],...] をワールド座標で渡す");
+
+                bool changed = false;
+                for (const DirectX::XMFLOAT2& p : pts)
+                    changed |= sp.PaintCircle(t._hf->WorldSize(), p.x, p.y,
+                                              radius, static_cast<u32>(layer),
+                                              strength, falloff).Valid();
+                if (changed) t._splatNeedsSave = true;
+
+                resp["ok"] = true;
+                resp["result"] = {
+                    {"entityId", static_cast<u32>(e)}, {"layer", layer},
+                    {"points", pts.size()}, {"radius", radius}, {"strength", strength},
+                    {"changed", changed}, {"splatSize", sp.Size()},
+                    {"note", "★相対操作（同じ呼び出しを2回撃つと2回ぶん塗れる）。strength=1 で 1 回塗れば"
+                             "そのレイヤー 100%。他レイヤーは合計 1 を保つよう比例縮小される。"
+                             "全面を傾斜/標高から焼き直すなら dx12_terrain_autopaint。"}};
+            }
+        });
+
+    McpDefine("terrain_set_layers", "autopaint:bool,distTiling:any,distTilingFarScale:number,distTilingStart:number,"
+              "entity:int,heightBlendDepth:number,layerSetPath:any,macro:any,macroScale:number,"
+              "macroStrength:number,name:string,normalStrength:number,pom:any,pomFadeEnd:number,"
+              "pomFadeStart:number,pomHeightScale:number,splatResolution:int,triplanar:any,"
+              "triplanarSharpness:number,uvScale:number", DX12E_MCP_HANDLER
+        {
+            // 地形へ .terrainlayers（4 層の PBR 素材）を割り当てる / 外す。
+            // ★これが無かったので terrain_paint / autopaint は「シーン JSON を手書きして
+            //   開き直した地形」にしか使えなかった（#27）。
+            if (busyPlaying)
+                throw McpError(McpErr::ModeConflict, "cannot modify terrain while Playing",
+                               "先に dx12_stop で Editor へ戻してくれ");
+            auto& reg = m_scene->GetRegistry();
+            const auto e = ResolveMcpComponentEntity<Terrain>(
+                *m_scene, params, "terrain", "先に dx12_terrain_create で地形を作ってくれ");
+            Terrain& t = reg.get<Terrain>(e);
+            if (!t._hf || !t._hf->IsValid())
+                throw McpError(McpErr::Internal, "terrain has no valid height field");
+
+            if (!params.contains("layerSetPath"))
+                throw McpError(McpErr::InvalidParam, "missing 'layerSetPath'",
+                    "assets 相対の .terrainlayers。空文字 \"\" を渡すと割当を外して従来の見た目へ戻す");
+            const std::string prev = t.layerSetPath;
+            std::string relPath = params["layerSetPath"].get<std::string>();
+
+            u32  layerCount = 0;
+            json layerNames = json::array();
+            if (!relPath.empty())
+            {
+                relPath = ValidateMcpAssetRelPath(relPath, "layerSetPath");
+                if (!vfs::Exists(relPath))
+                    throw McpError(McpErr::NotFound, "layer set not found: " + relPath,
+                        "assets 相対で .terrainlayers を指す（例 terrain/alpine.terrainlayers）");
+                TerrainLayerSetData lsData;
+                if (!ParseTerrainLayerSet(vfs::ReadAsset(relPath), lsData))
+                    throw McpError(McpErr::InvalidParam, "failed to parse " + relPath,
+                        "JSON の形式が違う。既存の .terrainlayers を雛形にしてくれ");
+                layerCount = static_cast<u32>((std::min)(lsData.layers.size(), size_t{4}));
+                for (u32 i = 0; i < layerCount; ++i) layerNames.push_back(lsData.layers[i].name);
+            }
+            t.layerSetPath = relPath;
+
+            // 各種パラメータ（省略したものは触らない）
+            if (params.contains("splatResolution"))
+                t.splatResolution = TerrainSplatMap::NormalizeSize(
+                    static_cast<u32>(McpIntParam(params, "splatResolution", 512, 32, 2048)));
+            if (params.contains("uvScale"))
+                t.uvScale = McpFloatParam(params, "uvScale", t.uvScale, 0.01f, 1000.0f);
+            if (params.contains("heightBlendDepth"))
+                t.heightBlendDepth = McpFloatParam(params, "heightBlendDepth", t.heightBlendDepth, 0.01f, 1.0f);
+            if (params.contains("triplanarSharpness"))
+                t.triplanarSharpness = McpFloatParam(params, "triplanarSharpness", t.triplanarSharpness, 1.0f, 16.0f);
+            if (params.contains("normalStrength"))
+                t.normalStrength = McpFloatParam(params, "normalStrength", t.normalStrength, 0.0f, 2.0f);
+            if (params.contains("macroScale"))
+                t.macroScale = McpFloatParam(params, "macroScale", t.macroScale, 10.0f, 400.0f);
+            if (params.contains("macroStrength"))
+                t.macroStrength = McpFloatParam(params, "macroStrength", t.macroStrength, 0.0f, 1.0f);
+            if (params.contains("distTilingStart"))
+                t.distTilingStart = McpFloatParam(params, "distTilingStart", t.distTilingStart, 5.0f, 200.0f);
+            if (params.contains("distTilingFarScale"))
+                t.distTilingFarScale = McpFloatParam(params, "distTilingFarScale", t.distTilingFarScale, 2.0f, 16.0f);
+            if (params.contains("pomHeightScale"))
+                t.pomHeightScale = McpFloatParam(params, "pomHeightScale", t.pomHeightScale, 0.0f, 0.3f);
+            if (params.contains("pomFadeStart"))
+                t.pomFadeStart = McpFloatParam(params, "pomFadeStart", t.pomFadeStart, 0.0f, 40.0f);
+            if (params.contains("pomFadeEnd"))
+                t.pomFadeEnd = McpFloatParam(params, "pomFadeEnd", t.pomFadeEnd, 1.0f, 120.0f);
+            {
+                // bit0=triplanar bit1=pom bit2=macro bit3=distTiling
+                u32 flags = t.terrainMatFlags;
+                auto setBit = [&](const char* key, u32 bit) {
+                    if (params.contains(key) && params[key].is_boolean())
+                        flags = params[key].get<bool>() ? (flags | bit) : (flags & ~bit);
+                };
+                setBit("triplanar", 0x1u); setBit("pom", 0x2u);
+                setBit("macro", 0x4u);     setBit("distTiling", 0x8u);
+                t.terrainMatFlags = flags;
+            }
+
+            // 割当の付け外しでスプラットを用意/破棄する（TerrainPanel と同じ規則）。
+            bool splatCreated = false;
+            if (t.layerSetPath.empty())
+            {
+                t._splat.reset();
+            }
+            else if (!t._splat)
+            {
+                t._splat = std::make_shared<TerrainSplatMap>();
+                if (t.splatPath.empty() || !terrain::LoadSplatMapAsset(t.splatPath, *t._splat))
+                {
+                    t._splat->Create(t.splatResolution);
+                    if (params.value("autopaint", true))
+                        t._splat->AutoPaintFromHeightField(*t._hf, TerrainAutoPaintParams{});
+                    t._splatNeedsSave = true;
+                    splatCreated = true;
+                }
+                t.splatResolution = t._splat->Size();
+            }
+            t.MarkVisualDirty();
+
+            resp["ok"] = true;
+            resp["result"] = {
+                {"entityId", static_cast<u32>(e)},
+                {"layerSetPath", t.layerSetPath},
+                {"previousLayerSetPath", prev},
+                {"layerCount", layerCount},
+                {"layerNames", layerNames},
+                {"splatPath", t.splatPath},
+                {"splatSize", t._splat ? t._splat->Size() : 0u},
+                {"splatCreated", splatCreated},
+                {"uvScale", t.uvScale},
+                {"terrainMatFlags", t.terrainMatFlags},
+                {"sceneGeneration", m_sceneGeneration},
+                {"note", t.layerSetPath.empty()
+                    ? "レイヤーセットを外した（従来の頂点色 / .dxmat 経路へ戻る）"
+                    : "割当てた。スプラットは .splat へ自動保存される。"
+                      "塗るのは dx12_terrain_paint / dx12_terrain_autopaint、"
+                      "結果の確認は dx12_terrain_splat_info。"}};
+        });
+
+    McpDefine("terrain_splat_info", "entity:int,gridSize:int,name:string,point:any,points:any", DX12E_MCP_HANDLER
+        {
+            // スプラット（レイヤー重み）の要約を返す読み取り専用メソッド。
+            // terrain_paint / autopaint の結果を「絵を見ずに」検証するために使う。
+            auto& reg = m_scene->GetRegistry();
+            const auto e = ResolveMcpComponentEntity<Terrain>(
+                *m_scene, params, "terrain", "先に dx12_terrain_create で地形を作ってくれ");
+            Terrain& t = reg.get<Terrain>(e);
+
+            json out;
+            out["entityId"]     = static_cast<u32>(e);
+            out["layerSetPath"] = t.layerSetPath;
+            out["splatPath"]    = t.splatPath;
+            out["hasSplat"]     = static_cast<bool>(t._splat && t._splat->IsValid());
+            out["unsavedSplat"] = t._splatNeedsSave;
+            if (!t._splat || !t._splat->IsValid())
+            {
+                out["splatSize"] = 0;
+                out["note"] = "この地形にはまだスプラットが無い。dx12_terrain_set_layers で "
+                              ".terrainlayers を割り当てると作られる";
+                resp["ok"] = true;
+                resp["result"] = std::move(out);
+            }
+            else
+            {
+                const TerrainSplatMap& sp = *t._splat;
+                const u32 size = sp.Size();
+                const std::vector<u8>& px = sp.Pixels();
+                out["splatSize"] = size;
+
+                // 全面の平均重み(0..1) と「最大レイヤー」のテクセル数
+                double sum[4] = {0, 0, 0, 0};
+                u64    domCount[4] = {0, 0, 0, 0};
+                const u64 total = static_cast<u64>(size) * size;
+                for (u64 i = 0; i < total; ++i)
+                {
+                    const u8* p = &px[static_cast<size_t>(i) * 4];
+                    u32 best = 0;
+                    for (u32 c = 0; c < 4; ++c)
+                    {
+                        sum[c] += p[c];
+                        if (p[c] > p[best]) best = c;
+                    }
+                    ++domCount[best];
+                }
+                json coverage = json::array(), dominant = json::array();
+                for (u32 c = 0; c < 4; ++c)
+                {
+                    coverage.push_back(sum[c] / (255.0 * static_cast<double>(total)));
+                    dominant.push_back(static_cast<double>(domCount[c]) / static_cast<double>(total));
+                }
+                out["coverage"]      = coverage;   // 平均重み（4 層の合計はほぼ 1）
+                out["dominantRatio"] = dominant;   // そのレイヤーが最大だったテクセルの割合
+
+                // 粗いグリッド（各セルの支配レイヤー番号）。paint がどこに乗ったかを目で追える。
+                const i32 g = McpIntParam(params, "gridSize", 8, 0, 32);
+                if (g > 0)
+                {
+                    json grid = json::array();
+                    for (i32 gz = 0; gz < g; ++gz)
+                    {
+                        std::string row;
+                        for (i32 gx = 0; gx < g; ++gx)
+                        {
+                            const u32 x0 = static_cast<u32>(static_cast<u64>(gx)     * size / static_cast<u32>(g));
+                            const u32 x1 = static_cast<u32>(static_cast<u64>(gx + 1) * size / static_cast<u32>(g));
+                            const u32 z0 = static_cast<u32>(static_cast<u64>(gz)     * size / static_cast<u32>(g));
+                            const u32 z1 = static_cast<u32>(static_cast<u64>(gz + 1) * size / static_cast<u32>(g));
+                            u64 acc[4] = {0, 0, 0, 0};
+                            for (u32 z = z0; z < z1; ++z)
+                                for (u32 x = x0; x < x1; ++x)
+                                {
+                                    const u8* p = &px[(static_cast<size_t>(z) * size + x) * 4];
+                                    for (u32 c = 0; c < 4; ++c) acc[c] += p[c];
+                                }
+                            u32 best = 0;
+                            for (u32 c = 1; c < 4; ++c) if (acc[c] > acc[best]) best = c;
+                            row.push_back(static_cast<char>('0' + best));
+                        }
+                        grid.push_back(row);
+                    }
+                    out["gridSize"] = g;
+                    out["grid"]     = grid;   // grid[z][x] = 支配レイヤー番号。z が増えると +Z
+                }
+
+                // 指定ワールド座標の正確な重み
+                if (params.contains("point") || params.contains("points"))
+                {
+                    const DirectX::XMFLOAT3 origin = McpTerrainOrigin(reg, e);
+                    const f32 worldSize = t._hf ? t._hf->WorldSize() : t.worldSize;
+                    json samples = json::array();
+                    auto sample = [&](const nlohmann::json& a) {
+                        if (!a.is_array() || (a.size() != 2 && a.size() != 3))
+                            throw McpError(McpErr::InvalidParam, "point must be [x,z] or [x,y,z]");
+                        const f32 wx = a[0].get<f32>();
+                        const f32 wz = (a.size() == 2) ? a[1].get<f32>() : a[2].get<f32>();
+                        const i32 tx = sp.LocalToTexelX(wx - origin.x, worldSize);
+                        const i32 tz = sp.LocalToTexelZ(wz - origin.z, worldSize);
+                        const u8* p = &px[(static_cast<size_t>(tz) * size + static_cast<size_t>(tx)) * 4];
+                        u32 best = 0;
+                        for (u32 c = 1; c < 4; ++c) if (p[c] > p[best]) best = c;
+                        samples.push_back({{"world", {wx, wz}}, {"texel", {tx, tz}},
+                                           {"weights", {p[0] / 255.0, p[1] / 255.0,
+                                                        p[2] / 255.0, p[3] / 255.0}},
+                                           {"dominant", best}});
+                    };
+                    if (params.contains("points"))
+                    {
+                        if (!params["points"].is_array() || params["points"].size() > 256)
+                            throw McpError(McpErr::InvalidParam, "points must be an array (max 256)");
+                        for (const auto& a : params["points"]) sample(a);
+                    }
+                    if (params.contains("point")) sample(params["point"]);
+                    out["samples"] = samples;
+                }
+                out["note"] = "coverage/dominantRatio は 0..1。grid[z][x] は '0'..'3' の文字で"
+                              "そのセルの支配レイヤー（z が増えると +Z、x が増えると +X）。";
+                resp["ok"] = true;
+                resp["result"] = std::move(out);
+            }
+        });
+
+    McpDefine("terrain_erode", "entity:int,iterations:int,name:string,region:any,talusDeg:number", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot modify terrain while Playing",
@@ -5870,8 +8021,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"minHeight", hMin}, {"maxHeight", hMax},
                 {"note", "熱浸食(安息角を超えた斜面の土砂を隣へ落とす)。相対操作なので繰り返すほど崩れる。"
                          "重いので iterations は 16〜40 くらいから試すとええ。"}};
-        }
-        else if (method == "terrain_sample")
+        });
+
+    McpDefine("terrain_sample", "entity:int,name:string,points:any", DX12E_MCP_HANDLER
         {
             // 読み取り専用。木や建物を「地形の上」に置くための高さ/法線問い合わせ。
             auto& reg = m_scene->GetRegistry();
@@ -5926,11 +8078,13 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"samples", samples}, {"count", samples.size()},
                 {"note", "worldY をそのまま dx12_set_transform の y に使えば地形に接地する"
                          "(範囲外は端の値。inside=false で判別)。"}};
-        }
-        // ════════════════════════════════════════════════════════════
-        //  頂点スカルプト（洞窟・アーチ・岩みたいな異形）
-        // ════════════════════════════════════════════════════════════
-        else if (method == "sculpt_create")
+        });
+
+    // ════════════════════════════════════════════════════════════
+    //  頂点スカルプト（洞窟・アーチ・岩みたいな異形）
+    // ════════════════════════════════════════════════════════════
+    McpDefine("sculpt_create", "collision:any,color:vec3,name:string,position:vec3,primitive:string,size:number,"
+              "subdivisions:int,uvScale:number", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot create a sculpt mesh while Playing",
@@ -5989,8 +8143,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 m_editorCtx->mcpProcCreates.push_back(std::move(pending));
                 isDeferred = true;
             }
-        }
-        else if (method == "sculpt_make_editable")
+        });
+
+    McpDefine("sculpt_make_editable", "entity:int,name:string", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot convert a model while Playing",
@@ -6029,8 +8184,12 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 m_editorCtx->mcpProcCreates.push_back(std::move(pending));
                 isDeferred = true;
             }
-        }
-        else if (method == "sculpt_brush")
+        });
+
+    McpDefine("sculpt_brush", "brush:string,direction:vec3,entity:int,falloff:number,grabDelta:vec3,"
+              "localPosition:vec3,name:string,noiseFrequency:number,noiseOctaves:int,"
+              "noiseRidged:number,position:vec3,radius:number,seed:int,strength:number,"
+              "symmetryX:bool,symmetryY:bool,symmetryZ:bool", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot sculpt while Playing",
@@ -6114,11 +8273,19 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"note", "★相対操作（撃つたびに彫れる）。radius/strength は【メッシュのローカル単位】"
                          "＝Transform の scale が掛かる前の大きさ。当てる場所は dx12_pick / "
                          "dx12_raycast_precise の worldPos をそのまま position に渡すのが確実。"}};
-        }
-        // ════════════════════════════════════════════════════════════
-        //  ライティング
-        // ════════════════════════════════════════════════════════════
-        else if (method == "list_lights")
+        });
+}
+
+// ---- ライティング / 診断 ----
+void Application::RegisterMcpLightingMethods()
+{
+    using json = nlohmann::json;
+    namespace fs = std::filesystem;
+
+    // ════════════════════════════════════════════════════════════
+    //  ライティング
+    // ════════════════════════════════════════════════════════════
+    McpDefine("list_lights", "cursor:int,limit:int", DX12E_MCP_HANDLER
         {
             using namespace DirectX;
             auto& reg = m_scene->GetRegistry();
@@ -6171,8 +8338,10 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                     j["intensity"]   = pl.intensity;
                     j["range"]       = pl.range;
                     j["castShadows"] = pl.castShadows;
-                    j["overBudget"]  = (r.slot >= kLightBudgetPoint);
-                    j["effective"]   = (r.slot < kLightBudgetPoint) && pl.intensity > 0.0f && pl.range > 0.0f;
+                    // クラスタード化で個別上限は撤廃。overBudget は point+spot 合計の枠で判定する。
+                    // Application は「点光源を先、スポットを後」の順で 1 本の配列へ積む。
+                    j["overBudget"]  = (r.slot >= kLightBudgetTotal);
+                    j["effective"]   = (r.slot < kLightBudgetTotal) && pl.intensity > 0.0f && pl.range > 0.0f;
                 }
                 else
                 {
@@ -6185,8 +8354,10 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                     j["innerConeDeg"] = sl.innerConeDeg;
                     j["outerConeDeg"] = sl.outerConeDeg;
                     j["castShadows"]  = sl.castShadows;
-                    j["overBudget"]   = (r.slot >= kLightBudgetSpot);
-                    j["effective"]    = (r.slot < kLightBudgetSpot) && sl.intensity > 0.0f && sl.range > 0.0f;
+                    // スポットは点光源の後ろに積まれるので通し番号は pointN + slot
+                    j["overBudget"]   = (pointN + r.slot >= kLightBudgetTotal);
+                    j["effective"]    = (pointN + r.slot < kLightBudgetTotal)
+                                      && sl.intensity > 0.0f && sl.range > 0.0f;
                     if (sl.innerConeDeg > sl.outerConeDeg)
                         j["warning"] = "innerConeDeg > outerConeDeg（内外が逆。減衰しない）";
                 }
@@ -6194,13 +8365,17 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             }
 
             json warnings = json::array();
-            if (pointN > kLightBudgetPoint)
-                warnings.push_back("ポイントライトが上限超過 (" + std::to_string(pointN) + "/"
-                    + std::to_string(kLightBudgetPoint) + ")。超えた分は【無言で描画されない】"
-                    "。灯を減らすか range を広げてまとめてくれ（パーティクルの発光ライトも枠を使う）");
-            if (spotN > kLightBudgetSpot)
-                warnings.push_back("スポットライトが上限超過 (" + std::to_string(spotN) + "/"
-                    + std::to_string(kLightBudgetSpot) + ")。超えた分は無言で描画されない");
+            // クラスタードライティング（Forward+）化で「点 8 / スポット 8」の個別上限は撤廃。
+            // 今の上限は point + spot の合計 1024 灯。
+            if (pointN + spotN > kLightBudgetTotal)
+                warnings.push_back("ライトの合計が上限超過 (" + std::to_string(pointN + spotN) + "/"
+                    + std::to_string(kLightBudgetTotal) + ")。超えた分は【無言で描画されない】"
+                    "（パーティクルの発光ライトも枠を使う）");
+            if (pointN + spotN > kLightBudgetPerCluster)
+                warnings.push_back("ライトが " + std::to_string(pointN + spotN) + " 灯ある。1 クラスタ("
+                    + std::to_string(kLightBudgetPerCluster) + "灯) を超えて重なった所は無言で切り捨てられる。"
+                    "密集していないかは【ツール > ライティング > クラスタデバッグ表示】の"
+                    "ライト複雑度ヒートマップ(白＝上限に張り付き)で確認すること");
             if (dirN > 1)
                 warnings.push_back("平行光が " + std::to_string(dirN) + " 灯ある。太陽として効くのは先頭の 1 灯だけ");
             if (dirN == 0)
@@ -6217,17 +8392,24 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"lights", arr}, {"count", arr.size()}, {"total", total},
                 {"cursor", cursor}, {"nextCursor", i}, {"has_more", i < total},
                 {"budget", {
-                    {"point",       {{"used", pointN},       {"max", kLightBudgetPoint}}},
-                    {"spot",        {{"used", spotN},        {"max", kLightBudgetSpot}}},
+                    // クラスタードライティング(Forward+)。point/spot に個別上限は無く、合計 1024 灯。
+                    {"total",       {{"used", pointN + spotN}, {"max", kLightBudgetTotal}}},
+                    {"perCluster",  {{"max", kLightBudgetPerCluster}}},
+                    {"point",       {{"used", pointN},       {"max", kLightBudgetTotal}}},
+                    {"spot",        {{"used", spotN},        {"max", kLightBudgetTotal}}},
                     {"directional", {{"used", dirN},         {"max", 1}}},
                     {"shadowSpot",  {{"used", shadowSpotN},  {"max", kLightBudgetShadowSpot}}},
                     {"shadowPoint", {{"used", shadowPointN}, {"max", kLightBudgetShadowPoint}}},
                 }},
                 {"warnings", warnings},
                 {"note", "Transform を持つライトだけを数える(GPU へ送られる条件と同じ)。"
+                         "灯数はクラスタードライティングで合計 1024 灯まで(点/スポットの個別上限は無い)。"
+                         "ただし影が落ちるのは spot 4 / point 2 のまま。"
                          "太陽の調整は dx12_set_sun、まとめて雰囲気を変えるなら dx12_apply_lighting_preset。"}};
-        }
-        else if (method == "set_sun")
+        });
+
+    McpDefine("set_sun", "ambient:number,azimuth:number,color:vec3,elevation:number,intensity:number,"
+              "kelvin:number,timeOfDay:number", DX12E_MCP_HANDLER
         {
             auto& reg = m_scene->GetRegistry();
             // view.front() は空なら entt::null。break 付きの for だと MSVC が C4702 を出す。
@@ -6280,8 +8462,9 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"note", "絶対指定＝同じ引数の再実行で同じ結果(冪等)。timeOfDay は 0..24 で "
                          "向き/色/強度/環境光を一括で決める(Lua の Lighting.setTimeOfDay と同じカーブ)。"
                          "azimuth/elevation は【太陽が見える方向】(方位 +Z=0°,+X=90° / 高度 0=地平線,90=真上)。"}};
-        }
-        else if (method == "apply_lighting_preset")
+        });
+
+    McpDefine("apply_lighting_preset", "preset:string", DX12E_MCP_HANDLER
         {
             auto& reg = m_scene->GetRegistry();
             std::vector<std::string> presetIds;
@@ -6320,11 +8503,12 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {"note", sun == entt::null
                     ? "平行光(太陽)が無いのでポストだけ適用した。dx12_create_entity(type:\"light_directional\") で作れる"
                     : "太陽 + ポストをまとめて適用した(冪等)。細部は dx12_set_sun / dx12_set_post_process で詰める"}};
-        }
-        // ════════════════════════════════════════════════════════════
-        //  エンジン診断（機械可読）
-        // ════════════════════════════════════════════════════════════
-        else if (method == "diagnose")
+        });
+
+    // ════════════════════════════════════════════════════════════
+    //  エンジン診断（機械可読）
+    // ════════════════════════════════════════════════════════════
+    McpDefine("diagnose", "only:any", DX12E_MCP_HANDLER
         {
             const std::vector<std::string> allIds = DeepDiag::AllCheckIds();
             std::string only;
@@ -6370,6 +8554,49 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                              "instancing は 1 度も描画していないと測れない(skipped に理由が入る)。";
             resp["ok"] = true;
             resp["result"] = std::move(report);
+        });
+}
+
+std::string Application::HandleMcpCommand(uint64_t client, const std::string& line)
+{
+    using json = nlohmann::json;
+
+    json req;
+    try { req = json::parse(line); }
+    catch (const std::exception& e)
+    {
+        return json{{"id", nullptr}, {"ok", false}, {"error_code", McpErr::InvalidParam},
+                    {"error", std::string("parse error: ") + e.what()}}.dump();
+    }
+
+    json resp;
+    resp["id"] = req.value("id", json(nullptr));
+    const std::string method = req.value("method", std::string());
+    const json params = req.value("params", json::object());
+
+    // 遅延応答(create/spawn/delete/open_scene/play/stop)の相関情報。
+    // 該当ハンドラで deferred=true にし、保留キューへ mcp を積んで空文字列を返す。
+    McpDeferred deferred{ client, req.value("id", 0LL), params.value("idempotency_key", std::string()) };
+    bool isDeferred = false;
+
+    try
+    {
+        if (!m_scene || !m_scriptEngine)
+            throw std::runtime_error("engine not ready");
+
+        // 生成/削除/シーン系を弾く判定。Playing 中はもちろん、同一 Poll バッチで先に play が
+        // 積まれた(モード遷移保留)場合も弾く＝そのフレームで spawn ドレインが skip されて
+        // 遅延応答が宙吊り(クライアント timeout)になるのを防ぐ。
+        const bool busyPlaying = (m_engineMode == EngineMode::Playing) ||
+                                 (m_modeChangeRequested && m_pendingMode == EngineMode::Playing);
+
+        // ★ディスパッチ（旧: 118 本の else-if 連鎖 = C1061 の温床。N37 / N43）。
+        //   表引きなので method を何本足しても入れ子は深くならない。
+        EnsureMcpMethodTable();
+        const auto it = m_mcpMethods.find(method);
+        if (it != m_mcpMethods.end())
+        {
+            it->second.fn(params, resp, method, deferred, isDeferred, busyPlaying);
         }
         else
         {
@@ -6667,11 +8894,14 @@ bool Application::ReadbackSceneBgra(std::vector<u8>& outBgra, u32& outW, u32& ou
         uint8_t*    out = &outBgra[static_cast<size_t>(w) * 4 * y];
         for (UINT x = 0; x < w; ++x)
         {
+            // ★render debug 中はトーンマップも露出も掛けない（RenderDebug.hlsl が
+            //   「表示したい色」をそのまま書いているので、加工すると偽色の意味が壊れる）。
+            const float ex = m_renderDebugRawReadback ? 1.0f : exposure;
             float rgb[3] = {
-                DirectX::PackedVector::XMConvertHalfToFloat(in[x * 4 + 0]) * exposure,
-                DirectX::PackedVector::XMConvertHalfToFloat(in[x * 4 + 1]) * exposure,
-                DirectX::PackedVector::XMConvertHalfToFloat(in[x * 4 + 2]) * exposure };
-            toneMapGamma(rgb);
+                DirectX::PackedVector::XMConvertHalfToFloat(in[x * 4 + 0]) * ex,
+                DirectX::PackedVector::XMConvertHalfToFloat(in[x * 4 + 1]) * ex,
+                DirectX::PackedVector::XMConvertHalfToFloat(in[x * 4 + 2]) * ex };
+            if (!m_renderDebugRawReadback) toneMapGamma(rgb);
             out[x * 4 + 0] = toByte(rgb[2]);   // BGRA 順
             out[x * 4 + 1] = toByte(rgb[1]);
             out[x * 4 + 2] = toByte(rgb[0]);
@@ -6686,7 +8916,27 @@ bool Application::ReadbackSceneBgra(std::vector<u8>& outBgra, u32& outW, u32& ou
     return true;
 }
 
-std::string Application::CaptureSceneScreenshot(std::string& err)
+// MCP のスクショ系が共有する出力先の解決。
+//   省略 → CWD の defName（＝従来の挙動。dx12_engine.log と同じ場所へ上書き）
+//   相対 → CWD 基準 / 絶対 → そのまま。拡張子が .png でなければ足す。
+// ".." は弾く（ブリッジは localhost 専用だが、AI が誤って上位ディレクトリへ書くのを防ぐ）。
+static std::filesystem::path McpScreenshotPath(const std::string& rel, const char* defName)
+{
+    namespace fs = std::filesystem;
+    if (rel.empty()) return fs::absolute(defName);
+    fs::path p(rel);
+    for (const auto& part : p)
+        if (part == "..")
+            throw McpError(McpErr::InvalidParam, "path must not contain '..'",
+                           "CWD からの相対パスか絶対パスで指定する");
+    if (p.extension() != ".png") p += ".png";
+    p = fs::absolute(p);
+    std::error_code ec;
+    if (p.has_parent_path()) fs::create_directories(p.parent_path(), ec);
+    return p;
+}
+
+std::string Application::CaptureSceneScreenshot(std::string& err, const std::string& outPathRel)
 {
     namespace fs = std::filesystem;
 
@@ -6694,9 +8944,185 @@ std::string Application::CaptureSceneScreenshot(std::string& err)
     u32 w = 0, h = 0;
     if (!ReadbackSceneBgra(bgra, w, h, err)) return {};
 
-    const fs::path outPath = fs::absolute("mcp_screenshot.png");   // CWD(= dx12_engine.log と同じ場所)へ上書き
+    const fs::path outPath = McpScreenshotPath(outPathRel, "mcp_screenshot.png");
     if (!WriteBgraPng(outPath.wstring(), bgra.data(), w, h, err)) return {};
     return outPath.string();
+}
+
+// ---------------------------------------------------------------------------
+// screenshot_final — バックバッファ（ポスト適用後の最終画）の読み戻し（§6 B5 の根治）
+// ---------------------------------------------------------------------------
+// ★なぜ別経路が要るのか
+//   ReadbackSceneBgra が読む m_sceneRT は **ポストプロセスの入力** なので、
+//   グレーディング / ブルーム / ゴッドレイ / ビネット / LUT / FXAA / デバンド、
+//   そして TAA の解決結果（履歴 RT 側に出る）が 1 つも写らない。
+//   MCP の測定と目視が食い違う根本原因がこれ。バックバッファを読めば全部解決する。
+//
+// ★撮る位置
+//   Render() の中、**ImGui フレームを始める前**。この時点のバックバッファには
+//   「ポスト適用後のシーン + エディタアイコン + ゲーム内 UI 画像」が入っており、
+//   ImGui のパネル / ギズモ / オーバーレイはまだ 1 ピクセルも乗っていない。
+//   ＝エディタで撮ってもゲームと同じ絵になる。パネル込みが欲しいときは ui_screenshot。
+void Application::CaptureFinalBackBufferRegion(ID3D12GraphicsCommandList* cmd, ID3D12Resource* backBuffer,
+                                               u32 vpX, u32 vpY, u32 vpW, u32 vpH)
+{
+    if (!m_mcpFinalShot.pending || !cmd || !backBuffer) return;
+    m_mcpFinalShot.pending  = false;
+    m_mcpFinalShot.captured = false;
+
+    // ★どの早期 return でも必ずここを通す。通さないと遅延応答が宙吊りになり、
+    //   決定論モードの「時間を固定したまま」状態がエディタに残り続ける（＝時間が止まって見える）。
+    auto bail = [&](const char* why)
+    {
+        FailMcp(m_mcpBridge.get(), m_mcpFinalShot.reply, McpErr::Internal, why);
+        m_mcpFinalShot = {};
+        m_deterministicCapture = false;
+    };
+
+    auto* dev = m_graphicsDevice ? m_graphicsDevice->GetDevice() : nullptr;
+    if (!dev) { bail("graphics device not ready"); return; }
+
+    const D3D12_RESOURCE_DESC bbDesc = backBuffer->GetDesc();
+    const u32 fullW = static_cast<u32>(bbDesc.Width);
+    const u32 fullH = bbDesc.Height;
+    // ビューポートがバックバッファをはみ出していたらクランプ（リサイズ直後の 1 フレームで起きる）。
+    if (vpW == 0 || vpH == 0 || fullW == 0 || fullH == 0 || vpX >= fullW || vpY >= fullH)
+    { bail("viewport rect is empty (window minimized or resizing?)"); return; }
+    vpW = (std::min)(vpW, fullW - vpX);
+    vpH = (std::min)(vpH, fullH - vpY);
+
+    // コピー先のレイアウトは「切り出す矩形と同じサイズのテクスチャ」で計算する。
+    D3D12_RESOURCE_DESC regionDesc = bbDesc;
+    regionDesc.Width  = vpW;
+    regionDesc.Height = vpH;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
+    UINT   rowCount = 0;
+    UINT64 rowSize = 0, totalBytes = 0;
+    dev->GetCopyableFootprints(&regionDesc, 0, 1, 0, &fp, &rowCount, &rowSize, &totalBytes);
+
+    D3D12_HEAP_PROPERTIES heap{ D3D12_HEAP_TYPE_READBACK };
+    D3D12_RESOURCE_DESC bd{};
+    bd.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bd.Width            = totalBytes;
+    bd.Height           = 1;
+    bd.DepthOrArraySize = 1;
+    bd.MipLevels        = 1;
+    bd.Format           = DXGI_FORMAT_UNKNOWN;
+    bd.SampleDesc.Count = 1;
+    bd.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    Microsoft::WRL::ComPtr<ID3D12Resource> readback;
+    if (FAILED(dev->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &bd,
+            D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&readback))))
+    { bail("readback alloc failed"); return; }
+
+    // バックバッファはこの時点で RENDER_TARGET（呼び出し側の契約）。COPY_SOURCE へ往復させる。
+    auto barrier = [&](D3D12_RESOURCE_STATES a, D3D12_RESOURCE_STATES b)
+    {
+        D3D12_RESOURCE_BARRIER br{};
+        br.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        br.Transition.pResource   = backBuffer;
+        br.Transition.StateBefore = a;
+        br.Transition.StateAfter  = b;
+        br.Transition.Subresource = 0;
+        cmd->ResourceBarrier(1, &br);
+    };
+    barrier(D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
+
+    D3D12_TEXTURE_COPY_LOCATION src{};
+    src.pResource        = backBuffer;
+    src.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    src.SubresourceIndex = 0;
+    D3D12_TEXTURE_COPY_LOCATION dst{};
+    dst.pResource       = readback.Get();
+    dst.Type            = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dst.PlacedFootprint = fp;
+    const D3D12_BOX box{ vpX, vpY, 0, vpX + vpW, vpY + vpH, 1 };
+    cmd->CopyTextureRegion(&dst, 0, 0, 0, &src, &box);
+
+    barrier(D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+    m_mcpFinalShot.readback = readback;
+    m_mcpFinalShot.w        = vpW;
+    m_mcpFinalShot.h        = vpH;
+    m_mcpFinalShot.rowPitch = fp.Footprint.RowPitch;
+    m_mcpFinalShot.bytes    = totalBytes;
+    m_mcpFinalShot.format   = static_cast<u32>(bbDesc.Format);
+    m_mcpFinalShot.captured = true;
+}
+
+void Application::FinishFinalScreenshot()
+{
+    if (!m_mcpFinalShot.captured) return;
+    m_mcpFinalShot.captured = false;
+    const bool wasDeterministic = m_mcpFinalShot.deterministic;
+    m_deterministicCapture = false;   // 撮り終わったら必ず通常の時間へ戻す
+
+    McpDeferred reply = m_mcpFinalShot.reply;
+    m_mcpFinalShot.reply = {};
+    auto readback = m_mcpFinalShot.readback;
+    m_mcpFinalShot.readback.Reset();
+    if (!readback || reply.client == 0) return;
+
+    // コピーは Present と同じコマンドリストに積んである。読む前に GPU の完了を待つ。
+    m_commandQueue->WaitIdle();
+
+    const u32 w = m_mcpFinalShot.w, h = m_mcpFinalShot.h, pitch = m_mcpFinalShot.rowPitch;
+    // バックバッファは既に表示色（トーンマップ + ガンマ済み）。並びだけ BGRA へ揃える。
+    const bool bgraSrc = (m_mcpFinalShot.format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+                          m_mcpFinalShot.format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB);
+
+    void* mapped = nullptr;
+    // ★read range は必ず GetCopyableFootprints の totalBytes。pitch*h を渡すと最終行の
+    //   パディング分だけリソースを超えて E_INVALIDARG になる（実際に踏んだ）。
+    D3D12_RANGE rr{ 0, static_cast<SIZE_T>(m_mcpFinalShot.bytes) };
+    if (FAILED(readback->Map(0, &rr, &mapped)))
+    {
+        FailMcp(m_mcpBridge.get(), reply, McpErr::Internal, "readback map failed");
+        return;
+    }
+    std::vector<u8> bgra(static_cast<size_t>(w) * h * 4);
+    const auto* base = static_cast<const uint8_t*>(mapped);
+    for (u32 y = 0; y < h; ++y)
+    {
+        const uint8_t* in  = base + static_cast<size_t>(pitch) * y;
+        uint8_t*       out = &bgra[static_cast<size_t>(w) * 4 * y];
+        for (u32 x = 0; x < w; ++x)
+        {
+            const uint8_t c0 = in[x * 4 + 0], c1 = in[x * 4 + 1], c2 = in[x * 4 + 2];
+            out[x * 4 + 0] = bgraSrc ? c0 : c2;   // B
+            out[x * 4 + 1] = c1;                  // G
+            out[x * 4 + 2] = bgraSrc ? c2 : c0;   // R
+            out[x * 4 + 3] = 255;
+        }
+    }
+    D3D12_RANGE wr{ 0, 0 };
+    readback->Unmap(0, &wr);
+
+    std::string err;
+    std::filesystem::path outPath;
+    try { outPath = McpScreenshotPath(m_mcpFinalShot.path, "mcp_screenshot_final.png"); }
+    catch (const std::exception& e)
+    {
+        FailMcp(m_mcpBridge.get(), reply, McpErr::InvalidParam, e.what());
+        return;
+    }
+    if (!WriteBgraPng(outPath.wstring(), bgra.data(), w, h, err))
+    {
+        FailMcp(m_mcpBridge.get(), reply, McpErr::Internal, err.empty() ? "png write failed" : err);
+        return;
+    }
+    const PostProcessSettings& pp = m_scene->GetPostSettings();
+    CompleteMcp(m_mcpBridge.get(), reply,
+        nlohmann::json{{"path", outPath.string()},
+                       {"width", w}, {"height", h},
+                       {"source", "backbuffer"},
+                       {"postApplied", pp.enabled},
+                       {"deterministic", wasDeterministic},
+                       {"taa", m_scene->GetTaaSettings().enabled},
+                       {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"},
+                       {"note", "ポスト適用後のバックバッファ。ImGui を描く前に撮るので"
+                                "エディタのパネル/ギズモは写らない。dx12_screenshot（ポスト前の "
+                                "m_sceneRT）とは別物なので、見た目の判断はこちらを使う"}});
 }
 
 Application::DiagRenderInfo Application::GetDiagRenderInfo() const
@@ -6714,6 +9140,41 @@ Application::DiagRenderInfo Application::GetDiagRenderInfo() const
         info.exposure    = pp.exposure;
     }
     return info;
+}
+
+Application::DiagDxrInfo Application::GetDiagDxrInfo() const
+{
+    DiagDxrInfo d;
+    d.supported = m_dxrEnabled;
+    if (m_graphicsDevice)
+    {
+        d.tier        = static_cast<int>(m_graphicsDevice->GetRaytracingTier());
+        d.shaderModel = static_cast<int>(m_graphicsDevice->GetHighestShaderModel());
+        d.inlineRt    = m_graphicsDevice->SupportsInlineRaytracing();
+    }
+    if (m_scene)
+    {
+        const RtSettings& r = m_scene->GetRtSettings();
+        d.shadowEnabled = r.shadowEnabled;
+        d.aoEnabled     = r.aoEnabled;
+    }
+    d.shadowActive = m_rtShadowActiveThisFrame;
+    if (m_rtScene)
+    {
+        const auto& s = m_rtScene->GetStats();
+        d.tlasReady          = m_rtScene->IsReady();
+        d.instances          = s.instances;
+        d.blasCount          = s.blasCount;
+        d.skippedSkinned     = s.skippedSkinned;
+        d.skippedTransparent = s.skippedTransparent;
+        d.droppedOverLimit   = s.droppedOverLimit;
+        d.blasBytes          = s.blasBytes;
+        d.blasTriangles      = s.blasTriangles;
+        d.tlasBytes          = s.tlasBytes;
+        d.scratchBytes       = s.scratchBytes;
+        d.instanceDescBytes  = s.instanceDescBytes;
+    }
+    return d;
 }
 
 Application::DiagFrameStats Application::TakeDiagnosticFrameStats()
@@ -6844,7 +9305,8 @@ void Application::Run()
         if (m_window->ShouldClose())
             break;
 
-        // リサイズ処理
+        // リサイズ処理（★ここで作り直すのはスワップチェイン＝表示解像度だけ。
+        //   シーン系 RT は下の UpdateRenderResolution() が renderScale 込みで面倒を見る）
         if (m_window->WasResized())
         {
             m_window->ResetResizedFlag();
@@ -6854,63 +9316,7 @@ void Application::Run()
             {
                 m_commandQueue->WaitIdle();
                 m_swapChain->Resize(w, h, *m_descriptorHeap);
-
-                // デプスバッファ再作成
-                m_depthBuffer.Reset();
-                D3D12_RESOURCE_DESC depthDesc{};
-                depthDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-                depthDesc.Width = w;
-                depthDesc.Height = h;
-                depthDesc.DepthOrArraySize = 1;
-                depthDesc.MipLevels = 1;
-                depthDesc.Format = DXGI_FORMAT_R32_TYPELESS;
-                depthDesc.SampleDesc = {1, 0};
-                depthDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
-
-                D3D12_CLEAR_VALUE clearValue{};
-                clearValue.Format = DXGI_FORMAT_D32_FLOAT;
-                clearValue.DepthStencil = {1.0f, 0};
-
-                D3D12_HEAP_PROPERTIES heapProps{};
-                heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-
-                ThrowIfFailed(m_graphicsDevice->GetDevice()->CreateCommittedResource(
-                    &heapProps, D3D12_HEAP_FLAG_NONE,
-                    &depthDesc, D3D12_RESOURCE_STATE_DEPTH_WRITE,
-                    &clearValue, IID_PPV_ARGS(&m_depthBuffer)));
-
-                D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc{};
-                dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
-                dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
-                m_graphicsDevice->GetDevice()->CreateDepthStencilView(
-                    m_depthBuffer.Get(), &dsvDesc, m_dsvHandle);
-
-                if (m_depthSrvIndex != 0xFFFFFFFFu)
-                {
-                    D3D12_SHADER_RESOURCE_VIEW_DESC depthSrvDesc{};
-                    depthSrvDesc.Format                  = DXGI_FORMAT_R32_FLOAT;
-                    depthSrvDesc.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
-                    depthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-                    depthSrvDesc.Texture2D.MipLevels     = 1;
-                    m_graphicsDevice->GetDevice()->CreateShaderResourceView(
-                        m_depthBuffer.Get(), &depthSrvDesc, m_srvHeap->GetCpuHandle(m_depthSrvIndex));
-                }
-
-                // オフスクリーン RT もウィンドウサイズへ作り直す
-                if (m_sceneRT)
-                    m_sceneRT->Resize(*m_graphicsDevice, w, h);
-                // SSAO の AO/Blur RT も同寸へ（深度と同じフル解像度）
-                if (m_ssaoPass)
-                    m_ssaoPass->Resize(*m_graphicsDevice, w, h);
-                // ブルームチェーン（1/2〜1/64）も追従
-                if (m_bloomPass)
-                    m_bloomPass->Resize(*m_graphicsDevice, w, h);
-                if (m_godRaysPass)    m_godRaysPass->Resize(*m_graphicsDevice, w, h);
-                if (m_lensFlarePass)  m_lensFlarePass->Resize(*m_graphicsDevice, w, h);
-                if (m_dofPass)        m_dofPass->Resize(*m_graphicsDevice, w, h);
-                if (m_motionBlurPass) m_motionBlurPass->Resize(*m_graphicsDevice, w, h);
-                if (m_distortRT)      m_distortRT->Resize(*m_graphicsDevice, w, h);
-                m_prevViewProjValid = false;  // リサイズ直後のMB速度スパイク防止
+                m_renderResFlush = true;   // レンダー解像度はデバウンスせず即時追従させる
 
                 // カメラアスペクト比更新（エディタモードではサイドバー分引く）
                 m_camera->SetPerspective(DirectX::XM_PIDIV4,
@@ -6919,6 +9325,10 @@ void Application::Run()
                 Logger::Info("Resized to {}x{}", w, h);
             }
         }
+
+        // 表示矩形 × renderScale へシーン系 RT を追従させる（#16）。
+        // ★必ず Render() より前・フレーム外で呼ぶこと（内部で WaitIdle する）。
+        UpdateRenderResolution();
 
         m_gameClock.Tick();
 
@@ -7018,6 +9428,39 @@ void Application::Run()
             SplashScreen::Close();
         }
 
+        // ★決定論キャプチャ（#31）: 時間依存を固定したまま N フレーム回して履歴を収束させ、
+        //   0 になった時点で撮る。sceneRT はここで直接読めるが、バックバッファは Render() の
+        //   中でしかコピーできないので pending を立てて次フレームに撮らせる。
+        if (m_deterministicCapture && m_deterministicFramesLeft > 0 && --m_deterministicFramesLeft == 0)
+        {
+            if (m_mcpFinalShot.wantSceneRt)
+            {
+                std::string derr;
+                const std::string dpath = CaptureSceneScreenshot(derr, m_mcpFinalShot.path);
+                if (dpath.empty())
+                    FailMcp(m_mcpBridge.get(), m_mcpFinalShot.reply, McpErr::Internal,
+                            derr.empty() ? "screenshot failed" : derr);
+                else
+                    CompleteMcp(m_mcpBridge.get(), m_mcpFinalShot.reply,
+                        nlohmann::json{{"path", dpath},
+                                       {"width",  m_sceneRT ? m_sceneRT->GetWidth()  : 0u},
+                                       {"height", m_sceneRT ? m_sceneRT->GetHeight() : 0u},
+                                       {"source", "sceneRT(pre-post)"},
+                                       {"deterministic", true},
+                                       {"note", "決定論モード: time / TAA ジッタ / フォグ・SSGI の位相を固定し、"
+                                                "履歴を収束させてから撮った。ゲームのシミュレーションは止まらない"}});
+                m_mcpFinalShot = {};
+                m_deterministicCapture = false;
+            }
+            else
+            {
+                m_mcpFinalShot.pending = true;   // 次フレームの Render がバックバッファをコピーする
+            }
+        }
+
+        // screenshot_final: Render() 内でバックバッファをコピー済みなら PNG 化して遅延応答を返す。
+        FinishFinalScreenshot();
+
         // screenshot_game_view: このフレームの描画(ゲームカメラ視点)を撮って遅延応答 → 編集カメラ復元。
         if (gvShot)
         {
@@ -7038,6 +9481,59 @@ void Application::Run()
                 if (gvOrtho) m_camera->SetOrthographic(gvOrthoH, gvAsp, gvNear, gvFar);
                 else         m_camera->SetPerspective(gvFov, gvAsp, gvNear, gvFar);
             }
+        }
+
+        // MCP render_debug: N フレーム描いたらスクショを撮って返し、必ず元の設定へ戻す。
+        if (m_mcpRenderDebugFramesLeft > 0 && --m_mcpRenderDebugFramesLeft == 0
+            && m_mcpRenderDebugReply.client != 0)
+        {
+            std::string rerr;
+            const std::string rpath = (m_renderDebugModeName == "off")
+                                    ? std::string("(no capture)")
+                                    : CaptureSceneScreenshot(rerr);
+
+            nlohmann::json warnJson = nlohmann::json::array();
+            if (!m_renderDebugWarnings.empty())
+            {
+                try { warnJson = nlohmann::json::parse(m_renderDebugWarnings); }
+                catch (...) { warnJson = nlohmann::json::array(); }
+            }
+
+            if (rpath.empty())
+            {
+                FailMcp(m_mcpBridge.get(), m_mcpRenderDebugReply, McpErr::Internal,
+                        rerr.empty() ? "render_debug screenshot failed" : rerr);
+            }
+            else
+            {
+                CompleteMcp(m_mcpBridge.get(), m_mcpRenderDebugReply,
+                    nlohmann::json{{"path", rpath},
+                                   {"mode", m_renderDebugModeName},
+                                   {"width",  m_sceneRT ? m_sceneRT->GetWidth()  : 0u},
+                                   {"height", m_sceneRT ? m_sceneRT->GetHeight() : 0u},
+                                   {"toneMapped", !m_renderDebugRawReadback},
+                                   {"warnings", warnJson},
+                                   {"mode_engine", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"}});
+            }
+            m_mcpRenderDebugReply = {};
+
+            // ---- 退避した設定を必ず戻す（デバッグ表示を残さない）----
+            if (m_renderDebugRestore.valid && m_scene)
+            {
+                m_scene->GetTaaSettings().enabled           = m_renderDebugRestore.taa;
+                m_scene->GetSSAOSettings().enabled          = m_renderDebugRestore.ssao;
+                m_scene->GetContactShadowSettings().enabled = m_renderDebugRestore.contactShadow;
+                m_scene->GetSsrSettings().enabled           = m_renderDebugRestore.ssr;
+                m_scene->GetSsgiSettings().enabled          = m_renderDebugRestore.ssgi;
+                m_scene->GetVolumetricFogSettings().debugMode = m_renderDebugRestore.fogDebug;
+                m_scene->GetRtSettings().forceBuildTlas       = m_renderDebugRestore.rtForceTlas;
+                if (m_editorCtx) m_editorCtx->clusterDebugMode = m_renderDebugRestore.clusterDebug;
+                m_showCascadeDebug = m_renderDebugRestore.cascadeDebug;
+                m_renderDebugRestore.valid = false;
+            }
+            m_renderDebugMode        = 0;
+            m_renderDebugRawReadback = false;
+            m_renderDebugWarnings.clear();
         }
 
         // MCP step_frames: 1フレーム回り切ったらカウントダウン。0 になったら遅延応答を返す。
@@ -7132,6 +9628,9 @@ void Application::Shutdown()
     m_materialEditorPanel.reset();
     m_materialLibraryPanel.reset();
     m_materialAssetManager.reset();
+    // 地形レイヤー配列とスプラットテクスチャ（GPU リソース）もデバイス解放より前に明示破棄する。
+    m_terrainSrvCache.clear();
+    m_terrainLayerSets.reset();
     m_editorCtx.reset();
     m_physicsDebugRenderer.reset();
     // 新規レンダラ群（GPU リソース）をデバイス解放より前に明示破棄
@@ -7149,11 +9648,23 @@ void Application::Shutdown()
     m_motionBlurPass.reset();
     m_distortRT.reset();
     m_gpuParticles.reset();
-    // SSAO（GPU リソース）をデバイス解放より前に明示破棄
+    // SSAO / コンタクトシャドウ（GPU リソース）をデバイス解放より前に明示破棄
     m_ssaoPass.reset();
+    m_contactShadowPass.reset();
+    m_taaPass.reset();
+    m_gbufferRT.reset();
+    m_screenSpaceGi.reset();
+    // DXR（加速構造 + RT パス）。デバイス解放より前に確実に落とす。
+    m_rtScreenPass.reset();
+    if (m_rtScene) m_rtScene->Shutdown();
+    m_rtScene.reset();
     m_ssaoWhiteTex.reset();
+    m_ssBlackTex.reset();
     m_depthPrepassPSO.reset();
     m_depthPrepassSkinnedPSO.reset();
+    m_velocityPSO.reset();
+    m_velocityPSOInst.reset();
+    m_velocityPSOSkinned.reset();
     // IBL / Skybox（GPU リソース）をデバイス解放より前に明示破棄。SRV index も srvHeap 生存中に返却。
     m_skyboxRenderer.reset();
     if (m_iblBaker)
@@ -7173,6 +9684,25 @@ void Application::Shutdown()
     m_cameraPreviewRT.reset();
     m_sceneRT.reset();
     m_offscreenRtvHeap.reset();
+    // クラスタードライティング: SRV ブロックを返してから（m_srvHeap の破棄より前に）解放する。
+    if (m_clusteredLighting)
+    {
+        m_clusteredLighting->Shutdown();
+        m_clusteredLighting.reset();
+    }
+    // ボリュメトリックフォグも SRV/UAV ブロックを持っている（同上）。
+    if (m_volumetricFogPass)
+    {
+        m_volumetricFogPass->Shutdown();
+        m_volumetricFogPass.reset();
+    }
+    // デカールは自前のディスクリプタを持たない（クラスタのブロックを借りるだけ）が、
+    // UPLOAD バッファの Unmap があるので明示的に落とす。
+    if (m_decalSystem)
+    {
+        m_decalSystem->Shutdown();
+        m_decalSystem.reset();
+    }
     m_sceneFlow.reset();
     if (m_physicsSystem)
     {
@@ -7202,6 +9732,8 @@ void Application::Shutdown()
     m_shadowMap.Reset();
     m_shadowDsvHeap.reset();
     m_gridPipelineState.reset();
+    m_terrainPipelineStateLEqual.reset();
+    m_terrainPipelineState.reset();
     m_skinnedPipelineStateLEqual.reset();
     m_skinnedPipelineState.reset();
     m_scene.reset();
@@ -7267,6 +9799,26 @@ void Application::Update()
                 m_eventBus.Emit(ev);
             }
         }
+    }
+
+    // スケルタルアニメのクリップイベント（.animfsm の clipEvents。足音等）を EventBus へ。
+    // Scene::Update が積んだものをここで流し切る（Lua は events:on("footstep", fn) で受ける）。
+    if (m_scene)
+    {
+        auto& animEvents = m_scene->GetPendingAnimEvents();
+        for (const auto& ae : animEvents)
+        {
+            EngineEvent ev;
+            ev.name   = ae.name;
+            ev.source = ae.entity;
+            if (!ae.stringParam.empty()) ev.set("string", ae.stringParam);
+            ev.set("float", static_cast<double>(ae.floatParam));
+            ev.set("clip",  ae.clip);
+            ev.set("layer", static_cast<double>(ae.layer));
+            ev.set("time",  static_cast<double>(ae.time));
+            m_eventBus.Emit(ev);
+        }
+        animEvents.clear();
     }
 
     // 非同期プロジェクトロードの状態機械を進める
@@ -7535,13 +10087,18 @@ void Application::Update()
         // アクティブカメラの Transform をグローバル Camera に同期。
         // 親階層込みのワールド変換で反映するので、親オブジェクトにアタッチした
         // カメラが親の移動・回転に追従する。
-        auto& reg = m_scene->GetRegistry();
-        auto camSyncView = reg.view<const CameraComponent>();
-        for (auto [e, cam] : camSyncView.each())
+        // ★MCP が dx12_set_editor_camera で視点を固定している間は同期しない（#20-6）。
+        //   Play 中の絵で look_compare / camera_path を回すための一時上書き。
+        if (!m_mcpCameraOverride)
         {
-            if (!cam.isActive) continue;
-            ApplyCameraTransformToGlobal(e);
-            break;
+            auto& reg = m_scene->GetRegistry();
+            auto camSyncView = reg.view<const CameraComponent>();
+            for (auto [e, cam] : camSyncView.each())
+            {
+                if (!cam.isActive) continue;
+                ApplyCameraTransformToGlobal(e);
+                break;
+            }
         }
     }
 
@@ -7637,8 +10194,9 @@ void Application::Update()
     }
 
     // パーティクル更新（配置エミッタのプレビューのため、エディタでも実 dt で前進）
+    // ★決定論キャプチャ中は前進させない（#31。粒子が動くと 2 枚が一致しない）。
     if (m_particleSystem)
-        m_particleSystem->Update(dt);
+        m_particleSystem->Update(m_deterministicCapture ? 0.0f : dt);
 
     // 物理更新（プレイモードのみ）
     if (m_engineMode == EngineMode::Playing && m_physicsSystem->IsInitialized())
@@ -7685,6 +10243,122 @@ void Application::Update()
     if (m_engineMode == EngineMode::Playing)
     {
         m_eventBus.Flush();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// フット IK パス。FootIK + SkeletalAnimation を持つエンティティの足を地面に合わせる。
+//
+// FootIK.cpp（Animation ライブラリ）は entt も PhysicsSystem も知らない。
+// ここが「エンティティを走査して PhysicsSystem::RaycastEx を繋ぐ」接着層。
+// ---------------------------------------------------------------------------
+void Application::ApplyFootIkPass()
+{
+    if (!m_scene) return;
+    // 物理ボディは Play 中しか存在しない＝エディタでは接地判定ができない（仕様）
+    if (m_engineMode != EngineMode::Playing) return;
+    if (!m_physicsSystem) return;
+
+    auto& reg = m_scene->GetRegistry();
+    auto view = reg.view<FootIK, SkeletalAnimation>();
+    if (view.begin() == view.end()) return;
+
+    const f32 dt = m_gameClock.GetDeltaTime();
+
+    // PhysicsSystem::RaycastEx を FootIK 側のコールバック形へ包む。
+    // ★従来の Raycast は法線を (0,1,0) にフェイクしているので使えない★
+    const FootIKRayCast rayFn =
+        [this](const DirectX::XMFLOAT3& origin, const DirectX::XMFLOAT3& dir, f32 maxDist,
+               DirectX::XMFLOAT3& outPoint, DirectX::XMFLOAT3& outNormal) -> bool
+    {
+        const RaycastHit hit = m_physicsSystem->RaycastEx(origin, dir, maxDist);
+        if (!hit.hit) return false;
+        outPoint  = hit.point;
+        outNormal = hit.normal;
+        return true;
+    };
+
+    for (auto [e, ik, skelAnim] : view.each())
+    {
+        if (!ik.enabled || ik.weight <= 0.0f) continue;
+        if (!skelAnim.animator || !skelAnim.skeleton) continue;
+
+        // ---- ボーン解決（1 回だけ）----
+        if (!ik._resolved && !ik._resolveFailed)
+        {
+            FootIKBoneNames names;
+            names.leftHip   = ik.leftHipBone;   names.leftKnee  = ik.leftKneeBone;
+            names.leftFoot  = ik.leftFootBone;  names.leftToe   = ik.leftToeBone;
+            names.rightHip  = ik.rightHipBone;  names.rightKnee = ik.rightKneeBone;
+            names.rightFoot = ik.rightFootBone; names.rightToe  = ik.rightToeBone;
+            names.pelvis    = ik.pelvisBone;
+
+            FootIKBones bones;
+            if (ResolveFootIKBones(*skelAnim.skeleton, names, bones))
+            {
+                ik._lHip = bones.left.hip;   ik._lKnee = bones.left.knee;
+                ik._lFoot = bones.left.foot; ik._lToe  = bones.left.toe;
+                ik._rHip = bones.right.hip;  ik._rKnee = bones.right.knee;
+                ik._rFoot = bones.right.foot; ik._rToe = bones.right.toe;
+                ik._pelvis = bones.pelvis;
+                ik._resolved = true;
+            }
+            else
+            {
+                ik._resolveFailed = true;
+                std::string all;
+                for (u32 b = 0; b < skelAnim.skeleton->GetBoneCount(); ++b)
+                {
+                    if (!all.empty()) all += ", ";
+                    all += skelAnim.skeleton->GetBone(b).name;
+                }
+                Logger::Warn("FootIK: 足ボーンを特定できませんでした。FootIK の "
+                             "leftHipBone/leftKneeBone/leftFootBone(+right) で明示指定してください。"
+                             "このスケルトンのボーン一覧: [{}]", all);
+            }
+        }
+        if (!ik._resolved) continue;
+
+        FootIKBones bones;
+        bones.left  = { ik._lHip, ik._lKnee, ik._lFoot, ik._lToe };
+        bones.right = { ik._rHip, ik._rKnee, ik._rFoot, ik._rToe };
+        bones.pelvis = ik._pelvis;
+
+        FootIKParams params;
+        params.weight          = ik.weight;
+        params.rayUpOffset     = ik.rayUpOffset;
+        params.rayLength       = ik.rayLength;
+        params.footHeight      = ik.footHeight;
+        params.maxPelvisDrop   = ik.maxPelvisDrop;
+        params.maxFootPitchDeg = ik.maxFootPitchDeg;
+        params.smoothTime      = ik.smoothTime;
+        params.fadeOutTime     = ik.fadeOutTime;
+        params.alignToNormal   = ik.alignToNormal;
+        params.kneeForward     = ik.kneeForward;
+
+        FootIKState st;
+        st.leftLift    = ik._lLift;    st.rightLift   = ik._rLift;
+        st.pelvisDrop  = ik._pelvisDrop;
+        st.leftWeight  = ik._lWeight;  st.rightWeight = ik._rWeight;
+        st.leftNormal  = ik._lNormal;  st.rightNormal = ik._rNormal;
+        st.leftContact = ik._lContact; st.rightContact = ik._rContact;
+        st.initialized = ik._smoothInit;
+
+        // 接地判定は CharacterController があればそれを使う（ジャンプ中は IK を切る）
+        bool grounded = true;
+        if (reg.all_of<CharacterController>(e))
+            grounded = reg.get<CharacterController>(e)._grounded;
+
+        const DirectX::XMMATRIX world = ComputeWorldMatrix(reg, e);
+        ApplyFootIK(*skelAnim.animator, *skelAnim.skeleton, world,
+                    bones, params, st, rayFn, dt, grounded);
+
+        ik._lLift   = st.leftLift;    ik._rLift   = st.rightLift;
+        ik._pelvisDrop = st.pelvisDrop;
+        ik._lWeight = st.leftWeight;  ik._rWeight = st.rightWeight;
+        ik._lNormal = st.leftNormal;  ik._rNormal = st.rightNormal;
+        ik._lContact = st.leftContact; ik._rContact = st.rightContact;
+        ik._smoothInit = st.initialized;
     }
 }
 
@@ -7776,6 +10450,102 @@ void Application::LoadEditorIcons(ID3D12GraphicsCommandList* cmdList)
     Logger::Info("Editor UI icons loaded");
 }
 
+// ---------------------------------------------------------------------------
+// 手続きスカイ（Scene.h の kProceduralSkyPath）。.dds を 1 枚も用意しなくても
+// 背景と IBL が最初から効くようにするための、その場生成のキューブマップ。
+// ---------------------------------------------------------------------------
+
+// 方向 → 空の色（リニア HDR）。天頂の青 → 地平の白 → 地面側の灰。
+// ponytail: 太陽は焼き込まない。シーンの DirectionalLight と向きが食い違うのと、
+//           mip を 1 枚しか作らないので輝点があると IBL プリフィルタでちらつくため。
+static DirectX::PackedVector::XMHALF4 ProceduralSkySample(float dx, float dy, float dz)
+{
+    const float len = std::sqrt(dx * dx + dy * dy + dz * dz);
+    const float y   = dy / len;
+
+    // 表示基準(sRGB風)で決めた色をリニアへ。Skybox_PS はリニアのまま出力する。
+    const float zenith[3]  = {0.29f, 0.48f, 0.80f};
+    const float horizon[3] = {0.80f, 0.86f, 0.93f};
+    const float ground[3]  = {0.33f, 0.32f, 0.31f};  // 明るめの灰＝地平より下が黒く沈まない
+
+    float rgb[3];
+    if (y >= 0.0f)
+    {
+        const float t = std::pow(y, 0.45f);   // 地平付近のグラデーションを厚めに取る
+        for (int i = 0; i < 3; ++i) rgb[i] = horizon[i] + (zenith[i] - horizon[i]) * t;
+    }
+    else
+    {
+        const float t = std::min(-y / 0.35f, 1.0f);
+        const float s = t * t * (3.0f - 2.0f * t);   // smoothstep
+        for (int i = 0; i < 3; ++i) rgb[i] = horizon[i] + (ground[i] - horizon[i]) * s;
+    }
+    return DirectX::PackedVector::XMHALF4(std::pow(rgb[0], 2.2f), std::pow(rgb[1], 2.2f),
+                                          std::pow(rgb[2], 2.2f), 1.0f);
+}
+
+// 64^2 × 6 面の RGBA16F キューブを CPU で作って GPU へ上げる。形式は IBL パイプラインと
+// HDR の .dds に合わせてある（32F はフィルタリング対応がハード依存で安全でない）。
+// ponytail: 単一 mip。IBL 側は 32(irradiance) / 128(prefilter) へ畳むので、
+//           なめらかなグラデーションが相手ならこれで十分（〜200KB）。
+static std::unique_ptr<Texture> MakeProceduralSkyCube(GraphicsDevice& device,
+                                                      ID3D12GraphicsCommandList* cmd)
+{
+    using Half4 = DirectX::PackedVector::XMHALF4;
+    constexpr u32 kSize  = 64;
+    constexpr u32 kFaces = 6;
+
+    std::vector<std::vector<Half4>> pixels(
+        kFaces, std::vector<Half4>(static_cast<size_t>(kSize) * kSize));
+
+    for (u32 f = 0; f < kFaces; ++f)
+    {
+        for (u32 py = 0; py < kSize; ++py)
+        {
+            const float v = 1.0f - 2.0f * (static_cast<float>(py) + 0.5f) / kSize;
+            for (u32 px = 0; px < kSize; ++px)
+            {
+                const float u = 2.0f * (static_cast<float>(px) + 0.5f) / kSize - 1.0f;
+                float d[3];
+                switch (f)   // D3D のキューブ面順: +X -X +Y -Y +Z -Z
+                {
+                    case 0:  d[0] =  1; d[1] =  v; d[2] = -u; break;
+                    case 1:  d[0] = -1; d[1] =  v; d[2] =  u; break;
+                    case 2:  d[0] =  u; d[1] =  1; d[2] = -v; break;
+                    case 3:  d[0] =  u; d[1] = -1; d[2] =  v; break;
+                    case 4:  d[0] =  u; d[1] =  v; d[2] =  1; break;
+                    default: d[0] = -u; d[1] =  v; d[2] = -1; break;
+                }
+                pixels[f][static_cast<size_t>(py) * kSize + px] =
+                    ProceduralSkySample(d[0], d[1], d[2]);
+            }
+        }
+    }
+
+    D3D12_RESOURCE_DESC desc{};
+    desc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width            = kSize;
+    desc.Height           = kSize;
+    desc.DepthOrArraySize = static_cast<u16>(kFaces);
+    desc.MipLevels        = 1;
+    desc.Format           = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    desc.SampleDesc       = {1, 0};
+    desc.Layout           = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    desc.Flags            = D3D12_RESOURCE_FLAG_NONE;
+
+    D3D12_SUBRESOURCE_DATA sub[kFaces]{};
+    for (u32 f = 0; f < kFaces; ++f)
+    {
+        sub[f].pData      = pixels[f].data();
+        sub[f].RowPitch   = static_cast<LONG_PTR>(kSize) * sizeof(Half4);
+        sub[f].SlicePitch = sub[f].RowPitch * static_cast<LONG_PTR>(kSize);
+    }
+
+    auto tex = std::make_unique<Texture>();
+    tex->Initialize(device, cmd, desc, sub, kFaces);
+    return tex;
+}
+
 void Application::LoadSkyboxIfNeeded(ID3D12GraphicsCommandList* cmd)
 {
     if (!m_scene || !m_iblBaker) return;
@@ -7823,7 +10593,13 @@ void Application::LoadSkyboxIfNeeded(ID3D12GraphicsCommandList* cmd)
     m_envCubeTex.reset();
     m_iblReady = false;
 
+    // 手続きスカイ: ファイルを読まずにその場で生成する（新規プロジェクトの既定）
+    if (sky.envMapPath == kProceduralSkyPath)
+    {
+        m_envCubeTex = MakeProceduralSkyCube(*m_graphicsDevice, cmd);
+    }
     // VFS 経由でまず試みる（ゲームモード = pak から復号、ディスクモード = loose file）
+    else
     {
         auto envBytes = vfs::ReadAsset(sky.envMapPath);
         if (!envBytes.empty())
@@ -8202,6 +10978,32 @@ void Application::LoadProject(const ProjectInfo& info)
     // ※ SetProjectRoot の後でないと PersistPath がエンジン側を指してしまう。
     m_instancingEnabled = PersistGet("render_instancing", 1.0) != 0.0;
     Logger::Info("自動インスタンシング: {}", m_instancingEnabled ? "ON" : "OFF");
+
+    // クラスタードライティング（Forward+）。0 で「先頭 64 灯を総当たり」フォールバックへ倒す。
+    m_clusteredEnabled = PersistGet("render_clustered", 1.0) != 0.0;
+    Logger::Info("クラスタードライティング: {}", m_clusteredEnabled ? "ON" : "OFF");
+
+    // 深度プリパスの単独強制（計画10 A2）。既定 OFF。
+    m_forceDepthPrepass = PersistGet("render_depth_prepass", 0.0) != 0.0;
+    if (m_forceDepthPrepass) Logger::Info("深度プリパス: 強制 ON（render_depth_prepass=1）");
+
+    // 内部解像度スケール（#16）。1.0 で従来と完全に同じ絵。0.5 なら 3D だけ半解像度で
+    // 描いて表示解像度へ引き伸ばす（UI / ImGui は表示解像度のまま鮮明）。
+    {
+        const f32 s = std::clamp(static_cast<f32>(PersistGet("render_scale", 1.0)), 0.25f, 1.0f);
+        if (s != m_renderScale) { m_renderScale = s; m_renderResFlush = true; }
+        Logger::Info("レンダー解像度スケール: {:.2f}", m_renderScale);
+    }
+
+    // BC7/BC5 テクスチャ圧縮（settings.json "texture_compression"、既定 1）。
+    //   0 = 無圧縮（ハードウェア/ツール差で絵が壊れた時に従来の R8G8B8A8 へ戻す逃げ道）
+    //   1 = 高速（BC7 は mode6 のみ。実測 1024² で 1.1 秒）
+    //   2 = 高品質（BC7 全モード探索。実測 1024² で 37 秒。初回だけ待てるなら）
+    TextureLoader::SetCompressionMode(static_cast<int>(PersistGet("texture_compression", 1.0)));
+    {
+        const int q = static_cast<int>(TextureLoader::GetCompressionMode());
+        Logger::Info("テクスチャ BC 圧縮: {}", q == 0 ? "OFF" : (q == 1 ? "ON(高速)" : "ON(高品質)"));
+    }
 
     // 1.5) プロジェクト独自シェーダー(上書き/自作)を再走査。切替前の PSO が残っている可能性があるので
     //      WaitIdle 後に全リロードキーを差分無視で作り直す(Poll() の逐次差分検知とは別経路)。
@@ -9340,6 +12142,9 @@ void Application::UpdateSceneLoadJob(ID3D12GraphicsCommandList* cmdList)
 void Application::FinishSceneLoad(const std::string& fullPath, const std::string& rel, bool runtime,
                                   ID3D12GraphicsCommandList* cmdList)
 {
+    // TAA: 別のシーンの絵を履歴として持ち越さない（持ち越すと切替直後に前のシーンが半透明で残る）。
+    InvalidateTemporalHistory();
+
     if (runtime)
     {
         DoRuntimeSceneLoad(rel, cmdList);
@@ -9530,6 +12335,9 @@ void Application::LaunchNetTestClient()
 
 void Application::EnterPlayMode()
 {
+    InvalidateTemporalHistory();   // Editor の絵を Play の履歴に持ち越さない
+    m_mcpCameraOverride = false;   // MCP の撮影用カメラ固定はモード遷移で必ず解除する
+
     // カメラ設置チェック
     {
         auto& reg = m_scene->GetRegistry();
@@ -9773,6 +12581,9 @@ void Application::EnterEditorMode()
 {
     DX_ASSERT(!m_playSceneJson.empty(),
               "EnterEditorMode requires a prior EnterPlayMode snapshot");
+
+    InvalidateTemporalHistory();   // Play の絵を Editor の履歴に持ち越さない
+    m_mcpCameraOverride = false;   // MCP の撮影用カメラ固定はモード遷移で必ず解除する
 
     m_commandQueue->WaitIdle();
 
@@ -10091,11 +12902,21 @@ bool Application::BuildGame()
         {
             fs::path assetsDir = fs::path(PathResolver::AssetsDir());
             std::error_code ec;
-            for (auto& entry : fs::recursive_directory_iterator(assetsDir, ec))
+            for (fs::recursive_directory_iterator it(assetsDir, ec), end; it != end; it.increment(ec))
             {
-                if (!entry.is_regular_file()) continue;
-                std::string relPath = entry.path().lexically_relative(assetsDir).generic_string();
-                pak.AddFile(entry.path().string(), relPath);
+                if (ec) break;
+                // "." 始まりのフォルダ（.thumbcache / .texcache）はエディタ専用のキャッシュ。
+                // 出荷 pak に入れても実行時には参照されず容量を食うだけなので丸ごと除外する。
+                if (it->is_directory(ec))
+                {
+                    const std::string dirName = it->path().filename().string();
+                    if (!dirName.empty() && dirName[0] == '.')
+                        it.disable_recursion_pending();
+                    continue;
+                }
+                if (!it->is_regular_file(ec)) continue;
+                std::string relPath = it->path().lexically_relative(assetsDir).generic_string();
+                pak.AddFile(it->path().string(), relPath);
             }
         }
 
@@ -10433,6 +13254,17 @@ void Application::BuildDrawList()
         item.e        = e;
         item.renderer = &renderer;
         XMStoreFloat4x4(&item.world, world);
+        // 速度バッファ用の前フレームワールド行列。TAA 無効時は追跡しない＝world と同値（速度0）。
+        // 新規スポーン直後も PrevWorldMatrix が無いので world と同値になり、初回のゴーストを防ぐ。
+        if (m_trackPrevWorld)
+        {
+            if (const auto* pw = reg.try_get<PrevWorldMatrix>(e)) item.prevWorld = pw->m;
+            else                                                  item.prevWorld = item.world;
+        }
+        else
+        {
+            item.prevWorld = item.world;
+        }
 
         auto* skel = reg.try_get<SkeletalAnimation>(e);
         item.skin        = skel ? skel->skinningBuffer.get() : nullptr;
@@ -10496,8 +13328,16 @@ void Application::BuildDrawList()
         // 「per-object 定数を一切必要としない静的メッシュ」だけを畳む。
         // アニメ/スキン/カスタムシェーダ/マテリアル差し替え/UVアニメがあると
         // インスタンス間で定数が違うので対象外（従来経路にフォールバック）。
+        // ★レイヤーセット付きの地形は専用 PSO（Terrain.hlsl）で描くので、インスタンシングの
+        //   対象から外す（インスタンス経路は ForwardInstanced_VS + Forward_PS 固定のため）。
+        //   地形は 1 体 1 メッシュでバッチが 1 件しか集まらず、外しても性能は落ちない。
+        //   レイヤーセット未設定の地形は判定に掛からない＝従来どおりインスタンス経路のまま。
+        bool splatTerrain = false;
+        if (const auto* tc = reg.try_get<Terrain>(e))
+            splatTerrain = !tc->layerSetPath.empty();
+
         item.batchKey = 0;
-        if (item.sortKey == 0u && !item.skin && !item.hasNodeAnim
+        if (item.sortKey == 0u && !item.skin && !item.hasNodeAnim && !splatTerrain
             && renderer.meshes.size() == 1 && renderer.meshes[0]
             && !renderer.HasMaterialAsset(0) && !renderer.HasAnyTextureOverride(0)
             && renderer.animFrames == 0
@@ -10519,6 +13359,15 @@ void Application::BuildDrawList()
         m_drawItems.push_back(item);
     }
     }   // _scan
+
+    // 速度バッファ用に「今フレームのワールド行列」を次フレームの prevWorld として記録する。
+    // ★view 走査を抜けてから別ループで書く（走査中に別ストレージへ emplace すると entt の
+    //   バージョン次第で挙動が怪しいため。ここなら確実に安全）。
+    if (m_trackPrevWorld)
+    {
+        for (const auto& it : m_drawItems)
+            reg.emplace_or_replace<PrevWorldMatrix>(it.e, PrevWorldMatrix{it.world});
+    }
 
     CpuScopeTimer _sort(&m_cpuMs[CpuListSort]);
     // PSO バケツ → シェーダ → メッシュ → LOD → バッチ鍵 の順に整列。
@@ -10596,6 +13445,10 @@ void Application::RecordPerfFrame()
             nlohmann::json rep = PerfReportJson(sum, m_useVsync, m_fpsLimit);
             rep["frames"] = static_cast<int>(n);
             rep["instancing"] = m_instancingEnabled;
+            rep["clustered"]  = m_clusteredEnabled;
+            rep["renderScale"]      = m_renderScale;      // #16。GPU 時間の A/B ではここも見ること
+            rep["depthPrepass"]     = m_forceDepthPrepass;
+            rep["renderResolution"] = {{"width", m_renderW}, {"height", m_renderH}};
             // uncap で外していた FPS 上限/VSync を元に戻す（レポートには計測時の値=解除後を載せる）
             if (m_benchRestore)
             {
@@ -10620,7 +13473,8 @@ void Application::RecordPerfFrame()
 
 void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u32 frameIndex,
                                    DirectX::XMMATRIX viewProj, bool isGameView, u32 aoSrvIndex,
-                                   bool depthPrepassActive)
+                                   bool depthPrepassActive, u32 contactShadowSrvIndex,
+                                   u32 ssrSrvIndex, u32 ssgiSrvIndex)
 {
     using namespace DirectX;
     auto& reg = m_scene->GetRegistry();
@@ -10643,6 +13497,27 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
         m_commandList->SetSRVTable(RootSignature::kSlotAOSRV,
             m_srvHeap->GetGpuHandle(aoSrvIndex));
 
+    // コンタクトシャドウ(t11)も同じ理由でここで 1 回バインド。
+    // PS が無条件で Load するので、無効時も白ダミー(1.0)を必ず張ること。
+    {
+        const u32 csIdx = (contactShadowSrvIndex != DescriptorHeap::kInvalidIndex)
+            ? contactShadowSrvIndex : m_ssaoWhiteSrvIndex;
+        if (csIdx != DescriptorHeap::kInvalidIndex)
+            m_commandList->SetSRVTable(RootSignature::kSlotContactShadowSRV,
+                m_srvHeap->GetGpuHandle(csIdx));
+    }
+
+    // SSR(t16) / SSGI(t17) も同形。PS が無条件で Load するので、無効時は必ず
+    // 1x1 黒ダミー(RGBA16F)を張ること（1x1 なので範囲外 Load=0 ＝ 寄与ゼロになる）。
+    {
+        const u32 ssr  = (ssrSrvIndex  != DescriptorHeap::kInvalidIndex) ? ssrSrvIndex  : m_ssBlackSrvIndex;
+        const u32 ssgi = (ssgiSrvIndex != DescriptorHeap::kInvalidIndex) ? ssgiSrvIndex : m_ssBlackSrvIndex;
+        if (ssr != DescriptorHeap::kInvalidIndex)
+            m_commandList->SetSRVTable(RootSignature::kSlotSsrSRV, m_srvHeap->GetGpuHandle(ssr));
+        if (ssgi != DescriptorHeap::kInvalidIndex)
+            m_commandList->SetSRVTable(RootSignature::kSlotSsgiSRV, m_srvHeap->GetGpuHandle(ssgi));
+    }
+
     // パーティクル判定（名前が "Pfx" で始まる＝加算発光で描く。パス3の instancing 集約用）
     auto isPfx = [&](entt::entity e) -> bool {
         const auto* nt = reg.try_get<NameTag>(e);
@@ -10654,11 +13529,32 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
     auto drawEntity = [&](entt::entity e, const MeshRenderer& renderer, XMMATRIX world,
                           SkinningBuffer* skin, bool hasNodeAnim, bool isGrid, u32 lod)
     {
+        // ★地形マテリアル（4 レイヤースプラット）のゲートはここ 1 箇所だけ。
+        //   layerSetPath が空でなく、レイヤー配列とスプラットが両方揃った時にだけ地形経路へ入る。
+        //   b2 の意味を読み替えているので「地形 PSO ではないのに地形の定数を詰める」
+        //   逆条件が絶対に起きない書き方にしてある（terrainSrv が 0xFFFFFFFF なら丸ごと従来経路）。
+        const Terrain* terrainMat = nullptr;
+        u32 terrainSrv = 0xFFFFFFFF;
+        if (!isGrid && !skin && m_terrainPipelineState)
+        {
+            const Terrain* tc = reg.try_get<Terrain>(e);
+            if (tc && !tc->layerSetPath.empty())
+            {
+                terrainSrv = EnsureTerrainSrv(e, *tc, nativeCmdList);
+                if (terrainSrv != 0xFFFFFFFF) terrainMat = tc;
+            }
+        }
+
         // PSO 選択。同一 PSO が連続する間はバインドをスキップ（リストはソート済み）。
         PipelineState* psoSel;
         if (isGrid)
         {
             psoSel = m_gridPipelineState.get();
+        }
+        else if (terrainMat)
+        {
+            psoSel = depthPrepassActive ? m_terrainPipelineStateLEqual.get()
+                                        : m_terrainPipelineState.get();
         }
         else if (skin)
         {
@@ -10700,9 +13596,24 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             struct PerObjectData { XMMATRIX mvp; XMMATRIX mdl; float effect; XMFLOAT3 _pad; XMFLOAT4 params; } objData;
             objData.mvp = XMMatrixTranspose(meshWorld * viewProj);
             objData.mdl = XMMatrixTranspose(meshWorld);
-            objData.effect = renderer.effectValue;
-            objData._pad   = {};
-            objData.params = renderer.shaderParams;
+            if (terrainMat)
+            {
+                // ★b0 の余り 8 float を地形用に読み替える（バイトレイアウトは 1 バイトも変えない）。
+                //   effect → pomHeightScale / _pad(3) → pomFadeStart,End,normalStrength /
+                //   params → terrainParams(.x=1/uvScale .y=distTilingStart .z=distTilingFarScale .w=macroStrength)
+                objData.effect = terrainMat->pomHeightScale;
+                objData._pad   = { terrainMat->pomFadeStart, terrainMat->pomFadeEnd,
+                                   terrainMat->normalStrength };
+                const f32 uvS  = (terrainMat->uvScale > 1e-4f) ? terrainMat->uvScale : 1.0f;
+                objData.params = { 1.0f / uvS, terrainMat->distTilingStart,
+                                   terrainMat->distTilingFarScale, terrainMat->macroStrength };
+            }
+            else
+            {
+                objData.effect = renderer.effectValue;
+                objData._pad   = {};
+                objData.params = renderer.shaderParams;
+            }
             m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 40, &objData);
 
             const Material* mat = mesh->GetMaterial();
@@ -10722,7 +13633,9 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             // 専用ブロックを優先する(mat は同一モデルの全インスタンスで共有されるため直接は触らない)。
             u32 overrideBlock = EnsureMaterialOverrideSrv(e, mi, renderer, mat, nativeCmdList);
             D3D12_GPU_DESCRIPTOR_HANDLE matSrv;
-            if (matAsset)
+            if (terrainMat)
+                matSrv = m_srvHeap->GetGpuHandle(terrainSrv);   // t0/t1=レイヤー配列, t2=スプラット
+            else if (matAsset)
                 matSrv = m_srvHeap->GetGpuHandle(matAsset->srvBlockStart);
             else if (overrideBlock != 0xFFFFFFFF)
                 matSrv = m_srvHeap->GetGpuHandle(overrideBlock);
@@ -10738,6 +13651,45 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             {
                 m_commandList->SetSRVTable(RootSignature::kSlotSRVTable, matSrv);
                 lastMatSrv = matSrv.ptr;
+            }
+
+            // ★地形は b2（8 DWORD）をまるごと TerrainMaterial として読み替える。
+            //   Terrain.hlsl の cbuffer TerrainMaterial とバイト単位で一致させること。
+            if (terrainMat)
+            {
+                const auto* ls = m_terrainLayerSets->GetOrLoad(terrainMat->layerSetPath, nativeCmdList);
+                const u32 layerCount = (ls && ls->valid) ? ls->layerCount : 1u;
+                u32 flags = terrainMat->terrainMatFlags & 0xFFu;
+                flags |= (layerCount & 0xFu) << 8;
+                flags |= (std::min)(terrainMat->pomMaxSteps, 255u) << 16;
+
+                struct { float heightBlendDepth; float triplanarSharpness; u32 flags; float macroScale;
+                         float tile0, tile1, tile2, tile3; } tp;
+                tp.heightBlendDepth   = terrainMat->heightBlendDepth;
+                tp.triplanarSharpness = (terrainMat->triplanarSharpness > 0.1f)
+                                      ? terrainMat->triplanarSharpness : 4.0f;
+                tp.flags              = flags;
+                tp.macroScale         = (terrainMat->macroScale > 1e-3f) ? terrainMat->macroScale : 90.0f;
+                tp.tile0 = ls ? ls->tiling[0] : 0.35f;
+                tp.tile1 = ls ? ls->tiling[1] : 0.35f;
+                tp.tile2 = ls ? ls->tiling[2] : 0.35f;
+                tp.tile3 = ls ? ls->tiling[3] : 0.35f;
+                nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPBRMaterial, 8, &tp, 0);
+
+                if (mesh != lastVbMesh || lod != lastLod)
+                {
+                    m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                    m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
+                    m_commandList->SetIndexBuffer(mesh->GetIndexBufferLod(lod).GetView());
+                    lastVbMesh = mesh;
+                    lastLod    = lod;
+                }
+                m_commandList->DrawIndexedInstanced(mesh->GetIndexCountLod(lod));
+                ++m_statDraws;
+                m_statTris += mesh->GetIndexCountLod(lod) / 3;
+                ++m_passBucket->draws;
+                m_passBucket->tris += mesh->GetIndexCountLod(lod) / 3;
+                continue;
             }
 
             // PBR Material Constants (Slot 5)
@@ -10762,10 +13714,23 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
                 pbrParams.roughness = (renderer.overrideRoughness >= 0.0f) ? renderer.overrideRoughness
                                     : (mat ? mat->defaultRoughness : 0.5f);
                 pbrParams.flags     = 0;
-                if (mat && mat->normalMapTexture) pbrParams.flags |= 1u;
-                // overrideが有効な場合、metalRoughnessテクスチャのスケーリングを無効化
-                bool hasOverride = (renderer.overrideMetallic >= 0.0f || renderer.overrideRoughness >= 0.0f);
-                if (!hasOverride && mat && mat->metalRoughnessTexture) pbrParams.flags |= 2u;
+                // ★上書きテクスチャ(MeshRenderer::overrideNormalTexture /
+                //   overrideMetalRoughnessTexture)も見る。EnsureMaterialOverrideSrv は既に
+                //   t1/t2 を差し替えているのに、ここが Material 側しか見ていなかったので
+                //   「set_texture で法線/ORM を貼っても SRV だけ差し替わりシェーダが無視する」
+                //   状態だった(#26)。ブロックが確保できた時だけ立てる(確保に失敗したら
+                //   t1/t2 は 3 本ブロックではないので絶対にサンプルさせない)。
+                const bool ovBlockOk = (overrideBlock != 0xFFFFFFFFu);
+                const bool ovNormal  = ovBlockOk &&
+                    !MeshRenderer::SafeGetOverride(renderer.overrideNormalTexture, mi).empty();
+                const bool ovMR      = ovBlockOk &&
+                    !MeshRenderer::SafeGetOverride(renderer.overrideMetalRoughnessTexture, mi).empty();
+                if (ovNormal || (mat && mat->normalMapTexture))      pbrParams.flags |= 1u;
+                // ★metallic/roughness のスカラーは glTF 意味論の「係数」として扱い、
+                //   MR テクスチャを殺さない(matAsset 経路と同じ規則に揃えた)。
+                //   SceneSerializer が全モデルに material{metallic,roughness} を必ず書くため、
+                //   旧実装では「保存し直したシーンでは ORM テクスチャが必ず死ぬ」状態だった。
+                if (ovMR || (mat && mat->metalRoughnessTexture))     pbrParams.flags |= 2u;
                 pbrParams.pad = 0;
             }
             // UV 変換: 連番アニメ > UVスクロール > 恒等 の優先順（renderer/SpriteAnim.h の純関数）
@@ -10909,9 +13874,10 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
         pbrParams.roughness = (r.overrideRoughness >= 0.0f) ? r.overrideRoughness
                                                             : (mat ? mat->defaultRoughness : 0.5f);
         pbrParams.flags = 0;
-        if (mat && mat->normalMapTexture) pbrParams.flags |= 1u;
-        const bool hasOverride = (r.overrideMetallic >= 0.0f || r.overrideRoughness >= 0.0f);
-        if (!hasOverride && mat && mat->metalRoughnessTexture) pbrParams.flags |= 2u;
+        if (mat && mat->normalMapTexture)      pbrParams.flags |= 1u;
+        // ★metallic/roughness のスカラーは glTF 意味論の「係数」＝ MR テクスチャを殺さない
+        //   （非インスタンス経路 / matAsset 経路と同じ規則。#26 で揃えた）
+        if (mat && mat->metalRoughnessTexture) pbrParams.flags |= 2u;
         pbrParams.pad = 0.0f;
         pbrParams.uvScaleX = 1.0f; pbrParams.uvScaleY = 1.0f;
         pbrParams.uvOffsetX = 0.0f; pbrParams.uvOffsetY = 0.0f;
@@ -11082,11 +14048,88 @@ void Application::DrawWorldSprites(ID3D12GraphicsCommandList* cmd, DirectX::XMMA
 // GridPlane・park済み(scale≈0)・発光弾(Pfx*)は除外（元のシャドウパスのフィルタをそのまま踏襲）。
 void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState& staticPSO,
                                        PipelineState& skinnedPSO, bool updateSkinning, u32 frameIndex,
-                                       u32 lodBias, PipelineState* instPSO)
+                                       u32 lodBias, PipelineState* instPSO,
+                                       const PrepassParams* prepass,
+                                       bool skipRtCovered)
 {
     using namespace DirectX;
 
     auto& reg = m_scene->GetRegistry();
+
+    // 速度モード（PrepassMode::DepthVelocityGBuffer）。b0 のレイアウトが変わり、
+    // インスタンシング経路は slot2 に前フレームワールドを積み、スキンドは t12 に前ボーンを張る。
+    const bool velocityMode = prepass && prepass->mode == PrepassMode::DepthVelocityGBuffer;
+    const XMMATRIX prevViewProj = velocityMode ? XMLoadFloat4x4(&prepass->prevViewProj)
+                                               : XMMatrixIdentity();
+    const XMFLOAT2 jitterNdc = prepass ? prepass->jitterNdc : XMFLOAT2{0.0f, 0.0f};
+    const bool skipTransparent = prepass && prepass->skipTransparent;
+    if (velocityMode && !m_instancePrevMapped[frameIndex]) instPSO = nullptr;  // 前ワールドVBが無ければ従来経路
+
+    // 速度+G-Buffer パスの b0。静的/スキンドは 40 DWORD（ルート定数の上限ぴったり）、
+    // インスタンシングは 36 DWORD（法線はインスタンスデータから取れるので行列を送らない）。
+    // ★ 静的/スキンド版で prevMvp の z 列を送っていないのは、そこで浮いた 4 DWORD を
+    //   法線行列(3x3=9)に回すため。prevClip は x/y/w しか使わないので情報は落ちていない。
+    struct VelocityObjCB
+    {
+        XMMATRIX mvpJ;                        // 16  transpose(world * viewProjJittered)
+        XMFLOAT4 prevC0, prevC1, prevC3;      // 12  transpose(prevWorld*prevVP) の row0/1/3
+        XMFLOAT3 nrm0; float jitterX;         //  4  transpose(world).row0.xyz
+        XMFLOAT3 nrm1; float jitterY;         //  4
+        XMFLOAT3 nrm2; float matPacked;       //  4  round(rough*255)+round(metal*255)*256
+    };
+    static constexpr u32 kVelocityObjNum32 = 40;
+    static_assert(sizeof(VelocityObjCB) == kVelocityObjNum32 * sizeof(float),
+                  "VelocityObjCB は shaders/velocity/VelocityPrepass{,Skinned}.hlsl の cbuffer と一致させること");
+
+    struct VelocityInstObjCB { XMMATRIX vpJ; XMMATRIX prevVp; XMFLOAT2 jitter; float matPacked; float pad; };
+    static constexpr u32 kVelocityInstObjNum32 = 36;
+    static_assert(sizeof(VelocityInstObjCB) == kVelocityInstObjNum32 * sizeof(float),
+                  "VelocityInstObjCB は shaders/velocity/VelocityPrepassInstanced.hlsl と一致させること");
+
+    // b0 の 1 float に roughness/metallic を詰める（ScreenSpaceCommon.hlsli の SS_UnpackMaterial と対）。
+    auto packMaterial = [](float roughness, float metallic) -> float
+    {
+        const float r = std::round(std::clamp(roughness, 0.0f, 1.0f) * 255.0f);
+        const float m = std::round(std::clamp(metallic,  0.0f, 1.0f) * 255.0f);
+        return r + m * 256.0f;
+    };
+    // transpose(world) の row0/1/2 の xyz を取り出す（= world 3x3 の列）。
+    // forward の mul(normal, (float3x3)model) と同じ値になる並び。
+    auto fillNormalRows = [](VelocityObjCB& c, const XMMATRIX& worldT)
+    {
+        XMFLOAT4 r0, r1, r2;
+        XMStoreFloat4(&r0, worldT.r[0]);
+        XMStoreFloat4(&r1, worldT.r[1]);
+        XMStoreFloat4(&r2, worldT.r[2]);
+        c.nrm0 = {r0.x, r0.y, r0.z};
+        c.nrm1 = {r1.x, r1.y, r1.z};
+        c.nrm2 = {r2.x, r2.y, r2.z};
+    };
+    // transpose(prevMvp) の row0/1/3（= prevMvp の col0/1/3）。row2(z) は prevClip で使わない。
+    auto fillPrevCols = [](VelocityObjCB& c, const XMMATRIX& prevMvpT)
+    {
+        XMStoreFloat4(&c.prevC0, prevMvpT.r[0]);
+        XMStoreFloat4(&c.prevC1, prevMvpT.r[1]);
+        XMStoreFloat4(&c.prevC3, prevMvpT.r[3]);
+    };
+    // G-Buffer に書く roughness/metallic。RenderSceneMeshes の PBR ルート定数と同じ優先順
+    // （materialAsset > MeshRenderer のスカラー上書き > モデル焼き込み Material）。
+    // v1 では metalRoughness テクスチャは読まない（プリパスで t0-t2 を毎ドロー貼らないため）。
+    auto resolvePbr = [&](const MeshRenderer& r, const Mesh* m, u32 mi, float& rough, float& metal)
+    {
+        const Material* mat = m ? m->GetMaterial() : nullptr;
+        float baseM = mat ? mat->defaultMetallic  : 0.0f;
+        float baseR = mat ? mat->defaultRoughness : 0.5f;
+        if (m_materialAssetManager && r.HasMaterialAsset(mi))
+        {
+            const MaterialAssetManager::Entry* loaded = m_materialAssetManager->GetOrLoad(
+                MeshRenderer::SafeGetOverride(r.materialAsset, mi), m_commandList->GetNative());
+            if (loaded && loaded->valid) { baseM = loaded->data.metallic; baseR = loaded->data.roughness; }
+        }
+        metal = (r.overrideMetallic  >= 0.0f) ? r.overrideMetallic  : baseM;
+        rough = (r.overrideRoughness >= 0.0f) ? r.overrideRoughness : baseR;
+        rough = (std::max)(rough, 0.04f);   // Forward.hlsl:179 と同じ下限
+    };
 
     // このパスの視錐台（ライト/カメラ視点）で描画リストを球カリングする。
     // CSM はタイトフィット正射 + DepthClipEnable=TRUE のため、落とすのは
@@ -11100,18 +14143,35 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
     const size_t itemCount = m_drawItems.size();
     const XMMATRIX passVpT = XMMatrixTranspose(viewProj);   // instanced VS の b0 用
     // 描画は単一スレッドなので関数ローカル static で使い回す。
-    static std::vector<MeshInstanceData> depthInstScratch;
+    static std::vector<MeshInstanceData>     depthInstScratch;
+    static std::vector<MeshInstancePrevData> depthInstPrevScratch;
     bool instOverflow = false;   // リングが尽きたら以降このパスは従来経路のみ
 
     for (size_t i = 0; i < itemCount; ++i)
     {
         const DrawItem& item = m_drawItems[i];
 
+        // 半透明（カスタムシェーダ + shaderAlphaBlend）はカメラのプリパスから除外する。
+        // ＝プリパスが半透明の深度を書いてしまうと、その裏の不透明が forward の LESS_EQUAL で
+        //   弾かれて「ガラス越しにクリア色が見える」（00-COORDINATION §6 B3）。
+        // 影パスでは skipTransparent=false のままなので、半透明の影は従来どおり落ちる。
+        // 半透明は velocity も書かない（TAA は背後の不透明の速度で再投影する＝標準的な扱い）。
+        if (skipTransparent && item.sortKey == 3u) continue;
+
+        // ★RT サン影が有効なとき、CSM は「DXR の TLAS に入っていないもの」だけを描く。
+        //   CSM と RT で担当を排他にしておかないと、フォワードの
+        //     shadow = min(csmShadow, contactShadowTex)
+        //   が暗い方を採るせいで CSM のアクネ（本来明るいのに縞状に暗い）と
+        //   カスケード境界の段差が残ってしまう（RT 影を入れる意味の半分がここ）。
+        //   判定は必ず IsRaytracedItem()（renderer/DrawItem.h）に一本化すること。
+        if (skipRtCovered && IsRaytracedItem(item)) continue;
+
         // ★自動インスタンシング: 同一 batchKey の連続ランを 1 ドローに畳む。
         //   batchKey は LOD 込みなので、このパスの lodBias を足しても run 内は同一 LOD。
         if (instPSO && m_instancingEnabled && item.batchKey != 0 && !instOverflow)
         {
             depthInstScratch.clear();
+            depthInstPrevScratch.clear();
             size_t j = i;
             for (; j < itemCount && m_drawItems[j].batchKey == item.batchKey; ++j)
             {
@@ -11123,7 +14183,21 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
                 XMStoreFloat4(&d.r1, t.r[1]);
                 XMStoreFloat4(&d.r2, t.r[2]);
                 d.color = {1.0f, 1.0f, 1.0f, 1.0f};
+                // ★不変条件: depthInstScratch と depthInstPrevScratch は必ず同じ要素数・同じ順序。
+                //   同じ base オフセットへ別々のストライドで memcpy し、slot1/slot2 として
+                //   同じインスタンスに割り当てられるため。**この2つの push_back の間に
+                //   early-continue を挟むと無言で対応がズレる**（前フレームのワールド行列が
+                //   別のインスタンスに付き、そのオブジェクトだけ盛大にゴーストする）。
                 depthInstScratch.push_back(d);
+                if (velocityMode)
+                {
+                    XMMATRIX pt = XMMatrixTranspose(XMLoadFloat4x4(&m_drawItems[j].prevWorld));
+                    MeshInstancePrevData p;
+                    XMStoreFloat4(&p.p0, pt.r[0]);
+                    XMStoreFloat4(&p.p1, pt.r[1]);
+                    XMStoreFloat4(&p.p2, pt.r[2]);
+                    depthInstPrevScratch.push_back(p);
+                }
             }
             const u32 n = static_cast<u32>(depthInstScratch.size());
             if (n == 0) { i = j - 1; continue; }
@@ -11133,6 +14207,9 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
                 const u32 base = m_instanceCursor;
                 std::memcpy(m_instanceMapped[frameIndex] + static_cast<size_t>(base) * sizeof(MeshInstanceData),
                             depthInstScratch.data(), static_cast<size_t>(n) * sizeof(MeshInstanceData));
+                if (velocityMode)
+                    std::memcpy(m_instancePrevMapped[frameIndex] + static_cast<size_t>(base) * sizeof(MeshInstancePrevData),
+                                depthInstPrevScratch.data(), static_cast<size_t>(n) * sizeof(MeshInstancePrevData));
                 m_instanceCursor += n;
 
                 if (instPSO->Get() != lastPso)
@@ -11140,7 +14217,24 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
                     m_commandList->SetPipelineState(*instPSO);
                     lastPso = instPSO->Get();
                 }
-                m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 16, &passVpT);
+                if (velocityMode)
+                {
+                    // batchKey にマテリアルが含まれているので、バッチ単位で 1 回貼れば正しい。
+                    float rough = 0.5f, metal = 0.0f;
+                    resolvePbr(*item.renderer, item.renderer->meshes[0], 0, rough, metal);
+
+                    VelocityInstObjCB vc;
+                    vc.vpJ       = passVpT;                            // transpose(jittered VP)
+                    vc.prevVp    = XMMatrixTranspose(prevViewProj);    // transpose(prev non-jittered VP)
+                    vc.jitter    = jitterNdc;
+                    vc.matPacked = packMaterial(rough, metal);
+                    vc.pad       = 0.0f;
+                    m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, kVelocityInstObjNum32, &vc);
+                }
+                else
+                {
+                    m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 16, &passVpT);
+                }
 
                 const Mesh* mesh = item.renderer->meshes[0];
                 const u32   lodI = item.lod + lodBias;
@@ -11151,6 +14245,13 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
                 iv.BufferLocation += static_cast<u64>(base) * sizeof(MeshInstanceData);
                 iv.SizeInBytes     = n * sizeof(MeshInstanceData);
                 m_commandList->GetNative()->IASetVertexBuffers(1, 1, &iv);
+                if (velocityMode)
+                {
+                    D3D12_VERTEX_BUFFER_VIEW pv = m_instancePrevVbView[frameIndex];
+                    pv.BufferLocation += static_cast<u64>(base) * sizeof(MeshInstancePrevData);
+                    pv.SizeInBytes     = n * sizeof(MeshInstancePrevData);
+                    m_commandList->GetNative()->IASetVertexBuffers(2, 1, &pv);
+                }
                 lastVbMesh = mesh;
                 lastLod    = lodI;
 
@@ -11185,6 +14286,15 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
             }
             m_commandList->SetSRVTable(RootSignature::kSlotBonesSRV,
                 m_srvHeap->GetGpuHandle(item.skin->GetSrvIndex(frameIndex)));
+            if (velocityMode)
+            {
+                // SkinningBuffer は frameCount 枚を多重化していて毎フレーム frameIndex の
+                // スロットだけを書く＝前フレームのスロットに前フレームの行列がそのまま残っている。
+                // 履歴が無い初回は現フレームを前としても使う（＝速度0）。
+                const u32 prevSlot = m_prevFrameIndexValid ? m_prevFrameIndex : frameIndex;
+                m_commandList->SetSRVTable(RootSignature::kSlotPrevBonesSRV,
+                    m_srvHeap->GetGpuHandle(item.skin->GetSrvIndex(prevSlot)));
+            }
         }
         else if (staticPSO.Get() != lastPso)
         {
@@ -11204,10 +14314,34 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
                 meshWorld = nodeMat * world;
             }
 
-            struct PerObjectData { XMMATRIX mvp; XMMATRIX mdl; } objData;
-            objData.mvp = XMMatrixTranspose(meshWorld * viewProj);
-            objData.mdl = XMMatrixTranspose(meshWorld);
-            m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
+            if (velocityMode)
+            {
+                // 前フレームのメッシュワールド。ノードアニメ(meshNodeTransforms)は現在値しか
+                // 持っていないので、そのメッシュの速度は「親のワールドの動き」だけの近似になる
+                // （既知の制限。精密にやるなら MeshRenderer に prevMeshNodeTransforms が要る）。
+                XMMATRIX prevMeshWorld = XMLoadFloat4x4(&item.prevWorld);
+                if (item.hasNodeAnim && mi < static_cast<u32>(renderer.meshNodeTransforms.size()))
+                    prevMeshWorld = XMLoadFloat4x4(&renderer.meshNodeTransforms[mi]) * prevMeshWorld;
+
+                float rough = 0.5f, metal = 0.0f;
+                resolvePbr(renderer, mesh, mi, rough, metal);
+
+                VelocityObjCB vc;
+                vc.mvpJ    = XMMatrixTranspose(meshWorld * viewProj);   // viewProj はジッタ込み
+                fillPrevCols(vc, XMMatrixTranspose(prevMeshWorld * prevViewProj)); // 前は非ジッタ
+                fillNormalRows(vc, XMMatrixTranspose(meshWorld));
+                vc.jitterX   = jitterNdc.x;
+                vc.jitterY   = jitterNdc.y;
+                vc.matPacked = packMaterial(rough, metal);
+                m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, kVelocityObjNum32, &vc);
+            }
+            else
+            {
+                struct PerObjectData { XMMATRIX mvp; XMMATRIX mdl; } objData;
+                objData.mvp = XMMatrixTranspose(meshWorld * viewProj);
+                objData.mdl = XMMatrixTranspose(meshWorld);
+                m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
+            }
 
             if (mesh != lastVbMesh || lod != lastLod)
             {
@@ -11380,6 +14514,9 @@ void Application::Render()
     // マテリアルアセット(.dxmat)のホットリロード監視。エディタのみ(内部で0.5秒間隔にスロットリング)。
     if (!m_isGameMode && m_materialAssetManager)
         m_materialAssetManager->PollHotReload(m_gameClock.GetDeltaTime(), nativeCmdList);
+    // 地形レイヤーセット(.terrainlayers)のホットリロード監視（同上）。
+    if (!m_isGameMode && m_terrainLayerSets)
+        m_terrainLayerSets->PollHotReload(m_gameClock.GetDeltaTime(), nativeCmdList);
 
     // Deferred: new scene（描画前に処理しないと GPU リソース解放でクラッシュする）
     if (m_editorCtx->pendingNewScene && m_engineMode == EngineMode::Editor)
@@ -11550,6 +14687,7 @@ void Application::Render()
                 else if (req.modelPath == "__spot_light__")       name = "SpotLight";
                 else if (req.modelPath == "__particle_emitter__") name = "ParticleEmitter";
                 else if (req.modelPath == "__trigger__")          name = "Trigger";
+                else if (req.modelPath == "__decal__")            name = "Decal";
             }
             // 同名エンティティがいると Trigger / Lua の名前参照が区別できず、
             // コピペ時の参照リマップも誤った相手に付く。生成時点で連番ユニーク化する。
@@ -11696,6 +14834,17 @@ void Application::Render()
                 reg.emplace<NameTag>(e, NameTag{name});
                 reg.emplace<Transform>(e, Transform{req.position, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
                 reg.emplace<Trigger>(e, Trigger{});
+                spawnedEntity = e;
+            }
+            else if (req.modelPath == "__decal__")
+            {
+                // 投影デカール: 空エンティティ + DecalComponent。
+                // scale が投影ボックスなので、床向けに「広く薄く」を既定にする。
+                auto& reg = m_scene->GetRegistry();
+                auto e = reg.create();
+                reg.emplace<NameTag>(e, NameTag{name});
+                reg.emplace<Transform>(e, Transform{req.position, {0.0f, 0.0f, 0.0f}, {1.0f, 2.0f, 1.0f}});
+                reg.emplace<DecalComponent>(e, DecalComponent{});
                 spawnedEntity = e;
             }
             else if (req.modelPath == "__ui_canvas__" || req.modelPath == "__ui_image__" ||
@@ -11990,40 +15139,19 @@ void Application::Render()
                         modelPath = PathResolver::AssetsDir() + modelPath;
                     auto entity = m_scene->Spawn(name, modelPath, req.position);
 
-                    // D&D時のみ: AABBから自動スケーリング
-                    bool valid = entity.IsValid();
-                    bool hasMR = valid && entity.HasComponent<MeshRenderer>();
-                    {
-                        char buf[128];
-                        snprintf(buf, sizeof(buf), "[D&D Scale] valid=%d hasMR=%d\n", valid, hasMR);
-                        OutputDebugStringA(buf);
-                    }
-
-                    if (hasMR)
-                    {
-                        auto& mr = entity.GetComponent<MeshRenderer>();
-                        f32 maxExtent = 0.0f;
-                        for (const auto* mesh : mr.meshes)
-                        {
-                            if (!mesh) continue;
-                            auto mn = mesh->GetAABBMin();
-                            auto mx = mesh->GetAABBMax();
-                            f32 dx = mx.x - mn.x;
-                            f32 dy = mx.y - mn.y;
-                            f32 dz = mx.z - mn.z;
-                            if (dx > maxExtent) maxExtent = dx;
-                            if (dy > maxExtent) maxExtent = dy;
-                            if (dz > maxExtent) maxExtent = dz;
-                        }
-                        // 既存Luaモデルと同じ見た目サイズにスケーリング
-                        constexpr f32 kDefaultScale = 0.01f;
-                        auto& t = entity.GetComponent<Transform>();
-                        t.scale = {kDefaultScale, kDefaultScale, kDefaultScale};
-
-                        // glTF/glb はZ-upなのでX軸90度回転で立たせる
-                        if (ext == ".gltf" || ext == ".glb")
-                            t.rotation.x = 90.0f;
-                    }
+                    // ★スケールは 1 のまま = ファイルが持っている実寸で置く（D&D も MCP も）。
+                    //   昔ここに「AABB から自動スケーリング」と称して *無条件に* scale=0.01 を
+                    //   入れる処理があった(maxExtent は計算するだけで捨てていた)。実体は
+                    //   Fox.glb(約 155 単位)に合わせた決め打ちで、DamagedHelmet.glb(約 1.9m)は
+                    //   2cm、1m の立方体は 1cm になっていた = 「モデルが極端に小さく読まれる」バグ。
+                    //   単位の正規化は ModelLoader 側(FBX の cm→m)で済ませてあるので、
+                    //   ここで見た目合わせをしてはいけない（オーサリングされた寸法が壊れる）。
+                    //
+                    //   ★ここに昔あった「glTF/glb は Z-up なので X 軸 90 度回転」も削除済み(B13)。
+                    //     glTF 2.0 は仕様上 Y-up 固定で、assimp も軸変換を一切足さない。
+                    //     Z-up でオーサリングされたファイル(CesiumMan.glb 等)は自分の中に
+                    //     変換ノード("Z_UP")を持っており、それは ModelLoader が
+                    //     BoneNode::preTransform として畳み込む。
                     spawnedEntity = entity.GetHandle();
                 }
                 else
@@ -12682,6 +15810,25 @@ void Application::Render()
     u32 frameIndex = m_swapChain->GetCurrentBackBufferIndex();
     f32 totalTime = m_gameClock.GetTotalTime();
 
+    // ★決定論キャプチャ（#31）: 時間依存の要素を全部固定する。
+    //   totalTime は deband ディザ / フィルムグレイン / ウェーブ / グリッチ / パーティクル /
+    //   カスタムシェーダの time が全部見ているので、ここ 1 箇所で止まる。
+    //   TAA / フォグ / SSGI は位相カウンタを毎フレーム 0 へ戻して「常に同じジッタ」にする
+    //   （＝時間蓄積は不動点へ収束する。数フレーム回してから撮ればビット再現する）。
+    if (m_deterministicCapture)
+    {
+        totalTime = kDeterministicTime;
+        if (m_taaPass)           m_taaPass->ResetJitter();
+        if (m_volumetricFogPass) m_volumetricFogPass->ResetTemporalPhase();
+        if (m_screenSpaceGi)     m_screenSpaceGi->ResetTemporalPhase();
+    }
+
+    // ===== フット IK（接地補正）=====
+    // 物理ステップが終わった後・スキニングバッファのアップロード前に走らせる
+    // （IK 後のボーン行列がアップロードされるように）。
+    // Play 中だけ（PhysicsSystem が body を持つのが Play 中だけのため）。
+    ApplyFootIkPass();
+
     // ===== スケルタルアニメのボーン行列を毎フレーム GPU へアップロード =====
     // 以前は CSM シャドウパス(ci==0)内でのみ skinningBuffer->Update していたため、
     // 影OFFシーンや正射カメラ(2Dゲーム。シャドウパスが丸ごとスキップされる)では
@@ -12752,28 +15899,16 @@ void Application::Render()
     // 以降の CSM / SSAO / forward はすべてこの同じカメラ状態を前提にする。
     // ここがシャドウ計算より後だと、Scene カメラの投影で影を作って GameCamera で描くなどの
     // 経路差が起き、Scene/Game で光の強さが違って見える。
+    // ★#16: 「表示（display）」と「レンダー（render）」の 2 つに分かれている。混ぜないこと。
+    //   vpLeft/vpTop/vpW/vpH … バックバッファ上の矩形。uber パス以降だけが使う
+    //   rW/rH               … シーン系 RT のサイズ。シーンは必ずその全面 (0,0,rW,rH) に描く
     u32 vpLeft, vpTop, vpW, vpH;
-    {
-        auto vp = m_editorLayer->GetViewportPos();
-        auto vs = m_editorLayer->GetViewportSize();
-        // 負座標(パネルのドラッグ中/画面外)を u32 へキャストすると巨大値にラップし、
-        // ビューポートが RT 外へ飛んで描画が全滅する(クリアだけ残り真っ青)ため 0 で下限。
-        vpLeft = static_cast<u32>((std::max)(0.0f, vp.x));
-        vpTop  = static_cast<u32>((std::max)(0.0f, vp.y));
-        vpW    = static_cast<u32>((std::max)(0.0f, vs.x));
-        vpH    = static_cast<u32>((std::max)(0.0f, vs.y));
-        if (vpW < 1) vpW = 1;
-        if (vpH < 1) vpH = 1;
-        // 全画面は「単体ゲーム（エディタUIなし）」のみ。エディタは編集中も Play 中も
-        // 中央の 16:9 ビューポート矩形に描く（パネル下に潜り込ませない）。
-        if (m_isGameMode)
-        {
-            vpLeft = 0; vpTop = 0;
-            vpW = m_window->GetWidth();
-            vpH = m_window->GetHeight();
-        }
-    }
+    GetDisplayViewport(vpLeft, vpTop, vpW, vpH);
+    const u32 rW = (m_renderW > 0) ? m_renderW : vpW;
+    const u32 rH = (m_renderH > 0) ? m_renderH : vpH;
 
+    // アスペクトは**表示側**を使う（レンダー解像度は同じアスペクトで縮めるだけ。
+    // ここをレンダー側にすると renderScale の丸め誤差で絵が伸びる）。
     const f32 renderAspect = static_cast<f32>(vpW) / static_cast<f32>(vpH);
 
     // ===== 2D ビューモード: エディタカメラを正射＋XY平面正対(forward +Z)へ固定 =====
@@ -12935,12 +16070,143 @@ void Application::Render()
     m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
     m_commandList->SetRootSignature(*m_rootSignature);
 
+    // ===== TAA の有効判定（BuildDrawList より前に決めること）=====
+    // 「速度バッファ用に前フレームのワールド行列を追跡するか」がここで決まるため、
+    // 描画リスト構築より前に確定させる必要がある。
+    // 正射（2D ビュー / 俯瞰ゲーム）では無効: サブピクセルジッタと深度再投影が透視前提で、
+    // 深度プリパス自体も透視限定の運用になっている。
+    const TaaSettings& taaCfg = m_scene->GetTaaSettings();
+    const bool taaViewOk = !(m_editorCtx && m_editorCtx->view2D) && !m_camera->IsOrthographic();
+    const bool taaActive = taaCfg.enabled && m_taaPass && m_taaPass->IsReady() && taaViewOk;
+    // SSR/SSGI も速度+G-Buffer プリパスを要求する（TAA が OFF でも）。速度バッファはヒット点の
+    // 再投影に使うので、前フレームのワールド行列の追跡もインスタンス用の前ワールド VB も要る。
+    // ★ここを taaActive だけにすると、SSR だけ ON のときに動く物体の速度が 0 になり、
+    //   プリパスのインスタンシング経路も無効化されて無駄に遅くなる。
+    const bool ssGiWantsPrepass =
+        m_screenSpaceGi && m_screenSpaceGi->IsReady() && taaViewOk
+        && (m_scene->GetSsrSettings().enabled || m_scene->GetSsgiSettings().enabled);
+    if (taaActive || ssGiWantsPrepass) EnsureInstancePrevBuffer();
+    m_trackPrevWorld = taaActive || ssGiWantsPrepass;
+
+    // ★かつてここに「ビューポート矩形が変わったら履歴を捨てる」ブロックがあったが、
+    //   #16 でシーンは常に RT 全面に描くようになり、履歴の UV 対応が表示矩形に依存しなくなった。
+    //   レンダー解像度が変わったときは ApplyRenderResolution() が履歴を捨てる。
+
+    // ===== TAA ジッタ =====
+    // ハルトン(2,3)列で投影行列を ±0.5px ずらす。Camera 自体には一切入れない
+    //   → エディタのピッキング / ギズモ / MCP project_world_to_screen が影響を受けない。
+    // ★ジッタ行列の数学（DirectXMath は行ベクトル規約 v' = v * M）:
+    //   clip = v * P の後に T = XMMatrixTranslation(jx, jy, 0) を掛けると
+    //   clip' = clip * T で clip'.x = clip.x + clip.w * jx。
+    //   透視では clip.w = z_view、正射では clip.w = 1 なので、どちらでも NDC が jx 平行移動する
+    //   （_31/_32 を直接いじる透視専用の方法より汎用で安全）。
+    // ★ジッタ幅は「レンダー解像度の 1px」基準（ラスタライズするのはレンダー解像度）。
+    if (taaActive) m_taaJitterNdc = m_taaPass->NextJitterNdc(
+        static_cast<u32>(taaCfg.sampleCount), rW, rH, taaCfg.jitterScale);
+    else           m_taaJitterNdc = {0.0f, 0.0f};
+    const XMFLOAT2 jitterNdc = m_taaJitterNdc;
+
+    // ラスタライズ用（ジッタあり）と、計算用（ジッタなし）を明確に分ける。
+    //   camVPJ … 深度プリパス/フォワード/パーティクル/スプライト＝実際に画を出すもの全部
+    //   camVP  … 再投影・深度線形化・太陽投影・カスケード分割・ピッキング＝ジッタ厳禁のもの
+    const XMMATRIX camVP  = m_camera->GetViewProjMatrix();
+    const XMMATRIX camVPJ = taaActive
+        ? XMMatrixMultiply(m_camera->GetViewMatrix(),
+              XMMatrixMultiply(m_camera->GetProjectionMatrix(),
+                               XMMatrixTranslation(jitterNdc.x, jitterNdc.y, 0.0f)))
+        : camVP;
+
     // フレーム描画リストを構築（1回）。以降の影/プリパス/メイン/プレビューの全パスで共有する。
     BuildDrawList();   // 内部で buildList / listSort を別々に計時する
 
     // instancing リングのカーソルをフレーム先頭でリセット。
     // 影4カスケード → 深度プリパス → メイン → プレビューの順に連番で追記していく。
     m_instanceCursor = 0;
+
+    // ===== DXR: BLAS の遅延構築 + TLAS の再構築（計画09 Step 1）=====
+    // ★CSM のパスより前に建てる。RT サン影が有効かどうかが決まらないと、
+    //   CSM が「RT の担当ぶんを描かない」排他モードに入れないため。
+    m_rtShadowActiveThisFrame = false;
+    bool rtAoActive = false;
+    if (m_dxrEnabled && m_rtScene && m_rtScreenPass && m_rtScreenPass->IsReady() && m_scene)
+    {
+        const RtSettings& rtCfg = m_scene->GetRtSettings();
+        // 深度からワールドを復元する都合で透視カメラ限定（SSAO / コンタクトシャドウと同じ条件）。
+        const bool rtViewOk = !(m_editorCtx && m_editorCtx->view2D) && !m_camera->IsOrthographic();
+        const bool wantDebug = (m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtHit)
+                             || m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtDiff));
+        const bool want = rtViewOk
+                        && (rtCfg.shadowEnabled || rtCfg.aoEnabled || rtCfg.forceBuildTlas || wantDebug);
+        if (want)
+        {
+            // シーンを作り直したら BLAS キャッシュを丸ごと捨てる。Mesh* は解放後に
+            // 同じアドレスへ再確保され得るので、内容比較だけでは検出できない（N30 と同じ話）。
+            if (m_rtSceneGenSeen != m_sceneGeneration)
+            {
+                m_rtScene->Invalidate();
+                m_rtSceneGenSeen = m_sceneGeneration;
+            }
+
+            m_gpuTimer->Begin(nativeCmdList, GpuTimer::Raytracing);
+            const XMFLOAT3 camP = m_camera->GetPosition();
+            // 除外された数は診断（dx12_diagnose の dxr 検査）で「なぜキャラの影が
+            // RT に出ないのか」を説明するために数えておく。
+            u32 skippedSkin = 0, skippedTransp = 0;
+            for (const DrawItem& it : m_drawItems)
+            {
+                if (it.skin)             ++skippedSkin;
+                else if (it.sortKey == 3u) ++skippedTransp;
+            }
+            m_rtScene->BeginFrame(camP, skippedSkin, skippedTransp);
+            for (const DrawItem& it : m_drawItems)
+            {
+                if (!IsRaytracedItem(it)) continue;
+                const MeshRenderer& r = *it.renderer;
+                const XMMATRIX world = XMLoadFloat4x4(&it.world);
+                for (u32 mi = 0; mi < static_cast<u32>(r.meshes.size()); ++mi)
+                {
+                    if (!r.meshes[mi]) continue;
+                    // ノードアニメのメッシュ単位変換はラスタ側と同じ式で合成する
+                    // （RenderSceneMeshes の meshWorld = nodeMat * world）。ここがズレると
+                    // render_debug の rtDiff で一発で分かる。
+                    XMMATRIX meshWorld = world;
+                    if (it.hasNodeAnim && mi < static_cast<u32>(r.meshNodeTransforms.size()))
+                        meshWorld = XMLoadFloat4x4(&r.meshNodeTransforms[mi]) * world;
+                    m_rtScene->AddInstance(r.meshes[mi], meshWorld, it.center);
+                }
+            }
+
+            RaytracingScene::BuildDesc bd;
+            bd.frameIndex   = frameIndex;
+            bd.maxInstances = (rtCfg.maxInstances > 0)
+                            ? static_cast<u32>(rtCfg.maxInstances) : RaytracingScene::kMaxRtInstances;
+            const bool tlasOk = m_rtScene->Build(*m_graphicsDevice, nativeCmdList, bd);
+            m_gpuTimer->End(nativeCmdList, GpuTimer::Raytracing);
+
+            if (tlasOk)
+            {
+                m_rtShadowActiveThisFrame = rtCfg.shadowEnabled;
+                rtAoActive                = rtCfg.aoEnabled;
+            }
+        }
+    }
+    // エディタのライティング窓へ実行時状態を流す（非対応 GPU で理由を出すため）。
+    if (m_editorCtx)
+    {
+        m_editorCtx->dxrSupported   = m_dxrEnabled;
+        m_editorCtx->dxrTier        = m_graphicsDevice
+                                    ? static_cast<int>(m_graphicsDevice->GetRaytracingTier()) : 0;
+        m_editorCtx->dxrShaderModel = m_graphicsDevice
+                                    ? static_cast<int>(m_graphicsDevice->GetHighestShaderModel()) : 0;
+        if (m_rtScene)
+        {
+            const auto& st = m_rtScene->GetStats();
+            m_editorCtx->dxrInstances      = st.instances;
+            m_editorCtx->dxrSkippedSkinned = st.skippedSkinned;
+            m_editorCtx->dxrAsBytes        = st.blasBytes + st.tlasBytes
+                                           + st.scratchBytes + st.instanceDescBytes;
+        }
+    }
 
     // ===== スポットライト影スロット割当（castShadows なライトをカメラに近い順で最大kMaxShadowSpot灯）=====
     // 結果は m_spotShadowViewProj[] / m_spotShadowEntity[] に格納し、直後の影パス描画と
@@ -13127,9 +16393,14 @@ void Application::Render()
 
             // skinningBuffer はフレーム先頭で全 SkeletalAnimation を一括 Update 済み
             // （シャドウパスは影OFF/正射カメラでスキップされるため、ここでは更新しない）。
+            // ★RT サン影が有効なフレームは、CSM は「RT が担当できないもの」だけを描く
+            //   （スキンド / 半透明）。担当を排他にすることで、フォワードの min() 合成が
+            //   静的ジオメトリのアクネ・peter-panning・カスケード境界を完全に消す。
+            //   副産物として CSM のドロー数も大きく減る。
             RenderDepthOnlyScene(cascadeVP, *m_shadowPipelineState, *m_shadowSkinnedPipelineState,
                                  /*updateSkinning*/ false, frameIndex, /*lodBias*/ 1,
-                                 m_shadowPipelineStateInst.get());
+                                 m_shadowPipelineStateInst.get(), /*prepass*/ nullptr,
+                                 /*skipRtCovered*/ m_rtShadowActiveThisFrame);
         }
 
         m_commandList->TransitionResource(m_shadowMap.Get(),
@@ -13141,46 +16412,222 @@ void Application::Render()
 
     // ===== メインパス（オフスクリーン RT へ描画）=====
 
-    // ===== 深度プリパス → SSAO（透視のみ。2D 正射ビューや無効時は素通し）=====
-    // SSAO 有効時はカメラ視点の深度を m_depthBuffer へ先に完成させ、深度から法線を再構築して AO を作る。
+    // ===== 深度プリパス → SSAO / コンタクトシャドウ（透視のみ。2D 正射ビューや無効時は素通し）=====
+    // どちらもカメラ視点の深度を m_depthBuffer へ先に完成させてから、その深度を読んで作る。
+    // プリパスは 1 回だけ走らせて 2 つのパスで共有する。
     const SSAOSettings& ssaoCfg = m_scene->GetSSAOSettings();
+    const ContactShadowSettings& csCfg = m_scene->GetContactShadowSettings();
     // SSAO は透視前提（深度線形化が透視射影に依存）。正射カメラ（俯瞰ゲーム/2Dビュー）では
     // AO 計算が壊れて全面 AO≈0 になり、ambient を黒く潰す（ゲームだけ真っ暗の原因）。→ 正射は無効化。
+    // コンタクトシャドウもビュー空間でレイを飛ばす＝同じ理由で透視限定。
+    const bool viewSupportsScreenSpace = !(m_editorCtx && m_editorCtx->view2D)
+                                       && !m_camera->IsOrthographic();
+    // DXR（計画09）。深度からワールドを復元してレイを飛ばすので、こちらも深度プリパスが要る。
+    // ★m_rtShadowActiveThisFrame / rtAoActive は BuildDrawList 直後の TLAS 構築ブロックで
+    //   既に確定している（CSM の排他描画の判定に先に必要だったため）。ここで作り直さないこと。
+    const bool useRtShadow = m_rtShadowActiveThisFrame && m_rtScene && m_rtScene->IsReady();
+    const bool useRtAo     = rtAoActive && m_rtScene && m_rtScene->IsReady();
+    const bool useRtDebug  = m_rtScene && m_rtScene->IsReady() && m_rtScreenPass
+                           && (m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtHit)
+                            || m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtDiff));
+
+    // ★RT-AO が走るフレームは SSAO を走らせない（どちらも同じ t8 枠へ書くので後勝ちになるだけ）。
+    //   ただし aoCombineWithSsao のときは min 合成の相手として SSAO の結果が要るので走らせる。
     const bool useSSAO = ssaoCfg.enabled && m_ssaoPass && m_ssaoPass->IsReady()
-                       && !(m_editorCtx && m_editorCtx->view2D)
-                       && !m_camera->IsOrthographic();
+                       && viewSupportsScreenSpace
+                       && (!useRtAo || m_scene->GetRtSettings().aoCombineWithSsao);
+    // ★RT 影が走るフレームはコンタクトシャドウを走らせない。どちらも同じ t11 枠へ書くので
+    //   先に書いた方が捨てられるだけ（RT 影は接地の遮蔽も正しく拾うので上位互換）。
+    const bool useContactShadow = csCfg.enabled && m_contactShadowPass
+                                && m_contactShadowPass->IsReady()
+                                && viewSupportsScreenSpace && !useRtShadow;
+    // SSR / SSGI（計画04）。G-Buffer と前フレームカラーが要るので、有効なら速度プリパスを走らせる。
+    const SsrSettings&  ssrCfg  = m_scene->GetSsrSettings();
+    const SsgiSettings& ssgiCfg = m_scene->GetSsgiSettings();
+    // m_iblBaker は SSGI のミス時フォールバック（TextureCube t5）のバインドに必須。
+    // 未ベイクでも SRV ブロックは有効なので、居るかどうかだけ見る。
+    const bool ssGiReady = m_screenSpaceGi && m_screenSpaceGi->IsReady()
+                         && viewSupportsScreenSpace && m_iblBaker != nullptr;
+    const bool useSsr    = ssrCfg.enabled  && ssGiReady;
+    const bool useSsgi   = ssgiCfg.enabled && ssGiReady;
+
+    // ★TAA 有効時は SSAO/コンタクトシャドウが無効でも必ずプリパスを走らせる（速度バッファのため）。
+    //   新しく深度を要求するパスを足したら、この行に OR で足すこと（00-COORDINATION §2 H2）。
+    // ★m_forceDepthPrepass（settings.json "render_depth_prepass" / MCP set_depth_prepass）は
+    //   「深度プリパス単独の損得」を測るための A/B スイッチ（計画10 A2）。
+    //   viewSupportsScreenSpace を必ず掛けること（正射 / 2D ビューでプリパスを走らせても
+    //   意味が無く、LESS_EQUAL の PSO 選択だけが変わって z-fight の温床になる）。
+    const bool useDepthPrepass = useSSAO || useContactShadow || taaActive || useSsr || useSsgi
+                               || useRtShadow || useRtAo || useRtDebug
+                               || (m_forceDepthPrepass && viewSupportsScreenSpace);
+    // 速度＋G-Buffer モードで走らせるか（PSO 3 本が揃っていることが条件）。
+    // ★SSR/SSGI は G-Buffer が必要なので TAA が OFF でもこのモードで走らせる。
+    //   速度バッファは書かれるが TAA が読まないだけ（fp16×2ch のフィル 1 枚ぶん ≒ 0.05ms）。
+    //   PSO を 3 モードに分けるより安い（00-COORDINATION §5.5）。
+    const bool velocityPrepass = (taaActive || useSsr || useSsgi)
+                               && m_velocityPSO && m_velocityPSOSkinned;
+    // TAA 解決まで走らせるか。速度が書かれていないフレームでは絶対に解決しない
+    // （履歴を速度なしで再投影すると全面がゴーストする）。
+    // ★taaActive を必ず併記すること。SSR だけ ON のときに TAA が勝手に効いてしまう。
+    const bool taaResolveActive = taaActive && velocityPrepass && m_taaPass->IsResolveReady();
+    // 走らないフレームでは履歴を捨てる。TAA を OFF→ON したり 2D ビューを往復したときに
+    // 何十フレームも前の絵が半透明で残るのを防ぐ。
+    if (!taaResolveActive && m_taaPass) m_taaPass->InvalidateHistory();
     u32 aoSrv = m_ssaoWhiteSrvIndex;  // 既定 = 白（AO=1.0 素通し）
+    u32 csSrv = m_ssaoWhiteSrvIndex;  // 既定 = 白（遮蔽なし素通し。SSAO と同じ 1x1 白を共用）
+    u32 ssrSrv  = DescriptorHeap::kInvalidIndex;   // 無効 = 黒ダミー（RenderSceneMeshes が差し替える）
+    u32 ssgiSrv = DescriptorHeap::kInvalidIndex;
+    u32 rtDebugSrv = DescriptorHeap::kInvalidIndex;   // render_debug の rt / rtDiff 用
 
     m_gpuTimer->Begin(nativeCmdList, GpuTimer::PrepassSSAO);
-    if (useSSAO)
+    if (useDepthPrepass)
     {
-        XMMATRIX camVP = m_camera->GetViewProjMatrix();
-
-        // --- 深度プリパス（カメラ視点で m_depthBuffer/m_dsvHandle へ深度のみ書く）---
+        // --- 深度プリパス（カメラ視点で m_depthBuffer/m_dsvHandle へ書く）---
+        // ★ラスタライズは camVPJ（ジッタあり）。ここをジッタなしにするとフォワードと
+        //   深度がビット一致せず LESS_EQUAL で面が欠落する。
         m_commandList->ClearDepthStencil(m_dsvHandle);
-        nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_dsvHandle);
-        m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+        m_commandList->SetViewportAndScissor(rW, rH);
 
-        // skinningBuffer は毎フレーム1回どこかで Update されていれば良い（このプリパスより前に
-        // シャドウパスの ci==0 で更新済み＝ここでは false）。
-        RenderDepthOnlyScene(camVP, *m_depthPrepassPSO, *m_depthPrepassSkinnedPSO,
-                             /*updateSkinning*/ false, frameIndex, /*lodBias*/ 0,
-                             m_depthPrepassPSOInst.get());
+        // 半透明（sortKey==3）はカメラのプリパスから除外する（00-COORDINATION §6 B3）。
+        // 影パスは従来どおり半透明も描く＝影の見た目は不変。
+        PrepassParams pp{};
+        pp.skipTransparent = true;
+        pp.jitterNdc       = jitterNdc;
 
-        // --- SSAO 生成（depth SRV を読み AO→Blur）---
+        if (velocityPrepass)
+        {
+            // 深度 + 速度を同時に書く（RTV=速度RT / DSV=m_dsvHandle）。
+            // 前フレームは「ジッタなし」viewProj。履歴が無い初回は現フレームを使う＝速度0。
+            pp.mode = PrepassMode::DepthVelocityGBuffer;
+            XMStoreFloat4x4(&pp.prevViewProj,
+                m_prevViewProjNJValid ? XMLoadFloat4x4(&m_prevViewProjNoJitter) : camVP);
+            // RTV1 = G-Buffer。全面 0 クリア（背景は深度 1.0 で弾かれるので中身は問われない）。
+            m_gbufferRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            constexpr float gbufZero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+            m_commandList->ClearRenderTarget(m_gbufferRT->GetRtv(), gbufZero);
+            m_taaPass->BeginVelocity(*m_commandList, m_dsvHandle, m_gbufferRT->GetRtv(),
+                                     0u, 0u, rW, rH);
+            m_gpuTimer->Begin(nativeCmdList, GpuTimer::DepthPrepass);
+            RenderDepthOnlyScene(camVPJ, *m_velocityPSO, *m_velocityPSOSkinned,
+                                 /*updateSkinning*/ false, frameIndex, /*lodBias*/ 0,
+                                 m_velocityPSOInst.get(), &pp);
+            m_gpuTimer->End(nativeCmdList, GpuTimer::DepthPrepass);
+            m_taaPass->EndVelocity(*m_commandList);
+            m_gbufferRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        }
+        else
+        {
+            nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_dsvHandle);
+            // skinningBuffer は毎フレーム1回どこかで Update されていれば良い（このプリパスより前に
+            // シャドウパスの ci==0 で更新済み＝ここでは false）。
+            m_gpuTimer->Begin(nativeCmdList, GpuTimer::DepthPrepass);
+            RenderDepthOnlyScene(camVPJ, *m_depthPrepassPSO, *m_depthPrepassSkinnedPSO,
+                                 /*updateSkinning*/ false, frameIndex, /*lodBias*/ 0,
+                                 m_depthPrepassPSOInst.get(), &pp);
+            m_gpuTimer->End(nativeCmdList, GpuTimer::DepthPrepass);
+        }
+
         m_commandList->TransitionResource(m_depthBuffer.Get(),
             D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        aoSrv = m_ssaoPass->Generate(nativeCmdList, m_srvHeap.get(),
-            m_srvHeap->GetGpuHandle(m_depthSrvIndex), ssaoCfg,
-            m_camera->GetProjectionMatrix(), m_camera->GetNearZ(), m_camera->GetFarZ(),
-            vpLeft, vpTop, vpW, vpH, frameIndex);
-        // 生成失敗（未準備）時は白ダミー(AO=1.0)へフォールバック。誤テクスチャの読み出しを防ぐ。
-        if (aoSrv == DescriptorHeap::kInvalidIndex)
-            aoSrv = m_ssaoWhiteSrvIndex;
+
+        // --- SSAO 生成（depth SRV を読み AO→Blur）---
+        if (useSSAO)
+        {
+            aoSrv = m_ssaoPass->Generate(nativeCmdList, m_srvHeap.get(),
+                m_srvHeap->GetGpuHandle(m_depthSrvIndex), ssaoCfg,
+                m_camera->GetProjectionMatrix(), m_camera->GetNearZ(), m_camera->GetFarZ(),
+                0u, 0u, rW, rH, frameIndex);
+            // 生成失敗（未準備）時は白ダミー(AO=1.0)へフォールバック。誤テクスチャの読み出しを防ぐ。
+            if (aoSrv == DescriptorHeap::kInvalidIndex)
+                aoSrv = m_ssaoWhiteSrvIndex;
+        }
+
+        // --- コンタクトシャドウ生成（同じ深度を太陽方向へレイマーチ）---
+        if (useContactShadow)
+        {
+            csSrv = m_contactShadowPass->Generate(nativeCmdList,
+                m_srvHeap->GetGpuHandle(m_depthSrvIndex), csCfg,
+                m_camera->GetViewMatrix(), m_camera->GetProjectionMatrix(), lightDirF3,
+                0u, 0u, rW, rH, frameIndex);
+            if (csSrv == DescriptorHeap::kInvalidIndex)
+                csSrv = m_ssaoWhiteSrvIndex;
+        }
+
+        // --- DXR: RT サン影 / RT-AO / RT デバッグ（同じ深度 + TLAS）---
+        // ★出力先は既存の枠。RT 影 → コンタクトシャドウ枠(t11)、RT-AO → SSAO 枠(t8)。
+        //   ルートシグネチャも b1 も 1 ビットも増えない。フォワード PS は無改造のまま。
+        if (useRtShadow || useRtAo || useRtDebug)
+        {
+            m_gpuTimer->Begin(nativeCmdList, GpuTimer::RtScreen);
+            RtScreenPass::GenerateDesc rd;
+            rd.depthSrv  = m_srvHeap->GetGpuHandle(m_depthSrvIndex);
+            // SSAO が実際に生成されていれば min 合成の相手にする。
+            // 白 1x1 ダミーのままだと範囲外 Load が 0 を返して画面が真っ黒になるので、
+            // ssaoValid を必ず添えること。
+            rd.ssaoSrv   = m_srvHeap->GetGpuHandle(aoSrv);
+            rd.ssaoValid = (aoSrv != m_ssaoWhiteSrvIndex);
+            rd.tlas      = m_rtScene->GetTlasAddress();
+            rd.view      = m_camera->GetViewMatrix();
+            rd.proj      = m_camera->GetProjectionMatrix();   // ★ジッタなし
+            rd.cameraPos = m_camera->GetPosition();
+            rd.lightDir  = lightDirF3;
+            rd.zNear     = m_camera->GetNearZ();
+            rd.zFar      = m_camera->GetFarZ();
+            rd.vpLeft = 0; rd.vpTop = 0; rd.vpW = rW; rd.vpH = rH;
+            rd.frameIndex  = frameIndex;
+            // 時間ディザは TAA が有効なときだけ回す（無効時に回すとチラつくだけ。PCSS と同じ方針）。
+            rd.frameJitter = taaActive
+                ? std::fmod(static_cast<f32>(m_perfTotalFrames & 0xFFFFull) * 0.61803398875f, 1.0f)
+                : 0.0f;
+            rd.debugRange  = m_renderDebugDepthRange;
+
+            const RtSettings& rtCfg = m_scene->GetRtSettings();
+            if (useRtShadow)
+            {
+                const u32 s = m_rtScreenPass->GenerateShadow(nativeCmdList, rd, rtCfg);
+                if (s != DescriptorHeap::kInvalidIndex) csSrv = s;
+            }
+            if (useRtAo)
+            {
+                const u32 s = m_rtScreenPass->GenerateAo(nativeCmdList, rd, rtCfg);
+                if (s != DescriptorHeap::kInvalidIndex) aoSrv = s;
+            }
+            if (useRtDebug)
+                rtDebugSrv = m_rtScreenPass->GenerateDebug(nativeCmdList, rd);
+            m_gpuTimer->End(nativeCmdList, GpuTimer::RtScreen);
+        }
+
+        // --- SSR / SSGI 生成（深度 + G-Buffer + 速度 + 前フレームカラーをレイマーチ）---
+        // ★前フレームカラーが無いフレーム（初回 / シーン切替直後 / リサイズ直後）は
+        //   ScreenSpaceGiPass::Generate が何もせず kInvalidIndex を返す＝黒ダミーへフォールバック。
+        m_gpuTimer->Begin(nativeCmdList, GpuTimer::ScreenSpaceGI);
+        if ((useSsr || useSsgi) && velocityPrepass && m_screenSpaceGi->HasHistory())
+        {
+            ScreenSpaceGiPass::GenerateDesc gd;
+            gd.ssr        = useSsr  ? &ssrCfg  : nullptr;
+            gd.ssgi       = useSsgi ? &ssgiCfg : nullptr;
+            gd.view       = m_camera->GetViewMatrix();
+            gd.proj       = m_camera->GetProjectionMatrix();   // ジッタなし（深度線形化は無誤差）
+            gd.zNear      = m_camera->GetNearZ();
+            gd.zFar       = m_camera->GetFarZ();
+            gd.vpLeft = 0; gd.vpTop = 0; gd.vpW = rW; gd.vpH = rH;
+            gd.frameIndex = frameIndex;
+            gd.hasIbl     = (m_iblReady && m_iblBaker != nullptr);
+            gd.depthSrv     = m_srvHeap->GetGpuHandle(m_depthSrvIndex);
+            gd.gbufferSrv   = m_srvHeap->GetGpuHandle(m_gbufferRT->GetSrvIndex());
+            gd.velocitySrv  = m_srvHeap->GetGpuHandle(m_taaPass->GetVelocitySrvIndex());
+            // irradiance キューブ(t5)。IBLBaker が居れば SRV ブロックは常に有効なので
+            // 未ベイクでも型の合った TextureCube を張れる（中身は hasIbl=0 で読まれない）。
+            // ★ここに Texture2D の黒ダミーを張ってはいけない（TextureCube 宣言と型不一致）。
+            gd.irradianceSrv = m_srvHeap->GetGpuHandle(m_iblBaker->GetIrradianceSrv());
+            m_screenSpaceGi->Generate(*m_commandList, gd, ssrSrv, ssgiSrv);
+        }
+        m_gpuTimer->End(nativeCmdList, GpuTimer::ScreenSpaceGI);
+
         m_commandList->TransitionResource(m_depthBuffer.Get(),
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
 
-        // SSAO/プリパスで RootSig/PSO/RT/ヒープを切り替えたので forward 用に再設定
+        // プリパス/SSAO/コンタクトシャドウ/SSR/SSGI で RootSig/PSO/RT/ヒープを切り替えたので forward 用に再設定
         m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
         m_commandList->SetRootSignature(*m_rootSignature);
     }
@@ -13191,29 +16638,15 @@ void Application::Render()
     constexpr float clearColor[4] = {0.127f, 0.306f, 0.850f, 1.0f};  // リニア空間のコーンフラワーブルー
     m_commandList->ClearRenderTarget(m_sceneRT->GetRtv(), clearColor);
     // プリパス有効時は深度が完成済みなので forward では clear しない（再利用）。
-    if (!useSSAO)
+    if (!useDepthPrepass)
         m_commandList->ClearDepthStencil(m_dsvHandle);
     m_commandList->SetRenderTarget(m_sceneRT->GetRtv(), m_dsvHandle);
-    m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+    m_commandList->SetViewportAndScissor(rW, rH);
 
     m_commandList->SetPipelineState(*m_pipelineState);
 
-    // PerFrame CB（PointLight / SpotLight 各最大8灯対応）
+    // PerFrame CB（ライト本体はクラスタードライティングの StructuredBuffer(t13) 側）
     // レイアウトは shaders/forward/Lighting.hlsli の PerFrameConstants と完全一致させること。
-    static constexpr u32 kMaxPointLightsR = 8;
-    static constexpr u32 kMaxSpotLightsR  = 8;
-    struct PointLightGPU {
-        XMFLOAT3 position;
-        float range;
-        XMFLOAT3 color;
-        float shadowIndex;   // -1=影なし、それ以外はポイント影キューブ配列のインデックス
-    };
-    struct SpotLightGPU {
-        XMFLOAT3 position;   float range;
-        XMFLOAT3 direction;  float cosInner;
-        XMFLOAT3 color;      float cosOuter;
-        float shadowIndex;   XMFLOAT3 _spad;  // -1=影なし、それ以外は spotShadowMatrix[] のインデックス
-    };
     struct FrameConstants {
         XMFLOAT4X4 view;
         XMFLOAT4X4 proj;
@@ -13226,20 +16659,28 @@ void Application::Render()
         XMFLOAT4   shadowParams;                  // 16B
         XMFLOAT3   cameraPos;
         float      aoEnabled;   // 1=実AOを読む / 0=AO読まず ao=1（白ダミー1x1の範囲外Load=0で環境光が消えるのを防ぐ）
-        u32        numPointLights;
+        u32        numPointLights;   // 統計/デバッグ用（シェーダは読まない）
         u32        numSpotLights;
         float      spotShadowTexel;   // 1/kSpotShadowMapSize
         float      pointShadowNear;
-        PointLightGPU pointLights[kMaxPointLightsR];
-        SpotLightGPU  spotLights[kMaxSpotLightsR];
-        XMFLOAT4X4 spotShadowMatrix[kMaxShadowSpot]; // 256B
+        // ▼ クラスタードライティング 64B (offset 480)。旧 pointLights[8]/spotLights[8] の跡地。
+        XMFLOAT4   clusterParams;    // .x=zNear .y=zFar(クラスタ用) .z=sliceScale .w=sliceBias
+        XMFLOAT4   clusterGrid;      // .x=gridX .y=gridY .z=gridZ .w=クラスタード有効(1/0)
+        XMFLOAT4   clusterViewport;  // .xy=ビューポート原点(RT px) .zw=(gridX/vpW, gridY/vpH)
+        XMFLOAT4   clusterExtra;     // .x=総灯数 .y=maxLightsPerCluster .z=デバッグ表示 .w=予約
+        XMFLOAT4   pcssParams;                       // 16B  (offset 544) PCSS: .x=tanTheta(0で無効) .y=maxPenumbraTexels .z=時間ディザ位相 .w=探索半径texel
+        XMFLOAT4   _clusterReserved[43];             // 688B (offset 560..1247)
+        XMFLOAT4X4 spotShadowMatrix[kMaxShadowSpot]; // 256B (offset 1248)
         // ▼ IBL 制御 16B
         float iblIntensity;
         float maxPrefilterMip;
         u32   hasIBL;
         float skyboxIntensity;
+        // ▼ コンタクトシャドウ制御 16B
+        float contactShadowEnabled;  // 1=実テクスチャ(t11)を読む / 0=読まず 1.0（白ダミー1x1の範囲外Load=0対策）
+        XMFLOAT3 _csPad;
     };
-    static_assert(sizeof(FrameConstants) == 1520, "FrameConstants must be 1520 bytes");
+    static_assert(sizeof(FrameConstants) == 1536, "FrameConstants must be 1536 bytes");
 
     FrameConstants fc{};
     XMStoreFloat4x4(&fc.view, XMMatrixTranspose(m_camera->GetViewMatrix()));
@@ -13259,6 +16700,24 @@ void Application::Render()
     fc.cameraPos = m_camera->GetPosition();
     fc.spotShadowTexel = 1.0f / static_cast<f32>(kSpotShadowMapSize);
     fc.pointShadowNear = 0.1f;
+
+    // ---- PCSS（ソフトシャドウ）----
+    // .x = 0 なら HLSL 側は従来の 3x3 PCF 経路を通る＝絵はビット一致。
+    // 時間ディザはフレーム連番 × 黄金比。★TAA が無効なときに回すとチラつくだけなので 0 にする
+    //  （時間蓄積を持つパスはディザをフレーム連番×黄金比で回さないと収束しない、の裏返し）。
+    {
+        const ShadowPcssSettings& pcss = m_scene->GetShadowPcssSettings();
+        const bool pcssOn = pcss.enabled && !m_camera->IsOrthographic()
+                         && m_scene->GetShadowsEnabled();
+        f32 phase = 0.0f;
+        if (pcssOn && pcss.temporalDither && taaActive)
+            phase = std::fmod(static_cast<f32>(m_perfTotalFrames & 0xFFFFull) * 0.61803398875f, 1.0f);
+        fc.pcssParams = {
+            pcssOn ? (std::max)(pcss.lightTanAngle, 1e-4f) : 0.0f,
+            (std::max)(pcss.maxPenumbraTexels,   1.0f),
+            phase,
+            (std::max)(pcss.blockerSearchTexels, 1.0f)};
+    }
     // スポット影行列（HLSL は列優先 mul(row,mat) なので転置して格納。上で割り当てたスロット分だけ埋める）
     for (u32 i = 0; i < kMaxShadowSpot; ++i)
         XMStoreFloat4x4(&fc.spotShadowMatrix[i],
@@ -13274,15 +16733,26 @@ void Application::Render()
     // 白ダミー(1x1)で、Load は範囲外 0 を返して環境光を潰すため、シェーダ側で読まず ao=1 にする。
     fc.aoEnabled = (aoSrv != m_ssaoWhiteSrvIndex) ? 1.0f : 0.0f;
 
-    // PointLight を ECS から収集
+    // コンタクトシャドウも同じ規約（白ダミーが張られている時はシェーダ側で読まない）。
+    fc.contactShadowEnabled = (csSrv != m_ssaoWhiteSrvIndex) ? 1.0f : 0.0f;
+
+    // ===== ライト収集（point / spot を 1 本の配列へ統合してクラスタード用 SB へ送る）=====
+    // 旧 8 灯固定配列は撤廃。上限は ClusteredLightCulling::kMaxSceneLights（1024）。
+    // m_clusterLights はフレーム間で使い回すメンバ（毎フレーム malloc しない）。
+    using ClusterLightGPU = ClusteredLightCulling::LightGPU;
+    m_clusterLights.clear();
+    m_clusterLights.reserve(64);
     fc.numPointLights = 0;
+    fc.numSpotLights  = 0;
+
+    // PointLight を ECS から収集
     {
         auto& reg = m_scene->GetRegistry();
         auto plView = reg.view<const dx12e::PointLight, const Transform>();
         for (auto [e, pl, tf] : plView.each())
         {
-            if (fc.numPointLights >= kMaxPointLightsR) break;
-            auto& pld = fc.pointLights[fc.numPointLights];
+            if (m_clusterLights.size() >= ClusteredLightCulling::kMaxSceneLights) break;
+            ClusterLightGPU pld{};
             XMMATRIX world = (tf.parent != entt::null)
                 ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
             XMStoreFloat3(&pld.position, world.r[3]);
@@ -13290,6 +16760,11 @@ void Application::Render()
             pld.color = {pl.color.x * pl.intensity,
                          pl.color.y * pl.intensity,
                          pl.color.z * pl.intensity};
+            pld.type      = 0.0f;   // point
+            pld.direction = {0.0f, 0.0f, 1.0f};
+            pld.cosOuter  = -1.0f;
+            pld.cosInner  = 1.0f;
+            pld.sinOuter  = 0.0f;
 
             // 影スロット割当（上で計算済みの m_pointShadowEntity[]）と突合
             pld.shadowIndex = -1.0f;
@@ -13298,23 +16773,24 @@ void Application::Render()
                 if (m_pointShadowEntity[si] == e) { pld.shadowIndex = static_cast<f32>(si); break; }
             }
 
+            m_clusterLights.push_back(pld);
             fc.numPointLights++;
         }
     }
 
     // SpotLight を ECS から収集（位置=Transform、軸=direction、内外コーン角を cos へ）
-    fc.numSpotLights = 0;
     {
         auto& reg = m_scene->GetRegistry();
         auto slView = reg.view<const dx12e::SpotLight, const Transform>();
         for (auto [e, sl, tf] : slView.each())
         {
-            if (fc.numSpotLights >= kMaxSpotLightsR) break;
-            auto& sld = fc.spotLights[fc.numSpotLights];
+            if (m_clusterLights.size() >= ClusteredLightCulling::kMaxSceneLights) break;
+            ClusterLightGPU sld{};
             XMMATRIX world = (tf.parent != entt::null)
                 ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
             XMStoreFloat3(&sld.position, world.r[3]);
-            sld.range    = sl.range;
+            sld.range = sl.range;
+            sld.type  = 1.0f;   // spot
 
             XMVECTOR dir = XMVector3Normalize(XMLoadFloat3(&sl.direction));
             XMStoreFloat3(&sld.direction, dir);
@@ -13323,6 +16799,8 @@ void Application::Render()
             float outerDeg = (std::max)(sl.outerConeDeg, sl.innerConeDeg);
             sld.cosInner = std::cos(XMConvertToRadians(sl.innerConeDeg));
             sld.cosOuter = std::cos(XMConvertToRadians(outerDeg));
+            // 円錐カリング用の sin（GPU で acos を回さないよう CPU で 1 回だけ）
+            sld.sinOuter = std::sqrt((std::max)(0.0f, 1.0f - sld.cosOuter * sld.cosOuter));
 
             sld.color = {sl.color.x * sl.intensity,
                          sl.color.y * sl.intensity,
@@ -13335,28 +16813,295 @@ void Application::Render()
                 if (m_spotShadowEntity[si] == e) { sld.shadowIndex = static_cast<f32>(si); break; }
             }
 
+            m_clusterLights.push_back(sld);
             fc.numSpotLights++;
         }
     }
 
-    // パーティクルライト: light=true の明るい粒子上位を、ポイントライトの空き枠へ注ぐ
+    // パーティクルライト: light=true の明るい粒子上位を空き枠へ注ぐ
     // （炎や魔法が実際に周囲を照らす。シーン配置のライトが優先）
-    if (m_particleSystem && fc.numPointLights < kMaxPointLightsR)
+    if (m_particleSystem && m_clusterLights.size() < ClusteredLightCulling::kMaxSceneLights)
     {
-        ParticleSystem::LightInfo pls[kMaxPointLightsR];
-        const u32 got = m_particleSystem->CollectLights(kMaxPointLightsR - fc.numPointLights, pls);
+        const u32 room = ClusteredLightCulling::kMaxSceneLights
+                       - static_cast<u32>(m_clusterLights.size());
+        // 粒子ライトは実用上せいぜい数十灯。1024 枠ぶんの一時配列をスタックへ積むのは
+        // 無駄なので受け皿は 64 で頭打ちにする（従来は 8 だった）。
+        constexpr u32 kMaxParticleLights = 64;
+        ParticleSystem::LightInfo pls[kMaxParticleLights];
+        const u32 want = (std::min)(room, kMaxParticleLights);
+        const u32 got = m_particleSystem->CollectLights(want, pls);
         for (u32 li = 0; li < got; ++li)
         {
-            auto& pld = fc.pointLights[fc.numPointLights];
-            pld.position = pls[li].pos;
-            pld.range    = pls[li].range;
-            pld.color    = pls[li].color;
+            ClusterLightGPU pld{};
+            pld.position    = pls[li].pos;
+            pld.range       = pls[li].range;
+            pld.color       = pls[li].color;
+            pld.type        = 0.0f;
+            pld.direction   = {0.0f, 0.0f, 1.0f};
+            pld.cosOuter    = -1.0f;
+            pld.cosInner    = 1.0f;
+            pld.sinOuter    = 0.0f;
             pld.shadowIndex = -1.0f;
+            m_clusterLights.push_back(pld);
             fc.numPointLights++;
         }
     }
 
+    // ===== デカールの収集（sortOrder 昇順）=====
+    // ★クラスタのフォールバック経路（正射 / プレビュー / 設定 OFF）にはデカールリストが無いので、
+    //   そのときは 0 個扱いにしてフォワード PS の分岐ごと切る。
+    m_decalEntries.clear();
+    if (m_decalSystem && m_decalSystem->IsReady())
+    {
+        auto& reg = m_scene->GetRegistry();
+        auto dView = reg.view<const Transform, const DecalComponent>();
+        for (auto [e, tf, dc] : dView.each())
+        {
+            if (m_decalEntries.size() >= DecalSystem::kMaxDecals) break;
+            if (dc.opacity <= 0.0f) continue;
+
+            XMMATRIX world = (tf.parent != entt::null)
+                ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
+
+            DecalEntry entry{};
+            entry.sortOrder = dc.sortOrder;
+            auto& d = entry.gpu;
+            XMStoreFloat4x4(&d.invWorld, XMMatrixTranspose(XMMatrixInverse(nullptr, world)));
+            // 投影軸 = ローカル +Y のワールド方向 / 接線 = ローカル +X のワールド方向。
+            // invWorld から逆算せずここで直接送る（PS 側の逆行列計算を丸ごと省ける）。
+            XMStoreFloat3(&d.axisW,    XMVector3Normalize(world.r[1]));
+            XMStoreFloat3(&d.tangentW, XMVector3Normalize(world.r[0]));
+            d.atlasUV        = dc.atlasUV;
+            d.atlasUVNormal  = dc.atlasUVNormal;
+            d.tint           = dc.tint;
+            d.opacity        = dc.opacity;
+            d.emissive       = dc.emissive;
+            d.normalStrength = dc.normalStrength;
+            d.roughness      = dc.roughness;
+            d.metallic       = dc.metallic;
+            // cos は CPU で 1 回だけ（GPU で acos/cos を回さない。クラスタライトの sinOuter と同じ流儀）
+            const f32 fadeDeg = (std::min)((std::max)(dc.angleFadeDeg, 0.0f), 89.0f);
+            d.cosAngleFade   = std::cos(XMConvertToRadians(fadeDeg));
+            d.fadeEdge       = (std::max)(dc.fadeEdge, 0.001f);
+            m_decalEntries.push_back(entry);
+        }
+        std::stable_sort(m_decalEntries.begin(), m_decalEntries.end(),
+                         [](const DecalEntry& a, const DecalEntry& b) { return a.sortOrder < b.sortOrder; });
+        m_decalGpu.clear();
+        m_decalGpu.reserve(m_decalEntries.size());
+        for (const auto& en : m_decalEntries) m_decalGpu.push_back(en.gpu);
+    }
+
+    // ===== クラスタードライティングのパラメータ =====
+    // クラスタ AABB の構築が透視前提なので、正射カメラ（俯瞰ゲーム / 2D ビュー）と
+    // 設定 OFF のときは「先頭 64 灯の総当たり」フォールバックへ倒す（旧 8 灯より緩い）。
+    const u32 numClusterLights = static_cast<u32>(m_clusterLights.size());
+    const bool clusterOn = m_clusteredEnabled && m_clusteredLighting
+                        && m_clusteredLighting->IsReady() && !m_camera->IsOrthographic();
+    {
+        const float zN    = (std::max)(m_camera->GetNearZ(), 0.001f);
+        const float zFcam = (std::max)(m_camera->GetFarZ(), zN + 1.0f);
+        const float zFcl  = (std::max)((std::min)(zFcam, cluster::kClusterFarLimit), zN + 1.0f);
+
+        fc.clusterParams = {zN, zFcl,
+                            cluster::SliceScale(zN, zFcl), cluster::SliceBias(zN, zFcl)};
+        fc.clusterGrid   = {static_cast<f32>(cluster::kGridX),
+                            static_cast<f32>(cluster::kGridY),
+                            static_cast<f32>(cluster::kGridZ),
+                            clusterOn ? 1.0f : 0.0f};
+        // SV_Position.xy は RT 座標。#16 でシーンは RT 全面に描くようになったので原点は常に 0
+        // （かつては m_sceneRT のサブ矩形に描いていたので vpLeft/vpTop を引いていた）。
+        fc.clusterViewport = {0.0f, 0.0f,
+                              static_cast<f32>(cluster::kGridX) / static_cast<f32>(rW),
+                              static_cast<f32>(cluster::kGridY) / static_cast<f32>(rH)};
+        // デバッグ表示はエディタのライティング窓から（ゲームモードは常に 0）
+        m_clusterDebugMode = m_editorCtx ? m_editorCtx->clusterDebugMode : 0u;
+        // ★clusterExtra.w は計画02 が「予約」として空けておいた枠。
+        //   計画06 のデカール数がここに入る（PerFrameConstants のレイアウトは 1 バイトも動かない）。
+        //   0 ならフォワード PS のデカールブロックが [branch] で丸ごと飛ぶ。
+        fc.clusterExtra    = {static_cast<f32>(numClusterLights),
+                              static_cast<f32>(cluster::kMaxLightsPerCluster),
+                              static_cast<f32>(m_clusterDebugMode),
+                              clusterOn ? static_cast<f32>(m_decalGpu.size()) : 0.0f};
+    }
+
     m_perFrameCB->Update(&fc, sizeof(fc), frameIndex);
+
+    // ===== クラスタライトカリング（compute 2 パス）=====
+    // ライトを UPLOAD リングへ書いてから AABB 構築 → カリング。呼び出し後は
+    // インデックス/カウントが PIXEL_SHADER_RESOURCE 状態になる。
+    // ★compute は PSO を共有するので、直後にグラフィクスの RootSig/PSO を必ず再設定する。
+    if (m_clusteredLighting && m_clusteredLighting->IsReady())
+    {
+        const u32 uploaded = m_clusteredLighting->UploadLights(
+            m_clusterLights.data(), numClusterLights, frameIndex);
+        if (clusterOn)
+        {
+            XMFLOAT4X4 projF;
+            XMStoreFloat4x4(&projF, m_camera->GetProjectionMatrix());
+            m_gpuTimer->Begin(nativeCmdList, GpuTimer::ClusterCull);
+            m_clusteredLighting->Dispatch(nativeCmdList, m_camera->GetViewMatrix(),
+                                          projF._11, projF._22,
+                                          fc.clusterParams.x, fc.clusterParams.y,
+                                          m_camera->GetFarZ(), uploaded, frameIndex);
+            m_gpuTimer->End(nativeCmdList, GpuTimer::ClusterCull);
+            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+            m_commandList->SetRootSignature(*m_rootSignature);
+            m_commandList->SetPipelineState(*m_pipelineState);
+        }
+        else
+        {
+            // フォールバック（正射 / 設定 OFF）でもテーブルはバインドするので、
+            // インデックス/カウントは読取状態にしておく（中身は読まれない）。
+            m_clusteredLighting->EnsureReadable(nativeCmdList);
+        }
+    }
+
+    // ===== デカール: アトラス解決 → アップロード → クラスタへビニング =====
+    // ★クラスタカリングの直後（同じ compute のかたまり）に置く。
+    //   フォワード PS は t18..t21 を kSlotClusterSRV のテーブル越しに読むので、
+    //   バインドはクラスタライトと同じ 1 本のままで増えない。
+    if (m_decalSystem && m_decalSystem->IsReady()
+        && m_clusteredLighting && m_clusteredLighting->IsReady())
+    {
+        // アトラスの解決（パスが変わったときだけ。空なら 1x1 黒ダミー＝アルファ 0 で不可視）。
+        const std::string& atlasPath = m_scene->GetDecalAtlasPath();
+        if (atlasPath != m_decalAtlasLoaded)
+        {
+            m_decalAtlasLoaded   = atlasPath;
+            m_decalAtlasSrvIndex = DescriptorHeap::kInvalidIndex;
+            if (!atlasPath.empty() && m_resourceManager)
+            {
+                const std::wstring wpath =
+                    PathResolver::Utf8ToWide(PathResolver::AssetsDir() + atlasPath);
+                if (Texture* tex = m_resourceManager->GetOrLoadTexture(
+                        wpath, nativeCmdList, /*srgb*/ true, TextureUsage::BaseColor))
+                    m_decalAtlasSrvIndex = tex->GetSrvIndex();
+                if (m_decalAtlasSrvIndex == DescriptorHeap::kInvalidIndex)
+                    Logger::Warn("デカールアトラスを読めませんでした: {}", atlasPath);
+            }
+            m_decalSrvDirty = true;
+        }
+        if (m_decalSrvDirty)
+        {
+            const u32 atlasIdx = (m_decalAtlasSrvIndex != DescriptorHeap::kInvalidIndex)
+                               ? m_decalAtlasSrvIndex : m_ssBlackSrvIndex;
+            if (atlasIdx != DescriptorHeap::kInvalidIndex)
+            {
+                for (u32 f = 0; f < DecalSystem::kFrameCount; ++f)
+                {
+                    const u32 block = m_clusteredLighting->GetSrvTableIndex(f);
+                    m_decalSystem->WriteSrvsInto(*m_graphicsDevice, *m_srvHeap, block, f,
+                                                 m_srvHeap->GetCpuHandle(atlasIdx));
+                }
+                m_decalSrvDirty = false;
+            }
+        }
+
+        const u32 uploadedDecals =
+            m_decalSystem->Upload(m_decalGpu.data(), static_cast<u32>(m_decalGpu.size()), frameIndex);
+        if (clusterOn && uploadedDecals > 0)
+        {
+            XMFLOAT4X4 projF;
+            XMStoreFloat4x4(&projF, m_camera->GetProjectionMatrix());
+            m_decalSystem->Cull(nativeCmdList, m_camera->GetViewMatrix(),
+                                projF._11, projF._22,
+                                fc.clusterParams.x, fc.clusterParams.y,
+                                m_camera->GetFarZ(), uploadedDecals, frameIndex);
+            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+            m_commandList->SetRootSignature(*m_rootSignature);
+            m_commandList->SetPipelineState(*m_pipelineState);
+        }
+        else
+        {
+            // デカール 0 個でもテーブルはバインドするので読取状態にしておく
+            // （フォワード PS は clusterExtra.w==0 で読まないが、状態は正しく保つ）。
+            m_decalSystem->EnsureReadable(nativeCmdList);
+        }
+    }
+
+    // ===== ボリュメトリックフォグ: froxel ボリュームの構築（compute 3 パス）=====
+    // クラスタカリングの直後に置く理由: 散乱パスがクラスタライトリストを読むため。
+    // ここは (1) CSM が完成済み・(2) カスケード行列/分割が確定済み・(3) 深度は DEPTH_WRITE のまま
+    // ＝ フォグの compute が誰の状態も壊さない位置。合成はパーティクル直前で行う（下）。
+    // ★compute は PSO を graphics と共有するので、直後に RootSig/PSO/ヒープを必ず再設定する。
+    const VolumetricFogSettings& fogCfg = m_scene->GetVolumetricFogSettings();
+    // 透視限定（froxel の Z 分布と深度線形化が透視前提）。正射 / 2D ビューでは丸ごと素通し。
+    // ★クラスタライトリスト（t3..t5）は散乱シェーダが必ず参照する＝テーブルを必ずバインドする
+    //   必要があるので、クラスタードライティングが生きていることをフォグの前提条件にしている。
+    //   （生きていないのは初期化に失敗したときだけ。その場合フォグを諦める方が安全。）
+    const bool volFogActive = fogCfg.enabled && fogCfg.density > 0.0f
+                            && m_volumetricFogPass && m_volumetricFogPass->IsReady()
+                            && m_clusteredLighting && m_clusteredLighting->IsReady()
+                            && viewSupportsScreenSpace;
+    bool volFogBuilt = false;
+    if (volFogActive)
+    {
+        m_gpuTimer->Begin(nativeCmdList, GpuTimer::VolumetricFog);
+        // 影テクスチャは PIXEL_SHADER_RESOURCE で置かれている。compute から読むには NON_PIXEL が要る。
+        // （クラスタのインデックス/カウントは ClusteredLightCulling が最初から
+        //   PIXEL|NON_PIXEL の合成状態で置いているので遷移不要。）
+        m_commandList->TransitionResource(m_shadowMap.Get(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        m_commandList->TransitionResource(m_spotShadowMap.Get(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        m_commandList->TransitionResource(m_pointShadowMap.Get(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+        VolumetricFogPass::ViewParams fv{};
+        fv.view         = m_camera->GetViewMatrix();          // ジッタなし
+        fv.prevViewProj = m_prevViewProjNJValid ? XMLoadFloat4x4(&m_prevViewProjNoJitter) : camVP;
+        {
+            XMFLOAT4X4 projF;
+            XMStoreFloat4x4(&projF, m_camera->GetProjectionMatrix());
+            fv.proj11 = projF._11;
+            fv.proj22 = projF._22;
+        }
+        fv.cameraPos        = fc.cameraPos;
+        fv.sunDir           = lightDirF3;
+        fv.sunColor         = lightColorF3;
+        fv.cascadeViewProj  = m_cascadeViewProj;              // 非転置（パス内で転置する）
+        fv.cascadeSplits    = fc.cascadeSplitsView;
+        fv.shadowParams     = fc.shadowParams;
+        fv.clusterParams    = fc.clusterParams;
+        fv.clusterGrid      = fc.clusterGrid;
+        fv.vpLeft = 0; fv.vpTop = 0; fv.vpW = rW; fv.vpH = rH;
+        fv.nearZ = m_camera->GetNearZ();
+        fv.farZ  = m_camera->GetFarZ();
+        fv.numLights     = numClusterLights;
+        fv.maxPerCluster = cluster::kMaxLightsPerCluster;
+        fv.spotShadowMatrixTransposed = fc.spotShadowMatrix;   // ★転置済み（未使用枠は単位行列）
+        fv.spotShadowTexel = fc.spotShadowTexel;
+        fv.pointShadowNear = fc.pointShadowNear;
+        fv.csmSrv          = m_srvHeap->GetGpuHandle(m_shadowSrvIndex);
+        fv.clusterSrv      = m_clusteredLighting->GetSrvTable(frameIndex);
+        // t9,t10 と同じ「スポット影配列 → ポイント影キューブ配列」の 2 本連番。
+        fv.punctualShadowSrv = m_srvHeap->GetGpuHandle(m_spotShadowSrvIndex);
+
+        m_volumetricFogPass->BuildVolumes(nativeCmdList, *m_graphicsDevice, fogCfg, fv, frameIndex);
+        volFogBuilt = m_volumetricFogPass->VolumesAllocated();
+
+        m_commandList->TransitionResource(m_shadowMap.Get(),
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        m_commandList->TransitionResource(m_spotShadowMap.Get(),
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        m_commandList->TransitionResource(m_pointShadowMap.Get(),
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        m_gpuTimer->End(nativeCmdList, GpuTimer::VolumetricFog);
+
+        // compute で PSO/RootSig を奪ったので forward 用に戻す（クラスタカリング直後と同じ作法）。
+        m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+        m_commandList->SetRootSignature(*m_rootSignature);
+        m_commandList->SetPipelineState(*m_pipelineState);
+        m_commandList->SetRenderTarget(m_sceneRT->GetRtv(), m_dsvHandle);
+        m_commandList->SetViewportAndScissor(rW, rH);
+    }
 
     // ===== Skybox（不透明描画の前に全画面塗り。深度テスト OFF なので後続不透明が上書き）=====
     // skybox は自前 RootSig/PSO を bind するため、直後にメイン RootSig/PSO を再設定してから
@@ -13365,9 +17110,9 @@ void Application::Render()
         m_iblBaker && m_iblBaker->HasEnvironment() &&
         m_envCubeSrvIndex != DescriptorHeap::kInvalidIndex)
     {
+        // スカイボックスもジッタさせる（させないと TAA で空だけ滲む）。
         XMFLOAT4X4 invVP;
-        XMStoreFloat4x4(&invVP, XMMatrixTranspose(
-            XMMatrixInverse(nullptr, m_camera->GetViewProjMatrix())));
+        XMStoreFloat4x4(&invVP, XMMatrixTranspose(XMMatrixInverse(nullptr, camVPJ)));
         m_skyboxRenderer->Render(nativeCmdList, m_srvHeap->GetGpuHandle(m_envCubeSrvIndex),
                                  invVP, m_skyboxIntensity);
         // メイン RootSig / PSO を再設定
@@ -13390,16 +17135,26 @@ void Application::Render()
         m_commandList->SetSRVTable(RootSignature::kSlotIBLTable,
             m_srvHeap->GetGpuHandle(m_iblBaker->GetIrradianceSrv()));
 
-    XMMATRIX viewProj = m_camera->GetViewProjMatrix();
+    // クラスタライト テーブル(t13,t14,t15 + デカール予約 t18..t21)をバインド。
+    // フォワード PS が t13..t15 を参照する以上、クラスタード無効時（フォールバック経路）でも
+    // 必ずバインドが要る（未バインドのテーブルはデバッグレイヤ違反）。
+    if (m_clusteredLighting && m_clusteredLighting->IsReady())
+        m_commandList->SetSRVTable(RootSignature::kSlotClusterSRV,
+            m_clusteredLighting->GetSrvTable(frameIndex));
 
-    // 全Entityを描画（メインパス: 編集カメラ視点）。AO は SSAO 有効時のみ実テクスチャ、無効時は白。
-    // useSSAO=true のときだけ深度プリパスで深度が完成済み → LESS_EQUAL forward PSO で再利用する。
+    // フォワード本体はジッタあり（深度プリパスとビット一致させる）。
+    XMMATRIX viewProj = camVPJ;
+
+    // 全Entityを描画（メインパス: 編集カメラ視点）。AO / コンタクトシャドウは有効時のみ実テクスチャ、
+    // 無効時は白（＝素通し）。深度プリパスが走ったときだけ深度が完成済み →
+    // LESS_EQUAL forward PSO で再利用する。
     m_gpuTimer->Begin(nativeCmdList, GpuTimer::MainScene);
     m_passBucket = &m_passMain;
     {
         CpuScopeTimer _tMain(&m_cpuMs[CpuMainRec]);
         RenderSceneMeshes(nativeCmdList, frameIndex, viewProj,
-                          (m_isGameMode || m_engineMode == EngineMode::Playing), aoSrv, useSSAO);
+                          (m_isGameMode || m_engineMode == EngineMode::Playing), aoSrv,
+                          useDepthPrepass, csSrv, ssrSrv, ssgiSrv);
     }
     m_passBucket = &m_passOther;
     m_gpuTimer->End(nativeCmdList, GpuTimer::MainScene);
@@ -13411,7 +17166,7 @@ void Application::Render()
         m_physicsDebugRenderer->CollectFromRegistry(m_scene->GetRegistry());
 
         XMFLOAT4X4 vp;
-        XMStoreFloat4x4(&vp, XMMatrixTranspose(m_camera->GetViewProjMatrix()));
+        XMStoreFloat4x4(&vp, XMMatrixTranspose(camVPJ));
         m_physicsDebugRenderer->Render(nativeCmdList, vp);
     }
 
@@ -13427,8 +17182,27 @@ void Application::Render()
 
         auto srtv = m_sceneRT->GetRtv();
         nativeCmdList->OMSetRenderTargets(1, &srtv, FALSE, nullptr);
-        m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+        m_commandList->SetViewportAndScissor(rW, rH);
         m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+
+        // ---- ボリュメトリックフォグの合成（フルスクリーン 1 枚をブレンドで scene RT へ）----
+        // ★ここに挿すのは偶然ではない。(1) 深度が既に PIXEL_SHADER_RESOURCE、
+        //   (2) OMSetRenderTargets が DSV を意図的にバインドしていない、
+        //   (3) scene RT がまだ RENDER_TARGET —— の 3 条件が同時に揃う唯一の場所で、
+        //   深度の遷移を 1 回も追加せずに済む。
+        // パーティクルより「前」なので、加算合成のパーティクルにはフォグがかからない（意図どおり）。
+        // ★合成の GPU 時間は GpuTimer::Particles の内数になる（GpuTimer は 1 スコープにつき
+        //   フレーム 1 回の Begin/End しか記録できないので、volFog スコープは compute 3 パス専用）。
+        if (volFogBuilt)
+        {
+            m_volumetricFogPass->Composite(nativeCmdList,
+                m_srvHeap->GetGpuHandle(m_depthSrvIndex),
+                0u, 0u, rW, rH, frameIndex);
+            // フォグ用の RootSig/PSO を張ったので、後続（パーティクル）のために作法どおり戻す。
+            nativeCmdList->OMSetRenderTargets(1, &srtv, FALSE, nullptr);
+            m_commandList->SetViewportAndScissor(rW, rH);
+            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+        }
 
         XMMATRIX invView = XMMatrixInverse(nullptr, m_camera->GetViewMatrix());
         XMFLOAT3 camRight, camUp, camPos;
@@ -13445,7 +17219,8 @@ void Application::Render()
         else
             m_particleSystem->DisableSceneDepth();
         m_particleSystem->SetTime(totalTime);
-        m_particleSystem->Render(nativeCmdList, m_camera->GetViewProjMatrix(), camRight, camUp, camPos);
+        // ラスタライズ系はジッタあり（TAA でアンチエイリアスされる）。
+        m_particleSystem->Render(nativeCmdList, camVPJ, camRight, camUp, camPos);
 
         // ---- GPUパーティクル（compute シム + ExecuteIndirect）: 同じ HDR RT へ加算 ----
         if (m_gpuParticles)
@@ -13455,8 +17230,10 @@ void Application::Render()
                     proj._33, proj._43, 1.0f / rtw, 1.0f / rth);
             else
                 m_gpuParticles->DisableSceneDepth();
-            m_gpuParticles->SimulateAndRender(nativeCmdList, m_gameClock.GetDeltaTime(), totalTime,
-                                              m_camera->GetViewProjMatrix(), camRight, camUp);
+            // 決定論キャプチャ中は dt=0（#31。GPU 粒子が前進すると 2 枚が一致しない）。
+            m_gpuParticles->SimulateAndRender(nativeCmdList,
+                                              m_deterministicCapture ? 0.0f : m_gameClock.GetDeltaTime(),
+                                              totalTime, camVPJ, camRight, camUp);
         }
 
         // ---- 歪みパーティクル（熱ゆらぎ/衝撃波）: 歪みバッファ(RG16F)へ ----
@@ -13468,9 +17245,8 @@ void Application::Render()
             m_commandList->ClearRenderTarget(m_distortRT->GetRtv(), distClear);
             auto drtv = m_distortRT->GetRtv();
             nativeCmdList->OMSetRenderTargets(1, &drtv, FALSE, nullptr);
-            m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
-            m_particleSystem->RenderDistortion(nativeCmdList, m_camera->GetViewProjMatrix(),
-                                               camRight, camUp);
+            m_commandList->SetViewportAndScissor(rW, rH);
+            m_particleSystem->RenderDistortion(nativeCmdList, camVPJ, camRight, camUp);
             m_distortRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
             particleDistortDrawn = true;
         }
@@ -13490,12 +17266,78 @@ void Application::Render()
         XMFLOAT3 camRight, camUp;
         XMStoreFloat3(&camRight, invView.r[0]);
         XMStoreFloat3(&camUp,    invView.r[1]);
-        DrawWorldSprites(nativeCmdList, m_camera->GetViewProjMatrix(), camRight, camUp,
-                         m_sceneRT->GetRtv(), m_dsvHandle, vpLeft, vpTop, vpW, vpH, totalTime);
+        DrawWorldSprites(nativeCmdList, camVPJ, camRight, camUp,
+                         m_sceneRT->GetRtv(), m_dsvHandle, 0u, 0u, rW, rH, totalTime);
     }
 
+    // ===== 中間バッファ可視化（dx12_render_debug）=====
+    // ★ここに挿す理由: シーン RT がまだ RENDER_TARGET で、ポストチェーンより前。
+    //   readback（CaptureSceneScreenshot）は m_sceneRT を読むので必ず絵に写る（B5 の罠を回避）。
+    //   フォワード PS には 1 行も足していない（N24: [branch] でも occupancy が落ちる）。
+    if (m_renderDebugMode != 0 && m_renderDebugPass && m_renderDebugPass->IsReady()
+        && m_depthSrvIndex != DescriptorHeap::kInvalidIndex)
+    {
+        const auto dbgMode = static_cast<RenderDebugMode>(m_renderDebugMode);
+        u32 srcIdx = DescriptorHeap::kInvalidIndex;
+        switch (dbgMode)
+        {
+        case RenderDebugMode::Normal:
+        case RenderDebugMode::Roughness:
+        case RenderDebugMode::Metallic:
+            if (velocityPrepass && m_gbufferRT) srcIdx = m_gbufferRT->GetSrvIndex();
+            break;
+        case RenderDebugMode::Depth:          srcIdx = m_depthSrvIndex; break;   // t0 は使わないが有効な物を渡す
+        case RenderDebugMode::Ao:             srcIdx = aoSrv; break;
+        case RenderDebugMode::ContactShadow:  srcIdx = csSrv; break;
+        case RenderDebugMode::Velocity:
+            if (velocityPrepass && m_taaPass) srcIdx = m_taaPass->GetVelocitySrvIndex();
+            break;
+        case RenderDebugMode::Ssr:            srcIdx = ssrSrv;  break;
+        case RenderDebugMode::Ssgi:           srcIdx = ssgiSrv; break;
+        case RenderDebugMode::RtHit:
+        case RenderDebugMode::RtDiff:         srcIdx = rtDebugSrv; break;
+        default: break;
+        }
+
+        if (srcIdx != DescriptorHeap::kInvalidIndex)
+        {
+            // 深度は DEPTH_WRITE のままなので PS から読める状態へ往復させる。
+            m_commandList->TransitionResource(m_depthBuffer.Get(),
+                D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+            auto drtv = m_sceneRT->GetRtv();
+            nativeCmdList->OMSetRenderTargets(1, &drtv, FALSE, nullptr);   // DSV は張らない
+            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+
+            XMFLOAT4X4 dbgProj; XMStoreFloat4x4(&dbgProj, m_camera->GetProjectionMatrix());
+
+            RenderDebugPass::DrawDesc dd{};
+            dd.mode       = dbgMode;
+            dd.sourceSrv  = m_srvHeap->GetGpuHandle(srcIdx);
+            dd.depthSrv   = m_srvHeap->GetGpuHandle(m_depthSrvIndex);
+            dd.vpLeft = 0; dd.vpTop = 0; dd.vpW = rW; dd.vpH = rH;
+            dd.gain       = m_renderDebugGain;
+            dd.projA      = dbgProj._33;
+            dd.projB      = dbgProj._43;
+            dd.depthRange = m_renderDebugDepthRange;
+            dd.exposure   = m_renderDebugExposure;
+            m_renderDebugPass->Draw(*m_commandList, dd);
+
+            m_commandList->TransitionResource(m_depthBuffer.Get(),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        }
+    }
+
+    // ===== 次フレームの SSR/SSGI 用に、このフレームの HDR シーンカラーを退避 =====
+    // ★ポストチェーン（DoF/モーションブラー/ブルーム/トーンマップ）より前でなければならない。
+    //   トーンマップ後の絵を GI ソースにすると露出変動でフィードバックが暴れる。
+    //   m_sceneRT はリニア HDR で露出が焼き込まれていないので、その事故が構造的に起きない。
+    //   この位置ならパーティクル / ワールドスプライト / 歪みまで含んだ「見えている絵」が入る。
+    // ★m_sceneRT の ping-pong 化は禁止（33 参照あり）。CopyResource 1 発が唯一安全な手段。
     // ===== ポストプロセス: オフスクリーン RT → バックバッファ =====
     m_gpuTimer->Begin(nativeCmdList, GpuTimer::PostFX);
+    if (m_screenSpaceGi && (useSsr || useSsgi))
+        m_screenSpaceGi->CaptureSceneColor(*m_commandList, *m_sceneRT);
     auto* backBuffer = m_swapChain->GetCurrentBackBuffer();
     auto  rtv        = m_swapChain->GetCurrentRTV();
 
@@ -13508,12 +17350,11 @@ void Application::Render()
     {
         m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
 
+        // ★#16: シーンは RT 全面に描かれているので「サブ矩形の UV」は常に (0,0,1,1)。
+        //   かつてここで計算していた uvOfs/uvScl は 7 パスから丸ごと消えた。
+        //   fullW/fullH ＝ レンダー解像度（テクセルサイズの供給元）。
         const f32 fullW = static_cast<f32>(m_sceneRT->GetWidth());
         const f32 fullH = static_cast<f32>(m_sceneRT->GetHeight());
-        const f32 uvOfsX = static_cast<f32>(vpLeft) / fullW;
-        const f32 uvOfsY = static_cast<f32>(vpTop)  / fullH;
-        const f32 uvSclX = static_cast<f32>(vpW)    / fullW;
-        const f32 uvSclY = static_cast<f32>(vpH)    / fullH;
         const auto sceneSrvGpu = m_srvHeap->GetGpuHandle(m_sceneRT->GetSrvIndex());
 
         // ポストエフェクトも Scene/Game で同じ設定を適用する。
@@ -13534,50 +17375,82 @@ void Application::Render()
             }
         }
 
-        // ---- 深度依存パス（DoF/モーションブラー/ゴッドレイ）の準備 ----
+        // ---- TAA と FXAA の排他 ----
+        // TAA 解決済みの絵に FXAA を掛けると輪郭が二重にぼける。TAA が走るなら FXAA は落とす。
+        const bool taaResolve = taaResolveActive;
+        if (taaResolve) ppApplied.fxaaOn = false;
+
+        // ---- 深度依存パス（TAA/DoF/モーションブラー/ゴッドレイ）の準備 ----
         // 透視カメラのみ（正射は CoC/再投影/太陽投影が破綻するため無効）
         const bool persp = !m_camera->IsOrthographic();
         const bool wantDepthPost = ppApplied.enabled && persp &&
             m_depthBuffer && m_depthSrvIndex != DescriptorHeap::kInvalidIndex &&
             (ppApplied.dofOn || ppApplied.motionBlurOn || ppApplied.godraysOn);
+        // TAA も深度を読む（空の速度再構成 + closest-depth dilation）。深度の遷移は
+        // 1 箇所にまとめる＝二重遷移で D3D12 の状態追跡が壊れるのを防ぐ。
+        const bool needDepthSrv = wantDepthPost || taaResolve;
         D3D12_GPU_DESCRIPTOR_HANDLE depthSrvGpu{};
-        if (wantDepthPost)
+        if (needDepthSrv)
         {
             m_commandList->TransitionResource(m_depthBuffer.Get(),
                 D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
             depthSrvGpu = m_srvHeap->GetGpuHandle(m_depthSrvIndex);
         }
 
-        // ---- シーン変換チェーン: DoF → モーションブラー（結果を以降の「シーン」として使う）----
+        // ---- シーン変換チェーン: TAA → DoF → モーションブラー（結果を以降の「シーン」として使う）----
         D3D12_GPU_DESCRIPTOR_HANDLE curSceneSrv = sceneSrvGpu;
+
+        // ★TAA はチェーンの先頭。トーンマップ前のリニア HDR に対して解決する。
+        //   露出に依存するアーティファクトを避けるためと、以降の DoF / モーションブラー /
+        //   自動露出 / ブルーム / レンズフレアが「安定した絵」を入力に取れるようにするため
+        //   （ブルームとレンズフレアのちらつきが目に見えて減る）。
+        if (taaResolve)
+        {
+            XMFLOAT4X4 invVpT, prevVpT;
+            XMStoreFloat4x4(&invVpT, XMMatrixTranspose(XMMatrixInverse(nullptr, camVP)));
+            XMStoreFloat4x4(&prevVpT, XMMatrixTranspose(
+                m_prevViewProjNJValid ? XMLoadFloat4x4(&m_prevViewProjNoJitter) : camVP));
+            const u32 o = m_taaPass->Resolve(*m_commandList, curSceneSrv, depthSrvGpu,
+                invVpT, prevVpT, rW, rH, taaCfg);
+            if (o != DescriptorHeap::kInvalidIndex)
+                curSceneSrv = m_srvHeap->GetGpuHandle(o);
+            // TaaPass は自前のルートシグネチャ/PSO を張るので、後段のために SRV ヒープを張り直す。
+            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+        }
         if (wantDepthPost && ppApplied.dofOn && m_dofPass)
         {
             XMFLOAT4X4 projF;
             XMStoreFloat4x4(&projF, m_camera->GetProjectionMatrix());
             const u32 o = m_dofPass->Apply(*m_commandList, m_srvHeap.get(),
-                curSceneSrv, depthSrvGpu,
-                uvOfsX, uvOfsY, uvSclX, uvSclY, vpLeft, vpTop, vpW, vpH,
-                projF._33, projF._43, ppApplied);
+                curSceneSrv, depthSrvGpu, projF._33, projF._43, ppApplied);
             if (o != DescriptorHeap::kInvalidIndex)
                 curSceneSrv = m_srvHeap->GetGpuHandle(o);
         }
         if (wantDepthPost && ppApplied.motionBlurOn && m_motionBlurPass && m_prevViewProjValid)
         {
-            const XMMATRIX vp  = m_camera->GetViewProjMatrix();
+            // モーションブラーの再投影はジッタなし（ジッタ込みだと毎フレーム微ブラーが乗る）。
+            const XMMATRIX vp  = camVP;
             const XMMATRIX inv = XMMatrixInverse(nullptr, vp);
             XMFLOAT4X4 invT, prevT;
             XMStoreFloat4x4(&invT,  XMMatrixTranspose(inv));
             XMStoreFloat4x4(&prevT, XMMatrixTranspose(XMLoadFloat4x4(&m_prevViewProj)));
+            // 速度バッファが今フレーム書かれていれば、それを使って「オブジェクト毎の」
+            // モーションブラーにする（従来の深度再構成はカメラの動きしか拾えない）。
+            // 使えない時は深度 SRV をダミーとして張る（params.w=0 なのでシェーダは読まない）。
+            const u32 velIdx = velocityPrepass ? m_taaPass->GetVelocitySrvIndex()
+                                               : DescriptorHeap::kInvalidIndex;
+            const bool mbUseVelocity = (velIdx != DescriptorHeap::kInvalidIndex);
+            const auto velSrvGpu = mbUseVelocity ? m_srvHeap->GetGpuHandle(velIdx) : depthSrvGpu;
             const u32 o = m_motionBlurPass->Apply(*m_commandList, m_srvHeap.get(),
-                curSceneSrv, depthSrvGpu, invT, prevT,
-                uvOfsX, uvOfsY, uvSclX, uvSclY, vpLeft, vpTop, vpW, vpH, ppApplied);
+                curSceneSrv, depthSrvGpu, velSrvGpu, mbUseVelocity, invT, prevT,
+                rW, rH, ppApplied);
             if (o != DescriptorHeap::kInvalidIndex)
                 curSceneSrv = m_srvHeap->GetGpuHandle(o);
         }
 
         // ---- 自動露出（compute。ビューポート矩形のヒストグラム→露出値を GPU 内バッファへ）----
         if (m_autoExposure && ppApplied.enabled && ppApplied.autoExposureOn)
-            m_autoExposure->Generate(nativeCmdList, curSceneSrv, vpLeft, vpTop, vpW, vpH,
+            m_autoExposure->Generate(nativeCmdList, curSceneSrv, 0u, 0u, rW, rH,
                                      m_gameClock.GetDeltaTime(), ppApplied);
         D3D12_GPU_VIRTUAL_ADDRESS exposureVA = 0;
         if (m_autoExposure)
@@ -13590,7 +17463,6 @@ void Application::Render()
         u32 bloomSrv = DescriptorHeap::kInvalidIndex;
         if (m_bloomPass && ppApplied.enabled && (ppApplied.bloomOn || ppApplied.lensflareOn))
             bloomSrv = m_bloomPass->Generate(*m_commandList, m_srvHeap.get(), curSceneSrv,
-                                             uvOfsX, uvOfsY, uvSclX, uvSclY,
                                              1.0f / fullW, 1.0f / fullH, ppApplied);
         const bool bloomReady = (bloomSrv != DescriptorHeap::kInvalidIndex);
         const auto bloomSrvGpu = m_srvHeap->GetGpuHandle(bloomReady ? bloomSrv : m_ssaoWhiteSrvIndex);
@@ -13617,7 +17489,7 @@ void Application::Render()
                 const XMFLOAT3 camPos = m_camera->GetPosition();
                 XMVECTOR d  = XMVector3Normalize(XMLoadFloat3(&sunDir));
                 XMVECTOR wp = XMVectorSubtract(XMLoadFloat3(&camPos), XMVectorScale(d, 5000.0f));
-                XMVECTOR clip = XMVector4Transform(XMVectorSetW(wp, 1.0f), m_camera->GetViewProjMatrix());
+                XMVECTOR clip = XMVector4Transform(XMVectorSetW(wp, 1.0f), camVP);  // 太陽投影はジッタなし
                 const f32 cw = XMVectorGetW(clip);
                 if (cw > 0.01f)
                 {
@@ -13628,10 +17500,10 @@ void Application::Render()
                     const f32 fade = (std::min)((std::max)((1.1f - dc) / 0.4f, 0.0f), 1.0f);
                     if (fade > 0.001f)
                     {
+                        // ★#16: シーンは RT 全面なので、ローカル UV がそのまま RT の UV。
+                        //   （かつては lu * uvScl + uvOfs でサブ矩形へ写していた）
                         godraysSrv = m_godRaysPass->Generate(*m_commandList, m_srvHeap.get(),
-                            depthSrvGpu,
-                            uvOfsX, uvOfsY, uvSclX, uvSclY, vpLeft, vpTop, vpW, vpH,
-                            lu * uvSclX + uvOfsX, lv * uvSclY + uvOfsY, fade, sunColI, ppApplied);
+                            depthSrvGpu, rW, rH, lu, lv, fade, sunColI, ppApplied);
                     }
                 }
             }
@@ -13649,8 +17521,8 @@ void Application::Render()
         }
         const bool lfReady = (flareSrv != DescriptorHeap::kInvalidIndex);
 
-        // 深度を DSV 用途（エディタアイコン等）へ戻す
-        if (wantDepthPost)
+        // 深度を DSV 用途（エディタアイコン等）へ戻す（遷移した時だけ。needDepthSrv と対で閉じる）
+        if (needDepthSrv)
             m_commandList->TransitionResource(m_depthBuffer.Get(),
                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
 
@@ -13694,13 +17566,34 @@ void Application::Render()
         pin.flareReady   = lfReady;
         pin.distortReady = particleDistortDrawn;
 
+        // ★ここが唯一の「レンダー解像度 → 表示解像度」の橋渡し。ビューポートが表示矩形で、
+        //   シーン RT の全面をサンプルする＝renderScale < 1 なら自動的にバイリニア拡大になる。
         m_postProcess->Apply(nativeCmdList, pin, ppApplied,
-            uvOfsX, uvOfsY, uvSclX, uvSclY,
             1.0f / fullW, 1.0f / fullH, totalTime, frameIndex);
 
+        // ---- 速度バッファのデバッグ可視化（ポスト後のバックバッファを上書き）----
+        // 静止時に全面が均一な (0.5,0.5,0.5) グレーになるのが「ジッタが正しく除去されている」証拠。
+        if (taaActive && taaCfg.debugVelocity && m_taaPass)
+        {
+            const u32 velSrv = m_taaPass->GetVelocitySrvIndex();
+            if (velSrv != DescriptorHeap::kInvalidIndex)
+            {
+                nativeCmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+                m_taaPass->DrawVelocityDebug(*m_commandList, m_srvHeap->GetGpuHandle(velSrv),
+                    vpLeft, vpTop, vpW, vpH, /*scale*/ 20.0f);
+            }
+        }
+
         // 次フレームのモーションブラー用に今フレームの viewProj を保存
-        XMStoreFloat4x4(&m_prevViewProj, m_camera->GetViewProjMatrix());
+        XMStoreFloat4x4(&m_prevViewProj, camVP);   // ジッタなし（従来より正確になる）
         m_prevViewProjValid = true;
+        // 速度バッファ/TAA 用に「ジッタなし」viewProj と frameIndex を保存する。
+        // frameIndex は SkinningBuffer の前フレームスロットを指すため
+        //（GetCurrentBackBufferIndex() の巡回順は DXGI 仕様上保証されないので明示記録）。
+        XMStoreFloat4x4(&m_prevViewProjNoJitter, camVP);
+        m_prevViewProjNJValid = true;
+        m_prevFrameIndex      = frameIndex;
+        m_prevFrameIndexValid = true;
     }
     m_gpuTimer->End(nativeCmdList, GpuTimer::PostFX);
     m_gpuTimer->Begin(nativeCmdList, GpuTimer::UI);
@@ -13708,14 +17601,19 @@ void Application::Render()
     // ---- Editor Icon Draw（ポスト後のバックバッファへ, エディタモードのみ）----
     if (m_engineMode == EngineMode::Editor && !m_isGameMode)
     {
-        m_commandList->SetRenderTarget(rtv, m_dsvHandle);
+        // ★DSV は張らない。アイコンは DepthEnable=FALSE で深度テストをしないうえ、
+        //   #16 でメイン深度はレンダー解像度に縮んだので、表示解像度のバックバッファへ
+        //   束ねると RTV より小さい DSV になる（PSO 側も DSVFormat=UNKNOWN にしてある）。
+        m_commandList->SetRenderTarget(rtv);
         m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
 
         m_editorIconRenderer->BeginFrame();
         m_editorIconRenderer->CollectFromRegistry(m_scene->GetRegistry(), *m_editorCtx);
 
         XMFLOAT4X4 vpIcon;
-        XMStoreFloat4x4(&vpIcon, XMMatrixTranspose(m_camera->GetViewProjMatrix()));
+        // エディタアイコンはポスト後のバックバッファ＝TAA の対象外なのでジッタなし
+        // （ジッタさせると選択アイコンだけが 1px 揺れる）。
+        XMStoreFloat4x4(&vpIcon, XMMatrixTranspose(camVP));
         m_editorIconRenderer->Render(nativeCmdList, vpIcon, vpW, vpH);
     }
 
@@ -13839,13 +17737,20 @@ void Application::Render()
             XMStoreFloat4x4(&fcp.proj, XMMatrixTranspose(proj));
             fcp.cameraPos = tf.position;
             fcp.aoEnabled = 0.0f;   // プレビューは白ダミー AO（SSAO 非対応）なので AO を読まない
+            fcp.contactShadowEnabled = 0.0f;   // 同上（コンタクトシャドウもプレビューでは作らない）
+            // クラスタは「メインカメラ視点」で作ってあるので、別視点のプレビューで引くと
+            // 完全に間違ったライトリストになる。総当たりフォールバックへ倒す。
+            // ★これでデカール（計画06）もプレビューでは無効になる（ApplyDecals が
+            //   clusterGrid.w <= 0.5 で丸ごと return する）。ビニングが別視点なので正しい挙動。
+            fcp.clusterGrid.w  = 0.0f;
+            fcp.clusterExtra.z = 0.0f;   // デバッグ可視化もプレビューでは出さない
             m_previewFrameCB->Update(&fcp, sizeof(fcp), frameIndex);
 
             m_cameraPreviewRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
             constexpr float pvClear[4] = {0.127f, 0.306f, 0.850f, 1.0f};  // リニア空間のコーンフラワーブルー
             m_commandList->ClearRenderTarget(m_cameraPreviewRT->GetRtv(), pvClear);
-            m_commandList->ClearDepthStencil(m_dsvHandle);
-            m_commandList->SetRenderTarget(m_cameraPreviewRT->GetRtv(), m_dsvHandle);
+            m_commandList->ClearDepthStencil(m_previewDsvHandle);
+            m_commandList->SetRenderTarget(m_cameraPreviewRT->GetRtv(), m_previewDsvHandle);
             m_commandList->SetViewportAndScissor(pw, ph);
 
             m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
@@ -13857,16 +17762,21 @@ void Application::Render()
             if (m_iblReady && m_iblBaker)
                 m_commandList->SetSRVTable(RootSignature::kSlotIBLTable,
                     m_srvHeap->GetGpuHandle(m_iblBaker->GetIrradianceSrv()));
+            // クラスタテーブルはフォールバック時も必ずバインドする（PS が t13..t15 を参照するため）
+            if (m_clusteredLighting && m_clusteredLighting->IsReady())
+                m_commandList->SetSRVTable(RootSignature::kSlotClusterSRV,
+                    m_clusteredLighting->GetSrvTable(frameIndex));
 
             // グリッドは出さない＝isGameView=true。プレビューは SSAO 非対応＝白ダミー。
-            RenderSceneMeshes(nativeCmdList, frameIndex, camViewProj, true, m_ssaoWhiteSrvIndex);
+            RenderSceneMeshes(nativeCmdList, frameIndex, camViewProj, true, m_ssaoWhiteSrvIndex,
+                              /*depthPrepassActive=*/false, m_ssaoWhiteSrvIndex);
 
             // ワールド空間スプライトもプレビューへ（このカメラ視点で。ビルボードは行列の右/上ベクトル）。
             XMFLOAT3 pvRight, pvUp;
             XMStoreFloat3(&pvRight, rot.r[0]);
             XMStoreFloat3(&pvUp,    rot.r[1]);
             DrawWorldSprites(nativeCmdList, camViewProj, pvRight, pvUp,
-                             m_cameraPreviewRT->GetRtv(), m_dsvHandle, 0u, 0u, pw, ph, totalTime);
+                             m_cameraPreviewRT->GetRtv(), m_previewDsvHandle, 0u, 0u, pw, ph, totalTime);
 
             m_cameraPreviewRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
@@ -13894,7 +17804,6 @@ void Application::Render()
                 pvIn.distortSrv = pvDummy;
                 pvIn.exposureVA = m_autoExposure ? m_autoExposure->GetExposureBufferVA() : 0;
                 m_postProcess->Apply(nativeCmdList, pvIn, pvPost,
-                    0.0f, 0.0f, 1.0f, 1.0f,
                     1.0f / static_cast<f32>(pw), 1.0f / static_cast<f32>(ph), totalTime, frameIndex);
 
                 m_cameraPreviewLdrRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -13909,7 +17818,7 @@ void Application::Render()
 
             // プレビュー描画でRT/ビューポートを切り替えたので、バックバッファへ戻す。
             // これをしないと直後の ImGui がプレビューRTへ描かれ、画面に出なくなる。
-            m_commandList->SetRenderTarget(rtv, m_dsvHandle);
+            m_commandList->SetRenderTarget(rtv);   // 深度は張らない（#16: メイン深度はレンダー解像度）
             m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
         }
     }
@@ -13919,7 +17828,7 @@ void Application::Render()
     {
         m_vfxEditorPanel->RenderPreview3D(*m_editorCtx, *m_commandList, m_gameClock.GetDeltaTime());
         // プレビュー描画でRT/ビューポートを切り替えたので、バックバッファへ戻す。
-        m_commandList->SetRenderTarget(rtv, m_dsvHandle);
+        m_commandList->SetRenderTarget(rtv);   // 深度は張らない（#16: メイン深度はレンダー解像度）
         m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
     }
 
@@ -13928,9 +17837,13 @@ void Application::Render()
     {
         m_materialEditorPanel->RenderPreview3D(*m_editorCtx, *m_commandList);
         // プレビュー描画でRT/ビューポートを切り替えたので、バックバッファへ戻す。
-        m_commandList->SetRenderTarget(rtv, m_dsvHandle);
+        m_commandList->SetRenderTarget(rtv);   // 深度は張らない（#16: メイン深度はレンダー解像度）
         m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
     }
+
+    // ---- MCP screenshot_final: ImGui を描く前のバックバッファ（＝ポスト適用後の絵だけ）を撮る ----
+    //   ここより後は ImGui のパネル / ギズモ / オーバーレイが乗るので、必ずこの位置で撮ること（§6 B5）。
+    CaptureFinalBackBufferRegion(nativeCmdList, backBuffer, vpLeft, vpTop, vpW, vpH);
 
     // ---- ImGui フレーム ----
     m_imguiManager->BeginFrame();
@@ -14047,7 +17960,8 @@ void Application::Render()
 
         // ---- ポストプロセス: ON/OFF ウィンドウ と パラメータ ウィンドウ ----
         {
-            auto& pp = m_scene->GetPostSettings();
+            auto& pp  = m_scene->GetPostSettings();
+            auto& taa = m_scene->GetTaaSettings();   // TAA は PostProcessSettings とは別（下の注記参照）
 
             // 全エフェクトのメタ情報（トグルとパラメータ描画を一元定義）
             struct PostFx {
@@ -14151,7 +18065,27 @@ void Application::Render()
                     [&]{ ImGui::SliderFloat("強度##outl", &pp.outline, 0.0f, 4.0f, "%.2f");
                          ImGui::ColorEdit3("線の色##outlc", &pp.outlineColor.x); }},
 
-                {"アンチエイリアス", "FXAA", "簡易アンチエイリアス", &pp.fxaaOn, {}},
+                {"アンチエイリアス", "FXAA", "簡易アンチエイリアス（TAA が有効なら無視されます）", &pp.fxaaOn, {}},
+                // TAA は PostProcessSettings ではなく TaaSettings（シーン単位の独立設定）に住む。
+                // uber パスの「マスク付きエフェクト」ではなく、チェーンの構造そのものを変える
+                // （深度+速度プリパスの強制・投影行列のジッタ・FXAA 排他）ため。
+                {"アンチエイリアス", "TAA (テンポラル)",
+                 "速度バッファ + 前フレームの履歴でサブピクセル AA。動くものもぼけません。"
+                 "有効にすると FXAA は自動で無視されます（透視ビューのみ。2D 正射では無効）",
+                 &taa.enabled,
+                    [&]{ int sc = (taa.sampleCount <= 4) ? 0 : (taa.sampleCount >= 16 ? 2 : 1);
+                         if (ImGui::Combo("ジッタ数##taasc", &sc, "4 (シャープ)\0" "8 (標準)\0" "16 (滑らか)\0"))
+                             taa.sampleCount = (sc == 0) ? 4 : (sc == 2 ? 16 : 8);
+                         ImGui::SliderFloat("ジッタ量##taajs", &taa.jitterScale, 0.0f, 1.0f, "%.2f");
+                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("1.0 = ±0.5px。ブラーが強すぎるなら下げる");
+                         ImGui::SliderFloat("履歴 最小##taafbmin", &taa.feedbackMin, 0.5f, 0.98f, "%.3f");
+                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("現フレームと食い違うピクセルで使う履歴の比率");
+                         ImGui::SliderFloat("履歴 最大##taafbmax", &taa.feedbackMax, 0.5f, 0.995f, "%.3f");
+                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("安定しているピクセルで使う履歴の比率。高いほど滑らかだがゴーストしやすい");
+                         ImGui::SliderFloat("クリップ幅##taavg", &taa.varianceGamma, 0.25f, 3.0f, "%.2f");
+                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("近傍色の許容幅 (μ±γσ)。下げるとゴーストが減りチラつきが増える");
+                         ImGui::Checkbox("速度バッファを可視化##taadbg", &taa.debugVelocity);
+                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("静止時に全面が均一なグレーになるのが正常"); }},
 
                 {"仕上げ", "デバンディング Deband", "TPDFディザで空/ビネットの縞(バンディング)を除去", &pp.debandOn, {}},
             };
@@ -14288,6 +18222,95 @@ void Application::Render()
                     ss.sampleCount = s16 ? 16 : 8;
             }
             ImGui::Checkbox("ブラー Blur", &ss.blur);
+            ImGui::EndDisabled();
+            ImGui::End();
+        }
+
+        // ---- SSR / SSGI 設定ウィンドウ（シーン単位・グローバルレンダ設定・トグル表示）----
+        if (m_scene && m_editorCtx->showScreenSpaceGi)
+        {
+            auto& sr = m_scene->GetSsrSettings();
+            auto& sg = m_scene->GetSsgiSettings();
+            ImGui::Begin("SSR / SSGI");
+            ImGui::TextWrapped("深度プリパスの G-Buffer（法線/ラフネス/メタリック）と"
+                               "前フレームのシーンカラーをレイマーチする。透視ビューのみ。"
+                               "どちらか有効にすると深度+速度プリパスが常時走る。"
+                               "反射/間接光は 1 フレーム遅れる。");
+            ImGui::Separator();
+
+            ImGui::SeparatorText("SSR（スクリーン空間反射）");
+            ImGui::Checkbox("SSR 有効", &sr.enabled);
+            ImGui::BeginDisabled(!sr.enabled);
+            ImGui::SliderFloat("強度##ssr",        &sr.intensity,       0.0f, 1.0f,   "%.2f");
+            ImGui::SliderFloat("最大距離(m)",       &sr.maxDistance,     1.0f, 200.0f, "%.1f");
+            ImGui::SliderFloat("厚み(m)##ssr",      &sr.thickness,       0.05f, 2.0f,  "%.2f");
+            ImGui::SliderInt  ("ステップ数",         &sr.maxSteps,        16, 128);
+            ImGui::SliderFloat("歩幅(px)",          &sr.stride,          1.0f, 8.0f,   "%.1f");
+            ImGui::SliderFloat("ラフネス上限",       &sr.roughnessCutoff, 0.05f, 1.0f,  "%.2f");
+            ImGui::SliderFloat("画面端フェード",      &sr.edgeFade,        0.0f, 0.5f,   "%.2f");
+            ImGui::SliderFloat("バイアス(m)##ssr",   &sr.bias,            0.0f, 0.5f,   "%.3f");
+            ImGui::TextDisabled("ラフネス上限を超える面はレイを打たず IBL に任せる");
+            ImGui::EndDisabled();
+
+            ImGui::SeparatorText("SSGI（スクリーン空間GI）");
+            ImGui::Checkbox("SSGI 有効", &sg.enabled);
+            ImGui::BeginDisabled(!sg.enabled);
+            ImGui::SliderFloat("強度##ssgi",       &sg.intensity,  0.0f, 2.0f,  "%.2f");
+            ImGui::SliderFloat("到達距離(m)",       &sg.radius,     0.5f, 30.0f, "%.1f");
+            ImGui::SliderFloat("厚み(m)##ssgi",     &sg.thickness,  0.05f, 2.0f, "%.2f");
+            ImGui::SliderInt  ("レイ数/px",         &sg.rayCount,   1, 4);
+            ImGui::SliderInt  ("ステップ数##ssgi",   &sg.stepCount,  4, 24);
+            ImGui::SliderFloat("輝度クランプ",       &sg.clampValue, 0.1f, 20.0f, "%.2f");
+            ImGui::SliderFloat("時間蓄積 Feedback", &sg.feedback,   0.0f, 0.98f, "%.2f");
+            ImGui::Checkbox("画面外は IBL で埋める", &sg.iblFallback);
+            ImGui::TextDisabled("IBL 埋めを切るとカメラを回すたびに明るさが変動する");
+            ImGui::EndDisabled();
+            ImGui::End();
+        }
+
+        // ---- ボリュメトリックフォグ設定ウィンドウ（シーン単位・グローバルレンダ設定・トグル表示）----
+        if (m_scene && m_editorCtx->showVolumetricFog)
+        {
+            auto& f = m_scene->GetVolumetricFogSettings();
+            ImGui::Begin("Volumetric Fog");
+            ImGui::TextWrapped("視錐台に沿った 3D テクスチャ（160x90x64）へ散乱を焼いてから "
+                               "画面へ合成する。空気そのものが光る＝光の筋（ゴッドレイ）が "
+                               "立体的に見える。透視ビューのみ。有効にした時点で 28MB 確保する。");
+            ImGui::Separator();
+
+            ImGui::Checkbox("有効", &f.enabled);
+            ImGui::BeginDisabled(!f.enabled);
+
+            ImGui::SeparatorText("媒質");
+            ImGui::SliderFloat("濃度##fog",     &f.density,       0.0f, 0.3f,  "%.4f");
+            ImGui::ColorEdit3 ("散乱アルベド",   &f.albedo.x);
+            ImGui::SliderFloat("異方性 g",      &f.anisotropy,   -0.9f, 0.9f,  "%.2f");
+            ImGui::TextDisabled("g>0 = 前方散乱（太陽の方を向くと明るい）。0.6-0.8 で強いシャフト");
+            ImGui::SliderFloat("高さ減衰(1/m)", &f.heightFalloff, 0.0f, 0.5f,  "%.3f");
+            ImGui::DragFloat  ("基準高さ(Y)",   &f.heightRef,     0.1f, -500.0f, 500.0f, "%.1f");
+
+            ImGui::SeparatorText("ボリューム");
+            ImGui::SliderFloat("到達距離(m)",   &f.distance,        10.0f, 500.0f, "%.0f");
+            ImGui::SliderFloat("深度分布 k",    &f.depthDistribution, 1.0f, 4.0f, "%.2f");
+            ImGui::TextDisabled("z = 距離 * w^k。1=線形 / 大きいほど手前が細かい");
+            ImGui::Checkbox("到達距離の外を解析フォグで延長", &f.extendBeyondRange);
+
+            ImGui::SeparatorText("ライティング");
+            ImGui::ColorEdit3 ("環境散乱",      &f.ambient.x);
+            ImGui::SliderFloat("太陽の寄与",    &f.sunIntensity, 0.0f, 5.0f, "%.2f");
+            ImGui::Checkbox("点光源/スポットも散乱させる", &f.lightScattering);
+            ImGui::TextDisabled("クラスタライトリストを引く（クラスタード無効時はスキップ）");
+
+            ImGui::SeparatorText("時間再投影");
+            ImGui::Checkbox("有効##fogTemporal", &f.temporal);
+            ImGui::BeginDisabled(!f.temporal);
+            ImGui::SliderFloat("現フレーム比率", &f.temporalBlend, 0.01f, 1.0f, "%.3f");
+            ImGui::TextDisabled("小さいほど滑らかだがゴーストが増える（既定 0.08）");
+            ImGui::EndDisabled();
+
+            ImGui::SeparatorText("デバッグ表示（保存されない）");
+            ImGui::Combo("表示##fogDebug", &f.debugMode,
+                         "オフ\0散乱だけ\0透過率だけ\0froxel スライス\0\0");
             ImGui::EndDisabled();
             ImGui::End();
         }

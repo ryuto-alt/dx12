@@ -193,6 +193,7 @@ void Mesh::UploadVertexCache(GraphicsDevice& device, ID3D12GraphicsCommandList* 
                               cmd);
     // ステージングは DeferredRelease 経由（フェンス完了まで生存）なので即返して安全。
     m_vertexBuffer.FinishUpload();
+    ++m_geometryVersion;   // GPU VA が変わった → DXR の BLAS キャッシュを無効化させる
 }
 
 void Mesh::InitializeAsBox(GraphicsDevice& device)
@@ -209,43 +210,53 @@ void Mesh::InitializeAsBox(GraphicsDevice& device)
     const XMFLOAT2 uv11 = {1, 1};
     const XMFLOAT2 uv01 = {0, 1};
 
+    // TANGENT は各面の「U が増える向き」。w は cross(N,T) が V の向きと一致するかの符号で、
+    // 全面 +1 になる（下の UV 割り当てから手計算。PBR.hlsli の PerturbNormal と同じ規約）。
+    // ★これが (0,0,0,1) のままだと、法線マップを貼ったとき PerturbNormal の
+    //   normalize(0) が NaN になる（#26 でプリミティブにも法線マップが効くようになったため必要）。
+    const XMFLOAT4 tPX = { 1,  0,  0, 1};
+    const XMFLOAT4 tNX = {-1,  0,  0, 1};
+    const XMFLOAT4 tPY = { 0,  1,  0, 1};
+    const XMFLOAT4 tPZ = { 0,  0,  1, 1};
+    const XMFLOAT4 tNZ = { 0,  0, -1, 1};
+
     std::vector<Vertex> vertices =
     {
         // +Y face (top) - normal (0, 1, 0)
-        { {-h,  h, -h}, { 0,  1,  0}, white, uv00 },
-        { {-h,  h,  h}, { 0,  1,  0}, white, uv10 },
-        { { h,  h,  h}, { 0,  1,  0}, white, uv11 },
-        { { h,  h, -h}, { 0,  1,  0}, white, uv01 },
+        { {-h,  h, -h}, { 0,  1,  0}, white, uv00, tPZ },
+        { {-h,  h,  h}, { 0,  1,  0}, white, uv10, tPZ },
+        { { h,  h,  h}, { 0,  1,  0}, white, uv11, tPZ },
+        { { h,  h, -h}, { 0,  1,  0}, white, uv01, tPZ },
 
         // -Y face (bottom) - normal (0, -1, 0)
-        { {-h, -h,  h}, { 0, -1,  0}, white, uv00 },
-        { {-h, -h, -h}, { 0, -1,  0}, white, uv10 },
-        { { h, -h, -h}, { 0, -1,  0}, white, uv11 },
-        { { h, -h,  h}, { 0, -1,  0}, white, uv01 },
+        { {-h, -h,  h}, { 0, -1,  0}, white, uv00, tNZ },
+        { {-h, -h, -h}, { 0, -1,  0}, white, uv10, tNZ },
+        { { h, -h, -h}, { 0, -1,  0}, white, uv11, tNZ },
+        { { h, -h,  h}, { 0, -1,  0}, white, uv01, tNZ },
 
         // +X face (right) - normal (1, 0, 0)
-        { { h, -h, -h}, { 1,  0,  0}, white, uv00 },
-        { { h,  h, -h}, { 1,  0,  0}, white, uv10 },
-        { { h,  h,  h}, { 1,  0,  0}, white, uv11 },
-        { { h, -h,  h}, { 1,  0,  0}, white, uv01 },
+        { { h, -h, -h}, { 1,  0,  0}, white, uv00, tPY },
+        { { h,  h, -h}, { 1,  0,  0}, white, uv10, tPY },
+        { { h,  h,  h}, { 1,  0,  0}, white, uv11, tPY },
+        { { h, -h,  h}, { 1,  0,  0}, white, uv01, tPY },
 
         // -X face (left) - normal (-1, 0, 0)
-        { {-h, -h,  h}, {-1,  0,  0}, white, uv00 },
-        { {-h,  h,  h}, {-1,  0,  0}, white, uv10 },
-        { {-h,  h, -h}, {-1,  0,  0}, white, uv11 },
-        { {-h, -h, -h}, {-1,  0,  0}, white, uv01 },
+        { {-h, -h,  h}, {-1,  0,  0}, white, uv00, tPY },
+        { {-h,  h,  h}, {-1,  0,  0}, white, uv10, tPY },
+        { {-h,  h, -h}, {-1,  0,  0}, white, uv11, tPY },
+        { {-h, -h, -h}, {-1,  0,  0}, white, uv01, tPY },
 
         // +Z face (front) - normal (0, 0, 1)
-        { {-h, -h,  h}, { 0,  0,  1}, white, uv00 },
-        { { h, -h,  h}, { 0,  0,  1}, white, uv10 },
-        { { h,  h,  h}, { 0,  0,  1}, white, uv11 },
-        { {-h,  h,  h}, { 0,  0,  1}, white, uv01 },
+        { {-h, -h,  h}, { 0,  0,  1}, white, uv00, tPX },
+        { { h, -h,  h}, { 0,  0,  1}, white, uv10, tPX },
+        { { h,  h,  h}, { 0,  0,  1}, white, uv11, tPX },
+        { {-h,  h,  h}, { 0,  0,  1}, white, uv01, tPX },
 
         // -Z face (back) - normal (0, 0, -1)
-        { { h, -h, -h}, { 0,  0, -1}, white, uv00 },
-        { {-h, -h, -h}, { 0,  0, -1}, white, uv10 },
-        { {-h,  h, -h}, { 0,  0, -1}, white, uv11 },
-        { { h,  h, -h}, { 0,  0, -1}, white, uv01 },
+        { { h, -h, -h}, { 0,  0, -1}, white, uv00, tNX },
+        { {-h, -h, -h}, { 0,  0, -1}, white, uv10, tNX },
+        { {-h,  h, -h}, { 0,  0, -1}, white, uv11, tNX },
+        { { h,  h, -h}, { 0,  0, -1}, white, uv01, tNX },
     };
 
     std::vector<u32> indices =
@@ -288,7 +299,8 @@ void Mesh::InitializeAsPlane(GraphicsDevice& device, f32 size, u32 subdivisions)
             f32 pz = -half + static_cast<f32>(z) * step;
             f32 u = static_cast<f32>(x) / static_cast<f32>(subdivisions) * uvScale;
             f32 v = static_cast<f32>(z) / static_cast<f32>(subdivisions) * uvScale;
-            vertices.push_back({{px, 0, pz}, normal, white, {u, v}});
+            // U は +X、V は +Z。cross(N,T) = (0,0,-1) なので w = -1（法線マップ用）
+            vertices.push_back({{px, 0, pz}, normal, white, {u, v}, {1.0f, 0.0f, 0.0f, -1.0f}});
         }
     }
 
@@ -332,7 +344,10 @@ void Mesh::InitializeAsSphere(GraphicsDevice& device, f32 radius, u32 slices, u3
                 static_cast<f32>(slice) / static_cast<f32>(slices),
                 static_cast<f32>(stack) / static_cast<f32>(stacks)
             };
-            vertices.push_back({pos, normal, white, uv});
+            // U は theta 方向。T = d(pos)/d(theta) を正規化したもの。
+            // cross(N,T) が d(pos)/d(phi)（= V 方向）と一致するので w = +1。
+            const XMFLOAT4 tangent = {-sinTheta, 0.0f, cosTheta, 1.0f};
+            vertices.push_back({pos, normal, white, uv, tangent});
         }
     }
 
@@ -388,6 +403,38 @@ u32 Mesh::GetInstancedInputLayoutCount()
     return static_cast<u32>(std::size(kInstancedInputLayout));
 }
 
+// 速度パス専用: slot0(頂点7要素) + slot1(MeshInstanceData 64B) + slot2(MeshInstancePrevData 48B)。
+// slot1 までは kInstancedInputLayout と完全に同一（VelocityPrepassInstanced.hlsl の VSInput も同順）。
+static const D3D12_INPUT_ELEMENT_DESC kVelocityInstancedInputLayout[] =
+{
+    { "POSITION",     0, DXGI_FORMAT_R32G32B32_FLOAT,    0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    { "NORMAL",       0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    { "COLOR",        0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    { "TEXCOORD",     0, DXGI_FORMAT_R32G32_FLOAT,       0, 40, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    { "TANGENT",      0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 48, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    { "BLENDINDICES", 0, DXGI_FORMAT_R32G32B32A32_UINT,  0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    { "BLENDWEIGHT",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    // --- slot1 PER_INSTANCE: MeshInstanceData（現フレームのワールド行列）---
+    { "TEXCOORD",  8, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+    { "TEXCOORD",  9, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+    { "TEXCOORD", 10, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+    { "TEXCOORD", 11, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+    // --- slot2 PER_INSTANCE: MeshInstancePrevData（前フレームのワールド行列）---
+    { "TEXCOORD", 12, DXGI_FORMAT_R32G32B32A32_FLOAT, 2,  0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+    { "TEXCOORD", 13, DXGI_FORMAT_R32G32B32A32_FLOAT, 2, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+    { "TEXCOORD", 14, DXGI_FORMAT_R32G32B32A32_FLOAT, 2, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+};
+
+const D3D12_INPUT_ELEMENT_DESC* Mesh::GetVelocityInstancedInputLayout()
+{
+    return kVelocityInstancedInputLayout;
+}
+
+u32 Mesh::GetVelocityInstancedInputLayoutCount()
+{
+    return static_cast<u32>(std::size(kVelocityInstancedInputLayout));
+}
+
 void Mesh::ApplyUVScale(GraphicsDevice& device, float scaleU, float scaleV)
 {
     if (m_verticesCache.empty()) return;
@@ -404,6 +451,7 @@ void Mesh::ApplyUVScale(GraphicsDevice& device, float scaleU, float scaleV)
                               scaled.data(),
                               static_cast<u32>(scaled.size() * sizeof(Vertex)),
                               static_cast<u32>(sizeof(Vertex)));
+    ++m_geometryVersion;
 }
 
 void Mesh::SetVertexColor(GraphicsDevice& device, float r, float g, float b, float a)
@@ -418,6 +466,7 @@ void Mesh::SetVertexColor(GraphicsDevice& device, float r, float g, float b, flo
                               m_verticesCache.data(),
                               static_cast<u32>(m_verticesCache.size() * sizeof(Vertex)),
                               static_cast<u32>(sizeof(Vertex)));
+    ++m_geometryVersion;
 }
 
 } // namespace dx12e

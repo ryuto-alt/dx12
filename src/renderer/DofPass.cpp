@@ -140,8 +140,6 @@ void DofPass::Resize(GraphicsDevice& device, u32 width, u32 height)
 u32 DofPass::Apply(CommandList& cmd, DescriptorHeap* srvHeap,
                    D3D12_GPU_DESCRIPTOR_HANDLE sceneSrvGpu,
                    D3D12_GPU_DESCRIPTOR_HANDLE depthSrvGpu,
-                   float uvOfsX, float uvOfsY, float uvScaleX, float uvScaleY,
-                   u32 vpLeft, u32 vpTop, u32 vpW, u32 vpH,
                    float projA, float projB,
                    const PostProcessSettings& s)
 {
@@ -151,8 +149,8 @@ u32 DofPass::Apply(CommandList& cmd, DescriptorHeap* srvHeap,
     const u32 halfW = (std::max)(1u, m_width / 2), halfH = (std::max)(1u, m_height / 2);
 
     DofCB cb{};
-    cb.rectP[0] = uvOfsX;   cb.rectP[1] = uvOfsY;
-    cb.rectP[2] = uvScaleX; cb.rectP[3] = uvScaleY;
+    cb.rectP[0] = 0.0f; cb.rectP[1] = 0.0f;   // ★#16: シーンは RT 全面
+    cb.rectP[2] = 1.0f; cb.rectP[3] = 1.0f;
     cb.focus[0] = (std::max)(s.dofFocusDist, 0.01f);
     cb.focus[1] = 1.0f / (std::max)(s.dofFocusRange, 0.05f);
     cb.focus[2] = (std::max)(s.dofBlurSize, 1.0f) * 0.5f;   // 半解像度基準の px
@@ -167,15 +165,14 @@ u32 DofPass::Apply(CommandList& cmd, DescriptorHeap* srvHeap,
     native->IASetVertexBuffers(0, 0, nullptr);
     native->IASetIndexBuffer(nullptr);
 
-    const u32 hl = vpLeft / 2, ht = vpTop / 2;
-    const u32 hw = (std::max)(1u, vpW / 2), hh = (std::max)(1u, vpH / 2);
+    // ★半解像度 RT の実サイズをそのまま使う（Resize と同じ式なので必ず一致する）。
 
     // ---- パス1: 半解像度へ 色+CoC ----
     m_halfCoc->Transition(cmd, D3D12_RESOURCE_STATE_RENDER_TARGET);
     {
         D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_halfCoc->GetRtv();
         native->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-        cmd.SetViewportAndScissor(hl, ht, hw, hh);
+        cmd.SetViewportAndScissor(halfW, halfH);
         native->SetPipelineState(m_psoCoc.Get());
         native->SetGraphicsRootDescriptorTable(0, sceneSrvGpu);
         native->SetGraphicsRootDescriptorTable(1, sceneSrvGpu);   // 未使用スロットもバインド
@@ -189,7 +186,7 @@ u32 DofPass::Apply(CommandList& cmd, DescriptorHeap* srvHeap,
     {
         D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_halfBlur->GetRtv();
         native->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-        cmd.SetViewportAndScissor(hl, ht, hw, hh);
+        cmd.SetViewportAndScissor(halfW, halfH);
         native->SetPipelineState(m_psoGather.Get());
         native->SetGraphicsRootDescriptorTable(0, srvHeap->GetGpuHandle(m_halfCoc->GetSrvIndex()));
         native->SetGraphicsRootDescriptorTable(1, sceneSrvGpu);
@@ -203,7 +200,7 @@ u32 DofPass::Apply(CommandList& cmd, DescriptorHeap* srvHeap,
     {
         D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_outRT->GetRtv();
         native->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-        cmd.SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+        cmd.SetViewportAndScissor(m_width, m_height);
         native->SetPipelineState(m_psoComposite.Get());
         native->SetGraphicsRootDescriptorTable(0, sceneSrvGpu);
         native->SetGraphicsRootDescriptorTable(1, srvHeap->GetGpuHandle(m_halfBlur->GetSrvIndex()));

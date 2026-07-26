@@ -1,7 +1,10 @@
 #pragma once
 
+#include <dxgiformat.h>
+
 #include <string>
 #include <memory>
+#include <vector>
 #include <cstdint>
 
 struct ID3D12GraphicsCommandList;
@@ -11,6 +14,17 @@ namespace dx12e
 
 class Texture;
 class GraphicsDevice;
+
+// テクスチャの用途。BC 圧縮の形式選択に使う。
+// 用途が分かっている経路(モデルのマテリアル / .dxmat / Inspector のテクスチャ上書き)だけ圧縮し、
+// 判定できない経路(UI 画像・アイコン・スプライト・3D LUT 等)は Unknown = 無圧縮で安全側に倒す。
+enum class TextureUsage
+{
+    Unknown = 0,  // 用途不明 → 圧縮しない
+    BaseColor,    // アルベド / ベースカラー(sRGB) → BC7_UNORM_SRGB
+    Normal,       // 法線マップ(linear, xy のみ) → BC5_UNORM（z はシェーダで再構成）
+    NonColor,     // ORM / metallic-roughness / マスク(linear) → BC7_UNORM
+};
 
 // MCP asset_info 用: GPU を使わずテクスチャのメタ情報だけ読む(DirectXTex のみ)。
 struct TextureProbeInfo
@@ -25,6 +39,24 @@ struct TextureProbeInfo
 class TextureLoader
 {
 public:
+    // ---- BC 圧縮（取り込み時に DirectXTex の Compress を通し、結果を .dds でディスクキャッシュする）----
+    // settings.json の "texture_compression" で切り替える。
+    //   0 = 無圧縮（ハードウェア/ツール差で絵が壊れた時の逃げ道。従来の R8G8B8A8 で読む）
+    //   1 = 高速（既定。BC7 は TEX_COMPRESS_BC7_QUICK ＝ mode6 のみ）
+    //   2 = 高品質（BC7 の全モード探索。実測で 1 の 30〜35 倍遅い）
+    // ★ 1 と 2 は .texcache のキーが別なので、切り替えると一度だけ作り直しになる。
+    enum class CompressionMode : int { Off = 0, Fast = 1, HighQuality = 2 };
+    static void SetCompressionMode(int mode);
+    static CompressionMode GetCompressionMode();
+    static bool IsCompressionEnabled();
+
+    // 用途 + 元フォーマットから BC 形式を決める純関数（DXGI_FORMAT_UNKNOWN = 圧縮しない）。
+    // float 系(HDR)は用途に関わらず BC6H_UF16。テストから直接叩けるよう public にしてある。
+    static DXGI_FORMAT SelectCompressedFormat(TextureUsage usage, DXGI_FORMAT srcFormat, bool srgb);
+
+    // BC の 4x4 ブロック制約 / 2D 単体かどうかで圧縮可否を判定する純関数。
+    static bool IsCompressibleSize(size_t width, size_t height, size_t arraySize, size_t depth);
+
     static TextureProbeInfo Probe(const std::wstring& filePath);
 
     // MCP read_texture 用: 対応形式(dds/tga/hdr/WIC 系)を PNG へ変換して保存する。
@@ -37,7 +69,8 @@ public:
         GraphicsDevice& device,
         ID3D12GraphicsCommandList* cmdList,
         const std::wstring& filePath,
-        bool srgb = true);  // false = linear (normal/metalRoughness maps)
+        bool srgb = true,   // false = linear (normal/metalRoughness maps)
+        TextureUsage usage = TextureUsage::Unknown);
 
     // IBL 環境キューブ用：.dds の TEXTURECUBE を 6 面×全 mip でロードする。
     // SRV(TextureCube) は呼び出し側で Texture::CreateCubeSRV を使って張ること。
@@ -47,13 +80,32 @@ public:
         const std::wstring& filePath,
         bool srgb = false);
 
-    // FBX 埋め込みテクスチャ用：メモリバッファから読み込み
+    // FBX 埋め込みテクスチャ / VFS(pak・ルーズファイル)用：メモリバッファから読み込み。
+    // cacheKey は BC 圧縮結果のディスクキャッシュを引くための識別子（通常は元ファイルのパス）。
+    // 空文字なら圧縮はするがキャッシュしない（＝毎回圧縮する。用途不明なら usage=Unknown で圧縮自体しない）。
     static std::unique_ptr<Texture> LoadFromMemory(
         GraphicsDevice& device,
         ID3D12GraphicsCommandList* cmdList,
         const uint8_t* data, size_t dataSize,
         const char* formatHint,
-        bool srgb = true);
+        bool srgb = true,
+        TextureUsage usage = TextureUsage::Unknown,
+        const std::string& cacheKey = std::string());
+
+    // 地形レイヤー配列用：CPU 側で組み上げた RGBA8 スライス列から Texture2DArray を作る。
+    //   ミップ生成 → BC 圧縮（.texcache にキャッシュ）→ GPU アップロードまで一括で行う。
+    // slices の各要素は width*height*4 バイトの RGBA8（先頭 = スライス 0）。
+    // SRV は呼び出し側が Texture::CreateArraySRV で張ること。
+    // contentHash は「元素材が変わったらキャッシュを捨てる」ための識別子（0 ならキャッシュしない）。
+    static std::unique_ptr<Texture> CreateArrayFromRGBA(
+        GraphicsDevice& device,
+        ID3D12GraphicsCommandList* cmdList,
+        const std::vector<const uint8_t*>& slices,
+        uint32_t width, uint32_t height,
+        bool srgb,
+        TextureUsage usage,
+        const std::string& cacheKey,
+        uint64_t contentHash);
 
     // VFS / pak 経由キューブマップ用：メモリバッファから .dds キューブマップを読み込む。
     // IsCubemap() && arraySize==6 でなければ nullptr を返す。

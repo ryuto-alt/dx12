@@ -16,6 +16,10 @@
 #include "animation/NodeGraph.h"
 #include "animation/NodeAnimationClip.h"
 #include "animation/NodeAnimator.h"
+#include "animation/AnimGraphAsset.h"
+#include "animation/AnimGraphRuntime.h"
+#include "core/vfs/Vfs.h"
+#include "core/PathResolver.h"
 #include "terrain/HeightField.h"
 #include "terrain/TerrainIO.h"
 #include "terrain/TerrainMeshBuilder.h"
@@ -321,6 +325,20 @@ Entity Scene::SpawnTerrain(const std::string& name,
         }
     }
 
+    // スプラット重み（レイヤーセットを使うときだけ）。ファイルが無いのは正常（未ペイント）で、
+    // その場合は傾斜と標高から自動生成して即座に見た目が出るようにする。
+    if (!t.layerSetPath.empty())
+    {
+        t._splat = std::make_shared<TerrainSplatMap>();
+        if (t.splatPath.empty() || !terrain::LoadSplatMapAsset(t.splatPath, *t._splat))
+        {
+            t._splat->Create(t.splatResolution);
+            t._splat->AutoPaintFromHeightField(*t._hf, TerrainAutoPaintParams{});
+            t._splatNeedsSave = true;   // TerrainPanel が .splat を書き出す
+        }
+        t.splatResolution = t._splat->Size();
+    }
+
     MeshRenderer& renderer = entity.AddComponent<MeshRenderer>();
     renderer.modelPath = kTerrainMeshMarker;   // ファイルではない内部マーカー
     {
@@ -419,10 +437,123 @@ void Scene::Clear()
     m_glowMeshCache.clear();   // m_ownedMeshes の前にクリア（dangling 回避）
     m_ownedMeshes.clear();
     m_postSettings = PostProcessSettings{};  // ポスト設定もデフォルトへ
+    m_skybox       = SkyboxSettings{};       // 空も既定へ（前シーンの環境マップを引き継がない）
+}
+
+// ---------------------------------------------------------------------------
+// AnimatorController（.animfsm）を進める。Scene::Update の先頭で呼ばれる。
+// ---------------------------------------------------------------------------
+void Scene::UpdateAnimGraphs(f32 dt)
+{
+    auto view = m_registry.view<AnimatorController, SkeletalAnimation>();
+    if (view.begin() == view.end()) return;
+
+    std::vector<AnimFiredEvent> fired;
+
+    for (auto [entity, ctrl, skelAnim] : view.each())
+    {
+        if (!skelAnim.animator || !skelAnim.skeleton) continue;
+
+        // --- 遅延ロード（毎フレームの I/O を避ける。パスを変えたら読み直す）---
+        if (!ctrl._loaded || ctrl._loadedPath != ctrl.graphPath)
+        {
+            ctrl._loaded     = true;
+            ctrl._failed     = false;
+            ctrl._loadedPath = ctrl.graphPath;
+            ctrl._state.reset();
+
+            if (!ctrl.graphPath.empty())
+            {
+                const std::vector<uint8_t> bytes = vfs::ReadAsset(ctrl.graphPath);
+                AnimGraphAsset asset;
+                std::string err;
+                if (bytes.empty())
+                {
+                    Logger::Warn("AnimGraph: .animfsm を読めない: {}", ctrl.graphPath);
+                    ctrl._failed = true;
+                }
+                else if (!ParseAnimGraphAsset(bytes, asset, err))
+                {
+                    Logger::Warn("AnimGraph: .animfsm の JSON が不正: {} ({})", ctrl.graphPath, err);
+                    ctrl._failed = true;
+                }
+                else
+                {
+                    // extraClips: グラフが要求する追加クリップを別ファイルから読む
+                    // （Application にあった sneakWalk.gltf のハードコードの置き換え）。
+                    for (const AnimGraphExtraClip& ec : asset.extraClips)
+                    {
+                        const std::string abs = PathResolver::AssetsDir() + ec.path;
+                        auto extra = ModelLoader::LoadAnimationsFromFile(abs, *skelAnim.skeleton);
+                        if (extra.empty())
+                        {
+                            Logger::Warn("AnimGraph: extraClips を読めない: {}", ec.path);
+                            continue;
+                        }
+                        for (auto& a : extra)
+                        {
+                            if (!ec.name.empty()) a->SetName(ec.name);
+                            if (anim_graph::FindClipIndex(skelAnim.clips, a->GetName()) >= 0) continue;
+                            skelAnim.clips.push_back(std::move(a));
+                        }
+                    }
+
+                    std::vector<std::string> missing;
+                    anim_graph::ResolveAsset(asset, skelAnim.clips, missing);
+                    if (!missing.empty())
+                    {
+                        std::string list;
+                        for (const auto& m : missing) { if (!list.empty()) list += ", "; list += m; }
+                        Logger::Warn("AnimGraph: 解決できない参照 [{}] ({})", list, ctrl.graphPath);
+                    }
+                    anim_graph::ApplyClipEvents(asset, skelAnim.clips);
+
+                    ctrl._state = std::make_unique<AnimGraphRuntimeState>();
+                    ctrl._state->asset = std::move(asset);
+                    anim_graph::InitRuntime(*ctrl._state, *skelAnim.skeleton);
+
+                    if (!ctrl._state->missingMaskBones.empty())
+                    {
+                        std::string list;
+                        for (const auto& m : ctrl._state->missingMaskBones)
+                        { if (!list.empty()) list += ", "; list += m; }
+                        Logger::Warn("AnimGraph: マスクのボーンが見つからない [{}] ({})",
+                                     list, ctrl.graphPath);
+                    }
+                }
+            }
+        }
+
+        if (!ctrl._state || !ctrl._state->valid) continue;
+        if (!ctrl.playOnStart) continue;
+
+        fired.clear();
+        anim_graph::Update(*ctrl._state, skelAnim.clips, *skelAnim.skeleton,
+                           *skelAnim.animator, dt * ctrl.speed, fired);
+
+        for (const auto& fe : fired)
+        {
+            SceneAnimEvent se;
+            se.entity      = entity;
+            se.name        = ctrl.eventChannel.empty() ? fe.name : (ctrl.eventChannel + fe.name);
+            se.stringParam = fe.stringParam;
+            se.floatParam  = fe.floatParam;
+            se.clip        = fe.clip;
+            se.layer       = fe.layer;
+            se.time        = fe.time;
+            m_pendingAnimEvents.push_back(std::move(se));
+        }
+    }
 }
 
 void Scene::Update(f32 dt)
 {
+    // アニメーションステートマシン（.animfsm）。
+    // ⚠️ 必ず SkeletalAnimation の更新より**前**に回すこと。
+    //    ここで Animator::SetPoseOverride を呼び、直後の animator->Update(dt) が
+    //    「注入されたフレーム」としてサンプリングをスキップする、という並びになっている。
+    UpdateAnimGraphs(dt);
+
     // スケルタルアニメーション更新
     {
         auto view = m_registry.view<SkeletalAnimation>();

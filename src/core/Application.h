@@ -27,6 +27,8 @@
 #include "core/mcp/McpDeferred.h"   // MCP 遅延応答の相関情報（値メンバで持つので完全型が要る）
 #include "core/CpuScope.h"          // CpuScope / CpuScopeTimer（エディタとも共有するので独立ヘッダ）
 #include "renderer/DrawItem.h"      // 描画リストの要素（エディタのピッキングも読むので独立ヘッダ）
+#include "renderer/ClusteredLightCulling.h"  // LightGPU を値で持つので完全型が要る（軽量ヘッダ）
+#include "renderer/DecalSystem.h"            // DecalGPU を値で持つので同上
 
 // Forward declarations for graphics module
 namespace dx12e
@@ -49,6 +51,15 @@ namespace dx12e
     class DofPass;
     class MotionBlurPass;
     class SSAOPass;
+    class ContactShadowPass;
+    class TaaPass;
+    class RenderDebugPass;
+    enum class RenderDebugMode : u32;   // renderer/RenderDebugPass.h（前方宣言可能な scoped enum）
+    class ScreenSpaceGiPass;
+    class RaytracingScene;
+    class RtScreenPass;
+    class VolumetricFogPass;
+    class DecalSystem;
     class ParticleSystem;
     class GpuParticleSystem;
     class SpriteRenderer;
@@ -84,6 +95,7 @@ namespace dx12e
     class NetworkPanel;
     class ShaderManager;
     class MaterialAssetManager;
+    class TerrainLayerSetManager;
     class MaterialEditorPanel;
     class MaterialLibraryPanel;
     struct Material;
@@ -100,6 +112,11 @@ public:
 
     Application(const Application&) = delete;
     Application& operator=(const Application&) = delete;
+
+    // Application.cpp 側でコンパイルされた sizeof(Application) を返す（必ず .cpp で定義する）。
+    // 呼び出し側の TU が持つ sizeof と突き合わせて「.obj の再コンパイル漏れ」を検出するための穴。
+    // 詳しくは main.cpp のビルド健全性チェックを参照。
+    static size_t CompiledLayoutSize();
 
     void Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode = false,
                     const ProjectInfo* projectInfo = nullptr, bool buildMode = false);
@@ -159,6 +176,24 @@ public:
     };
     DiagRenderInfo GetDiagRenderInfo() const;
 
+    // DXR（レイトレーシング）の状態一式。DeepDiagnostics の `dxr` 検査と
+    // エディタの「レイトレーシング」窓が読む（計画09 §5.3）。
+    struct DiagDxrInfo
+    {
+        bool supported      = false;   // 6 段ゲートを全部通り、パスが生きているか
+        int  tier           = 0;       // D3D12_RAYTRACING_TIER の実値（0 = 非対応 / 10 / 11 / 12）
+        int  shaderModel    = 0;       // D3D_SHADER_MODEL の実値（0x65 = SM 6.5）
+        bool inlineRt       = false;   // Tier>=1.1 かつ SM>=6.5
+        bool shadowEnabled  = false;
+        bool aoEnabled      = false;
+        bool shadowActive   = false;   // 直近フレームで RT サン影が実際に走ったか
+        bool tlasReady      = false;
+        u32  instances = 0, blasCount = 0;
+        u32  skippedSkinned = 0, skippedTransparent = 0, droppedOverLimit = 0;
+        u64  blasBytes = 0, blasTriangles = 0, tlasBytes = 0, scratchBytes = 0, instanceDescBytes = 0;
+    };
+    DiagDxrInfo GetDiagDxrInfo() const;
+
     // 直近フレームの絵そのものを数値で受け取る。「配置したのに何も映らない」
     // 「ポスト処理が実は走っていない」をピクセルで確かめるため。
     struct DiagFrameStats
@@ -191,9 +226,68 @@ private:
     // 戻り値が空文字列なら「遅延応答」(フレーム境界で結果確定後に SendToClient で送る)。
     // client は遅延応答を送り返すための McpBridge クライアントトークン。
     std::string HandleMcpCommand(uint64_t client, const std::string& line);
+
+    // ---- MCP ディスパッチ表（method 名 → ハンドラ）----------------------------
+    // ★#30 / N37 / N43 の根治。以前は HandleMcpCommand の中に `else if (method == "...")` が
+    //   118 本並んでいて、MSVC の C1061（ブロックの入れ子が深すぎます）上限に張り付いていた。
+    //   表引きにしたので **method を何本足しても入れ子は 1 段も深くならない**。
+    //   新しい method は Application.cpp の Register***McpMethods() のどれかへ 1 本足すだけ。
+    //
+    // ハンドラの引数名は旧 else-if チェーンのローカル変数と同じにしてある
+    //   （params / resp / method / deferred / isDeferred / busyPlaying）。
+    //   おかげで 118 本の本文を 1 行も書き換えずに移設できた。DX12E_MCP_HANDLER が定型を包む。
+    using McpHandler = std::function<void(const nlohmann::json& params,
+                                          nlohmann::json&       resp,
+                                          const std::string&    method,
+                                          McpDeferred&          deferred,
+                                          bool&                 isDeferred,
+                                          bool                  busyPlaying)>;
+    struct McpMethodEntry
+    {
+        // 受け付ける params のキー表 "key:type,key:type,..."（type は bool/int/number/string/vec3/object/any）。
+        // dx12_describe_mcp_params がそのまま返す。**本文で読むキーと一致させること。**
+        const char* paramSpec = "";
+        McpHandler  fn;
+    };
+    // 名前は "a" か "a|b"（get/set を 1 本のハンドラで捌く場合。本文が method を見て分ける）。
+    void McpDefine(const char* names, const char* paramSpec, McpHandler fn);
+    void EnsureMcpMethodTable();          // 初回の MCP コマンドで 1 度だけ表を組む
+    void RegisterMcpEntityMethods();      // エンティティ / コンポーネント / シーン入出力
+    void RegisterMcpEditorMethods();      // エディタ操作（設定 / Play / 入力 / スクショ / 計測）
+    void RegisterMcpRenderMethods();      // 描画設定（ポスト / SSAO / SSR / SSGI / TAA / フォグ / PCSS / DXR）
+    void RegisterMcpToolingMethods();     // ビルド検証 / Lua / テクスチャ / アニメ / マルチプレイ
+    void RegisterMcpAssetMethods();       // カメラ / 空間クエリ / アセット入出力 / ピッキング
+    void RegisterMcpTerrainMethods();     // 地形 / スカルプト
+    void RegisterMcpLightingMethods();    // ライティング / 診断
     // 直近フレームのシーン描画(m_sceneRT)を PNG に書き出す。成功=絶対パス / 失敗=空文字列+err。
     // MCP の screenshot 用。同期 readback(WaitIdle×2)＝低頻度のエディタ操作として割り切る。
-    std::string CaptureSceneScreenshot(std::string& err);
+    // outPath が空なら従来どおり CWD の mcp_screenshot.png（後方互換）。
+    std::string CaptureSceneScreenshot(std::string& err, const std::string& outPath = std::string());
+
+    // ---- screenshot_final（バックバッファ＝ポスト適用後の最終画を読む。§6 B5 の根治）------
+    // ReadbackSceneBgra はポスト前の m_sceneRT を読むので、グレーディング / ブルーム /
+    // ビネット / TAA 解決結果が一切写らない。ここはバックバッファのビューポート矩形を
+    // 「ImGui を描く前に」コピーするので、エディタのパネルは写らず絵だけが撮れる。
+    struct McpFinalShot
+    {
+        McpDeferred reply;              // client == 0 で非アクティブ
+        std::string path;               // 出力先（空なら CWD/mcp_screenshot_final.png）
+        bool        pending  = false;   // 次に描くフレームでコピーする
+        bool        captured = false;   // コピー済み → Run ループが PNG 化して応答する
+        bool        wantSceneRt = false;// true なら m_sceneRT を撮る（dx12_screenshot の決定論モード）
+        bool        deterministic = false;   // 応答に載せる印
+        u32         w = 0, h = 0;       // 撮った矩形（ビューポート）
+        u32         rowPitch = 0;
+        u64         bytes    = 0;       // readback バッファの実サイズ（Map の read range に使う。
+                                        // pitch*h ではない＝最終行はパディングされないので超えると E_INVALIDARG）
+        u32         format   = 0;       // DXGI_FORMAT（RGBA/BGRA の入れ替え判定用）
+        Microsoft::WRL::ComPtr<ID3D12Resource> readback;
+    };
+    // Render() の ImGui フレーム直前で呼ぶ。pending が立っていなければ何もしない。
+    void CaptureFinalBackBufferRegion(ID3D12GraphicsCommandList* cmd, ID3D12Resource* backBuffer,
+                                      u32 vpX, u32 vpY, u32 vpW, u32 vpH);
+    // Run ループの Render() 直後で呼ぶ。captured が立っていれば PNG 化して遅延応答を返す。
+    void FinishFinalScreenshot();
     // m_sceneRT を CPU へ読み戻し、現在のポスト設定と同じ表示変換を掛けて BGRA8 にする。
     // CaptureSceneScreenshot と超詳細診断のフレーム統計で共用する実体。
     // フレーム境界からのみ呼ぶこと(内部で BeginFrame/WaitIdle する)。
@@ -203,9 +297,16 @@ private:
     // ルートシグネチャ / RT / ビューポートは呼び出し側で設定済みとする。
     // depthPrepassActive=true のときだけ深度プリパス併用用の LESS_EQUAL forward PSO を使う
     // （プリパスが書いた深度を再利用するため）。false の通常経路は LESS PSO（既存 z-fight 挙動を維持）。
+    // contactShadowSrvIndex は t11 に張るスクリーン空間の近接遮蔽（無効時は白ダミー）。
+    // ssrSrvIndex(t16) / ssgiSrvIndex(t17) は SSR/SSGI の結果（無効時は 1x1 黒ダミー）。
+    // ★カメラプレビュー / サムネイルなど「メインカメラ以外の視点」では必ず既定値（＝黒ダミー）
+    //   のままにすること。メインカメラの G-Buffer を別視点で読むと完全に間違った絵になる。
     void RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u32 frameIndex,
                            DirectX::XMMATRIX viewProj, bool isGameView, u32 aoSrvIndex,
-                           bool depthPrepassActive = false);
+                           bool depthPrepassActive = false,
+                           u32 contactShadowSrvIndex = 0xFFFFFFFFu,
+                           u32 ssrSrvIndex = 0xFFFFFFFFu,
+                           u32 ssgiSrvIndex = 0xFFFFFFFFu);
     // Sprite2D(worldSpace=true) を指定 viewProj/RT/DSV へ描画（メインパスとカメラプレビューで共用）。
     // camRight/camUp はビルボード展開用。billboard でないものはエンティティのワールド行列で配置。
     void DrawWorldSprites(ID3D12GraphicsCommandList* cmd, DirectX::XMMATRIX viewProj,
@@ -222,9 +323,42 @@ private:
     // メインパスと同一LOD必須（LESS_EQUAL で同一深度を通すため）。
     // instPSO を渡すと、batchKey が同じ静的メッシュ群を DrawIndexedInstanced に畳む
     // （nullptr なら従来どおり per-object 描画）。
+    //
+    // ★深度プリパスのモード契約（00-COORDINATION §2。3つ目のモードを作らないこと）:
+    //   DepthOnly            … 従来どおり深度のみ（CSM / スポット影 / ポイント影 / SSAO+コンタクトシャドウ）
+    //   DepthVelocityGBuffer … 深度 + 速度(RG16F) [+ 将来の G-Buffer(法線/ラフネス/メタリック)]。
+    //                          RTV は呼び出し側（TaaPass::BeginVelocity 等）がバインドしておくこと。
+    //                          このモードでのみ b0 のレイアウトが 36 DWORD の速度用に変わり、
+    //                          スキンドは t12 に前フレームのボーン行列がバインドされる。
+    //   G-Buffer を足す者へ: PSO を 3 本（静的/インスタンシング/スキンド）差し替えて
+    //   SetRenderTargetFormats に RTV を追加し、VelocityCommon.hlsli の PS 出力を
+    //   構造体化して SV_TARGET1.. を足すだけでよい。ここの分岐は増やさないこと。
+    enum class PrepassMode : u32
+    {
+        DepthOnly,
+        DepthVelocityGBuffer,
+    };
+    struct PrepassParams
+    {
+        PrepassMode         mode = PrepassMode::DepthOnly;
+        DirectX::XMFLOAT4X4 prevViewProj{};          // 前フレームの「ジッタなし」viewProj（非転置）
+        DirectX::XMFLOAT2   jitterNdc{0.0f, 0.0f};   // 現フレームの NDC ジッタ（速度から除去する量）
+        // 半透明(sortKey==3)をプリパスから除外する。カメラのプリパス専用。
+        // 影パスでは false のまま＝半透明も従来どおり影を落とす。
+        bool                skipTransparent = false;
+    };
+    // skipRtCovered: DXR の TLAS に入っているもの（IsRaytracedItem）を描かない。
+    //   ★CSM（太陽の影）のパスだけに渡す。RT サン影が有効なとき、CSM は
+    //     「RT が担当できないもの（スキンド / 半透明）」だけを描く排他ハイブリッドになる。
+    //     フォワードの shadow = min(csm, contactShadowTex) が過不足なく合成する。
+    //     これをやらずに CSM を全部描くと min() は暗い方を採るので、CSM のアクネと
+    //     カスケード境界の段差が残ってしまう（RT 影の価値の半分がここ）。
+    //   スポット影 / ポイント影は太陽ではないので必ず false のまま。
     void RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState& staticPSO,
                               PipelineState& skinnedPSO, bool updateSkinning, u32 frameIndex,
-                              u32 lodBias = 0, PipelineState* instPSO = nullptr);
+                              u32 lodBias = 0, PipelineState* instPSO = nullptr,
+                              const PrepassParams* prepass = nullptr,
+                              bool skipRtCovered = false);
     // フレーム描画リスト: Transform+MeshRenderer の走査・ワールド行列合成を1フレーム1回だけ行い、
     // メイン/深度プリパス/CSM各カスケード/スポット影/ポイント影の全パスで共有する
     // （従来は最悪 ~20 パス × entt 全走査 + ComputeWorldMatrix 再計算）。
@@ -252,7 +386,10 @@ private:
     // ---- パフォーマンス診断（MCP perf_stats / benchmark 用）----
     // GPU パス別タイムスタンプ。Render() 内の各パスを挟んで計測（結果は約3フレーム遅れ）。
     std::unique_ptr<GpuTimer> m_gpuTimer;
-    static constexpr u32 kPerfGpuScopes = 8;   // >= GpuTimer::Scope::Count（cpp で static_assert）
+    // >= GpuTimer::Scope::Count（cpp で static_assert）。
+    // 12 → 14（計画09 が raytracing / rtScreen の 2 スコープを足して 12 使用。残り 2）。
+    static constexpr u32 kPerfGpuScopes = 14;
+                                               // 現在 8 使用（ClusterCull 追加）。SSR/SSGI/フォグ用に余裕を持たせてある。
     struct PerfFrame
     {
         f32 frameMs;       // フレーム間隔（リミッター/VSync 込み＝実 FPS の逆数）
@@ -286,6 +423,10 @@ private:
     f32  m_benchSavedFpsLimit = 0.0f;
     bool m_benchSavedVsync = false;
     void RebuildScene();
+    // フット IK（接地補正）を 1 フレームぶん適用する。Play 中のみ。
+    // 物理ステップ後・スキニングバッファのアップロード前に呼ぶこと
+    // （IK 後のボーン行列が GPU へ行くように）。
+    void ApplyFootIkPass();
     // シェーダーホットリロード用 PSO 再生成。初回(Initialize)と再生成(hot-reload)の両方から呼ぶ。
     // 既存 unique_ptr が非 null ならその場で Initialize() し直す(オブジェクトの住所は変えない=
     // ModelThumbnailRenderer 等が生ポインタを保持しているケースでのダングリングを避けるため)。
@@ -293,9 +434,24 @@ private:
     void RecreateForwardPsos();          // m_pipelineState / LEqual / Thumb (Forward_VS/PS, ForwardLdr_PS)
     void RecreateSkinnedPsos();          // m_skinnedPipelineState / LEqual (ForwardSkinned_VS, Forward_PS)
     void RecreateGridPso();              // m_gridPipelineState (ForwardGrid_VS/PS)
+    void RecreateTerrainPsos();          // m_terrainPipelineState / LEqual (Terrain_VS/PS)
     void RecreateEmissivePso();          // m_emissivePipelineState (Emissive_VS/PS)
     void RecreateShadowPsos();           // m_shadowPipelineState / m_shadowSkinnedPipelineState
     void RecreateDepthPrepassPsos();     // m_depthPrepassPSO / m_depthPrepassSkinnedPSO
+    void RecreateVelocityPsos();         // m_velocityPSO / Inst / Skinned（深度+速度プリパス）
+    void InvalidateTemporalHistory();    // TAA 履歴 + 前フレーム行列を捨てる（シーン切替/Play遷移/リサイズ）
+
+    // ---- レンダー解像度と表示解像度の分離（#16）----
+    // 表示側（バックバッファ上の矩形）。エディタは ImGui のシーンビュー矩形、
+    // 単体ゲーム / ゲームモードはウィンドウ全面。
+    void GetDisplayViewport(u32& x, u32& y, u32& w, u32& h) const;
+    // シーン系 RT を丸ごと (w,h) へ作り直す（WaitIdle 込み・時間履歴は必ず捨てる）。
+    void ApplyRenderResolution(u32 w, u32 h);
+    // 毎フレーム Run ループの先頭で呼ぶ。表示矩形 × renderScale と現状がズレていたら追従する。
+    void UpdateRenderResolution();
+    void SetRenderScale(f32 s);          // settings.json へ保存し、次フレームで即反映
+    f32  GetRenderScale() const { return m_renderScale; }
+    void EnsureInstancePrevBuffer();     // 速度パス用 per-instance 前ワールドバッファの遅延確保
     void RegisterShaderReloadHandlers(); // 上記全部+PostProcess等を ShaderManager に束ねて登録する(Initialize末尾で1回)
 
     // カスタムシェーダー(MeshRenderer::shaderPath)割当用の遅延生成PSOキャッシュ。
@@ -349,6 +505,30 @@ private:
     // .dxmat マテリアルアセット(assets/materials/*.dxmat)のロード/SRV/ホットリロード管理。
     // MeshRenderer::materialAsset が割当てられているサブメッシュはこちらが overrideXxxTexture より優先される。
     std::unique_ptr<MaterialAssetManager> m_materialAssetManager;
+
+    // 地形レイヤーセット(.terrainlayers)のロード/Texture2DArray ビルド/ホットリロード管理。
+    std::unique_ptr<TerrainLayerSetManager> m_terrainLayerSets;
+
+    // 地形 1 体ぶんの t0,t1,t2 連続 3 ディスクリプタ + スプラットの GPU テクスチャ。
+    //   [0] レイヤーアルベド配列 / [1] レイヤーサーフェス配列 / [2] この地形のスプラット
+    // レイヤー配列はレイヤーセット共有だが、スプラットは地形ごとに違うのでブロックは地形ごとに要る。
+    struct TerrainSrvEntry
+    {
+        u32 blockStart = 0xFFFFFFFF;
+        std::unique_ptr<Texture> splatTex;      // R8G8B8A8_UNORM + CPU 焼きミップ
+        u32 splatVersion   = 0xFFFFFFFF;        // TerrainSplatMap::Version() の追跡
+        u32 splatSize      = 0;
+        u32 layerGeneration = 0xFFFFFFFF;       // レイヤーセットのホットリロード検知
+        std::string layerSetPath;
+    };
+    // key = entityID。★シーン世代が変わったら丸ごと捨てる（Play→Stop / シーン切替で
+    //   entt が entity id を再利用するため、放置すると「別の地形が前の地形のスプラットを
+    //   使い回す」事故になる。ブロックも FreeBlock で返すのでヒープも漏れない）。
+    std::unordered_map<u32, TerrainSrvEntry> m_terrainSrvCache;
+    u32 m_terrainSrvGeneration = 0xFFFFFFFF;
+    // 地形の SRV ブロックを用意して先頭インデックスを返す。使えなければ 0xFFFFFFFF。
+    u32 EnsureTerrainSrv(entt::entity e, const Terrain& terrain,
+                         ID3D12GraphicsCommandList* cmdList);
 
     // ランチャーで選んだ/作成したプロジェクトを実行時に読み込む（パス再ポイント + シーンロード）
     void LoadProject(const ProjectInfo& info);
@@ -447,6 +627,9 @@ private:
     std::unique_ptr<PipelineState>     m_skinnedPipelineState;        // 通常 forward(skinned, LESS)
     std::unique_ptr<PipelineState>     m_skinnedPipelineStateLEqual;  // SSAO 深度プリパス併用時(skinned, LESS_EQUAL)
     std::unique_ptr<PipelineState>     m_gridPipelineState;
+    // 地形マテリアル（4 レイヤースプラット）。layerSetPath が空でない Terrain だけが使う。
+    std::unique_ptr<PipelineState>     m_terrainPipelineState;        // 通常 forward(LESS)
+    std::unique_ptr<PipelineState>     m_terrainPipelineStateLEqual;  // 深度プリパス併用時(LESS_EQUAL)
     std::unique_ptr<PipelineState>     m_emissivePipelineState;  // 加算発光（Pfx）GPU instancing 用
     // ---- 発光メッシュ instancing 用 per-instance バッファ（リング=FrameResources::kFrameCount=3）----
     // 自動インスタンシングは 1 フレームで「メイン+深度プリパス+影4カスケード」ぶんの
@@ -456,6 +639,12 @@ private:
     uint8_t*                               m_instanceMapped[3] = {};
     D3D12_VERTEX_BUFFER_VIEW               m_instanceVbView[3] = {};
     u32                                    m_instanceCursor = 0;  // フレーム内 instance 連番（メイン＋プレビュー共有）
+    // 速度パス用の per-instance「前フレームのワールド行列」バッファ（slot2, stride=48）。
+    // TAA 有効時のみ EnsureInstancePrevBuffer() で遅延確保する（+37MB を使わない人に払わせない）。
+    // インデックスは m_instanceBuffer と同じ base/count を共有する＝並びが必ず揃う。
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_instancePrevBuffer[3];
+    uint8_t*                               m_instancePrevMapped[3] = {};
+    D3D12_VERTEX_BUFFER_VIEW               m_instancePrevVbView[3] = {};
     std::unique_ptr<PipelineState>     m_shadowPipelineState;
     std::unique_ptr<PipelineState>     m_shadowPipelineStateInst;   // 影パスのインスタンシング版
     std::unique_ptr<PipelineState>     m_depthPrepassPSOInst;       // 深度プリパスのインスタンシング版
@@ -604,6 +793,10 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> m_depthBuffer;
     D3D12_CPU_DESCRIPTOR_HANDLE        m_dsvHandle{};
     u32                                m_depthSrvIndex = 0xFFFFFFFFu;  // soft particles 用シーン深度SRV
+    // カメラプレビュー専用の深度（固定 480x270）。メインの深度はレンダー解像度に追従して
+    // 縮むので、480x270 のプレビューを描くには足りなくなり得る（#16）。
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_previewDepthBuffer;
+    D3D12_CPU_DESCRIPTOR_HANDLE        m_previewDsvHandle{};
     std::unique_ptr<InputSystem>       m_inputSystem;
     std::unique_ptr<Scene>             m_scene;
     // ゲームプレイ中のエンジン汎用イベントバス。Play 開始時 Clear、Update 末尾 Flush。
@@ -627,7 +820,26 @@ private:
     McpDeferred m_mcpStepReply;          // step_frames の遅延応答（N フレーム経過後に送る）。client=0 で無効。
     int         m_mcpStepFramesLeft = 0; // step_frames で残り何フレーム回すか。0 で非アクティブ。
     McpDeferred m_mcpGameViewReply;      // screenshot_game_view の遅延応答（1フレーム描画後に送る）。client=0 で無効。
+    McpFinalShot m_mcpFinalShot;         // screenshot_final の状態（バックバッファ読み戻し）。
+    // dx12_set_editor_camera が Play 中にカメラを固定している間 true（アクティブ CameraComponent の
+    // 毎フレーム同期を止める）。Play/Stop の遷移と {"release":true} で解除。
+    bool m_mcpCameraOverride = false;
+
+    // ---- 決定論キャプチャ（#31）------------------------------------------------
+    // 「設定を変えずに 2 回撮ると絵が違う」を潰すための一時モード。実測した犯人は 3 つ:
+    //   ① ポストの deband ディザ / フィルムグレイン（time 依存。バックバッファの ±1LSB が画面の 66%）
+    //   ② TAA のジッタ（毎フレーム位相が回るので m_sceneRT のラスタ結果そのものが動く）
+    //   ③ SSGI / ボリュメトリックフォグの時間ジッタ + 履歴蓄積
+    // このモード中は time を固定し、②③ の位相カウンタを毎フレーム 0 に戻す。
+    // 位相が固定されれば履歴は不動点へ収束するので、N フレーム回してから撮れば再現する。
+    // ★止めるのは「レンダラの時間依存」だけ。ゲームのシミュレーション（Play 中の移動 / 物理 /
+    //   アニメーション）は止まらないので、厳密に比べたいときは dx12_stop してから撮ること。
+    bool m_deterministicCapture   = false;
+    int  m_deterministicFramesLeft = 0;
+    static constexpr f32 kDeterministicTime = 8.0f;   // 固定する totalTime（0 は「未初期化」と紛れるので避ける）
     std::unordered_map<std::string, uint32_t> m_mcpIdempotency;  // idempotency_key -> 生成済み entityId
+    // method 名 → ハンドラ。EnsureMcpMethodTable() が初回に 1 度だけ組む（#30 / N37 の根治）。
+    std::unordered_map<std::string, McpMethodEntry> m_mcpMethods;
     std::unique_ptr<AudioSystem>       m_audioSystem;
     std::unique_ptr<PhysicsSystem>     m_physicsSystem;
     std::unique_ptr<NetworkSystem>     m_networkSystem;   // マルチプレイ（GPU非依存、Play/Stopでも再構築しない）
@@ -665,6 +877,137 @@ private:
     u32                           m_ssaoWhiteSrvIndex = 0xFFFFFFFFu; // 白AOダミー SRV index
     std::unique_ptr<PipelineState> m_depthPrepassPSO;               // 深度プリパス（static, bias なし）
     std::unique_ptr<PipelineState> m_depthPrepassSkinnedPSO;        // 深度プリパス（skinned）
+
+    // ---- コンタクトシャドウ（同じ深度プリパスを使うスクリーン空間レイマーチ）----
+    // 白ダミーは SSAO と共用（どちらも 1x1 R8_UNORM の 1.0）。
+    std::unique_ptr<ContactShadowPass> m_contactShadowPass;
+
+    // ---- TAA（速度バッファ + ジッタ + 履歴再投影）----
+    // 深度プリパスを MRT 化して速度(RG16F)を書き、ポストチェーンの先頭（トーンマップ前の
+    // HDR）で解決する。ジッタは Camera には一切入れない（ピッキング/MCP 投影を壊さないため）。
+    std::unique_ptr<TaaPass>       m_taaPass;
+    // ---- G-Buffer（深度+速度プリパスに相乗り。SSR/SSGI が読む）----
+    // R16G16B16A16_FLOAT: xy=oct(ワールド法線) z=roughness w=metallic。
+    // 速度 RT と同じ MRT に書くので、速度プリパスが走るときは必ず一緒に書かれる
+    // （PSO の RTV 本数を分岐させないため。00-COORDINATION §5.5 の契約）。
+    std::unique_ptr<RenderTarget>  m_gbufferRT;
+
+    // ---- 中間バッファ可視化（dx12_render_debug）----
+    // ★フォワード PS には 1 行も足していない完全に独立したフルスクリーンパス（N24 対策）。
+    //   ポスト前の m_sceneRT へ後掛けするので、dx12_screenshot / render_debug の
+    //   readback（= m_sceneRT を読む）に必ず写る（B5 の罠を踏まない）。
+    //   カスケード境界 / クラスタのライト複雑度 / フォグの各表示は既存実装があるので
+    //   重複させず、render_debug が既存トグルへ振り分ける（入口だけ 1 本化する）。
+    std::unique_ptr<RenderDebugPass> m_renderDebugPass;
+    u32  m_renderDebugMode       = 0;      // RenderDebugMode（0 = 無効）
+    f32  m_renderDebugGain       = 1.0f;
+    f32  m_renderDebugDepthRange = 100.0f; // depth 表示のレンジ(m)
+    f32  m_renderDebugExposure   = 1.0f;   // ssr/ssgi 表示の露出
+    // readback（PNG 化）でトーンマップ/ガンマを掛けない。デバッグ色をそのまま出すため。
+    bool m_renderDebugRawReadback = false;
+    // render_debug の遅延応答（N フレーム描いてからスクショを撮って返す）
+    McpDeferred m_mcpRenderDebugReply;
+    int         m_mcpRenderDebugFramesLeft = 0;
+    // 一時的に ON にした機能を元へ戻すためのスナップショット
+    struct RenderDebugRestore
+    {
+        bool valid = false;
+        bool taa = false, ssao = false, contactShadow = false, ssr = false, ssgi = false;
+        u32  clusterDebug = 0;
+        bool cascadeDebug = false;
+        int  fogDebug = 0;
+        bool rtForceTlas = false;
+    } m_renderDebugRestore;
+    std::string m_renderDebugModeName;
+    std::string m_renderDebugWarnings;   // JSON 配列（応答へそのまま埋める）
+
+    // ---- SSR / SSGI（スクリーン空間反射 + スクリーン空間GI。計画04）----
+    // G-Buffer + 深度 + 速度 + 前フレームカラーをレイマーチして、フォワード PS の
+    // IBL ブロックで合成する。無効時は 1x1 黒ダミー(RGBA16F)を t16/t17 に貼れば寄与ゼロ。
+    std::unique_ptr<ScreenSpaceGiPass> m_screenSpaceGi;
+
+    // ---- DXR レイトレーシング（計画09 Step 1〜3）----
+    // ★ルートシグネチャ / b1 / RTV ヒープの増分はゼロ。
+    //   RT サン影は既存のコンタクトシャドウ枠(t11)、RT-AO は既存の SSAO 枠(t8) へ書くだけ。
+    //   DXR 非対応 GPU では m_dxrEnabled=false のままで、既存の白 1x1 ダミーが貼られる
+    //   ＝フォワード PS は 1 行も変わらない。
+    std::unique_ptr<RaytracingScene> m_rtScene;      // BLAS キャッシュ + TLAS
+    std::unique_ptr<RtScreenPass>    m_rtScreenPass; // RT影 / RT-AO / RTデバッグ
+    bool m_dxrEnabled = false;                       // 6 段ゲートを全部通ったか
+    int  m_rtSceneGenSeen = -1;                      // BLAS キャッシュ無効化用（N30 と同じ理由）
+    // このフレームで RT サン影が実際に走ったか。CSM 側の排他描画（skipRtCovered）と
+    // フォワードの min() 合成が食い違わないよう、判定は必ずこの 1 変数を見ること。
+    bool m_rtShadowActiveThisFrame = false;
+
+    std::unique_ptr<Texture>       m_ssBlackTex;                    // 1x1 黒 RGBA16F ダミー
+    u32                            m_ssBlackSrvIndex = 0xFFFFFFFFu;
+    std::unique_ptr<PipelineState> m_velocityPSO;          // 深度+速度（static）
+    std::unique_ptr<PipelineState> m_velocityPSOInst;      // 深度+速度（instanced）
+    std::unique_ptr<PipelineState> m_velocityPSOSkinned;   // 深度+速度（skinned, t12=前ボーン）
+    DirectX::XMFLOAT4X4 m_prevViewProjNoJitter{};          // 前フレームの「ジッタなし」viewProj
+    bool                m_prevViewProjNJValid = false;
+    // 前フレームの frameIndex（SkinningBuffer の「前フレームのスロット」を指すため）。
+    // GetCurrentBackBufferIndex() の巡回順は DXGI 仕様上保証されないので明示記録する。
+    u32                 m_prevFrameIndex = 0;
+    bool                m_prevFrameIndexValid = false;
+    DirectX::XMFLOAT2   m_taaJitterNdc{};                  // 現フレームの NDC ジッタ
+
+    // ---- レンダー解像度 / 表示解像度の分離（#16）--------------------------------
+    // シーン系の RT（sceneRT / 深度 / SSAO / コンタクトシャドウ / TAA / G-Buffer /
+    // SSR・SSGI / ブルーム / DoF / ゴッドレイ / 歪み）は **すべて m_renderW x m_renderH**。
+    // シーンは常に「その RT の全面 (0,0,renderW,renderH)」へ描く（サブ矩形描画は廃止）。
+    // 表示位置＝エディタのビューポート矩形は uber パス以降だけの関心事。
+    //   → ポストの uvOfs/uvScl が定数 0,0,1,1 になり、7 パスから引数が消えた。
+    //   → DoF / ゴッドレイの「半解像度サブ矩形を vpLeft/2 で作る」オフバイワンも消えた。
+    f32  m_renderScale = 1.0f;      // settings.json "render_scale"（0.25〜1.0）。1.0 で従来と同一
+    u32  m_renderW = 0;             // 現在確保されているレンダー解像度（0 = 未初期化）
+    u32  m_renderH = 0;
+    // ドッキング分割のドラッグ中に毎フレーム RT を作り直すと WaitIdle でカクつくので、
+    // 「同じサイズが数フレーム続いたら」確定させる（renderScale 変更とウィンドウリサイズは即時）。
+    u32  m_pendingRenderW = 0;
+    u32  m_pendingRenderH = 0;
+    u32  m_renderResizeSettle = 0;
+    bool m_renderResFlush = false;
+    static constexpr u32 kRenderResizeSettleFrames = 3;
+    // BuildDrawList() が PrevWorldMatrix を更新するか（TAA 有効時のみ。10万体の
+    // emplace_or_replace を TAA を使わない人に払わせないため）。
+    bool                m_trackPrevWorld = false;
+
+    // ---- クラスタードライティング（Forward+）----
+    // 旧「点光源 8 灯 / スポット 8 灯」の cbuffer 固定配列を撤廃し、
+    // StructuredBuffer + クラスタ別ライトリスト（16x9x24=3456 クラスタ）へ移行した。
+    // 無効時（正射カメラ / カメラプレビュー / render_clustered=0）は
+    // 「先頭 64 灯を総当たり」フォールバックで動く（旧 8 灯より緩い）。
+    std::unique_ptr<ClusteredLightCulling> m_clusteredLighting;
+    bool m_clusteredEnabled  = true;   // settings.json "render_clustered" で A/B 可
+    // 深度プリパスを他機能と無関係に単独で ON にする A/B スイッチ（計画10 A2）。
+    // settings.json "render_depth_prepass" / MCP dx12_set_depth_prepass。
+    // 「そのシーンでオーバードローがどれだけあるか（＝オクルージョンの余地）」を
+    // SSAO 生成コストを混ぜずに測るためだけに存在する。既定 OFF ＝従来と完全に同じ経路。
+    bool m_forceDepthPrepass = false;
+    u32  m_clusterDebugMode  = 0;      // 0=off / 1=ライト複雑度ヒートマップ / 2=クラスタ境界
+    // 毎フレームのライト収集バッファ（再確保を避けるためメンバで使い回す）
+    std::vector<ClusteredLightCulling::LightGPU> m_clusterLights;
+
+    // ---- ボリュメトリックフォグ（froxel。計画06）----
+    // シャドウ + クラスタカリングの直後に compute 3 パスで 160x90x64 の 3D テクスチャを作り、
+    // パーティクル描画の直前にフルスクリーン 1 枚をブレンド合成する。
+    // メインのルートシグネチャにも PerFrameConstants(b1) にも触らない ＝ RTV 消費 0。
+    std::unique_ptr<VolumetricFogPass> m_volumetricFogPass;
+
+    // ---- デカール（クラスタードフォワードデカール。計画06 D1〜D5）----
+    // クラスタカリングの直後にデカールをビニングし、フォワード PS が
+    // kSlotClusterSRV テーブルの t18..t21 から読む（ルートシグネチャの増分 0）。
+    std::unique_ptr<DecalSystem> m_decalSystem;
+    // シーン設定 decalAtlas の解決キャッシュ。パスが変わったときだけ SRV を貼り直す。
+    std::string m_decalAtlasLoaded;
+    u32         m_decalAtlasSrvIndex = 0xFFFFFFFFu;
+    bool        m_decalSrvDirty      = true;
+    // 毎フレームのデカール収集バッファ（再確保を避けるためメンバで使い回す）。
+    // sortOrder 昇順に並べてから GPU へ送る＝重ね順が「下から上へ」で決まる。
+    struct DecalEntry { int sortOrder; DecalSystem::DecalGPU gpu; };
+    std::vector<DecalEntry>            m_decalEntries;
+    std::vector<DecalSystem::DecalGPU> m_decalGpu;
 
     // IBL 環境マップ（irradiance/prefiltered/BRDF LUT）+ 任意スカイボックス
     std::unique_ptr<IBLBaker>       m_iblBaker;

@@ -105,12 +105,33 @@ t.scale      -- Vec3
 | `:isValid()` | bool | 有効なエンティティか |
 | `.name` | string | 名前（読み取り専用プロパティ） |
 | `.transform` | Transform | Transform 参照（読み書き） |
-| `:hasComponent(type)` | bool | コンポーネント有無。type: `"Transform"`,`"MeshRenderer"`,`"SkeletalAnimation"`,`"NodeAnimation"`,`"GridPlane"`,`"PointLight"`,`"DirectionalLight"`,`"SpotLight"`,`"Camera"`,`"AudioSource"`,`"Gimmick"`,`"ParticleEmitter"`,`"Trigger"`,`"CharacterController"`,`"UICanvas"`,`"UIRect"`,`"UIImage"`,`"UIText"`,`"UIButton"`,`"UISlider"`,`"UIToggle"`,`"UIScrollView"`,`"UILayout"`,`"UIAnimator"` |
+| `:hasComponent(type)` | bool | コンポーネント有無。type: `"Transform"`,`"MeshRenderer"`,`"SkeletalAnimation"`,`"AnimatorController"`,`"FootIK"`,`"NodeAnimation"`,`"GridPlane"`,`"PointLight"`,`"DirectionalLight"`,`"SpotLight"`,`"Camera"`,`"AudioSource"`,`"Gimmick"`,`"ParticleEmitter"`,`"Trigger"`,`"CharacterController"`,`"UICanvas"`,`"UIRect"`,`"UIImage"`,`"UIText"`,`"UIButton"`,`"UISlider"`,`"UIToggle"`,`"UIScrollView"`,`"UILayout"`,`"UIAnimator"` |
 | `:playAnim(clipIndex, blendDuration)` | — | スケルタルアニメをクリップ番号で再生（クロスフェード） |
 | `:playAnimByName(name, blendDuration)` | — | クリップ名で再生 |
 | `:setLooping(loop)` | — | ループ ON/OFF |
+| `:setAnimSpeed(speed)` | — | 再生速度倍率（既定 1.0、2.0 で 2 倍速、0 で一時停止）。移動速度と足の同期に |
 | `:getAnimCount()` | int | クリップ数 |
 | `:getAnimName(index)` | string | クリップ名 |
+| `:setAnimFloat(name, v)` | — | アニメ FSM の float パラメータ（例 `"speed"`）。詳細は `docs/ANIMATION.md` |
+| `:setAnimBool(name, v)` | — | FSM の bool パラメータ |
+| `:setAnimTrigger(name)` | — | FSM のトリガを立てる（1 回だけ。遷移が消費する） |
+| `:getAnimFloat(name)` | number | FSM の float を読む（無ければ 0） |
+| `:getAnimBool(name)` | bool | FSM の bool を読む（無ければ false） |
+| `:getAnimStateName(layer?)` | string | 現在のステート名（`layer` 省略で 0。無ければ `""`） |
+| `:getAnimNormalizedTime(layer?)` | number | 現ステートの正規化時間 0..1（攻撃の当たり判定窓などに） |
+| `:playAnimState(name, blend?)` | — | ステートへ強制遷移（デバッグ / カットシーン用） |
+| `:setAnimLayerWeight(layer, w)` | — | レイヤー重み 0..1（上半身レイヤーのフェードイン等） |
+| `:getAnimLayerWeight(layer)` | number | レイヤー重みを読む |
+| `:setFootIKWeight(w)` | — | フット IK の効き 0..1（`FootIK` コンポーネントが要る） |
+| `:getFootIKWeight()` | number | フット IK の効きを読む |
+| `:isFootGrounded(rightFoot?)` | bool | フット IK のレイが地面に当たっているか（省略で左足） |
+| `:playUiAnim(clipPath?)` | — | UI アニメ(.uianim)を再生。`UIAnimPlayer` が無ければ自動で付く |
+| `:stopUiAnim()` | — | UI アニメを止める |
+| `:setUiAnimTime(t)` | — | UI アニメの再生位置を秒で直接指定（スクラブ/ポーズ用） |
+| `:setUiAnimSpeed(speed)` | — | UI アニメの再生速度 |
+| `:playSprite(seqName)` | — | スプライトシートのシーケンスを再生。`SpriteAnimator` が無ければ自動で付く |
+| `:stopSprite()` | — | スプライトアニメを止める |
+| `:setSpriteSheet(sheetPath)` | — | `.spranim` シートを割り当てる（assets 相対） |
 | `:light()` | Light \| nil | ライトのプロキシ（持ってなければ nil） |
 | `:addLight(kind?)` | Light | ライトを後付け。`kind`: `"point"`(既定) / `"directional"`(`"dir"`/`"sun"`) / `"spot"` |
 | `:removeLight()` | — | 付いているライト成分を全部外す（消灯ではなく削除） |
@@ -197,7 +218,7 @@ lamp.range = 12
 | `:queryByTag(tag)` | table | タグ一致エンティティの**名前配列** |
 | `:queryInBox(minX, minZ, maxX, maxZ, tag?)` | table | XZ 矩形内のエンティティ名配列（RTS の矩形選択向け） |
 | `:sun()` | Light \| nil | 最初の `DirectionalLight`（＝太陽）。時間帯演出はこれを駆動する |
-| `:lightCount()` | table | `{point=, spot=, directional=, maxPoint=8, maxSpot=8}`。**CB 上限に引っかかってないかの確認用**（9 個目以降は黙って無視される） |
+| `:lightCount()` | table | `{point=, spot=, directional=, total=, maxTotal=1024, maxPerCluster=128}`。**上限に引っかかってないかの確認用**。クラスタードライティング(Forward+)なので点/スポットの個別上限は無く合計 1024 灯まで。ただし画面を割ったクラスタ 1 マスで評価できるのは 128 灯までで、密集して超えた所は黙って消える。**影が落ちるのは spot 4 / point 2 のまま** |
 | `:getAmbient()` / `:setAmbient(v)` | float / — | 環境光（＝影部分の明るさ）。実体は `DirectionalLight.ambient`。読みは最初の太陽、書きは全太陽へ |
 | `:getShadowsEnabled()` / `:setShadowsEnabled(b)` | bool / — | リアルタイム影（CSM）の ON/OFF。false で影パスごとスキップ |
 | `:getSkybox()` | table | `{envMapPath=, iblIntensity=, skyboxIntensity=, drawSkybox=}` |
@@ -763,7 +784,9 @@ MeshRenderer はシーン JSON では `uvScroll`（`{u,v}`）と `flipbook`（`{
 ### アニメーション
 | コンポーネント | 説明 |
 |---|---|
-| `SkeletalAnimation` | スケルタル（skeleton/animator/clips）。`Entity:playAnim*` で再生 |
+| `SkeletalAnimation` | スケルタル（skeleton/animator/clips）。`Entity:playAnim*` で再生。モデルのロード時に自動で付く |
+| `AnimatorController` | ステートマシン（`.animfsm` アセット）。`graphPath` / `playOnStart` / `speed` / `applyRootMotion` / `eventChannel`。付いていれば `Animator` を上書き駆動する。→ `docs/ANIMATION.md` |
+| `FootIK` | 接地補正（2 ボーン解析 IK + 地面レイキャスト + 腰下げ + 面法線）。ボーン名が空なら自動推定。**Play 中のみ動く** |
 | `NodeAnimationComp` | ノードアニメーション |
 
 ### 物理
@@ -783,6 +806,35 @@ MeshRenderer はシーン JSON では `uvScroll`（`{u,v}`）と `flipbook`（`{
 | `Gimmick` | `kind`(0=StaticWall/1=SpikePulse/2=SlideX/3=SlideZ), `period=4`, `phase`, `amplitude=1.6`, `threshold=0.5`, `solid=true`, `deadly=false` |
 | `ParticleEmitter` | §8 参照（配置できるエフェクト部品） |
 | `Trigger` | §8 参照（範囲イベント部品） |
+
+### デカール（投影デカール）
+
+`DecalComponent`（jsonKey `decal`）。Transform の scale が投影ボックス（ローカル単位立方体）で、
+**ローカル −Y 方向へ 1 枚テクスチャを投影する**（無回転で置けばそのまま床に落ちる）。
+テクスチャは**シーン設定 `decalAtlas`（assets 相対の 1 枚）+ 下の UV 矩形**で指す。
+
+| フィールド（既定値） | 説明 |
+|---|---|
+| `atlasUV=[0,0,1,1]` | アトラス内のカラー矩形 (u0, v0, 幅, 高さ) |
+| `atlasUVNormal=[0,0,0,0]` | 同・法線マップ矩形。高さ ≤ 0 で法線ブレンド無し |
+| `tint=[1,1,1]` / `opacity=1` | カラーへの乗算 / 全体の不透明度 |
+| `emissive=[0,0,0]` | 加算する自己発光（HDR。ブルームに乗る） |
+| `normalStrength=1` | 法線ブレンドの強さ |
+| `roughness=-1` / `metallic=-1` | 受け面の値を上書き。**負なら変更しない** |
+| `angleFadeDeg=60` | 投影軸と受け面法線の角度がこれを超えたら消える（急斜面での引き伸ばし防止） |
+| `fadeEdge=0.1` | 箱の縁からのフェード幅（ローカル座標） |
+| `sortOrder=0` | 小さいものから下に重なる |
+
+**制限（v1）**:
+- シーン合計 **256 枚** / 1 クラスタ **16 枚**。超過分は無言で描かれない。
+- **クラスタードライティングが有効なときだけ描画される**（正射カメラ / カメラプレビュー /
+  アセットサムネイル / `settings.json` の `render_clustered=0` では出ない）。
+- **カスタムシェーダ（`assets/shaders/*.hlsl`）のメッシュには乗らない**。デカールは
+  内製の `Forward.hlsl` / `ForwardSkinned.hlsl` の中で適用しているため。
+- **深度プリパスの G-Buffer には反映されない**ので、SSR / SSGI はデカールの無い法線・
+  ラフネスを見る（濡れた床デカールを貼っても反射のボケ方は変わらない）。
+- デカールが 1 枚でもあるシーンではフォワード PS のコストが上がる。**0 枚のシーンでも
+  レジスタ圧で +0.06 ms/1080p 程度**（実測。`[branch]` で本体はスキップされる）。
 
 ---
 
@@ -884,6 +936,8 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 | `dx12_terrain_sample` | 地形の高さ/法線/傾きを座標で問い合わせ（配置の自動化に使う）|
 | `dx12_list_lights` | ライト一覧 + 灯数バジェット（点8/スポット8・影spot4/point2）と超過警告 |
 | `dx12_diagnose` | エンジン診断（`DeepDiag::RunAll`）を JSON で。`summary.errors > 0` だけが失敗 |
+| `dx12_get_anim_state` | スケルタルアニメの状態。クリップ一覧 / 現在ステート / レイヤー / FSM パラメータ / `footIK`（解決したボーン名・接地・面法線・腰オフセット）|
+| `dx12_describe_anim_graph` | `.animfsm` の構造（ステート/遷移/条件/ブレンドツリー/レイヤー/マスク）を JSON で返す。`{entity}` か `{path}` |
 
 ### 編集系（同期）
 | ツール | 説明 |
@@ -908,6 +962,8 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 | `dx12_sculpt_brush` | 頂点スカルプト（draw/pull/push/smooth/flatten/pinch/noise/grab + 対称）|
 | `dx12_set_sun` | 太陽の向き（timeOfDay か azimuth/elevation）・色（color/kelvin）・強度・環境光を絶対指定 |
 | `dx12_apply_lighting_preset` | 昼/夕暮れ/夜/屋内/ホラー/スタジオ（エディタのプリセットと同じ実装）|
+| `dx12_play_anim` | スケルタルアニメの再生。`clip`/`clipName` でクロスフェード、または `state` で FSM 遷移（`AnimatorController` が要る）。`blend`/`loop`/`speed`/`layer` も指定可 |
+| `dx12_set_anim_param` | アニメ FSM のパラメータを外から叩く（`{name, value}` または `{name, trigger:true}`）。遷移の検証に |
 
 ### 生成・削除・モード遷移（遅延同期）
 | ツール | 説明 |

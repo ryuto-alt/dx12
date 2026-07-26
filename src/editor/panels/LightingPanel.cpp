@@ -35,11 +35,12 @@ namespace lm = lightmath;
 namespace
 {
 
-// shaders/forward/Lighting.hlsli の MAX_POINT_LIGHTS / MAX_SPOT_LIGHTS。
-// Application::UpdateFrameConstants がこの数で打ち切る（超えた分は無言で描画されない）。
+// クラスタードライティング（Forward+）の灯数バジェット。
+// 「点 8 / スポット 8」の個別上限は撤廃済みで、今は point + spot 合計 1024 灯。
+// 1 クラスタあたりは 128 灯（超えた分は無言で消えるが CPU からは検出できない）。
 // 実体は editor/LightingPresets.h（MCP の dx12_list_lights と同じ数字を出すため 1 箇所に集約）。
-constexpr int kMaxPointLights = kLightBudgetPoint;
-constexpr int kMaxSpotLights  = kLightBudgetSpot;
+constexpr int kMaxTotalLights  = kLightBudgetTotal;
+constexpr int kMaxPerCluster   = kLightBudgetPerCluster;
 
 // ── InspectorPanel の IconHeader と同じ流儀のカテゴリ帯 ──
 bool SectionHeader(const EditorUiIcons* ic, u64 tex, const char* label,
@@ -324,30 +325,34 @@ void RenderLightingPanel(Scene* scene,
             rows.push_back({e, 2, spotCount++});
         }
 
-        // 上限表示（超過は赤。超えた分はシェーダへ渡らず「無言で消える」ので必ず出す）
-        auto budget = [&](const char* label, int used, int cap)
+        // 灯数表示。クラスタードライティングで個別上限は消えたので「合計 / 1024」を出す。
+        // 1 クラスタ 128 灯の切り捨ては CPU からは見えないので、ヒートマップへ誘導する。
         {
-            const bool over = used > cap;
-            ImGui::TextUnformatted(label);
+            const int totalPunctual = pointCount + spotCount;
+            const bool over = totalPunctual > kMaxTotalLights;
+            ImGui::TextUnformatted("ライト");
             ImGui::SameLine(0.0f, 4.0f);
             ImGui::PushStyleColor(ImGuiCol_Text, over ? theme::Bad : theme::TextDim);
-            ImGui::Text("%d / %d", used, cap);
+            ImGui::Text("%d / %d", totalPunctual, kMaxTotalLights);
             ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("クラスタードライティング（Forward+）。\n"
+                                  "点光源とスポットに個別の上限はなく、合計 %d 灯まで GPU へ送れます。\n"
+                                  "ただし画面を分割したクラスタ 1 マスあたりで評価できるのは %d 灯まで。\n"
+                                  "ライトが密集して超えた所は無言で切り捨てられます（下の\n"
+                                  "「クラスタデバッグ表示 > ライト複雑度」で白くなる所がそれ）。\n"
+                                  "パーティクルの発光ライトも枠を使います。",
+                                  kMaxTotalLights, kMaxPerCluster);
             if (over)
             {
                 ImGui::SameLine(0.0f, 6.0f);
                 ImGui::PushStyleColor(ImGuiCol_Text, theme::Bad);
                 ImGui::TextUnformatted("超過");
                 ImGui::PopStyleColor();
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("GPU へ送れるのは先頭 %d 灯だけです。\n"
-                                      "超えた分は無言で描画されません（灯を減らすか range を広げてまとめてください）。\n"
-                                      "パーティクルの発光ライトも空き枠を使います。", cap);
             }
-        };
-        budget("ポイント", pointCount, kMaxPointLights);
-        ImGui::SameLine(0.0f, 18.0f);
-        budget("スポット", spotCount, kMaxSpotLights);
+            ImGui::SameLine(0.0f, 18.0f);
+            ImGui::TextDisabled("点 %d / スポット %d", pointCount, spotCount);
+        }
         ImGui::SameLine(0.0f, 18.0f);
         ImGui::TextDisabled("平行光 %d（太陽は先頭の1灯のみ有効）", dirCount);
 
@@ -422,8 +427,12 @@ void RenderLightingPanel(Scene* scene,
                 ctx.Select(r.e);
 
             ImGui::SameLine();
-            const bool over = (r.kind == 1 && r.slot >= kMaxPointLights)
-                           || (r.kind == 2 && r.slot >= kMaxSpotLights);
+            // 個別上限は撤廃済み。合計 1024 灯を超えた分だけが「無言で消える」。
+            // Application は「点光源を先、スポットを後」の順で 1 本の配列へ積むので、
+            // スポットの通し番号は pointCount + slot になる。
+            const int combinedIdx = (r.kind == 1) ? r.slot
+                                  : (r.kind == 2) ? pointCount + r.slot : -1;
+            const bool over = (combinedIdx >= kMaxTotalLights);
             ImGui::PushStyleColor(ImGuiCol_Text, over ? theme::Bad : theme::TextFaint);
             if (over) ImGui::Text("%.2f  (上限超過)", static_cast<double>(intensity));
             else      ImGui::Text("%.2f", static_cast<double>(intensity));
@@ -561,6 +570,124 @@ void RenderLightingPanel(Scene* scene,
             pg::End();
         }
         ImGui::TextDisabled("影を落とせるのは スポット4灯 / ポイント2灯 まで（カメラに近い順）");
+
+        // ---- コンタクトシャドウ（CSM の解像度では抜ける接地部の影をスクリーン空間で補う）----
+        // CSM の ON/OFF とは独立（CSM を切っていても接地感だけ足せる）。
+        if (pg::Begin("LightContactShadow"))
+        {
+            auto& cs = scene->GetContactShadowSettings();
+            pg::Group("コンタクトシャドウ");
+            pg::Checkbox("有効", &cs.enabled,
+                         "深度バッファを太陽方向へレイマーチして、物と地面の接地部の細かい影を足します"
+                         "（透視ビューのみ。2D 正射では無効）");
+            ImGui::BeginDisabled(!cs.enabled);
+            pg::SliderFloat("レイ長 (m)", &cs.rayLength, 0.02f, 2.0f, "%.2f", nullptr,
+                            "伸ばすほど遠くの遮蔽を拾えますが、サンプル間隔が粗くなりノイズが増えます");
+            pg::SliderInt("ステップ数", &cs.steps, 4, 32, nullptr,
+                          "レイマーチのサンプル数。16 前後が品質/負荷の相場");
+            pg::SliderFloat("厚み (m)", &cs.thickness, 0.02f, 2.0f, "%.2f", nullptr,
+                            "遮蔽とみなす深度差の上限。深度バッファは表面しか持たないので、"
+                            "これを超える差は「物体の裏側を通っただけ」として無視します");
+            pg::SliderFloat("バイアス (m)", &cs.bias, 0.0f, 0.2f, "%.3f", nullptr,
+                            "自己遮蔽（自分の面に自分の影が出るシミ）を抑える押し出し量");
+            pg::SliderFloat("強度", &cs.intensity, 0.0f, 1.0f, "%.2f");
+            pg::SliderFloat("フェード開始 (m)", &cs.maxDistance, 5.0f, 200.0f, "%.0f", nullptr,
+                            "カメラからこの距離を超えたら効果を弱めます（遠景は精度が出ないため）");
+            pg::SliderFloat("フェード幅 (m)", &cs.fadeDistance, 1.0f, 50.0f, "%.0f");
+            ImGui::EndDisabled();
+            pg::End();
+        }
+
+        // ---- PCSS（ソフトシャドウ）----
+        // CSM の固定幅 PCF を「ブロッカー探索 → 可変ペナンブラ」へ置き換える。
+        // OFF のときシェーダは従来の 3x3 PCF 経路をそのまま通る＝絵はビット一致。
+        if (pg::Begin("LightPcss"))
+        {
+            auto& pc = scene->GetShadowPcssSettings();
+            pg::Group("ソフトシャドウ (PCSS)");
+            pg::Checkbox("有効", &pc.enabled,
+                         "接地部は鋭く、遮蔽物から離れるほど柔らかい影にします"
+                         "（太陽を面光源とみなす）。OFF で従来の 3x3 PCF に戻ります");
+            ImGui::BeginDisabled(!pc.enabled);
+            pg::SliderFloat("太陽の大きさ", &pc.lightTanAngle, 0.001f, 0.3f, "%.3f", nullptr,
+                            "太陽の角半径の tan。実際の太陽は 0.0044（ほぼ硬い影）。"
+                            "大きくするほど半影が急に太くなります");
+            pg::SliderFloat("半影の上限 (texel)", &pc.maxPenumbraTexels, 1.0f, 64.0f, "%.0f", nullptr,
+                            "ぼかし半径の上限。塗り面積＝コストの上限を決めます");
+            pg::SliderFloat("探索半径 (texel)", &pc.blockerSearchTexels, 1.0f, 64.0f, "%.0f", nullptr,
+                            "遮蔽物を探す範囲。大きすぎると重要な遮蔽物を飛ばして影に穴が開き、"
+                            "小さすぎると遠くの遮蔽物を拾えず半影が伸びません");
+            pg::Checkbox("時間ディザ (TAA 有効時のみ)", &pc.temporalDither,
+                         "フレームごとにサンプルの回転位相を黄金比で回して、TAA の蓄積で"
+                         "ノイズを消します。TAA が無効なときは自動で切れます（チラつくだけなので）");
+            ImGui::EndDisabled();
+            pg::End();
+        }
+
+        // ---- レイトレーシング（DXR）----
+        // 太陽の影を BVH のレイで解く。CSM のアクネ / peter-panning / カスケード境界が消える。
+        // ★出力先は既存のコンタクトシャドウ枠なので、ルートシグネチャは 1 DWORD も増えていない。
+        if (pg::Begin("LightRt"))
+        {
+            auto& rt = scene->GetRtSettings();
+            pg::Group("レイトレーシング (DXR)");
+
+            // 非対応 GPU で「押せるのに何も起きない」のが最悪なので、必ず理由を出す。
+            if (!ctx.dxrSupported)
+            {
+                const int t = ctx.dxrTier, sm = ctx.dxrShaderModel;
+                ImGui::TextWrapped(
+                    "この GPU では使えません（DXR Tier %s / ShaderModel %d.%d）。\n"
+                    "inline raytracing には DXR Tier 1.1 かつ Shader Model 6.5 が必要です"
+                    "（RTX 20 系 / RX 6000 系以降）。",
+                    (t < 10) ? "非対応" : (std::to_string(t / 10) + "." + std::to_string(t % 10)).c_str(),
+                    sm >> 4, sm & 0xF);
+            }
+            ImGui::BeginDisabled(!ctx.dxrSupported);
+
+            pg::Checkbox("RT サン影", &rt.shadowEnabled,
+                         "太陽の影をレイで解きます。シャドウマップ由来のアクネ・接地部の隙間"
+                         "（peter-panning）・カスケード境界の段差が消えます。\n"
+                         "★スキンドキャラと半透明は加速構造に入らないので従来どおり CSM が担当し、"
+                         "両者は自動で合成されます（PCSS と併用して構いません）");
+            ImGui::BeginDisabled(!rt.shadowEnabled);
+            pg::SliderFloat("太陽の角直径 (度)", &rt.shadowSunAngle, 0.0f, 5.0f, "%.2f", nullptr,
+                            "0 で完全なハードシャドウ（ノイズゼロ）。実際の太陽は 0.53 度。"
+                            "大きくすると半影が出ますが 1px 1 レイなのでノイズが増えます");
+            pg::SliderFloat("法線バイアス (m)", &rt.shadowNormalBias, 0.0f, 0.2f, "%.3f", nullptr,
+                            "レイ始点を法線方向へ押し出す距離。シャドウマップの深度バイアスと違い"
+                            "ワールド空間の実距離なので、影が浮く現象は起きません");
+            pg::SliderFloat("最大距離 (m)", &rt.shadowMaxDistance, 0.0f, 2000.0f, "%.0f", nullptr,
+                            "0 で無限。短くすると遠くの遮蔽物を追わないぶん速くなります");
+            pg::SliderFloat("強さ", &rt.shadowIntensity, 0.0f, 1.0f, "%.2f");
+            ImGui::EndDisabled();
+
+            pg::Checkbox("RT-AO", &rt.aoEnabled,
+                         "環境遮蔽をレイで解きます。SSAO と違い画面外のジオメトリも遮蔽に数えるので、"
+                         "カメラを回しても AO が変動しません");
+            ImGui::BeginDisabled(!rt.aoEnabled);
+            pg::SliderFloat("AO 半径 (m)", &rt.aoRadius, 0.05f, 10.0f, "%.2f");
+            pg::SliderInt("AO レイ本数", &rt.aoRayCount, 1, 8, nullptr,
+                          "1px あたりの本数。増やすほど滑らかになりますが線形に重くなります");
+            pg::SliderFloat("AO 強さ", &rt.aoIntensity, 0.0f, 1.0f, "%.2f");
+            pg::SliderFloat("AO コントラスト", &rt.aoPower, 0.1f, 4.0f, "%.2f");
+            pg::Checkbox("SSAO と合成 (min)", &rt.aoCombineWithSsao,
+                         "大きな遮蔽は RT、1px 単位の細かい皺は SSAO、と役割を分けます"
+                         "（SSAO も ON にしておくこと）");
+            ImGui::EndDisabled();
+
+            ImGui::EndDisabled();
+
+            if (ctx.dxrSupported)
+            {
+                ImGui::TextDisabled("TLAS %u インスタンス / 加速構造 %.1f MB",
+                                    ctx.dxrInstances,
+                                    static_cast<double>(ctx.dxrAsBytes) / (1024.0 * 1024.0));
+                if (ctx.dxrSkippedSkinned > 0)
+                    ImGui::TextDisabled("スキンド %u 体は CSM が担当（仕様）", ctx.dxrSkippedSkinned);
+            }
+            pg::End();
+        }
     }
 
     // =====================================================================
@@ -572,7 +699,9 @@ void RenderLightingPanel(Scene* scene,
         if (pg::Begin("LightSky"))
         {
             pg::InputTextStr("環境マップ", sky.envMapPath, nullptr,
-                             "assets 相対の .dds (TEXTURECUBE)。空なら IBL 無効＝従来の ambient");
+                             "assets 相対の .dds (TEXTURECUBE)。\n"
+                             "__procedural_sky__ = エンジン内蔵のグラデーション空（既定・アセット不要）。\n"
+                             "空なら IBL 無効＝従来の ambient");
             pg::SliderFloat("IBL 強度", &sky.iblIntensity, 0.0f, 3.0f, "%.2f");
             pg::SliderFloat("スカイ強度", &sky.skyboxIntensity, 0.0f, 3.0f, "%.2f");
             pg::Checkbox("背景を描く", &sky.drawSkybox, "OFF なら IBL だけ効かせて背景は塗りません");
@@ -658,8 +787,7 @@ void RenderLightingPanel(Scene* scene,
                 &reg, std::move(recs), std::move(created)));
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("選択物（無ければ原点）の周りにキー/フィル/リムのポイントライトを 3 灯置きます。\n"
-                              "ポイントライトの枠を 3 つ使うので上限に注意");
+            ImGui::SetTooltip("選択物（無ければ原点）の周りにキー/フィル/リムのポイントライトを 3 灯置きます。");
     }
 
     // =====================================================================
@@ -671,8 +799,30 @@ void RenderLightingPanel(Scene* scene,
         {
             pg::Checkbox("全ライトの影響範囲を表示", &ctx.lightWireAll,
                          "選択していないライトの range / コーンも薄いワイヤで描きます");
+
+            // クラスタードライティング（Forward+）のデバッグ表示。
+            // 1 クラスタ 128 灯の切り捨ては CPU 側からは検出できないので、
+            // 「どこが上限に張り付いているか」を見るにはこれしか手が無い。
+            static const char* const kClusterDebugItems[] = {
+                "オフ", "ライト複雑度（ヒートマップ）", "クラスタ境界", "デカール枚数（ヒートマップ）",
+            };
+            int clusterDebug = static_cast<int>(ctx.clusterDebugMode);
+            if (pg::Combo("クラスタデバッグ表示", &clusterDebug, kClusterDebugItems, 4,
+                          "クラスタードライティングの内部状態を可視化します。\n"
+                          "・ライト複雑度: そのピクセルのクラスタが評価しているライト数。\n"
+                          "  青(0灯) → 緑 → 赤 と増え、【白は上限 128 灯に張り付いて\n"
+                          "  無言で切り捨てが起きている】場所です。\n"
+                          "・クラスタ境界: 画面の分割（16x9 タイル x 24 スライス）を市松で確認。\n"
+                          "・デカール枚数: そのクラスタに割り当てられたデカール数（上限 16 で白）。\n"
+                          "透視ビューのみ（2D 正射ではクラスタード自体が無効）。\n"
+                          "MCP からは dx12_render_debug の lightComplexity / clusterGrid / decalCount。"))
+            {
+                ctx.clusterDebugMode = static_cast<u32>(clusterDebug);
+            }
             pg::End();
         }
+        if (ctx.clusterDebugMode == 1)
+            ImGui::TextDisabled("ヒートマップ: 青=0灯 → 緑 → 赤 / 白=1クラスタ128灯に張り付き（切り捨て中）");
         ImGui::TextDisabled("L を押しながらマウス移動: 太陽の向きを直接回す");
         ImGui::TextDisabled("ライトを選択: 丸ハンドルをドラッグでコーン角 / 距離 / 向き");
     }

@@ -91,9 +91,9 @@ void ModelThumbnailRenderer::CreateSharedResources()
     }
 
     // ===== PerFrame アップロードバッファ =====
-    // main の Forward PSO を流用するため b1 のレイアウトは Application.cpp の FrameConstants(1520B)
+    // main の Forward PSO を流用するため b1 のレイアウトは Application.cpp の FrameConstants(1536B)
     // と一致させる。256B アラインで 1536B 確保（CSM の cascadeViewProj[4]/cascadeSplitsView/
-    // shadowParams/スポット影行列/IBL まで含めて書けるサイズ）。
+    // shadowParams/スポット影行列/IBL/コンタクトシャドウまで含めて書けるサイズ）。
     {
         D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_UPLOAD};
         D3D12_RESOURCE_DESC desc{};
@@ -305,23 +305,11 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
 
     // ===== PerFrame CB 書き込み =====
     // main の Forward PSO(Forward.hlsl)を流用するので b1 のレイアウトは
-    // Application.cpp の FrameConstants(1520B) / Lighting.hlsli の PerFrameConstants と
+    // Application.cpp の FrameConstants(1536B) / Lighting.hlsli の PerFrameConstants と
     // バイト単位で一致させること。サムネには影を出さないため CSM 領域は
     // 「cascade0 を必ず選ばせて UV クリップ → CalcShadow が 1.0(無影) を返す」値に倒す。
     // スポット/ポイント影も numPointLights/numSpotLights=0 で未使用（shadowIndex 参照自体が発生しない）。
-    static constexpr u32 kMaxPointLights = 8;  // = MAX_POINT_LIGHTS (Lighting.hlsli)
-    static constexpr u32 kMaxSpotLights  = 8;  // = MAX_SPOT_LIGHTS  (Lighting.hlsli)
     static constexpr u32 kMaxShadowSpotThumb = 4;  // = MAX_SHADOW_SPOT (Lighting.hlsli)
-    struct PointLightGPU {
-        XMFLOAT3 position;   float range;
-        XMFLOAT3 color;      float shadowIndex;
-    };
-    struct SpotLightGPU {
-        XMFLOAT3 position;   float range;
-        XMFLOAT3 direction;  float cosInner;
-        XMFLOAT3 color;      float cosOuter;
-        float shadowIndex;   XMFLOAT3 _spad;
-    };
     struct FrameConstants {
         XMFLOAT4X4 view;                          // 64B  (offset   0)
         XMFLOAT4X4 proj;                          // 64B  (offset  64)
@@ -333,16 +321,25 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
         XMFLOAT3   cameraPos;       float _pad;   // 16B  (offset 448)
         u32        numPointLights;  u32 numSpotLights;
         float      spotShadowTexel; float pointShadowNear;   // 16B (offset 464)
-        PointLightGPU pointLights[kMaxPointLights]; // 256B (offset 480)
-        SpotLightGPU  spotLights[kMaxSpotLights];   // 512B (offset 736)
+        // ▼ クラスタードライティング 64B (offset 480)。旧 pointLights[8]/spotLights[8] の跡地。
+        // サムネイルは灯数 0 なので clusterGrid.w=0（総当たりフォールバック）で十分。
+        XMFLOAT4   clusterParams;    // (offset 480)
+        XMFLOAT4   clusterGrid;      // (offset 496)
+        XMFLOAT4   clusterViewport;  // (offset 512)
+        XMFLOAT4   clusterExtra;     // (offset 528)
+        XMFLOAT4   pcssParams;                            // 16B  (offset 544) PCSS（サムネイルでは常に 0＝従来 PCF）
+        XMFLOAT4   _clusterReserved[43];                  // 688B (offset 560..1247)
         XMFLOAT4X4 spotShadowMatrix[kMaxShadowSpotThumb]; // 256B (offset 1248)
         // ▼ IBL 制御 16B (offset 1504)
         float iblIntensity;
         float maxPrefilterMip;
         u32   hasIBL;
         float skyboxIntensity;
-    };  // total = 1520B
-    static_assert(sizeof(FrameConstants) == 1520, "FrameConstants must be 1520 bytes (match Application.cpp / Lighting.hlsli)");
+        // ▼ コンタクトシャドウ制御 16B (offset 1520)。サムネは白ダミー(t11)なので 0 固定。
+        float contactShadowEnabled;
+        XMFLOAT3 _csPad;
+    };  // total = 1536B
+    static_assert(sizeof(FrameConstants) == 1536, "FrameConstants must be 1536 bytes (match Application.cpp / Lighting.hlsli)");
     {
         FrameConstants fc{};
         XMStoreFloat4x4(&fc.view, XMMatrixTranspose(viewMat));
@@ -368,6 +365,11 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
         // ライト/IBL なし: numPointLights/numSpotLights=0、hasIBL=0(ambient フォールバック)。
         fc.numPointLights  = 0;
         fc.numSpotLights   = 0;
+        // クラスタードは無効（clusterGrid.w=0）+ 灯数 0 なので PS のライトループは 0 周。
+        // clusterParams は log2 に食わせないので 0 のままで安全。
+        // ★clusterExtra.w = デカール数（計画06）。サムネイルは 0 = デカール無効。
+        fc.clusterGrid  = {16.0f, 9.0f, 24.0f, 0.0f};
+        fc.clusterExtra = {0.0f, 128.0f, 0.0f, 0.0f};
         fc.iblIntensity    = 0.0f;
         fc.maxPrefilterMip = 4.0f;
         fc.hasIBL          = 0u;
@@ -421,12 +423,37 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
             m_srvHeap->GetGpuHandle(defTex->GetSrvIndex()));
     }
 
-    // SSAO AO SRV (t8): forward PS が無条件で Load するので白ダミー(R8_UNORM)を必ずバインド。
+    // SSAO AO SRV (t8) / コンタクトシャドウ SRV (t11): forward PS が無条件で Load するので
+    // 白ダミー(R8_UNORM=1.0)を必ずバインドする（どちらも同じ 1x1 白を共用）。
     if (m_aoWhiteSrvIndex != 0xFFFFFFFFu)
     {
         cmdList->SetGraphicsRootDescriptorTable(
             RootSignature::kSlotAOSRV,
             m_srvHeap->GetGpuHandle(m_aoWhiteSrvIndex));
+        cmdList->SetGraphicsRootDescriptorTable(
+            RootSignature::kSlotContactShadowSRV,
+            m_srvHeap->GetGpuHandle(m_aoWhiteSrvIndex));
+    }
+
+    // SSR SRV (t16) / SSGI SRV (t17): forward PS が無条件で Load するので黒ダミーを必ず張る。
+    // サムネイルはメインカメラと別視点なので、本物の SSR/SSGI を渡してはいけない。
+    if (m_ssBlackSrvIndex != 0xFFFFFFFFu)
+    {
+        cmdList->SetGraphicsRootDescriptorTable(
+            RootSignature::kSlotSsrSRV,
+            m_srvHeap->GetGpuHandle(m_ssBlackSrvIndex));
+        cmdList->SetGraphicsRootDescriptorTable(
+            RootSignature::kSlotSsgiSRV,
+            m_srvHeap->GetGpuHandle(m_ssBlackSrvIndex));
+    }
+
+    // クラスタライトテーブル (t13,t14,t15 + デカール予約 t18..t21)。
+    // 灯数 0 + clusterGrid.w=0 なので実際には読まれないが、テーブルは必ずバインドする。
+    if (m_clusterSrvIndex != 0xFFFFFFFFu)
+    {
+        cmdList->SetGraphicsRootDescriptorTable(
+            RootSignature::kSlotClusterSRV,
+            m_srvHeap->GetGpuHandle(m_clusterSrvIndex));
     }
 
     // 各メッシュを描画

@@ -50,13 +50,13 @@ public:
     };
 
     // 呼び出し側で対象 RTV と descriptor heap(srv) を先にバインドしておくこと。
-    // uvOffset/uvScale はエディタのビューポート矩形に合わせたシーンテクスチャの参照範囲。
+    // ★#16: シーンは常にシーン RT の全面に描かれる（サブ矩形描画は廃止）ので、
+    //   かつての uvOffset/uvScale 引数は消えた。ビューポートを表示矩形に張れば、
+    //   シーン RT 全面 → 表示矩形の拡大（renderScale < 1 のとき）が自動で起きる。
     // frameIndex はフレーム多重化 CB のスロット選択（同一フレーム内の複数 Apply も安全）。
     void Apply(ID3D12GraphicsCommandList* cmd,
                const Inputs& in,
                const PostProcessSettings& s,
-               float uvOffsetX, float uvOffsetY,
-               float uvScaleX, float uvScaleY,
                float texelW, float texelH,
                float timeSeconds,
                u32 frameIndex);

@@ -18,6 +18,7 @@
 #include "animation/NodeAnimationClip.h"
 #include "animation/NodeAnimator.h"
 #include "animation/SkinningBuffer.h"
+#include "animation/AnimGraphRuntime.h"
 #include "scripting/ScriptEngine.h"
 #include "resource/ShaderRegistry.h"
 #include "resource/MaterialAssetIO.h"
@@ -1698,6 +1699,157 @@ void InspectorPanel::Render(entt::registry& reg,
             }
         }
 
+        // AnimatorController（.animfsm ステートマシン）。
+        // 編集できるのはパスとパラメータだけ。グラフの構造は JSON アセット側にあるので
+        // ここは「現在の状態を見せるライブ表示」に徹する（決定 2: グラフエディタは作らない）。
+        if (reg.all_of<AnimatorController>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entMesh : 0, "AnimatorController");
+            bool removed = ComponentRemoveMenu<AnimatorController>(reg, ctx, ctx.selectedEntity,
+                                                                   "AnimatorController");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_animatorControllerEdit);
+                auto& ac = reg.get<AnimatorController>(ctx.selectedEntity);
+                bool changed = false, active = false;
+
+                if (pg::Begin("AnimatorController"))
+                {
+                    changed |= pg::InputTextStr("グラフ Graph", ac.graphPath, &active,
+                        "assets 相対の .animfsm パス（例 animfsm/humanoid_locomotion.animfsm）。"
+                        "中身はテキストエディタで編集する");
+                    changed |= AcceptAssetPathDrop(ac.graphPath, ".animfsm", m_assetsDir);
+                    changed |= pg::Checkbox("開始時に再生 Play On Start", &ac.playOnStart);
+                    changed |= pg::Float("速度 Speed", &ac.speed, 0.01f, 0.0f, 4.0f, "%.2f", &active,
+                        "グラフ全体の再生速度倍率");
+                    changed |= pg::InputTextStr("イベント接頭辞 Event Channel", ac.eventChannel, &active,
+                        "クリップイベント名の前に付ける文字列（空 = 素の名前で EventBus へ）");
+                    pg::End();
+                }
+
+                if (!reg.all_of<SkeletalAnimation>(ctx.selectedEntity))
+                    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f),
+                                       "SkeletalAnimation が無いと動きません");
+
+                // --- 読み取り専用のライブ表示 ---
+                if (ac._failed)
+                {
+                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+                                       ".animfsm の読み込みに失敗（ログを確認）");
+                }
+                else if (ac._state && ac._state->valid && reg.all_of<SkeletalAnimation>(ctx.selectedEntity))
+                {
+                    auto& sa = reg.get<SkeletalAnimation>(ctx.selectedEntity);
+                    if (pg::Begin("実行状態 Runtime"))
+                    {
+                        for (size_t li = 0; li < ac._state->layers.size(); ++li)
+                        {
+                            const auto& lr  = ac._state->layers[li];
+                            const auto& def = ac._state->asset.layers[li];
+                            const char* stateName =
+                                (lr.curState >= 0 && lr.curState < static_cast<i32>(def.states.size()))
+                                ? def.states[static_cast<size_t>(lr.curState)].name.c_str() : "-";
+                            pg::Text(def.name.c_str(), "%s  (w=%.2f, t=%.2f)%s",
+                                     stateName, lr.weight,
+                                     anim_graph::NormalizedTime(*ac._state, static_cast<u32>(li), sa.clips),
+                                     lr.inTransition ? "  →遷移中" : "");
+                        }
+                        for (const auto& [name, v] : ac._state->params)
+                        {
+                            if (v.type == AnimParamType::Float) pg::Text(name.c_str(), "%.3f", v.f);
+                            else                                pg::Text(name.c_str(), "%s", v.b ? "true" : "false");
+                        }
+                        pg::End();
+                    }
+                }
+                EndEdit(reg, ctx, ctx.selectedEntity, m_animatorControllerEdit, changed, active,
+                        "AnimatorController");
+            }
+        }
+
+        // FootIK（接地補正）
+        if (reg.all_of<FootIK>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entMesh : 0, "FootIK");
+            bool removed = ComponentRemoveMenu<FootIK>(reg, ctx, ctx.selectedEntity, "FootIK");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_footIkEdit);
+                auto& ik = reg.get<FootIK>(ctx.selectedEntity);
+                bool changed = false, active = false;
+
+                if (pg::Begin("FootIK"))
+                {
+                    changed |= pg::Checkbox("有効 Enabled", &ik.enabled);
+                    changed |= pg::Float("効き Weight", &ik.weight, 0.01f, 0.0f, 1.0f, "%.2f", &active,
+                        "0 で無効、1 で完全に接地補正する");
+                    changed |= pg::Float("足首の高さ Foot Height", &ik.footHeight, 0.005f, 0.0f, 0.5f,
+                        "%.3f", &active, "レストポーズでの足首の地面からの高さ(m)");
+                    changed |= pg::Float("レイ開始オフセット Ray Up", &ik.rayUpOffset, 0.01f, 0.0f, 2.0f,
+                        "%.2f", &active, "足首から何 m 上からレイを打つか");
+                    changed |= pg::Float("レイ長さ Ray Length", &ik.rayLength, 0.01f, 0.05f, 5.0f,
+                        "%.2f", &active);
+                    changed |= pg::Float("腰下げ上限 Max Pelvis Drop", &ik.maxPelvisDrop, 0.01f, 0.0f, 2.0f,
+                        "%.2f", &active, "これを超える段差は諦める(m)");
+                    changed |= pg::Checkbox("面法線に合わせる Align To Normal", &ik.alignToNormal,
+                        "斜面で足を寝かせる");
+                    changed |= pg::Float("傾きの上限 Max Foot Pitch", &ik.maxFootPitchDeg, 1.0f, 0.0f, 90.0f,
+                        "%.0f", &active, "急斜面で足が不自然にねじれるのを防ぐ(度)");
+                    changed |= pg::Float("平滑時間 Smooth Time", &ik.smoothTime, 0.005f, 0.0f, 0.5f,
+                        "%.3f", &active, "段差でレイが飛ぶのをならす時定数(秒)");
+                    changed |= pg::Float("フェード時間 Fade Out", &ik.fadeOutTime, 0.005f, 0.0f, 1.0f,
+                        "%.3f", &active, "非接地(ジャンプ中など)で IK を切る時間(秒)");
+                    pg::End();
+                }
+
+                if (pg::Begin("ボーン指定 Bones（空 = 自動推定）"))
+                {
+                    changed |= pg::InputTextStr("左 股関節 L Hip",  ik.leftHipBone,  &active);
+                    changed |= pg::InputTextStr("左 膝 L Knee",     ik.leftKneeBone, &active);
+                    changed |= pg::InputTextStr("左 足首 L Foot",   ik.leftFootBone, &active);
+                    changed |= pg::InputTextStr("右 股関節 R Hip",  ik.rightHipBone,  &active);
+                    changed |= pg::InputTextStr("右 膝 R Knee",     ik.rightKneeBone, &active);
+                    changed |= pg::InputTextStr("右 足首 R Foot",   ik.rightFootBone, &active);
+                    changed |= pg::InputTextStr("腰 Pelvis",        ik.pelvisBone,    &active);
+                    pg::End();
+                }
+
+                if (!reg.all_of<SkeletalAnimation>(ctx.selectedEntity))
+                    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f),
+                                       "SkeletalAnimation が無いと動きません");
+                else if (ik._resolveFailed)
+                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+                                       "足ボーンを特定できません。上のボーン名を明示指定してください"
+                                       "（候補はログに出ています）");
+
+                // 読み取り専用のライブ表示（Play 中のみ動く）
+                if (ik._resolved)
+                {
+                    auto& sa = reg.get<SkeletalAnimation>(ctx.selectedEntity);
+                    auto boneName = [&](i32 b) -> const char* {
+                        return (sa.skeleton && b >= 0 && static_cast<u32>(b) < sa.skeleton->GetBoneCount())
+                             ? sa.skeleton->GetBone(static_cast<u32>(b)).name.c_str() : "-";
+                    };
+                    if (pg::Begin("解決結果 / 実行状態"))
+                    {
+                        pg::Text("左脚", "%s / %s / %s",
+                                 boneName(ik._lHip), boneName(ik._lKnee), boneName(ik._lFoot));
+                        pg::Text("右脚", "%s / %s / %s",
+                                 boneName(ik._rHip), boneName(ik._rKnee), boneName(ik._rFoot));
+                        pg::Text("腰", "%s", boneName(ik._pelvis));
+                        pg::Text("接地", "L=%s(w %.2f)  R=%s(w %.2f)",
+                                 ik._lContact ? "○" : "×", ik._lWeight,
+                                 ik._rContact ? "○" : "×", ik._rWeight);
+                        pg::Text("補正量", "L %+.3fm  R %+.3fm  腰 %+.3fm",
+                                 ik._lLift, ik._rLift, ik._pelvisDrop);
+                        pg::End();
+                    }
+                    ImGui::TextDisabled("※ Play 中のみ動きます（物理ボディが要るため）");
+                }
+                EndEdit(reg, ctx, ctx.selectedEntity, m_footIkEdit, changed, active, "FootIK");
+            }
+        }
+
         // NodeAnimation
         if (reg.all_of<NodeAnimationComp>(ctx.selectedEntity))
         {
@@ -1882,6 +2034,47 @@ void InspectorPanel::Render(entt::registry& reg,
                 }
                 ImGui::TextDisabled("エンティティを動かすと軌跡の帯が出ます（エディタでもプレビュー）");
                 EndEdit(reg, ctx, ctx.selectedEntity, m_trailEdit, changed, active, "Trail Renderer");
+            }
+        }
+
+        // Decal（投影デカール: 弾痕/血/汚れ/水たまり）
+        if (reg.all_of<DecalComponent>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entMesh : 0, "Decal");
+            bool removed = ComponentRemoveMenu<DecalComponent>(reg, ctx, ctx.selectedEntity, "Decal");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_decalEdit);
+                auto& dc = reg.get<DecalComponent>(ctx.selectedEntity);
+                bool changed = false, active = false;
+                if (pg::Begin("Decal"))
+                {
+                    pg::Group("アトラス");
+                    changed |= pg::Float4("カラー矩形 UV", &dc.atlasUV.x, 0.005f, 0.0f, 1.0f, "%.4f", &active,
+                        "シーン設定のデカールアトラスの中の (u0, v0, 幅, 高さ)。既定は全面");
+                    changed |= pg::Float4("法線矩形 UV", &dc.atlasUVNormal.x, 0.005f, 0.0f, 1.0f, "%.4f", &active,
+                        "同アトラス内の法線マップ領域。高さ(4番目)を 0 にすると法線ブレンド無し");
+
+                    pg::Group("見た目");
+                    changed |= pg::Color3("色 Tint", &dc.tint.x);
+                    changed |= pg::SliderFloat("不透明度 Opacity", &dc.opacity, 0.0f, 1.0f, "%.2f", &active);
+                    changed |= pg::Color3("自己発光 Emissive", &dc.emissive.x);
+                    changed |= pg::SliderFloat("法線の強さ", &dc.normalStrength, 0.0f, 2.0f, "%.2f", &active);
+                    changed |= pg::Float("粗さ上書き Roughness", &dc.roughness, 0.01f, -1.0f, 1.0f, "%.2f", &active,
+                        "-1 で「変更しない」。0..1 で受け面のラフネスを上書きする（濡れた床など）");
+                    changed |= pg::Float("金属度上書き Metallic", &dc.metallic, 0.01f, -1.0f, 1.0f, "%.2f", &active,
+                        "-1 で「変更しない」");
+
+                    pg::Group("投影");
+                    changed |= pg::SliderFloat("角度フェード(度)", &dc.angleFadeDeg, 0.0f, 89.0f, "%.0f", &active);
+                    changed |= pg::SliderFloat("縁フェード", &dc.fadeEdge, 0.001f, 0.5f, "%.3f", &active);
+                    changed |= pg::Int("重ね順 SortOrder", &dc.sortOrder, 1.0f, -999, 999, &active,
+                        "小さいものから下に重なる");
+                    pg::End();
+                }
+                ImGui::TextDisabled("Transform の scale が投影ボックスの大きさ。ローカル -Y 方向へ投影します");
+                ImGui::TextDisabled("アトラスは「ツール > ライティング」ではなくシーン設定 decalAtlas で指定します");
+                EndEdit(reg, ctx, ctx.selectedEntity, m_decalEdit, changed, active, "Decal");
             }
         }
 
@@ -2778,6 +2971,7 @@ void InspectorPanel::Render(entt::registry& reg,
             AddComponentMenuItem<Gimmick>(reg, ctx, ctx.selectedEntity, "Gimmick");
             AddComponentMenuItem<ParticleEmitter>(reg, ctx, ctx.selectedEntity, "Particle Emitter");
             AddComponentMenuItem<TrailRenderer>(reg, ctx, ctx.selectedEntity, "Trail Renderer");
+            AddComponentMenuItem<DecalComponent>(reg, ctx, ctx.selectedEntity, "Decal");
             AddComponentMenuItem<Trigger>(reg, ctx, ctx.selectedEntity, "Trigger");
             ImGui::Separator();
             AddComponentMenuItem<UICanvas>(reg, ctx, ctx.selectedEntity, "UI Canvas");
@@ -2794,6 +2988,10 @@ void InspectorPanel::Render(entt::registry& reg,
                                                "UI Anim Player (.uianim クリップ)");
             AddComponentMenuItem<SpriteAnimator>(reg, ctx, ctx.selectedEntity,
                                                  "Sprite Animator (.spranim シート)");
+            AddComponentMenuItem<AnimatorController>(reg, ctx, ctx.selectedEntity,
+                                                     "Animator Controller (.animfsm ステートマシン)");
+            AddComponentMenuItem<FootIK>(reg, ctx, ctx.selectedEntity,
+                                         "Foot IK (接地補正・Play 中のみ)");
             ImGui::Separator();
             AddComponentMenuItem<RigidBody>(reg, ctx, ctx.selectedEntity, "RigidBody");
             AddComponentMenuItem<BoxCollider>(reg, ctx, ctx.selectedEntity, "Box Collider");

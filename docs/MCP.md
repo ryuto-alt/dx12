@@ -130,7 +130,8 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 
 | ツール | params | 返り値 |
 |--------|--------|--------|
-| `dx12_ping` | `{}` | `{pong, mode, entityCount, sceneGeneration, currentScene, protocolVersion}` |
+| `dx12_ping` | `{}` | `{pong, mode, entityCount, sceneGeneration, currentScene, assetsDir, scriptsDir, baseDir, projectShaderDir, cwd, protocolVersion:4}` ※**`assetsDir` はエンジンが返す正**（`protocolVersion 4` から）。ログの絶対パスから推定する必要はもう無い |
+| `dx12_describe_mcp_params` | `{method?:string}` | `{methods:{<method名>:[{key,type}]}, count, globalKeys:["idempotency_key"], note}` ※**エンジンのディスパッチ表そのもの**。`type` は `bool`/`int`/`number`/`string`/`vec3`/`object`/`any`。`"親.子"` は入れ子オブジェクトのキー（例 `skybox.envMapPath`）。TS スキーマとのドリフト検出はこれを正にすること |
 | `dx12_list_entities` | `{verbose?:bool, name_prefix?:string, component_type?:string}` | `{entities:[{entityId,id,name,componentTypes?}], count, sceneGeneration}` |
 | `dx12_get_entity` | `{entity:int}` | `{entityId, componentTypes:[...], sceneGeneration, ...(全コンポーネント値)...}` |
 | `dx12_find_entity` | `{name:string}` | `{entityId, name}` または `null` |
@@ -143,6 +144,13 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_get_scene_settings` | `{}` | `{skybox:{envMapPath, iblIntensity, skyboxIntensity, drawSkybox}, note}` |
 | `dx12_get_post_process` | `{}` | ポストプロセス全フィールド(約25エフェクトの `<name>On`/パラメータ) |
 | `dx12_get_ssao` | `{}` | `{enabled, radius, bias, intensity, power, sampleCount, blur}` |
+| `dx12_get_contact_shadow` | `{}` | `{enabled, rayLength, thickness, bias, intensity, steps, maxDistance, fadeDistance}` |
+| `dx12_get_taa` | `{}` | `{enabled, sampleCount, feedbackMin, feedbackMax, varianceGamma, jitterScale, debugVelocity, active, fxaaSuppressed}` |
+| `dx12_get_render_scale` | `{}` | `{scale, renderResolution:{width,height}, displayResolution:{width,height}, pending, note}` ※**内部解像度スケール**（#16 レンダー解像度と表示解像度の分離） |
+| `dx12_get_depth_prepass` | `{}` | `{enabled, note}` ※深度プリパスの単独強制（計画10 A2 の A/B スイッチ） |
+| `dx12_get_ssr` | `{}` | `{enabled, intensity, maxDistance, thickness, maxSteps, stride, roughnessCutoff, edgeFade, bias}` |
+| `dx12_get_ssgi` | `{}` | `{enabled, intensity, radius, thickness, rayCount, stepCount, clampValue, feedback, iblFallback}` |
+| `dx12_get_volumetric_fog` | `{}` | `{enabled, density, albedo, anisotropy, heightFalloff, heightRef, distance, depthDistribution, ambient, sunIntensity, lightScattering, temporal, temporalBlend, extendBeyondRange, debugMode, active}` |
 | `dx12_read_lua_component` | `{path:string}` | `{path, code}` ※既存 .lua のソースをそのまま読む |
 | `dx12_read_shader` | `{path:string(assets/shaders相対)}` | `{path, code, compiled}` ※既存カスタムシェーダーのソースをそのまま読む(compiled は直近の既知のコンパイル成否) |
 | `dx12_raycast` | `{origin:[x,y,z], direction:[x,y,z], maxDistance?:f}` | `{hit, distance?, point?, normal?, entityId?, name?}` ※Playing 中のみ意味のある結果 |
@@ -150,23 +158,26 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_overlap_sphere` | `{center:[x,y,z], radius:f, maxResults?:int}` | `{entities:[{entityId,name}], count}` ※Playing 中のみ |
 | `dx12_get_physics_state` | `{entity:int}` | `{entityId, hasRigidBody, velocity:[x,y,z], hasCharacterController, isGrounded}` ※Playing 中のみ |
 | `dx12_validate_scene` | `{path?:string}` | `{pass, exitCode, report, scenePath}` ※`--validate` をヘッドレス子プロセスで実行。省略時は現在のシーン |
-| `dx12_get_anim_state` | `{entity:int}` | `{hasSkeletalAnimation, clips:[クリップ名...]}` ※`dx12_play_anim` の clipName 選びに |
+| `dx12_get_anim_state` | `{entity:int}` | `{hasSkeletalAnimation, clips:[クリップ名...], boneCount, currentClip, clipTime, speed, looping, blending, hasController, graphPath, graphLoaded, layers:[{name,weight,state,normalizedTime,transitioning,transitionTo,transitionProgress,masked}], parameters:{名前:値}, footIK:{enabled,weight,resolved,bones,boneNames,leftContact,rightContact,leftLift,rightLift,pelvisOffset,leftNormal,rightNormal}}` ※`dx12_play_anim` の clipName 選びと、接地の破綻をスクショ無しで検知するのに使う |
+| `dx12_describe_anim_graph` | `{entity:int}` または `{path:string}` | `{source, graph:{version,parameters,clipEvents,extraClips,layers:[{name,weight,blend,mask,defaultState,states,transitions}]}}` ※`.animfsm` の構造を返す。ステート名/パラメータ名の確認に。**TS 側未定義**（B12 と同様） |
 | `dx12_net_status` | `{}` | `{available, role:"Offline"\|"Host"\|"Client", isConnected, localClientId, tick, syncedEntityCount, players:[{id,rttMs,bytesSent,bytesReceived}], config:{tickRate,snapshotRate,maxPlayers,defaultPort}, testRole, testJoinAddress}` |
-| `dx12_screenshot` | `{}` | PNG 画像ブロック + text(`{path(絶対パス), width, height}`) |
+| `dx12_screenshot` | `{path?:string, deterministic?:bool=false, settleFrames?:int=8(1..240)}` | PNG 画像ブロック + text(`{path(絶対パス), width, height, source:"sceneRT(pre-post)", note}`) ※**ポストプロセス前の `m_sceneRT`**。グレーディング / ブルーム / ゴッドレイ / ビネット / LUT / FXAA / デバンド / **TAA の解決結果が一切写らない**。見た目を判断するなら `dx12_screenshot_final` を使うこと |
+| `dx12_screenshot_final` | `{path?:string, deterministic?:bool=false, settleFrames?:int=8(1..240)}` | **遅延同期**。`{path, width, height, source:"backbuffer", postApplied, deterministic, taa, mode, note}` ※**バックバッファ（＝ポスト適用後の最終画）のビューポート矩形**。ImGui を描く前にコピーするので**エディタのパネル / ギズモは写らない**＝ゲームと同じ絵。サイズはウィンドウ全体ではなく**シーンビューの矩形** |
 | `dx12_ui_screenshot` | `{}` | PNG 画像ブロック ※エディタウィンドウ全体(ImGuiパネル込み)。ゲーム内UI/UIエディタの見た目確認用(scene RT には UI が写らない) |
+| `dx12_render_debug` | `{mode:string, frames?:int=3(1..120), gain?:number=1, depthRange?:number=100, exposure?:number=1}` | `{path(絶対パス), mode, width, height, toneMapped:bool, warnings:[string], mode_engine:"Editor"\|"Playing"}` ※**中間バッファの可視化**（「なぜ変に見えるか」の切り分け用）。`frames` フレーム描いてからスクショを撮り、**必ず元の設定へ戻す**。必要な機能（TAA/SSAO/コンタクトシャドウ/SSR/SSGI）は一時的に自動で ON にし、その旨を `warnings` に返す。返り値の `path` を画像として読むこと |
 | `dx12_ui_tree` | `{}` | `{canvases:[{entityId, name, uiCanvas:{refWidth,refHeight,...}, children:[{entityId, name, components, uiRect, resolvedRect:[x,y,w,h](キャンバス空間px), text?, children}]}]}` ※UIレイアウトの数値確認 |
 | `dx12_ui_design_brief` | `{genre:"cinematic"\|"tactical"\|"fantasy"\|"horror"\|"arcade"\|"cozy", screen:"title"\|"hud"\|"inventory"\|"settings"\|"result"\|"dialog"\|"other", tone?}` | 画面固有の構図・階層・制約・アンチパターン。UI生成前に呼ぶ |
 | `dx12_ui_audit` | `{strictness?:"balanced"\|"strict"}` | 現在のUIを数値監査。`{pass,score,grade,summary,issues[]}`。崩れ/重なり/可読性/入力遮断/過装飾を検出 |
 | `dx12_ui_compose` | `{blueprint:{theme,prefix,root}}` | dock/stack/grid と意味的roleからUI一式を制約付き生成。失敗時ロールバック。生成後はaudit→screenshot必須 |
-| `dx12_get_editor_camera` | `{}` | `{position, forward, yawDeg, pitchDeg, fovYDeg, orthographic, mode}` ※シーンビューを描いてるカメラの状態 |
+| `dx12_get_editor_camera` | `{targetDistance?:number=10}` | `{position, forward, target, targetDistance, yawDeg, pitchDeg, fovYDeg, aspect, nearZ, farZ, orthographic, overridden, mode}` ※シーンビューを描いてるカメラの状態。**`target` は `position + forward * targetDistance`**。そのまま `dx12_set_editor_camera {position, target}` へ渡すと同じ yaw/pitch に戻る＝読み返し検証ができる |
 | `dx12_get_bounds` | `{entity:int, includeChildren?:bool}` | `{min, max, center, size, hasMesh}` ※ワールド空間 AABB(回転/親子変換込み)。配置座標の計算に |
 | `dx12_get_hierarchy` | `{}` | `{roots:[{entityId, name, children:[...]}], count, sceneGeneration}` ※シーンの親子ツリー |
-| `dx12_asset_info` | `{path}` | モデル: `{meshCount, totalVertices, totalFaces, materialCount, boneCount, hasSkeleton, animations:[{name,durationSec}], aabbMin/Max(メッシュローカル近似)}`、テクスチャ: `{width, height, mipLevels, format, isCubemap}`、他: `{type, fileSizeBytes}` |
+| `dx12_asset_info` | `{path}` | モデル: `{meshCount, totalVertices, totalFaces, materialCount, boneCount, hasSkeleton, animations:[{name,durationSec}], aabbMin/Max(ノード変換込みのワールド AABB)}`、テクスチャ: `{width, height, mipLevels, format, isCubemap}`、他: `{type, fileSizeBytes}` |
 | `dx12_view_texture` | `{path, maxSize?:int=1024}` | PNG 画像ブロック ※dds/tga/hdr も変換して見られる。キューブマップは先頭面のみ |
 | `dx12_pick` | `{x?,y?(px) \| u?,v?(0..1), all?:bool, maxHits?:int=16, includeIcons?:bool=true, trianglePrecise?:bool=true, maxCandidates?:int=64}` | `{hits:[{entityId,name,submeshIndex,distance,worldPos,worldNormal,isIcon}], count, totalHits, truncated, screen, viewport, mode}` ※**エディタの左クリック選択と同じ `RaycastScene`**。座標系は `dx12_screenshot` / `dx12_project_world_to_screen` と同じ |
 | `dx12_raycast_precise` | `{origin:[x,y,z], direction:[x,y,z], maxDistance?:f=1000, all?:bool, maxHits?:int=16, trianglePrecise?:bool=true, maxCandidates?:int=256}` | `dx12_pick` と同形式 + `{origin, direction, maxDistance}` ※**描画メッシュの三角形基準**。`dx12_raycast`(物理コライダー基準・Playing 限定)とは別物 |
 | `dx12_terrain_sample` | `{entity?/name?, points?:[[x,z]...] (最大512)}` | `{entityId, name, origin, resolution, worldSize, cellSize, boundsXZ, minHeight, maxHeight, samples:[{x,z,height,worldY,normal,slopeDeg,inside}], count}` |
-| `dx12_list_lights` | `{limit?:int=50, cursor?:int}` | `{lights:[{entityId,name,type,position,slot,color,intensity,range?,direction?,innerConeDeg?,outerConeDeg?,castShadows?,overBudget,effective}], count, total, cursor, nextCursor, has_more, budget:{point,spot,directional,shadowSpot,shadowPoint}, warnings:[...]}` ※**上限超過は無言で描画されない**ので必ずここで確認する |
+| `dx12_list_lights` | `{limit?:int=50, cursor?:int}` | `{lights:[{entityId,name,type,position,slot,color,intensity,range?,direction?,innerConeDeg?,outerConeDeg?,castShadows?,overBudget,effective}], count, total, cursor, nextCursor, has_more, budget:{total,perCluster,point,spot,directional,shadowSpot,shadowPoint}, warnings:[...]}` ※**上限超過は無言で描画されない**ので必ずここで確認する。クラスタードライティング(Forward+)で点/スポットの個別上限は撤廃され、**合計 1024 灯 / 1 クラスタ 128 灯**が上限。**影は spot 4 / point 2 のまま** |
 | `dx12_diagnose` | `{only?:string[], fast?:bool}` | `DeepDiag::RunAll` の JSON(`{version, engine, checks:[{id,title,checked,errors,warnings,infos,issues,omitted,skipped}], summary:{checks,errors,warnings,infos,ok,unknownIds}, checkIds, note}`) ※`summary.errors > 0` だけが失敗 |
 
 ### 4-2. 編集系(同期)
@@ -187,6 +198,53 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_set_scene_settings` | `{skybox:{envMapPath?, iblIntensity?, skyboxIntensity?, drawSkybox?}}` | `{applied, envMapRebake}` |
 | `dx12_set_post_process` | 約25エフェクトの `<name>On`/パラメータ(指定分のみ適用) | `{applied}` |
 | `dx12_set_ssao` | `{enabled?, radius?, bias?, intensity?, power?, sampleCount?, blur?}` | `{applied}` |
+| `dx12_set_contact_shadow` | `{enabled?, rayLength?, thickness?, bias?, intensity?, steps?, maxDistance?, fadeDistance?}` | `{applied}` ※太陽(平行光)専用のスクリーン空間近接遮蔽。正射/2Dビューでは自動無効 |
+| `dx12_set_taa` | `{enabled?, sampleCount?, feedbackMin?, feedbackMax?, varianceGamma?, jitterScale?, debugVelocity?}` | `{applied}` ※テンポラルAA。ONの間は `fxaaOn` が無視される。深度+速度プリパスが常時走る。正射/2Dビューでは自動無効 |
+| `dx12_set_render_scale` | `{scale:0.25..1.0}` | `{...get と同じ...}` ※**内部解像度スケール**。3D シーン系の RT（sceneRT / 深度 / SSAO / コンタクトシャドウ / TAA 履歴・速度 / G-Buffer / SSR・SSGI / ブルーム / DoF / ゴッドレイ / 歪み）だけを `scale` 倍で確保し、最終(uber)パスで表示解像度へ引き伸ばす。**UI / ImGui / エディタのアイコンとギズモは常に表示解像度のまま**＝文字はボケない。`settings.json` の `"render_scale"` に保存される（起動時とプロジェクト切替時に読む）。★変更は**次のフレーム先頭**で反映される（内部で `WaitIdle` するのでフレーム外でしか作り直せない）。反映後は TAA / SSR / SSGI / ボリュメトリックフォグの**時間履歴が全部捨てられる**（座標系が変わるため。持ち越すとゴーストする）。★`dx12_screenshot` は**レンダー解像度**、`dx12_screenshot_final` は**表示解像度**で返る。`dx12_pick` / `dx12_project_world_to_screen` の座標系もレンダー解像度 |
+| `dx12_set_depth_prepass` | `{enabled:bool}` | `{enabled, note}` ※**深度プリパスを単独で ON にする**。通常は SSAO / コンタクトシャドウ / TAA / SSR / SSGI / DXR のどれかが要求したときだけ走るが、これを立てると単独で走る（正射 / 2D ビューでは自動的に無効）。`dx12_perf_stats` / `dx12_benchmark` の `gpuPassMs.depthPrepass` が**プリパスの描画だけ**の実測値で、`prepassSsao` はそれを含む「プリパス一式（SSAO / コンタクトシャドウ / SSR・SSGI 生成込み）」。**そのシーンでオーバードローがどれだけあるか＝オクルージョンカリングの余地**を測るための道具。`settings.json` の `"render_depth_prepass"` に保存される |
+| `dx12_get_shadow_pcss` | `{}` | `{enabled, lightTanAngle, maxPenumbraTexels, blockerSearchTexels, temporalDither, active, temporalDitherActive, applied:false, note}` ※`active` は「ON でも実際に走る条件（影 ON かつ透視カメラ）」を満たしているか |
+| `dx12_set_shadow_pcss` | `{enabled?:bool, lightTanAngle?:0.001..0.5, maxPenumbraTexels?:1..64, blockerSearchTexels?:1..64, temporalDither?:bool}` | `{...get と同じ..., applied:true}` ※**PCSS（ソフトシャドウ）**。CSM の固定幅 PCF を「ブロッカー探索 → 可変ペナンブラ」へ置き換え、接地部は鋭く・離れるほど柔らかい影にする。**OFF で従来の 3x3 PCF に戻る（絵はビット一致）**。`lightTanAngle` は太陽の角半径の tan（実際の太陽は 0.0044＝ほぼ硬い影。既定 0.05 は誇張値）。`temporalDither` は **TAA 有効時のみ**効く（無効時に回してもチラつくだけなのでエンジンが自動で切る）。シーン JSON の `shadowPcss` に保存される |
+| `dx12_get_dxr` | `{}` | `{supported, raytracingTier:"1.2" or "none", highestShaderModel:"6.8", shadowEnabled, shadowSunAngle, shadowNormalBias, shadowMaxDistance, shadowIntensity, aoEnabled, aoRadius, aoRayCount, aoIntensity, aoPower, aoCombineWithSsao, maxInstances, forceBuildTlas, shadowActive, tlasReady, stats:{instances, blasCount, blasBytes, blasTriangles, tlasBytes, scratchBytes, instanceDescBytes, skippedSkinned, skippedTransparent, droppedOverLimit, bytesPerTriangle}, applied:false, note}` ※`shadowActive` は「ON でも実際に走ったか」。`stats` は直近フレームの加速構造の実測値 |
+| `dx12_set_dxr` | `{shadowEnabled?:bool, shadowSunAngle?:0..20(度), shadowNormalBias?:0..1(m), shadowMaxDistance?:0..100000(m, 0=無限), shadowIntensity?:0..1, aoEnabled?:bool, aoRadius?:0.01..100(m), aoRayCount?:1..8, aoIntensity?:0..1, aoPower?:0.01..8, aoCombineWithSsao?:bool, maxInstances?:0..32768, forceBuildTlas?:bool}` | `{...get と同じ..., applied:true}` ※**DXR 1.1 inline raytracing（RayQuery）**。RT サン影は既存のコンタクトシャドウ枠(t11)、RT-AO は既存の SSAO 枠(t8) へ書くので**ルートシグネチャは 1 DWORD も増えない**。**非対応 GPU では `error_code` を返す**（要 DXR Tier 1.1 かつ SM 6.5）。★スキンドと半透明は加速構造に入らないので従来どおり CSM が担当し、フォワードの `min()` で合成される（RT 影が有効なフレームは CSM が「RT の担当ぶん」を描かなくなる＝排他）。シーン JSON の `raytracing` に保存される |
+| `dx12_set_ssr` | `{enabled?, intensity?, maxDistance?, thickness?, maxSteps?, stride?, roughnessCutoff?, edgeFade?, bias?}` | `{applied}` ※スクリーン空間反射。深度プリパスのG-Bufferと前フレームカラーをレイマーチして IBL の鏡面を置き換える。反射は1フレーム遅れる。ONの間は深度+速度プリパスが常時走る。正射/2Dビューでは自動無効 |
+| `dx12_set_ssgi` | `{enabled?, intensity?, radius?, thickness?, rayCount?, stepCount?, clampValue?, feedback?, iblFallback?}` | `{applied}` ※スクリーン空間GI。前フレームカラーを間接光源にして IBL の拡散(irradiance)を置き換える。`iblFallback` を切るとカメラ回転で明るさが変動する。正射/2Dビューでは自動無効 |
+| `dx12_set_volumetric_fog` | `{enabled?, density?, albedo?, anisotropy?, heightFalloff?, heightRef?, distance?, depthDistribution?, ambient?, sunIntensity?, lightScattering?, temporal?, temporalBlend?, extendBeyondRange?, debugMode?}` | `{applied}` ※froxel ボリュメトリックフォグ。視錐台に沿った 3D テクスチャ(160x90x64)へ散乱を焼いて合成する＝光の筋が立体的に見える。有効にすると VRAM を 28MB 確保する。GodRays と同時に有効にすると太陽の散乱が二重計上される。正射/2Dビューでは自動無効 |
+
+> **TAA の効果確認は `dx12_ui_screenshot` を使うこと。** `dx12_screenshot` はポスト前の `m_sceneRT` を読むので、TAA の解決結果も `debugVelocity` の可視化も写らない（どちらもその後段で出力される）。
+
+### 4-2-1. `dx12_render_debug` の mode 一覧
+
+「絵が変」の原因を切り分けるための唯一の入口。**呼ぶ前と後でシーンの設定は完全に同じ**（一時的に ON にした機能は必ず戻す）。
+可視化はポスト前の `m_sceneRT` へ描くので、返ってくる PNG には**必ず写る**（`dx12_screenshot` の B5 の罠を踏まない）。
+`toneMapped:false` のモードはトーンマップ/露出を掛けずに 8bit へ落とすので、**PNG のピクセル値がそのままバッファの値**として読める。
+
+| mode | 出るもの | 実装 | 備考 |
+|---|---|---|---|
+| `normal` | ワールド法線 `0.5+0.5*N`（+X=赤 +Y=緑 +Z=青） | 専用パス | **G-Buffer は幾何法線**。法線マップは載っていない（SSR/SSGI が見ているのもこれ） |
+| `roughness` | G-Buffer の roughness（白 = 1） | 専用パス | **スカラー値のみ**。ORM テクスチャは載っていない |
+| `metallic` | G-Buffer の metallic（白 = 1） | 専用パス | 同上 |
+| `depth` | ビュー空間 Z をヒートマップ（青=近 → 赤=遠、空は黒） | 専用パス | `depthRange`(m) で正規化。既定 100 |
+| `ao` | SSAO（白 = 遮蔽なし） | 専用パス | SSAO を一時 ON |
+| `contactShadow` | コンタクトシャドウ（白 = 遮蔽なし） | 専用パス | コンタクトシャドウを一時 ON |
+| `velocity` | 速度バッファ（R=+X G=+画面下、**静止していれば一様な (0.5,0.5,0.5)**） | 専用パス | `gain` で強調（既定 1、20 くらいが見やすい） |
+| `ssr` | SSR の結果（リニア HDR にガンマのみ） | 専用パス | SSR を一時 ON。時間蓄積があるので `frames` を 8〜16 に |
+| `ssgi` | SSGI の結果 | 専用パス | 同上 |
+| `rt` | **DXR のプライマリレイのヒット距離**をヒートマップ（空/ミスは黒） | 専用パス | TLAS が正しく建っているかの目視確認。`depthRange`(m) で正規化。RT 影 / RT-AO が OFF でも TLAS を一時的に建てる |
+| `rtDiff` | **&#124;RT のヒット距離 − ラスタの距離&#124;** をヒートマップ（**黒 = 完全一致**、マゼンタ = 片方だけヒット） | 専用パス | ★加速構造の検証はこれが本命。行列の転置ミス / ノード変換の付け忘れを一発で炙り出す。`gain` を 20 くらいにすると 5cm でフルスケール。**スキンドと半透明は TLAS に入らない仕様なのでマゼンタになる**。BLAS は LOD0 固定なので、遠くて低 LOD で描かれている物は数 cm の差が出るのが正常 |
+| `shadowCascade` | CSM のカスケードを色分け（赤/緑/青/黄の色掛け） | 既存 `shadowParams.w` | フォワード PS の既存実装をそのまま使う |
+| `lightComplexity` | クラスタごとのライト数ヒートマップ（青0 → 緑 → 赤、**白 = 128 灯で切り捨て中**） | 既存 `clusterExtra.z=1` | 正射/2D ではクラスタード自体が無効 |
+| `clusterGrid` | クラスタ境界の市松 | 既存 `clusterExtra.z=2` | |
+| `decalCount` | クラスタごとのデカール枚数ヒートマップ（**白 = 16 枚で切り捨て中**） | 既存 `clusterExtra.z=3` | デカール 0 枚のクラスタはほぼ黒 |
+| `fogScattering` / `fogTransmittance` / `fogSlice` | ボリュメトリックフォグの散乱 / 透過率 / froxel スライス | 既存 `FogParams.gMisc.z` | フォグが無効なら何も出ない（`warnings` で通知） |
+| `off` | 何もせず全部を戻すだけ（スクショも撮らない） | — | 途中で失敗したときのリセット用 |
+
+**非対応（作っていない。理由つき）**
+- `albedo` … 前方レンダラなのでアルベドの G-Buffer が存在しない。作るには深度プリパスに RT をもう 1 枚足す必要があり、
+  速度 PSO の RTV 本数（＝00-COORDINATION §5.5 の契約）に手を入れることになるので見送った。
+- `overdraw` … 加算カウント用の専用パス（全メッシュを再描画してブレンド加算）が要る。既存のどのバッファにも無い。
+
+**⚠️ `normal` / `roughness` / `metallic` / `velocity` は「深度+速度プリパス」でしか書かれない**ので、TAA も SSR も SSGI も
+OFF のときは TAA を一時的に ON にして撮る（`warnings` に出る）。この 4 モードが「ジオメトリだけの粗い絵」に見えるのは仕様。
 | `dx12_undo` | `{}` | `{queuedUndo}` |
 | `dx12_redo` | `{}` | `{queuedRedo}` |
 | `dx12_save_scene` | `{path?:string}` | `{path}` ※省略で現在シーンへ上書き |
@@ -197,10 +255,11 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_eval_lua` | `{code:string}` | `{result:string}` ※任意 Lua をその場実行(デバッグ用) |
 | `dx12_build_game` | `{}` | `{success, outputDir, error?}` ※ヘッドレスビルド(同期・数十秒かかることあり) |
 | `dx12_set_texture` | `{entity:int, path:string(assets相対、空文字で解除), slot?:"albedo"\|"normal"\|"metalRoughness", submesh?:int}` | `{entityId, slot, submesh, path}` ※Inspector のテクスチャ D&D と同じインスタンス単位 override(Material 共有を壊さない) |
-| `dx12_play_anim` | `{entity:int, clip?:int, clipName?:string, blend?:f=0.3, loop?:bool}` | `{entityId, clip, clipName, blend}` ※スケルタルアニメのクロスフェード再生(Lua playAnim と同経路) |
+| `dx12_play_anim` | `{entity:int, clip?:int, clipName?:string, blend?:f=0.3, loop?:bool, speed?:f, state?:string, layer?:int=0}` | `{entityId, clip, clipName, blend, speed}` または `{entityId, state, layer, blend}` ※スケルタルアニメのクロスフェード再生(Lua playAnim と同経路)。**`state` を渡すと `.animfsm` のステート遷移**になる(`AnimatorController` が要る)。渡さなければ従来どおり clip 経路で完全後方互換。`state`/`layer` は **TS 側未定義** |
+| `dx12_set_anim_param` | `{entity?:int / name?:string(エンティティ名), param:string(FSM パラメータ名), value?:number\|bool, trigger?:bool}` | `{entityId, param, name(=param。後方互換), value}` ※アニメ FSM のパラメータを外から叩いて遷移を検証する。**★パラメータ名は `param`**。`name` は他ツールと同じく「エンティティ名」。`param` を省略したときだけ `name` をパラメータ名として読む後方互換がある（`{entity, name:"Speed"}` も通る）が、**新しいコードは必ず `param` を使うこと** |
 | `dx12_net_setup` | `{role:"host"\|"client"\|"offline", address?:string, port?:int}` | `{testRole, address, port}` ※次の `dx12_play` で自動 Host/Join(ツールバーの Play ロールと同じ) |
 | `dx12_net_launch_test_client` | `{}` | `{requested}` ※ホスト Playing 中のみ。同エンジンをもう1プロセス起動し 127.0.0.1 へ自動接続(フレーム境界) |
-| `dx12_set_editor_camera` | `{position?:[x,y,z], target?:[x,y,z], yawDeg?:f, pitchDeg?:f}` | `{position, forward, yawDeg, pitchDeg}` ※エディタのフライカメラを任意視点へ。target 指定で yaw/pitch 自動逆算。**Editor 限定**(Playing 中は MODE_CONFLICT) |
+| `dx12_set_editor_camera` | `{position?:[x,y,z], target?:[x,y,z], yawDeg?:f, pitchDeg?:f, release?:bool}` | `{position, forward, yawDeg, pitchDeg, overridden, mode, note}` ※シーンビューのカメラを任意視点へ。target 指定で yaw/pitch 自動逆算。**Play 中も使える**: Playing 中に呼ぶとアクティブ `CameraComponent` の毎フレーム同期を止めて視点を固定する（`overridden:true`）。`{"release":true}` でゲームカメラへ返す。**Play/Stop の遷移でも自動解除**。Play 中の絵で `look_compare` / `camera_path` を回すための機能 |
 | `dx12_look_at` | `{entity:int, target?:[x,y,z], targetEntity?:int, targetName?:string, upright?:bool}` | `{entityId, rotation, target}` ※+Z 正面の想定で rotation(Euler) を書く。upright=true でピッチ0。親が回転してると厳密でない |
 | `dx12_snap_to_ground` | `{entity:int, offset?:f, precise?:bool=true}` | `{groundY, movedBy, method:"raycast"\|"aabb", position, groundEntityId?}` ※**三角形精密レイキャストで真下の実際の面へ接地**(地形の起伏・斜面・彫った岩に乗る)。真下に三角形が無ければ従来の AABB 天面判定へフォールバック(`method:"aabb"`)。床なしは y=0。Editor 中でも動く |
 | `dx12_import_asset` | `{sourcePath:string(絶対パス可), destPath:string(assets相対), overwrite?:bool}` | `{imported:[相対パス...], count}` ※外部ファイル/フォルダを assets へコピー。.gltf はフォルダごと |
@@ -209,6 +268,10 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_terrain_generate` | `{entity?/name?, preset?:"hills"\|"canyon"\|"mountains", seed?:int, frequency?, octaves?, amplitude?, ridged?, baseHeight?, edgeFalloff?, valleyDepth?}` | `{entityId, preset, params:{...}, minHeight, maxHeight, resolution, worldSize}` ※高さ配列を丸ごと作り直す(既存の彫りは消える)。**同じ seed/params なら毎回同じ地形=冪等**。★Editor 限定 |
 | `dx12_terrain_sculpt` | `{entity?/name?, brush?:"raise"\|"lower"\|"smooth"\|"flatten"\|"noise", point?:[x,z] \| points?:[[x,z]...](最大512) \| worldPos?:[x,y,z], radius?=12, strength?=5, falloff?=0.5, flattenHeight?, mirrorX?, mirrorZ?, noiseFrequency?, noiseOctaves?, noiseRidged?, seed?}` | `{entityId, brush, points, radius, strength, changed, minHeight, maxHeight}` ※座標は**ワールド XZ**。相対操作(2回撃つと2回ぶん)。`flatten`+`flattenHeight` は絶対値なので冪等寄り。★Editor 限定 |
 | `dx12_terrain_erode` | `{entity?/name?, iterations?:int=16, talusDeg?:f=34, region?:[minX,minZ,maxX,maxZ]}` | `{entityId, iterations, talusDeg, changed, minHeight, maxHeight}` ※熱浸食。相対操作。★Editor 限定 |
+| `dx12_terrain_paint` | `{entity?/name?, layer?:0..3, point?:[x,z] \| points?:[[x,z]...](最大512) \| worldPos?:[x,y,z], radius?=12, strength?=0.7, falloff?=0.5}` | `{entityId, layer, points, radius, strength, changed, splatSize}` ※**テクスチャレイヤーの重み**を円ブラシで塗る。座標は**ワールド XZ**。相対操作。`terrain.layerSetPath` 未設定だと `INVALID_PARAM`。★Editor 限定 |
+| `dx12_terrain_autopaint` | `{entity?/name?, rockSlopeStart?, rockSlopeEnd?, dirtSlopeStart?, dirtSlopeEnd?, snowHeightStart?, snowHeightEnd?, noiseStrength?}` | `{entityId, splatSize}` ※傾斜と標高から 4 層を焼き直す（**冪等**。手で塗った内容は消える）。傾斜は 0=平ら〜1=垂直、標高はワールド Y(m)。★Editor 限定 |
+| `dx12_terrain_set_layers` | `{entity?/name?, layerSetPath:string(assets 相対 .terrainlayers。**空文字で割当解除**), splatResolution?:int=512(32..2048), autopaint?:bool=true, uvScale?, heightBlendDepth?:0.01..1, triplanarSharpness?:1..16, normalStrength?:0..2, macroScale?:10..400, macroStrength?:0..1, distTilingStart?:5..200, distTilingFarScale?:2..16, pomHeightScale?:0..0.3, pomFadeStart?:0..40, pomFadeEnd?:1..120, triplanar?:bool, pom?:bool, macro?:bool, distTiling?:bool}` | `{entityId, layerSetPath, previousLayerSetPath, layerCount, layerNames:[...], splatPath, splatSize, splatCreated, uvScale, terrainMatFlags, sceneGeneration, note}` ※**地形にテクスチャレイヤーを割り当てる唯一の MCP 経路**（#27）。初回割当時にスプラットを作り、`autopaint:true`（既定）なら傾斜/標高から自動で塗る。省略したパラメータは触らない（冪等）。`layerSetPath:""` で外すと従来の頂点色描画へ戻る。★Editor 限定 |
+| `dx12_terrain_splat_info` | `{entity?/name?, gridSize?:int=8(0..32。0 で grid を返さない), point?:[x,z] \| points?:[[x,z]...](最大256)}` | `{entityId, layerSetPath, splatPath, hasSplat, unsavedSplat, splatSize, coverage:[4](層ごとの平均重み 0..1), dominantRatio:[4](その層が最大だったテクセルの割合), gridSize, grid:[gridSize 本の文字列。`grid[z][x]` が `'0'..'3'` でそのセルの支配レイヤー。z が増えると +Z、x が増えると +X], samples:[{world:[x,z], texel:[tx,tz], weights:[4], dominant:int}], note}` ※**読み取り専用**。`terrain_paint` / `autopaint` の結果を絵を見ずに検証する。スプラット未作成なら `hasSplat:false` と案内だけ返す。Playing 中も可 |
 | `dx12_sculpt_brush` | `{entity?/name?, brush?:"draw"\|"pull"\|"push"\|"smooth"\|"flatten"\|"pinch"\|"noise"\|"grab", position?:[x,y,z](ワールド) \| localPosition?, radius?=0.5, strength?=0.2, falloff?=0.5, direction?, grabDelta?, symmetryX/Y/Z?, noise*?, seed?}` | `{entityId, brush, movedVertices, localCenter, radius, strength, vertexCount, triangleCount, localBounds}` ※radius/strength は**メッシュのローカル単位**(Transform の scale が掛かる前)。相対操作。★Editor 限定 |
 | `dx12_set_sun` | `{timeOfDay?:0..24, azimuth?:deg, elevation?:deg, color?:[r,g,b], kelvin?:1000..40000, intensity?, ambient?}` | `{entityId, name, direction, azimuthDeg, elevationDeg, color, intensity, ambient, timeOfDay}` ※最初の DirectionalLight を**絶対指定**で更新(冪等)。方位/高度は「太陽が見える方向」(+Z=0°, +X=90° / 高度 0=地平線) |
 | `dx12_apply_lighting_preset` | `{preset:"day"\|"dusk"\|"night"\|"indoor"\|"horror"\|"studio"}` | `{preset, label, tip, sun:{...}\|null, post:{exposure/bloom/vignette/saturation...}}` ※**エディタの「ライティング」窓と同じ表・同じ式**(`src/editor/LightingPresets.h` に 1 本化)。太陽が無ければポストのみ適用 |
@@ -275,6 +338,21 @@ MCP で見えるものとエディタで選ばれるものが食い違わない�
 - 回転・スケールは効かない（XZ グリッドの前提）。位置だけが意味を持つ。
 - 手順は「① `dx12_terrain_create` → ② `dx12_terrain_generate`（土台）→ ③ `dx12_terrain_sculpt`/`dx12_terrain_erode`（詰め）」。
   ②は高さを丸ごと作り直すので、**必ず③より先**にやること。
+- **テクスチャレイヤー**（4 層スプラット）は `terrain.layerSetPath` に `.terrainlayers` を割り当てた地形だけ。
+  割り当ては **`dx12_terrain_set_layers`**（MCP）/ シーン JSON / 地形ツール窓のどれでもよい。
+  割当後は `dx12_terrain_autopaint`（傾斜と標高から焼き直す・冪等）と
+  `dx12_terrain_paint`（円ブラシで 1 層を塗る・相対）が使え、結果は
+  `dx12_terrain_splat_info` で数値検証できる。詳細は
+  [`AUTHORING.md` §10.5.1](AUTHORING.md)。**高さを彫り直したら autopaint をやり直すこと**
+  （重みは高さに自動追従しない）。
+  手順の例:
+  ```
+  dx12_terrain_create      {name:"Terrain", resolution:256, worldSize:400}
+  dx12_terrain_generate    {name:"Terrain", preset:"mountains", seed:1}
+  dx12_terrain_set_layers  {name:"Terrain", layerSetPath:"terrain/alpine.terrainlayers"}   ← ここが無くて詰んでいた
+  dx12_terrain_paint       {name:"Terrain", point:[0,0], layer:2, radius:60, strength:1}
+  dx12_terrain_splat_info  {name:"Terrain", point:[0,0]}   → weights:[0,0,1,0] で確認
+  ```
 
 **スカルプト（異形メッシュ）**
 
@@ -315,13 +393,19 @@ dx12_set_component({entity: 42, component: "pointLight", data: {color:[1,0.8,0.6
 
 ## 6. idempotency_key
 
-`create_entity` と `spawn_model` は `idempotency_key` を受け付ける。
-同じキーで2回送った場合、2回目は処理をスキップして1回目の `entityId` を返す。
-AI がリトライしたときに重複エンティティを防ぐ用途。
+`create_entity` / `spawn_model` / `spawn_prefab` は `idempotency_key` を受け付ける。
+同じキーで2回送った場合、2回目は処理をスキップして1回目の `entityId` を
+`{"idempotentReplay": true}` 付きで返す。AI がリトライしたときに重複エンティティを防ぐ用途。
 
 ```json
 {"method":"create_entity", "params":{"type":"box","idempotency_key":"floor-001"}}
 ```
+
+- `spawn_prefab` は**リプレイ時も `rootEntityId` / `entityIds`（サブツリー全部）を返す**。
+- キーはシーンをまたがない（`open_scene` / `new_scene` で表ごと捨てる）。
+- 記録された entity が削除済みなら「無かったこと」にして普通に生成する。
+- ⚠️ **`spawn_prefab` は 2026-07-26 まで記録だけしてリプレイ判定を持っておらず、
+  再送で毎回サブツリーが増えていた**（#20-4 の実バグ。修正済み）。
 
 ---
 
@@ -388,6 +472,36 @@ dx12_play → (ゲームロジック動作) → dx12_stop
 → dx12_get_log でランタイムエラー確認
 ```
 
+### 9-1. どのスクショを使うか（絵を判断するときの必読）
+
+| ツール | 撮る先 | 写るもの | 用途 |
+|---|---|---|---|
+| `dx12_screenshot` | `m_sceneRT`（**ポスト前**） | シーン本体だけ | 幾何 / ライティングの素の値を見たいとき |
+| `dx12_screenshot_final` | **バックバッファ**（ポスト後・ImGui 前） | グレーディング / ブルーム / ゴッドレイ / ビネット / LUT / FXAA / デバンド / **TAA 解決結果** | **見た目の判断は必ずこちら** |
+| `dx12_ui_screenshot` | ウィンドウ全体（`PrintWindow`） | 上に加えて ImGui のパネル / ギズモ | エディタ UI・ゲーム内 UI の確認 |
+
+### 9-2. `deterministic` — ピクセル差分で A/B を取るとき（#31）
+
+**同じ設定で 2 回撮っても絵は一致しない。** 実測した原因は 3 つ:
+
+| 原因 | 効く先 | 実測（1920x1032・同一設定 2 枚） |
+|---|---|---|
+| ポストの **deband ディザ / フィルムグレイン**（`time` 依存の TPDF ノイズ） | `screenshot_final` のみ | 画面の **66%** のピクセルが ±1〜2 LSB |
+| **TAA のジッタ**（毎フレーム位相が回るのでラスタ結果そのものが動く） | 両方 | `screenshot` で **9.4%** / max 140 |
+| **SSGI・ボリュメトリックフォグの時間ジッタ + 履歴蓄積** | 両方 | SSGI 1.5% / フォグ 5.9% |
+
+`{"deterministic": true}` を付けると:
+1. `time` を固定（deband / grain / wave / glitch / パーティクル / カスタムシェーダの time が全部止まる）
+2. TAA・フォグ・SSGI の**時間ジッタ位相を毎フレーム 0 に固定**
+3. パーティクルの前進を止める（dt=0）
+4. **時間蓄積の履歴を捨ててから** `settleFrames`（既定 8）フレーム回し、そこで撮る
+
+→ 実測: 上の全構成（TAA / SSGI / フォグを個別 ON・全部 ON）で **2 枚が完全一致（diff 0.00%）**。
+
+> ⚠️ 止まるのは**レンダラの時間依存だけ**。Play 中のゲームシミュレーション（移動 / 物理 /
+> アニメーション）は止まらないので、厳密に比べたいときは `dx12_stop` してから撮ること。
+> `settleFrames` を増やすと TAA / SSGI の収束が進む（決定性は 8 でも得られる）。
+
 ---
 
 ## 10. セキュリティモデル
@@ -440,6 +554,37 @@ dx12_play → (ゲームロジック動作) → dx12_stop
   "error_hint":<string 任意>, "error_values":<string[] 任意>}\n`
 
 遅延同期 method は受信時は何も返さず、フレーム境界で実処理後に同じ id でレスポンスを送る。
+
+### 12-1. エンジン側に method を足す（実装者向け）
+
+`Application::HandleMcpCommand` は **`std::unordered_map<std::string, McpMethodEntry>` の表引き**。
+以前は `else if (method == "...")` の 118 本連鎖で、MSVC の
+**「ブロックの入れ子のレベルが深すぎます (C1061)」上限に張り付いていた**（1 本足すとコンパイルが落ちた）。
+表引きなので **method を何本足しても入れ子は 1 段も深くならない**。
+
+足し方は 3 つだけ:
+
+1. `src/core/Application.cpp` の `Register***McpMethods()` のどれか（テーマで選ぶ。順序に意味は無い）へ
+   ```cpp
+   McpDefine("名前", "キー:型,キー:型", DX12E_MCP_HANDLER
+       {
+           // params / resp / method / deferred / isDeferred / busyPlaying がそのまま使える
+           resp["ok"] = true;
+           resp["result"] = { ... };
+       });
+   ```
+   `"a|b"` と書くと 1 本のハンドラで 2 つの method を受ける（本文で `method ==` を見て分ける）。
+2. 第 2 引数のキー表は **`dx12_describe_mcp_params` がそのまま返す**。型は
+   `bool` / `int` / `number` / `string` / `vec3` / `object` / `any`、入れ子は `"親.子"`。
+   **本文で読むキーと必ず一致させること。**
+   ポスト / SSAO だけは `DX12E_POST_FIELDS` / `DX12E_SSAO_FIELDS`（X マクロ）から自動生成している。
+3. `tools/mcp-server/index.ts` の zod スキーマとこのドキュメントにも同じキーを足す
+   （**足し忘れると zod が黙って引数を捨てる**。`schemaDrift.test.ts` が見張っている）。
+
+- 例外は `throw McpError(McpErr::…, msg, hint, validValues)`。呼び出し側の try/catch が拾う。
+- 遅延応答は `deferred` を保存して `isDeferred = true`。
+- ハンドラの中で `return;` してよい（旧 else-if 連鎖では `HandleMcpCommand` ごと抜けてしまい
+  `RecordCommand` を飛ばしていたので使えなかった）。
 
 ---
 

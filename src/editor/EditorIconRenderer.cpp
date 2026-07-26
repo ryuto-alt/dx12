@@ -174,7 +174,10 @@ void EditorIconRenderer::RecreatePipelines(GraphicsDevice& device)
         psoDesc.SampleMask = UINT_MAX;
         psoDesc.NumRenderTargets = 1;
         psoDesc.RTVFormats[0] = m_rtvFormat;
-        psoDesc.DSVFormat = m_dsvFormat;
+        // ★DepthEnable=FALSE なので DSV は使わない。UNKNOWN にしておけば呼び出し側が
+        //   DSV を張らずに済む（#16 でメイン深度がレンダー解像度に縮み、表示解像度の
+        //   バックバッファと束ねられなくなったため）。ビルボード PSO は元から UNKNOWN。
+        psoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
         psoDesc.SampleDesc = { 1, 0 };
 
         ThrowIfFailed(dev->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_pso)));
@@ -630,6 +633,44 @@ void EditorIconRenderer::CollectFromRegistry(entt::registry& registry,
                 };
                 for (const auto& ed : edges) AddLine(p[ed[0]], p[ed[1]], col);
             }
+        }
+    }
+
+    // --- Decal（投影デカール）: 投影ボックスの OBB ワイヤーフレーム + 投影方向の矢印 ---
+    // これが無いと「どこにデカールがあるか」が全く見えない（テクスチャが貼れるまでは特に）。
+    // ★Trigger と違い回転を反映する必要があるので、単位立方体の 8 頂点をワールド行列で変換する。
+    {
+        const XMFLOAT3 colorDecal = { 1.0f, 0.45f, 0.85f };
+        auto view = registry.view<const Transform, const DecalComponent>();
+        for (auto [entity, tf, dc] : view.each())
+        {
+            (void)dc;
+            bool selected = ctx.IsSelected(entity);
+            XMFLOAT3 col = selected ? colorSelected : colorDecal;
+
+            XMMATRIX world = tf.GetWorldMatrix();
+            XMFLOAT3 p[8];
+            for (int i = 0; i < 8; ++i)
+            {
+                XMVECTOR v = XMVectorSet((i & 1) ? 0.5f : -0.5f,
+                                         (i & 2) ? 0.5f : -0.5f,
+                                         (i & 4) ? 0.5f : -0.5f, 1.0f);
+                XMStoreFloat3(&p[i], XMVector3TransformCoord(v, world));
+            }
+            const int edges[12][2] = {
+                {0,1},{1,3},{3,2},{2,0},{4,5},{5,7},{7,6},{6,4},{0,4},{1,5},{2,6},{3,7}
+            };
+            for (const auto& ed : edges) AddLine(p[ed[0]], p[ed[1]], col);
+
+            // 投影軸（ローカル -Y 方向へ投影する）。上面の中心から下向きの矢印を出す。
+            XMFLOAT3 top{}, dirDown{};
+            XMStoreFloat3(&top, XMVector3TransformCoord(XMVectorSet(0.0f, 0.5f, 0.0f, 1.0f), world));
+            XMStoreFloat3(&dirDown,
+                XMVector3Normalize(XMVector3TransformNormal(XMVectorSet(0.0f, -1.0f, 0.0f, 0.0f), world)));
+            const f32 len = (std::max)(tf.scale.y, 0.01f) * 0.6f;
+            AddDirectionalArrow(top, dirDown, len, col);
+
+            AddPointLightIcon(top, col);
         }
     }
 }

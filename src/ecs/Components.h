@@ -15,6 +15,7 @@ namespace dx12e
 
 class Mesh;
 class HeightField;   // terrain/HeightField.h（Terrain コンポーネントが shared_ptr で持つ）
+class TerrainSplatMap;  // terrain/TerrainSplatMap.h（同上。4 レイヤーのスプラット重み）
 struct Material;
 class Skeleton;
 class AnimationClip;
@@ -23,6 +24,7 @@ class SkinningBuffer;
 class NodeGraph;
 class NodeAnimationClip;
 class NodeAnimator;
+struct AnimGraphRuntimeState;   // animation/AnimGraphRuntime.h（AnimatorController が持つ）
 
 struct NameTag
 {
@@ -195,6 +197,90 @@ struct SkeletalAnimation
     SkeletalAnimation& operator=(SkeletalAnimation&&) noexcept;
 };
 
+// -------------------------------------------------------------------------
+// アニメーションステートマシン。SkeletalAnimation と同居して Animator を上書き駆動する。
+//
+// グラフの構造（ステート・遷移・条件・ブレンドツリー・レイヤー・マスク・イベント）は
+// すべて .animfsm（JSON アセット）側にあり、ここはパスと実行時パラメータだけを持つ。
+// 反射シリアライズが std::vector を扱えないことへの対応であり、同時に
+// 「ゲームの中身は全部データ」という設計思想への整合でもある（.uianim / .spranim と同型）。
+//
+// このコンポーネントが無ければ Animator は従来どおり単一クリップ + CrossFadeTo で動く
+// （＝既存シーンは一切壊れない）。
+// -------------------------------------------------------------------------
+struct AnimatorController
+{
+    std::string graphPath;            // assets 相対（例 "animfsm/humanoid_locomotion.animfsm"）。空 = 無効
+    bool        playOnStart = true;
+    f32         speed       = 1.0f;   // グラフ全体の再生速度倍率
+    bool        applyRootMotion = false;  // 計画05 Step 9（未実装。既定 false のまま）
+    std::string eventChannel;         // アニメイベント名の前置き（空なら素の名前で EventBus へ）
+
+    // ランタイム専有（非シリアライズ・meta 未登録・複製時に必ず無効化）
+    std::unique_ptr<AnimGraphRuntimeState> _state;
+    bool _loaded = false;   // graphPath のロードを試したか（毎フレームの I/O を防ぐ）
+    bool _failed = false;   // ロードに失敗した（再試行しない。パスを変えると再試行する）
+    std::string _loadedPath;
+
+    // ⚠️ 特殊メンバは**全部**アウトオブライン定義（Components.cpp）にすること。
+    //    AnimGraphRuntimeState はここでは前方宣言なので、インラインで = default にすると
+    //    「例外時に unique_ptr メンバを破棄するコード」を各 TU が実体化しようとして
+    //    `can't delete an incomplete type` になる（ComponentMeta.cpp が実際に踏んだ）。
+    AnimatorController();
+    ~AnimatorController();
+    AnimatorController(AnimatorController&&) noexcept;
+    AnimatorController& operator=(AnimatorController&&) noexcept;
+
+    // 複製（Ctrl+D / プレハブ展開 / シリアライズの値コピー）では実行状態を引き継がない。
+    // _state を共有すると 2 体が同じ FSM を回して壊れる。コピー先は次の Update で読み直す。
+    AnimatorController(const AnimatorController& other);
+    AnimatorController& operator=(const AnimatorController& other);
+};
+
+// -------------------------------------------------------------------------
+// フット IK（接地補正）。SkeletalAnimation が必須。
+// 地面へレイキャストして足首の高さと向きを合わせ、届かない側に合わせて腰を下げる。
+// ボーン名が空なら一般的な命名から自動推定する（mixamorig: / .L .R / Bip01 等）。
+//
+// ⚠️ Play 中しか動かない（PhysicsSystem が body を持つのが Play 中だけのため）。
+//    エディタのシーンビューでは接地しない。仕様。
+// -------------------------------------------------------------------------
+struct FootIK
+{
+    bool enabled = true;
+    f32  weight  = 1.0f;        // 0..1 全体の効き
+
+    // ---- ボーン指定（空なら自動推定。推定結果は _*Index に入る）----
+    std::string leftHipBone, leftKneeBone, leftFootBone, leftToeBone;
+    std::string rightHipBone, rightKneeBone, rightFootBone, rightToeBone;
+    std::string pelvisBone;     // 腰下げの対象（空ならルートボーン）
+
+    // ---- パラメータ ----
+    f32 rayUpOffset     = 0.5f;   // 足首から何 m 上からレイを打つか
+    f32 rayLength       = 1.0f;   // レイの全長
+    f32 footHeight      = 0.10f;  // レストポーズでの足首の地面からの高さ
+    f32 maxPelvisDrop   = 0.5f;   // 腰を下げられる上限(m)。これを超える段差は諦める
+    f32 maxFootPitchDeg = 45.0f;  // 面法線に合わせる足の傾きの上限(度)
+    f32 smoothTime      = 0.10f;  // 足首高さ/腰オフセットの指数平滑の時定数(秒)
+    f32 fadeOutTime     = 0.15f;  // 非接地時に IK を切るフェード時間(秒)
+    bool alignToNormal  = true;   // 面法線に足を合わせるか
+    DirectX::XMFLOAT3 kneeForward{0.0f, 0.0f, 1.0f};  // 膝が向く方向（モデル空間）
+
+    // ---- ランタイム専有（非シリアライズ・meta 未登録）----
+    i32  _lHip = -1, _lKnee = -1, _lFoot = -1, _lToe = -1;
+    i32  _rHip = -1, _rKnee = -1, _rFoot = -1, _rToe = -1;
+    i32  _pelvis = -1;
+    bool _resolved = false;
+    bool _resolveFailed = false;
+    f32  _lLift = 0.0f, _rLift = 0.0f;      // 平滑済みの足首の上げ下げ量
+    f32  _pelvisDrop = 0.0f;                // 平滑済みの腰下げ量（0 以下）
+    f32  _lWeight = 0.0f, _rWeight = 0.0f;  // フェード済みの片足ごとの効き
+    bool _lContact = false, _rContact = false;
+    bool _smoothInit = false;
+    DirectX::XMFLOAT3 _lNormal{0.0f, 1.0f, 0.0f};
+    DirectX::XMFLOAT3 _rNormal{0.0f, 1.0f, 0.0f};
+};
+
 struct NodeAnimationComp
 {
     std::unique_ptr<NodeGraph>    nodeGraph;
@@ -240,9 +326,32 @@ struct Terrain
     f32  uvScale    = 24.0f;     // 地形全体で UV が何回繰り返すか（タイリングテクスチャ用）
     DirectX::XMFLOAT4 color{0.42f, 0.50f, 0.32f, 1.0f};  // 頂点色（マテリアル未割当時の見た目）
 
+    // ---- テクスチャスプラット（4 レイヤー）----
+    // ★layerSetPath が空なら従来経路（Forward.hlsl + .dxmat / 頂点色）へ落ちる＝完全後方互換。
+    //   空でないときだけ地形専用 PSO（Terrain.hlsl）が選ばれる。
+    std::string layerSetPath;      // assets 相対 ".terrainlayers"。空 = スプラットを使わない
+    std::string splatPath;         // assets 相対 ".splat"。空 = 未保存
+    f32  heightBlendDepth   = 0.2f;   // Mishkinis の depth（小さいほど境界がシャープ）
+    f32  triplanarSharpness = 4.0f;   // トライプラナー重みの指数
+    // bit0=triplanar bit1=POM bit2=macro bit3=distTiling。既定: トライプラナー/マクロ/距離タイリング ON
+    u32  terrainMatFlags    = 0x0Du;
+    f32  macroScale         = 90.0f;  // マクロバリエーションの周期(m)
+    f32  macroStrength      = 0.45f;
+    f32  distTilingStart    = 40.0f;  // ここから遠距離タイリングへブレンドし始める(m)
+    f32  distTilingFarScale = 7.0f;   // 遠距離側は 1/この値のタイリング（粗くする）
+    f32  normalStrength     = 1.0f;
+    f32  pomHeightScale     = 0.05f;  // POM の高さ(m)。既定 OFF なので効かない
+    f32  pomFadeStart       = 8.0f;
+    f32  pomFadeEnd         = 25.0f;
+    u32  pomMaxSteps        = 24;
+    u32  splatResolution    = 512;    // .splat の 1 辺（2 のべき乗へ丸まる）
+
     // ---- ランタイム専有（非シリアライズ・meta 未登録）----
     // 高さ配列の実体。描画メッシュ生成・コリジョン・ブラシが同じインスタンスを見る。
     std::shared_ptr<HeightField> _hf;
+    // スプラット重みの実体（4 レイヤー RGBA8）。描画とペイントが同じインスタンスを見る。
+    std::shared_ptr<TerrainSplatMap> _splat;
+    bool _splatNeedsSave = false;  // .splat を書き出す必要がある（TerrainPanel が消化）
     bool _meshDirty     = false;   // 高さが変わった → メッシュを作り直す
     bool _colliderDirty = false;   // 高さが変わった → 物理形状を作り直す（Play 中の追従用）
     // 高さが変わった → .hf を書き出す必要がある。高さ配列はシーン JSON に入らないので、
@@ -1062,6 +1171,34 @@ struct TrailRenderer
     f32  intensity = 2.0f;     // HDR 増幅（>1 でブルームに乗る）
     int  blend     = 0;        // 0=加算（エネルギー）, 1=前乗算アルファ（煙）
     f32  minDist   = 0.03f;    // この距離以上動いたら点を打つ
+};
+
+// 投影デカール（弾痕/血/汚れ/水たまり/落書き）。
+// エンティティの Transform が作る箱（ローカル単位立方体 [-0.5,0.5] を scale で拡縮）の中に入った
+// 面へ、ローカル +Y から下向きに 1 枚テクスチャを投影する。無回転で置けばそのまま床に落ちる。
+//
+// 方式は「クラスタードフォワードデカール」。クラスタごとのデカールリストを作り、フォワード PS の
+// マテリアル確定直後に albedo/normal/roughness/metallic を書き換える（src/renderer/DecalSystem.h）。
+//
+// ★テクスチャは「シーン設定のアトラス 1 枚 + ここの UV 矩形」で指す。
+//   コンポーネントに std::string を持たせないのは意図的な設計判断:
+//   InspectorPanel の EndEdit が std::memcmp でスナップショット比較しているので、
+//   std::string メンバがあると SSO 境界をまたぐ変更を取りこぼす/誤検知する。
+struct DecalComponent
+{
+    // アトラス内のカラー矩形（UV 0..1）。(u0, v0, du, dv)。既定はアトラス全面。
+    DirectX::XMFLOAT4 atlasUV{0.0f, 0.0f, 1.0f, 1.0f};
+    // アトラス内の法線矩形。dv <= 0（既定）なら法線マップ無し＝受け面の法線をそのまま使う。
+    DirectX::XMFLOAT4 atlasUVNormal{0.0f, 0.0f, 0.0f, 0.0f};
+    DirectX::XMFLOAT3 tint{1.0f, 1.0f, 1.0f};   // カラーへの乗算
+    f32  opacity        = 1.0f;   // 全体の不透明度
+    DirectX::XMFLOAT3 emissive{0.0f, 0.0f, 0.0f};  // 加算する自己発光（HDR）
+    f32  normalStrength = 1.0f;   // 法線ブレンドの強さ（atlasUVNormal がある時だけ効く）
+    f32  roughness      = -1.0f;  // 受け面のラフネスを上書き。< 0 で変更しない
+    f32  metallic       = -1.0f;  // 同メタリック。< 0 で変更しない
+    f32  angleFadeDeg   = 60.0f;  // 投影軸と受け面法線の角度がこれを超えたら消える（引き伸ばし防止）
+    f32  fadeEdge       = 0.1f;   // 箱の縁からのフェード幅（ローカル座標。0=硬い縁）
+    int  sortOrder      = 0;      // 小さいものから下に重なる（同値なら不定）
 };
 
 // --- Trigger（イベント）: 範囲に入った/出た/居る ときに宣言的なアクションを実行する部品 ---

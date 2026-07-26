@@ -233,10 +233,28 @@ if(DXC_EXECUTABLE)
     set(SHADER_SKINNED "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardSkinned.hlsl")
     set(SHADER_EMISSIVE "${CMAKE_SOURCE_DIR}/shaders/forward/Emissive.hlsl")
     # Forward/Skinned が include する共有ヘッダ（編集時に再コンパイルさせる）
+    # ★ClusterCommon.hlsli は Lighting.hlsli が include している。ここに入れておかないと
+    #   クラスタ定数を変えたときにフォワード系の .cso が古いまま残る。
     set(SHADER_FWD_INC
         "${CMAKE_SOURCE_DIR}/shaders/forward/PBR.hlsli"
+        "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterCommon.hlsli"
+        "${CMAKE_SOURCE_DIR}/shaders/forward/DecalCommon.hlsli"
+        "${CMAKE_SOURCE_DIR}/shaders/forward/DecalApply.hlsli"
+        "${CMAKE_SOURCE_DIR}/shaders/forward/ShadowPcss.hlsli"
         "${CMAKE_SOURCE_DIR}/shaders/forward/Lighting.hlsli")
+    # クラスタードライティング（Forward+）のライトカリング compute 2 本
+    set(SHADER_CLUSTER_BUILD "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterBuild.hlsl")
+    set(SHADER_CLUSTER_CULL  "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterCull.hlsl")
+    set(SHADER_CLUSTER_INC   "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterCommon.hlsli")
+    # デカール（クラスタードフォワードデカール）。カリング compute 1 本 + 共有 .hlsli 2 本。
+    set(SHADER_DECAL_CULL    "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterCullDecals.hlsl")
+    set(SHADER_DECAL_INC     "${CMAKE_SOURCE_DIR}/shaders/forward/DecalCommon.hlsli"
+                             "${CMAKE_SOURCE_DIR}/shaders/forward/DecalApply.hlsli")
     set(SHADER_GRID          "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardGrid.hlsl")
+    # 地形マテリアル（4 レイヤースプラット + 高さブレンド + トライプラナー）。
+    # Lighting.hlsli / PBR.hlsli / ClusterCommon.hlsli / DecalApply.hlsli を include するので
+    # DEPENDS に ${SHADER_FWD_INC} を必ず入れる（入れ忘れると古い .cso が残ってレイアウトがズレる）。
+    set(SHADER_TERRAIN       "${CMAKE_SOURCE_DIR}/shaders/forward/Terrain.hlsl")
     set(SHADER_FWD_INST      "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardInstanced.hlsl")
     set(SHADER_SHADOW_INST   "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPassInstanced.hlsl")
     set(SHADER_SHADOW        "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPass.hlsl")
@@ -267,6 +285,40 @@ if(DXC_EXECUTABLE)
     set(SHADER_IBL_INC       "${CMAKE_SOURCE_DIR}/shaders/ibl/IBLCommon.hlsli")
     set(SHADER_SSAO          "${CMAKE_SOURCE_DIR}/shaders/ssao/SSAO.hlsl")
     set(SHADER_SSAO_BLUR     "${CMAKE_SOURCE_DIR}/shaders/ssao/SSAOBlur.hlsl")
+    set(SHADER_CONTACT_SHADOW "${CMAKE_SOURCE_DIR}/shaders/shadow/ContactShadow.hlsl")
+    set(SHADER_VELOCITY      "${CMAKE_SOURCE_DIR}/shaders/velocity/VelocityPrepass.hlsl")
+    set(SHADER_VELOCITY_INST "${CMAKE_SOURCE_DIR}/shaders/velocity/VelocityPrepassInstanced.hlsl")
+    set(SHADER_VELOCITY_SKIN "${CMAKE_SOURCE_DIR}/shaders/velocity/VelocityPrepassSkinned.hlsl")
+    # スクリーン空間共通ヘッダ（oct 法線 / ビューポート UV↔NDC / レイマーチ）。
+    # 深度プリパスの PS（G-Buffer 書き出し）と SSR/SSGI の両方が include する。
+    set(SHADER_SS_INC        "${CMAKE_SOURCE_DIR}/shaders/screenspace/ScreenSpaceCommon.hlsli")
+    # SSR / SSGI（計画04）。VS は SSR.hlsl の FSTriVS を全パスで共有する。
+    set(SHADER_SSR           "${CMAKE_SOURCE_DIR}/shaders/screenspace/SSR.hlsl")
+    set(SHADER_SSGI          "${CMAKE_SOURCE_DIR}/shaders/screenspace/SSGI.hlsl")
+    set(SHADER_SSGI_INC      "${SHADER_SS_INC}"
+                             "${CMAKE_SOURCE_DIR}/shaders/screenspace/ScreenSpaceParams.hlsli"
+                             "${CMAKE_SOURCE_DIR}/shaders/post/FullscreenTri.hlsli")
+    set(SHADER_VELOCITY_INC  "${CMAKE_SOURCE_DIR}/shaders/velocity/VelocityCommon.hlsli"
+                             "${SHADER_SS_INC}")
+    # ボリュメトリックフォグ（froxel）。compute 3 本 + 合成 VS/PS。
+    set(SHADER_FOG_INC       "${CMAKE_SOURCE_DIR}/shaders/fog/FogCommon.hlsli")
+    set(SHADER_FOG_INJECT    "${CMAKE_SOURCE_DIR}/shaders/fog/FogInject.hlsl")
+    set(SHADER_FOG_SCATTER   "${CMAKE_SOURCE_DIR}/shaders/fog/FogScatter.hlsl")
+    set(SHADER_FOG_INTEGRATE "${CMAKE_SOURCE_DIR}/shaders/fog/FogIntegrate.hlsl")
+    set(SHADER_FOG_COMPOSITE "${CMAKE_SOURCE_DIR}/shaders/fog/FogComposite.hlsl")
+    set(SHADER_TAA           "${CMAKE_SOURCE_DIR}/shaders/post/TAA.hlsl")
+    # ★ shaders/debug/ は .gitignore の "Debug/" に食われて新規ファイルが追跡されない。
+    #    velocity/ 配下に置くこと（DebugLine.hlsl は昔から追跡済みなので生き残っているだけ）。
+    set(SHADER_VEL_DEBUG     "${CMAKE_SOURCE_DIR}/shaders/velocity/VelocityDebug.hlsl")
+    # dx12_render_debug（中間バッファ可視化）。同じ理由で shaders/debug/ には置けない。
+    set(SHADER_RENDER_DEBUG  "${CMAKE_SOURCE_DIR}/shaders/renderdebug/RenderDebug.hlsl")
+    # DXR 1.1 inline raytracing（計画09 Step 1〜3）。★プロファイルは ps_6_5（RayQuery は SM 6.5 必須）。
+    # VS だけは RayQuery を含まないので vs_6_0 のままでよい。
+    set(SHADER_RT_SHADOW     "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtShadow.hlsl")
+    set(SHADER_RT_AO         "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtAo.hlsl")
+    set(SHADER_RT_DEBUG      "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtDebug.hlsl")
+    set(SHADER_RT_INC        "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtCommon.hlsli"
+                             "${CMAKE_SOURCE_DIR}/shaders/post/FullscreenTri.hlsli")
 
     set(SHADER_OUTPUTS
         "${SHADER_OUTPUT_DIR}/Forward_VS.cso"
@@ -276,6 +328,8 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/ForwardSkinned_PS.cso"
         "${SHADER_OUTPUT_DIR}/ForwardGrid_VS.cso"
         "${SHADER_OUTPUT_DIR}/ForwardGrid_PS.cso"
+        "${SHADER_OUTPUT_DIR}/Terrain_VS.cso"
+        "${SHADER_OUTPUT_DIR}/Terrain_PS.cso"
         "${SHADER_OUTPUT_DIR}/ForwardInstanced_VS.cso"
         "${SHADER_OUTPUT_DIR}/ShadowPassInstanced_VS.cso"
         "${SHADER_OUTPUT_DIR}/ShadowPass_VS.cso"
@@ -326,6 +380,138 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/SSAO_VS.cso"
         "${SHADER_OUTPUT_DIR}/SSAO_PS.cso"
         "${SHADER_OUTPUT_DIR}/SSAOBlur_PS.cso"
+        "${SHADER_OUTPUT_DIR}/ContactShadow_VS.cso"
+        "${SHADER_OUTPUT_DIR}/ContactShadow_PS.cso"
+        "${SHADER_OUTPUT_DIR}/VelocityPrepass_VS.cso"
+        "${SHADER_OUTPUT_DIR}/VelocityPrepass_PS.cso"
+        "${SHADER_OUTPUT_DIR}/VelocityPrepassInstanced_VS.cso"
+        "${SHADER_OUTPUT_DIR}/VelocityPrepassSkinned_VS.cso"
+        "${SHADER_OUTPUT_DIR}/TaaResolve_PS.cso"
+        "${SHADER_OUTPUT_DIR}/VelocityDebug_PS.cso"
+        "${SHADER_OUTPUT_DIR}/RenderDebug_PS.cso"
+        "${SHADER_OUTPUT_DIR}/ClusterBuild_CS.cso"
+        "${SHADER_OUTPUT_DIR}/ClusterCull_CS.cso"
+        "${SHADER_OUTPUT_DIR}/ScreenSpace_VS.cso"
+        "${SHADER_OUTPUT_DIR}/SsrTrace_PS.cso"
+        "${SHADER_OUTPUT_DIR}/SsrUpsample_PS.cso"
+        "${SHADER_OUTPUT_DIR}/SsgiTrace_PS.cso"
+        "${SHADER_OUTPUT_DIR}/SsgiTemporal_PS.cso"
+        "${SHADER_OUTPUT_DIR}/SsgiUpsample_PS.cso"
+        "${SHADER_OUTPUT_DIR}/ColorDownsample_PS.cso"
+        "${SHADER_OUTPUT_DIR}/FogInject_CS.cso"
+        "${SHADER_OUTPUT_DIR}/FogScatter_CS.cso"
+        "${SHADER_OUTPUT_DIR}/FogIntegrate_CS.cso"
+        "${SHADER_OUTPUT_DIR}/FogComposite_VS.cso"
+        "${SHADER_OUTPUT_DIR}/FogComposite_PS.cso"
+        "${SHADER_OUTPUT_DIR}/ClusterCullDecals_CS.cso"
+        "${SHADER_OUTPUT_DIR}/Rt_VS.cso"
+        "${SHADER_OUTPUT_DIR}/RtShadow_PS.cso"
+        "${SHADER_OUTPUT_DIR}/RtAo_PS.cso"
+        "${SHADER_OUTPUT_DIR}/RtDebug_PS.cso"
+    )
+
+    # --- デカールのクラスタカリング ---
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ClusterCullDecals_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSMain -Fo "${SHADER_OUTPUT_DIR}/ClusterCullDecals_CS.cso" "${SHADER_DECAL_CULL}"
+        DEPENDS "${SHADER_DECAL_CULL}" "${SHADER_CLUSTER_INC}" ${SHADER_DECAL_INC}
+        COMMENT "Compiling ClusterCullDecals.hlsl -> ClusterCullDecals_CS.cso (cs_6_0)"
+    )
+
+    # --- ボリュメトリックフォグ（froxel）---
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/FogInject_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSInject -Fo "${SHADER_OUTPUT_DIR}/FogInject_CS.cso" "${SHADER_FOG_INJECT}"
+        DEPENDS "${SHADER_FOG_INJECT}" "${SHADER_FOG_INC}"
+        COMMENT "Compiling FogInject.hlsl -> FogInject_CS.cso (cs_6_0)"
+        VERBATIM
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/FogScatter_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSScatter -Fo "${SHADER_OUTPUT_DIR}/FogScatter_CS.cso" "${SHADER_FOG_SCATTER}"
+        DEPENDS "${SHADER_FOG_SCATTER}" "${SHADER_FOG_INC}" "${SHADER_CLUSTER_INC}"
+        COMMENT "Compiling FogScatter.hlsl -> FogScatter_CS.cso (cs_6_0)"
+        VERBATIM
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/FogIntegrate_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSIntegrate -Fo "${SHADER_OUTPUT_DIR}/FogIntegrate_CS.cso" "${SHADER_FOG_INTEGRATE}"
+        DEPENDS "${SHADER_FOG_INTEGRATE}" "${SHADER_FOG_INC}"
+        COMMENT "Compiling FogIntegrate.hlsl -> FogIntegrate_CS.cso (cs_6_0)"
+        VERBATIM
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/FogComposite_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E FSTriVS -Fo "${SHADER_OUTPUT_DIR}/FogComposite_VS.cso" "${SHADER_FOG_COMPOSITE}"
+        DEPENDS "${SHADER_FOG_COMPOSITE}" "${SHADER_FOG_INC}" "${SHADER_POST_INC}"
+        COMMENT "Compiling FogComposite.hlsl -> FogComposite_VS.cso (vs_6_0)"
+        VERBATIM
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/FogComposite_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/FogComposite_PS.cso" "${SHADER_FOG_COMPOSITE}"
+        DEPENDS "${SHADER_FOG_COMPOSITE}" "${SHADER_FOG_INC}" "${SHADER_POST_INC}"
+        COMMENT "Compiling FogComposite.hlsl -> FogComposite_PS.cso (ps_6_0)"
+        VERBATIM
+    )
+
+    # --- SSR / SSGI（スクリーン空間反射 + スクリーン空間GI）---
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ScreenSpace_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E FSTriVS -Fo "${SHADER_OUTPUT_DIR}/ScreenSpace_VS.cso" "${SHADER_SSR}"
+        DEPENDS "${SHADER_SSR}" ${SHADER_SSGI_INC}
+        COMMENT "Compiling SSR.hlsl -> ScreenSpace_VS.cso (vs_6_0)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/SsrTrace_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E TracePS -Fo "${SHADER_OUTPUT_DIR}/SsrTrace_PS.cso" "${SHADER_SSR}"
+        DEPENDS "${SHADER_SSR}" ${SHADER_SSGI_INC}
+        COMMENT "Compiling SSR.hlsl -> SsrTrace_PS.cso (ps_6_0)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/SsrUpsample_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E UpsamplePS -Fo "${SHADER_OUTPUT_DIR}/SsrUpsample_PS.cso" "${SHADER_SSR}"
+        DEPENDS "${SHADER_SSR}" ${SHADER_SSGI_INC}
+        COMMENT "Compiling SSR.hlsl -> SsrUpsample_PS.cso (ps_6_0)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/SsgiTrace_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E TracePS -Fo "${SHADER_OUTPUT_DIR}/SsgiTrace_PS.cso" "${SHADER_SSGI}"
+        DEPENDS "${SHADER_SSGI}" ${SHADER_SSGI_INC}
+        COMMENT "Compiling SSGI.hlsl -> SsgiTrace_PS.cso (ps_6_0)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/SsgiTemporal_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E TemporalPS -Fo "${SHADER_OUTPUT_DIR}/SsgiTemporal_PS.cso" "${SHADER_SSGI}"
+        DEPENDS "${SHADER_SSGI}" ${SHADER_SSGI_INC}
+        COMMENT "Compiling SSGI.hlsl -> SsgiTemporal_PS.cso (ps_6_0)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/SsgiUpsample_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E UpsamplePS -Fo "${SHADER_OUTPUT_DIR}/SsgiUpsample_PS.cso" "${SHADER_SSGI}"
+        DEPENDS "${SHADER_SSGI}" ${SHADER_SSGI_INC}
+        COMMENT "Compiling SSGI.hlsl -> SsgiUpsample_PS.cso (ps_6_0)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ColorDownsample_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E DownsamplePS -Fo "${SHADER_OUTPUT_DIR}/ColorDownsample_PS.cso" "${SHADER_SSGI}"
+        DEPENDS "${SHADER_SSGI}" ${SHADER_SSGI_INC}
+        COMMENT "Compiling SSGI.hlsl -> ColorDownsample_PS.cso (ps_6_0)"
+    )
+
+    # --- クラスタードライティング（Forward+）のライトカリング compute 2 パス ---
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ClusterBuild_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSMain -Fo "${SHADER_OUTPUT_DIR}/ClusterBuild_CS.cso" "${SHADER_CLUSTER_BUILD}"
+        DEPENDS "${SHADER_CLUSTER_BUILD}" "${SHADER_CLUSTER_INC}"
+        COMMENT "Compiling ClusterBuild.hlsl -> ClusterBuild_CS.cso (cs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ClusterCull_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSMain -Fo "${SHADER_OUTPUT_DIR}/ClusterCull_CS.cso" "${SHADER_CLUSTER_CULL}"
+        DEPENDS "${SHADER_CLUSTER_CULL}" "${SHADER_CLUSTER_INC}"
+        COMMENT "Compiling ClusterCull.hlsl -> ClusterCull_CS.cso (cs_6_0)"
     )
 
     add_custom_command(
@@ -383,15 +569,29 @@ if(DXC_EXECUTABLE)
     add_custom_command(
         OUTPUT "${SHADER_OUTPUT_DIR}/ForwardGrid_VS.cso"
         COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/ForwardGrid_VS.cso" "${SHADER_GRID}"
-        DEPENDS "${SHADER_GRID}"
+        DEPENDS "${SHADER_GRID}" ${SHADER_FWD_INC}   # Lighting.hlsli/PBR.hlsli を include している
         COMMENT "Compiling ForwardGrid.hlsl -> ForwardGrid_VS.cso (vs_6_0)"
     )
 
     add_custom_command(
         OUTPUT "${SHADER_OUTPUT_DIR}/ForwardGrid_PS.cso"
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/ForwardGrid_PS.cso" "${SHADER_GRID}"
-        DEPENDS "${SHADER_GRID}"
+        DEPENDS "${SHADER_GRID}" ${SHADER_FWD_INC}   # Lighting.hlsli/PBR.hlsli を include している
         COMMENT "Compiling ForwardGrid.hlsl -> ForwardGrid_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/Terrain_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/Terrain_VS.cso" "${SHADER_TERRAIN}"
+        DEPENDS "${SHADER_TERRAIN}" ${SHADER_FWD_INC}
+        COMMENT "Compiling Terrain.hlsl -> Terrain_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/Terrain_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/Terrain_PS.cso" "${SHADER_TERRAIN}"
+        DEPENDS "${SHADER_TERRAIN}" ${SHADER_FWD_INC}
+        COMMENT "Compiling Terrain.hlsl -> Terrain_PS.cso (ps_6_0)"
     )
 
     add_custom_command(
@@ -711,6 +911,101 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/SSAOBlur_PS.cso" "${SHADER_SSAO_BLUR}"
         DEPENDS "${SHADER_SSAO_BLUR}" "${SHADER_POST_INC}"
         COMMENT "Compiling SSAOBlur.hlsl -> SSAOBlur_PS.cso (ps_6_0)"
+    )
+
+    # --- コンタクトシャドウ（VS は FSTriVS 流用。SSAO と同じフルスクリーン 1 パス）---
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ContactShadow_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E FSTriVS -Fo "${SHADER_OUTPUT_DIR}/ContactShadow_VS.cso" "${SHADER_CONTACT_SHADOW}"
+        DEPENDS "${SHADER_CONTACT_SHADOW}" "${SHADER_POST_INC}"
+        COMMENT "Compiling ContactShadow.hlsl -> ContactShadow_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ContactShadow_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/ContactShadow_PS.cso" "${SHADER_CONTACT_SHADOW}"
+        DEPENDS "${SHADER_CONTACT_SHADOW}" "${SHADER_POST_INC}"
+        COMMENT "Compiling ContactShadow.hlsl -> ContactShadow_PS.cso (ps_6_0)"
+    )
+
+    # --- 速度バッファ（モーションベクター）生成パス: 静的 / インスタンシング / スキンド ---
+    # PS は 3 経路で共有（VelocityCommon.hlsli の VelocityPS）。VelocityPrepass.hlsl からだけ出す。
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/VelocityPrepass_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/VelocityPrepass_VS.cso" "${SHADER_VELOCITY}"
+        DEPENDS "${SHADER_VELOCITY}" ${SHADER_VELOCITY_INC}
+        COMMENT "Compiling VelocityPrepass.hlsl -> VelocityPrepass_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/VelocityPrepass_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E VelocityPS -Fo "${SHADER_OUTPUT_DIR}/VelocityPrepass_PS.cso" "${SHADER_VELOCITY}"
+        DEPENDS "${SHADER_VELOCITY}" ${SHADER_VELOCITY_INC}
+        COMMENT "Compiling VelocityPrepass.hlsl -> VelocityPrepass_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/VelocityPrepassInstanced_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/VelocityPrepassInstanced_VS.cso" "${SHADER_VELOCITY_INST}"
+        DEPENDS "${SHADER_VELOCITY_INST}" ${SHADER_VELOCITY_INC}
+        COMMENT "Compiling VelocityPrepassInstanced.hlsl -> VelocityPrepassInstanced_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/VelocityPrepassSkinned_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/VelocityPrepassSkinned_VS.cso" "${SHADER_VELOCITY_SKIN}"
+        DEPENDS "${SHADER_VELOCITY_SKIN}" ${SHADER_VELOCITY_INC}
+        COMMENT "Compiling VelocityPrepassSkinned.hlsl -> VelocityPrepassSkinned_VS.cso (vs_6_0)"
+    )
+
+    # --- TAA 解決 / 速度バッファのデバッグ可視化（VS は PostProcess_VS.cso を流用）---
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/TaaResolve_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E TaaResolvePS -Fo "${SHADER_OUTPUT_DIR}/TaaResolve_PS.cso" "${SHADER_TAA}"
+        DEPENDS "${SHADER_TAA}" "${SHADER_POST_INC}"
+        COMMENT "Compiling TAA.hlsl -> TaaResolve_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/VelocityDebug_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E VelocityDebugPS -Fo "${SHADER_OUTPUT_DIR}/VelocityDebug_PS.cso" "${SHADER_VEL_DEBUG}"
+        DEPENDS "${SHADER_VEL_DEBUG}" "${SHADER_POST_INC}"
+        COMMENT "Compiling VelocityDebug.hlsl -> VelocityDebug_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/RenderDebug_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E RenderDebugPS -Fo "${SHADER_OUTPUT_DIR}/RenderDebug_PS.cso" "${SHADER_RENDER_DEBUG}"
+        DEPENDS "${SHADER_RENDER_DEBUG}" "${SHADER_POST_INC}" "${SHADER_SS_INC}"
+        COMMENT "Compiling RenderDebug.hlsl -> RenderDebug_PS.cso (ps_6_0)"
+    )
+
+    # --- DXR 1.1 inline raytracing（計画09 Step 1〜3）---
+    # VS は 3 パス共有（RtShadow.hlsl の中の FSTriVS）。PS は必ず ps_6_5 以上でビルドすること。
+    # ps_6_4 以下だと "Opcode AllocateRayQuery not valid in shader model ps_6_4" で落ちる。
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/Rt_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E FSTriVS -Fo "${SHADER_OUTPUT_DIR}/Rt_VS.cso" "${SHADER_RT_SHADOW}"
+        DEPENDS "${SHADER_RT_SHADOW}" ${SHADER_RT_INC}
+        COMMENT "Compiling RtShadow.hlsl -> Rt_VS.cso (vs_6_0)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/RtShadow_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_5 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/RtShadow_PS.cso" "${SHADER_RT_SHADOW}"
+        DEPENDS "${SHADER_RT_SHADOW}" ${SHADER_RT_INC}
+        COMMENT "Compiling RtShadow.hlsl -> RtShadow_PS.cso (ps_6_5)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/RtAo_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_5 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/RtAo_PS.cso" "${SHADER_RT_AO}"
+        DEPENDS "${SHADER_RT_AO}" ${SHADER_RT_INC}
+        COMMENT "Compiling RtAo.hlsl -> RtAo_PS.cso (ps_6_5)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/RtDebug_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_5 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/RtDebug_PS.cso" "${SHADER_RT_DEBUG}"
+        DEPENDS "${SHADER_RT_DEBUG}" ${SHADER_RT_INC}
+        COMMENT "Compiling RtDebug.hlsl -> RtDebug_PS.cso (ps_6_5)"
     )
 
     add_custom_target(Shaders ALL DEPENDS ${SHADER_OUTPUTS})

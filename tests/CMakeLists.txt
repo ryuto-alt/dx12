@@ -39,6 +39,19 @@ else()
 endif()
 add_test(NAME NetBufferTests COMMAND NetBufferTests)
 
+# クラスタードライティング（Forward+）の Z 指数分割とカリング判定のテスト。
+# renderer/ClusterMath.h はヘッダオンリー・GPU/DirectXMath 非依存なのでスタンドアロンでも動く。
+# HLSL 側（shaders/forward/ClusterCommon.hlsli）は同じ式を手で写しているので、
+# 片方を直したら必ず両方直すこと。
+add_executable(ClusterMathTests cluster_math_test.cpp)
+target_include_directories(ClusterMathTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(ClusterMathTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(ClusterMathTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME ClusterMathTests COMMAND ClusterMathTests)
+
 # UIText リッチテキスト(インラインタグ)パーサのテスト(ヘッダオンリー・依存ゼロなのでスタンドアロンでも動く)。
 add_executable(UiRichTextTests ui_rich_text_test.cpp)
 target_include_directories(UiRichTextTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
@@ -59,6 +72,18 @@ else()
     target_compile_options(SpriteAnimTests PRIVATE -Wall -Wextra -Werror)
 endif()
 add_test(NAME SpriteAnimTests COMMAND SpriteAnimTests)
+
+# ブレンドツリーの重み計算(animation/BlendTree.h)テスト。
+# 1D 区間線形補間 + 2D Gradient Band（Johansen 論文 §6.3/§6.3.1）。
+# ヘッダオンリー・依存ゼロなのでスタンドアロン構成でも動く。
+add_executable(BlendTreeTests blend_tree_test.cpp)
+target_include_directories(BlendTreeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(BlendTreeTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(BlendTreeTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME BlendTreeTests COMMAND BlendTreeTests)
 
 # UIアニメクリップ(animation/UiAnimAsset.h)の評価テスト。
 # 評価とイージングは純関数(nlohmann も entt も要らない)なのでスタンドアロンでも動く。
@@ -127,6 +152,18 @@ if(TARGET Resource)
     add_test(NAME DxmatRoundtripTests COMMAND DxmatRoundtripTests)
 endif()
 
+# BC7/BC5 テクスチャ圧縮の形式選択 + DirectXTex の圧縮/伸長往復テスト。
+# Resource が Microsoft::DirectXTex を PUBLIC でリンクしているので、GPU 無しで CPU コーデックを叩ける。
+if(TARGET Resource)
+    add_executable(TextureCompressTests texture_compress_test.cpp)
+    target_link_libraries(TextureCompressTests PRIVATE Resource)
+    if(MSVC)
+        target_compile_options(TextureCompressTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(TextureCompressTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME TextureCompressTests COMMAND TextureCompressTests)
+endif()
+
 # entt::meta コア部品フィールド反映テスト（Phase 2 土台）。ECS（+ entt/DirectXMath）をリンク。
 if(TARGET ECS)
     add_executable(ComponentMetaTests component_meta_test.cpp)
@@ -154,6 +191,18 @@ if(TARGET Renderer)
     endif()
     add_test(NAME CameraProjectionTests COMMAND CameraProjectionTests)
 
+    # 速度バッファ（モーションベクター）と TAA ジッタの数式テスト。
+    # 「静止時に速度が 0」「ジッタは NDC の平行移動」を守る。
+    # renderer/TaaJitter.h はヘッダオンリー・GPU 非依存なので .cpp のビルドは不要。
+    add_executable(VelocityMathTests velocity_math_test.cpp)
+    target_include_directories(VelocityMathTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(VelocityMathTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(VelocityMathTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(VelocityMathTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME VelocityMathTests COMMAND VelocityMathTests)
+
     # AnimationClip::NormalizeToSeconds（ticks→秒正規化。glTF=1000ticks/s 由来の
     # ポーズ凍結/スロー再生の再発防止）テスト。AnimationClip.cpp は純ロジックなので直接ビルド。
     add_executable(AnimClipNormalizeTests
@@ -172,6 +221,7 @@ if(TARGET Renderer)
     add_executable(AnimatorSpeedTests
         animator_speed_test.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/Animator.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/AnimPose.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/AnimationClip.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/Skeleton.cpp)
     target_include_directories(AnimatorSpeedTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
@@ -181,6 +231,63 @@ if(TARGET Renderer)
         target_compile_definitions(AnimatorSpeedTests PRIVATE ${DX12_COMPILE_DEFS})
     endif()
     add_test(NAME AnimatorSpeedTests COMMAND AnimatorSpeedTests)
+
+    # ポーズ空間ブレンド（animation/AnimPose.h）テスト。クロスフェードのバグ B1
+    # 「最終スキニング行列を要素ごとに lerp すると骨が縮む」の回帰テストが本体。
+    # AnimPose/Animator/Skeleton/AnimationClip は純ロジック（GPU非依存）なので直接ビルド。
+    add_executable(AnimPoseTests
+        anim_pose_test.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/AnimPose.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/Animator.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/AnimationClip.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/Skeleton.cpp)
+    target_include_directories(AnimPoseTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(AnimPoseTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(AnimPoseTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(AnimPoseTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME AnimPoseTests COMMAND AnimPoseTests)
+
+    # アニメイベント収集（animation/AnimEvent.h）+ ステートマシン（AnimGraphAsset.h）テスト。
+    # どちらも純関数（GPU/entt/Jolt 非依存）。AnimationClip.cpp だけ実体が要る。
+    add_executable(AnimGraphTests
+        anim_graph_test.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/AnimationClip.cpp)
+    target_include_directories(AnimGraphTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(AnimGraphTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(AnimGraphTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(AnimGraphTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME AnimGraphTests COMMAND AnimGraphTests)
+
+    # ボーンマスク（animation/BoneMask.h）+ レイヤー合成テスト。
+    # 「マスク外のボーンが下位レイヤーとビット単位で同一」を守る。
+    add_executable(BoneMaskTests
+        bone_mask_test.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/AnimPose.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/AnimationClip.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/Skeleton.cpp)
+    target_include_directories(BoneMaskTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(BoneMaskTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(BoneMaskTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(BoneMaskTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME BoneMaskTests COMMAND BoneMaskTests)
+
+    # 2 ボーン解析 IK（animation/TwoBoneIK.h）テスト。フット IK の心臓部。
+    # 「解いたあと FK し直すと足首が目標に乗る」「ボーン長が保存される」を数値で守る。
+    # ヘッダオンリー・純 DirectXMath。
+    add_executable(TwoBoneIKTests two_bone_ik_test.cpp)
+    target_include_directories(TwoBoneIKTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(TwoBoneIKTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(TwoBoneIKTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(TwoBoneIKTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME TwoBoneIKTests COMMAND TwoBoneIKTests)
 
     # Frustum（視錐台抽出＋球カリング）テスト。ヘッダオンリー・純 DirectXMath。
     add_executable(FrustumTests frustum_test.cpp)
@@ -242,7 +349,8 @@ if(TARGET Renderer)
     add_executable(TerrainTests
         terrain_test.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/terrain/HeightField.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/../src/terrain/TerrainBrush.cpp)
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/terrain/TerrainBrush.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/terrain/TerrainSplatMap.cpp)
     target_include_directories(TerrainTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
     target_link_libraries(TerrainTests PRIVATE Microsoft::DirectXMath)
     if(MSVC)
@@ -376,3 +484,29 @@ if(TARGET Renderer)
     endif()
     add_test(NAME LightMathTests COMMAND LightMathTests)
 endif()
+
+# モデルのインポートサイズ回帰テスト（FBX の cm→m 正規化）。ModelLoader::Probe は GPU を
+# 触らないが Resource ライブラリ(assimp)が要るので統合ビルドでのみ有効。
+if(TARGET Resource AND TARGET Renderer)
+    add_executable(ModelScaleTests model_scale_test.cpp)
+    target_link_libraries(ModelScaleTests PRIVATE Resource Renderer)
+    target_compile_definitions(ModelScaleTests PRIVATE
+        DX12E_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+    if(MSVC)
+        target_compile_options(ModelScaleTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(ModelScaleTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME ModelScaleTests COMMAND ModelScaleTests)
+endif()
+
+# MCP ディスパッチ表（Application.cpp の McpDefine）の「申告キー表 ⊇ 本文が読むキー」を
+# 機械的に見張るテスト。dx12_describe_mcp_params が嘘をつかないことの保証（#20-7 / #30）。
+# エンジンをリンクせず Application.cpp をテキストとして読むだけ。依存ゼロ。
+add_executable(McpParamSpecTests mcp_param_spec_test.cpp)
+target_compile_definitions(McpParamSpecTests PRIVATE
+    DX12E_APPLICATION_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../src/core/Application.cpp")
+if(MSVC)
+    target_compile_options(McpParamSpecTests PRIVATE ${DX12_COMPILE_OPTIONS})
+    target_compile_definitions(McpParamSpecTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME McpParamSpecTests COMMAND McpParamSpecTests)

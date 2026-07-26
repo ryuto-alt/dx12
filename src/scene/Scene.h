@@ -12,6 +12,13 @@
 #include "scene/Entity.h"
 #include "renderer/PostProcessSettings.h"
 #include "renderer/SSAOSettings.h"
+#include "renderer/ContactShadowSettings.h"
+#include "renderer/ShadowPcssSettings.h"
+#include "renderer/RtSettings.h"
+#include "renderer/SsrSettings.h"
+#include "renderer/SsgiSettings.h"
+#include "renderer/TaaSettings.h"
+#include "renderer/VolumetricFogSettings.h"
 // SpawnSculpt の既定引数で SculptPrimitive の列挙子を使うため（前方宣言では足りない）。
 #include "terrain/SculptMesh.h"
 
@@ -25,13 +32,32 @@ class ResourceManager;
 class GraphicsDevice;
 class DescriptorHeap;
 
+// envMapPath がこの値なら .dds を読まず、エンジンが手続きでグラデーションの空を作る。
+// 新規プロジェクト / 新規シーンの既定＝アセットを 1 つも用意しなくても背景と IBL が効く。
+inline constexpr const char* kProceduralSkyPath = "__procedural_sky__";
+
 // シーン単位のスカイボックス / IBL 設定（per-entity component ではなく scene-level）。
 struct SkyboxSettings
 {
-    std::string envMapPath;            // assets 相対 .dds（空=IBL/skybox 無効）
+    // assets 相対 .dds / kProceduralSkyPath（手続きの空）/ 空文字（IBL・skybox 無効）
+    std::string envMapPath = kProceduralSkyPath;
     float       iblIntensity   = 1.0f;
     float       skyboxIntensity = 1.0f;
     bool        drawSkybox     = true; // false=IBL のみ（背景は塗らない）
+};
+
+// .animfsm のクリップイベント（足音等）が発火したときの通知。
+// Scene::Update が積み、Application が EventBus へ流してから Clear する
+// （Scene は EventBus を知らないので、UI アニメと同じく「積んで渡す」形にしている）。
+struct SceneAnimEvent
+{
+    entt::entity entity = entt::null;
+    std::string  name;          // EventBus のイベント名（eventChannel が付いた後の最終名）
+    std::string  stringParam;
+    f32          floatParam = 0.0f;
+    std::string  clip;
+    i32          layer = 0;
+    f32          time = 0.0f;
 };
 
 class Scene
@@ -135,16 +161,55 @@ public:
     SSAOSettings&       GetSSAOSettings()       { return m_ssao; }
     const SSAOSettings& GetSSAOSettings() const { return m_ssao; }
 
+    ContactShadowSettings&       GetContactShadowSettings()       { return m_contactShadow; }
+    const ContactShadowSettings& GetContactShadowSettings() const { return m_contactShadow; }
+
+    // PCSS（ソフトシャドウ）。既定 OFF ＝ 従来の 3x3 PCF とビット一致。
+    ShadowPcssSettings&       GetShadowPcssSettings()       { return m_shadowPcss; }
+    const ShadowPcssSettings& GetShadowPcssSettings() const { return m_shadowPcss; }
+
+    // スクリーン空間反射 / スクリーン空間GI（どちらも既定 OFF。深度プリパスの G-Buffer を使う）
+    SsrSettings&        GetSsrSettings()        { return m_ssr; }
+    const SsrSettings&  GetSsrSettings() const  { return m_ssr; }
+    SsgiSettings&       GetSsgiSettings()       { return m_ssgi; }
+    const SsgiSettings& GetSsgiSettings() const { return m_ssgi; }
+
+    // DXR レイトレーシング（RT サン影 → t11 / RT-AO → t8）。既定 OFF。
+    // DXR 非対応 GPU では Application が黙って無視する（ルートシグネチャは 1 DWORD も増えない）。
+    RtSettings&         GetRtSettings()        { return m_rt; }
+    const RtSettings&   GetRtSettings() const  { return m_rt; }
+
+    TaaSettings&       GetTaaSettings()       { return m_taa; }
+    const TaaSettings& GetTaaSettings() const { return m_taa; }
+
+    // froxel ボリュメトリックフォグ（既定 OFF。有効時のみ 3D テクスチャ 28MB を確保する）
+    VolumetricFogSettings&       GetVolumetricFogSettings()       { return m_volFog; }
+    const VolumetricFogSettings& GetVolumetricFogSettings() const { return m_volFog; }
+
+    // デカールアトラス（assets 相対）。DecalComponent の atlasUV はこの 1 枚の中の矩形を指す。
+    // 空なら 1x1 の透明ダミーが貼られる＝デカールは描かれない。
+    const std::string& GetDecalAtlasPath() const { return m_decalAtlasPath; }
+    void SetDecalAtlasPath(const std::string& p) { m_decalAtlasPath = p; }
+
     // リアルタイム影(CSM)をこのシーンで描くか。false なら影パスを丸ごとスキップ
     // （トップダウン等で影が要らないシーンの FPS 向上用。シェーダは無影センチネルで全面ライト）。
     bool GetShadowsEnabled() const { return m_shadowsEnabled; }
     void SetShadowsEnabled(bool v) { m_shadowsEnabled = v; }
+
+    // 今フレームの Update で発火したアニメイベント。Application が EventBus へ流したら
+    // clear すること（Scene 自身は毎フレーム先頭で clear しない＝取りこぼしを見えるようにする）。
+    std::vector<SceneAnimEvent>&       GetPendingAnimEvents()       { return m_pendingAnimEvents; }
+    const std::vector<SceneAnimEvent>& GetPendingAnimEvents() const { return m_pendingAnimEvents; }
 
 private:
     Entity CreateEntityWithTransform(const std::string& name,
                                      DirectX::XMFLOAT3 position,
                                      DirectX::XMFLOAT3 rotation,
                                      DirectX::XMFLOAT3 scale);
+
+    // AnimatorController を持つエンティティの .animfsm を進める（Update の先頭で呼ぶ）。
+    // 未ロードならここで vfs からアセットを読み、クリップ名の解決とイベントの流し込みを行う。
+    void UpdateAnimGraphs(f32 dt);
 
     // 発光弾(Pfx)など「同一形状を大量に出すプリミティブ」をサイズ別に共有して
     // インスタンシング可能にするキャッシュ。値は m_ownedMeshes が所有する Mesh*。
@@ -156,7 +221,16 @@ private:
     PostProcessSettings m_postSettings;
     SkyboxSettings      m_skybox;
     SSAOSettings        m_ssao;
+    ContactShadowSettings m_contactShadow;
+    ShadowPcssSettings    m_shadowPcss;
+    SsrSettings         m_ssr;
+    SsgiSettings        m_ssgi;
+    RtSettings          m_rt;
+    TaaSettings         m_taa;
+    VolumetricFogSettings m_volFog;
+    std::string         m_decalAtlasPath;         // assets 相対。空 = デカール無効
     bool                m_shadowsEnabled = true;  // 既定 ON（エディタ/従来シーン互換）
+    std::vector<SceneAnimEvent> m_pendingAnimEvents;
 
     ResourceManager*  m_resourceManager = nullptr;
     GraphicsDevice*   m_device          = nullptr;

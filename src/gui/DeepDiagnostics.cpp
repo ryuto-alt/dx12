@@ -15,6 +15,7 @@
 //    （IsValid / Resolution / WorldSize）。Gui は Terrain ライブラリをリンクしていないので、
 //    .cpp 側にある関数（Create / Decode / NormalizeResolution 等）を呼ぶとリンクエラーになる。
 #include "terrain/HeightField.h"
+#include "terrain/TerrainSplatMap.h"   // Terrain::_splat の IsValid()（ヘッダ内 inline のみ）
 
 #include <nlohmann/json.hpp>
 
@@ -50,10 +51,13 @@ constexpr int kMaxModels   = 80;
 constexpr uint32_t kMaxBonesRef = 256;
 
 // 1 フレームに GPU へ送れるライトの数。超えたぶんは *無言で* 描画されない。
-// 出所は shaders/forward/Lighting.hlsli の MAX_POINT_LIGHTS / MAX_SPOT_LIGHTS
-// （= Application.cpp の kMaxPointLightsR / kMaxSpotLightsR）。private 定数なので写している。
-constexpr int kMaxPointLightsRef = 8;
-constexpr int kMaxSpotLightsRef  = 8;
+// クラスタードライティング（Forward+）化で「点 8 / スポット 8」の個別上限は撤廃され、
+// 今は point + spot の合計 1024 灯。ただし 1 クラスタ（画面を 16x9x24 に割った 1 マス）で
+// 評価できるのは 128 灯までで、そこを超えた分も無言で消える（CPU からは検出できない）。
+// 出所は src/renderer/ClusterMath.h の kMaxSceneLights / kMaxLightsPerCluster
+// （= src/editor/LightingPresets.h の kLightBudgetTotal / kLightBudgetPerCluster）。写している。
+constexpr int kMaxTotalLightsRef  = 1024;
+constexpr int kMaxPerClusterRef   = 128;
 // 影スロットの同時上限。出所は Application.h の kMaxShadowSpot / kMaxShadowPoint。
 // あぶれたライトは「影だけ」落ちる（ライト自体は出る）＝気付きにくいので注意で出す。
 constexpr int kMaxShadowSpotRef  = 4;
@@ -831,7 +835,12 @@ DeepDiagReport DeepDiag::SceneAssets(Application& app)
         if (mr.meshes.empty())
             r.Add(2, who + " にメッシュがロードされていない（modelPath=" + mr.modelPath + "）");
         else if (mr.materials.empty())
-            r.Add(1, who + " にマテリアルが無い。既定の白テクスチャで描かれる");
+        {
+            // 地形レイヤーセット割当があるならマテリアルは要らない（t0/t1/t2 を地形が自前で張る）
+            const TerrainComp* tc = reg.try_get<TerrainComp>(e);
+            if (!tc || tc->layerSetPath.empty())
+                r.Add(1, who + " にマテリアルが無い。既定の白テクスチャで描かれる");
+        }
 
         for (const std::string& p : mr.overrideAlbedoTexture)        checkFile(p, who, "アルベド");
         for (const std::string& p : mr.overrideNormalTexture)        checkFile(p, who, "法線マップ");
@@ -995,19 +1004,21 @@ DeepDiagReport DeepDiag::Lighting(Application& app)
                  + " 個ある。実際に使われるのは先頭の 1 灯だけで、残りは無言で無視される"
                    "（要らない方を消すか、影響を確認すること）");
 
-    if (pointCount > kMaxPointLightsRef)
-        r.Add(2, "ポイントライトが " + std::to_string(pointCount) + " 灯ある。GPU へ送れるのは先頭 "
-                 + std::to_string(kMaxPointLightsRef) + " 灯だけで、残り "
-                 + std::to_string(pointCount - kMaxPointLightsRef)
+    // クラスタードライティング（Forward+）: 個別上限は無く、point + spot の合計で判定する。
+    const int punctualCount = pointCount + spotCount;
+    if (punctualCount > kMaxTotalLightsRef)
+        r.Add(2, "ライト（点+スポット）が " + std::to_string(punctualCount) + " 灯ある。GPU へ送れるのは先頭 "
+                 + std::to_string(kMaxTotalLightsRef) + " 灯だけで、残り "
+                 + std::to_string(punctualCount - kMaxTotalLightsRef)
                  + " 灯は無言で描画されない（灯を減らすか range を広げてまとめること）");
-    else if (pointCount == kMaxPointLightsRef)
-        r.Add(0, "ポイントライトが上限ちょうど " + std::to_string(kMaxPointLightsRef)
-                 + " 灯。パーティクルの発光ライトは空き枠を使うので、これ以上は光らない");
-
-    if (spotCount > kMaxSpotLightsRef)
-        r.Add(2, "スポットライトが " + std::to_string(spotCount) + " 灯ある。GPU へ送れるのは先頭 "
-                 + std::to_string(kMaxSpotLightsRef) + " 灯だけで、残り "
-                 + std::to_string(spotCount - kMaxSpotLightsRef) + " 灯は無言で描画されない");
+    else if (punctualCount > kMaxPerClusterRef)
+        // 1 クラスタ 128 灯の切り捨ては GPU 側でしか分からないので、注意止まりで誘導する。
+        r.Add(1, "ライト（点+スポット）が " + std::to_string(punctualCount) + " 灯ある。合計の上限 "
+                 + std::to_string(kMaxTotalLightsRef) + " 灯には収まっているが、画面を割った"
+                   "クラスタ 1 マスで評価できるのは " + std::to_string(kMaxPerClusterRef)
+                 + " 灯まで。密集した所は無言で切り捨てられるので、"
+                   "「ツール > ライティング > クラスタデバッグ表示 > ライト複雑度」で"
+                   "白く飽和している場所が無いか確認すること");
 
     if (droppedNoTransform > 0)
         r.Add(1, "Transform を持たないライトが " + std::to_string(droppedNoTransform)
@@ -1044,7 +1055,8 @@ DeepDiagReport DeepDiag::Lighting(Application& app)
     else
     {
         fs::path abs;
-        if (ResolveAssetPath(sky.envMapPath, abs))
+        // 手続きスカイはファイルを持たない（エンジンがその場で作る）ので存在チェックしない
+        if (sky.envMapPath != kProceduralSkyPath && ResolveAssetPath(sky.envMapPath, abs))
         {
             std::error_code ec;
             if (!fs::exists(abs, ec))
@@ -1054,6 +1066,66 @@ DeepDiagReport DeepDiag::Lighting(Application& app)
         if (sky.iblIntensity <= 0.0f)
             r.Add(1, "環境マップは設定されているが IBL 強度が " + Fmt(sky.iblIntensity)
                      + "。IBL が効いていない");
+    }
+
+    // ---- ボリュメトリックフォグ ----
+    {
+        const VolumetricFogSettings& fog = scene->GetVolumetricFogSettings();
+        if (fog.enabled)
+        {
+            if (fog.density <= 0.0f)
+                r.Add(1, "ボリュメトリックフォグが有効だが濃度が 0。3D テクスチャ 28MB を確保して"
+                         "compute 3 パスを回すだけで絵は一切変わらない");
+            // GodRays（スクリーン空間の太陽シャフト）と役割が重なる。両方 ON だと
+            // 太陽が画面内にあるとき散乱が二重計上される。
+            if (scene->GetPostSettings().godraysOn)
+                r.Add(1, "ボリュメトリックフォグと GodRays が同時に有効。どちらも太陽の散乱を描くので、"
+                         "太陽が画面内にあるとき二重計上されて白飛びする。通常はフォグ側だけで足りる");
+            if (fog.temporal && fog.temporalBlend >= 0.5f)
+                r.Add(0, "フォグの時間再投影の現フレーム比率が " + Fmt(fog.temporalBlend)
+                         + "。大きいとノイズが収束しない（既定 0.08）");
+        }
+    }
+
+    // ---- デカール ----
+    {
+        int decalCount = 0, alwaysHidden = 0;
+        for (auto [e, dc] : reg.view<DecalComponent>().each())
+        {
+            (void)e;
+            ++decalCount;
+            if (dc.opacity <= 0.0f || dc.angleFadeDeg >= 89.0f) ++alwaysHidden;
+        }
+        if (decalCount > 0)
+        {
+            const std::string& atlas = scene->GetDecalAtlasPath();
+            if (atlas.empty())
+            {
+                r.Add(1, "デカールが " + std::to_string(decalCount)
+                         + " 個あるがシーンの decalAtlas が未設定。"
+                           "テクスチャが無いので 1 枚も描かれない（アルファ 0 のダミーが貼られる）");
+            }
+            else
+            {
+                fs::path abs;
+                if (ResolveAssetPath(atlas, abs))
+                {
+                    std::error_code ec;
+                    if (!fs::exists(abs, ec))
+                        r.Add(2, "デカールアトラスが見つからない: " + atlas + "（デカールが全部消える）");
+                }
+            }
+            if (decalCount > 256)
+                r.Add(1, "デカールが " + std::to_string(decalCount)
+                         + " 個ある。GPU へ送れるのは 256 個までで、超過分は無言で描画されない");
+            if (alwaysHidden > 0)
+                r.Add(0, "opacity=0 か angleFadeDeg>=89 で絶対に見えないデカールが "
+                         + std::to_string(alwaysHidden) + " 個ある");
+            // ★クラスタードライティングが無効（正射カメラ / settings.json の render_clustered=0）だと
+            //   デカールのビニング先が無いので 1 枚も描かれない。設定は dx12_perf_stats の clustered で見える。
+            r.Add(0, "デカール " + std::to_string(decalCount)
+                     + " 個（クラスタード有効時のみ描画。正射カメラ/カメラプレビューでは出ない）");
+        }
     }
 
     return r;
@@ -1076,7 +1148,8 @@ DeepDiagReport DeepDiag::Terrain(Application& app)
     }
     entt::registry& reg = scene->GetRegistry();
 
-    std::map<std::string, std::string> pathOwner;   // heightmapPath → 最初に使ったエンティティ名
+    std::map<std::string, std::string> pathOwner;    // heightmapPath → 最初に使ったエンティティ名
+    std::map<std::string, std::string> splatOwner;   // splatPath     → 同上（.hf と同じ共有バグ検出）
     int terrainCount = 0;
 
     for (auto [e, t] : reg.view<TerrainComp>().each())
@@ -1204,6 +1277,40 @@ DeepDiagReport DeepDiag::Terrain(Application& app)
                     }
                 }
             }
+        }
+
+        // ---- テクスチャスプラット（.terrainlayers / .splat）----
+        if (!t.layerSetPath.empty())
+        {
+            fs::path lsAbs;
+            std::error_code lsEc;
+            if (!ResolveAssetPath(t.layerSetPath, lsAbs) || !fs::exists(lsAbs, lsEc))
+                r.Add(2, who + " のレイヤーセットが見つからない: " + t.layerSetPath
+                         + "（テクスチャスプラットが効かず従来の見た目に戻る）");
+
+            if (t.splatPath.empty())
+            {
+                r.Add(1, who + " のスプラット重みが未保存（splatPath が空）。"
+                               "シーンを開き直すと自動ペイントし直しになる");
+            }
+            else
+            {
+                // .hf と同じ構造の同じバグ（複製で共有）を .splat でも検出する
+                auto sowner = splatOwner.find(t.splatPath);
+                if (sowner != splatOwner.end())
+                    r.Add(2, who + " と " + sowner->second + " が同じスプラット " + t.splatPath
+                             + " を共有している。片方を塗るともう片方も書き換わる（別名で保存し直すこと）");
+                else
+                    splatOwner.emplace(t.splatPath, who);
+            }
+
+            if (!t._splat || !t._splat->IsValid())
+                r.Add(1, who + " のスプラット重みが読み込まれていない（レイヤー 0 だけで描かれる）");
+        }
+        else if (!t.splatPath.empty())
+        {
+            r.Add(0, who + " は splatPath を持っているが layerSetPath が空なので"
+                           "テクスチャスプラットは効いていない（従来の見た目）");
         }
 
         // ---- コライダー（PhysicsSystem::RegisterBody が RigidBody を見て作る）----
@@ -1396,6 +1503,7 @@ DeepDiagReport DeepDiag::Instancing(Application& app)
         { "テクスチャ上書き（アルベド/法線/MR）",              0 },
         { "連番アニメ（animFrames > 0）",                      0 },
         { "UV スクロール",                                     0 },
+        { "地形マテリアル割当（専用 PSO で描くため対象外）",   0 },
         { "分類不能（適格条件の変更漏れの疑い）",              0 },
     };
 
@@ -1419,11 +1527,13 @@ DeepDiagReport DeepDiag::Instancing(Application& app)
         }
 
         const MeshRenderer* mr = item.renderer;
-        int idx = 9;
+        const TerrainComp* tc = (reg != nullptr) ? reg->try_get<TerrainComp>(item.e) : nullptr;
+        int idx = 10;
         if      (item.skin != nullptr)                            idx = 0;
         else if (item.hasNodeAnim)                                idx = 1;
         else if (mr == nullptr)                                   idx = 4;
         else if (item.sortKey != 0u || !mr->shaderPath.empty())   idx = 2;
+        else if (tc != nullptr && !tc->layerSetPath.empty())      idx = 9;
         else if (mr->meshes.size() != 1u)                         idx = 3;
         else if (mr->meshes[0] == nullptr)                        idx = 4;
         else if (mr->HasMaterialAsset(0u))                        idx = 5;
@@ -1470,8 +1580,8 @@ DeepDiagReport DeepDiag::Instancing(Application& app)
         r.Add(0, "不適格 " + std::to_string(rank) + " 位: " + reason->label + " … "
                  + std::to_string(reason->count) + " 件 (" + std::to_string(p) + "%)");
     }
-    if (reasons[9].count > 0)
-        r.Add(1, "適格条件のどれにも当てはまらない不適格ドローが " + std::to_string(reasons[9].count)
+    if (reasons[10].count > 0)
+        r.Add(1, "適格条件のどれにも当てはまらない不適格ドローが " + std::to_string(reasons[10].count)
                  + " 件ある。BuildDrawList() の条件が変わってこの診断が追いついていない可能性");
 
     if (total >= 200 && eligible * 2 < total)
@@ -1585,10 +1695,104 @@ nlohmann::json ReportToJson(const char* id, const DeepDiagReport& rep)
 
 } // namespace
 
+DeepDiagReport DeepDiag::Dxr(Application& app)
+{
+    DeepDiagReport r;
+    r.title = "DXR レイトレーシング";
+
+    const Application::DiagDxrInfo d = app.GetDiagDxrInfo();
+
+    auto fmtTier = [](int t) -> std::string
+    {
+        if (t < 10) return "非対応";
+        return std::to_string(t / 10) + "." + std::to_string(t % 10);
+    };
+    auto fmtSm = [](int s) -> std::string
+    {
+        return std::to_string(s >> 4) + "." + std::to_string(s & 0xF);
+    };
+    auto mb = [](uint64_t b) { return static_cast<double>(b) / (1024.0 * 1024.0); };
+
+    ++r.checked;
+    if (!d.inlineRt)
+    {
+        // エラーではなく「機能の不在」。DXR 非対応 GPU でも従来どおり動くのが正しい。
+        r.Add(1, "この GPU では inline raytracing (RayQuery) が使えません（Tier "
+                 + fmtTier(d.tier) + " / ShaderModel " + fmtSm(d.shaderModel)
+                 + "）。要 DXR Tier 1.1 かつ SM 6.5。RT 影 / RT-AO は無効のまま従来の "
+                   "CSM + SSAO で描画されます");
+        return r;
+    }
+    r.Add(0, "DXR: Tier " + fmtTier(d.tier) + " / ShaderModel " + fmtSm(d.shaderModel)
+             + " / inline raytracing 可");
+
+    ++r.checked;
+    if (!d.supported)
+        r.Add(2, "GPU は対応しているのにレイトレーシングのパスが初期化されていません"
+                 "（.cso の欠落か加速構造バッファの確保失敗）。起動ログの \"DXR\" 行を確認すること");
+
+    ++r.checked;
+    if (!d.shadowEnabled && !d.aoEnabled)
+        r.Add(0, "RT サン影 / RT-AO はどちらも OFF（シーンの \"raytracing\" 設定。既定 OFF）");
+    else
+    {
+        r.Add(0, std::string("RT サン影=") + (d.shadowEnabled ? "ON" : "OFF")
+                 + " / RT-AO=" + (d.aoEnabled ? "ON" : "OFF"));
+        if (d.shadowEnabled && !d.shadowActive)
+            r.Add(1, "RT サン影が ON なのに直近フレームで走っていません"
+                     "（正射カメラ / 2D ビュー / TLAS 未構築のいずれか）");
+    }
+
+    ++r.checked;
+    if (d.tlasReady)
+    {
+        char buf[256];
+        std::snprintf(buf, sizeof(buf),
+            "TLAS: %u インスタンス / BLAS %u 個 / %llu 三角形 — 加速構造 %.1f MB "
+            "(BLAS %.1f + TLAS %.2f + スクラッチ %.1f + インスタンス記述 %.2f) = %.1f B/三角形",
+            d.instances, d.blasCount, static_cast<unsigned long long>(d.blasTriangles),
+            mb(d.blasBytes + d.tlasBytes + d.scratchBytes + d.instanceDescBytes),
+            mb(d.blasBytes), mb(d.tlasBytes), mb(d.scratchBytes), mb(d.instanceDescBytes),
+            d.blasTriangles ? static_cast<double>(d.blasBytes) / static_cast<double>(d.blasTriangles) : 0.0);
+        r.Add(0, buf);
+    }
+    else if (d.shadowEnabled || d.aoEnabled)
+    {
+        r.Add(2, "TLAS が構築されていません（TLAS に入るジオメトリが 0 件）。"
+                 "シーンが空か、全部スキンド / 半透明の可能性があります");
+    }
+
+    // 「なぜキャラの影が RT に出ないのか」への回答をここに集約する。
+    ++r.checked;
+    if (d.skippedSkinned > 0)
+        r.Add(0, "スキンドメッシュ " + std::to_string(d.skippedSkinned)
+                 + " 体は TLAS に入りません（頂点シェーダ内スキニングなので変形後の頂点が "
+                   "GPU に存在しないため。仕様）。影は従来どおり CSM が担当し、"
+                   "フォワードの min() で RT 影と合成されます");
+    if (d.skippedTransparent > 0)
+        r.Add(0, "半透明メッシュ " + std::to_string(d.skippedTransparent)
+                 + " 個は TLAS に入りません（any-hit が必要になり 2〜10 倍遅くなるため。仕様）");
+
+    ++r.checked;
+    if (d.droppedOverLimit > 0)
+        r.Add(1, std::to_string(d.droppedOverLimit)
+                 + " 個のインスタンスが上限超過で TLAS から外れました"
+                   "（カメラから遠い順に切っています）。シーンの raytracing.maxInstances を上げるか、"
+                   "そのぶん影 / AO が欠けることを許容すること");
+
+    // 4GB クラスの GPU で問題になる水準を注意として出す（コンパクション未実装）。
+    ++r.checked;
+    if (d.blasBytes > (512ull << 20))
+        r.Add(1, "BLAS の VRAM が 512MB を超えています（コンパクションは未実装）。"
+                 "低 VRAM の GPU では厳しいので、シーンの三角形数を見直すこと");
+
+    return r;
+}
+
 std::vector<std::string> DeepDiag::AllCheckIds()
 {
     return { "shaders", "textures", "models", "gamma", "scene_assets",
-             "lighting", "terrain", "picking", "instancing", "scripts" };
+             "lighting", "terrain", "picking", "instancing", "scripts", "dxr" };
 }
 
 nlohmann::json DeepDiag::RunAll(Application& app, const std::string& only)
@@ -1641,6 +1845,7 @@ nlohmann::json DeepDiag::RunAll(Application& app, const std::string& only)
     if (pick("picking"))      add("picking",      DeepDiag::Picking(app));
     if (pick("instancing"))   add("instancing",   DeepDiag::Instancing(app));
     if (pick("scripts"))      add("scripts",      DeepDiag::Scripts());
+    if (pick("dxr"))          add("dxr",          DeepDiag::Dxr(app));
 
     nlohmann::json summary;
     summary["checks"]     = ran;

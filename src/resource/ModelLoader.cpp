@@ -10,12 +10,14 @@
 #include "core/vfs/Vfs.h"
 
 #include <cstdlib>
+#include <cmath>    // 祖先変換が単位行列かの判定
 #include <cctype>   // ::tolower(拡張子の小文字化)
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 #include <assimp/config.h>
 #include <algorithm>
+#include <functional>      // Probe のノード再帰(ワールド AABB)用
 #include <unordered_set>   // Probe のボーン名ユニーク数え上げ用
 
 #include <Windows.h>
@@ -27,6 +29,49 @@ namespace dx12e
 
 namespace
 {
+
+// FBX の単位系をメートルへ正規化する共通フラグ。
+//   FBX は GlobalSettings::UnitScaleFactor で「1単位 = 何 cm か」を宣言する。Blender/Maya/3ds Max
+//   の既定書き出しは cm 基準なので、1m の立方体がノード変換 100 倍(= 100 単位)で入ってくる。
+//   assimp は既定ではこの単位を解釈しないため、そのまま読むと **100 倍の大きさ** になる。
+//   aiProcess_GlobalScale が UnitScaleFactor*0.01 を頂点・ボーンオフセット・ノード平行移動・
+//   アニメーションの位置キーへ一括で適用してメートルに揃える。
+//   assimp で SetFileScale() を呼ぶインポータは FBX **だけ** なので(v5.4.3 で確認)、
+//   glTF/glb・OBJ・STL・PLY・DAE 等には完全な no-op。Collada の <unit meter> は
+//   ColladaLoader がルートノード変換へ焼き込み済みなので二重適用にもならない。
+//   ★ロード系(LoadFromFile/LoadAnimationsFromFile)と Probe で必ず同じ値を使うこと。
+//     片方だけ外すと asset_info の申告サイズと実際の描画サイズがずれる。
+constexpr unsigned int kUnitScaleFlag = aiProcess_GlobalScale;
+
+// ★ただしスキンメッシュには掛けてはいけない。
+//   assimp の FBX インポータが返すスキン情報は boneGlobal * offsetMatrix のスケールが常に 1
+//   になる(= スキンメッシュはメッシュローカル座標のまま描かれ、ノード変換の 100 倍は
+//   ボーン側で打ち消される)。そこへ kUnitScaleFlag が頂点だけ k 倍すると、打ち消しが
+//   崩れて描画結果がそのまま k 倍ずれる。実測: Blender 既定書き出しの 1m スキンキューブが 1cm。
+//   静的メッシュはノード変換を頂点へ焼き込むので、逆に掛けないと 100m になる。
+//   → ボーンの有無で出し分ける。判定に使う「k」がこれ。
+//   FBX 以外は UnitScaleFactor を持たないので常に 1.0 = 再インポートは起きない。
+float UnitScaleFactorOf(const aiScene* scene)
+{
+    if (!scene || !scene->mMetaData) return 1.0f;
+    // ★型は assimp のバージョンで float だったり double だったりする
+    //   (v5.4.3 の FBXConverter は GlobalSettings の float をそのまま Set する)。
+    //   aiMetadata::Get は型が合わないと黙って false を返すので両方試すこと。
+    double unitScale = 0.0;
+    float  unitScaleF = 0.0f;
+    if (scene->mMetaData->Get("UnitScaleFactor", unitScale)) { /* ok */ }
+    else if (scene->mMetaData->Get("UnitScaleFactor", unitScaleF)) unitScale = unitScaleF;
+    else return 1.0f;
+    if (unitScale == 0.0) return 1.0f;
+    return static_cast<float>(unitScale * 0.01);   // assimp の fileScale と同じ式
+}
+
+bool SceneHasBones(const aiScene* scene)
+{
+    for (unsigned i = 0; i < scene->mNumMeshes; ++i)
+        if (scene->mMeshes[i]->mNumBones > 0) return true;
+    return false;
+}
 
 std::wstring ToWideString(const char* str)
 {
@@ -115,9 +160,17 @@ void CollectBoneNames(const aiScene* scene, std::unordered_map<std::string, cons
     }
 }
 
+// skippedAncestors: 直近のボーン祖先より下にある「ボーンではないノード」のローカル変換の積
+//   （行ベクトル規約 = 子 * 親 の順）。glTF の "Z_UP" / "Armature"、Collada/FBX の軸変換
+//   ノードはスケルトンに現れないので、ここで拾って直下のボーンへ畳み込む。
+//   これを捨てると Z-up でオーサリングされた glTF（CesiumMan.glb）が寝たまま入る。
+//   ★glTF は仕様上 Y-up 固定で、assimp の glTF2 インポータは軸変換を一切足さない
+//     （glTF2Importer::ImportNodes を確認済み。aiProcess_ にも該当フラグは無い）。
+//     「Z-up の glTF」に見えるものは、ファイル側が変換ノードを持っているだけ。
 void BuildSkeletonRecursive(
     const aiNode* node,
     i32 parentIndex,
+    DirectX::FXMMATRIX skippedAncestors,
     const std::unordered_map<std::string, const aiBone*>& boneMap,
     Skeleton& skeleton)
 {
@@ -126,21 +179,41 @@ void BuildSkeletonRecursive(
 
     i32 currentIndex = parentIndex;
 
+    const DirectX::XMFLOAT4X4 localF = ToXMFLOAT4X4(node->mTransformation);
+    DirectX::XMMATRIX childSkipped =
+        DirectX::XMMatrixMultiply(DirectX::XMLoadFloat4x4(&localF), skippedAncestors);
+
     if (it != boneMap.end())
     {
         BoneNode boneNode;
         boneNode.name = nodeName;
         boneNode.parentIndex = parentIndex;
         boneNode.inverseBindPose = ToXMFLOAT4X4(it->second->mOffsetMatrix);
-        boneNode.localBindPose = ToXMFLOAT4X4(node->mTransformation);
+        boneNode.localBindPose = localF;
+
+        // 祖先の変換が単位行列でなければ preTransform として持たせる。
+        // （単位行列なら hasPreTransform=false のまま = 従来と完全に同じ計算）
+        DirectX::XMFLOAT4X4 pre;
+        DirectX::XMStoreFloat4x4(&pre, skippedAncestors);
+        constexpr float kEps = 1e-6f;
+        bool isIdentity = true;
+        for (int r = 0; r < 4 && isIdentity; ++r)
+            for (int c = 0; c < 4; ++c)
+                if (std::fabs(pre.m[r][c] - ((r == c) ? 1.0f : 0.0f)) > kEps) { isIdentity = false; break; }
+        if (!isIdentity)
+        {
+            boneNode.preTransform    = pre;
+            boneNode.hasPreTransform = true;
+        }
 
         currentIndex = static_cast<i32>(skeleton.GetBoneCount());
         skeleton.AddBone(std::move(boneNode));
+        childSkipped = DirectX::XMMatrixIdentity();
     }
 
     for (unsigned int ci = 0; ci < node->mNumChildren; ++ci)
     {
-        BuildSkeletonRecursive(node->mChildren[ci], currentIndex, boneMap, skeleton);
+        BuildSkeletonRecursive(node->mChildren[ci], currentIndex, childSkipped, boneMap, skeleton);
     }
 }
 
@@ -155,9 +228,31 @@ std::unique_ptr<Skeleton> BuildSkeleton(const aiScene* scene)
     }
 
     auto skeleton = std::make_unique<Skeleton>();
-    BuildSkeletonRecursive(scene->mRootNode, -1, boneMap, *skeleton);
+    BuildSkeletonRecursive(scene->mRootNode, -1, DirectX::XMMatrixIdentity(), boneMap, *skeleton);
 
     Logger::Info("Skeleton built: {} bones", skeleton->GetBoneCount());
+
+    // FK（ComputeGlobalMatrices）の単一ループは「親が子より前に並んでいる」ことを前提にしている。
+    // assimp のノード階層を前順走査で積んでいるので通常は必ず成立するが、
+    // 破れたら全ボーンが静かに壊れる（親のグローバル行列が未計算のまま読まれる）ので検証する。
+    if (!skeleton->AreBonesCorrectlyOrdered())
+    {
+        Logger::Warn("Skeleton bones are NOT in parent-before-child order. "
+                     "FK will read uninitialized parent matrices and the character will be deformed.");
+    }
+    // トラックの無いボーンは localBindPose を TRS 分解した値でポーズを埋める。
+    // せん断を含む行列は分解できないので、その場合だけバインドポーズがずれる。
+    if (skeleton->HasUndecomposableBind())
+    {
+        Logger::Warn("Skeleton has bone(s) whose localBindPose cannot be decomposed into TRS "
+                     "(shear?). Bones without animation tracks may be posed incorrectly.");
+    }
+    if (skeleton->GetBoneCount() > Skeleton::kMaxBones)
+    {
+        Logger::Warn("Skeleton has {} bones but the skinning buffer holds only {}. "
+                     "Bones beyond the limit will not be uploaded.",
+                     skeleton->GetBoneCount(), Skeleton::kMaxBones);
+    }
     return skeleton;
 }
 
@@ -459,10 +554,10 @@ ModelProbeInfo ModelLoader::Probe(const std::filesystem::path& filePath)
 {
     ModelProbeInfo info;
     Assimp::Importer importer;
-    // メタ情報だけ欲しいので後処理は最小限(AABB 生成のみ)。三角形化しないので faces は
-    // ポリゴン数(三角形換算前)になる。
-    const aiScene* scene = importer.ReadFile(filePath.string(),
-                                             static_cast<unsigned>(aiProcess_GenBoundingBoxes));
+    // メタ情報だけ欲しいので後処理は最小限。三角形化しないので faces は
+    // ポリゴン数(三角形換算前)になる。単位正規化だけは LoadFromFile と揃える
+    // (揃えないと asset_info の申告サイズが実際の描画サイズと食い違う)。
+    const aiScene* scene = importer.ReadFile(filePath.string(), kUnitScaleFlag);
     if (!scene || !scene->mRootNode)
     {
         info.error = importer.GetErrorString();
@@ -473,7 +568,6 @@ ModelProbeInfo ModelLoader::Probe(const std::filesystem::path& filePath)
     info.materialCount = scene->mNumMaterials;
 
     std::unordered_set<std::string> boneNames;
-    bool first = true;
     for (unsigned i = 0; i < scene->mNumMeshes; ++i)
     {
         const aiMesh* mesh = scene->mMeshes[i];
@@ -481,25 +575,40 @@ ModelProbeInfo ModelLoader::Probe(const std::filesystem::path& filePath)
         info.totalFaces    += mesh->mNumFaces;
         for (unsigned b = 0; b < mesh->mNumBones; ++b)
             boneNames.insert(mesh->mBones[b]->mName.C_Str());
-        const aiAABB& ab = mesh->mAABB;
-        if (first)
-        {
-            info.aabbMin[0] = ab.mMin.x; info.aabbMin[1] = ab.mMin.y; info.aabbMin[2] = ab.mMin.z;
-            info.aabbMax[0] = ab.mMax.x; info.aabbMax[1] = ab.mMax.y; info.aabbMax[2] = ab.mMax.z;
-            first = false;
-        }
-        else
-        {
-            info.aabbMin[0] = (std::min)(info.aabbMin[0], ab.mMin.x);
-            info.aabbMin[1] = (std::min)(info.aabbMin[1], ab.mMin.y);
-            info.aabbMin[2] = (std::min)(info.aabbMin[2], ab.mMin.z);
-            info.aabbMax[0] = (std::max)(info.aabbMax[0], ab.mMax.x);
-            info.aabbMax[1] = (std::max)(info.aabbMax[1], ab.mMax.y);
-            info.aabbMax[2] = (std::max)(info.aabbMax[2], ab.mMax.z);
-        }
     }
     info.boneCount   = static_cast<uint32_t>(boneNames.size());
     info.hasSkeleton = !boneNames.empty();
+
+    // AABB はノード変換を掛けたワールド空間で出す。メッシュローカルのままだと
+    // 「スケールがノード変換側に乗っている」モデル(FBX 全般・Blender 由来の glTF)で
+    // 実際の描画サイズと桁違いの値を報告してしまい、サイズ不具合の発見が不可能になる。
+    bool anyVertex = false;
+    const std::function<void(const aiNode*, const aiMatrix4x4&)> walk =
+        [&](const aiNode* node, const aiMatrix4x4& parent)
+    {
+        const aiMatrix4x4 global = parent * node->mTransformation;
+        for (unsigned i = 0; i < node->mNumMeshes; ++i)
+        {
+            const aiMesh* mesh = scene->mMeshes[node->mMeshes[i]];
+            for (unsigned v = 0; v < mesh->mNumVertices; ++v)
+            {
+                const aiVector3D p = global * mesh->mVertices[v];
+                const float c[3] = { p.x, p.y, p.z };
+                for (int k = 0; k < 3; ++k)
+                {
+                    if (!anyVertex) { info.aabbMin[k] = c[k]; info.aabbMax[k] = c[k]; }
+                    else
+                    {
+                        info.aabbMin[k] = (std::min)(info.aabbMin[k], c[k]);
+                        info.aabbMax[k] = (std::max)(info.aabbMax[k], c[k]);
+                    }
+                }
+                anyVertex = true;
+            }
+        }
+        for (unsigned c = 0; c < node->mNumChildren; ++c) walk(node->mChildren[c], global);
+    };
+    walk(scene->mRootNode, aiMatrix4x4());
 
     for (unsigned a = 0; a < scene->mNumAnimations; ++a)
     {
@@ -519,6 +628,9 @@ ModelData ModelLoader::LoadFromFile(
 {
     Assimp::Importer importer;
     importer.SetIOHandler(new VfsIOSystem()); // importer が所有権を持ち dtor で delete する
+    // スキンメッシュ用の「単位正規化なし再読み」(下記)。Assimp::Importer は
+    // 生成だけで全インポータを登録する重いオブジェクトなので、必要になってから作る。
+    std::unique_ptr<Assimp::Importer> rawImporter;
 
     // 全フォーマットで FlipUVs を掛ける(従来挙動)。assimp の glTF インポータは UV を
     // 左下原点(OpenGL流)で返すため、FlipUVs で D3D の左上原点に揃う(実機検証済み)。
@@ -529,7 +641,8 @@ ModelData ModelLoader::LoadFromFile(
         aiProcess_JoinIdenticalVertices |
         aiProcess_LimitBoneWeights |
         aiProcess_PopulateArmatureData |
-        aiProcess_FlipUVs;
+        aiProcess_FlipUVs |
+        kUnitScaleFlag;
 
     const aiScene* scene = importer.ReadFile(filePath.string(), flags);
 
@@ -537,6 +650,32 @@ ModelData ModelLoader::LoadFromFile(
     {
         Logger::Error("モデルの読み込みに失敗しました: {}", filePath.string());
         return {};
+    }
+
+    // 単位正規化はスキンメッシュには掛けない(kUnitScaleFlag のコメント参照)。
+    // 掛かった形跡(k != 1)があるスキンモデルだけ、フラグを外して読み直す。
+    // 再パースが走るのは「ボーン有り かつ cm 基準の FBX」だけ。glTF/OBJ 等は k == 1 なので起きない。
+    if (SceneHasBones(scene))
+    {
+        const float k = UnitScaleFactorOf(scene);
+        if (std::fabs(k - 1.0f) > 1e-6f)
+        {
+            rawImporter = std::make_unique<Assimp::Importer>();
+            rawImporter->SetIOHandler(new VfsIOSystem());
+            const aiScene* raw = rawImporter->ReadFile(filePath.string(), flags & ~kUnitScaleFlag);
+            if (raw && !(raw->mFlags & AI_SCENE_FLAGS_INCOMPLETE) && raw->mRootNode)
+            {
+                Logger::Info("スキンメッシュのため単位正規化(×{:.4f})を外して読み直しました: {}",
+                             k, filePath.filename().string());
+                scene = raw;
+            }
+            else
+            {
+                Logger::Warn("単位正規化なしの再読み込みに失敗したため正規化済みデータを使います "
+                             "(スキンメッシュが {:.4f} 倍で表示される可能性があります): {}",
+                             k, filePath.string());
+            }
+        }
     }
 
     const std::filesystem::path parentDir = filePath.parent_path();
@@ -817,7 +956,7 @@ ModelData ModelLoader::LoadFromFile(
                                 reinterpret_cast<const uint8_t*>(embTex->pcData),
                                 embTex->mWidth,
                                 embTex->achFormatHint,
-                                cmdList);
+                                cmdList, /*srgb=*/true, TextureUsage::BaseColor);
                             if (texture)
                                 material->albedoTexture = texture;
                         }
@@ -838,7 +977,7 @@ ModelData ModelLoader::LoadFromFile(
                                     reinterpret_cast<const uint8_t*>(aiTex->pcData),
                                     aiTex->mWidth,
                                     aiTex->achFormatHint,
-                                    cmdList);
+                                    cmdList, /*srgb=*/true, TextureUsage::BaseColor);
                                 if (texture)
                                     material->albedoTexture = texture;
                             }
@@ -850,7 +989,8 @@ ModelData ModelLoader::LoadFromFile(
                         if (!resolvedPath.empty())
                         {
                             Texture* texture = resourceManager.GetOrLoadTexture(
-                                resolvedPath.wstring(), cmdList);
+                                resolvedPath.wstring(), cmdList,
+                                /*srgb=*/true, TextureUsage::BaseColor);
                             if (texture)
                             {
                                 material->albedoTexture = texture;
@@ -865,7 +1005,8 @@ ModelData ModelLoader::LoadFromFile(
             }
 
             // --- PBR: Normal Map ---
-            auto loadPBRTexture = [&](aiTextureType type, bool srgb) -> Texture* {
+            // usage は BC 圧縮の形式選択（Normal→BC5_UNORM / NonColor→BC7_UNORM）に使う。
+            auto loadPBRTexture = [&](aiTextureType type, bool srgb, TextureUsage usage) -> Texture* {
                 if (aiMat->GetTextureCount(type) == 0) return nullptr;
                 aiString tp;
                 if (aiMat->GetTexture(type, 0, &tp) != AI_SUCCESS) return nullptr;
@@ -876,26 +1017,26 @@ ModelData ModelLoader::LoadFromFile(
                     std::string key = filePath.string() + "_emb_" + tp.C_Str();
                     return resourceManager.GetOrLoadEmbeddedTexture(
                         key, reinterpret_cast<const uint8_t*>(emb->pcData),
-                        emb->mWidth, emb->achFormatHint, cmdList);
+                        emb->mWidth, emb->achFormatHint, cmdList, srgb, usage);
                 }
                 if (tp.C_Str()[0] != '*')
                 {
                     auto resolved = ResolveTexturePath(tp.C_Str(), parentDir);
                     if (!resolved.empty())
-                        return resourceManager.GetOrLoadTexture(resolved.wstring(), cmdList, srgb);
+                        return resourceManager.GetOrLoadTexture(resolved.wstring(), cmdList, srgb, usage);
                 }
                 return nullptr;
             };
 
             // Normal map (linear)
-            material->normalMapTexture = loadPBRTexture(aiTextureType_NORMALS, false);
+            material->normalMapTexture = loadPBRTexture(aiTextureType_NORMALS, false, TextureUsage::Normal);
             if (!material->normalMapTexture)
-                material->normalMapTexture = loadPBRTexture(aiTextureType_HEIGHT, false);
+                material->normalMapTexture = loadPBRTexture(aiTextureType_HEIGHT, false, TextureUsage::Normal);
 
             // Metalness (linear)
-            material->metalRoughnessTexture = loadPBRTexture(aiTextureType_METALNESS, false);
+            material->metalRoughnessTexture = loadPBRTexture(aiTextureType_METALNESS, false, TextureUsage::NonColor);
             if (!material->metalRoughnessTexture)
-                material->metalRoughnessTexture = loadPBRTexture(aiTextureType_DIFFUSE_ROUGHNESS, false);
+                material->metalRoughnessTexture = loadPBRTexture(aiTextureType_DIFFUSE_ROUGHNESS, false, TextureUsage::NonColor);
 
             // PBR scalar factors
             float metallic = 0.0f, roughness = 0.5f;
@@ -956,6 +1097,9 @@ std::vector<std::unique_ptr<AnimationClip>> ModelLoader::LoadAnimationsFromFile(
     Assimp::Importer importer;
     importer.SetIOHandler(new VfsIOSystem()); // importer が所有権を持ち dtor で delete する
 
+    // kUnitScaleFlag は付けない。この関数は既存スケルトンへ流し込む用＝常にスキンメッシュで、
+    // LoadFromFile 側もスキンなら正規化を外して読んでいる。ここだけ掛けると位置キーの単位が
+    // ボーンとずれてキャラが吹っ飛ぶ。
     const unsigned int flags =
         aiProcess_Triangulate |
         aiProcess_LimitBoneWeights |

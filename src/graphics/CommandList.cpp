@@ -84,6 +84,11 @@ void CommandList::SetRenderTarget(D3D12_CPU_DESCRIPTOR_HANDLE rtv, D3D12_CPU_DES
     m_cmdList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
 }
 
+void CommandList::SetRenderTarget(D3D12_CPU_DESCRIPTOR_HANDLE rtv)
+{
+    m_cmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+}
+
 void CommandList::SetPipelineState(PipelineState& pso)
 {
     m_cmdList->SetPipelineState(pso.Get());

@@ -74,6 +74,7 @@ private:
     EditState<ParticleEmitter>  m_emitterEdit;
     EditState<Sprite2D>        m_spriteEdit;
     EditState<TrailRenderer>    m_trailEdit;
+    EditState<DecalComponent>   m_decalEdit;
     EditState<RigidBody>        m_rbEdit;
     EditState<BoxCollider>      m_boxColEdit;
     EditState<SphereCollider>   m_sphereColEdit;
@@ -93,6 +94,8 @@ private:
     EditState<UIAnimator>       m_uiAnimatorEdit;
     EditState<UIAnimPlayer>     m_uiAnimPlayerEdit;
     EditState<SpriteAnimator>   m_spriteAnimatorEdit;
+    EditState<AnimatorController> m_animatorControllerEdit;
+    EditState<FootIK>           m_footIkEdit;
 
     // プレハブ差分のキャッシュ。差分計算はサブツリー全体を JSON 化するので、
     // 毎フレームやると要素の多い UI プレハブで無駄が大きい。選択が変わった時と

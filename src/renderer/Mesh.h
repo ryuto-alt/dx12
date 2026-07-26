@@ -31,6 +31,18 @@ struct MeshInstanceData
     DirectX::XMFLOAT4 color;  // TEXCOORD11
 };
 
+// 速度パス用の per-instance「前フレームのワールド行列」（slot2, PER_INSTANCE, stride=48）。
+// r0..r2 = XMMatrixTranspose(prevWorld) の先頭3行。
+// ★既存の MeshInstanceData(64B) を太らせない: kMaxInstances(262144) × 3 フレームぶんの
+//   UPLOAD ヒープなので、+48B すると TAA を使わない人にも +38MB 払わせることになる。
+//   よって別バッファにして TAA 有効時のみ遅延確保する。
+struct MeshInstancePrevData
+{
+    DirectX::XMFLOAT4 p0;     // TEXCOORD12
+    DirectX::XMFLOAT4 p1;     // TEXCOORD13
+    DirectX::XMFLOAT4 p2;     // TEXCOORD14
+};
+
 class Mesh
 {
 public:
@@ -117,11 +129,22 @@ public:
     // GPU アップロード同期を伴うので毎フレームではなく生成時に1度だけ呼ぶこと。
     void SetVertexColor(GraphicsDevice& device, float r, float g, float b, float a = 1.0f);
 
+    // 頂点バッファを作り直すたびに +1 される版数。
+    // ★DXR の BLAS キャッシュ用（計画09 §4.2 / R2）。VertexBuffer を作り直すと GPU の
+    //   仮想アドレスが変わるので、それを指したままの BLAS は壊れたポインタを読む。
+    //   地形/スカルプトのブラシは 1 ストロークごとに UploadVertexCache() を呼ぶので
+    //   これを見ないと必ず踏む。BLAS キャッシュは (Mesh*, geometryVersion) をキーにすること。
+    u32 GetGeometryVersion() const { return m_geometryVersion; }
+
     static const D3D12_INPUT_ELEMENT_DESC* GetInputLayout();
     static u32 GetInputLayoutCount();
     // slot0(頂点) + slot1(MeshInstanceData, PER_INSTANCE) のインスタンシング用レイアウト。
     static const D3D12_INPUT_ELEMENT_DESC* GetInstancedInputLayout();
     static u32 GetInstancedInputLayoutCount();
+    // 上記 + slot2(MeshInstancePrevData, PER_INSTANCE) を足した速度パス専用レイアウト。
+    // 既存の kInstancedInputLayout は絶対に変更しない（既存 PSO が全部作り直しになる）。
+    static const D3D12_INPUT_ELEMENT_DESC* GetVelocityInstancedInputLayout();
+    static u32 GetVelocityInstancedInputLayoutCount();
 
 private:
     // 自動LOD生成（Initialize 末尾から呼ぶ。失敗/効果なしなら m_lodCount=1 のまま）
@@ -140,6 +163,7 @@ private:
     std::vector<DirectX::XMFLOAT3> m_positions; // Convex Hull 用の頂点座標キャッシュ
     std::vector<Vertex> m_verticesCache;         // UV スケール用の頂点データキャッシュ
     std::vector<u32>    m_indicesCache;          // LOD0 インデックスの CPU コピー（レイ-三角形判定用）
+    u32                 m_geometryVersion = 0;   // VB を作り直すたびに +1（BLAS キャッシュ無効化用）
 };
 
 } // namespace dx12e

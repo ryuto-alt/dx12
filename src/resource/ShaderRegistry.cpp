@@ -30,7 +30,7 @@ const std::vector<ShaderSource>& BuildRegistry()
                 { L"Forward_PS.cso", L"PSMain", L"ps_6_0" },
                 { L"ForwardLdr_PS.cso", L"PSMain", L"ps_6_0", L"LDR_OUTPUT=1" },
             },
-            { "forward/PBR.hlsli", "forward/Lighting.hlsli" },
+            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli" },
         },
         {
             "forward/ForwardSkinned.hlsl",
@@ -38,18 +38,42 @@ const std::vector<ShaderSource>& BuildRegistry()
                 { L"ForwardSkinned_VS.cso", L"VSMain", L"vs_6_0" },
                 { L"ForwardSkinned_PS.cso", L"PSMain", L"ps_6_0" },
             },
-            { "forward/PBR.hlsli", "forward/Lighting.hlsli" },
+            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli" },
         },
         {
-            // 注意: CMakeLists.txt の DEPENDS には Lighting.hlsli が抜けている(既存の潜在バグ、
-            // ForwardGrid.hlsl 自体は `#include "Lighting.hlsli"` している)。ここでは実際の
-            // include に合わせて正しく列挙する(ホットリロードの逆引きが漏れないように)。
+            // クラスタードライティング（Forward+）のライトカリング compute。
+            // ClusterCommon.hlsli は Lighting.hlsli（＝フォワード PS 側）とも共有している。
+            "forward/ClusterBuild.hlsl",
+            { { L"ClusterBuild_CS.cso", L"CSMain", L"cs_6_0" } },
+            { "forward/ClusterCommon.hlsli" },
+        },
+        {
+            "forward/ClusterCull.hlsl",
+            { { L"ClusterCull_CS.cso", L"CSMain", L"cs_6_0" } },
+            { "forward/ClusterCommon.hlsli" },
+        },
+        {
+            // ForwardGrid.hlsl は `#include "Lighting.hlsli"` している。
+            // CMakeLists.txt の DEPENDS に Lighting.hlsli が抜けていた既存バグは修正済み
+            // （PerFrameConstants を拡張したときに再コンパイルされずレイアウトがズレる）。
             "forward/ForwardGrid.hlsl",
             {
                 { L"ForwardGrid_VS.cso", L"VSMain", L"vs_6_0" },
                 { L"ForwardGrid_PS.cso", L"PSMain", L"ps_6_0" },
             },
-            { "forward/PBR.hlsli", "forward/Lighting.hlsli" },
+            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli" },
+        },
+        {
+            // 地形マテリアル（4 レイヤースプラット）。t0/t1 を Texture2DArray として読む。
+            // DecalApply.hlsli も include しているので依存に入れる（.hlsli を直しても
+            // ホットリロードで拾われるように）。
+            "forward/Terrain.hlsl",
+            {
+                { L"Terrain_VS.cso", L"VSMain", L"vs_6_0" },
+                { L"Terrain_PS.cso", L"PSMain", L"ps_6_0" },
+            },
+            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli",
+              "forward/DecalCommon.hlsli", "forward/DecalApply.hlsli" },
         },
         {
             "shadow/ShadowPass.hlsl",
@@ -234,6 +258,128 @@ const std::vector<ShaderSource>& BuildRegistry()
             "ssao/SSAOBlur.hlsl",
             { { L"SSAOBlur_PS.cso", L"PSMain", L"ps_6_0" } },
             { "post/FullscreenTri.hlsli" },
+        },
+        {
+            // コンタクトシャドウ（深度バッファのスクリーン空間レイマーチ。SSAO と同じ 1 パス構成）
+            "shadow/ContactShadow.hlsl",
+            {
+                { L"ContactShadow_VS.cso", L"FSTriVS", L"vs_6_0" },
+                { L"ContactShadow_PS.cso", L"PSMain", L"ps_6_0" },
+            },
+            { "post/FullscreenTri.hlsli" },
+        },
+        {
+            // 速度バッファ（モーションベクター）生成。PS は 3 経路で共有する。
+            "velocity/VelocityPrepass.hlsl",
+            {
+                { L"VelocityPrepass_VS.cso", L"VSMain",     L"vs_6_0" },
+                { L"VelocityPrepass_PS.cso", L"VelocityPS", L"ps_6_0" },
+            },
+            { "velocity/VelocityCommon.hlsli", "screenspace/ScreenSpaceCommon.hlsli" },
+        },
+        {
+            "velocity/VelocityPrepassInstanced.hlsl",
+            { { L"VelocityPrepassInstanced_VS.cso", L"VSMain", L"vs_6_0" } },
+            { "velocity/VelocityCommon.hlsli", "screenspace/ScreenSpaceCommon.hlsli" },
+        },
+        {
+            "velocity/VelocityPrepassSkinned.hlsl",
+            { { L"VelocityPrepassSkinned_VS.cso", L"VSMain", L"vs_6_0" } },
+            { "velocity/VelocityCommon.hlsli", "screenspace/ScreenSpaceCommon.hlsli" },
+        },
+        {
+            "post/TAA.hlsl",
+            { { L"TaaResolve_PS.cso", L"TaaResolvePS", L"ps_6_0" } },
+            { "post/FullscreenTri.hlsli" },
+        },
+        {
+            "velocity/VelocityDebug.hlsl",
+            { { L"VelocityDebug_PS.cso", L"VelocityDebugPS", L"ps_6_0" } },
+            { "post/FullscreenTri.hlsli" },
+        },
+        {
+            // 中間バッファ可視化（dx12_render_debug）。フォワード PS には足さない独立パス。
+            "renderdebug/RenderDebug.hlsl",
+            { { L"RenderDebug_PS.cso", L"RenderDebugPS", L"ps_6_0" } },
+            { "post/FullscreenTri.hlsli", "screenspace/ScreenSpaceCommon.hlsli" },
+        },
+        {
+            // DXR 1.1 inline raytracing の RT サン影（計画09 Step 2）。VS は 3 パス共有。
+            // ★PS は必ず ps_6_5 以上。RayQuery は SM 6.5 必須で 6.4 以下はコンパイルできない。
+            "raytracing/RtShadow.hlsl",
+            {
+                { L"Rt_VS.cso",       L"FSTriVS", L"vs_6_0" },
+                { L"RtShadow_PS.cso", L"PSMain",  L"ps_6_5" },
+            },
+            { "raytracing/RtCommon.hlsli", "post/FullscreenTri.hlsli" },
+        },
+        {
+            // RT-AO（計画09 Step 3）
+            "raytracing/RtAo.hlsl",
+            { { L"RtAo_PS.cso", L"PSMain", L"ps_6_5" } },
+            { "raytracing/RtCommon.hlsli", "post/FullscreenTri.hlsli" },
+        },
+        {
+            // TLAS の目視確認用プライマリレイ（計画09 Step 1）。dx12_render_debug の rt / rtDiff。
+            "raytracing/RtDebug.hlsl",
+            { { L"RtDebug_PS.cso", L"PSMain", L"ps_6_5" } },
+            { "raytracing/RtCommon.hlsli", "post/FullscreenTri.hlsli" },
+        },
+        {
+            // SSR（スクリーン空間反射）。VS は SSR.hlsl の FSTriVS を SSGI 側とも共有する。
+            "screenspace/SSR.hlsl",
+            {
+                { L"ScreenSpace_VS.cso",  L"FSTriVS",    L"vs_6_0" },
+                { L"SsrTrace_PS.cso",     L"TracePS",    L"ps_6_0" },
+                { L"SsrUpsample_PS.cso",  L"UpsamplePS", L"ps_6_0" },
+            },
+            { "screenspace/ScreenSpaceCommon.hlsli", "screenspace/ScreenSpaceParams.hlsli",
+              "post/FullscreenTri.hlsli" },
+        },
+        {
+            // SSGI（スクリーン空間GI）+ 前フレームカラーのハーフ縮小。
+            "screenspace/SSGI.hlsl",
+            {
+                { L"SsgiTrace_PS.cso",      L"TracePS",       L"ps_6_0" },
+                { L"SsgiTemporal_PS.cso",   L"TemporalPS",    L"ps_6_0" },
+                { L"SsgiUpsample_PS.cso",   L"UpsamplePS",    L"ps_6_0" },
+                { L"ColorDownsample_PS.cso",L"DownsamplePS",  L"ps_6_0" },
+            },
+            { "screenspace/ScreenSpaceCommon.hlsli", "screenspace/ScreenSpaceParams.hlsli",
+              "post/FullscreenTri.hlsli" },
+        },
+        {
+            // デカールのクラスタカリング compute（計画06 D2）。
+            "forward/ClusterCullDecals.hlsl",
+            { { L"ClusterCullDecals_CS.cso", L"CSMain", L"cs_6_0" } },
+            { "forward/ClusterCommon.hlsli", "forward/DecalCommon.hlsli" },
+        },
+        {
+            // ボリュメトリックフォグ（froxel）: 媒質注入 compute。
+            "fog/FogInject.hlsl",
+            { { L"FogInject_CS.cso", L"CSInject", L"cs_6_0" } },
+            { "fog/FogCommon.hlsli" },
+        },
+        {
+            // 散乱ライティング + 時間再投影 compute。ClusterCommon.hlsli はクラスタライトの散乱で使う。
+            "fog/FogScatter.hlsl",
+            { { L"FogScatter_CS.cso", L"CSScatter", L"cs_6_0" } },
+            { "fog/FogCommon.hlsli", "forward/ClusterCommon.hlsli" },
+        },
+        {
+            // Z 方向の解析積分 compute。
+            "fog/FogIntegrate.hlsl",
+            { { L"FogIntegrate_CS.cso", L"CSIntegrate", L"cs_6_0" } },
+            { "fog/FogCommon.hlsli" },
+        },
+        {
+            // シーン RT への合成（フルスクリーン三角形）。
+            "fog/FogComposite.hlsl",
+            {
+                { L"FogComposite_VS.cso", L"FSTriVS", L"vs_6_0" },
+                { L"FogComposite_PS.cso", L"PSMain",  L"ps_6_0" },
+            },
+            { "fog/FogCommon.hlsli", "post/FullscreenTri.hlsli" },
         },
     };
     return registry;

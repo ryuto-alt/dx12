@@ -31,12 +31,12 @@ public:
     void Resize(GraphicsDevice& device, u32 width, u32 height);
 
     // depthSrvGpu: PIXEL_SHADER_RESOURCE 状態の深度(R32_FLOAT)。
-    // sunUv: 太陽のスクリーンUV（フルRT正規化空間）。fade: 画面外/背面フェード 0..1。
+    // sunUv: 太陽のスクリーン UV（★#16 でシーンが RT 全面になったので RT の UV と同じ）。
+    // fade: 画面外/背面フェード 0..1。sceneW/H はアスペクト計算にだけ使う。
     // 戻り値 = 光条テクスチャ(PIXEL_SHADER_RESOURCE)の SRV index。未準備は kInvalidIndex。
     u32 Generate(CommandList& cmd, DescriptorHeap* srvHeap,
                  D3D12_GPU_DESCRIPTOR_HANDLE depthSrvGpu,
-                 float uvOfsX, float uvOfsY, float uvScaleX, float uvScaleY,
-                 u32 vpLeft, u32 vpTop, u32 vpW, u32 vpH,
+                 u32 sceneW, u32 sceneH,
                  float sunUvX, float sunUvY, float fade,
                  const DirectX::XMFLOAT3& sunColor,
                  const PostProcessSettings& s);

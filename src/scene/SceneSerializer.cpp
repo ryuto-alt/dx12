@@ -5,8 +5,11 @@
 #include "renderer/Mesh.h"
 #include "renderer/Material.h"
 #include "core/Logger.h"
+#include "core/PathResolver.h"
 #include "core/vfs/Vfs.h"
 #include "engine/ecs/ComponentRegistry.h"  // Phase 1: コア部品の直列化をレジストリ走査へ
+#include "terrain/TerrainIO.h"             // 複製時に .hf のパスを振り直す
+#include "terrain/SculptIO.h"              // 複製時に .smsh のパスを振り直す
 
 #pragma warning(push)
 #pragma warning(disable: 4189 4456 4458 4267 4996)
@@ -243,6 +246,7 @@ static void RegisterCoreComponentSerializers()
     R.Register(MakeReflectedInfo<CharacterController>("CharacterController", "characterController", true));
     R.Register(MakeReflectedInfo<Sprite2D>("Sprite2D", "sprite2d", true));
     R.Register(MakeReflectedInfo<TrailRenderer>("TrailRenderer", "trailRenderer", true));
+    R.Register(MakeReflectedInfo<DecalComponent>("DecalComponent", "decal", true));
     R.Register(MakeReflectedInfo<NetworkIdentity>("NetworkIdentity", "networkIdentity", true));
     R.Register(MakeReflectedInfo<NetworkTransform>("NetworkTransform", "networkTransform", true));
     // ゲーム内UI（retained-mode）。ランタイム状態（_付き）は ComponentMeta 未登録なので保存されない
@@ -259,6 +263,10 @@ static void RegisterCoreComponentSerializers()
     // タイムライン製クリップ(.uianim) / スプライトシート(.spranim) の再生器
     R.Register(MakeReflectedInfo<UIAnimPlayer>("UIAnimPlayer", "uiAnimPlayer", true));
     R.Register(MakeReflectedInfo<SpriteAnimator>("SpriteAnimator", "spriteAnimator", true));
+    // スケルタルアニメのステートマシン(.animfsm)。構造はアセット側、ここはパスとパラメータだけ
+    R.Register(MakeReflectedInfo<AnimatorController>("AnimatorController", "animatorController", true));
+    // フット IK（接地補正）。ボーン名が空なら一般的な命名から自動推定する
+    R.Register(MakeReflectedInfo<FootIK>("FootIK", "footIK", true));
     // プレハブインスタンスの紐付け。.prefab 側へ書き出す時だけ StripPrefabLinks で落とす
     R.Register(MakeReflectedInfo<PrefabLink>("PrefabLink", "prefabLink", true));
 
@@ -512,6 +520,27 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                 {"uvScale",       tr.uvScale},
                 {"color",         json::array({tr.color.x, tr.color.y, tr.color.z, tr.color.w})}
             };
+            // テクスチャスプラット。layerSetPath が空のときは 1 つも書かない
+            // ＝既存シーンの JSON が 1 バイトも変わらない（完全後方互換）。
+            if (!tr.layerSetPath.empty())
+            {
+                auto& tj = ej["terrain"];
+                tj["layerSetPath"]       = tr.layerSetPath;
+                tj["splatPath"]          = tr.splatPath;
+                tj["heightBlendDepth"]   = tr.heightBlendDepth;
+                tj["triplanarSharpness"] = tr.triplanarSharpness;
+                tj["terrainMatFlags"]    = tr.terrainMatFlags;
+                tj["macroScale"]         = tr.macroScale;
+                tj["macroStrength"]      = tr.macroStrength;
+                tj["distTilingStart"]    = tr.distTilingStart;
+                tj["distTilingFarScale"] = tr.distTilingFarScale;
+                tj["normalStrength"]     = tr.normalStrength;
+                tj["pomHeightScale"]     = tr.pomHeightScale;
+                tj["pomFadeStart"]       = tr.pomFadeStart;
+                tj["pomFadeEnd"]         = tr.pomFadeEnd;
+                tj["pomMaxSteps"]        = tr.pomMaxSteps;
+                tj["splatResolution"]    = tr.splatResolution;
+            }
         }
 
         // スカルプトメッシュ（異形）。頂点配列そのものは assets/sculpt/*.smsh 側にあり、
@@ -777,6 +806,119 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
         };
     }
 
+    // コンタクトシャドウ設定（シーン単位）
+    {
+        const auto& cs = scene.GetContactShadowSettings();
+        root["contactShadow"] = {
+            {"enabled",      cs.enabled},
+            {"rayLength",    cs.rayLength},
+            {"thickness",    cs.thickness},
+            {"bias",         cs.bias},
+            {"intensity",    cs.intensity},
+            {"steps",        cs.steps},
+            {"maxDistance",  cs.maxDistance},
+            {"fadeDistance", cs.fadeDistance},
+        };
+    }
+
+    // SSR / SSGI 設定（シーン単位）。どちらも既定 OFF なので旧シーンは無変更で開く。
+    {
+        const auto& sr = scene.GetSsrSettings();
+        root["ssr"] = {
+            {"enabled",         sr.enabled},
+            {"intensity",       sr.intensity},
+            {"maxDistance",     sr.maxDistance},
+            {"thickness",       sr.thickness},
+            {"maxSteps",        sr.maxSteps},
+            {"stride",          sr.stride},
+            {"roughnessCutoff", sr.roughnessCutoff},
+            {"edgeFade",        sr.edgeFade},
+            {"bias",            sr.bias},
+        };
+        const auto& sg = scene.GetSsgiSettings();
+        root["ssgi"] = {
+            {"enabled",     sg.enabled},
+            {"intensity",   sg.intensity},
+            {"radius",      sg.radius},
+            {"thickness",   sg.thickness},
+            {"rayCount",    sg.rayCount},
+            {"stepCount",   sg.stepCount},
+            {"clampValue",  sg.clampValue},
+            {"feedback",    sg.feedback},
+            {"iblFallback", sg.iblFallback},
+        };
+    }
+
+    // TAA 設定（シーン単位）。debugVelocity は目視検証用の一時トグルなので保存しない。
+    {
+        const auto& ta = scene.GetTaaSettings();
+        root["taa"] = {
+            {"enabled",       ta.enabled},
+            {"sampleCount",   ta.sampleCount},
+            {"feedbackMin",   ta.feedbackMin},
+            {"feedbackMax",   ta.feedbackMax},
+            {"varianceGamma", ta.varianceGamma},
+            {"jitterScale",   ta.jitterScale},
+        };
+    }
+
+    // PCSS（ソフトシャドウ・シーン単位）。既定 OFF なので、未設定シーンは従来どおり。
+    {
+        const auto& pc = scene.GetShadowPcssSettings();
+        root["shadowPcss"] = {
+            {"enabled",             pc.enabled},
+            {"lightTanAngle",       pc.lightTanAngle},
+            {"maxPenumbraTexels",   pc.maxPenumbraTexels},
+            {"blockerSearchTexels", pc.blockerSearchTexels},
+            {"temporalDither",      pc.temporalDither},
+        };
+    }
+
+    // DXR レイトレーシング（シーン単位）。既定 OFF なので、未設定シーンは従来どおり。
+    // forceBuildTlas は目視検証用の一時トグルなので保存しない。
+    {
+        const auto& rt = scene.GetRtSettings();
+        root["raytracing"] = {
+            {"shadowEnabled",      rt.shadowEnabled},
+            {"shadowSunAngle",     rt.shadowSunAngle},
+            {"shadowNormalBias",   rt.shadowNormalBias},
+            {"shadowMaxDistance",  rt.shadowMaxDistance},
+            {"shadowIntensity",    rt.shadowIntensity},
+            {"aoEnabled",          rt.aoEnabled},
+            {"aoRadius",           rt.aoRadius},
+            {"aoRayCount",         rt.aoRayCount},
+            {"aoIntensity",        rt.aoIntensity},
+            {"aoPower",            rt.aoPower},
+            {"aoCombineWithSsao",  rt.aoCombineWithSsao},
+            {"maxInstances",       rt.maxInstances},
+        };
+    }
+
+    // ボリュメトリックフォグ（シーン単位）。debugMode は目視検証用の一時トグルなので保存しない。
+    {
+        const auto& vf = scene.GetVolumetricFogSettings();
+        root["volumetricFog"] = {
+            {"enabled",           vf.enabled},
+            {"density",           vf.density},
+            {"albedo",            {vf.albedo.x, vf.albedo.y, vf.albedo.z}},
+            {"anisotropy",        vf.anisotropy},
+            {"heightFalloff",     vf.heightFalloff},
+            {"heightRef",         vf.heightRef},
+            {"distance",          vf.distance},
+            {"depthDistribution", vf.depthDistribution},
+            {"ambient",           {vf.ambient.x, vf.ambient.y, vf.ambient.z}},
+            {"sunIntensity",      vf.sunIntensity},
+            {"lightScattering",   vf.lightScattering},
+            {"temporal",          vf.temporal},
+            {"temporalBlend",     vf.temporalBlend},
+            {"extendBeyondRange", vf.extendBeyondRange},
+        };
+    }
+
+    // デカールアトラス（assets 相対の 1 枚）。空のときは書かない＝旧シーンと差分ゼロ。
+    if (!scene.GetDecalAtlasPath().empty())
+        root["decalAtlas"] = scene.GetDecalAtlasPath();
+
     return root;
 }
 
@@ -871,6 +1013,155 @@ static void LoadSSAOSettings(Scene& scene, const json& root)
     scene.GetSSAOSettings() = ss;
 }
 
+// JSON からコンタクトシャドウ設定を復元（contactShadow が無ければデフォルト = 後方互換）
+static void LoadContactShadowSettings(Scene& scene, const json& root)
+{
+    ContactShadowSettings cs;  // デフォルト（未指定キーは既定値を維持）
+    if (root.contains("contactShadow"))
+    {
+        const auto& cj = root["contactShadow"];
+        cs.enabled      = cj.value("enabled",      cs.enabled);
+        cs.rayLength    = cj.value("rayLength",    cs.rayLength);
+        cs.thickness    = cj.value("thickness",    cs.thickness);
+        cs.bias         = cj.value("bias",         cs.bias);
+        cs.intensity    = cj.value("intensity",    cs.intensity);
+        cs.steps        = cj.value("steps",        cs.steps);
+        cs.maxDistance  = cj.value("maxDistance",  cs.maxDistance);
+        cs.fadeDistance = cj.value("fadeDistance", cs.fadeDistance);
+    }
+    scene.GetContactShadowSettings() = cs;
+}
+
+// JSON から SSR / SSGI 設定を復元（キーが無ければデフォルト OFF = 後方互換）
+static void LoadScreenSpaceGiSettings(Scene& scene, const json& root)
+{
+    SsrSettings sr;
+    if (root.contains("ssr"))
+    {
+        const auto& j = root["ssr"];
+        sr.enabled         = j.value("enabled",         sr.enabled);
+        sr.intensity       = j.value("intensity",       sr.intensity);
+        sr.maxDistance     = j.value("maxDistance",     sr.maxDistance);
+        sr.thickness       = j.value("thickness",       sr.thickness);
+        sr.maxSteps        = j.value("maxSteps",        sr.maxSteps);
+        sr.stride          = j.value("stride",          sr.stride);
+        sr.roughnessCutoff = j.value("roughnessCutoff", sr.roughnessCutoff);
+        sr.edgeFade        = j.value("edgeFade",        sr.edgeFade);
+        sr.bias            = j.value("bias",            sr.bias);
+    }
+    scene.GetSsrSettings() = sr;
+
+    SsgiSettings sg;
+    if (root.contains("ssgi"))
+    {
+        const auto& j = root["ssgi"];
+        sg.enabled     = j.value("enabled",     sg.enabled);
+        sg.intensity   = j.value("intensity",   sg.intensity);
+        sg.radius      = j.value("radius",      sg.radius);
+        sg.thickness   = j.value("thickness",   sg.thickness);
+        sg.rayCount    = j.value("rayCount",    sg.rayCount);
+        sg.stepCount   = j.value("stepCount",   sg.stepCount);
+        sg.clampValue  = j.value("clampValue",  sg.clampValue);
+        sg.feedback    = j.value("feedback",    sg.feedback);
+        sg.iblFallback = j.value("iblFallback", sg.iblFallback);
+    }
+    scene.GetSsgiSettings() = sg;
+}
+
+// JSON から TAA 設定を復元（taa が無ければデフォルト = 後方互換。旧シーンは既定 OFF で開く）
+static void LoadTaaSettings(Scene& scene, const json& root)
+{
+    TaaSettings ta;  // デフォルト（未指定キーは既定値を維持）
+    if (root.contains("taa"))
+    {
+        const auto& tj = root["taa"];
+        ta.enabled       = tj.value("enabled",       ta.enabled);
+        ta.sampleCount   = tj.value("sampleCount",   ta.sampleCount);
+        ta.feedbackMin   = tj.value("feedbackMin",   ta.feedbackMin);
+        ta.feedbackMax   = tj.value("feedbackMax",   ta.feedbackMax);
+        ta.varianceGamma = tj.value("varianceGamma", ta.varianceGamma);
+        ta.jitterScale   = tj.value("jitterScale",   ta.jitterScale);
+    }
+    scene.GetTaaSettings() = ta;   // debugVelocity は常に既定 OFF（保存対象外）
+}
+
+// JSON から PCSS 設定を復元（shadowPcss が無ければデフォルト OFF = 後方互換）
+static void LoadShadowPcssSettings(Scene& scene, const json& root)
+{
+    ShadowPcssSettings pc;
+    if (root.contains("shadowPcss"))
+    {
+        const auto& pj = root["shadowPcss"];
+        pc.enabled             = pj.value("enabled",             pc.enabled);
+        pc.lightTanAngle       = pj.value("lightTanAngle",       pc.lightTanAngle);
+        pc.maxPenumbraTexels   = pj.value("maxPenumbraTexels",   pc.maxPenumbraTexels);
+        pc.blockerSearchTexels = pj.value("blockerSearchTexels", pc.blockerSearchTexels);
+        pc.temporalDither      = pj.value("temporalDither",      pc.temporalDither);
+    }
+    scene.GetShadowPcssSettings() = pc;
+}
+
+// JSON から DXR 設定を復元（raytracing が無ければデフォルト OFF = 後方互換）
+static void LoadRtSettings(Scene& scene, const json& root)
+{
+    RtSettings rt;
+    if (root.contains("raytracing"))
+    {
+        const auto& j = root["raytracing"];
+        rt.shadowEnabled     = j.value("shadowEnabled",     rt.shadowEnabled);
+        rt.shadowSunAngle    = j.value("shadowSunAngle",    rt.shadowSunAngle);
+        rt.shadowNormalBias  = j.value("shadowNormalBias",  rt.shadowNormalBias);
+        rt.shadowMaxDistance = j.value("shadowMaxDistance", rt.shadowMaxDistance);
+        rt.shadowIntensity   = j.value("shadowIntensity",   rt.shadowIntensity);
+        rt.aoEnabled         = j.value("aoEnabled",         rt.aoEnabled);
+        rt.aoRadius          = j.value("aoRadius",          rt.aoRadius);
+        rt.aoRayCount        = j.value("aoRayCount",        rt.aoRayCount);
+        rt.aoIntensity       = j.value("aoIntensity",       rt.aoIntensity);
+        rt.aoPower           = j.value("aoPower",           rt.aoPower);
+        rt.aoCombineWithSsao = j.value("aoCombineWithSsao", rt.aoCombineWithSsao);
+        rt.maxInstances      = j.value("maxInstances",      rt.maxInstances);
+    }
+    scene.GetRtSettings() = rt;   // forceBuildTlas は常に既定 OFF（保存対象外）
+}
+
+// JSON から ボリュメトリックフォグ設定を復元（volumetricFog が無ければデフォルト OFF = 後方互換）
+static void LoadVolumetricFogSettings(Scene& scene, const json& root)
+{
+    VolumetricFogSettings vf;  // デフォルト（未指定キーは既定値を維持）
+    if (root.contains("volumetricFog"))
+    {
+        const auto& j = root["volumetricFog"];
+        auto readVec3 = [&](const char* key, DirectX::XMFLOAT3& dst)
+        {
+            if (j.contains(key) && j[key].is_array() && j[key].size() >= 3)
+            {
+                dst.x = j[key][0].get<float>();
+                dst.y = j[key][1].get<float>();
+                dst.z = j[key][2].get<float>();
+            }
+        };
+        vf.enabled           = j.value("enabled",           vf.enabled);
+        vf.density           = j.value("density",           vf.density);
+        readVec3("albedo", vf.albedo);
+        vf.anisotropy        = j.value("anisotropy",        vf.anisotropy);
+        vf.heightFalloff     = j.value("heightFalloff",     vf.heightFalloff);
+        vf.heightRef         = j.value("heightRef",         vf.heightRef);
+        vf.distance          = j.value("distance",          vf.distance);
+        vf.depthDistribution = j.value("depthDistribution", vf.depthDistribution);
+        readVec3("ambient", vf.ambient);
+        vf.sunIntensity      = j.value("sunIntensity",      vf.sunIntensity);
+        vf.lightScattering   = j.value("lightScattering",   vf.lightScattering);
+        vf.temporal          = j.value("temporal",          vf.temporal);
+        vf.temporalBlend     = j.value("temporalBlend",     vf.temporalBlend);
+        vf.extendBeyondRange = j.value("extendBeyondRange", vf.extendBeyondRange);
+    }
+    scene.GetVolumetricFogSettings() = vf;   // debugMode は常に 0（保存対象外）
+
+    // デカールアトラス（assets 相対）。キーが無ければ空＝デカール無効。
+    scene.SetDecalAtlasPath(root.contains("decalAtlas") && root["decalAtlas"].is_string()
+                            ? root["decalAtlas"].get<std::string>() : std::string());
+}
+
 // JSON ノードから 1 エンティティを既存シーンに追加生成（Clear しない）
 // 失敗時は entt::null
 static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
@@ -917,6 +1208,22 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
             tp.color = { tj["color"][0].get<float>(), tj["color"][1].get<float>(),
                          tj["color"][2].get<float>(), tj["color"][3].get<float>() };
         }
+        // テクスチャスプラット（無ければ既定値のまま = layerSetPath 空 = 従来経路）
+        tp.layerSetPath       = tj.value("layerSetPath", std::string{});
+        tp.splatPath          = tj.value("splatPath", std::string{});
+        tp.heightBlendDepth   = tj.value("heightBlendDepth", 0.2f);
+        tp.triplanarSharpness = tj.value("triplanarSharpness", 4.0f);
+        tp.terrainMatFlags    = tj.value("terrainMatFlags", 0x0Du);
+        tp.macroScale         = tj.value("macroScale", 90.0f);
+        tp.macroStrength      = tj.value("macroStrength", 0.45f);
+        tp.distTilingStart    = tj.value("distTilingStart", 40.0f);
+        tp.distTilingFarScale = tj.value("distTilingFarScale", 7.0f);
+        tp.normalStrength     = tj.value("normalStrength", 1.0f);
+        tp.pomHeightScale     = tj.value("pomHeightScale", 0.05f);
+        tp.pomFadeStart       = tj.value("pomFadeStart", 8.0f);
+        tp.pomFadeEnd         = tj.value("pomFadeEnd", 25.0f);
+        tp.pomMaxSteps        = tj.value("pomMaxSteps", 24u);
+        tp.splatResolution    = tj.value("splatResolution", 512u);
         e = scene.SpawnTerrain(name, pos, tp).GetHandle();
         OutputDebugStringA(("[Load] SpawnTerrain: " + name + "\n").c_str());
     }
@@ -1291,6 +1598,18 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
     catch (const json::exception& e) { Logger::Warn("skybox 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadSSAOSettings(scene, root); }
     catch (const json::exception& e) { Logger::Warn("ssao 設定をスキップしました（型不正）: {}", e.what()); }
+    try { LoadContactShadowSettings(scene, root); }
+    catch (const json::exception& e) { Logger::Warn("contactShadow 設定をスキップしました（型不正）: {}", e.what()); }
+    try { LoadTaaSettings(scene, root); }
+    catch (const json::exception& e) { Logger::Warn("taa 設定をスキップしました（型不正）: {}", e.what()); }
+    try { LoadScreenSpaceGiSettings(scene, root); }
+    catch (const json::exception& e) { Logger::Warn("ssr/ssgi 設定をスキップしました（型不正）: {}", e.what()); }
+    try { LoadShadowPcssSettings(scene, root); }
+    catch (const json::exception& e) { Logger::Warn("shadowPcss 設定をスキップしました（型不正）: {}", e.what()); }
+    try { LoadVolumetricFogSettings(scene, root); }
+    catch (const json::exception& e) { Logger::Warn("volumetricFog 設定をスキップしました（型不正）: {}", e.what()); }
+    try { LoadRtSettings(scene, root); }
+    catch (const json::exception& e) { Logger::Warn("raytracing 設定をスキップしました（型不正）: {}", e.what()); }
 
     // リアルタイム影 ON/OFF（キーが無ければ既定 ON ＝後方互換）
     scene.SetShadowsEnabled(root.value("shadows", true));
@@ -1604,10 +1923,63 @@ entt::entity SceneSerializer::DuplicateEntity(Scene& scene, entt::entity src,
         return entt::null;
 
     json ej = SerializeEntityJson(reg, src, assetsDir);
-    ej["name"] = MakeUniqueName(scene, reg.get<NameTag>(src).name);
+    const std::string uniqueName = MakeUniqueName(scene, reg.get<NameTag>(src).name);
+    ej["name"] = uniqueName;
+
+    // 地形(.hf) / スカルプト(.smsh) の実データはシーン JSON に入らず assets 配下の外部ファイルにある。
+    // JSON を素通しでコピーすると複製元と複製先が同じファイルを指し、どちらを彫っても
+    // 両方が同じ .hf へ自動保存されて壊れる。→ 複製先には固有のパスを振る。
+    // 実データはこの時点でまだ存在しないので、下で複製元の中身をメモリ上でコピーし、
+    // _needsSave を立てて TerrainPanel / SculptPanel に書き出させる。
+    if (ej.contains("terrain") && ej["terrain"].is_object())
+    {
+        ej["terrain"]["heightmapPath"] = terrain::MakeHeightFieldRelPath(uniqueName);
+        if (ej["terrain"].contains("splatPath")
+            && !ej["terrain"]["splatPath"].get<std::string>().empty())
+            ej["terrain"]["splatPath"] = terrain::MakeSplatRelPath(uniqueName);
+    }
+    if (ej.contains("sculpt") && ej["sculpt"].is_object())
+        ej["sculpt"]["meshPath"] = sculpt::MakeSculptMeshRelPath(uniqueName);
 
     entt::entity copy = InstantiateEntityJson(scene, ej, assetsDir);
     if (copy == entt::null) return entt::null;
+
+    // 実データのコピー。Spawn* は「新パスのファイルが無い」ので平坦 / 素体へフォールバック
+    // しているため、ここで複製元の中身を流し込んで見た目とコリジョンを一致させる。
+    // 注: InstantiateEntityJson でコンポーネントプールが再確保されうるので、
+    //     複製元側のポインタもここで取り直すこと。
+    if (auto* dstT = reg.try_get<Terrain>(copy))
+    {
+        const auto* srcT = reg.try_get<Terrain>(src);
+        if (srcT && srcT->_hf && dstT->_hf && srcT->_hf->IsValid())
+        {
+            *dstT->_hf     = *srcT->_hf;
+            dstT->resolution = dstT->_hf->Resolution();
+            dstT->worldSize  = dstT->_hf->WorldSize();
+            dstT->ClearDirtyRect();          // 矩形無効 = 全面再構築
+            dstT->_meshDirty     = true;
+            dstT->_colliderDirty = true;
+            dstT->_needsSave     = true;     // 新しい .hf を書き出させる
+        }
+        if (srcT && srcT->_splat && srcT->_splat->IsValid())
+        {
+            if (!dstT->_splat) dstT->_splat = std::make_shared<TerrainSplatMap>();
+            *dstT->_splat = *srcT->_splat;
+            dstT->_splat->Touch();
+            dstT->_splatNeedsSave = true;    // 新しい .splat を書き出させる
+        }
+    }
+    if (auto* dstS = reg.try_get<SculptMesh>(copy))
+    {
+        const auto* srcS = reg.try_get<SculptMesh>(src);
+        if (srcS && srcS->_data && dstS->_data && srcS->_data->IsValid())
+        {
+            *dstS->_data = *srcS->_data;
+            dstS->_meshDirty     = true;
+            dstS->_colliderDirty = true;
+            dstS->_needsSave     = true;     // 新しい .smsh を書き出させる
+        }
+    }
 
     // 親は元エンティティと同じにする
     reg.get<Transform>(copy).parent = reg.get<Transform>(src).parent;
@@ -1668,6 +2040,51 @@ entt::entity SceneSerializer::SwapEntityModel(Scene& scene, entt::entity e,
 // ── Prefab / サブツリー ──
 // root とその全子孫を 1 つの JSON（シーンと同形式 + parent をローカル index 参照）に直列化する。
 // root の親（サブツリー外）は含めない＝プレハブは自己完結する。
+// 地形(.hf) / スプラット(.splat) / スカルプト(.smsh) の実データはシーン JSON に入らず
+// assets 配下の外部ファイルにある。複製 / ペースト / プレハブ展開で名前が連番リネームされたのに
+// パスを素通しでコピーすると、複製元と複製先が同じファイルを指す。以後どちらを彫っても
+// 同じファイルへ自動保存され、両方が壊れる。
+// → リネームされたら実ファイルを新しい名前へコピーし、パスもそこへ付け替える。
+//   コピーできなかった場合はパスを付け替えない（＝従来どおり共有。参照切れで平坦になるより安全）。
+static void RepointGeneratedAssets(json& ej, const std::string& oldName,
+                                   const std::string& newName, const std::string& assetsDir)
+{
+    if (newName.empty() || oldName == newName) return;
+    if (!ej.contains("terrain") && !ej.contains("sculpt")) return;
+
+    namespace fs = std::filesystem;
+    const std::string base = assetsDir.empty() ? PathResolver::AssetsDir() : assetsDir;
+
+    auto repoint = [&](json& node, const char* key, const std::string& newRel)
+    {
+        if (!node.is_object() || !node.contains(key) || !node[key].is_string()) return;
+        const std::string oldRel = node[key].get<std::string>();
+        if (oldRel.empty() || oldRel == newRel) return;   // 未保存はそのまま（保存時に自分の名前で決まる）
+
+        std::error_code ec;
+        const fs::path src(base + oldRel);
+        const fs::path dst(base + newRel);
+        if (!fs::exists(src, ec)) return;
+        fs::create_directories(dst.parent_path(), ec);
+        fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
+        if (ec)
+        {
+            Logger::Warn("複製時に {} を {} へコピーできませんでした（元と共有します）: {}",
+                         oldRel, newRel, ec.message());
+            return;
+        }
+        node[key] = newRel;
+    };
+
+    if (ej.contains("terrain") && ej["terrain"].is_object())
+    {
+        repoint(ej["terrain"], "heightmapPath", terrain::MakeHeightFieldRelPath(newName));
+        repoint(ej["terrain"], "splatPath",     terrain::MakeSplatRelPath(newName));
+    }
+    if (ej.contains("sculpt") && ej["sculpt"].is_object())
+        repoint(ej["sculpt"], "meshPath", sculpt::MakeSculptMeshRelPath(newName));
+}
+
 std::string SceneSerializer::SerializeSubtree(const Scene& scene, entt::entity root,
                                               const std::string& assetsDir)
 {
@@ -1742,7 +2159,11 @@ entt::entity SceneSerializer::InstantiateSubtree(Scene& scene, const std::string
         try
         {
             json copy = ej;
-            copy["name"] = MakeUniqueName(scene, ej.value("name", std::string("Unnamed")));
+            const std::string oldName = ej.value("name", std::string("Unnamed"));
+            const std::string newName = MakeUniqueName(scene, oldName);
+            copy["name"] = newName;
+            // 地形/スカルプトの外部ファイルを複製先専用にする（共有バグの根治はここ）
+            RepointGeneratedAssets(copy, oldName, newName, assetsDir);
             e = InstantiateEntityJson(scene, copy, assetsDir);
         }
         catch (const std::exception& ex)

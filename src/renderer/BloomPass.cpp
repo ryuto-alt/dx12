@@ -149,7 +149,6 @@ void BloomPass::Resize(GraphicsDevice& device, u32 width, u32 height)
 
 u32 BloomPass::Generate(CommandList& cmd, DescriptorHeap* srvHeap,
                         D3D12_GPU_DESCRIPTOR_HANDLE sceneSrvGpu,
-                        float uvOfsX, float uvOfsY, float uvScaleX, float uvScaleY,
                         float sceneTexelW, float sceneTexelH,
                         const PostProcessSettings& s)
 {
@@ -177,8 +176,8 @@ u32 BloomPass::Generate(CommandList& cmd, DescriptorHeap* srvHeap,
 
         if (i == 0)
         {
-            cb.srcRect[0] = uvOfsX;   cb.srcRect[1] = uvOfsY;
-            cb.srcRect[2] = uvScaleX; cb.srcRect[3] = uvScaleY;
+            cb.srcRect[0] = 0.0f; cb.srcRect[1] = 0.0f;   // ★#16: シーンは RT 全面
+            cb.srcRect[2] = 1.0f; cb.srcRect[3] = 1.0f;
             cb.texelP[0]  = sceneTexelW; cb.texelP[1] = sceneTexelH;
             cb.texelP[2]  = 1.0f;  // 初段: Karis + しきい値抽出
             native->SetGraphicsRootDescriptorTable(0, sceneSrvGpu);

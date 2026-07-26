@@ -10,6 +10,7 @@
 #include <Windows.h>
 #include <shellapi.h>   // CommandLineToArgvW（--net-client / --project の解析用）
 #include <string>
+#include <stdexcept>   // ビルド健全性チェックの std::runtime_error
 #include <fstream>
 #include <sstream>
 #include <vector>
@@ -215,6 +216,33 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
 
     try
     {
+        // ★ビルド健全性の自己検査。引数解析より前＝全経路（--validate / --write-version /
+        //   GameRuntime 含む）で必ず通す。
+        //
+        // main.cpp の .obj が古い Application.h のまま再コンパイルされずに残ると、WinMain が
+        // 確保するスタック領域より Application::Application() が書き込む量のほうが大きくなり、
+        // ローカル変数 `Application app` の枠を溢れて /GS のスタッククッキーを踏み潰す。
+        // 結果は 0xC0000409 (STATUS_STACK_BUFFER_OVERRUN / __fastfail サブコード2) での即死。
+        // __fastfail は SEH を迂回するので CrashHandler も catch も走らず、ログも dmp も
+        // 一切残らない＝「何も言わずに落ちる」ため原因特定が極めて困難になる。
+        // 2026-07-25 に実際にこれで起動不能になった（ninja の依存記録が #deps 0 に壊れており
+        // Application.h を書き換えても main.cpp が再コンパイルされなかった）。
+        //
+        // 復旧手順: build ディレクトリを作り直す。あるいは
+        //   cmake --build <builddir> -- -t deps
+        // で "#deps 0" になっている .obj を探し、その .cpp を touch して再ビルドする。
+        if (sizeof(dx12e::Application) != dx12e::Application::CompiledLayoutSize())
+        {
+            throw std::runtime_error(
+                "ビルドが壊れています: sizeof(Application) が main.cpp では "
+                + std::to_string(sizeof(dx12e::Application))
+                + " バイト、Application.cpp では "
+                + std::to_string(dx12e::Application::CompiledLayoutSize())
+                + " バイトになっています（古い .obj の再コンパイル漏れ）。\n"
+                  "build ディレクトリを作り直すか、"
+                  "cmake --build <builddir> -- -t deps で \"#deps 0\" の .obj を探してください。");
+        }
+
         bool gameMode  = false;
         bool buildMode = false;
         std::string buildProjectDir;  // --build <dir> で指定したプロジェクト（空=組み込み）

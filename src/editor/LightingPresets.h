@@ -120,10 +120,22 @@ inline PostProcessSettings ApplyLightingPresetToPost(const LightingPreset& p,
 }
 
 // GPU へ送れる灯数の上限。超えたぶんは【無言で描画されない】ので、エディタの警告表示と
-// MCP の dx12_list_lights が同じ数字を出せるようここに置く（shaders/forward/Lighting.hlsli と一致）。
-inline constexpr int kLightBudgetPoint      = 8;   // MAX_POINT_LIGHTS
-inline constexpr int kLightBudgetSpot       = 8;   // MAX_SPOT_LIGHTS
-inline constexpr int kLightBudgetShadowSpot = 4;   // MAX_SHADOW_SPOT（Application::kMaxShadowSpot）
-inline constexpr int kLightBudgetShadowPoint = 2;  // Application::kMaxShadowPoint（6面/灯）
+// MCP の dx12_list_lights が同じ数字を出せるようここに置く。
+//
+// ★クラスタードライティング（Forward+）化で「点 8 / スポット 8」の個別上限は撤廃された。
+//   今の上限は point + spot の合計 1024 灯（src/renderer/ClusterMath.h の kMaxSceneLights）。
+//   ただし 1 クラスタ（16x9x24 グリッドの 1 マス）で評価できるのは 128 灯までで、
+//   ここを超えた分は【無言で消える】。これは CPU 側からは検出できないので、
+//   エディタのクラスタデバッグ表示（ライト複雑度ヒートマップ）で目視するしかない。
+//
+//   影マップの本数（spot 4 / point 2）は据え置き＝クラスタード化しても
+//   シャドウパスの描画回数は 1 回も減らないため（別問題として切り離してある）。
+inline constexpr int kLightBudgetTotal      = 1024;  // point + spot の合計（kMaxSceneLights）
+inline constexpr int kLightBudgetPerCluster = 128;   // 1 クラスタ内で評価できる灯数（kMaxLightsPerCluster）
+inline constexpr int kLightBudgetShadowSpot = 4;     // MAX_SHADOW_SPOT（Application::kMaxShadowSpot）
+inline constexpr int kLightBudgetShadowPoint = 2;    // Application::kMaxShadowPoint（6面/灯）
+// 後方互換のエイリアス（呼び出し側を段階的に移行するため。どちらも合計上限を指す）。
+inline constexpr int kLightBudgetPoint = kLightBudgetTotal;
+inline constexpr int kLightBudgetSpot  = kLightBudgetTotal;
 
 } // namespace dx12e

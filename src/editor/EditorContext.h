@@ -203,6 +203,24 @@ public:
     bool  view2D     = false;
     float view2DZoom = 6.0f;   // 正射の縦半分（世界単位）。小さいほどズームイン。
 
+    // クラスタードライティング（Forward+）のデバッグ表示。
+    // 0=off / 1=ライト複雑度ヒートマップ（青→緑→赤。上限 128 灯に張り付いた所は白）/
+    // 2=クラスタ境界。Application::Render が毎フレーム読んで b1 の clusterExtra.z へ流す。
+    // 「1 クラスタ 128 灯を超えて無言で切り捨てられている場所」を見つける唯一の手段なので、
+    // 診断（DeepDiagnostics の lighting）と dx12_list_lights の警告からここへ誘導している。
+    u32 clusterDebugMode = 0;
+
+    // ---- DXR（レイトレーシング）の実行時状態。Application::Render が毎フレーム書き、
+    //      ライティング窓の「レイトレーシング (DXR)」節が読むだけ（編集はしない）。
+    //      ★非対応 GPU でチェックボックスを黙って無効にするのが最悪なので、
+    //        BeginDisabled + 理由表示に必要な値をここへ流す（計画09 §5.3）。
+    bool dxrSupported      = false;   // 6 段ゲートを全部通ったか
+    int  dxrTier           = 0;       // D3D12_RAYTRACING_TIER の実値（0=非対応 / 10 / 11 / 12）
+    int  dxrShaderModel    = 0;       // D3D_SHADER_MODEL の実値（0x65 = SM 6.5）
+    u32  dxrInstances      = 0;       // 直近フレームで TLAS に入ったインスタンス数
+    u32  dxrSkippedSkinned = 0;       // TLAS から外したスキンド数（CSM が担当する）
+    u64  dxrAsBytes        = 0;       // 加速構造の VRAM 合計
+
     // UI 編集モード（ツールバーの「UI」トグル）。ON 中は非 Play でも SceneView に
     // ゲーム内 UI（UICanvas ツリー）をプレビュー描画し、UI 要素のクリック選択・
     // ドラッグ編集を 3D ピッキングより優先する。Play 中/ゲームモードは従来どおり
@@ -219,6 +237,8 @@ public:
     bool showPostParams     = false;
     bool showSkybox         = false;   // Skybox / IBL
     bool showSSAO           = false;
+    bool showScreenSpaceGi  = false;   // SSR / SSGI 設定窓
+    bool showVolumetricFog  = false;   // ボリュメトリックフォグ設定窓
     bool showEngineSettings = false;
     bool showSceneFlow      = false;
     bool showProject        = false;
@@ -265,7 +285,8 @@ public:
 
     bool AnyToolWindowOpen() const
     {
-        return showPostProcess || showPostParams || showSkybox || showSSAO
+        return showPostProcess || showPostParams || showSkybox || showSSAO || showScreenSpaceGi
+            || showVolumetricFog
             || showEngineSettings || showSceneFlow || showProject || showVersionControl
             || showMcpBridge || showBuildSettings || showNetworkStatus || showNetworkSettings;
     }

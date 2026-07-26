@@ -36,6 +36,8 @@
 #include <Jolt/Geometry/AABox.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Body/BodyInterface.h>
+#include <Jolt/Physics/Body/BodyLock.h>       // RaycastEx: 真の面法線を取るための BodyLockRead
+#include <Jolt/Physics/Body/BodyFilter.h>     // RaycastEx: セルフヒット除外
 #pragma warning(pop)
 
 #include <entt/entt.hpp>
@@ -1047,6 +1049,62 @@ RaycastHit PhysicsSystem::Raycast(XMFLOAT3 origin, XMFLOAT3 direction, f32 maxDi
 
         // Normal: approximate with up vector (full surface normal requires body lock)
         result.normal = { 0.0f, 1.0f, 0.0f };
+    }
+
+    return result;
+}
+
+RaycastHit PhysicsSystem::RaycastEx(XMFLOAT3 origin, XMFLOAT3 direction,
+                                    f32 maxDistance, uint32_t ignoreBody) const
+{
+    RaycastHit result;
+    if (!m_initialized) return result;
+    if (maxDistance <= 0.0f) return result;
+
+    XMVECTOR dir = XMVector3Normalize(XMLoadFloat3(&direction));
+    if (XMVectorGetX(XMVector3LengthSq(dir)) < 0.5f) return result;   // ゼロ方向
+    XMFLOAT3 normDir;
+    XMStoreFloat3(&normDir, dir);
+
+    const JPH::RRayCast ray(
+        JPH::RVec3(origin.x, origin.y, origin.z),
+        JPH::Vec3(normDir.x * maxDistance, normDir.y * maxDistance, normDir.z * maxDistance));
+
+    // セルフヒット除外。CharacterVirtual はブロードフェーズに body を持たないので
+    // キャラコン使用時は不要だが、RigidBody キャラや足元の自前コライダー用に用意する。
+    JPH::IgnoreSingleBodyFilter selfFilter{JPH::BodyID(ignoreBody)};
+    const JPH::BodyFilter defaultFilter;
+    const JPH::BodyFilter& bodyFilter =
+        (ignoreBody != 0xFFFFFFFFu) ? static_cast<const JPH::BodyFilter&>(selfFilter)
+                                    : defaultFilter;
+
+    JPH::RayCastResult hit;
+    if (!m_impl->physicsSystem->GetNarrowPhaseQuery().CastRay(
+            ray, hit, {}, {}, bodyFilter))
+    {
+        return result;
+    }
+
+    result.hit      = true;
+    result.distance = hit.mFraction * maxDistance;
+    result.bodyId   = hit.mBodyID.GetIndexAndSequenceNumber();
+
+    const JPH::RVec3 hitPoint = ray.GetPointOnRay(hit.mFraction);
+    result.point = { static_cast<f32>(hitPoint.GetX()),
+                     static_cast<f32>(hitPoint.GetY()),
+                     static_cast<f32>(hitPoint.GetZ()) };
+
+    // ★本物の面法線★ サブシェイプ ID とヒット点から取る。
+    // Body へ触るのでロックが要る（HeightField / Mesh でも三角形の法線が返る）。
+    result.normal = { 0.0f, 1.0f, 0.0f };   // ロックに失敗したときの保険
+    {
+        const JPH::BodyLockRead lock(m_impl->physicsSystem->GetBodyLockInterface(), hit.mBodyID);
+        if (lock.Succeeded())
+        {
+            const JPH::Vec3 n = lock.GetBody().GetWorldSpaceSurfaceNormal(hit.mSubShapeID2, hitPoint);
+            if (n.LengthSq() > 1.0e-6f)
+                result.normal = { n.GetX(), n.GetY(), n.GetZ() };
+        }
     }
 
     return result;

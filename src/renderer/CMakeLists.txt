@@ -10,6 +10,16 @@ add_library(Renderer STATIC
     DofPass.cpp
     MotionBlurPass.cpp
     SSAOPass.cpp
+    ContactShadowPass.cpp
+    TaaPass.cpp
+    RenderDebugPass.cpp
+    ScreenSpaceGiPass.cpp
+    AccelerationStructure.cpp
+    RaytracingScene.cpp
+    RtScreenPass.cpp
+    ClusteredLightCulling.cpp
+    VolumetricFogPass.cpp
+    DecalSystem.cpp
     SpriteRenderer.cpp
     SceneTransition.cpp
     ParticleSystem.cpp

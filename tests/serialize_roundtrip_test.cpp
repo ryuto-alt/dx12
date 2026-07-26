@@ -425,6 +425,108 @@ static void Test_NetworkTransform()
         });
 }
 
+static void Test_Decal()
+{
+    Case<DecalComponent>(
+        [](entt::registry& r, entt::entity e) {
+            DecalComponent d;
+            d.atlasUV       = {0.25f, 0.5f, 0.25f, 0.5f};
+            d.atlasUVNormal = {0.75f, 0.5f, 0.25f, 0.5f};
+            d.tint          = {0.9f, 0.2f, 0.1f};
+            d.opacity       = 0.75f;
+            d.emissive      = {0.0f, 1.5f, 0.25f};
+            d.normalStrength = 0.5f;
+            d.roughness     = 0.2f;
+            d.metallic      = 0.0f;
+            d.angleFadeDeg  = 45.0f;
+            d.fadeEdge      = 0.2f;
+            d.sortOrder     = 7;
+            r.emplace<DecalComponent>(e, d);
+        },
+        [](const DecalComponent& d) {
+            CHECK_F(d.atlasUV.x, 0.25f);       CHECK_F(d.atlasUV.w, 0.5f);
+            CHECK_F(d.atlasUVNormal.x, 0.75f); CHECK_F(d.atlasUVNormal.z, 0.25f);
+            CHECK_V3(d.tint, 0.9f, 0.2f, 0.1f);
+            CHECK_F(d.opacity, 0.75f);
+            CHECK_V3(d.emissive, 0.0f, 1.5f, 0.25f);
+            CHECK_F(d.normalStrength, 0.5f);
+            CHECK_F(d.roughness, 0.2f);
+            CHECK_F(d.metallic, 0.0f);
+            CHECK_F(d.angleFadeDeg, 45.0f);
+            CHECK_F(d.fadeEdge, 0.2f);
+            CHECK(d.sortOrder == 7);
+        });
+}
+
+// アニメーションステートマシン（.animfsm へのパス + 実行時パラメータ）。
+// _state / _loaded はランタイム専有なので meta 未登録＝往復に出てこないこと。
+static void Test_AnimatorController()
+{
+    Case<AnimatorController>(
+        [](entt::registry& r, entt::entity e) {
+            AnimatorController ac;
+            ac.graphPath       = "animfsm/humanoid_locomotion.animfsm";
+            ac.playOnStart     = false;
+            ac.speed           = 1.25f;
+            ac.applyRootMotion = true;
+            ac.eventChannel    = "player.";
+            r.emplace<AnimatorController>(e, std::move(ac));
+        },
+        [](const AnimatorController& ac) {
+            CHECK(ac.graphPath == "animfsm/humanoid_locomotion.animfsm");
+            CHECK(ac.playOnStart == false);
+            CHECK_F(ac.speed, 1.25f);
+            CHECK(ac.applyRootMotion == true);
+            CHECK(ac.eventChannel == "player.");
+            // 復元直後は必ず未ロード（複製先が元の FSM 実行状態を引き継がないこと）
+            CHECK(ac._state == nullptr);
+            CHECK(ac._loaded == false);
+        });
+}
+
+// フット IK（接地補正）。_ 付きのランタイム状態は往復に出てこないこと。
+static void Test_FootIK()
+{
+    Case<FootIK>(
+        [](entt::registry& r, entt::entity e) {
+            FootIK ik;
+            ik.enabled         = false;
+            ik.weight          = 0.75f;
+            ik.leftFootBone    = "mixamorig:LeftFoot";
+            ik.rightFootBone   = "mixamorig:RightFoot";
+            ik.pelvisBone      = "mixamorig:Hips";
+            ik.rayUpOffset     = 0.6f;
+            ik.rayLength       = 1.4f;
+            ik.footHeight      = 0.12f;
+            ik.maxPelvisDrop   = 0.4f;
+            ik.maxFootPitchDeg = 30.0f;
+            ik.smoothTime      = 0.08f;
+            ik.fadeOutTime     = 0.2f;
+            ik.alignToNormal   = false;
+            ik.kneeForward     = {0.0f, 0.0f, -1.0f};
+            r.emplace<FootIK>(e, ik);
+        },
+        [](const FootIK& ik) {
+            CHECK(ik.enabled == false);
+            CHECK_F(ik.weight, 0.75f);
+            CHECK(ik.leftFootBone == "mixamorig:LeftFoot");
+            CHECK(ik.rightFootBone == "mixamorig:RightFoot");
+            CHECK(ik.pelvisBone == "mixamorig:Hips");
+            CHECK_F(ik.rayUpOffset, 0.6f);
+            CHECK_F(ik.rayLength, 1.4f);
+            CHECK_F(ik.footHeight, 0.12f);
+            CHECK_F(ik.maxPelvisDrop, 0.4f);
+            CHECK_F(ik.maxFootPitchDeg, 30.0f);
+            CHECK_F(ik.smoothTime, 0.08f);
+            CHECK_F(ik.fadeOutTime, 0.2f);
+            CHECK(ik.alignToNormal == false);
+            CHECK_V3(ik.kneeForward, 0.0f, 0.0f, -1.0f);
+            // 復元直後は未解決（複製先が元の解決結果を引き継がないこと）
+            CHECK(ik._resolved == false);
+            CHECK(ik._lFoot == -1 && ik._rFoot == -1);
+        });
+}
+
 static void Test_BoxCollider()
 {
     Case<BoxCollider>(
@@ -1158,6 +1260,9 @@ int main()
     Test_RigidBody();
     Test_NetworkIdentity();
     Test_NetworkTransform();
+    Test_Decal();
+    Test_AnimatorController();
+    Test_FootIK();
     Test_BoxCollider();
     Test_SphereCollider();
     Test_CapsuleCollider();

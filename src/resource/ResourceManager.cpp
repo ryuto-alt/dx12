@@ -93,7 +93,8 @@ void ResourceManager::Initialize(GraphicsDevice* device, DescriptorHeap* srvHeap
 Texture* ResourceManager::GetOrLoadTexture(
     const std::wstring& filePath,
     ID3D12GraphicsCommandList* cmdList,
-    bool srgb)
+    bool srgb,
+    TextureUsage usage)
 {
     // キャッシュチェック
     auto it = m_textureCache.find(filePath);
@@ -119,14 +120,15 @@ Texture* ResourceManager::GetOrLoadTexture(
                 *m_device, cmdList,
                 bytes.data(), bytes.size(),
                 formatHint.c_str(),
-                srgb);
+                srgb, usage,
+                /*cacheKey=*/PathResolver::WideToUtf8(filePath));
         }
     }
 
     // VFS が空（ディスクモード / マウント前 / ファイル不在）なら元のファイル読み込みにフォールバック
     if (!texture)
     {
-        texture = TextureLoader::LoadFromFile(*m_device, cmdList, filePath, srgb);
+        texture = TextureLoader::LoadFromFile(*m_device, cmdList, filePath, srgb, usage);
     }
 
     if (!texture)
@@ -205,7 +207,9 @@ Texture* ResourceManager::GetOrLoadEmbeddedTexture(
     const std::string& key,
     const uint8_t* data, size_t dataSize,
     const char* formatHint,
-    ID3D12GraphicsCommandList* cmdList)
+    ID3D12GraphicsCommandList* cmdList,
+    bool srgb,
+    TextureUsage usage)
 {
     // wstring キーに変換してキャッシュ検索（UTF-8正変換。バイトコピーだと
     // 日本語キーが壊れて wstring パス経由のキャッシュと不一致になる）
@@ -214,7 +218,8 @@ Texture* ResourceManager::GetOrLoadEmbeddedTexture(
     if (it != m_textureCache.end())
         return it->second.get();
 
-    auto texture = TextureLoader::LoadFromMemory(*m_device, cmdList, data, dataSize, formatHint);
+    auto texture = TextureLoader::LoadFromMemory(*m_device, cmdList, data, dataSize, formatHint,
+                                                 srgb, usage, /*cacheKey=*/key);
     if (!texture) return nullptr;
 
     u32 srvIdx = m_srvHeap->AllocateIndex();

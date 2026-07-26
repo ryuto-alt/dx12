@@ -116,7 +116,24 @@ void RegisterCoreComponentMeta()
         .data<&Terrain::maxHeight>("maxHeight")
         .data<&Terrain::heightmapPath>("heightmapPath")
         .data<&Terrain::uvScale>("uvScale")
-        .data<&Terrain::color>("color");
+        .data<&Terrain::color>("color")
+        // テクスチャスプラット。layerSetPath が空なら従来経路（完全後方互換）。
+        // スプラット重みの実体（_splat）は .splat バイナリ側が正なので登録しない。
+        .data<&Terrain::layerSetPath>("layerSetPath")
+        .data<&Terrain::splatPath>("splatPath")
+        .data<&Terrain::heightBlendDepth>("heightBlendDepth")
+        .data<&Terrain::triplanarSharpness>("triplanarSharpness")
+        .data<&Terrain::terrainMatFlags>("terrainMatFlags")
+        .data<&Terrain::macroScale>("macroScale")
+        .data<&Terrain::macroStrength>("macroStrength")
+        .data<&Terrain::distTilingStart>("distTilingStart")
+        .data<&Terrain::distTilingFarScale>("distTilingFarScale")
+        .data<&Terrain::normalStrength>("normalStrength")
+        .data<&Terrain::pomHeightScale>("pomHeightScale")
+        .data<&Terrain::pomFadeStart>("pomFadeStart")
+        .data<&Terrain::pomFadeEnd>("pomFadeEnd")
+        .data<&Terrain::pomMaxSteps>("pomMaxSteps")
+        .data<&Terrain::splatResolution>("splatResolution");
 
     // スカルプトメッシュ。頂点配列（_data）は .smsh バイナリ側が正なので登録しない＝JSON には出ない。
     entt::meta_factory<SculptMesh>{}
@@ -173,6 +190,20 @@ void RegisterCoreComponentMeta()
         .data<&TrailRenderer::intensity>("intensity")
         .data<&TrailRenderer::blend>("blend")
         .data<&TrailRenderer::minDist>("minDist");
+
+    entt::meta_factory<DecalComponent>{}
+        .type("DecalComponent")
+        .data<&DecalComponent::atlasUV>("atlasUV")
+        .data<&DecalComponent::atlasUVNormal>("atlasUVNormal")
+        .data<&DecalComponent::tint>("tint")
+        .data<&DecalComponent::opacity>("opacity")
+        .data<&DecalComponent::emissive>("emissive")
+        .data<&DecalComponent::normalStrength>("normalStrength")
+        .data<&DecalComponent::roughness>("roughness")
+        .data<&DecalComponent::metallic>("metallic")
+        .data<&DecalComponent::angleFadeDeg>("angleFadeDeg")
+        .data<&DecalComponent::fadeEdge>("fadeEdge")
+        .data<&DecalComponent::sortOrder>("sortOrder");
 
     entt::meta_factory<NetworkIdentity>{}
         .type("NetworkIdentity")
@@ -353,6 +384,39 @@ void RegisterCoreComponentMeta()
         .data<&SpriteAnimator::playOnStart>("playOnStart")
         .data<&SpriteAnimator::speed>("speed")
         .data<&SpriteAnimator::applyTexture>("applyTexture");
+
+    // AnimatorController: _state / _loaded はランタイム状態なので登録しない
+    entt::meta_factory<AnimatorController>{}
+        .type("AnimatorController")
+        .data<&AnimatorController::graphPath>("graphPath")
+        .data<&AnimatorController::playOnStart>("playOnStart")
+        .data<&AnimatorController::speed>("speed")
+        .data<&AnimatorController::applyRootMotion>("applyRootMotion")
+        .data<&AnimatorController::eventChannel>("eventChannel");
+
+    // FootIK: _ 付きのランタイム状態（解決済みボーン index / 平滑値）は登録しない
+    entt::meta_factory<FootIK>{}
+        .type("FootIK")
+        .data<&FootIK::enabled>("enabled")
+        .data<&FootIK::weight>("weight")
+        .data<&FootIK::leftHipBone>("leftHipBone")
+        .data<&FootIK::leftKneeBone>("leftKneeBone")
+        .data<&FootIK::leftFootBone>("leftFootBone")
+        .data<&FootIK::leftToeBone>("leftToeBone")
+        .data<&FootIK::rightHipBone>("rightHipBone")
+        .data<&FootIK::rightKneeBone>("rightKneeBone")
+        .data<&FootIK::rightFootBone>("rightFootBone")
+        .data<&FootIK::rightToeBone>("rightToeBone")
+        .data<&FootIK::pelvisBone>("pelvisBone")
+        .data<&FootIK::rayUpOffset>("rayUpOffset")
+        .data<&FootIK::rayLength>("rayLength")
+        .data<&FootIK::footHeight>("footHeight")
+        .data<&FootIK::maxPelvisDrop>("maxPelvisDrop")
+        .data<&FootIK::maxFootPitchDeg>("maxFootPitchDeg")
+        .data<&FootIK::smoothTime>("smoothTime")
+        .data<&FootIK::fadeOutTime>("fadeOutTime")
+        .data<&FootIK::alignToNormal>("alignToNormal")
+        .data<&FootIK::kneeForward>("kneeForward");
 
     entt::meta_factory<PrefabLink>{}
         .type("PrefabLink")

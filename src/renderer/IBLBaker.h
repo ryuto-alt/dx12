@@ -64,6 +64,11 @@ private:
     // RecreatePipelines 用に保持
     std::wstring m_shaderDir;
 
+    // 派生3枚の現在ステート。Bake は 1 回きりではなく環境マップ差し替え/シーン切替でも
+    // 呼ばれる。前回の末尾で PIXEL_SHADER_RESOURCE にしてあるので、2 回目以降は
+    // UAV へ戻してから書く（戻し忘れるとステート不整合でドライバが落ちる）。
+    D3D12_RESOURCE_STATES m_derivedState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+
     u32  m_blockStart = 0xFFFFFFFFu;  // srvHeap 上の連続3枚先頭(=irradiance)
     bool m_valid  = false;
     bool m_hasEnv = false;

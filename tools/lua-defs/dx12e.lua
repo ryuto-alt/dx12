@@ -67,6 +67,7 @@ function Vec3.new(x, y, z) end
 ---| "LuaScript"
 ---| "ParticleEmitter"
 ---| "TrailRenderer"
+---| "DecalComponent"
 ---| "Trigger"
 ---| "NetworkIdentity"
 ---| "NetworkTransform"
@@ -113,6 +114,11 @@ function Entity:playAnimByName(name, blendDuration) end
 ---@param loop boolean
 function Entity:setLooping(loop) end
 
+---スケルタルアニメの再生速度倍率（既定 1.0、2.0 で 2 倍速、0 で一時停止）。
+---移動速度と足の同期に使う。
+---@param speed number
+function Entity:setAnimSpeed(speed) end
+
 ---アニメクリップ数
 ---@return integer
 function Entity:getAnimCount() end
@@ -121,6 +127,78 @@ function Entity:getAnimCount() end
 ---@param index integer 0始まり
 ---@return string
 function Entity:getAnimName(index) end
+
+--=============================================================================
+-- アニメーションステートマシン（.animfsm / AnimatorController）
+-- グラフの構造はアセット側。Lua が触るのはパラメータだけ。
+-- AnimatorController が無いときは黙って no-op / 既定値を返す。
+--=============================================================================
+
+---FSM の float パラメータを書く（例 setAnimFloat("speed", 3.2)）
+---@param name string
+---@param value number
+function Entity:setAnimFloat(name, value) end
+
+---FSM の bool パラメータを書く
+---@param name string
+---@param value boolean
+function Entity:setAnimBool(name, value) end
+
+---FSM のトリガを立てる（1 回だけ。条件を満たした遷移が消費する）
+---@param name string
+function Entity:setAnimTrigger(name) end
+
+---FSM の float パラメータを読む（無ければ 0）
+---@param name string
+---@return number
+function Entity:getAnimFloat(name) end
+
+---FSM の bool パラメータを読む（無ければ false）
+---@param name string
+---@return boolean
+function Entity:getAnimBool(name) end
+
+---現在のステート名（無ければ ""）
+---@param layer integer? 省略で 0
+---@return string
+function Entity:getAnimStateName(layer) end
+
+---現ステートの正規化時間 0..1（攻撃の当たり判定窓などに使う）
+---@param layer integer? 省略で 0
+---@return number
+function Entity:getAnimNormalizedTime(layer) end
+
+---ステートへ強制遷移（デバッグ / カットシーン用）
+---@param stateName string
+---@param blendDuration number? 省略で 0.2
+function Entity:playAnimState(stateName, blendDuration) end
+
+---レイヤー重み 0..1（上半身レイヤーのフェードイン等）
+---@param layer integer
+---@param w number
+function Entity:setAnimLayerWeight(layer, w) end
+
+---レイヤー重みを読む
+---@param layer integer
+---@return number
+function Entity:getAnimLayerWeight(layer) end
+
+--=============================================================================
+-- フット IK（接地補正）。FootIK コンポーネントが要る。Play 中のみ動く。
+--=============================================================================
+
+---フット IK の効きを実行時に変える 0..1
+---@param w number
+function Entity:setFootIKWeight(w) end
+
+---フット IK の効きを読む
+---@return number
+function Entity:getFootIKWeight() end
+
+---フット IK のレイが地面に当たっているか
+---@param rightFoot boolean? true で右足、省略/false で左足
+---@return boolean
+function Entity:isFootGrounded(rightFoot) end
 
 ---UIアニメクリップ(.uianim)を頭から再生する。UIAnimPlayer が無ければ自動で付く。
 ---clipPath 省略時は既に割り当てられているクリップを再生。

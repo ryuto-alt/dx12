@@ -129,8 +129,7 @@ void GodRaysPass::Resize(GraphicsDevice& device, u32 width, u32 height)
 
 u32 GodRaysPass::Generate(CommandList& cmd, DescriptorHeap* srvHeap,
                           D3D12_GPU_DESCRIPTOR_HANDLE depthSrvGpu,
-                          float uvOfsX, float uvOfsY, float uvScaleX, float uvScaleY,
-                          u32 vpLeft, u32 vpTop, u32 vpW, u32 vpH,
+                          u32 sceneW, u32 sceneH,
                           float sunUvX, float sunUvY, float fade,
                           const DirectX::XMFLOAT3& sunColor,
                           const PostProcessSettings& s)
@@ -139,30 +138,30 @@ u32 GodRaysPass::Generate(CommandList& cmd, DescriptorHeap* srvHeap,
     auto* native = cmd.GetNative();
 
     GRCB cb{};
-    cb.rectP[0] = uvOfsX;   cb.rectP[1] = uvOfsY;
-    cb.rectP[2] = uvScaleX; cb.rectP[3] = uvScaleY;
+    cb.rectP[0] = 0.0f; cb.rectP[1] = 0.0f;   // ★#16: シーンは RT 全面
+    cb.rectP[2] = 1.0f; cb.rectP[3] = 1.0f;
     cb.sunP[0]  = sunUvX;   cb.sunP[1]  = sunUvY;
     cb.sunP[2]  = fade;     cb.sunP[3]  = s.grIntensity;
     cb.sunCol[0] = sunColor.x; cb.sunCol[1] = sunColor.y; cb.sunCol[2] = sunColor.z;
     cb.sunCol[3] = (std::min)((std::max)(s.grDensity, 0.05f), 1.0f);
     cb.marchP[0] = (std::min)((std::max)(s.grDecay, 0.5f), 0.999f);
-    cb.marchP[1] = (vpH > 0) ? static_cast<float>(vpW) / static_cast<float>(vpH) : 1.0f;
+    cb.marchP[1] = (sceneH > 0) ? static_cast<float>(sceneW) / static_cast<float>(sceneH) : 1.0f;
 
     native->SetGraphicsRootSignature(m_rootSig.Get());
     native->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     native->IASetVertexBuffers(0, 0, nullptr);
     native->IASetIndexBuffer(nullptr);
 
-    // 半解像度のサブ矩形ビューポート（シーンと同じ正規化レイアウトを保つ）
-    const u32 hl = vpLeft / 2, ht = vpTop / 2;
-    const u32 hw = (std::max)(1u, vpW / 2), hh = (std::max)(1u, vpH / 2);
+    // ★半解像度 RT の実サイズをそのまま使う（Resize と同じ式なので必ず一致する）。
+    //   かつては vpLeft/2, vpW/2 と整数半減していてオフバイワンの温床だった（#16 で解消）。
+    const u32 hw = (std::max)(1u, m_width / 2), hh = (std::max)(1u, m_height / 2);
 
     // ---- パス1: 空マスク ----
     m_maskRT->Transition(cmd, D3D12_RESOURCE_STATE_RENDER_TARGET);
     {
         D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_maskRT->GetRtv();
         native->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-        cmd.SetViewportAndScissor(hl, ht, hw, hh);
+        cmd.SetViewportAndScissor(hw, hh);
         native->SetPipelineState(m_psoMask.Get());
         native->SetGraphicsRootDescriptorTable(0, depthSrvGpu);
         native->SetGraphicsRoot32BitConstants(1, kGRCBNum32, &cb, 0);
@@ -175,7 +174,7 @@ u32 GodRaysPass::Generate(CommandList& cmd, DescriptorHeap* srvHeap,
     {
         D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_shaftRT->GetRtv();
         native->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-        cmd.SetViewportAndScissor(hl, ht, hw, hh);
+        cmd.SetViewportAndScissor(hw, hh);
         native->SetPipelineState(m_psoBlur.Get());
         native->SetGraphicsRootDescriptorTable(0, srvHeap->GetGpuHandle(m_maskRT->GetSrvIndex()));
         native->SetGraphicsRoot32BitConstants(1, kGRCBNum32, &cb, 0);
