@@ -699,7 +699,9 @@ void RenderLightingPanel(Scene* scene,
         if (pg::Begin("LightSky"))
         {
             pg::InputTextStr("環境マップ", sky.envMapPath, nullptr,
-                             "assets 相対の .dds (TEXTURECUBE)。空なら IBL 無効＝従来の ambient");
+                             "assets 相対の .dds (TEXTURECUBE)。\n"
+                             "__procedural_sky__ = エンジン内蔵のグラデーション空（既定・アセット不要）。\n"
+                             "空なら IBL 無効＝従来の ambient");
             pg::SliderFloat("IBL 強度", &sky.iblIntensity, 0.0f, 3.0f, "%.2f");
             pg::SliderFloat("スカイ強度", &sky.skyboxIntensity, 0.0f, 3.0f, "%.2f");
             pg::Checkbox("背景を描く", &sky.drawSkybox, "OFF なら IBL だけ効かせて背景は塗りません");

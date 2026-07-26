@@ -198,9 +198,12 @@ void IBLBaker::Bake(GraphicsDevice& device, ID3D12GraphicsCommandList* cmdList,
         dev->CreateShaderResourceView(m_brdfLut.Get(), &l, srvHeap.GetCpuHandle(m_blockStart + 2));
     }
 
-    // env が無ければベイクせず、リソースを UAV→SRV へ遷移して bind 可能にして終了（hasIBL=false 運用）
-    if (!envCube)
+    // 派生3枚のステート遷移。★Bake は環境マップ差し替え/シーン切替で何度も呼ばれるので、
+    //   毎回「今どのステートか」を見て動かす。決め打ちで UNORDERED_ACCESS を StateBefore に
+    //   すると 2 回目以降で不整合になり、ドライバが ACCESS_VIOLATION で落ちる。
+    auto transitionDerived = [&](D3D12_RESOURCE_STATES after)
     {
+        if (m_derivedState == after) return;
         D3D12_RESOURCE_BARRIER b[3]{};
         ID3D12Resource* res[3] = { m_irradianceCube.Get(), m_prefilteredCube.Get(), m_brdfLut.Get() };
         for (int i = 0; i < 3; ++i)
@@ -208,13 +211,23 @@ void IBLBaker::Bake(GraphicsDevice& device, ID3D12GraphicsCommandList* cmdList,
             b[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
             b[i].Transition.pResource   = res[i];
             b[i].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-            b[i].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-            b[i].Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            b[i].Transition.StateBefore = m_derivedState;
+            b[i].Transition.StateAfter  = after;
         }
         cmdList->ResourceBarrier(3, b);
+        m_derivedState = after;
+    };
+
+    // env が無ければベイクせず、リソースを SRV へ遷移して bind 可能にして終了（hasIBL=false 運用）
+    if (!envCube)
+    {
+        transitionDerived(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         m_valid = true;   // テーブルは有効（中身ダミー）
         return;
     }
+
+    // 書き込みは UAV として行う（前回 Bake 済みなら SRV から戻す）
+    transitionDerived(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
     // ===== compute ベイク =====
     // env cube を読むため NON_PIXEL_SHADER_RESOURCE へ遷移。
@@ -289,6 +302,17 @@ void IBLBaker::Bake(GraphicsDevice& device, ID3D12GraphicsCommandList* cmdList,
     D3D12_GPU_VIRTUAL_ADDRESS cbBrdf = writeCB(1 + kPrefilterMips, kBrdfSize, 0.0f, envFaceSize);
     m_cbUpload->Unmap(0, nullptr);
 
+    // ★ディスクリプタテーブルを積む前に shader-visible ヒープを必ず bind する。
+    //   Bake は「毎フレームのレンダ経路」だけでなく Application::Initialize の専用
+    //   コマンドリスト（ヒープ未 bind）からも呼ばれる。bind を忘れると
+    //   SetComputeRootDescriptorTable が無効なハンドルを積み、Dispatch でドライバが
+    //   ACCESS_VIOLATION する（起動時クラッシュの正体）。同じヒープを張り直すだけなので
+    //   レンダ経路から呼ばれた場合も無害。
+    {
+        ID3D12DescriptorHeap* heaps[] = { srvHeap.GetHeap() };
+        cmdList->SetDescriptorHeaps(1, heaps);
+    }
+
     cmdList->SetComputeRootSignature(m_computeRS.Get());
 
     auto dispatch = [&](ID3D12PipelineState* pso, D3D12_GPU_VIRTUAL_ADDRESS cb,
@@ -318,19 +342,7 @@ void IBLBaker::Bake(GraphicsDevice& device, ID3D12GraphicsCommandList* cmdList,
              kBrdfSize / 8, kBrdfSize / 8, 1);
 
     // UAV → PIXEL_SHADER_RESOURCE（forward が読む）
-    {
-        D3D12_RESOURCE_BARRIER b[3]{};
-        ID3D12Resource* res[3] = { m_irradianceCube.Get(), m_prefilteredCube.Get(), m_brdfLut.Get() };
-        for (int i = 0; i < 3; ++i)
-        {
-            b[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-            b[i].Transition.pResource   = res[i];
-            b[i].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-            b[i].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-            b[i].Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-        }
-        cmdList->ResourceBarrier(3, b);
-    }
+    transitionDerived(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
     // env cube を元の PIXEL_SHADER_RESOURCE へ戻す（skybox が読む）
     {
@@ -361,6 +373,7 @@ void IBLBaker::Reset()
     m_prefilteredCube.Reset();
     m_brdfLut.Reset();
     m_cbUpload.Reset();
+    m_derivedState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;  // 作り直したら UAV から
     m_valid = false;
     m_hasEnv = false;
     m_initialized = false;

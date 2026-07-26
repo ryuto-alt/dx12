@@ -76,65 +76,101 @@ float CalcShadow(float3 worldPos, float viewDepth, float2 svPos)
     return SampleCascade(c, worldPos, svPos);
 }
 
+// ---------------------------------------------------------------------------
+// アンチエイリアス済みの格子線の被覆率(0..1)。widthPx = 画面上の線の太さ(ピクセル)。
+// 手順は Ben Golus "The Best Darn Grid Shader (Yet)" に合わせてある:
+//   ・drawWidth を 1px 未満にしない。細るぶんは輝度で表す(phone-wire AA)＝
+//     遠距離/低角度でも線が「消える」のではなく「薄くなる」だけになる
+//   ・1 セルがサブピクセルまで詰まったら一様な塗りへ落としてモアレを止める
+// ponytail: 線幅が 0.5 セルを超える極太ケースの反転処理は使わないので省略。
+// ---------------------------------------------------------------------------
+float GridCoverage(float2 pos, float2 deriv, float cell, float widthPx)
+{
+    float2 uv      = pos / cell;
+    float2 uvDeriv = deriv / cell;
+    float2 target  = widthPx * uvDeriv;                    // 線幅(セル比)
+    float2 drawW   = clamp(target, uvDeriv, 0.5f);
+    float2 lineAA  = uvDeriv * 1.5f;
+    float2 gridUV  = 1.0f - abs(frac(uv) * 2.0f - 1.0f);   // 0=線上, 1=セル中央
+    float2 g       = smoothstep(drawW + lineAA, drawW - lineAA, gridUV);
+    g             *= saturate(target / drawW);             // 1px 未満ぶんを輝度で補償
+    g              = lerp(g, target, saturate(uvDeriv * 2.0f - 1.0f));  // モアレ抑制
+    return lerp(g.x, 1.0f, g.y);
+}
+
+// 軸線(1 本だけ)の被覆率。格子と違い繰り返さないのでモアレ対策は要らない。
+float AxisCoverage(float coord, float deriv, float widthPx)
+{
+    float px = abs(coord) / deriv;   // 軸までの距離(ピクセル)
+    return 1.0f - smoothstep(widthPx - 0.5f, widthPx + 0.5f, px);
+}
+
 float4 PSMain(PSInput input) : SV_TARGET
 {
     float3 worldPos = input.worldPos;
 
-    // 1 ワールド単位あたりの画面変化量。これで割ると「線までの距離(ピクセル)」になる。
-    float2 dW = max(fwidth(worldPos.xz), 1e-5f);
-
-    // 線幅はワールド単位ではなくピクセル固定にする。ワールド幅の smoothstep だと
-    // 遠距離/低角度で線がサブピクセルになり薄れて消えていた（グリッドが見えない主因）。
-    const float kFinePx   = 1.0f;
-    const float kCoarsePx = 1.5f;
-    const float kAxisPx   = 2.0f;
+    // ワールド 1 単位あたりの画面変化量。ddx/ddy をベクトルとして長さを取る。
+    // fwidth(=|ddx|+|ddy|) より斜め視点で正確＝カメラを回しても線幅がぶれない。
+    float4 dd    = float4(ddx(worldPos.xz), ddy(worldPos.xz));
+    float2 deriv = max(float2(length(dd.xz), length(dd.yw)), 1e-6f);
 
     // セル間隔を 10 倍刻みで自動切替する（Blender/Unity と同じ考え方）。
     // 1セルが画面上で kTargetPx を切らないよう桁を上げる ＝ 遠くでも高空でも
     // 格子が詰まってモアレにならず、逆にグリッドが消えることもない＝実質無限グリッド。
-    const float kTargetPx = 14.0f;
-    float pxPerMeter = 1.0f / max(dW.x, dW.y);
-    float level      = max(0.0f, log10(kTargetPx / pxPerMeter));   // 0=1m, 1=10m, 2=100m...
-    float fineCell   = pow(10.0f, floor(level));
-    float coarseCell = fineCell * 10.0f;
-    float blend      = frac(level);   // 1 に近づくほど細い方を消して桁上がりする
+    const float kTargetPx = 16.0f;
+    float level  = max(0.0f, log10(kTargetPx * max(deriv.x, deriv.y)));  // 0=1m, 1=10m...
+    float fine   = pow(10.0f, floor(level));
+    float coarse = fine * 10.0f;
+    float fadeIn = 1.0f - frac(level);   // 桁上がりで細い方を消す
 
-    // cell 間隔の格子線。frac(p/cell+0.5)-0.5 で最寄りの線までの距離(セル比) → m → px。
-    float2 dFine   = abs(frac(worldPos.xz / fineCell   + 0.5f) - 0.5f) * fineCell   / dW;
-    float2 dCoarse = abs(frac(worldPos.xz / coarseCell + 0.5f) - 0.5f) * coarseCell / dW;
-    float  minor   = (1.0f - saturate(min(dFine.x,   dFine.y)   / kFinePx))   * (1.0f - blend);
-    float  major   =  1.0f - saturate(min(dCoarse.x, dCoarse.y) / kCoarsePx);
+    // 線は「明るい芯」＋「その外側の暗い縁取り」の 2 層で描く。空のような明るい背景でも
+    // 夜/暗い床でも必ずどちらかがコントラストを持つ＝背景色に依存せず読める。
+    const float kMinorPx = 1.1f;
+    const float kMajorPx = 1.8f;
+    const float kAxisPx  = 2.4f;
+    const float kHaloPx  = 1.5f;   // 縁取りは芯より何 px 太いか
 
-    float axisX = 1.0f - saturate(abs(worldPos.z) / dW.y / kAxisPx);
-    float axisZ = 1.0f - saturate(abs(worldPos.x) / dW.x / kAxisPx);
+    float minorC = GridCoverage(worldPos.xz, deriv, fine,   kMinorPx)           * fadeIn;
+    float minorH = GridCoverage(worldPos.xz, deriv, fine,   kMinorPx + kHaloPx) * fadeIn;
+    float majorC = GridCoverage(worldPos.xz, deriv, coarse, kMajorPx);
+    float majorH = GridCoverage(worldPos.xz, deriv, coarse, kMajorPx + kHaloPx);
+    float axisX  = AxisCoverage(worldPos.z, deriv.y, kAxisPx);   // +X 軸 (z=0)
+    float axisZ  = AxisCoverage(worldPos.x, deriv.x, kAxisPx);   // +Z 軸 (x=0)
+    float axisH  = max(AxisCoverage(worldPos.z, deriv.y, kAxisPx + kHaloPx),
+                       AxisCoverage(worldPos.x, deriv.x, kAxisPx + kHaloPx));
 
-    // 表示色は「線そのものの色」。ライティング/シャドウは掛けない＝ライトの当たり方や
-    // 影で線が沈まない（暗いシーン・逆光でも同じ濃さで見える）。
-    // 濃さは「あることが分かる」程度に抑える(以前は白くて配置物より目立っていた)。
-    float3 minorColor = float3(0.52f, 0.53f, 0.56f);
-    float3 majorColor = float3(0.68f, 0.69f, 0.73f);
-    float3 axisXColor = float3(0.76f, 0.30f, 0.32f);
-    float3 axisZColor = float3(0.30f, 0.46f, 0.80f);
+    // 芯。ライティング/シャドウは掛けない＝ライトの当たり方や影で線が沈まない。
+    const float3 kMinorColor = float3(0.86f, 0.87f, 0.90f);
+    const float3 kMajorColor = float3(1.00f, 1.00f, 1.00f);
+    const float3 kAxisXColor = float3(1.00f, 0.34f, 0.36f);
+    const float3 kAxisZColor = float3(0.36f, 0.62f, 1.00f);
+    const float3 kHaloColor  = float3(0.02f, 0.02f, 0.03f);
 
-    float3 color = minorColor;
-    float  alpha = minor * 0.20f;
+    float3 coreColor = kMinorColor;
+    float  coreAlpha = minorC * 0.45f;
+    coreColor = lerp(coreColor, kMajorColor, majorC);
+    coreAlpha = max(coreAlpha, majorC * 0.80f);
+    coreColor = lerp(coreColor, kAxisXColor, axisX);
+    coreColor = lerp(coreColor, kAxisZColor, axisZ);
+    coreAlpha = max(coreAlpha, max(axisX, axisZ) * 1.0f);
 
-    color = lerp(color, majorColor, major);
-    alpha = max(alpha, major * 0.34f);
+    float haloAlpha = max(max(minorH * 0.30f, majorH * 0.50f), axisH * 0.60f);
 
-    color = lerp(color, axisXColor, axisX);
-    color = lerp(color, axisZColor, axisZ);
-    alpha = max(alpha, max(axisX, axisZ) * 0.55f);
+    // 芯を縁取りの上に合成して 1 枚のストレートアルファに畳む。
+    // グリッド色は表示基準(sRGB風)で調整してあるので、合成はリニアへ直してから行う
+    // （シーン RT はリニア HDR。最終段で ACES+ガンマが掛かる）。
+    float  outAlpha = coreAlpha + haloAlpha * (1.0f - coreAlpha);
+    float3 outColor = (pow(coreColor, 2.2f) * coreAlpha
+                     + pow(kHaloColor, 2.2f) * haloAlpha * (1.0f - coreAlpha))
+                    / max(outAlpha, 1e-4f);
 
     // 距離フェード: 原点からではなく「カメラの真下」から測る＝カメラと一緒にグリッドが
     // ついてくる。板は ±10km(kEditorGridSize/2)あるので、どこへ飛んでも足元に線がある。
     // フェード半径はカメラ高度に比例させる: 地面に近いほど手元だけ、上へ引くほど広く出す。
     float fadeEnd   = clamp(abs(cameraPos.y - worldPos.y) * 14.0f, 400.0f, 9000.0f);
-    float fadeStart = fadeEnd * 0.45f;
+    float fadeStart = fadeEnd * 0.55f;
     float dist = length(worldPos.xz - cameraPos.xz);
-    alpha *= 1.0f - saturate((dist - fadeStart) / max(fadeEnd - fadeStart, 1e-3f));
+    outAlpha *= 1.0f - saturate((dist - fadeStart) / max(fadeEnd - fadeStart, 1e-3f));
 
-    // グリッド色は表示基準(sRGB風)で調整されている。シーンRTはリニアHDRなので
-    // (最終段でACES+ガンマが掛かる)リニアへ変換して見た目を揃える。
-    return float4(pow(max(color, 0.0f), 2.2f), alpha);
+    return float4(outColor, outAlpha);
 }

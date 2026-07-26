@@ -12,6 +12,9 @@ x86/
 Debug/
 Release/
 *.obj
+# 上の *.obj は MSVC のオブジェクトファイル除け。Wavefront OBJ のテスト素材は残す
+# （gitignore は行末コメントを解釈しないので必ず独立行に書くこと）
+!tests/data/*.obj
 *.pdb
 *.ilk
 *.exe

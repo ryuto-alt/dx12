@@ -437,6 +437,7 @@ void Scene::Clear()
     m_glowMeshCache.clear();   // m_ownedMeshes の前にクリア（dangling 回避）
     m_ownedMeshes.clear();
     m_postSettings = PostProcessSettings{};  // ポスト設定もデフォルトへ
+    m_skybox       = SkyboxSettings{};       // 空も既定へ（前シーンの環境マップを引き継がない）
 }
 
 // ---------------------------------------------------------------------------

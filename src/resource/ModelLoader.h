@@ -41,7 +41,7 @@ struct ModelProbeInfo
     bool     hasSkeleton = false;
     struct Anim { std::string name; double durationSec = 0.0; };
     std::vector<Anim> animations;
-    // メッシュローカル(ノード変換未適用)の近似 AABB
+    // ノード変換込みのワールド空間 AABB(= スケール1で置いた時の実サイズ)
     float aabbMin[3] = {0, 0, 0}, aabbMax[3] = {0, 0, 0};
 };
 

@@ -1055,7 +1055,8 @@ DeepDiagReport DeepDiag::Lighting(Application& app)
     else
     {
         fs::path abs;
-        if (ResolveAssetPath(sky.envMapPath, abs))
+        // 手続きスカイはファイルを持たない（エンジンがその場で作る）ので存在チェックしない
+        if (sky.envMapPath != kProceduralSkyPath && ResolveAssetPath(sky.envMapPath, abs))
         {
             std::error_code ec;
             if (!fs::exists(abs, ec))

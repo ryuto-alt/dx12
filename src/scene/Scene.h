@@ -32,10 +32,15 @@ class ResourceManager;
 class GraphicsDevice;
 class DescriptorHeap;
 
+// envMapPath がこの値なら .dds を読まず、エンジンが手続きでグラデーションの空を作る。
+// 新規プロジェクト / 新規シーンの既定＝アセットを 1 つも用意しなくても背景と IBL が効く。
+inline constexpr const char* kProceduralSkyPath = "__procedural_sky__";
+
 // シーン単位のスカイボックス / IBL 設定（per-entity component ではなく scene-level）。
 struct SkyboxSettings
 {
-    std::string envMapPath;            // assets 相対 .dds（空=IBL/skybox 無効）
+    // assets 相対 .dds / kProceduralSkyPath（手続きの空）/ 空文字（IBL・skybox 無効）
+    std::string envMapPath = kProceduralSkyPath;
     float       iblIntensity   = 1.0f;
     float       skyboxIntensity = 1.0f;
     bool        drawSkybox     = true; // false=IBL のみ（背景は塗らない）

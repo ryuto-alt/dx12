@@ -7206,7 +7206,7 @@ void Application::RegisterMcpAssetMethods()
                 result["animations"] = std::move(anims);
                 result["aabbMin"] = {info.aabbMin[0], info.aabbMin[1], info.aabbMin[2]};
                 result["aabbMax"] = {info.aabbMax[0], info.aabbMax[1], info.aabbMax[2]};
-                result["aabbNote"] = "メッシュローカル(ノード変換未適用)の近似 AABB";
+                result["aabbNote"] = "ノード変換込みのワールド AABB(スケール1で spawn した時の実サイズ)";
             }
             else if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".dds" ||
                      ext == ".tga" || ext == ".bmp" || ext == ".hdr")
@@ -10450,6 +10450,102 @@ void Application::LoadEditorIcons(ID3D12GraphicsCommandList* cmdList)
     Logger::Info("Editor UI icons loaded");
 }
 
+// ---------------------------------------------------------------------------
+// 手続きスカイ（Scene.h の kProceduralSkyPath）。.dds を 1 枚も用意しなくても
+// 背景と IBL が最初から効くようにするための、その場生成のキューブマップ。
+// ---------------------------------------------------------------------------
+
+// 方向 → 空の色（リニア HDR）。天頂の青 → 地平の白 → 地面側の灰。
+// ponytail: 太陽は焼き込まない。シーンの DirectionalLight と向きが食い違うのと、
+//           mip を 1 枚しか作らないので輝点があると IBL プリフィルタでちらつくため。
+static DirectX::PackedVector::XMHALF4 ProceduralSkySample(float dx, float dy, float dz)
+{
+    const float len = std::sqrt(dx * dx + dy * dy + dz * dz);
+    const float y   = dy / len;
+
+    // 表示基準(sRGB風)で決めた色をリニアへ。Skybox_PS はリニアのまま出力する。
+    const float zenith[3]  = {0.29f, 0.48f, 0.80f};
+    const float horizon[3] = {0.80f, 0.86f, 0.93f};
+    const float ground[3]  = {0.33f, 0.32f, 0.31f};  // 明るめの灰＝地平より下が黒く沈まない
+
+    float rgb[3];
+    if (y >= 0.0f)
+    {
+        const float t = std::pow(y, 0.45f);   // 地平付近のグラデーションを厚めに取る
+        for (int i = 0; i < 3; ++i) rgb[i] = horizon[i] + (zenith[i] - horizon[i]) * t;
+    }
+    else
+    {
+        const float t = std::min(-y / 0.35f, 1.0f);
+        const float s = t * t * (3.0f - 2.0f * t);   // smoothstep
+        for (int i = 0; i < 3; ++i) rgb[i] = horizon[i] + (ground[i] - horizon[i]) * s;
+    }
+    return DirectX::PackedVector::XMHALF4(std::pow(rgb[0], 2.2f), std::pow(rgb[1], 2.2f),
+                                          std::pow(rgb[2], 2.2f), 1.0f);
+}
+
+// 64^2 × 6 面の RGBA16F キューブを CPU で作って GPU へ上げる。形式は IBL パイプラインと
+// HDR の .dds に合わせてある（32F はフィルタリング対応がハード依存で安全でない）。
+// ponytail: 単一 mip。IBL 側は 32(irradiance) / 128(prefilter) へ畳むので、
+//           なめらかなグラデーションが相手ならこれで十分（〜200KB）。
+static std::unique_ptr<Texture> MakeProceduralSkyCube(GraphicsDevice& device,
+                                                      ID3D12GraphicsCommandList* cmd)
+{
+    using Half4 = DirectX::PackedVector::XMHALF4;
+    constexpr u32 kSize  = 64;
+    constexpr u32 kFaces = 6;
+
+    std::vector<std::vector<Half4>> pixels(
+        kFaces, std::vector<Half4>(static_cast<size_t>(kSize) * kSize));
+
+    for (u32 f = 0; f < kFaces; ++f)
+    {
+        for (u32 py = 0; py < kSize; ++py)
+        {
+            const float v = 1.0f - 2.0f * (static_cast<float>(py) + 0.5f) / kSize;
+            for (u32 px = 0; px < kSize; ++px)
+            {
+                const float u = 2.0f * (static_cast<float>(px) + 0.5f) / kSize - 1.0f;
+                float d[3];
+                switch (f)   // D3D のキューブ面順: +X -X +Y -Y +Z -Z
+                {
+                    case 0:  d[0] =  1; d[1] =  v; d[2] = -u; break;
+                    case 1:  d[0] = -1; d[1] =  v; d[2] =  u; break;
+                    case 2:  d[0] =  u; d[1] =  1; d[2] = -v; break;
+                    case 3:  d[0] =  u; d[1] = -1; d[2] =  v; break;
+                    case 4:  d[0] =  u; d[1] =  v; d[2] =  1; break;
+                    default: d[0] = -u; d[1] =  v; d[2] = -1; break;
+                }
+                pixels[f][static_cast<size_t>(py) * kSize + px] =
+                    ProceduralSkySample(d[0], d[1], d[2]);
+            }
+        }
+    }
+
+    D3D12_RESOURCE_DESC desc{};
+    desc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width            = kSize;
+    desc.Height           = kSize;
+    desc.DepthOrArraySize = static_cast<u16>(kFaces);
+    desc.MipLevels        = 1;
+    desc.Format           = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    desc.SampleDesc       = {1, 0};
+    desc.Layout           = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    desc.Flags            = D3D12_RESOURCE_FLAG_NONE;
+
+    D3D12_SUBRESOURCE_DATA sub[kFaces]{};
+    for (u32 f = 0; f < kFaces; ++f)
+    {
+        sub[f].pData      = pixels[f].data();
+        sub[f].RowPitch   = static_cast<LONG_PTR>(kSize) * sizeof(Half4);
+        sub[f].SlicePitch = sub[f].RowPitch * static_cast<LONG_PTR>(kSize);
+    }
+
+    auto tex = std::make_unique<Texture>();
+    tex->Initialize(device, cmd, desc, sub, kFaces);
+    return tex;
+}
+
 void Application::LoadSkyboxIfNeeded(ID3D12GraphicsCommandList* cmd)
 {
     if (!m_scene || !m_iblBaker) return;
@@ -10497,7 +10593,13 @@ void Application::LoadSkyboxIfNeeded(ID3D12GraphicsCommandList* cmd)
     m_envCubeTex.reset();
     m_iblReady = false;
 
+    // 手続きスカイ: ファイルを読まずにその場で生成する（新規プロジェクトの既定）
+    if (sky.envMapPath == kProceduralSkyPath)
+    {
+        m_envCubeTex = MakeProceduralSkyCube(*m_graphicsDevice, cmd);
+    }
     // VFS 経由でまず試みる（ゲームモード = pak から復号、ディスクモード = loose file）
+    else
     {
         auto envBytes = vfs::ReadAsset(sky.envMapPath);
         if (!envBytes.empty())
@@ -15037,43 +15139,19 @@ void Application::Render()
                         modelPath = PathResolver::AssetsDir() + modelPath;
                     auto entity = m_scene->Spawn(name, modelPath, req.position);
 
-                    // D&D時のみ: AABBから自動スケーリング
-                    bool valid = entity.IsValid();
-                    bool hasMR = valid && entity.HasComponent<MeshRenderer>();
-                    {
-                        char buf[128];
-                        snprintf(buf, sizeof(buf), "[D&D Scale] valid=%d hasMR=%d\n", valid, hasMR);
-                        OutputDebugStringA(buf);
-                    }
-
-                    if (hasMR)
-                    {
-                        auto& mr = entity.GetComponent<MeshRenderer>();
-                        f32 maxExtent = 0.0f;
-                        for (const auto* mesh : mr.meshes)
-                        {
-                            if (!mesh) continue;
-                            auto mn = mesh->GetAABBMin();
-                            auto mx = mesh->GetAABBMax();
-                            f32 dx = mx.x - mn.x;
-                            f32 dy = mx.y - mn.y;
-                            f32 dz = mx.z - mn.z;
-                            if (dx > maxExtent) maxExtent = dx;
-                            if (dy > maxExtent) maxExtent = dy;
-                            if (dz > maxExtent) maxExtent = dz;
-                        }
-                        // 既存Luaモデルと同じ見た目サイズにスケーリング
-                        constexpr f32 kDefaultScale = 0.01f;
-                        auto& t = entity.GetComponent<Transform>();
-                        t.scale = {kDefaultScale, kDefaultScale, kDefaultScale};
-
-                        // ★ここに昔あった「glTF/glb は Z-up なので X 軸 90 度回転」は削除した(B13)。
-                        //   glTF 2.0 は仕様上 Y-up 固定で、assimp も軸変換を一切足さない。
-                        //   Z-up でオーサリングされたファイル(CesiumMan.glb 等)は自分の中に
-                        //   変換ノード("Z_UP")を持っており、それは ModelLoader が
-                        //   BoneNode::preTransform として畳み込む。ここで一律に回すと
-                        //   正しい Y-up の glTF(Fox.glb)が立ち上がってしまう。
-                    }
+                    // ★スケールは 1 のまま = ファイルが持っている実寸で置く（D&D も MCP も）。
+                    //   昔ここに「AABB から自動スケーリング」と称して *無条件に* scale=0.01 を
+                    //   入れる処理があった(maxExtent は計算するだけで捨てていた)。実体は
+                    //   Fox.glb(約 155 単位)に合わせた決め打ちで、DamagedHelmet.glb(約 1.9m)は
+                    //   2cm、1m の立方体は 1cm になっていた = 「モデルが極端に小さく読まれる」バグ。
+                    //   単位の正規化は ModelLoader 側(FBX の cm→m)で済ませてあるので、
+                    //   ここで見た目合わせをしてはいけない（オーサリングされた寸法が壊れる）。
+                    //
+                    //   ★ここに昔あった「glTF/glb は Z-up なので X 軸 90 度回転」も削除済み(B13)。
+                    //     glTF 2.0 は仕様上 Y-up 固定で、assimp も軸変換を一切足さない。
+                    //     Z-up でオーサリングされたファイル(CesiumMan.glb 等)は自分の中に
+                    //     変換ノード("Z_UP")を持っており、それは ModelLoader が
+                    //     BoneNode::preTransform として畳み込む。
                     spawnedEntity = entity.GetHandle();
                 }
                 else
