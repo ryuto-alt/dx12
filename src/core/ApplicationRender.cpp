@@ -3501,6 +3501,11 @@ void Application::Render()
     fc.time = totalTime;
     fc.lightColor = lightColorF3;
     fc.ambientStrength = lightAmbient;
+    // 編集用の照らし込み（F2 / 表示メニュー）。シーンの環境光へ「下限」として被せるだけなので、
+    // 元から明るいシーンでは何も起きない。★Editor モード限定＝ゲームの絵は絶対に変わらないし、
+    // DirectionalLight.ambient 自体は触っていないのでシーンにも保存されない。
+    if (m_engineMode == EngineMode::Editor && m_editorCtx && m_editorCtx->viewportFill > 0.0f)
+        fc.ambientStrength = (std::max)(fc.ambientStrength, m_editorCtx->viewportFill);
     // CSM: カスケード行列（HLSL は列優先 mul(row,mat) なので転置して格納）
     for (u32 i = 0; i < kNumCascades; ++i)
         XMStoreFloat4x4(&fc.cascadeViewProj[i],

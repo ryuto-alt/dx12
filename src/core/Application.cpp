@@ -2070,6 +2070,11 @@ void Application::Update()
                 if (GetAsyncKeyState('T') & 1) m_editorCtx->gizmoLocalSpace = !m_editorCtx->gizmoLocalSpace;
             }
 
+            // F2: 編集用の照らし込み。暗い屋内シーンは「見えないから置けない」になるので、
+            //     ビューポートにだけ環境光の下限を被せる。シーンには保存しない。
+            if (GetAsyncKeyState(VK_F2) & 1)
+                m_editorCtx->viewportFill = (m_editorCtx->viewportFill > 0.0f) ? 0.0f : 0.35f;
+
             // F: 選択エンティティにフォーカス（Unity 風）
             if ((GetAsyncKeyState('F') & 1) && m_editorCtx->HasSelection())
             {

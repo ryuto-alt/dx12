@@ -273,6 +273,19 @@ void ToolbarPanel::Render(bool isPlaying,
             if (ImGui::MenuItem("レイアウトをリセット"))
                 ctx.resetLayout = true;
             ImGui::Separator();
+            {
+                bool fill = ctx.viewportFill > 0.0f;
+                if (ImGui::MenuItem("編集用の照らし込み", "F2", &fill))
+                    ctx.viewportFill = fill ? 0.35f : 0.0f;
+                if (fill)
+                {
+                    ImGui::SetNextItemWidth(160.0f);
+                    ImGui::SliderFloat("##viewportFill", &ctx.viewportFill, 0.02f, 1.0f, "%.2f");
+                }
+                if (ImGui::IsItemHovered() || ImGui::IsItemActive())
+                    ImGui::SetTooltip("暗いシーンを編集するための光。シーンには保存されず、Play 中は効かない。");
+            }
+            ImGui::Separator();
             ImGui::TextDisabled("ツール窓（右下に開く）");
             ImGui::MenuItem("Post Process",            nullptr, &ctx.showPostProcess);
             ImGui::MenuItem("Post Process パラメータ",  nullptr, &ctx.showPostParams);
@@ -804,6 +817,7 @@ void ToolbarPanel::Render(bool isPlaying,
                 {"左クリック",    "エンティティ選択（Ctrl+クリックで複数選択）"},
                 {"右クリック+WASD","フライカメラ移動（Space/Shift で上下）"},
                 {"F",             "選択エンティティにフォーカス"},
+                {"F2",            "編集用の照らし込み（暗いシーンを見る。ゲームには影響なし）"},
                 {"L + マウス移動", "太陽（DirectionalLight）の向きを直接回す"},
                 {"F11",           "ボーダレスフルスクリーン切替"},
                 {"Ctrl+Z / Y",   "元に戻す / やり直す"},
