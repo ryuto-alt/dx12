@@ -117,18 +117,22 @@ void Application::BuildDrawList()
         item.radius = meshRadius * ms * bias;
 
         // LOD 選択: 見かけの大きさ（半径/距離 ≒ 画面高さに占める割合）で段階を落とす。
-        // LOD1 の簡略化誤差は実測 0.1% 未満なので半画面未満は迷わず落とす。
-        // トライアングルが数px未満になる領域はラスタ効率が崩壊するため遠距離は強めに削る。
         // LODが無い/浅いメッシュは Mesh 側で最終LODへクランプされる。
         // 距離もエンティティ原点ではなくバウンディング球の中心から測る
         // （原点からズレたモデルで LOD が不当に粗く選ばれるのを防ぐ）。
+        // ★閾値は「人間が見て分かる距離では落とさない」側に振ってある(2026-07-26)。
+        //   旧値 0.50/0.25/0.10/0.04 は 4m 幅の壁が 6.4m で LOD1 に落ちる= 一人称視点だと
+        //   目の前でベベルの陰影が消えるのが見えてしまっていた。今の値なら同じ壁が
+        //   LOD0 = 約 25m / LOD1 = 約 55m まで保つ。屋内の視距離ならほぼ常にフル解像度。
+        //   遠景を大量に出すシーンで重くなったら kLodScale を下げる方向で調整すること。
+        constexpr f32 kLodScale = 1.0f;   // >1 で更に遠くまでフル解像度を維持
         const f32 dist = XMVectorGetX(XMVector3Length(
             XMVectorSubtract(XMLoadFloat3(&item.center), camPos)));
-        const f32 apparent = item.radius / (std::max)(dist, 1e-3f);
-        item.lod = (apparent < 0.04f) ? 4u
-                 : (apparent < 0.10f) ? 3u
-                 : (apparent < 0.25f) ? 2u
-                 : (apparent < 0.50f) ? 1u : 0u;
+        const f32 apparent = item.radius / (std::max)(dist, 1e-3f) * kLodScale;
+        item.lod = (apparent < 0.008f) ? 4u
+                 : (apparent < 0.020f) ? 3u
+                 : (apparent < 0.055f) ? 2u
+                 : (apparent < 0.125f) ? 1u : 0u;
 
         // 0=既定static / 1=カスタム不透明 / 2=skinned / 3=カスタム半透明（不透明の後に描く。
         // 旧実装は entt 格納順で半透明の前後関係が運任せだったため、これはむしろ改善）。
