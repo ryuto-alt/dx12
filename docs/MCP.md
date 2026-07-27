@@ -564,7 +564,10 @@ dx12_play → (ゲームロジック動作) → dx12_stop
 
 足し方は 3 つだけ:
 
-1. `src/core/Application.cpp` の `Register***McpMethods()` のどれか（テーマで選ぶ。順序に意味は無い）へ
+1. `src/core/mcp/ApplicationMcp*.cpp` の `Register***McpMethods()` のどれか（テーマで選ぶ。
+   順序に意味は無い）へ。ファイルはテーマ 1 対 1 で分かれている
+   （`Entity` / `Editor` / `Render` / `Tooling` / `Asset` / `Terrain` / `Lighting`。
+   表の土台と共有ヘルパは `mcp/ApplicationMcp.cpp` と `core/ApplicationInternal.h`）
    ```cpp
    McpDefine("名前", "キー:型,キー:型", DX12E_MCP_HANDLER
        {
@@ -580,6 +583,9 @@ dx12_play → (ゲームロジック動作) → dx12_stop
    ポスト / SSAO だけは `DX12E_POST_FIELDS` / `DX12E_SSAO_FIELDS`（X マクロ）から自動生成している。
 3. `tools/mcp-server/index.ts` の zod スキーマとこのドキュメントにも同じキーを足す
    （**足し忘れると zod が黙って引数を捨てる**。`schemaDrift.test.ts` が見張っている）。
+
+テーマ別ファイルを新設したときだけ、`src/core/CMakeLists.txt` のソース一覧と
+`tests/CMakeLists.txt` の `DX12E_MCP_SOURCES`（`McpParamSpecTests` が走査する対象）にも足すこと。
 
 - 例外は `throw McpError(McpErr::…, msg, hint, validValues)`。呼び出し側の try/catch が拾う。
 - 遅延応答は `deferred` を保存して `isDeferred = true`。

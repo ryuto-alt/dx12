@@ -499,12 +499,18 @@ if(TARGET Resource AND TARGET Renderer)
     add_test(NAME ModelScaleTests COMMAND ModelScaleTests)
 endif()
 
-# MCP ディスパッチ表（Application.cpp の McpDefine）の「申告キー表 ⊇ 本文が読むキー」を
+# MCP ディスパッチ表（mcp/ApplicationMcp*.cpp の McpDefine）の「申告キー表 ⊇ 本文が読むキー」を
 # 機械的に見張るテスト。dx12_describe_mcp_params が嘘をつかないことの保証（#20-7 / #30）。
-# エンジンをリンクせず Application.cpp をテキストとして読むだけ。依存ゼロ。
+# エンジンをリンクせずソースをテキストとして読むだけ。依存ゼロ。
+# ★登録はテーマ別 TU に散っているので、ここは '|' 区切りの一覧を渡す（増えたら足すこと）。
+set(DX12E_MCP_SOURCES "")
+foreach(_mcp Entity Editor Render Tooling Asset Terrain Lighting)
+    set(DX12E_MCP_SOURCES
+        "${DX12E_MCP_SOURCES}${CMAKE_CURRENT_SOURCE_DIR}/../src/core/mcp/ApplicationMcp${_mcp}.cpp|")
+endforeach()
 add_executable(McpParamSpecTests mcp_param_spec_test.cpp)
 target_compile_definitions(McpParamSpecTests PRIVATE
-    DX12E_APPLICATION_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../src/core/Application.cpp")
+    DX12E_APPLICATION_CPP="${DX12E_MCP_SOURCES}${CMAKE_CURRENT_SOURCE_DIR}/../src/core/mcp/ApplicationMcp.cpp")
 if(MSVC)
     target_compile_options(McpParamSpecTests PRIVATE ${DX12_COMPILE_OPTIONS})
     target_compile_definitions(McpParamSpecTests PRIVATE ${DX12_COMPILE_DEFS})

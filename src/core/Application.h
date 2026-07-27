@@ -104,6 +104,17 @@ namespace dx12e
 namespace dx12e
 {
 
+// ★実装は 1 ファイルではない。18k 行のゴッドファイルだったのをテーマ別 TU へ分割してある
+//   （クラス定義はこのヘッダのまま・メンバ定義を移しただけ。全体像は ApplicationInternal.h）:
+//     Application.cpp          ctor / Initialize / Run / Update / Shutdown
+//     ApplicationPipeline.cpp  PSO 再生成 / レンダー解像度 / PSO・SRV キャッシュ
+//     ApplicationRender.cpp    Render() と描画の下請け
+//     ApplicationScene.cpp     シーンロード / Play⇔Editor 遷移 / 永続化 / スカイボックス
+//     ApplicationProject.cpp   プロジェクト / バージョン管理 / ゲームビルド
+//     mcp/ApplicationMcp*.cpp  MCP ディスパッチ表（テーマ別 8 ファイル）
+//   分割の目的は「別々の機能を別々の担当が同時に触れること」。実装は該当テーマの
+//   ファイルへ足すこと。**このヘッダへメンバを足すと全 TU が再コンパイル対象になる**
+//   （build/release の ninja 依存 DB はヘッダ変更を取りこぼすので、その際は --clean-first）。
 class Application
 {
 public:
@@ -231,7 +242,8 @@ private:
     // ★#30 / N37 / N43 の根治。以前は HandleMcpCommand の中に `else if (method == "...")` が
     //   118 本並んでいて、MSVC の C1061（ブロックの入れ子が深すぎます）上限に張り付いていた。
     //   表引きにしたので **method を何本足しても入れ子は 1 段も深くならない**。
-    //   新しい method は Application.cpp の Register***McpMethods() のどれかへ 1 本足すだけ。
+    //   新しい method は src/core/mcp/ApplicationMcp*.cpp（テーマ別に分割済み）の
+    //   Register***McpMethods() のどれかへ 1 本足すだけ。
     //
     // ハンドラの引数名は旧 else-if チェーンのローカル変数と同じにしてある
     //   （params / resp / method / deferred / isDeferred / busyPlaying）。

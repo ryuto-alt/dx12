@@ -147,18 +147,22 @@ std::vector<std::string> Split(const std::string& s, char sep)
 int main()
 {
 #ifndef DX12E_APPLICATION_CPP
-    std::printf("SKIP: Application.cpp のパスが渡されていない\n");
+    std::printf("SKIP: MCP 登録ソースのパスが渡されていない\n");
     return 0;
 #else
-    const char* srcPath = DX12E_APPLICATION_CPP;
-    std::ifstream ifs(srcPath, std::ios::binary);
-    if (!ifs)
-    {
-        std::printf("SKIP: %s を開けない（配布ツリー等）\n", srcPath);
-        return 0;
-    }
+    // McpDefine の登録はテーマ別 TU（src/core/mcp/ApplicationMcp*.cpp）へ分割済みなので、
+    // '|' 区切りで渡された全ソースを連結して 1 本のテキストとして走査する。
     std::stringstream ss;
-    ss << ifs.rdbuf();
+    for (const std::string& srcPath : Split(DX12E_APPLICATION_CPP, '|'))
+    {
+        std::ifstream ifs(srcPath, std::ios::binary);
+        if (!ifs)
+        {
+            std::printf("SKIP: %s を開けない（配布ツリー等）\n", srcPath.c_str());
+            return 0;
+        }
+        ss << ifs.rdbuf() << "\n";
+    }
     const std::string src = ss.str();
 
     std::printf("MCP ディスパッチ表: 申告キー表 ⊇ ハンドラ本文が読むキー\n");

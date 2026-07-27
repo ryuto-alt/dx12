@@ -117,7 +117,14 @@ dx12/
 ├── src/
 │   ├── main.cpp             # WinMain エントリポイント
 │   ├── core/                # アプリ基盤
-│   │   ├── Application.h/cpp  # メインループ、初期化、描画オーケストレーション
+│   │   ├── Application.h       # クラス定義（実装は下記の TU 群へ分割済み）
+│   │   ├── ApplicationInternal.h/cpp  # 分割の全体像 + TU 共有ヘルパ(dx12e::appdetail)
+│   │   ├── Application.cpp     # ctor / Initialize / Run / Update / Shutdown
+│   │   ├── ApplicationPipeline.cpp  # PSO再生成、レンダー解像度、PSO/SRVキャッシュ
+│   │   ├── ApplicationRender.cpp    # Render() と描画の下請け
+│   │   ├── ApplicationScene.cpp     # シーンロード、Play⇔Editor 遷移、永続化
+│   │   ├── ApplicationProject.cpp   # プロジェクト、バージョン管理、ゲームビルド
+│   │   ├── mcp/ApplicationMcp*.cpp  # MCP ディスパッチ表（テーマ別 8 ファイル）
 │   │   ├── Window.h/cpp       # Win32ウィンドウ、F11フルスクリーン
 │   │   ├── Logger.h/cpp       # spdlog ラッパー
 │   │   ├── GameClock.h/cpp    # delta time、FPS

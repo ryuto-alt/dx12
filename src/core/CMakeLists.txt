@@ -10,7 +10,24 @@ endif()
 
 add_library(Core STATIC
     Version.cpp
-    Application.cpp
+    # Application の実装は 1 ファイル 18k 行のゴッドファイルだったので、クラス定義
+    # (Application.h) を一切変えずにテーマ別 TU へ分割してある。担当を分けて同時に
+    # 触れるようにするのが目的なので、新しい実装は該当テーマのファイルへ足すこと。
+    # 分割の全体像と共有ヘルパは ApplicationInternal.h を参照。
+    Application.cpp                 # ctor / Initialize / Run / Update / Shutdown
+    ApplicationInternal.cpp         # 複数 TU 共有ヘルパのうち本文が大きいもの
+    ApplicationPipeline.cpp         # PSO 再生成 / レンダー解像度 / PSO・SRV キャッシュ
+    ApplicationRender.cpp           # Render() と描画の下請け
+    ApplicationScene.cpp            # シーンロード / Play⇔Editor 遷移 / 永続化
+    ApplicationProject.cpp          # プロジェクト / バージョン管理 / ゲームビルド
+    mcp/ApplicationMcp.cpp          # ディスパッチ表の土台 + スクショ / 読み戻し / 診断
+    mcp/ApplicationMcpEntity.cpp
+    mcp/ApplicationMcpEditor.cpp
+    mcp/ApplicationMcpRender.cpp
+    mcp/ApplicationMcpTooling.cpp
+    mcp/ApplicationMcpAsset.cpp
+    mcp/ApplicationMcpTerrain.cpp
+    mcp/ApplicationMcpLighting.cpp
     Window.cpp
     SplashScreen.cpp
     Logger.cpp
@@ -43,6 +60,6 @@ target_link_libraries(Core
 target_compile_options(Core PRIVATE ${DX12_COMPILE_OPTIONS})
 target_compile_definitions(Core PRIVATE ${DX12_COMPILE_DEFS})
 
-# Application.cpp は MCP ハンドラ + nlohmann::json のテンプレート実体化が多く、Debug(未最適化)では
+# Application*.cpp は MCP ハンドラ + nlohmann::json のテンプレート実体化が多く、Debug(未最適化)では
 # COFF セクション上限(C1128)を超える。/bigobj で回避（Release は最適化で収まるが両構成へ付けて統一）。
 target_compile_options(Core PRIVATE /bigobj)
