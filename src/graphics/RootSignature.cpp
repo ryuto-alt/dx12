@@ -228,8 +228,16 @@ void RootSignature::Initialize(GraphicsDevice& device)
     //                  s3=BRDF linear-clamp mipなし, s4=AO point-clamp スクリーンサンプル)
     D3D12_STATIC_SAMPLER_DESC staticSamplers[5]{};
 
-    // s0 - Linear Wrap (albedo, normal, metalRoughness)
-    staticSamplers[0].Filter           = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    // s0 - Anisotropic Wrap (albedo, normal, metalRoughness)
+    // ★等方トリリニアだと LOD が「フットプリントの長軸」で決まるため、床や壁を
+    //   グレージング角で見たときに視線方向の伸びに合わせて全体がボケる。
+    //   法線マップは mip が上がると (0.5,0.5)=平坦法線へ収束するので、
+    //   「ある距離から先だけ模様が消えて灰色に見え、カメラを動かすと境界も動く」
+    //   という不具合になっていた（環境光は法線非依存なので点光源のときだけ出る）。
+    // ★MaxAnisotropy は構造体の {} 初期化で 0 のままなので明示的に設定すること。
+    //   Filter だけ ANISOTROPIC にして MaxAnisotropy=0 だと不正な組み合わせになる。
+    staticSamplers[0].Filter           = D3D12_FILTER_ANISOTROPIC;
+    staticSamplers[0].MaxAnisotropy    = 8;
     staticSamplers[0].AddressU         = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     staticSamplers[0].AddressV         = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     staticSamplers[0].AddressW         = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
