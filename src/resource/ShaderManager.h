@@ -107,6 +107,10 @@ private:
     // 監視ベースライン: relPath(小文字)→(解決済み絶対パス, mtime)。Poll() が差分検知に使う。
     struct WatchedSource
     {
+        // 解決に使った元の relPath(原文ケース)。キーは小文字化してあるので、これを持たずに
+        // キーから再解決すると resolvedPath の文字列が必ず食い違い、全ソースが毎回 dirty に
+        // なる(＝プロジェクトを開くたび 49 本を DXC で再コンパイルしていた)。
+        std::string  relPath;
         std::wstring resolvedPath;
         std::filesystem::file_time_type mtime{};
     };

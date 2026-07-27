@@ -135,7 +135,7 @@ void ShaderManager::EstablishBaseline()
         if (isProjectOverride)
             CompileSourceAllVariants(src, resolved);  // 失敗しても Logger::Error 済み。baked .cso のまま続行。
 
-        m_watchedSources[LowerRelPath(src.relPath)] = { resolved, mtime };
+        m_watchedSources[LowerRelPath(src.relPath)] = { src.relPath, resolved, mtime };
 
         for (const char* dep : src.staticDeps)
         {
@@ -147,7 +147,7 @@ void ShaderManager::EstablishBaseline()
             auto depMtime = fs::last_write_time(depResolved, ec);
             if (ec)
                 continue;
-            m_watchedDeps[depKey] = { depResolved, depMtime };
+            m_watchedDeps[depKey] = { dep, depResolved, depMtime };
         }
     }
 
@@ -239,7 +239,9 @@ std::vector<std::wstring> ShaderManager::Poll()
     for (auto& [depKeyLower, watched] : m_watchedDeps)
     {
         ec.clear();
-        std::wstring resolved = ResolveSourcePath(depKeyLower);
+        // ベースラインと同じ入力(原文ケース)で解決すること。小文字キーで解決すると
+        // 文字列比較が必ず外れて毎回 dirty 扱いになる。
+        std::wstring resolved = ResolveSourcePath(watched.relPath);
         auto mtime = fs::last_write_time(resolved, ec);
         if (ec)
             continue;
@@ -255,7 +257,7 @@ std::vector<std::wstring> ShaderManager::Poll()
     for (auto& [relKeyLower, watched] : m_watchedSources)
     {
         ec.clear();
-        std::wstring resolved = ResolveSourcePath(relKeyLower);
+        std::wstring resolved = ResolveSourcePath(watched.relPath);
         auto mtime = fs::last_write_time(resolved, ec);
         if (ec)
             continue;  // 解決先が消えた(理論上起きない)
