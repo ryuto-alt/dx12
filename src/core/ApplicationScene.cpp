@@ -477,6 +477,9 @@ void Application::ApplyCameraTransformToGlobal(entt::entity camEntity)
     m_camera->SetPosition(worldPos);
     m_camera->SetYaw(yaw);
     m_camera->SetPitch(pitch);
+    // roll は forward に現れないので euler からそのまま渡す（SetYaw/SetPitch が 0 に
+    // 戻すので、この順で最後に呼ぶこと）。ヘッドボブはこれで効く。
+    m_camera->SetRoll(XMConvertToRadians(tf.rotation.z));
 }
 
 void Application::SyncActiveCameraToGlobal()

@@ -40,8 +40,13 @@ public:
     f32 GetFarZ()   const { return m_farZ; }
     f32 GetOrthoHeight() const { return m_orthoHeight; }  // 正射ビュー縦(全高)。保存/復元用。
 
-    void SetYaw(f32 yaw) { m_yaw = yaw; UpdateVectors(); }
-    void SetPitch(f32 pitch) { m_pitch = pitch; UpdateVectors(); }
+    // roll は「毎フレーム明示的に入れ直すもの」として扱う。SetYaw/SetPitch が 0 に戻すので、
+    // ゲーム側が SetRoll を呼ばなくなった瞬間（Play 終了・エディタ視点へ復帰）に水平へ戻る。
+    // 呼ぶ順は SetYaw → SetPitch → SetRoll。
+    void SetYaw(f32 yaw) { m_yaw = yaw; m_roll = 0.0f; UpdateVectors(); }
+    void SetPitch(f32 pitch) { m_pitch = pitch; m_roll = 0.0f; UpdateVectors(); }
+    void SetRoll(f32 roll) { m_roll = roll; UpdateVectors(); }
+    f32 GetRoll() const { return m_roll; }
     void SetMoveSpeed(f32 speed) { m_moveSpeed = speed; }
     void SetMouseSensitivity(f32 sens) { m_mouseSensitivity = sens; }
     f32 GetMoveSpeed() const { return m_moveSpeed; }
@@ -57,6 +62,7 @@ private:
 
     f32 m_yaw   = 0.0f;     // Y軸回転 (rad)
     f32 m_pitch = 0.0f;     // X軸回転 (rad), ±89度制限
+    f32 m_roll  = 0.0f;     // 視線軸まわりの傾き (rad)。ヘッドボブ/被弾ゆれ用
 
     f32 m_fovY   = DirectX::XM_PIDIV4;
     f32 m_aspect = 1280.0f / 720.0f;

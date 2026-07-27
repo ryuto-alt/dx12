@@ -109,6 +109,16 @@ void Camera::UpdateVectors()
 
     // up = cross(forward, right)
     XMVECTOR upVec = XMVector3Cross(fwd, rgt);
+
+    // roll は right/up を forward まわりに回すだけ。forward は動かないので、
+    // 照準やレイキャストの向きは傾けても一切変わらない。
+    if (m_roll != 0.0f)
+    {
+        XMMATRIX r = XMMatrixRotationAxis(fwd, m_roll);
+        rgt   = XMVector3Normalize(XMVector3TransformNormal(rgt, r));
+        upVec = XMVector3Normalize(XMVector3TransformNormal(upVec, r));
+        XMStoreFloat3(&m_right, rgt);
+    }
     XMStoreFloat3(&m_up, upVec);
 }
 
