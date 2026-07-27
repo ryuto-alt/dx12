@@ -167,7 +167,11 @@ float4 PSMain(PSInput input) : SV_TARGET
     // 距離フェード: 原点からではなく「カメラの真下」から測る＝カメラと一緒にグリッドが
     // ついてくる。板は ±10km(kEditorGridSize/2)あるので、どこへ飛んでも足元に線がある。
     // フェード半径はカメラ高度に比例させる: 地面に近いほど手元だけ、上へ引くほど広く出す。
-    float fadeEnd   = clamp(abs(cameraPos.y - worldPos.y) * 14.0f, 400.0f, 9000.0f);
+    // ★下限は 400m ではなく 20m。400m だとカメラ高 1.7m の一人称でも fadeStart=220m に
+    //   なり、30m 程度の屋内シーンではフェードが一切効かず、床全面にグリッドの膜が
+    //   乗ったままになる（グリッド板は y=0 で床の上面と同一平面、かつ DepthBias が
+    //   負なので必ず床に勝つ）。20m なら fadeEnd≈24m / fadeStart≈13m で足元だけに出る。
+    float fadeEnd   = clamp(abs(cameraPos.y - worldPos.y) * 14.0f, 20.0f, 9000.0f);
     float fadeStart = fadeEnd * 0.55f;
     float dist = length(worldPos.xz - cameraPos.xz);
     outAlpha *= 1.0f - saturate((dist - fadeStart) / max(fadeEnd - fadeStart, 1e-3f));
