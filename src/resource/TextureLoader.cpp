@@ -209,6 +209,81 @@ bool ConvertForCompression(DirectX::ScratchImage& scratch, DXGI_FORMAT dstFormat
     return true;
 }
 
+// 圧縮キャッシュのファイルパスを組む（空文字 = キャッシュ不使用）。
+// ★キーの材料は「デコードしなくても分かるもの」だけで構成すること。
+//   （元バイトのハッシュ / 用途 / 出力形式 / 配列数 / 品質）
+//   ここにデコード後にしか分からない値を混ぜると、下の事前ヒット判定が成立しなくなり
+//   「キャッシュがあるのに PNG を毎回デコードしてから捨てる」に逆戻りする。
+// ★ 品質をキーに含める（含めないと texture_compression を 1↔2 で切り替えても
+//   古い品質のキャッシュを読み続けて設定が効かない）。
+std::string CompressedCachePath(DXGI_FORMAT dst, size_t arraySize, TextureUsage usage,
+                                uint64_t contentHash, const std::string& cacheKey)
+{
+    if (cacheKey.empty())
+        return {};
+    const std::string dir = CacheDir();
+    if (dir.empty())
+        return {};
+
+    const std::string key = cacheKey + "|" + std::to_string(contentHash)
+                          + "|u" + std::to_string(static_cast<int>(usage))
+                          + "|f" + std::to_string(static_cast<int>(dst))
+                          + "|a" + std::to_string(static_cast<unsigned>(arraySize))
+                          + "|q" + std::to_string(g_compressionMode.load()) + "|v2";
+    char name[40];
+    snprintf(name, sizeof(name), "t%016llx.dds",
+             static_cast<unsigned long long>(HashString(key)));
+    return dir + name;
+}
+
+// 圧縮キャッシュを引く。ヒットしたら outScratch に BC 済み画像が入って true。
+// srcMeta は「元画像のメタデータ」で、ヘッダだけ読んだもの（GetMetadataFromWIC*）でも
+// デコード済みのものでも良い ── キーが依存するのは format/arraySize だけで、
+// どちらの経路でも同じ値になる。
+bool TryLoadCachedCompressed(const DirectX::TexMetadata& srcMeta, TextureUsage usage, bool srgb,
+                             uint64_t contentHash, const std::string& cacheKey,
+                             bool allowArray, DirectX::ScratchImage& outScratch)
+{
+    using namespace DirectX;
+    if (g_compressionMode.load() == 0 || usage == TextureUsage::Unknown)
+        return false;
+    if (IsCompressed(srcMeta.format))
+        return false;   // 既に BC（DDS 入力）＝圧縮しないのでキャッシュも無い
+    const bool sizeOk = allowArray
+        ? (srcMeta.depth == 1 && srcMeta.width >= 4 && srcMeta.height >= 4
+           && (srcMeta.width % 4) == 0 && (srcMeta.height % 4) == 0)
+        : TextureLoader::IsCompressibleSize(srcMeta.width, srcMeta.height,
+                                            srcMeta.arraySize, srcMeta.depth);
+    if (!sizeOk)
+        return false;
+
+    const DXGI_FORMAT dst = TextureLoader::SelectCompressedFormat(usage, srcMeta.format, srgb);
+    if (dst == DXGI_FORMAT_UNKNOWN)
+        return false;
+
+    const std::string cachePath =
+        CompressedCachePath(dst, srcMeta.arraySize, usage, contentHash, cacheKey);
+    if (cachePath.empty())
+        return false;
+
+    std::error_code ec;
+    if (!std::filesystem::exists(cachePath, ec))
+        return false;
+
+    ScratchImage cached;
+    if (FAILED(LoadFromDDSFile(PathResolver::Utf8ToWide(cachePath).c_str(),
+                               DDS_FLAGS_NONE, nullptr, cached)))
+        return false;   // 壊れたキャッシュは無視して作り直す
+
+    const TexMetadata& cm = cached.GetMetadata();
+    if (cm.format != dst || cm.width != srcMeta.width ||
+        cm.height != srcMeta.height || cm.arraySize != srcMeta.arraySize)
+        return false;   // 古い/食い違うキャッシュ
+
+    outScratch = std::move(cached);
+    return true;
+}
+
 // scratch を BC へ圧縮する（成功したら scratch を差し替える）。
 // contentHash: 元データのハッシュ。cacheKey: キャッシュ名の衝突ドメインを分ける識別子（通常は元パス）。
 // 失敗しても品質/VRAM が従来どおりになるだけなので、常に「何もしない」でフォールバックする。
@@ -238,42 +313,18 @@ void CompressInPlace(DirectX::ScratchImage& scratch, TextureUsage usage, bool sr
         return;
 
     // ---- キャッシュヒット判定（形式まで含めてキーに入れるので、用途を変えたら自動で作り直る）----
-    std::string cachePath;
-    if (!cacheKey.empty())
+    // 呼び出し側がデコード前に TryLoadCachedCompressed で当てていれば、ここは基本ミスする。
+    // それでも残してあるのは、事前判定を通らない経路（配列テクスチャ等）のため。
     {
-        const std::string dir = CacheDir();
-        if (!dir.empty())
+        ScratchImage cached;
+        if (TryLoadCachedCompressed(meta, usage, srgb, contentHash, cacheKey, allowArray, cached))
         {
-            // ★ 品質をキーに含める（含めないと texture_compression を 1↔2 で切り替えても
-            //   古い品質のキャッシュを読み続けて設定が効かない）。
-            const std::string key = cacheKey + "|" + std::to_string(contentHash)
-                                  + "|u" + std::to_string(static_cast<int>(usage))
-                                  + "|f" + std::to_string(static_cast<int>(dst))
-                                  + "|a" + std::to_string(static_cast<unsigned>(meta.arraySize))
-                                  + "|q" + std::to_string(quality) + "|v2";
-            char name[40];
-            snprintf(name, sizeof(name), "t%016llx.dds",
-                     static_cast<unsigned long long>(HashString(key)));
-            cachePath = dir + name;
-
-            std::error_code ec;
-            if (std::filesystem::exists(cachePath, ec))
-            {
-                ScratchImage cached;
-                if (SUCCEEDED(LoadFromDDSFile(PathResolver::Utf8ToWide(cachePath).c_str(),
-                                              DDS_FLAGS_NONE, nullptr, cached))
-                    && cached.GetMetadata().format    == dst
-                    && cached.GetMetadata().width     == meta.width
-                    && cached.GetMetadata().height    == meta.height
-                    && cached.GetMetadata().arraySize == meta.arraySize)
-                {
-                    scratch = std::move(cached);
-                    return;
-                }
-                // 壊れた/古いキャッシュは無視して作り直す
-            }
+            scratch = std::move(cached);
+            return;
         }
     }
+    const std::string cachePath =
+        CompressedCachePath(dst, meta.arraySize, usage, contentHash, cacheKey);
 
     // ---- 圧縮（BC7/BC6H は重いので TEX_COMPRESS_PARALLEL 必須）----
     if (!ConvertForCompression(scratch, dst))
@@ -459,23 +510,7 @@ std::unique_ptr<Texture> TextureLoader::LoadFromFile(
     const size_t dotPos = filePath.find_last_of(L'.');
     const std::wstring ext = (dotPos != std::wstring::npos) ? filePath.substr(dotPos) : L"";
 
-    HRESULT hr = S_OK;
-    if (ext == L".dds" || ext == L".DDS")
-    {
-        hr = DirectX::LoadFromDDSFile(
-            filePath.c_str(),
-            DirectX::DDS_FLAGS_NONE,
-            nullptr,
-            scratchImage);
-    }
-    else
-    {
-        hr = DirectX::LoadFromWICFile(
-            filePath.c_str(),
-            DirectX::WIC_FLAGS_NONE,
-            nullptr,
-            scratchImage);
-    }
+    const bool isDds = (ext == L".dds" || ext == L".DDS");
 
     // wstring → UTF-8（ログ / 圧縮キャッシュのキーで使う）
     std::string pathStr;
@@ -489,17 +524,9 @@ std::unique_ptr<Texture> TextureLoader::LoadFromFile(
         }
     }
 
-    if (FAILED(hr))
-    {
-        Logger::Error("テクスチャの読み込みに失敗しました: {}", pathStr);
-        return nullptr;
-    }
-
-    // mip が無ければ生成（メタデータは生成後に取り直す）
-    EnsureMipChain(scratchImage, srgb);
-
-    // BC 圧縮（キャッシュ経由）。キャッシュキーはパス + 更新時刻 + サイズ。
-    if (usage != TextureUsage::Unknown)
+    // キャッシュキー = パス + サイズ + 更新時刻。ファイルを開かずに計算できる。
+    uint64_t contentHash = 0;
+    if (!isDds && usage != TextureUsage::Unknown)
     {
         std::error_code ec;
         const auto sz = std::filesystem::file_size(filePath, ec);
@@ -507,7 +534,39 @@ std::unique_ptr<Texture> TextureLoader::LoadFromFile(
         const std::string stamp = pathStr + "|" + (ec ? std::string("?") :
             std::to_string(static_cast<unsigned long long>(sz)) + ":" +
             std::to_string(mt.time_since_epoch().count()));
-        CompressInPlace(scratchImage, usage, srgb, HashString(stamp), pathStr);
+        contentHash = HashString(stamp);
+    }
+
+    // ★ デコードより先に BC 圧縮キャッシュを引く（LoadFromMemory 側と同じ理由）。
+    //   ヘッダだけ読めばキーが組めるので、ヒットすればデコードもミップ生成も不要。
+    bool fromCache = false;
+    if (!isDds && usage != TextureUsage::Unknown)
+    {
+        DirectX::TexMetadata srcMeta{};
+        fromCache = SUCCEEDED(DirectX::GetMetadataFromWICFile(
+                        filePath.c_str(), DirectX::WIC_FLAGS_NONE, srcMeta))
+                 && TryLoadCachedCompressed(srcMeta, usage, srgb, contentHash, pathStr,
+                                            false, scratchImage);
+    }
+
+    if (!fromCache)
+    {
+        HRESULT hr = isDds
+            ? DirectX::LoadFromDDSFile(filePath.c_str(), DirectX::DDS_FLAGS_NONE, nullptr, scratchImage)
+            : DirectX::LoadFromWICFile(filePath.c_str(), DirectX::WIC_FLAGS_NONE, nullptr, scratchImage);
+
+        if (FAILED(hr))
+        {
+            Logger::Error("テクスチャの読み込みに失敗しました: {}", pathStr);
+            return nullptr;
+        }
+
+        // mip が無ければ生成（メタデータは生成後に取り直す）
+        EnsureMipChain(scratchImage, srgb);
+
+        // BC 圧縮（キャッシュ経由）。キャッシュキーはパス + 更新時刻 + サイズ。
+        if (usage != TextureUsage::Unknown)
+            CompressInPlace(scratchImage, usage, srgb, contentHash, pathStr);
     }
 
     DirectX::TexMetadata meta = scratchImage.GetMetadata();
@@ -653,31 +712,53 @@ std::unique_ptr<Texture> TextureLoader::LoadFromMemory(
     // 入れても読めるようにするため。DDS のマジックは先頭 4 バイトの "DDS "）。
     const bool ddsMagic = (dataSize >= 4 && data[0] == 'D' && data[1] == 'D' &&
                            data[2] == 'S' && data[3] == ' ');
-    if (hint == "dds" || ddsMagic)
+    const bool isDds = (hint == "dds" || ddsMagic);
+
+    // ★ BC 圧縮キャッシュは「デコードする前」に引く。
+    //   ヒットするなら PNG のデコード(2048² で RGBA 16MB)とミップ生成が丸ごと不要になる。
+    //   以前はデコード＋ミップ生成を済ませてから CompressInPlace の中で判定していたため、
+    //   キャッシュが効いていても 1 枚あたり 143〜169ms 払って結果を捨てていた
+    //   （Nocturne の 70 枚で実測 3.2 秒）。ヘッダだけ読めばキーは組める。
+    bool fromCache = false;
+    const uint64_t contentHash = (!isDds && usage != TextureUsage::Unknown)
+                                     ? HashBytes(data, dataSize) : 0;
+    if (!isDds && usage != TextureUsage::Unknown)
     {
-        hr = DirectX::LoadFromDDSMemory(data, dataSize,
-            DirectX::DDS_FLAGS_NONE, nullptr, scratchImage);
-    }
-    else
-    {
-        // jpg, png 等は WIC で読める
-        hr = DirectX::LoadFromWICMemory(data, dataSize,
-            DirectX::WIC_FLAGS_NONE, nullptr, scratchImage);
+        DirectX::TexMetadata srcMeta{};
+        fromCache = SUCCEEDED(DirectX::GetMetadataFromWICMemory(
+                        data, dataSize, DirectX::WIC_FLAGS_NONE, srcMeta))
+                 && TryLoadCachedCompressed(srcMeta, usage, srgb, contentHash, cacheKey,
+                                            false, scratchImage);
     }
 
-    if (FAILED(hr))
+    if (!fromCache)
     {
-        Logger::Error("埋め込みテクスチャの読み込みに失敗しました（format={}）", hint);
-        return nullptr;
+        if (isDds)
+        {
+            hr = DirectX::LoadFromDDSMemory(data, dataSize,
+                DirectX::DDS_FLAGS_NONE, nullptr, scratchImage);
+        }
+        else
+        {
+            // jpg, png 等は WIC で読める
+            hr = DirectX::LoadFromWICMemory(data, dataSize,
+                DirectX::WIC_FLAGS_NONE, nullptr, scratchImage);
+        }
+
+        if (FAILED(hr))
+        {
+            Logger::Error("埋め込みテクスチャの読み込みに失敗しました（format={}）", hint);
+            return nullptr;
+        }
+
+        // mip が無ければ生成（メタデータは生成後に取り直す）
+        EnsureMipChain(scratchImage, srgb);
+
+        // BC 圧縮（キャッシュ経由）。元バイト列のハッシュをキーにするので、
+        // ディスクモード(ルーズファイル)でも pak モードでも同じ判定になる。
+        if (usage != TextureUsage::Unknown)
+            CompressInPlace(scratchImage, usage, srgb, contentHash, cacheKey);
     }
-
-    // mip が無ければ生成（メタデータは生成後に取り直す）
-    EnsureMipChain(scratchImage, srgb);
-
-    // BC 圧縮（キャッシュ経由）。元バイト列のハッシュをキーにするので、
-    // ディスクモード(ルーズファイル)でも pak モードでも同じ判定になる。
-    if (usage != TextureUsage::Unknown)
-        CompressInPlace(scratchImage, usage, srgb, HashBytes(data, dataSize), cacheKey);
 
     DirectX::TexMetadata meta = scratchImage.GetMetadata();
     DXGI_FORMAT format = srgb ? DirectX::MakeSRGB(meta.format) : meta.format;
