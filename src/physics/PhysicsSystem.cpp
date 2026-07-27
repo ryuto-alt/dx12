@@ -209,6 +209,10 @@ struct PhysicsSystem::JoltImpl
     // メンバ宣言順では characters が physicsSystem の後ろ＝デストラクト時に先に破棄される
     // ので、CharacterVirtual が生きている PhysicsSystem を参照する破棄順は安全。
     std::unordered_map<entt::entity, JPH::Ref<JPH::CharacterVirtual>> characters;
+    // キャラの「1 固定ステップ前」の位置。描画は current との間を accumulator の
+    // 端数で補間する（→ SyncCharactersToTransforms）。ここに置いてあるのは
+    // CharacterController のレイアウトを変えずに済ませるため。
+    std::unordered_map<entt::entity, JPH::RVec3> prevCharPos;
 };
 
 // ========== Trace/Assert callbacks ==========
@@ -841,6 +845,7 @@ void PhysicsSystem::UnregisterCharacter(entt::registry& registry, entt::entity e
 {
     if (!m_initialized) return;
     m_impl->characters.erase(entity);   // Ref 解放
+    m_impl->prevCharPos.erase(entity);
     if (auto* cc = registry.try_get<CharacterController>(entity)) cc->_registered = false;
 }
 
@@ -848,6 +853,7 @@ void PhysicsSystem::UnregisterAllCharacters(entt::registry& registry)
 {
     if (!m_initialized) return;
     m_impl->characters.clear();
+    m_impl->prevCharPos.clear();
     for (auto [e, cc] : registry.view<CharacterController>().each())
         cc._registered = false;
 }
@@ -867,6 +873,9 @@ void PhysicsSystem::StepCharacters(f32 fixedDt, entt::registry& registry)
     {
         auto* cc = registry.try_get<CharacterController>(entity);
         if (!cc) continue;
+
+        // 描画補間用に、このステップを踏む前の位置を控える
+        m_impl->prevCharPos[entity] = ch->GetPosition();
 
         // 接地状態更新（前ステップ結果）
         bool grounded = ch->GetGroundState() == JPH::CharacterVirtual::EGroundState::OnGround;
@@ -955,6 +964,8 @@ void PhysicsSystem::SetCharacterPosition(entt::entity entity, DirectX::XMFLOAT3 
     auto it = m_impl->characters.find(entity);
     if (it == m_impl->characters.end()) return;
     it->second->SetPosition(JPH::RVec3(pos.x, pos.y, pos.z));
+    // テレポートなので補間の起点も飛ばす（さもないと描画が旧位置から新位置へ 1 ステップ舐める）
+    m_impl->prevCharPos[entity] = JPH::RVec3(pos.x, pos.y, pos.z);
 }
 
 void PhysicsSystem::SyncCharactersToTransforms(entt::registry& registry)
@@ -967,7 +978,20 @@ void PhysicsSystem::SyncCharactersToTransforms(entt::registry& registry)
         if (!tf || !cc) continue;
         // GetPosition() = mPosition（mShapeOffset は含まない）。オフセットは mShapeOffset に
         // 一本化したので、Transform へはそのまま書き戻す（- offset しない）。
+        //
+        // ★描画は「1 固定ステップ前」と現在の間を accumulator の端数で補間する。
+        //   物理は 60Hz 固定だが描画はそうではないので、素の位置を書くと
+        //   「同じ座標のフレーム」と「2 ステップ分飛ぶフレーム」が混ざり、
+        //   一人称視点では歩行が細かくガタつく（＝これが無かった頃の症状）。
+        //   最大 1 ステップぶん遅れるだけで、当たり判定は素の位置のままなので
+        //   ゲームロジックへの影響は 2cm 未満。
         JPH::RVec3 p = ch->GetPosition();
+        auto prev = m_impl->prevCharPos.find(entity);
+        if (prev != m_impl->prevCharPos.end())
+        {
+            const f32 a = std::clamp(m_accumulator / kFixedTimeStep, 0.0f, 1.0f);
+            p = prev->second + (p - prev->second) * a;
+        }
         tf->position = { static_cast<f32>(p.GetX()),
                          static_cast<f32>(p.GetY()),
                          static_cast<f32>(p.GetZ()) };
