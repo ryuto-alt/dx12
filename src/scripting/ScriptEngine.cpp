@@ -2072,9 +2072,24 @@ void ScriptEngine::RegisterPhysicsBindings()
             if (!e.HasComponent<RigidBody>()) return {};
             return ps.GetLinearVelocity(e.GetComponent<RigidBody>().bodyId);
         },
+        // setPosition(entity, pos) — RigidBody は body を、CharacterController は
+        // CharacterVirtual をテレポートする。CC は Transform を書いても
+        // SyncCharactersToTransforms に上書きされて戻るため、こちらを通す必要がある
+        // （リスポーン/チェックポイント復帰で必須）。
         "setPosition", [](PhysicsSystem& ps, Entity& e, XMFLOAT3 pos) {
-            if (!e.HasComponent<RigidBody>()) return;
-            ps.SetPosition(e.GetComponent<RigidBody>().bodyId, pos);
+            if (e.HasComponent<RigidBody>())
+            {
+                ps.SetPosition(e.GetComponent<RigidBody>().bodyId, pos);
+                return;
+            }
+            if (e.HasComponent<CharacterController>())
+            {
+                // テレポートなので落下速度と移動入力も捨てる（復帰直後に落下継続しない）
+                auto& cc = e.GetComponent<CharacterController>();
+                cc._verticalVel = 0.0f;
+                cc._desiredVel  = {0.0f, 0.0f, 0.0f};
+                ps.SetCharacterPosition(e.GetHandle(), pos);
+            }
         },
         "raycast", [](PhysicsSystem& ps, XMFLOAT3 origin, XMFLOAT3 dir,
                        float maxDist) -> RaycastHit {
