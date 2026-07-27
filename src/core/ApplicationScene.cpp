@@ -706,11 +706,16 @@ void Application::UpdateSceneLoadJob(ID3D12GraphicsCommandList* cmdList)
     const auto t0 = std::chrono::steady_clock::now();
     while (job.next < job.assets.size())
     {
+        // 先に current を更新してから読む。1 件に数秒かかる（初回の BC 圧縮など）
+        // ケースで「どのファイルで止まっているか」が画面に出るようにするため。
+        job.current = job.assets[job.next];
         WarmSceneAssetRef(job.assets[job.next++], cmdList);
         const f64 ms = std::chrono::duration<f64, std::milli>(
                            std::chrono::steady_clock::now() - t0).count();
         if (ms >= kSceneLoadBudgetMs) break;
     }
+    if (job.next >= job.assets.size())
+        job.current.clear();
 
     // ステータスバー用の進捗（ローディングオーバーレイと同じ割合）
     if (m_editorCtx && !job.assets.empty())
@@ -838,14 +843,26 @@ void Application::RenderSceneLoadingOverlay()
         dl->AddText(ImVec2(c.x - ts.x * 0.5f, c.y + dy), col, s);
     };
     const bool warming = job.next < job.assets.size();
-    centerText(warming ? "シーンを読み込み中..." : "シーンを構築中...",
+    centerText(warming ? "アセットを読み込み中..." : "シーンを構築中...",
                r + 22.0f, IM_COL32(235, 235, 235, 255));
     centerText(job.rel.c_str(), r + 44.0f, IM_COL32(140, 143, 152, 255));
+
+    // 「今なにをしているか」。件数だけだと 1 件に数秒かかる初回 BC 圧縮で
+    // 止まって見えるので、処理中のファイル名まで出す。
+    if (warming && !job.assets.empty())
+    {
+        char line[320];
+        const std::string& cur = job.current;
+        const size_t slash = cur.find_last_of('/');
+        const char* base = (slash == std::string::npos) ? cur.c_str() : cur.c_str() + slash + 1;
+        snprintf(line, sizeof(line), "%zu / %zu   %s", job.next, job.assets.size(), base);
+        centerText(line, r + 66.0f, IM_COL32(120, 124, 134, 255));
+    }
 
     // 進捗バー（アセット先読みの消化率）。件数が分かるのは先読みフェーズだけなので、
     // 構築フェーズでは端から端へ往復するバーにする＝満タンのまま止まって見せない。
     const float barW = (std::min)(size.x * 0.5f, 320.0f), barH = 6.0f;
-    const float y    = c.y + r + 72.0f;
+    const float y    = c.y + r + 94.0f;
     const float x0   = c.x - barW * 0.5f;
     dl->AddRectFilled(ImVec2(x0, y), ImVec2(x0 + barW, y + barH),
                       IM_COL32(40, 42, 50, 255), barH * 0.5f);

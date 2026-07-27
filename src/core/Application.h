@@ -789,6 +789,9 @@ private:
         size_t                   next  = 0;   // assets の消化位置
         f32                      spin  = 0.0f;
         int                      frames = 0;  // ジョブ開始から進めたフレーム数（0 = UI を出すだけ）
+        // 「今なにをしているか」を画面に出すための現在処理中アセット（assets 相対）。
+        // 総数と消化数だけだと、1 件に数秒かかる初回の BC 圧縮で固まったように見える。
+        std::string              current;
     };
     std::unique_ptr<SceneLoadJob> m_sceneLoadJob;   // null = ロード中でない
     // 参照アセットがこれ以上あるシーンは分割ロード＋ローディング UI に切り替える。

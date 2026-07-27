@@ -257,6 +257,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     }
 
     // シェーダー読み込み & PipelineState
+    SplashScreen::SetStatus("シェーダーとパイプラインを構築中...");
     RecreateForwardPsos();
 
     // Camera
@@ -523,6 +524,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     }
 
     // シャドウマップ作成（CSM: Texture2DArray, ArraySize=kNumCascades）
+    SplashScreen::SetStatus("シャドウマップを準備中...");
     {
         m_shadowDsvHeap = std::make_unique<DescriptorHeap>();
         m_shadowDsvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, kNumCascades, false);
@@ -1146,6 +1148,15 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                     m_thumbRenderer->RenderNext(cmdList);
                     ++completed;
 
+                    // ★この時点ではメインウィンドウはまだ非表示(m_deferredFirstShow)なので、
+                    //   下の ImGui 進捗は画面に出ない。実際にユーザーが見るのはスプラッシュ。
+                    {
+                        char st[96];
+                        snprintf(st, sizeof(st), "サムネイルを生成中... (%zu / %zu)",
+                                 completed, uncachedCount);
+                        SplashScreen::SetStatus(st);
+                    }
+
                     // ローディング画面をバックバッファに描画
                     auto* backBuffer = m_swapChain->GetCurrentBackBuffer();
                     auto rtvHandle = m_descriptorHeap->GetCpuHandle(
@@ -1209,6 +1220,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     }
 
     // IBL: シーンの skybox 設定に応じて環境キューブを読み込み派生をベイク（専用 cmdList）。
+    SplashScreen::SetStatus("環境マップをベイク中...");
     {
         auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
         LoadSkyboxIfNeeded(cmdList);

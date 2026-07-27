@@ -133,6 +133,28 @@ void Application::UpdateProjectLoad(f32 dt)
     }
 
     // フェーズ3: シーンロード（pending* と段階ロードのジョブ）が消化されたら次へ
+    // ローディング画面とスプラッシュに「今どのアセットを読んでいるか」を出す。
+    // 総数と件数だけだと、1 件に数秒かかる初回の BC 圧縮で固まったように見える。
+    if (m_sceneLoadJob)
+    {
+        const SceneLoadJob& job = *m_sceneLoadJob;
+        char buf[320];
+        if (!job.assets.empty())
+        {
+            const size_t slash = job.current.find_last_of('/');
+            const char* base = (slash == std::string::npos)
+                             ? job.current.c_str() : job.current.c_str() + slash + 1;
+            snprintf(buf, sizeof(buf), "アセットを読み込み中... (%zu / %zu)  %s",
+                     job.next, job.assets.size(), base);
+        }
+        else
+        {
+            snprintf(buf, sizeof(buf), "シーンを構築中...");
+        }
+        m_loadStatus = buf;
+        SplashScreen::SetStatus(m_loadStatus);
+    }
+
     bool pendingScene = !m_editorCtx->pendingLoadPath.empty() || m_editorCtx->pendingNewScene
                      || m_sceneLoadJob != nullptr;
     if (m_loadSceneWaitFrames > 0) --m_loadSceneWaitFrames;
