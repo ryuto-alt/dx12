@@ -3703,6 +3703,14 @@ void Application::Render()
                                 && m_ddgi->WriteIrradianceSrv(*m_graphicsDevice, dst);
                 if (!wrote && m_ssBlackTex)
                     m_ssBlackTex->CreateSRV(*m_graphicsDevice, dst);   // 1x1 黒 RGBA16F
+
+                // t23: 距離モーメント（段階2 の Chebyshev 可視性）。同じ扱い。
+                const auto dstDist = m_srvHeap->GetCpuHandle(
+                    block + ClusteredLightCulling::kDdgiDistSrvOffset);
+                const bool wroteDist = ddgiActive
+                                    && m_ddgi->WriteDistanceSrv(*m_graphicsDevice, dstDist);
+                if (!wroteDist && m_ssBlackTex)
+                    m_ssBlackTex->CreateSRV(*m_graphicsDevice, dstDist);
             }
         }
 

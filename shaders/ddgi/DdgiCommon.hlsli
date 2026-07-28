@@ -30,6 +30,12 @@
 #define DDGI_IRRADIANCE_TEXELS 6
 #define DDGI_PROBE_TILE       (DDGI_IRRADIANCE_TEXELS + 2)   // 8
 
+// 距離モーメント（平均距離 / 距離の二乗平均）のタイル。★irradiance より高解像度にする。
+// irradiance は低周波でよいが、可視性は「壁の縁」を表現しないといけないので 6x6 では粗すぎる
+// （論文も距離側だけ 14x14 を使う）。
+#define DDGI_DISTANCE_TEXELS  14
+#define DDGI_DISTANCE_TILE    (DDGI_DISTANCE_TEXELS + 2)     // 16
+
 struct DdgiConstants
 {
     float3 originWS;      // プローブ格子の原点（最小コーナー）
@@ -65,10 +71,26 @@ float3 DdgiProbePosition(uint3 c, DdgiConstants k)
 
 // アトラス上のプローブタイルの左上テクセル（ボーダー込み）。
 // プローブは (counts.x * counts.y) 列 × counts.z 行 に並べる。
-uint2 DdgiProbeTileOrigin(uint index, uint3 counts)
+// ★tile はアトラスごとに違う（irradiance=8 / distance=16）ので引数で受ける。
+uint2 DdgiProbeTileOrigin(uint index, uint3 counts, uint tile)
 {
     const uint perRow = counts.x * counts.y;
-    return uint2((index % perRow) * DDGI_PROBE_TILE, (index / perRow) * DDGI_PROBE_TILE);
+    return uint2((index % perRow) * tile, (index / perRow) * tile);
+}
+
+// ボーダー（周囲 1 テクセル）が写し取るべき内側テクセルの座標。
+// 八面体は「縁で反対側の縁へ折り返す」形なので、単純なクランプでは繋がらない。
+// t はタイル内座標 0..texels+1、戻り値も同じ座標系（内側は 1..texels）。
+int2 DdgiBorderSource(int2 t, int texels)
+{
+    const int N = texels;
+    // 角は対角の内側テクセル
+    if ((t.x == 0 || t.x == N + 1) && (t.y == 0 || t.y == N + 1))
+        return int2(t.x == 0 ? N : 1, t.y == 0 ? N : 1);
+    if (t.x == 0)     return int2(1,         N + 1 - t.y);
+    if (t.x == N + 1) return int2(N,         N + 1 - t.y);
+    if (t.y == 0)     return int2(N + 1 - t.x, 1);
+    return                 int2(N + 1 - t.x, N);   // t.y == N+1
 }
 
 // ---- 八面体マッピング（Cigolle et al. / 論文 §4.2）----
@@ -91,11 +113,11 @@ float3 DdgiOctDecode(float2 f)
     return normalize(n);
 }
 
-// タイル内のテクセル座標(0..DDGI_IRRADIANCE_TEXELS-1) → 方向
-float3 DdgiTexelDirection(uint2 texel)
+// タイル内のテクセル座標(0..texels-1) → 方向
+float3 DdgiTexelDirection(uint2 texel, uint texels)
 {
     // テクセル中心を [-1,1] へ。
-    const float2 uv = (float2(texel) + 0.5) / float(DDGI_IRRADIANCE_TEXELS);
+    const float2 uv = (float2(texel) + 0.5) / float(texels);
     return DdgiOctDecode(uv * 2.0 - 1.0);
 }
 
@@ -130,32 +152,55 @@ float3x3 DdgiRayRotation(uint frameIndex)
 // ============================================================================
 
 // アトラスのテクセル数（C++ の DdgiVolume::AtlasSize と同じ式）
-float2 DdgiAtlasSize(uint3 counts)
+float2 DdgiAtlasSize(uint3 counts, uint tile)
 {
-    return float2(counts.x * counts.y * DDGI_PROBE_TILE, counts.z * DDGI_PROBE_TILE);
+    return float2(counts.x * counts.y * tile, counts.z * tile);
+}
+
+// 八面体タイル内のサンプル UV。★段階2 でボーダーを埋めたのでクランプは要らなくなった。
+//   oct01*texels ∈ [0, texels] → タイル内座標 [1, texels+1]、バイリニアの足 [0.5, texels+1.5]
+//   ＝ ボーダー込みのタイル [0, texels+2] に完全に収まる。継ぎ目は折り返しで正しく繋がる。
+float2 DdgiProbeUv(uint probeIndex, uint3 counts, float3 dir, uint texels, uint tile)
+{
+    const uint2  origin = DdgiProbeTileOrigin(probeIndex, counts, tile);
+    const float2 oct01  = DdgiOctEncode(dir) * 0.5 + 0.5;                  // [-1,1] -> [0,1]
+    return (float2(origin) + 1.0 + oct01 * float(texels)) / DdgiAtlasSize(counts, tile);
 }
 
 // 1 プローブの八面体タイルから dir 方向の irradiance を引く。
-// ★ボーダー（周囲 1 テクセル）はまだ埋めていないので、バイリニアの 2x2 が内側 6x6 から
-//   はみ出さないよう [0.5, 5.5] にクランプする。八面体の継ぎ目がわずかに引き伸ばされるが、
-//   6x6 の低周波なので目視では出ない。ボーダーコピーは段階2で BlendCS 側に入れる。
 float3 DdgiFetchProbe(Texture2D<float4> atlas, SamplerState samp,
                       uint probeIndex, uint3 counts, float3 dir)
 {
-    const uint2  tile  = DdgiProbeTileOrigin(probeIndex, counts);
-    const float2 oct01 = DdgiOctEncode(dir) * 0.5 + 0.5;                  // [-1,1] -> [0,1]
-    const float2 inner = clamp(oct01 * float(DDGI_IRRADIANCE_TEXELS),
-                               0.5, float(DDGI_IRRADIANCE_TEXELS) - 0.5);
-    // BlendCS は tile+(1,1) を内側の原点として書いている（DdgiProbeUpdate.hlsl）。
-    const float2 uv = (float2(tile) + 1.0 + inner) / DdgiAtlasSize(counts);
-    return atlas.SampleLevel(samp, uv, 0).rgb;
+    return atlas.SampleLevel(
+        samp, DdgiProbeUv(probeIndex, counts, dir, DDGI_IRRADIANCE_TEXELS, DDGI_PROBE_TILE),
+        0).rgb;
+}
+
+// 距離モーメント（.x = 平均距離 / .y = 距離の二乗平均）。
+float2 DdgiFetchProbeDistance(Texture2D<float2> atlas, SamplerState samp,
+                              uint probeIndex, uint3 counts, float3 dir)
+{
+    return atlas.SampleLevel(
+        samp, DdgiProbeUv(probeIndex, counts, dir, DDGI_DISTANCE_TEXELS, DDGI_DISTANCE_TILE),
+        0).rg;
+}
+
+// 距離モーメントを詰めるときの上限（＝Chebyshev の効く範囲）。
+// ★spacing の 2 倍。8 近傍プローブまでの最大距離は spacing*sqrt(3)≒1.73 倍なので、
+//   これを下回る値でクランプすると「何も無い空間なのに遮蔽扱い」になる。
+//   同時に、half(最大 65504) で二乗平均が溢れないための上限でもある
+//   （rayLength は 10000 まで許されているので、生の距離をそのまま二乗すると壊れる）。
+float DdgiMaxProbeDistance(float3 spacing)
+{
+    return max(spacing.x, max(spacing.y, spacing.z)) * 2.0;
 }
 
 // worldPos / N の位置で周囲 8 プローブをトライリニア + 法線重みで混ぜる（論文 §4.4）。
 // 戻り値はコサイン加重の平均放射輝度で、IBL の irradiance キューブと同じ単位。
 //   ＝ albedo を掛ければそのまま拡散間接光になる（π の補正は不要）。
 // confidence は格子の境界フェード（外側は 0）。呼び出し側はこれで lerp する。
-float3 DdgiSampleIrradiance(Texture2D<float4> atlas, SamplerState samp,
+float3 DdgiSampleIrradiance(Texture2D<float4> atlas, Texture2D<float2> distAtlas,
+                            SamplerState samp,
                             float3 worldPos, float3 N,
                             float3 originWS, float3 spacing, uint3 counts,
                             float normalBias, out float confidence)
@@ -193,6 +238,30 @@ float3 DdgiSampleIrradiance(Texture2D<float4> atlas, SamplerState samp,
         const float3 dir  = normalize(probePos - p);
         const float  wrap = dot(dir, N) * 0.5 + 0.5;
         w *= wrap * wrap + 0.2;
+
+        // ---- Chebyshev 可視性テスト（段階2 / 論文 §4.4。Variance Shadow Maps と同型）----
+        // プローブから見た「この点の方向」の平均距離 r と二乗平均 r2 を引く。
+        // 点がプローブより手前なら遮蔽なし。奥なら、分散が小さい（＝その方向の壁が
+        // はっきりしている）ほど強く遮蔽と判定して重みを落とす。
+        // ★これが壁の裏へ光が回り込む「ライトリーク」を潰す本体。
+        {
+            const float3 toPoint = p - probePos;
+            const float  distToProbe = length(toPoint);
+            const float2 m = DdgiFetchProbeDistance(distAtlas, samp,
+                                 DdgiProbeIndex(uint3(c), counts), counts,
+                                 toPoint / max(distToProbe, 1e-6));
+            if (distToProbe > m.x)
+            {
+                // 分散。abs は数値誤差で負に振れるのを潰すため。
+                const float variance = abs(m.x * m.x - m.y);
+                const float diff = distToProbe - m.x;
+                float cheb = variance / (variance + diff * diff);
+                // 3 乗して裾を切る（論文と同じ。中途半端な半遮蔽が滲むのを防ぐ）。
+                cheb = max(cheb * cheb * cheb, 0.0);
+                w *= cheb;
+            }
+        }
+
         if (w < 1e-6) continue;
 
         sum  += DdgiFetchProbe(atlas, samp, DdgiProbeIndex(uint3(c), counts), counts, N) * w;

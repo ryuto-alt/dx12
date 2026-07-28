@@ -177,9 +177,9 @@ void ClusteredLightCulling::Initialize(GraphicsDevice& device, DescriptorHeap* s
         srv.Buffer.StructureByteStride = sizeof(u32);
         dev->CreateShaderResourceView(m_countBuf.Get(), &srv, m_srvHeap->GetCpuHandle(base + 2));
 
-        // [3..6] デカール枠（t18..t21）+ [7] DDGI 枠（t22）の仮埋め。
+        // [3..6] デカール枠（t18..t21）+ [7..8] DDGI 枠（t22/t23）の仮埋め。
         // ★実体は DecalSystem::WriteSrvsInto と Application の DDGI バインドが
-        //   Application::Initialize の中で即座に上書きする（フォワード PS が t21/t22 を
+        //   Application::Initialize の中で即座に上書きする（フォワード PS が t21/t22/t23 を
         //   Texture2D として宣言しているので、型の合わないまま描画に入らせない）。
         //   ここは「テーブルを Set した瞬間に未初期化が無い」ことの保険。
         for (u32 i = 3; i < kSrvTableSize; ++i)

@@ -38,6 +38,8 @@ StructuredBuffer<uint>         g_clusterLightCount : register(t15);
 //   読むかどうかは ddgiOrigin.w > 0 で判断する。s5 は DDGI 専用の LINEAR CLAMP 静的サンプラ
 //   （s2 は Forward.hlsl が g_iblSampler として使っているので同じ register を二重宣言できない）。
 Texture2D<float4> g_ddgiIrradiance : register(t22);
+// 距離モーメント（.r=平均距離 / .g=二乗平均）。Chebyshev 可視性テスト用（段階2）。
+Texture2D<float2> g_ddgiDistance   : register(t23);
 SamplerState      g_ddgiSampler    : register(s5);
 #include "../ddgi/DdgiCommon.hlsli"
 
@@ -97,7 +99,7 @@ float3 SampleDdgi(float3 worldPos, float3 N, out float confidence)
     if (ddgiOrigin.w <= 0.0) return float3(0.0, 0.0, 0.0);   // OFF なら 1 テクセルも読まない
     // ★intensity はここでは掛けない。BlendCS がアトラスへ書く時点で既に掛かっている
     //   （DdgiProbeUpdate.hlsl の `irradiance *= gDdgi.intensity`）。掛けると 2 乗になる。
-    return DdgiSampleIrradiance(g_ddgiIrradiance, g_ddgiSampler, worldPos, N,
+    return DdgiSampleIrradiance(g_ddgiIrradiance, g_ddgiDistance, g_ddgiSampler, worldPos, N,
                                 ddgiOrigin.xyz, ddgiSpacing.xyz,
                                 uint3(ddgiCounts.xyz), ddgiSpacing.w, confidence);
 }

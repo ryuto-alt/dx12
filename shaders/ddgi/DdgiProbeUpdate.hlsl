@@ -43,6 +43,8 @@ cbuffer DdgiCB : register(b0)
 RWTexture2D<float4> gRayData    : register(u0);
 // 八面体 irradiance アトラス（ボーダー込みのタイル配置）
 RWTexture2D<float4> gIrradiance : register(u1);
+// 八面体 距離モーメントアトラス（.r = 平均距離 / .g = 距離の二乗平均）。段階2。
+RWTexture2D<float2> gDistance   : register(u2);
 
 SamplerState gLinearWrap : register(s0);
 
@@ -203,7 +205,10 @@ void TraceCS(uint3 dtid : SV_DispatchThreadID)
 // ---------------------------------------------------------------------------
 //  Blend: 1 スレッド = irradiance アトラスの 1 テクセル（内側のみ）
 // ---------------------------------------------------------------------------
-[numthreads(DDGI_IRRADIANCE_TEXELS, DDGI_IRRADIANCE_TEXELS, 1)]
+// ★numthreads はボーダー込みのタイル全体。内側スレッドが積分して書き、
+//   グループ同期のあとでボーダーのスレッドが内側から折り返してコピーする（論文 §4.3）。
+//   ボーダーが無いとバイリニアが隣のプローブや未初期化テクセルを舐める。
+[numthreads(DDGI_PROBE_TILE, DDGI_PROBE_TILE, 1)]
 void BlendCS(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID)
 {
     const uint probeIndex = gid.x;
@@ -211,39 +216,120 @@ void BlendCS(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID)
     if (probeIndex >= probeTotal)
         return;
 
-    // このテクセルが代表する方向。
-    const float3 texelDir = DdgiTexelDirection(gtid.xy);
+    const uint2 tile = DdgiProbeTileOrigin(probeIndex, gDdgi.probeCounts, DDGI_PROBE_TILE);
+    const int2  t    = int2(gtid.xy);                  // 0..DDGI_PROBE_TILE-1
+    const bool  interior = all(t >= 1) && all(t <= DDGI_IRRADIANCE_TEXELS);
 
-    float3 sum = 0.0;
-    float  wsum = 0.0;
-
-    [loop]
-    for (uint i = 0; i < DDGI_RAYS_PER_PROBE; ++i)
+    if (interior)
     {
-        const float4 rd = gRayData[uint2(i, probeIndex)];
-        if (rd.w < 0.0)
-            continue;   // 負の距離 = 裏面ヒット（壁の中）= 無効。ミスは +1e30 なので通る
+        // このテクセルが代表する方向（内側の原点は tile+(1,1)）。
+        const float3 texelDir = DdgiTexelDirection(uint2(t - 1), DDGI_IRRADIANCE_TEXELS);
 
-        const float3 rayDir = mul(DdgiRayRotation(gDdgi.frameIndex),
-                                  DdgiSphericalFibonacci(i, DDGI_RAYS_PER_PROBE));
-        // コサイン重み。テクセルの方向から見て裏側のレイは寄与しない。
-        const float w = max(0.0, dot(texelDir, rayDir));
-        if (w <= 0.0) continue;
+        float3 sum = 0.0;
+        float  wsum = 0.0;
 
-        sum  += rd.rgb * w;
-        wsum += w;
+        [loop]
+        for (uint i = 0; i < DDGI_RAYS_PER_PROBE; ++i)
+        {
+            const float4 rd = gRayData[uint2(i, probeIndex)];
+            if (rd.w < 0.0)
+                continue;   // 負の距離 = 裏面ヒット（壁の中）= 無効。ミスは +1e30 なので通る
+
+            const float3 rayDir = mul(DdgiRayRotation(gDdgi.frameIndex),
+                                      DdgiSphericalFibonacci(i, DDGI_RAYS_PER_PROBE));
+            // コサイン重み。テクセルの方向から見て裏側のレイは寄与しない。
+            const float w = max(0.0, dot(texelDir, rayDir));
+            if (w <= 0.0) continue;
+
+            sum  += rd.rgb * w;
+            wsum += w;
+        }
+
+        float3 irradiance = (wsum > 0.0) ? (sum / wsum) : float3(0, 0, 0);
+        irradiance *= gDdgi.intensity;
+
+        // 時間ブレンド（ヒステリシス）。★これがあるからデノイザが要らない。
+        // 初回（履歴が黒）は hysteresis を無視して即座に埋める。
+        const float4 prev = gIrradiance[tile + uint2(t)];
+        const float  hyst = (prev.a > 0.0) ? gDdgi.hysteresis : 0.0;
+        gIrradiance[tile + uint2(t)] = float4(lerp(irradiance, prev.rgb, hyst), 1.0);
     }
 
-    float3 irradiance = (wsum > 0.0) ? (sum / wsum) : float3(0, 0, 0);
-    irradiance *= gDdgi.intensity;
+    GroupMemoryBarrierWithGroupSync();
 
-    // アトラス上の書き込み先（タイルのボーダーを 1 テクセル空ける）。
-    const uint2 tile = DdgiProbeTileOrigin(probeIndex, gDdgi.probeCounts);
-    const uint2 dst  = tile + uint2(1, 1) + gtid.xy;
+    if (!interior)
+    {
+        const int2 src = DdgiBorderSource(t, DDGI_IRRADIANCE_TEXELS);
+        gIrradiance[tile + uint2(t)] = gIrradiance[tile + uint2(src)];
+    }
+}
 
-    // 時間ブレンド（ヒステリシス）。★これがあるからデノイザが要らない。
-    // 初回（履歴が黒）は hysteresis を無視して即座に埋める。
-    const float4 prev = gIrradiance[dst];
-    const float  hyst = (prev.a > 0.0) ? gDdgi.hysteresis : 0.0;
-    gIrradiance[dst] = float4(lerp(irradiance, prev.rgb, hyst), 1.0);
+// ---------------------------------------------------------------------------
+//  BlendDistance: 距離モーメント（段階2）。1 グループ = 1 プローブ
+//
+//  Chebyshev 可視性テストのために、方向ごとの「平均距離」と「距離の二乗平均」を持つ。
+//  irradiance より高い解像度（14x14）で、コサインの高次乗で重み付けする＝
+//  壁の縁をぼかさずに保つ（低次だと半球全体が混ざって縁が消え、リークが残る）。
+// ---------------------------------------------------------------------------
+[numthreads(DDGI_DISTANCE_TILE, DDGI_DISTANCE_TILE, 1)]
+void BlendDistanceCS(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID)
+{
+    const uint probeIndex = gid.x;
+    const uint probeTotal = gDdgi.probeCounts.x * gDdgi.probeCounts.y * gDdgi.probeCounts.z;
+    if (probeIndex >= probeTotal)
+        return;
+
+    const uint2 tile = DdgiProbeTileOrigin(probeIndex, gDdgi.probeCounts, DDGI_DISTANCE_TILE);
+    const int2  t    = int2(gtid.xy);
+    const bool  interior = all(t >= 1) && all(t <= DDGI_DISTANCE_TEXELS);
+
+    if (interior)
+    {
+        const float3 texelDir = DdgiTexelDirection(uint2(t - 1), DDGI_DISTANCE_TEXELS);
+        const float  maxDist  = DdgiMaxProbeDistance(gDdgi.spacing);
+
+        float2 sum  = 0.0;   // (Σ d·w, Σ d²·w)
+        float  wsum = 0.0;
+
+        [loop]
+        for (uint i = 0; i < DDGI_RAYS_PER_PROBE; ++i)
+        {
+            const float4 rd = gRayData[uint2(i, probeIndex)];
+
+            // ★abs: 裏面ヒット（負で記録）も「そこに壁がある」ので遮蔽としては数える。
+            //   ★min: ミスは +1e30 で記録されるが、RayData は R16G16B16A16_FLOAT なので
+            //     読み戻すと +INF。二乗すると INF、分散 mean²-mean で NaN になり
+            //     フォワード PS まで壊れた値が届く。ここで必ず潰すこと。
+            const float d = min(abs(rd.w), maxDist);
+
+            const float3 rayDir = mul(DdgiRayRotation(gDdgi.frameIndex),
+                                      DdgiSphericalFibonacci(i, DDGI_RAYS_PER_PROBE));
+            const float c = max(0.0, dot(texelDir, rayDir));
+            if (c <= 0.0) continue;
+            // 高次のコサイン重み（論文の depthSharpness）。irradiance の 1 乗と違い、
+            // ほぼ真正面のレイだけを見るので壁の縁が保たれる。
+            const float w = pow(c, 50.0);
+            if (w <= 0.0) continue;
+
+            sum  += float2(d, d * d) * w;
+            wsum += w;
+        }
+
+        const float2 moments = (wsum > 0.0) ? (sum / wsum) : float2(maxDist, maxDist * maxDist);
+
+        // 時間ブレンド。★irradiance と違い .a が無いので、履歴の有無は
+        //   「平均距離が 0 より大きいか」で判定する（初期値は 0 クリアされていない可能性が
+        //   あるので、格子を作り直したフレームは hysteresis を効かせずに埋める）。
+        const float2 prev = gDistance[tile + uint2(t)];
+        const float  hyst = (prev.x > 0.0) ? gDdgi.hysteresis : 0.0;
+        gDistance[tile + uint2(t)] = lerp(moments, prev, hyst);
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    if (!interior)
+    {
+        const int2 src = DdgiBorderSource(t, DDGI_DISTANCE_TEXELS);
+        gDistance[tile + uint2(t)] = gDistance[tile + uint2(src)];
+    }
 }

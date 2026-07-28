@@ -427,6 +427,7 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/RtAlbedo_PS.cso"
         "${SHADER_OUTPUT_DIR}/DdgiTrace_CS.cso"
         "${SHADER_OUTPUT_DIR}/DdgiBlend_CS.cso"
+        "${SHADER_OUTPUT_DIR}/DdgiBlendDist_CS.cso"
         "${SHADER_OUTPUT_DIR}/SkinCompute_CS.cso"
     )
 
@@ -1063,6 +1064,12 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T cs_6_6 -E BlendCS -Fo "${SHADER_OUTPUT_DIR}/DdgiBlend_CS.cso" "${SHADER_DDGI_UPDATE}"
         DEPENDS "${SHADER_DDGI_UPDATE}" ${SHADER_DDGI_INC}
         COMMENT "Compiling DdgiProbeUpdate.hlsl -> DdgiBlend_CS.cso (cs_6_6)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/DdgiBlendDist_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_6 -E BlendDistanceCS -Fo "${SHADER_OUTPUT_DIR}/DdgiBlendDist_CS.cso" "${SHADER_DDGI_UPDATE}"
+        DEPENDS "${SHADER_DDGI_UPDATE}" ${SHADER_DDGI_INC}
+        COMMENT "Compiling DdgiProbeUpdate.hlsl -> DdgiBlendDist_CS.cso (cs_6_6)"
     )
 
     add_custom_target(Shaders ALL DEPENDS ${SHADER_OUTPUTS})

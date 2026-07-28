@@ -193,11 +193,11 @@ void RootSignature::Initialize(GraphicsDevice& device)
     clusterRanges[1].Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
     clusterRanges[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    // t22: DDGI の irradiance アトラス（計画09 Step 6 / 段階1）。
+    // t22 = DDGI の irradiance アトラス（段階1） / t23 = 距離モーメント（段階2）。
     // ★ここも新規スロットを取らず slot11 へ相乗りする＝ルート定数の予算は 61/64 のまま。
     //   OFF のときも 1x1 黒ダミーで必ず埋めること（未初期化はデバッグレイヤが落とす）。
     clusterRanges[2].RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    clusterRanges[2].NumDescriptors                    = 1;   // t22
+    clusterRanges[2].NumDescriptors                    = 2;   // t22, t23
     clusterRanges[2].BaseShaderRegister                = 22;
     clusterRanges[2].RegisterSpace                     = 0;
     clusterRanges[2].Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;

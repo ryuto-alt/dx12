@@ -33,10 +33,10 @@ static_assert(sizeof(DdgiCB) % 16 == 0, "DdgiCB は 16B 境界に揃えること
 constexpr u32 kDdgiCBNum32 = sizeof(DdgiCB) / sizeof(u32);
 
 // irradiance アトラスのサイズ。プローブは (X*Y) 列 × Z 行 に並べる。
-void AtlasSize(u32 px, u32 py, u32 pz, u32& w, u32& h)
+void AtlasSize(u32 px, u32 py, u32 pz, u32 tile, u32& w, u32& h)
 {
-    w = px * py * DdgiVolume::kProbeTile;
-    h = pz * DdgiVolume::kProbeTile;
+    w = px * py * tile;
+    h = pz * tile;
 }
 
 } // namespace
@@ -61,14 +61,18 @@ void DdgiVolume::Shutdown()
 {
     if (m_srvHeap)
     {
-        if (m_rayDataUav    != 0xFFFFFFFFu) m_srvHeap->FreeBlock(m_rayDataUav, 2);
+        if (m_rayDataUav    != 0xFFFFFFFFu) m_srvHeap->FreeBlock(m_rayDataUav, 3);
         if (m_irradianceSrv != 0xFFFFFFFFu) m_srvHeap->Free(m_irradianceSrv);
+        if (m_distanceSrv   != 0xFFFFFFFFu) m_srvHeap->Free(m_distanceSrv);
     }
-    m_rayDataUav = m_irradianceUav = m_irradianceSrv = 0xFFFFFFFFu;
+    m_rayDataUav = m_irradianceUav = m_distanceUav = 0xFFFFFFFFu;
+    m_irradianceSrv = m_distanceSrv = 0xFFFFFFFFu;
     m_rayData.Reset();
     m_irradiance.Reset();
+    m_distance.Reset();
     m_psoTrace.Reset();
     m_psoBlend.Reset();
+    m_psoBlendDist.Reset();
     m_rootSig.Reset();
     m_probesX = m_probesY = m_probesZ = 0;
     m_historyValid = false;
@@ -77,7 +81,8 @@ void DdgiVolume::Shutdown()
 void DdgiVolume::CreateRootSignature(GraphicsDevice& device)
 {
     // b0(32bit定数) + t0(TLAS root SRV) + t1(GeometryInfo root SRV) + u0/u1(root UAV)
-    // DWORD: kDdgiCBNum32 + 2 + 2 + 2 + 2。専用ルートシグネチャなので PBR の 61/64 は無関係。
+    // DWORD: kDdgiCBNum32(32) + t0(2) + t1(2) + テーブル(1) = 37/64。
+    // 専用ルートシグネチャなので PBR の 61/64 とは無関係。
     D3D12_ROOT_PARAMETER params[4]{};
     params[0].ParameterType            = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[0].Constants.ShaderRegister = 0;
@@ -92,7 +97,7 @@ void DdgiVolume::CreateRootSignature(GraphicsDevice& device)
     //   連続 2 スロットのディスクリプタテーブルにする。
     D3D12_DESCRIPTOR_RANGE uavRange{};
     uavRange.RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-    uavRange.NumDescriptors     = 2;   // u0 = RayData / u1 = Irradiance
+    uavRange.NumDescriptors     = 3;   // u0 = RayData / u1 = Irradiance / u2 = Distance
     uavRange.BaseShaderRegister = 0;
     params[3].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     params[3].DescriptorTable.NumDescriptorRanges = 1;
@@ -145,6 +150,7 @@ void DdgiVolume::RecreatePipelines(GraphicsDevice& device)
     };
     make(L"DdgiTrace_CS.cso", m_psoTrace);
     make(L"DdgiBlend_CS.cso", m_psoBlend);
+    make(L"DdgiBlendDist_CS.cso", m_psoBlendDist);
 }
 
 bool DdgiVolume::EnsureResources(GraphicsDevice& device, const DdgiSettings& s)
@@ -157,7 +163,8 @@ bool DdgiVolume::EnsureResources(GraphicsDevice& device, const DdgiSettings& s)
     if (m_rayData && m_probesX == px && m_probesY == py && m_probesZ == pz) return true;
 
     auto* dev = device.GetDevice();
-    auto makeTex = [&](u32 w, u32 h, Microsoft::WRL::ComPtr<ID3D12Resource>& out) -> bool
+    auto makeTex = [&](u32 w, u32 h, DXGI_FORMAT fmt,
+                       Microsoft::WRL::ComPtr<ID3D12Resource>& out) -> bool
     {
         D3D12_HEAP_PROPERTIES heap{};
         heap.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -167,33 +174,42 @@ bool DdgiVolume::EnsureResources(GraphicsDevice& device, const DdgiSettings& s)
         desc.Height           = h;
         desc.DepthOrArraySize = 1;
         desc.MipLevels        = 1;
-        desc.Format           = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        desc.Format           = fmt;
         desc.SampleDesc       = {1, 0};
         desc.Flags            = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
         return SUCCEEDED(dev->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&out)));
     };
 
-    u32 aw = 0, ah = 0;
-    AtlasSize(px, py, pz, aw, ah);
-    Microsoft::WRL::ComPtr<ID3D12Resource> rayData, irradiance;
-    if (!makeTex(kRaysPerProbe, total, rayData) || !makeTex(aw, ah, irradiance))
+    u32 aw = 0, ah = 0, dw = 0, dh = 0;
+    AtlasSize(px, py, pz, kProbeTile,    aw, ah);
+    AtlasSize(px, py, pz, kDistanceTile, dw, dh);
+    Microsoft::WRL::ComPtr<ID3D12Resource> rayData, irradiance, distance;
+    // ★距離は 2 成分（平均 / 二乗平均）なので RG16F で足りる。RGBA16F にすると
+    //   14x14 タイルは irradiance の 4 倍の面積があるので VRAM が倍要る。
+    if (!makeTex(kRaysPerProbe, total, DXGI_FORMAT_R16G16B16A16_FLOAT, rayData)
+     || !makeTex(aw, ah,        DXGI_FORMAT_R16G16B16A16_FLOAT, irradiance)
+     || !makeTex(dw, dh,        DXGI_FORMAT_R16G16_FLOAT,       distance))
     {
         Logger::Warn("DDGI: プローブ用テクスチャを確保できません（{} プローブ）", total);
         return false;
     }
     m_rayData    = std::move(rayData);
     m_irradiance = std::move(irradiance);
-    // 作りたてはどちらも UNORDERED_ACCESS。作り直したら追跡中のステートも戻す。
+    m_distance   = std::move(distance);
+    // 作りたては全部 UNORDERED_ACCESS。作り直したら追跡中のステートも戻す。
     m_irradianceState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    m_distanceState   = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 
     // ディスクリプタは初回だけ取る（格子が変わっても同じ index へ張り直す）。
     // ★u0/u1 はディスクリプタテーブルなので**連続**でなければならない。
     if (m_rayDataUav == 0xFFFFFFFFu)
     {
-        m_rayDataUav    = m_srvHeap->AllocateBlock(2);
+        m_rayDataUav    = m_srvHeap->AllocateBlock(3);
         m_irradianceUav = m_rayDataUav + 1;
+        m_distanceUav   = m_rayDataUav + 2;
         m_irradianceSrv = m_srvHeap->AllocateIndex();
+        m_distanceSrv   = m_srvHeap->AllocateIndex();
     }
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
     uav.Format        = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -202,6 +218,9 @@ bool DdgiVolume::EnsureResources(GraphicsDevice& device, const DdgiSettings& s)
                                    m_srvHeap->GetCpuHandle(m_rayDataUav));
     dev->CreateUnorderedAccessView(m_irradiance.Get(), nullptr, &uav,
                                    m_srvHeap->GetCpuHandle(m_irradianceUav));
+    uav.Format = DXGI_FORMAT_R16G16_FLOAT;   // ★距離だけフォーマットが違う
+    dev->CreateUnorderedAccessView(m_distance.Get(), nullptr, &uav,
+                                   m_srvHeap->GetCpuHandle(m_distanceUav));
     D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
     srv.Format                  = DXGI_FORMAT_R16G16B16A16_FLOAT;
     srv.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -209,20 +228,30 @@ bool DdgiVolume::EnsureResources(GraphicsDevice& device, const DdgiSettings& s)
     srv.Texture2D.MipLevels     = 1;
     dev->CreateShaderResourceView(m_irradiance.Get(), &srv,
                                   m_srvHeap->GetCpuHandle(m_irradianceSrv));
+    srv.Format = DXGI_FORMAT_R16G16_FLOAT;
+    dev->CreateShaderResourceView(m_distance.Get(), &srv,
+                                  m_srvHeap->GetCpuHandle(m_distanceSrv));
 
     m_probesX = px; m_probesY = py; m_probesZ = pz;
     m_historyValid = false;   // 格子が変わった＝履歴の意味が変わる
     m_stats.probes = total;
-    m_stats.bytes  = static_cast<u64>(kRaysPerProbe) * total * 8
-                   + static_cast<u64>(aw) * ah * 8;
-    Logger::Info("DDGI: プローブ {}x{}x{} = {} 個 / アトラス {}x{} / {:.2f} MB",
-                 px, py, pz, total, aw, ah, static_cast<double>(m_stats.bytes) / (1024.0 * 1024.0));
+    m_stats.bytes  = static_cast<u64>(kRaysPerProbe) * total * 8   // RayData  RGBA16F
+                   + static_cast<u64>(aw) * ah * 8                  // irradiance RGBA16F
+                   + static_cast<u64>(dw) * dh * 4;                 // distance   RG16F
+    Logger::Info("DDGI: プローブ {}x{}x{} = {} 個 / irradiance {}x{} / 距離 {}x{} / {:.2f} MB",
+                 px, py, pz, total, aw, ah, dw, dh,
+                 static_cast<double>(m_stats.bytes) / (1024.0 * 1024.0));
     return true;
 }
 
 u32 DdgiVolume::GetIrradianceSrvIndex() const
 {
     return m_irradiance ? m_irradianceSrv : 0xFFFFFFFFu;
+}
+
+u32 DdgiVolume::GetDistanceSrvIndex() const
+{
+    return m_distance ? m_distanceSrv : 0xFFFFFFFFu;
 }
 
 bool DdgiVolume::WriteIrradianceSrv(GraphicsDevice& device, D3D12_CPU_DESCRIPTOR_HANDLE dst) const
@@ -234,6 +263,18 @@ bool DdgiVolume::WriteIrradianceSrv(GraphicsDevice& device, D3D12_CPU_DESCRIPTOR
     srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srv.Texture2D.MipLevels     = 1;
     device.GetDevice()->CreateShaderResourceView(m_irradiance.Get(), &srv, dst);
+    return true;
+}
+
+bool DdgiVolume::WriteDistanceSrv(GraphicsDevice& device, D3D12_CPU_DESCRIPTOR_HANDLE dst) const
+{
+    if (!m_distance || dst.ptr == 0) return false;
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+    srv.Format                  = DXGI_FORMAT_R16G16_FLOAT;
+    srv.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.Texture2D.MipLevels     = 1;
+    device.GetDevice()->CreateShaderResourceView(m_distance.Get(), &srv, dst);
     return true;
 }
 
@@ -270,17 +311,24 @@ void DdgiVolume::Update(ID3D12GraphicsCommandList* cmd, GraphicsDevice& device,
     cb.lightSrvIndex = d.lightSrvIndex;
     cb.lightCount    = d.lightCount;
 
-    // 段階1 でフォワード PS が t22 から読むようになったので、書く前に UAV へ戻す。
-    if (m_irradianceState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+    // フォワード PS が t22/t23 から読むようになったので、書く前に UAV へ戻す。
     {
-        D3D12_RESOURCE_BARRIER b{};
-        b.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource   = m_irradiance.Get();
-        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        b.Transition.StateBefore = m_irradianceState;
-        b.Transition.StateAfter  = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-        cmd->ResourceBarrier(1, &b);
-        m_irradianceState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        D3D12_RESOURCE_BARRIER b[2]{};
+        u32 n = 0;
+        auto toUav = [&](ID3D12Resource* res, D3D12_RESOURCE_STATES& state)
+        {
+            if (state == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) return;
+            b[n].Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            b[n].Transition.pResource   = res;
+            b[n].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            b[n].Transition.StateBefore = state;
+            b[n].Transition.StateAfter  = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+            ++n;
+            state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        };
+        toUav(m_irradiance.Get(), m_irradianceState);
+        toUav(m_distance.Get(),   m_distanceState);
+        if (n > 0) cmd->ResourceBarrier(n, b);
     }
 
     cmd->SetComputeRootSignature(m_rootSig.Get());
@@ -300,19 +348,28 @@ void DdgiVolume::Update(ID3D12GraphicsCommandList* cmd, GraphicsDevice& device,
     cmd->ResourceBarrier(1, &uavB);
 
     // ---- ブレンド（1 グループ = 1 プローブ / 1 スレッド = 1 テクセル）----
+    // ★irradiance と距離モーメントは別テクスチャなので、間に UAV バリアは要らない
+    //   （どちらも同じ RayData を読むだけ。上のバリアで直列化済み）。
     cmd->SetPipelineState(m_psoBlend.Get());
     cmd->Dispatch(total, 1, 1);
+    cmd->SetPipelineState(m_psoBlendDist.Get());
+    cmd->Dispatch(total, 1, 1);
 
-    // フォワードパスが PS から読めるようにしておく（段階1）。
+    // フォワードパスが PS から読めるようにしておく（段階1 / 段階2）。
     {
-        D3D12_RESOURCE_BARRIER b{};
-        b.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource   = m_irradiance.Get();
-        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        b.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-        b.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-        cmd->ResourceBarrier(1, &b);
+        D3D12_RESOURCE_BARRIER b[2]{};
+        ID3D12Resource* res[2] = { m_irradiance.Get(), m_distance.Get() };
+        for (u32 i = 0; i < 2; ++i)
+        {
+            b[i].Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            b[i].Transition.pResource   = res[i];
+            b[i].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            b[i].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+            b[i].Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        }
+        cmd->ResourceBarrier(2, b);
         m_irradianceState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        m_distanceState   = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
     }
 
     m_stats.raysCast = total * kRaysPerProbe;
