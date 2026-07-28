@@ -18,6 +18,7 @@ add_library(Renderer STATIC
     RaytracingScene.cpp
     RtScreenPass.cpp
     SkinningCompute.cpp
+    DdgiVolume.cpp
     ClusteredLightCulling.cpp
     VolumetricFogPass.cpp
     DecalSystem.cpp

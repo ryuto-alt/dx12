@@ -59,6 +59,7 @@ namespace dx12e
     class RaytracingScene;
     class RtScreenPass;
     class SkinningCompute;
+    class DdgiVolume;
     class VolumetricFogPass;
     class DecalSystem;
     class ParticleSystem;
@@ -955,6 +956,10 @@ private:
     // compute スキニング（計画09 Step 4）。スキンドの変形後頂点を書き出して BLAS の入力にする。
     // これが無いとスキンドは TLAS に入れられず、キャラだけ RT 影 / RT-AO の対象外になる。
     std::unique_ptr<SkinningCompute> m_skinningCompute;
+    // DDGI（計画09 Step 6）。world-space の拡散間接光。既定 OFF。
+    // ★inline RayQuery とバインドレス（SM6.6 Dynamic Resources）の両方が要る。
+    //   どちらか欠ける GPU では作られず、絵は導入前と完全に一致する。
+    std::unique_ptr<DdgiVolume> m_ddgi;
     bool m_dxrEnabled = false;                       // 6 段ゲートを全部通ったか
     int  m_rtSceneGenSeen = -1;                      // BLAS キャッシュ無効化用（N30 と同じ理由）
     // このフレームで RT サン影が実際に走ったか。CSM 側の排他描画（skipRtCovered）と

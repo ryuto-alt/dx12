@@ -14,7 +14,14 @@
 //   逆に、ルート定数由来（テーブル自体のアドレス）は一様なので付けない
 //   （付けると無駄な waterfall loop が出る）。
 
-#include "RtCommon.hlsli"
+// ★RtCommon.hlsli は include しない。
+//   あちらは深度 / SSAO / G-Buffer などスクリーンパス用のバインドを t0.. に宣言するので、
+//   compute（DDGI の probe 更新）から使うとレジスタが衝突する。
+//   ここはヒット点の読み取りだけを提供し、TLAS と gGeometry のレジスタは includer が決める。
+
+#ifndef RT_GEOMETRY_REGISTER
+#define RT_GEOMETRY_REGISTER t6
+#endif
 
 // RaytracingScene::GeometryInfo とバイト単位で一致させること（C++ 側に static_assert あり）。
 struct GeometryInfo
@@ -34,8 +41,8 @@ struct GeometryInfo
 #define RT_VTX_OFS_COL 24
 #define RT_VTX_OFS_UV  40
 
-// GeometryInfo テーブル（ルート SRV t6）。ヒット点で 1 回だけ引く。
-StructuredBuffer<GeometryInfo> gGeometry : register(t6);
+// GeometryInfo テーブル（ルート SRV）。ヒット点で 1 回だけ引く。
+StructuredBuffer<GeometryInfo> gGeometry : register(RT_GEOMETRY_REGISTER);
 
 struct RtHitInfo
 {

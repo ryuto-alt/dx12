@@ -957,6 +957,21 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                     Logger::Warn("compute スキニングを初期化できませんでした: {}", e.what());
                     m_skinningCompute.reset();
                 }
+
+                // DDGI（計画09 Step 6）。バインドレスのヒット読み取りを使うので
+                // Dynamic Resources が要る。作れなくても DXR 自体は動き続ける。
+                try
+                {
+                    m_ddgi = std::make_unique<DdgiVolume>();
+                    if (!m_ddgi->Initialize(*m_graphicsDevice, m_srvHeap.get(),
+                                            PathResolver::ShaderDirW()))
+                        m_ddgi.reset();
+                }
+                catch (const std::exception& e)
+                {
+                    Logger::Warn("DDGI を初期化できませんでした: {}", e.what());
+                    m_ddgi.reset();
+                }
             }
         }
 

@@ -3105,6 +3105,28 @@ void Application::Render()
             {
                 m_rtShadowActiveThisFrame = rtCfg.shadowEnabled;
                 rtAoActive                = rtCfg.aoEnabled;
+
+                // ---- DDGI: プローブ更新（計画09 Step 6）----
+                // ★TLAS が建った直後・スクリーンパスより前に回す。プローブは画面空間では
+                //   ないので compute。ヒット点のシェーディングは Step 5 のバインドレスを流用。
+                if (m_ddgi && m_ddgi->IsReady())
+                {
+                    DdgiVolume::UpdateDesc dd;
+                    dd.tlas         = m_rtScene->GetTlasAddress();
+                    dd.geometryInfo = m_rtScene->GetGeometryInfoAddress();
+                    dd.sunDir       = lightDirF3;
+                    // ★lightColorF3 には既に intensity が掛かっている（color * intensity）。
+                    //   ここで再度掛けると二重になるので 1.0 にする。
+                    dd.sunColor     = lightColorF3;
+                    dd.sunIntensity = 1.0f;
+                    // ★屋内は envMap が空なので、ミス時の放射輝度は環境光の下限を使う。
+                    //   ここを明るくしすぎると壁の外から光が漏れてくるので控えめに。
+                    dd.skyColor     = {lightAmbient, lightAmbient, lightAmbient};
+                    dd.frameIndex   = m_deterministicCapture
+                                    ? 0u : static_cast<u32>(m_perfTotalFrames & 0xFFFFull);
+                    m_ddgi->Update(nativeCmdList, *m_graphicsDevice,
+                                   m_scene->GetDdgiSettings(), dd);
+                }
             }
         }
     }

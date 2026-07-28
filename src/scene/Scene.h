@@ -15,6 +15,7 @@
 #include "renderer/ContactShadowSettings.h"
 #include "renderer/ShadowPcssSettings.h"
 #include "renderer/RtSettings.h"
+#include "renderer/DdgiVolume.h"   // DdgiSettings
 #include "renderer/SsrSettings.h"
 #include "renderer/SsgiSettings.h"
 #include "renderer/TaaSettings.h"
@@ -179,6 +180,12 @@ public:
     RtSettings&         GetRtSettings()        { return m_rt; }
     const RtSettings&   GetRtSettings() const  { return m_rt; }
 
+    // DDGI（world-space の拡散間接光）。既定 OFF。
+    // ★SSGI とは役割分担。SSGI は画面内しか拾えないので、屋内では外した瞬間に
+    //   間接光がゼロになる（このエンジンは屋内で envMap が空）。そこを DDGI が埋める。
+    DdgiSettings&       GetDdgiSettings()       { return m_ddgi; }
+    const DdgiSettings& GetDdgiSettings() const { return m_ddgi; }
+
     TaaSettings&       GetTaaSettings()       { return m_taa; }
     const TaaSettings& GetTaaSettings() const { return m_taa; }
 
@@ -226,6 +233,7 @@ private:
     SsrSettings         m_ssr;
     SsgiSettings        m_ssgi;
     RtSettings          m_rt;
+    DdgiSettings        m_ddgi;
     TaaSettings         m_taa;
     VolumetricFogSettings m_volFog;
     std::string         m_decalAtlasPath;         // assets 相対。空 = デカール無効

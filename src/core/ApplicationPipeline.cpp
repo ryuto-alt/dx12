@@ -609,6 +609,12 @@ void Application::RegisterShaderReloadHandlers()
             { L"SkinCompute_CS.cso" },
             [this]() { m_skinningCompute->RecreatePipelines(*m_graphicsDevice); });
     }
+    if (m_ddgi)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"DdgiTrace_CS.cso", L"DdgiBlend_CS.cso" },
+            [this]() { m_ddgi->RecreatePipelines(*m_graphicsDevice); });
+    }
     if (m_bloomPass)
     {
         m_shaderManager->RegisterReloadHandler(

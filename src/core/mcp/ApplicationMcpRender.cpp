@@ -408,6 +408,9 @@ void Application::RegisterMcpRenderMethods()
         });
 
     McpDefine("get_dxr|set_dxr", "aoCombineWithSsao:any,aoDenoise:any,aoDenoiseRadius:number,"
+              "ddgiEnabled:any,ddgiSpacing:number,ddgiRayLength:number,ddgiHysteresis:number,"
+              "ddgiIntensity:number,ddgiProbeCountX:any,ddgiProbeCountY:any,ddgiProbeCountZ:any,"
+              "ddgiOriginX:number,ddgiOriginY:number,ddgiOriginZ:number,"
               "aoEnabled:any,aoIntensity:number,aoPower:number,aoRadius:number,"
               "aoRayCount:any,forceBuildTlas:any,maxInstances:any,shadowEnabled:any,"
               "shadowIntensity:number,shadowMaxDistance:number,shadowNormalBias:number,"
@@ -444,6 +447,25 @@ void Application::RegisterMcpRenderMethods()
                     r.aoPower = McpFloatParam(params, "aoPower", r.aoPower, 0.01f, 8.0f);
                 r.aoCombineWithSsao = params.value("aoCombineWithSsao", r.aoCombineWithSsao);
             r.aoDenoise         = params.value("aoDenoise", r.aoDenoise);
+            // DDGI（計画09 Step 6）。RT 設定と同じハンドラで捌く（TLAS が前提なので）。
+            if (m_scene)
+            {
+                DdgiSettings& g = m_scene->GetDdgiSettings();
+                const bool wasEnabled = g.enabled;
+                g.enabled     = params.value("ddgiEnabled", g.enabled);
+                g.spacing     = std::clamp(params.value("ddgiSpacing", g.spacing), 0.1f, 100.0f);
+                g.rayLength   = std::clamp(params.value("ddgiRayLength", g.rayLength), 0.1f, 10000.0f);
+                g.hysteresis  = std::clamp(params.value("ddgiHysteresis", g.hysteresis), 0.0f, 0.995f);
+                g.intensity   = std::clamp(params.value("ddgiIntensity", g.intensity), 0.0f, 10.0f);
+                g.probeCountX = std::clamp(params.value("ddgiProbeCountX", g.probeCountX), 1, 32);
+                g.probeCountY = std::clamp(params.value("ddgiProbeCountY", g.probeCountY), 1, 32);
+                g.probeCountZ = std::clamp(params.value("ddgiProbeCountZ", g.probeCountZ), 1, 32);
+                g.originX     = params.value("ddgiOriginX", g.originX);
+                g.originY     = params.value("ddgiOriginY", g.originY);
+                g.originZ     = params.value("ddgiOriginZ", g.originZ);
+                // 設定が変わったら履歴を捨てる（古いポーズの irradiance が残らないように）。
+                if (m_ddgi && (!wasEnabled && g.enabled)) m_ddgi->InvalidateHistory();
+            }
             r.aoDenoiseRadius   = std::clamp(params.value("aoDenoiseRadius", r.aoDenoiseRadius),
                                              0.0f, 32.0f);
                 if (params.contains("maxInstances"))
@@ -476,6 +498,12 @@ void Application::RegisterMcpRenderMethods()
                          {"bindlessSupported", m_graphicsDevice
                               && m_graphicsDevice->SupportsDynamicResources()},
                          {"bindlessReady", m_rtScreenPass && m_rtScreenPass->SupportsBindlessHit()},
+                         // DDGI（計画09 Step 6）
+                         {"ddgiReady", m_ddgi && m_ddgi->IsReady()},
+                         {"ddgiEnabled", m_scene && m_scene->GetDdgiSettings().enabled},
+                         {"ddgiProbes", m_ddgi ? m_ddgi->GetStats().probes : 0u},
+                         {"ddgiRaysCast", m_ddgi ? m_ddgi->GetStats().raysCast : 0u},
+                         {"ddgiBytes", m_ddgi ? m_ddgi->GetStats().bytes : 0ull},
                          {"bytesPerTriangle", s.blasTriangles
                               ? static_cast<double>(s.blasBytes) / static_cast<double>(s.blasTriangles) : 0.0}};
                 if (m_skinningCompute)

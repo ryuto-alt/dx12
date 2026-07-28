@@ -61,6 +61,7 @@
 #include "renderer/RaytracingScene.h"
 #include "renderer/RtScreenPass.h"
 #include "renderer/SkinningCompute.h"
+#include "renderer/DdgiVolume.h"
 #include "renderer/VolumetricFogPass.h"
 #include "renderer/DecalSystem.h"
 #include "renderer/PrevWorldComponent.h"

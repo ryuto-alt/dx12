@@ -369,6 +369,15 @@ const std::vector<ShaderSource>& BuildRegistry()
             { "raytracing/RtCommon.hlsli", "post/FullscreenTri.hlsli" },
         },
         {
+            // DDGI のプローブ更新（計画09 Step 6）。compute で RayQuery を使うので cs_6_6。
+            "ddgi/DdgiProbeUpdate.hlsl",
+            {
+                { L"DdgiTrace_CS.cso", L"TraceCS", L"cs_6_6" },
+                { L"DdgiBlend_CS.cso", L"BlendCS", L"cs_6_6" },
+            },
+            { "ddgi/DdgiCommon.hlsli", "raytracing/RtBindless.hlsli" },
+        },
+        {
             // compute スキニング（計画09 Step 4）。スキンドの変形後頂点 → BLAS 用。
             "skinning/SkinCompute.hlsl",
             { { L"SkinCompute_CS.cso", L"CSMain", L"cs_6_0" } },

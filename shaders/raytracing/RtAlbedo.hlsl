@@ -12,7 +12,8 @@
 //   - 裏面: ラスタは背面カリング、RT は当たる。CommittedTriangleFrontFace() で判定できる
 //   - 半透明は TLAS に入らない仕様なのでミスになる
 
-#include "RtBindless.hlsli"
+#include "RtCommon.hlsli"     // 深度 / TLAS / RtParams（スクリーンパス用のバインド一式）
+#include "RtBindless.hlsli"   // ヒット点の属性読み取り（gGeometry は t6）
 
 SamplerState gLinearWrap : register(s0);
 
