@@ -29,6 +29,7 @@ void RtScreenPass::Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap, D
 {
     m_width  = (width  > 0) ? width  : 1;
     m_height = (height > 0) ? height : 1;
+    m_srvHeap = srvHeap;
 
     CreateRootSignature(device);
     m_shaderDir = shaderDir;
@@ -67,7 +68,19 @@ void RtScreenPass::CreateRootSignature(GraphicsDevice& device)
     ssaoRange.NumDescriptors     = 1;
     ssaoRange.BaseShaderRegister = 2;  // t2 = SSAO（RT-AO と min 合成するとき用）
 
-    D3D12_ROOT_PARAMETER params[4]{};
+    // t3 = G-Buffer（xy=oct 法線）。AO のレイ方向とデノイザの bilateral 重みに使う。
+    D3D12_DESCRIPTOR_RANGE gbufRange{};
+    gbufRange.RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    gbufRange.NumDescriptors     = 1;
+    gbufRange.BaseShaderRegister = 3;
+
+    // t4 = 生の可視率（デノイザの入力）。空間フィルタパスだけが読む。
+    D3D12_DESCRIPTOR_RANGE rawRange{};
+    rawRange.RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    rawRange.NumDescriptors     = 1;
+    rawRange.BaseShaderRegister = 4;
+
+    D3D12_ROOT_PARAMETER params[6]{};
     params[0].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     params[0].DescriptorTable.NumDescriptorRanges = 1;
     params[0].DescriptorTable.pDescriptorRanges   = &srvRange;
@@ -86,8 +99,18 @@ void RtScreenPass::CreateRootSignature(GraphicsDevice& device)
     params[3].DescriptorTable.pDescriptorRanges   = &ssaoRange;
     params[3].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
 
+    params[4].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[4].DescriptorTable.NumDescriptorRanges = 1;
+    params[4].DescriptorTable.pDescriptorRanges   = &gbufRange;
+    params[4].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    params[5].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[5].DescriptorTable.NumDescriptorRanges = 1;
+    params[5].DescriptorTable.pDescriptorRanges   = &rawRange;
+    params[5].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
+
     D3D12_ROOT_SIGNATURE_DESC desc{};
-    desc.NumParameters = 4;
+    desc.NumParameters = _countof(params);
     desc.pParameters   = params;
     desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS
                | D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS
@@ -129,9 +152,10 @@ void RtScreenPass::RecreatePipelines(GraphicsDevice& device)
         ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&out)));
     };
 
-    make(L"RtShadow_PS.cso", kMaskFormat,  m_psoShadow);
-    make(L"RtAo_PS.cso",     kMaskFormat,  m_psoAo);
-    make(L"RtDebug_PS.cso",  kDebugFormat, m_psoDebug);
+    make(L"RtShadow_PS.cso",    kMaskFormat,  m_psoShadow);
+    make(L"RtAo_PS.cso",        kMaskFormat,  m_psoAo);
+    make(L"RtDebug_PS.cso",     kDebugFormat, m_psoDebug);
+    make(L"RtAoDenoise_PS.cso", kMaskFormat,  m_psoAoDenoise);
 }
 
 void RtScreenPass::Resize(GraphicsDevice& device, u32 width, u32 height)
@@ -151,9 +175,10 @@ u32 RtScreenPass::Run(ID3D12GraphicsCommandList* cmd, const GenerateDesc& d, con
 {
     if (!m_rootSig || !m_rt[pass] || d.tlas == 0) return DescriptorHeap::kInvalidIndex;
 
-    ID3D12PipelineState* pso = (pass == PassShadow) ? m_psoShadow.Get()
-                             : (pass == PassAo)     ? m_psoAo.Get()
-                                                    : m_psoDebug.Get();
+    ID3D12PipelineState* pso = (pass == PassShadow)    ? m_psoShadow.Get()
+                             : (pass == PassAo)        ? m_psoAo.Get()
+                             : (pass == PassAoDenoise) ? m_psoAoDenoise.Get()
+                                                       : m_psoDebug.Get();
     if (!pso) return DescriptorHeap::kInvalidIndex;
 
     const XMMATRIX viewProj = d.view * d.proj;
@@ -175,15 +200,22 @@ u32 RtScreenPass::Run(ID3D12GraphicsCommandList* cmd, const GenerateDesc& d, con
                static_cast<float>(d.vpW),    static_cast<float>(d.vpH)};
     cb.p[3] = {static_cast<float>(m_width), static_cast<float>(m_height),
                1.0f / static_cast<float>(m_width), 1.0f / static_cast<float>(m_height)};
+    const bool aoLike = (pass == PassAo) || (pass == PassAoDenoise);
     cb.p[4] = {std::max(s.shadowNormalBias, 0.0f),
-               (pass == PassAo) ? 0.0f : std::max(s.shadowMaxDistance, 0.0f),
-               (pass == PassAo) ? std::clamp(s.aoIntensity, 0.0f, 1.0f)
-                                : std::clamp(s.shadowIntensity, 0.0f, 1.0f),
+               aoLike ? 0.0f : std::max(s.shadowMaxDistance, 0.0f),
+               aoLike ? std::clamp(s.aoIntensity, 0.0f, 1.0f)
+                      : std::clamp(s.shadowIntensity, 0.0f, 1.0f),
                d.frameJitter};
     cb.p[5] = {std::max(s.aoRadius, 0.01f), static_cast<float>(std::clamp(s.aoRayCount, 1, 8)),
                std::max(s.aoPower, 0.01f), d.debugRange};
-    cb.p[6] = {d.zFar, (s.aoCombineWithSsao && d.ssaoValid) ? 1.0f : 0.0f, 0.0f, 0.0f};
-    cb.p[7] = {0.0f, 0.0f, 0.0f, 0.0f};
+    // ★gCombineSsao は「デノイズ後」だけ立てる。トレースパスは生の可視率を返すので、
+    //   そこで min を掛けるとノイズごと SSAO と混ざって収束先がずれる。
+    cb.p[6] = {d.zFar,
+               (pass == PassAoDenoise && s.aoCombineWithSsao && d.ssaoValid) ? 1.0f : 0.0f,
+               static_cast<float>(d.denoiseFrame & 0xFFFFu),
+               // 空間フィルタの半径(px)。G-Buffer が無いフレームは重みが作れないので 0＝無効。
+               (s.aoDenoise && d.gbufferValid) ? std::max(s.aoDenoiseRadius, 0.0f) : 0.0f};
+    cb.p[7] = {d.gbufferValid ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
 
     const u32 cbSlot = d.frameIndex % FrameResources::kFrameCount * PassCount + pass;
     m_paramCB->Update(&cb, sizeof(cb), cbSlot);
@@ -220,6 +252,10 @@ u32 RtScreenPass::Run(ID3D12GraphicsCommandList* cmd, const GenerateDesc& d, con
     cmd->SetGraphicsRootShaderResourceView(1, d.tlas);   // TLAS はルート SRV（VA 直指定）
     cmd->SetGraphicsRootConstantBufferView(2, m_paramCB->GetGpuAddress(cbSlot));
     cmd->SetGraphicsRootDescriptorTable(3, d.ssaoSrv);
+    // ★そのパスが読まないテーブルにも必ず有効なディスクリプタを貼る（未バインドは
+    //   デバッグレイヤが落ちる）。生 AO は自分自身を読ませないよう PassAo の SRV を渡す。
+    cmd->SetGraphicsRootDescriptorTable(4, d.gbufferSrv.ptr ? d.gbufferSrv : d.depthSrv);
+    cmd->SetGraphicsRootDescriptorTable(5, m_rawAoSrv.ptr ? m_rawAoSrv : d.depthSrv);
     cmd->DrawInstanced(3, 1, 0, 0);
 
     transition(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -234,7 +270,20 @@ u32 RtScreenPass::GenerateShadow(ID3D12GraphicsCommandList* cmd, const GenerateD
 
 u32 RtScreenPass::GenerateAo(ID3D12GraphicsCommandList* cmd, const GenerateDesc& d, const RtSettings& s)
 {
-    return Run(cmd, d, s, PassAo);
+    // ① トレース（生の可視率）。intensity / pow / SSAO の min はここでは掛けない。
+    const u32 raw = Run(cmd, d, s, PassAo);
+    if (raw == DescriptorHeap::kInvalidIndex) return raw;
+
+    // ② デノイズ（joint bilateral）+ 最終合成。設定 OFF / G-Buffer 無し / PSO 無しなら
+    //    ①の結果をそのまま返す＝導入前と同じ絵になる（このリポジトリの流儀）。
+    if (!s.aoDenoise || !d.gbufferValid || !m_psoAoDenoise)
+        return raw;
+
+    m_rawAoSrv = m_srvHeap ? m_srvHeap->GetGpuHandle(raw) : D3D12_GPU_DESCRIPTOR_HANDLE{};
+    if (m_rawAoSrv.ptr == 0) return raw;
+
+    const u32 denoised = Run(cmd, d, s, PassAoDenoise);
+    return (denoised != DescriptorHeap::kInvalidIndex) ? denoised : raw;
 }
 
 u32 RtScreenPass::GenerateDebug(ID3D12GraphicsCommandList* cmd, const GenerateDesc& d)

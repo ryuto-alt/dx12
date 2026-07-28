@@ -1345,7 +1345,8 @@ reg(
   + "RT 系を触る前にまずこれを呼んで supported を見ること。"
   + "\n■ ケーパビリティ: supported(bool) / raytracingTier(\"1.1\" \"1.2\" … or \"none\") / highestShaderModel(\"6.8\" 等)。"
   + "\n■ 設定: shadowEnabled, shadowSunAngle, shadowNormalBias, shadowMaxDistance, shadowIntensity, "
-  + "aoEnabled, aoRadius, aoRayCount, aoIntensity, aoPower, aoCombineWithSsao, maxInstances, forceBuildTlas。"
+  + "aoEnabled, aoRadius, aoRayCount, aoIntensity, aoPower, aoCombineWithSsao, aoDenoise, aoDenoiseRadius, "
+  + "maxInstances, forceBuildTlas。"
   + "\n■ 実際に走ったか: shadowActive(ON でも本当に RT 影パスが走ったフレームか) / tlasReady(TLAS が建っているか)。"
   + "enabled:true なのに shadowActive:false なら supported / tlasReady / カメラ(正射)を疑う。"
   + "\n■ stats(直近フレームの加速構造の実測): instances, blasCount, blasBytes, blasTriangles, tlasBytes, "
@@ -1396,6 +1397,14 @@ reg(
     aoCombineWithSsao: z.boolean().optional().describe(
       "SSAO と min() 合成するか(既定 false)。RT-AO は細かい皺の遮蔽が苦手なので、"
       + "『大きな遮蔽 = RT / 細部 = SSAO』の合成が実用上いちばん良い。"),
+    aoDenoise: z.boolean().optional().describe(
+      "RT-AO の空間デノイザ(joint bilateral)を使うか(既定 true)。1px 数本のレイをそのまま出すと"
+      + "ノイズが乗るので、深度・法線・接平面でエッジを守りながら平滑化する。"
+      + "★false で完全に従来経路(トレース結果をそのまま t8 へ)に戻る。"
+      + "★G-Buffer が書かれていないフレームは重みが作れないので自動的にスキップされる。"),
+    aoDenoiseRadius: z.number().optional().describe(
+      "デノイザのフィルタ半径(px)。0..32 にクランプ。既定 8。0 で無効。"
+      + "大きいほど滑らかになるが、細い形状の AO が潰れる。"),
     maxInstances: z.number().int().optional().describe(
       "TLAS へ入れるインスタンスの上限。0..32768 にクランプ。0 で既定(RaytracingScene::kMaxRtInstances)。"
       + "dx12_get_dxr の stats.droppedOverLimit > 0 なら足りていない。"),

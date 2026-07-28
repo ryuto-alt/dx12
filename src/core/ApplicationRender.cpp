@@ -3353,7 +3353,10 @@ void Application::Render()
     // ★SSR/SSGI は G-Buffer が必要なので TAA が OFF でもこのモードで走らせる。
     //   速度バッファは書かれるが TAA が読まないだけ（fp16×2ch のフィル 1 枚ぶん ≒ 0.05ms）。
     //   PSO を 3 モードに分けるより安い（00-COORDINATION §5.5）。
-    const bool velocityPrepass = (taaActive || useSsr || useSsgi)
+    // ★RT-AO も G-Buffer の法線を使う（レイ方向とデノイザの bilateral 重み）。
+    //   ここに足さないと G-Buffer が書かれず、AO は ddx/ddy 法線へ落ち、
+    //   空間デノイザは丸ごとスキップされる。
+    const bool velocityPrepass = (taaActive || useSsr || useSsgi || useRtAo)
                                && m_velocityPSO && m_velocityPSOSkinned;
     // TAA 解決まで走らせるか。速度が書かれていないフレームでは絶対に解決しない
     // （履歴を速度なしで再投影すると全面がゴーストする）。
@@ -3469,6 +3472,15 @@ void Application::Render()
                 ? std::fmod(static_cast<f32>(m_perfTotalFrames & 0xFFFFull) * 0.61803398875f, 1.0f)
                 : 0.0f;
             rd.debugRange  = m_renderDebugDepthRange;
+            // G-Buffer（xy=oct 法線）。velocityPrepass が走ったフレームだけ中身が正しい。
+            rd.gbufferSrv   = m_gbufferRT ? m_srvHeap->GetGpuHandle(m_gbufferRT->GetSrvIndex())
+                                          : rd.depthSrv;
+            rd.gbufferValid = velocityPrepass && m_gbufferRT != nullptr;
+            // ★TAA の有無に関係なく必ず回す連番。frameJitter（TAA 有効時のみ非0）とは別物で、
+            //   これが止まっているとレイ方向が毎フレーム同じになり、デノイザが収束しない。
+            //   決定論キャプチャ中は 0 に固定してビット再現させる。
+            rd.denoiseFrame = m_deterministicCapture
+                            ? 0u : static_cast<u32>(m_perfTotalFrames & 0xFFFFull);
 
             const RtSettings& rtCfg = m_scene->GetRtSettings();
             if (useRtShadow)

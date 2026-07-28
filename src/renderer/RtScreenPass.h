@@ -80,6 +80,15 @@ public:
         u32   frameIndex  = 0;
         float frameJitter = 0.0f;                     // TAA 有効時のみ非 0
         float debugRange  = 100.0f;
+        // G-Buffer（xy=oct ワールド法線）。AO のレイ方向とデノイザの bilateral 重みに使う。
+        // ★ssaoSrv と同じく、常に有効なハンドルを渡すこと（型不一致でデバッグレイヤが落ちる）。
+        D3D12_GPU_DESCRIPTOR_HANDLE gbufferSrv{};
+        // gbufferSrv が本物か。false なら AO は ddx/ddy 法線へフォールバックし、
+        // デノイザの空間フィルタは丸ごとスキップする（重みが作れないため）。
+        bool  gbufferValid = false;
+        // このフレームの通し番号。★TAA の有無に関係なく必ず回すこと。
+        // 止まっているとレイ方向が毎フレーム同じになり、デノイザが原理的に収束しない。
+        u32   denoiseFrame = 0;
     };
 
     // 生成して SRV index を返す。未準備なら DescriptorHeap::kInvalidIndex。
@@ -90,7 +99,9 @@ public:
     u32 GenerateDebug (ID3D12GraphicsCommandList* cmd, const GenerateDesc& d);
 
 private:
-    enum PassIndex : u32 { PassShadow = 0, PassAo = 1, PassDebug = 2, PassCount = 3 };
+    // ★PassDebug までの番号は変えないこと（Run 内のフォーマット判定が依存している）。
+    enum PassIndex : u32 { PassShadow = 0, PassAo = 1, PassDebug = 2,
+                           PassAoDenoise = 3, PassCount = 4 };
 
     void CreateRootSignature(GraphicsDevice& device);
     // 3 パス共通の実行本体（CB を書いて全画面三角形を 1 枚描く）。
@@ -101,12 +112,17 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoShadow;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoAo;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoDebug;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoAoDenoise;
 
     std::unique_ptr<RenderTarget>   m_rt[PassCount];
     std::unique_ptr<ConstantBuffer> m_paramCB;   // kFrameCount × PassCount 個
     // RenderTarget の内部状態を使わず自前で追跡する（native cmd で遷移するため。
     // ContactShadowPass / SSAOPass と同じ理由）。
     D3D12_RESOURCE_STATES m_rtState[PassCount] = {};
+
+    // デノイズパスが読む「生 AO」の GPU ハンドル。GenerateAo がトレース直後に詰める。
+    D3D12_GPU_DESCRIPTOR_HANDLE m_rawAoSrv{};
+    DescriptorHeap* m_srvHeap = nullptr;   // 生 AO の SRV index → GPU ハンドル変換用
 
     u32 m_width  = 0;
     u32 m_height = 0;

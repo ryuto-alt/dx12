@@ -319,6 +319,7 @@ if(DXC_EXECUTABLE)
     set(SHADER_RT_SHADOW     "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtShadow.hlsl")
     set(SHADER_RT_AO         "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtAo.hlsl")
     set(SHADER_RT_DEBUG      "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtDebug.hlsl")
+    set(SHADER_RT_AODENOISE  "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtAoDenoise.hlsl")
     set(SHADER_RT_INC        "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtCommon.hlsli"
                              "${CMAKE_SOURCE_DIR}/shaders/post/FullscreenTri.hlsli")
 
@@ -410,6 +411,7 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/RtShadow_PS.cso"
         "${SHADER_OUTPUT_DIR}/RtAo_PS.cso"
         "${SHADER_OUTPUT_DIR}/RtDebug_PS.cso"
+        "${SHADER_OUTPUT_DIR}/RtAoDenoise_PS.cso"
         "${SHADER_OUTPUT_DIR}/SkinCompute_CS.cso"
     )
 
@@ -1017,6 +1019,14 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T ps_6_5 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/RtDebug_PS.cso" "${SHADER_RT_DEBUG}"
         DEPENDS "${SHADER_RT_DEBUG}" ${SHADER_RT_INC}
         COMMENT "Compiling RtDebug.hlsl -> RtDebug_PS.cso (ps_6_5)"
+    )
+    # RT-AO の空間デノイザ。RayQuery を使わないので ps_6_0 で足りるが、RtCommon.hlsli を
+    # include する（＝TLAS 宣言を含む）ので他の RT シェーダと同じ ps_6_5 で揃える。
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/RtAoDenoise_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_5 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/RtAoDenoise_PS.cso" "${SHADER_RT_AODENOISE}"
+        DEPENDS "${SHADER_RT_AODENOISE}" ${SHADER_RT_INC}
+        COMMENT "Compiling RtAoDenoise.hlsl -> RtAoDenoise_PS.cso (ps_6_5)"
     )
 
     add_custom_target(Shaders ALL DEPENDS ${SHADER_OUTPUTS})

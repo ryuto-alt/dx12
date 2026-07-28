@@ -355,6 +355,12 @@ const std::vector<ShaderSource>& BuildRegistry()
             { "forward/ClusterCommon.hlsli", "forward/DecalCommon.hlsli" },
         },
         {
+            // RT-AO の空間デノイザ（joint bilateral）+ 最終合成。
+            "raytracing/RtAoDenoise.hlsl",
+            { { L"RtAoDenoise_PS.cso", L"PSMain", L"ps_6_5" } },
+            { "raytracing/RtCommon.hlsli", "post/FullscreenTri.hlsli" },
+        },
+        {
             // compute スキニング（計画09 Step 4）。スキンドの変形後頂点 → BLAS 用。
             "skinning/SkinCompute.hlsl",
             { { L"SkinCompute_CS.cso", L"CSMain", L"cs_6_0" } },

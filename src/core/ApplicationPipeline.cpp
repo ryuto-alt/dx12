@@ -599,7 +599,8 @@ void Application::RegisterShaderReloadHandlers()
     if (m_rtScreenPass)
     {
         m_shaderManager->RegisterReloadHandler(
-            { L"Rt_VS.cso", L"RtShadow_PS.cso", L"RtAo_PS.cso", L"RtDebug_PS.cso" },
+            { L"Rt_VS.cso", L"RtShadow_PS.cso", L"RtAo_PS.cso", L"RtDebug_PS.cso",
+              L"RtAoDenoise_PS.cso" },
             [this]() { m_rtScreenPass->RecreatePipelines(*m_graphicsDevice); });
     }
     if (m_skinningCompute)

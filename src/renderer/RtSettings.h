@@ -36,6 +36,12 @@ struct RtSettings
     // SSAO と min() 合成するか。RT-AO はプローブ的で細かい皺の遮蔽が苦手なので、
     // 「大きな遮蔽=RT / 細部=SSAO」の合成が実用上いちばん良い。
     bool  aoCombineWithSsao = false;
+    // 空間デノイザ（joint bilateral）。1px あたり数本のレイをそのまま出すとノイズが乗るので、
+    // 深度・法線・接平面でエッジを守りながら平滑化する。構成は Unity HDRP の RTAO と同じ。
+    // ★false で完全に従来経路（トレース結果をそのまま t8 へ）に戻る。
+    // ★G-Buffer が書かれていないフレームは重みが作れないので自動的にスキップされる。
+    bool  aoDenoise       = true;
+    float aoDenoiseRadius = 8.0f;   // フィルタ半径(px)。0 で無効
 
     // --- 共通 ---------------------------------------------------------------
     // TLAS へ入れるインスタンスの上限。0 で既定（RaytracingScene::kMaxRtInstances）。

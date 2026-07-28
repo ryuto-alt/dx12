@@ -21,6 +21,11 @@
 Texture2D<float>                gDepth : register(t0);   // カメラ深度（R32_FLOAT・フル RT サイズ）
 RaytracingAccelerationStructure gTlas  : register(t1);   // ルート SRV（VA 直指定）
 Texture2D<float>                gSsao  : register(t2);   // SSAO の結果（RT-AO と min 合成する用）
+// G-Buffer（深度+速度プリパスの RTV1）。xy=oct(ワールド法線) z=roughness w=metallic。
+// ★AO のレイ方向とデノイザの bilateral 重みに使う。ddx/ddy 法線は quad 境界で壊れるので使わない。
+Texture2D<float4>               gGBuffer : register(t3);
+// デノイザの入力（生の可視率）。空間フィルタパスだけが読む。
+Texture2D<float>                gAoRaw   : register(t4);
 
 // RtScreenPass.cpp の RtParamsCB とバイト単位で一致させること（static_assert あり）。
 // ★可変部は必ず float4 の配列に押し込む。DXC は cbuffer の未参照メンバを消して
@@ -50,6 +55,22 @@ cbuffer RtParams : register(b0)
 #define gDebugRange   gRtP[5].w     // デバッグ表示のレンジ(m)
 #define gZFar         gRtP[6].x
 #define gCombineSsao  gRtP[6].y     // 1 で RT-AO と SSAO を min() 合成する
+// ★フレーム連番。gFrameJitter と違い TAA の有無に関係なく必ず回る。
+//   これが止まっていると毎フレーム同じレイ方向になり、時間方向にいくら平均しても
+//   分散が 1 ミリも下がらない（SSGI が同じ罠を踏んだ記録が SSGI.hlsl にある）。
+#define gFrameIndex   gRtP[6].z
+#define gAoDenoiseRadius gRtP[6].w  // 空間フィルタの半径(px)。0 でフィルタ無効
+#define gGBufferValid gRtP[7].x     // 1 で G-Buffer が書かれている（法線を読んでよい）
+
+// 八面体デコード（ScreenSpaceCommon.hlsli の SS_OctDecode と同一の式）。
+// G-Buffer の .xy から ワールド法線を復元する。
+float3 RtOctDecode(float2 f)
+{
+    float3 n = float3(f.xy, 1.0 - abs(f.x) - abs(f.y));
+    float  t = saturate(-n.z);
+    n.xy += float2(n.x >= 0.0 ? -t : t, n.y >= 0.0 ? -t : t);
+    return normalize(n);
+}
 
 static const float RT_PI    = 3.14159265f;
 static const float RT_2PI   = 6.28318531f;

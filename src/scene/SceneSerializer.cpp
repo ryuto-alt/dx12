@@ -890,6 +890,8 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
             {"aoIntensity",        rt.aoIntensity},
             {"aoPower",            rt.aoPower},
             {"aoCombineWithSsao",  rt.aoCombineWithSsao},
+            {"aoDenoise",          rt.aoDenoise},
+            {"aoDenoiseRadius",    rt.aoDenoiseRadius},
             {"maxInstances",       rt.maxInstances},
         };
     }
@@ -1119,6 +1121,8 @@ static void LoadRtSettings(Scene& scene, const json& root)
         rt.aoIntensity       = j.value("aoIntensity",       rt.aoIntensity);
         rt.aoPower           = j.value("aoPower",           rt.aoPower);
         rt.aoCombineWithSsao = j.value("aoCombineWithSsao", rt.aoCombineWithSsao);
+        rt.aoDenoise         = j.value("aoDenoise",         rt.aoDenoise);
+        rt.aoDenoiseRadius   = j.value("aoDenoiseRadius",   rt.aoDenoiseRadius);
         rt.maxInstances      = j.value("maxInstances",      rt.maxInstances);
     }
     scene.GetRtSettings() = rt;   // forceBuildTlas は常に既定 OFF（保存対象外）

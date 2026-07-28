@@ -407,7 +407,8 @@ void Application::RegisterMcpRenderMethods()
                                        "時間ディザは TAA 有効時のみ効く"}};
         });
 
-    McpDefine("get_dxr|set_dxr", "aoCombineWithSsao:any,aoEnabled:any,aoIntensity:number,aoPower:number,aoRadius:number,"
+    McpDefine("get_dxr|set_dxr", "aoCombineWithSsao:any,aoDenoise:any,aoDenoiseRadius:number,"
+              "aoEnabled:any,aoIntensity:number,aoPower:number,aoRadius:number,"
               "aoRayCount:any,forceBuildTlas:any,maxInstances:any,shadowEnabled:any,"
               "shadowIntensity:number,shadowMaxDistance:number,shadowNormalBias:number,"
               "shadowSunAngle:number", DX12E_MCP_HANDLER
@@ -442,6 +443,9 @@ void Application::RegisterMcpRenderMethods()
                 if (params.contains("aoPower"))
                     r.aoPower = McpFloatParam(params, "aoPower", r.aoPower, 0.01f, 8.0f);
                 r.aoCombineWithSsao = params.value("aoCombineWithSsao", r.aoCombineWithSsao);
+            r.aoDenoise         = params.value("aoDenoise", r.aoDenoise);
+            r.aoDenoiseRadius   = std::clamp(params.value("aoDenoiseRadius", r.aoDenoiseRadius),
+                                             0.0f, 32.0f);
                 if (params.contains("maxInstances"))
                     r.maxInstances = std::clamp(params.value("maxInstances", r.maxInstances), 0, 32768);
                 r.forceBuildTlas = params.value("forceBuildTlas", r.forceBuildTlas);
@@ -493,6 +497,8 @@ void Application::RegisterMcpRenderMethods()
                               {"aoIntensity", r.aoIntensity},
                               {"aoPower", r.aoPower},
                               {"aoCombineWithSsao", r.aoCombineWithSsao},
+                              {"aoDenoise", r.aoDenoise},
+                              {"aoDenoiseRadius", r.aoDenoiseRadius},
                               {"maxInstances", r.maxInstances},
                               {"forceBuildTlas", r.forceBuildTlas},
                               // ON でも実際に走らない条件を明示する（誤診断を防ぐ）
