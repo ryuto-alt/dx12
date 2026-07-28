@@ -21,6 +21,14 @@ public:
 
     u32 GetSrvIndex(u32 frameIndex) const { return m_frames[frameIndex].srvIndex; }
 
+    // compute スキニング（計画09 Step 4）がルート SRV でボーン行列を読むために使う。
+    // ★UPLOAD ヒープなので compute から読むと PCIe 越えになるが、256 ボーン × 64B = 16KB と
+    //   小さく、頂点シェーダが既に同じバッファを毎フレーム読んでいるので新規の負荷ではない。
+    D3D12_GPU_VIRTUAL_ADDRESS GetGpuAddress(u32 frameIndex) const
+    {
+        return m_frames[frameIndex].resource->GetGPUVirtualAddress();
+    }
+
 private:
     struct PerFrame
     {

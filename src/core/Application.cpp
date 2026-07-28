@@ -940,6 +940,24 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                 m_rtScene.reset();
                 m_rtScreenPass.reset();
             }
+            else
+            {
+                // compute スキニング（計画09 Step 4）。DXR が生きているときだけ意味があるので
+                // ここで作る。失敗しても DXR 自体は静的メッシュで動き続ける（スキンドが
+                // TLAS に入らなくなるだけ＝Step 3 までと同じ挙動）。
+                try
+                {
+                    m_skinningCompute = std::make_unique<SkinningCompute>();
+                    m_skinningCompute->Initialize(*m_graphicsDevice, PathResolver::ShaderDirW());
+                    if (!m_skinningCompute->IsReady())
+                        m_skinningCompute.reset();
+                }
+                catch (const std::exception& e)
+                {
+                    Logger::Warn("compute スキニングを初期化できませんでした: {}", e.what());
+                    m_skinningCompute.reset();
+                }
+            }
         }
 
         // クラスタードライティング（Forward+）。ライトカリング compute 2 パス + SRV テーブル。

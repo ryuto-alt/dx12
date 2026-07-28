@@ -9,6 +9,30 @@ namespace dx12e
 {
 using namespace appdetail;
 
+namespace
+{
+// ボーン行列列のハッシュ（FNV-1a 64、8 バイトずつ）。
+// 「前フレームとポーズが同じか」だけを見るので暗号強度は不要。
+// 256 ボーン = 16KB のスキャンで、SkinningBuffer::Update の memcpy と同程度のコスト。
+u64 HashBonesFnv1a(const std::vector<DirectX::XMFLOAT4X4>& mats)
+{
+    u64 h = 1469598103934665603ull;
+    const auto* p = reinterpret_cast<const u8*>(mats.data());
+    const size_t len = mats.size() * sizeof(DirectX::XMFLOAT4X4);
+    size_t i = 0;
+    for (; i + 8 <= len; i += 8)
+    {
+        u64 block = 0;
+        std::memcpy(&block, p + i, 8);
+        h = (h ^ block) * 1099511628211ull;
+        h ^= h >> 29;
+    }
+    for (; i < len; ++i)
+        h = (h ^ p[i]) * 1099511628211ull;
+    // 0 は「未計算」の意味で使うので避ける。
+    return h ? h : 1ull;
+}
+} // namespace
 
 // フレーム描画リスト構築（Render() 先頭で1回）。要素の定義は renderer/DrawItem.h、
 // 呼び出し文脈は Application.h の m_drawItems 直前のコメント参照。
@@ -980,7 +1004,7 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
         //   が暗い方を採るせいで CSM のアクネ（本来明るいのに縞状に暗い）と
         //   カスケード境界の段差が残ってしまう（RT 影を入れる意味の半分がここ）。
         //   判定は必ず IsRaytracedItem()（renderer/DrawItem.h）に一本化すること。
-        if (skipRtCovered && IsRaytracedItem(item)) continue;
+        if (skipRtCovered && IsRaytracedItem(item, m_rtSkinnedActiveThisFrame)) continue;
 
         // ★自動インスタンシング: 同一 batchKey の連続ランを 1 ドローに畳む。
         //   batchKey は LOD 込みなので、このパスの lodBias を足しても run 内は同一 LOD。
@@ -2942,7 +2966,8 @@ void Application::Render()
     // ===== DXR: BLAS の遅延構築 + TLAS の再構築（計画09 Step 1）=====
     // ★CSM のパスより前に建てる。RT サン影が有効かどうかが決まらないと、
     //   CSM が「RT の担当ぶんを描かない」排他モードに入れないため。
-    m_rtShadowActiveThisFrame = false;
+    m_rtShadowActiveThisFrame  = false;
+    m_rtSkinnedActiveThisFrame = false;
     bool rtAoActive = false;
     if (m_dxrEnabled && m_rtScene && m_rtScreenPass && m_rtScreenPass->IsReady() && m_scene)
     {
@@ -2965,20 +2990,61 @@ void Application::Render()
 
             m_gpuTimer->Begin(nativeCmdList, GpuTimer::Raytracing);
             const XMFLOAT3 camP = m_camera->GetPosition();
+
+            // スキンドを TLAS に入れられるのは compute スキニングが生きているフレームだけ。
+            // ★この 1 変数を IsRaytracedItem() の両方の呼び出し側が見る（CSM 排他 / TLAS 詰め込み）。
+            const bool skinnedInTlas = (m_skinningCompute != nullptr);
+            m_rtSkinnedActiveThisFrame = skinnedInTlas;
+            if (m_skinningCompute) m_skinningCompute->BeginFrame();
+
             // 除外された数は診断（dx12_diagnose の dxr 検査）で「なぜキャラの影が
             // RT に出ないのか」を説明するために数えておく。
             u32 skippedSkin = 0, skippedTransp = 0;
             for (const DrawItem& it : m_drawItems)
             {
-                if (it.skin)             ++skippedSkin;
-                else if (it.sortKey == 3u) ++skippedTransp;
+                if (it.skin && !skinnedInTlas) ++skippedSkin;
+                else if (it.sortKey == 3u)     ++skippedTransp;
             }
             m_rtScene->BeginFrame(camP, skippedSkin, skippedTransp);
+
+            auto& rtReg = m_scene->GetRegistry();
             for (const DrawItem& it : m_drawItems)
             {
-                if (!IsRaytracedItem(it)) continue;
+                if (!IsRaytracedItem(it, skinnedInTlas)) continue;
                 const MeshRenderer& r = *it.renderer;
                 const XMMATRIX world = XMLoadFloat4x4(&it.world);
+
+                // ---- スキンド: compute でローカル空間の変形後頂点を作ってから BLAS へ ----
+                if (it.skin)
+                {
+                    const auto* skelAnim = rtReg.try_get<SkeletalAnimation>(it.e);
+                    if (!skelAnim || !skelAnim->animator) continue;
+                    // ポーズのハッシュ。前フレームと同じならスキニングも BLAS 再構築も省く。
+                    const auto& mats = skelAnim->animator->GetSkinningMatrices();
+                    const u64 poseHash = HashBonesFnv1a(mats);
+                    const D3D12_GPU_VIRTUAL_ADDRESS bonesVa = it.skin->GetGpuAddress(frameIndex);
+                    for (u32 mi = 0; mi < static_cast<u32>(r.meshes.size()); ++mi)
+                    {
+                        if (!r.meshes[mi]) continue;
+                        // ★キーは (エンティティ, サブメッシュ)。Mesh* は複数エンティティで
+                        //   共有されるのでキーに使えない（同じキャラ 10 体が同じポーズになる）。
+                        const u64 key = (static_cast<u64>(entt::to_integral(it.e)) << 32) | (mi + 1);
+                        const auto va = m_skinningCompute->Skin(nativeCmdList, *m_graphicsDevice,
+                                                                key, *r.meshes[mi], bonesVa, poseHash);
+                        if (va == 0) continue;
+                        const auto& vbv = r.meshes[mi]->GetVertexBuffer().GetView();
+                        const u32 vcount = (vbv.StrideInBytes != 0)
+                                         ? vbv.SizeInBytes / vbv.StrideInBytes : 0;
+                        // 変形後頂点はローカル空間なので world は静的とまったく同じものを渡す。
+                        XMMATRIX meshWorld = world;
+                        if (it.hasNodeAnim && mi < static_cast<u32>(r.meshNodeTransforms.size()))
+                            meshWorld = XMLoadFloat4x4(&r.meshNodeTransforms[mi]) * world;
+                        m_rtScene->AddSkinnedInstance(key, r.meshes[mi], va, vcount, poseHash,
+                                                      meshWorld, it.center);
+                    }
+                    continue;
+                }
+
                 for (u32 mi = 0; mi < static_cast<u32>(r.meshes.size()); ++mi)
                 {
                     if (!r.meshes[mi]) continue;
@@ -2992,11 +3058,18 @@ void Application::Render()
                 }
             }
 
+            // compute の書き込みを AS ビルド入力（NON_PIXEL_SHADER_RESOURCE）へ遷移させる。
+            // ★静的メッシュで「バリア不要」なのは VB が GENERIC_READ で置かれているからで、
+            //   compute の出力には当てはまらない。ここを抜かすとゴミの BVH ができる。
+            if (m_skinningCompute)
+                m_skinningCompute->TransitionForAccelerationStructureBuild(nativeCmdList);
+
             RaytracingScene::BuildDesc bd;
             bd.frameIndex   = frameIndex;
             bd.maxInstances = (rtCfg.maxInstances > 0)
                             ? static_cast<u32>(rtCfg.maxInstances) : RaytracingScene::kMaxRtInstances;
             const bool tlasOk = m_rtScene->Build(*m_graphicsDevice, nativeCmdList, bd);
+            if (m_skinningCompute) m_skinningCompute->EndFrame();
             m_gpuTimer->End(nativeCmdList, GpuTimer::Raytracing);
 
             if (tlasOk)

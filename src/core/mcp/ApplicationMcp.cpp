@@ -557,7 +557,11 @@ Application::DiagDxrInfo Application::GetDiagDxrInfo() const
         d.skippedSkinned     = s.skippedSkinned;
         d.skippedTransparent = s.skippedTransparent;
         d.droppedOverLimit   = s.droppedOverLimit;
-        d.blasBytes          = s.blasBytes;
+        d.skinnedInstances   = s.skinnedInstances;
+        d.skinnedRebuilds    = s.skinnedRebuilds;
+        d.skinnedStale       = s.skinnedStale;
+        d.skinnedTriangles   = s.skinnedTriangles;
+        d.blasBytes          = s.blasBytes + s.skinnedBlasBytes;
         d.blasTriangles      = s.blasTriangles;
         d.tlasBytes          = s.tlasBytes;
         d.scratchBytes       = s.scratchBytes;

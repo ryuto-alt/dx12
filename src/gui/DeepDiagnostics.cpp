@@ -1765,10 +1765,17 @@ DeepDiagReport DeepDiag::Dxr(Application& app)
     // 「なぜキャラの影が RT に出ないのか」への回答をここに集約する。
     ++r.checked;
     if (d.skippedSkinned > 0)
-        r.Add(0, "スキンドメッシュ " + std::to_string(d.skippedSkinned)
-                 + " 体は TLAS に入りません（頂点シェーダ内スキニングなので変形後の頂点が "
-                   "GPU に存在しないため。仕様）。影は従来どおり CSM が担当し、"
-                   "フォワードの min() で RT 影と合成されます");
+        r.Add(1, "スキンドメッシュ " + std::to_string(d.skippedSkinned)
+                 + " 体が TLAS に入っていません（compute スキニングが初期化できていない）。"
+                   "影は CSM が担当するので破綻はしませんが、キャラだけ RT 影 / RT-AO の対象外です");
+    if (d.skinnedInstances > 0)
+        r.Add(0, "スキンド " + std::to_string(d.skinnedInstances)
+                 + " 体を TLAS に入れています（compute スキニング / 三角形 "
+                 + std::to_string(d.skinnedTriangles) + " / 再構築 "
+                 + std::to_string(d.skinnedRebuilds)
+                 + (d.skinnedStale > 0 ? " / 予算切れで前フレーム流用 "
+                                         + std::to_string(d.skinnedStale) : std::string())
+                 + "）");
     if (d.skippedTransparent > 0)
         r.Add(0, "半透明メッシュ " + std::to_string(d.skippedTransparent)
                  + " 個は TLAS に入りません（any-hit が必要になり 2〜10 倍遅くなるため。仕様）");

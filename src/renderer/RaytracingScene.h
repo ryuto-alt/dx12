@@ -46,8 +46,13 @@ public:
         u32 instances          = 0;   // TLAS に入ったインスタンス数
         u32 blasCount          = 0;   // キャッシュ中の BLAS 個数
         u32 blasBuiltThisFrame = 0;
-        u32 skippedSkinned     = 0;   // スキンドで除外した DrawItem 数（CSM が担当する）
-        u32 skippedTransparent = 0;   // 半透明で除外した DrawItem 数（同上）
+        u32 skippedSkinned     = 0;   // スキンドで除外した DrawItem 数（compute スキニングが無い時のみ）
+        u32 skippedTransparent = 0;   // 半透明で除外した DrawItem 数（CSM が担当する）
+        u32 skinnedInstances   = 0;   // TLAS に入ったスキンドインスタンス数
+        u32 skinnedRebuilds    = 0;   // このフレームで再構築したスキンド BLAS 数
+        u32 skinnedStale       = 0;   // 予算切れで前フレームの BLAS を流用した数
+        u64 skinnedBlasBytes   = 0;   // スキンド BLAS の実サイズ合計
+        u64 skinnedTriangles   = 0;   // 同 三角形数
         u32 droppedOverLimit   = 0;   // 上限超過で切った数
         u64 blasBytes          = 0;   // BLAS 実サイズ合計（PrebuildInfo の実測値）
         u64 blasTriangles      = 0;   // BLAS に入っている三角形の総数
@@ -76,12 +81,31 @@ public:
     void AddInstance(const Mesh* mesh, const DirectX::XMMATRIX& world,
                      const DirectX::XMFLOAT3& center);
 
+    // スキンド用（計画09 Step 4）。compute スキニングが書いた変形後頂点バッファを指定する。
+    // key は「エンティティ × サブメッシュ」で一意な値を呼び出し側が作って渡すこと。
+    //   ★Mesh* をキーにしてはいけない。ResourceManager がモデルパス単位で Mesh* を
+    //     キャッシュしていて複数エンティティが共有するので、同じキャラ 10 体が
+    //     全員同じポーズの BLAS を共有してしまう。
+    // 変形後頂点はオブジェクトローカル空間なので、world は静的と同じものを渡す。
+    // poseHash が前フレームと同じなら BLAS の再構築も省く（変形後頂点が変わっていないため）。
+    void AddSkinnedInstance(u64 key, const Mesh* mesh,
+                            D3D12_GPU_VIRTUAL_ADDRESS deformedVb, u32 vertexCount, u64 poseHash,
+                            const DirectX::XMMATRIX& world, const DirectX::XMFLOAT3& center);
+
     struct BuildDesc
     {
         u32 frameIndex   = 0;
         u32 maxInstances = kMaxRtInstances;
         // 1 フレームで新規構築する BLAS の上限。シーンロード直後のスパイクを分散させる。
         u32 maxBlasBuildsPerFrame = 64;
+        // 1 フレームで再構築するスキンド BLAS の三角形数の上限。
+        // ★根拠: BLAS のリビルドは実測 ~100M tris/sec（SOTTR / GTC 2019）。RT の AS 構築に
+        //   割ける予算を 2ms とすると 20 万三角形が上限になる。超過分はこのフレームの
+        //   再構築を見送り、前フレームの BLAS をそのまま使う（＝ポーズが 1 フレーム古くなる）。
+        //   Metro Exodus も 2 万インスタンス中 5〜6 千が古いまま出荷している。
+        // ponytail: これを恒常的に超えるようになったら refit（PREFER_FAST_TRACE|ALLOW_UPDATE +
+        //   PERFORM_UPDATE）へ移行すること。refit は ~1000M tris/sec で 10 倍速い。
+        u32 maxSkinnedTrianglesPerFrame = 200000;
     };
     // BLAS の遅延構築と TLAS 再構築を cmd へ積む。
     // 戻り値: この後 RayQuery を投げてよいか（TLAS が有効か）。
@@ -102,13 +126,22 @@ private:
         u32 triangles   = 0;
         u64 sizeInBytes = 0;
         u64 lastUsedFrame = 0;
+        u64 poseHash    = 0;   // スキンドのみ。前フレームと同じなら再構築を省く
     };
 
     // 既にあれば返す。無ければ cmd にビルドを積んで作る。作れなければ nullptr。
     const BlasEntry* EnsureBlas(GraphicsDevice& device, ID3D12GraphicsCommandList4* cmd,
                                 const Mesh* mesh, u32& budget);
 
+    // スキンド用。毎フレーム同じ AS バッファへ再構築する（変形後頂点が毎フレーム変わるため）。
+    // triangleBudget を使い切ったら再構築を見送り、既存の BLAS をそのまま返す。
+    const BlasEntry* EnsureSkinnedBlas(GraphicsDevice& device, ID3D12GraphicsCommandList4* cmd,
+                                       u64 key, const Mesh* mesh,
+                                       D3D12_GPU_VIRTUAL_ADDRESS deformedVb, u32 vertexCount,
+                                       u64 poseHash, u32& triangleBudget);
+
     std::unordered_map<const Mesh*, BlasEntry> m_blas;
+    std::unordered_map<u64, BlasEntry>         m_skinnedBlas;   // キーは呼び出し側が作る u64
     RtBuffer m_blasScratch;                                 // BLAS ビルド用（連続ビルドは UAV バリアで直列化）
     RtBuffer m_tlas;
     RtBuffer m_tlasScratch;
@@ -119,6 +152,11 @@ private:
         const Mesh*         mesh;
         DirectX::XMFLOAT4X4 world;    // ノード変換合成済みのメッシュワールド
         float               distSq;   // カメラからの距離²（上限超過時の足切り用）
+        // --- スキンドのみ（skinnedKey != 0 で判別）---
+        u64                       skinnedKey = 0;
+        D3D12_GPU_VIRTUAL_ADDRESS deformedVb = 0;
+        u32                       vertexCount = 0;
+        u64                       poseHash = 0;
     };
     std::vector<PendingInstance> m_pending;
     DirectX::XMFLOAT3 m_cameraPos{0, 0, 0};

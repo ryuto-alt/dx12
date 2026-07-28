@@ -355,6 +355,12 @@ const std::vector<ShaderSource>& BuildRegistry()
             { "forward/ClusterCommon.hlsli", "forward/DecalCommon.hlsli" },
         },
         {
+            // compute スキニング（計画09 Step 4）。スキンドの変形後頂点 → BLAS 用。
+            "skinning/SkinCompute.hlsl",
+            { { L"SkinCompute_CS.cso", L"CSMain", L"cs_6_0" } },
+            {},
+        },
+        {
             // ボリュメトリックフォグ（froxel）: 媒質注入 compute。
             "fog/FogInject.hlsl",
             { { L"FogInject_CS.cso", L"CSInject", L"cs_6_0" } },

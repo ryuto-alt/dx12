@@ -602,6 +602,12 @@ void Application::RegisterShaderReloadHandlers()
             { L"Rt_VS.cso", L"RtShadow_PS.cso", L"RtAo_PS.cso", L"RtDebug_PS.cso" },
             [this]() { m_rtScreenPass->RecreatePipelines(*m_graphicsDevice); });
     }
+    if (m_skinningCompute)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"SkinCompute_CS.cso" },
+            [this]() { m_skinningCompute->RecreatePipelines(*m_graphicsDevice); });
+    }
     if (m_bloomPass)
     {
         m_shaderManager->RegisterReloadHandler(

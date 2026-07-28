@@ -2,6 +2,7 @@
 
 #include "graphics/GraphicsDevice.h"
 #include "renderer/Mesh.h"
+#include "renderer/SkinningCompute.h"   // kOutStride（変形後頂点のストライド）
 #include "core/Logger.h"
 
 #include <algorithm>
@@ -45,6 +46,7 @@ bool RaytracingScene::Initialize(GraphicsDevice& device)
 void RaytracingScene::Shutdown()
 {
     m_blas.clear();
+    m_skinnedBlas.clear();
     m_blasScratch.Release();
     m_tlas.Release();
     m_tlasScratch.Release();
@@ -59,10 +61,13 @@ void RaytracingScene::Shutdown()
 void RaytracingScene::Invalidate()
 {
     m_blas.clear();
+    m_skinnedBlas.clear();   // エンティティ id が再利用されるので必ず捨てる（N30 と同じ理由）
     m_tlasValid = false;
-    m_stats.blasBytes     = 0;
-    m_stats.blasTriangles = 0;
-    m_stats.blasCount     = 0;
+    m_stats.blasBytes        = 0;
+    m_stats.blasTriangles    = 0;
+    m_stats.blasCount        = 0;
+    m_stats.skinnedBlasBytes = 0;
+    m_stats.skinnedTriangles = 0;
 }
 
 void RaytracingScene::BeginFrame(const XMFLOAT3& cameraPos, u32 skippedSkinned, u32 skippedTransparent)
@@ -75,6 +80,9 @@ void RaytracingScene::BeginFrame(const XMFLOAT3& cameraPos, u32 skippedSkinned, 
     m_stats.droppedOverLimit   = 0;
     m_stats.skippedSkinned     = skippedSkinned;
     m_stats.skippedTransparent = skippedTransparent;
+    m_stats.skinnedInstances   = 0;
+    m_stats.skinnedRebuilds    = 0;
+    m_stats.skinnedStale       = 0;
 }
 
 void RaytracingScene::AddInstance(const Mesh* mesh, const XMMATRIX& world, const XMFLOAT3& center)
@@ -86,6 +94,132 @@ void RaytracingScene::AddInstance(const Mesh* mesh, const XMMATRIX& world, const
     const XMVECTOR c = XMLoadFloat3(&center);
     p.distSq = XMVectorGetX(XMVector3LengthSq(XMVectorSubtract(c, XMLoadFloat3(&m_cameraPos))));
     m_pending.push_back(p);
+}
+
+void RaytracingScene::AddSkinnedInstance(u64 key, const Mesh* mesh,
+                                         D3D12_GPU_VIRTUAL_ADDRESS deformedVb, u32 vertexCount,
+                                         u64 poseHash,
+                                         const XMMATRIX& world, const XMFLOAT3& center)
+{
+    if (!mesh || !m_initialized || key == 0 || deformedVb == 0 || vertexCount == 0) return;
+    PendingInstance p;
+    p.mesh        = mesh;
+    p.skinnedKey  = key;
+    p.deformedVb  = deformedVb;
+    p.vertexCount = vertexCount;
+    p.poseHash    = poseHash;
+    XMStoreFloat4x4(&p.world, world);
+    const XMVECTOR c = XMLoadFloat3(&center);
+    p.distSq = XMVectorGetX(XMVector3LengthSq(XMVectorSubtract(c, XMLoadFloat3(&m_cameraPos))));
+    m_pending.push_back(p);
+}
+
+// スキンド BLAS。変形後頂点が毎フレーム変わるので毎フレーム同じ AS バッファへ再構築する。
+// ★コンパクションは使わない: ALLOW_UPDATE と併用すると効果が大幅に減るうえ、
+//   コンパクション後サイズの CPU 読み戻しが毎フレームには成立しない（NVIDIA / DXR 仕様）。
+// ★動的 BLAS は 60〜80 B/三角形（静的コンパクション済みの約 3 倍）。VRAM 見積もりに注意。
+const RaytracingScene::BlasEntry* RaytracingScene::EnsureSkinnedBlas(
+    GraphicsDevice& device, ID3D12GraphicsCommandList4* cmd, u64 key, const Mesh* mesh,
+    D3D12_GPU_VIRTUAL_ADDRESS deformedVb, u32 vertexCount, u64 poseHash, u32& triangleBudget)
+{
+    const auto& ibView = mesh->GetIndexBufferLod(0).GetView();   // ★静的と同じく LOD0 固定
+    const u32   indexCount = mesh->GetIndexCountLod(0);
+    if (ibView.BufferLocation == 0 || indexCount < 3)
+        return nullptr;
+
+    const u32 triangles = indexCount / 3;
+
+    auto it = m_skinnedBlas.find(key);
+    const bool haveUsable = (it != m_skinnedBlas.end())
+                         && it->second.indexCount == indexCount
+                         && it->second.vbAddress  == deformedVb;
+
+    // ポーズが前フレームと同じなら変形後頂点も同じ＝BLAS は再構築不要。
+    // （SkinningCompute 側でスキニング自体も省いている）
+    if (haveUsable && it->second.poseHash == poseHash && poseHash != 0)
+    {
+        it->second.lastUsedFrame = m_frameCounter;
+        return &it->second;
+    }
+
+    // 予算切れ: 既にある BLAS をそのまま使う（＝ポーズが 1 フレーム古くなるだけ）。
+    // 無いなら今フレームは諦める（次フレームで作られる）。
+    if (triangleBudget < triangles)
+    {
+        if (haveUsable)
+        {
+            it->second.lastUsedFrame = m_frameCounter;
+            ++m_stats.skinnedStale;
+            return &it->second;
+        }
+        return nullptr;
+    }
+
+    D3D12_RAYTRACING_GEOMETRY_DESC geom{};
+    geom.Type  = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+    geom.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+    geom.Triangles.Transform3x4               = 0;
+    geom.Triangles.IndexFormat                = DXGI_FORMAT_R32_UINT;
+    geom.Triangles.VertexFormat               = DXGI_FORMAT_R32G32B32_FLOAT;
+    geom.Triangles.IndexCount                 = indexCount;
+    geom.Triangles.VertexCount                = vertexCount;
+    geom.Triangles.IndexBuffer                = ibView.BufferLocation;
+    // 変形後バッファは「位置だけを詰めた float3 配列」。インデックスは元メッシュのものを共有する
+    // （compute は LOD0 の全頂点を書くので、インデックスの並びは変わらない）。
+    geom.Triangles.VertexBuffer.StartAddress  = deformedVb;
+    geom.Triangles.VertexBuffer.StrideInBytes = SkinningCompute::kOutStride;
+
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs{};
+    inputs.Type           = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+    inputs.DescsLayout    = D3D12_ELEMENTS_LAYOUT_ARRAY;
+    // 毎フレーム完全再構築なので ALLOW_UPDATE は付けない（付けるとサイズが増えるだけ損）。
+    inputs.Flags          = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+    inputs.NumDescs       = 1;
+    inputs.pGeometryDescs = &geom;
+
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info{};
+    device.GetDevice()->GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &info);
+    if (info.ResultDataMaxSizeInBytes == 0) return nullptr;
+
+    BlasEntry& entry = m_skinnedBlas[key];
+    // AS バッファは形状が変わらない限り使い回す（毎フレーム作り直すと当然もたない）。
+    if (entry.sizeInBytes != info.ResultDataMaxSizeInBytes)
+    {
+        if (entry.sizeInBytes != 0)
+            m_stats.skinnedBlasBytes -= (std::min)(m_stats.skinnedBlasBytes, entry.sizeInBytes);
+        if (!entry.as.Initialize(device, info.ResultDataMaxSizeInBytes,
+                                 RtBuffer::Kind::AccelStruct, L"Skinned BLAS"))
+        {
+            m_skinnedBlas.erase(key);
+            return nullptr;
+        }
+        entry.sizeInBytes = info.ResultDataMaxSizeInBytes;
+        m_stats.skinnedBlasBytes += entry.sizeInBytes;
+    }
+    if (!m_blasScratch.EnsureCapacity(device, info.ScratchDataSizeInBytes,
+                                      RtBuffer::Kind::Scratch, L"BLAS scratch"))
+        return nullptr;
+
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build{};
+    build.Inputs                           = inputs;
+    build.DestAccelerationStructureData    = entry.as.GetGpuAddress();
+    build.ScratchAccelerationStructureData = m_blasScratch.GetGpuAddress();
+    cmd->BuildRaytracingAccelerationStructure(&build, 0, nullptr);
+    // 静的と同じく、同じスクラッチを次の BLAS が使うので直列化する。
+    // ponytail: スキンドが増えるとここが GPU 直列化のボトルネックになる。
+    //   スクラッチをリング化するか、まとめて 1 回の Build に入れる方向で解くこと。
+    RtUavBarrier(cmd);
+
+    entry.vbAddress     = deformedVb;
+    entry.ibAddress     = ibView.BufferLocation;
+    entry.indexCount    = indexCount;
+    entry.triangles     = triangles;
+    entry.lastUsedFrame = m_frameCounter;
+    entry.poseHash      = poseHash;
+
+    triangleBudget -= triangles;
+    ++m_stats.skinnedRebuilds;
+    return &entry;
 }
 
 const RaytracingScene::BlasEntry* RaytracingScene::EnsureBlas(
@@ -226,12 +360,26 @@ bool RaytracingScene::Build(GraphicsDevice& device, ID3D12GraphicsCommandList* c
     auto* descs = static_cast<D3D12_RAYTRACING_INSTANCE_DESC*>(descBuf.GetMappedPtr());
     if (!descs) return false;
 
-    u32 budget = d.maxBlasBuildsPerFrame;
-    u32 count  = 0;
+    u32 budget      = d.maxBlasBuildsPerFrame;
+    u32 skinBudget  = d.maxSkinnedTrianglesPerFrame;
+    u32 count       = 0;
+    // 近いものから処理する＝予算が切れたときに古いポーズで残るのは遠くのキャラになる。
+    // （Metro Exodus の「見えている/近いものを優先」と同じ考え方の、最小の実装）
+    std::sort(m_pending.begin(), m_pending.end(),
+              [](const PendingInstance& a, const PendingInstance& b) { return a.distSq < b.distSq; });
+    m_stats.skinnedTriangles = 0;
     for (const PendingInstance& p : m_pending)
     {
-        const BlasEntry* blas = EnsureBlas(device, cmd4.Get(), p.mesh, budget);
+        const BlasEntry* blas = (p.skinnedKey != 0)
+            ? EnsureSkinnedBlas(device, cmd4.Get(), p.skinnedKey, p.mesh,
+                                p.deformedVb, p.vertexCount, p.poseHash, skinBudget)
+            : EnsureBlas(device, cmd4.Get(), p.mesh, budget);
         if (!blas) continue;   // まだ建っていない（予算切れ / 不正なメッシュ）→ 次フレームで入る
+        if (p.skinnedKey != 0)
+        {
+            ++m_stats.skinnedInstances;
+            m_stats.skinnedTriangles += blas->triangles;
+        }
 
         D3D12_RAYTRACING_INSTANCE_DESC& dst = descs[count];
         // ★Transform[3][4] は row-major 3x4（平行移動が 4 列目）。

@@ -260,6 +260,8 @@ if(DXC_EXECUTABLE)
     set(SHADER_SHADOW        "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPass.hlsl")
     set(SHADER_SHADOW_SKIN   "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPassSkinned.hlsl")
     set(SHADER_DEPTHPRE_SKIN "${CMAKE_SOURCE_DIR}/shaders/shadow/DepthPrepassSkinned.hlsl")
+    # compute スキニング（計画09 Step 4）。スキンドの変形後頂点を書き出して BLAS を建てるため。
+    set(SHADER_SKIN_CS       "${CMAKE_SOURCE_DIR}/shaders/skinning/SkinCompute.hlsl")
     set(SHADER_DEBUG_LINE    "${CMAKE_SOURCE_DIR}/shaders/debug/DebugLine.hlsl")
     set(SHADER_POST          "${CMAKE_SOURCE_DIR}/shaders/post/PostProcess.hlsl")
     set(SHADER_POST_INC      "${CMAKE_SOURCE_DIR}/shaders/post/FullscreenTri.hlsli")
@@ -408,6 +410,15 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/RtShadow_PS.cso"
         "${SHADER_OUTPUT_DIR}/RtAo_PS.cso"
         "${SHADER_OUTPUT_DIR}/RtDebug_PS.cso"
+        "${SHADER_OUTPUT_DIR}/SkinCompute_CS.cso"
+    )
+
+    # --- compute スキニング（スキンドの変形後頂点 → BLAS 用）---
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/SkinCompute_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSMain -Fo "${SHADER_OUTPUT_DIR}/SkinCompute_CS.cso" "${SHADER_SKIN_CS}"
+        DEPENDS "${SHADER_SKIN_CS}"
+        COMMENT "Compiling SkinCompute.hlsl -> SkinCompute_CS.cso (cs_6_0)"
     )
 
     # --- デカールのクラスタカリング ---

@@ -48,12 +48,15 @@ struct DrawItem
 //   が過不足なく合成する。CSM を全部描いたままにすると min() は暗い方を採るので
 //   CSM のアクネ（本来明るいのに縞状に暗い）とカスケード境界の段差が残ってしまう。
 //
-//  - skin != nullptr … スキンド。変形後の頂点が GPU のどこにも無い（VS 内スキニング）ので
-//                      compute スキニング（計画09 Step 4）を作るまで BLAS を建てられない。
+//  - skin != nullptr … スキンド。変形後の頂点が GPU に要るので compute スキニング
+//                      （計画09 Step 4 / SkinningCompute）が動いているフレームだけ TLAS に入る。
+//                      それを表すのが引数 skinnedInTlas。**必ず両方の呼び出し側へ同じ値を渡すこと**
+//                      （CSM 側だけ true にすると影が消え、TLAS 側だけ true にすると二重に出る）。
 //  - sortKey == 3    … 半透明。TLAS に入れると any-hit が必要になり 2〜10 倍遅くなる。
-inline bool IsRaytracedItem(const DrawItem& it)
+inline bool IsRaytracedItem(const DrawItem& it, bool skinnedInTlas)
 {
-    return it.renderer != nullptr && it.skin == nullptr && it.sortKey != 3u;
+    if (it.renderer == nullptr || it.sortKey == 3u) return false;
+    return it.skin == nullptr || skinnedInTlas;
 }
 
 } // namespace dx12e

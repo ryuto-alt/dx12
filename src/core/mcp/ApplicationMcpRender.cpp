@@ -460,8 +460,22 @@ void Application::RegisterMcpRenderMethods()
                          {"skippedSkinned", s.skippedSkinned},
                          {"skippedTransparent", s.skippedTransparent},
                          {"droppedOverLimit", s.droppedOverLimit},
+                         // スキンド（計画09 Step 4 / compute スキニング）
+                         {"skinnedInstances", s.skinnedInstances},
+                         {"skinnedTriangles", s.skinnedTriangles},
+                         {"skinnedBlasBytes", s.skinnedBlasBytes},
+                         {"skinnedRebuilds", s.skinnedRebuilds},
+                         {"skinnedStale", s.skinnedStale},
                          {"bytesPerTriangle", s.blasTriangles
                               ? static_cast<double>(s.blasBytes) / static_cast<double>(s.blasTriangles) : 0.0}};
+                if (m_skinningCompute)
+                {
+                    const auto& sc = m_skinningCompute->GetStats();
+                    stats["skinDispatched"] = sc.meshes;
+                    stats["skinSkipped"]    = sc.skipped;   // ポーズ不変で省いた数
+                    stats["skinVertices"]   = sc.vertices;
+                    stats["skinBufferBytes"] = sc.bytes;
+                }
             }
             resp["ok"] = true;
             resp["result"] = {{"supported", m_dxrEnabled},
@@ -487,8 +501,9 @@ void Application::RegisterMcpRenderMethods()
                               {"stats", stats},
                               {"applied", method == "set_dxr"},
                               {"note", "RT 影は t11(コンタクトシャドウ枠)、RT-AO は t8(SSAO枠)へ書く。"
-                                       "ルートシグネチャ増分ゼロ。スキンドと半透明は TLAS に入らないので "
-                                       "CSM が担当する（min 合成）"}};
+                                       "ルートシグネチャ増分ゼロ。スキンドは compute スキニング"
+                                       "(計画09 Step 4)で TLAS に入る＝キャラにも RT 影 / RT-AO が乗る。"
+                                       "半透明だけは TLAS に入らず CSM が担当する（min 合成）"}};
         });
 }
 

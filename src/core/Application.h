@@ -58,6 +58,7 @@ namespace dx12e
     class ScreenSpaceGiPass;
     class RaytracingScene;
     class RtScreenPass;
+    class SkinningCompute;
     class VolumetricFogPass;
     class DecalSystem;
     class ParticleSystem;
@@ -201,6 +202,9 @@ public:
         bool tlasReady      = false;
         u32  instances = 0, blasCount = 0;
         u32  skippedSkinned = 0, skippedTransparent = 0, droppedOverLimit = 0;
+        // スキンド（計画09 Step 4 / compute スキニング）
+        u32  skinnedInstances = 0, skinnedRebuilds = 0, skinnedStale = 0;
+        u64  skinnedTriangles = 0;
         u64  blasBytes = 0, blasTriangles = 0, tlasBytes = 0, scratchBytes = 0, instanceDescBytes = 0;
     };
     DiagDxrInfo GetDiagDxrInfo() const;
@@ -948,11 +952,17 @@ private:
     //   ＝フォワード PS は 1 行も変わらない。
     std::unique_ptr<RaytracingScene> m_rtScene;      // BLAS キャッシュ + TLAS
     std::unique_ptr<RtScreenPass>    m_rtScreenPass; // RT影 / RT-AO / RTデバッグ
+    // compute スキニング（計画09 Step 4）。スキンドの変形後頂点を書き出して BLAS の入力にする。
+    // これが無いとスキンドは TLAS に入れられず、キャラだけ RT 影 / RT-AO の対象外になる。
+    std::unique_ptr<SkinningCompute> m_skinningCompute;
     bool m_dxrEnabled = false;                       // 6 段ゲートを全部通ったか
     int  m_rtSceneGenSeen = -1;                      // BLAS キャッシュ無効化用（N30 と同じ理由）
     // このフレームで RT サン影が実際に走ったか。CSM 側の排他描画（skipRtCovered）と
     // フォワードの min() 合成が食い違わないよう、判定は必ずこの 1 変数を見ること。
     bool m_rtShadowActiveThisFrame = false;
+    // このフレームでスキンドが TLAS に入ったか（compute スキニングが動いたか）。
+    // ★IsRaytracedItem() へ渡す値。CSM 側と TLAS 側で必ず同じものを見ること。
+    bool m_rtSkinnedActiveThisFrame = false;
 
     std::unique_ptr<Texture>       m_ssBlackTex;                    // 1x1 黒 RGBA16F ダミー
     u32                            m_ssBlackSrvIndex = 0xFFFFFFFFu;

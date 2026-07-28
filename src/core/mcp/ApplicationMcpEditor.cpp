@@ -511,7 +511,9 @@ void Application::RegisterMcpEditorMethods()
                 m_renderDebugRestore.rtForceTlas = m_scene->GetRtSettings().forceBuildTlas;
                 m_scene->GetRtSettings().forceBuildTlas = true;
                 if (mode == "rtDiff")
-                    warn.push_back("スキンドと半透明は TLAS に入らない仕様なので、そこはマゼンタになる");
+                    warn.push_back("半透明は TLAS に入らない仕様なのでマゼンタになる。"
+                                   "スキンドは compute スキニングが動いていれば入る"
+                                   "（dx12_get_dxr の stats.skinnedInstances で確認できる）");
             }
             else if (mode == "shadowCascade")
             {
