@@ -124,4 +124,84 @@ float3x3 DdgiRayRotation(uint frameIndex)
     return mul(ry, rx);
 }
 
+// ============================================================================
+// シェーディング側のサンプル（段階1）。プローブ更新は使わないので、
+// フォワード PS からも同じ配置ルールで引けるようここに置く。
+// ============================================================================
+
+// アトラスのテクセル数（C++ の DdgiVolume::AtlasSize と同じ式）
+float2 DdgiAtlasSize(uint3 counts)
+{
+    return float2(counts.x * counts.y * DDGI_PROBE_TILE, counts.z * DDGI_PROBE_TILE);
+}
+
+// 1 プローブの八面体タイルから dir 方向の irradiance を引く。
+// ★ボーダー（周囲 1 テクセル）はまだ埋めていないので、バイリニアの 2x2 が内側 6x6 から
+//   はみ出さないよう [0.5, 5.5] にクランプする。八面体の継ぎ目がわずかに引き伸ばされるが、
+//   6x6 の低周波なので目視では出ない。ボーダーコピーは段階2で BlendCS 側に入れる。
+float3 DdgiFetchProbe(Texture2D<float4> atlas, SamplerState samp,
+                      uint probeIndex, uint3 counts, float3 dir)
+{
+    const uint2  tile  = DdgiProbeTileOrigin(probeIndex, counts);
+    const float2 oct01 = DdgiOctEncode(dir) * 0.5 + 0.5;                  // [-1,1] -> [0,1]
+    const float2 inner = clamp(oct01 * float(DDGI_IRRADIANCE_TEXELS),
+                               0.5, float(DDGI_IRRADIANCE_TEXELS) - 0.5);
+    // BlendCS は tile+(1,1) を内側の原点として書いている（DdgiProbeUpdate.hlsl）。
+    const float2 uv = (float2(tile) + 1.0 + inner) / DdgiAtlasSize(counts);
+    return atlas.SampleLevel(samp, uv, 0).rgb;
+}
+
+// worldPos / N の位置で周囲 8 プローブをトライリニア + 法線重みで混ぜる（論文 §4.4）。
+// 戻り値はコサイン加重の平均放射輝度で、IBL の irradiance キューブと同じ単位。
+//   ＝ albedo を掛ければそのまま拡散間接光になる（π の補正は不要）。
+// confidence は格子の境界フェード（外側は 0）。呼び出し側はこれで lerp する。
+float3 DdgiSampleIrradiance(Texture2D<float4> atlas, SamplerState samp,
+                            float3 worldPos, float3 N,
+                            float3 originWS, float3 spacing, uint3 counts,
+                            float normalBias, out float confidence)
+{
+    confidence = 0.0;
+    const float3 gridMax = originWS + float3(counts - 1) * spacing;
+
+    // 格子の外は寄与させない。半セルかけて滑らかに落とす（硬い境界線を出さないため）。
+    const float3 outside  = max(originWS - worldPos, worldPos - gridMax);
+    const float  worstOut = max(outside.x, max(outside.y, outside.z));
+    const float  falloff  = max(max(spacing.x, max(spacing.y, spacing.z)) * 0.5, 1e-4);
+    const float  fade     = saturate(1.0 - max(worstOut, 0.0) / falloff);
+    if (fade <= 0.0) return 0.0;
+
+    // サンプル位置を法線方向へ押し出す（壁際で裏側のプローブを引くのを減らす）。
+    // ★段階2 の Chebyshev 可視性テストが入るまでは、これがリーク対策の主な手段。
+    const float3 p = worldPos + N * normalBias;
+    const float3 g = (p - originWS) / max(spacing, 1e-4);
+    const int3   lo = clamp(int3(floor(g)), int3(0, 0, 0), int3(counts) - 1);
+    const float3 f  = saturate(g - float3(lo));
+
+    float3 sum  = 0.0;
+    float  wsum = 0.0;
+    [unroll]
+    for (uint i = 0; i < 8; ++i)
+    {
+        const int3   off = int3(i & 1, (i >> 1) & 1, (i >> 2) & 1);
+        const int3   c   = clamp(lo + off, int3(0, 0, 0), int3(counts) - 1);
+        const float3 t   = lerp(1.0 - f, f, float3(off));
+        float w = t.x * t.y * t.z;
+
+        // 法線重み（"wrap shading"）。真後ろのプローブをほぼ捨てる。+0.2 は
+        // 8 個すべてが背面になった時に真っ黒へ落ちないための下駄（論文と同じ）。
+        const float3 probePos = originWS + float3(c) * spacing;
+        const float3 dir  = normalize(probePos - p);
+        const float  wrap = dot(dir, N) * 0.5 + 0.5;
+        w *= wrap * wrap + 0.2;
+        if (w < 1e-6) continue;
+
+        sum  += DdgiFetchProbe(atlas, samp, DdgiProbeIndex(uint3(c), counts), counts, N) * w;
+        wsum += w;
+    }
+    if (wsum <= 0.0) return 0.0;
+
+    confidence = fade;
+    return sum / wsum;
+}
+
 #endif // DDGI_COMMON_HLSLI

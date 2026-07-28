@@ -33,6 +33,14 @@ StructuredBuffer<ClusterLight> g_clusterLights     : register(t13);
 StructuredBuffer<uint>         g_clusterLightIndex : register(t14);  // 固定ストライド 128/クラスタ
 StructuredBuffer<uint>         g_clusterLightCount : register(t15);
 
+// DDGI の irradiance アトラス（同じ slot11 テーブルの 8 本目 = デカール予約枠の次）。
+// ★無効時は 1x1 黒ダミーが貼られる（ディスクリプタが未初期化だとデバッグレイヤが落とす）。
+//   読むかどうかは ddgiOrigin.w > 0 で判断する。s5 は DDGI 専用の LINEAR CLAMP 静的サンプラ
+//   （s2 は Forward.hlsl が g_iblSampler として使っているので同じ register を二重宣言できない）。
+Texture2D<float4> g_ddgiIrradiance : register(t22);
+SamplerState      g_ddgiSampler    : register(s5);
+#include "../ddgi/DdgiCommon.hlsli"
+
 // PerFrame constants (b1)
 // CSM 対応で lightViewProj(64B) を cascadeViewProj[4](256B) + cascadeSplitsView(16B) + shadowParams(16B) へ拡張。
 // IBL 対応で iblParams(16B) を追加。スポット/ポイント影対応で shadowIndex・spotShadowMatrix[]・
@@ -60,7 +68,14 @@ cbuffer PerFrameConstants : register(b1)
     //   .y = 半影の上限（テクセル数）  .z = 時間ディザの位相（TAA 無効時は 0）
     //   .w = ブロッカー探索半径（テクセル数）
     float4   pcssParams;                          // 16B  (offset 544)
-    float4   _clusterReserved[43];                // 688B (offset 560..1247) 予約（総サイズ 1536B 維持のため）
+    // ▼ DDGI（world-space 拡散間接光。計画09 Step 6 / 段階1）48B (offset 560)。
+    //   _clusterReserved を 3 本削って作った＝総サイズも既存オフセットも 1 バイトも動かない。
+    //   ★ddgiOrigin.w（強さ）が 0 なら g_ddgiIrradiance を一切読まず従来経路（絵はビット一致）。
+    //     SSR/SSGI と違いワールド座標からの Sample なので、範囲外 Load の自動ゼロが効かない。
+    float4   ddgiOrigin;                          // 16B  (offset 560) .xyz=格子の原点 .w=強さ(0=無効)
+    float4   ddgiSpacing;                         // 16B  (offset 576) .xyz=プローブ間隔 .w=法線バイアス(m)
+    float4   ddgiCounts;                          // 16B  (offset 592) .xyz=各軸のプローブ数 .w=予約
+    float4   _clusterReserved[40];                // 640B (offset 608..1247) 予約（総サイズ 1536B 維持のため）
     float4x4 spotShadowMatrix[MAX_SHADOW_SPOT];   // 256B (offset 1248)
     // ▼ IBL 制御 16B (offset 1504)
     float  iblIntensity;     // IBL 拡散/反射の全体スケール
@@ -71,6 +86,20 @@ cbuffer PerFrameConstants : register(b1)
     float  contactShadowEnabled;  // 1=実テクスチャ(t11)を読む, 0=読まず 1.0（白ダミー 1x1 の範囲外 Load 対策）
     float3 _csPad;
 };                                               // total = 1536B
+
+// DDGI の拡散間接光。PerFrame のパラメータで包んだだけの薄いラッパ。
+// 戻り値は IBL の irradiance キューブと同じ単位（コサイン加重の平均放射輝度）なので、
+// ★足すのではなく「置き換える」こと。足すと同じ光を二重に数える（SSGI と同じ理屈）。
+// confidence は格子の境界フェード。無効時は 0 なので lerp が恒等になる。
+float3 SampleDdgi(float3 worldPos, float3 N, out float confidence)
+{
+    confidence = 0.0;
+    if (ddgiOrigin.w <= 0.0) return float3(0.0, 0.0, 0.0);   // OFF なら 1 テクセルも読まない
+    const float3 v = DdgiSampleIrradiance(g_ddgiIrradiance, g_ddgiSampler, worldPos, N,
+                                          ddgiOrigin.xyz, ddgiSpacing.xyz,
+                                          uint3(ddgiCounts.xyz), ddgiSpacing.w, confidence);
+    return v * ddgiOrigin.w;
+}
 
 // スポットライト影: spotShadowMatrix[idx] で射影し 3x3 PCF（CSM の SampleCascade と同じ流儀）。
 float SampleSpotShadow(int idx, float3 worldPos)

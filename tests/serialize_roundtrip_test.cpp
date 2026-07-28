@@ -1142,6 +1142,73 @@ static void Test_SkyboxSettings()
 }
 
 // シーン単位の SSAOSettings の往復。device 不要の SaveToString/LoadFromString 経路で検証。
+// DDGI（計画09 Step 6 / 段階1）。raytracing の入れ子に保存される。
+static void Test_DdgiSettings()
+{
+    Scene src;
+    auto& dg = src.GetDdgiSettings();
+    dg.enabled     = true;
+    dg.probeCountX = 12; dg.probeCountY = 6; dg.probeCountZ = 10;
+    dg.spacing     = 1.5f;
+    dg.originX     = -6.0f; dg.originY = 1.25f; dg.originZ = -4.5f;
+    dg.rayLength   = 45.0f;
+    dg.hysteresis  = 0.9f;
+    dg.intensity   = 1.4f;
+    dg.normalBias  = 0.05f;
+
+    const std::string js = SceneSerializer::SaveToString(src, "");
+    CHECK(!js.empty());
+
+    Scene dst;
+    const bool ok = SceneSerializer::LoadFromString(dst, js, "");
+    CHECK(ok);
+    if (ok)
+    {
+        const auto& d = dst.GetDdgiSettings();
+        CHECK(d.enabled == true);
+        CHECK(d.probeCountX == 12);
+        CHECK(d.probeCountY == 6);
+        CHECK(d.probeCountZ == 10);
+        CHECK_F(d.spacing, 1.5f);
+        CHECK_F(d.originX, -6.0f);
+        CHECK_F(d.originY, 1.25f);
+        CHECK_F(d.originZ, -4.5f);
+        CHECK_F(d.rayLength, 45.0f);
+        CHECK_F(d.hysteresis, 0.9f);
+        CHECK_F(d.intensity, 1.4f);
+        CHECK_F(d.normalBias, 0.05f);
+    }
+
+    // ddgi キーが無い JSON（＝段階1 より前に保存された全シーン）は既定 OFF へ。
+    // ★ここが赤くなると「既存シーンを開いた瞬間に絵が変わる」ことを意味する。
+    Scene dst2;
+    const bool ok2 = SceneSerializer::LoadFromString(dst2, "{\"entities\":[]}", "");
+    CHECK(ok2);
+    if (ok2)
+    {
+        const auto& d2 = dst2.GetDdgiSettings();
+        CHECK(d2.enabled == false);
+        CHECK(d2.probeCountX == 8 && d2.probeCountY == 4 && d2.probeCountZ == 8);
+        CHECK_F(d2.spacing, 2.0f);
+        CHECK_F(d2.intensity, 1.0f);
+    }
+
+    // 手書き JSON の範囲外はロード時に丸める（プローブ数 999 で 4096 上限を割らない）。
+    Scene dst3;
+    const bool ok3 = SceneSerializer::LoadFromString(
+        dst3, "{\"entities\":[],\"raytracing\":{\"ddgi\":{\"enabled\":true,"
+              "\"probeCountX\":999,\"probeCountY\":-5,\"spacing\":0.0,\"hysteresis\":2.0}}}", "");
+    CHECK(ok3);
+    if (ok3)
+    {
+        const auto& d3 = dst3.GetDdgiSettings();
+        CHECK(d3.probeCountX == 32);
+        CHECK(d3.probeCountY == 1);
+        CHECK_F(d3.spacing, 0.1f);
+        CHECK_F(d3.hysteresis, 0.995f);
+    }
+}
+
 static void Test_SSAOSettings()
 {
     Scene src;
@@ -1284,6 +1351,7 @@ int main()
     Test_UIAnimator();
     Test_SkyboxSettings();
     Test_SSAOSettings();
+    Test_DdgiSettings();
     Test_EntityOrderStable();
     Test_RegistryHeaderCompiles();
 

@@ -542,6 +542,10 @@ float4 PSMain(PSInput input) : SV_TARGET
     float  ssrConf  = saturate(ssrRaw.a);
     float  ssgiConf = saturate(ssgiRaw.a);
 
+    // DDGI（Forward.hlsl と同じ扱い。OFF なら ddgiConf=0 で以降の lerp が恒等）
+    float  ddgiConf = 0.0;
+    float3 ddgiIrr  = TerrSanitize(SampleDdgi(input.worldPos, N, ddgiConf));
+
     float3 ambient;
     if (hasIBL != 0u)
     {
@@ -551,6 +555,7 @@ float4 PSMain(PSInput input) : SV_TARGET
         float3 kD  = (1.0 - F) * (1.0 - metallic);
 
         float3 irradiance = g_irradianceMap.SampleLevel(g_iblSampler, N, 0).rgb;
+        irradiance = lerp(irradiance, ddgiIrr, ddgiConf);
         irradiance = lerp(irradiance, ssgiRgb, ssgiConf);
         float3 diffuseIBL = irradiance * albedo;
 
@@ -569,6 +574,9 @@ float4 PSMain(PSInput input) : SV_TARGET
         float3 ambientDiffuse  = albedo * (1.0 - metallic);
         float3 ambientSpecular = lerp(F0, ssrRgb, ssrConf);
         ambient = ambientStrength * (ambientDiffuse + ambientSpecular) * ao;
+        ambient = lerp(ambient,
+                       (ddgiIrr * ambientDiffuse + ambientStrength * ambientSpecular) * ao,
+                       ddgiConf);
         ambient = lerp(ambient,
                        ssgiRgb * ambientDiffuse + ambientStrength * ambientSpecular * ao,
                        ssgiConf);

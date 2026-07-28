@@ -178,7 +178,7 @@ void RootSignature::Initialize(GraphicsDevice& device)
     //   ヒープを消費しない）。DATA_VOLATILE でも「ディスクリプタ自体」は静的扱いなので、
     //   予約枠 4 本も有効なディスクリプタで埋めてから SetGraphicsRootDescriptorTable すること
     //   （ClusteredLightCulling::Initialize がカウントバッファの SRV で埋めている）。
-    D3D12_DESCRIPTOR_RANGE1 clusterRanges[2]{};
+    D3D12_DESCRIPTOR_RANGE1 clusterRanges[3]{};
     clusterRanges[0].RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     clusterRanges[0].NumDescriptors                    = 3;   // t13,t14,t15
     clusterRanges[0].BaseShaderRegister                = 13;
@@ -192,6 +192,16 @@ void RootSignature::Initialize(GraphicsDevice& device)
     clusterRanges[1].RegisterSpace                     = 0;
     clusterRanges[1].Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
     clusterRanges[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    // t22: DDGI の irradiance アトラス（計画09 Step 6 / 段階1）。
+    // ★ここも新規スロットを取らず slot11 へ相乗りする＝ルート定数の予算は 61/64 のまま。
+    //   OFF のときも 1x1 黒ダミーで必ず埋めること（未初期化はデバッグレイヤが落とす）。
+    clusterRanges[2].RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    clusterRanges[2].NumDescriptors                    = 1;   // t22
+    clusterRanges[2].BaseShaderRegister                = 22;
+    clusterRanges[2].RegisterSpace                     = 0;
+    clusterRanges[2].Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    clusterRanges[2].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
     rootParams[11].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rootParams[11].DescriptorTable.NumDescriptorRanges = _countof(clusterRanges);
@@ -225,8 +235,9 @@ void RootSignature::Initialize(GraphicsDevice& device)
     rootParams[13].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
 
     // Static Samplers (s0=albedo wrap, s1=shadow PCF, s2=IBL linear-clamp mip有,
-    //                  s3=BRDF linear-clamp mipなし, s4=AO point-clamp スクリーンサンプル)
-    D3D12_STATIC_SAMPLER_DESC staticSamplers[5]{};
+    //                  s3=BRDF linear-clamp mipなし, s4=AO point-clamp スクリーンサンプル,
+    //                  s5=DDGI irradiance linear-clamp mipなし)
+    D3D12_STATIC_SAMPLER_DESC staticSamplers[6]{};
 
     // s0 - Anisotropic Wrap (albedo, normal, metalRoughness)
     // ★等方トリリニアだと LOD が「フットプリントの長軸」で決まるため、床や壁を
@@ -284,6 +295,14 @@ void RootSignature::Initialize(GraphicsDevice& device)
     staticSamplers[4].MaxLOD           = D3D12_FLOAT32_MAX;
     staticSamplers[4].ShaderRegister   = 4;  // s4
     staticSamplers[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // s5 - DDGI irradiance アトラス: LINEAR CLAMP (mipなし)
+    // ★s2(IBL) を使い回せない: Forward.hlsl が s2 を g_iblSampler として宣言済みで、
+    //   同じ register に 2 つ目の SamplerState を宣言すると DXC が弾く。
+    //   静的サンプラはルート定数の DWORD を 1 つも消費しないので足しても無料。
+    staticSamplers[5]                  = staticSamplers[2];
+    staticSamplers[5].MaxLOD           = 0.0f;
+    staticSamplers[5].ShaderRegister   = 5;  // s5
 
     // Root Signature (Version 1.1)
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC versionedDesc{};

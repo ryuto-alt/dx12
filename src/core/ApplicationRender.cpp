@@ -3629,7 +3629,11 @@ void Application::Render()
         XMFLOAT4   clusterViewport;  // .xy=ビューポート原点(RT px) .zw=(gridX/vpW, gridY/vpH)
         XMFLOAT4   clusterExtra;     // .x=総灯数 .y=maxLightsPerCluster .z=デバッグ表示 .w=予約
         XMFLOAT4   pcssParams;                       // 16B  (offset 544) PCSS: .x=tanTheta(0で無効) .y=maxPenumbraTexels .z=時間ディザ位相 .w=探索半径texel
-        XMFLOAT4   _clusterReserved[43];             // 688B (offset 560..1247)
+        // ▼ DDGI 48B (offset 560)。ddgiOrigin.w=0 なら PS は t22 を一切読まない
+        XMFLOAT4   ddgiOrigin;                       // 16B  (offset 560) .xyz=格子の原点 .w=強さ(0=無効)
+        XMFLOAT4   ddgiSpacing;                      // 16B  (offset 576) .xyz=プローブ間隔 .w=法線バイアス(m)
+        XMFLOAT4   ddgiCounts;                       // 16B  (offset 592) .xyz=各軸のプローブ数
+        XMFLOAT4   _clusterReserved[40];             // 640B (offset 608..1247)
         XMFLOAT4X4 spotShadowMatrix[kMaxShadowSpot]; // 256B (offset 1248)
         // ▼ IBL 制御 16B
         float iblIntensity;
@@ -3683,6 +3687,49 @@ void Application::Render()
             phase,
             (std::max)(pcss.blockerSearchTexels, 1.0f)};
     }
+    // ===== DDGI: フォワード PS へのバインド（計画09 Step 6 / 段階1）=====
+    // ★プローブ更新（上の TLAS 直後）はもう終わっているので、ここでは「今フレーム読めるか」
+    //   だけを見る。読めないなら 1x1 黒ダミーで t22 を埋めて ddgiOrigin.w=0 にする
+    //   ＝ PS は 1 テクセルも読まず、絵は DDGI 導入前とビット一致する。
+    {
+        const DdgiSettings& ddgiCfg = m_scene->GetDdgiSettings();
+        const bool ddgiActive = m_ddgi && ddgiCfg.enabled && ddgiCfg.intensity > 0.0f
+                             && m_ddgi->GetIrradianceSrvIndex() != DescriptorHeap::kInvalidIndex;
+
+        // t22 は slot11 テーブルの中（＝専用 SRV index では届かない）。毎フレーム書き直す。
+        // ディスクリプタ 1 本の CreateSRV は数百 ns なので、変化検出を持つより安い。
+        // ★BeginFrame がこのフレームの GPU 完了を待っているので、いま書いて安全。
+        if (m_clusteredLighting && m_clusteredLighting->IsReady() && m_srvHeap)
+        {
+            const u32 block = m_clusteredLighting->GetSrvTableIndex(frameIndex);
+            if (block != DescriptorHeap::kInvalidIndex)
+            {
+                const auto dst = m_srvHeap->GetCpuHandle(
+                    block + ClusteredLightCulling::kDdgiSrvOffset);
+                const bool wrote = ddgiActive
+                                && m_ddgi->WriteIrradianceSrv(*m_graphicsDevice, dst);
+                if (!wrote && m_ssBlackTex)
+                    m_ssBlackTex->CreateSRV(*m_graphicsDevice, dst);   // 1x1 黒 RGBA16F
+            }
+        }
+
+        if (ddgiActive)
+        {
+            fc.ddgiOrigin  = {ddgiCfg.originX, ddgiCfg.originY, ddgiCfg.originZ,
+                              ddgiCfg.intensity};
+            fc.ddgiSpacing = {ddgiCfg.spacing, ddgiCfg.spacing, ddgiCfg.spacing,
+                              (std::max)(ddgiCfg.normalBias, 0.0f)};
+            fc.ddgiCounts  = {static_cast<f32>(ddgiCfg.probeCountX),
+                              static_cast<f32>(ddgiCfg.probeCountY),
+                              static_cast<f32>(ddgiCfg.probeCountZ), 0.0f};
+        }
+        else
+        {
+            fc.ddgiOrigin = fc.ddgiSpacing = fc.ddgiCounts = {0.0f, 0.0f, 0.0f, 0.0f};
+        }
+        m_ddgiActiveThisFrame = ddgiActive;
+    }
+
     // スポット影行列（HLSL は列優先 mul(row,mat) なので転置して格納。上で割り当てたスロット分だけ埋める）
     for (u32 i = 0; i < kMaxShadowSpot; ++i)
         XMStoreFloat4x4(&fc.spotShadowMatrix[i],

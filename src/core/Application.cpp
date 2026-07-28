@@ -716,7 +716,11 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         DirectX::XMFLOAT4    clusterViewport; // (offset 512)
         DirectX::XMFLOAT4    clusterExtra;    // (offset 528)
         DirectX::XMFLOAT4    pcssParams;                       // 16B  (offset 544) PCSS（計画03）
-        DirectX::XMFLOAT4    _clusterReserved[43];             // 688B (offset 560..1247)
+        // ▼ DDGI 48B (offset 560)。ddgiOrigin.w=0 なら PS は t22 を一切読まない
+        DirectX::XMFLOAT4    ddgiOrigin;                       // 16B  (offset 560) .xyz=原点 .w=強さ
+        DirectX::XMFLOAT4    ddgiSpacing;                      // 16B  (offset 576) .xyz=間隔 .w=法線バイアス
+        DirectX::XMFLOAT4    ddgiCounts;                       // 16B  (offset 592) .xyz=プローブ数
+        DirectX::XMFLOAT4    _clusterReserved[40];             // 640B (offset 608..1247)
         DirectX::XMFLOAT4X4  spotShadowMatrix[kMaxShadowSpot]; // 256B (offset 1248)
         // ▼ IBL 制御 16B (offset 1504)
         float                iblIntensity;

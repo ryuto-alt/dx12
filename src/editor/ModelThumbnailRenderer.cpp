@@ -328,7 +328,11 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
         XMFLOAT4   clusterViewport;  // (offset 512)
         XMFLOAT4   clusterExtra;     // (offset 528)
         XMFLOAT4   pcssParams;                            // 16B  (offset 544) PCSS（サムネイルでは常に 0＝従来 PCF）
-        XMFLOAT4   _clusterReserved[43];                  // 688B (offset 560..1247)
+        // ▼ DDGI 48B (offset 560)。サムネイルでは常に 0＝t22 を読まない
+        XMFLOAT4   ddgiOrigin;                            // 16B  (offset 560)
+        XMFLOAT4   ddgiSpacing;                           // 16B  (offset 576)
+        XMFLOAT4   ddgiCounts;                            // 16B  (offset 592)
+        XMFLOAT4   _clusterReserved[40];                  // 640B (offset 608..1247)
         XMFLOAT4X4 spotShadowMatrix[kMaxShadowSpotThumb]; // 256B (offset 1248)
         // ▼ IBL 制御 16B (offset 1504)
         float iblIntensity;

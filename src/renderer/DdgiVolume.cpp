@@ -183,6 +183,8 @@ bool DdgiVolume::EnsureResources(GraphicsDevice& device, const DdgiSettings& s)
     }
     m_rayData    = std::move(rayData);
     m_irradiance = std::move(irradiance);
+    // 作りたてはどちらも UNORDERED_ACCESS。作り直したら追跡中のステートも戻す。
+    m_irradianceState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 
     // ディスクリプタは初回だけ取る（格子が変わっても同じ index へ張り直す）。
     // ★u0/u1 はディスクリプタテーブルなので**連続**でなければならない。
@@ -222,6 +224,18 @@ u32 DdgiVolume::GetIrradianceSrvIndex() const
     return m_irradiance ? m_irradianceSrv : 0xFFFFFFFFu;
 }
 
+bool DdgiVolume::WriteIrradianceSrv(GraphicsDevice& device, D3D12_CPU_DESCRIPTOR_HANDLE dst) const
+{
+    if (!m_irradiance || dst.ptr == 0) return false;
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+    srv.Format                  = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    srv.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.Texture2D.MipLevels     = 1;
+    device.GetDevice()->CreateShaderResourceView(m_irradiance.Get(), &srv, dst);
+    return true;
+}
+
 void DdgiVolume::Update(ID3D12GraphicsCommandList* cmd, GraphicsDevice& device,
                         const DdgiSettings& s, const UpdateDesc& d)
 {
@@ -252,6 +266,19 @@ void DdgiVolume::Update(ID3D12GraphicsCommandList* cmd, GraphicsDevice& device,
     cb.sunColor    = d.sunColor;
     cb.skyColor    = d.skyColor;
 
+    // 段階1 でフォワード PS が t22 から読むようになったので、書く前に UAV へ戻す。
+    if (m_irradianceState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+    {
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource   = m_irradiance.Get();
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = m_irradianceState;
+        b.Transition.StateAfter  = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        cmd->ResourceBarrier(1, &b);
+        m_irradianceState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    }
+
     cmd->SetComputeRootSignature(m_rootSig.Get());
     cmd->SetComputeRoot32BitConstants(0, kDdgiCBNum32, &cb, 0);
     cmd->SetComputeRootShaderResourceView(1, d.tlas);
@@ -271,6 +298,18 @@ void DdgiVolume::Update(ID3D12GraphicsCommandList* cmd, GraphicsDevice& device,
     // ---- ブレンド（1 グループ = 1 プローブ / 1 スレッド = 1 テクセル）----
     cmd->SetPipelineState(m_psoBlend.Get());
     cmd->Dispatch(total, 1, 1);
+
+    // フォワードパスが PS から読めるようにしておく（段階1）。
+    {
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource   = m_irradiance.Get();
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        b.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        cmd->ResourceBarrier(1, &b);
+        m_irradianceState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    }
 
     m_stats.raysCast = total * kRaysPerProbe;
     m_historyValid   = true;

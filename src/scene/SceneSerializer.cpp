@@ -894,6 +894,24 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
             {"aoDenoiseRadius",    rt.aoDenoiseRadius},
             {"maxInstances",       rt.maxInstances},
         };
+        // DDGI（計画09 Step 6）。★ルートキーを新設せず raytracing の入れ子にする:
+        //   TLAS が前提で MCP も set_dxr が捌いている＝同じものだから。
+        //   （SCENE_ROOT_KEYS / sceneWrite.ts を触らずに済む副次効果もある）
+        const auto& dg = scene.GetDdgiSettings();
+        root["raytracing"]["ddgi"] = {
+            {"enabled",     dg.enabled},
+            {"probeCountX", dg.probeCountX},
+            {"probeCountY", dg.probeCountY},
+            {"probeCountZ", dg.probeCountZ},
+            {"spacing",     dg.spacing},
+            {"originX",     dg.originX},
+            {"originY",     dg.originY},
+            {"originZ",     dg.originZ},
+            {"rayLength",   dg.rayLength},
+            {"hysteresis",  dg.hysteresis},
+            {"intensity",   dg.intensity},
+            {"normalBias",  dg.normalBias},
+        };
     }
 
     // ボリュメトリックフォグ（シーン単位）。debugMode は目視検証用の一時トグルなので保存しない。
@@ -1126,6 +1144,35 @@ static void LoadRtSettings(Scene& scene, const json& root)
         rt.maxInstances      = j.value("maxInstances",      rt.maxInstances);
     }
     scene.GetRtSettings() = rt;   // forceBuildTlas は常に既定 OFF（保存対象外）
+
+    // DDGI（raytracing の入れ子。キーが無ければ既定 OFF＝旧シーンは無変更で開く）
+    DdgiSettings dg;
+    if (root.contains("raytracing") && root["raytracing"].contains("ddgi"))
+    {
+        const auto& j = root["raytracing"]["ddgi"];
+        dg.enabled     = j.value("enabled",     dg.enabled);
+        dg.probeCountX = j.value("probeCountX", dg.probeCountX);
+        dg.probeCountY = j.value("probeCountY", dg.probeCountY);
+        dg.probeCountZ = j.value("probeCountZ", dg.probeCountZ);
+        dg.spacing     = j.value("spacing",     dg.spacing);
+        dg.originX     = j.value("originX",     dg.originX);
+        dg.originY     = j.value("originY",     dg.originY);
+        dg.originZ     = j.value("originZ",     dg.originZ);
+        dg.rayLength   = j.value("rayLength",   dg.rayLength);
+        dg.hysteresis  = j.value("hysteresis",  dg.hysteresis);
+        dg.intensity   = j.value("intensity",   dg.intensity);
+        dg.normalBias  = j.value("normalBias",  dg.normalBias);
+        // ★MCP の set_dxr と同じ範囲へ丸める（手書き JSON でプローブ数 999 を書かれても落ちない）
+        dg.probeCountX = std::clamp(dg.probeCountX, 1, 32);
+        dg.probeCountY = std::clamp(dg.probeCountY, 1, 32);
+        dg.probeCountZ = std::clamp(dg.probeCountZ, 1, 32);
+        dg.spacing     = std::clamp(dg.spacing,    0.1f, 100.0f);
+        dg.rayLength   = std::clamp(dg.rayLength,  0.1f, 10000.0f);
+        dg.hysteresis  = std::clamp(dg.hysteresis, 0.0f, 0.995f);
+        dg.intensity   = std::clamp(dg.intensity,  0.0f, 10.0f);
+        dg.normalBias  = std::clamp(dg.normalBias, 0.0f, 1.0f);
+    }
+    scene.GetDdgiSettings() = dg;
 }
 
 // JSON から ボリュメトリックフォグ設定を復元（volumetricFog が無ければデフォルト OFF = 後方互換）

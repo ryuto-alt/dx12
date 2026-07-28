@@ -80,6 +80,10 @@ public:
 
     // irradiance アトラスの SRV index（可視化とライティングパスが読む）。
     u32 GetIrradianceSrvIndex() const;
+    // 任意のディスクリプタ位置へ irradiance アトラスの SRV を作る（段階1）。
+    // フォワードの t22 は slot11 テーブルの中なので、専用 index ではなくここへ書く必要がある。
+    // アトラスが未確保なら false（呼び出し側が黒ダミーで埋める）。
+    bool WriteIrradianceSrv(GraphicsDevice& device, D3D12_CPU_DESCRIPTOR_HANDLE dst) const;
     // 履歴を捨てる（シーン切替 / 設定変更）。次の更新で hysteresis 無しで埋め直す。
     void InvalidateHistory() { m_historyValid = false; }
 
@@ -113,6 +117,9 @@ private:
     // 現在のリソースが対応している格子（変わったら作り直す）。
     u32  m_probesX = 0, m_probesY = 0, m_probesZ = 0;
     bool m_historyValid = false;
+    // irradiance アトラスの現在のステート。段階1 でフォワード PS が読むようになったので
+    // compute(UAV) と PS(SRV) を行き来する。遷移の面倒はこのクラスの中で完結させる。
+    D3D12_RESOURCE_STATES m_irradianceState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     Stats m_stats;
 };
 

@@ -241,6 +241,9 @@ if(DXC_EXECUTABLE)
         "${CMAKE_SOURCE_DIR}/shaders/forward/DecalCommon.hlsli"
         "${CMAKE_SOURCE_DIR}/shaders/forward/DecalApply.hlsli"
         "${CMAKE_SOURCE_DIR}/shaders/forward/ShadowPcss.hlsli"
+        # ★DdgiCommon.hlsli も Lighting.hlsli が include している（DDGI 段階1）。
+        #   入れ忘れると DDGI のサンプル式を直してもフォワード系の .cso が古いまま残る。
+        "${CMAKE_SOURCE_DIR}/shaders/ddgi/DdgiCommon.hlsli"
         "${CMAKE_SOURCE_DIR}/shaders/forward/Lighting.hlsli")
     # クラスタードライティング（Forward+）のライトカリング compute 2 本
     set(SHADER_CLUSTER_BUILD "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterBuild.hlsl")
