@@ -9,6 +9,7 @@ namespace dx12e
 {
 
 struct Material;
+class DescriptorHeap;
 
 struct Vertex
 {
@@ -136,6 +137,16 @@ public:
     //   これを見ないと必ず踏む。BLAS キャッシュは (Mesh*, geometryVersion) をキーにすること。
     u32 GetGeometryVersion() const { return m_geometryVersion; }
 
+    // ---- 計画09 Step 5（バインドレス）------------------------------------
+    // レイのヒット点で頂点属性（UV / 法線 / 頂点カラー）を読むための VB/IB の SRV。
+    // ★RT を実際に使うフレームで初めて払い出す。RT OFF のプロジェクトでは 1 個も消費しない。
+    // ★VB を作り直すと m_geometryVersion が上がるので、そのとき SRV も張り直す
+    //   （忘れると RT だけ古いジオメトリを読む。BLAS キャッシュとまったく同じ罠）。
+    // 失敗（ヒープ枯渇）時は index が kInvalid のままになるので、呼び出し側は必ず確認すること。
+    void EnsureRaytracingSrvs(GraphicsDevice& device, DescriptorHeap& srvHeap);
+    u32  GetVbSrvIndex() const { return m_vbSrvIndex; }
+    u32  GetIbSrvIndex() const { return m_ibSrvIndex; }
+
     static const D3D12_INPUT_ELEMENT_DESC* GetInputLayout();
     static u32 GetInputLayoutCount();
     // slot0(頂点) + slot1(MeshInstanceData, PER_INSTANCE) のインスタンシング用レイアウト。
@@ -164,6 +175,10 @@ private:
     std::vector<Vertex> m_verticesCache;         // UV スケール用の頂点データキャッシュ
     std::vector<u32>    m_indicesCache;          // LOD0 インデックスの CPU コピー（レイ-三角形判定用）
     u32                 m_geometryVersion = 0;   // VB を作り直すたびに +1（BLAS キャッシュ無効化用）
+    // バインドレス用の SRV（計画09 Step 5）。0xFFFFFFFF = 未払い出し。
+    u32                 m_vbSrvIndex = 0xFFFFFFFFu;
+    u32                 m_ibSrvIndex = 0xFFFFFFFFu;
+    u32                 m_srvGeometryVersion = 0xFFFFFFFFu;   // SRV を張った時点の版
 };
 
 } // namespace dx12e

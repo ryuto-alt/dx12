@@ -25,6 +25,7 @@
 #define DBG_SSGI            9
 #define DBG_RT_HIT          10
 #define DBG_RT_DIFF         11
+#define DBG_RT_ALBEDO       12
 
 cbuffer RenderDebugCB : register(b0)
 {
@@ -100,6 +101,12 @@ float4 RenderDebugPS(FSQuadVSOut i) : SV_TARGET
         // R = +X, G = +Y(画面下)。静止していれば全面が均一な (0.5,0.5,0.5)。
         float2 v = gSource.SampleLevel(gPoint, uv, 0).rg * gain;
         outColor = float3(saturate(0.5 + v.x), saturate(0.5 + v.y), 0.5);
+    }
+    else if (mode == DBG_RT_ALBEDO)
+    {
+        // バインドレスのヒット点アルベドをそのまま出す。ラスタの絵と色が一致すれば
+        // InstanceID → GeometryInfo → VB/IB/テクスチャ の配線が全部正しい。
+        outColor = gSource.SampleLevel(gPoint, uv, 0).rgb;
     }
     else if (mode == DBG_RT_HIT || mode == DBG_RT_DIFF)
     {

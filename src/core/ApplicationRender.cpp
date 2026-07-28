@@ -2975,7 +2975,8 @@ void Application::Render()
         // 深度からワールドを復元する都合で透視カメラ限定（SSAO / コンタクトシャドウと同じ条件）。
         const bool rtViewOk = !(m_editorCtx && m_editorCtx->view2D) && !m_camera->IsOrthographic();
         const bool wantDebug = (m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtHit)
-                             || m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtDiff));
+                             || m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtDiff)
+                                 || m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtAlbedo));
         const bool want = rtViewOk
                         && (rtCfg.shadowEnabled || rtCfg.aoEnabled || rtCfg.forceBuildTlas || wantDebug);
         if (want)
@@ -3008,6 +3009,32 @@ void Application::Render()
             m_rtScene->BeginFrame(camP, skippedSkin, skippedTransp);
 
             auto& rtReg = m_scene->GetRegistry();
+
+            // レイのヒット点で頂点属性 / アルベドを引くための表（計画09 Step 5）。
+            // ★SRV の払い出しはここが初回＝RT を使わないプロジェクトでは 1 個も消費しない。
+            // ★スキンドでも「属性用 VB」は元メッシュのものを渡す。変形後バッファには
+            //   位置しか入っていない（UV も法線も無い）が、インデックスは共有なので
+            //   PrimitiveIndex と バリセントリック はそのまま使える。
+            const bool wantGeoInfo = m_graphicsDevice->SupportsDynamicResources();
+            auto makeGeoInfo = [&](Mesh* mesh) -> RaytracingScene::GeometryInfo
+            {
+                RaytracingScene::GeometryInfo g{0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0u};
+                if (!wantGeoInfo || !mesh) return g;
+                mesh->EnsureRaytracingSrvs(*m_graphicsDevice, *m_srvHeap);
+                g.vbSrvIndex = mesh->GetVbSrvIndex();
+                g.ibSrvIndex = mesh->GetIbSrvIndex();
+                // アルベド: srvBlockIndex は albedo/normal/metalRoughness の 3 連続ブロックの
+                // 先頭＝そのまま albedo。ブロックが無いモデルはテクスチャ単体の SRV を使う。
+                if (const Material* mat = mesh->GetMaterial())
+                {
+                    if (mat->srvBlockIndex != 0xFFFFFFFFu)
+                        g.baseColorSrvIndex = mat->srvBlockIndex;
+                    else if (mat->albedoTexture)
+                        g.baseColorSrvIndex = mat->albedoTexture->GetSrvIndex();
+                }
+                return g;
+            };
+
             for (const DrawItem& it : m_drawItems)
             {
                 if (!IsRaytracedItem(it, skinnedInTlas)) continue;
@@ -3040,7 +3067,8 @@ void Application::Render()
                         if (it.hasNodeAnim && mi < static_cast<u32>(r.meshNodeTransforms.size()))
                             meshWorld = XMLoadFloat4x4(&r.meshNodeTransforms[mi]) * world;
                         m_rtScene->AddSkinnedInstance(key, r.meshes[mi], va, vcount, poseHash,
-                                                      meshWorld, it.center);
+                                                      meshWorld, it.center,
+                                                      makeGeoInfo(r.meshes[mi]));
                     }
                     continue;
                 }
@@ -3054,7 +3082,8 @@ void Application::Render()
                     XMMATRIX meshWorld = world;
                     if (it.hasNodeAnim && mi < static_cast<u32>(r.meshNodeTransforms.size()))
                         meshWorld = XMLoadFloat4x4(&r.meshNodeTransforms[mi]) * world;
-                    m_rtScene->AddInstance(r.meshes[mi], meshWorld, it.center);
+                    m_rtScene->AddInstance(r.meshes[mi], meshWorld, it.center,
+                                           makeGeoInfo(r.meshes[mi]));
                 }
             }
 
@@ -3318,7 +3347,8 @@ void Application::Render()
     const bool useRtAo     = rtAoActive && m_rtScene && m_rtScene->IsReady();
     const bool useRtDebug  = m_rtScene && m_rtScene->IsReady() && m_rtScreenPass
                            && (m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtHit)
-                            || m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtDiff));
+                            || m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtDiff)
+                                || m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtAlbedo));
 
     // ★RT-AO が走るフレームは SSAO を走らせない（どちらも同じ t8 枠へ書くので後勝ちになるだけ）。
     //   ただし aoCombineWithSsao のときは min 合成の相手として SSAO の結果が要るので走らせる。
@@ -3481,6 +3511,9 @@ void Application::Render()
             //   決定論キャプチャ中は 0 に固定してビット再現させる。
             rd.denoiseFrame = m_deterministicCapture
                             ? 0u : static_cast<u32>(m_perfTotalFrames & 0xFFFFull);
+            // GeometryInfo テーブル（Build() が毎フレーム詰め直す）。0 なら
+            // ヒット点のバインドレス情報は使えない＝アルベド可視化は黒になる。
+            rd.geometryInfo = m_rtScene->GetGeometryInfoAddress();
 
             const RtSettings& rtCfg = m_scene->GetRtSettings();
             if (useRtShadow)
@@ -3494,7 +3527,11 @@ void Application::Render()
                 if (s != DescriptorHeap::kInvalidIndex) aoSrv = s;
             }
             if (useRtDebug)
-                rtDebugSrv = m_rtScreenPass->GenerateDebug(nativeCmdList, rd);
+            {
+                rtDebugSrv = (m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtAlbedo))
+                           ? m_rtScreenPass->GenerateAlbedo(nativeCmdList, rd)
+                           : m_rtScreenPass->GenerateDebug(nativeCmdList, rd);
+            }
             m_gpuTimer->End(nativeCmdList, GpuTimer::RtScreen);
         }
 
@@ -4201,7 +4238,8 @@ void Application::Render()
         case RenderDebugMode::Ssr:            srcIdx = ssrSrv;  break;
         case RenderDebugMode::Ssgi:           srcIdx = ssgiSrv; break;
         case RenderDebugMode::RtHit:
-        case RenderDebugMode::RtDiff:         srcIdx = rtDebugSrv; break;
+        case RenderDebugMode::RtDiff:
+        case RenderDebugMode::RtAlbedo:       srcIdx = rtDebugSrv; break;
         default: break;
         }
 

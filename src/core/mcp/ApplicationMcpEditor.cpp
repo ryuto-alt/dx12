@@ -428,6 +428,7 @@ void Application::RegisterMcpEditorMethods()
                 {"ssgi",             static_cast<u32>(RenderDebugMode::Ssgi)},
                 {"rt",               static_cast<u32>(RenderDebugMode::RtHit)},
                 {"rtDiff",           static_cast<u32>(RenderDebugMode::RtDiff)},
+                {"rtAlbedo",         static_cast<u32>(RenderDebugMode::RtAlbedo)},
                 {"shadowCascade",    0},
                 {"lightComplexity",  0},
                 {"clusterGrid",      0},
@@ -501,7 +502,7 @@ void Application::RegisterMcpEditorMethods()
             {
                 if (!ssgiS.enabled) { ssgiS.enabled = true; warn.push_back("SSGI を一時的に ON にした（同上）"); }
             }
-            else if (mode == "rt" || mode == "rtDiff")
+            else if (mode == "rt" || mode == "rtDiff" || mode == "rtAlbedo")
             {
                 // TLAS を建てさせる（RT 影 / RT-AO が両方 OFF でも見られるようにする）。
                 // forceBuildTlas はシーン JSON に保存しない一時トグル。
@@ -510,6 +511,11 @@ void Application::RegisterMcpEditorMethods()
                                    "（要 DXR Tier 1.1 / Shader Model 6.5）");
                 m_renderDebugRestore.rtForceTlas = m_scene->GetRtSettings().forceBuildTlas;
                 m_scene->GetRtSettings().forceBuildTlas = true;
+                if (mode == "rtAlbedo")
+                    warn.push_back("ヒット点のアルベド（計画09 Step 5 のバインドレス検証）。"
+                                   "ラスタの絵と色が一致すれば配線が全部正しい。"
+                                   "BLAS は LOD0 固定なので比較は近距離で行うこと。"
+                                   "Dynamic Resources 非対応 GPU では真っ黒になる");
                 if (mode == "rtDiff")
                     warn.push_back("半透明は TLAS に入らない仕様なのでマゼンタになる。"
                                    "スキンドは compute スキニングが動いていれば入る"

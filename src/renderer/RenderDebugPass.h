@@ -52,6 +52,12 @@ enum class RenderDebugMode : u32
     //   一致しない＝スキニング式がラスタとズレているということなので、そのときはここで気付ける。
     RtHit         = 10,
     RtDiff        = 11,
+    // バインドレス（計画09 Step 5）の検証。レイのヒット点のアルベドをそのまま出す。
+    // ★ラスタの絵と色が一致すれば InstanceID → GeometryInfo → VB/IB/テクスチャ の配線と
+    //   バリセントリック補間が全部正しいことの証明になる。ここが合っていないと
+    //   DDGI のヒットシェーディングは絶対に正しくならない。
+    //   比較は近距離で（BLAS は LOD0 固定なので遠景はラスタと LOD が食い違う）。
+    RtAlbedo      = 12,
 };
 
 class RenderDebugPass

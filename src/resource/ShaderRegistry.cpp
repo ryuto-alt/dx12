@@ -304,25 +304,33 @@ const std::vector<ShaderSource>& BuildRegistry()
             { "post/FullscreenTri.hlsli", "screenspace/ScreenSpaceCommon.hlsli" },
         },
         {
-            // DXR 1.1 inline raytracing の RT サン影（計画09 Step 2）。VS は 3 パス共有。
-            // ★PS は必ず ps_6_5 以上。RayQuery は SM 6.5 必須で 6.4 以下はコンパイルできない。
+            // DXR 1.1 inline raytracing の RT サン影（計画09 Step 2）。VS は全パス共有。
+            // ★PS は ps_6_6。RayQuery は SM 6.5 必須で、さらに計画09 Step 5 の
+            //   ResourceDescriptorHeap[]（バインドレス）が SM 6.6 必須なので 6.6 に揃えた。
+            //   ★CMakeLists.txt の -T 指定と二重管理。片方だけ直すとホットリロード時だけ挙動が変わる。
             "raytracing/RtShadow.hlsl",
             {
                 { L"Rt_VS.cso",       L"FSTriVS", L"vs_6_0" },
-                { L"RtShadow_PS.cso", L"PSMain",  L"ps_6_5" },
+                { L"RtShadow_PS.cso", L"PSMain",  L"ps_6_6" },
             },
             { "raytracing/RtCommon.hlsli", "post/FullscreenTri.hlsli" },
         },
         {
+            // バインドレスのヒット点アルベド可視化（計画09 Step 5 の検証用）。
+            "raytracing/RtAlbedo.hlsl",
+            { { L"RtAlbedo_PS.cso", L"PSMain", L"ps_6_6" } },
+            { "raytracing/RtCommon.hlsli", "raytracing/RtBindless.hlsli", "post/FullscreenTri.hlsli" },
+        },
+        {
             // RT-AO（計画09 Step 3）
             "raytracing/RtAo.hlsl",
-            { { L"RtAo_PS.cso", L"PSMain", L"ps_6_5" } },
+            { { L"RtAo_PS.cso", L"PSMain", L"ps_6_6" } },
             { "raytracing/RtCommon.hlsli", "post/FullscreenTri.hlsli" },
         },
         {
             // TLAS の目視確認用プライマリレイ（計画09 Step 1）。dx12_render_debug の rt / rtDiff。
             "raytracing/RtDebug.hlsl",
-            { { L"RtDebug_PS.cso", L"PSMain", L"ps_6_5" } },
+            { { L"RtDebug_PS.cso", L"PSMain", L"ps_6_6" } },
             { "raytracing/RtCommon.hlsli", "post/FullscreenTri.hlsli" },
         },
         {
@@ -357,7 +365,7 @@ const std::vector<ShaderSource>& BuildRegistry()
         {
             // RT-AO の空間デノイザ（joint bilateral）+ 最終合成。
             "raytracing/RtAoDenoise.hlsl",
-            { { L"RtAoDenoise_PS.cso", L"PSMain", L"ps_6_5" } },
+            { { L"RtAoDenoise_PS.cso", L"PSMain", L"ps_6_6" } },
             { "raytracing/RtCommon.hlsli", "post/FullscreenTri.hlsli" },
         },
         {

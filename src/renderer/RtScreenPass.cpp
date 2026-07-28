@@ -10,6 +10,7 @@
 #include "core/Logger.h"
 
 #include <algorithm>
+#include <vector>
 
 namespace dx12e
 {
@@ -41,8 +42,9 @@ void RtScreenPass::Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap, D
     for (u32 i = 0; i < PassCount; ++i)
     {
         m_rt[i] = std::make_unique<RenderTarget>();
-        m_rt[i]->Initialize(device, rtvHeap, srvHeap, m_width, m_height,
-                            (i == PassDebug) ? kDebugFormat : kMaskFormat,
+        const DXGI_FORMAT fmt = (i == PassDebug)  ? kDebugFormat
+                              : (i == PassAlbedo) ? kAlbedoFormat : kMaskFormat;
+        m_rt[i]->Initialize(device, rtvHeap, srvHeap, m_width, m_height, fmt,
                             (i == PassDebug) ? miss : white);
         m_rtState[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
     }
@@ -80,7 +82,7 @@ void RtScreenPass::CreateRootSignature(GraphicsDevice& device)
     rawRange.NumDescriptors     = 1;
     rawRange.BaseShaderRegister = 4;
 
-    D3D12_ROOT_PARAMETER params[6]{};
+    D3D12_ROOT_PARAMETER params[7]{};
     params[0].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     params[0].DescriptorTable.NumDescriptorRanges = 1;
     params[0].DescriptorTable.pDescriptorRanges   = &srvRange;
@@ -109,15 +111,91 @@ void RtScreenPass::CreateRootSignature(GraphicsDevice& device)
     params[5].DescriptorTable.pDescriptorRanges   = &rawRange;
     params[5].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    D3D12_ROOT_SIGNATURE_DESC desc{};
-    desc.NumParameters = _countof(params);
-    desc.pParameters   = params;
-    desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS
-               | D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS
-               | D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+    // t6 = GeometryInfo テーブル（ルート SRV）。TLAS と同じ理由で、毎フレーム作り直しても
+    // ディスクリプタを張り直さずに済む。
+    params[6].ParameterType             = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    params[6].Descriptor.ShaderRegister = 6;
+    params[6].ShaderVisibility          = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_FLAGS flags =
+          D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS
+        | D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS
+        | D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+
+    // ★SM 6.6 Dynamic Resources（ResourceDescriptorHeap[]）を使うフラグ。
+    //   これが無いと「シェーダがヒープから直接リソースを作っているのにルートシグネチャに
+    //   フラグが無い」として PSO 生成時の検証で落ちる（仕様に明記）。
+    //   非対応 GPU では立てない＝シェーダも従来経路のままにする。
+    m_dynamicResources = device.SupportsDynamicResources();
+    if (m_dynamicResources)
+        flags |= D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+
+    // ★Versioned 側で作る。CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED は 1.1 で入ったフラグで、
+    //   ランタイムの VERSION_1 シリアライザが受理するかは仕様上保証されていないため
+    //   （DXC のシリアライザは通るが別実装）。1_1 は仕様が想定している経路。
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC vdesc{};
+    vdesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    std::vector<D3D12_ROOT_PARAMETER1> p1(_countof(params));
+    std::vector<D3D12_DESCRIPTOR_RANGE1> r1(_countof(params));
+    for (u32 i = 0; i < _countof(params); ++i)
+    {
+        p1[i].ParameterType    = params[i].ParameterType;
+        p1[i].ShaderVisibility = params[i].ShaderVisibility;
+        if (params[i].ParameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE)
+        {
+            const auto& src = *params[i].DescriptorTable.pDescriptorRanges;
+            r1[i] = {};
+            r1[i].RangeType          = src.RangeType;
+            r1[i].NumDescriptors     = src.NumDescriptors;
+            r1[i].BaseShaderRegister = src.BaseShaderRegister;
+            r1[i].RegisterSpace      = src.RegisterSpace;
+            r1[i].OffsetInDescriptorsFromTableStart =
+                D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+            // 中身は毎フレーム書き換わる（RT の出力を次パスが読む）ので VOLATILE。
+            r1[i].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE;
+            p1[i].DescriptorTable.NumDescriptorRanges = 1;
+            p1[i].DescriptorTable.pDescriptorRanges   = &r1[i];
+        }
+        else
+        {
+            p1[i].Descriptor.ShaderRegister = params[i].Descriptor.ShaderRegister;
+            p1[i].Descriptor.RegisterSpace  = params[i].Descriptor.RegisterSpace;
+            p1[i].Descriptor.Flags          = D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE;
+        }
+    }
+    // アルベド可視化がテクスチャを引くための静的サンプラ（s0）。
+    // ★Sample() は使えない（quad 内で添字が発散すると LOD が未定義）ので SampleLevel 前提。
+    //   したがってミップフィルタは何でもよいが、将来 SampleGrad へ進めるよう LINEAR にしておく。
+    D3D12_STATIC_SAMPLER_DESC samp{};
+    samp.Filter           = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    samp.AddressU         = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    samp.AddressV         = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    samp.AddressW         = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    samp.MaxLOD           = D3D12_FLOAT32_MAX;
+    samp.ShaderRegister   = 0;   // s0
+    samp.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    vdesc.Desc_1_1.NumParameters     = _countof(params);
+    vdesc.Desc_1_1.pParameters       = p1.data();
+    vdesc.Desc_1_1.NumStaticSamplers = 1;
+    vdesc.Desc_1_1.pStaticSamplers   = &samp;
+    vdesc.Desc_1_1.Flags             = flags;
 
     Microsoft::WRL::ComPtr<ID3DBlob> serialized, error;
-    ThrowIfFailed(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &serialized, &error));
+    HRESULT hr = D3D12SerializeVersionedRootSignature(&vdesc, &serialized, &error);
+    if (FAILED(hr) && m_dynamicResources)
+    {
+        // 1_1 が使えない環境（理論上ありえないが保険）。バインドレス無しへ縮退する。
+        Logger::Warn("ルートシグネチャ 1.1 のシリアライズに失敗したため、"
+                     "バインドレス（Dynamic Resources）を無効にします");
+        m_dynamicResources = false;
+        vdesc.Desc_1_1.Flags = flags & ~D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+        hr = D3D12SerializeVersionedRootSignature(&vdesc, &serialized, &error);
+    }
+    if (FAILED(hr) && error)
+        Logger::Error("RtScreenPass のルートシグネチャ: {}",
+                      static_cast<const char*>(error->GetBufferPointer()));
+    ThrowIfFailed(hr);
     ThrowIfFailed(device.GetDevice()->CreateRootSignature(0, serialized->GetBufferPointer(),
         serialized->GetBufferSize(), IID_PPV_ARGS(&m_rootSig)));
 }
@@ -156,6 +234,18 @@ void RtScreenPass::RecreatePipelines(GraphicsDevice& device)
     make(L"RtAo_PS.cso",        kMaskFormat,  m_psoAo);
     make(L"RtDebug_PS.cso",     kDebugFormat, m_psoDebug);
     make(L"RtAoDenoise_PS.cso", kMaskFormat,  m_psoAoDenoise);
+    // ★アルベド可視化は Dynamic Resources が使えるときだけ作る。
+    //   ルートシグネチャに HEAP_DIRECTLY_INDEXED が立っていない状態で
+    //   ResourceDescriptorHeap[] を使うシェーダの PSO を作ると検証で落ちる。
+    if (m_dynamicResources)
+    {
+        try { make(L"RtAlbedo_PS.cso", kAlbedoFormat, m_psoAlbedo); }
+        catch (const std::exception& e)
+        {
+            Logger::Warn("RtAlbedo の PSO を作れませんでした（バインドレス検証は無効）: {}", e.what());
+            m_psoAlbedo.Reset();
+        }
+    }
 }
 
 void RtScreenPass::Resize(GraphicsDevice& device, u32 width, u32 height)
@@ -178,6 +268,7 @@ u32 RtScreenPass::Run(ID3D12GraphicsCommandList* cmd, const GenerateDesc& d, con
     ID3D12PipelineState* pso = (pass == PassShadow)    ? m_psoShadow.Get()
                              : (pass == PassAo)        ? m_psoAo.Get()
                              : (pass == PassAoDenoise) ? m_psoAoDenoise.Get()
+                             : (pass == PassAlbedo)    ? m_psoAlbedo.Get()
                                                        : m_psoDebug.Get();
     if (!pso) return DescriptorHeap::kInvalidIndex;
 
@@ -223,6 +314,15 @@ u32 RtScreenPass::Run(ID3D12GraphicsCommandList* cmd, const GenerateDesc& d, con
     D3D12_VIEWPORT vp{0.0f, 0.0f, static_cast<float>(m_width), static_cast<float>(m_height), 0.0f, 1.0f};
     D3D12_RECT     sc{0, 0, static_cast<LONG>(m_width), static_cast<LONG>(m_height)};
 
+    // ★SM 6.6 Dynamic Resources の順序制約（仕様に明記）:
+    //   「CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED を使うルートシグネチャを Set する**前**に
+    //     SetDescriptorHeaps を呼んでいなければならない」。
+    //   フレーム前半のバインドに暗黙依存すると、描画順を変えた誰かが静かに壊す。ここで明示する。
+    if (m_dynamicResources && m_srvHeap && m_srvHeap->GetHeap())
+    {
+        ID3D12DescriptorHeap* heaps[] = { m_srvHeap->GetHeap() };
+        cmd->SetDescriptorHeaps(1, heaps);
+    }
     cmd->SetGraphicsRootSignature(m_rootSig.Get());
     cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cmd->IASetVertexBuffers(0, 0, nullptr);
@@ -256,6 +356,9 @@ u32 RtScreenPass::Run(ID3D12GraphicsCommandList* cmd, const GenerateDesc& d, con
     //   デバッグレイヤが落ちる）。生 AO は自分自身を読ませないよう PassAo の SRV を渡す。
     cmd->SetGraphicsRootDescriptorTable(4, d.gbufferSrv.ptr ? d.gbufferSrv : d.depthSrv);
     cmd->SetGraphicsRootDescriptorTable(5, m_rawAoSrv.ptr ? m_rawAoSrv : d.depthSrv);
+    // GeometryInfo テーブル。未構築のフレームは TLAS のアドレスで埋める（読まれないが
+    // ルートパラメータは必ず有効なアドレスでなければならない）。
+    cmd->SetGraphicsRootShaderResourceView(6, d.geometryInfo ? d.geometryInfo : d.tlas);
     cmd->DrawInstanced(3, 1, 0, 0);
 
     transition(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -284,6 +387,15 @@ u32 RtScreenPass::GenerateAo(ID3D12GraphicsCommandList* cmd, const GenerateDesc&
 
     const u32 denoised = Run(cmd, d, s, PassAoDenoise);
     return (denoised != DescriptorHeap::kInvalidIndex) ? denoised : raw;
+}
+
+u32 RtScreenPass::GenerateAlbedo(ID3D12GraphicsCommandList* cmd, const GenerateDesc& d)
+{
+    // GeometryInfo が無いフレームは走らせない（ヒット点の表が引けないので全部黒になる）。
+    if (!m_dynamicResources || !m_psoAlbedo || d.geometryInfo == 0)
+        return DescriptorHeap::kInvalidIndex;
+    static const RtSettings kDefault{};
+    return Run(cmd, d, kDefault, PassAlbedo);
 }
 
 u32 RtScreenPass::GenerateDebug(ID3D12GraphicsCommandList* cmd, const GenerateDesc& d)

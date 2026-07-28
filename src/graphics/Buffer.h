@@ -46,6 +46,11 @@ public:
 
     const D3D12_VERTEX_BUFFER_VIEW& GetView() const { return m_view; }
 
+    // ByteAddressBuffer(RAW) として SRV を張る（計画09 Step 5 / バインドレス）。
+    // レイのヒット点で頂点属性（UV / 法線 / 頂点カラー）を読むために要る。
+    // ★リソースは Initialize で GENERIC_READ に置かれたままなので追加バリアは不要。
+    void CreateSRV(GraphicsDevice& device, D3D12_CPU_DESCRIPTOR_HANDLE handle) const;
+
 private:
     D3D12_VERTEX_BUFFER_VIEW                   m_view{};
     Microsoft::WRL::ComPtr<ID3D12Resource>     m_uploadBuffer;
@@ -64,6 +69,9 @@ public:
 
     const D3D12_INDEX_BUFFER_VIEW& GetView()       const { return m_view; }
     u32                            GetIndexCount()  const { return m_indexCount; }
+
+    // VertexBuffer::CreateSRV と同じ理由。インデックスは u32 固定なので RAW で読める。
+    void CreateSRV(GraphicsDevice& device, D3D12_CPU_DESCRIPTOR_HANDLE handle) const;
 
 private:
     D3D12_INDEX_BUFFER_VIEW                    m_view{};

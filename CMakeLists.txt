@@ -320,7 +320,9 @@ if(DXC_EXECUTABLE)
     set(SHADER_RT_AO         "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtAo.hlsl")
     set(SHADER_RT_DEBUG      "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtDebug.hlsl")
     set(SHADER_RT_AODENOISE  "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtAoDenoise.hlsl")
+    set(SHADER_RT_ALBEDO     "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtAlbedo.hlsl")
     set(SHADER_RT_INC        "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtCommon.hlsli"
+                             "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtBindless.hlsli"
                              "${CMAKE_SOURCE_DIR}/shaders/post/FullscreenTri.hlsli")
 
     set(SHADER_OUTPUTS
@@ -412,6 +414,7 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/RtAo_PS.cso"
         "${SHADER_OUTPUT_DIR}/RtDebug_PS.cso"
         "${SHADER_OUTPUT_DIR}/RtAoDenoise_PS.cso"
+        "${SHADER_OUTPUT_DIR}/RtAlbedo_PS.cso"
         "${SHADER_OUTPUT_DIR}/SkinCompute_CS.cso"
     )
 
@@ -1004,19 +1007,19 @@ if(DXC_EXECUTABLE)
     )
     add_custom_command(
         OUTPUT "${SHADER_OUTPUT_DIR}/RtShadow_PS.cso"
-        COMMAND ${DXC_EXECUTABLE} -T ps_6_5 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/RtShadow_PS.cso" "${SHADER_RT_SHADOW}"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_6 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/RtShadow_PS.cso" "${SHADER_RT_SHADOW}"
         DEPENDS "${SHADER_RT_SHADOW}" ${SHADER_RT_INC}
         COMMENT "Compiling RtShadow.hlsl -> RtShadow_PS.cso (ps_6_5)"
     )
     add_custom_command(
         OUTPUT "${SHADER_OUTPUT_DIR}/RtAo_PS.cso"
-        COMMAND ${DXC_EXECUTABLE} -T ps_6_5 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/RtAo_PS.cso" "${SHADER_RT_AO}"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_6 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/RtAo_PS.cso" "${SHADER_RT_AO}"
         DEPENDS "${SHADER_RT_AO}" ${SHADER_RT_INC}
         COMMENT "Compiling RtAo.hlsl -> RtAo_PS.cso (ps_6_5)"
     )
     add_custom_command(
         OUTPUT "${SHADER_OUTPUT_DIR}/RtDebug_PS.cso"
-        COMMAND ${DXC_EXECUTABLE} -T ps_6_5 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/RtDebug_PS.cso" "${SHADER_RT_DEBUG}"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_6 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/RtDebug_PS.cso" "${SHADER_RT_DEBUG}"
         DEPENDS "${SHADER_RT_DEBUG}" ${SHADER_RT_INC}
         COMMENT "Compiling RtDebug.hlsl -> RtDebug_PS.cso (ps_6_5)"
     )
@@ -1024,9 +1027,17 @@ if(DXC_EXECUTABLE)
     # include する（＝TLAS 宣言を含む）ので他の RT シェーダと同じ ps_6_5 で揃える。
     add_custom_command(
         OUTPUT "${SHADER_OUTPUT_DIR}/RtAoDenoise_PS.cso"
-        COMMAND ${DXC_EXECUTABLE} -T ps_6_5 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/RtAoDenoise_PS.cso" "${SHADER_RT_AODENOISE}"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_6 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/RtAoDenoise_PS.cso" "${SHADER_RT_AODENOISE}"
         DEPENDS "${SHADER_RT_AODENOISE}" ${SHADER_RT_INC}
-        COMMENT "Compiling RtAoDenoise.hlsl -> RtAoDenoise_PS.cso (ps_6_5)"
+        COMMENT "Compiling RtAoDenoise.hlsl -> RtAoDenoise_PS.cso (ps_6_6)"
+    )
+    # バインドレスのヒット点アルベド可視化（計画09 Step 5 の検証用）。
+    # ★ps_6_6 必須（ResourceDescriptorHeap[] は SM 6.6 で入った）。
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/RtAlbedo_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_6 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/RtAlbedo_PS.cso" "${SHADER_RT_ALBEDO}"
+        DEPENDS "${SHADER_RT_ALBEDO}" ${SHADER_RT_INC}
+        COMMENT "Compiling RtAlbedo.hlsl -> RtAlbedo_PS.cso (ps_6_6)"
     )
 
     add_custom_target(Shaders ALL DEPENDS ${SHADER_OUTPUTS})

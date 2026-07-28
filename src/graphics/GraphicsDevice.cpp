@@ -167,6 +167,14 @@ void GraphicsDevice::QueryCapabilities()
         }
     }
 
+    // --- ③.5 リソースバインディング Tier（SM 6.6 Dynamic Resources の必要条件）---
+    // 仕様が要求するのは「SM 6.6」かつ「Tier 3」の 2 つだけ。FL 12_2 の GPU は Tier 3 が必須。
+    {
+        D3D12_FEATURE_DATA_D3D12_OPTIONS opts{};
+        if (SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &opts, sizeof(opts))))
+            m_resourceBindingTier = opts.ResourceBindingTier;
+    }
+
     // --- ④ 起動ログ 1 行（dx12_get_log / DeepDiagnostics `dxr` の一次情報）---
     const int tierMajor = (m_raytracingTier >= D3D12_RAYTRACING_TIER_1_0)
                         ? static_cast<int>(m_raytracingTier) / 10 : 0;
@@ -177,10 +185,12 @@ void GraphicsDevice::QueryCapabilities()
 
     if (m_dxrSupported)
     {
-        Logger::Info("DXR: Tier {}.{} / ShaderModel {}.{} / InlineRT={} / Bindless(SM6.6)={} / DXR1.2={} / SER={}",
+        Logger::Info("DXR: Tier {}.{} / ShaderModel {}.{} / InlineRT={} / DynamicResources(SM6.6+Tier3)={}"
+                     " (bindingTier={}) / DXR1.2={} / SER={}",
             tierMajor, tierMinor, smMajor, smMinor,
             SupportsInlineRaytracing() ? "yes" : "no",
-            SupportsBindlessSm66()     ? "yes" : "no",
+            SupportsDynamicResources() ? "yes" : "no",
+            static_cast<int>(m_resourceBindingTier),
             SupportsDxr12()            ? "yes" : "no",
             m_serActuallyReorders      ? "yes" : "no");
     }

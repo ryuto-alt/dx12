@@ -51,6 +51,8 @@ public:
     static constexpr DXGI_FORMAT kMaskFormat  = DXGI_FORMAT_R8_UNORM;
     // デバッグ出力。 .r = RT のヒット距離(m) / .g = ラスタの距離(m)（どちらもミスは -1）
     static constexpr DXGI_FORMAT kDebugFormat = DXGI_FORMAT_R16G16_FLOAT;
+    // アルベド可視化は RGB が要るので RG16F では足りない（kDebugFormat は流用できない）。
+    static constexpr DXGI_FORMAT kAlbedoFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
     void Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap, DescriptorHeap* srvHeap,
                     u32 width, u32 height, const std::wstring& shaderDir);
@@ -89,6 +91,9 @@ public:
         // このフレームの通し番号。★TAA の有無に関係なく必ず回すこと。
         // 止まっているとレイ方向が毎フレーム同じになり、デノイザが原理的に収束しない。
         u32   denoiseFrame = 0;
+        // GeometryInfo テーブル（RaytracingScene::GetGeometryInfoAddress()）。
+        // 0 なら バインドレスのヒット点情報は使えない。
+        D3D12_GPU_VIRTUAL_ADDRESS geometryInfo = 0;
     };
 
     // 生成して SRV index を返す。未準備なら DescriptorHeap::kInvalidIndex。
@@ -97,11 +102,15 @@ public:
     u32 GenerateShadow(ID3D12GraphicsCommandList* cmd, const GenerateDesc& d, const RtSettings& s);
     u32 GenerateAo    (ID3D12GraphicsCommandList* cmd, const GenerateDesc& d, const RtSettings& s);
     u32 GenerateDebug (ID3D12GraphicsCommandList* cmd, const GenerateDesc& d);
+    // バインドレス検証用: ヒット点のアルベドをそのまま出す（計画09 Step 5）。
+    // Dynamic Resources 非対応 GPU / GeometryInfo 未構築なら kInvalidIndex。
+    u32 GenerateAlbedo(ID3D12GraphicsCommandList* cmd, const GenerateDesc& d);
+    bool SupportsBindlessHit() const { return m_dynamicResources && m_psoAlbedo != nullptr; }
 
 private:
     // ★PassDebug までの番号は変えないこと（Run 内のフォーマット判定が依存している）。
     enum PassIndex : u32 { PassShadow = 0, PassAo = 1, PassDebug = 2,
-                           PassAoDenoise = 3, PassCount = 4 };
+                           PassAoDenoise = 3, PassAlbedo = 4, PassCount = 5 };
 
     void CreateRootSignature(GraphicsDevice& device);
     // 3 パス共通の実行本体（CB を書いて全画面三角形を 1 枚描く）。
@@ -113,6 +122,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoAo;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoDebug;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoAoDenoise;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoAlbedo;
 
     std::unique_ptr<RenderTarget>   m_rt[PassCount];
     std::unique_ptr<ConstantBuffer> m_paramCB;   // kFrameCount × PassCount 個
@@ -123,6 +133,9 @@ private:
     // デノイズパスが読む「生 AO」の GPU ハンドル。GenerateAo がトレース直後に詰める。
     D3D12_GPU_DESCRIPTOR_HANDLE m_rawAoSrv{};
     DescriptorHeap* m_srvHeap = nullptr;   // 生 AO の SRV index → GPU ハンドル変換用
+    // SM 6.6 Dynamic Resources（ResourceDescriptorHeap[]）が使えるか。
+    // ルートシグネチャのフラグとシェーダ側の分岐が必ず一致していなければならない。
+    bool m_dynamicResources = false;
 
     u32 m_width  = 0;
     u32 m_height = 0;

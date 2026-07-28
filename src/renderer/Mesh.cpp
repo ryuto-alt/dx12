@@ -1,4 +1,5 @@
 #include "renderer/Mesh.h"
+#include "graphics/DescriptorHeap.h"
 #include "core/Logger.h"
 #include <algorithm>
 #include <meshoptimizer.h>
@@ -7,6 +8,38 @@ using namespace DirectX;
 
 namespace dx12e
 {
+
+void Mesh::EnsureRaytracingSrvs(GraphicsDevice& device, DescriptorHeap& srvHeap)
+{
+    // 版が同じなら何もしない（毎フレーム呼ばれる想定）。
+    if (m_vbSrvIndex != 0xFFFFFFFFu && m_srvGeometryVersion == m_geometryVersion)
+        return;
+
+    // 初回だけ index を取る。VB の作り直しでは同じ index へ張り直すので、
+    // ヒープの使用量はメッシュ 1 個あたり 2 個で頭打ちになる。
+    if (m_vbSrvIndex == 0xFFFFFFFFu)
+    {
+        // ★AllocateIndex はヒープ枯渇時に throw する。RT のためだけに起動を落とさないよう
+        //   ここで握って「バインドレス無し」に縮退させる（呼び出し側が index を見て判断する）。
+        try
+        {
+            m_vbSrvIndex = srvHeap.AllocateIndex();
+            m_ibSrvIndex = srvHeap.AllocateIndex();
+        }
+        catch (const std::exception& e)
+        {
+            Logger::Warn("バインドレス用 SRV を確保できませんでした（RT のヒット点情報は無効）: {}",
+                         e.what());
+            m_vbSrvIndex = 0xFFFFFFFFu;
+            m_ibSrvIndex = 0xFFFFFFFFu;
+            return;
+        }
+    }
+
+    m_vertexBuffer.CreateSRV(device, srvHeap.GetCpuHandle(m_vbSrvIndex));
+    m_indexBuffer.CreateSRV(device, srvHeap.GetCpuHandle(m_ibSrvIndex));   // ★BLAS と同じ LOD0
+    m_srvGeometryVersion = m_geometryVersion;
+}
 
 static const D3D12_INPUT_ELEMENT_DESC kInputLayout[] =
 {

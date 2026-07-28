@@ -120,6 +120,37 @@ void VertexBuffer::Initialize(GraphicsDevice& device, const void* data, u32 size
     m_view.StrideInBytes  = strideInBytes;
 }
 
+namespace
+{
+// バッファを ByteAddressBuffer(RAW) として SRV に張る共通処理。
+// RAW SRV は「4 バイト単位の生バイト列」なので、頂点構造体のレイアウトを
+// シェーダ側の Load3/Load4 のオフセットに合わせるだけで読める。
+void CreateRawSrv(GraphicsDevice& device, ID3D12Resource* res, u32 sizeInBytes,
+                  D3D12_CPU_DESCRIPTOR_HANDLE handle)
+{
+    if (!res || sizeInBytes == 0) return;
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+    srv.Format                     = DXGI_FORMAT_R32_TYPELESS;   // RAW は必ず R32_TYPELESS
+    srv.ViewDimension              = D3D12_SRV_DIMENSION_BUFFER;
+    srv.Shader4ComponentMapping    = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.Buffer.FirstElement        = 0;
+    srv.Buffer.NumElements         = sizeInBytes / 4;            // 4 バイト単位
+    srv.Buffer.StructureByteStride = 0;
+    srv.Buffer.Flags               = D3D12_BUFFER_SRV_FLAG_RAW;
+    device.GetDevice()->CreateShaderResourceView(res, &srv, handle);
+}
+} // namespace
+
+void VertexBuffer::CreateSRV(GraphicsDevice& device, D3D12_CPU_DESCRIPTOR_HANDLE handle) const
+{
+    CreateRawSrv(device, m_resource.Get(), m_view.SizeInBytes, handle);
+}
+
+void IndexBuffer::CreateSRV(GraphicsDevice& device, D3D12_CPU_DESCRIPTOR_HANDLE handle) const
+{
+    CreateRawSrv(device, m_resource.Get(), m_view.SizeInBytes, handle);
+}
+
 void VertexBuffer::FinishUpload()
 {
     // ステージングはコピーコマンドの GPU 完了まで生存が必要 → Texture と同じく

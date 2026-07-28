@@ -73,6 +73,10 @@ export const RENDER_DEBUG_MODES = [
   // DXR（計画09）。rt = プライマリレイのヒット距離、rtDiff = RT とラスタの距離差
   // （加速構造の検証はこれが本命）。非対応 GPU では真っ黒 + warnings が返るだけでエラーにはならない。
   "rt", "rtDiff",
+  // rtAlbedo = レイのヒット点のアルベド（計画09 Step 5 のバインドレス検証）。
+  // ラスタの絵と色が一致すれば InstanceID → GeometryInfo → VB/IB/テクスチャ の配線が正しい。
+  // Dynamic Resources（SM6.6 + Resource Binding Tier 3）非対応 GPU では真っ黒になる。
+  "rtAlbedo",
   "shadowCascade", "lightComplexity", "clusterGrid", "decalCount",
   "fogScattering", "fogTransmittance", "fogSlice", "off",
 ] as const;

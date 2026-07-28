@@ -83,13 +83,17 @@ void RaytracingScene::BeginFrame(const XMFLOAT3& cameraPos, u32 skippedSkinned, 
     m_stats.skinnedInstances   = 0;
     m_stats.skinnedRebuilds    = 0;
     m_stats.skinnedStale       = 0;
+    m_stats.geoInfoWritten     = 0;
+    m_stats.geoInfoWithAlbedo  = 0;
 }
 
-void RaytracingScene::AddInstance(const Mesh* mesh, const XMMATRIX& world, const XMFLOAT3& center)
+void RaytracingScene::AddInstance(const Mesh* mesh, const XMMATRIX& world, const XMFLOAT3& center,
+                                  const GeometryInfo& geo)
 {
     if (!mesh || !m_initialized) return;
     PendingInstance p;
     p.mesh = mesh;
+    p.geo  = geo;
     XMStoreFloat4x4(&p.world, world);
     const XMVECTOR c = XMLoadFloat3(&center);
     p.distSq = XMVectorGetX(XMVector3LengthSq(XMVectorSubtract(c, XMLoadFloat3(&m_cameraPos))));
@@ -99,11 +103,14 @@ void RaytracingScene::AddInstance(const Mesh* mesh, const XMMATRIX& world, const
 void RaytracingScene::AddSkinnedInstance(u64 key, const Mesh* mesh,
                                          D3D12_GPU_VIRTUAL_ADDRESS deformedVb, u32 vertexCount,
                                          u64 poseHash,
-                                         const XMMATRIX& world, const XMFLOAT3& center)
+                                         const XMMATRIX& world, const XMFLOAT3& center,
+                                         const GeometryInfo& geo)
 {
     if (!mesh || !m_initialized || key == 0 || deformedVb == 0 || vertexCount == 0) return;
     PendingInstance p;
     p.mesh        = mesh;
+    p.geo         = geo;
+    p.geo.flags  |= kGeomFlagSkinned;
     p.skinnedKey  = key;
     p.deformedVb  = deformedVb;
     p.vertexCount = vertexCount;
@@ -360,6 +367,15 @@ bool RaytracingScene::Build(GraphicsDevice& device, ID3D12GraphicsCommandList* c
     auto* descs = static_cast<D3D12_RAYTRACING_INSTANCE_DESC*>(descBuf.GetMappedPtr());
     if (!descs) return false;
 
+    // GeometryInfo テーブル（ヒット点で頂点属性 / アルベドを引くため）。
+    // ★インスタンス記述とまったく同じ添字で書く。下のループの count が両方の添字になる。
+    RtBuffer& geoBuf = m_geoInfos[d.frameIndex % FrameResources::kFrameCount];
+    GeometryInfo* geos = nullptr;
+    if (geoBuf.EnsureCapacity(device, static_cast<u64>(m_pending.size()) * sizeof(GeometryInfo),
+                              RtBuffer::Kind::Upload, L"RT geometry info"))
+        geos = static_cast<GeometryInfo*>(geoBuf.GetMappedPtr());
+    m_geoInfoAddress = geos ? geoBuf.GetGpuAddress() : 0;
+
     u32 budget      = d.maxBlasBuildsPerFrame;
     u32 skinBudget  = d.maxSkinnedTrianglesPerFrame;
     u32 count       = 0;
@@ -391,7 +407,16 @@ bool RaytracingScene::Build(GraphicsDevice& device, ID3D12GraphicsCommandList* c
         static_assert(sizeof(t.m) == sizeof(dst.Transform), "3x4 transform layout mismatch");
         std::memcpy(dst.Transform, t.m, sizeof(dst.Transform));
 
-        dst.InstanceID                          = 0;      // Step 5 で GeometryInfo の index にする
+        // ★GeometryInfo テーブルの添字。24bit なので kMaxRtInstances(32768) には十分。
+        //   m_pending の添字ではなく「実際に書き出した順」であることが重要
+        //   （上で距離順にソートしたうえ、BLAS が建っていないものは continue で飛んでいる）。
+        dst.InstanceID                          = count;
+        if (geos)
+        {
+            geos[count] = p.geo;
+            if (p.geo.vbSrvIndex != 0xFFFFFFFFu) ++m_stats.geoInfoWritten;
+            if (p.geo.baseColorSrvIndex != 0xFFFFFFFFu) ++m_stats.geoInfoWithAlbedo;
+        }
         dst.InstanceMask                        = 0xFF;
         dst.InstanceContributionToHitGroupIndex = 0;
         dst.Flags                               = D3D12_RAYTRACING_INSTANCE_FLAG_NONE;

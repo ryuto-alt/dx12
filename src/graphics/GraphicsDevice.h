@@ -49,6 +49,18 @@ public:
     }
     // SM 6.6（ResourceDescriptorHeap[] のバインドレス）。計画09 Step 5 以降で使う。
     bool SupportsBindlessSm66() const { return m_highestShaderModel >= D3D_SHADER_MODEL_6_6; }
+    // ★SM 6.6 Dynamic Resources（ResourceDescriptorHeap[]）の必要十分条件。
+    //   仕様が要求するのは「SM 6.6 以上」かつ「Resource Binding Tier 3」の 2 つだけで、
+    //   Agility SDK も OS バージョン条件も要らない（Win11 の in-box ランタイムに入っている）。
+    //   出典: DirectX-Specs HLSL_SM_6_6_DynamicResources
+    //   「must be supported on devices that support both D3D12_RESOURCE_BINDING_TIER_3
+    //     and D3D_SHADER_MODEL_6_6」
+    bool SupportsDynamicResources() const
+    {
+        return m_highestShaderModel  >= D3D_SHADER_MODEL_6_6
+            && m_resourceBindingTier >= D3D12_RESOURCE_BINDING_TIER_3;
+    }
+    D3D12_RESOURCE_BINDING_TIER GetResourceBindingTier() const { return m_resourceBindingTier; }
     // DXR 1.2（SER / OMM）。v1 のスコープ外。将来の判断材料としてログに出すだけ。
     bool SupportsDxr12()      const { return m_raytracingTier >= D3D12_RAYTRACING_TIER_1_2; }
     bool SupportsReordering() const { return m_serActuallyReorders; }
@@ -63,6 +75,7 @@ private:
     bool                                   m_dxrSupported = false;
     D3D12_RAYTRACING_TIER                  m_raytracingTier = D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
     D3D_SHADER_MODEL                       m_highestShaderModel = D3D_SHADER_MODEL_6_0;
+    D3D12_RESOURCE_BINDING_TIER            m_resourceBindingTier = D3D12_RESOURCE_BINDING_TIER_1;
     bool                                   m_serActuallyReorders = false;
 };
 

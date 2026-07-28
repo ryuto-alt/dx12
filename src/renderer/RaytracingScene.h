@@ -41,6 +41,22 @@ public:
     // INSTANCE_DESC だけで 16.8MB/フレームの UPLOAD 帯域になる。
     static constexpr u32 kMaxRtInstances = 32768;
 
+    // レイのヒット点で頂点属性とマテリアルを引くための表（計画09 Step 5 / バインドレス）。
+    // TLAS の InstanceID がそのままこの配列の添字になる。
+    // ★shaders/raytracing/RtBindless.hlsli の GeometryInfo とバイト単位で一致させること。
+    // ★マテリアル用の別テーブルは作らない。このエンジンは 1 Mesh = 1 Material なので
+    //   分けても重複排除の利得が無く、ヒット点での依存ロードが 1 段増えるだけになる
+    //   （NVIDIA: "Avoid indirections in accessing index, vertex, and material data"）。
+    struct GeometryInfo
+    {
+        u32 vbSrvIndex;        // 属性用 VB（96B インターリーブ）の raw SRV。0xFFFFFFFF = 無効
+        u32 ibSrvIndex;        // u32 インデックスバッファの raw SRV
+        u32 baseColorSrvIndex; // アルベドテクスチャの SRV。0xFFFFFFFF = テクスチャ無し
+        u32 flags;             // bit0 = スキンド（位置は変形後バッファ / 属性は元 VB）
+    };
+    static_assert(sizeof(GeometryInfo) == 16, "RtBindless.hlsli の GeometryInfo と一致させること");
+    static constexpr u32 kGeomFlagSkinned = 1u;
+
     struct Stats
     {
         u32 instances          = 0;   // TLAS に入ったインスタンス数
@@ -53,6 +69,9 @@ public:
         u32 skinnedStale       = 0;   // 予算切れで前フレームの BLAS を流用した数
         u64 skinnedBlasBytes   = 0;   // スキンド BLAS の実サイズ合計
         u64 skinnedTriangles   = 0;   // 同 三角形数
+        // バインドレス（計画09 Step 5）
+        u32 geoInfoWritten     = 0;   // GeometryInfo を書いたインスタンス数
+        u32 geoInfoWithAlbedo  = 0;   // うちアルベドテクスチャの SRV が有効だった数
         u32 droppedOverLimit   = 0;   // 上限超過で切った数
         u64 blasBytes          = 0;   // BLAS 実サイズ合計（PrebuildInfo の実測値）
         u64 blasTriangles      = 0;   // BLAS に入っている三角形の総数
@@ -79,7 +98,8 @@ public:
     // BeginFrame → AddInstance × N → Build の順で 1 回だけ呼ぶ。
     void BeginFrame(const DirectX::XMFLOAT3& cameraPos, u32 skippedSkinned, u32 skippedTransparent);
     void AddInstance(const Mesh* mesh, const DirectX::XMMATRIX& world,
-                     const DirectX::XMFLOAT3& center);
+                     const DirectX::XMFLOAT3& center,
+                     const GeometryInfo& geo = {0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0u});
 
     // スキンド用（計画09 Step 4）。compute スキニングが書いた変形後頂点バッファを指定する。
     // key は「エンティティ × サブメッシュ」で一意な値を呼び出し側が作って渡すこと。
@@ -90,7 +110,8 @@ public:
     // poseHash が前フレームと同じなら BLAS の再構築も省く（変形後頂点が変わっていないため）。
     void AddSkinnedInstance(u64 key, const Mesh* mesh,
                             D3D12_GPU_VIRTUAL_ADDRESS deformedVb, u32 vertexCount, u64 poseHash,
-                            const DirectX::XMMATRIX& world, const DirectX::XMFLOAT3& center);
+                            const DirectX::XMMATRIX& world, const DirectX::XMFLOAT3& center,
+                            const GeometryInfo& geo = {0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0u});
 
     struct BuildDesc
     {
@@ -113,6 +134,10 @@ public:
 
     bool IsReady() const { return m_tlasValid; }
     D3D12_GPU_VIRTUAL_ADDRESS GetTlasAddress() const { return m_tlas.GetGpuAddress(); }
+    // GeometryInfo テーブルの GPU アドレス（ルート SRV で渡す）。0 = このフレームは無効。
+    // ★TLAS と同じくルート SRV にする。毎フレーム作り直してもディスクリプタを
+    //   張り直さずに済むのが利点（RtCommon.hlsli の TLAS と同じ理由）。
+    D3D12_GPU_VIRTUAL_ADDRESS GetGeometryInfoAddress() const { return m_geoInfoAddress; }
     const Stats& GetStats() const { return m_stats; }
 
 private:
@@ -146,6 +171,8 @@ private:
     RtBuffer m_tlas;
     RtBuffer m_tlasScratch;
     RtBuffer m_instanceDescs[FrameResources::kFrameCount];   // UPLOAD リング（CPU が毎フレーム書く）
+    RtBuffer m_geoInfos[FrameResources::kFrameCount];        // 同上（GeometryInfo テーブル）
+    D3D12_GPU_VIRTUAL_ADDRESS m_geoInfoAddress = 0;
 
     struct PendingInstance
     {
@@ -157,6 +184,9 @@ private:
         D3D12_GPU_VIRTUAL_ADDRESS deformedVb = 0;
         u32                       vertexCount = 0;
         u64                       poseHash = 0;
+        // ★ここに持たせるのが必須。m_pending は Build 中に 2 回並べ替えられ、
+        //   予算切れで要素も落ちるので、呼び出し順から添字を復元できない。
+        GeometryInfo              geo{0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0u};
     };
     std::vector<PendingInstance> m_pending;
     DirectX::XMFLOAT3 m_cameraPos{0, 0, 0};
