@@ -940,7 +940,7 @@ reg(
   "dx12_perf_stats",
   "パフォーマンス統計",
   "直近 window フレーム(既定60)の性能統計を即時取得。fps / frameMs(avg,min,max,p95) / cpu(workMs,fenceWaitMs,presentMs) / "
-  + "gpuPassMs(total, shadows, prepassSsao, clusterCull, raytracing, rtScreen, screenSpaceGi, volFog, mainScene, particles, postFx, ui "
+  + "gpuPassMs(total, shadows, depthPrepass, prepassSsao, clusterCull, raytracing, rtScreen, screenSpaceGi, volFog, mainScene, particles, postFx, ui "
   + "※約3フレーム遅れのGPUタイムスタンプ。raytracing = DXR の BLAS 遅延構築 + TLAS の毎フレーム再構築(加速構造だけ)、"
   + "rtScreen = RT サン影 + RT-AO + RT デバッグのスクリーン空間パス。どちらも DXR OFF なら 0) / "
   + "drawCalls / culled / triangles / vsync / fpsLimit / scene(エンティティ内訳・shadows/ssao) と "
@@ -1347,6 +1347,10 @@ reg(
   + "\n■ 設定: shadowEnabled, shadowSunAngle, shadowNormalBias, shadowMaxDistance, shadowIntensity, "
   + "aoEnabled, aoRadius, aoRayCount, aoIntensity, aoPower, aoCombineWithSsao, aoDenoise, aoDenoiseRadius, "
   + "maxInstances, forceBuildTlas。"
+  + "\n■ DDGI: ddgiEnabled, ddgiSpacing, ddgiProbeCountX/Y/Z, ddgiOriginX/Y/Z, ddgiRayLength, "
+  + "ddgiHysteresis, ddgiIntensity, ddgiNormalBias。"
+  + "実測は stats.ddgiReady(PSO が建ったか) / ddgiEnabled / ddgiProbes / ddgiRaysCast / ddgiBytes。"
+  + "★ddgiEnabled:true なのに ddgiProbes:0 なら TLAS が無い(tlasReady を見ること)。"
   + "\n■ 実際に走ったか: shadowActive(ON でも本当に RT 影パスが走ったフレームか) / tlasReady(TLAS が建っているか)。"
   + "enabled:true なのに shadowActive:false なら supported / tlasReady / カメラ(正射)を疑う。"
   + "\n■ stats(直近フレームの加速構造の実測): instances, blasCount, blasBytes, blasTriangles, tlasBytes, "
@@ -1411,6 +1415,31 @@ reg(
     forceBuildTlas: z.boolean().optional().describe(
       "RT 影 / RT-AO が両方 OFF でも TLAS を建てる(検証用)。シーン JSON には保存されない。"
       + "dx12_render_debug の mode:\"rt\" / \"rtDiff\" はこれを一時的に立ててから撮る。"),
+    // ── DDGI(world-space の拡散間接光。計画09 Step 6) ────────────────────
+    ddgiEnabled: z.boolean().optional().describe(
+      "DDGI を使うか(既定 false)。プローブ格子にレイを飛ばして八面体 irradiance アトラスを作り、"
+      + "フォワードの ambient に拡散間接項として【加算】する。★TLAS が要る(RT 影 / RT-AO が両方 OFF なら "
+      + "forceBuildTlas:true も一緒に立てること)。SSGI とは排他ではなく、"
+      + "SSGI が画面内で当てた分は自動で差し引かれる(二重計上の回避)。"
+      + "屋内は envMap が空で IBL フォールバックが無いため、ここがいちばん効く。"),
+    ddgiSpacing: z.number().optional().describe(
+      "プローブ間隔(m)。0.1..100 にクランプ。既定 2。格子が動くと履歴は捨てられる。"),
+    ddgiProbeCountX: z.number().int().optional().describe("プローブ数 X。1..32 にクランプ。既定 8。"),
+    ddgiProbeCountY: z.number().int().optional().describe("プローブ数 Y。1..32 にクランプ。既定 4。"),
+    ddgiProbeCountZ: z.number().int().optional().describe("プローブ数 Z。1..32 にクランプ。既定 8。"),
+    ddgiOriginX: z.number().optional().describe("格子の原点 X(m)。既定 -8。"),
+    ddgiOriginY: z.number().optional().describe("格子の原点 Y(m)。既定 0.5。床より少し上に置く。"),
+    ddgiOriginZ: z.number().optional().describe("格子の原点 Z(m)。既定 -8。"),
+    ddgiRayLength: z.number().optional().describe(
+      "プローブレイの最大距離(m)。0.1..10000 にクランプ。既定 30。"),
+    ddgiHysteresis: z.number().optional().describe(
+      "時間ブレンドの係数。0..0.995 にクランプ。既定 0.97(前フレームを 97% 残す)。"
+      + "大きいほど安定するが光の変化への追従が遅い。0 で毎フレーム入れ替え。"),
+    ddgiIntensity: z.number().optional().describe("DDGI の強さ。0..10 にクランプ。既定 1。0 で実質 OFF。"),
+    ddgiNormalBias: z.number().optional().describe(
+      "サンプル位置を法線方向へ押し出す量(m)。0..1 にクランプ。既定 0.02。"
+      + "壁際で裏側のプローブを引いてしまう(ライトリーク)なら上げる。"
+      + "★段階2 の Chebyshev 可視性テストが入るまでは、これがリーク対策の主な手段。"),
   },
   { idempotentHint: true },
   (a) => run(async () => {

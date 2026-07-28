@@ -410,7 +410,7 @@ void Application::RegisterMcpRenderMethods()
     McpDefine("get_dxr|set_dxr", "aoCombineWithSsao:any,aoDenoise:any,aoDenoiseRadius:number,"
               "ddgiEnabled:any,ddgiSpacing:number,ddgiRayLength:number,ddgiHysteresis:number,"
               "ddgiIntensity:number,ddgiProbeCountX:any,ddgiProbeCountY:any,ddgiProbeCountZ:any,"
-              "ddgiOriginX:number,ddgiOriginY:number,ddgiOriginZ:number,"
+              "ddgiOriginX:number,ddgiOriginY:number,ddgiOriginZ:number,ddgiNormalBias:number,"
               "aoEnabled:any,aoIntensity:number,aoPower:number,aoRadius:number,"
               "aoRayCount:any,forceBuildTlas:any,maxInstances:any,shadowEnabled:any,"
               "shadowIntensity:number,shadowMaxDistance:number,shadowNormalBias:number,"
@@ -446,32 +446,39 @@ void Application::RegisterMcpRenderMethods()
                 if (params.contains("aoPower"))
                     r.aoPower = McpFloatParam(params, "aoPower", r.aoPower, 0.01f, 8.0f);
                 r.aoCombineWithSsao = params.value("aoCombineWithSsao", r.aoCombineWithSsao);
-            r.aoDenoise         = params.value("aoDenoise", r.aoDenoise);
-            // DDGI（計画09 Step 6）。RT 設定と同じハンドラで捌く（TLAS が前提なので）。
-            if (m_scene)
-            {
+                r.aoDenoise         = params.value("aoDenoise", r.aoDenoise);
+                r.aoDenoiseRadius   = std::clamp(params.value("aoDenoiseRadius", r.aoDenoiseRadius),
+                                                 0.0f, 32.0f);
+                if (params.contains("maxInstances"))
+                    r.maxInstances = std::clamp(params.value("maxInstances", r.maxInstances), 0, 32768);
+                r.forceBuildTlas = params.value("forceBuildTlas", r.forceBuildTlas);
+
+                // DDGI（計画09 Step 6）。RT 設定と同じハンドラで捌く（TLAS が前提なので）。
                 DdgiSettings& g = m_scene->GetDdgiSettings();
-                const bool wasEnabled = g.enabled;
+                const DdgiSettings before = g;
                 g.enabled     = params.value("ddgiEnabled", g.enabled);
                 g.spacing     = std::clamp(params.value("ddgiSpacing", g.spacing), 0.1f, 100.0f);
                 g.rayLength   = std::clamp(params.value("ddgiRayLength", g.rayLength), 0.1f, 10000.0f);
                 g.hysteresis  = std::clamp(params.value("ddgiHysteresis", g.hysteresis), 0.0f, 0.995f);
                 g.intensity   = std::clamp(params.value("ddgiIntensity", g.intensity), 0.0f, 10.0f);
+                g.normalBias  = std::clamp(params.value("ddgiNormalBias", g.normalBias), 0.0f, 1.0f);
                 g.probeCountX = std::clamp(params.value("ddgiProbeCountX", g.probeCountX), 1, 32);
                 g.probeCountY = std::clamp(params.value("ddgiProbeCountY", g.probeCountY), 1, 32);
                 g.probeCountZ = std::clamp(params.value("ddgiProbeCountZ", g.probeCountZ), 1, 32);
                 g.originX     = params.value("ddgiOriginX", g.originX);
                 g.originY     = params.value("ddgiOriginY", g.originY);
                 g.originZ     = params.value("ddgiOriginZ", g.originZ);
-                // 設定が変わったら履歴を捨てる（古いポーズの irradiance が残らないように）。
-                if (m_ddgi && (!wasEnabled && g.enabled)) m_ddgi->InvalidateHistory();
+                // 格子が動いたら古い場所の irradiance は嘘になるので履歴を捨てる。
+                // intensity / hysteresis は絵のスケールだけなので捨てない（時間ブレンドを壊さない）。
+                const bool gridMoved = g.probeCountX != before.probeCountX
+                    || g.probeCountY != before.probeCountY || g.probeCountZ != before.probeCountZ
+                    || g.spacing != before.spacing || g.originX != before.originX
+                    || g.originY != before.originY || g.originZ != before.originZ
+                    || g.rayLength != before.rayLength;
+                if (m_ddgi && ((!before.enabled && g.enabled) || gridMoved))
+                    m_ddgi->InvalidateHistory();
             }
-            r.aoDenoiseRadius   = std::clamp(params.value("aoDenoiseRadius", r.aoDenoiseRadius),
-                                             0.0f, 32.0f);
-                if (params.contains("maxInstances"))
-                    r.maxInstances = std::clamp(params.value("maxInstances", r.maxInstances), 0, 32768);
-                r.forceBuildTlas = params.value("forceBuildTlas", r.forceBuildTlas);
-            }
+            const DdgiSettings& dg = m_scene->GetDdgiSettings();
             const auto* gd = m_graphicsDevice.get();
             const int tier = gd ? static_cast<int>(gd->GetRaytracingTier()) : 0;
             const int sm   = gd ? static_cast<int>(gd->GetHighestShaderModel()) : 0;
@@ -501,6 +508,9 @@ void Application::RegisterMcpRenderMethods()
                          // DDGI（計画09 Step 6）
                          {"ddgiReady", m_ddgi && m_ddgi->IsReady()},
                          {"ddgiEnabled", m_scene && m_scene->GetDdgiSettings().enabled},
+                         // ★ON でも絵に効いていない条件を名指しする（段階1）。
+                         //   false なら TLAS 未構築 / intensity 0 / アトラス未確保のどれか。
+                         {"ddgiActive", m_ddgiActiveThisFrame},
                          {"ddgiProbes", m_ddgi ? m_ddgi->GetStats().probes : 0u},
                          {"ddgiRaysCast", m_ddgi ? m_ddgi->GetStats().raysCast : 0u},
                          {"ddgiBytes", m_ddgi ? m_ddgi->GetStats().bytes : 0ull},
@@ -535,6 +545,19 @@ void Application::RegisterMcpRenderMethods()
                               {"aoDenoiseRadius", r.aoDenoiseRadius},
                               {"maxInstances", r.maxInstances},
                               {"forceBuildTlas", r.forceBuildTlas},
+                              // DDGI の設定値。set_dxr の読み返し照合(applyAndVerify)はここを見る。
+                              {"ddgiEnabled", dg.enabled},
+                              {"ddgiSpacing", dg.spacing},
+                              {"ddgiRayLength", dg.rayLength},
+                              {"ddgiHysteresis", dg.hysteresis},
+                              {"ddgiIntensity", dg.intensity},
+                              {"ddgiNormalBias", dg.normalBias},
+                              {"ddgiProbeCountX", dg.probeCountX},
+                              {"ddgiProbeCountY", dg.probeCountY},
+                              {"ddgiProbeCountZ", dg.probeCountZ},
+                              {"ddgiOriginX", dg.originX},
+                              {"ddgiOriginY", dg.originY},
+                              {"ddgiOriginZ", dg.originZ},
                               // ON でも実際に走らない条件を明示する（誤診断を防ぐ）
                               {"shadowActive", m_rtShadowActiveThisFrame},
                               {"tlasReady", m_rtScene && m_rtScene->IsReady()},

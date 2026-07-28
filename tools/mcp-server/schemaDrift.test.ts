@@ -23,7 +23,14 @@ import { SCENE_ROOT_KEYS } from "./sceneWrite.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..", "..");
-const CPP = path.join(repoRoot, "src", "core", "Application.cpp");
+// MCP のディスパッチ表は src/core/mcp/ApplicationMcp*.cpp へテーマ別に分割済み。
+// ★1 ファイル決め打ちにすると分割された瞬間に size=0 で全滅する(実際に起きた)。
+// glob で拾って連結するので、TU を新設しても勝手に追従する。行番号は連結後のものになる。
+const MCP_DIR = path.join(repoRoot, "src", "core", "mcp");
+const CPP_SOURCES = fs.existsSync(MCP_DIR)
+  ? fs.readdirSync(MCP_DIR).filter((f) => /^ApplicationMcp.*\.cpp$/.test(f)).sort()
+    .map((f) => path.join(MCP_DIR, f))
+  : [];
 const POST_H = path.join(repoRoot, "src", "renderer", "PostProcessSettings.h");
 const INDEX_TS = path.join(here, "index.ts");
 
@@ -34,13 +41,13 @@ function check(label: string, cond: boolean, detail?: string) {
   else { failed++; console.log(`  NG  ${label}${detail ? `\n      ${detail}` : ""}`); }
 }
 
-if (!fs.existsSync(CPP) || !fs.existsSync(POST_H)) {
+if (CPP_SOURCES.length === 0 || !fs.existsSync(POST_H)) {
   // mcp-server だけを配布したケース。突き合わせる相手が無いので検査しない(落とさない)。
-  console.log("SKIP: エンジンのソース(src/core/Application.cpp)が無いのでドリフト検査は省略");
+  console.log("SKIP: エンジンのソース(src/core/mcp/ApplicationMcp*.cpp)が無いのでドリフト検査は省略");
   process.exit(0);
 }
 
-const cpp = fs.readFileSync(CPP, "utf8");
+const cpp = CPP_SOURCES.map((f) => fs.readFileSync(f, "utf8")).join("\n");
 const header = fs.readFileSync(POST_H, "utf8");
 const indexSrc = fs.readFileSync(INDEX_TS, "utf8");
 
@@ -62,17 +69,20 @@ const SPREADS: Record<string, string[]> = {
 const SHARED_BLOCK_KEYS: Record<string, string[]> = {
   overlap_box: ["radius"],
   overlap_sphere: ["halfExtents"],
-  // Application.cpp `get_shadow_pcss || set_shadow_pcss`。get は引数を取らない({} が正)。
+  // ApplicationMcp*.cpp(連結) `get_shadow_pcss || set_shadow_pcss`。get は引数を取らない({} が正)。
   get_shadow_pcss: [
     "enabled", "lightTanAngle", "maxPenumbraTexels", "blockerSearchTexels", "temporalDither",
   ],
-  // Application.cpp `get_dxr || set_dxr`。同じく get は引数を取らない。
+  // ApplicationMcp*.cpp(連結) `get_dxr || set_dxr`。同じく get は引数を取らない。
   get_dxr: [
     "shadowEnabled", "shadowSunAngle", "shadowNormalBias", "shadowMaxDistance", "shadowIntensity",
     "aoEnabled", "aoRadius", "aoRayCount", "aoIntensity", "aoPower", "aoCombineWithSsao",
-    "maxInstances", "forceBuildTlas",
+    "aoDenoise", "aoDenoiseRadius", "maxInstances", "forceBuildTlas",
+    "ddgiEnabled", "ddgiSpacing", "ddgiProbeCountX", "ddgiProbeCountY", "ddgiProbeCountZ",
+    "ddgiOriginX", "ddgiOriginY", "ddgiOriginZ", "ddgiRayLength", "ddgiHysteresis",
+    "ddgiIntensity", "ddgiNormalBias",
   ],
-  // Application.cpp:6358 `terrain_paint || terrain_autopaint`
+  // ApplicationMcp*.cpp(連結):6358 `terrain_paint || terrain_autopaint`
   terrain_paint: [
     "rockSlopeStart", "rockSlopeEnd", "dirtSlopeStart", "dirtSlopeEnd",
     "snowHeightStart", "snowHeightEnd", "noiseStrength",
@@ -81,7 +91,7 @@ const SHARED_BLOCK_KEYS: Record<string, string[]> = {
 };
 
 console.log("[0] パーサ自体が壊れていないこと");
-check("Application.cpp から MCP method を抜ける", engine.size >= 90, `size=${engine.size}`);
+check("ApplicationMcp*.cpp(連結) から MCP method を抜ける", engine.size >= 90, `size=${engine.size}`);
 check("index.ts からツール定義を抜ける", tools.length >= 100, `tools=${tools.length}`);
 check("代表的な method / ツールが取れている",
   engine.has("set_post_process") && engine.has("set_ssao") && engine.has("set_volumetric_fog")
@@ -122,7 +132,7 @@ check("スプレッドが全部 SPREADS に載っている",
   //   今は McpDefine("a|b", "キー:型,...", DX12E_MCP_HANDLER {...}) の表引きなので、
   //   その前提は完全に消えている。新世代の読み方が生きていることをここで固定する。
   const usesTable = /\bMcpDefine\s*\(\s*"/.test(cpp);
-  check("Application.cpp はディスパッチ表(McpDefine)になっている", usesTable,
+  check("ApplicationMcp*.cpp(連結) はディスパッチ表(McpDefine)になっている", usesTable,
     "else-if 連鎖へ戻ったなら parseEngineMethods の旧世代フォールバックが使われる(それ自体は動く)");
   for (const m of ["get_shadow_pcss", "set_shadow_pcss", "get_dxr", "set_dxr"]) {
     check(`ディスパッチ表の "a|b" 形式も両方拾える: ${m}`, engine.has(m),
@@ -190,7 +200,7 @@ console.log("\n[2] エンジンが受け付けるフィールド ⊇ TS スキ�
     const missing = em.keys.filter((k) => !declared.has(k) && !allowed.has(k));
     if (missing.length > 0) {
       drifted.push(`${t.tool}: エンジンにあるのに TS スキーマに無い → ${missing.join(", ")}`
-        + `  (Application.cpp:${em.line} / index.ts:${t.line})`);
+        + `  (ApplicationMcp*.cpp(連結):${em.line} / index.ts:${t.line})`);
     }
   }
   check("全ツールで取りこぼしゼロ", drifted.length === 0, drifted.join("\n      "));
@@ -220,7 +230,7 @@ console.log("\n[3] PostProcessSettings.h の名前表(X マクロ)と突き合�
   const em = engine.get("set_post_process")!;
   const notHandled = postFields.filter((f) => !em.keys.includes(f));
   check("engine の set_post_process が名前表の全フィールドを読んでいる", notHandled.length === 0,
-    `Application.cpp が読んでいない: ${notHandled.join(", ")}`);
+    `ApplicationMcp*.cpp(連結) が読んでいない: ${notHandled.join(", ")}`);
 }
 
 console.log("\n[4] {applied:true} を鵜呑みにせず get_* で読み返している");
@@ -254,7 +264,7 @@ console.log("\n[5] 列挙値(sceneTools.ts の定数 ⇔ engine の表)");
   for (const [cppVar, tsName, tsValues] of cases) {
     const engineValues = parseStringVector(cpp, cppVar);
     if (engineValues == null) {
-      check(`${cppVar} を Application.cpp から読める`, false, "変数名が変わった? schemaDrift.test.ts を更新すること");
+      check(`${cppVar} を ApplicationMcp*.cpp(連結) から読める`, false, "変数名が変わった? schemaDrift.test.ts を更新すること");
       continue;
     }
     check(`${tsName} が ${cppVar} と一致(順序込み)`,
@@ -319,14 +329,14 @@ console.log("\n[8] 入れ子オブジェクトのフィールドもドリフト�
       const declared = zodObjectKeys(t.schemaSrc, parent);
       if (declared == null) {
         drifted.push(`${t.tool}: エンジンは ${parent} の中を読んでいるが TS 側が z.object で宣言していない`
-          + ` → ${kids.join(", ")}  (Application.cpp:${em.line} / index.ts:${t.line})`);
+          + ` → ${kids.join(", ")}  (ApplicationMcp*.cpp(連結):${em.line} / index.ts:${t.line})`);
         continue;
       }
       checkedPairs++;
       const missing = kids.filter((k) => !declared.includes(k));
       if (missing.length > 0) {
         drifted.push(`${t.tool}: ${parent} の中でエンジンにあるのに TS に無い → ${missing.join(", ")}`
-          + `  (Application.cpp:${em.line} / index.ts:${t.line})`);
+          + `  (ApplicationMcp*.cpp(連結):${em.line} / index.ts:${t.line})`);
       }
     }
   }
@@ -363,7 +373,7 @@ console.log("\n[9] アニメーション系ツール(エンジンに実装済み
 
   // ★以前ここには「エンジンが name をエンティティ名/FSM パラメータ名の二重の意味で読んでいる」
   //   前提の 2 つの見張り(entityRef を展開しないこと / 壊れたままであること)が入っていた。
-  //   エンジンが param を正にして name をエンティティ名へ戻した(Application.cpp:5943)ので撤去し、
+  //   エンジンが param を正にして name をエンティティ名へ戻した(ApplicationMcp*.cpp(連結):5943)ので撤去し、
   //   代わりに「param が正・name はエンティティ名」を固定する検査へ置き換えた。
   const sap = tools.find((t) => t.tool === "dx12_set_anim_param");
   check("dx12_set_anim_param は param を宣言している(パラメータ名の正)",
@@ -381,14 +391,14 @@ console.log("\n[9] アニメーション系ツール(エンジンに実装済み
     check("engine の set_anim_param は param を先に読む(name はフォールバック)",
       /params\.value\(\s*"param"/.test(body)
       && body.indexOf('params.value("param"') < body.indexOf('params.value("name"'),
-      "Application.cpp の set_anim_param が param を読まなくなった / name を先に見るようになった");
+      "ApplicationMcp*.cpp(連結) の set_anim_param が param を読まなくなった / name を先に見るようになった");
   }
 }
 
 console.log("\n[10] 新規ツール(エンジンに実装済みで TS 定義が無かった分)");
 {
   // [1] は「TS → エンジン」しか見ないので、逆向き(エンジンにあるのに TS が無い)は名指しで押さえる。
-  // 引数は Application.cpp の各ハンドラを読んで写したもの(docs/MCP.md §4-2 と一致)。
+  // 引数は ApplicationMcp*.cpp(連結) の各ハンドラを読んで写したもの(docs/MCP.md §4-2 と一致)。
   const want: Record<string, string[]> = {
     dx12_render_debug: ["mode", "frames", "gain", "depthRange", "exposure"],
     dx12_terrain_set_layers: [
@@ -405,7 +415,10 @@ console.log("\n[10] 新規ツール(エンジンに実装済みで TS 定義が�
     dx12_set_dxr: [
       "shadowEnabled", "shadowSunAngle", "shadowNormalBias", "shadowMaxDistance", "shadowIntensity",
       "aoEnabled", "aoRadius", "aoRayCount", "aoIntensity", "aoPower", "aoCombineWithSsao",
-      "maxInstances", "forceBuildTlas",
+      "aoDenoise", "aoDenoiseRadius", "maxInstances", "forceBuildTlas",
+      "ddgiEnabled", "ddgiSpacing", "ddgiProbeCountX", "ddgiProbeCountY", "ddgiProbeCountZ",
+      "ddgiOriginX", "ddgiOriginY", "ddgiOriginZ", "ddgiRayLength", "ddgiHysteresis",
+      "ddgiIntensity", "ddgiNormalBias",
     ],
     dx12_get_dxr: [],
   };
@@ -445,14 +458,14 @@ console.log("\n[10] 新規ツール(エンジンに実装済みで TS 定義が�
       "error_code:2 は引数不正の汎用コードでもあるので、全部を非対応扱いにすると本物のバグが隠れる");
   }
 
-  // render_debug の mode 表 ⇔ Application.cpp の kEntries[]。
+  // render_debug の mode 表 ⇔ ApplicationMcp*.cpp(連結) の kEntries[]。
   // C++ は `static const DbgEntry kEntries[] = {{"off", 0}, {"normal", ...}, ...}` なので
   // parseStringVector(std::vector<std::string> 用)では拾えない。ここで直接抜く。
   {
     const at = cpp.indexOf("static const DbgEntry kEntries[]");
     const block = at < 0 ? "" : cpp.slice(at, cpp.indexOf("};", at));
     const engineModes = [...block.matchAll(/\{\s*"([A-Za-z0-9_]+)"\s*,/g)].map((m) => m[1]);
-    check("Application.cpp から render_debug の mode 表を読める", engineModes.length >= 16,
+    check("ApplicationMcp*.cpp(連結) から render_debug の mode 表を読める", engineModes.length >= 16,
       `modes=${engineModes.join(",")}`);
     const sortedEngine = [...engineModes].sort();
     const sortedTs = [...RENDER_DEBUG_MODES].sort();
@@ -463,7 +476,7 @@ console.log("\n[10] 新規ツール(エンジンに実装済みで TS 定義が�
     for (const m of Object.keys(RENDER_DEBUG_UNSUPPORTED)) {
       check(`非対応 mode "${m}" はエンジンにも無い(実装されたら除外表を消す合図)`,
         !engineModes.includes(m),
-        `Application.cpp の kEntries[] に "${m}" が生えた。sceneTools.ts の RENDER_DEBUG_UNSUPPORTED から外し、`
+        `ApplicationMcp*.cpp(連結) の kEntries[] に "${m}" が生えた。sceneTools.ts の RENDER_DEBUG_UNSUPPORTED から外し、`
         + "RENDER_DEBUG_MODES へ足すこと");
     }
   }
@@ -589,7 +602,7 @@ console.log("\n[13] 遅延同期 method のタイムアウトが engine の待�
   const ping = cpp.match(/McpDefine\("ping"[\s\S]{0,1200}?\}\);/);
   check("engine の ping が assetsDir を返している",
     ping != null && /"assetsDir"/.test(ping[0]) && /"protocolVersion"\s*,\s*4/.test(ping[0]),
-    "Application.cpp の ping に assetsDir / protocolVersion 4 が無い");
+    "ApplicationMcp*.cpp(連結) の ping に assetsDir / protocolVersion 4 が無い");
 }
 
 console.log(failed === 0

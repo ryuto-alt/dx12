@@ -133,7 +133,12 @@ const DXR_DEFAULTS = {
   shadowEnabled: false, shadowSunAngle: 0.53, shadowNormalBias: 0.02,
   shadowMaxDistance: 0, shadowIntensity: 1,
   aoEnabled: false, aoRadius: 1, aoRayCount: 2, aoIntensity: 1, aoPower: 1.5,
-  aoCombineWithSsao: false, maxInstances: 0, forceBuildTlas: false,
+  aoCombineWithSsao: false, aoDenoise: true, aoDenoiseRadius: 8,
+  maxInstances: 0, forceBuildTlas: false,
+  // DDGI（計画09 Step 6 / 段階1）。既定は DdgiSettings（src/renderer/DdgiVolume.h）と同じ。
+  ddgiEnabled: false, ddgiSpacing: 2, ddgiProbeCountX: 8, ddgiProbeCountY: 4, ddgiProbeCountZ: 8,
+  ddgiOriginX: -8, ddgiOriginY: 0.5, ddgiOriginZ: -8,
+  ddgiRayLength: 30, ddgiHysteresis: 0.97, ddgiIntensity: 1, ddgiNormalBias: 0.02,
 };
 
 /** エンジンと同じクランプ(Application.cpp を写したもの)。 */

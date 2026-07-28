@@ -968,6 +968,10 @@ private:
     // このフレームでスキンドが TLAS に入ったか（compute スキニングが動いたか）。
     // ★IsRaytracedItem() へ渡す値。CSM 側と TLAS 側で必ず同じものを見ること。
     bool m_rtSkinnedActiveThisFrame = false;
+    // このフレームで DDGI が実際にフォワードへ効いたか（t22 が黒ダミーでなく、
+    // ddgiOrigin.w > 0 で送られたか）。「ON にしたのに絵が変わらない」の答えを
+    // get_dxr の stats.ddgiActive で名指しするための 1 変数。
+    bool m_ddgiActiveThisFrame = false;
 
     std::unique_ptr<Texture>       m_ssBlackTex;                    // 1x1 黒 RGBA16F ダミー
     u32                            m_ssBlackSrvIndex = 0xFFFFFFFFu;
