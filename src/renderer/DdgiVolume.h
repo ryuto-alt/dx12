@@ -74,6 +74,11 @@ public:
         // ★フォワードの拡散 IBL と同じテクスチャを引かせることで、空が見えている面では
         //   DDGI の ON/OFF で値が変わらなくなる（遮蔽のある所のバウンスだけが差分になる）。
         u32               skyCubeSrvIndex = 0xFFFFFFFFu;
+        // クラスタライト配列(t13 = StructuredBuffer<ClusterLight>)の bindless index と灯数。
+        // ★t14/t15(クラスタのインデックス/カウント)は使わない。あれは画面空間のクラスタで、
+        //   視錐台の外にあるプローブには対応するクラスタが無いため。灯数ぶん総当たりする。
+        u32               lightSrvIndex = 0xFFFFFFFFu;
+        u32               lightCount    = 0;
         u32               frameIndex = 0;
     };
 

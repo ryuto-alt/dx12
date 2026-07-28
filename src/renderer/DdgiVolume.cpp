@@ -27,6 +27,7 @@ struct DdgiCB
     XMFLOAT3 sunDir;     float sunIntensity;
     XMFLOAT3 sunColor;   float pad2;
     XMFLOAT3 skyColor;   u32   skyCubeIndex;
+    u32      lightSrvIndex, lightCount, pad4, pad5;
 };
 static_assert(sizeof(DdgiCB) % 16 == 0, "DdgiCB は 16B 境界に揃えること");
 constexpr u32 kDdgiCBNum32 = sizeof(DdgiCB) / sizeof(u32);
@@ -266,6 +267,8 @@ void DdgiVolume::Update(ID3D12GraphicsCommandList* cmd, GraphicsDevice& device,
     cb.sunColor    = d.sunColor;
     cb.skyColor    = d.skyColor;
     cb.skyCubeIndex = d.skyCubeSrvIndex;
+    cb.lightSrvIndex = d.lightSrvIndex;
+    cb.lightCount    = d.lightCount;
 
     // 段階1 でフォワード PS が t22 から読むようになったので、書く前に UAV へ戻す。
     if (m_irradianceState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)

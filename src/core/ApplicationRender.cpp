@@ -2969,6 +2969,11 @@ void Application::Render()
     m_rtShadowActiveThisFrame  = false;
     m_rtSkinnedActiveThisFrame = false;
     bool rtAoActive = false;
+    // ★DDGI のプローブ更新は「ここ」では回せない。プローブが点光源/スポットを拾うには
+    //   m_clusteredLighting->UploadLights() が済んでいる必要があり、それは後段（クラスタ
+    //   カリング）で起きる。ここでは TLAS のアドレスだけ持ち越して、更新は後段でやる。
+    bool ddgiTlasOk = false;
+    D3D12_GPU_VIRTUAL_ADDRESS ddgiTlas = 0, ddgiGeoInfo = 0;
     if (m_dxrEnabled && m_rtScene && m_rtScreenPass && m_rtScreenPass->IsReady() && m_scene)
     {
         const RtSettings& rtCfg = m_scene->GetRtSettings();
@@ -2977,8 +2982,13 @@ void Application::Render()
         const bool wantDebug = (m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtHit)
                              || m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtDiff)
                                  || m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtAlbedo));
-        const bool want = rtViewOk
-                        && (rtCfg.shadowEnabled || rtCfg.aoEnabled || rtCfg.forceBuildTlas || wantDebug);
+        // ★DDGI も TLAS が要る。ここに入れておかないと「ddgiEnabled:true にしたのに
+        //   forceBuildTlas も一緒に立てないと何も起きない」という罠になる。
+        //   DDGI はワールド空間なので rtViewOk（透視カメラ限定）は課さない。
+        const bool ddgiWant = m_ddgi && m_scene->GetDdgiSettings().enabled;
+        const bool want = (rtViewOk
+                        && (rtCfg.shadowEnabled || rtCfg.aoEnabled || rtCfg.forceBuildTlas || wantDebug))
+                        || ddgiWant;
         if (want)
         {
             // シーンを作り直したら BLAS キャッシュを丸ごと捨てる。Mesh* は解放後に
@@ -3106,34 +3116,10 @@ void Application::Render()
                 m_rtShadowActiveThisFrame = rtCfg.shadowEnabled;
                 rtAoActive                = rtCfg.aoEnabled;
 
-                // ---- DDGI: プローブ更新（計画09 Step 6）----
-                // ★TLAS が建った直後・スクリーンパスより前に回す。プローブは画面空間では
-                //   ないので compute。ヒット点のシェーディングは Step 5 のバインドレスを流用。
-                if (m_ddgi && m_ddgi->IsReady())
-                {
-                    DdgiVolume::UpdateDesc dd;
-                    dd.tlas         = m_rtScene->GetTlasAddress();
-                    dd.geometryInfo = m_rtScene->GetGeometryInfoAddress();
-                    dd.sunDir       = lightDirF3;
-                    // ★lightColorF3 には既に intensity が掛かっている（color * intensity）。
-                    //   ここで再度掛けると二重になるので 1.0 にする。
-                    dd.sunColor     = lightColorF3;
-                    dd.sunIntensity = 1.0f;
-                    // ミス時の放射輝度。envMap があるならフォワードの拡散 IBL と
-                    // 【同じ irradiance キューブ】を bindless で引かせる（段階1）。
-                    // ★これが無いと空の見えている面まで真っ暗になり、DDGI を ON にした
-                    //   瞬間にシーン全体が暗くなる（実機で踏んだ）。
-                    // envMap が無い屋内は従来どおり環境光の下限をスカラーで使う。
-                    //   ここを明るくしすぎると壁の外から光が漏れてくるので控えめに。
-                    dd.skyColor     = {lightAmbient, lightAmbient, lightAmbient};
-                    dd.skyCubeSrvIndex =
-                        (m_iblReady && m_iblBaker && m_iblBaker->HasEnvironment())
-                            ? m_iblBaker->GetIrradianceSrv() : 0xFFFFFFFFu;
-                    dd.frameIndex   = m_deterministicCapture
-                                    ? 0u : static_cast<u32>(m_perfTotalFrames & 0xFFFFull);
-                    m_ddgi->Update(nativeCmdList, *m_graphicsDevice,
-                                   m_scene->GetDdgiSettings(), dd);
-                }
+                // DDGI 用に TLAS を持ち越す（更新自体はライトが揃う後段で回す）。
+                ddgiTlasOk  = true;
+                ddgiTlas    = m_rtScene->GetTlasAddress();
+                ddgiGeoInfo = m_rtScene->GetGeometryInfoAddress();
             }
         }
     }
@@ -3952,6 +3938,8 @@ void Application::Render()
     // ライトを UPLOAD リングへ書いてから AABB 構築 → カリング。呼び出し後は
     // インデックス/カウントが PIXEL_SHADER_RESOURCE 状態になる。
     // ★compute は PSO を共有するので、直後にグラフィクスの RootSig/PSO を必ず再設定する。
+    u32 ddgiLightSrvIndex = DescriptorHeap::kInvalidIndex;   // DDGI が読む t13 の SRV index
+    u32 ddgiLightCount    = 0;
     if (m_clusteredLighting && m_clusteredLighting->IsReady())
     {
         const u32 uploaded = m_clusteredLighting->UploadLights(
@@ -3976,6 +3964,49 @@ void Application::Render()
             // インデックス/カウントは読取状態にしておく（中身は読まれない）。
             m_clusteredLighting->EnsureReadable(nativeCmdList);
         }
+        ddgiLightSrvIndex = m_clusteredLighting->GetSrvTableIndex(frameIndex);  // = t13
+        ddgiLightCount    = uploaded;
+    }
+
+    // ===== DDGI: プローブ更新（計画09 Step 6）=====
+    // ★必ず UploadLights の【後】に置くこと。プローブは点光源/スポットを t13 から
+    //   総当たりで拾うので、ここより前で回すと前フレームの灯りを見てしまう
+    //   （影スロットの割当も上のシャドウパスで初めて確定する）。
+    // ★t14/t15（クラスタのインデックス/カウント）は使わない。あれは画面空間のクラスタで、
+    //   視錐台の外にあるプローブには対応するクラスタが存在しないため。
+    // プローブは画面空間ではないので compute。ヒット点は Step 5 のバインドレスを流用。
+    // ★compute は PSO を共有するので、直後にグラフィクスの RootSig/PSO を再設定する。
+    if (ddgiTlasOk && m_ddgi && m_ddgi->IsReady())
+    {
+        m_gpuTimer->Begin(nativeCmdList, GpuTimer::Ddgi);
+        DdgiVolume::UpdateDesc dd;
+        dd.tlas         = ddgiTlas;
+        dd.geometryInfo = ddgiGeoInfo;
+        dd.sunDir       = lightDirF3;
+        // ★lightColorF3 には既に intensity が掛かっている（color * intensity）。
+        //   ここで再度掛けると二重になるので 1.0 にする。
+        dd.sunColor     = lightColorF3;
+        dd.sunIntensity = 1.0f;
+        // ミス時の放射輝度。envMap があるならフォワードの拡散 IBL と
+        // 【同じ irradiance キューブ】を bindless で引かせる（段階1）。
+        // ★これが無いと空の見えている面まで真っ暗になり、DDGI を ON にした
+        //   瞬間にシーン全体が暗くなる（実機で踏んだ）。
+        // envMap が無い屋内は従来どおり環境光の下限をスカラーで使う。
+        //   ここを明るくしすぎると壁の外から光が漏れてくるので控えめに。
+        dd.skyColor     = {lightAmbient, lightAmbient, lightAmbient};
+        dd.skyCubeSrvIndex =
+            (m_iblReady && m_iblBaker && m_iblBaker->HasEnvironment())
+                ? m_iblBaker->GetIrradianceSrv() : 0xFFFFFFFFu;
+        // 点光源/スポット（t13 のライト配列を bindless で引く）。屋内はこれが本体。
+        dd.lightSrvIndex = ddgiLightSrvIndex;
+        dd.lightCount    = ddgiLightCount;
+        dd.frameIndex   = m_deterministicCapture
+                        ? 0u : static_cast<u32>(m_perfTotalFrames & 0xFFFFull);
+        m_ddgi->Update(nativeCmdList, *m_graphicsDevice, m_scene->GetDdgiSettings(), dd);
+        m_gpuTimer->End(nativeCmdList, GpuTimer::Ddgi);
+        m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+        m_commandList->SetRootSignature(*m_rootSignature);
+        m_commandList->SetPipelineState(*m_pipelineState);
     }
 
     // ===== デカール: アトラス解決 → アップロード → クラスタへビニング =====

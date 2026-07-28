@@ -375,7 +375,7 @@ const std::vector<ShaderSource>& BuildRegistry()
                 { L"DdgiTrace_CS.cso", L"TraceCS", L"cs_6_6" },
                 { L"DdgiBlend_CS.cso", L"BlendCS", L"cs_6_6" },
             },
-            { "ddgi/DdgiCommon.hlsli", "raytracing/RtBindless.hlsli" },
+            { "ddgi/DdgiCommon.hlsli", "raytracing/RtBindless.hlsli", "forward/ClusterCommon.hlsli" },
         },
         {
             // compute スキニング（計画09 Step 4）。スキンドの変形後頂点 → BLAS 用。

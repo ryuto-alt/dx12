@@ -16,6 +16,10 @@
 #define RT_GEOMETRY_REGISTER t1
 #include "../raytracing/RtBindless.hlsli"
 #include "DdgiCommon.hlsli"
+// ★CLUSTER_CS を define せずに include すること（あちらは define されたときだけ
+//   cbuffer b0 を宣言する。define すると DdgiCB の b0 と衝突する）。
+//   ここで欲しいのは ClusterLight の構造体定義だけ。Lighting.hlsli / FogScatter.hlsl と同じ作法。
+#include "../forward/ClusterCommon.hlsli"
 
 RaytracingAccelerationStructure gTlas : register(t0);
 
@@ -30,6 +34,9 @@ cbuffer DdgiCB : register(b0)
     // 空キューブ（IBL の irradiance キューブ）の bindless index。0xFFFFFFFF で無効。
     // ★これが無いと「空の見えている面まで真っ暗になる」。段階1 で実機を見て入れた。
     uint          gSkyCubeIndex;
+    uint          gLightSrvIndex;  // t13 (StructuredBuffer<ClusterLight>) の bindless index
+    uint          gLightCount;     // 有効な灯数。0 なら点光源を 1 灯も評価しない
+    uint2         _pad45;
 };
 
 // レイの結果。x = レイ番号 / y = プローブ番号。rgb = 放射輝度 / a = ヒット距離（ミスは負）
@@ -46,6 +53,74 @@ float3 DdgiSkyRadiance(float3 dir)
     if (gSkyCubeIndex == 0xFFFFFFFFu) return gSkyColor;
     TextureCube<float4> skyCube = ResourceDescriptorHeap[gSkyCubeIndex];
     return skyCube.SampleLevel(gLinearWrap, dir, 0).rgb;
+}
+
+// 影レイ 1 本。遮られていれば 0、通れば 1。
+// maxT は太陽なら 1e5、点光源ならライトまでの距離（そこまでしか遮蔽を探さない）。
+float DdgiShadowRay(float3 posWS, float3 nWS, float3 toLight, float maxT)
+{
+    RayDesc sr;
+    sr.Origin    = posWS + nWS * gDdgi.normalBias;
+    sr.Direction = toLight;
+    sr.TMin      = 0.0;
+    sr.TMax      = maxT;
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
+           | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER
+           | RAY_FLAG_CULL_NON_OPAQUE
+           | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> sq;
+    sq.TraceRayInline(gTlas, 0, 0xFF, sr);
+    sq.Proceed();
+    return (sq.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ? 0.0 : 1.0;
+}
+
+// ヒット点が点光源 / スポットから受ける放射照度（拡散のみ）。
+//
+// ★減衰式・コーン式は Lighting.hlsli の AccumulatePunctualLights と完全同一に保つこと
+//   （FogScatter.hlsl に続く 3 つ目の複製。片方だけ直すと絵が食い違う）。
+// ★ここは拡散間接光を作るためのバウンス元なので Cook-Torrance は要らない。
+//   ラスタ側の kD * albedo/PI * radiance * NdotL に対し、こちらは albedo を後で掛ける前提で
+//   radiance * NdotL だけを返す（金属の扱いも含め、プローブは拡散近似で十分）。
+// ★影はシャドウマップではなくレイで引く。DDGI の compute ルートシグネチャに t9/t10 も
+//   比較サンプラも無いうえ、影マップを持てるのは spot 4 灯 / point 2 灯だけで、
+//   屋内の多灯シーンでは大半が shadowIndex=-1 ＝ 壁を貫通してしまうため。
+float3 DdgiPunctualIrradiance(float3 posWS, float3 nWS)
+{
+    if (gLightSrvIndex == 0xFFFFFFFFu || gLightCount == 0) return float3(0.0, 0.0, 0.0);
+    StructuredBuffer<ClusterLight> lights = ResourceDescriptorHeap[gLightSrvIndex];
+
+    float3 sum = 0.0;
+    [loop]
+    for (uint i = 0; i < gLightCount; ++i)
+    {
+        ClusterLight L = lights[i];
+
+        float3 d    = L.position - posWS;
+        float  dist = length(d);
+        if (dist >= L.range) continue;              // 減衰 0。影レイを丸ごと省く
+        float3 Ldir = d / max(dist, 0.0001);
+
+        float ndotl = dot(nWS, Ldir);
+        if (ndotl <= 0.0) continue;                 // 裏面。影レイの前に落とす
+
+        float att = saturate(1.0 - dist / L.range);
+        att *= att;
+        float3 radiance = L.color * att;            // ★color は intensity 乗算済み
+
+        if (L.type > 0.5)   // spot
+        {
+            float cd   = dot(L.direction, -Ldir);
+            float cone = saturate((cd - L.cosOuter) / max(L.cosInner - L.cosOuter, 0.001));
+            cone *= cone;
+            if (cone <= 0.0) continue;              // コーン外。ここも影レイの前
+            radiance *= cone;
+        }
+
+        // 早期棄却を全部抜けた灯だけ影レイを 1 本。
+        // ★TMax は「ライトまでの距離」。太陽の 1e5 のままにすると
+        //   ライトの向こう側にある壁で遮られたことになり、全部影になる。
+        sum += radiance * ndotl * DdgiShadowRay(posWS, nWS, Ldir, dist * 0.999);
+    }
+    return sum;
 }
 
 // ---------------------------------------------------------------------------
@@ -107,29 +182,19 @@ void TraceCS(uint3 dtid : SV_DispatchThreadID)
         //   費用対効果が最も高い拡張だが、まず 1 バウンスの正しさを確認してから入れる。
         const float ndotl = saturate(dot(h.worldNormal, -gSunDir));
         float shadow = 0.0;
-        if (ndotl > 0.0)
-        {
-            RayDesc sr;
-            sr.Origin    = h.worldPos + h.worldNormal * gDdgi.normalBias;
-            sr.Direction = -gSunDir;
-            sr.TMin      = 0.0;
-            sr.TMax      = 1e5;
-            RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
-                   | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER
-                   | RAY_FLAG_CULL_NON_OPAQUE
-                   | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> sq;
-            sq.TraceRayInline(gTlas, 0, 0xFF, sr);
-            sq.Proceed();
-            shadow = (sq.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ? 0.0 : 1.0;
-        }
+        if (ndotl > 0.0)   // 太陽は無限遠なので TMax は打ち切りなし
+            shadow = DdgiShadowRay(h.worldPos, h.worldNormal, -gSunDir, 1e5);
         // ヒット面「自身が受けている環境光」も乗せる（＝空に照らされた床のバウンス）。
         // ★これが無いと囲われた空間の面が全部「太陽の直射ぶんだけ」になり、
         //   DDGI を ON にした瞬間にシーンが暗くなる（実機で踏んだ）。
         //   ラスタ側のフォワードが同じ面へ IBL を掛けているのと同じ扱いに揃えている＝
         //   プローブが返す放射輝度とラスタの見た目が一致する。
         //   ★ラスタ同様この環境項は遮蔽されない。厳密な可視性は段階2 の Chebyshev の仕事。
+        // ★屋内はここが本体。灯りが全部 punctual なシーンでは、これが無いと
+        //   プローブが太陽と空しか見ず DDGI が丸ごと 0 になる（DDGI を選んだ理由そのもの）。
         radiance = albedo * (gSunColor * (gSunIntensity * ndotl * shadow)
-                             + DdgiSkyRadiance(h.worldNormal));
+                             + DdgiSkyRadiance(h.worldNormal)
+                             + DdgiPunctualIrradiance(h.worldPos, h.worldNormal));
     }
 
     gRayData[uint2(rayIndex, probeIndex)] = float4(radiance, dist);

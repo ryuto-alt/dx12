@@ -25,6 +25,7 @@ public:
         ClusterCull,   // クラスタ AABB 構築 + ライトカリング（compute 2 パス）
         Raytracing,    // DXR: BLAS の遅延構築 + TLAS の毎フレーム再構築（加速構造だけ）
         RtScreen,      // DXR: RT サン影 + RT-AO + RT デバッグ（スクリーン空間パス）
+        Ddgi,          // DDGI: プローブのレイトレ + 八面体アトラスへのブレンド（compute 2 パス）
         ScreenSpaceGI, // SSR + SSGI（トレース/時間蓄積/アップサンプル + 前フレームカラー退避）
         VolumetricFog, // froxel フォグ（注入/散乱/Z積分の compute 3 パス + 合成）
         MainScene,     // 不透明メッシュ（RenderSceneMeshes メインビュー）

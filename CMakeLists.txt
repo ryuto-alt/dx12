@@ -327,7 +327,10 @@ if(DXC_EXECUTABLE)
     # DDGI（計画09 Step 6）。probe 更新の compute 2 本。★ps/cs とも SM 6.6（バインドレス）。
     set(SHADER_DDGI_UPDATE   "${CMAKE_SOURCE_DIR}/shaders/ddgi/DdgiProbeUpdate.hlsl")
     set(SHADER_DDGI_INC      "${CMAKE_SOURCE_DIR}/shaders/ddgi/DdgiCommon.hlsli"
-                             "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtBindless.hlsli")
+                             "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtBindless.hlsli"
+                             # ★プローブが点光源を拾うようになったので ClusterLight に依存する。
+                             #   入れ忘れると構造体を変えても DdgiTrace_CS.cso が古いまま残る。
+                             "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterCommon.hlsli")
     set(SHADER_RT_INC        "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtCommon.hlsli"
                              "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtBindless.hlsli"
                              "${CMAKE_SOURCE_DIR}/shaders/post/FullscreenTri.hlsli")
