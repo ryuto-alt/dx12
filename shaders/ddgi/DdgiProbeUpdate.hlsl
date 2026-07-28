@@ -26,8 +26,10 @@ cbuffer DdgiCB : register(b0)
     float         gSunIntensity;
     float3        gSunColor;
     float         gPad2;
-    float3        gSkyColor;    // ミス時の放射輝度。★屋内は envMap が空なのでここは黒に近い
-    float         gPad3;
+    float3        gSkyColor;    // ミス時の放射輝度（envMap が無いときのフォールバック）
+    // 空キューブ（IBL の irradiance キューブ）の bindless index。0xFFFFFFFF で無効。
+    // ★これが無いと「空の見えている面まで真っ暗になる」。段階1 で実機を見て入れた。
+    uint          gSkyCubeIndex;
 };
 
 // レイの結果。x = レイ番号 / y = プローブ番号。rgb = 放射輝度 / a = ヒット距離（ミスは負）
@@ -36,6 +38,15 @@ RWTexture2D<float4> gRayData    : register(u0);
 RWTexture2D<float4> gIrradiance : register(u1);
 
 SamplerState gLinearWrap : register(s0);
+
+// 空の放射輝度。envMap があるならフォワードの拡散 IBL と【同じ irradiance キューブ】を
+// bindless で引く。無い（屋内）なら環境光のスカラーへフォールバック。
+float3 DdgiSkyRadiance(float3 dir)
+{
+    if (gSkyCubeIndex == 0xFFFFFFFFu) return gSkyColor;
+    TextureCube<float4> skyCube = ResourceDescriptorHeap[gSkyCubeIndex];
+    return skyCube.SampleLevel(gLinearWrap, dir, 0).rgb;
+}
 
 // ---------------------------------------------------------------------------
 //  Trace: 1 スレッド = 1 レイ
@@ -66,8 +77,15 @@ void TraceCS(uint3 dtid : SV_DispatchThreadID)
     q.TraceRayInline(gTlas, 0, 0xFF, r);
     q.Proceed();
 
-    float3 radiance = gSkyColor;   // ミス = 空
-    float  dist     = -1.0;
+    // ミス = 空。★envMap があるならその irradiance キューブを引く。
+    //   フォワードの拡散 IBL と【同じテクスチャ】なので、空が丸見えの面では
+    //   DDGI を ON にしても OFF のときと同じ値に落ち着く（＝置き換えが安全になる）。
+    //   遮蔽のある所だけがバウンス光で変わる、という本来の差分だけが残る。
+    //   ★iblIntensity はフォワード側で ambient 全体に掛かるので、ここでは掛けない（二重になる）。
+    float3 radiance = DdgiSkyRadiance(dir);
+    // ★ミスは「無限遠」。負の距離は裏面ヒット専用の印にする（下の Blend が見る）。
+    //   段階0 は miss も -1 だったので、空が黒いとミスが裏面と区別できず捨てられていた。
+    float dist = 1e30;
 
     const RtHitInfo h = RtLoadHit(q);
     if (h.valid)
@@ -104,7 +122,14 @@ void TraceCS(uint3 dtid : SV_DispatchThreadID)
             sq.Proceed();
             shadow = (sq.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ? 0.0 : 1.0;
         }
-        radiance = albedo * gSunColor * (gSunIntensity * ndotl * shadow);
+        // ヒット面「自身が受けている環境光」も乗せる（＝空に照らされた床のバウンス）。
+        // ★これが無いと囲われた空間の面が全部「太陽の直射ぶんだけ」になり、
+        //   DDGI を ON にした瞬間にシーンが暗くなる（実機で踏んだ）。
+        //   ラスタ側のフォワードが同じ面へ IBL を掛けているのと同じ扱いに揃えている＝
+        //   プローブが返す放射輝度とラスタの見た目が一致する。
+        //   ★ラスタ同様この環境項は遮蔽されない。厳密な可視性は段階2 の Chebyshev の仕事。
+        radiance = albedo * (gSunColor * (gSunIntensity * ndotl * shadow)
+                             + DdgiSkyRadiance(h.worldNormal));
     }
 
     gRayData[uint2(rayIndex, probeIndex)] = float4(radiance, dist);
@@ -131,8 +156,8 @@ void BlendCS(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID)
     for (uint i = 0; i < DDGI_RAYS_PER_PROBE; ++i)
     {
         const float4 rd = gRayData[uint2(i, probeIndex)];
-        if (rd.w < 0.0 && all(rd.rgb == 0.0))
-            continue;   // 裏面ヒット = 無効
+        if (rd.w < 0.0)
+            continue;   // 負の距離 = 裏面ヒット（壁の中）= 無効。ミスは +1e30 なので通る
 
         const float3 rayDir = mul(DdgiRayRotation(gDdgi.frameIndex),
                                   DdgiSphericalFibonacci(i, DDGI_RAYS_PER_PROBE));

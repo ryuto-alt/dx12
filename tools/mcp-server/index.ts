@@ -1435,7 +1435,9 @@ reg(
     ddgiHysteresis: z.number().optional().describe(
       "時間ブレンドの係数。0..0.995 にクランプ。既定 0.97(前フレームを 97% 残す)。"
       + "大きいほど安定するが光の変化への追従が遅い。0 で毎フレーム入れ替え。"),
-    ddgiIntensity: z.number().optional().describe("DDGI の強さ。0..10 にクランプ。既定 1。0 で実質 OFF。"),
+    ddgiIntensity: z.number().optional().describe(
+      "DDGI の強さ。0..10 にクランプ。既定 1。★アトラスへ書き込む時点で掛かるので、"
+      + "変更は ddgiHysteresis ぶんの時間をかけて絵に効く(即時ではない)。0 なら実質 OFF。"),
     ddgiNormalBias: z.number().optional().describe(
       "サンプル位置を法線方向へ押し出す量(m)。0..1 にクランプ。既定 0.02。"
       + "壁際で裏側のプローブを引いてしまう(ライトリーク)なら上げる。"

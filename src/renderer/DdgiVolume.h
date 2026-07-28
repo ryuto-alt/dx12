@@ -69,7 +69,11 @@ public:
         DirectX::XMFLOAT3 sunDir{0, -1, 0};      // 進行方向（PerFrame の lightDir と同じ）
         DirectX::XMFLOAT3 sunColor{1, 1, 1};
         float             sunIntensity = 1.0f;
-        DirectX::XMFLOAT3 skyColor{0, 0, 0};     // ミス時の放射輝度。★屋内は envMap が空なので暗い
+        DirectX::XMFLOAT3 skyColor{0, 0, 0};     // envMap が無いときのミス放射輝度（フォールバック）
+        // IBL の irradiance キューブの bindless index。0xFFFFFFFF で skyColor を使う。
+        // ★フォワードの拡散 IBL と同じテクスチャを引かせることで、空が見えている面では
+        //   DDGI の ON/OFF で値が変わらなくなる（遮蔽のある所のバウンスだけが差分になる）。
+        u32               skyCubeSrvIndex = 0xFFFFFFFFu;
         u32               frameIndex = 0;
     };
 

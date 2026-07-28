@@ -72,7 +72,7 @@ cbuffer PerFrameConstants : register(b1)
     //   _clusterReserved を 3 本削って作った＝総サイズも既存オフセットも 1 バイトも動かない。
     //   ★ddgiOrigin.w（強さ）が 0 なら g_ddgiIrradiance を一切読まず従来経路（絵はビット一致）。
     //     SSR/SSGI と違いワールド座標からの Sample なので、範囲外 Load の自動ゼロが効かない。
-    float4   ddgiOrigin;                          // 16B  (offset 560) .xyz=格子の原点 .w=強さ(0=無効)
+    float4   ddgiOrigin;                          // 16B  (offset 560) .xyz=格子の原点 .w=有効(1/0)
     float4   ddgiSpacing;                         // 16B  (offset 576) .xyz=プローブ間隔 .w=法線バイアス(m)
     float4   ddgiCounts;                          // 16B  (offset 592) .xyz=各軸のプローブ数 .w=予約
     float4   _clusterReserved[40];                // 640B (offset 608..1247) 予約（総サイズ 1536B 維持のため）
@@ -95,10 +95,11 @@ float3 SampleDdgi(float3 worldPos, float3 N, out float confidence)
 {
     confidence = 0.0;
     if (ddgiOrigin.w <= 0.0) return float3(0.0, 0.0, 0.0);   // OFF なら 1 テクセルも読まない
-    const float3 v = DdgiSampleIrradiance(g_ddgiIrradiance, g_ddgiSampler, worldPos, N,
-                                          ddgiOrigin.xyz, ddgiSpacing.xyz,
-                                          uint3(ddgiCounts.xyz), ddgiSpacing.w, confidence);
-    return v * ddgiOrigin.w;
+    // ★intensity はここでは掛けない。BlendCS がアトラスへ書く時点で既に掛かっている
+    //   （DdgiProbeUpdate.hlsl の `irradiance *= gDdgi.intensity`）。掛けると 2 乗になる。
+    return DdgiSampleIrradiance(g_ddgiIrradiance, g_ddgiSampler, worldPos, N,
+                                ddgiOrigin.xyz, ddgiSpacing.xyz,
+                                uint3(ddgiCounts.xyz), ddgiSpacing.w, confidence);
 }
 
 // スポットライト影: spotShadowMatrix[idx] で射影し 3x3 PCF（CSM の SampleCascade と同じ流儀）。

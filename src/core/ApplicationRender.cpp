@@ -3119,9 +3119,16 @@ void Application::Render()
                     //   ここで再度掛けると二重になるので 1.0 にする。
                     dd.sunColor     = lightColorF3;
                     dd.sunIntensity = 1.0f;
-                    // ★屋内は envMap が空なので、ミス時の放射輝度は環境光の下限を使う。
+                    // ミス時の放射輝度。envMap があるならフォワードの拡散 IBL と
+                    // 【同じ irradiance キューブ】を bindless で引かせる（段階1）。
+                    // ★これが無いと空の見えている面まで真っ暗になり、DDGI を ON にした
+                    //   瞬間にシーン全体が暗くなる（実機で踏んだ）。
+                    // envMap が無い屋内は従来どおり環境光の下限をスカラーで使う。
                     //   ここを明るくしすぎると壁の外から光が漏れてくるので控えめに。
                     dd.skyColor     = {lightAmbient, lightAmbient, lightAmbient};
+                    dd.skyCubeSrvIndex =
+                        (m_iblReady && m_iblBaker && m_iblBaker->HasEnvironment())
+                            ? m_iblBaker->GetIrradianceSrv() : 0xFFFFFFFFu;
                     dd.frameIndex   = m_deterministicCapture
                                     ? 0u : static_cast<u32>(m_perfTotalFrames & 0xFFFFull);
                     m_ddgi->Update(nativeCmdList, *m_graphicsDevice,
@@ -3715,8 +3722,10 @@ void Application::Render()
 
         if (ddgiActive)
         {
-            fc.ddgiOrigin  = {ddgiCfg.originX, ddgiCfg.originY, ddgiCfg.originZ,
-                              ddgiCfg.intensity};
+            // .w は「読むか」の 1/0 だけ。★intensity は BlendCS がアトラスへ書く時点で
+            //   既に掛かっているので、ここで渡すと 2 乗になる（実機で踏んだ）。
+            //   その代わり intensity の変更は hysteresis ぶんかけて絵に効く。
+            fc.ddgiOrigin  = {ddgiCfg.originX, ddgiCfg.originY, ddgiCfg.originZ, 1.0f};
             fc.ddgiSpacing = {ddgiCfg.spacing, ddgiCfg.spacing, ddgiCfg.spacing,
                               (std::max)(ddgiCfg.normalBias, 0.0f)};
             fc.ddgiCounts  = {static_cast<f32>(ddgiCfg.probeCountX),
