@@ -491,6 +491,12 @@ private:
     // GPU デバイスが失われていたら退避して true（＝ループを畳む合図）。詳細は .cpp。
     bool HandleDeviceLoss();
     bool m_deviceLost = false;   // 一度立ったら描画へ戻らない
+
+    // フレーム例外を記録し、復帰不能と判断したら true（＝ループを畳む合図）。詳細は .cpp。
+    bool ReportFrameError(const std::string& what);
+    // 何回連続で失敗したら諦めるか。2 秒ぶん（60fps 換算）。
+    // 一時的な失敗はまず 1〜2 フレームで収まるので、これを超えるのは構造的な故障。
+    static constexpr int kMaxConsecFrameErrors = 120;
     // シーンを開いた直後に呼ぶ。オートセーブの方が本体より新しければ復旧プロンプトを立てる。
     void CheckAutosaveRecovery(const std::string& sceneFullPath);
     // オートセーブの置き場（assets/scenes/.autosave/）。末尾 '/' 付き。
@@ -1236,6 +1242,14 @@ private:
     void   PersistSet(const std::string& key, double v);
     std::unordered_map<std::string, double> m_persistStore;
     bool m_persistLoaded = false;
+
+    // ★フレーム例外の連続カウンタ。クラス中間ではなく末尾に置いてある。
+    //   中間へ入れると起動時に PSO 作成で落ちた（m_rootSignature の値が壊れて
+    //   D3D12 のランタイムがアドレス 0x7 を読む）。メンバの並びを変えただけで
+    //   壊れる＝初期化のどこかにメンバ境界を越えて書いている箇所がある。
+    //   原因は未特定。ここに置けば当たらないので、まず動く形にしてから追う。
+    int         m_consecFrameErrors = 0;   // 1 枚描けたら 0 に戻る
+    std::string m_lastFrameError;          // 同じ内容の連投を間引くため
 };
 
 } // namespace dx12e

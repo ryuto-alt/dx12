@@ -1543,10 +1543,11 @@ void Application::Run()
             { CpuScopeTimer _t(&m_cpuMs[CpuUpdate]); DX12_PROFILE_ZONE_N("Update"); Update(); }
             if (gvOverride) SyncActiveCameraToGlobal();   // Update の後に上書き(編集カメラ操作に勝つ)
             Render();
+            m_consecFrameErrors = 0;   // 1 枚描けたら「復帰した」＝連続失敗を数え直す
         }
         catch (const std::exception& ex)
         {
-            Logger::Error("フレーム処理でエラー: {}", ex.what());
+            if (ReportFrameError(ex.what())) break;
 
             // ★まずデバイスが生きているかを見る。
             //   デバイスロスト(TDR / ドライバのハング / GPU リセット)は「次フレームで
@@ -2511,6 +2512,40 @@ void Application::UpdateAutosave(f32 dt)
     if (!m_editorCtx->IsSceneDirty()) return;            // 汚れていなければ書く意味が無い
 
     WriteAutosave();
+}
+
+// フレーム例外を記録し、「もう回しても無駄」なら畳む合図を返す。
+//
+// なぜ要るか:
+//   例外ハンドラは「次フレームで復帰を試みる」前提で書かれている。それが正しいのは
+//   一時的な失敗のときだけで、SRV ヒープ枯渇や AbortFrame 後の状態食い違いのように
+//   毎フレーム同じ理由で失敗し続ける種類もある。その場合ユーザーから見えるのは
+//   「画面が真っ暗のまま何も起きない」だけで、原因はログの奥（毎フレーム同じ行が
+//   秒 60 本積まれた山の底）に埋もれる。最初の 1 本が一番役に立つのに、
+//   それを自分で埋めてしまっていた。
+//
+//   なので (1) 同じ内容の連投は間引く (2) 一定回数続いたら復帰不能と認めて
+//   作業を退避してから畳む。「静かに壊れたまま動き続ける」より
+//   「何が起きたか言って止まる」方が失うものが少ない。
+bool Application::ReportFrameError(const std::string& what)
+{
+    // 直前と同じ内容なら間引く（最初の 1 本と、以後 1 秒ぶんごとに 1 本だけ残す）
+    const bool same = (what == m_lastFrameError);
+    ++m_consecFrameErrors;
+    m_lastFrameError = what;
+
+    if (!same)
+        Logger::Error("フレーム処理でエラー: {}", what);
+    else if (m_consecFrameErrors % 60 == 0)
+        Logger::Error("同じエラーが {} フレーム続いています: {}", m_consecFrameErrors, what);
+
+    if (m_consecFrameErrors < kMaxConsecFrameErrors) return false;
+
+    Logger::Error("フレーム処理が {} 回連続で失敗しました。復帰できないので終了します: {}",
+                  m_consecFrameErrors, what);
+    if (m_editorCtx && m_scene && m_editorCtx->IsSceneDirty() && WriteAutosave())
+        Logger::Error("未保存の変更を退避しました。次回起動時に復旧するか聞きます");
+    return true;
 }
 
 // GPU デバイスが失われていたら、作業内容を退避してから畳む合図を返す。
