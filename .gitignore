@@ -69,3 +69,12 @@ installer/output/
 
 # --validate CLI の出力（実行のたびに生成される）
 validate_report.txt
+
+# 実行時に出る生成物（コミットしない）
+build-tests/
+dx12_crash.dmp
+dx12_crash.log
+dx12_engine.log
+mcp_screenshot.png
+mcp_screenshot_final.png
+mcp_ui_screenshot.png
