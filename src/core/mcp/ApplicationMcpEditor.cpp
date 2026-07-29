@@ -797,14 +797,15 @@ void Application::RegisterMcpEditorMethods()
             if (originV.size() != 3 || dirV.size() != 3)
                 throw McpError(McpErr::InvalidParam, "origin and direction must be [x,y,z]");
             const float maxDist = params.value("maxDistance", 1000.0f);
-            RaycastHit hit = m_physicsSystem->Raycast(
+            // RaycastEx を使う（Raycast は normal を (0,1,0) でフェイクする）。Lua の
+            // physics:raycast と違い MCP には後方互換の縛りが無いので、こちらは本物を返す。
+            RaycastHit hit = m_physicsSystem->RaycastEx(
                 {originV[0], originV[1], originV[2]}, {dirV[0], dirV[1], dirV[2]}, maxDist);
             json result{{"hit", hit.hit}};
             if (hit.hit)
             {
                 result["distance"] = hit.distance;
                 result["point"]    = {hit.point.x, hit.point.y, hit.point.z};
-                // 法線は近似(常に up 向き。PhysicsSystem::Raycast の既知の制約)。厳密な面法線は未対応。
                 result["normal"]   = {hit.normal.x, hit.normal.y, hit.normal.z};
                 auto& reg = m_scene->GetRegistry();
                 entt::entity ent = m_physicsSystem->EntityForBody(hit.bodyId);

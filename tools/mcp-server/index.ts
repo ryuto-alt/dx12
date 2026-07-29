@@ -1006,7 +1006,7 @@ reg(
 reg(
   "dx12_raycast",
   "レイキャスト",
-  "origin から direction 方向へ物理レイを飛ばし、最初にヒットしたボディを調べる。★Playing 中のみ意味のある結果(Editor 中は body 未登録なので hit=false)。{hit, distance?, point?, normal?, entityId?, name?}。normal は現状 常に up 方向の近似値(エンジンの既知の制約)。当たり判定確認・地面/壁の検出・ラインオブサイトの確認に。",
+  "origin から direction 方向へ物理レイを飛ばし、最初にヒットしたボディを調べる。★Playing 中のみ意味のある結果(Editor 中は body 未登録なので hit=false)。{hit, distance?, point?, normal?, entityId?, name?}。normal はヒット面の真の法線(Jolt の GetWorldSpaceSurfaceNormal)。当たり判定確認・地面/壁の検出・ラインオブサイトの確認に。",
   {
     origin: v3().describe("[x,y,z] レイの始点。"),
     direction: v3().describe("[x,y,z] レイの方向(正規化不要。エンジン側で正規化される)。"),
