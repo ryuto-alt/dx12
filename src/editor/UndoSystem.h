@@ -284,6 +284,25 @@ private:
     std::string  m_newPath;
 };
 
+// ── リネームに追従する名前参照の書き換え ──
+// エンティティ名で結ばれた参照（Lua の entity プロパティ / Trigger の filter・target）は
+// リネームすると黙って切れる。ComponentEditCommand<NameTag> は NameTag しか戻さないので、
+// 参照側の巻き戻しをこのコマンドが受け持つ（両方を CompositeCommand で束ねて使う）。
+class RenameRefsCommand : public IUndoCommand
+{
+public:
+    RenameRefsCommand(entt::registry* reg, std::string oldName, std::string newName)
+        : m_reg(reg), m_old(std::move(oldName)), m_new(std::move(newName)) {}
+
+    void Undo() override { if (m_reg) RewriteEntityNameRefs(*m_reg, m_new, m_old); }
+    void Redo() override { if (m_reg) RewriteEntityNameRefs(*m_reg, m_old, m_new); }
+    const char* GetName() const override { return "RenameRefs"; }
+
+private:
+    entt::registry* m_reg = nullptr;
+    std::string m_old, m_new;
+};
+
 // ── 複合コマンド（複数コマンドを 1 回の Undo/Redo で実行） ──
 class CompositeCommand : public IUndoCommand
 {

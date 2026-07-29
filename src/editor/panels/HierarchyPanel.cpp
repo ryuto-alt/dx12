@@ -20,6 +20,28 @@
 namespace dx12e
 {
 
+namespace {
+
+// リネームを 1 コマンドとして積む。
+// ★NameTag を書き換えるだけだと、名前で結ばれた参照（Lua の entity プロパティ /
+//   Trigger の filter・target）が無言で切れる。参照の書き換えと、その巻き戻しを
+//   受け持つコマンドを CompositeCommand で束ねて「1 回の Undo で全部戻る」形にする。
+void PushRenameCommand(entt::registry& reg, EditorContext& ctx, entt::entity e,
+                       NameTag& tag, const char* newName)
+{
+    NameTag before = tag;
+    const std::string oldName = before.name;
+    tag.name = newName;
+    RewriteEntityNameRefs(reg, oldName, tag.name);
+
+    auto composite = std::make_unique<CompositeCommand>("Rename");
+    composite->Add(std::make_unique<ComponentEditCommand<NameTag>>(&reg, e, before, tag, "Rename"));
+    composite->Add(std::make_unique<RenameRefsCommand>(&reg, oldName, tag.name));
+    ctx.undoSystem.PushCommand(std::move(composite));
+}
+
+} // namespace
+
 // エンティティの構成コンポーネントから代表アイコンを選ぶ（Hierarchy のノード頭に表示）
 static u64 PickEntityIcon(entt::registry& reg, entt::entity e, const EditorUiIcons& ic)
 {
@@ -141,10 +163,7 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
         {
             if (std::strlen(m_renameBuf) > 0 && tag.name != m_renameBuf)
             {
-                NameTag before = tag;
-                tag.name = m_renameBuf;
-                ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<NameTag>>(
-                    &reg, e, before, tag, "Rename"));
+                PushRenameCommand(reg, ctx, e, tag, m_renameBuf);
             }
             m_renamingEntity = entt::null;
             ImGui::PopID();
@@ -160,10 +179,7 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
             {
                 if (std::strlen(m_renameBuf) > 0 && tag.name != m_renameBuf)
                 {
-                    NameTag before = tag;
-                    tag.name = m_renameBuf;
-                    ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<NameTag>>(
-                        &reg, e, before, tag, "Rename"));
+                    PushRenameCommand(reg, ctx, e, tag, m_renameBuf);
                 }
                 m_renamingEntity = entt::null;
             }

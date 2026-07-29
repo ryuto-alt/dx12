@@ -91,6 +91,29 @@ AnimatorController& AnimatorController::operator=(const AnimatorController& othe
     return *this;
 }
 
+void RewriteEntityNameRefs(entt::registry& reg, const std::string& oldName,
+                           const std::string& newName)
+{
+    if (oldName.empty() || oldName == newName) return;
+
+    for (auto [e, ls] : reg.view<LuaScript>().each())
+    {
+        (void)e;
+        for (auto& p : ls.props)
+            if (p.type == ScriptPropType::Entity && p.str == oldName)
+                p.str = newName;
+    }
+
+    for (auto [e, tr] : reg.view<Trigger>().each())
+    {
+        (void)e;
+        // filter が空 = 「Player」の暗黙指定。空を newName で埋めない。
+        if (!tr.filter.empty() && tr.filter == oldName) tr.filter = newName;
+        for (auto& a : tr.actions)
+            if (a.target == oldName) a.target = newName;
+    }
+}
+
 NodeAnimationComp::~NodeAnimationComp() = default;
 NodeAnimationComp::NodeAnimationComp(NodeAnimationComp&&) noexcept = default;
 NodeAnimationComp& NodeAnimationComp::operator=(NodeAnimationComp&&) noexcept = default;

@@ -932,9 +932,13 @@ void Application::RegisterMcpEntityMethods()
             std::string name = base;
             int n = 2;            // 重複時は連番付与(MakeUniqueName 相当をインライン)
             while (taken(name)) name = base + "_" + std::to_string(n++);
+            const std::string oldName = reg.get<NameTag>(e).name;
             reg.get<NameTag>(e).name = name;
+            // 名前で結ばれた参照（Lua の entity プロパティ / Trigger の filter・target）を
+            // 追従させる。これが無いとリネームした瞬間に無言で切れる。
+            RewriteEntityNameRefs(reg, oldName, name);
             resp["ok"] = true;
-            resp["result"] = {{"name", name}};
+            resp["result"] = {{"name", name}, {"previousName", oldName}};
         });
 
     McpDefine("ping", "", DX12E_MCP_HANDLER

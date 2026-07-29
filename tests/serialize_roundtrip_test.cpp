@@ -1438,6 +1438,83 @@ static void Test_DuplicateGetsNewGuid()
     if (g1) CHECK(g1->value != origGuid);
 }
 
+// ---------------------------------------------------------------------------
+// リネームで名前ベースの参照が切れないこと。
+// 実行時の解決は「名前一致」なので、切れてもエラーは出ず「なぜか動かない」だけになる。
+// ---------------------------------------------------------------------------
+static void Test_RenameRewritesNameRefs()
+{
+    Scene sc;
+    auto& reg = sc.GetRegistry();
+
+    entt::entity target = reg.create();
+    reg.emplace<NameTag>(target, NameTag{"Player"});
+    reg.emplace<Transform>(target);
+
+    // Lua の entity プロパティが "Player" を指す
+    entt::entity scripted = reg.create();
+    reg.emplace<NameTag>(scripted, NameTag{"Door"});
+    reg.emplace<Transform>(scripted);
+    {
+        LuaScript ls;
+        ls.scriptPath = "components/Door.lua";
+        ScriptProp p;
+        p.name = "opener";
+        p.type = ScriptPropType::Entity;
+        p.str  = "Player";
+        ls.props.push_back(p);
+        // 巻き込まれてはいけない別型のプロパティ（文字列だが entity ではない）
+        ScriptProp s2;
+        s2.name = "label";
+        s2.type = ScriptPropType::String;
+        s2.str  = "Player";
+        ls.props.push_back(s2);
+        reg.emplace<LuaScript>(scripted, std::move(ls));
+    }
+
+    // Trigger の filter / action target が "Player" を指す
+    entt::entity trig = reg.create();
+    reg.emplace<NameTag>(trig, NameTag{"Zone"});
+    reg.emplace<Transform>(trig);
+    {
+        Trigger t;
+        t.filter = "Player";
+        TriggerAction a;
+        a.target = "Player";
+        t.actions.push_back(a);
+        reg.emplace<Trigger>(trig, std::move(t));
+    }
+
+    // filter が空（= 暗黙の "Player"）のトリガは触ってはいけない
+    entt::entity trigDefault = reg.create();
+    reg.emplace<NameTag>(trigDefault, NameTag{"Zone2"});
+    reg.emplace<Transform>(trigDefault);
+    reg.emplace<Trigger>(trigDefault, Trigger{});
+
+    RewriteEntityNameRefs(reg, "Player", "Hero");
+
+    const auto& ls = reg.get<LuaScript>(scripted);
+    CHECK(ls.props.size() == 2);
+    if (ls.props.size() == 2)
+    {
+        CHECK(ls.props[0].str == "Hero");     // entity 参照は追従する
+        CHECK(ls.props[1].str == "Player");   // ただの文字列は触らない
+    }
+
+    const auto& tr = reg.get<Trigger>(trig);
+    CHECK(tr.filter == "Hero");
+    CHECK(tr.actions.size() == 1);
+    if (tr.actions.size() == 1) CHECK(tr.actions[0].target == "Hero");
+
+    // 空の filter は「Player の暗黙指定」なので埋めない
+    CHECK(reg.get<Trigger>(trigDefault).filter.empty());
+
+    // 逆向きに戻せる（Undo が対称に効くことの根拠）
+    RewriteEntityNameRefs(reg, "Hero", "Player");
+    CHECK(reg.get<LuaScript>(scripted).props[0].str == "Player");
+    CHECK(reg.get<Trigger>(trig).filter == "Player");
+}
+
 // 中立ヘッダ(ComponentRegistry.h)が /WX で通り、型が使えることの最小確認。
 static void Test_RegistryHeaderCompiles()
 {
@@ -1490,6 +1567,7 @@ int main()
     Test_GuidSurvivesArrayInsertion();
     Test_LegacySceneWithoutGuid();
     Test_DuplicateGetsNewGuid();
+    Test_RenameRewritesNameRefs();
     Test_RegistryHeaderCompiles();
 
     std::printf("serialize_roundtrip: %d checks, %d failures\n", g_checks, g_failures);

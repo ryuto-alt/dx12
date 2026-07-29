@@ -92,6 +92,21 @@ struct Transform
 // 親階層を遡って合成したワールド行列を返す（描画/ギズモ/ピッキング用）
 DirectX::XMMATRIX ComputeWorldMatrix(const entt::registry& reg, entt::entity e);
 
+// エンティティ名で結ばれた参照を追従させる（リネーム時に呼ぶ）。
+//
+// シーンには「名前でエンティティを指す」参照が 3 種類ある:
+//   - LuaScript の公開プロパティ（type="entity"）
+//   - Trigger::filter（反応する対象。空は "Player" の暗黙指定なので触らない）
+//   - TriggerAction::target（アクションの対象）
+// これらはリネームすると**黙って切れる**（解決は実行時の名前一致なので、
+// エラーも出ずに「なぜか動かない」だけになる）。
+//
+// ★暫定対処。本来は guid で結ぶべきで、EntityGuid の導入はその第一歩。
+//   ここは「guid 化が全参照へ行き渡るまで、少なくともリネームでは壊れない」を担保する。
+//   .uianim のトラック target（アセット側の名前パス）はシーン外なので対象外。
+void RewriteEntityNameRefs(entt::registry& reg, const std::string& oldName,
+                           const std::string& newName);
+
 struct MeshRenderer
 {
     std::string modelPath; // アセット相対パス（シーン保存/読み込み用）
