@@ -76,6 +76,13 @@ DeepDiagReport Gamma(Application& app);
 // 「パスは合っているのに meshes が空＝画面に出ない」を捕まえる。
 DeepDiagReport SceneAssets(Application& app);
 
+// エンティティを「名前」で指す参照が生きているか。
+// 対象: LuaScript の entity プロパティ / Trigger.filter / Trigger.actions[].target。
+// これらは名前文字列で相手を指すので、指し先を消すと黙って切れる（アセット参照と違い
+// ファイルが無いわけではないので、起動時にも何も言われない）。
+// 同名のエンティティが複数あると「どちらを指しているか」が決まらない点も見る。
+DeepDiagReport EntityRefs(Application& app);
+
 // シーンの光。灯数の上限超過（クラスタード: 点+スポット合計 1024 灯 / 1 クラスタ 128 灯。
 // 超えたぶんは *無言で* 描画されない）、
 // DirectionalLight が 0 個 / 2 個以上（2 個目以降は無視される）、影スロット超過、
@@ -172,7 +179,7 @@ DeepDiagReport RenderHealth(Application& app);
 nlohmann::json RunAll(Application& app, const std::string& only = "");
 
 // RunAll が回す検査 ID を実行順で返す。
-// "shaders","textures","models","gamma","scene_assets","lighting","terrain",
+// "shaders","textures","models","gamma","scene_assets","entity_refs","lighting","terrain",
 // "picking","instancing","scripts"
 std::vector<std::string> AllCheckIds();
 

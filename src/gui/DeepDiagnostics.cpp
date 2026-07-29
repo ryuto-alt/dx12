@@ -774,6 +774,88 @@ DeepDiagReport DeepDiag::Gamma(Application& app)
 
 // ===================== シーンのアセット =====================
 
+DeepDiagReport DeepDiag::EntityRefs(Application& app)
+{
+    DeepDiagReport r;
+    r.title = "エンティティ参照";
+
+    Scene* scene = app.GetScene();
+    if (scene == nullptr)
+    {
+        r.Add(2, "シーンが読み込まれていない");
+        return r;
+    }
+    entt::registry& reg = scene->GetRegistry();
+
+    // 名前 → 個数。0 件なら参照切れ、2 件以上なら「どちらを指すか決まらない」。
+    std::unordered_map<std::string, int> nameCount;
+    for (auto [e, n] : reg.view<const NameTag>().each())
+    {
+        (void)e;
+        if (!n.name.empty()) ++nameCount[n.name];
+    }
+
+    auto nameOf = [&reg](entt::entity e) -> std::string {
+        if (reg.all_of<NameTag>(e)) return reg.get<NameTag>(e).name;
+        return "entity#" + std::to_string(static_cast<uint32_t>(e));
+    };
+
+    // 同じ相手を何箇所からも指していることは普通にあるので、同じ (名前, 理由) を
+    // 何度も出さない。40 件で打ち切られる issues 欄が同じ文で埋まるのを防ぐ。
+    std::set<std::string> reported;
+    auto checkRef = [&](const std::string& ref, const std::string& who, const char* what)
+    {
+        if (ref.empty()) return;
+        ++r.checked;
+        const auto it = nameCount.find(ref);
+        const int  n  = (it == nameCount.end()) ? 0 : it->second;
+        if (n == 1) return;
+
+        const std::string key = ref + "\x1f" + (n == 0 ? "missing" : "dup");
+        if (!reported.insert(key).second) return;
+
+        if (n == 0)
+            r.Add(2, who + " の " + what + "が指す「" + ref
+                         + "」というエンティティがシーンに無い（参照が切れている）");
+        else
+            r.Add(1, who + " の " + what + "が指す「" + ref + "」が " + std::to_string(n)
+                         + " 個ある。どれを指すかは決まらない（先に見つかった方が使われる）");
+    };
+
+    for (auto [e, ls] : reg.view<const LuaScript>().each())
+    {
+        const std::string who = nameOf(e);
+        for (const auto& p : ls.props)
+            if (p.type == ScriptPropType::Entity)
+                checkRef(p.str, who, ("Lua プロパティ「" + p.name + "」").c_str());
+    }
+
+    for (auto [e, tr] : reg.view<const Trigger>().each())
+    {
+        const std::string who = nameOf(e);
+        // filter が空 = 「Player」の暗黙指定。空欄そのものは正しい書き方なので、
+        // 指し先が居ないときだけ注意する（エラーにはしない）。
+        if (tr.filter.empty())
+        {
+            if (nameCount.find("Player") == nameCount.end()
+                && reported.insert("Player\x1fimplicit").second)
+                r.Add(1, who + " の Trigger は絞り込みが空欄＝「Player」の暗黙指定だが、"
+                              "その名前のエンティティがシーンに無い（誰にも反応しない）");
+        }
+        else
+        {
+            checkRef(tr.filter, who, "Trigger の絞り込み");
+        }
+        for (const auto& a : tr.actions)
+            checkRef(a.target, who, "Trigger の相手");
+    }
+
+    if (r.checked == 0)
+        r.Add(0, "名前でエンティティを指している箇所は無い");
+
+    return r;
+}
+
 DeepDiagReport DeepDiag::SceneAssets(Application& app)
 {
     DeepDiagReport r;
@@ -1979,8 +2061,8 @@ DeepDiagReport DeepDiag::Dxr(Application& app)
 std::vector<std::string> DeepDiag::AllCheckIds()
 {
     return { "shaders", "textures", "models", "gamma", "scene_assets",
-             "lighting", "terrain", "picking", "instancing", "scripts", "dxr",
-             "render_health" };
+             "entity_refs", "lighting", "terrain", "picking", "instancing",
+             "scripts", "dxr", "render_health" };
 }
 
 nlohmann::json DeepDiag::RunAll(Application& app, const std::string& only)
@@ -2028,6 +2110,7 @@ nlohmann::json DeepDiag::RunAll(Application& app, const std::string& only)
     if (pick("models"))       add("models",       DeepDiag::Models());
     if (pick("gamma"))        add("gamma",        DeepDiag::Gamma(app));
     if (pick("scene_assets")) add("scene_assets", DeepDiag::SceneAssets(app));
+    if (pick("entity_refs"))  add("entity_refs",  DeepDiag::EntityRefs(app));
     if (pick("lighting"))     add("lighting",     DeepDiag::Lighting(app));
     if (pick("terrain"))      add("terrain",      DeepDiag::Terrain(app));
     if (pick("picking"))      add("picking",      DeepDiag::Picking(app));
