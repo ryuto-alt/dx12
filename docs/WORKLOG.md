@@ -133,9 +133,6 @@ git checkout master                 # 現在の作業ブランチ（feat/engine-
 
 ## 次にやる候補 / TODO
 
-- **2026-07-25 の一式はまだビルド検証していない**。`build/release` でビルドして PerfTest プロジェクトで
-  実機確認すること（地形/スカルプトを彫る → Play → 当たり判定、ライトハンドル、循環選択）。
-- 地形 / スカルプトを MCP から触るツールは未整備（`DeepDiag::RunAll` の JSON 化は済み）。
 - スカルプトのレイキャストは三角形総当たり（`SculptPanel.cpp` の `RaycastSculptLocal`）。
   十万三角形級で重くなったら BVH を積む。今は「重い」と言われるまで入れない方針。
 - FPS/TPS/empty の既存アイコンは据え置き。全部の作り直し要望が来たら `tools/gen_icons.ps1` で対応。

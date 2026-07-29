@@ -1298,7 +1298,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     if (!m_isGameMode && !buildMode)
     {
         m_mcpBridge = std::make_unique<McpBridge>();
-        m_mcpBridge->Start(8787);   // ponytail: ポート固定。衝突したら env/引数化する。
+        m_mcpBridge->Start(8787);   // 起点。衝突したら 8797 まで順に試し、確定値を dx12_mcp.port へ書く
     }
 }
 

@@ -5,7 +5,7 @@ ECS(entt) / 物理(Jolt) / Lua スクリプト / glTF・FBX モデル / シー�
 
 目玉のひとつが **MCP / AI Bridge** — 起動中のエディタを Claude Code / Codex から
 操作してゲームを組み立てられる（エンティティ生成・コンポーネント設定・Lua アタッチ・
-シーン保存・Play/Stop まで、全20ツール）。
+シーン保存・Play/Stop まで、全142ツール）。
 
 ---
 
@@ -45,7 +45,7 @@ cd tools/mcp-server
 シーンを開き、AI から `dx12_list_entities` などを呼ぶだけ。エディタの「ウィンドウ →
 MCP / AI Bridge」パネルで接続状態とコマンド履歴を確認できる。
 
-**完全な手順・全20ツールのリファレンス・セキュリティモデルは [docs/MCP.md](docs/MCP.md)。**
+**完全な手順・全ツールのリファレンス・セキュリティモデルは [docs/MCP.md](docs/MCP.md)。**
 
 ゲーム（封印ランタイム）ではブリッジは起動しない＝外から触れない。
 

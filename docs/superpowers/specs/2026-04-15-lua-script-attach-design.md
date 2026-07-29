@@ -1,5 +1,10 @@
 # Lua スクリプトのエンティティアタッチ機能 設計
 
+> **【実装済み】この文書は当時の設計記録**。中の未チェックのチェックボックスは
+> 「残タスク」ではない。現在の仕様は [`docs/SCRIPT_COMPONENTS.md`](../../SCRIPT_COMPONENTS.md) を見ること。
+> （手順書だった `plans/2026-04-15-lua-script-attach.md` は、未チェック 68 個が
+> grep と AI エージェントを毎回誤誘導するので削除した。中身は git 履歴にある）
+
 - 日付: 2026-04-15
 - ブランチ: `feature/audio`
 - 関連: `src/scripting/ScriptEngine.{h,cpp}`, `src/scene/`, `src/editor/panels/`
