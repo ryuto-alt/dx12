@@ -516,15 +516,18 @@ endif()
 # MCP ディスパッチ表（mcp/ApplicationMcp*.cpp の McpDefine）の「申告キー表 ⊇ 本文が読むキー」を
 # 機械的に見張るテスト。dx12_describe_mcp_params が嘘をつかないことの保証（#20-7 / #30）。
 # エンジンをリンクせずソースをテキストとして読むだけ。依存ゼロ。
-# ★登録はテーマ別 TU に散っているので、ここは '|' 区切りの一覧を渡す（増えたら足すこと）。
-set(DX12E_MCP_SOURCES "")
-foreach(_mcp Entity Editor Render Tooling Asset Terrain Lighting)
-    set(DX12E_MCP_SOURCES
-        "${DX12E_MCP_SOURCES}${CMAKE_CURRENT_SOURCE_DIR}/../src/core/mcp/ApplicationMcp${_mcp}.cpp|")
-endforeach()
+# ★登録はテーマ別 TU に散っているので '|' 区切りの一覧を渡す。ここを手書きの列挙にすると
+#   TU を 1 本新設した瞬間にその中の登録を黙って見逃す（TS 側の schemaDrift.test.ts が
+#   同じ理由で決め打ちをやめている）。CONFIGURE_DEPENDS でファイル追加時に再 glob させる。
+file(GLOB DX12E_MCP_TUS CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/../src/core/mcp/ApplicationMcp*.cpp")
+if(NOT DX12E_MCP_TUS)
+    message(FATAL_ERROR "McpParamSpecTests: src/core/mcp/ApplicationMcp*.cpp が 1 本も見つからない")
+endif()
+list(JOIN DX12E_MCP_TUS "|" DX12E_MCP_SOURCES)
 add_executable(McpParamSpecTests mcp_param_spec_test.cpp)
 target_compile_definitions(McpParamSpecTests PRIVATE
-    DX12E_APPLICATION_CPP="${DX12E_MCP_SOURCES}${CMAKE_CURRENT_SOURCE_DIR}/../src/core/mcp/ApplicationMcp.cpp")
+    DX12E_APPLICATION_CPP="${DX12E_MCP_SOURCES}")
 if(MSVC)
     target_compile_options(McpParamSpecTests PRIVATE ${DX12_COMPILE_OPTIONS})
     target_compile_definitions(McpParamSpecTests PRIVATE ${DX12_COMPILE_DEFS})
