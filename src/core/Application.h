@@ -196,7 +196,7 @@ public:
     {
         u32         renderDebugMode = 0;      // 0 以外 = デバッグ可視化が出しっぱなし
         std::string renderDebugName;
-        u32         srvHeapCapacity = 0;      // 4096 固定。枯渇すると描画が例外で止まる
+        u32         srvHeapCapacity = 0;      // 枯渇すると描画が例外で止まる（Application.cpp の Initialize 参照）
         u32         srvHeapFree     = 0;
         u32         renderW = 0, renderH = 0;    // レンダー解像度
         u32         viewportW = 0, viewportH = 0; // 画面上のシーン矩形（潰れると暗色だけ残る）

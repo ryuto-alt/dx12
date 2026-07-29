@@ -182,10 +182,17 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_networkSystem->SetHooks(std::move(hooks));
     }
 
-    // Shader Visible SRV ヒープ。1024→4096: マテリアルライブラリ(Poly Haven)の検索サムネイル(~200枚)+
-    // マテリアルアセットのSRVブロック(3連続×N)分の余裕を確保(shader-visibleヒープの上限は100万なので無視できる増量)。
+    // Shader Visible SRV ヒープ。1024 → 4096 → 65536。
+    // このヒープの容量が事実上「同時に扱えるアセット総数」の上限になっている:
+    // テクスチャ1枚=1、マテリアル1個=3(連続)、メッシュ1個=2(DXR有効時)、
+    // スケルタル1体=3。しかもテクスチャ/モデル/サムネイルの経路は解放しないので、
+    // 4096 だと DXR 有効で約800メッシュ、スケルタル約1300体で枯渇していた。
+    // 枯渇 = AllocateIndex が例外 → Render を貫通 → AbortFrame → 以後ずっと真っ暗。
+    // D3D12 の shader-visible CBV/SRV/UAV ヒープ上限は Tier1 で 1,000,000 なので
+    // 65536 でもまだ十分低い。記述子1個32B想定でも 2MB。
+    // ★これは天井を上げただけで根治ではない。根治はエビクション(LRU)と bindless 化。
     m_srvHeap = std::make_unique<DescriptorHeap>();
-    m_srvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 4096, true);
+    m_srvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 65536, true);
 
     // ResourceManager
     m_resourceManager = std::make_unique<ResourceManager>();

@@ -16,7 +16,7 @@ class SkinningBuffer
 public:
     SkinningBuffer() = default;
     // 確保した SRV インデックスを返す。返さないと Play/Stop・シーン開き直しのたびに
-    // スケルタル 1 体につき frameCount 個ずつ SRV ヒープ(容量 4096)を食い潰し、
+    // スケルタル 1 体につき frameCount 個ずつ SRV ヒープを食い潰し、
     // やがて AllocateIndex が例外を投げて描画が止まる(＝突然シーンビューが真っ暗になる)。
     ~SkinningBuffer();
     // ヒープへの生ポインタを持つのでコピー禁止(二重 Free を作らない)。

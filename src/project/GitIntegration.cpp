@@ -5,6 +5,7 @@
 #include <shellapi.h>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <algorithm>
 #include <array>
 #include <vector>
@@ -228,6 +229,10 @@ GitResult GitIntegration::CommitAll(const std::string& workDir, const std::strin
 {
     // commit が "Author identity unknown" で落ちないよう、未設定なら identity を補う。
     EnsureIdentity(workDir);
+    // `add -A` の直前に無視リストを最新化する。Init 時にしか書かないと、既に git init
+    // 済みのプロジェクトへ後から足した除外（.texcache 等）が永久に効かない。
+    // 足りない行の追記だけなので、ユーザーが書いた .gitignore は壊さない。
+    WriteGitignore(workDir);
 
     auto add = RunGit(workDir, "add -A");
     if (!add.ok()) return add;
@@ -583,21 +588,61 @@ void GitIntegration::EnsureIdentity(const std::string& workDir)
 
 void GitIntegration::WriteGitignore(const std::string& workDir)
 {
+    // 無視すべきもの。★assets/.texcache と .thumbcache は「元アセットから再生成できる
+    // 派生物」で、しかもテクスチャを触るたびに新しい .dds が増える。これを除外しないと
+    // 圧縮済みテクスチャとサムネイルが丸ごとリポジトリ履歴に積み上がる。
+    static const char* kEntries[] = {
+        "build/", "out/", "*.user", "imgui.ini", ".vs/", "*.tmp",
+        "assets/.texcache/",    // BC 圧縮済み .dds（TextureLoader が生成）
+        "assets/.thumbcache/",  // モデル/マテリアルのサムネイル
+        ".mcp.json",            // MCP の接続設定は各自の環境依存
+    };
+
     fs::path path = fs::path(workDir) / ".gitignore";
     std::error_code ec;
-    if (fs::exists(path, ec)) return;
 
-    std::ofstream ofs(path);
+    if (!fs::exists(path, ec))
+    {
+        std::ofstream ofs(path);
+        if (!ofs.is_open()) return;
+        ofs << "# DX12 Engine project\n";
+        for (const char* e : kEntries) ofs << e << "\n";
+        Logger::Info("Wrote .gitignore to {}", workDir);
+        return;
+    }
+
+    // 既存の .gitignore は壊さず、足りない行だけ追記する。
+    // （既存プロジェクトでも派生キャッシュの流入を止めたいので、exists で諦めない）
+    std::string existing;
+    {
+        std::ifstream ifs(path, std::ios::binary);
+        if (!ifs) return;
+        existing.assign(std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>());
+    }
+    auto hasLine = [&existing](const std::string& needle) {
+        size_t pos = 0;
+        while ((pos = existing.find(needle, pos)) != std::string::npos)
+        {
+            const bool atLineStart = (pos == 0) || existing[pos - 1] == '\n' || existing[pos - 1] == '\r';
+            const size_t end = pos + needle.size();
+            const bool atLineEnd = (end >= existing.size()) || existing[end] == '\n' || existing[end] == '\r';
+            if (atLineStart && atLineEnd) return true;   // 行として一致（部分一致は数えない）
+            pos = end;
+        }
+        return false;
+    };
+
+    std::string add;
+    int added = 0;
+    for (const char* e : kEntries)
+        if (!hasLine(e)) { add += std::string(e) + "\n"; ++added; }
+    if (added == 0) return;
+
+    std::ofstream ofs(path, std::ios::app | std::ios::binary);
     if (!ofs.is_open()) return;
-    ofs <<
-        "# DX12 Engine project\n"
-        "build/\n"
-        "out/\n"
-        "*.user\n"
-        "imgui.ini\n"
-        ".vs/\n"
-        "*.tmp\n";
-    Logger::Info("Wrote .gitignore to {}", workDir);
+    if (!existing.empty() && existing.back() != '\n') ofs << "\n";
+    ofs << "\n# DX12 Engine (追記)\n" << add;
+    Logger::Info("Appended {} entries to .gitignore in {}", added, workDir);
 }
 
 } // namespace dx12e

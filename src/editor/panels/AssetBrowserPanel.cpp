@@ -20,6 +20,29 @@
 
 namespace
 {
+// アセットをごみ箱へ送る（完全削除しない）。
+// 以前は remove_all/remove で即座に消していたので、間違って消したら復旧手段が無かった。
+// アセットの参照元を調べる仕組みがまだ無い（何がこのテクスチャを使っているか分からない）以上、
+// 「消す前に確認」だけでは足りず「消した後に戻せる」が要る。
+// 失敗時は false を返し、呼び出し側がログに出す。
+bool MoveToRecycleBin(const std::filesystem::path& path)
+{
+    // pFrom は二重 NUL 終端が要る（複数パスを NUL 区切りで並べる仕様のため）。
+    std::wstring from = path.wstring();
+    from.push_back(L'\0');
+    from.push_back(L'\0');
+
+    SHFILEOPSTRUCTW op{};
+    op.wFunc  = FO_DELETE;
+    op.pFrom  = from.c_str();
+    // ALLOWUNDO = ごみ箱行き。NOCONFIRMATION/NOERRORUI/SILENT はエディタ側で既に
+    // 確認ダイアログを出しているので、OS の UI を二重に出さないため。
+    op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
+
+    const int rc = ::SHFileOperationW(&op);
+    return rc == 0 && !op.fAnyOperationsAborted;
+}
+
 void OpenInVSCode(const std::string& filePath)
 {
     // Code.exe を SHGetFolderPathA (LOCALAPPDATA) 経由で探す
@@ -953,16 +976,18 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
         if (isCurrentScene)
             ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f),
                 "\xe2\x80\xbb\xe7\x8f\xbe\xe5\x9c\xa8\xe9\x96\x8b\xe3\x81\x84\xe3\x81\xa6\xe3\x81\x84\xe3\x82\x8b\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3\xe3\x81\xa7\xe3\x81\x99\xe3\x80\x82");  // ※現在開いているシーンです。
-        ImGui::TextDisabled("\xe3\x81\x93\xe3\x81\xae\xe6\x93\x8d\xe4\xbd\x9c\xe3\x81\xaf\xe5\x85\x83\xe3\x81\xab\xe6\x88\xbb\xe3\x81\x9b\xe3\x81\xbe\xe3\x81\x9b\xe3\x82\x93\xe3\x80\x82");  // この操作は元に戻せません。
+        // ごみ箱へ送るので OS 側から復元できる（エディタの Undo では戻らない）。
+        ImGui::TextDisabled("\xe3\x81\x94\xe3\x81\xbf\xe7\xae\xb1\xe3\x81\xb8\xe7\xa7\xbb\xe5\x8b\x95\xe3\x81\x97\xe3\x81\xbe\xe3\x81\x99\xef\xbc\x88\xe3\x82\xa8\xe3\x83\x87\xe3\x82\xa3\xe3\x82\xbf\xe3\x81\xae Undo \xe3\x81\xa7\xe3\x81\xaf\xe6\x88\xbb\xe3\x82\x8a\xe3\x81\xbe\xe3\x81\x9b\xe3\x82\x93\xef\xbc\x89");  // ごみ箱へ移動します（エディタの Undo では戻りません）
         ImGui::Separator();
 
         if (ImGui::Button("\xe5\x89\x8a\xe9\x99\xa4", ImVec2(120, 0)))  // 削除
         {
-            std::error_code ec;
-            if (isDir) std::filesystem::remove_all(m_pendingDeletePath, ec);
-            else       std::filesystem::remove(m_pendingDeletePath, ec);
-            if (ec) Logger::Warn("アセットの削除に失敗しました: {}（{}）", m_pendingDeletePath.string(), ec.message());
-            else    Logger::Info("Asset deleted: {}", m_pendingDeletePath.string());
+            // ごみ箱へ。失敗しても完全削除へフォールバックしない（戻せない操作に化けるため）。
+            if (MoveToRecycleBin(m_pendingDeletePath))
+                Logger::Info("Asset moved to recycle bin: {}", m_pendingDeletePath.string());
+            else
+                Logger::Warn("アセットをごみ箱へ移動できませんでした: {}（削除していません）",
+                             m_pendingDeletePath.string());
             if (isCurrentScene) ctx.currentScenePath.clear();
             if (m_selectedPath == m_pendingDeletePath) m_selectedPath.clear();
             m_pendingDeletePath.clear();

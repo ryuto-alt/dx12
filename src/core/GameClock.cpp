@@ -7,6 +7,7 @@ void GameClock::Reset()
 {
     m_startTime = Clock::now();
     m_prevTime = m_startTime;
+    m_rawDeltaTime = 0.0f;
     m_deltaTime = 0.0f;
     m_totalTime = 0.0f;
     m_frameCount = 0;
@@ -19,13 +20,18 @@ void GameClock::Tick()
     std::chrono::duration<f32> delta = now - m_prevTime;
     std::chrono::duration<f32> total = now - m_startTime;
 
-    m_deltaTime = delta.count();
+    m_rawDeltaTime = delta.count();
+    // 巨大 dt を切る（kMaxDeltaTime のコメント参照）。負値は steady_clock なので出ないが、
+    // 0 未満を弾いておく分にはコストゼロ。
+    m_deltaTime = (m_rawDeltaTime < 0.0f)             ? 0.0f
+                : (m_rawDeltaTime > kMaxDeltaTime)    ? kMaxDeltaTime
+                                                      : m_rawDeltaTime;
     m_totalTime = total.count();
     m_prevTime = now;
     m_frameCount++;
 
-    // FPS計測（0.3秒間隔で更新）
-    m_fpsAccum += m_deltaTime;
+    // FPS計測（0.3秒間隔で更新）。クランプ前の実時間で測る＝重いフレームを隠さない。
+    m_fpsAccum += m_rawDeltaTime;
     m_fpsFrames++;
     if (m_fpsAccum >= 0.3f)
     {
