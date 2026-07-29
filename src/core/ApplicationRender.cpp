@@ -4,6 +4,7 @@
 // Application.cpp から機械分割した実装 TU。分割の全体像は ApplicationInternal.h。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/Profiler.h"
 
 namespace dx12e
 {
@@ -68,7 +69,7 @@ void Application::BuildDrawList()
     // スパースセット参照が丸ごと消える。10万体規模では効く）。
     auto renderView = reg.view<const Transform, const MeshRenderer>(entt::exclude<GridPlane>);
     {
-    CpuScopeTimer _scan(&m_cpuMs[CpuBuildList]);   // 走査部（ソートは listSort で別計上）
+    CpuScopeTimer _scan(&m_cpuMs[CpuBuildList]); DX12_PROFILE_ZONE_N("BuildDrawList");   // 走査部（ソートは listSort で別計上）
     for (auto [e, transform, renderer] : renderView.each())
     {
         if (renderer.meshes.empty()) continue;
@@ -209,7 +210,7 @@ void Application::BuildDrawList()
             reg.emplace_or_replace<PrevWorldMatrix>(it.e, PrevWorldMatrix{it.world});
     }
 
-    CpuScopeTimer _sort(&m_cpuMs[CpuListSort]);
+    CpuScopeTimer _sort(&m_cpuMs[CpuListSort]); DX12_PROFILE_ZONE_N("SortDrawList");
     // PSO バケツ → シェーダ → メッシュ → LOD → バッチ鍵 の順に整列。
     // 前半はパイプライン/マテリアル/VB の切替最小化（従来通り）、
     // 末尾の LOD/batchKey は「同一キーが連続する」ことを保証してインスタンシングの
@@ -1341,7 +1342,12 @@ void Application::Render()
 
     // フェンス待ち時間を計測（GPU がフレームを消化しきれていないとここが伸びる＝GPUバウンドの指標）
     const auto perfFenceT0 = std::chrono::high_resolution_clock::now();
-    auto* nativeCmdList = m_frameResources->BeginFrame(*m_commandQueue);
+    // ★ここが長い = GPU バウンド（CPU が GPU の完了を待っている）。
+    //   Update/記録より長いなら CPU 最適化をしても FPS は上がらない、の判断材料。
+    auto* nativeCmdList = [&] {
+        DX12_PROFILE_ZONE_N("Wait/Fence");
+        return m_frameResources->BeginFrame(*m_commandQueue);
+    }();
     m_perfFenceWaitMs = std::chrono::duration<f32, std::milli>(
         std::chrono::high_resolution_clock::now() - perfFenceT0).count();
     m_commandList->Wrap(nativeCmdList);
@@ -3386,7 +3392,7 @@ void Application::Render()
         nativeCmdList->RSSetViewports(1, &shadowVp);
         nativeCmdList->RSSetScissorRects(1, &shadowScissor);
 
-        CpuScopeTimer _tShadow(&m_cpuMs[CpuShadowRec]);
+        CpuScopeTimer _tShadow(&m_cpuMs[CpuShadowRec]); DX12_PROFILE_ZONE_N("Rec/Shadows");
         for (u32 ci = 0; ci < kNumCascades; ++ci)
         {
             XMMATRIX cascadeVP = XMLoadFloat4x4(&m_cascadeViewProj[ci]);
@@ -4282,7 +4288,7 @@ void Application::Render()
     m_gpuTimer->Begin(nativeCmdList, GpuTimer::MainScene);
     m_passBucket = &m_passMain;
     {
-        CpuScopeTimer _tMain(&m_cpuMs[CpuMainRec]);
+        CpuScopeTimer _tMain(&m_cpuMs[CpuMainRec]); DX12_PROFILE_ZONE_N("Rec/Main");
         RenderSceneMeshes(nativeCmdList, frameIndex, viewProj,
                           (m_isGameMode || m_engineMode == EngineMode::Playing), aoSrv,
                           useDepthPrepass, csSrv, ssrSrv, ssgiSrv);
@@ -5074,7 +5080,7 @@ void Application::Render()
     else if (!m_isGameMode)
     {
         bool pendingPlayMode = false;
-        CpuScopeTimer _tUi(&m_cpuMs[CpuEditorUi]);
+        CpuScopeTimer _tUi(&m_cpuMs[CpuEditorUi]); DX12_PROFILE_ZONE_N("EditorUI");
         m_editorLayer->Render(
             m_engineMode == EngineMode::Playing,
             m_scene.get(), m_camera.get(), m_window.get(),
@@ -5774,7 +5780,8 @@ void Application::Render()
     // メインリストのExecute後に呼ぶことで、メインリスト内で遷移したテクスチャの状態が正しく見える。
     m_imguiManager->RenderPlatformWindows();
     const auto perfPresentT0 = std::chrono::high_resolution_clock::now();
-    m_swapChain->Present(m_useVsync);
+    { DX12_PROFILE_ZONE_N("Present");
+      m_swapChain->Present(m_useVsync); }
     m_frameResources->EndFrame(*m_commandQueue);
     m_perfPresentMs = std::chrono::duration<f32, std::milli>(
         std::chrono::high_resolution_clock::now() - perfPresentT0).count();

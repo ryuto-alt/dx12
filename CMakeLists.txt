@@ -5,6 +5,9 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(DX12_BUILD_TESTS "Build unit tests" ON)
+# Tracy Profiler。既定 OFF ＝ 配布ビルドには 1 バイトも入らない。
+# 計測したいときだけ  cmake --preset windows-tracy  で別ディレクトリへ建てる。
+option(DX12_ENABLE_TRACY "Tracy Profiler を有効化（開発計測用。既定 OFF）" OFF)
 
 # MSVC compile options (not global - applied per-target to avoid conflicts with FetchContent deps)
 set(DX12_COMPILE_OPTIONS /W4 /WX /permissive- /utf-8 /external:anglebrackets /external:W0 /bigobj)
@@ -25,6 +28,23 @@ find_package(spdlog CONFIG REQUIRED)
 # 見えず、後段の POST_BUILD DLL コピー(DX12Engine/GameRuntime、ルート scope)から参照できないため）。
 find_package(directx-dxc CONFIG REQUIRED)
 find_package(meshoptimizer CONFIG REQUIRED)   # 自動LOD生成（Renderer がリンク、DLL はルートで同梱）
+
+# --- Tracy Profiler（任意・既定 OFF）---------------------------------------
+# vcpkg の tracy は TRACY_ENABLE 込みでビルドされており、リンクした時点で有効になる。
+# したがって「リンクするかしないか」で開発/配布を切り分ける。
+# INTERFACE ターゲットへ畳んでおくと、各ライブラリ側は無条件に 1 行リンクするだけで済む。
+#
+# ★vcpkg 側で default-features:false にして crash-handler フィーチャを切っている。
+#   Tracy の crash handler は VEH(AddVectoredExceptionHandler)を張り、SEH より先に走るので、
+#   有効にすると src/core/CrashHandler.cpp の SetUnhandledExceptionFilter が
+#   クラッシュレポートを奪われる（dx12_crash.log / .dmp が出なくなる）。
+add_library(Dx12Profiler INTERFACE)
+if(DX12_ENABLE_TRACY)
+    find_package(Tracy CONFIG REQUIRED)          # Tracy::TracyClient
+    target_link_libraries(Dx12Profiler INTERFACE Tracy::TracyClient)
+    target_compile_definitions(Dx12Profiler INTERFACE DX12_TRACY=1)
+    message(STATUS "Tracy Profiler: ON （プロファイラUIは公式リリースの Tracy.exe を使う）")
+endif()
 
 # Sub-projects
 add_subdirectory(src/core)
@@ -205,6 +225,16 @@ foreach(DX12_MESHOPT_TARGET DX12Engine GameRuntime)
             "$<TARGET_FILE_DIR:${DX12_MESHOPT_TARGET}>"
         COMMENT "Bundling meshoptimizer.dll next to ${DX12_MESHOPT_TARGET}.exe")
 endforeach()
+# TracyClient.dll（Tracy 有効ビルドのみ）。dxil.dll / meshoptimizer.dll と同じ理由で明示コピー。
+if(DX12_ENABLE_TRACY)
+    foreach(DX12_TRACY_TARGET DX12Engine GameRuntime)
+        add_custom_command(TARGET ${DX12_TRACY_TARGET} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:Tracy::TracyClient>" "$<TARGET_FILE_DIR:${DX12_TRACY_TARGET}>"
+            COMMENT "Bundling TracyClient.dll next to ${DX12_TRACY_TARGET}.exe")
+    endforeach()
+endif()
+
 # テスト実行ファイルの隣へ、メイン exe と同じ実行時 DLL を全部配る。
 # vcpkg の applocal デプロイはメイン exe の分しか置かないので、これが無いと
 # Core をリンクするテスト(spdlog.dll / fmt.dll 等が要る)が 0xC0000135 で

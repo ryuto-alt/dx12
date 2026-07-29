@@ -1175,7 +1175,10 @@ bool Application::BuildGame()
         // (Developer Mode OFF の環境で)DXIL署名検証のため内部で LoadLibrary するもので、
         // 我々のコードがリンクしているわけではない delay-load できない実行時依存。
         // 除外するとユーザー環境次第で PSO 生成が失敗するため、常に同梱する。
-        static const std::unordered_set<std::string> kDllExcludeList = { "dxcompiler.dll" };
+        // ★tracyclient.dll: 計測ビルド(cmake --preset windows-tracy)のツリーからゲームを
+    //   ビルドしたときに、プロファイラのクライアントが配布物へ紛れ込むのを防ぐ。
+    //   BuildGame は exe と同じフォルダの .dll をここに載っていないもの全部コピーする。
+    static const std::unordered_set<std::string> kDllExcludeList = { "dxcompiler.dll", "tracyclient.dll" };
         std::error_code ec;
         for (auto& entry : fs::directory_iterator(exeDir, ec))
         {

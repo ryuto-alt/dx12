@@ -4,6 +4,7 @@
 // Application.cpp から機械分割した実装 TU。分割の全体像は ApplicationInternal.h。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/Profiler.h"   // Tracy ゾーン（無効時は完全に消える）
 
 namespace dx12e
 {
@@ -1537,7 +1538,7 @@ void Application::Run()
 
         try
         {
-            { CpuScopeTimer _t(&m_cpuMs[CpuUpdate]); Update(); }
+            { CpuScopeTimer _t(&m_cpuMs[CpuUpdate]); DX12_PROFILE_ZONE_N("Update"); Update(); }
             if (gvOverride) SyncActiveCameraToGlobal();   // Update の後に上書き(編集カメラ操作に勝つ)
             Render();
         }
@@ -1710,6 +1711,10 @@ void Application::Run()
                 _mm_pause();
             }
         }
+
+        // フレーム境界。FPS リミッター/VSync 待ちの「後」に打つので、Tracy が出す
+        // フレーム時間が実際に画面へ出ているレートと一致する。
+        DX12_PROFILE_FRAME();
     }
 
     timeEndPeriod(1);
@@ -1934,7 +1939,8 @@ void Application::Update()
         {
             // イベントは滅多に出ないので、空 vector はヒープを触らない = ローカルで十分
             std::vector<UiAnimRuntime::PendingEvent> animEvents;
-            m_uiAnimRuntime->Update(animReg, dt, animEvents);
+            { DX12_PROFILE_ZONE_N("UiAnim");
+              m_uiAnimRuntime->Update(animReg, dt, animEvents); }
             for (const auto& pe : animEvents)
             {
                 EngineEvent ev;
@@ -2230,9 +2236,9 @@ void Application::Update()
         if (m_uiSystem)
             m_uiSystem->DispatchPendingClicks(m_scene->GetRegistry(), m_eventBus);
 
-        m_scriptEngine->CallOnUpdate(dt);
-        m_scriptEngine->UpdateAttachedScripts(dt);
-        m_scriptEngine->UpdateTriggers(dt);   // Trigger（イベント）評価
+        { DX12_PROFILE_ZONE_N("Lua/OnUpdate");   m_scriptEngine->CallOnUpdate(dt); }
+        { DX12_PROFILE_ZONE_N("Lua/Components"); m_scriptEngine->UpdateAttachedScripts(dt); }
+        { DX12_PROFILE_ZONE_N("Lua/Triggers");   m_scriptEngine->UpdateTriggers(dt); }   // Trigger（イベント）評価
 
         // アクティブカメラの Transform をグローバル Camera に同期。
         // 親階層込みのワールド変換で反映するので、親オブジェクトにアタッチした
@@ -2253,7 +2259,8 @@ void Application::Update()
     }
 
     // シーン更新（Animator等）— エディタモードは時間を止める（ボーン行列は維持）
-    m_scene->Update(m_engineMode == EngineMode::Playing ? dt : 0.0f);
+    { DX12_PROFILE_ZONE_N("Scene/Animators");
+      m_scene->Update(m_engineMode == EngineMode::Playing ? dt : 0.0f); }
 
     // 配置パーティクル放出器（ParticleEmitter）を駆動。
     // エディタでも常時プレビュー（実 dt で放出/前進）し、Play では _active に従う。
@@ -2346,12 +2353,14 @@ void Application::Update()
     // パーティクル更新（配置エミッタのプレビューのため、エディタでも実 dt で前進）
     // ★決定論キャプチャ中は前進させない（#31。粒子が動くと 2 枚が一致しない）。
     if (m_particleSystem)
-        m_particleSystem->Update(m_deterministicCapture ? 0.0f : dt);
+        { DX12_PROFILE_ZONE_N("Particles/Sim");
+          m_particleSystem->Update(m_deterministicCapture ? 0.0f : dt); }
 
     // 物理更新（プレイモードのみ）
     if (m_engineMode == EngineMode::Playing && m_physicsSystem->IsInitialized())
     {
-        m_physicsSystem->Update(dt, m_scene->GetRegistry());
+        { DX12_PROFILE_ZONE_N("Physics");
+          m_physicsSystem->Update(dt, m_scene->GetRegistry()); }
     }
 
     // ネットワーク送信処理（物理確定後の座標を使うため直後。フェーズ⑤でスナップショット送信を実装）。
@@ -2386,13 +2395,13 @@ void Application::Update()
             if (src.runtimeSlot >= 0 && src.spatial)
                 m_audioSystem->UpdateSpatialEmitter(src.runtimeSlot, wx, wy, wz);
         }
-        m_audioSystem->Update();
+        { DX12_PROFILE_ZONE_N("Audio"); m_audioSystem->Update(); }
     }
 
     // Trigger の Post や接触 Post を同フレーム内で配信（Playing のみ）。
     if (m_engineMode == EngineMode::Playing)
     {
-        m_eventBus.Flush();
+        { DX12_PROFILE_ZONE_N("Events/Flush"); m_eventBus.Flush(); }
 
         // プレイセッション記録。物理・スクリプト・アニメが全部確定した後に取る。
         // 記録するだけで何も操作しない（遊ぶのは人間、読むのは AI）。

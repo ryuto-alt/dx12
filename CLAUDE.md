@@ -90,6 +90,30 @@ cmake --build build/debug --config Debug
 build/debug/Debug/DX12Engine.exe
 ```
 
+### プロファイリング（Tracy）
+CPU のどこで時間を食っているかを**フレーム単位の時系列**で見る。
+`dx12_perf_stats` は「N フレーム平均を 8 スロットに畳んだ数値」で、Update の中身
+（Lua / 物理 / アニメ / パーティクル / オーディオ）が 1 個に潰れているため、
+内訳を見るにはこちらが要る。
+
+```bash
+cmake --preset windows-tracy      # 別ディレクトリ build/tracy へ建てる
+cmake --build build/tracy
+build/tracy/DX12Engine.exe
+# Tracy.exe（公式リリースの prebuilt）を起動して Connect
+```
+
+- **既定は OFF**。`cmake --preset windows-release` には Tracy のコードは 1 バイトも入らない
+- vcpkg の `profiling` フィーチャ経由。通常ビルドでは tracy をダウンロードすらしない
+- `default-features:false` で **crash-handler フィーチャを切っている**。Tracy の
+  crash handler は VEH を張り SEH より先に走るので、有効にすると `CrashHandler.cpp` の
+  `SetUnhandledExceptionFilter` がクラッシュレポートを奪われる
+- `on-demand` フィーチャ有効＝プロファイラを繋ぐまでのオーバーヘッドはほぼゼロ
+- `BuildGame` は exe 隣の DLL を無条件コピーするので、`tracyclient.dll` は
+  `kDllExcludeList`（`ApplicationProject.cpp`）で配布物から除外している
+- ゾーンは `src/core/Profiler.h` の `DX12_PROFILE_ZONE_N()`。既存の `CpuScopeTimer` は
+  消さず**同じ行に並べる**（前者は AI が読む数値、後者は人間が読むタイムライン）
+
 ### vcpkg セットアップ（初回のみ）
 ```bash
 cd ~

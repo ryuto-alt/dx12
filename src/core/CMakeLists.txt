@@ -54,7 +54,9 @@ target_include_directories(Core
 find_package(spdlog CONFIG REQUIRED)
 
 target_link_libraries(Core
-    PUBLIC spdlog::spdlog
+    # Dx12Profiler は Tracy 無効時は空の INTERFACE ターゲット。ここ 1 箇所で
+    # 全ライブラリへ伝播する（全部が直接/間接に Core を PUBLIC リンクしているため）。
+    PUBLIC spdlog::spdlog Dx12Profiler
     PRIVATE imgui::imgui bcrypt.lib Cabinet.lib ws2_32.lib gdiplus.lib  # gdiplus はスプラッシュのPNGロゴ用
 )
 

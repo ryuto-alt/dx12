@@ -20,5 +20,17 @@
     "joltphysics",
     "enet",
     "meshoptimizer"
-  ]
+  ],
+  "features": {
+    "profiling": {
+      "description": "Tracy Profiler クライアント（開発計測用。配布ビルドでは有効にしない）",
+      "dependencies": [
+        {
+          "name": "tracy",
+          "default-features": false,
+          "features": ["on-demand"]
+        }
+      ]
+    }
+  }
 }
