@@ -89,6 +89,35 @@ int main()
     map.Clear();
     CHECK(map.BindingCount("jump") == 0);
 
+    // Bindings() の列挙。設定ファイルへの保存と設定画面の一覧表示がこれに依存する。
+    // ここが壊れると「保存したのに次回起動で戻っていない」になるが、保存経路は
+    // Application 側なのでユニットテストからは見えない。最低限ここで守る。
+    {
+        ActionMap m2;
+        m2.Bind("move", 'W', XMFLOAT3{0.0f, 0.0f, 1.0f});
+        m2.Bind("move", 'S', XMFLOAT3{0.0f, 0.0f, -1.0f});
+        m2.Bind("jump", 0x20);   // VK_SPACE
+
+        const auto& all = m2.Bindings();
+        CHECK(all.size() == 2);                       // move / jump
+        auto itMove = all.find("move");
+        CHECK(itMove != all.end());
+        if (itMove != all.end())
+        {
+            CHECK(itMove->second.size() == 2);
+            // Bind した順に並ぶ（保存 → 読み込みで順序が変わらないこと）
+            CHECK(itMove->second[0].key == 'W');
+            CHECK(feq(itMove->second[0].c.z, 1.0f));
+            CHECK(itMove->second[1].key == 'S');
+            CHECK(feq(itMove->second[1].c.z, -1.0f));
+        }
+        auto itJump = all.find("jump");
+        CHECK(itJump != all.end());
+        // キーだけの Bind は寄与 (1,0,0)
+        if (itJump != all.end() && itJump->second.size() == 1)
+            CHECK(feq(itJump->second[0].c.x, 1.0f));
+    }
+
     std::printf("action_map: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

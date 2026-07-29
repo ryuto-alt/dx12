@@ -183,6 +183,10 @@ void Application::UpdateProjectLoad(f32 dt)
         m_loadProjectStarted = false;
         m_editorCtx->buildCompleteFlash = 1.5f;
 
+        // キー割り当てはプロジェクト単位（保存先が PathResolver::BaseDir() 基準なので、
+        // プロジェクトルートが確定したここで読む）。無ければ既定のまま。
+        LoadActionBindings();
+
         // ロード完了: 隠していたメインウィンドウを出してからスプラッシュを閉じる
         // (順序を逆にすると一瞬何も表示されない空白ができる)。
         // 起動直後の遅延表示(--project直開き等でまだ未表示)もここで役目を引き継ぐ。

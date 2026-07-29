@@ -2417,6 +2417,65 @@ void Application::Update()
 // FootIK.cpp（Animation ライブラリ）は entt も PhysicsSystem も知らない。
 // ここが「エンティティを走査して PhysicsSystem::RaycastEx を繋ぐ」接着層。
 // ---------------------------------------------------------------------------
+std::string Application::ActionBindingsPath() const
+{
+    // プロジェクト直下。settings.json の隣に置く（あちらは double しか持てないので
+    // キー割り当ては表現できず、別ファイルにするしかない）。
+    return PathResolver::BaseDir() + "input_bindings.json";
+}
+
+void Application::SaveActionBindings()
+{
+    nlohmann::json root = nlohmann::json::object();
+    for (const auto& [action, list] : m_actionMap.Bindings())
+    {
+        nlohmann::json arr = nlohmann::json::array();
+        for (const auto& b : list)
+            arr.push_back({{"key", b.key},
+                           {"c", nlohmann::json::array({b.c.x, b.c.y, b.c.z})}});
+        root[action] = std::move(arr);
+    }
+    const std::string path = ActionBindingsPath();
+    std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
+    if (!ofs) { Logger::Warn("キー割り当てを保存できませんでした: {}", path); return; }
+    ofs << root.dump(2);
+    Logger::Info("キー割り当てを保存しました: {}", path);
+}
+
+void Application::LoadActionBindings()
+{
+    const std::string path = ActionBindingsPath();
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) return;   // 無いのは正常（既定のまま）
+
+    nlohmann::json root;
+    try { std::ifstream ifs(path, std::ios::binary); if (!ifs) return; ifs >> root; }
+    catch (const std::exception& e)
+    {
+        // 壊れた設定でゲームが起動しなくなる方が困る。既定のまま進む。
+        Logger::Warn("キー割り当ての読み込みに失敗しました（既定のまま進みます）: {}", e.what());
+        return;
+    }
+    if (!root.is_object()) return;
+
+    m_actionMap.Clear();
+    for (auto it = root.begin(); it != root.end(); ++it)
+    {
+        if (!it.value().is_array()) continue;
+        for (const auto& bj : it.value())
+        {
+            if (!bj.is_object()) continue;
+            const int key = bj.value("key", -1);
+            if (key < 0 || key > 255) continue;   // VK の範囲外は捨てる
+            DirectX::XMFLOAT3 c{1.0f, 0.0f, 0.0f};
+            if (bj.contains("c") && bj["c"].is_array() && bj["c"].size() == 3)
+                c = { bj["c"][0].get<f32>(), bj["c"][1].get<f32>(), bj["c"][2].get<f32>() };
+            m_actionMap.Bind(it.key(), key, c);
+        }
+    }
+    Logger::Info("キー割り当てを読み込みました: {}", path);
+}
+
 std::string Application::AutosaveDir()
 {
     // assets 配下に置く。シーン JSON がアセットを assets 相対で参照するので、

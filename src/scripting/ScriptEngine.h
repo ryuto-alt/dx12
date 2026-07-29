@@ -25,6 +25,7 @@ class PhysicsSystem;
 class ParticleSystem;
 class GpuParticleSystem;
 class NetworkSystem;
+class ActionMap;
 
 // スクリプトコンポーネントのプロパティ宣言（.lua の properties から解析）。
 // 型 / 既定値 / 範囲 / 表示名を持ち、Inspector の自動 UI 生成と Play 時の注入に使う。
@@ -158,6 +159,14 @@ public:
     void SetUiRectCallback(UiRectCb r) { m_uiRectCb = std::move(r); }
     void SetUiFocusCallback(UiFocusCb cb) { m_uiFocusCb = std::move(cb); }
 
+    // ── アクションマップ（キーリバインドの土台）──
+    // Application が所有する。Play/Stop で lua state は作り直されるが、
+    // キー割り当ては「設定」なのでアプリ寿命で持つ必要がある（ここで借りるだけ）。
+    // null 許容（未設定なら Lua の actions.* は何もしない）。
+    void SetActionMap(ActionMap* am) { m_actionMap = am; }
+    // actions.save() から呼ばれる。バインドの永続化は Application 側の仕事。
+    void SetActionSaveCallback(VoidCb cb) { m_actionSaveCb = std::move(cb); }
+
     // 映像設定（Application が注入）。Lua の display.* から呼ばれる（'.' 呼び、time と同様）。
     struct DisplayCallbacks
     {
@@ -202,6 +211,7 @@ private:
     GpuParticleSystem* m_gpuParticleSystem = nullptr;   // 大量粒子用（fx の gpu=true で使用）
     NetworkSystem* m_network = nullptr;   // マルチプレイ（net:host/join等）。null 許容
     EventBus*    m_eventBus = nullptr;   // Application が所有、null 許容（エディタ中は非使用）
+    ActionMap*   m_actionMap = nullptr;  // Application が所有、null 許容
     std::string  m_assetsDir;
     std::string  m_lastError;
 
@@ -231,6 +241,7 @@ private:
     LoadSceneCb  m_preloadSceneCb;
     VoidCb       m_nextSceneCb;
     VoidCb       m_quitCb;
+    VoidCb       m_actionSaveCb;
     TransitionCb m_transitionCb;
     UiTextCb    m_uiTextCb;
     UiButtonCb  m_uiButtonCb;

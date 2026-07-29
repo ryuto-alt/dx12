@@ -27,6 +27,7 @@
 #include "core/mcp/McpDeferred.h"   // MCP 遅延応答の相関情報（値メンバで持つので完全型が要る）
 #include "core/CpuScope.h"          // CpuScope / CpuScopeTimer（エディタとも共有するので独立ヘッダ）
 #include "core/PlaySession.h"       // Play 1 回ぶんの記録（値メンバで持つので完全型が要る）
+#include "engine/input/ActionMap.h"  // キーリバインド（値メンバで持つので完全型が要る）
 #include "renderer/DrawItem.h"      // 描画リストの要素（エディタのピッキングも読むので独立ヘッダ）
 #include "renderer/ClusteredLightCulling.h"  // LightGPU を値で持つので完全型が要る（軽量ヘッダ）
 #include "renderer/DecalSystem.h"            // DecalGPU を値で持つので同上
@@ -463,6 +464,14 @@ private:
     // 物理ステップ後・スキニングバッファのアップロード前に呼ぶこと
     // （IK 後のボーン行列が GPU へ行くように）。
     void ApplyFootIkPass();
+    // ── アクションマップ（キーリバインド）──
+    // Play/Stop で ScriptEngine ごと作り直されても消えないよう Application が持つ。
+    // 保存先はプロジェクト直下の input_bindings.json（settings.json は double しか
+    // 持てないのでキー割り当てを表現できない）。
+    std::string ActionBindingsPath() const;
+    void SaveActionBindings();
+    void LoadActionBindings();
+
     // 「いまの状態＝保存済み」に揃える（保存成功時・シーンを開いた直後・新規作成直後）。
     // 実体は EditorContext::MarkSceneSaved + 設定指紋の取り直し。
     void MarkSceneClean();
@@ -1131,6 +1140,7 @@ private:
     // シーンフロー（WP6）
     std::unique_ptr<SceneFlow> m_sceneFlow;
     GameClock                          m_gameClock;
+    ActionMap                          m_actionMap;   // キー割り当て（アプリ寿命）
     // Play 1 回ぶんの記録（人間の操作 + ログ + カメラ/FPS サンプル）。
     // Stop 後も次の Play まで残す＝遊び終えてから MCP で取りに来られる。
     PlaySession                        m_playSession;

@@ -63,8 +63,13 @@ public:
         return it == m_actions.end() ? 0 : it->second.size();
     }
 
-private:
     struct Binding { int key; DirectX::XMFLOAT3 c; };
+
+    // 全バインドの読み取り。保存（設定ファイルへの書き出し）と設定画面の一覧表示用。
+    // ここも「入力の実体を知らない」まま済ませたいので、シリアライズ自体は呼び出し側の仕事。
+    const std::unordered_map<std::string, std::vector<Binding>>& Bindings() const { return m_actions; }
+
+private:
     std::unordered_map<std::string, std::vector<Binding>> m_actions;
 };
 

@@ -19,6 +19,7 @@
 #include "renderer/ParticleSystem.h"
 #include "renderer/GpuParticleSystem.h"
 #include "input/InputSystem.h"
+#include "engine/input/ActionMap.h"
 #include "renderer/Camera.h"
 #include "audio/AudioSystem.h"
 #include "physics/PhysicsSystem.h"
@@ -1415,6 +1416,54 @@ void ScriptEngine::RegisterBindings()
         "setPadVibration",      &InputSystem::SetPadVibration,
         "setPadVibrationTimed", &InputSystem::SetPadVibrationTimed
     );
+
+    // --- actions（アクションマップ）---
+    // 「W キーで前進」ではなく「move アクションで前進」と書くための層。
+    // キー割り当てを設定として差し替えられる＝リバインドの土台になる。
+    // ★ActionMap は「キーが押されているか」を述語で受け取る設計（InputSystem 非依存）なので、
+    //   ここで InputSystem を捕まえたラムダを渡す。ActionMap 側は入力の実体を知らないままでいる。
+    {
+        sol::table act = lua.create_named_table("actions");
+
+        // bind(name, key, [x, y, z])  x,y,z 省略時は (1,0,0)＝ボタン用
+        act.set_function("bind",
+            [this](const std::string& name, int key, sol::optional<f32> x,
+                   sol::optional<f32> y, sol::optional<f32> z) {
+                if (!m_actionMap) return;
+                m_actionMap->Bind(name, key,
+                    DirectX::XMFLOAT3{ x.value_or(1.0f), y.value_or(0.0f), z.value_or(0.0f) });
+            });
+
+        // get(name) -> x, y, z（押されているキーの寄与を合算）
+        act.set_function("get", [this](const std::string& name) {
+            if (!m_actionMap || !m_input) return std::make_tuple(0.0f, 0.0f, 0.0f);
+            const auto v = m_actionMap->Evaluate(name,
+                [this](int k) { return m_input->IsKeyDown(k); });
+            return std::make_tuple(v.x, v.y, v.z);
+        });
+
+        // down(name) -> bool（いずれかのキーが押されている）
+        act.set_function("down", [this](const std::string& name) {
+            if (!m_actionMap || !m_input) return false;
+            return m_actionMap->Active(name, [this](int k) { return m_input->IsKeyDown(k); });
+        });
+
+        // pressed(name) -> bool（このフレームで押された。連打の判定用）
+        act.set_function("pressed", [this](const std::string& name) {
+            if (!m_actionMap || !m_input) return false;
+            return m_actionMap->Active(name, [this](int k) { return m_input->IsKeyPressed(k); });
+        });
+
+        act.set_function("clear", [this](const std::string& name) {
+            if (m_actionMap) m_actionMap->ClearAction(name);
+        });
+        act.set_function("clearAll", [this]() { if (m_actionMap) m_actionMap->Clear(); });
+        act.set_function("count", [this](const std::string& name) {
+            return m_actionMap ? static_cast<int>(m_actionMap->BindingCount(name)) : 0;
+        });
+        // 設定画面から呼ぶ。プロジェクト直下の input_bindings.json へ書く。
+        act.set_function("save", [this]() { if (m_actionSaveCb) m_actionSaveCb(); });
+    }
 
     // --- Camera ---
     lua.new_usertype<Camera>("Camera",

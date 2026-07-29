@@ -324,6 +324,11 @@ void Application::WireScriptCallbacks()
 {
     if (!m_scriptEngine) return;
 
+    // アクションマップ（キーリバインド）。Play/Stop で ScriptEngine は作り直されるが
+    // 割り当ては設定なので Application 側で持ち続ける＝ここで借り直すだけ。
+    m_scriptEngine->SetActionMap(&m_actionMap);
+    m_scriptEngine->SetActionSaveCallback([this]() { SaveActionBindings(); });
+
     m_scriptEngine->SetLoadSceneCallback(
         [this](const std::string& rel) { m_editorCtx->pendingGameLoadPath = rel; });
 
