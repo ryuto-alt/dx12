@@ -486,6 +486,11 @@ private:
     // 定期的に assets/scenes/.autosave/ へ現在シーンを書く。通常の保存とは別物なので
     // 未保存フラグは落とさない（落とすと「保存した」と誤認させる）。
     void UpdateAutosave(f32 dt);
+    // オートセーブを間隔・未保存判定を通さずに今すぐ書く。書けたら true。
+    bool WriteAutosave();
+    // GPU デバイスが失われていたら退避して true（＝ループを畳む合図）。詳細は .cpp。
+    bool HandleDeviceLoss();
+    bool m_deviceLost = false;   // 一度立ったら描画へ戻らない
     // シーンを開いた直後に呼ぶ。オートセーブの方が本体より新しければ復旧プロンプトを立てる。
     void CheckAutosaveRecovery(const std::string& sceneFullPath);
     // オートセーブの置き場（assets/scenes/.autosave/）。末尾 '/' 付き。

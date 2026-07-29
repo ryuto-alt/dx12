@@ -1547,9 +1547,18 @@ void Application::Run()
         catch (const std::exception& ex)
         {
             Logger::Error("フレーム処理でエラー: {}", ex.what());
-            // GPU 状態をリセットして次フレームで復帰を試みる。
-            // cmdList が open のまま残ると次の BeginFrame の Reset が失敗し続けて
-            // 復帰不能ループになるため、必ず AbortFrame で Close しておく。
+
+            // ★まずデバイスが生きているかを見る。
+            //   デバイスロスト(TDR / ドライバのハング / GPU リセット)は「次フレームで
+            //   復帰を試みる」種類のエラーではない。以後どの GPU 呼び出しも同じ HRESULT で
+            //   失敗し続け、失敗を握り潰した先で null になった Map ポインタへ書き込んで落ちる。
+            //   実際 SkinningBuffer::Update がその形でアクセス違反を起こしていた
+            //   （デバイスロスト → 例外 → 続行 → 次フレームで 0x20 番地へ書き込み）。
+            //   ここで止めないと、落ちるまでの数フレームで作業内容ごと失われる。
+            if (HandleDeviceLoss()) break;
+
+            // 復帰を試みる。cmdList が open のまま残ると次の BeginFrame の Reset が
+            // 失敗し続けて復帰不能ループになるため、必ず AbortFrame で Close しておく。
             m_commandQueue->WaitIdle();
             if (m_frameResources)
                 m_frameResources->AbortFrame();
@@ -2501,6 +2510,53 @@ void Application::UpdateAutosave(f32 dt)
     m_autosaveTimer = 0.0f;
     if (!m_editorCtx->IsSceneDirty()) return;            // 汚れていなければ書く意味が無い
 
+    WriteAutosave();
+}
+
+// GPU デバイスが失われていたら、作業内容を退避してから畳む合図を返す。
+// 戻り値 true = もうフレームを回してはいけない（呼び出し側は break すること）。
+//
+// なぜ「復帰を試みない」のか:
+//   デバイスロストは D3D12 では回復手段が無い。復帰するにはデバイス・スワップチェーン・
+//   全リソースを作り直す必要があり、それは実質アプリの再起動と同じ。
+//   中途半端に続けると、GPU 呼び出しが全部失敗する中で null になったポインタを踏んで
+//   アクセス違反で落ちる＝未保存の作業が確実に消える。
+//   落ちるのが避けられないなら、せめて落ちる前に書いてから畳む。
+bool Application::HandleDeviceLoss()
+{
+    if (m_deviceLost) return true;   // 二度目以降は黙って畳む（同じログを積まない）
+    if (!m_graphicsDevice || !m_graphicsDevice->GetDevice()) return false;
+    const HRESULT reason = m_graphicsDevice->GetDevice()->GetDeviceRemovedReason();
+    if (SUCCEEDED(reason)) return false;   // デバイスは生きている＝普通の例外。復帰を試してよい
+
+    const char* why = "不明";
+    switch (reason)
+    {
+    case DXGI_ERROR_DEVICE_HUNG:      why = "GPU がハングした（描画が重すぎて TDR に達した可能性）"; break;
+    case DXGI_ERROR_DEVICE_REMOVED:   why = "GPU が取り外された（ドライバ更新・スリープ復帰など）"; break;
+    case DXGI_ERROR_DEVICE_RESET:     why = "GPU がリセットされた"; break;
+    case DXGI_ERROR_DRIVER_INTERNAL_ERROR: why = "ドライバ内部エラー"; break;
+    case DXGI_ERROR_INVALID_CALL:     why = "不正な API 呼び出し（エンジン側のバグ）"; break;
+    default: break;
+    }
+    Logger::Error("GPU デバイスが失われました（0x{:08X}: {}）。復帰できないので終了します",
+                  static_cast<unsigned>(reason), why);
+
+    if (m_editorCtx && m_scene && m_editorCtx->IsSceneDirty() && WriteAutosave())
+        Logger::Error("未保存の変更を退避しました。次回起動時に復旧するか聞きます");
+    else
+        Logger::Error("未保存の変更はありません（退避不要）");
+
+    m_deviceLost = true;
+    return true;
+}
+
+// オートセーブの「実際に書く」部分。UpdateAutosave の間隔判定・未保存判定を通さずに
+// 呼べるようにしてある。デバイスロスト時の緊急退避がこれを直接叩くため。
+bool Application::WriteAutosave()
+{
+    if (!m_editorCtx || !m_scene || m_editorCtx->currentScenePath.empty()) return false;
+
     namespace fs = std::filesystem;
     std::error_code ec;
     const std::string dir = AutosaveDir();
@@ -2511,7 +2567,7 @@ void Application::UpdateAutosave(f32 dt)
     if (!SceneSerializer::Save(*m_scene, dir + "scene.json", PathResolver::AssetsDir()))
     {
         Logger::Warn("オートセーブに失敗しました: {}", dir + "scene.json");
-        return;
+        return false;
     }
 
     // どのシーンの退避かを残す。復旧側はこれを見て本体のパスへ書き戻す。
@@ -2525,6 +2581,7 @@ void Application::UpdateAutosave(f32 dt)
     std::ofstream mf(dir + "meta.json", std::ios::binary | std::ios::trunc);
     if (mf) mf << meta.dump(2);
     Logger::Info("オートセーブしました: {}", dir + "scene.json");
+    return true;
 }
 
 void Application::CheckAutosaveRecovery(const std::string& sceneFullPath)

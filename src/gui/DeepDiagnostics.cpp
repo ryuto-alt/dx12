@@ -1902,10 +1902,31 @@ DeepDiagReport DeepDiag::RenderHealth(Application& app)
             (void)e;
             if (dl.intensity > sunMax) sunMax = dl.intensity;
         }
+        // ★点光源・スポットも数えること。
+        //   「太陽 OFF・IBL 0・空 非表示」は屋内シーンではまったく正常な構成で、
+        //   シャンデリアと燭台だけで照らしているだけ。ここを見落とすと
+        //   ちゃんと照明が組んであるシーンに「真っ暗です」と嘘をつくことになる。
+        //   実際、本番のホラーゲームのシーン（点光源 36 個が点灯）で誤検知していた。
+        int litLocal = 0;
+        auto lit = [](f32 intensity, const DirectX::XMFLOAT3& c, f32 range) {
+            return intensity > 0.0f && range > 0.0f
+                && (c.x > 0.0f || c.y > 0.0f || c.z > 0.0f);
+        };
+        for (auto [e, pl] : reg.view<const PointLight>().each())
+        {
+            (void)e;
+            if (lit(pl.intensity, pl.color, pl.range)) ++litLocal;
+        }
+        for (auto [e, sl] : reg.view<const SpotLight>().each())
+        {
+            (void)e;
+            if (lit(sl.intensity, sl.color, sl.range)) ++litLocal;
+        }
+
         ++r.checked;
-        if (sunMax <= 0.0f && sky.iblIntensity <= 0.0f && !sky.drawSkybox)
-            r.Add(2, "光が 1 つもありません（太陽の強度 0 / IBL 0 / スカイボックス非表示）。"
-                     "どれか 1 つを戻さないと何も見えません");
+        if (sunMax <= 0.0f && sky.iblIntensity <= 0.0f && !sky.drawSkybox && litLocal == 0)
+            r.Add(2, "光が 1 つもありません（太陽の強度 0 / IBL 0 / スカイボックス非表示 / "
+                     "点・スポットも全部消灯）。どれか 1 つを戻さないと何も見えません");
     }
 
     // ---- 4) シーン矩形が潰れている ----
