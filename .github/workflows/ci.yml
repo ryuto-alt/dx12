@@ -23,3 +23,25 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build-tests --build-config Release --output-on-failure
+
+  mcp-server-tests:
+    name: MCP server tests (Node)
+    # 開発機と同じ Windows で回す。テストはパス絡みの検査を含むので OS を変えない。
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 型ストリップ(tsc なし)で .ts を直接動かすので Node 24 以上が要る。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install
+        working-directory: tools/mcp-server
+        run: npm ci
+
+      # schemaDrift.test.ts は「MCP のスキーマに足した引数が engine まで届かず
+      # 黙って捨てられる」事故を実際に止めている。CI で走っていないと意味がない。
+      - name: Test
+        working-directory: tools/mcp-server
+        run: npm test
