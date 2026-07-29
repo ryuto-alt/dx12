@@ -1,4 +1,4 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 # MCP サーバを配布リポジトリ https://github.com/ryuto-alt/dx12-mcp へ同期する。
 # ソース・オブ・トゥルースはこのフォルダ(tools/mcp-server)。変更をコミットしたら実行してや。
 # 使い方: pwsh -ExecutionPolicy Bypass -File tools\mcp-server\publish.ps1 [-Message "コミットメッセージ"]
