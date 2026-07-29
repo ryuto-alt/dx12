@@ -95,10 +95,19 @@ std::string IndexPath()
     return dir.empty() ? std::string() : dir + "/index.ts";
 }
 
-// Claude Code 用ワンライナー。これをターミナルに貼るだけで繋がる（パス手入力ゼロ）。
+// セットアップ用ワンライナー。install.ps1 が Claude Code と Codex の両方へ登録するので、
+// ユーザーが貼るコマンドはこれ1本で済む（クライアントごとに別コマンドを案内しない）。
+// powershell(5.1) 指定: pwsh は入っていない環境がある。スクリプト自体は 5.1 で動く書き方。
+std::string SetupCommand()
+{
+    std::string dir = McpServerDir();
+    return "powershell -ExecutionPolicy Bypass -File \"" + dir + "/install.ps1\"";
+}
+
+// 手動登録用（自動登録がコケた時の逃げ道）。折りたたみの中にだけ出す。
 std::string ClaudeCommand()
 {
-    return "claude mcp add dx12-engine -- node \"" + IndexPath() + "\"";
+    return "claude mcp add dx12-engine --scope user -- node \"" + IndexPath() + "\"";
 }
 
 // Codex / 手動用 .mcp.json。args に実行時解決した絶対パスを埋める。
@@ -154,7 +163,8 @@ void McpBridgePanel::Render(McpBridge& bridge, EditorContext& ctx)
         ImGui::TextColored(ImVec4(0.95f, 0.6f, 0.5f, 1.0f), "MCP サーバが未インストールです。");
         ImGui::TextWrapped("MCP サーバは別リポジトリで配布しています。下のコマンドを"
                            "ターミナル(PowerShell 等)に貼って実行すると %%USERPROFILE%%\\dx12-mcp に"
-                           "インストールされます（Node.js v24+ が必要）。完了後この窓を開き直してな。");
+                           "インストールされ、Claude Code と Codex へ自動登録されます"
+                           "（Node.js v24+ が必要）。完了後この窓を開き直してください。");
         ImGui::Spacing();
         static std::string installCmd =
             "git clone https://github.com/ryuto-alt/dx12-mcp \"$env:USERPROFILE\\dx12-mcp\"; "
@@ -169,27 +179,36 @@ void McpBridgePanel::Render(McpBridge& bridge, EditorContext& ctx)
     }
     else
     {
-        ImGui::TextDisabled("① 下の「コマンドをコピー」を押す");
+        ImGui::TextDisabled("① 下の「セットアップコマンドをコピー」を押す");
         ImGui::TextDisabled("② ターミナル(PowerShell 等)に貼って実行");
-        ImGui::TextDisabled("③ Claude Code を再起動 → 繋がります");
+        ImGui::TextDisabled("③ Claude Code / Codex を再起動 → 繋がります");
         ImGui::Spacing();
 
         // コピーされる中身を見せておく（読み取り専用・選択可）。
         // 実行時解決した値を毎回反映できるよう static にしない（パスはプロセス内で一定なので再計算は軽い）。
-        std::string cmd = ClaudeCommand();
+        std::string cmd = SetupCommand();
         ImGui::SetNextItemWidth(-FLT_MIN);
         ImGui::InputText("##mcp_cmd", cmd.data(), cmd.size() + 1, ImGuiInputTextFlags_ReadOnly);
 
         // 主役ボタン: ワンライナーを丸ごとクリップボードへ。
-        if (ImGui::Button("コマンドをコピー", ImVec2(-FLT_MIN, 0)))
+        if (ImGui::Button("セットアップコマンドをコピー", ImVec2(-FLT_MIN, 0)))
             ImGui::SetClipboardText(cmd.c_str());
+        ImGui::TextDisabled("Claude Code と Codex の両方へ自動登録されます。");
 
         ImGui::Spacing();
 
-        // ---- 別の接続方法（Codex / 手動）。普段は折りたたみ ----
-        if (ImGui::CollapsingHeader("別の接続方法 (Codex / .mcp.json)"))
+        // ---- 手動登録（自動が失敗した時だけ）。普段は折りたたみ ----
+        if (ImGui::CollapsingHeader("手動で登録する (Claude Code / Codex / .mcp.json)"))
         {
-            ImGui::TextDisabled(".mcp.json に貼るか、Codex の設定に同じ command/args を書く。");
+            std::string manual = ClaudeCommand();
+            ImGui::TextDisabled("Claude Code:");
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            ImGui::InputText("##mcp_manual_claude", manual.data(), manual.size() + 1,
+                             ImGuiInputTextFlags_ReadOnly);
+            if (ImGui::Button("Claude Code のコマンドをコピー", ImVec2(-FLT_MIN, 0)))
+                ImGui::SetClipboardText(manual.c_str());
+            ImGui::Spacing();
+            ImGui::TextDisabled(".mcp.json に貼るか、Codex の ~/.codex/config.toml に同じ command/args を書く。");
             std::string js = McpJson();
             ImGui::InputTextMultiline("##mcp_json", js.data(), js.size() + 1,
                                       ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 8.0f),

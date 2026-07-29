@@ -3747,6 +3747,64 @@ void ScriptEngine::ReloadScript(entt::entity e)
     // 実際の再構築は UpdateAttachedScripts のループで行う
 }
 
+int ScriptEngine::ReloadChangedScripts()
+{
+    if (!m_scene) return 0;
+    namespace fs = std::filesystem;
+    auto& reg  = m_scene->GetRegistry();
+    auto  view = reg.view<LuaScript>();
+
+    // 1) 使用中の scriptPath ごとに 1 回だけ mtime を見る（同じ .lua を複数エンティティが使う）。
+    std::unordered_map<std::string, bool> changed;   // scriptPath → 書き換わったか
+    for (auto e : view)
+    {
+        const auto& ls = view.get<LuaScript>(e);
+        if (ls.scriptPath.empty() || changed.count(ls.scriptPath)) continue;
+
+        std::error_code ec;
+        const auto t = fs::last_write_time(fs::path(m_assetsDir) / ls.scriptPath, ec);
+        // pak 運用（封印ランタイム）や編集中の一時的な消失では stat が失敗する。黙って見送る。
+        if (ec) { changed.emplace(ls.scriptPath, false); continue; }
+
+        const int64_t stamp = t.time_since_epoch().count();
+        auto [it, inserted] = m_scriptMtimes.try_emplace(ls.scriptPath, stamp);
+        const bool diff = !inserted && it->second != stamp;   // 初見は基準を作るだけでリロードしない
+        it->second = stamp;
+        changed.emplace(ls.scriptPath, diff);
+    }
+
+    // 2) 書き換わった .lua を使うエンティティを作り直す。
+    //    ReloadScript が loadError を落とすので、エラーで死んでいたスクリプトも保存だけで復活する。
+    int n = 0;
+    for (auto e : view)
+    {
+        const auto& ls = view.get<LuaScript>(e);
+        auto it = changed.find(ls.scriptPath);
+        if (it == changed.end() || !it->second) continue;
+        ReloadScript(e);   // 実際の再構築は次の UpdateAttachedScripts
+        ++n;
+    }
+    if (n > 0) Logger::Info("Lua ホットリロード: {} 個のコンポーネントを作り直します", n);
+    return n;
+}
+
+std::vector<ScriptEngine::ScriptError> ScriptEngine::CollectScriptErrors()
+{
+    std::vector<ScriptError> out;
+    if (!m_scene) return out;
+    auto& reg  = m_scene->GetRegistry();
+    auto  view = reg.view<LuaScript>();
+    for (auto e : view)
+    {
+        const auto& ls = view.get<LuaScript>(e);
+        if (!ls.loadError) continue;
+        const auto* tag = reg.try_get<NameTag>(e);
+        out.push_back({ static_cast<u32>(e), tag ? tag->name : std::string{},
+                        ls.scriptPath, ls.errorMessage });
+    }
+    return out;
+}
+
 bool ScriptEngine::CheckLuaSyntax(const std::string& code, std::string& err)
 {
     if (!m_lua) { err = "lua state not initialized"; return false; }
@@ -4109,6 +4167,7 @@ void ScriptEngine::Shutdown()
     if (m_eventBus) m_eventBus->Clear();
 
     m_propSchemaCache.clear();
+    m_scriptMtimes.clear();   // 次の Play で mtime の基準を取り直す
     if (m_lua)
     {
         m_lua.reset();

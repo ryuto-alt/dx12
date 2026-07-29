@@ -33,6 +33,7 @@ add_library(Core STATIC
     Logger.cpp
     CrashHandler.cpp
     GameClock.cpp
+    PlaySession.cpp                 # Play 1 回ぶんの記録（人間の操作を後から読む）
     PathResolver.cpp
     Updater.cpp
     Http.cpp

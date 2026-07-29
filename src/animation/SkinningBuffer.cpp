@@ -9,9 +9,22 @@
 namespace dx12e
 {
 
+SkinningBuffer::~SkinningBuffer()
+{
+    if (!m_srvHeap) return;
+    for (const PerFrame& f : m_frames)
+        if (f.srvIndex != 0xFFFFFFFFu) m_srvHeap->Free(f.srvIndex);
+}
+
 void SkinningBuffer::Initialize(GraphicsDevice& device, DescriptorHeap& srvHeap,
                                 u32 maxBones, u32 frameCount)
 {
+    // 貼り直し（Initialize の二度呼び）でも古いインデックスを取りこぼさない。
+    if (m_srvHeap)
+        for (const PerFrame& f : m_frames)
+            if (f.srvIndex != 0xFFFFFFFFu) m_srvHeap->Free(f.srvIndex);
+    m_frames.clear();
+    m_srvHeap    = &srvHeap;
     m_maxBones   = maxBones;
     m_bufferSize = maxBones * static_cast<u32>(sizeof(DirectX::XMFLOAT4X4)); // maxBones * 64
 

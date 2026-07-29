@@ -265,8 +265,19 @@ void DrawLuaScriptSection(entt::registry& reg,
 
     if (ls.loadError)
     {
-        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
-                           "Load error (see log)");
+        // errorMessage は sol2 の traceback 込み。ログを見に行かせず、ここで本文を出す。
+        // 長いので折り返し + コピーボタン（そのまま AI に貼れるように）。
+        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Lua エラー");
+        if (!ls.errorMessage.empty())
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.5f, 1.0f));
+            ImGui::TextWrapped("%s", ls.errorMessage.c_str());
+            ImGui::PopStyleColor();
+            if (ImGui::SmallButton("エラーをコピー##LuaScript"))
+                ImGui::SetClipboardText(ls.errorMessage.c_str());
+            ImGui::SameLine();
+        }
+        ImGui::TextDisabled(".lua を保存し直すと自動で読み直します");
     }
 
     // --- 公開プロパティ（.lua の properties 宣言からスキーマ駆動で自動生成）---

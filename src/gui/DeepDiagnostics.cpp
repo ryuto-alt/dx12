@@ -1695,6 +1695,108 @@ nlohmann::json ReportToJson(const char* id, const DeepDiagReport& rep)
 
 } // namespace
 
+DeepDiagReport DeepDiag::RenderHealth(Application& app)
+{
+    DeepDiagReport r;
+    r.title = "描画の健全性（真っ暗の切り分け）";
+
+    const Application::DiagRenderHealth h = app.GetDiagRenderHealth();
+
+    // ---- 1) デバッグ可視化が出しっぱなし ----
+    ++r.checked;
+    if (h.renderDebugMode != 0)
+        r.Add(2, "デバッグ可視化 '" + h.renderDebugName + "' が出したままです。"
+                 "rtDiff/rtHit 等はそもそも真っ黒が正常な表示なので、これが原因で"
+                 "『シーンビューが真っ暗』に見えます。dx12_render_debug {mode:\"off\"} で戻ります");
+
+    // ---- 2) ポスト処理で最終色が 0 になる設定 ----
+    if (Scene* sc = app.GetScene())
+    {
+        const PostProcessSettings& pp = sc->GetPostSettings();
+        if (pp.enabled)
+        {
+            ++r.checked;
+            if (pp.exposureOn && pp.exposure < 0.001f)
+                r.Add(2, "露出が 0（exposure=" + std::to_string(pp.exposure)
+                         + "）。ポストが最終色を 0 倍するので画面は完全な黒になります。"
+                           "dx12_set_post_process {exposure:1} で戻ります");
+
+            ++r.checked;
+            if (pp.tintOn && pp.tint.x <= 0.0f && pp.tint.y <= 0.0f && pp.tint.z <= 0.0f)
+                r.Add(2, "ティントが黒（tint=[0,0,0]）。これも最終色を 0 倍します。"
+                         "dx12_set_post_process {tint:[1,1,1]} で戻ります");
+
+            ++r.checked;
+            if (pp.autoExposureOn && pp.aeLogMin >= pp.aeLogMax)
+                r.Add(2, "自動露出の測光レンジが逆転しています（aeLogMin="
+                         + std::to_string(pp.aeLogMin) + " >= aeLogMax="
+                         + std::to_string(pp.aeLogMax) + "）。露出値が破綻します");
+        }
+
+        // ---- 3) 光源が 1 つも無い ----
+        const auto& sky = sc->GetSkyboxSettings();
+        auto& reg = sc->GetRegistry();
+        float sunMax = 0.0f;
+        for (auto [e, dl] : reg.view<DirectionalLight>().each())
+        {
+            (void)e;
+            if (dl.intensity > sunMax) sunMax = dl.intensity;
+        }
+        ++r.checked;
+        if (sunMax <= 0.0f && sky.iblIntensity <= 0.0f && !sky.drawSkybox)
+            r.Add(2, "光が 1 つもありません（太陽の強度 0 / IBL 0 / スカイボックス非表示）。"
+                     "どれか 1 つを戻さないと何も見えません");
+    }
+
+    // ---- 4) シーン矩形が潰れている ----
+    // ランチャー表示中はドックスペース自体が無く 1x1 が正常。ここで狼少年にしない。
+    ++r.checked;
+    if (h.atLauncher)
+        r.Add(0, "プロジェクトランチャー表示中（まだプロジェクトを開いていない）。"
+                 "シーン矩形の検査は省略しました");
+    else if (h.viewportW <= 1 || h.viewportH <= 1)
+        r.Add(2, "画面上のシーン矩形が " + std::to_string(h.viewportW) + "x"
+                 + std::to_string(h.viewportH) + " に潰れています。"
+                   "3D はここにしか描かれないので、画面には背景色だけが残ります"
+                   "（ドックレイアウト再構築の直後なら次のフレームで戻ります）");
+    else if (h.renderW <= 16 || h.renderH <= 16)
+        r.Add(1, "レンダー解像度が " + std::to_string(h.renderW) + "x"
+                 + std::to_string(h.renderH) + " まで落ちています（一時的なら回復します）");
+
+    // ---- 5) SRV ヒープ枯渇（＝この後で描画が止まる予告）----
+    ++r.checked;
+    if (h.srvHeapCapacity > 0)
+    {
+        const u32 used = h.srvHeapCapacity - h.srvHeapFree;
+        const std::string usage = std::to_string(used) + " / " + std::to_string(h.srvHeapCapacity);
+        if (h.srvHeapFree < 32)
+            r.Add(2, "SRV ディスクリプタヒープが枯渇寸前です（" + usage + " 使用）。"
+                     "次のテクスチャ/モデル読み込みで例外が出て描画が止まり、"
+                     "以後シーンビューが真っ暗のまま戻らなくなります。エディタを再起動してください");
+        else if (h.srvHeapFree * 10 < h.srvHeapCapacity)
+            r.Add(1, "SRV ディスクリプタヒープの残りが 1 割を切りました（" + usage + " 使用）");
+        else
+            r.Add(0, "SRV ディスクリプタヒープ: " + usage + " 使用");
+    }
+
+    // ---- 6) カメラ ----
+    ++r.checked;
+    if (!h.cameraFinite)
+        r.Add(2, "カメラ位置が NaN/Inf です。何も映りません");
+    else if (h.cameraDistance > 1.0e6f)
+        r.Add(2, "カメラが原点から " + std::to_string(h.cameraDistance)
+                 + " も離れています。浮動小数の精度外でシーン全体がカリングされ、"
+                   "背景色しか残りません");
+
+    ++r.checked;
+    if (h.cameraOverridden)
+        r.Add(1, "MCP がゲームカメラを握ったままです（Play 中に set_editor_camera を使った後）。"
+                 "ゲーム側のカメラ追従が止まっているので、"
+                 "dx12_set_editor_camera {release:true} で返してください");
+
+    return r;
+}
+
 DeepDiagReport DeepDiag::Dxr(Application& app)
 {
     DeepDiagReport r;
@@ -1799,7 +1901,8 @@ DeepDiagReport DeepDiag::Dxr(Application& app)
 std::vector<std::string> DeepDiag::AllCheckIds()
 {
     return { "shaders", "textures", "models", "gamma", "scene_assets",
-             "lighting", "terrain", "picking", "instancing", "scripts", "dxr" };
+             "lighting", "terrain", "picking", "instancing", "scripts", "dxr",
+             "render_health" };
 }
 
 nlohmann::json DeepDiag::RunAll(Application& app, const std::string& only)
@@ -1853,6 +1956,7 @@ nlohmann::json DeepDiag::RunAll(Application& app, const std::string& only)
     if (pick("instancing"))   add("instancing",   DeepDiag::Instancing(app));
     if (pick("scripts"))      add("scripts",      DeepDiag::Scripts());
     if (pick("dxr"))          add("dxr",          DeepDiag::Dxr(app));
+    if (pick("render_health")) add("render_health", DeepDiag::RenderHealth(app));
 
     nlohmann::json summary;
     summary["checks"]     = ran;

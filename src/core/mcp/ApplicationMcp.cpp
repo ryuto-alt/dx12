@@ -531,6 +531,31 @@ Application::DiagRenderInfo Application::GetDiagRenderInfo() const
     return info;
 }
 
+Application::DiagRenderHealth Application::GetDiagRenderHealth() const
+{
+    DiagRenderHealth h;
+    h.renderDebugMode = m_renderDebugMode;
+    h.renderDebugName = m_renderDebugModeName;
+    if (m_srvHeap)
+    {
+        h.srvHeapCapacity = m_srvHeap->GetCapacity();
+        h.srvHeapFree     = m_srvHeap->GetFreeCount();
+    }
+    h.renderW = m_renderW;
+    h.renderH = m_renderH;
+    u32 vx = 0, vy = 0;
+    GetDisplayViewport(vx, vy, h.viewportW, h.viewportH);
+    h.atLauncher       = m_showLauncher;
+    h.cameraOverridden = m_mcpCameraOverride;
+    if (m_camera)
+    {
+        const DirectX::XMFLOAT3 p = m_camera->GetPosition();
+        h.cameraFinite = std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
+        if (h.cameraFinite) h.cameraDistance = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
+    }
+    return h;
+}
+
 Application::DiagDxrInfo Application::GetDiagDxrInfo() const
 {
     DiagDxrInfo d;

@@ -26,6 +26,7 @@
 #include "engine/core/EventBus.h"   // ヘッダオンリー、GPU 非依存。entt の後に置く
 #include "core/mcp/McpDeferred.h"   // MCP 遅延応答の相関情報（値メンバで持つので完全型が要る）
 #include "core/CpuScope.h"          // CpuScope / CpuScopeTimer（エディタとも共有するので独立ヘッダ）
+#include "core/PlaySession.h"       // Play 1 回ぶんの記録（値メンバで持つので完全型が要る）
 #include "renderer/DrawItem.h"      // 描画リストの要素（エディタのピッキングも読むので独立ヘッダ）
 #include "renderer/ClusteredLightCulling.h"  // LightGPU を値で持つので完全型が要る（軽量ヘッダ）
 #include "renderer/DecalSystem.h"            // DecalGPU を値で持つので同上
@@ -189,6 +190,23 @@ public:
     };
     DiagRenderInfo GetDiagRenderInfo() const;
 
+    // 「シーンビューが真っ暗／カメラが何も映さない」を機械的に切り分けるための状態一式。
+    // DeepDiag::RenderHealth が読む。d3d12 の型を漏らさないよう全部 u32/bool/float。
+    struct DiagRenderHealth
+    {
+        u32         renderDebugMode = 0;      // 0 以外 = デバッグ可視化が出しっぱなし
+        std::string renderDebugName;
+        u32         srvHeapCapacity = 0;      // 4096 固定。枯渇すると描画が例外で止まる
+        u32         srvHeapFree     = 0;
+        u32         renderW = 0, renderH = 0;    // レンダー解像度
+        u32         viewportW = 0, viewportH = 0; // 画面上のシーン矩形（潰れると暗色だけ残る）
+        bool        atLauncher = false;         // ランチャー表示中はシーン矩形が無くて当たり前
+        bool        cameraOverridden = false;  // MCP がゲームカメラを握ったまま
+        bool        cameraFinite     = true;
+        float       cameraDistance   = 0.0f;   // 原点からの距離（極端だと全部カリングされる）
+    };
+    DiagRenderHealth GetDiagRenderHealth() const;
+
     // DXR（レイトレーシング）の状態一式。DeepDiagnostics の `dxr` 検査と
     // エディタの「レイトレーシング」窓が読む（計画09 §5.3）。
     struct DiagDxrInfo
@@ -233,6 +251,7 @@ public:
     // ワールド行列と球（center/radius）を再計算せずに済ませる。
     // Grid / メッシュ無し / park済み(scale≈0) / Pfx* の除外もリスト構築時に済んでいる。
     const std::vector<DrawItem>& GetDrawItems() const { return m_drawItems; }
+    const PlaySession&           GetPlaySession() const { return m_playSession; }
 
 private:
     void Update();
@@ -444,6 +463,9 @@ private:
     // 物理ステップ後・スキニングバッファのアップロード前に呼ぶこと
     // （IK 後のボーン行列が GPU へ行くように）。
     void ApplyFootIkPass();
+    // render_debug が一時的に ON にした設定を元へ戻す（何も退避していなければ何もしない）。
+    // 正常終了と「固着していたので強制解除」の両方から呼ぶので関数にしてある。
+    void RestoreRenderDebugSettings();
     // シェーダーホットリロード用 PSO 再生成。初回(Initialize)と再生成(hot-reload)の両方から呼ぶ。
     // 既存 unique_ptr が非 null ならその場で Initialize() し直す(オブジェクトの住所は変えない=
     // ModelThumbnailRenderer 等が生ポインタを保持しているケースでのダングリングを避けるため)。
@@ -1091,6 +1113,9 @@ private:
     // シーンフロー（WP6）
     std::unique_ptr<SceneFlow> m_sceneFlow;
     GameClock                          m_gameClock;
+    // Play 1 回ぶんの記録（人間の操作 + ログ + カメラ/FPS サンプル）。
+    // Stop 後も次の Play まで残す＝遊び終えてから MCP で取りに来られる。
+    PlaySession                        m_playSession;
     bool                               m_isRunning = false;
     u32                                m_framesSinceStart = 0;
 

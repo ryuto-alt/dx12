@@ -98,6 +98,22 @@ public:
     void UpdateTriggers(f32 dt);          // 毎フレーム Trigger（イベント）評価（Play 中）
     void ReloadScript(entt::entity e);    // Inspector Reload ボタン用
 
+    // 監視中の .lua が書き換わっていたら、それを使う全エンティティを作り直す。
+    // Application が 0.5 秒ごとに呼ぶ。Play を止めずにスクリプトを差し替えるための入口。
+    // 戻り値: 作り直したエンティティ数（0 なら変更なし）。
+    int ReloadChangedScripts();
+
+    // いま loadError が立っている LuaScript を全部集める（MCP の一括エラー取得用）。
+    // ログを漁らずに「どのスクリプトが死んでいるか」を 1 回で答えるためのもの。
+    struct ScriptError
+    {
+        u32         entity;
+        std::string name;         // NameTag（無ければ空）
+        std::string scriptPath;
+        std::string message;      // errorMessage（sol2 の traceback 込み）
+    };
+    std::vector<ScriptError> CollectScriptErrors();
+
     // Lua をコンパイルのみして構文を検証(実行しない・副作用なし)。OK なら true。
     // 失敗時 err にエラー文を入れる。MCP の create で書き込み前チェックに使う。
     bool CheckLuaSyntax(const std::string& code, std::string& err);
@@ -206,6 +222,10 @@ private:
 
     // scriptPath → プロパティ宣言スキーマのキャッシュ。
     std::unordered_map<std::string, std::vector<ScriptPropDef>> m_propSchemaCache;
+
+    // scriptPath → 最後に見た mtime（file_time_type の生カウント）。ホットリロードの差分検出用。
+    // ヘッダに <filesystem> を持ち込まないため int64_t で持つ。
+    std::unordered_map<std::string, int64_t> m_scriptMtimes;
 
     LoadSceneCb  m_loadSceneCb;
     LoadSceneCb  m_preloadSceneCb;

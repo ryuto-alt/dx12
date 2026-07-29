@@ -1045,6 +1045,9 @@ void Application::EnterPlayMode()
     // playOnStart のクリップ/シートを頭出し。events:on の登録より前だと発火を取りこぼすので、
     // Lua の OnPlayStart より**後**に置く（最初の実評価は次フレームの Update）。
     m_scriptEngine->OnPlayStart();
+    // プレイセッション記録を開始（Play を押した時点で自動。開始用ツールは要らない）。
+    // OnPlayStart の後＝ここまでに出た Lua のロードエラーもログ経由で記録に載る。
+    m_playSession.Start(m_gameClock.GetTotalTime());
     if (m_uiAnimRuntime) m_uiAnimRuntime->OnPlayStart(m_scene->GetRegistry());
     if (m_particleSystem) m_particleSystem->Clear();  // Play 開始時に粒子をリセット
     if (m_gpuParticles) m_gpuParticles->Clear();
@@ -1204,6 +1207,8 @@ void Application::EnterEditorMode()
     // OnPlayStop は ScriptEngine::Shutdown より前に呼ぶ（Shutdown で Lua state が消える）
     if (m_engineMode == EngineMode::Playing)
         m_scriptEngine->OnPlayStop();
+    // 記録を閉じる（中身は次の Play まで残す＝遊び終えてから MCP で取りに来られる）。
+    m_playSession.Stop(m_gameClock.GetTotalTime());
 
     // EventBus には Play 中に登録された Lua ハンドラのラムダが残っている。
     // 物理を Shutdown→Initialize で作り直す前に購読を消し、物理側の EventBus 参照も外す。

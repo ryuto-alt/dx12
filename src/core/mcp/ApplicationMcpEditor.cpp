@@ -323,6 +323,33 @@ void Application::RegisterMcpEditorMethods()
                               {"properties", std::move(props)}};
         });
 
+    McpDefine("get_play_session", "maxEvents:int,maxSamples:int", DX12E_MCP_HANDLER
+        {
+            // 直近の Play 1 回ぶんの記録。Play を押した時点で自動的に取り始めており、
+            // Stop 後も次の Play まで残る（人間が遊び終えてから取りに来るため）。
+            int maxEvents  = params.value("maxEvents", 400);
+            int maxSamples = params.value("maxSamples", 200);
+            maxEvents  = std::clamp(maxEvents, 1, 8000);
+            maxSamples = std::clamp(maxSamples, 1, 4000);
+            resp["ok"] = true;
+            resp["result"] = m_playSession.ToJson(static_cast<size_t>(maxEvents),
+                                                  static_cast<size_t>(maxSamples));
+        });
+
+    McpDefine("get_script_errors", "", DX12E_MCP_HANDLER
+        {
+            // いま壊れている LuaScript を全部返す。ログを漁らずに「どれが死んだか」を 1 回で出す用。
+            // get_lua_component_state は entity を 1 個ずつ聞く必要があり、どれが壊れたか分からない
+            // 状態では使えない(その用途がこれ)。
+            json arr = json::array();
+            for (const auto& se : m_scriptEngine->CollectScriptErrors())
+                arr.push_back({{"entityId", se.entity}, {"name", se.name},
+                               {"scriptPath", se.scriptPath}, {"message", se.message}});
+            resp["ok"] = true;
+            resp["result"] = {{"count", arr.size()}, {"errors", std::move(arr)},
+                              {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"}};
+        });
+
     McpDefine("set_lua_property", "entity:int,key:string,name:string,value:any", DX12E_MCP_HANDLER
         {
             // LuaScript のプロパティを1つ書き換える。スキーマで型を確認して検証。
@@ -450,6 +477,19 @@ void Application::RegisterMcpEditorMethods()
                     "overdraw は加算カウント用の専用パスが要るため）");
             }
 
+            // ---- 引数の検証は「状態を1バイトも変える前」に全部済ませる ----
+            // ここを後回しにすると、m_renderDebugMode だけ立って
+            // m_mcpRenderDebugFramesLeft(=後始末の予約) が立たないまま例外で抜け、
+            // デバッグ可視化が永久に固着する = シーンビューが真っ暗のまま戻らなくなる。
+            // (Play/Stop でもシーン再読込でも直らない。Application のメンバなので)
+            const f32 dbgGain       = static_cast<f32>(params.value("gain", 1.0));
+            const f32 dbgDepthRange = McpFloatParam(params, "depthRange", 100.0f, 0.1f, 100000.0f);
+            const f32 dbgExposure   = McpFloatParam(params, "exposure", 1.0f, 0.001f, 1000.0f);
+            int frames = params.value("frames", 3);
+            frames = std::clamp(frames, 1, 120);
+            if ((mode == "lightComplexity" || mode == "clusterGrid" || mode == "decalCount") && !m_editorCtx)
+                throw McpError(McpErr::Internal, "editor context not available");
+
             // ---- 現在の状態を退避（返す直前に必ず戻す）----
             auto& taaS  = m_scene->GetTaaSettings();
             auto& ssaoS = m_scene->GetSSAOSettings();
@@ -466,14 +506,17 @@ void Application::RegisterMcpEditorMethods()
             m_renderDebugRestore.clusterDebug  = m_editorCtx ? m_editorCtx->clusterDebugMode : 0u;
             m_renderDebugRestore.cascadeDebug  = m_showCascadeDebug;
             m_renderDebugRestore.fogDebug      = fogS.debugMode;
+            // rtForceTlas は rt 系 mode でしか再退避されないので、常にここで今の値を控える。
+            // (控えないと「set_dxr で立てた forceBuildTlas が render_debug の後始末で勝手に戻る」)
+            m_renderDebugRestore.rtForceTlas   = m_scene->GetRtSettings().forceBuildTlas;
 
             // ---- 必要な機能を一時的に ON ----
             json warn = json::array();
             m_renderDebugMode        = entry->passMode;
             m_renderDebugModeName    = mode;
-            m_renderDebugGain        = static_cast<f32>(params.value("gain", 1.0));
-            m_renderDebugDepthRange  = McpFloatParam(params, "depthRange", 100.0f, 0.1f, 100000.0f);
-            m_renderDebugExposure    = McpFloatParam(params, "exposure", 1.0f, 0.001f, 1000.0f);
+            m_renderDebugGain        = dbgGain;
+            m_renderDebugDepthRange  = dbgDepthRange;
+            m_renderDebugExposure    = dbgExposure;
             m_renderDebugRawReadback = (entry->passMode != 0);
 
             if (mode == "normal" || mode == "roughness" || mode == "metallic" || mode == "velocity")
@@ -509,8 +552,7 @@ void Application::RegisterMcpEditorMethods()
                 if (!m_dxrEnabled)
                     warn.push_back("この GPU では inline raytracing が使えないので何も出ない"
                                    "（要 DXR Tier 1.1 / Shader Model 6.5）");
-                m_renderDebugRestore.rtForceTlas = m_scene->GetRtSettings().forceBuildTlas;
-                m_scene->GetRtSettings().forceBuildTlas = true;
+                m_scene->GetRtSettings().forceBuildTlas = true;   // 退避は上で済ませてある
                 if (mode == "rtAlbedo")
                     warn.push_back("ヒット点のアルベド（計画09 Step 5 のバインドレス検証）。"
                                    "ラスタの絵と色が一致すれば配線が全部正しい。"
@@ -527,8 +569,6 @@ void Application::RegisterMcpEditorMethods()
             }
             else if (mode == "lightComplexity" || mode == "clusterGrid" || mode == "decalCount")
             {
-                if (!m_editorCtx)
-                    throw McpError(McpErr::Internal, "editor context not available");
                 m_editorCtx->clusterDebugMode = (mode == "lightComplexity") ? 1u
                                               : (mode == "clusterGrid")     ? 2u : 3u;
                 if (!m_clusteredEnabled)
@@ -552,9 +592,7 @@ void Application::RegisterMcpEditorMethods()
                 // 何も ON にしない（退避した値をそのまま書き戻して終わる）
             }
 
-            int frames = params.value("frames", 3);
-            frames = std::clamp(frames, 1, 120);
-            m_mcpRenderDebugFramesLeft = frames;
+            m_mcpRenderDebugFramesLeft = frames;   // 検証済み（上で clamp 済み）
             m_mcpRenderDebugReply      = deferred;
             m_renderDebugWarnings      = warn.dump();
             isDeferred = true;

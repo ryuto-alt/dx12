@@ -1400,9 +1400,14 @@ void Application::Run()
                     FailMcp(m_mcpBridge.get(), m_mcpModeReply, McpErr::ModeConflict,
                             "play failed (no active camera? check dx12_get_log)");
                 else
+                    // scriptErrors: Play は Lua が全滅していても ok を返してしまうので、
+                    // OnPlayStart 時点で死んでいるコンポーネント数をここで一緒に返す
+                    // (中身は dx12_get_script_errors)。0 でないなら絵を見る前にそっちを疑う。
                     CompleteMcp(m_mcpBridge.get(), m_mcpModeReply,
                         nlohmann::json{{"mode", nowPlaying ? "Playing" : "Editor"},
-                                       {"sceneGeneration", m_sceneGeneration}});
+                                       {"sceneGeneration", m_sceneGeneration},
+                                       {"scriptErrors", m_scriptEngine
+                                            ? m_scriptEngine->CollectScriptErrors().size() : 0u}});
                 m_mcpModeReply = {};
             }
         }
@@ -1470,6 +1475,12 @@ void Application::Run()
                     Logger::Info("Hot-reload complete");
                 }
             }
+
+            // コンポーネント .lua（assets/components/*.lua 等）のホットリロード。
+            // game.lua と違い RebuildScene は要らない: 該当エンティティの env を捨てるだけで、
+            // 次の UpdateAttachedScripts が作り直す。Play を止めずにスクリプトを差し替えられる。
+            if (m_scriptEngine && m_scriptEngine->ReloadChangedScripts() > 0)
+                m_editorCtx->hotReloadFlash = 2.0f;
         }
 
         // シェーダーホットリロード（0.5秒ごとに .hlsl/.hlsli 変更チェック）
@@ -1595,6 +1606,19 @@ void Application::Run()
         }
 
         // MCP render_debug: N フレーム描いたらスクショを撮って返し、必ず元の設定へ戻す。
+        // 安全網: 「可視化モードは立っているのに後始末の予約が無い」= 誰かが途中で
+        // 抜けた状態。放置するとシーンビューが真っ暗のまま永久に戻らないので、
+        // 気付いた時点で素の描画へ復帰させる（原因はログに出して分かるようにする）。
+        if (m_renderDebugMode != 0 && m_mcpRenderDebugFramesLeft == 0)
+        {
+            Logger::Warn("render_debug が後始末されないまま残っていたので解除しました（mode={}）",
+                         m_renderDebugModeName);
+            m_renderDebugMode        = 0;
+            m_renderDebugModeName.clear();
+            m_renderDebugRawReadback = false;
+            RestoreRenderDebugSettings();
+        }
+
         if (m_mcpRenderDebugFramesLeft > 0 && --m_mcpRenderDebugFramesLeft == 0
             && m_mcpRenderDebugReply.client != 0)
         {
@@ -1629,19 +1653,7 @@ void Application::Run()
             m_mcpRenderDebugReply = {};
 
             // ---- 退避した設定を必ず戻す（デバッグ表示を残さない）----
-            if (m_renderDebugRestore.valid && m_scene)
-            {
-                m_scene->GetTaaSettings().enabled           = m_renderDebugRestore.taa;
-                m_scene->GetSSAOSettings().enabled          = m_renderDebugRestore.ssao;
-                m_scene->GetContactShadowSettings().enabled = m_renderDebugRestore.contactShadow;
-                m_scene->GetSsrSettings().enabled           = m_renderDebugRestore.ssr;
-                m_scene->GetSsgiSettings().enabled          = m_renderDebugRestore.ssgi;
-                m_scene->GetVolumetricFogSettings().debugMode = m_renderDebugRestore.fogDebug;
-                m_scene->GetRtSettings().forceBuildTlas       = m_renderDebugRestore.rtForceTlas;
-                if (m_editorCtx) m_editorCtx->clusterDebugMode = m_renderDebugRestore.clusterDebug;
-                m_showCascadeDebug = m_renderDebugRestore.cascadeDebug;
-                m_renderDebugRestore.valid = false;
-            }
+            RestoreRenderDebugSettings();
             m_renderDebugMode        = 0;
             m_renderDebugRawReadback = false;
             m_renderDebugWarnings.clear();
@@ -2359,6 +2371,12 @@ void Application::Update()
     if (m_engineMode == EngineMode::Playing)
     {
         m_eventBus.Flush();
+
+        // プレイセッション記録。物理・スクリプト・アニメが全部確定した後に取る。
+        // 記録するだけで何も操作しない（遊ぶのは人間、読むのは AI）。
+        if (m_inputSystem)
+            m_playSession.Update(m_gameClock.GetTotalTime(), *m_inputSystem,
+                                 m_camera.get(), m_gameClock.GetFPS());
     }
 }
 
@@ -2368,6 +2386,21 @@ void Application::Update()
 // FootIK.cpp（Animation ライブラリ）は entt も PhysicsSystem も知らない。
 // ここが「エンティティを走査して PhysicsSystem::RaycastEx を繋ぐ」接着層。
 // ---------------------------------------------------------------------------
+void Application::RestoreRenderDebugSettings()
+{
+    if (!m_renderDebugRestore.valid || !m_scene) return;
+    m_scene->GetTaaSettings().enabled           = m_renderDebugRestore.taa;
+    m_scene->GetSSAOSettings().enabled          = m_renderDebugRestore.ssao;
+    m_scene->GetContactShadowSettings().enabled = m_renderDebugRestore.contactShadow;
+    m_scene->GetSsrSettings().enabled           = m_renderDebugRestore.ssr;
+    m_scene->GetSsgiSettings().enabled          = m_renderDebugRestore.ssgi;
+    m_scene->GetVolumetricFogSettings().debugMode = m_renderDebugRestore.fogDebug;
+    m_scene->GetRtSettings().forceBuildTlas       = m_renderDebugRestore.rtForceTlas;
+    if (m_editorCtx) m_editorCtx->clusterDebugMode = m_renderDebugRestore.clusterDebug;
+    m_showCascadeDebug = m_renderDebugRestore.cascadeDebug;
+    m_renderDebugRestore.valid = false;
+}
+
 void Application::ApplyFootIkPass()
 {
     if (!m_scene) return;

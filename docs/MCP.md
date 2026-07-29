@@ -55,8 +55,15 @@ cd tools/mcp-server
 ./install.sh
 ```
 
-スクリプトは Node v24+ を確認し `npm install` と自己テスト(`npm test`、エンジン不要)を実行したあと
-絶対パス解決済みの登録コマンドを表示する。手動の場合:
+スクリプトは Node v24+ を確認 → `npm install` + 自己テスト(`npm test`、エンジン不要) →
+**Claude Code と Codex の両方へ自動登録**（`claude mcp add --scope user` / `codex mcp add`）まで行う。
+手で貼るコマンドは無く、CLI が入っていないクライアントの分だけ手順を表示する。
+再実行しても壊れない（remove → add で冪等）。登録後はクライアントを再起動すること。
+
+> `--scope user` を使う。Claude Code の既定 `local` スコープは**そのディレクトリでしか有効でない**ため、
+> 別のプロジェクトで作業すると「ツールが出ない」になる。
+
+手動の場合:
 
 ```bash
 cd tools/mcp-server
@@ -68,13 +75,14 @@ Node v24+ が `.ts` を直接実行するため `tsc` ビルドは不要。
 
 ---
 
-## 2. 接続
+## 2. 接続（install スクリプトが失敗したとき / 手で入れたいとき）
 
+通常は `install.ps1` / `install.sh` が両クライアントへ自動登録するので、この節は不要。
 `<REPO>` は clone した絶対パスに置換する(Windows でもパスは `/` 区切りで可)。
 
 ### Claude Code(CLI)
 ```bash
-claude mcp add dx12-engine -- node <REPO>/tools/mcp-server/index.ts
+claude mcp add dx12-engine --scope user -- node <REPO>/tools/mcp-server/index.ts
 ```
 
 ### Claude Code(`.mcp.json`)

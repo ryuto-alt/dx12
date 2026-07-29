@@ -80,7 +80,7 @@ void Application::RegisterMcpToolingMethods()
     // ════════════════════════════════════════════════════════════
     //  Lua 即時実行(eval) — デバッグ用。globals フォールバック環境で実行するため
     //  scene/physics/camera/audio 等の既存グローバルバインディングがそのまま使える。
-    //  print() は捕捉されない(log() を使うと dx12_get_log で見える)。
+    //  print() は Logger へ差し替え済みなので log() と同じく dx12_get_log で見える。
     // ════════════════════════════════════════════════════════════
     McpDefine("eval_lua", "code:string", DX12E_MCP_HANDLER
         {
