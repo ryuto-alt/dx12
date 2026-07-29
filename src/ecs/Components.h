@@ -1307,10 +1307,12 @@ struct NetworkIdentity
 // --- NetworkTransform: Transform をスナップショット複製する設定 ---
 // NetworkIdentity と併用する。サーバーは自分が権威を持つ全エンティティの位置/回転を
 // 定期送信し、クライアントは受信スナップショットを補間してこのエンティティの
-// Transform に書き込む（syncMode=1 のオーナー予測はフェーズ⑦で追加）。
+// Transform に書き込む。syncMode=1（オーナー予測）は自分が所有するエンティティを補間バッファに
+// 積まず、NetworkSystem::RecordPredictedState → ReconcilePredictedEntity で
+// サーバー確定位置と突き合わせ、ズレが snapDistance を超えたときだけ未処理入力を再適用する。
 struct NetworkTransform
 {
-    int  syncMode       = 0;      // 0=補間(SimulatedProxy) / 1=オーナー予測(AutonomousProxy、フェーズ⑦)
+    int  syncMode       = 0;      // 0=補間(SimulatedProxy) / 1=オーナー予測(AutonomousProxy)
     f32  sendRate       = 20.0f;  // Hz（フェーズ⑧でグローバル既定と合成する予定。現状は未使用）
     bool syncPosition   = true;
     bool syncRotation   = true;

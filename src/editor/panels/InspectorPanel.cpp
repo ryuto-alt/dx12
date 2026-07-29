@@ -2122,7 +2122,7 @@ void InspectorPanel::Render(entt::registry& reg,
                 BeginEdit(reg, ctx.selectedEntity, m_netTfEdit);
                 auto& nt = reg.get<NetworkTransform>(ctx.selectedEntity);
                 bool changed = false, active = false;
-                const char* modes[] = { "補間 Interpolated", "オーナー予測 Predicted(未実装)" };
+                const char* modes[] = { "補間 Interpolated", "オーナー予測 Predicted" };
                 if (pg::Begin("NetworkTransform"))
                 {
                     changed |= pg::Combo("同期モード SyncMode", &nt.syncMode, modes, IM_ARRAYSIZE(modes));
