@@ -2352,10 +2352,14 @@ void Application::Render()
         for (entt::entity e : m_editorCtx->pendingPrefabApply)
         {
             if (!reg.valid(e)) continue;
-            if (SceneSerializer::ApplyPrefabInstance(*m_scene, e, assets))
+            // 適用は他インスタンスへの伝播まで含む（各インスタンスの手直しは 3-way マージで残る）。
+            // 伝播は元に戻せないので Undo 履歴は汚さず、件数をログへ残して何が起きたか追えるようにする。
+            int propagated = 0;
+            if (SceneSerializer::ApplyPrefabInstance(*m_scene, e, assets, &propagated))
             {
                 m_editorCtx->hotReloadFlash = 1.0f;
-                Logger::Info("Prefab applied: {}", reg.get<PrefabLink>(e).sourcePath);
+                Logger::Info("Prefab applied: {} (他 {} インスタンスへ反映)",
+                             reg.get<PrefabLink>(e).sourcePath, propagated);
             }
         }
         m_editorCtx->pendingPrefabApply.clear();

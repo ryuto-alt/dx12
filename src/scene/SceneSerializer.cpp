@@ -2773,6 +2773,156 @@ void DiffEntityJson(const json& mine, const json& base, int index, const std::st
     }
 }
 
+// mine（インスタンスの今の姿）が oldBase から動かしたところだけを newBase の上へ載せ直す。
+// いわゆる 3-way マージ。oldBase が要るのは、これが無いと「インスタンス側が上書きした」のか
+// 「プレハブ側が変わった」のかを区別できず、どちらかを必ず捨てることになるため。
+json Merge3WayEntity(const json& mine, const json& oldBase, const json& newBase)
+{
+    // インスタンス固有で、プレハブ側の値に上書きされては困るもの。
+    //   name       : 名前ベースの参照（Lua の entity プロパティ / Trigger）が切れる
+    //   guid       : 安定 ID が変わると parentGuid などの参照が切れる
+    //   prefabLink : .prefab 側は Strip 済みなので、こちらから持ち込まないと紐付けが外れる
+    static const char* const kInstanceOwned[] = {"name", "guid", "parentGuid", "prefabLink"};
+    auto instanceOwned = [](const std::string& key)
+    {
+        for (const char* k : kInstanceOwned) if (key == k) return true;
+        return false;
+    };
+
+    json out = newBase;
+    for (const char* k : kInstanceOwned)
+    {
+        const auto it = mine.find(k);
+        if (it != mine.end()) out[k] = *it;
+        else                  out.erase(k);
+    }
+
+    for (auto it = mine.begin(); it != mine.end(); ++it)
+    {
+        const std::string& key = it.key();
+        // parent はサブツリー内のローカル index。構造が同じなら三者一致するので触らない
+        if (key == "parent" || instanceOwned(key)) continue;
+
+        const auto ob = oldBase.find(key);
+        if (ob == oldBase.end()) { out[key] = it.value(); continue; }  // インスタンスが足した
+        if (*ob == it.value()) continue;                               // 触っていない→プレハブ側を採用
+
+        const auto nb = out.find(key);
+        if (it.value().is_object() && ob->is_object() && nb != out.end() && nb->is_object())
+        {
+            // フィールド単位まで降りる。「位置だけ動かしたインスタンス」が
+            // プレハブ側の scale 変更をちゃんと受け取れるようにするため
+            for (auto f = it.value().begin(); f != it.value().end(); ++f)
+            {
+                const auto obf = ob->find(f.key());
+                if (obf == ob->end() || *obf != f.value()) (*nb)[f.key()] = f.value();
+            }
+        }
+        else
+        {
+            out[key] = it.value();
+        }
+    }
+
+    // インスタンス側で消したコンポーネントは消したままにする
+    for (auto it = oldBase.begin(); it != oldBase.end(); ++it)
+        if (!mine.contains(it.key())) out.erase(it.key());
+
+    return out;
+}
+
+// entities 配列ぜんたいの 3-way マージ。
+json Merge3WaySubtree(const json& mine, const json& oldBase, const json& newBase)
+{
+    const size_t nc = (std::min)({mine.size(), oldBase.size(), newBase.size()});
+    json out = json::array();
+    for (size_t i = 0; i < nc; ++i)
+        out.push_back(Merge3WayEntity(mine[i], oldBase[i], newBase[i]));
+
+    // プレハブ側で増えた子。merged での index が newBase での index と同じなので parent は直さなくてよい。
+    // なお mine の方が短い（インスタンスが子を消した）場合はここで復活する。
+    // 「プレハブに戻ってくる」方が「プレハブ側の追加を黙って落とす」より事故が小さいので、これでよい。
+    for (size_t i = nc; i < newBase.size(); ++i)
+        out.push_back(newBase[i]);
+
+    // インスタンス側で足した子（プレハブ配下へ手で足したもの）。ここだけ index がずれるので直す
+    for (size_t i = nc; i < mine.size(); ++i)
+    {
+        json ej = mine[i];
+        if (ej.contains("parent") && ej["parent"].is_number_integer())
+        {
+            const int p = ej["parent"].get<int>();
+            if (p >= 0)
+                ej["parent"] = static_cast<int>(static_cast<size_t>(p) < nc
+                                                    ? static_cast<size_t>(p)
+                                                    : newBase.size() + (static_cast<size_t>(p) - nc));
+        }
+        out.push_back(std::move(ej));
+    }
+    return out;
+}
+
+// 他のインスタンスへプレハブの変更を配る。各インスタンスの上書きは 3-way マージで残す。
+int MergePrefabInstances(Scene& scene, const std::string& sourcePath, const json& oldBase,
+                         const json& newBase, const std::string& assetsDir, entt::entity except)
+{
+    auto& reg = scene.GetRegistry();
+    // 作り直すのでビューを回しながらだと壊れる。先に対象を集める
+    std::vector<entt::entity> targets;
+    for (auto [e, link] : reg.view<const PrefabLink>().each())
+        if (link.sourcePath == sourcePath && e != except) targets.push_back(e);
+
+    int n = 0;
+    for (entt::entity root : targets)
+    {
+        if (!reg.valid(root)) continue;
+
+        json mine = json::parse(SceneSerializer::SerializeSubtree(scene, root, assetsDir),
+                                nullptr, /*allow_exceptions=*/false);
+        if (mine.is_discarded() || !mine.contains("entities") || !mine["entities"].is_array())
+            continue;
+
+        json merged = mine;
+        merged["entities"] = Merge3WaySubtree(mine["entities"], oldBase, newBase);
+        if (merged["entities"].empty()) continue;
+
+        // guid を控える。InstantiateSubtree は「別のエンティティ」として作るので guid を
+        // 捨てるが、ここは同じインスタンスの作り直しなので元の値へ戻す
+        std::vector<uint64_t> guids;
+        guids.reserve(merged["entities"].size());
+        for (const auto& ej : merged["entities"]) guids.push_back(GuidFromJson(ej, "guid"));
+
+        const entt::entity externalParent =
+            reg.all_of<Transform>(root) ? reg.get<Transform>(root).parent : entt::null;
+
+        // ★先に消してから作る。逆にすると MakeUniqueName が名前の重複を避けて連番を足し、
+        //   伝播のたびに Barrel → Barrel_1 → Barrel_1_1 と名前が伸びて、名前ベースの参照が切れる。
+        //   中身は merged（parse 済みの JSON）由来なので、作る側が丸ごと失敗する経路は無い。
+        std::vector<entt::entity> old{root};
+        for (size_t head = 0; head < old.size(); ++head)
+            for (auto [child, tf] : reg.view<const Transform>().each())
+                if (tf.parent == old[head] && std::find(old.begin(), old.end(), child) == old.end())
+                    old.push_back(child);
+        for (auto it = old.rbegin(); it != old.rend(); ++it)
+            if (reg.valid(*it)) reg.destroy(*it);
+
+        std::vector<entt::entity> created;
+        const entt::entity newRoot =
+            SceneSerializer::InstantiateSubtree(scene, merged.dump(), assetsDir, &created);
+        if (newRoot == entt::null) continue;
+
+        for (size_t i = 0; i < created.size() && i < guids.size(); ++i)
+            if (created[i] != entt::null && guids[i] != 0)
+                reg.emplace_or_replace<EntityGuid>(created[i], EntityGuid{guids[i]});
+
+        if (externalParent != entt::null && reg.valid(externalParent)
+            && reg.all_of<Transform>(newRoot))
+            reg.get<Transform>(newRoot).parent = externalParent;
+        ++n;
+    }
+    return n;
+}
+
 } // namespace
 
 bool SceneSerializer::ComputePrefabOverrides(const Scene& scene, entt::entity root,
@@ -2808,14 +2958,32 @@ bool SceneSerializer::ComputePrefabOverrides(const Scene& scene, entt::entity ro
     return true;
 }
 
-bool SceneSerializer::ApplyPrefabInstance(const Scene& scene, entt::entity root,
-                                          const std::string& assetsDir)
+bool SceneSerializer::ApplyPrefabInstance(Scene& scene, entt::entity root,
+                                          const std::string& assetsDir, int* outPropagated)
 {
-    const auto& reg = scene.GetRegistry();
+    auto& reg = scene.GetRegistry();
     if (!reg.valid(root) || !reg.all_of<PrefabLink>(root)) return false;
     const std::string rel = reg.get<PrefabLink>(root).sourcePath;
     if (rel.empty()) return false;
-    return SavePrefab(scene, root, assetsDir + rel, assetsDir);
+
+    // 上書きする前に元の中身を控える。これが 3-way マージの base になる。
+    // 読めない（新規プレハブ）ときは配る相手もいないので、そのまま書くだけ。
+    json oldBase;
+    const bool haveOld = ReadPrefabJson(assetsDir + rel, oldBase);
+
+    if (!SavePrefab(scene, root, assetsDir + rel, assetsDir)) return false;
+
+    if (haveOld)
+    {
+        json newBase;
+        if (ReadPrefabJson(assetsDir + rel, newBase))
+        {
+            const int n = MergePrefabInstances(scene, rel, oldBase["entities"],
+                                               newBase["entities"], assetsDir, root);
+            if (outPropagated) *outPropagated = n;
+        }
+    }
+    return true;
 }
 
 entt::entity SceneSerializer::RevertPrefabInstance(Scene& scene, entt::entity root,

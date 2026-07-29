@@ -3123,7 +3123,9 @@ void InspectorPanel::RenderPrefabHeader(entt::registry& reg, EditorContext& ctx,
     if (ImGui::Button("適用 Apply"))
         ctx.pendingPrefabApply.push_back(e);
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("このインスタンスの今の姿を元の .prefab へ書き戻す");
+        ImGui::SetTooltip("このインスタンスの今の姿を元の .prefab へ書き戻し、同じプレハブの\n"
+                          "他のインスタンスへも反映する。各インスタンスの手直し（置いた位置、\n"
+                          "差し替えたマテリアル、手で足した子）はそのまま残る");
     ImGui::SameLine();
     if (ImGui::Button("元に戻す Revert"))
         ctx.pendingPrefabRevert.push_back(e);
@@ -3131,11 +3133,13 @@ void InspectorPanel::RenderPrefabHeader(entt::registry& reg, EditorContext& ctx,
         ImGui::SetTooltip("元の .prefab の状態へ戻す（外側の親だけ維持。この操作は作り直しなので\n"
                           "エンティティ ID が変わる）");
     ImGui::SameLine();
-    if (ImGui::Button("他のインスタンスも更新"))
+    if (ImGui::Button("他を強制リセット"))
         ctx.pendingPrefabPropagate.push_back(e);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("同じ .prefab から作った他のインスタンスを、保存済みの .prefab の内容で\n"
-                          "作り直す（先に「適用」してから押すこと）");
+                          "まるごと作り直す。★各インスタンスの手直しは消える。\n"
+                          ".prefab をエディタの外で直接編集したときの手動リセット用。\n"
+                          "普通に直して配りたいだけなら「適用」を押せばよい（手直しが残る）");
     ImGui::SameLine();
     if (ImGui::Button("リンクを外す"))
         reg.remove<PrefabLink>(e);

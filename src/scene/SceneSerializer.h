@@ -136,9 +136,15 @@ public:
                                        const std::string& assetsDir,
                                        std::vector<PrefabOverride>& out);
 
-    // インスタンスの現在の姿を元 .prefab へ書き戻す（Apply）。PrefabLink は書き出さない。
-    static bool ApplyPrefabInstance(const Scene& scene, entt::entity root,
-                                    const std::string& assetsDir);
+    // インスタンスの現在の姿を元 .prefab へ書き戻し（Apply）、同じ .prefab から作った
+    // 他のインスタンスへも配る。配るときは 3-way マージなので、各インスタンスの手直し
+    // （置いた位置、差し替えたマテリアル、手で足した子）は残る。
+    // 書き込む前の .prefab が base として要るので、この 2 つは 1 回の呼び出しにまとめてある。
+    // PrefabLink は .prefab へ書き出さない。outPropagated に配った個数を返す。
+    // 作り直しなので他インスタンスの entity ID は変わる（name / guid は維持）。
+    static bool ApplyPrefabInstance(Scene& scene, entt::entity root,
+                                    const std::string& assetsDir,
+                                    int* outPropagated = nullptr);
 
     // インスタンスを元 .prefab の状態へ戻す（Revert）。作り直しなので entity ID は変わる。
     // 外部親（サブツリーの外側にいる親）だけは維持する（戻した拍子に階層から飛び出さないため）。
@@ -146,8 +152,10 @@ public:
     static entt::entity RevertPrefabInstance(Scene& scene, entt::entity root,
                                              const std::string& assetsDir);
 
-    // sourcePath が一致する他のインスタンスを全部 Revert する（Apply 後の伝播用）。
-    // except は伝播元のインスタンス自身（自分は作り直さない）。戻り値 = 更新した個数。
+    // sourcePath が一致する他のインスタンスを全部 Revert する。
+    // ★上書き（位置調整など）は消える。.prefab を外部で直接編集したときの手動リセット用。
+    //   通常の「直して配る」は ApplyPrefabInstance を使うこと（上書きが残る）。
+    // except は起点のインスタンス自身（自分は作り直さない）。戻り値 = 更新した個数。
     static int RefreshPrefabInstances(Scene& scene, const std::string& sourcePath,
                                       const std::string& assetsDir, entt::entity except);
 };

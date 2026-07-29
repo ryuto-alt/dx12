@@ -37,6 +37,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <filesystem>
 #include <functional>
 #include <string>
 #include <vector>
@@ -1563,6 +1564,92 @@ static void Test_AssetRefRewrite()
     CHECK(SceneSerializer::CountAssetPathRefs(sc, "") == 0);
 }
 
+// プレハブの「適用」が、他インスタンスの手直しを消さないこと（3-way マージ）。
+//
+// なぜ大事か: レベル制作では 1 つのプレハブを何十個も置き、それぞれ違う場所へ置く。
+// ここが壊れていると「プレハブのマテリアルを直したら全部が原点へ戻った」が起きる。
+// 以前は他インスタンスを Revert（＝プレハブの姿へ作り直し）していたので、実際に起きていた。
+static void Test_PrefabApplyKeepsInstanceOverrides()
+{
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / "dx12_prefab_merge_test";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    const std::string assets = dir.string() + "/";
+    const std::string rel    = "p.prefab";
+
+    Scene sc;
+    auto& reg = sc.GetRegistry();
+
+    // テンプレートを作って .prefab へ保存 → 実体は消す
+    {
+        entt::entity t = reg.create();
+        reg.emplace<NameTag>(t, NameTag{"Barrel"});
+        reg.emplace<Transform>(t);
+        PointLight pl; pl.intensity = 1.0f; pl.range = 10.0f;
+        reg.emplace<PointLight>(t, pl);
+        CHECK(SceneSerializer::SavePrefab(sc, t, assets + rel, assets));
+        reg.destroy(t);
+    }
+
+    entt::entity a = SceneSerializer::InstantiatePrefab(sc, assets + rel, assets);
+    entt::entity b = SceneSerializer::InstantiatePrefab(sc, assets + rel, assets);
+    CHECK(a != entt::null && b != entt::null && a != b);
+
+    // B はレベル上の別の場所へ置いた（インスタンス固有の手直し）＋子を手で足した
+    reg.get<Transform>(b).position = {5.0f, 0.0f, 0.0f};
+    const std::string bName = reg.get<NameTag>(b).name;
+    {
+        entt::entity extra = reg.create();
+        reg.emplace<NameTag>(extra, NameTag{"HandAdded"});
+        Transform tf; tf.parent = b; tf.position = {0.0f, 2.0f, 0.0f};
+        reg.emplace<Transform>(extra, tf);
+    }
+
+    // A 側でプレハブそのものを直して「適用」
+    reg.get<PointLight>(a).intensity = 7.0f;
+    int propagated = 0;
+    CHECK(SceneSerializer::ApplyPrefabInstance(sc, a, assets, &propagated));
+    CHECK(propagated == 1);
+
+    // B は作り直されるので名前で引き直す（★名前が変わらないことも同時に見ている）
+    auto findByName = [&](const std::string& nm) {
+        entt::entity found = entt::null;
+        for (auto [e, n] : reg.view<const NameTag>().each())
+            if (n.name == nm) found = e;
+        return found;
+    };
+    entt::entity b2 = findByName(bName);
+    CHECK(b2 != entt::null);
+    if (b2 == entt::null) { fs::remove_all(dir); return; }
+
+    // ★本題: 置いた位置は残り、プレハブ側の変更は受け取っている
+    CHECK_F(reg.get<Transform>(b2).position.x, 5.0f);
+    CHECK_F(reg.get<PointLight>(b2).intensity, 7.0f);
+    // プレハブで触っていないフィールドは巻き込まれない
+    CHECK_F(reg.get<PointLight>(b2).range, 10.0f);
+    // 紐付けが外れていない（外れると以後 適用/元に戻す が効かなくなる）
+    CHECK(reg.all_of<PrefabLink>(b2));
+
+    // 手で足した子が生き残り、作り直した B にぶら下がったまま
+    entt::entity extra2 = findByName("HandAdded");
+    CHECK(extra2 != entt::null);
+    if (extra2 != entt::null) CHECK(reg.get<Transform>(extra2).parent == b2);
+
+    // 2 回目の適用で名前に連番が積み上がらない（Barrel_1 → Barrel_1_1 になる回帰の検出）
+    reg.get<PointLight>(a).intensity = 9.0f;
+    CHECK(SceneSerializer::ApplyPrefabInstance(sc, a, assets, &propagated));
+    entt::entity b3 = findByName(bName);
+    CHECK(b3 != entt::null);
+    if (b3 != entt::null)
+    {
+        CHECK_F(reg.get<Transform>(b3).position.x, 5.0f);
+        CHECK_F(reg.get<PointLight>(b3).intensity, 9.0f);
+    }
+
+    fs::remove_all(dir);
+}
+
 // 中立ヘッダ(ComponentRegistry.h)が /WX で通り、型が使えることの最小確認。
 static void Test_RegistryHeaderCompiles()
 {
@@ -1617,6 +1704,7 @@ int main()
     Test_DuplicateGetsNewGuid();
     Test_RenameRewritesNameRefs();
     Test_AssetRefRewrite();
+    Test_PrefabApplyKeepsInstanceOverrides();
     Test_RegistryHeaderCompiles();
 
     std::printf("serialize_roundtrip: %d checks, %d failures\n", g_checks, g_failures);
