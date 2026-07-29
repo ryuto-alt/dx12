@@ -32,6 +32,26 @@ public:
     // 失敗時は entt::null を返す
     static entt::entity InstantiateEntity(Scene& scene, const std::string& jsonStr,
                                           const std::string& assetsDir);
+    // ── アセット参照（assets 相対パス）の付け替え / 数え上げ ──
+    //
+    // アセットを移動・削除しても参照は追従しない、というのが長らくの状態だった。
+    // 切れても実行時は「音が鳴らない」「UI が真っ白」と出るだけでエラーが無いので、
+    // 気付かないまま壊れたシーンを保存できてしまう。
+    //
+    // ★対象は「いま開いているシーン」だけ。他のシーンファイルや .prefab の中は触らない
+    //   （それらを直すにはアセット GUID が要る）。呼び出し側はその前提で結果を伝えること。
+    //
+    // oldRel がディレクトリの場合も想定して、前方一致 + 区切り境界で判定する
+    // （"tex" が "textures/a.png" に誤爆しないように）。
+    // 戻り値は書き換えた参照の数。
+    static int RewriteAssetPathRefs(Scene& scene, const std::string& oldRel,
+                                    const std::string& newRel);
+    // rel を参照しているフィールドの数を数える（削除前の警告用）。
+    // outWho に「エンティティ名: 種別」を最大 maxNames 件だけ積む。
+    static int CountAssetPathRefs(const Scene& scene, const std::string& rel,
+                                  std::vector<std::string>* outWho = nullptr,
+                                  int maxNames = 8);
+
     // エンティティを全コンポーネント込みで複製（名前は重複しないよう連番付与）
     static entt::entity DuplicateEntity(Scene& scene, entt::entity src,
                                         const std::string& assetsDir);

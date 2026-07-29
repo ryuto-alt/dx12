@@ -2291,6 +2291,139 @@ std::string SceneSerializer::SerializeSubtree(const Scene& scene, entt::entity r
 
 // サブツリー JSON を既存シーンへ展開（Clear しない）。戻り値 = root エンティティ。
 // outAll に生成した全エンティティ（root 先頭）を返す（Undo 用）。
+// ---------------------------------------------------------------------------
+// アセット参照（assets 相対パス）の走査。
+//
+// 参照フィールドは 20 箇所以上あり、増えるたびにここへ足す必要がある。
+// 「1 箇所ずつ書く」代わりに、フィールドを訪問する関数を 1 本にして
+// 付け替え(Rewrite)と数え上げ(Count)の両方から使う＝片方だけ更新して
+// ズレる事故を防ぐ。
+// ---------------------------------------------------------------------------
+namespace {
+
+// rel が target と一致するか、target ディレクトリ配下か。
+// 前方一致だけだと "tex" が "textures/a.png" に誤爆するので区切りを見る。
+bool PathMatches(const std::string& rel, const std::string& target)
+{
+    if (rel.empty() || target.empty()) return false;
+    if (rel == target) return true;
+    if (rel.size() > target.size() && rel.compare(0, target.size(), target) == 0)
+        return rel[target.size()] == '/';
+    return false;
+}
+
+// 一致したら新しいパスへ差し替える。oldRel がディレクトリなら配下の相対部分を保つ。
+// fn(field, who, kind) の形で全参照フィールドを訪問する。
+template <typename Fn>
+void ForEachAssetPathField(Scene& scene, Fn&& fn)
+{
+    auto& reg = scene.GetRegistry();
+    auto nameOf = [&reg](entt::entity e) -> std::string {
+        const auto* n = reg.try_get<NameTag>(e);
+        return n ? n->name : std::string("(no name)");
+    };
+
+    for (auto [e, mr] : reg.view<MeshRenderer>().each())
+    {
+        const std::string who = nameOf(e);
+        fn(mr.modelPath,  who, "model");
+        fn(mr.shaderPath, who, "shader");
+        for (auto& p : mr.overrideAlbedoTexture)         fn(p, who, "albedo");
+        for (auto& p : mr.overrideNormalTexture)         fn(p, who, "normal");
+        for (auto& p : mr.overrideMetalRoughnessTexture) fn(p, who, "metalRoughness");
+        for (auto& p : mr.materialAsset)                 fn(p, who, "material");
+    }
+    for (auto [e, t] : reg.view<Terrain>().each())
+    {
+        const std::string who = nameOf(e);
+        fn(t.heightmapPath, who, "heightmap");
+        fn(t.layerSetPath,  who, "terrainLayers");
+        fn(t.splatPath,     who, "splat");
+    }
+    for (auto [e, sm] : reg.view<SculptMesh>().each()) fn(sm.meshPath, nameOf(e), "sculpt");
+    for (auto [e, a]  : reg.view<AudioSource>().each()) fn(a.clipPath, nameOf(e), "audio");
+    for (auto [e, sp] : reg.view<Sprite2D>().each())
+    {
+        const std::string who = nameOf(e);
+        fn(sp.texturePath, who, "sprite");
+        fn(sp.shaderPath,  who, "spriteShader");
+    }
+    for (auto [e, i]  : reg.view<UIImage>().each())     fn(i.texturePath, nameOf(e), "uiImage");
+    for (auto [e, t]  : reg.view<UIText>().each())      fn(t.fontPath,    nameOf(e), "font");
+    for (auto [e, b]  : reg.view<UIButton>().each())
+    {
+        const std::string who = nameOf(e);
+        fn(b.hoverSound, who, "hoverSound");
+        fn(b.clickSound, who, "clickSound");
+    }
+    for (auto [e, p]  : reg.view<ParticleEmitter>().each()) fn(p.texturePath, nameOf(e), "particle");
+    for (auto [e, ap] : reg.view<UIAnimPlayer>().each())    fn(ap.clipPath,   nameOf(e), "uianim");
+    for (auto [e, sa] : reg.view<SpriteAnimator>().each())  fn(sa.sheetPath,  nameOf(e), "spriteSheet");
+    for (auto [e, ac] : reg.view<AnimatorController>().each()) fn(ac.graphPath, nameOf(e), "animGraph");
+    for (auto [e, pl] : reg.view<PrefabLink>().each())      fn(pl.sourcePath, nameOf(e), "prefab");
+    for (auto [e, ls] : reg.view<LuaScript>().each())       fn(ls.scriptPath, nameOf(e), "luaScript");
+
+    // シーン単位
+    fn(scene.GetSkyboxSettings().envMapPath, "(scene)", "envMap");
+    fn(scene.GetPostSettings().lutPath,      "(scene)", "lut");
+    // デカールアトラスはセッタ経由でしか触れないので個別に扱う（下の Rewrite で対応）
+}
+
+} // namespace
+
+int SceneSerializer::RewriteAssetPathRefs(Scene& scene, const std::string& oldRel,
+                                          const std::string& newRel)
+{
+    if (oldRel.empty() || oldRel == newRel) return 0;
+    int n = 0;
+    auto rewrite = [&](std::string& field, const std::string&, const char*) {
+        if (!PathMatches(field, oldRel)) return;
+        // ディレクトリ配下なら、配下の相対部分を保ったまま付け替える
+        field = (field.size() == oldRel.size()) ? newRel
+                                                : newRel + field.substr(oldRel.size());
+        ++n;
+    };
+    ForEachAssetPathField(scene, rewrite);
+
+    // デカールアトラス（getter が const 参照なので個別）
+    {
+        std::string atlas = scene.GetDecalAtlasPath();
+        if (PathMatches(atlas, oldRel))
+        {
+            atlas = (atlas.size() == oldRel.size()) ? newRel
+                                                    : newRel + atlas.substr(oldRel.size());
+            scene.SetDecalAtlasPath(atlas);
+            ++n;
+        }
+    }
+    return n;
+}
+
+int SceneSerializer::CountAssetPathRefs(const Scene& scene, const std::string& rel,
+                                        std::vector<std::string>* outWho, int maxNames)
+{
+    if (rel.empty()) return 0;
+    int n = 0;
+    // ForEachAssetPathField は非 const 参照を配るので、数えるだけでも非 const が要る。
+    // 実際には書き換えないので const_cast で足りる（Scene の実体は const ではない）。
+    auto& mutableScene = const_cast<Scene&>(scene);
+    auto count = [&](std::string& field, const std::string& who, const char* kind) {
+        if (!PathMatches(field, rel)) return;
+        ++n;
+        if (outWho && static_cast<int>(outWho->size()) < maxNames)
+            outWho->push_back(who + ": " + kind);
+    };
+    ForEachAssetPathField(mutableScene, count);
+
+    if (PathMatches(scene.GetDecalAtlasPath(), rel))
+    {
+        ++n;
+        if (outWho && static_cast<int>(outWho->size()) < maxNames)
+            outWho->push_back("(scene): decalAtlas");
+    }
+    return n;
+}
+
 entt::entity SceneSerializer::InstantiateSubtree(Scene& scene, const std::string& jsonStr,
                                                  const std::string& assetsDir,
                                                  std::vector<entt::entity>* outAll)

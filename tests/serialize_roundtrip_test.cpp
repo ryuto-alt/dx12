@@ -1515,6 +1515,54 @@ static void Test_RenameRewritesNameRefs()
     CHECK(reg.get<Trigger>(trig).filter == "Player");
 }
 
+// ---------------------------------------------------------------------------
+// アセット参照の付け替え。境界判定を間違えると "tex" が "textures/a.png" を
+// 巻き込んで、無関係なアセットの参照が壊れる（しかも実行時までエラーが出ない）。
+// ---------------------------------------------------------------------------
+static void Test_AssetRefRewrite()
+{
+    Scene sc;
+    auto& reg = sc.GetRegistry();
+
+    auto mkImage = [&](const char* name, const char* tex) {
+        entt::entity e = reg.create();
+        reg.emplace<NameTag>(e, NameTag{name});
+        reg.emplace<Transform>(e);
+        UIImage img;
+        img.texturePath = tex;
+        reg.emplace<UIImage>(e, img);
+        return e;
+    };
+
+    entt::entity exact  = mkImage("Exact",  "tex/a.png");
+    entt::entity under  = mkImage("Under",  "tex/sub/b.png");
+    entt::entity prefix = mkImage("Prefix", "texture/c.png");   // 前方一致だが別ディレクトリ
+    entt::entity other  = mkImage("Other",  "ui/d.png");
+
+    // 数え上げ: ディレクトリ "tex" は exact と under だけを拾う
+    std::vector<std::string> who;
+    const int n = SceneSerializer::CountAssetPathRefs(sc, "tex", &who);
+    CHECK(n == 2);
+
+    // 付け替え: ディレクトリごと移動しても配下の相対部分は保たれる
+    const int rewritten = SceneSerializer::RewriteAssetPathRefs(sc, "tex", "assets2/tex");
+    CHECK(rewritten == 2);
+    CHECK(reg.get<UIImage>(exact).texturePath  == "assets2/tex/a.png");
+    CHECK(reg.get<UIImage>(under).texturePath  == "assets2/tex/sub/b.png");
+    // ★ここが本題: 前方一致するだけの別パスを巻き込まない
+    CHECK(reg.get<UIImage>(prefix).texturePath == "texture/c.png");
+    CHECK(reg.get<UIImage>(other).texturePath  == "ui/d.png");
+
+    // 単一ファイルのリネーム
+    const int one = SceneSerializer::RewriteAssetPathRefs(sc, "ui/d.png", "ui/renamed.png");
+    CHECK(one == 1);
+    CHECK(reg.get<UIImage>(other).texturePath == "ui/renamed.png");
+
+    // 該当なしは 0（空文字で全部巻き込む、のような事故がないこと）
+    CHECK(SceneSerializer::RewriteAssetPathRefs(sc, "", "x") == 0);
+    CHECK(SceneSerializer::CountAssetPathRefs(sc, "") == 0);
+}
+
 // 中立ヘッダ(ComponentRegistry.h)が /WX で通り、型が使えることの最小確認。
 static void Test_RegistryHeaderCompiles()
 {
@@ -1568,6 +1616,7 @@ int main()
     Test_LegacySceneWithoutGuid();
     Test_DuplicateGetsNewGuid();
     Test_RenameRewritesNameRefs();
+    Test_AssetRefRewrite();
     Test_RegistryHeaderCompiles();
 
     std::printf("serialize_roundtrip: %d checks, %d failures\n", g_checks, g_failures);

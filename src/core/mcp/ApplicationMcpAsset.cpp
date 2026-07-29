@@ -459,9 +459,21 @@ void Application::RegisterMcpAssetMethods()
             }
             fs::create_directories(toP.parent_path());
             fs::rename(fromP, toP);
+
+            // 開いているシーンの参照を追従させる。切れても実行時にエラーが出ない
+            // （音が鳴らない / UI が真っ白 になるだけ）ので、放置すると気付けない。
+            // ★書き換えるのは「いま開いているシーン」のメモリ上の値だけ。
+            //   保存しないとディスクには載らないし、他のシーンや .prefab は直らない。
+            const int updated = SceneSerializer::RewriteAssetPathRefs(*m_scene, fromRel, toRel);
+            if (updated > 0 && m_editorCtx) m_editorCtx->undoSystem.MarkEdited();
+
             resp["ok"] = true;
             resp["result"] = {{"from", fromRel}, {"to", toRel},
-                              {"note", "シーン/プレハブ内の参照パスは自動更新されない(必要なら開き直して保存)"}};
+                              {"refsUpdated", updated},
+                              {"note", updated > 0
+                                  ? "開いているシーンの参照を更新した。dx12_save_scene で保存すること。"
+                                    "他のシーン/.prefab 内の参照は直っていない"
+                                  : "開いているシーンにこのアセットへの参照は無かった"}};
         });
 
     McpDefine("delete_asset", "path:string,recursive:bool", DX12E_MCP_HANDLER
@@ -470,6 +482,14 @@ void Application::RegisterMcpAssetMethods()
             const std::string rel = ValidateMcpAssetRelPath(params.value("path", std::string()));
             const fs::path full = fs::path(PathResolver::AssetsDir()) / rel;
             if (!fs::exists(full)) throw McpError(McpErr::NotFound, "asset not found: " + rel);
+
+            // 消す前に「まだ誰が使っているか」を数える。消してから数えても手遅れなので順序が要点。
+            // 削除は止めない（消したい理由がある場合を邪魔しない）が、黙って壊すのはやめる。
+            std::vector<std::string> who;
+            const int refCount = SceneSerializer::CountAssetPathRefs(*m_scene, rel, &who);
+            json refWho = json::array();
+            for (const auto& w : who) refWho.push_back(w);
+
             uintmax_t removed = 0;
             bool wasDirectory = false;
             if (fs::is_directory(full))
@@ -487,7 +507,13 @@ void Application::RegisterMcpAssetMethods()
             resp["ok"] = true;
             resp["result"] = {{"deleted", rel}, {"removedCount", removed},
                               {"wasDirectory", wasDirectory},
-                              {"note", "シーン/プレハブ内の参照パスは自動更新されない"}};
+                              {"stillReferencedBy", refWho},
+                              {"stillReferencedCount", refCount},
+                              {"note", refCount > 0
+                                  ? "★開いているシーンがまだこのアセットを参照している。"
+                                    "実行時はエラー無しで「出ない/鳴らない」だけになるので、"
+                                    "参照元を直すか dx12_diagnose {only:[\"scene_assets\"]} で確認すること"
+                                  : "開いているシーンからの参照は無かった"}};
         });
 
     // ════════════════════════════════════════════════════════════
