@@ -147,6 +147,8 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             "benchmark", "step_frames", "play", "stop", "save_scene", "select_entity",
             "focus_camera", "look_at", "set_editor_camera", "key_down",
             "key_up", "key_press", "render_debug", "eval_lua",
+            // reload_scripts は env を作り直すだけでシーンのデータは変えない
+            "reload_scripts",
         };
         // eval_lua と render_debug は「シーンを変えうる」が、変えないことの方が多い。
         // 変えた場合は設定フィンガープリント（Run ループの定期比較）か、

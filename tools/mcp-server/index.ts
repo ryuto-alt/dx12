@@ -409,6 +409,15 @@ reg(
 );
 
 reg(
+  "dx12_reload_scripts",
+  "Luaを強制リロード",
+  "LuaScript を作り直して loadError を落とす: {reloaded, cleared}。★実行時エラーで死んだスクリプトを Play を止めずに復帰させる用。OnUpdate で 1 回でもエラーが出たスクリプトはそのフレーム以降まるごとスキップされるので、原因を直しても自動では戻らない場合にこれを叩く。path を渡すとその .lua を使うものだけ、省略で全部。ファイルを書き換えた場合は 0.5 秒で自動リロードされるのでこれは不要 — これが要るのは「外から状態を戻したい」「ファイルは変えずにやり直したい」ケース。Editor モードで呼ぶと env を捨てるだけで、実際の作り直しは次の Play。",
+  { path: z.string().optional().describe("assets 相対の .lua パス。省略で全 LuaScript が対象") },
+  {},
+  ({ path }) => run(() => engine.call("reload_scripts", path ? { path } : {})),
+);
+
+reg(
   "dx12_set_lua_property",
   "Luaプロパティ設定",
   "LuaScript のプロパティを1つ書き換える(スクリプトの properties 宣言にあるものだけ)。type に応じて value は number/bool/string/[x,y,z]。Playing 中なら即再注入(スクリプト再ロード=OnStart 再実行)、Editor 中は保存だけで次 Play から反映。entity(id) か name 指定。型が不安なら先に dx12_get_lua_component_state で確認。",

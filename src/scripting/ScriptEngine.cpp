@@ -371,6 +371,20 @@ bool InitializeLuaScriptInstance(sol::state& lua,
     // (*env)["OnStart"] だと env の __index フォールバック経由で lua.globals() まで辿り、
     // game.lua のグローバル OnStart/OnUpdate を self 引数で誤呼び出ししてしまう。
     sol::object fnObj = env->raw_get<sol::object>("OnStart");
+
+    // ★どちらも無いコンポーネントは「読めてはいるが何もしない」。
+    //   よくある原因は module テーブル形式（local M = {} ... function M.OnUpdate() ... return M）で、
+    //   この形式だと raw_get が env 直下を見るので関数が見つからず、エラーも出ないまま
+    //   黙って動かないコンポーネントが出来上がる。気付けないので必ず警告を出す。
+    if (fnObj.get_type() != sol::type::function
+        && env->raw_get<sol::object>("OnUpdate").get_type() != sol::type::function)
+    {
+        Logger::Warn("LuaScript [{}] に OnStart / OnUpdate がありません（このコンポーネントは"
+                     "何もしません）。module テーブルを return する形式ではなく、"
+                     "トップレベルに function OnUpdate(self, dt) と書いてください",
+                     ls.scriptPath);
+    }
+
     if (fnObj.get_type() == sol::type::function)
     {
         sol::protected_function fn = fnObj;
@@ -3923,6 +3937,29 @@ int ScriptEngine::ReloadChangedScripts()
     return n;
 }
 
+int ScriptEngine::ReloadAllScripts(const std::string& onlyPath)
+{
+    if (!m_scene) return 0;
+    auto& reg = m_scene->GetRegistry();
+
+    // ★mtime の基準も捨てる。ReloadChangedScripts は「初見は基準を作るだけ」なので、
+    //   ここで消しておかないと、リロード後に同じファイルをもう一度編集したときの
+    //   1 回目の変更を取りこぼす。
+    if (onlyPath.empty()) m_scriptMtimes.clear();
+    else                  m_scriptMtimes.erase(onlyPath);
+
+    int n = 0;
+    for (auto [e, ls] : reg.view<LuaScript>().each())
+    {
+        if (ls.scriptPath.empty()) continue;
+        if (!onlyPath.empty() && ls.scriptPath != onlyPath) continue;
+        ReloadScript(e);   // 実際の再構築は次の UpdateAttachedScripts
+        ++n;
+    }
+    if (n > 0) Logger::Info("Lua 強制リロード: {} 個のコンポーネントを作り直します", n);
+    return n;
+}
+
 std::vector<ScriptEngine::ScriptError> ScriptEngine::CollectScriptErrors()
 {
     std::vector<ScriptError> out;
@@ -4091,6 +4128,9 @@ void ScriptEngine::OnPlayStart()
         ls.self.reset();
         ls.started   = false;
         ls.loadError = false;
+        // ★errorMessage も消す。残すと、直したあとの Play でも Inspector と
+        //   get_script_errors に前回のエラー文が出続けて「まだ壊れている」と誤読させる。
+        ls.errorMessage.clear();
         if (ls.scriptPath.empty()) continue;
         const auto& schema = GetPropertySchema(ls.scriptPath);
         InitializeLuaScriptInstance(*m_lua, reg, e, ls, m_assetsDir, m_lastError, &schema);

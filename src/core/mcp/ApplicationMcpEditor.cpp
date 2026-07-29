@@ -350,6 +350,21 @@ void Application::RegisterMcpEditorMethods()
                               {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"}};
         });
 
+    McpDefine("reload_scripts", "path:string", DX12E_MCP_HANDLER
+        {
+            // 実行時エラーで死んだ LuaScript を Play を止めずに戻す。
+            // OnUpdate が 1 回でも失敗すると loadError が立ち、そのエンティティは以後の
+            // フレームで丸ごとスキップされる（毎フレーム同じエラーを吐かないための設計）。
+            // ファイルを直せば mtime 監視が拾うが、「ファイルは変えずにやり直したい」
+            // ときの復帰手段が無かった＝エンジンを再起動するしかなかった。ここがその入口。
+            const std::string path = params.value("path", std::string());
+            const size_t before = m_scriptEngine->CollectScriptErrors().size();
+            const int n = m_scriptEngine->ReloadAllScripts(path);
+            resp["ok"] = true;
+            resp["result"] = {{"reloaded", n}, {"cleared", before},
+                              {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"}};
+        });
+
     McpDefine("set_lua_property", "entity:int,key:string,name:string,value:any", DX12E_MCP_HANDLER
         {
             // LuaScript のプロパティを1つ書き換える。スキーマで型を確認して検証。

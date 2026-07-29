@@ -104,6 +104,12 @@ public:
     // 戻り値: 作り直したエンティティ数（0 なら変更なし）。
     int ReloadChangedScripts();
 
+    // ファイルが書き換わっていなくても作り直す（強制リロード）。
+    // 実行時エラーで死んだスクリプトを Play を止めずに復帰させる入口。
+    // onlyPath が空でなければ、その scriptPath を使うものだけが対象。
+    // 戻り値: 作り直したエンティティ数。
+    int ReloadAllScripts(const std::string& onlyPath = {});
+
     // いま loadError が立っている LuaScript を全部集める（MCP の一括エラー取得用）。
     // ログを漁らずに「どのスクリプトが死んでいるか」を 1 回で答えるためのもの。
     struct ScriptError
