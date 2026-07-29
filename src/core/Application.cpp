@@ -1483,6 +1483,18 @@ void Application::Run()
                 }
             }
 
+            // シーン設定（ポスト/SSAO/空/フォグ等）の変更検知。これらを触る窓は 20 箇所以上
+            // あってどれも Undo を積まないので、1 箇所ずつフックする代わりに設定そのものを
+            // 定期比較する。Playing 中は Lua が触っても Stop で巻き戻るので見ない。
+            if (m_editorCtx && m_scene && !m_showLauncher && !m_isGameMode
+                && m_engineMode == EngineMode::Editor)
+            {
+                // 現在値を書くだけ。未保存かどうかの判定は EditorContext::IsSceneDirty が
+                // savedSettingsHash と比べて行う。ここで MarkEdited すると、保存直前の
+                // 変更を保存後に二重計上してしまう。
+                m_editorCtx->settingsHash = SceneSettingsFingerprint(*m_scene);
+            }
+
             // コンポーネント .lua（assets/components/*.lua 等）のホットリロード。
             // game.lua と違い RebuildScene は要らない: 該当エンティティの env を捨てるだけで、
             // 次の UpdateAttachedScripts が作り直す。Play を止めずにスクリプトを差し替えられる。
@@ -2075,7 +2087,8 @@ void Application::Update()
             }
             else
             {
-                SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, PathResolver::AssetsDir());
+                if (SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, PathResolver::AssetsDir()))
+                    MarkSceneClean();   // 成功したときだけ未保存フラグを落とす
                 ProjectManager::SaveLastOpenedScene(m_editorCtx->currentScenePath);
                 m_editorCtx->hotReloadFlash = 1.5f;
                 m_editorLayer->RefreshAssetBrowser();
@@ -2393,6 +2406,14 @@ void Application::Update()
 // FootIK.cpp（Animation ライブラリ）は entt も PhysicsSystem も知らない。
 // ここが「エンティティを走査して PhysicsSystem::RaycastEx を繋ぐ」接着層。
 // ---------------------------------------------------------------------------
+void Application::MarkSceneClean()
+{
+    // 「いまの状態＝保存済み」に揃える。保存直後・シーンを開いた直後・新規作成直後。
+    // 指紋はここで取り直す（ポーリングで拾った古い値を使うと、保存直前の設定変更が
+    // 保存後に「新しい変更」として再検出される）。
+    if (m_editorCtx && m_scene) m_editorCtx->MarkSceneSaved(SceneSettingsFingerprint(*m_scene));
+}
+
 void Application::RestoreRenderDebugSettings()
 {
     if (!m_renderDebugRestore.valid || !m_scene) return;

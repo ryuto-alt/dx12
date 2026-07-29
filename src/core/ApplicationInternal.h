@@ -88,6 +88,7 @@
 #include "animation/NodeAnimator.h"
 #include "input/InputSystem.h"
 #include "scene/Scene.h"
+#include "scene/SceneSettingsHash.h"
 #include "scene/Entity.h"
 #include "ecs/Components.h"
 #include "scripting/ScriptEngine.h"

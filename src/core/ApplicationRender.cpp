@@ -1367,6 +1367,8 @@ void Application::Render()
         m_editorCtx->pendingNewScenePath.clear();
         m_editorCtx->ClearSelection();
         m_editorCtx->undoSystem.Clear();
+        // 新規シーンは「作った直後」を基準にする（保存先が指定されていればこの後 Save される）
+        MarkSceneClean();
         m_editorCtx->currentScenePath = starterPath;  // 空なら未保存の新規シーン
         m_scene->Clear();
         m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
@@ -1396,7 +1398,8 @@ void Application::Render()
         // 作成と同時にシーンファイルを保存
         if (!m_editorCtx->currentScenePath.empty())
         {
-            SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, PathResolver::AssetsDir());
+            if (SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, PathResolver::AssetsDir()))
+                MarkSceneClean();
             ProjectManager::SaveLastOpenedScene(m_editorCtx->currentScenePath);
             m_editorCtx->hotReloadFlash = 1.5f;
         }

@@ -463,6 +463,9 @@ private:
     // 物理ステップ後・スキニングバッファのアップロード前に呼ぶこと
     // （IK 後のボーン行列が GPU へ行くように）。
     void ApplyFootIkPass();
+    // 「いまの状態＝保存済み」に揃える（保存成功時・シーンを開いた直後・新規作成直後）。
+    // 実体は EditorContext::MarkSceneSaved + 設定指紋の取り直し。
+    void MarkSceneClean();
     // render_debug が一時的に ON にした設定を元へ戻す（何も退避していなければ何もしない）。
     // 正常終了と「固着していたので強制解除」の両方から呼ぶので関数にしてある。
     void RestoreRenderDebugSettings();

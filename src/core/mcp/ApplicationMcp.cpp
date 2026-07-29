@@ -6,6 +6,8 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 
+#include <unordered_set>
+
 namespace dx12e
 {
 using namespace appdetail;
@@ -114,6 +116,40 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
     // パネル(MCP / AI Bridge)用にコマンド結果を記録（メインスレッドからのみ）。
     if (m_mcpBridge)
         m_mcpBridge->RecordCommand(method, resp.value("ok", false), resp.value("error", std::string()));
+
+    // 未保存フラグ: MCP でシーンを変えた分も拾う。
+    // MCP ハンドラは 100 個以上あり、Undo を積むのは group_entities だけなので、
+    // ここ 1 箇所で名前から判定する。★読み取り専用リストの方を持つ（新しい書き込み系
+    // メソッドが増えたときに黙って漏れる側にしない）。誤検出しても「保存しますか」と
+    // 余計に聞くだけで済むが、取りこぼすと黙って作業が消える。
+    if (m_editorCtx && resp.value("ok", false) && !method.empty())
+    {
+        static const std::unordered_set<std::string> kReadOnly = {
+            "ping", "get_mode", "get_log", "get_entity", "get_hierarchy", "list_entities",
+            "list_scenes", "list_assets", "list_lights", "query_entities", "find_entity",
+            "get_bounds", "get_editor_camera", "get_scene_settings", "get_post_process",
+            "get_ssao", "get_ssr", "get_ssgi", "get_taa", "get_contact_shadow",
+            "get_shadow_pcss", "get_volumetric_fog", "get_dxr", "get_physics_state",
+            "get_anim_state", "get_lua_component_state", "get_script_errors",
+            "get_play_session", "read_lua_component", "read_shader", "describe_components",
+            "describe_lua_api", "describe_anim_graph", "describe_mcp_params",
+            "asset_info", "perf_stats", "diagnose", "validate_scene", "raycast",
+            "raycast_precise", "overlap_box", "overlap_sphere", "pick",
+            "project_world_to_screen", "screenshot", "screenshot_final",
+            "screenshot_game_view", "read_texture", "preview_model", "ui_tree",
+            "ui_screenshot", "terrain_sample", "terrain_splat_info", "net_status",
+            // play/stop はシーンを汚さない（Stop がスナップショットへ戻す）。
+            // undo/redo は状態を変えるので入れない（安全側に倒す）。
+            "benchmark", "step_frames", "play", "stop", "save_scene", "select_entity",
+            "focus_camera", "look_at", "set_editor_camera", "key_down",
+            "key_up", "key_press", "render_debug", "eval_lua",
+        };
+        // eval_lua と render_debug は「シーンを変えうる」が、変えないことの方が多い。
+        // 変えた場合は設定フィンガープリント（Run ループの定期比較）か、
+        // ハンドラ内で積まれる Undo の側で拾われる。
+        if (kReadOnly.find(method) == kReadOnly.end())
+            m_editorCtx->undoSystem.MarkEdited();
+    }
     // 遅延応答は今は送らない(フレーム境界で SendToClient が送る)。Poll が空文字列をスキップ。
     if (isDeferred) return std::string();
     // 不正 UTF-8(例: CP932 のモデル名由来の NameTag)で dump() が例外を投げないよう置換。

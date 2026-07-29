@@ -5,6 +5,7 @@
 #include "core/GameClock.h"
 #include "scene/Scene.h"
 #include "scene/SceneSerializer.h"
+#include "scene/SceneSettingsHash.h"   // 未保存判定に使う設定の指紋
 #include "core/Window.h"
 #include "core/Logger.h"
 #include "core/Version.h"          // ツールバーの版バッジ（文字列を直書きしない）
@@ -175,7 +176,8 @@ void ToolbarPanel::Render(bool isPlaying,
                 }
                 if (!ctx.currentScenePath.empty())
                 {
-                    SceneSerializer::Save(*scene, ctx.currentScenePath, assetsDir);
+                    if (SceneSerializer::Save(*scene, ctx.currentScenePath, assetsDir))
+                        ctx.MarkSceneSaved(SceneSettingsFingerprint(*scene));
                     ProjectManager::SaveLastOpenedScene(ctx.currentScenePath);
                     ctx.hotReloadFlash = 1.5f;
                 }
@@ -198,7 +200,8 @@ void ToolbarPanel::Render(bool isPlaying,
                 if (GetSaveFileNameA(&ofn))
                 {
                     ctx.currentScenePath = savePath;
-                    SceneSerializer::Save(*scene, ctx.currentScenePath, assetsDir);
+                    if (SceneSerializer::Save(*scene, ctx.currentScenePath, assetsDir))
+                        ctx.MarkSceneSaved(SceneSettingsFingerprint(*scene));
                     ProjectManager::SaveLastOpenedScene(ctx.currentScenePath);
                     ctx.hotReloadFlash = 1.5f;
                 }
@@ -346,6 +349,8 @@ void ToolbarPanel::Render(bool isPlaying,
                 if (size_t d = name.find_last_of('.');   d != std::string::npos) name = name.substr(0, d);
                 if (!name.empty()) title = name + " - DX12 Engine";
             }
+            // 未保存なら先頭に * を出す（エディタの慣習。ここが唯一の常時見える手掛かり）
+            if (ctx.IsSceneDirty()) title = "*" + title;
             const ImVec2 ts = ImGui::CalcTextSize(title.c_str());
             float cx = titleBarRect.Min.x + (titleBarRect.GetWidth() - ts.x) * 0.5f;
             cx = (std::max)(cx, menusEndX + 24.0f);   // 窓が狭い時はメニューの右に退避
@@ -912,7 +917,8 @@ void ToolbarPanel::Render(bool isPlaying,
             else
             {
                 // 今のシーンをそのまま名前を付けて保存
-                SceneSerializer::Save(*scene, ctx.currentScenePath, assetsDir);
+                if (SceneSerializer::Save(*scene, ctx.currentScenePath, assetsDir))
+                    ctx.MarkSceneSaved(SceneSettingsFingerprint(*scene));
                 ctx.hotReloadFlash = 1.5f;
             }
             ImGui::CloseCurrentPopup();

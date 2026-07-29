@@ -387,6 +387,9 @@ void Application::RegisterMcpEntityMethods()
             }
             if (!SceneSerializer::Save(*m_scene, full, PathResolver::AssetsDir()))
                 throw std::runtime_error("save failed");
+            // path 省略＝現在シーンへの保存のときだけ未保存フラグを落とす
+            // （別名保存は「今開いているシーン」が保存されたわけではない）
+            if (rel.empty() && m_editorCtx) MarkSceneClean();
             resp["ok"] = true;
             resp["result"] = {{"path", rel.empty() ? m_editorCtx->currentScenePath : rel}};
         });
@@ -944,6 +947,7 @@ void Application::RegisterMcpEntityMethods()
                 {"entityCount", entityCount},
                 {"sceneGeneration", m_sceneGeneration},
                 {"currentScene", ToAssetRel(m_editorCtx->currentScenePath)},
+                {"sceneDirty", m_editorCtx->IsSceneDirty()},   // 未保存の変更があるか
                 // ★TS 側はこれまで「エンジンログに混ざる絶対パス」から assets ディレクトリを
                 //   推定していた（#20-3）。ここで正確に返すので推定は不要。
                 {"assetsDir", PathResolver::AssetsDir()},

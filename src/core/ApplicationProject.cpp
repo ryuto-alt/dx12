@@ -484,7 +484,8 @@ void Application::SaveCurrentProject()
     // 現在シーンを保存
     if (!m_editorCtx->currentScenePath.empty())
     {
-        SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, PathResolver::AssetsDir());
+        if (SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, PathResolver::AssetsDir()))
+            MarkSceneClean();
         ProjectManager::SaveLastOpenedScene(m_editorCtx->currentScenePath);
     }
 

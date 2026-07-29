@@ -423,6 +423,32 @@ public:
     // Undo/Redo
     UndoSystem undoSystem;
 
+    // ── 未保存フラグ ──
+    // 変更の検知経路は2つある。どちらか一方でも食い違えば未保存。
+    //  (1) undoSystem.EditSeq() … 変更のたびに ++ される単調増加カウンタ。
+    //      Undo を積む操作と、MCP の書き込み系メソッドがここを進める。
+    //  (2) settingsHash … シーン設定（ポスト/SSAO/空/フォグ等）の指紋。
+    //      これらを触る窓は 20 箇所以上あって Undo を積まないので、
+    //      Application が定期的に SceneSettingsFingerprint() で更新する。
+    // Play 開始/終了ではリセットしない（Play 前に未保存だったなら Stop 後も未保存）。
+    u64  sceneSavedSeq      = 0;
+    u64  settingsHash       = 0;   // Application が毎回上書きする「現在値」
+    u64  savedSettingsHash  = 0;   // 保存時点の値
+
+    bool IsSceneDirty() const
+    {
+        return undoSystem.EditSeq() != sceneSavedSeq || settingsHash != savedSettingsHash;
+    }
+    // 保存に成功したときに呼ぶ。freshSettingsHash は「いま保存した内容」の指紋。
+    // ★ポーリングで拾った古い値ではなく、保存の直前に取り直した値を渡すこと。
+    //   古い値を渡すと、保存直前の設定変更が保存後に「新しい変更」として再検出される。
+    void MarkSceneSaved(u64 freshSettingsHash)
+    {
+        sceneSavedSeq     = undoSystem.EditSeq();
+        settingsHash      = freshSettingsHash;
+        savedSettingsHash = freshSettingsHash;
+    }
+
     // クリップボード（Ctrl+C/V 用。エンティティの JSON スナップショット）
     std::vector<std::string> clipboard;
 

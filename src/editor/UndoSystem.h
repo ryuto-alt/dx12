@@ -492,12 +492,23 @@ class UndoSystem
 public:
     void PushCommand(std::unique_ptr<IUndoCommand> cmd)
     {
+        ++m_editSeq;          // 未保存判定用（下記 EditSeq のコメント参照）
         m_undoStack.push_back(std::move(cmd));
         m_redoStack.clear();  // 新しい操作が入ったら redo は破棄
         // スタック上限
         if (m_undoStack.size() > kMaxHistory)
             m_undoStack.erase(m_undoStack.begin());
     }
+
+    // ── 「シーンが変更されたか」の指標 ──
+    // スタックの深さは指標に使えない: kMaxHistory を超えると先頭から捨てるし、
+    // Clear() は Play/Stop とシーンロードで呼ばれる。なので単調増加カウンタを別に持つ。
+    // ★Clear() ではリセットしない。Undo スタックが消えることと、
+    //   「保存していない変更があること」は別の話なので。
+    u64  EditSeq() const { return m_editSeq; }
+    // Undo を積まない変更経路（レンダ設定の窓・Lua プロパティ・MCP など）から呼ぶ。
+    // Undo できないこと自体は別問題だが、少なくとも「保存し忘れ」からは守る。
+    void MarkEdited() { ++m_editSeq; }
 
     void Undo()
     {
@@ -523,6 +534,7 @@ public:
 
 private:
     static constexpr size_t kMaxHistory = 100;
+    u64 m_editSeq = 0;
     std::vector<std::unique_ptr<IUndoCommand>> m_undoStack;
     std::vector<std::unique_ptr<IUndoCommand>> m_redoStack;
 };
