@@ -454,6 +454,18 @@ public:
     // ★MCP 経由（open_scene / new_scene / open_project）はここを通さない。
     //   AI はモーダルを押せないので出すと固まる。あちらは dx12_ping の sceneDirty で判断させる。
     enum class UnsavedChoice { None, Save, Discard, Cancel };
+
+    // ── オートセーブからの復旧プロンプト ──
+    // シーンを開いた直後、オートセーブの方が本体より新しければ「前回の続きが残っています」と聞く。
+    // ★クラッシュ復旧をクラッシュハンドラでやらない理由: ハンドラ内から entt を走査して
+    //   JSON を組むのはヒープも例外もスレッド安全性も壊れている状況で危険（しかも
+    //   ヒープ破壊で落ちた場合は二重クラッシュしてクラッシュログすら残らない）。
+    //   オートセーブのファイルを復旧元にすれば、ハンドラに一切触れずに済むうえ、
+    //   電源断や強制終了もカバーできる。代償は「最後の数十秒」だけ。
+    enum class AutosaveChoice { None, Restore, Discard };
+    bool           showAutosaveRecovery = false;
+    AutosaveChoice autosaveChoice       = AutosaveChoice::None;
+    std::string    autosaveInfo;            // モーダルに出す説明（保存時刻など）
     bool          showUnsavedConfirm = false;
     UnsavedChoice unsavedChoice      = UnsavedChoice::None;
 

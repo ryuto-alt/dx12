@@ -472,6 +472,15 @@ private:
     //   false … まだ進めない。モーダル表示中なので pending フラグを保持したまま次フレームへ。
     //           ただし outCancelled=true のときはユーザーが取り消したので pending を消すこと。
     bool ConfirmDiscardScene(bool& outCancelled);
+
+    // ── オートセーブ ──
+    // 定期的に assets/scenes/.autosave/ へ現在シーンを書く。通常の保存とは別物なので
+    // 未保存フラグは落とさない（落とすと「保存した」と誤認させる）。
+    void UpdateAutosave(f32 dt);
+    // シーンを開いた直後に呼ぶ。オートセーブの方が本体より新しければ復旧プロンプトを立てる。
+    void CheckAutosaveRecovery(const std::string& sceneFullPath);
+    // オートセーブの置き場（assets/scenes/.autosave/）。末尾 '/' 付き。
+    std::string AutosaveDir();
     // render_debug が一時的に ON にした設定を元へ戻す（何も退避していなければ何もしない）。
     // 正常終了と「固着していたので強制解除」の両方から呼ぶので関数にしてある。
     void RestoreRenderDebugSettings();
@@ -1185,6 +1194,14 @@ private:
     std::filesystem::file_time_type m_scriptLastWriteTime{};
     f32 m_scriptPollTimer = 0.0f;
     static constexpr f32 kScriptPollInterval = 0.5f;
+
+    // オートセーブ。60 秒ごと・未保存のときだけ書く。
+    // 失うのは最大でこの間隔ぶん。短くするほど安全だが、大きなシーンは Save 自体が重い。
+    f32 m_autosaveTimer = 0.0f;
+    static constexpr f32 kAutosaveInterval = 60.0f;
+    // 復旧を選んだとき、ロード後に currentScenePath をこの本来のパスへ戻す
+    // （戻さないと次の Ctrl+S がオートセーブファイルを上書きしてしまう）。
+    std::string m_autosaveRestoreTarget;
 
     // フレームレートリミッター（VSync OFF 時のみ有効。0=無制限。オプション画面から変更可能）
     // 自動インスタンシングの ON/OFF。settings.json の "render_instancing"(0/1) で切替。

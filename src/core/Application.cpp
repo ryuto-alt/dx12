@@ -1483,6 +1483,8 @@ void Application::Run()
                 }
             }
 
+            UpdateAutosave(kScriptPollInterval);   // 中で 60 秒ぶん貯めてから書く
+
             // シーン設定（ポスト/SSAO/空/フォグ等）の変更検知。これらを触る窓は 20 箇所以上
             // あってどれも Undo を積まないので、1 箇所ずつフックする代わりに設定そのものを
             // 定期比較する。Playing 中は Lua が触っても Stop で巻き戻るので見ない。
@@ -2406,6 +2408,101 @@ void Application::Update()
 // FootIK.cpp（Animation ライブラリ）は entt も PhysicsSystem も知らない。
 // ここが「エンティティを走査して PhysicsSystem::RaycastEx を繋ぐ」接着層。
 // ---------------------------------------------------------------------------
+std::string Application::AutosaveDir()
+{
+    // assets 配下に置く。シーン JSON がアセットを assets 相対で参照するので、
+    // %TEMP% 等の外へ出すと復元時にパスが解決できない（SaveSceneSnapshot と同じ理由）。
+    return PathResolver::AssetsDir() + "scenes/.autosave/";
+}
+
+void Application::UpdateAutosave(f32 dt)
+{
+    // 触ってはいけない状況を全部弾く。
+    // Playing 中は書かない: Stop でスナップショットへ巻き戻るので、Play 中の状態を
+    // オートセーブすると「Stop したら消えるはずの変更」を復旧候補にしてしまう。
+    if (m_isGameMode || m_showLauncher || m_loading || m_sceneLoadJob) return;
+    if (!m_editorCtx || !m_scene) return;
+    if (m_engineMode != EngineMode::Editor) return;
+    if (m_editorCtx->currentScenePath.empty()) return;   // 保存先未定のシーンは対象外
+    if (m_editorCtx->showAutosaveRecovery) return;       // 復旧を聞いている最中に上書きしない
+
+    m_autosaveTimer += dt;
+    if (m_autosaveTimer < kAutosaveInterval) return;
+    m_autosaveTimer = 0.0f;
+    if (!m_editorCtx->IsSceneDirty()) return;            // 汚れていなければ書く意味が無い
+
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const std::string dir = AutosaveDir();
+    fs::create_directories(dir, ec);
+
+    // ★通常の保存とは別物なので MarkSceneClean は呼ばない。
+    //   ここで未保存フラグを落とすと「保存した」と誤認させ、確認ダイアログが出なくなる。
+    if (!SceneSerializer::Save(*m_scene, dir + "scene.json", PathResolver::AssetsDir()))
+    {
+        Logger::Warn("オートセーブに失敗しました: {}", dir + "scene.json");
+        return;
+    }
+
+    // どのシーンの退避かを残す。復旧側はこれを見て本体のパスへ書き戻す。
+    nlohmann::json meta{
+        {"originPath", m_editorCtx->currentScenePath},
+        {"engineVersion", std::string(kEngineVersion)},
+        {"savedAtUnix", static_cast<long long>(
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count())},
+    };
+    std::ofstream mf(dir + "meta.json", std::ios::binary | std::ios::trunc);
+    if (mf) mf << meta.dump(2);
+    Logger::Info("オートセーブしました: {}", dir + "scene.json");
+}
+
+void Application::CheckAutosaveRecovery(const std::string& sceneFullPath)
+{
+    if (!m_editorCtx || sceneFullPath.empty()) return;
+    namespace fs = std::filesystem;
+    std::error_code ec;
+
+    const std::string dir  = AutosaveDir();
+    const std::string auto_ = dir + "scene.json";
+    const std::string metaP = dir + "meta.json";
+    if (!fs::exists(auto_, ec) || !fs::exists(metaP, ec)) return;
+
+    nlohmann::json meta;
+    try { std::ifstream mf(metaP, std::ios::binary); if (!mf) return; mf >> meta; }
+    catch (...) { return; }   // 壊れた meta は黙って無視（復旧を促せないだけ）
+
+    // 別のシーンの退避なら関係ない
+    const std::string origin = meta.value("originPath", std::string());
+    if (origin.empty()) return;
+    if (fs::weakly_canonical(fs::path(origin), ec) != fs::weakly_canonical(fs::path(sceneFullPath), ec))
+        return;
+
+    // ★本体の方が新しければ復旧するものは無い（＝正常に保存して終えている）。
+    //   この比較があるので、保存のたびにオートセーブを消して回る必要が無い。
+    const auto autoT   = fs::last_write_time(auto_, ec);
+    if (ec) return;
+    const auto sceneT  = fs::last_write_time(sceneFullPath, ec);
+    if (!ec && sceneT >= autoT) return;
+
+    const long long at = meta.value("savedAtUnix", 0LL);
+    std::string when = "(時刻不明)";
+    if (at > 0)
+    {
+        const std::time_t t = static_cast<std::time_t>(at);
+        std::tm tmv{};
+        if (localtime_s(&tmv, &t) == 0)
+        {
+            char buf[64];
+            if (std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tmv) > 0) when = buf;
+        }
+    }
+    m_editorCtx->autosaveInfo         = when;
+    m_editorCtx->autosaveChoice       = EditorContext::AutosaveChoice::None;
+    m_editorCtx->showAutosaveRecovery = true;
+    Logger::Warn("保存されていない自動保存が見つかりました（{}）。復旧するか確認します", when);
+}
+
 bool Application::ConfirmDiscardScene(bool& outCancelled)
 {
     outCancelled = false;

@@ -773,6 +773,23 @@ void Application::FinishSceneLoad(const std::string& fullPath, const std::string
         ++m_sceneGeneration;   // 古い entity id を無効化(MCP の STALE_SCENE 検出用)
         m_mcpIdempotency.clear();   // 別シーンの entity を idempotentReplay で誤返却しないようクリア
         Logger::Info("Scene loaded: {}", fullPath);
+
+        if (!m_autosaveRestoreTarget.empty())
+        {
+            // オートセーブから復旧した。パスを本来のシーンへ戻す。
+            // 戻さないと次の Ctrl+S が .autosave/scene.json を上書きしてしまう。
+            m_editorCtx->currentScenePath = m_autosaveRestoreTarget;
+            m_currentSceneRel             = ToAssetRel(m_autosaveRestoreTarget);
+            m_autosaveRestoreTarget.clear();
+            // 復旧した内容はディスクの本体と違う＝未保存。ここを落とすと
+            // 「復旧したのに保存し忘れて閉じる」が無警告で通ってしまう。
+            m_editorCtx->undoSystem.MarkEdited();
+            Logger::Info("自動保存から復旧しました。保存先: {}", m_editorCtx->currentScenePath);
+        }
+        else
+        {
+            CheckAutosaveRecovery(fullPath);
+        }
     }
 
     // MCP open_scene の遅延応答。

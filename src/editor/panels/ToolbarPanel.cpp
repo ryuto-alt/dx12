@@ -1125,6 +1125,45 @@ void ToolbarPanel::Render(bool isPlaying,
         }
         ImGui::EndPopup();
     }
+
+    // ===== 自動保存からの復旧 =====
+    // シーンを開いた直後、オートセーブの方が本体より新しいときだけ出る
+    // （＝前回クラッシュした / 保存せずに落ちた）。
+    if (ctx.showAutosaveRecovery && !m_autosavePopupOpen)
+    {
+        ImGui::OpenPopup("##AutosaveRecovery");
+        m_autosavePopupOpen = true;
+    }
+    if (!ctx.showAutosaveRecovery) m_autosavePopupOpen = false;
+
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(460, 0), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("##AutosaveRecovery", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        // 保存されていない自動保存が見つかりました
+        ImGui::TextColored(ImVec4(0.55f, 0.85f, 1.0f, 1.0f),
+            "\xe4\xbf\x9d\xe5\xad\x98\xe3\x81\x95\xe3\x82\x8c\xe3\x81\xa6\xe3\x81\x84\xe3\x81\xaa\xe3\x81\x84\xe8\x87\xaa\xe5\x8b\x95\xe4\xbf\x9d\xe5\xad\x98\xe3\x81\x8c\xe8\xa6\x8b\xe3\x81\xa4\xe3\x81\x8b\xe3\x82\x8a\xe3\x81\xbe\xe3\x81\x97\xe3\x81\x9f");
+        ImGui::Spacing();
+        ImGui::Text("%s", ctx.autosaveInfo.c_str());
+        // シーンファイルより新しい内容です。前回、保存せずに終了した可能性があります。
+        ImGui::TextDisabled("\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3\xe3\x83\x95\xe3\x82\xa1\xe3\x82\xa4\xe3\x83\xab\xe3\x82\x88\xe3\x82\x8a\xe6\x96\xb0\xe3\x81\x97\xe3\x81\x84\xe5\x86\x85\xe5\xae\xb9\xe3\x81\xa7\xe3\x81\x99\xe3\x80\x82");
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        if (ImGui::Button("\xe5\xbe\xa9\xe5\x85\x83\xe3\x81\x99\xe3\x82\x8b", ImVec2(140, 0)))  // 復元する
+        {
+            ctx.autosaveChoice = EditorContext::AutosaveChoice::Restore;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("\xe7\xa0\xb4\xe6\xa3\x84\xe3\x81\x99\xe3\x82\x8b", ImVec2(140, 0)))  // 破棄する
+        {
+            ctx.autosaveChoice = EditorContext::AutosaveChoice::Discard;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
 }
 
 } // namespace dx12e

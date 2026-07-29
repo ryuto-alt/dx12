@@ -1426,6 +1426,32 @@ void Application::Render()
     // Deferred: scene load（描画前に処理）
     // 参照アセットが多いシーンはここで一気に読まず、段階ロードのジョブへ積む。
     // （同期のまま読むとメッセージポンプが止まり「エンジンが固まった」ように見える）
+    // オートセーブ復旧の選択を消化する（モーダルは ToolbarPanel が描く）。
+    if (m_editorCtx->autosaveChoice != EditorContext::AutosaveChoice::None)
+    {
+        const auto choice = m_editorCtx->autosaveChoice;
+        m_editorCtx->autosaveChoice       = EditorContext::AutosaveChoice::None;
+        m_editorCtx->showAutosaveRecovery = false;
+
+        const std::string dir = AutosaveDir();
+        if (choice == EditorContext::AutosaveChoice::Restore)
+        {
+            // 本体ではなくオートセーブを読み込む。読み終わったら FinishSceneLoad が
+            // currentScenePath を本来のシーンへ戻す（m_autosaveRestoreTarget）。
+            m_autosaveRestoreTarget             = m_editorCtx->currentScenePath;
+            m_editorCtx->pendingLoadPath        = dir + "scene.json";
+            m_editorCtx->pendingLoadSkipConfirm = true;   // 本人が選んだ操作。二重に聞かない
+        }
+        else
+        {
+            // 破棄。消しておかないと次回起動でも同じことを聞き続ける。
+            std::error_code ec;
+            std::filesystem::remove(dir + "scene.json", ec);
+            std::filesystem::remove(dir + "meta.json", ec);
+            Logger::Info("自動保存を破棄しました");
+        }
+    }
+
     // 未保存なら先に確認する（別シーンを開くと今の変更は完全に消える）。
     bool loadAllowed = false;
     if (!m_editorCtx->pendingLoadPath.empty() && m_engineMode == EngineMode::Editor
