@@ -2371,6 +2371,114 @@ void ForEachAssetPathField(Scene& scene, Fn&& fn)
 
 } // namespace
 
+namespace {
+
+// JSON を再帰で歩き、文字列値のうち target に一致するものを付け替える。
+// ★キー名は見ない。アセット参照フィールドは 30 箇所以上あり、増えるたびに
+//   列挙を更新し忘れて静かに漏れるため（sceneWrite.ts の表が実際そうなっていた）。
+//   誤爆は「たまたまアセットパスと完全一致する非パス文字列」だけで、実質起きない。
+int RewriteJsonStrings(json& node, const std::string& oldRel, const std::string& newRel)
+{
+    int n = 0;
+    if (node.is_string())
+    {
+        const std::string v = node.get<std::string>();
+        if (PathMatches(v, oldRel))
+        {
+            node = (v.size() == oldRel.size()) ? newRel : newRel + v.substr(oldRel.size());
+            ++n;
+        }
+        return n;
+    }
+    if (node.is_array() || node.is_object())
+        for (auto& child : node) n += RewriteJsonStrings(child, oldRel, newRel);
+    return n;
+}
+
+// assets 配下で「中身が JSON でアセットを参照しうる」拡張子。
+bool IsRewritableAssetFile(const std::filesystem::path& p)
+{
+    static const char* kExts[] = {
+        ".json",          // シーン / vfx プリセット / sceneflow
+        ".prefab",
+        ".dxmat",         // albedo / normal / metalRoughness
+        ".animfsm",       // clip パス
+        ".spranim",       // texture
+        ".terrainlayers", // layers[].albedo など
+        ".uianim",
+    };
+    const std::string ext = p.extension().string();
+    for (const char* e : kExts) if (ext == e) return true;
+    return false;
+}
+
+} // namespace
+
+SceneSerializer::AssetRefFileRewrite
+SceneSerializer::RewriteAssetPathRefsInFiles(const std::string& assetsDir,
+                                             const std::string& oldRel,
+                                             const std::string& newRel,
+                                             const std::string& skipAbsPath)
+{
+    AssetRefFileRewrite out;
+    if (oldRel.empty() || oldRel == newRel || assetsDir.empty()) return out;
+
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path root(assetsDir);
+    if (!fs::exists(root, ec)) return out;
+
+    const fs::path skip = skipAbsPath.empty() ? fs::path()
+                                              : fs::weakly_canonical(fs::path(skipAbsPath), ec);
+
+    for (fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end;
+         it != end; it.increment(ec))
+    {
+        if (ec) { ec.clear(); continue; }
+        // .texcache / .thumbcache / .autosave など「生成物の置き場」は丸ごと飛ばす。
+        // 中身は再生成できるし、走査するだけ無駄で遅い。
+        if (it->is_directory(ec) && it->path().filename().string().rfind('.', 0) == 0)
+        {
+            it.disable_recursion_pending();
+            continue;
+        }
+        if (!it->is_regular_file(ec)) continue;
+        const fs::path& p = it->path();
+        if (!IsRewritableAssetFile(p)) continue;
+        if (!skip.empty() && fs::weakly_canonical(p, ec) == skip) continue;
+
+        json doc;
+        try
+        {
+            std::ifstream ifs(p, std::ios::binary);
+            if (!ifs) { out.failed.push_back(MakeRelative(p.string(), assetsDir)); continue; }
+            ifs >> doc;
+        }
+        catch (const std::exception&)
+        {
+            // JSON でないファイル（拡張子が同じだけ）は黙って飛ばす。
+            // ここでエラーを積むと「壊れていないのに失敗した」ように見える。
+            continue;
+        }
+
+        const int changed = RewriteJsonStrings(doc, oldRel, newRel);
+        if (changed == 0) continue;
+
+        std::ofstream ofs(p, std::ios::binary | std::ios::trunc);
+        if (!ofs)
+        {
+            out.failed.push_back(MakeRelative(p.string(), assetsDir));
+            continue;
+        }
+        ofs << doc.dump(2);
+        ++out.filesChanged;
+        out.refsChanged += changed;
+        if (static_cast<int>(out.files.size()) < kMaxReportedFiles)
+            out.files.push_back(MakeRelative(p.string(), assetsDir));
+    }
+    return out;
+}
+
 int SceneSerializer::RewriteAssetPathRefs(Scene& scene, const std::string& oldRel,
                                           const std::string& newRel)
 {

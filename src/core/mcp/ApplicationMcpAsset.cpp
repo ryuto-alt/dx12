@@ -437,7 +437,7 @@ void Application::RegisterMcpAssetMethods()
                               {"sourcePath", rel}};
         });
 
-    McpDefine("move_asset", "from:string,overwrite:bool,to:string", DX12E_MCP_HANDLER
+    McpDefine("move_asset", "from:string,overwrite:bool,to:string,updateFiles:bool", DX12E_MCP_HANDLER
         {
             // assets 内のファイル/フォルダの移動・リネーム。参照パスは自動更新しない。
             const std::string fromRel =
@@ -467,12 +467,31 @@ void Application::RegisterMcpAssetMethods()
             const int updated = SceneSerializer::RewriteAssetPathRefs(*m_scene, fromRel, toRel);
             if (updated > 0 && m_editorCtx) m_editorCtx->undoSystem.MarkEdited();
 
+            // ディスク上の他ファイル（他シーン / .prefab / .dxmat / .animfsm /
+            // .spranim / .terrainlayers / .uianim）も直す。アセット同士の参照も
+            // 同じ問題を抱えているので同じ経路で扱う。
+            // 開いているシーンのファイルは除外する。メモリ側を既に直しており、
+            // 保存時にそちらが書かれるので二重に触る必要が無い。
+            SceneSerializer::AssetRefFileRewrite files{};
+            if (params.value("updateFiles", true))
+                files = SceneSerializer::RewriteAssetPathRefsInFiles(
+                    PathResolver::AssetsDir(), fromRel, toRel,
+                    m_editorCtx ? m_editorCtx->currentScenePath : std::string());
+
+            json changedFiles = json::array();
+            for (const auto& f : files.files) changedFiles.push_back(f);
+            json failedFiles = json::array();
+            for (const auto& f : files.failed) failedFiles.push_back(f);
+
             resp["ok"] = true;
             resp["result"] = {{"from", fromRel}, {"to", toRel},
                               {"refsUpdated", updated},
+                              {"filesChanged", files.filesChanged},
+                              {"fileRefsUpdated", files.refsChanged},
+                              {"changedFiles", changedFiles},
+                              {"failedFiles", failedFiles},
                               {"note", updated > 0
-                                  ? "開いているシーンの参照を更新した。dx12_save_scene で保存すること。"
-                                    "他のシーン/.prefab 内の参照は直っていない"
+                                  ? "開いているシーンの参照はメモリ上で更新した。dx12_save_scene で保存すること"
                                   : "開いているシーンにこのアセットへの参照は無かった"}};
         });
 

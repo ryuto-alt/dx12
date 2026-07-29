@@ -140,6 +140,10 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             "ui_screenshot", "terrain_sample", "terrain_splat_info", "net_status",
             // play/stop はシーンを汚さない（Stop がスナップショットへ戻す）。
             // undo/redo は状態を変えるので入れない（安全側に倒す）。
+            // アセット操作: シーンを汚すのは move_asset が参照を実際に書き換えたときだけで、
+            // その場合はハンドラ内で MarkEdited を呼んでいる。ここで一律に汚すと
+            // 「参照していないアセットを整理しただけ」で未保存扱いになる。
+            "move_asset", "delete_asset", "import_asset",
             "benchmark", "step_frames", "play", "stop", "save_scene", "select_entity",
             "focus_camera", "look_at", "set_editor_camera", "key_down",
             "key_up", "key_press", "render_debug", "eval_lua",

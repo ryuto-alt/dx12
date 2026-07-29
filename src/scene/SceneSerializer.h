@@ -52,6 +52,31 @@ public:
                                   std::vector<std::string>* outWho = nullptr,
                                   int maxNames = 8);
 
+    // ── ディスク上のファイル内のアセット参照を一括で付け替える ──
+    //
+    // 上の RewriteAssetPathRefs は「いま開いているシーンのメモリ上の値」しか直さない。
+    // 実際にはアセット参照は他のシーン・.prefab・.dxmat・.animfsm・.spranim・
+    // .terrainlayers・.uianim にも入っていて、そちらは移動すると切れたままになる。
+    //
+    // どれも JSON なので、パースして**全文字列値**を走査し、oldRel と一致する
+    // （またはディレクトリとして配下にある）ものだけを置き換える。
+    // キー名を 30 箇所以上列挙する方式にしないのは、フィールドが増えるたびに
+    // ここを更新し忘れて静かに漏れるため（実際 sceneWrite.ts の表がそれで腐っていた）。
+    //
+    // skipAbsPath は「メモリ側で処理済みなので触らないファイル」（＝開いているシーン）。
+    struct AssetRefFileRewrite
+    {
+        int filesChanged = 0;
+        int refsChanged  = 0;
+        std::vector<std::string> files;   // assets 相対。最大 kMaxReportedFiles 件
+        std::vector<std::string> failed;  // 読めなかった/書けなかったファイル
+    };
+    static constexpr int kMaxReportedFiles = 32;
+    static AssetRefFileRewrite RewriteAssetPathRefsInFiles(const std::string& assetsDir,
+                                                           const std::string& oldRel,
+                                                           const std::string& newRel,
+                                                           const std::string& skipAbsPath = {});
+
     // エンティティを全コンポーネント込みで複製（名前は重複しないよう連番付与）
     static entt::entity DuplicateEntity(Scene& scene, entt::entity src,
                                         const std::string& assetsDir);

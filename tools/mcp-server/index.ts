@@ -2013,11 +2013,12 @@ reg(
 reg(
   "dx12_move_asset",
   "アセット移動/リネーム",
-  "assets 内のファイル/フォルダを移動・リネームする。★シーン/プレハブ内の参照パスは自動更新されない(参照済みアセットを動かすとロードが壊れる。dx12_list_entities → get_entity で modelPath 等を確認してから)。",
+  "assets 内のファイル/フォルダを移動・リネームする。★参照パスは自動で追従する: 開いているシーンはメモリ上で更新され(refsUpdated)、ディスク上の他シーン/.prefab/.dxmat/.animfsm/.spranim/.terrainlayers/.uianim も書き換わる(filesChanged / changedFiles)。★開いているシーンの分はメモリ上の更新なので dx12_save_scene で保存すること(保存しないとそのシーンだけ古いパスのまま残る)。ディレクトリを動かした場合は配下の相対部分を保って付け替える。",
   {
     from: z.string().describe("assets 相対の移動元。"),
     to: z.string().describe("assets 相対の移動先。"),
     overwrite: z.boolean().optional().describe("true で既存ファイルを上書き(ディレクトリは不可)。既定 false。"),
+    updateFiles: z.boolean().optional().describe("ディスク上の他ファイル内の参照も書き換える。既定 true。false にすると開いているシーンのメモリ上だけ更新する。"),
   },
   {},
   ({ from, to, overwrite }) => run(() => engine.call("move_asset", { from, to, overwrite })),
