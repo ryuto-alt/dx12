@@ -3493,6 +3493,10 @@ void Application::Render()
     u32 ssgiSrv = DescriptorHeap::kInvalidIndex;
     u32 rtDebugSrv = DescriptorHeap::kInvalidIndex;   // render_debug の rt / rtDiff 用
 
+    // ★RAII で囲まない: この関数の残り全部が生存範囲になり、後続の lights 等と
+    //   二重計上になる（実際に踏んだ。lights+prepass の合計が workMs を超えた）。
+    //   計りたいのは GpuTimer::PrepassSSAO の Begin..End と同じ区間なので明示的に取る。
+    const auto _prepassT0 = std::chrono::high_resolution_clock::now();
     m_gpuTimer->Begin(nativeCmdList, GpuTimer::PrepassSSAO);
     if (useDepthPrepass)
     {
@@ -3662,6 +3666,8 @@ void Application::Render()
         m_commandList->SetRootSignature(*m_rootSignature);
     }
     m_gpuTimer->End(nativeCmdList, GpuTimer::PrepassSSAO);
+    m_cpuMs[CpuPrepass] += std::chrono::duration<f32, std::milli>(
+        std::chrono::high_resolution_clock::now() - _prepassT0).count();
 
     m_sceneRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
 
@@ -3832,6 +3838,9 @@ void Application::Render()
     // 旧 8 灯固定配列は撤廃。上限は ClusteredLightCulling::kMaxSceneLights（1024）。
     // m_clusterLights はフレーム間で使い回すメンバ（毎フレーム malloc しない）。
     using ClusterLightGPU = ClusteredLightCulling::LightGPU;
+    // ★ここは ECS を全走査して灯ごとに ComputeWorldMatrix を回す。灯が増えるほど効く。
+    //   prepass と同じ理由で RAII を使わない（区間の外まで生きて二重計上になる）。
+    const auto _lightsT0 = std::chrono::high_resolution_clock::now();
     m_clusterLights.clear();
     m_clusterLights.reserve(64);
     fc.numPointLights = 0;
@@ -4052,6 +4061,9 @@ void Application::Render()
         ddgiLightSrvIndex = m_clusteredLighting->GetSrvTableIndex(frameIndex);  // = t13
         ddgiLightCount    = uploaded;
     }
+    // ライト収集〜クラスタ転送まで（灯数に比例する CPU コスト）。
+    m_cpuMs[CpuLights] += std::chrono::duration<f32, std::milli>(
+        std::chrono::high_resolution_clock::now() - _lightsT0).count();
 
     // ===== DDGI: プローブ更新（計画09 Step 6）=====
     // ★必ず UploadLights の【後】に置くこと。プローブは点光源/スポットを t13 から
@@ -5737,7 +5749,8 @@ void Application::Render()
     if (m_uiTests) m_uiTests->DrawDiagnosticsPanel(&m_editorCtx->showEngineDiagnostics,
                                                    &m_editorCtx->floatingToolWindowHoveredThisFrame);
 
-    m_imguiManager->EndFrame(nativeCmdList);
+    { CpuScopeTimer _tImGui(&m_cpuMs[CpuImGui]); DX12_PROFILE_ZONE_N("Rec/ImGui");
+      m_imguiManager->EndFrame(nativeCmdList); }
 
     // ---- シーントランジション オーバーレイ（ImGui の上に被せる）----
     // フェードは 3D ビューにだけ適用する:

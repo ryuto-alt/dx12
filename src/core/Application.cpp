@@ -1316,6 +1316,8 @@ void Application::Run()
 
         // AI(MCP)から溜まったコマンドをメインスレッドで処理(scene/scriptengine を安全に触れる)。
         if (m_mcpBridge)
+            CpuScopeTimer _tMcp(&m_cpuMs[CpuMcp]);
+            DX12_PROFILE_ZONE_N("MCP/Poll");
             m_mcpBridge->Poll([this](uint64_t client, const std::string& line) {
                 return HandleMcpCommand(client, line);
             });

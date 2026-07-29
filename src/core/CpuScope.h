@@ -12,8 +12,13 @@
 namespace dx12e
 {
 
+// ★スコープを足す動機は「other が大きい＝どこで時間を使っているか分からない」を潰すこと。
+//   dx12_perf_stats の cpuScopeMs は AI が読む唯一の CPU 内訳なので、
+//   ここが盲目だと「重い」以上のことを誰も言えない（実測で other が work の 40% を
+//   占めていたのでこの 4 つを足した）。
 enum CpuScope { CpuUpdate, CpuBuildList, CpuListSort, CpuShadowRec, CpuMainRec, CpuEditorUi,
                 CpuPicking, CpuGizmo,
+                CpuLights, CpuPrepass, CpuImGui, CpuMcp,
                 CpuScopeCount };
 const char* CpuScopeName(u32 i);
 

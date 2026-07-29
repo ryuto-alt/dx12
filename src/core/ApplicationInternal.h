@@ -419,6 +419,10 @@ inline const char* CpuScopeName(u32 i)
     // 「エディタUIが重い」の中身がピッキングなのかギズモなのかを名指しするのが目的。
     case CpuPicking:    return "picking";     // シーンビューのレイキャスト選択（editorUi の内数）
     case CpuGizmo:      return "gizmo";       // ImGuizmo の操作・描画（editorUi の内数）
+    case CpuLights:     return "lights";      // ライト収集（ECS 全走査＋ワールド行列）とクラスタへの転送
+    case CpuPrepass:    return "prepass";     // 深度プリパス / SSAO / SSR / SSGI / RT の記録
+    case CpuImGui:      return "imgui";       // ImGui の描画データ生成と記録（editorUi とは別。ゲーム内 UI も含む）
+    case CpuMcp:        return "mcp";         // MCP コマンドの処理（AI が叩いている間だけ増える）
     default:            return "?";
     }
 }

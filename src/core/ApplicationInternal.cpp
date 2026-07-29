@@ -28,8 +28,18 @@ nlohmann::json PerfReportJson(const PerfSummary& s, bool vsync, float fpsLimit)
         {"cpuScopeMs", [&] {
             nlohmann::json c = nlohmann::json::object();
             double named = 0;
-            for (u32 i = 0; i < CpuScopeCount; ++i) { c[CpuScopeName(i)] = r2(s.cpuMs[i]); named += s.cpuMs[i]; }
-            c["other"] = r2((std::max)(0.0, s.workMs - named));   // 計測外（MCP/Present準備等）
+            for (u32 i = 0; i < CpuScopeCount; ++i)
+            {
+                c[CpuScopeName(i)] = r2(s.cpuMs[i]);
+                // ★picking / gizmo は editorUi の「内数」。合計に足すと二重計上になり、
+                //   other が実際より小さく出る（＝計測できていない時間を過小報告する）。
+                //   ここを間違えると「other は小さいから大丈夫」と誤読させてしまう。
+                if (i == CpuPicking || i == CpuGizmo) continue;
+                named += s.cpuMs[i];
+            }
+            // other = workMs のうちどのスコープにも入っていない分。
+            // これが大きいなら「重いのは分かるがどこか分からない」状態＝スコープを足す合図。
+            c["other"] = r2((std::max)(0.0, s.workMs - named));
             return c;
         }()},
         {"gpuPassMs", gpu},
