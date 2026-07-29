@@ -40,6 +40,7 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include <nlohmann/json.hpp>   // guid の JSON を直接検査する
 
 using namespace dx12e;
 
@@ -1307,6 +1308,136 @@ static void Test_EntityOrderStable()
     CHECK(order1 == order2);
 }
 
+// ---------------------------------------------------------------------------
+// エンティティ GUID — このコミットが解く問題そのものを再現する。
+//
+// シーン JSON の親子は長らく「entities 配列のインデックス」だった。その index は
+// entt のプール順に依存するので、2 人が別々の場所にエンティティを足すと
+// git は行単位でどちらも通し、**コンフリクトを出さずに以降の全 parent がズレる**。
+// ここではその「マージ後の JSON」を手で作り、guid があれば階層が保たれることを見る。
+// ---------------------------------------------------------------------------
+static void Test_GuidSurvivesArrayInsertion()
+{
+    // A(親) と B(子) を作る
+    Scene src;
+    {
+        auto& reg = src.GetRegistry();
+        entt::entity a = reg.create();
+        reg.emplace<NameTag>(a, NameTag{"Parent"});
+        reg.emplace<Transform>(a);
+        entt::entity b = reg.create();
+        reg.emplace<NameTag>(b, NameTag{"Child"});
+        reg.emplace<Transform>(b).parent = a;
+    }
+    const std::string js = SceneSerializer::SaveToString(src, "");
+    CHECK(!js.empty());
+
+    nlohmann::json root = nlohmann::json::parse(js);
+    CHECK(root.contains("entities"));
+    CHECK(root["entities"].size() == 2);
+
+    // 保存されたら guid と parentGuid が入っている（これが無いと以下は無意味）
+    bool sawGuid = false, sawParentGuid = false;
+    for (const auto& ej : root["entities"])
+    {
+        if (ej.contains("guid") && ej["guid"].is_string()) sawGuid = true;
+        if (ej.contains("parentGuid") && ej["parentGuid"].is_string()) sawParentGuid = true;
+    }
+    CHECK(sawGuid);
+    CHECK(sawParentGuid);
+
+    // ★他人が entities 配列の【先頭】へエンティティを 1 個足した状態を作る。
+    //   これで既存要素の index は全部 +1 ズレる（git のテキストマージで起きること）。
+    nlohmann::json inserted = nlohmann::json::object();
+    inserted["name"] = "Intruder";
+    inserted["transform"] = {{"position", {0.0, 0.0, 0.0}},
+                             {"rotation", {0.0, 0.0, 0.0}},
+                             {"scale",    {1.0, 1.0, 1.0}}};
+    nlohmann::json merged = root;
+    merged["entities"].insert(merged["entities"].begin(), inserted);
+
+    Scene dst;
+    CHECK(SceneSerializer::LoadFromString(dst, merged.dump(), ""));
+
+    auto& reg = dst.GetRegistry();
+    entt::entity parent = entt::null, child = entt::null, intruder = entt::null;
+    for (auto [e, tag] : reg.view<const NameTag>().each())
+    {
+        if (tag.name == "Parent")   parent   = e;
+        if (tag.name == "Child")    child    = e;
+        if (tag.name == "Intruder") intruder = e;
+    }
+    CHECK(parent != entt::null);
+    CHECK(child != entt::null);
+    CHECK(intruder != entt::null);
+
+    // guid で解決しているので、index がズレても Child の親は Parent のまま。
+    // （index フォールバックだけだと Intruder か別物を指してしまう）
+    if (child != entt::null && reg.all_of<Transform>(child))
+        CHECK(reg.get<Transform>(child).parent == parent);
+    // 割り込んだ方は親を持たない
+    if (intruder != entt::null && reg.all_of<Transform>(intruder))
+        CHECK(reg.get<Transform>(intruder).parent == entt::null);
+}
+
+// guid が無い旧シーンでも従来どおり index で親子が復元されること（後方互換）。
+static void Test_LegacySceneWithoutGuid()
+{
+    const char* legacy = R"({
+      "version": 1,
+      "entities": [
+        { "name": "P", "transform": {"position":[0,0,0],"rotation":[0,0,0],"scale":[1,1,1]} },
+        { "name": "C", "transform": {"position":[0,0,0],"rotation":[0,0,0],"scale":[1,1,1]}, "parent": 0 }
+      ]
+    })";
+    Scene dst;
+    CHECK(SceneSerializer::LoadFromString(dst, legacy, ""));
+    auto& reg = dst.GetRegistry();
+    entt::entity p = entt::null, c = entt::null;
+    for (auto [e, tag] : reg.view<const NameTag>().each())
+    {
+        if (tag.name == "P") p = e;
+        if (tag.name == "C") c = e;
+    }
+    CHECK(p != entt::null && c != entt::null);
+    if (c != entt::null && reg.all_of<Transform>(c))
+        CHECK(reg.get<Transform>(c).parent == p);
+
+    // 一度保存すれば guid が付く（既存プロジェクトの移行はこれで進む）
+    const std::string saved = SceneSerializer::SaveToString(dst, "");
+    nlohmann::json root = nlohmann::json::parse(saved);
+    bool allHaveGuid = !root["entities"].empty();
+    for (const auto& ej : root["entities"])
+        if (!ej.contains("guid") || !ej["guid"].is_string()) allHaveGuid = false;
+    CHECK(allHaveGuid);
+}
+
+// 複製すると guid は引き継がれない（同じ guid が 2 体できると参照先が曖昧になる）。
+static void Test_DuplicateGetsNewGuid()
+{
+    Scene src;
+    entt::entity a = entt::null;
+    {
+        auto& reg = src.GetRegistry();
+        a = reg.create();
+        reg.emplace<NameTag>(a, NameTag{"Orig"});
+        reg.emplace<Transform>(a);
+    }
+    // 一度保存して guid を確定させる
+    (void)SceneSerializer::SaveToString(src, "");
+    const auto* g0 = src.GetRegistry().try_get<EntityGuid>(a);
+    CHECK(g0 != nullptr && g0->value != 0);
+    const uint64_t origGuid = g0 ? g0->value : 0;
+
+    const entt::entity copy = SceneSerializer::DuplicateEntity(src, a, "");
+    CHECK(copy != entt::null);
+    // 複製直後は guid 未設定（次の保存で新しい値が振られる）か、少なくとも元と違う
+    (void)SceneSerializer::SaveToString(src, "");
+    const auto* g1 = src.GetRegistry().try_get<EntityGuid>(copy);
+    CHECK(g1 != nullptr);
+    if (g1) CHECK(g1->value != origGuid);
+}
+
 // 中立ヘッダ(ComponentRegistry.h)が /WX で通り、型が使えることの最小確認。
 static void Test_RegistryHeaderCompiles()
 {
@@ -1356,6 +1487,9 @@ int main()
     Test_SSAOSettings();
     Test_DdgiSettings();
     Test_EntityOrderStable();
+    Test_GuidSurvivesArrayInsertion();
+    Test_LegacySceneWithoutGuid();
+    Test_DuplicateGetsNewGuid();
     Test_RegistryHeaderCompiles();
 
     std::printf("serialize_roundtrip: %d checks, %d failures\n", g_checks, g_failures);

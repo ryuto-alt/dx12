@@ -24,6 +24,8 @@
 #include <unordered_set>
 #include <vector>
 #include <algorithm>
+#include <random>    // エンティティ GUID の生成
+#include <cstdio>     // GUID の hex 整形
 
 using json = nlohmann::json;
 using namespace DirectX;
@@ -686,6 +688,49 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
 }
 
 // シーン全エンティティを JSON ノードに直列化（共通処理）
+// ---- エンティティ GUID -------------------------------------------------------
+// 位置に依存しない参照。EntityGuid（ecs/Components.h）の解説を参照。
+namespace {
+
+uint64_t NewEntityGuid()
+{
+    // 0 は「未設定」の番兵なので絶対に返さない。
+    static std::mt19937_64 rng{ std::random_device{}() };
+    uint64_t v = 0;
+    while (v == 0) v = rng();
+    return v;
+}
+
+std::string GuidToHex(uint64_t v)
+{
+    // JSON では**文字列**にする。u64 を数値で書くと、JS/TS 側（dx12_scene_write の
+    // 検証や外部ツール）が double へ丸めて下位ビットを失う。
+    char buf[17];
+    std::snprintf(buf, sizeof(buf), "%016llx", static_cast<unsigned long long>(v));
+    return buf;
+}
+
+uint64_t GuidFromJson(const json& j, const char* key)
+{
+    auto it = j.find(key);
+    if (it == j.end() || !it->is_string()) return 0;
+    const std::string sv = it->get<std::string>();
+    if (sv.empty() || sv.size() > 16) return 0;
+    uint64_t v = 0;
+    for (char c : sv)
+    {
+        int d;
+        if      (c >= '0' && c <= '9') d = c - '0';
+        else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+        else return 0;   // 壊れた guid は「無い」扱い（index フォールバックへ落ちる）
+        v = (v << 4) | static_cast<uint64_t>(d);
+    }
+    return v;
+}
+
+} // namespace
+
 static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
 {
     json root;
@@ -712,14 +757,39 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
     for (int i = 0; i < static_cast<int>(order.size()); ++i)
         indexOf[order[i]] = i;
 
-    // 2パス目: 直列化 + 親子関係をインデックス参照で保存
+    // GUID の自動付与。まだ持っていないエンティティ（＝旧シーン、または reg.create() で
+    // 直接作られたもの）へここで振る。開いて保存すれば既存シーンにも付く。
+    // ★const_cast: 保存 API は歴史的に const Scene& を取る。ここを非 const へ変えると
+    //   Save/SaveToString/SavePrefab とその 7 箇所以上の呼び出し側まで波及するので、
+    //   「保存時に GUID を確定させる」ためだけに限定して使う。
+    //   Scene の実体が const で構築されることは無いので未定義動作にはならない。
+    {
+        auto& mutableReg = const_cast<entt::registry&>(reg);
+        for (auto entity : order)
+        {
+            auto* g = mutableReg.try_get<EntityGuid>(entity);
+            if (!g)                       mutableReg.emplace<EntityGuid>(entity, EntityGuid{ NewEntityGuid() });
+            else if (g->value == 0)       g->value = NewEntityGuid();
+        }
+    }
+
+    // 2パス目: 直列化 + 親子関係を保存
     for (auto entity : order)
     {
         json ej = SerializeEntityJson(reg, entity, assetsDir);
 
+        if (const auto* g = reg.try_get<EntityGuid>(entity))
+            ej["guid"] = GuidToHex(g->value);
+
         const auto& transform = reg.get<Transform>(entity);
         if (transform.parent != entt::null && reg.valid(transform.parent))
         {
+            // ★parentGuid が正。parent(index) は旧エンジンで開けるように残す互換用。
+            //   index は entt のプール順に依存するので、他人が別の場所へエンティティを
+            //   足した JSON と git がマージされると黙ってズレる。読み側は guid を優先する。
+            if (const auto* pg = reg.try_get<EntityGuid>(transform.parent))
+                ej["parentGuid"] = GuidToHex(pg->value);
+
             auto it = indexOf.find(transform.parent);
             if (it != indexOf.end())
                 ej["parent"] = it->second;
@@ -1692,28 +1762,66 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
 
     // 2パス目: 親子関係の復元
     auto& reg = scene.GetRegistry();
+
+    // guid → entity。JSON に guid があるものだけ載る（旧シーンは空のまま）。
+    // guid を持つエンティティには EntityGuid を復元しておく（次の保存でそのまま残る）。
+    std::unordered_map<uint64_t, entt::entity> byGuid;
+    {
+        size_t gi = 0;
+        for (const auto& ej : root["entities"])
+        {
+            const entt::entity e = created[gi++];
+            if (e == entt::null || !ej.is_object()) continue;
+            const uint64_t g = GuidFromJson(ej, "guid");
+            if (g == 0) continue;
+            // 同じ guid が 2 つある = 壊れたマージか、複製時の振り直し漏れ。
+            // 先勝ちにして警告する（黙って片方の参照を奪わせない）。
+            auto [it, inserted] = byGuid.emplace(g, e);
+            if (!inserted)
+            {
+                Logger::Warn("エンティティ [{}] の guid が重複しています（先に読んだ方を使います）", gi - 1);
+                continue;
+            }
+            reg.emplace_or_replace<EntityGuid>(e, EntityGuid{ g });
+        }
+    }
+
     size_t idx = 0;
     for (const auto& ej : root["entities"])
     {
         entt::entity e = created[idx++];
-        if (e == entt::null || !ej.is_object() || !ej.contains("parent")) continue;
-        if (!ej["parent"].is_number_integer())
+        if (e == entt::null || !ej.is_object()) continue;
+
+        // ★parentGuid を優先。index は entt のプール順に依存するので、他人が別の場所へ
+        //   エンティティを足した JSON と git がマージされると黙ってズレる。
+        //   guid が無い（旧シーン）ときだけ index へフォールバックする。
+        entt::entity parent = entt::null;
+        if (const uint64_t pg = GuidFromJson(ej, "parentGuid"); pg != 0)
         {
-            Logger::Warn("エンティティ [{}] の parent が整数ではないため、ルートのままにします", idx - 1);
-            continue;
+            auto it = byGuid.find(pg);
+            if (it != byGuid.end()) parent = it->second;
+            else Logger::Warn("エンティティ [{}] の parentGuid が見つかりません。index へフォールバックします", idx - 1);
         }
 
-        int parentIdx = ej["parent"].get<int>();
-        if (parentIdx < 0 || parentIdx >= static_cast<int>(created.size())) continue;
-
-        entt::entity parent = created[static_cast<size_t>(parentIdx)];
-        if (parent == entt::null || parent == e)
+        if (parent == entt::null)
         {
+            if (!ej.contains("parent")) continue;
+            if (!ej["parent"].is_number_integer())
+            {
+                Logger::Warn("エンティティ [{}] の parent が整数ではないため、ルートのままにします", idx - 1);
+                continue;
+            }
+            const int parentIdx = ej["parent"].get<int>();
+            if (parentIdx < 0 || parentIdx >= static_cast<int>(created.size())) continue;
+            parent = created[static_cast<size_t>(parentIdx)];
             if (parent == entt::null)
+            {
                 Logger::Warn("エンティティ [{}] の親（index {}）が読み込めなかったため、ルートのままにします", idx - 1, parentIdx);
-            continue;
+                continue;
+            }
         }
 
+        if (parent == e) continue;
         if (reg.all_of<Transform>(e))
             reg.get<Transform>(e).parent = parent;
     }
@@ -2214,6 +2322,12 @@ entt::entity SceneSerializer::InstantiateSubtree(Scene& scene, const std::string
             const std::string oldName = ej.value("name", std::string("Unnamed"));
             const std::string newName = MakeUniqueName(scene, oldName);
             copy["name"] = newName;
+            // ★GUID は引き継がない。複製・プレハブ展開・貼り付けは「別のエンティティ」なので、
+            //   元と同じ guid を持たせると参照先が曖昧になり、guid → entity の対応も壊れる。
+            //   ここで消しておけば、この後の保存時に新しい値が自動で振られる。
+            //   親子は下の 2 パス目が index で結び直すので、ここで消しても問題ない。
+            copy.erase("guid");
+            copy.erase("parentGuid");
             // 地形/スカルプトの外部ファイルを複製先専用にする（共有バグの根治はここ）
             RepointGeneratedAssets(copy, oldName, newName, assetsDir);
             e = InstantiateEntityJson(scene, copy, assetsDir);
@@ -2372,7 +2486,11 @@ bool ReadPrefabJson(const std::string& absPath, json& out)
 void DiffEntityJson(const json& mine, const json& base, int index, const std::string& name,
                     std::vector<SceneSerializer::PrefabOverride>& out)
 {
-    static const char* const kIgnored[] = {"name", "prefabLink"};
+    // ★guid / parentGuid を除外する理由: インスタンスは展開時に guid を振り直すので、
+    //   .prefab 側の値と必ず食い違う。除外しないと全インスタンスに「guid が違う」という
+    //   偽の差分が出続け、本当の上書きが埋もれる。
+    //   name / prefabLink も同じ理由（展開時の連番リネームで毎回全差分になる）。
+    static const char* const kIgnored[] = {"name", "prefabLink", "guid", "parentGuid"};
     auto ignored = [&](const std::string& key)
     {
         for (const char* k : kIgnored) if (key == k) return true;
