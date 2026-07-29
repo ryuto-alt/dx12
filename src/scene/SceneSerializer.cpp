@@ -1907,6 +1907,7 @@ bool SceneSerializer::ApplyOverrides(Scene& scene, const std::string& filePath,
             rb.linearDamping  = rj.value("linearDamping", 0.02f);
             rb.angularDamping = rj.value("angularDamping", 0.01f);
             rb.useGravity     = rj.value("useGravity", true);
+            rb.continuousCollision = rj.value("continuousCollision", false);
         }
     }
 

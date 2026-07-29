@@ -1005,6 +1005,12 @@ struct RigidBody
     f32        linearDamping  = 0.02f;  // 移動減衰を弱く
     f32        angularDamping = 0.01f;  // 回転減衰を弱く → 倒れやすい
     bool       useGravity    = true;
+    // 連続衝突判定(CCD)。既定 false = Jolt の Discrete。
+    // Discrete は「1 ステップぶん移動した後の位置」でしか当たりを見ないので、
+    // 1 フレームで自分の厚みより長く動く物（弾丸・投擲物・高速の乗り物）は
+    // 薄い壁をすり抜ける。true にすると LinearCast（移動線分で判定）になる。
+    // 常時 true にはしない: LinearCast は明確にコストが高く、普通の箱や瓦礫には不要。
+    bool       continuousCollision = false;
 
     // PhysicsSystem が管理（ユーザーは触らない）
     uint32_t   bodyId = kInvalidBodyId;

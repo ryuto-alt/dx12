@@ -405,8 +405,12 @@ void ScriptEngine::Initialize(Scene* scene, InputSystem* input, Camera* camera,
     m_assetsDir = assetsDir;
 
     m_lua = std::make_unique<sol::state>();
+    // coroutine: Lua 5.4 では独立ライブラリなので明示的に開かないと
+    // coroutine.create / yield が一切使えない。これが無いと「n 秒待ってから次」を
+    // 素直に書けず、time.after のネスト地獄になる（カットシーン・敵の行動シーケンス）。
+    // prelude の task.spawn / wait() がこの上に乗っている。
     m_lua->open_libraries(sol::lib::base, sol::lib::math, sol::lib::string,
-                          sol::lib::table, sol::lib::io);
+                          sol::lib::table, sol::lib::io, sol::lib::coroutine);
 
     RegisterBindings();
     LoadPrelude();
@@ -2610,7 +2614,86 @@ function charge:released()
   return v
 end
 
+-- ===== task: コルーチンで「待てる」処理を書く =====
+-- 使い方:
+--   task.spawn(function()
+--     door:open(); wait(1.5)
+--     say("誰かいる…"); waitUntil(function() return player.inRoom end)
+--     lightsOut()
+--   end)
+-- time.after のコールバック地獄を置き換えるためのもの。Play 開始でリセットされる。
+task = {}
+task._list, task._nextId = {}, 1
+
+-- 1 タスクを 1 回だけ進める。戻り値: まだ生きていれば true。
+function task._step(id, t)
+  local ok, res
+  if not t.started then
+    t.started = true
+    ok, res = coroutine.resume(t.co, table.unpack(t.args, 1, t.args.n))
+  else
+    ok, res = coroutine.resume(t.co)
+  end
+  if not ok then
+    print("task error: " .. tostring(res))
+    task._list[id] = nil
+    return false
+  end
+  if coroutine.status(t.co) == "dead" then
+    task._list[id] = nil
+    return false
+  end
+  -- wait/waitFrames/waitUntil が yield したもの。それ以外の yield は「次フレームまで待つ」
+  if type(res) == "table" then t.wt, t.wf, t.wp = res.t, res.f, res.p
+  else t.wt, t.wf, t.wp = nil, nil, nil end
+  return true
+end
+
+-- fn をコルーチンとして開始する。戻り値は cancel 用の id。
+-- ★最初の wait までは「その場で」走る（Unity の StartCoroutine と同じ）。
+--   次フレームまで待たせると task.spawn(function() door:open() ... end) が
+--   1 フレーム遅れて開く、という直感に反する挙動になるため。
+function task.spawn(fn, ...)
+  local id = task._nextId
+  task._nextId = id + 1
+  local t = { co = coroutine.create(fn), args = table.pack(...), started = false }
+  task._list[id] = t
+  task._step(id, t)
+  return id
+end
+function task.cancel(id) task._list[id] = nil end
+function task.alive(id) return task._list[id] ~= nil end
+function task.count() local n = 0; for _ in pairs(task._list) do n = n + 1 end; return n end
+function task.cancelAll() task._list = {} end
+
+-- ↓ この3つは task.spawn の中（＝コルーチン内）からだけ呼べる。
+function wait(sec)        coroutine.yield({ t = sec or 0 }) end
+function waitFrames(n)    coroutine.yield({ f = n or 1 }) end
+function waitUntil(pred)  coroutine.yield({ p = pred }) end
+
+function task._tick(dt)
+  -- スナップショットしてから回す（コルーチン内で spawn/cancel されても安全）
+  local ids = {}
+  for id in pairs(task._list) do ids[#ids + 1] = id end
+  for _, id in ipairs(ids) do
+    local t = task._list[id]
+    if t then
+      local ready
+      if t.wt then t.wt = t.wt - dt; ready = (t.wt <= 0)
+      elseif t.wf then t.wf = t.wf - 1; ready = (t.wf <= 0)
+      elseif t.wp then local ok, v = pcall(t.wp); ready = (ok and v) and true or false
+      else ready = true end
+
+      if ready then
+        t.wt, t.wf, t.wp = nil, nil, nil
+        task._step(id, t)
+      end
+    end
+  end
+end
+
 function __time_reset()
+  task._list, task._nextId = {}, 1
   time._timers, time._nextId = {}, 1
   -- time.video はメソッドも入っているテーブルなので丸ごと差し替えず状態フィールドだけ戻す
   local v = time.video
@@ -2622,6 +2705,9 @@ end
 function __time_tick(dt)
   -- Tween / Flicker（演出レイヤ）を進める。既存の毎フレームフックに1行ぶら下げるだけ。
   if __anim_tick then __anim_tick(dt) end
+
+  -- コルーチンのタスクを進める。wait(0) / waitFrames(1) はどちらも「次のフレームで再開」。
+  task._tick(dt)
 
   -- ビデオ時計・個別時計を進める
   if time.video._active then time.video._t = time.video._t + dt end

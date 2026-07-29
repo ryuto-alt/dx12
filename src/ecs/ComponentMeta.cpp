@@ -79,7 +79,8 @@ void RegisterCoreComponentMeta()
         .data<&RigidBody::friction>("friction")
         .data<&RigidBody::linearDamping>("linearDamping")
         .data<&RigidBody::angularDamping>("angularDamping")
-        .data<&RigidBody::useGravity>("useGravity");
+        .data<&RigidBody::useGravity>("useGravity")
+        .data<&RigidBody::continuousCollision>("continuousCollision");
 
     entt::meta_factory<BoxCollider>{}
         .type("BoxCollider")

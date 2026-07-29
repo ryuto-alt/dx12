@@ -748,6 +748,11 @@ void PhysicsSystem::RegisterBody(entt::registry& registry, entt::entity entity)
     bodySettings.mLinearDamping  = rb->linearDamping;
     bodySettings.mAngularDamping = rb->angularDamping;
     bodySettings.mGravityFactor  = rb->useGravity ? 1.0f : 0.0f;
+    // CCD。既定の Discrete は移動後の位置でしか当たりを見ないので、1 ステップで
+    // 自分の厚みより長く動く物は薄い壁をすり抜ける。LinearCast は移動線分で判定する。
+    // 静的/キネマティックには意味が無いので Dynamic のときだけ立てる。
+    if (rb->continuousCollision && rb->motionType == MotionType::Dynamic)
+        bodySettings.mMotionQuality = JPH::EMotionQuality::LinearCast;
 
     // ゲーム向け: すぐ sleep しない（不安定な積み方でも少し動き続ける）
     bodySettings.mAllowSleeping  = true;

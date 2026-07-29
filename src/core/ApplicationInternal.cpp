@@ -174,6 +174,7 @@ nlohmann::json McpComponentSchema()
         F("motionType", "int (0=Static,1=Kinematic,2=Dynamic)", 2), F("mass", "float", 1.0),
         F("restitution", "float", 0.4), F("friction", "float", 0.3),
         F("linearDamping", "float", 0.02), F("angularDamping", "float", 0.01), F("useGravity", "bool", true),
+        F("continuousCollision", "bool (CCD。弾丸/投擲物など1フレームで自分の厚みより長く動く物だけ true。既定 false は薄い壁をすり抜ける)", false),
     })));
     comps.push_back(C("boxCollider", true, true, json::array({
         F("halfExtents", "float3", json::array({0.5, 0.5, 0.5})), F("offset", "float3", json::array({0, 0, 0})),
@@ -652,6 +653,9 @@ nlohmann::json McpLuaApi()
         "time.after(sec, fn) -> id  — sec秒後に fn を1回実行(スケール済み時間で進む)",
         "time.every(sec, fn) -> id  — sec秒ごとに fn を繰り返し実行",
         "time.cancel(id)  — after/every の解除。タイマーは Play 開始でクリア",
+        "★task.spawn(fn, ...) -> id  — fn をコルーチンとして開始。中で wait(sec)/waitFrames(n)/waitUntil(pred) が使える。演出やカットシーン、敵の行動シーケンスは time.after のネストではなくこちらで直線的に書く",
+        "task.cancel(id)/task.alive(id)/task.count()/task.cancelAll()  — タスクの中断・生存確認。Play 開始で全クリア",
+        "wait(sec)/waitFrames(n)/waitUntil(pred)  — task.spawn の中でだけ呼べる。wait(0) と waitFrames(1) はどちらも次フレーム再開",
         "time.video.start(duration, {skipCost=1.0}?)/stop()/active()  — ステージ共有の\"ビデオ時計\"開始。ギミックは t=video.localTime(self) の純関数で動きを書く(決定論タイムライン)",
         "time.video.now()/duration()/remaining()/finished()  — 動画時間・残り時間(未startなら remaining=math.huge)。skip の消費も残り時間に反映",
         "time.video.skip(entOrName, ±sec) -> offset  — 対象だけ先送り/巻き戻し(オフセット±)。残り時間を |sec|*skipCost 自動消費",

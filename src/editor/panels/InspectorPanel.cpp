@@ -2356,6 +2356,10 @@ void InspectorPanel::Render(entt::registry& reg,
                     changed |= pg::Float("摩擦 Friction", &rb.friction, 0.01f, 0.0f, 2.0f, "%.2f", &active);
                     changed |= pg::Float("反発 Bounce", &rb.restitution, 0.01f, 0.0f, 1.0f, "%.2f", &active);
                     changed |= pg::Checkbox("重力 Gravity", &rb.useGravity);
+                    changed |= pg::Checkbox("すり抜け防止 CCD", &rb.continuousCollision);
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("弾丸や投擲物のように 1 フレームで自分の厚みより長く動く物だけ ON。\n"
+                                          "OFF だと薄い壁をすり抜ける。ON はコストが高いので普通の物には不要。");
                     pg::End();
                 }
                 EndEdit(reg, ctx, ctx.selectedEntity, m_rbEdit, changed, active, "RigidBody");
