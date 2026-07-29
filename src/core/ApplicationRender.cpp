@@ -1359,9 +1359,19 @@ void Application::Render()
         m_terrainLayerSets->PollHotReload(m_gameClock.GetDeltaTime(), nativeCmdList);
 
     // Deferred: new scene（描画前に処理しないと GPU リソース解放でクラッシュする）
+    // 未保存なら先に確認する（保存 / 破棄 / 取り消し）。取り消されたら要求ごと捨てる。
+    // モーダル表示中は pending を残して次フレームへ持ち越す。
+    bool newSceneAllowed = false;
     if (m_editorCtx->pendingNewScene && m_engineMode == EngineMode::Editor)
     {
-        m_editorCtx->pendingNewScene = false;
+        bool cancelled = false;
+        newSceneAllowed = m_editorCtx->pendingNewSceneSkipConfirm || ConfirmDiscardScene(cancelled);
+        if (cancelled) m_editorCtx->pendingNewScene = false;
+    }
+    if (newSceneAllowed)
+    {
+        m_editorCtx->pendingNewScene        = false;
+        m_editorCtx->pendingNewSceneSkipConfirm = false;
         // プロジェクト新規作成の初期シーンなら保存先が指定されている
         std::string starterPath = std::move(m_editorCtx->pendingNewScenePath);
         m_editorCtx->pendingNewScenePath.clear();
@@ -1416,11 +1426,33 @@ void Application::Render()
     // Deferred: scene load（描画前に処理）
     // 参照アセットが多いシーンはここで一気に読まず、段階ロードのジョブへ積む。
     // （同期のまま読むとメッセージポンプが止まり「エンジンが固まった」ように見える）
+    // 未保存なら先に確認する（別シーンを開くと今の変更は完全に消える）。
+    bool loadAllowed = false;
     if (!m_editorCtx->pendingLoadPath.empty() && m_engineMode == EngineMode::Editor
         && !m_sceneLoadJob)
     {
+        bool cancelled = false;
+        loadAllowed = m_editorCtx->pendingLoadSkipConfirm || ConfirmDiscardScene(cancelled);
+        if (cancelled)
+        {
+            m_editorCtx->pendingLoadPath.clear();
+            m_editorCtx->pendingLoadSkipConfirm = false;
+            // 保険: 誰かが MCP の遅延応答を積んだままここへ来たら、必ず失敗を返して解放する。
+            // 応答を宙に浮かせると m_mcpLoadReply が残り、以後 open_scene が
+            // 「already in progress」で永久に失敗する（設計を間違えて一度踏んだ）。
+            if (m_mcpLoadReply.client != 0)
+            {
+                FailMcp(m_mcpBridge.get(), m_mcpLoadReply, McpErr::ModeConflict,
+                        "scene load cancelled by the unsaved-changes prompt");
+                m_mcpLoadReply = {};
+            }
+        }
+    }
+    if (loadAllowed)
+    {
         std::string loadPath = std::move(m_editorCtx->pendingLoadPath);
         m_editorCtx->pendingLoadPath.clear();
+        m_editorCtx->pendingLoadSkipConfirm = false;
 
         BeginSceneLoadJob(loadPath, ToAssetRel(loadPath), false);
         if (!m_sceneLoadJob)   // 軽いシーンは従来どおり即ロード
@@ -2339,8 +2371,18 @@ void Application::Render()
     // 「ランチャーに戻る」ボタン（RenderProjectWindow）と同じ遷移＝ファイル削除等は一切不要。
     if (m_editorCtx->pendingCloseProject)
     {
-        m_editorCtx->pendingCloseProject = false;
-        m_showLauncher = true;
+        // ランチャーへ戻ると EditorLayer も TerrainPanel も呼ばれなくなる＝確認モーダルを
+        // 出す場所が無くなる。だから m_showLauncher を立てる「前」に必ず聞く。
+        bool cancelled = false;
+        if (ConfirmDiscardScene(cancelled))
+        {
+            m_editorCtx->pendingCloseProject = false;
+            m_showLauncher = true;
+        }
+        else if (cancelled)
+        {
+            m_editorCtx->pendingCloseProject = false;
+        }
     }
 
     // Undo/Redo（エンティティ復元がモデル再ロードを伴うため cmdList 有効時に実行）

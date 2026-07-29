@@ -1353,7 +1353,8 @@ std::string Application::SaveSceneSnapshot()
 void Application::RequestSceneRestore(const std::string& path)
 {
     if (m_editorCtx && !path.empty())
-        m_editorCtx->pendingLoadPath = path;   // フレーム境界で SceneSerializer::Load される
+        m_editorCtx->pendingLoadPath        = path;   // フレーム境界で SceneSerializer::Load される
+        m_editorCtx->pendingLoadSkipConfirm = true;   // 診断のシーン復元。人間の操作ではないので聞かない
 }
 
 

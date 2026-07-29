@@ -28,6 +28,11 @@ public:
                 AudioSystem* audioSystem,
                 const std::string& assetsDir,
                 f32 toolbarHeight);
+
+private:
+    // 未保存確認モーダルの OpenPopup を毎フレーム呼ばないためのラッチ
+    // （AssetBrowserPanel の削除確認と同じ作法）。
+    bool m_unsavedPopupOpen = false;
 };
 
 } // namespace dx12e

@@ -466,6 +466,12 @@ private:
     // 「いまの状態＝保存済み」に揃える（保存成功時・シーンを開いた直後・新規作成直後）。
     // 実体は EditorContext::MarkSceneSaved + 設定指紋の取り直し。
     void MarkSceneClean();
+
+    // シーンを捨てる操作（開く / 新規 / プロジェクトを閉じる / ウィンドウを閉じる）の直前に呼ぶ。
+    //   true  … 進んでよい（未保存でない、またはユーザーが「保存」「破棄」を選んだ）
+    //   false … まだ進めない。モーダル表示中なので pending フラグを保持したまま次フレームへ。
+    //           ただし outCancelled=true のときはユーザーが取り消したので pending を消すこと。
+    bool ConfirmDiscardScene(bool& outCancelled);
     // render_debug が一時的に ON にした設定を元へ戻す（何も退避していなければ何もしない）。
     // 正常終了と「固着していたので強制解除」の両方から呼ぶので関数にしてある。
     void RestoreRenderDebugSettings();

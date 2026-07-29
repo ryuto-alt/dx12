@@ -431,7 +431,8 @@ void Application::LoadProject(const ProjectInfo& info)
     if (fs::exists(sceneFull))
     {
         // 既存シーンを次フレームで安全にロード
-        m_editorCtx->pendingLoadPath = sceneFull;
+        m_editorCtx->pendingLoadPath       = sceneFull;
+        m_editorCtx->pendingLoadSkipConfirm = true;   // ロード中はモーダルを描けない（上の解説参照）
     }
     else
     {
@@ -539,7 +540,7 @@ void Application::RenderProjectWindow()
     }
     icon(m_icons.recent, 22);
     if (ImGui::Button("ランチャーに戻る", ImVec2(-1, 0)))
-        m_showLauncher = true;
+        m_editorCtx->pendingCloseProject = true;   // 未保存の確認を挟むため直接は遷移しない
 
     ImGui::End();
 }
@@ -560,8 +561,10 @@ bool Application::HandleWindowCloseRequest()
     }
 
     // プロジェクトを開いた状態で X → ファイルメニュー「プロジェクトを閉じる」と同じ扱い。
-    // ファイル削除等は不要＝ランチャーに戻すだけ。
-    m_showLauncher = true;
+    // ★ここで直接 m_showLauncher を立てない。立てた瞬間に EditorLayer が呼ばれなくなり、
+    //   未保存の確認モーダルを出す場所が無くなる（＝黙って作業が消える）。
+    //   pendingCloseProject へ回して、フレーム内の消化側で確認してから遷移させる。
+    m_editorCtx->pendingCloseProject = true;
     return false;
 }
 

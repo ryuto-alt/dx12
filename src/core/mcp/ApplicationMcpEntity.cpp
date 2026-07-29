@@ -411,7 +411,8 @@ void Application::RegisterMcpEntityMethods()
             if (!fs::exists(full)) throw McpError(McpErr::NotFound, "scene not found: " + rel);
             // 遅延ロード: フレーム境界の機構が pendingLoadPath を消費し SceneSerializer::Load を行う。
             // 完了後に m_mcpLoadReply 経由で sceneName/entityCount/sceneGeneration を返す(遅延同期)。
-            m_editorCtx->pendingLoadPath = full;
+            m_editorCtx->pendingLoadPath    = full;
+            m_editorCtx->pendingLoadSkipConfirm = true;   // 未保存モーダルを出さない（AI は押せない）
             m_mcpLoadReply = deferred;
             isDeferred = true;
         });
@@ -1097,7 +1098,8 @@ void Application::RegisterMcpEntityMethods()
                     throw McpError(McpErr::InvalidParam, "invalid savePath (assets 相対のみ)");
                 m_editorCtx->pendingNewScenePath = PathResolver::AssetsDir() + rel;
             }
-            m_editorCtx->pendingNewScene = true;   // フレーム境界で空シーン生成 + sceneGeneration++
+            m_editorCtx->pendingNewScene        = true;   // フレーム境界で空シーン生成 + sceneGeneration++
+            m_editorCtx->pendingNewSceneSkipConfirm = true;   // 未保存モーダルを出さない（AI は押せない）
             resp["ok"] = true;
             resp["result"] = {{"applied", "next frame"}};
         });

@@ -1059,6 +1059,72 @@ void ToolbarPanel::Render(bool isPlaying,
 
         ImGui::EndPopup();
     }
+
+    // ===== 未保存の確認（シーンを開く / 新規 / プロジェクトを閉じる / ウィンドウを閉じる）=====
+    // Application::ConfirmDiscardScene が showUnsavedConfirm を立て、ここで選択を受け取る。
+    // ★MCP 経由（open_scene / new_scene / open_project）はここを通さない。
+    //   AI はモーダルを押せないので、出すと応答不能になる。あちらは ping の sceneDirty で判断させる。
+    if (ctx.showUnsavedConfirm && !m_unsavedPopupOpen)
+    {
+        ImGui::OpenPopup("##UnsavedConfirm");
+        m_unsavedPopupOpen = true;
+    }
+    if (!ctx.showUnsavedConfirm) m_unsavedPopupOpen = false;
+
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(440, 0), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("##UnsavedConfirm", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.35f, 1.0f),
+            "\xe4\xbf\x9d\xe5\xad\x98\xe3\x81\x97\xe3\x81\xa6\xe3\x81\x84\xe3\x81\xaa\xe3\x81\x84\xe5\xa4\x89\xe6\x9b\xb4\xe3\x81\x8c\xe3\x81\x82\xe3\x82\x8a\xe3\x81\xbe\xe3\x81\x99");  // 保存していない変更があります
+        ImGui::Spacing();
+
+        const bool canSave = !ctx.currentScenePath.empty();
+        if (canSave)
+        {
+            std::string name = ctx.currentScenePath;
+            if (size_t sp = name.find_last_of("/\\"); sp != std::string::npos) name = name.substr(sp + 1);
+            ImGui::TextWrapped("%s", name.c_str());
+            // 続けると、保存していない変更は元に戻せません。
+            ImGui::TextDisabled("\xe7\xb6\x9a\xe3\x81\x91\xe3\x82\x8b\xe3\x81\xa8\xe3\x80\x81\xe4\xbf\x9d\xe5\xad\x98\xe3\x81\x97\xe3\x81\xa6\xe3\x81\x84\xe3\x81\xaa\xe3\x81\x84\xe5\xa4\x89\xe6\x9b\xb4\xe3\x81\xaf\xe5\x85\x83\xe3\x81\xab\xe6\x88\xbb\xe3\x81\x9b\xe3\x81\xbe\xe3\x81\x9b\xe3\x82\x93\xe3\x80\x82");
+        }
+        else
+        {
+            // このシーンはまだ保存先が決まっていません（先に「名前を付けて保存」が要ります）。
+            ImGui::TextWrapped("\xe3\x81\x93\xe3\x81\xae\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3\xe3\x81\xaf\xe3\x81\xbe\xe3\x81\xa0\xe4\xbf\x9d\xe5\xad\x98\xe5\x85\x88\xe3\x81\x8c\xe6\xb1\xba\xe3\x81\xbe\xe3\x81\xa3\xe3\x81\xa6\xe3\x81\x84\xe3\x81\xbe\xe3\x81\x9b\xe3\x82\x93\xe3\x80\x82");
+        }
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        if (!canSave) ImGui::BeginDisabled();
+        if (ImGui::Button("\xe4\xbf\x9d\xe5\xad\x98\xe3\x81\x97\xe3\x81\xa6\xe7\xb6\x9a\xe8\xa1\x8c", ImVec2(132, 0)))  // 保存して続行
+        {
+            ctx.unsavedChoice = EditorContext::UnsavedChoice::Save;
+            ImGui::CloseCurrentPopup();
+        }
+        if (!canSave) ImGui::EndDisabled();
+
+        ImGui::SameLine();
+        // 破棄は誤爆すると作業が消えるので赤くしておく（既定フォーカスも持たせない）
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.45f, 0.18f, 0.18f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.60f, 0.22f, 0.22f, 1.0f));
+        if (ImGui::Button("\xe4\xbf\x9d\xe5\xad\x98\xe3\x81\x9b\xe3\x81\x9a\xe7\xb6\x9a\xe8\xa1\x8c", ImVec2(132, 0)))  // 保存せず続行
+        {
+            ctx.unsavedChoice = EditorContext::UnsavedChoice::Discard;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::PopStyleColor(2);
+
+        ImGui::SameLine();
+        if (ImGui::Button("\xe3\x82\xad\xe3\x83\xa3\xe3\x83\xb3\xe3\x82\xbb\xe3\x83\xab", ImVec2(120, 0))  // キャンセル
+            || ImGui::IsKeyPressed(ImGuiKey_Escape))
+        {
+            ctx.unsavedChoice = EditorContext::UnsavedChoice::Cancel;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
 }
 
 } // namespace dx12e

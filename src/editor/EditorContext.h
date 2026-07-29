@@ -389,6 +389,15 @@ public:
     // ファイルメニュー「プロジェクトを閉じる」で立つ。Application がフレーム境界で
     // ランチャーへ戻す（削除等のファイル操作は一切不要＝現在の状態はそのままメモリに残す）。
     bool pendingCloseProject = false;
+    // ★true なら未保存の確認モーダルを出さずに素通しする。立てるのは2種類:
+    //   (a) MCP 由来 … AI はモーダルを押せないので、出すとツール呼び出しが固まる。
+    //       MCP 側は dx12_ping の sceneDirty を見て自分で判断する契約（index.ts に明記）。
+    //   (b) プロジェクト読み込み由来 … ロード中/ランチャー中は EditorLayer が呼ばれない＝
+    //       モーダルを描く場所が無い。ここで止めると pendingLoadPath が消化されないまま残り、
+    //       以後の open_scene が「already in progress」で永久に失敗する（実際に踏んだ）。
+    //       プロジェクト切替の確認は BeginProjectLoad を呼ぶ「前」に UI 側で行うのが正しい。
+    bool pendingLoadSkipConfirm  = false;
+    bool pendingNewSceneSkipConfirm = false;
     // 直近ビルドの成果物フォルダ（完了後に Explorer で開くために保持）。
     std::string lastBuildDir;
 
@@ -439,6 +448,15 @@ public:
     {
         return undoSystem.EditSeq() != sceneSavedSeq || settingsHash != savedSettingsHash;
     }
+    // ── 未保存の確認モーダル ──
+    // showUnsavedConfirm が true の間 ToolbarPanel がモーダルを描く。
+    // ユーザーが選ぶと unsavedChoice に入り、Application::ConfirmDiscardScene が消化する。
+    // ★MCP 経由（open_scene / new_scene / open_project）はここを通さない。
+    //   AI はモーダルを押せないので出すと固まる。あちらは dx12_ping の sceneDirty で判断させる。
+    enum class UnsavedChoice { None, Save, Discard, Cancel };
+    bool          showUnsavedConfirm = false;
+    UnsavedChoice unsavedChoice      = UnsavedChoice::None;
+
     // 保存に成功したときに呼ぶ。freshSettingsHash は「いま保存した内容」の指紋。
     // ★ポーリングで拾った古い値ではなく、保存の直前に取り直した値を渡すこと。
     //   古い値を渡すと、保存直前の設定変更が保存後に「新しい変更」として再検出される。

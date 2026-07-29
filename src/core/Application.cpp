@@ -2406,6 +2406,51 @@ void Application::Update()
 // FootIK.cpp（Animation ライブラリ）は entt も PhysicsSystem も知らない。
 // ここが「エンティティを走査して PhysicsSystem::RaycastEx を繋ぐ」接着層。
 // ---------------------------------------------------------------------------
+bool Application::ConfirmDiscardScene(bool& outCancelled)
+{
+    outCancelled = false;
+    if (!m_editorCtx) return true;
+    if (!m_editorCtx->IsSceneDirty()) return true;   // 汚れていないなら黙って進む
+
+    using Choice = EditorContext::UnsavedChoice;
+    const Choice choice = m_editorCtx->unsavedChoice;
+    if (choice != Choice::None)
+    {
+        m_editorCtx->unsavedChoice      = Choice::None;
+        m_editorCtx->showUnsavedConfirm = false;
+    }
+
+    switch (choice)
+    {
+    case Choice::Save:
+        if (m_scene && !m_editorCtx->currentScenePath.empty() &&
+            SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, PathResolver::AssetsDir()))
+        {
+            MarkSceneClean();
+            return true;
+        }
+        // 保存できなかった（保存先が未設定 / 書き込み失敗）。ここで進むと変更が消えるので、
+        // 進まずに操作ごと取り消す。黙って捨てるくらいなら操作を無かったことにする方がまし。
+        Logger::Warn("未保存の変更を保存できませんでした（保存先が未設定か書き込みに失敗）。操作を取り消します");
+        outCancelled = true;
+        return false;
+
+    case Choice::Discard:
+        // 破棄＝この変更は無かったことにする。以後もう聞かない。
+        MarkSceneClean();
+        return true;
+
+    case Choice::Cancel:
+        outCancelled = true;
+        return false;
+
+    case Choice::None:
+    default:
+        m_editorCtx->showUnsavedConfirm = true;   // 毎フレーム true でよい（Toolbar 側でラッチする）
+        return false;
+    }
+}
+
 void Application::MarkSceneClean()
 {
     // 「いまの状態＝保存済み」に揃える。保存直後・シーンを開いた直後・新規作成直後。
