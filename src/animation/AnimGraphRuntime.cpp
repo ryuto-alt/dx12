@@ -57,6 +57,23 @@ size_t EvalBlendTreeWeights(const AnimBlendTree& bt, const AnimParamMap& params,
     for (size_t i = 0; i < kMaxBlendSamples; ++i) out[i] = 0.0f;
     if (n == 0) return 0;
 
+    if (bt.type == AnimBlendTreeType::TwoD || bt.type == AnimBlendTreeType::TwoDPolar)
+    {
+        // Gradient Band Interpolation（BlendTree.h。式は Johansen の論文で裏取り済み）。
+        BlendPoint2D pts[kMaxBlendSamples];
+        for (size_t i = 0; i < n; ++i) pts[i] = { bt.samples[i].value, bt.samples[i].valueY };
+
+        auto ity = params.find(bt.paramY);
+        const BlendPoint2D p{ BlendTreeInput(bt, params),
+                              (ity == params.end()) ? 0.0f : ity->second.f };
+
+        if (bt.type == AnimBlendTreeType::TwoDPolar)
+            GradientBandPolar(pts, n, p, bt.polarAlpha, out);
+        else
+            GradientBandCartesian(pts, n, p, out);
+        return n;
+    }
+
     f32 axis[kMaxBlendSamples];
     for (size_t i = 0; i < n; ++i) axis[i] = bt.samples[i].value;
 
@@ -70,7 +87,7 @@ size_t EvalBlendTreeWeights(const AnimBlendTree& bt, const AnimParamMap& params,
 f32 StateDuration(const AnimStateDef& st, const std::vector<std::unique_ptr<AnimationClip>>& clips,
                   const AnimParamMap& params)
 {
-    if (st.blendTree.type == AnimBlendTreeType::OneD)
+    if (st.blendTree.type != AnimBlendTreeType::None)
     {
         f32 w[kMaxBlendSamples];
         const size_t n = EvalBlendTreeWeights(st.blendTree, params, w);
@@ -129,7 +146,7 @@ const AnimationClip* SampleStatePose(const AnimStateDef& st, f32 time,
 {
     eventTimeScale = 1.0f;
 
-    if (st.blendTree.type == AnimBlendTreeType::OneD)
+    if (st.blendTree.type != AnimBlendTreeType::None)
     {
         f32 w[kMaxBlendSamples];
         const size_t n = EvalBlendTreeWeights(st.blendTree, params, w);

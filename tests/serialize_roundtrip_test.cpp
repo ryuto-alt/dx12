@@ -1134,7 +1134,10 @@ static void Test_SkyboxSettings()
     if (ok2)
     {
         const auto& d2 = dst2.GetSkyboxSettings();
-        CHECK(d2.envMapPath.empty());
+        // ★ここは「skybox キーが無ければ SkyboxSettings の構造体既定値になる」ことの確認。
+        //   既定は空文字ではなく手続きの空(kProceduralSkyPath)。空文字は「IBL も skybox も
+        //   無効」という別の意味を持つ値なので、取り違えると屋内シーンが真っ暗になる。
+        CHECK(d2.envMapPath == kProceduralSkyPath);
         CHECK_F(d2.iblIntensity, 1.0f);
         CHECK_F(d2.skyboxIntensity, 1.0f);
         CHECK(d2.drawSkybox == true);

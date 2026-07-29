@@ -76,12 +76,20 @@ void ParseBlendTree(const json& j, AnimBlendTree& out)
 {
     if (!j.is_object()) return;
     const std::string type = j.value("type", std::string("1d"));
-    if (type != "1d") return;   // 2D は未対応（計画05 Step 7）
+    if      (type == "1d")      out.type = AnimBlendTreeType::OneD;
+    else if (type == "2d")      out.type = AnimBlendTreeType::TwoD;        // Freeform Cartesian
+    else if (type == "2dPolar") out.type = AnimBlendTreeType::TwoDPolar;   // Freeform Directional
+    else return;                                                          // 未知の type は無視
 
-    out.type       = AnimBlendTreeType::OneD;
+    const bool is2D = (out.type != AnimBlendTreeType::OneD);
     out.param      = j.value("param", std::string());
+    out.paramY     = j.value("paramY", std::string());
+    out.polarAlpha = j.value("polarAlpha", 2.0f);
     out.syncPhase  = j.value("syncPhase", true);
     out.speedMatch = j.value("speedMatch", false);
+    // speedMatch は「param の値＝そのクリップ本来の移動速度」を前提にした 1D 専用の補正。
+    // 2D はどの軸が速度なのかツリー次第で決まらないので黙って無視する。
+    if (is2D) out.speedMatch = false;
 
     if (j.contains("samples") && j["samples"].is_array())
     {
@@ -89,17 +97,23 @@ void ParseBlendTree(const json& j, AnimBlendTree& out)
         {
             if (!sj.is_object()) continue;
             AnimBlendSample1D s;
-            s.value = sj.value("value", 0.0f);
-            s.clip  = sj.value("clip", std::string());
-            s.speed = sj.value("speed", 1.0f);
+            s.value  = sj.value("value",  0.0f);
+            s.valueY = sj.value("valueY", 0.0f);
+            s.clip   = sj.value("clip", std::string());
+            s.speed  = sj.value("speed", 1.0f);
             if (!s.clip.empty()) out.samples.push_back(std::move(s));
         }
     }
-    // value 昇順。Eval1DBlend は「ソート済み」を前提にしている。
-    std::stable_sort(out.samples.begin(), out.samples.end(),
-                     [](const AnimBlendSample1D& a, const AnimBlendSample1D& b) { return a.value < b.value; });
+    // 1D だけソートする。Eval1DBlend が「value 昇順」を前提にしているため。
+    // 2D の Gradient Band は並び順に依存しないので、記述順を保って読みやすさを優先する。
+    if (!is2D)
+        std::stable_sort(out.samples.begin(), out.samples.end(),
+                         [](const AnimBlendSample1D& a, const AnimBlendSample1D& b) { return a.value < b.value; });
 
     if (out.samples.empty()) out.type = AnimBlendTreeType::None;
+    // 2D なのに Y 軸パラメータが無いと、全サンプルが y=0 の直線上で評価されて
+    // 1D と区別が付かない結果になる。黙って変な絵を出すより 1D として扱う方がまし。
+    if (is2D && out.paramY.empty()) out.type = AnimBlendTreeType::OneD;
 }
 
 void ParseLayer(const json& j, AnimLayerDef& out)
@@ -165,13 +179,24 @@ void ParseLayer(const json& j, AnimLayerDef& out)
 json BlendTreeToJson(const AnimBlendTree& bt)
 {
     json j;
-    j["type"]       = "1d";
+    const bool is2D = (bt.type == AnimBlendTreeType::TwoD || bt.type == AnimBlendTreeType::TwoDPolar);
+    j["type"]       = (bt.type == AnimBlendTreeType::TwoDPolar) ? "2dPolar"
+                    : (bt.type == AnimBlendTreeType::TwoD)      ? "2d" : "1d";
     j["param"]      = bt.param;
     j["syncPhase"]  = bt.syncPhase;
     j["speedMatch"] = bt.speedMatch;
+    if (is2D)
+    {
+        j["paramY"] = bt.paramY;
+        if (bt.type == AnimBlendTreeType::TwoDPolar) j["polarAlpha"] = bt.polarAlpha;
+    }
     json samples = json::array();
     for (const auto& s : bt.samples)
-        samples.push_back({{"value", s.value}, {"clip", s.clip}, {"speed", s.speed}});
+    {
+        json sj{{"value", s.value}, {"clip", s.clip}, {"speed", s.speed}};
+        if (is2D) sj["valueY"] = s.valueY;
+        samples.push_back(std::move(sj));
+    }
     j["samples"] = std::move(samples);
     return j;
 }

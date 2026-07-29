@@ -262,6 +262,20 @@ if(TARGET Renderer)
     endif()
     add_test(NAME AnimGraphTests COMMAND AnimGraphTests)
 
+# .animfsm のブレンドツリー宣言のパース検証。nlohmann を使う AnimGraphAsset.cpp を
+# リンクするので、エンジン本体と一緒にビルドする構成でのみ有効
+# （tests 単体構成は依存ゼロを保つ。上の SerializeRoundtripTests と同じ作法）。
+if(TARGET Animation)
+    add_executable(AnimBlendTreeAssetTests anim_blendtree_asset_test.cpp)
+    target_link_libraries(AnimBlendTreeAssetTests PRIVATE Animation)
+    target_include_directories(AnimBlendTreeAssetTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(AnimBlendTreeAssetTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(AnimBlendTreeAssetTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME AnimBlendTreeAssetTests COMMAND AnimBlendTreeAssetTests)
+endif()
+
     # ボーンマスク（animation/BoneMask.h）+ レイヤー合成テスト。
     # 「マスク外のボーンが下位レイヤーとビット単位で同一」を守る。
     add_executable(BoneMaskTests

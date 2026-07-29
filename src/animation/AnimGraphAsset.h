@@ -68,21 +68,32 @@ struct AnimCondition
 // ---------------------------------------------------------------------------
 struct AnimBlendSample1D
 {
-    f32         value = 0.0f;    // パラメータ軸上の位置（例: 移動速度 m/s）
+    f32         value  = 0.0f;   // X 軸上の位置（1D なら唯一の軸。例: 移動速度 m/s）
+    f32         valueY = 0.0f;   // Y 軸上の位置（2D のときだけ使う。例: 横移動 m/s）
     std::string clip;
     f32         speed = 1.0f;    // このサンプル固有の再生速度倍率
     i32         _clipIndex = -1; // ロード時に解決（クリップ名 → index）
 };
 
-enum class AnimBlendTreeType : uint8_t { None = 0, OneD = 1 };
+// 2D は Gradient Band Interpolation（BlendTree.h）。Unity の
+// "Freeform Cartesian" = TwoD / "Freeform Directional" = TwoDPolar に対応する。
+// ストレイフ移動や 8 方向ロコモーションは 1D では表現できないのでこちらを使う。
+enum class AnimBlendTreeType : uint8_t { None = 0, OneD = 1, TwoD = 2, TwoDPolar = 3 };
 
 struct AnimBlendTree
 {
     AnimBlendTreeType type = AnimBlendTreeType::None;
-    std::string       param;                 // 1D の入力パラメータ名
-    std::vector<AnimBlendSample1D> samples;  // value 昇順（ロード時にソートする）
+    std::string       param;                 // X 軸の入力パラメータ名
+    std::string       paramY;                // Y 軸の入力パラメータ名（2D のみ）
+    // 2D Polar の角度重み。大きいほど「向きの違い」を強く効かせる（論文の α）。
+    f32               polarAlpha = 2.0f;
+    // 1D は value 昇順にソートして持つ（Eval1DBlend の前提）。2D は並び順に意味が無いので
+    // 記述順のまま。
+    std::vector<AnimBlendSample1D> samples;
     bool syncPhase  = true;   // 全クリップを正規化時間で位相同期する
-    bool speedMatch = false;  // param の値に合わせて再生レートを補正する（足滑り対策）
+    // param の値に合わせて再生レートを補正する（足滑り対策）。1D のみ。
+    // 2D は「どの軸が速度なのか」がツリー次第で決まらないので効かせない。
+    bool speedMatch = false;
 };
 
 // ---------------------------------------------------------------------------

@@ -113,7 +113,23 @@ Inspector は**読み取り専用のライブ表示**（現在ステート / レ
             "samples": [ { "value": 0.0, "clip": "Survey" },
                          { "value": 1.4, "clip": "Walk"   },
                          { "value": 4.5, "clip": "Run"    } ],
-            "syncPhase": true, "speedMatch": true } }
+            "syncPhase": true, "speedMatch": true } },
+
+        // 2D ブレンドツリー（ストレイフ移動・8方向ロコモーション）。
+        //   "2d"      = Freeform Cartesian（前後左右の速度をそのまま座標にする）
+        //   "2dPolar" = Freeform Directional（向きの違いを強く効かせる。polarAlpha で調整）
+        // ★paramY を書かないと 1D として扱う（全サンプルが y=0 の直線に並んで
+        //   1D と区別が付かない結果になるため、黙って変な絵を出さない）。
+        // ★speedMatch は 1D 専用。2D では「どの軸が速度か」がツリー次第で決まらないので無視される。
+        { "name": "Strafe", "loop": true,
+          "blendTree": {
+            "type": "2d", "param": "moveX", "paramY": "moveZ",
+            "samples": [ { "value":  0.0, "valueY":  0.0, "clip": "Idle"      },
+                         { "value":  0.0, "valueY":  1.0, "clip": "RunFwd"    },
+                         { "value":  0.0, "valueY": -1.0, "clip": "RunBack"   },
+                         { "value": -1.0, "valueY":  0.0, "clip": "RunLeft"   },
+                         { "value":  1.0, "valueY":  0.0, "clip": "RunRight"  } ],
+            "syncPhase": true } }
       ],
 
       // 評価は**宣言順**。最初に成立したものが勝つ。

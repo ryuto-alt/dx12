@@ -205,11 +205,20 @@ foreach(DX12_MESHOPT_TARGET DX12Engine GameRuntime)
             "$<TARGET_FILE_DIR:${DX12_MESHOPT_TARGET}>"
         COMMENT "Bundling meshoptimizer.dll next to ${DX12_MESHOPT_TARGET}.exe")
 endforeach()
+# テスト実行ファイルの隣へ、メイン exe と同じ実行時 DLL を全部配る。
+# vcpkg の applocal デプロイはメイン exe の分しか置かないので、これが無いと
+# Core をリンクするテスト(spdlog.dll / fmt.dll 等が要る)が 0xC0000135 で
+# **起動すらできない**。ctest では「失敗」に見えるが実際には 1 行も走っておらず、
+# 壊れていることに気付けない（実際 SerializeRoundtrip / TextureCompress / Vfs /
+# EnetLoopback の 4 本がずっとこの状態だった）。
+# 以前は meshoptimizer.dll だけを個別にコピーしていたが、必要な DLL が増えるたびに
+# 同じ症状を踏むので、ディレクトリごと配る形にした。
 add_custom_command(TARGET DX12Engine POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/tests"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "$<TARGET_FILE:meshoptimizer::meshoptimizer>" "${CMAKE_BINARY_DIR}/tests"
-    COMMENT "Bundling meshoptimizer.dll next to tests")
+    COMMAND ${CMAKE_COMMAND}
+        -DSRC=$<TARGET_FILE_DIR:DX12Engine>
+        -DDST=${CMAKE_BINARY_DIR}/tests
+        -P ${CMAKE_SOURCE_DIR}/tools/copy_runtime_dlls.cmake
+    COMMENT "Bundling runtime DLLs next to tests")
 
 # --- DXC Shader Compilation ---
 find_program(DXC_EXECUTABLE dxc
