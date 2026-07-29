@@ -52,6 +52,11 @@ public:
 
     // 用途 + 元フォーマットから BC 形式を決める純関数（DXGI_FORMAT_UNKNOWN = 圧縮しない）。
     // float 系(HDR)は用途に関わらず BC6H_UF16。テストから直接叩けるよう public にしてある。
+    // 読み込み時の色空間指定を、実際のリソース形式へ確定させる。
+    // srgb=false は「sRGB を付けない」ではなく「sRGB を外す」でなければならない。
+    // 詳しい理由は .cpp 側の実装コメントを参照。
+    static DXGI_FORMAT SelectViewFormat(DXGI_FORMAT fmt, bool srgb);
+
     static DXGI_FORMAT SelectCompressedFormat(TextureUsage usage, DXGI_FORMAT srcFormat, bool srgb);
 
     // BC の 4x4 ブロック制約 / 2D 単体かどうかで圧縮可否を判定する純関数。

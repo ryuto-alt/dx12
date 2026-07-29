@@ -614,7 +614,7 @@ DeepDiagReport DeepDiag::Textures()
                   + std::to_string(kMaxTextures) + " 枚だけ検査した";
     }
 
-    int noMip = 0, huge = 0;
+    int noMip = 0, huge = 0, srgbTagged = 0;
     for (const fs::path& p : files)
     {
         ++r.checked;
@@ -633,19 +633,16 @@ DeepDiagReport DeepDiag::Textures()
         }
 
         // ── ガンマ ──
-        // エンジンは「アルベドは sRGB として読む / 法線・metalRoughness はリニアで読む」
-        // という *読み込み時の指定* で色空間を決めている（フォーマットには持たせていない）。
-        // ファイル側が最初から _SRGB フォーマットだと MakeSRGB が効かず、
-        // 法線・データ系マップが sRGB デコードされてライティングが確実に狂う。
-        if (IsSrgbFormatName(info.format))
-        {
-            if (LooksLikeNormalMap(p))
-                r.Add(2, rel + " は法線マップだが " + info.format
-                         + " で保存されている。リニア(_UNORM)で保存し直すこと");
-            else if (LooksLikeDataMap(p))
-                r.Add(2, rel + " はデータ系マップだが " + info.format
-                         + " で保存されている。リニア(_UNORM)で保存し直すこと");
-        }
+        // ★以前ここは「法線/データ系マップが _SRGB で保存されている」を*エラー*にして、
+        //   書き出し直すよう促していた。だが直すべきはコンテンツではなくローダーだった。
+        //   TextureLoader が `srgb ? MakeSRGB(fmt) : fmt` としていて、srgb=false が
+        //   「sRGB を付けない」だけで「外す」ができていなかった（SelectViewFormat で修正済み）。
+        //   いまはリニア要求で確実にリニアへ落ちるので、ソースのタグは描画に影響しない。
+        //   実プロジェクトで 29 件が該当していた＝そのまま残すと、直っている問題のために
+        //   29 枚を書き出し直させ、しかも本物のエラーがその陰に埋もれる。
+        //   件数だけ情報として残す（書き出し設定の癖には気付けるため）。
+        if (IsSrgbFormatName(info.format) && (LooksLikeNormalMap(p) || LooksLikeDataMap(p)))
+            ++srgbTagged;
 
         if (info.mipLevels <= 1 && (std::max)(info.width, info.height) >= 512) ++noMip;
         if ((std::max)(info.width, info.height) > 4096) ++huge;
@@ -656,6 +653,9 @@ DeepDiagReport DeepDiag::Textures()
                  "縮小時にちらつく場合はミップ付き(.dds)にする");
     if (huge > 0)
         r.Add(1, std::to_string(huge) + " 枚が 4096px 超。VRAM とロード時間を食う");
+    if (srgbTagged > 0)
+        r.Add(0, std::to_string(srgbTagged) + " 枚の法線/データ系マップが sRGB タグ付きで保存されている。"
+                 "エンジンが読み込み時にリニアへ落とすので描画は正しい（書き出し設定の癖として参考まで）");
 
     return r;
 }

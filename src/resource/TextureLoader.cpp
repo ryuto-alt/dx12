@@ -289,6 +289,7 @@ bool TryLoadCachedCompressed(const DirectX::TexMetadata& srcMeta, TextureUsage u
 // 失敗しても品質/VRAM が従来どおりになるだけなので、常に「何もしない」でフォールバックする。
 // allowArray: 配列テクスチャ（地形レイヤー配列）も圧縮対象にする。既定は false ＝従来どおり
 //   arraySize>1 は圧縮しない（IBL の焼き済み .dds を二重圧縮しないため）。
+
 void CompressInPlace(DirectX::ScratchImage& scratch, TextureUsage usage, bool srgb,
                      uint64_t contentHash, const std::string& cacheKey,
                      bool allowArray = false)
@@ -385,6 +386,25 @@ TextureLoader::CompressionMode TextureLoader::GetCompressionMode()
 bool TextureLoader::IsCompressionEnabled()
 {
     return g_compressionMode.load() != 0;
+}
+
+// 読み込み時に指定した色空間を、実際のリソース形式へ確定させる。
+//
+// ★ここが素直に見えて素直でない箇所。
+//   以前は `srgb ? MakeSRGB(fmt) : fmt` だった。つまり srgb=false は
+//   「sRGB を付けない」だけで「sRGB を外す」ことができなかった。
+//   ソース画像のメタデータが最初から _SRGB だと（最近の書き出しツールは
+//   法線や ORM にも sRGB チャンクを埋めてくる）、リニアで読んだつもりの
+//   テクスチャが GPU 側で sRGB デコードされる。
+//   法線なら 0.5 が 0.21 になり、ORM なら粗さと金属度がまるごとずれる。
+//   ライティングが静かに壊れるだけでエラーは出ない。
+//
+//   BC 圧縮が効く経路は SelectCompressedFormat が形式を明示するので無事だった。
+//   踏むのは圧縮が省かれる経路――圧縮 OFF、4 の倍数でないサイズ、
+//   ConvertForCompression の失敗――で、そこだけ黙って壊れていた。
+DXGI_FORMAT TextureLoader::SelectViewFormat(DXGI_FORMAT fmt, bool srgb)
+{
+    return srgb ? DirectX::MakeSRGB(fmt) : DirectX::MakeLinear(fmt);
 }
 
 DXGI_FORMAT TextureLoader::SelectCompressedFormat(TextureUsage usage, DXGI_FORMAT srcFormat, bool srgb)
@@ -570,7 +590,7 @@ std::unique_ptr<Texture> TextureLoader::LoadFromFile(
     }
 
     DirectX::TexMetadata meta = scratchImage.GetMetadata();
-    DXGI_FORMAT format = srgb ? DirectX::MakeSRGB(meta.format) : meta.format;
+    DXGI_FORMAT format = TextureLoader::SelectViewFormat(meta.format, srgb);
 
     // D3D12_RESOURCE_DESC 構築
     D3D12_RESOURCE_DESC resourceDesc = {};
@@ -646,7 +666,7 @@ std::unique_ptr<Texture> TextureLoader::LoadCubeFromFile(
         return nullptr;
     }
 
-    DXGI_FORMAT format = srgb ? DirectX::MakeSRGB(meta.format) : meta.format;
+    DXGI_FORMAT format = TextureLoader::SelectViewFormat(meta.format, srgb);
 
     D3D12_RESOURCE_DESC resourceDesc = {};
     resourceDesc.Dimension          = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -761,7 +781,7 @@ std::unique_ptr<Texture> TextureLoader::LoadFromMemory(
     }
 
     DirectX::TexMetadata meta = scratchImage.GetMetadata();
-    DXGI_FORMAT format = srgb ? DirectX::MakeSRGB(meta.format) : meta.format;
+    DXGI_FORMAT format = TextureLoader::SelectViewFormat(meta.format, srgb);
 
     D3D12_RESOURCE_DESC resourceDesc = {};
     resourceDesc.Dimension          = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -882,7 +902,7 @@ std::unique_ptr<Texture> TextureLoader::LoadCubeFromMemory(
         return nullptr;
     }
 
-    DXGI_FORMAT format = srgb ? DirectX::MakeSRGB(meta.format) : meta.format;
+    DXGI_FORMAT format = TextureLoader::SelectViewFormat(meta.format, srgb);
 
     D3D12_RESOURCE_DESC resourceDesc = {};
     resourceDesc.Dimension          = D3D12_RESOURCE_DIMENSION_TEXTURE2D;

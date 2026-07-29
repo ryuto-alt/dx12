@@ -206,9 +206,50 @@ static void Test_BC5NormalRoundtrip()
     CHECK(maxAngleErrDeg <= 6.0f);
 }
 
+// 読み込み時の色空間指定が、実際のリソース形式へ正しく落ちること。
+//
+// 直したバグ: 以前は `srgb ? MakeSRGB(fmt) : fmt` で、srgb=false が
+// 「sRGB を付けない」だけになっていた。ソース画像のメタデータが最初から _SRGB だと
+// （最近の書き出しツールは法線や ORM にも sRGB チャンクを埋めてくる）、
+// リニアで読んだつもりのテクスチャが GPU 側で sRGB デコードされる。
+// 法線なら 0.5 が 0.21 になり、ORM なら粗さと金属度がまるごとずれる。
+// エラーは何も出ないので気付けない。実プロジェクトで 29 枚が該当していた。
+static void Test_ViewFormatStripsSrgb()
+{
+    using dx12e::TextureLoader;
+
+    // ★本題: リニア要求は sRGB を「外す」こと（付けないだけでは不足）
+    CHECK(TextureLoader::SelectViewFormat(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, false)
+          == DXGI_FORMAT_R8G8B8A8_UNORM);
+    CHECK(TextureLoader::SelectViewFormat(DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, false)
+          == DXGI_FORMAT_B8G8R8A8_UNORM);
+    // BC 入力（sRGB タグ付き DDS）でも同じ
+    CHECK(TextureLoader::SelectViewFormat(DXGI_FORMAT_BC7_UNORM_SRGB, false)
+          == DXGI_FORMAT_BC7_UNORM);
+
+    // sRGB 要求は付ける（従来どおり）
+    CHECK(TextureLoader::SelectViewFormat(DXGI_FORMAT_R8G8B8A8_UNORM, true)
+          == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB);
+    CHECK(TextureLoader::SelectViewFormat(DXGI_FORMAT_BC7_UNORM, true)
+          == DXGI_FORMAT_BC7_UNORM_SRGB);
+
+    // 既に要求どおりなら素通し（往復で形式が変わらない）
+    CHECK(TextureLoader::SelectViewFormat(DXGI_FORMAT_R8G8B8A8_UNORM, false)
+          == DXGI_FORMAT_R8G8B8A8_UNORM);
+    CHECK(TextureLoader::SelectViewFormat(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, true)
+          == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB);
+
+    // sRGB 版を持たない形式は、どちらの要求でも壊さない
+    CHECK(TextureLoader::SelectViewFormat(DXGI_FORMAT_BC5_UNORM, false) == DXGI_FORMAT_BC5_UNORM);
+    CHECK(TextureLoader::SelectViewFormat(DXGI_FORMAT_BC5_UNORM, true)  == DXGI_FORMAT_BC5_UNORM);
+    CHECK(TextureLoader::SelectViewFormat(DXGI_FORMAT_R16G16B16A16_FLOAT, true)
+          == DXGI_FORMAT_R16G16B16A16_FLOAT);
+}
+
 int main()
 {
     Test_FormatSelection();
+    Test_ViewFormatStripsSrgb();
     Test_CompressibleSize();
     Test_BC7Roundtrip();
     Test_BC5NormalRoundtrip();
