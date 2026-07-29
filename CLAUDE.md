@@ -53,20 +53,21 @@ Claude Code はテキストで作れる。新機能の作法はここを参照:
 - 検証: `DX12Engine.exe --validate <scene.json>`（参照切れ・スクリプト不在をヘッドレスで報告。終了コード 0/1）
 - **超詳細診断**: `DX12Engine.exe --ui-tests-deep --project <dir>`（またはエディタの `ツール > エンジン診断 > 🔬 超詳細診断`）
   「UI は動くけど絵が間違っている」を拾う担当（UI 自動テストは絵を一切見ない）。
-  実体は `src/gui/DeepDiagnostics.{h,cpp}`。検査は 11 種（`DeepDiag::AllCheckIds()` の順）:
+  実体は `src/gui/DeepDiagnostics.{h,cpp}`。検査は 12 種（`DeepDiag::AllCheckIds()` の順）:
   | ID | 見るもの |
   |---|---|
   | `shaders` | `.cso` の存在・破損・`.hlsl` より古くないか（ビルドし忘れ） |
   | `textures` | 読めない/サイズ0/ミップ無し、法線・metalRoughness が sRGB 保存＝ライティングが狂う |
   | `models` | メッシュ0・頂点0・AABB が NaN・ボーン 256 超（SkinningBuffer が無言で切り捨てる） |
   | `gamma` | バックバッファが `_SRGB` ＝ガンマ二重適用（全体が白っぽい） |
-  | `scene_assets` | パスは合っているのに `meshes` が空＝画面に出ない |
+  | `scene_assets` | パスは合っているのに `meshes` が空＝画面に出ない / **アセット参照切れ**（モデル・テクスチャ・マテリアル・シェーダに加えて、音声・UI画像・フォント・ボタン効果音・パーティクル画像・.uianim・.spranim・.animfsm・.prefab・環境マップ・LUT・デカールアトラス） |
   | `lighting` | 灯数の上限超過（**合計 1024 灯**／クラスタ 1 マス **128 灯**。超過分は**無言で**描画されない）・DirectionalLight が 0/2 個以上・影スロット超過（spot 4 / point 2 は据え置き）・強度0/range0 の効かないライト・コーン角の内外逆転・IBL 無しの金属 |
   | `terrain` | `.hf` の存在/ヘッダ整合/サイズ、コンポーネントとの解像度食い違い、4 の倍数（Jolt の要求）、コライダー用 RigidBody の有無、**複数の地形が同じ `.hf` / `.splat` を共有していないか**、レイヤーセット(`.terrainlayers`)の参照切れ |
   | `picking` | CPU 頂点キャッシュ無し（AABB 判定に落ちる）・スケール0/NaN の Transform（レイが素通り）・原点から極端にズレたジオメトリ |
   | `instancing` | `render_instancing` 設定・適格ドローの割合・**不適格の支配的な理由ランキング** |
   | `scripts` | `.lua` の `end`/`until`/括弧/文字列の閉じ忘れ（字句だけ追う。式の文法は見ない） |
   | `dxr` | GPU の DXR Tier / シェーダモデル・レイトレーシングのゲート通過状況・TLAS のインスタンス数と加速構造の VRAM・**TLAS に入らなかったもの**（スキンド / 半透明 / 上限超過）。「RT 影を ON にしたのにキャラの影が変わらない」の答えはここ |
+  | `render_health` | **「シーンビューが真っ暗 / カメラが何も映らない」の原因を名指しする**。render_debug の出しっぱなし・露出0・ティント黒・自動露出レンジの逆転・光源ゼロ・シーン矩形の潰れ・SRV ヒープ枯渇（枯渇**前**に警告）・カメラの NaN や極端な座標・MCP のカメラ乗っ取り残り |
   - `DeepDiag::RunAll(app, only)` が全部まとめて**機械可読な JSON** を返す（`version`/`engine`/`checks[]`/`summary`）。
     `only` はカンマ区切りの検査 ID で絞り込み（例 `"lighting,terrain,picking"`）。
     失敗判定は `summary.errors > 0` だけ見ればよい（注意/情報は赤くしない方針）

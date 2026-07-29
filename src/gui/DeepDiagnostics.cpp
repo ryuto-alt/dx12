@@ -868,6 +868,84 @@ DeepDiagReport DeepDiag::SceneAssets(Application& app)
             r.Add(1, who + " のスプライトが完全に透明（color.a=0）");
     }
 
+    // ---- ここから下は「今まで誰も参照切れを見ていなかった」フィールド ----
+    // アセットの移動/削除に参照が追従する仕組みが無い（dx12_move_asset 自身が
+    // 「参照パスは自動更新しない」と返す）ので、切れても実行時に無言で
+    // 「音が鳴らない」「UI が真っ白」「アニメが再生されない」になるだけだった。
+    // 直すのは別の課題。まず**見えるように**する。
+
+    for (auto [e, a] : reg.view<AudioSource>().each())
+    {
+        ++r.checked;
+        checkFile(a.clipPath, nameOf(e), "音声クリップ");
+    }
+
+    for (auto [e, img] : reg.view<UIImage>().each())
+    {
+        ++r.checked;
+        checkFile(img.texturePath, nameOf(e), "UI 画像");
+    }
+
+    for (auto [e, txt] : reg.view<UIText>().each())
+    {
+        ++r.checked;
+        checkFile(txt.fontPath, nameOf(e), "フォント");
+    }
+
+    for (auto [e, btn] : reg.view<UIButton>().each())
+    {
+        ++r.checked;
+        checkFile(btn.hoverSound, nameOf(e), "ホバー音");
+        checkFile(btn.clickSound, nameOf(e), "クリック音");
+    }
+
+    for (auto [e, pe] : reg.view<ParticleEmitter>().each())
+    {
+        ++r.checked;
+        checkFile(pe.texturePath, nameOf(e), "パーティクル画像");
+    }
+
+    for (auto [e, ap] : reg.view<UIAnimPlayer>().each())
+    {
+        ++r.checked;
+        checkFile(ap.clipPath, nameOf(e), "UI アニメ(.uianim)");
+    }
+
+    for (auto [e, sa] : reg.view<SpriteAnimator>().each())
+    {
+        ++r.checked;
+        checkFile(sa.sheetPath, nameOf(e), "スプライトシート(.spranim)");
+    }
+
+    for (auto [e, ac] : reg.view<AnimatorController>().each())
+    {
+        ++r.checked;
+        checkFile(ac.graphPath, nameOf(e), "アニメグラフ(.animfsm)");
+    }
+
+    for (auto [e, pl] : reg.view<PrefabLink>().each())
+    {
+        ++r.checked;
+        // プレハブ本体が消えていると Revert / 伝播が黙って効かなくなる
+        checkFile(pl.sourcePath, nameOf(e), "プレハブ(.prefab)");
+    }
+
+    // ---- シーン単位のアセット参照 ----
+    {
+        const auto& sky = app.GetScene()->GetSkyboxSettings();
+        ++r.checked;
+        // kProceduralSkyPath は実ファイルではない番兵なので除外する
+        if (!sky.envMapPath.empty() && sky.envMapPath != kProceduralSkyPath)
+            checkFile(sky.envMapPath, "シーン", "環境マップ(skybox)");
+
+        const auto& pp = app.GetScene()->GetPostSettings();
+        ++r.checked;
+        if (pp.lutOn) checkFile(pp.lutPath, "シーン", "カラーグレーディング LUT");
+
+        ++r.checked;
+        checkFile(app.GetScene()->GetDecalAtlasPath(), "シーン", "デカールアトラス");
+    }
+
     return r;
 }
 
