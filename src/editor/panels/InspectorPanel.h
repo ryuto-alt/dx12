@@ -71,6 +71,11 @@ private:
     EditState<AudioSource>      m_audioEdit;
     EditState<CameraComponent>  m_camEdit;
     EditState<Gimmick>          m_gimmickEdit;
+    // ★Trigger は std::string / std::vector を含むので memcmp が使えず、
+    //   長らく EditState が無かった＝フィールド編集もアクションの追加/削除も
+    //   Undo に積まれていなかった（コンポーネントの追加/削除だけは積まれるので
+    //   「中身だけ戻らない」という気づきにくい形だった）。operator== を足して対応。
+    EditState<Trigger>          m_triggerEdit;
     EditState<ParticleEmitter>  m_emitterEdit;
     EditState<Sprite2D>        m_spriteEdit;
     EditState<TrailRenderer>    m_trailEdit;

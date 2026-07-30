@@ -1,11 +1,61 @@
 #include "editor/UndoSystem.h"
 #include "scene/Scene.h"
+#include "renderer/Mesh.h"   // MeshRendererLookCommand が ApplyUVScale を呼ぶ
 #include "scene/Entity.h"
 #include "scene/SceneSerializer.h"
 #include "core/Logger.h"
 
 namespace dx12e
 {
+
+// ── MeshRendererLook ──
+MeshRendererLook MeshRendererLook::From(const MeshRenderer& mr)
+{
+    MeshRendererLook v;
+    v.uvScaleU = mr.uvScaleU; v.uvScaleV = mr.uvScaleV;
+    v.uvScrollU = mr.uvScrollU; v.uvScrollV = mr.uvScrollV;
+    v.animFrames = mr.animFrames; v.animCols = mr.animCols; v.animRow = mr.animRow;
+    v.animRows = mr.animRows; v.animMode = mr.animMode; v.animFps = mr.animFps;
+    v.shaderPath = mr.shaderPath; v.shaderAlphaBlend = mr.shaderAlphaBlend;
+    v.effectValue = mr.effectValue; v.shaderParams = mr.shaderParams;
+    return v;
+}
+
+void MeshRendererLook::ApplyTo(MeshRenderer& mr) const
+{
+    mr.uvScaleU = uvScaleU; mr.uvScaleV = uvScaleV;
+    mr.uvScrollU = uvScrollU; mr.uvScrollV = uvScrollV;
+    mr.animFrames = animFrames; mr.animCols = animCols; mr.animRow = animRow;
+    mr.animRows = animRows; mr.animMode = animMode; mr.animFps = animFps;
+    mr.shaderPath = shaderPath; mr.shaderAlphaBlend = shaderAlphaBlend;
+    mr.effectValue = effectValue; mr.shaderParams = shaderParams;
+}
+
+bool MeshRendererLook::operator==(const MeshRendererLook& o) const
+{
+    return uvScaleU == o.uvScaleU && uvScaleV == o.uvScaleV
+        && uvScrollU == o.uvScrollU && uvScrollV == o.uvScrollV
+        && animFrames == o.animFrames && animCols == o.animCols && animRow == o.animRow
+        && animRows == o.animRows && animMode == o.animMode && animFps == o.animFps
+        && shaderPath == o.shaderPath && shaderAlphaBlend == o.shaderAlphaBlend
+        && effectValue == o.effectValue
+        && shaderParams.x == o.shaderParams.x && shaderParams.y == o.shaderParams.y
+        && shaderParams.z == o.shaderParams.z && shaderParams.w == o.shaderParams.w;
+}
+
+void MeshRendererLookCommand::Apply(const MeshRendererLook& v)
+{
+    if (!m_reg || !m_reg->valid(m_entity) || !m_reg->all_of<MeshRenderer>(m_entity)) return;
+    auto& mr = m_reg->get<MeshRenderer>(m_entity);
+    v.ApplyTo(mr);
+    // ★uvScale は頂点へ焼く方式なので、値を戻すだけでは絵が戻らない。焼き直す。
+    if (m_scene && m_scene->GetDevice())
+        for (auto* mesh : mr.meshes)
+            if (mesh) mesh->ApplyUVScale(*m_scene->GetDevice(), mr.uvScaleU, mr.uvScaleV);
+}
+
+void MeshRendererLookCommand::Undo() { Apply(m_before); }
+void MeshRendererLookCommand::Redo() { Apply(m_after); }
 
 // ── DeleteEntityCommand ──
 void DeleteEntityCommand::Undo()

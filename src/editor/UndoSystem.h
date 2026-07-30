@@ -261,6 +261,51 @@ private:
 // SceneSerializer::SwapEntityModel で新旧パスを行き来する。swap のたびに
 // entity ID が変わるため m_entity を実行結果で更新し続ける。
 // 注意: モデルロードを伴うため pendingUndo/pendingRedo 経由のフレーム境界で実行すること。
+// ── MeshRenderer の見た目まわり（UVタイリング / 連番アニメ / カスタムシェーダー）──
+//
+// ★普通の ComponentEditCommand で戻せない。uvScale は Mesh::ApplyUVScale で
+//   **頂点バッファへ焼き込む**方式なので、値を戻すだけでは絵が戻らない。
+//   逆に「値は新しいのに絵は古い」という食い違いが残る。
+//   戻すときに焼き直しまで面倒を見る専用コマンドにする。
+// ★復元するのはこの Inspector 節が編集するフィールドだけ（modelPath や meshes は触らない）。
+//   上にウィジェットを足したらここにも足すこと。
+struct MeshRendererLook
+{
+    f32  uvScaleU = 1.0f, uvScaleV = 1.0f;
+    f32  uvScrollU = 0.0f, uvScrollV = 0.0f;
+    i32  animFrames = 0, animCols = 0, animRow = 0, animRows = 0, animMode = 0;
+    f32  animFps = 0.0f;
+    std::string shaderPath;
+    bool shaderAlphaBlend = false;
+    f32  effectValue = 0.0f;
+    DirectX::XMFLOAT4 shaderParams{0, 0, 0, 0};
+
+    static MeshRendererLook From(const MeshRenderer& mr);
+    void ApplyTo(MeshRenderer& mr) const;
+    bool operator==(const MeshRendererLook& o) const;
+};
+
+class MeshRendererLookCommand : public IUndoCommand
+{
+public:
+    MeshRendererLookCommand(Scene* scene, entt::registry* reg, entt::entity e,
+                            MeshRendererLook before, MeshRendererLook after)
+        : m_scene(scene), m_reg(reg), m_entity(e),
+          m_before(std::move(before)), m_after(std::move(after)) {}
+
+    void Undo() override;
+    void Redo() override;
+    const char* GetName() const override { return "MeshRenderer Look"; }
+
+private:
+    void Apply(const MeshRendererLook& v);
+
+    Scene*           m_scene;
+    entt::registry*  m_reg;
+    entt::entity     m_entity;
+    MeshRendererLook m_before, m_after;
+};
+
 class ModelSwapCommand : public IUndoCommand
 {
 public:

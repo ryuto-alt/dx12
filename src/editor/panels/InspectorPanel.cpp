@@ -452,7 +452,15 @@ void EndEdit(entt::registry& reg, EditorContext& ctx, entt::entity e,
     auto push = [&]()
     {
         const T& cur = reg.get<T>(e);
-        if (std::memcmp(&state.snapshot, &cur, sizeof(T)) != 0)
+        // ★operator== があるならそちらを使う。std::string / std::vector を含む
+        //   コンポーネント（Trigger 等）は memcmp が中身ではなくポインタを見るので、
+        //   変わっていなくても「変わった」と判定して Undo エントリを量産する。
+        bool same;
+        if constexpr (requires (const T& a, const T& b) { { a == b } -> std::convertible_to<bool>; })
+            same = (state.snapshot == cur);
+        else
+            same = (std::memcmp(&state.snapshot, &cur, sizeof(T)) == 0);
+        if (!same)
         {
             ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<T>>(
                 &reg, e, state.snapshot, cur, name));
@@ -2247,6 +2255,7 @@ void InspectorPanel::Render(entt::registry& reg,
             bool removed = ComponentRemoveMenu<Trigger>(reg, ctx, ctx.selectedEntity, "Trigger");
             if (open && !removed)
             {
+                BeginEdit(reg, ctx.selectedEntity, m_triggerEdit);
                 auto& tr = reg.get<Trigger>(ctx.selectedEntity);
                 const char* shapes[] = { "Box", "Sphere" };
                 // ★参照は guid が正。名前だけ書き換えると古い guid が勝って
@@ -2334,6 +2343,13 @@ void InspectorPanel::Render(entt::registry& reg,
                 if (removeIdx >= 0) tr.actions.erase(tr.actions.begin() + removeIdx);
                 if (ImGui::Button("＋ アクション追加")) tr.actions.push_back(dx12e::TriggerAction{});
                 ImGui::TextDisabled("Play 中に評価。Target 空のアクションは Filter 対象に作用");
+
+                // ★この節はウィジェットが多く changed を全部拾うと差分が大きいので、
+                //   スナップショットとの比較そのものを changed として渡す（operator== がある）。
+                //   ドラッグ中は active が優先されるので、離した時に 1 エントリだけ積まれる。
+                const bool trChanged = !(m_triggerEdit.snapshot == tr);
+                EndEdit(reg, ctx, ctx.selectedEntity, m_triggerEdit,
+                        trChanged, ImGui::IsAnyItemActive(), "Trigger");
             }
         }
 
@@ -2969,6 +2985,13 @@ void InspectorPanel::Render(entt::registry& reg,
             }
 
             // UV タイリング / UVスクロール / 連番アニメ
+            // ★UV & Anim とシェーダーの 2 節は長らく Undo に積まれていなかった。
+            //   普通の ComponentEditCommand では戻せない（uvScale は頂点へ焼くので
+            //   値だけ戻すと「値は新しいのに絵は古い」になる）ため、
+            //   焼き直しまで面倒を見る MeshRendererLookCommand を使う。
+            //   節をまたぐので、スナップショットは両方の外側で取る。
+            const MeshRendererLook lookBefore = MeshRendererLook::From(mr);
+
             if (IconHeader(nullptr, 0, "UV & Anim"))
             {
                 bool uvChanged = false;
@@ -3097,6 +3120,17 @@ void InspectorPanel::Render(entt::registry& reg,
                 }
                 if (reg.all_of<SkeletalAnimation>(ctx.selectedEntity) && !mr.shaderPath.empty())
                     WarnText("スキンドメッシュは既定シェーダーへフォールバック");
+            }
+
+            // 上の 2 節で見た目まわりが変わっていたら 1 エントリだけ積む。
+            // ドラッグ中（IsAnyItemActive）は積まない＝離した時にまとめて 1 回。
+            {
+                const MeshRendererLook lookAfter = MeshRendererLook::From(mr);
+                if (!(lookBefore == lookAfter) && !ImGui::IsAnyItemActive())
+                {
+                    ctx.undoSystem.PushCommand(std::make_unique<MeshRendererLookCommand>(
+                        scene, &reg, ctx.selectedEntity, lookBefore, lookAfter));
+                }
             }
         }
 

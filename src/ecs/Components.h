@@ -1325,6 +1325,15 @@ struct TriggerAction
     std::string str;          // シーンパス / プロパティ名 / イベント名
     double num = 0.0;         // 数値パラメータ
     DirectX::XMFLOAT3 vec{0.0f, 0.0f, 0.0f}; // Move 用の移動量
+
+    // ★Inspector の Undo 判定用。std::string / std::vector を含むので memcmp が使えない。
+    //   XMFLOAT3 に operator== が無いので手書きする（= default だと使えない）。
+    bool operator==(const TriggerAction& o) const
+    {
+        return when == o.when && type == o.type && target == o.target
+            && targetGuid == o.targetGuid && str == o.str && num == o.num
+            && vec.x == o.vec.x && vec.y == o.vec.y && vec.z == o.vec.z;
+    }
 };
 
 struct Trigger
@@ -1347,6 +1356,16 @@ struct Trigger
     // ランタイム専有（非シリアライズ）
     bool _wasInside = false;
     bool _firedOnce = false;
+
+    // ★Inspector の Undo 判定用（ランタイム専有フィールドは比較しない）。
+    bool operator==(const Trigger& o) const
+    {
+        return shape == o.shape && radius == o.radius && filter == o.filter
+            && filterGuid == o.filterGuid && once == o.once && actions == o.actions
+            && halfExtents.x == o.halfExtents.x && halfExtents.y == o.halfExtents.y
+            && halfExtents.z == o.halfExtents.z
+            && offset.x == o.offset.x && offset.y == o.offset.y && offset.z == o.offset.z;
+    }
 };
 
 // --- NetworkIdentity: エンティティをマルチプレイ複製対象にする印 ---
