@@ -870,6 +870,12 @@ ModelData ModelLoader::LoadFromFile(
             if (nodeIdx >= 0)
             {
                 DirectX::XMMATRIX bakeMatrix = bakeGlobalMatrices[static_cast<u32>(nodeIdx)];
+                // ★鏡映（行列式が負）を含むノードでは接空間の利き手が反転する。
+                //   tangent.w は法線マップのビタンジェント符号なので、ここで一緒に返さないと
+                //   凹凸が逆に見える。
+                const float bakeDet =
+                    DirectX::XMVectorGetX(DirectX::XMMatrixDeterminant(bakeMatrix));
+                const float handednessFlip = (bakeDet < 0.0f) ? -1.0f : 1.0f;
 
                 for (auto& vert : vertices)
                 {
@@ -883,6 +889,24 @@ ModelData ModelLoader::LoadFromFile(
                     norm = DirectX::XMVector3TransformNormal(norm, bakeMatrix);
                     norm = DirectX::XMVector3Normalize(norm);
                     DirectX::XMStoreFloat3(&vert.normal, norm);
+
+                    // ★tangent も変換する。position/normal だけ回して tangent を
+                    //   メッシュローカルのまま残していたので、ノードに回転を持つ静的モデル
+                    //   （DamagedHelmet.glb はノードに +90°X を持つ）で**法線マップの向きだけ
+                    //   狂っていた**。凹凸が斜めに寝る形で出るので「ライティングがなんか変」に
+                    //   しか見えず、原因が分かりにくい。
+                    DirectX::XMVECTOR tan = DirectX::XMVectorSet(
+                        vert.tangent.x, vert.tangent.y, vert.tangent.z, 0.0f);
+                    tan = DirectX::XMVector3TransformNormal(tan, bakeMatrix);
+                    // 退化（スケール 0 の軸など）で 0 ベクトルになったら元の値を残す
+                    if (DirectX::XMVectorGetX(DirectX::XMVector3LengthSq(tan)) > 1.0e-12f)
+                    {
+                        tan = DirectX::XMVector3Normalize(tan);
+                        vert.tangent.x = DirectX::XMVectorGetX(tan);
+                        vert.tangent.y = DirectX::XMVectorGetY(tan);
+                        vert.tangent.z = DirectX::XMVectorGetZ(tan);
+                    }
+                    vert.tangent.w *= handednessFlip;
                 }
             }
         }
