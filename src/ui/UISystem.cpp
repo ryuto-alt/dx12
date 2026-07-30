@@ -98,6 +98,9 @@ struct UiHitEntry
     UiXform2x3   invXform;   // 実スクリーン → レイアウト空間
     bool         hasClip = false;
     UiRectPx     clip;       // スクリーン空間クリップ（スクロールビュー）
+    // このウィジェットを内包しているスクロールビュー（無ければ null）。
+    // パッド/キーでフォーカスが動いたとき、画面外の項目を見える位置まで送るのに使う。
+    entt::entity scrollOwner = entt::null;
 
     bool Contains(float x, float y) const
     {
@@ -147,11 +150,18 @@ struct UiDrawContext
     std::vector<UiHitEntry>* toggleRects = nullptr;  // interactable な UIToggle 全件
     std::vector<UiHitEntry>* scrollRects = nullptr;  // UIScrollView のビューポート（ホイール配送用）
     std::vector<UiHitEntry>* blockers    = nullptr;  // クリックを遮る要素（ウィジェット + raycastBlock 画像）
+    // ★フォーカスナビ専用。上の *Rects はスクロールのクリップで切って積む（＝はみ出た要素は
+    //   クリックも効かない、が正しい）。だがナビはそれだと**折り返しより下の項目へ永久に
+    //   到達できない**（そこへ移ってからスクロールで見せたいのに、候補に居ない）。
+    //   なのでナビだけはクリップせず、素の矩形と所属スクロールビューを別に集める。
+    std::vector<UiHitEntry>* navRects    = nullptr;  // interactable なウィジェット全件（クリップしない）
 
     // UIScrollView のクリップ（スクリーン空間）。サブツリー内で収集するレイキャスト矩形は
     // これと交差してから積む＝スクロールではみ出た要素はクリックも効かない。ネストは交差。
     // DrawUiSubtree が push/pop 式に付け替える。
     const UiRectPx* hitClip = nullptr;
+    // hitClip を張っているスクロールビューのエンティティ（入れ子なら最も内側）。
+    entt::entity    hitClipOwner = entt::null;
 
     // UIScrollView のコンテンツ計測先（キャンバス空間の合併矩形）。サブツリー内で UIRect を
     // 解決するたびに合併する。ネストは内側の計測のみに入る（push/pop 式）。
@@ -201,6 +211,30 @@ UiRectPx ToScreen(const UiRectPx& c, const UiDrawContext& ctx)
             ctx.originX + c.maxX * ctx.scaleX, ctx.originY + c.maxY * ctx.scaleY};
 }
 
+// フォーカスナビ用にクリップ**せず**積む。矩形は素のまま（スクロール量を計算するのに
+// 「どれだけビュー外か」が要る）。所属スクロールビューも一緒に持たせる。
+void PushNavRect(std::vector<UiHitEntry>* out, entt::entity e, const UiRectPx& s,
+                 const UiDrawContext& ctx)
+{
+    if (!out) return;
+    UiHitEntry entry;
+    entry.e           = e;
+    entry.rect        = s;
+    entry.scrollOwner = ctx.hitClipOwner;
+    if (ctx.hasXform)
+    {
+        entry.hasXform = true;
+        entry.xform    = ctx.xform;
+        entry.invXform = ctx.invXform;
+    }
+    if (ctx.hitClip)
+    {
+        entry.hasClip = true;
+        entry.clip    = *ctx.hitClip;
+    }
+    out->push_back(entry);
+}
+
 // レイキャスト矩形を ctx.hitClip（スクロールビューのクリップ）と交差してから out へ積む。
 // 完全にはみ出ていれば積まない（クリップ外の要素はクリックも受けない）。
 // 変換あり（ctx.hasXform）: rect はレイアウト空間・クリップはスクリーン空間で空間が違うため
@@ -212,6 +246,7 @@ void PushHitRect(std::vector<UiHitEntry>* out, entt::entity e, const UiRectPx& s
     if (!out) return;
     UiHitEntry entry;
     entry.e = e;
+    entry.scrollOwner = ctx.hitClipOwner;
     if (ctx.hasXform)
     {
         entry.rect     = s;
@@ -917,6 +952,7 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
             tint = btn->_pressed ? btn->pressedColor
                  : (btn->_hovered ? btn->hoverColor : btn->normalColor);
             PushHitRect(ctx.buttonRects, e, s, ctx.hitClip, ctx);
+            PushNavRect(ctx.navRects, e, s, ctx);
         }
         else
         {
@@ -931,12 +967,14 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
     auto* tgl = reg.try_get<UIToggle>(e);
     if (sld && ctx.interactive)
     {
-        if (sld->interactable) PushHitRect(ctx.sliderRects, e, s, ctx.hitClip, ctx);
+        if (sld->interactable) { PushHitRect(ctx.sliderRects, e, s, ctx.hitClip, ctx);
+                                 PushNavRect(ctx.navRects, e, s, ctx); }
         else                   { sld->_hovered = false; sld->_dragging = false; }
     }
     if (tgl && ctx.interactive)
     {
-        if (tgl->interactable) PushHitRect(ctx.toggleRects, e, s, ctx.hitClip, ctx);
+        if (tgl->interactable) { PushHitRect(ctx.toggleRects, e, s, ctx.hitClip, ctx);
+                                 PushNavRect(ctx.navRects, e, s, ctx); }
         else                   { tgl->_hovered = false; tgl->_pressed = false; }
     }
 
@@ -1929,10 +1967,12 @@ void DrawUiSubtree(entt::entity e, const UiRectPx& parentRect, UiDrawContext& ct
         contentRect.minX -= sv->scrollX; contentRect.maxX -= sv->scrollX;
         contentRect.minY -= sv->scrollY; contentRect.maxY -= sv->scrollY;
 
-        const UiRectPx* prevClip   = ctx.hitClip;
-        UiRectPx*       prevBounds = ctx.contentBounds;
+        const UiRectPx* prevClip      = ctx.hitClip;
+        const entt::entity prevClipOwner = ctx.hitClipOwner;
+        UiRectPx*       prevBounds    = ctx.contentBounds;
         UiRectPx bounds{FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX};
         ctx.hitClip       = &clip;
+        ctx.hitClipOwner  = e;
         ctx.contentBounds = &bounds;
         if (ctx.dl)
             ctx.dl->PushClipRect(ImVec2(clip.minX, clip.minY), ImVec2(clip.maxX, clip.maxY), true);
@@ -1942,6 +1982,7 @@ void DrawUiSubtree(entt::entity e, const UiRectPx& parentRect, UiDrawContext& ct
         if (ctx.dl)
             ctx.dl->PopClipRect();
         ctx.hitClip       = prevClip;
+        ctx.hitClipOwner  = prevClipOwner;
         ctx.contentBounds = prevBounds;
 
         // 計測結果（コンテンツ原点=平行移動後の親左上からの広がり）を保存 → 次フレームのクランプへ
@@ -2151,6 +2192,7 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
     UpdateUiAnimations(reg, ImGui::GetIO().DeltaTime);
 
     // このフレームの入力スナップショット（##GameUI ウィンドウ内で呼ばれる前提）
+    std::vector<UiHitEntry> navRects;      // フォーカスナビ用（クリップしない。上のコメント参照）
     std::vector<UiHitEntry> buttonRects;   // interactable な UIButton（描画順）
     std::vector<UiHitEntry> sliderRects;   // interactable な UISlider
     std::vector<UiHitEntry> toggleRects;   // interactable な UIToggle
@@ -2168,6 +2210,7 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
     ctx.resources     = resources;
     ctx.srvHeap       = srvHeap;
     ctx.cmdList       = cmdList;
+    ctx.navRects      = &navRects;
     ctx.buttonRects   = &buttonRects;
     ctx.sliderRects   = &sliderRects;
     ctx.toggleRects   = &toggleRects;
@@ -2443,11 +2486,11 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
 
     // ===== フォーカスナビゲーション（ゲームパッド / キーボード）=====
     // フォーカス対象 = このフレームに収集した操作可能ウィジェット全件（描画順）。
-    std::vector<UiHitEntry> focusables;
-    focusables.reserve(buttonRects.size() + sliderRects.size() + toggleRects.size());
-    focusables.insert(focusables.end(), buttonRects.begin(), buttonRects.end());
-    focusables.insert(focusables.end(), sliderRects.begin(), sliderRects.end());
-    focusables.insert(focusables.end(), toggleRects.begin(), toggleRects.end());
+    // ★ナビ候補はクリップしていない navRects を使う。クリップ済みの *Rects を使うと
+    //   スクロールビューの折り返しより下の項目が候補に居らず、**永久に到達できない**
+    //   （そこへフォーカスを移してから見える位置まで送りたいのに、候補に無い）。
+    //   マウスの当たり判定は従来どおり *Rects（クリップ済み）なので影響しない。
+    const std::vector<UiHitEntry>& focusables = navRects;
 
     const auto findFocusable = [&focusables](entt::entity e) -> const UiHitEntry* {
         for (const auto& f : focusables)
@@ -2553,9 +2596,50 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
                 m_confirmHeld = false;
                 if (const auto* b = reg.try_get<UIButton>(m_focused); b && !b->hoverSound.empty())
                     m_pendingSfx.push_back(b->hoverSound);
-                // ponytail: スクロールビュー内のフォーカス先への自動スクロールは未対応。
-                // リスト UI をパッドで操作する時に必要になったら「包含スクロールビューへ
-                // 矩形が収まるよう scrollY を調整」を足す
+
+                // ★スクロールビューの中にある項目へ移ったら、見える位置まで送る。
+                //   これが無いと、パッドでリストを辿ったとき選択中の項目が画面外のまま
+                //   進んでいく（何を選んでいるか分からない状態で決定を押すことになる）。
+                //   scrollY を増やすとコンテンツが上へ動く（contentRect.minY -= scrollY）ので、
+                //   下へはみ出した分だけ足し、上へはみ出した分だけ引く。
+                //   次フレームのクランプが 0..(コンテンツ-ビュー) に収めるのでここでは丸めない。
+                if (best->hasClip && best->scrollOwner != entt::null
+                    && reg.valid(best->scrollOwner))
+                {
+                    if (auto* sv = reg.try_get<UIScrollView>(best->scrollOwner))
+                    {
+                        // 変換があるときは 4 隅を写してスクリーン空間 AABB にする。
+                        float eMinX = best->rect.minX, eMinY = best->rect.minY;
+                        float eMaxX = best->rect.maxX, eMaxY = best->rect.maxY;
+                        if (best->hasXform)
+                        {
+                            const ImVec2 c[4] = {
+                                best->xform.Apply(best->rect.minX, best->rect.minY),
+                                best->xform.Apply(best->rect.maxX, best->rect.minY),
+                                best->xform.Apply(best->rect.maxX, best->rect.maxY),
+                                best->xform.Apply(best->rect.minX, best->rect.maxY)};
+                            eMinX = std::min(std::min(c[0].x, c[1].x), std::min(c[2].x, c[3].x));
+                            eMinY = std::min(std::min(c[0].y, c[1].y), std::min(c[2].y, c[3].y));
+                            eMaxX = std::max(std::max(c[0].x, c[1].x), std::max(c[2].x, c[3].x));
+                            eMaxY = std::max(std::max(c[0].y, c[1].y), std::max(c[2].y, c[3].y));
+                        }
+                        // クリップはスクリーン px、scroll はキャンバス px なので割り戻す。
+                        const float sx = (ctx.scaleX != 0.0f) ? ctx.scaleX : 1.0f;
+                        const float sy = (ctx.scaleY != 0.0f) ? ctx.scaleY : 1.0f;
+                        if (sv->vertical)
+                        {
+                            if (eMaxY > best->clip.maxY)      sv->scrollY += (eMaxY - best->clip.maxY) / sy;
+                            else if (eMinY < best->clip.minY) sv->scrollY -= (best->clip.minY - eMinY) / sy;
+                        }
+                        if (sv->horizontal)
+                        {
+                            if (eMaxX > best->clip.maxX)      sv->scrollX += (eMaxX - best->clip.maxX) / sx;
+                            else if (eMinX < best->clip.minX) sv->scrollX -= (best->clip.minX - eMinX) / sx;
+                        }
+                        // 慣性が残っていると送った直後に流されるので止める。
+                        sv->_velX = 0.0f; sv->_velY = 0.0f;
+                    }
+                }
             }
         }
     }
