@@ -1431,6 +1431,60 @@ void T_PhysicsParentedBodyWorldSpace(ImGuiTestContext* ctx)
     ctx->Yield(2);
 }
 
+// 親と子を「子を先に」選んで削除 → Undo で、子が親の下に戻るか。
+// ★以前は祖先も削除対象に入っている子を除外していなかったので、
+//   「子だけの削除コマンド」と「親の削除コマンド」が別々に積まれ、Undo は逆順なので
+//   親が先に**新しいハンドル**で復元される。その後に子のコマンドが走ると
+//   externalParent が無効（entt は destroy で version を進める）になり、
+//   子が**シーンのルートとして**復元されて親から外れる。
+//   しかも Ctrl+クリックの順番次第で出たり出なかったりした。
+void T_DeleteUndoKeepsParent(ImGuiTestContext* ctx)
+{
+    IM_CHECK(g_app != nullptr);
+    Scene* scene = g_app->GetScene();
+    EditorContext* ed = Ed();
+    IM_CHECK(scene != nullptr && ed != nullptr);
+    auto& reg = scene->GetRegistry();
+
+    Step(ctx, "親と子を作る");
+    Entity parent = scene->SpawnBox("__uitest_delp", {0.0f, 40.0f, 0.0f});
+    Entity child  = scene->SpawnBox("__uitest_delc", {1.0f,  0.0f, 0.0f});
+    reg.get<Transform>(child.GetHandle()).parent = parent.GetHandle();
+    ctx->Yield(3);
+
+    Step(ctx, "★子を先に、次に親を削除キューへ入れる（この順番が壊れていた）");
+    ed->ClearSelection();
+    ed->pendingDeletions.clear();
+    ed->pendingDeletions.push_back(child.GetHandle());
+    ed->pendingDeletions.push_back(parent.GetHandle());
+    ctx->Yield(6);
+    if (reg.valid(parent.GetHandle()) || reg.valid(child.GetHandle()))
+    { IM_ERRORF("削除が反映されていない"); return; }
+
+    Step(ctx, "Undo して親子関係が戻るか見る");
+    ed->pendingUndo = true;
+    ctx->Yield(8);
+
+    Entity p2 = scene->FindEntity("__uitest_delp");
+    Entity c2 = scene->FindEntity("__uitest_delc");
+    if (!p2.IsValid() || !c2.IsValid())
+    { IM_ERRORF("Undo で復元されていない（親=%d 子=%d）", p2.IsValid(), c2.IsValid()); }
+    else
+    {
+        const entt::entity restoredParent = reg.get<Transform>(c2.GetHandle()).parent;
+        if (restoredParent != p2.GetHandle())
+            IM_ERRORF("Undo 後、子が親の下に戻っていない（シーンのルートへ外れた）");
+    }
+
+    // 後片付け
+    for (const char* nm : {"__uitest_delc", "__uitest_delp"})
+    {
+        Entity e = scene->FindEntity(nm);
+        if (e.IsValid()) scene->Remove(e);
+    }
+    ctx->Yield(2);
+}
+
 void T_MeshGarbageCollect(ImGuiTestContext* ctx)
 {
     IM_CHECK(g_app != nullptr);
@@ -2054,6 +2108,7 @@ const DiagReg kTests[] = {
     { "panel", "new_floating_panels",   "パネル",             "ライティング / 地形ツールの開閉",       T_NewFloatingPanels     },
     { "panel", "layout_reset",          "パネル",             "ドックレイアウトのリセット",           T_LayoutReset           },
     { "panel", "mesh_gc",               "パネル",             "未参照メッシュの回収（リーク）",       T_MeshGarbageCollect    },
+    { "panel", "delete_undo_parent",    "パネル",             "親子を消して Undo で親子が戻る",       T_DeleteUndoKeepsParent },
     { "panel", "prefab_geo_propagate",  "パネル",             "プレハブ適用で形状が配られる",         T_PrefabGeometryPropagate },
 
     { "uied",  "ui_spawn_all",          "UI エディタ",        "UI 要素を全種類配置",                  T_UiEditorSpawnAll      },

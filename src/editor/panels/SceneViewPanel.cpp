@@ -1,4 +1,5 @@
 #include "editor/panels/SceneViewPanel.h"
+#include "scene/SceneSerializer.h"
 #include "editor/EditorContext.h"
 #include "editor/ScenePick.h"
 #include "editor/UiEditUtil.h"
@@ -332,8 +333,28 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
             if (std::abs(XMVectorGetX(det)) > 1e-12f)
             {
                 const XMMATRIX W = invBefore * XMLoadFloat4x4(&gizmoM);
-                for (auto e : ctx.selectedEntities)
+                // ★祖先も選択されている子は除外する（TopmostRoots）。
+                //   子は親の変換で既に動くので、そのうえで自分にも W を掛けると
+                //   **2 回ぶん動く**（`local_C · world_P · W · W`）。しかも m_gizmoPivot は
+                //   毎フレーム取り直すので、ドラッグしている間ずっと誤差が積み上がる。
+                //   ヒエラルキーの範囲選択（Shift+クリック）は親子を一緒に掴むのが普通なので、
+                //   「グループを選んで動かす」という一番自然な操作で必ず踏んでいた。
+                //   コピー/複製の経路は既に SceneSerializer::TopmostRoots で同じ二重適用を
+                //   防いでいる（あちらは Scene& を要るのでここでは registry だけで同じ判定をする）。
+                const auto& sel = ctx.selectedEntities;
+                auto ancestorAlsoSelected = [&](entt::entity e) {
+                    const Transform* t = reg.try_get<Transform>(e);
+                    for (int guard = 0; t && t->parent != entt::null && guard < 256; ++guard)
+                    {
+                        if (!reg.valid(t->parent)) break;
+                        if (std::find(sel.begin(), sel.end(), t->parent) != sel.end()) return true;
+                        t = reg.try_get<Transform>(t->parent);
+                    }
+                    return false;
+                };
+                for (auto e : sel)
                 {
+                    if (ancestorAlsoSelected(e)) continue;
                     if (!reg.valid(e) || !reg.all_of<Transform>(e)) continue;
                     auto& t = reg.get<Transform>(e);
                     const bool childHasParent =

@@ -2632,6 +2632,10 @@ void Application::Render()
                             m_srvHeap.get(), nativeCmdList);
 
         m_editorCtx->ClearSelection();
+        // ★ルートごとに PushCommand していたので、5 個コピーして Ctrl+V すると Undo が
+        //   5 エントリになり、Ctrl+Z 1 回では 1 個しか消えなかった。
+        //   削除と複製は既に CompositeCommand で束ねてある（同じ指摘で直した箇所）。
+        auto pasteBatch = std::make_unique<CompositeCommand>("Paste");
         for (const auto& snap : pastes)
         {
             std::vector<entt::entity> all;
@@ -2645,11 +2649,12 @@ void Application::Render()
                 reg.get<Transform>(e).position.x += 1.0f;
 
             m_editorCtx->AddToSelection(e);
-            m_editorCtx->undoSystem.PushCommand(
-                std::make_unique<SpawnPrefabCommand>(
-                    m_scene.get(), PathResolver::AssetsDir(), std::move(all)));
+            pasteBatch->Add(std::make_unique<SpawnPrefabCommand>(
+                m_scene.get(), PathResolver::AssetsDir(), std::move(all)));
             Logger::Info("Pasted entity: {}", reg.get<NameTag>(e).name);
         }
+        if (!pasteBatch->Empty())
+            m_editorCtx->undoSystem.PushCommand(std::move(pasteBatch));
     }
 
     // スクリプトアタッチ遅延処理
@@ -5687,7 +5692,17 @@ void Application::Render()
         // Deferred: entity deletion
         if (!m_editorCtx->pendingDeletions.empty())
         {
-            auto deletions = std::move(m_editorCtx->pendingDeletions);
+            // ★祖先も削除対象に入っている子を先に除外する（TopmostRoots）。
+            //   残しておくと「子だけの削除コマンド」と「親の削除コマンド」が別々に積まれ、
+            //   Undo は逆順なので**親が先に新しいハンドルで復元される**。その後に子の
+            //   コマンドが走ると `reg.valid(externalParent)` が false（entt は destroy で
+            //   version を進める）になり、子は**シーンのルートとして復元**される
+            //   ＝親から外れてワールド位置ごと飛ぶ。
+            //   しかも Ctrl+クリックの順番（子を先に選んだか親を先に選んだか）で
+            //   出たり出なかったりするので、再現条件が分からない不具合になっていた。
+            //   親のサブツリー削除で子も一緒に消えるので、除外しても消し漏れは起きない。
+            auto deletions = SceneSerializer::TopmostRoots(
+                *m_scene, std::move(m_editorCtx->pendingDeletions));
             m_editorCtx->pendingDeletions.clear();
             // ★ルートごとに PushCommand していたので、5 個選んで Del すると
             //   Undo エントリが 5 個できて Ctrl+Z 1 回では 1 個しか戻らなかった
