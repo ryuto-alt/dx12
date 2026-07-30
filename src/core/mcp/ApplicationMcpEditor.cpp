@@ -396,9 +396,24 @@ void Application::RegisterMcpEditorMethods()
                 if (!value.is_boolean()) throw McpError(McpErr::InvalidParam, "value must be a bool");
                 p->b = value.get<bool>(); break;
             case ScriptPropType::String:
-            case ScriptPropType::Entity:
                 if (!value.is_string()) throw McpError(McpErr::InvalidParam, "value must be a string");
                 p->str = value.get<std::string>(); break;
+            case ScriptPropType::Entity:
+            {
+                if (!value.is_string()) throw McpError(McpErr::InvalidParam, "value must be a string");
+                // ★名前で指定されたら guid も差し替える。名前だけ書くと古い guid が勝って
+                //   この呼び出しが黙って無視される（参照の正は guid）。
+                //   まだ guid が振られていない相手なら 0（次の保存で付き、読み込みで昇格する）。
+                p->str = value.get<std::string>();
+                p->guid = 0;
+                if (!p->str.empty())
+                {
+                    const entt::entity t = ResolveEntityRef(reg, 0, p->str);
+                    if (t != entt::null)
+                        if (const auto* g = reg.try_get<EntityGuid>(t)) p->guid = g->value;
+                }
+                break;
+            }
             case ScriptPropType::Vec3:
             case ScriptPropType::Color:
             {

@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <memory>
 #include <cstdint>
 #include <functional>
@@ -121,10 +122,21 @@ entt::entity FindEntityByGuid(const entt::registry& reg, uint64_t guid);
 // guid が 0（旧データ）か、guid が指す先が既に消えている場合だけ名前で引く。
 entt::entity ResolveEntityRef(const entt::registry& reg, uint64_t guid, const std::string& name);
 
-// Trigger の filter/target の名前参照を guid へ昇格させる（メモリ上だけ。ファイルは触らない）。
-// シーン読み込みの最後に 1 回呼ぶ。これで旧シーンも「開いて保存」で自動移行する。
+// 名前参照を guid へ昇格させる（メモリ上だけ。ファイルは触らない）。対象は
+// Trigger の filter/target と、LuaScript の type="entity" プロパティ。
+// シーン読み込みの最後と保存の直前に呼ぶ。これで旧シーンも「開いて保存」で自動移行し、
+// そのセッションで作った参照も 1 往復待たずに guid が付く。
 // 名前が解決できないもの（＝参照切れ）は guid 0 のまま残すので、診断は従来どおり拾える。
-void PromoteTriggerRefsToGuid(entt::registry& reg);
+void PromoteEntityRefsToGuid(entt::registry& reg);
+
+// サブツリー展開（複製 / 貼り付け / プレハブの新規配置）で「別のエンティティ」を作るとき、
+// **サブツリー内部を指していた guid** を 0 へ落とす。落とさないと参照が
+// 「切れる」のではなく「複製元の方を正しく指し続ける」＝より悪い失敗になる。
+// 0 にしておけば名前フォールバックへ落ち、連番リネーム後の名前付け替えが効く。
+// srcGuids は展開元 JSON に入っていた guid の集合。
+void ClearInternalEntityRefGuids(entt::registry& reg,
+                                 const std::vector<entt::entity>& created,
+                                 const std::unordered_set<uint64_t>& srcGuids);
 
 struct MeshRenderer
 {
@@ -1146,6 +1158,10 @@ struct ScriptProp
     bool              b    = false;              // Bool
     std::string       str;                       // String / Entity(参照先エンティティ名)
     DirectX::XMFLOAT3 vec{0.0f, 0.0f, 0.0f};     // Vec3 / Color
+    // Entity 型のときだけ意味を持つ。★参照の正はこちらで、str(名前) は保存時に
+    // guid から引き直される派生値。0 = 未設定（名前だけの旧データ）。
+    // 詳細は Trigger::filterGuid のコメント。
+    uint64_t          guid = 0;
 };
 
 struct LuaScript

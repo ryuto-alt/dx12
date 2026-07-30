@@ -336,20 +336,29 @@ void DrawLuaScriptSection(entt::registry& reg,
                         break;
                     case dx12e::ScriptPropType::Entity:
                     {
-                        // シーン内のエンティティ名から選ぶコンボ（参照先を名前で保持）。
+                        // シーン内のエンティティから選ぶコンボ。
+                        // ★参照の正は guid。名前だけ書き換えると古い guid が勝って
+                        //   コンボの操作が黙って無視されるので、必ず両方を同時に書く。
+                        const auto setEntRef = [&reg](entt::entity picked, dx12e::ScriptProp& pp) {
+                            if (picked == entt::null) { pp.str.clear(); pp.guid = 0; return; }
+                            const auto* n = reg.try_get<dx12e::NameTag>(picked);
+                            pp.str = n ? n->name : std::string{};
+                            const auto* g = reg.try_get<dx12e::EntityGuid>(picked);
+                            pp.guid = g ? g->value : 0;   // 保存前なら 0（次の保存で付く）
+                        };
                         const char* cur = p.str.empty() ? "(なし)" : p.str.c_str();
                         dx12e::pg::Label(lbl);
                         if (ImGui::BeginCombo("##ent", cur))
                         {
                             if (ImGui::Selectable("(なし)", p.str.empty()))
-                                p.str.clear();
+                                setEntRef(entt::null, p);
                             auto nameView = reg.view<dx12e::NameTag>();
                             for (auto ne : nameView)
                             {
                                 const auto& nm = nameView.get<dx12e::NameTag>(ne).name;
                                 if (nm.empty()) continue;
                                 if (ImGui::Selectable(nm.c_str(), nm == p.str))
-                                    p.str = nm;
+                                    setEntRef(ne, p);
                             }
                             ImGui::EndCombo();
                         }

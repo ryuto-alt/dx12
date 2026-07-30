@@ -386,6 +386,18 @@ uint64_t GuidFromJson(const json& j, const char* key)
 static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                                 const std::string& assetsDir)
 {
+    // エンティティ参照の名前を guid から引き直す。★参照の正は guid で、名前は
+    // 人間と git diff のための派生値。ここで引き直すことで「guid は A を指すのに
+    // 名前は B」というドリフト状態が原理的に作れない。guid が 0（旧データ）か
+    // 指す先が消えているときだけ、元の名前をそのまま残す。
+    const auto refName = [&reg](uint64_t g, const std::string& fallback) -> std::string {
+        if (g == 0) return fallback;
+        const entt::entity t = FindEntityByGuid(reg, g);
+        if (t == entt::null) return fallback;
+        const auto* n = reg.try_get<NameTag>(t);
+        return n ? n->name : fallback;
+    };
+
     RegisterCoreComponentSerializers();
     const auto& tag       = reg.get<NameTag>(entity);
     const auto& transform = reg.get<Transform>(entity);
@@ -652,14 +664,6 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
             //   guid が生きているならその時点の NameTag で書き直す。こうしておくと
             //   両者がドリフトした状態（guid は A を指すのに名前は B）が原理的に作れない。
             //   guid が 0（旧データ）か指す先が消えているときだけ、元の名前をそのまま残す。
-            const auto refName = [&reg](uint64_t g, const std::string& fallback) -> std::string {
-                if (g == 0) return fallback;
-                const entt::entity t = FindEntityByGuid(reg, g);
-                if (t == entt::null) return fallback;
-                const auto* n = reg.try_get<NameTag>(t);
-                return n ? n->name : fallback;
-            };
-
             json acts = json::array();
             for (const auto& a : tr.actions)
             {
@@ -711,8 +715,12 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                         case ScriptPropType::Float:  pj["value"] = p.num; break;
                         case ScriptPropType::Int:    pj["value"] = static_cast<long long>(p.num); break;
                         case ScriptPropType::Bool:   pj["value"] = p.b; break;
-                        case ScriptPropType::String:
-                        case ScriptPropType::Entity: pj["value"] = p.str; break;
+                        case ScriptPropType::String: pj["value"] = p.str; break;
+                        case ScriptPropType::Entity:
+                            // ★参照の正は guid。名前は保存時に引き直す派生値（Trigger と同じ流儀）。
+                            pj["value"] = refName(p.guid, p.str);
+                            if (p.guid != 0) pj["valueGuid"] = GuidToHex(p.guid);
+                            break;
                         case ScriptPropType::Vec3:
                         case ScriptPropType::Color:
                             pj["value"] = json::array({p.vec.x, p.vec.y, p.vec.z}); break;
@@ -774,7 +782,7 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
         // guid が出そろった直後に、Trigger の名前参照を guid へ昇格させる。
         // ★ここでやらないと「このセッションで作った参照」は次に開き直すまで
         //   guid が付かない（読み込み時の昇格だけでは 1 往復ぶん遅れる）。
-        PromoteTriggerRefsToGuid(mutableReg);
+        PromoteEntityRefsToGuid(mutableReg);
     }
 
     // 2パス目: 直列化 + 親子関係を保存
@@ -1678,8 +1686,11 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                         case ScriptPropType::Bool:
                             p.b = v.is_boolean() ? v.get<bool>() : false; break;
                         case ScriptPropType::String:
-                        case ScriptPropType::Entity:
                             p.str = v.is_string() ? v.get<std::string>() : std::string{}; break;
+                        case ScriptPropType::Entity:
+                            p.str  = v.is_string() ? v.get<std::string>() : std::string{};
+                            p.guid = GuidFromJson(pj, "valueGuid");
+                            break;
                         case ScriptPropType::Vec3:
                             p.vec = DeserializeFloat3(v, {0.0f, 0.0f, 0.0f}); break;
                         case ScriptPropType::Color:
@@ -1862,7 +1873,7 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
     // 4パス目: Trigger の名前参照を guid へ昇格させる（メモリ上だけ）。
     // 全エンティティが揃った後でないと名前を引けないのでここに置く。
     // これで旧シーンも「開いて保存」で自動的に guid 参照へ移行する。
-    PromoteTriggerRefsToGuid(reg);
+    PromoteEntityRefsToGuid(reg);
 
     return true;
 }
@@ -2574,6 +2585,16 @@ entt::entity SceneSerializer::InstantiateSubtree(Scene& scene, const std::string
 
     auto& reg = scene.GetRegistry();
 
+    // ★展開元 JSON に入っていた guid の集合。keepGuids=false のとき、参照がこの中の
+    //   guid を指していたら 0 へ落とす（下の 3 パス目の直前）。落とさないと、複製した
+    //   サブツリー内部の参照が「切れる」のではなく**複製元の方を正しく指し続ける**。
+    //   名前だけの時代は MakeUniqueName の連番リネーム後に名前を付け替えれば済んでいたが、
+    //   guid は連番と無関係なので付け替えが効かない。
+    std::unordered_set<uint64_t> srcGuids;
+    if (!keepGuids)
+        for (const auto& ej : root["entities"])
+            if (const uint64_t g = GuidFromJson(ej, "guid"); g != 0) srcGuids.insert(g);
+
     // 1パス目: 生成（名前は重複しないよう連番付与）
     std::vector<entt::entity> created;
     created.reserve(root["entities"].size());
@@ -2641,6 +2662,10 @@ entt::entity SceneSerializer::InstantiateSubtree(Scene& scene, const std::string
         if (!oldName.empty() && newName != oldName)
             renamed.emplace(std::move(oldName), newName);   // 同名は先勝ち（root 優先）
     }
+    // ★名前の付け替えより先に、サブツリー内部を指していた guid を落とす。
+    //   guid が残っていると解決が guid 優先なので、名前を付け替えても効かない。
+    ClearInternalEntityRefGuids(reg, created, srcGuids);
+
     if (!renamed.empty())
     {
         auto remap = [&](std::string& ref)

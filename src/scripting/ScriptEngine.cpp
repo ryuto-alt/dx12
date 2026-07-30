@@ -305,9 +305,11 @@ void InjectScriptProps(sol::table& self,
             self[def.name] = ov ? ov->vec : def.def.vec; break;
         case ScriptPropType::Entity:
         {
-            // 参照先エンティティ名を解決して Entity を注入（self.<name>:isValid() で確認できる）。
-            const std::string& refName = ov ? ov->str : def.def.str;
-            entt::entity re = FindEntityByName(reg, refName);
+            // 参照先を解決して Entity を注入（self.<name>:isValid() で確認できる）。
+            // ★guid が正、名前はフォールバック。スクリプトから見えるものは変わらない
+            //   （注入されるのは今までどおり Entity ハンドルで、名前は返らない）。
+            const ScriptProp& src = ov ? *ov : def.def;
+            entt::entity re = ResolveEntityRef(reg, src.guid, src.str);
             self[def.name] = Entity(re, &reg);   // 未解決でも invalid な Entity を入れる
             break;
         }

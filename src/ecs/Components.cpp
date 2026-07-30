@@ -155,7 +155,7 @@ entt::entity ResolveEntityRef(const entt::registry& reg, uint64_t guid, const st
     return entt::null;
 }
 
-void PromoteTriggerRefsToGuid(entt::registry& reg)
+void PromoteEntityRefsToGuid(entt::registry& reg)
 {
     // 名前 → entity の索引を 1 回だけ作る（トリガーごとに全走査すると O(n*m) になる）。
     // 同名が複数ある場合の勝者は、実行時の名前引きと同じ「後勝ち」に揃える
@@ -178,6 +178,38 @@ void PromoteTriggerRefsToGuid(entt::registry& reg)
         if (tr.filterGuid == 0) tr.filterGuid = guidOf(tr.filter);
         for (auto& a : tr.actions)
             if (a.targetGuid == 0) a.targetGuid = guidOf(a.target);
+    }
+
+    for (auto [e, ls] : reg.view<LuaScript>().each())
+    {
+        (void)e;
+        for (auto& p : ls.props)
+            if (p.type == ScriptPropType::Entity && p.guid == 0)
+                p.guid = guidOf(p.str);
+    }
+}
+
+void ClearInternalEntityRefGuids(entt::registry& reg,
+                                 const std::vector<entt::entity>& created,
+                                 const std::unordered_set<uint64_t>& srcGuids)
+{
+    if (srcGuids.empty()) return;
+    const auto inside = [&](uint64_t g) { return g != 0 && srcGuids.count(g) != 0; };
+
+    for (entt::entity e : created)
+    {
+        if (e == entt::null || !reg.valid(e)) continue;
+        if (auto* tr = reg.try_get<Trigger>(e))
+        {
+            if (inside(tr->filterGuid)) tr->filterGuid = 0;
+            for (auto& a : tr->actions)
+                if (inside(a.targetGuid)) a.targetGuid = 0;
+        }
+        if (auto* ls = reg.try_get<LuaScript>(e))
+        {
+            for (auto& p : ls->props)
+                if (p.type == ScriptPropType::Entity && inside(p.guid)) p.guid = 0;
+        }
     }
 }
 

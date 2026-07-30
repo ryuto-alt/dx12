@@ -826,7 +826,9 @@ DeepDiagReport DeepDiag::EntityRefs(Application& app)
     {
         const std::string who = nameOf(e);
         for (const auto& p : ls.props)
-            if (p.type == ScriptPropType::Entity)
+            if (p.type == ScriptPropType::Entity && FindEntityByGuid(reg, p.guid) == entt::null)
+                // guid で解決できているなら名前がどうであれ参照は生きている。
+                // ここで名前だけ見て報告すると「正しい検出＋誤った処方」になる。
                 checkRef(p.str, who, ("Lua プロパティ「" + p.name + "」").c_str());
     }
 

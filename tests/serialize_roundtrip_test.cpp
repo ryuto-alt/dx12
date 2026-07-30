@@ -1619,6 +1619,136 @@ static void Test_TriggerGuidWinsOverName()
     CHECK(ResolveEntityRef(reg, 0xdeadbeefdeadbeefull, "Nope") == entt::null);
 }
 
+// Lua の type="entity" プロパティも guid 基準になっていること（Trigger と同じ流儀）。
+static void Test_LuaEntityPropSurvivesRenameViaGuid()
+{
+    Scene src;
+    {
+        auto& reg = src.GetRegistry();
+        entt::entity door = reg.create();
+        reg.emplace<NameTag>(door, NameTag{"Door"});
+        reg.emplace<Transform>(door);
+
+        entt::entity ctrl = reg.create();
+        reg.emplace<NameTag>(ctrl, NameTag{"Ctrl"});
+        reg.emplace<Transform>(ctrl);
+        LuaScript ls;
+        ls.scriptPath = "scripts/ctrl.lua";
+        ScriptProp p; p.name = "target"; p.type = ScriptPropType::Entity; p.str = "Door";
+        ls.props.push_back(std::move(p));
+        reg.emplace<LuaScript>(ctrl, std::move(ls));
+    }
+    const std::string js1 = SceneSerializer::SaveToString(src, "");
+    Scene sc;
+    CHECK(SceneSerializer::LoadFromString(sc, js1, ""));
+    auto& reg = sc.GetRegistry();
+
+    entt::entity door = entt::null, ctrl = entt::null;
+    for (auto [e, n] : reg.view<const NameTag>().each())
+    {
+        if (n.name == "Door") door = e;
+        if (n.name == "Ctrl") ctrl = e;
+    }
+    CHECK(door != entt::null && ctrl != entt::null);
+    if (door == entt::null || ctrl == entt::null) return;
+
+    const auto* dg = reg.try_get<EntityGuid>(door);
+    CHECK(dg != nullptr && dg->value != 0);
+    CHECK(!reg.get<LuaScript>(ctrl).props.empty()
+          && reg.get<LuaScript>(ctrl).props[0].guid == (dg ? dg->value : 0));
+
+    // RewriteEntityNameRefs を通さずに改名しても、保存で名前が追従する
+    reg.get<NameTag>(door).name = "FrontDoor";
+    const std::string js2 = SceneSerializer::SaveToString(sc, "");
+    nlohmann::json r2 = nlohmann::json::parse(js2, nullptr, /*allow_exceptions=*/false);
+    CHECK(!r2.is_discarded());
+    bool checked = false;
+    if (!r2.is_discarded())
+        for (const auto& ej : r2["entities"])
+        {
+            if (ej.value("name", std::string{}) != "Ctrl") continue;
+            checked = true;
+            const auto& pj = ej["luaScript"]["props"][0];
+            CHECK(pj.value("value", std::string{}) == "FrontDoor");
+            CHECK(pj.value("valueGuid", std::string{}).size() == 16);
+        }
+    CHECK(checked);
+}
+
+// ★これが第2段でいちばん危ない失敗。
+// サブツリー（プレハブ / 複製）の内部を指す参照は、複製したら**コピー側**を指さないといけない。
+// guid をそのまま引き継ぐと「参照が切れる」のではなく「複製元を正しく指し続ける」＝
+// エラーも警告も出ないまま、押したスイッチが元のドアを開ける、という壊れ方になる。
+// 名前だけの時代は MakeUniqueName の連番リネーム後に名前を付け替えれば済んでいたが、
+// guid は連番と無関係なので付け替えが効かない（＝内部を指す guid は 0 に落とす必要がある）。
+static void Test_DuplicateSubtreeRepointsInternalRefs()
+{
+    Scene sc;
+    entt::entity root = entt::null, target = entt::null, watcher = entt::null;
+    {
+        auto& reg = sc.GetRegistry();
+        root = reg.create();
+        reg.emplace<NameTag>(root, NameTag{"Root"});
+        reg.emplace<Transform>(root);
+
+        target = reg.create();
+        reg.emplace<NameTag>(target, NameTag{"Target"});
+        reg.emplace<Transform>(target).parent = root;
+
+        watcher = reg.create();
+        reg.emplace<NameTag>(watcher, NameTag{"Watcher"});
+        reg.emplace<Transform>(watcher).parent = root;
+        // Lua プロパティと Trigger の両方でサブツリー内部を指す
+        LuaScript ls;
+        ls.scriptPath = "scripts/w.lua";
+        ScriptProp p; p.name = "target"; p.type = ScriptPropType::Entity; p.str = "Target";
+        ls.props.push_back(std::move(p));
+        reg.emplace<LuaScript>(watcher, std::move(ls));
+        Trigger tr;
+        tr.filter = "Target";
+        TriggerAction a; a.target = "Target"; tr.actions.push_back(a);
+        reg.emplace<Trigger>(watcher, std::move(tr));
+    }
+    // 保存で guid が振られ、名前参照が guid へ昇格する
+    (void)SceneSerializer::SaveToString(sc, "");
+    auto& reg = sc.GetRegistry();
+    const auto* tg = reg.try_get<EntityGuid>(target);
+    CHECK(tg != nullptr && tg->value != 0);
+    CHECK(reg.get<Trigger>(watcher).filterGuid == (tg ? tg->value : 0));
+
+    // サブツリーを複製する
+    std::vector<entt::entity> all;
+    const entt::entity copyRoot = SceneSerializer::DuplicateSubtree(sc, root, "", &all);
+    CHECK(copyRoot != entt::null);
+    if (copyRoot == entt::null) return;
+
+    entt::entity copyWatcher = entt::null, copyTarget = entt::null;
+    for (entt::entity e : all)
+    {
+        if (e == entt::null || !reg.valid(e)) continue;
+        if (reg.all_of<LuaScript>(e)) copyWatcher = e;
+        else if (e != copyRoot)       copyTarget  = e;
+    }
+    CHECK(copyWatcher != entt::null && copyTarget != entt::null);
+    if (copyWatcher == entt::null || copyTarget == entt::null) return;
+    CHECK(copyTarget != target);   // 別の実体になっている
+
+    // ★本題: コピー側の参照はコピー側の Target を指すこと（元を指したら失敗）
+    const auto& cls = reg.get<LuaScript>(copyWatcher);
+    const auto& ctr = reg.get<Trigger>(copyWatcher);
+    CHECK(!cls.props.empty());
+    if (!cls.props.empty())
+        CHECK(ResolveEntityRef(reg, cls.props[0].guid, cls.props[0].str) == copyTarget);
+    CHECK(ResolveEntityRef(reg, ctr.filterGuid, ctr.filter) == copyTarget);
+    CHECK(!ctr.actions.empty());
+    if (!ctr.actions.empty())
+        CHECK(ResolveEntityRef(reg, ctr.actions[0].targetGuid, ctr.actions[0].target) == copyTarget);
+
+    // 元のサブツリー側は元を指したまま（巻き添えで壊れていない）
+    CHECK(ResolveEntityRef(reg, reg.get<Trigger>(watcher).filterGuid,
+                           reg.get<Trigger>(watcher).filter) == target);
+}
+
 // ---------------------------------------------------------------------------
 // リネームで名前ベースの参照が切れないこと。
 // 実行時の解決は「名前一致」なので、切れてもエラーは出ず「なぜか動かない」だけになる。
@@ -1911,6 +2041,8 @@ int main()
     Test_SubtreeInstantiateDropsGuidByDefault();
     Test_TriggerRefSurvivesRenameViaGuid();
     Test_TriggerGuidWinsOverName();
+    Test_LuaEntityPropSurvivesRenameViaGuid();
+    Test_DuplicateSubtreeRepointsInternalRefs();
     Test_RenameRewritesNameRefs();
     Test_AssetRefRewrite();
     Test_PrefabApplyKeepsInstanceOverrides();
