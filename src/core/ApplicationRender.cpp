@@ -891,7 +891,8 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
                                        PipelineState& skinnedPSO, bool updateSkinning, u32 frameIndex,
                                        u32 lodBias, PipelineState* instPSO,
                                        const PrepassParams* prepass,
-                                       bool skipRtCovered)
+                                       bool skipRtCovered,
+                                       f32 cascadeTexelWorld)
 {
     using namespace DirectX;
 
@@ -977,6 +978,28 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
     // 「現状でもラスタライザにクリップされている範囲」だけ＝影の見た目は不変。
     const Frustum frustum = Frustum::FromViewProj(viewProj);
 
+    // ★このパスで使う LOD。カメラ距離で決まる item.lod に加えて、
+    //   「シャドウマップ上で何テクセルを占めるか」でも粗くする。
+    //   遠カスケードはスライス錐台の外接球にフィットする都合で 1 テクセルが 20cm 級になり、
+    //   半径 5m の物でも 40 テクセル幅しかない。そこへフル解像度のメッシュを投げると
+    //   1 テクセルあたり数トライアングルになる（実測: stress_5000 で影が GPU の 45%）。
+    //   ★max を取るので、現在より細かい LOD になることは無い。1 テクセルが 3cm の
+    //     cascade0 では tl が常に 0 側に出るので近景の絵は変わらない。
+    const auto passLod = [&](const DrawItem& it) -> u32
+    {
+        u32 lod = it.lod + lodBias;
+        if (cascadeTexelWorld > 0.0f)
+        {
+            const f32 texels = 2.0f * it.radius / cascadeTexelWorld;   // 影マップ上の直径
+            const u32 tl = (texels <  32.0f) ? 4u
+                         : (texels <  96.0f) ? 3u
+                         : (texels < 288.0f) ? 2u
+                         : (texels < 864.0f) ? 1u : 0u;
+            lod = (std::max)(lod, tl);
+        }
+        return lod;
+    };
+
     ID3D12PipelineState* lastPso    = nullptr;
     const Mesh*          lastVbMesh = nullptr;
     u32                  lastLod    = ~0u;
@@ -1008,13 +1031,19 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
         if (skipRtCovered && IsRaytracedItem(item, m_rtSkinnedActiveThisFrame)) continue;
 
         // ★自動インスタンシング: 同一 batchKey の連続ランを 1 ドローに畳む。
-        //   batchKey は LOD 込みなので、このパスの lodBias を足しても run 内は同一 LOD。
+        //   batchKey は item.lod 込みなので、このパスの lodBias を足しても run 内は同一 LOD
+        //   だった。**テクセル基準の LOD を足した今はそうではない**: batchKey に item.radius は
+        //   入っていないので、同じメッシュでもワールドスケールが違えば passLod が割れる。
+        //   ラン条件に passLod の一致を足さないと、先頭要素の LOD で全インスタンスを描く
+        //   （＝スケールの違う物の影の形が変わる）。
         if (instPSO && m_instancingEnabled && item.batchKey != 0 && !instOverflow)
         {
             depthInstScratch.clear();
             depthInstPrevScratch.clear();
+            const u32 runLod = passLod(item);
             size_t j = i;
-            for (; j < itemCount && m_drawItems[j].batchKey == item.batchKey; ++j)
+            for (; j < itemCount && m_drawItems[j].batchKey == item.batchKey
+                                 && passLod(m_drawItems[j]) == runLod; ++j)
             {
                 XMMATRIX w = XMLoadFloat4x4(&m_drawItems[j].world);
                 if (!frustum.SphereVisible(XMLoadFloat3(&m_drawItems[j].center), m_drawItems[j].radius)) { ++m_statCulled; continue; }
@@ -1078,7 +1107,7 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
                 }
 
                 const Mesh* mesh = item.renderer->meshes[0];
-                const u32   lodI = item.lod + lodBias;
+                const u32   lodI = runLod;   // ラン条件で全要素が同一と保証済み
                 m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
                 m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
                 m_commandList->SetIndexBuffer(mesh->GetIndexBufferLod(lodI).GetView());
@@ -1111,7 +1140,7 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
 
         XMMATRIX world = XMLoadFloat4x4(&item.world);
         if (!frustum.SphereVisible(XMLoadFloat3(&item.center), item.radius)) { ++m_statCulled; continue; }
-        const u32 lod = item.lod + lodBias;   // Mesh 側で最終LODへクランプ
+        const u32 lod = passLod(item);   // Mesh 側で最終LODへクランプ
 
         if (item.skin)
         {
@@ -1220,6 +1249,7 @@ void Application::ComputeCascades(const DirectX::XMVECTOR& lightDir, f32 camNear
         {
             XMStoreFloat4x4(&m_cascadeViewProj[i], id);
             m_cascadeSplitsView[i] = 1e9f;  // 全成分を遠端 → cascade0 固定
+            m_cascadeRadius[i]     = 0.0f;  // テクセル基準の LOD/棄却を無効化
         }
         return;
     }
@@ -1277,6 +1307,7 @@ void Application::ComputeCascades(const DirectX::XMVECTOR& lightDir, f32 camNear
             radius = (std::max)(radius,
                 XMVectorGetX(XMVector3Length(XMVectorSubtract(corners[k], center))));
         radius = std::ceil(radius * 16.0f) / 16.0f;
+        m_cascadeRadius[ci] = radius;   // 1 テクセル = 2*radius / m_shadowMapSize [m]
 
         // ライトビュー: 球中心から -lightDir 方向へ後退
         XMVECTOR eye = XMVectorSubtract(center, XMVectorScale(lightDir, radius));
@@ -3411,10 +3442,14 @@ void Application::Render()
             //   （スキンド / 半透明）。担当を排他にすることで、フォワードの min() 合成が
             //   静的ジオメトリのアクネ・peter-panning・カスケード境界を完全に消す。
             //   副産物として CSM のドロー数も大きく減る。
+            // このカスケードの 1 テクセルが何メートルか。遠カスケードほど大きくなり、
+            //   そこへフル解像度のメッシュを投げる無駄を passLod が落とす。
+            const f32 texelWorld = 2.0f * m_cascadeRadius[ci] / static_cast<f32>(m_shadowMapSize);
             RenderDepthOnlyScene(cascadeVP, *m_shadowPipelineState, *m_shadowSkinnedPipelineState,
                                  /*updateSkinning*/ false, frameIndex, /*lodBias*/ 1,
                                  m_shadowPipelineStateInst.get(), /*prepass*/ nullptr,
-                                 /*skipRtCovered*/ m_rtShadowActiveThisFrame);
+                                 /*skipRtCovered*/ m_rtShadowActiveThisFrame,
+                                 /*cascadeTexelWorld*/ texelWorld);
         }
 
         m_commandList->TransitionResource(m_shadowMap.Get(),

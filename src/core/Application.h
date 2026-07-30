@@ -390,7 +390,11 @@ private:
                               PipelineState& skinnedPSO, bool updateSkinning, u32 frameIndex,
                               u32 lodBias = 0, PipelineState* instPSO = nullptr,
                               const PrepassParams* prepass = nullptr,
-                              bool skipRtCovered = false);
+                              bool skipRtCovered = false,
+                              // このパスのシャドウマップ 1 テクセルが何メートルか（= 2*半径/解像度）。
+                              // >0 のとき「影マップ上で数十テクセルにしかならない物」を粗い LOD へ落とす。
+                              // 0 = 無効（カメラの深度プリパスなど、テクセル比が意味を持たないパス）。
+                              f32 cascadeTexelWorld = 0.0f);
     // フレーム描画リスト: Transform+MeshRenderer の走査・ワールド行列合成を1フレーム1回だけ行い、
     // メイン/深度プリパス/CSM各カスケード/スポット影/ポイント影の全パスで共有する
     // （従来は最悪 ~20 パス × entt 全走査 + ComputeWorldMatrix 再計算）。
@@ -740,6 +744,9 @@ private:
     // フレーム毎に計算した結果（描画パス間で共有）
     DirectX::XMFLOAT4X4                m_cascadeViewProj[kNumCascades]{};  // 行優先(world*VP用、非転置)
     f32                                m_cascadeSplitsView[kNumCascades]{}; // 各カスケード遠端 view深度(正値)
+    // 各カスケードを包む球の半径[m]。1 テクセルが何メートルかを出すのに使う
+    // （= 2*radius / m_shadowMapSize）。0 は「影を描かない」の番兵。
+    f32                                m_cascadeRadius[kNumCascades]{};
 
     // ---- スポット/ポイントライトの影 ----
     // castShadows=true のライトのうちカメラに近い順で固定スロットへ毎フレーム割当（多数灯があっても
