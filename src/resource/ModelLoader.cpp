@@ -797,8 +797,44 @@ ModelData ModelLoader::LoadFromFile(
     // ---------------------------------------------------------------
     // Create meshes (with vertex baking for node animation)
     // ---------------------------------------------------------------
-    for (unsigned int meshIdx = 0; meshIdx < scene->mNumMeshes; ++meshIdx)
+    // ★どの (メッシュ, 焼き込み先ノード) を作るかの一覧。
+    //   既定は「aiMesh 1 個につき 1 個」。ただし**静的モデル**（スキンもアニメも無い）は
+    //   ノードごとに 1 個ずつ作る。glTF は同じ mesh を複数ノードから参照できるので
+    //   （チェスセットの駒、並べた椅子など）、1 個しか作らないと**2 個目以降が丸ごと
+    //   消える**（実際 ABeautifulGame.glb は駒が 32 個あるのに 5 個しか出ていなかった）。
+    //   焼き込み行列はノードごとに違うので、頂点も個別に持つしかない。
+    //   ★ノードアニメ経路（mNumAnimations > 0）はここでは展開しない。あちらは
+    //     meshNodeTransforms を描画時に掛ける別の仕組みで、メッシュ枠とノードの対応を
+    //     前提にしているため。必要になったらそちらは別途。
+    struct MeshBuildRef { unsigned int meshIdx; i32 bakeNode; };
+    std::vector<MeshBuildRef> buildRefs;
+    const bool expandPerNode = (nodeGraph && !skeleton && scene->mNumAnimations == 0);
+    if (expandPerNode)
     {
+        for (u32 n = 0; n < nodeGraph->GetNodeCount(); ++n)
+            for (u32 mi : nodeGraph->GetNode(n).meshIndices)
+                if (mi < scene->mNumMeshes)
+                    buildRefs.push_back({mi, static_cast<i32>(n)});
+        if (buildRefs.size() > scene->mNumMeshes)
+            Logger::Info("同じメッシュを複数ノードが参照しています: {} → 描画単位 {} 個へ展開 ({})",
+                         scene->mNumMeshes, buildRefs.size(), filePath.filename().string());
+
+        // ★どのノードからも参照されていないメッシュを取りこぼさない。
+        //   ノード走査だけで組を作ると、孤立メッシュが**黙って消える**（従来は全 aiMesh を
+        //   作っていたので出ていた）。壊れたファイルで「モデルの一部が無い」を作らないため、
+        //   参照が無いものは従来どおり bakeNode=-1 で 1 個作る。
+        std::vector<bool> referenced(scene->mNumMeshes, false);
+        for (const auto& r : buildRefs) referenced[r.meshIdx] = true;
+        for (unsigned int i = 0; i < scene->mNumMeshes; ++i)
+            if (!referenced[i]) buildRefs.push_back({i, -1});
+    }
+    if (buildRefs.empty())
+        for (unsigned int i = 0; i < scene->mNumMeshes; ++i)
+            buildRefs.push_back({i, -1});
+
+    for (const MeshBuildRef& buildRef : buildRefs)
+    {
+        const unsigned int meshIdx = buildRef.meshIdx;
         const aiMesh* aiMeshPtr = scene->mMeshes[meshIdx];
 
         // --- Build vertex data ---
@@ -879,7 +915,10 @@ ModelData ModelLoader::LoadFromFile(
         // so that inv(rest) * current at render time produces correct results
         if (nodeGraph && !bakeGlobalMatrices.empty())
         {
-            i32 nodeIdx = nodeGraph->FindNodeForMesh(meshIdx);
+            // 展開したときは「この描画単位が属するノード」が確定している。
+            // していないときだけ従来どおり最初に見つかったノードを使う。
+            i32 nodeIdx = (buildRef.bakeNode >= 0) ? buildRef.bakeNode
+                                                   : nodeGraph->FindNodeForMesh(meshIdx);
             if (nodeIdx >= 0)
             {
                 DirectX::XMMATRIX bakeMatrix = bakeGlobalMatrices[static_cast<u32>(nodeIdx)];
