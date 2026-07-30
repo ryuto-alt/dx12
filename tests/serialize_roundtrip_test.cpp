@@ -410,7 +410,6 @@ static void Test_NetworkTransform()
         [](entt::registry& r, entt::entity e) {
             NetworkTransform nt;
             nt.syncMode = 1;
-            nt.sendRate = 30.0f;
             nt.syncPosition = true;
             nt.syncRotation = false;
             nt.syncScale = true;
@@ -420,7 +419,6 @@ static void Test_NetworkTransform()
         },
         [](const NetworkTransform& nt) {
             CHECK(nt.syncMode == 1);
-            CHECK_F(nt.sendRate, 30.0f);
             CHECK(nt.syncPosition == true);
             CHECK(nt.syncRotation == false);
             CHECK(nt.syncScale == true);

@@ -276,7 +276,24 @@ std::filesystem::path Application::PersistPath() const
         GetModuleFileNameW(nullptr, exe, MAX_PATH);
         return std::filesystem::path(exe).parent_path() / L"settings.json";
     }
-    return std::filesystem::path(PathResolver::AssetsDir()).parent_path() / "settings.json";
+    // ★AssetsDir() は末尾が '/'（ProjectShaderDir() が s_assets + "shaders/" で
+    //   組み立てているのと同じ規約）。path("…/assets/").parent_path() は "…/assets" を
+    //   返すので、意図した「assets の隣」ではなく **assets の中** に書いていた。
+    //   assets 配下はゲームビルドで game.pak に丸ごと詰められるので、開発機の
+    //   音量や解像度が配布物に混ざる。
+    std::filesystem::path assets(PathResolver::AssetsDir());
+    if (!assets.has_filename()) assets = assets.parent_path();   // 末尾の '/' を落とす
+    const std::filesystem::path path = assets.parent_path() / "settings.json";
+
+    // 旧位置(assets/settings.json)に既にあるなら、そちらを読み続ける。
+    // 黙って場所が変わると「設定が全部戻った」に見えるため。
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec))
+    {
+        const std::filesystem::path legacy = assets / "settings.json";
+        if (std::filesystem::exists(legacy, ec)) return legacy;
+    }
+    return path;
 }
 
 void Application::LoadPersistStore()
@@ -394,7 +411,12 @@ void Application::WireScriptCallbacks()
     // 保存キー: video_vsync / video_fps / video_mode(0=win,1=borderless,2=full) / video_w / video_h
     {
         ScriptEngine::DisplayCallbacks dc;
-        dc.setVsync = [this](bool b) { m_useVsync = b; PersistSet("video_vsync", b ? 1.0 : 0.0); };
+        // m_persistedVsync も揃える（エディタ側の「変化を見て保存する」判定が
+        // 毎フレーム同じ値を書き直さないように）。
+        dc.setVsync = [this](bool b) {
+            m_useVsync = m_persistedVsync = b;
+            PersistSet("video_vsync", b ? 1.0 : 0.0);
+        };
         dc.getVsync = [this] { return m_useVsync; };
         dc.setFpsLimit = [this](int v) {
             m_fpsLimit = static_cast<f32>(std::max(0, v));

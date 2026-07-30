@@ -214,7 +214,6 @@ void RegisterCoreComponentMeta()
     entt::meta_factory<NetworkTransform>{}
         .type("NetworkTransform")
         .data<&NetworkTransform::syncMode>("syncMode")
-        .data<&NetworkTransform::sendRate>("sendRate")
         .data<&NetworkTransform::syncPosition>("syncPosition")
         .data<&NetworkTransform::syncRotation>("syncRotation")
         .data<&NetworkTransform::syncScale>("syncScale")

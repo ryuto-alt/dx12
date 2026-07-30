@@ -5146,6 +5146,19 @@ void Application::Render()
             PathResolver::AssetsDir(), kLeftPanelWidth, kToolbarHeight,
             m_resourceManager.get(), m_srvHeap.get(), nativeCmdList);
 
+        // ★エンジン設定の VSync チェックボックスは m_useVsync を参照で直接書くだけで、
+        //   settings.json へは保存されていなかった（PersistSet("video_vsync") を呼ぶのは
+        //   Lua の display:setVSync だけ。ApplicationScene.cpp:397）。
+        //   結果「エディタで VSync を切っても次の起動で戻る」。Inspector 側に
+        //   コールバックを引き回すより、変わった時にここで 1 回書く方が短い。
+        //   ベンチ中(m_benchRestore)は VSync を一時的に外しているので書かない。
+        //   書くと計測の途中でユーザーの設定が一瞬 OFF で保存され、そこで落ちると戻らない。
+        if (m_useVsync != m_persistedVsync && !m_benchRestore)
+        {
+            m_persistedVsync = m_useVsync;
+            PersistSet("video_vsync", m_useVsync ? 1.0 : 0.0);
+        }
+
         if (m_modeChangeRequested)
             m_pendingMode = pendingPlayMode ? EngineMode::Playing : EngineMode::Editor;
 

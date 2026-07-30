@@ -280,7 +280,6 @@ nlohmann::json McpComponentSchema()
         "Use dx12_net_setup + dx12_play to test."));
     comps.push_back(C("networkTransform", true, true, json::array({
         F("syncMode", "int (0=interpolated proxy, 1=owner-predicted)", 0),
-        F("sendRate", "float Hz (reserved)", 20.0),
         F("syncPosition", "bool", true), F("syncRotation", "bool", true), F("syncScale", "bool", false),
         F("interpDelayMs", "float (jitter buffer)", 100.0), F("snapDistance", "float (teleport threshold)", 5.0),
     }), "replicates Transform snapshots. Requires networkIdentity on the same entity."));
@@ -300,9 +299,13 @@ nlohmann::json McpComponentSchema()
         F("enabled", "bool", true),
         F("weight", "float (0..1 overall strength)", 1.0),
         F("leftHipBone", "string (empty = auto-detect from common naming)", ""),
-        F("leftKneeBone", "string", ""), F("leftFootBone", "string", ""), F("leftToeBone", "string", ""),
+        F("leftKneeBone", "string", ""), F("leftFootBone", "string", ""),
+        // ★toe は解決までされるが ApplyFootIK が一度も読まない（つま先ピボット用の
+        //   受け口として置いてあるだけ）。設定しても何も起きないと明記する。
+        F("leftToeBone", "string (RESERVED - resolved but never used by the IK solver)", ""),
         F("rightHipBone", "string", ""), F("rightKneeBone", "string", ""),
-        F("rightFootBone", "string", ""), F("rightToeBone", "string", ""),
+        F("rightFootBone", "string", ""),
+        F("rightToeBone", "string (RESERVED - resolved but never used by the IK solver)", ""),
         F("pelvisBone", "string (empty = root bone)", ""),
         F("rayUpOffset", "float (metres above the ankle to start the ray)", 0.5),
         F("rayLength", "float (total ray length in metres)", 1.0),

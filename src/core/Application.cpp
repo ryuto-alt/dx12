@@ -111,9 +111,16 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     // ゲームモード: 保存済みの映像設定（オプション画面の settings.json）をスワップチェイン
     // 生成前に適用する。エディタではエディタ自身の窓を勝手に変えないため適用しない
     // （Play 中に display.* を呼んだときだけライブで反映される）。
+    // ★VSync だけは窓の形を変えないので、エディタでも読み書きする。
+    //   ここが gameMode 限定だったせいで「エディタで VSync を切っても次の起動で戻る」
+    //   （読まないので既定 false のまま、書かないので settings.json にも残らない）。
+    //   video_vsync は Lua の display:setVSync と共有する 1 個の設定なので、
+    //   エディタで切った状態はビルドしたゲームにも引き継がれる。
+    m_useVsync       = PersistGet("video_vsync", m_useVsync ? 1.0 : 0.0) != 0.0;
+    m_persistedVsync = m_useVsync;   // 起動直後に同じ値を書き戻さないための基準
+
     if (gameMode)
     {
-        m_useVsync = PersistGet("video_vsync", m_useVsync ? 1.0 : 0.0) != 0.0;
         m_fpsLimit = static_cast<f32>(PersistGet("video_fps", m_fpsLimit));
         m_instancingEnabled = PersistGet("render_instancing", 1.0) != 0.0;
         // クラスタードライティング（Forward+）。0 にすると「先頭 64 灯を総当たり」

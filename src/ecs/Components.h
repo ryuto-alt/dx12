@@ -1360,7 +1360,9 @@ struct NetworkIdentity
     u32  _netId        = 0;
     u16  _owner        = 0;        // 0 = サーバー/ホスト
     bool _isLocalOwner = false;
-    bool _netSpawned   = false;    // 実行時スポーン品（Stop時に破棄する対象の目印）
+    // ★_netSpawned（実行時スポーン品の目印）は消した。書かれるだけで誰も読んでいなかった。
+    //   Stop はシーンを Play 開始時の JSON から丸ごと作り直す（ApplicationScene.cpp の
+    //   LoadFromString）ので、ランタイムスポーン品は目印なしで消える。
 };
 
 // --- NetworkTransform: Transform をスナップショット複製する設定 ---
@@ -1372,7 +1374,11 @@ struct NetworkIdentity
 struct NetworkTransform
 {
     int  syncMode       = 0;      // 0=補間(SimulatedProxy) / 1=オーナー予測(AutonomousProxy)
-    f32  sendRate       = 20.0f;  // Hz（フェーズ⑧でグローバル既定と合成する予定。現状は未使用）
+    // ★sendRate（エンティティ単位の送信 Hz）は消した。シーン JSON にも MCP にも出ていたが
+    //   SendSnapshots はエンティティ単位のレート判定を持っておらず、送信間隔を決めているのは
+    //   グローバル 1 本の NetworkConfig::snapshotRate だけ（NetworkSystem.cpp:129）。
+    //   「20Hz に落としたのに帯域が変わらない」で悩む方が害が大きい。
+    //   本当に要るなら interestRadius と同じくアキュムレータをエンティティ単位に持つ実装から。
     bool syncPosition   = true;
     bool syncRotation   = true;
     bool syncScale      = false;

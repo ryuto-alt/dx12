@@ -107,9 +107,22 @@ void NetworkPanel::RenderSettings(NetworkSystem& net, EditorContext& ctx, const 
     ImGui::TextDisabled("保存すると assets/network.json に書き込まれます(次回起動時にも反映)。");
     ImGui::Separator();
 
+    // ★tickRate は保存・表示・dx12_net_status に出るだけで、src/network/ の中に
+    //   読み手が 1 つも無い。シム更新は PhysicsSystem.h の kFixedTimeStep = 1/60 で
+    //   ハードコード固定。動かせるつまみに見えるのが害なので、serverAuthority と同じく
+    //   disabled + 理由のツールチップにする（値そのものは network.json に残す）。
+    ImGui::BeginDisabled(true);
     int tickRate = static_cast<int>(m_staging.tickRate);
-    if (ImGui::DragInt("シム更新Hz TickRate", &tickRate, 1.0f, 1, 240))
-        m_staging.tickRate = static_cast<u32>(std::max(1, tickRate));
+    ImGui::DragInt("シム更新Hz TickRate", &tickRate, 1.0f, 1, 240);
+    ImGui::EndDisabled();
+    ImGui::SameLine(); ImGui::TextDisabled("(?)");
+    if (ImGui::BeginItemTooltip())
+    {
+        ImGui::TextUnformatted("未実装。シム更新は 60Hz 固定（PhysicsSystem の kFixedTimeStep）。\n"
+                               "ここを変えても何も起きないので触れないようにしてある。\n"
+                               "帯域を変えたいなら下の SnapshotRate。");
+        ImGui::EndTooltip();
+    }
 
     int snapshotRate = static_cast<int>(m_staging.snapshotRate);
     if (ImGui::DragInt("スナップショット送信Hz SnapshotRate", &snapshotRate, 1.0f, 1, 120))

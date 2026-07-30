@@ -80,7 +80,7 @@ int main()
     Expect<Tag>({ "tags" });
     Expect<Sprite2D>({ "texturePath", "layer", "size", "uvMin", "uvMax", "color", "worldSpace" });
     Expect<NetworkIdentity>({ "interestRadius", "serverAuthority" });
-    Expect<NetworkTransform>({ "syncMode", "sendRate", "syncPosition", "syncRotation", "syncScale",
+    Expect<NetworkTransform>({ "syncMode", "syncPosition", "syncRotation", "syncScale",
                                 "interpDelayMs", "snapDistance" });
     Expect<DecalComponent>({ "atlasUV", "atlasUVNormal", "tint", "opacity", "emissive",
                              "normalStrength", "roughness", "metallic", "angleFadeDeg",

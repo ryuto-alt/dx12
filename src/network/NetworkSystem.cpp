@@ -374,7 +374,6 @@ void NetworkSystem::OnEntityInstantiated(NetId netId, ClientId owner, entt::enti
     ni._netId = netId;
     ni._owner = owner;
     ni._isLocalOwner = (owner == m_localClientId);
-    ni._netSpawned = true;
 
     m_netToEntity[netId] = e;
     if (netId >= m_nextNetId) m_nextNetId = netId + 1;   // クライアントは採番しないが将来の衝突予防

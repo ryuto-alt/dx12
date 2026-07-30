@@ -42,6 +42,15 @@ vcpkg_installed/
 # VS Code
 .vscode/
 
+# ユーザーごとの設定（音量・解像度・VSync など）。エディタが assets の隣に書く。
+# 以前は末尾スラッシュの取りこぼしで assets/ の中に落ちていた（= game.pak に混ざる）。
+/settings.json
+/assets/settings.json
+
+# UI テスト/エンジン診断が検査前のシーンを退避する場所。--ui-tests-run-all は
+# 復元を待たずに exe が終わるので消し残る（毎回 7KB 積む）。
+.diagnostics_snapshot.json
+
 # Compiled shaders
 *.cso
 *.pdb

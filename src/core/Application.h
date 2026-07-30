@@ -1237,6 +1237,9 @@ private:
     bool m_instancingEnabled = true;
     f32  m_fpsLimit = 144.0f;
     bool m_useVsync = false;
+    // 直近 settings.json へ書いた VSync の値。エンジン設定のチェックボックスは
+    // m_useVsync を参照で直接書くだけなので、変化を拾って保存するための基準。
+    bool m_persistedVsync = false;
     std::chrono::high_resolution_clock::time_point m_frameStart{};
 
     // ---- ユーザー設定の永続化（settings.json）----
