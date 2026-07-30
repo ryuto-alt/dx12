@@ -254,7 +254,19 @@ void DrawLuaScriptSection(entt::registry& reg,
     {
         dx12e::pg::InputText("Script", pathBuf, sizeof(pathBuf), ImGuiInputTextFlags_ReadOnly);
         dx12e::pg::Label("有効 Enabled");
-        ImGui::Checkbox("##lsEnabled", &ls.enabled);
+        // ★戻り値を捨てていたので Undo にも積まれず未保存フラグも立たなかった。
+        //   ls.enabled はシリアライズされるのに、切り替えてもタイトルに `*` が出ず、
+        //   閉じる/別シーンを開くと確認も無しに元へ戻っていた。
+        {
+            const bool before = ls.enabled;
+            if (ImGui::Checkbox("##lsEnabled", &ls.enabled))
+            {
+                dx12e::LuaScript snapshot = ls;
+                snapshot.enabled = before;
+                ctx.undoSystem.PushCommand(std::make_unique<dx12e::ComponentEditCommand<dx12e::LuaScript>>(
+                    &reg, e, snapshot, ls, "Script Enabled"));
+            }
+        }
         ImGui::SameLine();
         ImGui::TextColored(
             ls.started ? ImVec4(0.4f, 1.0f, 0.4f, 1.0f) : ImVec4(0.7f, 0.7f, 0.7f, 1.0f),
@@ -2642,6 +2654,17 @@ void InspectorPanel::Render(entt::registry& reg,
                             pg::Label("");
                             if (ImGui::SmallButton("ç¶æ¿ã«æ»ã"))  // 継承に戻す
                             {
+                                // ★Undo に積む。m_pbrEditing はスライダー操作でしか立たないので、
+                                //   このボタンだけは下のドラッグ終了検出に拾われず、
+                                //   Undo にも未保存フラグにも一切残らなかった
+                                //   （overrideMetallic/Roughness は material ブロックの出力を左右する）。
+                                if (mr.overrideMetallic >= 0.0f || mr.overrideRoughness >= 0.0f)
+                                {
+                                    ctx.undoSystem.PushCommand(std::make_unique<PBRCommand>(
+                                        &reg, ctx.selectedEntity,
+                                        mr.overrideMetallic, mr.overrideRoughness,
+                                        -1.0f, -1.0f));
+                                }
                                 mr.overrideMetallic  = -1.0f;
                                 mr.overrideRoughness = -1.0f;
                             }
@@ -2990,7 +3013,15 @@ void InspectorPanel::Render(entt::registry& reg,
             //   値だけ戻すと「値は新しいのに絵は古い」になる）ため、
             //   焼き直しまで面倒を見る MeshRendererLookCommand を使う。
             //   節をまたぐので、スナップショットは両方の外側で取る。
-            const MeshRendererLook lookBefore = MeshRendererLook::From(mr);
+            // ★毎フレーム取り直してはいけない。ドラッグ中は push を抑止するので、
+            //   離したフレームには「今フレームの値」と一致してしまい差分が消える
+            //   ＝ドラッグ編集が一度も積まれない。選択が変わったときだけ取り直す。
+            if (m_lookEntity != ctx.selectedEntity)
+            {
+                m_lookEntity   = ctx.selectedEntity;
+                m_lookSnapshot = MeshRendererLook::From(mr);
+            }
+            const MeshRendererLook& lookBefore = m_lookSnapshot;
 
             if (IconHeader(nullptr, 0, "UV & Anim"))
             {
@@ -3130,6 +3161,7 @@ void InspectorPanel::Render(entt::registry& reg,
                 {
                     ctx.undoSystem.PushCommand(std::make_unique<MeshRendererLookCommand>(
                         scene, &reg, ctx.selectedEntity, lookBefore, lookAfter));
+                    m_lookSnapshot = lookAfter;   // 次の編集の基準を更新（同じ差分で積み続けない）
                 }
             }
         }

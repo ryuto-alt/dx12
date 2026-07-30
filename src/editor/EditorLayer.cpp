@@ -446,6 +446,13 @@ void EditorLayer::Render(bool isPlaying,
                         MeshRenderer::SetOverride(mr.materialAsset, pick.submeshIndex, rel);
 
                         // UVタイリングが既定値(1.0)のままなら .dxmat の値を初期値としてコピー
+                        // ★ここは頂点バッファへ焼く（ApplyUVScale）ので、値を戻すだけの
+                        //   ComponentEditCommand では **絵が戻らない**。焼き直しまで面倒を見る
+                        //   MeshRendererLookCommand を併せて積む（UndoSystem.h の注記どおり）。
+                        //   しかも mr.meshes は同じモデルの全インスタンスで共有されるので、
+                        //   焼いたままだと他のインスタンスまでタイル表示が残る。
+                        const MeshRendererLook lookBefore = MeshRendererLook::From(mr);
+                        bool bakedUv = false;
                         if (mr.uvScaleU == 1.0f && mr.uvScaleV == 1.0f)
                         {
                             std::ifstream ifs(assetsDir + rel, std::ios::binary);
@@ -462,12 +469,26 @@ void EditorLayer::Render(bool isPlaying,
                                     if (scene)
                                         for (auto* mesh : mr.meshes)
                                             if (mesh) mesh->ApplyUVScale(*scene->GetDevice(), mr.uvScaleU, mr.uvScaleV);
+                                    bakedUv = true;
                                 }
                             }
                         }
 
-                        m_ctx->undoSystem.PushCommand(std::make_unique<ComponentEditCommand<MeshRenderer>>(
-                            &reg, pick.entity, before, mr, "マテリアル割当(D&D)"));
+                        if (bakedUv)
+                        {
+                            // Undo は逆順なので Look（焼き直し）→ ComponentEdit（値の復元）の順に走る。
+                            auto batch = std::make_unique<CompositeCommand>("マテリアル割当(D&D)");
+                            batch->Add(std::make_unique<ComponentEditCommand<MeshRenderer>>(
+                                &reg, pick.entity, before, mr, "マテリアル割当(D&D)"));
+                            batch->Add(std::make_unique<MeshRendererLookCommand>(
+                                scene, &reg, pick.entity, lookBefore, MeshRendererLook::From(mr)));
+                            m_ctx->undoSystem.PushCommand(std::move(batch));
+                        }
+                        else
+                        {
+                            m_ctx->undoSystem.PushCommand(std::make_unique<ComponentEditCommand<MeshRenderer>>(
+                                &reg, pick.entity, before, mr, "マテリアル割当(D&D)"));
+                        }
                         Logger::Info("マテリアルD&D適用: entity={} submesh={} -> {}",
                             static_cast<u32>(pick.entity), pick.submeshIndex, rel);
                     }

@@ -6,6 +6,7 @@
 #include "core/Types.h"
 #include "ecs/Components.h"
 #include "scene/SceneSerializer.h"   // PrefabOverride（プレハブ差分表示のキャッシュ用）
+#include "editor/UndoSystem.h"       // MeshRendererLook（見た目まわりの Undo スナップショット）
 
 namespace dx12e
 {
@@ -60,6 +61,15 @@ private:
     // Undo 用: ウィジェット操作開始時のスナップショット
     bool      m_transformEditing = false;
     Transform m_transformSnapshot{};
+
+    // 見た目まわり（UV & Anim / シェーダー節）の Undo 用スナップショット。
+    // ★以前は毎フレーム取り直すローカル変数だった。ドラッグ中は IsAnyItemActive で
+    //   push を抑止し、離したフレームは値が変わらない（＝差分ゼロ）ので、
+    //   **ドラッグ編集が一度も Undo に積まれなかった**。積まれない＝editSeq も動かないので
+    //   タイトルの `*` も保存確認も出ず、閉じると変更が消えていた。
+    //   選択が変わったときだけ取り直し、push したらそこを新しい基準にする。
+    entt::entity     m_lookEntity = entt::null;
+    MeshRendererLook m_lookSnapshot{};
 
     bool  m_pbrEditing = false;
     float m_pbrMetallicSnapshot  = -1.0f;
