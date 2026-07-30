@@ -274,7 +274,7 @@ nlohmann::json McpComponentSchema()
         "scene-level 'decalAtlas' + this atlasUV rect. Max 256 per scene / 16 per cluster."));
     comps.push_back(C("networkIdentity", true, true, json::array({
         F("interestRadius", "float (0 = always relevant, no distance culling)", 0.0),
-        F("serverAuthority", "bool", true),
+        F("serverAuthority", "bool (reserved; nothing reads it yet)", true),
     }), "marks the entity for multiplayer replication (host assigns netId). Pair with networkTransform. "
         "Use dx12_net_setup + dx12_play to test."));
     comps.push_back(C("networkTransform", true, true, json::array({

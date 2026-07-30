@@ -2111,8 +2111,17 @@ void InspectorPanel::Render(entt::registry& reg,
                 if (pg::Begin("NetworkIdentity"))
                 {
                     changed |= pg::Float("関連半径 InterestRadius", &ni.interestRadius, 0.5f, 0.0f, 1000.0f, "%.1f", &active,
-                        "0 = 常に全クライアントへ複製（フェーズ⑧の興味管理で使用予定）");
-                    changed |= pg::Checkbox("サーバー権威", &ni.serverAuthority);
+                        "0 = 常に全クライアントへ複製。>0 にすると観測者からこの距離を超えた相手へは"
+                        "スナップショットを送らない（★実装済み・稼働中）");
+                    // ★予約フィールド。src/network/ に読者が 1 箇所も無い（権限判定は
+                    //   _isLocalOwner + NetworkTransform::syncMode で行っている）。
+                    //   触れると「設定したのに何も起きない」になるので触らせない。
+                    ImGui::BeginDisabled(true);
+                    ImGui::Checkbox("サーバー権威（予約・未実装）", &ni.serverAuthority);
+                    ImGui::EndDisabled();
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                        ImGui::SetTooltip("クライアント権威エンティティ用の予約枠。"
+                                          "現状どこからも読まれないので、変えても挙動は変わらない");
                     pg::Text("netId（実行時割当）", "%d", static_cast<int>(ni._netId));
                     pg::Text("owner clientId", "%d", static_cast<int>(ni._owner));
                     pg::End();

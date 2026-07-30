@@ -149,7 +149,7 @@ Lighting.fadeToBlack(1.0, function() goToScene("assets/scenes/next.json") end)
 scene:setAmbient(0.05)                -- 影の明るさ
 scene:setShadowsEnabled(false)        -- 影パスごとスキップ（軽量化）
 post.setMany{ bloomOn = true, bloom = 0.8, vignetteOn = true }
-log(scene:lightCount().point)         -- 8 個を超えたライトは黙って無視されるので確認用
+log(scene:lightCount().total)         -- 上限 1024 灯（maxTotal も返る）。超過分は無言で落ちるので確認用
 ```
 サンプル: [`assets/components/LightShowDemo.lua`](../assets/components/LightShowDemo.lua)（フリッカ+フェード+時間帯変化）。
 詳細は API_REFERENCE.md の「ライティング演出」セクションを参照。
@@ -392,7 +392,10 @@ setUiFocus(scene:findEntity("StartButton"))
   軽量な当たり判定。`box` プリミティブは「半径 0.5 × scale」で扱う。トップダウン移動向け。
 - 物理的な剛体衝突（落下・反発・スタック）が要るなら、エディタで `RigidBody` と各コライダーを付けて
   物理エンジン（Jolt）に任せる。スクリプト不要。
-- 「侵入した瞬間に発火」するトリガーや衝突イベント（onCollision/onTrigger）は今後の追加予定。
+- 「侵入した瞬間に発火」するトリガーと衝突イベントは**両方とも実装済み**。
+  - トリガー: `Trigger` コンポーネント + アクション 11 種（Enter/Exit/Stay）。→ `docs/AUTHORING.md` §4
+  - 剛体の接触: `engine.contact.enter` / `engine.contact.exit` がイベントバスへ流れる
+    （`PhysicsSystem` が発火）。`events:on("engine.contact.enter", fn)` で拾える。
 
 ---
 

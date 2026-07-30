@@ -405,7 +405,9 @@ struct Terrain
     f32  distTilingStart    = 40.0f;  // ここから遠距離タイリングへブレンドし始める(m)
     f32  distTilingFarScale = 7.0f;   // 遠距離側は 1/この値のタイリング（粗くする）
     f32  normalStrength     = 1.0f;
-    f32  pomHeightScale     = 0.05f;  // POM の高さ(m)。既定 OFF なので効かない
+    f32  pomHeightScale     = 0.05f;  // POM の高さ(m)。★配線は完成している
+                                      //   （ApplicationRender.cpp:445 → Terrain.hlsl:67,409）。
+                                      //   「効かない」のではなく POM 自体が既定 OFF なだけ
     f32  pomFadeStart       = 8.0f;
     f32  pomFadeEnd         = 25.0f;
     u32  pomMaxSteps        = 24;
@@ -1340,7 +1342,8 @@ struct Trigger
 // 代わりにこの netId を安定識別子として使う。
 struct NetworkIdentity
 {
-    f32  interestRadius  = 0.0f;   // 0 = 常に関連（距離カリングなし。フェーズ⑧で使用）
+    f32  interestRadius  = 0.0f;   // 0 = 常に関連（距離カリングなし）。★稼働中:
+                                   //   NetworkSystem.cpp:435 の IsRelevant() が今まさに送信を間引いている
     bool serverAuthority = true;   // 予約（将来のクライアント権威エンティティ用）
 
     // ランタイム専有（非シリアライズ）
@@ -1364,7 +1367,8 @@ struct NetworkTransform
     bool syncRotation   = true;
     bool syncScale      = false;
     f32  interpDelayMs  = 100.0f; // 補間バッファの遅延（ジッター吸収）
-    f32  snapDistance   = 5.0f;   // これ以上の誤差はテレポート扱い（フェーズ⑦以降で使用）
+    f32  snapDistance   = 5.0f;   // これ以上の誤差はテレポート扱い。★稼働中:
+                                  //   NetworkSystem.cpp:563 の reconciliation 分岐がこれで判定する
 };
 
 } // namespace dx12e

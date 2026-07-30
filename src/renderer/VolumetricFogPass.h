@@ -61,7 +61,9 @@ public:
         const DirectX::XMFLOAT4X4* spotShadowMatrixTransposed = nullptr;  // 4 本
         float spotShadowTexel  = 0.0f;   // 1/kSpotShadowMapSize
         float pointShadowNear  = 0.1f;
-        // ビューポート矩形（合成時に使う。BuildVolumes では未使用だが CB を 1 本で済ませるため受ける）
+        // ビューポート矩形。★どのフォグシェーダも読んでいない（FogCommon.hlsli:45 の gRect は
+        //   宣言だけ）。CB を 1 本で済ませるために枠だけ残っている状態で、
+        //   以前ここには「合成時に使う」と書いてあったが嘘だった。
         u32 vpLeft = 0, vpTop = 0, vpW = 1, vpH = 1;
         float nearZ = 0.1f, farZ = 1000.0f;
         // ディスクリプタ（すべて m_srvHeap 上・すでにバインド済みのヒープを前提）

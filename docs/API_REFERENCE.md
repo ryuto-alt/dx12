@@ -351,7 +351,8 @@ hit.normal    -- Vec3
 >
 > 興味管理(interest management): `NetworkIdentity.interestRadius`(0=常に関連)を使い、サーバーは各クライアントの所有エンティティ位置を観測点として、半径を超えて離れた複製エンティティのTransformスナップショットをそのクライアントへは送らない(帯域のO(接続数×エンティティ数)爆発を回避)。所有物が無いクライアントにはフィルタせず全部送る。現状は「継続的なスナップショット送信」だけを興味管理の対象にしており、動的スポーン(`net:spawn`)は引き続き全クライアントへブロードキャストする(スポーンは頻度が低く帯域上の主要因ではないため)。
 > エディタの「ツール > Network」窓(Play中)でロール/tick/複製数と接続一覧(clientId・RTT・送受信バイト概算)を確認できる。
-> 現状はフェーズ⑧(興味管理+統計窓)まで実装済み。エディタ設定UI・セッション抽象は今後のフェーズで追加予定。
+> 現状はフェーズ⑧(興味管理+統計窓)まで実装済み。**エディタ設定UI も実装済み**
+> （`ツール > ネットワーク` の NetworkPanel。保存/既定値復帰つき）。セッション抽象は今後。
 
 ### time（`time`）— 時間 API（v0.9.3+）
 `:` ではなく `.` で呼ぶ。状態は Play 開始でリセットされる。
@@ -934,7 +935,7 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 | `dx12_pick` | 画面座標（x/y か u/v）→ 三角形精密ヒット列（entityId/submesh/distance/worldPos/worldNormal）|
 | `dx12_raycast_precise` | ワールドのレイ → 描画メッシュの三角形と交差（`dx12_raycast` は物理コライダー基準・Playing 限定）|
 | `dx12_terrain_sample` | 地形の高さ/法線/傾きを座標で問い合わせ（配置の自動化に使う）|
-| `dx12_list_lights` | ライト一覧 + 灯数バジェット（点8/スポット8・影spot4/point2）と超過警告 |
+| `dx12_list_lights` | ライト一覧 + 灯数バジェット（合計 1024 灯・1 クラスタ 128 灯／影スロットは spot4・point2）と超過警告。★「点8/スポット8」の個別上限は撤廃済み |
 | `dx12_diagnose` | エンジン診断（`DeepDiag::RunAll`）を JSON で。`summary.errors > 0` だけが失敗 |
 | `dx12_get_anim_state` | スケルタルアニメの状態。クリップ一覧 / 現在ステート / レイヤー / FSM パラメータ / `footIK`（解決したボーン名・接地・面法線・腰オフセット）|
 | `dx12_describe_anim_graph` | `.animfsm` の構造（ステート/遷移/条件/ブレンドツリー/レイヤー/マスク）を JSON で返す。`{entity}` か `{path}` |
