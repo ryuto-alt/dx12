@@ -413,6 +413,10 @@ void Update(AnimGraphRuntimeState& rt,
                 }
                 else
                 {
+                    // ★割り込み（既に遷移中）なら、表示中の合成ポーズを遷移元として使う。
+                    //   そうしないと完全な遷移元へ 1 フレーム巻き戻ってから混ぜ直しになる。
+                    lr.useSnapshotAsFrom = lr.inTransition && !lr.blendedSnapshot.empty();
+
                     lr.inTransition       = true;
                     lr.transTo            = tr._to;
                     lr.transElapsed       = 0.0f;
@@ -478,12 +482,25 @@ void Update(AnimGraphRuntimeState& rt,
         const AnimStateDef& active = def.states[static_cast<size_t>(lr.curState)];
         const f32 activeDur = next ? curDur : StateDuration(active, clips, rt.params);
         f32 evScale = 1.0f;
-        const AnimationClip* eventClip =
-            SampleStatePose(active, lr.stateTime, clips, skeleton, rt.params, activeDur,
-                            rt.layerPose, rt.poseB, evScale);
-        f32 eventPrev = lr.prevStateTime * evScale;
-        f32 eventCur  = lr.stateTime * evScale;
-        bool eventWrapped = lr.wrapped;
+        const AnimationClip* eventClip = nullptr;
+        f32 eventPrev = 0.0f, eventCur = 0.0f;
+        bool eventWrapped = false;
+
+        if (lr.useSnapshotAsFrom && lr.blendedSnapshot.size() == skeleton.GetBoneCount())
+        {
+            // 割り込み前の合成ポーズをそのまま遷移元にする（凍結）。
+            // ★イベントはこちら側から拾わない。ポーズが進んでいないのに足音が鳴るのは嘘なので。
+            rt.layerPose = lr.blendedSnapshot;
+        }
+        else
+        {
+            lr.useSnapshotAsFrom = false;
+            eventClip = SampleStatePose(active, lr.stateTime, clips, skeleton, rt.params, activeDur,
+                                        rt.layerPose, rt.poseB, evScale);
+            eventPrev    = lr.prevStateTime * evScale;
+            eventCur     = lr.stateTime * evScale;
+            eventWrapped = lr.wrapped;
+        }
 
         if (next && blend > 0.0f)
         {
@@ -509,6 +526,18 @@ void Update(AnimGraphRuntimeState& rt,
 
         GatherEvents(eventClip, eventPrev, eventCur, eventWrapped,
                      static_cast<i32>(li), rt.eventHits, outEvents);
+
+        // 遷移中は合成結果を控えておく（次フレームで割り込まれたときの遷移元になる）。
+        // 遷移していないときは凍結を解いて捨てる（メモリを抱え続けない）。
+        if (lr.inTransition)
+        {
+            lr.blendedSnapshot = rt.layerPose;
+        }
+        else
+        {
+            lr.useSnapshotAsFrom = false;
+            lr.blendedSnapshot.clear();
+        }
 
         // ---- レイヤー合成 ----------------------------------------------------
         const f32 layerWeight = std::clamp(lr.weight, 0.0f, 1.0f);

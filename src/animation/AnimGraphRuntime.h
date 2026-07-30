@@ -47,6 +47,14 @@ struct AnimLayerRuntime
     //   （Attack の t=0.05 に置いた hitbox_on が duration 0.2 の遷移では常に鳴らない）。
     //   優勢側が切り替わった最初のフレームだけ、頭から拾い直すために使う。
     bool transEventsStarted = false;
+    // ★遷移中の合成ポーズのスナップショット（遷移割り込み用）。
+    //   割り込みが成立すると transElapsed だけ 0 に戻り curState は遷移元のまま据え置かれるので、
+    //   ポーズは「完全な遷移元」から作り直されていた。表示中の合成ポーズ（例 blend=0.7）が
+    //   捨てられるため、**割り込んだ瞬間にポーズが 1 フレームだけ遷移元へ巻き戻る**
+    //   （移動しながら攻撃、走行中に被弾で毎回カクつく）。
+    //   遷移中は毎フレームここへ合成結果を控え、割り込み時はこれを遷移元ポーズとして使う。
+    AnimPose blendedSnapshot;
+    bool     useSnapshotAsFrom = false;
     bool transInterruptible = true;
 
     f32  weight = 1.0f;              // 実行時に動かせるレイヤー重み（Lua/MCP から）
