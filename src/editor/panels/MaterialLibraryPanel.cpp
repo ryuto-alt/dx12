@@ -247,6 +247,21 @@ void MaterialLibraryPanel::RequestThumbnail(const std::string& id)
 
 void MaterialLibraryPanel::LoadPendingThumbnails(ID3D12GraphicsCommandList* cmdList)
 {
+    // ★ダウンロードジョブのスレッドを回収する。サムネイル側（下）は done を見て
+    //   join + erase しているのに、ジョブ側だけ**デストラクタまで一度も join されず**、
+    //   1 マテリアル落とすごとにスレッドハンドルとスタック予約が残っていた。
+    //   さらに m_jobs はグリッド描画で毎フレーム 2 回線形走査されるので、
+    //   落とすほど窓が重くなる。
+    //   失敗ジョブだけはエラー文言を出すために残す（件数は高が知れている）。
+    for (size_t i = 0; i < m_jobs.size(); )
+    {
+        DownloadJob* j = m_jobs[i].get();
+        if (!j->done.load()) { ++i; continue; }
+        if (j->worker.joinable()) j->worker.join();   // done 後の join は即返る
+        if (j->phase.load() == -1) { ++i; continue; } // 失敗は表示用に残す
+        m_jobs.erase(m_jobs.begin() + static_cast<ptrdiff_t>(i));
+    }
+
     if (!cmdList || !m_resourceManager) return;
 
     for (size_t i = 0; i < m_thumbInFlight.size(); )

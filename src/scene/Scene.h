@@ -223,6 +223,13 @@ private:
     Mesh* GetSharedGlowMesh(bool sphere, f32 radius);
 
     entt::registry m_registry;
+    // ponytail: エンティティを消しても縮まない。Scene::Clear（シーン開き直し / Play→Stop /
+    // 新規シーン）でしか解放されないので、Del → Ctrl+Z を繰り返すと 1 往復ごとに
+    // Mesh が 1 個積まれる（箱なら数 KB だが 512² の地形は VB + 各キャッシュで 50MB 級）。
+    // 上限: 1 セッション内の生成回数ぶん。到達すると単純にメモリ/VRAM を食い潰す。
+    // 直すなら「エンティティ削除後に、どの MeshRenderer からも参照されていない Mesh を回収する」
+    // 遅延 GC が要る。即時解放は不可: アップロードが in-flight のことがあり、
+    // 共有メッシュ（m_glowMeshCache）や同一フレームで組んだ描画リストからも参照される。
     std::vector<std::unique_ptr<Mesh>> m_ownedMeshes;
     std::unordered_map<uint64_t, Mesh*> m_glowMeshCache;
     PostProcessSettings m_postSettings;
