@@ -336,6 +336,10 @@ void Application::RegisterMcpEntityMethods()
                 if (q.size() != 4) throw McpError(McpErr::InvalidParam, "quaternion must be [x,y,z,w]");
                 t.quaternion = { q[0], q[1], q[2], q[3] };
                 t.useQuaternion = true;   // set_component の transform 経路と同じ挙動に揃える
+                // ★euler も揃える。シーン JSON は rotation(euler) しか持たないので、
+                //   ここを揃えないと保存時に**古い euler** が書かれて開き直すと姿勢が戻る
+                //   （成功が返るうえ、その場では正しく見えるので気づけない）。
+                t.rotation = QuaternionToEulerDegrees(t.quaternion);
             }
             if (params.contains("scale"))
             {
@@ -574,6 +578,8 @@ void Application::RegisterMcpEntityMethods()
                     if (q.size() != 4) throw McpError(McpErr::InvalidParam, "quaternion must be [x,y,z,w]");
                     t.quaternion = { q[0], q[1], q[2], q[3] };
                     t.useQuaternion = true;
+                    // set_transform と同じ理由で euler も揃える（保存で姿勢が戻らないように）
+                    t.rotation = QuaternionToEulerDegrees(t.quaternion);
                 }
                 if (data.contains("scale"))
                 {

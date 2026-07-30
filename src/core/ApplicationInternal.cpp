@@ -152,8 +152,9 @@ nlohmann::json McpComponentSchema()
         F("position", "float3", json::array({0, 0, 0})),
         F("rotation", "float3 (euler degrees)", json::array({0, 0, 0})),
         F("scale", "float3", json::array({1, 1, 1})),
-        F("quaternion", "float4 (x,y,z,w)", json::array({0, 0, 0, 1})),
-        F("useQuaternion", "bool", false),
+        F("quaternion", "float4 (x,y,z,w). Setting it also syncs rotation(euler), because the "
+                        "scene file only stores euler — otherwise the pose reverts on reload.",
+          json::array({0, 0, 0, 1})),
     }), "core; cannot be removed. Prefer dx12_set_transform for position/rotation/scale."));
     comps.push_back(C("meshRenderer", false, false, json::array({
         F("modelPath", "string (assets-relative)", ""),

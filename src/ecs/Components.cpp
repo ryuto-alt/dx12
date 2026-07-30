@@ -1,4 +1,7 @@
 #include "ecs/Components.h"
+
+#include <algorithm>   // QuaternionToEulerDegrees の clamp
+#include <cmath>
 #include "animation/Skeleton.h"
 #include "animation/AnimationClip.h"
 #include "animation/Animator.h"
@@ -35,6 +38,34 @@ XMMATRIX Transform::GetWorldMatrix() const
     XMMATRIX t = XMMatrixTranslation(position.x, position.y, position.z);
 
     return s * r * t;
+}
+
+XMFLOAT3 QuaternionToEulerDegrees(const XMFLOAT4& q)
+{
+    // GetWorldMatrix と同じ XMMatrixRotationRollPitchYaw(pitch=x, yaw=y, roll=z) を
+    // 逆に解く。クォータニオン → 行列 → 成分抽出（自前で三角関数を展開すると
+    // 規約を取り違えやすいので、行列を経由して DirectXMath に合わせる）。
+    const XMMATRIX m = XMMatrixRotationQuaternion(XMLoadFloat4(&q));
+    XMFLOAT4X4 f{};
+    XMStoreFloat4x4(&f, m);
+
+    // 行ベクトル規約。m32 = -sin(pitch)
+    const float sp = std::clamp(-f._32, -1.0f, 1.0f);
+    const float pitch = std::asin(sp);
+
+    float yaw, roll;
+    if (std::fabs(sp) < 0.9999f)
+    {
+        yaw  = std::atan2(f._31, f._33);
+        roll = std::atan2(f._12, f._22);
+    }
+    else
+    {
+        // ジンバルロック: yaw と roll が同じ軸になるので roll を 0 に寄せる
+        yaw  = std::atan2(-f._13, f._11);
+        roll = 0.0f;
+    }
+    return { XMConvertToDegrees(pitch), XMConvertToDegrees(yaw), XMConvertToDegrees(roll) };
 }
 
 XMMATRIX ComputeWorldMatrix(const entt::registry& reg, entt::entity e)

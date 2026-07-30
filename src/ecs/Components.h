@@ -90,6 +90,16 @@ struct Transform
     DirectX::XMMATRIX GetWorldMatrix() const;  // ローカル行列（親は考慮しない）
 };
 
+// クォータニオン → Transform::rotation（Euler 度・YXZ = GetWorldMatrix と同じ規約）。
+//
+// ★なぜ要るか: シーン JSON は position / rotation / scale しか持たない
+//   （quaternion / useQuaternion は保存されない実行時専有フィールド）。
+//   MCP などで quaternion だけを書くと、保存時には**古い euler** が書かれて
+//   開き直したときに姿勢が戻る＝無音のデータ損失になる。書いた側で euler も
+//   揃えておけば、ファイル形式を変えずにこれが起きない。
+//   ジンバルロック（pitch=±90°）では roll を 0 に寄せて yaw へ畳む（表現は変わるが姿勢は同じ）。
+DirectX::XMFLOAT3 QuaternionToEulerDegrees(const DirectX::XMFLOAT4& q);
+
 // 親階層を遡って合成したワールド行列を返す（描画/ギズモ/ピッキング用）
 DirectX::XMMATRIX ComputeWorldMatrix(const entt::registry& reg, entt::entity e);
 

@@ -173,6 +173,16 @@ if(TARGET ECS)
         target_compile_definitions(ComponentMetaTests PRIVATE ${DX12_COMPILE_DEFS})
     endif()
     add_test(NAME ComponentMetaTests COMMAND ComponentMetaTests)
+
+    # QuaternionToEulerDegrees の往復テスト。
+    # 規約を取り違えると「保存すると少しだけ姿勢がずれる」形で出る（気づきにくい）。
+    add_executable(QuatEulerTests quat_euler_test.cpp)
+    target_link_libraries(QuatEulerTests PRIVATE ECS)
+    if(MSVC)
+        target_compile_options(QuatEulerTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(QuatEulerTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME QuatEulerTests COMMAND QuatEulerTests)
 endif()
 
 # Camera 投影行列（透視/正射）テスト（Phase 4: ortho 能力）。
