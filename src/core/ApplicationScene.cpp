@@ -1382,11 +1382,16 @@ void Application::LoadGameScript()
     // LoadScript は VFS 経由で pak から読むので、InGameMode 時は存在チェックを迂回する。
     // ※ ScriptEngine を作り直すたび（EnterPlayMode / シーン切替 / プロジェクト読込）に
     //   グローバル OnUpdate も作り直されるので、その都度ここを呼ぶ必要がある。
+    // ★ゲームモードでも存在確認する。以前は InGameMode なら無条件に LoadScript を
+    //   呼んでいたので、グローバル game.lua を持たないプロジェクト（持つかどうかは任意）では
+    //   **配布物のログに毎回「Luaエラー（スクリプト読み込み）」が出ていた**。
+    //   無いだけならエラーではないし、本物のエラーが埋もれる。
+    //   GameLuaPath() は vfs 対応済みなので、同じ判定で両モードを見られる。
     std::string scriptPath = PathResolver::GameLuaPath();
-    if (dx12e::vfs::InGameMode() || std::filesystem::exists(scriptPath))
+    if (dx12e::vfs::ExistsAbs(scriptPath) || std::filesystem::exists(scriptPath))
         m_scriptEngine->LoadScript(scriptPath);
     else
-        Logger::Warn("ゲームスクリプトが見つかりません: {}", scriptPath);
+        Logger::Warn("ゲームスクリプトが見つかりません: {}（グローバル game.lua は任意）", scriptPath);
 }
 
 // エンジン診断が検査前に現在のシーンを退避するための保存先。assets 配下に置くのは、
