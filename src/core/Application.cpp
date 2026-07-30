@@ -375,7 +375,9 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         WireScriptCallbacks();
 
         // ゲームスクリプト読み込み（グローバル game.lua）
-        LoadGameScript();
+        // 配布ゲームは起動＝ゲームプレイ開始なので OnStart を呼ぶ。
+        // エディタは「プロジェクトを開いただけ」なので呼ばない（Play を押したときに呼ばれる）。
+        LoadGameScript(/*callOnStart=*/m_isGameMode);
 
         // 初期シーン: (配布) game.json の startScene → (エディタ) 最後に開いたシーン → default.json → クリーン状態
         {
@@ -2507,6 +2509,12 @@ void Application::SaveActionBindings()
 void Application::LoadActionBindings()
 {
     const std::string path = ActionBindingsPath();
+
+    // ★Clear は「ファイルがあるか」より前。以前は exists の早期 return が先だったので、
+    //   input_bindings.json を持たないプロジェクトを次に開くと、**前のプロジェクトの
+    //   キー割り当てがそのまま生き残っていた**。
+    m_actionMap.Clear();
+
     std::error_code ec;
     if (!std::filesystem::exists(path, ec)) return;   // 無いのは正常（既定のまま）
 
@@ -2520,7 +2528,6 @@ void Application::LoadActionBindings()
     }
     if (!root.is_object()) return;
 
-    m_actionMap.Clear();
     for (auto it = root.begin(); it != root.end(); ++it)
     {
         if (!it.value().is_array()) continue;
@@ -2528,7 +2535,16 @@ void Application::LoadActionBindings()
         {
             if (!bj.is_object()) continue;
             const int key = bj.value("key", -1);
-            if (key < 0 || key > 255) continue;   // VK の範囲外は捨てる
+            if (key < 0 || key > 255)
+            {
+                // ★黙って捨てない。PAD_A(4096) 等を bind して save すると、書き出しは
+                //   成功するのに読み戻しでここに落ちて割り当てが消える＝「再起動したら
+                //   キー設定が戻った」になる。原因が分かる 1 行を残す。
+                Logger::Warn("キー割り当てを 1 件捨てました（VK の範囲外 key={}, action={}）。"
+                             "actions.bind に渡せるのは KEY_* だけです（PAD_* はゲームパッド用で "
+                             "actions では扱えません）", key, it.key());
+                continue;
+            }
             DirectX::XMFLOAT3 c{1.0f, 0.0f, 0.0f};
             if (bj.contains("c") && bj["c"].is_array() && bj["c"].size() == 3)
                 c = { bj["c"][0].get<f32>(), bj["c"][1].get<f32>(), bj["c"][2].get<f32>() };

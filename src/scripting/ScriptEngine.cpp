@@ -2569,12 +2569,23 @@ void ScriptEngine::LoadPrelude()
 -- ============================================================
 
 -- キー名 -> エンジンのキー定数
-local KEYS = {
-  W=KEY_W, A=KEY_A, S=KEY_S, D=KEY_D, E=KEY_E, Q=KEY_Q,
+local KEYS = setmetatable({
   UP=KEY_UP, DOWN=KEY_DOWN, LEFT=KEY_LEFT, RIGHT=KEY_RIGHT,
   SPACE=KEY_SPACE, SHIFT=KEY_SHIFT, TAB=KEY_TAB,
   ENTER=KEY_ENTER, ESC=KEY_ESCAPE, ESCAPE=KEY_ESCAPE,
-}
+}, {
+  -- ★以前はここが 16 件の素のテーブルで、載っていない名前は **黙って false** だった。
+  --   KEY_A..KEY_Z / KEY_0..KEY_9 は全部グローバルにあるのに、
+  --   keyDown("R")（リロード）/ keyDown("F")（調べる）/ keyDown("1") / 小文字の keyDown("w")
+  --   が何も言わずに反応しない。charge.new("R", ...) も永久に溜まらない。
+  --   グローバルの KEY_<大文字> を引くフォールバックを足して、素直な書き方を通す。
+  __index = function(t, name)
+    if type(name) ~= "string" then return nil end
+    local k = _G["KEY_" .. name:upper()]
+    if type(k) == "number" then rawset(t, name, k); return k end
+    return nil
+  end
+})
 function keyDown(name)    local k = KEYS[name]; return k ~= nil and input:isKeyDown(k)    end
 function keyPressed(name) local k = KEYS[name]; return k ~= nil and input:isKeyPressed(k) end
 

@@ -369,6 +369,14 @@ void Application::LoadProject(const ProjectInfo& info)
 
     // プロジェクトの settings.json で描画オプションを上書き（A/B 計測用。既定 ON）。
     // ※ SetProjectRoot の後でないと PersistPath がエンジン側を指してしまう。
+    // ★VSync もここで読み直す。書き込み側（ApplicationRender.cpp）は PersistPath()＝
+    //   <project>/settings.json へ保存しているのに、読み込みは Initialize の 1 回だけで、
+    //   その時点の PersistPath() はまだエンジン組み込みの assets を指している。
+    //   つまり**保存はプロジェクトへ、読み出しはエンジンから**という食い違いがあり、
+    //   エンジン設定で VSync を切っても再起動すると必ず元に戻っていた。
+    m_useVsync       = PersistGet("video_vsync", m_useVsync ? 1.0 : 0.0) != 0.0;
+    m_persistedVsync = m_useVsync;
+
     m_instancingEnabled = PersistGet("render_instancing", 1.0) != 0.0;
     Logger::Info("自動インスタンシング: {}", m_instancingEnabled ? "ON" : "OFF");
 
@@ -1206,6 +1214,25 @@ bool Application::BuildGame()
             fs::copy_file(entry.path(), outputDir / entry.path().filename(),
                           fs::copy_options::overwrite_existing, ec);
             Logger::Info("Copied dll -> {}", entry.path().filename().string());
+        }
+
+        // ★エディタで作ったキー割り当てを配布物へ持っていく。
+        //   input_bindings.json はプロジェクトルート直下にあり、pak に入るのは
+        //   assets / scripts / shaders の 3 本だけなので、これまで **一度も同梱されていなかった**。
+        //   ゲーム側の LoadActionBindings は exe の隣を見る（プレイヤーが後から書き換える
+        //   ファイルなので pak ではなく生ファイルで正しい）。ここへ既定値として置いてやる。
+        //   ビルド時に警告も出ていなかったので、「エディタで割り当てて actions.save() したのに
+        //   配布ゲームではスクリプトの既定しか効かない」に気づけなかった。
+        {
+            const fs::path bindingsSrc(ActionBindingsPath());
+            std::error_code bec;
+            if (fs::exists(bindingsSrc, bec))
+            {
+                fs::copy_file(bindingsSrc, outputDir / bindingsSrc.filename(),
+                              fs::copy_options::overwrite_existing, bec);
+                if (bec) Logger::Warn("キー割り当ての同梱に失敗しました: {}", bec.message());
+                else     Logger::Info("Copied input_bindings.json");
+            }
         }
     }
 

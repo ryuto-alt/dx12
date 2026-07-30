@@ -25,7 +25,22 @@ public:
     // action に (key → 寄与ベクトル) を追加。移動なら方向ベクトル、ボタンなら任意。
     void Bind(const std::string& action, int key, const DirectX::XMFLOAT3& contribution)
     {
-        m_actions[action].push_back(Binding{key, contribution});
+        // ★同じ (action, key) は積み増さない。
+        //   m_actionMap はアプリ寿命なのに、Play / Stop / ランタイムのシーン切替のたびに
+        //   スクリプトが読み直されて bind が再実行される。重複を許すと寄与が合算され、
+        //   **2 回目の Play で移動速度が 2 倍、3 回目で 3 倍**になる（エラーもログも無し）。
+        //   配布ゲームでもタイトル↔ステージを往復するたびに 1 ずつ増えていた。
+        auto& list = m_actions[action];
+        for (Binding& b : list)
+            if (b.key == key) { b.c = contribution; return; }   // 寄与だけ更新
+        list.push_back(Binding{key, contribution});
+    }
+
+    // その action に 1 つでも割り当てがあるか（「既定値は上書きしない」判定用）。
+    bool HasAction(const std::string& action) const
+    {
+        const auto it = m_actions.find(action);
+        return it != m_actions.end() && !it->second.empty();
     }
     // ボタン用（寄与 (1,0,0)）。
     void Bind(const std::string& action, int key)

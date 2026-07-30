@@ -30,8 +30,14 @@ public:
     void Update(f32 dt = 0.0f);  // フレーム開始時に呼ぶ（前フレームの状態をリセット + XInputポーリング）
 
     // キーボード
-    bool IsKeyDown(int vkCode) const { return m_keys[vkCode]; }
-    bool IsKeyPressed(int vkCode) const { return m_keys[vkCode] && !m_prevKeys[vkCode]; }
+    // ★範囲チェックは必須。m_keys は 256 要素で、この 2 つは Lua から生の int で叩ける
+    //   （input:isKeyDown / actions.bind 経由の述語）。PAD_A(0x1000=4096) を渡すのは
+    //   PAD_* が同じくグローバルにある以上ごく自然な間違いで、以前はオブジェクトの
+    //   3KB 先を読んで**ゴミを返すか落ちる**かだった（警告もログも無し）。
+    bool IsKeyDown(int vkCode) const
+    { return (vkCode >= 0 && vkCode < 256) && m_keys[vkCode]; }
+    bool IsKeyPressed(int vkCode) const
+    { return (vkCode >= 0 && vkCode < 256) && m_keys[vkCode] && !m_prevKeys[vkCode]; }
     bool IsAsyncKeyDown(int vkCode) const { return (GetAsyncKeyState(vkCode) & 0x8000) != 0; }
 
     // ゲームパッド（XInput / Xbox コントローラー。pad = 0..3）

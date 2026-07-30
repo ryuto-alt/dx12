@@ -677,7 +677,11 @@ private:
     bool BuildGame();  // 成否を返す（早期 return = 失敗）
     // グローバル game.lua をロード（ScriptEngine 再初期化のたびに呼ぶ）。
     // ゲームモードは pak から読むのでディスク存在チェックを迂回する。
-    void LoadGameScript();
+    // グローバル game.lua を（再）読み込む。
+    // callOnStart=true のときだけ OnStart() を呼ぶ＝「ゲームプレイが始まる」経路
+    //（Play 開始 / ランタイムのシーン切替 / 配布ゲームの起動）だけで、
+    // プロジェクトを開いただけのエディタでは呼ばない。
+    void LoadGameScript(bool callOnStart = false);
 
     // Lua の loadScene/nextScene/quit/ui コールバックを ScriptEngine に注入（再生成のたび呼ぶ）
     void WireScriptCallbacks();

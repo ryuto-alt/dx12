@@ -319,8 +319,18 @@ void Application::SavePersistStore()
 {
     nlohmann::json j = nlohmann::json::object();
     for (auto& [k, v] : m_persistStore) j[k] = v;
-    std::ofstream f(PersistPath());
-    if (f) f << j.dump(2);
+    const auto path = PersistPath();
+    std::ofstream f(path);
+    // ★失敗を黙って捨てない。配布ゲームの PersistPath は exe の隣なので、
+    //   Program Files 配下へインストールされると設定・進行度の保存が**全部無言で消える**
+    //   （Lua の savePersist は void で、成功したように見える）。
+    //   兄弟の SaveActionBindings は同じ失敗を警告しているので、片方だけ抜けていた。
+    if (!f)
+    {
+        Logger::Warn("設定の保存に失敗しました（書き込み権限？）: {}", path.string());
+        return;
+    }
+    f << j.dump(2);
 }
 
 double Application::PersistGet(const std::string& key, double def)
@@ -561,7 +571,7 @@ void Application::DoRuntimeSceneLoad(const std::string& rel, ID3D12GraphicsComma
     m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(), m_camera.get(),
                                m_audioSystem.get(), m_physicsSystem.get(), PathResolver::AssetsDir());
     WireScriptCallbacks();
-    LoadGameScript();
+    LoadGameScript(/*callOnStart=*/true);   // ランタイムのシーン切替もゲームプレイの一部
 
     // アクティブカメラがなければ最初のものを有効化
     {
@@ -582,6 +592,9 @@ void Application::DoRuntimeSceneLoad(const std::string& rel, ID3D12GraphicsComma
     if (m_uiAnimRuntime) m_uiAnimRuntime->OnPlayStart(m_scene->GetRegistry());
     if (m_particleSystem) m_particleSystem->Clear();  // シーン切替時に前シーンの粒子を消す
     if (m_gpuParticles) m_gpuParticles->Clear();
+    // 前ステージの振動を持ち込まない（Stop 側と同じ理由）
+    if (m_inputSystem)
+        for (int pad = 0; pad < 4; ++pad) m_inputSystem->SetPadVibration(pad, 0.0f, 0.0f);
     // ★前シーンの効果音も消す。ここだけ抜けていた（Play→Stop 経路にはある）。
     //   AudioSource(loop=true) の環境音は BuffersQueued が永久に 0 にならないので
     //   空きスロット探索で回収されず、ステージ↔タイトルを数往復すると 16 スロットを
@@ -1166,14 +1179,17 @@ void Application::EnterPlayMode()
     m_inputSystem->SetMouseCapture(false);
 
     // スクリプトエンジン初期化（エンティティにアタッチされた LuaScript 用）
-    // ※ グローバルな game.lua の OnStart は呼ばない（エディタ配置のみで Play する）
+    // ※ 以前ここには「グローバルな game.lua の OnStart は呼ばない」とあったが、
+    //   docs/API_REFERENCE.md は OnStart / OnUpdate の両方をライフサイクルとして書いており、
+    //   実際 CallOnStart の呼び出し元は 1 つも無かった＝ドキュメント側が正しく実装が欠けていた。
+    //   Play 開始はゲームプレイの開始なので、ここで呼ぶ（下の LoadGameScript(true)）。
     m_scriptEngine->Shutdown();
     m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
                                m_camera.get(), m_audioSystem.get(),
                                m_physicsSystem.get(), PathResolver::AssetsDir());
     WireScriptCallbacks();
 
-    LoadGameScript();
+    LoadGameScript(/*callOnStart=*/true);
     m_eventBus.Clear();   // Play 開始時に前 Play の購読を完全消去
     // playOnStart のクリップ/シートを頭出し。events:on の登録より前だと発火を取りこぼすので、
     // Lua の OnPlayStart より**後**に置く（最初の実評価は次フレームの Update）。
@@ -1334,6 +1350,12 @@ void Application::EnterEditorMode()
     // Play 中に鳴っていた SE（空間含む）と BGM を停止（Stop で鳴り続けるのを防ぐ）
     if (m_audioSystem) { m_audioSystem->StopAllSFX(); m_audioSystem->StopBGM(); }
 
+    // ★パッドの振動も止める。`padVibrate(1,1)`（seconds 省略＝手動で止めるまで鳴り続ける形）の
+    //   最中に Stop すると、エディタに戻ってもコントローラーが震えたままで、止める UI が無い。
+    //   音・粒子・ネットワークは全部ここで畳んでいるのに、振動だけ抜けていた。
+    if (m_inputSystem)
+        for (int pad = 0; pad < 4; ++pad) m_inputSystem->SetPadVibration(pad, 0.0f, 0.0f);
+
     // ★Play 中の粒子・トレイルも消す。Clear は Play 開始側にしか無かった。
     //   Application::Update はエディタ中も粒子シムを回すので、爆発の途中で Stop すると
     //   寿命ぶん（fx:burst{life=8} なら 8 秒）エディタのビューポートで飛び続ける。
@@ -1480,7 +1502,7 @@ void Application::EnterEditorMode()
     Logger::Info("Entered EDITOR mode");
 }
 
-void Application::LoadGameScript()
+void Application::LoadGameScript(bool callOnStart)
 {
     // ゲームモードでは game.lua はディスクに無く game.pak 内に在る（exists() は false）。
     // LoadScript は VFS 経由で pak から読むので、InGameMode 時は存在チェックを迂回する。
@@ -1493,7 +1515,15 @@ void Application::LoadGameScript()
     //   GameLuaPath() は vfs 対応済みなので、同じ判定で両モードを見られる。
     std::string scriptPath = PathResolver::GameLuaPath();
     if (dx12e::vfs::ExistsAbs(scriptPath) || std::filesystem::exists(scriptPath))
+    {
         m_scriptEngine->LoadScript(scriptPath);
+        // ★OnStart はここでしか呼ばれない。以前は ScriptEngine::CallOnStart の呼び出し元が
+        //   **リポジトリ全体で 0 件**で、OnUpdate だけが配線されていた。
+        //   docs/API_REFERENCE.md は両方あると書いているので、
+        //   「ファイルは明らかに読めていて OnUpdate は毎フレーム動くのに OnStart だけ死んでいる」
+        //   という一番たちの悪い形になっていた（初期化・BGM 開始・キー割り当てが全部無言で消える）。
+        if (callOnStart) m_scriptEngine->CallOnStart();
+    }
     else
         Logger::Warn("ゲームスクリプトが見つかりません: {}（グローバル game.lua は任意）", scriptPath);
 }

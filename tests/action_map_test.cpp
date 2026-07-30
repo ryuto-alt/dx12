@@ -118,6 +118,43 @@ int main()
             CHECK(feq(itJump->second[0].c.x, 1.0f));
     }
 
+    // ---- 同じ (action, key) を積み増さない ------------------------------------
+    // m_actionMap はアプリ寿命なのに、Play / Stop / ランタイムのシーン切替のたびに
+    // スクリプトが読み直されて bind が再実行される。重複を許すと寄与が合算され、
+    // ★2 回目の Play で移動速度が 2 倍、3 回目で 3 倍になる（エラーもログも無し）。
+    {
+        ActionMap m;
+        m.Bind("move", 'W', {0.0f, 0.0f, 1.0f});
+        m.Bind("move", 'W', {0.0f, 0.0f, 1.0f});   // 同じ割り当てを 2 回
+        m.Bind("move", 'W', {0.0f, 0.0f, 1.0f});   // 3 回
+
+        const auto& all2 = m.Bindings();
+        auto it = all2.find("move");
+        CHECK(it != all2.end());
+        if (it != all2.end())
+        {
+            CHECK(it->second.size() == 1);          // 積み増さない
+            CHECK(it->second[0].key == 'W');
+        }
+        // 押されている扱いにして合算値を見る（ここが 3.0 になると 3 倍速）
+        CHECK(feq(m.Evaluate("move", [](int) { return true; }).z, 1.0f));
+
+        // 同じキーへ別の寄与を割り当て直したら「上書き」（重複ではない）
+        m.Bind("move", 'W', {0.0f, 0.0f, 2.0f});
+        CHECK(all2.find("move")->second.size() == 1);
+        CHECK(feq(m.Evaluate("move", [](int) { return true; }).z, 2.0f));
+
+        // 別キーはちゃんと増える
+        m.Bind("move", 'S', {0.0f, 0.0f, -1.0f});
+        CHECK(all2.find("move")->second.size() == 2);
+
+        // HasAction（「既定値は上書きしない」判定用）
+        CHECK(m.HasAction("move"));
+        CHECK(!m.HasAction("fire"));
+        m.ClearAction("move");
+        CHECK(!m.HasAction("move"));
+    }
+
     std::printf("action_map: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
