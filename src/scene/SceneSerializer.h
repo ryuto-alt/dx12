@@ -106,9 +106,15 @@ public:
                                         const std::string& assetsDir);
     // サブツリー JSON を既存シーンへ展開（Clear しない）。戻り値 = root。
     // outAll に生成した全エンティティ（root 先頭）を返す。
+    // keepGuids=false（既定）… 展開は「別のエンティティ」を作る。複製 / 貼り付け /
+    //   プレハブの新規配置がこれ。guid は捨てて次の保存で新しい値を振らせる。
+    // keepGuids=true … **同じエンティティ**を作り直す。Undo の復元と、プレハブ適用の
+    //   伝播（消してから作り直す）がこれ。guid を引き継がないと、参照が guid を向いた
+    //   瞬間に Undo やプレハブ適用のたびに黙って参照が切れる。
     static entt::entity InstantiateSubtree(Scene& scene, const std::string& jsonStr,
                                            const std::string& assetsDir,
-                                           std::vector<entt::entity>* outAll = nullptr);
+                                           std::vector<entt::entity>* outAll = nullptr,
+                                           bool keepGuids = false);
     // root + 子孫を .prefab ファイルへ保存
     static bool SavePrefab(const Scene& scene, entt::entity root,
                            const std::string& filePath, const std::string& assetsDir);

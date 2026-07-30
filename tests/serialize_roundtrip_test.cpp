@@ -38,7 +38,9 @@
 #include <cstddef>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>             // .prefab に guid が漏れていないかをファイルで見る
 #include <functional>
+#include <iterator>
 #include <string>
 #include <vector>
 #include <nlohmann/json.hpp>   // guid の JSON を直接検査する
@@ -1439,6 +1441,72 @@ static void Test_DuplicateGetsNewGuid()
     if (g1) CHECK(g1->value != origGuid);
 }
 
+// 「同じエンティティを作り直す」経路（Undo の復元 / プレハブ適用の伝播）は guid を保つこと。
+// ★これが無いと、参照が guid を向いた瞬間に Undo とプレハブ適用のたびに黙って参照が切れる。
+//   実際 ApplyPrefabToInstances には guid を戻すコードが最初からあったが、元データを作る
+//   SerializeSubtree が guid を書いていなかったので常に 0 を読んでいて一度も動いていなかった。
+//   「復元コードがある」ことと「復元されている」ことは別物なので、ここで実際に見る。
+static void Test_SubtreeRestoreKeepsGuid()
+{
+    Scene sc;
+    entt::entity a = entt::null;
+    {
+        auto& reg = sc.GetRegistry();
+        a = reg.create();
+        reg.emplace<NameTag>(a, NameTag{"Barrel"});
+        reg.emplace<Transform>(a);
+    }
+    (void)SceneSerializer::SaveToString(sc, "");   // ここで guid が確定する
+    const auto* g0 = sc.GetRegistry().try_get<EntityGuid>(a);
+    CHECK(g0 != nullptr && g0->value != 0);
+    const uint64_t orig = g0 ? g0->value : 0;
+
+    const std::string snap = SceneSerializer::SerializeSubtree(sc, a, "");
+    CHECK(!snap.empty());
+    {   // スナップショット自体に guid が入っていること（ここが空だと以下の検査は無意味）
+        nlohmann::json j = nlohmann::json::parse(snap, nullptr, /*allow_exceptions=*/false);
+        CHECK(!j.is_discarded());
+        CHECK(!j.is_discarded() && j.contains("entities") && j["entities"].size() == 1
+              && j["entities"][0].contains("guid"));
+    }
+
+    sc.GetRegistry().destroy(a);
+
+    std::vector<entt::entity> all;
+    const entt::entity restored =
+        SceneSerializer::InstantiateSubtree(sc, snap, "", &all, /*keepGuids*/ true);
+    CHECK(restored != entt::null);
+    const auto* g1 = sc.GetRegistry().try_get<EntityGuid>(restored);
+    CHECK(g1 != nullptr);
+    if (g1) CHECK(g1->value == orig);
+}
+
+// 既定（keepGuids=false）は従来どおり guid を捨てること。
+// 貼り付け・プレハブの新規配置は「別のエンティティ」なので、上の修正のついでに
+// ここまで引き継ぐようになっていたら同じ guid が 2 体できて参照先が曖昧になる。
+static void Test_SubtreeInstantiateDropsGuidByDefault()
+{
+    Scene sc;
+    entt::entity a = entt::null;
+    {
+        auto& reg = sc.GetRegistry();
+        a = reg.create();
+        reg.emplace<NameTag>(a, NameTag{"Crate"});
+        reg.emplace<Transform>(a);
+    }
+    (void)SceneSerializer::SaveToString(sc, "");
+    const auto* g0 = sc.GetRegistry().try_get<EntityGuid>(a);
+    CHECK(g0 != nullptr && g0->value != 0);
+    const uint64_t orig = g0 ? g0->value : 0;
+
+    const std::string snap = SceneSerializer::SerializeSubtree(sc, a, "");
+    std::vector<entt::entity> all;
+    const entt::entity pasted = SceneSerializer::InstantiateSubtree(sc, snap, "", &all);
+    CHECK(pasted != entt::null && pasted != a);
+    const auto* g1 = sc.GetRegistry().try_get<EntityGuid>(pasted);
+    CHECK(g1 == nullptr || g1->value != orig);   // 未設定 = 次の保存で新しい値が振られる
+}
+
 // ---------------------------------------------------------------------------
 // リネームで名前ベースの参照が切れないこと。
 // 実行時の解決は「名前一致」なので、切れてもエラーは出ず「なぜか動かない」だけになる。
@@ -1592,6 +1660,17 @@ static void Test_PrefabApplyKeepsInstanceOverrides()
         reg.destroy(t);
     }
 
+    // .prefab は「型」であってインスタンスではないので guid を持ち込まないこと。
+    // （SerializeSubtree は Undo/伝播のために guid を書くようになったので、
+    //   SavePrefab がそれを落としていないとインスタンスの guid がファイルに残る）
+    {
+        std::ifstream ifs(assets + rel);
+        const std::string body((std::istreambuf_iterator<char>(ifs)),
+                                std::istreambuf_iterator<char>());
+        CHECK(!body.empty());
+        CHECK(body.find("\"guid\"") == std::string::npos);
+    }
+
     entt::entity a = SceneSerializer::InstantiatePrefab(sc, assets + rel, assets);
     entt::entity b = SceneSerializer::InstantiatePrefab(sc, assets + rel, assets);
     CHECK(a != entt::null && b != entt::null && a != b);
@@ -1605,6 +1684,14 @@ static void Test_PrefabApplyKeepsInstanceOverrides()
         Transform tf; tf.parent = b; tf.position = {0.0f, 2.0f, 0.0f};
         reg.emplace<Transform>(extra, tf);
     }
+
+    // 一度保存して guid を確定させ、B の guid を控える。
+    // ★プレハブ適用は B を「消して作り直す」ので、guid を引き継がないと伝播のたびに
+    //   全インスタンスの guid が回る。参照が guid を向いた瞬間に黙って切れる形になる。
+    (void)SceneSerializer::SaveToString(sc, assets);
+    const auto* bg = reg.try_get<EntityGuid>(b);
+    CHECK(bg != nullptr && bg->value != 0);
+    const uint64_t bGuid = bg ? bg->value : 0;
 
     // A 側でプレハブそのものを直して「適用」
     reg.get<PointLight>(a).intensity = 7.0f;
@@ -1630,6 +1717,12 @@ static void Test_PrefabApplyKeepsInstanceOverrides()
     CHECK_F(reg.get<PointLight>(b2).range, 10.0f);
     // 紐付けが外れていない（外れると以後 適用/元に戻す が効かなくなる）
     CHECK(reg.all_of<PrefabLink>(b2));
+    // ★guid が回っていない（伝播は「同じインスタンスの作り直し」であってコピーではない）
+    {
+        const auto* bg2 = reg.try_get<EntityGuid>(b2);
+        CHECK(bg2 != nullptr);
+        if (bg2) CHECK(bg2->value == bGuid);
+    }
 
     // 手で足した子が生き残り、作り直した B にぶら下がったまま
     entt::entity extra2 = findByName("HandAdded");
@@ -1702,6 +1795,8 @@ int main()
     Test_GuidSurvivesArrayInsertion();
     Test_LegacySceneWithoutGuid();
     Test_DuplicateGetsNewGuid();
+    Test_SubtreeRestoreKeepsGuid();
+    Test_SubtreeInstantiateDropsGuidByDefault();
     Test_RenameRewritesNameRefs();
     Test_AssetRefRewrite();
     Test_PrefabApplyKeepsInstanceOverrides();

@@ -114,7 +114,9 @@ void SpawnPrefabCommand::Redo()
     if (m_snapshot.empty()) return;
     auto& reg = m_scene->GetRegistry();
     std::vector<entt::entity> all;
-    SceneSerializer::InstantiateSubtree(*m_scene, m_snapshot, m_assetsDir, &all);
+    // keepGuids=true: Undo/Redo で戻すのは「同じエンティティ」。guid を振り直すと、
+    // 参照が guid を向いた瞬間に Undo のたびに黙って参照が切れる。
+    SceneSerializer::InstantiateSubtree(*m_scene, m_snapshot, m_assetsDir, &all, /*keepGuids*/ true);
     m_entities = std::move(all);  // 新しい ID 群に更新
     // root（先頭）の外部親を張り直す（親が既に消えていれば黙って null のまま＝安全）
     if (!m_entities.empty() && reg.valid(m_entities[0])
@@ -143,7 +145,8 @@ void SwapSubtree(Scene* scene, const std::string& assetsDir, const std::string& 
 
     if (incomingJson.empty()) return;
     std::vector<entt::entity> all;
-    SceneSerializer::InstantiateSubtree(*scene, incomingJson, assetsDir, &all);
+    // keepGuids=true: Undo/Redo で戻すのは「同じエンティティ」（上の Redo と同じ理由）。
+    SceneSerializer::InstantiateSubtree(*scene, incomingJson, assetsDir, &all, /*keepGuids*/ true);
     entities = std::move(all);
 
     if (!entities.empty() && reg.valid(entities[0]) && externalParent != entt::null

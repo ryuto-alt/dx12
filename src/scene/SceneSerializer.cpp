@@ -2277,6 +2277,13 @@ std::string SceneSerializer::SerializeSubtree(const Scene& scene, entt::entity r
     for (auto e : order)
     {
         json ej = SerializeEntityJson(reg, e, assetsDir);
+        // ★guid も書く。書かないと、この JSON から作り直す経路（Undo の復元・
+        //   プレハブ適用の伝播）が「同じエンティティ」を復元しているのに guid だけ
+        //   別物になる。ApplyPrefabToInstances には元々 guid を戻すコードがあるが、
+        //   ここが書いていなかったので常に 0 を読んでいて一度も動いていなかった。
+        //   .prefab ファイルには残したくないので SavePrefab 側で落とす。
+        if (const auto* g = reg.try_get<EntityGuid>(e))
+            ej["guid"] = GuidToHex(g->value);
         const auto& tf = reg.get<Transform>(e);
         if (e != root && tf.parent != entt::null)
         {
@@ -2534,7 +2541,8 @@ int SceneSerializer::CountAssetPathRefs(const Scene& scene, const std::string& r
 
 entt::entity SceneSerializer::InstantiateSubtree(Scene& scene, const std::string& jsonStr,
                                                  const std::string& assetsDir,
-                                                 std::vector<entt::entity>* outAll)
+                                                 std::vector<entt::entity>* outAll,
+                                                 bool keepGuids)
 {
     json root;
     try { root = json::parse(jsonStr); }
@@ -2563,10 +2571,9 @@ entt::entity SceneSerializer::InstantiateSubtree(Scene& scene, const std::string
             const std::string oldName = ej.value("name", std::string("Unnamed"));
             const std::string newName = MakeUniqueName(scene, oldName);
             copy["name"] = newName;
-            // ★GUID は引き継がない。複製・プレハブ展開・貼り付けは「別のエンティティ」なので、
-            //   元と同じ guid を持たせると参照先が曖昧になり、guid → entity の対応も壊れる。
-            //   ここで消しておけば、この後の保存時に新しい値が自動で振られる。
-            //   親子は下の 2 パス目が index で結び直すので、ここで消しても問題ない。
+            // ★GUID は JSON からは渡さない。InstantiateEntityJson は複製・貼り付け・
+            //   モデル差し替えからも呼ばれるので、そちらで guid が重複しないよう常に消す。
+            //   keepGuids のときは生成後に下で emplace し直す（この関数の中だけで完結させる）。
             copy.erase("guid");
             copy.erase("parentGuid");
             // 地形/スカルプトの外部ファイルを複製先専用にする（共有バグの根治はここ）
@@ -2577,6 +2584,14 @@ entt::entity SceneSerializer::InstantiateSubtree(Scene& scene, const std::string
         {
             Logger::Error("サブツリーのエンティティ [{}] をスキップしました（値不正）: {}",
                           created.size(), ex.what());
+        }
+        // 同じエンティティを作り直している経路（Undo の復元 / プレハブ適用の伝播）だけ
+        // guid を戻す。ここを忘れると、参照が guid を向いた瞬間に Undo とプレハブ適用の
+        // たびに黙って参照が切れる。
+        if (keepGuids && e != entt::null)
+        {
+            if (const uint64_t g = GuidFromJson(ej, "guid"); g != 0)
+                reg.emplace_or_replace<EntityGuid>(e, EntityGuid{g});
         }
         created.push_back(e);
     }
@@ -2886,12 +2901,6 @@ int MergePrefabInstances(Scene& scene, const std::string& sourcePath, const json
         merged["entities"] = Merge3WaySubtree(mine["entities"], oldBase, newBase);
         if (merged["entities"].empty()) continue;
 
-        // guid を控える。InstantiateSubtree は「別のエンティティ」として作るので guid を
-        // 捨てるが、ここは同じインスタンスの作り直しなので元の値へ戻す
-        std::vector<uint64_t> guids;
-        guids.reserve(merged["entities"].size());
-        for (const auto& ej : merged["entities"]) guids.push_back(GuidFromJson(ej, "guid"));
-
         const entt::entity externalParent =
             reg.all_of<Transform>(root) ? reg.get<Transform>(root).parent : entt::null;
 
@@ -2906,14 +2915,14 @@ int MergePrefabInstances(Scene& scene, const std::string& sourcePath, const json
         for (auto it = old.rbegin(); it != old.rend(); ++it)
             if (reg.valid(*it)) reg.destroy(*it);
 
+        // ★keepGuids=true。ここは「同じインスタンスの作り直し」なので guid を引き継ぐ。
+        //   以前は生成後に自前で戻していたが、その元データ（SerializeSubtree の出力）が
+        //   guid を書いていなかったので常に 0 を読んでいて、伝播のたびに全インスタンスの
+        //   guid が回っていた（参照が guid を向いた瞬間に効く地雷だった）。
         std::vector<entt::entity> created;
-        const entt::entity newRoot =
-            SceneSerializer::InstantiateSubtree(scene, merged.dump(), assetsDir, &created);
+        const entt::entity newRoot = SceneSerializer::InstantiateSubtree(
+            scene, merged.dump(), assetsDir, &created, /*keepGuids*/ true);
         if (newRoot == entt::null) continue;
-
-        for (size_t i = 0; i < created.size() && i < guids.size(); ++i)
-            if (created[i] != entt::null && guids[i] != 0)
-                reg.emplace_or_replace<EntityGuid>(created[i], EntityGuid{guids[i]});
 
         if (externalParent != entt::null && reg.valid(externalParent)
             && reg.all_of<Transform>(newRoot))
@@ -3045,12 +3054,18 @@ bool SceneSerializer::SavePrefab(const Scene& scene, entt::entity root,
     std::string s = SerializeSubtree(scene, root, assetsDir);
     if (s.empty()) return false;
 
-    // 自己参照リンクを落としてから書く（下の StripPrefabLinks のコメント参照）
+    // 自己参照リンクを落としてから書く（下の StripPrefabLinks のコメント参照）。
+    // guid も落とす: SerializeSubtree は Undo/プレハブ伝播のために guid を書くが、
+    // .prefab は「型」であってインスタンスではないので、特定インスタンスの guid が
+    // ファイルに残ると git の差分が無意味に動くし、読む人を誤解させる。
+    // （InstantiateSubtree も既定で guid を捨てるので、残っていても動作は変わらない）
     {
         json j = json::parse(s, nullptr, /*allow_exceptions=*/false);
         if (!j.is_discarded())
         {
             StripPrefabLinks(j);
+            if (j.contains("entities") && j["entities"].is_array())
+                for (auto& ej : j["entities"]) { ej.erase("guid"); ej.erase("parentGuid"); }
             s = j.dump(2);
         }
     }
