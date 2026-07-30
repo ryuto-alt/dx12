@@ -1856,6 +1856,20 @@ void UiTestHarness::PostRender()
         ++warmup;
         if (warmup < 60) return;
         if (warmup < 1800 && ImGui::FindWindowByName(kWinHierarchyName) == nullptr) return;
+        // ★打ち切り後もヒエラルキーが無い＝エディタが出ていない（引数なし起動は
+        //   前回プロジェクトを復元せずランチャーで止まる。Application.cpp:1173）。
+        //   ここでテストを流すと 25 件が「パネルが見つからない」で落ち、本物の UI 不具合に
+        //   見える。実際それで小一時間溶かした。原因を名指しして走らせずに終わる。
+        if (ImGui::FindWindowByName(kWinHierarchyName) == nullptr)
+        {
+            Logger::Error("UI テストを実行できません: エディタが開いていません"
+                          "（ランチャー画面のまま）。--project <プロジェクトのフォルダ> を付けて"
+                          "起動してください。例: DX12Engine.exe --ui-tests-run-all --project .");
+            m_exitCode  = 2;
+            m_wantsExit = true;
+            m_started   = true;
+            return;
+        }
         QueueTests(nullptr, false, m_deepOnly ? 1 : -1);
         m_started = true;
         Logger::Info("UI テスト: {} 件をキューへ投入しました ({})",

@@ -329,11 +329,18 @@ nlohmann::json McpComponentSchema()
         F("actions", "array of {when:int(0=Enter,1=Exit,2=Stay), type:int(0..10), target:string, "
                      "targetGuid:string(16-hex, authoritative over target), str:string, num:number, vec:float3}", json::array()),
     })));
+    // ★これは「動く部品」ではなく**ただのパラメータ置き場**。C++ に更新システムは無い
+    //   (Gimmick を読むのは保存/復元・Inspector・scene:gimmicks() だけ。grep 済み)。
+    //   説明が無いと「kind=SpikePulse, period=4 を置いたのに動かない」で必ず詰まる。
     comps.push_back(C("gimmick", true, true, json::array({
         F("kind", "int (0=StaticWall,1=SpikePulse,2=SlideX,3=SlideZ)", 0), F("period", "float", 4.0),
         F("phase", "float (0..1)", 0.0), F("amplitude", "float", 1.6), F("threshold", "float (0..1)", 0.5),
         F("solid", "bool", true), F("deadly", "bool", false),
-    })));
+    }), "DATA ONLY - nothing in C++ moves it. Adding this component makes the entity do nothing by itself. "
+        "A Lua script must read the parameters and drive the motion, e.g. "
+        "`for _,g in ipairs(scene:gimmicks()) do local t=(time.now()/g.period+g.phase)%1 ... end`. "
+        "scene:gimmicks() returns {e=Entity, name, kind, period, phase, amplitude, threshold, solid, deadly}. "
+        "kind/threshold/solid/deadly are conventions your script must honour, not engine behaviour."));
     comps.push_back(C("luaScript", false, true, json::array({
         F("scriptPath", "string (assets-relative)", ""), F("enabled", "bool", true),
     }), "attach via dx12_attach_lua_component (not set_component). Removable via MCP."));
@@ -538,7 +545,14 @@ nlohmann::json McpLuaApi()
         "isValid() -> bool",
         "name  (string, read-only property)",
         "transform  (Transform getter。フィールドは書込可: entity.transform.position = Vec3.new(x,y,z)。ただし entity.transform 自体の再代入は read-only) — 唯一直接読めるコンポーネントデータ",
-        "hasComponent(type:string) -> bool  (type: Transform,MeshRenderer,SkeletalAnimation,AnimatorController,NodeAnimation,GridPlane,PointLight,DirectionalLight,SpotLight,Camera,AudioSource,Gimmick,ParticleEmitter,Trigger,CharacterController,UICanvas,UIRect,UIImage,UIText,UIButton,UISlider,UIToggle,UIScrollView,UILayout,UIAnimator)",
+        // ★型名は ScriptEngine.cpp:507-544 の if 連鎖と 1:1。ここが短いと「対応していない」と
+        //   誤解されて使われなくなるので、増やしたら必ず両方直すこと。
+        "hasComponent(type:string) -> bool  (type: Transform,NameTag,Tag,DataComponent,MeshRenderer,"
+        "SkeletalAnimation,NodeAnimation,GridPlane,PointLight,DirectionalLight,SpotLight,Camera,Sprite2D,"
+        "AudioSource,Gimmick,RigidBody,BoxCollider,SphereCollider,CapsuleCollider,ConvexHullCollider,"
+        "CharacterController,LuaScript,ParticleEmitter,TrailRenderer,DecalComponent,Trigger,UICanvas,UIRect,"
+        "UIImage,UIText,UIButton,UISlider,UIToggle,UIScrollView,UILayout,UIAnimator,AnimatorController,FootIK)"
+        "  ※知らない型名は false ではなくログに警告が出る(タイプミスを黙って握り潰さない)",
         "playAnim(clipIndex:int, blend:float)",
         "playAnimByName(name:string, blend:float)",
         "setLooping(loop:bool)",
@@ -599,7 +613,11 @@ nlohmann::json McpLuaApi()
     objects.push_back(O("scene", "global", json::array({
         "spawn(name,modelPath,pos,rot,scale) -> entity", "spawnBox(name,pos,rot,scale) -> entity",
         "spawnSphere(name,pos,radius) -> entity", "spawnPlane(name,pos,size,grid) -> entity",
-        "remove(entity)", "getEntityCount() -> int", "findEntity(name) -> entity",
+        "remove(entity)", "getEntityCount() -> int",
+        // ★見つからなくても nil ではなく「無効な Entity」が返る。`if e then` は常に真になる。
+        //   transform を触れば例外で気づけるが、hasComponent は false を返すだけなので黙って外れる。
+        "findEntity(name) -> entity  ★見つからなくても nil ではない。必ず e:isValid() で確かめる"
+        "（`if e then` は常に true。無効な e への e.transform は例外、e:hasComponent は常に false）",
         "setUVScale(entity,u,v)", "setColor(entity,r,g,b)", "gimmicks() -> table",
         "setSpriteEffect(entity,value)  (Sprite2D.effectValue、カスタムシェーダー用)",
         "setSpriteAlpha(entity,alpha)  (Sprite2D不透明度0..1、半透明演出用)",
@@ -607,14 +625,23 @@ nlohmann::json McpLuaApi()
         "setSpriteUV(entity,u0,v0,u1,v1)  (Sprite2D.uvMin/uvMax 直接指定)",
         "setSpriteScroll(entity,su,sv)  (Sprite2D UVスクロール速度・単位/秒。溶岩/滝等)",
         "setSpriteAnim(entity,frames,fps,cols,row)  (Sprite2D フリップブック。frames=0で停止)",
+        "setSpriteAnimMode(entity,mode)  (0=ループ 1=単発 2=往復)",
+        "restartSpriteAnim(entity)  (設定は変えず頭から再生し直す)",
+        "isSpriteAnimDone(entity) -> bool  (単発の再生完了。爆発スプライトを消すタイミング)",
         "setMeshEffect(entity,value)  (MeshRenderer.effectValue、カスタムシェーダー用)",
         "setMeshParams(entity,x,y,z,w)  (MeshRenderer.shaderParams、カスタムシェーダー汎用float4)",
+        "setMeshUvScroll(entity,su,sv)  (MeshRenderer の UV スクロール速度・単位/秒。滝/溶岩/コンベア)",
+        "setMeshAnim(entity,frames,fps,cols,row) / setMeshAnimMode(entity,mode) / isMeshAnimDone(entity) -> bool"
+        "  (3Dメッシュのフリップブック。Sprite2D 版と同じ流儀)",
         "queryByTag(tag) -> table(names)", "queryInBox(minX,minZ,maxX,maxZ,tag?) -> table(names)",
         "setUiText(e,text) / getUiText(e)  (setはタイプライターを先頭から再生し直す)",
         "setUiTypewriter(e,charsPerSec)  (0=即全表示。UIText.typewriterSpeed)",
         "isUiTypewriterDone(e) -> bool  (会話の「クリックで次へ」判定用)",
         "setUiColor(e,r,g,b,a)", "setUiVisible(e,visible)",
         "setUiTexture(e,path)", "setUiFill(e,amount) / getUiFill(e)  (UIImage.fillAmount 0..1)",
+        "setUiUvScroll(e,su,sv)  (UIImage の UV スクロール。流れる背景パターン)",
+        "setUiAnim(e,frames,fps,cols,row) / setUiAnimMode(e,mode) / restartUiAnim(e) / isUiAnimDone(e) -> bool"
+        "  (UIImage のフリップブック。★entity:playUiAnim/setUiAnimTime は .uianim の別物なので混同しない)",
         "setUiRotation(e,deg) / getUiRotation(e)  (UIRect.rotation 視覚回転・度)",
         "getUiSlider(e) / setUiSlider(e,v)  (UISlider実値。setはonChange発火しない)",
         "getUiToggle(e) / setUiToggle(e,on)  (UIToggle。setはonChange発火しない)",
@@ -634,10 +661,45 @@ nlohmann::json McpLuaApi()
         "getSkybox() -> { envMapPath=, iblIntensity=, skyboxIntensity=, drawSkybox= }",
         "setSkybox{ iblIntensity=, skyboxIntensity=, drawSkybox= }  (渡したキーだけ上書き。envMapPath の実行時差し替えは非対応)",
     })));
-    objects.push_back(O("input", "global", json::array({
+    objects.push_back(O("input", "global (':' で呼ぶ)", json::array({
         "isKeyDown(vk) -> bool", "isKeyPressed(vk) -> bool", "isAsyncKeyDown(vk) -> bool",
         "isMouseCaptured() -> bool", "isRightMouseDown() -> bool",
         "getMouseDeltaX() -> float", "getMouseDeltaY() -> float", "setMouseCapture(b)",
+        "--- ゲームパッド(XInput。pad = 0..3) ---",
+        "isPadConnected(pad) -> bool", "getConnectedPadCount() -> int",
+        "isPadButtonDown(pad,button) -> bool / isPadButtonPressed(...) / isPadButtonReleased(...)"
+        "  (button は PAD_A/B/X/Y/LB/RB/BACK/START/LSTICK/RSTICK/DPAD_UP/DOWN/LEFT/RIGHT のグローバル定数)",
+        "getPadLeftStickX(pad)/getPadLeftStickY(pad)/getPadRightStickX(pad)/getPadRightStickY(pad) -> -1..1"
+        "  (デッドゾーン適用済み)",
+        "getPadLeftTrigger(pad)/getPadRightTrigger(pad) -> 0..1",
+        "setPadVibration(pad,low,high)  (low=強モーター/high=弱モーター。0..1。手動で止める)",
+        "setPadVibrationTimed(pad,low,high,sec)  (sec 秒鳴って自動停止)",
+        "★prelude に名前で呼べる簡易版がある: padDown(\"A\") / padStick(\"left\") 等（下の prelude 欄）",
+    })));
+    // ★display / net はどちらも「エンジンには完全に実装があるのに describe_lua_api に
+    //   1 文字も無い」状態だった。オプション画面もマルチプレイも、ここに載っていなければ
+    //   AI からは存在しないのと同じ。
+    objects.push_back(O("display", "global (':' で呼ぶ)。映像設定", json::array({
+        "setVSync(b) / getVSync() -> bool",
+        "setFpsLimit(n) / getFpsLimit() -> int  (0=無制限)",
+        "setWindowMode(\"windowed\"|\"borderless\"|\"fullscreen\") / getWindowMode() -> string",
+        "setResolution(w,h) / getResolution() -> w,h  (2値を返す)",
+        "getResolutions() -> { {w=,h=}, ... }  (選べる解像度の一覧。設定画面のドロップダウン用)",
+        "★set 系は即適用＋ settings.json へ保存され、ゲーム起動時に自動で復元される",
+    })));
+    objects.push_back(O("net", "global (':' で呼ぶ)。マルチプレイ", json::array({
+        "host(port?) -> err:string  (\"\"=成功) / join(ip,port?) -> err:string / disconnect()",
+        "isServer() / isClient() / isConnected() -> bool", "localClientId() -> int",
+        "players() -> { {id=,rtt=,bytesSent=,bytesReceived=}, ... }",
+        "setInput{ moveX=,moveZ=,aimYaw=,aimPitch=,buttons=,jump= }  ★クライアント専用・毎フレーム呼ぶ"
+        "（呼ばなかったフレームは前回値が送られ続ける）",
+        "getInput(entity) -> table  ★サーバー専用。その entity の所有者の最新入力",
+        "spawn(prefabPath,x,y,z,owner?) -> netId:int, err:string  ★サーバー専用。netId=0 が失敗。"
+        "生成はフレーム境界で走るので完了は net.spawned イベントで受ける",
+        "despawn(entity) -> err:string  ★サーバー専用（即時）",
+        "findByNetId(netId) -> Entity  ※見つからなくても nil ではない。e:isValid() で確かめる",
+        "rpc(name,...) / rpcAll(name,...) / rpcClient(clientId,name,...) / onRpc(name,fn)",
+        "★RPC 引数は number/string/boolean/Vec3 のみ。テーブル/関数は**警告なしで nil になる**",
     })));
     objects.push_back(O("camera", "global", json::array({
         "getPosition()/setPosition(v)", "getYaw()/setYaw(f)", "getPitch()/setPitch(f)",
@@ -662,7 +724,9 @@ nlohmann::json McpLuaApi()
     objects.push_back(O("audio", "global", json::array({
         "playBGM(path)/stopBGM()/pauseBGM()/resumeBGM()", "seekBGM(sec)  (再生位置を秒指定でジャンプ。ループ維持、イントロスキップ等)", "setBGMRate(ratio)  (再生速度倍率・ピッチ連動0.05〜2.0。1=通常。playBGMで1.0に戻る)", "setListener(x,y,z)  (空間SFXのリスナー位置上書き。プレイヤー中心の定位に。毎フレーム呼ぶ想定)", "playSFX(path)",
         "playSpatial(path,x,y,z,minD,maxD,vol?,loop?)", "stopAllSFX()",
-        "setMasterVolume/setBGMVolume/setSFXVolume(v)", "getBGMList()/getSFXList() -> table",
+        "setMasterVolume/setBGMVolume/setSFXVolume(v)",
+        "getMasterVolume()/getBGMVolume()/getSFXVolume() -> float  (設定画面のスライダー初期値に要る)",
+        "getBGMList()/getSFXList() -> table",
     })));
     objects.push_back(O("time", "global ('.' で呼ぶ)", json::array({
         "time.now() -> float  — Play開始からの経過秒(タイムスケール適用済み)",
@@ -720,7 +784,13 @@ nlohmann::json McpLuaApi()
         "events:on(name,fn) -> id", "events:off(id)", "events:emit(name,data?)", "events:clear()",
     })));
     objects.push_back(O("globals", "", json::array({
-        "log(msg)", "saveNum(key,val)", "loadNum(key,default?) -> double",
+        "log(...) / logWarn(...) / logError(...) / print(...)  (可変長。tostring でタブ区切り連結。"
+        "print は素の Lua print を差し替えたもの＝どれもエディタのコンソールに出る)",
+        "saveNum(key,val) / loadNum(key,default?) -> double  ★メモリのみ。シーン間の受け渡し用でアプリ終了で消える",
+        "savePersist(key,val) / loadPersist(key,default?) -> double  ★settings.json へディスク永続。"
+        "音量・映像設定などはこちら（saveNum と間違えると「設定が保存されない」になる）",
+        "PAD_A/PAD_B/PAD_X/PAD_Y/PAD_LB/PAD_RB/PAD_BACK/PAD_START/PAD_LSTICK/PAD_RSTICK/"
+        "PAD_DPAD_UP/PAD_DPAD_DOWN/PAD_DPAD_LEFT/PAD_DPAD_RIGHT  (input:isPadButton* に渡す)",
         "loadScene(rel)", "nextScene()", "quit()", "fadeToScene(rel,dur?)",
         "preloadScene(rel)  (次シーンのテクスチャ/モデルを先読み。切替はしない=トランジションのカクつき対策)",
         "transitionToScene(rel,type:int,dur?)  (type: 0=Fade,1=横Wipe,2=Circle,3=縦Wipe,4=シークバー早送り)",
@@ -729,12 +799,35 @@ nlohmann::json McpLuaApi()
     })));
     objects.push_back(O("prelude", "global (高レベルヘルパ)", json::array({
         "keyDown(name) -> bool / keyPressed(name) -> bool  (name: \"W\",\"SPACE\",\"ESC\" 等)",
+        "padConnected(pad?) / padDown(name,pad?) / padPressed(name,pad?) / padReleased(name,pad?)"
+        "  (name は \"A\",\"START\",\"DPAD_UP\" 等。PAD_* 定数を書かずに済む)",
+        "padStick(\"left\"|\"right\", pad?) -> x,y / padTrigger(\"left\"|\"right\", pad?) -> 0..1",
+        "padVibrate(low,high,seconds?,pad?)  (seconds 省略で padVibrate(0,0) するまで鳴り続ける)",
         "actor(name,opts?) -> Actor", "cameraFollow/cameraTPS/cameraLockOn(...)",
         "goToScene(path,dur?)", "win(dur?)", "clamp(v,lo,hi)", "lerp(a,b,t)", "angleDelta(from,to)",
-        "FX.explosion/shockwave/spark/...", "vfx.register(name,fn) / vfx.play(name,x,y,z,scale?)",
+        // ★「FX.explosion/shockwave/spark/...」の「...」は名前が分からず引けないので全部書く。
+        "FX.explosion/shockwave/spark/trail/supernova/pillar(x,y,z,...)",
+        "FX.hit(amount?)  (画面パルス) / FX.beam(x0,y0,z0,x1,y1,z1,r,g,b,width,kind,intensity)",
+        "FX.lightning(x0,y0,z0,x1,y1,z1,r,g,b,width?)",
+        "vfx.register(name,fn) / vfx.play(name,x,y,z,scale?)",
         "uifx.punch(e,s?,dur?) / flash(e,r?,g?,b?,dur?) / shake(e,amp?,dur?) / hit(e,amp?) / "
         "bounceIn(e,dur?) / flipIn(e,dur?) / popOut(e,dur?) / fadeIn(e,dur?) / fadeOut(e,dur?)"
         "  (ゲーム内UIの定番演出ワンライナー。e は Entity かボタンイベントの e.source)",
+        "uifx.slideInLeft/slideInRight/slideInUp(e,delay?,dist?,dur?) / popIn(e,delay?,dur?)"
+        "  (delay 付き＝下の stagger と組み合わせる前提)",
+        "uifx.stagger(list, step?, fn, ...)  (list の各要素を step 秒ずつ遅らせて fn に流す。"
+        "例: uifx.stagger(items, 0.07, uifx.slideInLeft))",
+        "uifx.countTo(e,to,dur?,fmt?)  (数字ロール) / uifx.fillTo(e,v,dur?,easing?)  (ゲージ増減)",
+        "uifx.damageBar(front, ghost, v, ghostDelay?)  (格ゲー式。前景バーは即・後追いの薄いバーが遅れて減る)",
+        "uifx.wiggle(e,deg?,dur?) / uifx.heartbeat(e,s?,dur?)",
+    })));
+    // ★actor() は載っていたのにメソッドが 1 つも載っていなかった＝返り値の使い道が分からない状態。
+    objects.push_back(O("Actor", "prelude の actor(name,opts?) の戻り値", json::array({
+        "Actor:entity() -> Entity|nil  (名前で毎回引き直す。消えていれば nil)",
+        "Actor:valid() -> bool",
+        "Actor:pos() -> Vec3 / Actor:setPos(x,y,z)",
+        "Actor:moveTopDown(dt, \"WASD\"|\"Arrows\")  (見下ろし移動。solid 相手には壁ズリする)",
+        "Actor:reached(other, radius?) -> bool  (XZ 距離での到達判定。other も Actor)",
     })));
     objects.push_back(O("Tween / Flicker / Lighting", "global (prelude。ライティング演出レイヤ)", json::array({
         "Tween(target, prop, to, duration, opts?) -> id  — 汎用プロパティ補間。target は table でも "

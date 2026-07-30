@@ -556,3 +556,16 @@ if(MSVC)
     target_compile_definitions(McpParamSpecTests PRIVATE ${DX12_COMPILE_DEFS})
 endif()
 add_test(NAME McpParamSpecTests COMMAND McpParamSpecTests)
+
+# Lua 束縛 ⇔ dx12_describe_lua_api のドリフト検出（display / net がテーブルごと
+# 未ドキュメントだったのを二度と起こさないため）。McpParamSpecTests と同じく
+# ソースをテキストとして読むだけなのでエンジンをリンクしない。
+add_executable(LuaApiDocTests lua_api_doc_test.cpp)
+target_compile_definitions(LuaApiDocTests PRIVATE
+    DX12E_SCRIPT_ENGINE_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../src/scripting/ScriptEngine.cpp"
+    DX12E_APP_INTERNAL_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../src/core/ApplicationInternal.cpp")
+if(MSVC)
+    target_compile_options(LuaApiDocTests PRIVATE ${DX12_COMPILE_OPTIONS})
+    target_compile_definitions(LuaApiDocTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME LuaApiDocTests COMMAND LuaApiDocTests)
