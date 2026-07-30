@@ -520,10 +520,27 @@ void Application::RegisterMcpEntityMethods()
                 if (it != m_mcpIdempotency.end() &&
                     m_scene->GetRegistry().valid(static_cast<entt::entity>(it->second)))
                 {
+                    // ★以前は「要求された」name / meshPath をそのまま返していた。
+                    //   キーは idempotency_key だけなので、同じキーで別の path / position を
+                    //   投げても ok:true が返り、実体は動かないまま**要求した方のモデル名**を
+                    //   報告する。同じキーを使い回して N 個置こうとすると、N 回成功が返って
+                    //   実体は 1 個、というのが検知できなかった。
+                    //   実体の値（uniquify 済みの NameTag と実際の modelPath）を返す。
+                    const entt::entity replayed = static_cast<entt::entity>(it->second);
+                    auto& rreg = m_scene->GetRegistry();
+                    const std::string actualName = rreg.all_of<NameTag>(replayed)
+                                                 ? rreg.get<NameTag>(replayed).name : std::string{};
+                    const std::string actualPath = rreg.all_of<MeshRenderer>(replayed)
+                                                 ? rreg.get<MeshRenderer>(replayed).modelPath : std::string{};
                     resp["ok"] = true;
-                    resp["result"] = {{"entityId", it->second}, {"name", name},
-                                      {"meshPath", path}, {"sceneGeneration", m_sceneGeneration},
+                    resp["result"] = {{"entityId", it->second}, {"name", actualName},
+                                      {"meshPath", actualPath}, {"sceneGeneration", m_sceneGeneration},
                                       {"idempotentReplay", true}};
+                    if (actualPath != path)
+                        resp["result"]["note"] =
+                            "同じ idempotency_key で別のモデルが要求されましたが、"
+                            "初回に作られたエンティティをそのまま返しています（新規生成はしていません）。"
+                            "別の物を置くならキーを変えてください。";
                 }
             }
             if (!resp.contains("result"))

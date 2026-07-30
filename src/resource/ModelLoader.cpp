@@ -645,6 +645,11 @@ ModelData ModelLoader::LoadFromFile(
     // 左下原点(OpenGL流)で返すため、FlipUVs で D3D の左上原点に揃う(実機検証済み)。
     unsigned int flags =
         aiProcess_Triangulate |
+        // ★SortByPType: Triangulate だけだと線・点のプリミティブがそのまま残り、
+        //   同じインデックスバッファへ 1〜2 個ずつ流し込まれてインデックス数が 3 の倍数で
+        //   なくなる（meshopt_generateVertexRemap / meshopt_simplify にも壊れた入力が渡る）。
+        //   三角形以外を別メッシュへ分けておけば、下の面ループで自然に弾ける。
+        aiProcess_SortByPType |
         aiProcess_GenNormals |
         aiProcess_CalcTangentSpace |
         aiProcess_JoinIdenticalVertices |
@@ -734,6 +739,32 @@ ModelData ModelLoader::LoadFromFile(
             //   → 選択は PickRestClip に集約した（以前はここが clips[0] 決め打ちで、
             //     Scene は "static" 優先だったため "static" が先頭でないファイルで食い違った）。
             // ---------------------------------------------------------------
+            // ★アニメーションが「在るが使えるトラックが 0 本」だとここが空になる
+            //   （glTF のモーフターゲット専用アニメ、空の FBX テイク等。
+            //   BuildAllNodeAnimClips は GetTrackCount()==0 のクリップを捨てる）。
+            //   以前はその場合ベイクを丸ごと飛ばしていたので、`mNumAnimations == 0` の
+            //   分岐にも `nodeAnimClips` 非空の分岐にも入らず **meshNodeTransforms が
+            //   一度も作られない** → 各サブメッシュがエンティティ原点へ重なって
+            //   「モデルが原点で潰れた山になる」。しかもファイルからアニメを消すと直る、
+            //   という理由の分からない壊れ方だった。
+            //   使えるクリップが無いなら「アニメ無し」と同じ扱い＝各ノードの既定変換で焼く。
+            if (nodeAnimClips.empty())
+            {
+                Logger::Warn("使えるノードアニメが 1 本もありません（トラック 0 本）。"
+                             "静的モデルとして各ノードの既定変換で焼きます: {}", filePath.string());
+                const u32 nodeCount = nodeGraph->GetNodeCount();
+                bakeGlobalMatrices.resize(nodeCount, DirectX::XMMatrixIdentity());
+                for (u32 i = 0; i < nodeCount; ++i)
+                {
+                    const SceneNode& sceneNode = nodeGraph->GetNode(i);
+                    const DirectX::XMMATRIX localMatrix =
+                        DirectX::XMLoadFloat4x4(&sceneNode.localDefault);
+                    bakeGlobalMatrices[i] = (sceneNode.parentIndex >= 0)
+                        ? localMatrix * bakeGlobalMatrices[static_cast<u32>(sceneNode.parentIndex)]
+                        : localMatrix;
+                }
+            }
+
             if (!nodeAnimClips.empty())
             {
                 const NodeAnimationClip* staticClip = PickRestClip(nodeAnimClips);
@@ -1048,6 +1079,18 @@ ModelData ModelLoader::LoadFromFile(
                                 cmdList, /*srgb=*/true, TextureUsage::BaseColor);
                             if (texture)
                                 material->albedoTexture = texture;
+                        }
+                        else
+                        {
+                            // ★mHeight != 0 = assimp が非圧縮 ARGB8888 で返した埋め込みテクスチャ。
+                            //   ここに else が無く、**何のログも出さずに捨てて**いた。
+                            //   結果 albedoTexture が null のまま既定の白テクスチャが張られ、
+                            //   「読み込みは成功したのにモデルが真っ白」になる
+                            //   （外部パスが見つからない側はちゃんと警告を出しているので、片方だけ無言だった）。
+                            Logger::Warn("埋め込みテクスチャが非圧縮形式のため読み込めません "
+                                         "({}x{}, hint='{}')。モデルは白いまま描画されます: {}",
+                                         embTex->mWidth, embTex->mHeight,
+                                         embTex->achFormatHint, filePath.string());
                         }
                     }
                     else if (texPath.C_Str()[0] == '*')
