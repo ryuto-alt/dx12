@@ -127,8 +127,17 @@ git checkout master                 # 現在の作業ブランチ（feat/engine-
   据え置いていた理由（Lua の physics:raycast が依存しているかも）を実際に調べたら
   `hit.normal` を読む Lua が 1 行も無かったので、フェイク版を削除して
   RaycastEx を Raycast へ統一した。今は 1 本だけで、返る normal は常に本物。
-- **glTF のインポート向きが Y-up モデルに対して過剰回転する**（Fox.glb が縦に立つ）。
-  スケルタルの計算とは無関係で、ModelLoader 側の座標変換の問題。別タスク。
+- ~~glTF のインポート向きが Y-up モデルに対して過剰回転する~~ … **この記載が古かった**。
+  実際にはこの節を書いた直後のコミット `0368820`（B13, 2026-07-26）で修正されている
+  （`ApplicationRender.cpp` が .gltf/.glb に無条件で入れていた rotation.x=90 を削除し、
+  Z-up でオーサリングされた glTF の軸変換ノードは `BoneNode::preTransform` へ畳み込む）。
+  この節だけ更新し忘れていた。2026-07-30 に実機で再確認:
+  `dx12_asset_info models/anim/Fox.glb` の AABB が Y(高さ)79 < Z(体長)155 ＝ 四つ足の正しい向き、
+  `dx12_preview_model` でも Fox は接地、CesiumMan は直立して歩行する。
+  ★ただし自動 +90 度時代に保存された `rotation:[90,0,0]` が **PerfTest の 5 エンティティ**
+  （main.json の Statue0/_001/_002/_003、quality.json の Gear）に残骸として残っている。
+  ローダーは直っているので見た目は当時のままだが、あれは今や「手で入れた回転」。
+  性能計測用シーンで向きは無関係なので放置でよい（直すなら rotation を [0,0,0] にするだけ）。
 
 ---
 

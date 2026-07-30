@@ -70,6 +70,9 @@ int RunValidate(const std::string& scenePathStr)
         else
         {
             std::set<std::string> names, dups;
+            // シーンに存在する guid。参照の正は guid なので、guid で解決できるものは
+            // 名前がどうであれ生きている（名前だけ見ると嘘の「参照切れ」を出す）。
+            std::set<std::string> guids;
             {
                 size_t i = 0;
                 for (const auto& ej : *entities)
@@ -80,6 +83,8 @@ int RunValidate(const std::string& scenePathStr)
                     {
                         std::string nm = ej.value("name", std::string{});
                         if (!nm.empty() && !names.insert(nm).second) dups.insert(nm);
+                        if (ej.contains("guid") && ej["guid"].is_string())
+                            guids.insert(ej["guid"].get<std::string>());
                     }
                     catch (const std::exception& e)
                     {
@@ -91,11 +96,18 @@ int RunValidate(const std::string& scenePathStr)
             for (const auto& d : dups)
                 warnings.push_back("duplicate entity name: " + d + " (references become ambiguous)");
 
-            auto checkRef = [&](const std::string& refName, const std::string& where)
+            // refGuid が空でなく、その guid がシーンに居るなら参照は生きている。
+            // guid が 0/未設定/死んでいるときだけ名前で見る（実行時の解決順と同じ）。
+            auto checkRef = [&](const std::string& refName, const std::string& refGuid,
+                                const std::string& where)
             {
+                if (!refGuid.empty() && guids.count(refGuid)) return;
                 if (refName.empty()) return;
                 if (!names.count(refName))
                     errors.push_back("unresolved entity reference: \"" + refName + "\" (" + where + ")");
+            };
+            auto jstr = [](const json& j, const char* key) -> std::string {
+                return (j.contains(key) && j[key].is_string()) ? j[key].get<std::string>() : std::string{};
             };
             auto checkScene = [&](const std::string& rel, const std::string& where)
             {
@@ -133,7 +145,8 @@ int RunValidate(const std::string& scenePathStr)
                             {
                                 std::string v = (pj.contains("value") && pj["value"].is_string())
                                     ? pj["value"].get<std::string>() : std::string{};
-                                checkRef(v, "entity prop \"" + pj.value("name", std::string{}) + "\" of " + nm);
+                                checkRef(v, jstr(pj, "valueGuid"),
+                                         "entity prop \"" + pj.value("name", std::string{}) + "\" of " + nm);
                             }
                         }
                     }
@@ -156,13 +169,15 @@ int RunValidate(const std::string& scenePathStr)
                 {
                     ++triggers;
                     const auto& tj = ej["trigger"];
-                    checkRef(tj.value("filter", std::string{}), "trigger filter of " + nm);
+                    checkRef(tj.value("filter", std::string{}), jstr(tj, "filterGuid"),
+                                 "trigger filter of " + nm);
                     if (tj.contains("actions") && tj["actions"].is_array())
                     {
                         for (const auto& aj : tj["actions"])
                         {
                             int type = aj.value("type", 0);
-                            checkRef(aj.value("target", std::string{}), "trigger action target of " + nm);
+                            checkRef(aj.value("target", std::string{}), jstr(aj, "targetGuid"),
+                                     "trigger action target of " + nm);
                             if (type == 7 || type == 8)  // LoadScene / FadeToScene
                                 checkScene(aj.value("str", std::string{}), "trigger action scene of " + nm);
                         }
