@@ -2441,7 +2441,7 @@ void Application::Update()
 // フット IK パス。FootIK + SkeletalAnimation を持つエンティティの足を地面に合わせる。
 //
 // FootIK.cpp（Animation ライブラリ）は entt も PhysicsSystem も知らない。
-// ここが「エンティティを走査して PhysicsSystem::RaycastEx を繋ぐ」接着層。
+// ここが「エンティティを走査して PhysicsSystem::Raycast を繋ぐ」接着層。
 // ---------------------------------------------------------------------------
 std::string Application::ActionBindingsPath() const
 {
@@ -2760,13 +2760,13 @@ void Application::ApplyFootIkPass()
 
     const f32 dt = m_gameClock.GetDeltaTime();
 
-    // PhysicsSystem::RaycastEx を FootIK 側のコールバック形へ包む。
+    // PhysicsSystem::Raycast を FootIK 側のコールバック形へ包む。
     // ★従来の Raycast は法線を (0,1,0) にフェイクしているので使えない★
     const FootIKRayCast rayFn =
         [this](const DirectX::XMFLOAT3& origin, const DirectX::XMFLOAT3& dir, f32 maxDist,
                DirectX::XMFLOAT3& outPoint, DirectX::XMFLOAT3& outNormal) -> bool
     {
-        const RaycastHit hit = m_physicsSystem->RaycastEx(origin, dir, maxDist);
+        const RaycastHit hit = m_physicsSystem->Raycast(origin, dir, maxDist);
         if (!hit.hit) return false;
         outPoint  = hit.point;
         outNormal = hit.normal;

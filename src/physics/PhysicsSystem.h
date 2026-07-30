@@ -78,21 +78,19 @@ public:
     DirectX::XMFLOAT3 GetLinearVelocity(uint32_t bodyId) const;
     void SetPosition(uint32_t bodyId, DirectX::XMFLOAT3 pos);
 
-    // ⚠️ この Raycast は normal を (0,1,0) で**フェイク**して返す（歴史的経緯）。
-    //    Lua の physics:raycast がこの挙動に依存している可能性があるため据え置く。
-    //    本物の面法線が要るなら RaycastEx を使うこと。
+    // レイキャスト。normal は Body::GetWorldSpaceSurfaceNormal（BodyLockRead 越し）で
+    // 取る**本物の面法線**（HeightField / Mesh でも三角形の法線が返る）。
+    // ignoreBody に自分のボディ ID を渡すとセルフヒットを除外する（0xFFFFFFFF で無効）。
+    //
+    // ★かつてここには normal を (0,1,0) で固定して返す Raycast と、本物を返す RaycastEx の
+    //   2 本があった。フェイク側は「Lua の physics:raycast が依存しているかもしれない」
+    //   という理由で据え置かれていたが、実際には依存しているコードが 1 行も無かったので
+    //   削除して 1 本に統一した（2026-07-30）。normal というフィールドがあるのに嘘を返す
+    //   のは、呼んだ側から嘘だと分からない一番たちの悪い形なので、二度と分岐させないこと。
     RaycastHit Raycast(DirectX::XMFLOAT3 origin,
                        DirectX::XMFLOAT3 direction,
-                       f32 maxDistance = 1000.0f) const;
-
-    // 真の面法線を返すレイキャスト。フット IK のように「斜面で足を寝かせる」用途では
-    // 法線が無いと成立しないので、Raycast とは別に用意した（既存の挙動は変えない）。
-    // ignoreBody に自分のボディ ID を渡すとセルフヒットを除外する（0xFFFFFFFF で無効）。
-    // 法線は Body::GetWorldSpaceSurfaceNormal（BodyLockRead 越し）で取る。
-    RaycastHit RaycastEx(DirectX::XMFLOAT3 origin,
-                         DirectX::XMFLOAT3 direction,
-                         f32 maxDistance = 1000.0f,
-                         uint32_t ignoreBody = 0xFFFFFFFF) const;
+                       f32 maxDistance = 1000.0f,
+                       uint32_t ignoreBody = 0xFFFFFFFF) const;
 
     // --- 空間クエリ（Broadphase）---
     // out[0..cap) に entity を書き込み、実際に書いた数を返す。cap 超えは切り捨て。

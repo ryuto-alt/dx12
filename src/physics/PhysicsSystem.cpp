@@ -36,8 +36,8 @@
 #include <Jolt/Geometry/AABox.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Body/BodyInterface.h>
-#include <Jolt/Physics/Body/BodyLock.h>       // RaycastEx: 真の面法線を取るための BodyLockRead
-#include <Jolt/Physics/Body/BodyFilter.h>     // RaycastEx: セルフヒット除外
+#include <Jolt/Physics/Body/BodyLock.h>       // Raycast: 真の面法線を取るための BodyLockRead
+#include <Jolt/Physics/Body/BodyFilter.h>     // Raycast: セルフヒット除外
 #pragma warning(pop)
 
 #include <entt/entt.hpp>
@@ -1049,41 +1049,7 @@ void PhysicsSystem::SetPosition(uint32_t bodyId, XMFLOAT3 pos)
 
 // ========== Raycast ==========
 
-RaycastHit PhysicsSystem::Raycast(XMFLOAT3 origin, XMFLOAT3 direction, f32 maxDistance) const
-{
-    RaycastHit result;
-    if (!m_initialized) return result;
-
-    // Normalize direction
-    XMVECTOR dir = XMLoadFloat3(&direction);
-    dir = XMVector3Normalize(dir);
-    XMFLOAT3 normDir;
-    XMStoreFloat3(&normDir, dir);
-
-    JPH::RRayCast ray(
-        JPH::RVec3(origin.x, origin.y, origin.z),
-        JPH::Vec3(normDir.x * maxDistance, normDir.y * maxDistance, normDir.z * maxDistance));
-
-    JPH::RayCastResult hit;
-    if (m_impl->physicsSystem->GetNarrowPhaseQuery().CastRay(ray, hit))
-    {
-        result.hit      = true;
-        result.distance = hit.mFraction * maxDistance;
-        result.bodyId   = hit.mBodyID.GetIndexAndSequenceNumber();
-
-        JPH::RVec3 hitPoint = ray.GetPointOnRay(hit.mFraction);
-        result.point = { static_cast<f32>(hitPoint.GetX()),
-                         static_cast<f32>(hitPoint.GetY()),
-                         static_cast<f32>(hitPoint.GetZ()) };
-
-        // Normal: approximate with up vector (full surface normal requires body lock)
-        result.normal = { 0.0f, 1.0f, 0.0f };
-    }
-
-    return result;
-}
-
-RaycastHit PhysicsSystem::RaycastEx(XMFLOAT3 origin, XMFLOAT3 direction,
+RaycastHit PhysicsSystem::Raycast(XMFLOAT3 origin, XMFLOAT3 direction,
                                     f32 maxDistance, uint32_t ignoreBody) const
 {
     RaycastHit result;

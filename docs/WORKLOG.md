@@ -123,9 +123,10 @@ git checkout master                 # 現在の作業ブランチ（feat/engine-
 
 ### 既知の残課題（このタスクでは触っていない）
 
-- **PhysicsSystem::Raycast（法線が {0,1,0} 固定のフェイク）はそのまま**。
-  Lua の physics:raycast の挙動を変えると既存ゲームに影響しうるため、
-  法線が要る用途は RaycastEx を使う形にした。いつか統一するなら別タスクで。
+- ~~PhysicsSystem::Raycast の法線フェイク~~ … **2026-07-30 に解消**。
+  据え置いていた理由（Lua の physics:raycast が依存しているかも）を実際に調べたら
+  `hit.normal` を読む Lua が 1 行も無かったので、フェイク版を削除して
+  RaycastEx を Raycast へ統一した。今は 1 本だけで、返る normal は常に本物。
 - **glTF のインポート向きが Y-up モデルに対して過剰回転する**（Fox.glb が縦に立つ）。
   スケルタルの計算とは無関係で、ModelLoader 側の座標変換の問題。別タスク。
 

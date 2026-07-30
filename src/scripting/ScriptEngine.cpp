@@ -2162,6 +2162,7 @@ void ScriptEngine::RegisterPhysicsBindings()
         },
         "raycast", [](PhysicsSystem& ps, XMFLOAT3 origin, XMFLOAT3 dir,
                        float maxDist) -> RaycastHit {
+            // normal は本物の面法線（旧実装は (0,1,0) 固定のフェイクだった）。
             return ps.Raycast(origin, dir, maxDist);
         },
 

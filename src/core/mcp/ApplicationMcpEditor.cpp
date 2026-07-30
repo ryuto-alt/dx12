@@ -812,9 +812,7 @@ void Application::RegisterMcpEditorMethods()
             if (originV.size() != 3 || dirV.size() != 3)
                 throw McpError(McpErr::InvalidParam, "origin and direction must be [x,y,z]");
             const float maxDist = params.value("maxDistance", 1000.0f);
-            // RaycastEx を使う（Raycast は normal を (0,1,0) でフェイクする）。Lua の
-            // physics:raycast と違い MCP には後方互換の縛りが無いので、こちらは本物を返す。
-            RaycastHit hit = m_physicsSystem->RaycastEx(
+            RaycastHit hit = m_physicsSystem->Raycast(
                 {originV[0], originV[1], originV[2]}, {dirV[0], dirV[1], dirV[2]}, maxDist);
             json result{{"hit", hit.hit}};
             if (hit.hit)

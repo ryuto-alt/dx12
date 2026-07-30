@@ -10,7 +10,7 @@
 //    ECS が Animation に依存しているので逆向きの依存は循環になるし、
 //    レイキャストを差し替え可能にしておけば合成地面で単体テストできる。
 //    → 地面問い合わせは FootIKRayCast（コールバック）で受け取る。
-//    エンティティの走査と PhysicsSystem::RaycastEx への接続は呼び出し側（Application）の仕事。
+//    エンティティの走査と PhysicsSystem::Raycast への接続は呼び出し側（Application）の仕事。
 //
 // 座標系: ボーンのグローバル行列は**モデル空間**。レイは**ワールド空間**で打つので、
 //         world / worldInv を渡してもらって内部で往復する。

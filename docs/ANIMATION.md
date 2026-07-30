@@ -250,7 +250,7 @@ end)
 - ボーン名が空なら一般的な命名（`mixamorig:LeftFoot` / `foot.L` / `Bip01 L Foot` 等）から
   自動推定する。外れたら `FootIK` の文字列フィールドで明示指定する。
   推定結果は `dx12_get_anim_state` の `footIK` に出る。
-- 面法線が要るので `PhysicsSystem::RaycastEx`（法線を返す版）を使う。
+- 面法線が要るので `PhysicsSystem::Raycast` を使う（本物の面法線を返す）。
   従来の `Raycast` は法線が `(0,1,0)` 固定でフェイクされているので使えない。
 
 ---

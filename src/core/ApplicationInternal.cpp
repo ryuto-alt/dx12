@@ -316,7 +316,7 @@ nlohmann::json McpComponentSchema()
         "matches ankle height and orientation, and drops the pelvis to reach the lower foot. "
         "ONLY RUNS IN PLAY MODE (physics bodies exist only while playing). Bone names left empty "
         "are auto-detected from common rig naming; check the resolved result in dx12_get_anim_state's "
-        "footIK block. Uses PhysicsSystem::RaycastEx for true surface normals."));
+        "footIK block. Uses PhysicsSystem::Raycast for true surface normals."));
     comps.push_back(C("trigger", true, true, json::array({
         F("shape", "int (0=Box,1=Sphere)", 0), F("halfExtents", "float3", json::array({1, 1, 1})),
         F("radius", "float", 1.0), F("offset", "float3", json::array({0, 0, 0})),
