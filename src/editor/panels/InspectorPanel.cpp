@@ -2150,6 +2150,17 @@ void InspectorPanel::Render(entt::registry& reg,
             {
                 auto& tr = reg.get<Trigger>(ctx.selectedEntity);
                 const char* shapes[] = { "Box", "Sphere" };
+                // ★参照は guid が正。名前だけ書き換えると古い guid が勝って
+                //   コンボの操作が黙って無視されるので、必ず両方を同時に書く。
+                //   まだ guid が振られていないエンティティ（保存前）は 0 のままにし、
+                //   次の保存で付いた値を読み込み時の昇格が拾う。
+                const auto setRef = [&reg](entt::entity picked, std::string& name, uint64_t& guid) {
+                    if (picked == entt::null) { name.clear(); guid = 0; return; }
+                    const auto* n = reg.try_get<dx12e::NameTag>(picked);
+                    name = n ? n->name : std::string{};
+                    const auto* g = reg.try_get<dx12e::EntityGuid>(picked);
+                    guid = g ? g->value : 0;
+                };
                 if (pg::Begin("Trigger"))
                 {
                     pg::Combo("形 Shape", &tr.shape, shapes, IM_ARRAYSIZE(shapes));
@@ -2161,11 +2172,13 @@ void InspectorPanel::Render(entt::registry& reg,
                         pg::Label("対象 Filter");
                         if (ImGui::BeginCombo("##trFilter", cur))
                         {
-                            if (ImGui::Selectable("Player（既定）", tr.filter.empty())) tr.filter.clear();
+                            if (ImGui::Selectable("Player（既定）", tr.filter.empty()))
+                                setRef(entt::null, tr.filter, tr.filterGuid);
                             auto nv = reg.view<dx12e::NameTag>();
                             for (auto ne : nv)
                             { const auto& nm = nv.get<dx12e::NameTag>(ne).name; if (nm.empty()) continue;
-                              if (ImGui::Selectable(nm.c_str(), nm == tr.filter)) tr.filter = nm; }
+                              if (ImGui::Selectable(nm.c_str(), nm == tr.filter))
+                                  setRef(ne, tr.filter, tr.filterGuid); }
                             ImGui::EndCombo();
                         }
                     }
@@ -2191,11 +2204,13 @@ void InspectorPanel::Render(entt::registry& reg,
                             pg::Label("対象 Target");
                             if (ImGui::BeginCombo("##actTarget", cur))
                             {
-                                if (ImGui::Selectable("(なし=Filter対象)", a.target.empty())) a.target.clear();
+                                if (ImGui::Selectable("(なし=Filter対象)", a.target.empty()))
+                                    setRef(entt::null, a.target, a.targetGuid);
                                 auto nv = reg.view<dx12e::NameTag>();
                                 for (auto ne : nv)
                                 { const auto& nm = nv.get<dx12e::NameTag>(ne).name; if (nm.empty()) continue;
-                                  if (ImGui::Selectable(nm.c_str(), nm == a.target)) a.target = nm; }
+                                  if (ImGui::Selectable(nm.c_str(), nm == a.target))
+                                      setRef(ne, a.target, a.targetGuid); }
                                 ImGui::EndCombo();
                             }
                         }

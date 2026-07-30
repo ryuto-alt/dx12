@@ -107,6 +107,25 @@ DirectX::XMMATRIX ComputeWorldMatrix(const entt::registry& reg, entt::entity e);
 void RewriteEntityNameRefs(entt::registry& reg, const std::string& oldName,
                            const std::string& newName);
 
+// 16 桁 hex 文字列 ⇔ guid。JSON では**数値ではなく文字列**で持つ
+// （u64 を JSON 数値で書くと JS/TS 側が double へ丸めて下位ビットを失う）。
+// 壊れた文字列は 0（＝未設定）を返す。呼び出し側で例外を捕まえなくてよい。
+uint64_t    ParseEntityGuidHex(const std::string& s);
+std::string FormatEntityGuidHex(uint64_t v);
+
+// guid からエンティティを引く（0 / 見つからない → entt::null）。線形走査。
+// 名前引き（NameTag の文字列比較）と同じ計算量だが、リネームでも同名でも揺れない。
+entt::entity FindEntityByGuid(const entt::registry& reg, uint64_t guid);
+
+// 参照の解決口。**guid が正、名前はフォールバック**。
+// guid が 0（旧データ）か、guid が指す先が既に消えている場合だけ名前で引く。
+entt::entity ResolveEntityRef(const entt::registry& reg, uint64_t guid, const std::string& name);
+
+// Trigger の filter/target の名前参照を guid へ昇格させる（メモリ上だけ。ファイルは触らない）。
+// シーン読み込みの最後に 1 回呼ぶ。これで旧シーンも「開いて保存」で自動移行する。
+// 名前が解決できないもの（＝参照切れ）は guid 0 のまま残すので、診断は従来どおり拾える。
+void PromoteTriggerRefsToGuid(entt::registry& reg);
+
 struct MeshRenderer
 {
     std::string modelPath; // アセット相対パス（シーン保存/読み込み用）
@@ -1268,6 +1287,10 @@ struct TriggerAction
     int  when = 0;            // TriggerWhen（Enter/Exit/Stay）
     int  type = 0;            // TriggerActionType
     std::string target;       // 対象エンティティ名（空=なし）
+    // ★参照の正は guid。target(名前) は人間と git diff のための派生値で、
+    //   保存時に guid から引き直すので両者はドリフトしない。0 = 未設定（名前だけの旧データ）。
+    //   詳細は Trigger::filterGuid のコメント。
+    uint64_t targetGuid = 0;
     std::string str;          // シーンパス / プロパティ名 / イベント名
     double num = 0.0;         // 数値パラメータ
     DirectX::XMFLOAT3 vec{0.0f, 0.0f, 0.0f}; // Move 用の移動量
@@ -1280,6 +1303,13 @@ struct Trigger
     f32  radius = 1.0f;                       // Sphere 用（Transform.scale 最大成分 乗算）
     DirectX::XMFLOAT3 offset{0.0f, 0.0f, 0.0f}; // 判定中心のローカルオフセット
     std::string filter;                        // 反応する対象エンティティ名（空=Player）
+    // ★参照の正は guid（[[EntityGuid]]）。名前は配列位置に依存しない代わりに
+    //   「リネームで切れる」「同名で曖昧になる」の 2 つが避けられない。
+    //   解決順は guid → 名前 → （filter のみ）暗黙の "Player"。
+    //   保存時に guid から名前を引き直すので、両者が食い違ったまま残ることはない。
+    //   読み込み時に「名前 → guid」へメモリ上だけ昇格させるので、旧シーンも
+    //   一度開いて保存すれば自動で移行する。0 = 未設定。
+    uint64_t filterGuid = 0;
     bool once = false;                          // 一度 Enter 発火したら無効化
     std::vector<TriggerAction> actions;
 

@@ -357,6 +357,9 @@ inline bool ApplyOrphanComponent(entt::registry& reg, entt::entity e,
         tr.radius = d.value("radius", 1.0f);
         if (d.contains("offset")) tr.offset = McpF3(d["offset"]);
         tr.filter = d.value("filter", std::string{}); tr.once = d.value("once", false);
+        // guid を明示できる。省略時は 0 のままで、名前で解決され、読み込み時に昇格する
+        // （＝名前だけ指定する従来の呼び方はそのまま動く）。
+        tr.filterGuid = ParseEntityGuidHex(d.value("filterGuid", std::string{}));
         if (d.contains("actions") && d["actions"].is_array())
         {
             for (const auto& aj : d["actions"])
@@ -364,6 +367,7 @@ inline bool ApplyOrphanComponent(entt::registry& reg, entt::entity e,
                 TriggerAction a;
                 a.when = aj.value("when", 0); a.type = aj.value("type", 0);
                 a.target = aj.value("target", std::string{}); a.str = aj.value("str", std::string{});
+                a.targetGuid = ParseEntityGuidHex(aj.value("targetGuid", std::string{}));
                 a.num = aj.value("num", 0.0);
                 if (aj.contains("vec")) a.vec = McpF3(aj["vec"]);
                 tr.actions.push_back(std::move(a));

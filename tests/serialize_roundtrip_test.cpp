@@ -1507,6 +1507,118 @@ static void Test_SubtreeInstantiateDropsGuidByDefault()
     CHECK(g1 == nullptr || g1->value != orig);   // 未設定 = 次の保存で新しい値が振られる
 }
 
+// Trigger の参照が guid 基準になっていること。
+// ★これが解く問題: 名前参照は「リネームで切れる」「同名で曖昧になる」。
+//   RewriteEntityNameRefs はエディタのリネーム経路を守るだけで、手書き JSON や
+//   別経路の改名は素通りする。guid が正なら、名前がどう変わっても参照は残る。
+static void Test_TriggerRefSurvivesRenameViaGuid()
+{
+    // 1) 名前だけで書かれた（＝旧形式の）シーンを作る
+    Scene src;
+    {
+        auto& reg = src.GetRegistry();
+        entt::entity door = reg.create();
+        reg.emplace<NameTag>(door, NameTag{"Door"});
+        reg.emplace<Transform>(door);
+
+        entt::entity zone = reg.create();
+        reg.emplace<NameTag>(zone, NameTag{"Zone"});
+        reg.emplace<Transform>(zone);
+        Trigger tr;
+        tr.filter = "Door";
+        TriggerAction a; a.target = "Door"; tr.actions.push_back(a);
+        reg.emplace<Trigger>(zone, std::move(tr));
+    }
+    const std::string js1 = SceneSerializer::SaveToString(src, "");
+    CHECK(!js1.empty());
+
+    // 2) 読み込むと名前参照が guid へ昇格する（旧シーンの自動移行）
+    Scene sc;
+    CHECK(SceneSerializer::LoadFromString(sc, js1, ""));
+    auto& reg = sc.GetRegistry();
+
+    entt::entity door = entt::null, zone = entt::null;
+    for (auto [e, n] : reg.view<const NameTag>().each())
+    {
+        if (n.name == "Door") door = e;
+        if (n.name == "Zone") zone = e;
+    }
+    CHECK(door != entt::null && zone != entt::null);
+    if (door == entt::null || zone == entt::null) return;
+
+    const auto* dg = reg.try_get<EntityGuid>(door);
+    CHECK(dg != nullptr && dg->value != 0);
+    const uint64_t doorGuid = dg ? dg->value : 0;
+
+    auto& tr = reg.get<Trigger>(zone);
+    CHECK(tr.filterGuid == doorGuid);
+    CHECK(!tr.actions.empty() && tr.actions[0].targetGuid == doorGuid);
+
+    // 3) ★RewriteEntityNameRefs を通さずに改名する（手書き JSON / 別経路の再現）。
+    //    名前だけの参照ならここで黙って切れる。
+    reg.get<NameTag>(door).name = "FrontDoor";
+
+    // 4) 保存すると、名前は guid から引き直されて追従する（ドリフトしない）
+    const std::string js2 = SceneSerializer::SaveToString(sc, "");
+    nlohmann::json r2 = nlohmann::json::parse(js2, nullptr, /*allow_exceptions=*/false);
+    CHECK(!r2.is_discarded());
+    bool checkedZone = false;
+    if (!r2.is_discarded())
+    {
+        for (const auto& ej : r2["entities"])
+        {
+            if (ej.value("name", std::string{}) != "Zone") continue;
+            checkedZone = true;
+            const auto& tj = ej["trigger"];
+            CHECK(tj.value("filter", std::string{}) == "FrontDoor");
+            CHECK(tj.value("filterGuid", std::string{}).size() == 16);
+            CHECK(tj["actions"][0].value("target", std::string{}) == "FrontDoor");
+        }
+    }
+    CHECK(checkedZone);
+
+    // 5) 読み直しても同じエンティティを指したまま
+    Scene sc3;
+    CHECK(SceneSerializer::LoadFromString(sc3, js2, ""));
+    auto& reg3 = sc3.GetRegistry();
+    entt::entity zone3 = entt::null;
+    for (auto [e, n] : reg3.view<const NameTag>().each())
+        if (n.name == "Zone") zone3 = e;
+    CHECK(zone3 != entt::null);
+    if (zone3 == entt::null) return;
+    const entt::entity resolved =
+        ResolveEntityRef(reg3, reg3.get<Trigger>(zone3).filterGuid, "FrontDoor");
+    CHECK(resolved != entt::null);
+    if (resolved != entt::null) CHECK(reg3.get<NameTag>(resolved).name == "FrontDoor");
+}
+
+// guid が正で、名前が食い違っていても guid の先を指すこと（同名の曖昧さを断つ）。
+static void Test_TriggerGuidWinsOverName()
+{
+    Scene sc;
+    auto& reg = sc.GetRegistry();
+
+    entt::entity a = reg.create();
+    reg.emplace<NameTag>(a, NameTag{"Same"});
+    reg.emplace<Transform>(a);
+    reg.emplace<EntityGuid>(a, EntityGuid{0x1111222233334444ull});
+
+    entt::entity b = reg.create();
+    reg.emplace<NameTag>(b, NameTag{"Same"});   // 同名が 2 体
+    reg.emplace<Transform>(b);
+    reg.emplace<EntityGuid>(b, EntityGuid{0x5555666677778888ull});
+
+    // 名前は両方に一致するが、guid は b を名指ししている
+    CHECK(ResolveEntityRef(reg, 0x5555666677778888ull, "Same") == b);
+    CHECK(ResolveEntityRef(reg, 0x1111222233334444ull, "Same") == a);
+    // guid 0（旧データ）は名前フォールバック。見つかりはするが、どちらかは曖昧なまま
+    CHECK(ResolveEntityRef(reg, 0, "Same") != entt::null);
+    // guid が死んでいる（対象が消えた）ときも名前で拾える
+    CHECK(ResolveEntityRef(reg, 0xdeadbeefdeadbeefull, "Same") != entt::null);
+    // どちらも当たらなければ null
+    CHECK(ResolveEntityRef(reg, 0xdeadbeefdeadbeefull, "Nope") == entt::null);
+}
+
 // ---------------------------------------------------------------------------
 // リネームで名前ベースの参照が切れないこと。
 // 実行時の解決は「名前一致」なので、切れてもエラーは出ず「なぜか動かない」だけになる。
@@ -1797,6 +1909,8 @@ int main()
     Test_DuplicateGetsNewGuid();
     Test_SubtreeRestoreKeepsGuid();
     Test_SubtreeInstantiateDropsGuidByDefault();
+    Test_TriggerRefSurvivesRenameViaGuid();
+    Test_TriggerGuidWinsOverName();
     Test_RenameRewritesNameRefs();
     Test_AssetRefRewrite();
     Test_PrefabApplyKeepsInstanceOverrides();

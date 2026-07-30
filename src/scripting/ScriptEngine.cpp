@@ -4212,7 +4212,10 @@ void ScriptEngine::UpdateTriggers(f32 /*dt*/)
     // 1 アクションを実行する
     auto exec = [&](entt::entity self, entt::entity defaultTarget, const TriggerAction& a)
     {
-        entt::entity at = a.target.empty() ? defaultTarget : FindEntityByName(reg, a.target);
+        // guid が正、名前はフォールバック（旧データ / guid の指す先が消えている場合）。
+        entt::entity at = (a.targetGuid == 0 && a.target.empty())
+                            ? defaultTarget
+                            : ResolveEntityRef(reg, a.targetGuid, a.target);
 
         switch (static_cast<TriggerActionType>(a.type))
         {
@@ -4285,9 +4288,9 @@ void ScriptEngine::UpdateTriggers(f32 /*dt*/)
         DirectX::XMStoreFloat3(&center, w.r[3]);
         center.x += tr.offset.x; center.y += tr.offset.y; center.z += tr.offset.z;
 
-        // 反応対象（filter 空なら "Player"）
+        // 反応対象。guid が正、名前はフォールバック、どちらも空なら "Player" の暗黙指定。
         const std::string targetName = tr.filter.empty() ? std::string("Player") : tr.filter;
-        entt::entity te = FindEntityByName(reg, targetName);
+        entt::entity te = ResolveEntityRef(reg, tr.filterGuid, targetName);
 
         bool inside = false;
         if (te != entt::null && reg.all_of<Transform>(te))

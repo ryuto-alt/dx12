@@ -320,8 +320,13 @@ nlohmann::json McpComponentSchema()
     comps.push_back(C("trigger", true, true, json::array({
         F("shape", "int (0=Box,1=Sphere)", 0), F("halfExtents", "float3", json::array({1, 1, 1})),
         F("radius", "float", 1.0), F("offset", "float3", json::array({0, 0, 0})),
-        F("filter", "string (entity name; empty=Player)", ""), F("once", "bool", false),
-        F("actions", "array of {when:int(0=Enter,1=Exit,2=Stay), type:int(0..10), target:string, str:string, num:number, vec:float3}", json::array()),
+        F("filter", "string (entity name; empty=Player). Derived from filterGuid when set — "
+                    "the engine rewrites it from the target's current name on save.", ""),
+        F("filterGuid", "string (16-hex EntityGuid; authoritative over filter). Omit it and the "
+                        "engine promotes filter->guid on load. Set it to \"\" to force name lookup.", ""),
+        F("once", "bool", false),
+        F("actions", "array of {when:int(0=Enter,1=Exit,2=Stay), type:int(0..10), target:string, "
+                     "targetGuid:string(16-hex, authoritative over target), str:string, num:number, vec:float3}", json::array()),
     })));
     comps.push_back(C("gimmick", true, true, json::array({
         F("kind", "int (0=StaticWall,1=SpikePulse,2=SlideX,3=SlideZ)", 0), F("period", "float", 4.0),

@@ -357,6 +357,32 @@ static void RegisterCoreComponentSerializers()
 }
 
 // 単一エンティティを JSON ノードに直列化（parent は含まない）
+// ---- エンティティ GUID -------------------------------------------------------
+// 位置に依存しない参照。EntityGuid（ecs/Components.h）の解説を参照。
+namespace {
+
+uint64_t NewEntityGuid()
+{
+    // 0 は「未設定」の番兵なので絶対に返さない。
+    static std::mt19937_64 rng{ std::random_device{}() };
+    uint64_t v = 0;
+    while (v == 0) v = rng();
+    return v;
+}
+
+// hex 変換の実体は ecs/Components.{h,cpp}（MCP の set_component も同じものを使う。
+// 2 箇所に別実装があると片方だけ直して静かに食い違う）。
+std::string GuidToHex(uint64_t v) { return FormatEntityGuidHex(v); }
+
+uint64_t GuidFromJson(const json& j, const char* key)
+{
+    auto it = j.find(key);
+    if (it == j.end() || !it->is_string()) return 0;
+    return ParseEntityGuidHex(it->get<std::string>());
+}
+
+} // namespace
+
 static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                                 const std::string& assetsDir)
 {
@@ -622,19 +648,34 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
         if (reg.all_of<Trigger>(entity))
         {
             const auto& tr = reg.get<Trigger>(entity);
+            // ★参照の正は guid。名前は「人間と git diff のための派生値」なので、
+            //   guid が生きているならその時点の NameTag で書き直す。こうしておくと
+            //   両者がドリフトした状態（guid は A を指すのに名前は B）が原理的に作れない。
+            //   guid が 0（旧データ）か指す先が消えているときだけ、元の名前をそのまま残す。
+            const auto refName = [&reg](uint64_t g, const std::string& fallback) -> std::string {
+                if (g == 0) return fallback;
+                const entt::entity t = FindEntityByGuid(reg, g);
+                if (t == entt::null) return fallback;
+                const auto* n = reg.try_get<NameTag>(t);
+                return n ? n->name : fallback;
+            };
+
             json acts = json::array();
             for (const auto& a : tr.actions)
             {
-                acts.push_back({
-                    {"when", a.when}, {"type", a.type}, {"target", a.target},
+                json aj = {
+                    {"when", a.when}, {"type", a.type}, {"target", refName(a.targetGuid, a.target)},
                     {"str", a.str}, {"num", a.num}, {"vec", SerializeFloat3(a.vec)}
-                });
+                };
+                if (a.targetGuid != 0) aj["targetGuid"] = GuidToHex(a.targetGuid);
+                acts.push_back(std::move(aj));
             }
             ej["trigger"] = {
                 {"shape", tr.shape}, {"halfExtents", SerializeFloat3(tr.halfExtents)},
                 {"radius", tr.radius}, {"offset", SerializeFloat3(tr.offset)},
-                {"filter", tr.filter}, {"once", tr.once}, {"actions", acts}
+                {"filter", refName(tr.filterGuid, tr.filter)}, {"once", tr.once}, {"actions", acts}
             };
+            if (tr.filterGuid != 0) ej["trigger"]["filterGuid"] = GuidToHex(tr.filterGuid);
         }
 
         // --- Physics ---（RigidBody / 各 Collider の直列化は上の ForEach レジストリ走査が担当）
@@ -688,48 +729,6 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
 }
 
 // シーン全エンティティを JSON ノードに直列化（共通処理）
-// ---- エンティティ GUID -------------------------------------------------------
-// 位置に依存しない参照。EntityGuid（ecs/Components.h）の解説を参照。
-namespace {
-
-uint64_t NewEntityGuid()
-{
-    // 0 は「未設定」の番兵なので絶対に返さない。
-    static std::mt19937_64 rng{ std::random_device{}() };
-    uint64_t v = 0;
-    while (v == 0) v = rng();
-    return v;
-}
-
-std::string GuidToHex(uint64_t v)
-{
-    // JSON では**文字列**にする。u64 を数値で書くと、JS/TS 側（dx12_scene_write の
-    // 検証や外部ツール）が double へ丸めて下位ビットを失う。
-    char buf[17];
-    std::snprintf(buf, sizeof(buf), "%016llx", static_cast<unsigned long long>(v));
-    return buf;
-}
-
-uint64_t GuidFromJson(const json& j, const char* key)
-{
-    auto it = j.find(key);
-    if (it == j.end() || !it->is_string()) return 0;
-    const std::string sv = it->get<std::string>();
-    if (sv.empty() || sv.size() > 16) return 0;
-    uint64_t v = 0;
-    for (char c : sv)
-    {
-        int d;
-        if      (c >= '0' && c <= '9') d = c - '0';
-        else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
-        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
-        else return 0;   // 壊れた guid は「無い」扱い（index フォールバックへ落ちる）
-        v = (v << 4) | static_cast<uint64_t>(d);
-    }
-    return v;
-}
-
-} // namespace
 
 static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
 {
@@ -771,6 +770,11 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
             if (!g)                       mutableReg.emplace<EntityGuid>(entity, EntityGuid{ NewEntityGuid() });
             else if (g->value == 0)       g->value = NewEntityGuid();
         }
+
+        // guid が出そろった直後に、Trigger の名前参照を guid へ昇格させる。
+        // ★ここでやらないと「このセッションで作った参照」は次に開き直すまで
+        //   guid が付かない（読み込み時の昇格だけでは 1 往復ぶん遅れる）。
+        PromoteTriggerRefsToGuid(mutableReg);
     }
 
     // 2パス目: 直列化 + 親子関係を保存
@@ -1480,7 +1484,8 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                 if (tj.contains("halfExtents")) tr.halfExtents = DeserializeFloat3(tj["halfExtents"], {1.0f, 1.0f, 1.0f});
                 tr.radius = tj.value("radius", 1.0f);
                 if (tj.contains("offset")) tr.offset = DeserializeFloat3(tj["offset"]);
-                tr.filter = tj.value("filter", std::string{});
+                tr.filter     = tj.value("filter", std::string{});
+                tr.filterGuid = GuidFromJson(tj, "filterGuid");
                 tr.once   = tj.value("once", false);
                 if (tj.contains("actions") && tj["actions"].is_array())
                 {
@@ -1490,6 +1495,7 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                         a.when   = aj.value("when", 0);
                         a.type   = aj.value("type", 0);
                         a.target = aj.value("target", std::string{});
+                        a.targetGuid = GuidFromJson(aj, "targetGuid");
                         a.str    = aj.value("str", std::string{});
                         a.num    = aj.value("num", 0.0);
                         if (aj.contains("vec")) a.vec = DeserializeFloat3(aj["vec"]);
@@ -1848,6 +1854,11 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
             reg.get<Transform>(e).parent = entt::null;
         }
     }
+
+    // 4パス目: Trigger の名前参照を guid へ昇格させる（メモリ上だけ）。
+    // 全エンティティが揃った後でないと名前を引けないのでここに置く。
+    // これで旧シーンも「開いて保存」で自動的に guid 参照へ移行する。
+    PromoteTriggerRefsToGuid(reg);
 
     return true;
 }

@@ -842,12 +842,15 @@ DeepDiagReport DeepDiag::EntityRefs(Application& app)
                 r.Add(1, who + " の Trigger は絞り込みが空欄＝「Player」の暗黙指定だが、"
                               "その名前のエンティティがシーンに無い（誰にも反応しない）");
         }
-        else
+        else if (FindEntityByGuid(reg, tr.filterGuid) == entt::null)
         {
+            // guid で解決できているなら名前がどうであれ参照は生きている。
+            // ここで名前だけ見て報告すると「正しい検出＋誤った処方」になる。
             checkRef(tr.filter, who, "Trigger の絞り込み");
         }
         for (const auto& a : tr.actions)
-            checkRef(a.target, who, "Trigger の相手");
+            if (FindEntityByGuid(reg, a.targetGuid) == entt::null)
+                checkRef(a.target, who, "Trigger の相手");
     }
 
     if (r.checked == 0)
