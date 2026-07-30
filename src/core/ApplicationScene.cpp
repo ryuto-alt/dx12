@@ -645,42 +645,85 @@ bool IsModelRef(const std::string& s)
 }
 
 // シーン JSON を走査して、参照されているテクスチャ/モデルの assets 相対パスを集める（重複除去）。
-std::vector<std::string> CollectSceneAssetRefs(const std::string& rel)
+//
+// ★テクスチャは「どのキーから来たか」で色空間と圧縮形式が変わる。ResourceManager の
+//   キャッシュキーにも (srgb, usage) が入っているので、種別を取り違えると
+//   **先読みが一度も当たらないうえ、非圧縮のフル解像度が丸ごと余計に載る**
+//   （実際そうなっていた: 先読みは usage 既定 Unknown = 圧縮しない、
+//     描画は BaseColor/Normal/NonColor で要求するのでキーが一致しない）。
+//   JSON のキー名から種別を決める（法線は "normal"、ORM は "metalRoughness"、他は色）。
+std::vector<SceneAssetRef> CollectSceneAssetRefs(const std::string& rel)
 {
-    std::vector<std::string> out;
+    std::vector<SceneAssetRef> out;
     auto bytes = dx12e::vfs::ReadAsset(rel);
     if (bytes.empty()) return out;
     nlohmann::json j = nlohmann::json::parse(bytes.begin(), bytes.end(), nullptr, false);
     if (j.is_discarded()) return out;
 
+    // 同じパスでも種別が違えば別エントリ（キャッシュキーが別なので両方温める必要がある）
     std::unordered_set<std::string> seen;
-    std::function<void(const nlohmann::json&)> walk = [&](const nlohmann::json& node) {
+    std::function<void(const nlohmann::json&, const std::string&)> walk =
+        [&](const nlohmann::json& node, const std::string& key) {
         if (node.is_string())
         {
             const std::string s = node.get<std::string>();
-            if ((IsTextureRef(s) || IsModelRef(s)) && seen.insert(s).second)
-                out.push_back(s);
+            SceneAssetRef r;
+            r.path = s;
+            if (IsTextureRef(s))
+            {
+                const bool isNormal = (key.find("normal") != std::string::npos)
+                                   || (key.find("Normal") != std::string::npos);
+                const bool isMR     = (key.find("metalRoughness") != std::string::npos)
+                                   || (key.find("MetalRoughness") != std::string::npos);
+                // materialTextureOverrides の "albedo" は BaseColor で要求される
+                const bool isAlbedo = (key == "albedo") || (key.find("Albedo") != std::string::npos);
+                r.isTexture = true;
+                r.srgb  = !(isNormal || isMR);
+                // ★既定は Unknown（GetOrLoadTexture の既定と同じ）。
+                //   スプライト / パーティクル / UI 画像 / LUT の実ロードは
+                //   `GetOrLoadTexture(path, cmd)` と既定引数で呼んでいるので、
+                //   ここで BaseColor にすると**今度はそちらと不一致になる**。
+                //   明示的な usage を渡すのはマテリアル上書きの 3 キーだけ
+                //   （ApplicationPipeline.cpp が BaseColor/Normal/NonColor で要求する）。
+                r.usage = isNormal ? TextureUsage::Normal
+                        : isMR     ? TextureUsage::NonColor
+                        : isAlbedo ? TextureUsage::BaseColor
+                                   : TextureUsage::Unknown;
+            }
+            else if (IsModelRef(s))
+            {
+                r.isTexture = false;
+            }
+            else return;
+
+            const std::string dedup = s + "|" + std::to_string(static_cast<int>(r.usage))
+                                    + (r.srgb ? "1" : "0");
+            if (seen.insert(dedup).second) out.push_back(std::move(r));
         }
-        else if (node.is_object() || node.is_array())
+        else if (node.is_object())
         {
-            for (const auto& c : node) walk(c);
+            for (auto it = node.begin(); it != node.end(); ++it) walk(it.value(), it.key());
+        }
+        else if (node.is_array())
+        {
+            for (const auto& c : node) walk(c, key);   // 配列は親のキーを引き継ぐ
         }
     };
-    walk(j);
+    walk(j, std::string());
     return out;
 }
 } // namespace
 
 // 参照 1 件をキャッシュへ載せる。キャッシュキーは実ロード経路と同一の絶対パス形式
 // (テクスチャ=wide絶対+srgb既定true / モデル=assetsDir+相対)に合わせる。
-void Application::WarmSceneAssetRef(const std::string& s, ID3D12GraphicsCommandList* cmdList)
+void Application::WarmSceneAssetRef(const SceneAssetRef& r, ID3D12GraphicsCommandList* cmdList)
 {
     if (!m_resourceManager || !cmdList) return;
-    if (IsTextureRef(s))
+    if (r.isTexture)
         m_resourceManager->GetOrLoadTexture(
-            PathResolver::Utf8ToWide(PathResolver::AssetsDir() + s), cmdList);
-    else if (IsModelRef(s))
-        m_resourceManager->GetOrLoadModel(PathResolver::AssetsDir() + s, cmdList);
+            PathResolver::Utf8ToWide(PathResolver::AssetsDir() + r.path), cmdList, r.srgb, r.usage);
+    else
+        m_resourceManager->GetOrLoadModel(PathResolver::AssetsDir() + r.path, cmdList);
 }
 
 // シーン JSON を走査し、参照されているテクスチャ/モデルをキャッシュへ先読みする。
@@ -714,7 +757,7 @@ void Application::BeginSceneLoadJob(const std::string& fullPath, const std::stri
     // 巨大な JSON では参照アセットの走査自体が重い（12MB で ~1 秒）。ここで走らせると
     // ローディング UI が出る前に固まるので、大きいシーンは走査せずに UI を出して
     // そのまま実体化へ回す（アセットは SceneSerializer::Load が構築中に読む）。
-    auto refs = bigFile ? std::vector<std::string>{} : CollectSceneAssetRefs(rel);
+    auto refs = bigFile ? std::vector<SceneAssetRef>{} : CollectSceneAssetRefs(rel);
 
     // 軽いシーンは分割しない（オーバーレイが1フレームだけ光って見えるのを避ける）
     if (!bigFile && refs.size() < kSceneLoadAsyncThreshold) return;
@@ -748,7 +791,7 @@ void Application::UpdateSceneLoadJob(ID3D12GraphicsCommandList* cmdList)
     {
         // 先に current を更新してから読む。1 件に数秒かかる（初回の BC 圧縮など）
         // ケースで「どのファイルで止まっているか」が画面に出るようにするため。
-        job.current = job.assets[job.next];
+        job.current = job.assets[job.next].path;   // 進捗表示はパスだけ
         WarmSceneAssetRef(job.assets[job.next++], cmdList);
         const f64 ms = std::chrono::duration<f64, std::milli>(
                            std::chrono::steady_clock::now() - t0).count();

@@ -3,6 +3,7 @@
 #include "Types.h"
 #include "Window.h"
 #include "GameClock.h"
+#include "resource/TextureLoader.h"   // SceneAssetRef の TextureUsage
 
 #include <memory>
 #include <vector>
@@ -119,6 +120,16 @@ namespace dx12e
 //   分割の目的は「別々の機能を別々の担当が同時に触れること」。実装は該当テーマの
 //   ファイルへ足すこと。**このヘッダへメンバを足すと全 TU が再コンパイル対象になる**
 //   （build/release の ninja 依存 DB はヘッダ変更を取りこぼすので、その際は --clean-first）。
+// シーン先読みが温める 1 参照。テクスチャは (srgb, usage) までキーに入るので、
+// パスだけでは実ロード経路のキャッシュキーと一致せず、先読みが空振りする。
+struct SceneAssetRef
+{
+    std::string  path;                                  // assets 相対
+    bool         isTexture = true;                      // false = モデル
+    bool         srgb      = true;                      // 法線/ORM は false
+    TextureUsage usage     = TextureUsage::BaseColor;   // 圧縮形式が変わる
+};
+
 class Application
 {
 public:
@@ -633,7 +644,7 @@ private:
     void UpdateSceneLoadJob(ID3D12GraphicsCommandList* cmdList);  // 毎フレーム少しずつ進める
     void RenderSceneLoadingOverlay();  // ロード中のオーバーレイ（進捗バー付き）
     // 参照アセット1件をキャッシュへ載せる（先読み / 段階ロードの両方から使う）
-    void WarmSceneAssetRef(const std::string& rel, ID3D12GraphicsCommandList* cmdList);
+    void WarmSceneAssetRef(const SceneAssetRef& ref, ID3D12GraphicsCommandList* cmdList);
     void FinishSceneLoad(const std::string& fullPath, const std::string& rel, bool runtime,
                          ID3D12GraphicsCommandList* cmdList);  // 実体化（同期/非同期の共通後段）
     bool IsSceneLoadJobActive() const { return m_sceneLoadJob != nullptr; }
@@ -858,7 +869,7 @@ private:
         std::string              fullPath;    // シーンの絶対パス
         std::string              rel;         // assets 相対パス
         bool                     runtime = false;  // true=Play中の切替 / false=エディタで開く
-        std::vector<std::string> assets;      // 先読み対象（assets 相対）
+        std::vector<SceneAssetRef> assets;    // 先読み対象（パス + 色空間/用途）
         size_t                   next  = 0;   // assets の消化位置
         f32                      spin  = 0.0f;
         int                      frames = 0;  // ジョブ開始から進めたフレーム数（0 = UI を出すだけ）
