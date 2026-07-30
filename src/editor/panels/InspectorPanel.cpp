@@ -1699,7 +1699,15 @@ void InspectorPanel::Render(entt::registry& reg,
                     pg::End();
                 }
                 if (ImGui::Button("UIアニメーションを開く"))
+                {
+                    // ★フラグだけ立てると「前回開いていたクリップ」が出たままになる。
+                    //   気づかず編集して保存すると**無関係な .uianim を上書きする**。
+                    //   同じファイルの Material の Edit ボタン(:2844 付近)は
+                    //   pendingOpenMaterialPath を正しく渡しているので、これは設計ではなく漏れ。
                     ctx.showAnimEditor = true;
+                    if (!pl.clipPath.empty())
+                        ctx.pendingOpenUiAnimPath = m_assetsDir + pl.clipPath;
+                }
                 EndEdit(reg, ctx, ctx.selectedEntity, m_uiAnimPlayerEdit, changed, active,
                         "UIAnimPlayer");
             }
@@ -1734,7 +1742,11 @@ void InspectorPanel::Render(entt::registry& reg,
                     ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f),
                                        "Sprite2D か UIImage が無いと何も表示されへん");
                 if (ImGui::Button("スプライトシートを開く"))
-                    ctx.showSpriteSheetEditor = true;
+                {
+                    ctx.showSpriteSheetEditor = true;   // ↑と同じ理由でパスも渡す
+                    if (!sa.sheetPath.empty())
+                        ctx.pendingOpenSpriteSheetPath = m_assetsDir + sa.sheetPath;
+                }
                 EndEdit(reg, ctx, ctx.selectedEntity, m_spriteAnimatorEdit, changed, active,
                         "SpriteAnimator");
             }

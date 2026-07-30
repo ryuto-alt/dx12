@@ -980,25 +980,45 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
         ImGui::TextDisabled("\xe3\x81\x94\xe3\x81\xbf\xe7\xae\xb1\xe3\x81\xb8\xe7\xa7\xbb\xe5\x8b\x95\xe3\x81\x97\xe3\x81\xbe\xe3\x81\x99\xef\xbc\x88\xe3\x82\xa8\xe3\x83\x87\xe3\x82\xa3\xe3\x82\xbf\xe3\x81\xae Undo \xe3\x81\xa7\xe3\x81\xaf\xe6\x88\xbb\xe3\x82\x8a\xe3\x81\xbe\xe3\x81\x9b\xe3\x82\x93\xef\xbc\x89");  // ごみ箱へ移動します（エディタの Undo では戻りません）
         ImGui::Separator();
 
+        // 失敗した理由を窓に出しっぱなしにする（ログだけだと気づかない）
+        if (!m_deleteError.empty())
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", m_deleteError.c_str());
+
         if (ImGui::Button("\xe5\x89\x8a\xe9\x99\xa4", ImVec2(120, 0)))  // 削除
         {
             // ごみ箱へ。失敗しても完全削除へフォールバックしない（戻せない操作に化けるため）。
-            if (MoveToRecycleBin(m_pendingDeletePath))
+            const bool moved = MoveToRecycleBin(m_pendingDeletePath);
+            if (moved)
                 Logger::Info("Asset moved to recycle bin: {}", m_pendingDeletePath.string());
             else
                 Logger::Warn("アセットをごみ箱へ移動できませんでした: {}（削除していません）",
                              m_pendingDeletePath.string());
-            if (isCurrentScene) ctx.currentScenePath.clear();
-            if (m_selectedPath == m_pendingDeletePath) m_selectedPath.clear();
-            m_pendingDeletePath.clear();
-            m_deletePopupOpen = false;
-            needRefresh = true;
-            ImGui::CloseCurrentPopup();
+
+            // ★以下は以前 moved を見ずに走っていた。ファイルが残ったまま currentScenePath
+            //   だけ空になると、エディタは「開いているシーンが無い」状態になり、次の Ctrl+S が
+            //   実在するシーンファイルへ書かなくなる＝削除は失敗したのに破壊的な副作用だけ残る。
+            if (moved)
+            {
+                if (isCurrentScene) ctx.currentScenePath.clear();
+                if (m_selectedPath == m_pendingDeletePath) m_selectedPath.clear();
+                m_pendingDeletePath.clear();
+                m_deleteError.clear();
+                m_deletePopupOpen = false;
+                ImGui::CloseCurrentPopup();
+            }
+            else
+            {
+                // 窓は閉じない。閉じると「押したのに消えていない」だけが残り、
+                // 理由はログにしか出ない。
+                m_deleteError = "\xe3\x81\x94\xe3\x81\xbf\xe7\xae\xb1\xe3\x81\xb8\xe7\xa7\xbb\xe5\x8b\x95\xe3\x81\xa7\xe3\x81\x8d\xe3\x81\xbe\xe3\x81\x9b\xe3\x82\x93\xe3\x81\xa7\xe3\x81\x97\xe3\x81\x9f\xef\xbc\x88\xe4\xbb\x96\xe3\x81\xae\xe3\x82\xa2\xe3\x83\x97\xe3\x83\xaa\xe3\x81\x8c\xe9\x96\x8b\xe3\x81\x84\xe3\x81\xa6\xe3\x81\x84\xe3\x82\x8b\xe5\x8f\xaf\xe8\x83\xbd\xe6\x80\xa7\xef\xbc\x89\xe3\x80\x82\xe5\x89\x8a\xe9\x99\xa4\xe3\x81\x97\xe3\x81\xa6\xe3\x81\x84\xe3\x81\xbe\xe3\x81\x9b\xe3\x82\x93\xe3\x80\x82";
+            }
+            needRefresh = true;   // 成否どちらでも実際の状態を出し直す
         }
         ImGui::SameLine();
         if (ImGui::Button("\xe3\x82\xad\xe3\x83\xa3\xe3\x83\xb3\xe3\x82\xbb\xe3\x83\xab", ImVec2(120, 0)))  // キャンセル
         {
             m_pendingDeletePath.clear();
+            m_deleteError.clear();
             m_deletePopupOpen = false;
             ImGui::CloseCurrentPopup();
         }

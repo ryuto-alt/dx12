@@ -493,8 +493,16 @@ void Application::SaveCurrentProject()
     if (!m_editorCtx->currentScenePath.empty())
     {
         if (SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, PathResolver::AssetsDir()))
+        {
             MarkSceneClean();
-        ProjectManager::SaveLastOpenedScene(m_editorCtx->currentScenePath);
+            ProjectManager::SaveLastOpenedScene(m_editorCtx->currentScenePath);
+        }
+        else
+        {
+            // 書けていないシーンを「最後に開いていたシーン」として記録しない。
+            Logger::Error("シーンを保存できませんでした: {}", m_editorCtx->currentScenePath);
+            m_editorCtx->saveErrorFlash = 6.0f;
+        }
     }
 
     // .dx12proj を保存（プロジェクトを開いている場合のみ）

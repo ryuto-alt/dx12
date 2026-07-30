@@ -176,10 +176,20 @@ void ToolbarPanel::Render(bool isPlaying,
                 }
                 if (!ctx.currentScenePath.empty())
                 {
+                    // ★Save の戻り値を見ずに緑の「✓ Saved」を出し、SaveLastOpenedScene まで
+                    //   走らせていた。書けていないのに保存できたように見え、しかも
+                    //   プロジェクトは「そのシーンを開いていた」と記録してしまう。
                     if (SceneSerializer::Save(*scene, ctx.currentScenePath, assetsDir))
+                    {
                         ctx.MarkSceneSaved(SceneSettingsFingerprint(*scene));
-                    ProjectManager::SaveLastOpenedScene(ctx.currentScenePath);
-                    ctx.hotReloadFlash = 1.5f;
+                        ProjectManager::SaveLastOpenedScene(ctx.currentScenePath);
+                        ctx.hotReloadFlash = 1.5f;
+                    }
+                    else
+                    {
+                        Logger::Error("シーンを保存できませんでした: {}", ctx.currentScenePath);
+                        ctx.saveErrorFlash = 6.0f;
+                    }
                 }
             }
 
@@ -201,9 +211,16 @@ void ToolbarPanel::Render(bool isPlaying,
                 {
                     ctx.currentScenePath = savePath;
                     if (SceneSerializer::Save(*scene, ctx.currentScenePath, assetsDir))
+                    {
                         ctx.MarkSceneSaved(SceneSettingsFingerprint(*scene));
-                    ProjectManager::SaveLastOpenedScene(ctx.currentScenePath);
-                    ctx.hotReloadFlash = 1.5f;
+                        ProjectManager::SaveLastOpenedScene(ctx.currentScenePath);
+                        ctx.hotReloadFlash = 1.5f;
+                    }
+                    else
+                    {
+                        Logger::Error("シーンを保存できませんでした: {}", ctx.currentScenePath);
+                        ctx.saveErrorFlash = 6.0f;
+                    }
                 }
             }
 
@@ -797,6 +814,15 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::Text("\xe2\x9c\x93 Saved");
         ImGui::PopStyleColor();
         ctx.hotReloadFlash -= clock->GetDeltaTime();
+    }
+    // 保存失敗。緑より長く出す（見逃すと書けていないことに気づけない）
+    if (ctx.saveErrorFlash > 0.0f)
+    {
+        ImGui::SameLine(0, 12);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.35f, 0.35f, 1.0f));
+        ImGui::Text("\xe2\x9c\x95 \xe4\xbf\x9d\xe5\xad\x98\xe3\x81\xab\xe5\xa4\xb1\xe6\x95\x97 (dx12_engine.log)");  // ✕ 保存に失敗
+        ImGui::PopStyleColor();
+        ctx.saveErrorFlash -= clock->GetDeltaTime();
     }
 
     // ※ FPS/描画統計は下部ステータスバー(EditorLayer::RenderStatusBar)に集約した。

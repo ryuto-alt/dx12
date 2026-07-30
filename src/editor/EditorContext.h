@@ -354,6 +354,9 @@ public:
     f32 hotReloadFlash    = 0.0f;
     f32 buildCompleteFlash = 0.0f;
     f32 buildErrorFlash    = 0.0f;  // ビルド失敗表示（>0 の間 赤で「✗ ビルド失敗」）
+    // ★シーン保存の失敗表示。以前は SceneSerializer::Save の戻り値を見ずに
+    //   緑の「✓ Saved」を出していたので、書けていないのに保存できたように見えた。
+    f32 saveErrorFlash     = 0.0f;
     std::string buildErrorMsg;      // ビルド失敗の具体理由（空なら汎用メッセージ）
 
     // エラー通知（Play 不可等）

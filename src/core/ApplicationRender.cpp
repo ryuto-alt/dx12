@@ -1446,9 +1446,18 @@ void Application::Render()
         if (!m_editorCtx->currentScenePath.empty())
         {
             if (SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, PathResolver::AssetsDir()))
+            {
                 MarkSceneClean();
-            ProjectManager::SaveLastOpenedScene(m_editorCtx->currentScenePath);
-            m_editorCtx->hotReloadFlash = 1.5f;
+                ProjectManager::SaveLastOpenedScene(m_editorCtx->currentScenePath);
+                m_editorCtx->hotReloadFlash = 1.5f;
+            }
+            else
+            {
+                // 新規シーンのファイルを作れなかった。緑の Saved を出すと
+                // 「作られている」と誤解したまま作業が進む。
+                Logger::Error("新規シーンを保存できませんでした: {}", m_editorCtx->currentScenePath);
+                m_editorCtx->saveErrorFlash = 6.0f;
+            }
         }
         m_editorLayer->RefreshAssetBrowser();
         // 新シーンの SkyboxSettings で IBL/skybox を次フレーム冒頭に再ベイク。

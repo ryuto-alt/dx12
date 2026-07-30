@@ -2128,10 +2128,20 @@ void Application::Update()
             }
             else
             {
+                // ★未保存フラグだけは成否を見ていたのに、緑の「✓ Saved」と
+                //   SaveLastOpenedScene は無条件だった。書けていないのに保存できたように
+                //   見え、しかもプロジェクトは「そのシーンを開いていた」と記録する。
                 if (SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, PathResolver::AssetsDir()))
-                    MarkSceneClean();   // 成功したときだけ未保存フラグを落とす
-                ProjectManager::SaveLastOpenedScene(m_editorCtx->currentScenePath);
-                m_editorCtx->hotReloadFlash = 1.5f;
+                {
+                    MarkSceneClean();
+                    ProjectManager::SaveLastOpenedScene(m_editorCtx->currentScenePath);
+                    m_editorCtx->hotReloadFlash = 1.5f;
+                }
+                else
+                {
+                    Logger::Error("シーンを保存できませんでした: {}", m_editorCtx->currentScenePath);
+                    m_editorCtx->saveErrorFlash = 6.0f;
+                }
                 m_editorLayer->RefreshAssetBrowser();
             }
         }

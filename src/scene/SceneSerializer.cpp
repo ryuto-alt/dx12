@@ -1916,9 +1916,20 @@ bool SceneSerializer::Save(const Scene& scene, const std::string& filePath,
 {
     namespace fs = std::filesystem;
 
+    // ★error_code 版を使う。投げる版だと不正なパス（Windows の予約名・使えない文字）で
+    //   filesystem_error が Save を突き抜け、呼び出し側の `if (Save(...))` による
+    //   失敗処理が一切走らない。ここは戻り値で失敗を返す約束の関数。
     fs::path dir = fs::path(filePath).parent_path();
     if (!dir.empty())
-        fs::create_directories(dir);
+    {
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        if (ec && !fs::exists(dir, ec))
+        {
+            Logger::Error("保存先のフォルダを作れません: {} ({})", dir.string(), ec.message());
+            return false;
+        }
+    }
 
     json root = BuildSceneJson(scene, assetsDir);
 

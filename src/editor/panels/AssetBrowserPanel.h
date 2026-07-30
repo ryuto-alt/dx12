@@ -111,6 +111,8 @@ private:
     std::filesystem::path m_selectedPath;       // 単一クリックで選択中のアセット
     std::filesystem::path m_pendingDeletePath;  // 削除確認中のアセット（確定で remove）
     bool                  m_deletePopupOpen = false;
+    // 削除に失敗した理由（窓に出しっぱなしにする。空でなければ削除は成功していない）
+    std::string           m_deleteError;
 
     // モデルサムネイルレンダラー
     ModelThumbnailRenderer* m_thumbRenderer = nullptr;
