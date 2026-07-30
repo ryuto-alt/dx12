@@ -103,6 +103,13 @@ void VfxEditorPanel::RenderPreview3D(EditorContext& ctx, CommandList& cmd, f32 d
         p.turbStrength = m_current.turbStrength; p.turbFreq = m_current.turbFreq;
         p.flicker = m_current.flicker;       p.flickerFreq = m_current.flickerFreq;
         p.texturePath = m_current.texturePath;
+        // ★プレビューにも歪み/ライトを渡す。渡していなかったので「画面歪み」スライダーを
+        //   動かしてもプレビューは一切変わらず、そのまま実シーンへ適用すると
+        //   **エフェクトが消えたように見える**（distort>0 の粒子はカラーパスに載らず
+        //   歪みバッファへ回るので色の寄与がゼロになる）。真逆の嘘を 2 回ついていた。
+        p.distort    = m_current.distort;
+        p.light      = m_current.light;
+        p.lightRange = m_current.lightRange;
         m_previewParticles.Emit(p);
     }
     m_previewParticles.Update(dt);
@@ -359,6 +366,8 @@ std::string VfxEditorPanel::BuildLuaSnippet() const
         ss << "  distort=" << m_current.distort << ",\n";
     if (m_current.light)
         ss << "  light=true, lightRange=" << m_current.lightRange << ",\n";
+    if (!m_current.texturePath.empty())
+        ss << "  texture=\"" << m_current.texturePath << "\",\n";
     ss << "}\n";
     return ss.str();
 }

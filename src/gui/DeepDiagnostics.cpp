@@ -953,6 +953,17 @@ DeepDiagReport DeepDiag::SceneAssets(Application& app)
             r.Add(1, who + " のスプライトサイズが 0 以下（表示されない）");
         if (sp.color.w <= 0.0f)
             r.Add(1, who + " のスプライトが完全に透明（color.a=0）");
+
+        // ★MeshRenderer 側と同じ検査。ここだけ抜けていた。
+        //   壊れた/消えたシェーダーを割り当てても既定の Sprite.hlsl で描かれ続ける＝
+        //   テクスチャもサイズも正しいのに効果だけ出ない、という一番見つけにくい形になる。
+        //   Inspector のコンボはディスクの .hlsl を並べるだけなので、割当は正常に見える。
+        if (!sp.shaderPath.empty())
+        {
+            if (ShaderManager* sm = ShaderManager::Instance())
+                if (!sm->HasValidCustomShader(sp.shaderPath))
+                    r.Add(2, who + " のスプライトに割り当てたシェーダーが有効でない: " + sp.shaderPath);
+        }
     }
 
     // ---- ここから下は「今まで誰も参照切れを見ていなかった」フィールド ----

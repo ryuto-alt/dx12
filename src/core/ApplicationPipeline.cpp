@@ -898,6 +898,15 @@ Application::CustomSpritePsos* Application::EnsureCustomSpritePso(const std::str
             entry.valid = false;
         }
     }
+    else
+    {
+        // ★バイトコードが取れない（.cso 未ビルド / シェーダーをリネーム or 削除）ケース。
+        //   ここに else が無く、呼び出し側も nullptr を素通りして既定 PSO で描いていたので、
+        //   「シェーダーを割り当てたのに効果が出ない」がログにも診断にも一切出なかった。
+        //   キャッシュに積むので、この警告は shaderPath ごとに 1 回だけ出る。
+        Logger::Warn("Sprite2D カスタムシェーダーが見つかりません（既定シェーダーで描画します）: {} "
+                     "— シェーダーを保存し直すか、パスが正しいか確認してください", shaderRel);
+    }
 
     auto& stored = m_customSpritePsoCache[key];
     stored = std::move(entry);

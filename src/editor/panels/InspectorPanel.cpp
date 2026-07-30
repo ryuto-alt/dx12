@@ -2044,17 +2044,17 @@ void InspectorPanel::Render(entt::registry& reg,
                             "stretch>0 の速度ストレッチ時と GPUパーティクルでは無効");
                     }
                     {
-                        static char texBuf[260] = "";
+                        // ★static バッファ + 確定時コミットだった。バッファが全エンティティで
+                        //   共有なので、パスを打ってから Enter を押さずにヒエラルキーで別の
+                        //   エンティティをクリックすると（Hierarchy が Inspector より前に走る）、
+                        //   入力が捨てられるか **選び直した方の放出器へ書き込まれる**。
+                        //   Sprite2D 側と同じ「ローカルバッファ + 打鍵ごとにコミット」に揃える。
+                        char texBuf[260] = {};
+                        const size_t tn = pe.texturePath.copy(texBuf, sizeof(texBuf) - 1);
+                        texBuf[tn] = '\0';
                         pg::Label("テクスチャ", "assetsからの相対パス。空=プロシージャル質感");
-                        ImGui::InputTextWithHint("##peTex", "空=プロシージャル質感", texBuf, sizeof(texBuf));
-                        if (ImGui::IsItemDeactivatedAfterEdit()) { pe.texturePath = texBuf; changed = true; }
-                        if (!ImGui::IsItemActive() && pe.texturePath != texBuf)
-                        {
-                            size_t n = pe.texturePath.size();
-                            if (n >= sizeof(texBuf)) n = sizeof(texBuf) - 1;
-                            std::memcpy(texBuf, pe.texturePath.c_str(), n);
-                            texBuf[n] = '\0';
-                        }
+                        if (ImGui::InputTextWithHint("##peTex", "空=プロシージャル質感", texBuf, sizeof(texBuf)))
+                        { pe.texturePath = texBuf; changed = true; }
                     }
                     // ★無効になるのは GpuParticleSystem::EmitRequest に無いものが全部。
                     //   ここを増やしたら EmitRequest と突き合わせて更新すること。

@@ -662,14 +662,22 @@ void ParticleSystem::Update(f32 dt)
         pt.vel.y += pt.gravity * dt;
         float damp = (std::max)(0.0f, 1.0f - pt.drag * dt);
         pt.vel.x *= damp; pt.vel.y *= damp; pt.vel.z *= damp;
+        const float prevY = pt.pos.y;
         pt.pos.x += pt.vel.x * dt;
         pt.pos.y += pt.vel.y * dt;
         pt.pos.z += pt.vel.z * dt;
         pt.rot += pt.rotVel * dt;
-        // 床で軽くバウンド
-        if (pt.pos.y < 0.05f && pt.vel.y < 0.0f)
+        // 床で軽くバウンド（y=0.05 の見えない平面。地面が原点にある前提の簡易処理）
+        // ★「今フレームで上から突き抜けた」ときだけ弾く。位置だけで判定すると、
+        //   地下（洞窟・地下室・水中）に置いた放出器の粒子が gravity<0 で落ちた瞬間に
+        //   y=-8 → y=+0.05 へ **8m 瞬間移動** して原点の見えない床を這う。
+        //   ログも警告も出ないので「なぜか煙が上に飛ぶ」としか見えなかった。
+        // ponytail: 平面は据え置きで貫通判定だけ足した。任意の高さに置きたくなったら
+        //           ParticleEmitter に floorY を生やす（シェーダ側は既に -1e9=無効に対応済み）。
+        constexpr float kFloorY = 0.05f;
+        if (pt.pos.y < kFloorY && prevY >= kFloorY && pt.vel.y < 0.0f)
         {
-            pt.pos.y = 0.05f;
+            pt.pos.y = kFloorY;
             pt.vel.y = -pt.vel.y * 0.35f;
             pt.vel.x *= 0.7f; pt.vel.z *= 0.7f;
         }

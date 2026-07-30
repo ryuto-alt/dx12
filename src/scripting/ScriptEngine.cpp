@@ -1867,6 +1867,10 @@ void ScriptEngine::RegisterBindings()
             p.distort     = t.get_or("distort", 0.0f);      // >0 で歪みパーティクル（熱ゆらぎ/衝撃波）
             p.light       = t.get_or("light", false);       // 明るい粒子上位をポイントライト化
             p.lightRange  = t.get_or("lightRange", 3.0f);
+            // ★texture: パーティクルエディタも ParticleEmitter も texturePath を効かせるのに、
+            //   fx:burst だけ読む口が無かった。エディタの「Lua コードをコピー」で貼っても
+            //   画像が出ず、手で texture= を書き足しても無視される、という詰み方をしていた。
+            p.texturePath = t.get_or("texture", std::string{});
             return p;
         };
 

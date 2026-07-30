@@ -115,7 +115,8 @@ void SpriteSheetEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ct
         const std::string path = ctx.pendingOpenSpriteSheetPath;
         ctx.pendingOpenSpriteSheetPath.clear();
         ctx.showSpriteSheetEditor = true;
-        LoadAsset(path);
+        if (!LoadAsset(path))
+        { m_statusMsg = "読み込みに失敗しました: " + path; m_statusFlash = 4.0f; }
     }
     if (!ctx.showSpriteSheetEditor) return;
     if (!m_assetListLoaded) RefreshAssetList(assetsDir);
@@ -168,7 +169,10 @@ void SpriteSheetEditorPanel::DrawToolbar(EditorContext& /*ctx*/, const std::stri
         if (m_assetNames.empty()) ImGui::TextDisabled("(assets/spriteanim/ が空)");
         for (const auto& nm : m_assetNames)
             if (ImGui::MenuItem(nm.c_str()))
-                LoadAsset(assetsDir + "spriteanim/" + nm + ".spranim");
+            {
+                if (!LoadAsset(assetsDir + "spriteanim/" + nm + ".spranim"))
+                { m_statusMsg = "読み込みに失敗しました: " + nm; m_statusFlash = 4.0f; }
+            }
         ImGui::EndPopup();
     }
 
@@ -186,6 +190,9 @@ void SpriteSheetEditorPanel::DrawToolbar(EditorContext& /*ctx*/, const std::stri
             m_statusMsg = std::string("保存しました: ") + m_nameBuf;
             m_statusFlash = 2.0f;
         }
+        // ★失敗時に else が無く、緑のフラッシュが出ないことだけが手掛かりだった
+        //   （書き込み権限・パス不正・ディスク満杯を無言で捨てていた）
+        else { m_statusMsg = "保存に失敗しました: " + path; m_statusFlash = 4.0f; }
     }
     ImGui::SameLine();
     if (ImGui::Button("名前を付けて保存"))
@@ -198,6 +205,7 @@ void SpriteSheetEditorPanel::DrawToolbar(EditorContext& /*ctx*/, const std::stri
             m_statusMsg = std::string("保存しました: ") + m_nameBuf;
             m_statusFlash = 2.0f;
         }
+        else { m_statusMsg = "保存に失敗しました: " + path; m_statusFlash = 4.0f; }
     }
     if (!canSave) ImGui::EndDisabled();
 

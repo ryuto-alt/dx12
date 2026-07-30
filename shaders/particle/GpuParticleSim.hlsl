@@ -182,10 +182,13 @@ void CSSimulate(uint3 id : SV_DispatchThreadID)
     p.vel.y += p.gravity * dt;
     float damp = max(0.0, 1.0 - p.drag * dt);
     p.vel *= damp;
+    float prevY = p.pos.y;
     p.pos += p.vel * dt;
 
     // 床バウンド（CPU 版と同じ簡易挙動）
-    if (p.pos.y < simP.w && p.vel.y < 0.0)
+    // ★「今フレームで上から突き抜けた」ときだけ。位置だけで判定すると地下に置いた
+    //   放出器の粒子が原点の床へ瞬間移動する（CPU 版と同じ修正）。
+    if (p.pos.y < simP.w && prevY >= simP.w && p.vel.y < 0.0)
     {
         p.pos.y = simP.w;
         p.vel.y = -p.vel.y * 0.35;
