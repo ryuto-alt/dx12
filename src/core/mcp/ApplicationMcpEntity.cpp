@@ -639,7 +639,13 @@ void Application::RegisterMcpEntityMethods()
             auto& reg = m_scene->GetRegistry();
 
             std::vector<UiResolvedRect> rects;
-            UISystem::ResolveRects(reg, 0.0f, 0.0f, 1920.0f, 1080.0f, rects);
+            // ★以前は 1920x1080 決め打ちだった。scaleMode=ConstantPixel のキャンバスでは
+            //   キャンバス矩形＝ビューポートそのものなので、右下に寄せた要素の resolvedRect が
+            //   実際のゲーム画面と食い違い、dx12_ui_audit の画面外/重なり判定もその誤差を継ぐ。
+            //   実際に描いている解像度で解決する（未初期化のときだけ 1920x1080 へ倒す）。
+            const float uiVw = (m_renderW > 0) ? static_cast<float>(m_renderW) : 1920.0f;
+            const float uiVh = (m_renderH > 0) ? static_cast<float>(m_renderH) : 1080.0f;
+            UISystem::ResolveRects(reg, 0.0f, 0.0f, uiVw, uiVh, rects);
             auto findRect = [&rects](entt::entity e) -> const UiResolvedRect* {
                 for (const auto& rr : rects) if (rr.e == e) return &rr;
                 return nullptr;
@@ -685,6 +691,15 @@ void Application::RegisterMcpEntityMethods()
                                    {"clipChildren", r->clipChildren}};
                     if (r->rotation != 0.0f) n["uiRect"]["rotation"] = r->rotation;
                     if (r->skewX != 0.0f)    n["uiRect"]["skewX"] = r->skewX;
+                    // ★alpha / scaleX / scaleY が抜けていた。どれも 0 なら**何も描かれない**のに
+                    //   visible:true + 実サイズの resolvedRect が返るので、
+                    //   「パネルが出ない」を調べに来た相手がツリーから何も気づけなかった。
+                    n["uiRect"]["alpha"]  = r->alpha;
+                    n["uiRect"]["scaleX"] = r->scaleX;
+                    n["uiRect"]["scaleY"] = r->scaleY;
+                    if (r->visible && (r->alpha <= 0.0f || r->scaleX == 0.0f || r->scaleY == 0.0f))
+                        n["uiRect"]["invisibleReason"] =
+                            (r->alpha <= 0.0f) ? "alpha=0" : "scale=0";
                     if (const UiResolvedRect* rr = findRect(e))
                     {
                         // 解決済み矩形をキャンバス空間 px へ（[x, y, w, h]、キャンバス左上原点）

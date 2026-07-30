@@ -210,10 +210,18 @@ inline void CollectUiAnimEvents(const UiAnimClip& clip, f32 prevTime, f32 curTim
 {
     if (clip.events.empty()) return;
     const bool wrapped = curTime < prevTime;
+    // ★再生開始フレームだけは区間を閉じる（`>=`）。再生は prevTime=curTime=0 から始まるので、
+    //   半開区間 (prev, cur] だと **time=0 のイベントが一度も当たらない**。
+    //   ループするクリップは 2 周目から拾えるが、単発クリップは永久に鳴らない。
+    //   「メニューが開く瞬間に効果音」という一番自然なマーカーが無言で死ぬ場所だった。
+    // ★curTime > prevTime のときだけ。t=0 で止まったまま更新され続ける（prev==cur==0）ケースで
+    //   毎フレーム再発火しないようにする。
+    const bool atStart = (prevTime <= 0.0f) && (curTime > prevTime);
     for (const auto& ev : clip.events)
     {
         const bool hit = wrapped ? (ev.time > prevTime || ev.time <= curTime)
-                                 : (ev.time > prevTime && ev.time <= curTime);
+                                 : ((atStart ? ev.time >= prevTime : ev.time > prevTime)
+                                    && ev.time <= curTime);
         if (hit) out.push_back(&ev);
     }
 }

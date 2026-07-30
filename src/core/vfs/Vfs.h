@@ -43,6 +43,11 @@ struct BootConfig
     std::string startScene;
     int         windowWidth  = 1280;
     int         windowHeight = 720;
+    // ★UI の既定フォント（assets 相対、例 "fonts/NotoSansJP-400.ttf"）。空なら未設定。
+    //   これが無いと配布ゲームは C:\Windows\Fonts の Yu Gothic / Meiryo を直読みするしかなく、
+    //   その 2 つが入っていない環境（日本語 SKU 以外の素の Windows）では ImGui が
+    //   ProggyClean（ASCII のみ）へフォールバックして**日本語が全部消える / □になる**。
+    std::string uiFont;
 };
 bool ReadBootConfig(BootConfig& out);
 

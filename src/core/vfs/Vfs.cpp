@@ -232,6 +232,7 @@ bool ReadBootConfig(BootConfig& out)
     ExtractJsonString(json, "startScene", out.startScene);
     ExtractJsonInt(json, "windowWidth", out.windowWidth);
     ExtractJsonInt(json, "windowHeight", out.windowHeight);
+    ExtractJsonString(json, "uiFont", out.uiFont);
     return true;
 }
 

@@ -1449,10 +1449,45 @@ bool Application::BuildGame()
                 titleEsc += c;
             }
 
+            // ★UI の既定フォントを決めて manifest に書く。
+            //   配布ゲームは今まで C:\Windows\Fonts の Yu Gothic / Meiryo を直読みしていて、
+            //   その 2 つが入っていない環境（日本語 SKU 以外の素の Windows）では
+            //   ImGui が ProggyClean（ASCII のみ）へ落ち、**日本語 UI が全部消える**。
+            //   開発機では絶対に出ないので気づけない。
+            //   assets/fonts/ のフォント（dx12_install_font が置く Noto Sans JP 等。
+            //   pak には既に入っている）を指すようにする。
+            std::string uiFontRel;
+            {
+                std::error_code fec;
+                const fs::path fontsDir(PathResolver::AssetsDir() + "fonts");
+                if (fs::is_directory(fontsDir, fec))
+                {
+                    std::vector<std::string> found;
+                    for (auto& de : fs::directory_iterator(fontsDir, fec))
+                    {
+                        if (!de.is_regular_file()) continue;
+                        std::string ext = de.path().extension().string();
+                        for (char& c : ext)
+                            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                        if (ext == ".ttf" || ext == ".otf" || ext == ".ttc")
+                            found.push_back(de.path().filename().string());
+                    }
+                    std::sort(found.begin(), found.end());   // 選択を再現可能にする
+                    if (!found.empty()) uiFontRel = "fonts/" + found.front();
+                }
+                if (uiFontRel.empty())
+                    Logger::Warn("assets/fonts/ にフォントがありません。配布ゲームは OS の "
+                                 "Yu Gothic / Meiryo に頼るため、それらが無い環境では日本語 UI が "
+                                 "表示されません（dx12_install_font で日本語対応フォントを入れてください）");
+                else
+                    Logger::Info("UI 既定フォント: {}", uiFontRel);
+            }
+
             std::string manifest =
                 std::string("{\n") +
                 "  \"title\": \"" + titleEsc + "\",\n" +
                 "  \"startScene\": \"" + startSceneRel + "\",\n" +
+                "  \"uiFont\": \"" + uiFontRel + "\",\n" +
                 "  \"windowWidth\": " + std::to_string(winW) + ",\n" +
                 "  \"windowHeight\": " + std::to_string(winH) + "\n" +
                 "}\n";

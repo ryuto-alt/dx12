@@ -2,6 +2,9 @@
 #include "graphics/GraphicsDevice.h"
 #include "graphics/DescriptorHeap.h"
 #include "core/Logger.h"
+#include <vector>
+#include <cstring>
+#include "core/vfs/Vfs.h"
 #include "editor/EditorTheme.h"
 
 #include <filesystem>
@@ -47,8 +50,40 @@ void ImGuiManager::Initialize(
             "C:\\Windows\\Fonts\\meiryo.ttc",
         };
         bool loaded = false;
+
+        // ★配布ゲームでは pak 内のフォントを最優先にする。
+        //   以前は OS の Yu Gothic / Meiryo を直読みするだけで、その 2 つが入っていない環境
+        //   （日本語 SKU 以外の素の Windows。両方とも同じオプション機能に入っている）では
+        //   ImGui が ProggyClean（ASCII のみ）へフォールバックし、**日本語 UI が全部消える**。
+        //   開発機では絶対に再現しないので気づけない類の壊れ方だった。
+        //   BuildGame が assets/fonts/ から 1 本選んで manifest の uiFont に書いている。
+        //   フォントのバイト列は ImGui が所有する（FontDataOwnedByAtlas 既定 true）ので
+        //   ここで確保したメモリを渡し切りにしてよい。
+        if (vfs::InGameMode())
+        {
+            vfs::BootConfig boot;
+            if (vfs::ReadBootConfig(boot) && !boot.uiFont.empty())
+            {
+                std::vector<uint8_t> bytes = vfs::ReadAsset(boot.uiFont);
+                if (!bytes.empty())
+                {
+                    void* owned = IM_ALLOC(bytes.size());
+                    std::memcpy(owned, bytes.data(), bytes.size());
+                    io.Fonts->AddFontFromMemoryTTF(owned, static_cast<int>(bytes.size()), 17.0f,
+                        nullptr, io.Fonts->GetGlyphRangesJapanese());
+                    Logger::Info("UI font loaded from pak: {}", boot.uiFont);
+                    loaded = true;
+                }
+                else
+                {
+                    Logger::Error("manifest の uiFont を pak から読めません: {}", boot.uiFont);
+                }
+            }
+        }
+
         for (const char* fontPath : candidates)
         {
+            if (loaded) break;
             if (!std::filesystem::exists(fontPath)) continue;
             io.Fonts->AddFontFromFileTTF(fontPath, 17.0f, nullptr,
                 io.Fonts->GetGlyphRangesJapanese());
@@ -57,7 +92,13 @@ void ImGuiManager::Initialize(
             break;
         }
         if (!loaded)
-            Logger::Warn("日本語フォントが見つかりません (Japanese font not found)");
+        {
+            // ★ここは警告ではなく**エラー**。この状態のまま出荷すると日本語が 1 文字も出ない。
+            Logger::Error("日本語フォントが見つかりません。ASCII のみの内蔵フォントで続行するため、"
+                          "日本語の UI テキストは表示されません "
+                          "(dx12_install_font で assets/fonts/ に日本語対応フォントを入れ、"
+                          "ゲームを再ビルドしてください)");
+        }
     }
 
     // ===== Nebula Engine Editor ライクなダークテーマ =====

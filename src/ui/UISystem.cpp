@@ -1470,7 +1470,16 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
     // --- UIText: 整列 + 折り返し（ImGui 共有フォントのスケール描画。ボタンティントは掛けない）---
     if (const auto* txt = reg.try_get<UIText>(e))
     {
-        if (!txt->text.empty() && txt->color.w * ctx.alphaMul > 0.0f)
+        // ★以前は「本体の alpha が 0 なら何もしない」だったので、
+        //   影だけ / 縁取りだけ（color.a=0, outlineColor.a=1）の見せ方が無言で出なかった。
+        //   影・縁取り・本体はそれぞれ独立した alpha を持つので、どれか 1 つでも出るなら描く。
+        //   （`ctx.alphaMul`＝UIRect.alpha とツイーンの乗算は全体に掛かるのでこちらは共通条件）
+        const bool anyTextLayerVisible =
+            txt && ctx.alphaMul > 0.0f &&
+            (txt->color.w > 0.0f
+             || (txt->outlineWidth > 0.0f && txt->outlineColor.w > 0.0f)
+             || txt->shadowColor.w > 0.0f);
+        if (!txt->text.empty() && anyTextLayerVisible)
         {
             ImFont* font = ImGui::GetFont();
             if (!txt->fontPath.empty())
@@ -1712,9 +1721,12 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
                                         textBegin, textEnd, wrapW);
                 }
                 // テキストグラデ（本体のみ。影/縁取りには掛けない）
-                const int gStart = (txt->gradientDir > 0) ? ctx.dl->VtxBuffer.Size : -1;
-                ctx.dl->AddText(font, fontSize, ImVec2(tx, ty), ToImCol(tcol),
-                                textBegin, textEnd, wrapW);
+                // ★本体は自前の alpha が 0 なら描かない（影/縁取りだけを出す見せ方のため）
+                const int gStart = (txt->gradientDir > 0 && txt->color.w > 0.0f)
+                                 ? ctx.dl->VtxBuffer.Size : -1;
+                if (txt->color.w > 0.0f)
+                    ctx.dl->AddText(font, fontSize, ImVec2(tx, ty), ToImCol(tcol),
+                                    textBegin, textEnd, wrapW);
                 if (gStart >= 0 && ctx.dl->VtxBuffer.Size > gStart)
                 {
                     const ImVec2 p0(tx, ty);
@@ -1756,11 +1768,18 @@ void DrawUiChildren(entt::entity e, const UiRectPx& parentRect, UiDrawContext& c
     int idx = 0;
     for (entt::entity child : it->second)
     {
-        if (!ctx.reg->all_of<UIRect>(child))
+        const UIRect* childRect = ctx.reg->try_get<UIRect>(child);
+        if (!childRect)
         {
             DrawUiSubtree(child, parentRect, ctx);
             continue;
         }
+        // ★非表示の子にはセルを配らない（idx を進めない）。
+        //   以前は UIRect さえ持っていれば idx を進めてから DrawUiSubtree に渡し、
+        //   visible の判定はその 1 段下でしていたので、`setUiVisible(item,false)` した項目の場所が
+        //   **穴になって残った**（習得前のスキル / 売り切れの行 / 選べないメニューを隠すと隙間が空く）。
+        //   Unity の LayoutGroup も非アクティブな子は詰める。
+        if (!childRect->visible) continue;
         // セルサイズ: 積む軸は必ず正、交差軸は 0 以下でインナーいっぱい
         UiRectPx cell = inner;
         switch (lay->mode)
@@ -1956,11 +1975,22 @@ void DrawUiSubtree(entt::entity e, const UiRectPx& parentRect, UiDrawContext& ct
         }
 
         // スクロールを 0..(コンテンツ−ビュー) にクランプ（前フレームの計測値を使う）
+        // ★まだ 1 度も計測していない（_contentW/H は非シリアライズで既定 0）フレームでは
+        //   クランプ範囲が [0,0] になり、**オーサリングした / スクリプトが入れたスクロール位置が
+        //   計測前に 0 へ潰される**。「選択中の行までスクロールした状態で開く」が永久に効かなかった。
+        //   計測済みになるまで触らない。
+        // ★書き換えるのは interactive なフレームだけにする。ここは ResolveRects
+        //   （「描画せずレイアウト解決のみ」= SceneViewPanel と MCP の ui_tree が毎フレーム呼ぶ）
+        //   からも通るので、**readOnlyHint を名乗るツールが生シーンの scrollX/Y を書いていた**。
         const float rawSX = sv->scrollX, rawSY = sv->scrollY;
-        sv->scrollX = std::clamp(sv->scrollX, 0.0f,
-                                 std::max(0.0f, sv->_contentW - current.Width()));
-        sv->scrollY = std::clamp(sv->scrollY, 0.0f,
-                                 std::max(0.0f, sv->_contentH - current.Height()));
+        const bool measured = (sv->_contentW > 0.0f || sv->_contentH > 0.0f);
+        if (measured && ctx.interactive)
+        {
+            sv->scrollX = std::clamp(sv->scrollX, 0.0f,
+                                     std::max(0.0f, sv->_contentW - current.Width()));
+            sv->scrollY = std::clamp(sv->scrollY, 0.0f,
+                                     std::max(0.0f, sv->_contentH - current.Height()));
+        }
         // 端でクランプされたらその軸の慣性は止める（壁で跳ねずに止まるタッチUIの定番。
         // ドラッグ中も端に張り付いた時点で速度を捨てる=壁際 release でフリックしない）
         if (ctx.interactive)

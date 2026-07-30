@@ -217,10 +217,24 @@ void TestCollectEvents()
     CollectUiAnimEvents(clip, 0.9f, 0.1f, out);
     check(out.size() == 2, "ラップ時は末尾側と先頭側の両方を拾う");
 
-    // t=0 のイベントはラップ時のみ拾える（開いた左境界の帰結）
+    // ★仕様変更: 再生開始フレーム（prev=0 → cur>0）だけは左境界を閉じ、t=0 のイベントを拾う。
+    //   以前は半開区間 (prev, cur] を貫いていたので **単発クリップの t=0 イベントは永久に鳴らず**、
+    //   ループクリップも 2 周目からしか鳴らなかった（「メニューが開く瞬間に効果音」が死ぬ）。
+    //   ラップ時は従来どおり別の枝で拾うので二重発火にはならない。
     out.clear();
     CollectUiAnimEvents(clip, 0.0f, 0.1f, out);
-    check(out.empty(), "t=0 のイベントは 0 から進んだフレームでは拾わない");
+    check(out.size() == 1 && out[0]->event == "zero",
+          "再生開始フレームは t=0 のイベントを拾う");
+
+    // 開始フレーム以外は従来どおり左境界を開く（0.0 を跨がない限り再発火しない）
+    out.clear();
+    CollectUiAnimEvents(clip, 0.1f, 0.2f, out);
+    check(out.empty(), "開始以外のフレームで t=0 が再発火しない");
+
+    // t=0 で止まったまま更新され続けても 1 回きり（prev==cur なら拾わない）
+    out.clear();
+    CollectUiAnimEvents(clip, 0.0f, 0.0f, out);
+    check(out.empty(), "時間が進んでいないフレームでは拾わない");
 }
 } // namespace
 

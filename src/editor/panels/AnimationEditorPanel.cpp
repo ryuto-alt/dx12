@@ -587,6 +587,12 @@ void AnimationEditorPanel::DrawAddTrackPopup(entt::registry& reg, EditorContext&
             m_clip.tracks.push_back(std::move(tr));
             m_selTrack = static_cast<int>(m_clip.tracks.size()) - 1;
             m_selKey = 0;
+            // ★先に復元してからスナップし直す。他の呼び出し元（対象切替 / Open）は必ずそうしている。
+            //   スクラブは実コンポーネントへ直接書く（ApplyAtTime → WriteProp）ので、
+            //   復元せずにここでスナップすると **t=0.6 の途中ポーズが「元の値」になる**。
+            //   窓を閉じる / 「元に戻す」でそれが復元され、Ctrl+S でシーンに焼き付く
+            //   （パネルがずれたまま / 半透明のまま / visible=false のまま保存される）。
+            if (m_snapshotValid) RestoreTargets(reg);
             SnapshotTargets(reg);
         }
         if (exists) ImGui::EndDisabled();
