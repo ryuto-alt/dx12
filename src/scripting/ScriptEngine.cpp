@@ -966,7 +966,11 @@ void ScriptEngine::RegisterBindings()
             auto& reg = s.GetRegistry();
             if (!reg.all_of<UIText>(e.GetHandle())) return;
             auto& t = reg.get<UIText>(e.GetHandle());
-            if (t.text != text) t._twT = 0.0f;
+            // ★同じ文字列でも頭出しする。以前は != のときだけ戻していたので、
+            //   会話の「……」のように同じ台詞を続けて出すと 2 回目が一瞬で全文表示になった。
+            //   このバインドのコメント自身が「set はタイプライターを先頭から再生し直す」と
+            //   謳っているので、その約束に合わせる。
+            t._twT = 0.0f;
             t.text = text;
         },
         // UIText::text を読む。UIText が無ければ空文字列。
@@ -1278,6 +1282,12 @@ void ScriptEngine::RegisterBindings()
             if (reg.all_of<UIRect>(h))          reg.get<UIRect>(h).visible = true;
             else if (reg.all_of<UICanvas>(h))   reg.get<UICanvas>(h).visible = true;
             if (auto* an = reg.try_get<UIAnimator>(h)) { an->_t = 0.0f; an->_mode = 0; }
+            // ★タイプライターも頭出しする。_twT は可視/不可視に関係なく進み続けるので、
+            //   hideUi → showUi で開き直した会話ウィンドウは全文表示で出ていた
+            //   （エディタで visible=false のまま置いたものは Play 開始からの経過ぶん進む）。
+            if (auto* tx = reg.try_get<UIText>(h)) tx->_twT = 0.0f;
+            for (auto [ce, ct, ctx2] : reg.view<Transform, UIText>().each())
+                if (ct.parent == h) ctx2._twT = 0.0f;   // 直下の子も
         },
         // 出現アニメの逆再生で消す（UIAnimator 無し/出現アニメ無しなら即 visible=false）。
         // 消えた後に戻すのは showUi（setUiVisible では戻らない）。

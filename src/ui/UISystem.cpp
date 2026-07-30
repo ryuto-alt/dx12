@@ -93,6 +93,11 @@ struct UiHitEntry
 {
     entt::entity e = entt::null;
     UiRectPx     rect;
+    // ★クリップを掛ける前の素の矩形。当たり判定は rect（クリップ済み）で正しいが、
+    //   スライダーの値の正規化のように「ウィジェットの実寸」が要る計算はこちらを使う。
+    //   rect を使っていたので、UIScrollView の縁で半分だけ見えている行のつまみを掴むと
+    //   トラック範囲が描画と食い違い、掴んだ瞬間に値が飛んでいた。
+    UiRectPx     rawRect;
     bool         hasXform = false;
     UiXform2x3   xform;      // レイアウト空間 → 実スクリーン（累積）
     UiXform2x3   invXform;   // 実スクリーン → レイアウト空間
@@ -220,6 +225,7 @@ void PushNavRect(std::vector<UiHitEntry>* out, entt::entity e, const UiRectPx& s
     UiHitEntry entry;
     entry.e           = e;
     entry.rect        = s;
+    entry.rawRect     = s;   // ナビ矩形はもともとクリップしない（同じ値）
     entry.scrollOwner = ctx.hitClipOwner;
     if (ctx.hasXform)
     {
@@ -247,6 +253,7 @@ void PushHitRect(std::vector<UiHitEntry>* out, entt::entity e, const UiRectPx& s
     UiHitEntry entry;
     entry.e = e;
     entry.scrollOwner = ctx.hitClipOwner;
+    entry.rawRect = s;   // クリップ前（値の正規化用）
     if (ctx.hasXform)
     {
         entry.rect     = s;
@@ -2277,8 +2284,15 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
             // release が同一フレームの超高速フリックでも誤クリックさせず、速度にも入れる）
             const float sdx = ctx.mousePos.x - sv._prevMX;   // スクリーンpx
             const float sdy = ctx.mousePos.y - sv._prevMY;
-            // 開始点から 6px 超えたらドラッグ確定（それまでは候補のまま=クリック誤爆防止）
-            if (!sv._dragMoved && sdx * sdx + sdy * sdy > 6.0f * 6.0f)
+            // 開始点から 6px 超えたらドラッグ確定（それまでは候補のまま=クリック誤爆防止）。
+            // ★しきい値は**スクロールできる軸の成分だけ**で見る。両軸のベクタ長で見ていたので、
+            //   縦スクロールのリスト（vertical=true / horizontal=false）の中に置いた
+            //   UISlider を横へドラッグすると、6px でつまみが指から外れ、しかも
+            //   横スクロールは無効なのでリストも動かない＝**何も起きなくなる**。
+            //   設定画面（縦リスト＋スライダー）で必ず踏む。
+            const float tdx = sv.horizontal ? sdx : 0.0f;
+            const float tdy = sv.vertical   ? sdy : 0.0f;
+            if (!sv._dragMoved && tdx * tdx + tdy * tdy > 6.0f * 6.0f)
             {
                 sv._dragMoved = true;
                 // 確定した瞬間、進行中のボタン/トグル押下・スライダードラッグをキャンセル。
@@ -2444,8 +2458,11 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
                 ImVec2 m = ctx.mousePos;
                 if (hit.hasXform)
                     m = hit.invXform.Apply(m.x, m.y);
-                const float knobR = std::max(3.0f, hit.rect.Height() * 0.5f);
-                const float x0 = hit.rect.minX + knobR, x1 = hit.rect.maxX - knobR;
+                // ★描画は素の矩形（クリップ前）で組んでいるので、値の正規化も素の矩形で行う。
+                //   hit.rect（クリップ済み）を使っていたため、スクロールビューの縁で
+                //   半分だけ見えている行のつまみを掴むと値が別の位置へ飛んでいた。
+                const float knobR = std::max(3.0f, hit.rawRect.Height() * 0.5f);
+                const float x0 = hit.rawRect.minX + knobR, x1 = hit.rawRect.maxX - knobR;
                 const float t = std::clamp((m.x - x0) / std::max(1.0f, x1 - x0),
                                            0.0f, 1.0f);
                 float v = sld->minValue + (sld->maxValue - sld->minValue) * t;
@@ -2490,7 +2507,48 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
     //   スクロールビューの折り返しより下の項目が候補に居らず、**永久に到達できない**
     //   （そこへフォーカスを移してから見える位置まで送りたいのに、候補に無い）。
     //   マウスの当たり判定は従来どおり *Rects（クリップ済み）なので影響しない。
-    const std::vector<UiHitEntry>& focusables = navRects;
+    //   ★ただし「見えているか」は見る必要がある。モーダル（暗幕 + ボタン）を上に重ねても
+    //   ナビ候補は裏のボタンを含んだままで、マウスでは暗幕が正しく遮るのに
+    //   **パッドだけフォーカスが裏へ抜けて、決定ボタンで裏の onClick が発火していた**
+    //   （設定画面を開いたまま「ゲーム開始」が走る）。候補の中心が自分（か自分の子孫）
+    //   以外のブロッカーに覆われていたら候補から外す。
+    //   ブロッカーが 1 つも無いフレーム（暗幕なし）は従来どおり全件が候補。
+    std::vector<UiHitEntry> navVisible;
+    if (!blockers.empty())
+    {
+        // top が f の子孫か（＝f 自身が覆われているのではなく、f の一部が手前にあるだけ）
+        const auto isSelfOrDescendant = [&reg](entt::entity top, entt::entity f) {
+            for (entt::entity cur = top; cur != entt::null && reg.valid(cur); )
+            {
+                if (cur == f) return true;
+                const auto* t = reg.try_get<Transform>(cur);
+                if (!t) break;
+                cur = t->parent;
+            }
+            return false;
+        };
+        navVisible.reserve(navRects.size());
+        for (const auto& f : navRects)
+        {
+            float cx = (f.rect.minX + f.rect.maxX) * 0.5f;
+            float cy = (f.rect.minY + f.rect.maxY) * 0.5f;
+            if (f.hasXform)
+            {
+                const ImVec2 p = f.xform.Apply(cx, cy);
+                cx = p.x; cy = p.y;
+            }
+            entt::entity top = entt::null;
+            for (auto it = blockers.rbegin(); it != blockers.rend(); ++it)
+                if (it->Contains(cx, cy)) { top = it->e; break; }
+
+            if (top == entt::null || isSelfOrDescendant(top, f.e))
+                navVisible.push_back(f);
+        }
+    }
+    // 全部弾いてしまったら（判定の取りこぼし）従来どおり全件を候補にする＝
+    // 「フォーカスがどこにも行けない」で操作不能になるより安全側に倒す。
+    const std::vector<UiHitEntry>& focusables =
+        (blockers.empty() || navVisible.empty()) ? navRects : navVisible;
 
     const auto findFocusable = [&focusables](entt::entity e) -> const UiHitEntry* {
         for (const auto& f : focusables)
