@@ -128,11 +128,6 @@ public:
     Application(const Application&) = delete;
     Application& operator=(const Application&) = delete;
 
-    // Application.cpp 側でコンパイルされた sizeof(Application) を返す（必ず .cpp で定義する）。
-    // 呼び出し側の TU が持つ sizeof と突き合わせて「.obj の再コンパイル漏れ」を検出するための穴。
-    // 詳しくは main.cpp のビルド健全性チェックを参照。
-    static size_t CompiledLayoutSize();
-
     void Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode = false,
                     const ProjectInfo* projectInfo = nullptr, bool buildMode = false);
     void Run();
@@ -497,6 +492,8 @@ private:
     // 何回連続で失敗したら諦めるか。2 秒ぶん（60fps 換算）。
     // 一時的な失敗はまず 1〜2 フレームで収まるので、これを超えるのは構造的な故障。
     static constexpr int kMaxConsecFrameErrors = 120;
+    int         m_consecFrameErrors = 0;   // 1 枚描けたら 0 に戻る
+    std::string m_lastFrameError;          // 同じ内容の連投を間引くため
     // シーンを開いた直後に呼ぶ。オートセーブの方が本体より新しければ復旧プロンプトを立てる。
     void CheckAutosaveRecovery(const std::string& sceneFullPath);
     // オートセーブの置き場（assets/scenes/.autosave/）。末尾 '/' 付き。
@@ -1243,13 +1240,44 @@ private:
     std::unordered_map<std::string, double> m_persistStore;
     bool m_persistLoaded = false;
 
-    // ★フレーム例外の連続カウンタ。クラス中間ではなく末尾に置いてある。
-    //   中間へ入れると起動時に PSO 作成で落ちた（m_rootSignature の値が壊れて
-    //   D3D12 のランタイムがアドレス 0x7 を読む）。メンバの並びを変えただけで
-    //   壊れる＝初期化のどこかにメンバ境界を越えて書いている箇所がある。
-    //   原因は未特定。ここに置けば当たらないので、まず動く形にしてから追う。
-    int         m_consecFrameErrors = 0;   // 1 枚描けたら 0 に戻る
-    std::string m_lastFrameError;          // 同じ内容の連投を間引くため
 };
+
+// ══════════════════════════════════════════════════════════════════════════
+// TU 間のレイアウト整合を起動時に検査する
+// ══════════════════════════════════════════════════════════════════════════
+// このヘッダを書き換えたのに一部の .obj が再コンパイルされないと、TU ごとに
+// メンバのオフセットが食い違ったまま動く。同じ原因で 2 回起動不能になっている:
+//   2026-07-25 … main.cpp が古い → Application のスタック枠が足りず /GS 検出で
+//                0xC0000409 即死（__fastfail は SEH を迂回するのでログも dmp も残らない）
+//   2026-07-30 … ApplicationPipeline.cpp が古い → RecreateForwardPsos が 32 バイト
+//                手前のメンバを m_graphicsDevice として読み、D3D12 がアドレス 0x7 を読む。
+//                「メモリ破壊」と誤診した。実際にはこのビルドの問題
+// 真因はどちらも ninja の依存 DB が壊れて #deps 0 になること:
+//   cmake --build <builddir> -- -t deps | grep '#deps 0'
+// #deps 0 の .obj はヘッダを書き換えても永久に再コンパイルされず、
+// 再コンパイルされないので依存記録を直す機会も来ない（自己増殖する）。
+// 復旧は --clean-first か、該当 .cpp を touch して 1 度ビルドする。
+//
+// ★検査対象の列挙はしない。この probe は Application を見る全 TU に 1 個ずつ
+//   実体化されるので、TU を新設しても何もしなくてよい。2026-07-25 の検査は
+//   main.cpp と Application.cpp の 2 本を名指しで比べていて、そこに入っていない
+//   ApplicationPipeline.cpp が古くなった 2026-07-30 を素通りさせた。
+namespace appdetail
+{
+void        RegisterApplicationLayout(std::size_t size) noexcept;
+// 食い違う sizeof(Application) を返す。全 TU が一致していれば 0。
+std::size_t ApplicationLayoutMismatch() noexcept;
+// 最初に登録された sizeof(Application)（＝多数派とは限らない。報告用）。
+std::size_t ApplicationLayoutFirstSeen() noexcept;
+
+namespace
+{
+struct ApplicationLayoutProbe
+{
+    ApplicationLayoutProbe() noexcept { RegisterApplicationLayout(sizeof(Application)); }
+};
+const ApplicationLayoutProbe g_applicationLayoutProbe;
+}
+} // namespace appdetail
 
 } // namespace dx12e

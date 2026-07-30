@@ -13,12 +13,26 @@ using namespace appdetail;
 
 Application::Application() = default;
 
-// ★この関数は必ず Application.cpp（= Application 本体と同じ TU）で定義すること。
-// インライン化されるとチェックの意味が消える。詳細は main.cpp のビルド健全性チェック。
-size_t Application::CompiledLayoutSize()
+// ── TU 間のレイアウト整合（仕掛けの説明は Application.h の appdetail のところ）──
+// 各 TU の静的初期化から呼ばれる。初期化順は不定なので、関数ローカル static で受ける。
+namespace appdetail
 {
-    return sizeof(Application);
+namespace
+{
+std::size_t& FirstSeenSlot() noexcept { static std::size_t s = 0; return s; }
+std::size_t& MismatchSlot()  noexcept { static std::size_t s = 0; return s; }
 }
+
+void RegisterApplicationLayout(std::size_t size) noexcept
+{
+    std::size_t& first = FirstSeenSlot();
+    if (first == 0) { first = size; return; }
+    if (first != size) MismatchSlot() = size;
+}
+
+std::size_t ApplicationLayoutMismatch() noexcept { return MismatchSlot(); }
+std::size_t ApplicationLayoutFirstSeen() noexcept { return FirstSeenSlot(); }
+} // namespace appdetail
 
 Application::~Application()
 {

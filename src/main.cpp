@@ -227,18 +227,24 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         // 一切残らない＝「何も言わずに落ちる」ため原因特定が極めて困難になる。
         // 2026-07-25 に実際にこれで起動不能になった（ninja の依存記録が #deps 0 に壊れており
         // Application.h を書き換えても main.cpp が再コンパイルされなかった）。
+        // 2026-07-30 には ApplicationPipeline.cpp が同じ理由で古くなり、そちらは
+        // 「m_rootSignature が壊れる」形（PSO 作成でアドレス 0x7 を読む）で出た。
+        //
+        // ★かつてここは main.cpp と Application.cpp の 2 本だけを比べていた。
+        //   古くなったのがそのどちらでもない TU だったので、2026-07-30 は素通りした。
+        //   今は Application を見る全 TU が Application.h の probe で自動登録される
+        //   （＝TU を新設しても、ここに足しに来る必要はない）。
         //
         // 復旧手順: build ディレクトリを作り直す。あるいは
         //   cmake --build <builddir> -- -t deps
         // で "#deps 0" になっている .obj を探し、その .cpp を touch して再ビルドする。
-        if (sizeof(dx12e::Application) != dx12e::Application::CompiledLayoutSize())
+        if (const std::size_t bad = dx12e::appdetail::ApplicationLayoutMismatch(); bad != 0)
         {
             throw std::runtime_error(
-                "ビルドが壊れています: sizeof(Application) が main.cpp では "
-                + std::to_string(sizeof(dx12e::Application))
-                + " バイト、Application.cpp では "
-                + std::to_string(dx12e::Application::CompiledLayoutSize())
-                + " バイトになっています（古い .obj の再コンパイル漏れ）。\n"
+                "ビルドが壊れています: sizeof(Application) が TU によって "
+                + std::to_string(dx12e::appdetail::ApplicationLayoutFirstSeen())
+                + " バイトと " + std::to_string(bad)
+                + " バイトに割れています（古い .obj の再コンパイル漏れ）。\n"
                   "build ディレクトリを作り直すか、"
                   "cmake --build <builddir> -- -t deps で \"#deps 0\" の .obj を探してください。");
         }
