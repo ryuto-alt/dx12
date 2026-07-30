@@ -2483,6 +2483,8 @@ void Application::Render()
                             m_srvHeap.get(), nativeCmdList);
 
         m_editorCtx->ClearSelection();
+        // 削除と同じ理由で 1 エントリに束ねる（5 個複製したら Ctrl+Z 1 回で 5 個消える）。
+        auto dupBatch = std::make_unique<CompositeCommand>("Duplicate");
         for (auto src : SceneSerializer::TopmostRoots(*m_scene, sources))
         {
             std::vector<entt::entity> all;
@@ -2491,12 +2493,14 @@ void Application::Render()
             if (copy == entt::null) continue;
 
             m_editorCtx->AddToSelection(copy);
-            m_editorCtx->undoSystem.PushCommand(
+            dupBatch->Add(
                 std::make_unique<SpawnPrefabCommand>(
                     m_scene.get(), PathResolver::AssetsDir(), std::move(all)));
             Logger::Info("Duplicated entity: {}",
                          m_scene->GetRegistry().get<NameTag>(copy).name);
         }
+        if (!dupBatch->Empty())
+            m_editorCtx->undoSystem.PushCommand(std::move(dupBatch));
     }
 
     // Deferred: MCP entity deletion（サブツリー削除後に deletedCount を遅延応答で返す）。
@@ -2650,20 +2654,25 @@ void Application::Render()
             bool        hadBefore  = reg.all_of<LuaScript>(req.entity);
             std::string oldPath;
             bool        oldEnabled = true;
+            // ★props も退避する。無いと「別スクリプトへ差し替え → Undo」でパスは戻るのに
+            //   エンティティ個別に詰めた公開プロパティが全部消える（シーン JSON に載る値）。
+            std::vector<ScriptProp> oldProps;
             if (hadBefore)
             {
                 const auto& cur = reg.get<LuaScript>(req.entity);
                 oldPath    = cur.scriptPath;
                 oldEnabled = cur.enabled;
+                oldProps   = cur.props;
             }
 
             m_scriptEngine->AttachScriptToEntity(req.entity, req.scriptPath);
 
-            m_editorCtx->undoSystem.PushCommand(
-                std::make_unique<AttachScriptCommand>(
-                    &reg, req.entity,
-                    hadBefore, oldPath, oldEnabled,
-                    req.scriptPath));
+            auto attachCmd = std::make_unique<AttachScriptCommand>(
+                &reg, req.entity,
+                hadBefore, oldPath, oldEnabled,
+                req.scriptPath);
+            attachCmd->SetOldProps(std::move(oldProps));
+            m_editorCtx->undoSystem.PushCommand(std::move(attachCmd));
         }
     }
 
@@ -5623,6 +5632,11 @@ void Application::Render()
         {
             auto deletions = std::move(m_editorCtx->pendingDeletions);
             m_editorCtx->pendingDeletions.clear();
+            // ★ルートごとに PushCommand していたので、5 個選んで Del すると
+            //   Undo エントリが 5 個できて Ctrl+Z 1 回では 1 個しか戻らなかった
+            //   （残りは消えたまま。ユーザーから見れば「Undo が壊れている」）。
+            //   1 回の操作は 1 エントリに束ねる（マルチ選択ギズモは既にそうしている）。
+            auto deleteBatch = std::make_unique<CompositeCommand>("Delete");
             for (auto root : deletions)
             {
                 auto& reg = m_scene->GetRegistry();
@@ -5661,7 +5675,7 @@ void Application::Render()
                     records.push_back(std::move(rec));
                 }
 
-                m_editorCtx->undoSystem.PushCommand(
+                deleteBatch->Add(
                     std::make_unique<DeleteEntityCommand>(
                         m_scene.get(), PathResolver::AssetsDir(),
                         std::move(records), subtree, externalParent));
@@ -5673,6 +5687,8 @@ void Application::Render()
                         m_scene->Remove(Entity(*it, &reg));
                 }
             }
+            if (!deleteBatch->Empty())
+                m_editorCtx->undoSystem.PushCommand(std::move(deleteBatch));
 
             // 削除で無効になった選択をクリーンアップ
             {

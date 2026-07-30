@@ -287,6 +287,11 @@ void DrawLuaScriptSection(entt::registry& reg,
     ImGui::SameLine();
     if (ImGui::Button("Detach##LuaScript"))
     {
+        // ★Undo を積んでいなかった。押すと LuaScript が公開プロパティごと消え、
+        //   Ctrl+Z で戻らない（しかも代わりに 1 つ前の別操作が巻き戻る）。
+        //   DetachScriptCommand は前から定義済みなのにどこからも使われていなかった。
+        ctx.undoSystem.PushCommand(std::make_unique<dx12e::DetachScriptCommand>(
+            &reg, e, ls.scriptPath, ls.enabled, ls.props));
         if (scriptEngine) scriptEngine->DetachScriptFromEntity(e);
         return;
     }
@@ -318,6 +323,12 @@ void DrawLuaScriptSection(entt::registry& reg,
         {
             SyncScriptProps(ls, schema);
             ImGui::SeparatorText("プロパティ");
+            // ★Lua の公開プロパティはシーン JSON に保存されるのに、この経路は
+            //   Undo も MarkEdited も呼んでいなかった。UndoSystem.h の MarkEdited は
+            //   「Undo を積まない変更経路（Lua プロパティ等）から呼ぶ」契約なのに
+            //   その呼び出しが無く、**編集しても未保存フラグが立たない**＝
+            //   確認ダイアログ無しで閉じると消える。まず契約に合わせる。
+            bool propsEdited = false;
             if (dx12e::pg::Begin("LuaProps"))
             {
                 for (size_t i = 0; i < schema.size(); ++i)
@@ -333,7 +344,7 @@ void DrawLuaScriptSection(entt::registry& reg,
                         float v = static_cast<float>(p.num);
                         bool ch = d.hasRange ? dx12e::pg::SliderFloat(lbl, &v, d.minVal, d.maxVal)
                                              : dx12e::pg::Float(lbl, &v, 0.01f);
-                        if (ch) p.num = v;
+                        if (ch) { p.num = v; propsEdited = true; }
                         break;
                     }
                     case dx12e::ScriptPropType::Int:
@@ -341,11 +352,11 @@ void DrawLuaScriptSection(entt::registry& reg,
                         int v = static_cast<int>(p.num);
                         bool ch = d.hasRange ? dx12e::pg::SliderInt(lbl, &v, static_cast<int>(d.minVal), static_cast<int>(d.maxVal))
                                              : dx12e::pg::Int(lbl, &v);
-                        if (ch) p.num = v;
+                        if (ch) { p.num = v; propsEdited = true; }
                         break;
                     }
                     case dx12e::ScriptPropType::Bool:
-                        dx12e::pg::Checkbox(lbl, &p.b);
+                        if (dx12e::pg::Checkbox(lbl, &p.b)) propsEdited = true;
                         break;
                     case dx12e::ScriptPropType::String:
                     {
@@ -353,14 +364,14 @@ void DrawLuaScriptSection(entt::registry& reg,
                         std::memset(buf, 0, sizeof(buf));
                         strncpy_s(buf, sizeof(buf), p.str.c_str(), _TRUNCATE);
                         if (dx12e::pg::InputText(lbl, buf, sizeof(buf)))
-                            p.str = buf;
+                        { p.str = buf; propsEdited = true; }
                         break;
                     }
                     case dx12e::ScriptPropType::Vec3:
-                        dx12e::pg::Float3(lbl, &p.vec.x, 0.01f);
+                        if (dx12e::pg::Float3(lbl, &p.vec.x, 0.01f)) propsEdited = true;
                         break;
                     case dx12e::ScriptPropType::Color:
-                        dx12e::pg::Color3(lbl, &p.vec.x);
+                        if (dx12e::pg::Color3(lbl, &p.vec.x)) propsEdited = true;
                         break;
                     case dx12e::ScriptPropType::Entity:
                     {
@@ -379,14 +390,14 @@ void DrawLuaScriptSection(entt::registry& reg,
                         if (ImGui::BeginCombo("##ent", cur))
                         {
                             if (ImGui::Selectable("(なし)", p.str.empty()))
-                                setEntRef(entt::null, p);
+                            { setEntRef(entt::null, p); propsEdited = true; }
                             auto nameView = reg.view<dx12e::NameTag>();
                             for (auto ne : nameView)
                             {
                                 const auto& nm = nameView.get<dx12e::NameTag>(ne).name;
                                 if (nm.empty()) continue;
                                 if (ImGui::Selectable(nm.c_str(), nm == p.str))
-                                    setEntRef(ne, p);
+                                { setEntRef(ne, p); propsEdited = true; }
                             }
                             ImGui::EndCombo();
                         }
@@ -404,7 +415,9 @@ void DrawLuaScriptSection(entt::registry& reg,
                     auto& p = ls.props[i]; const auto& d = schema[i];
                     p.num = d.def.num; p.b = d.def.b; p.str = d.def.str; p.vec = d.def.vec;
                 }
+                propsEdited = true;   // 1 クリックで全プロパティが変わる。ここが一番失いやすい
             }
+            if (propsEdited) ctx.undoSystem.MarkEdited();
         }
         else
         {

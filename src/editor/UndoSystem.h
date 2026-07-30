@@ -468,7 +468,14 @@ private:
     bool            m_hadBefore;
     std::string     m_oldPath;
     bool            m_oldEnabled;
+    // ★props も持つ。持たないと「別スクリプトへ差し替え → Undo」で
+    //   パスは戻るのに**エンティティ個別に詰めた公開プロパティが全部消える**
+    //   （AttachScriptToEntity は既存 props を残すのに、Undo 側が空の LuaScript で潰していた）。
+    std::vector<ScriptProp> m_oldProps;
     std::string     m_newPath;
+
+public:
+    void SetOldProps(std::vector<ScriptProp> props) { m_oldProps = std::move(props); }
 };
 
 // ── LuaScript Detach コマンド ──
@@ -476,9 +483,11 @@ class DetachScriptCommand : public IUndoCommand
 {
 public:
     DetachScriptCommand(entt::registry* reg, entt::entity entity,
-                        std::string oldPath, bool oldEnabled)
+                        std::string oldPath, bool oldEnabled,
+                        std::vector<ScriptProp> oldProps = {})
         : m_reg(reg), m_entity(entity),
-          m_oldPath(std::move(oldPath)), m_oldEnabled(oldEnabled) {}
+          m_oldPath(std::move(oldPath)), m_oldEnabled(oldEnabled),
+          m_oldProps(std::move(oldProps)) {}
 
     void Undo() override
     {
@@ -486,6 +495,7 @@ public:
         LuaScript ls;
         ls.scriptPath = m_oldPath;
         ls.enabled    = m_oldEnabled;
+        ls.props      = m_oldProps;   // 詰めた値ごと戻す
         m_reg->emplace_or_replace<LuaScript>(m_entity, std::move(ls));
     }
 
@@ -503,6 +513,7 @@ private:
     entt::entity    m_entity;
     std::string     m_oldPath;
     bool            m_oldEnabled;
+    std::vector<ScriptProp> m_oldProps;   // Detach で失うのは主にここ（詰めた値）
 };
 
 // ── Undo/Redo スタック ──
