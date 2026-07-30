@@ -12,7 +12,8 @@ class EditorContext;
 
 // マルチプレイのエディタパネル。
 // - RenderStatus: 状態モニタ(読み取り専用)。ロール/tick・複製数・接続一覧(RTT/送受信バイト概算)。
-// - RenderSettings: assets/network.json の編集窓(tickRate/snapshotRate/maxPlayers/defaultPort)。
+// - RenderSettings: assets/network.json の編集窓(snapshotRate/maxPlayers/defaultPort)。
+//   ※tickRate も表示するが未実装のため disabled（シム更新は 60Hz 固定）。
 //   保存を押すまで NetworkSystem::Config() へは反映しない(誤操作で接続中に値が変わらないように)。
 class NetworkPanel
 {

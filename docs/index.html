@@ -558,7 +558,7 @@ cmake --build build/release</code></pre>
               <tr><td>得意なもの</td><td>山 / 谷 / 丘 / 平野。広いステージの地面</td><td>洞窟 / アーチ / せり出した崖 / 岩 / 柱（<b>オーバーハングが作れる</b>）</td></tr>
               <tr><td>データ</td><td>XZ グリッドの高さ配列（32〜512）</td><td>メッシュの頂点位置（トポロジは変えない）</td></tr>
               <tr><td>素材</td><td>解像度とサイズを決めて生成。fBm プリセット（なだらかな丘 / 峡谷 / 険しい山脈）で一発生成、熱浸食で山肌を崩せる</td><td>箱 / 球 / 板 / 円柱の素体、または<b>既存モデルを「編集可能にする」</b>（元の <code class="inl">.glb</code> は書き換えない）</td></tr>
-              <tr><td>ブラシ</td><td>盛る / 削る / ならす / 平らに / ノイズ / 浸食（6種）＋ X・Z ミラー</td><td>盛る / 引っぱる / 押し込む / ならす / 平らに / つまむ / ノイズ / 掴む（8種）＋ X・Y・Z ミラー</td></tr>
+              <tr><td>ブラシ</td><td>盛る / 削る / ならす / 平らに / ノイズ / 浸食（6種）＋ X・Z ミラー（浸食のみミラー・強さ・Shift 非対応）</td><td>盛る / 引っぱる / 押し込む / ならす / 平らに / つまむ / ノイズ / 掴む（8種）＋ X・Y・Z ミラー</td></tr>
               <tr><td>当たり判定</td><td>Jolt <code class="inl">HeightFieldShape</code>。乗る / 滑る / 斜面登坂がそのまま効く</td><td>Jolt <code class="inl">MeshShape</code>＝<b>彫った通りに当たる</b>（洞窟に入れる）。動く剛体に付けた場合だけ凸包へフォールバック</td></tr>
               <tr><td>保存先</td><td><code class="inl">assets/terrain/*.hf</code></td><td><code class="inl">assets/sculpt/*.smsh</code></td></tr>
             </tbody>

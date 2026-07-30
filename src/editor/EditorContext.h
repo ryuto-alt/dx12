@@ -252,7 +252,7 @@ public:
     bool showMcpBridge      = false;   // MCP / AI Bridge モニタ窓
     bool showBuildSettings  = false;   // ビルド設定（Unity の Build Settings 相当）
     bool showNetworkStatus  = false;   // マルチプレイ状態モニタ窓（接続一覧/tick/帯域、フェーズ⑧）
-    bool showNetworkSettings = false;  // マルチプレイ設定窓（tickRate/port等、assets/network.json、フェーズ⑨）
+    bool showNetworkSettings = false;  // マルチプレイ設定窓（snapshotRate/port等、assets/network.json、フェーズ⑨）
 
     // ---- マルチプレイのローカルテストループ（ツールバーPlayドロップダウン、フェーズ⑨）----
     NetTestRole netTestRole = NetTestRole::Offline;   // 次にPlayした時に自動でHost/Joinするか

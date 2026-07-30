@@ -86,7 +86,14 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 
 **炎=** kind1 blend0 gravity+ / **煙=** kind2 blend1 size大 colorEnd暗 / **魔法=** kind4 blend0 / **火花=** kind3 stretch>0。
 **テクスチャ貼り付け=** `texturePath` に画像を指定（例 `"vfx/spark.png"`）。色は寿命カーブの頂点色で乗算、
-アルファは画像のアルファをそのまま使用（straight alpha、Sprite2D と同じ規約）。GPU パーティクル(`gpu:true`)は非対応。
+アルファは画像のアルファをそのまま使用（straight alpha、Sprite2D と同じ規約）。
+
+**★GPU パーティクル(`gpu` フィールド = true)で無視されるもの**: compute シムへ渡す `EmitRequest` に
+無いフィールドは全部無効になり、警告も出ない。具体的には
+`colorMid`/`hasColorMid`（中間色）/ `sizeMid`（中間サイズ）/ `turbFreq`（乱流の細かさ）/
+`distort`（画面歪み）/ `light`・`lightRange`（ライト放出）/ `flicker`・`flickerFreq`（明滅）/
+`texturePath`（テクスチャ）/ `orient`（向き）/ `blend`（合成は加算固定）。
+最大 131072 粒子を出せる代わりの制約で、Inspector にも同じ注記が出る。
 
 ---
 
@@ -401,9 +408,12 @@ Metallic/Roughness の数値上書き(`overrideMetallic`/`overrideRoughness`)と
   nor_gl(normal)・arm(metalRoughness) の3枚を保存し、対応する `assets/materials/<id>.dxmat` を自動生成、
   `assets/ASSET_MANIFEST.md` にも出所を記録する（Poly Haven は CC0 なので帰属は不要）。
 - **マテリアルエディタ**（ツール > マテリアルエディタ、またはアセットブラウザで `.dxmat` をダブル
-  クリック）: テクスチャ3スロット・Metallic/Roughness・UVタイリングを編集できる。既存マテリアルは
-  スライダードラッグ中も即座にシーンへプレビュー反映され（`MaterialAssetManager::UpdateScalarsOnly`、
-  SRV再構築なしの軽量パス）、指を離すとディスクへ保存される。外部エディタで `.dxmat` を直接編集した
+  クリック）: テクスチャ3スロット・Metallic/Roughness・UVタイリングを編集できる。
+  **Metallic/Roughness は**スライダードラッグ中も即座にシーンへプレビュー反映され
+  （`MaterialAssetManager::UpdateScalarsOnly`、SRV再構築なしの軽量パス）、指を離すとディスクへ保存される。
+  ★**UVタイリングだけは即時反映されない**。これは「この .dxmat をこれからメッシュへ割り当てるときの
+  初期値」で、既に貼ってあるメッシュには効かない（UV は `Mesh::ApplyUVScale` で頂点に焼く設計のため。
+  割当済みのものは Inspector > MeshRenderer > UVTiling で変える）。外部エディタで `.dxmat` を直接編集した
   場合も0.5秒間隔でホットリロードされる。
 - **Inspector**: サブメッシュごとの「Material Asset」欄にアセットブラウザから `.dxmat` を D&D、または
   クリックしてピッカーから選択。割当中は7節のテクスチャ個別上書きスロットが無効表示になる
@@ -492,7 +502,9 @@ Ctrl+Z / Ctrl+Y = パネル内 Undo（ECS の Undo とは別勘定）。
 4. 「全体に適用 → 浸食をかける」で山肌を安息角まで崩して自然にする
 
 **ビューポート操作**: 左ドラッグ = 塗る / **Shift** = 逆方向（盛る↔削る）/ **Ctrl** = 一時的に「ならす」/
-**`[` `]`** = 半径。ブラシの円は地形の起伏に沿って描かれる。Undo/Redo は**ストローク単位**（Ctrl+Z 1 回で
+**`[` `]`** = 半径。★**浸食(Erode)だけは例外**で、強さ・縁のぼかし・X/Zミラー・Shift(逆方向)を
+使わない（`ApplyThermalErosion` が安息角と反復回数と範囲しか受け取らないため。パネル側でも
+これらの項目は触れないようにしてある）。ブラシの円は地形の起伏に沿って描かれる。Undo/Redo は**ストローク単位**（Ctrl+Z 1 回で
 1 ストロークぶん戻る）。窓を閉じるか「ブラシ有効」を OFF にすると通常の選択に戻る。
 
 **当たり判定**: `Terrain` を持つエンティティには静的 `RigidBody` が自動で付き、Play 時に Jolt の

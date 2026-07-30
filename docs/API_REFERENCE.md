@@ -78,6 +78,8 @@ end
 | `Lighting` | table | 時間帯（Time of Day）とライティング演出プリセット |
 | `Tween` / `Flicker` | function | 汎用プロパティ補間 / lightstyle 明滅（演出レイヤの中核） |
 | `Anim` / `Ease` / `LIGHT_STYLES` | table | Tween の実行リスト / イージング関数表 / lightstyle プリセット |
+| `display` | table | 映像設定（VSync / FPS 上限 / 窓モード / 解像度）。設定画面はこれで作る |
+| `net` | table | マルチプレイ（host/join/RPC/スポーン）。詳細は §7 |
 | `ASSETS` | string | assets ディレクトリの絶対パス |
 | `SCREEN_W` / `SCREEN_H` | int | 画面解像度（`SetScreenSize` で更新） |
 
@@ -155,7 +157,8 @@ t.scale      -- Vec3
 | `:setColor(r,g,b)` / `:setDirection(x,y,z)` | — | `Vec3` を作らずに書く近道 |
 
 ```lua
-local lamp = scene:findEntity("Lamp"):light()   -- または findLight("Lamp")
+local lamp = findLight("Lamp")                  -- 見つからなければ nil（scene:findEntity は
+                                                -- 無効な Entity を返すのでチェーンすると例外）
 lamp.intensity = 8
 lamp.color = Vec3.new(1, 0.7, 0.3)
 lamp.range = 12
@@ -170,7 +173,7 @@ lamp.range = 12
 | `:spawnSphere(name, pos, radius)` | Entity | 球を生成 |
 | `:remove(entity)` | — | 削除 |
 | `:getEntityCount()` | int | エンティティ総数 |
-| `:findEntity(name)` | Entity | 名前で検索 |
+| `:findEntity(name)` | Entity | 名前で検索。★**見つからなくても nil ではない**（無効な Entity が返る）。`if e then` は常に真なので `e:isValid()` で確かめる。無効な e への `e.transform` は例外、`e:hasComponent(...)` は常に false |
 | `:setUVScale(e, u, v)` | — | UV タイリング（生成時に1回。GPU 同期あり） |
 | `:setColor(e, r, g, b)` | — | 頂点カラーで着色（生成時に1回。毎フレーム禁止） |
 | `:setUiText(e, text)` | — | `UIText.text` を書き換える（無ければ何もしない）。タイプライター中なら先頭から再生し直す |
@@ -261,8 +264,8 @@ lamp.range = 12
 | `:rotate(dyaw, dpitch)` | — | 回転 |
 | `:getPosition()` / `:setPosition(v)` | Vec3 | 位置 |
 | `:getYaw()` / `:getPitch()` / `:setYaw(v)` / `:setPitch(v)` | float | 向き |
-| `:getMoveSpeed()` / `:setMoveSpeed(v)` | float | 移動速度 |
-| `:getMouseSensitivity()` / `:setMouseSensitivity(v)` | float | マウス感度 |
+| `:getMoveSpeed()` / `:setMoveSpeed(v)` | float | ★**エディタのフライ操作専用**。読むのは `EngineMode::Editor` の経路だけなので、Play・配布ゲームでは呼んでも何も起きない |
+| `:getMouseSensitivity()` / `:setMouseSensitivity(v)` | float | ★同上。ゲーム内のマウス感度は自前で持つこと |
 | `:project(x, y, z)` | u, v, visible | ワールド座標→正規化スクリーン座標（左上原点 [0,1]）。3 値返し。頭上ダメージ表示等に |
 
 ### AudioSystem（`audio`）
@@ -906,6 +909,11 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 | `--build [<projectDir>]` | ヘッドレスでゲームをビルド（exe+DLL+assets を `build/game/` へ出力） |
 | `--validate <scene.json>` | ヘッドレスでシーンの参照グラフを検証（参照切れ・スクリプト不在を報告）。終了コード 0=PASS / 1=FAIL、`validate_report.txt` 出力 |
 | `--updated` | 自動アップデート適用後の再起動マーカー（内部用） |
+| `--project <dir>` | ランチャーを飛ばして指定プロジェクトを開く（自動 Play はしない） |
+| `--ui-tests` | UI 自動テストのエンジンを有効にして起動（手動実行用の窓が出る） |
+| `--ui-tests-run-all [--project <dir>]` | 全 UI テストを走らせて終了。**`--project` は必須**。付けないと前回プロジェクトを復元せずランチャー画面で止まり、`exit 2` で「エディタが開いていない」と言って何も実行しない。終了コード 0=全通過 / 1=失敗あり / 2=起動条件不足。結果は `ui_test_results.xml` |
+| `--ui-tests-deep --project <dir>` | 超詳細診断（12 種）だけを走らせて終了。条件と終了コードは上と同じ |
+| `--ui-tests-speed=<0\|1\|2>` | 実行速度（0=Fast / 1=Normal / 2=Cinematic） |
 
 ---
 

@@ -250,8 +250,12 @@ end)
 - ボーン名が空なら一般的な命名（`mixamorig:LeftFoot` / `foot.L` / `Bip01 L Foot` 等）から
   自動推定する。外れたら `FootIK` の文字列フィールドで明示指定する。
   推定結果は `dx12_get_anim_state` の `footIK` に出る。
+- ★**`leftToeBone` / `rightToeBone` だけは指定しても効かない**。ボーンの解決までは走るが、
+  `ApplyFootIK` は hip/knee/foot の 2 ボーン解しか使わず toe を一度も読まない
+  （つま先ピボット用の受け口として置いてあるだけ。MCP のスキーマにも RESERVED と明記）。
 - 面法線が要るので `PhysicsSystem::Raycast` を使う（本物の面法線を返す）。
-  従来の `Raycast` は法線が `(0,1,0)` 固定でフェイクされているので使えない。
+  （かつて法線を `(0,1,0)` で固定して返すフェイク版が併存していたが、`4e55f4b` で削除し
+   1 本に統一済み。Lua の `physics:raycast` も本物の法線を返す）
 
 ---
 
