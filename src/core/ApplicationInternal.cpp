@@ -678,6 +678,12 @@ nlohmann::json McpLuaApi()
         "setPadVibration(pad,low,high)  (low=強モーター/high=弱モーター。0..1。手動で止める)",
         "setPadVibrationTimed(pad,low,high,sec)  (sec 秒鳴って自動停止)",
         "★prelude に名前で呼べる簡易版がある: padDown(\"A\") / padStick(\"left\") 等（下の prelude 欄）",
+        "--- ゲーム UI が入力を食ったか ---",
+        "isUiCapturingMouse() -> bool  (カーソルの下に UI がある。暗幕やボタンがクリックを吸う)",
+        "isUiCapturingNav() -> bool  (方向/決定入力を UI が使っている＝フォーカスが UI に乗っている)",
+        "★エンジンは自動で抑止しない。HUD にボタンを 1 つ置くだけでスティック移動がメニュー移動と"
+        "二重に効き、ジャンプ(A/Space)が onClick も撃つので、"
+        "ゲーム側で `if input:isUiCapturingNav() then return end` のように自分で止めること",
     })));
     // ★display / net はどちらも「エンジンには完全に実装があるのに describe_lua_api に
     //   1 文字も無い」状態だった。オプション画面もマルチプレイも、ここに載っていなければ

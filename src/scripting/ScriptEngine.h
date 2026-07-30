@@ -25,6 +25,7 @@ class PhysicsSystem;
 class ParticleSystem;
 class GpuParticleSystem;
 class NetworkSystem;
+class UISystem;
 class ActionMap;
 
 // スクリプトコンポーネントのプロパティ宣言（.lua の properties から解析）。
@@ -68,6 +69,8 @@ public:
 
     // マルチプレイシステムを Lua net API へ公開（Application が一度だけ注入。null 許容）。
     void SetNetworkSystem(NetworkSystem* n) { m_network = n; }
+    // ゲーム UI が入力を食ったかを Lua から読めるようにするためだけに保持する。null 許容。
+    void SetUiSystem(UISystem* u) { m_uiSystem = u; }
 
     // EventBus 注入（WireScriptCallbacks から Application が呼ぶ）。
     // events:on/emit/clear バインドはこのポインタを実行時に参照する（null 許容）。
@@ -219,6 +222,7 @@ private:
     ParticleSystem* m_particleSystem = nullptr;
     GpuParticleSystem* m_gpuParticleSystem = nullptr;   // 大量粒子用（fx の gpu=true で使用）
     NetworkSystem* m_network = nullptr;   // マルチプレイ（net:host/join等）。null 許容
+    UISystem*      m_uiSystem = nullptr;  // input:isUiCapturing* 用。null 許容
     EventBus*    m_eventBus = nullptr;   // Application が所有、null 許容（エディタ中は非使用）
     ActionMap*   m_actionMap = nullptr;  // Application が所有、null 許容
     std::string  m_assetsDir;

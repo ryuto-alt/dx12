@@ -1,4 +1,6 @@
 #include "scripting/ScriptEngine.h"
+
+#include "ui/UISystem.h"   // input:isUiCapturing* が WantsMouse/WantsNav を読む
 #include "core/Logger.h"
 #include "core/vfs/Vfs.h"
 
@@ -1444,7 +1446,17 @@ void ScriptEngine::RegisterBindings()
         "getPadLeftTrigger",  &InputSystem::GetPadLeftTrigger,
         "getPadRightTrigger", &InputSystem::GetPadRightTrigger,
         "setPadVibration",      &InputSystem::SetPadVibration,
-        "setPadVibrationTimed", &InputSystem::SetPadVibrationTimed
+        "setPadVibrationTimed", &InputSystem::SetPadVibrationTimed,
+        // --- ゲーム UI が入力を食ったか（自分の入力を止める判断用）---
+        // ★HUD にボタンを 1 つ置くだけで、スティック移動がメニュー移動と二重に効き、
+        //   ジャンプ(A/Space)が onClick も撃つ。エンジンは自動で抑止しない
+        //   （既存プロジェクトの挙動を勝手に変えないため）ので、ゲーム側がこれで判断する。
+        "isUiCapturingMouse", [this](InputSystem&) -> bool {
+            return m_uiSystem && m_uiSystem->WantsMouse();
+        },
+        "isUiCapturingNav", [this](InputSystem&) -> bool {
+            return m_uiSystem && m_uiSystem->WantsNav();
+        }
     );
 
     // --- actions（アクションマップ）---

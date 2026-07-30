@@ -139,6 +139,14 @@ public:
     // 妥当性チェックは次フレームの RenderAndUpdateInput が行う（非フォーカサブルなら無視される）。
     void SetFocus(entt::entity e) { m_focused = e; m_confirmHeld = false; }
 
+    // 「このフレーム、UI が入力を食ったか」。ゲーム側が自分の入力を止める判断に使う。
+    // ★これが無かったので、HUD にボタンを 1 つ置くだけで
+    //   スティック移動がメニュー移動と二重に効き、ジャンプ(A/Space)が onClick も撃っていた。
+    //   自動で抑止はしない（既存プロジェクトの挙動を勝手に変えないため）。
+    //   ゲーム側が `if input:isUiCapturingNav() then return end` のように自分で使う。
+    bool WantsMouse() const { return m_wantsMouse; }
+    bool WantsNav()   const { return m_wantsNav; }
+
 private:
     std::vector<UIPendingClick> m_pendingClicks;
     std::vector<std::string>    m_pendingSfx;
@@ -149,6 +157,8 @@ private:
     float        m_navRepeatT = 0.0f;      // 方向ホールドのリピートタイマー（秒）
     int          m_navHeldDir = -1;        // ホールド中の方向 0=左 1=右 2=上 3=下（-1=なし）
     bool         m_confirmHeld = false;    // フォーカス上で決定を押下中（離しで確定）
+    bool         m_wantsMouse  = false;    // 今フレーム、カーソル下に UI があった
+    bool         m_wantsNav    = false;    // 今フレーム、方向/決定入力を UI が使った
 };
 
 } // namespace dx12e

@@ -2191,6 +2191,10 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
                                     ID3D12GraphicsCommandList* cmdList,
                                     const UiNavInput& nav)
 {
+    // 「今フレーム UI が入力を食ったか」は毎フレーム作り直す（前フレームを持ち越さない）。
+    m_wantsMouse = false;
+    m_wantsNav   = false;
+
     if (!dl || vw <= 0.0f || vh <= 0.0f)
         return;
 
@@ -2251,6 +2255,10 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
     // topmost 自身が interactable なウィジェット（Button/Slider/Toggle）ならそれ。無ければ
     // Transform::parent を遡って最初のウィジェットへバブリング（ウィジェット内の子アイコン
     // 画像がクリックを吸っても親が反応する）。どこにも無ければクリックは吸収されただけ。
+    // カーソル下に何か UI があれば「マウスは UI が食う」。ボタンでなくても
+    // 暗幕（raycastBlock）はクリックを吸収するので、ゲーム側は撃たない方が正しい。
+    m_wantsMouse = (topmost != entt::null);
+
     entt::entity effectiveWidget = entt::null;
     entt::entity walk = topmost;
     for (int depth = 0; depth < 64 && walk != entt::null && reg.valid(walk); ++depth)
@@ -2580,6 +2588,11 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
     {
         m_navHeldDir = -1;
     }
+
+    // UI にフォーカス可能なものがあり、実際にフォーカスが乗っているなら、
+    // 方向入力と決定入力は UI が使っている＝ゲーム側は自分の入力を止めた方がよい。
+    m_wantsNav = !focusables.empty()
+              && (m_focused != entt::null || dir >= 0 || nav.confirm);
 
     if (dir >= 0 && !focusables.empty())
     {
