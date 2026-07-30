@@ -211,11 +211,24 @@ int RunValidate(const std::string& scenePathStr)
     std::string text = out.str();
 
     { std::ofstream f("validate_report.txt", std::ios::trunc); if (f) f << text; }
-    if (AttachConsole(ATTACH_PARENT_PROCESS) || AllocConsole())
+
+    // ★以前は無条件に AttachConsole/AllocConsole してから WriteConsoleA していた。
+    //   WriteConsoleA は**コンソールハンドル専用**で、リダイレクト先（ファイル/パイプ）には
+    //   書けずに黙って失敗する。つまり CI や `--validate x.json > out.txt` では
+    //   **出力ゼロで exit 1 だけが返り、何が壊れているのか分からなかった**
+    //   （内容は CWD の validate_report.txt にだけ残っていた）。
+    //   標準出力が既に繋がっているならそこへ直接書き、繋がっていないときだけ
+    //   親コンソールへ寄生する（ダブルクリック起動でも結果が読めるように）。
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (hOut == nullptr || hOut == INVALID_HANDLE_VALUE)
+    {
+        if (AttachConsole(ATTACH_PARENT_PROCESS) || AllocConsole())
+            hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    }
+    if (hOut != nullptr && hOut != INVALID_HANDLE_VALUE)
     {
         DWORD written = 0;
-        HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
-        WriteConsoleA(h, text.c_str(), static_cast<DWORD>(text.size()), &written, nullptr);
+        WriteFile(hOut, text.c_str(), static_cast<DWORD>(text.size()), &written, nullptr);
     }
     return errors.empty() ? 0 : 1;
 }
