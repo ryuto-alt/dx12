@@ -14,6 +14,8 @@
 //
 // 実行: ctest --output-on-failure -R LuaApiDoc
 
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <fstream>
 #include <set>
@@ -46,6 +48,42 @@ std::set<std::string> CollectQuoted(const std::string& src, const std::string& p
         if (e == std::string::npos) break;
         const std::string name = src.substr(b, e - b);
         if (!name.empty()) out.insert(name);
+    }
+    return out;
+}
+
+// new_usertype<T>("Name", "key", &T::member, ...) の「key」を拾う。
+//
+// ★usertype の中身は「行頭に "識別子", が来て、その後ろにメンバポインタかラムダが続く」
+//   という書き方で揃っている。この形だけを拾えば、prose の文字列や
+//   kSafeLibs のような**文字列だけが並ぶ配列**（"unpack", "rawget", ... ）を巻き込まない。
+//   実測: 190 個ヒットして誤検出ゼロ。
+std::set<std::string> CollectUsertypeKeys(const std::string& src)
+{
+    std::set<std::string> out;
+    std::istringstream in(src);
+    std::string line;
+    while (std::getline(in, line))
+    {
+        std::size_t i = line.find_first_not_of(" \t");
+        if (i == std::string::npos || line[i] != '"') continue;
+        const std::size_t b = i + 1;
+        const std::size_t e = line.find('"', b);
+        if (e == std::string::npos || e == b) continue;
+
+        const std::string name = line.substr(b, e - b);
+        const bool ident = (std::isalpha(static_cast<unsigned char>(name[0])) || name[0] == '_')
+            && std::all_of(name.begin(), name.end(), [](char c) {
+                   return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+               });
+        if (!ident) continue;
+
+        std::size_t j = line.find_first_not_of(" \t", e + 1);
+        if (j == std::string::npos || line[j] != ',') continue;
+        j = line.find_first_not_of(" \t", j + 1);
+        // 残りが空 or さらに文字列 = 束縛ではなくただの文字列配列
+        if (j == std::string::npos || line[j] == '"') continue;
+        out.insert(name);
     }
     return out;
 }
@@ -114,6 +152,16 @@ int main()
     std::printf("[4] 族でまとめた定数\n");
     Expect(mentions("KEY_"), "KEY_* の記載が消えている");
     Expect(mentions("MOTION_"), "MOTION_* の記載が消えている");
+
+    // [5] new_usertype のメンバ（scene: / entity: / input: / audio: / camera: など）。
+    //     実際に抜けていた 28 個（scene の連番アニメ 12・ゲームパッド 13・音量 get 3）は
+    //     ここでしか捕まらない。
+    std::printf("[5] usertype のメンバ\n");
+    const auto keys = CollectUsertypeKeys(engineSrc);
+    Expect(keys.size() > 100, "usertype キーの抽出が壊れている(件数 "
+                              + std::to_string(keys.size()) + ")");
+    for (const auto& k : keys)
+        Expect(mentions(k), "usertype メンバ '" + k + "' が describe_lua_api に無い");
 
     if (g_failures != 0)
     {

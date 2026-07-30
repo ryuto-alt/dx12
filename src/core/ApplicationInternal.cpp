@@ -730,6 +730,7 @@ nlohmann::json McpLuaApi()
         "setMasterVolume/setBGMVolume/setSFXVolume(v)",
         "getMasterVolume()/getBGMVolume()/getSFXVolume() -> float  (設定画面のスライダー初期値に要る)",
         "getBGMList()/getSFXList() -> table",
+        "rescan()  (assets 配下の音声ファイルを列挙し直す。実行中に wav を足したとき用)",
     })));
     objects.push_back(O("time", "global ('.' で呼ぶ)", json::array({
         "time.now() -> float  — Play開始からの経過秒(タイムスケール適用済み)",
