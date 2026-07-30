@@ -1103,7 +1103,10 @@ void Application::RegisterMcpEntityMethods()
                 {"queuedUndo", true},
                 {"undoable", name != nullptr},
                 {"willUndo", name ? std::string(name) : std::string()},
-                {"note", "MCP の編集はほぼ Undo に積まれない（group_entities のみ）。"
+                {"note", "MCP の編集で Undo に積まれるのは group_entities / spawn_prefab / "
+                         "地形とスカルプトの編集（terrain_generate・terrain_sculpt・terrain_erode・"
+                         "terrain_paint・terrain_autopaint・sculpt_brush）。"
+                         "それ以外（set_component・set_transform 等）は積まれないので、"
                          "willUndo が自分の操作でなければ、それは別の変更を戻している"},
             };
         });

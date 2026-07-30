@@ -11,6 +11,7 @@
 // 開き方: ヒエラルキー「＋エンティティ追加 → スカルプト（異形）」、または SculptMesh を持つ
 //         エンティティを選択すると自動で開く。
 
+#include <functional>
 #include <string>
 #include <entt/entt.hpp>
 
@@ -38,6 +39,13 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
 // パネルの「選択中のモデルを編集可能にする」ボタンと MCP の dx12_sculpt_make_editable が
 // 同じ実装を通るように公開している。
 bool MakeEditable(entt::registry& reg, entt::entity src, SculptMeshData& out);
+
+// パネルの外（MCP）からスカルプトを彫るときの Undo 入口。TerrainPanel 側と同じ理由:
+// これを通さないと MCP のブラシが Undo に一切積まれず、Ctrl+Z が利用者自身の
+// 無関係な 1 手を巻き戻す（しかも MarkDirty が .smsh の自動保存まで走らせる）。
+// op の前後で全ルート頂点をスナップショットし、動いたものだけを Undo に積む。
+bool RunUndoableSculptEdit(entt::registry& reg, EditorContext& ctx, entt::entity e,
+                           const char* label, const std::function<void(SculptMeshData&)>& op);
 
 } // namespace SculptPanel
 

@@ -197,6 +197,8 @@ void EditorLayer::Render(bool isPlaying,
                          DescriptorHeap* srvHeap,
                          ID3D12GraphicsCommandList* cmdList)
 {
+    m_ctx->isPlaying = isPlaying;   // 各パネルが「Play 中は押せない」を判定するのに使う
+
     auto& reg = scene->GetRegistry();
 
     // ===== ツールバー（画面上部、DockSpace の外に固定） =====

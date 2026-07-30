@@ -1043,6 +1043,53 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
     ImGui::End();
 }
 
+
+// ---- MCP など、パネル外からの編集を Undo に積む入口 -------------------------
+bool RunUndoableHeightEdit(entt::registry& reg, EditorContext& ctx, entt::entity e,
+                           const char* label, const std::function<void(HeightField&)>& op)
+{
+    Terrain* t = reg.valid(e) ? reg.try_get<Terrain>(e) : nullptr;
+    if (!t || !t->_hf || !t->_hf->IsValid()) return false;
+
+    TerrainToolState& s = State();
+    // ブラシのストロークが進行中なら混ぜない（GUI と MCP の同時操作は想定しない）
+    if (s.strokeActive) { op(*t->_hf); }
+    else
+    {
+        BeginStroke(s, e, label);
+        CaptureTiles(s, *t->_hf, t->_hf->FullRect());
+        op(*t->_hf);
+        EndStroke(s, reg, ctx);   // 変化が無ければ何も積まない
+    }
+    const HeightField::Rect full = t->_hf->FullRect();
+    t->MarkDirty(full.x0, full.z0, full.x1, full.z1);
+    return true;
+}
+
+bool RunUndoableSplatEdit(entt::registry& reg, EditorContext& ctx, entt::entity e,
+                          const std::function<void(TerrainSplatMap&)>& op)
+{
+    Terrain* t = reg.valid(e) ? reg.try_get<Terrain>(e) : nullptr;
+    if (!t || !t->_splat || !t->_splat->IsValid()) return false;
+
+    TerrainToolState& s = State();
+    if (s.paintStrokeActive) { op(*t->_splat); }
+    else
+    {
+        BeginPaintStroke(s, e);
+        HeightField::Rect full;
+        full.x0 = 0; full.z0 = 0;
+        full.x1 = static_cast<i32>(t->_splat->Size()) - 1;
+        full.z1 = full.x1;
+        CaptureSplatTiles(s, *t->_splat, full);
+        op(*t->_splat);
+        EndPaintStroke(s, reg, ctx);
+    }
+    t->_splat->Touch();          // GPU 側の再アップロードを促す（TerrainPaintCommand と同じ）
+    t->_splatNeedsSave = true;
+    return true;
+}
+
 } // namespace TerrainPanel
 
 } // namespace dx12e

@@ -592,6 +592,9 @@ private:
     std::unordered_map<u64, MaterialOverrideSrv> m_materialOverrideSrvCache;
     u32 m_materialOverrideSrvGeneration = 0xFFFFFFFF;
     // 上書きが無ければ 0xFFFFFFFF を返す(呼び出し側は mat->srvBlockIndex 等の既定経路へフォールバック)。
+    // シーン世代が変わったら entity id キーの SRV キャッシュを捨てる（毎フレーム無条件に呼ぶ）。
+    void SweepSceneGenerationSrvCaches();
+
     u32 EnsureMaterialOverrideSrv(entt::entity e, u32 submeshIndex, const MeshRenderer& renderer,
                                   const Material* mat, ID3D12GraphicsCommandList* cmdList);
 

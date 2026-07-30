@@ -39,6 +39,11 @@ u64 HashBonesFnv1a(const std::vector<DirectX::XMFLOAT4X4>& mats)
 // 呼び出し文脈は Application.h の m_drawItems 直前のコメント参照。
 void Application::BuildDrawList()
 {
+    // entity id をキーにした SRV キャッシュの世代掃除。
+    // ★描画対象の有無に関わらず毎フレーム走らせる（各 Ensure〜 の中に置くと、
+    //   次のシーンにその種類が 1 つも無いときに一度も走らずヒープが漏れる）。
+    SweepSceneGenerationSrvCaches();
+
     using namespace DirectX;
 
     // 前フレームの描画統計を HUD へ引き渡してからリセット
@@ -1616,6 +1621,31 @@ void Application::Render()
         m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
                             m_srvHeap.get(), nativeCmdList);
 
+        // 同名エンティティがいると Trigger / Lua の名前参照が区別できず、コピペ時の
+        // 参照リマップも誤った相手に付く。生成時点で連番ユニーク化する。
+        // ★プレハブ経路は「展開した後」に呼ぶ必要があるのでラムダに切り出してある。
+        auto uniquify = [&](std::string n) -> std::string
+        {
+            auto& reg = m_scene->GetRegistry();
+            auto exists = [&](const std::string& q)
+            {
+                for (auto [e, tag] : reg.view<const NameTag>().each())
+                    if (tag.name == q) return true;
+                return false;
+            };
+            if (!exists(n)) return n;
+            std::string stem = n;
+            auto p = stem.rfind(" (");
+            if (p != std::string::npos && stem.back() == ')')
+                stem = stem.substr(0, p);
+            for (int i = 1; i < 1000; ++i)
+            {
+                std::string cand = stem + " (" + std::to_string(i) + ")";
+                if (!exists(cand)) return cand;
+            }
+            return n;
+        };
+
         for (auto& req : spawns)
         {
             std::string name = std::filesystem::path(req.modelPath).stem().string();
@@ -1636,29 +1666,7 @@ void Application::Render()
                 else if (req.modelPath == "__trigger__")          name = "Trigger";
                 else if (req.modelPath == "__decal__")            name = "Decal";
             }
-            // 同名エンティティがいると Trigger / Lua の名前参照が区別できず、
-            // コピペ時の参照リマップも誤った相手に付く。生成時点で連番ユニーク化する。
-            {
-                auto& reg = m_scene->GetRegistry();
-                auto exists = [&](const std::string& n)
-                {
-                    for (auto [e, tag] : reg.view<const NameTag>().each())
-                        if (tag.name == n) return true;
-                    return false;
-                };
-                if (exists(name))
-                {
-                    std::string stem = name;
-                    auto p = stem.rfind(" (");
-                    if (p != std::string::npos && stem.back() == ')')
-                        stem = stem.substr(0, p);
-                    for (int i = 1; i < 1000; ++i)
-                    {
-                        std::string cand = stem + " (" + std::to_string(i) + ")";
-                        if (!exists(cand)) { name = cand; break; }
-                    }
-                }
-            }
+            name = uniquify(name);
             entt::entity spawnedEntity = entt::null;
             entt::entity mcpPrefabRoot = entt::null;          // prefab 経路の MCP 応答用ルート
             std::vector<entt::entity> mcpPrefabAll;           // prefab 経路の全 entity
@@ -1996,6 +2004,21 @@ void Application::Render()
                     auto& reg = m_scene->GetRegistry();
                     if (reg.all_of<Transform>(root))
                         reg.get<Transform>(root).position = req.position;
+
+                    // ★要求された名前をルートへ付ける。ここが抜けていたので
+                    //   dx12_spawn_prefab {name:"Enemy_A"} は {"ok":true,"name":"Enemy_A"} を
+                    //   返しつつ実体は "enemy (3)" のままで、以後 name 指定の find_entity /
+                    //   set_component が全部外れた（dx12_scatter の報告も丸ごと嘘になる）。
+                    //   ユニーク化はプレハブ展開**後**に判定する（展開で名前が増えるため）。
+                    if (!req.name.empty())
+                    {
+                        name = uniquify(req.name);
+                        reg.get_or_emplace<NameTag>(root).name = name;
+                    }
+                    else if (reg.all_of<NameTag>(root))
+                    {
+                        name = reg.get<NameTag>(root).name;   // 応答は実体に合わせる
+                    }
 
                     // UI エディタのキャンバスへドロップされた UI プレハブ:
                     // 親を指定の UI ノードにして、ドロップ位置（キャンバス px）へ移す。

@@ -913,6 +913,36 @@ Application::CustomSpritePsos* Application::EnsureCustomSpritePso(const std::str
     return stored.valid ? &stored : nullptr;
 }
 
+// シーンが作り直された（Play→Stop / シーン切替）ときに、entity id をキーにした
+// SRV ブロックのキャッシュを丸ごと捨てる。entt の entity は index + version で、
+// registry.clear() が version を進めるので、同じオブジェクトでもキーが変わる。
+//
+// ★**毎フレーム無条件に**呼ぶこと。以前はこの掃除が EnsureMaterialOverrideSrv /
+//   EnsureTerrainSrv の中（しかも早期 return より後ろ）にあったので、
+//   「次に開いたシーンに上書きマテリアルもレイヤーセット地形も 1 つも無い」場合に
+//   一度も走らず、ディスクリプタ 3 個/件がセッション終了まで残り続けた。
+//   SRV ヒープが静かに埋まって、最後は無関係な描画が落ちる（原因は地形とは見えない）。
+void Application::SweepSceneGenerationSrvCaches()
+{
+    const u32 sceneGen = static_cast<u32>(m_sceneGeneration);
+
+    if (m_materialOverrideSrvGeneration != sceneGen)
+    {
+        for (auto& kv : m_materialOverrideSrvCache)
+            if (kv.second.blockStart != 0xFFFFFFFF) m_srvHeap->FreeBlock(kv.second.blockStart, 3);
+        m_materialOverrideSrvCache.clear();
+        m_materialOverrideSrvGeneration = sceneGen;
+    }
+
+    if (m_terrainSrvGeneration != sceneGen)
+    {
+        for (auto& kv : m_terrainSrvCache)
+            if (kv.second.blockStart != 0xFFFFFFFF) m_srvHeap->FreeBlock(kv.second.blockStart, 3);
+        m_terrainSrvCache.clear();
+        m_terrainSrvGeneration = sceneGen;
+    }
+}
+
 u32 Application::EnsureMaterialOverrideSrv(entt::entity e, u32 submeshIndex, const MeshRenderer& renderer,
                                             const Material* mat, ID3D12GraphicsCommandList* cmdList)
 {
@@ -922,21 +952,6 @@ u32 Application::EnsureMaterialOverrideSrv(entt::entity e, u32 submeshIndex, con
     const std::string& albedoPath = MeshRenderer::SafeGetOverride(renderer.overrideAlbedoTexture, submeshIndex);
     const std::string& normalPath = MeshRenderer::SafeGetOverride(renderer.overrideNormalTexture, submeshIndex);
     const std::string& mrPath     = MeshRenderer::SafeGetOverride(renderer.overrideMetalRoughnessTexture, submeshIndex);
-
-    // ★シーンが作り直されたら（Play→Stop / シーン切替）キャッシュを丸ごと捨てる。
-    //   entt の entity は index + version で、registry.clear() が version を進めるので
-    //   同じオブジェクトでもキーが変わり、捨てないと古いブロックが取り残される。
-    //   （m_terrainSrvCache と同じ処方）
-    {
-        const u32 sceneGen = static_cast<u32>(m_sceneGeneration);
-        if (m_materialOverrideSrvGeneration != sceneGen)
-        {
-            for (auto& kv : m_materialOverrideSrvCache)
-                if (kv.second.blockStart != 0xFFFFFFFF) m_srvHeap->FreeBlock(kv.second.blockStart, 3);
-            m_materialOverrideSrvCache.clear();
-            m_materialOverrideSrvGeneration = sceneGen;
-        }
-    }
 
     const u64 key = (static_cast<u64>(e) << 16) | submeshIndex;
     auto it = m_materialOverrideSrvCache.find(key);
@@ -997,17 +1012,6 @@ u32 Application::EnsureTerrainSrv(entt::entity e, const Terrain& terrain,
     const auto* layers = m_terrainLayerSets->GetOrLoad(terrain.layerSetPath, cmdList);
     if (!layers || !layers->valid || !layers->albedoArray || !layers->surfaceArray)
         return 0xFFFFFFFF;
-
-    // ★シーンが作り直されたら（Play→Stop / シーン切替）キャッシュを丸ごと捨てる。
-    //   entt は entity id を再利用するので、放置すると別の地形へ前のスプラットが張られる。
-    const u32 sceneGen = static_cast<u32>(m_sceneGeneration);
-    if (m_terrainSrvGeneration != sceneGen)
-    {
-        for (auto& kv : m_terrainSrvCache)
-            if (kv.second.blockStart != 0xFFFFFFFF) m_srvHeap->FreeBlock(kv.second.blockStart, 3);
-        m_terrainSrvCache.clear();
-        m_terrainSrvGeneration = sceneGen;
-    }
 
     TerrainSrvEntry& entry = m_terrainSrvCache[static_cast<u32>(e)];
 

@@ -284,6 +284,12 @@ public:
 
     // プレハブのリンク操作。どちらもエンティティの生成/破棄を伴うので、
     // 他の pending* と同じくフレーム境界（Application）で実行する。
+    // Play 中かどうか。EditorLayer::Render が毎フレーム入れる。
+    // ★プレハブ系のボタンのように「Editor でしか消化されない pending キュー」を持つ UI は、
+    //   これを見て自分を無効化すること。押せてしまうと押し込んだ要求が誰にも読まれず、
+    //   ログにもエラーにも出ないまま黙って消える（MCP 側は ModeConflict を投げている）。
+    bool isPlaying = false;
+
     std::vector<entt::entity> pendingPrefabApply;    // インスタンス → 元 .prefab へ書き戻す
     std::vector<entt::entity> pendingPrefabRevert;   // インスタンス ← 元 .prefab で作り直す
     // Apply 後に「他のインスタンスも更新する」を押した時だけ立てる（伝播元を除いて Revert）

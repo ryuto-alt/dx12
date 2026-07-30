@@ -803,6 +803,42 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
     ImGui::End();
 }
 
+
+// ---- MCP など、パネル外からの編集を Undo に積む入口 -------------------------
+bool RunUndoableSculptEdit(entt::registry& reg, EditorContext& ctx, entt::entity e,
+                           const char* label, const std::function<void(SculptMeshData&)>& op)
+{
+    SculptMesh* sc = reg.valid(e) ? reg.try_get<SculptMesh>(e) : nullptr;
+    if (!sc || !sc->_data || !sc->_data->IsValid()) return false;
+
+    SculptToolState& s = State();
+    if (s.strokeActive) { op(*sc->_data); sc->MarkDirty(); return true; }
+
+    // 全ルート頂点を控えてから彫り、動いたものだけ Undo に積む。
+    // ponytail: 全走査。GUI 側はブラシ半径で絞れるが、MCP は op が何を触るか分からない。
+    //           10 万頂点でも XMFLOAT3 で 1.2MB / 呼び出し。
+    const size_t rootCount = sc->_data->RootCount();
+    std::vector<XMFLOAT3> before(rootCount);
+    for (size_t i = 0; i < rootCount; ++i)
+        before[i] = sc->_data->GetRootPosition(static_cast<u32>(i));
+
+    op(*sc->_data);
+
+    BeginStroke(s, e, label);
+    for (size_t i = 0; i < rootCount; ++i)
+    {
+        const XMFLOAT3 now = sc->_data->GetRootPosition(static_cast<u32>(i));
+        if (now.x != before[i].x || now.y != before[i].y || now.z != before[i].z)
+        {
+            s.strokeRoots.push_back(static_cast<u32>(i));
+            s.strokeBefore.push_back(before[i]);
+        }
+    }
+    EndStroke(s, reg, ctx);   // 動いた頂点が 0 なら何も積まない
+    sc->MarkDirty();
+    return true;
+}
+
 } // namespace SculptPanel
 
 } // namespace dx12e

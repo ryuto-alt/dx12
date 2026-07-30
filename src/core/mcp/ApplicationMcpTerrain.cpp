@@ -129,9 +129,11 @@ void Application::RegisterMcpTerrainMethods()
             gp.valleyDepth = McpFloatParam(params, "valleyDepth", gp.valleyDepth, 0.0f, 10.0f);
             gp.seed        = seed;
 
-            GenerateTerrain(hf, gp);
-            const HeightField::Rect full = hf.FullRect();
-            t.MarkDirty(full.x0, full.z0, full.x1, full.z1);
+            // ★Undo に積みながら書き換える。素で書き換えると Ctrl+Z が
+            //   利用者自身の無関係な 1 手を巻き戻す（MarkDirty が .hf の自動保存まで走らせるので
+            //   生成そのものは取り消せない）。MarkDirty もこの中で行う。
+            TerrainPanel::RunUndoableHeightEdit(reg, *m_editorCtx, e, "Terrain Generate",
+                [&](HeightField& h) { GenerateTerrain(h, gp); });
 
             f32 hMin = 0.0f, hMax = 0.0f;
             hf.MinMaxHeight(hMin, hMax);
@@ -220,10 +222,13 @@ void Application::RegisterMcpTerrainMethods()
                 bp.flattenTarget -= origin.y;   // 指定はワールド Y。地形ローカルの高さへ直す
 
             HeightField::Rect changed{};
-            for (const DirectX::XMFLOAT2& p : pts)
-                changed = HeightField::UnionRect(changed, ApplyTerrainBrush(hf, bp, p.x, p.y, 1.0f, false));
-            if (changed.Valid())
-                t.MarkDirty(changed.x0, changed.z0, changed.x1, changed.z1);
+            TerrainPanel::RunUndoableHeightEdit(reg, *m_editorCtx, e, "Terrain Sculpt",
+                [&](HeightField& h)
+                {
+                    for (const DirectX::XMFLOAT2& p : pts)
+                        changed = HeightField::UnionRect(
+                            changed, ApplyTerrainBrush(h, bp, p.x, p.y, 1.0f, false));
+                });
 
             f32 hMin = 0.0f, hMax = 0.0f;
             hf.MinMaxHeight(hMin, hMax);
@@ -286,8 +291,9 @@ void Application::RegisterMcpTerrainMethods()
                     ap.snowHeightStart  = McpFloatParam(params, "snowHeightStart", 0.0f, -10000.0f, 10000.0f) - origin.y;
                     ap.snowHeightEnd    = McpFloatParam(params, "snowHeightEnd",  50.0f, -10000.0f, 10000.0f) - origin.y;
                 }
-                sp.AutoPaintFromHeightField(*t._hf, ap);
-                t._splatNeedsSave = true;
+                // ★Undo に積みながら塗る（高さ側と同じ理由）。_splatNeedsSave もこの中で立つ。
+                TerrainPanel::RunUndoableSplatEdit(reg, *m_editorCtx, e,
+                    [&](TerrainSplatMap& m) { m.AutoPaintFromHeightField(*t._hf, ap); });
 
                 resp["ok"] = true;
                 resp["result"] = {
@@ -326,11 +332,14 @@ void Application::RegisterMcpTerrainMethods()
                         "point:[x,z] か points:[[x,z],...] をワールド座標で渡す");
 
                 bool changed = false;
-                for (const DirectX::XMFLOAT2& p : pts)
-                    changed |= sp.PaintCircle(t._hf->WorldSize(), p.x, p.y,
-                                              radius, static_cast<u32>(layer),
-                                              strength, falloff).Valid();
-                if (changed) t._splatNeedsSave = true;
+                TerrainPanel::RunUndoableSplatEdit(reg, *m_editorCtx, e,
+                    [&](TerrainSplatMap& m)
+                    {
+                        for (const DirectX::XMFLOAT2& p : pts)
+                            changed |= m.PaintCircle(t._hf->WorldSize(), p.x, p.y,
+                                                     radius, static_cast<u32>(layer),
+                                                     strength, falloff).Valid();
+                    });
 
                 resp["ok"] = true;
                 resp["result"] = {
@@ -626,9 +635,9 @@ void Application::RegisterMcpTerrainMethods()
                                    "地形の XZ 範囲は dx12_terrain_sample で確認できる");
             }
 
-            const HeightField::Rect changed = ApplyThermalErosion(hf, talusDeg, iterations, rect);
-            if (changed.Valid())
-                t.MarkDirty(changed.x0, changed.z0, changed.x1, changed.z1);
+            HeightField::Rect changed{};
+            TerrainPanel::RunUndoableHeightEdit(reg, *m_editorCtx, e, "Terrain Erode",
+                [&](HeightField& h) { changed = ApplyThermalErosion(h, talusDeg, iterations, rect); });
 
             f32 hMin = 0.0f, hMax = 0.0f;
             hf.MinMaxHeight(hMin, hMax);
@@ -874,8 +883,10 @@ void Application::RegisterMcpTerrainMethods()
                 throw McpError(McpErr::InvalidParam, "brush 'grab' needs a non-zero grabDelta",
                                "grabDelta:[dx,dy,dz] にワールド空間の移動量を入れてくれ");
 
-            const size_t moved = md.ApplyBrush(bp, center, 1.0f, false, nullptr);
-            if (moved > 0) sc.MarkDirty();
+            size_t moved = 0;
+            // ★Undo に積みながら彫る（地形側と同じ理由）。MarkDirty もこの中で行う。
+            SculptPanel::RunUndoableSculptEdit(reg, *m_editorCtx, e, "Sculpt Brush",
+                [&](SculptMeshData& m) { moved = m.ApplyBrush(bp, center, 1.0f, false, nullptr); });
 
             XMFLOAT3 bmin{}, bmax{};
             md.Bounds(bmin, bmax);

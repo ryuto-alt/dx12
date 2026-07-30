@@ -3286,7 +3286,14 @@ void InspectorPanel::RenderPrefabHeader(entt::registry& reg, EditorContext& ctx,
 
     const bool dirty = m_prefabDiffOk && !m_prefabDiff.empty();
 
-    if (!m_prefabDiffOk) ImGui::BeginDisabled();
+    // ★Play 中は全部無効化する。これらのボタンは pending キューへ積むだけで、
+    //   消化側（ApplicationRender）が Editor モードでしか回らない。押せてしまうと
+    //   要求は誰にも読まれずログにもエラーにも出ないまま消える（MCP 側は ModeConflict）。
+    if (ctx.isPlaying)
+        ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.35f, 1.0f),
+                           "Play 中はプレハブを編集できません（Stop してください）");
+
+    if (!m_prefabDiffOk || ctx.isPlaying) ImGui::BeginDisabled();
     if (ImGui::Button("適用 Apply"))
         ctx.pendingPrefabApply.push_back(e);
     if (ImGui::IsItemHovered())
@@ -3309,10 +3316,20 @@ void InspectorPanel::RenderPrefabHeader(entt::registry& reg, EditorContext& ctx,
                           "普通に直して配りたいだけなら「適用」を押せばよい（手直しが残る）");
     ImGui::SameLine();
     if (ImGui::Button("リンクを外す"))
-        reg.remove<PrefabLink>(e);
+    {
+        // ★Undo に積む。以前はその場で remove していたので、隣の「他を強制リセット」と
+        //   押し間違えると Ctrl+Z でも戻せず、シーン JSON を手で直すしかなかった。
+        if (auto* pl = reg.try_get<PrefabLink>(e))
+        {
+            ctx.undoSystem.PushCommand(
+                std::make_unique<RemoveComponentCommand<PrefabLink>>(
+                    &reg, e, *pl, "Unlink Prefab"));
+            reg.remove<PrefabLink>(e);
+        }
+    }
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("ただのコピーに戻す（以後 適用/元に戻す は出えへん）");
-    if (!m_prefabDiffOk) ImGui::EndDisabled();
+    if (!m_prefabDiffOk || ctx.isPlaying) ImGui::EndDisabled();
 
     if (dirty)
     {

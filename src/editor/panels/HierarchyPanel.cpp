@@ -375,7 +375,9 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
         {
             ctx.pendingDuplications.push_back(e);
         }
-        if (ImGui::MenuItem("プレハブにする"))  // Prefab 化（assets/prefabs へ保存）
+        // ★Play 中は無効。消化側（ApplicationRender）が Editor モードでしか回らないので、
+        //   押せてしまうと要求が誰にも読まれず、ログにも出ないまま消える。
+        if (ImGui::MenuItem("プレハブにする", nullptr, false, !ctx.isPlaying))
         {
             ctx.pendingCreatePrefab = e;
         }
