@@ -8,6 +8,8 @@
 #include "editor/EditorContext.h"
 #include "gui/DeepDiagnostics.h"
 #include "scene/Scene.h"
+#include "scene/SceneSerializer.h"
+#include "renderer/Mesh.h"
 
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4201 4244 4267 4996)
@@ -1544,6 +1546,94 @@ void T_DeepDuplicateSubtree(ImGuiTestContext* ctx)
         IM_ERRORF("複製した子にコライダーが引き継がれていない");
 }
 
+// プリミティブと PBR の保存往復。
+//
+// ★これが無かったせいで 2 件のサイレントなデータ損失が生きていた:
+//   - 平面の一辺・球の半径が保存されず、読み込み側のハードコード(50 / 0.5)に化ける。
+//     既定シーンの Ground は 20m なので、開いて保存し直すだけで 50m へ広がっていた。
+//   - metallic/roughness は Material を持つメッシュ(=モデル由来)でしか保存されず、
+//     プリミティブでは dx12_set_pbr が成功を返し絵も変わるのに保存で消えていた。
+// どちらも「保存した本人には見えない」形なので、JSON を直接見て固定する。
+void T_DeepPrimitiveSaveRoundtrip(ImGuiTestContext* ctx)
+{
+    IM_CHECK(g_app != nullptr);
+    Scene* scene = g_app->GetScene();
+    IM_CHECK(scene != nullptr);
+    entt::registry& reg = scene->GetRegistry();
+    const std::string assetsDir = PathResolver::AssetsDir();
+
+    Step(ctx, "既定と違うサイズの平面 + PBR 上書きを作る");
+    const float kSide = 17.5f;   // 既定(50)とも Ground(20)とも違う値
+    Entity plane = scene->SpawnPlane("__T_Plane", { 0.0f, -50.0f, 0.0f }, kSide, false);
+    const entt::entity pe = plane.GetHandle();
+    IM_CHECK(pe != entt::null);
+    {
+        auto& mr = reg.get<MeshRenderer>(pe);
+        mr.overrideMetallic  = 0.91f;
+        mr.overrideRoughness = 0.13f;
+        IM_CHECK(!mr.meshes.empty() && mr.meshes[0] != nullptr);
+        // 前提の確認: プリミティブは Material を持たない(SetMaterial は ModelLoader だけが呼ぶ)。
+        // ここが将来変わったら、下の material 検査は別の理由で通ってしまう。
+        if (mr.meshes[0]->GetMaterial() != nullptr)
+            ctx->LogWarning("プリミティブが Material を持つようになった。この検査の前提を見直すこと");
+    }
+
+    Step(ctx, "JSON へ書き出して、消えがちなキーが載っているか見る");
+    const std::string js = SceneSerializer::SerializeEntity(*scene, pe, assetsDir);
+    if (js.find("\"primitiveSize\"") == std::string::npos)
+        IM_ERRORF("平面の一辺が保存されていない(読み込みで既定 50 に化ける)");
+    if (js.find("\"material\"") == std::string::npos)
+        IM_ERRORF("プリミティブの metallic/roughness が保存されていない(絵は変わるのに保存で消える)");
+
+    Step(ctx, "読み戻して形と値が一致するか");
+    const entt::entity pe2 = SceneSerializer::InstantiateEntity(*scene, js, assetsDir);
+    if (pe2 == entt::null)
+    {
+        IM_ERRORF("書き出した JSON を読み戻せない");
+        reg.destroy(pe);
+        return;
+    }
+    {
+        auto& mr2 = reg.get<MeshRenderer>(pe2);
+        IM_CHECK(!mr2.meshes.empty() && mr2.meshes[0] != nullptr);
+        const float side2 = mr2.meshes[0]->GetAABBMax().x * 2.0f;
+        if (std::fabs(side2 - kSide) > 0.01f)
+            IM_ERRORF("平面の一辺が %.2f -> %.2f に化けた", kSide, side2);
+        if (std::fabs(mr2.overrideMetallic - 0.91f) > 0.001f
+            || std::fabs(mr2.overrideRoughness - 0.13f) > 0.001f)
+            IM_ERRORF("PBR が復元されない (metallic=%.3f roughness=%.3f)",
+                      mr2.overrideMetallic, mr2.overrideRoughness);
+    }
+
+    Step(ctx, "球の半径も同じ経路を通る");
+    Entity sph = scene->SpawnSphere("__T_Sphere", { 0.0f, -50.0f, 0.0f }, 2.75f);
+    const entt::entity se = sph.GetHandle();
+    const std::string sjs = SceneSerializer::SerializeEntity(*scene, se, assetsDir);
+    const entt::entity se2 = SceneSerializer::InstantiateEntity(*scene, sjs, assetsDir);
+    if (se2 != entt::null)
+    {
+        auto& mr3 = reg.get<MeshRenderer>(se2);
+        if (!mr3.meshes.empty() && mr3.meshes[0])
+        {
+            // 半径は AABB から復元するので、頂点分割ぶんの誤差を許す
+            const float r2 = mr3.meshes[0]->GetAABBMax().x;
+            if (std::fabs(r2 - 2.75f) > 0.05f)
+                IM_ERRORF("球の半径が 2.75 -> %.3f に化けた", r2);
+        }
+        reg.destroy(se2);
+    }
+    else
+    {
+        IM_ERRORF("球の JSON を読み戻せない");
+    }
+
+    // 後始末（検査用エンティティをシーンに残さない）
+    reg.destroy(se);
+    reg.destroy(pe2);
+    reg.destroy(pe);
+    ctx->Yield(2);
+}
+
 // プレハブの往復: プレハブ化 → .prefab がディスクに出る → 元がインスタンス化(PrefabLink) →
 // 配置した新インスタンスにも子・コライダー・リンクが揃っているか。
 void T_DeepPrefabRoundtrip(ImGuiTestContext* ctx)
@@ -1688,6 +1778,7 @@ const DiagReg kTests[] = {
     { "deep",  "deep_copy_paste",       "超詳細: コピペ複製", "コピペで子・コライダー・Lua・参照が残るか", T_DeepCopyPasteSubtree, true },
     { "deep",  "deep_duplicate",        "超詳細: コピペ複製", "複製の子孫維持と二重複製防止",         T_DeepDuplicateSubtree, true },
     { "deep",  "deep_prefab_roundtrip", "超詳細: プレハブ",   "プレハブ化→配置→リンク→構成維持",      T_DeepPrefabRoundtrip,  true },
+    { "deep",  "deep_primitive_save",   "超詳細: 保存",       "プリミティブの寸法と PBR が保存往復するか", T_DeepPrimitiveSaveRoundtrip, true },
 };
 
 const DiagReg* FindReg(const ImGuiTest* test)

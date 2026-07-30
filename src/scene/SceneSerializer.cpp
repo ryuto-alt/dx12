@@ -424,11 +424,30 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                 // 何も書かない（"terrain" / "sculpt" ブロックが担当）
             }
             // プリミティブマーカー（"__primitive_box__" 等）は種別として保存
+            //
+            // ★種別しか書いていなかったので、球の半径と平面の一辺が保存されず、
+            //   読み込み側のハードコード（0.5 / 50）に化けていた。既定シーンの
+            //   Ground は SpawnPlane(..., 20.0f) なので、**開いて保存し直すだけで
+            //   20m→50m に広がる**（実測で再現）。box は scale が Transform に乗るので無事。
+            //   半径/一辺はメッシュに焼かれていて別途持っていないため AABB から復元する
+            //   （平面は 4 隅なので厳密、球は頂点分割ぶんだけ内側に出る可能性がある）。
             else if (mr.modelPath.rfind("__primitive_", 0) == 0)
             {
-                if      (mr.modelPath == "__primitive_sphere__") ej["primitive"] = "sphere";
-                else if (mr.modelPath == "__primitive_plane__")  ej["primitive"] = "plane";
-                else                                              ej["primitive"] = "box";
+                const Mesh* pmesh = (!mr.meshes.empty()) ? mr.meshes[0] : nullptr;
+                if (mr.modelPath == "__primitive_sphere__")
+                {
+                    ej["primitive"] = "sphere";
+                    if (pmesh) ej["primitiveSize"] = pmesh->GetAABBMax().x;          // 半径
+                }
+                else if (mr.modelPath == "__primitive_plane__")
+                {
+                    ej["primitive"] = "plane";
+                    if (pmesh) ej["primitiveSize"] = pmesh->GetAABBMax().x * 2.0f;   // 一辺
+                }
+                else
+                {
+                    ej["primitive"] = "box";
+                }
             }
             else
             {
@@ -515,11 +534,23 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
             }
 
             // PBR Material パラメータ保存（オーバーライド値優先）
-            if (!mr.meshes.empty() && mr.meshes[0] && mr.meshes[0]->GetMaterial())
+            //
+            // ★以前は `GetMaterial()` が非 null のときだけ書いていた。Material を持つのは
+            //   ModelLoader が読んだメッシュだけ（SetMaterial の呼び出しは ModelLoader.cpp:1145
+            //   の 1 箇所のみ）で、プリミティブ・地形・スカルプトは常に null。
+            //   ところが描画側は mat の有無に関わらず override を優先する
+            //   （ApplicationRender.cpp:553）ので、dx12_set_pbr でボックスを金属にすると
+            //   **絵は変わり MCP も成功を返すのに、保存すると消える**（実測で再現）。
+            //   override が入っているなら mat が無くても書く。
+            const auto* mat = (!mr.meshes.empty() && mr.meshes[0]) ? mr.meshes[0]->GetMaterial() : nullptr;
+            const bool  hasPbrOverride = (mr.overrideMetallic >= 0.0f) || (mr.overrideRoughness >= 0.0f);
+            if (mat || hasPbrOverride)
             {
-                const auto* mat = mr.meshes[0]->GetMaterial();
-                f32 metallic  = (mr.overrideMetallic  >= 0.0f) ? mr.overrideMetallic  : mat->defaultMetallic;
-                f32 roughness = (mr.overrideRoughness >= 0.0f) ? mr.overrideRoughness : mat->defaultRoughness;
+                // 既定値は描画側（ApplicationRender.cpp:553-556）と同じものを使う。
+                f32 metallic  = (mr.overrideMetallic  >= 0.0f) ? mr.overrideMetallic
+                              : (mat ? mat->defaultMetallic  : 0.0f);
+                f32 roughness = (mr.overrideRoughness >= 0.0f) ? mr.overrideRoughness
+                              : (mat ? mat->defaultRoughness : 0.5f);
                 ej["material"] = {
                     {"metallic",  metallic},
                     {"roughness", roughness}
@@ -1397,10 +1428,12 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
     else if (ej.contains("primitive"))
     {
         std::string prim = ej["primitive"].get<std::string>();
+        // primitiveSize が無い旧シーンは従来どおりの既定値（0.5 / 50）で読む。
+        const f32 psize = ej.value("primitiveSize", 0.0f);
         if (prim == "sphere")
-            e = scene.SpawnSphere(name, pos, 0.5f).GetHandle();
+            e = scene.SpawnSphere(name, pos, psize > 0.0f ? psize : 0.5f).GetHandle();
         else if (prim == "plane")
-            e = scene.SpawnPlane(name, pos, 50.0f, false).GetHandle();
+            e = scene.SpawnPlane(name, pos, psize > 0.0f ? psize : 50.0f, false).GetHandle();
         else
             e = scene.SpawnBox(name, pos, rot, scale).GetHandle();
         OutputDebugStringA(("[Load] SpawnPrimitive: " + name + " type=" + prim + "\n").c_str());
