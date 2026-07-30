@@ -998,9 +998,23 @@ void Application::EnterPlayMode()
         auto camCheck = reg.view<const CameraComponent>();
         if (camCheck.empty())
         {
+            // ★配布したゲームではここで詰む。ゲームモードは起動時に一度だけ
+            //   m_modeChangeRequested を立てて消費するので**再試行しない**うえ、
+            //   errorMessage を出す ToolbarPanel はエディタでしか描かれない。
+            //   結果「Play へ入れず Editor モードのまま、フリーカメラの絵だけが出続ける」
+            //   ＝ゲームが無言で動かない。理由を必ず見せてから終了する。
+            Logger::Error("Play を中止しました: アクティブな CameraComponent がありません");
+            if (m_isGameMode)
+            {
+                MessageBoxW(nullptr,
+                            L"開始シーンに Camera がありません。\n"
+                            L"エディタでシーンに Camera を追加してからビルドし直してください。",
+                            L"起動できません", MB_OK | MB_ICONERROR);
+                m_isRunning = false;   // 動かないウィンドウを残さない
+                return;
+            }
             m_editorCtx->errorMessage = "シーンに Camera が配置されていません。\nHierarchy 右クリック → Camera で追加してください。";
             m_editorCtx->errorFlash = 1.0f;
-            Logger::Warn("Play を中止しました: アクティブな CameraComponent がありません");
             return;
         }
         // isActive なカメラがなければ最初のカメラを自動で有効化
@@ -1396,9 +1410,14 @@ std::string Application::SaveSceneSnapshot()
 
 void Application::RequestSceneRestore(const std::string& path)
 {
+    // ★同じ「波括弧の無い if」がここにもあった。skipConfirm は無条件に立っていたので、
+    //   path が空（退避に失敗した等）でも次のシーン読み込みが未保存確認を飛ばす＝
+    //   編集内容を聞かずに捨てうる。
     if (m_editorCtx && !path.empty())
+    {
         m_editorCtx->pendingLoadPath        = path;   // フレーム境界で SceneSerializer::Load される
         m_editorCtx->pendingLoadSkipConfirm = true;   // 診断のシーン復元。人間の操作ではないので聞かない
+    }
 }
 
 

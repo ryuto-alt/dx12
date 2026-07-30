@@ -32,6 +32,9 @@
 #include <set>
 #include <vector>
 
+// 配布ゲームを実際に起動して確かめるため（下の T_BuildGame）
+#include <Windows.h>
+
 namespace dx12e
 {
 namespace
@@ -925,8 +928,50 @@ void T_BuildGame(ImGuiTestContext* ctx)
         while (!exeStem.empty() && exeStem.back()  == ' ') exeStem.pop_back();
         while (!exeStem.empty() && exeStem.front() == ' ') exeStem.erase(exeStem.begin());
         if (exeStem.empty()) exeStem = "Game";
-        IM_CHECK_NO_RET(fs::exists(fs::path(buildDir) / (exeStem + ".exe")));
+        const fs::path exePath = fs::path(buildDir) / (exeStem + ".exe");
+        IM_CHECK_NO_RET(fs::exists(exePath));
         IM_CHECK_NO_RET(fs::exists(fs::path(buildDir) / "game.pak"));
+
+        // ★成果物が「在る」ことしか見ていなかったので、**起動直後に必ずクラッシュする
+        //   ゲームを 3 日間出荷できていた**（Application::Run の if に波括弧が無く、
+        //   MCP ブリッジを持たないゲームモードで null 参照していた）。
+        //   実際に起動して数秒生きているかを見る。ここが唯一 GameRuntime に触るテスト。
+        if (fs::exists(exePath))
+        {
+            Step(ctx, "配布ゲームを起動して落ちないか見る");
+            std::wstring cmd = exePath.wstring();
+            std::wstring cwd = fs::path(buildDir).wstring();
+            STARTUPINFOW si{};
+            si.cb = sizeof(si);
+            PROCESS_INFORMATION pi{};
+            if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE,
+                                0, nullptr, cwd.c_str(), &si, &pi))
+            {
+                IM_ERRORF("ビルドしたゲームを起動できません（CreateProcess 失敗 %lu）", GetLastError());
+            }
+            else
+            {
+                // 生きていれば TIMEOUT が返る。先に終わった＝異常終了。
+                const DWORD wr = WaitForSingleObject(pi.hProcess, 6000);
+                if (wr == WAIT_OBJECT_0)
+                {
+                    DWORD code = 0;
+                    GetExitCodeProcess(pi.hProcess, &code);
+                    const bool crashed = fs::exists(fs::path(buildDir) / "dx12_crash.log");
+                    IM_ERRORF("ビルドしたゲームが起動直後に終了しました (exit=0x%08lX%s)",
+                              code, crashed ? ", dx12_crash.log あり" : "");
+                }
+                else
+                {
+                    TerminateProcess(pi.hProcess, 0);
+                    WaitForSingleObject(pi.hProcess, 3000);
+                }
+                CloseHandle(pi.hThread);
+                CloseHandle(pi.hProcess);
+            }
+            // ゲーム窓にフォーカスを取られたままだと後続テストのキー入力が届かない
+            ctx->Yield(30);
+        }
     }
 
     fs::remove_all(outDir, ec);   // 一時フォルダを掃除（失敗しても無視）

@@ -1243,13 +1243,30 @@ bool Application::BuildGame()
             return false;
         }
 
+        // ★以前は AddFile の戻り値を全部捨て、走査の error_code でも黙って break していた。
+        //   読めないファイルが 1 つあるだけで**そのアセットが欠けた pak が「ビルド完了」として
+        //   出荷される**（実行すると該当のテクスチャ/モデルだけが無言で消える）。
+        //   拾って最後に失敗させる。
+        std::vector<std::string> packFailures;
+        auto addFile = [&](const std::string& srcAbs, const std::string& relPath)
+        {
+            if (!pak.AddFile(srcAbs, relPath))
+                packFailures.push_back(relPath + "  <- " + srcAbs);
+        };
+
         // assets/ 配下を全パック（Normalize が "assets/" プレフィックスを剥がす）
         {
             fs::path assetsDir = fs::path(PathResolver::AssetsDir());
             std::error_code ec;
             for (fs::recursive_directory_iterator it(assetsDir, ec), end; it != end; it.increment(ec))
             {
-                if (ec) break;
+                // ★ここで break すると assets/ の**残り全部**を諦めたまま成功扱いになる。
+                //   読めないサブフォルダは記録して先へ進む。
+                if (ec)
+                {
+                    packFailures.push_back("assets の走査に失敗: " + ec.message());
+                    break;
+                }
                 // "." 始まりのフォルダ（.thumbcache / .texcache）はエディタ専用のキャッシュ。
                 // 出荷 pak に入れても実行時には参照されず容量を食うだけなので丸ごと除外する。
                 if (it->is_directory(ec))
@@ -1261,7 +1278,7 @@ bool Application::BuildGame()
                 }
                 if (!it->is_regular_file(ec)) continue;
                 std::string relPath = it->path().lexically_relative(assetsDir).generic_string();
-                pak.AddFile(it->path().string(), relPath);
+                addFile(it->path().string(), relPath);
             }
         }
 
@@ -1276,7 +1293,7 @@ bool Application::BuildGame()
                     if (!entry.is_regular_file()) continue;
                     std::string relPath = "scripts/" +
                         entry.path().lexically_relative(scriptsDir).generic_string();
-                    pak.AddFile(entry.path().string(), relPath);
+                    addFile(entry.path().string(), relPath);
                 }
             }
         }
@@ -1313,7 +1330,7 @@ bool Application::BuildGame()
                     if (overrideBytes)
                         pak.AddBlob(relPath, overrideBytes->data(), overrideBytes->size());
                     else
-                        pak.AddFile(entry.path().string(), relPath);
+                        addFile(entry.path().string(), relPath);
                 }
             }
 
@@ -1330,6 +1347,19 @@ bool Application::BuildGame()
                     pak.AddBlob("shaders/custom/" + relPath + "_PS.cso", ps->data(), ps->size());
                 }
             }
+        }
+
+        // 1 件でも詰め損ねていたら「完了」と言わない（欠けた配布物を出さない）。
+        if (!packFailures.empty())
+        {
+            std::string msg = "game.pak に入れられなかったファイルがあります。ビルドを中止しました:\n";
+            for (std::size_t i = 0; i < packFailures.size() && i < 20; ++i)
+                msg += "  - " + packFailures[i] + "\n";
+            if (packFailures.size() > 20)
+                msg += "  ...ほか " + std::to_string(packFailures.size() - 20) + " 件\n";
+            Logger::Error("{}", msg);
+            if (m_editorCtx) m_editorCtx->buildErrorMsg = msg;
+            return false;
         }
 
         // ブートマニフェスト（game.json の代替。GameRuntime は pak からこれを読む）。

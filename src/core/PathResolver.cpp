@@ -1,5 +1,7 @@
 #include "core/PathResolver.h"
 
+#include "core/vfs/Vfs.h"
+
 #include <Windows.h>
 #include <filesystem>
 
@@ -112,12 +114,19 @@ std::string PathResolver::ProjectShaderDir()
 std::string PathResolver::GameLuaPath()
 {
     // s_* は UTF-8。fs::exists(std::string) は ACP 解釈なので、非 ASCII / 壊れた
-    // フォルダ名だと例外を投げ得る -> error_code 版で握りつぶす(ゲームモードは pak 経由で読む)。
+    // フォルダ名だと例外を投げ得る -> error_code 版で握りつぶす。
+    //
+    // ★ゲームモードでは assets/ も scripts/ もディスクに無い（全部 pak）ので
+    //   fs::exists は必ず false になり、この 2 段フォールバックが機能しなかった。
+    //   その結果 `assets/game.lua` 構成のプロジェクトは、配布すると
+    //   pak キー "scripts/game.lua" を引きに行って空振りし、**OnStart/OnUpdate が
+    //   一度も呼ばれない**（シーンは出るのでゲームが動かない理由が分からない）。
+    //   pak/ディスク両対応の vfs::Exists で見る。
     std::error_code ec;
-    std::string s = s_scripts + "game.lua";
-    if (fs::exists(s, ec)) return s;
-    std::string a = s_assets + "game.lua";
-    if (fs::exists(a, ec)) return a;
+    const std::string s = s_scripts + "game.lua";
+    if (vfs::ExistsAbs(s) || fs::exists(s, ec)) return s;
+    const std::string a = s_assets + "game.lua";
+    if (vfs::ExistsAbs(a) || fs::exists(a, ec)) return a;
     return s;  // 既定（存在チェックは呼び出し側）
 }
 }

@@ -533,8 +533,11 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
         // sneakWalk アニメーションを全スケルタルEntityに追加
         {
-            std::filesystem::path sneakPath = PathResolver::AssetsDir() + "models/human/sneakWalk.gltf";
-            if (std::filesystem::exists(sneakPath))
+            // ★std::filesystem::exists は pak モード（配布ゲーム）で常に false になるため、
+            //   ここだけエディタとゲームで挙動が食い違っていた（他所は vfs へ直してある）。
+            const std::string sneakRel = "models/human/sneakWalk.gltf";
+            std::filesystem::path sneakPath = PathResolver::AssetsDir() + sneakRel;
+            if (vfs::Exists(sneakRel))
             {
                 auto& reg = m_scene->GetRegistry();
                 auto skelView = reg.view<SkeletalAnimation>();
@@ -1133,6 +1136,12 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     // ゲームモードの場合、即座にPlayモードに入る
     if (m_isGameMode)
     {
+        // ★キー割り当ての読み込みはプロジェクトロード完了時(ApplicationProject.cpp)にしか
+        //   無かったが、その経路（BeginProjectLoad）はエディタ専用で、ゲームモードでは
+        //   一度も通らない。結果「ゲーム内のオプションでキーを変えて保存はされるのに、
+        //   次の起動で必ず既定へ戻る」状態だった。BaseDir はここで確定しているので読む。
+        LoadActionBindings();
+
         m_pendingMode = EngineMode::Playing;
         m_modeChangeRequested = true;
     }
@@ -1336,12 +1345,19 @@ void Application::Run()
         m_frameStart = std::chrono::high_resolution_clock::now();
 
         // AI(MCP)から溜まったコマンドをメインスレッドで処理(scene/scriptengine を安全に触れる)。
+        // ★波括弧が無く、if が効いていたのは CpuScopeTimer の宣言 1 行だけだった。
+        //   Poll は**無条件**に呼ばれるため、MCP ブリッジを起動しないゲームモード
+        //   （m_mcpBridge は null）では 1 フレーム目で null 参照して落ちる。
+        //   ＝**ビルドして配布したゲームが起動直後に必ずクラッシュする**状態だった
+        //   （a1c73e7 の TU 分割で混入。GameRuntime を起動するテストが無く 3 日気づけなかった）。
         if (m_mcpBridge)
+        {
             CpuScopeTimer _tMcp(&m_cpuMs[CpuMcp]);
             DX12_PROFILE_ZONE_N("MCP/Poll");
             m_mcpBridge->Poll([this](uint64_t client, const std::string& line) {
                 return HandleMcpCommand(client, line);
             });
+        }
 
         // 超詳細診断からのフレーム読み戻し要求。ReadbackSceneBgra は内部でコマンドリストを
         // 開くのでフレーム境界のここでしか呼べない（ImGui のテスト本体から直接は呼べない）。
