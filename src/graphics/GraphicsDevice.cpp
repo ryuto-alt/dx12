@@ -21,17 +21,32 @@ GraphicsDevice::~GraphicsDevice()
 void GraphicsDevice::Initialize(Window& /*window*/)
 {
     // --- Debug Layer ---
+    // ★Debug ビルド限定にしない。このリポジトリでは Debug ビルドが実際には作られておらず
+    //   （build/debug が存在しない）、デバッグレイヤの指摘が「誰にも見えない」状態が続いていた。
+    //   環境変数で release からも入れられるようにする:
+    //     DX12_D3D_DEBUG=1  … デバッグレイヤ + メッセージをエンジンログへ流す
+    //     DX12_D3D_GBV=1    … 加えて GPU-based validation（重い。単体では入れない）
+    const auto envOn = [](const char* name) {
+        size_t len = 0; char buf[8]{};
+        return getenv_s(&len, buf, sizeof(buf), name) == 0 && len > 0 && buf[0] == '1';
+    };
 #ifdef _DEBUG
+    const bool wantDebugLayer = true;
+    const bool wantGbv        = !envOn("DX12_D3D_NO_GBV");
+#else
+    const bool wantDebugLayer = envOn("DX12_D3D_DEBUG") || envOn("DX12_D3D_GBV");
+    const bool wantGbv        = envOn("DX12_D3D_GBV");
+#endif
+    if (wantDebugLayer)
     {
         ComPtr<ID3D12Debug3> debugController;
         if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController))))
         {
             debugController->EnableDebugLayer();
-            debugController->SetEnableGPUBasedValidation(TRUE);
-            Logger::Info("D3D12 Debug Layer enabled with GPU-based validation");
+            debugController->SetEnableGPUBasedValidation(wantGbv ? TRUE : FALSE);
+            Logger::Info("D3D12 Debug Layer enabled (GBV={})", wantGbv ? "on" : "off");
         }
     }
-#endif
 
     // --- DXGI Factory ---
     {
@@ -76,17 +91,41 @@ void GraphicsDevice::Initialize(Window& /*window*/)
     }
 
     // --- Info Queue (Debug) ---
-#ifdef _DEBUG
+    // ★指摘を dx12_engine.log へ流す。従来は OutputDebugString へ出るだけで、
+    //   デバッガを繋がない限り誰も読めなかった（＝実在するエラーが何ヶ月も放置されていた）。
+    //   ログに出れば dx12_get_log からも読める＝AI もエンジンの不正を検出できる。
+    if (wantDebugLayer)
     {
+        ComPtr<ID3D12InfoQueue1> iq1;
+        if (SUCCEEDED(m_device.As(&iq1)))
+        {
+            DWORD cookie = 0;
+            iq1->RegisterMessageCallback(
+                [](D3D12_MESSAGE_CATEGORY, D3D12_MESSAGE_SEVERITY sev, D3D12_MESSAGE_ID id,
+                   LPCSTR desc, void*)
+                {
+                    // CORRUPTION/ERROR は error、WARNING は warn。INFO 以下は捨てる（大量に出る）。
+                    if (sev <= D3D12_MESSAGE_SEVERITY_ERROR)
+                        Logger::Error("[D3D12 id={}] {}", static_cast<int>(id), desc ? desc : "");
+                    else if (sev == D3D12_MESSAGE_SEVERITY_WARNING)
+                        Logger::Warn("[D3D12 id={}] {}", static_cast<int>(id), desc ? desc : "");
+                },
+                D3D12_MESSAGE_CALLBACK_FLAG_NONE, nullptr, &cookie);
+            Logger::Info("D3D12 InfoQueue: メッセージをエンジンログへ流します");
+        }
+
+        // ★break-on-severity は既定で切る。起動時に実在のエラーが出ている状態で
+        //   これを立てるとデバッガ無しでは即死するだけで、原因が何も分からない
+        //   （実際 2026-07-30 に exit 2170 で落ちて、ログへ流して初めて中身が読めた）。
+        //   デバッガで止めたいときだけ環境変数で。
         ComPtr<ID3D12InfoQueue> infoQueue;
-        if (SUCCEEDED(m_device.As(&infoQueue)))
+        if (envOn("DX12_D3D_BREAK") && SUCCEEDED(m_device.As(&infoQueue)))
         {
             infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, TRUE);
             infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, TRUE);
-            Logger::Info("D3D12 InfoQueue break-on-severity configured");
+            Logger::Info("D3D12 InfoQueue: ERROR で break します");
         }
     }
-#endif
 
     // --- D3D12 Memory Allocator ---
     {
