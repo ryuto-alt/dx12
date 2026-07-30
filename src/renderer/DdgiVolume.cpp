@@ -22,12 +22,16 @@ struct DdgiCB
     XMFLOAT3 originWS;   float rayLength;
     XMFLOAT3 spacing;    float hysteresis;
     u32      probeCountX, probeCountY, probeCountZ, frameIndex;
-    float    intensity, normalBias, pad0, pad1;
+    float    intensity, normalBias, bounceIntensity, pad1;
     // 光源
     XMFLOAT3 sunDir;     float sunIntensity;
     XMFLOAT3 sunColor;   float pad2;
     XMFLOAT3 skyColor;   u32   skyCubeIndex;
-    u32      lightSrvIndex, lightCount, pad4, pad5;
+    // 前フレームの irradiance / 距離アトラスを TraceCS が SRV として引くための
+    // bindless index（段階3）。0xFFFFFFFF = 履歴が無い＝バウンスを丸ごとスキップ。
+    // ★テクスチャは CreateCommittedResource で確保するだけでクリアしていないので、
+    //   初回フレームに読むと未初期化メモリ（NaN もあり得る）を拾う。ガードは必須。
+    u32      lightSrvIndex, lightCount, prevIrradianceSrv, prevDistanceSrv;
 };
 static_assert(sizeof(DdgiCB) % 16 == 0, "DdgiCB は 16B 境界に揃えること");
 constexpr u32 kDdgiCBNum32 = sizeof(DdgiCB) / sizeof(u32);
@@ -310,26 +314,42 @@ void DdgiVolume::Update(ID3D12GraphicsCommandList* cmd, GraphicsDevice& device,
     cb.skyCubeIndex = d.skyCubeSrvIndex;
     cb.lightSrvIndex = d.lightSrvIndex;
     cb.lightCount    = d.lightCount;
+    cb.bounceIntensity = std::clamp(s.bounceIntensity, 0.0f, 1.0f);
+    // 履歴が無いフレーム（初回 / InvalidateHistory 直後）はバウンスを切る。
+    // アトラスはクリアしていないので、読むと未初期化メモリを拾う。
+    constexpr u32 kNoSrv = 0xFFFFFFFFu;
+    const bool wantBounce = m_historyValid && cb.bounceIntensity > 0.0f;
+    cb.prevIrradianceSrv = wantBounce ? m_irradianceSrv : kNoSrv;
+    cb.prevDistanceSrv   = wantBounce ? m_distanceSrv   : kNoSrv;
 
-    // フォワード PS が t22/t23 から読むようになったので、書く前に UAV へ戻す。
+    // ★段階3: TraceCS が【前フレームの】アトラスを SRV で読むので、Trace の前に
+    //   NON_PIXEL_SHADER_RESOURCE へ、Blend の直前に UNORDERED_ACCESS へ、と 2 段に分ける。
+    //   ping-pong は要らない。この 1 フレームの並びは
+    //     [SRV へ] → Trace（読む） → [UAV へ] → Blend（書く） → [PS SRV へ]
+    //   で、遷移バリアが完全な同期点なので読みが書きより先に完了することが保証される。
+    // 状態を一括で移すヘルパ（同じ状態なら何もしない）。
+    const auto transition = [&](D3D12_RESOURCE_STATES to)
     {
         D3D12_RESOURCE_BARRIER b[2]{};
         u32 n = 0;
-        auto toUav = [&](ID3D12Resource* res, D3D12_RESOURCE_STATES& state)
+        auto one = [&](ID3D12Resource* res, D3D12_RESOURCE_STATES& state)
         {
-            if (state == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) return;
+            if (state == to) return;
             b[n].Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
             b[n].Transition.pResource   = res;
             b[n].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
             b[n].Transition.StateBefore = state;
-            b[n].Transition.StateAfter  = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+            b[n].Transition.StateAfter  = to;
             ++n;
-            state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+            state = to;
         };
-        toUav(m_irradiance.Get(), m_irradianceState);
-        toUav(m_distance.Get(),   m_distanceState);
+        one(m_irradiance.Get(), m_irradianceState);
+        one(m_distance.Get(),   m_distanceState);
         if (n > 0) cmd->ResourceBarrier(n, b);
-    }
+    };
+
+    // バウンスするフレームだけ、Trace の前に読み取り状態へ移す。
+    if (wantBounce) transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
     cmd->SetComputeRootSignature(m_rootSig.Get());
     cmd->SetComputeRoot32BitConstants(0, kDdgiCBNum32, &cb, 0);
@@ -340,6 +360,9 @@ void DdgiVolume::Update(ID3D12GraphicsCommandList* cmd, GraphicsDevice& device,
     // ---- レイトレ（1 スレッド = 1 レイ）----
     cmd->SetPipelineState(m_psoTrace.Get());
     cmd->Dispatch(1, total, 1);   // x は numthreads が kRaysPerProbe なので 1 グループ
+
+    // フォワード PS が t22/t23 から読むようになったので、書く前に UAV へ戻す。
+    transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
     // RayData の書き込みを Blend が読む前に直列化する。
     D3D12_RESOURCE_BARRIER uavB{};
@@ -356,21 +379,7 @@ void DdgiVolume::Update(ID3D12GraphicsCommandList* cmd, GraphicsDevice& device,
     cmd->Dispatch(total, 1, 1);
 
     // フォワードパスが PS から読めるようにしておく（段階1 / 段階2）。
-    {
-        D3D12_RESOURCE_BARRIER b[2]{};
-        ID3D12Resource* res[2] = { m_irradiance.Get(), m_distance.Get() };
-        for (u32 i = 0; i < 2; ++i)
-        {
-            b[i].Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-            b[i].Transition.pResource   = res[i];
-            b[i].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-            b[i].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-            b[i].Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-        }
-        cmd->ResourceBarrier(2, b);
-        m_irradianceState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-        m_distanceState   = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    }
+    transition(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
     m_stats.raysCast = total * kRaysPerProbe;
     m_historyValid   = true;

@@ -46,7 +46,9 @@ struct DdgiConstants
     uint   frameIndex;    // レイ方向を回すための連番
     float  intensity;     // 出力の強さ
     float  normalBias;    // レイ始点の法線オフセット(m)
-    float  pad0, pad1;
+    // 多重バウンス（段階3）の強さ。0 = 1 バウンスのみ。収束値は E/(1-ρ·b) なので 1 で打ち止め。
+    float  bounceIntensity;
+    float  pad1;
 };
 
 // プローブの 3D 添字 → 通し番号

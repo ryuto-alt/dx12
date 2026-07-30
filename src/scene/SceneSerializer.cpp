@@ -985,6 +985,7 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
             {"hysteresis",  dg.hysteresis},
             {"intensity",   dg.intensity},
             {"normalBias",  dg.normalBias},
+            {"bounceIntensity", dg.bounceIntensity},
         };
     }
 
@@ -1236,6 +1237,7 @@ static void LoadRtSettings(Scene& scene, const json& root)
         dg.hysteresis  = j.value("hysteresis",  dg.hysteresis);
         dg.intensity   = j.value("intensity",   dg.intensity);
         dg.normalBias  = j.value("normalBias",  dg.normalBias);
+        dg.bounceIntensity = j.value("bounceIntensity", dg.bounceIntensity);
         // ★MCP の set_dxr と同じ範囲へ丸める（手書き JSON でプローブ数 999 を書かれても落ちない）
         dg.probeCountX = std::clamp(dg.probeCountX, 1, 32);
         dg.probeCountY = std::clamp(dg.probeCountY, 1, 32);
@@ -1245,6 +1247,8 @@ static void LoadRtSettings(Scene& scene, const json& root)
         dg.hysteresis  = std::clamp(dg.hysteresis, 0.0f, 0.995f);
         dg.intensity   = std::clamp(dg.intensity,  0.0f, 10.0f);
         dg.normalBias  = std::clamp(dg.normalBias, 0.0f, 1.0f);
+        // 1 を超えさせない。E/(1-ρ·b) の幾何級数が発散する。
+        dg.bounceIntensity = std::clamp(dg.bounceIntensity, 0.0f, 1.0f);
     }
     scene.GetDdgiSettings() = dg;
 }

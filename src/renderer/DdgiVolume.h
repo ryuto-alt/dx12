@@ -45,6 +45,11 @@ struct DdgiSettings
     float hysteresis = 0.97f;       // 履歴の保持率。大きいほど滑らかで応答が遅い
     float intensity  = 1.0f;
     float normalBias = 0.02f;       // 影レイ始点の法線オフセット(m)
+    // 多重バウンスの強さ（段階3）。0 = 1 バウンスのみ＝段階2 までと同じ絵。
+    // プローブレイのヒット点で【前フレームのプローブ】を引いて足す量。
+    // ★1.0 を超えさせないこと。収束値は E/(1-ρ·b) の幾何級数なので、
+    //   アルベド ρ とこの b の積が 1 に近づくと発散する（アルベド側も 0.9 で潰してある）。
+    float bounceIntensity = 0.0f;
 };
 
 class DdgiVolume

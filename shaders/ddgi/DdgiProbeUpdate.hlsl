@@ -36,7 +36,11 @@ cbuffer DdgiCB : register(b0)
     uint          gSkyCubeIndex;
     uint          gLightSrvIndex;  // t13 (StructuredBuffer<ClusterLight>) の bindless index
     uint          gLightCount;     // 有効な灯数。0 なら点光源を 1 灯も評価しない
-    uint2         _pad45;
+    // 段階3: 【前フレームの】irradiance / 距離アトラスを SRV として引く bindless index。
+    // 0xFFFFFFFF = 履歴が無い（初回フレーム / InvalidateHistory 直後）＝バウンスしない。
+    // ★アトラスはクリアしていないので、ガードを外すと未初期化メモリ（NaN あり得る）を読む。
+    uint          gPrevIrradianceSrv;
+    uint          gPrevDistanceSrv;
 };
 
 // レイの結果。x = レイ番号 / y = プローブ番号。rgb = 放射輝度 / a = ヒット距離（ミスは負）
@@ -194,11 +198,36 @@ void TraceCS(uint3 dtid : SV_DispatchThreadID)
         //   ★ラスタ同様この環境項は遮蔽されない。厳密な可視性は段階2 の Chebyshev の仕事。
         // ★屋内はここが本体。灯りが全部 punctual なシーンでは、これが無いと
         //   プローブが太陽と空しか見ず DDGI が丸ごと 0 になる（DDGI を選んだ理由そのもの）。
+        // ★段階3: 多重バウンス。ヒット点で【前フレームの】プローブを引いて、
+        //   そこへ届いていた間接光を 1 段ぶん足す。これを毎フレーム繰り返すことで
+        //   バウンスが積み上がる（1 フレーム 1 段。収束は hysteresis ぶん遅れる）。
+        //   ★アルベドは 0.9 で潰す。収束値は E/(1-ρ·b) の幾何級数なので、
+        //     白に近い面（ρ→1）を放置すると発散する。
+        float3 bounce = 0.0.xxx;
+        if (gPrevIrradianceSrv != 0xFFFFFFFF && gDdgi.bounceIntensity > 0.0)
+        {
+            Texture2D<float4> prevIrr  = ResourceDescriptorHeap[gPrevIrradianceSrv];
+            Texture2D<float2> prevDist = ResourceDescriptorHeap[gPrevDistanceSrv];
+            float conf = 0.0;
+            const float3 irr = DdgiSampleIrradiance(prevIrr, prevDist, gLinearWrap,
+                                                    h.worldPos, h.worldNormal,
+                                                    gDdgi.originWS, gDdgi.spacing,
+                                                    gDdgi.probeCounts, gDdgi.normalBias, conf);
+            bounce = gDdgi.bounceIntensity * conf * irr;
+        }
+
+        // ★アルベドのクランプは【バウンス項だけ】に掛ける。ループゲインを 1 未満に
+        //   抑えるのが目的なので、直接光側に掛けると bounceIntensity=0 でも絵が変わる。
         radiance = albedo * (gSunColor * (gSunIntensity * ndotl * shadow)
                              + DdgiSkyRadiance(h.worldNormal)
-                             + DdgiPunctualIrradiance(h.worldPos, h.worldNormal));
+                             + DdgiPunctualIrradiance(h.worldPos, h.worldNormal))
+                 + min(albedo, 0.9.xxx) * bounce;
     }
 
+    // ★gRayData は RGBA16F ＝ half（最大 65504）。多重バウンスで値が育つので、
+    //   書く直前に必ず潰す。溢れると読み戻しが +INF になり、BlendCS の二乗で INF、
+    //   分散 r²-r*r が NaN になって PS まで壊れた値が届く（段階2 で実際に踏んだ形）。
+    radiance = min(radiance, 1000.0.xxx);
     gRayData[uint2(rayIndex, probeIndex)] = float4(radiance, dist);
 }
 

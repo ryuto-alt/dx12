@@ -411,6 +411,7 @@ void Application::RegisterMcpRenderMethods()
               "ddgiEnabled:any,ddgiSpacing:number,ddgiRayLength:number,ddgiHysteresis:number,"
               "ddgiIntensity:number,ddgiProbeCountX:any,ddgiProbeCountY:any,ddgiProbeCountZ:any,"
               "ddgiOriginX:number,ddgiOriginY:number,ddgiOriginZ:number,ddgiNormalBias:number,"
+              "ddgiBounceIntensity:number,"
               "aoEnabled:any,aoIntensity:number,aoPower:number,aoRadius:number,"
               "aoRayCount:any,forceBuildTlas:any,maxInstances:any,shadowEnabled:any,"
               "shadowIntensity:number,shadowMaxDistance:number,shadowNormalBias:number,"
@@ -462,6 +463,8 @@ void Application::RegisterMcpRenderMethods()
                 g.hysteresis  = std::clamp(params.value("ddgiHysteresis", g.hysteresis), 0.0f, 0.995f);
                 g.intensity   = std::clamp(params.value("ddgiIntensity", g.intensity), 0.0f, 10.0f);
                 g.normalBias  = std::clamp(params.value("ddgiNormalBias", g.normalBias), 0.0f, 1.0f);
+                // 多重バウンス（段階3）。1 を超えさせない＝ E/(1-ρ·b) が発散する。
+                g.bounceIntensity = std::clamp(params.value("ddgiBounceIntensity", g.bounceIntensity), 0.0f, 1.0f);
                 g.probeCountX = std::clamp(params.value("ddgiProbeCountX", g.probeCountX), 1, 32);
                 g.probeCountY = std::clamp(params.value("ddgiProbeCountY", g.probeCountY), 1, 32);
                 g.probeCountZ = std::clamp(params.value("ddgiProbeCountZ", g.probeCountZ), 1, 32);
@@ -552,6 +555,7 @@ void Application::RegisterMcpRenderMethods()
                               {"ddgiHysteresis", dg.hysteresis},
                               {"ddgiIntensity", dg.intensity},
                               {"ddgiNormalBias", dg.normalBias},
+                              {"ddgiBounceIntensity", dg.bounceIntensity},
                               {"ddgiProbeCountX", dg.probeCountX},
                               {"ddgiProbeCountY", dg.probeCountY},
                               {"ddgiProbeCountZ", dg.probeCountZ},
