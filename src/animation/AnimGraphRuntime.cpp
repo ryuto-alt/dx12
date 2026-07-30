@@ -374,6 +374,9 @@ void Update(AnimGraphRuntimeState& rt,
     AnimPose& finalPose = rt.poseA;   // 合成結果
     bool haveBase = false;
 
+    // このフレームに発火した遷移。トリガの消費は全レイヤーを評価し終えてから行う（[4]）。
+    std::vector<const AnimTransitionDef*> firedTransitions;
+
     for (size_t li = 0; li < rt.asset.layers.size(); ++li)
     {
         const AnimLayerDef& def = rt.asset.layers[li];
@@ -391,11 +394,16 @@ void Update(AnimGraphRuntimeState& rt,
             q.inTransition         = lr.inTransition;
             q.currentInterruptible = lr.transInterruptible;
             q.curTransitionTo      = lr.transTo;
+            q.loopedThisFrame      = lr.wrapped;
             const i32 pick = PickTransition(def, q, rt.params);
             if (pick >= 0)
             {
                 const AnimTransitionDef& tr = def.transitions[static_cast<size_t>(pick)];
-                ConsumeTriggers(tr, rt.params);
+                // ★トリガの消費はレイヤーループの**後**でまとめて行う。
+                //   ここで消すと、rt.params が全レイヤー共有なので先に評価された
+                //   レイヤーがトリガを食ってしまい、同じトリガで動くはずの上半身レイヤーが
+                //   一生反応しない（「マスクが壊れている」と誤診しやすい）。
+                firedTransitions.push_back(&tr);
                 if (tr.duration <= 1e-6f)
                 {
                     // 即時遷移（0 除算・NaN を作らない）
@@ -408,6 +416,7 @@ void Update(AnimGraphRuntimeState& rt,
                     lr.inTransition       = true;
                     lr.transTo            = tr._to;
                     lr.transElapsed       = 0.0f;
+                    lr.transEventsStarted = false;   // 遷移先の頭からイベントを拾い直す
                     lr.transDuration      = tr.duration;
                     lr.transTime          = 0.0f;
                     lr.transPrevTime      = 0.0f;
@@ -488,10 +497,13 @@ void Update(AnimGraphRuntimeState& rt,
             // 両方から拾うとクロスフェード中だけ足音が二重に鳴る。
             if (blend >= 0.5f)
             {
-                eventClip    = nextClip;
-                eventPrev    = lr.transPrevTime * nextEvScale;
+                eventClip = nextClip;
+                // 優勢側が切り替わった最初のフレームだけ、クリップの頭から拾い直す。
+                // そうしないと [0, transPrevTime] が永久に未走査のまま捨てられる。
+                eventPrev    = lr.transEventsStarted ? (lr.transPrevTime * nextEvScale) : 0.0f;
                 eventCur     = lr.transTime * nextEvScale;
-                eventWrapped = lr.transWrapped;
+                eventWrapped = lr.transEventsStarted ? lr.transWrapped : false;
+                lr.transEventsStarted = true;
             }
         }
 
@@ -528,6 +540,12 @@ void Update(AnimGraphRuntimeState& rt,
             OverrideBlendPose(finalPose, rt.layerPose, layerWeight, mask);
         }
     }
+
+    // ★全レイヤーを評価し終えてからトリガを消す（[4]）。ループ内で消すと、
+    //   rt.params が全レイヤー共有なので先に評価されたレイヤーがトリガを食い、
+    //   同じトリガで動くはずの上半身レイヤーが一生反応しなかった。
+    for (const AnimTransitionDef* tr : firedTransitions)
+        ConsumeTriggers(*tr, rt.params);
 
     if (haveBase) animator.SetPoseOverride(finalPose);
 }

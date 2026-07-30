@@ -224,6 +224,12 @@ struct AnimTransitionQuery
     bool inTransition         = false;  // いま遷移中か
     bool currentInterruptible = true;   // 進行中の遷移が割り込み可能か（inTransition のときだけ見る）
     i32  curTransitionTo      = -1;     // 進行中の遷移の行き先ステート（inTransition のときだけ見る）
+    // ★このフレームでクリップが 1 周してループしたか。
+    //   ループするステートの stateTime は [0,duration) に畳まれるので normalizedTime は
+    //   1.0 に到達できず、`exitTime: 1.0`（「クリップが終わったら戻る」の一番素直な書き方）が
+    //   **永久に成立しなかった**。ループした瞬間＝クリップが終わった瞬間なので、そこで満たす。
+    //   窓幅（1-exitTime）が 1 フレームの進行量より狭くて窓を飛び越す場合も、これで拾える。
+    bool loopedThisFrame      = false;
 };
 
 // 発火できる遷移の添字を返す（-1 = なし）。
@@ -260,8 +266,9 @@ inline i32 PickTransition(const AnimLayerDef& layer, const AnimTransitionQuery& 
             if (tr._from < 0 || tr._from != q.curState) continue;
         }
 
-        // exitTime: 現ステートの正規化時間がここに達するまで遷移しない
-        if (tr.hasExitTime && q.normalizedTime < tr.exitTime) continue;
+        // exitTime: 現ステートの正規化時間がここに達するまで遷移しない。
+        // ループで 1 周したフレームは「末尾に到達した」とみなす（上の loopedThisFrame 参照）。
+        if (tr.hasExitTime && !q.loopedThisFrame && q.normalizedTime < tr.exitTime) continue;
 
         if (!EvalConditions(tr.conditions, params)) continue;
 

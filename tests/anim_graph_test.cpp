@@ -314,6 +314,49 @@ static void TestExitTime()
     CHECK(PickTransition(layer, Q(2, 1.00f, false, true), p) == -1);
 }
 
+// ループするステートで exitTime が成立しなくなる件の回帰テスト。
+//
+// ★ループ時の stateTime は [0, duration) に畳まれるので normalizedTime は 1.0 に届かない。
+//   そのため `exitTime: 1.0`（「クリップが終わったら戻る」の一番素直な書き方）が
+//   **永久に成立せず、そのステートから出られなかった**。
+//   ループした瞬間＝クリップが終わった瞬間なので、そのフレームは満たすようにした。
+//   窓幅が 1 フレームの進行量より狭くて窓を飛び越す場合も同じ経路で拾える。
+static void TestExitTimeOnLoopedState()
+{
+    AnimLayerDef layer;
+    {
+        AnimStateDef idle; idle.name = "Idle"; idle.loop = true;
+        AnimStateDef atk;  atk.name  = "Attack"; atk.loop = true;
+        layer.states = { idle, atk };
+        layer.defaultState = "Idle";
+
+        AnimTransitionDef tr;
+        tr.from = "Attack"; tr.to = "Idle";
+        tr._from = 1; tr._to = 0;
+        tr.hasExitTime = true; tr.exitTime = 1.0f;   // 「クリップが終わったら」
+        layer.transitions = { tr };
+    }
+    AnimParamMap p;
+
+    // 途中では出ない
+    AnimTransitionQuery q = Q(1, 0.5f, false, true);
+    CHECK(PickTransition(layer, q, p) == -1);
+
+    // ループで畳まれた直後（normalizedTime は小さい）でも、1 周したフレームなら出る
+    q = Q(1, 0.02f, false, true);
+    q.loopedThisFrame = true;
+    CHECK(PickTransition(layer, q, p) == 0);
+
+    // ループしていないフレームでは、いくら末尾に近くても exitTime 1.0 は満たさない
+    q = Q(1, 0.999f, false, true);
+    q.loopedThisFrame = false;
+    CHECK(PickTransition(layer, q, p) == -1);
+
+    // 非ループ（normalizedTime が 1.0 に到達できる）は従来どおり
+    q = Q(1, 1.0f, false, true);
+    CHECK(PickTransition(layer, q, p) == 0);
+}
+
 static void TestAnyStateTransition()
 {
     const AnimLayerDef layer = BuildLocomotionLayer();
@@ -453,6 +496,7 @@ int main()
     TestConditionOps();
     TestTransitionFiresOnlyWhenConditionsMet();
     TestExitTime();
+    TestExitTimeOnLoopedState();
     TestAnyStateTransition();
     TestDeclarationOrderWins();
     TestTriggerConsumedOnce();

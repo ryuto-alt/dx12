@@ -41,6 +41,12 @@ struct AnimLayerRuntime
     f32  transTime          = 0.0f;   // 遷移先ステートの再生位置（秒）
     f32  transPrevTime      = 0.0f;
     bool transWrapped       = false;
+    // ★遷移先クリップのイベントを拾い始めたか。イベントは「重みが優勢な側」からだけ
+    //   拾う設計なので、blend が 0.5 を超えるまでの区間 [0, transPrevTime] が
+    //   一度も走査されず、**遷移先クリップの前半のイベントが全部落ちていた**
+    //   （Attack の t=0.05 に置いた hitbox_on が duration 0.2 の遷移では常に鳴らない）。
+    //   優勢側が切り替わった最初のフレームだけ、頭から拾い直すために使う。
+    bool transEventsStarted = false;
     bool transInterruptible = true;
 
     f32  weight = 1.0f;              // 実行時に動かせるレイヤー重み（Lua/MCP から）

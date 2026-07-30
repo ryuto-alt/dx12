@@ -100,6 +100,9 @@ void ParseBlendTree(const json& j, AnimBlendTree& out)
             s.value  = sj.value("value",  0.0f);
             s.valueY = sj.value("valueY", 0.0f);
             s.clip   = sj.value("clip", std::string());
+            // ★読むだけで、再生レートには使っていない（AnimGraphRuntime に読み手が無い）。
+            //   位相同期(syncPhase)と両立しないので保留。docs/ANIMATION.md にも未実装と明記。
+            //   捨てずに保持するのは .animfsm の往復で値を失わないため。
             s.speed  = sj.value("speed", 1.0f);
             if (!s.clip.empty()) out.samples.push_back(std::move(s));
         }
