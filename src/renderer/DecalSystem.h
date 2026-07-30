@@ -11,6 +11,7 @@ namespace dx12e
 {
 class GraphicsDevice;
 class DescriptorHeap;
+class Texture;
 
 // クラスタードフォワードデカール（計画06 D1〜D5）。
 //
@@ -69,11 +70,14 @@ public:
     void EnsureReadable(ID3D12GraphicsCommandList* cmd);
 
     // ClusteredLightCulling の SRV ブロック（7 本）の +3..+6 へ t18..t21 を書き込む。
-    // atlasSrvCpu はデカールアトラスの SRV（未設定なら 1x1 ダミーを渡すこと。
-    // 未初期化のディスクリプタがあるとテーブルを Set した時点でデバッグレイヤが落とす）。
+    // atlas はデカールアトラス（未設定なら 1x1 ダミーを渡すこと。未初期化の
+    // ディスクリプタがあるとテーブルを Set した時点でデバッグレイヤが落とす）。
+    // ★以前はここへ「コピー元の CPU ハンドル」を渡していたが、渡されていたのは
+    //   シェーダ可視ヒープのハンドルだった。シェーダ可視ヒープは CPU write-only なので
+    //   CopyDescriptors のコピー元にできず、結果は未定義（D3D12 デバッグレイヤ id=654）。
+    //   Texture を受けて宛先へ SRV を作り直す形にしてコピーそのものを無くした。
     void WriteSrvsInto(GraphicsDevice& device, DescriptorHeap& heap,
-                       u32 blockStart, u32 frameIndex,
-                       D3D12_CPU_DESCRIPTOR_HANDLE atlasSrvCpu);
+                       u32 blockStart, u32 frameIndex, Texture* atlas);
 
     bool IsReady() const { return m_pso != nullptr && m_indexBuf != nullptr; }
 

@@ -1029,7 +1029,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             for (u32 f = 0; f < DecalSystem::kFrameCount; ++f)
                 m_decalSystem->WriteSrvsInto(*m_graphicsDevice, *m_srvHeap,
                                              m_clusteredLighting->GetSrvTableIndex(f), f,
-                                             m_srvHeap->GetCpuHandle(m_ssBlackSrvIndex));
+                                             m_ssBlackTex.get());
         }
         m_decalSrvDirty = true;
 

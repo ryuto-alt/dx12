@@ -1100,6 +1100,9 @@ private:
     // シーン設定 decalAtlas の解決キャッシュ。パスが変わったときだけ SRV を貼り直す。
     std::string m_decalAtlasLoaded;
     u32         m_decalAtlasSrvIndex = 0xFFFFFFFFu;
+    // t21 の SRV を「宛先へ作り直す」ために実体が要る（ディスクリプタのコピーは
+    // シェーダ可視ヒープからは不正）。ResourceManager のキャッシュが所有者。
+    Texture*    m_decalAtlasTex      = nullptr;
     bool        m_decalSrvDirty      = true;
     // 毎フレームのデカール収集バッファ（再確保を避けるためメンバで使い回す）。
     // sortOrder 昇順に並べてから GPU へ送る＝重ね順が「下から上へ」で決まる。

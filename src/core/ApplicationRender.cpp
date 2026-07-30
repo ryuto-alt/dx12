@@ -4158,13 +4158,17 @@ void Application::Render()
         {
             m_decalAtlasLoaded   = atlasPath;
             m_decalAtlasSrvIndex = DescriptorHeap::kInvalidIndex;
+            m_decalAtlasTex      = nullptr;
             if (!atlasPath.empty() && m_resourceManager)
             {
                 const std::wstring wpath =
                     PathResolver::Utf8ToWide(PathResolver::AssetsDir() + atlasPath);
                 if (Texture* tex = m_resourceManager->GetOrLoadTexture(
                         wpath, nativeCmdList, /*srgb*/ true, TextureUsage::BaseColor))
+                {
                     m_decalAtlasSrvIndex = tex->GetSrvIndex();
+                    m_decalAtlasTex      = tex;
+                }
                 if (m_decalAtlasSrvIndex == DescriptorHeap::kInvalidIndex)
                     Logger::Warn("デカールアトラスを読めませんでした: {}", atlasPath);
             }
@@ -4172,15 +4176,13 @@ void Application::Render()
         }
         if (m_decalSrvDirty)
         {
-            const u32 atlasIdx = (m_decalAtlasSrvIndex != DescriptorHeap::kInvalidIndex)
-                               ? m_decalAtlasSrvIndex : m_ssBlackSrvIndex;
-            if (atlasIdx != DescriptorHeap::kInvalidIndex)
+            Texture* atlasTex = m_decalAtlasTex ? m_decalAtlasTex : m_ssBlackTex.get();
+            if (atlasTex)
             {
                 for (u32 f = 0; f < DecalSystem::kFrameCount; ++f)
                 {
                     const u32 block = m_clusteredLighting->GetSrvTableIndex(f);
-                    m_decalSystem->WriteSrvsInto(*m_graphicsDevice, *m_srvHeap, block, f,
-                                                 m_srvHeap->GetCpuHandle(atlasIdx));
+                    m_decalSystem->WriteSrvsInto(*m_graphicsDevice, *m_srvHeap, block, f, atlasTex);
                 }
                 m_decalSrvDirty = false;
             }

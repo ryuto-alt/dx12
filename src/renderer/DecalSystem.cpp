@@ -2,6 +2,7 @@
 
 #include "graphics/GraphicsDevice.h"
 #include "graphics/DescriptorHeap.h"
+#include "graphics/Texture.h"
 #include "renderer/ClusterMath.h"
 #include "resource/ShaderCompiler.h"
 #include "core/Assert.h"
@@ -266,7 +267,7 @@ void DecalSystem::EnsureReadable(ID3D12GraphicsCommandList* cmd)
 
 void DecalSystem::WriteSrvsInto(GraphicsDevice& device, DescriptorHeap& heap,
                                 u32 blockStart, u32 frameIndex,
-                                D3D12_CPU_DESCRIPTOR_HANDLE atlasSrvCpu)
+                                Texture* atlas)
 {
     if (!m_indexBuf || blockStart == DescriptorHeap::kInvalidIndex) return;
     if (frameIndex >= kFrameCount) return;
@@ -296,10 +297,11 @@ void DecalSystem::WriteSrvsInto(GraphicsDevice& device, DescriptorHeap& heap,
     srv.Buffer.StructureByteStride = sizeof(u32);
     dev->CreateShaderResourceView(m_countBuf.Get(), &srv, heap.GetCpuHandle(base + 2));
 
-    // t21: Texture2D（アトラス）。呼び出し側が用意した SRV をコピーする。
-    if (atlasSrvCpu.ptr != 0)
-        dev->CopyDescriptorsSimple(1, heap.GetCpuHandle(base + 3), atlasSrvCpu,
-                                   D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    // t21: Texture2D（アトラス）。★宛先へ直接 SRV を作る。
+    //   シェーダ可視ヒープからのディスクリプタコピーは不正（CPU write-only なので
+    //   コピー元として読めない）。以前ここは CopyDescriptorsSimple で、デバッグレイヤが
+    //   id=654 を出していた＝t21 の中身は未定義だった。
+    if (atlas) atlas->CreateSRV(device, heap.GetCpuHandle(base + 3));
 }
 
 } // namespace dx12e
