@@ -54,6 +54,10 @@ end
 ### グローバルスクリプト（`game.lua`）
 プロジェクト全体の `game.lua` はトップレベルの `OnStart()` / `OnUpdate(dt)`（`self` 無し）を使う。コンポーネント方式では任意。
 
+> `OnStart()` が呼ばれるのは**ゲームプレイが始まる瞬間**だけ:
+> Play 開始 / ランタイムのシーン切替（`loadScene`）/ 配布ゲームの起動。
+> プロジェクトを開いただけのエディタでは呼ばれない（`OnUpdate` は従来どおりエディタでも回る）。
+
 ### プロパティ型（`type=`）
 `float` / `int` / `bool` / `string` / `vec3` / `color` / `entity`（他エンティティ名で参照、Play 時に `Entity` 解決）
 
@@ -644,8 +648,42 @@ Lighting.pulse(alarm, 0.8, 0.5, 4.0)
 ### 入力
 | 関数 | 説明 |
 |---|---|
-| `keyDown(name)` | 文字列キー名で押下判定。name: `"W/A/S/D/E/Q/UP/DOWN/LEFT/RIGHT/SPACE/SHIFT/TAB/ENTER/ESC"` |
+| `keyDown(name)` | 文字列キー名で押下判定。`KEY_*` 定数がある名前はすべて使える（`"A"`〜`"Z"` / `"0"`〜`"9"` / `"UP"/"DOWN"/"LEFT"/"RIGHT"/"SPACE"/"SHIFT"/"TAB"/"ENTER"/"ESC"` など）。大小文字は問わない（`keyDown("w")` も可） |
 | `keyPressed(name)` | 同上（押した瞬間） |
+
+> 以前は 16 個の固定表しか引けず、`keyDown("R")` / `keyDown("1")` / 小文字が**黙って false** を返していた（エラーも警告も無し）。今は `KEY_<大文字>` へフォールバックするので素直に書ける。
+
+#### actions（キー割り当て。リマップ可能な入力）
+キー直読みの代わりに「アクション名」で入力を取る。プレイヤーがキーを変えられる作りにするならこちら。
+
+| 関数 | 説明 |
+|---|---|
+| `actions.bind(name, key [, x, y, z])` | `name` に `key`（`KEY_*`）を割り当てる。x/y/z は寄与ベクトル（移動なら方向、省略時 `(1,0,0)`） |
+| `actions.get(name)` | 押されているキーの寄与を合算して `x, y, z` を返す（移動ベクトル） |
+| `actions.down(name)` / `actions.pressed(name)` | いずれかのキーが押されているか / この フレームで押されたか |
+| `actions.clear(name)` / `actions.clearAll()` | 割り当てを消す |
+| `actions.count(name)` | その名前に割り当たっているキー数 |
+| `actions.save()` | 現在の割り当てを `input_bindings.json` へ保存（プレイヤーのリマップ結果を残す） |
+
+```lua
+function OnStart()
+  actions.bind("move", KEY_W, 0, 0,  1)
+  actions.bind("move", KEY_S, 0, 0, -1)
+  actions.bind("jump", KEY_SPACE)
+end
+function OnUpdate(dt)
+  local x, y, z = actions.get("move")
+  if actions.pressed("jump") then --[[ ... ]] end
+end
+```
+
+> - **`actions.bind` に渡せるのは `KEY_*` だけ**。`PAD_*` はゲームパッド用の別系統で、渡すと
+>   読み込み時に捨てられる（警告がログに出る）。パッドは `padDown("A")` 等を使う。
+> - 同じ `(name, key)` を何度 bind しても**積み増さない**（寄与は上書き）。
+>   `bind` は Play / Stop / シーン切替のたびにスクリプトごと再実行されるので、
+>   積み増すと**2 回目の Play で移動速度が 2 倍**になってしまう。
+> - `actions.save()` した `input_bindings.json` は**ゲームのビルドにも同梱される**（exe の隣）。
+>   起動時に読み込まれ、その上からスクリプトの `bind` が乗る。
 
 ### Actor（名前付きエンティティの薄ラッパー）
 ```lua
