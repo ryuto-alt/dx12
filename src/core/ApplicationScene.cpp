@@ -1362,7 +1362,16 @@ void Application::EnterEditorMode()
     m_commandQueue->WaitIdle();
 
     // Play 中に鳴っていた SE（空間含む）と BGM を停止（Stop で鳴り続けるのを防ぐ）
-    if (m_audioSystem) { m_audioSystem->StopAllSFX(); m_audioSystem->StopBGM(); }
+    if (m_audioSystem)
+    {
+        m_audioSystem->StopAllSFX();
+        m_audioSystem->StopBGM();
+        // ★Lua の setListener による上書きを解除する。呼んでいたのはランタイムの
+        //   loadScene 経路だけだったので、`setListener` を使うステージを Play → Stop すると
+        //   **次の Play でも前セッションの座標にリスナーが固定**されたままだった
+        //   （タイトルや別ステージの空間 SE が全部そこ基準で定位する）。
+        m_audioSystem->ClearListenerOverride();
+    }
 
     // ★パッドの振動も止める。`padVibrate(1,1)`（seconds 省略＝手動で止めるまで鳴り続ける形）の
     //   最中に Stop すると、エディタに戻ってもコントローラーが震えたままで、止める UI が無い。

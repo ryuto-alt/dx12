@@ -245,6 +245,7 @@ void AudioSystem::PlayBGM(const std::string& filePath, bool loop)
     m_bgmVoice->Start();
     m_currentBGMPath = filePath;
     m_bgmLoop = loop;
+    m_bgmPlaying = true;
 
     Logger::Info("BGM playing: {} (loop={})", filePath, loop);
 }
@@ -300,18 +301,20 @@ void AudioSystem::StopBGM()
         m_bgmVoice->FlushSourceBuffers();
     }
     m_currentBGMPath.clear();
+    m_bgmPlaying = false;
 }
 
 void AudioSystem::PauseBGM()
 {
     if (m_bgmVoice)
         m_bgmVoice->Stop();
+    m_bgmPlaying = false;
 }
 
 void AudioSystem::ResumeBGM()
 {
     if (m_bgmVoice)
-        m_bgmVoice->Start();
+    { m_bgmVoice->Start(); m_bgmPlaying = true; }
 }
 
 // ===== SFX =====

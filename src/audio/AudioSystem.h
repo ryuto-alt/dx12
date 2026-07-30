@@ -47,7 +47,13 @@ public:
     //   これで判定して呼ばない、という形でしか書けない（曲の途中で切り替わると
     //   イントロへ戻ってしまうため、engine 側で勝手に早期 return はしない）。
     const std::string& GetCurrentBGM() const { return m_currentBGMPath; }
-    bool IsBGMPlaying() const { return m_bgmVoice != nullptr; }
+    // ★「ボイスが存在するか」ではなく「実際に鳴っているか」。
+    //   StopBGM はボイスを使い回すために破棄しないので、以前の実装だと
+    //   **一度 playBGM したら永久に true** だった。結果、一番自然な書き方
+    //   `if not audio:isBGMPlaying() then audio:playBGM(...) end` が
+    //   stopBGM 後も曲の終了後も二度と鳴らない。Play/Stop もまたぐ
+    //   （Stop で StopBGM されるので、次の Play の OnStart では「鳴っている」判定になる）。
+    bool IsBGMPlaying() const { return m_bgmPlaying; }
 
     void StopAllSFX();
     // Lua の setListener による上書きを解除してカメラ位置へ戻す。
@@ -90,6 +96,9 @@ private:
     // BGM
     IXAudio2SourceVoice* m_bgmVoice = nullptr;
     std::string          m_currentBGMPath;
+    // 実際に鳴っているか。ボイスは使い回すので存在では判定できない
+    // （StopBGM / PauseBGM で false、PlayBGM / ResumeBGM で true）。
+    bool                 m_bgmPlaying = false;
     bool                 m_bgmLoop = true;
 
     // SFX pool

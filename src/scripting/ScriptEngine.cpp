@@ -1550,8 +1550,13 @@ void ScriptEngine::RegisterBindings()
         "seekBGM",         &AudioSystem::SeekBGM,
         "setBGMRate",      &AudioSystem::SetBGMRate,
         "setListener",     &AudioSystem::SetListenerPos,
-        "playSFX",         [](AudioSystem& a, const std::string& path, sol::optional<bool> loop) {
-                               a.PlaySFX(path, loop.value_or(false));
+        // ★vol を受け取って渡す。以前は引数を取らず C++ 既定の 1.0 が常に勝っていたので、
+        //   `audio:playSFX("hit.wav", false, 0.2)` はエラーも警告も無しに全音量で鳴っていた
+        //   （sol2 は余った引数を黙って捨てる）。すぐ下の playSpatial には vol があるので、
+        //   2D だけ音量を下げられない状態だった。
+        "playSFX",         [](AudioSystem& a, const std::string& path, sol::optional<bool> loop,
+                              sol::optional<float> vol) {
+                               a.PlaySFX(path, loop.value_or(false), vol.value_or(1.0f));
                            },
         "playSpatial",     [](AudioSystem& a, const std::string& path, float x, float y, float z,
                               float minD, float maxD, sol::optional<float> vol, sol::optional<bool> loop) {
@@ -4335,8 +4340,27 @@ void ScriptEngine::UpdateTriggers(f32 /*dt*/)
             if (at != entt::null) if (auto* pe = reg.try_get<ParticleEmitter>(at)) pe->_active = false;
             break;
         case TriggerActionType::PlaySound:
+            // ★AudioSource::spatial を見る。既定が true なうえ Inspector は spatial のときだけ
+            //   Min/Max 距離を出すのに、ここは常に 2D で鳴らしていた＝距離減衰も定位も効かず、
+            //   しかも警告も出ない（playOnStart 以外で AudioSource を鳴らす唯一の経路がこれ）。
             if (at != entt::null) if (auto* as = reg.try_get<AudioSource>(at))
-            { if (m_audio && !as->clipPath.empty()) m_audio->PlaySFX(as->clipPath, as->loop, as->volume); }
+            {
+                if (m_audio && !as->clipPath.empty())
+                {
+                    if (as->spatial && reg.all_of<Transform>(at))
+                    {
+                        DirectX::XMFLOAT3 wp;
+                        DirectX::XMStoreFloat3(&wp, ComputeWorldMatrix(reg, at).r[3]);
+                        m_audio->PlaySFXSpatial(as->clipPath, wp.x, wp.y, wp.z,
+                                                as->minDistance, as->maxDistance,
+                                                as->volume, as->loop);
+                    }
+                    else
+                    {
+                        m_audio->PlaySFX(as->clipPath, as->loop, as->volume);
+                    }
+                }
+            }
             break;
         case TriggerActionType::LoadScene:
             if (!a.str.empty() && m_loadSceneCb) m_loadSceneCb(a.str);
