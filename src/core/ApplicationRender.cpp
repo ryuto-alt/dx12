@@ -5914,6 +5914,22 @@ void Application::Render()
     //   2. キュー内の未確定分に今フレームの Signal 値を刻む
     //   3. GPU が完了したフェンス値以下の分を実際に解放
     m_resourceManager->DeferPendingUploads();
+
+    // 参照されなくなったシーン所有メッシュの回収。**Stamp より前**に走らせること:
+    // ~Mesh が DeferredRelease へ積んだ分に今フレームの Signal 値が刻まれ、
+    // GPU が今フレームを描き終えるまで実解放が待たれる。
+    // ponytail: 60 フレームに 1 回。毎フレーム走らせても MeshRenderer の view を
+    //           1 周するだけだが、これは「長時間の積み上がり」対策なので頻度は要らない。
+    if (m_scene && (m_framesSinceStart % 60u) == 0u)
+    {
+        std::vector<const Mesh*> freed;
+        m_scene->CollectUnusedMeshes(freed);
+        // ★BLAS キャッシュのキーは Mesh*。外さないと、同じアドレスへ再確保された別メッシュが
+        //   古い BLAS を掴んで「ラスタは正しいのにレイトレの影/反射だけ前の形」になる。
+        if (m_rtScene)
+            for (const Mesh* m : freed) m_rtScene->RemoveBlas(m);
+    }
+
     DeferredRelease::Stamp(m_commandQueue->GetLastSignaledValue());
     DeferredRelease::Collect(m_commandQueue->GetCompletedValue());
 

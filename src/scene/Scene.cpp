@@ -1,5 +1,8 @@
 #include "scene/Scene.h"
 
+#include <algorithm>
+#include <unordered_set>
+
 #include <Windows.h>
 #include "core/Logger.h"
 #include "resource/ResourceManager.h"
@@ -422,6 +425,35 @@ Mesh* Scene::GetSharedGlowMesh(bool sphere, f32 radius)
     m_ownedMeshes.push_back(std::move(mesh));
     m_glowMeshCache[key] = ptr;
     return ptr;
+}
+
+void Scene::CollectUnusedMeshes(std::vector<const Mesh*>& outFreed)
+{
+    if (m_ownedMeshes.empty()) return;
+
+    // 根: 生きている MeshRenderer が指すメッシュ + 共有グローメッシュ。
+    // （弾が 1 発も出ていない瞬間でも共有メッシュは残す。次の弾で作り直すと
+    //   インスタンシングのキャッシュが毎回無効になるだけで得が無い）
+    std::unordered_set<const Mesh*> roots;
+    for (auto [e, mr] : m_registry.view<MeshRenderer>().each())
+        for (const Mesh* m : mr.meshes)
+            if (m) roots.insert(m);
+    for (const auto& [key, m] : m_glowMeshCache)
+        if (m) roots.insert(m);
+
+    const size_t before = m_ownedMeshes.size();
+    auto it = std::remove_if(m_ownedMeshes.begin(), m_ownedMeshes.end(),
+        [&](const std::unique_ptr<Mesh>& m)
+        {
+            if (!m || roots.count(m.get())) return false;
+            outFreed.push_back(m.get());   // 破棄前にアドレスを控える（BLAS キャッシュの掃除用）
+            return true;
+        });
+    if (it == m_ownedMeshes.end()) return;
+
+    m_ownedMeshes.erase(it, m_ownedMeshes.end());   // ここで ~Mesh → DeferredRelease
+    Logger::Info("未参照メッシュを {} 個回収しました（{} → {}）",
+                 before - m_ownedMeshes.size(), before, m_ownedMeshes.size());
 }
 
 void Scene::Clear()

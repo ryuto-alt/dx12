@@ -208,6 +208,22 @@ public:
     std::vector<SceneAnimEvent>&       GetPendingAnimEvents()       { return m_pendingAnimEvents; }
     const std::vector<SceneAnimEvent>& GetPendingAnimEvents() const { return m_pendingAnimEvents; }
 
+    // どの MeshRenderer からも参照されなくなった m_ownedMeshes を回収する。
+    // ★以前は Scene::Clear（シーン開き直し / Play→Stop / 新規シーン）でしか解放されず、
+    //   Del → Ctrl+Z を繰り返すと 1 往復ごとに Mesh が 1 個積まれた
+    //   （箱なら数 KB だが 512² の地形は VB + 各キャッシュで 50MB 級）。
+    // 呼ぶ場所は**フレーム末尾（コマンド送出後）**に限ること:
+    //   - 描画リストは毎フレーム作り直すので、今フレームぶんを使い終えた後なら安全
+    //   - GPU リソース自体は ~Mesh → GpuResource → DeferredRelease でフェンスまで守られる
+    // 共有メッシュ（m_glowMeshCache）は誰も参照していなくても根として残す。
+    // outFreed には解放したポインタが入る。**呼び出し側は必ず RaytracingScene の BLAS
+    // キャッシュからも外すこと**（キーが Mesh* なので、同じアドレスに再確保された別メッシュが
+    // 古い BLAS を掴んで、レイトレだけ違う形で映る）。
+    void CollectUnusedMeshes(std::vector<const Mesh*>& outFreed);
+
+    // 上の回収が効いているかを外から見るための数（UI テスト / 診断用）。
+    size_t GetOwnedMeshCount() const { return m_ownedMeshes.size(); }
+
 private:
     Entity CreateEntityWithTransform(const std::string& name,
                                      DirectX::XMFLOAT3 position,
@@ -222,14 +238,8 @@ private:
     // インスタンシング可能にするキャッシュ。値は m_ownedMeshes が所有する Mesh*。
     Mesh* GetSharedGlowMesh(bool sphere, f32 radius);
 
+
     entt::registry m_registry;
-    // ponytail: エンティティを消しても縮まない。Scene::Clear（シーン開き直し / Play→Stop /
-    // 新規シーン）でしか解放されないので、Del → Ctrl+Z を繰り返すと 1 往復ごとに
-    // Mesh が 1 個積まれる（箱なら数 KB だが 512² の地形は VB + 各キャッシュで 50MB 級）。
-    // 上限: 1 セッション内の生成回数ぶん。到達すると単純にメモリ/VRAM を食い潰す。
-    // 直すなら「エンティティ削除後に、どの MeshRenderer からも参照されていない Mesh を回収する」
-    // 遅延 GC が要る。即時解放は不可: アップロードが in-flight のことがあり、
-    // 共有メッシュ（m_glowMeshCache）や同一フレームで組んだ描画リストからも参照される。
     std::vector<std::unique_ptr<Mesh>> m_ownedMeshes;
     std::unordered_map<uint64_t, Mesh*> m_glowMeshCache;
     PostProcessSettings m_postSettings;

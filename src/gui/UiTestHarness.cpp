@@ -1237,6 +1237,47 @@ void T_DeepRenderProof(ImGuiTestContext* ctx)
 // スクリーンショットの表示変換がシーンのトーンマップ設定に追従しているか。
 // シーン RT はポスト処理前のリニア HDR なので、読み戻し側が設定を見ずに決め打ちすると
 // 「ビューポートと違う色の PNG」が出てきて、色やコントラストの判断を丸ごと誤らせる。
+// 参照されなくなったシーン所有メッシュが回収されるか。
+// 以前はシーンを開き直すまで一切解放されず、生成→削除を繰り返すぶんだけ積み上がった
+// （箱なら数 KB だが 512² の地形は 50MB 級）。回収はフレーム末尾で 60 フレームに 1 回走る。
+void T_MeshGarbageCollect(ImGuiTestContext* ctx)
+{
+    IM_CHECK(g_app != nullptr);
+    Scene* scene = g_app->GetScene();
+    IM_CHECK(scene != nullptr);
+
+    ctx->Yield(70);   // 事前に 1 回回してから基準を取る（前のテストの残骸を落とす）
+    const size_t baseline = scene->GetOwnedMeshCount();
+
+    constexpr int kRounds = 3;
+    constexpr int kPerRound = 4;
+    for (int r = 0; r < kRounds; ++r)
+    {
+        Step(ctx, "生成→削除 %d 巡目", r + 1);
+        std::vector<Entity> made;
+        for (int i = 0; i < kPerRound; ++i)
+        {
+            char nm[64];
+            std::snprintf(nm, sizeof(nm), "__gc_%d_%d", r, i);
+            made.push_back((i % 2 == 0) ? scene->SpawnBox(nm, {static_cast<f32>(i) * 2.0f, 50.0f, 0.0f})
+                                        : scene->SpawnSphere(nm, {static_cast<f32>(i) * 2.0f, 50.0f, 2.0f}));
+        }
+        ctx->Yield(3);
+        for (Entity& e : made) scene->Remove(e);
+        ctx->Yield(70);   // 回収は 60 フレームに 1 回
+    }
+
+    const size_t after = scene->GetOwnedMeshCount();
+    ctx->LogInfo("owned meshes: baseline=%d after %d rounds=%d",
+                 static_cast<int>(baseline), kRounds, static_cast<int>(after));
+    // 回収が効いていなければ kRounds*kPerRound = 12 個ぶん増えている。
+    // ぴったり baseline に戻ることまでは要求しない（共有グローメッシュ等が増える経路がある）。
+    if (after > baseline + 2)
+        IM_ERRORF("未参照メッシュが回収されていない: %d -> %d（%d 個増えた）",
+                  static_cast<int>(baseline), static_cast<int>(after),
+                  static_cast<int>(after - baseline));
+}
+
 void T_DeepGammaRoundTrip(ImGuiTestContext* ctx)
 {
     IM_CHECK(g_app != nullptr);
@@ -1821,6 +1862,7 @@ const DiagReg kTests[] = {
     { "panel", "asset_browser",         "パネル",             "アセットブラウザ",                     T_AssetBrowser          },
     { "panel", "new_floating_panels",   "パネル",             "ライティング / 地形ツールの開閉",       T_NewFloatingPanels     },
     { "panel", "layout_reset",          "パネル",             "ドックレイアウトのリセット",           T_LayoutReset           },
+    { "panel", "mesh_gc",               "パネル",             "未参照メッシュの回収（リーク）",       T_MeshGarbageCollect    },
 
     { "uied",  "ui_spawn_all",          "UI エディタ",        "UI 要素を全種類配置",                  T_UiEditorSpawnAll      },
     { "uied",  "ui_view_ops",           "UI エディタ",        "ズーム / グリッド / 極小リサイズ",     T_UiEditorViewOps       },

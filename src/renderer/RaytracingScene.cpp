@@ -58,6 +58,12 @@ void RaytracingScene::Shutdown()
     m_stats = Stats{};
 }
 
+void RaytracingScene::RemoveBlas(const Mesh* mesh)
+{
+    if (m_blas.erase(mesh) > 0)
+        m_tlasValid = false;   // 次フレームで TLAS を組み直す
+}
+
 void RaytracingScene::Invalidate()
 {
     m_blas.clear();

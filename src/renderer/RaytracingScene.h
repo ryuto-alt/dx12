@@ -92,6 +92,11 @@ public:
     // 内容比較だけでは「別物なのに一致した」を防げない（00-COORDINATION N30 と同じ話）。
     void Invalidate();
 
+    // 解放されたメッシュの BLAS を捨てる（Scene::CollectUnusedMeshes とセットで使う）。
+    // ★m_blas のキーは Mesh* なので、解放したまま残すと同じアドレスへ再確保された
+    //   別メッシュが古い BLAS を掴む＝ラスタは正しいのにレイトレの影/反射だけ違う形になる。
+    void RemoveBlas(const Mesh* mesh);
+
     bool IsInitialized() const { return m_initialized; }
 
     // --- 毎フレームの流し込み ---------------------------------------------
