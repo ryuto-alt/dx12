@@ -2669,6 +2669,21 @@ void Application::Render()
 
     // モデル差し替え 遅延処理（Inspector の MeshRenderer へのD&D/コンボ選択）。
     // モデルロードを伴うため cmdList 有効なフレーム境界で SwapEntityModel を実行する。
+    // ★以前は `&& m_engineMode == EngineMode::Editor` を条件に含めていたので、
+    //   Play 中に積まれた要求が**キューに溜まったまま**になっていた。Inspector は Play 中も
+    //   描かれるのでコンボや D&D は普通に push できる。そして Stop はシーンを丸ごと作り直して
+    //   entity id を全部振り直すため、溜まっていた要求は Stop 後に
+    //   **まったく別のエンティティ**へ着弾する（reg.valid() は再生成後の別 entity でも真）。
+    //   Play 中の分は溜めずにここで捨て、理由を画面に出す。
+    if (!m_editorCtx->pendingModelSwaps.empty() && m_engineMode != EngineMode::Editor)
+    {
+        Logger::Warn("Play 中のモデル差し替えは適用しません（{} 件を破棄）。"
+                     "Stop してからやり直してください",
+                     m_editorCtx->pendingModelSwaps.size());
+        m_editorCtx->pendingModelSwaps.clear();
+        m_editorCtx->errorMessage = "Play 中はモデルを差し替えられません（Stop してください）";
+        m_editorCtx->errorFlash   = 3.0f;
+    }
     if (!m_editorCtx->pendingModelSwaps.empty() && m_engineMode == EngineMode::Editor)
     {
         auto swaps = std::move(m_editorCtx->pendingModelSwaps);

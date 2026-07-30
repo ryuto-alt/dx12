@@ -2576,10 +2576,17 @@ void InspectorPanel::Render(entt::registry& reg,
                 const auto* mat = mr.meshes[0]->GetMaterial();
                 if (IconHeader(ic, ic ? ic->entMesh : 0, "Material"))
                 {
-                    if (mr.overrideMetallic < 0.0f)
-                        mr.overrideMetallic = mat->defaultMetallic;
-                    if (mr.overrideRoughness < 0.0f)
-                        mr.overrideRoughness = mat->defaultRoughness;
+                    // ★ここは以前「ヘッダを開いた瞬間に -1(継承) を mat の既定値で潰す」
+                    //   だった。描画側は override >= 0 を materialAsset より優先するので
+                    //   （ApplicationRender.cpp の matAsset 分岐）、.dxmat を割り当てた
+                    //   メッシュでも **Material 節を一度展開しただけで .dxmat の
+                    //   metallic/roughness が恒久的に無視される**。しかも保存されるので戻らない
+                    //   （-1 を書き戻す UI はどこにも無かった）。
+                    //   表示用のローカルへ入れ、実際に動かされたときだけ override を書く。
+                    const bool inheritMetal = (mr.overrideMetallic  < 0.0f);
+                    const bool inheritRough = (mr.overrideRoughness < 0.0f);
+                    float uiMetal = inheritMetal ? mat->defaultMetallic  : mr.overrideMetallic;
+                    float uiRough = inheritRough ? mat->defaultRoughness : mr.overrideRoughness;
 
                     // PBR 編集前スナップショット
                     if (!m_pbrEditing)
@@ -2593,10 +2600,23 @@ void InspectorPanel::Render(entt::registry& reg,
                     bool hasMR2 = mat->metalRoughnessTexture != nullptr;
                     if (pg::Begin("MaterialPBR"))
                     {
-                        pg::SliderFloat("金属感 Metallic", &mr.overrideMetallic, 0.0f, 1.0f, "%.3f", &metalActive);
-                        pg::SliderFloat("粗さ Roughness", &mr.overrideRoughness, 0.0f, 1.0f, "%.3f", &roughActive);
+                        if (pg::SliderFloat("金属感 Metallic", &uiMetal, 0.0f, 1.0f, "%.3f", &metalActive))
+                            mr.overrideMetallic = uiMetal;   // 動かしたときだけ上書きにする
+                        if (pg::SliderFloat("粗さ Roughness", &uiRough, 0.0f, 1.0f, "%.3f", &roughActive))
+                            mr.overrideRoughness = uiRough;
                         pg::Text("Normal Map", "%s", hasNormal ? "あり" : "なし");
                         pg::Text("MetalRough Map", "%s", hasMR2 ? "あり" : "なし");
+                        if (inheritMetal || inheritRough)
+                            WarnRow("継承中（この値はモデル/マテリアル側の既定。動かすと上書きになります）");
+                        if (!inheritMetal || !inheritRough)
+                        {
+                            pg::Label("");
+                            if (ImGui::SmallButton("ç¶æ¿ã«æ»ã"))  // 継承に戻す
+                            {
+                                mr.overrideMetallic  = -1.0f;
+                                mr.overrideRoughness = -1.0f;
+                            }
+                        }
                         pg::End();
                     }
 
