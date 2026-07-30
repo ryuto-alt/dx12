@@ -802,6 +802,10 @@ void ScriptEngine::RegisterBindings()
             auto& mr = reg.get<MeshRenderer>(e.GetHandle());
             auto* device = s.GetDevice();
             if (!device) return;
+            // ★コンポーネントにも記録する。焼き込むだけだとシーン保存に残らず、
+            //   開き直すと 1.0 に戻る（すぐ下の setColor が同じ理由で colorTint を書いている）。
+            mr.uvScaleU = u;
+            mr.uvScaleV = v;
             for (auto* mesh : mr.meshes)
             {
                 if (mesh) mesh->ApplyUVScale(*device, u, v);
@@ -4244,7 +4248,7 @@ void ScriptEngine::UpdateTriggers(f32 /*dt*/)
             break;
         case TriggerActionType::PlaySound:
             if (at != entt::null) if (auto* as = reg.try_get<AudioSource>(at))
-            { if (m_audio && !as->clipPath.empty()) m_audio->PlaySFX(as->clipPath, as->loop); }
+            { if (m_audio && !as->clipPath.empty()) m_audio->PlaySFX(as->clipPath, as->loop, as->volume); }
             break;
         case TriggerActionType::LoadScene:
             if (!a.str.empty() && m_loadSceneCb) m_loadSceneCb(a.str);

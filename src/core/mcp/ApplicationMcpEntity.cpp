@@ -1059,8 +1059,16 @@ void Application::RegisterMcpEntityMethods()
             auto& mr = reg.get<MeshRenderer>(e);
             if (params.contains("metallic"))  mr.overrideMetallic  = params["metallic"].get<float>();
             if (params.contains("roughness")) mr.overrideRoughness = params["roughness"].get<float>();
+            const bool uvChanged = params.contains("uvScaleU") || params.contains("uvScaleV");
             if (params.contains("uvScaleU"))  mr.uvScaleU = params["uvScaleU"].get<float>();
             if (params.contains("uvScaleV"))  mr.uvScaleV = params["uvScaleV"].get<float>();
+            // ★UV タイリングは頂点バッファへ焼き込む方式なので、値を書くだけでは絵が変わらない。
+            //   他の書き込み経路（Inspector / EditorLayer / シーン読み込み / Lua）は全部
+            //   ApplyUVScale を呼んでいて、ここだけ抜けていた＝ ok と新しい値が返るのに
+            //   ジオメトリは無変化、保存して開き直すと初めて効く、という形になっていた。
+            if (uvChanged && m_scene && m_scene->GetDevice())
+                for (auto* mesh : mr.meshes)
+                    if (mesh) mesh->ApplyUVScale(*m_scene->GetDevice(), mr.uvScaleU, mr.uvScaleV);
             resp["ok"] = true;
             resp["result"] = {{"entityId", static_cast<u32>(e)},
                               {"metallic", mr.overrideMetallic}, {"roughness", mr.overrideRoughness},

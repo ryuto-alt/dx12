@@ -38,7 +38,10 @@ public:
     void SetBGMRate(f32 ratio);  // 再生速度倍率(ピッチ連動)。1=通常、0.5=半速+1oct下。スローモ演出用
 
     // SFX
-    void PlaySFX(const std::string& filePath, bool loop = false);
+    // volume は 0..1 のクリップ個別音量（マスター m_sfxVolume に乗算される）。
+    // ★以前は引数が無く、AudioSource::volume は spatial=true の経路でしか効かなかった
+    //   （Inspector のスライダに注記も無いので「動かしたのに変わらない」になっていた）。
+    void PlaySFX(const std::string& filePath, bool loop = false, float volume = 1.0f);
     void StopAllSFX();
 
     // 3D 空間オーディオ（SFX のみ。ステレオ素材は自動モノ化。リスナーは通常カメラ）

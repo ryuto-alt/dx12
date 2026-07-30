@@ -2330,6 +2330,9 @@ void Application::Update()
                 r.size0 = pe.size;    r.size1 = pe.sizeEnd;
                 r.life = pe.life;     r.lifeVar = pe.lifeVar;
                 r.gravity = pe.gravity; r.drag = pe.drag; r.up = pe.up;
+                // ★turb を渡し忘れていた。フィールドもアップロードもシェーダも揃っているのに
+                //   ここだけ抜けていたので、GPU パーティクルの乱流が常に 0 だった。
+                r.turb = pe.turbStrength;
                 r.kind = pe.kind;     r.stretch = pe.stretch;
                 m_gpuParticles->Emit(r);
                 continue;
@@ -2415,7 +2418,7 @@ void Application::Update()
                     src.runtimeSlot = m_audioSystem->PlaySFXSpatial(
                         src.clipPath, wx, wy, wz, src.minDistance, src.maxDistance, src.volume, src.loop);
                 else
-                    m_audioSystem->PlaySFX(src.clipPath, src.loop);
+                    m_audioSystem->PlaySFX(src.clipPath, src.loop, src.volume);
                 src.startedThisPlay = true;
             }
             if (src.runtimeSlot >= 0 && src.spatial)

@@ -316,7 +316,7 @@ void AudioSystem::ResumeBGM()
 
 // ===== SFX =====
 
-void AudioSystem::PlaySFX(const std::string& filePath, bool loop)
+void AudioSystem::PlaySFX(const std::string& filePath, bool loop, float volume)
 {
     if (!m_xaudio2) return;
 
@@ -367,7 +367,7 @@ void AudioSystem::PlaySFX(const std::string& filePath, bool loop)
         return;
     }
 
-    slot.voice->SetVolume(m_sfxVolume);
+    slot.voice->SetVolume(m_sfxVolume * std::clamp(volume, 0.0f, 1.0f));
 
     XAUDIO2_BUFFER buffer{};
     buffer.AudioBytes = clip->GetSizeInBytes();
