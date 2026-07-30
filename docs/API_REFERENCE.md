@@ -785,7 +785,7 @@ MeshRenderer はシーン JSON では `uvScroll`（`{u,v}`）と `flipbook`（`{
 | コンポーネント | 説明 |
 |---|---|
 | `SkeletalAnimation` | スケルタル（skeleton/animator/clips）。`Entity:playAnim*` で再生。モデルのロード時に自動で付く |
-| `AnimatorController` | ステートマシン（`.animfsm` アセット）。`graphPath` / `playOnStart` / `speed` / `applyRootMotion` / `eventChannel`。付いていれば `Animator` を上書き駆動する。→ `docs/ANIMATION.md` |
+| `AnimatorController` | ステートマシン（`.animfsm` アセット）。`graphPath` / `playOnStart` / `speed` / `eventChannel`。付いていれば `Animator` を上書き駆動する。→ `docs/ANIMATION.md`<br>★`applyRootMotion` は**未実装**（保存はされるがランタイムが一切読まない。計画05 Step 9）。false のままにすること |
 | `FootIK` | 接地補正（2 ボーン解析 IK + 地面レイキャスト + 腰下げ + 面法線）。ボーン名が空なら自動推定。**Play 中のみ動く** |
 | `NodeAnimationComp` | ノードアニメーション |
 
