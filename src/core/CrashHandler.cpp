@@ -247,7 +247,12 @@ void CrashHandler::Install()
     std::signal(SIGABRT, [](int) { ReportHereAndDie(); });
 
     // スタックオーバーフロー時でもハンドラが動けるよう予備スタックを確保しておく。
-    // ponytail: メインスレッドのみ。ワーカーでのスタックオーバーフローはダンプ無しで死ぬ可能性あり。
+    // ★これはスレッドごとの設定なので、ワーカーは自分で PrepareThread() を呼ぶこと。
+    PrepareThread();
+}
+
+void CrashHandler::PrepareThread()
+{
     ULONG reserve = 32 * 1024;
     SetThreadStackGuarantee(&reserve);
 }

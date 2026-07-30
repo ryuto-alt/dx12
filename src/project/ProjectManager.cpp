@@ -1,6 +1,7 @@
 #include "project/ProjectManager.h"
 #include "project/GitIntegration.h"
 #include "core/Logger.h"
+#include "core/CrashHandler.h"
 
 #include <Windows.h>
 #include <atomic>
@@ -477,6 +478,7 @@ LauncherAction ProjectManager::RenderLauncher(ProjectInfo& outInfo, HWND hwnd,
                 s_loginRunning = true;
                 s_login->done.store(false);
                 std::thread([sh = s_login]{
+                    CrashHandler::PrepareThread();
                     auto r = GitIntegration::LoginAndWait(sh->neverAbort);
                     sh->user = r.output;
                     sh->done.store(true);   // ★user を書いた後に立てる（メイン側はこれを見てから読む）

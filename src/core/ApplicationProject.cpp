@@ -4,6 +4,7 @@
 // Application.cpp から機械分割した実装 TU。分割の全体像は ApplicationInternal.h。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/CrashHandler.h"
 
 namespace dx12e
 {
@@ -92,6 +93,7 @@ void Application::BeginProjectLoad(const ProjectInfo& info, bool isNew)
         ProjectInfo copy = info;
         m_loadThread = std::thread([this, copy]()
         {
+            CrashHandler::PrepareThread();
             Project::CreateDefaultStructure(copy);
             std::string projPath =
                 (std::filesystem::path(copy.rootDir) / (copy.name + ".dx12proj")).string();
@@ -211,6 +213,7 @@ void Application::RunGitAsync(const std::string& label, std::function<GitResult(
     // task はワーカー上で git/gh の子プロセスのみ叩く（ImGui/シーン/GPU には触れない）。
     // 結果を m_gitPending* に書いてから done を立てる＝メインは done 観測後にだけ読む。
     m_gitThread = std::thread([this, task = std::move(task)]() {
+        CrashHandler::PrepareThread();
         GitResult r = task();
         m_gitPendingOutput = std::move(r.output);
         m_gitPendingOk     = r.ok();

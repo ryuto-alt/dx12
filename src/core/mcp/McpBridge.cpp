@@ -1,5 +1,6 @@
 // winsock2.h は windows.h より前に include する必要がある。
 #include <winsock2.h>
+#include "core/CrashHandler.h"
 #include <ws2tcpip.h>
 
 #include "core/mcp/McpBridge.h"
@@ -156,7 +157,7 @@ bool McpBridge::Start(uint16_t preferredPort)
     s.port = chosen;          // 待受ポートを記録（パネル表示用）
     WritePortFile(chosen);    // Node 側の自動検出用
     s.running.store(true);
-    s.worker = std::thread([&s] { s.AcceptLoop(); });
+    s.worker = std::thread([&s] { CrashHandler::PrepareThread(); s.AcceptLoop(); });
     Logger::Info("MCP bridge listening on 127.0.0.1:{}", chosen);
     return true;
 }

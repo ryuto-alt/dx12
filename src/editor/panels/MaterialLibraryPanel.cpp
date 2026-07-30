@@ -1,4 +1,5 @@
 #include "editor/panels/MaterialLibraryPanel.h"
+#include "core/CrashHandler.h"
 #include "editor/EditorContext.h"
 #include "resource/ResourceManager.h"
 #include "resource/MaterialAssetManager.h"
@@ -182,6 +183,9 @@ void MaterialLibraryPanel::EnsureCatalogRequested(const std::string& /*assetsDir
 
     m_catalogThread = std::thread([this]()
     {
+        // ★ネットワーク由来の JSON を再帰パースするので、深く入れ子になった応答で
+        //   スタックオーバーフローしうる。予備スタックが無いとダンプも残らない。
+        CrashHandler::PrepareThread();
         std::vector<uint8_t> bytes;
         bool ok = HttpGetUtf8("https://api.polyhaven.com/assets?type=textures", bytes);
         std::vector<CatalogItem> parsed;
@@ -234,6 +238,7 @@ void MaterialLibraryPanel::RequestThumbnail(const std::string& id)
     std::string url = "https://cdn.polyhaven.com/asset_img/thumbs/" + id + ".png?width=128&height=128";
     fetch->worker = std::thread([raw, url]()
     {
+        CrashHandler::PrepareThread();
         HttpGetUtf8(url, raw->bytes);
         raw->done.store(true);
     });
@@ -284,6 +289,7 @@ void MaterialLibraryPanel::StartDownload(const std::string& id, const std::strin
 
     raw->worker = std::thread([raw, id, res, assetsDir]()
     {
+        CrashHandler::PrepareThread();   // ここも応答 JSON を再帰パースする
         auto fail = [&](const std::string& msg)
         {
             raw->error = msg;
