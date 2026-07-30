@@ -1894,6 +1894,16 @@ void ScriptEngine::RegisterBindings()
                 r.turb  = p.turbStrength;
                 r.kind  = p.kind;
                 r.stretch = p.stretch;
+                r.ring  = ring;   // ★これが無いと fx:ring{gpu=true} が球状バーストになる
+                // GPU 経路は入れ子放出を持たない。黙って無視すると
+                // 「gpu を外すと連鎖するのに付けると連鎖しない」になるので名指しで警告する。
+                if (t["onDeath"].valid())
+                {
+                    static bool warned = false;
+                    if (!warned) { warned = true;
+                        Logger::Warn("fx: gpu=true では onDeath(入れ子放出)は使えません。無視します"
+                                     "（gpu を外すか、死亡時に Lua 側で fx:burst してください）"); }
+                }
                 m_gpuParticleSystem->Emit(r);
                 return;
             }
@@ -4151,6 +4161,17 @@ void ScriptEngine::OnPlayStart()
             pe._emitAccum = 0.0f;
         }
     }
+    // 連番アニメ(フリップブック)の再生位置を初期化。
+    // ★これが無いと、エディタで放置していた分だけ _animT が進んだまま Play に入る。
+    //   Application::Update はエディタ中もプレビュー再生で _animT を足し続けているので、
+    //   単発(animMode=1)の爆発スプライトは「Play した瞬間もう終わっている」＝最終フレームで
+    //   静止し、isSpriteAnimDone も初回フレームから true になる。
+    //   Stop 側はシーンを JSON から作り直すので直る＝Stop→Play を素早く繰り返すと直り、
+    //   放置してから Play すると壊れる、という一番たちの悪い出方をしていた。
+    for (auto [e, sp] : reg.view<Sprite2D>().each())  sp._animT  = 0.0f;
+    for (auto [e, img] : reg.view<UIImage>().each())  img._animT = 0.0f;
+    for (auto [e, mr] : reg.view<MeshRenderer>().each()) mr._animT = 0.0f;
+
     // Trigger のランタイム状態を初期化
     {
         auto trView = reg.view<Trigger>();

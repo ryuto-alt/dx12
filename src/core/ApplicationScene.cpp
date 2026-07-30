@@ -833,6 +833,9 @@ void Application::FinishSceneLoad(const std::string& fullPath, const std::string
     // ---- エディタでシーンを開く ----
     m_editorCtx->ClearSelection();
     m_editorCtx->undoSystem.Clear();
+    // 前のシーンの粒子・トレイルを持ち込まない（ランタイム側の DoRuntimeSceneLoad と同じ規律）
+    if (m_particleSystem) m_particleSystem->Clear();
+    if (m_gpuParticles)   m_gpuParticles->Clear();
 
     m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(), m_srvHeap.get(), cmdList);
     const bool loaded = SceneSerializer::Load(*m_scene, fullPath, PathResolver::AssetsDir());
@@ -1330,6 +1333,15 @@ void Application::EnterEditorMode()
 
     // Play 中に鳴っていた SE（空間含む）と BGM を停止（Stop で鳴り続けるのを防ぐ）
     if (m_audioSystem) { m_audioSystem->StopAllSFX(); m_audioSystem->StopBGM(); }
+
+    // ★Play 中の粒子・トレイルも消す。Clear は Play 開始側にしか無かった。
+    //   Application::Update はエディタ中も粒子シムを回すので、爆発の途中で Stop すると
+    //   寿命ぶん（fx:burst{life=8} なら 8 秒）エディタのビューポートで飛び続ける。
+    //   トレイルはもっと悪い: ParticleSystem::m_trails のキーが u64(entt::entity) で、
+    //   Stop はレジストリを作り直す＝id が再利用されるため、**新しいエンティティが
+    //   前のエンティティの軌跡を相続して**、離れた 2 点間にリボンが張られる。
+    if (m_particleSystem) m_particleSystem->Clear();
+    if (m_gpuParticles)   m_gpuParticles->Clear();
 
     // Play 中に張ったネットワーク接続を Stop で確実に切る（次の Play に持ち越さない）。
     if (m_networkSystem) m_networkSystem->Disconnect();

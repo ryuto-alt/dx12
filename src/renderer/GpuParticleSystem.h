@@ -39,6 +39,7 @@ public:
         float gravity = 0.0f, drag = 1.0f, up = 0.0f, turb = 0.0f;
         int   kind = 0;
         float stretch = 0.0f;
+        bool  ring = false;   // true = XZ 平面へ等間隔（fx:ring 相当）
     };
 
     void Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat, const std::wstring& shaderDir);

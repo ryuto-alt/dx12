@@ -305,58 +305,63 @@ inline bool ApplyOrphanComponent(entt::registry& reg, entt::entity e,
 {
     if (comp == "gimmick")
     {
-        Gimmick gm;
-        gm.kind = d.value("kind", 0); gm.period = d.value("period", 4.0f);
-        gm.phase = d.value("phase", 0.0f); gm.amplitude = d.value("amplitude", 1.6f);
-        gm.threshold = d.value("threshold", 0.5f); gm.solid = d.value("solid", true);
-        gm.deadly = d.value("deadly", false);
+        // ★部分更新: 既存があればその写しから始める（未指定キーを既定値へ戻さない）
+        Gimmick gm = reg.all_of<Gimmick>(e) ? reg.get<Gimmick>(e) : Gimmick{};
+        gm.kind = d.value("kind", gm.kind); gm.period = d.value("period", gm.period);
+        gm.phase = d.value("phase", gm.phase); gm.amplitude = d.value("amplitude", gm.amplitude);
+        gm.threshold = d.value("threshold", gm.threshold); gm.solid = d.value("solid", gm.solid);
+        gm.deadly = d.value("deadly", gm.deadly);
         reg.emplace_or_replace<Gimmick>(e, gm);
         return true;
     }
     if (comp == "audioSource")
     {
-        AudioSource as;
-        as.clipPath = d.value("clipPath", std::string{}); as.volume = d.value("volume", 1.0f);
-        as.loop = d.value("loop", false); as.spatial = d.value("spatial", true);
-        as.playOnStart = d.value("playOnStart", true);
-        as.minDistance = d.value("minDistance", 1.0f); as.maxDistance = d.value("maxDistance", 30.0f);
+        // ★部分更新: 既存があればその写しから始める（未指定キーを既定値へ戻さない）
+        AudioSource as = reg.all_of<AudioSource>(e) ? reg.get<AudioSource>(e) : AudioSource{};
+        as.clipPath = d.value("clipPath", as.clipPath); as.volume = d.value("volume", as.volume);
+        as.loop = d.value("loop", as.loop); as.spatial = d.value("spatial", as.spatial);
+        as.playOnStart = d.value("playOnStart", as.playOnStart);
+        as.minDistance = d.value("minDistance", as.minDistance); as.maxDistance = d.value("maxDistance", as.maxDistance);
         reg.emplace_or_replace<AudioSource>(e, std::move(as));
         return true;
     }
     if (comp == "particleEmitter")
     {
-        ParticleEmitter pe;
-        pe.kind = d.value("kind", 0); pe.blend = d.value("blend", 0); pe.rate = d.value("rate", 30.0f);
-        pe.playOnStart = d.value("playOnStart", true); pe.looping = d.value("looping", true);
-        pe.duration = d.value("duration", 1.0f);
+        // ★部分更新: 既存があればその写しから始める（未指定キーを既定値へ戻さない）
+        ParticleEmitter pe = reg.all_of<ParticleEmitter>(e) ? reg.get<ParticleEmitter>(e) : ParticleEmitter{};
+        pe.kind = d.value("kind", pe.kind); pe.blend = d.value("blend", pe.blend); pe.rate = d.value("rate", pe.rate);
+        pe.orient = d.value("orient", pe.orient);   // ★抜けていた（get_entity には出るのに書けなかった）
+        pe.playOnStart = d.value("playOnStart", pe.playOnStart); pe.looping = d.value("looping", pe.looping);
+        pe.duration = d.value("duration", pe.duration);
         if (d.contains("dir")) pe.dir = McpF3(d["dir"], {0.0f, 1.0f, 0.0f});
-        pe.spread = d.value("spread", 0.4f); pe.speed = d.value("speed", 3.0f);
-        pe.speedVar = d.value("speedVar", 0.4f); pe.size = d.value("size", 0.3f);
-        pe.sizeEnd = d.value("sizeEnd", 0.0f); pe.life = d.value("life", 0.8f);
-        pe.lifeVar = d.value("lifeVar", 0.3f);
+        pe.spread = d.value("spread", pe.spread); pe.speed = d.value("speed", pe.speed);
+        pe.speedVar = d.value("speedVar", pe.speedVar); pe.size = d.value("size", pe.size);
+        pe.sizeEnd = d.value("sizeEnd", pe.sizeEnd); pe.life = d.value("life", pe.life);
+        pe.lifeVar = d.value("lifeVar", pe.lifeVar);
         if (d.contains("color"))    pe.color    = McpF3(d["color"], {1.0f, 0.6f, 0.2f});
         if (d.contains("colorEnd")) pe.colorEnd = McpF3(d["colorEnd"], {1.0f, 0.12f, 0.05f});
         if (d.contains("colorMid")) { pe.colorMid = McpF3(d["colorMid"], {1.0f, 0.6f, 0.2f}); pe.hasColorMid = true; }
         pe.hasColorMid = d.value("hasColorMid", pe.hasColorMid);
-        pe.intensity = d.value("intensity", 3.0f); pe.gravity = d.value("gravity", 0.0f);
-        pe.drag = d.value("drag", 1.0f); pe.up = d.value("up", 0.0f); pe.stretch = d.value("stretch", 0.0f);
-        pe.turbStrength = d.value("turbStrength", 0.0f); pe.turbFreq = d.value("turbFreq", 1.0f);
-        pe.sizeMid = d.value("sizeMid", -1.0f); pe.distort = d.value("distort", 0.0f);
-        pe.light = d.value("light", false); pe.lightRange = d.value("lightRange", 3.0f);
-        pe.flicker = d.value("flicker", 0.0f); pe.flickerFreq = d.value("flickerFreq", 18.0f);
-        pe.gpu = d.value("gpu", false);
-        pe.texturePath = d.value("texturePath", std::string{});
+        pe.intensity = d.value("intensity", pe.intensity); pe.gravity = d.value("gravity", pe.gravity);
+        pe.drag = d.value("drag", pe.drag); pe.up = d.value("up", pe.up); pe.stretch = d.value("stretch", pe.stretch);
+        pe.turbStrength = d.value("turbStrength", pe.turbStrength); pe.turbFreq = d.value("turbFreq", pe.turbFreq);
+        pe.sizeMid = d.value("sizeMid", pe.sizeMid); pe.distort = d.value("distort", pe.distort);
+        pe.light = d.value("light", pe.light); pe.lightRange = d.value("lightRange", pe.lightRange);
+        pe.flicker = d.value("flicker", pe.flicker); pe.flickerFreq = d.value("flickerFreq", pe.flickerFreq);
+        pe.gpu = d.value("gpu", pe.gpu);
+        pe.texturePath = d.value("texturePath", pe.texturePath);
         reg.emplace_or_replace<ParticleEmitter>(e, pe);
         return true;
     }
     if (comp == "trigger")
     {
-        Trigger tr;
-        tr.shape = d.value("shape", 0);
+        // ★部分更新: 既存があればその写しから始める（未指定キーを既定値へ戻さない）
+        Trigger tr = reg.all_of<Trigger>(e) ? reg.get<Trigger>(e) : Trigger{};
+        tr.shape = d.value("shape", tr.shape);
         if (d.contains("halfExtents")) tr.halfExtents = McpF3(d["halfExtents"], {1.0f, 1.0f, 1.0f});
-        tr.radius = d.value("radius", 1.0f);
+        tr.radius = d.value("radius", tr.radius);
         if (d.contains("offset")) tr.offset = McpF3(d["offset"]);
-        tr.filter = d.value("filter", std::string{}); tr.once = d.value("once", false);
+        tr.filter = d.value("filter", tr.filter); tr.once = d.value("once", tr.once);
         // guid を明示できる。省略時は 0 のままで、名前で解決され、読み込み時に昇格する
         // （＝名前だけ指定する従来の呼び方はそのまま動く）。
         tr.filterGuid = ParseEntityGuidHex(d.value("filterGuid", std::string{}));

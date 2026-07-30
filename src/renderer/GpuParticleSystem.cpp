@@ -332,6 +332,7 @@ void GpuParticleSystem::SimulateAndRender(ID3D12GraphicsCommandList* cmd, float 
             ecb.emitP2[0] = static_cast<float>(r.kind);
             ecb.emitP2[1] = r.stretch;
             ecb.emitP2[2] = dist(m_rng);   // シード
+            ecb.emitP2[3] = r.ring ? 1.0f : 0.0f;
             cmd->SetComputeRoot32BitConstants(0, kGPCBNum32, &ecb, 0);
             cmd->Dispatch((r.count + 255) / 256, 1, 1);
         }

@@ -233,6 +233,7 @@ nlohmann::json McpComponentSchema()
     comps.push_back(C("particleEmitter", true, true, json::array({
         F("kind", "int (0=Glow,1=Fire,2=Smoke,3=Spark,4=Magic,5=Electric,6=Ring,7=Star)", 0),
         F("blend", "int (0=Additive,1=Alpha)", 0), F("rate", "float (per sec)", 30.0),
+        F("orient", "int (0=Billboard,1=Horizontal XZ,2=Vertical XY)", 0),
         F("playOnStart", "bool", true), F("looping", "bool", true), F("duration", "float", 1.0),
         F("dir", "float3", json::array({0, 1, 0})), F("spread", "float", 0.4), F("speed", "float", 3.0),
         F("speedVar", "float", 0.4), F("size", "float", 0.3), F("sizeEnd", "float", 0.0),

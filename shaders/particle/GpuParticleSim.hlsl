@@ -26,7 +26,7 @@ cbuffer GPCB : register(b0)
     float4 emitCol1;  // rgb=終了色(強度込み), w=speedVar
     float4 emitP0;    // size0, size1, life, lifeVar
     float4 emitP1;    // gravity, drag, up, turb
-    float4 emitP2;    // kind, stretch, seed, 未使用
+    float4 emitP2;    // kind, stretch, seed, ring(1=XZ等間隔リング)
     float4 simP;      // dt, time, maxParticles, floorY(床バウンド高さ。-1e9で無効)
     float4 simP3;     // 予備
 };
@@ -104,6 +104,15 @@ void CSEmit(uint3 id : SV_DispatchThreadID)
     dirN = (dl > 1e-4) ? dirN / dl : float3(0, 1, 0);
     float spread = emitDir.w;
     float3 vdir = sph * spread + dirN * (1.0 - spread);
+
+    // ★ring: XZ 平面へ等間隔（CPU 版 ParticleSystem::Emit と同じ式）。
+    //   これが無いと fx:ring{gpu=true} が球状バーストになる＝gpu を付けた瞬間に
+    //   衝撃波リングが別物になる（エラーもログも出ない）。
+    if (emitP2.w > 0.5)
+    {
+        float ra = (float(id.x) / max(emitPos.w, 1.0)) * 6.2831853;
+        vdir = float3(cos(ra), 0.0, sin(ra));
+    }
 
     float spd = emitCol0.w * (1.0 - rand01(h) * emitCol1.w);
 
