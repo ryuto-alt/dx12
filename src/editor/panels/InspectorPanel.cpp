@@ -48,6 +48,34 @@
 namespace
 {
 
+// 「この項目は今の設定では効かない」を出す注記行（pg テーブルの中で使う）。
+//
+// ★ImGui::TextColored の 1 行では**パネル幅で右端が切れて読めない**（実際に切れていた）。
+//   値セル側（col 1）は幅が広く、そこで折り返せば全文が出る。ラベル列は空にする。
+// ★色はこの用途で既に使っていた橙（1.0, 0.65, 0.2）に統一。
+void WarnTextV(const char* fmt, va_list args)
+{
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.65f, 0.2f, 1.0f));
+    ImGui::PushTextWrapPos(0.0f);   // 現在の作業矩形の右端で折り返す
+    ImGui::TextV(fmt, args);
+    ImGui::PopTextWrapPos();
+    ImGui::PopStyleColor();
+}
+
+// pg テーブルの中で使う（値セル側は幅が広いので col 1 に置く）。
+void WarnRow(const char* fmt, ...)
+{
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(1);
+    va_list args; va_start(args, fmt); WarnTextV(fmt, args); va_end(args);
+}
+
+// pg::End() の後（テーブル外）で使う。
+void WarnText(const char* fmt, ...)
+{
+    va_list args; va_start(args, fmt); WarnTextV(fmt, args); va_end(args);
+}
+
 // CollapsingHeader を Unreal 風カテゴリ帯（濃いグレー地＋左端アクセントストライプ）で描くヘルパ。
 // tex 指定でラベル頭に種別アイコンを重ね描きする。
 bool IconHeader(const dx12e::EditorUiIcons* ic, dx12e::u64 tex, const char* label,
@@ -746,6 +774,12 @@ void InspectorPanel::Render(entt::registry& reg,
                     changed |= pg::Float2("サイズ Size", &sp.size.x, 0.01f, 0.0f, 100.0f, "%.2f", &active);
                     changed |= pg::Float2("UV Min", &sp.uvMin.x, 0.005f, 0.0f, 1.0f, "%.3f", &active);
                     changed |= pg::Float2("UV Max", &sp.uvMax.x, 0.005f, 0.0f, 1.0f, "%.3f", &active);
+                    // ★同じ注記が「アニメ」グループの下(animFrames の子項目の後)にもあるが、
+                    //   UV Min/Max を触っている人はそこまでスクロールしない。効かない値の
+                    //   すぐ隣に出す（ApplicationRender.cpp:854 が uvMin/uvMax を丸ごと上書きする）。
+                    if (sp.animFrames > 0)
+                        WarnRow("animFrames>0 のため UV Min/Max は無視されます"
+                                "（下の連番設定が UV を決めます）");
                     changed |= pg::Color4("色 Color", &sp.color.x);
 
                     pg::Group("配置");
@@ -776,7 +810,7 @@ void InspectorPanel::Render(entt::registry& reg,
                                 IM_ARRAYSIZE(animModes),
                                 "単発=爆発/被弾など1回きりの演出。往復=0→末尾→0 の呼吸アニメ");
                         }
-                        ImGui::TextDisabled("animFrames>0 中は UV Min/Max は無視（自動設定）");
+                        WarnRow("UV Min/Max は無視され、上の連番設定から自動で決まります");
                     }
                     else
                     {
@@ -841,8 +875,7 @@ void InspectorPanel::Render(entt::registry& reg,
                     }
                     pg::End();
                     if (!sp.worldSpace && !sp.shaderPath.empty())
-                        ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
-                            "HUD スプライトはカスタムシェーダー未対応(worldSpaceのみ)");
+                        WarnText("HUD スプライトはカスタムシェーダー未対応(worldSpaceのみ)");
                 }
 
                 EndEdit(reg, ctx, ctx.selectedEntity, m_spriteEdit, changed, active, "Sprite2D");
@@ -1135,6 +1168,21 @@ void InspectorPanel::Render(entt::registry& reg,
                         -32.0f, 32.0f, "%.2f", &active,
                         "uv/秒。タイル(UV Max>1)と併用で流れるパターンに\n"
                         "（警告帯/コンベア/背景ストライプ）。9スライスでは無効");
+                    // ★UISystem.cpp:1050 の分岐をそのまま画面に出す。
+                    //   これまで注記は animFrames のツールチップにしか無く、
+                    //   UV を触っている人は animFrames にホバーしない。
+                    {
+                        const bool nineSlice = img.sliceBorder.x > 0.0f || img.sliceBorder.y > 0.0f
+                                            || img.sliceBorder.z > 0.0f || img.sliceBorder.w > 0.0f;
+                        const bool flipbookLive = img.animFrames > 0 && !nineSlice && img.shape == 0;
+                        if (flipbookLive)
+                            WarnRow("連番アニメ中のため UV Min/Max・UVスクロールは無視されます");
+                        else if (img.animFrames > 0)
+                            WarnRow("連番アニメは %s では動きません（UV はそのまま使われます）",
+                                    nineSlice ? "9スライス有効中" : "矩形以外の形状");
+                        else if (nineSlice && (img.uvScroll.x != 0.0f || img.uvScroll.y != 0.0f))
+                            WarnRow("9スライス有効中は UVスクロールが効きません");
+                    }
                     // 連番アニメ（スプライトシート）。エディタ中もプレビュー再生される
                     changed |= pg::Int("連番フレーム数 animFrames", &img.animFrames, 1.0f, 0, 1024, &active,
                         "0=なし。1以上でテクスチャをコマ送り再生（爆発/ローディング/アイコン点滅）。\n"
@@ -1407,8 +1455,7 @@ void InspectorPanel::Render(entt::registry& reg,
                     pg::End();
                 }
                 if (!reg.all_of<UIImage>(ctx.selectedEntity))
-                    ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
-                        "状態色の反映には同一エンティティの UIImage が必要");
+                    WarnText("状態色の反映には同一エンティティの UIImage が必要");
                 EndEdit(reg, ctx, ctx.selectedEntity, m_uiButtonEdit, changed, active, "UIButton");
             }
         }
@@ -1985,9 +2032,8 @@ void InspectorPanel::Render(entt::registry& reg,
                         "CPU 専用の項目は無効: 中間色 / 中間サイズ / 乱流の細かさ / 画面歪み /\n"
                         "ライト放出 / 明滅 / テクスチャ / 向き / 合成（加算固定）");
                     if (pe.gpu)
-                        ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
-                            "GPU では無効: 中間色・中間サイズ・乱流の細かさ・画面歪み・"
-                            "ライト放出・明滅・テクスチャ・向き（合成は加算固定）");
+                        WarnRow("GPU では無効: 中間色・中間サイズ・乱流の細かさ・画面歪み・"
+                                "ライト放出・明滅・テクスチャ・向き（合成は加算固定）");
                     changed |= pg::Float("放出レート Rate(/s)", &pe.rate, 0.5f, 0.0f, pe.gpu ? 100000.0f : 500.0f, "%.1f", &active);
                     changed |= pg::Checkbox("Play開始で放出", &pe.playOnStart);
                     changed |= pg::Checkbox("ループ Looping", &pe.looping);
@@ -3005,8 +3051,7 @@ void InspectorPanel::Render(entt::registry& reg,
                     pg::End();
                 }
                 if (reg.all_of<SkeletalAnimation>(ctx.selectedEntity) && !mr.shaderPath.empty())
-                    ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
-                        "スキンドメッシュは既定シェーダーへフォールバック");
+                    WarnText("スキンドメッシュは既定シェーダーへフォールバック");
             }
         }
 

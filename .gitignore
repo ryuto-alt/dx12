@@ -51,6 +51,10 @@ vcpkg_installed/
 # 復元を待たずに exe が終わるので消し残る（毎回 7KB 積む）。
 .diagnostics_snapshot.json
 
+# エディタのオートセーブ（Application.cpp: assets/scenes/.autosave/）。
+# プロジェクトごとに assets の場所が違うので、深さを固定せずどこでも無視する。
+.autosave/
+
 # Compiled shaders
 *.cso
 *.pdb
