@@ -164,16 +164,9 @@ Entity Scene::Spawn(const std::string& name,
                 }
             }
 
-            // レストポーズクリップ: static > 先頭（inverseRest計算用）
-            const NodeAnimationClip* restClip = nodeAnim.clips[0].get();
-            for (const auto& clip : nodeAnim.clips)
-            {
-                if (clip->GetName() == "static")
-                {
-                    restClip = clip.get();
-                    break;
-                }
-            }
+            // レストポーズクリップ（inverseRest 計算用）。★選択規則は ModelLoader が
+            // 頂点を焼くときと同一でなければならないので PickRestClip に集約してある。
+            const NodeAnimationClip* restClip = PickRestClip(nodeAnim.clips);
 
             nodeAnim.nodeAnimator->Initialize(nodeAnim.nodeGraph.get(), playClip, restClip);
         }

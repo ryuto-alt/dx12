@@ -557,6 +557,15 @@ ModelProbeInfo ModelLoader::Probe(const std::filesystem::path& filePath)
     // メタ情報だけ欲しいので後処理は最小限。三角形化しないので faces は
     // ポリゴン数(三角形換算前)になる。単位正規化だけは LoadFromFile と揃える
     // (揃えないと asset_info の申告サイズが実際の描画サイズと食い違う)。
+    //
+    // ★★ここは**スキンメッシュでも kUnitScaleFlag を外さない**。それで正しい。
+    //   LoadFromFile はスキン時にフラグを外すので「揃っていない」ように見えるが、
+    //   両者は経路が違うだけで結果は一致する:
+    //     Probe        … ノード変換(cm ファイルなら 100 倍) × 単位正規化(0.01) = 1 倍
+    //     LoadFromFile … ノード変換を頂点へ焼かず(ボーン側で打ち消される) + フラグも外す
+    //   2026-07-30 に「揃っていない」と判断して Probe 側でもフラグを外す変更を入れたところ、
+    //   `ModelScaleTests` の cube1m_skinned.fbx が 1m → **100m** になって落ちた。
+    //   触る前に必ず `ctest -R ModelScaleTests` を通すこと（tests/data に FBX 一式がある）。
     const aiScene* scene = importer.ReadFile(filePath.string(), kUnitScaleFlag);
     if (!scene || !scene->mRootNode)
     {
@@ -717,13 +726,17 @@ ModelData ModelLoader::LoadFromFile(
             nodeAnimClips = BuildAllNodeAnimClips(scene, *nodeGraph);
 
             // ---------------------------------------------------------------
-            // Compute bake matrices: static clip (first clip) at time=0
+            // Compute bake matrices: rest clip at time=0
             // Uses the same S*R*T pipeline as NodeAnimator::ComputeRawNodeMatrices
             // to avoid mismatch with FBX's complex node transforms (Pivot, PreRotation, etc.)
+            // ★クリップの選び方は Scene 側(inverseRest を作る所)と必ず同じにすること。
+            //   描画は inv(rest) * current なので、違うクリップで焼くと残差が絵に出る。
+            //   → 選択は PickRestClip に集約した（以前はここが clips[0] 決め打ちで、
+            //     Scene は "static" 優先だったため "static" が先頭でないファイルで食い違った）。
             // ---------------------------------------------------------------
             if (!nodeAnimClips.empty())
             {
-                const NodeAnimationClip* staticClip = nodeAnimClips[0].get();
+                const NodeAnimationClip* staticClip = PickRestClip(nodeAnimClips);
                 u32 nodeCount = nodeGraph->GetNodeCount();
                 bakeGlobalMatrices.resize(nodeCount, DirectX::XMMatrixIdentity());
 

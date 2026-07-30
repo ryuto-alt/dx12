@@ -35,4 +35,13 @@ void NodeAnimationClip::NormalizeToSeconds()
     m_ticksPerSecond = 1.0f;
 }
 
+const NodeAnimationClip* PickRestClip(
+    const std::vector<std::unique_ptr<NodeAnimationClip>>& clips)
+{
+    if (clips.empty()) return nullptr;
+    for (const auto& c : clips)
+        if (c && c->GetName() == "static") return c.get();
+    return clips[0].get();
+}
+
 } // namespace dx12e

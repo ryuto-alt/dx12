@@ -216,6 +216,19 @@ if(TARGET Renderer)
     endif()
     add_test(NAME AnimClipNormalizeTests COMMAND AnimClipNormalizeTests)
 
+    # PickRestClip（頂点の焼き込みと inverseRest が同じクリップを選ぶこと）のテスト。
+    # 食い違うと inv(rest)*current の残差が余分な変換として絵に出る。
+    add_executable(RestClipPickTests
+        rest_clip_pick_test.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/NodeAnimationClip.cpp)
+    target_include_directories(RestClipPickTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(RestClipPickTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(RestClipPickTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(RestClipPickTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME RestClipPickTests COMMAND RestClipPickTests)
+
     # Animator の再生速度倍率(SetSpeed。speed=2.0 で進行2倍、0 で一時停止)テスト。
     # Animator/Skeleton/AnimationClip は純ロジック(GPU非依存)なので直接ビルド。
     add_executable(AnimatorSpeedTests

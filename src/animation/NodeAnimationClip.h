@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <memory>
 #include <vector>
 #include <DirectXMath.h>
 #include "core/Types.h"
@@ -41,5 +42,16 @@ private:
     float m_duration       = 0.0f;
     float m_ticksPerSecond = 25.0f;
 };
+
+// レストポーズに使うクリップを選ぶ。名前が "static" のものを優先し、無ければ先頭。
+//
+// ★**この選択は 2 箇所で使う**。ModelLoader は「このクリップの t=0 の姿勢」で頂点を
+//   焼き込み、Scene は同じクリップを inverseRest として NodeAnimator へ渡す。
+//   描画は inv(rest) * current なので、**両者が違うクリップを選ぶと残差がそのまま
+//   余分な変換として絵に出る**（モデルが余計に回る / ずれる）。
+//   以前は ModelLoader が clips[0] 決め打ち、Scene が "static" 優先で、
+//   "static" が先頭でないファイルで食い違っていた。二度と分岐させないためここに集約する。
+const NodeAnimationClip* PickRestClip(
+    const std::vector<std::unique_ptr<NodeAnimationClip>>& clips);
 
 } // namespace dx12e
