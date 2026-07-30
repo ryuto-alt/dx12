@@ -7,19 +7,14 @@ cbuffer PerObjectConstants : register(b0)
     float4x4 gViewProjT;
 };
 
+// ★深度に要る分だけ宣言する（position と per-instance の world 3 行）。
+//   使わない属性も宣言すれば入力署名に残り、IA がフェッチする。詳細は ShadowPass.hlsl。
 struct VSInput
 {
-    float3 position    : POSITION;
-    float3 normal      : NORMAL;
-    float4 color       : COLOR;
-    float2 texCoord    : TEXCOORD0;
-    float4 tangent     : TANGENT;
-    uint4  boneIndices : BLENDINDICES;
-    float4 boneWeights : BLENDWEIGHT;
-    float4 ir0         : TEXCOORD8;
-    float4 ir1         : TEXCOORD9;
-    float4 ir2         : TEXCOORD10;
-    float4 icolor      : TEXCOORD11;
+    float3 position : POSITION;
+    float4 ir0      : TEXCOORD8;
+    float4 ir1      : TEXCOORD9;
+    float4 ir2      : TEXCOORD10;
 };
 
 float4 VSMain(VSInput input) : SV_POSITION
