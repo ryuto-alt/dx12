@@ -1992,6 +1992,61 @@ static void Test_RegistryHeaderCompiles()
     CHECK(info.typeName == "Probe");
 }
 
+// 地形のスプラット参照。
+// ★layerSetPath を外しただけで splatPath がシーンから消えると、再割り当て時に
+//   「splatPath が空 → 新規作成」と判定されて自動ペイントが走り、しかも保存先が
+//   エンティティ名から決まるので **手描きのスプラットがディスクごと上書きされる**。
+//   比べるために一時的にレイヤーを外す、が破壊操作になっていた。
+//
+// ここは書き出し側だけを見る（Terrain の復元は .hf のロードとメッシュ生成で
+// device を要求するので、この GPU 無しテストでは往復させられない）。
+static void Test_TerrainSplatPathIsWrittenWithoutLayerSet()
+{
+    auto serialize = [](const std::function<void(Terrain&)>& fill) -> nlohmann::json
+    {
+        Scene src;
+        auto& reg = src.GetRegistry();
+        entt::entity e = reg.create();
+        reg.emplace<NameTag>(e, NameTag{"E"});
+        reg.emplace<Transform>(e);
+        Terrain t;
+        fill(t);
+        reg.emplace<Terrain>(e, t);
+        const std::string js = SceneSerializer::SerializeEntity(src, e, "");
+        return nlohmann::json::parse(js, nullptr, /*allow_exceptions=*/false);
+    };
+
+    // レイヤーセットを外してあっても splatPath は残す
+    {
+        nlohmann::json j = serialize([](Terrain& t) {
+            t.heightmapPath = "terrain/Hill.hf";
+            t.layerSetPath  = "";
+            t.splatPath     = "terrain/Hill.splat";
+        });
+        const bool ok = !j.is_discarded() && j.contains("terrain") && j["terrain"].is_object();
+        CHECK(ok);
+        if (ok)
+        {
+            CHECK(j["terrain"].value("heightmapPath", std::string{}) == "terrain/Hill.hf");
+            // ← これが落ちると手描きスプラットが自動ペイントで潰れる
+            CHECK(j["terrain"].value("splatPath", std::string{}) == "terrain/Hill.splat");
+        }
+    }
+
+    // レイヤーもスプラットも一度も使っていない地形では従来どおり 1 つも書かない
+    // （既存シーンの JSON を変えないための後方互換）
+    {
+        nlohmann::json j = serialize([](Terrain& t) { t.heightmapPath = "terrain/Plain.hf"; });
+        const bool ok = !j.is_discarded() && j.contains("terrain") && j["terrain"].is_object();
+        CHECK(ok);
+        if (ok)
+        {
+            CHECK(!j["terrain"].contains("splatPath"));
+            CHECK(!j["terrain"].contains("layerSetPath"));
+        }
+    }
+}
+
 int main()
 {
     Test_Transform();
@@ -2007,6 +2062,7 @@ int main()
     Test_NetworkIdentity();
     Test_NetworkTransform();
     Test_Decal();
+    Test_TerrainSplatPathIsWrittenWithoutLayerSet();
     Test_AnimatorController();
     Test_FootIK();
     Test_BoxCollider();

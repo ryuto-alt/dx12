@@ -10,6 +10,8 @@
 #include "scene/Scene.h"
 #include "scene/SceneSerializer.h"
 #include "renderer/Mesh.h"
+#include "terrain/SculptIO.h"
+#include "terrain/SculptMesh.h"
 
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4201 4244 4267 4996)
@@ -28,6 +30,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <set>
 #include <vector>
@@ -1240,6 +1243,108 @@ void T_DeepRenderProof(ImGuiTestContext* ctx)
 // 参照されなくなったシーン所有メッシュが回収されるか。
 // 以前はシーンを開き直すまで一切解放されず、生成→削除を繰り返すぶんだけ積み上がった
 // （箱なら数 KB だが 512² の地形は 50MB 級）。回収はフレーム末尾で 60 フレームに 1 回走る。
+// プレハブの「適用」が、彫った形（.smsh）を他インスタンスへ配るか。
+// 3-way マージはパス文字列しか見ず、インスタンスは私物のコピーを持つ（＝パスが必ず違う）ため、
+// 対策が無いと形状の差が常に「インスタンス側の手直し」と判定されて配られない。
+// なのにログと UI は「他 N インスタンスへ反映」と言う、という嘘が出る場所。
+void T_PrefabGeometryPropagate(ImGuiTestContext* ctx)
+{
+    namespace fs = std::filesystem;
+    IM_CHECK(g_app != nullptr);
+    Scene* scene = g_app->GetScene();
+    IM_CHECK(scene != nullptr);
+    auto& reg = scene->GetRegistry();
+    const std::string assets = PathResolver::AssetsDir();
+    const std::string prefabRel = "prefabs/__uitest_rock.prefab";
+
+    auto readBytes = [](const std::string& abs) -> std::string
+    {
+        std::ifstream ifs(abs, std::ios::binary);
+        if (!ifs) return {};
+        return std::string(std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>());
+    };
+    auto carve = [&](entt::entity e, float x)
+    {
+        SculptMesh* sc = reg.try_get<SculptMesh>(e);
+        if (!sc || !sc->_data) return false;
+        SculptBrushParams bp;
+        bp.type = SculptBrushType::Draw;
+        bp.radius = 1.5f; bp.strength = 1.0f;
+        bp.direction = {0.0f, 1.0f, 0.0f};
+        const size_t moved = sc->_data->ApplyBrush(bp, {x, 0.0f, 0.0f}, 1.0f, false, nullptr);
+        if (moved == 0) return false;
+        // .smsh を書き出す（パネルの自動保存に頼らず、この場で確定させる）
+        if (sc->meshPath.empty()) sc->meshPath = sculpt::MakeSculptMeshRelPath(
+            reg.all_of<NameTag>(e) ? reg.get<NameTag>(e).name : std::string("S"));
+        fs::create_directories(fs::path(assets + sc->meshPath).parent_path());
+        return sculpt::SaveSculptMeshFile(assets + sc->meshPath, *sc->_data);
+    };
+
+    Step(ctx, "素体を作ってプレハブ化 → 2 個生成");
+    SculptMesh params;
+    Entity src = scene->SpawnSculpt("__uitest_rock", {0.0f, 60.0f, 0.0f}, params);
+    IM_CHECK(reg.valid(src.GetHandle()));
+    IM_CHECK(carve(src.GetHandle(), 0.0f));   // プレハブ化前に一度彫って .smsh を確定させる
+    IM_CHECK(SceneSerializer::SavePrefab(*scene, src.GetHandle(), assets + prefabRel, assets));
+
+    std::vector<entt::entity> allA, allB;
+    entt::entity a = SceneSerializer::InstantiatePrefab(*scene, assets + prefabRel, assets, &allA);
+    entt::entity b = SceneSerializer::InstantiatePrefab(*scene, assets + prefabRel, assets, &allB);
+    IM_CHECK(a != entt::null && b != entt::null);
+
+    const SculptMesh* scA = reg.try_get<SculptMesh>(a);
+    const SculptMesh* scB = reg.try_get<SculptMesh>(b);
+    IM_CHECK(scA != nullptr && scB != nullptr);
+    // インスタンスは私物のコピーを持つ（同じファイルを共有していたら以降の検査が無意味）
+    IM_CHECK_STR_NE(scA->meshPath.c_str(), scB->meshPath.c_str());
+
+    Step(ctx, "A を彫って「適用」→ 未編集の B へ形が配られる");
+    IM_CHECK(carve(a, 0.5f));
+    const std::string aBytes = readBytes(assets + scA->meshPath);
+    IM_CHECK(!aBytes.empty());
+
+    int propagated = 0;
+    IM_CHECK(SceneSerializer::ApplyPrefabInstance(*scene, a, assets, &propagated));
+    ctx->Yield(3);
+
+    const std::string bBytes = readBytes(assets + scB->meshPath);
+    if (bBytes != aBytes)
+        IM_ERRORF("彫った形が他インスタンスへ配られていない（A %d バイト / B %d バイト）",
+                  static_cast<int>(aBytes.size()), static_cast<int>(bBytes.size()));
+
+    Step(ctx, "個別に彫ったインスタンスは据え置き（手直しを潰さない）");
+    // b を作り直しているので取り直す
+    entt::entity b2 = entt::null;
+    for (auto [e, link] : reg.view<const PrefabLink>().each())
+        if (link.sourcePath == prefabRel && e != a) { b2 = e; break; }
+    IM_CHECK(b2 != entt::null);
+    IM_CHECK(carve(b2, -0.8f));
+    const SculptMesh* scB2 = reg.try_get<SculptMesh>(b2);
+    IM_CHECK(scB2 != nullptr);
+    const std::string b2Own = readBytes(assets + scB2->meshPath);
+
+    IM_CHECK(carve(a, 1.2f));
+    IM_CHECK(SceneSerializer::ApplyPrefabInstance(*scene, a, assets, &propagated));
+    ctx->Yield(3);
+    if (readBytes(assets + scB2->meshPath) != b2Own)
+        IM_ERRORF("個別に彫ったインスタンスの形が上書きされた（手直しが消える）");
+
+    // 後片付け（assets を汚さない）
+    std::error_code ec;
+    std::vector<entt::entity> kill;
+    for (auto [e, link] : reg.view<const PrefabLink>().each())
+        if (link.sourcePath == prefabRel) kill.push_back(e);
+    kill.push_back(src.GetHandle());
+    for (entt::entity e : kill) if (reg.valid(e)) scene->Remove(Entity(e, &reg));
+    fs::remove(fs::path(assets + prefabRel), ec);
+    for (const auto& de : fs::directory_iterator(fs::path(assets + "sculpt"), ec))
+    {
+        const std::string fn = de.path().filename().string();
+        if (fn.rfind("__uitest_rock", 0) == 0 || fn.rfind("__prefab___uitest_rock", 0) == 0)
+            fs::remove(de.path(), ec);
+    }
+}
+
 void T_MeshGarbageCollect(ImGuiTestContext* ctx)
 {
     IM_CHECK(g_app != nullptr);
@@ -1863,6 +1968,7 @@ const DiagReg kTests[] = {
     { "panel", "new_floating_panels",   "パネル",             "ライティング / 地形ツールの開閉",       T_NewFloatingPanels     },
     { "panel", "layout_reset",          "パネル",             "ドックレイアウトのリセット",           T_LayoutReset           },
     { "panel", "mesh_gc",               "パネル",             "未参照メッシュの回収（リーク）",       T_MeshGarbageCollect    },
+    { "panel", "prefab_geo_propagate",  "パネル",             "プレハブ適用で形状が配られる",         T_PrefabGeometryPropagate },
 
     { "uied",  "ui_spawn_all",          "UI エディタ",        "UI 要素を全種類配置",                  T_UiEditorSpawnAll      },
     { "uied",  "ui_view_ops",           "UI エディタ",        "ズーム / グリッド / 極小リサイズ",     T_UiEditorViewOps       },

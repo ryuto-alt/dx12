@@ -17,6 +17,7 @@
 #pragma warning(pop)
 
 #include <Windows.h>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 #include <filesystem>
@@ -591,9 +592,16 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                 {"uvScale",       tr.uvScale},
                 {"color",         json::array({tr.color.x, tr.color.y, tr.color.z, tr.color.w})}
             };
-            // テクスチャスプラット。layerSetPath が空のときは 1 つも書かない
-            // ＝既存シーンの JSON が 1 バイトも変わらない（完全後方互換）。
-            if (!tr.layerSetPath.empty())
+            // テクスチャスプラット。
+            // ★条件に splatPath を足してある。以前は layerSetPath が空だと 1 つも書かず、
+            //   **レイヤーセットを外しただけで splatPath がシーンから消えた**。
+            //   再割り当てすると TerrainPanel は「splatPath が空 → 新規作成」と判断して
+            //   傾斜/標高からの自動ペイントを走らせ、しかも SaveSplat がエンティティ名から
+            //   同じファイル名を導くので、**手描きのスプラットがディスクごと上書きされる**。
+            //   （比べるために一時的にレイヤーを外す、が破壊操作になっていた）
+            //   layerSetPath も splatPath も空＝レイヤーを一度も使っていない地形では
+            //   従来どおり 1 つも書かないので、既存シーンの JSON は変わらない。
+            if (!tr.layerSetPath.empty() || !tr.splatPath.empty())
             {
                 auto& tj = ej["terrain"];
                 tj["layerSetPath"]       = tr.layerSetPath;
@@ -2315,6 +2323,62 @@ static void RepointGeneratedAssets(json& ej, const std::string& oldName,
         repoint(ej["sculpt"], "meshPath", sculpt::MakeSculptMeshRelPath(newName));
 }
 
+// ---- プレハブが持つ「生成アセット」（.smsh / .hf / .splat）の面倒を見る ------------
+//
+// 経緯: これらの実体はシーン JSON に入らず別ファイルにある。インスタンス化のときに
+// RepointGeneratedAssets が **インスタンスごとに私物のコピー**を作る（1 個彫っても
+// 他のインスタンスが変わらないようにするため）。
+// ところが .prefab 自身はコピーを持たず、「作った元インスタンスのファイル」を指したままだった。
+// そのせいで:
+//   - 元インスタンスを後から彫ると、触っていない .prefab の中身が黙って変わる
+//   - 「適用」で他インスタンスへ配るとき、3-way マージは meshPath の違いを
+//     **インスタンス側の手直し**と判定してインスタンスの古いパスを残す
+//     ＝形状だけ配られない。なのにログと UI は「他 N インスタンスへ反映」と言う。
+// 対策: 保存時にプレハブ専用のコピーを作って .prefab をそこへ向け（自己完結させる）、
+// 配布時は「そのインスタンスが自分で彫っていない」ときだけ中身を上書きする。
+struct GeoField { const char* comp; const char* key; };
+static const GeoField kGeoFields[] = {
+    {"sculpt",  "meshPath"},
+    {"terrain", "heightmapPath"},
+    {"terrain", "splatPath"},
+};
+
+// key に応じた「その名前ならこの相対パス」を返す
+static std::string MakeGeoRelPath(const char* key, const std::string& name)
+{
+    if (std::strcmp(key, "meshPath")      == 0) return sculpt::MakeSculptMeshRelPath(name);
+    if (std::strcmp(key, "heightmapPath") == 0) return terrain::MakeHeightFieldRelPath(name);
+    return terrain::MakeSplatRelPath(name);
+}
+
+static std::string ReadFileBytes(const std::string& abs)
+{
+    std::ifstream ifs(abs, std::ios::binary);
+    if (!ifs) return {};
+    return std::string(std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>());
+}
+
+// entities 配列の各要素から生成アセットのパスを拾う。戻り値は "<index>/<comp>.<key>" → 相対パス。
+static std::unordered_map<std::string, std::string> CollectGeoPaths(const json& entities)
+{
+    std::unordered_map<std::string, std::string> out;
+    if (!entities.is_array()) return out;
+    for (size_t i = 0; i < entities.size(); ++i)
+    {
+        for (const GeoField& g : kGeoFields)
+        {
+            const auto c = entities[i].find(g.comp);
+            if (c == entities[i].end() || !c->is_object()) continue;
+            const auto k = c->find(g.key);
+            if (k == c->end() || !k->is_string()) continue;
+            const std::string rel = k->get<std::string>();
+            if (rel.empty()) continue;
+            out[std::to_string(i) + "/" + g.comp + "." + g.key] = rel;
+        }
+    }
+    return out;
+}
+
 std::string SceneSerializer::SerializeSubtree(const Scene& scene, entt::entity root,
                                               const std::string& assetsDir)
 {
@@ -2962,8 +3026,13 @@ json Merge3WaySubtree(const json& mine, const json& oldBase, const json& newBase
 }
 
 // 他のインスタンスへプレハブの変更を配る。各インスタンスの上書きは 3-way マージで残す。
+// oldGeoBytes: 「配る前のプレハブが持っていた生成アセットの中身」（キーは CollectGeoPaths と同じ）。
+// インスタンスのファイルがこれと 1 バイト違わなければ「そのインスタンスは自分では彫っていない」
+// と判断でき、新しい形状を安全に上書きできる。違えば個別の手直しなので残す。
 int MergePrefabInstances(Scene& scene, const std::string& sourcePath, const json& oldBase,
-                         const json& newBase, const std::string& assetsDir, entt::entity except)
+                         const json& newBase, const std::string& assetsDir, entt::entity except,
+                         const std::unordered_map<std::string, std::string>& oldGeoBytes,
+                         int* outGeoPropagated, int* outGeoKept)
 {
     auto& reg = scene.GetRegistry();
     // 作り直すのでビューを回しながらだと壊れる。先に対象を集める
@@ -2984,6 +3053,36 @@ int MergePrefabInstances(Scene& scene, const std::string& sourcePath, const json
         json merged = mine;
         merged["entities"] = Merge3WaySubtree(mine["entities"], oldBase, newBase);
         if (merged["entities"].empty()) continue;
+
+        // ★形状（.smsh / .hf / .splat）の伝播。
+        //   3-way マージはパス文字列しか見ないので、ここを通さないと形だけ配られない
+        //   （インスタンスは私物のコピーを持つ＝パスが必ず違う＝常に「手直し」判定になる）。
+        //   このインスタンスのファイルが「配る前のプレハブ」と同一なら未編集なので中身を差し替え、
+        //   違えば個別に彫ったものなので残す。
+        {
+            namespace fs = std::filesystem;
+            const std::string base = assetsDir.empty() ? PathResolver::AssetsDir() : assetsDir;
+            const auto minePaths = CollectGeoPaths(merged["entities"]);
+            const auto newPaths  = CollectGeoPaths(newBase);
+            for (const auto& [key, mineRel] : minePaths)
+            {
+                const auto np = newPaths.find(key);
+                const auto op = oldGeoBytes.find(key);
+                if (np == newPaths.end() || op == oldGeoBytes.end()) continue;
+
+                const std::string mineBytes = ReadFileBytes(base + mineRel);
+                if (mineBytes.empty()) continue;
+                if (mineBytes != op->second)
+                {
+                    if (outGeoKept) ++*outGeoKept;   // 個別に彫ってある＝手直しとして残す
+                    continue;
+                }
+                std::error_code ec;
+                fs::copy_file(fs::path(base + np->second), fs::path(base + mineRel),
+                              fs::copy_options::overwrite_existing, ec);
+                if (!ec && outGeoPropagated) ++*outGeoPropagated;
+            }
+        }
 
         const entt::entity externalParent =
             reg.all_of<Transform>(root) ? reg.get<Transform>(root).parent : entt::null;
@@ -3064,6 +3163,19 @@ bool SceneSerializer::ApplyPrefabInstance(Scene& scene, entt::entity root,
     json oldBase;
     const bool haveOld = ReadPrefabJson(assetsDir + rel, oldBase);
 
+    // ★SavePrefab は生成アセットをプレハブ専用パスへ上書きコピーするので、
+    //   「配る前の中身」はここで先に読んでおく必要がある。
+    std::unordered_map<std::string, std::string> oldGeoBytes;
+    if (haveOld && oldBase.contains("entities"))
+    {
+        const std::string base = assetsDir.empty() ? PathResolver::AssetsDir() : assetsDir;
+        for (const auto& [key, rel2] : CollectGeoPaths(oldBase["entities"]))
+        {
+            std::string bytes = ReadFileBytes(base + rel2);
+            if (!bytes.empty()) oldGeoBytes.emplace(key, std::move(bytes));
+        }
+    }
+
     if (!SavePrefab(scene, root, assetsDir + rel, assetsDir)) return false;
 
     if (haveOld)
@@ -3071,9 +3183,14 @@ bool SceneSerializer::ApplyPrefabInstance(Scene& scene, entt::entity root,
         json newBase;
         if (ReadPrefabJson(assetsDir + rel, newBase))
         {
+            int geoProp = 0, geoKept = 0;
             const int n = MergePrefabInstances(scene, rel, oldBase["entities"],
-                                               newBase["entities"], assetsDir, root);
+                                               newBase["entities"], assetsDir, root,
+                                               oldGeoBytes, &geoProp, &geoKept);
             if (outPropagated) *outPropagated = n;
+            if (geoProp > 0 || geoKept > 0)
+                Logger::Info("プレハブの形状(.smsh/.hf/.splat): {} 件へ反映 / {} 件は"
+                             "個別に彫ってあるので据え置き", geoProp, geoKept);
         }
     }
     return true;
@@ -3150,6 +3267,46 @@ bool SceneSerializer::SavePrefab(const Scene& scene, entt::entity root,
             StripPrefabLinks(j);
             if (j.contains("entities") && j["entities"].is_array())
                 for (auto& ej : j["entities"]) { ej.erase("guid"); ej.erase("parentGuid"); }
+
+            // ★生成アセット（.smsh / .hf / .splat）は .prefab 専用のコピーへ向け直す。
+            //   向け直さないと .prefab が「作った元インスタンスのファイル」を指したままになり、
+            //   その元を後から彫るだけで、触っていないはずの .prefab の中身が黙って変わる。
+            if (j.contains("entities") && j["entities"].is_array())
+            {
+                const std::string base = assetsDir.empty() ? PathResolver::AssetsDir() : assetsDir;
+                const std::string stem = fs::path(filePath).stem().string();
+                auto& arr = j["entities"];
+                for (size_t i = 0; i < arr.size(); ++i)
+                {
+                    for (const GeoField& g : kGeoFields)
+                    {
+                        auto c = arr[i].find(g.comp);
+                        if (c == arr[i].end() || !c->is_object()) continue;
+                        auto k = c->find(g.key);
+                        if (k == c->end() || !k->is_string()) continue;
+                        const std::string srcRel = k->get<std::string>();
+                        if (srcRel.empty()) continue;
+
+                        const std::string dstRel =
+                            MakeGeoRelPath(g.key, "__prefab_" + stem + "_" + std::to_string(i));
+                        if (srcRel == dstRel) continue;
+
+                        std::error_code ec;
+                        const fs::path src(base + srcRel), dst(base + dstRel);
+                        if (!fs::exists(src, ec)) continue;
+                        fs::create_directories(dst.parent_path(), ec);
+                        fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
+                        if (ec)
+                        {
+                            Logger::Warn("プレハブ用に {} を {} へコピーできませんでした"
+                                         "（元インスタンスのファイルを共有します）: {}",
+                                         srcRel, dstRel, ec.message());
+                            continue;
+                        }
+                        *k = dstRel;
+                    }
+                }
+            }
             s = j.dump(2);
         }
     }
