@@ -69,6 +69,13 @@ inline u64 SceneSettingsFingerprint(const Scene& scene)
 
     const std::string& decal = scene.GetDecalAtlasPath();
     mix(decal.data(), decal.size());
+
+    // ★「このシーンで影を描く」も混ぜる。シリアライズはされているのにここに無かったので、
+    //   トグルしても未保存扱いにならず、タイトルの * も保存確認ダイアログも出ず、
+    //   自動保存も走らないまま**次にシーンを開くと元に戻っていた**
+    //   （このチェックボックスは Undo も積まないので、指紋だけが検知経路）。
+    const bool shadows = scene.GetShadowsEnabled();
+    mix(&shadows, sizeof(shadows));
     return v;
 }
 

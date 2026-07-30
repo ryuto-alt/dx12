@@ -291,6 +291,11 @@ void Application::RecreateDepthPrepassPsos()
 // TAA の履歴と、速度の再投影に使う前フレーム情報をまとめて捨てる。
 // シーンロード / Play↔Editor 遷移 / リサイズで呼ぶこと。忘れると「切替直後に
 // 前のシーンの絵が半透明で残る」という気味の悪いバグになる。
+bool Application::ScreenSpaceViewSupported() const
+{
+    return !(m_editorCtx && m_editorCtx->view2D) && m_camera && !m_camera->IsOrthographic();
+}
+
 void Application::InvalidateTemporalHistory()
 {
     if (m_taaPass) m_taaPass->InvalidateHistory();
@@ -299,6 +304,12 @@ void Application::InvalidateTemporalHistory()
     if (m_screenSpaceGi) m_screenSpaceGi->InvalidateHistory();
     // ボリュメトリックフォグの froxel ボリュームも時間再投影の履歴を持っている。
     if (m_volumetricFogPass) m_volumetricFogPass->InvalidateHistory();
+    // ★DDGI のプローブも hysteresis 0.97 の時間蓄積を持つ。ここに無かったので、
+    //   シーン切替 / Play / Stop で**前のシーンの間接光がプローブに残った**
+    //   （プローブ格子はワールド固定なので、暗い洞窟に明るい部屋の照り返しが 1〜2 秒残る）。
+    //   DdgiVolume::InvalidateHistory はまさにこの用途だと書いてあるのに、
+    //   呼んでいたのは MCP の set_dxr だけだった。
+    if (m_ddgi) m_ddgi->InvalidateHistory();
     m_prevViewProjNJValid = false;
     m_prevFrameIndexValid = false;
     m_prevViewProjValid   = false;   // モーションブラーの速度スパイクも同時に防ぐ

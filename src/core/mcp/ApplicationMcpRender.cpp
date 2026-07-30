@@ -146,7 +146,8 @@ void Application::RegisterMcpRenderMethods()
             resp["ok"] = true;
             resp["result"] = {{"enabled", s.enabled}, {"radius", s.radius}, {"bias", s.bias},
                               {"intensity", s.intensity}, {"power", s.power},
-                              {"sampleCount", s.sampleCount}, {"blur", s.blur}};
+                              {"sampleCount", s.sampleCount}, {"blur", s.blur},
+                              {"active", s.enabled && ScreenSpaceViewSupported()}};
         });
 
     McpDefine("set_ssao", McpSsaoParamSpec(), DX12E_MCP_HANDLER
@@ -171,7 +172,8 @@ void Application::RegisterMcpRenderMethods()
                               {"maxDistance", s.maxDistance}, {"thickness", s.thickness},
                               {"maxSteps", s.maxSteps}, {"stride", s.stride},
                               {"roughnessCutoff", s.roughnessCutoff}, {"edgeFade", s.edgeFade},
-                              {"bias", s.bias}};
+                              {"bias", s.bias},
+                              {"active", s.enabled && ScreenSpaceViewSupported()}};
         });
 
     McpDefine("set_ssr", "bias:any,edgeFade:any,enabled:any,intensity:any,maxDistance:any,maxSteps:any,"
@@ -199,7 +201,8 @@ void Application::RegisterMcpRenderMethods()
                               {"radius", s.radius}, {"thickness", s.thickness},
                               {"rayCount", s.rayCount}, {"stepCount", s.stepCount},
                               {"clampValue", s.clampValue}, {"feedback", s.feedback},
-                              {"iblFallback", s.iblFallback}};
+                              {"iblFallback", s.iblFallback},
+                              {"active", s.enabled && ScreenSpaceViewSupported()}};
         });
 
     McpDefine("set_ssgi", "clampValue:any,enabled:any,feedback:any,iblFallback:any,intensity:any,radius:any,"
@@ -226,7 +229,10 @@ void Application::RegisterMcpRenderMethods()
             resp["result"] = {{"enabled", c.enabled}, {"rayLength", c.rayLength},
                               {"thickness", c.thickness}, {"bias", c.bias},
                               {"intensity", c.intensity}, {"steps", c.steps},
-                              {"maxDistance", c.maxDistance}, {"fadeDistance", c.fadeDistance}};
+                              {"maxDistance", c.maxDistance}, {"fadeDistance", c.fadeDistance},
+                              // ★RT サン影が ON だと t11 スロットを取られて無効になる
+                              {"active", c.enabled && ScreenSpaceViewSupported()
+                                         && !m_scene->GetRtSettings().shadowEnabled}};
         });
 
     McpDefine("set_contact_shadow", "bias:any,enabled:any,fadeDistance:any,intensity:any,maxDistance:any,rayLength:any,"
@@ -303,7 +309,11 @@ void Application::RegisterMcpRenderMethods()
                               // TAA が ON でも実際に走らない条件を明示する（誤診断を防ぐ）
                               {"active", t.enabled && m_taaPass && !m_camera->IsOrthographic()
                                          && !(m_editorCtx && m_editorCtx->view2D)},
-                              {"fxaaSuppressed", t.enabled}};
+                              // ★以前は t.enabled をそのまま返していた。実際に FXAA が抑止されるのは
+            //   TAA の resolve が走ったときだけ（正射影 / 2D / 速度プリパス無しでは走らない）。
+            //   「2D の絵がぼやける」を調べに来た相手へ逆のことを答えていた。
+            {"fxaaSuppressed", t.enabled && m_taaPass && !m_camera->IsOrthographic()
+                               && !(m_editorCtx && m_editorCtx->view2D)}};
         });
 
     McpDefine("set_taa", "debugVelocity:any,enabled:any,feedbackMax:any,feedbackMin:any,jitterScale:any,"

@@ -1519,7 +1519,8 @@ void Application::Run()
                 {
                     Logger::Info("Hot-reload: game.lua changed, reloading...");
                     m_commandQueue->WaitIdle();
-                    RebuildScene();
+                    ReloadGameScript();
+                    m_scriptLastWriteTime = currentTime;
                     m_editorCtx->hotReloadFlash = 2.0f;
                     Logger::Info("Hot-reload complete");
                 }
@@ -2909,36 +2910,26 @@ void Application::ApplyFootIkPass()
     }
 }
 
-void Application::RebuildScene()
+// グローバル game.lua を読み直す。**シーンには一切触らない**。
+//
+// ★以前ここは RebuildScene() で、`m_scene->Clear()` から作り直していた。
+//   game.lua がシーンを手続き的に組んでいた時代の名残で、シーンをエディタで作る今は
+//   **エディタを開いたまま game.lua を保存しただけでシーンが全部消える**（しかも
+//   ポスト / SSAO / 空 / フォグ / 影 ON-OFF 等のシーン設定も既定へ戻る）。
+//   RebuildScene は Load をしないので何も復元されず、そのまま Ctrl+S すると
+//   空のシーンが本物のファイルを上書きする。自動保存も空の内容を書きに行く。
+//   ホットリロードでやりたいのは「Lua を読み直す」ことだけなので、それだけをする。
+void Application::ReloadGameScript()
 {
-    m_editorCtx->ClearSelection();
-    m_scene->Clear();
-    auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
-    m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
-                        m_srvHeap.get(), cmdList);
-
     m_scriptEngine->Shutdown();
     m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
                                m_camera.get(), m_audioSystem.get(),
                                m_physicsSystem.get(), PathResolver::AssetsDir());
     WireScriptCallbacks();
 
-    LoadGameScript();
-
-    ThrowIfFailed(cmdList->Close());
-    m_commandQueue->ExecuteCommandList(cmdList);
-    m_commandQueue->WaitIdle();
-    m_resourceManager->FinishUploads();
-    m_frameResources->EndFrame(*m_commandQueue);
-
-    // ホットリロード用タイムスタンプ更新
-    {
-        std::string reloadPath = PathResolver::GameLuaPath();
-        if (std::filesystem::exists(reloadPath))
-            m_scriptLastWriteTime = std::filesystem::last_write_time(reloadPath);
-    }
+    // Play 中（またはゲーム）に書き換えたなら、読み直しはゲームプレイの再開始なので OnStart を呼ぶ。
+    LoadGameScript(/*callOnStart=*/m_isGameMode || m_engineMode == EngineMode::Playing);
 }
-
 
 
 } // namespace dx12e

@@ -471,7 +471,15 @@ private:
     bool m_benchRestore = false;
     f32  m_benchSavedFpsLimit = 0.0f;
     bool m_benchSavedVsync = false;
-    void RebuildScene();
+    // グローバル game.lua を読み直す（シーンは触らない）。ホットリロード専用。
+    void ReloadGameScript();
+
+    // スクリーン空間系（SSAO / SSR / SSGI / コンタクトシャドウ）が実際に走る視点か。
+    // ★正射影 / 2D ビューでは ApplicationRender が問答無用で切る（viewSupportsScreenSpace）。
+    //   MCP の getter がこれを返していなかったので、トップダウンのシーンで SSAO を ON にすると
+    //   `enabled:true` が返るのに何も描かれず、applyAndVerify も「一致」と報告していた。
+    //   TAA / フォグ / PCSS / DXR の getter には既に active があるので、ここだけ抜けていた。
+    bool ScreenSpaceViewSupported() const;
     // フット IK（接地補正）を 1 フレームぶん適用する。Play 中のみ。
     // 物理ステップ後・スキニングバッファのアップロード前に呼ぶこと
     // （IK 後のボーン行列が GPU へ行くように）。
@@ -758,7 +766,11 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE        m_shadowDsvHandles[kNumCascades]{}; // スライス毎の DSV
     u32                                m_shadowSrvIndex = 0;    // 配列SRV(1個)
     u32                                m_shadowMapSize = 2048;  // 4096→2048: トップダウンで影は小さく、1/4の帯域で十分
-    i32                                m_shadowQualityIndex = 2;  // 0:1024, 1:2048, 2:4096, 3:8192
+    // ★index は m_shadowMapSize と必ず一致させること（0:1024, 1:2048, 2:4096, 3:8192）。
+    //   2048 にしたときここが 2(=4096) のままだったので、**コンボは「4096 (High)」と
+    //   表示しているのに実際は 2048** という嘘になっていた（すぐ下の「実サイズ」だけが真実で、
+    //   同じ項目を選び直すと突然影が綺麗になる、という紛らわしい挙動）。
+    i32                                m_shadowQualityIndex = 1;
     bool                               m_shadowMapDirty = false;
     // CSM パラメータ（ImGui 編集用）
     f32                                m_cascadeSplitLambda = 0.5f;  // 0=一様, 1=対数
