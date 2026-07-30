@@ -772,6 +772,12 @@ private:
     //   同じ項目を選び直すと突然影が綺麗になる、という紛らわしい挙動）。
     i32                                m_shadowQualityIndex = 1;
     bool                               m_shadowMapDirty = false;
+    // 直近で settings.json へ書いた値。変わったフレームだけ書くための控え
+    // （VSync と同じ流儀。エンジン設定の窓は値を参照で直接書くだけでコールバックが無い）。
+    i32                                m_persistedShadowQuality = -1;
+    f32                                m_persistedSplitLambda   = -1.0f;
+    f32                                m_persistedBlendBand     = -1.0f;
+    f32                                m_persistedDepthBias     = -1.0f;
     // CSM パラメータ（ImGui 編集用）
     f32                                m_cascadeSplitLambda = 0.5f;  // 0=一様, 1=対数
     f32                                m_cascadeBlendBand   = 1.5f;  // 境界ブレンド幅(view深度)

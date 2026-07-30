@@ -276,6 +276,12 @@ void RenderLightingPanel(Scene* scene,
                                | ImGuiHoveredFlags_AllowWhenBlockedByPopup))
         ctx.floatingToolWindowHoveredThisFrame = true;
 
+    // ★Play 中の変更は Stop で捨てられる（Stop は Play 開始時のシーン JSON から復元する）。
+    //   この窓は Play 中も編集できるので、黙って巻き戻る前に言っておく。
+    if (ctx.isPlaying)
+        ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.35f, 1.0f),
+            "Play 中の変更は Stop で破棄されます（残すなら Stop してから調整）");
+
     entt::registry& reg = scene->GetRegistry();
     const EditorUiIcons* ic = ctx.icons;
     const entt::entity sun = FindSun(reg);

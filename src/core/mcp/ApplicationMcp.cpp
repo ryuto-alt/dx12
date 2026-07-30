@@ -87,6 +87,26 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         if (it != m_mcpMethods.end())
         {
             it->second.fn(params, resp, method, deferred, isDeferred, busyPlaying);
+
+            // ★シーンに属する描画設定は Play 中に変えても Stop で捨てられる
+            //   （Stop は Play 開始時のシーン JSON から丸ごと復元する）。
+            //   これらのセッターは Playing でも素通しなので、応答は成功、get も新しい値、
+            //   なのに Stop した瞬間に巻き戻る＝**呼んだ側からは検知しようがなかった**。
+            //   エンティティ系ツールのように弾いてしまうと「動いている絵を見ながら詰める」
+            //   という正当な使い方まで潰れるので、捨てられることを応答に書く。
+            static const std::unordered_set<std::string> kSceneRenderSetters = {
+                "set_post_process", "set_ssao", "set_ssr", "set_ssgi", "set_taa",
+                "set_volumetric_fog", "set_shadow_pcss", "set_contact_shadow",
+                "set_dxr", "set_sun", "apply_lighting_preset", "set_scene_settings",
+            };
+            if (busyPlaying && kSceneRenderSetters.count(method)
+                && resp.contains("result") && resp["result"].is_object())
+            {
+                resp["result"]["discardedOnStop"] = true;
+                resp["result"]["note"] =
+                    "★Play 中の変更は dx12_stop で破棄される（Stop は Play 開始時のシーンを"
+                    "丸ごと復元する）。残したいなら先に dx12_stop してから設定すること。";
+            }
         }
         else
         {

@@ -127,6 +127,20 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         // フォールバックへ倒す（A/B 検証用。旧 8 灯経路そのものは残していない）。
         m_clusteredEnabled  = PersistGet("render_clustered", 1.0) != 0.0;
         m_forceDepthPrepass = PersistGet("render_depth_prepass", 0.0) != 0.0;
+        // 影の解像度 / CSM の調整値（エディタで詰めた値を配布物でも使う）
+        {
+            static const u32 kSizes[4] = {1024, 2048, 4096, 8192};
+            m_shadowQualityIndex = std::clamp(
+                static_cast<int>(PersistGet("shadow_quality",
+                                            static_cast<double>(m_shadowQualityIndex))), 0, 3);
+            m_shadowMapSize      = kSizes[m_shadowQualityIndex];
+            m_cascadeSplitLambda = std::clamp(
+                static_cast<f32>(PersistGet("shadow_csm_lambda", m_cascadeSplitLambda)), 0.0f, 1.0f);
+            m_cascadeBlendBand   = std::clamp(
+                static_cast<f32>(PersistGet("shadow_csm_band", m_cascadeBlendBand)), 0.0f, 5.0f);
+            m_shadowDepthBias    = std::clamp(
+                static_cast<f32>(PersistGet("shadow_depth_bias", m_shadowDepthBias)), 0.0f, 0.05f);
+        }
         // BC7/BC5 テクスチャ圧縮（0=無圧縮 / 1=高速 / 2=高品質）。既定 1。
         TextureLoader::SetCompressionMode(static_cast<int>(PersistGet("texture_compression", 1.0)));
         const int mode = static_cast<int>(PersistGet("video_mode", 0));

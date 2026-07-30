@@ -377,6 +377,28 @@ void Application::LoadProject(const ProjectInfo& info)
     m_useVsync       = PersistGet("video_vsync", m_useVsync ? 1.0 : 0.0) != 0.0;
     m_persistedVsync = m_useVsync;
 
+    // ★影の解像度と CSM の調整値。書き込み側（ApplicationRender.cpp）とセットで、
+    //   これが無いと保存はされるのに読み出されない＝毎回既定に戻る。
+    {
+        const int qi = static_cast<int>(PersistGet("shadow_quality",
+                                                   static_cast<double>(m_shadowQualityIndex)));
+        static const u32 kSizes[4] = {1024, 2048, 4096, 8192};
+        m_shadowQualityIndex = std::clamp(qi, 0, 3);
+        const u32 want = kSizes[m_shadowQualityIndex];
+        if (want != m_shadowMapSize) { m_shadowMapSize = want; m_shadowMapDirty = true; }
+        m_persistedShadowQuality = m_shadowQualityIndex;
+
+        m_cascadeSplitLambda = std::clamp(
+            static_cast<f32>(PersistGet("shadow_csm_lambda", m_cascadeSplitLambda)), 0.0f, 1.0f);
+        m_cascadeBlendBand   = std::clamp(
+            static_cast<f32>(PersistGet("shadow_csm_band", m_cascadeBlendBand)), 0.0f, 5.0f);
+        m_shadowDepthBias    = std::clamp(
+            static_cast<f32>(PersistGet("shadow_depth_bias", m_shadowDepthBias)), 0.0f, 0.05f);
+        m_persistedSplitLambda = m_cascadeSplitLambda;
+        m_persistedBlendBand   = m_cascadeBlendBand;
+        m_persistedDepthBias   = m_shadowDepthBias;
+    }
+
     m_instancingEnabled = PersistGet("render_instancing", 1.0) != 0.0;
     Logger::Info("自動インスタンシング: {}", m_instancingEnabled ? "ON" : "OFF");
 
@@ -1232,6 +1254,24 @@ bool Application::BuildGame()
                               fs::copy_options::overwrite_existing, bec);
                 if (bec) Logger::Warn("キー割り当ての同梱に失敗しました: {}", bec.message());
                 else     Logger::Info("Copied input_bindings.json");
+            }
+        }
+
+        // ★settings.json も同じ理由で同梱する。ゲームは起動時に PersistGet で
+        //   render_instancing / render_clustered / 影の解像度 / CSM / テクスチャ圧縮 /
+        //   video_* を読むのに、このファイルが配布物に無いので**全部エンジンの既定値**で
+        //   動いていた（エディタで詰めた描画品質が一切届かない）。
+        //   置き先は exe の隣＝プレイヤーが後から書き換える場所そのものなので、
+        //   「作者が選んだ既定値」として置き、以後はプレイヤーの変更が上書きしていく。
+        {
+            const fs::path settingsSrc(PersistPath());
+            std::error_code sec;
+            if (fs::exists(settingsSrc, sec))
+            {
+                fs::copy_file(settingsSrc, outputDir / "settings.json",
+                              fs::copy_options::overwrite_existing, sec);
+                if (sec) Logger::Warn("設定の同梱に失敗しました: {}", sec.message());
+                else     Logger::Info("Copied settings.json");
             }
         }
     }

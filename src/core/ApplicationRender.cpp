@@ -2901,6 +2901,7 @@ void Application::Render()
         srvDesc.Texture2DArray.ArraySize = kNumCascades;
         m_graphicsDevice->GetDevice()->CreateShaderResourceView(
             m_shadowMap.Get(), &srvDesc, m_srvHeap->GetCpuHandle(m_shadowSrvIndex));
+        Logger::Info("Shadow map resized ({}x{})", m_shadowMapSize, m_shadowMapSize);
     }
 
     // ===== メインパスのビューポートとカメラ投影を先に確定 =====
@@ -5215,6 +5216,31 @@ void Application::Render()
             PersistSet("video_vsync", m_useVsync ? 1.0 : 0.0);
         }
 
+        // ★影の解像度と CSM の調整値も同じ流儀で保存する。
+        //   これまでどこにも永続化されておらず（settings.json にもシーン JSON にも無い）、
+        //   8192 に上げて分割 λ を詰めても**次の起動で既定へ戻り、配布ゲームにも届かない**。
+        //   シーンではなくプロジェクトの描画品質設定なので settings.json 側が正しい。
+        if (m_shadowQualityIndex != m_persistedShadowQuality)
+        {
+            m_persistedShadowQuality = m_shadowQualityIndex;
+            PersistSet("shadow_quality", static_cast<double>(m_shadowQualityIndex));
+        }
+        if (m_cascadeSplitLambda != m_persistedSplitLambda)
+        {
+            m_persistedSplitLambda = m_cascadeSplitLambda;
+            PersistSet("shadow_csm_lambda", static_cast<double>(m_cascadeSplitLambda));
+        }
+        if (m_cascadeBlendBand != m_persistedBlendBand)
+        {
+            m_persistedBlendBand = m_cascadeBlendBand;
+            PersistSet("shadow_csm_band", static_cast<double>(m_cascadeBlendBand));
+        }
+        if (m_shadowDepthBias != m_persistedDepthBias)
+        {
+            m_persistedDepthBias = m_shadowDepthBias;
+            PersistSet("shadow_depth_bias", static_cast<double>(m_shadowDepthBias));
+        }
+
         if (m_modeChangeRequested)
             m_pendingMode = pendingPlayMode ? EngineMode::Playing : EngineMode::Editor;
 
@@ -5359,6 +5385,14 @@ void Application::Render()
             if (m_editorCtx->showPostProcess)
             {
             ImGui::Begin("Post Process");
+            // ★Play 中の変更は Stop で捨てられる（Stop は Play 開始時のシーン JSON から
+            //   丸ごと復元する）。以前はこの窓も MCP のセッターも Play 中に素通しで、
+            //   警告もタイトルの * も出ないまま、詰めた露出やブルームが黙って巻き戻っていた。
+            //   窓ごと無効にすると「動いている絵を見ながら詰める」という正当な使い方まで
+            //   潰れるので、捨てられることを言うだけにする。
+            if (m_engineMode == EngineMode::Playing)
+                ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.35f, 1.0f),
+                    "Play 中の変更は Stop で破棄されます（残すなら Stop してから調整）");
             ImGui::Checkbox("有効（マスター）", &pp.enabled);
             // トーンマップ（表示変換）はマスターOFF でも常に適用されるのでディセーブル外
             ImGui::SetNextItemWidth(200.0f);
