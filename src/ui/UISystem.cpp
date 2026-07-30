@@ -2203,10 +2203,20 @@ bool ResolveAndDrawCanvases(entt::registry& reg, float ox, float oy, float vw, f
         }
         ctx.canvasEntity = entry.e;
 
-        auto it = children.find(entry.e);
-        if (it == children.end()) continue;
-        for (entt::entity child : it->second)
-            DrawUiSubtree(child, canvasRect, ctx);
+        // ★キャンバス自身も 1 つのノードとして通す。
+        //   以前は子だけを回していたので、**UICanvas エンティティに付けた UI 部品が全部無視された**
+        //   （「Canvas に UI Image を足して全画面背景」「Canvas に UILayout を足して直下を並べる」が
+        //   何も起きない）。Inspector も MCP も canvas へ付けさせるし、`dx12_ui_tree` は
+        //   components に載せて報告するので、**木は「ある」と言うのにスクショには出ない**という
+        //   一番たちの悪い食い違いになっていた。
+        //   ★UIRect を持たないノードは DrawUiSubtree が描画自体をスキップする（矩形が無いので）。
+        //   キャンバスの矩形は canvasRect として暗黙に決まっているので、
+        //   UIRect が無いキャンバスはここで明示的にキャンバス全面で描く
+        //   （＝「Canvas に UI Image を足したら全画面背景」という素直な意図どおりになる）。
+        //   子より先に描く＝背景として下に敷かれる。
+        if (ctx.dl && !ctx.reg->all_of<UIRect>(entry.e))
+            DrawUiElement(entry.e, canvasRect, ctx);
+        DrawUiSubtree(entry.e, canvasRect, ctx);
     }
 
     ctx.children = nullptr;   // children はローカル所有。ダングリング参照を残さない
