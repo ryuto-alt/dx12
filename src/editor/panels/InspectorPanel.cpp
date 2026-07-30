@@ -1976,8 +1976,18 @@ void InspectorPanel::Render(entt::registry& reg,
                             texBuf[n] = '\0';
                         }
                     }
+                    // ★無効になるのは GpuParticleSystem::EmitRequest に無いものが全部。
+                    //   ここを増やしたら EmitRequest と突き合わせて更新すること。
+                    //   ツールチップだけだとホバーしないと読まれないので、本文にも出す
+                    //   （「設定したのに変わらない」で悩ませないため）。
                     changed |= pg::Checkbox("GPUパーティクル", &pe.gpu,
-                        "compute シムで最大 131072 粒子（加算専用・大量粒子向け）。\n歪み/ライト/中間サイズ/アルファ合成は CPU 専用のため無効");
+                        "compute シムで最大 131072 粒子（加算専用・大量粒子向け）。\n"
+                        "CPU 専用の項目は無効: 中間色 / 中間サイズ / 乱流の細かさ / 画面歪み /\n"
+                        "ライト放出 / 明滅 / テクスチャ / 向き / 合成（加算固定）");
+                    if (pe.gpu)
+                        ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
+                            "GPU では無効: 中間色・中間サイズ・乱流の細かさ・画面歪み・"
+                            "ライト放出・明滅・テクスチャ・向き（合成は加算固定）");
                     changed |= pg::Float("放出レート Rate(/s)", &pe.rate, 0.5f, 0.0f, pe.gpu ? 100000.0f : 500.0f, "%.1f", &active);
                     changed |= pg::Checkbox("Play開始で放出", &pe.playOnStart);
                     changed |= pg::Checkbox("ループ Looping", &pe.looping);
