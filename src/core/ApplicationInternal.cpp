@@ -642,7 +642,11 @@ nlohmann::json McpLuaApi()
     objects.push_back(O("camera", "global", json::array({
         "getPosition()/setPosition(v)", "getYaw()/setYaw(f)", "getPitch()/setPitch(f)",
         "moveForward/moveRight/moveUp(amt)", "rotate(dx,dy)",
-        "getMoveSpeed/setMoveSpeed", "getMouseSensitivity/setMouseSensitivity",
+        // ★この2つを読むのはエディタのフライカメラだけ（Application.cpp の
+        //   EngineMode::Editor ブロックと SceneViewPanel）。Play/配布ゲームでは
+        //   誰も読まないので、ゲームスクリプトから呼んでも何も起きない。
+        "getMoveSpeed/setMoveSpeed  ※エディタのフライ操作専用。ゲーム中は無効",
+        "getMouseSensitivity/setMouseSensitivity  ※同上（自作のマウス感度は自前で持つこと）",
         "project(x,y,z) -> (u,v,visible)",
     })));
     objects.push_back(O("physics", "global", json::array({
@@ -650,7 +654,7 @@ nlohmann::json McpLuaApi()
         "addCapsuleCollider(e,radius,halfHeight)", "addRigidBody(e,motionType,mass)", "removeRigidBody(e)",
         "applyForce(e,vec3)", "applyImpulse(e,vec3)", "setVelocity(e,vec3)", "getVelocity(e) -> vec3",
         "setPosition(e,vec3)  ※DYNAMIC ボディ向け。KINEMATIC/STATIC は Transform 駆動なので entity.transform.position を直接書く",
-        "raycast(origin,dir,maxDist) -> RaycastHit",
+        "raycast(origin,dir,maxDist) -> RaycastHit  ※戻り値は h.hit / h.distance / h.point / h.normal（() を付けない）",
         "overlapBox(center,half,maxN?) -> {entity..}", "overlapSphere(center,radius,maxN?) -> {entity..}",
         "setGravity(vec3)", "setPaused(b)", "step(dt)",
         "addCharacterController(e,radius,halfHeight)", "move(e,vx,vz)", "jump(e,amount?)", "isGrounded(e) -> bool",
@@ -683,8 +687,14 @@ nlohmann::json McpLuaApi()
         "time.localTime(e)/skipEntity(e,±sec)/scaleEntity(e,s)/getEntityScale(e)/resetEntity(e)  — ビデオ時計と独立したエンティティ個別時計(0=停止、負=逆再生)",
         "charge.new(key, {max=2,rate=1,realtime=false}?) -> c  — 押しっぱなしチャージ計測(弓を引く等)。OnUpdate で c:update()、c:charging()/c:ratio()/c:value()、離した瞬間 c:released() がチャージ量を返す(他は nil)",
     })));
-    objects.push_back(O("RaycastHit", "physics:raycast(...)", json::array({
-        "hit() -> bool", "distance() -> float", "point() -> vec3", "normal() -> vec3",
+    // ★メソッドではなくプロパティ。sol2 はメンバ変数ポインタ(&RaycastHit::hit 等)を
+    //   プロパティとして束縛するので、h:hit() は "attempt to call a boolean value" で落ちる。
+    //   ここが () 付きで書いてあったせいで、ドキュメント通りに書くとエラーになっていた。
+    objects.push_back(O("RaycastHit", "physics:raycast(...) の戻り値", json::array({
+        "★プロパティで読む。h:hit() や h.hit() は実行時エラー（() を付けない）",
+        "hit -> bool", "distance -> float", "point -> Vec3", "normal -> Vec3",
+        "例: local h = physics:raycast(o, dir, 100); if h.hit then log(h.point.y) end",
+        "bodyId は Lua に出していない（当たった相手の Entity は取れない）",
     })));
     objects.push_back(O("ui", "global (':' で呼ぶ)", json::array({
         "ui:text(x,y,text,size?,r?,g?,b?,a?)", "ui:button(x,y,w,h,label) -> bool",

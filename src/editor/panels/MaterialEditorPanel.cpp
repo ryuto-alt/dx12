@@ -439,7 +439,8 @@ void MaterialEditorPanel::RenderWindow(EditorContext& ctx, const std::string& as
     ImGui::Spacing();
     ImGui::TextDisabled("Scalars");
 
-    // ドラッグ中は UpdateScalarsOnly で SRV を触らず即時プレビュー反映、指を離した瞬間にディスクへ保存する。
+    // ドラッグ中は UpdateScalarsOnly で SRV を触らずキャッシュだけ更新、指を離した瞬間にディスクへ保存する。
+    // ★即時プレビューに出るのは metallic/roughness だけ。uvTiling は描画側に読み手が無い（下の注記参照）。
     auto liveSlider = [&](const char* label, f32* v, f32 lo, f32 hi)
     {
         bool dragging = ImGui::SliderFloat(label, v, lo, hi, "%.3f");
@@ -455,9 +456,20 @@ void MaterialEditorPanel::RenderWindow(EditorContext& ctx, const std::string& as
     liveSlider("\xe7\xb2\x97\xe3\x81\x95 Roughness", &m_current.roughness, 0.0f, 1.0f);
 
     ImGui::Spacing();
-    ImGui::TextDisabled("UV Tiling");
+    // ★metallic/roughness と違い、これは即時反映されない。
+    //   ApplicationRender.cpp:578 が pbrParams.uvScale を無条件 1.0 で初期化しており、
+    //   MaterialAssetData::uvTilingU/V を読む描画コードは存在しない。実際に使われるのは
+    //   割り当て時のコピー（EditorLayer.cpp / InspectorPanel.cpp の D&D）1 回だけで、
+    //   そこから先は MeshRenderer::uvScaleU/V → Mesh::ApplyUVScale で**頂点に焼く**。
+    //   設計としてそう決まっている（InspectorPanel.cpp:2762）ので描画側は変えず、
+    //   「動かしても何も起きない」に見える方を潰す。
+    ImGui::TextDisabled("UV Tiling\xef\xbc\x88\xe5\x89\xb2\xe3\x82\x8a\xe5\xbd\x93\xe3\x81\xa6\xe6\x99\x82\xe3\x81\xae\xe5\x88\x9d\xe6\x9c\x9f\xe5\x80\xa4\xef\xbc\x89");
     liveSlider("U", &m_current.uvTilingU, 0.01f, 32.0f);
     liveSlider("V", &m_current.uvTilingV, 0.01f, 32.0f);
+    ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f), "%s",
+        "\xe2\x80\xbb\xe3\x81\x93\xe3\x82\x8c\xe3\x81\x8b\xe3\x82\x89\xe5\x89\xb2\xe3\x82\x8a\xe5\xbd\x93\xe3\x81\xa6\xe3\x82\x8b\xe6\x99\x82\xe3\x81\xae\xe5\x88\x9d\xe6\x9c\x9f\xe5\x80\xa4\xe3\x81\xa7\xe3\x81\x99\xe3\x80\x82\xe6\x97\xa2\xe3\x81\xab\xe8\xb2\xbc\xe3\x81\xa3\xe3\x81\xa6\xe3\x81\x82\xe3\x82\x8b\xe3\x83\xa1\xe3\x83\x83\xe3\x82\xb7\xe3\x83\xa5\xe3\x81\xaf\xe5\xa4\x89\xe3\x82\x8f\xe3\x82\x8a\xe3\x81\xbe\xe3\x81\x9b\xe3\x82\x93");
+    ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f), "%s",
+        "\xef\xbc\x88UV \xe3\x81\xaf\xe9\xa0\x82\xe7\x82\xb9\xe3\x81\xab\xe7\x84\xbc\xe3\x81\x8d\xe8\xbe\xbc\xe3\x82\x80\xe3\x81\x9f\xe3\x82\x81\xef\xbc\x89\xe3\x80\x82Inspector > MeshRenderer > UVTiling \xe3\x81\xa7\xe5\xa4\x89\xe3\x81\x88\xe3\x81\xa6\xe3\x81\x8f\xe3\x81\xa0\xe3\x81\x95\xe3\x81\x84\xe3\x80\x82");
 
     if (m_currentPath.empty())
         ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f),
