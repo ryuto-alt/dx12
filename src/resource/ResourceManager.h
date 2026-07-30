@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "core/Types.h"
 #include "resource/TextureLoader.h"   // TextureUsage（BC 圧縮の形式選択に使う）
 
 struct ID3D12GraphicsCommandList;
@@ -44,11 +45,15 @@ public:
     // usage は BC 圧縮の形式選択に使う（既定 Unknown = 圧縮しない＝従来どおり）。
     // マテリアルのスロットが分かっている呼び出し側（ModelLoader / .dxmat / Inspector の上書き）
     // だけが BaseColor / Normal / NonColor を渡すこと。
+    // maxDimension > 0 = 長辺をそこまで縮めて読む（0 = 等倍）。アセットブラウザの
+    // サムネイル専用。キャッシュキーにも混ぜてあるので、同じ画像を等倍で要求する経路
+    // （UI 画像・マテリアル）が縮小版を掴むことはない。
     Texture* GetOrLoadTexture(
         const std::wstring& filePath,
         ID3D12GraphicsCommandList* cmdList,
         bool srgb = true,
-        TextureUsage usage = TextureUsage::Unknown);
+        TextureUsage usage = TextureUsage::Unknown,
+        u32 maxDimension = 0);
 
     // モデル読み込み（キャッシュ付き）
     const CachedModel* GetOrLoadModel(

@@ -62,6 +62,11 @@ public:
     // BC の 4x4 ブロック制約 / 2D 単体かどうかで圧縮可否を判定する純関数。
     static bool IsCompressibleSize(size_t width, size_t height, size_t arraySize, size_t depth);
 
+    // 長辺を maxDim に収めるサイズを縦横比を保って求める純関数。
+    // 縮小が不要（maxDim==0 / 既に収まっている / サイズ 0）なら false を返し out は触らない。
+    static bool ComputeDownscale(size_t width, size_t height, uint32_t maxDim,
+                                 size_t& outWidth, size_t& outHeight);
+
     static TextureProbeInfo Probe(const std::wstring& filePath);
 
     // MCP read_texture 用: 対応形式(dds/tga/hdr/WIC 系)を PNG へ変換して保存する。
@@ -70,12 +75,16 @@ public:
                              uint32_t maxSize, std::string& outError,
                              uint32_t& outWidth, uint32_t& outHeight);
 
+    // maxDimension > 0 なら、長辺がそれを超える画像を読み込み時点で縮小する（0 = 等倍＝従来どおり）。
+    // 用途はサムネイル。80px のセルに 4K テクスチャを等倍で置くと VRAM が一瞬で溶ける。
+    // ★BC 圧縮済み / 配列 / ボリュームは縮小しない（DirectXTex の Resize が扱えない）。
     static std::unique_ptr<Texture> LoadFromFile(
         GraphicsDevice& device,
         ID3D12GraphicsCommandList* cmdList,
         const std::wstring& filePath,
         bool srgb = true,   // false = linear (normal/metalRoughness maps)
-        TextureUsage usage = TextureUsage::Unknown);
+        TextureUsage usage = TextureUsage::Unknown,
+        uint32_t maxDimension = 0);
 
     // IBL 環境キューブ用：.dds の TEXTURECUBE を 6 面×全 mip でロードする。
     // SRV(TextureCube) は呼び出し側で Texture::CreateCubeSRV を使って張ること。
@@ -95,7 +104,8 @@ public:
         const char* formatHint,
         bool srgb = true,
         TextureUsage usage = TextureUsage::Unknown,
-        const std::string& cacheKey = std::string());
+        const std::string& cacheKey = std::string(),
+        uint32_t maxDimension = 0);
 
     // 地形レイヤー配列用：CPU 側で組み上げた RGBA8 スライス列から Texture2DArray を作る。
     //   ミップ生成 → BC 圧縮（.texcache にキャッシュ）→ GPU アップロードまで一括で行う。

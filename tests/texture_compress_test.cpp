@@ -246,6 +246,46 @@ static void Test_ViewFormatStripsSrgb()
           == DXGI_FORMAT_R16G16B16A16_FLOAT);
 }
 
+// ---------------------------------------------------------------
+// 6. サムネイル縮小の寸法計算
+//    アセットブラウザは 4K テクスチャを 80px のセルに載せる。等倍で読むと
+//    1 枚 85MB(mip 込み)が ResourceManager に残り続ける（エビクション無し）。
+//    ここが壊れると「無言で VRAM を食う」に戻るので寸法だけは固定する。
+// ---------------------------------------------------------------
+void Test_ComputeDownscale()
+{
+    size_t w = 0, h = 0;
+
+    // 縮小不要のケースは false（out は触らない）
+    CHECK(!TextureLoader::ComputeDownscale(4096, 4096, 0, w, h));    // maxDim=0 = 無効
+    CHECK(!TextureLoader::ComputeDownscale(256, 256, 256, w, h));    // ちょうど = 縮小しない
+    CHECK(!TextureLoader::ComputeDownscale(128, 64, 256, w, h));     // 既に小さい
+    CHECK(!TextureLoader::ComputeDownscale(0, 512, 256, w, h));      // サイズ 0
+    CHECK(!TextureLoader::ComputeDownscale(512, 0, 256, w, h));
+
+    // 正方形
+    CHECK(TextureLoader::ComputeDownscale(4096, 4096, 256, w, h));
+    CHECK(w == 256 && h == 256);
+
+    // 横長：長辺が上限、縦横比は保つ
+    CHECK(TextureLoader::ComputeDownscale(2048, 1024, 256, w, h));
+    CHECK(w == 256 && h == 128);
+
+    // 縦長：長辺で決まる（短辺が上限になってはいけない）
+    CHECK(TextureLoader::ComputeDownscale(1024, 2048, 256, w, h));
+    CHECK(w == 128 && h == 256);
+
+    // ★極端なアスペクト比でも短辺が 0 にならない（0 だと Resize が失敗して等倍のまま通る）
+    CHECK(TextureLoader::ComputeDownscale(8192, 1, 256, w, h));
+    CHECK(w == 256 && h == 1);
+    CHECK(TextureLoader::ComputeDownscale(1, 8192, 256, w, h));
+    CHECK(w == 1 && h == 256);
+
+    // 2 の冪でないサイズでも長辺は必ず上限以下に収まる
+    CHECK(TextureLoader::ComputeDownscale(1920, 1080, 256, w, h));
+    CHECK(w == 256 && h <= 256 && h == 144);
+}
+
 int main()
 {
     Test_FormatSelection();
@@ -253,6 +293,7 @@ int main()
     Test_CompressibleSize();
     Test_BC7Roundtrip();
     Test_BC5NormalRoundtrip();
+    Test_ComputeDownscale();
 
     std::printf("texture_compress: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

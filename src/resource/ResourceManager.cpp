@@ -94,9 +94,11 @@ namespace
 {
 // テクスチャキャッシュのキー。パスだけだと、同じ画像を別の色空間/用途で要求しても
 // 先に読まれた方が返ってしまう（法線マップが sRGB 版になる等）。
-std::wstring MakeTextureCacheKey(const std::wstring& path, bool srgb, TextureUsage usage)
+std::wstring MakeTextureCacheKey(const std::wstring& path, bool srgb, TextureUsage usage,
+                                 uint32_t maxDim)
 {
-    return path + (srgb ? L"|s1|u" : L"|s0|u") + std::to_wstring(static_cast<int>(usage));
+    return path + (srgb ? L"|s1|u" : L"|s0|u") + std::to_wstring(static_cast<int>(usage))
+                + L"|m" + std::to_wstring(maxDim);
 }
 }
 
@@ -104,7 +106,8 @@ Texture* ResourceManager::GetOrLoadTexture(
     const std::wstring& filePath,
     ID3D12GraphicsCommandList* cmdList,
     bool srgb,
-    TextureUsage usage)
+    TextureUsage usage,
+    u32 maxDimension)
 {
     // ★キーはパスだけではいけない。srgb / usage は「後から効かせる設定」ではなく
     //   テクスチャの実体（SRV フォーマット・BC 圧縮形式・ミップのフィルタ）を変える
@@ -114,7 +117,7 @@ Texture* ResourceManager::GetOrLoadTexture(
     //   後から srgb=false / TextureUsage::Normal で要求しても **sRGB 版が返る**。
     //   法線マップがガンマ解除されてライティングが静かに狂う（ログも警告も出ない）。
     //   1 層下のディスク圧縮キャッシュ（TextureLoader.cpp:228）は既に usage を混ぜてある。
-    const std::wstring cacheKey = MakeTextureCacheKey(filePath, srgb, usage);
+    const std::wstring cacheKey = MakeTextureCacheKey(filePath, srgb, usage, maxDimension);
 
     auto it = m_textureCache.find(cacheKey);
     if (it != m_textureCache.end())
@@ -140,14 +143,16 @@ Texture* ResourceManager::GetOrLoadTexture(
                 bytes.data(), bytes.size(),
                 formatHint.c_str(),
                 srgb, usage,
-                /*cacheKey=*/PathResolver::WideToUtf8(filePath));
+                /*cacheKey=*/PathResolver::WideToUtf8(filePath),
+                maxDimension);
         }
     }
 
     // VFS が空（ディスクモード / マウント前 / ファイル不在）なら元のファイル読み込みにフォールバック
     if (!texture)
     {
-        texture = TextureLoader::LoadFromFile(*m_device, cmdList, filePath, srgb, usage);
+        texture = TextureLoader::LoadFromFile(*m_device, cmdList, filePath, srgb, usage,
+                                              maxDimension);
     }
 
     if (!texture)
@@ -232,7 +237,8 @@ Texture* ResourceManager::GetOrLoadEmbeddedTexture(
 {
     // wstring キーに変換してキャッシュ検索（UTF-8正変換。バイトコピーだと
     // 日本語キーが壊れて wstring パス経由のキャッシュと不一致になる）
-    std::wstring wkey = MakeTextureCacheKey(PathResolver::Utf8ToWide(key), srgb, usage);
+    // 埋め込みテクスチャは常に等倍（サムネイル経路が無い）
+    std::wstring wkey = MakeTextureCacheKey(PathResolver::Utf8ToWide(key), srgb, usage, 0);
     auto it = m_textureCache.find(wkey);
     if (it != m_textureCache.end())
         return it->second.get();

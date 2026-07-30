@@ -99,6 +99,11 @@ void OpenInVSCode(const std::string& filePath)
 namespace dx12e
 {
 
+// サムネイルの長辺上限[px]。セルは最大でも 128px 程度なので 256 で足りる。
+// ponytail: 固定値。セルサイズに追従させたいなら m_cellSize から求める（キャッシュキーが
+//           増えるので、素材を等倍と縮小の 2 通り持つことになる点に注意）。
+constexpr u32 kThumbnailMaxDim = 256;
+
 void AssetBrowserPanel::Initialize(const std::string& assetsDir,
                                     const std::string& scriptsDir,
                                     ResourceManager* resourceManager,
@@ -126,8 +131,12 @@ void AssetBrowserPanel::LoadPendingThumbnails(ID3D12GraphicsCommandList* cmdList
         std::filesystem::path path(pathStr);
 
         ThumbnailInfo info;
+        // ★サムネイルは 256px 上限で読む。80px のセルに 4K テクスチャを等倍で載せると、
+        //   1 枚 85MB(mip 込み)がキャッシュに残り続ける（ResourceManager にエビクションは無い）。
+        //   assets/textures を一度スクロールしただけで VRAM が数 GB 飛び、以後そのセッションの
+        //   ずっと戻らない。ログも警告も出ないまま「なぜか重い」になる。
         Texture* tex = m_resourceManager->GetOrLoadTexture(
-            path.wstring(), cmdList, true);
+            path.wstring(), cmdList, true, TextureUsage::Unknown, kThumbnailMaxDim);
         if (tex && tex->GetSrvIndex() != UINT32_MAX)
         {
             auto gpuHandle = m_srvHeap->GetGpuHandle(tex->GetSrvIndex());

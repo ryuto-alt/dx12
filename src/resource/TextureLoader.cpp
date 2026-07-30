@@ -34,6 +34,29 @@ std::atomic<bool> g_cacheDirWarned{false};
 // mip が 1 枚しか無い非圧縮画像はフルミップチェーンを生成する（遠景のシマー/
 // エイリアシング防止）。BC 圧縮はデコード無しで再生成できないためそのまま。
 // 生成失敗は品質低下のみなので mip1 のまま続行する。
+// 長辺が maxDim を超えていたら縮小する。maxDim==0 は何もしない。
+// BC 圧縮済み / 配列 / キューブ / ボリュームは DirectXTex の Resize が扱えないので素通し
+// （＝サムネイルでも等倍で載る。無言で壊すより等倍で正しい方がまし）。
+void DownscaleIfLarger(DirectX::ScratchImage& scratch, uint32_t maxDim)
+{
+    if (maxDim == 0) return;
+    const DirectX::TexMetadata& meta = scratch.GetMetadata();
+    if (DirectX::IsCompressed(meta.format)) return;
+    if (meta.arraySize > 1 || meta.depth > 1 || meta.IsCubemap()) return;
+
+    size_t nw = 0, nh = 0;
+    if (!TextureLoader::ComputeDownscale(meta.width, meta.height, maxDim, nw, nh)) return;
+
+    // mip0 だけを縮小する（元にミップがあっても、この後 EnsureMipChain が作り直す）
+    const DirectX::Image* src = scratch.GetImage(0, 0, 0);
+    if (!src) return;
+
+    DirectX::ScratchImage resized;
+    if (FAILED(DirectX::Resize(*src, nw, nh, DirectX::TEX_FILTER_DEFAULT, resized)))
+        return;   // 縮小に失敗しても等倍で続行する（読み込み自体は成功させる）
+    scratch = std::move(resized);
+}
+
 void EnsureMipChain(DirectX::ScratchImage& scratch, bool srgb)
 {
     const DirectX::TexMetadata& meta = scratch.GetMetadata();
@@ -441,6 +464,26 @@ bool TextureLoader::IsCompressibleSize(size_t width, size_t height, size_t array
     return true;
 }
 
+bool TextureLoader::ComputeDownscale(size_t width, size_t height, uint32_t maxDim,
+                                     size_t& outWidth, size_t& outHeight)
+{
+    if (maxDim == 0 || width == 0 || height == 0) return false;
+
+    const size_t longSide = (std::max)(width, height);
+    if (longSide <= maxDim) return false;
+
+    const double scale = static_cast<double>(maxDim) / static_cast<double>(longSide);
+    size_t nw = static_cast<size_t>(static_cast<double>(width) * scale);
+    size_t nh = static_cast<size_t>(static_cast<double>(height) * scale);
+    // 極端なアスペクト比（8192x1 等）で短辺が 0 に落ちると Resize が失敗する
+    if (nw < 1) nw = 1;
+    if (nh < 1) nh = 1;
+
+    outWidth  = nw;
+    outHeight = nh;
+    return true;
+}
+
 TextureProbeInfo TextureLoader::Probe(const std::wstring& filePath)
 {
     TextureProbeInfo info;
@@ -522,7 +565,8 @@ std::unique_ptr<Texture> TextureLoader::LoadFromFile(
     ID3D12GraphicsCommandList* cmdList,
     const std::wstring& filePath,
     bool srgb,
-    TextureUsage usage)
+    TextureUsage usage,
+    uint32_t maxDimension)
 {
     DirectX::ScratchImage scratchImage;
 
@@ -580,6 +624,9 @@ std::unique_ptr<Texture> TextureLoader::LoadFromFile(
             Logger::Error("テクスチャの読み込みに失敗しました: {}", pathStr);
             return nullptr;
         }
+
+        // ★縮小はミップ生成より前。後だとフルサイズのミップ鎖を一度作ってから捨てることになる。
+        DownscaleIfLarger(scratchImage, maxDimension);
 
         // mip が無ければ生成（メタデータは生成後に取り直す）
         EnsureMipChain(scratchImage, srgb);
@@ -721,7 +768,8 @@ std::unique_ptr<Texture> TextureLoader::LoadFromMemory(
     const char* formatHint,
     bool srgb,
     TextureUsage usage,
-    const std::string& cacheKey)
+    const std::string& cacheKey,
+    uint32_t maxDimension)
 {
     DirectX::ScratchImage scratchImage;
 
@@ -770,6 +818,9 @@ std::unique_ptr<Texture> TextureLoader::LoadFromMemory(
             Logger::Error("埋め込みテクスチャの読み込みに失敗しました（format={}）", hint);
             return nullptr;
         }
+
+        // ★縮小はミップ生成より前（LoadFromFile と同じ）
+        DownscaleIfLarger(scratchImage, maxDimension);
 
         // mip が無ければ生成（メタデータは生成後に取り直す）
         EnsureMipChain(scratchImage, srgb);
