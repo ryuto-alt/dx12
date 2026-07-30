@@ -418,6 +418,104 @@ void PhysicsSystem::FlushPendingContacts()
     }
 }
 
+namespace {
+
+// 親子階層を解決した「ワールドの」位置 / 回転 / スケール。
+//
+// ★物理は長らく Transform.parent を無視して**ローカル値をそのまま**使っていた。
+//   親（グループ化した空エンティティ等）の下に置いた剛体は、当たり判定がローカル座標に
+//   作られ、描画は親の分だけずれる＝**見えている箱と当たる箱が別の場所にある**。
+//   実測: 親を (10,0,0)、子をローカル (0,6,0) に置いて落とすと、箱は world x=10 に描かれるのに
+//   overlapSphere が拾うのは x=0（親なしの対照は一致する）。
+//   スケールも同じで、親を 2 倍にしても当たり判定は等倍のままだった。
+struct WorldTRS
+{
+    DirectX::XMFLOAT3 pos{0.0f, 0.0f, 0.0f};
+    JPH::Quat         rot = JPH::Quat::sIdentity();
+    DirectX::XMFLOAT3 scale{1.0f, 1.0f, 1.0f};
+};
+
+// 親なし（大多数）は従来と 1 ビットも変えない。親付きだけワールド行列から取り出す。
+WorldTRS ResolveWorldTRS(const entt::registry& reg, entt::entity e, const Transform& t)
+{
+    WorldTRS out;
+    const bool parented = (t.parent != entt::null) && reg.valid(t.parent);
+
+    if (!parented)
+    {
+        out.pos   = t.position;
+        out.scale = t.scale;
+        if (t.useQuaternion)
+            out.rot = JPH::Quat(t.quaternion.x, t.quaternion.y, t.quaternion.z, t.quaternion.w);
+        else
+        {
+            DirectX::XMFLOAT4 qf;
+            DirectX::XMStoreFloat4(&qf, DirectX::XMQuaternionRotationRollPitchYaw(
+                DirectX::XMConvertToRadians(t.rotation.x),
+                DirectX::XMConvertToRadians(t.rotation.y),
+                DirectX::XMConvertToRadians(t.rotation.z)));
+            out.rot = JPH::Quat(qf.x, qf.y, qf.z, qf.w);
+        }
+        return out;
+    }
+
+    DirectX::XMVECTOR s, q, p;
+    if (!DirectX::XMMatrixDecompose(&s, &q, &p, ComputeWorldMatrix(reg, e)))
+        return out;   // 分解できない（スケール 0 / せん断）: 既定のまま返す
+
+    DirectX::XMStoreFloat3(&out.pos, p);
+    DirectX::XMStoreFloat3(&out.scale, s);
+    DirectX::XMFLOAT4 qf;
+    DirectX::XMStoreFloat4(&qf, q);
+    out.rot = JPH::Quat(qf.x, qf.y, qf.z, qf.w);
+    return out;
+}
+
+// 物理が返したワールドの位置 / 回転を、親のローカル空間へ戻して Transform へ書く。
+// 親なしならそのまま代入（従来の挙動）。
+void WriteBackWorldToLocal(const entt::registry& reg, Transform& t,
+                           const DirectX::XMFLOAT3& worldPos, const JPH::Quat& worldRot)
+{
+    const bool parented = (t.parent != entt::null) && reg.valid(t.parent);
+    if (!parented)
+    {
+        t.position   = worldPos;
+        t.quaternion = { worldRot.GetX(), worldRot.GetY(), worldRot.GetZ(), worldRot.GetW() };
+        t.useQuaternion = true;
+        return;
+    }
+
+    // 親のワールド行列の逆行列を通す。ここを通さないと**ワールド値をローカルへ代入**する形になり、
+    // 親のオフセットぶん毎フレーム描画がずれる（親の下では物理が二重に効いて見える）。
+    DirectX::XMVECTOR det;
+    const DirectX::XMMATRIX parentW   = ComputeWorldMatrix(reg, t.parent);
+    const DirectX::XMMATRIX parentInv = DirectX::XMMatrixInverse(&det, parentW);
+    if (DirectX::XMVectorGetX(DirectX::XMVectorAbs(det)) < 1e-12f)
+    {
+        // 親のスケールが 0 等で逆行列が取れない。ワールド値をそのまま入れる（従来と同じ壊れ方）
+        t.position   = worldPos;
+        t.quaternion = { worldRot.GetX(), worldRot.GetY(), worldRot.GetZ(), worldRot.GetW() };
+        t.useQuaternion = true;
+        return;
+    }
+
+    const DirectX::XMMATRIX world =
+        DirectX::XMMatrixRotationQuaternion(
+            DirectX::XMVectorSet(worldRot.GetX(), worldRot.GetY(), worldRot.GetZ(), worldRot.GetW()))
+        * DirectX::XMMatrixTranslation(worldPos.x, worldPos.y, worldPos.z);
+
+    DirectX::XMVECTOR s, q, p;
+    if (!DirectX::XMMatrixDecompose(&s, &q, &p, world * parentInv)) return;
+
+    DirectX::XMStoreFloat3(&t.position, p);
+    DirectX::XMFLOAT4 qf;
+    DirectX::XMStoreFloat4(&qf, q);
+    t.quaternion = { qf.x, qf.y, qf.z, qf.w };
+    t.useQuaternion = true;
+}
+
+} // namespace
+
 void PhysicsSystem::SyncTransformsToPhysics(entt::registry& registry, f32 dt)
 {
     auto& bodyInterface = m_impl->physicsSystem->GetBodyInterfaceNoLock();
@@ -429,24 +527,10 @@ void PhysicsSystem::SyncTransformsToPhysics(entt::registry& registry, f32 dt)
         if (rb.motionType != MotionType::Kinematic) continue;
 
         JPH::BodyID joltId(rb.bodyId);
-        JPH::RVec3 pos(transform.position.x, transform.position.y, transform.position.z);
-
-        JPH::Quat rot;
-        if (transform.useQuaternion)
-        {
-            rot = JPH::Quat(transform.quaternion.x, transform.quaternion.y,
-                            transform.quaternion.z, transform.quaternion.w);
-        }
-        else
-        {
-            XMVECTOR q = XMQuaternionRotationRollPitchYaw(
-                XMConvertToRadians(transform.rotation.x),
-                XMConvertToRadians(transform.rotation.y),
-                XMConvertToRadians(transform.rotation.z));
-            XMFLOAT4 qf;
-            XMStoreFloat4(&qf, q);
-            rot = JPH::Quat(qf.x, qf.y, qf.z, qf.w);
-        }
+        // ★親子を解決したワールド値で送る（親なしなら従来と同一）
+        const WorldTRS w = ResolveWorldTRS(registry, entity, transform);
+        JPH::RVec3 pos(w.pos.x, w.pos.y, w.pos.z);
+        JPH::Quat  rot = w.rot;
 
         // ★以前は SetPositionAndRotation で毎フレーム**テレポート**していた。
         //   それだと Jolt 側の MotionProperties に速度が入らないので
@@ -498,13 +582,12 @@ void PhysicsSystem::SyncPhysicsToTransforms(entt::registry& registry)
         if (sphere)  { offsetX = sphere->offset.x;  offsetY = sphere->offset.y;  offsetZ = sphere->offset.z; }
         if (capsule) { offsetX = capsule->offset.x; offsetY = capsule->offset.y; offsetZ = capsule->offset.z; }
 
-        transform.position = { static_cast<f32>(pos.GetX()) - offsetX,
-                               static_cast<f32>(pos.GetY()) - offsetY,
-                               static_cast<f32>(pos.GetZ()) - offsetZ };
-
-        // Quaternion で保持（Gimbal Lock 回避）
-        transform.quaternion = { rot.GetX(), rot.GetY(), rot.GetZ(), rot.GetW() };
-        transform.useQuaternion = true;
+        // ★親のローカル空間へ戻してから書く。以前は**ワールド値をローカルへ代入**していたので、
+        //   親の下に置いた剛体は毎フレーム親のオフセットぶんずれた場所に描かれていた。
+        const DirectX::XMFLOAT3 worldPos{ static_cast<f32>(pos.GetX()) - offsetX,
+                                          static_cast<f32>(pos.GetY()) - offsetY,
+                                          static_cast<f32>(pos.GetZ()) - offsetZ };
+        WriteBackWorldToLocal(registry, transform, worldPos, rot);
     }
 }
 
@@ -618,6 +701,12 @@ void PhysicsSystem::RegisterBody(entt::registry& registry, entt::entity entity)
     auto* transform = registry.try_get<Transform>(entity);
     if (!transform) return;
 
+    // ★親子を解決したワールドの位置 / 回転 / スケール。物理は長らくローカル値で
+    //   ボディを作っていたので、グループ化した親の下の剛体は
+    //   **見えている場所と当たる場所が別**、親を拡大しても当たり判定は等倍のままだった。
+    //   親なしのときは従来と 1 ビットも変わらない（ResolveWorldTRS の早期パス）。
+    const WorldTRS wtrs = ResolveWorldTRS(registry, entity, *transform);
+
     auto& bodyInterface = m_impl->physicsSystem->GetBodyInterface();
 
     // ---- 地形（ハイトフィールド）----
@@ -652,7 +741,7 @@ void PhysicsSystem::RegisterBody(entt::registry& registry, entt::entity entity)
 
         JPH::BodyCreationSettings terrainSettings(
             terrainShape,
-            JPH::RVec3(transform->position.x, transform->position.y, transform->position.z),
+            JPH::RVec3(wtrs.pos.x, wtrs.pos.y, wtrs.pos.z),
             JPH::Quat::sIdentity(),          // 地形は回転させない（ハイトフィールドの前提）
             JPH::EMotionType::Static,
             Layers::NON_MOVING);
@@ -686,9 +775,9 @@ void PhysicsSystem::RegisterBody(entt::registry& registry, entt::entity entity)
         const SculptMeshData& data      = *sculpt->_data;
         const auto&           positions = data.Positions();
         const auto&           indices   = data.Indices();
-        const f32 sclX = transform->scale.x;
-        const f32 sclY = transform->scale.y;
-        const f32 sclZ = transform->scale.z;
+        const f32 sclX = wtrs.scale.x;
+        const f32 sclY = wtrs.scale.y;
+        const f32 sclZ = wtrs.scale.z;
 
         if (rb->motionType == MotionType::Static)
         {
@@ -773,28 +862,28 @@ void PhysicsSystem::RegisterBody(entt::registry& registry, entt::entity entity)
         // halfExtents は Transform.scale 乗算が前提（Trigger/EditorIconRenderer と同じ規約）。
         // これが無いと SpawnBox→scale で見た目だけ拡大したボックス（Ground/Wall等）が
         // 実際にはデフォルトの 0.5 半径でしか衝突しなくなる。
-        shape = new JPH::BoxShape(JPH::Vec3(box->halfExtents.x * transform->scale.x,
-                                             box->halfExtents.y * transform->scale.y,
-                                             box->halfExtents.z * transform->scale.z));
+        shape = new JPH::BoxShape(JPH::Vec3(box->halfExtents.x * wtrs.scale.x,
+                                             box->halfExtents.y * wtrs.scale.y,
+                                             box->halfExtents.z * wtrs.scale.z));
     }
     else if (sphere)
     {
-        f32 s = std::max({transform->scale.x, transform->scale.y, transform->scale.z});
+        f32 s = std::max({wtrs.scale.x, wtrs.scale.y, wtrs.scale.z});
         shape = new JPH::SphereShape(sphere->radius * s);
     }
     else if (capsule)
     {
-        f32 radiusScale = std::max(transform->scale.x, transform->scale.z);
-        shape = new JPH::CapsuleShape(capsule->halfHeight * transform->scale.y,
+        f32 radiusScale = std::max(wtrs.scale.x, wtrs.scale.z);
+        shape = new JPH::CapsuleShape(capsule->halfHeight * wtrs.scale.y,
                                        capsule->radius * radiusScale);
     }
     else
     {
         // Fallback: box from scale
         shape = new JPH::BoxShape(JPH::Vec3(
-            transform->scale.x * 0.5f,
-            transform->scale.y * 0.5f,
-            transform->scale.z * 0.5f));
+            wtrs.scale.x * 0.5f,
+            wtrs.scale.y * 0.5f,
+            wtrs.scale.z * 0.5f));
     }
 
     // Motion type
@@ -824,26 +913,11 @@ void PhysicsSystem::RegisterBody(entt::registry& registry, entt::entity entity)
     if (sphere)  { offsetX = sphere->offset.x;  offsetY = sphere->offset.y;  offsetZ = sphere->offset.z; }
     if (capsule) { offsetX = capsule->offset.x; offsetY = capsule->offset.y; offsetZ = capsule->offset.z; }
 
-    JPH::RVec3 pos(transform->position.x + offsetX,
-                   transform->position.y + offsetY,
-                   transform->position.z + offsetZ);
-    JPH::Quat  rot = JPH::Quat::sIdentity();
-
-    if (transform->useQuaternion)
-    {
-        rot = JPH::Quat(transform->quaternion.x, transform->quaternion.y,
-                        transform->quaternion.z, transform->quaternion.w);
-    }
-    else
-    {
-        XMVECTOR q = XMQuaternionRotationRollPitchYaw(
-            XMConvertToRadians(transform->rotation.x),
-            XMConvertToRadians(transform->rotation.y),
-            XMConvertToRadians(transform->rotation.z));
-        XMFLOAT4 qf;
-        XMStoreFloat4(&qf, q);
-        rot = JPH::Quat(qf.x, qf.y, qf.z, qf.w);
-    }
+    // ★親子を解決したワールド値でボディを置く（親なしなら従来と同一）。
+    //   ローカル値で作ると、グループ化した親の下の剛体は
+    //   **見えている場所と当たる場所が別**になる。
+    JPH::RVec3 pos(wtrs.pos.x + offsetX, wtrs.pos.y + offsetY, wtrs.pos.z + offsetZ);
+    JPH::Quat  rot = wtrs.rot;
 
     JPH::BodyCreationSettings bodySettings(shape, pos, rot, joltMotion, layer);
 

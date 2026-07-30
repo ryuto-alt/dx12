@@ -9,6 +9,7 @@
 #include "gui/DeepDiagnostics.h"
 #include "scene/Scene.h"
 #include "scene/SceneSerializer.h"
+#include "physics/PhysicsSystem.h"
 #include "renderer/Mesh.h"
 #include "terrain/SculptIO.h"
 #include "terrain/SculptMesh.h"
@@ -1345,6 +1346,91 @@ void T_PrefabGeometryPropagate(ImGuiTestContext* ctx)
     }
 }
 
+// 親の下に置いた剛体の当たり判定が、描画位置（ワールド）に作られるか。
+// 物理は長らく Transform.parent を無視してローカル値でボディを作っていたので、
+// ★見えている箱と当たる箱が別の場所にあった（グループ化して動かすと必ず踏む）。
+void T_PhysicsParentedBodyWorldSpace(ImGuiTestContext* ctx)
+{
+    IM_CHECK(g_app != nullptr);
+    Scene* scene = g_app->GetScene();
+    IM_CHECK(scene != nullptr);
+    auto& reg = scene->GetRegistry();
+
+    // ---- 床（静的）+ 親 (30,0,0) + 子（ローカル (0,6,0) の動的剛体）----
+    Entity floorE = scene->SpawnBox("__uitest_floor", {0.0f, -60.5f, 0.0f});
+    {
+        auto& t = reg.get<Transform>(floorE.GetHandle());
+        t.scale = {80.0f, 1.0f, 80.0f};
+        reg.emplace_or_replace<RigidBody>(floorE.GetHandle(),
+            RigidBody{ .motionType = MotionType::Static });
+        BoxCollider bc; bc.halfExtents = {0.5f, 0.5f, 0.5f};
+        reg.emplace_or_replace<BoxCollider>(floorE.GetHandle(), bc);
+    }
+    Entity parentE = scene->SpawnBox("__uitest_pparent", {30.0f, -60.0f, 0.0f});
+    Entity childE  = scene->SpawnBox("__uitest_pchild", {0.0f, 6.0f, 0.0f});
+    {
+        auto& t = reg.get<Transform>(childE.GetHandle());
+        t.parent = parentE.GetHandle();
+        reg.emplace_or_replace<RigidBody>(childE.GetHandle(),
+            RigidBody{ .motionType = MotionType::Dynamic });
+        BoxCollider bc; bc.halfExtents = {0.5f, 0.5f, 0.5f};
+        reg.emplace_or_replace<BoxCollider>(childE.GetHandle(), bc);
+    }
+
+    Step(ctx, "Play へ入って落ち着くまで回す");
+    g_app->RequestMode(Application::EngineMode::Playing);
+    int frames = 0;
+    while (g_app->GetEngineMode() != Application::EngineMode::Playing && frames < 240)
+    { ctx->Yield(); ++frames; }
+    if (g_app->GetEngineMode() != Application::EngineMode::Playing)
+    {
+        ctx->LogWarning("Play に入れませんでした（アクティブなカメラが無い？）");
+        return;   // 後片付けは Stop 側のスナップショット復元に任せる
+    }
+    ctx->Yield(150);   // 6m 落ちて静止するまで
+
+    PhysicsSystem* phys = g_app->GetPhysicsSystem();
+    IM_CHECK(phys != nullptr);
+    if (phys)
+    {
+        auto countAt = [&](float x, float y, float z) {
+            entt::entity buf[16];
+            const size_t n = phys->OverlapSphere(DirectX::XMFLOAT3{x, y, z}, 1.0f, buf, 16);
+            int hits = 0;
+            for (size_t i = 0; i < n; ++i)
+            {
+                if (!reg.valid(buf[i]) || !reg.all_of<NameTag>(buf[i])) continue;
+                if (reg.get<NameTag>(buf[i]).name == "__uitest_pchild") ++hits;
+            }
+            return hits;
+        };
+        // 描画される場所 = 親(30,-60,0) + ローカル(0,0.5,0)
+        const int atWorld = countAt(30.0f, -59.5f, 0.0f);
+        // 以前ボディが作られていた場所 = ローカル値そのまま
+        const int atLocal = countAt(0.0f, 0.5f, 0.0f);
+        ctx->LogInfo("parented body hits: world=%d local=%d", atWorld, atLocal);
+        if (atWorld != 1)
+            IM_ERRORF("親の下の剛体の当たり判定が描画位置(30,-59.5,0)に無い（親のローカル値で作られている）");
+        if (atLocal != 0)
+            IM_ERRORF("親の下の剛体の当たり判定がローカル座標(0,0.5,0)に残っている");
+    }
+
+    Step(ctx, "Stop してエディタへ戻す");
+    g_app->RequestMode(Application::EngineMode::Editor);
+    frames = 0;
+    while (g_app->GetEngineMode() != Application::EngineMode::Editor && frames < 240)
+    { ctx->Yield(); ++frames; }
+    ctx->Yield(4);
+
+    // 後片付け（Stop でシーンが作り直されるので名前で引き直す）
+    for (const char* nm : {"__uitest_pchild", "__uitest_pparent", "__uitest_floor"})
+    {
+        Entity e = scene->FindEntity(nm);
+        if (e.IsValid()) scene->Remove(e);
+    }
+    ctx->Yield(2);
+}
+
 void T_MeshGarbageCollect(ImGuiTestContext* ctx)
 {
     IM_CHECK(g_app != nullptr);
@@ -1980,6 +2066,7 @@ const DiagReg kTests[] = {
     { "mat",   "material_library",      "マテリアル",         "マテリアルライブラリを開く",           T_MaterialLibrary       },
 
     { "play",  "play_stop_cycle",       "再生",               "Play → Stop を 2 往復",                T_PlayStopCycle         },
+    { "play",  "physics_parent_world",  "再生",               "親の下の剛体が描画位置で当たる",       T_PhysicsParentedBodyWorldSpace },
 
     { "build", "build_game",            "ビルド",             "ゲームをビルドして成果物を確認",       T_BuildGame             },
 

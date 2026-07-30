@@ -181,6 +181,8 @@ public:
     // ===== 超詳細診断用フック =====
     // シーンが参照しているアセットを走査するために registry が要る（DeepDiag::SceneAssets）。
     Scene*         GetScene() { return m_scene.get(); }
+    // 物理系への読み取りアクセス（UI テスト / 診断用。所有権は Application）。
+    PhysicsSystem* GetPhysicsSystem() const { return m_physicsSystem.get(); }
 
     // 表示パイプラインのフォーマット構成。ガンマ二重適用の検出用（DeepDiag::Gamma）。
     // DXGI_FORMAT を u32 で渡すのは、この診断を将来ヘッドレス側から呼んでも
