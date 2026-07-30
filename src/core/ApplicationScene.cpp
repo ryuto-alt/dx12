@@ -582,6 +582,18 @@ void Application::DoRuntimeSceneLoad(const std::string& rel, ID3D12GraphicsComma
     if (m_uiAnimRuntime) m_uiAnimRuntime->OnPlayStart(m_scene->GetRegistry());
     if (m_particleSystem) m_particleSystem->Clear();  // シーン切替時に前シーンの粒子を消す
     if (m_gpuParticles) m_gpuParticles->Clear();
+    // ★前シーンの効果音も消す。ここだけ抜けていた（Play→Stop 経路にはある）。
+    //   AudioSource(loop=true) の環境音は BuffersQueued が永久に 0 にならないので
+    //   空きスロット探索で回収されず、ステージ↔タイトルを数往復すると 16 スロットを
+    //   ゾンビが埋め尽くし、**以降すべての SE が同じスロットを奪い合って即座に切れる**。
+    //   BGM は「シーンをまたいで鳴らし続ける」用途があるので触らない。
+    //   リスナー位置の上書きも戻す（次シーンで setListener を呼ばないと前ステージの
+    //   座標にリスナーが固定されたままになる）。
+    if (m_audioSystem)
+    {
+        m_audioSystem->StopAllSFX();
+        m_audioSystem->ClearListenerOverride();
+    }
     SyncActiveCameraToGlobal();
 
     // 新シーンの RigidBody を物理登録

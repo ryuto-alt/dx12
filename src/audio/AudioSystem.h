@@ -42,7 +42,18 @@ public:
     // ★以前は引数が無く、AudioSource::volume は spatial=true の経路でしか効かなかった
     //   （Inspector のスライダに注記も無いので「動かしたのに変わらない」になっていた）。
     void PlaySFX(const std::string& filePath, bool loop = false, float volume = 1.0f);
+    // 今鳴っている BGM の assets 相対パス（鳴っていなければ空）。
+    // ★playBGM は同じパスでも必ず頭出しするので、「シーンをまたいで同じ曲を鳴らし続ける」は
+    //   これで判定して呼ばない、という形でしか書けない（曲の途中で切り替わると
+    //   イントロへ戻ってしまうため、engine 側で勝手に早期 return はしない）。
+    const std::string& GetCurrentBGM() const { return m_currentBGMPath; }
+    bool IsBGMPlaying() const { return m_bgmVoice != nullptr; }
+
     void StopAllSFX();
+    // Lua の setListener による上書きを解除してカメラ位置へ戻す。
+    // シーン切替で呼ばないと、次シーンで setListener を呼ばない限り
+    // 前ステージの座標にリスナーが固定されたままになる。
+    void ClearListenerOverride() { m_listenerPosOverride = false; }
 
     // 3D 空間オーディオ（SFX のみ。ステレオ素材は自動モノ化。リスナーは通常カメラ）
     void SetListener(float px, float py, float pz,
@@ -89,6 +100,15 @@ private:
         float minDist = 1.0f;
         float maxDist = 30.0f;
         float emitterPos[3] = {0, 0, 0};
+        // ★スロットの世代。PlaySFXSpatial のたびに +1 する。
+        //   AudioSource::runtimeSlot は鳴り終わっても -1 に戻らないので、スロットが
+        //   使い回されると**古いエンティティが新しい音の定位を毎フレーム上書き**していた
+        //   （遠くの敵の足音が自分の足元から鳴る）。返す ID に世代を混ぜて弾く。
+        u32   generation = 0;
+        // ★このクリップ個別の音量（0..1）。SetSFXVolume がマスターを掛け直すのに要る。
+        //   持っていなかったので、オプション画面の SE スライダーを触った瞬間に
+        //   小さく鳴らしていた環境音や遠くの空間音が**マスター音量の大きさに跳ね上がって**いた。
+        float clipVolume = 1.0f;
     };
     std::array<SFXSlot, kMaxSFXVoices> m_sfxSlots{};
 

@@ -1565,6 +1565,10 @@ void ScriptEngine::RegisterBindings()
         "getMasterVolume",  &AudioSystem::GetMasterVolume,
         "getBGMVolume",     &AudioSystem::GetBGMVolume,
         "getSFXVolume",     &AudioSystem::GetSFXVolume,
+        // 「今なにが鳴っているか」。playBGM は同じパスでも頭出しするので、
+        // シーンをまたいで同じ曲を流し続けたいときはこれで判定して呼ばない。
+        "getCurrentBGM",    &AudioSystem::GetCurrentBGM,
+        "isBGMPlaying",     &AudioSystem::IsBGMPlaying,
         "getBGMList",       &AudioSystem::GetBGMList,
         "getSFXList",       &AudioSystem::GetSFXList,
         "rescan",           &AudioSystem::ScanAudioFiles

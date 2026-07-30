@@ -735,6 +735,10 @@ nlohmann::json McpLuaApi()
         "playSpatial(path,x,y,z,minD,maxD,vol?,loop?)", "stopAllSFX()",
         "setMasterVolume/setBGMVolume/setSFXVolume(v)",
         "getMasterVolume()/getBGMVolume()/getSFXVolume() -> float  (設定画面のスライダー初期値に要る)",
+        "getCurrentBGM() -> string  (今鳴っている BGM の assets 相対パス。鳴っていなければ空)",
+        "isBGMPlaying() -> bool",
+        "★playBGM は同じパスでも必ず頭出しする。シーンをまたいで同じ曲を流し続けたいときは"
+        "getCurrentBGM() で判定して呼ばないこと（曲の途中で遷移するとイントロへ戻る）",
         "getBGMList()/getSFXList() -> table",
         "rescan()  (assets 配下の音声ファイルを列挙し直す。実行中に wav を足したとき用)",
     })));

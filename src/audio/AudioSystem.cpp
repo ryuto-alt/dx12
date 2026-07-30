@@ -367,7 +367,8 @@ void AudioSystem::PlaySFX(const std::string& filePath, bool loop, float volume)
         return;
     }
 
-    slot.voice->SetVolume(m_sfxVolume * std::clamp(volume, 0.0f, 1.0f));
+    slot.clipVolume = std::clamp(volume, 0.0f, 1.0f);
+    slot.voice->SetVolume(m_sfxVolume * slot.clipVolume);
 
     XAUDIO2_BUFFER buffer{};
     buffer.AudioBytes = clip->GetSizeInBytes();
@@ -486,7 +487,8 @@ i32 AudioSystem::PlaySFXSpatial(const std::string& filePath, float x, float y, f
     slot.emitterPos[0]  = x;
     slot.emitterPos[1]  = y;
     slot.emitterPos[2]  = z;
-    slot.voice->SetVolume(std::clamp(volume, 0.0f, 1.0f) * m_sfxVolume);
+    slot.clipVolume = std::clamp(volume, 0.0f, 1.0f);
+    slot.voice->SetVolume(slot.clipVolume * m_sfxVolume);
 
     XAUDIO2_BUFFER buffer{};
     buffer.AudioBytes = clip->GetSizeInBytes();
@@ -502,14 +504,22 @@ i32 AudioSystem::PlaySFXSpatial(const std::string& filePath, float x, float y, f
 
     ComputeAndApply(slot);
     slot.voice->Start();
-    return freeSlot;
+    // 世代を進めて (generation<<8)|index を返す。呼び出し側はこれをそのまま持ち、
+    // UpdateSpatialEmitter へ渡す。スロットが別の音に使い回されたら世代が食い違って弾かれる。
+    ++slot.generation;
+    return static_cast<i32>((slot.generation << 8) | static_cast<u32>(freeSlot));
 }
 
 void AudioSystem::UpdateSpatialEmitter(i32 slotId, float x, float y, float z)
 {
-    if (slotId < 0 || slotId >= static_cast<i32>(kMaxSFXVoices)) return;
-    auto& slot = m_sfxSlots[static_cast<u32>(slotId)];
+    if (slotId < 0) return;
+    const u32 index = static_cast<u32>(slotId) & 0xFFu;
+    const u32 gen   = static_cast<u32>(slotId) >> 8;
+    if (index >= kMaxSFXVoices) return;
+    auto& slot = m_sfxSlots[index];
     if (!slot.voice || !slot.spatial) return;
+    // ★世代が違う＝このスロットは既に別の音へ使い回されている。触らない。
+    if (slot.generation != gen) return;
     slot.emitterPos[0] = x;
     slot.emitterPos[1] = y;
     slot.emitterPos[2] = z;
@@ -561,8 +571,11 @@ void AudioSystem::SetSFXVolume(f32 volume)
     m_sfxVolume = std::clamp(volume, 0.0f, 1.0f);
     for (auto& slot : m_sfxSlots)
     {
+        // ★クリップ個別音量を掛け直す。以前はマスター値をそのまま書いていたので、
+        //   再生中の小さい音がスライダーを触った瞬間に最大音量へ跳ね上がっていた
+        //   （再生時は個別音量を掛けているので、ここだけ規約が破れていた）。
         if (slot.voice)
-            slot.voice->SetVolume(m_sfxVolume);
+            slot.voice->SetVolume(m_sfxVolume * slot.clipVolume);
     }
 }
 

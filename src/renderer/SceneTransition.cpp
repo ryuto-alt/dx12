@@ -81,6 +81,12 @@ void SceneTransition::RecreatePipelines(GraphicsDevice& device)
 
 void SceneTransition::Start(TransitionType type, float totalDuration)
 {
+    // ★進行中なら無視する。以前はガードが無く毎回頭から巻き戻していたので、
+    //   決定ボタンを連打すると暗くなりかけては戻るのを繰り返し、
+    //   `if keyDown(ENTER) then goToScene(...) end` のように毎フレーム成立する書き方だと
+    //   m_t が毎フレーム 0 に戻って中間点に到達せず、**ステージに一生入れなかった**。
+    if (m_active) return;
+
     m_type          = type;
     m_dur           = (totalDuration > 0.05f) ? totalDuration : 0.05f;
     m_t             = 0.0f;
