@@ -573,9 +573,13 @@ private:
         std::string albedoPath, normalPath, mrPath;  // 直近ビルド時の上書きパス(変化検知用)
     };
     // key = (entityID << 16) | submeshIndex。エンティティ削除時の明示破棄は行わない
-    // (ParticleSystem 同様、無効エンティティは次回描画されない=実害なし。SRVヒープを僅かに消費し続ける
-    // 既知の制約)。
+    // (無効エンティティは次回描画されない=実害なし)。
+    // ★ただしシーンが作り直されると話が別。entt::entity は index + version で、
+    //   registry.clear() が version を進めるため**同じオブジェクトでもキーが変わり、
+    //   毎回新しいブロックを取る**。放置すると Play/Stop とシーン開き直しのたびに
+    //   3 個ずつヒープが減り続ける。隣の m_terrainSrvCache と同じく世代で捨てる。
     std::unordered_map<u64, MaterialOverrideSrv> m_materialOverrideSrvCache;
+    u32 m_materialOverrideSrvGeneration = 0xFFFFFFFF;
     // 上書きが無ければ 0xFFFFFFFF を返す(呼び出し側は mat->srvBlockIndex 等の既定経路へフォールバック)。
     u32 EnsureMaterialOverrideSrv(entt::entity e, u32 submeshIndex, const MeshRenderer& renderer,
                                   const Material* mat, ID3D12GraphicsCommandList* cmdList);

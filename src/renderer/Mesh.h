@@ -144,6 +144,9 @@ public:
     //   （忘れると RT だけ古いジオメトリを読む。BLAS キャッシュとまったく同じ罠）。
     // 失敗（ヒープ枯渇）時は index が kInvalid のままになるので、呼び出し側は必ず確認すること。
     void EnsureRaytracingSrvs(GraphicsDevice& device, DescriptorHeap& srvHeap);
+    // RT 用バインドレス SRV をヒープへ返す（他は ComPtr / RAII なので明示解放は要らない）。
+    ~Mesh();
+
     u32  GetVbSrvIndex() const { return m_vbSrvIndex; }
     u32  GetIbSrvIndex() const { return m_ibSrvIndex; }
 
@@ -178,6 +181,10 @@ private:
     // バインドレス用の SRV（計画09 Step 5）。0xFFFFFFFF = 未払い出し。
     u32                 m_vbSrvIndex = 0xFFFFFFFFu;
     u32                 m_ibSrvIndex = 0xFFFFFFFFu;
+    // ★確保元のヒープ。デストラクタで返すために持つ。
+    //   これが無かったので、Scene::Clear（シーン開き直し / Play→Stop）で捨てられる
+    //   メッシュのぶんだけ SRV が**永久に**減っていた（実測: Play/Stop 1 往復で +4）。
+    DescriptorHeap*     m_rtSrvHeap  = nullptr;
     u32                 m_srvGeometryVersion = 0xFFFFFFFFu;   // SRV を張った時点の版
 };
 

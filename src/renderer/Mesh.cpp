@@ -9,6 +9,17 @@ using namespace DirectX;
 namespace dx12e
 {
 
+Mesh::~Mesh()
+{
+    // RT 用バインドレス SRV を返す。ここが無かったので、Scene::Clear で捨てられる
+    // メッシュのぶんだけヒープが減り続けていた（DXR/DDGI 有効時のみ払い出される）。
+    if (m_rtSrvHeap)
+    {
+        if (m_vbSrvIndex != 0xFFFFFFFFu) m_rtSrvHeap->Free(m_vbSrvIndex);
+        if (m_ibSrvIndex != 0xFFFFFFFFu) m_rtSrvHeap->Free(m_ibSrvIndex);
+    }
+}
+
 void Mesh::EnsureRaytracingSrvs(GraphicsDevice& device, DescriptorHeap& srvHeap)
 {
     // 版が同じなら何もしない（毎フレーム呼ばれる想定）。
@@ -25,6 +36,7 @@ void Mesh::EnsureRaytracingSrvs(GraphicsDevice& device, DescriptorHeap& srvHeap)
         {
             m_vbSrvIndex = srvHeap.AllocateIndex();
             m_ibSrvIndex = srvHeap.AllocateIndex();
+            m_rtSrvHeap  = &srvHeap;   // デストラクタで返すため
         }
         catch (const std::exception& e)
         {

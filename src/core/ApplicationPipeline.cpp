@@ -914,6 +914,21 @@ u32 Application::EnsureMaterialOverrideSrv(entt::entity e, u32 submeshIndex, con
     const std::string& normalPath = MeshRenderer::SafeGetOverride(renderer.overrideNormalTexture, submeshIndex);
     const std::string& mrPath     = MeshRenderer::SafeGetOverride(renderer.overrideMetalRoughnessTexture, submeshIndex);
 
+    // ★シーンが作り直されたら（Play→Stop / シーン切替）キャッシュを丸ごと捨てる。
+    //   entt の entity は index + version で、registry.clear() が version を進めるので
+    //   同じオブジェクトでもキーが変わり、捨てないと古いブロックが取り残される。
+    //   （m_terrainSrvCache と同じ処方）
+    {
+        const u32 sceneGen = static_cast<u32>(m_sceneGeneration);
+        if (m_materialOverrideSrvGeneration != sceneGen)
+        {
+            for (auto& kv : m_materialOverrideSrvCache)
+                if (kv.second.blockStart != 0xFFFFFFFF) m_srvHeap->FreeBlock(kv.second.blockStart, 3);
+            m_materialOverrideSrvCache.clear();
+            m_materialOverrideSrvGeneration = sceneGen;
+        }
+    }
+
     const u64 key = (static_cast<u64>(e) << 16) | submeshIndex;
     auto it = m_materialOverrideSrvCache.find(key);
     if (it != m_materialOverrideSrvCache.end() && it->second.blockStart != 0xFFFFFFFF

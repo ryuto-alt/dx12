@@ -820,9 +820,23 @@ void T_MaterialLibrary(ImGuiTestContext* ctx)
 
 // ---- 再生 ----
 
+u32 g_srvUsedAfterFirstCycle = 0;   // T_PlayStopCycle 内でのみ使う
+
 void T_PlayStopCycle(ImGuiTestContext* ctx)
 {
     IM_CHECK(g_app != nullptr);
+
+    // ★RT 影を一時的に ON にする。バインドレス SRV（Mesh の VB/IB）は DXR が有効な
+    //   フレームでしか払い出されないので、OFF のままだと下のリーク検査が空振りする
+    //   （実際、有効化しないと 2 件のリークをどちらも見逃した）。
+    Scene* scene = g_app->GetScene();
+    bool savedRtShadow = false;
+    if (scene)
+    {
+        savedRtShadow = scene->GetRtSettings().shadowEnabled;
+        scene->GetRtSettings().shadowEnabled = true;
+        ctx->Yield(6);   // TLAS が組まれて SRV が払い出されるまで回す
+    }
 
     for (int i = 0; i < 2; ++i)
     {
@@ -854,7 +868,25 @@ void T_PlayStopCycle(ImGuiTestContext* ctx)
         }
         IM_CHECK(g_app->GetEngineMode() == Application::EngineMode::Editor);
         ctx->Yield(10);
+
+        // ★1 往復目の直後のヒープ使用量を基準にして、2 往復目で増えていないか見る。
+        //   Play/Stop はシーンを丸ごと作り直すので、確保しっぱなしのディスクリプタが
+        //   あると往復のたびに単調増加し、最後は AllocateIndex が例外を投げて
+        //   **シーンビューが真っ黒のまま戻らない**。実際 2 件あった:
+        //     - Mesh の RT 用バインドレス SRV（VB/IB 各 1）がデストラクタで返らない
+        //     - m_materialOverrideSrvCache が entt の version 込みキーで毎回取り直す
+        //   1 往復目は初回確保が混ざるので基準にしない。
+        const u32 used = g_app->GetDiagRenderHealth().srvHeapCapacity
+                       - g_app->GetDiagRenderHealth().srvHeapFree;
+        if (i == 0) { g_srvUsedAfterFirstCycle = used; }
+        else if (used > g_srvUsedAfterFirstCycle)
+        {
+            IM_ERRORF("Play/Stop でディスクリプタが戻っていません: %u -> %u (+%u/往復)",
+                      g_srvUsedAfterFirstCycle, used, used - g_srvUsedAfterFirstCycle);
+        }
     }
+
+    if (scene) scene->GetRtSettings().shadowEnabled = savedRtShadow;   // 元に戻す
 }
 
 // ---- ビルド ----
