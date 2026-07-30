@@ -32,6 +32,7 @@ bool NetworkSystem::Host(u16 port, u32 maxPlayers, std::string& outError)
     m_readyClients.clear();
     m_netToEntity.clear();
     m_pendingSpawns.clear();
+    m_spawnHistory.clear();
     m_localTime = 0.0f;
     m_snapshotAccum = 0.0f;
     m_tick = 0;
@@ -64,6 +65,7 @@ bool NetworkSystem::Join(const std::string& ip, u16 port, std::string& outError)
     m_readyClients.clear();
     m_netToEntity.clear();
     m_pendingSpawns.clear();
+    m_spawnHistory.clear();
     m_localTime = 0.0f;
     m_snapshotAccum = 0.0f;
     m_tick = 0;
@@ -98,10 +100,12 @@ void NetworkSystem::ResetState()
     m_readyClients.clear();
     m_netToEntity.clear();
     m_pendingSpawns.clear();
+    m_spawnHistory.clear();
     m_localTime = 0.0f;
     m_snapshotAccum = 0.0f;
     m_tick = 0;
     m_interpBuffers.clear();
+    m_pendingReadyScene.clear();
     m_rpcHandlers.clear();   // Lua側のsol::functionを握ったままにしない(Play終了でLua stateごと消える)
     m_inputHistory.clear();
     m_latestInput.clear();
@@ -138,6 +142,19 @@ void NetworkSystem::PreSimUpdate(f32 /*dt*/, entt::registry& reg)
     if (IsServer()) AssignNetIds(reg);
 
     for (auto& ev : m_transport->Poll(0)) HandleTransportEvent(ev, reg);
+
+    // ★Welcome で要求されたシーンのロードが終わったら SceneReady を送る。
+    //   これを受けてサーバーが Baseline を送る＝**正しいシーンへ適用される**。
+    if (!m_pendingReadyScene.empty() && m_serverPeer != kInvalidPeer && m_hooks.currentScenePath)
+    {
+        if (m_hooks.currentScenePath() == m_pendingReadyScene)
+        {
+            Logger::Info("NetworkSystem: シーン '{}' のロード完了。SceneReady を送ります",
+                         m_pendingReadyScene);
+            m_pendingReadyScene.clear();
+            SendTo(m_serverPeer, PacketType::SceneReady, {}, true);
+        }
+    }
 }
 
 void NetworkSystem::PostSimUpdate(f32 dt, entt::registry& reg)
@@ -199,7 +216,7 @@ void NetworkSystem::BroadcastPacket(PacketType type, const std::vector<u8>& body
     m_transport->Broadcast(ch, reliable, packet.data(), packet.size(), exclude);
 }
 
-void NetworkSystem::SendWelcomeAndBaseline(PeerHandle peer, entt::registry& reg)
+void NetworkSystem::SendWelcomeAndBaseline(PeerHandle peer, entt::registry& /*reg*/)
 {
     auto it = m_peerToClient.find(peer);
     const ClientId id = (it != m_peerToClient.end()) ? it->second : ClientId{ 0 };
@@ -209,22 +226,64 @@ void NetworkSystem::SendWelcomeAndBaseline(PeerHandle peer, entt::registry& reg)
     welcome.WriteString(m_hooks.currentScenePath ? m_hooks.currentScenePath() : std::string{});
     SendTo(peer, PacketType::Welcome, welcome.Data(), true);
 
-    NetWriter baseline;
-    auto view = reg.view<NetworkIdentity>();
-    const u32 count = static_cast<u32>(view.size());
-    baseline.WriteU32(count);
-    for (auto [e, ni] : view.each())
-        baseline.WriteU32(ni._netId);
-    SendTo(peer, PacketType::Baseline, baseline.Data(), true);
-
-    Logger::Info("NetworkSystem: sent Welcome(clientId={}) + Baseline({} entities) to peer {}",
-                 id, count, peer);
+    // ★Baseline はここでは送らない。SceneReady を受け取ってから送る（SendBaselineTo）。
+    //   以前は Welcome と同じフレームで続けて送っていたが、クライアント側の
+    //   requestSceneLoad は**フラグを立てるだけ**で、実ロードは同フレームの Render 以降
+    //   （しかも数フレームに分割）。つまり Baseline は必ず**ロード前の古いシーン**に適用され、
+    //   直後の `scene.Clear()` で全 `_netId` ごと消えていた。再送は無い。
+    //   エディタのローカルテストは両側が同じシーンなので再ロードが起きず露見しない。
+    Logger::Info("NetworkSystem: sent Welcome(clientId={}) to peer {}", id, peer);
 }
 
-void NetworkSystem::HandleSceneReady(PeerHandle peer)
+void NetworkSystem::SendBaselineTo(PeerHandle peer, entt::registry& reg)
+{
+    // ★(guid, netId) の対で送る。以前は netId の羅列だけで、
+    //   「サーバーとクライアントの entt 反復順が一致する」前提だった。
+    //   動的スポーン（net:spawn）も同じ view に入るので、後から参加したクライアントでは
+    //   件数がズレて **シーン配置オブジェクトが別のオブジェクトの動きをする**。
+    //   guid はシーン JSON に載っている安定 ID なので、順序に依存せず正しく対応づく。
+    NetWriter baseline;
+    auto view = reg.view<NetworkIdentity>();
+    std::vector<std::pair<uint64_t, NetId>> pairs;
+    pairs.reserve(view.size());
+    for (auto [e, ni] : view.each())
+    {
+        const auto* g = reg.try_get<EntityGuid>(e);
+        pairs.emplace_back(g ? g->value : 0ull, ni._netId);
+    }
+    baseline.WriteU32(static_cast<u32>(pairs.size()));
+    for (const auto& [guid, netId] : pairs)
+    {
+        baseline.WriteU64(guid);
+        baseline.WriteU32(netId);
+    }
+    SendTo(peer, PacketType::Baseline, baseline.Data(), true);
+    Logger::Info("NetworkSystem: sent Baseline({} entities) to peer {}", pairs.size(), peer);
+}
+
+void NetworkSystem::HandleSceneReady(PeerHandle peer, entt::registry& reg)
 {
     auto it = m_peerToClient.find(peer);
     if (it == m_peerToClient.end()) return;
+    // ★シーンが揃ってから Baseline を送る（この順序が今回の修正の肝）
+    SendBaselineTo(peer, reg);
+
+    // ★既に生きている動的スポーンを再送する。Spawn は「その時点で接続中のピア」へしか
+    //   ブロードキャストされず再送機構が無かったので、**後から参加したクライアントには
+    //   先行プレイヤーのキャラがそもそも存在しなかった**（スナップショットだけ届いて捨てられる）。
+    //   位置は生成時のもので送る。直後のスナップショットが現在位置へ寄せるので問題ない。
+    for (const PendingSpawn& sp : m_spawnHistory)
+    {
+        NetWriter w;
+        w.WriteU32(sp.netId);
+        w.WriteU16(sp.owner);
+        w.WriteString(sp.prefabPath);
+        w.WriteF32(sp.x); w.WriteF32(sp.y); w.WriteF32(sp.z);
+        SendTo(peer, PacketType::Spawn, w.Data(), true);
+    }
+    if (!m_spawnHistory.empty())
+        Logger::Info("NetworkSystem: 既存スポーン {} 件を peer {} へ再送しました",
+                     m_spawnHistory.size(), peer);
     m_readyClients.insert(it->second);
     Logger::Info("NetworkSystem: client {} is scene-ready", it->second);
     if (m_eventBus)
@@ -244,11 +303,23 @@ void NetworkSystem::HandleWelcome(const std::vector<u8>& body)
         std::string scenePath = r.ReadString();
         Logger::Info("NetworkSystem: received Welcome (clientId={}, scene={})", m_localClientId, scenePath);
 
-        if (m_hooks.requestSceneLoad && !scenePath.empty())
+        // ★シーンのロードが要るなら、**ロード完了まで SceneReady を送らない**。
+        //   requestSceneLoad はフラグを立てるだけで、実ロードは以降のフレーム
+        //   （BeginSceneLoadJob で数フレームに分割）。ここで即 SceneReady を返すと
+        //   サーバーが「準備完了」と誤認して古いシーンへ Baseline とスナップショットを流す。
+        //   完了は PreSimUpdate で currentScenePath() を見て判定する。
+        m_pendingReadyScene.clear();
+        if (!scenePath.empty())
         {
             const std::string current = m_hooks.currentScenePath ? m_hooks.currentScenePath() : std::string{};
-            if (current != scenePath) m_hooks.requestSceneLoad(scenePath);
+            if (current != scenePath && m_hooks.requestSceneLoad)
+            {
+                m_hooks.requestSceneLoad(scenePath);
+                m_pendingReadyScene = scenePath;   // 完了待ち
+            }
         }
+        if (m_pendingReadyScene.empty() && m_serverPeer != kInvalidPeer)
+            SendTo(m_serverPeer, PacketType::SceneReady, {}, true);   // ロード不要＝即準備完了
 
         if (m_eventBus)
         {
@@ -265,13 +336,17 @@ void NetworkSystem::HandleWelcome(const std::vector<u8>& body)
 
 void NetworkSystem::HandleBaseline(const std::vector<u8>& body, entt::registry& reg)
 {
-    std::vector<NetId> ids;
+    std::vector<std::pair<uint64_t, NetId>> pairs;
     try
     {
         NetReader r(body);
         const u32 count = r.ReadU32();
-        ids.reserve(count);
-        for (u32 i = 0; i < count; ++i) ids.push_back(r.ReadU32());
+        pairs.reserve(count);
+        for (u32 i = 0; i < count; ++i)
+        {
+            const uint64_t guid = r.ReadU64();
+            pairs.emplace_back(guid, r.ReadU32());
+        }
     }
     catch (const NetReadError&)
     {
@@ -279,29 +354,31 @@ void NetworkSystem::HandleBaseline(const std::vector<u8>& body, entt::registry& 
         return;
     }
 
-    // サーバーと同じシーンを同じロード順で構築済みである前提で、view の反復順を
-    // そのまま対応させる(既にロード済みでないと数が合わない=シーン未ロード/不一致)。
+    // ★guid で対応づける。以前は「サーバーと同じ反復順」前提で netId を順に配っていたので、
+    //   件数が 1 つでもズレると**全部 1 個ずつ後ろにズレて、別のオブジェクトの動きをする**。
+    //   動的スポーン（net:spawn）も同じ view に入るため、後から参加したクライアントでは必ずズレた。
+    std::unordered_map<uint64_t, entt::entity> byGuid;
     auto view = reg.view<NetworkIdentity>();
-    if (view.size() != ids.size())
-    {
-        Logger::Warn("NetworkSystem: Baseline の件数不一致(受信{} / 手元{})。"
-                     "シーンロードが完了していないか、サーバーと異なるシーンの可能性があります",
-                     ids.size(), view.size());
-    }
-
-    size_t i = 0;
     for (auto [e, ni] : view.each())
+        if (const auto* g = reg.try_get<EntityGuid>(e); g && g->value != 0)
+            byGuid.emplace(g->value, e);
+
+    size_t applied = 0, missing = 0;
+    for (const auto& [guid, netId] : pairs)
     {
-        if (i >= ids.size()) break;
-        ni._netId = ids[i++];
-        m_netToEntity[ni._netId] = e;
+        auto hit = (guid != 0) ? byGuid.find(guid) : byGuid.end();
+        if (hit == byGuid.end()) { ++missing; continue; }
+        reg.get<NetworkIdentity>(hit->second)._netId = netId;
+        m_netToEntity[netId] = hit->second;
+        ++applied;
     }
 
-    Logger::Info("NetworkSystem: Baseline 適用完了({}件)", i);
-
-    // Baseline 適用が完了した(できる限り)ので、サーバーへ準備完了を通知する。
-    if (m_serverPeer != kInvalidPeer)
-        SendTo(m_serverPeer, PacketType::SceneReady, {}, true);
+    if (missing > 0)
+        Logger::Warn("NetworkSystem: Baseline の {} 件が手元に見つかりません"
+                     "（サーバー側の動的スポーンか、異なるシーン）。適用 {} 件",
+                     missing, applied);
+    else
+        Logger::Info("NetworkSystem: Baseline 適用完了({}件)", applied);
 }
 
 void NetworkSystem::HandleSpawn(const std::vector<u8>& body)
@@ -354,6 +431,7 @@ NetId NetworkSystem::RequestSpawn(const std::string& prefabPath, f32 x, f32 y, f
 
     const NetId id = m_nextNetId++;
     m_pendingSpawns.push_back({ id, owner, prefabPath, x, y, z });
+    m_spawnHistory.push_back({ id, owner, prefabPath, x, y, z });   // 後発クライアントへの再送用
 
     NetWriter w;
     w.WriteU32(id);
@@ -375,6 +453,7 @@ bool NetworkSystem::RequestDespawn(NetId netId, entt::registry& reg, std::string
 
     DestroyEntitySubtree(reg, it->second);
     m_netToEntity.erase(it);
+    std::erase_if(m_spawnHistory, [netId](const PendingSpawn& sp) { return sp.netId == netId; });
 
     NetWriter w;
     w.WriteU32(netId);
@@ -845,6 +924,7 @@ void NetworkSystem::HandleTransportEvent(const TransportEvent& ev, entt::registr
             //   再接続したら同じハンドラをそのまま使いたいため（ResetState は使わない）。
             m_serverPeer = kInvalidPeer;
             m_role       = NetRole::Offline;
+            m_pendingReadyScene.clear();
             m_netToEntity.clear();
             m_interpBuffers.clear();
             m_inputHistory.clear();
@@ -865,7 +945,7 @@ void NetworkSystem::HandleTransportEvent(const TransportEvent& ev, entt::registr
 
         if (IsServer())
         {
-            if      (type == PacketType::SceneReady)  HandleSceneReady(ev.peer);
+            if      (type == PacketType::SceneReady)  HandleSceneReady(ev.peer, reg);
             else if (type == PacketType::RpcMessage)  HandleRpc(ev.peer, body);
             else if (type == PacketType::Input)       HandleInput(ev.peer, body);
         }

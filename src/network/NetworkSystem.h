@@ -135,7 +135,10 @@ private:
     // ---- サーバー専用 ----
     void AssignNetIds(entt::registry& reg);                       // 未割当(_netId==0)のNetworkIdentityにid採番
     void SendWelcomeAndBaseline(PeerHandle peer, entt::registry& reg);
-    void HandleSceneReady(PeerHandle peer);
+    // Baseline は SceneReady を受けてから送る（クライアントのシーンロードは非同期なので、
+    // 接続直後に送ると必ずロード前の古いシーンへ適用されて捨てられる）。
+    void SendBaselineTo(PeerHandle peer, entt::registry& reg);
+    void HandleSceneReady(PeerHandle peer, entt::registry& reg);
 
     // ---- クライアント専用 ----
     void HandleWelcome(const std::vector<u8>& body);
@@ -174,11 +177,19 @@ private:
     ClientId m_nextClientId = 1;   // 0 はサーバー/ホスト予約
     NetId    m_nextNetId    = 1;   // 0 は「未割当」の意味で予約
     PeerHandle m_serverPeer = kInvalidPeer;   // クライアント視点: サーバーを指すピアハンドル
+    // クライアント視点: Welcome で要求されたシーンのロード完了待ち（空 = 待ちなし）。
+    // ロードが終わってから SceneReady を送る＝サーバーはそれから Baseline とスナップショットを流す。
+    std::string m_pendingReadyScene;
 
     std::unordered_map<PeerHandle, ClientId>  m_peerToClient;
     std::unordered_set<ClientId>              m_readyClients;   // SceneReady 済み(サーバー視点)
     std::unordered_map<NetId, entt::entity>   m_netToEntity;    // 動的スポーン+ベースライン両方を登録
     std::vector<PendingSpawn>                 m_pendingSpawns;  // フレーム境界で drain される
+    // サーバー専用: 生存中の動的スポーンの履歴。**後から参加したクライアントへ再送する**ため。
+    // ★これが無いと、既にスポーン済みのプレイヤーやアイテムが後発クライアントに存在しない
+    //   （Spawn は「その時点で接続中のピア」へしかブロードキャストされず、再送機構が無かった）。
+    //   despawn で消し、ResetState で捨てる。
+    std::vector<PendingSpawn>                 m_spawnHistory;
 
     // ---- スナップショット複製(フェーズ⑤) ----
     f32 m_localTime = 0.0f;         // PostSimUpdate の dt 累積(受信サンプルのタイムスタンプに使う)
