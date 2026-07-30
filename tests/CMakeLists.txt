@@ -548,11 +548,16 @@ if(NOT DX12E_MCP_TUS)
     message(FATAL_ERROR "McpParamSpecTests: src/core/mcp/ApplicationMcp*.cpp が 1 本も見つからない")
 endif()
 list(JOIN DX12E_MCP_TUS "|" DX12E_MCP_SOURCES)
+# ★/utf-8 を明示する。DX12_COMPILE_OPTIONS はルート CMakeLists が定義するので、
+# CI と同じ `cmake -S tests -B build-tests`（テストツリー単体）では**空**になる。
+# ソースは UTF-8 で日本語コメントを含むため、既定コードページが CP932 の環境では
+# マルチバイトの後続バイトが `{` を飲み込んで C2447 でビルドできなくなる
+# （英語ロケールの CI は CP1252 で 1 バイト単位なので偶然通っていた）。
 add_executable(McpParamSpecTests mcp_param_spec_test.cpp)
 target_compile_definitions(McpParamSpecTests PRIVATE
     DX12E_APPLICATION_CPP="${DX12E_MCP_SOURCES}")
 if(MSVC)
-    target_compile_options(McpParamSpecTests PRIVATE ${DX12_COMPILE_OPTIONS})
+    target_compile_options(McpParamSpecTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
     target_compile_definitions(McpParamSpecTests PRIVATE ${DX12_COMPILE_DEFS})
 endif()
 add_test(NAME McpParamSpecTests COMMAND McpParamSpecTests)
@@ -565,7 +570,7 @@ target_compile_definitions(LuaApiDocTests PRIVATE
     DX12E_SCRIPT_ENGINE_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../src/scripting/ScriptEngine.cpp"
     DX12E_APP_INTERNAL_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../src/core/ApplicationInternal.cpp")
 if(MSVC)
-    target_compile_options(LuaApiDocTests PRIVATE ${DX12_COMPILE_OPTIONS})
+    target_compile_options(LuaApiDocTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
     target_compile_definitions(LuaApiDocTests PRIVATE ${DX12_COMPILE_DEFS})
 endif()
 add_test(NAME LuaApiDocTests COMMAND LuaApiDocTests)
@@ -577,7 +582,7 @@ target_compile_definitions(ShaderIncludeDepsTests PRIVATE
     DX12E_SHADER_REGISTRY_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../src/resource/ShaderRegistry.cpp"
     DX12E_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../shaders")
 if(MSVC)
-    target_compile_options(ShaderIncludeDepsTests PRIVATE ${DX12_COMPILE_OPTIONS})
+    target_compile_options(ShaderIncludeDepsTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
     target_compile_definitions(ShaderIncludeDepsTests PRIVATE ${DX12_COMPILE_DEFS})
 endif()
 add_test(NAME ShaderIncludeDepsTests COMMAND ShaderIncludeDepsTests)
