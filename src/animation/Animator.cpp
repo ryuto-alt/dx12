@@ -79,6 +79,18 @@ void Animator::CrossFadeTo(const AnimationClip* nextClip, float blendDuration)
         return;
     }
 
+    // ★ブレンド中に同じ行き先をもう一度指定されたら何もしない。
+    //   これが無いと「毎フレーム playAnimByName("Walk") を呼ぶ」という
+    //   ドキュメント推奨の書き方（docs/SCRIPTING.md / docs/ANIMATION.md の例）で
+    //   毎回 m_blendFactor が 0 に巻き戻り、**ブレンドが永久に完了しない**。
+    //   完了しない間は m_clip が旧クリップのままなので上のガードも素通りし、
+    //   「Walk が少しだけ混ざった Idle」を延々再生する＝アニメが切り替わらない。
+    //   （blendDuration=0 だと即時切替パスに落ちるので突然直る、という紛らわしい形になる）
+    if (m_blending && nextClip == m_nextClip)
+    {
+        return;
+    }
+
     m_nextClip      = nextClip;
     m_nextTime      = 0.0f;
     m_blendFactor   = 0.0f;

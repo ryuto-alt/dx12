@@ -2226,7 +2226,11 @@ void ScriptEngine::RegisterPhysicsBindings()
         "jump", [](PhysicsSystem& /*ps*/, Entity& e, sol::optional<float> amount) {
             if (!e.HasComponent<CharacterController>()) return;
             auto& cc = e.GetComponent<CharacterController>();
-            if (amount && *amount > 0.0f) cc.jumpSpeed = *amount;
+            // ★以前は cc.jumpSpeed を直接書き換えていたので、チャージジャンプ等で
+            //   一度 physics:jump(e, 3) を通すと、以降の引数なし physics:jump(e) が
+            //   既定値ではなく 3 になった（コンポーネントの設定値が勝手に変わる）。
+            //   今回ぶんだけの上書きにする。
+            cc._jumpOverride = (amount && *amount > 0.0f) ? *amount : -1.0f;
             cc._jumpQueued = true;
         },
         "isGrounded", [](PhysicsSystem& /*ps*/, Entity& e) -> bool {
@@ -4172,11 +4176,28 @@ void ScriptEngine::OnPlayStop()
 void ScriptEngine::UpdateAttachedScripts(f32 dt)
 {
     auto& reg = m_scene->GetRegistry();
-    auto view = reg.view<LuaScript>();
-    for (auto e : view)
+
+    // ★エンティティ一覧を先に写してから回す。
+    //   OnUpdate の中で scene:remove(other) を呼ぶ（弾が当たった敵を消す等）と、
+    //   反復中の storage が swap_and_pop で詰め替わる。entt の単一型ビューは
+    //   末尾→先頭へ走るので、「まだ今フレーム走っていない手前の要素」を消すと
+    //   **もう走り終えた末尾の要素がその位置へ降りてきて再訪される**＝
+    //   無関係な別キャラの OnUpdate が同フレームに 2 回走る（移動が 2 倍進む、
+    //   弾が 2 発出る、ダメージが二重に入る）。
+    //   同ファイルの UpdateTriggers は既に「列挙中の再入を避けるため」溜めてから
+    //   消す流儀にしてあり、こちらだけ揃っていなかった。
+    std::vector<entt::entity> targets;
     {
-        auto& ls = view.get<LuaScript>(e);
-        if (!reg.valid(e)) continue;
+        auto view = reg.view<LuaScript>();
+        targets.reserve(view.size());
+        for (auto e : view) targets.push_back(e);
+    }
+
+    for (auto e : targets)
+    {
+        // 写した後に消えている可能性があるので、毎回引き直す（get より先に確認する）。
+        if (!reg.valid(e) || !reg.all_of<LuaScript>(e)) continue;
+        auto& ls = reg.get<LuaScript>(e);
         if (!ls.enabled) continue;
         if (ls.loadError) continue;
         if (ls.scriptPath.empty()) continue;

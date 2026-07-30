@@ -1141,6 +1141,9 @@ struct CharacterController
     DirectX::XMFLOAT3 _desiredVel = {0.0f, 0.0f, 0.0f}; // move() が積む目標水平速度(world XZ)
     f32   _verticalVel = 0.0f;  // jump/落下の鉛直速度（接地でリセット）
     bool  _jumpQueued  = false; // このフレーム jump 要求があったか
+    // physics:jump(e, amount) の今回ぶんの初速（負 = jumpSpeed を使う）。
+    // 以前は jumpSpeed 自体を書き換えていて、一度引数付きで呼ぶと既定値が変わっていた。
+    f32   _jumpOverride = -1.0f;
     bool  _grounded    = false; // 直近 ExtendedUpdate 後の接地状態（isGrounded() が読む）
     bool  _registered  = false; // PhysicsSystem に CharacterVirtual が生成済みか
     // CharacterVirtual* はヘッダに出さない。PhysicsSystem 内 map<entity,Ref<CharacterVirtual>> で持つ。

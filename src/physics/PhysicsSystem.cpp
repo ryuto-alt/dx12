@@ -332,13 +332,29 @@ void PhysicsSystem::Update(f32 dt, entt::registry& registry)
         dt = kFixedTimeStep;
 
     m_accumulator += dt;
+    int steppedCount = 0;
     while (m_accumulator >= kFixedTimeStep)
     {
         m_impl->physicsSystem->Update(
             kFixedTimeStep, kCollisionSteps,
             m_impl->tempAllocator.get(), m_impl->jobSystem.get());
         StepCharacters(kFixedTimeStep, registry);   // 剛体ステップ後にキャラを進める
+        ++steppedCount;
         m_accumulator -= kFixedTimeStep;
+    }
+
+    // ★水平入力のゼロ化は「1 フレームに 1 回」。以前は StepCharacters の中、つまり
+    //   サブステップごとにゼロ化していたので、1 フレームで 2 ステップ回る状況
+    //   （60fps を下回ると起きる。dt=33ms なら 2 ステップ）では 2 本目以降が
+    //   _desiredVel=0 で進み、**水平移動速度がフレームレートに比例して落ちていた**。
+    //   鉛直（重力・ジャンプ初速）は _verticalVel が持続するので落ちず、
+    //   「60fps では届くジャンプが 30fps では届かない」という形で出る。
+    //   0 ステップのフレームでは消さない（次のステップまで入力を取りこぼさないため。
+    //   これが元コメントの意図で、そこは維持する）。
+    if (steppedCount > 0)
+    {
+        for (auto [e, cc] : registry.view<CharacterController>().each())
+            cc._desiredVel = { 0.0f, 0.0f, 0.0f };
     }
 
     SyncPhysicsToTransforms(registry);
@@ -844,6 +860,7 @@ void PhysicsSystem::RegisterCharacter(entt::registry& registry, entt::entity ent
     // 形状生成と同時に明示リセットする。
     cc->_desiredVel  = { 0.0f, 0.0f, 0.0f };
     cc->_jumpQueued  = false;
+    cc->_jumpOverride = -1.0f;
 }
 
 void PhysicsSystem::UnregisterCharacter(entt::registry& registry, entt::entity entity)
@@ -890,8 +907,10 @@ void PhysicsSystem::StepCharacters(f32 fixedDt, entt::registry& registry)
         cc->_verticalVel += baseGravity.GetY() * cc->gravityScale * fixedDt;
 
         // ジャンプ要求（接地中のみ受け付け）
-        if (cc->_jumpQueued && grounded) { cc->_verticalVel = cc->jumpSpeed; }
-        cc->_jumpQueued = false;
+        if (cc->_jumpQueued && grounded)
+            cc->_verticalVel = (cc->_jumpOverride > 0.0f) ? cc->_jumpOverride : cc->jumpSpeed;
+        cc->_jumpQueued   = false;
+        cc->_jumpOverride = -1.0f;   // 今回ぶんだけ
 
         // 目標速度合成: 水平=move()入力 + 接地面速度、鉛直=積分結果
         JPH::Vec3 ground = ch->GetGroundVelocity();
@@ -913,10 +932,8 @@ void PhysicsSystem::StepCharacters(f32 fixedDt, entt::registry& registry)
 
         cc->_grounded = ch->GetGroundState() == JPH::CharacterVirtual::EGroundState::OnGround;
 
-        // move しなければ止まる: 水平入力はこのステップで消費したのでゼロ化する。
-        // 実際に消費したステップ末でゼロ化することで、0 サブステップのフレームでも
-        // 直前の move() 入力を次ステップまで取りこぼさない。
-        cc->_desiredVel = { 0.0f, 0.0f, 0.0f };
+        // ★ここではゼロ化しない。1 フレームに複数ステップ回ると 2 本目以降が
+        //   入力ゼロで進んでしまうため、Update() のループを抜けた所で 1 回だけ消す。
     }
 }
 
@@ -940,8 +957,10 @@ void PhysicsSystem::StepSingleCharacter(entt::entity entity, f32 fixedDt, entt::
     bool grounded = ch->GetGroundState() == JPH::CharacterVirtual::EGroundState::OnGround;
     if (grounded && cc->_verticalVel < 0.0f) cc->_verticalVel = 0.0f;
     cc->_verticalVel += baseGravity.GetY() * cc->gravityScale * fixedDt;
-    if (cc->_jumpQueued && grounded) { cc->_verticalVel = cc->jumpSpeed; }
-    cc->_jumpQueued = false;
+    if (cc->_jumpQueued && grounded)
+        cc->_verticalVel = (cc->_jumpOverride > 0.0f) ? cc->_jumpOverride : cc->jumpSpeed;
+    cc->_jumpQueued   = false;
+    cc->_jumpOverride = -1.0f;
 
     JPH::Vec3 ground = ch->GetGroundVelocity();
     JPH::Vec3 vel(cc->_desiredVel.x + (grounded ? ground.GetX() : 0.0f),

@@ -255,6 +255,22 @@ if(TARGET Renderer)
     endif()
     add_test(NAME AnimatorSpeedTests COMMAND AnimatorSpeedTests)
 
+    # CrossFadeTo を毎フレーム同じ行き先で呼ぶ（ドキュメント推奨の書き方）と
+    # ブレンドが永久に完了しなかった件の回帰テスト。
+    add_executable(AnimatorCrossfadeTests
+        animator_crossfade_test.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/Animator.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/AnimPose.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/AnimationClip.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/animation/Skeleton.cpp)
+    target_include_directories(AnimatorCrossfadeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(AnimatorCrossfadeTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(AnimatorCrossfadeTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(AnimatorCrossfadeTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME AnimatorCrossfadeTests COMMAND AnimatorCrossfadeTests)
+
     # ポーズ空間ブレンド（animation/AnimPose.h）テスト。クロスフェードのバグ B1
     # 「最終スキニング行列を要素ごとに lerp すると骨が縮む」の回帰テストが本体。
     # AnimPose/Animator/Skeleton/AnimationClip は純ロジック（GPU非依存）なので直接ビルド。
