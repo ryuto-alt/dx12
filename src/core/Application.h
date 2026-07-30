@@ -1174,6 +1174,10 @@ private:
         DirectX::XMFLOAT3 position;
         f32 yaw;
         f32 pitch;
+        // Lua の camera:setMoveSpeed / setMouseSensitivity はエディタのフライカメラと
+        // 同じ値を書き換える。退避しておかないと Stop 後もゲームが設定した速度のまま残る。
+        f32 moveSpeed;
+        f32 mouseSensitivity;
     } m_cameraSnapshot{};
 
     // 2D⇆3D ビュー切替時の 3D カメラ退避。2D は正射＋正面固定で位置を強制するため、

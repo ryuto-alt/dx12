@@ -94,6 +94,9 @@ public:
     // ファイルを編集した後などにスキーマ再解析を促す（次回 GetPropertySchema で解析しなおす）。
     void InvalidatePropertySchema(const std::string& scriptPath);
     void OnPlayStart();                   // 全 LuaScript 初期化 + OnStart
+    // saveNum/loadNum のストア。シーンをまたぐ受け渡しが目的なので Shutdown では消さず、
+    // 「Play を押し直したら初期状態」にするために Play 開始時だけ Application が消す。
+    void ClearBlackboard();
     void OnPlayStop();                    // 全 env 破棄、started リセット
     void UpdateAttachedScripts(f32 dt);   // 毎フレーム OnUpdate
     void UpdateTriggers(f32 dt);          // 毎フレーム Trigger（イベント）評価（Play 中）

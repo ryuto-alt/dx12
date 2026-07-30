@@ -1017,16 +1017,6 @@ void Application::EnterPlayMode()
             m_editorCtx->errorFlash = 1.0f;
             return;
         }
-        // isActive なカメラがなければ最初のカメラを自動で有効化
-        bool hasActive = false;
-        for (auto [e, cam] : camCheck.each())
-            if (cam.isActive) { hasActive = true; break; }
-        if (!hasActive)
-        {
-            auto first = *camCheck.begin();
-            reg.get<CameraComponent>(first).isActive = true;
-            Logger::Info("Auto-activated first CameraComponent for play mode");
-        }
     }
 
     // GPU を待機してコマンドリスト状態を安全にする
@@ -1036,9 +1026,33 @@ void Application::EnterPlayMode()
     m_cameraSnapshot.position = m_camera->GetPosition();
     m_cameraSnapshot.yaw = m_camera->GetYaw();
     m_cameraSnapshot.pitch = m_camera->GetPitch();
+    m_cameraSnapshot.moveSpeed        = m_camera->GetMoveSpeed();
+    m_cameraSnapshot.mouseSensitivity = m_camera->GetMouseSensitivity();
 
     // Lua が触る前のエディタ状態を Stop 時の完全復元用に保存
     m_playSceneJson = SceneSerializer::SaveToString(*m_scene, PathResolver::AssetsDir());
+
+    // ★「isActive なカメラが無ければ先頭を有効化」はこのスナップショットより**後**に置く。
+    //   前に置くと自動有効化が JSON に焼き付き、全カメラを非アクティブにしてあるシーンで
+    //   Play を押しただけで Stop 後もそのカメラが有効なまま残る（未保存フラグも立たない）。
+    {
+        auto& reg = m_scene->GetRegistry();
+        auto camCheck = reg.view<const CameraComponent>();
+        bool hasActive = false;
+        for (auto [e, cam] : camCheck.each())
+            if (cam.isActive) { hasActive = true; break; }
+        if (!hasActive && camCheck.begin() != camCheck.end())
+        {
+            auto first = *camCheck.begin();
+            reg.get<CameraComponent>(first).isActive = true;
+            Logger::Info("Auto-activated first CameraComponent for play mode");
+        }
+    }
+
+    // ★saveNum のストアは Play をまたいで残っていた（シーンまたぎの受け渡しが目的で
+    //   Shutdown では消さない設計）。Play を押し直したら初期状態から始まるべきなので
+    //   ここで消す（ランタイムのシーン切替から呼ばれる OnPlayStart に入れてはいけない）。
+    if (m_scriptEngine) m_scriptEngine->ClearBlackboard();
 
     // シーンパスも退避（Play 中の loadScene/goToScene が書き換えるため。Stop で復元）
     m_playScenePathSnapshot = m_editorCtx->currentScenePath;
@@ -1295,17 +1309,39 @@ void Application::EnterEditorMode()
     m_camera->SetPosition(m_cameraSnapshot.position);
     m_camera->SetYaw(m_cameraSnapshot.yaw);
     m_camera->SetPitch(m_cameraSnapshot.pitch);
+    // ゲームが camera:setMoveSpeed / setMouseSensitivity を触っていた場合に備えて戻す
+    // （エディタのフライカメラとツールバーの「カメラ速度」が同じ値を読むため）。
+    m_camera->SetMoveSpeed(m_cameraSnapshot.moveSpeed);
+    m_camera->SetMouseSensitivity(m_cameraSnapshot.mouseSensitivity);
+
+    // ★Play 中に始まった段階ロード（Lua の loadScene）が生き残ると、Stop で復元した
+    //   直後のシーンを数フレーム後に丸ごと差し替える＝編集内容が無言で消える。
+    //   UpdateSceneLoadJob はモードを見ずに毎フレーム進むので、ここで捨てる。
+    if (m_sceneLoadJob)
+    {
+        Logger::Warn("Stop: 進行中のランタイムシーン読み込みを破棄しました");
+        m_sceneLoadJob.reset();
+        m_editorCtx->sceneLoadProgress = -1.0f;
+    }
+
+    // ★環境マップ / IBL はシーン JSON の復元では戻らない（ベイク結果は
+    //   m_loadedSkyboxPath でキャッシュされ、m_skyboxDirty 経由でしか焼き直さない）。
+    //   ランタイムのシーン切替をしたあと Stop すると、空と環境光だけが切替先のまま残り、
+    //   「明るさは合っているのに背景と色味だけ違う」という気づきにくい形になる。
+    m_loadedSkyboxPath.clear();
+    m_skyboxDirty = true;
 
     m_editorCtx->ClearSelection();
 
     // Play 中のランタイムシーン切替で汚れたシーンパスを Play 開始時点に戻す。
     // これをしないとパス無し save_scene / Ctrl+S / エディタ終了時の自動保存が
     // 別シーン(タイトル等)を上書きする。下のディスク再読込フォールバックも復元後のパスで行う。
-    if (!m_playScenePathSnapshot.empty())
-    {
-        m_editorCtx->currentScenePath = m_playScenePathSnapshot;
-        m_currentSceneRel             = m_playSceneRelSnapshot;
-    }
+    // ★以前は `if (!m_playScenePathSnapshot.empty())` で囲っていた。Play 開始時が
+    //   未保存の新規シーン（パス空）だと復元自体を飛ばすので、Lua の loadScene で
+    //   移った先のパスが残り、以後の Ctrl+S / 自動保存が**そのシーンを上書きする**。
+    //   このコメントが防ごうとした事故が、まさにこの経路だけ通っていた。無条件に戻す。
+    m_editorCtx->currentScenePath = m_playScenePathSnapshot;
+    m_currentSceneRel             = m_playSceneRelSnapshot;
     m_playScenePathSnapshot.clear();
     m_playSceneRelSnapshot.clear();
 

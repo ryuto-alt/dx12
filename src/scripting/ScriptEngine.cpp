@@ -4088,6 +4088,11 @@ std::vector<std::string> ScriptEngine::GetCompletions(const std::string& line)
     return out;
 }
 
+void ScriptEngine::ClearBlackboard()
+{
+    m_blackboard.clear();
+}
+
 void ScriptEngine::OnPlayStart()
 {
     auto& reg = m_scene->GetRegistry();
