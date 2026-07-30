@@ -90,14 +90,33 @@ void ResourceManager::Initialize(GraphicsDevice* device, DescriptorHeap* srvHeap
     m_uploadsPending = true;  // 既定テクスチャのアップロードを初回フレームで確定させる
 }
 
+namespace
+{
+// テクスチャキャッシュのキー。パスだけだと、同じ画像を別の色空間/用途で要求しても
+// 先に読まれた方が返ってしまう（法線マップが sRGB 版になる等）。
+std::wstring MakeTextureCacheKey(const std::wstring& path, bool srgb, TextureUsage usage)
+{
+    return path + (srgb ? L"|s1|u" : L"|s0|u") + std::to_wstring(static_cast<int>(usage));
+}
+}
+
 Texture* ResourceManager::GetOrLoadTexture(
     const std::wstring& filePath,
     ID3D12GraphicsCommandList* cmdList,
     bool srgb,
     TextureUsage usage)
 {
-    // キャッシュチェック
-    auto it = m_textureCache.find(filePath);
+    // ★キーはパスだけではいけない。srgb / usage は「後から効かせる設定」ではなく
+    //   テクスチャの実体（SRV フォーマット・BC 圧縮形式・ミップのフィルタ）を変える
+    //   （TextureLoader.cpp の SelectViewFormat / SelectCompressedFormat / EnsureMipChain）。
+    //   パス単独キーだと、シーン先読み（ApplicationScene.cpp の WarmSceneAssetRef は
+    //   srgb=true 既定）やアセットブラウザのサムネイル（srgb=true 固定）が先に読んだだけで、
+    //   後から srgb=false / TextureUsage::Normal で要求しても **sRGB 版が返る**。
+    //   法線マップがガンマ解除されてライティングが静かに狂う（ログも警告も出ない）。
+    //   1 層下のディスク圧縮キャッシュ（TextureLoader.cpp:228）は既に usage を混ぜてある。
+    const std::wstring cacheKey = MakeTextureCacheKey(filePath, srgb, usage);
+
+    auto it = m_textureCache.find(cacheKey);
     if (it != m_textureCache.end())
     {
         return it->second.get();
@@ -134,7 +153,7 @@ Texture* ResourceManager::GetOrLoadTexture(
     if (!texture)
     {
         Logger::Warn("テクスチャの読み込みに失敗しました（nullptr をキャッシュし、以後は再試行しません）");
-        m_textureCache[filePath] = nullptr;   // 失敗もキャッシュ＝毎フレーム再ロード試行してログが埋まるのを防ぐ
+        m_textureCache[cacheKey] = nullptr;   // 失敗もキャッシュ＝毎フレーム再ロード試行してログが埋まるのを防ぐ
         return nullptr;
     }
 
@@ -145,7 +164,7 @@ Texture* ResourceManager::GetOrLoadTexture(
 
     // キャッシュ登録
     Texture* rawPtr = texture.get();
-    m_textureCache[filePath] = std::move(texture);
+    m_textureCache[cacheKey] = std::move(texture);
     m_pendingUploads.push_back(rawPtr);   // フレーム末尾にステージングを遅延解放
     m_uploadsPending = true;
 
@@ -213,7 +232,7 @@ Texture* ResourceManager::GetOrLoadEmbeddedTexture(
 {
     // wstring キーに変換してキャッシュ検索（UTF-8正変換。バイトコピーだと
     // 日本語キーが壊れて wstring パス経由のキャッシュと不一致になる）
-    std::wstring wkey = PathResolver::Utf8ToWide(key);
+    std::wstring wkey = MakeTextureCacheKey(PathResolver::Utf8ToWide(key), srgb, usage);
     auto it = m_textureCache.find(wkey);
     if (it != m_textureCache.end())
         return it->second.get();

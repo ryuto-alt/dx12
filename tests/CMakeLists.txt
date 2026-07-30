@@ -569,3 +569,15 @@ if(MSVC)
     target_compile_definitions(LuaApiDocTests PRIVATE ${DX12_COMPILE_DEFS})
 endif()
 add_test(NAME LuaApiDocTests COMMAND LuaApiDocTests)
+
+# シェーダーホットリロードの手書き依存表 ⇔ 実際の #include のドリフト検出。
+# 表から漏れると「保存しても再コンパイルされないのに、別ファイルの成功ログだけ出る」。
+add_executable(ShaderIncludeDepsTests shader_include_deps_test.cpp)
+target_compile_definitions(ShaderIncludeDepsTests PRIVATE
+    DX12E_SHADER_REGISTRY_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../src/resource/ShaderRegistry.cpp"
+    DX12E_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../shaders")
+if(MSVC)
+    target_compile_options(ShaderIncludeDepsTests PRIVATE ${DX12_COMPILE_OPTIONS})
+    target_compile_definitions(ShaderIncludeDepsTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME ShaderIncludeDepsTests COMMAND ShaderIncludeDepsTests)

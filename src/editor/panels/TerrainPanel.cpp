@@ -154,6 +154,9 @@ struct TerrainToolState
     Scene*         scene = nullptr;
     EditorContext* ctx   = nullptr;
     bool           handlerRegistered = false;
+    // 「選択が地形に変わった瞬間」だけ窓を開くための前フレーム選択。
+    // 毎フレーム無条件に開くと ✕ が効かない（下の Render 参照）。
+    entt::entity   prevSelected = entt::null;
 
     // ブラシ
     TerrainBrushParams brush;
@@ -656,10 +659,17 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
 
     entt::registry& reg = scene.GetRegistry();
 
-    // Terrain を持つエンティティを選んだら勝手に開く（メニューを探し回らなくて済む）。
-    if (ctx.selectedEntity != entt::null && reg.valid(ctx.selectedEntity)
-        && reg.all_of<Terrain>(ctx.selectedEntity))
-        ctx.showTerrainEditor = true;
+    // Terrain を持つエンティティを**選び直した瞬間だけ**勝手に開く。
+    // ★以前は毎フレーム無条件に true を書いていた。この関数は窓が閉じていても
+    //   毎フレーム呼ばれる（ApplicationRender.cpp）ので、✕ が false を書いても
+    //   次のフレーム冒頭で true に戻され、**窓が閉じられなかった**。
+    if (ctx.selectedEntity != s.prevSelected)
+    {
+        s.prevSelected = ctx.selectedEntity;
+        if (ctx.selectedEntity != entt::null && reg.valid(ctx.selectedEntity)
+            && reg.all_of<Terrain>(ctx.selectedEntity))
+            ctx.showTerrainEditor = true;
+    }
 
     // 高さが変わったメッシュを作り直す（ブラシ / Undo / 生成の全経路がここに集まる）。
     // 窓が閉じていても回す＝Ctrl+Z の結果が必ず絵に出る。
@@ -773,11 +783,18 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
 
             pg::Float("半径", &s.brush.radius, 0.25f, 0.5f, hf.WorldSize() * 0.5f, "%.1f m",
                       nullptr, "[ と ] でも増減できる");
+            // ★浸食(Erode)だけは ApplyTerrainBrush がミラー処理より前で return しており
+            //   （TerrainBrush.cpp の Erode 分岐）、strength / falloff / mirror / invert / dt を
+            //   一切受け取らない。触っても何も起きないので触れないようにする。
+            //   効かせるなら ApplyThermalErosion にこれらの受け口を足すところから。
+            const bool erodeSelected = (s.brush.type == TerrainBrushType::Erode);
+            ImGui::BeginDisabled(erodeSelected);
             pg::Float("強さ", &s.brush.strength, 0.1f, 0.1f, 200.0f, "%.1f");
             pg::SliderFloat("縁のぼかし", &s.brush.falloff, 0.0f, 1.0f, "%.2f", nullptr,
                             "0 = 硬い縁 / 1 = とろけるように滑らか");
             pg::Checkbox("Xミラー", &s.brush.mirrorX, "x を反転した位置にも同じ筆を置く");
             pg::Checkbox("Zミラー", &s.brush.mirrorZ);
+            ImGui::EndDisabled();
 
             if (s.brush.type == TerrainBrushType::Noise)
             {
@@ -791,10 +808,15 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
                 pg::Group("浸食");
                 pg::SliderFloat("安息角", &s.brush.talusDeg, 5.0f, 80.0f, "%.0f deg");
                 pg::SliderInt("反復回数", &s.brush.erodeIterations, 1, 40);
+                ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
+                                   "浸食は 強さ/ぼかし/ミラー/Shift を使いません");
             }
             pg::End();
         }
-        ImGui::TextDisabled("左ドラッグ=塗る / Shift=逆方向 / Ctrl=一時的にならす / [ ]=半径");
+        if (s.brush.type == TerrainBrushType::Erode)
+            ImGui::TextDisabled("左ドラッグ=浸食 / Ctrl=一時的にならす / [ ]=半径");
+        else
+            ImGui::TextDisabled("左ドラッグ=塗る / Shift=逆方向 / Ctrl=一時的にならす / [ ]=半径");
     }
 
     // ---------------- 山を一発生成 ----------------

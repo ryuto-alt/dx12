@@ -429,8 +429,26 @@ void Scene::Clear()
     m_registry.clear();
     m_glowMeshCache.clear();   // m_ownedMeshes の前にクリア（dangling 回避）
     m_ownedMeshes.clear();
-    m_postSettings = PostProcessSettings{};  // ポスト設定もデフォルトへ
-    m_skybox       = SkyboxSettings{};       // 空も既定へ（前シーンの環境マップを引き継がない）
+    // ★ここは長らく post と skybox の 2 つしか戻していなかった。
+    //   シーンの**読み込み**は ApplySceneJson が全ブロックを既定から入れ直すので無事だが、
+    //   「新規シーン」は Clear → Initialize → そのまま Save なので、直前に開いていた
+    //   シーンの DXR / DDGI / フォグ / SSR / SSGI / TAA / PCSS / コンタクトシャドウ /
+    //   SSAO / デカールアトラス / 影 ON-OFF がそのまま新ファイルへ書き込まれていた。
+    //   Scene.h にメンバを足したらここにも足すこと（足し忘れると同じ形で漏れる）。
+    m_postSettings   = PostProcessSettings{};
+    m_skybox         = SkyboxSettings{};
+    m_ssao           = SSAOSettings{};
+    m_contactShadow  = ContactShadowSettings{};
+    m_shadowPcss     = ShadowPcssSettings{};
+    m_ssr            = SsrSettings{};
+    m_ssgi           = SsgiSettings{};
+    m_rt             = RtSettings{};
+    m_ddgi           = DdgiSettings{};
+    m_taa            = TaaSettings{};
+    m_volFog         = VolumetricFogSettings{};
+    m_decalAtlasPath.clear();
+    m_shadowsEnabled = true;
+    m_pendingAnimEvents.clear();
 }
 
 // ---------------------------------------------------------------------------

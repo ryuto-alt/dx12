@@ -96,6 +96,8 @@ struct SculptToolState
     Scene*         scene = nullptr;
     EditorContext* ctx   = nullptr;
     bool           handlerRegistered = false;
+    // 「選択がスカルプトに変わった瞬間」だけ窓を開くための前フレーム選択（TerrainPanel と同型）。
+    entt::entity   prevSelected = entt::null;
 
     // ブラシ
     SculptBrushParams brush;
@@ -575,10 +577,15 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
 
     entt::registry& reg = scene.GetRegistry();
 
-    // SculptMesh を持つエンティティを選んだら勝手に開く（メニューを探し回らなくて済む）。
-    if (ctx.selectedEntity != entt::null && reg.valid(ctx.selectedEntity)
-        && reg.all_of<SculptMesh>(ctx.selectedEntity))
-        ctx.showSculptEditor = true;
+    // SculptMesh を持つエンティティを**選び直した瞬間だけ**勝手に開く。
+    // 毎フレーム無条件だと ✕ が効かない（TerrainPanel と同じ事故）。
+    if (ctx.selectedEntity != s.prevSelected)
+    {
+        s.prevSelected = ctx.selectedEntity;
+        if (ctx.selectedEntity != entt::null && reg.valid(ctx.selectedEntity)
+            && reg.all_of<SculptMesh>(ctx.selectedEntity))
+            ctx.showSculptEditor = true;
+    }
 
     // 頂点が変わったメッシュを作り直す（ブラシ / Undo / 素体作成の全経路がここに集まる）。
     // 窓が閉じていても回す＝Ctrl+Z の結果が必ず絵に出る。

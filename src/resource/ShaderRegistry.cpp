@@ -30,7 +30,13 @@ const std::vector<ShaderSource>& BuildRegistry()
                 { L"Forward_PS.cso", L"PSMain", L"ps_6_0" },
                 { L"ForwardLdr_PS.cso", L"PSMain", L"ps_6_0", L"LDR_OUTPUT=1" },
             },
-            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli", "ddgi/DdgiCommon.hlsli" },
+            // ★DecalApply/DecalCommon を落としていた。Forward.hlsl も ForwardSkinned.hlsl も
+            //   実際に #include しているのに、この手書き表に無いせいで DecalApply.hlsli を
+            //   保存しても Terrain.hlsl しか再コンパイルされず、しかも
+            //   「シェーダーホットリロード成功: forward/Terrain.hlsl」だけがログに出る。
+            //   ズレは ShaderIncludeDepsTests が見張る。
+            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli",
+              "forward/DecalCommon.hlsli", "forward/DecalApply.hlsli", "ddgi/DdgiCommon.hlsli" },
         },
         {
             "forward/ForwardSkinned.hlsl",
@@ -38,7 +44,13 @@ const std::vector<ShaderSource>& BuildRegistry()
                 { L"ForwardSkinned_VS.cso", L"VSMain", L"vs_6_0" },
                 { L"ForwardSkinned_PS.cso", L"PSMain", L"ps_6_0" },
             },
-            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli", "ddgi/DdgiCommon.hlsli" },
+            // ★DecalApply/DecalCommon を落としていた。Forward.hlsl も ForwardSkinned.hlsl も
+            //   実際に #include しているのに、この手書き表に無いせいで DecalApply.hlsli を
+            //   保存しても Terrain.hlsl しか再コンパイルされず、しかも
+            //   「シェーダーホットリロード成功: forward/Terrain.hlsl」だけがログに出る。
+            //   ズレは ShaderIncludeDepsTests が見張る。
+            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli",
+              "forward/DecalCommon.hlsli", "forward/DecalApply.hlsli", "ddgi/DdgiCommon.hlsli" },
         },
         {
             // クラスタードライティング（Forward+）のライトカリング compute。

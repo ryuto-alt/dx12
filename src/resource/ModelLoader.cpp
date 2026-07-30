@@ -974,6 +974,39 @@ ModelData ModelLoader::LoadFromFile(
             }
         }
 
+        // --- UV Transform（タイリング/オフセット）を頂点 UV へ焼く ---
+        //
+        // ★ここは元々 mesh->Initialize() の**後ろ**にあった。Initialize は入口で
+        //   vertices のコピーを取り meshoptimizer で並べ替えてから VRAM へ上げ切るので、
+        //   後からローカルの vertices を書き換えても一切反映されない。
+        //   それでいて「[UV] scale=(4.00,4.00)」というデバッグ出力だけは出るので、
+        //   効いているように見えていた（この関数内で vertices を読む箇所は 979 が最後だった）。
+        //   ※アップロード後に m_verticesCache を書き換える方式は不可（並びが変わっている）。
+        if (aiMeshPtr->mMaterialIndex < scene->mNumMaterials)
+        {
+            const aiMaterial* uvMat = scene->mMaterials[aiMeshPtr->mMaterialIndex];
+            aiUVTransform uvTransform;
+            if (uvMat->Get(AI_MATKEY_UVTRANSFORM(aiTextureType_DIFFUSE, 0), uvTransform) == AI_SUCCESS)
+            {
+                const float sx = uvTransform.mScaling.x;
+                const float sy = uvTransform.mScaling.y;
+                const float ox = uvTransform.mTranslation.x;
+                const float oy = uvTransform.mTranslation.y;
+                if (sx != 1.0f || sy != 1.0f || ox != 0.0f || oy != 0.0f)
+                {
+                    for (auto& v : vertices)
+                    {
+                        v.texCoord.x = v.texCoord.x * sx + ox;
+                        v.texCoord.y = v.texCoord.y * sy + oy;
+                    }
+                    char dbg[256];
+                    snprintf(dbg, sizeof(dbg), "[UV] scale=(%.2f,%.2f) offset=(%.2f,%.2f)\n",
+                             sx, sy, ox, oy);
+                    OutputDebugStringA(dbg);
+                }
+            }
+        }
+
         // --- Create Mesh ---
         auto mesh = std::make_unique<Mesh>();
         mesh->Initialize(device, vertices, indices, cmdList);   // DEFAULT ヒープ(VRAM)常駐
@@ -985,27 +1018,7 @@ ModelData ModelLoader::LoadFromFile(
         {
             const aiMaterial* aiMat = scene->mMaterials[aiMeshPtr->mMaterialIndex];
 
-            // UV Transform（タイリング/オフセット）を取得して頂点 UV に適用
-            aiUVTransform uvTransform;
-            if (aiMat->Get(AI_MATKEY_UVTRANSFORM(aiTextureType_DIFFUSE, 0), uvTransform) == AI_SUCCESS)
-            {
-                float sx = uvTransform.mScaling.x;
-                float sy = uvTransform.mScaling.y;
-                float ox = uvTransform.mTranslation.x;
-                float oy = uvTransform.mTranslation.y;
-                if (sx != 1.0f || sy != 1.0f || ox != 0.0f || oy != 0.0f)
-                {
-                    for (auto& v : vertices)
-                    {
-                        v.texCoord.x = v.texCoord.x * sx + ox;
-                        v.texCoord.y = v.texCoord.y * sy + oy;
-                    }
-                    char dbg[256];
-                    snprintf(dbg, sizeof(dbg), "[UV] scale=(%.2f,%.2f) offset=(%.2f,%.2f)\n",
-                        sx, sy, ox, oy);
-                    OutputDebugStringA(dbg);
-                }
-            }
+            // UV Transform は mesh->Initialize より前で処理済み（上のブロック）
 
             if (aiMat->GetTextureCount(aiTextureType_DIFFUSE) > 0)
             {
