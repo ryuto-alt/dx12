@@ -427,15 +427,29 @@ LauncherAction ProjectManager::RenderLauncher(ProjectInfo& outInfo, HWND hwnd,
 
     // --- GitHub ログイン状態 ---
     {
+        // ここから下はメインスレッド専有（ImGui のフレーム内でしか触らない）。
         static bool        s_loginChecked = false;
         static std::string s_loginUser;
         static bool        s_loginRunning = false;
-        static std::atomic<bool> s_loginDone{false};
-        static std::string s_loginPendingUser;
-        // ponytail: ランチャーはアプリ全体の m_gitAbort を持たないので、ログイン待ちスレッドは
-        // detach する（gh.exe の終了待ちだけで Application/ProjectManager の状態には触れないので
-        // プロセス終了時に残っても無害）。中断UIが要るなら Application 側に寄せる。
-        static const std::atomic<bool> s_neverAbort{false};
+
+        // ランチャーはアプリ全体の m_gitAbort を持たないので、ログイン待ちスレッドは
+        // detach する（gh.exe の終了待ちだけで Application/ProjectManager の状態には触れない）。
+        // 中断UIが要るなら Application 側に寄せる。
+        //
+        // ★スレッドと共有する状態は**意図的に leak する**。detach したスレッドは
+        //   gh.exe のブラウザ認証が終わる前にアプリを閉じるとまだ生きていて、その後に
+        //   done / user へ書き込む。関数ローカル static のままだと静的デストラクタで
+        //   先に消えた std::string へ書くことになり、終了時に落ちて
+        //   「身に覚えのないクラッシュレポート」だけが残る（原因が一番分かりにくい形）。
+        //   leak させれば書き込み先はプロセスが死ぬまで有効なので、この事故が原理的に起きない。
+        //   大きさは 1 個ぶんで、ランチャーの寿命 = プロセスの寿命なので実害も無い。
+        struct LoginShared
+        {
+            std::atomic<bool> done{false};
+            std::atomic<bool> neverAbort{false};   // LoginAndWait が参照で受ける
+            std::string       user;                // done が true になった後だけ読む
+        };
+        static LoginShared* const s_login = new LoginShared();
 
         if (launcherAppearing) s_loginChecked = false;  // ランチャー再入時だけ再確認
         if (!s_loginChecked && !s_loginRunning)
@@ -443,9 +457,9 @@ LauncherAction ProjectManager::RenderLauncher(ProjectInfo& outInfo, HWND hwnd,
             s_loginChecked = true;
             s_loginUser = (s_ghAvail == 1) ? GitIntegration::GitHubUser() : std::string();
         }
-        if (s_loginRunning && s_loginDone.load())        // 非同期ログイン待ちの完了を取り込む
+        if (s_loginRunning && s_login->done.load())       // 非同期ログイン待ちの完了を取り込む
         {
-            s_loginUser    = s_loginPendingUser;
+            s_loginUser    = s_login->user;
             s_loginRunning = false;
         }
 
@@ -461,11 +475,11 @@ LauncherAction ProjectManager::RenderLauncher(ProjectInfo& outInfo, HWND hwnd,
             if (ImGui::SmallButton("ログイン"))
             {
                 s_loginRunning = true;
-                s_loginDone.store(false);
-                std::thread([]{
-                    auto r = GitIntegration::LoginAndWait(s_neverAbort);
-                    s_loginPendingUser = r.output;
-                    s_loginDone.store(true);
+                s_login->done.store(false);
+                std::thread([sh = s_login]{
+                    auto r = GitIntegration::LoginAndWait(sh->neverAbort);
+                    sh->user = r.output;
+                    sh->done.store(true);   // ★user を書いた後に立てる（メイン側はこれを見てから読む）
                 }).detach();
             }
         }
