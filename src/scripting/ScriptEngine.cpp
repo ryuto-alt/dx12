@@ -1183,6 +1183,16 @@ void ScriptEngine::RegisterBindings()
                     else if (es == "inOutBack")                 t.easing = 9;
                     else if (es == "quint")                     t.easing = 10;
                     else if (es == "sine")                      t.easing = 11;
+                    else
+                    {
+                        // ★以前は未知の名前を黙って無視し、既定の linear で動いていた。
+                        //   prelude の Tween が使う名前（outQuad / inCubic 等）とは**別の語彙**で、
+                        //   共通なのは "linear" だけなので、取り違えは普通に起きる。
+                        Logger::Warn("tweenUi: 未知の easing '{}' です。linear を使います。"
+                                     "使えるのは linear/in/out/inOut/back/bounce/elastic/expo/"
+                                     "inBack/inOutBack/quint/sine（prelude の Tween の ease とは別語彙）",
+                                     es);
+                    }
                 }
                 else if (eo.is<int>())
                 {
@@ -3391,7 +3401,19 @@ function Tween(target, prop, to, duration, opts)
     target = target, prop = prop, from = from, to = dest, n = n, mk = mk,
     dur = math.max(duration or 0.3, 0.0001),
     t = -(opts.delay or 0),
-    ease = Ease[opts.ease or "outQuad"] or Ease.outQuad,
+    -- ★名前が Ease に無ければ黙って outQuad へ落ちる（tweenUi の easing とは別の語彙で、
+    --   共通なのは "linear" だけ）。無言で違うカーブになるのが一番困るので警告を出す。
+    ease = (function()
+      local n = opts.ease or "outQuad"
+      local f = Ease[n]
+      if not f then
+        logWarn("Tween: 未知の ease 名 '" .. tostring(n) .. "' です。outQuad を使います。"
+             .. "使えるのは linear/inQuad/outQuad/inOutQuad/inCubic/outCubic/inOutSine/outBack/outBounce"
+             .. "（scene:tweenUi の easing とは別の語彙です）")
+        f = Ease.outQuad
+      end
+      return f
+    end)(),
     loops = loops, pingpong = (opts.pingpong == true),
     onComplete = opts.onComplete, _back = false,
   }

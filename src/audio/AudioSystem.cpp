@@ -120,7 +120,20 @@ void AudioSystem::ScanAudioFiles()
     // エディタの音声ピッカ用。ディスク走査は無駄なうえ、AssetsDir(UTF-8)を
     // std::filesystem::path(=ACP 解釈)に通すと非 ASCII フォルダ名で例外になり得る。
     if (vfs::InGameMode())
+    {
+        // ★配布ゲームでは一覧が必ず空になる（pak の中身は列挙しない）。
+        //   Lua の audio:getBGMList() / getSFXList() でサウンドテスト画面を作ると、
+        //   エディタでは埋まるのに配布物では**無言で空リスト**になるので、理由を残す。
+        static bool warned = false;
+        if (!warned)
+        {
+            warned = true;
+            Logger::Warn("配布ゲームでは audio:getBGMList()/getSFXList() は常に空です"
+                         "（一覧はエディタのピッカ用で、pak の中身は列挙しません）。"
+                         "曲名一覧が要るならスクリプト側に配列を持ってください");
+        }
         return;
+    }
 
     auto scanDir = [&](const std::string& subDir, std::vector<std::string>& outList) {
         std::filesystem::path dir = std::filesystem::path(m_assetsDir) / subDir;
@@ -346,10 +359,24 @@ void AudioSystem::PlaySFX(const std::string& filePath, bool loop, float volume)
         }
     }
 
-    // 空きがなければ最初のスロットを強制停止
+    // 空きがなければ一番古いスロットを奪う。
+    // ★以前は無条件に 0 番だった。ループ再生の SE（環境音など）は BuffersQueued が
+    //   永久に 0 にならずスロットを占有し続けるので、混み合うと**新しい音が全部 0 番へ
+    //   集中して互いを切り合い、1 つしか聞こえないうえ鳴り直し続ける**。
+    //   ラウンドロビンなら少なくとも 16 個ぶんは分散する。ログも 1 度だけ出して、
+    //   「音が鳴らない/途切れる」の原因に気づけるようにする。
     if (freeSlot < 0)
     {
-        freeSlot = 0;
+        freeSlot = static_cast<i32>(m_sfxStealCursor % kMaxSFXVoices);
+        m_sfxStealCursor = (m_sfxStealCursor + 1) % kMaxSFXVoices;
+        if (!m_sfxStealWarned)
+        {
+            m_sfxStealWarned = true;
+            Logger::Warn("SE の同時発音数が上限({})に達しました。以降は古い音を止めて鳴らします"
+                         "（ループ再生の SE はスロットを占有し続けるので、"
+                         "使い終わったら stopAllSFX するか loop=false にしてください）",
+                         kMaxSFXVoices);
+        }
     }
 
     auto& slot = m_sfxSlots[freeSlot];

@@ -99,6 +99,10 @@ private:
     // 実際に鳴っているか。ボイスは使い回すので存在では判定できない
     // （StopBGM / PauseBGM で false、PlayBGM / ResumeBGM で true）。
     bool                 m_bgmPlaying = false;
+    // 空きスロットが無いときに奪う位置（ラウンドロビン）。0 番固定だと全部が 0 番を
+    // 奪い合って 1 音しか聞こえなくなる。
+    u32                  m_sfxStealCursor = 0;
+    bool                 m_sfxStealWarned = false;
     bool                 m_bgmLoop = true;
 
     // SFX pool

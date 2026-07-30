@@ -284,7 +284,7 @@ lamp.range = 12
 | `:stopAllSFX()` | 全 SE 停止 |
 | `:setMasterVolume(v)` / `:setBGMVolume(v)` / `:setSFXVolume(v)` | 音量設定 |
 | `:getMasterVolume()` / `:getBGMVolume()` / `:getSFXVolume()` | 音量取得 |
-| `:getBGMList()` / `:getSFXList()` | ファイル一覧 |
+| `:getBGMList()` / `:getSFXList()` | ファイル一覧。**エディタ専用**（配布ゲームでは常に空。一覧はエディタのピッカ用で、pak の中身は列挙しない）。サウンドテスト画面を作るならスクリプト側に曲名の配列を持つこと |
 | `:rescan()` | オーディオフォルダ再スキャン |
 
 ### PhysicsSystem（`physics`）
