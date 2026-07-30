@@ -253,8 +253,8 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 
 **⚠️ `normal` / `roughness` / `metallic` / `velocity` は「深度+速度プリパス」でしか書かれない**ので、TAA も SSR も SSGI も
 OFF のときは TAA を一時的に ON にして撮る（`warnings` に出る）。この 4 モードが「ジオメトリだけの粗い絵」に見えるのは仕様。
-| `dx12_undo` | `{}` | `{queuedUndo}` |
-| `dx12_redo` | `{}` | `{queuedRedo}` |
+| `dx12_undo` | `{}` | `{queuedUndo, undoable, willUndo}` ※MCP の編集は積まれない。`willUndo` で何が戻るか確認してから使う |
+| `dx12_redo` | `{}` | `{queuedRedo, redoable, willRedo}` |
 | `dx12_save_scene` | `{path?:string}` | `{path}` ※省略で現在シーンへ上書き |
 | `dx12_create_lua_component` | `{name:string, code:string}` | `{path}` ※書込前に構文検証。既存パスなら上書き更新も兼ねる |
 | `dx12_create_shader` | `{name:string, code:string}` | `{path, compiled, error?}` ※assets/shaders/に作成/上書き後、即コンパイルを試す。Luaと違い失敗してもファイルは残る(反復修正前提) |
@@ -470,8 +470,14 @@ Node 側は `Error.hint` / `Error.valid_values` として受け取り、ツー�
 1. dx12_set_transform / dx12_set_component で変更
 2. dx12_focus_and_screenshot(entity: <entityId>) → PNG で確認
 3. dx12_get_log(lines: 30) → エンジンのエラー/警告を確認
-4. 問題があれば dx12_undo で戻す
+4. 問題があれば**同じ set_* を反対の値で呼び直す**
 ```
+
+★ここで `dx12_undo` を使ってはいけない。**MCP の編集ツールはほぼ Undo に積まれない**
+（積むのは `dx12_group_entities` だけ）。`set_transform` を取り消すつもりで `dx12_undo` を
+呼ぶと、スタックの一番上にある別の操作（エディタでの編集や entity 生成）が戻る。
+`dx12_undo` は戻り値に `willUndo`（次に戻る操作の名前）と `undoable` を返すので、
+どうしても使うなら**自分の操作かどうかを確かめてから**呼ぶこと。
 
 Play/Stop テスト:
 ```

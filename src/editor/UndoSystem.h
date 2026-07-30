@@ -529,6 +529,19 @@ public:
     // Undo できないこと自体は別問題だが、少なくとも「保存し忘れ」からは守る。
     void MarkEdited() { ++m_editSeq; }
 
+    // 次の Undo / Redo が何に当たるか。押す前に呼び出し側へ見せるため。
+    // ★MCP の編集ツールはほぼ Undo を積まない（積むのは group_entities だけ）。
+    //   dx12_undo を「直前の自分の変更を戻す」つもりで呼ぶと**別の操作**が戻る。
+    //   何が戻るのかを名前で返せるようにして、その事故を見えるようにする。
+    const char* PeekUndoName() const
+    {
+        return m_undoStack.empty() ? nullptr : m_undoStack.back()->GetName();
+    }
+    const char* PeekRedoName() const
+    {
+        return m_redoStack.empty() ? nullptr : m_redoStack.back()->GetName();
+    }
+
     void Undo()
     {
         if (m_undoStack.empty()) return;

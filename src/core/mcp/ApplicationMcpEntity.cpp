@@ -1090,18 +1090,34 @@ void Application::RegisterMcpEntityMethods()
             isDeferred = true;
         });
 
+    // ★MCP の編集ツールはほぼ Undo を積まない（積むのは group_entities のみ）。
+    //   「直前の set_transform を取り消す」つもりで undo を呼ぶと、
+    //   スタックの一番上にある**別の操作**（エディタでの編集や entity 生成）が戻る。
+    //   何が戻るのかを willUndo で返し、undoable でスタックの有無も伝える。
     McpDefine("undo", "", DX12E_MCP_HANDLER
         {
+            const char* name = m_editorCtx->undoSystem.PeekUndoName();
             m_editorCtx->pendingUndo = true;   // フレーム境界で適用
             resp["ok"] = true;
-            resp["result"] = {{"queuedUndo", true}};
+            resp["result"] = {
+                {"queuedUndo", true},
+                {"undoable", name != nullptr},
+                {"willUndo", name ? std::string(name) : std::string()},
+                {"note", "MCP の編集はほぼ Undo に積まれない（group_entities のみ）。"
+                         "willUndo が自分の操作でなければ、それは別の変更を戻している"},
+            };
         });
 
     McpDefine("redo", "", DX12E_MCP_HANDLER
         {
+            const char* name = m_editorCtx->undoSystem.PeekRedoName();
             m_editorCtx->pendingRedo = true;
             resp["ok"] = true;
-            resp["result"] = {{"queuedRedo", true}};
+            resp["result"] = {
+                {"queuedRedo", true},
+                {"redoable", name != nullptr},
+                {"willRedo", name ? std::string(name) : std::string()},
+            };
         });
 
     McpDefine("new_scene", "savePath:string", DX12E_MCP_HANDLER
