@@ -99,6 +99,14 @@ public:
     using RpcHandler = std::function<void(ClientId sender, const RpcArgs& args)>;
     void SetRpcHandler(const std::string& name, RpcHandler handler);
 
+    // ★Lua state を作り直す直前に必ず呼ぶこと（接続は切らない）。
+    //   ハンドラは Lua の関数（sol::main_function）を値で握っているので、
+    //   lua_close の後まで残すと **破棄済みの lua_State を参照する**。
+    //   Play/Stop 経路は Disconnect → ResetState で消えるが、
+    //   ランタイムのシーン切替（loadScene）とホットリロードは接続を保ったまま
+    //   ScriptEngine を Shutdown/Initialize するので、そこには何の掃除も無かった。
+    void ClearRpcHandlers() { m_rpcHandlers.clear(); }
+
     bool SendRpcToServer(const std::string& name, const RpcArgs& args, std::string& outError);   // クライアント専用
     bool SendRpcToClient(ClientId target, const std::string& name, const RpcArgs& args, std::string& outError); // サーバー専用
     bool SendRpcToAll(const std::string& name, const RpcArgs& args, std::string& outError);       // サーバー専用

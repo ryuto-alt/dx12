@@ -431,9 +431,15 @@ void Application::RegisterMcpToolingMethods()
             else if (role == "offline") m_editorCtx->netTestRole = NetTestRole::Offline;
             else throw McpError(McpErr::InvalidParam, "role must be host|client|offline");
             if (params.contains("address")) m_editorCtx->netTestJoinAddress = params["address"].get<std::string>();
-            const int port = params.value("port", 0);
-            if (port < 0 || port > 65535) throw McpError(McpErr::InvalidParam, "port must be 0..65535");
-            m_editorCtx->netTestJoinPort = static_cast<u16>(port);
+            // ★port は指定されたときだけ更新する。以前は既定 0 を無条件に代入していたので、
+            //   role だけ変える呼び出し（port 省略）で**前回設定した port が黙って消えて**いた。
+            if (params.contains("port"))
+            {
+                const int port = params.value("port", 0);
+                if (port < 0 || port > 65535)
+                    throw McpError(McpErr::InvalidParam, "port must be 0..65535");
+                m_editorCtx->netTestJoinPort = static_cast<u16>(port);
+            }
             resp["ok"] = true;
             resp["result"] = {{"testRole", role}, {"address", m_editorCtx->netTestJoinAddress},
                               {"port", m_editorCtx->netTestJoinPort}};

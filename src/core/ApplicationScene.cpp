@@ -566,6 +566,12 @@ void Application::DoRuntimeSceneLoad(const std::string& rel, ID3D12GraphicsComma
     m_editorCtx->currentScenePath = full;
     m_currentSceneRel = rel;
 
+    // ★Lua state を捨てる前に、ネットワークが握っている RPC ハンドラを外す。
+    //   ハンドラは Lua の関数を値で持っているので、lua_close 後まで残すと
+    //   破棄済みの lua_State を参照する（次の受信 RPC か、同名の再登録による
+    //   古いハンドラの破棄で踏む）。接続自体は切らない＝シーンをまたいで繋がったまま。
+    if (m_networkSystem) m_networkSystem->ClearRpcHandlers();
+
     // ScriptEngine 作り直し（コールバック再注入）
     m_scriptEngine->Shutdown();
     m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(), m_camera.get(),
@@ -1028,7 +1034,10 @@ void Application::LaunchNetTestClient()
     wchar_t exe[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
 
-    const u16 port = m_networkSystem ? m_networkSystem->Config().defaultPort : u16(7777);
+    // ★ホストが待ち受けている実ポートへ繋ぐ（net_setup で port を変えていたら defaultPort ではない）
+    const u16 port = (m_editorCtx && m_editorCtx->netTestJoinPort != 0)
+                   ? m_editorCtx->netTestJoinPort
+                   : (m_networkSystem ? m_networkSystem->Config().defaultPort : u16(7777));
     std::wstring cmd = L"\"" + std::wstring(exe) + L"\" --editor --net-client 127.0.0.1:"
                      + std::to_wstring(port);
     if (!m_projectInfo.rootDir.empty())
@@ -1210,8 +1219,13 @@ void Application::EnterPlayMode()
         std::string netErr;
         if (m_editorCtx->netTestRole == NetTestRole::Host)
         {
-            if (!m_networkSystem->Host(m_networkSystem->Config().defaultPort,
-                                       m_networkSystem->Config().maxPlayers, netErr))
+            // ★netTestJoinPort はクライアント分岐だけが見ていて、ホストは defaultPort 固定だった。
+            //   `dx12_net_setup(role="host", port=9000)` は {"port":9000} を返して成功するのに
+            //   実際は 7777 で待ち受ける＝**別マシンから繋がらないのにログも出ない**。
+            const u16 hostPort = m_editorCtx->netTestJoinPort != 0
+                               ? m_editorCtx->netTestJoinPort
+                               : m_networkSystem->Config().defaultPort;
+            if (!m_networkSystem->Host(hostPort, m_networkSystem->Config().maxPlayers, netErr))
                 Logger::Warn("テストロール: ホスト開始に失敗しました: {}", netErr);
         }
         else if (m_editorCtx->netTestRole == NetTestRole::Client)

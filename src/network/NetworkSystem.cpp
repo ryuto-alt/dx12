@@ -1,4 +1,6 @@
 #include "network/NetworkSystem.h"
+
+#include <algorithm>
 #include "network/EnetTransport.h"
 #include "network/Interest.h"
 #include "network/NetBuffer.h"
@@ -105,6 +107,27 @@ void NetworkSystem::ResetState()
     m_latestInput.clear();
     m_predictedHistory.clear();
 }
+
+namespace {
+// ルート + 子孫をまとめて破棄する。
+// ★以前はルート 1 個だけ destroy していたので、子を持つプレハブ（武器やコリジョン用の
+//   子ノードを分けた敵など）を despawn すると **子メッシュだけがワールド原点付近に
+//   取り残されて描かれ続けた**（ComputeWorldMatrix は無効な親で打ち切るため、
+//   親の変換が抜けたローカル変換で描かれる）。エンジンの通常削除経路は
+//   ApplicationRender.cpp:2548 で同じ BFS をしている。
+void DestroyEntitySubtree(entt::registry& reg, entt::entity root)
+{
+    if (!reg.valid(root)) return;
+    std::vector<entt::entity> all{root};
+    for (size_t head = 0; head < all.size(); ++head)
+        for (auto [child, tf] : reg.view<const Transform>().each())
+            if (tf.parent == all[head]
+                && std::find(all.begin(), all.end(), child) == all.end())
+                all.push_back(child);
+    for (auto it = all.rbegin(); it != all.rend(); ++it)
+        if (reg.valid(*it)) reg.destroy(*it);
+}
+} // namespace
 
 void NetworkSystem::PreSimUpdate(f32 /*dt*/, entt::registry& reg)
 {
@@ -308,7 +331,7 @@ void NetworkSystem::HandleDespawn(const std::vector<u8>& body, entt::registry& r
         auto it = m_netToEntity.find(netId);
         if (it != m_netToEntity.end())
         {
-            if (reg.valid(it->second)) reg.destroy(it->second);
+            DestroyEntitySubtree(reg, it->second);
             m_netToEntity.erase(it);
         }
         if (m_eventBus)
@@ -350,7 +373,7 @@ bool NetworkSystem::RequestDespawn(NetId netId, entt::registry& reg, std::string
     auto it = m_netToEntity.find(netId);
     if (it == m_netToEntity.end()) { outError = "unknown netId"; return false; }
 
-    if (reg.valid(it->second)) reg.destroy(it->second);
+    DestroyEntitySubtree(reg, it->second);
     m_netToEntity.erase(it);
 
     NetWriter w;
@@ -599,7 +622,15 @@ void NetworkSystem::ApplyInterpolation(entt::registry& reg)
         if (!reg.all_of<Transform, NetworkTransform>(e)) continue;
 
         const auto& nt = reg.get<NetworkTransform>(e);
-        if (nt.syncMode != 0) continue;   // オーナー予測(フェーズ⑦)はここでは触らない
+        // ★予測をスキップするのは「自分が所有していて syncMode=1」のときだけ。
+        //   以前は syncMode!=0 で一律に弾いていたが、**他人が所有する予測エンティティ**を
+        //   書き込む経路は他に 1 つも無い（:519 も :539 も _isLocalOwner 前提）。
+        //   結果、NetworkTransform を「オーナー予測」にすると自分のキャラだけ動いて
+        //   **他プレイヤーが全員スポーン位置で固まる**。スナップショットは届いて
+        //   m_interpBuffers に積まれ、ここで捨てられていた（ログも警告も無し）。
+        //   1 クライアントのテストループでは自分しか見ないので気づけない。
+        const auto& niE = reg.get<NetworkIdentity>(e);
+        if (nt.syncMode != 0 && niE._isLocalOwner) continue;
 
         const f32 renderTime = m_localTime - (nt.interpDelayMs / 1000.0f);
         SnapshotBuffer::Sample s;
@@ -805,6 +836,19 @@ void NetworkSystem::HandleTransportEvent(const TransportEvent& ev, entt::registr
         else
         {
             Logger::Info("NetworkSystem: disconnected from server");
+            // ★接続状態を戻す。以前は m_serverPeer も m_role も触っていなかったので:
+            //   - `net:rpc(...)` のガード（IsClient() && m_serverPeer != kInvalidPeer）を
+            //     素通りし、送信は無言で捨てられるのに **成功を返し続けた**
+            //   - Join() の「already hosting/connected」ガードに引っかかって、
+            //     `net:disconnect()` を明示的に呼ぶまで**別サーバーへ再接続できない**
+            //   RPC ハンドラ（Lua の関数）は消さない。Lua state は生きていて、
+            //   再接続したら同じハンドラをそのまま使いたいため（ResetState は使わない）。
+            m_serverPeer = kInvalidPeer;
+            m_role       = NetRole::Offline;
+            m_netToEntity.clear();
+            m_interpBuffers.clear();
+            m_inputHistory.clear();
+            m_predictedHistory.clear();
             if (m_eventBus)
             {
                 EngineEvent e; e.name = "net.disconnected";

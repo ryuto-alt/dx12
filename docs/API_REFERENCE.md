@@ -337,7 +337,7 @@ hit.normal    -- Vec3
 | `:disconnect()` | — | 切断 |
 | `:isServer()` / `:isClient()` / `:isConnected()` | bool | 状態確認 |
 | `:localClientId()` | int | 自分の clientId（ホストは常に0） |
-| `:players()` | `{id, rtt}[]` | 接続中プレイヤー一覧 |
+| `:players()` | `{id, rtt}[]` | **サーバー専用**。接続中プレイヤー一覧。クライアント側では**常に空**（ピア表は接続受理側にしか無い）。クライアントで人数や名簿が要るなら、サーバーが `rpcAll` で配るか、プレイヤーを表す NetworkIdentity 付きエンティティを数えること |
 | `:spawn(prefabPath, x, y, z, owner?)` | netId(int), string(err) | **サーバー専用**。prefabPath は assets 相対（例 "prefabs/Player.prefab"）。生成はフレーム境界(`net.spawned`で分かる) |
 | `:despawn(entity)` | string(err) | **サーバー専用**。NetworkIdentity付きエンティティを破棄(即時) |
 | `:findByNetId(netId)` | Entity | netIdからエンティティを引く。見つからなければ`isValid()==false` |

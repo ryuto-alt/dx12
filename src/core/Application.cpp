@@ -2935,6 +2935,8 @@ void Application::ApplyFootIkPass()
 //   ホットリロードでやりたいのは「Lua を読み直す」ことだけなので、それだけをする。
 void Application::ReloadGameScript()
 {
+    // Lua state を捨てる前にネットワークの RPC ハンドラを外す（DoRuntimeSceneLoad と同じ理由）
+    if (m_networkSystem) m_networkSystem->ClearRpcHandlers();
     m_scriptEngine->Shutdown();
     m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
                                m_camera.get(), m_audioSystem.get(),
