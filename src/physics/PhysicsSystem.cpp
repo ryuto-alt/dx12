@@ -319,17 +319,44 @@ void PhysicsSystem::Update(f32 dt, entt::registry& registry)
         return;
     }
 
+    // ★Play 中に足された RigidBody / CharacterController をここで拾って登録する。
+    //   以前は Play 開始とランタイムのシーン切替の一括スイープでしか登録しておらず、
+    //   OnUpdate や time.after の中で spawnBox → addBoxCollider → addRigidBody しても
+    //   **Jolt のボディが作られないまま**だった（箱は空中に固まり、当たりもしない。
+    //   ログもエラーも出ない）。addCharacterController も同じで、move/jump/isGrounded が
+    //   全部黙って無効になっていた。「OnStart では動いたのに time.after に移したら動かない」
+    //   という形で出る。地形の _colliderDirty 消化と同じ場所・同じ流儀で毎フレーム拾う。
+    RegisterPendingPhysicsBodies(registry);
+    // ★逆に、消えたエンティティのボディを Jolt から外す。
+    //   Scene::Remove は registry.destroy を呼ぶだけで UnregisterBody を呼ばず、
+    //   registry に on_destroy フックも無かったので、`scene:remove(e)` で消した
+    //   敵・箱・弾の**当たり判定だけが最後の位置に残り続けていた**（見えない壁になる）。
+    //   overlapSphere / overlapBox も破棄済みエンティティを返し続け、
+    //   Jolt の body 上限（maxBodies=4096）にも効くので、弾のような使い捨てで枯渇する。
+    ReleaseOrphanedPhysicsBodies(registry);
+
     // 地形を彫った直後なら、ステップ前にコライダーを作り直しておく
     //（描画メッシュと当たり判定が 1 フレームでもズレないようにする）。
     RefreshTerrainColliders(registry);
     // 彫ったスカルプトメッシュも同じ理屈でコライダーを作り直す（ストローク終了時にだけ立つ）。
     RefreshSculptColliders(registry);
 
-    SyncTransformsToPhysics(registry);
-
-    // dt をクランプ（モード切替時の大きな dt で一気に何ステップも走るのを防ぐ）
+    // dt をクランプ（モード切替時の大きな dt で一気に何ステップも走るのを防ぐ）。
+    // ★SyncTransformsToPhysics より前へ移した。キネマティック体を MoveKinematic で
+    //   動かすようになり、そこで dt を使うため（クランプ前の巨大な dt を渡さない）。
     if (dt > kFixedTimeStep * 4.0f)
         dt = kFixedTimeStep;
+
+    // ★MoveKinematic へ渡すのは「このフレームで実際にシミュレートされる時間」。
+    //   フレームの dt をそのまま渡すと、
+    //     - dt が極端に小さいフレーム（0 サブステップ）で velocity = 差分/dt が発散する
+    //     - dt と実際に進む時間（fixed の整数倍）がズレて毎フレーム行き過ぎ／戻りする
+    //   実際、フレーム dt を渡した版は動く床を 2 秒動かしただけで
+    //   Jolt の中で FLT_OVERFLOW（Body::UpdateSleepStateInternal）を起こして落ちた。
+    //   このフレームで 0 ステップなら 0 を渡し、キネマティックの更新自体を見送る
+    //   （差分は次のフレームへ持ち越され、そこでまとめて適用される）。
+    const f32 simDt = std::floor((m_accumulator + dt) / kFixedTimeStep) * kFixedTimeStep;
+    SyncTransformsToPhysics(registry, simDt);
 
     m_accumulator += dt;
     int steppedCount = 0;
@@ -391,7 +418,7 @@ void PhysicsSystem::FlushPendingContacts()
     }
 }
 
-void PhysicsSystem::SyncTransformsToPhysics(entt::registry& registry)
+void PhysicsSystem::SyncTransformsToPhysics(entt::registry& registry, f32 dt)
 {
     auto& bodyInterface = m_impl->physicsSystem->GetBodyInterfaceNoLock();
 
@@ -421,7 +448,25 @@ void PhysicsSystem::SyncTransformsToPhysics(entt::registry& registry)
             rot = JPH::Quat(qf.x, qf.y, qf.z, qf.w);
         }
 
-        bodyInterface.SetPositionAndRotation(joltId, pos, rot, JPH::EActivation::DontActivate);
+        // ★以前は SetPositionAndRotation で毎フレーム**テレポート**していた。
+        //   それだと Jolt 側の MotionProperties に速度が入らないので
+        //   CharacterVirtual::GetGroundVelocity() が常に 0 になり、
+        //   StepCharacters の接地面速度の加算（下の `+ ground.GetX()`）が死にコードだった。
+        //   ＝**動く床・エレベーター・回転床に乗ってもキャラが運ばれない**。
+        //   MoveKinematic は目標位置から速度を逆算するので、接地面速度と押し出しの
+        //   両方が同時に効くようになる（毎フレーム現在位置から引き直すので誤差は自己補正される）。
+        // dt=0（このフレームは 1 ステップも進まない）なら何もしない。差分は次フレームへ。
+        if (dt <= 0.0f) continue;
+
+        // 大きく飛ぶとき（シーン読み込み・リスポーン・physics:setPosition 相当）は
+        // 速度に直すと極端な値になるのでテレポートにする。動く床の速度は高が知れているので、
+        // 1 ステップ 10m を超えたら「移動」ではなく「瞬間移動」とみなす。
+        const JPH::RVec3 cur = bodyInterface.GetPosition(joltId);
+        const float      dist = (pos - cur).Length();
+        if (dist > 10.0f)
+            bodyInterface.SetPositionAndRotation(joltId, pos, rot, JPH::EActivation::DontActivate);
+        else
+            bodyInterface.MoveKinematic(joltId, pos, rot, dt);
     }
 }
 
@@ -461,6 +506,55 @@ void PhysicsSystem::SyncPhysicsToTransforms(entt::registry& registry)
         transform.quaternion = { rot.GetX(), rot.GetY(), rot.GetZ(), rot.GetW() };
         transform.useQuaternion = true;
     }
+}
+
+// エンティティが消えたのに残っている Jolt のボディ / キャラを解放する。
+// UnregisterBody は RigidBody コンポーネントを見るので、破棄済みエンティティには使えない
+// （component ごと消えている）。ここでは bodyId から直接外す。
+void PhysicsSystem::ReleaseOrphanedPhysicsBodies(entt::registry& registry)
+{
+    if (!m_impl) return;
+
+    {
+        auto& bodyInterface = m_impl->physicsSystem->GetBodyInterface();
+        for (auto it = m_bodyToEntity.begin(); it != m_bodyToEntity.end(); )
+        {
+            const bool alive = registry.valid(it->second)
+                            && registry.all_of<RigidBody>(it->second);
+            if (alive) { ++it; continue; }
+            JPH::BodyID joltId(it->first);
+            bodyInterface.RemoveBody(joltId);
+            bodyInterface.DestroyBody(joltId);
+            it = m_bodyToEntity.erase(it);
+        }
+    }
+
+    for (auto it = m_impl->characters.begin(); it != m_impl->characters.end(); )
+    {
+        const bool alive = registry.valid(it->first)
+                        && registry.all_of<CharacterController>(it->first);
+        if (alive) { ++it; continue; }
+        m_impl->prevCharPos.erase(it->first);
+        it = m_impl->characters.erase(it);   // Ref 解放で CharacterVirtual も落ちる
+    }
+}
+
+// 未登録の RigidBody / CharacterController を拾って Jolt へ登録する。
+// Play 開始時の一括スイープと同じことを毎フレームの取りこぼしぶんだけ行う。
+void PhysicsSystem::RegisterPendingPhysicsBodies(entt::registry& registry)
+{
+    // 反復中に registry を触らないよう、対象を集めてから登録する。
+    std::vector<entt::entity> pendingBodies;
+    for (auto [e, rb] : registry.view<RigidBody>().each())
+        if (rb.bodyId == kInvalidBodyId) pendingBodies.push_back(e);
+    for (auto e : pendingBodies)
+        RegisterBody(registry, e);
+
+    std::vector<entt::entity> pendingChars;
+    for (auto [e, cc] : registry.view<CharacterController>().each())
+        if (!cc._registered) pendingChars.push_back(e);
+    for (auto e : pendingChars)
+        RegisterCharacter(registry, e);
 }
 
 void PhysicsSystem::RefreshTerrainColliders(entt::registry& registry)

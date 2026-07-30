@@ -45,6 +45,13 @@ public:
     void RefreshSculptColliders(entt::registry& registry);
 
     // Entity の物理体を登録/解除
+    // Play 中に足された RigidBody / CharacterController を拾って登録する（Update の頭で毎フレーム）。
+    // これが無いと、実行中に生成したエンティティの物理が無言で効かない。
+    void RegisterPendingPhysicsBodies(entt::registry& registry);
+    // 逆に、消えたエンティティのボディを Jolt から外す（Scene::Remove は registry.destroy
+    // を呼ぶだけなので、これが無いと当たり判定だけが残り、body 上限も食い潰す）。
+    void ReleaseOrphanedPhysicsBodies(entt::registry& registry);
+
     void RegisterBody(entt::registry& registry, entt::entity entity);
     void UnregisterBody(entt::registry& registry, entt::entity entity);
     void UnregisterAllBodies(entt::registry& registry);
@@ -121,7 +128,7 @@ public:
     void ResetAccumulator() { m_accumulator = 0.0f; }
 
 private:
-    void SyncTransformsToPhysics(entt::registry& registry);
+    void SyncTransformsToPhysics(entt::registry& registry, f32 dt);
     void SyncPhysicsToTransforms(entt::registry& registry);
     // ContactListener の pending をメインスレッドで EventBus へ流す。
     void FlushPendingContacts();
