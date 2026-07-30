@@ -5719,7 +5719,8 @@ void Application::Render()
                 m_networkPanel->RenderSettings(*m_networkSystem, *m_editorCtx, PathResolver::AssetsDir());
         }
         if (m_vfxEditorPanel)
-            m_vfxEditorPanel->RenderWindow(m_scene->GetRegistry(), *m_editorCtx, PathResolver::AssetsDir());
+            m_vfxEditorPanel->RenderWindow(m_scene->GetRegistry(), *m_editorCtx, PathResolver::AssetsDir(),
+                                           m_scene.get());
         if (m_uiEditorPanel)
             m_uiEditorPanel->RenderWindow(m_scene->GetRegistry(), *m_editorCtx, PathResolver::AssetsDir(),
                                           m_resourceManager.get(), m_srvHeap.get(), nativeCmdList);

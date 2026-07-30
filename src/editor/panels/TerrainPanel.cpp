@@ -738,6 +738,11 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
                                                 XMFLOAT3{0.0f, 0.0f, 0.0f}, params, cmd);
             if (created.IsValid())
             {
+                // ★Undo に積んでいなかった。誤って作った地形が Ctrl+Z で消えず、
+                //   代わりに直前の別の編集が巻き戻っていた（MCP 経由の生成は
+                //   ApplicationRender.cpp で SpawnEntityCommand を積んでいる＝GUI だけ抜けていた）。
+                ctx.undoSystem.PushCommand(std::make_unique<SpawnEntityCommand>(
+                    &scene, assetsDir, created.GetHandle()));
                 ctx.Select(created.GetHandle());
                 Logger::Info("地形を作成しました: {}", s.newName);
             }

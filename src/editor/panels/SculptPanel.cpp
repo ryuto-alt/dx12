@@ -646,6 +646,9 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
                 static_cast<u32>(s.newSubdivisions), s.newSize, cmd);
             if (created.IsValid())
             {
+                // ★TerrainPanel と同じ理由で Undo に積む（GUI 経由だけ抜けていた）。
+                ctx.undoSystem.PushCommand(std::make_unique<SpawnEntityCommand>(
+                    &scene, assetsDir, created.GetHandle()));
                 ctx.Select(created.GetHandle());
                 // ブラシ半径を素体の大きさに合わせる（毎回手で直さなくて済む）
                 s.brush.radius   = s.newSize * 0.25f;
@@ -688,6 +691,8 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
                         tf.parent = keepParent;
                     }
                     scene.RebuildSculptMesh(created.GetHandle(), cmd);
+                    ctx.undoSystem.PushCommand(std::make_unique<SpawnEntityCommand>(
+                        &scene, assetsDir, created.GetHandle()));
                     ctx.Select(created.GetHandle());
                     if (reg.all_of<SkeletalAnimation>(sel))
                         Logger::Warn("スキン付きモデルを編集可能にしました。"

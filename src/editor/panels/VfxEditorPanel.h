@@ -19,6 +19,7 @@ class GraphicsDevice;
 class CommandList;
 class EditorContext;
 class ResourceManager;
+class Scene;   // SpawnEntityCommand（Undo）に渡すだけ
 
 // 名前付き VFX プリセット（assets/vfx/*.json）。ParticleEmitter コンポーネントの
 // フィールドをほぼそのまま保持しつつ、Lua fx:burst{} 生成用のフィールド（burstCount）も
@@ -95,7 +96,8 @@ public:
 
     // ImGui ウィンドウ本体（アセット一覧・プレビュー表示・パラメータ編集・操作ボタン）。
     // ctx.showVfxEditor が false なら即 return（呼び出し側でのガードは不要）。
-    void RenderWindow(entt::registry& reg, EditorContext& ctx, const std::string& assetsDir);
+    void RenderWindow(entt::registry& reg, EditorContext& ctx, const std::string& assetsDir,
+                      Scene* scene);
 
 private:
     void RefreshAssetList(const std::string& assetsDir);
@@ -103,7 +105,10 @@ private:
     bool LoadAsset(const std::string& path);
     bool SaveAsset(const std::string& path);
     void ApplyToSelected(entt::registry& reg, EditorContext& ctx);
-    void SpawnEntity(entt::registry& reg, EditorContext& ctx);
+    // Scene* と assetsDir は SpawnEntityCommand（Undo）に必要。
+    // 無いと「新規エンティティとして配置」が Ctrl+Z で消えない。
+    void SpawnEntity(entt::registry& reg, EditorContext& ctx,
+                     Scene* scene, const std::string& assetsDir);
     std::string BuildLuaSnippet() const;
 
     void DrawColorGradient();

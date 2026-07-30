@@ -282,7 +282,8 @@ void VfxEditorPanel::ApplyToSelected(entt::registry& reg, EditorContext& ctx)
     m_statusFlash = 2.0f;
 }
 
-void VfxEditorPanel::SpawnEntity(entt::registry& reg, EditorContext& ctx)
+void VfxEditorPanel::SpawnEntity(entt::registry& reg, EditorContext& ctx,
+                                 Scene* scene, const std::string& assetsDir)
 {
     ParticleEmitter pe{};
     pe.kind = m_current.kind;   pe.blend = m_current.blend;
@@ -313,6 +314,9 @@ void VfxEditorPanel::SpawnEntity(entt::registry& reg, EditorContext& ctx)
     reg.emplace<NameTag>(e, NameTag{ m_current.name.empty() ? std::string("ParticleEmitter") : m_current.name });
     reg.emplace<Transform>(e, Transform{ spawnPos, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f} });
     reg.emplace<ParticleEmitter>(e, pe);
+    // ★Undo に積む。積まないと誤配置が Ctrl+Z で消えず、別の編集が代わりに戻る。
+    if (scene)
+        ctx.undoSystem.PushCommand(std::make_unique<SpawnEntityCommand>(scene, assetsDir, e));
     ctx.Select(e);
     m_statusMsg = "新規エンティティとして配置しました";
     m_statusFlash = 2.0f;
@@ -474,7 +478,8 @@ void VfxEditorPanel::DrawSizeCurve()
     ImGui::DragFloat("終了 End##sz", &m_current.sizeEnd, 0.01f, 0.0f, 20.0f);
 }
 
-void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const std::string& assetsDir)
+void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const std::string& assetsDir,
+                                  Scene* scene)
 {
     if (!ctx.showVfxEditor) return;
     if (!m_assetListLoaded) RefreshAssetList(assetsDir);
@@ -702,7 +707,7 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
     if (ImGui::Button("選択エンティティへ適用")) ApplyToSelected(reg, ctx);
     if (!canApply) ImGui::EndDisabled();
     ImGui::SameLine();
-    if (ImGui::Button("新規エンティティとして配置")) SpawnEntity(reg, ctx);
+    if (ImGui::Button("新規エンティティとして配置")) SpawnEntity(reg, ctx, scene, assetsDir);
     ImGui::SameLine();
     if (ImGui::Button("Luaコードをコピー"))
     {
