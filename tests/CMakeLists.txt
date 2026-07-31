@@ -352,6 +352,18 @@ endif()
     endif()
     add_test(NAME FrustumTests COMMAND FrustumTests)
 
+    # Hi-Z オクルージョンカリングの数学（renderer/HiZMath.h: AABB→スクリーン矩形投影 /
+    # ミップ選択 / 遮蔽判定）テスト。ヘッダオンリー・純 DirectXMath。
+    # 深度規約（標準 Z）と「選んだミップで矩形が 2x2 に収まる」不変条件を固定する。
+    add_executable(HiZMathTests hiz_math_test.cpp)
+    target_include_directories(HiZMathTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(HiZMathTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(HiZMathTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(HiZMathTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME HiZMathTests COMMAND HiZMathTests)
+
     # 精密ピッキングの土台（editor/RayGeometry.h: レイ-三角形/AABB/球 + ヒット順ソート）テスト。
     # ヘッダオンリー・純 DirectXMath（entt も GPU も要らない）。
     add_executable(RayPickTests ray_pick_test.cpp)
