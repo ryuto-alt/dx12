@@ -62,6 +62,14 @@ struct DrawBatch
     DirectX::XMFLOAT3 aabbMax;
 };
 
+// オクルージョン判定へ出す 1 件ぶんのワールド AABB。
+// アイテム単体のものとバッチの合成のものが同じ配列に混ざる（判定側は区別しない）。
+struct OcclusionBounds
+{
+    DirectX::XMFLOAT3 aabbMin;
+    DirectX::XMFLOAT3 aabbMax;
+};
+
 // この DrawItem が DXR の TLAS に入るか（＝RT 影 / RT-AO が担当する範囲か）。
 //
 // ★CSM 側で「RT が担当するぶんを除外する」ときも必ずこの関数を使うこと。

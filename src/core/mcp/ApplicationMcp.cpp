@@ -635,8 +635,8 @@ Application::DiagOcclusionInfo Application::GetDiagOcclusionInfo() const
     {
         o.tested   = m_occlusionCull->GetTested();
         o.occluded = m_occlusionCull->GetOccluded();
-        o.batches  = m_occlusionCull->GetBatchCount();
     }
+    o.batches = static_cast<u32>(m_drawBatches.size());
     o.predicatedDraws = m_statPredicated;
     o.drawItems       = static_cast<u32>(m_drawItems.size());
     return o;

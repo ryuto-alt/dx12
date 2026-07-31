@@ -446,8 +446,20 @@ private:
     //   これが無いとインスタンス化された物にオクルージョンカリングが一切効かない
     //   （実測: city_blocks はメインパス 631 ドローが全部バッチで、述語が 1 本も張れなかった）。
     std::vector<DrawBatch> m_drawBatches;
-    // 描画アイテム index → バッチ番号（区間先頭にだけ入る。それ以外は 0xFFFFFFFFu）。
-    std::vector<u32>       m_drawBatchSlot;
+    // オクルージョン判定へ出す AABB の一覧。★「個別に落とせるもの」だけを入れる:
+    //   ・batchKey==0 のアイテム（1 ドロー = 1 体なので個別に述語を張れる）
+    //   ・バッチの合成 AABB（1 ドロー = N 体。バッチ単位でしか落とせない）
+    // バッチに属する個々のアイテムは入れない。入れても述語を張る先が無いので、
+    // 判定コストと転送帯域を捨てるだけになる（実測: 10 万体シーンで判定対象が
+    // 100005 → 5 に減る。判定は 0.30ms 掛かっていた）。
+    std::vector<OcclusionBounds> m_occlusionBounds;
+    // 描画アイテム index → m_occlusionBounds の添字（＝可視性バッファのスロット）。
+    //   batchKey==0 のアイテム … 自分の枠
+    //   バッチ区間の先頭      … そのバッチの枠
+    //   それ以外               … 0xFFFFFFFFu（述語を張らない）
+    // ★インスタンシング PSO が無い経路ではバッチのアイテムも 1 体ずつ描かれるが、
+    //   そのとき先頭が引くのはバッチの合成 AABB＝実体より大きい＝保守的なので安全。
+    std::vector<u32>       m_occlusionSlot;
     void BuildDrawList();
     u32 m_statDraws  = 0;   // フレーム内の DrawIndexedInstanced 発行数（ビューポートHUD用）
     u32 m_statCulled = 0;   // フレーム内にフラスタムカリングで省いたエンティティ描画の延べ数

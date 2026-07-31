@@ -282,17 +282,28 @@ void Application::BuildDrawList()
     // ★バッチは 1 ドローコールなので述語もバッチ単位でしか張れない。合成 AABB は視錐台で
     //   落ちるぶんも含んだ上位集合＝これが隠れていれば中の 1 体 1 体も必ず隠れている（保守的）。
     m_drawBatches.clear();
-    m_drawBatchSlot.assign(m_drawItems.size(), 0xFFFFFFFFu);
+    m_occlusionBounds.clear();
+    m_occlusionSlot.assign(m_drawItems.size(), 0xFFFFFFFFu);
     {
         const size_t total = m_drawItems.size();
         for (size_t i = 0; i < total; )
         {
-            const u64 key = m_drawItems[i].batchKey;
-            if (key == 0) { ++i; continue; }        // インスタンシング不可＝アイテム単位で判定する
+            const DrawItem& it = m_drawItems[i];
+            if (it.batchKey == 0)
+            {
+                // インスタンシング不可＝1 ドロー 1 体なので個別に述語を張れる。
+                m_occlusionSlot[i] = static_cast<u32>(m_occlusionBounds.size());
+                m_occlusionBounds.push_back({it.aabbMin, it.aabbMax});
+                ++i;
+                continue;
+            }
+            // 同一 batchKey の連続区間 = 1 ドロー。合成 AABB を 1 件だけ判定へ出す。
+            // ★区間内の個々のアイテムは出さない。述語を張る先が無いので、出しても
+            //   判定コストと転送帯域を捨てるだけになる。
             size_t j = i;
             XMVECTOR mn = XMVectorReplicate( FLT_MAX);
             XMVECTOR mx = XMVectorReplicate(-FLT_MAX);
-            for (; j < total && m_drawItems[j].batchKey == key; ++j)
+            for (; j < total && m_drawItems[j].batchKey == it.batchKey; ++j)
             {
                 mn = XMVectorMin(mn, XMLoadFloat3(&m_drawItems[j].aabbMin));
                 mx = XMVectorMax(mx, XMLoadFloat3(&m_drawItems[j].aabbMax));
@@ -302,7 +313,8 @@ void Application::BuildDrawList()
             b.count = static_cast<u32>(j - i);
             XMStoreFloat3(&b.aabbMin, mn);
             XMStoreFloat3(&b.aabbMax, mx);
-            m_drawBatchSlot[i] = static_cast<u32>(m_drawBatches.size());
+            m_occlusionSlot[i] = static_cast<u32>(m_occlusionBounds.size());
+            m_occlusionBounds.push_back({b.aabbMin, b.aabbMax});
             m_drawBatches.push_back(b);
             i = j;
         }
@@ -322,10 +334,12 @@ nlohmann::json Application::OcclusionReportJson() const
         {"ready",   ready},
         // メインパスで述語を張って発行したドロー数。0 ならカリングは効いていない。
         {"predicatedDraws", m_statPredicated},
-        {"batches", m_occlusionCull ? m_occlusionCull->GetBatchCount() : 0u},
-        {"note", "occluded は GPU からの読み戻し（数フレーム遅れ）。tested は"
-                 "「アイテム数 + バッチ数」。インスタンシングされた描画はバッチの合成 AABB で"
-                 "判定する（1 ドローに畳まれているので述語もバッチ単位でしか張れない）"},
+        {"batches",   static_cast<u32>(m_drawBatches.size())},
+        {"drawItems", static_cast<u32>(m_drawItems.size())},
+        {"note", "occluded は GPU からの読み戻し（数フレーム遅れ）。★tested はエンティティ数では"
+                 "なく「個別に落とせるものの数」＝非インスタンスのアイテム + バッチ数。"
+                 "バッチに属する個々のアイテムは判定しない（1 ドローに畳まれていて述語を張る先が"
+                 "無いため）。したがってコストはエンティティ数ではなく描画コール数に比例する"},
     };
     if (m_occlusionCull)
     {
@@ -467,8 +481,19 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
     //   消える。バッチ単位で落とすにはバッチの合成 AABB で別途判定する必要があり、
     //   それは今回の範囲外（インスタンス化された物はこれまで通り全部描く）。
     ID3D12Resource* predBuf = nullptr;
+    u32             predSlots = 0;
     if (applyOcclusion && m_occlusionCull && m_occlusionCull->IsReady())
-        predBuf = m_occlusionCull->GetVisibilityBuffer();
+    {
+        predBuf   = m_occlusionCull->GetVisibilityBuffer();
+        predSlots = m_occlusionCull->GetSlotCount();
+    }
+    // 描画アイテム index → 判定スロット。範囲外/未割当なら述語を張らない（＝必ず描く）。
+    auto predSlotOf = [&](size_t i) -> u32
+    {
+        if (!predBuf || i >= m_occlusionSlot.size()) return 0xFFFFFFFFu;
+        const u32 s = m_occlusionSlot[i];
+        return (s < predSlots) ? s : 0xFFFFFFFFu;
+    };
     // 述語を張ったまま関数を抜けると、以降のグリッド / パーティクル / ImGui / ギズモまで
     // 巻き添えで消える。必ず最後に解除する。
     auto clearPredication = [&]()
@@ -825,11 +850,19 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
                 // Hi-Z の判定結果を述語として張る。0（隠れている）なら GPU 側で描画が落ちる。
                 // ★述語は「ドローが実際に走ったか」を CPU へ返さないので、m_statDraws は
                 //   減らない。実際に落ちた数は perf_stats の occlusion.occluded を見ること。
-                if (predBuf)
+                // ★インスタンシング PSO が無い経路ではバッチのアイテムもここへ来る。その場合
+                //   区間先頭が引くのはバッチの合成 AABB＝実体より大きい＝保守的なので安全。
+                const u32 slot = predSlotOf(i);
+                if (slot != 0xFFFFFFFFu)
                 {
                     nativeCmdList->SetPredication(
-                        predBuf, static_cast<u64>(i) * 8ull, D3D12_PREDICATION_OP_EQUAL_ZERO);
+                        predBuf, OcclusionCullPass::PredicateOffset(slot),
+                        D3D12_PREDICATION_OP_EQUAL_ZERO);
                     ++m_statPredicated;
+                }
+                else
+                {
+                    clearPredication();
                 }
                 drawEntity(head.e, *head.renderer, world, head.skin, head.hasNodeAnim,
                            /*isGrid*/ false, head.lod);
@@ -843,17 +876,19 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
         //   描くので、1 体ぶんの判定で落とすと同じバッチの見えている物まで消える。
         //   合成 AABB は全インスタンスを包含するので、これが隠れていれば中身も全部隠れている。
         bool batchPredicated = false;
-        if (predBuf && i < m_drawBatchSlot.size() && m_drawBatchSlot[i] != 0xFFFFFFFFu
-            && m_drawBatchSlot[i] < m_occlusionCull->GetBatchCount())
         {
-            nativeCmdList->SetPredication(
-                predBuf, m_occlusionCull->GetBatchPredicateOffset(m_drawBatchSlot[i]),
-                D3D12_PREDICATION_OP_EQUAL_ZERO);
-            batchPredicated = true;
-        }
-        else
-        {
-            clearPredication();
+            const u32 slot = predSlotOf(i);   // 区間先頭にはバッチの合成 AABB の枠が入っている
+            if (slot != 0xFFFFFFFFu)
+            {
+                nativeCmdList->SetPredication(
+                    predBuf, OcclusionCullPass::PredicateOffset(slot),
+                    D3D12_PREDICATION_OP_EQUAL_ZERO);
+                batchPredicated = true;
+            }
+            else
+            {
+                clearPredication();
+            }
         }
 
         // 同一 batchKey のランのうち「見えている物」だけインスタンスへ積む
@@ -3932,7 +3967,7 @@ void Application::Render()
                 op.hzbH = static_cast<f32>(m_hiZPass->GetHeight());
                 op.mipCount = m_hiZPass->GetMipCount();
                 m_occlusionCull->Dispatch(nativeCmdList, *m_graphicsDevice,
-                                          m_drawItems, m_drawBatches, op,
+                                          m_occlusionBounds, op,
                                           m_srvHeap->GetGpuHandle(m_hiZPass->GetSrvIndex()),
                                           frameIndex);
             }

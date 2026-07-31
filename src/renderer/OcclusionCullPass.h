@@ -12,8 +12,7 @@ namespace dx12e
 {
 class GraphicsDevice;
 class DescriptorHeap;
-struct DrawItem;
-struct DrawBatch;
+struct OcclusionBounds;
 
 // Hi-Z ピラミッドを引いて、描画アイテムごとに「隠れているか」を GPU で判定する。
 //
@@ -48,11 +47,11 @@ public:
 
     // 判定を実行する。cmd には SRV ヒープが設定済みであること。
     // 戻り時、可視性バッファは PREDICATION 状態（そのまま SetPredication に渡せる）。
-    // 可視性バッファの並びは [0, items.size()) がアイテム、
-    // [items.size(), items.size()+batches.size()) がバッチ。
+    // bounds[k] の判定結果は可視性バッファの k 番目（＝オフセット k*8）に入る。
+    // ★呼び出し側は「個別に述語を張れるもの」だけを bounds に入れること。バッチに属する
+    //   個々のアイテムを入れても述語を張る先が無く、判定コストと転送帯域を捨てるだけになる。
     void Dispatch(ID3D12GraphicsCommandList* cmd, GraphicsDevice& device,
-                  const std::vector<DrawItem>& items,
-                  const std::vector<DrawBatch>& batches, const Params& p,
+                  const std::vector<OcclusionBounds>& bounds, const Params& p,
                   D3D12_GPU_DESCRIPTOR_HANDLE hzbSrvGpu, u32 frameIndex);
 
     // 前フレームまでの結果を CPU から回収する（数フレーム遅れ。表示専用）。
@@ -67,12 +66,11 @@ public:
     // ★D3D12 の仕様上オフセットは 8 バイト境界でなければならない。
     ID3D12Resource* GetVisibilityBuffer() const { return m_visBuf.Get(); }
 
-    // バッチ b の述語オフセット（バイト）。バッチはアイテムの後ろに並んでいる。
-    u64 GetBatchPredicateOffset(u32 b) const
-    {
-        return static_cast<u64>(m_lastItemCount + b) * kPredicateStride;
-    }
-    u32 GetBatchCount() const { return m_lastBatchCount; }
+    // bounds[k] に対応する述語のオフセット（バイト）。D3D12 は 8 バイト境界を要求する。
+    static u64 PredicateOffset(u32 slot) { return static_cast<u64>(slot) * kPredicateStride; }
+    // 直近ディスパッチで判定した件数。slot がこれ未満であることを呼び出し側で確認すること
+    // （リサイズ直後などにドローリストと判定結果の件数がズレうるため）。
+    u32 GetSlotCount() const { return m_lastSlotCount; }
 
 private:
     void EnsureCapacity(GraphicsDevice& device, u32 count);
@@ -96,8 +94,7 @@ private:
     u32  m_capacity     = 0;
     u32  m_statOccluded = 0;
     u32  m_statTested   = 0;
-    u32  m_lastItemCount  = 0;   // 直近ディスパッチのアイテム数（バッチのスロット計算用）
-    u32  m_lastBatchCount = 0;
+    u32  m_lastSlotCount  = 0;   // 直近ディスパッチで判定した件数
     bool m_statsPending[kFrameCount]{};
 
     std::wstring m_shaderDir;

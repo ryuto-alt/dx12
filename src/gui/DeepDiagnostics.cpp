@@ -2149,8 +2149,12 @@ DeepDiagReport DeepDiag::HiZOcclusion(Application& app)
     {
         const double ratio = static_cast<double>(o.occluded) / o.tested;
         char buf[192];
+        // ★判定件数はエンティティ数ではない。「個別に落とせるもの」だけを判定している
+        //   （非インスタンスのアイテム + バッチ）。バッチに属する個々のアイテムは
+        //   1 ドローに畳まれていて述語を張る先が無いので判定しない。
         std::snprintf(buf, sizeof(buf),
-                      "遮蔽率 %.1f%%（%u / %u。アイテム %u + バッチ %u）、述語を張ったドロー %u",
+                      "遮蔽率 %.1f%%（%u / %u 件を判定）。描画アイテム %u / バッチ %u、"
+                      "述語を張ったドロー %u",
                       ratio * 100.0, o.occluded, o.tested, o.drawItems, o.batches,
                       o.predicatedDraws);
         r.Add(0, buf);
