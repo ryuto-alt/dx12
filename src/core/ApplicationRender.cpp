@@ -3814,9 +3814,14 @@ void Application::Render()
     // Hi-Z オクルージョンカリング。プリパスの深度からピラミッドを作るのでプリパスが前提。
     const bool useHiZ = m_occlusionCulling && m_hiZPass && m_hiZPass->IsReady()
                       && viewSupportsScreenSpace;
-    const bool useDepthPrepass = useSSAO || useContactShadow || taaActive || useSsr || useSsgi
-                               || useRtShadow || useRtAo || useRtDebug || useHiZ
-                               || (m_forceDepthPrepass && viewSupportsScreenSpace);
+    // ★Hi-Z を除いてもプリパスが要るか（診断用。ここが false のときに Hi-Z を ON にすると
+    //   オクルージョンのためだけにプリパスが走って描画コールが増える＝損になる）。
+    const bool prepassWithoutHiZ = useSSAO || useContactShadow || taaActive || useSsr || useSsgi
+                                 || useRtShadow || useRtAo || useRtDebug
+                                 || (m_forceDepthPrepass && viewSupportsScreenSpace);
+    const bool useDepthPrepass = prepassWithoutHiZ || useHiZ;
+    m_diagPrepassWithoutHiZ = prepassWithoutHiZ;
+    m_diagOcclusionActive   = useHiZ;
     // 速度＋G-Buffer モードで走らせるか（PSO 3 本が揃っていることが条件）。
     // ★SSR/SSGI は G-Buffer が必要なので TAA が OFF でもこのモードで走らせる。
     //   速度バッファは書かれるが TAA が読まないだけ（fp16×2ch のフィル 1 枚ぶん ≒ 0.05ms）。

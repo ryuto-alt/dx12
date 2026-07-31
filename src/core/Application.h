@@ -239,6 +239,23 @@ public:
     };
     DiagDxrInfo GetDiagDxrInfo() const;
 
+    // Hi-Z オクルージョンカリングの状態。「ON にしたのに効いていない」「ON にしたせいで
+    // 遅くなっている」を名指しするための材料。
+    struct DiagOcclusionInfo
+    {
+        bool enabled  = false;   // settings.json / MCP のトグル
+        bool ready    = false;   // ピラミッドと判定 PSO が揃っているか
+        bool active   = false;   // 直近フレームで実際に走ったか（正射/2Dビューでは false）
+        // ★これが false のとき ON にすると損をする。オクルージョンのためだけに深度プリパスが
+        //   走り、その描画コールぶん CPU が増えるため（実測: city_blocks で 1068→1543）。
+        bool prepassNeededAnyway = false;   // TAA/SSAO/コンタクトシャドウ/SSR/SSGI/DXR のどれかが有効か
+        u32  pyramidW = 0, pyramidH = 0, pyramidMips = 0;
+        u32  tested = 0, occluded = 0;      // GPU からの読み戻し（数フレーム遅れ）
+        u32  predicatedDraws = 0;           // メインパスで述語を張って発行したドロー数
+        u32  drawItems = 0, batches = 0;
+    };
+    DiagOcclusionInfo GetDiagOcclusionInfo() const;
+
     // 直近フレームの絵そのものを数値で受け取る。「配置したのに何も映らない」
     // 「ポスト処理が実は走っていない」をピクセルで確かめるため。
     struct DiagFrameStats
@@ -1163,6 +1180,12 @@ private:
     // ★深度プリパスが前提（プリパスの深度からピラミッドを作るため）。ON の間は
     //   useDepthPrepass に OR で入る。
     bool m_occlusionCulling  = false;
+    // 直近フレームで「Hi-Z を除いても深度プリパスが要求されていたか」。
+    // ★診断用。false のときにオクルージョンを ON にすると、オクルージョンのためだけに
+    //   プリパスが走って描画コールが増える＝損をする。憶測でなく実測を出すために、
+    //   Render() が毎フレーム実際の判定結果をここへ書く。
+    bool m_diagPrepassWithoutHiZ = false;
+    bool m_diagOcclusionActive   = false;   // 直近フレームで実際にカリングが走ったか
     u32  m_clusterDebugMode  = 0;      // 0=off / 1=ライト複雑度ヒートマップ / 2=クラスタ境界
     // 毎フレームのライト収集バッファ（再確保を避けるためメンバで使い回す）
     std::vector<ClusteredLightCulling::LightGPU> m_clusterLights;

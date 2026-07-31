@@ -2095,11 +2095,87 @@ DeepDiagReport DeepDiag::Dxr(Application& app)
     return r;
 }
 
+DeepDiagReport DeepDiag::HiZOcclusion(Application& app)
+{
+    DeepDiagReport r;
+    r.title = "Hi-Z オクルージョンカリング";
+
+    const Application::DiagOcclusionInfo o = app.GetDiagOcclusionInfo();
+
+    ++r.checked;
+    if (!o.enabled)
+    {
+        r.Add(0, "OFF（settings.json の render_occlusion_culling / MCP dx12_set_occlusion）。"
+                 "GPU 律速でかつ深度プリパスが既に走っているシーンで ON にすると効く");
+        return r;
+    }
+
+    ++r.checked;
+    if (!o.ready)
+    {
+        r.Add(2, "ON だが準備できていない（ピラミッドか判定 PSO が無い）。"
+                 "シェーダ .cso のビルド漏れの可能性がある");
+        return r;
+    }
+
+    r.Add(0, "ピラミッド " + std::to_string(o.pyramidW) + "x" + std::to_string(o.pyramidH)
+             + " / " + std::to_string(o.pyramidMips) + " ミップ");
+
+    ++r.checked;
+    if (!o.active)
+    {
+        r.Add(1, "ON だが直近フレームでは走っていない。正射 / 2D ビューでは自動的に無効になる"
+                 "（スクリーン空間の前提が成り立たないため）");
+        return r;
+    }
+
+    // ★これが本命。ON にしたせいで損をしている状態を名指しする。
+    ++r.checked;
+    if (!o.prepassNeededAnyway)
+    {
+        r.Add(1, "ON だが深度プリパスを要求しているのはオクルージョンだけ"
+                 "（TAA / SSAO / コンタクトシャドウ / SSR / SSGI / DXR がどれも無効）。"
+                 "この状態ではプリパスぶんの描画コールが増えるので、GPU で節約したぶんより"
+                 "高くつくことがある。実測例: city_blocks で drawCalls 1068→1543 / fps 604→549。"
+                 "TAA か SSAO を有効にするか、オクルージョンを OFF にすることを勧める");
+    }
+
+    ++r.checked;
+    if (o.tested == 0)
+    {
+        r.Add(1, "判定結果がまだ返っていない（GPU からの読み戻しは数フレーム遅れる）");
+    }
+    else
+    {
+        const double ratio = static_cast<double>(o.occluded) / o.tested;
+        char buf[192];
+        std::snprintf(buf, sizeof(buf),
+                      "遮蔽率 %.1f%%（%u / %u。アイテム %u + バッチ %u）、述語を張ったドロー %u",
+                      ratio * 100.0, o.occluded, o.tested, o.drawItems, o.batches,
+                      o.predicatedDraws);
+        r.Add(0, buf);
+
+        ++r.checked;
+        if (ratio < 0.02)
+            r.Add(1, "遮蔽率がほぼ 0。見晴らしの良いシーン/視点では判定コストだけを払うことになる。"
+                     "屋内など遮蔽の多い場面でだけ ON にするか、常時 OFF でよい");
+
+        ++r.checked;
+        if (o.predicatedDraws == 0 && o.occluded > 0)
+            r.Add(1, "隠れていると判定されたのに述語を 1 本も張れていない。"
+                     "描画が全部インスタンシングのバッチに畳まれていて、かつバッチ全体が"
+                     "隠れることが無い状態（述語は 1 ドローコール単位なので、バッチの一部だけを"
+                     "落とすことはできない）");
+    }
+
+    return r;
+}
+
 std::vector<std::string> DeepDiag::AllCheckIds()
 {
     return { "shaders", "textures", "models", "gamma", "scene_assets",
              "entity_refs", "lighting", "terrain", "picking", "instancing",
-             "scripts", "dxr", "render_health" };
+             "scripts", "dxr", "render_health", "hiz_occlusion" };
 }
 
 nlohmann::json DeepDiag::RunAll(Application& app, const std::string& only)
@@ -2155,6 +2231,7 @@ nlohmann::json DeepDiag::RunAll(Application& app, const std::string& only)
     if (pick("scripts"))      add("scripts",      DeepDiag::Scripts());
     if (pick("dxr"))          add("dxr",          DeepDiag::Dxr(app));
     if (pick("render_health")) add("render_health", DeepDiag::RenderHealth(app));
+    if (pick("hiz_occlusion")) add("hiz_occlusion", DeepDiag::HiZOcclusion(app));
 
     nlohmann::json summary;
     summary["checks"]     = ran;

@@ -618,6 +618,30 @@ Application::DiagRenderHealth Application::GetDiagRenderHealth() const
     return h;
 }
 
+Application::DiagOcclusionInfo Application::GetDiagOcclusionInfo() const
+{
+    DiagOcclusionInfo o;
+    o.enabled = m_occlusionCulling;
+    o.ready   = m_hiZPass && m_hiZPass->IsReady() && m_occlusionCull && m_occlusionCull->IsReady();
+    o.active  = m_diagOcclusionActive;
+    o.prepassNeededAnyway = m_diagPrepassWithoutHiZ;
+    if (m_hiZPass && m_hiZPass->IsReady())
+    {
+        o.pyramidW    = m_hiZPass->GetWidth();
+        o.pyramidH    = m_hiZPass->GetHeight();
+        o.pyramidMips = m_hiZPass->GetMipCount();
+    }
+    if (m_occlusionCull)
+    {
+        o.tested   = m_occlusionCull->GetTested();
+        o.occluded = m_occlusionCull->GetOccluded();
+        o.batches  = m_occlusionCull->GetBatchCount();
+    }
+    o.predicatedDraws = m_statPredicated;
+    o.drawItems       = static_cast<u32>(m_drawItems.size());
+    return o;
+}
+
 Application::DiagDxrInfo Application::GetDiagDxrInfo() const
 {
     DiagDxrInfo d;
