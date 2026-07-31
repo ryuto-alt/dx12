@@ -539,7 +539,14 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             }
 
             // PBR Material Constants (Slot 5)
-            struct { float metallic; float roughness; u32 flags; float pad;
+            // ★pad はエンティティ毎の一律色ティントに使う（b2 の空き 1 DWORD に RGB888）。
+            //   以前 setColor は **共有 Mesh の頂点バッファ**を塗り替えていた。Mesh は
+            //   ResourceManager がモデルパス単位でキャッシュして共有するので、1 体に色を付けると
+            //   **同じモデルを使うエンティティが全部その色になる**。さらにシーン読み込みは
+            //   エンティティ順に塗り直すので **最後に読まれた 1 体の色が全員に残る**
+            //   （色違い 3 体を保存して開くと 3 体とも同じ色。色未指定の兄弟まで染まる）。
+            //   ルート定数の予算（61/64）に余裕が無いので float4 は足せない。8bit×3 で十分。
+            struct { float metallic; float roughness; u32 flags; u32 packedTint;
                      float uvScaleX, uvScaleY, uvOffsetX, uvOffsetY; } pbrParams;
             if (matAsset)
             {
@@ -550,7 +557,6 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
                 pbrParams.flags = 0;
                 if (matAsset->hasNormalTex) pbrParams.flags |= 1u;
                 if (matAsset->hasMRTex)     pbrParams.flags |= 2u;
-                pbrParams.pad = 0;
             }
             else
             {
@@ -577,8 +583,18 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
                 //   SceneSerializer が全モデルに material{metallic,roughness} を必ず書くため、
                 //   旧実装では「保存し直したシーンでは ORM テクスチャが必ず死ぬ」状態だった。
                 if (ovMR || (mat && mat->metalRoughnessTexture))     pbrParams.flags |= 2u;
-                pbrParams.pad = 0;
             }
+            // 一律色ティント（未指定は白＝従来と同じ絵）
+            {
+                const auto q = [](f32 v) {
+                    return static_cast<u32>(static_cast<int>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f));
+                };
+                const DirectX::XMFLOAT4 tc = renderer.hasColorTint
+                                           ? renderer.colorTint
+                                           : DirectX::XMFLOAT4{1.0f, 1.0f, 1.0f, 1.0f};
+                pbrParams.packedTint = (q(tc.x) << 16) | (q(tc.y) << 8) | q(tc.z);
+            }
+
             // UV 変換: 連番アニメ > UVスクロール > 恒等 の優先順（renderer/SpriteAnim.h の純関数）
             pbrParams.uvScaleX = 1.0f; pbrParams.uvScaleY = 1.0f;
             pbrParams.uvOffsetX = 0.0f; pbrParams.uvOffsetY = 0.0f;
@@ -661,7 +677,17 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             XMStoreFloat4(&d.r0, t.r[0]);
             XMStoreFloat4(&d.r1, t.r[1]);
             XMStoreFloat4(&d.r2, t.r[2]);
-            d.color = {1.0f, 1.0f, 1.0f, 1.0f};   // 非インスタンシング経路と同じ＝頂点色のみ
+            // ★エンティティ毎の一律色ティントを per-instance 色として渡す。
+            //   以前は白固定で「非インスタンシング経路と同じ＝頂点色のみ」だった。
+            //   これは色を**共有 Mesh の頂点バッファへ焼いていた**時代の前提で、
+            //   焼くのをやめた今は白のままだと**インスタンス化された物だけ色が付かない**。
+            //   バッチ鍵に colorTint は混ぜない（per-instance なので混ぜる必要が無く、
+            //   混ぜると色違いというだけでバッチが割れて描画数が増える）。
+            {
+                const MeshRenderer* mrI = m_drawItems[j].renderer;
+                d.color = (mrI && mrI->hasColorTint) ? mrI->colorTint
+                                                     : DirectX::XMFLOAT4{1.0f, 1.0f, 1.0f, 1.0f};
+            }
             instScratch.push_back(d);
         }
 
@@ -712,7 +738,7 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
         }
 
         // 適格判定で materialAsset/上書きテクスチャ/UVアニメは除外済みなので単純形でよい
-        struct { float metallic; float roughness; u32 flags; float pad;
+        struct { float metallic; float roughness; u32 flags; u32 packedTint;
                  float uvScaleX, uvScaleY, uvOffsetX, uvOffsetY; } pbrParams;
         const MeshRenderer& r = *head.renderer;
         pbrParams.metallic  = (r.overrideMetallic  >= 0.0f) ? r.overrideMetallic
@@ -724,7 +750,9 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
         // ★metallic/roughness のスカラーは glTF 意味論の「係数」＝ MR テクスチャを殺さない
         //   （非インスタンス経路 / matAsset 経路と同じ規則。#26 で揃えた）
         if (mat && mat->metalRoughnessTexture) pbrParams.flags |= 2u;
-        pbrParams.pad = 0.0f;
+        // ★インスタンス経路の色は per-instance 頂点ストリーム（inst.color）で掛かるのでここは白。
+        //   b0 も同様に 16 DWORD しか書かないので、この経路では b0 の 16 番以降を読んではいけない。
+        pbrParams.packedTint = 0x00FFFFFFu;
         pbrParams.uvScaleX = 1.0f; pbrParams.uvScaleY = 1.0f;
         pbrParams.uvOffsetX = 0.0f; pbrParams.uvOffsetY = 0.0f;
         nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPBRMaterial, 8, &pbrParams, 0);
@@ -1764,10 +1792,10 @@ void Application::Render()
                 auto e = m_scene->SpawnBox(nm, req.position);
                 auto h = e.GetHandle();
                 reg.get<Transform>(h).scale = {sx, sy, sz};
-                if (auto* dev = m_scene->GetDevice())
-                    if (auto* mr = reg.try_get<MeshRenderer>(h))
-                        for (auto* mesh : mr->meshes)
-                            if (mesh) mesh->SetVertexColor(*dev, cr, cg, cb, 1.0f);
+                // 共有 Mesh は塗らずエンティティ毎のティントとして持つ（setColor と同じ理由）
+                if (auto* mr = reg.try_get<MeshRenderer>(h))
+                { mr->colorTint = {cr, cg, cb, 1.0f}; mr->hasColorTint = true;
+                  mr->instanceColor = mr->colorTint; }
                 reg.emplace<Gimmick>(h, g);
                 spawnedEntity = h;
             }

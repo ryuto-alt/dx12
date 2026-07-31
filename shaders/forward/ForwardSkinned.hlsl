@@ -49,7 +49,11 @@ cbuffer PBRMaterial : register(b2)
     float defaultMetallic;
     float defaultRoughness;
     uint  pbrFlags;
-    float _pbrPad;
+    // ★エンティティ毎の一律色ティント（RGB888。0xFFFFFF = 白 = 影響なし）。
+    //   共有 Mesh の頂点バッファを塗り替える旧実装だと、同じモデルを使う他のエンティティまで
+    //   同じ色になり、シーン読み込みでは最後に読まれた 1 体の色が全員に残っていた。
+    //   ★インスタンス描画では白が入り、色は per-instance の input.color 側で掛かる。
+    uint  packedTint;
     // UV 変換 (xy=スケール, zw=オフセット)。MeshRenderer の UV スクロール/連番アニメ用。
     float4 uvScaleOffset;
 };
@@ -149,7 +153,10 @@ float4 PSMain(PSInput input) : SV_TARGET
     // UV スクロール/連番アニメ (b2)。無効時は uvScaleOffset=(1,1,0,0) なので恒等変換
     float2 uv = input.texCoord * uvScaleOffset.xy + uvScaleOffset.zw;
 
-    float4 albedo4 = g_albedo.Sample(g_sampler, uv) * input.color;
+    const float3 objectTint = float3((packedTint >> 16) & 0xFF,
+                                     (packedTint >>  8) & 0xFF,
+                                     (packedTint      ) & 0xFF) / 255.0;
+    float4 albedo4 = g_albedo.Sample(g_sampler, uv) * input.color * float4(objectTint, 1.0);
     float3 albedo = albedo4.rgb;
 
     float3 N;

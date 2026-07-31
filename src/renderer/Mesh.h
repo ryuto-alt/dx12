@@ -128,6 +128,12 @@ public:
 
     // 頂点カラーを一括設定して VertexBuffer を再作成（Forward.hlsl が albedo に乗算）。
     // GPU アップロード同期を伴うので毎フレームではなく生成時に1度だけ呼ぶこと。
+    // ★頂点バッファを塗り替える。**共有 Mesh には使わないこと**。
+    //   Mesh は ResourceManager がモデルパス単位でキャッシュして共有するので、
+    //   これを呼ぶと同じモデルを使うエンティティが全部その色になる（実際にそうなっていた）。
+    //   エンティティ毎の色は MeshRenderer::colorTint（非インスタンス描画は b2 の packedTint、
+    //   インスタンス描画は per-instance の color として掛かる）を使うこと。
+    //   現在エンジン内に呼び出し元は無い。低レベル操作として残してある。
     void SetVertexColor(GraphicsDevice& device, float r, float g, float b, float a = 1.0f);
 
     // 頂点バッファを作り直すたびに +1 される版数。

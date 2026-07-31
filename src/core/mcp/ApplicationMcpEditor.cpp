@@ -778,7 +778,9 @@ void Application::RegisterMcpEditorMethods()
             auto& mr = reg.get<MeshRenderer>(e);
             mr.colorTint    = {c[0], c[1], c[2], 1.0f};   // シーン保存で色指定が消えないよう記録
             mr.hasColorTint = true;
-            for (auto* mesh : mr.meshes) if (mesh) mesh->SetVertexColor(*device, c[0], c[1], c[2], 1.0f);
+            // ★共有 Mesh は塗らない（Lua の setColor と同じ理由）。Pfx の共有グローメッシュでは
+            //   VB 再生成まで誘発していた（Lua 側には instanced ガードがあったのにここには無かった）。
+            mr.instanceColor = mr.colorTint;
             resp["ok"] = true;
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"color", {c[0], c[1], c[2]}}};
         });

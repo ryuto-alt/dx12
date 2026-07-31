@@ -822,17 +822,11 @@ void ScriptEngine::RegisterBindings()
             mr.hasColorTint = true;
             // 共有メッシュ(instanced)は VB を焼かず per-instance 色へ。発光弾はこちら＝
             // setColor が VB 再生成しない＝大量の弾でも GPU 同期ゼロ。
-            if (mr.instanced)
-            {
-                mr.instanceColor = {r, g, b, 1.0f};
-                return;
-            }
-            auto* device = s.GetDevice();
-            if (!device) return;
-            for (auto* mesh : mr.meshes)
-            {
-                if (mesh) mesh->SetVertexColor(*device, r, g, b, 1.0f);
-            }
+            // ★共有 Mesh の頂点バッファは塗らない。Mesh は ResourceManager がモデルパス単位で
+            //   キャッシュして共有するので、塗ると**同じモデルを使うエンティティが全部その色**になる。
+            //   非インスタンス描画は b2 の packedTint、インスタンス描画は per-instance の
+            //   inst.color として掛かる（どちらも colorTint / instanceColor から作る）。
+            mr.instanceColor = {r, g, b, 1.0f};
         },
         // Sprite2D::effectValue を書き換える(カスタムシェーダーへ渡す汎用の進捗/強度値)。
         // 頂点属性として補間されるだけなので毎フレーム呼んでも安価(GPU同期・VB再生成なし)。

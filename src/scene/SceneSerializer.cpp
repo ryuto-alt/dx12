@@ -1614,9 +1614,10 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                 auto& mr = reg.get<MeshRenderer>(e);
                 mr.colorTint    = {c.x, c.y, c.z, 1.0f};   // 保存で消えないよう意図を記録
                 mr.hasColorTint = true;
-                if (auto* dev = scene.GetDevice())
-                    for (auto* mesh : mr.meshes)
-                        if (mesh) mesh->SetVertexColor(*dev, c.x, c.y, c.z, 1.0f);
+                mr.instanceColor = mr.colorTint;
+                // ★共有 Mesh は塗らない。ここが最悪で、読み込みはエンティティ順に同じ Mesh を
+                //   塗り直すので **最後に読まれた 1 体の色が全員に残って**いた
+                //   （色違い 3 体を保存して開き直すと 3 体とも同じ色。色未指定の兄弟まで染まる）。
             }
 
             // UV タイリング復元
