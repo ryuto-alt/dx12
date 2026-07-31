@@ -290,6 +290,7 @@ if(DXC_EXECUTABLE)
     set(SHADER_CLUSTER_INC   "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterCommon.hlsli")
     # Hi-Z オクルージョンカリング。深度ピラミッド構築 compute（コピー + 縮約の 2 エントリ）。
     set(SHADER_HIZ_BUILD     "${CMAKE_SOURCE_DIR}/shaders/hiz/HiZBuild.hlsl")
+    set(SHADER_HIZ_CULL      "${CMAKE_SOURCE_DIR}/shaders/hiz/HiZCull.hlsl")
     # デカール（クラスタードフォワードデカール）。カリング compute 1 本 + 共有 .hlsli 2 本。
     set(SHADER_DECAL_CULL    "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterCullDecals.hlsl")
     set(SHADER_DECAL_INC     "${CMAKE_SOURCE_DIR}/shaders/forward/DecalCommon.hlsli"
@@ -449,6 +450,7 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/ClusterCull_CS.cso"
         "${SHADER_OUTPUT_DIR}/HiZBuildCopy_CS.cso"
         "${SHADER_OUTPUT_DIR}/HiZBuildReduce_CS.cso"
+        "${SHADER_OUTPUT_DIR}/HiZCull_CS.cso"
         "${SHADER_OUTPUT_DIR}/ScreenSpace_VS.cso"
         "${SHADER_OUTPUT_DIR}/SsrTrace_PS.cso"
         "${SHADER_OUTPUT_DIR}/SsrUpsample_PS.cso"
@@ -599,6 +601,13 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSReduce -Fo "${SHADER_OUTPUT_DIR}/HiZBuildReduce_CS.cso" "${SHADER_HIZ_BUILD}"
         DEPENDS "${SHADER_HIZ_BUILD}"
         COMMENT "Compiling HiZBuild.hlsl -> HiZBuildReduce_CS.cso (cs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/HiZCull_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSMain -Fo "${SHADER_OUTPUT_DIR}/HiZCull_CS.cso" "${SHADER_HIZ_CULL}"
+        DEPENDS "${SHADER_HIZ_CULL}"
+        COMMENT "Compiling HiZCull.hlsl -> HiZCull_CS.cso (cs_6_0)"
     )
 
     add_custom_command(

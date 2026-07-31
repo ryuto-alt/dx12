@@ -686,6 +686,7 @@ void Application::RegisterMcpEditorMethods()
             // クラスタードライティング（Forward+）。settings.json "render_clustered" で A/B 可。
             // OFF / 正射カメラのときは「先頭 64 灯を総当たり」フォールバックで走る。
             rep["clustered"]  = m_clusteredEnabled;
+            rep["occlusion"]  = OcclusionReportJson();
             // 内部解像度スケール（#16）。GPU 時間を読むときは必ずこれも見ること
             // （renderScale=0.5 なら画素数が 1/4 になっているので単純比較できない）。
             {

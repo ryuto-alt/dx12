@@ -21,6 +21,7 @@ add_library(Renderer STATIC
     DdgiVolume.cpp
     ClusteredLightCulling.cpp
     HiZPass.cpp
+    OcclusionCullPass.cpp
     VolumetricFogPass.cpp
     DecalSystem.cpp
     SpriteRenderer.cpp

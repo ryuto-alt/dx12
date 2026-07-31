@@ -74,6 +74,12 @@ const std::vector<ShaderSource>& BuildRegistry()
             {},
         },
         {
+            // Hi-Z を引いてアイテムごとの可視性を出す。式は src/renderer/HiZMath.h と一対一。
+            "hiz/HiZCull.hlsl",
+            { { L"HiZCull_CS.cso", L"CSMain", L"cs_6_0" } },
+            {},
+        },
+        {
             // ForwardGrid.hlsl は `#include "Lighting.hlsli"` している。
             // CMakeLists.txt の DEPENDS に Lighting.hlsli が抜けていた既存バグは修正済み
             // （PerFrameConstants を拡張したときに再コンパイルされずレイアウトがズレる）。

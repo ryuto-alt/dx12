@@ -55,6 +55,7 @@
 #include "renderer/GpuParticleSystem.h"
 #include "renderer/SSAOPass.h"
 #include "renderer/HiZPass.h"
+#include "renderer/OcclusionCullPass.h"
 #include "renderer/ContactShadowPass.h"
 #include "renderer/TaaPass.h"
 #include "renderer/RenderDebugPass.h"

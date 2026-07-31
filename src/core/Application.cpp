@@ -933,6 +933,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_hiZPass = std::make_unique<HiZPass>();
         m_hiZPass->Initialize(*m_graphicsDevice, m_srvHeap.get(),
                               m_window->GetWidth(), m_window->GetHeight(), PathResolver::ShaderDirW());
+        m_occlusionCull = std::make_unique<OcclusionCullPass>();
+        m_occlusionCull->Initialize(*m_graphicsDevice, PathResolver::ShaderDirW());
 
         // コンタクトシャドウ（SSAO と同じ深度プリパスの結果を使う 1 パス。RT も同じヒープから）。
         m_contactShadowPass = std::make_unique<ContactShadowPass>();
@@ -1875,6 +1877,8 @@ void Application::Shutdown()
     // Hi-Z はディスクリプタブロックを持っているので、ヒープより先に明示的に返す。
     if (m_hiZPass) m_hiZPass->Shutdown();
     m_hiZPass.reset();
+    if (m_occlusionCull) m_occlusionCull->Shutdown();
+    m_occlusionCull.reset();
     m_contactShadowPass.reset();
     m_taaPass.reset();
     m_gbufferRT.reset();

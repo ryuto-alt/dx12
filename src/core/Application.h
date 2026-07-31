@@ -56,6 +56,7 @@ namespace dx12e
     class SSAOPass;
     class ContactShadowPass;
     class HiZPass;
+    class OcclusionCullPass;
     class TaaPass;
     class RenderDebugPass;
     enum class RenderDebugMode : u32;   // renderer/RenderDebugPass.h（前方宣言可能な scoped enum）
@@ -552,6 +553,10 @@ private:
     void UpdateRenderResolution();
     void SetRenderScale(f32 s);          // settings.json へ保存し、次フレームで即反映
     f32  GetRenderScale() const { return m_renderScale; }
+
+    // perf_stats / benchmark の "occlusion" ブロック。
+    // occluded は数フレーム遅れの実測値（GPU から読み戻す表示専用の数）。
+    nlohmann::json OcclusionReportJson() const;
     void EnsureInstancePrevBuffer();     // 速度パス用 per-instance 前ワールドバッファの遅延確保
     void RegisterShaderReloadHandlers(); // 上記全部+PostProcess等を ShaderManager に束ねて登録する(Initialize末尾で1回)
 
@@ -1011,6 +1016,7 @@ private:
     //   camVPJ / 同じ LOD）ので、プリパス完了後にピラミッドを建てれば「今フレーム・今の
     //   カメラ」の遮蔽情報になる。前フレーム深度の再投影も 2 フェーズ方式も要らない。
     std::unique_ptr<HiZPass>       m_hiZPass;
+    std::unique_ptr<OcclusionCullPass> m_occlusionCull;
 
     // ---- コンタクトシャドウ（同じ深度プリパスを使うスクリーン空間レイマーチ）----
     // 白ダミーは SSAO と共用（どちらも 1x1 R8_UNORM の 1.0）。

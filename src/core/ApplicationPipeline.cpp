@@ -601,6 +601,12 @@ void Application::RegisterShaderReloadHandlers()
             { L"HiZBuildCopy_CS.cso", L"HiZBuildReduce_CS.cso" },
             [this]() { m_hiZPass->RecreatePipelines(*m_graphicsDevice); });
     }
+    if (m_occlusionCull)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"HiZCull_CS.cso" },
+            [this]() { m_occlusionCull->RecreatePipelines(*m_graphicsDevice); });
+    }
     if (m_contactShadowPass)
     {
         m_shaderManager->RegisterReloadHandler(

@@ -148,6 +148,46 @@ void Application::BuildDrawList()
         const f32 bias = (item.skin || item.hasNodeAnim) ? 2.0f : 1.25f;
         item.radius = meshRadius * ms * bias;
 
+        // ワールド AABB（オクルージョンカリング用）。上で合成したローカル AABB の
+        // 8 隅をワールドへ移して min/max を取る。回転があると軸整列でなくなるため
+        // 8 隅を全部回す必要がある（中心±半対角では回転時に実体をはみ出す）。
+        // ★球側の max(1.0f, ...) 下限はここには持ち込まない。あれはフラスタムカリング
+        //   では無害だが、遮蔽判定では小物のスクリーン矩形を不当に膨らませて
+        //   「何もカリングされない」に直結する。
+        if (hasAabb)
+        {
+            XMVECTOR wmn = XMVectorReplicate( FLT_MAX);
+            XMVECTOR wmx = XMVectorReplicate(-FLT_MAX);
+            const XMVECTOR lo = lmn, hi = lmx;
+            for (int c = 0; c < 8; ++c)
+            {
+                const XMVECTOR corner = XMVectorSelect(lo, hi,
+                    XMVectorSelectControl((c & 1) ? 1u : 0u, (c & 2) ? 1u : 0u,
+                                          (c & 4) ? 1u : 0u, 0u));
+                const XMVECTOR w = XMVector3Transform(corner, world);
+                wmn = XMVectorMin(wmn, w);
+                wmx = XMVectorMax(wmx, w);
+            }
+            // 変形ぶんの余裕。球と同じ理由（バインドポーズ AABB を超え得る）。
+            if (item.skin || item.hasNodeAnim)
+            {
+                const XMVECTOR ctr  = XMVectorScale(XMVectorAdd(wmn, wmx), 0.5f);
+                const XMVECTOR half = XMVectorScale(XMVectorSubtract(wmx, wmn), 0.5f * 2.0f);
+                wmn = XMVectorSubtract(ctr, half);
+                wmx = XMVectorAdd(ctr, half);
+            }
+            XMStoreFloat3(&item.aabbMin, wmn);
+            XMStoreFloat3(&item.aabbMax, wmx);
+        }
+        else
+        {
+            // AABB を持たないメッシュは球から作る（この経路は保守的でよい）。
+            const XMVECTOR c = XMLoadFloat3(&item.center);
+            const XMVECTOR r = XMVectorReplicate(item.radius);
+            XMStoreFloat3(&item.aabbMin, XMVectorSubtract(c, r));
+            XMStoreFloat3(&item.aabbMax, XMVectorAdd(c, r));
+        }
+
         // LOD 選択: 見かけの大きさ（半径/距離 ≒ 画面高さに占める割合）で段階を落とす。
         // LODが無い/浅いメッシュは Mesh 側で最終LODへクランプされる。
         // 距離もエンティティ原点ではなくバウンディング球の中心から測る
@@ -236,6 +276,37 @@ void Application::BuildDrawList()
         });
 }
 
+// perf_stats / benchmark の "occlusion" ブロック。
+// ★occluded / tested は GPU から数フレーム遅れて届く表示専用の値。描画判断には使わない。
+//   applied=false の間は「もしカリングしたら何体消えるか」の観測値であって、
+//   実際には 1 体も落としていない。
+nlohmann::json Application::OcclusionReportJson() const
+{
+    const bool ready = m_hiZPass && m_hiZPass->IsReady()
+                    && m_occlusionCull && m_occlusionCull->IsReady();
+    nlohmann::json j{
+        {"enabled", m_occlusionCulling},
+        {"ready",   ready},
+        {"applied", false},   // まだ描画には反映していない（観測のみ）
+    };
+    if (m_occlusionCull)
+    {
+        const u32 tested   = m_occlusionCull->GetTested();
+        const u32 occluded = m_occlusionCull->GetOccluded();
+        j["tested"]   = tested;
+        j["occluded"] = occluded;
+        j["ratio"]    = (tested > 0)
+            ? std::round(static_cast<double>(occluded) / tested * 1000.0) / 1000.0 : 0.0;
+    }
+    if (m_hiZPass && m_hiZPass->IsReady())
+    {
+        j["pyramid"] = {{"width",  m_hiZPass->GetWidth()},
+                        {"height", m_hiZPass->GetHeight()},
+                        {"mips",   m_hiZPass->GetMipCount()}};
+    }
+    return j;
+}
+
 // フレーム末（Present/EndFrame 後）に1回。perf リング履歴の記録と benchmark の収集・完了を行う。
 void Application::RecordPerfFrame()
 {
@@ -294,6 +365,7 @@ void Application::RecordPerfFrame()
             rep["frames"] = static_cast<int>(n);
             rep["instancing"] = m_instancingEnabled;
             rep["clustered"]  = m_clusteredEnabled;
+            rep["occlusion"]  = OcclusionReportJson();
             rep["renderScale"]      = m_renderScale;      // #16。GPU 時間の A/B ではここも見ること
             rep["depthPrepass"]     = m_forceDepthPrepass;
             rep["renderResolution"] = {{"width", m_renderW}, {"height", m_renderH}};
@@ -1444,6 +1516,10 @@ void Application::Render()
     static_assert(GpuTimer::Count <= kPerfGpuScopes, "kPerfGpuScopes を GpuTimer::Count に合わせて広げること");
     m_gpuTimer->NewFrame(m_swapChain->GetCurrentBackBufferIndex());
     m_gpuTimer->Begin(nativeCmdList, GpuTimer::Total);
+    // オクルージョン統計も同じタイミングで回収する（このスロットの GPU 作業は
+    // 上のフェンス待ちで完了済み。表示専用で描画には使わない）。
+    if (m_occlusionCull)
+        m_occlusionCull->CollectStats(m_swapChain->GetCurrentBackBufferIndex());
 
     // マテリアルアセット(.dxmat)のホットリロード監視。エディタのみ(内部で0.5秒間隔にスロットリング)。
     if (!m_isGameMode && m_materialAssetManager)
@@ -3719,8 +3795,27 @@ void Application::Render()
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
             m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+            // ★GpuTimer は 1 スコープにつき 1 フレーム 1 組しか記録できないので、
+            //   ピラミッド構築と可視性判定をまとめて hiZ で挟む（= 機能全体のコスト）。
             m_gpuTimer->Begin(nativeCmdList, GpuTimer::HiZ);
             m_hiZPass->Build(nativeCmdList, m_srvHeap->GetGpuHandle(m_depthSrvIndex));
+
+            if (m_occlusionCull && m_occlusionCull->IsReady())
+            {
+                OcclusionCullPass::Params op{};
+                // ★プリパスと同じジッタ付き VP を渡すこと。素の VP を使うと半テクセルずれて、
+                //   細い物（手すり・柵・ワイヤ）が明滅する。
+                XMStoreFloat4x4(&op.viewProj, camVPJ);
+                op.vpX = 0.0f;  op.vpY = 0.0f;
+                op.vpW = static_cast<f32>(rW);
+                op.vpH = static_cast<f32>(rH);
+                op.hzbW = static_cast<f32>(m_hiZPass->GetWidth());
+                op.hzbH = static_cast<f32>(m_hiZPass->GetHeight());
+                op.mipCount = m_hiZPass->GetMipCount();
+                m_occlusionCull->Dispatch(nativeCmdList, *m_graphicsDevice, m_drawItems, op,
+                                          m_srvHeap->GetGpuHandle(m_hiZPass->GetSrvIndex()),
+                                          frameIndex);
+            }
             m_gpuTimer->End(nativeCmdList, GpuTimer::HiZ);
 
             m_commandList->TransitionResource(m_depthBuffer.Get(),
