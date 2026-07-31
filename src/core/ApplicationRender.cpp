@@ -57,6 +57,7 @@ void Application::BuildDrawList()
     m_statDraws  = 0;
     m_statCulled = 0;
     m_statTris   = 0;
+    m_statPredicated = 0;
     m_passMain = {}; m_passShadow = {}; m_passOther = {};
     m_passBucket = &m_passOther;
 
@@ -287,7 +288,12 @@ nlohmann::json Application::OcclusionReportJson() const
     nlohmann::json j{
         {"enabled", m_occlusionCulling},
         {"ready",   ready},
-        {"applied", false},   // まだ描画には反映していない（観測のみ）
+        // メインパスの非インスタンス描画に述語を張った数。0 ならカリングは効いていない。
+        {"predicatedDraws", m_statPredicated},
+        // ★インスタンシングのバッチには適用していない。述語は 1 ドロー単位なので
+        //   「バッチ内の一部だけ隠れている」を表現できないため。
+        {"note", "occluded は GPU からの読み戻し（数フレーム遅れ）。"
+                 "述語はインスタンシングされていない描画にのみ張る"},
     };
     if (m_occlusionCull)
     {
@@ -394,11 +400,28 @@ void Application::RecordPerfFrame()
 void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u32 frameIndex,
                                    DirectX::XMMATRIX viewProj, bool isGameView, u32 aoSrvIndex,
                                    bool depthPrepassActive, u32 contactShadowSrvIndex,
-                                   u32 ssrSrvIndex, u32 ssgiSrvIndex)
+                                   u32 ssrSrvIndex, u32 ssgiSrvIndex, bool applyOcclusion)
 {
     using namespace DirectX;
     auto& reg = m_scene->GetRegistry();
     auto renderView = reg.view<const Transform, const MeshRenderer>();
+
+    // Hi-Z オクルージョンのプレディケーション。
+    // ★compute が書いた可視性バッファをそのまま述語に使う（クエリも読み戻しも要らない）。
+    //   0=隠れている → EQUAL_ZERO で描画が落ちる。
+    // ★インスタンシングのバッチには適用しない。プレディケーションは 1 ドローコール単位なので
+    //   「バッチ内の一部だけ隠れている」を表現できず、バッチ全体を落とすと見えている物まで
+    //   消える。バッチ単位で落とすにはバッチの合成 AABB で別途判定する必要があり、
+    //   それは今回の範囲外（インスタンス化された物はこれまで通り全部描く）。
+    ID3D12Resource* predBuf = nullptr;
+    if (applyOcclusion && m_occlusionCull && m_occlusionCull->IsReady())
+        predBuf = m_occlusionCull->GetVisibilityBuffer();
+    // 述語を張ったまま関数を抜けると、以降のグリッド / パーティクル / ImGui / ギズモまで
+    // 巻き添えで消える。必ず最後に解除する。
+    auto clearPredication = [&]()
+    {
+        if (predBuf) nativeCmdList->SetPredication(nullptr, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
+    };
 
     // 視錐台カリング（全ビュー）。保守的球判定＝画面に少しでも掛かる物は必ず残るため、
     // 編集ビューでも見え方は不変のまま画面外ドローだけを省ける。
@@ -744,11 +767,27 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
         {
             XMMATRIX world = XMLoadFloat4x4(&head.world);
             if (!camFrustum.SphereVisible(XMLoadFloat3(&head.center), head.radius)) ++m_statCulled;
-            else drawEntity(head.e, *head.renderer, world, head.skin, head.hasNodeAnim,
-                            /*isGrid*/ false, head.lod);
+            else
+            {
+                // Hi-Z の判定結果を述語として張る。0（隠れている）なら GPU 側で描画が落ちる。
+                // ★述語は「ドローが実際に走ったか」を CPU へ返さないので、m_statDraws は
+                //   減らない。実際に落ちた数は perf_stats の occlusion.occluded を見ること。
+                if (predBuf)
+                {
+                    nativeCmdList->SetPredication(
+                        predBuf, static_cast<u64>(i) * 8ull, D3D12_PREDICATION_OP_EQUAL_ZERO);
+                    ++m_statPredicated;
+                }
+                drawEntity(head.e, *head.renderer, world, head.skin, head.hasNodeAnim,
+                           /*isGrid*/ false, head.lod);
+            }
             ++i;
             continue;
         }
+
+        // ★バッチは 1 ドローで N 体まとめて描くので、述語を張ると「一部だけ隠れている」
+        //   ケースで見えている物まで消える。ここでは必ず解除しておく。
+        clearPredication();
 
         // 同一 batchKey のランのうち「見えている物」だけインスタンスへ積む
         instScratch.clear();
@@ -861,6 +900,11 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
 
         i = j;
     }
+
+    // ★不透明パスはここで終わり。以降（グリッド / 半透明 / パーティクル / スプライト /
+    //   ImGui / ギズモ）は Hi-Z の判定対象ではないので、述語を必ず解除する。
+    //   張りっぱなしにすると「エディタ UI が丸ごと消える」という分かりにくい壊れ方をする。
+    clearPredication();
 
     // パス2: エディタ用グリッド。線だけを後描きする（ForwardGrid 側で線以外 alpha=0）。
     // 床全体へ半透明の膜を被せず、グリッド表示だけ維持する。
@@ -4578,9 +4622,11 @@ void Application::Render()
     m_passBucket = &m_passMain;
     {
         CpuScopeTimer _tMain(&m_cpuMs[CpuMainRec]); DX12_PROFILE_ZONE_N("Rec/Main");
+        // ★applyOcclusion はここ（メインカメラ視点）でだけ true。Hi-Z はこの視点の
+        //   深度プリパスから作られているので、別視点の呼び出しで適用してはいけない。
         RenderSceneMeshes(nativeCmdList, frameIndex, viewProj,
                           (m_isGameMode || m_engineMode == EngineMode::Playing), aoSrv,
-                          useDepthPrepass, csSrv, ssrSrv, ssgiSrv);
+                          useDepthPrepass, csSrv, ssrSrv, ssgiSrv, /*applyOcclusion*/ useHiZ);
     }
     m_passBucket = &m_passOther;
     m_gpuTimer->End(nativeCmdList, GpuTimer::MainScene);

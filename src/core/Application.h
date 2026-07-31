@@ -348,12 +348,17 @@ private:
     // ssrSrvIndex(t16) / ssgiSrvIndex(t17) は SSR/SSGI の結果（無効時は 1x1 黒ダミー）。
     // ★カメラプレビュー / サムネイルなど「メインカメラ以外の視点」では必ず既定値（＝黒ダミー）
     //   のままにすること。メインカメラの G-Buffer を別視点で読むと完全に間違った絵になる。
+    // applyOcclusion: Hi-Z の可視性バッファをプレディケーションとして適用するか。
+    // ★**メインカメラ視点の呼び出しでだけ true にすること**。Hi-Z はメインカメラの深度
+    //   プリパスから作られているので、カメラプレビュー等の別視点で適用すると
+    //   まったく無関係な遮蔽情報で物が消える。
     void RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u32 frameIndex,
                            DirectX::XMMATRIX viewProj, bool isGameView, u32 aoSrvIndex,
                            bool depthPrepassActive = false,
                            u32 contactShadowSrvIndex = 0xFFFFFFFFu,
                            u32 ssrSrvIndex = 0xFFFFFFFFu,
-                           u32 ssgiSrvIndex = 0xFFFFFFFFu);
+                           u32 ssgiSrvIndex = 0xFFFFFFFFu,
+                           bool applyOcclusion = false);
     // Sprite2D(worldSpace=true) を指定 viewProj/RT/DSV へ描画（メインパスとカメラプレビューで共用）。
     // camRight/camUp はビルボード展開用。billboard でないものはエンティティのワールド行列で配置。
     void DrawWorldSprites(ID3D12GraphicsCommandList* cmd, DirectX::XMMATRIX viewProj,
@@ -422,6 +427,10 @@ private:
     u32 m_statDraws  = 0;   // フレーム内の DrawIndexedInstanced 発行数（ビューポートHUD用）
     u32 m_statCulled = 0;   // フレーム内にフラスタムカリングで省いたエンティティ描画の延べ数
     u32 m_statTris   = 0;   // フレーム内に発行した三角形数（全パス・インスタンス数込み）
+    // Hi-Z の述語を張って発行したドロー数（メインパスの非インスタンス描画のみ）。
+    // ★「実際に落ちた数」ではない。述語はドローが走ったかを CPU へ返さないので、
+    //   落ちた数は perf_stats の occlusion.occluded（GPU からの読み戻し）を見ること。
+    u32 m_statPredicated = 0;
 
     // パス別内訳（perf_stats 用）。描画サイトは m_passBucket に加算し、Render() が
     // パス境界でバケツを差し替える（main=メインビュー / shadow=CSM+スポット+ポイント影 / other=それ以外）。
