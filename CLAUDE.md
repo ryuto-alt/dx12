@@ -297,6 +297,33 @@ Application::Render()
 - **デフォルト白テクスチャ**: テクスチャ無しメッシュで SRV slot 未初期化エラーを防ぐ
 - **unique_ptr + 前方宣言**: コンストラクタ/デストラクタを `.cpp` で定義しないと incomplete type エラー
 
+### Hi-Z オクルージョンカリング（既定 OFF）
+壁の裏に完全に隠れた描画を GPU 側で落とす。`settings.json` の `"render_occlusion_culling"` /
+MCP `dx12_set_occlusion`。実装は `src/renderer/HiZPass.{h,cpp}`（深度ピラミッド）+
+`OcclusionCullPass.{h,cpp}`（可視性判定）+ `HiZMath.h`（純関数・`tests/hiz_math_test.cpp` で検証）。
+
+- **深度規約は標準 Z（0=near / 1=far）**。根拠は `Camera.cpp` の `XMMatrixPerspectiveFovLH` 素通し /
+  DSV クリア値が全箇所 `1.0f` / 深度比較が `LESS` 系のみ（`GREATER` 系はリポジトリに 0 件）。
+  したがって**ピラミッドは max 縮約**、遮蔽判定は `箱の最近点 > タイルの最遠面`。
+  リバース Z へ移行するなら `HiZMath.h` と `shaders/hiz/*.hlsl` の両方を直すこと（テストが落ちて気付ける）
+- **`shaders/hiz/HiZCull.hlsl` と `src/renderer/HiZMath.h` は式が一対一で対応している。片方だけ
+  直すと誤カリングになる**（両ファイルの先頭に対応表がある）
+- **2 フェーズ方式は使っていない**。このエンジンは深度プリパスが前方パスとビット厳密に一致する
+  （同じ `m_drawItems` / 同じジッタ付き `camVPJ` / 同じ LOD）ので、プリパス後にピラミッドを建てれば
+  同一フレーム・同一カメラの遮蔽情報になる。2 フェーズは遮蔽物パスを別途払いたくないための技法で、
+  ここでは既に払っている
+- 判定結果は **D3D12 のプレディケーション**へ直接渡す（クエリも読み戻しも不要）。ルートシグネチャは
+  1 DWORD も増えない（既に 61/64 使用済みなので `ExecuteIndirect` 化は非現実的だった）
+- **インスタンシングされた描画はバッチの合成 AABB で判定する**。バッチは 1 ドローコールなので
+  述語もバッチ単位でしか張れない。区間は `BuildDrawList` のソート直後に `m_drawBatches` へ確定する
+- ★**落とし穴**: ON にすると深度プリパスが強制的に走る。TAA/SSAO/SSR/DXR がどれも無効なシーンで
+  ON にすると、プリパスぶんの描画コールが増えて**遅くなる**（実測: city_blocks で drawCalls
+  1068→1543、fps 604→549）。プリパスが元々走っているシーンなら追加コストは `gpuPassMs.hiZ` の
+  0.04ms だけで `mainScene` が 3 割減る（実測: Nocturne で 0.23→0.16ms、drawCalls は 4656 のまま）
+- ★**どちらのテストシーンも GPU 律速ではない**（CPU バウンド）ので fps は改善しない。
+  効いてくるのは GPU 律速になってから
+- 影パス（描画コールの約 90%）には未対応。光源視点の Hi-Z が別途要る
+
 ### 操作方法
 
 #### カメラ
