@@ -30,8 +30,14 @@ public:
                                        const std::string& assetsDir);
     // JSON からエンティティを既存シーンに追加生成（Clear しない）
     // 失敗時は entt::null を返す
+    // keepGuid=true は「同じエンティティを作り直す」経路（Undo の復元 / Redo）専用。
+    // ★false のままだと復元されたエンティティは EntityGuid を持たず、次の保存で新しい guid が
+    //   振られる。そのエンティティを guid で指していた参照（Trigger の相手、Lua の entity
+    //   プロパティ、NetworkIdentity）は全部ぶら下がりになり、名前一致へ静かに格下げされる
+    //   （同名が居ると誤爆する）。複製/貼り付けは guid を振り直すのが正しいので既定は false。
     static entt::entity InstantiateEntity(Scene& scene, const std::string& jsonStr,
-                                          const std::string& assetsDir);
+                                          const std::string& assetsDir,
+                                          bool keepGuid = false);
     // ── アセット参照（assets 相対パス）の付け替え / 数え上げ ──
     //
     // アセットを移動・削除しても参照は追従しない、というのが長らくの状態だった。

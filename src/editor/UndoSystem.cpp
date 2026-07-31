@@ -69,8 +69,11 @@ void DeleteEntityCommand::Undo()
                                        static_cast<entt::entity>(entt::null));
     for (size_t i = 0; i < m_records.size(); ++i)
     {
+        // ★同じエンティティの復元なので guid を引き継ぐ。落とすと、このエンティティを
+        //   guid で指していた参照（Trigger の相手 / Lua の entity プロパティ /
+        //   NetworkIdentity）が全部ぶら下がりになり、名前一致へ静かに格下げされる。
         entt::entity e = SceneSerializer::InstantiateEntity(
-            *m_scene, m_records[i].snapshot, m_assetsDir);
+            *m_scene, m_records[i].snapshot, m_assetsDir, /*keepGuid=*/true);
         restored[i] = e;
         if (e == entt::null)
         {
@@ -127,7 +130,8 @@ void SpawnEntityCommand::Redo()
     // 生成直後（まだ一度も Undo していない）はスナップショットが無いので何もしない
     if (m_snapshot.empty()) return;
     auto& reg = m_scene->GetRegistry();
-    entt::entity e = SceneSerializer::InstantiateEntity(*m_scene, m_snapshot, m_assetsDir);
+    entt::entity e = SceneSerializer::InstantiateEntity(*m_scene, m_snapshot, m_assetsDir,
+                                                        /*keepGuid=*/true);
     if (e != entt::null)
     {
         m_entity = e;  // 新しい ID に更新

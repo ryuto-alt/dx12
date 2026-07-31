@@ -1452,6 +1452,18 @@ void T_DeleteUndoKeepsParent(ImGuiTestContext* ctx)
     reg.get<Transform>(child.GetHandle()).parent = parent.GetHandle();
     ctx->Yield(3);
 
+    // 削除前の guid を控える（復元で保たれるか見る）
+    auto guidOf = [&](entt::entity ent) -> uint64_t {
+        const auto* g = reg.try_get<EntityGuid>(ent);
+        return g ? g->value : 0ull;
+    };
+    if (guidOf(parent.GetHandle()) == 0)
+        reg.emplace_or_replace<EntityGuid>(parent.GetHandle(), EntityGuid{ 0xA11CE0001ull });
+    if (guidOf(child.GetHandle()) == 0)
+        reg.emplace_or_replace<EntityGuid>(child.GetHandle(), EntityGuid{ 0xA11CE0002ull });
+    const uint64_t savedParentGuid = guidOf(parent.GetHandle());
+    const uint64_t savedChildGuid  = guidOf(child.GetHandle());
+
     Step(ctx, "★子を先に、次に親を削除キューへ入れる（この順番が壊れていた）");
     ed->ClearSelection();
     ed->pendingDeletions.clear();
@@ -1474,6 +1486,20 @@ void T_DeleteUndoKeepsParent(ImGuiTestContext* ctx)
         const entt::entity restoredParent = reg.get<Transform>(c2.GetHandle()).parent;
         if (restoredParent != p2.GetHandle())
             IM_ERRORF("Undo 後、子が親の下に戻っていない（シーンのルートへ外れた）");
+    }
+
+    // ★guid も引き継がれているか。落とすと、このエンティティを guid で指していた参照
+    //   （Trigger の相手 / Lua の entity プロパティ / NetworkIdentity）が全部ぶら下がりになり、
+    //   名前一致へ静かに格下げされる（同名が居ると誤爆する）。
+    if (p2.IsValid() && c2.IsValid())
+    {
+        const auto* gp = reg.try_get<EntityGuid>(p2.GetHandle());
+        const auto* gc = reg.try_get<EntityGuid>(c2.GetHandle());
+        if (!gp || gp->value == 0 || !gc || gc->value == 0)
+            IM_ERRORF("Undo で復元したエンティティが EntityGuid を失っている（親=%llu 子=%llu）",
+                      gp ? gp->value : 0ull, gc ? gc->value : 0ull);
+        else if (gp->value != savedParentGuid || gc->value != savedChildGuid)
+            IM_ERRORF("Undo で復元したエンティティの guid が変わっている");
     }
 
     // 後片付け

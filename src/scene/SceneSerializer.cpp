@@ -2108,13 +2108,20 @@ std::string SceneSerializer::SerializeEntity(const Scene& scene, entt::entity e,
     const auto& reg = scene.GetRegistry();
     if (!reg.valid(e) || !reg.all_of<NameTag>(e) || !reg.all_of<Transform>(e))
         return {};
-    return SerializeEntityJson(reg, e, assetsDir).dump();
+    json ej = SerializeEntityJson(reg, e, assetsDir);
+    // ★guid も載せる。BuildSceneJson / SerializeSubtree は書いているのにここだけ抜けていて、
+    //   削除 → Undo で復元されたエンティティが guid を失っていた（次の保存で別 guid になる）。
+    //   受け取り側が使うかは InstantiateEntity の keepGuid で決める。
+    if (const auto* g = reg.try_get<EntityGuid>(e))
+        ej["guid"] = GuidToHex(g->value);
+    return ej.dump();
 }
 
 static std::string MakeUniqueName(const Scene& scene, const std::string& base);
 
 entt::entity SceneSerializer::InstantiateEntity(Scene& scene, const std::string& jsonStr,
-                                                const std::string& assetsDir)
+                                                const std::string& assetsDir,
+                                                bool keepGuid)
 {
     json ej;
     try { ej = json::parse(jsonStr); }
@@ -2124,7 +2131,12 @@ entt::entity SceneSerializer::InstantiateEntity(Scene& scene, const std::string&
         return entt::null;
     }
     ej["name"] = MakeUniqueName(scene, ej.value("name", "Unnamed"));
-    return InstantiateEntityJson(scene, ej, assetsDir);
+    const uint64_t guid = keepGuid ? GuidFromJson(ej, "guid") : 0ull;
+    const entt::entity e = InstantiateEntityJson(scene, ej, assetsDir);
+    // 同じエンティティの作り直し（Undo/Redo）だけ guid を引き継ぐ。
+    if (e != entt::null && guid != 0)
+        scene.GetRegistry().emplace_or_replace<EntityGuid>(e, EntityGuid{ guid });
+    return e;
 }
 
 // "Box" → "Box (1)" → "Box (2)" のように重複しない名前を作る
