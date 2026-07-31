@@ -4,6 +4,8 @@
 // Application.cpp から機械分割した実装 TU。分割の全体像は ApplicationInternal.h。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+
+#include <unordered_set>
 #include "core/Profiler.h"
 
 namespace dx12e
@@ -407,6 +409,17 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             // 深度プリパス併用時は LESS_EQUAL バリアントで同一深度を通す。
             psoSel = depthPrepassActive ? m_skinnedPipelineStateLEqual.get()
                                         : m_skinnedPipelineState.get();
+            // ★スキンドはこの分岐が先に勝つのでカスタムシェーダーが無視される。
+            //   MCP の set_mesh_shader は値を書いて ok を返し、Inspector にも割当が出るのに
+            //   エンジンは何も言わなかった＝「キャラにディゾルブを付けたのに何も起きない」。
+            //   1 エンティティにつき 1 回だけ言う（毎フレームは出さない）。
+            if (!renderer.shaderPath.empty())
+            {
+                static std::unordered_set<u32> warned;
+                if (warned.insert(static_cast<u32>(e)).second)
+                    Logger::Warn("スキンドメッシュではカスタムシェーダーは無視されます"
+                                 "（既定のスキンド用シェーダーで描画）: {}", renderer.shaderPath);
+            }
         }
         else
         {
@@ -866,6 +879,17 @@ void Application::DrawWorldSprites(ID3D12GraphicsCommandList* cmd, DirectX::XMMA
     m_spriteRenderer->BeginWorldFrame();
     for (auto [e, sp] : sreg.view<const Sprite2D>().each())
     {
+        // ★カスタムスプライトシェーダーはワールド空間スプライトにしか効かない
+        //   （EnsureCustomSpritePso を呼ぶのがこのループの中だけ）。
+        //   HUD（スクリーン空間）に割り当てても素の PSO で描かれるのに、
+        //   MCP の set_sprite_shader は値を書いて ok を返すだけで実行時は何も言わなかった。
+        if (!sp.worldSpace && !sp.shaderPath.empty())
+        {
+            static std::unordered_set<u32> warnedSprite;
+            if (warnedSprite.insert(static_cast<u32>(e)).second)
+                Logger::Warn("カスタムスプライトシェーダーはワールド空間スプライト専用です"
+                             "（スクリーン空間では既定シェーダーで描画）: {}", sp.shaderPath);
+        }
         if (!sp.worldSpace || sp.texturePath.empty()) continue;
         if (!sreg.all_of<Transform>(e)) continue;
         const std::string absPath = PathResolver::AssetsDir() + sp.texturePath;

@@ -76,6 +76,23 @@ const std::vector<ShaderSource>& BuildRegistry()
             { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli", "ddgi/DdgiCommon.hlsli" },
         },
         {
+            // ★自動インスタンシング用の VS。長らく登録漏れで**ホットリロードの対象外**だった。
+            //   `Lighting.hlsli` を編集すると Forward / ForwardSkinned / ForwardGrid / Terrain は
+            //   リロードされて正しくなるのに、これだけ**古い b1 レイアウトのまま**動き続ける
+            //   （view 行列や viewDepth を別オフセットで読む → 自動インスタンシングされた
+            //   メッシュだけカスケード選択と影がおかしくなる）。しかもログは他の成功だけを出す。
+            //   ★ピクセルシェーダは Forward_PS を共有するので、ここでは VS だけ。
+            //   （MaterialPreview は実行時コンパイル＝.cso を持たないので登録しない。
+            //     ShadowPassInstanced / VelocityPrepassInstanced は .hlsli を include して
+            //     いないので、共有ヘッダの編集で壊れる余地が無い）
+            "forward/ForwardInstanced.hlsl",
+            {
+                { L"ForwardInstanced_VS.cso", L"VSMain", L"vs_6_0" },
+            },
+            { "forward/PBR.hlsli", "forward/Lighting.hlsli",
+              "forward/ClusterCommon.hlsli", "ddgi/DdgiCommon.hlsli" },
+        },
+        {
             // 地形マテリアル（4 レイヤースプラット）。t0/t1 を Texture2DArray として読む。
             // DecalApply.hlsli も include しているので依存に入れる（.hlsli を直しても
             // ホットリロードで拾われるように）。

@@ -23,6 +23,15 @@ cbuffer PerObjectConstants : register(b0)
 {
     float4x4 mvp;
     float4x4 model;
+    // ★エンジンは 40 DWORD 送っている。ここまで宣言すると
+    //   MeshRenderer の「効果値 / シェーダーパラメータ」が使える
+    //   （Inspector で編集でき、Lua からも書ける唯一の per-object の口）。
+    //   使わないなら消してよいが、オフセットがずれるので順番は変えないこと。
+    //   （カスタムシェーダーを割り当てた時点で自動インスタンシングの対象外になるので、
+    //     b0 は常に 40 DWORD ぶん書かれる。ここを読んで安全）
+    float  effectValue;     // MeshRenderer::effectValue（0..1 の汎用進捗値）
+    float3 _reserved;       // 予約（エンジンが一律色ティントに使う）
+    float4 shaderParams;    // MeshRenderer::shaderParams（汎用 float4）
 };
 
 // PerFrame constants (b1) - 先頭部分だけ宣言(shaders/forward/Lighting.hlsli と同一オフセット厳守)

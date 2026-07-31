@@ -854,6 +854,16 @@ Application::CustomForwardPsos* Application::EnsureCustomPso(const std::string& 
             entry.valid = false;
         }
     }
+    else
+    {
+        // ★バイトコードが取れない（.cso 未ビルド / リネーム / 削除 / pak に入っていない）ケース。
+        //   ここに else が無く、呼び出し側も nullptr を素通りして既定 PSO で描いていたので、
+        //   「シェーダーを割り当てたのに効果が出ない」がログにも診断にも一切出なかった。
+        //   スプライト側は同じ指摘で直したのに、メッシュ側が対称になっていなかった。
+        //   キャッシュに積むので、この警告は shaderPath ごとに 1 回だけ出る。
+        Logger::Warn("カスタムシェーダーが見つかりません（既定シェーダーで描画します）: {} "
+                     "— シェーダーを保存し直すか、パスが正しいか確認してください", shaderRel);
+    }
 
     auto& stored = m_customPsoCache[key];
     stored = std::move(entry);
