@@ -423,6 +423,14 @@ private:
     // CSM はタイトフィット正射 + DepthClipEnable=TRUE で今もクリップされる範囲しか落ちない）。
     // ※ DrawItem 本体は renderer/DrawItem.h（エディタのピッキングからも読むため独立ヘッダ）。
     std::vector<DrawItem> m_drawItems;
+    // 自動インスタンシングで 1 ドローに畳まれる連続区間。BuildDrawList のソート直後に確定する。
+    // ★区間の切れ目は batchKey だけで決まる＝視錐台カリングより前に分かるので、描画を
+    //   記録し始める前に「バッチ全体が隠れているか」を GPU へ問い合わせられる。
+    //   これが無いとインスタンス化された物にオクルージョンカリングが一切効かない
+    //   （実測: city_blocks はメインパス 631 ドローが全部バッチで、述語が 1 本も張れなかった）。
+    std::vector<DrawBatch> m_drawBatches;
+    // 描画アイテム index → バッチ番号（区間先頭にだけ入る。それ以外は 0xFFFFFFFFu）。
+    std::vector<u32>       m_drawBatchSlot;
     void BuildDrawList();
     u32 m_statDraws  = 0;   // フレーム内の DrawIndexedInstanced 発行数（ビューポートHUD用）
     u32 m_statCulled = 0;   // フレーム内にフラスタムカリングで省いたエンティティ描画の延べ数

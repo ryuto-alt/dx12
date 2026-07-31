@@ -275,6 +275,38 @@ void Application::BuildDrawList()
             if (a.lod != b.lod) return a.lod < b.lod;
             return a.batchKey < b.batchKey;
         });
+
+    // ---- インスタンシングのバッチ区間を確定する（オクルージョンカリング用）----
+    // ソート済みなので同一 batchKey は必ず連続している。ここで区間と合成 AABB を出しておくと、
+    // 描画を記録し始める前に「バッチ全体が隠れているか」を GPU へ問い合わせられる。
+    // ★バッチは 1 ドローコールなので述語もバッチ単位でしか張れない。合成 AABB は視錐台で
+    //   落ちるぶんも含んだ上位集合＝これが隠れていれば中の 1 体 1 体も必ず隠れている（保守的）。
+    m_drawBatches.clear();
+    m_drawBatchSlot.assign(m_drawItems.size(), 0xFFFFFFFFu);
+    {
+        const size_t total = m_drawItems.size();
+        for (size_t i = 0; i < total; )
+        {
+            const u64 key = m_drawItems[i].batchKey;
+            if (key == 0) { ++i; continue; }        // インスタンシング不可＝アイテム単位で判定する
+            size_t j = i;
+            XMVECTOR mn = XMVectorReplicate( FLT_MAX);
+            XMVECTOR mx = XMVectorReplicate(-FLT_MAX);
+            for (; j < total && m_drawItems[j].batchKey == key; ++j)
+            {
+                mn = XMVectorMin(mn, XMLoadFloat3(&m_drawItems[j].aabbMin));
+                mx = XMVectorMax(mx, XMLoadFloat3(&m_drawItems[j].aabbMax));
+            }
+            DrawBatch b{};
+            b.first = static_cast<u32>(i);
+            b.count = static_cast<u32>(j - i);
+            XMStoreFloat3(&b.aabbMin, mn);
+            XMStoreFloat3(&b.aabbMax, mx);
+            m_drawBatchSlot[i] = static_cast<u32>(m_drawBatches.size());
+            m_drawBatches.push_back(b);
+            i = j;
+        }
+    }
 }
 
 // perf_stats / benchmark の "occlusion" ブロック。
@@ -288,12 +320,12 @@ nlohmann::json Application::OcclusionReportJson() const
     nlohmann::json j{
         {"enabled", m_occlusionCulling},
         {"ready",   ready},
-        // メインパスの非インスタンス描画に述語を張った数。0 ならカリングは効いていない。
+        // メインパスで述語を張って発行したドロー数。0 ならカリングは効いていない。
         {"predicatedDraws", m_statPredicated},
-        // ★インスタンシングのバッチには適用していない。述語は 1 ドロー単位なので
-        //   「バッチ内の一部だけ隠れている」を表現できないため。
-        {"note", "occluded は GPU からの読み戻し（数フレーム遅れ）。"
-                 "述語はインスタンシングされていない描画にのみ張る"},
+        {"batches", m_occlusionCull ? m_occlusionCull->GetBatchCount() : 0u},
+        {"note", "occluded は GPU からの読み戻し（数フレーム遅れ）。tested は"
+                 "「アイテム数 + バッチ数」。インスタンシングされた描画はバッチの合成 AABB で"
+                 "判定する（1 ドローに畳まれているので述語もバッチ単位でしか張れない）"},
     };
     if (m_occlusionCull)
     {
@@ -785,9 +817,23 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             continue;
         }
 
-        // ★バッチは 1 ドローで N 体まとめて描くので、述語を張ると「一部だけ隠れている」
-        //   ケースで見えている物まで消える。ここでは必ず解除しておく。
-        clearPredication();
+        // バッチ全体の合成 AABB が隠れているときだけ述語を張る。
+        // ★アイテム単位の述語をここで使ってはいけない。バッチは 1 ドローで N 体まとめて
+        //   描くので、1 体ぶんの判定で落とすと同じバッチの見えている物まで消える。
+        //   合成 AABB は全インスタンスを包含するので、これが隠れていれば中身も全部隠れている。
+        bool batchPredicated = false;
+        if (predBuf && i < m_drawBatchSlot.size() && m_drawBatchSlot[i] != 0xFFFFFFFFu
+            && m_drawBatchSlot[i] < m_occlusionCull->GetBatchCount())
+        {
+            nativeCmdList->SetPredication(
+                predBuf, m_occlusionCull->GetBatchPredicateOffset(m_drawBatchSlot[i]),
+                D3D12_PREDICATION_OP_EQUAL_ZERO);
+            batchPredicated = true;
+        }
+        else
+        {
+            clearPredication();
+        }
 
         // 同一 batchKey のランのうち「見えている物」だけインスタンスへ積む
         instScratch.clear();
@@ -893,6 +939,9 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
 
         const u32 idx = mesh->GetIndexCountLod(head.lod);
         m_commandList->DrawIndexedInstanced(idx, n);
+        // ★実際にドローを発行したときだけ数える。区間を訪れた回数を数えると、
+        //   視錐台で全部落ちた区間まで「述語を張った」ことになって数字が嘘になる。
+        if (batchPredicated) ++m_statPredicated;
         ++m_statDraws;
         m_statTris += idx / 3 * n;
         ++m_passBucket->draws;
@@ -3856,7 +3905,8 @@ void Application::Render()
                 op.hzbW = static_cast<f32>(m_hiZPass->GetWidth());
                 op.hzbH = static_cast<f32>(m_hiZPass->GetHeight());
                 op.mipCount = m_hiZPass->GetMipCount();
-                m_occlusionCull->Dispatch(nativeCmdList, *m_graphicsDevice, m_drawItems, op,
+                m_occlusionCull->Dispatch(nativeCmdList, *m_graphicsDevice,
+                                          m_drawItems, m_drawBatches, op,
                                           m_srvHeap->GetGpuHandle(m_hiZPass->GetSrvIndex()),
                                           frameIndex);
             }

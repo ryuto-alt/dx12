@@ -178,26 +178,37 @@ void OcclusionCullPass::EnsureCapacity(GraphicsDevice& device, u32 count)
 }
 
 void OcclusionCullPass::Dispatch(ID3D12GraphicsCommandList* cmd, GraphicsDevice& device,
-                                 const std::vector<DrawItem>& items, const Params& p,
+                                 const std::vector<DrawItem>& items,
+                                 const std::vector<DrawBatch>& batches, const Params& p,
                                  D3D12_GPU_DESCRIPTOR_HANDLE hzbSrvGpu, u32 frameIndex)
 {
     if (!IsReady() || !cmd || frameIndex >= kFrameCount) return;
-    const u32 n = static_cast<u32>(items.size());
+    const u32 nItems   = static_cast<u32>(items.size());
+    const u32 nBatches = static_cast<u32>(batches.size());
+    const u32 n = nItems + nBatches;
     if (n == 0) return;
 
     EnsureCapacity(device, n);
     if (!m_boundsMapped[frameIndex] || !m_visBuf) return;
 
-    // AABB を書き出す。
+    // AABB を書き出す。前半がアイテム、後半がバッチの合成 AABB。
     {
         auto* dst = reinterpret_cast<ItemBoundsGPU*>(m_boundsMapped[frameIndex]);
-        for (u32 i = 0; i < n; ++i)
+        for (u32 i = 0; i < nItems; ++i)
         {
             const DrawItem& it = items[i];
             dst[i].aabbMin = XMFLOAT4(it.aabbMin.x, it.aabbMin.y, it.aabbMin.z, 0.0f);
             dst[i].aabbMax = XMFLOAT4(it.aabbMax.x, it.aabbMax.y, it.aabbMax.z, 0.0f);
         }
+        for (u32 b = 0; b < nBatches; ++b)
+        {
+            const DrawBatch& bb = batches[b];
+            dst[nItems + b].aabbMin = XMFLOAT4(bb.aabbMin.x, bb.aabbMin.y, bb.aabbMin.z, 0.0f);
+            dst[nItems + b].aabbMax = XMFLOAT4(bb.aabbMax.x, bb.aabbMax.y, bb.aabbMax.z, 0.0f);
+        }
     }
+    m_lastItemCount  = nItems;
+    m_lastBatchCount = nBatches;
 
     // 統計を 0 クリア（毎フレーム積み直す）。
     {

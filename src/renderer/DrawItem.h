@@ -47,6 +47,21 @@ struct DrawItem
     u64                 batchKey;
 };
 
+// 自動インスタンシングで 1 ドローに畳まれる連続区間（ソート済み描画リスト上の [first, first+count)）。
+// 区間の切れ目は batchKey だけで決まる＝視錐台カリングより前に確定できるので、
+// 描画を記録し始める前に「バッチ全体が隠れているか」を GPU へ問い合わせられる。
+//
+// ★aabb は区間内**全インスタンス**の合成 AABB。視錐台で落ちるぶんも含んだ上位集合なので、
+//   これが隠れていれば実際に描く 1 体 1 体も必ず隠れている（保守的）。
+//   バッチは 1 ドローコールなので、述語もバッチ単位でしか張れない。
+struct DrawBatch
+{
+    u32               first;
+    u32               count;
+    DirectX::XMFLOAT3 aabbMin;
+    DirectX::XMFLOAT3 aabbMax;
+};
+
 // この DrawItem が DXR の TLAS に入るか（＝RT 影 / RT-AO が担当する範囲か）。
 //
 // ★CSM 側で「RT が担当するぶんを除外する」ときも必ずこの関数を使うこと。
