@@ -574,6 +574,8 @@ private:
     // perf_stats / benchmark の "occlusion" ブロック。
     // occluded は数フレーム遅れの実測値（GPU から読み戻す表示専用の数）。
     nlohmann::json OcclusionReportJson() const;
+    // MCP get_occlusion / set_occlusion が返す状態。
+    nlohmann::json OcclusionStateJson() const;
     void EnsureInstancePrevBuffer();     // 速度パス用 per-instance 前ワールドバッファの遅延確保
     void RegisterShaderReloadHandlers(); // 上記全部+PostProcess等を ShaderManager に束ねて登録する(Initialize末尾で1回)
 

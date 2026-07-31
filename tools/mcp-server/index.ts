@@ -1201,6 +1201,32 @@ reg(
 );
 
 reg(
+  "dx12_get_occlusion",
+  "オクルージョンカリング取得",
+  "Hi-Z オクルージョンカリングの状態を返す。{enabled, active, ready, pyramid{width,height,mips}}。"
+  + "active は「このフレームで実際に走るか」(正射/2Dビューでは自動無効)。"
+  + "実際に何体隠れたかは dx12_perf_stats の occlusion ブロック(occluded/tested/ratio/predicatedDraws)を見ること。",
+  {},
+  { readOnlyHint: true },
+  () => run(() => engine.call("get_occlusion", {})),
+);
+
+reg(
+  "dx12_set_occlusion",
+  "オクルージョンカリング切替",
+  "Hi-Z オクルージョンカリングの ON/OFF。深度プリパスの深度から階層 Z ピラミッドを作り、"
+  + "壁の裏に完全に隠れた描画を GPU 側で落とす(D3D12 のプレディケーション。遅延ゼロ)。"
+  + "★ON にすると深度プリパスも強制的に走る。TAA/SSAO/SSR/DXR のどれかが有効なシーンでは"
+  + "プリパスは元々走っているので追加コストは Hi-Z ぶん(実測 0.04ms)だけだが、"
+  + "どれも無効なシーンで ON にするとプリパスぶんの描画コールが増えて**遅くなる**ことがある。"
+  + "GPU 律速のときに効く機能で、CPU 律速のシーンでは fps は改善しない。既定 OFF。"
+  + "設定は settings.json の render_occlusion_culling に保存される。",
+  { enabled: z.boolean() },
+  { idempotentHint: true },
+  (a) => run(() => applyAndVerify("set_occlusion", "get_occlusion", a)),
+);
+
+reg(
   "dx12_get_ssr",
   "SSR設定取得",
   "現在のシーンの SSR(スクリーン空間反射)設定を返す。{enabled, intensity, maxDistance, thickness, maxSteps, stride, roughnessCutoff, edgeFade, bias}。★正射カメラ/2Dビューでは自動無効化される。",

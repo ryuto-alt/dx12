@@ -345,6 +345,27 @@ nlohmann::json Application::OcclusionReportJson() const
     return j;
 }
 
+// MCP get_occlusion / set_occlusion が返す状態。
+nlohmann::json Application::OcclusionStateJson() const
+{
+    const bool ready = m_hiZPass && m_hiZPass->IsReady()
+                    && m_occlusionCull && m_occlusionCull->IsReady();
+    return {
+        {"enabled", m_occlusionCulling},
+        // ★enabled ではなく active を見ること。正射 / 2D ビューや PSO 未準備では
+        //   enabled=true でも実際には走らない。
+        {"active",  m_occlusionCulling && ready && ScreenSpaceViewSupported()},
+        {"ready",   ready},
+        {"pyramid", ready ? nlohmann::json{{"width",  m_hiZPass->GetWidth()},
+                                           {"height", m_hiZPass->GetHeight()},
+                                           {"mips",   m_hiZPass->GetMipCount()}}
+                          : nlohmann::json(nullptr)},
+        {"note", "深度プリパスの深度から階層 Z ピラミッドを作る。ON にすると深度プリパスも"
+                 "自動的に走るので、TAA/SSAO/SSR/DXR がどれも無効なシーンでは"
+                 "プリパスぶんの描画コールが増えて遅くなることがある。"
+                 "実際に何体隠れたかは perf_stats の occlusion ブロックを見ること"}};
+}
+
 // フレーム末（Present/EndFrame 後）に1回。perf リング履歴の記録と benchmark の収集・完了を行う。
 void Application::RecordPerfFrame()
 {
