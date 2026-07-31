@@ -410,6 +410,10 @@ void Application::LoadProject(const ProjectInfo& info)
     m_forceDepthPrepass = PersistGet("render_depth_prepass", 0.0) != 0.0;
     if (m_forceDepthPrepass) Logger::Info("深度プリパス: 強制 ON（render_depth_prepass=1）");
 
+    // Hi-Z オクルージョンカリング。既定 OFF。
+    m_occlusionCulling = PersistGet("render_occlusion_culling", 0.0) != 0.0;
+    if (m_occlusionCulling) Logger::Info("オクルージョンカリング: ON（render_occlusion_culling=1）");
+
     // 内部解像度スケール（#16）。1.0 で従来と完全に同じ絵。0.5 なら 3D だけ半解像度で
     // 描いて表示解像度へ引き伸ばす（UI / ImGui は表示解像度のまま鮮明）。
     {

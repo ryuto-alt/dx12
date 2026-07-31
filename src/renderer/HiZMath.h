@@ -194,10 +194,15 @@ inline u32 SelectHiZMip(const ScreenBounds& b, u32 mipCount)
 //   tileMaxDepth = 選んだミップの 2x2 テクセルの **最大値**（＝その範囲で最も遠い面）
 // 箱の最近点がそれよりさらに遠ければ、箱は完全にその面の裏 ＝ 遮蔽されている。
 //
-// depthBias は「ギリギリのときは見えることにする」ための余裕（NDC 深度の絶対値）。
-// 0 でも数学的には正しいが、Hi-Z の縮約とラスタライズの丸めが完全一致しないため、
-// 自己遮蔽（自分が書いた深度で自分が消える）が起きうる。既定は控えめな正の値。
-inline bool IsOccludedByHiZ(const ScreenBounds& b, f32 tileMaxDepth, f32 depthBias = 1e-6f)
+// ★depthBias の既定は 0。NDC 深度に固定の余裕を足してはいけない。
+//   標準 Z + near=0.1 では ndc.z = f/(f-n)*(1 - n/z_view) なので、z_view=10m で既に
+//   0.990 に達し、10m〜1000m が [0.990, 1.0] に押し込まれている。つまり同じ NDC の
+//   イプシロンが手前ではミリメートル、遠方では数メートルに化ける＝意味を成さない。
+//   「ギリギリは見えることにする」は等号の向き（visible ⟺ minZ <= tileMax）で
+//   既に担保されている。それでも余裕が要る場合は、深度ではなく
+//   **スクリーン矩形を mip0 の 1 テクセルぶん膨らませる**こと（次元的に正しい）。
+//   引数を残してあるのは実験用で、常用しない。
+inline bool IsOccludedByHiZ(const ScreenBounds& b, f32 tileMaxDepth, f32 depthBias = 0.0f)
 {
     if (!b.valid) return false;                  // 判定不能は必ず「見える」
     if (!(tileMaxDepth == tileMaxDepth)) return false;   // NaN

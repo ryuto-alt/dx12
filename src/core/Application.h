@@ -55,6 +55,7 @@ namespace dx12e
     class MotionBlurPass;
     class SSAOPass;
     class ContactShadowPass;
+    class HiZPass;
     class TaaPass;
     class RenderDebugPass;
     enum class RenderDebugMode : u32;   // renderer/RenderDebugPass.h（前方宣言可能な scoped enum）
@@ -437,7 +438,8 @@ private:
     std::unique_ptr<GpuTimer> m_gpuTimer;
     // >= GpuTimer::Scope::Count（cpp で static_assert）。
     // 12 → 14（計画09 が raytracing / rtScreen の 2 スコープを足して 12 使用。残り 2）。
-    static constexpr u32 kPerfGpuScopes = 14;
+    // 14 → 16（Hi-Z オクルージョンカリングが hiZ を足して 15 使用。残り 1）。
+    static constexpr u32 kPerfGpuScopes = 16;
                                                // 現在 8 使用（ClusterCull 追加）。SSR/SSGI/フォグ用に余裕を持たせてある。
     struct PerfFrame
     {
@@ -1004,6 +1006,12 @@ private:
     std::unique_ptr<PipelineState> m_depthPrepassPSO;               // 深度プリパス（static, bias なし）
     std::unique_ptr<PipelineState> m_depthPrepassSkinnedPSO;        // 深度プリパス（skinned）
 
+    // ---- Hi-Z オクルージョンカリング（深度プリパスの深度から階層 Z を作る）----
+    // ★深度プリパスと前方パスはビット厳密に一致する（同じ m_drawItems / 同じジッタ付き
+    //   camVPJ / 同じ LOD）ので、プリパス完了後にピラミッドを建てれば「今フレーム・今の
+    //   カメラ」の遮蔽情報になる。前フレーム深度の再投影も 2 フェーズ方式も要らない。
+    std::unique_ptr<HiZPass>       m_hiZPass;
+
     // ---- コンタクトシャドウ（同じ深度プリパスを使うスクリーン空間レイマーチ）----
     // 白ダミーは SSAO と共用（どちらも 1x1 R8_UNORM の 1.0）。
     std::unique_ptr<ContactShadowPass> m_contactShadowPass;
@@ -1125,6 +1133,11 @@ private:
     // 「そのシーンでオーバードローがどれだけあるか（＝オクルージョンの余地）」を
     // SSAO 生成コストを混ぜずに測るためだけに存在する。既定 OFF ＝従来と完全に同じ経路。
     bool m_forceDepthPrepass = false;
+    // Hi-Z オクルージョンカリング。settings.json "render_occlusion_culling" /
+    // MCP dx12_set_occlusion。既定 OFF ＝従来と完全に同じ経路。
+    // ★深度プリパスが前提（プリパスの深度からピラミッドを作るため）。ON の間は
+    //   useDepthPrepass に OR で入る。
+    bool m_occlusionCulling  = false;
     u32  m_clusterDebugMode  = 0;      // 0=off / 1=ライト複雑度ヒートマップ / 2=クラスタ境界
     // 毎フレームのライト収集バッファ（再確保を避けるためメンバで使い回す）
     std::vector<ClusteredLightCulling::LightGPU> m_clusterLights;

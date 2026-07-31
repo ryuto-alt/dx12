@@ -28,6 +28,7 @@ public:
         Ddgi,          // DDGI: プローブのレイトレ + 八面体アトラスへのブレンド（compute 2 パス）
         ScreenSpaceGI, // SSR + SSGI（トレース/時間蓄積/アップサンプル + 前フレームカラー退避）
         VolumetricFog, // froxel フォグ（注入/散乱/Z積分の compute 3 パス + 合成）
+        HiZ,           // Hi-Z 深度ピラミッド構築（compute。ミップ数ぶんのディスパッチ連鎖）
         MainScene,     // 不透明メッシュ（RenderSceneMeshes メインビュー）
         Particles,     // CPU/GPU パーティクル + 歪み
         PostFX,        // ブルーム/DoF/自動露出/uber 等ポスト一式

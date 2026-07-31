@@ -127,6 +127,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         // フォールバックへ倒す（A/B 検証用。旧 8 灯経路そのものは残していない）。
         m_clusteredEnabled  = PersistGet("render_clustered", 1.0) != 0.0;
         m_forceDepthPrepass = PersistGet("render_depth_prepass", 0.0) != 0.0;
+        m_occlusionCulling  = PersistGet("render_occlusion_culling", 0.0) != 0.0;
         // 影の解像度 / CSM の調整値（エディタで詰めた値を配布物でも使う）
         {
             static const u32 kSizes[4] = {1024, 2048, 4096, 8192};
@@ -926,6 +927,12 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_ssaoPass = std::make_unique<SSAOPass>();
         m_ssaoPass->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
                                m_window->GetWidth(), m_window->GetHeight(), PathResolver::ShaderDirW());
+
+        // Hi-Z オクルージョンカリング（深度プリパスの深度 → 階層 Z ピラミッド）。
+        // レンダー解像度ぶんの R32_FLOAT ミップ連鎖なので RTV ヒープは要らない。
+        m_hiZPass = std::make_unique<HiZPass>();
+        m_hiZPass->Initialize(*m_graphicsDevice, m_srvHeap.get(),
+                              m_window->GetWidth(), m_window->GetHeight(), PathResolver::ShaderDirW());
 
         // コンタクトシャドウ（SSAO と同じ深度プリパスの結果を使う 1 パス。RT も同じヒープから）。
         m_contactShadowPass = std::make_unique<ContactShadowPass>();
@@ -1865,6 +1872,9 @@ void Application::Shutdown()
     m_gpuParticles.reset();
     // SSAO / コンタクトシャドウ（GPU リソース）をデバイス解放より前に明示破棄
     m_ssaoPass.reset();
+    // Hi-Z はディスクリプタブロックを持っているので、ヒープより先に明示的に返す。
+    if (m_hiZPass) m_hiZPass->Shutdown();
+    m_hiZPass.reset();
     m_contactShadowPass.reset();
     m_taaPass.reset();
     m_gbufferRT.reset();

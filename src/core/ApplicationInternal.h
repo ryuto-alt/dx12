@@ -54,6 +54,7 @@
 #include "renderer/MotionBlurPass.h"
 #include "renderer/GpuParticleSystem.h"
 #include "renderer/SSAOPass.h"
+#include "renderer/HiZPass.h"
 #include "renderer/ContactShadowPass.h"
 #include "renderer/TaaPass.h"
 #include "renderer/RenderDebugPass.h"

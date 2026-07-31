@@ -402,6 +402,8 @@ void Application::ApplyRenderResolution(u32 w, u32 h)
     // シーン系 RT（★ここに載っていないものは表示解像度のまま = スワップチェインだけ）
     if (m_sceneRT)          m_sceneRT->Resize(*m_graphicsDevice, w, h);
     if (m_ssaoPass)         m_ssaoPass->Resize(*m_graphicsDevice, w, h);
+    // ★Hi-Z を作り直し忘れると、古い寸法のピラミッドを引いて画面全体が壊れる。
+    if (m_hiZPass)          m_hiZPass->Resize(*m_graphicsDevice, w, h);
     if (m_contactShadowPass)m_contactShadowPass->Resize(*m_graphicsDevice, w, h);
     if (m_bloomPass)        m_bloomPass->Resize(*m_graphicsDevice, w, h);
     if (m_godRaysPass)      m_godRaysPass->Resize(*m_graphicsDevice, w, h);
@@ -592,6 +594,12 @@ void Application::RegisterShaderReloadHandlers()
         m_shaderManager->RegisterReloadHandler(
             { L"SSAO_VS.cso", L"SSAO_PS.cso", L"SSAOBlur_PS.cso" },
             [this]() { m_ssaoPass->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_hiZPass)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"HiZBuildCopy_CS.cso", L"HiZBuildReduce_CS.cso" },
+            [this]() { m_hiZPass->RecreatePipelines(*m_graphicsDevice); });
     }
     if (m_contactShadowPass)
     {

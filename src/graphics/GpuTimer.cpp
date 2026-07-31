@@ -18,6 +18,7 @@ const char* GpuTimer::Name(u32 s)
     case Ddgi:        return "ddgi";
     case ScreenSpaceGI: return "screenSpaceGi";
     case VolumetricFog: return "volFog";
+    case HiZ:         return "hiZ";
     case MainScene:   return "mainScene";
     case Particles:   return "particles";
     case PostFX:      return "postFx";

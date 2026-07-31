@@ -3621,8 +3621,11 @@ void Application::Render()
     //   「深度プリパス単独の損得」を測るための A/B スイッチ（計画10 A2）。
     //   viewSupportsScreenSpace を必ず掛けること（正射 / 2D ビューでプリパスを走らせても
     //   意味が無く、LESS_EQUAL の PSO 選択だけが変わって z-fight の温床になる）。
+    // Hi-Z オクルージョンカリング。プリパスの深度からピラミッドを作るのでプリパスが前提。
+    const bool useHiZ = m_occlusionCulling && m_hiZPass && m_hiZPass->IsReady()
+                      && viewSupportsScreenSpace;
     const bool useDepthPrepass = useSSAO || useContactShadow || taaActive || useSsr || useSsgi
-                               || useRtShadow || useRtAo || useRtDebug
+                               || useRtShadow || useRtAo || useRtDebug || useHiZ
                                || (m_forceDepthPrepass && viewSupportsScreenSpace);
     // 速度＋G-Buffer モードで走らせるか（PSO 3 本が揃っていることが条件）。
     // ★SSR/SSGI は G-Buffer が必要なので TAA が OFF でもこのモードで走らせる。
@@ -3700,6 +3703,30 @@ void Application::Render()
 
         m_commandList->TransitionResource(m_depthBuffer.Get(),
             D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+        // --- Hi-Z 深度ピラミッド構築（オクルージョンカリングの入力）---
+        // ★ここで作るピラミッドは「今フレーム・今のカメラ」の完全な不透明深度から来る。
+        //   深度プリパスは前方パスとビット厳密に一致する（同じ m_drawItems / 同じジッタ付き
+        //   camVPJ / 同じ LOD）ので、前フレーム深度の再投影も 2 フェーズ方式も要らない。
+        if (useHiZ)
+        {
+            // ★compute から読むので NON_PIXEL が要る。このエンジンで深度を
+            //   NON_PIXEL_SHADER_RESOURCE へ遷移するのはここが初めて（既存の深度読者は
+            //   SSAO/SSGI/SSR/コンタクトシャドウ/RT すべてフルスクリーン PS）。
+            //   前後で PIXEL へ戻すので、以降のパスの前提は一切変わらない。
+            m_commandList->TransitionResource(m_depthBuffer.Get(),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+            m_gpuTimer->Begin(nativeCmdList, GpuTimer::HiZ);
+            m_hiZPass->Build(nativeCmdList, m_srvHeap->GetGpuHandle(m_depthSrvIndex));
+            m_gpuTimer->End(nativeCmdList, GpuTimer::HiZ);
+
+            m_commandList->TransitionResource(m_depthBuffer.Get(),
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        }
 
         // --- SSAO 生成（depth SRV を読み AO→Blur）---
         if (useSSAO)

@@ -65,6 +65,15 @@ const std::vector<ShaderSource>& BuildRegistry()
             { "forward/ClusterCommon.hlsli" },
         },
         {
+            // Hi-Z 深度ピラミッド。1 ファイルに 2 エントリ（深度→mip0 / mip N-1→N）。
+            "hiz/HiZBuild.hlsl",
+            {
+                { L"HiZBuildCopy_CS.cso",   L"CSCopy",   L"cs_6_0" },
+                { L"HiZBuildReduce_CS.cso", L"CSReduce", L"cs_6_0" },
+            },
+            {},
+        },
+        {
             // ForwardGrid.hlsl は `#include "Lighting.hlsli"` している。
             // CMakeLists.txt の DEPENDS に Lighting.hlsli が抜けていた既存バグは修正済み
             // （PerFrameConstants を拡張したときに再コンパイルされずレイアウトがズレる）。

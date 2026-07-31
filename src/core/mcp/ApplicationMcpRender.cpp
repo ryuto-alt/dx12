@@ -298,6 +298,32 @@ void Application::RegisterMcpRenderMethods()
                          "prepassSsao はそれを含むプリパス一式。正射 / 2D ビューでは自動的に無効"}};
         });
 
+    // ---- Hi-Z オクルージョンカリング ----
+    McpDefine("get_occlusion|set_occlusion", "enabled:bool", DX12E_MCP_HANDLER
+        {
+            if (method == "set_occlusion")
+            {
+                if (!params.contains("enabled"))
+                    throw McpError(McpErr::InvalidParam, "need enabled (bool)");
+                m_occlusionCulling = params.value("enabled", false);
+                PersistSet("render_occlusion_culling", m_occlusionCulling ? 1.0 : 0.0);
+            }
+            const bool ready = m_hiZPass && m_hiZPass->IsReady();
+            resp["ok"] = true;
+            resp["result"] = {
+                {"enabled", m_occlusionCulling},
+                // ★enabled ではなく active を見ること。正射 / 2D ビューや PSO 未準備では
+                //   enabled=true でも実際には走らない。
+                {"active",  m_occlusionCulling && ready && ScreenSpaceViewSupported()},
+                {"ready",   ready},
+                {"pyramid", ready ? nlohmann::json{{"width",  m_hiZPass->GetWidth()},
+                                                   {"height", m_hiZPass->GetHeight()},
+                                                   {"mips",   m_hiZPass->GetMipCount()}}
+                                  : nlohmann::json(nullptr)},
+                {"note", "深度プリパスの深度から階層 Z ピラミッドを作る。ON にすると深度プリパスも"
+                         "自動的に走る。コストは gpuPassMs.hiZ。正射 / 2D ビューでは自動的に無効"}};
+        });
+
     McpDefine("get_taa", "", DX12E_MCP_HANDLER
         {
             const auto& t = m_scene->GetTaaSettings();

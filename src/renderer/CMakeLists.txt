@@ -20,6 +20,7 @@ add_library(Renderer STATIC
     SkinningCompute.cpp
     DdgiVolume.cpp
     ClusteredLightCulling.cpp
+    HiZPass.cpp
     VolumetricFogPass.cpp
     DecalSystem.cpp
     SpriteRenderer.cpp
