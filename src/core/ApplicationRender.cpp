@@ -1767,15 +1767,16 @@ void Application::Render()
             // 本体ではなくオートセーブを読み込む。読み終わったら FinishSceneLoad が
             // currentScenePath を本来のシーンへ戻す（m_autosaveRestoreTarget）。
             m_autosaveRestoreTarget             = m_editorCtx->currentScenePath;
-            m_editorCtx->pendingLoadPath        = dir + "scene.json";
+            m_editorCtx->pendingLoadPath        = autosave::ScenePath(dir);
             m_editorCtx->pendingLoadSkipConfirm = true;   // 本人が選んだ操作。二重に聞かない
         }
         else
         {
             // 破棄。消しておかないと次回起動でも同じことを聞き続ける。
             std::error_code ec;
-            std::filesystem::remove(dir + "scene.json", ec);
-            std::filesystem::remove(dir + "meta.json", ec);
+            std::filesystem::remove(autosave::ScenePath(dir), ec);
+            std::filesystem::remove(autosave::MetaPath(dir),  ec);
+            std::filesystem::remove(autosave::NavPath(dir),   ec);
             Logger::Info("自動保存を破棄しました");
         }
     }

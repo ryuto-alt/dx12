@@ -33,7 +33,6 @@ private:
     // 未保存確認モーダルの OpenPopup を毎フレーム呼ばないためのラッチ
     // （AssetBrowserPanel の削除確認と同じ作法）。
     bool m_unsavedPopupOpen   = false;
-    bool m_autosavePopupOpen  = false;
 };
 
 } // namespace dx12e

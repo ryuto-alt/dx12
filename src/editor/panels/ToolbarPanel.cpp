@@ -1158,12 +1158,11 @@ void ToolbarPanel::Render(bool isPlaying,
     // ===== 自動保存からの復旧 =====
     // シーンを開いた直後、オートセーブの方が本体より新しいときだけ出る
     // （＝前回クラッシュした / 保存せずに落ちた）。
-    if (ctx.showAutosaveRecovery && !m_autosavePopupOpen)
-    {
+    // ★開いたかどうかは自前のフラグではなく ImGui に聞く。自前ラッチだと、別のモーダルに
+    //   割り込まれて実際には開かなかったフレームでもラッチだけ立ち、以後二度と開かない
+    //   （かつ showAutosaveRecovery が立ちっぱなしになり UpdateAutosave も止まる）。
+    if (ctx.showAutosaveRecovery && !ImGui::IsPopupOpen("##AutosaveRecovery"))
         ImGui::OpenPopup("##AutosaveRecovery");
-        m_autosavePopupOpen = true;
-    }
-    if (!ctx.showAutosaveRecovery) m_autosavePopupOpen = false;
 
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(460, 0), ImGuiCond_Appearing);

@@ -615,6 +615,19 @@ if(MSVC)
 endif()
 add_test(NAME ShaderIncludeDepsTests COMMAND ShaderIncludeDepsTests)
 
+# オートセーブ退避スロット（core/AutosaveSlot.h）のテスト。ヘッダオンリーだが
+# meta.json の読み取りに nlohmann を使うので、統合ビルドでのみ有効（Core をリンク）。
+if(TARGET Core)
+    add_executable(AutosaveSlotTests autosave_test.cpp)
+    target_link_libraries(AutosaveSlotTests PRIVATE Core)
+    target_include_directories(AutosaveSlotTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(AutosaveSlotTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(AutosaveSlotTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME AutosaveSlotTests COMMAND AutosaveSlotTests)
+endif()
+
 # 自作ナビメッシュ（ボクセル化 → 領域分割 → 輪郭 → ポリゴン化 → A*/ファネル）のテスト。
 # nav/ は純ロジック（GPU も entt も DirectXMath も vfs も不要）なので、
 # TerrainTests と同じくライブラリをリンクせず .cpp を直接ビルドする＝スタンドアロン CI でも動く。

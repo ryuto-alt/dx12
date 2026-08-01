@@ -544,7 +544,12 @@ private:
 
     // 「いまの状態＝保存済み」に揃える（保存成功時・シーンを開いた直後・新規作成直後）。
     // 実体は EditorContext::MarkSceneSaved + 設定指紋の取り直し。
-    void MarkSceneClean();
+    // dropAutosave=true（既定）のとき、このシーンの退避（オートセーブ）も一緒に捨てる。
+    // ★シーンを開いた直後だけ false にすること。開いた直後は「これから復旧を聞く」ので、
+    //   ここで消すと復旧候補が無くなり、前回の未保存作業が黙って失われる。
+    void MarkSceneClean(bool dropAutosave = true);
+    // 指定シーンの退避を捨てる（別シーンの退避なら何もしない）。
+    void DiscardAutosaveFor(const std::string& scenePath);
 
     // シーンを捨てる操作（開く / 新規 / プロジェクトを閉じる / ウィンドウを閉じる）の直前に呼ぶ。
     //   true  … 進んでよい（未保存でない、またはユーザーが「保存」「破棄」を選んだ）

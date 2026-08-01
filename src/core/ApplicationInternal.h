@@ -123,6 +123,7 @@
 #include "editor/EditorLayer.h"
 #include "editor/EditorTheme.h"        // バージョン管理パネルのステータス配色
 #include "core/Version.h"              // kEngineVersion / 「更新内容」ポップアップの中身
+#include "core/AutosaveSlot.h"         // .autosave/ スロットの読み取りと破棄
 #include "editor/EditorIconRenderer.h"
 #include "editor/UndoSystem.h"
 #include "editor/ModelThumbnailRenderer.h"

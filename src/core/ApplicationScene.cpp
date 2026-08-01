@@ -860,8 +860,9 @@ void Application::FinishSceneLoad(const std::string& fullPath, const std::string
     const bool loaded = SceneSerializer::Load(*m_scene, fullPath, PathResolver::AssetsDir());
     if (loaded)
     {
-        // 開いた直後はディスクの内容と一致している＝未保存ではない
-        MarkSceneClean();
+        // 開いた直後はディスクの内容と一致している＝未保存ではない。
+        // ★オートセーブは消さない（この後 CheckAutosaveRecovery で復旧を聞くため）。
+        MarkSceneClean(/*dropAutosave=*/false);
         m_editorCtx->currentScenePath = fullPath;
         m_currentSceneRel = rel;
         ProjectManager::SaveLastOpenedScene(fullPath);

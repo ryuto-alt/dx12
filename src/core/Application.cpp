@@ -2694,9 +2694,9 @@ bool Application::WriteAutosave()
 
     // ★通常の保存とは別物なので MarkSceneClean は呼ばない。
     //   ここで未保存フラグを落とすと「保存した」と誤認させ、確認ダイアログが出なくなる。
-    if (!SceneSerializer::Save(*m_scene, dir + "scene.json", PathResolver::AssetsDir()))
+    if (!SceneSerializer::Save(*m_scene, autosave::ScenePath(dir), PathResolver::AssetsDir()))
     {
-        Logger::Warn("オートセーブに失敗しました: {}", dir + "scene.json");
+        Logger::Warn("オートセーブに失敗しました: {}", autosave::ScenePath(dir));
         return false;
     }
 
@@ -2708,9 +2708,9 @@ bool Application::WriteAutosave()
             std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count())},
     };
-    std::ofstream mf(dir + "meta.json", std::ios::binary | std::ios::trunc);
+    std::ofstream mf(autosave::MetaPath(dir), std::ios::binary | std::ios::trunc);
     if (mf) mf << meta.dump(2);
-    Logger::Info("オートセーブしました: {}", dir + "scene.json");
+    Logger::Info("オートセーブしました: {}", autosave::ScenePath(dir));
     return true;
 }
 
@@ -2720,9 +2720,9 @@ void Application::CheckAutosaveRecovery(const std::string& sceneFullPath)
     namespace fs = std::filesystem;
     std::error_code ec;
 
-    const std::string dir  = AutosaveDir();
-    const std::string auto_ = dir + "scene.json";
-    const std::string metaP = dir + "meta.json";
+    const std::string dir   = AutosaveDir();
+    const std::string auto_ = autosave::ScenePath(dir);
+    const std::string metaP = autosave::MetaPath(dir);
     if (!fs::exists(auto_, ec) || !fs::exists(metaP, ec)) return;
 
     nlohmann::json meta;
@@ -2730,17 +2730,22 @@ void Application::CheckAutosaveRecovery(const std::string& sceneFullPath)
     catch (...) { return; }   // 壊れた meta は黙って無視（復旧を促せないだけ）
 
     // 別のシーンの退避なら関係ない
-    const std::string origin = meta.value("originPath", std::string());
-    if (origin.empty()) return;
-    if (fs::weakly_canonical(fs::path(origin), ec) != fs::weakly_canonical(fs::path(sceneFullPath), ec))
-        return;
+    if (!autosave::SamePath(meta.value("originPath", std::string()), sceneFullPath)) return;
 
-    // ★本体の方が新しければ復旧するものは無い（＝正常に保存して終えている）。
-    //   この比較があるので、保存のたびにオートセーブを消して回る必要が無い。
+    // 本体の方が新しければ復旧するものは無い（＝正常に保存して終えている）。
     const auto autoT   = fs::last_write_time(auto_, ec);
     if (ec) return;
     const auto sceneT  = fs::last_write_time(sceneFullPath, ec);
-    if (!ec && sceneT >= autoT) return;
+    if (!ec && sceneT >= autoT) { DiscardAutosaveFor(sceneFullPath); return; }
+
+    // ★更新時刻だけを信じない。中身が同じなら復旧するものは無い。
+    //   時刻の比較はコピー・展開・同期・時計のずれで簡単に逆転するので、これが最後の砦。
+    //   ここが無いと「保存して終えたのに毎回聞かれる」が時刻のいたずらだけで再発する。
+    if (autosave::SameBytes(auto_, sceneFullPath))
+    {
+        DiscardAutosaveFor(sceneFullPath);
+        return;
+    }
 
     const long long at = meta.value("savedAtUnix", 0LL);
     std::string when = "(時刻不明)";
@@ -2805,12 +2810,33 @@ bool Application::ConfirmDiscardScene(bool& outCancelled)
     }
 }
 
-void Application::MarkSceneClean()
+void Application::MarkSceneClean(bool dropAutosave)
 {
     // 「いまの状態＝保存済み」に揃える。保存直後・シーンを開いた直後・新規作成直後。
     // 指紋はここで取り直す（ポーリングで拾った古い値を使うと、保存直前の設定変更が
     // 保存後に「新しい変更」として再検出される）。
-    if (m_editorCtx && m_scene) m_editorCtx->MarkSceneSaved(SceneSettingsFingerprint(*m_scene));
+    if (!m_editorCtx || !m_scene) return;
+    m_editorCtx->MarkSceneSaved(SceneSettingsFingerprint(*m_scene));
+
+    // ★ここに来た＝「今の内容が正」とユーザーが決めた（保存した / 破棄を選んだ）。
+    //   退避しておいたオートセーブはもう復旧候補ではないので消す。
+    //
+    //   消さないと何が起きるか（実際に起きていた）:
+    //   復旧するかの判定はファイルの更新時刻だけ（オートセーブの方が新しいか）で見ている。
+    //   保存や破棄でオートセーブを消していなかったので、一度書かれたオートセーブが
+    //   シーン本体より新しいまま残り続け、**Ctrl+S で保存して終えても次に開くたびに**
+    //   「保存されていない自動保存が見つかりました」を聞かれた。
+    //   特に「破棄」は 「以後もう聞かない」 つもりの操作なのに、ディスク側は何も変わって
+    //   いなかったので必ず再発した。
+    if (dropAutosave) DiscardAutosaveFor(m_editorCtx->currentScenePath);
+}
+
+// 指定シーンの退避（オートセーブ）を捨てる。別シーンの退避なら触らない
+// （そこにしか無い未保存作業を消してしまうため）。判定と削除は autosave::DiscardIfFor。
+void Application::DiscardAutosaveFor(const std::string& scenePath)
+{
+    if (autosave::DiscardIfFor(AutosaveDir(), scenePath))
+        m_autosaveTimer = 0.0f;   // 直後にもう一度書かれないよう間隔を測り直す
 }
 
 void Application::RestoreRenderDebugSettings()
