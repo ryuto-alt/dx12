@@ -910,6 +910,30 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
         };
     }
 
+    // ナビメッシュの生成パラメータ（シーン単位）。焼いた実体は隣の .nav サイドカー。
+    {
+        const auto& nc = scene.GetNavConfig();
+        root["navmesh"] = {
+            {"cellSize",             nc.cellSize},
+            {"cellHeight",           nc.cellHeight},
+            {"agentHeight",          nc.agentHeight},
+            {"agentRadius",          nc.agentRadius},
+            {"agentMaxClimb",        nc.agentMaxClimb},
+            {"agentMaxSlope",        nc.agentMaxSlope},
+            {"minRegionArea",        nc.minRegionArea},
+            {"mergeRegionArea",      nc.mergeRegionArea},
+            {"maxEdgeLen",           nc.maxEdgeLen},
+            {"maxSimplificationErr", nc.maxSimplificationErr},
+            {"maxVertsPerPoly",      nc.maxVertsPerPoly},
+            {"monotonePartition",    nc.monotonePartition},
+            {"filterLedgeSpans",     nc.filterLedgeSpans},
+            {"filterLowHanging",     nc.filterLowHanging},
+            {"useBounds",            nc.useBounds},
+            {"boundsMin",            {nc.boundsMin[0], nc.boundsMin[1], nc.boundsMin[2]}},
+            {"boundsMax",            {nc.boundsMax[0], nc.boundsMax[1], nc.boundsMax[2]}},
+        };
+    }
+
     // リアルタイム影 ON/OFF（シーン単位）
     root["shadows"] = scene.GetShadowsEnabled();
 
@@ -1135,6 +1159,42 @@ static void LoadSkyboxSettings(Scene& scene, const json& root)
         sk.drawSkybox      = sj.value("drawSkybox", sk.drawSkybox);
     }
     scene.GetSkyboxSettings() = sk;
+}
+
+// JSON からナビメッシュの生成パラメータを復元（navmesh が無ければ既定 = 後方互換）
+static void LoadNavSettings(Scene& scene, const json& root)
+{
+    nav::NavBuildConfig nc;   // 既定
+    if (root.contains("navmesh"))
+    {
+        const auto& nj = root["navmesh"];
+        nc.cellSize             = nj.value("cellSize",             nc.cellSize);
+        nc.cellHeight           = nj.value("cellHeight",           nc.cellHeight);
+        nc.agentHeight          = nj.value("agentHeight",          nc.agentHeight);
+        nc.agentRadius          = nj.value("agentRadius",          nc.agentRadius);
+        nc.agentMaxClimb        = nj.value("agentMaxClimb",        nc.agentMaxClimb);
+        nc.agentMaxSlope        = nj.value("agentMaxSlope",        nc.agentMaxSlope);
+        nc.minRegionArea        = nj.value("minRegionArea",        nc.minRegionArea);
+        nc.mergeRegionArea      = nj.value("mergeRegionArea",      nc.mergeRegionArea);
+        nc.maxEdgeLen           = nj.value("maxEdgeLen",           nc.maxEdgeLen);
+        nc.maxSimplificationErr = nj.value("maxSimplificationErr", nc.maxSimplificationErr);
+        nc.maxVertsPerPoly      = nj.value("maxVertsPerPoly",      nc.maxVertsPerPoly);
+        nc.monotonePartition    = nj.value("monotonePartition",    nc.monotonePartition);
+        nc.filterLedgeSpans     = nj.value("filterLedgeSpans",     nc.filterLedgeSpans);
+        nc.filterLowHanging     = nj.value("filterLowHanging",     nc.filterLowHanging);
+        nc.useBounds            = nj.value("useBounds",            nc.useBounds);
+        if (nj.contains("boundsMin"))
+        {
+            const DirectX::XMFLOAT3 v = DeserializeFloat3(nj["boundsMin"], {0, 0, 0});
+            nc.boundsMin[0] = v.x; nc.boundsMin[1] = v.y; nc.boundsMin[2] = v.z;
+        }
+        if (nj.contains("boundsMax"))
+        {
+            const DirectX::XMFLOAT3 v = DeserializeFloat3(nj["boundsMax"], {0, 0, 0});
+            nc.boundsMax[0] = v.x; nc.boundsMax[1] = v.y; nc.boundsMax[2] = v.z;
+        }
+    }
+    scene.GetNavConfig() = nc;
 }
 
 // JSON から SSAO 設定を復元（ssao が無ければデフォルト = 後方互換）
@@ -1782,6 +1842,8 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
     catch (const json::exception& e) { Logger::Warn("skybox 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadSSAOSettings(scene, root); }
     catch (const json::exception& e) { Logger::Warn("ssao 設定をスキップしました（型不正）: {}", e.what()); }
+    try { LoadNavSettings(scene, root); }
+    catch (const json::exception& e) { Logger::Warn("navmesh 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadContactShadowSettings(scene, root); }
     catch (const json::exception& e) { Logger::Warn("contactShadow 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadTaaSettings(scene, root); }
@@ -1951,9 +2013,56 @@ bool SceneSerializer::Save(const Scene& scene, const std::string& filePath,
 
     ofs << root.dump(2);
     ofs.close();
+
+    // ---- ナビメッシュのサイドカー（<シーン>.nav）----
+    // シーン JSON にはパラメータだけを書き、焼いた実体はバイナリで隣に置く。
+    // 焼いていない/消したシーンでは古い .nav を残さない（開き直すと蘇るため）。
+    {
+        const std::string navPath = fs::path(filePath).replace_extension(".nav").string();
+        if (scene.HasNavMesh())
+        {
+            std::string err;
+            if (!scene.GetNavMesh().Save(navPath, err))
+                Logger::Warn("ナビメッシュの保存に失敗しました: {}", err);
+        }
+        else
+        {
+            std::error_code ec;
+            fs::remove(navPath, ec);
+        }
+    }
+
     Logger::Info("Scene saved ({} entities): {}",
                  root["entities"].size(), filePath);
     return true;
+}
+
+// シーンの隣にある .nav を読む（あれば）。無くてもエラーにしない。
+static void LoadNavMeshSidecar(Scene& scene, const std::string& scenePath)
+{
+    namespace fs = std::filesystem;
+    const std::string navPath = fs::path(scenePath).replace_extension(".nav").string();
+    auto bytes = vfs::ReadAssetAbs(navPath);          // ゲームモードは pak から復号
+    if (bytes.empty())
+    {
+        std::error_code ec;
+        if (!fs::exists(navPath, ec)) return;
+        std::ifstream f(navPath, std::ios::binary);
+        if (!f) return;
+        bytes.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    }
+    if (bytes.empty()) return;
+
+    std::string err;
+    if (!scene.GetNavMesh().LoadFromMemory(reinterpret_cast<const u8*>(bytes.data()),
+                                           bytes.size(), err))
+    {
+        Logger::Warn("ナビメッシュを読めませんでした（焼き直しが必要）: {}", err);
+        return;
+    }
+    Logger::Info("NavMesh loaded: {} polys, {} samples ({})",
+                 scene.GetNavMesh().PolyCount(),
+                 scene.GetNavMesh().GetStats().sampleCount, navPath);
 }
 
 bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
@@ -1962,7 +2071,11 @@ bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
     // VFS 経由で読む（ゲームモード: pak 復号。エディタ: ディスク）。
     auto b = vfs::ReadAssetAbs(filePath);
     if (!b.empty())
-        return LoadFromString(scene, std::string(b.begin(), b.end()), assetsDir);
+    {
+        const bool ok = LoadFromString(scene, std::string(b.begin(), b.end()), assetsDir);
+        if (ok) LoadNavMeshSidecar(scene, filePath);
+        return ok;
+    }
 
     // ディスクフォールバック
     std::ifstream ifs(filePath);
@@ -1996,8 +2109,11 @@ bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
         return false;
     }
     if (ok)
+    {
+        LoadNavMeshSidecar(scene, filePath);
         Logger::Info("Scene loaded ({} entities): {}",
                      root.contains("entities") ? root["entities"].size() : 0, filePath);
+    }
     return ok;
 }
 

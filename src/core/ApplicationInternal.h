@@ -135,6 +135,7 @@
 #include "editor/panels/MaterialEditorPanel.h"
 #include "editor/panels/MaterialLibraryPanel.h"
 #include "editor/panels/TerrainPanel.h"   // 地形ツール（状態は関数ローカル static なので所有しない）
+#include "editor/panels/NavMeshPanel.h"   // ナビメッシュ窓（同上。MCP からも BuildForScene を呼ぶ）
 #include "editor/panels/SculptPanel.h"    // スカルプト窓（同上。ハイトフィールドで作れん異形の担当）
 #include "editor/ScenePick.h"             // MCP dx12_pick / raycast_precise / snap_to_ground（エディタと同じ実装）
 #include "editor/LightingPresets.h"       // MCP dx12_apply_lighting_preset（エディタの窓と同じ表）

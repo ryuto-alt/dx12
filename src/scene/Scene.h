@@ -22,6 +22,8 @@
 #include "renderer/VolumetricFogSettings.h"
 // SpawnSculpt の既定引数で SculptPrimitive の列挙子を使うため（前方宣言では足りない）。
 #include "terrain/SculptMesh.h"
+// 自作ナビメッシュ（シーン単位で 1 枚。設定はシーン JSON、実体は .nav サイドカー）。
+#include "nav/NavTypes.h"
 
 struct ID3D12GraphicsCommandList;
 
@@ -203,6 +205,18 @@ public:
     bool GetShadowsEnabled() const { return m_shadowsEnabled; }
     void SetShadowsEnabled(bool v) { m_shadowsEnabled = v; }
 
+    // ===== ナビメッシュ（追いかける AI の経路探索）=====
+    // 設定はシーン JSON の "navmesh" に、焼いた実体は assets/navmesh/<シーン名>.nav に置く。
+    // シーンをロードすると .nav があれば自動で読む（無くてもエラーにはしない）。
+    nav::NavBuildConfig&       GetNavConfig()       { return m_navConfig; }
+    const nav::NavBuildConfig& GetNavConfig() const { return m_navConfig; }
+    nav::NavMesh&              GetNavMesh()         { return m_navMesh; }
+    const nav::NavMesh&        GetNavMesh()   const { return m_navMesh; }
+    bool HasNavMesh() const { return !m_navMesh.Empty(); }
+    // シーンビューにナビメッシュのワイヤを重ねるか（デバッグ表示。シーンには保存しない）
+    bool GetNavDebugDraw() const { return m_navDebugDraw; }
+    void SetNavDebugDraw(bool v) { m_navDebugDraw = v; }
+
     // 今フレームの Update で発火したアニメイベント。Application が EventBus へ流したら
     // clear すること（Scene 自身は毎フレーム先頭で clear しない＝取りこぼしを見えるようにする）。
     std::vector<SceneAnimEvent>&       GetPendingAnimEvents()       { return m_pendingAnimEvents; }
@@ -255,6 +269,9 @@ private:
     VolumetricFogSettings m_volFog;
     std::string         m_decalAtlasPath;         // assets 相対。空 = デカール無効
     bool                m_shadowsEnabled = true;  // 既定 ON（エディタ/従来シーン互換）
+    nav::NavBuildConfig m_navConfig;               // シーン JSON に保存する生成パラメータ
+    nav::NavMesh        m_navMesh;                 // 焼いた実体（.nav から読む / エディタで焼く）
+    bool                m_navDebugDraw = false;    // ワイヤ表示（保存しない）
     std::vector<SceneAnimEvent> m_pendingAnimEvents;
 
     ResourceManager*  m_resourceManager = nullptr;

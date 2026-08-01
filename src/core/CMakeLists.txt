@@ -28,6 +28,7 @@ add_library(Core STATIC
     mcp/ApplicationMcpAsset.cpp
     mcp/ApplicationMcpTerrain.cpp
     mcp/ApplicationMcpLighting.cpp
+    mcp/ApplicationMcpNav.cpp
     Window.cpp
     SplashScreen.cpp
     Logger.cpp

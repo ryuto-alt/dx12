@@ -70,6 +70,13 @@ inline u64 SceneSettingsFingerprint(const Scene& scene)
     const std::string& decal = scene.GetDecalAtlasPath();
     mix(decal.data(), decal.size());
 
+    // ナビメッシュ: 生成パラメータと「焼けているか/ポリゴン数」。
+    // パラメータを触っただけ / 焼き直しただけでも「未保存」になる
+    //（.nav はシーン保存と同時に書かれるので、ここを混ぜないと焼いた結果が黙って消える）。
+    pod(scene.GetNavConfig());
+    const i32 navPolys = scene.GetNavMesh().PolyCount();
+    mix(&navPolys, sizeof(navPolys));
+
     // ★「このシーンで影を描く」も混ぜる。シリアライズはされているのにここに無かったので、
     //   トグルしても未保存扱いにならず、タイトルの * も保存確認ダイアログも出ず、
     //   自動保存も走らないまま**次にシーンを開くと元に戻っていた**

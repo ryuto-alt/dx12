@@ -44,6 +44,7 @@ void Application::EnsureMcpMethodTable()
     RegisterMcpAssetMethods();
     RegisterMcpTerrainMethods();
     RegisterMcpLightingMethods();
+    RegisterMcpNavMethods();
 }
 
 

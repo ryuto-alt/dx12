@@ -329,6 +329,8 @@ void ToolbarPanel::Render(bool isPlaying,
                 ctx.showBuildSettings = true;
             // シーンの光を1画面で詰めるパネル（太陽/影/スカイ/プリセット）
             ImGui::MenuItem("ライティング",             nullptr, &ctx.showLighting);
+            // 追いかける AI 用の経路探索メッシュを焼く窓
+            ImGui::MenuItem("ナビメッシュ",             nullptr, &ctx.showNavMesh);
             ImGui::MenuItem("パーティクルエディタ",     nullptr, &ctx.showVfxEditor);
             ImGui::MenuItem("UIアニメーション",         nullptr, &ctx.showAnimEditor);
             ImGui::MenuItem("スプライトシート",         nullptr, &ctx.showSpriteSheetEditor);
@@ -688,6 +690,7 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::MenuItem("Network",                nullptr, &ctx.showNetworkStatus);
         ImGui::MenuItem("Network 設定",            nullptr, &ctx.showNetworkSettings);
         ImGui::MenuItem("ライティング",            nullptr, &ctx.showLighting);
+        ImGui::MenuItem("ナビメッシュ",            nullptr, &ctx.showNavMesh);
         ImGui::MenuItem("パーティクルエディタ",    nullptr, &ctx.showVfxEditor);
         ImGui::MenuItem("UIエディタ",              nullptr, &ctx.showUiEditor);
         ImGui::MenuItem("UIアニメーション",        nullptr, &ctx.showAnimEditor);

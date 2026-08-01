@@ -283,6 +283,14 @@ OFF のときは TAA を一時的に ON にして撮る（`warnings` に出る�
 | `dx12_terrain_splat_info` | `{entity?/name?, gridSize?:int=8(0..32。0 で grid を返さない), point?:[x,z] \| points?:[[x,z]...](最大256)}` | `{entityId, layerSetPath, splatPath, hasSplat, unsavedSplat, splatSize, coverage:[4](層ごとの平均重み 0..1), dominantRatio:[4](その層が最大だったテクセルの割合), gridSize, grid:[gridSize 本の文字列。`grid[z][x]` が `'0'..'3'` でそのセルの支配レイヤー。z が増えると +Z、x が増えると +X], samples:[{world:[x,z], texel:[tx,tz], weights:[4], dominant:int}], note}` ※**読み取り専用**。`terrain_paint` / `autopaint` の結果を絵を見ずに検証する。スプラット未作成なら `hasSplat:false` と案内だけ返す。Playing 中も可 |
 | `dx12_sculpt_brush` | `{entity?/name?, brush?:"draw"\|"pull"\|"push"\|"smooth"\|"flatten"\|"pinch"\|"noise"\|"grab", position?:[x,y,z](ワールド) \| localPosition?, radius?=0.5, strength?=0.2, falloff?=0.5, direction?, grabDelta?, symmetryX/Y/Z?, noise*?, seed?}` | `{entityId, brush, movedVertices, localCenter, radius, strength, vertexCount, triangleCount, localBounds}` ※radius/strength は**メッシュのローカル単位**(Transform の scale が掛かる前)。相対操作。★Editor 限定 |
 | `dx12_set_sun` | `{timeOfDay?:0..24, azimuth?:deg, elevation?:deg, color?:[r,g,b], kelvin?:1000..40000, intensity?, ambient?}` | `{entityId, name, direction, azimuthDeg, elevationDeg, color, intensity, ambient, timeOfDay}` ※最初の DirectionalLight を**絶対指定**で更新(冪等)。方位/高度は「太陽が見える方向」(+Z=0°, +X=90° / 高度 0=地平線) |
+| `dx12_navmesh_build` | `{cellSize?, cellHeight?, agentHeight?, agentRadius?, agentMaxClimb?, agentMaxSlope?, minRegionArea?, mergeRegionArea?, maxEdgeLen?, maxSimplificationErr?, maxVertsPerPoly?:int, monotonePartition?:bool, filterLedgeSpans?:bool, filterLowHanging?:bool, useBounds?:bool, boundsMin?:[x,y,z], boundsMax?:[x,y,z]}` | `{ok, settingsChanged, stats:{...}, config:{...}, stageLog}` ※シーンのメッシュを**実際の三角形のまま**ボクセル化して歩ける面を取り出す。引数はシーンの生成設定を上書きしてから焼く。★Editor 限定。焼いた実体は隣の `.nav`（`dx12_save_scene` で書かれる） |
+| `dx12_navmesh_settings` | build と同じキー | `{applied, config, note}` ※焼き直さずに設定だけ変える。引数なしで現在値を読める |
+| `dx12_navmesh_info` | `{}` | `{config, stats:{built, polyCount, vertCount, sampleCount, gridW, gridH, walkableArea, buildMs, memoryBytes, boundsMin, boundsMax}, debugDraw}` |
+| `dx12_navmesh_path` | `{from:[x,y,z], to:[x,y,z], searchRadius?, searchHeight?}` | `{pointCount, points:[[x,y,z]...], length, reached}` ※A* + ファネル。`reached:false` は「到達できないので一番近い所まで」 |
+| `dx12_navmesh_sample` | `{point:[x,y,z], searchRadius?, searchHeight?}` | `{onNavMesh, poly?, point?, distance?}` ※位置を歩行面へ落とす（高さは坂道でもボクセル分解能で正確） |
+| `dx12_navmesh_raycast` | `{from:[x,y,z], to:[x,y,z], searchRadius?, searchHeight?}` | `{hit, t, point, normal}` ※壁（隣のポリゴンが無い辺）との精密な交差。「真っ直ぐ行けるか」の判定 |
+| `dx12_navmesh_debug` | `{enabled?:bool}` | `{enabled}` ※シーンビューにワイヤを重ねる（明るい線=壁 / 暗い線=ポータル）。MCP のスクショにも写る |
+| `dx12_navmesh_clear` | `{}` | `{cleared}` ※★Editor 限定 |
 | `dx12_apply_lighting_preset` | `{preset:"day"\|"dusk"\|"night"\|"indoor"\|"horror"\|"studio"}` | `{preset, label, tip, sun:{...}\|null, post:{exposure/bloom/vignette/saturation...}}` ※**エディタの「ライティング」窓と同じ表・同じ式**(`src/editor/LightingPresets.h` に 1 本化)。太陽が無ければポストのみ適用 |
 
 ### 4-3. 生成・削除・モード遷移(遅延同期 — 本物の値が返る)
@@ -338,6 +346,20 @@ MCP で見えるものとエディタで選ばれるものが食い違わない�
 > ブロードフェーズは**直近に描かれたフレームの描画リスト**を借りる（10 万体でも速いのはこのため）。
 > `dx12_set_transform` で動かした直後に撃つと 1 フレームぶん古い位置で判定されることがある。
 > 移動 → ピックを続けてやるときは間に `dx12_step_frames(frames:1)` を挟むこと。
+
+**ナビメッシュ（追いかける AI の経路探索）**
+
+- 生成は「ラスタライズ → フィルタ（またぎ/崖/頭上）→ コンパクト化 → エージェント半径ぶん侵食 →
+  領域分割（分水嶺 or monotone）→ 輪郭抽出と単純化 → 凸ポリゴン化 → 高さサンプル格子」の自作パイプライン。
+  入力は **AABB ではなくメッシュの実三角形**なので、坂道・階段・斜めの壁がそのままの形で反映される。
+- **設定はシーン JSON の `navmesh`、焼いた実体はシーンの隣の `<シーン>.nav`**（バイナリ）。
+  `dx12_navmesh_build` はメモリ上に焼くだけなので、**残すには `dx12_save_scene` が要る**。
+  シーンを開くと `.nav` があれば自動で読む。Play/Stop をまたいでも消えない。
+- 除外したいメッシュには `navMeshIgnore` タグを付ける。スキンメッシュ（動くキャラ）は自動で除外。
+- **箱や柱のような閉じた立体は、底面と天面の間に頭上クリアランスが空くと内部の床も歩行面として残る**
+  （どこからも行けない孤立島になる）。`minRegionArea` を 8〜20 m² に上げると消える。
+- Lua からは `nav:ready()` / `nav:sample(pos)` / `nav:findPath(from,to)` / `nav:raycast(from,to)` /
+  `nav:moveAlong(from,to)`。`findPath` を毎フレーム全員ぶん呼ばないこと。
 
 **地形（ハイトフィールド）**
 

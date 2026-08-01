@@ -4742,15 +4742,43 @@ void Application::Render()
     m_passBucket = &m_passOther;
     m_gpuTimer->End(nativeCmdList, GpuTimer::MainScene);
 
-    // ---- Physics Debug Draw（オフスクリーン RT へ）----
-    if (m_physicsDebugDraw && m_physicsDebugRenderer->IsEnabled())
+    // ---- Physics / NavMesh Debug Draw（オフスクリーン RT へ・同じ線パイプラインを共有）----
+    // ナビメッシュのワイヤは物理デバッグとは独立にトグルできる（別々に見たいので）。
     {
-        m_physicsDebugRenderer->BeginFrame();
-        m_physicsDebugRenderer->CollectFromRegistry(m_scene->GetRegistry());
+        const bool physDraw = m_physicsDebugDraw && m_physicsDebugRenderer->IsEnabled();
+        const bool navDraw  = m_scene && m_scene->GetNavDebugDraw() && m_scene->HasNavMesh();
+        if (physDraw || navDraw)
+        {
+            m_physicsDebugRenderer->BeginFrame();
+            if (physDraw) m_physicsDebugRenderer->CollectFromRegistry(m_scene->GetRegistry());
+            if (navDraw)
+            {
+                // 壁の辺（隣が無い＝そこから先へ行けない）は明るく、
+                // ポリゴン同士のポータルは暗く描く＝「どこが通れるか」が一目で分かる。
+                const nav::NavMesh& nm = m_scene->GetNavMesh();
+                const XMFLOAT3 kWallCol   { 0.20f, 0.95f, 1.00f };
+                const XMFLOAT3 kPortalCol { 0.10f, 0.35f, 0.45f };
+                const f32 lift = 0.03f;   // 床とのZファイト防止に少し浮かせる
+                for (const nav::NavPoly& p : nm.Polys())
+                {
+                    for (u32 e = 0; e < p.vertCount; ++e)
+                    {
+                        f32 a[3], b[3];
+                        nm.GetPolyVert(p, e, a);
+                        nm.GetPolyVert(p, (e + 1) % p.vertCount, b);
+                        const bool wall = nm.Neis()[p.firstNei + e] == 0xffffffffu;
+                        m_physicsDebugRenderer->AddLine(
+                            XMFLOAT3{ a[0], a[1] + lift, a[2] },
+                            XMFLOAT3{ b[0], b[1] + lift, b[2] },
+                            wall ? kWallCol : kPortalCol);
+                    }
+                }
+            }
 
-        XMFLOAT4X4 vp;
-        XMStoreFloat4x4(&vp, XMMatrixTranspose(camVPJ));
-        m_physicsDebugRenderer->Render(nativeCmdList, vp);
+            XMFLOAT4X4 vp;
+            XMStoreFloat4x4(&vp, XMMatrixTranspose(camVPJ));
+            m_physicsDebugRenderer->Render(nativeCmdList, vp);
+        }
     }
 
     // ---- パーティクル（プロシージャル質感ビルボード）: HDR scene RT へ ----
@@ -6145,6 +6173,8 @@ void Application::Render()
         // スカルプト窓（任意メッシュの頂点スカルプト）。地形ツールと同じ理由で
         // 窓が閉じていても呼ぶ＝Undo で戻した頂点がメッシュへ反映される。
         SculptPanel::Render(*m_scene, *m_editorCtx, PathResolver::AssetsDir(), nativeCmdList);
+        // ナビメッシュ窓（追いかける AI 用の経路探索メッシュ）。中で showNavMesh を見て早期 return する。
+        NavMeshPanel::Render(*m_scene, *m_editorCtx);
     }
 
     // ---- ゲーム内 UI: テキスト/ボタン（ImGui オーバーレイ・ゲーム/Play 中のみ）----

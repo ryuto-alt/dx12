@@ -59,6 +59,14 @@ const SPREADS: Record<string, string[]> = {
   "...entityRef": ["entity", "name"],
   // dx12_screenshot / dx12_screenshot_final の共通引数($ref 回避でファクトリにしてある)。
   "...captureParams()": ["path", "deterministic", "settleFrames"],
+  // ナビメッシュ: 生成パラメータ(build / settings が共有)と探索の許容ずれ(path / sample / raycast)。
+  "...navConfigParams": [
+    "cellSize", "cellHeight", "agentHeight", "agentRadius", "agentMaxClimb", "agentMaxSlope",
+    "minRegionArea", "mergeRegionArea", "maxEdgeLen", "maxSimplificationErr", "maxVertsPerPoly",
+    "monotonePartition", "filterLedgeSpans", "filterLowHanging", "useBounds",
+    "boundsMin", "boundsMax",
+  ],
+  "...navSearchParams": ["searchRadius", "searchHeight"],
 };
 
 /**

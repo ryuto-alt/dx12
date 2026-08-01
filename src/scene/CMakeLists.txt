@@ -4,6 +4,7 @@ add_library(Scene STATIC
     SceneSerializer.cpp
     SceneFlow.cpp
     ComponentRegistry.cpp
+    NavSceneGather.cpp
 )
 
 target_include_directories(Scene PUBLIC
@@ -22,6 +23,7 @@ target_link_libraries(Scene PUBLIC
     Resource
     ECS
     Terrain
+    Nav
     Microsoft::DirectXMath
     nlohmann_json::nlohmann_json
 )

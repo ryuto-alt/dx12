@@ -480,6 +480,8 @@ void Scene::Clear()
     m_volFog         = VolumetricFogSettings{};
     m_decalAtlasPath.clear();
     m_shadowsEnabled = true;
+    m_navConfig      = nav::NavBuildConfig{};
+    m_navMesh.Clear();   // 前のシーンのナビメッシュを持ち越さない（.nav が無いシーンで残る）
     m_pendingAnimEvents.clear();
 }
 

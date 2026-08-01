@@ -2062,6 +2062,7 @@ void ScriptEngine::RegisterBindings()
     RegisterPhysicsBindings();
     RegisterEventsBinding();
     RegisterNetworkBindings();
+    RegisterNavBindings();
 
     Logger::Info("Lua bindings registered");
 }
@@ -2289,6 +2290,101 @@ void ScriptEngine::RegisterPhysicsBindings()
     );
 
     lua["physics"] = m_physics;
+}
+
+// ---------------------------------------------------------------------------
+// nav グローバル（ナビメッシュ）。追いかける AI の実装に必要な最小限だけ出す。
+//   nav:ready()                        -> bool          焼けているか
+//   nav:sample(pos, radius?)           -> Vec3|nil      位置を歩行面へ落とす（坂道でも正確な高さ）
+//   nav:findPath(from, to, radius?)    -> {Vec3,...}    A* + ファネルの折れ線（空なら経路なし）
+//   nav:raycast(from, to)              -> bool, Vec3    壁に当たるか / 当たった点（直進できるかの判定）
+//   nav:moveAlong(from, to)            -> Vec3          壁で滑らせた移動先（精密な当たり判定）
+// ★毎フレーム findPath を全員ぶん呼ばないこと（経路は数十フレームに 1 回引き直せば足りる）。
+// ---------------------------------------------------------------------------
+void ScriptEngine::RegisterNavBindings()
+{
+    using namespace DirectX;
+    auto& lua = *m_lua;
+    sol::table nav = lua.create_named_table("nav");
+
+    auto ext = [this](sol::optional<float> radius, float out[3])
+    {
+        const auto& cfg = m_scene->GetNavConfig();
+        const float r = (radius && *radius > 0.0f) ? *radius
+                                                   : (std::max)(2.0f, cfg.cellSize * 8.0f);
+        out[0] = r;
+        out[1] = (std::max)(cfg.agentHeight * 2.0f, 4.0f);
+        out[2] = r;
+    };
+
+    nav["ready"] = [this](sol::this_state) -> bool
+    {
+        return m_scene && m_scene->HasNavMesh();
+    };
+
+    nav["sample"] = [this, ext](sol::this_state ts, XMFLOAT3 p, sol::optional<float> radius)
+        -> sol::object
+    {
+        sol::state_view sv(ts);
+        if (!m_scene || !m_scene->HasNavMesh()) return sol::lua_nil;
+        float e[3]; ext(radius, e);
+        const float pos[3] = { p.x, p.y, p.z };
+        float out[3]{};
+        const int poly = m_scene->GetNavMesh().FindNearestPoly(pos, e, out);
+        if (poly < 0) return sol::lua_nil;
+        float y = out[1];
+        m_scene->GetNavMesh().GetHeightAt(out, poly, y);
+        return sol::make_object(sv, XMFLOAT3{ out[0], y, out[2] });
+    };
+
+    nav["findPath"] = [this, ext](sol::this_state ts, XMFLOAT3 a, XMFLOAT3 b,
+                                  sol::optional<float> radius) -> sol::table
+    {
+        sol::state_view sv(ts);
+        sol::table t = sv.create_table();
+        if (!m_scene || !m_scene->HasNavMesh()) return t;
+        float e[3]; ext(radius, e);
+        const float from[3] = { a.x, a.y, a.z };
+        const float to[3]   = { b.x, b.y, b.z };
+        std::vector<float> path;
+        const int n = m_scene->GetNavMesh().FindPath(from, to, e, path);
+        for (int i = 0; i < n; ++i)
+            t[i + 1] = XMFLOAT3{ path[static_cast<size_t>(i) * 3 + 0],
+                                 path[static_cast<size_t>(i) * 3 + 1],
+                                 path[static_cast<size_t>(i) * 3 + 2] };
+        return t;
+    };
+
+    nav["raycast"] = [this, ext](sol::this_state ts, XMFLOAT3 a, XMFLOAT3 b)
+        -> std::tuple<bool, sol::object>
+    {
+        sol::state_view sv(ts);
+        if (!m_scene || !m_scene->HasNavMesh()) return { false, sol::lua_nil };
+        float e[3]; ext(sol::nullopt, e);
+        const float from[3] = { a.x, a.y, a.z };
+        const float to[3]   = { b.x, b.y, b.z };
+        float start[3]{};
+        const int poly = m_scene->GetNavMesh().FindNearestPoly(from, e, start);
+        if (poly < 0) return { false, sol::lua_nil };
+        float t = 1.0f, n[3]{}, hit[3]{};
+        const bool blocked = m_scene->GetNavMesh().Raycast(start, to, poly, t, n, hit);
+        return { blocked, sol::make_object(sv, XMFLOAT3{ hit[0], hit[1], hit[2] }) };
+    };
+
+    nav["moveAlong"] = [this, ext](sol::this_state ts, XMFLOAT3 a, XMFLOAT3 b) -> sol::object
+    {
+        sol::state_view sv(ts);
+        if (!m_scene || !m_scene->HasNavMesh()) return sol::make_object(sv, a);
+        float e[3]; ext(sol::nullopt, e);
+        const float from[3] = { a.x, a.y, a.z };
+        const float to[3]   = { b.x, b.y, b.z };
+        float start[3]{};
+        const int poly = m_scene->GetNavMesh().FindNearestPoly(from, e, start);
+        if (poly < 0) return sol::make_object(sv, a);
+        float out[3]{}; int outPoly = poly;
+        m_scene->GetNavMesh().MoveAlongSurface(start, to, poly, out, outPoly);
+        return sol::make_object(sv, XMFLOAT3{ out[0], out[1], out[2] });
+    };
 }
 
 // events グローバルを C++ EventBus への薄いバインドとして登録する。

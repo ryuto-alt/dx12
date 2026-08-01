@@ -527,6 +527,11 @@ public:
     // 地形ツール窓と同じ独立フローティング窓なので AnyToolWindowOpen には含めない。
     // ヒエラルキー「＋エンティティ追加 → スカルプト」で開き、SculptMesh 付きを選ぶと自動で開く。
     bool showSculptEditor = false;
+
+    // ナビメッシュ窓（追いかける AI 用の経路探索メッシュを焼く）。
+    // 地形/彫刻と同じ独立フローティング窓なので AnyToolWindowOpen には含めない。
+    // メニュー「ツール > ナビメッシュ」で開く。
+    bool showNavMesh = false;
 };
 
 } // namespace dx12e

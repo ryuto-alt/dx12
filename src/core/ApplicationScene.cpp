@@ -1470,6 +1470,11 @@ void Application::EnterEditorMode()
         // ApplySceneJson が scene.Clear() 後に中断してシーンが空になる(= Stop 後に list_entities が
         // count:0 になる原因)。失敗を握りつぶさず、ディスク上の現在シーンから読み直してフォールバックする
         // (ユーザが手動で open_scene し直して復旧していた動作を自動化)。
+        // ★焼いたナビメッシュは JSON スナップショットに載らない（実体は .nav サイドカー）。
+        //   復元は Scene::Clear() を通るので、退避しておかないと Play → Stop するだけで
+        //   焼いた結果が消える（利用者から見ると「再生したらナビメッシュが無くなった」）。
+        nav::NavMesh savedNav = std::move(m_scene->GetNavMesh());
+
         bool restored = false;
         try {
             restored = SceneSerializer::LoadFromString(*m_scene, m_playSceneJson, PathResolver::AssetsDir());
@@ -1488,6 +1493,11 @@ void Application::EnterEditorMode()
         }
         if (!restored)
             Logger::Error("EnterEditorMode: Stop 後のシーンが空です（有効なスナップショットもディスクのシーンもありません）");
+
+        // 退避しておいたナビメッシュを戻す。ディスクから読み直した経路では隣の .nav が
+        // 既に読まれているので、そちら（ファイルの内容）を優先して上書きしない。
+        if (m_scene->GetNavMesh().Empty() && !savedNav.Empty())
+            m_scene->GetNavMesh() = std::move(savedNav);
 
         m_scriptEngine->Shutdown();
         m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),

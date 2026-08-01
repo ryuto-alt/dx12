@@ -614,3 +614,29 @@ if(MSVC)
     target_compile_definitions(ShaderIncludeDepsTests PRIVATE ${DX12_COMPILE_DEFS})
 endif()
 add_test(NAME ShaderIncludeDepsTests COMMAND ShaderIncludeDepsTests)
+
+# 自作ナビメッシュ（ボクセル化 → 領域分割 → 輪郭 → ポリゴン化 → A*/ファネル）のテスト。
+# nav/ は純ロジック（GPU も entt も DirectXMath も vfs も不要）なので、
+# TerrainTests と同じくライブラリをリンクせず .cpp を直接ビルドする＝スタンドアロン CI でも動く。
+add_executable(NavMeshTests
+    navmesh_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavRasterize.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavRegion.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavContour.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavPolyMesh.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavMesh.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavQuery.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavBuilder.cpp)
+target_include_directories(NavMeshTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(NavMeshTests PRIVATE /W4 /WX /permissive- /utf-8 /bigobj)
+    # 生成の内部トレースが要るときは DX12_NAV_TRACE を足す（段階ごとの件数が stdout に出る）
+else()
+    target_compile_options(NavMeshTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME NavMeshTests COMMAND NavMeshTests)
+
+
+
+
+

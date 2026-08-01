@@ -210,6 +210,8 @@ private:
     void RegisterEventsBinding();
     // net グローバルを NetworkSystem への薄いバインドとして登録する。
     void RegisterNetworkBindings();
+    // nav グローバル（ナビメッシュの経路探索）を登録する。
+    void RegisterNavBindings();
     // .lua の properties テーブルを解析して out へ詰める（失敗時は out 空のまま）。
     void ParsePropertySchema(const std::string& scriptPath, std::vector<ScriptPropDef>& out);
 

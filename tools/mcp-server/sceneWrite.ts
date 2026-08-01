@@ -30,6 +30,8 @@ export const SCENE_ROOT_KEYS = [
   //   「ルートの未知キー」警告が出る。schemaDrift.test.ts [11] が SceneSerializer.cpp の
   //   root["..."] 代入と突き合わせるので、次からは足し忘れた時点でテストが赤くなる。
   "shadowPcss", "raytracing",
+  // ナビメッシュの生成パラメータ（焼いた実体はシーンの隣の .nav サイドカー）。
+  "navmesh",
 ] as const;
 
 /** 反射登録されたコア部品の JSON キー(RegisterCoreComponentSerializers の登録順)。 */

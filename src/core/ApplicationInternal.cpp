@@ -731,6 +731,15 @@ nlohmann::json McpLuaApi()
         "setGravity(vec3)", "setPaused(b)", "step(dt)",
         "addCharacterController(e,radius,halfHeight)", "move(e,vx,vz)", "jump(e,amount?)", "isGrounded(e) -> bool",
     })));
+    objects.push_back(O("nav", "global (':' で呼ぶ)。ナビメッシュ経路探索", json::array({
+        "ready() -> bool  (ナビメッシュが焼けているか。エディタの『ツール > ナビメッシュ』か dx12_navmesh_build で焼く)",
+        "sample(pos, radius?) -> Vec3|nil  (位置を一番近い歩行面へ落とす。高さは坂道でもボクセル分解能で正確)",
+        "findPath(from, to, radius?) -> {Vec3,...}  (A* + ファネル。空テーブルなら経路なし。"
+        "最後の点が to から離れていれば『そこまでしか行けない』意味)",
+        "raycast(from, to) -> hit:bool, point:Vec3  (壁に当たるまで直進。『経路を張らずに真っ直ぐ行けるか』の判定)",
+        "moveAlong(from, to) -> Vec3  (壁で滑らせた移動先。精密な当たり判定つきの1歩)",
+        "★findPath は毎フレーム全員ぶん呼ばないこと。数十フレームに 1 回引き直して、間は折れ線を追うだけで足りる",
+    })));
     objects.push_back(O("audio", "global", json::array({
         "playBGM(path)/stopBGM()/pauseBGM()/resumeBGM()", "seekBGM(sec)  (再生位置を秒指定でジャンプ。ループ維持、イントロスキップ等)", "setBGMRate(ratio)  (再生速度倍率・ピッチ連動0.05〜2.0。1=通常。playBGMで1.0に戻る)", "setListener(x,y,z)  (空間SFXのリスナー位置上書き。プレイヤー中心の定位に。毎フレーム呼ぶ想定)", "playSFX(path)",
         "playSpatial(path,x,y,z,minD,maxD,vol?,loop?)", "stopAllSFX()",
