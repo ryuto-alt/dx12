@@ -5211,8 +5211,12 @@ void Application::Render()
     m_gpuTimer->End(nativeCmdList, GpuTimer::PostFX);
     m_gpuTimer->Begin(nativeCmdList, GpuTimer::UI);
 
-    // ---- Editor Icon Draw（ポスト後のバックバッファへ, エディタモードのみ）----
-    if (m_engineMode == EngineMode::Editor && !m_isGameMode)
+    // ---- Editor Icon Draw（ポスト後のバックバッファへ, エディタモード + 一時停止中）----
+    // ★一時停止(F1)中も描く。シーンビューを飛び回って「ゲームカメラが今どこを向いているか」を
+    //   見るための機能なので、ここで切ると一時停止の意味が半分無くなる。
+    const bool iconsWhilePaused = (m_engineMode == EngineMode::Playing
+                                   && m_editorCtx && m_editorCtx->paused);
+    if ((m_engineMode == EngineMode::Editor || iconsWhilePaused) && !m_isGameMode)
     {
         // ★DSV は張らない。アイコンは DepthEnable=FALSE で深度テストをしないうえ、
         //   #16 でメイン深度はレンダー解像度に縮んだので、表示解像度のバックバッファへ

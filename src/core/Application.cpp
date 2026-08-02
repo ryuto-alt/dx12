@@ -2063,7 +2063,39 @@ void Application::Update()
         LaunchNetTestClient();
     }
 
-    if (m_engineMode == EngineMode::Editor)
+    // ===== Play 中の一時停止（F1）=====
+    // ★キーが本命でツールバーのボタンはおまけ。Play 中はゲームがマウスを
+    //   キャプチャしていてボタンを押せないことが多いため。
+    // ★配布ランタイム(m_isGameMode)では効かせない。デバッグ専用の機能。
+    if (!m_isGameMode && m_engineMode == EngineMode::Playing
+        && m_inputSystem && m_inputSystem->IsKeyPressed(VK_F1))
+    {
+        m_editorCtx->paused = !m_editorCtx->paused;
+        // ★Logger::Info は consteval な書式文字列を取るので三項演算子は渡せない。
+        if (m_editorCtx->paused) Logger::Info("一時停止（シーンビューを操作できます。F1 で再開）");
+        else                     Logger::Info("再開");
+    }
+    // 一時停止中は「Playing だが時間は進めない」。ゲーム側の更新を全部止め、
+    // カメラ操作はエディタ側（下の Editor 分岐）へ返す。
+    const bool paused     = (!m_isGameMode && m_engineMode == EngineMode::Playing
+                             && m_editorCtx->paused);
+    const bool simRunning = (m_engineMode == EngineMode::Playing) && !paused;
+
+    // 一時停止の切り替わりでマウスキャプチャを退避／復元する（下の Editor 分岐が
+    // 「右ドラッグしていない＝解除」を毎フレームやるので、覚えておかないと戻せない）。
+    if (paused != m_prevPaused)
+    {
+        if (paused)
+            m_pausedMouseCapture = (m_inputSystem && m_inputSystem->IsMouseCaptured());
+        else if (m_inputSystem && m_pausedMouseCapture)
+            m_inputSystem->SetMouseCapture(true);
+        m_prevPaused = paused;
+    }
+
+    // ★paused のときは Editor 分岐へ入れる。これだけで
+    //   「Lua を回さない・ゲームカメラの同期をしない・エディタのフライカメラが効く」が
+    //   まとめて成立する（Lua もカメラ同期も下の else 側にあるため）。
+    if (m_engineMode == EngineMode::Editor || paused)
     {
         // エディタモード: C++カメラ操作
         bool rightMouseHeld = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
@@ -2350,11 +2382,11 @@ void Application::Update()
 
     // シーン更新（Animator等）— エディタモードは時間を止める（ボーン行列は維持）
     { DX12_PROFILE_ZONE_N("Scene/Animators");
-      m_scene->Update(m_engineMode == EngineMode::Playing ? dt : 0.0f); }
+      m_scene->Update(simRunning ? dt : 0.0f); }
 
     // 配置パーティクル放出器（ParticleEmitter）を駆動。
     // エディタでも常時プレビュー（実 dt で放出/前進）し、Play では _active に従う。
-    if (m_particleSystem)
+    if (m_particleSystem && !paused)   // 一時停止中は放出も止める（止めないと同じ位置に溜まる）
     {
         auto& peReg = m_scene->GetRegistry();
         const bool pedPlaying = (m_engineMode == EngineMode::Playing);
@@ -2447,23 +2479,25 @@ void Application::Update()
     // ★決定論キャプチャ中は前進させない（#31。粒子が動くと 2 枚が一致しない）。
     if (m_particleSystem)
         { DX12_PROFILE_ZONE_N("Particles/Sim");
-          m_particleSystem->Update(m_deterministicCapture ? 0.0f : dt); }
+          m_particleSystem->Update((m_deterministicCapture || paused) ? 0.0f : dt); }
 
-    // 物理更新（プレイモードのみ）
-    if (m_engineMode == EngineMode::Playing && m_physicsSystem->IsInitialized())
+    // 物理更新（プレイモードのみ。一時停止中は止める）
+    if (simRunning && m_physicsSystem->IsInitialized())
     {
         { DX12_PROFILE_ZONE_N("Physics");
           m_physicsSystem->Update(dt, m_scene->GetRegistry()); }
     }
 
     // ネットワーク送信処理（物理確定後の座標を使うため直後。フェーズ⑤でスナップショット送信を実装）。
-    if (m_engineMode == EngineMode::Playing && m_networkSystem)
+    if (simRunning && m_networkSystem)
     {
         m_networkSystem->PostSimUpdate(dt, m_scene->GetRegistry());
     }
 
     // 3D 空間オーディオ: リスナー＝カメラ、AudioSource を駆動（Playing のみ）
-    if (m_engineMode == EngineMode::Playing && m_audioSystem)
+    // ★一時停止中は動かさない。動かすとリスナーがエディタのフライカメラに付いて
+    //   音場が飛び回る（BGM は XAudio2 側で鳴り続けるので途切れない）。
+    if (simRunning && m_audioSystem)
     {
         auto pos = m_camera->GetPosition();
         auto fwd = m_camera->GetForward();
@@ -2492,7 +2526,7 @@ void Application::Update()
     }
 
     // Trigger の Post や接触 Post を同フレーム内で配信（Playing のみ）。
-    if (m_engineMode == EngineMode::Playing)
+    if (simRunning)
     {
         { DX12_PROFILE_ZONE_N("Events/Flush"); m_eventBus.Flush(); }
 

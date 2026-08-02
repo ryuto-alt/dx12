@@ -237,6 +237,12 @@ public:
     // 0 で無効。0.35 くらいで真っ暗な部屋の形が読めるようになる。
     float viewportFill = 0.0f;
 
+    // Play 中の一時停止（F1、またはツールバーの「一時停止」）。
+    // true の間は Lua / 物理 / アニメ / パーティクル / ネットワークを止め、
+    // カメラをエディタ操作へ返す＝Play したままシーンビューを飛び回って調べられる。
+    // ★モード遷移（EnterPlayMode / ExitPlayMode）で必ず false へ戻すこと。
+    bool paused = false;
+
     // ---- ツール窓の表示トグル（既定OFF=スッキリ中核4窓。ツールバー「窓」/メニュー「ウィンドウ」から開閉）----
     // ON の窓だけ Inspector の下（右カラム下部）にタブで現れる。全OFFなら Inspector が右カラム全高。
     bool showPostProcess    = false;

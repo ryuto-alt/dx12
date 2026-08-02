@@ -1073,6 +1073,7 @@ void Application::EnterPlayMode()
 {
     InvalidateTemporalHistory();   // Editor の絵を Play の履歴に持ち越さない
     m_mcpCameraOverride = false;   // MCP の撮影用カメラ固定はモード遷移で必ず解除する
+    if (m_editorCtx) m_editorCtx->paused = false;   // 一時停止(F1)もモード遷移で必ず解除する
 
     // カメラ設置チェック
     {
@@ -1359,6 +1360,7 @@ void Application::EnterEditorMode()
 
     InvalidateTemporalHistory();   // Play の絵を Editor の履歴に持ち越さない
     m_mcpCameraOverride = false;   // MCP の撮影用カメラ固定はモード遷移で必ず解除する
+    if (m_editorCtx) m_editorCtx->paused = false;   // 一時停止(F1)もモード遷移で必ず解除する
 
     m_commandQueue->WaitIdle();
 
