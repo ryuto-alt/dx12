@@ -744,6 +744,8 @@ nlohmann::json McpLuaApi()
     objects.push_back(O("audio", "global", json::array({
         "playBGM(path)/stopBGM()/pauseBGM()/resumeBGM()", "seekBGM(sec)  (再生位置を秒指定でジャンプ。ループ維持、イントロスキップ等)", "setBGMRate(ratio)  (再生速度倍率・ピッチ連動0.05〜2.0。1=通常。playBGMで1.0に戻る)", "setListener(x,y,z)  (空間SFXのリスナー位置上書き。プレイヤー中心の定位に。毎フレーム呼ぶ想定)", "playSFX(path)",
         "playSpatial(path,x,y,z,minD,maxD,vol?,loop?)", "stopAllSFX()",
+        "playSFXId(path,loop?,vol?) -> id / playSpatialId(path,x,y,z,minD,maxD,vol?,loop?) -> id  (★ID を返す版。ループ音はこちらで鳴らす)",
+        "stopVoice(id) / setVoiceVolume(id,v) / setVoicePitch(id,ratio) / moveVoice(id,x,y,z) / isVoicePlaying(id) -> bool  (鳴っている 1 本だけを止める/絞る/回転を落とす/追従させる。stopAllSFX の巻き添えを避ける)",
         "setMasterVolume/setBGMVolume/setSFXVolume(v)",
         "getMasterVolume()/getBGMVolume()/getSFXVolume() -> float  (設定画面のスライダー初期値に要る)",
         "getCurrentBGM() -> string  (今鳴っている BGM の assets 相対パス。鳴っていなければ空)",

@@ -1583,6 +1583,26 @@ void ScriptEngine::RegisterBindings()
                                                 vol.value_or(1.0f), loop.value_or(false));
                            },
         "stopAllSFX",      &AudioSystem::StopAllSFX,
+        // ---- 鳴っている 1 本を掴んで操作する（環境音・機械の唸り・スピンダウン用）----
+        // ★playSFX / playSpatial は「撃ちっぱなし」なので、ループ再生した音を止められない。
+        //   止めるのに stopAllSFX しか無いと、他の音まで巻き添えで消える。
+        //   下の 3 つは ID を返す版の再生と、その ID への操作。
+        //   ID は世代つきなので、鳴り終わってスロットが使い回された後の ID は無視される
+        //   （古い ID で他人の音を止めてしまう事故が起きない）。
+        "playSFXId",       [](AudioSystem& a, const std::string& path, sol::optional<bool> loop,
+                              sol::optional<float> vol) {
+                               return a.PlaySFXTracked(path, loop.value_or(false), vol.value_or(1.0f));
+                           },
+        "playSpatialId",   [](AudioSystem& a, const std::string& path, float x, float y, float z,
+                              float minD, float maxD, sol::optional<float> vol, sol::optional<bool> loop) {
+                               return a.PlaySFXSpatial(path, x, y, z, minD, maxD,
+                                                       vol.value_or(1.0f), loop.value_or(false));
+                           },
+        "moveVoice",       &AudioSystem::UpdateSpatialEmitter,
+        "stopVoice",       &AudioSystem::StopVoice,
+        "setVoiceVolume",  &AudioSystem::SetVoiceVolume,
+        "setVoicePitch",   &AudioSystem::SetVoicePitch,
+        "isVoicePlaying",  &AudioSystem::IsVoicePlaying,
         "setMasterVolume",  &AudioSystem::SetMasterVolume,
         "setBGMVolume",     &AudioSystem::SetBGMVolume,
         "setSFXVolume",     &AudioSystem::SetSFXVolume,

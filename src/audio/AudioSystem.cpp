@@ -335,10 +335,17 @@ void AudioSystem::ResumeBGM()
 
 void AudioSystem::PlaySFX(const std::string& filePath, bool loop, float volume)
 {
-    if (!m_xaudio2) return;
+    PlaySFXTracked(filePath, loop, volume);
+}
+
+// ★中身は元の PlaySFX そのままで、最後にスロット ID を返すだけ。
+//   ループ再生した環境音を後から止める・絞る・回転を落とす、が ID 無しでは書けなかった。
+i32 AudioSystem::PlaySFXTracked(const std::string& filePath, bool loop, float volume)
+{
+    if (!m_xaudio2) return -1;
 
     AudioClip* clip = GetOrLoadClip(filePath);
-    if (!clip) return;
+    if (!clip) return -1;
 
     // 空きスロットを探す
     i32 freeSlot = -1;
@@ -395,7 +402,7 @@ void AudioSystem::PlaySFX(const std::string& filePath, bool loop, float volume)
     if (FAILED(hr))
     {
         Logger::Error("ソースボイス作成（SFX）に失敗しました: 0x{:08X}", static_cast<u32>(hr));
-        return;
+        return -1;
     }
 
     slot.clipVolume = std::clamp(volume, 0.0f, 1.0f);
@@ -411,11 +418,64 @@ void AudioSystem::PlaySFX(const std::string& filePath, bool loop, float volume)
     if (FAILED(hr))
     {
         Logger::Error("バッファ送信（SFX）に失敗しました: 0x{:08X}", static_cast<u32>(hr));
-        return;
+        return -1;
     }
 
     slot.spatial = false;  // 非空間
     slot.voice->Start();
+    ++slot.generation;
+    return static_cast<i32>((slot.generation << 8) | static_cast<u32>(freeSlot));
+}
+
+// ===== 鳴っている 1 本を掴んで操作する =====
+// ★ID は (generation<<8)|index。スロットが別の音へ使い回されていたら世代が食い違うので、
+//   古い ID で新しい音を止めてしまう事故が起きない。
+AudioSystem::SFXSlot* AudioSystem::ResolveVoice(i32 slotId)
+{
+    if (slotId < 0) return nullptr;
+    const u32 index = static_cast<u32>(slotId) & 0xFFu;
+    const u32 gen   = static_cast<u32>(slotId) >> 8;
+    if (index >= kMaxSFXVoices) return nullptr;
+    auto& slot = m_sfxSlots[index];
+    if (!slot.voice || slot.generation != gen) return nullptr;
+    return &slot;
+}
+
+void AudioSystem::StopVoice(i32 slotId)
+{
+    SFXSlot* slot = ResolveVoice(slotId);
+    if (!slot) return;
+    slot->voice->Stop();
+    slot->voice->FlushSourceBuffers();   // ループ中でもこれで確実に止まる
+}
+
+void AudioSystem::SetVoiceVolume(i32 slotId, float volume)
+{
+    SFXSlot* slot = ResolveVoice(slotId);
+    if (!slot) return;
+    slot->clipVolume = std::clamp(volume, 0.0f, 1.0f);
+    // 空間音は距離減衰を ComputeAndApply が毎フレーム掛け直すので、そちらに任せる。
+    if (!slot->spatial) slot->voice->SetVolume(slot->clipVolume * m_sfxVolume);
+}
+
+void AudioSystem::SetVoicePitch(i32 slotId, float ratio)
+{
+    SFXSlot* slot = ResolveVoice(slotId);
+    if (!slot) return;
+    slot->voice->SetFrequencyRatio(std::clamp(ratio, 0.1f, 2.0f));
+}
+
+bool AudioSystem::IsVoicePlaying(i32 slotId) const
+{
+    if (slotId < 0) return false;
+    const u32 index = static_cast<u32>(slotId) & 0xFFu;
+    const u32 gen   = static_cast<u32>(slotId) >> 8;
+    if (index >= kMaxSFXVoices) return false;
+    const auto& slot = m_sfxSlots[index];
+    if (!slot.voice || slot.generation != gen) return false;
+    XAUDIO2_VOICE_STATE state{};
+    slot.voice->GetState(&state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
+    return state.BuffersQueued > 0;
 }
 
 // ===== 3D 空間オーディオ =====

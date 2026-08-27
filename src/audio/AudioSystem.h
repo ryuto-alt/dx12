@@ -72,6 +72,16 @@ public:
                         float minDistance, float maxDistance,
                         float volume = 1.0f, bool loop = false);
     void UpdateSpatialEmitter(i32 slotId, float x, float y, float z);
+    // ★鳴っている 1 本を掴んで操作する 3 つ。PlaySFXSpatial / PlaySFXTracked が返す ID を使う。
+    //   ループ再生した環境音を止める・フェードさせる・回転数が落ちるように鳴らす、が
+    //   これが無いと書けなかった（StopAllSFX しか無く、他の音まで巻き添えになる）。
+    //   世代が食い違う ID（スロットが使い回された後）は黙って無視する。
+    void StopVoice(i32 slotId);
+    void SetVoiceVolume(i32 slotId, float volume);        // 0..1（クリップ個別音量）
+    void SetVoicePitch(i32 slotId, float ratio);          // 再生速度＝ピッチ。0.1..2.0
+    bool IsVoicePlaying(i32 slotId) const;
+    // 非空間の SFX を ID 付きで鳴らす（上の 3 つで操作できる）。失敗時 -1。
+    i32  PlaySFXTracked(const std::string& filePath, bool loop = false, float volume = 1.0f);
     // 遮蔽量 0..1（1=リスナーとの間に壁がある）。ローパスで「こもった」音にし、音量も落とす。
     // 値は Update() 内で時定数 ~0.1s で追従するので、毎フレーム 0/1 を投げてよい。
     void SetOcclusion(i32 slotId, float amount);
@@ -142,6 +152,7 @@ private:
     float m_lopX = 0, m_lopY = 0, m_lopZ = 0;
     u32  m_outChannels = 2;
     bool m_x3dReady = false;
+    SFXSlot* ResolveVoice(i32 slotId);    // ID → スロット（世代が食い違えば nullptr）
     void ComputeAndApply(SFXSlot& slot);
     void ApplyOcclusion(SFXSlot& slot);   // slot.occ を音量とローパスへ反映
 
