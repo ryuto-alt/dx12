@@ -4,6 +4,7 @@
 #include <memory>
 #include <array>
 #include <unordered_map>
+#include <filesystem>
 #include <wrl/client.h>
 #include <xaudio2.h>
 #include <x3daudio.h>
@@ -158,6 +159,10 @@ private:
 
     // Clip cache
     std::unordered_map<std::string, std::unique_ptr<AudioClip>> m_clipCache;
+    // ★★キャッシュした時点のファイル更新時刻。焼き直した wav を反映するために要る。
+    //   これが無いと、エディタを起動したまま素材を作り直しても【古い音が鳴り続ける】。
+    //   「直したのに何も変わらない」の原因になり、実際に半日ぶん溶かした(2026-08-27)。
+    std::unordered_map<std::string, std::filesystem::file_time_type> m_clipStamp;
 
     f32 m_masterVolume = 1.0f;
     f32 m_bgmVolume    = 0.7f;

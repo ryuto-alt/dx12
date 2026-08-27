@@ -164,11 +164,6 @@ void AudioSystem::ScanAudioFiles()
 
 AudioClip* AudioSystem::GetOrLoadClip(const std::string& filePath)
 {
-    // キャッシュチェック
-    auto it = m_clipCache.find(filePath);
-    if (it != m_clipCache.end())
-        return it->second.get();
-
     // フルパス構築（相対パスならassetsDir基準）
     const bool isRelative = (filePath.size() < 2 || filePath[1] != ':');
     std::string fullPath = filePath;
@@ -176,6 +171,25 @@ AudioClip* AudioSystem::GetOrLoadClip(const std::string& filePath)
     {
         fullPath = m_assetsDir + filePath;
     }
+
+    // ★★キャッシュチェック。ファイルが焼き直されていたら捨てて読み直す。
+    //   ★以前は「一度読んだら二度と読み直さない」だったので、エディタを起動したまま
+    //     素材を作り直しても古い音が鳴り続けた(直したはずの音が変わらない、の原因)。
+    //   ★stat は 1 回の再生につき 1 回だけ。実測でも足音(毎秒 2 回)で問題にならない。
+    std::error_code fec;
+    const auto stamp = std::filesystem::last_write_time(fullPath, fec);
+    auto it = m_clipCache.find(filePath);
+    if (it != m_clipCache.end())
+    {
+        auto st = m_clipStamp.find(filePath);
+        const bool fresh = fec || st == m_clipStamp.end() || st->second == stamp;
+        if (fresh)
+            return it->second.get();
+        Logger::Info("音声が更新されたので読み直します: {}", filePath);
+        m_clipCache.erase(it);
+        m_clipStamp.erase(filePath);
+    }
+    if (!fec) m_clipStamp[filePath] = stamp;
 
     // 拡張子抽出（VFS 経由ロード時に LoadFromMemory へ渡す）
     std::string ext = std::filesystem::path(filePath).extension().string();
