@@ -4,6 +4,7 @@
 #include "core/vfs/Vfs.h"
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 
 namespace dx12e
@@ -469,6 +470,47 @@ void AudioSystem::ComputeAndApply(SFXSlot& slot)
     slot.voice->SetOutputMatrix(nullptr, 1, m_outChannels, matrix);
 }
 
+// 遮蔽の効き。壁越しは「高域が落ちて音量も下がる」。数値は完全に趣味の範囲。
+static constexpr float kOccVolumeDrop = 0.65f;    // 全遮蔽で音量 -65%
+static constexpr float kOccCutoffHz   = 420.0f;   // 全遮蔽時のローパス
+static constexpr float kOccSmooth     = 8.0f;     // 1/s。時定数 ~0.12s
+
+void AudioSystem::ApplyOcclusion(SFXSlot& slot)
+{
+    if (!slot.voice) return;
+    const float occ = std::clamp(slot.occ, 0.0f, 1.0f);
+    slot.voice->SetVolume(m_sfxVolume * slot.clipVolume * (1.0f - kOccVolumeDrop * occ));
+
+    // XAudio2 のフィルタ Frequency は 2*sin(pi*fc/fs)。1.0（＝上限）が素通し。
+    const float fs   = static_cast<float>(slot.sampleRate > 0 ? slot.sampleRate : 44100);
+    const float shut = std::clamp(2.0f * std::sin(3.14159265f * kOccCutoffHz / fs),
+                                  0.0f, XAUDIO2_MAX_FILTER_FREQUENCY);
+    XAUDIO2_FILTER_PARAMETERS fp{};
+    fp.Type      = LowPassFilter;
+    fp.Frequency = XAUDIO2_MAX_FILTER_FREQUENCY + (shut - XAUDIO2_MAX_FILTER_FREQUENCY) * occ;
+    fp.OneOverQ  = 1.0f;
+    slot.voice->SetFilterParameters(&fp);
+}
+
+void AudioSystem::SetOcclusion(i32 slotId, float amount)
+{
+    if (slotId < 0) return;
+    const u32 index = static_cast<u32>(slotId) & 0xFFu;
+    const u32 gen   = static_cast<u32>(slotId) >> 8;
+    if (index >= kMaxSFXVoices) return;
+    auto& slot = m_sfxSlots[index];
+    if (!slot.voice || !slot.spatial) return;
+    if (slot.generation != gen) return;   // 使い回された後のスロット。触らない
+    slot.occTarget = std::clamp(amount, 0.0f, 1.0f);
+}
+
+void AudioSystem::GetListenerPos(float& x, float& y, float& z) const
+{
+    x = m_listener.Position.x;
+    y = m_listener.Position.y;
+    z = m_listener.Position.z;
+}
+
 i32 AudioSystem::PlaySFXSpatial(const std::string& filePath, float x, float y, float z,
                                 float minDistance, float maxDistance, float volume, bool loop)
 {
@@ -504,13 +546,17 @@ i32 AudioSystem::PlaySFXSpatial(const std::string& filePath, float x, float y, f
     }
 
     WAVEFORMATEX fmt = clip->GetFormat();
-    HRESULT hr = m_xaudio2->CreateSourceVoice(&slot.voice, &fmt);
+    // ★USEFILTER はボイス生成時にしか付けられない。遮蔽のローパスに要る。
+    HRESULT hr = m_xaudio2->CreateSourceVoice(&slot.voice, &fmt, XAUDIO2_VOICE_USEFILTER);
     if (FAILED(hr))
     {
         Logger::Error("ソースボイス作成（空間SFX）に失敗しました: 0x{:08X}", static_cast<u32>(hr));
         return -1;
     }
 
+    slot.sampleRate     = fmt.nSamplesPerSec;
+    slot.occ            = 0.0f;
+    slot.occTarget      = 0.0f;
     slot.spatial        = true;
     slot.minDist        = minDistance;
     slot.maxDist        = maxDistance;
@@ -555,9 +601,10 @@ void AudioSystem::UpdateSpatialEmitter(i32 slotId, float x, float y, float z)
     slot.emitterPos[2] = z;
 }
 
-void AudioSystem::Update()
+void AudioSystem::Update(f32 dt)
 {
     if (!m_x3dReady) return;
+    const float k = std::clamp(dt * kOccSmooth, 0.0f, 1.0f);
     for (auto& slot : m_sfxSlots)
     {
         if (!slot.voice || !slot.spatial) continue;
@@ -565,6 +612,8 @@ void AudioSystem::Update()
         slot.voice->GetState(&state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
         if (state.BuffersQueued == 0) { slot.spatial = false; continue; }
         ComputeAndApply(slot);
+        slot.occ += (slot.occTarget - slot.occ) * k;
+        ApplyOcclusion(slot);
     }
 }
 
@@ -604,8 +653,10 @@ void AudioSystem::SetSFXVolume(f32 volume)
         // ★クリップ個別音量を掛け直す。以前はマスター値をそのまま書いていたので、
         //   再生中の小さい音がスライダーを触った瞬間に最大音量へ跳ね上がっていた
         //   （再生時は個別音量を掛けているので、ここだけ規約が破れていた）。
+        // ★ApplyOcclusion 経由で書く。直接 SetVolume すると壁越しでこもらせた音が
+        //   スライダーを触った瞬間だけ素の音量へ戻る（次の Update で戻るので一瞬鳴る）。
         if (slot.voice)
-            slot.voice->SetVolume(m_sfxVolume * slot.clipVolume);
+            ApplyOcclusion(slot);
     }
 }
 

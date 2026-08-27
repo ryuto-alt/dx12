@@ -72,7 +72,12 @@ public:
                         float minDistance, float maxDistance,
                         float volume = 1.0f, bool loop = false);
     void UpdateSpatialEmitter(i32 slotId, float x, float y, float z);
-    void Update();  // 毎フレーム: 空間ボイスの定位を再計算
+    // 遮蔽量 0..1（1=リスナーとの間に壁がある）。ローパスで「こもった」音にし、音量も落とす。
+    // 値は Update() 内で時定数 ~0.1s で追従するので、毎フレーム 0/1 を投げてよい。
+    void SetOcclusion(i32 slotId, float amount);
+    // 実際に使われているリスナー位置（Lua の setListener 上書き込み）。遮蔽レイの終点用。
+    void GetListenerPos(float& x, float& y, float& z) const;
+    void Update(f32 dt);  // 毎フレーム: 空間ボイスの定位と遮蔽を再計算
 
     // Volume (0.0 - 1.0)
     void SetMasterVolume(f32 volume);
@@ -122,6 +127,11 @@ private:
         //   持っていなかったので、オプション画面の SE スライダーを触った瞬間に
         //   小さく鳴らしていた環境音や遠くの空間音が**マスター音量の大きさに跳ね上がって**いた。
         float clipVolume = 1.0f;
+        // 遮蔽（壁越し）。target が呼び出し側の指定、cur が時間平滑した実効値。
+        // 直接入れるとドア枠を通るたびにブツッと切り替わる。
+        float occTarget  = 0.0f;
+        float occ        = 0.0f;
+        u32   sampleRate = 44100;   // ローパスのカットオフ計算に要る
     };
     std::array<SFXSlot, kMaxSFXVoices> m_sfxSlots{};
 
@@ -133,6 +143,7 @@ private:
     u32  m_outChannels = 2;
     bool m_x3dReady = false;
     void ComputeAndApply(SFXSlot& slot);
+    void ApplyOcclusion(SFXSlot& slot);   // slot.occ を音量とローパスへ反映
 
     // Clip cache
     std::unordered_map<std::string, std::unique_ptr<AudioClip>> m_clipCache;

@@ -4102,7 +4102,10 @@ void Application::Render()
 
     m_sceneRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
 
-    constexpr float clearColor[4] = {0.127f, 0.306f, 0.850f, 1.0f};  // リニア空間のコーンフラワーブルー
+    // ★背景は黒。skybox を描かないシーン(屋内)では、ここがそのまま「空の色」になる。
+    //   以前はコーンフラワーブルーで、壁の穴やステージの外へ出た瞬間に青が見えていた。
+    //   skybox を描くシーンでは全面塗り潰されるので、この値は見えない。
+    constexpr float clearColor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     m_commandList->ClearRenderTarget(m_sceneRT->GetRtv(), clearColor);
     // プリパス有効時は深度が完成済みなので forward では clear しない（再利用）。
     if (!useDepthPrepass)
@@ -5364,7 +5367,7 @@ void Application::Render()
             m_previewFrameCB->Update(&fcp, sizeof(fcp), frameIndex);
 
             m_cameraPreviewRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            constexpr float pvClear[4] = {0.127f, 0.306f, 0.850f, 1.0f};  // リニア空間のコーンフラワーブルー
+            constexpr float pvClear[4] = {0.0f, 0.0f, 0.0f, 1.0f};   // ★sceneRT と同じ背景色
             m_commandList->ClearRenderTarget(m_cameraPreviewRT->GetRtv(), pvClear);
             m_commandList->ClearDepthStencil(m_previewDsvHandle);
             m_commandList->SetRenderTarget(m_cameraPreviewRT->GetRtv(), m_previewDsvHandle);

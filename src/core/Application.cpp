@@ -846,8 +846,9 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_offscreenRtvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 64, false);
 
         // シーンは HDR(kSceneColorFormat) の中間RTへ描き、ポストで backbuffer へ解決する。
-        // クリア色はリニア空間の値（最終段のACES+ガンマ後にコーンフラワーブルーに見える値）
-        const float sceneClear[4] = {0.127f, 0.306f, 0.850f, 1.0f};
+        // クリア色 = skybox を描かないシーンの背景色。★ClearRenderTarget 側と必ず同じ値に
+        // すること（最適化クリア値が食い違うと D3D12 が遅いパスへ落ちる）。
+        const float sceneClear[4] = {0.0f, 0.0f, 0.0f, 1.0f};
         m_sceneRT = std::make_unique<RenderTarget>();
         m_sceneRT->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
                               m_window->GetWidth(), m_window->GetHeight(),
@@ -2520,9 +2521,29 @@ void Application::Update()
                 src.startedThisPlay = true;
             }
             if (src.runtimeSlot >= 0 && src.spatial)
+            {
                 m_audioSystem->UpdateSpatialEmitter(src.runtimeSlot, wx, wy, wz);
+
+                // 壁越しはこもらせる。エミッタ→リスナーへレイを 1 本飛ばし、
+                // 途中で何かに当たったら遮蔽 1.0（平滑は AudioSystem 側）。
+                // ponytail: レイ 1 本だけ。半遮蔽も回折も見ない。要るなら本数を増やす
+                float occ = 0.0f;
+                if (m_physicsSystem->IsInitialized())
+                {
+                    float lx, ly, lz;
+                    m_audioSystem->GetListenerPos(lx, ly, lz);
+                    const DirectX::XMFLOAT3 dir{lx - wx, ly - wy, lz - wz};
+                    const float len = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+                    // ★終端を少し削る。削らないとリスナーを包んでいる
+                    //   プレイヤーのコライダーに当たって常時こもる
+                    if (len > 1.0f &&
+                        m_physicsSystem->Raycast({wx, wy, wz}, dir, len - 0.6f).hit)
+                        occ = 1.0f;
+                }
+                m_audioSystem->SetOcclusion(src.runtimeSlot, occ);
+            }
         }
-        { DX12_PROFILE_ZONE_N("Audio"); m_audioSystem->Update(); }
+        { DX12_PROFILE_ZONE_N("Audio"); m_audioSystem->Update(dt); }
     }
 
     // Trigger の Post や接触 Post を同フレーム内で配信（Playing のみ）。
