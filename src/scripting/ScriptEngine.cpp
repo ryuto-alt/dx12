@@ -794,9 +794,15 @@ void ScriptEngine::RegisterBindings()
 
     // --- Scene ---
     lua.new_usertype<Scene>("Scene",
-        "spawn", [](Scene& s, const std::string& name, const std::string& modelPath,
+        // ★★modelPath は【assets 相対】で受ける(2026-08-27)。
+        //   Scene::Spawn は受け取った文字列をそのままファイルとして開くので、
+        //   audio:playSFX などと違って "models/props/x.glb" では読めず、Lua 側だけが
+        //   ASSETS を自分で連結する必要があった。他の API と規約が食い違っていて、
+        //   実際 BatteryPickup.lua が【毎回 静かに読み込みに失敗して代用の箱を出していた】。
+        //   絶対パス(ドライブレター or 先頭 /)ならそのまま使うので、既存の呼び出しも壊れない。
+        "spawn", [this](Scene& s, const std::string& name, const std::string& modelPath,
                      DirectX::XMFLOAT3 pos, DirectX::XMFLOAT3 rot, DirectX::XMFLOAT3 scale) -> Entity {
-            return s.Spawn(name, modelPath, pos, rot, scale);
+            return s.Spawn(name, ResolveAssetPath(modelPath), pos, rot, scale);
         },
         "spawnPlane", [](Scene& s, const std::string& name, DirectX::XMFLOAT3 pos,
                          float size, bool grid) -> Entity {
@@ -3812,6 +3818,18 @@ void ScriptEngine::SetScreenSize(int w, int h)
     if (!m_lua) return;
     (*m_lua)["SCREEN_W"] = w;
     (*m_lua)["SCREEN_H"] = h;
+}
+
+std::string ScriptEngine::ResolveAssetPath(const std::string& path) const
+{
+    if (path.empty()) return path;
+    // 絶対パス判定: "C:/..." / "C:\..." / "/..." はそのまま
+    const bool hasDrive = path.size() >= 2 && path[1] == ':';
+    if (hasDrive || path[0] == '/' || path[0] == 0x5C) return path;
+    if (m_assetsDir.empty()) return path;
+    std::string base = m_assetsDir;
+    if (base.back() != '/' && base.back() != 0x5C) base.push_back('/');
+    return base + path;
 }
 
 void ScriptEngine::LoadScript(const std::string& filePath)

@@ -616,7 +616,7 @@ nlohmann::json McpLuaApi()
         "<宣言した properties の各値>  (dx12_get_lua_component_state で確認)",
     })));
     objects.push_back(O("scene", "global", json::array({
-        "spawn(name,modelPath,pos,rot,scale) -> entity", "spawnBox(name,pos,rot,scale) -> entity",
+        "spawn(name,modelPath,pos,rot,scale) -> entity  (modelPath は assets 相対でよい。絶対パスもそのまま通る)", "spawnBox(name,pos,rot,scale) -> entity",
         "spawnSphere(name,pos,radius) -> entity", "spawnPlane(name,pos,size,grid) -> entity",
         "remove(entity)", "getEntityCount() -> int",
         // ★見つからなくても nil ではなく「無効な Entity」が返る。`if e then` は常に真になる。
