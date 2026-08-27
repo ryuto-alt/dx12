@@ -589,6 +589,7 @@ nlohmann::json McpLuaApi()
         "light() -> Light|nil  (PointLight/DirectionalLight/SpotLight の統一プロキシ。無ければ nil)",
         "addLight(kind:string?) -> Light  (kind: \"point\"(既定)/\"directional\"(\"dir\"/\"sun\")/\"spot\"。既にあればそれを返す)",
         "removeLight()  (付いているライト成分を全部外す。消灯ではなく削除=CB枠が空く)",
+        "getFov() / setFov(deg)  (Camera コンポーネントの垂直FOV・度。ズームは毎フレーム絶対値で書く。renderer 側へ書いても翌フレームに戻る)",
     })));
     objects.push_back(O("Light", "entity:light() / entity:addLight(kind) / scene:sun()", json::array({
         "type  (string, read-only: \"point\"/\"directional\"/\"spot\")",

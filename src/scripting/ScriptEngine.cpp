@@ -774,6 +774,21 @@ void ScriptEngine::RegisterBindings()
             e.RemoveComponent<PointLight>();
             e.RemoveComponent<DirectionalLight>();
             e.RemoveComponent<SpotLight>();
+        },
+
+        // --- カメラの垂直 FOV（度）---
+        // ★レンダラの Camera ではなく CameraComponent 側を書く。描画は毎フレーム
+        //   CameraComponent.fovDegrees から射影行列を作り直す（ApplicationScene.cpp）ので、
+        //   renderer::Camera へ直接書いても次のフレームで黙って戻る。
+        //   ズーム（構え/スコープ）は毎フレームここへ絶対値で書き込むこと。
+        "getFov", [](Entity& e) -> float {
+            if (!e.IsValid() || !e.HasComponent<CameraComponent>()) return 0.0f;
+            return e.GetComponent<CameraComponent>().fovDegrees;
+        },
+        "setFov", [](Entity& e, float deg) {
+            if (!e.IsValid() || !e.HasComponent<CameraComponent>()) return;
+            if (!std::isfinite(deg)) return;
+            e.GetComponent<CameraComponent>().fovDegrees = (std::min)(150.0f, (std::max)(5.0f, deg));
         }
     );
 
