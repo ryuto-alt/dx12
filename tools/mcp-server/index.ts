@@ -562,17 +562,47 @@ reg(
 reg(
   "dx12_set_pbr",
   "PBR マテリアル設定",
-  "エンティティの PBR パラメータ(metallic/roughness/UV スケール)を設定する。指定分のみ更新。即時反映で {entityId, metallic, roughness, uvScaleU, uvScaleV} を返す。",
+  "エンティティの PBR パラメータ(metallic/roughness/UV スケール/透明)を設定する。指定分のみ更新。"
+  + "即時反映で {entityId, metallic, roughness, uvScaleU, uvScaleV, alphaMode, alphaCutoff, opacity} を返す。"
+  + "透明は alphaMode(auto/opaque/mask/blend) + alphaCutoff + opacity。mask は影も同じ形に抜ける。",
   {
     ...entityRef,
     metallic: z.number().optional().describe("金属度 0..1"),
     roughness: z.number().optional().describe("粗さ 0..1"),
     uvScaleU: z.number().optional().describe("UV の U 方向スケール(タイリング)"),
     uvScaleV: z.number().optional().describe("UV の V 方向スケール(タイリング)"),
+    alphaMode: z
+      .enum(["auto", "opaque", "mask", "blend"])
+      .optional()
+      .describe(
+        "透明の扱い。auto=モデルのマテリアル(glTF alphaMode)に従う(既定) / opaque=不透明 / " +
+          "mask=baseColor.a < alphaCutoff を discard(葉・フェンス・角膜。影も同じ形に抜ける) / " +
+          "blend=半透明(不透明の後にカメラから遠い順で描く。深度は書かない)",
+      ),
+    alphaCutoff: z
+      .number()
+      .optional()
+      .describe("mask のしきい値 0..1(既定はマテリアル値、glTF 既定 0.5)。負でマテリアルに従う"),
+    opacity: z
+      .number()
+      .optional()
+      .describe("不透明度 0..1。1 未満なら alphaMode を省いても半透明になる(ガラス・水面)"),
   },
   { idempotentHint: true },
-  ({ entity, name, metallic, roughness, uvScaleU, uvScaleV }) =>
-    run(() => engine.call("set_pbr", { entity, name, metallic, roughness, uvScaleU, uvScaleV })),
+  ({ entity, name, metallic, roughness, uvScaleU, uvScaleV, alphaMode, alphaCutoff, opacity }) =>
+    run(() =>
+      engine.call("set_pbr", {
+        entity,
+        name,
+        metallic,
+        roughness,
+        uvScaleU,
+        uvScaleV,
+        alphaMode,
+        alphaCutoff,
+        opacity,
+      }),
+    ),
 );
 
 reg(
