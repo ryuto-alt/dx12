@@ -159,7 +159,7 @@ void Application::RegisterMcpEditorMethods()
             resp["result"] = arr;   // ファイル無しは空配列(grace)
         });
 
-    McpDefine("screenshot", "deterministic:bool,path:string,settleFrames:int", DX12E_MCP_HANDLER
+    McpDefine("screenshot", "deterministic:bool,gizmos:bool,path:string,settleFrames:int", DX12E_MCP_HANDLER
         {
             // 直近フレームのシーン描画を PNG にして絶対パスを返す。AI 側はそのパスを画像として読む。
             // ★これは【ポスト前】の m_sceneRT。グレーディング/ブルーム/ビネット/TAA は写らない（§6 B5）。
@@ -174,6 +174,9 @@ void Application::RegisterMcpEditorMethods()
                 m_mcpFinalShot.reply         = deferred;
                 m_mcpFinalShot.wantSceneRt   = true;
                 m_mcpFinalShot.deterministic = true;
+                // gizmos:false = この 1 枚だけデバッグ描画を止める(既定 true = 従来どおり)。
+                // 撮り終われば m_mcpFinalShot ごと {} に戻るので後始末は不要。
+                m_mcpFinalShot.hideGizmos    = !params.value("gizmos", true);
                 // ★履歴を捨ててから固定フレーム数だけ回す（#31）。
                 //   位相を固定しただけでは「ピンポンの偶奇」と「撮る前に何フレーム回っていたか」で
                 //   結果がわずかに残るので（実測 240 フレーム回しても 1% 残った）、
@@ -196,13 +199,15 @@ void Application::RegisterMcpEditorMethods()
                               //   表示解像度より小さい絵が返る（拡大前）。表示解像度で見たいなら final。
                               {"renderScale", m_renderScale},
                               {"note", "ポストプロセス前のシーン RT（レンダー解像度）。グレーディング/"
-                                       "ブルーム/ビネット/TAA は写らない。最終画は dx12_screenshot_final"}};
+                                       "ブルーム/ビネット/TAA は写らない。最終画は dx12_screenshot_final"
+                                       "（gizmos:false は deterministic:true のときだけ効く＝"
+                                       "この経路は直前フレームの読み戻しで撮り直さないため）"}};
         });
 
     // ★§6 B5 の根治。バックバッファ（ポスト適用後の最終画）のビューポート矩形を撮る。
     //   ImGui を描く前にコピーするのでエディタのパネルは写らない＝ゲームと同じ絵になる。
     //   1 フレーム描いてから撮るので遅延応答。
-    McpDefine("screenshot_final", "deterministic:bool,path:string,settleFrames:int", DX12E_MCP_HANDLER
+    McpDefine("screenshot_final", "deterministic:bool,gizmos:bool,path:string,settleFrames:int", DX12E_MCP_HANDLER
         {
             if (m_mcpFinalShot.reply.client != 0 || m_mcpFinalShot.pending || m_deterministicCapture)
                 throw McpError(McpErr::ModeConflict,
@@ -212,6 +217,12 @@ void Application::RegisterMcpEditorMethods()
             m_mcpFinalShot.path          = params.value("path", std::string());
             m_mcpFinalShot.reply         = deferred;
             m_mcpFinalShot.deterministic = det;
+            // ★gizmos:false = この 1 枚だけエディタのデバッグ描画(アイコン / 選択枠 /
+            //   カメラ視錐台の水色の線 / 物理・ナビのワイヤ / 床グリッド)を止めて撮る。
+            //   既定 true は従来どおり。render_debug と同じで「必ず元へ戻す」が要るが、
+            //   状態を m_mcpFinalShot に載せてあるので撮影完了時の {} 代入で自動的に戻る
+            //   ＝戻し忘れが構造的に起きない。
+            m_mcpFinalShot.hideGizmos    = !params.value("gizmos", true);
             if (det)
             {
                 // ★#31: time / TAA ジッタ / フォグ・SSGI の位相を固定して N フレーム回し、

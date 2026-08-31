@@ -321,6 +321,8 @@ private:
     void RegisterMcpRenderMethods();      // 描画設定（ポスト / SSAO / SSR / SSGI / TAA / フォグ / PCSS / DXR）
     void RegisterMcpToolingMethods();     // ビルド検証 / Lua / テクスチャ / アニメ / マルチプレイ
     void RegisterMcpAssetMethods();       // カメラ / 空間クエリ / アセット入出力 / ピッキング
+    // dx12_reload_assets の実処理（フレーム境界で 1 度だけ呼ぶ。cmdList が要る）。
+    void ProcessMcpAssetReloads(ID3D12GraphicsCommandList* cmdList);
     void RegisterMcpTerrainMethods();     // 地形 / スカルプト
     void RegisterMcpLightingMethods();    // ライティング / 診断
     void RegisterMcpNavMethods();         // ナビメッシュ（生成 / 設定 / 経路 / レイ / 可視化）
@@ -341,6 +343,11 @@ private:
         bool        captured = false;   // コピー済み → Run ループが PNG 化して応答する
         bool        wantSceneRt = false;// true なら m_sceneRT を撮る（dx12_screenshot の決定論モード）
         bool        deterministic = false;   // 応答に載せる印
+        // ★この 1 枚だけエディタのデバッグ描画（アイコン / 選択枠 / カメラ視錐台 /
+        //   物理・ナビのワイヤ / 床グリッド）を止めて撮る（dx12_screenshot_final gizmos:false）。
+        //   撮影が終われば m_mcpFinalShot ごと {} に戻るので後始末は要らない
+        //   ＝「次の 1 枚では必ず元通り」が構造で保証される（render_debug の作法と同じ）。
+        bool        hideGizmos = false;
         u32         w = 0, h = 0;       // 撮った矩形（ビューポート）
         u32         rowPitch = 0;
         u64         bytes    = 0;       // readback バッファの実サイズ（Map の read range に使う。
@@ -348,6 +355,15 @@ private:
         u32         format   = 0;       // DXGI_FORMAT（RGBA/BGRA の入れ替え判定用）
         Microsoft::WRL::ComPtr<ID3D12Resource> readback;
     };
+    // 今このフレームは「ギズモ抜きの 1 枚」を撮っている最中か。
+    // 非決定論モード = pending が立っている今フレームで撮る。決定論モード = 収束させる
+    // 数フレームのあいだ m_deterministicCapture が立っている（どちらもこの 1 発ぶん）。
+    bool McpHidingGizmos() const
+    {
+        return m_mcpFinalShot.hideGizmos
+            && (m_mcpFinalShot.pending || m_deterministicCapture);
+    }
+
     // Render() の ImGui フレーム直前で呼ぶ。pending が立っていなければ何もしない。
     void CaptureFinalBackBufferRegion(ID3D12GraphicsCommandList* cmd, ID3D12Resource* backBuffer,
                                       u32 vpX, u32 vpY, u32 vpW, u32 vpH);

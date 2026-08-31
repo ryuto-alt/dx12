@@ -112,7 +112,7 @@ void Application::RegisterMcpAssetMethods()
             };
         });
 
-    McpDefine("get_bounds", "entity:int,includeChildren:bool,name:string", DX12E_MCP_HANDLER
+    McpDefine("get_bounds", "entity:int,includeChildren:bool,name:string,perSubmesh:bool", DX12E_MCP_HANDLER
         {
             // ワールド AABB。AI が「どこに何を置くか」を数値で決めるための基礎情報。
             const auto e = ResolveMcpEntity(*m_scene, params);
@@ -143,6 +143,71 @@ void Application::RegisterMcpAssetMethods()
                 {"size", {mx.x - mn.x, mx.y - mn.y, mx.z - mn.z}},
                 {"hasMesh", hasMesh},
             };
+
+            // ★サブメッシュ内訳（perSubmesh:true）。
+            //   「モデルの一部だけ変な位置に飛んでいる。どの部品か」を 1 回で特定するための口。
+            //   index は **dx12_pick が返す submeshIndex と同じ番号**（どちらも
+            //   MeshRenderer.meshes の並び）なので、そのまま突き合わせられる。
+            //   glTF/FBX の JSON 内の並びとは一致しない（ModelLoader がノード単位に展開するため）
+            //   ＝だからこそ name / materialName を一緒に返す。
+            if (params.value("perSubmesh", false))
+            {
+                using namespace DirectX;
+                const auto* mr = reg.try_get<MeshRenderer>(e);
+                if (!mr) throw McpError(McpErr::NotFound, "entity has no MeshRenderer");
+                const XMMATRIX world = ComputeWorldMatrix(reg, e);
+                json arr = json::array();
+                f32 biggest = 0.0f;
+                int biggestIdx = -1;
+                for (size_t i = 0; i < mr->meshes.size(); ++i)
+                {
+                    const Mesh* m = mr->meshes[i];
+                    if (!m) { arr.push_back({{"index", static_cast<u32>(i)}, {"missing", true}}); continue; }
+                    const XMFLOAT3 lmn = m->GetAABBMin(), lmx = m->GetAABBMax();
+                    // ノードアニメ付きモデルは meshNodeTransforms がサブメッシュごとの姿勢を持つ
+                    XMMATRIX node = XMMatrixIdentity();
+                    if (i < mr->meshNodeTransforms.size())
+                        node = XMLoadFloat4x4(&mr->meshNodeTransforms[i]);
+                    const XMMATRIX full = node * world;
+                    XMFLOAT3 wmn{0, 0, 0}, wmx{0, 0, 0};
+                    for (int c = 0; c < 8; ++c)
+                    {
+                        const XMVECTOR p = XMVector3Transform(
+                            XMVectorSet((c & 1) ? lmx.x : lmn.x,
+                                        (c & 2) ? lmx.y : lmn.y,
+                                        (c & 4) ? lmx.z : lmn.z, 1.0f), full);
+                        XMFLOAT3 q; XMStoreFloat3(&q, p);
+                        if (c == 0) { wmn = q; wmx = q; }
+                        else
+                        {
+                            wmn = { (std::min)(wmn.x, q.x), (std::min)(wmn.y, q.y), (std::min)(wmn.z, q.z) };
+                            wmx = { (std::max)(wmx.x, q.x), (std::max)(wmx.y, q.y), (std::max)(wmx.z, q.z) };
+                        }
+                    }
+                    const XMFLOAT3 wsize{ wmx.x - wmn.x, wmx.y - wmn.y, wmx.z - wmn.z };
+                    // 「原点からどれだけ離れているか」= 飛んでいる部品を見つける物差し
+                    const XMFLOAT3 wc{ (wmn.x + wmx.x) * 0.5f, (wmn.y + wmx.y) * 0.5f, (wmn.z + wmx.z) * 0.5f };
+                    const f32 span = (std::max)((std::max)(wsize.x, wsize.y), wsize.z);
+                    if (span > biggest) { biggest = span; biggestIdx = static_cast<int>(i); }
+                    arr.push_back({
+                        {"index", static_cast<u32>(i)},
+                        {"name", m->GetName()},
+                        {"materialName", m->GetMaterialName()},
+                        {"triangles", m->GetIndexCount() / 3},
+                        {"localMin", {lmn.x, lmn.y, lmn.z}}, {"localMax", {lmx.x, lmx.y, lmx.z}},
+                        {"localSize", {lmx.x - lmn.x, lmx.y - lmn.y, lmx.z - lmn.z}},
+                        {"worldMin", {wmn.x, wmn.y, wmn.z}}, {"worldMax", {wmx.x, wmx.y, wmx.z}},
+                        {"worldCenter", {wc.x, wc.y, wc.z}},
+                        {"worldSize", {wsize.x, wsize.y, wsize.z}},
+                    });
+                }
+                resp["result"]["submeshes"]     = std::move(arr);
+                resp["result"]["submeshCount"]  = static_cast<u32>(mr->meshes.size());
+                resp["result"]["largestSubmesh"] = biggestIdx;
+                resp["result"]["submeshNote"] =
+                    "index は dx12_pick の submeshIndex と同じ並び。worldSize/worldCenter が"
+                    "他と桁違いの部品が『飛んでいる』もの。name/materialName は DCC 側の呼び名";
+            }
         });
 
     McpDefine("look_at", "entity:int,name:string,target:any,targetEntity:any,targetName:any,upright:bool", DX12E_MCP_HANDLER
@@ -416,6 +481,44 @@ void Application::RegisterMcpAssetMethods()
             resp["result"] = std::move(result);
         });
 
+    McpDefine("reload_assets", "force:bool,path:string", DX12E_MCP_HANDLER
+        {
+            // ディスク上で書き換わったアセットだけをキャッシュごと読み直す。
+            //
+            // ★これが無かったとき何が起きていたか: Blender から同じパスへ書き出し直しても、
+            //   ResourceManager のテクスチャ/モデルキャッシュが一生ヒットするので絵が変わらない。
+            //   結果、見た目を確認するたびにエディタを落として起動し直す(1 往復 20 秒以上)
+            //   ハメになっていた。ここがその再起動を消すための口。
+            //
+            // ★シーンは開き直さない。テクスチャは「同じ Texture オブジェクト・同じ SRV 番号」の
+            //   まま中身だけ差し替わり、モデルは実体を作り直したうえで今シーンに置かれている
+            //   MeshRenderer の参照を張り替える(= エンティティも Transform も選択状態も残る)。
+            //
+            // 実ロードは GPU アップロードを伴うので cmdList が有効なフレーム境界へ回す
+            // (mcpProcCreates と同じ流儀)。応答は遅延。
+            if (!m_editorCtx) throw McpError(McpErr::Internal, "editor context not ready");
+            McpPendingAssetReload req;
+            req.force = params.value("force", false);
+            const std::string rel = params.value("path", std::string());
+            if (rel.empty())
+            {
+                req.prefix   = fs::path(PathResolver::AssetsDir()).lexically_normal().generic_string();
+                req.relLabel = "(assets 全体)";
+            }
+            else
+            {
+                const std::string v = ValidateMcpAssetRelPath(rel);
+                const fs::path full = fs::path(PathResolver::AssetsDir()) / v;
+                if (!fs::exists(full))
+                    throw McpError(McpErr::NotFound, "asset not found: " + v);
+                req.prefix   = full.lexically_normal().generic_string();
+                req.relLabel = v;
+            }
+            req.mcp = deferred;
+            m_editorCtx->mcpAssetReloads.push_back(std::move(req));
+            isDeferred = true;
+        });
+
     McpDefine("read_texture", "maxSize:int,path:string", DX12E_MCP_HANDLER
         {
             // 任意対応形式(dds/tga 含む)のテクスチャを PNG に変換して絶対パスを返す。
@@ -621,5 +724,135 @@ void Application::RegisterMcpAssetMethods()
 }
 
 
+
+
+// ---------------------------------------------------------------------------
+// dx12_reload_assets の実処理(フレーム境界。ApplicationRender.cpp から 1 度だけ呼ぶ)
+// ---------------------------------------------------------------------------
+// ★ここは「参照の張り替え」まで含めて 1 セット。ResourceManager が CachedModel を
+//   作り直すと、そのモデルを使っている MeshRenderer.meshes / .materials と
+//   Mesh::m_material、そして RaytracingScene の BLAS キャッシュ(キーが Mesh*)が
+//   まとめて宙に浮く。**同じ関数の中で全部張り替え切ること**(描画は後段なので間に合う)。
+void Application::ProcessMcpAssetReloads(ID3D12GraphicsCommandList* cmdList)
+{
+    using json = nlohmann::json;
+    if (!m_editorCtx || m_editorCtx->mcpAssetReloads.empty()) return;
+    auto reqs = std::move(m_editorCtx->mcpAssetReloads);
+    m_editorCtx->mcpAssetReloads.clear();
+    if (!cmdList || !m_resourceManager || !m_scene)
+    {
+        for (const auto& req : reqs)
+            FailMcp(m_mcpBridge.get(), req.mcp, McpErr::Internal, "renderer not ready");
+        return;
+    }
+
+    const std::string assetsDir = PathResolver::AssetsDir();
+    auto toRel = [&](const std::string& abs) -> std::string
+    {
+        const std::string a = std::filesystem::path(abs).lexically_normal().generic_string();
+        const std::string root = std::filesystem::path(assetsDir).lexically_normal().generic_string();
+        if (a.size() > root.size() && _strnicmp(a.c_str(), root.c_str(), root.size()) == 0)
+            return a.substr(root.size());
+        return a;
+    };
+
+    for (const auto& req : reqs)
+    {
+        const AssetReloadResult r =
+            m_resourceManager->ReloadChangedAssets(cmdList, req.prefix, req.force);
+
+        // ---- モデルを読み直したなら、今シーンの MeshRenderer を新しい実体へ張り替える ----
+        int reboundEntities = 0;
+        json warnings = json::array();
+        if (!r.models.empty())
+        {
+            std::unordered_map<std::string, const CachedModel*> byKey;
+            for (const auto& mp : r.models)
+            {
+                const std::string k = ResourceManager::NormalizeModelKey(mp);
+                byKey[k] = m_resourceManager->FindModel(k);
+            }
+            auto& reg = m_scene->GetRegistry();
+            for (auto [e, mr] : reg.view<MeshRenderer>().each())
+            {
+                if (mr.modelPath.empty()) continue;
+                // modelPath は「assets 相対」で保存されるが、D&D 配置直後は絶対パスのこともある。
+                // GetOrLoadModel と同じ正規化を両方の綴りで試す(片方でも当たれば同じモデル)。
+                const CachedModel* cm = nullptr;
+                {
+                    auto it = byKey.find(ResourceManager::NormalizeModelKey(mr.modelPath));
+                    if (it == byKey.end())
+                        it = byKey.find(ResourceManager::NormalizeModelKey(assetsDir + mr.modelPath));
+                    if (it != byKey.end()) cm = it->second;
+                }
+                if (!cm) continue;
+
+                // ★ヒットしたら必ず張り替える。「アニメ付きだから見送る」は
+                //   死んだポインタを残す＝次の描画で落ちるので絶対にやらない。
+                const size_t before = mr.meshes.size();
+                mr.meshes.clear();
+                mr.materials.clear();
+                for (const auto& m : cm->meshes)    mr.meshes.push_back(m.get());
+                for (const auto& m : cm->materials) mr.materials.push_back(m.get());
+                if (!mr.meshNodeTransforms.empty() || cm->nodeGraph)
+                {
+                    DirectX::XMFLOAT4X4 ident;
+                    DirectX::XMStoreFloat4x4(&ident, DirectX::XMMatrixIdentity());
+                    mr.meshNodeTransforms.assign(mr.meshes.size(), ident);
+                }
+                ++reboundEntities;
+                if (before != mr.meshes.size()
+                    && (reg.all_of<SkeletalAnimation>(e) || reg.all_of<NodeAnimationComp>(e)))
+                {
+                    warnings.push_back(
+                        "サブメッシュ数が " + std::to_string(before) + " -> "
+                        + std::to_string(mr.meshes.size()) + " に変わりました(" + mr.modelPath
+                        + ")。アニメーションの割り当ては作り直さないので、動きがおかしければ "
+                          "dx12_open_scene でシーンを開き直すこと");
+                }
+            }
+            // BLAS キャッシュのキーは Mesh*。解放したアドレスへ新しいメッシュが載ると
+            // 「ラスタは正しいのにレイトレの影/反射だけ古い形」になるので全部捨てる。
+            if (m_rtScene) m_rtScene->Invalidate();
+        }
+
+        // ---- テクスチャを読み直したなら、マテリアル上書きの SRV ブロックも作り直す ----
+        // (ModelLoader が組む Material::srvBlockIndex 側は ResourceManager が張り直し済み)
+        if (!r.textures.empty() && m_srvHeap)
+        {
+            for (auto& kv : m_materialOverrideSrvCache)
+                if (kv.second.blockStart != 0xFFFFFFFF) m_srvHeap->FreeBlock(kv.second.blockStart, 3);
+            m_materialOverrideSrvCache.clear();
+        }
+
+        json textures = json::array();
+        for (const auto& t : r.textures) textures.push_back(toRel(t));
+        json models = json::array();
+        for (const auto& m : r.models) models.push_back(toRel(m));
+        json skipped = json::array();
+        for (const auto& sk : r.skipped) skipped.push_back(sk);
+
+        const size_t total = r.textures.size() + r.models.size();
+        Logger::Info("アセット再読込: {} (テクスチャ{}件 / モデル{}件 / 張り替え{}体)",
+                     req.relLabel, r.textures.size(), r.models.size(), reboundEntities);
+
+        CompleteMcp(m_mcpBridge.get(), req.mcp,
+            json{{"path", req.relLabel},
+                 {"force", req.force},
+                 {"reloaded", static_cast<u32>(total)},
+                 {"textures", std::move(textures)},
+                 {"models", std::move(models)},
+                 {"reboundEntities", reboundEntities},
+                 {"checkedTextures", r.checkedTextures},
+                 {"checkedModels", r.checkedModels},
+                 {"skipped", std::move(skipped)},
+                 {"warnings", std::move(warnings)},
+                 {"note", total == 0
+                      ? "更新時刻が変わったアセットはありませんでした。"
+                        "書き出し直したのに 0 件なら force:true を試すこと"
+                      : "シーンは開き直していない。絵の確認は "
+                        "dx12_screenshot_final (gizmos:false) で"}});
+    }
+}
 
 } // namespace dx12e

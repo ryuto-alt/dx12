@@ -1014,7 +1014,8 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
     // パス2: エディタ用グリッド。線だけを後描きする（ForwardGrid 側で線以外 alpha=0）。
     // 床全体へ半透明の膜を被せず、グリッド表示だけ維持する。
     // グリッドは描画リスト対象外なので従来どおり registry を直接走査（エディタのみ・少数）。
-    if (!isGameView)
+    // ★gizmos:false のスクショ中はグリッドも描かない（エディタ専用のデバッグ描画なので）。
+    if (!isGameView && !McpHidingGizmos())
     {
         for (auto [e, transform, renderer] : renderView.each())
         {
@@ -2463,6 +2464,10 @@ void Application::Render()
             }
         }
     }
+
+    // ---- MCP 由来のアセット再読込（dx12_reload_assets）----
+    // テクスチャ/モデルのロードは GPU アップロードを伴うので、記録中の cmdList があるここで走らせる。
+    ProcessMcpAssetReloads(nativeCmdList);
 
     // ---- MCP 由来の地形 / スカルプト生成（GPU メッシュ構築に cmdList が要るのでフレーム境界）----
     // pendingSpawns と同じ流儀。生成後に本物の entityId を遅延応答で返す。
@@ -4751,7 +4756,7 @@ void Application::Render()
     {
         const bool physDraw = m_physicsDebugDraw && m_physicsDebugRenderer->IsEnabled();
         const bool navDraw  = m_scene && m_scene->GetNavDebugDraw() && m_scene->HasNavMesh();
-        if (physDraw || navDraw)
+        if ((physDraw || navDraw) && !McpHidingGizmos())   // gizmos:false のスクショ中は止める
         {
             m_physicsDebugRenderer->BeginFrame();
             if (physDraw) m_physicsDebugRenderer->CollectFromRegistry(m_scene->GetRegistry());
@@ -5219,7 +5224,11 @@ void Application::Render()
     //   見るための機能なので、ここで切ると一時停止の意味が半分無くなる。
     const bool iconsWhilePaused = (m_engineMode == EngineMode::Playing
                                    && m_editorCtx && m_editorCtx->paused);
-    if ((m_engineMode == EngineMode::Editor || iconsWhilePaused) && !m_isGameMode)
+    // ★gizmos:false のスクショ中だけ丸ごと止める（カメラ視錐台の水色の線 / 選択枠 /
+    //   ライトのハンドルがここ。選択を外しても「アクティブなカメラ」は描かれ続けるので、
+    //   選択解除では消せなかったのが元の痛み）。撮り終われば自動で戻る。
+    if ((m_engineMode == EngineMode::Editor || iconsWhilePaused) && !m_isGameMode
+        && !McpHidingGizmos())
     {
         // ★DSV は張らない。アイコンは DepthEnable=FALSE で深度テストをしないうえ、
         //   #16 でメイン深度はレンダー解像度に縮んだので、表示解像度のバックバッファへ
