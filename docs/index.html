@@ -1733,6 +1733,7 @@ claude mcp add dx12-engine --scope user -- node &lt;REPO&gt;/index.ts
 [mcp_servers.dx12-engine]
 command = <span class="tok-s">"node"</span>
 args = [<span class="tok-s">"&lt;REPO&gt;/index.ts"</span>]</code></pre>
+            <p>エンジンをソースから開発している場合は、<code class="inl">&lt;REPO&gt;/index.ts</code> の代わりに <code class="inl">&lt;エンジンrepo&gt;/tools/mcp-server/index.ts</code> を指す（そちらがソース・オブ・トゥルースで、<code class="inl">publish.ps1</code> で dx12-mcp へ同期している）。</p>
             <p><b>既定スコープ <code class="inl">local</code> は「そのディレクトリでしか有効でない」</b>ので、別プロジェクトで作業すると「ツールが出ない」になる。必ず <code class="inl">--scope user</code>。</p>
           </div>
           <div class="step">
