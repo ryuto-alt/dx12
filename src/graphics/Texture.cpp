@@ -138,6 +138,24 @@ void Texture::Initialize(
     Logger::Info("Texture created ({}x{}, format={})", m_width, m_height, static_cast<u32>(m_format));
 }
 
+void Texture::AdoptFrom(Texture& src)
+{
+    if (&src == this) return;
+    // 自分の旧リソースを手放す（DeferredRelease 行き = GPU が読み終わってから解放）。
+    ReleaseResource();
+    m_resource     = std::move(src.m_resource);
+    m_allocation   = src.m_allocation;
+    src.m_allocation = nullptr;
+    m_currentState = src.m_currentState;
+    m_uploadBuffer = std::move(src.m_uploadBuffer);
+    m_width        = src.m_width;
+    m_height       = src.m_height;
+    m_mipLevels    = src.m_mipLevels;
+    m_arraySize    = src.m_arraySize;
+    m_format       = src.m_format;
+    // m_srvIndex は **引き継がない**（自分のスロットを使い続ける）。
+}
+
 void Texture::CreateSRV(GraphicsDevice& device, D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle)
 {
     DX_ASSERT(m_resource.Get(), "Resource must be initialized before creating SRV");
