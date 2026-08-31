@@ -150,6 +150,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             "list_scenes", "list_assets", "list_lights", "query_entities", "find_entity",
             "get_bounds", "get_editor_camera", "get_scene_settings", "get_post_process",
             "get_ssao", "get_ssr", "get_ssgi", "get_taa", "get_contact_shadow",
+            "get_normal_filter",
             "get_shadow_pcss", "get_volumetric_fog", "get_dxr", "get_physics_state",
             "get_anim_state", "get_lua_component_state", "get_script_errors",
             "get_play_session", "read_lua_component", "read_shader", "describe_components",

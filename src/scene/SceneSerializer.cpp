@@ -966,6 +966,17 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
         };
     }
 
+    // 法線マップフィルタリング（シーン単位）
+    {
+        const auto& nf = scene.GetNormalFilterSettings();
+        root["normalFilter"] = {
+            {"enabled",        nf.enabled},
+            {"strength",       nf.strength},
+            {"varianceClamp",  nf.varianceClamp},
+            {"geometricBlend", nf.geometricBlend},
+        };
+    }
+
     // SSR / SSGI 設定（シーン単位）。どちらも既定 OFF なので旧シーンは無変更で開く。
     {
         const auto& sr = scene.GetSsrSettings();
@@ -1232,6 +1243,21 @@ static void LoadContactShadowSettings(Scene& scene, const json& root)
         cs.fadeDistance = cj.value("fadeDistance", cs.fadeDistance);
     }
     scene.GetContactShadowSettings() = cs;
+}
+
+// JSON から法線マップフィルタリング設定を復元（normalFilter が無ければ既定 ON）
+static void LoadNormalFilterSettings(Scene& scene, const json& root)
+{
+    NormalFilterSettings nf;
+    if (root.contains("normalFilter"))
+    {
+        const auto& j = root["normalFilter"];
+        nf.enabled        = j.value("enabled",        nf.enabled);
+        nf.strength       = j.value("strength",       nf.strength);
+        nf.varianceClamp  = j.value("varianceClamp",  nf.varianceClamp);
+        nf.geometricBlend = j.value("geometricBlend", nf.geometricBlend);
+    }
+    scene.GetNormalFilterSettings() = nf;
 }
 
 // JSON から SSR / SSGI 設定を復元（キーが無ければデフォルト OFF = 後方互換）
@@ -1846,6 +1872,8 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
     catch (const json::exception& e) { Logger::Warn("navmesh 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadContactShadowSettings(scene, root); }
     catch (const json::exception& e) { Logger::Warn("contactShadow 設定をスキップしました（型不正）: {}", e.what()); }
+    try { LoadNormalFilterSettings(scene, root); }
+    catch (const json::exception& e) { Logger::Warn("normalFilter 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadTaaSettings(scene, root); }
     catch (const json::exception& e) { Logger::Warn("taa 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadScreenSpaceGiSettings(scene, root); }

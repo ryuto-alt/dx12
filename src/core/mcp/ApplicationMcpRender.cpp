@@ -251,6 +251,28 @@ void Application::RegisterMcpRenderMethods()
             resp["result"] = {{"applied", true}};
         });
 
+    // ---- 法線マップフィルタリング（分散 → ラフネス / 平均法線の復元）----
+    McpDefine("get_normal_filter", "", DX12E_MCP_HANDLER
+        {
+            const auto& n = m_scene->GetNormalFilterSettings();
+            resp["ok"] = true;
+            resp["result"] = {{"enabled", n.enabled}, {"strength", n.strength},
+                              {"varianceClamp", n.varianceClamp},
+                              {"geometricBlend", n.geometricBlend}};
+        });
+
+    McpDefine("set_normal_filter", "enabled:any,strength:any,varianceClamp:any,geometricBlend:any",
+              DX12E_MCP_HANDLER
+        {
+            auto& n = m_scene->GetNormalFilterSettings();
+            n.enabled        = params.value("enabled",        n.enabled);
+            n.strength       = params.value("strength",       n.strength);
+            n.varianceClamp  = params.value("varianceClamp",  n.varianceClamp);
+            n.geometricBlend = params.value("geometricBlend", n.geometricBlend);
+            resp["ok"] = true;
+            resp["result"] = {{"applied", true}};
+        });
+
     // ---- 内部解像度スケール（#16。レンダー解像度と表示解像度の分離）----
     // 3D シーンだけを scale 倍の解像度で描き、最終パスで表示解像度へ引き伸ばす。
     // UI / ImGui / エディタのギズモは常に表示解像度のまま＝文字がボケない。

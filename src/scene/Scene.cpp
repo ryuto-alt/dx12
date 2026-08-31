@@ -471,6 +471,7 @@ void Scene::Clear()
     m_skybox         = SkyboxSettings{};
     m_ssao           = SSAOSettings{};
     m_contactShadow  = ContactShadowSettings{};
+    m_normalFilter   = NormalFilterSettings{};
     m_shadowPcss     = ShadowPcssSettings{};
     m_ssr            = SsrSettings{};
     m_ssgi           = SsgiSettings{};

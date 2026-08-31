@@ -4157,7 +4157,9 @@ void Application::Render()
         float skyboxIntensity;
         // ▼ コンタクトシャドウ制御 16B
         float contactShadowEnabled;  // 1=実テクスチャ(t11)を読む / 0=読まず 1.0（白ダミー1x1の範囲外Load=0対策）
-        XMFLOAT3 _csPad;
+        // ▼ 法線マップフィルタリング（旧 _csPad の 12B を流用＝レイアウトは 1 バイトも動かない）
+        //   .x=強さ(0 で完全に恒等) .y=α に足せる量の上限 .z=幾何法線へ寄せる強さ
+        XMFLOAT3 normalFilterParams;
     };
     static_assert(sizeof(FrameConstants) == 1536, "FrameConstants must be 1536 bytes");
 
@@ -4272,6 +4274,16 @@ void Application::Render()
 
     // コンタクトシャドウも同じ規約（白ダミーが張られている時はシェーダ側で読まない）。
     fc.contactShadowEnabled = (csSrv != m_ssaoWhiteSrvIndex) ? 1.0f : 0.0f;
+
+    // 法線マップフィルタリング（分散→ラフネス / 平均法線の復元）。強さ 0 でシェーダは恒等。
+    {
+        const NormalFilterSettings nf = m_scene ? m_scene->GetNormalFilterSettings()
+                                                : NormalFilterSettings{};
+        fc.normalFilterParams = XMFLOAT3(
+            nf.enabled ? (std::max)(nf.strength, 0.0f) : 0.0f,
+            (std::max)(nf.varianceClamp, 0.0f),
+            (std::max)(nf.geometricBlend, 0.0f));
+    }
 
     // ===== ライト収集（point / spot を 1 本の配列へ統合してクラスタード用 SB へ送る）=====
     // 旧 8 灯固定配列は撤廃。上限は ClusteredLightCulling::kMaxSceneLights（1024）。

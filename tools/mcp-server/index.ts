@@ -1315,6 +1315,29 @@ reg(
   (a) => run(() => applyAndVerify("set_contact_shadow", "get_contact_shadow", a)),
 );
 
+reg(
+  "dx12_get_normal_filter",
+  "法線マップフィルタリング設定取得",
+  "法線マップフィルタリング(分散→ラフネス / 平均法線の復元)の設定を返す。{enabled, strength, varianceClamp, geometricBlend}。",
+  {},
+  { readOnlyHint: true },
+  () => run(() => engine.call("get_normal_filter", {})),
+);
+
+reg(
+  "dx12_set_normal_filter",
+  "法線マップフィルタリング設定変更",
+  "法線マップのエイリアシング対策。1 画素の中に法線マップの山谷が何個も入る状況(高いタイリング / 遠景 / 面を舐める角度)で、①鏡面のちらつき ②【光源が面を舐める角度で N·L の符号が裏返り、面が黒い斑点で埋まる】の 2 つが起きる。スクリーン空間の法線微分から画素内の法線分散を見積もり、分散を GGX のラフネス(α)へ足し込み、分散が大きい画素は法線を幾何法線へ寄せる(=平均法線の復元)。★これが【法線マップを貼ると床が消える】の直接の対策。既定 ON。シーン JSON の normalFilter に保存される。",
+  {
+    enabled: z.boolean().optional().describe("既定 true。false で完全に従来どおり。"),
+    strength: z.number().optional().describe("分散のスケール。既定 2。上げるほど強く効く(0 で OFF 相当)。"),
+    varianceClamp: z.number().optional().describe("ラフネス α に足せる量の上限。既定 0.25。上げるとよりボケる。"),
+    geometricBlend: z.number().optional().describe("分散に応じて幾何法線へ寄せる強さ。既定 2。0 にするとラフネス補正だけになる(黒斑点は残る)。"),
+  },
+  { idempotentHint: true },
+  (a) => run(() => applyAndVerify("set_normal_filter", "get_normal_filter", a)),
+);
+
 // ── PCSS(ソフトシャドウ) ─────────────────────────────────────────
 // エンジン側は Application.cpp:5565 の 1 ブロックで get/set を捌いている(MSVC の C1061 対策)。
 // 受け付ける引数とクランプ範囲はそこを読んで写した(憶測なし)。

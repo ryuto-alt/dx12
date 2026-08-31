@@ -52,6 +52,7 @@ inline u64 SceneSettingsFingerprint(const Scene& scene)
 
     pod(scene.GetSSAOSettings());
     pod(scene.GetContactShadowSettings());
+    pod(scene.GetNormalFilterSettings());
     pod(scene.GetShadowPcssSettings());
     pod(scene.GetSsrSettings());
     pod(scene.GetSsgiSettings());

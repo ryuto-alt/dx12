@@ -1142,6 +1142,7 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 | `dx12_get_ssr` / `dx12_set_ssr` | スクリーン空間反射 |
 | `dx12_get_ssgi` / `dx12_set_ssgi` | スクリーン空間 GI |
 | `dx12_get_contact_shadow` / `dx12_set_contact_shadow` | コンタクトシャドウ |
+| `dx12_get_normal_filter` / `dx12_set_normal_filter` | 法線マップフィルタリング（分散→ラフネス / 平均法線の復元。既定 ON）|
 | `dx12_get_shadow_pcss` / `dx12_set_shadow_pcss` | PCSS ソフトシャドウ |
 | `dx12_get_dxr` / `dx12_set_dxr` | レイトレーシング（対応 GPU のみ）|
 | `dx12_get_taa` / `dx12_set_taa` | TAA |

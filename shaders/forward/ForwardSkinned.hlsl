@@ -189,6 +189,10 @@ float4 PSMain(PSInput input) : SV_TARGET
     ApplyDecals(input.worldPos, input.positionSV.xy, input.viewDepth,
                 albedo, N, metallic, roughness, decalEmissive);
 
+    // ===== 法線マップフィルタリング（分散 → ラフネス / 平均法線の復元）=====
+    // ★デカールの後・ライティングの前。normalFilterParams.x=0 なら完全に恒等。
+    FilterShadingNormal(N, roughness, normalize(input.worldNormal), normalFilterParams);
+
     float3 V = normalize(cameraPos - input.worldPos);
     float3 L = normalize(-lightDir);
 
