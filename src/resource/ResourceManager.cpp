@@ -110,6 +110,35 @@ int64_t FileStamp(const std::string& path)
     return static_cast<int64_t>(t.time_since_epoch().count());
 }
 
+// テクスチャ 1 枚をディスク(VFS 優先)から読む。★初回ロードと dx12_reload_assets の
+// 再読込は必ずこの 1 本を通すこと。VFS 経路(LoadFromMemory)と生ファイル経路
+// (LoadFromFile)は **BC 圧縮キャッシュのキーの作り方が違う**（前者は元バイト列の
+// ハッシュ、後者は パス+サイズ+更新時刻）。経路を分けると、同じ画像に対して
+// .texcache が 2 系統でき、再読込のたびに BC7 圧縮をやり直す羽目になる（実際に踏んだ）。
+std::unique_ptr<Texture> LoadTextureFromDisk(GraphicsDevice& device,
+                                             ID3D12GraphicsCommandList* cmdList,
+                                             const std::wstring& filePath,
+                                             bool srgb, TextureUsage usage, u32 maxDimension)
+{
+    // 拡張子から formatHint を決定 (.dds → "dds"、それ以外 → "")
+    const auto dotPos = filePath.rfind(L'.');
+    const std::string formatHint =
+        (dotPos != std::wstring::npos &&
+         (filePath.substr(dotPos) == L".dds" || filePath.substr(dotPos) == L".DDS"))
+        ? "dds" : "";
+
+    auto bytes = vfs::ReadAssetAbs(filePath);
+    if (!bytes.empty())
+    {
+        auto tex = TextureLoader::LoadFromMemory(
+            device, cmdList, bytes.data(), bytes.size(), formatHint.c_str(), srgb, usage,
+            /*cacheKey=*/PathResolver::WideToUtf8(filePath), maxDimension);
+        if (tex) return tex;
+    }
+    // VFS が空（ディスクモード / マウント前 / ファイル不在）なら元のファイル読み込みへ
+    return TextureLoader::LoadFromFile(device, cmdList, filePath, srgb, usage, maxDimension);
+}
+
 std::wstring MakeTextureCacheKey(const std::wstring& path, bool srgb, TextureUsage usage,
                                  uint32_t maxDim)
 {
@@ -141,35 +170,10 @@ Texture* ResourceManager::GetOrLoadTexture(
         return it->second.texture.get();
     }
 
-    // VFS 経由で読み込みを試みる（ゲームモード: pak から復号+展開、ディスクモード: ルーズファイル）
-    // 拡張子から formatHint を決定 (.dds → "dds"、それ以外 → "")
-    std::unique_ptr<Texture> texture;
-    {
-        const auto dotPos = filePath.rfind(L'.');
-        const std::string formatHint =
-            (dotPos != std::wstring::npos &&
-             (filePath.substr(dotPos) == L".dds" || filePath.substr(dotPos) == L".DDS"))
-            ? "dds" : "";
-
-        auto bytes = vfs::ReadAssetAbs(filePath);
-        if (!bytes.empty())
-        {
-            texture = TextureLoader::LoadFromMemory(
-                *m_device, cmdList,
-                bytes.data(), bytes.size(),
-                formatHint.c_str(),
-                srgb, usage,
-                /*cacheKey=*/PathResolver::WideToUtf8(filePath),
-                maxDimension);
-        }
-    }
-
-    // VFS が空（ディスクモード / マウント前 / ファイル不在）なら元のファイル読み込みにフォールバック
-    if (!texture)
-    {
-        texture = TextureLoader::LoadFromFile(*m_device, cmdList, filePath, srgb, usage,
-                                              maxDimension);
-    }
+    // VFS 経由で読み込みを試みる（ゲームモード: pak から復号+展開、ディスクモード: ルーズファイル）。
+    // 経路は再読込と共通（LoadTextureFromDisk のコメント参照）。
+    std::unique_ptr<Texture> texture =
+        LoadTextureFromDisk(*m_device, cmdList, filePath, srgb, usage, maxDimension);
 
     if (!texture)
     {
@@ -389,8 +393,8 @@ AssetReloadResult ResourceManager::ReloadChangedAssets(ID3D12GraphicsCommandList
             continue;
         }
 
-        auto fresh = TextureLoader::LoadFromFile(*m_device, cmdList, entry.path,
-                                                 entry.srgb, entry.usage, entry.maxDimension);
+        auto fresh = LoadTextureFromDisk(*m_device, cmdList, entry.path,
+                                         entry.srgb, entry.usage, entry.maxDimension);
         if (!fresh)
         {
             out.skipped.push_back(u8 + ": 読み込みに失敗(古い実体のまま)");
