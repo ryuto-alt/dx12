@@ -19,7 +19,17 @@ Texture2D    gAux   : register(t1);  // パス3: 半解像度ボケ結果
 Texture2D    gDepth : register(t2);  // パス1/3: 深度(R32_FLOAT)
 SamplerState gSamp  : register(s0);
 
-static float ViewZ(float d) { return texelP.w / max(d - texelP.z, 1e-6); }
+// ★DoF が実用にならなかった真犯人（2026-09-01）。
+//   viewZ = projB / (d - projA)。projA = proj._33 > 1、projB = proj._43 < 0 なので
+//   【分母は常に負】。旧実装は max(den, 1e-6) でクランプしていたため、分母が常に 1e-6 に
+//   潰れて viewZ が -80000 のような値になり、CoC が画面全体で ±1 に張り付いていた
+//   （＝「合っているはずの設定なのに画面全体がボケる」）。RenderDebug.hlsl は同じ罠を
+//   既に踏んで直してあり、そちらと同じ書き方に揃える。
+static float ViewZ(float d)
+{
+    float den = d - texelP.z;
+    return texelP.w / (abs(den) < 1e-8 ? -1e-8 : den);
+}
 
 static float CocAt(float2 uvFull)
 {
