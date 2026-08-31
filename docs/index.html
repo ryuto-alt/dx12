@@ -31,7 +31,14 @@
   --radius:14px; --radius-sm:10px;
 }
 *{box-sizing:border-box}
-html{scroll-behavior:smooth}
+html{scroll-behavior:smooth; -webkit-text-size-adjust:100%}
+section[id]{scroll-margin-top:calc(var(--header-h) + 14px)}
+/* ★グリッド/フレックスの子は既定 min-width:auto なので、中の pre や
+   nowrap な code が親を押し広げ、ページ全体が横に溢れる（スマホで文章が切れる）。
+   溢れは中のスクローラ（pre / .tbl-wrap）に閉じ込める。 */
+.shell,.main,.wrap,.doc,section,.steps>*,.bento>*,.compare>*,.hero-grid>*,.bigfeat>*{min-width:0}
+.steps{grid-template-columns:minmax(0,1fr)}
+pre,.codecard,.tbl-wrap,img{max-width:100%}
 @media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}}
 body{
   margin:0; background:var(--bg); color:var(--text); font-family:var(--font-body);
@@ -68,6 +75,7 @@ a:hover{color:#8db6ff}
 .gh-btn:active{transform:translateY(1px)}
 .menu-btn{display:none; margin-left:auto; background:var(--panel-2); border:1px solid var(--border-2); color:var(--text); width:40px; height:40px; border-radius:9px; cursor:pointer; align-items:center; justify-content:center}
 .menu-btn svg{width:20px;height:20px}
+.menu-btn .mlabel{display:none; font-size:13px; font-weight:600; margin-left:7px}
 
 /* ---------- Layout ---------- */
 .shell{position:relative; z-index:1; max-width:var(--content-max); margin:0 auto; display:grid; grid-template-columns:var(--sidebar-w) minmax(0,1fr); gap:0;}
@@ -133,6 +141,7 @@ pre::-webkit-scrollbar-thumb{background:#2c2d34; border-radius:8px}
 pre code{font-family:inherit; color:#d6d8de; white-space:pre}
 .copy-btn{position:absolute; top:8px; right:8px; font-family:var(--font-body); font-size:11.5px; color:var(--text-2); background:var(--panel-2); border:1px solid var(--border-2); border-radius:7px; padding:4px 9px; cursor:pointer; opacity:0; transition:opacity .15s, color .15s, border-color .15s}
 pre:hover .copy-btn{opacity:1}
+@media (hover:none){ .copy-btn{opacity:.85} }   /* ★タッチ端末は hover が無いので常時表示 */
 .copy-btn:hover{color:var(--text); border-color:var(--accent-line)}
 .copy-btn.done{color:var(--good); border-color:rgba(111,207,69,.5)}
 code.inl{font-family:var(--font-mono); font-size:.88em; background:var(--group); border:1px solid var(--border); border-radius:6px; padding:1.5px 6px; color:#cdd0d8}
@@ -246,12 +255,13 @@ footer{position:relative; z-index:1; border-top:1px solid var(--border); margin-
     transition:transform .25s ease; z-index:55;
   }
   .sidebar.open{transform:none}
+  .sidebar a.s{padding:10px 12px}          /* ドロワーは指で押すのでタップ領域を広げる */
   .menu-btn{display:flex}
   .topnav{display:none}
   .main{padding:0 22px 100px}
   .overlay.show{display:block; position:fixed; inset:var(--header-h) 0 0 0; background:rgba(0,0,0,.5); z-index:54}
 }
-@media (max-width:760px){
+@media (max-width:860px){
   .hero-grid{grid-template-columns:1fr; gap:26px}
   .hero{padding:40px 0 26px}
   .bento{grid-template-columns:1fr}
@@ -260,6 +270,107 @@ footer{position:relative; z-index:1; border-top:1px solid var(--border); margin-
   .bigfeat .vis{border-left:0; border-top:1px solid var(--border)}
   .compare{grid-template-columns:1fr}
   .foot-in{grid-template-columns:1fr; gap:24px}
+}
+/* ---------- スマホ（縦持ち） ---------- */
+@media (max-width:620px){
+  :root{--header-h:56px}
+  body{font-size:15.5px; line-height:1.75}
+
+  .topbar{padding:0 14px; gap:10px}
+  .brand .wm{font-size:15px}
+  .brand img{width:26px; height:26px}
+  .brand .chip{font-size:10.5px; padding:2px 7px}
+  .menu-btn{width:auto; height:42px; padding:0 13px}
+  .menu-btn .mlabel{display:inline}
+
+  .main{padding:0 16px 80px}
+  .sidebar{width:min(88vw,300px); padding:20px 12px 60px 16px}
+  .sidebar a.s{padding:10px 12px; font-size:14.5px}          /* タップ領域を広げる */
+  .nav-group{margin-bottom:18px}
+
+  .hero{padding:28px 0 20px}
+  .hero h1{font-size:clamp(1.75rem,7.6vw,2.25rem); line-height:1.2}
+  .hero p.lead{font-size:15.5px; max-width:none}
+  .hero .kick{font-size:11px; margin-bottom:16px}
+  .hero-stats{display:grid; grid-template-columns:1fr 1fr; gap:14px 18px; margin-top:22px}
+  .cta-row .btn{flex:1 1 46%; justify-content:center; padding:12px 14px; font-size:14.5px}
+
+  .doc{margin-top:44px}
+  .sec-head{gap:10px}
+  .sec-head h2{font-size:1.38rem}
+  .sec-sub{font-size:14.5px}
+  h3{font-size:1.06rem}
+
+  /* 表: 入れ子の横スクロールはスマホで操作しづらいので、折り返して 1 画面に収める */
+  table{min-width:0; font-size:13px}
+  thead th{padding:9px 11px; font-size:11px}
+  tbody td{padding:9px 11px}
+  td code, th code{white-space:normal; overflow-wrap:anywhere; font-size:12px}
+  td, th{overflow-wrap:anywhere}
+  .tbl-wrap{margin:14px 0; border-radius:10px}
+  tbody td:first-child{min-width:7em}
+
+  /* コードは折り返さず横スクロール（意味が壊れるため）。ページ側には溢れさせない */
+  /* コピーボタンを常時出す関係で、1 行目に被らないよう上を空ける */
+  pre{font-size:12px; padding:32px 14px 13px; margin:14px 0; line-height:1.6}
+  .copy-btn{top:6px; right:6px; padding:7px 12px; font-size:12px; background:var(--group)}
+  code.inl{overflow-wrap:anywhere}
+
+  /* ★一部の .bento は HTML 側の style= で列数を指定しているので、
+     インラインスタイルに勝てるよう !important で 1 列へ落とす */
+  .bento{grid-template-columns:1fr !important; gap:12px}
+  .card{padding:16px}
+  .bigfeat .txt{padding:18px 16px}
+  .bigfeat .vis{padding:14px}
+  .bigfeat .txt h3{font-size:1.1rem}
+  .codecard .bar{padding:9px 12px}
+  .note{padding:12px 13px; gap:10px; font-size:14px}
+  .step{padding:15px 15px 16px}
+  .step::before{position:static; float:left; margin:1px 10px 2px 0; width:26px; height:26px; font-size:13px}
+  .step h4{overflow:hidden}                      /* バッジの隣に見出しを置く */
+  .step p, .step pre, .step ul{clear:both}
+  .iconstrip .it{font-size:12.5px; padding:6px 10px}
+  .pill{font-size:12px}
+
+  footer{padding:32px 16px 48px}
+  .foot-bottom{justify-content:flex-start; gap:6px}
+}
+
+/* ---------- 小さめのスマホ ---------- */
+@media (max-width:380px){
+  .main{padding:0 13px 72px}
+  .hero h1{font-size:1.62rem}
+  pre{font-size:11.5px; padding:12px 12px}
+  table{font-size:12.5px}
+  thead th, tbody td{padding:8px 9px}
+}
+
+/* ---------- 横持ち（高さが足りないとき）---------- */
+@media (max-height:520px) and (orientation:landscape){
+  .hero{padding:22px 0 16px}
+  .sidebar{padding-bottom:40px}
+}
+/* ---------- スマホ: 2列の表は積み重ねて読ませる ---------- */
+@media (max-width:480px){
+  .tbl-wrap:has(table:not(:has(thead th:nth-child(3)))){border:0; border-radius:0; overflow:visible}
+  table:not(:has(thead th:nth-child(3))){display:block}
+  table:not(:has(thead th:nth-child(3))) thead{display:none}
+  table:not(:has(thead th:nth-child(3))) tbody{display:block}
+  table:not(:has(thead th:nth-child(3))) tbody tr{
+    display:block; background:var(--panel); border:1px solid var(--border);
+    border-radius:11px; padding:11px 13px; margin-bottom:9px;
+  }
+  table:not(:has(thead th:nth-child(3))) tbody tr:hover td{background:transparent}
+  table:not(:has(thead th:nth-child(3))) tbody td{
+    display:block; padding:0; border:0; min-width:0;
+  }
+  table:not(:has(thead th:nth-child(3))) tbody td:first-child{
+    color:var(--text); font-weight:600; margin-bottom:5px;
+    padding-bottom:6px; border-bottom:1px solid var(--border);
+  }
+  table:not(:has(thead th:nth-child(3))) tbody td:first-child code{color:var(--accent-light)}
+  /* 積み重ねなら幅に余裕があるので、識別子は途中で切らない */
+  table:not(:has(thead th:nth-child(3))) td code{overflow-wrap:normal; word-break:keep-all}
 }
 </style>
 </head>
@@ -280,8 +391,9 @@ footer{position:relative; z-index:1; border-top:1px solid var(--border); margin-
       <img src="img/github.png" alt="" /> GitHub
     </a>
   </nav>
-  <button class="menu-btn" id="menuBtn" aria-label="メニュー" aria-expanded="false">
+  <button class="menu-btn" id="menuBtn" aria-label="目次を開く" aria-expanded="false">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    <span class="mlabel">目次</span>
   </button>
 </header>
 
