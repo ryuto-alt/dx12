@@ -1067,7 +1067,7 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 ### 10-5. マテリアル・シェーダー
 | ツール | 説明 |
 |---|---|
-| `dx12_set_pbr` | metallic / roughness / emissive などの数値 |
+| `dx12_set_pbr` | metallic / roughness / UV スケール / **透明**（`alphaMode` = auto / opaque / mask / blend、`alphaCutoff`、`opacity`）|
 | `dx12_set_color` | 基本色（頂点色の乗算）|
 | `dx12_set_texture` | スロット指定でテクスチャ上書き（albedo / normal / metalRoughness）|
 | `dx12_material_apply` | **PBR 4 点セット（BaseColor / Normal / ORM / Height）を 1 回で**。素材フォルダから用途を推定 |

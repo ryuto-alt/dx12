@@ -205,7 +205,7 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_rename_entity` | `{entity:int, name:string}` | `{name}` ※重複は連番付与 |
 | `dx12_select_entity` | `{entity:int}` | `{selected}` |
 | `dx12_focus_camera` | `{entity:int}` | `{cameraPos:[x,y,z], target, distance}` |
-| `dx12_set_pbr` | `{entity:int, metallic?:f, roughness?:f, uvScaleU?:f, uvScaleV?:f}` | `{entityId, metallic, roughness, uvScaleU, uvScaleV}` |
+| `dx12_set_pbr` | `{entity:int, metallic?:f, roughness?:f, uvScaleU?:f, uvScaleV?:f, alphaMode?:"auto"|"opaque"|"mask"|"blend", alphaCutoff?:f, opacity?:f}` | `{entityId, metallic, roughness, uvScaleU, uvScaleV, alphaMode, alphaCutoff, opacity}` ※**透明**は `alphaMode`。既定の `auto` はモデル側（glTF の `alphaMode`）に従う。`mask` は `baseColor.a < alphaCutoff` を discard（葉・フェンス・角膜。**影も同じ形に抜ける**）、`blend` は半透明（不透明の後にカメラから遠い順で描く。深度を書かず影も落とさない）。`opacity` は 1 未満なら `alphaMode` を省いても半透明になる（ガラス・水面）。詳しくは docs/AUTHORING.md §7.5 |
 | `dx12_set_mesh_shader` | `{entity:int, shaderPath?:string(assets/shaders相対), alphaBlend?:bool}` | `{entityId, shaderPath, alphaBlend, skinnedFallbackWarning}` ※shaderPath省略/空文字で既定Forwardに戻す。alphaBlend省略時は既存値を維持、既定false(不透明固定でPSのalpha出力は無視される)。true でSrcAlpha/InvSrcAlphaブレンド(DepthWrite OFF) |
 | `dx12_set_sprite_shader` | `{entity:int, shaderPath?:string(assets/shaders相対), alphaBlend?:bool}` | `{entityId, shaderPath, alphaBlend, worldSpaceWarning}` ※Sprite2D専用・world-spaceのみ対応。MeshRendererのシェーダーとは頂点/ルートシグネチャの契約が異なる(docs/AUTHORING.md §6.1)。shaderPath省略/空文字で既定Spriteシェーダーに戻す |
 | `dx12_set_scene_settings` | `{skybox:{envMapPath?, iblIntensity?, skyboxIntensity?, drawSkybox?}}` | `{applied, envMapRebake}` |

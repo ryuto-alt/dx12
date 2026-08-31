@@ -2045,6 +2045,17 @@ args = [<span class="tok-s">"&lt;REPO&gt;/index.ts"</span>]</code></pre>
 <span class="tok-c">// → submeshes[{index, name, materialName, triangles, worldSize …}]</span>
 <span class="tok-c">//   index は dx12_pick の submeshIndex と同じ並び。worldSize が桁違いのものが犯人</span></code></pre>
 
+        <h3>2.6 葉を抜く・ガラスを透かす（透明）</h3>
+<pre><code><span class="tok-c">// 既定は全部不透明。glTF に alphaMode があればそのまま効く（auto）</span>
+<span class="tok-fn">dx12_set_pbr</span>(name:<span class="tok-s">"Leaf"</span>, alphaMode:<span class="tok-s">"mask"</span>, alphaCutoff:<span class="tok-n">0.5</span>)
+<span class="tok-c">// ★mask は影も同じ形に抜ける（専用の深度パスで同じ cutoff を読む）</span>
+<span class="tok-c">//   これが無いと「本体は葉の形なのに影は板」になる</span>
+
+<span class="tok-c">// ガラス・水面は opacity だけでよい（1 未満なら alphaMode を省いても半透明）</span>
+<span class="tok-fn">dx12_set_pbr</span>(name:<span class="tok-s">"Window"</span>, opacity:<span class="tok-n">0.3</span>, roughness:<span class="tok-n">0.05</span>)
+<span class="tok-c">// 半透明は不透明の後にカメラから遠い順で描く。深度は書かず影も落とさない</span>
+<span class="tok-c">// ← 戻すなら alphaMode:"auto"、opacity:1</span></code></pre>
+
         <h3>3. 地形を作って質感まで付ける</h3>
 <pre><code><span class="tok-fn">dx12_terrain_create</span>(resolution:<span class="tok-n">256</span>, worldSize:<span class="tok-n">400</span>, maxHeight:<span class="tok-n">120</span>)
 <span class="tok-fn">dx12_terrain_generate</span>(preset:<span class="tok-s">"mountains"</span>, seed:<span class="tok-n">3</span>)
