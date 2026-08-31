@@ -48,11 +48,16 @@ cbuffer PBRMaterial : register(b2)
 {
     float defaultMetallic;
     float defaultRoughness;
+    // bit0=hasNormalMap, bit1=hasMetalRoughness, bit2=アルファテスト有効,
+    // bit8..15=alphaCutoff(8bit 量子化)。詳細は renderer/Material.h。
     uint  pbrFlags;
     // ★エンティティ毎の一律色ティント（RGB888。0xFFFFFF = 白 = 影響なし）。
     //   共有 Mesh の頂点バッファを塗り替える旧実装だと、同じモデルを使う他のエンティティまで
     //   同じ色になり、シーン読み込みでは最後に読まれた 1 体の色が全員に残っていた。
     //   ★インスタンス描画では白が入り、色は per-instance の input.color 側で掛かる。
+    // ★上位 8bit(bit24..31) は「不透明度(opacity)」を 8bit 量子化したもの。255 = 不透明。
+    //   ルート定数の予算が 61/64 で埋まっていて float を足せないため、空きバイトへ詰めてある
+    //   （b2 のバイトレイアウトは 1 バイトも変わっていない）。詳細は renderer/Material.h。
     uint  packedTint;
     // UV 変換 (xy=スケール, zw=オフセット)。MeshRenderer の UV スクロール/連番アニメ用。
     float4 uvScaleOffset;
@@ -158,6 +163,20 @@ float4 PSMain(PSInput input) : SV_TARGET
                                      (packedTint      ) & 0xFF) / 255.0;
     float4 albedo4 = g_albedo.Sample(g_sampler, uv) * input.color * float4(objectTint, 1.0);
     float3 albedo = albedo4.rgb;
+
+    // ===== 透明（アルファクリップ / アルファブレンド）=====
+    // ALPHA_TEST は -D ALPHA_TEST=1 でコンパイルした **専用バリアント**でのみ有効
+    // （clip を含む PS は early-Z が効かなくなるので、不透明パスの PS には絶対に混ぜない）。
+    // cutoff は b2 の pbrFlags bit8..15 に 8bit 量子化して載っている。
+#ifdef ALPHA_TEST
+    {
+        const float cutoff = float((pbrFlags >> 8) & 0xFF) / 255.0;
+        clip(albedo4.a - cutoff);
+    }
+#endif
+    // 不透明度。BLEND 用 PSO でのみ意味を持つ（不透明 PSO はブレンド無効なので無視される）。
+    // ★不透明時は 255 が入る。0 が入ると全部消えるので CPU 側は必ず書くこと。
+    const float gOpacity = float((packedTint >> 24) & 0xFF) / 255.0;
 
     float3 N;
     if (pbrFlags & 1u)
@@ -278,5 +297,5 @@ float4 PSMain(PSInput input) : SV_TARGET
     color = ApplyDecalDebug(color, input.positionSV.xy, input.worldPos);
 
     // リニア HDR のまま scene RT へ出力（トーンマップ+ガンマは PostProcess 最終段）
-    return float4(color, albedo4.a);
+    return float4(color, albedo4.a * gOpacity);
 }

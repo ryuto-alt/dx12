@@ -66,6 +66,73 @@ void Application::RecreateForwardPsos()
         }
     }
 
+    // ---- MASK（アルファクリップ）バリアント ----------------------------------
+    // PS だけ ForwardMask_PS（-D ALPHA_TEST）に差し替える。頂点処理も PSO の他の状態も同じ。
+    // ★clip を含む PS は early-Z が効かないので不透明とは別 PSO にしてある（性能の分離）。
+    {
+        auto psMask = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ForwardMask_PS.cso");
+        if (psMask.GetSize() > 0)
+        {
+            PipelineStateBuilder mb;
+            mb.SetRootSignature(m_rootSignature->Get())
+              .SetVertexShader(vs.GetData(), vs.GetSize())
+              .SetPixelShader(psMask.GetData(), psMask.GetSize())
+              .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
+              .SetRenderTargetFormat(kSceneColorFormat)
+              .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+              .SetDepthEnabled(true)
+              .SetCullMode(D3D12_CULL_MODE_NONE);
+            if (!m_pipelineStateMask) m_pipelineStateMask = std::make_unique<PipelineState>();
+            m_pipelineStateMask->Initialize(*m_graphicsDevice, mb);
+
+            mb.SetDepthFunc(D3D12_COMPARISON_FUNC_LESS_EQUAL);
+            if (!m_pipelineStateMaskLEqual) m_pipelineStateMaskLEqual = std::make_unique<PipelineState>();
+            m_pipelineStateMaskLEqual->Initialize(*m_graphicsDevice, mb);
+
+            auto vsInstM = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ForwardInstanced_VS.cso");
+            if (vsInstM.GetSize() > 0)
+            {
+                PipelineStateBuilder ib;
+                ib.SetRootSignature(m_rootSignature->Get())
+                  .SetVertexShader(vsInstM.GetData(), vsInstM.GetSize())
+                  .SetPixelShader(psMask.GetData(), psMask.GetSize())
+                  .SetInputLayout(Mesh::GetInstancedInputLayout(), Mesh::GetInstancedInputLayoutCount())
+                  .SetRenderTargetFormat(kSceneColorFormat)
+                  .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+                  .SetDepthEnabled(true)
+                  .SetCullMode(D3D12_CULL_MODE_NONE);
+                if (!m_pipelineStateInstMask) m_pipelineStateInstMask = std::make_unique<PipelineState>();
+                m_pipelineStateInstMask->Initialize(*m_graphicsDevice, ib);
+
+                ib.SetDepthFunc(D3D12_COMPARISON_FUNC_LESS_EQUAL);
+                if (!m_pipelineStateInstMaskLEqual) m_pipelineStateInstMaskLEqual = std::make_unique<PipelineState>();
+                m_pipelineStateInstMaskLEqual->Initialize(*m_graphicsDevice, ib);
+            }
+        }
+        else
+        {
+            Logger::Warn("ForwardMask_PS.cso が無い: アルファクリップ(MASK)は不透明として描画されます");
+        }
+    }
+
+    // ---- BLEND（アルファブレンド）バリアント ---------------------------------
+    // 深度書き込み OFF ＋ 深度テスト LESS。半透明は BuildDrawList が後→前に並べて最後に描く。
+    {
+        PipelineStateBuilder bb;
+        bb.SetRootSignature(m_rootSignature->Get())
+          .SetVertexShader(vs.GetData(), vs.GetSize())
+          .SetPixelShader(ps.GetData(), ps.GetSize())
+          .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
+          .SetRenderTargetFormat(kSceneColorFormat)
+          .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+          .SetDepthEnabled(true)
+          .SetDepthWrite(false)
+          .SetAlphaBlendEnabled(true)
+          .SetCullMode(D3D12_CULL_MODE_NONE);
+        if (!m_pipelineStateBlend) m_pipelineStateBlend = std::make_unique<PipelineState>();
+        m_pipelineStateBlend->Initialize(*m_graphicsDevice, bb);
+    }
+
     // サムネイル描画用バリアント。ModelThumbnailRenderer の RT は R8G8B8A8 で
     // ポストプロセス(トーンマップ)を通らないため、シェーダー内で ACES+ガンマまで
     // 済ませる LDR 直出力の PS を使う。
@@ -100,6 +167,44 @@ void Application::RecreateSkinnedPsos()
     builder.SetDepthFunc(D3D12_COMPARISON_FUNC_LESS_EQUAL);
     if (!m_skinnedPipelineStateLEqual) m_skinnedPipelineStateLEqual = std::make_unique<PipelineState>();
     m_skinnedPipelineStateLEqual->Initialize(*m_graphicsDevice, builder);
+
+    // MASK（髪・まつ毛・葉を持つキャラ）。PS だけ差し替える。
+    {
+        auto psMask = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ForwardMask_PS.cso");
+        if (psMask.GetSize() > 0)
+        {
+            PipelineStateBuilder mb;
+            mb.SetRootSignature(m_rootSignature->Get())
+              .SetVertexShader(vs.GetData(), vs.GetSize())
+              .SetPixelShader(psMask.GetData(), psMask.GetSize())
+              .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
+              .SetRenderTargetFormat(kSceneColorFormat)
+              .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+              .SetDepthEnabled(true)
+              .SetCullMode(D3D12_CULL_MODE_NONE);
+            if (!m_skinnedPipelineStateMask) m_skinnedPipelineStateMask = std::make_unique<PipelineState>();
+            m_skinnedPipelineStateMask->Initialize(*m_graphicsDevice, mb);
+            mb.SetDepthFunc(D3D12_COMPARISON_FUNC_LESS_EQUAL);
+            if (!m_skinnedPipelineStateMaskLEqual) m_skinnedPipelineStateMaskLEqual = std::make_unique<PipelineState>();
+            m_skinnedPipelineStateMaskLEqual->Initialize(*m_graphicsDevice, mb);
+        }
+    }
+    // BLEND
+    {
+        PipelineStateBuilder bb;
+        bb.SetRootSignature(m_rootSignature->Get())
+          .SetVertexShader(vs.GetData(), vs.GetSize())
+          .SetPixelShader(ps.GetData(), ps.GetSize())
+          .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
+          .SetRenderTargetFormat(kSceneColorFormat)
+          .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+          .SetDepthEnabled(true)
+          .SetDepthWrite(false)
+          .SetAlphaBlendEnabled(true)
+          .SetCullMode(D3D12_CULL_MODE_NONE);
+        if (!m_skinnedPipelineStateBlend) m_skinnedPipelineStateBlend = std::make_unique<PipelineState>();
+        m_skinnedPipelineStateBlend->Initialize(*m_graphicsDevice, bb);
+    }
 }
 
 void Application::RecreateGridPso()
@@ -230,6 +335,50 @@ void Application::RecreateShadowPsos()
         if (!m_shadowSkinnedPipelineState) m_shadowSkinnedPipelineState = std::make_unique<PipelineState>();
         m_shadowSkinnedPipelineState->Initialize(*m_graphicsDevice, builder);
     }
+
+    // MASK マテリアル用（葉の影を葉の形に抜く）
+    RecreateDepthMaskPsos(/*forShadow*/ true);
+}
+
+// ShadowMask.hlsl バリアントの深度 PSO を 3 本作る（静的 / インスタンシング / スキンド）。
+// depthBias>0 なら影パス用（bias あり）、0 ならカメラの深度プリパス用（bias なし）。
+// PS(clip 入り)を持つので RTV は無しのまま＝深度だけを正しく抜く。
+void Application::RecreateDepthMaskPsos(bool forShadow)
+{
+    const i32 bias      = forShadow ? 8000 : 0;
+    const f32 slopeBias = forShadow ? 2.0f : 0.0f;
+    auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ShadowMask_PS.cso");
+    if (ps.GetSize() == 0)
+    {
+        Logger::Warn("ShadowMask_PS.cso が無い: アルファクリップの影が板のままになります");
+        return;
+    }
+    struct Item { const wchar_t* vsName; bool instanced; std::unique_ptr<PipelineState>* out; };
+    const Item items[3] = {
+        { L"ShadowMask_VS.cso",          false, forShadow ? &m_shadowMaskPSO        : &m_depthPrepassMaskPSO },
+        { L"ShadowMaskInstanced_VS.cso", true,  forShadow ? &m_shadowMaskPSOInst    : &m_depthPrepassMaskPSOInst },
+        { L"ShadowMaskSkinned_VS.cso",   false, forShadow ? &m_shadowMaskPSOSkinned : &m_depthPrepassMaskPSOSkinned },
+    };
+    for (const auto& it : items)
+    {
+        auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + it.vsName);
+        if (vs.GetSize() == 0) continue;
+        PipelineStateBuilder b;
+        b.SetRootSignature(m_rootSignature->Get())
+         .SetVertexShader(vs.GetData(), vs.GetSize())
+         .SetPixelShader(ps.GetData(), ps.GetSize())
+         .SetRenderTargetFormat(DXGI_FORMAT_UNKNOWN)
+         .SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+         .SetDepthEnabled(true)
+         .SetCullMode(D3D12_CULL_MODE_NONE);
+        if (it.instanced)
+            b.SetInputLayout(Mesh::GetInstancedInputLayout(), Mesh::GetInstancedInputLayoutCount());
+        else
+            b.SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount());
+        if (forShadow) b.SetDepthBias(bias, slopeBias);
+        if (!*it.out) *it.out = std::make_unique<PipelineState>();
+        (*it.out)->Initialize(*m_graphicsDevice, b);
+    }
 }
 
 void Application::RecreateDepthPrepassPsos()
@@ -282,6 +431,10 @@ void Application::RecreateDepthPrepassPsos()
         if (!m_depthPrepassSkinnedPSO) m_depthPrepassSkinnedPSO = std::make_unique<PipelineState>();
         m_depthPrepassSkinnedPSO->Initialize(*m_graphicsDevice, builder);
     }
+
+    // MASK マテリアル用（プリパスが葉の隙間まで深度を書くと、その裏の物が
+    // forward の LESS_EQUAL で弾かれて「葉の隙間が真っ黒」になる）
+    RecreateDepthMaskPsos(/*forShadow*/ false);
 }
 
 // 深度+速度プリパス（PrepassMode::DepthVelocityGBuffer）の PSO 3 本。

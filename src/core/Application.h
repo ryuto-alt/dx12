@@ -433,6 +433,13 @@ private:
         // 影パスでは false のまま＝半透明も従来どおり影を落とす。
         bool                skipTransparent = false;
     };
+    // 深度パスで MASK マテリアルを描くための PSO 束（ShadowMask.hlsl のバリアント）。
+    struct DepthMaskPsos
+    {
+        PipelineState* stat = nullptr;
+        PipelineState* inst = nullptr;
+        PipelineState* skin = nullptr;
+    };
     // skipRtCovered: DXR の TLAS に入っているもの（IsRaytracedItem）を描かない。
     //   ★CSM（太陽の影）のパスだけに渡す。RT サン影が有効なとき、CSM は
     //     「RT が担当できないもの（スキンド / 半透明）」だけを描く排他ハイブリッドになる。
@@ -448,7 +455,11 @@ private:
                               // このパスのシャドウマップ 1 テクセルが何メートルか（= 2*半径/解像度）。
                               // >0 のとき「影マップ上で数十テクセルにしかならない物」を粗い LOD へ落とす。
                               // 0 = 無効（カメラの深度プリパスなど、テクセル比が意味を持たないパス）。
-                              f32 cascadeTexelWorld = 0.0f);
+                              f32 cascadeTexelWorld = 0.0f,
+                              // MASK マテリアルを描くための PSO 3 本（静的/インスタンス/スキンド）。
+                              // nullptr なら MASK も従来どおり不透明として深度を書く（＝葉が板になる）。
+                              // 速度+G-Buffer モードでは今のところ nullptr（既知の割り切り）。
+                              const DepthMaskPsos* maskPsos = nullptr);
     // フレーム描画リスト: Transform+MeshRenderer の走査・ワールド行列合成を1フレーム1回だけ行い、
     // メイン/深度プリパス/CSM各カスケード/スポット影/ポイント影の全パスで共有する
     // （従来は最悪 ~20 パス × entt 全走査 + ComputeWorldMatrix 再計算）。
@@ -608,6 +619,9 @@ private:
     void RecreateEmissivePso();          // m_emissivePipelineState (Emissive_VS/PS)
     void RecreateShadowPsos();           // m_shadowPipelineState / m_shadowSkinnedPipelineState
     void RecreateDepthPrepassPsos();     // m_depthPrepassPSO / m_depthPrepassSkinnedPSO
+    // 深度パスの MASK 版 PSO 3 本（ShadowMask.hlsl）。forShadow=true で bias あり(影)、
+    // false で bias なし(カメラの深度プリパス)。RecreateShadowPsos / RecreateDepthPrepassPsos が呼ぶ。
+    void RecreateDepthMaskPsos(bool forShadow);
     void RecreateVelocityPsos();         // m_velocityPSO / Inst / Skinned（深度+速度プリパス）
     void InvalidateTemporalHistory();    // TAA 履歴 + 前フレーム行列を捨てる（シーン切替/Play遷移/リサイズ）
 
@@ -796,6 +810,18 @@ private:
     // 連続ドローを 1 回の DrawIndexedInstanced に畳む。PS は Forward_PS を共用。
     std::unique_ptr<PipelineState>     m_pipelineStateInst;
     std::unique_ptr<PipelineState>     m_pipelineStateInstLEqual;
+    // ---- 透明 -----------------------------------------------------------------
+    // MASK（アルファクリップ）用。PS だけ ForwardMask_PS（clip 入り）に差し替えたバリアント。
+    // ★clip を含む PS は early-Z が効かなくなる＝不透明の PSO と混ぜてはいけない。
+    //   MASK のマテリアルを持つドローだけがこちらへ来るので、不透明の性能は変わらない。
+    std::unique_ptr<PipelineState>     m_pipelineStateMask;
+    std::unique_ptr<PipelineState>     m_pipelineStateMaskLEqual;
+    std::unique_ptr<PipelineState>     m_pipelineStateInstMask;
+    std::unique_ptr<PipelineState>     m_pipelineStateInstMaskLEqual;
+    // BLEND（アルファブレンド）用。深度テスト LESS / 深度書き込み OFF / SrcAlpha-InvSrcAlpha。
+    // ★深度プリパスの有無に関わらず LESS で正しい（半透明はプリパスから除外されるので
+    //   自分の深度がそこに無い。不透明の深度に対しては LESS が正しい遮蔽判定になる）。
+    std::unique_ptr<PipelineState>     m_pipelineStateBlend;
     std::unique_ptr<DescriptorHeap>    m_srvHeap;
     std::unique_ptr<ResourceManager>   m_resourceManager;
     // プロジェクト独自HLSL(上書き/自作)の実行時コンパイル+ホットリロード。エディタモードのみ生成。
@@ -813,6 +839,9 @@ private:
     DiagFrameStats m_diagFrameStats;        // 直近の測定結果（Take で valid を落とす）
     std::unique_ptr<PipelineState>     m_skinnedPipelineState;        // 通常 forward(skinned, LESS)
     std::unique_ptr<PipelineState>     m_skinnedPipelineStateLEqual;  // SSAO 深度プリパス併用時(skinned, LESS_EQUAL)
+    std::unique_ptr<PipelineState>     m_skinnedPipelineStateMask;        // MASK(skinned, LESS)
+    std::unique_ptr<PipelineState>     m_skinnedPipelineStateMaskLEqual;  // MASK(skinned, LESS_EQUAL)
+    std::unique_ptr<PipelineState>     m_skinnedPipelineStateBlend;       // BLEND(skinned)
     std::unique_ptr<PipelineState>     m_gridPipelineState;
     // 地形マテリアル（4 レイヤースプラット）。layerSetPath が空でない Terrain だけが使う。
     std::unique_ptr<PipelineState>     m_terrainPipelineState;        // 通常 forward(LESS)
@@ -836,6 +865,15 @@ private:
     std::unique_ptr<PipelineState>     m_shadowPipelineStateInst;   // 影パスのインスタンシング版
     std::unique_ptr<PipelineState>     m_depthPrepassPSOInst;       // 深度プリパスのインスタンシング版
     std::unique_ptr<PipelineState>     m_shadowSkinnedPipelineState;
+    // ---- 深度パスの MASK 版（ShadowMask.hlsl。UV を渡して baseColor.a < cutoff を discard）----
+    // これが無いと「葉は抜けているのに影は板」になる。影(bias あり)と
+    // カメラの深度プリパス(bias なし)で別 PSO が要るので 3 本 × 2 セット持つ。
+    std::unique_ptr<PipelineState>     m_shadowMaskPSO;
+    std::unique_ptr<PipelineState>     m_shadowMaskPSOInst;
+    std::unique_ptr<PipelineState>     m_shadowMaskPSOSkinned;
+    std::unique_ptr<PipelineState>     m_depthPrepassMaskPSO;
+    std::unique_ptr<PipelineState>     m_depthPrepassMaskPSOInst;
+    std::unique_ptr<PipelineState>     m_depthPrepassMaskPSOSkinned;
     // ---- CSM (Cascaded Shadow Maps, 4分割) ----
     static constexpr u32 kNumCascades = 4;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_shadowMap;        // Texture2DArray(ArraySize=kNumCascades)
@@ -1350,6 +1388,10 @@ private:
 
         bool  hasMeshRenderer = false;
         float materialMetallicOverride  = -1.0f;
+        // 透明のオーバーライド（Play 中に Lua/MCP で変えても Stop で編集時の値へ戻す）
+        int   alphaModeOverride   = -1;
+        float alphaCutoffOverride = -1.0f;
+        float alphaOpacity        = 1.0f;
         float materialRoughnessOverride = -1.0f;
     };
     std::unordered_map<std::string, EntitySnapshot> m_editorSnapshots;

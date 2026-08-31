@@ -25,6 +25,7 @@
 #include <unordered_set>
 #include <vector>
 #include <algorithm>
+#include <cctype>
 #include <random>    // エンティティ GUID の生成
 #include <cstdio>     // GUID の hex 整形
 
@@ -33,6 +34,31 @@ using namespace DirectX;
 
 namespace dx12e
 {
+
+// シーン JSON の "material" ブロックから透明のオーバーライドを読む。
+// ★読み込みは 2 経路（InstantiateEntityJson / ApplyOverrides）あるので必ずここへ一本化すること。
+//   キーが無ければ何もしない＝既存シーンは全部 OPAQUE のまま。
+static void ReadAlphaOverrides(const nlohmann::json& mj, MeshRenderer& mr)
+{
+    if (mj.contains("alphaMode"))
+    {
+        const auto& v = mj["alphaMode"];
+        int mode = -1;
+        if (v.is_string())
+        {
+            std::string m = v.get<std::string>();
+            std::transform(m.begin(), m.end(), m.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (m == "opaque")      mode = 0;
+            else if (m == "mask")   mode = 1;
+            else if (m == "blend")  mode = 2;
+            else if (m == "auto" || m.empty()) mode = -1;
+        }
+        else if (v.is_number_integer()) mode = v.get<int>();
+        mr.alphaModeOverride = (mode >= -1 && mode <= 2) ? mode : -1;
+    }
+    if (mj.contains("alphaCutoff")) mr.alphaCutoffOverride = mj["alphaCutoff"].get<f32>();
+    if (mj.contains("opacity"))     mr.opacity             = mj["opacity"].get<f32>();
+}
 
 // assetsDir プレフィックスを除去して相対パスにする
 static std::string MakeRelative(const std::string& absPath,
@@ -556,6 +582,22 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                     {"metallic",  metallic},
                     {"roughness", roughness}
                 };
+            }
+
+            // ---- 透明（アルファクリップ / アルファブレンド）----
+            // ★書くのは「エンティティ側のオーバーライド」だけ。モデル焼き込みの alphaMode は
+            //   毎回 ModelLoader が読み直すので保存しない（既定のままなら 1 キーも増えない
+            //   ＝既存シーンを開いて保存し直しても JSON は変わらない）。
+            if (mr.alphaModeOverride >= 0 || mr.alphaCutoffOverride >= 0.0f || mr.opacity != 1.0f)
+            {
+                if (!ej.contains("material")) ej["material"] = nlohmann::json::object();
+                if (mr.alphaModeOverride >= 0)
+                {
+                    const char* names[3] = {"opaque", "mask", "blend"};
+                    ej["material"]["alphaMode"] = names[(std::min)(mr.alphaModeOverride, 2)];
+                }
+                if (mr.alphaCutoffOverride >= 0.0f) ej["material"]["alphaCutoff"] = mr.alphaCutoffOverride;
+                if (mr.opacity != 1.0f)             ej["material"]["opacity"]     = mr.opacity;
             }
 
             // UV タイリング
@@ -1695,6 +1737,7 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                     auto& mr = reg.get<MeshRenderer>(e);
                     if (mj.contains("metallic"))  mr.overrideMetallic  = mj["metallic"].get<f32>();
                     if (mj.contains("roughness")) mr.overrideRoughness = mj["roughness"].get<f32>();
+                    ReadAlphaOverrides(mj, mr);
                 }
             }
 
@@ -2229,6 +2272,7 @@ bool SceneSerializer::ApplyOverrides(Scene& scene, const std::string& filePath,
             auto& mr = reg.get<MeshRenderer>(e);
             if (mj.contains("metallic"))  mr.overrideMetallic  = mj["metallic"].get<f32>();
             if (mj.contains("roughness")) mr.overrideRoughness = mj["roughness"].get<f32>();
+            ReadAlphaOverrides(mj, mr);
         }
 
         // RigidBody

@@ -41,7 +41,13 @@ struct DrawItem
     DirectX::XMFLOAT3   aabbMax;
     u32                 lod;          // メインカメラ基準の選択LOD（Mesh 側でクランプされる）
     bool                hasNodeAnim;
-    u32                 sortKey;      // 0=既定static / 1=カスタム不透明 / 2=skinned / 3=カスタム半透明(最後)
+    u32                 sortKey;      // 0=既定static / 1=カスタム不透明 / 2=skinned / 3=半透明(最後)
+    // 透明の分類（エンティティ単位。サブメッシュの最大値）。0=OPAQUE 1=MASK 2=BLEND。
+    // ★BLEND は sortKey=3 に落として「不透明の後に、カメラから遠い順」で描く。
+    //   MASK は不透明パスのまま（深度を書くのでソート不要＝Hi-Z とも喧嘩しない）。
+    u8                  alphaClass;
+    // バウンディング球中心までのカメラ距離。半透明の後→前ソートに使う（LOD 選択で計算済み）。
+    f32                 camDist;
     // 自動インスタンシングのバッチ鍵。0 = インスタンシング不可（従来の per-object 描画）。
     // 同一キー同士は「同じメッシュ・同じLOD・同じマテリアル/PBR値」＝1ドローに畳んで良い。
     u64                 batchKey;

@@ -246,6 +246,20 @@ struct MeshRenderer
         return !SafeGetOverride(materialAsset, mi).empty();
     }
 
+    // ---- 透明（アルファクリップ / アルファブレンド）のエンティティ単位オーバーライド ----
+    // モデル焼き込みの Material::alphaMode を上書きする。既定はどれも「マテリアルに従う」
+    // ＝既存シーンを読んでも全部 OPAQUE のまま＝絵は 1 ピクセルも変わらない。
+    //   alphaModeOverride  : -1=マテリアルに従う / 0=OPAQUE / 1=MASK / 2=BLEND
+    //   alphaCutoffOverride: <0=マテリアルに従う。MASK のしきい値（baseColor.a < cutoff で discard）
+    //   opacity            : Material::baseColorAlpha に掛ける係数。BLEND の不透明度
+    // ★実効値の合成は必ず ResolveAlphaParams()（renderer/Material.h）に一本化すること。
+    //   描画・影パス・深度プリパス・シリアライズが別々の規則を持つと必ず食い違う。
+    // シーン JSON は "material": { "alphaMode": "blend", "alphaCutoff": 0.5, "opacity": 0.3 }
+    // MCP は dx12_set_pbr の alphaMode / alphaCutoff / opacity。
+    int   alphaModeOverride   = -1;
+    float alphaCutoffOverride = -1.0f;
+    float opacity             = 1.0f;
+
     // インスタンシング: 共有メッシュを使う発光弾(Pfx)等は色を頂点バッファに焼かず
     // ここに持つ（setColor が書き込む）。instanced=true の間 setColor は VB を再生成しない。
     DirectX::XMFLOAT4 instanceColor = {1.0f, 1.0f, 1.0f, 1.0f};
