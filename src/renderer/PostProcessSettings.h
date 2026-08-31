@@ -92,9 +92,18 @@ struct PostProcessSettings
 
     // ── 被写界深度 DoF（gather ボケ。透視カメラのみ）──
     bool  dofOn        = false;
-    float dofFocusDist = 8.0f;   // フォーカス距離（カメラからのビュー距離）
-    float dofFocusRange = 5.0f;  // 完全にシャープな範囲の広さ
-    float dofBlurSize  = 12.0f;  // 最大ボケ半径（px）
+    float dofFocusDist = 8.0f;   // フォーカス距離（カメラからのビュー距離, m）
+    float dofFocusRange = 5.0f;  // ★レガシーモード専用（dofAperture<=0 のとき）。シャープな範囲の広さ
+    float dofBlurSize  = 12.0f;  // ボケ半径の上限（px。物理モードでは「絞りを開けても暴れない」ための上限）
+    // ▼ 合焦をエンティティに任せる。空でなければ毎フレームその名前のエンティティまでの
+    //   ビュー距離を dofFocusDist の代わりに使う（見つからなければ dofFocusDist）。
+    //   ＝「被写体に合焦したまま寄る / 回る」が Lua を書かずに作れる。
+    std::string dofFocusName;
+    // ▼ 絞り基準の錯乱円（既定＝物理モード）。0 以下にすると旧 dofFocusRange 方式へ戻る。
+    //   CoC(mm) = |z-zf|/z * f^2 / (N * (zf-f))  を 35mm 判センサ(高さ 24mm)で px 化する。
+    //   ＝画面解像度に依存する dofBlurSize を「上限」へ追いやり、絵作りは F 値だけで決まる。
+    float dofAperture    = 2.8f;  // F 値（小さいほど浅い）
+    float dofFocalLength = 0.0f;  // 焦点距離(mm)。0 ならカメラの FOV から導出（画角と一致する）
 
     // ── カメラモーションブラー（深度再構成方式・velocity buffer 不要）──
     bool  motionBlurOn = false;
@@ -147,6 +156,7 @@ struct PostProcessSettings
     B(godraysOn)    F(grIntensity) F(grDensity) F(grDecay)                        \
     B(lensflareOn)  F(lfIntensity) I(lfGhosts) F(lfDispersal) F(lfHalo) F(lfChroma) \
     B(dofOn)        F(dofFocusDist) F(dofFocusRange) F(dofBlurSize)               \
+    S(dofFocusName) F(dofAperture)   F(dofFocalLength)                            \
     B(motionBlurOn) F(mbStrength) I(mbSamples)                                    \
     B(fxaaOn) B(debandOn)
 

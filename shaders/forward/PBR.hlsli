@@ -85,4 +85,40 @@ float3 PerturbNormal(float3 worldNormal, float3 worldTangent, float tangentW,
     return normalize(mul(tangentNormal, TBN));
 }
 
+
+// ---------------------------------------------------------------------------
+// 法線マップフィルタリング（specular anti-aliasing / 分散→ラフネス）
+//
+// 1 画素の中に法線マップの山谷が何個も入る（高タイリング / 遠景 / グレージング角）と、
+// 1 サンプルの法線はもはや画素を代表しない。本来評価したいのは「画素内の法線分布」なので、
+//   ① 分布の広がり（分散）を GGX の α へ足し込む      → 鏡面のちらつきが消える
+//   ② 分散が大きい画素は法線を幾何法線へ寄せる          → N·L の符号反転（黒斑点）が消える
+// を行う。分散はスクリーン空間の法線微分から見積もる（Kaplanyan / Tokuyoshi の流儀）。
+// これならタイリング倍率・距離・視野角を全部含んだ「実効的な」分散が 1 画素ごとに取れる。
+//
+// ★ミップに焼かない理由: 法線マップは BC5_UNORM(RG 2ch) で z を再構成しているので、
+//   平均法線の長さ（＝分散）がテクスチャに残らない（常に単位長に戻る）。
+//
+// params: .x=強さ(0 で恒等) .y=α に足せる量の上限 .z=幾何法線へ寄せる強さ
+void FilterShadingNormal(inout float3 N, inout float roughness, float3 Ng, float3 params)
+{
+    // ★ddx/ddy は分岐の外で取る（勾配命令を非一様な制御フローに入れない）。
+    float3 dNx = ddx(N);
+    float3 dNy = ddy(N);
+    if (params.x <= 0.0) return;
+
+    // 画素内の法線分散（スクリーン空間の 1 画素分の広がり）
+    float variance = 0.25 * params.x * (dot(dNx, dNx) + dot(dNy, dNy));
+
+    // ① 分散 → ラフネス。GGX の幅は α = roughness^2 なので α 側に足す。
+    float alpha = roughness * roughness;
+    alpha = saturate(alpha + min(2.0 * variance, max(params.y, 0.0)));
+    roughness = sqrt(alpha);
+
+    // ② 平均法線の復元。分散が 1 に近い＝画素内で法線が散り散り＝平均は幾何法線。
+    //    normalize の前に lerp するので、t=1 でちょうど幾何法線になる。
+    float t = saturate(variance * params.z);
+    N = normalize(lerp(N, Ng, t));
+}
+
 #endif // PBR_HLSLI

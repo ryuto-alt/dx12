@@ -29,6 +29,15 @@ public:
     void CreateArraySRV(GraphicsDevice& device, D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle);
     void FinishUpload();
 
+    // 別インスタンスとして読み直したテクスチャの中身をこのオブジェクトへ引き取る。
+    // ★SRV インデックスだけは自分のものを保つ ── Material の 3 連続 SRV ブロックや
+    //   スプライト/UI が握っているのは「この Texture のアドレス」と「srvIndex」なので、
+    //   実体を作り直しても両方が変わらなければ参照側は一切書き換えずに済む
+    //   （ホットリロード = dx12_reload_assets の土台）。呼び出し側は引き取り後に
+    //   CreateSRV() で自分の srvIndex へ SRV を張り直すこと（フォーマットが変わり得る）。
+    //   旧リソースは GpuResource::ReleaseResource 経由で DeferredRelease に積まれる。
+    void AdoptFrom(Texture& src);
+
     u32         GetWidth()     const { return m_width; }
     u32         GetHeight()    const { return m_height; }
     DXGI_FORMAT GetFormat()    const { return m_format; }

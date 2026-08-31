@@ -1820,7 +1820,7 @@ scene:<span class="tok-fn">hideUi</span>(modalRoot)</code></pre>
 <pre><code>Claude Code / Codex
       │  MCP (stdio)
       ▼
-Node MCP サーバ  <span class="tok-c">(tools/mcp-server/index.ts ・ 152 ツール)</span>
+Node MCP サーバ  <span class="tok-c">(tools/mcp-server/index.ts ・ 153 ツール)</span>
       │  改行区切り JSON / TCP 127.0.0.1:8787-8797
       ▼
 DX12Engine.exe <span class="tok-c">(エディタ。ゲーム=封印ランタイムでは起動しない)</span></code></pre>
@@ -2031,6 +2031,30 @@ args = [<span class="tok-s">"&lt;REPO&gt;/index.ts"</span>]</code></pre>
 <span class="tok-c">// 木や岩をばら撒く（seed 付き＝同じ seed なら同じ配置）</span>
 <span class="tok-fn">dx12_scatter</span>(model:<span class="tok-s">"models/tree.glb"</span>, count:<span class="tok-n">60</span>, area:[-<span class="tok-n">50</span>,-<span class="tok-n">50</span>,<span class="tok-n">50</span>,<span class="tok-n">50</span>],
              snapToGround:<span class="tok-k">true</span>, randomYaw:<span class="tok-k">true</span>, scaleRange:[<span class="tok-n">0.8</span>,<span class="tok-n">1.3</span>], seed:<span class="tok-n">7</span>)</code></pre>
+
+        <h3>2.5 DCC ツールと行き来しながら詰める（再起動しない）</h3>
+<pre><code><span class="tok-c">// Blender から assets/ へ書き出し直したあと（テクスチャもモデルも同じ）</span>
+<span class="tok-fn">dx12_reload_assets</span>(path:<span class="tok-s">"models/camera"</span>)   <span class="tok-c">// 更新時刻が変わったものだけ読み直す</span>
+<span class="tok-c">// → {reloaded, textures[], models[], reboundEntities} ★シーンは開き直さない</span>
+<span class="tok-c">//   （エンティティ・Transform・選択状態はそのまま。0 件なら force:true）</span>
+<span class="tok-fn">dx12_screenshot_from</span>(position:[<span class="tok-n">0.2</span>,<span class="tok-n">1.0</span>,<span class="tok-n">0.3</span>], target:[<span class="tok-n">0</span>,<span class="tok-n">0.95</span>,<span class="tok-n">0</span>], gizmos:<span class="tok-k">false</span>)
+<span class="tok-c">// ★gizmos:false = この 1 枚だけ視錐台の線・選択枠・アイコン・グリッドを止めて撮る（次の 1 枚では自動で戻る）</span>
+
+<span class="tok-c">// 一部の部品だけ変な位置に飛んでいるとき</span>
+<span class="tok-fn">dx12_get_bounds</span>(name:<span class="tok-s">"HeroCamera"</span>, perSubmesh:<span class="tok-k">true</span>)
+<span class="tok-c">// → submeshes[{index, name, materialName, triangles, worldSize …}]</span>
+<span class="tok-c">//   index は dx12_pick の submeshIndex と同じ並び。worldSize が桁違いのものが犯人</span></code></pre>
+
+        <h3>2.6 葉を抜く・ガラスを透かす（透明）</h3>
+<pre><code><span class="tok-c">// 既定は全部不透明。glTF に alphaMode があればそのまま効く（auto）</span>
+<span class="tok-fn">dx12_set_pbr</span>(name:<span class="tok-s">"Leaf"</span>, alphaMode:<span class="tok-s">"mask"</span>, alphaCutoff:<span class="tok-n">0.5</span>)
+<span class="tok-c">// ★mask は影も同じ形に抜ける（専用の深度パスで同じ cutoff を読む）</span>
+<span class="tok-c">//   これが無いと「本体は葉の形なのに影は板」になる</span>
+
+<span class="tok-c">// ガラス・水面は opacity だけでよい（1 未満なら alphaMode を省いても半透明）</span>
+<span class="tok-fn">dx12_set_pbr</span>(name:<span class="tok-s">"Window"</span>, opacity:<span class="tok-n">0.3</span>, roughness:<span class="tok-n">0.05</span>)
+<span class="tok-c">// 半透明は不透明の後にカメラから遠い順で描く。深度は書かず影も落とさない</span>
+<span class="tok-c">// ← 戻すなら alphaMode:"auto"、opacity:1</span></code></pre>
 
         <h3>3. 地形を作って質感まで付ける</h3>
 <pre><code><span class="tok-fn">dx12_terrain_create</span>(resolution:<span class="tok-n">256</span>, worldSize:<span class="tok-n">400</span>, maxHeight:<span class="tok-n">120</span>)

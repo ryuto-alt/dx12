@@ -6,6 +6,9 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 
+#include <algorithm>
+#include <cctype>
+
 namespace dx12e
 {
 using namespace appdetail;
@@ -1088,7 +1091,7 @@ void Application::RegisterMcpEntityMethods()
                               {"target", {wpos.x, wpos.y, wpos.z}}, {"distance", dist}};
         });
 
-    McpDefine("set_pbr", "entity:int,metallic:any,name:string,roughness:any,uvScaleU:any,uvScaleV:any", DX12E_MCP_HANDLER
+    McpDefine("set_pbr", "alphaCutoff:any,alphaMode:string,entity:int,metallic:any,name:string,opacity:any,roughness:any,uvScaleU:any,uvScaleV:any", DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
@@ -1097,6 +1100,26 @@ void Application::RegisterMcpEntityMethods()
             auto& mr = reg.get<MeshRenderer>(e);
             if (params.contains("metallic"))  mr.overrideMetallic  = params["metallic"].get<float>();
             if (params.contains("roughness")) mr.overrideRoughness = params["roughness"].get<float>();
+            // ---- 透明（アルファクリップ / アルファブレンド）----
+            // alphaMode: "auto"(既定=モデルのマテリアルに従う) / "opaque" / "mask" / "blend"
+            // alphaCutoff: MASK のしきい値 0..1（負でマテリアルに従う）
+            // opacity: BLEND の不透明度 0..1（1 未満なら alphaMode 未指定でも半透明になる）
+            if (params.contains("alphaMode"))
+            {
+                std::string m = params["alphaMode"].get<std::string>();
+                std::transform(m.begin(), m.end(), m.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (m == "auto" || m.empty()) mr.alphaModeOverride = -1;
+                else if (m == "opaque")       mr.alphaModeOverride = 0;
+                else if (m == "mask")         mr.alphaModeOverride = 1;
+                else if (m == "blend")        mr.alphaModeOverride = 2;
+                else throw McpError(McpErr::InvalidParam,
+                                    "alphaMode は auto / opaque / mask / blend のいずれか");
+            }
+            if (params.contains("alphaCutoff"))
+                mr.alphaCutoffOverride = std::clamp(params["alphaCutoff"].get<float>(), -1.0f, 1.0f);
+            if (params.contains("opacity"))
+                mr.opacity = std::clamp(params["opacity"].get<float>(), 0.0f, 1.0f);
             const bool uvChanged = params.contains("uvScaleU") || params.contains("uvScaleV");
             if (params.contains("uvScaleU"))  mr.uvScaleU = params["uvScaleU"].get<float>();
             if (params.contains("uvScaleV"))  mr.uvScaleV = params["uvScaleV"].get<float>();
@@ -1108,9 +1131,15 @@ void Application::RegisterMcpEntityMethods()
                 for (auto* mesh : mr.meshes)
                     if (mesh) mesh->ApplyUVScale(*m_scene->GetDevice(), mr.uvScaleU, mr.uvScaleV);
             resp["ok"] = true;
+            const char* modeNames[3] = {"opaque", "mask", "blend"};
             resp["result"] = {{"entityId", static_cast<u32>(e)},
                               {"metallic", mr.overrideMetallic}, {"roughness", mr.overrideRoughness},
-                              {"uvScaleU", mr.uvScaleU}, {"uvScaleV", mr.uvScaleV}};
+                              {"uvScaleU", mr.uvScaleU}, {"uvScaleV", mr.uvScaleV},
+                              {"alphaMode", mr.alphaModeOverride < 0
+                                                ? std::string("auto")
+                                                : std::string(modeNames[mr.alphaModeOverride])},
+                              {"alphaCutoff", mr.alphaCutoffOverride},
+                              {"opacity", mr.opacity}};
         });
 
     McpDefine("duplicate_entity", "entity:int,name:string", DX12E_MCP_HANDLER

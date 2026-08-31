@@ -1181,6 +1181,9 @@ void Application::EnterPlayMode()
                 const auto& mr = reg.get<MeshRenderer>(entity);
                 snap.materialMetallicOverride  = mr.overrideMetallic;
                 snap.materialRoughnessOverride = mr.overrideRoughness;
+                snap.alphaModeOverride   = mr.alphaModeOverride;
+                snap.alphaCutoffOverride = mr.alphaCutoffOverride;
+                snap.alphaOpacity        = mr.opacity;
             }
 
             m_editorSnapshots[name.name] = snap;
@@ -1312,6 +1315,9 @@ void Application::EnterPlayMode()
             {
                 auto& mr = reg.get<MeshRenderer>(entity);
                 mr.overrideMetallic  = snap.materialMetallicOverride;
+                mr.alphaModeOverride   = snap.alphaModeOverride;
+                mr.alphaCutoffOverride = snap.alphaCutoffOverride;
+                mr.opacity             = snap.alphaOpacity;
                 mr.overrideRoughness = snap.materialRoughnessOverride;
             }
         }

@@ -140,8 +140,8 @@ void DofPass::Resize(GraphicsDevice& device, u32 width, u32 height)
 u32 DofPass::Apply(CommandList& cmd, DescriptorHeap* srvHeap,
                    D3D12_GPU_DESCRIPTOR_HANDLE sceneSrvGpu,
                    D3D12_GPU_DESCRIPTOR_HANDLE depthSrvGpu,
-                   float projA, float projB,
-                   const PostProcessSettings& s)
+                   float projA, float projB, float proj22,
+                   const PostProcessSettings& s, float focusDistOverride)
 {
     if (!m_psoComposite || !m_outRT) return DescriptorHeap::kInvalidIndex;
     auto* native = cmd.GetNative();
@@ -151,9 +151,36 @@ u32 DofPass::Apply(CommandList& cmd, DescriptorHeap* srvHeap,
     DofCB cb{};
     cb.rectP[0] = 0.0f; cb.rectP[1] = 0.0f;   // ★#16: シーンは RT 全面
     cb.rectP[2] = 1.0f; cb.rectP[3] = 1.0f;
-    cb.focus[0] = (std::max)(s.dofFocusDist, 0.01f);
-    cb.focus[1] = 1.0f / (std::max)(s.dofFocusRange, 0.05f);
+    const float focusDist = (std::max)(
+        (focusDistOverride > 0.0f) ? focusDistOverride : s.dofFocusDist, 0.01f);
+    cb.focus[0] = focusDist;
     cb.focus[2] = (std::max)(s.dofBlurSize, 1.0f) * 0.5f;   // 半解像度基準の px
+    if (s.dofAperture > 0.0f)
+    {
+        // ---- 物理モード（絞り基準）----
+        // 薄レンズの錯乱円: CoC = |z - zf| / z * f^2 / (N * (zf - f))   （すべて m）
+        // 画素へは 35mm 判のセンサ高 24mm で正規化する。
+        //  ★これで「blurSize を何 px にするか」という解像度依存の値が絵作りから消え、
+        //    残るのは F 値だけになる（blurSize は暴走防止の上限としてのみ効く）。
+        const float sensorH = 0.024f;                                   // m
+        const float fMm     = (s.dofFocalLength > 0.0f)
+                            ? s.dofFocalLength
+                            : (0.5f * 24.0f) * (std::max)(proj22, 1e-3f);
+        const float f       = (std::max)(fMm, 1.0f) * 0.001f;           // mm -> m
+        // zf <= f は「レンズの焦点距離より近くに合焦」＝物理的に不可能。0 除算を避けて張り付かせる。
+        const float denom   = (std::max)(focusDist - f, 1e-4f);
+        const float cocPerU = (f * f) / ((std::max)(s.dofAperture, 0.05f) * denom); // m（直径）
+        // 半解像度基準の半径 px へ。 直径(m)/センサ高(m) * 半解像度の高さ / 2
+        const float halfHf  = static_cast<float>((std::max)(1u, m_height / 2));
+        cb.focus[1] = cocPerU / sensorH * halfHf * 0.5f;
+        cb.focus[3] = 1.0f;
+    }
+    else
+    {
+        // ---- レガシー（範囲基準）。旧シーンの見た目をそのまま保つための後方互換 ----
+        cb.focus[1] = 1.0f / (std::max)(s.dofFocusRange, 0.05f);
+        cb.focus[3] = 0.0f;
+    }
     cb.texelP[0] = 1.0f / static_cast<float>(halfW);
     cb.texelP[1] = 1.0f / static_cast<float>(halfH);
     cb.texelP[2] = projA;

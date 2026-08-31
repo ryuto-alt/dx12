@@ -562,17 +562,47 @@ reg(
 reg(
   "dx12_set_pbr",
   "PBR マテリアル設定",
-  "エンティティの PBR パラメータ(metallic/roughness/UV スケール)を設定する。指定分のみ更新。即時反映で {entityId, metallic, roughness, uvScaleU, uvScaleV} を返す。",
+  "エンティティの PBR パラメータ(metallic/roughness/UV スケール/透明)を設定する。指定分のみ更新。"
+  + "即時反映で {entityId, metallic, roughness, uvScaleU, uvScaleV, alphaMode, alphaCutoff, opacity} を返す。"
+  + "透明は alphaMode(auto/opaque/mask/blend) + alphaCutoff + opacity。mask は影も同じ形に抜ける。",
   {
     ...entityRef,
     metallic: z.number().optional().describe("金属度 0..1"),
     roughness: z.number().optional().describe("粗さ 0..1"),
     uvScaleU: z.number().optional().describe("UV の U 方向スケール(タイリング)"),
     uvScaleV: z.number().optional().describe("UV の V 方向スケール(タイリング)"),
+    alphaMode: z
+      .enum(["auto", "opaque", "mask", "blend"])
+      .optional()
+      .describe(
+        "透明の扱い。auto=モデルのマテリアル(glTF alphaMode)に従う(既定) / opaque=不透明 / " +
+          "mask=baseColor.a < alphaCutoff を discard(葉・フェンス・角膜。影も同じ形に抜ける) / " +
+          "blend=半透明(不透明の後にカメラから遠い順で描く。深度は書かない)",
+      ),
+    alphaCutoff: z
+      .number()
+      .optional()
+      .describe("mask のしきい値 0..1(既定はマテリアル値、glTF 既定 0.5)。負でマテリアルに従う"),
+    opacity: z
+      .number()
+      .optional()
+      .describe("不透明度 0..1。1 未満なら alphaMode を省いても半透明になる(ガラス・水面)"),
   },
   { idempotentHint: true },
-  ({ entity, name, metallic, roughness, uvScaleU, uvScaleV }) =>
-    run(() => engine.call("set_pbr", { entity, name, metallic, roughness, uvScaleU, uvScaleV })),
+  ({ entity, name, metallic, roughness, uvScaleU, uvScaleV, alphaMode, alphaCutoff, opacity }) =>
+    run(() =>
+      engine.call("set_pbr", {
+        entity,
+        name,
+        metallic,
+        roughness,
+        uvScaleU,
+        uvScaleV,
+        alphaMode,
+        alphaCutoff,
+        opacity,
+      }),
+    ),
 );
 
 reg(
@@ -1147,7 +1177,10 @@ reg(
     dofOn: z.boolean().optional().describe("被写界深度。★正射カメラでは効かない。"),
     dofFocusDist: z.number().optional().describe("フォーカス距離(カメラからのビュー距離)。既定 8。"),
     dofFocusRange: z.number().optional().describe("完全にシャープな範囲の広さ。既定 5。"),
-    dofBlurSize: z.number().optional().describe("最大ボケ半径(px)。既定 12。"),
+    dofBlurSize: z.number().optional().describe("ボケ半径の上限(px)。既定 12。物理モードでは『暴走防止の上限』としてだけ効く。"),
+    dofFocusName: z.string().optional().describe("合焦させるエンティティ名(完全一致)。空でなければ毎フレームそのエンティティまでのビュー距離を合焦距離に使う=被写体に合焦したまま寄る/回るが Lua 無しで作れる。"),
+    dofAperture: z.number().optional().describe("F 値。既定 2.8(>0 で物理モード: 焦点距離と F 値から錯乱円を出す)。0 以下にすると旧 dofFocusRange 方式へ戻る。"),
+    dofFocalLength: z.number().optional().describe("焦点距離(mm)。既定 0 = カメラの FOV から導出(35mm 判・センサ高 24mm 換算)。"),
     // ── カメラモーションブラー(深度再構成方式・velocity buffer 不要) ──
     motionBlurOn: z.boolean().optional().describe("カメラモーションブラー。"),
     mbStrength: z.number().optional().describe("シャッター係数(速度に乗算)。既定 0.5。"),
@@ -1313,6 +1346,29 @@ reg(
   },
   { idempotentHint: true },
   (a) => run(() => applyAndVerify("set_contact_shadow", "get_contact_shadow", a)),
+);
+
+reg(
+  "dx12_get_normal_filter",
+  "法線マップフィルタリング設定取得",
+  "法線マップフィルタリング(分散→ラフネス / 平均法線の復元)の設定を返す。{enabled, strength, varianceClamp, geometricBlend}。",
+  {},
+  { readOnlyHint: true },
+  () => run(() => engine.call("get_normal_filter", {})),
+);
+
+reg(
+  "dx12_set_normal_filter",
+  "法線マップフィルタリング設定変更",
+  "法線マップのエイリアシング対策。1 画素の中に法線マップの山谷が何個も入る状況(高いタイリング / 遠景 / 面を舐める角度)で、①鏡面のちらつき ②【光源が面を舐める角度で N·L の符号が裏返り、面が黒い斑点で埋まる】の 2 つが起きる。スクリーン空間の法線微分から画素内の法線分散を見積もり、分散を GGX のラフネス(α)へ足し込み、分散が大きい画素は法線を幾何法線へ寄せる(=平均法線の復元)。★これが【法線マップを貼ると床が消える】の直接の対策。既定 ON。シーン JSON の normalFilter に保存される。",
+  {
+    enabled: z.boolean().optional().describe("既定 true。false で完全に従来どおり。"),
+    strength: z.number().optional().describe("分散のスケール。既定 2。上げるほど強く効く(0 で OFF 相当)。"),
+    varianceClamp: z.number().optional().describe("ラフネス α に足せる量の上限。既定 0.25。上げるとよりボケる。"),
+    geometricBlend: z.number().optional().describe("分散に応じて幾何法線へ寄せる強さ。既定 2。0 にするとラフネス補正だけになる(黒斑点は残る)。"),
+  },
+  { idempotentHint: true },
+  (a) => run(() => applyAndVerify("set_normal_filter", "get_normal_filter", a)),
 );
 
 // ── PCSS(ソフトシャドウ) ─────────────────────────────────────────
@@ -1977,14 +2033,21 @@ reg(
 reg(
   "dx12_get_bounds",
   "ワールドAABB取得",
-  "エンティティのワールド空間 AABB を返す。{min, max, center, size, hasMesh}。回転・スケール・親子変換込み。「テーブルの上に置く」「壁にぴったり寄せる」等、配置座標を数値で決める時の基礎情報。includeChildren=true で子孫も含めた全体境界。メッシュ無し(ライト等)は位置の点(size=0)。",
+  "エンティティのワールド空間 AABB を返す。{min, max, center, size, hasMesh}。回転・スケール・親子変換込み。「テーブルの上に置く」「壁にぴったり寄せる」等、配置座標を数値で決める時の基礎情報。includeChildren=true で子孫も含めた全体境界。メッシュ無し(ライト等)は位置の点(size=0)。"
+    + "★perSubmesh:true でサブメッシュ内訳(名前/マテリアル名/三角形数/ローカル・ワールド AABB)も返る = 「モデルの一部だけ変な位置に飛んでいる。どの部品か」を 1 回で特定できる。",
   {
     ...entityRef,
     includeChildren: z.boolean().optional().describe("true で子孫エンティティの AABB も合成する(モデルルートが empty の時に有効)。"),
+    perSubmesh: z.boolean().optional().describe(
+      "true でサブメッシュ 1 個ずつの内訳を submeshes[] に返す。既定 false。"
+      + "各要素は {index, name, materialName, triangles, localMin/localMax/localSize, worldMin/worldMax/worldCenter/worldSize}。"
+      + "index は dx12_pick が返す submeshIndex と同じ並び(= MeshRenderer.meshes の順)なので突き合わせられる。"
+      + "★glTF/FBX の JSON 内の並びとは一致しない(エンジンがノード単位に展開するため)。だから name/materialName で照合すること。"
+      + "worldSize / worldCenter が他と桁違いの部品が『飛んでいる』もの。largestSubmesh に最大の index が入る。"),
   },
   { readOnlyHint: true },
-  ({ entity, name, includeChildren }) =>
-    run(() => engine.call("get_bounds", { entity, name, includeChildren })),
+  ({ entity, name, includeChildren, perSubmesh }) =>
+    run(() => engine.call("get_bounds", { entity, name, includeChildren, perSubmesh })),
 );
 
 reg(
@@ -2054,6 +2117,28 @@ reg(
   },
   { readOnlyHint: true },
   ({ path }) => run(() => engine.call("asset_info", { path })),
+);
+
+reg(
+  "dx12_reload_assets",
+  "アセットを読み直す",
+  "ディスク上で書き換わったアセット(テクスチャ / モデル)のキャッシュを捨てて読み直す: {reloaded, textures[], models[], reboundEntities, skipped[], warnings[]}。"
+    + "★★エンジンはテクスチャもモデルも【プロセス起動から一生キャッシュする】ので、Blender や画像編集ソフトから同じパスへ書き出し直しても絵は変わらない。"
+    + "これが無いとエディタを終了→起動→シーンロード(20 秒以上)を毎回やることになる。DCC ツールと行き来しながら見た目を詰めるときは必ずこれを使うこと。"
+    + "★シーンは開き直さない: エンティティも Transform も選択状態もそのまま、いま置かれている MeshRenderer の参照だけが新しい実体へ張り替わる(reboundEntities がその体数)。"
+    + "★既定はディスクの更新時刻を見て【変わったものだけ】。書き出し直したのに reloaded が 0 なら force:true(更新時刻を無視して全部読み直す)。"
+    + "★モデル内の埋め込みテクスチャはモデル側を読み直せば一緒に更新される。キューブマップ / 配列テクスチャ(スカイボックス・地形レイヤー)だけは張り直せず skipped に載る(シーンを開き直すこと)。"
+    + "読み直した後の絵の確認は dx12_screenshot_final {gizmos:false} が早い。",
+  {
+    path: z.string().optional().describe(
+      "assets 相対のファイル or フォルダ。省略で assets 配下ぜんぶ。"
+      + "例: models/camera/camera.gltf(1 ファイル) / models/camera(そのフォルダ配下すべて)。"),
+    force: z.boolean().optional().describe(
+      "true で更新時刻を見ずに対象を全部読み直す。既定 false(更新時刻が変わったものだけ)。"
+      + "ネットワークドライブ等で更新時刻が当てにならないとき、「書き出したのに 0 件」のときに使う。"),
+  },
+  {},
+  ({ path, force }) => run(() => engine.call("reload_assets", { path, force })),
 );
 
 reg(
@@ -2234,17 +2319,22 @@ regRaw(
     title: "寄せて撮影",
     description: "カメラを対象エンティティに寄せてからスクショを撮り、PNG 画像で返す(dx12_focus_camera + dx12_screenshot_final の合成)。entity(id) か name 指定。配置や見た目を自分の目で確認するのに使う。"
       + "★撮るのは【ポスト適用後の最終画】なのでグレーディング/ブルーム/TAA 込みの見た目が確認できる。image ブロック + text(path/サイズ)を返す。",
-    inputSchema: { ...entityRef },
+    inputSchema: {
+      ...entityRef,
+      gizmos: z.boolean().optional().describe(
+        "false でこの 1 枚だけエディタのデバッグ描画(視錐台の線 / 選択枠 / アイコン / グリッド)を止めて撮る。既定 true。次の 1 枚では自動で元に戻る。"),
+    },
     annotations: { title: "寄せて撮影", openWorldHint: false, idempotentHint: true },
   },
-  async ({ entity, name }) => {
+  async ({ entity, name, gizmos }) => {
     try {
       await engine.call("focus_camera", { entity, name });
-      const shot = await engine.call("screenshot_final", {});
+      const shot = await engine.call("screenshot_final", { gizmos });
       if (!shot || !shot.path) throw new Error("screenshot_final が path を返さなかった");
       return imageResult(shot.path, {
         entity, width: shot.width, height: shot.height,
         source: shot.source ?? "backbuffer", postApplied: shot.postApplied,
+        gizmos: shot.gizmos ?? true,
       });
     } catch (e: any) {
       return errResult(e);
@@ -2267,6 +2357,12 @@ const captureParams = () => ({
     + "★止まるのはレンダラの時間依存だけ。Play 中のゲームシミュレーション(移動/物理/アニメ)は止まらないので、厳密に比べるなら dx12_stop してから撮る。"),
   settleFrames: z.number().int().optional().describe(
     "deterministic:true のとき履歴を捨ててから回すフレーム数(1..240)。既定 8。増やすと TAA / SSGI の収束が進む(決定性そのものは 8 で得られる)。deterministic:false のときは無視される。"),
+  gizmos: z.boolean().optional().describe(
+    "false でこの 1 枚だけエディタのデバッグ描画を止めて撮る。既定 true(従来どおり)。"
+    + "止まるのは【カメラエンティティの視錐台の水色の線 / 選択枠 / ライトやカメラのアイコン / "
+    + "物理・ナビメッシュのワイヤ / 床のグリッド】。選択を外しても消えない『アクティブなカメラの視錐台』もこれで消える。"
+    + "★戻すための呼び出しは不要。撮影状態と一緒に破棄されるので【次の 1 枚では必ず元どおり】。"
+    + "★dx12_screenshot(ポスト前)では deterministic:true のときだけ効く(既定経路は直前フレームの読み戻しなので撮り直さないため)。"),
 });
 
 // スクショ単体も画像ブロックで返す。
@@ -2284,9 +2380,9 @@ regRaw(
     inputSchema: { ...captureParams() },
     annotations: { title: "スクリーンショット(ポスト前)", openWorldHint: false, readOnlyHint: true },
   },
-  async ({ path: outPath, deterministic, settleFrames }) => {
+  async ({ path: outPath, deterministic, settleFrames, gizmos }) => {
     try {
-      const shot = await engine.call("screenshot", { path: outPath, deterministic, settleFrames });
+      const shot = await engine.call("screenshot", { path: outPath, deterministic, settleFrames, gizmos });
       if (!shot || !shot.path) throw new Error("screenshot が path を返さなかった");
       return imageResult(shot.path, {
         width: shot.width, height: shot.height,
@@ -2314,15 +2410,16 @@ regRaw(
     inputSchema: { ...captureParams() },
     annotations: { title: "最終画スクリーンショット(ポスト後)", openWorldHint: false, readOnlyHint: true },
   },
-  async ({ path: outPath, deterministic, settleFrames }) => {
+  async ({ path: outPath, deterministic, settleFrames, gizmos }) => {
     try {
-      const shot = await engine.call("screenshot_final", { path: outPath, deterministic, settleFrames });
+      const shot = await engine.call("screenshot_final", { path: outPath, deterministic, settleFrames, gizmos });
       if (!shot || !shot.path) throw new Error("screenshot_final が path を返さなかった");
       return imageResult(shot.path, {
         width: shot.width, height: shot.height,
         source: shot.source ?? "backbuffer",
         postApplied: shot.postApplied,
         deterministic: shot.deterministic ?? false,
+        gizmos: shot.gizmos ?? true,
         taa: shot.taa,
         mode: shot.mode,
         note: shot.note,
@@ -2518,17 +2615,22 @@ regRaw(
     inputSchema: {
       position: v3().describe("カメラ位置 [x,y,z]。"),
       target: v3().optional().describe("注視点 [x,y,z]。省略で現在の向きのまま位置だけ移動。"),
+      gizmos: z.boolean().optional().describe(
+        "false でこの 1 枚だけエディタのデバッグ描画(カメラの視錐台の水色の線 / 選択枠 / アイコン / "
+        + "物理・ナビのワイヤ / 床グリッド)を止めて撮る。既定 true。構図や質感を評価する絵、AI に見せる絵はこれを false にする。"
+        + "★戻す呼び出しは不要 ── 次の 1 枚では必ず元どおり。"),
     },
     annotations: { title: "任意視点スクショ", openWorldHint: false, idempotentHint: true },
   },
-  async ({ position, target }) => {
+  async ({ position, target, gizmos }) => {
     try {
       await engine.call("set_editor_camera", { position, target });
-      const shot = await engine.call("screenshot_final", {});
+      const shot = await engine.call("screenshot_final", { gizmos });
       if (!shot || !shot.path) throw new Error("screenshot_final が path を返さなかった");
       return imageResult(shot.path, {
         position, target, width: shot.width, height: shot.height,
         source: shot.source ?? "backbuffer", postApplied: shot.postApplied,
+        gizmos: shot.gizmos ?? true,
       });
     } catch (e: any) {
       return errResult(e);

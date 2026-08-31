@@ -65,6 +65,8 @@ void Application::RegisterMcpRenderMethods()
                 {"lfHalo", pp.lfHalo}, {"lfChroma", pp.lfChroma},
                 {"dofOn", pp.dofOn}, {"dofFocusDist", pp.dofFocusDist},
                 {"dofFocusRange", pp.dofFocusRange}, {"dofBlurSize", pp.dofBlurSize},
+                {"dofFocusName", pp.dofFocusName}, {"dofAperture", pp.dofAperture},
+                {"dofFocalLength", pp.dofFocalLength},
                 {"motionBlurOn", pp.motionBlurOn}, {"mbStrength", pp.mbStrength},
                 {"mbSamples", pp.mbSamples},
             };
@@ -110,6 +112,9 @@ void Application::RegisterMcpRenderMethods()
             pp.dofFocusDist = params.value("dofFocusDist", pp.dofFocusDist);
             pp.dofFocusRange = params.value("dofFocusRange", pp.dofFocusRange);
             pp.dofBlurSize = params.value("dofBlurSize", pp.dofBlurSize);
+            pp.dofFocusName = params.value("dofFocusName", pp.dofFocusName);
+            pp.dofAperture = params.value("dofAperture", pp.dofAperture);
+            pp.dofFocalLength = params.value("dofFocalLength", pp.dofFocalLength);
             pp.motionBlurOn = params.value("motionBlurOn", pp.motionBlurOn);
             pp.mbStrength = params.value("mbStrength", pp.mbStrength);
             pp.mbSamples = params.value("mbSamples", pp.mbSamples);
@@ -247,6 +252,28 @@ void Application::RegisterMcpRenderMethods()
             c.steps        = params.value("steps",        c.steps);
             c.maxDistance  = params.value("maxDistance",  c.maxDistance);
             c.fadeDistance = params.value("fadeDistance", c.fadeDistance);
+            resp["ok"] = true;
+            resp["result"] = {{"applied", true}};
+        });
+
+    // ---- 法線マップフィルタリング（分散 → ラフネス / 平均法線の復元）----
+    McpDefine("get_normal_filter", "", DX12E_MCP_HANDLER
+        {
+            const auto& n = m_scene->GetNormalFilterSettings();
+            resp["ok"] = true;
+            resp["result"] = {{"enabled", n.enabled}, {"strength", n.strength},
+                              {"varianceClamp", n.varianceClamp},
+                              {"geometricBlend", n.geometricBlend}};
+        });
+
+    McpDefine("set_normal_filter", "enabled:any,strength:any,varianceClamp:any,geometricBlend:any",
+              DX12E_MCP_HANDLER
+        {
+            auto& n = m_scene->GetNormalFilterSettings();
+            n.enabled        = params.value("enabled",        n.enabled);
+            n.strength       = params.value("strength",       n.strength);
+            n.varianceClamp  = params.value("varianceClamp",  n.varianceClamp);
+            n.geometricBlend = params.value("geometricBlend", n.geometricBlend);
             resp["ok"] = true;
             resp["result"] = {{"applied", true}};
         });

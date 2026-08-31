@@ -35,6 +35,27 @@ u64 HashBonesFnv1a(const std::vector<DirectX::XMFLOAT4X4>& mats)
     // 0 は「未計算」の意味で使うので避ける。
     return h ? h : 1ull;
 }
+
+// フォワードと深度パスで共通の UV 変換（連番アニメ > UVスクロール > 恒等）。
+// ★アルファクリップの影は「フォワードとまったく同じ UV で同じテクセル」を読まないと
+//   本体と影の抜けがズレる。ここを 1 箇所にまとめておくこと。
+void ComputeMeshUvScaleOffset(const MeshRenderer& r, float& sx, float& sy, float& ox, float& oy)
+{
+    sx = 1.0f; sy = 1.0f; ox = 0.0f; oy = 0.0f;
+    if (r.animFrames > 0)
+    {
+        const SpriteUvRect uvr = ComputeFlipbookUvEx(r.animFrames, r.animFps, r.animCols,
+                                                     r.animRow, r.animRows, r.animMode, r._animT);
+        sx = uvr.u1 - uvr.u0; sy = uvr.v1 - uvr.v0; ox = uvr.u0; oy = uvr.v0;
+    }
+    else if (r.uvScrollU != 0.0f || r.uvScrollV != 0.0f)
+    {
+        const float du = r.uvScrollU * r._animT;
+        const float dv = r.uvScrollV * r._animT;
+        ox = du - std::floor(du);
+        oy = dv - std::floor(dv);
+    }
+}
 } // namespace
 
 // フレーム描画リスト構築（Render() 先頭で1回）。要素の定義は renderer/DrawItem.h、
@@ -207,11 +228,38 @@ void Application::BuildDrawList()
                  : (apparent < 0.055f) ? 2u
                  : (apparent < 0.125f) ? 1u : 0u;
 
-        // 0=既定static / 1=カスタム不透明 / 2=skinned / 3=カスタム半透明（不透明の後に描く。
+        item.camDist = dist;
+
+        // ---- 透明の分類（エンティティ単位）------------------------------------
+        // サブメッシュごとに ResolveAlphaParams で実効モードを出し、その最大値を採る
+        // （BLEND > MASK > OPAQUE）。ガラス 1 枚を含むモデルは全体が半透明バケツへ行くが、
+        // PSO はサブメッシュ単位で選ぶので不透明部分は不透明のまま描かれる（割り切り）。
+        // ★既定は全部 OPAQUE（Material もオーバーライドも既定値）＝既存シーンは alphaClass=0。
+        {
+            u32 aclass = 0;
+            for (const auto* m : renderer.meshes)
+            {
+                if (!m) continue;
+                const AlphaParams ap = ResolveAlphaParams(m->GetMaterial(), renderer.alphaModeOverride,
+                                                          renderer.alphaCutoffOverride, renderer.opacity);
+                aclass = (std::max)(aclass, static_cast<u32>(ap.mode));
+            }
+            // エンティティ側で opacity を下げただけ（マテリアルは OPAQUE）でも半透明にする。
+            // ★マテリアル焼き込みの baseColorAlpha ではこの昇格をしない（glTF の意味論では
+            //   alphaMode=OPAQUE のとき baseColorFactor.a は無視されるため）。
+            if (aclass == 0 && renderer.opacity < 0.999f) aclass = 2;
+            item.alphaClass = static_cast<u8>(aclass);
+        }
+
+        // 0=既定static / 1=カスタム不透明 / 2=skinned / 3=半透明（不透明の後に描く。
         // 旧実装は entt 格納順で半透明の前後関係が運任せだったため、これはむしろ改善）。
         if (item.skin)                          item.sortKey = 2u;
         else if (renderer.shaderPath.empty())   item.sortKey = 0u;
         else                                    item.sortKey = renderer.shaderAlphaBlend ? 3u : 1u;
+        // マテリアル由来の半透明も同じ最終バケツへ落とす（スキンド/カスタムを問わない）。
+        // sortKey==3 は既に「深度プリパスから外す / TLAS に入れない」の判定に使われているので、
+        // ここへ入れるだけで半透明の扱いが全パスで一貫する。
+        if (item.alphaClass == 2u) item.sortKey = 3u;
 
         // ---- 自動インスタンシングの適格判定 ----
         // 「per-object 定数を一切必要としない静的メッシュ」だけを畳む。
@@ -243,6 +291,12 @@ void Application::BuildDrawList()
             mix(bits(renderer.effectValue));
             mix(bits(renderer.shaderParams.x)); mix(bits(renderer.shaderParams.y));
             mix(bits(renderer.shaderParams.z)); mix(bits(renderer.shaderParams.w));
+            // ★透明パラメータも混ぜる。混ぜないと「MASK と OPAQUE が同じバッチに入り、
+            //   先頭のマテリアルの cutoff で全部描かれる」＝葉が抜けたり抜けなかったりする。
+            mix(item.alphaClass);
+            mix(bits(renderer.alphaCutoffOverride));
+            mix(bits(renderer.opacity));
+            mix(static_cast<u64>(renderer.alphaModeOverride + 2));
             item.batchKey = k | 1ull;   // 0 は「不可」の予約値なので必ず非 0 にする
         }
         m_drawItems.push_back(item);
@@ -266,6 +320,11 @@ void Application::BuildDrawList()
     std::sort(m_drawItems.begin(), m_drawItems.end(),
         [](const DrawItem& a, const DrawItem& b) {
             if (a.sortKey != b.sortKey) return a.sortKey < b.sortKey;
+            // ★半透明は「カメラから遠い順」＝後ろから前へ。アルファブレンドは
+            //   非可換なので順番が絵そのもの（近い方を先に描くと後ろの物が消える）。
+            //   エンティティ単位。サブメッシュ単位が要る形（コップの中にコップ）は
+            //   モデルを分けること（今回の割り切り。docs/AUTHORING.md の「透明」節を参照）。
+            if (a.sortKey == 3u && a.camDist != b.camDist) return a.camDist > b.camDist;
             if (a.sortKey == 1u || a.sortKey == 3u) {
                 const int c = a.renderer->shaderPath.compare(b.renderer->shaderPath);
                 if (c != 0) return c < 0;
@@ -568,6 +627,7 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
 
         // PSO 選択。同一 PSO が連続する間はバインドをスキップ（リストはソート済み）。
         PipelineState* psoSel;
+        bool usesCustomShader = false;
         if (isGrid)
         {
             psoSel = m_gridPipelineState.get();
@@ -599,11 +659,36 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             // カスタムシェーダー割当(静的メッシュのみ)。未コンパイル/生成失敗時は既定 Forward へフォールバック。
             CustomForwardPsos* custom = renderer.shaderPath.empty() ? nullptr : EnsureCustomPso(renderer.shaderPath);
             if (custom)
+            {
                 psoSel = renderer.shaderAlphaBlend
                     ? (depthPrepassActive ? custom->lequalBlend.get() : custom->lessBlend.get())
                     : (depthPrepassActive ? custom->lequal.get() : custom->less.get());
+                usesCustomShader = true;
+            }
             else
                 psoSel = depthPrepassActive ? m_pipelineStateLEqual.get() : m_pipelineState.get();
+        }
+        // ---- 透明バリアントの PSO（サブメッシュ単位で切り替える）------------------
+        // ★カスタムシェーダー / グリッド / 地形には触らない（作者の PSO をそのまま尊重する）。
+        //   MASK は clip 入り PS、BLEND は深度書き込み OFF + アルファブレンド。
+        PipelineState* maskPso  = nullptr;
+        PipelineState* blendPso = nullptr;
+        if (!isGrid && !usesCustomShader)
+        {
+            if (skin)
+            {
+                maskPso  = depthPrepassActive ? m_skinnedPipelineStateMaskLEqual.get()
+                                              : m_skinnedPipelineStateMask.get();
+                blendPso = m_skinnedPipelineStateBlend.get();
+            }
+            else
+            {
+                maskPso  = depthPrepassActive ? m_pipelineStateMaskLEqual.get()
+                                              : m_pipelineStateMask.get();
+                blendPso = m_pipelineStateBlend.get();
+            }
+            if (maskPso  && !maskPso->Get())  maskPso  = nullptr;
+            if (blendPso && !blendPso->Get()) blendPso = nullptr;
         }
         if (psoSel->Get() != lastPso)
         {
@@ -649,6 +734,15 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 40, &objData);
 
             const Material* mat = mesh->GetMaterial();
+
+            // ---- 透明（サブメッシュ単位の実効値）----
+            // ★合成規則は必ず ResolveAlphaParams に一本化する（描画・影・深度・保存で共通）。
+            const AlphaParams alphaP = ResolveAlphaParams(mat, renderer.alphaModeOverride,
+                                                          renderer.alphaCutoffOverride, renderer.opacity);
+            // opacity を下げただけのときも BLEND として描く（BuildDrawList の分類と同じ規則）。
+            const bool wantBlend = (alphaP.mode == AlphaMode::Blend)
+                                || (alphaP.mode == AlphaMode::Opaque && renderer.opacity < 0.999f);
+            const bool wantMask  = (alphaP.mode == AlphaMode::Mask);
 
             // マテリアルアセット(assets/materials/*.dxmat)割当があれば最優先で解決する。
             // 優先度: materialAsset > overrideXxxTexture(テクスチャ個別上書き) > モデル焼き込み Material。
@@ -780,6 +874,10 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
                                            : DirectX::XMFLOAT4{1.0f, 1.0f, 1.0f, 1.0f};
                 pbrParams.packedTint = (q(tc.x) << 16) | (q(tc.y) << 8) | q(tc.z);
             }
+            // ★透明パラメータを b2 の空きビットへ詰める（レイアウトは 1 バイトも変えない）。
+            //   packedTint の上位バイトは opacity。不透明でも 255 が入る＝従来と同じ絵。
+            pbrParams.flags      = PackAlphaTestFlags(pbrParams.flags, alphaP);
+            pbrParams.packedTint = PackTintWithOpacity(pbrParams.packedTint, alphaP.opacity);
 
             // UV 変換: 連番アニメ > UVスクロール > 恒等 の優先順（renderer/SpriteAnim.h の純関数）
             pbrParams.uvScaleX = 1.0f; pbrParams.uvScaleY = 1.0f;
@@ -805,6 +903,18 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
                 pbrParams.uvOffsetY = dv - std::floor(dv);
             }
             nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPBRMaterial, 8, &pbrParams, 0);
+
+            // 透明バリアントへ切り替える（サブメッシュ単位）。PSO が無ければ従来どおり不透明で描く。
+            {
+                PipelineState* want = psoSel;
+                if (wantBlend && blendPso)     want = blendPso;
+                else if (wantMask && maskPso)  want = maskPso;
+                if (want->Get() != lastPso)
+                {
+                    m_commandList->SetPipelineState(*want);
+                    lastPso = want->Get();
+                }
+            }
 
             // 同一メッシュ・同一LOD連続時（同モデルの複数エンティティ等）は IA バインドをスキップ
             if (mesh != lastVbMesh || lod != lastLod)
@@ -939,15 +1049,26 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
                     instScratch.data(), static_cast<size_t>(n) * sizeof(MeshInstanceData));
         m_instanceCursor += n;
 
-        if (instPso->Get() != lastPso)
+        const Mesh*     mesh = head.renderer->meshes[0];
+        const Material* mat  = mesh->GetMaterial();
+        // ★batchKey にメッシュポインタと透明パラメータが入っている＝バッチ内で実効値は同一。
+        const AlphaParams alphaP = ResolveAlphaParams(mat, head.renderer->alphaModeOverride,
+                                                      head.renderer->alphaCutoffOverride,
+                                                      head.renderer->opacity);
+        PipelineState* batchPso = instPso;
+        if (alphaP.mode == AlphaMode::Mask)
         {
-            m_commandList->SetPipelineState(*instPso);
-            lastPso = instPso->Get();
+            PipelineState* mp = depthPrepassActive ? m_pipelineStateInstMaskLEqual.get()
+                                                   : m_pipelineStateInstMask.get();
+            if (mp && mp->Get()) batchPso = mp;
+        }
+        if (batchPso->Get() != lastPso)
+        {
+            m_commandList->SetPipelineState(*batchPso);
+            lastPso = batchPso->Get();
         }
         m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 16, &passVpT);
 
-        const Mesh*     mesh = head.renderer->meshes[0];
-        const Material* mat  = mesh->GetMaterial();
         D3D12_GPU_DESCRIPTOR_HANDLE matSrv;
         if (mat && mat->srvBlockIndex != 0xFFFFFFFF)
             matSrv = m_srvHeap->GetGpuHandle(mat->srvBlockIndex);
@@ -979,6 +1100,9 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
         // ★インスタンス経路の色は per-instance 頂点ストリーム（inst.color）で掛かるのでここは白。
         //   b0 も同様に 16 DWORD しか書かないので、この経路では b0 の 16 番以降を読んではいけない。
         pbrParams.packedTint = 0x00FFFFFFu;
+        // 透明パラメータ（インスタンス経路は MASK のみ。BLEND は sortKey=3 でバッチ対象外）。
+        pbrParams.flags      = PackAlphaTestFlags(pbrParams.flags, alphaP);
+        pbrParams.packedTint = PackTintWithOpacity(pbrParams.packedTint, alphaP.opacity);
         pbrParams.uvScaleX = 1.0f; pbrParams.uvScaleY = 1.0f;
         pbrParams.uvOffsetX = 0.0f; pbrParams.uvOffsetY = 0.0f;
         nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPBRMaterial, 8, &pbrParams, 0);
@@ -1014,7 +1138,8 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
     // パス2: エディタ用グリッド。線だけを後描きする（ForwardGrid 側で線以外 alpha=0）。
     // 床全体へ半透明の膜を被せず、グリッド表示だけ維持する。
     // グリッドは描画リスト対象外なので従来どおり registry を直接走査（エディタのみ・少数）。
-    if (!isGameView)
+    // ★gizmos:false のスクショ中はグリッドも描かない（エディタ専用のデバッグ描画なので）。
+    if (!isGameView && !McpHidingGizmos())
     {
         for (auto [e, transform, renderer] : renderView.each())
         {
@@ -1170,7 +1295,8 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
                                        u32 lodBias, PipelineState* instPSO,
                                        const PrepassParams* prepass,
                                        bool skipRtCovered,
-                                       f32 cascadeTexelWorld)
+                                       f32 cascadeTexelWorld,
+                                       const Application::DepthMaskPsos* maskPsos)
 {
     using namespace DirectX;
 
@@ -1282,6 +1408,51 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
     const Mesh*          lastVbMesh = nullptr;
     u32                  lastLod    = ~0u;
 
+    // ---- アルファクリップ(MASK)を深度パスでも抜く ----------------------------
+    // ★これが無いと「葉は抜けているのに影は板」「プリパスが葉の隙間に深度を書いて
+    //   その裏が真っ黒」になる。フォワードと同じ SRV・同じ cutoff・同じ UV を読ませること。
+    // 速度+G-Buffer モード（velocityMode）も同じ（呼び出し側が速度パス用の PSO を渡す）。
+    const bool maskEnabled = (maskPsos != nullptr);
+    auto resolveAlphaOf = [&](const MeshRenderer& r, const Mesh* m) -> AlphaParams
+    {
+        return ResolveAlphaParams(m ? m->GetMaterial() : nullptr, r.alphaModeOverride,
+                                  r.alphaCutoffOverride, r.opacity);
+    };
+    // MASK 用に t0..t2 と b2 を貼る（深度パスは通常どちらも貼らないので毎回貼る）。
+    auto bindMaskMaterial = [&](entt::entity e, u32 mi, const MeshRenderer& r,
+                                const Mesh* m, const AlphaParams& ap)
+    {
+        const Material* mat = m ? m->GetMaterial() : nullptr;
+        D3D12_GPU_DESCRIPTOR_HANDLE srv{};
+        const MaterialAssetManager::Entry* matAsset = nullptr;
+        if (m_materialAssetManager && r.HasMaterialAsset(mi))
+        {
+            const auto* loaded = m_materialAssetManager->GetOrLoad(
+                MeshRenderer::SafeGetOverride(r.materialAsset, mi), m_commandList->GetNative());
+            if (loaded && loaded->valid) matAsset = loaded;
+        }
+        const u32 ovBlock = EnsureMaterialOverrideSrv(e, mi, r, mat, m_commandList->GetNative());
+        if (matAsset)                                   srv = m_srvHeap->GetGpuHandle(matAsset->srvBlockStart);
+        else if (ovBlock != 0xFFFFFFFFu)                srv = m_srvHeap->GetGpuHandle(ovBlock);
+        else if (mat && mat->srvBlockIndex != 0xFFFFFFFFu) srv = m_srvHeap->GetGpuHandle(mat->srvBlockIndex);
+        else
+        {
+            Texture* tex = (mat && mat->albedoTexture) ? mat->albedoTexture
+                                                       : m_resourceManager->GetDefaultWhiteTexture();
+            srv = m_srvHeap->GetGpuHandle(tex->GetSrvIndex());
+        }
+        m_commandList->SetSRVTable(RootSignature::kSlotSRVTable, srv);
+
+        struct { float metallic; float roughness; u32 flags; u32 packedTint;
+                 float uvScaleX, uvScaleY, uvOffsetX, uvOffsetY; } cb{};
+        cb.metallic = 0.0f; cb.roughness = 0.5f;
+        cb.flags      = PackAlphaTestFlags(0u, ap);
+        cb.packedTint = PackTintWithOpacity(0x00FFFFFFu, 1.0f);
+        ComputeMeshUvScaleOffset(r, cb.uvScaleX, cb.uvScaleY, cb.uvOffsetX, cb.uvOffsetY);
+        m_commandList->GetNative()->SetGraphicsRoot32BitConstants(
+            RootSignature::kSlotPBRMaterial, 8, &cb, 0);
+    };
+
     const size_t itemCount = m_drawItems.size();
     const XMMATRIX passVpT = XMMatrixTranspose(viewProj);   // instanced VS の b0 用
     // 描画は単一スレッドなので関数ローカル static で使い回す。
@@ -1299,6 +1470,11 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
         // 影パスでは skipTransparent=false のままなので、半透明の影は従来どおり落ちる。
         // 半透明は velocity も書かない（TAA は背後の不透明の速度で再投影する＝標準的な扱い）。
         if (skipTransparent && item.sortKey == 3u) continue;
+
+        // ★マテリアル由来の半透明(BLEND)はどの深度パスにも出さない。
+        //   出すと「ガラスが真っ黒な板の影を落とす」。カスタムシェーダの shaderAlphaBlend は
+        //   alphaClass=0 のままなので従来どおり影を落とす（既存シーンの非退行）。
+        if (item.alphaClass == 2u) continue;
 
         // ★RT サン影が有効なとき、CSM は「DXR の TLAS に入っていないもの」だけを描く。
         //   CSM と RT で担当を排他にしておかないと、フォワードの
@@ -1360,10 +1536,22 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
                                 depthInstPrevScratch.data(), static_cast<size_t>(n) * sizeof(MeshInstancePrevData));
                 m_instanceCursor += n;
 
-                if (instPSO->Get() != lastPso)
+                // MASK バッチは clip 入りの深度 PSO へ差し替え、t0/b2 も貼る。
+                // batchKey に透明パラメータを混ぜてあるのでバッチ内の実効値は同一。
+                PipelineState* usePso = instPSO;
+                if (maskEnabled && maskPsos->inst)
                 {
-                    m_commandList->SetPipelineState(*instPSO);
-                    lastPso = instPSO->Get();
+                    const AlphaParams ap = resolveAlphaOf(*item.renderer, item.renderer->meshes[0]);
+                    if (ap.mode == AlphaMode::Mask)
+                    {
+                        usePso = maskPsos->inst;
+                        bindMaskMaterial(item.e, 0, *item.renderer, item.renderer->meshes[0], ap);
+                    }
+                }
+                if (usePso->Get() != lastPso)
+                {
+                    m_commandList->SetPipelineState(*usePso);
+                    lastPso = usePso->Get();
                 }
                 if (velocityMode)
                 {
@@ -1427,11 +1615,6 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
                 auto& skelAnim = reg.get<SkeletalAnimation>(item.e);
                 skelAnim.skinningBuffer->Update(skelAnim.animator->GetSkinningMatrices(), frameIndex);
             }
-            if (skinnedPSO.Get() != lastPso)
-            {
-                m_commandList->SetPipelineState(skinnedPSO);
-                lastPso = skinnedPSO.Get();
-            }
             m_commandList->SetSRVTable(RootSignature::kSlotBonesSRV,
                 m_srvHeap->GetGpuHandle(item.skin->GetSrvIndex(frameIndex)));
             if (velocityMode)
@@ -1444,11 +1627,9 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
                     m_srvHeap->GetGpuHandle(item.skin->GetSrvIndex(prevSlot)));
             }
         }
-        else if (staticPSO.Get() != lastPso)
-        {
-            m_commandList->SetPipelineState(staticPSO);
-            lastPso = staticPSO.Get();
-        }
+        // ★PSO のバインドはサブメッシュのループの中へ移した。MASK はサブメッシュ単位で
+        //   clip 入りの PSO に差し替える必要があるため（不透明サブメッシュは従来どおり）。
+        PipelineState& basePso = item.skin ? skinnedPSO : staticPSO;
 
         const MeshRenderer& renderer = *item.renderer;
         for (u32 mi = 0; mi < static_cast<u32>(renderer.meshes.size()); ++mi)
@@ -1489,6 +1670,23 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
                 objData.mvp = XMMatrixTranspose(meshWorld * viewProj);
                 objData.mdl = XMMatrixTranspose(meshWorld);
                 m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
+            }
+
+            PipelineState* usePso = &basePso;
+            if (maskEnabled)
+            {
+                const AlphaParams ap = resolveAlphaOf(renderer, mesh);
+                PipelineState* mp = item.skin ? maskPsos->skin : maskPsos->stat;
+                if (ap.mode == AlphaMode::Mask && mp && mp->Get())
+                {
+                    usePso = mp;
+                    bindMaskMaterial(item.e, mi, renderer, mesh, ap);
+                }
+            }
+            if (usePso->Get() != lastPso)
+            {
+                m_commandList->SetPipelineState(*usePso);
+                lastPso = usePso->Get();
             }
 
             if (mesh != lastVbMesh || lod != lastLod)
@@ -1614,6 +1812,11 @@ void Application::ComputeCascades(const DirectX::XMVECTOR& lightDir, f32 camNear
 void Application::Render()
 {
     using namespace DirectX;
+
+    // MASK（アルファクリップ）マテリアルを影パスでも抜くための PSO 束。
+    // ★これを渡さないと「葉は抜けているのに影は板」になる。ShadowMask.hlsl 参照。
+    const DepthMaskPsos shadowMaskPsos{ m_shadowMaskPSO.get(), m_shadowMaskPSOInst.get(),
+                                        m_shadowMaskPSOSkinned.get() };
 
     // シーンの Skybox 設定 → ランタイム値を毎フレーム引き直す。
     // 以前は「Skybox / IBL 窓を開いている間」と再ベイク時しか同期しておらず、
@@ -2463,6 +2666,10 @@ void Application::Render()
             }
         }
     }
+
+    // ---- MCP 由来のアセット再読込（dx12_reload_assets）----
+    // テクスチャ/モデルのロードは GPU アップロードを伴うので、記録中の cmdList があるここで走らせる。
+    ProcessMcpAssetReloads(nativeCmdList);
 
     // ---- MCP 由来の地形 / スカルプト生成（GPU メッシュ構築に cmdList が要るのでフレーム境界）----
     // pendingSpawns と同じ流儀。生成後に本物の entityId を遅延応答で返す。
@@ -3665,7 +3872,9 @@ void Application::Render()
             nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_spotShadowDsvHandles[i]);
             RenderDepthOnlyScene(lvp, *m_shadowPipelineState, *m_shadowSkinnedPipelineState,
                                  /*updateSkinning*/ false, frameIndex, /*lodBias*/ 1,
-                                 m_shadowPipelineStateInst.get());
+                                 m_shadowPipelineStateInst.get(), /*prepass*/ nullptr,
+                                 /*skipRtCovered*/ false, /*cascadeTexelWorld*/ 0.0f,
+                                 &shadowMaskPsos);
         }
 
         m_commandList->TransitionResource(m_spotShadowMap.Get(),
@@ -3739,7 +3948,9 @@ void Application::Render()
                 nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_pointShadowDsvHandles[slice]);
                 RenderDepthOnlyScene(faceView * faceProj, *m_shadowPipelineState, *m_shadowSkinnedPipelineState,
                                      /*updateSkinning*/ false, frameIndex, /*lodBias*/ 1,
-                                     m_shadowPipelineStateInst.get());
+                                     m_shadowPipelineStateInst.get(), /*prepass*/ nullptr,
+                                     /*skipRtCovered*/ false, /*cascadeTexelWorld*/ 0.0f,
+                                     &shadowMaskPsos);
             }
         }
 
@@ -3789,7 +4000,8 @@ void Application::Render()
                                  /*updateSkinning*/ false, frameIndex, /*lodBias*/ 1,
                                  m_shadowPipelineStateInst.get(), /*prepass*/ nullptr,
                                  /*skipRtCovered*/ m_rtShadowActiveThisFrame,
-                                 /*cascadeTexelWorld*/ texelWorld);
+                                 /*cascadeTexelWorld*/ texelWorld,
+                                 &shadowMaskPsos);
         }
 
         m_commandList->TransitionResource(m_shadowMap.Get(),
@@ -3913,9 +4125,16 @@ void Application::Render()
             m_taaPass->BeginVelocity(*m_commandList, m_dsvHandle, m_gbufferRT->GetRtv(),
                                      0u, 0u, rW, rH);
             m_gpuTimer->Begin(nativeCmdList, GpuTimer::DepthPrepass);
+            // ★MASK は速度パスでも抜くこと。抜かないと板の深度が書かれ、葉の隙間の背後が
+            //   forward の LESS_EQUAL で弾かれて真っ黒になる（TAA を入れた時だけ出る不具合）。
+            const DepthMaskPsos velocityMaskPsos{ m_velocityMaskPSO.get(),
+                                                  m_velocityMaskPSOInst.get(),
+                                                  m_velocityMaskPSOSkinned.get() };
             RenderDepthOnlyScene(camVPJ, *m_velocityPSO, *m_velocityPSOSkinned,
                                  /*updateSkinning*/ false, frameIndex, /*lodBias*/ 0,
-                                 m_velocityPSOInst.get(), &pp);
+                                 m_velocityPSOInst.get(), &pp,
+                                 /*skipRtCovered*/ false, /*cascadeTexelWorld*/ 0.0f,
+                                 &velocityMaskPsos);
             m_gpuTimer->End(nativeCmdList, GpuTimer::DepthPrepass);
             m_taaPass->EndVelocity(*m_commandList);
             m_gbufferRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -3926,9 +4145,14 @@ void Application::Render()
             // skinningBuffer は毎フレーム1回どこかで Update されていれば良い（このプリパスより前に
             // シャドウパスの ci==0 で更新済み＝ここでは false）。
             m_gpuTimer->Begin(nativeCmdList, GpuTimer::DepthPrepass);
+            const DepthMaskPsos prepassMaskPsos{ m_depthPrepassMaskPSO.get(),
+                                                 m_depthPrepassMaskPSOInst.get(),
+                                                 m_depthPrepassMaskPSOSkinned.get() };
             RenderDepthOnlyScene(camVPJ, *m_depthPrepassPSO, *m_depthPrepassSkinnedPSO,
                                  /*updateSkinning*/ false, frameIndex, /*lodBias*/ 0,
-                                 m_depthPrepassPSOInst.get(), &pp);
+                                 m_depthPrepassPSOInst.get(), &pp,
+                                 /*skipRtCovered*/ false, /*cascadeTexelWorld*/ 0.0f,
+                                 &prepassMaskPsos);
             m_gpuTimer->End(nativeCmdList, GpuTimer::DepthPrepass);
         }
 
@@ -4152,7 +4376,9 @@ void Application::Render()
         float skyboxIntensity;
         // ▼ コンタクトシャドウ制御 16B
         float contactShadowEnabled;  // 1=実テクスチャ(t11)を読む / 0=読まず 1.0（白ダミー1x1の範囲外Load=0対策）
-        XMFLOAT3 _csPad;
+        // ▼ 法線マップフィルタリング（旧 _csPad の 12B を流用＝レイアウトは 1 バイトも動かない）
+        //   .x=強さ(0 で完全に恒等) .y=α に足せる量の上限 .z=幾何法線へ寄せる強さ
+        XMFLOAT3 normalFilterParams;
     };
     static_assert(sizeof(FrameConstants) == 1536, "FrameConstants must be 1536 bytes");
 
@@ -4267,6 +4493,16 @@ void Application::Render()
 
     // コンタクトシャドウも同じ規約（白ダミーが張られている時はシェーダ側で読まない）。
     fc.contactShadowEnabled = (csSrv != m_ssaoWhiteSrvIndex) ? 1.0f : 0.0f;
+
+    // 法線マップフィルタリング（分散→ラフネス / 平均法線の復元）。強さ 0 でシェーダは恒等。
+    {
+        const NormalFilterSettings nf = m_scene ? m_scene->GetNormalFilterSettings()
+                                                : NormalFilterSettings{};
+        fc.normalFilterParams = XMFLOAT3(
+            nf.enabled ? (std::max)(nf.strength, 0.0f) : 0.0f,
+            (std::max)(nf.varianceClamp, 0.0f),
+            (std::max)(nf.geometricBlend, 0.0f));
+    }
 
     // ===== ライト収集（point / spot を 1 本の配列へ統合してクラスタード用 SB へ送る）=====
     // 旧 8 灯固定配列は撤廃。上限は ClusteredLightCulling::kMaxSceneLights（1024）。
@@ -4751,7 +4987,7 @@ void Application::Render()
     {
         const bool physDraw = m_physicsDebugDraw && m_physicsDebugRenderer->IsEnabled();
         const bool navDraw  = m_scene && m_scene->GetNavDebugDraw() && m_scene->HasNavMesh();
-        if (physDraw || navDraw)
+        if ((physDraw || navDraw) && !McpHidingGizmos())   // gizmos:false のスクショ中は止める
         {
             m_physicsDebugRenderer->BeginFrame();
             if (physDraw) m_physicsDebugRenderer->CollectFromRegistry(m_scene->GetRegistry());
@@ -5037,8 +5273,24 @@ void Application::Render()
         {
             XMFLOAT4X4 projF;
             XMStoreFloat4x4(&projF, m_camera->GetProjectionMatrix());
+            // ★合焦をエンティティに任せる（dofFocusName）。毎フレームその子孫込みのワールド位置を
+            //   ビュー空間へ落として z を取る＝「被写体に合焦したまま寄る/回る」が Lua 無しで作れる。
+            //   見つからない/名前が空なら -1 を渡して dofFocusDist にフォールバックする。
+            float focusOverride = -1.0f;
+            if (!ppApplied.dofFocusName.empty() && m_scene)
+            {
+                Entity fe = m_scene->FindEntity(ppApplied.dofFocusName);
+                if (fe.IsValid())
+                {
+                    const XMMATRIX w = ComputeWorldMatrix(m_scene->GetRegistry(), fe.GetHandle());
+                    const XMVECTOR vp = XMVector3TransformCoord(w.r[3], m_camera->GetViewMatrix());
+                    const float vz = XMVectorGetZ(vp);
+                    if (vz > 0.0f) focusOverride = vz;
+                }
+            }
             const u32 o = m_dofPass->Apply(*m_commandList, m_srvHeap.get(),
-                curSceneSrv, depthSrvGpu, projF._33, projF._43, ppApplied);
+                curSceneSrv, depthSrvGpu, projF._33, projF._43, projF._22,
+                ppApplied, focusOverride);
             if (o != DescriptorHeap::kInvalidIndex)
                 curSceneSrv = m_srvHeap->GetGpuHandle(o);
         }
@@ -5219,7 +5471,11 @@ void Application::Render()
     //   見るための機能なので、ここで切ると一時停止の意味が半分無くなる。
     const bool iconsWhilePaused = (m_engineMode == EngineMode::Playing
                                    && m_editorCtx && m_editorCtx->paused);
-    if ((m_engineMode == EngineMode::Editor || iconsWhilePaused) && !m_isGameMode)
+    // ★gizmos:false のスクショ中だけ丸ごと止める（カメラ視錐台の水色の線 / 選択枠 /
+    //   ライトのハンドルがここ。選択を外しても「アクティブなカメラ」は描かれ続けるので、
+    //   選択解除では消せなかったのが元の痛み）。撮り終われば自動で戻る。
+    if ((m_engineMode == EngineMode::Editor || iconsWhilePaused) && !m_isGameMode
+        && !McpHidingGizmos())
     {
         // ★DSV は張らない。アイコンは DepthEnable=FALSE で深度テストをしないうえ、
         //   #16 でメイン深度はレンダー解像度に縮んだので、表示解像度のバックバッファへ
@@ -5668,8 +5924,17 @@ void Application::Render()
                          ImGui::SliderFloat("色収差##lfc", &pp.lfChroma, 0.0f, 0.05f, "%.3f"); }},
                 {"ライト/カメラ", "被写界深度 DoF", "フォーカス距離の前後がボケる(透視カメラのみ)", &pp.dofOn,
                     [&]{ ImGui::SliderFloat("フォーカス距離##doff", &pp.dofFocusDist, 0.1f, 100.0f, "%.1f");
-                         ImGui::SliderFloat("シャープ範囲##dofr", &pp.dofFocusRange, 0.1f, 50.0f, "%.1f");
-                         ImGui::SliderFloat("最大ボケpx##dofb", &pp.dofBlurSize, 1.0f, 32.0f, "%.0f"); }},
+                         {   // 合焦をエンティティに任せる（空なら上のフォーカス距離）
+                             char buf[128]{};
+                             std::snprintf(buf, sizeof(buf), "%s", pp.dofFocusName.c_str());
+                             if (ImGui::InputText("合焦エンティティ##dofent", buf, sizeof(buf)))
+                                 pp.dofFocusName = buf;
+                         }
+                         ImGui::SliderFloat("F値(0でレガシー)##dofap", &pp.dofAperture, 0.0f, 22.0f, "%.1f");
+                         ImGui::SliderFloat("焦点距離mm(0=画角)##doffl", &pp.dofFocalLength, 0.0f, 200.0f, "%.0f");
+                         if (pp.dofAperture <= 0.0f)
+                             ImGui::SliderFloat("シャープ範囲##dofr", &pp.dofFocusRange, 0.1f, 50.0f, "%.1f");
+                         ImGui::SliderFloat("最大ボケpx##dofb", &pp.dofBlurSize, 1.0f, 64.0f, "%.0f"); }},
                 {"ライト/カメラ", "モーションブラー Motion Blur", "カメラの動きで残像(深度再構成方式・透視カメラのみ)", &pp.motionBlurOn,
                     [&]{ ImGui::SliderFloat("強度##mbs", &pp.mbStrength, 0.0f, 2.0f, "%.2f");
                          ImGui::SliderInt("サンプル数##mbn", &pp.mbSamples, 4, 16); }},

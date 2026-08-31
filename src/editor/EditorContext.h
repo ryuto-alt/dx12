@@ -94,6 +94,17 @@ struct McpPendingProcCreate
     McpDeferred mcp;
 };
 
+// MCP 由来の「アセット再読込」要求（dx12_reload_assets）。
+// テクスチャ/モデルの読み込みは GPU アップロードを伴うので記録中の cmdList が要る＝
+// MCP 受信時点（フレーム先頭）では実行できない。mcpProcCreates と同じくフレーム境界で処理する。
+struct McpPendingAssetReload
+{
+    std::string prefix;        // assets 配下の実パス前方一致（空 = assets 全体）
+    std::string relLabel;      // 応答に載せる assets 相対の指定（空 = "assets"）
+    bool        force = false; // true = 更新時刻を見ずに全部読み直す
+    McpDeferred mcp;
+};
+
 struct PendingScriptAttach
 {
     entt::entity entity = entt::null;
@@ -384,6 +395,8 @@ public:
     std::vector<McpPendingDelete>    mcpDuplications;      // MCP 由来複製（.entity=複製元。応答に複製先 id を返す）
     // MCP 由来の地形/スカルプト生成（GPU メッシュ構築に cmdList が要るのでフレーム境界で処理）
     std::vector<McpPendingProcCreate> mcpProcCreates;
+    // MCP 由来のアセット再読込（同上。dx12_reload_assets）
+    std::vector<McpPendingAssetReload> mcpAssetReloads;
     // Undo/Redo はエンティティ復元（モデル再ロード）を伴う場合があるため
     // cmdList が有効なフレーム境界まで遅延する
     bool pendingUndo = false;

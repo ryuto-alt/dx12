@@ -150,6 +150,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             "list_scenes", "list_assets", "list_lights", "query_entities", "find_entity",
             "get_bounds", "get_editor_camera", "get_scene_settings", "get_post_process",
             "get_ssao", "get_ssr", "get_ssgi", "get_taa", "get_contact_shadow",
+            "get_normal_filter",
             "get_shadow_pcss", "get_volumetric_fog", "get_dxr", "get_physics_state",
             "get_anim_state", "get_lua_component_state", "get_script_errors",
             "get_play_session", "read_lua_component", "read_shader", "describe_components",
@@ -168,8 +169,10 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             "benchmark", "step_frames", "play", "stop", "save_scene", "select_entity",
             "focus_camera", "look_at", "set_editor_camera", "key_down",
             "key_up", "key_press", "render_debug", "eval_lua",
-            // reload_scripts は env を作り直すだけでシーンのデータは変えない
-            "reload_scripts",
+            // reload_scripts は env を作り直すだけでシーンのデータは変えない。
+            // reload_assets も同じ（MeshRenderer の参照先を新しい実体へ差し替えるだけで、
+            // シリアライズされる値は 1 つも変わらない＝未保存扱いにしてはいけない）。
+            "reload_scripts", "reload_assets",
         };
         // eval_lua と render_debug は「シーンを変えうる」が、変えないことの方が多い。
         // 変えた場合は設定フィンガープリント（Run ループの定期比較）か、
@@ -507,6 +510,7 @@ void Application::FinishFinalScreenshot()
     if (!m_mcpFinalShot.captured) return;
     m_mcpFinalShot.captured = false;
     const bool wasDeterministic = m_mcpFinalShot.deterministic;
+    const bool hidGizmos        = m_mcpFinalShot.hideGizmos;
     m_deterministicCapture = false;   // 撮り終わったら必ず通常の時間へ戻す
 
     McpDeferred reply = m_mcpFinalShot.reply;
@@ -570,6 +574,7 @@ void Application::FinishFinalScreenshot()
                        {"source", "backbuffer"},
                        {"postApplied", pp.enabled},
                        {"deterministic", wasDeterministic},
+                       {"gizmos", !hidGizmos},
                        {"taa", m_scene->GetTaaSettings().enabled},
                        {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"},
                        {"note", "ポスト適用後のバックバッファ。ImGui を描く前に撮るので"

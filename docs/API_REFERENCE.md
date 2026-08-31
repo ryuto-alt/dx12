@@ -1010,7 +1010,7 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 ## 10. MCP（AI ブリッジ）ツール一覧
 
 起動中のエディタを Claude Code / Codex から操作する MCP サーバ（`tools/mcp-server`。配布は
-[ryuto-alt/dx12-mcp](https://github.com/ryuto-alt/dx12-mcp)）。ツール名は `dx12_` 接頭辞で **全 152 種**。
+[ryuto-alt/dx12-mcp](https://github.com/ryuto-alt/dx12-mcp)）。ツール名は `dx12_` 接頭辞で **全 153 種**。
 ここは全ツールの一覧（1 行説明）。**params / 返り値・遅延同期・error_code・セキュリティモデルは
 [`MCP.md`](MCP.md) が正**。エンジンのディスパッチ表そのものは `dx12_describe_mcp_params` で引ける。
 
@@ -1048,6 +1048,7 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 | `dx12_get_script_errors` | **壊れている LuaScript を全部**（`dx12_play` が `scriptErrors>0` を返したら次はこれ）|
 | `dx12_set_lua_property` | プロパティを 1 つ書き換える（Playing 中は即再注入）|
 | `dx12_reload_scripts` | 実行時エラーで死んだスクリプトを **Play を止めずに**復帰させる |
+| `dx12_reload_assets` | **書き換えたテクスチャ/モデルをエディタ再起動なしで読み直す**（DCC ツールと行き来するとき用。シーンは開き直さず、いま置かれている `MeshRenderer` の参照だけ張り替える）|
 | `dx12_eval_lua` | 任意 Lua をその場実行（デバッグ用）|
 
 ### 10-4. 編集（同期）
@@ -1066,7 +1067,7 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 ### 10-5. マテリアル・シェーダー
 | ツール | 説明 |
 |---|---|
-| `dx12_set_pbr` | metallic / roughness / emissive などの数値 |
+| `dx12_set_pbr` | metallic / roughness / UV スケール / **透明**（`alphaMode` = auto / opaque / mask / blend、`alphaCutoff`、`opacity`）|
 | `dx12_set_color` | 基本色（頂点色の乗算）|
 | `dx12_set_texture` | スロット指定でテクスチャ上書き（albedo / normal / metalRoughness）|
 | `dx12_material_apply` | **PBR 4 点セット（BaseColor / Normal / ORM / Height）を 1 回で**。素材フォルダから用途を推定 |
@@ -1141,6 +1142,7 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 | `dx12_get_ssr` / `dx12_set_ssr` | スクリーン空間反射 |
 | `dx12_get_ssgi` / `dx12_set_ssgi` | スクリーン空間 GI |
 | `dx12_get_contact_shadow` / `dx12_set_contact_shadow` | コンタクトシャドウ |
+| `dx12_get_normal_filter` / `dx12_set_normal_filter` | 法線マップフィルタリング（分散→ラフネス / 平均法線の復元。既定 ON）|
 | `dx12_get_shadow_pcss` / `dx12_set_shadow_pcss` | PCSS ソフトシャドウ |
 | `dx12_get_dxr` / `dx12_set_dxr` | レイトレーシング（対応 GPU のみ）|
 | `dx12_get_taa` / `dx12_set_taa` | TAA |

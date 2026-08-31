@@ -86,7 +86,9 @@ cbuffer PerFrameConstants : register(b1)
     float  skyboxIntensity;  // skybox 描画/反射の明るさ
     // ▼ コンタクトシャドウ制御 16B (offset 1520)
     float  contactShadowEnabled;  // 1=実テクスチャ(t11)を読む, 0=読まず 1.0（白ダミー 1x1 の範囲外 Load 対策）
-    float3 _csPad;
+    // ▼ 法線マップフィルタリング（旧 _csPad の 12B をそのまま使う＝レイアウトは 1 バイトも動かない）
+    //   .x=強さ(0 で完全に恒等) .y=α に足せる量の上限 .z=幾何法線へ寄せる強さ
+    float3 normalFilterParams;
 };                                               // total = 1536B
 
 // DDGI の拡散間接光。PerFrame のパラメータで包んだだけの薄いラッパ。

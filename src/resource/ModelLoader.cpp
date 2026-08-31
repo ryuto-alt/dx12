@@ -16,6 +16,7 @@
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 #include <assimp/config.h>
+#include <assimp/GltfMaterial.h>
 #include <algorithm>
 #include <functional>      // Probe のノード再帰(ワールド AABB)用
 #include <unordered_set>   // Probe のボーン名ユニーク数え上げ用
@@ -1176,6 +1177,47 @@ ModelData ModelLoader::LoadFromFile(
             aiMat->Get(AI_MATKEY_ROUGHNESS_FACTOR, roughness);
             material->defaultMetallic = metallic;
             material->defaultRoughness = roughness;
+
+            // ---- 透明（glTF: alphaMode / alphaCutoff / baseColorFactor.a、FBX/OBJ: opacity）----
+            // ★これを読まないと「葉・枝カード・角膜・ガラス」が全部不透明な板になる。
+            //   既定は Opaque なので、alphaMode を持たないモデルは従来と 1 ピクセルも変わらない。
+            {
+                aiString alphaMode;
+                if (aiMat->Get(AI_MATKEY_GLTF_ALPHAMODE, alphaMode) == AI_SUCCESS)
+                {
+                    const std::string am = alphaMode.C_Str();
+                    if (am == "MASK")       material->alphaMode = AlphaMode::Mask;
+                    else if (am == "BLEND") material->alphaMode = AlphaMode::Blend;
+                    else                    material->alphaMode = AlphaMode::Opaque;
+                }
+                float cutoff = 0.5f;
+                if (aiMat->Get(AI_MATKEY_GLTF_ALPHACUTOFF, cutoff) == AI_SUCCESS)
+                    material->alphaCutoff = cutoff;
+
+                // baseColorFactor.a（glTF）→ 無ければ $mat.opacity（FBX/OBJ/Collada）。
+                float alpha = 1.0f;
+                aiColor4D baseColor;
+                if (aiMat->Get(AI_MATKEY_BASE_COLOR, baseColor) == AI_SUCCESS)
+                    alpha = baseColor.a;
+                else
+                {
+                    float op = 1.0f;
+                    if (aiMat->Get(AI_MATKEY_OPACITY, op) == AI_SUCCESS) alpha = op;
+                }
+                material->baseColorAlpha = std::clamp(alpha, 0.0f, 1.0f);
+
+                // ★alphaMode を持たない形式（FBX/OBJ）の救済: opacity が 1 未満なら BLEND とみなす。
+                //   glTF は alphaMode が正なので、ここで勝手に上書きしない。
+                if (material->alphaMode == AlphaMode::Opaque && material->baseColorAlpha < 0.999f
+                    && alphaMode.length == 0)
+                    material->alphaMode = AlphaMode::Blend;
+
+                if (material->alphaMode != AlphaMode::Opaque)
+                    Logger::Info("マテリアル透明: mode={} cutoff={:.2f} alpha={:.2f} ({})",
+                                 (material->alphaMode == AlphaMode::Mask) ? "MASK" : "BLEND",
+                                 material->alphaCutoff, material->baseColorAlpha,
+                                 aiMat->GetName().C_Str());
+            }
         }
 
         // PBR SRVブロック確保（albedo, normal, metalRoughness の3連続SRV）
@@ -1199,6 +1241,19 @@ ModelData ModelLoader::LoadFromFile(
         }
 
         mesh->SetMaterial(material.get());
+
+        // インポート元での呼び名を控える（描画には使わない）。ランタイムのサブメッシュ番号は
+        // 上の buildRefs = ノード展開順なので、glTF/FBX の並びとは一致しない。名前を持たせて
+        // おかないと「レンズの前玉だけ 3 倍飛んでいる」の "どれ" が特定できない
+        // （dx12_get_bounds perSubmesh:true が返す）。
+        {
+            std::string mn = aiMeshPtr->mName.C_Str();
+            if (mn.empty() && buildRef.bakeNode >= 0 && nodeGraph)
+                mn = nodeGraph->GetNode(static_cast<u32>(buildRef.bakeNode)).name;
+            mesh->SetName(std::move(mn));
+            if (aiMeshPtr->mMaterialIndex < scene->mNumMaterials)
+                mesh->SetMaterialName(scene->mMaterials[aiMeshPtr->mMaterialIndex]->GetName().C_Str());
+        }
 
         result.meshes.push_back(std::move(mesh));
         result.materials.push_back(std::move(material));
