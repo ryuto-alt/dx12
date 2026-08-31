@@ -71,9 +71,11 @@ private:
     entt::entity     m_lookEntity = entt::null;
     MeshRendererLook m_lookSnapshot{};
 
-    bool  m_pbrEditing = false;
-    float m_pbrMetallicSnapshot  = -1.0f;
-    float m_pbrRoughnessSnapshot = -1.0f;
+    // マテリアル節（metallic / roughness / 透明の上書き）の Undo スナップショット。
+    // ★透明を別スナップショットに分けると「2 本動かしたら Undo が 2 回要る」うえに
+    //   片方だけ戻せてしまうので、上書き一式をまとめて 1 コマンドにする。
+    bool         m_pbrEditing = false;
+    PbrOverrides m_pbrSnapshot{};
 
     EditState<PointLight>       m_plEdit;
     EditState<DirectionalLight> m_dlEdit;

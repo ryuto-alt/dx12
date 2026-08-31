@@ -53,44 +53,63 @@ private:
     Transform       m_after;
 };
 
-// ── PBR パラメータ変更コマンド ──
+// マテリアルの「エンティティ側の上書き」一式。負値 = 継承（モデル/マテリアルに従う）。
+// ★透明（alphaMode / alphaCutoff / opacity）も metallic / roughness と同じ扱いなので
+//   ここへ一緒に入れる。別コマンドに分けると「スライダーを 2 本動かすと Undo が 2 回要る」
+//   になり、しかも片方だけ戻して食い違う状態が作れてしまう。
+struct PbrOverrides
+{
+    float metallic    = -1.0f;
+    float roughness   = -1.0f;
+    int   alphaMode   = -1;      // -1=継承 / 0=opaque / 1=mask / 2=blend
+    float alphaCutoff = -1.0f;   // <0=継承
+    float opacity     = 1.0f;
+
+    static PbrOverrides From(const MeshRenderer& mr)
+    {
+        PbrOverrides v;
+        v.metallic    = mr.overrideMetallic;
+        v.roughness   = mr.overrideRoughness;
+        v.alphaMode   = mr.alphaModeOverride;
+        v.alphaCutoff = mr.alphaCutoffOverride;
+        v.opacity     = mr.opacity;
+        return v;
+    }
+    void ApplyTo(MeshRenderer& mr) const
+    {
+        mr.overrideMetallic    = metallic;
+        mr.overrideRoughness   = roughness;
+        mr.alphaModeOverride   = alphaMode;
+        mr.alphaCutoffOverride = alphaCutoff;
+        mr.opacity             = opacity;
+    }
+    bool operator==(const PbrOverrides& o) const = default;
+};
+
+// ── PBR パラメータ変更コマンド（metallic / roughness / 透明の上書き）──
 class PBRCommand : public IUndoCommand
 {
 public:
     PBRCommand(entt::registry* reg, entt::entity entity,
-               float metalBefore, float roughBefore,
-               float metalAfter, float roughAfter)
-        : m_reg(reg), m_entity(entity),
-          m_metalBefore(metalBefore), m_roughBefore(roughBefore),
-          m_metalAfter(metalAfter), m_roughAfter(roughAfter) {}
+               const PbrOverrides& before, const PbrOverrides& after)
+        : m_reg(reg), m_entity(entity), m_before(before), m_after(after) {}
 
-    void Undo() override
-    {
-        if (m_reg->valid(m_entity) && m_reg->all_of<MeshRenderer>(m_entity))
-        {
-            auto& mr = m_reg->get<MeshRenderer>(m_entity);
-            mr.overrideMetallic = m_metalBefore;
-            mr.overrideRoughness = m_roughBefore;
-        }
-    }
-
-    void Redo() override
-    {
-        if (m_reg->valid(m_entity) && m_reg->all_of<MeshRenderer>(m_entity))
-        {
-            auto& mr = m_reg->get<MeshRenderer>(m_entity);
-            mr.overrideMetallic = m_metalAfter;
-            mr.overrideRoughness = m_roughAfter;
-        }
-    }
+    void Undo() override { Apply(m_before); }
+    void Redo() override { Apply(m_after); }
 
     const char* GetName() const override { return "PBR"; }
 
 private:
+    void Apply(const PbrOverrides& v)
+    {
+        if (m_reg->valid(m_entity) && m_reg->all_of<MeshRenderer>(m_entity))
+            v.ApplyTo(m_reg->get<MeshRenderer>(m_entity));
+    }
+
     entt::registry* m_reg;
     entt::entity    m_entity;
-    float m_metalBefore, m_roughBefore;
-    float m_metalAfter, m_roughAfter;
+    PbrOverrides    m_before;
+    PbrOverrides    m_after;
 };
 
 // ── エンティティ削除コマンド（サブツリー対応。Undo で全コンポーネント復元） ──

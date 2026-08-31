@@ -2629,13 +2629,20 @@ void InspectorPanel::Render(entt::registry& reg,
                     float uiMetal = inheritMetal ? mat->defaultMetallic  : mr.overrideMetallic;
                     float uiRough = inheritRough ? mat->defaultRoughness : mr.overrideRoughness;
 
-                    // PBR 編集前スナップショット
+                    // PBR 編集前スナップショット（metallic / roughness / 透明をひとまとめ）
                     if (!m_pbrEditing)
-                    {
-                        m_pbrMetallicSnapshot = mr.overrideMetallic;
-                        m_pbrRoughnessSnapshot = mr.overrideRoughness;
-                    }
+                        m_pbrSnapshot = PbrOverrides::From(mr);
 
+                    // 透明の実効値（モデル焼き込み × エンティティ上書き）。
+                    // ★合成規則は renderer/Material.h の ResolveAlphaParams が正。ここで
+                    //   別の規則を書くと「インスペクタの表示と実際の絵が食い違う」になる。
+                    const AlphaParams effAlpha = ResolveAlphaParams(mat, mr.alphaModeOverride,
+                                                                    mr.alphaCutoffOverride, mr.opacity);
+                    int   alphaIdx  = mr.alphaModeOverride + 1;   // -1..2 → 0..3（0 = 継承）
+                    float uiCutoff  = effAlpha.cutoff;
+                    float uiOpacity = mr.opacity;
+
+                    bool cutoffActive = false, opacityActive = false;
                     bool metalActive = false, roughActive = false;
                     bool hasNormal = mat->normalMapTexture != nullptr;
                     bool hasMR2 = mat->metalRoughnessTexture != nullptr;
@@ -2647,44 +2654,70 @@ void InspectorPanel::Render(entt::registry& reg,
                             mr.overrideRoughness = uiRough;
                         pg::Text("Normal Map", "%s", hasNormal ? "あり" : "なし");
                         pg::Text("MetalRough Map", "%s", hasMR2 ? "あり" : "なし");
+
+                        // ---- 透明（アルファクリップ / アルファブレンド）----
+                        // 既定は「継承」＝モデルの glTF alphaMode に従う。ここを触ると
+                        // エンティティ単位の上書きになり、シーン JSON の material ブロックに載る。
+                        pg::Group("透明 Transparency");
+                        static const char* const kAlphaModes[4] = {
+                            "継承 (モデルに従う)", "不透明 Opaque",
+                            "アルファクリップ Mask", "半透明 Blend" };
+                        if (pg::Combo("扱い Alpha Mode", &alphaIdx, kAlphaModes, 4,
+                                      "継承 = glTF の alphaMode。Mask は葉・フェンス・角膜の抜き"
+                                      "（影も同じ形に抜ける）。Blend は不透明の後に奥から順に描く"))
+                        {
+                            // コンボは押した瞬間に確定する＝下のドラッグ終了検出には拾われない
+                            const PbrOverrides before = PbrOverrides::From(mr);
+                            mr.alphaModeOverride = alphaIdx - 1;
+                            ctx.undoSystem.PushCommand(std::make_unique<PBRCommand>(
+                                &reg, ctx.selectedEntity, before, PbrOverrides::From(mr)));
+                        }
+                        if (effAlpha.mode == AlphaMode::Mask)
+                        {
+                            if (pg::SliderFloat("しきい値 Cutoff", &uiCutoff, 0.0f, 1.0f, "%.2f", &cutoffActive))
+                                mr.alphaCutoffOverride = uiCutoff;
+                        }
+                        if (pg::SliderFloat("不透明度 Opacity", &uiOpacity, 0.0f, 1.0f, "%.2f", &opacityActive))
+                            mr.opacity = uiOpacity;
+                        if (effAlpha.mode == AlphaMode::Blend)
+                            WarnRow("半透明は深度を書かず影も落としません"
+                                    "（エンティティ単位で奥から手前へ描画）");
+
                         if (inheritMetal || inheritRough)
                             WarnRow("継承中（この値はモデル/マテリアル側の既定。動かすと上書きになります）");
-                        if (!inheritMetal || !inheritRough)
+                        if (!inheritMetal || !inheritRough || mr.alphaModeOverride >= 0
+                            || mr.alphaCutoffOverride >= 0.0f || mr.opacity != 1.0f)
                         {
                             pg::Label("");
-                            if (ImGui::SmallButton("ç¶æ¿ã«æ»ã"))  // 継承に戻す
+                            if (ImGui::SmallButton("継承に戻す"))
                             {
                                 // ★Undo に積む。m_pbrEditing はスライダー操作でしか立たないので、
                                 //   このボタンだけは下のドラッグ終了検出に拾われず、
                                 //   Undo にも未保存フラグにも一切残らなかった
                                 //   （overrideMetallic/Roughness は material ブロックの出力を左右する）。
-                                if (mr.overrideMetallic >= 0.0f || mr.overrideRoughness >= 0.0f)
+                                // ★透明の上書きもここで一緒に落とす（節の中の全上書きが対象）。
+                                const PbrOverrides before = PbrOverrides::From(mr);
+                                PbrOverrides{}.ApplyTo(mr);   // 既定 = 全部「継承」/ opacity 1
+                                if (!(before == PbrOverrides::From(mr)))
                                 {
                                     ctx.undoSystem.PushCommand(std::make_unique<PBRCommand>(
-                                        &reg, ctx.selectedEntity,
-                                        mr.overrideMetallic, mr.overrideRoughness,
-                                        -1.0f, -1.0f));
+                                        &reg, ctx.selectedEntity, before, PbrOverrides::From(mr)));
                                 }
-                                mr.overrideMetallic  = -1.0f;
-                                mr.overrideRoughness = -1.0f;
                             }
                         }
                         pg::End();
                     }
 
-                    if (metalActive || roughActive)
+                    const bool pbrActive = metalActive || roughActive || cutoffActive || opacityActive;
+                    if (pbrActive)
                         m_pbrEditing = true;
 
-                    if (m_pbrEditing && !metalActive && !roughActive && !ImGui::IsAnyItemActive())
+                    if (m_pbrEditing && !pbrActive && !ImGui::IsAnyItemActive())
                     {
-                        bool changed = m_pbrMetallicSnapshot != mr.overrideMetallic
-                                    || m_pbrRoughnessSnapshot != mr.overrideRoughness;
-                        if (changed)
+                        if (!(m_pbrSnapshot == PbrOverrides::From(mr)))
                         {
                             ctx.undoSystem.PushCommand(std::make_unique<PBRCommand>(
-                                &reg, ctx.selectedEntity,
-                                m_pbrMetallicSnapshot, m_pbrRoughnessSnapshot,
-                                mr.overrideMetallic, mr.overrideRoughness));
+                                &reg, ctx.selectedEntity, m_pbrSnapshot, PbrOverrides::From(mr)));
                         }
                         m_pbrEditing = false;
                     }

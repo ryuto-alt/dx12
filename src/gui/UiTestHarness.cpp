@@ -10,6 +10,7 @@
 #include "scene/Scene.h"
 #include "scene/SceneSerializer.h"
 #include "physics/PhysicsSystem.h"
+#include "renderer/Material.h"
 #include "renderer/Mesh.h"
 #include "terrain/SculptIO.h"
 #include "terrain/SculptMesh.h"
@@ -2025,6 +2026,106 @@ void T_DeepPrimitiveSaveRoundtrip(ImGuiTestContext* ctx)
     ctx->Yield(2);
 }
 
+// 透明（アルファクリップ / アルファブレンド）の上書きが保存往復するか。
+//
+// ★ここが守る不変条件は 2 つある:
+//   ① 上書きした値（alphaMode / alphaCutoff / opacity）が JSON に載り、読み戻して一致する。
+//   ② **何も上書きしていないエンティティは material の透明キーを 1 つも書かない**。
+//      書いてしまうと「既存シーンを開いて保存し直しただけで全エンティティの JSON が膨らむ」＝
+//      差分が読めなくなる。既定値が「継承」であることの担保でもある。
+void T_DeepAlphaSaveRoundtrip(ImGuiTestContext* ctx)
+{
+    IM_CHECK(g_app != nullptr);
+    Scene* scene = g_app->GetScene();
+    IM_CHECK(scene != nullptr);
+    entt::registry& reg = scene->GetRegistry();
+    const std::string assetsDir = PathResolver::AssetsDir();
+
+    Step(ctx, "上書きしていない板は透明キーを 1 つも書かない");
+    Entity plain = scene->SpawnPlane("__T_AlphaPlain", { 0.0f, -50.0f, 0.0f }, 1.0f, false);
+    const entt::entity plainE = plain.GetHandle();
+    IM_CHECK(plainE != entt::null);
+    {
+        const std::string js = SceneSerializer::SerializeEntity(*scene, plainE, assetsDir);
+        if (js.find("alphaMode") != std::string::npos
+            || js.find("alphaCutoff") != std::string::npos
+            || js.find("\"opacity\"") != std::string::npos)
+            IM_ERRORF("上書きしていないのに透明キーが書かれている（既存シーンの差分が膨らむ）");
+    }
+
+    Step(ctx, "MASK + cutoff + opacity を上書きして書き出す");
+    Entity plane = scene->SpawnPlane("__T_AlphaPlane", { 0.0f, -50.0f, 0.0f }, 1.0f, false);
+    const entt::entity pe = plane.GetHandle();
+    IM_CHECK(pe != entt::null);
+    {
+        auto& mr = reg.get<MeshRenderer>(pe);
+        mr.alphaModeOverride   = 1;        // Mask
+        mr.alphaCutoffOverride = 0.33f;
+        mr.opacity             = 0.5f;
+    }
+    const std::string js = SceneSerializer::SerializeEntity(*scene, pe, assetsDir);
+    if (js.find("\"alphaMode\"") == std::string::npos)
+        IM_ERRORF("alphaMode が保存されていない（絵は変わるのに保存で消える）");
+    if (js.find("\"alphaCutoff\"") == std::string::npos)
+        IM_ERRORF("alphaCutoff が保存されていない");
+    if (js.find("\"opacity\"") == std::string::npos)
+        IM_ERRORF("opacity が保存されていない");
+
+    Step(ctx, "読み戻して値が一致するか");
+    const entt::entity pe2 = SceneSerializer::InstantiateEntity(*scene, js, assetsDir);
+    if (pe2 == entt::null)
+    {
+        IM_ERRORF("透明を書いた JSON を読み戻せない");
+        reg.destroy(pe);
+        reg.destroy(plainE);
+        return;
+    }
+    {
+        const auto& mr2 = reg.get<MeshRenderer>(pe2);
+        if (mr2.alphaModeOverride != 1
+            || std::fabs(mr2.alphaCutoffOverride - 0.33f) > 0.001f
+            || std::fabs(mr2.opacity - 0.5f) > 0.001f)
+            IM_ERRORF("透明が復元されない (mode=%d cutoff=%.3f opacity=%.3f)",
+                      mr2.alphaModeOverride, mr2.alphaCutoffOverride, mr2.opacity);
+    }
+
+    Step(ctx, "実効値の合成規則（上書き > マテリアル）");
+    {
+        // マテリアルが Blend でも、エンティティ側で Opaque を指定したら Opaque になること。
+        Material mat;
+        mat.alphaMode      = AlphaMode::Blend;
+        mat.alphaCutoff    = 0.9f;
+        mat.baseColorAlpha = 0.25f;
+        const AlphaParams inherit = ResolveAlphaParams(&mat, -1, -1.0f, 1.0f);
+        if (inherit.mode != AlphaMode::Blend || std::fabs(inherit.cutoff - 0.9f) > 0.001f
+            || std::fabs(inherit.opacity - 0.25f) > 0.001f)
+            IM_ERRORF("継承（-1）でマテリアルの値が出てこない");
+        const AlphaParams forced = ResolveAlphaParams(&mat, 0, 0.1f, 0.5f);
+        if (forced.mode != AlphaMode::Opaque || std::fabs(forced.cutoff - 0.1f) > 0.001f
+            || std::fabs(forced.opacity - 0.125f) > 0.001f)
+            IM_ERRORF("上書きがマテリアルより優先されていない");
+    }
+
+    Step(ctx, "インスペクターのマテリアル節が透明を描いても落ちない");
+    if (EditorContext* ed = Ed())
+    {
+        const entt::entity prevSel = ed->selectedEntity;
+        ed->Select(pe);
+        ctx->Yield(3);                 // 選択の反映 → Inspector の再描画まで進める
+        ctx->SetRef(kWinInspector);
+        ctx->ItemOpenAll("", 2);       // マテリアル節を開いて透明の行まで描かせる
+        ctx->Yield(3);
+        ed->Select(prevSel);
+        ctx->Yield(2);
+    }
+
+    // 後始末（検査用エンティティをシーンに残さない）
+    reg.destroy(pe2);
+    reg.destroy(pe);
+    reg.destroy(plainE);
+    ctx->Yield(2);
+}
+
 // プレハブの往復: プレハブ化 → .prefab がディスクに出る → 元がインスタンス化(PrefabLink) →
 // 配置した新インスタンスにも子・コライダー・リンクが揃っているか。
 void T_DeepPrefabRoundtrip(ImGuiTestContext* ctx)
@@ -2174,6 +2275,7 @@ const DiagReg kTests[] = {
     { "deep",  "deep_duplicate",        "超詳細: コピペ複製", "複製の子孫維持と二重複製防止",         T_DeepDuplicateSubtree, true },
     { "deep",  "deep_prefab_roundtrip", "超詳細: プレハブ",   "プレハブ化→配置→リンク→構成維持",      T_DeepPrefabRoundtrip,  true },
     { "deep",  "deep_primitive_save",   "超詳細: 保存",       "プリミティブの寸法と PBR が保存往復するか", T_DeepPrimitiveSaveRoundtrip, true },
+    { "deep",  "deep_alpha_save",       "超詳細: 保存",       "透明(アルファ)の上書きが保存往復するか", T_DeepAlphaSaveRoundtrip, true },
 };
 
 const DiagReg* FindReg(const ImGuiTest* test)
