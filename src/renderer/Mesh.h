@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <vector>
 #include <DirectXMath.h>
 #include "core/Types.h"
@@ -95,6 +96,15 @@ public:
     }
     u32 GetIndexCountLod(u32 lod) const { return GetIndexBufferLod(lod).GetIndexCount(); }
 
+    // インポート元での呼び名（glTF/FBX のメッシュ名とマテリアル名）。描画には使わず、
+    // 「どのサブメッシュが変な位置にいるか」を人間/AI が特定するためだけに持つ
+    // （dx12_get_bounds perSubmesh:true が返す。ランタイムのサブメッシュ番号は
+    //   ModelLoader のノード展開順なので、glTF の JSON とは並びが一致しない）。
+    void SetName(std::string name) { m_name = std::move(name); }
+    const std::string& GetName() const { return m_name; }
+    void SetMaterialName(std::string name) { m_materialName = std::move(name); }
+    const std::string& GetMaterialName() const { return m_materialName; }
+
     void SetMaterial(Material* mat) { m_material = mat; }
     const Material* GetMaterial() const { return m_material; }
     Material* GetMaterialMutable() { return m_material; }
@@ -178,6 +188,8 @@ private:
     IndexBuffer  m_lodIndexBuffers[kMaxLods - 1];
     u32          m_lodCount = 1;
     Material*    m_material = nullptr;
+    std::string  m_name;          // インポート元のメッシュ名（空 = 名前なし）
+    std::string  m_materialName;  // インポート元のマテリアル名（空 = 名前なし）
     DirectX::XMFLOAT3 m_aabbMin = { 0, 0, 0 };
     DirectX::XMFLOAT3 m_aabbMax = { 0, 0, 0 };
     std::vector<DirectX::XMFLOAT3> m_positions; // Convex Hull 用の頂点座標キャッシュ

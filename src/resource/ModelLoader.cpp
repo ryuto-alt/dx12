@@ -1200,6 +1200,19 @@ ModelData ModelLoader::LoadFromFile(
 
         mesh->SetMaterial(material.get());
 
+        // インポート元での呼び名を控える（描画には使わない）。ランタイムのサブメッシュ番号は
+        // 上の buildRefs = ノード展開順なので、glTF/FBX の並びとは一致しない。名前を持たせて
+        // おかないと「レンズの前玉だけ 3 倍飛んでいる」の "どれ" が特定できない
+        // （dx12_get_bounds perSubmesh:true が返す）。
+        {
+            std::string mn = aiMeshPtr->mName.C_Str();
+            if (mn.empty() && buildRef.bakeNode >= 0 && nodeGraph)
+                mn = nodeGraph->GetNode(static_cast<u32>(buildRef.bakeNode)).name;
+            mesh->SetName(std::move(mn));
+            if (aiMeshPtr->mMaterialIndex < scene->mNumMaterials)
+                mesh->SetMaterialName(scene->mMaterials[aiMeshPtr->mMaterialIndex]->GetName().C_Str());
+        }
+
         result.meshes.push_back(std::move(mesh));
         result.materials.push_back(std::move(material));
     }
