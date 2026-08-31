@@ -31,7 +31,30 @@ struct VelocityVSOut
     float4 prevClip    : TEXCOORD1;    // 前フレーム(非ジッタ)クリップ座標
     float3 worldNormal : NORMAL;       // ワールド空間法線（正規化前）
     float2 material    : TEXCOORD2;    // x=roughness y=metallic（VS で b0 から展開済み）
+#ifdef ALPHA_TEST
+    float2 uv          : TEXCOORD3;    // アルファクリップ(MASK)バリアントだけが持つ
+#endif
 };
+
+#ifdef ALPHA_TEST
+// ---- アルファクリップ(MASK)バリアント（-D ALPHA_TEST=1）--------------------
+// ★これが無いと TAA(=速度プリパス)を入れた瞬間に「葉の隙間に板の深度が書かれ、
+//   その裏の物が forward の LESS_EQUAL で弾かれて真っ黒に抜ける」。
+//   Forward.hlsl / ShadowMask.hlsl と **同じテクスチャ・同じ cutoff・同じ UV** を読むこと。
+//   1 つでもズレると本体と深度が食い違い、輪郭に黒い縁が出る。
+// ★MASK のドローでだけこの PSO に切り替える（t0-t2 と b2 を貼る手間もそのぶんだけ）。
+Texture2D    g_albedo  : register(t0);
+SamplerState g_sampler : register(s0);
+
+cbuffer PBRMaterial : register(b2)
+{
+    float  vpbrMetallic;
+    float  vpbrRoughness;
+    uint   vpbrFlags;          // bit8..15 = alphaCutoff(8bit 量子化)。renderer/Material.h 参照
+    uint   vpbrPackedTint;
+    float4 vpbrUvScaleOffset;  // xy=スケール zw=オフセット（無効時は (1,1,0,0)）
+};
+#endif
 
 struct PrepassOut
 {
@@ -46,6 +69,14 @@ struct PrepassOut
 PrepassOut VelocityPS(VelocityVSOut i, bool isFront : SV_IsFrontFace)
 {
     PrepassOut o;
+
+#ifdef ALPHA_TEST
+    {
+        const float2 uv     = i.uv * vpbrUvScaleOffset.xy + vpbrUvScaleOffset.zw;
+        const float  cutoff = float((vpbrFlags >> 8) & 0xFF) / 255.0;
+        clip(g_albedo.Sample(g_sampler, uv).a - cutoff);
+    }
+#endif
 
     float2 curNdc  = i.curClip.xy  / max(abs(i.curClip.w),  1e-6);
     float2 prevNdc = i.prevClip.xy / max(abs(i.prevClip.w), 1e-6);

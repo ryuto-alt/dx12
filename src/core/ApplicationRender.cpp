@@ -1411,8 +1411,8 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
     // ---- アルファクリップ(MASK)を深度パスでも抜く ----------------------------
     // ★これが無いと「葉は抜けているのに影は板」「プリパスが葉の隙間に深度を書いて
     //   その裏が真っ黒」になる。フォワードと同じ SRV・同じ cutoff・同じ UV を読ませること。
-    // 速度+G-Buffer モード（velocityMode）では専用シェーダなので今回は対象外（既知の割り切り）。
-    const bool maskEnabled = (maskPsos != nullptr) && !velocityMode;
+    // 速度+G-Buffer モード（velocityMode）も同じ（呼び出し側が速度パス用の PSO を渡す）。
+    const bool maskEnabled = (maskPsos != nullptr);
     auto resolveAlphaOf = [&](const MeshRenderer& r, const Mesh* m) -> AlphaParams
     {
         return ResolveAlphaParams(m ? m->GetMaterial() : nullptr, r.alphaModeOverride,
@@ -4125,9 +4125,16 @@ void Application::Render()
             m_taaPass->BeginVelocity(*m_commandList, m_dsvHandle, m_gbufferRT->GetRtv(),
                                      0u, 0u, rW, rH);
             m_gpuTimer->Begin(nativeCmdList, GpuTimer::DepthPrepass);
+            // ★MASK は速度パスでも抜くこと。抜かないと板の深度が書かれ、葉の隙間の背後が
+            //   forward の LESS_EQUAL で弾かれて真っ黒になる（TAA を入れた時だけ出る不具合）。
+            const DepthMaskPsos velocityMaskPsos{ m_velocityMaskPSO.get(),
+                                                  m_velocityMaskPSOInst.get(),
+                                                  m_velocityMaskPSOSkinned.get() };
             RenderDepthOnlyScene(camVPJ, *m_velocityPSO, *m_velocityPSOSkinned,
                                  /*updateSkinning*/ false, frameIndex, /*lodBias*/ 0,
-                                 m_velocityPSOInst.get(), &pp);
+                                 m_velocityPSOInst.get(), &pp,
+                                 /*skipRtCovered*/ false, /*cascadeTexelWorld*/ 0.0f,
+                                 &velocityMaskPsos);
             m_gpuTimer->End(nativeCmdList, GpuTimer::DepthPrepass);
             m_taaPass->EndVelocity(*m_commandList);
             m_gbufferRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);

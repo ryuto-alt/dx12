@@ -71,5 +71,8 @@ VelocityVSOut VSMain(VSInput input)
     float rough, metal;
     SS_UnpackMaterial(gMatPacked, rough, metal);
     o.material = float2(rough, metal);
+#ifdef ALPHA_TEST
+    o.uv = input.texCoord;   // MASK バリアントだけ UV を流す（PS で clip する）
+#endif
     return o;
 }

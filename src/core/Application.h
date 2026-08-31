@@ -1213,6 +1213,11 @@ private:
     std::unique_ptr<PipelineState> m_velocityPSO;          // 深度+速度（static）
     std::unique_ptr<PipelineState> m_velocityPSOInst;      // 深度+速度（instanced）
     std::unique_ptr<PipelineState> m_velocityPSOSkinned;   // 深度+速度（skinned, t12=前ボーン）
+    // 深度+速度プリパスの MASK 版（ShadowMask 相当を速度パスでもやる）。
+    // ★無いと TAA 有効時だけ「葉の隙間の背後が真っ黒」になる（板の深度が書かれるため）。
+    std::unique_ptr<PipelineState> m_velocityMaskPSO;
+    std::unique_ptr<PipelineState> m_velocityMaskPSOInst;
+    std::unique_ptr<PipelineState> m_velocityMaskPSOSkinned;
     DirectX::XMFLOAT4X4 m_prevViewProjNoJitter{};          // 前フレームの「ジッタなし」viewProj
     bool                m_prevViewProjNJValid = false;
     // 前フレームの frameIndex（SkinningBuffer の「前フレームのスロット」を指すため）。

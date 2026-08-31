@@ -639,10 +639,10 @@ void Application::RecreateVelocityPsos()
     const DXGI_FORMAT rtFormats[] = { TaaPass::kVelocityFormat, kGBufferFormat };
 
     auto build = [&](const wchar_t* vsName, const D3D12_INPUT_ELEMENT_DESC* layout, u32 layoutCount,
-                     std::unique_ptr<PipelineState>& out)
+                     std::unique_ptr<PipelineState>& out, const wchar_t* psName = L"VelocityPrepass_PS.cso")
     {
         auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + vsName);
-        auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"VelocityPrepass_PS.cso");
+        auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + psName);
         if (vs.GetSize() == 0 || ps.GetSize() == 0) return;
         PipelineStateBuilder builder;
         builder.SetRootSignature(m_rootSignature->Get())
@@ -664,6 +664,17 @@ void Application::RecreateVelocityPsos()
           m_velocityPSOInst);
     build(L"VelocityPrepassSkinned_VS.cso", Mesh::GetInputLayout(), Mesh::GetInputLayoutCount(),
           m_velocityPSOSkinned);
+
+    // ---- MASK（アルファクリップ）バリアント ----
+    // ★これが無いと TAA を入れた瞬間に「葉の隙間に板の深度が書かれ、その裏が真っ黒」になる。
+    //   PS が clip を持つので t0-t2 と b2 を貼る必要があるが、貼るのは MASK のドローだけ。
+    build(L"VelocityPrepassMask_VS.cso", Mesh::GetInputLayout(), Mesh::GetInputLayoutCount(),
+          m_velocityMaskPSO, L"VelocityPrepassMask_PS.cso");
+    build(L"VelocityPrepassInstancedMask_VS.cso",
+          Mesh::GetVelocityInstancedInputLayout(), Mesh::GetVelocityInstancedInputLayoutCount(),
+          m_velocityMaskPSOInst, L"VelocityPrepassMask_PS.cso");
+    build(L"VelocityPrepassSkinnedMask_VS.cso", Mesh::GetInputLayout(), Mesh::GetInputLayoutCount(),
+          m_velocityMaskPSOSkinned, L"VelocityPrepassMask_PS.cso");
 }
 
 // 速度パス用の per-instance「前フレームのワールド行列」バッファ（slot2）を必要になった時だけ確保する。
@@ -700,10 +711,11 @@ void Application::RegisterShaderReloadHandlers()
         return;
 
     m_shaderManager->RegisterReloadHandler(
-        { L"Forward_VS.cso", L"Forward_PS.cso", L"ForwardLdr_PS.cso", L"ForwardInstanced_VS.cso" },
+        { L"Forward_VS.cso", L"Forward_PS.cso", L"ForwardLdr_PS.cso", L"ForwardInstanced_VS.cso",
+          L"ForwardMask_PS.cso" },
         [this]() { RecreateForwardPsos(); });
     m_shaderManager->RegisterReloadHandler(
-        { L"ForwardSkinned_VS.cso", L"Forward_PS.cso" },
+        { L"ForwardSkinned_VS.cso", L"Forward_PS.cso", L"ForwardMask_PS.cso" },
         [this]() { RecreateSkinnedPsos(); });
     m_shaderManager->RegisterReloadHandler(
         { L"ForwardGrid_VS.cso", L"ForwardGrid_PS.cso" },
@@ -715,14 +727,18 @@ void Application::RegisterShaderReloadHandlers()
         { L"Emissive_VS.cso", L"Emissive_PS.cso" },
         [this]() { RecreateEmissivePso(); });
     m_shaderManager->RegisterReloadHandler(
-        { L"ShadowPass_VS.cso", L"ShadowPassSkinned_VS.cso", L"ShadowPassInstanced_VS.cso" },
+        { L"ShadowPass_VS.cso", L"ShadowPassSkinned_VS.cso", L"ShadowPassInstanced_VS.cso",
+          L"ShadowMask_VS.cso", L"ShadowMaskInstanced_VS.cso", L"ShadowMaskSkinned_VS.cso",
+          L"ShadowMask_PS.cso" },
         [this]() { RecreateShadowPsos(); RecreateDepthPrepassPsos(); });  // ShadowPass_VS は深度プリパスにも流用
     m_shaderManager->RegisterReloadHandler(
         { L"DepthPrepassSkinned_VS.cso" },
         [this]() { RecreateDepthPrepassPsos(); });
     m_shaderManager->RegisterReloadHandler(
         { L"VelocityPrepass_VS.cso", L"VelocityPrepass_PS.cso",
-          L"VelocityPrepassInstanced_VS.cso", L"VelocityPrepassSkinned_VS.cso" },
+          L"VelocityPrepassInstanced_VS.cso", L"VelocityPrepassSkinned_VS.cso",
+          L"VelocityPrepassMask_VS.cso", L"VelocityPrepassMask_PS.cso",
+          L"VelocityPrepassInstancedMask_VS.cso", L"VelocityPrepassSkinnedMask_VS.cso" },
         [this]() { RecreateVelocityPsos(); });
     if (m_taaPass)
     {
