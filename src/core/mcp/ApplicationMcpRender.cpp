@@ -65,6 +65,8 @@ void Application::RegisterMcpRenderMethods()
                 {"lfHalo", pp.lfHalo}, {"lfChroma", pp.lfChroma},
                 {"dofOn", pp.dofOn}, {"dofFocusDist", pp.dofFocusDist},
                 {"dofFocusRange", pp.dofFocusRange}, {"dofBlurSize", pp.dofBlurSize},
+                {"dofFocusName", pp.dofFocusName}, {"dofAperture", pp.dofAperture},
+                {"dofFocalLength", pp.dofFocalLength},
                 {"motionBlurOn", pp.motionBlurOn}, {"mbStrength", pp.mbStrength},
                 {"mbSamples", pp.mbSamples},
             };
@@ -110,6 +112,9 @@ void Application::RegisterMcpRenderMethods()
             pp.dofFocusDist = params.value("dofFocusDist", pp.dofFocusDist);
             pp.dofFocusRange = params.value("dofFocusRange", pp.dofFocusRange);
             pp.dofBlurSize = params.value("dofBlurSize", pp.dofBlurSize);
+            pp.dofFocusName = params.value("dofFocusName", pp.dofFocusName);
+            pp.dofAperture = params.value("dofAperture", pp.dofAperture);
+            pp.dofFocalLength = params.value("dofFocalLength", pp.dofFocalLength);
             pp.motionBlurOn = params.value("motionBlurOn", pp.motionBlurOn);
             pp.mbStrength = params.value("mbStrength", pp.mbStrength);
             pp.mbSamples = params.value("mbSamples", pp.mbSamples);

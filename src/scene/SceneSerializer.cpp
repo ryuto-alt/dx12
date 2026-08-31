@@ -875,6 +875,8 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
             {"lfHalo",       pp.lfHalo},       {"lfChroma",    pp.lfChroma},
             {"dofOn",        pp.dofOn},        {"dofFocusDist", pp.dofFocusDist},
             {"dofFocusRange", pp.dofFocusRange}, {"dofBlurSize", pp.dofBlurSize},
+            {"dofFocusName", pp.dofFocusName}, {"dofAperture", pp.dofAperture},
+            {"dofFocalLength", pp.dofFocalLength},
             {"motionBlurOn", pp.motionBlurOn}, {"mbStrength",  pp.mbStrength},
             {"mbSamples",    pp.mbSamples},
             {"vignetteOn",   pp.vignetteOn},   {"vignette",   pp.vignette},
@@ -1132,6 +1134,9 @@ static void LoadPostSettings(Scene& scene, const json& root)
         pp.lfHalo       = pj.value("lfHalo",       pp.lfHalo);       pp.lfChroma    = pj.value("lfChroma",    pp.lfChroma);
         pp.dofOn        = pj.value("dofOn",        pp.dofOn);        pp.dofFocusDist = pj.value("dofFocusDist", pp.dofFocusDist);
         pp.dofFocusRange = pj.value("dofFocusRange", pp.dofFocusRange); pp.dofBlurSize = pj.value("dofBlurSize", pp.dofBlurSize);
+        pp.dofFocusName = pj.value("dofFocusName", pp.dofFocusName);
+        pp.dofAperture = pj.value("dofAperture", pp.dofAperture);
+        pp.dofFocalLength = pj.value("dofFocalLength", pp.dofFocalLength);
         pp.motionBlurOn = pj.value("motionBlurOn", pp.motionBlurOn); pp.mbStrength  = pj.value("mbStrength",  pp.mbStrength);
         pp.mbSamples    = pj.value("mbSamples",    pp.mbSamples);
         pp.vignetteOn   = pj.value("vignetteOn",   pp.vignetteOn);   pp.vignette   = pj.value("vignette",   pp.vignette);

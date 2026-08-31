@@ -5054,8 +5054,24 @@ void Application::Render()
         {
             XMFLOAT4X4 projF;
             XMStoreFloat4x4(&projF, m_camera->GetProjectionMatrix());
+            // ★合焦をエンティティに任せる（dofFocusName）。毎フレームその子孫込みのワールド位置を
+            //   ビュー空間へ落として z を取る＝「被写体に合焦したまま寄る/回る」が Lua 無しで作れる。
+            //   見つからない/名前が空なら -1 を渡して dofFocusDist にフォールバックする。
+            float focusOverride = -1.0f;
+            if (!ppApplied.dofFocusName.empty() && m_scene)
+            {
+                Entity fe = m_scene->FindEntity(ppApplied.dofFocusName);
+                if (fe.IsValid())
+                {
+                    const XMMATRIX w = ComputeWorldMatrix(m_scene->GetRegistry(), fe.GetHandle());
+                    const XMVECTOR vp = XMVector3TransformCoord(w.r[3], m_camera->GetViewMatrix());
+                    const float vz = XMVectorGetZ(vp);
+                    if (vz > 0.0f) focusOverride = vz;
+                }
+            }
             const u32 o = m_dofPass->Apply(*m_commandList, m_srvHeap.get(),
-                curSceneSrv, depthSrvGpu, projF._33, projF._43, ppApplied);
+                curSceneSrv, depthSrvGpu, projF._33, projF._43, projF._22,
+                ppApplied, focusOverride);
             if (o != DescriptorHeap::kInvalidIndex)
                 curSceneSrv = m_srvHeap->GetGpuHandle(o);
         }
@@ -5689,8 +5705,17 @@ void Application::Render()
                          ImGui::SliderFloat("色収差##lfc", &pp.lfChroma, 0.0f, 0.05f, "%.3f"); }},
                 {"ライト/カメラ", "被写界深度 DoF", "フォーカス距離の前後がボケる(透視カメラのみ)", &pp.dofOn,
                     [&]{ ImGui::SliderFloat("フォーカス距離##doff", &pp.dofFocusDist, 0.1f, 100.0f, "%.1f");
-                         ImGui::SliderFloat("シャープ範囲##dofr", &pp.dofFocusRange, 0.1f, 50.0f, "%.1f");
-                         ImGui::SliderFloat("最大ボケpx##dofb", &pp.dofBlurSize, 1.0f, 32.0f, "%.0f"); }},
+                         {   // 合焦をエンティティに任せる（空なら上のフォーカス距離）
+                             char buf[128]{};
+                             std::snprintf(buf, sizeof(buf), "%s", pp.dofFocusName.c_str());
+                             if (ImGui::InputText("合焦エンティティ##dofent", buf, sizeof(buf)))
+                                 pp.dofFocusName = buf;
+                         }
+                         ImGui::SliderFloat("F値(0でレガシー)##dofap", &pp.dofAperture, 0.0f, 22.0f, "%.1f");
+                         ImGui::SliderFloat("焦点距離mm(0=画角)##doffl", &pp.dofFocalLength, 0.0f, 200.0f, "%.0f");
+                         if (pp.dofAperture <= 0.0f)
+                             ImGui::SliderFloat("シャープ範囲##dofr", &pp.dofFocusRange, 0.1f, 50.0f, "%.1f");
+                         ImGui::SliderFloat("最大ボケpx##dofb", &pp.dofBlurSize, 1.0f, 64.0f, "%.0f"); }},
                 {"ライト/カメラ", "モーションブラー Motion Blur", "カメラの動きで残像(深度再構成方式・透視カメラのみ)", &pp.motionBlurOn,
                     [&]{ ImGui::SliderFloat("強度##mbs", &pp.mbStrength, 0.0f, 2.0f, "%.2f");
                          ImGui::SliderInt("サンプル数##mbn", &pp.mbSamples, 4, 16); }},

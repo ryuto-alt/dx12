@@ -34,11 +34,17 @@ public:
     // 戻り値 = ボケ合成済みフル解像度シーン(PIXEL_SHADER_RESOURCE)の SRV index。未準備は kInvalidIndex。
     // ★#16: シーンは RT 全面に描かれるので、可視サブ矩形の UV も描画先の矩形も要らなくなった
     //   （半解像度チェーンを vpLeft/2, vpW/2 と整数半減で作るオフバイワンも同時に消えた）。
+    // proj22 = proj._22（= 1/tan(fovY/2)）。dofFocalLength=0 のとき、ここから
+    //   f(mm) = (センサ高 24mm / 2) * proj22
+    // で焦点距離を導く＝【画角と焦点距離が必ず一致する】ので、絞り(F値)だけで絵が決まる。
+    // focusDistOverride > 0 なら dofFocusDist の代わりにそれを合焦距離に使う
+    //   （dofFocusName のエンティティまでのビュー距離。呼び出し側が解決する）。
     u32 Apply(CommandList& cmd, DescriptorHeap* srvHeap,
               D3D12_GPU_DESCRIPTOR_HANDLE sceneSrvGpu,
               D3D12_GPU_DESCRIPTOR_HANDLE depthSrvGpu,
-              float projA, float projB,
-              const PostProcessSettings& s);
+              float projA, float projB, float proj22,
+              const PostProcessSettings& s,
+              float focusDistOverride = -1.0f);
 
     bool IsReady() const { return m_psoComposite != nullptr; }
 

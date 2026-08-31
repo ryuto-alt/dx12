@@ -1147,7 +1147,10 @@ reg(
     dofOn: z.boolean().optional().describe("被写界深度。★正射カメラでは効かない。"),
     dofFocusDist: z.number().optional().describe("フォーカス距離(カメラからのビュー距離)。既定 8。"),
     dofFocusRange: z.number().optional().describe("完全にシャープな範囲の広さ。既定 5。"),
-    dofBlurSize: z.number().optional().describe("最大ボケ半径(px)。既定 12。"),
+    dofBlurSize: z.number().optional().describe("ボケ半径の上限(px)。既定 12。物理モードでは『暴走防止の上限』としてだけ効く。"),
+    dofFocusName: z.string().optional().describe("合焦させるエンティティ名(完全一致)。空でなければ毎フレームそのエンティティまでのビュー距離を合焦距離に使う=被写体に合焦したまま寄る/回るが Lua 無しで作れる。"),
+    dofAperture: z.number().optional().describe("F 値。既定 2.8(>0 で物理モード: 焦点距離と F 値から錯乱円を出す)。0 以下にすると旧 dofFocusRange 方式へ戻る。"),
+    dofFocalLength: z.number().optional().describe("焦点距離(mm)。既定 0 = カメラの FOV から導出(35mm 判・センサ高 24mm 換算)。"),
     // ── カメラモーションブラー(深度再構成方式・velocity buffer 不要) ──
     motionBlurOn: z.boolean().optional().describe("カメラモーションブラー。"),
     mbStrength: z.number().optional().describe("シャッター係数(速度に乗算)。既定 0.5。"),

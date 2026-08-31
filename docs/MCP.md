@@ -210,6 +210,7 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_set_sprite_shader` | `{entity:int, shaderPath?:string(assets/shaders相対), alphaBlend?:bool}` | `{entityId, shaderPath, alphaBlend, worldSpaceWarning}` ※Sprite2D専用・world-spaceのみ対応。MeshRendererのシェーダーとは頂点/ルートシグネチャの契約が異なる(docs/AUTHORING.md §6.1)。shaderPath省略/空文字で既定Spriteシェーダーに戻す |
 | `dx12_set_scene_settings` | `{skybox:{envMapPath?, iblIntensity?, skyboxIntensity?, drawSkybox?}}` | `{applied, envMapRebake}` |
 | `dx12_set_post_process` | 約25エフェクトの `<name>On`/パラメータ(指定分のみ適用) | `{applied}` |
+| `dx12_set_post_process`（被写界深度） | `{dofOn?, dofFocusDist?, dofFocusName?, dofAperture?, dofFocalLength?, dofBlurSize?, dofFocusRange?}` | `{applied}` ※**DoF は絞り基準（物理モード）が既定**。`dofAperture`＝F 値（既定 2.8）と `dofFocalLength`（mm。**0 でカメラの画角から導出**）から薄レンズの錯乱円 `CoC = |z-zf|/z * f²/(N*(zf-f))` を出し、35mm 判のセンサ高 24mm で px 化する。＝**画面解像度に依存する `dofBlurSize` は「暴走防止の上限」へ後退**し、絵作りは F 値だけで決まる。`dofAperture:0` で旧来の `dofFocusRange` 方式（範囲基準）へ戻る。`dofFocusName` にエンティティ名を入れると**毎フレームそのエンティティまでのビュー距離を合焦距離に使う**（＝被写体に合焦したまま寄る/回るカメラワークが Lua 無しで書ける。空なら `dofFocusDist`）|
 | `dx12_set_ssao` | `{enabled?, radius?, bias?, intensity?, power?, sampleCount?, blur?}` | `{applied}` |
 | `dx12_set_contact_shadow` | `{enabled?, rayLength?, thickness?, bias?, intensity?, steps?, maxDistance?, fadeDistance?}` | `{applied}` ※太陽(平行光)専用のスクリーン空間近接遮蔽。正射/2Dビューでは自動無効 |
 | `dx12_get_normal_filter` | `{}` | `{enabled, strength, varianceClamp, geometricBlend}` |
