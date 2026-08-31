@@ -130,7 +130,7 @@ SSH ポートフォワード推奨(エンジン側は `127.0.0.1` のみ待受)�
 
 ---
 
-## 4. ツール一覧（全 152 ツール）
+## 4. ツール一覧（全 153 ツール）
 
 MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り、**遅延同期** = フレーム境界後に本物の値が返る。
 
@@ -173,8 +173,8 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_get_anim_state` | `{entity:int}` | `{hasSkeletalAnimation, clips:[クリップ名...], boneCount, currentClip, clipTime, speed, looping, blending, hasController, graphPath, graphLoaded, layers:[{name,weight,state,normalizedTime,transitioning,transitionTo,transitionProgress,masked}], parameters:{名前:値}, footIK:{enabled,weight,resolved,bones,boneNames,leftContact,rightContact,leftLift,rightLift,pelvisOffset,leftNormal,rightNormal}}` ※`dx12_play_anim` の clipName 選びと、接地の破綻をスクショ無しで検知するのに使う |
 | `dx12_describe_anim_graph` | `{entity:int}` または `{path:string}` | `{source, graph:{version,parameters,clipEvents,extraClips,layers:[{name,weight,blend,mask,defaultState,states,transitions}]}}` ※`.animfsm` の構造を返す。ステート名/パラメータ名の確認に。**TS 側未定義**（B12 と同様） |
 | `dx12_net_status` | `{}` | `{available, role:"Offline"\|"Host"\|"Client", isConnected, localClientId, tick, syncedEntityCount, players:[{id,rttMs,bytesSent,bytesReceived}], config:{tickRate,snapshotRate,maxPlayers,defaultPort}, testRole, testJoinAddress}` |
-| `dx12_screenshot` | `{path?:string, deterministic?:bool=false, settleFrames?:int=8(1..240)}` | PNG 画像ブロック + text(`{path(絶対パス), width, height, source:"sceneRT(pre-post)", note}`) ※**ポストプロセス前の `m_sceneRT`**。グレーディング / ブルーム / ゴッドレイ / ビネット / LUT / FXAA / デバンド / **TAA の解決結果が一切写らない**。見た目を判断するなら `dx12_screenshot_final` を使うこと |
-| `dx12_screenshot_final` | `{path?:string, deterministic?:bool=false, settleFrames?:int=8(1..240)}` | **遅延同期**。`{path, width, height, source:"backbuffer", postApplied, deterministic, taa, mode, note}` ※**バックバッファ（＝ポスト適用後の最終画）のビューポート矩形**。ImGui を描く前にコピーするので**エディタのパネル / ギズモは写らない**＝ゲームと同じ絵。サイズはウィンドウ全体ではなく**シーンビューの矩形** |
+| `dx12_screenshot` | `{path?:string, deterministic?:bool=false, settleFrames?:int=8(1..240), gizmos?:bool=true}` | PNG 画像ブロック + text(`{path(絶対パス), width, height, source:"sceneRT(pre-post)", note}`) ※**ポストプロセス前の `m_sceneRT`**。グレーディング / ブルーム / ゴッドレイ / ビネット / LUT / FXAA / デバンド / **TAA の解決結果が一切写らない**。見た目を判断するなら `dx12_screenshot_final` を使うこと。★`gizmos:false` はこの経路では `deterministic:true` のときだけ効く（既定は直前フレームの読み戻しで撮り直さないため） |
+| `dx12_screenshot_final` | `{path?:string, deterministic?:bool=false, settleFrames?:int=8(1..240), gizmos?:bool=true}` | **遅延同期**。`{path, width, height, source:"backbuffer", postApplied, deterministic, gizmos, taa, mode, note}` ※**バックバッファ（＝ポスト適用後の最終画）のビューポート矩形**。ImGui を描く前にコピーするので**エディタのパネル / ギズモは写らない**＝ゲームと同じ絵。サイズはウィンドウ全体ではなく**シーンビューの矩形**。★`gizmos:false` で**この 1 枚だけ**エディタのデバッグ描画（カメラの視錐台の水色の線 / 選択枠 / ライト・カメラのアイコン / 物理・ナビのワイヤ / 床グリッド）を止めて撮る。選択を外しても消えない「アクティブなカメラの視錐台」もこれで消える。**戻す呼び出しは不要 ── 撮影状態と一緒に破棄されるので次の 1 枚では必ず元どおり**（`dx12_render_debug` と同じ作法） |
 | `dx12_screenshot_game_view` | `{}` | PNG 画像ブロック ※**アクティブな `CameraComponent`（ゲームカメラ）視点**で 1 フレーム描いて返す。Editor 中でも Play せずに画角・構図を確認できる。アクティブなカメラが無いとエラー |
 | `dx12_ui_screenshot` | `{}` | PNG 画像ブロック ※エディタウィンドウ全体(ImGuiパネル込み)。ゲーム内UI/UIエディタの見た目確認用(scene RT には UI が写らない) |
 | `dx12_render_debug` | `{mode:string, frames?:int=3(1..120), gain?:number=1, depthRange?:number=100, exposure?:number=1}` | `{path(絶対パス), mode, width, height, toneMapped:bool, warnings:[string], mode_engine:"Editor"\|"Playing"}` ※**中間バッファの可視化**（「なぜ変に見えるか」の切り分け用）。`frames` フレーム描いてからスクショを撮り、**必ず元の設定へ戻す**。必要な機能（TAA/SSAO/コンタクトシャドウ/SSR/SSGI）は一時的に自動で ON にし、その旨を `warnings` に返す。返り値の `path` を画像として読むこと |
@@ -183,7 +183,7 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_ui_audit` | `{strictness?:"balanced"\|"strict"}` | 現在のUIを数値監査。`{pass,score,grade,summary,issues[]}`。崩れ/重なり/可読性/入力遮断/過装飾を検出 |
 | `dx12_ui_compose` | `{blueprint:{theme,prefix,root}}` | dock/stack/grid と意味的roleからUI一式を制約付き生成。失敗時ロールバック。生成後はaudit→screenshot必須 |
 | `dx12_get_editor_camera` | `{targetDistance?:number=10}` | `{position, forward, target, targetDistance, yawDeg, pitchDeg, fovYDeg, aspect, nearZ, farZ, orthographic, overridden, mode}` ※シーンビューを描いてるカメラの状態。**`target` は `position + forward * targetDistance`**。そのまま `dx12_set_editor_camera {position, target}` へ渡すと同じ yaw/pitch に戻る＝読み返し検証ができる |
-| `dx12_get_bounds` | `{entity:int, includeChildren?:bool}` | `{min, max, center, size, hasMesh}` ※ワールド空間 AABB(回転/親子変換込み)。配置座標の計算に |
+| `dx12_get_bounds` | `{entity:int, includeChildren?:bool, perSubmesh?:bool=false}` | `{min, max, center, size, hasMesh}` ※ワールド空間 AABB(回転/親子変換込み)。配置座標の計算に。★`perSubmesh:true` で `{submeshes:[{index, name, materialName, triangles, localMin/localMax/localSize, worldMin/worldMax/worldCenter/worldSize}], submeshCount, largestSubmesh}` も返る＝**「モデルの一部だけ変な位置に飛んでいる。どの部品か」が 1 回で分かる**。`index` は `dx12_pick` の `submeshIndex` と同じ並び。★glTF/FBX の JSON 内の並びとは一致しない（ローダがノード単位に展開するため）ので照合は `name` / `materialName` で |
 | `dx12_get_hierarchy` | `{}` | `{roots:[{entityId, name, children:[...]}], count, sceneGeneration}` ※シーンの親子ツリー |
 | `dx12_asset_info` | `{path}` | モデル: `{meshCount, totalVertices, totalFaces, materialCount, boneCount, hasSkeleton, animations:[{name,durationSec}], aabbMin/Max(ノード変換込みのワールド AABB)}`、テクスチャ: `{width, height, mipLevels, format, isCubemap}`、他: `{type, fileSizeBytes}` |
 | `dx12_view_texture` | `{path, maxSize?:int=1024}` | PNG 画像ブロック ※dds/tga/hdr も変換して見られる。キューブマップは先頭面のみ |
@@ -267,6 +267,7 @@ OFF のときは TAA を一時的に ON にして撮る（`warnings` に出る�
 | `dx12_attach_lua_component` | `{entity:int, script:string(assets相対)}` | `ok` |
 | `dx12_set_lua_property` | `{entity?/name?, key:string, value:any}` | `{entityId, key, value}` ※スクリプトの `properties` 宣言にあるものだけ。Playing 中は即再注入（`OnStart` 再実行）、Editor 中は保存だけで次 Play から反映 |
 | `dx12_reload_scripts` | `{path?:string}` | `{reloaded, cleared}` ※実行時エラーで死んだスクリプトを **Play を止めずに**復帰させる。ファイルを書き換えた場合は 0.5 秒で自動リロードされるので不要 |
+| `dx12_reload_assets` | `{path?:string(assets相対のファイル or フォルダ), force?:bool=false}` | `{path, force, reloaded, textures[], models[], reboundEntities, checkedTextures, checkedModels, skipped[], warnings[], note}` ※**DCC ツールと行き来するときの必須ツール**。エンジンはテクスチャもモデルも**プロセス起動から一生キャッシュする**ので、Blender や画像編集ソフトから同じパスへ書き出し直しても絵は変わらない（これが無いと確認のたびにエディタ再起動＝1 往復 20 秒以上）。★**シーンは開き直さない**: エンティティ / Transform / 選択状態はそのまま、いま置かれている `MeshRenderer` の参照だけが新しい実体へ張り替わる（`reboundEntities` がその体数）。テクスチャは**同じ `Texture` オブジェクト・同じ SRV 番号**のまま中身だけ差し替わるので、スプライト / UI / マテリアルの参照は 1 つも直さずに済む。★既定はディスクの更新時刻を見て**変わったものだけ**。書き出し直したのに `reloaded` が 0 なら `force:true`。★キューブマップ / 配列テクスチャ（スカイボックス・地形レイヤー）は張り直せず `skipped` に載る（シーンを開き直すこと）。モデル内の埋め込みテクスチャはモデル側を読み直せば一緒に更新される |
 | `dx12_set_color` | `{entity?/name?, color:[r,g,b]}` | `{entityId, color}` ※メッシュの基本色（頂点色の乗算）。金属感は `dx12_set_pbr` と併用 |
 | `dx12_install_font` | `{family:string, weight?:int=400}` | `{fontPath, family, weight}` ※Google Fonts から `.ttf` を `assets/fonts/` へ取り込む。★日本語 UI には日本語対応フォント（Noto Sans JP 等）を選ぶこと（欧文フォントは豆腐になる） |
 | `dx12_create_prefab` | `{entity:int, path?:string}` | `{path, entityId}` ※path省略で assets/prefabs/<name>.prefab |

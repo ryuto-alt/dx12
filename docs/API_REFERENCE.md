@@ -1010,7 +1010,7 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 ## 10. MCP（AI ブリッジ）ツール一覧
 
 起動中のエディタを Claude Code / Codex から操作する MCP サーバ（`tools/mcp-server`。配布は
-[ryuto-alt/dx12-mcp](https://github.com/ryuto-alt/dx12-mcp)）。ツール名は `dx12_` 接頭辞で **全 152 種**。
+[ryuto-alt/dx12-mcp](https://github.com/ryuto-alt/dx12-mcp)）。ツール名は `dx12_` 接頭辞で **全 153 種**。
 ここは全ツールの一覧（1 行説明）。**params / 返り値・遅延同期・error_code・セキュリティモデルは
 [`MCP.md`](MCP.md) が正**。エンジンのディスパッチ表そのものは `dx12_describe_mcp_params` で引ける。
 
@@ -1048,6 +1048,7 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 | `dx12_get_script_errors` | **壊れている LuaScript を全部**（`dx12_play` が `scriptErrors>0` を返したら次はこれ）|
 | `dx12_set_lua_property` | プロパティを 1 つ書き換える（Playing 中は即再注入）|
 | `dx12_reload_scripts` | 実行時エラーで死んだスクリプトを **Play を止めずに**復帰させる |
+| `dx12_reload_assets` | **書き換えたテクスチャ/モデルをエディタ再起動なしで読み直す**（DCC ツールと行き来するとき用。シーンは開き直さず、いま置かれている `MeshRenderer` の参照だけ張り替える）|
 | `dx12_eval_lua` | 任意 Lua をその場実行（デバッグ用）|
 
 ### 10-4. 編集（同期）
