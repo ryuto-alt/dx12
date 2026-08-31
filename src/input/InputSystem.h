@@ -77,10 +77,16 @@ public:
     void OnMouseButton(bool rightDown);
     // フォーカス喪失時（他ウィンドウ/タブをクリック等）に呼ぶ。WM_KEYUP が
     // 届かず押しっぱなし判定で動けなくなるのを防ぐため、全キー状態をクリアする。
+    // 併せてカーソルの物理拘束も解く（Alt+Tab 中に裏で作業できるように）。
     void OnFocusLost();
+    // フォーカス復帰時（WM_SETFOCUS）に呼ぶ。論理キャプチャが立っていれば拘束を掛け直す。
+    void OnFocusGained();
 
 private:
     void UpdateGamepads(f32 dt);
+    // ponytail: 「論理キャプチャ(m_mouseCaptured)」と「物理拘束(カーソル非表示/クリップ/中央固定)」を
+    // 分けるための唯一の仕掛け。ShowCursor はカウンタベースなので何度呼んでも同じ状態に落ち着く。
+    void ApplyCursorConstraint(bool on);
 
     HWND m_hwnd = nullptr;
     bool m_keys[256] = {};
@@ -90,7 +96,14 @@ private:
 
     f32  m_mouseDeltaX = 0.0f;
     f32  m_mouseDeltaY = 0.0f;
-    bool m_mouseCaptured = false;
+    bool m_mouseCaptured = false;   // 論理状態（Lua/エディタの意図）。フォーカス喪失では落とさない
+    // フォーカス復帰フレームの生マウス移動を捨てるフラグ（復帰直後に視点が吹っ飛ぶのを防ぐ）。
+    // Update() が毎フレーム先頭で false に戻すので、効くのは復帰したそのフレームだけ。
+    bool m_dropMouseDelta = false;
+    // 復帰時の拘束掛け直しは WM_SETFOCUS の中ではなく次の Update() で行う。
+    // 最小化からの復帰は WM_SETFOCUS 時点でクライアント矩形がまだ最小化サイズ(0x0/画面外)で、
+    // その場で ClipCursor するとカーソルを画面外に閉じ込めかねないため。
+    bool m_reapplyConstraint = false;
 
     GamepadState m_pads[kMaxGamepads];
 };

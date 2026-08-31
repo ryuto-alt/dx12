@@ -589,6 +589,7 @@ nlohmann::json McpLuaApi()
         "light() -> Light|nil  (PointLight/DirectionalLight/SpotLight の統一プロキシ。無ければ nil)",
         "addLight(kind:string?) -> Light  (kind: \"point\"(既定)/\"directional\"(\"dir\"/\"sun\")/\"spot\"。既にあればそれを返す)",
         "removeLight()  (付いているライト成分を全部外す。消灯ではなく削除=CB枠が空く)",
+        "getFov() / setFov(deg)  (Camera コンポーネントの垂直FOV・度。ズームは毎フレーム絶対値で書く。renderer 側へ書いても翌フレームに戻る)",
     })));
     objects.push_back(O("Light", "entity:light() / entity:addLight(kind) / scene:sun()", json::array({
         "type  (string, read-only: \"point\"/\"directional\"/\"spot\")",
@@ -615,7 +616,7 @@ nlohmann::json McpLuaApi()
         "<宣言した properties の各値>  (dx12_get_lua_component_state で確認)",
     })));
     objects.push_back(O("scene", "global", json::array({
-        "spawn(name,modelPath,pos,rot,scale) -> entity", "spawnBox(name,pos,rot,scale) -> entity",
+        "spawn(name,modelPath,pos,rot,scale) -> entity  (modelPath は assets 相対でよい。絶対パスもそのまま通る)", "spawnBox(name,pos,rot,scale) -> entity",
         "spawnSphere(name,pos,radius) -> entity", "spawnPlane(name,pos,size,grid) -> entity",
         "remove(entity)", "getEntityCount() -> int",
         // ★見つからなくても nil ではなく「無効な Entity」が返る。`if e then` は常に真になる。
@@ -743,6 +744,8 @@ nlohmann::json McpLuaApi()
     objects.push_back(O("audio", "global", json::array({
         "playBGM(path)/stopBGM()/pauseBGM()/resumeBGM()", "seekBGM(sec)  (再生位置を秒指定でジャンプ。ループ維持、イントロスキップ等)", "setBGMRate(ratio)  (再生速度倍率・ピッチ連動0.05〜2.0。1=通常。playBGMで1.0に戻る)", "setListener(x,y,z)  (空間SFXのリスナー位置上書き。プレイヤー中心の定位に。毎フレーム呼ぶ想定)", "playSFX(path)",
         "playSpatial(path,x,y,z,minD,maxD,vol?,loop?)", "stopAllSFX()",
+        "playSFXId(path,loop?,vol?) -> id / playSpatialId(path,x,y,z,minD,maxD,vol?,loop?) -> id  (★ID を返す版。ループ音はこちらで鳴らす)",
+        "stopVoice(id) / setVoiceVolume(id,v) / setVoicePitch(id,ratio) / moveVoice(id,x,y,z) / isVoicePlaying(id) -> bool  (鳴っている 1 本だけを止める/絞る/回転を落とす/追従させる。stopAllSFX の巻き添えを避ける)",
         "setMasterVolume/setBGMVolume/setSFXVolume(v)",
         "getMasterVolume()/getBGMVolume()/getSFXVolume() -> float  (設定画面のスライダー初期値に要る)",
         "getCurrentBGM() -> string  (今鳴っている BGM の assets 相対パス。鳴っていなければ空)",

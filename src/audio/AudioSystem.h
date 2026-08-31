@@ -4,6 +4,7 @@
 #include <memory>
 #include <array>
 #include <unordered_map>
+#include <filesystem>
 #include <wrl/client.h>
 #include <xaudio2.h>
 #include <x3daudio.h>
@@ -72,7 +73,22 @@ public:
                         float minDistance, float maxDistance,
                         float volume = 1.0f, bool loop = false);
     void UpdateSpatialEmitter(i32 slotId, float x, float y, float z);
-    void Update();  // 毎フレーム: 空間ボイスの定位を再計算
+    // ★鳴っている 1 本を掴んで操作する 3 つ。PlaySFXSpatial / PlaySFXTracked が返す ID を使う。
+    //   ループ再生した環境音を止める・フェードさせる・回転数が落ちるように鳴らす、が
+    //   これが無いと書けなかった（StopAllSFX しか無く、他の音まで巻き添えになる）。
+    //   世代が食い違う ID（スロットが使い回された後）は黙って無視する。
+    void StopVoice(i32 slotId);
+    void SetVoiceVolume(i32 slotId, float volume);        // 0..1（クリップ個別音量）
+    void SetVoicePitch(i32 slotId, float ratio);          // 再生速度＝ピッチ。0.1..2.0
+    bool IsVoicePlaying(i32 slotId) const;
+    // 非空間の SFX を ID 付きで鳴らす（上の 3 つで操作できる）。失敗時 -1。
+    i32  PlaySFXTracked(const std::string& filePath, bool loop = false, float volume = 1.0f);
+    // 遮蔽量 0..1（1=リスナーとの間に壁がある）。ローパスで「こもった」音にし、音量も落とす。
+    // 値は Update() 内で時定数 ~0.1s で追従するので、毎フレーム 0/1 を投げてよい。
+    void SetOcclusion(i32 slotId, float amount);
+    // 実際に使われているリスナー位置（Lua の setListener 上書き込み）。遮蔽レイの終点用。
+    void GetListenerPos(float& x, float& y, float& z) const;
+    void Update(f32 dt);  // 毎フレーム: 空間ボイスの定位と遮蔽を再計算
 
     // Volume (0.0 - 1.0)
     void SetMasterVolume(f32 volume);
@@ -122,6 +138,11 @@ private:
         //   持っていなかったので、オプション画面の SE スライダーを触った瞬間に
         //   小さく鳴らしていた環境音や遠くの空間音が**マスター音量の大きさに跳ね上がって**いた。
         float clipVolume = 1.0f;
+        // 遮蔽（壁越し）。target が呼び出し側の指定、cur が時間平滑した実効値。
+        // 直接入れるとドア枠を通るたびにブツッと切り替わる。
+        float occTarget  = 0.0f;
+        float occ        = 0.0f;
+        u32   sampleRate = 44100;   // ローパスのカットオフ計算に要る
     };
     std::array<SFXSlot, kMaxSFXVoices> m_sfxSlots{};
 
@@ -132,10 +153,16 @@ private:
     float m_lopX = 0, m_lopY = 0, m_lopZ = 0;
     u32  m_outChannels = 2;
     bool m_x3dReady = false;
+    SFXSlot* ResolveVoice(i32 slotId);    // ID → スロット（世代が食い違えば nullptr）
     void ComputeAndApply(SFXSlot& slot);
+    void ApplyOcclusion(SFXSlot& slot);   // slot.occ を音量とローパスへ反映
 
     // Clip cache
     std::unordered_map<std::string, std::unique_ptr<AudioClip>> m_clipCache;
+    // ★★キャッシュした時点のファイル更新時刻。焼き直した wav を反映するために要る。
+    //   これが無いと、エディタを起動したまま素材を作り直しても【古い音が鳴り続ける】。
+    //   「直したのに何も変わらない」の原因になり、実際に半日ぶん溶かした(2026-08-27)。
+    std::unordered_map<std::string, std::filesystem::file_time_type> m_clipStamp;
 
     f32 m_masterVolume = 1.0f;
     f32 m_bgmVolume    = 0.7f;

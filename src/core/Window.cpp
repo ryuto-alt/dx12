@@ -473,10 +473,19 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         case WM_KILLFOCUS:
             // 他ウィンドウ/タブへフォーカスが移ると以降の WM_KEYUP が届かず、
-            // 最後に押したキーが押しっぱなし判定で残る → 全キー状態をクリア
+            // 最後に押したキーが押しっぱなし判定で残る → 全キー状態をクリア。
+            // 同時にカーソルの拘束（非表示/クリップ/中央固定）も解いて裏で作業できるようにする。
             if (window->m_inputSystem)
             {
                 window->m_inputSystem->OnFocusLost();
+            }
+            break;
+
+        case WM_SETFOCUS:
+            // 戻ってきたら、論理キャプチャが立っていればカーソル拘束を掛け直す
+            if (window->m_inputSystem)
+            {
+                window->m_inputSystem->OnFocusGained();
             }
             break;
 

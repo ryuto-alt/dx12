@@ -743,6 +743,27 @@ void ToolbarPanel::Render(bool isPlaying,
             outModeChangeRequested = true;
         }
         ImGui::PopStyleColor(2);
+
+        // 一時停止（Play を続けたままシーンビューを飛び回って調べる）。
+        // ★本命は F1。ゲームがマウスをキャプチャしているとこのボタンは押せないため。
+        ImGui::SameLine(0, 6);
+        const bool wasPaused = ctx.paused;
+        if (wasPaused)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.85f, 0.62f, 0.15f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.95f, 0.72f, 0.22f, 1.0f));
+        }
+        if (toolButton(0, wasPaused ? "再開" : "一時停止",
+                       wasPaused
+                           ? "Resume  再開（F1）"
+                           : "Pause  一時停止（F1）\n"
+                             "Play を続けたまま時間だけ止めて、シーンビューを自由に動かせます。\n"
+                             "右ドラッグで視点、WASD/Space/Shift で移動。",
+                       false))
+        {
+            ctx.paused = !ctx.paused;
+        }
+        if (wasPaused) ImGui::PopStyleColor(2);
     }
     ImGui::PopStyleVar();   // FramePadding(Play大型化)
 

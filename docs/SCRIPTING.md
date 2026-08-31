@@ -224,6 +224,27 @@ if e:isFootGrounded() then ... end
 `.animfsm` のスキーマ・ブレンドツリー・レイヤー・落とし穴の一覧は
 [`ANIMATION.md`](ANIMATION.md) にまとめてある。
 
+### 音（BGM / SE / 空間音）
+```lua
+audio:playBGM("audio/bgm/field.mp3")      -- BGM（同じパスでも必ず頭出しする）
+-- シーンをまたいで同じ曲を流し続けたいときは、鳴っているか見てから呼ぶ
+if audio:getCurrentBGM() ~= "audio/bgm/field.mp3" then audio:playBGM("audio/bgm/field.mp3") end
+audio:setBGMRate(0.5)                     -- スローモ演出（ピッチ連動 0.05〜2.0）
+audio:playSFX("audio/se/coin.wav")        -- 撃ちっぱなしの 2D SE
+audio:setListener(px, py, pz)             -- 空間音のリスナーをプレイヤーへ（毎フレーム）
+audio:playSpatial("audio/se/hit.wav", x, y, z, 2, 30)   -- 距離減衰つき 3D SE
+
+-- ★ループする音（環境音・機械の唸り・炎）は【ID を返す版】で鳴らす。
+--   撃ちっぱなしの playSFX / playSpatial で鳴らすと stopAllSFX しか止める手が無く、
+--   他の音まで巻き添えで消える。
+local hum = audio:playSpatialId("audio/se/generator.wav", x, y, z, 3, 40, 0.8, true)
+audio:moveVoice(hum, x, y, z)             -- 音源が動くなら毎フレーム更新
+audio:setVoiceVolume(hum, 0.3)            -- フェードアウト
+audio:setVoicePitch(hum, 0.6)             -- スピンダウン（0.1〜2.0）
+if audio:isVoicePlaying(hum) then audio:stopVoice(hum) end   -- その 1 本だけ止める
+```
+ID は世代つきなので、鳴り終わってスロットが使い回された後の古い ID は無視される（他人の音を誤って止めない）。
+
 ### その他
 ```lua
 log("hp:", hp)                       -- ログ出力（任意個・任意型を tostring 連結、[Lua] 接頭辞）
@@ -372,6 +393,10 @@ scene:setSpriteScroll(e, 0.5, 0)         -- UVスクロール速度(単位/秒)�
 scene:setSpriteAnim(e, 4, 8, 0, 0)       -- フリップブック(frames,fps,cols,row)。frames=0で停止
 scene:setMeshEffect(e, 0.5)              -- カスタムメッシュシェーダーへの汎用値(毎フレーム可)
 scene:setMeshParams(e, 1, 0.5, 0, 0)     -- カスタムメッシュシェーダーへの汎用float4(毎フレーム可)
+
+local cam = scene:findEntity("MainCamera")
+cam:setFov(40)                           -- 構え/スコープのズーム(度・5〜150)。
+                                         -- ★毎フレーム絶対値で書くこと(レンダラ側へ書いても翌フレームに戻る)
 
 fadeToScene("scenes/title.json", 0.5)    -- 低レベルの遷移
 transitionToScene("scenes/select.json", 4, 1.3)  -- 演出付き遷移(0=Fade 1=Wipe 2=Circle 3=縦Wipe 4=シークバー早送り)

@@ -76,6 +76,10 @@ public:
     // events:on/emit/clear バインドはこのポインタを実行時に参照する（null 許容）。
     void SetEventBus(EventBus* bus) { m_eventBus = bus; }
 
+    // assets 相対パスを絶対パスへ。既に絶対(ドライブレター or 先頭 /)ならそのまま返す。
+    // ★Lua から渡るパスの規約を audio/texture 系と揃えるためのもの。
+    std::string ResolveAssetPath(const std::string& path) const;
+
     void LoadScript(const std::string& filePath);
     void LoadScriptFromString(const std::string& code, const std::string& chunkName);
 

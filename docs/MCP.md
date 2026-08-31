@@ -130,7 +130,7 @@ SSH ポートフォワード推奨(エンジン側は `127.0.0.1` のみ待受)�
 
 ---
 
-## 4. ツール一覧
+## 4. ツール一覧（全 152 ツール）
 
 MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り、**遅延同期** = フレーム境界後に本物の値が返る。
 
@@ -159,6 +159,10 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_get_ssr` | `{}` | `{enabled, intensity, maxDistance, thickness, maxSteps, stride, roughnessCutoff, edgeFade, bias}` |
 | `dx12_get_ssgi` | `{}` | `{enabled, intensity, radius, thickness, rayCount, stepCount, clampValue, feedback, iblFallback}` |
 | `dx12_get_volumetric_fog` | `{}` | `{enabled, density, albedo, anisotropy, heightFalloff, heightRef, distance, depthDistribution, ambient, sunIntensity, lightScattering, temporal, temporalBlend, extendBeyondRange, debugMode, active}` |
+| `dx12_describe_lua_api` | `{}` | binding ごと(entity/transform/Vec3/self/scene/input/camera/physics/audio/nav/ui/fx/events/globals/prelude)の**静的辞書**。★MCP で見えるコンポーネントと Lua から読める API は違う（entity から直接読めるのは transform だけ）。Lua を書く前にこれで確認する |
+| `dx12_get_lua_component_state` | `{entity?/name?}` | `{scriptPath, enabled, started, loadError, errorMessage, properties:[{name,type,value,isOverride}]}` ※未上書きの既定値も含む（`get_entity` は保存済みの上書きしか出さない）。`loadError=true` なら `errorMessage` に Lua の traceback がそのまま入る |
+| `dx12_get_script_errors` | `{}` | `{count, mode, errors:[{entityId,name,scriptPath,message}]}` ※★`dx12_play` の結果に `scriptErrors>0` が出たら次はこれ。どのエンティティが壊れたか分からない状態で使う |
+| `dx12_get_play_session` | `{maxEvents?:int=400, maxSamples?:int=200}` | `{started, recording, durationSec, frames, fpsMin, summary:{...}, events:[{t,kind,detail}], samples:[{t,fps,camPos,...}]}` ※**`dx12_play` を押した時点で自動的に記録が始まる**（開始ツールは無い）。人間に遊んでもらってから取りに来る用。`detail` のキー名は `dx12_key_press` にそのまま渡せる |
 | `dx12_read_lua_component` | `{path:string}` | `{path, code}` ※既存 .lua のソースをそのまま読む |
 | `dx12_read_shader` | `{path:string(assets/shaders相対)}` | `{path, code, compiled}` ※既存カスタムシェーダーのソースをそのまま読む(compiled は直近の既知のコンパイル成否) |
 | `dx12_raycast` | `{origin:[x,y,z], direction:[x,y,z], maxDistance?:f}` | `{hit, distance?, point?, normal?, entityId?, name?}` ※Playing 中のみ意味のある結果 |
@@ -171,6 +175,7 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_net_status` | `{}` | `{available, role:"Offline"\|"Host"\|"Client", isConnected, localClientId, tick, syncedEntityCount, players:[{id,rttMs,bytesSent,bytesReceived}], config:{tickRate,snapshotRate,maxPlayers,defaultPort}, testRole, testJoinAddress}` |
 | `dx12_screenshot` | `{path?:string, deterministic?:bool=false, settleFrames?:int=8(1..240)}` | PNG 画像ブロック + text(`{path(絶対パス), width, height, source:"sceneRT(pre-post)", note}`) ※**ポストプロセス前の `m_sceneRT`**。グレーディング / ブルーム / ゴッドレイ / ビネット / LUT / FXAA / デバンド / **TAA の解決結果が一切写らない**。見た目を判断するなら `dx12_screenshot_final` を使うこと |
 | `dx12_screenshot_final` | `{path?:string, deterministic?:bool=false, settleFrames?:int=8(1..240)}` | **遅延同期**。`{path, width, height, source:"backbuffer", postApplied, deterministic, taa, mode, note}` ※**バックバッファ（＝ポスト適用後の最終画）のビューポート矩形**。ImGui を描く前にコピーするので**エディタのパネル / ギズモは写らない**＝ゲームと同じ絵。サイズはウィンドウ全体ではなく**シーンビューの矩形** |
+| `dx12_screenshot_game_view` | `{}` | PNG 画像ブロック ※**アクティブな `CameraComponent`（ゲームカメラ）視点**で 1 フレーム描いて返す。Editor 中でも Play せずに画角・構図を確認できる。アクティブなカメラが無いとエラー |
 | `dx12_ui_screenshot` | `{}` | PNG 画像ブロック ※エディタウィンドウ全体(ImGuiパネル込み)。ゲーム内UI/UIエディタの見た目確認用(scene RT には UI が写らない) |
 | `dx12_render_debug` | `{mode:string, frames?:int=3(1..120), gain?:number=1, depthRange?:number=100, exposure?:number=1}` | `{path(絶対パス), mode, width, height, toneMapped:bool, warnings:[string], mode_engine:"Editor"\|"Playing"}` ※**中間バッファの可視化**（「なぜ変に見えるか」の切り分け用）。`frames` フレーム描いてからスクショを撮り、**必ず元の設定へ戻す**。必要な機能（TAA/SSAO/コンタクトシャドウ/SSR/SSGI）は一時的に自動で ON にし、その旨を `warnings` に返す。返り値の `path` を画像として読むこと |
 | `dx12_ui_tree` | `{}` | `{canvases:[{entityId, name, uiCanvas:{refWidth,refHeight,...}, children:[{entityId, name, components, uiRect, resolvedRect:[x,y,w,h](キャンバス空間px), text?, children}]}]}` ※UIレイアウトの数値確認 |
@@ -260,6 +265,10 @@ OFF のときは TAA を一時的に ON にして撮る（`warnings` に出る�
 | `dx12_create_lua_component` | `{name:string, code:string}` | `{path}` ※書込前に構文検証。既存パスなら上書き更新も兼ねる |
 | `dx12_create_shader` | `{name:string, code:string}` | `{path, compiled, error?}` ※assets/shaders/に作成/上書き後、即コンパイルを試す。Luaと違い失敗してもファイルは残る(反復修正前提) |
 | `dx12_attach_lua_component` | `{entity:int, script:string(assets相対)}` | `ok` |
+| `dx12_set_lua_property` | `{entity?/name?, key:string, value:any}` | `{entityId, key, value}` ※スクリプトの `properties` 宣言にあるものだけ。Playing 中は即再注入（`OnStart` 再実行）、Editor 中は保存だけで次 Play から反映 |
+| `dx12_reload_scripts` | `{path?:string}` | `{reloaded, cleared}` ※実行時エラーで死んだスクリプトを **Play を止めずに**復帰させる。ファイルを書き換えた場合は 0.5 秒で自動リロードされるので不要 |
+| `dx12_set_color` | `{entity?/name?, color:[r,g,b]}` | `{entityId, color}` ※メッシュの基本色（頂点色の乗算）。金属感は `dx12_set_pbr` と併用 |
+| `dx12_install_font` | `{family:string, weight?:int=400}` | `{fontPath, family, weight}` ※Google Fonts から `.ttf` を `assets/fonts/` へ取り込む。★日本語 UI には日本語対応フォント（Noto Sans JP 等）を選ぶこと（欧文フォントは豆腐になる） |
 | `dx12_create_prefab` | `{entity:int, path?:string}` | `{path, entityId}` ※path省略で assets/prefabs/<name>.prefab |
 | `dx12_eval_lua` | `{code:string}` | `{result:string}` ※任意 Lua をその場実行(デバッグ用) |
 | `dx12_build_game` | `{}` | `{success, outputDir, error?}` ※ヘッドレスビルド(同期・数十秒かかることあり) |
@@ -298,6 +307,9 @@ OFF のときは TAA を一時的に ON にして撮る（`warnings` に出る�
 | ツール | params | 返り値 |
 |--------|--------|--------|
 | `dx12_create_entity` | `{type:"box"\|"sphere"\|"plane"\|"empty"\|"camera"\|"light_directional"\|"light_point"\|"light_spot"\|"particle_emitter"\|"trigger"\|"ui_canvas"\|"ui_image"\|"ui_text"\|"ui_button"\|"ui_slider"\|"ui_toggle"\|"ui_scrollview", name?, position?:[x,y,z], parent?:int, parentName?:string, idempotency_key?:string}` | `{entityId, name, sceneGeneration}` ※light_*/camera/particle_emitter/trigger は既定値で生成(dx12_set_component で調整)。ui_* はエディタと同じ部品構成で生成され `entityIds`(自動Canvas/ラベル子含む全id)も返る。parent/parentName は ui_*(ui_canvas 以外)の親指定 |
+| `dx12_spawn_box` | `{name?, position?, scale?, rotation?, color?, metallic?, roughness?}` | `{entityId, name, sceneGeneration}` ※足場/壁/床用。内部で create_entity → set_transform → set_pbr → set_color を順に実行する |
+| `dx12_spawn_sphere` | `{name?, position?, scale?, rotation?, color?, metallic?, roughness?}` | `{entityId, name, sceneGeneration}` |
+| `dx12_spawn_coin` | `{name?, position?}` | `{entityId, name, sceneGeneration}` ※金色の薄い円盤 + tag `coin`。回転やスコア加算は Lua / Trigger で付ける |
 | `dx12_spawn_model` | `{path:string(.gltf/.glb/.fbx/.obj), position?:[x,y,z], name?, idempotency_key?:string}` | `{entityId, name, sceneGeneration}` |
 | `dx12_spawn_prefab` | `{path:string(.prefab), position?, name?}` | `{entityId, rootEntityId, entityIds:[...], name, sceneGeneration}` |
 | `dx12_duplicate_entity` | `{entity:int}` | `{entityId, name, sceneGeneration}` |
@@ -320,6 +332,11 @@ OFF のときは TAA を一時的に ON にして撮る（`warnings` に出る�
 
 | `dx12_scatter` | `{type\|model\|prefab(どれか1つ), count:int(1..200), area:[minX,minZ,maxX,maxZ], y?:f, placement?:"random"\|"grid", seed?:int, randomYaw?:bool, scaleRange?:[min,max], snapToGround?:bool, namePrefix?:string}` | `{entities:[{entityId,name}], count, seed, placement, errors?}` |
 | `dx12_screenshot_from` | `{position:[x,y,z], target?:[x,y,z]}` | 画像コンテンツ(PNG) ※Editor 限定 |
+| `dx12_material_apply` | `{entity?/name?, dir?:string(assets相対), baseColor?, normal?, orm?, height?, uvScale?}` | `{entityId, applied:{...}, ignored:[{file,reason}]}` ※PBR の 4 点セットを 1 回で割当（`set_texture`×3 + `set_pbr` を畳んだもの）。`dir` を渡すとファイル名から用途を推定する（Poly Haven の `diff`/`nor_gl`/`arm`/`disp`、`albedo`/`basecolor`/`ORM`/`RMA` 等）。推定できなかったものは `ignored` に理由付きで返る |
+| `dx12_scene_write` | `{path:string, scene:object, open?:bool}` | `{path, entityCount, opened}` ※**シーン JSON を直接書く**。MCP の spawn は 1 体につき 1 フレームかかる（遅延同期）ので、数十体以上を一気に並べるならこちらが桁違いに速い。書く前に `meshRenderer.modelPath` / `luaScript.scriptPath` の実在を `dx12_list_assets` と突き合わせて検証する |
+| `dx12_look_compare` | `{referencePath:string, bins?:int=24, ...}` | 横並び PNG + **測光の数値**（対数輝度ヒストグラムと EMD / 平均・中央輝度 / コントラスト / 相関色温度 CCT / 平均彩度 / 黒潰れ率 / 白飛び率）と「どのノブをどっちへ何倍動かすか」の指示 ※リアル系ライティングを詰める本体 |
+| `dx12_ui_compare` | `{referencePath:string, grid?:bool}` | 横並び PNG（左=参照 / 右=現在）+ `diffRatio(%)` ※`grid=true` で右側に 8px グリッドを重畳。**「参照と違う点を 3 つ」挙げてから直す**ループを回す用 |
+| `dx12_camera_path` | `{path:[[x,y,z],...] または keyframes, shots?:int, source?:"backbuffer"\|"sceneRT", ...}` | 連写をタイル化した 1 枚（コンタクトシート）※静止画 1 枚では分からない TAA のゴースト / LOD ポップ / 影のちらつき / カリング抜けを探す用。既定は `screenshot_final`（TAA の解決結果はポスト前の RT に出ない） |
 | `dx12_preview_model` | `{path:string(.gltf/.glb/.fbx/.obj)}` | 画像コンテンツ(PNG) ※一時 spawn→撮影→削除。シーンは変更されない |
 
 **`dx12_batch` 実装**: 各 op を順に await。`stopOnError=true` なら最初の失敗以降を skip 記録。往復削減用。
@@ -327,6 +344,30 @@ OFF のときは TAA を一時的に ON にして撮る（`warnings` に出る�
 **`dx12_scatter` 実装**: seed 付き乱数(mulberry32)で位置を決め、`create_entity`/`spawn_model`/`spawn_prefab` を1体ずつ実行(+必要なら `set_transform`/`snap_to_ground`)。同じ seed なら同じ配置になる(リトライで再現)。失敗3件で打ち切り。
 **`dx12_screenshot_from` 実装**: `set_editor_camera` → (1フレーム描画) → `screenshot`。
 **`dx12_preview_model` 実装**: `spawn_model`(y=-10000 の遠方) → `focus_camera` → `screenshot` → `delete_entity`。失敗時も一時エンティティは削除する。
+
+### 4-6. 実行・入力シミュレーション・計測
+
+| ツール | params | 返り値 |
+|--------|--------|--------|
+| `dx12_key_down` / `dx12_key_up` | `{key:int(VK) \| string("W","SPACE","UP","F1"…)}` | `{key}` ※押しっぱなしの挙動確認。Lua の `input:isKeyDown` / `keyDown()` に効く（`GetAsyncKeyState` を直接読む経路には効かない）。ウィンドウがフォーカスを失うと合成キーはクリアされる |
+| `dx12_key_press` | `{key}` | `{key}` ※1 フレームだけ押して離す（`isKeyPressed` / `keyPressed()` が 1 回立つ）|
+| `dx12_step_frames` | `{frames?:int=1(1..600)}` | `{frames}` ※**N フレーム進んでから応答する同期バリア**。入力がシミュレーションに効いてから観測するために挟む。※決定論ステッパではない（各フレームの dt は実時間）|
+| `dx12_perf_stats` | `{window?:int=60(..240)}` | `fps` / `frameMs{avg,min,max,p95}` / `cpu{workMs,fenceWaitMs,presentMs}` / `gpuPassMs{total,shadows,depthPrepass,prepassSsao,clusterCull,raytracing,rtScreen,ddgi,screenSpaceGi,volFog,hiZ,mainScene,particles,postFx,ui}` / `drawCalls` / `culled` / `triangles` / `occlusion{...}` / `analysis{verdict:"gpu-bound"\|"cpu-bound"\|"fps-limit-capped"…, notes}` ※**FPS が出ないときはまずこれで犯人を特定する** |
+| `dx12_benchmark` | `{...}` | 規模の梯子を測るベンチハーネス（同一シーンを条件を変えて回し、どこで折れるかを出す）|
+
+**入力テストの型**:
+
+```
+dx12_play
+dx12_key_down(key:"D") → dx12_step_frames(frames:30) → dx12_get_entity(name:"Player")   # 右へ動いたか
+                        → dx12_project_world_to_screen(name:"Player")                    # 画面内に居るか
+dx12_key_up(key:"D") → dx12_get_script_errors()    # Lua が死んでいないか
+dx12_stop
+```
+
+★合成入力より**人間に遊ばせて `dx12_get_play_session` を読む方が正確**（Play を押した時点で記録は始まっている）。
+
+---
 
 ### 4-5. 精密ピック / 地形 / スカルプトの約束事
 

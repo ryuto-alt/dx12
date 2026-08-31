@@ -774,14 +774,35 @@ void ScriptEngine::RegisterBindings()
             e.RemoveComponent<PointLight>();
             e.RemoveComponent<DirectionalLight>();
             e.RemoveComponent<SpotLight>();
+        },
+
+        // --- カメラの垂直 FOV（度）---
+        // ★レンダラの Camera ではなく CameraComponent 側を書く。描画は毎フレーム
+        //   CameraComponent.fovDegrees から射影行列を作り直す（ApplicationScene.cpp）ので、
+        //   renderer::Camera へ直接書いても次のフレームで黙って戻る。
+        //   ズーム（構え/スコープ）は毎フレームここへ絶対値で書き込むこと。
+        "getFov", [](Entity& e) -> float {
+            if (!e.IsValid() || !e.HasComponent<CameraComponent>()) return 0.0f;
+            return e.GetComponent<CameraComponent>().fovDegrees;
+        },
+        "setFov", [](Entity& e, float deg) {
+            if (!e.IsValid() || !e.HasComponent<CameraComponent>()) return;
+            if (!std::isfinite(deg)) return;
+            e.GetComponent<CameraComponent>().fovDegrees = (std::min)(150.0f, (std::max)(5.0f, deg));
         }
     );
 
     // --- Scene ---
     lua.new_usertype<Scene>("Scene",
-        "spawn", [](Scene& s, const std::string& name, const std::string& modelPath,
+        // ★★modelPath は【assets 相対】で受ける(2026-08-27)。
+        //   Scene::Spawn は受け取った文字列をそのままファイルとして開くので、
+        //   audio:playSFX などと違って "models/props/x.glb" では読めず、Lua 側だけが
+        //   ASSETS を自分で連結する必要があった。他の API と規約が食い違っていて、
+        //   実際 BatteryPickup.lua が【毎回 静かに読み込みに失敗して代用の箱を出していた】。
+        //   絶対パス(ドライブレター or 先頭 /)ならそのまま使うので、既存の呼び出しも壊れない。
+        "spawn", [this](Scene& s, const std::string& name, const std::string& modelPath,
                      DirectX::XMFLOAT3 pos, DirectX::XMFLOAT3 rot, DirectX::XMFLOAT3 scale) -> Entity {
-            return s.Spawn(name, modelPath, pos, rot, scale);
+            return s.Spawn(name, ResolveAssetPath(modelPath), pos, rot, scale);
         },
         "spawnPlane", [](Scene& s, const std::string& name, DirectX::XMFLOAT3 pos,
                          float size, bool grid) -> Entity {
@@ -1568,6 +1589,26 @@ void ScriptEngine::RegisterBindings()
                                                 vol.value_or(1.0f), loop.value_or(false));
                            },
         "stopAllSFX",      &AudioSystem::StopAllSFX,
+        // ---- 鳴っている 1 本を掴んで操作する（環境音・機械の唸り・スピンダウン用）----
+        // ★playSFX / playSpatial は「撃ちっぱなし」なので、ループ再生した音を止められない。
+        //   止めるのに stopAllSFX しか無いと、他の音まで巻き添えで消える。
+        //   下の 3 つは ID を返す版の再生と、その ID への操作。
+        //   ID は世代つきなので、鳴り終わってスロットが使い回された後の ID は無視される
+        //   （古い ID で他人の音を止めてしまう事故が起きない）。
+        "playSFXId",       [](AudioSystem& a, const std::string& path, sol::optional<bool> loop,
+                              sol::optional<float> vol) {
+                               return a.PlaySFXTracked(path, loop.value_or(false), vol.value_or(1.0f));
+                           },
+        "playSpatialId",   [](AudioSystem& a, const std::string& path, float x, float y, float z,
+                              float minD, float maxD, sol::optional<float> vol, sol::optional<bool> loop) {
+                               return a.PlaySFXSpatial(path, x, y, z, minD, maxD,
+                                                       vol.value_or(1.0f), loop.value_or(false));
+                           },
+        "moveVoice",       &AudioSystem::UpdateSpatialEmitter,
+        "stopVoice",       &AudioSystem::StopVoice,
+        "setVoiceVolume",  &AudioSystem::SetVoiceVolume,
+        "setVoicePitch",   &AudioSystem::SetVoicePitch,
+        "isVoicePlaying",  &AudioSystem::IsVoicePlaying,
         "setMasterVolume",  &AudioSystem::SetMasterVolume,
         "setBGMVolume",     &AudioSystem::SetBGMVolume,
         "setSFXVolume",     &AudioSystem::SetSFXVolume,
@@ -3777,6 +3818,18 @@ void ScriptEngine::SetScreenSize(int w, int h)
     if (!m_lua) return;
     (*m_lua)["SCREEN_W"] = w;
     (*m_lua)["SCREEN_H"] = h;
+}
+
+std::string ScriptEngine::ResolveAssetPath(const std::string& path) const
+{
+    if (path.empty()) return path;
+    // 絶対パス判定: "C:/..." / "C:\..." / "/..." はそのまま
+    const bool hasDrive = path.size() >= 2 && path[1] == ':';
+    if (hasDrive || path[0] == '/' || path[0] == 0x5C) return path;
+    if (m_assetsDir.empty()) return path;
+    std::string base = m_assetsDir;
+    if (base.back() != '/' && base.back() != 0x5C) base.push_back('/');
+    return base + path;
 }
 
 void ScriptEngine::LoadScript(const std::string& filePath)

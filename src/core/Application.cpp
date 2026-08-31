@@ -846,8 +846,9 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_offscreenRtvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 64, false);
 
         // シーンは HDR(kSceneColorFormat) の中間RTへ描き、ポストで backbuffer へ解決する。
-        // クリア色はリニア空間の値（最終段のACES+ガンマ後にコーンフラワーブルーに見える値）
-        const float sceneClear[4] = {0.127f, 0.306f, 0.850f, 1.0f};
+        // クリア色 = skybox を描かないシーンの背景色。★ClearRenderTarget 側と必ず同じ値に
+        // すること（最適化クリア値が食い違うと D3D12 が遅いパスへ落ちる）。
+        const float sceneClear[4] = {0.0f, 0.0f, 0.0f, 1.0f};
         m_sceneRT = std::make_unique<RenderTarget>();
         m_sceneRT->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
                               m_window->GetWidth(), m_window->GetHeight(),
@@ -2063,7 +2064,39 @@ void Application::Update()
         LaunchNetTestClient();
     }
 
-    if (m_engineMode == EngineMode::Editor)
+    // ===== Play 中の一時停止（F1）=====
+    // ★キーが本命でツールバーのボタンはおまけ。Play 中はゲームがマウスを
+    //   キャプチャしていてボタンを押せないことが多いため。
+    // ★配布ランタイム(m_isGameMode)では効かせない。デバッグ専用の機能。
+    if (!m_isGameMode && m_engineMode == EngineMode::Playing
+        && m_inputSystem && m_inputSystem->IsKeyPressed(VK_F1))
+    {
+        m_editorCtx->paused = !m_editorCtx->paused;
+        // ★Logger::Info は consteval な書式文字列を取るので三項演算子は渡せない。
+        if (m_editorCtx->paused) Logger::Info("一時停止（シーンビューを操作できます。F1 で再開）");
+        else                     Logger::Info("再開");
+    }
+    // 一時停止中は「Playing だが時間は進めない」。ゲーム側の更新を全部止め、
+    // カメラ操作はエディタ側（下の Editor 分岐）へ返す。
+    const bool paused     = (!m_isGameMode && m_engineMode == EngineMode::Playing
+                             && m_editorCtx->paused);
+    const bool simRunning = (m_engineMode == EngineMode::Playing) && !paused;
+
+    // 一時停止の切り替わりでマウスキャプチャを退避／復元する（下の Editor 分岐が
+    // 「右ドラッグしていない＝解除」を毎フレームやるので、覚えておかないと戻せない）。
+    if (paused != m_prevPaused)
+    {
+        if (paused)
+            m_pausedMouseCapture = (m_inputSystem && m_inputSystem->IsMouseCaptured());
+        else if (m_inputSystem && m_pausedMouseCapture)
+            m_inputSystem->SetMouseCapture(true);
+        m_prevPaused = paused;
+    }
+
+    // ★paused のときは Editor 分岐へ入れる。これだけで
+    //   「Lua を回さない・ゲームカメラの同期をしない・エディタのフライカメラが効く」が
+    //   まとめて成立する（Lua もカメラ同期も下の else 側にあるため）。
+    if (m_engineMode == EngineMode::Editor || paused)
     {
         // エディタモード: C++カメラ操作
         bool rightMouseHeld = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
@@ -2350,11 +2383,11 @@ void Application::Update()
 
     // シーン更新（Animator等）— エディタモードは時間を止める（ボーン行列は維持）
     { DX12_PROFILE_ZONE_N("Scene/Animators");
-      m_scene->Update(m_engineMode == EngineMode::Playing ? dt : 0.0f); }
+      m_scene->Update(simRunning ? dt : 0.0f); }
 
     // 配置パーティクル放出器（ParticleEmitter）を駆動。
     // エディタでも常時プレビュー（実 dt で放出/前進）し、Play では _active に従う。
-    if (m_particleSystem)
+    if (m_particleSystem && !paused)   // 一時停止中は放出も止める（止めないと同じ位置に溜まる）
     {
         auto& peReg = m_scene->GetRegistry();
         const bool pedPlaying = (m_engineMode == EngineMode::Playing);
@@ -2447,23 +2480,25 @@ void Application::Update()
     // ★決定論キャプチャ中は前進させない（#31。粒子が動くと 2 枚が一致しない）。
     if (m_particleSystem)
         { DX12_PROFILE_ZONE_N("Particles/Sim");
-          m_particleSystem->Update(m_deterministicCapture ? 0.0f : dt); }
+          m_particleSystem->Update((m_deterministicCapture || paused) ? 0.0f : dt); }
 
-    // 物理更新（プレイモードのみ）
-    if (m_engineMode == EngineMode::Playing && m_physicsSystem->IsInitialized())
+    // 物理更新（プレイモードのみ。一時停止中は止める）
+    if (simRunning && m_physicsSystem->IsInitialized())
     {
         { DX12_PROFILE_ZONE_N("Physics");
           m_physicsSystem->Update(dt, m_scene->GetRegistry()); }
     }
 
     // ネットワーク送信処理（物理確定後の座標を使うため直後。フェーズ⑤でスナップショット送信を実装）。
-    if (m_engineMode == EngineMode::Playing && m_networkSystem)
+    if (simRunning && m_networkSystem)
     {
         m_networkSystem->PostSimUpdate(dt, m_scene->GetRegistry());
     }
 
     // 3D 空間オーディオ: リスナー＝カメラ、AudioSource を駆動（Playing のみ）
-    if (m_engineMode == EngineMode::Playing && m_audioSystem)
+    // ★一時停止中は動かさない。動かすとリスナーがエディタのフライカメラに付いて
+    //   音場が飛び回る（BGM は XAudio2 側で鳴り続けるので途切れない）。
+    if (simRunning && m_audioSystem)
     {
         auto pos = m_camera->GetPosition();
         auto fwd = m_camera->GetForward();
@@ -2486,13 +2521,33 @@ void Application::Update()
                 src.startedThisPlay = true;
             }
             if (src.runtimeSlot >= 0 && src.spatial)
+            {
                 m_audioSystem->UpdateSpatialEmitter(src.runtimeSlot, wx, wy, wz);
+
+                // 壁越しはこもらせる。エミッタ→リスナーへレイを 1 本飛ばし、
+                // 途中で何かに当たったら遮蔽 1.0（平滑は AudioSystem 側）。
+                // ponytail: レイ 1 本だけ。半遮蔽も回折も見ない。要るなら本数を増やす
+                float occ = 0.0f;
+                if (m_physicsSystem->IsInitialized())
+                {
+                    float lx, ly, lz;
+                    m_audioSystem->GetListenerPos(lx, ly, lz);
+                    const DirectX::XMFLOAT3 dir{lx - wx, ly - wy, lz - wz};
+                    const float len = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+                    // ★終端を少し削る。削らないとリスナーを包んでいる
+                    //   プレイヤーのコライダーに当たって常時こもる
+                    if (len > 1.0f &&
+                        m_physicsSystem->Raycast({wx, wy, wz}, dir, len - 0.6f).hit)
+                        occ = 1.0f;
+                }
+                m_audioSystem->SetOcclusion(src.runtimeSlot, occ);
+            }
         }
-        { DX12_PROFILE_ZONE_N("Audio"); m_audioSystem->Update(); }
+        { DX12_PROFILE_ZONE_N("Audio"); m_audioSystem->Update(dt); }
     }
 
     // Trigger の Post や接触 Post を同フレーム内で配信（Playing のみ）。
-    if (m_engineMode == EngineMode::Playing)
+    if (simRunning)
     {
         { DX12_PROFILE_ZONE_N("Events/Flush"); m_eventBus.Flush(); }
 

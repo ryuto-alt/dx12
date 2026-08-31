@@ -4,6 +4,7 @@
 #include "core/vfs/Vfs.h"
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 
 namespace dx12e
@@ -163,11 +164,6 @@ void AudioSystem::ScanAudioFiles()
 
 AudioClip* AudioSystem::GetOrLoadClip(const std::string& filePath)
 {
-    // キャッシュチェック
-    auto it = m_clipCache.find(filePath);
-    if (it != m_clipCache.end())
-        return it->second.get();
-
     // フルパス構築（相対パスならassetsDir基準）
     const bool isRelative = (filePath.size() < 2 || filePath[1] != ':');
     std::string fullPath = filePath;
@@ -175,6 +171,25 @@ AudioClip* AudioSystem::GetOrLoadClip(const std::string& filePath)
     {
         fullPath = m_assetsDir + filePath;
     }
+
+    // ★★キャッシュチェック。ファイルが焼き直されていたら捨てて読み直す。
+    //   ★以前は「一度読んだら二度と読み直さない」だったので、エディタを起動したまま
+    //     素材を作り直しても古い音が鳴り続けた(直したはずの音が変わらない、の原因)。
+    //   ★stat は 1 回の再生につき 1 回だけ。実測でも足音(毎秒 2 回)で問題にならない。
+    std::error_code fec;
+    const auto stamp = std::filesystem::last_write_time(fullPath, fec);
+    auto it = m_clipCache.find(filePath);
+    if (it != m_clipCache.end())
+    {
+        auto st = m_clipStamp.find(filePath);
+        const bool fresh = fec || st == m_clipStamp.end() || st->second == stamp;
+        if (fresh)
+            return it->second.get();
+        Logger::Info("音声が更新されたので読み直します: {}", filePath);
+        m_clipCache.erase(it);
+        m_clipStamp.erase(filePath);
+    }
+    if (!fec) m_clipStamp[filePath] = stamp;
 
     // 拡張子抽出（VFS 経由ロード時に LoadFromMemory へ渡す）
     std::string ext = std::filesystem::path(filePath).extension().string();
@@ -334,10 +349,17 @@ void AudioSystem::ResumeBGM()
 
 void AudioSystem::PlaySFX(const std::string& filePath, bool loop, float volume)
 {
-    if (!m_xaudio2) return;
+    PlaySFXTracked(filePath, loop, volume);
+}
+
+// ★中身は元の PlaySFX そのままで、最後にスロット ID を返すだけ。
+//   ループ再生した環境音を後から止める・絞る・回転を落とす、が ID 無しでは書けなかった。
+i32 AudioSystem::PlaySFXTracked(const std::string& filePath, bool loop, float volume)
+{
+    if (!m_xaudio2) return -1;
 
     AudioClip* clip = GetOrLoadClip(filePath);
-    if (!clip) return;
+    if (!clip) return -1;
 
     // 空きスロットを探す
     i32 freeSlot = -1;
@@ -394,7 +416,7 @@ void AudioSystem::PlaySFX(const std::string& filePath, bool loop, float volume)
     if (FAILED(hr))
     {
         Logger::Error("ソースボイス作成（SFX）に失敗しました: 0x{:08X}", static_cast<u32>(hr));
-        return;
+        return -1;
     }
 
     slot.clipVolume = std::clamp(volume, 0.0f, 1.0f);
@@ -410,11 +432,64 @@ void AudioSystem::PlaySFX(const std::string& filePath, bool loop, float volume)
     if (FAILED(hr))
     {
         Logger::Error("バッファ送信（SFX）に失敗しました: 0x{:08X}", static_cast<u32>(hr));
-        return;
+        return -1;
     }
 
     slot.spatial = false;  // 非空間
     slot.voice->Start();
+    ++slot.generation;
+    return static_cast<i32>((slot.generation << 8) | static_cast<u32>(freeSlot));
+}
+
+// ===== 鳴っている 1 本を掴んで操作する =====
+// ★ID は (generation<<8)|index。スロットが別の音へ使い回されていたら世代が食い違うので、
+//   古い ID で新しい音を止めてしまう事故が起きない。
+AudioSystem::SFXSlot* AudioSystem::ResolveVoice(i32 slotId)
+{
+    if (slotId < 0) return nullptr;
+    const u32 index = static_cast<u32>(slotId) & 0xFFu;
+    const u32 gen   = static_cast<u32>(slotId) >> 8;
+    if (index >= kMaxSFXVoices) return nullptr;
+    auto& slot = m_sfxSlots[index];
+    if (!slot.voice || slot.generation != gen) return nullptr;
+    return &slot;
+}
+
+void AudioSystem::StopVoice(i32 slotId)
+{
+    SFXSlot* slot = ResolveVoice(slotId);
+    if (!slot) return;
+    slot->voice->Stop();
+    slot->voice->FlushSourceBuffers();   // ループ中でもこれで確実に止まる
+}
+
+void AudioSystem::SetVoiceVolume(i32 slotId, float volume)
+{
+    SFXSlot* slot = ResolveVoice(slotId);
+    if (!slot) return;
+    slot->clipVolume = std::clamp(volume, 0.0f, 1.0f);
+    // 空間音は距離減衰を ComputeAndApply が毎フレーム掛け直すので、そちらに任せる。
+    if (!slot->spatial) slot->voice->SetVolume(slot->clipVolume * m_sfxVolume);
+}
+
+void AudioSystem::SetVoicePitch(i32 slotId, float ratio)
+{
+    SFXSlot* slot = ResolveVoice(slotId);
+    if (!slot) return;
+    slot->voice->SetFrequencyRatio(std::clamp(ratio, 0.1f, 2.0f));
+}
+
+bool AudioSystem::IsVoicePlaying(i32 slotId) const
+{
+    if (slotId < 0) return false;
+    const u32 index = static_cast<u32>(slotId) & 0xFFu;
+    const u32 gen   = static_cast<u32>(slotId) >> 8;
+    if (index >= kMaxSFXVoices) return false;
+    const auto& slot = m_sfxSlots[index];
+    if (!slot.voice || slot.generation != gen) return false;
+    XAUDIO2_VOICE_STATE state{};
+    slot.voice->GetState(&state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
+    return state.BuffersQueued > 0;
 }
 
 // ===== 3D 空間オーディオ =====
@@ -469,6 +544,47 @@ void AudioSystem::ComputeAndApply(SFXSlot& slot)
     slot.voice->SetOutputMatrix(nullptr, 1, m_outChannels, matrix);
 }
 
+// 遮蔽の効き。壁越しは「高域が落ちて音量も下がる」。数値は完全に趣味の範囲。
+static constexpr float kOccVolumeDrop = 0.65f;    // 全遮蔽で音量 -65%
+static constexpr float kOccCutoffHz   = 420.0f;   // 全遮蔽時のローパス
+static constexpr float kOccSmooth     = 8.0f;     // 1/s。時定数 ~0.12s
+
+void AudioSystem::ApplyOcclusion(SFXSlot& slot)
+{
+    if (!slot.voice) return;
+    const float occ = std::clamp(slot.occ, 0.0f, 1.0f);
+    slot.voice->SetVolume(m_sfxVolume * slot.clipVolume * (1.0f - kOccVolumeDrop * occ));
+
+    // XAudio2 のフィルタ Frequency は 2*sin(pi*fc/fs)。1.0（＝上限）が素通し。
+    const float fs   = static_cast<float>(slot.sampleRate > 0 ? slot.sampleRate : 44100);
+    const float shut = std::clamp(2.0f * std::sin(3.14159265f * kOccCutoffHz / fs),
+                                  0.0f, XAUDIO2_MAX_FILTER_FREQUENCY);
+    XAUDIO2_FILTER_PARAMETERS fp{};
+    fp.Type      = LowPassFilter;
+    fp.Frequency = XAUDIO2_MAX_FILTER_FREQUENCY + (shut - XAUDIO2_MAX_FILTER_FREQUENCY) * occ;
+    fp.OneOverQ  = 1.0f;
+    slot.voice->SetFilterParameters(&fp);
+}
+
+void AudioSystem::SetOcclusion(i32 slotId, float amount)
+{
+    if (slotId < 0) return;
+    const u32 index = static_cast<u32>(slotId) & 0xFFu;
+    const u32 gen   = static_cast<u32>(slotId) >> 8;
+    if (index >= kMaxSFXVoices) return;
+    auto& slot = m_sfxSlots[index];
+    if (!slot.voice || !slot.spatial) return;
+    if (slot.generation != gen) return;   // 使い回された後のスロット。触らない
+    slot.occTarget = std::clamp(amount, 0.0f, 1.0f);
+}
+
+void AudioSystem::GetListenerPos(float& x, float& y, float& z) const
+{
+    x = m_listener.Position.x;
+    y = m_listener.Position.y;
+    z = m_listener.Position.z;
+}
+
 i32 AudioSystem::PlaySFXSpatial(const std::string& filePath, float x, float y, float z,
                                 float minDistance, float maxDistance, float volume, bool loop)
 {
@@ -504,13 +620,17 @@ i32 AudioSystem::PlaySFXSpatial(const std::string& filePath, float x, float y, f
     }
 
     WAVEFORMATEX fmt = clip->GetFormat();
-    HRESULT hr = m_xaudio2->CreateSourceVoice(&slot.voice, &fmt);
+    // ★USEFILTER はボイス生成時にしか付けられない。遮蔽のローパスに要る。
+    HRESULT hr = m_xaudio2->CreateSourceVoice(&slot.voice, &fmt, XAUDIO2_VOICE_USEFILTER);
     if (FAILED(hr))
     {
         Logger::Error("ソースボイス作成（空間SFX）に失敗しました: 0x{:08X}", static_cast<u32>(hr));
         return -1;
     }
 
+    slot.sampleRate     = fmt.nSamplesPerSec;
+    slot.occ            = 0.0f;
+    slot.occTarget      = 0.0f;
     slot.spatial        = true;
     slot.minDist        = minDistance;
     slot.maxDist        = maxDistance;
@@ -555,9 +675,10 @@ void AudioSystem::UpdateSpatialEmitter(i32 slotId, float x, float y, float z)
     slot.emitterPos[2] = z;
 }
 
-void AudioSystem::Update()
+void AudioSystem::Update(f32 dt)
 {
     if (!m_x3dReady) return;
+    const float k = std::clamp(dt * kOccSmooth, 0.0f, 1.0f);
     for (auto& slot : m_sfxSlots)
     {
         if (!slot.voice || !slot.spatial) continue;
@@ -565,6 +686,8 @@ void AudioSystem::Update()
         slot.voice->GetState(&state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
         if (state.BuffersQueued == 0) { slot.spatial = false; continue; }
         ComputeAndApply(slot);
+        slot.occ += (slot.occTarget - slot.occ) * k;
+        ApplyOcclusion(slot);
     }
 }
 
@@ -604,8 +727,10 @@ void AudioSystem::SetSFXVolume(f32 volume)
         // ★クリップ個別音量を掛け直す。以前はマスター値をそのまま書いていたので、
         //   再生中の小さい音がスライダーを触った瞬間に最大音量へ跳ね上がっていた
         //   （再生時は個別音量を掛けているので、ここだけ規約が破れていた）。
+        // ★ApplyOcclusion 経由で書く。直接 SetVolume すると壁越しでこもらせた音が
+        //   スライダーを触った瞬間だけ素の音量へ戻る（次の Update で戻るので一瞬鳴る）。
         if (slot.voice)
-            slot.voice->SetVolume(m_sfxVolume * slot.clipVolume);
+            ApplyOcclusion(slot);
     }
 }
 

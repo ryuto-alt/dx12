@@ -84,6 +84,7 @@ end
 | `Anim` / `Ease` / `LIGHT_STYLES` | table | Tween の実行リスト / イージング関数表 / lightstyle プリセット |
 | `display` | table | 映像設定（VSync / FPS 上限 / 窓モード / 解像度）。設定画面はこれで作る |
 | `net` | table | マルチプレイ（host/join/RPC/スポーン）。詳細は §7 |
+| `nav` | table | ナビメッシュ経路探索（`findPath` / `sample` / `raycast` / `moveAlong` / `ready`）|
 | `ASSETS` | string | assets ディレクトリの絶対パス |
 | `SCREEN_W` / `SCREEN_H` | int | 画面解像度（`SetScreenSize` で更新） |
 
@@ -141,6 +142,8 @@ t.scale      -- Vec3
 | `:light()` | Light \| nil | ライトのプロキシ（持ってなければ nil） |
 | `:addLight(kind?)` | Light | ライトを後付け。`kind`: `"point"`(既定) / `"directional"`(`"dir"`/`"sun"`) / `"spot"` |
 | `:removeLight()` | — | 付いているライト成分を全部外す（消灯ではなく削除） |
+| `:getFov()` | number | `Camera` コンポーネントの垂直 FOV（度）。持っていなければ 0 |
+| `:setFov(deg)` | — | 垂直 FOV を設定（5〜150 度にクランプ）。**★ズーム（構え / スコープ）は毎フレーム絶対値で書くこと**。描画は毎フレーム `CameraComponent.fovDegrees` から射影行列を作り直すので、`camera`（レンダラ側）へ書いても次のフレームで黙って戻る |
 
 ### Light（`entity:light()` / `entity:addLight(kind)` / `scene:sun()`）
 `PointLight` / `DirectionalLight` / `SpotLight` を **1 個の型**にまとめたプロキシ。
@@ -171,7 +174,7 @@ lamp.range = 12
 ### Scene（`scene`）
 | メソッド | 戻り値 | 説明 |
 |---|---|---|
-| `:spawn(name, modelPath, pos, rot, scale)` | Entity | モデルを生成（pos/rot/scale は Vec3） |
+| `:spawn(name, modelPath, pos, rot, scale)` | Entity | モデルを生成（pos/rot/scale は Vec3）。`modelPath` は **assets 相対**（`"models/props/box.glb"`）。絶対パスもそのまま通る |
 | `:spawnPlane(name, pos, size, grid)` | Entity | 平面を生成（grid=bool） |
 | `:spawnBox(name, pos, rot, scale)` | Entity | ボックスを生成 |
 | `:spawnSphere(name, pos, radius)` | Entity | 球を生成 |
@@ -282,6 +285,13 @@ lamp.range = 12
 | `:playSFX(path)` | 2D 効果音 |
 | `:playSpatial(path, x, y, z, minD, maxD, vol?, loop?)` | 3D 空間効果音 |
 | `:stopAllSFX()` | 全 SE 停止 |
+| `:playSFXId(path, loop?, vol?)` | **ID を返す** 2D 効果音。ループ音（環境音・機械の唸り）はこちらで鳴らす |
+| `:playSpatialId(path, x, y, z, minD, maxD, vol?, loop?)` | **ID を返す** 3D 空間効果音 |
+| `:stopVoice(id)` | その 1 本だけ止める（`stopAllSFX` の巻き添えを避ける） |
+| `:setVoiceVolume(id, v)` | その 1 本の音量 0..1（フェードアウトに） |
+| `:setVoicePitch(id, ratio)` | その 1 本の再生速度＝ピッチ 0.1〜2.0（機械のスピンダウン等） |
+| `:moveVoice(id, x, y, z)` | 空間音源の位置を更新（動く物に音を追従させる） |
+| `:isVoicePlaying(id)` | まだ鳴っているか |
 | `:setMasterVolume(v)` / `:setBGMVolume(v)` / `:setSFXVolume(v)` | 音量設定 |
 | `:getMasterVolume()` / `:getBGMVolume()` / `:getSFXVolume()` | 音量取得 |
 | `:getBGMList()` / `:getSFXList()` | ファイル一覧。**エディタ専用**（配布ゲームでは常に空。一覧はエディタのピッカ用で、pak の中身は列挙しない）。サウンドテスト画面を作るならスクリプト側に曲名の配列を持つこと |
@@ -328,6 +338,48 @@ hit.normal    -- Vec3
 | `:clear()` | — | 全購読解除（Play 開始時に自動 clear） |
 
 > Trigger の `EmitEvent` アクション（§8）も C++ からこの `emit` を呼ぶ。物理接触は `engine.contact.enter` / `engine.contact.exit` を Post する。
+
+### nav（`nav`）— ナビメッシュ経路探索（v1.9.0+）
+シーンのメッシュをボクセル化して焼いた歩行面の上で、A* + ファネルの経路を引く。
+焼くのはエディタの **ツール > ナビメッシュ**（または `dx12_navmesh_build`）。設定はシーンに、
+焼いた実体はシーンの隣の `.nav` に保存される。
+
+| メソッド | 戻り値 | 説明 |
+|---|---|---|
+| `:ready()` | bool | ナビメッシュが焼けているか。焼く前は他の API が全部空を返す |
+| `:sample(pos, radius?)` | Vec3 \| nil | 位置を一番近い歩行面へ落とす。高さは坂道でもボクセル分解能で正確（足が浮かない） |
+| `:findPath(from, to, radius?)` | `{Vec3, ...}` | A* + ファネルの折れ線。空テーブルなら経路なし。**最後の点が `to` から離れていれば「そこまでしか行けない」** |
+| `:raycast(from, to)` | hit:bool, point:Vec3 | 壁に当たるまで直進。「経路を張らずに真っ直ぐ行けるか」の判定 |
+| `:moveAlong(from, to)` | Vec3 | 壁で滑らせた移動先（精密な当たり判定つきの 1 歩） |
+
+```lua
+function OnStart(self)
+    self.path, self.idx, self.t = {}, 1, 0
+end
+
+function OnUpdate(self, dt)
+    if not nav:ready() then return end
+    local me, target = self.transform.position, scene:findEntity("Player").transform.position
+
+    -- ★findPath を毎フレーム全員ぶん呼ばないこと。数十フレームに 1 回引き直して、
+    --   間は折れ線を追うだけで足りる。
+    self.t = self.t + dt
+    if self.t > 0.5 then
+        self.t, self.idx = 0, 1
+        self.path = nav:findPath(me, target, 0.4)
+    end
+
+    local wp = self.path[self.idx]
+    if wp then
+        if (wp.x - me.x)^2 + (wp.z - me.z)^2 < 0.09 then self.idx = self.idx + 1 end
+        local dir = Vec3.new(wp.x - me.x, 0, wp.z - me.z)
+        self.transform.position = nav:moveAlong(me, Vec3.new(me.x + dir.x * dt, me.y, me.z + dir.z * dt))
+    end
+end
+```
+
+MCP からは `dx12_navmesh_build` / `settings` / `info` / `path` / `sample` / `raycast` / `debug` / `clear` の
+8 ツールで同じことができる（`dx12_navmesh_debug` でシーンビューにワイヤを重ねられる）。
 
 ### net（`net`）— オンラインマルチプレイ（リッスンサーバー方式・ENetベース、開発中）
 | メソッド | 戻り値 | 説明 |
@@ -957,83 +1009,189 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 
 ## 10. MCP（AI ブリッジ）ツール一覧
 
-起動中のエディタを Claude Code / Codex から操作する MCP サーバ（`tools/mcp-server`）。ツール名は `dx12_` 接頭辞。
-詳細・遅延同期・error_code は [`MCP.md`](MCP.md) を参照。
+起動中のエディタを Claude Code / Codex から操作する MCP サーバ（`tools/mcp-server`。配布は
+[ryuto-alt/dx12-mcp](https://github.com/ryuto-alt/dx12-mcp)）。ツール名は `dx12_` 接頭辞で **全 152 種**。
+ここは全ツールの一覧（1 行説明）。**params / 返り値・遅延同期・error_code・セキュリティモデルは
+[`MCP.md`](MCP.md) が正**。エンジンのディスパッチ表そのものは `dx12_describe_mcp_params` で引ける。
 
-### 読み取り系（同期）
+### 10-1. 疎通と辞書（まず最初に叩く）
 | ツール | 説明 |
 |---|---|
-| `dx12_ping` | 接続確認（mode/entityCount/sceneGeneration） |
-| `dx12_list_entities` | エンティティ一覧（name_prefix/component_type フィルタ） |
-| `dx12_get_entity` | 1 体の全コンポーネント値 |
-| `dx12_find_entity` | 名前で検索 |
-| `dx12_query_entities` | tag / box でクエリ |
-| `dx12_list_scenes` | シーン一覧 |
-| `dx12_list_assets` | アセット一覧（model/texture/script/audio/scene/prefab） |
+| `dx12_ping` | 疎通確認。mode / entityCount / sceneGeneration / currentScene / sceneDirty と各種ディレクトリの絶対パスを返す |
 | `dx12_get_mode` | Editor / Playing |
-| `dx12_get_log` | ログ末尾 N 行 |
-| `dx12_describe_components` | コンポーネント定義（jsonKey/fields/default） |
-| `dx12_ui_tree` | UI階層・解決矩形・表示/文字/装飾/入力/レイアウト情報 |
-| `dx12_ui_design_brief` | ジャンル×画面目的から構図・制約・アンチパターンを生成 |
-| `dx12_ui_audit` | UI崩れ・可読性・入力遮断・過装飾を自動監査 |
-| `dx12_get_scene_settings` | スカイボックス/IBL 設定 |
-| `dx12_screenshot` | スクショ（PNG） |
-| `dx12_pick` | 画面座標（x/y か u/v）→ 三角形精密ヒット列（entityId/submesh/distance/worldPos/worldNormal）|
-| `dx12_raycast_precise` | ワールドのレイ → 描画メッシュの三角形と交差（`dx12_raycast` は物理コライダー基準・Playing 限定）|
-| `dx12_terrain_sample` | 地形の高さ/法線/傾きを座標で問い合わせ（配置の自動化に使う）|
-| `dx12_list_lights` | ライト一覧 + 灯数バジェット（合計 1024 灯・1 クラスタ 128 灯／影スロットは spot4・point2）と超過警告。★「点8/スポット8」の個別上限は撤廃済み |
-| `dx12_diagnose` | エンジン診断（`DeepDiag::RunAll`）を JSON で。`summary.errors > 0` だけが失敗 |
-| `dx12_get_anim_state` | スケルタルアニメの状態。クリップ一覧 / 現在ステート / レイヤー / FSM パラメータ / `footIK`（解決したボーン名・接地・面法線・腰オフセット）|
-| `dx12_describe_anim_graph` | `.animfsm` の構造（ステート/遷移/条件/ブレンドツリー/レイヤー/マスク）を JSON で返す。`{entity}` か `{path}` |
+| `dx12_describe_components` | コンポーネント辞書（jsonKey / fields / default）。`set_component` を書く前に引く |
+| `dx12_describe_mcp_params` | **エンジンのディスパッチ表そのもの**（method ごとの引数キーと型）|
+| `dx12_describe_lua_api` | Lua から実際に読める API の辞書。**MCP で見えるコンポーネントと Lua の API は違う** |
+| `dx12_describe_anim_graph` | `.animfsm` の構造（ステート / 遷移 / 条件 / ブレンドツリー / レイヤー / マスク）|
 
-### 編集系（同期）
+### 10-2. シーンを読む
 | ツール | 説明 |
 |---|---|
-| `dx12_set_transform` | 位置/回転/quaternion/スケール |
-| `dx12_set_component` | コンポーネント設定（jsonKey + data） |
-| `dx12_remove_component` | コンポーネント削除 |
-| `dx12_set_parent` | 親子付け（省略で解除） |
-| `dx12_group_entities` | 複数をまとめて空の親（グループ）へ。見た目は動かない |
-| `dx12_rename_entity` | リネーム |
-| `dx12_select_entity` | 選択 |
-| `dx12_focus_camera` | カメラフォーカス |
-| `dx12_set_pbr` | metallic/roughness/UV スケール |
-| `dx12_set_scene_settings` | スカイボックス/IBL 設定 |
-| `dx12_undo` / `dx12_redo` | Undo/Redo |
-| `dx12_save_scene` | シーン保存 |
-| `dx12_create_lua_component` | Lua コンポーネント生成（構文検証つき） |
-| `dx12_attach_lua_component` | Lua をエンティティに添付 |
-| `dx12_terrain_generate` | fBm プリセット（hills/canyon/mountains）で地形を一発生成（同 seed で再現＝冪等）|
-| `dx12_terrain_sculpt` | 地形ブラシ（raise/lower/smooth/flatten/noise）。点列でストロークを一気に引ける |
-| `dx12_terrain_erode` | 熱浸食（安息角を超えた斜面を崩す）。region で範囲指定可 |
-| `dx12_sculpt_brush` | 頂点スカルプト（draw/pull/push/smooth/flatten/pinch/noise/grab + 対称）|
-| `dx12_set_sun` | 太陽の向き（timeOfDay か azimuth/elevation）・色（color/kelvin）・強度・環境光を絶対指定 |
-| `dx12_apply_lighting_preset` | 昼/夕暮れ/夜/屋内/ホラー/スタジオ（エディタのプリセットと同じ実装）|
-| `dx12_play_anim` | スケルタルアニメの再生。`clip`/`clipName` でクロスフェード、または `state` で FSM 遷移（`AnimatorController` が要る）。`blend`/`loop`/`speed`/`layer` も指定可 |
-| `dx12_set_anim_param` | アニメ FSM のパラメータを外から叩く（`{name, value}` または `{name, trigger:true}`）。遷移の検証に |
+| `dx12_list_entities` | エンティティ一覧（`name_prefix` / `component_type` で絞れる）|
+| `dx12_get_entity` | 1 体の全コンポーネント値 |
+| `dx12_find_entity` | 名前で 1 体引く |
+| `dx12_query_entities` | tag / XZ 範囲でクエリ |
+| `dx12_get_hierarchy` | 親子ツリー |
+| `dx12_get_bounds` | シーン全体 or 指定エンティティのワールド AABB |
+| `dx12_list_scenes` / `dx12_list_assets` | シーン一覧 / アセット一覧（model/texture/script/audio/scene/prefab/shader）|
+| `dx12_asset_info` | アセットのメタ情報（**スケール 1 で置いたときの実寸 AABB**・頂点数・ボーン数・アニメ）|
+| `dx12_get_scene_settings` | スカイボックス / IBL |
+| `dx12_list_lights` | ライト一覧と灯数バジェット（合計 1024 灯・1 クラスタ 128 灯、影スロット spot4 / point2）|
+| `dx12_project_world_to_screen` | ワールド座標 → 画面ピクセル。「ゲーム画面の中央に居るか」を**数値で**検証できる |
+| `dx12_get_log` | エンジンログ末尾 N 行 |
 
-### 生成・削除・モード遷移（遅延同期）
+### 10-3. Lua を読む・直す
 | ツール | 説明 |
 |---|---|
-| `dx12_create_entity` | box/sphere/plane/empty を生成 |
-| `dx12_spawn_model` | モデル（.gltf/.glb/.fbx/.obj）を生成 |
-| `dx12_spawn_prefab` | プレハブ（.prefab）を生成 |
-| `dx12_duplicate_entity` | 複製 |
-| `dx12_delete_entity` | 削除 |
-| `dx12_open_scene` / `dx12_new_scene` | シーン操作 |
-| `dx12_play` / `dx12_stop` | Play / Stop |
+| `dx12_read_lua_component` | 既存 `.lua` のソースをそのまま読む |
+| `dx12_get_lua_component_state` | LuaScript の現在のプロパティ値（未上書きの既定値込み）と `loadError` / traceback |
+| `dx12_get_script_errors` | **壊れている LuaScript を全部**（`dx12_play` が `scriptErrors>0` を返したら次はこれ）|
+| `dx12_set_lua_property` | プロパティを 1 つ書き換える（Playing 中は即再注入）|
+| `dx12_reload_scripts` | 実行時エラーで死んだスクリプトを **Play を止めずに**復帰させる |
+| `dx12_eval_lua` | 任意 Lua をその場実行（デバッグ用）|
+
+### 10-4. 編集（同期）
+| ツール | 説明 |
+|---|---|
+| `dx12_set_transform` | 位置 / 回転（Euler or クォータニオン）/ スケール |
+| `dx12_set_component` / `dx12_remove_component` | コンポーネントの設定 / 除去 |
+| `dx12_set_parent` / `dx12_group_entities` | 親子付け / 空の親へまとめる（見た目は不変・Undo 可）|
+| `dx12_rename_entity` / `dx12_select_entity` | リネーム / 選択（インスペクタに出す）|
+| `dx12_look_at` / `dx12_snap_to_ground` | 別のエンティティ（or 座標）へ向ける / 下の面へ接地させる |
+| `dx12_scatter` | seed 付きで一括配置（ランダム / グリッド・接地・ヨー乱数・スケール範囲）|
+| `dx12_scene_write` | **シーン JSON を直接書く**。数十体以上を一気に並べるなら spawn より桁違いに速い |
+| `dx12_save_scene` | 保存（省略で現在シーンへ上書き）|
+| `dx12_undo` / `dx12_redo` | ★**MCP の編集はほとんど Undo に積まれない**。`willUndo` で何が戻るか見てから使う |
+
+### 10-5. マテリアル・シェーダー
+| ツール | 説明 |
+|---|---|
+| `dx12_set_pbr` | metallic / roughness / emissive などの数値 |
+| `dx12_set_color` | 基本色（頂点色の乗算）|
+| `dx12_set_texture` | スロット指定でテクスチャ上書き（albedo / normal / metalRoughness）|
+| `dx12_material_apply` | **PBR 4 点セット（BaseColor / Normal / ORM / Height）を 1 回で**。素材フォルダから用途を推定 |
+| `dx12_set_mesh_shader` / `dx12_set_sprite_shader` | カスタム HLSL の割当（メッシュ用 / Sprite2D 用は別契約）|
+| `dx12_create_shader` / `dx12_read_shader` | カスタムシェーダーの作成（書込後にコンパイル検証）/ 読み取り |
+
+### 10-6. 生成・削除（遅延同期＝本物の値が返る）
+| ツール | 説明 |
+|---|---|
+| `dx12_create_entity` | box/sphere/plane/empty/camera/light_*/particle_emitter/trigger/ui_* を生成 |
+| `dx12_spawn_box` / `dx12_spawn_sphere` | 位置・スケール・色・metallic/roughness まで 1 コールで（足場 / 壁 / 床）|
+| `dx12_spawn_coin` | 収集アイテム（金色の円盤 + tag `coin`）|
+| `dx12_spawn_model` / `dx12_spawn_prefab` | モデル（.gltf/.glb/.fbx/.obj）/ プレハブを配置 |
+| `dx12_duplicate_entity` / `dx12_delete_entity` | 複製（子孫ごと）/ 削除 |
+| `dx12_create_prefab` | 選択エンティティを `.prefab` にする |
+| `dx12_create_lua_component` / `dx12_attach_lua_component` | `.lua` を書く（**書込前に構文検証**）/ 貼る |
+| `dx12_import_asset` / `dx12_move_asset` / `dx12_delete_asset` | 外部ファイルの取り込み / 移動・リネーム（参照は GUID で追従）/ 削除（参照元を報告）|
+
+### 10-7. シーン / プロジェクト / ビルド
+| ツール | 説明 |
+|---|---|
+| `dx12_open_scene` / `dx12_new_scene` | シーンを開く / 新規（★`sceneDirty=true` のまま撃つと未保存の変更が消える）|
+| `dx12_open_project` | プロジェクトを開く（ランチャーのクリック相当。ロードは数フレーム非同期）|
+| `dx12_validate_scene` | `--validate` をヘッドレス子プロセスで実行し、参照切れ / スクリプト不在を報告 |
+| `dx12_build_game` | ヘッドレスでゲームをビルド（暗号化パック + ゲーム専用 exe）|
+
+### 10-8. 再生・入力シミュレーション・計測
+| ツール | 説明 |
+|---|---|
+| `dx12_play` / `dx12_stop` | Play / Stop（`play` は `scriptErrors` を返す）|
+| `dx12_key_down` / `dx12_key_up` / `dx12_key_press` | 合成キー入力（Lua の `isKeyDown` / `isKeyPressed` に効く）|
+| `dx12_step_frames` | **N フレーム進んでから応答する同期バリア**。入力を効かせてから観測するために挟む |
+| `dx12_get_play_session` | 直近の Play 1 回ぶんの記録（操作イベント / fps サンプル / エラー）。**人間に遊ばせて読む**用 |
+| `dx12_perf_stats` | fps / frameMs / CPU / パス別 GPU 時間 / ドローコール / カリング +「GPU 律速か CPU 律速か」の判定 |
+| `dx12_benchmark` | 規模の梯子を測るベンチハーネス |
+| `dx12_diagnose` | エンジン診断を機械可読 JSON で（`summary.errors > 0` だけが失敗）|
+
+### 10-9. 物理クエリ・ピック
+| ツール | 説明 |
+|---|---|
+| `dx12_raycast` | **物理コライダー**基準（Playing 中のみ意味がある）|
+| `dx12_raycast_precise` | **描画メッシュの三角形**基準（Editor でも使える）|
+| `dx12_pick` | 画面座標 → 三角形精密ヒット列（アイコンも拾える）|
+| `dx12_overlap_box` / `dx12_overlap_sphere` | 範囲内の物理ボディ列挙（Playing 中）|
+| `dx12_get_physics_state` | 速度 / 接地判定など（Playing 中）|
+
+### 10-10. カメラと「絵」の確認
+| ツール | 説明 |
+|---|---|
+| `dx12_get_editor_camera` / `dx12_set_editor_camera` | エディタカメラの取得 / 設定 |
+| `dx12_focus_camera` / `dx12_focus_and_screenshot` | 対象へ寄る / 寄って撮る |
+| `dx12_screenshot` | **ポスト前**のシーン RT（幾何・ライティングの素の値を見るとき）|
+| `dx12_screenshot_final` | **バックバッファ**（ポスト後）。**見た目の判断は必ずこちら**（TAA の解決結果もここ）|
+| `dx12_screenshot_game_view` | アクティブなゲームカメラ視点（**Play せずに**構図を確認できる）|
+| `dx12_screenshot_from` | 任意の視点から 1 枚 |
+| `dx12_ui_screenshot` | ウィンドウ全体（ImGui パネル / ギズモ込み）|
+| `dx12_render_debug` | 法線 / 深度 / ラフネス / メタリック / 速度 などの可視化バッファ |
+| `dx12_camera_path` | 経路に沿って連写 → コンタクトシート 1 枚。静止画では出ないゴースト / LOD ポップ / ちらつき探し |
+| `dx12_look_compare` | 参照画像との**測光比較**（輝度ヒストグラム / コントラスト / CCT / 彩度 / 黒潰れ・白飛び）と補正指示 |
+| `dx12_view_texture` / `dx12_preview_model` | テクスチャを見る / モデルを一時 spawn して撮って消す（シーンは汚さない）|
+
+★スクショに `deterministic:true` を付けると時間依存（deband ディザ / グレイン / TAA ジッタ / SSGI / フォグ）を
+止めて撮るので、**2 枚がピクセル一致する**（A/B のピクセル差分を取るときに使う）。
+
+### 10-11. ライティング・ポストプロセス
+| ツール | 説明 |
+|---|---|
+| `dx12_set_sun` | 太陽の向き（timeOfDay か azimuth/elevation）・色（color / kelvin）・強度・環境光 |
+| `dx12_apply_lighting_preset` | 昼 / 夕暮れ / 夜 / 屋内 / ホラー / スタジオ（エディタのプリセットと同じ実装）|
+| `dx12_get_post_process` / `dx12_set_post_process` | 約 25 種のポストエフェクト |
+| `dx12_get_ssao` / `dx12_set_ssao` | SSAO |
+| `dx12_get_ssr` / `dx12_set_ssr` | スクリーン空間反射 |
+| `dx12_get_ssgi` / `dx12_set_ssgi` | スクリーン空間 GI |
+| `dx12_get_contact_shadow` / `dx12_set_contact_shadow` | コンタクトシャドウ |
+| `dx12_get_shadow_pcss` / `dx12_set_shadow_pcss` | PCSS ソフトシャドウ |
+| `dx12_get_dxr` / `dx12_set_dxr` | レイトレーシング（対応 GPU のみ）|
+| `dx12_get_taa` / `dx12_set_taa` | TAA |
+| `dx12_get_volumetric_fog` / `dx12_set_volumetric_fog` | ボリュメトリックフォグ |
+| `dx12_get_occlusion` / `dx12_set_occlusion` | Hi-Z オクルージョンカリング（GPU 律速のときだけ効く）|
+| `dx12_set_scene_settings` | スカイボックス / IBL |
+
+### 10-12. 地形・スカルプト
+| ツール | 説明 |
+|---|---|
 | `dx12_terrain_create` | ハイトフィールド地形を作る（同名があれば設定更新＝冪等）|
-| `dx12_sculpt_create` | スカルプト素体（box/sphere/plane/cylinder）を作る（同名なら設定更新）|
+| `dx12_terrain_generate` | fBm で一発生成（なだらかな丘 / 峡谷 / 険しい山脈）|
+| `dx12_terrain_sculpt` | ブラシで彫る（raise/lower/smooth/flatten/noise）|
+| `dx12_terrain_erode` | 熱浸食（安息角を超えた斜面を崩す）|
+| `dx12_terrain_set_layers` / `dx12_terrain_paint` / `dx12_terrain_autopaint` | 4 レイヤースプラットの割当 / 手塗り / 高さ・傾斜からの自動塗り |
+| `dx12_terrain_splat_info` / `dx12_terrain_sample` | 塗り分けの要約 / 高さ・法線・傾斜の問い合わせ（配置の自動化に使う）|
+| `dx12_sculpt_create` | スカルプト素体（box/sphere/plane/cylinder）|
 | `dx12_sculpt_make_editable` | 既存モデルから「彫れるコピー」を作る（元アセットは読むだけ）|
+| `dx12_sculpt_brush` | 頂点スカルプト（draw/pull/push/smooth/flatten/pinch/noise/grab + 対称）|
 
-### Node 合成ツール
+### 10-13. ナビメッシュ
 | ツール | 説明 |
 |---|---|
-| `dx12_batch` | 複数 op を順次実行（往復削減） |
-| `dx12_focus_and_screenshot` | フォーカス→描画→スクショ |
-| `dx12_ui_compose` | dock/stack/grid と意味的roleから制約付きUI一式を生成 |
+| `dx12_navmesh_build` | シーンのメッシュから歩行面を焼く（ボクセル化 → 領域 → 輪郭 → 凸ポリゴン）|
+| `dx12_navmesh_settings` | エージェント半径 / 高さ / またげる段差 / 歩ける最大傾斜 / セルサイズ |
+| `dx12_navmesh_info` | 焼けているか・ポリゴン数・カバー範囲 |
+| `dx12_navmesh_path` | A* + ファネルで経路を引く |
+| `dx12_navmesh_sample` | 座標を歩行面へ落とす |
+| `dx12_navmesh_raycast` | 壁との精密な交差（「真っ直ぐ行けるか」）|
+| `dx12_navmesh_debug` | シーンビューにワイヤを重ねる（MCP のスクショにも写る）|
+| `dx12_navmesh_clear` | 破棄（Editor 限定）|
 
----
+### 10-14. ゲーム内 UI
+| ツール | 説明 |
+|---|---|
+| `dx12_ui_design_brief` | ジャンル × 画面目的から構図・制約・アンチパターンを生成（UI を作る前に引く）|
+| `dx12_ui_compose` | dock / stack / grid と意味的 role から制約付きの UI 一式を生成 |
+| `dx12_ui_tree` | UI 階層・解決した矩形・文字 / 装飾 / 入力 / レイアウト情報 |
+| `dx12_ui_audit` | 崩れ・可読性・入力遮断・過装飾を自動監査 |
+| `dx12_ui_compare` | 参照 UI 画像と現在の UI を横並び 1 枚に合成 + ピクセル差分率 |
+| `dx12_install_font` | Google Fonts から `.ttf` を取り込む（日本語 UI には日本語対応フォントを）|
+
+### 10-15. アニメーション / ネットワーク / バッチ
+| ツール | 説明 |
+|---|---|
+| `dx12_play_anim` | クリップ再生（クロスフェード）または FSM ステートへ遷移 |
+| `dx12_get_anim_state` | 現在のクリップ / ステート / レイヤー / FSM パラメータ / フット IK の解決結果 |
+| `dx12_set_anim_param` | FSM パラメータ（float / bool / trigger）を外から叩く |
+| `dx12_net_status` / `dx12_net_setup` / `dx12_net_launch_test_client` | マルチプレイの状態 / 次の Play のロール設定 / 2 窓テスト用クライアント起動 |
+| `dx12_batch` | 複数 op を順次実行（往復削減。`stopOnError` あり）|
+
 
 ## 11. C++ 主要モジュール API
 

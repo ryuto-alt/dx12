@@ -525,11 +525,20 @@ void EditorIconRenderer::CollectFromRegistry(entt::registry& registry,
             // 常時: カメラの向きに追従する 3D カメラアイコン（斜め下を向けばアイコンも斜め下）
             AddCameraIcon(tf.position, quat, selected ? colorSelected : iconColor);
 
-            // 選択時のみ: フラスタム線画（3D）。正射は箱、透視は台形。
-            if (selected)
-                AddCameraFrustum(tf.position, quat, cam.fovDegrees, cam.nearClip, cam.farClip,
-                                 colorSelected,
+            // フラスタム線画（3D）。正射は箱、透視は台形。
+            //  ・選択時          : farClip までそのまま（画角の確認用）
+            //  ・一時停止(F1)中  : アクティブカメラを選択しなくても常に出す。ただし
+            //    ★短く切る。farClip は 400m 等になりがちで、そのまま描くと線が画面全体を
+            //      覆って「どっちを向いているか」がかえって読めなくなる。
+            const bool pausedActive = ctx.paused && cam.isActive && !selected;
+            if (selected || pausedActive)
+            {
+                const f32 farVis = pausedActive ? (cam.farClip < 6.0f ? cam.farClip : 6.0f)
+                                                : cam.farClip;
+                AddCameraFrustum(tf.position, quat, cam.fovDegrees, cam.nearClip, farVis,
+                                 selected ? colorSelected : colorCamActive,
                                  cam.projection == CameraProjection::Orthographic, cam.orthoSize);
+            }
         }
     }
 

@@ -75,10 +75,20 @@ void InputSystem::Update(f32 dt)
     // マウス差分リセット
     m_mouseDeltaX = 0.0f;
     m_mouseDeltaY = 0.0f;
+    m_dropMouseDelta = false;   // 捨てるのは復帰したフレームの分だけ
 
-    // キャプチャ中はカーソルをウィンドウ中央に固定 + カーソル非表示を維持
-    if (m_mouseCaptured && m_hwnd)
+    // キャプチャ中はカーソルをウィンドウ中央に固定 + カーソル非表示を維持。
+    // ★前面にいるときだけ。ここでフォアグラウンドを見ないと、Alt+Tab して別アプリで
+    //   作業している最中も毎フレーム SetCursorPos でカーソルを奪い返してしまう。
+    if (m_mouseCaptured && m_hwnd && GetForegroundWindow() == m_hwnd)
     {
+        // 復帰直後の掛け直し。ここまで遅らせるとクライアント矩形が確定済みなので
+        // （最小化からの復帰でも）正しい範囲に ClipCursor できる。
+        if (m_reapplyConstraint)
+        {
+            ApplyCursorConstraint(true);
+            m_reapplyConstraint = false;
+        }
         SetCursor(NULL);  // ImGui がカーソルを復活させるのを毎フレーム防止
         RECT rect;
         GetClientRect(m_hwnd, &rect);
@@ -106,7 +116,7 @@ void InputSystem::OnKeyUp(int vkCode)
 
 void InputSystem::OnRawInput(LPARAM lParam)
 {
-    if (!m_mouseCaptured) return;
+    if (!m_mouseCaptured || m_dropMouseDelta) return;
 
     UINT size = 0;
     GetRawInputData(reinterpret_cast<HRAWINPUT>(lParam), RID_INPUT, nullptr, &size, sizeof(RAWINPUTHEADER));
@@ -135,13 +145,42 @@ void InputSystem::OnFocusLost()
     std::memset(m_prevKeys, 0, sizeof(m_prevKeys));
     m_mouseDeltaX = 0.0f;
     m_mouseDeltaY = 0.0f;
+
+    // ★カーソルの物理拘束だけ解く。m_mouseCaptured（論理状態）は落とさない。
+    //   落とすと Lua の setMouseCapture(true) と食い違い、戻ってきたときにマウスルックが死ぬ。
+    ApplyCursorConstraint(false);
+}
+
+void InputSystem::OnFocusGained()
+{
+    if (!m_mouseCaptured) return;
+    m_reapplyConstraint = true;   // 実際に掛け直すのは次の Update()
+    // 復帰フレームに溜まった/発生する移動量は捨てる（視点がすっ飛ぶのを防ぐ）
+    m_mouseDeltaX = 0.0f;
+    m_mouseDeltaY = 0.0f;
+    m_dropMouseDelta = true;
 }
 
 void InputSystem::SetMouseCapture(bool capture)
 {
     m_mouseCaptured = capture;
 
-    if (capture)
+    // 背面のまま掛けに行かない。MCP/Lua 経由で Play を開始した（= OnStart が
+    // setMouseCapture(true) を呼ぶ）とき、ユーザーが別アプリで作業中ならカーソルを
+    // 奪ってしまうため。前面に戻ってきた時に Update() が掛け直す。
+    if (capture && m_hwnd && GetForegroundWindow() != m_hwnd)
+    {
+        m_reapplyConstraint = true;
+        return;
+    }
+    ApplyCursorConstraint(capture);
+}
+
+void InputSystem::ApplyCursorConstraint(bool on)
+{
+    if (!m_hwnd) return;
+
+    if (on)
     {
         // ShowCursor はカウンタベースなので確実に非表示にする
         while (ShowCursor(FALSE) >= 0) {}

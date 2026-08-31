@@ -4102,7 +4102,10 @@ void Application::Render()
 
     m_sceneRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
 
-    constexpr float clearColor[4] = {0.127f, 0.306f, 0.850f, 1.0f};  // リニア空間のコーンフラワーブルー
+    // ★背景は黒。skybox を描かないシーン(屋内)では、ここがそのまま「空の色」になる。
+    //   以前はコーンフラワーブルーで、壁の穴やステージの外へ出た瞬間に青が見えていた。
+    //   skybox を描くシーンでは全面塗り潰されるので、この値は見えない。
+    constexpr float clearColor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     m_commandList->ClearRenderTarget(m_sceneRT->GetRtv(), clearColor);
     // プリパス有効時は深度が完成済みなので forward では clear しない（再利用）。
     if (!useDepthPrepass)
@@ -5211,8 +5214,12 @@ void Application::Render()
     m_gpuTimer->End(nativeCmdList, GpuTimer::PostFX);
     m_gpuTimer->Begin(nativeCmdList, GpuTimer::UI);
 
-    // ---- Editor Icon Draw（ポスト後のバックバッファへ, エディタモードのみ）----
-    if (m_engineMode == EngineMode::Editor && !m_isGameMode)
+    // ---- Editor Icon Draw（ポスト後のバックバッファへ, エディタモード + 一時停止中）----
+    // ★一時停止(F1)中も描く。シーンビューを飛び回って「ゲームカメラが今どこを向いているか」を
+    //   見るための機能なので、ここで切ると一時停止の意味が半分無くなる。
+    const bool iconsWhilePaused = (m_engineMode == EngineMode::Playing
+                                   && m_editorCtx && m_editorCtx->paused);
+    if ((m_engineMode == EngineMode::Editor || iconsWhilePaused) && !m_isGameMode)
     {
         // ★DSV は張らない。アイコンは DepthEnable=FALSE で深度テストをしないうえ、
         //   #16 でメイン深度はレンダー解像度に縮んだので、表示解像度のバックバッファへ
@@ -5360,7 +5367,7 @@ void Application::Render()
             m_previewFrameCB->Update(&fcp, sizeof(fcp), frameIndex);
 
             m_cameraPreviewRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            constexpr float pvClear[4] = {0.127f, 0.306f, 0.850f, 1.0f};  // リニア空間のコーンフラワーブルー
+            constexpr float pvClear[4] = {0.0f, 0.0f, 0.0f, 1.0f};   // ★sceneRT と同じ背景色
             m_commandList->ClearRenderTarget(m_cameraPreviewRT->GetRtv(), pvClear);
             m_commandList->ClearDepthStencil(m_previewDsvHandle);
             m_commandList->SetRenderTarget(m_cameraPreviewRT->GetRtv(), m_previewDsvHandle);

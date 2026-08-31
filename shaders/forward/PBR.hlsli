@@ -73,8 +73,15 @@ float3 PerturbNormal(float3 worldNormal, float3 worldTangent, float tangentW,
     float3x3 TBN = float3x3(T, B, N);
 
     float2 xy = normalMapSample.xy * 2.0 - 1.0;
+    // ★z を 0 まで落とさないこと（2026-08-02）。
+    //   xy の長さが 1 に達すると saturate で z=0 になり、法線が【面に完全に寝てしまう】。
+    //   そうなるとライトがその面を舐める角度（懐中電灯で床を照らす等）で N·L が 0〜負に
+    //   なり、面が黒い斑点で埋まって「向きによって光の広がり方が別物」に見える。
+    //   xy が 1 を超えるのは異常ではなく、強めの法線マップ + 高いタイリング + フィルタリングで
+    //   普通に起きる（実測: 床の uvTiling=67.6 で床全体が真っ黒になった）。
+    //   接空間法線は面から離れすぎない、という物理的な前提を入れて打ち止める。
     float  z  = sqrt(saturate(1.0 - dot(xy, xy)));
-    float3 tangentNormal = float3(xy, z);
+    float3 tangentNormal = normalize(float3(xy, max(z, 0.35)));   // 幾何法線から最大約 69°
     return normalize(mul(tangentNormal, TBN));
 }
 
