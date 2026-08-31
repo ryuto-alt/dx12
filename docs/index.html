@@ -270,7 +270,7 @@ footer{position:relative; z-index:1; border-top:1px solid var(--border); margin-
   <a href="#top" class="brand" aria-label="DX12 Engine">
     <img src="img/logo.png" alt="" />
     <span class="wm">DX12 Engine</span>
-    <span class="chip">v0.2</span>
+    <span class="chip">v1.10</span>
   </a>
   <nav class="topnav" aria-label="主要セクション">
     <a class="nl" href="#quickstart">クイックスタート</a>
@@ -294,18 +294,25 @@ footer{position:relative; z-index:1; border-top:1px solid var(--border); margin-
       <a class="s" href="#features"><span class="dot"></span>特徴</a>
       <a class="s" href="#quickstart"><span class="dot"></span>クイックスタート</a>
       <a class="s" href="#layout"><span class="dot"></span>プロジェクト構成</a>
+      <a class="s" href="#firstgame"><span class="dot"></span>最初の30分：1本作る</a>
     </div>
     <div class="nav-group">
       <h4>作る</h4>
       <a class="s" href="#editor"><span class="dot"></span>エディタの使い方</a>
       <a class="s" href="#scripting"><span class="dot"></span>Lua スクリプト</a>
       <a class="s" href="#lua-api"><span class="dot"></span>Lua API リファレンス</a>
+      <a class="s" href="#navmesh"><span class="dot"></span>ナビメッシュと敵AI</a>
       <a class="s" href="#components"><span class="dot"></span>コンポーネント &amp; プレハブ</a>
       <a class="s" href="#authoring"><span class="dot"></span>データ駆動オーサリング</a>
     </div>
     <div class="nav-group">
-      <h4>AI &amp; 配布</h4>
+      <h4>AI 連携（MCP）</h4>
       <a class="s" href="#mcp"><span class="dot"></span>MCP / AIブリッジ</a>
+      <a class="s" href="#mcp-tools"><span class="dot"></span>MCP ツール全152種</a>
+      <a class="s" href="#mcp-recipes"><span class="dot"></span>MCP レシピ集</a>
+    </div>
+    <div class="nav-group">
+      <h4>出す</h4>
       <a class="s" href="#distribution"><span class="dot"></span>配布とアセット保護</a>
     </div>
     <div class="nav-group">
@@ -336,7 +343,7 @@ footer{position:relative; z-index:1; border-top:1px solid var(--border); margin-
             </div>
             <div class="hero-stats">
               <div class="st"><b>1 つ</b><span>のexeがエディタ兼ランタイム</span></div>
-              <div class="st"><b>87</b><span>MCPツールでAI操作</span></div>
+              <div class="st"><b>152</b><span>MCPツールでAI操作</span></div>
               <div class="st"><b>27</b><span>パーティクルプリセット</span></div>
             </div>
           </div>
@@ -371,7 +378,7 @@ footer{position:relative; z-index:1; border-top:1px solid var(--border); margin-
             <div class="txt">
               <span class="tag">MCP / AI BRIDGE</span>
               <h3>起動中のエディタを AI から操作</h3>
-              <p>Claude Code / Codex が、エンティティ生成・コンポーネント設定・Luaアタッチ・Play/Stop・スクショ取得まで全37ツールで実行できる。ゲームを「会話で」組み立てる。</p>
+              <p>Claude Code / Codex が、エンティティ生成・コンポーネント設定・Luaアタッチ・Play/Stop・スクショ取得・性能計測まで全152ツールで実行できる。ゲームを「会話で」組み立てる。</p>
             </div>
             <div class="vis">
 <pre><code><span class="tok-m">AI →</span> <span class="tok-fn">dx12_create_entity</span>(type:<span class="tok-s">"box"</span>, name:<span class="tok-s">"Floor"</span>)
@@ -485,6 +492,80 @@ cmake --build build/release</code></pre>
         <p><code class="inl">scriptPath</code> は <code class="inl">assets/</code> からの相対で解決される（<code class="inl">"components/Spinner.lua"</code> → <code class="inl">assets/components/Spinner.lua</code>）。エディタのランチャーから新規プロジェクトを作るとこの構成が生成される。Gitクローンからプロジェクトを開くこともできる。</p>
       </section>
 
+      <!-- ===== FIRST GAME ===== -->
+      <section class="doc reveal" id="firstgame">
+        <div class="sec-head">
+          <span class="ic"><img src="img/tmpl_fps.png" alt=""/></span>
+          <h2>最初の30分：1本作って配るまで</h2>
+        </div>
+        <p class="sec-sub">エンジンの一周を最短で通す。<b>プロジェクトを作る → 置く → 動かす → 光らせる → Play → 配る</b>。ここが分かれば、あとの節は全部「その先の詳しい話」になる。</p>
+
+        <div class="steps">
+          <div class="step">
+            <h4>1. プロジェクトを作る</h4>
+            <p><code class="inl">DX12Engine.exe</code> を起動するとランチャーが出る。<b>新規プロジェクト</b>でテンプレを選ぶ（空 / 2D / 3D / トップダウン）。テンプレはどれも<b>開いてすぐ遊べる小さなゲーム</b>になっていて、改造の出発点として使える。</p>
+            <p>できるのは <a href="#layout">プロジェクト構成</a> の通りのフォルダ。以後、<b>ゲームの中身は全部 <code class="inl">assets/</code> の下</b>に置く。</p>
+          </div>
+          <div class="step">
+            <h4>2. 置く</h4>
+            <p>Hierarchy の <b>✚ エンティティ追加</b> から Box / Sphere / Camera / Light / Terrain / Sculpt / UI を作る。自分のモデルは <code class="inl">assets/models/</code> に置けばアセットブラウザに出るので、<b>ビューポートへドラッグ&amp;ドロップ</b>で配置する。</p>
+            <div class="note">
+              <span class="ti">i</span>
+              <div><b>モデルは実寸で入る。</b>1m で作ったモデルは 1m で置かれる（FBX の cm 宣言も読む）。<code class="inl">scale</code> を 100 倍したり 0.01 にしたりする必要は無い。</div>
+            </div>
+          </div>
+          <div class="step">
+            <h4>3. 動かす</h4>
+            <p><code class="inl">assets/components/Player.lua</code> を作って、Hierarchy のエンティティへ<b>ドロップ</b>する。これで <code class="inl">OnStart</code> / <code class="inl">OnUpdate</code> が呼ばれるようになる。</p>
+<pre><code><span class="tok-c">-- assets/components/Player.lua</span>
+properties = {                                     <span class="tok-c">-- Inspector に編集欄が出て、シーンに保存される</span>
+  { name = <span class="tok-s">"speed"</span>, type = <span class="tok-s">"float"</span>, default = <span class="tok-n">6</span>, min = <span class="tok-n">1</span>, max = <span class="tok-n">20</span>, label = <span class="tok-s">"移動速度"</span> },
+}
+
+<span class="tok-k">function</span> <span class="tok-fn">OnStart</span>(self)
+    self.me = <span class="tok-fn">actor</span>(self.name, { speed = self.speed, solid = <span class="tok-s">"Wall"</span> })
+<span class="tok-k">end</span>
+
+<span class="tok-k">function</span> <span class="tok-fn">OnUpdate</span>(self, dt)
+    self.me:<span class="tok-fn">moveTopDown</span>(dt)                      <span class="tok-c">-- WASD で XZ 移動（壁で止まる）</span>
+    <span class="tok-k">if</span> <span class="tok-fn">keyPressed</span>(<span class="tok-s">"SPACE"</span>) <span class="tok-k">then</span>
+        <span class="tok-k">local</span> p = self.me:<span class="tok-fn">pos</span>()
+        audio:<span class="tok-fn">playSFX</span>(<span class="tok-s">"audio/se/jump.wav"</span>)
+        fx:<span class="tok-fn">burst</span>{ x = p.x, y = p.y + <span class="tok-n">0.2</span>, z = p.z, kind = <span class="tok-s">"spark"</span>, count = <span class="tok-n">14</span> }
+    <span class="tok-k">end</span>
+<span class="tok-k">end</span></code></pre>
+            <p>細かい制御が要るなら <a href="#lua-api">Lua API リファレンス</a>の低レベル API（<code class="inl">scene</code> / <code class="inl">physics</code> / <code class="inl">camera</code>）へ降りる。当たり判定を物理に任せるなら Inspector で <b>RigidBody + コライダー</b>を足すだけでよく、スクリプトは要らない。</p>
+          </div>
+          <div class="step">
+            <h4>4. 光らせる</h4>
+            <p><b>ツール &gt; ライティング</b> でプリセット（昼 / 夕暮れ / 夜 / 屋内 / ホラー / スタジオ）を当ててから、<span class="kbd">L</span> 押しっぱなし + マウスで太陽の向きを決める。仕上げは <b>ツール &gt; ポストプロセス</b>（ブルーム / トーンマップ / ビネット / 被写界深度）。</p>
+          </div>
+          <div class="step">
+            <h4>5. 動かして確かめる</h4>
+            <p><b>Play</b> で即実行。<span class="kbd">F1</span> で<b>時間だけ止めて</b>シーンビューを自由に飛び回れる（暗い画面の原因を追うのはこれが速い）。ログは<b>コンソール</b>タブに全部出る。</p>
+          </div>
+          <div class="step">
+            <h4>6. 配る</h4>
+            <p>ツールバーの <b>Build</b>（またはヘッドレスで <code class="inl">DX12Engine.exe --build "&lt;projectDir&gt;"</code>）。<code class="inl">&lt;project&gt;/build/game/</code> に <b>ゲーム専用 exe + 暗号化パック</b>が出る。詳しくは <a href="#distribution">配布とアセット保護</a>。</p>
+          </div>
+        </div>
+
+        <h3>次にどこを読むか</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>やりたいこと</th><th>読む場所</th></tr></thead>
+            <tbody>
+              <tr><td>ステージの地面・岩・洞窟を作る</td><td><a href="#editor">エディタの使い方</a> の「地形とスカルプト」</td></tr>
+              <tr><td>キャラを歩かせる / 走らせる（アニメ）</td><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/ANIMATION.md" target="_blank" rel="noopener">docs/ANIMATION.md</a> と <a href="#lua-api">Lua API</a> のアニメ系</td></tr>
+              <tr><td>敵に追いかけさせる</td><td><a href="#navmesh">ナビメッシュと敵AI</a></td></tr>
+              <tr><td>タイトル画面・HUD・オプション画面</td><td><a href="#lua-api">ゲーム内UI（コンポーネント方式）</a></td></tr>
+              <tr><td>エフェクト / トリガー / イベントをコードなしで置く</td><td><a href="#authoring">データ駆動オーサリング</a></td></tr>
+              <tr><td>AI（Claude Code）に作らせる</td><td><a href="#mcp">MCP / AIブリッジ</a>、<a href="#mcp-recipes">レシピ集</a></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <!-- ===== EDITOR ===== -->
       <section class="doc reveal" id="editor">
         <div class="sec-head">
@@ -596,6 +677,26 @@ cmake --build build/release</code></pre>
           </table>
         </div>
         <p>パネルの時刻カーブは Lua の <code class="inl">Lighting.setTimeOfDay</code> と<b>同じ式</b>。だからエディタで作った空気感をそのまま <a href="#lua-api">Lua の <code class="inl">Lighting</code> / <code class="inl">Tween</code> / <code class="inl">Flicker</code></a> で動かせる（ロウソクの揺らぎ・時間帯変化・雷）。</p>
+
+        <h3>Play とデバッグ（一時停止・診断）</h3>
+        <p>作ったものを確かめる側の道具。<b>「動かして、止めて、覗く」</b>がひと通り揃っている。</p>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>操作 / 場所</th><th>できること</th></tr></thead>
+            <tbody>
+              <tr><td><b>Play</b> / <b>Stop</b></td><td>その場で実行・停止。Stop すると編集状態へ完全に戻る（配置したライトやマテリアルもスナップショット復元される）</td></tr>
+              <tr><td><span class="kbd">F1</span>（ツールバー「一時停止」）</td><td><b>時間だけ止めて、シーンビューを自由に飛び回る。</b>Lua・物理・アニメ・パーティクル・ネット・空間オーディオが揃って止まり、エディタのフライカメラが復活する。暗いシーンのライティングを追うときに、ゲームカメラに縛られたままでは切り分けができないための機能。<br>一時停止中は<b>エディタのアイコンと、アクティブなゲームカメラの錐台</b>も描かれる（選択しなくても、飛び回りながらゲームカメラの向きが分かる）。<b>キーが本命</b>で、ゲームがマウスを掴んでいてもツールバーではなく <span class="kbd">F1</span> なら効く。配布ランタイムでは無効</td></tr>
+              <tr><td><b>コンソール</b>タブ</td><td>エンジン / Lua / ビルド / MCP の全ログ。Lua を 1 行その場で実行できる（下の「コンソール」参照）</td></tr>
+              <tr><td><b>ツール &gt; エンジン診断</b></td><td>エディタのほぼ全機能を自動で触ってクラッシュ・フリーズ・エラーを探す（44 件）。<b>超詳細診断</b>はさらに「画面に出ている絵」を検査する（シェーダー / テクスチャの sRGB 取り違え / モデルの NaN / ガンマ二重適用 / 真っ黒描画 / ギズモの誤作動）</td></tr>
+              <tr><td>コマンドライン</td><td>マウスを取られずに回せる。<code class="inl">--ui-tests-run-all --project &lt;dir&gt;</code>（全 UI テスト）/ <code class="inl">--ui-tests-deep --project &lt;dir&gt;</code>（超詳細診断）/ <code class="inl">--validate &lt;scene.json&gt;</code>（参照切れ検証）/ <code class="inl">--build &lt;projectDir&gt;</code>（配布ビルド）。終了コードは 0=OK / 1=問題あり / 2=起動条件不足</td></tr>
+              <tr><td>AI から</td><td><code class="inl">dx12_diagnose</code>（診断を JSON で）/ <code class="inl">dx12_perf_stats</code>（fps が出ない原因を名指し）/ <code class="inl">dx12_get_script_errors</code>（壊れている Lua を全部）。→ <a href="#mcp-recipes">MCP レシピ集</a></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="note">
+          <span class="ti">i</span>
+          <div><b>FPS が出ないとき</b>は <code class="inl">dx12_perf_stats</code> が「GPU 律速 / CPU 律速 / FPS 上限で頭打ち」を判定して返す。パス別の GPU 時間（影 / SSAO / レイトレ / GI / フォグ / ポスト）まで出るので、当てずっぽうに設定を切って回る必要はない。</div>
+        </div>
 
         <h3>コンソール</h3>
         <p>アセットブラウザの隣タブに常設。エンジン / Lua / ビルド / MCP の全ログが1箇所に集まる（Unity・Unreal のコンソールと同じ位置づけ）。</p>
@@ -861,12 +962,16 @@ properties = {
             <tbody>
               <tr><td><code>camera:project(x,y,z)</code></td><td>ワールド座標 → スクリーン <code>u, v, visible</code>（頭上ダメージ表示など）</td></tr>
               <tr><td><code>camera:getPosition()</code> / <code>setPosition(v)</code></td><td>低レベルのフライカメラ操作（yaw/pitch/速度も）</td></tr>
+              <tr><td><code>e:getFov()</code> / <code>e:setFov(deg)</code></td><td><code>Camera</code> を持つエンティティの垂直 FOV（度・5〜150）。構え / スコープのズームに。<b>★毎フレーム絶対値で書くこと</b>（描画は毎フレーム <code>CameraComponent.fovDegrees</code> から射影行列を作り直すので、<code>camera</code> 側へ書いても次のフレームで黙って戻る）</td></tr>
               <tr><td><code>audio:playBGM(path)</code> / <code>stopBGM()</code></td><td>BGM 再生 / 停止（<code>pauseBGM</code> / <code>resumeBGM</code>）</td></tr>
               <tr><td><code>audio:seekBGM(sec)</code></td><td>再生中 BGM の位置を秒指定でジャンプ（ループ維持。イントロスキップ等）</td></tr>
               <tr><td><code>audio:setBGMRate(ratio)</code></td><td>BGM 再生速度倍率（ピッチ連動、0.05〜2.0）。1=通常、0.5=半速+1oct下。playBGM で 1.0 に戻る</td></tr>
               <tr><td><code>audio:setListener(x, y, z)</code></td><td>空間SFXのリスナー位置を上書き（プレイヤー中心の定位に）。毎フレーム呼ぶ想定。一度呼ぶとカメラ位置より優先</td></tr>
               <tr><td><code>audio:playSFX(path)</code></td><td>効果音を鳴らす</td></tr>
               <tr><td><code>audio:playSpatial(path,x,y,z,minD,maxD[,vol,loop])</code></td><td>3D空間オーディオ（距離減衰）</td></tr>
+              <tr><td><code>audio:playSFXId(path[,loop,vol])</code><br><code>audio:playSpatialId(path,x,y,z,minD,maxD[,vol,loop])</code></td><td><b>ID を返す版の再生。</b>ループする音（環境音・機械の唸り・炎）はこちらで鳴らす。撃ちっぱなしの <code>playSFX</code> で鳴らすと <code>stopAllSFX</code> しか止める手が無く、他の音まで巻き添えで消える</td></tr>
+              <tr><td><code>audio:stopVoice(id)</code> / <code>setVoiceVolume(id,v)</code> / <code>setVoicePitch(id,r)</code></td><td><b>鳴っている 1 本だけ</b>を止める / 絞る（フェードアウト）/ 回転を落とす（スピンダウン・0.1〜2.0）</td></tr>
+              <tr><td><code>audio:moveVoice(id,x,y,z)</code> / <code>isVoicePlaying(id)</code></td><td>空間音源を動く物に追従させる / まだ鳴っているか。<b>ID は世代つき</b>なので、鳴り終わってスロットが使い回された後の古い ID は無視される（他人の音を誤って止めない）</td></tr>
               <tr><td><code>audio:setMasterVolume(v)</code></td><td><code>setBGMVolume</code> / <code>setSFXVolume</code></td></tr>
             </tbody>
           </table>
@@ -1349,6 +1454,87 @@ scene:<span class="tok-fn">hideUi</span>(modalRoot)</code></pre>
         </div>
       </section>
 
+      <!-- ===== NAVMESH ===== -->
+      <section class="doc reveal" id="navmesh">
+        <div class="sec-head">
+          <span class="ic"><img src="img/ent_physics.png" alt=""/></span>
+          <h2>ナビメッシュと敵AI</h2>
+        </div>
+        <p class="sec-sub">「追いかけてくる敵」を作るための経路探索。シーンのメッシュから<b>歩ける面を焼いて</b>、その上で A* + ファネルの最短折れ線を引く。Recast などの外部ライブラリではなく自前実装。</p>
+
+        <h3>焼く（エディタ）</h3>
+        <p><b>ツール &gt; ナビメッシュ</b> を開いて、エージェントの寸法を決めて<b>生成</b>を押す。入力は AABB ではなく<b>実際の三角形をボクセル化</b>するので、坂道・階段・斜めの壁がそのままの形で反映される。</p>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>設定</th><th>意味</th></tr></thead>
+            <tbody>
+              <tr><td>エージェント半径 / 高さ</td><td>この寸法で通れる場所だけが残る（狭い隙間は自動的に落ちる）</td></tr>
+              <tr><td>またげる段差</td><td>これ以下の段差は繋がった面として扱う（階段が 1 枚の床になる）</td></tr>
+              <tr><td>歩ける最大傾斜</td><td>これより急な面は歩行面から外れる</td></tr>
+              <tr><td>セルサイズ</td><td>ボクセルの細かさ。小さいほど正確で、焼く時間とメモリが増える</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <ul class="clean">
+          <li>経路は <b>A* + ファネル</b>（通路の中の最短折れ線。ポリゴン中心の数珠つなぎにならない）。</li>
+          <li>坂の上の高さは<b>ボクセル分解能で正確</b>（足が浮かない）。</li>
+          <li>壁との当たりは輪郭の<b>実際の辺と交差</b>を取る精密判定（レイキャスト / 壁ずり移動）。</li>
+          <li>シーンビューにワイヤ表示（<b>明るい線 = 壁</b> / 暗い線 = 通れるポータル）。</li>
+          <li>設定はシーンに、<b>焼いた実体はシーンの隣の <code class="inl">.nav</code></b> に保存される。</li>
+        </ul>
+
+        <h3>使う（Lua）</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>API</th><th>説明</th></tr></thead>
+            <tbody>
+              <tr><td><code>nav:ready()</code></td><td>焼けているか。焼く前は他が全部空を返す</td></tr>
+              <tr><td><code>nav:sample(pos, radius?)</code></td><td>位置を一番近い歩行面へ落とす（<code class="inl">Vec3</code> か <code class="inl">nil</code>）</td></tr>
+              <tr><td><code>nav:findPath(from, to, radius?)</code></td><td>経路の折れ線 <code class="inl">{Vec3, ...}</code>。空なら経路なし。<b>最後の点が <code class="inl">to</code> から離れていれば「そこまでしか行けない」</b></td></tr>
+              <tr><td><code>nav:raycast(from, to)</code></td><td><code class="inl">hit, point</code>。壁に当たるまで直進＝「経路を張らずに真っ直ぐ行けるか」の判定</td></tr>
+              <tr><td><code>nav:moveAlong(from, to)</code></td><td>壁で滑らせた移動先（精密な当たり判定つきの 1 歩）</td></tr>
+            </tbody>
+          </table>
+        </div>
+<pre><code><span class="tok-c">-- assets/components/Chaser.lua  … プレイヤーを追いかける</span>
+<span class="tok-k">function</span> <span class="tok-fn">OnStart</span>(self) self.path, self.idx, self.t = {}, <span class="tok-n">1</span>, <span class="tok-n">0</span> <span class="tok-k">end</span>
+
+<span class="tok-k">function</span> <span class="tok-fn">OnUpdate</span>(self, dt)
+    <span class="tok-k">if</span> <span class="tok-k">not</span> nav:<span class="tok-fn">ready</span>() <span class="tok-k">then</span> <span class="tok-k">return</span> <span class="tok-k">end</span>
+    <span class="tok-k">local</span> me     = self.transform.position
+    <span class="tok-k">local</span> target = scene:<span class="tok-fn">findEntity</span>(<span class="tok-s">"Player"</span>).transform.position
+
+    <span class="tok-c">-- ★findPath は毎フレーム全員ぶん呼ばない。数十フレームに1回引き直して、</span>
+    <span class="tok-c">--   間は折れ線を追うだけで足りる。</span>
+    self.t = self.t + dt
+    <span class="tok-k">if</span> self.t &gt; <span class="tok-n">0.5</span> <span class="tok-k">then</span>
+        self.t, self.idx = <span class="tok-n">0</span>, <span class="tok-n">1</span>
+        self.path = nav:<span class="tok-fn">findPath</span>(me, target, <span class="tok-n">0.4</span>)
+    <span class="tok-k">end</span>
+
+    <span class="tok-k">local</span> wp = self.path[self.idx]
+    <span class="tok-k">if</span> wp <span class="tok-k">then</span>
+        <span class="tok-k">if</span> (wp.x - me.x)^<span class="tok-n">2</span> + (wp.z - me.z)^<span class="tok-n">2</span> &lt; <span class="tok-n">0.09</span> <span class="tok-k">then</span> self.idx = self.idx + <span class="tok-n">1</span> <span class="tok-k">end</span>
+        <span class="tok-k">local</span> s = <span class="tok-n">3</span> * dt
+        <span class="tok-k">local</span> dx, dz = wp.x - me.x, wp.z - me.z
+        <span class="tok-k">local</span> len = math.<span class="tok-fn">max</span>(<span class="tok-n">1e-4</span>, math.<span class="tok-fn">sqrt</span>(dx*dx + dz*dz))
+        self.transform.position = nav:<span class="tok-fn">moveAlong</span>(me,
+            Vec3.<span class="tok-fn">new</span>(me.x + dx/len*s, me.y, me.z + dz/len*s))
+    <span class="tok-k">end</span>
+<span class="tok-k">end</span></code></pre>
+
+        <h3>AI（MCP）から</h3>
+        <p>同じことが 8 つのツールでできる。焼いて → 経路を引いて → ワイヤを出してスクショ、まで AI だけで回せる。</p>
+<pre><code><span class="tok-fn">dx12_navmesh_settings</span>(agentRadius:<span class="tok-n">0.4</span>, agentHeight:<span class="tok-n">1.8</span>, maxSlopeDeg:<span class="tok-n">50</span>)
+<span class="tok-fn">dx12_navmesh_build</span>()              <span class="tok-c">// → {polyCount, bounds, buildMs}</span>
+<span class="tok-fn">dx12_navmesh_path</span>(from:[…], to:[…])<span class="tok-c">// → 折れ線。届かなければ「そこまで」の点で終わる</span>
+<span class="tok-fn">dx12_navmesh_debug</span>(enabled:<span class="tok-k">true</span>)   <span class="tok-c">// → ワイヤ表示。dx12_screenshot にも写る</span></code></pre>
+        <div class="note warn">
+          <span class="ti">!</span>
+          <div>ナビメッシュは<b>シーンの形が変わったら焼き直す</b>もの（地形を彫った / 建物を動かした後は再生成）。<code class="inl">dx12_navmesh_clear</code> は Editor 限定。</div>
+        </div>
+      </section>
+
       <!-- ===== COMPONENTS & PREFABS ===== -->
       <section class="doc reveal" id="components">
         <div class="sec-head">
@@ -1517,57 +1703,292 @@ scene:<span class="tok-fn">hideUi</span>(modalRoot)</code></pre>
           <span class="ic"><img src="img/ent_camera.png" alt=""/></span>
           <h2>MCP / AIブリッジ</h2>
         </div>
-        <p class="sec-sub">起動中のエディタが <code class="inl">127.0.0.1</code> で待ち受ける TCP ブリッジに、Node 製 MCP サーバが繋ぐ。AI がシーンを読み・エンティティを生成し・コンポーネントを設定し・Luaを貼り・Play/Stop まで回せる。</p>
+        <p class="sec-sub"><b>起動中のエディタを Claude Code / Codex から直接操作する。</b>エディタが <code class="inl">127.0.0.1</code> で待ち受ける TCP ブリッジに Node 製 MCP サーバがつながり、AI がシーンを読み・物を置き・マテリアルを塗り・Lua を書いて貼り・Play して・スクショを見て直す、までを閉ループで回せる。</p>
+
+<pre><code>Claude Code / Codex
+      │  MCP (stdio)
+      ▼
+Node MCP サーバ  <span class="tok-c">(tools/mcp-server/index.ts ・ 152 ツール)</span>
+      │  改行区切り JSON / TCP 127.0.0.1:8787-8797
+      ▼
+DX12Engine.exe <span class="tok-c">(エディタ。ゲーム=封印ランタイムでは起動しない)</span></code></pre>
 
         <h3>セットアップ</h3>
         <div class="steps">
           <div class="step">
-            <h4>MCP サーバを入れる</h4>
-            <p>Node v24+ が必要（<code class="inl">.ts</code> を直接実行するので <code class="inl">tsc</code> ビルド不要）。スクリプトが <code class="inl">npm install</code> と自己テストまでやる。</p>
-<pre><code>cd tools/mcp-server
+            <h4>1. MCP サーバを入れる</h4>
+            <p>MCP サーバは<b>別リポジトリ</b>で配布する（エンジン配布物には同梱されない）。Node <b>v24+</b> が必要（<code class="inl">.ts</code> を直接実行するので <code class="inl">tsc</code> ビルドは不要）。</p>
+<pre><code>git clone https://github.com/ryuto-alt/dx12-mcp <span class="tok-s">"$env:USERPROFILE\dx12-mcp"</span>
+cd <span class="tok-s">"$env:USERPROFILE\dx12-mcp"</span>
 .\install.ps1            <span class="tok-c"># Linux / macOS は ./install.sh</span></code></pre>
+            <p>スクリプトが <b>Node の確認 → <code class="inl">npm install</code> → 自己テスト → Claude Code と Codex の両方へ自動登録</b>までやる（<code class="inl">--scope user</code>。再実行しても壊れない）。<b>登録後はクライアントを再起動</b>すること。エンジンをソースから開発している場合は <code class="inl">tools/mcp-server</code> がソース・オブ・トゥルースで、そのまま同じ手順で使える。</p>
           </div>
           <div class="step">
-            <h4>Claude Code / Codex に登録</h4>
-            <p><code class="inl">&lt;REPO&gt;</code> はクローンした絶対パスに置換する。</p>
+            <h4>2. 手で登録する場合</h4>
+            <p><code class="inl">&lt;REPO&gt;</code> は clone した絶対パス。</p>
 <pre><code><span class="tok-c"># Claude Code</span>
-claude mcp add dx12-engine -- node &lt;REPO&gt;/tools/mcp-server/index.ts</code></pre>
+claude mcp add dx12-engine --scope user -- node &lt;REPO&gt;/index.ts
+
+<span class="tok-c"># Codex（~/.codex/config.toml）</span>
+[mcp_servers.dx12-engine]
+command = <span class="tok-s">"node"</span>
+args = [<span class="tok-s">"&lt;REPO&gt;/index.ts"</span>]</code></pre>
+            <p><b>既定スコープ <code class="inl">local</code> は「そのディレクトリでしか有効でない」</b>ので、別プロジェクトで作業すると「ツールが出ない」になる。必ず <code class="inl">--scope user</code>。</p>
           </div>
           <div class="step">
-            <h4>エディタを起動してシーンを開く</h4>
-            <p>あとは AI から <code class="inl">dx12_list_entities</code> などを呼ぶだけ。エディタの「ウィンドウ → MCP / AI Bridge」パネルで接続状態とコマンド履歴を確認できる。ポートは <code class="inl">8787-8797</code> で自動採番（確定値は <code class="inl">%TEMP%\dx12_mcp.port</code>）。</p>
+            <h4>3. エディタを起動してシーンを開く</h4>
+            <p>あとは AI から <code class="inl">dx12_ping</code> を叩くだけ。エディタの<b>「ウィンドウ &gt; MCP / AI Bridge」</b>パネルで接続状態とコマンド履歴が見られる（インストールコマンドの表示・コピーもここ）。</p>
           </div>
         </div>
 
-        <h3>全37ツール（<code class="inl">dx12_</code> 接頭辞・エンジン35 + Node合成2）</h3>
-        <div class="bento" style="grid-template-columns:repeat(2,1fr)">
-          <div class="card c-span1" style="grid-column:span 1">
-            <h3 style="font-size:.98rem;color:var(--teal)">読み取り（同期・12）</h3>
-            <p style="font-size:13px"><code class="inl">ping</code> <code class="inl">list_entities</code> <code class="inl">get_entity</code> <code class="inl">find_entity</code> <code class="inl">query_entities</code> <code class="inl">list_scenes</code> <code class="inl">list_assets</code> <code class="inl">get_mode</code> <code class="inl">get_log</code> <code class="inl">describe_components</code> <code class="inl">get_scene_settings</code> <code class="inl">screenshot</code></p>
-          </div>
-          <div class="card c-span1" style="grid-column:span 1">
-            <h3 style="font-size:.98rem;color:var(--amber)">編集（同期・14）</h3>
-            <p style="font-size:13px"><code class="inl">set_transform</code> <code class="inl">set_component</code> <code class="inl">remove_component</code> <code class="inl">set_parent</code> <code class="inl">rename_entity</code> <code class="inl">select_entity</code> <code class="inl">focus_camera</code> <code class="inl">set_pbr</code> <code class="inl">set_scene_settings</code> <code class="inl">undo</code> <code class="inl">redo</code> <code class="inl">save_scene</code> <code class="inl">create_lua_component</code> <code class="inl">attach_lua_component</code></p>
-          </div>
-          <div class="card c-span1" style="grid-column:span 1">
-            <h3 style="font-size:.98rem;color:var(--purple)">生成・モード（遅延同期・9）</h3>
-            <p style="font-size:13px"><code class="inl">create_entity</code> <code class="inl">spawn_model</code> <code class="inl">spawn_prefab</code> <code class="inl">duplicate_entity</code> <code class="inl">delete_entity</code> <code class="inl">open_scene</code> <code class="inl">new_scene</code> <code class="inl">play</code> <code class="inl">stop</code></p>
-          </div>
-          <div class="card c-span1" style="grid-column:span 1">
-            <h3 style="font-size:.98rem;color:var(--accent)">Node 合成（2）</h3>
-            <p style="font-size:13px"><code class="inl">batch</code>（複数callを順次実行）<code class="inl">focus_and_screenshot</code>（フォーカス→描画→撮影）</p>
-          </div>
+        <h3>ポートは自動で決まる</h3>
+        <p>エンジンは起動時に <b>8787〜8797</b> の空きポートを取り、確定値を <code class="inl">%TEMP%\dx12_mcp.port</code>（Linux/macOS は <code class="inl">$TMPDIR</code>）へ書く。Node 側の解決順は次の通り。</p>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>優先</th><th>手段</th></tr></thead>
+            <tbody>
+              <tr><td>1</td><td>環境変数 <code class="inl">DX12_MCP_PORT</code></td></tr>
+              <tr><td>2</td><td>ファイル <code class="inl">&lt;tmpdir&gt;/dx12_mcp.port</code></td></tr>
+              <tr><td>3</td><td>既定値 <code class="inl">8787</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="note warn">
+          <span class="ti">!</span>
+          <div><code class="inl">.mcp.json</code> の <code class="inl">env</code> に <b><code class="inl">DX12_MCP_PORT</code> を書かないこと</b>。書くと自動探索が無効になり、エディタが 8787 を取れず 8788 に回った時に繋がらなくなる。ポートを固定したい時だけ書く。ホストは <code class="inl">DX12_MCP_HOST</code>（既定 <code class="inl">127.0.0.1</code>）。別マシンのエディタを叩くなら SSH ポートフォワード推奨。</div>
         </div>
 
-        <p><b>遅延同期</b>の生成系は、エンジン内部ではフレーム境界（GPU が使える瞬間）で実処理されるが、AI 側は id で待つだけでよい。処理完了後に同じ id で本物の <code class="inl">entityId</code> が返る。「名前で list して探す」旧パターンは不要、返ってきた id をそのまま使い続ける。</p>
+        <h3>いちばん大事な約束：遅延同期</h3>
+        <p>生成・削除・モード遷移（<code class="inl">create_entity</code> / <code class="inl">spawn_*</code> / <code class="inl">duplicate_entity</code> / <code class="inl">delete_entity</code> / <code class="inl">open_scene</code> / <code class="inl">new_scene</code> / <code class="inl">play</code> / <code class="inl">stop</code>）は、エンジン内部では<b>フレーム境界（GPU が使える瞬間）</b>で処理される。ただし<b>呼ぶ側は待つだけでよく、処理完了後に同じ id で本物の値が返る</b>。</p>
 <pre><code><span class="tok-m">AI →</span> <span class="tok-fn">dx12_create_entity</span>(type:<span class="tok-s">"box"</span>, name:<span class="tok-s">"Floor"</span>)
 <span class="tok-m">       ↓ (フレーム境界まで待機)</span>
 <span class="tok-m">  ←</span> { entityId: <span class="tok-n">42</span>, name: <span class="tok-s">"Floor"</span>, sceneGeneration: <span class="tok-n">7</span> }
 <span class="tok-m">AI →</span> <span class="tok-fn">dx12_set_transform</span>(entity: <span class="tok-n">42</span>, …)   <span class="tok-c">// そのまま entityId を使う</span></code></pre>
+        <ul class="clean">
+          <li>旧仕様の <code class="inl">{queued:true}</code> は<b>もう返らない</b>。「生成したあと名前で list して探す」旧パターンは不要。</li>
+          <li><code class="inl">sceneGeneration</code> は <code class="inl">open_scene</code> / <code class="inl">new_scene</code> のたびに +1 される。<b>変わったら以前の <code class="inl">entityId</code> は無効</b>（使うと <code class="inl">NOT_FOUND(1)</code>）。</li>
+          <li><code class="inl">create_entity</code> / <code class="inl">spawn_model</code> / <code class="inl">spawn_prefab</code> は <code class="inl">idempotency_key</code> を受ける。同じキーの再送は 1 回目の結果を返すので、<b>AI のリトライで物が二重に増えない</b>。</li>
+        </ul>
+
+        <h3>最初に叩く 4 つ</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>ツール</th><th>なぜ最初か</th></tr></thead>
+            <tbody>
+              <tr><td><code>dx12_ping</code></td><td>生きているか、今どのシーンか、<b>未保存の変更があるか</b>（<code class="inl">sceneDirty</code>）、assets の絶対パスはどこか。<b>パスはログから推測せずこれを正とする</b></td></tr>
+              <tr><td><code>dx12_describe_components</code></td><td>コンポーネントの <code class="inl">jsonKey</code> とフィールド型。<code class="inl">set_component</code> を書く前に引けば型ミスが消える</td></tr>
+              <tr><td><code>dx12_describe_mcp_params</code></td><td><b>エンジンのディスパッチ表そのもの</b>。引数名で迷ったらここが最終的な正</td></tr>
+              <tr><td><code>dx12_describe_lua_api</code></td><td>Lua から実際に読める API。<b>MCP で見えるコンポーネントと Lua の API は違う</b>（entity から直接読めるのは transform だけ）</td></tr>
+            </tbody>
+          </table>
+        </div>
 
         <div class="note warn">
           <span class="ti">!</span>
-          <div><b>セキュリティ:</b> ブリッジは<b>エディタ専用</b>で、受けるのは <code class="inl">127.0.0.1</code> のみ。最初の1行が JSON で始まらない接続は即切断（ブラウザのドライブバイを遮断）。パス系ツールは assets 相対のみ。<b>ゲーム（封印ランタイム）ではブリッジは起動しない</b>＝配布物は外から触れない。</div>
+          <div><b>セキュリティ:</b> ブリッジは<b>エディタ専用</b>で、受けるのは <code class="inl">127.0.0.1</code> のみ。最初の 1 行が JSON で始まらない接続は即切断（ブラウザからのドライブバイ / localhost CSRF を遮断）。パス系ツールは assets 相対のみで、絶対パス・<code class="inl">..</code> を拒否。<code class="inl">create_lua_component</code> は書き込み前に Lua を構文チェックする（非実行）。<b>認証は無い</b>（localhost の開発機前提）ので、共有マシンでは注意。<b>ゲーム（封印ランタイム）ではブリッジは起動しない</b>＝配布物は外から触れない。</div>
+        </div>
+      </section>
+
+      <!-- ===== MCP TOOLS ===== -->
+      <section class="doc reveal" id="mcp-tools">
+        <div class="sec-head">
+          <span class="ic"><img src="img/file.png" alt=""/></span>
+          <h2>MCP ツール全152種</h2>
+        </div>
+        <p class="sec-sub">用途別のカタログ。<b>params と返り値の完全なリファレンスは <a href="https://github.com/ryuto-alt/dx12/blob/master/docs/MCP.md" target="_blank" rel="noopener">docs/MCP.md</a></b>（このページは索引）。すべて <code class="inl">dx12_</code> 接頭辞。</p>
+
+        <div class="bento" style="grid-template-columns:repeat(2,1fr)">
+          <div class="card c-span1" style="grid-column:span 1">
+            <h3 style="font-size:.98rem;color:var(--teal)">疎通と辞書（6）</h3>
+            <p style="font-size:13px"><code class="inl">ping</code> <code class="inl">get_mode</code> <code class="inl">describe_components</code> <code class="inl">describe_mcp_params</code> <code class="inl">describe_lua_api</code> <code class="inl">describe_anim_graph</code></p>
+          </div>
+          <div class="card c-span1" style="grid-column:span 1">
+            <h3 style="font-size:.98rem;color:var(--teal)">シーンを読む（12）</h3>
+            <p style="font-size:13px"><code class="inl">list_entities</code> <code class="inl">get_entity</code> <code class="inl">find_entity</code> <code class="inl">query_entities</code> <code class="inl">get_hierarchy</code> <code class="inl">get_bounds</code> <code class="inl">list_scenes</code> <code class="inl">list_assets</code> <code class="inl">asset_info</code> <code class="inl">get_scene_settings</code> <code class="inl">list_lights</code> <code class="inl">project_world_to_screen</code> <code class="inl">get_log</code></p>
+          </div>
+          <div class="card c-span1" style="grid-column:span 1">
+            <h3 style="font-size:.98rem;color:var(--amber)">編集（同期・9）</h3>
+            <p style="font-size:13px"><code class="inl">set_transform</code> <code class="inl">set_component</code> <code class="inl">remove_component</code> <code class="inl">set_parent</code> <code class="inl">group_entities</code> <code class="inl">rename_entity</code> <code class="inl">select_entity</code> <code class="inl">look_at</code> <code class="inl">snap_to_ground</code> <code class="inl">scatter</code> <code class="inl">scene_write</code> <code class="inl">save_scene</code> <code class="inl">undo</code> <code class="inl">redo</code></p>
+          </div>
+          <div class="card c-span1" style="grid-column:span 1">
+            <h3 style="font-size:.98rem;color:var(--amber)">マテリアル・シェーダー（8）</h3>
+            <p style="font-size:13px"><code class="inl">set_pbr</code> <code class="inl">set_color</code> <code class="inl">set_texture</code> <code class="inl">material_apply</code> <code class="inl">set_mesh_shader</code> <code class="inl">set_sprite_shader</code> <code class="inl">create_shader</code> <code class="inl">read_shader</code> <code class="inl">view_texture</code></p>
+          </div>
+          <div class="card c-span1" style="grid-column:span 1">
+            <h3 style="font-size:.98rem;color:var(--purple)">生成・削除（遅延同期・11）</h3>
+            <p style="font-size:13px"><code class="inl">create_entity</code> <code class="inl">spawn_box</code> <code class="inl">spawn_sphere</code> <code class="inl">spawn_coin</code> <code class="inl">spawn_model</code> <code class="inl">spawn_prefab</code> <code class="inl">duplicate_entity</code> <code class="inl">delete_entity</code> <code class="inl">create_prefab</code> <code class="inl">create_lua_component</code> <code class="inl">attach_lua_component</code></p>
+          </div>
+          <div class="card c-span1" style="grid-column:span 1">
+            <h3 style="font-size:.98rem;color:var(--purple)">アセット / シーン / ビルド（7）</h3>
+            <p style="font-size:13px"><code class="inl">import_asset</code> <code class="inl">move_asset</code> <code class="inl">delete_asset</code> <code class="inl">open_scene</code> <code class="inl">new_scene</code> <code class="inl">open_project</code> <code class="inl">validate_scene</code> <code class="inl">build_game</code></p>
+          </div>
+          <div class="card c-span1" style="grid-column:span 1">
+            <h3 style="font-size:.98rem;color:var(--green)">Lua を読む・直す（6）</h3>
+            <p style="font-size:13px"><code class="inl">read_lua_component</code> <code class="inl">get_lua_component_state</code> <code class="inl">get_script_errors</code> <code class="inl">set_lua_property</code> <code class="inl">reload_scripts</code> <code class="inl">eval_lua</code></p>
+          </div>
+          <div class="card c-span1" style="grid-column:span 1">
+            <h3 style="font-size:.98rem;color:var(--green)">再生・入力・計測（10）</h3>
+            <p style="font-size:13px"><code class="inl">play</code> <code class="inl">stop</code> <code class="inl">key_down</code> <code class="inl">key_up</code> <code class="inl">key_press</code> <code class="inl">step_frames</code> <code class="inl">get_play_session</code> <code class="inl">perf_stats</code> <code class="inl">benchmark</code> <code class="inl">diagnose</code></p>
+          </div>
+          <div class="card c-span1" style="grid-column:span 1">
+            <h3 style="font-size:.98rem;color:var(--accent)">カメラと絵（12）</h3>
+            <p style="font-size:13px"><code class="inl">get_editor_camera</code> <code class="inl">set_editor_camera</code> <code class="inl">focus_camera</code> <code class="inl">focus_and_screenshot</code> <code class="inl">screenshot</code> <code class="inl">screenshot_final</code> <code class="inl">screenshot_game_view</code> <code class="inl">screenshot_from</code> <code class="inl">ui_screenshot</code> <code class="inl">render_debug</code> <code class="inl">camera_path</code> <code class="inl">look_compare</code> <code class="inl">preview_model</code></p>
+          </div>
+          <div class="card c-span1" style="grid-column:span 1">
+            <h3 style="font-size:.98rem;color:var(--accent)">ライティング / ポスト（22）</h3>
+            <p style="font-size:13px"><code class="inl">set_sun</code> <code class="inl">apply_lighting_preset</code> <code class="inl">set_scene_settings</code> と <code class="inl">get_</code>/<code class="inl">set_</code> のペア: <code class="inl">post_process</code> <code class="inl">ssao</code> <code class="inl">ssr</code> <code class="inl">ssgi</code> <code class="inl">contact_shadow</code> <code class="inl">shadow_pcss</code> <code class="inl">dxr</code> <code class="inl">taa</code> <code class="inl">volumetric_fog</code> <code class="inl">occlusion</code></p>
+          </div>
+          <div class="card c-span1" style="grid-column:span 1">
+            <h3 style="font-size:.98rem;color:var(--orange)">地形・スカルプト（12）</h3>
+            <p style="font-size:13px"><code class="inl">terrain_create</code> <code class="inl">terrain_generate</code> <code class="inl">terrain_sculpt</code> <code class="inl">terrain_erode</code> <code class="inl">terrain_paint</code> <code class="inl">terrain_autopaint</code> <code class="inl">terrain_set_layers</code> <code class="inl">terrain_splat_info</code> <code class="inl">terrain_sample</code> <code class="inl">sculpt_create</code> <code class="inl">sculpt_make_editable</code> <code class="inl">sculpt_brush</code></p>
+          </div>
+          <div class="card c-span1" style="grid-column:span 1">
+            <h3 style="font-size:.98rem;color:var(--orange)">ナビメッシュ（8）</h3>
+            <p style="font-size:13px"><code class="inl">navmesh_build</code> <code class="inl">navmesh_settings</code> <code class="inl">navmesh_info</code> <code class="inl">navmesh_path</code> <code class="inl">navmesh_sample</code> <code class="inl">navmesh_raycast</code> <code class="inl">navmesh_debug</code> <code class="inl">navmesh_clear</code></p>
+          </div>
+          <div class="card c-span1" style="grid-column:span 1">
+            <h3 style="font-size:.98rem;color:var(--mesh)">物理クエリ・ピック（6）</h3>
+            <p style="font-size:13px"><code class="inl">raycast</code> <code class="inl">raycast_precise</code> <code class="inl">pick</code> <code class="inl">overlap_box</code> <code class="inl">overlap_sphere</code> <code class="inl">get_physics_state</code></p>
+          </div>
+          <div class="card c-span1" style="grid-column:span 1">
+            <h3 style="font-size:.98rem;color:var(--mesh)">ゲーム内UI / アニメ / ネット（14）</h3>
+            <p style="font-size:13px"><code class="inl">ui_design_brief</code> <code class="inl">ui_compose</code> <code class="inl">ui_tree</code> <code class="inl">ui_audit</code> <code class="inl">ui_compare</code> <code class="inl">install_font</code> / <code class="inl">play_anim</code> <code class="inl">get_anim_state</code> <code class="inl">set_anim_param</code> / <code class="inl">net_status</code> <code class="inl">net_setup</code> <code class="inl">net_launch_test_client</code> / <code class="inl">batch</code></p>
+          </div>
+        </div>
+
+        <h3>どのスクショを使うか（絵を判断するときの必読）</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>ツール</th><th>撮る先</th><th>写るもの</th></tr></thead>
+            <tbody>
+              <tr><td><code>dx12_screenshot</code></td><td>シーン RT（<b>ポスト前</b>）</td><td>シーン本体だけ。幾何 / ライティングの素の値を見るとき</td></tr>
+              <tr><td><code>dx12_screenshot_final</code></td><td><b>バックバッファ</b>（ポスト後・ImGui 前）</td><td>グレーディング / ブルーム / ゴッドレイ / ビネット / LUT / FXAA / <b>TAA の解決結果</b>。<b>見た目の判断は必ずこちら</b></td></tr>
+              <tr><td><code>dx12_screenshot_game_view</code></td><td>アクティブなゲームカメラ</td><td><b>Play せずに</b>ゲーム画面の画角・構図</td></tr>
+              <tr><td><code>dx12_ui_screenshot</code></td><td>ウィンドウ全体</td><td>上に加えて ImGui のパネル / ギズモ。<b>エディタ UI・ゲーム内 UI の確認はこれ</b></td></tr>
+              <tr><td><code>dx12_render_debug</code></td><td>デバッグバッファ</td><td>法線 / 深度 / ラフネス / メタリック / 速度など</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="note">
+          <span class="ti">i</span>
+          <div><b>同じ設定で 2 回撮っても絵は一致しない</b>（deband ディザ / フィルムグレイン / TAA ジッタ / SSGI・フォグの時間ジッタ）。ピクセル差分で A/B を取るときは <code class="inl">deterministic:true</code> を付ける。時間依存を止め、履歴を捨ててから数フレーム回して撮るので<b>2 枚が完全一致する</b>（実測 diff 0.00%）。止まるのはレンダラの時間依存だけで、Play 中のゲーム進行は止まらない。</div>
+        </div>
+
+        <h3>error_code</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>コード</th><th>意味と対処</th></tr></thead>
+            <tbody>
+              <tr><td>1 <code>NOT_FOUND</code></td><td>エンティティ / アセット / コンポーネントが無い。<b>シーンを開き直した後の古い <code class="inl">entityId</code></b> もこれ。<code class="inl">dx12_ping</code> で <code class="inl">sceneGeneration</code> を見て引き直す</td></tr>
+              <tr><td>2 <code>INVALID_PARAM</code></td><td>型 / 値が不正。<code class="inl">describe_components</code> か <code class="inl">describe_mcp_params</code> で確認</td></tr>
+              <tr><td>3 <code>MODE_CONFLICT</code></td><td>Playing 中に生成系を呼んだ、またはカメラ無しで Play した。<code class="inl">dx12_stop</code> してから再試行</td></tr>
+              <tr><td>6 <code>UNKNOWN_COMPONENT</code></td><td><code class="inl">jsonKey</code> が不明。<code class="inl">describe_components</code> で有効な key を確認</td></tr>
+              <tr><td>7 <code>INTERNAL</code></td><td>エンジン内部エラー。<code class="inl">dx12_get_log</code> を読む</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>エラー応答には <code class="inl">error_hint</code>（次に何をすればいいか 1 文）と <code class="inl">error_values</code>（列挙型の有効値全部）が乗ることがある。<b>エラー本文を読めばリトライの引数が決まる</b>ように作ってある。</p>
+      </section>
+
+      <!-- ===== MCP RECIPES ===== -->
+      <section class="doc reveal" id="mcp-recipes">
+        <div class="sec-head">
+          <span class="ic"><img src="img/play.png" alt=""/></span>
+          <h2>MCP レシピ集</h2>
+        </div>
+        <p class="sec-sub">AI にやらせるときの定番手順。<b>「変更 → 見る → 直す」の閉ループ</b>を回せる形にしてある。</p>
+
+        <h3>1. 変更して目で確かめる（基本ループ）</h3>
+<pre><code><span class="tok-fn">dx12_set_transform</span>(entity:<span class="tok-n">42</span>, position:[<span class="tok-n">0</span>,<span class="tok-n">1</span>,<span class="tok-n">0</span>])
+<span class="tok-fn">dx12_focus_and_screenshot</span>(entity:<span class="tok-n">42</span>)   <span class="tok-c">// 寄って撮る</span>
+<span class="tok-fn">dx12_get_log</span>(lines:<span class="tok-n">30</span>)                   <span class="tok-c">// エラー/警告を確認</span>
+<span class="tok-c">// 問題があれば【同じ set_* を反対の値で】呼び直す</span></code></pre>
+        <div class="note warn">
+          <span class="ti">!</span>
+          <div><b>ここで <code class="inl">dx12_undo</code> を使ってはいけない。</b>MCP の編集ツールはほとんど Undo に積まれない（積むのは <code class="inl">group_entities</code> だけ）。取り消すつもりで叩くと、<b>スタックの一番上にある別の操作</b>（人間がエディタでやった編集など）が戻る。どうしても使うなら、返り値の <code class="inl">willUndo</code> で「次に何が戻るか」を確かめてから。</div>
+        </div>
+
+        <h3>2. ステージを一気に組む</h3>
+<pre><code><span class="tok-c">// 数体なら spawn_* で十分。★数十体以上は scene_write が桁違いに速い</span>
+<span class="tok-c">//   （MCP の spawn は【1 体につき 1 フレーム】かかるため）</span>
+<span class="tok-fn">dx12_list_assets</span>(type:<span class="tok-s">"model"</span>)                <span class="tok-c">// 実在するモデルを確認してから書く</span>
+<span class="tok-fn">dx12_scene_write</span>(path:<span class="tok-s">"scenes/level1.json"</span>, scene:{…}, open:<span class="tok-k">true</span>)
+<span class="tok-fn">dx12_validate_scene</span>()                        <span class="tok-c">// 参照切れ / スクリプト不在を検出</span>
+
+<span class="tok-c">// 木や岩をばら撒く（seed 付き＝同じ seed なら同じ配置）</span>
+<span class="tok-fn">dx12_scatter</span>(model:<span class="tok-s">"models/tree.glb"</span>, count:<span class="tok-n">60</span>, area:[-<span class="tok-n">50</span>,-<span class="tok-n">50</span>,<span class="tok-n">50</span>,<span class="tok-n">50</span>],
+             snapToGround:<span class="tok-k">true</span>, randomYaw:<span class="tok-k">true</span>, scaleRange:[<span class="tok-n">0.8</span>,<span class="tok-n">1.3</span>], seed:<span class="tok-n">7</span>)</code></pre>
+
+        <h3>3. 地形を作って質感まで付ける</h3>
+<pre><code><span class="tok-fn">dx12_terrain_create</span>(resolution:<span class="tok-n">256</span>, worldSize:<span class="tok-n">400</span>, maxHeight:<span class="tok-n">120</span>)
+<span class="tok-fn">dx12_terrain_generate</span>(preset:<span class="tok-s">"mountains"</span>, seed:<span class="tok-n">3</span>)
+<span class="tok-fn">dx12_terrain_erode</span>(iterations:<span class="tok-n">40</span>)          <span class="tok-c">// 山肌を崩す</span>
+<span class="tok-fn">dx12_terrain_set_layers</span>(layers:[…])          <span class="tok-c">// 4 レイヤーの割当</span>
+<span class="tok-fn">dx12_terrain_autopaint</span>()                     <span class="tok-c">// 高さ・傾斜から自動で塗り分け</span>
+<span class="tok-fn">dx12_terrain_sample</span>(points:[[<span class="tok-n">10</span>,<span class="tok-n">20</span>]])       <span class="tok-c">// 置きたい場所の実際の高さを取る</span>
+<span class="tok-fn">dx12_step_frames</span>(frames:<span class="tok-n">2</span>)                  <span class="tok-c">// ★彫った直後は 1〜2 フレーム進めてから撮る</span>
+<span class="tok-fn">dx12_screenshot_final</span>()</code></pre>
+
+        <h3>4. 絵づくりを参照画像に寄せる</h3>
+<pre><code><span class="tok-fn">dx12_apply_lighting_preset</span>(preset:<span class="tok-s">"dusk"</span>)
+<span class="tok-fn">dx12_look_compare</span>(referencePath:<span class="tok-s">"C:/ref/target.png"</span>)
+<span class="tok-c">// → 横並び画像 + 測光の数値（輝度ヒストグラム/コントラスト/色温度/彩度/黒潰れ・白飛び）</span>
+<span class="tok-c">//   と「どのノブをどっちへ何倍」の指示が返る。それに従って ↓ を動かして再測定</span>
+<span class="tok-fn">dx12_set_sun</span>(kelvin:<span class="tok-n">4200</span>, elevation:<span class="tok-n">8</span>, intensity:<span class="tok-n">3.5</span>)
+<span class="tok-fn">dx12_set_post_process</span>(exposure:<span class="tok-n">1.1</span>, bloom:<span class="tok-n">0.6</span>)
+<span class="tok-fn">dx12_camera_path</span>(…)   <span class="tok-c">// 動かして連写＝TAA のゴーストや影のちらつきを探す</span></code></pre>
+
+        <h3>5. ゲーム内 UI を作る</h3>
+<pre><code><span class="tok-fn">dx12_ui_design_brief</span>(genre:<span class="tok-s">"horror"</span>, screen:<span class="tok-s">"title"</span>)  <span class="tok-c">// 構図・制約・アンチパターン</span>
+<span class="tok-fn">dx12_install_font</span>(family:<span class="tok-s">"Noto Sans JP"</span>, weight:<span class="tok-n">700</span>)  <span class="tok-c">// ★日本語は日本語フォントで（欧文だと豆腐）</span>
+<span class="tok-fn">dx12_ui_compose</span>(…)                                    <span class="tok-c">// 制約付きで一式生成</span>
+<span class="tok-fn">dx12_ui_screenshot</span>()  <span class="tok-c">// ImGui 込みで見る（screenshot 系には UI が写らない）</span>
+<span class="tok-fn">dx12_ui_audit</span>()       <span class="tok-c">// 崩れ・可読性・入力遮断・過装飾を機械的に洗う</span>
+<span class="tok-fn">dx12_ui_compare</span>(referencePath:<span class="tok-s">"C:/ref/title.png"</span>, grid:<span class="tok-k">true</span>)</code></pre>
+
+        <h3>6. 動かしてテストする</h3>
+<pre><code><span class="tok-fn">dx12_play</span>()                                   <span class="tok-c">// → scriptErrors が返る</span>
+<span class="tok-fn">dx12_key_down</span>(key:<span class="tok-s">"D"</span>)
+<span class="tok-fn">dx12_step_frames</span>(frames:<span class="tok-n">30</span>)                 <span class="tok-c">// 入力を効かせてから観測する同期バリア</span>
+<span class="tok-fn">dx12_get_entity</span>(name:<span class="tok-s">"Player"</span>)              <span class="tok-c">// 右へ動いたか</span>
+<span class="tok-fn">dx12_project_world_to_screen</span>(name:<span class="tok-s">"Player"</span>) <span class="tok-c">// 画面内に居るか（数値で検証）</span>
+<span class="tok-fn">dx12_key_up</span>(key:<span class="tok-s">"D"</span>)
+<span class="tok-fn">dx12_get_script_errors</span>()                      <span class="tok-c">// 壊れた Lua を全部（traceback 込み）</span>
+<span class="tok-fn">dx12_reload_scripts</span>()                         <span class="tok-c">// Play を止めずに復帰させる</span>
+<span class="tok-fn">dx12_stop</span>()</code></pre>
+        <div class="note">
+          <span class="ti">i</span>
+          <div>挙動のデバッグは、AI が合成入力で動かすより<b>人間に遊んでもらって <code class="inl">dx12_get_play_session</code> を読む方が正確</b>。<b>Play を押した時点で記録は始まっている</b>ので、開始操作は要らない（操作イベント・fps サンプル・エラーが Stop 後も次の Play まで残る）。</div>
+        </div>
+
+        <h3>7. 重い原因を突き止める</h3>
+<pre><code><span class="tok-fn">dx12_perf_stats</span>(window:<span class="tok-n">120</span>)
+<span class="tok-c">// → fps / frameMs(avg,min,max,p95) / cpu(workMs,fenceWaitMs,presentMs)</span>
+<span class="tok-c">//   / gpuPassMs(shadows, depthPrepass, clusterCull, raytracing, ddgi, volFog, hiZ, postFx …)</span>
+<span class="tok-c">//   / drawCalls / culled / triangles / analysis.verdict = "gpu-bound" 等</span>
+<span class="tok-fn">dx12_diagnose</span>(only:[<span class="tok-s">"hiz_occlusion"</span>])   <span class="tok-c">// 「ON にしたせいで遅い」を名指しする検査もある</span>
+<span class="tok-fn">dx12_benchmark</span>(…)                          <span class="tok-c">// 規模を変えてどこで折れるかを測る</span></code></pre>
+
+        <h3>8. 配布ビルドまで</h3>
+<pre><code><span class="tok-fn">dx12_save_scene</span>()
+<span class="tok-fn">dx12_validate_scene</span>()      <span class="tok-c">// 参照切れが 1 個でもあれば先に直す</span>
+<span class="tok-fn">dx12_build_game</span>()          <span class="tok-c">// → {success, outputDir}（数十秒かかることがある）</span></code></pre>
+
+        <h3>トラブルシュート</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>症状</th><th>対処</th></tr></thead>
+            <tbody>
+              <tr><td>エディタに繋がらない</td><td>エディタが起動しているか / シーンを開いているか。<b>ゲームモードではブリッジは起動しない</b></td></tr>
+              <tr><td><code>engine timeout</code></td><td>エディタがフレームを回していない（モーダルが出ている等）。前面にしてリトライ</td></tr>
+              <tr><td>ポート競合</td><td><code class="inl">%TEMP%\dx12_mcp.port</code> を読むか <code class="inl">DX12_MCP_PORT</code> を合わせる</td></tr>
+              <tr><td>ツールが AI 側に出ない</td><td>登録済みか（<code class="inl">--scope user</code> か）とパスを確認。<b>登録後はクライアント再起動</b></td></tr>
+              <tr><td>Node が見つからない / <code class="inl">.ts</code> が動かない</td><td>Node <b>v24+</b> を入れる（<code class="inl">node --version</code>）</td></tr>
+              <tr><td>古い id で <code>NOT_FOUND(1)</code></td><td>シーンを開き直している。<code class="inl">dx12_ping</code> の <code class="inl">sceneGeneration</code> を見て <code class="inl">list_entities</code> で引き直す</td></tr>
+              <tr><td><code>MODE_CONFLICT(3)</code></td><td>Playing 中に生成系を呼んだ。<code class="inl">dx12_stop</code> してから</td></tr>
+              <tr><td>未保存の変更が消えた</td><td><code class="inl">dx12_ping</code> の <code class="inl">sceneDirty=true</code> のまま <code class="inl">open_scene</code> / <code class="inl">new_scene</code> / <code class="inl">open_project</code> を撃つと黙って捨てられる。<b>先に <code class="inl">save_scene</code> するか人間に確認する</b></td></tr>
+            </tbody>
+          </table>
         </div>
       </section>
 
@@ -1675,8 +2096,11 @@ claude mcp add dx12-engine -- node &lt;REPO&gt;/tools/mcp-server/index.ts</code>
               <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/SCRIPTING.md" target="_blank" rel="noopener"><code>docs/SCRIPTING.md</code></a></td><td>Lua スクリプトAPIガイド（高レベル / 低レベル）</td></tr>
               <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/SCRIPT_COMPONENTS.md" target="_blank" rel="noopener"><code>docs/SCRIPT_COMPONENTS.md</code></a></td><td>プロパティ付きコンポーネント / プレハブ</td></tr>
               <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/AUTHORING.md" target="_blank" rel="noopener"><code>docs/AUTHORING.md</code></a></td><td>ParticleEmitter / Trigger+Action / イベントバス / validate / 地形（<code>.hf</code>）とスカルプト（<code>.smsh</code>）</td></tr>
-              <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/MCP.md" target="_blank" rel="noopener"><code>docs/MCP.md</code></a></td><td>MCP / AIブリッジ 完全リファレンス（全87ツール・error_code）</td></tr>
+              <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/MCP.md" target="_blank" rel="noopener"><code>docs/MCP.md</code></a></td><td>MCP / AIブリッジ 完全リファレンス（全152ツールの params / 返り値・error_code・内部プロトコル）</td></tr>
               <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/ASSET_PROTECTION_DESIGN.md" target="_blank" rel="noopener"><code>docs/ASSET_PROTECTION_DESIGN.md</code></a></td><td>ゲーム専用ランタイム + 暗号化パックの設計</td></tr>
+              <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/ANIMATION.md" target="_blank" rel="noopener"><code>docs/ANIMATION.md</code></a></td><td>アニメーション（<code>.animfsm</code> ステートマシン / ブレンドツリー / レイヤー / フット IK / イベント）</td></tr>
+              <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/docs/UI_STYLE_GUIDE.md" target="_blank" rel="noopener"><code>docs/UI_STYLE_GUIDE.md</code></a></td><td>ゲーム内 UI のデザイン規約（配色 / 余白 / タイポ。<code>dx12_ui_design_brief</code> が返すのと同じ方針）</td></tr>
+              <tr><td><a href="https://github.com/ryuto-alt/dx12/blob/master/CLAUDE.md" target="_blank" rel="noopener"><code>CLAUDE.md</code></a></td><td>リポジトリの歩き方（ディレクトリ構成・ビルド・実装上の約束事）。AI に読ませる用</td></tr>
             </tbody>
           </table>
         </div>
@@ -1702,6 +2126,7 @@ claude mcp add dx12-engine -- node &lt;REPO&gt;/tools/mcp-server/index.ts</code>
       <a href="#editor">エディタの使い方</a>
       <a href="#scripting">Lua スクリプト</a>
       <a href="#authoring">データ駆動オーサリング</a>
+      <a href="#mcp">MCP / AIブリッジ</a>
     </div>
     <div class="foot-col">
       <h5>リンク</h5>

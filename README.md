@@ -5,7 +5,7 @@ ECS(entt) / 物理(Jolt) / Lua スクリプト / glTF・FBX モデル / シー�
 
 目玉のひとつが **MCP / AI Bridge** — 起動中のエディタを Claude Code / Codex から
 操作してゲームを組み立てられる（エンティティ生成・コンポーネント設定・Lua アタッチ・
-シーン保存・Play/Stop まで、全142ツール）。
+シーン保存・Play/Stop まで、全152ツール）。
 
 ---
 
