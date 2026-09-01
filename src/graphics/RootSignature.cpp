@@ -313,10 +313,11 @@ void RootSignature::Initialize(GraphicsDevice& device)
     versionedDesc.Desc_1_1.pStaticSamplers    = staticSamplers;
     versionedDesc.Desc_1_1.Flags              = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
-    Microsoft::WRL::ComPtr<ID3DBlob> serializedBlob;
     Microsoft::WRL::ComPtr<ID3DBlob> errorBlob;
 
-    HRESULT hr = D3D12SerializeVersionedRootSignature(&versionedDesc, &serializedBlob, &errorBlob);
+    // ★直列化結果はメンバへ残す。カスタムシェーダーの PSO 生成が失敗したとき、
+    //   ここから「実際に使えるレジスタ」を読み出してユーザーへ提示する。
+    HRESULT hr = D3D12SerializeVersionedRootSignature(&versionedDesc, &m_serialized, &errorBlob);
 
     if (FAILED(hr))
     {
@@ -330,8 +331,8 @@ void RootSignature::Initialize(GraphicsDevice& device)
 
     ThrowIfFailed(device.GetDevice()->CreateRootSignature(
         0,
-        serializedBlob->GetBufferPointer(),
-        serializedBlob->GetBufferSize(),
+        m_serialized->GetBufferPointer(),
+        m_serialized->GetBufferSize(),
         IID_PPV_ARGS(&m_rootSignature)));
 
     Logger::Info("RootSignature created (PBR: 14 slots, 61/64 DWORD)");

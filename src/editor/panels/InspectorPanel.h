@@ -129,6 +129,13 @@ private:
     void RenderPrefabHeader(entt::registry& reg, EditorContext& ctx, Scene& scene, entt::entity e);
     void RenderAudioHero(entt::registry& reg, EditorContext& ctx, entt::entity e);
 
+    // コンソールのシェーダーエラー行から飛んできたときだけ入る正規化キー
+    // （EditorContext::revealShaderIssue を Render の頭で受け取り、そのフレームの
+    //   終わりに捨てる）。該当セクションを強制的に開いて、そこまでスクロールする。
+    std::string m_revealShaderKey;
+    // shaderPath がジャンプ対象と同じか。空文字・キー未設定なら常に false。
+    bool RevealMatches(const std::string& shaderPath) const;
+
     ScriptEngine* m_scriptEngine = nullptr;
     std::string   m_assetsDir;
     AssetBrowserPanel* m_assetBrowser = nullptr;

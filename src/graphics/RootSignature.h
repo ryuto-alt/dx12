@@ -17,6 +17,11 @@ public:
 
     ID3D12RootSignature* Get() const { return m_rootSignature.Get(); }
 
+    // 直列化済みの本体。カスタムシェーダーの PSO 生成が失敗したとき、シェーダーの
+    // リフレクションと突き合わせて「どの register が余計なのか」を名指しするのに使う
+    // （デバッグレイヤーの無い Release ビルドでも同じ説明を出すため）。
+    ID3DBlob* GetSerializedBlob() const { return m_serialized.Get(); }
+
     static constexpr u32 kSlotPerObject    = 0;  // RootConstants b0 (40 DWORD = MVP+Model+CustomEffect+pad3+CustomParams)
     static constexpr u32 kSlotPerFrame     = 1;  // CBV b1 (PerFrame + cameraPos)
     static constexpr u32 kSlotSRVTable     = 2;  // DescriptorTable t0,t1,t2 (albedo, normal, metalRoughness)
@@ -39,6 +44,7 @@ public:
 
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;
+    Microsoft::WRL::ComPtr<ID3DBlob>            m_serialized;
 };
 
 } // namespace dx12e

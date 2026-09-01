@@ -1,4 +1,5 @@
 #include "resource/ShaderManager.h"
+#include "resource/ShaderDiagnostics.h"
 #include "resource/ShaderRegistry.h"
 #include "core/Logger.h"
 #include "core/PathResolver.h"
@@ -454,11 +455,20 @@ bool ShaderManager::CompileCustomShader(const std::string& relPath)
         entry.ps    = std::move(psResult.dxil);
         entry.valid = true;
         entry.errorLog.clear();
+        // 直前の失敗表示（Inspector の赤いボックス）を消す。PSO 生成はこの後で走り、
+        // そこで落ちれば改めて理由が積まれる。
+        shaderdiag::ClearIssue(key);
         Logger::Info("カスタムシェーダーのコンパイルに成功しました: {}", relPath);
         return true;
     }
 
     entry.errorLog = !vsResult.success ? vsResult.errorLog : psResult.errorLog;
+    // エディタの Inspector / 診断 / MCP が同じ文面を読めるように積んでおく。
+    // 従来はログに出るだけで、シェーダーを割り当てた本人には何も見えなかった。
+    shaderdiag::SetIssue(key,
+        "HLSL のコンパイルに失敗しました: " + relPath + "\n"
+        "  （" + (!vsResult.success ? "VSMain / vs_6_0" : "PSMain / ps_6_0") + " のコンパイル中）\n\n"
+        + entry.errorLog);
     // 直前に有効なバイトコードがある場合は消さない(entry.vs/ps はここでは書き換えていない)。
     // 一時的なファイルI/O失敗等での再コンパイルが、動いていた見た目を巻き添えで壊さないため。
     if (entry.valid)

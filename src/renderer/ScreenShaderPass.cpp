@@ -3,9 +3,47 @@
 #include "graphics/GraphicsDevice.h"
 #include "core/Assert.h"
 #include "core/Logger.h"
+#include "resource/ShaderDiagnostics.h"
+
+#include <iterator>
 
 namespace dx12e
 {
+namespace
+{
+
+// スクリーンシェーダーの契約。レジスタの「範囲」はルートシグネチャ実体から自動で出るので、
+// ここに書くのは人間向けの意味づけだけ（書き忘れても嘘にはならない）。
+constexpr shaderdiag::SlotNote kScreenSlotNotes[] = {
+    {'b', 0, "cbuffer ScreenShaderCB … resolution / timeParams / params / cameraParams / uvOffsetScale（20 DWORD）"},
+    {'t', 0, "画面カラー（ポストプロセス適用後の LDR・ガンマ空間）"},
+    {'t', 1, "シーン深度（R32_FLOAT。0=near, 1=far の非線形深度）"},
+    {'s', 0, "linear clamp サンプラー"},
+    {'s', 1, "point clamp サンプラー"},
+};
+
+shaderdiag::Contract MakeScreenContract(ID3DBlob* rsBlob)
+{
+    shaderdiag::Contract c;
+    c.title      = "スクリーンシェーダー（カメラの「画面シェーダー」）";
+    c.entryNote  = "VSMain / PSMain（vs_6_0 / ps_6_0）";
+    c.rsBlob     = rsBlob ? rsBlob->GetBufferPointer() : nullptr;
+    c.rsBlobSize = rsBlob ? rsBlob->GetBufferSize() : 0;
+    c.notes      = kScreenSlotNotes;
+    c.noteCount  = std::size(kScreenSlotNotes);
+    c.extra =
+        "  そのほかの約束事\n"
+        "    ・頂点バッファは使いません。VSMain は uint vid : SV_VertexID から\n"
+        "      フルスクリーン三角形を組んでください（雛形がそうなっています）。\n"
+        "    ・PSMain は float4 ... : SV_TARGET を返します。深度もステンシルも書けません。\n"
+        "    ・画面の読み取りは必ず uvOffsetScale を掛けること（雛形の SampleScreen /\n"
+        "      SampleDepth がやっています）。中間 RT はウィンドウ全面で、絵はその中の\n"
+        "      表示矩形にしか入っていないため、直接 Sample すると位置がずれます。\n"
+        "  雛形: ツールバーの「新規シェーダー」→ 種類「画面全体用」で生成できます。";
+    return c;
+}
+
+} // namespace
 
 void ScreenShaderPass::Initialize(GraphicsDevice& device, DXGI_FORMAT outFormat)
 {
@@ -60,11 +98,15 @@ void ScreenShaderPass::Initialize(GraphicsDevice& device, DXGI_FORMAT outFormat)
                | D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS
                | D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
 
-    Microsoft::WRL::ComPtr<ID3DBlob> serialized, error;
+    Microsoft::WRL::ComPtr<ID3DBlob> error;
     ThrowIfFailed(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1,
-                                              &serialized, &error));
-    ThrowIfFailed(dev->CreateRootSignature(0, serialized->GetBufferPointer(),
-        serialized->GetBufferSize(), IID_PPV_ARGS(&m_rootSig)));
+                                              &m_rsBlob, &error));
+    ThrowIfFailed(dev->CreateRootSignature(0, m_rsBlob->GetBufferPointer(),
+        m_rsBlob->GetBufferSize(), IID_PPV_ARGS(&m_rootSig)));
+
+    // 「書式」をエディタ UI から引けるように登録する（デバイスに触らずテキストだけ読める）。
+    shaderdiag::RegisterHelp(shaderdiag::kIdScreen,
+                             shaderdiag::DescribeContract(MakeScreenContract(m_rsBlob.Get())));
 
     Logger::Info("ScreenShaderPass initialized");
 }
@@ -95,7 +137,14 @@ ID3D12PipelineState* ScreenShaderPass::GetOrCreatePso(GraphicsDevice& device,
     entry.tried = true;
     if (!m_rootSig || vsBytes.empty() || psBytes.empty())
     {
-        if (outError) *outError = "シェーダーのバイトコードが取得できません";
+        std::string msg =
+            "スクリーンシェーダーのバイトコードが取得できません: " + key + "\n"
+            "  ・HLSL がコンパイルできていない（ログの「コンパイルに失敗しました」を確認）\n"
+            "  ・パスが違う（assets/shaders/ からの相対で指定します）\n"
+            "  ・VSMain / PSMain のどちらかが無い（両方必須です）\n\n"
+            + shaderdiag::GetHelp(shaderdiag::kIdScreen);
+        if (outError) *outError = msg;
+        shaderdiag::SetIssue(key, std::move(msg));
         m_psos[key] = std::move(entry);
         return nullptr;
     }
@@ -125,9 +174,19 @@ ID3D12PipelineState* ScreenShaderPass::GetOrCreatePso(GraphicsDevice& device,
         entry.pso.Reset();
         // ★ここで失敗する典型は「雛形と違うルートシグネチャ前提で書かれている」ケース
         //   （b1 を宣言している / t2 を使っている等）。素通しに倒して絵は出し続ける。
-        Logger::Error("スクリーンシェーダーの PSO 生成に失敗しました: {} (hr=0x{:08X})", key,
-                      static_cast<unsigned>(hr));
-        if (outError) *outError = "PSO の生成に失敗しました（b0/t0/t1/s0 以外のスロットを使っていませんか）";
+        //   D3D12 はその詳細をデバッグレイヤーにしか出さないので、シェーダーの
+        //   リフレクションとルートシグネチャを自前で突き合わせて理由を特定する。
+        std::string msg = shaderdiag::ExplainPsoFailure(
+            MakeScreenContract(m_rsBlob.Get()), hr,
+            vsBytes.data(), vsBytes.size(), psBytes.data(), psBytes.size(),
+            "対象: " + key);
+        Logger::Error("{}", msg);
+        if (outError) *outError = msg;
+        shaderdiag::SetIssue(key, std::move(msg));
+    }
+    else
+    {
+        shaderdiag::ClearIssue(key);
     }
 
     ID3D12PipelineState* raw = entry.pso.Get();

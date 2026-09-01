@@ -4,10 +4,81 @@
 // Application.cpp から機械分割した実装 TU。分割の全体像は ApplicationInternal.h。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "resource/ShaderDiagnostics.h"
+
+#include <iterator>
 
 namespace dx12e
 {
 using namespace appdetail;
+
+namespace
+{
+
+// ===== カスタムシェーダーの「契約」=====
+// レジスタの使える範囲はルートシグネチャの直列化バイト列から自動で読むので、ここに書くのは
+// 人間向けの意味づけだけ。書き忘れてもウソにはならない（範囲だけが出る）。
+// これを PSO 生成失敗時の説明と、エディタの「書式ヘルプ」の両方で使い回す。
+
+constexpr shaderdiag::SlotNote kMeshSlotNotes[] = {
+    {'b', 0, "cbuffer PerObjectConstants … mvp, model, effectValue, _reserved, shaderParams（40 DWORD）"},
+    {'b', 1, "cbuffer PerFrameConstants … view, proj, lightDir/time, lightColor/ambientStrength …（先頭から順に部分宣言してよい）"},
+    {'b', 2, "PBR マテリアル定数（metallic, roughness, flags, uvScaleOffset。8 DWORD）"},
+    {'t', 0, "アルベド（ベースカラー）テクスチャ"},
+    {'t', 1, "法線マップ"},
+    {'t', 2, "metallic-roughness マップ"},
+    {'t', 3, "ボーン行列 StructuredBuffer（スキンドメッシュのみ）"},
+    {'t', 4, "シャドウマップ（CSM）"},
+    {'s', 0, "異方性 wrap サンプラー（アルベド等はこれ）"},
+    {'s', 1, "シャドウ比較サンプラー"},
+    {'s', 2, "IBL 用 linear clamp サンプラー"},
+};
+
+shaderdiag::Contract MakeMeshContract(ID3DBlob* rsBlob)
+{
+    shaderdiag::Contract c;
+    c.title      = "メッシュ用カスタムシェーダー（MeshRenderer の Shader）";
+    c.entryNote  = "VSMain / PSMain（vs_6_0 / ps_6_0）";
+    c.rsBlob     = rsBlob ? rsBlob->GetBufferPointer() : nullptr;
+    c.rsBlobSize = rsBlob ? rsBlob->GetBufferSize() : 0;
+    c.notes      = kMeshSlotNotes;
+    c.noteCount  = std::size(kMeshSlotNotes);
+    c.extra =
+        "  そのほかの約束事\n"
+        "    ・VSInput は position/normal/color/texCoord/tangent/boneIndices/boneWeights の\n"
+        "      順で宣言すること（Mesh::GetInputLayout と一致していないと PSO が作れません）。\n"
+        "    ・PSMain は float4 ... : SV_TARGET を返します。出力は【リニア HDR】のまま。\n"
+        "      トーンマップはポストプロセスの最終段が行うので、自分でガンマを掛けないこと。\n"
+        "    ・cbuffer は先頭から順に部分宣言してよいが、フィールドの順序は変えないこと\n"
+        "      （オフセットがずれて値が全部おかしくなります）。\n"
+        "  雛形: ツールバーの「新規シェーダー」→ 種類「メッシュ用」で生成できます。";
+    return c;
+}
+
+constexpr shaderdiag::SlotNote kSpriteSlotNotes[] = {
+    {'b', 0, "変換行列 16 DWORD ＋ time 1 DWORD（float 1 個を末尾に足すと経過秒が読めます）"},
+    {'t', 0, "スプライトのテクスチャ"},
+    {'s', 0, "linear clamp サンプラー"},
+};
+
+shaderdiag::Contract MakeSpriteContract(ID3DBlob* rsBlob)
+{
+    shaderdiag::Contract c;
+    c.title      = "スプライト用カスタムシェーダー（Sprite2D の Shader）";
+    c.entryNote  = "VSMain / PSMain（vs_6_0 / ps_6_0）";
+    c.rsBlob     = rsBlob ? rsBlob->GetBufferPointer() : nullptr;
+    c.rsBlobSize = rsBlob ? rsBlob->GetBufferSize() : 0;
+    c.notes      = kSpriteSlotNotes;
+    c.noteCount  = std::size(kSpriteSlotNotes);
+    c.extra =
+        "  そのほかの約束事\n"
+        "    ・VSInput は SpriteRenderer::GetInputLayout と一致させること。\n"
+        "    ・b0 は VERTEX 可視です（PS からは読めません）。\n"
+        "    ・PSMain は float4 ... : SV_TARGET を返します。深度は書きません。";
+    return c;
+}
+
+} // namespace
 
 
 // ---------------------------------------------------------------------------
@@ -921,6 +992,15 @@ void Application::RegisterShaderReloadHandlers()
     // 既知の制約: カスタムシェーダーが forward/Lighting.hlsli 等の共有 .hlsli を include していても、
     // その .hlsli の変更だけでは再コンパイルされない(依存追跡は Registry ソースのみ対象)。
     // カスタムシェーダー自身を保存し直せば最新の include 内容で再コンパイルされる。
+    // カスタムシェーダーの「書式」をエディタ UI から引けるように登録しておく。
+    // ルートシグネチャ実体から生成するので、スロットを増減しても説明がズレない。
+    if (m_rootSignature)
+        shaderdiag::RegisterHelp(shaderdiag::kIdMesh,
+            shaderdiag::DescribeContract(MakeMeshContract(m_rootSignature->GetSerializedBlob())));
+    if (m_spriteRenderer)
+        shaderdiag::RegisterHelp(shaderdiag::kIdSprite,
+            shaderdiag::DescribeContract(MakeSpriteContract(m_spriteRenderer->GetRootSignatureBlob())));
+
     m_shaderManager->RegisterCustomReloadHandler(
         [this](const std::string& relKey)
         {
@@ -988,6 +1068,34 @@ bool Application::FetchCustomShaderBytecode(const std::string& shaderRel,
     return vsBytesOut && psBytesOut && !vsBytesOut->empty() && !psBytesOut->empty();
 }
 
+
+// バイトコードが取れなかったときの説明文。原因はほぼ「HLSL がコンパイルできていない」なので、
+// DXC の行番号付きエラーがあればそれを最優先で見せる（従来はログにしか出ていなかった）。
+static std::string DescribeMissingBytecode(ShaderManager* sm, const std::string& shaderRel,
+                                            const char* what, const char* helpId)
+{
+    std::string msg = std::string(what) + "が使えません: " + shaderRel + "\n\n";
+    const std::string compileErr = sm ? sm->GetCustomShaderError(shaderRel) : std::string();
+    if (!compileErr.empty())
+    {
+        msg += "■ 原因: HLSL のコンパイルに失敗しています\n";
+        msg += compileErr;
+        if (msg.back() != '\n') msg += '\n';
+        msg += "\n";
+    }
+    else
+    {
+        msg += "■ 原因の候補\n"
+               "    ・パスが違う（assets/shaders/ からの相対で指定します）\n"
+               "    ・ファイルを消した / 名前を変えた\n"
+               "    ・VSMain か PSMain が無い（両方必須です）\n"
+               "    ・配布ビルドに含まれていない（割り当て後にゲームをビルドし直してください）\n\n";
+    }
+    const std::string help = shaderdiag::GetHelp(helpId);
+    if (!help.empty()) msg += help;
+    return msg;
+}
+
 Application::CustomForwardPsos* Application::EnsureCustomPso(const std::string& shaderRel)
 {
     const std::string key = NormalizeCustomShaderKey(shaderRel);
@@ -1033,10 +1141,19 @@ Application::CustomForwardPsos* Application::EnsureCustomPso(const std::string& 
             entry.lequalBlend->Initialize(*m_graphicsDevice, builder);
 
             entry.valid = true;
+            shaderdiag::ClearIssue(key);
         }
         catch (const std::exception& ex)
         {
-            Logger::Error("カスタムシェーダーのPSO生成に失敗しました: {} - {}", shaderRel, ex.what());
+            // ★D3D12 は PSO 生成失敗の理由をデバッグレイヤーにしか出さない。
+            //   シェーダーのリフレクションとルートシグネチャを自前で突き合わせ、
+            //   どの register が余計なのかを名指しして、使える一覧＝書式ごと提示する。
+            std::string msg = shaderdiag::ExplainPsoFailure(
+                MakeMeshContract(m_rootSignature ? m_rootSignature->GetSerializedBlob() : nullptr),
+                S_OK, vsBytes->data(), vsBytes->size(), psBytes->data(), psBytes->size(),
+                "対象: " + shaderRel + "  /  " + ex.what());
+            Logger::Error("{}", msg);
+            shaderdiag::SetIssue(key, std::move(msg));
             entry.valid = false;
         }
     }
@@ -1047,8 +1164,10 @@ Application::CustomForwardPsos* Application::EnsureCustomPso(const std::string& 
         //   「シェーダーを割り当てたのに効果が出ない」がログにも診断にも一切出なかった。
         //   スプライト側は同じ指摘で直したのに、メッシュ側が対称になっていなかった。
         //   キャッシュに積むので、この警告は shaderPath ごとに 1 回だけ出る。
-        Logger::Warn("カスタムシェーダーが見つかりません（既定シェーダーで描画します）: {} "
-                     "— シェーダーを保存し直すか、パスが正しいか確認してください", shaderRel);
+        std::string msg = DescribeMissingBytecode(m_shaderManager.get(), shaderRel,
+                                                   "メッシュ用カスタムシェーダー", shaderdiag::kIdMesh);
+        Logger::Warn("{}\n（既定シェーダーで描画します）", msg);
+        shaderdiag::SetIssue(key, std::move(msg));
     }
 
     auto& stored = m_customPsoCache[key];
@@ -1098,10 +1217,16 @@ Application::CustomSpritePsos* Application::EnsureCustomSpritePso(const std::str
             entry.blend->Initialize(*m_graphicsDevice, builder);
 
             entry.valid = true;
+            shaderdiag::ClearIssue(key);
         }
         catch (const std::exception& ex)
         {
-            Logger::Error("Sprite2D カスタムシェーダーのPSO生成に失敗しました: {} - {}", shaderRel, ex.what());
+            std::string msg = shaderdiag::ExplainPsoFailure(
+                MakeSpriteContract(m_spriteRenderer ? m_spriteRenderer->GetRootSignatureBlob() : nullptr),
+                S_OK, vsBytes->data(), vsBytes->size(), psBytes->data(), psBytes->size(),
+                "対象: " + shaderRel + "  /  " + ex.what());
+            Logger::Error("{}", msg);
+            shaderdiag::SetIssue(key, std::move(msg));
             entry.valid = false;
         }
     }
@@ -1111,8 +1236,10 @@ Application::CustomSpritePsos* Application::EnsureCustomSpritePso(const std::str
         //   ここに else が無く、呼び出し側も nullptr を素通りして既定 PSO で描いていたので、
         //   「シェーダーを割り当てたのに効果が出ない」がログにも診断にも一切出なかった。
         //   キャッシュに積むので、この警告は shaderPath ごとに 1 回だけ出る。
-        Logger::Warn("Sprite2D カスタムシェーダーが見つかりません（既定シェーダーで描画します）: {} "
-                     "— シェーダーを保存し直すか、パスが正しいか確認してください", shaderRel);
+        std::string msg = DescribeMissingBytecode(m_shaderManager.get(), shaderRel,
+                                                   "スプライト用カスタムシェーダー", shaderdiag::kIdSprite);
+        Logger::Warn("{}\n（既定の描画に戻します）", msg);
+        shaderdiag::SetIssue(key, std::move(msg));
     }
 
     auto& stored = m_customSpritePsoCache[key];
@@ -1143,8 +1270,10 @@ ID3D12PipelineState* Application::EnsureScreenShaderPso(const std::string& shade
         //   CompileCustomShader が走り、コンパイルエラーのログで画面が流れ続ける。
         static const std::vector<u8> kEmpty;
         m_screenShaderPass->GetOrCreatePso(*m_graphicsDevice, key, kEmpty, kEmpty);
-        Logger::Warn("スクリーンシェーダーが見つかりません（画面はそのまま表示します）: {} "
-                     "— シェーダーを保存し直すか、パスが正しいか確認してください", shaderRel);
+        std::string msg = DescribeMissingBytecode(m_shaderManager.get(), shaderRel,
+                                                   "スクリーンシェーダー", shaderdiag::kIdScreen);
+        Logger::Warn("{}\n（画面はそのまま表示します）", msg);
+        shaderdiag::SetIssue(key, std::move(msg));
         return nullptr;
     }
     return m_screenShaderPass->GetOrCreatePso(*m_graphicsDevice, key, *vsBytes, *psBytes);

@@ -1,5 +1,7 @@
 #include "editor/panels/ConsolePanel.h"
+#include "editor/EditorContext.h"
 #include "editor/EditorTheme.h"
+#include "resource/ShaderDiagnostics.h"
 #include "scripting/ScriptEngine.h"
 
 #pragma warning(push)
@@ -116,7 +118,7 @@ void ConsolePanel::ClearLocal()
     m_viewDirty  = true;
 }
 
-void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying)
+void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying, EditorContext* ctx)
 {
     PullNewEntries();
 
@@ -222,7 +224,25 @@ void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying)
                         ImGui::ColorConvertFloat4ToU32(theme::Hex(0xffffff, 0.025f)));
 
                 if (ImGui::Selectable("##row", selected, ImGuiSelectableFlags_None, ImVec2(0, rowH)))
+                {
                     m_selectedId = selected ? 0 : e.id;   // 再クリックで閉じる
+                    // ★カスタムシェーダーのエラーなら Inspector へ飛ばす。
+                    //   ここで出せるのは 1 行目だけなので、全文は「そのシェーダーを
+                    //   割り当てた場所」で読ませるのが一番分かりやすい。
+                    if (ctx && m_selectedId != 0)
+                    {
+                        std::string key = shaderdiag::FindIssueKeyIn(e.text);
+                        if (!key.empty()) ctx->revealShaderIssue = std::move(key);
+                    }
+                }
+
+                // 行を右クリック: 全文コピー（詳細ペインを開かずに拾いたいとき用）
+                if (ImGui::BeginPopupContextItem("##rowmenu"))
+                {
+                    if (ImGui::MenuItem("この行をコピー（全文）"))
+                        ImGui::SetClipboardText(e.text.c_str());
+                    ImGui::EndPopup();
+                }
 
                 // 行の中身は DrawList で重ね描き（時刻=薄 / バッジ=重大度色 / 本文）
                 const float ty = rowMin.y + 3.0f;

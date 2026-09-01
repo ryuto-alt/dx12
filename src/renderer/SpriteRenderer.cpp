@@ -78,10 +78,12 @@ void SpriteRenderer::Initialize(GraphicsDevice& device, DescriptorHeap* srvHeap,
                    | D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS
                    | D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
 
-        Microsoft::WRL::ComPtr<ID3DBlob> serialized, error;
-        ThrowIfFailed(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &serialized, &error));
-        ThrowIfFailed(dev->CreateRootSignature(0, serialized->GetBufferPointer(),
-            serialized->GetBufferSize(), IID_PPV_ARGS(&m_rootSig)));
+        // ★直列化結果はメンバへ残す。カスタムシェーダーの PSO 生成が失敗したとき、
+        //   ここから「実際に使えるレジスタ」を読み出してユーザーへ提示する。
+        Microsoft::WRL::ComPtr<ID3DBlob> error;
+        ThrowIfFailed(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &m_rsBlob, &error));
+        ThrowIfFailed(dev->CreateRootSignature(0, m_rsBlob->GetBufferPointer(),
+            m_rsBlob->GetBufferSize(), IID_PPV_ARGS(&m_rootSig)));
     }
 
     // --- PSO: TriangleList / AlphaBlend ON / Depth OFF ---

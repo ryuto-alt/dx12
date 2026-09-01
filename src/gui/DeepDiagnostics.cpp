@@ -8,6 +8,7 @@
 #include "renderer/Mesh.h"
 #include "resource/ModelLoader.h"
 #include "resource/ShaderManager.h"
+#include "resource/ShaderDiagnostics.h"
 #include "resource/ShaderRegistry.h"
 #include "resource/TextureLoader.h"
 #include "scene/Scene.h"
@@ -476,6 +477,27 @@ std::string DeepDiagReport::Summary() const
 
 // ===================== シェーダー =====================
 
+// カスタムシェーダーの不具合の 1 行要約（詳細は Inspector とログに全文が出る）。
+// ★HasValidCustomShader は「HLSL がコンパイルできたか」しか見ない。コンパイルは通ったが
+//   ルートシグネチャに無い register を宣言していて PSO で落ちる、が一番多い形なので、
+//   そこを拾えないと診断が「異常なし」と言ってしまう。
+static std::string ShaderIssueLine(const std::string& shaderRel)
+{
+    std::string issue = dx12e::shaderdiag::GetIssue(shaderRel);
+    if (issue.empty()) return {};
+    // 最初の非空行だけ返す（先頭行は必ず「何が起きたか」になっている）。
+    size_t start = 0;
+    while (start < issue.size())
+    {
+        size_t nl = issue.find('\n', start);
+        std::string line = issue.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
+        if (!line.empty()) return " — " + line;
+        if (nl == std::string::npos) break;
+        start = nl + 1;
+    }
+    return {};
+}
+
 DeepDiagReport DeepDiag::Shaders()
 {
     DeepDiagReport r;
@@ -935,9 +957,13 @@ DeepDiagReport DeepDiag::SceneAssets(Application& app)
         for (const std::string& p : mr.materialAsset)                checkFile(p, who, "マテリアル");
         if (!mr.shaderPath.empty())
         {
-            if (ShaderManager* sm = ShaderManager::Instance())
-                if (!sm->HasValidCustomShader(mr.shaderPath))
-                    r.Add(2, who + " に割り当てたシェーダーが有効でない: " + mr.shaderPath);
+            ShaderManager* sm = ShaderManager::Instance();
+            if (sm && !sm->HasValidCustomShader(mr.shaderPath))
+                r.Add(2, who + " に割り当てたシェーダーが有効でない: " + mr.shaderPath
+                         + ShaderIssueLine(mr.shaderPath));
+            else if (!ShaderIssueLine(mr.shaderPath).empty())
+                r.Add(2, who + " に割り当てたシェーダーが効いていない: " + mr.shaderPath
+                         + ShaderIssueLine(mr.shaderPath));
         }
     }
 
@@ -960,9 +986,13 @@ DeepDiagReport DeepDiag::SceneAssets(Application& app)
         //   Inspector のコンボはディスクの .hlsl を並べるだけなので、割当は正常に見える。
         if (!sp.shaderPath.empty())
         {
-            if (ShaderManager* sm = ShaderManager::Instance())
-                if (!sm->HasValidCustomShader(sp.shaderPath))
-                    r.Add(2, who + " のスプライトに割り当てたシェーダーが有効でない: " + sp.shaderPath);
+            ShaderManager* sm = ShaderManager::Instance();
+            if (sm && !sm->HasValidCustomShader(sp.shaderPath))
+                r.Add(2, who + " のスプライトに割り当てたシェーダーが有効でない: " + sp.shaderPath
+                         + ShaderIssueLine(sp.shaderPath));
+            else if (!ShaderIssueLine(sp.shaderPath).empty())
+                r.Add(2, who + " のスプライトに割り当てたシェーダーが効いていない: " + sp.shaderPath
+                         + ShaderIssueLine(sp.shaderPath));
         }
     }
 
@@ -973,9 +1003,13 @@ DeepDiagReport DeepDiag::SceneAssets(Application& app)
     {
         if (cam.screenShaderPath.empty()) continue;
         const std::string who = nameOf(e);
-        if (ShaderManager* sm = ShaderManager::Instance())
-            if (!sm->HasValidCustomShader(cam.screenShaderPath))
-                r.Add(2, who + " のカメラに割り当てた画面シェーダーが有効でない: " + cam.screenShaderPath);
+        ShaderManager* sm = ShaderManager::Instance();
+        if (sm && !sm->HasValidCustomShader(cam.screenShaderPath))
+            r.Add(2, who + " のカメラに割り当てた画面シェーダーが有効でない: " + cam.screenShaderPath
+                     + ShaderIssueLine(cam.screenShaderPath));
+        else if (!ShaderIssueLine(cam.screenShaderPath).empty())
+            r.Add(2, who + " のカメラに割り当てた画面シェーダーが効いていない: " + cam.screenShaderPath
+                     + ShaderIssueLine(cam.screenShaderPath));
         if (!cam.isActive)
             r.Add(1, who + " は画面シェーダーを持っているがアクティブなカメラではない（適用されない）");
         if (!cam.screenShaderEnabled)

@@ -300,7 +300,9 @@ void EditorLayer::Render(bool isPlaying,
     m_assetBrowser->Render(*m_ctx, clock->GetDeltaTime());
 
     // コンソール（アセットブラウザの隣タブに常設。全ログ + Lua 即時実行）
-    m_console->Render(scriptEngine, isPlaying);
+    // ctx を渡すのは、シェーダーのエラー行クリックで Inspector へ飛ばすため
+    // （EditorContext::revealShaderIssue を次フレームの InspectorPanel が拾う）。
+    m_console->Render(scriptEngine, isPlaying, m_ctx);
 
     // ===== 中央ノードの領域を取得し、シーンビューを 16:9 にレターボックス =====
     {

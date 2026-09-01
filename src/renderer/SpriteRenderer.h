@@ -84,6 +84,9 @@ public:
     // Sprite2D カスタムシェーダー用(Application::EnsureCustomSpritePso が使う)。
     // ルートシグネチャ・頂点入力レイアウトは HUD/world 共通でこれ 1 種類のみ。
     ID3D12RootSignature* GetRootSignature() const { return m_rootSig.Get(); }
+    // 直列化済みの本体。カスタムシェーダーの PSO 生成失敗時に「使えるレジスタ」を
+    // 読み出して説明文を組み立てるために取ってある（ShaderDiagnostics）。
+    ID3DBlob*            GetRootSignatureBlob() const { return m_rsBlob.Get(); }
     static const D3D12_INPUT_ELEMENT_DESC* GetInputLayout(u32* countOut);
 
 private:
@@ -101,6 +104,7 @@ private:
     static constexpr u32 kWorldMaxVerts = kMaxVertices * 2;
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSig;
+    Microsoft::WRL::ComPtr<ID3DBlob>            m_rsBlob;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pso;
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_vertexBuffer;
     D3D12_VERTEX_BUFFER_VIEW                     m_vbView{};

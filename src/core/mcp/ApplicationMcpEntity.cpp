@@ -5,6 +5,7 @@
 // method の足し方は本ファイル内 McpDefine の並びに倣う（作法は ApplicationInternal.h の DX12E_MCP_HANDLER 付近）。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "resource/ShaderDiagnostics.h"
 
 #include <algorithm>
 #include <cctype>
@@ -103,6 +104,10 @@ void Application::RegisterMcpEntityMethods()
             resp["ok"] = true;
             resp["result"] = {{"path", rel}, {"compiled", compiled}};
             if (!compiled) resp["result"]["error"] = error.empty() ? "shader manager unavailable" : error;
+            // コンパイルが通っても PSO 生成で落ちることがある（ルートシグネチャに無い
+            // register を宣言した等）。その診断文はここに出る＝AI も同じ理由を読める。
+            const std::string issue = shaderdiag::GetIssue(rel);
+            if (!issue.empty()) resp["result"]["issue"] = issue;
         });
 
     McpDefine("read_shader", "path:string", DX12E_MCP_HANDLER
@@ -122,6 +127,8 @@ void Application::RegisterMcpEntityMethods()
             resp["ok"] = true;
             resp["result"] = {{"path", rel}, {"code", oss.str()},
                                {"compiled", m_shaderManager && m_shaderManager->HasValidCustomShader(rel)}};
+            const std::string issue = shaderdiag::GetIssue(rel);
+            if (!issue.empty()) resp["result"]["issue"] = issue;
         });
 
     McpDefine("set_mesh_shader", "alphaBlend:bool,entity:int,name:string,shaderPath:string", DX12E_MCP_HANDLER

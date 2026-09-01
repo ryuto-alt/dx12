@@ -22,6 +22,7 @@
 #include "animation/AnimGraphRuntime.h"
 #include "scripting/ScriptEngine.h"
 #include "resource/ShaderRegistry.h"
+#include "resource/ShaderDiagnostics.h"
 #include "resource/MaterialAssetIO.h"
 #include "editor/panels/AssetBrowserPanel.h"
 
@@ -75,6 +76,70 @@ void WarnRow(const char* fmt, ...)
 void WarnText(const char* fmt, ...)
 {
     va_list args; va_start(args, fmt); WarnTextV(fmt, args); va_end(args);
+}
+
+
+// ===== カスタムシェーダーの「なぜ効かないか」をその場に出す =====
+//
+// ★従来はコンパイルエラーも PSO 生成失敗も dx12_engine.log にしか出ず、シェーダーを
+//   割り当てた本人には「割り当てたのに何も起きない」としか見えなかった。
+//   割り当てた場所（Inspector）に、原因と使えるレジスタ＝書式をそのまま出す。
+//
+// shaderRel が空なら何も描かない。issue はエンジン側（ShaderManager / PSO 生成）が積む。
+void ShaderIssueBox(const std::string& shaderRel, const char* contractId, const char* idSuffix)
+{
+    namespace sd = dx12e::shaderdiag;
+
+    const std::string issue = shaderRel.empty() ? std::string() : sd::GetIssue(shaderRel);
+    const std::string help  = sd::GetHelp(contractId);
+    if (issue.empty() && help.empty()) return;
+
+    if (!issue.empty())
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.42f, 0.38f, 1.0f));
+        ImGui::TextUnformatted("このシェーダーは効いていません（既定の描画に戻しています）");
+        ImGui::PopStyleColor();
+
+        // ★読み取り専用の複数行テキストにする＝マウスでドラッグ選択して Ctrl+C できる。
+        //   （TextUnformatted だと目で読むしかなく、行番号やレジスタ名を写経する羽目になる）
+        //   バッファは ImGui が書き換えないので const_cast で渡してよい（コンソールの
+        //   詳細ペインと同じ流儀）。
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.16f, 0.10f, 0.10f, 1.0f));
+        const float h = ImGui::GetTextLineHeightWithSpacing() * 12.0f;
+        ImGui::InputTextMultiline((std::string("##shaderIssue") + idSuffix).c_str(),
+                                  const_cast<char*>(issue.c_str()), issue.size() + 1,
+                                  ImVec2(-1.0f, h), ImGuiInputTextFlags_ReadOnly);
+        ImGui::PopStyleColor();
+
+        if (ImGui::Button((std::string("全文をコピー##") + idSuffix).c_str()))
+            ImGui::SetClipboardText(issue.c_str());
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("上の枠内はドラッグで部分選択 → Ctrl+C でもコピーできます");
+        if (!help.empty()) ImGui::SameLine();
+    }
+
+    if (help.empty()) return;
+
+    const std::string popupId = std::string("シェーダーの書式##") + idSuffix;
+    if (ImGui::Button((std::string("書式を見る##") + idSuffix).c_str()))
+        ImGui::OpenPopup(popupId.c_str());
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("このシェーダーで宣言してよいレジスタと約束事の一覧");
+
+    ImGui::SetNextWindowSize(ImVec2(720.0f, 520.0f), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal(popupId.c_str(), nullptr, ImGuiWindowFlags_NoSavedSettings))
+    {
+        // ここも読み取り専用テキスト＝レジスタ名をそのまま選択コピーして HLSL へ貼れる。
+        ImGui::InputTextMultiline("##helpBody", const_cast<char*>(help.c_str()), help.size() + 1,
+                                  ImVec2(-1.0f, -ImGui::GetFrameHeightWithSpacing()),
+                                  ImGuiInputTextFlags_ReadOnly);
+        if (ImGui::Button("全文をコピー", ImVec2(140.0f, 0.0f)))
+            ImGui::SetClipboardText(help.c_str());
+        ImGui::SameLine();
+        if (ImGui::Button("閉じる", ImVec2(120.0f, 0.0f)))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
 }
 
 // CollapsingHeader を Unreal 風カテゴリ帯（濃いグレー地＋左端アクセントストライプ）で描くヘルパ。
@@ -605,10 +670,54 @@ inline bool AcceptAssetPathDrop(std::string& outRelPath, const char* wantExt,
 
 } // anonymous namespace
 
+bool InspectorPanel::RevealMatches(const std::string& shaderPath) const
+{
+    if (m_revealShaderKey.empty() || shaderPath.empty()) return false;
+    return shaderdiag::NormalizeKey(shaderPath) == m_revealShaderKey;
+}
+
 void InspectorPanel::Render(entt::registry& reg,
                             EditorContext& ctx,
                             Scene* scene)
 {
+    // ---- コンソールのシェーダーエラー行から飛んできた場合の受け口 ----
+    // そのシェーダーを使っているエンティティを選び直し、該当セクションを開く指示を
+    // このフレームだけ立てる（開く/スクロールは各セクションの描画箇所で行う）。
+    m_revealShaderKey.clear();
+    if (!ctx.revealShaderIssue.empty())
+    {
+        m_revealShaderKey = ctx.revealShaderIssue;
+        ctx.revealShaderIssue.clear();
+
+        // 既に選んでいるエンティティがそのシェーダーを使っているなら選択は動かさない
+        // （複数が同じシェーダーを共有している時に選択が飛び回るのを避ける）。
+        auto usesIt = [&](entt::entity e)
+        {
+            if (e == entt::null || !reg.valid(e)) return false;
+            if (auto* mr = reg.try_get<MeshRenderer>(e))
+                if (RevealMatches(mr->shaderPath)) return true;
+            if (auto* sp = reg.try_get<Sprite2D>(e))
+                if (RevealMatches(sp->shaderPath)) return true;
+            if (auto* cc = reg.try_get<CameraComponent>(e))
+                if (RevealMatches(cc->screenShaderPath)) return true;
+            return false;
+        };
+        if (!usesIt(ctx.selectedEntity))
+        {
+            entt::entity found = entt::null;
+            for (auto [e, mr] : reg.view<MeshRenderer>().each())
+                if (RevealMatches(mr.shaderPath)) { found = e; break; }
+            if (found == entt::null)
+                for (auto [e, sp] : reg.view<Sprite2D>().each())
+                    if (RevealMatches(sp.shaderPath)) { found = e; break; }
+            if (found == entt::null)
+                for (auto [e, cc] : reg.view<CameraComponent>().each())
+                    if (RevealMatches(cc.screenShaderPath)) { found = e; break; }
+            if (found != entt::null) ctx.Select(found);
+            else m_revealShaderKey.clear();   // 誰も使っていない＝開く先が無い
+        }
+    }
+
     ImGui::Begin("\xe3\x82\xa4\xe3\x83\xb3\xe3\x82\xb9\xe3\x83\x9a\xe3\x82\xaf\xe3\x82\xbf\xe3\x83\xbc");  // Inspector
 
     // --- Selected Entity properties ---
@@ -788,7 +897,12 @@ void InspectorPanel::Render(entt::registry& reg,
         // Sprite2D（ワールド/HUD スプライト）
         if (reg.all_of<Sprite2D>(ctx.selectedEntity))
         {
+            // コンソールのエラー行から飛んできたら、このコンポーネントと下の Shader 節を開く
+            const bool revealSprite =
+                RevealMatches(reg.get<Sprite2D>(ctx.selectedEntity).shaderPath);
+            if (revealSprite) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
             bool open = IconHeader(ic, ic ? ic->entMesh : 0, "Sprite2D");
+            if (revealSprite) ImGui::SetScrollHereY(0.15f);
             bool removed = ComponentRemoveMenu<Sprite2D>(reg, ctx, ctx.selectedEntity, "Sprite2D");
             if (open && !removed)
             {
@@ -856,6 +970,7 @@ void InspectorPanel::Render(entt::registry& reg,
 
                 // カスタムシェーダー割当（worldSpace のスプライトのみ有効。MeshRendererの仕組みを踏襲するが
                 // ルートシグネチャ/頂点フォーマットが異なるので互換性は無い＝別キャッシュ）。
+                if (revealSprite) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
                 if (IconHeader(nullptr, 0, "Shader##Sprite2D") && pg::Begin("Sprite2DShader"))
                 {
                     namespace fs = std::filesystem;
@@ -915,6 +1030,7 @@ void InspectorPanel::Render(entt::registry& reg,
                             "float4 params : TEXCOORD2; を足して読む。Luaの scene:setSpriteParams(e, x,y,z,w) でも変更可");
                     }
                     pg::End();
+                    ShaderIssueBox(sp.shaderPath, dx12e::shaderdiag::kIdSprite, "Sprite2D");
                     if (!sp.worldSpace && !sp.shaderPath.empty())
                         WarnText("HUD スプライトはカスタムシェーダー未対応(worldSpaceのみ)");
                 }
@@ -2376,7 +2492,12 @@ void InspectorPanel::Render(entt::registry& reg,
         // CameraComponent
         if (reg.all_of<CameraComponent>(ctx.selectedEntity))
         {
+            // コンソールのエラー行から飛んできたら、Camera と下の「画面シェーダー」節を開く
+            const bool revealCamScreen =
+                RevealMatches(reg.get<CameraComponent>(ctx.selectedEntity).screenShaderPath);
+            if (revealCamScreen) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
             bool open = IconHeader(ic, ic ? ic->entCamera : 0, "Camera");
+            if (revealCamScreen) ImGui::SetScrollHereY(0.15f);
             bool removed = ComponentRemoveMenu<CameraComponent>(reg, ctx, ctx.selectedEntity, "Camera");
             if (open && !removed)
             {
@@ -2423,6 +2544,7 @@ void InspectorPanel::Render(entt::registry& reg,
                 // ポストプロセスが終わった【完成した絵】をこの .hlsl が受け取って書き換える。
                 // MeshRenderer の shaderPath が「1 個のモデルの描き方」を差し替えるのに対し、
                 // こちらは「画面そのもの」を差し替える。
+                if (revealCamScreen) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
                 if (IconHeader(nullptr, 0, "\xe7\x94\xbb\xe9\x9d\xa2\xe3\x82\xb7\xe3\x82\xa7\xe3\x83\xbc\xe3\x83\x80\xe3\x83\xbc##CamScreenShader"))
                 {
                     namespace fs = std::filesystem;
@@ -2479,6 +2601,7 @@ void InspectorPanel::Render(entt::registry& reg,
                         }
                         pg::End();
                     }
+                    ShaderIssueBox(cam.screenShaderPath, dx12e::shaderdiag::kIdScreen, "CamScreen");
                     if (!cam.isActive && !cam.screenShaderPath.empty())
                         WarnText("\xe3\x82\xa2\xe3\x82\xaf\xe3\x83\x86\xe3\x82\xa3\xe3\x83\x96\xe3\x81\xaa\xe3\x82\xab\xe3\x83\xa1\xe3\x83\xa9\xe3\x81\xa0\xe3\x81\x91\xe3\x81\xab\xe9\x81\xa9\xe7\x94\xa8\xe3\x81\x95\xe3\x82\x8c\xe3\x81\xbe\xe3\x81\x99");
                 }
@@ -3193,7 +3316,12 @@ void InspectorPanel::Render(entt::registry& reg,
             // カスタムシェーダー割当（静的メッシュのみ有効。スキンド/インスタンシングは既定へフォールバック）。
             // 一覧はプロジェクト assets/shaders/ 配下の .hlsl のうち、Registry(エンジン組み込み)と
             // 一致しないもの＝自作シェーダーだけ(一致するものは全体に効く「上書き」用途なので個別割当から除外)。
-            if (IconHeader(nullptr, 0, "Shader"))
+            // コンソールのエラー行から飛んできたら、この節を開いてそこまでスクロールする
+            const bool revealMesh = RevealMatches(mr.shaderPath);
+            if (revealMesh) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+            const bool meshShaderOpen = IconHeader(nullptr, 0, "Shader");
+            if (revealMesh) ImGui::SetScrollHereY(0.15f);
+            if (meshShaderOpen)
             {
                 namespace fs = std::filesystem;
                 std::string currentLabel = mr.shaderPath.empty() ? "\xe6\x97\xa2\xe5\xae\x9a (Forward)" : mr.shaderPath;
@@ -3263,6 +3391,7 @@ void InspectorPanel::Render(entt::registry& reg,
                     }
                     pg::End();
                 }
+                ShaderIssueBox(mr.shaderPath, dx12e::shaderdiag::kIdMesh, "MeshRenderer");
                 if (reg.all_of<SkeletalAnimation>(ctx.selectedEntity) && !mr.shaderPath.empty())
                     WarnText("スキンドメッシュは既定シェーダーへフォールバック");
             }

@@ -185,6 +185,13 @@ public:
 
     bool HasSelection() const { return !selectedEntities.empty(); }
 
+    // ---- コンソール → Inspector のジャンプ（カスタムシェーダーのエラー用）----
+    // コンソールでシェーダーのエラー行をクリックすると、そのシェーダーの正規化キーがここへ入る。
+    // 次のフレームで InspectorPanel が拾い、使っているエンティティを選び直して
+    // 該当セクション（Shader / 画面シェーダー）を強制的に開き、全文をその場に出す。
+    // 消費した側がクリアする（1 フレームだけ生きる指示）。
+    std::string revealShaderIssue;
+
     // ギズモ
     GizmoMode gizmoMode      = GizmoMode::Translate;
     bool      gizmoLocalSpace = false;

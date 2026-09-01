@@ -77,6 +77,10 @@ public:
 
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSig;
+    // 直列化済みのルートシグネチャ。PSO 生成に失敗したとき、シェーダーのリフレクションと
+    // 突き合わせて「どの register が余計なのか」を名指しするために取っておく
+    // （デバッグレイヤーが無い Release ビルドでも同じ説明を出せる）。
+    Microsoft::WRL::ComPtr<ID3DBlob> m_rsBlob;
     DXGI_FORMAT m_outFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 
     struct Entry

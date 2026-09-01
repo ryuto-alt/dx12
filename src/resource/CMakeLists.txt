@@ -19,6 +19,7 @@ FetchContent_MakeAvailable(assimp)
 add_library(Resource STATIC
     ShaderCompiler.cpp
     ShaderRuntimeCompiler.cpp
+    ShaderDiagnostics.cpp
     ShaderRegistry.cpp
     ShaderManager.cpp
     TextureLoader.cpp

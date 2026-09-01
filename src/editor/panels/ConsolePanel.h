@@ -9,18 +9,23 @@
 namespace dx12e
 {
 class ScriptEngine;
+class EditorContext;
 
 // エディタ内コンソール（Unity の Console + Unreal の Output Log 参考）。
 // Logger のインメモリリングバッファ（全ログ = エンジン/Lua/ビルド/MCP）を表示する。
 //  - 重大度トグル（情報/警告/エラー、件数バッジ付き）+ テキスト検索
 //  - 折りたたみ（同一メッセージを xN 集約）/ 自動スクロール / Play時クリア / エラーで前面
-//  - 行クリックで詳細ペイン（全文表示・コピー）
+//  - 行クリックで詳細ペイン（全文表示・コピー）/ 行を右クリックで全文コピー
+//  - ★カスタムシェーダーのエラー行をクリックすると、そのシェーダーを使っている
+//    エンティティを選び直し、Inspector の該当セクションを開いて全文をその場に出す
+//    （EditorContext::revealShaderIssue 経由。詳細は resource/ShaderDiagnostics.h）
 //  - 下部に Lua 即時実行行（Unreal のコンソール入力相当。scene/fx/camera 等がそのまま使える）
 // アセットブラウザの隣タブに常設される（EditorLayer::BuildDefaultLayout）。
 class ConsolePanel
 {
 public:
-    void Render(ScriptEngine* scriptEngine, bool isPlaying);
+    // ctx は省略可（null なら Inspector へのジャンプが無効になるだけ）。
+    void Render(ScriptEngine* scriptEngine, bool isPlaying, EditorContext* ctx = nullptr);
 
 private:
     void PullNewEntries();   // Logger から新着を取り込み（新着エラーで前面化）
