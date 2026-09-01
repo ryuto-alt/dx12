@@ -729,11 +729,13 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                 }
 
                 // --- ドラッグ&ドロップソース ---
+                // ★Shader(.hlsl) もドラッグできる。以前は一覧に出るだけで掴めず、
+                //   カスタムシェーダーの割り当ては Inspector のコンボから探すしかなかった。
                 if (!entry.isDirectory &&
                     (entry.type == AssetType::Model || entry.type == AssetType::Texture ||
                      entry.type == AssetType::Script || entry.type == AssetType::Prefab ||
                      entry.type == AssetType::Material || entry.type == AssetType::UiAnim ||
-                     entry.type == AssetType::SpriteSheet))
+                     entry.type == AssetType::SpriteSheet || entry.type == AssetType::Shader))
                 {
                     if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
                     {
@@ -744,6 +746,8 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                         ImGui::Text("%s", entry.displayName.c_str());
                         if (entry.type == AssetType::Model || entry.type == AssetType::Prefab)
                             ImGui::TextDisabled("Drop to Scene");
+                        else if (entry.type == AssetType::Shader)
+                            ImGui::TextDisabled("Drop to MeshRenderer / Sprite2D / Camera");
                         ImGui::EndDragDropSource();
                     }
                 }

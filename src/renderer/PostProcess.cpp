@@ -46,7 +46,7 @@ enum PostEffectBit : uint32_t
     PE_DISTORT    = 1u << 30,
 };
 
-// HLSL の cbuffer PostCB と一致させる（12 個の float4 = 48 DWORD、CBV 経由）。
+// HLSL の cbuffer PostCB と一致させる（19 個の float4 = 76 DWORD、CBV 経由）。
 struct PostCB
 {
     float uvOffset[2];     // row0: uvOffsetScale.xy
@@ -89,8 +89,33 @@ struct PostCB
     float lutSize;         // row11: extra0.x
     float lutAmount;       //        extra0.y
     float _pad4[2];        //        extra0.zw
+    // ── 詳細パラメータ（「1 エフェクト 1 スライダー」を卒業するための追加分）──
+    float vignetteRadius;    // row12: vig2
+    float vignetteSoftness;
+    float vignetteRoundness;
+    float chromaMode;
+    float vignetteColor[3];  // row13: vigCol.xyz
+    float scanCount;         //        vigCol.w
+    float lensMode;          // row14: lens2
+    float lensK2;
+    float lensZoom;
+    float lensFlags;         //        bit0=円形補正 / bit1..2=はみ出し処理
+    float lensChroma;        // row15: lens3
+    float scanCurve;
+    float glitchBlocks;
+    float glitchSpeed;
+    float glitchColor;       // row16: misc0
+    float grainSize;
+    float grainColored;
+    float radialSamples;
+    float radialCenterX;     // row17: misc1
+    float radialCenterY;
+    float outlineThickness;
+    float outlineThreshold;
+    float outlineBg[3];      // row18: outl2.xyz
+    float outlineOnly;       //        outl2.w
 };
-static_assert(sizeof(PostCB) == 48 * sizeof(float), "PostCB must be 48 DWORDs (12 float4)");
+static_assert(sizeof(PostCB) == 76 * sizeof(float), "PostCB must be 76 DWORDs (19 float4)");
 
 PostProcess::PostProcess()  = default;
 PostProcess::~PostProcess() = default;
@@ -317,6 +342,37 @@ void PostProcess::Apply(ID3D12GraphicsCommandList* cmd,
     cb.outline     = s.outline;
     cb.lutSize     = in.lutSize;
     cb.lutAmount   = s.lutAmount;
+
+    cb.vignetteRadius    = s.vignetteRadius;
+    cb.vignetteSoftness  = s.vignetteSoftness;
+    cb.vignetteRoundness = s.vignetteRoundness;
+    cb.chromaMode        = static_cast<float>(s.chromaMode);
+    cb.vignetteColor[0]  = s.vignetteColor.x;
+    cb.vignetteColor[1]  = s.vignetteColor.y;
+    cb.vignetteColor[2]  = s.vignetteColor.z;
+    cb.scanCount         = s.scanCount;
+    cb.lensMode          = static_cast<float>(s.lensMode);
+    cb.lensK2            = s.lensK2;
+    cb.lensZoom          = s.lensZoom;
+    // bit0=円形補正 / bit1..2=はみ出し処理（0=端を伸ばす 1=黒 2=鏡映）
+    cb.lensFlags         = static_cast<float>((s.lensCircular ? 1u : 0u)
+                         | ((static_cast<u32>(std::clamp(s.lensEdge, 0, 2)) & 3u) << 1));
+    cb.lensChroma        = s.lensChroma;
+    cb.scanCurve         = s.scanCurve;
+    cb.glitchBlocks      = s.glitchBlocks;
+    cb.glitchSpeed       = s.glitchSpeed;
+    cb.glitchColor       = s.glitchColor;
+    cb.grainSize         = s.grainSize;
+    cb.grainColored      = s.grainColored ? 1.0f : 0.0f;
+    cb.radialSamples     = static_cast<float>(s.radialSamples);
+    cb.radialCenterX     = s.radialCenterX;
+    cb.radialCenterY     = s.radialCenterY;
+    cb.outlineThickness  = s.outlineThickness;
+    cb.outlineThreshold  = s.outlineThreshold;
+    cb.outlineBg[0]      = s.outlineBg.x;
+    cb.outlineBg[1]      = s.outlineBg.y;
+    cb.outlineBg[2]      = s.outlineBg.z;
+    cb.outlineOnly       = s.outlineOnly ? 1.0f : 0.0f;
 
     // 同一フレーム内の複数 Apply（メイン + カメラプレビュー等）で CB スロットを分ける。
     // コマンドリスト実行はフレーム末尾なので、同じスロットを使い回すと後勝ちで上書きされる。

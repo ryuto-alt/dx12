@@ -85,4 +85,84 @@ float4 PSMain(PSInput input) : SV_TARGET
 }
 )HLSL";
 
+// ===== スクリーンシェーダー（CameraComponent::screenShaderPath）の雛形 =====
+//
+// ポストプロセスが終わった【完成した画面】をテクスチャとして受け取り、好きに書き換える 1 パス。
+// ルートシグネチャは src/renderer/ScreenShaderPass.cpp が固定で持っている:
+//   t0 = 画面カラー(LDR/ガンマ空間) / t1 = 深度 / b0 = ScreenShaderCB(20 DWORD)
+//   s0 = linear clamp / s1 = point clamp
+// ★これ以外のレジスタ（b1, t2, ...）を宣言すると PSO 生成に失敗して素通しになる。
+//   その場合は dx12_engine.log に理由が出る。
+//
+// 画面のサンプルは必ず SampleScreen(uv) を通すこと。中間 RT はウィンドウ全面で、絵は
+// その中の「シーンビューの矩形」にしか入っていない。写像は uvOffsetScale で渡してある。
+inline const char* kNewScreenShaderTemplate = R"HLSL(// スクリーンシェーダー: 画面全体に掛かる 1 パス
+// カメラ（CameraComponent）の「画面シェーダー」に割り当てて使います。
+// assets/shaders/ に置いて保存すると自動でホットリロードされます。
+//
+// 使えるもの（この 4 つ以外のレジスタは宣言しないこと）:
+//   t0 = 画面カラー / t1 = 深度 / b0 = 下の ScreenShaderCB / s0 linear, s1 point
+
+Texture2D    gScreen : register(t0);
+Texture2D    gDepth  : register(t1);
+SamplerState gLinear : register(s0);
+SamplerState gPoint  : register(s1);
+
+cbuffer ScreenShaderCB : register(b0)
+{
+    float4 resolution;    // xy = 画面の px, zw = 1/px
+    float4 timeParams;    // x = 経過秒, y = デルタ秒, z = アスペクト(W/H), w = フレーム番号
+    float4 params;        // Inspector の「パラメーター」float4（好きに使ってよい）
+    float4 cameraParams;  // x = near, y = far, z = 垂直FOV(度), w = 正射なら 1
+    float4 uvOffsetScale; // ★内部用。SampleScreen / SampleDepth が使う
+};
+
+// uv は 0..1 で「画面の左上→右下」。必ずこれ経由で読むこと。
+float3 SampleScreen(float2 uv)
+{
+    return gScreen.Sample(gLinear, uv * uvOffsetScale.zw + uvOffsetScale.xy).rgb;
+}
+float SampleDepth(float2 uv)
+{
+    return gDepth.Sample(gPoint, uv * uvOffsetScale.zw + uvOffsetScale.xy).r;
+}
+// 非線形の深度をカメラからの距離(m)へ直す（透視カメラのみ）。
+float LinearDepth(float d)
+{
+    float n = cameraParams.x, f = cameraParams.y;
+    return (n * f) / max(f - d * (f - n), 1e-6);
+}
+
+struct VSOut
+{
+    float4 pos : SV_POSITION;
+    float2 uv  : TEXCOORD0;
+};
+
+// 頂点バッファ無しのフルスクリーン三角形（3 頂点で画面を覆う定石）。
+VSOut VSMain(uint vid : SV_VertexID)
+{
+    VSOut o;
+    o.uv  = float2((vid << 1) & 2, vid & 2);
+    o.pos = float4(o.uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
+    return o;
+}
+
+float4 PSMain(VSOut i) : SV_TARGET
+{
+    float3 col = SampleScreen(i.uv);
+
+    // ── ここから下を書き換える ──
+    // 例: 走る走査線 + 周辺を少し暗く（params.x で強さを調整できる）
+    float strength = saturate(params.x > 0.0 ? params.x : 0.35);
+    float band = sin((i.uv.y + timeParams.x * 0.15) * resolution.y * 0.5) * 0.5 + 0.5;
+    col *= lerp(1.0, band, strength * 0.35);
+
+    float2 d = i.uv - 0.5;
+    col *= 1.0 - saturate(dot(d, d) * 1.2) * strength;
+
+    return float4(col, 1.0);
+}
+)HLSL";
+
 } // namespace dx12e

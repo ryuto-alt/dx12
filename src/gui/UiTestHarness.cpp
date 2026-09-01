@@ -197,17 +197,22 @@ const ImGuiTestItemInfo* SelectLastItem(ImGuiTestItemList& items)
 // 1 件ごとに数フレーム回して Inspector 側の描画まで到達させる。
 void ClickEveryHierarchyItem(ImGuiTestContext* ctx, int maxItems)
 {
-    ctx->SetRef(kWinHierarchy);
-    ImGuiTestItemList items;
-    ctx->GatherItems(&items, "", 3);
-
+    // ★行は毎回集め直す。ヒエラルキーは ImGuiListClipper で【可視行しか作らない】ので、
+    //   クリックで選択が変わって行がスクロール/展開されると、最初に拾った ID が
+    //   その場から消えて "Unable to locate item" で落ちる（T_InspectorOpenAll は
+    //   同じ理由で既に集め直す形に直っていたが、こちらだけ古いままだった）。
     int clicked = 0;
-    for (int i = 0; i < items.GetSize(); ++i)
+    for (int i = 0; i < maxItems; ++i)
     {
+        ctx->SetRef(kWinHierarchy);
+        ImGuiTestItemList items;
+        ctx->GatherItems(&items, "", 3);
+        if (i >= items.GetSize()) break;
+
         const ImGuiTestItemInfo* item = items[i];
-        if (clicked >= maxItems) break;
         if (item == nullptr || item->ID == 0 || item->Window == nullptr) continue;
         if (std::strstr(item->DebugLabel, "✚") != nullptr) continue;
+        if (!ctx->ItemExists(item->ID)) continue;   // クリッパで消えた行は飛ばす
 
         ctx->MouseMove(item->ID);
         ctx->MouseClick(0);

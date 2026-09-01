@@ -3003,6 +3003,7 @@ end
 
 local function d2xz(ax, az, bx, bz) local dx, dz = ax-bx, az-bz; return dx*dx + dz*dz end
 
+)LUA" R"LUA(
 -- ===== Actor: 名前付きエンティティの薄いラッパー =====
 Actor = {}
 Actor.__index = Actor

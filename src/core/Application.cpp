@@ -1084,6 +1084,17 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_spriteRenderer->InitializeWorld(*m_graphicsDevice, kSceneColorFormat,
                                           DXGI_FORMAT_D32_FLOAT, PathResolver::ShaderDirW());
 
+        // 画面全体のカスタムシェーダー（CameraComponent::screenShaderPath）の 1 パス。
+        // ★入力 RT はレンダー解像度ではなく【表示解像度】。uber パスが
+        //   「レンダー解像度 → 表示矩形」の拡大を担うので、その後段はもう表示解像度で回る。
+        m_screenShaderPass = std::make_unique<ScreenShaderPass>();
+        m_screenShaderPass->Initialize(*m_graphicsDevice, m_swapChain->GetFormat());
+        const float screenClear[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        m_screenShaderRT = std::make_unique<RenderTarget>();
+        m_screenShaderRT->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
+                                     m_window->GetWidth(), m_window->GetHeight(),
+                                     m_swapChain->GetFormat(), screenClear);
+
         // パーティクル歪みバッファ（熱ゆらぎ/衝撃波が画面を歪ませる。RG=UVオフセット）
         const float distortClear[4] = {0.0f, 0.0f, 0.0f, 0.0f};
         m_distortRT = std::make_unique<RenderTarget>();
@@ -1505,6 +1516,9 @@ void Application::Run()
             {
                 m_commandQueue->WaitIdle();
                 m_swapChain->Resize(w, h, *m_descriptorHeap);
+                // スクリーンシェーダーの入力 RT は【表示解像度】なのでここで追従させる
+                // （renderScale で動くシーン系 RT の UpdateRenderResolution とは別扱い）。
+                if (m_screenShaderRT) m_screenShaderRT->Resize(*m_graphicsDevice, w, h);
                 m_renderResFlush = true;   // レンダー解像度はデバウンスせず即時追従させる
 
                 // カメラアスペクト比更新（エディタモードではサイドバー分引く）
@@ -1818,6 +1832,7 @@ void Application::Shutdown()
     m_gitAbort.store(true);
     if (m_gitThread.joinable())
         m_gitThread.join();
+    StopGitWatcher();   // 変更一覧の自動追従スレッド（起動していなければ何もしない）
 
     // GPU の処理完了を待機
     if (m_commandQueue)
@@ -1872,6 +1887,8 @@ void Application::Shutdown()
     m_dofPass.reset();
     m_motionBlurPass.reset();
     m_distortRT.reset();
+    m_screenShaderRT.reset();
+    m_screenShaderPass.reset();
     m_gpuParticles.reset();
     // SSAO / コンタクトシャドウ（GPU リソース）をデバイス解放より前に明示破棄
     m_ssaoPass.reset();

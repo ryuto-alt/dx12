@@ -20,127 +20,51 @@ void Application::RegisterMcpRenderMethods()
     // ════════════════════════════════════════════════════════════
     //  ビジュアル/ポスト設定の操作(ポストプロセス・SSAO)
     // ════════════════════════════════════════════════════════════
+    // ★get / set とも DX12E_POST_FIELDS（renderer/PostProcessSettings.h）から生成する。
+    //   手書きの並びが 3 箇所（get / set / TS スキーマ）に散っていたせいで、
+    //   エンジンに足したのに MCP から読めない・書けないフィールドが常に湧いていた。
+    //   TS 側の取りこぼしは tools/mcp-server/schemaDrift.test.ts が X マクロと突き合わせて赤くする。
     McpDefine("get_post_process", "", DX12E_MCP_HANDLER
         {
             const auto& pp = m_scene->GetPostSettings();
+            json out = json::object();
+#define DX12E_MCP_PPGET_B(f) out[#f] = pp.f;
+#define DX12E_MCP_PPGET_F(f) out[#f] = pp.f;
+#define DX12E_MCP_PPGET_I(f) out[#f] = pp.f;
+#define DX12E_MCP_PPGET_V(f) out[#f] = json::array({pp.f.x, pp.f.y, pp.f.z});
+#define DX12E_MCP_PPGET_S(f) out[#f] = pp.f;
+            DX12E_POST_FIELDS(DX12E_MCP_PPGET_B, DX12E_MCP_PPGET_F, DX12E_MCP_PPGET_I,
+                              DX12E_MCP_PPGET_V, DX12E_MCP_PPGET_S)
+#undef DX12E_MCP_PPGET_B
+#undef DX12E_MCP_PPGET_F
+#undef DX12E_MCP_PPGET_I
+#undef DX12E_MCP_PPGET_V
+#undef DX12E_MCP_PPGET_S
             resp["ok"] = true;
-            resp["result"] = {
-                {"enabled", pp.enabled},
-                {"exposureOn", pp.exposureOn}, {"exposure", pp.exposure},
-                {"contrastOn", pp.contrastOn}, {"contrast", pp.contrast},
-                {"brightnessOn", pp.brightnessOn}, {"brightness", pp.brightness},
-                {"saturationOn", pp.saturationOn}, {"saturation", pp.saturation},
-                {"warmthOn", pp.warmthOn}, {"warmth", pp.warmth},
-                {"hueOn", pp.hueOn}, {"hueShift", pp.hueShift},
-                {"tintOn", pp.tintOn}, {"tint", {pp.tint.x, pp.tint.y, pp.tint.z}},
-                {"bloomOn", pp.bloomOn}, {"bloom", pp.bloom}, {"bloomThreshold", pp.bloomThreshold},
-                {"vignetteOn", pp.vignetteOn}, {"vignette", pp.vignette},
-                {"chromaticOn", pp.chromaticOn}, {"chromatic", pp.chromatic},
-                {"pixelizeOn", pp.pixelizeOn}, {"pixelSize", pp.pixelSize},
-                {"posterizeOn", pp.posterizeOn}, {"posterize", pp.posterize},
-                {"ditherOn", pp.ditherOn}, {"ditherLevels", pp.ditherLevels},
-                {"scanlineOn", pp.scanlineOn}, {"scanline", pp.scanline},
-                {"sharpenOn", pp.sharpenOn}, {"sharpen", pp.sharpen},
-                {"grainOn", pp.grainOn}, {"grain", pp.grain},
-                {"invertOn", pp.invertOn}, {"invert", pp.invert},
-                {"sepiaOn", pp.sepiaOn}, {"sepia", pp.sepia},
-                {"grayscaleOn", pp.grayscaleOn}, {"grayscale", pp.grayscale},
-                {"lensOn", pp.lensOn}, {"lens", pp.lens},
-                {"waveOn", pp.waveOn}, {"waveAmp", pp.waveAmp}, {"waveFreq", pp.waveFreq}, {"waveSpeed", pp.waveSpeed},
-                {"radialOn", pp.radialOn}, {"radial", pp.radial},
-                {"glitchOn", pp.glitchOn}, {"glitch", pp.glitch},
-                {"outlineOn", pp.outlineOn}, {"outline", pp.outline},
-                {"outlineColor", {pp.outlineColor.x, pp.outlineColor.y, pp.outlineColor.z}},
-                {"fxaaOn", pp.fxaaOn},
-                {"tonemapper", pp.tonemapper},
-                {"bloomKnee", pp.bloomKnee}, {"bloomRadius", pp.bloomRadius},
-                {"autoExposureOn", pp.autoExposureOn}, {"aeSpeed", pp.aeSpeed}, {"aeEvComp", pp.aeEvComp},
-                {"aeLogMin", pp.aeLogMin}, {"aeLogMax", pp.aeLogMax},
-                {"lutOn", pp.lutOn}, {"lutPath", pp.lutPath}, {"lutAmount", pp.lutAmount},
-                {"debandOn", pp.debandOn},
-                {"godraysOn", pp.godraysOn}, {"grIntensity", pp.grIntensity},
-                {"grDensity", pp.grDensity}, {"grDecay", pp.grDecay},
-                {"lensflareOn", pp.lensflareOn}, {"lfIntensity", pp.lfIntensity},
-                {"lfGhosts", pp.lfGhosts}, {"lfDispersal", pp.lfDispersal},
-                {"lfHalo", pp.lfHalo}, {"lfChroma", pp.lfChroma},
-                {"dofOn", pp.dofOn}, {"dofFocusDist", pp.dofFocusDist},
-                {"dofFocusRange", pp.dofFocusRange}, {"dofBlurSize", pp.dofBlurSize},
-                {"dofFocusName", pp.dofFocusName}, {"dofAperture", pp.dofAperture},
-                {"dofFocalLength", pp.dofFocalLength},
-                {"motionBlurOn", pp.motionBlurOn}, {"mbStrength", pp.mbStrength},
-                {"mbSamples", pp.mbSamples},
-            };
+            resp["result"] = std::move(out);
         });
 
     McpDefine("set_post_process", McpPostParamSpec(), DX12E_MCP_HANDLER
         {
             auto& pp = m_scene->GetPostSettings();
-            pp.enabled = params.value("enabled", pp.enabled);
-            pp.exposureOn = params.value("exposureOn", pp.exposureOn); pp.exposure = params.value("exposure", pp.exposure);
-            pp.contrastOn = params.value("contrastOn", pp.contrastOn); pp.contrast = params.value("contrast", pp.contrast);
-            pp.brightnessOn = params.value("brightnessOn", pp.brightnessOn); pp.brightness = params.value("brightness", pp.brightness);
-            pp.saturationOn = params.value("saturationOn", pp.saturationOn); pp.saturation = params.value("saturation", pp.saturation);
-            pp.warmthOn = params.value("warmthOn", pp.warmthOn); pp.warmth = params.value("warmth", pp.warmth);
-            pp.hueOn = params.value("hueOn", pp.hueOn); pp.hueShift = params.value("hueShift", pp.hueShift);
-            pp.tintOn = params.value("tintOn", pp.tintOn);
-            if (params.contains("tint"))
+            auto vec3In = [&params](const char* key, DirectX::XMFLOAT3& dst)
             {
-                auto t = params["tint"].get<std::vector<float>>();
-                if (t.size() == 3) pp.tint = {t[0], t[1], t[2]};
-            }
-            pp.bloomOn = params.value("bloomOn", pp.bloomOn); pp.bloom = params.value("bloom", pp.bloom);
-            pp.bloomThreshold = params.value("bloomThreshold", pp.bloomThreshold);
-            pp.bloomKnee = params.value("bloomKnee", pp.bloomKnee); pp.bloomRadius = params.value("bloomRadius", pp.bloomRadius);
-            pp.tonemapper = params.value("tonemapper", pp.tonemapper);
-            pp.autoExposureOn = params.value("autoExposureOn", pp.autoExposureOn);
-            pp.aeSpeed = params.value("aeSpeed", pp.aeSpeed); pp.aeEvComp = params.value("aeEvComp", pp.aeEvComp);
-            pp.aeLogMin = params.value("aeLogMin", pp.aeLogMin); pp.aeLogMax = params.value("aeLogMax", pp.aeLogMax);
-            pp.lutOn = params.value("lutOn", pp.lutOn); pp.lutPath = params.value("lutPath", pp.lutPath);
-            pp.lutAmount = params.value("lutAmount", pp.lutAmount);
-            pp.debandOn = params.value("debandOn", pp.debandOn);
-            pp.godraysOn = params.value("godraysOn", pp.godraysOn);
-            pp.grIntensity = params.value("grIntensity", pp.grIntensity);
-            pp.grDensity = params.value("grDensity", pp.grDensity);
-            pp.grDecay = params.value("grDecay", pp.grDecay);
-            pp.lensflareOn = params.value("lensflareOn", pp.lensflareOn);
-            pp.lfIntensity = params.value("lfIntensity", pp.lfIntensity);
-            pp.lfGhosts = params.value("lfGhosts", pp.lfGhosts);
-            pp.lfDispersal = params.value("lfDispersal", pp.lfDispersal);
-            pp.lfHalo = params.value("lfHalo", pp.lfHalo);
-            pp.lfChroma = params.value("lfChroma", pp.lfChroma);
-            pp.dofOn = params.value("dofOn", pp.dofOn);
-            pp.dofFocusDist = params.value("dofFocusDist", pp.dofFocusDist);
-            pp.dofFocusRange = params.value("dofFocusRange", pp.dofFocusRange);
-            pp.dofBlurSize = params.value("dofBlurSize", pp.dofBlurSize);
-            pp.dofFocusName = params.value("dofFocusName", pp.dofFocusName);
-            pp.dofAperture = params.value("dofAperture", pp.dofAperture);
-            pp.dofFocalLength = params.value("dofFocalLength", pp.dofFocalLength);
-            pp.motionBlurOn = params.value("motionBlurOn", pp.motionBlurOn);
-            pp.mbStrength = params.value("mbStrength", pp.mbStrength);
-            pp.mbSamples = params.value("mbSamples", pp.mbSamples);
-            pp.vignetteOn = params.value("vignetteOn", pp.vignetteOn); pp.vignette = params.value("vignette", pp.vignette);
-            pp.chromaticOn = params.value("chromaticOn", pp.chromaticOn); pp.chromatic = params.value("chromatic", pp.chromatic);
-            pp.pixelizeOn = params.value("pixelizeOn", pp.pixelizeOn); pp.pixelSize = params.value("pixelSize", pp.pixelSize);
-            pp.posterizeOn = params.value("posterizeOn", pp.posterizeOn); pp.posterize = params.value("posterize", pp.posterize);
-            pp.ditherOn = params.value("ditherOn", pp.ditherOn); pp.ditherLevels = params.value("ditherLevels", pp.ditherLevels);
-            pp.scanlineOn = params.value("scanlineOn", pp.scanlineOn); pp.scanline = params.value("scanline", pp.scanline);
-            pp.sharpenOn = params.value("sharpenOn", pp.sharpenOn); pp.sharpen = params.value("sharpen", pp.sharpen);
-            pp.grainOn = params.value("grainOn", pp.grainOn); pp.grain = params.value("grain", pp.grain);
-            pp.invertOn = params.value("invertOn", pp.invertOn); pp.invert = params.value("invert", pp.invert);
-            pp.sepiaOn = params.value("sepiaOn", pp.sepiaOn); pp.sepia = params.value("sepia", pp.sepia);
-            pp.grayscaleOn = params.value("grayscaleOn", pp.grayscaleOn); pp.grayscale = params.value("grayscale", pp.grayscale);
-            pp.lensOn = params.value("lensOn", pp.lensOn); pp.lens = params.value("lens", pp.lens);
-            pp.waveOn = params.value("waveOn", pp.waveOn); pp.waveAmp = params.value("waveAmp", pp.waveAmp);
-            pp.waveFreq = params.value("waveFreq", pp.waveFreq); pp.waveSpeed = params.value("waveSpeed", pp.waveSpeed);
-            pp.radialOn = params.value("radialOn", pp.radialOn); pp.radial = params.value("radial", pp.radial);
-            pp.glitchOn = params.value("glitchOn", pp.glitchOn); pp.glitch = params.value("glitch", pp.glitch);
-            pp.outlineOn = params.value("outlineOn", pp.outlineOn); pp.outline = params.value("outline", pp.outline);
-            if (params.contains("outlineColor"))
-            {
-                auto c = params["outlineColor"].get<std::vector<float>>();
-                if (c.size() == 3) pp.outlineColor = {c[0], c[1], c[2]};
-            }
-            pp.fxaaOn = params.value("fxaaOn", pp.fxaaOn);
+                if (!params.contains(key) || !params[key].is_array()) return;
+                auto v = params[key].get<std::vector<float>>();
+                if (v.size() == 3) dst = {v[0], v[1], v[2]};
+            };
+#define DX12E_MCP_PPSET_B(f) pp.f = params.value(#f, pp.f);
+#define DX12E_MCP_PPSET_F(f) pp.f = params.value(#f, pp.f);
+#define DX12E_MCP_PPSET_I(f) pp.f = params.value(#f, pp.f);
+#define DX12E_MCP_PPSET_V(f) vec3In(#f, pp.f);
+#define DX12E_MCP_PPSET_S(f) pp.f = params.value(#f, pp.f);
+            DX12E_POST_FIELDS(DX12E_MCP_PPSET_B, DX12E_MCP_PPSET_F, DX12E_MCP_PPSET_I,
+                              DX12E_MCP_PPSET_V, DX12E_MCP_PPSET_S)
+#undef DX12E_MCP_PPSET_B
+#undef DX12E_MCP_PPSET_F
+#undef DX12E_MCP_PPSET_I
+#undef DX12E_MCP_PPSET_V
+#undef DX12E_MCP_PPSET_S
             resp["ok"] = true;
             resp["result"] = {{"applied", true}};
         });

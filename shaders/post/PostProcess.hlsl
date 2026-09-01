@@ -53,6 +53,14 @@ cbuffer PostCB : register(b0)
     float4 wave;            // waveAmp, waveFreq, waveSpeed, _
     float4 outlineP;        // outlineColor.rgb, outlineStrength
     float4 extra0;          // lutSize, lutAmount, _, _
+    // ── ここから下は「1 エフェクト 1 スライダー」を卒業するために足した詳細パラメータ ──
+    float4 vig2;            // vignetteRadius, vignetteSoftness, vignetteRoundness, chromaMode
+    float4 vigCol;          // vignetteColor.rgb, scanCount
+    float4 lens2;           // lensMode, lensK2, lensZoom, lensFlags(bit0=円形補正, bit1..2=はみ出し処理)
+    float4 lens3;           // lensChroma, scanCurve, glitchBlocks, glitchSpeed
+    float4 misc0;           // glitchColor, grainSize, grainColored, radialSamples
+    float4 misc1;           // radialCenterX, radialCenterY, outlineThickness, outlineThreshold
+    float4 outl2;           // outlineBg.rgb, outlineOnly
 };
 
 Texture2D    gScene : register(t0);
@@ -79,6 +87,13 @@ static float3 HueRotate(float3 col, float angle)
 }
 
 static float Rand(float2 p) { return frac(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453); }
+
+// 鏡映ラップ（0..1 の外へ出た UV を折り返す）。lensEdge=2 用。
+static float2 MirrorUV(float2 uv)
+{
+    float2 t = frac(abs(uv) * 0.5) * 2.0;
+    return 1.0 - abs(1.0 - t);
+}
 
 // シーンRT にはリニア HDR が入っている（forward/skybox はトーンマップせず出力）。
 // HDR 空間で行うべき処理（露出・ブルーム合成）の後、ここで表示変換（トーンマップ+ガンマ）を
@@ -143,6 +158,37 @@ static float Bayer4(float2 px)
     return m[idx] / 16.0;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// レンズ歪み / 魚眼の逆写像。
+//   出力ピクセルの正規化半径 r（画面中心=0 / 短辺の端=1）から、元のパース画像を
+//   どの半径でサンプルするか rIn を返す。r で割った「倍率」を返す（r=0 で 1 に収束）。
+//
+//   ★旧実装は d*(1+k*r^2*1.5) を【アスペクトを無視した UV 空間】で掛けていたので、
+//     16:9 では横だけ強く歪んで円が楕円に潰れた（＝「魚眼がおかしい」の正体）。
+//     さらに範囲外は端の 1px が引き伸ばされるだけで、魚眼の丸い像にならなかった。
+// ─────────────────────────────────────────────────────────────────────────────
+static float LensRadiusScale(float r, int mode, float k, float k2)
+{
+    if (mode == 0)
+    {
+        // 多項式（Brown-Conrady 風）。k>0 で樽（画角が広がる）/ k<0 で糸巻き。
+        float r2 = r * r;
+        return 1.0 + k * r2 + k2 * r2 * r2;
+    }
+
+    // 魚眼。k を「最大半画角」へ写す（k=1 で 85 度近く＝ど魚眼）。
+    // 出力半径 r に対応する画角 theta を作り、パース画像上の半径 tan(theta)/tan(thetaMax) を返す。
+    float thetaMax = clamp(abs(k), 0.001, 1.0) * (PI * 0.5 - 0.05);
+    float theta = (mode == 1)
+        ? r * thetaMax                                   // 等距離射影（f*theta）
+        : 2.0 * asin(saturate(r * sin(thetaMax * 0.5))); // 等立体角射影（2f*sin(theta/2)）
+    float denom = max(tan(thetaMax), 1e-5);
+    float rIn = tan(theta) / denom;
+    // k<0 の魚眼は「逆魚眼」として扱う（半径の写像を反転）。
+    if (k < 0.0) rIn = (r > 1e-5) ? (r * r / max(rIn, 1e-5)) : r;
+    return (r > 1e-5) ? (rIn / r) : 1.0;
+}
+
 float4 PostPS(FSQuadVSOut i) : SV_TARGET
 {
     float2 scale = uvOffsetScale.zw;
@@ -150,6 +196,8 @@ float4 PostPS(FSQuadVSOut i) : SV_TARGET
     float2 texel = texelTime.xy;
     float  time  = texelTime.z;
     uint   mask  = (uint)masks.x;
+    // 画面のアスペクト比（W/H）。テクセルサイズから出せるので CB を増やさない。
+    float  aspect = texel.y / max(texel.x, 1e-8);
 
     // マスター無効（全ビット 0）= エフェクト無し。ただしシーンRTはリニアHDRなので
     // トーンマップ+ガンマだけは必ず適用して表示用カラーにする。
@@ -158,6 +206,11 @@ float4 PostPS(FSQuadVSOut i) : SV_TARGET
 
     float2 luv    = i.uv;          // ビューポートローカル 0..1
     bool   crtOut = false;
+    bool   lensOut = false;
+    // 3 タップの色収差オフセット（レンズの倍率色収差と Chromatic をここに集約する。
+    // ★旧実装は Chromatic と FXAA が else-if で排他になっていて、
+    //   色収差を ON にすると FXAA が【無言で消えていた】）。
+    float2 caOfs = float2(0.0, 0.0);
 
     // ===== UV ステージ（サンプル前に UV を歪ませる） =====
 
@@ -168,12 +221,45 @@ float4 PostPS(FSQuadVSOut i) : SV_TARGET
         luv += dofs;
     }
 
-    // --- レンズ歪み（バレル） ---
+    // --- レンズ歪み / 魚眼 ---
     if (mask & E_LENS)
     {
-        float2 d = luv - 0.5;
-        float r2 = dot(d, d);
-        luv = 0.5 + d * (1.0 + dist0.x * r2 * 1.5);
+        int   lmode  = (int)lens2.x;
+        float k      = dist0.x;
+        float k2     = lens2.y;
+        float zoom   = max(lens2.z, 0.01);
+        uint  lflags = (uint)lens2.w;
+        bool  circular = (lflags & 1u) != 0u;
+        int   edge     = (int)((lflags >> 1) & 3u);
+
+        // 中心からのベクトルを「短辺基準の正方座標」へ持ち上げる＝歪みが円形になる。
+        float2 d = (luv - 0.5) * 2.0;
+        if (circular) d.x *= aspect;
+
+        float r  = length(d);
+        float sc = LensRadiusScale(r, lmode, k, k2) / zoom;
+
+        float2 dOut = d * sc;
+        if (circular) dOut.x /= aspect;
+        luv = dOut * 0.5 + 0.5;
+
+        // 倍率色収差: 歪みの強さに比例して R/B の倍率をずらす（本物のレンズ味）。
+        if (lens3.x > 0.0001)
+        {
+            float2 dCa = d * (sc * lens3.x * 0.02 * r);
+            if (circular) dCa.x /= aspect;
+            caOfs += dCa * 0.5;
+        }
+
+        // はみ出しの扱い。0=端を引き伸ばす(サンプラの clamp 任せ) / 1=黒 / 2=鏡映
+        if (edge == 1)
+        {
+            if (luv.x < 0.0 || luv.x > 1.0 || luv.y < 0.0 || luv.y > 1.0) lensOut = true;
+        }
+        else if (edge == 2)
+        {
+            luv = MirrorUV(luv);
+        }
     }
 
     // --- 波ゆらぎ（水中/陽炎） ---
@@ -187,7 +273,7 @@ float4 PostPS(FSQuadVSOut i) : SV_TARGET
     if (mask & E_SCANLINE)
     {
         float2 d = luv - 0.5;
-        luv += d * dot(d, d) * (stylize0.z * 0.18);
+        luv += d * dot(d, d) * lens3.y;
         if (luv.x < 0.0 || luv.x > 1.0 || luv.y < 0.0 || luv.y > 1.0)
             crtOut = true;
     }
@@ -195,10 +281,17 @@ float4 PostPS(FSQuadVSOut i) : SV_TARGET
     // --- デジタルグリッチ（行ブロックを横ずらし） ---
     if (mask & E_GLITCH)
     {
-        float blockY = floor(luv.y * 24.0);
-        float n = Rand(float2(blockY, floor(time * 12.0)));
+        float blocks = max(lens3.z, 1.0);
+        float speed  = max(lens3.w, 0.0);
+        float blockY = floor(luv.y * blocks);
+        float n = Rand(float2(blockY, floor(time * speed)));
         if (n > 0.8)
-            luv.x += (Rand(float2(blockY, time)) - 0.5) * dist0.z * 0.3;
+        {
+            float shift = (Rand(float2(blockY, floor(time * speed) + 7.0)) - 0.5) * dist0.z * 0.3;
+            luv.x += shift;
+            // RGB 分離（グリッチらしい色ズレ）。3 タップの共通オフセットに足す。
+            caOfs.x += shift * misc0.x;
+        }
     }
 
     float2 uv = luv * scale + ofs;
@@ -211,40 +304,53 @@ float4 PostPS(FSQuadVSOut i) : SV_TARGET
     }
 
     // ===== サンプル ステージ =====
-    float3 col;
+
+    // --- 色収差（放射 / 水平 / 垂直）---
     if (mask & E_CHROMATIC)
     {
-        float2 dir = (luv - 0.5) * stylize0.x * 0.03;
-        col.r = SampleScene(uv + dir).r;
-        col.g = SampleScene(uv).g;
-        col.b = SampleScene(uv - dir).b;
+        int cmode = (int)vig2.w;
+        float amt = stylize0.x * 0.03;
+        if (cmode == 1)      caOfs += float2(amt, 0.0);
+        else if (cmode == 2) caOfs += float2(0.0, amt);
+        else                 caOfs += (luv - 0.5) * amt;
     }
-    else if (mask & E_FXAA)
+
+    float3 col;
+    if (any(abs(caOfs) > 1e-6))
     {
-        float3 c = SampleScene(uv);
-        float3 n = SampleScene(uv + float2(0, -texel.y));
-        float3 s = SampleScene(uv + float2(0,  texel.y));
-        float3 e = SampleScene(uv + float2( texel.x, 0));
-        float3 w = SampleScene(uv + float2(-texel.x, 0));
-        float edge  = abs(Luma(n) - Luma(s)) + abs(Luma(e) - Luma(w));
-        col = lerp(c, (c + n + s + e + w) * 0.2, saturate(edge * 2.0));
+        col.r = SampleScene(uv + caOfs).r;
+        col.g = SampleScene(uv).g;
+        col.b = SampleScene(uv - caOfs).b;
     }
     else
     {
         col = SampleScene(uv);
     }
 
-    // --- 放射ブラー（中心へズーム） ---
+    // --- FXAA（色収差とは独立に効く。旧実装は排他だった）---
+    if (mask & E_FXAA)
+    {
+        float3 n = SampleScene(uv + float2(0, -texel.y));
+        float3 s = SampleScene(uv + float2(0,  texel.y));
+        float3 e = SampleScene(uv + float2( texel.x, 0));
+        float3 w = SampleScene(uv + float2(-texel.x, 0));
+        float edge  = abs(Luma(n) - Luma(s)) + abs(Luma(e) - Luma(w));
+        col = lerp(col, (col + n + s + e + w) * 0.2, saturate(edge * 2.0));
+    }
+
+    // --- 放射ブラー（任意の中心へズーム） ---
     if (mask & E_RADIAL)
     {
-        float2 dir = (luv - 0.5);
+        int   taps = clamp((int)misc0.w, 2, 32);
+        float2 ctr = float2(misc1.x, misc1.y);
+        float2 dir = (luv - ctr);
         float3 acc = col;
-        [unroll] for (int k = 1; k <= 6; ++k)
+        for (int k = 1; k <= taps; ++k)
         {
-            float t = (float)k / 6.0;
+            float t = (float)k / (float)taps;
             acc += SampleScene(uv - dir * t * dist0.y * 0.15);
         }
-        col = acc / 7.0;
+        col = acc / (float)(taps + 1);
     }
 
     // --- シャープ（アンシャープマスク） ---
@@ -287,10 +393,13 @@ float4 PostPS(FSQuadVSOut i) : SV_TARGET
     if (mask & E_SATURATION) col = lerp(Luma(col).xxx, col, cg0.w); // 彩度
 
     // --- 色温度 ---
+    // ★旧実装のゲインは ±0.08 しかなく、スライダーを端まで振っても
+    //   ほとんど見た目が変わらなかった（「効かない」と言われていた項目）。
     if (mask & E_WARMTH)
     {
-        col.r += cg1.x * 0.08;
-        col.b -= cg1.x * 0.08;
+        col.r += cg1.x * 0.16;
+        col.g += cg1.x * 0.03;
+        col.b -= cg1.x * 0.16;
     }
 
     if (mask & E_HUE)  col = HueRotate(col, radians(cg1.y));     // 色相回転
@@ -304,32 +413,34 @@ float4 PostPS(FSQuadVSOut i) : SV_TARGET
     {
         float  sz    = max(extra0.x, 2.0);
         float3 base  = saturate(col);
-        float  scale = (sz - 1.0) / sz;
+        float  lscale = (sz - 1.0) / sz;
         float  ofsL  = 0.5 / sz;
         float  b      = base.b * (sz - 1.0);
         float  slice0 = floor(b);
         float  f      = b - slice0;
         float  slice1 = min(slice0 + 1.0, sz - 1.0);
-        float  inX    = base.r * scale + ofsL;     // スライス内 0..1
-        float  y      = base.g * scale + ofsL;
+        float  inX    = base.r * lscale + ofsL;     // スライス内 0..1
+        float  y      = base.g * lscale + ofsL;
         float3 l0 = gLut.Sample(gSamp, float2((inX + slice0) / sz, y)).rgb;
         float3 l1 = gLut.Sample(gSamp, float2((inX + slice1) / sz, y)).rgb;
         col = lerp(col, lerp(l0, l1, f), extra0.y);
     }
 
     // --- ポスタライズ ---
+    // ★旧実装は floor(col*N)/(N-1) で、白(1.0)が N/(N-1) = 1.2 に【増光】していた。
+    //   N 段の量子化は floor(col*(N-1)+0.5)/(N-1) が正しい（0 と 1 が保存される）。
     if (mask & E_POSTERIZE)
     {
-        float fl = (float)max(masks.y, 2);
-        col = floor(col * fl) / max(fl - 1.0, 1.0);
+        float fl = (float)max(masks.y, 2) - 1.0;
+        col = floor(saturate(col) * fl + 0.5) / fl;
     }
 
     // --- 順序ディザ ---
     if (mask & E_DITHER)
     {
-        float fl = (float)max(masks.z, 2);
-        float th = Bayer4(i.uv / texel) - 0.5;
-        col = floor(col * fl + th) / max(fl - 1.0, 1.0);
+        float fl = (float)max(masks.z, 2) - 1.0;
+        float th = Bayer4(i.uv / texel);
+        col = floor(saturate(col) * fl + th) / fl;
     }
 
     // --- 色反転 ---
@@ -350,45 +461,69 @@ float4 PostPS(FSQuadVSOut i) : SV_TARGET
     if (mask & E_GRAYSCALE)
         col = lerp(col, Luma(col).xxx, stylize1.w);
 
-    // --- 輪郭線（Sobel エッジ検出） ---
+    // --- 輪郭線（Sobel エッジ検出。太さ / しきい値 / 線画モード）---
     if (mask & E_OUTLINE)
     {
-        float l00 = Luma(SampleScene(uv + float2(-texel.x, -texel.y)));
-        float l10 = Luma(SampleScene(uv + float2(0,        -texel.y)));
-        float l20 = Luma(SampleScene(uv + float2( texel.x, -texel.y)));
-        float l01 = Luma(SampleScene(uv + float2(-texel.x, 0)));
-        float l21 = Luma(SampleScene(uv + float2( texel.x, 0)));
-        float l02 = Luma(SampleScene(uv + float2(-texel.x,  texel.y)));
-        float l12 = Luma(SampleScene(uv + float2(0,         texel.y)));
-        float l22 = Luma(SampleScene(uv + float2( texel.x,  texel.y)));
+        float2 t = texel * max(misc1.z, 0.1);
+        float l00 = Luma(SampleScene(uv + float2(-t.x, -t.y)));
+        float l10 = Luma(SampleScene(uv + float2(0,    -t.y)));
+        float l20 = Luma(SampleScene(uv + float2( t.x, -t.y)));
+        float l01 = Luma(SampleScene(uv + float2(-t.x, 0)));
+        float l21 = Luma(SampleScene(uv + float2( t.x, 0)));
+        float l02 = Luma(SampleScene(uv + float2(-t.x,  t.y)));
+        float l12 = Luma(SampleScene(uv + float2(0,     t.y)));
+        float l22 = Luma(SampleScene(uv + float2( t.x,  t.y)));
         float gx = -l00 - 2.0*l01 - l02 + l20 + 2.0*l21 + l22;
         float gy = -l00 - 2.0*l10 - l20 + l02 + 2.0*l12 + l22;
         // ルマ勾配はリニアHDRのシーンから取る（暗部の勾配が小さいのでゲインで明瞭化）
-        float edge = saturate(sqrt(gx*gx + gy*gy) * outlineP.w * 4.0);
-        col = lerp(col, outlineP.rgb, edge);
+        float g = sqrt(gx*gx + gy*gy);
+        float edge = saturate(max(g - misc1.w, 0.0) * outlineP.w * 4.0);
+        float3 baseCol = (outl2.w > 0.5) ? outl2.rgb : col;   // 線画モードは下地を塗り潰す
+        col = lerp(baseCol, outlineP.rgb, edge);
     }
 
     // --- CRT 走査線 ---
     if (mask & E_SCANLINE)
     {
-        float scan = sin(luv.y * 240.0 * PI) * 0.5 + 0.5;
-        col *= lerp(1.0, scan, stylize0.z * 0.5);
+        float scan = sin(luv.y * max(vigCol.w, 1.0) * PI) * 0.5 + 0.5;
+        col *= lerp(1.0, scan, stylize0.z);
         if (crtOut) col = 0.0;
     }
 
     // --- フィルムグレイン ---
     if (mask & E_GRAIN)
     {
-        float n = Rand(i.uv * (time + 1.0));
-        col += (n - 0.5) * stylize1.x * 0.3;
+        float2 gp = i.uv / (texel * max(misc0.y, 0.25));   // 粒サイズ(px)
+        gp = floor(gp);
+        if (misc0.z > 0.5)
+        {
+            float3 n3 = float3(Rand(gp + time * 1.1),
+                               Rand(gp + time * 1.7 + 13.0),
+                               Rand(gp + time * 2.3 + 71.0));
+            col += (n3 - 0.5) * stylize1.x * 0.3;
+        }
+        else
+        {
+            float n = Rand(gp + frac(time));
+            col += (n - 0.5) * stylize1.x * 0.3;
+        }
     }
 
-    // --- ビネット ---
+    // --- ビネット（半径 / 柔らかさ / 真円度 / 色）---
+    // ★旧実装は 1 - dot(d,d)*2*strength の一発で、半径も境界も固定だった
+    //   （濃くすると画面中央まで一様に暗くなるだけで「四隅だけ落とす」が作れない）。
     if (mask & E_VIGNETTE)
     {
-        float2 d = i.uv - 0.5;
-        col *= saturate(1.0 - dot(d, d) * 2.0 * tintVig.w);
+        float2 d = (i.uv - 0.5) * 2.0;
+        float2 e = float2(lerp(1.0, aspect, saturate(vig2.z)), 1.0);
+        float  r = length(d * e) / max(length(e), 1e-5);   // 中心 0 / 四隅 1
+        float  soft = max(vig2.y, 0.001);
+        float  v = 1.0 - smoothstep(vig2.x - soft, vig2.x + soft, r);
+        col = lerp(vigCol.rgb, col, lerp(1.0, v, saturate(tintVig.w)));
     }
+
+    // --- レンズ歪みのはみ出しを黒で塗る（lensEdge=1）---
+    if (lensOut) col = 0.0;
 
     // --- デバンディング（TPDF ディザ）---
     // 三角分布ノイズ ±0.5/255 を最終 8bit 量子化の直前に加え、空・ビネットの縞を消す。

@@ -566,6 +566,19 @@ struct CameraComponent
     // 能力カタログ(Phase4): 正射投影。2D/2.5D・ボード・RTS俯瞰をエンジン無改造で成立させる。
     CameraProjection projection = CameraProjection::Perspective;
     f32  orthoSize  = 10.0f;    // Orthographic: ビュー縦の半分の世界単位(Unity orthographicSize 相当)
+
+    // ── 画面全体のカスタムシェーダー（スクリーンシェーダー）──
+    // assets/shaders/ 相対の .hlsl。空なら何もしない。
+    // ポストプロセス(uber パス)が終わった【最後】に、画面をもう 1 枚のテクスチャとして
+    // 受け取って好きに書き換える 1 パスが走る。MeshRenderer::shaderPath が「1 個のモデルの
+    // 描き方」を差し替えるのに対し、こちらは「完成した絵そのもの」を差し替える。
+    //   契約: エントリポイントは VSMain / PSMain（メッシュ用と同じ）。
+    //         t0=画面カラー(LDR, ガンマ空間) / t1=深度 / b0=ScreenShaderCB。
+    //         雛形は エディタの「新規スクリーンシェーダー」が書き出す。
+    // ★Inspector のカメラ欄へ .hlsl を D&D するだけで割り当てられる。
+    std::string screenShaderPath;
+    bool        screenShaderEnabled = true;              // パスは残したまま一時的に切る用
+    DirectX::XMFLOAT4 screenShaderParams{0.0f, 0.0f, 0.0f, 0.0f};  // シェーダーへ渡す汎用 float4
 };
 
 // 2Dスプライト(能力カタログ Phase4)。texturePath のテクスチャを、worldSpace=true なら

@@ -926,6 +926,9 @@ void Application::RegisterShaderReloadHandlers()
         {
             m_customPsoCache.erase(relKey);
             m_customSpritePsoCache.erase(relKey);  // Sprite2D::shaderPath 用キャッシュも同じキーで破棄
+            // CameraComponent::screenShaderPath（画面全体のシェーダー）も同じキーで破棄する。
+            // ここを足し忘れると「保存したのに画面が変わらない」＝ホットリロードが効かない。
+            if (m_screenShaderPass) m_screenShaderPass->InvalidatePso(relKey);
         });
 }
 
@@ -1115,6 +1118,36 @@ Application::CustomSpritePsos* Application::EnsureCustomSpritePso(const std::str
     auto& stored = m_customSpritePsoCache[key];
     stored = std::move(entry);
     return stored.valid ? &stored : nullptr;
+}
+
+// カスタムシェーダー(CameraComponent::screenShaderPath)= 画面全体に掛ける 1 パスの PSO。
+// メッシュ/スプライトと同じ流儀（正規化キー → バイトコード → PSO をキャッシュ）。
+// PSO の実体とルートシグネチャは ScreenShaderPass が持つので、ここは橋渡しだけ。
+ID3D12PipelineState* Application::EnsureScreenShaderPso(const std::string& shaderRel)
+{
+    if (!m_screenShaderPass || !m_screenShaderPass->IsReady() || shaderRel.empty())
+        return nullptr;
+
+    const std::string key = NormalizeCustomShaderKey(shaderRel);
+
+    // 生成済み（失敗の記録込み）なら即返す＝毎フレームのコンパイル要求を出さない。
+    if (m_screenShaderPass->FindPso(key))
+        return m_screenShaderPass->FindPso(key);
+
+    std::vector<u8> vsStorage, psStorage;
+    const std::vector<u8>* vsBytes = nullptr;
+    const std::vector<u8>* psBytes = nullptr;
+    if (!FetchCustomShaderBytecode(shaderRel, vsStorage, psStorage, vsBytes, psBytes))
+    {
+        // ★キャッシュへ「失敗」を積むために空で呼ぶ。積まないと毎フレーム
+        //   CompileCustomShader が走り、コンパイルエラーのログで画面が流れ続ける。
+        static const std::vector<u8> kEmpty;
+        m_screenShaderPass->GetOrCreatePso(*m_graphicsDevice, key, kEmpty, kEmpty);
+        Logger::Warn("スクリーンシェーダーが見つかりません（画面はそのまま表示します）: {} "
+                     "— シェーダーを保存し直すか、パスが正しいか確認してください", shaderRel);
+        return nullptr;
+    }
+    return m_screenShaderPass->GetOrCreatePso(*m_graphicsDevice, key, *vsBytes, *psBytes);
 }
 
 // シーンが作り直された（Play→Stop / シーン切替）ときに、entity id をキーにした

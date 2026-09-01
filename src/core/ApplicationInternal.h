@@ -46,6 +46,7 @@
 #include "renderer/Camera.h"
 #include "renderer/Frustum.h"
 #include "renderer/PostProcess.h"
+#include "renderer/ScreenShaderPass.h"
 #include "renderer/BloomPass.h"
 #include "renderer/AutoExposurePass.h"
 #include "renderer/GodRaysPass.h"

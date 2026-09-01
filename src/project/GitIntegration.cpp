@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <cstring>
 #include <algorithm>
 #include <array>
 #include <vector>
@@ -558,6 +559,45 @@ GitResult GitIntegration::CheckoutBranch(const std::string& workDir, const std::
 GitResult GitIntegration::CreateBranch(const std::string& workDir, const std::string& name)
 {
     return RunGit(workDir, "checkout -b \"" + name + "\"");
+}
+
+bool GitIntegration::IsValidBranchName(const std::string& name)
+{
+    if (name.empty()) return false;
+    if (name.front() == '-' || name.front() == '.' || name.front() == '/') return false;
+    if (name.back()  == '.' || name.back()  == '/') return false;
+    if (name.size() >= 5 && name.compare(name.size() - 5, 5, ".lock") == 0) return false;
+    if (name.find("..") != std::string::npos) return false;
+    if (name.find("@{") != std::string::npos) return false;
+    for (unsigned char c : name)
+    {
+        // 制御文字・空白・git のリビジョン構文で意味を持つ記号は使えない。
+        if (c <= 0x20 || c == 0x7F) return false;
+        if (std::strchr("~^:?*[\\\"", static_cast<char>(c)) != nullptr) return false;
+    }
+    return true;
+}
+
+GitResult GitIntegration::RenameBranch(const std::string& workDir,
+                                       const std::string& oldName, const std::string& newName)
+{
+    GitResult bad;
+    if (!IsValidBranchName(newName))
+    {
+        bad.exitCode = 1;
+        bad.output   = "ブランチ名として使えない文字が含まれています: " + newName;
+        return bad;
+    }
+    // -m は「今いるブランチ」でも「別のブランチ」でも同じ形で使える。
+    // 既に同名がある場合は git が拒否する（-M で潰さないのは事故防止のため）。
+    return RunGit(workDir, "branch -m \"" + oldName + "\" \"" + newName + "\"");
+}
+
+GitResult GitIntegration::DeleteBranch(const std::string& workDir, const std::string& name, bool force)
+{
+    // -d は未マージのブランチを git 自身が拒否する（＝作業が消えない安全側）。
+    // 「それでも消す」は UI 側で確認を取ってから force=true で呼ぶこと。
+    return RunGit(workDir, std::string("branch ") + (force ? "-D" : "-d") + " \"" + name + "\"");
 }
 
 void GitIntegration::EnsureIdentity(const std::string& workDir)

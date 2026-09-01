@@ -577,6 +577,32 @@ ssao.set("enabled", true)
 ```
 Play 中に変えた値は **Stop でシーン JSON ごと巻き戻る**ので、エディタで作った絵は壊れない。
 
+**エフェクトごとの詳細パラメータ**（「効果 1 個につきスライダー 1 本」では絵が作れなかったものを分解した分。
+`post.names()` にも出るし、MCP の `dx12_set_post_process` でも同じ名前で使える）:
+
+| エフェクト | 追加された項目 | 意味 |
+|---|---|---|
+| レンズ歪み / 魚眼 | `lensMode` | 0=バレル(多項式) / 1=魚眼(等距離射影) / 2=魚眼(等立体角射影) |
+| | `lensK2` / `lensZoom` | 2 次の歪み係数（バレルのみ）/ 拡大補正 |
+| | `lensCircular` | 縦横比を補正して**円形に**歪ませる（既定 true。false=旧来の UV 空間） |
+| | `lensEdge` | はみ出した所 0=端を伸ばす / 1=黒 / 2=鏡映（既定 1） |
+| | `lensChroma` | 倍率色収差（歪みに比例して RGB がずれる） |
+| ビネット | `vignetteRadius` / `vignetteSoftness` | 減光の開始半径（中心0・四隅1）/ 境界のぼけ幅 |
+| | `vignetteRoundness` / `vignetteColor` | 1=真円 / 0=画面比の楕円、減光先の色 |
+| CRT 走査線 | `scanCount` / `scanCurve` | 走査線の本数 / 画面湾曲（0 で平面） |
+| 色収差 | `chromaMode` | 0=放射 / 1=水平 / 2=垂直 |
+| グレイン | `grainSize` / `grainColored` | 粒の大きさ(px) / カラーノイズにするか |
+| 放射ブラー | `radialSamples` / `radialCenterX` / `radialCenterY` | タップ数 / 中心 |
+| グリッチ | `glitchBlocks` / `glitchSpeed` / `glitchColor` | 横帯の本数 / 差し替わる速さ / RGB 分離量 |
+| 輪郭線 | `outlineThickness` / `outlineThreshold` | 線の太さ(px) / これ未満の勾配は線にしない |
+| | `outlineOnly` / `outlineBg` | 絵を捨てて線画だけ描く / そのときの下地色 |
+
+エディタ側は「Post Process」窓 1 枚で完結する（チェックを入れるとその場にパラメータが出る）。
+上部の**見た目プリセット**（シネマ / レトロ CRT / 8bit ドット / 魚眼レンズ / 水中 / ホラー /
+白黒フィルム / セピア写真 / 線画コミック / ドリーム / 暗視ゴーグル / グリッチ）は
+`src/editor/PostPresets.h` の 1 箇所に定義してある。プリセットは**置き換え**で、
+露出 / DoF / ブルーム品質などシーン側の設定は保持される。
+
 ### ライティング演出（`Lighting` / `Tween` / `Flicker`）
 「プロパティは素直に読み書き」「時間変化は汎用 Tween 1 本」「明滅は lightstyle 文字列」の 3 本柱。
 実体は prelude（純 Lua）で、既存の毎フレームフック（`__time_tick`）にぶら下がって動く

@@ -3,6 +3,7 @@ add_library(Renderer STATIC
     Camera.cpp
     Material.cpp
     PostProcess.cpp
+    ScreenShaderPass.cpp
     BloomPass.cpp
     AutoExposurePass.cpp
     GodRaysPass.cpp

@@ -19,6 +19,7 @@
 #include <array>
 #include <thread>
 #include <atomic>
+#include <mutex>
 #include <functional>
 #include "ecs/Components.h"
 #include "project/Project.h"
@@ -46,6 +47,7 @@ namespace dx12e
     class CommandList;
     class RenderTarget;
     class GpuTimer;
+    class ScreenShaderPass;
     class PostProcess;
     class BloomPass;
     class AutoExposurePass;
@@ -669,6 +671,11 @@ private:
     };
     std::unordered_map<std::string, CustomSpritePsos> m_customSpritePsoCache;  // key: shaderPath(小文字正規化)
     CustomSpritePsos* EnsureCustomSpritePso(const std::string& shaderRel);
+
+    // カスタムシェーダー(CameraComponent::screenShaderPath)= 画面全体に掛ける 1 パス。
+    // PSO は ScreenShaderPass 側が抱える（ルートシグネチャが共有なので、ここは薄い橋渡しだけ）。
+    // 取得できなければ nullptr（＝スクリーンシェーダーを飛ばして素通しで表示する）。
+    ID3D12PipelineState* EnsureScreenShaderPso(const std::string& shaderRel);
     // EnsureCustomPso/EnsureCustomSpritePso共通のバイトコード取得(エディタ=ShaderManager実行時コンパイル、
     // ゲーム=ビルド焼き込みcso)。取得できなければ false(呼び出し側は既定シェーダーへフォールバック)。
     bool FetchCustomShaderBytecode(const std::string& shaderRel,
@@ -965,6 +972,29 @@ private:
     // ブランチ操作
     std::vector<std::string> m_gitBranches;     // ローカルブランチ一覧
     std::array<char, 128>    m_gitNewBranchBuf{}; // 新規ブランチ名入力
+    // ブランチの名前変更 / 削除（コンボの各行を右クリックすると出るメニューの受け皿）。
+    // ポップアップはコンボを閉じてから開く必要があるので、対象と要求を 1 フレーム持ち越す。
+    std::string              m_gitBranchOpTarget;    // 操作対象のブランチ名
+    std::array<char, 128>    m_gitRenameBranchBuf{}; // 新しい名前の入力
+    int                      m_gitBranchOpRequest = 0; // 0=なし 1=名前変更 2=削除
+
+    // ---- 変更一覧の自動追従（ファイルを消したら即座にリストへ反映する）----
+    // ★以前は「窓を開いた瞬間」と「git 操作の直後」と「更新ボタン」でしか取り直さなかったので、
+    //   エディタの外でファイルを消しても一覧が古いままだった。
+    //   git status はプロセス起動なのでメインスレッドで毎フレーム回すとヒッチする。
+    //   専用のワーカーで一定間隔だけ回し、結果はフラグ越しにメインが取り込む。
+    std::thread              m_gitWatchThread;
+    std::atomic<bool>        m_gitWatchStop{false};      // シャットダウン要求
+    std::atomic<bool>        m_gitWatchReady{false};     // ワーカー→メイン: 新しい結果がある
+    std::atomic<bool>        m_gitWatchWanted{false};    // メイン→ワーカー: パネルが表示中
+    std::mutex               m_gitWatchMutex;            // 下の 3 つを守る
+    std::string              m_gitWatchDir;              // 監視対象（プロジェクトルート）
+    std::vector<GitFileChange> m_gitWatchChanges;        // ワーカーが書く変更一覧
+    std::string              m_gitWatchBranch;           // ワーカーが書く現在ブランチ
+    bool                     m_gitWatchMerge = false;    // ワーカーが書くマージ進行中フラグ
+    std::vector<std::string> m_gitWatchConflicts;        // ワーカーが書く未解消ファイル
+    void StartGitWatcher();
+    void StopGitWatcher();
 
     // upstream に対する未送信/未取得コミット数（VS の ↑/↓ 表示用。-1=upstream無し/未取得）
     int         m_gitAhead  = -1;
@@ -1103,6 +1133,10 @@ private:
     std::unique_ptr<DescriptorHeap> m_offscreenRtvHeap;
     std::unique_ptr<RenderTarget>   m_sceneRT;
     std::unique_ptr<PostProcess>    m_postProcess;
+    // 画面全体のカスタムシェーダー（CameraComponent::screenShaderPath）。ポストの【後】に走る 1 パス。
+    // m_screenShaderRT はその入力（＝ポストの出力先）。表示解像度サイズ（バックバッファと同じ）。
+    std::unique_ptr<ScreenShaderPass> m_screenShaderPass;
+    std::unique_ptr<RenderTarget>     m_screenShaderRT;
     std::unique_ptr<BloomPass>      m_bloomPass;     // 物理ベースブルーム（ダウン/アップチェーン）
     std::unique_ptr<AutoExposurePass> m_autoExposure; // 自動露出（compute ヒストグラム）
     std::unique_ptr<GodRaysPass>    m_godRaysPass;    // スクリーンスペース ゴッドレイ

@@ -966,6 +966,22 @@ DeepDiagReport DeepDiag::SceneAssets(Application& app)
         }
     }
 
+    // カメラの画面シェーダー（CameraComponent::screenShaderPath）。
+    // ★MeshRenderer / Sprite2D と同じ検査。これが壊れていると【画面が素通しになるだけ】で、
+    //   絵は正常に出続けるので気付けない（一番タチが悪い形）。
+    for (auto [e, cam] : reg.view<CameraComponent>().each())
+    {
+        if (cam.screenShaderPath.empty()) continue;
+        const std::string who = nameOf(e);
+        if (ShaderManager* sm = ShaderManager::Instance())
+            if (!sm->HasValidCustomShader(cam.screenShaderPath))
+                r.Add(2, who + " のカメラに割り当てた画面シェーダーが有効でない: " + cam.screenShaderPath);
+        if (!cam.isActive)
+            r.Add(1, who + " は画面シェーダーを持っているがアクティブなカメラではない（適用されない）");
+        if (!cam.screenShaderEnabled)
+            r.Add(0, who + " の画面シェーダーは無効（screenShaderEnabled=false）");
+    }
+
     // ---- ここから下は「今まで誰も参照切れを見ていなかった」フィールド ----
     // アセットの移動/削除に参照が追従する仕組みが無い（dx12_move_asset 自身が
     // 「参照パスは自動更新しない」と返す）ので、切れても実行時に無言で

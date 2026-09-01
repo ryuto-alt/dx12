@@ -98,6 +98,15 @@ public:
     static std::vector<std::string> ListBranches(const std::string& workDir); // ローカルブランチ名
     static GitResult CheckoutBranch(const std::string& workDir, const std::string& name); // 既存へ切替
     static GitResult CreateBranch(const std::string& workDir, const std::string& name);   // 新規作成して切替
+    // ブランチ名の変更（git branch -m）。oldName が今いるブランチでも動く。
+    static GitResult RenameBranch(const std::string& workDir,
+                                  const std::string& oldName, const std::string& newName);
+    // ブランチの削除。force=false は -d（未マージなら git が拒否する＝安全側）、true は -D（強制）。
+    // 今いるブランチは削除できない（git がエラーにする）ので、呼ぶ側で先に切り替えること。
+    static GitResult DeleteBranch(const std::string& workDir, const std::string& name, bool force);
+    // ブランチ名として git が受け付ける形か（空 / 空白 / 制御文字 / ~^:?*[ / .. / 先頭末尾の記号）。
+    // git に投げる前に弾くのは、エラー出力より「なぜダメか」を UI で言える方が親切なため。
+    static bool IsValidBranchName(const std::string& name);
 
     // 標準的な .gitignore を workDir に書き出す（既存なら何もしない）
     static void WriteGitignore(const std::string& workDir);

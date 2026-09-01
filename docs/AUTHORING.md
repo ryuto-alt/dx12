@@ -348,6 +348,50 @@ float4 PSMain(PSIn p) : SV_TARGET { /* gTex.Sample(gSamp, p.uv) を p.effect/gTi
 - MCP: `dx12_set_sprite_shader({entity, shaderPath, alphaBlend})`。Inspector は Sprite2D の
   「Shader」セクション（コンボ+アルファブレンド+effectValueスライダー、MeshRenderer と同じ操作感）。
 
+### 6.2 スクリーンシェーダー（画面全体に掛ける HLSL・カメラに割り当てる）
+
+「1 個のモデルの描き方」ではなく **完成した画面そのもの** を書き換える 1 パス。
+ポストプロセス（uber パス）が終わった後に走り、結果がバックバッファへ出る。
+
+| 何を差し替えるか | 割当先 | 契約 |
+|---|---|---|
+| モデル 1 個の描き方 | `MeshRenderer::shaderPath` | 6 章（b0=PerObject, b1=PerFrame, t0=アルベド）|
+| スプライト 1 枚の描き方 | `Sprite2D::shaderPath` | 6.1 章 |
+| **画面そのもの** | **`CameraComponent::screenShaderPath`** | **下記（t0=画面, t1=深度, b0=ScreenShaderCB）** |
+
+- **作り方**: Toolbar「ファイル > 新規シェーダー」で **種類に「画面全体用」** を選ぶ。
+  雛形（`kNewScreenShaderTemplate`）に `SampleScreen()` / `SampleDepth()` / `LinearDepth()` が入っている。
+- **割当**: カメラを選んで Inspector の「画面シェーダー」欄。**アセットブラウザから `.hlsl` を
+  そのままドロップしてもよい**（メッシュ / Sprite2D の Shader 欄も同じくドロップ可）。
+- **有効になる条件**: そのカメラが **アクティブ** で、`screenShaderEnabled` が ON のとき。
+  複数のカメラが持っていても合成はしない（最初に見つかったアクティブなカメラ 1 つだけ）。
+  ポスト設定と同じく **Scene ビューにも同じものが掛かる**（割り当てた瞬間に結果が見える）。
+- **契約**（これ以外のレジスタを宣言すると PSO 生成に失敗し、素通しになる。理由は `dx12_engine.log`）:
+  ```hlsl
+  Texture2D    gScreen : register(t0);  // ポスト適用後の画面（LDR / ガンマ空間）
+  Texture2D    gDepth  : register(t1);  // シーン深度（R32_FLOAT, 0=near 1=far）
+  SamplerState gLinear : register(s0);
+  SamplerState gPoint  : register(s1);
+  cbuffer ScreenShaderCB : register(b0)
+  {
+      float4 resolution;    // xy=画面px, zw=1/px
+      float4 timeParams;    // x=経過秒, y=デルタ秒, z=アスペクト, w=フレーム番号
+      float4 params;        // Inspector の float4（Inspector / シーン JSON から編集）
+      float4 cameraParams;  // x=near, y=far, z=垂直FOV(度), w=正射なら1
+      float4 uvOffsetScale; // 内部用（SampleScreen が使う）
+  };
+  ```
+  エントリポイントは `VSMain` / `PSMain` 固定（`vs_6_0` / `ps_6_0`）。VS は頂点バッファ無しで
+  `SV_VertexID` からフルスクリーン三角形を組む。
+- **`gScreen` は必ず `SampleScreen(uv)` 経由で読む**。入力 RT はウィンドウ全面で、絵はその中の
+  「シーンビューの矩形」にしか入っていない。写像は `uvOffsetScale` で渡してある。
+- **保存すると自動でホットリロード**（メッシュ用と同じ経路）。
+- シーン JSON（`CameraComponent` の自動シリアライズに乗る）:
+  ```json
+  "camera": { "isActive": true, "screenShaderPath": "myfx/Crt.hlsl",
+              "screenShaderEnabled": true, "screenShaderParams": [0.5, 0, 0, 0] }
+  ```
+
 ## 7. マテリアルのテクスチャ割当（アセットブラウザから D&D）
 
 Unity/Unreal 風に、アセットブラウザのテクスチャをドラッグ&ドロップでメッシュのマテリアルへ割り当てられる。

@@ -69,7 +69,10 @@ void RegisterCoreComponentMeta()
         .data<&CameraComponent::farClip>("farClip")
         .data<&CameraComponent::isActive>("isActive")
         .data<&CameraComponent::projection>("projection")
-        .data<&CameraComponent::orthoSize>("orthoSize");
+        .data<&CameraComponent::orthoSize>("orthoSize")
+        .data<&CameraComponent::screenShaderPath>("screenShaderPath")
+        .data<&CameraComponent::screenShaderEnabled>("screenShaderEnabled")
+        .data<&CameraComponent::screenShaderParams>("screenShaderParams");
 
     entt::meta_factory<RigidBody>{}
         .type("RigidBody")

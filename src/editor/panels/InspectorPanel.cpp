@@ -3,6 +3,7 @@
 #include "editor/PropertyGrid.h"
 #include "editor/UiEditUtil.h"
 #include "editor/UndoSystem.h"
+#include "editor/AssetDrop.h"
 #include "ecs/Components.h"
 #include "renderer/Camera.h"
 #include "renderer/Material.h"
@@ -894,6 +895,13 @@ void InspectorPanel::Render(entt::registry& reg,
                             ImGui::TextDisabled("(assets/shaders/ に自作シェーダーなし)");
                         ImGui::EndCombo();
                     }
+                    {   // アセットブラウザから .hlsl を直接ドロップして割り当てる
+                        std::string dropped;
+                        if (assetdrop::AcceptShader(dropped, m_assetsDir + "shaders/"))
+                        { sp.shaderPath = dropped; changed = true; }
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip(".hlsl をここへドロップでも割り当てられます");
                     if (!sp.shaderPath.empty())
                     {
                         changed |= pg::Checkbox("アルファブレンド有効", &sp.shaderAlphaBlend,
@@ -2410,6 +2418,70 @@ void InspectorPanel::Render(entt::registry& reg,
                     }
                     pg::End();
                 }
+
+                // ── 画面全体のカスタムシェーダー（スクリーンシェーダー）──
+                // ポストプロセスが終わった【完成した絵】をこの .hlsl が受け取って書き換える。
+                // MeshRenderer の shaderPath が「1 個のモデルの描き方」を差し替えるのに対し、
+                // こちらは「画面そのもの」を差し替える。
+                if (IconHeader(nullptr, 0, "\xe7\x94\xbb\xe9\x9d\xa2\xe3\x82\xb7\xe3\x82\xa7\xe3\x83\xbc\xe3\x83\x80\xe3\x83\xbc##CamScreenShader"))
+                {
+                    namespace fs = std::filesystem;
+                    if (pg::Begin("CameraScreenShader"))
+                    {
+                        pg::Label("\xe3\x82\xb7\xe3\x82\xa7\xe3\x83\xbc\xe3\x83\x80\xe3\x83\xbc");  // シェーダー
+                        std::string label = cam.screenShaderPath.empty()
+                            ? "\xe3\x81\xaa\xe3\x81\x97\xef\xbc\x88\xe9\x80\x9a\xe5\xb8\xb8\xe6\x8f\x8f\xe7\x94\xbb\xef\xbc\x89"  // なし（通常描画）
+                            : cam.screenShaderPath;
+                        if (ImGui::BeginCombo("##camScreenShader", label.c_str()))
+                        {
+                            if (ImGui::Selectable("\xe3\x81\xaa\xe3\x81\x97\xef\xbc\x88\xe9\x80\x9a\xe5\xb8\xb8\xe6\x8f\x8f\xe7\x94\xbb\xef\xbc\x89",
+                                                  cam.screenShaderPath.empty()))
+                            { cam.screenShaderPath.clear(); changed = true; }
+
+                            std::error_code ec;
+                            fs::path root(m_assetsDir + "shaders/");
+                            if (fs::exists(root, ec))
+                            {
+                                fs::recursive_directory_iterator it(root,
+                                    fs::directory_options::skip_permission_denied, ec);
+                                fs::recursive_directory_iterator end;
+                                for (; !ec && it != end; it.increment(ec))
+                                {
+                                    std::error_code fec;
+                                    if (!it->is_regular_file(fec) || fec) continue;
+                                    if (it->path().extension() != L".hlsl") continue;
+                                    fs::path rel = fs::relative(it->path(), root, fec);
+                                    if (fec) continue;
+                                    std::string relStr = rel.generic_string();
+                                    if (FindShaderSourceByRelPath(relStr) != nullptr) continue;
+                                    if (ImGui::Selectable(relStr.c_str(), cam.screenShaderPath == relStr))
+                                    { cam.screenShaderPath = relStr; changed = true; }
+                                }
+                            }
+                            ImGui::EndCombo();
+                        }
+                        {   // ★.hlsl をここへ D&D するだけで画面全体のシェーダーになる
+                            std::string dropped;
+                            if (assetdrop::AcceptShader(dropped, m_assetsDir + "shaders/"))
+                            { cam.screenShaderPath = dropped; changed = true; }
+                        }
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip(".hlsl \xe3\x82\x92\xe3\x81\x93\xe3\x81\x93\xe3\x81\xb8\xe3\x83\x89\xe3\x83\xad\xe3\x83\x83\xe3\x83\x97"
+                                              "\xe3\x81\xa7\xe7\x94\xbb\xe9\x9d\xa2\xe5\x85\xa8\xe4\xbd\x93\xe3\x81\xab\xe9\x81\xa9\xe7\x94\xa8\xe3\x81\xa7\xe3\x81\x8d\xe3\x81\xbe\xe3\x81\x99");
+
+                        if (!cam.screenShaderPath.empty())
+                        {
+                            changed |= pg::Checkbox("\xe6\x9c\x89\xe5\x8a\xb9 Enabled", &cam.screenShaderEnabled,
+                                "\xe5\x89\xb2\xe3\x82\x8a\xe5\xbd\x93\xe3\x81\xa6\xe3\x81\x9f\xe3\x81\xbe\xe3\x81\xbe\xe4\xb8\x80\xe6\x99\x82\xe7\x9a\x84\xe3\x81\xab\xe5\x88\x87\xe3\x82\x8b");
+                            changed |= pg::Float4("\xe3\x83\x91\xe3\x83\xa9\xe3\x83\xa1\xe3\x83\xbc\xe3\x82\xbf\xe3\x83\xbc params",
+                                &cam.screenShaderParams.x, 0.01f, 0.0f, 0.0f, "%.3f", &active,
+                                "HLSL \xe5\x81\xb4\xe3\x81\xaf cbuffer ScreenShaderCB \xe3\x81\xae params \xe3\x81\xa7\xe8\xaa\xad\xe3\x82\x81\xe3\x81\xbe\xe3\x81\x99");
+                        }
+                        pg::End();
+                    }
+                    if (!cam.isActive && !cam.screenShaderPath.empty())
+                        WarnText("\xe3\x82\xa2\xe3\x82\xaf\xe3\x83\x86\xe3\x82\xa3\xe3\x83\x96\xe3\x81\xaa\xe3\x82\xab\xe3\x83\xa1\xe3\x83\xa9\xe3\x81\xa0\xe3\x81\x91\xe3\x81\xab\xe9\x81\xa9\xe7\x94\xa8\xe3\x81\x95\xe3\x82\x8c\xe3\x81\xbe\xe3\x81\x99");
+                }
                 EndEdit(reg, ctx, ctx.selectedEntity, m_camEdit, changed, active, "Camera");
             }
         }
@@ -3162,6 +3234,15 @@ void InspectorPanel::Render(entt::registry& reg,
                         ImGui::TextDisabled("(assets/shaders/ \xe3\x81\xab\xe8\x87\xaa\xe4\xbd\x9c\xe3\x82\xb7\xe3\x82\xa7\xe3\x83\xbc\xe3\x83\x80\xe3\x83\xbc\xe3\x81\xaa\xe3\x81\x97)");
                     ImGui::EndCombo();
                 }
+                // ★アセットブラウザから .hlsl を直接ドロップして割り当てられる
+                //   （コンボを開いて探さなくてよい。落とせる先は Mesh / Sprite2D / Camera）。
+                {
+                    std::string dropped;
+                    if (assetdrop::AcceptShader(dropped, m_assetsDir + "shaders/"))
+                        mr.shaderPath = dropped;
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip(".hlsl \xe3\x82\x92\xe3\x81\x93\xe3\x81\x93\xe3\x81\xb8\xe3\x83\x89\xe3\x83\xad\xe3\x83\x83\xe3\x83\x97\xe3\x81\xa7\xe3\x82\x82\xe5\x89\xb2\xe3\x82\x8a\xe5\xbd\x93\xe3\x81\xa6\xe3\x82\x89\xe3\x82\x8c\xe3\x81\xbe\xe3\x81\x99");
                 // カスタムシェーダー割当時のみ意味を持つ: PSが書く float4 の alpha を実際に
                 // ブレンドに使うかどうか。既定 OFF(不透明、DepthWrite=ON)のままだと
                 // シェーダー側でどれだけ alpha を作り込んでも画面には反映されない。

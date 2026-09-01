@@ -892,55 +892,25 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
     }
 
     // ポストプロセス設定（シーン単位）
+    // ★キーを手書きで並べるのはやめた。唯一の名前表である DX12E_POST_FIELDS
+    //   （renderer/PostProcessSettings.h）から生成する＝フィールドを足したのに
+    //   保存だけ書き忘れて「エディタで詰めた設定が次に開くと消える」事故を構造的に潰す。
     {
         const auto& pp = scene.GetPostSettings();
-        root["postProcess"] = {
-            {"enabled",        pp.enabled},
-            {"exposureOn",   pp.exposureOn},   {"exposure",   pp.exposure},
-            {"contrastOn",   pp.contrastOn},   {"contrast",   pp.contrast},
-            {"brightnessOn", pp.brightnessOn}, {"brightness", pp.brightness},
-            {"saturationOn", pp.saturationOn}, {"saturation", pp.saturation},
-            {"warmthOn",     pp.warmthOn},     {"warmth",     pp.warmth},
-            {"hueOn",        pp.hueOn},        {"hueShift",   pp.hueShift},
-            {"tintOn",       pp.tintOn},       {"tint",       {pp.tint.x, pp.tint.y, pp.tint.z}},
-            {"bloomOn",      pp.bloomOn},      {"bloom",      pp.bloom}, {"bloomThreshold", pp.bloomThreshold},
-            {"bloomKnee",    pp.bloomKnee},    {"bloomRadius", pp.bloomRadius},
-            {"tonemapper",   pp.tonemapper},
-            {"autoExposureOn", pp.autoExposureOn}, {"aeSpeed", pp.aeSpeed}, {"aeEvComp", pp.aeEvComp},
-            {"aeLogMin",     pp.aeLogMin},     {"aeLogMax",   pp.aeLogMax},
-            {"lutOn",        pp.lutOn},        {"lutPath",    pp.lutPath}, {"lutAmount", pp.lutAmount},
-            {"debandOn",     pp.debandOn},
-            {"godraysOn",    pp.godraysOn},    {"grIntensity", pp.grIntensity},
-            {"grDensity",    pp.grDensity},    {"grDecay",     pp.grDecay},
-            {"lensflareOn",  pp.lensflareOn},  {"lfIntensity", pp.lfIntensity},
-            {"lfGhosts",     pp.lfGhosts},     {"lfDispersal", pp.lfDispersal},
-            {"lfHalo",       pp.lfHalo},       {"lfChroma",    pp.lfChroma},
-            {"dofOn",        pp.dofOn},        {"dofFocusDist", pp.dofFocusDist},
-            {"dofFocusRange", pp.dofFocusRange}, {"dofBlurSize", pp.dofBlurSize},
-            {"dofFocusName", pp.dofFocusName}, {"dofAperture", pp.dofAperture},
-            {"dofFocalLength", pp.dofFocalLength},
-            {"motionBlurOn", pp.motionBlurOn}, {"mbStrength",  pp.mbStrength},
-            {"mbSamples",    pp.mbSamples},
-            {"vignetteOn",   pp.vignetteOn},   {"vignette",   pp.vignette},
-            {"chromaticOn",  pp.chromaticOn},  {"chromatic",  pp.chromatic},
-            {"pixelizeOn",   pp.pixelizeOn},   {"pixelSize",  pp.pixelSize},
-            {"posterizeOn",  pp.posterizeOn},  {"posterize",  pp.posterize},
-            {"ditherOn",     pp.ditherOn},     {"ditherLevels", pp.ditherLevels},
-            {"scanlineOn",   pp.scanlineOn},   {"scanline",   pp.scanline},
-            {"sharpenOn",    pp.sharpenOn},    {"sharpen",    pp.sharpen},
-            {"grainOn",      pp.grainOn},      {"grain",      pp.grain},
-            {"invertOn",     pp.invertOn},     {"invert",     pp.invert},
-            {"sepiaOn",      pp.sepiaOn},      {"sepia",      pp.sepia},
-            {"grayscaleOn",  pp.grayscaleOn},  {"grayscale",  pp.grayscale},
-            {"lensOn",       pp.lensOn},       {"lens",       pp.lens},
-            {"waveOn",       pp.waveOn},       {"waveAmp",    pp.waveAmp},
-            {"waveFreq",     pp.waveFreq},     {"waveSpeed",  pp.waveSpeed},
-            {"radialOn",     pp.radialOn},     {"radial",     pp.radial},
-            {"glitchOn",     pp.glitchOn},     {"glitch",     pp.glitch},
-            {"outlineOn",    pp.outlineOn},    {"outline",    pp.outline},
-            {"outlineColor", {pp.outlineColor.x, pp.outlineColor.y, pp.outlineColor.z}},
-            {"fxaaOn",       pp.fxaaOn},
-        };
+        json pj = json::object();
+#define DX12E_PP_SAVE_B(f) pj[#f] = pp.f;
+#define DX12E_PP_SAVE_F(f) pj[#f] = pp.f;
+#define DX12E_PP_SAVE_I(f) pj[#f] = pp.f;
+#define DX12E_PP_SAVE_V(f) pj[#f] = json::array({pp.f.x, pp.f.y, pp.f.z});
+#define DX12E_PP_SAVE_S(f) pj[#f] = pp.f;
+        DX12E_POST_FIELDS(DX12E_PP_SAVE_B, DX12E_PP_SAVE_F, DX12E_PP_SAVE_I,
+                          DX12E_PP_SAVE_V, DX12E_PP_SAVE_S)
+#undef DX12E_PP_SAVE_B
+#undef DX12E_PP_SAVE_F
+#undef DX12E_PP_SAVE_I
+#undef DX12E_PP_SAVE_V
+#undef DX12E_PP_SAVE_S
+        root["postProcess"] = std::move(pj);
     }
 
     // スカイボックス / IBL 設定（シーン単位）
@@ -1150,56 +1120,20 @@ static void LoadPostSettings(Scene& scene, const json& root)
     if (root.contains("postProcess"))
     {
         const auto& pj = root["postProcess"];
-        pp.enabled      = pj.value("enabled", pp.enabled);
-        pp.exposureOn   = pj.value("exposureOn",   pp.exposureOn);   pp.exposure   = pj.value("exposure",   pp.exposure);
-        pp.contrastOn   = pj.value("contrastOn",   pp.contrastOn);   pp.contrast   = pj.value("contrast",   pp.contrast);
-        pp.brightnessOn = pj.value("brightnessOn", pp.brightnessOn); pp.brightness = pj.value("brightness", pp.brightness);
-        pp.saturationOn = pj.value("saturationOn", pp.saturationOn); pp.saturation = pj.value("saturation", pp.saturation);
-        pp.warmthOn     = pj.value("warmthOn",     pp.warmthOn);     pp.warmth     = pj.value("warmth",     pp.warmth);
-        pp.hueOn        = pj.value("hueOn",        pp.hueOn);        pp.hueShift   = pj.value("hueShift",   pp.hueShift);
-        pp.tintOn       = pj.value("tintOn",       pp.tintOn);
-        if (pj.contains("tint")) pp.tint = DeserializeFloat3(pj["tint"], {1, 1, 1});
-        pp.bloomOn      = pj.value("bloomOn",      pp.bloomOn);      pp.bloom      = pj.value("bloom",      pp.bloom);
-        pp.bloomThreshold = pj.value("bloomThreshold", pp.bloomThreshold);
-        pp.bloomKnee    = pj.value("bloomKnee",    pp.bloomKnee);    pp.bloomRadius = pj.value("bloomRadius", pp.bloomRadius);
-        pp.tonemapper   = pj.value("tonemapper",   pp.tonemapper);
-        pp.autoExposureOn = pj.value("autoExposureOn", pp.autoExposureOn);
-        pp.aeSpeed      = pj.value("aeSpeed",      pp.aeSpeed);      pp.aeEvComp   = pj.value("aeEvComp",   pp.aeEvComp);
-        pp.aeLogMin     = pj.value("aeLogMin",     pp.aeLogMin);     pp.aeLogMax   = pj.value("aeLogMax",   pp.aeLogMax);
-        pp.lutOn        = pj.value("lutOn",        pp.lutOn);        pp.lutPath    = pj.value("lutPath",    pp.lutPath);
-        pp.lutAmount    = pj.value("lutAmount",    pp.lutAmount);
-        pp.debandOn     = pj.value("debandOn",     pp.debandOn);
-        pp.godraysOn    = pj.value("godraysOn",    pp.godraysOn);    pp.grIntensity = pj.value("grIntensity", pp.grIntensity);
-        pp.grDensity    = pj.value("grDensity",    pp.grDensity);    pp.grDecay     = pj.value("grDecay",     pp.grDecay);
-        pp.lensflareOn  = pj.value("lensflareOn",  pp.lensflareOn);  pp.lfIntensity = pj.value("lfIntensity", pp.lfIntensity);
-        pp.lfGhosts     = pj.value("lfGhosts",     pp.lfGhosts);     pp.lfDispersal = pj.value("lfDispersal", pp.lfDispersal);
-        pp.lfHalo       = pj.value("lfHalo",       pp.lfHalo);       pp.lfChroma    = pj.value("lfChroma",    pp.lfChroma);
-        pp.dofOn        = pj.value("dofOn",        pp.dofOn);        pp.dofFocusDist = pj.value("dofFocusDist", pp.dofFocusDist);
-        pp.dofFocusRange = pj.value("dofFocusRange", pp.dofFocusRange); pp.dofBlurSize = pj.value("dofBlurSize", pp.dofBlurSize);
-        pp.dofFocusName = pj.value("dofFocusName", pp.dofFocusName);
-        pp.dofAperture = pj.value("dofAperture", pp.dofAperture);
-        pp.dofFocalLength = pj.value("dofFocalLength", pp.dofFocalLength);
-        pp.motionBlurOn = pj.value("motionBlurOn", pp.motionBlurOn); pp.mbStrength  = pj.value("mbStrength",  pp.mbStrength);
-        pp.mbSamples    = pj.value("mbSamples",    pp.mbSamples);
-        pp.vignetteOn   = pj.value("vignetteOn",   pp.vignetteOn);   pp.vignette   = pj.value("vignette",   pp.vignette);
-        pp.chromaticOn  = pj.value("chromaticOn",  pp.chromaticOn);  pp.chromatic  = pj.value("chromatic",  pp.chromatic);
-        pp.pixelizeOn   = pj.value("pixelizeOn",   pp.pixelizeOn);   pp.pixelSize  = pj.value("pixelSize",  pp.pixelSize);
-        pp.posterizeOn  = pj.value("posterizeOn",  pp.posterizeOn);  pp.posterize  = pj.value("posterize",  pp.posterize);
-        pp.ditherOn     = pj.value("ditherOn",     pp.ditherOn);     pp.ditherLevels = pj.value("ditherLevels", pp.ditherLevels);
-        pp.scanlineOn   = pj.value("scanlineOn",   pp.scanlineOn);   pp.scanline   = pj.value("scanline",   pp.scanline);
-        pp.sharpenOn    = pj.value("sharpenOn",    pp.sharpenOn);    pp.sharpen    = pj.value("sharpen",    pp.sharpen);
-        pp.grainOn      = pj.value("grainOn",      pp.grainOn);      pp.grain      = pj.value("grain",      pp.grain);
-        pp.invertOn     = pj.value("invertOn",     pp.invertOn);     pp.invert     = pj.value("invert",     pp.invert);
-        pp.sepiaOn      = pj.value("sepiaOn",      pp.sepiaOn);      pp.sepia      = pj.value("sepia",      pp.sepia);
-        pp.grayscaleOn  = pj.value("grayscaleOn",  pp.grayscaleOn);  pp.grayscale  = pj.value("grayscale",  pp.grayscale);
-        pp.lensOn       = pj.value("lensOn",       pp.lensOn);       pp.lens       = pj.value("lens",       pp.lens);
-        pp.waveOn       = pj.value("waveOn",       pp.waveOn);       pp.waveAmp    = pj.value("waveAmp",    pp.waveAmp);
-        pp.waveFreq     = pj.value("waveFreq",     pp.waveFreq);     pp.waveSpeed  = pj.value("waveSpeed",  pp.waveSpeed);
-        pp.radialOn     = pj.value("radialOn",     pp.radialOn);     pp.radial     = pj.value("radial",     pp.radial);
-        pp.glitchOn     = pj.value("glitchOn",     pp.glitchOn);     pp.glitch     = pj.value("glitch",     pp.glitch);
-        pp.outlineOn    = pj.value("outlineOn",    pp.outlineOn);    pp.outline    = pj.value("outline",    pp.outline);
-        if (pj.contains("outlineColor")) pp.outlineColor = DeserializeFloat3(pj["outlineColor"], {0, 0, 0});
-        pp.fxaaOn       = pj.value("fxaaOn",       pp.fxaaOn);
+        // ★保存側と同じく DX12E_POST_FIELDS から生成する。
+        //   「保存はされているのに読み込みだけ書き忘れて、開き直すと既定値に戻る」を構造的に潰す。
+#define DX12E_PP_LOAD_B(f) pp.f = pj.value(#f, pp.f);
+#define DX12E_PP_LOAD_F(f) pp.f = pj.value(#f, pp.f);
+#define DX12E_PP_LOAD_I(f) pp.f = pj.value(#f, pp.f);
+#define DX12E_PP_LOAD_V(f) if (pj.contains(#f)) pp.f = DeserializeFloat3(pj[#f], pp.f);
+#define DX12E_PP_LOAD_S(f) pp.f = pj.value(#f, pp.f);
+        DX12E_POST_FIELDS(DX12E_PP_LOAD_B, DX12E_PP_LOAD_F, DX12E_PP_LOAD_I,
+                          DX12E_PP_LOAD_V, DX12E_PP_LOAD_S)
+#undef DX12E_PP_LOAD_B
+#undef DX12E_PP_LOAD_F
+#undef DX12E_PP_LOAD_I
+#undef DX12E_PP_LOAD_V
+#undef DX12E_PP_LOAD_S
     }
     scene.GetPostSettings() = pp;
 }

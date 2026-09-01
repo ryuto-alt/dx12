@@ -221,6 +221,58 @@ void Application::RunGitAsync(const std::string& label, std::function<GitResult(
     });
 }
 
+// ===== 変更一覧の自動追従（バージョン管理ウィンドウを開いている間だけ回る） =====
+//
+// ★なぜスレッドが要るか: git status / git branch はどちらも【プロセス起動】。
+//   メインスレッドで毎フレームどころか毎秒回しても、起動と待機で数十 ms のヒッチになる。
+//   専用スレッドで一定間隔だけ回し、結果はミューテックス越しにメインへ渡す。
+//   ワーカーは m_gitWatchWanted が立っている間しか git を叩かない（＝窓を閉じれば無音）。
+void Application::StartGitWatcher()
+{
+    if (m_gitWatchThread.joinable()) return;
+    m_gitWatchStop.store(false);
+    m_gitWatchThread = std::thread([this]
+    {
+        while (!m_gitWatchStop.load())
+        {
+            // 停止要求に素早く反応するため、待ちは 50ms 刻みで刻む（合計 ~800ms 間隔）。
+            for (int i = 0; i < 16 && !m_gitWatchStop.load(); ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            if (m_gitWatchStop.load()) break;
+            if (!m_gitWatchWanted.load()) continue;   // 窓が閉じている間は git を叩かない
+
+            std::string dir;
+            {
+                std::lock_guard<std::mutex> lk(m_gitWatchMutex);
+                dir = m_gitWatchDir;
+            }
+            if (dir.empty() || !GitIntegration::IsRepo(dir)) continue;
+
+            auto changes   = GitIntegration::ChangedFiles(dir);
+            auto branch    = GitIntegration::CurrentBranch(dir);
+            bool merging   = GitIntegration::IsMergeInProgress(dir);
+            auto conflicts = GitIntegration::ConflictedFiles(dir);
+            if (m_gitWatchStop.load()) break;
+
+            {
+                std::lock_guard<std::mutex> lk(m_gitWatchMutex);
+                m_gitWatchChanges   = std::move(changes);
+                m_gitWatchBranch    = std::move(branch);
+                m_gitWatchMerge     = merging;
+                m_gitWatchConflicts = std::move(conflicts);
+            }
+            m_gitWatchReady.store(true);
+        }
+    });
+}
+
+void Application::StopGitWatcher()
+{
+    m_gitWatchStop.store(true);
+    if (m_gitWatchThread.joinable())
+        m_gitWatchThread.join();
+}
+
 void Application::UpdateGitOp()
 {
     if (!m_gitOpRunning) return;
@@ -619,6 +671,11 @@ bool Application::HandleWindowCloseRequest()
 
 void Application::RenderVersionControlWindow()
 {
+    // 変更一覧の自動追従は「この窓が見えているフレーム」だけ許可する。
+    // 毎フレーム false に倒し、下の描画まで到達したら true に戻す＝
+    // 窓を閉じた/畳んだ瞬間にワーカーが git を叩くのをやめる。
+    m_gitWatchWanted.store(false);
+
     // 非表示タブ/折りたたみ時は中身を一切実行しない（git の外部プロセス起動を毎フレーム回さない）。
     // 表示名は "Git 変更" だが ImGui ID は従来通り（### 以降）にしてドッキング配置を維持する。
     if (!ImGui::Begin("Git 変更###Version Control (Git)"))
@@ -712,6 +769,27 @@ void Application::RenderVersionControlWindow()
     if (m_gitNewRepoNameBuf[0] == '\0' && !m_projectInfo.name.empty())
         strncpy_s(m_gitNewRepoNameBuf.data(), m_gitNewRepoNameBuf.size(),
                   m_projectInfo.name.c_str(), _TRUNCATE);
+
+    // ---- 変更一覧の自動追従（ファイルを消したら数百 ms でリストが動く）----
+    // 重い取得（プロセス起動）は専用ワーカーが担当。ここは出来上がった結果を取り込むだけ。
+    // ★ahead/behind とブランチ【一覧】はここでは触らない。
+    //   前者は upstream 参照が要って遅く、後者は勝手に変わらないので、
+    //   手動「更新」と git 操作の直後だけで十分（毎秒取り直す価値がない）。
+    m_gitWatchWanted.store(true);
+    {
+        std::lock_guard<std::mutex> lk(m_gitWatchMutex);
+        m_gitWatchDir = root;
+    }
+    if (!m_gitWatchThread.joinable()) StartGitWatcher();
+    if (m_gitWatchReady.exchange(false))
+    {
+        std::lock_guard<std::mutex> lk(m_gitWatchMutex);
+        m_gitChanges         = m_gitWatchChanges;
+        m_gitBranchCache     = m_gitWatchBranch;
+        m_gitMergeInProgress = m_gitWatchMerge;
+        m_gitConflicts       = m_gitWatchConflicts;
+        m_gitRepoCache       = true;
+    }
 
     // 状態の再取得（ローカル git のみで軽い。開いた瞬間と操作完了直後＋手動「更新」だけ＝定期ヒッチ無し）。
     if (ImGui::IsWindowAppearing() || m_gitForceRefresh)
@@ -878,12 +956,45 @@ void Application::RenderVersionControlWindow()
         if (ImGui::BeginCombo("##branch", curBr))
         {
             for (const auto& b : m_gitBranches)
+            {
+                ImGui::PushID(b.c_str());
                 if (ImGui::Selectable(b.c_str(), b == branch) && b != branch)
                 {
                     std::string target = b;
                     RunGitAsync("ブランチ切替", [root, target]{ return GitIntegration::CheckoutBranch(root, target); });
                 }
+                // ★各行を右クリックで「名前を変更 / 削除」。
+                //   ポップアップはコンボを閉じてからでないと出せないので、
+                //   ここでは要求だけ立てて 1 フレーム持ち越す（下の modal が拾う）。
+                if (ImGui::BeginPopupContextItem("##brmenu"))
+                {
+                    ImGui::TextDisabled("%s", b.c_str());
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("名前を変更..."))
+                    {
+                        m_gitBranchOpTarget  = b;
+                        m_gitBranchOpRequest = 1;
+                        strncpy_s(m_gitRenameBranchBuf.data(), m_gitRenameBranchBuf.size(),
+                                  b.c_str(), _TRUNCATE);
+                        ImGui::CloseCurrentPopup();
+                    }
+                    // 今いるブランチは git が削除を拒否する。押させてエラーを見せるより出さない。
+                    ImGui::BeginDisabled(b == branch);
+                    if (ImGui::MenuItem("削除..."))
+                    {
+                        m_gitBranchOpTarget  = b;
+                        m_gitBranchOpRequest = 2;
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::EndDisabled();
+                    if (b == branch)
+                        ImGui::TextDisabled("(今いるブランチは削除できません)");
+                    ImGui::EndPopup();
+                }
+                ImGui::PopID();
+            }
             ImGui::Separator();
+            ImGui::TextDisabled("右クリックで名前変更 / 削除");
             ImGui::SetNextItemWidth(-FLT_MIN);
             if (ImGui::InputTextWithHint("##nb", "+ 新規ブランチ名 → Enter",
                     m_gitNewBranchBuf.data(), m_gitNewBranchBuf.size(),
@@ -897,6 +1008,72 @@ void Application::RenderVersionControlWindow()
             ImGui::EndCombo();
         }
         ImGui::EndDisabled();
+    }
+
+    // ---- ブランチの名前変更 / 削除（コンボの右クリックメニューから要求される）----
+    // コンボが閉じたあとのこの位置で OpenPopup する（コンボの中からは開けない）。
+    if (m_gitBranchOpRequest == 1) { ImGui::OpenPopup("##branchRename"); m_gitBranchOpRequest = 0; }
+    if (m_gitBranchOpRequest == 2) { ImGui::OpenPopup("##branchDelete"); m_gitBranchOpRequest = 0; }
+
+    if (ImGui::BeginPopupModal("##branchRename", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::Text("ブランチ名を変更: %s", m_gitBranchOpTarget.c_str());
+        ImGui::SetNextItemWidth(320.0f);
+        const bool enter = ImGui::InputText("##newbrname", m_gitRenameBranchBuf.data(),
+                                            m_gitRenameBranchBuf.size(),
+                                            ImGuiInputTextFlags_EnterReturnsTrue);
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere(-1);
+
+        const std::string newName = m_gitRenameBranchBuf.data();
+        const bool nameOk = GitIntegration::IsValidBranchName(newName) && newName != m_gitBranchOpTarget;
+        if (!newName.empty() && !GitIntegration::IsValidBranchName(newName))
+            ImGui::TextColored(th::Bad, "ブランチ名に使えない文字が入っています");
+        else
+            ImGui::TextDisabled("空白や ~ ^ : ? * [ \\ .. は使えません");
+
+        ImGui::BeginDisabled(busy || !nameOk);
+        if (ImGui::Button("変更", ImVec2(120, 0)) || (enter && nameOk))
+        {
+            const std::string oldName = m_gitBranchOpTarget;
+            const std::string nn      = newName;
+            RunGitAsync("ブランチ名の変更",
+                [root, oldName, nn]{ return GitIntegration::RenameBranch(root, oldName, nn); });
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("キャンセル", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+
+    if (ImGui::BeginPopupModal("##branchDelete", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::Text("ブランチを削除: %s", m_gitBranchOpTarget.c_str());
+        ImGui::TextWrapped("未マージのコミットがある場合、通常の削除は git が拒否します。"
+                           "「強制削除」はそのコミットを捨てます（元に戻せません）。");
+        ImGui::Spacing();
+        ImGui::BeginDisabled(busy);
+        if (ImGui::Button("削除", ImVec2(120, 0)))
+        {
+            const std::string target = m_gitBranchOpTarget;
+            RunGitAsync("ブランチ削除",
+                [root, target]{ return GitIntegration::DeleteBranch(root, target, /*force=*/false); });
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.15f, 0.15f, 1.0f));
+        if (ImGui::Button("強制削除", ImVec2(120, 0)))
+        {
+            const std::string target = m_gitBranchOpTarget;
+            RunGitAsync("ブランチ強制削除",
+                [root, target]{ return GitIntegration::DeleteBranch(root, target, /*force=*/true); });
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::PopStyleColor();
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("キャンセル", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
     }
 
     // ---- 行2: GitHub アカウント ----

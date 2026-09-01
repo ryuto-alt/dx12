@@ -1069,6 +1069,23 @@ void ToolbarPanel::Render(bool isPlaying,
         if (ImGui::IsWindowAppearing())
             ImGui::SetKeyboardFocusHere(-1);
 
+        // 雛形の種類。メッシュ用と画面全体用ではルートシグネチャの契約が全く違うので、
+        // 「作った .hlsl をどこに割り当てるつもりか」をここで選ばせる。
+        // 選び間違えたまま割り当てると PSO 生成に失敗して素通しになるだけで、
+        // 何が悪いのか分からない（ログを見ないと気付けない）。
+        static int shaderKind = 0;
+        ImGui::Spacing();
+        ImGui::TextUnformatted("\xe7\xa8\xae\xe9\xa1\x9e:");  // 種類:
+        ImGui::SetNextItemWidth(-1);
+        ImGui::Combo("##ShaderKind", &shaderKind,
+            "\xe3\x83\xa1\xe3\x83\x83\xe3\x82\xb7\xe3\x83\xa5\xe7\x94\xa8"
+            "\xef\xbc\x88MeshRenderer \xe3\x81\xab\xe5\x89\xb2\xe3\x82\x8a\xe5\xbd\x93\xe3\x81\xa6\xe3\x82\x8b\xef\xbc\x89\0"
+            "\xe7\x94\xbb\xe9\x9d\xa2\xe5\x85\xa8\xe4\xbd\x93\xe7\x94\xa8"
+            "\xef\xbc\x88\xe3\x82\xab\xe3\x83\xa1\xe3\x83\xa9\xe3\x81\xab\xe5\x89\xb2\xe3\x82\x8a\xe5\xbd\x93\xe3\x81\xa6\xe3\x82\x8b\xef\xbc\x89\0");
+        ImGui::TextDisabled(shaderKind == 0
+            ? "\xe3\x83\xa2\xe3\x83\x87\xe3\x83\xab 1 \xe4\xbd\x93\xe3\x81\xae\xe6\x8f\x8f\xe3\x81\x8d\xe6\x96\xb9\xe3\x82\x92\xe5\xb7\xae\xe3\x81\x97\xe6\x9b\xbf\xe3\x81\x88\xe3\x82\x8b"
+            : "\xe5\xae\x8c\xe6\x88\x90\xe3\x81\x97\xe3\x81\x9f\xe7\x94\xbb\xe9\x9d\xa2\xe3\x81\x9d\xe3\x81\xae\xe3\x82\x82\xe3\x81\xae\xe3\x82\x92\xe6\x9b\xb8\xe3\x81\x8d\xe6\x8f\x9b\xe3\x81\x88\xe3\x82\x8b");
+
         ImGui::Separator();
 
         bool nameValid = std::strlen(ctx.newShaderNameBuf) > 0;
@@ -1085,7 +1102,7 @@ void ToolbarPanel::Render(bool isPlaying,
             if (!std::filesystem::exists(shaderPath))
             {
                 std::ofstream ofs(shaderPath);
-                ofs << kNewShaderTemplate;
+                ofs << (shaderKind == 1 ? kNewScreenShaderTemplate : kNewShaderTemplate);
                 ofs.close();
 
                 Logger::Info("Created shader: {}", shaderPath);
