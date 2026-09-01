@@ -8,6 +8,11 @@
 // ★プリセットは「積み増し」ではなく「置き換え」。
 //   適用すると【見た目を作るエフェクト】は全部いったん既定値へ戻してからプリセットの値を入れる。
 //   前に触ったグリッチやセピアが残って「プリセットを選んだのに違う絵になる」のを防ぐため。
+//
+// ★複数のプリセットを重ねたいときは ApplyPostPresets()。
+//   「既定へ戻す → 選ばれたものを表の並び順に適用」なので、選んだ順に依存せず、
+//   同じ組み合わせなら必ず同じ絵になる（同じ項目を触るプリセット同士は後ろが勝つ）。
+//   トグルのたびにこの合成をやり直すのが前提の設計＝外した分が残らない。
 //   逆に【シーンの露出・カメラ・画質の設定】は保存する（下の kept 一覧）。
 //     保持: enabled / tonemapper / exposure* / autoExposure* / lut* / dof* / motionBlur* /
 //           bloomKnee / bloomRadius / fxaaOn / debandOn / godrays* / lensflare*
@@ -187,6 +192,20 @@ inline PostProcessSettings ApplyPostPreset(const PostPreset& p, const PostProces
 {
     PostProcessSettings out = PostPresetBaseline(base);
     p.apply(out);
+    return out;
+}
+
+// 複数のプリセットを重ねた結果を返す（base は書き換えない）。
+// selected は kPostPresetCount 個の bool 配列。表の並び順に適用するので、
+// 選んだ順に関係なく同じ組み合わせは同じ絵になる。
+inline PostProcessSettings ApplyPostPresets(const bool* selected, int count,
+                                            const PostProcessSettings& base)
+{
+    PostProcessSettings out = PostPresetBaseline(base);
+    if (!selected) return out;
+    const int n = count < kPostPresetCount ? count : kPostPresetCount;
+    for (int i = 0; i < n; ++i)
+        if (selected[i]) kPostPresets[i].apply(out);
     return out;
 }
 

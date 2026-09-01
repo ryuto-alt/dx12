@@ -8,6 +8,7 @@
 #include <unordered_set>
 #include "core/Profiler.h"
 #include "editor/PostPresets.h"
+#include "editor/PostPresetSwatch.h"
 #include "editor/AssetDrop.h"
 
 namespace dx12e
@@ -6242,34 +6243,153 @@ void Application::Render()
                 ImGui::EndTooltip();
             }
 
-            // ---- 見た目プリセット（ポストの組み合わせを丸ごと差し替える）----
+            // ---- 見た目プリセット（複数選んで重ねられる。サムネイル付き）----
+            // ★以前は「文字のボタンを 1 個押すと丸ごと置き換わる」だけだったので、
+            //   (a) 押してみるまでどんな絵になるか分からない
+            //   (b) シネマ + グリッチ のような組み合わせが作れない（後勝ちで消える）
+            //   の 2 つが不便だった。ここではトグル選択にして、選ばれたものを
+            //   毎回「既定へ戻す → 表の並び順に適用」で作り直す（＝外した分が残らない）。
             static PostProcessSettings presetBackup{};
             static bool                hasPresetBackup = false;
+            static bool                presetSel[kPostPresetCount] = {};
+            static u64                 presetSceneGen = ~0ull;
+            // シーンを開き直したら選択も控えも捨てる
+            //（別のシーンで取った控えを「戻す」で流し込むと、無関係な設定が復活する）
+            if (presetSceneGen != static_cast<u64>(m_sceneGeneration))
+            {
+                presetSceneGen  = static_cast<u64>(m_sceneGeneration);
+                hasPresetBackup = false;
+                for (bool& s : presetSel) s = false;
+            }
+
             if (ImGui::CollapsingHeader("見た目プリセット", ImGuiTreeNodeFlags_DefaultOpen))
             {
-                ImGui::TextDisabled("味付けを丸ごと置き換えます（露出/DoF/ブルーム品質などシーン側の設定は残ります）");
-                const float availW = ImGui::GetContentRegionAvail().x;
-                float lineW = 0.0f;
+                // ★窓を右へドッキングすると幅が狭いので、説明は必ず折り返す
+                //   （TextDisabled のままだと右端で切れて読めなくなっていた）。
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextDisabled("クリックで ON/OFF。複数選べます");
+                ImGui::TextDisabled("並び順に重なり、同じ項目は後ろのプリセットが勝ちます。"
+                                    "露出 / DoF / ブルーム品質などシーン側の設定は残ります。");
+                ImGui::PopTextWrapPos();
+
+                // 選ばれているものから pp を作り直す。1 つも無ければ選ぶ前の状態へ戻す。
+                auto recompose = [&]()
+                {
+                    int n = 0;
+                    for (bool s : presetSel) if (s) ++n;
+                    if (n == 0)
+                    {
+                        if (hasPresetBackup) { pp = presetBackup; hasPresetBackup = false; }
+                    }
+                    else
+                    {
+                        pp = ApplyPostPresets(presetSel, kPostPresetCount, presetBackup);
+                    }
+                };
+
+                ImDrawList*  dl      = ImGui::GetWindowDrawList();
+                const float  sp      = ImGui::GetStyle().ItemSpacing.x;
+                const ImVec2 tile(136.0f, 92.0f);
+                const float  swatchH = 62.0f;
+                const float  availW  = ImGui::GetContentRegionAvail().x;
+                float        lineW   = 0.0f;
+                bool         first   = true;
+
                 for (int i = 0; i < kPostPresetCount; ++i)
                 {
                     const PostPreset& pr = kPostPresets[i];
-                    const float bw = ImGui::CalcTextSize(pr.label).x + ImGui::GetStyle().FramePadding.x * 2.0f;
-                    if (i > 0 && lineW + bw + ImGui::GetStyle().ItemSpacing.x < availW)
-                    { ImGui::SameLine(); lineW += bw + ImGui::GetStyle().ItemSpacing.x; }
+                    // 「素の絵」は下の「すべて外す」が担当するので、タイルには出さない
+                    // （ID は MCP / 保存の互換のため表には残してある）。
+                    if (std::strcmp(pr.id, "none") == 0) continue;
+
+                    if (!first && lineW + sp + tile.x <= availW)
+                    { ImGui::SameLine(); lineW += sp + tile.x; }
                     else
-                        lineW = bw;
-                    if (ImGui::Button(pr.label))
+                        lineW = tile.x;
+                    first = false;
+
+                    ImGui::PushID(i);
+                    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+                    ImGui::InvisibleButton("##presettile", tile);
+                    const bool hovered = ImGui::IsItemHovered();
+                    const bool clicked = ImGui::IsItemClicked();
+                    const bool sel     = presetSel[i];
+
+                    // サムネイル: そのプリセット【単体】を素の絵に当てた結果を描く。
+                    // 設定値から描いているので、プリセットの数値を直せば絵も一緒に変わる。
+                    const PostProcessSettings preview = ApplyPostPreset(pr, PostProcessSettings{});
+                    const ImVec2 s0(p0.x + 3.0f, p0.y + 3.0f);
+                    const ImVec2 s1(p0.x + tile.x - 3.0f, p0.y + 3.0f + swatchH);
+                    postswatch::DrawSwatch(dl, s0, s1, preview);
+
+                    // 選択中は重なる順番（1,2,3…）を右上に出す＝「後ろが勝つ」が見て分かる
+                    if (sel)
                     {
-                        presetBackup   = pp;
-                        hasPresetBackup = true;
-                        pp = ApplyPostPreset(pr, pp);
+                        int order = 1;
+                        for (int k = 0; k < i; ++k) if (presetSel[k]) ++order;
+                        char num[8];
+                        std::snprintf(num, sizeof(num), "%d", order);
+                        const ImVec2 ts = ImGui::CalcTextSize(num);
+                        const ImVec2 bc(s1.x - ts.x * 0.5f - 9.0f, s0.y + ts.y * 0.5f + 5.0f);
+                        dl->AddCircleFilled(bc, ts.y * 0.72f + 3.0f, IM_COL32(60, 140, 245, 255), 16);
+                        dl->AddText(ImVec2(bc.x - ts.x * 0.5f, bc.y - ts.y * 0.5f),
+                                    IM_COL32(255, 255, 255, 255), num);
                     }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", pr.tip);
+
+                    // ラベル（選択中はアクセント色）
+                    const ImVec2 ls = ImGui::CalcTextSize(pr.label);
+                    dl->AddText(ImVec2(p0.x + (tile.x - ls.x) * 0.5f, s1.y + 6.0f),
+                                sel ? IM_COL32(120, 190, 255, 255) : IM_COL32(205, 205, 212, 255),
+                                pr.label);
+
+                    // 枠（選択 > ホバー > 通常）
+                    dl->AddRect(p0, ImVec2(p0.x + tile.x, p0.y + tile.y),
+                                sel     ? IM_COL32(60, 140, 245, 255)
+                                : hovered ? IM_COL32(150, 152, 162, 220)
+                                          : IM_COL32(64, 65, 74, 180),
+                                4.0f, 0, sel ? 2.5f : 1.0f);
+
+                    if (hovered)
+                        ImGui::SetTooltip("%s\n\nクリックで %s", pr.tip, sel ? "外す" : "重ねる");
+                    if (clicked)
+                    {
+                        // 最初の 1 個を選ぶ瞬間の状態を控える（「戻す」で完全に元へ帰れる）
+                        if (!hasPresetBackup) { presetBackup = pp; hasPresetBackup = true; }
+                        presetSel[i] = !sel;
+                        recompose();
+                    }
+                    ImGui::PopID();
                 }
+
+                // ---- 選択中の要約 + 操作 ----
+                std::string summary;
+                for (int i = 0; i < kPostPresetCount; ++i)
+                    if (presetSel[i])
+                    { if (!summary.empty()) summary += " + "; summary += kPostPresets[i].label; }
+                if (summary.empty())
+                    ImGui::TextDisabled("選択中: なし");
+                else
+                    ImGui::TextColored(ImVec4(0.47f, 0.75f, 1.0f, 1.0f), "選択中: %s", summary.c_str());
+
+                if (ImGui::SmallButton("すべて外す（素の絵）"))
+                {
+                    if (!hasPresetBackup) { presetBackup = pp; hasPresetBackup = true; }
+                    for (bool& s : presetSel) s = false;
+                    pp = PostPresetBaseline(presetBackup);   // 味付けだけ落として素へ
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("味付けを全部落とします（露出・DoF・ブルーム品質は残ります）");
+                ImGui::SameLine();
                 ImGui::BeginDisabled(!hasPresetBackup);
-                if (ImGui::SmallButton("↩ プリセット適用前に戻す"))
-                { pp = presetBackup; hasPresetBackup = false; }
+                if (ImGui::SmallButton("↩ 選ぶ前に戻す"))
+                {
+                    pp = presetBackup;
+                    hasPresetBackup = false;
+                    for (bool& s : presetSel) s = false;
+                }
                 ImGui::EndDisabled();
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("プリセットを 1 つ目に選ぶ直前の状態へ完全に戻します");
             }
 
             ImGui::Separator();
