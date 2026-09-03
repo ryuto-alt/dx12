@@ -4135,10 +4135,16 @@ void InspectorPanel::RenderEngineSettings(EditorContext& ctx,
             }
             if (debugDraw)
             {
-                bool drawTriggers = physicsDebugRenderer->DrawsTriggers();
-                if (pg::Checkbox("トリガーも表示", &drawTriggers,
-                        "Trigger の反応範囲。物理ではなくスクリプトが内外を判定する領域"))
-                    physicsDebugRenderer->SetDrawTriggers(drawTriggers);
+                // ★全部出すと壁と床の線で画面が埋まって読めない。まず範囲で絞る。
+                auto& flt = physicsDebugRenderer->Filter();
+                int scope = static_cast<int>(flt.scope);
+                const char* scopes[] = { "すべて", "選択中のみ（子も）", "カメラの近くだけ" };
+                if (pg::Combo("表示範囲", &scope, scopes, IM_ARRAYSIZE(scopes),
+                        "『選択中のみ』が一番使いやすい。調べたいオブジェクトを Hierarchy で"
+                        "選ぶと、それと子だけが出る"))
+                    flt.scope = static_cast<dx12e::DebugDrawFilter::Scope>(scope);
+                if (flt.scope == dx12e::DebugDrawFilter::Scope::NearCamera)
+                    pg::Float("距離 (m)", &flt.maxDistance, 0.5f, 1.0f, 500.0f, "%.0f");
             }
             pg::End();
         }
@@ -4146,20 +4152,23 @@ void InspectorPanel::RenderEngineSettings(EditorContext& ctx,
         if (physicsDebugRenderer->IsEnabled())
         {
             ImGui::Indent();
-            auto swatch = [](ImVec4 c, const char* label, const char* tip)
+            // ★凡例そのものをチェックボックスにする。色を見て「これ邪魔」と思ったら
+            //   その場で消せる＝設定を探しに行かなくていい。
+            auto& flt = physicsDebugRenderer->Filter();
+            auto swatch = [](ImVec4 c, const char* label, bool* on, const char* tip)
             {
                 ImGui::ColorButton(label, c, ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker,
                                    ImVec2(12, 12));
                 ImGui::SameLine();
-                ImGui::TextUnformatted(label);
+                ImGui::Checkbox(label, on);
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
             };
-            swatch(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "動く (Dynamic)", "物理で動くコライダー");
-            swatch(ImVec4(0.5f, 0.5f, 1.0f, 1.0f), "動かない (Static)", "床や壁");
-            swatch(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Kinematic", "スクリプトが位置を決めるコライダー");
-            swatch(ImVec4(1.0f, 0.6f, 0.0f, 1.0f), "CharacterController", "接地中は緑、空中はオレンジ");
-            swatch(ImVec4(1.0f, 0.35f, 1.0f, 1.0f), "トリガー", "入っている間は白く光る");
-            swatch(ImVec4(1.0f, 0.25f, 0.25f, 1.0f), "★当たらない",
+            swatch(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "動く (Dynamic)", &flt.showDynamic, "物理で動くコライダー");
+            swatch(ImVec4(0.5f, 0.5f, 1.0f, 1.0f), "動かない (Static)", &flt.showStatic, "床や壁。★数が多くて線が埋まる原因はたいていこれ。まず切ってみるとよい");
+            swatch(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Kinematic", &flt.showKinematic, "スクリプトが位置を決めるコライダー");
+            swatch(ImVec4(1.0f, 0.6f, 0.0f, 1.0f), "CharacterController", &flt.showCharacter, "接地中は緑、空中はオレンジ");
+            swatch(ImVec4(1.0f, 0.35f, 1.0f, 1.0f), "トリガー", &flt.showTriggers, "入っている間は白く光る");
+            swatch(ImVec4(1.0f, 0.25f, 0.25f, 1.0f), "★当たらない", &flt.showOrphans,
                    "コライダーはあるが RigidBody が無い＝物理に登録されていない。\n"
                    "「コライダーを付けたのにすり抜ける」の一番多い原因");
             ImGui::Unindent();

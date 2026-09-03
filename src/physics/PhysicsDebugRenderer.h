@@ -20,6 +20,30 @@ struct DebugLineVertex
     DirectX::XMFLOAT3 color;
 };
 
+// 当たり判定表示のふるい。
+// ★全部出すと、壁と床（Static）だけで画面が線で埋まって何も読めなくなる。
+//   256 エンティティ規模の実シーンでは「全部表示」は事実上使えないので、
+//   何を見たいかで絞れるようにする。
+struct DebugDrawFilter
+{
+    enum class Scope : u8
+    {
+        All = 0,       // 全部（従来どおり）
+        Selected,      // 選択中のエンティティとその子孫だけ ★これが一番よく使う
+        NearCamera,    // カメラから maxDistance 以内だけ
+    };
+    Scope scope = Scope::All;
+    f32   maxDistance = 20.0f;   // NearCamera のとき（m）
+
+    // 種類ごとの表示。★Static を切れるのが効く（壁と床が線の大半を占めるため）。
+    bool showStatic    = true;
+    bool showDynamic   = true;
+    bool showKinematic = true;
+    bool showCharacter = true;
+    bool showTriggers  = true;
+    bool showOrphans   = true;   // コライダーはあるが RigidBody が無い＝当たらないもの
+};
+
 class PhysicsDebugRenderer
 {
 public:
@@ -51,8 +75,12 @@ public:
                     DirectX::XMFLOAT4 quat = {0,0,0,1},
                     DirectX::XMFLOAT3 color = {0.0f, 1.0f, 0.0f});
 
-    // PhysicsSystem + ECS から全コライダーを収集
-    void CollectFromRegistry(entt::registry& registry);
+    // ECS からコライダー/トリガーを収集する。
+    // selected はスコープが Selected のときの基準（entt::null なら何も出ない）。
+    // cameraPos は NearCamera のときの距離判定に使う。
+    void CollectFromRegistry(entt::registry& registry,
+                             entt::entity selected,
+                             const DirectX::XMFLOAT3& cameraPos);
 
     void Render(ID3D12GraphicsCommandList* cmdList,
                 const DirectX::XMFLOAT4X4& viewProj);
@@ -60,11 +88,9 @@ public:
     void SetEnabled(bool enabled) { m_enabled = enabled; }
     bool IsEnabled() const        { return m_enabled; }
 
-    // Trigger（ScriptEngine が内外判定するゲーム用の領域）も一緒に描くか。
-    // 物理コライダーとは別トグルにしてある＝トリガーだらけのシーンで
-    // 物理の線が埋もれるのを避けられる。
-    void SetDrawTriggers(bool on) { m_drawTriggers = on; }
-    bool DrawsTriggers() const    { return m_drawTriggers; }
+    // 表示のふるい（UI から直接いじる）。
+    DebugDrawFilter&       Filter()       { return m_filter; }
+    const DebugDrawFilter& Filter() const { return m_filter; }
 
 private:
     static constexpr u32 kMaxVertices = 131072; // 65536 lines * 2 vertices
@@ -81,7 +107,7 @@ private:
 
     u32  m_frameIdx    = 0;   // 動的VBの書き込み区画（Render毎に巡回）
     bool m_enabled     = false;
-    bool m_drawTriggers = true;   // 既定 ON（当たり判定を見る目的では大抵これも見たい）
+    DebugDrawFilter m_filter;
     bool m_initialized = false;
 
     // RecreatePipelines 用に保持

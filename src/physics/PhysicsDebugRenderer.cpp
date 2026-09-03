@@ -252,8 +252,50 @@ void PhysicsDebugRenderer::AddCapsule(XMFLOAT3 center, f32 radius, f32 halfHeigh
 
 // ========== Collect from ECS ==========
 
-void PhysicsDebugRenderer::CollectFromRegistry(entt::registry& registry)
+void PhysicsDebugRenderer::CollectFromRegistry(entt::registry& registry,
+                                               entt::entity selected,
+                                               const XMFLOAT3& cameraPos)
 {
+    // ★ふるい。全部出すと壁と床だけで画面が線で埋まって読めない。
+    //   「このエンティティが当たらない」を調べているときに、無関係な 200 個の線は邪魔でしかない。
+    const DebugDrawFilter& flt = m_filter;
+
+    // 選択中のもの本人か、その子孫か（親を辿って selected に届くか）。
+    auto isSelfOrDescendant = [&registry](entt::entity e, entt::entity root)
+    {
+        if (root == entt::null) return false;
+        // 親子が壊れて輪になっていても止まるように上限を切る。
+        for (int guard = 0; guard < 64 && e != entt::null && registry.valid(e); ++guard)
+        {
+            if (e == root) return true;
+            const auto* t = registry.try_get<Transform>(e);
+            if (!t) break;
+            e = t->parent;
+        }
+        return false;
+    };
+
+    // スコープの判定。位置はワールドで見る（親付きでも正しく絞れる）。
+    auto inScope = [&](entt::entity e, const XMFLOAT3& worldPos)
+    {
+        switch (flt.scope)
+        {
+        case DebugDrawFilter::Scope::Selected:
+            return isSelfOrDescendant(e, selected);
+        case DebugDrawFilter::Scope::NearCamera:
+        {
+            const f32 dx = worldPos.x - cameraPos.x;
+            const f32 dy = worldPos.y - cameraPos.y;
+            const f32 dz = worldPos.z - cameraPos.z;
+            const f32 r  = (std::max)(flt.maxDistance, 0.01f);
+            return (dx * dx + dy * dy + dz * dz) <= (r * r);
+        }
+        case DebugDrawFilter::Scope::All:
+        default:
+            return true;
+        }
+    };
+
     // 色は「なぜ当たる / なぜ当たらない」が色だけで分かるように割り当てる。
     const XMFLOAT3 dynamicColor   = { 0.0f, 1.0f, 0.0f };  // 緑   : 動く
     const XMFLOAT3 staticColor    = { 0.5f, 0.5f, 1.0f };  // 青   : 動かない
@@ -363,9 +405,21 @@ void PhysicsDebugRenderer::CollectFromRegistry(entt::registry& registry)
     {
         if (rb.bodyId == kInvalidBodyId) continue;
 
+        // 種類のふるい。★Static を切れるのが一番効く（壁と床が線の大半）。
         XMFLOAT3 color = dynamicColor;
-        if (rb.motionType == MotionType::Static)    color = staticColor;
-        if (rb.motionType == MotionType::Kinematic) color = kinematicColor;
+        if (rb.motionType == MotionType::Static)
+        {
+            if (!flt.showStatic) continue;
+            color = staticColor;
+        }
+        else if (rb.motionType == MotionType::Kinematic)
+        {
+            if (!flt.showKinematic) continue;
+            color = kinematicColor;
+        }
+        else if (!flt.showDynamic) continue;
+
+        if (!inScope(entity, transform.position)) continue;
         drawCollider(entity, transform, color);
     }
 
@@ -379,12 +433,17 @@ void PhysicsDebugRenderer::CollectFromRegistry(entt::registry& registry)
         {
             if (registry.all_of<RigidBody>(entity)) continue;
             if (registry.all_of<CharacterController>(entity)) continue;   // CC は下で描く
-            drawCollider(entity, colliderView.template get<Transform>(entity), orphanColor);
+            const Transform& t = colliderView.template get<Transform>(entity);
+            if (!inScope(entity, t.position)) continue;
+            drawCollider(entity, t, orphanColor);
         }
     };
-    orphan(registry.view<Transform, BoxCollider>());
-    orphan(registry.view<Transform, SphereCollider>());
-    orphan(registry.view<Transform, CapsuleCollider>());
+    if (flt.showOrphans)
+    {
+        orphan(registry.view<Transform, BoxCollider>());
+        orphan(registry.view<Transform, SphereCollider>());
+        orphan(registry.view<Transform, CapsuleCollider>());
+    }
 
     // ---- CharacterController（RigidBody とは排他）----
     // 接地中=緑、空中=オレンジ。回転は物理に渡していないので軸はそのまま。
@@ -392,6 +451,8 @@ void PhysicsDebugRenderer::CollectFromRegistry(entt::registry& registry)
     auto ccView = registry.view<Transform, CharacterController>();
     for (auto [entity, transform, cc] : ccView.each())
     {
+        if (!flt.showCharacter) continue;
+        if (!inScope(entity, transform.position)) continue;
         XMFLOAT3 wpos, wscale;
         XMFLOAT4 wquat;
         worldTRS(entity, transform, wpos, wquat, wscale);
@@ -405,11 +466,12 @@ void PhysicsDebugRenderer::CollectFromRegistry(entt::registry& registry)
     // ★物理コライダーと同じ窓で見えないと、「入ったのに発火しない」を調べるときに
     //   プレイヤーのカプセルとトリガー範囲の位置関係が分からない。
     //   判定中は白く光らせる＝Play 中に「今入っている」が目で追える。
-    if (m_drawTriggers)
+    if (flt.showTriggers)
     {
         auto trView = registry.view<Transform, Trigger>();
         for (auto [entity, transform, tr] : trView.each())
         {
+            if (!inScope(entity, transform.position)) continue;
             XMFLOAT3 wpos, wscale;
             XMFLOAT4 wquat;
             worldTRS(entity, transform, wpos, wquat, wscale);

@@ -5000,7 +5000,13 @@ void Application::Render()
         if ((physDraw || navDraw) && !McpHidingGizmos())   // gizmos:false のスクショ中は止める
         {
             m_physicsDebugRenderer->BeginFrame();
-            if (physDraw) m_physicsDebugRenderer->CollectFromRegistry(m_scene->GetRegistry());
+            // 選択中のエンティティとカメラ位置を渡す＝「選択中のみ」「カメラの近くだけ」で絞れる。
+            // ★全部出すと壁と床の線で画面が埋まって読めないので、実シーンではほぼ必須。
+            if (physDraw)
+                m_physicsDebugRenderer->CollectFromRegistry(
+                    m_scene->GetRegistry(),
+                    m_editorCtx ? m_editorCtx->selectedEntity : entt::null,
+                    m_camera->GetPosition());
             if (navDraw)
             {
                 // 壁の辺（隣が無い＝そこから先へ行けない）は明るく、
