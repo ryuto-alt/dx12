@@ -2,6 +2,7 @@
 #include "graphics/GraphicsDevice.h"
 #include "resource/ShaderCompiler.h"
 #include "ecs/Components.h"
+#include "physics/ColliderShape.h"   // 当たり判定の実効サイズの唯一の規約
 #include "core/Logger.h"
 #include "core/Assert.h"
 
@@ -253,10 +254,110 @@ void PhysicsDebugRenderer::AddCapsule(XMFLOAT3 center, f32 radius, f32 halfHeigh
 
 void PhysicsDebugRenderer::CollectFromRegistry(entt::registry& registry)
 {
-    const XMFLOAT3 dynamicColor   = { 0.0f, 1.0f, 0.0f };  // green
-    const XMFLOAT3 staticColor    = { 0.5f, 0.5f, 1.0f };  // blue
-    const XMFLOAT3 kinematicColor = { 1.0f, 1.0f, 0.0f };  // yellow
+    // 色は「なぜ当たる / なぜ当たらない」が色だけで分かるように割り当てる。
+    const XMFLOAT3 dynamicColor   = { 0.0f, 1.0f, 0.0f };  // 緑   : 動く
+    const XMFLOAT3 staticColor    = { 0.5f, 0.5f, 1.0f };  // 青   : 動かない
+    const XMFLOAT3 kinematicColor = { 1.0f, 1.0f, 0.0f };  // 黄   : スクリプトが動かす
+    const XMFLOAT3 orphanColor    = { 1.0f, 0.25f, 0.25f };// 赤   : ★当たらない（下記）
+    const XMFLOAT3 triggerColor   = { 1.0f, 0.35f, 1.0f }; // 紫   : Trigger（物理ではない）
+    const XMFLOAT3 triggerHitColor= { 1.0f, 1.0f, 1.0f };  // 白   : Trigger に入っている最中
 
+    // ★ワールド変換で描く。ローカルの Transform で描くと、親に付けたコライダーが
+    //   まったく別の場所に線だけ出る（物理は ResolveWorldTRS でワールドを見ている）。
+    auto worldTRS = [&registry](entt::entity e, const Transform& t,
+                                XMFLOAT3& pos, XMFLOAT4& quat, XMFLOAT3& scale)
+    {
+        const bool parented = (t.parent != entt::null) && registry.valid(t.parent);
+        if (!parented)
+        {
+            pos   = t.position;
+            scale = t.scale;
+            if (t.useQuaternion) quat = t.quaternion;
+            else
+                XMStoreFloat4(&quat, XMQuaternionRotationRollPitchYaw(
+                    XMConvertToRadians(t.rotation.x),
+                    XMConvertToRadians(t.rotation.y),
+                    XMConvertToRadians(t.rotation.z)));
+            return;
+        }
+        XMVECTOR s, q, p;
+        if (!XMMatrixDecompose(&s, &q, &p, ComputeWorldMatrix(registry, e)))
+        {
+            pos = t.position; scale = t.scale; quat = XMFLOAT4(0, 0, 0, 1);
+            return;
+        }
+        XMStoreFloat3(&pos, p);
+        XMStoreFloat3(&scale, s);
+        XMStoreFloat4(&quat, q);
+    };
+
+    // コライダーのオフセットはローカル。回転を掛けてからワールド位置へ足す
+    // （物理側も「回した後の位置」に置いている）。
+    auto applyOffset = [](const XMFLOAT3& pos, const XMFLOAT3& offset, const XMFLOAT4& quat)
+    {
+        XMVECTOR o = XMVector3Rotate(XMVectorSet(offset.x, offset.y, offset.z, 0.0f),
+                                     XMLoadFloat4(&quat));
+        XMFLOAT3 out;
+        XMStoreFloat3(&out, XMLoadFloat3(&pos) + o);
+        return out;
+    };
+
+    // 1 エンティティぶんのコライダーを描く。RigidBody の有無で色を変えるだけで形は同じ。
+    auto drawCollider = [&](entt::entity entity, const Transform& transform, const XMFLOAT3& color)
+    {
+        XMFLOAT3 wpos, wscale;
+        XMFLOAT4 wquat;
+        worldTRS(entity, transform, wpos, wquat, wscale);
+
+        const auto* convex  = registry.try_get<ConvexHullCollider>(entity);
+        const auto* box     = registry.try_get<BoxCollider>(entity);
+        const auto* sphere  = registry.try_get<SphereCollider>(entity);
+        const auto* capsule = registry.try_get<CapsuleCollider>(entity);
+
+        if (convex && !convex->points.empty())
+        {
+            const XMFLOAT3 center = applyOffset(wpos, convex->offset, wquat);
+            XMMATRIX rot = XMMatrixRotationQuaternion(XMLoadFloat4(&wquat));
+            XMVECTOR c   = XMLoadFloat3(&center);
+
+            std::vector<XMFLOAT3> worldPts;
+            worldPts.reserve(convex->points.size());
+            for (const auto& p : convex->points)
+            {
+                // 凸包の頂点もスケールが乗る（Jolt へ渡す点群と同じ扱い）。
+                XMVECTOR local = XMVectorSet(p.x * wscale.x, p.y * wscale.y, p.z * wscale.z, 0.0f);
+                XMFLOAT3 wp;
+                XMStoreFloat3(&wp, XMVector3TransformNormal(local, rot) + c);
+                worldPts.push_back(wp);
+            }
+            const size_t count = worldPts.size();
+            const size_t step  = (std::max)(count / 32, static_cast<size_t>(1));
+            for (size_t i = 0; i < count; i += step)
+                AddLine(worldPts[i], worldPts[(i + step) % count], color);
+        }
+        else if (box)
+        {
+            AddBox(applyOffset(wpos, box->offset, wquat),
+                   collider::BoxHalfExtents(box->halfExtents, wscale), wquat, color);
+        }
+        else if (sphere)
+        {
+            AddSphere(applyOffset(wpos, sphere->offset, wquat),
+                      collider::SphereRadius(sphere->radius, wscale), 16, color);
+        }
+        else if (capsule)
+        {
+            AddCapsule(applyOffset(wpos, capsule->offset, wquat),
+                       collider::CapsuleRadius(capsule->radius, wscale),
+                       collider::CapsuleHalfHeight(capsule->halfHeight, wscale), wquat, color);
+        }
+        else
+        {
+            AddBox(wpos, collider::FallbackHalfExtents(wscale), wquat, color);
+        }
+    };
+
+    // ---- RigidBody 付き（＝実際に物理で当たるもの）----
     auto view = registry.view<Transform, RigidBody>();
     for (auto [entity, transform, rb] : view.each())
     {
@@ -265,90 +366,66 @@ void PhysicsDebugRenderer::CollectFromRegistry(entt::registry& registry)
         XMFLOAT3 color = dynamicColor;
         if (rb.motionType == MotionType::Static)    color = staticColor;
         if (rb.motionType == MotionType::Kinematic) color = kinematicColor;
-
-        XMFLOAT4 quat = transform.useQuaternion
-            ? transform.quaternion
-            : XMFLOAT4(0, 0, 0, 1);
-
-        // Non-quaternion: compute quat from euler
-        if (!transform.useQuaternion)
-        {
-            XMVECTOR q = XMQuaternionRotationRollPitchYaw(
-                XMConvertToRadians(transform.rotation.x),
-                XMConvertToRadians(transform.rotation.y),
-                XMConvertToRadians(transform.rotation.z));
-            XMStoreFloat4(&quat, q);
-        }
-
-        auto* convex  = registry.try_get<ConvexHullCollider>(entity);
-        auto* box     = registry.try_get<BoxCollider>(entity);
-        auto* sphere  = registry.try_get<SphereCollider>(entity);
-        auto* capsule = registry.try_get<CapsuleCollider>(entity);
-
-        if (convex && !convex->points.empty())
-        {
-            // Convex Hull: 頂点同士を結ぶラインで描画
-            XMVECTOR c = XMLoadFloat3(&transform.position);
-            XMVECTOR off = XMVectorSet(convex->offset.x, convex->offset.y, convex->offset.z, 0);
-            XMVECTOR center = c + off;
-            XMMATRIX rot = XMMatrixRotationQuaternion(XMLoadFloat4(&quat));
-
-            // 凸包の頂点をワールド座標に変換して隣接点と結ぶ
-            std::vector<XMFLOAT3> worldPts;
-            worldPts.reserve(convex->points.size());
-            for (const auto& p : convex->points)
-            {
-                XMVECTOR local = XMVectorSet(p.x, p.y, p.z, 0);
-                XMVECTOR world = XMVector3TransformNormal(local, rot) + center;
-                XMFLOAT3 wp;
-                XMStoreFloat3(&wp, world);
-                worldPts.push_back(wp);
-            }
-
-            // 各頂点から最近傍数点にラインを引く（凸包の輪郭を近似描画）
-            size_t count = worldPts.size();
-            size_t step = (std::max)(count / 32, (size_t)1);
-            for (size_t i = 0; i < count; i += step)
-            {
-                // 次の頂点と結ぶ
-                size_t j = (i + step) % count;
-                AddLine(worldPts[i], worldPts[j], color);
-            }
-        }
-        else if (box)
-        {
-            AddBox(transform.position, box->halfExtents, quat, color);
-        }
-        else if (sphere)
-        {
-            AddSphere(transform.position, sphere->radius, 16, color);
-        }
-        else if (capsule)
-        {
-            AddCapsule(transform.position, capsule->radius, capsule->halfHeight, quat, color);
-        }
-        else
-        {
-            // Fallback: box from scale
-            XMFLOAT3 he = { transform.scale.x * 0.5f,
-                            transform.scale.y * 0.5f,
-                            transform.scale.z * 0.5f };
-            AddBox(transform.position, he, quat, color);
-        }
+        drawCollider(entity, transform, color);
     }
 
-    // CharacterController（RigidBody とは排他）のカプセルを可視化。
+    // ---- ★コライダーはあるのに RigidBody が無いもの（＝何にも当たらない）----
+    // 「コライダーを付けたのにすり抜ける」で一番多い原因がこれ。線が出ないと
+    // 「そもそも判定が無い」のか「判定はあるが位置がずれている」のか区別できないので、
+    // 赤で出して「これは当たらない」と分かるようにする。
+    auto orphan = [&](auto&& colliderView)
+    {
+        for (auto entity : colliderView)
+        {
+            if (registry.all_of<RigidBody>(entity)) continue;
+            if (registry.all_of<CharacterController>(entity)) continue;   // CC は下で描く
+            drawCollider(entity, colliderView.template get<Transform>(entity), orphanColor);
+        }
+    };
+    orphan(registry.view<Transform, BoxCollider>());
+    orphan(registry.view<Transform, SphereCollider>());
+    orphan(registry.view<Transform, CapsuleCollider>());
+
+    // ---- CharacterController（RigidBody とは排他）----
     // 接地中=緑、空中=オレンジ。回転は物理に渡していないので軸はそのまま。
     const XMFLOAT4 ccQuat(0, 0, 0, 1);
     auto ccView = registry.view<Transform, CharacterController>();
     for (auto [entity, transform, cc] : ccView.each())
     {
-        XMFLOAT3 center = { transform.position.x + cc.offset.x,
-                            transform.position.y + cc.offset.y,
-                            transform.position.z + cc.offset.z };
-        XMFLOAT3 color = cc._grounded ? XMFLOAT3{ 0.0f, 1.0f, 0.0f }
-                                      : XMFLOAT3{ 1.0f, 0.6f, 0.0f };
+        XMFLOAT3 wpos, wscale;
+        XMFLOAT4 wquat;
+        worldTRS(entity, transform, wpos, wquat, wscale);
+        const XMFLOAT3 center = { wpos.x + cc.offset.x, wpos.y + cc.offset.y, wpos.z + cc.offset.z };
+        const XMFLOAT3 color  = cc._grounded ? XMFLOAT3{ 0.0f, 1.0f, 0.0f }
+                                             : XMFLOAT3{ 1.0f, 0.6f, 0.0f };
         AddCapsule(center, cc.radius, cc.halfHeight, ccQuat, color);
+    }
+
+    // ---- Trigger（物理ではなく ScriptEngine が内外判定するゲーム用の領域）----
+    // ★物理コライダーと同じ窓で見えないと、「入ったのに発火しない」を調べるときに
+    //   プレイヤーのカプセルとトリガー範囲の位置関係が分からない。
+    //   判定中は白く光らせる＝Play 中に「今入っている」が目で追える。
+    if (m_drawTriggers)
+    {
+        auto trView = registry.view<Transform, Trigger>();
+        for (auto [entity, transform, tr] : trView.each())
+        {
+            XMFLOAT3 wpos, wscale;
+            XMFLOAT4 wquat;
+            worldTRS(entity, transform, wpos, wquat, wscale);
+            const XMFLOAT3 center = { wpos.x + tr.offset.x,
+                                      wpos.y + tr.offset.y,
+                                      wpos.z + tr.offset.z };
+            const XMFLOAT3 color = tr._wasInside ? triggerHitColor : triggerColor;
+
+            if (tr.shape == static_cast<int>(TriggerShape::Sphere))
+                AddSphere(center, collider::TriggerSphereRadius(tr.radius, wscale), 16, color);
+            else
+                // ★内外判定は軸平行（回転を見ない）ので、線も回さない。
+                //   回して描くと「線の中に居るのに発火しない」になる。
+                AddBox(center, collider::TriggerBoxHalfExtents(tr.halfExtents, wscale),
+                       XMFLOAT4(0, 0, 0, 1), color);
+        }
     }
 }
 

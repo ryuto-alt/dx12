@@ -30,6 +30,24 @@ endif()
 add_test(NAME IndexAllocatorTests COMMAND IndexAllocatorTests)
 
 # NetWriter/NetReader 往復テスト（GPU非依存・ヘッダオンリー、vcpkg/entt不要なのでスタンドアロンでも動く）。
+# 当たり判定の実効サイズの規約（src/physics/ColliderShape.h）。ヘッダオンリーの純粋関数なので
+# Jolt も entt も GPU も要らない＝依存ゼロの CI でも回る。
+# ★判定を作る側と線で描く側が同じ規則を使っていることの安全網。片方だけ変わると
+#   「見えている線と当たる場所が違う」デバッグ表示になり、目では気づけない。
+add_executable(ColliderShapeTests collider_shape_test.cpp)
+target_include_directories(ColliderShapeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+# ★DirectXMath は Windows SDK に同梱されているので、vcpkg 抜きのテストツリー単体構成
+#   (cmake -S tests -B build-tests) でもそのまま通る。find_package(REQUIRED) を書くと
+#   依存ゼロの CI がここで落ちるので書かない。エンジンと一緒にビルドするときだけ
+#   vcpkg 版のターゲットへ繋ぐ（使うのは XMFLOAT3(POD) だけなのでどちらでも同じ）。
+if(TARGET Microsoft::DirectXMath)
+    target_link_libraries(ColliderShapeTests PRIVATE Microsoft::DirectXMath)
+endif()
+if(MSVC)
+    target_compile_options(ColliderShapeTests PRIVATE /W4 /WX /permissive- /utf-8)
+endif()
+add_test(NAME ColliderShapeTests COMMAND ColliderShapeTests)
+
 add_executable(NetBufferTests net_buffer_test.cpp)
 target_include_directories(NetBufferTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 if(MSVC)

@@ -1,4 +1,5 @@
 #include "physics/PhysicsSystem.h"
+#include "physics/ColliderShape.h"   // 当たり判定の実効サイズの唯一の規約
 #include "ecs/Components.h"
 #include "core/Logger.h"
 #include "terrain/HeightField.h"   // 地形コライダー（Terrain::_hf の高さ配列を Jolt へ渡す）
@@ -862,28 +863,23 @@ void PhysicsSystem::RegisterBody(entt::registry& registry, entt::entity entity)
         // halfExtents は Transform.scale 乗算が前提（Trigger/EditorIconRenderer と同じ規約）。
         // これが無いと SpawnBox→scale で見た目だけ拡大したボックス（Ground/Wall等）が
         // 実際にはデフォルトの 0.5 半径でしか衝突しなくなる。
-        shape = new JPH::BoxShape(JPH::Vec3(box->halfExtents.x * wtrs.scale.x,
-                                             box->halfExtents.y * wtrs.scale.y,
-                                             box->halfExtents.z * wtrs.scale.z));
+        const DirectX::XMFLOAT3 he = collider::BoxHalfExtents(box->halfExtents, wtrs.scale);
+        shape = new JPH::BoxShape(JPH::Vec3(he.x, he.y, he.z));
     }
     else if (sphere)
     {
-        f32 s = std::max({wtrs.scale.x, wtrs.scale.y, wtrs.scale.z});
-        shape = new JPH::SphereShape(sphere->radius * s);
+        shape = new JPH::SphereShape(collider::SphereRadius(sphere->radius, wtrs.scale));
     }
     else if (capsule)
     {
-        f32 radiusScale = std::max(wtrs.scale.x, wtrs.scale.z);
-        shape = new JPH::CapsuleShape(capsule->halfHeight * wtrs.scale.y,
-                                       capsule->radius * radiusScale);
+        shape = new JPH::CapsuleShape(collider::CapsuleHalfHeight(capsule->halfHeight, wtrs.scale),
+                                       collider::CapsuleRadius(capsule->radius, wtrs.scale));
     }
     else
     {
         // Fallback: box from scale
-        shape = new JPH::BoxShape(JPH::Vec3(
-            wtrs.scale.x * 0.5f,
-            wtrs.scale.y * 0.5f,
-            wtrs.scale.z * 0.5f));
+        const DirectX::XMFLOAT3 he = collider::FallbackHalfExtents(wtrs.scale);
+        shape = new JPH::BoxShape(JPH::Vec3(he.x, he.y, he.z));
     }
 
     // Motion type

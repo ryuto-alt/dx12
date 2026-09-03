@@ -4064,12 +4064,44 @@ void InspectorPanel::RenderEngineSettings(EditorContext& ctx,
             pg::Checkbox("VSync", &useVsync);
 
             bool debugDraw = physicsDebugRenderer->IsEnabled();
-            if (pg::Checkbox("Physics Debug", &debugDraw))
+            if (pg::Checkbox("当たり判定を表示", &debugDraw,
+                    "コライダーとトリガーの形をワイヤーで重ねる。"
+                    "★描かれる形は実際の判定と同じ規約で作っているので、"
+                    "線からはみ出したら当たらない/線の中なら当たる、で読んでよい"))
             {
                 physicsDebugRenderer->SetEnabled(debugDraw);
                 physicsDebugDraw = debugDraw;
             }
+            if (debugDraw)
+            {
+                bool drawTriggers = physicsDebugRenderer->DrawsTriggers();
+                if (pg::Checkbox("トリガーも表示", &drawTriggers,
+                        "Trigger の反応範囲。物理ではなくスクリプトが内外を判定する領域"))
+                    physicsDebugRenderer->SetDrawTriggers(drawTriggers);
+            }
             pg::End();
+        }
+        // 色の意味。デバッグ表示は「何色が何か」が分からないと読めない。
+        if (physicsDebugRenderer->IsEnabled())
+        {
+            ImGui::Indent();
+            auto swatch = [](ImVec4 c, const char* label, const char* tip)
+            {
+                ImGui::ColorButton(label, c, ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker,
+                                   ImVec2(12, 12));
+                ImGui::SameLine();
+                ImGui::TextUnformatted(label);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+            };
+            swatch(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "動く (Dynamic)", "物理で動くコライダー");
+            swatch(ImVec4(0.5f, 0.5f, 1.0f, 1.0f), "動かない (Static)", "床や壁");
+            swatch(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Kinematic", "スクリプトが位置を決めるコライダー");
+            swatch(ImVec4(1.0f, 0.6f, 0.0f, 1.0f), "CharacterController", "接地中は緑、空中はオレンジ");
+            swatch(ImVec4(1.0f, 0.35f, 1.0f, 1.0f), "トリガー", "入っている間は白く光る");
+            swatch(ImVec4(1.0f, 0.25f, 0.25f, 1.0f), "★当たらない",
+                   "コライダーはあるが RigidBody が無い＝物理に登録されていない。\n"
+                   "「コライダーを付けたのにすり抜ける」の一番多い原因");
+            ImGui::Unindent();
         }
     }
 

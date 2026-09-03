@@ -60,6 +60,12 @@ public:
     void SetEnabled(bool enabled) { m_enabled = enabled; }
     bool IsEnabled() const        { return m_enabled; }
 
+    // Trigger（ScriptEngine が内外判定するゲーム用の領域）も一緒に描くか。
+    // 物理コライダーとは別トグルにしてある＝トリガーだらけのシーンで
+    // 物理の線が埋もれるのを避けられる。
+    void SetDrawTriggers(bool on) { m_drawTriggers = on; }
+    bool DrawsTriggers() const    { return m_drawTriggers; }
+
 private:
     static constexpr u32 kMaxVertices = 131072; // 65536 lines * 2 vertices
     // in-flight 多重度（SwapChain::kFrameCount と一致）。動的VBを区画リングで書き分ける
@@ -75,6 +81,7 @@ private:
 
     u32  m_frameIdx    = 0;   // 動的VBの書き込み区画（Render毎に巡回）
     bool m_enabled     = false;
+    bool m_drawTriggers = true;   // 既定 ON（当たり判定を見る目的では大抵これも見たい）
     bool m_initialized = false;
 
     // RecreatePipelines 用に保持
