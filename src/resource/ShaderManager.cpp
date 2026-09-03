@@ -461,10 +461,10 @@ bool ShaderManager::CompileCustomShader(const std::string& relPath)
         //   そのままインスペクターに項目が増える＝ホットリロードと同じ体験になる。
         //   失敗しても（dxcompiler にリフレクションが無い等）シェーダー自体は動くので無視する。
         {
-            std::vector<shaderparams::Param> params;
+            shaderparams::ShaderInfo info;
             shaderparams::Reflect(entry.vs.data(), entry.vs.size(),
-                                  entry.ps.data(), entry.ps.size(), hlslPath, params);
-            shaderparams::Set(key, std::move(params));
+                                  entry.ps.data(), entry.ps.size(), hlslPath, info);
+            shaderparams::Set(key, std::move(info));
         }
         // 直前の失敗表示（Inspector の赤いボックス）を消す。PSO 生成はこの後で走り、
         // そこで落ちれば改めて理由が積まれる。

@@ -94,7 +94,21 @@ std::string LastIdentifier(const std::string& decl)
 }
 
 // .hlsl を 1 行ずつ見て注釈を集める。読めなければ何も入れない（注釈は任意）。
-void ParseAnnotations(const std::wstring& hlslPath, std::unordered_map<std::string, Annot>& out)
+// ソース中の `// @group <名前>` を 1 個だけ拾う（ファイル単位の注釈）。
+// 行のどこにあってもよい。名前は行末まで（空白は前後だけ落とす）。
+std::string ParseGroup(const std::string& line)
+{
+    const size_t at = line.find("@group");
+    if (at == std::string::npos) return {};
+    size_t b = at + 6;
+    while (b < line.size() && (line[b] == ' ' || line[b] == '	' || line[b] == ':')) ++b;
+    size_t e = line.size();
+    while (e > b && (line[e - 1] == ' ' || line[e - 1] == '	' || line[e - 1] == '')) --e;
+    return (e > b) ? line.substr(b, e - b) : std::string();
+}
+
+void ParseAnnotations(const std::wstring& hlslPath, std::unordered_map<std::string, Annot>& out,
+                      std::string& groupOut)
 {
     if (hlslPath.empty()) return;
 
@@ -108,6 +122,12 @@ void ParseAnnotations(const std::wstring& hlslPath, std::unordered_map<std::stri
     std::string line;
     while (std::getline(f, line))
     {
+        if (groupOut.empty())
+        {
+            std::string g = ParseGroup(line);
+            if (!g.empty()) groupOut = std::move(g);
+        }
+
         const size_t slash = line.find("//");
         if (slash == std::string::npos) continue;
 
@@ -244,6 +264,33 @@ void ReflectOne(const void* bytecode, size_t size,
     }
 }
 
+// VS の入力シグネチャから契約を判定する。
+// ★セマンティクスは【頂点レイアウトそのもの】なので、ここが一致しないシェーダーは
+//   割り当てても必ず PSO 生成に失敗する。だから選ばせる前に仕分けられる。
+Contract ClassifyContract(const void* vs, size_t vsSize)
+{
+    ComPtr<ID3D12ShaderReflection> refl = shaderdiag::CreateReflection(vs, vsSize);
+    if (!refl) return Contract::Unknown;
+
+    D3D12_SHADER_DESC sd{};
+    if (FAILED(refl->GetDesc(&sd))) return Contract::Unknown;
+
+    bool hasPosition = false, hasNormal = false;
+    for (u32 i = 0; i < sd.InputParameters; ++i)
+    {
+        D3D12_SIGNATURE_PARAMETER_DESC pd{};
+        if (FAILED(refl->GetInputParameterDesc(i, &pd)) || !pd.SemanticName) continue;
+        const std::string sem = ToLower(pd.SemanticName);
+        if (sem == "position") hasPosition = true;
+        if (sem == "normal")   hasNormal   = true;
+    }
+
+    // 画面シェーダーは頂点バッファを使わない（SV_VertexID だけ）。
+    if (!hasPosition) return Contract::Screen;
+    // メッシュの頂点だけが NORMAL を持つ（Mesh::GetInputLayout）。
+    return hasNormal ? Contract::Mesh : Contract::Sprite;
+}
+
 // ---- 置き場 ----
 std::mutex& StoreMutex()
 {
@@ -251,9 +298,9 @@ std::mutex& StoreMutex()
     return m;
 }
 
-std::unordered_map<std::string, std::vector<Param>>& Store()
+std::unordered_map<std::string, ShaderInfo>& Store()
 {
-    static std::unordered_map<std::string, std::vector<Param>> s;
+    static std::unordered_map<std::string, ShaderInfo> s;
     return s;
 }
 
@@ -272,26 +319,39 @@ u32 Param::ComponentCount() const
 }
 
 bool Reflect(const void* vs, size_t vsSize, const void* ps, size_t psSize,
-             const std::wstring& hlslSourcePath, std::vector<Param>& out)
+             const std::wstring& hlslSourcePath, ShaderInfo& out)
 {
     std::unordered_map<std::string, Annot> annots;
-    ParseAnnotations(hlslSourcePath, annots);
+    ParseAnnotations(hlslSourcePath, annots, out.group);
 
     bool reflectedAny = false;
     // PS を先に見る（パラメーターはたいてい PS で読むので、宣言もそちらが素直）。
-    ReflectOne(ps, psSize, annots, out, reflectedAny);
-    ReflectOne(vs, vsSize, annots, out, reflectedAny);
+    ReflectOne(ps, psSize, annots, out.params, reflectedAny);
+    ReflectOne(vs, vsSize, annots, out.params, reflectedAny);
 
     // 宣言順ではなくオフセット順に並べる（HLSL のパッキングで前後することがある）。
-    std::sort(out.begin(), out.end(),
+    std::sort(out.params.begin(), out.params.end(),
               [](const Param& a, const Param& b) { return a.offset < b.offset; });
+
+    out.contract = ClassifyContract(vs, vsSize);
     return reflectedAny;
 }
 
-void Set(const std::string& key, std::vector<Param> params)
+const char* ContractLabel(Contract c)
+{
+    switch (c)
+    {
+    case Contract::Mesh:   return "メッシュ用";
+    case Contract::Sprite: return "スプライト用";
+    case Contract::Screen: return "画面用";
+    default:               return "不明";
+    }
+}
+
+void Set(const std::string& key, ShaderInfo info)
 {
     std::lock_guard<std::mutex> lock(StoreMutex());
-    Store()[key] = std::move(params);
+    Store()[key] = std::move(info);
 }
 
 void Clear(const std::string& key)
@@ -304,7 +364,7 @@ std::vector<Param> Get(const std::string& key)
 {
     std::lock_guard<std::mutex> lock(StoreMutex());
     auto it = Store().find(key);
-    return it == Store().end() ? std::vector<Param>{} : it->second;
+    return it == Store().end() ? std::vector<Param>{} : it->second.params;
 }
 
 std::vector<Param> GetIn(const std::string& key, Space space)
@@ -313,7 +373,7 @@ std::vector<Param> GetIn(const std::string& key, Space space)
     std::lock_guard<std::mutex> lock(StoreMutex());
     auto it = Store().find(key);
     if (it == Store().end()) return out;
-    for (const Param& p : it->second)
+    for (const Param& p : it->second.params)
         if (p.space == space) out.push_back(p);
     return out;
 }
@@ -323,13 +383,27 @@ bool Find(const std::string& key, const std::string& name, Param& out)
     std::lock_guard<std::mutex> lock(StoreMutex());
     auto it = Store().find(key);
     if (it == Store().end()) return false;
-    for (const Param& p : it->second)
+    for (const Param& p : it->second.params)
     {
         if (p.name != name) continue;
         out = p;
         return true;
     }
     return false;
+}
+
+Contract GetContract(const std::string& key)
+{
+    std::lock_guard<std::mutex> lock(StoreMutex());
+    auto it = Store().find(key);
+    return it == Store().end() ? Contract::Unknown : it->second.contract;
+}
+
+std::string GetGroup(const std::string& key)
+{
+    std::lock_guard<std::mutex> lock(StoreMutex());
+    auto it = Store().find(key);
+    return it == Store().end() ? std::string() : it->second.group;
 }
 
 } // namespace dx12e::shaderparams

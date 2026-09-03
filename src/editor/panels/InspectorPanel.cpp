@@ -30,6 +30,7 @@
 
 #include <imgui_internal.h>   // BeginDragDropTargetCustom（ウィンドウ全体をドロップ先に）
 #include <filesystem>
+#include <map>
 #include <fstream>
 #include <algorithm>
 #include <cmath>
@@ -141,6 +142,66 @@ bool DrawNamedShaderParams(const std::string& shaderRel, float* base,
         if (ch && outChanged) *outChanged = true;
     }
     return true;
+}
+
+// シェーダー選択コンボの中身。契約（メッシュ用 / スプライト用 / 画面用）でふるいに
+// かけてから、グループ見出しでまとめて並べる。
+//
+// ★契約が違うシェーダーは【割り当てても必ず PSO 生成に失敗する】。頂点レイアウトと
+//   ルートシグネチャが別物だから。だから「選べたのに赤い枠が出る」のではなく
+//   そもそも候補に出さない。判定できないもの（Unknown = まだコンパイルしていない /
+//   配布ビルドで .cso しか無い）は従来どおり出す＝黙って消えることはない。
+//
+// グループ名は `// @group イベント` があればそれ、無ければフォルダ名、
+// それも無ければ「その他」。用途で分けたいのは書いた人にしか分からないので申告制、
+// ただし何も書かなくてもフォルダで勝手に分かれる。
+// 戻り値: current が書き換わったら true。
+bool DrawShaderPicker(const std::vector<std::string>& options,
+                      dx12e::shaderparams::Contract want, std::string& current)
+{
+    namespace sp = dx12e::shaderparams;
+
+    // グループ名 → そのグループのパス一覧。std::map で見出しが名前順に安定する。
+    std::map<std::string, std::vector<const std::string*>> groups;
+    int hidden = 0;
+    for (const std::string& opt : options)
+    {
+        const std::string key = dx12e::shaderdiag::NormalizeKey(opt);
+        const sp::Contract c  = sp::GetContract(key);
+        // 判定できたうえで違う契約のものだけ隠す。
+        if (c != sp::Contract::Unknown && c != want) { ++hidden; continue; }
+
+        std::string g = sp::GetGroup(key);
+        if (g.empty())
+        {
+            const size_t slash = opt.rfind('/');
+            g = (slash == std::string::npos) ? std::string("その他") : opt.substr(0, slash);
+        }
+        groups[g].push_back(&opt);
+    }
+
+    bool changed = false;
+    for (const auto& [name, list] : groups)
+    {
+        // グループが 1 つしか無いなら見出しは邪魔なだけなので出さない。
+        if (groups.size() > 1) ImGui::SeparatorText(name.c_str());
+        for (const std::string* opt : list)
+        {
+            if (ImGui::Selectable(opt->c_str(), *opt == current)) { current = *opt; changed = true; }
+        }
+    }
+
+    if (groups.empty())
+        ImGui::TextDisabled("(この用途に使えるシェーダーがありません)");
+    if (hidden > 0)
+    {
+        ImGui::Separator();
+        ImGui::TextDisabled("他の用途のシェーダー %d 本は非表示", hidden);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("頂点レイアウトが違うため、割り当てても必ず失敗します\n"
+                              "（%s のシェーダーだけを出しています）", sp::ContractLabel(want));
+    }
+    return changed;
 }
 
 // トリガーの SetShaderParam / AnimShaderParam 用の「パラメーター名」コンボ。
@@ -2696,6 +2757,7 @@ void InspectorPanel::Render(entt::registry& reg,
                                                   cam.screenShaderPath.empty()))
                             { cam.screenShaderPath.clear(); changed = true; }
 
+                            std::vector<std::string> camOptions;
                             std::error_code ec;
                             fs::path root(m_assetsDir + "shaders/");
                             if (fs::exists(root, ec))
@@ -2712,10 +2774,13 @@ void InspectorPanel::Render(entt::registry& reg,
                                     if (fec) continue;
                                     std::string relStr = rel.generic_string();
                                     if (FindShaderSourceByRelPath(relStr) != nullptr) continue;
-                                    if (ImGui::Selectable(relStr.c_str(), cam.screenShaderPath == relStr))
-                                    { cam.screenShaderPath = relStr; changed = true; }
+                                    camOptions.push_back(std::move(relStr));
                                 }
                             }
+                            // 画面用の契約で書かれたものだけを、グループ見出し付きで出す。
+                            if (DrawShaderPicker(camOptions, dx12e::shaderparams::Contract::Screen,
+                                                 cam.screenShaderPath))
+                                changed = true;
                             ImGui::EndCombo();
                         }
                         {   // ★.hlsl をここへ D&D するだけで画面全体のシェーダーになる
@@ -3497,11 +3562,7 @@ void InspectorPanel::Render(entt::registry& reg,
 
                     if (ImGui::Selectable("\xe6\x97\xa2\xe5\xae\x9a (Forward)", mr.shaderPath.empty()))
                         mr.shaderPath.clear();
-                    for (const auto& opt : options)
-                    {
-                        if (ImGui::Selectable(opt.c_str(), mr.shaderPath == opt))
-                            mr.shaderPath = opt;
-                    }
+                    DrawShaderPicker(options, dx12e::shaderparams::Contract::Mesh, mr.shaderPath);
                     if (options.empty())
                         ImGui::TextDisabled("(assets/shaders/ \xe3\x81\xab\xe8\x87\xaa\xe4\xbd\x9c\xe3\x82\xb7\xe3\x82\xa7\xe3\x83\xbc\xe3\x83\x80\xe3\x83\xbc\xe3\x81\xaa\xe3\x81\x97)");
                     ImGui::EndCombo();

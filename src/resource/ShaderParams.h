@@ -97,24 +97,55 @@ struct Param
     bool IsAnimatable() const { return kind != Kind::Unsupported; }
 };
 
+// シェーダーが「どの契約で書かれているか」。★VS の入力シグネチャから機械的に判る。
+// 書き手の申告ではなくファイル自体から導くので、リネームしても移動してもズレない。
+//   Mesh   … POSITION + NORMAL（Mesh::GetInputLayout の頂点）
+//   Sprite … POSITION あり / NORMAL なし（SpriteRenderer の頂点）
+//   Screen … 頂点入力そのものが無い（SV_VertexID からフルスクリーン三角形を作る）
+// 契約が違うシェーダーは【割り当てても必ず PSO 生成に失敗する】。選ばせる前に弾けるように、
+// Inspector のコンボがこれを見て仕分ける。
+enum class Contract : u8
+{
+    Unknown,   // リフレクションが取れない / どれとも判定できない（従来どおり全部見せる）
+    Mesh,      // MeshRenderer::shaderPath
+    Sprite,    // Sprite2D::shaderPath
+    Screen,    // CameraComponent::screenShaderPath
+};
+const char* ContractLabel(Contract c);
+
+// 1 本のシェーダーについて分かったこと一式。
+struct ShaderInfo
+{
+    std::vector<Param> params;
+    Contract           contract = Contract::Unknown;
+    // 任意のグループ名。ソースのどこかに `// @group イベント` と書くと拾う。
+    // ★用途で分けたいのは書いた人にしか分からない（イベント用 / 常時 / 試作 …）ので、
+    //   そこだけは申告制にする。無ければ Inspector はフォルダ名で代用する。
+    std::string        group;
+};
+
 // vs/ps の DXIL から b0(space0) の cbuffer を読み、メッシュ用/画面用いずれかの自由枠に
 // 載っている変数を列挙する（どちらの契約かはコンパイル時点では分からないので両方見る）。
 // hlslSourcePath が読めれば、宣言行の行末コメント `// @range(min,max)` `// @color` も反映する
 // （配布ビルドには .hlsl が無いことがあるので、読めなくても失敗にはしない）。
 // 返り値: リフレクション自体が成立したら true（変数が 0 個でも true）。
 bool Reflect(const void* vs, size_t vsSize, const void* ps, size_t psSize,
-             const std::wstring& hlslSourcePath, std::vector<Param>& out);
+             const std::wstring& hlslSourcePath, ShaderInfo& out);
 
 // --- 置き場（プロセス内グローバル。ShaderManager が積み、Inspector / Trigger が読む）---
 // ShaderManager はデバイスも ImGui も知らず、InspectorPanel は ShaderManager を持っていない
 // ので、shaderdiag の Help/Issue ストアと同じ方式で受け渡す。
 // キーは shaderdiag::NormalizeKey() と同じ正規化済み relPath。
-void               Set(const std::string& key, std::vector<Param> params);
+void               Set(const std::string& key, ShaderInfo info);
 void               Clear(const std::string& key);
 std::vector<Param> Get(const std::string& key);
 
 // key のシェーダーが宣言している space 側のパラメーターだけを返す。
 std::vector<Param> GetIn(const std::string& key, Space space);
+
+// key のシェーダーの契約 / グループ名。未登録なら Unknown / 空文字。
+Contract    GetContract(const std::string& key);
+std::string GetGroup(const std::string& key);
 
 // key のシェーダーが宣言している name のパラメーターを探す。無ければ false。
 bool Find(const std::string& key, const std::string& name, Param& out);

@@ -77,7 +77,9 @@ void SeedMeshShader(const char* key)
     ps.push_back(MakeParam("_Tint", shaderparams::kMeshFreeBegin + 4, shaderparams::Space::MeshObject,
                            shaderparams::Kind::Color3));
     ps.push_back(MakeParam("_Last", shaderparams::kMeshFreeBegin + 28, shaderparams::Space::MeshObject));
-    shaderparams::Set(key, std::move(ps));
+    shaderparams::ShaderInfo info;
+    info.params = std::move(ps);
+    shaderparams::Set(key, std::move(info));
 }
 
 void SeedScreenShader(const char* key)
@@ -85,7 +87,9 @@ void SeedScreenShader(const char* key)
     std::vector<shaderparams::Param> ps;
     ps.push_back(MakeParam("_Flash", shaderparams::kScreenFreeBegin + 0, shaderparams::Space::Screen));
     ps.push_back(MakeParam("_Tail",  shaderparams::kScreenFreeBegin + 12, shaderparams::Space::Screen));
-    shaderparams::Set(key, std::move(ps));
+    shaderparams::ShaderInfo info;
+    info.params = std::move(ps);
+    shaderparams::Set(key, std::move(info));
 }
 
 // ---- 1) 名前 → スロットの解決 ----
