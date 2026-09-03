@@ -4,6 +4,8 @@
 だから同じものを **人間はエディタでポチポチ**、**Claude Code はテキスト（JSON/Lua）を書くだけ** で作れる。
 
 - スクリプトコンポーネント（プロパティ付き `.lua`）とプレハブ → [`SCRIPT_COMPONENTS.md`](SCRIPT_COMPONENTS.md)
+- **演出の作り方（貼れば動くレシピ集）** → [`EFFECT_RECIPES.md`](EFFECT_RECIPES.md)
+  … まぶしい / 暗転 / 被弾フラッシュ / 発光 / ディゾルブ / 危険地帯
 - このファイル → **エフェクト配置（ParticleEmitter）** / **イベント配置（Trigger + Action）** / **エンティティ参照** / **イベントバス** / **`--validate` 検証** / **地形（`.hf`）とスカルプト（`.smsh`）**
 
 プロジェクトのフォルダ規約（`testengine` / `skiptime2` などと同じ）:
@@ -158,6 +160,9 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 > `events:on("addTime", fn)` で受ける。これでエンジンは汎用のまま、ゲーム差分は Lua に閉じる。
 
 ### シェーダーを時間で動かす（`SetShaderParam` / `AnimShaderParam`）
+
+> **貼ればそのまま動く .hlsl と Trigger の組み合わせは [`EFFECT_RECIPES.md`](EFFECT_RECIPES.md) にまとまっている。**
+> ここは仕組みの説明。
 
 type 11 / 12 は、target のカスタムシェーダーの **名前付きパラメーター**（6章）を
 `str` の名前で引いて書き換える。**Lua を 1 行も書かずに「入った瞬間の演出」が組める**のがねらい。

@@ -47,6 +47,8 @@ Claude Code はテキストで作れる。新機能の作法はここを参照:
   エンティティ参照プロパティ(`type="entity"`) / イベントバス `events` / ヘッドレス検証 `--validate` /
   カスタムシェーダー(`assets/shaders/*.hlsl`、保存で自動ホットリロード) /
   地形(`.hf`)・スカルプト(`.smsh`)の作り方と当たり判定
+- **[`docs/EFFECT_RECIPES.md`](docs/EFFECT_RECIPES.md)** … 演出を作るときはここ。まぶしい/暗転/被弾・発光・
+  ディゾルブ・危険地帯の**貼れば動く**レシピ（Trigger の `AnimShaderParam` × 名前付きシェーダーパラメーター）
 - [`docs/SCRIPT_COMPONENTS.md`](docs/SCRIPT_COMPONENTS.md) … プロパティ付き Lua コンポーネント / プレハブ
 - **[`docs/UI_STYLE_GUIDE.md`](docs/UI_STYLE_GUIDE.md)** … ゲームUIを作るとき必読。ジャンル別デザイン語彙(形/色/字/動き)→
   エンジン機能の対応表・モーション相場・アンチパターン(実在ゲームのリサーチベース)
