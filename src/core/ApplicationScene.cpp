@@ -30,6 +30,10 @@ void Application::LoadEditorIcons(ID3D12GraphicsCommandList* cmdList)
     m_icons.github      = load("github");
     m_icons.commit      = load("commit");
     m_icons.push        = load("push");
+    m_icons.pull        = load("pull");
+    m_icons.fetch       = load("fetch");
+    m_icons.merge       = load("merge");
+    m_icons.refresh     = load("refresh");
 
     // ツールバー
     m_icons.file        = load("file");

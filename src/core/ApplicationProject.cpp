@@ -1026,18 +1026,44 @@ void Application::RenderVersionControlWindow()
     if (m_gitBranchOpRequest == 3)
     {
         // ★取り込むコミット数はここで 1 回だけ数える（git のプロセス起動なので毎フレームは不可）。
-        m_gitMergeCount = GitIntegration::CommitsToMerge(root, m_gitBranchOpTarget);
+        //   ツールバーから開いた場合は取り込み元が未選択なので、選ばれた時に数える。
+        m_gitMergeCount = m_gitBranchOpTarget.empty()
+                        ? -1
+                        : GitIntegration::CommitsToMerge(root, m_gitBranchOpTarget);
         ImGui::OpenPopup("##branchMerge");
         m_gitBranchOpRequest = 0;
     }
 
     if (ImGui::BeginPopupModal("##branchMerge", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
-        ImGui::Text("「%s」を今いるブランチ「%s」へ取り込みます",
-                    m_gitBranchOpTarget.c_str(), branch.c_str());
+        // 取り込み元。ブランチを右クリックして開いたときは選択済み、
+        // ツールバーのマージ ボタンから開いたときは空なのでここで選ばせる。
+        ImGui::Text("今いるブランチ「%s」へ取り込みます", branch.c_str());
+        ImGui::Spacing();
+        ImGui::TextUnformatted("取り込み元");
+        ImGui::SetNextItemWidth(320.0f);
+        if (ImGui::BeginCombo("##mergesrc",
+                m_gitBranchOpTarget.empty() ? "(ブランチを選ぶ)" : m_gitBranchOpTarget.c_str()))
+        {
+            for (const auto& b : m_gitBranches)
+            {
+                if (b == branch) continue;   // 自分自身は取り込めない
+                if (ImGui::Selectable(b.c_str(), b == m_gitBranchOpTarget))
+                {
+                    m_gitBranchOpTarget = b;
+                    // ★選び直した時だけ数え直す（git のプロセス起動なので毎フレームは不可）。
+                    m_gitMergeCount = GitIntegration::CommitsToMerge(root, b);
+                }
+            }
+            if (m_gitBranches.size() <= 1)
+                ImGui::TextDisabled("(取り込めるブランチがありません)");
+            ImGui::EndCombo();
+        }
         ImGui::Spacing();
 
-        if (m_gitMergeCount == 0)
+        if (m_gitBranchOpTarget.empty())
+            ImGui::TextDisabled("取り込み元を選ぶと、入るコミット数が出ます");
+        else if (m_gitMergeCount == 0)
             ImGui::TextColored(th::Good, "取り込むコミットはありません（すでに最新です）");
         else if (m_gitMergeCount > 0)
             ImGui::Text("取り込まれるコミット: %d 件", m_gitMergeCount);
@@ -1059,7 +1085,7 @@ void Application::RenderVersionControlWindow()
         ImGui::TextDisabled("コンフリクトしたら下に一覧が出るので、そこで解消してコミットしてください");
 
         ImGui::Spacing();
-        ImGui::BeginDisabled(busy);
+        ImGui::BeginDisabled(busy || m_gitBranchOpTarget.empty());
         if (ImGui::Button("マージ", ImVec2(120, 0)))
         {
             const std::string target = m_gitBranchOpTarget;
@@ -1147,27 +1173,72 @@ void Application::RenderVersionControlWindow()
             ShellExecuteA(nullptr, "open", webUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     }
 
-    // ---- 行3: 同期ツールバー（更新 / ↑↓ / フェッチ / プル↓ / プッシュ↑）----
+    // ---- 行3: 同期ツールバー（アイコンで並べる。ホバーで名前と意味が出る）----
+    // ★以前は「更新」「フェッチ」の文字ボタンと ▲▼ の矢印ボタンが混在していて、
+    //   どれが送信でどれが受信なのか押すまで分からなかった。色と形が違うアイコンなら
+    //   狭いドックでも並びが崩れず、意味も一目で分かる。
     {
         ImGui::BeginDisabled(busy);
-        if (ImGui::SmallButton("更新")) m_gitForceRefresh = true;
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("変更とブランチ状態を取り直す");
+
+        // 画像が読めない環境（配布 assets が古い等）では文字ボタンへ落とす。
+        // アイコンが無いだけで操作そのものが消えるのは困る。
+        auto iconBtn = [&](u64 tex, const char* id, const char* label, const char* tip) -> bool
+        {
+            const bool pressed = tex
+                ? ImGui::ImageButton(id, static_cast<ImTextureID>(tex), ImVec2(20.0f, 20.0f))
+                : ImGui::Button(label);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+            return pressed;
+        };
+
+        if (iconBtn(m_icons.refresh, "##girefresh", "更新",
+                    "更新 — 変更とブランチ状態を取り直す"))
+            m_gitForceRefresh = true;
+
+        // マージはリモートが無くても使える（ローカルブランチ同士の取り込み）。
+        ImGui::SameLine();
+        if (iconBtn(m_icons.merge, "##gimerge", "マージ",
+                    "マージ — 他のブランチを今いるブランチへ取り込む"))
+        {
+            m_gitBranchOpTarget.clear();   // 取り込み元はダイアログで選ばせる
+            m_gitMergeCount      = -1;
+            m_gitBranchOpRequest = 3;
+        }
+
         if (!remote.empty())
         {
             ImGui::SameLine(0, sp * 2);
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextDisabled("↑%d ↓%d", m_gitAhead < 0 ? 0 : m_gitAhead, m_gitBehind < 0 ? 0 : m_gitBehind);
-            ImGui::SameLine();
-            if (ImGui::SmallButton("フェッチ"))
+            if (iconBtn(m_icons.fetch, "##gifetch", "フェッチ",
+                        "フェッチ — リモートの最新を取ってくるだけ（作業ツリーは変えない）"))
                 RunGitAsync("フェッチ", [root]{ return GitIntegration::Fetch(root); });
             ImGui::SameLine();
-            if (ImGui::ArrowButton("##pull", ImGuiDir_Down))
+            if (iconBtn(m_icons.pull, "##gipull", "プル",
+                        "プル — リモートの変更を取り込む（受信）"))
                 RunGitAsync("プル", [root]{ return GitIntegration::Pull(root); });
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("プル（受信 ↓）");
             ImGui::SameLine();
-            if (ImGui::ArrowButton("##push", ImGuiDir_Up))
+            if (iconBtn(m_icons.push, "##gipush", "プッシュ",
+                        "プッシュ — 手元のコミットをリモートへ送る（送信）"))
                 RunGitAsync("プッシュ", [root]{ return GitIntegration::Push(root, true); });
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("プッシュ（送信 ↑）");
+
+            // 未送信/未取得の件数。0 のときは出さない＝「何かある」ときだけ目に入る。
+            const int ahead = m_gitAhead < 0 ? 0 : m_gitAhead;
+            const int behind = m_gitBehind < 0 ? 0 : m_gitBehind;
+            if (ahead > 0 || behind > 0)
+            {
+                ImGui::SameLine(0, sp * 2);
+                ImGui::AlignTextToFramePadding();
+                if (ahead > 0)
+                {
+                    ImGui::TextColored(th::Warn, "↑%d", ahead);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("未プッシュのコミットが %d 件", ahead);
+                    if (behind > 0) ImGui::SameLine();
+                }
+                if (behind > 0)
+                {
+                    ImGui::TextColored(th::Warn, "↓%d", behind);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("未取得のコミットが %d 件", behind);
+                }
+            }
         }
         ImGui::EndDisabled();
     }

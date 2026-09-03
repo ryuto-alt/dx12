@@ -328,6 +328,7 @@ private:
     void RegisterMcpTerrainMethods();     // 地形 / スカルプト
     void RegisterMcpLightingMethods();    // ライティング / 診断
     void RegisterMcpNavMethods();         // ナビメッシュ（生成 / 設定 / 経路 / レイ / 可視化）
+    void RegisterMcpGitMethods();         // Git / GitHub（状態 / ブランチ / マージ / コミット / プッシュ）
     // 直近フレームのシーン描画(m_sceneRT)を PNG に書き出す。成功=絶対パス / 失敗=空文字列+err。
     // MCP の screenshot 用。同期 readback(WaitIdle×2)＝低頻度のエディタ操作として割り切る。
     // outPath が空なら従来どおり CWD の mcp_screenshot.png（後方互換）。

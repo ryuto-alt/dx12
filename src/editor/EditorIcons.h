@@ -13,7 +13,8 @@ struct EditorUiIcons
 {
     // ---- ランチャー / プロジェクト / Git ----
     u64 logo = 0, newProject = 0, openProject = 0, recent = 0,
-        save = 0, git = 0, github = 0, commit = 0, push = 0;
+        save = 0, git = 0, github = 0, commit = 0, push = 0,
+        pull = 0, fetch = 0, merge = 0, refresh = 0;
 
     // ---- ツールバー ----
     u64 file = 0, play = 0, stop = 0, build = 0,

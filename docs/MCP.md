@@ -130,7 +130,7 @@ SSH ポートフォワード推奨(エンジン側は `127.0.0.1` のみ待受)�
 
 ---
 
-## 4. ツール一覧（全 153 ツール）
+## 4. ツール一覧（全 162 ツール）
 
 MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り、**遅延同期** = フレーム境界後に本物の値が返る。
 
@@ -370,6 +370,45 @@ dx12_stop
 ```
 
 ★合成入力より**人間に遊ばせて `dx12_get_play_session` を読む方が正確**（Play を押した時点で記録は始まっている）。
+
+---
+
+### 4-7. Git / GitHub（同期）
+
+エディタの「Git」窓と同じ操作。対象は**プロジェクトフォルダの git リポジトリ**で、
+エンジンの状態は変えない。認証はユーザーの既存の git/gh 資格情報に委ねる。
+
+| ツール | params | 返り値 |
+|--------|--------|--------|
+| `dx12_git_status` | `{}` | `{branch, remoteUrl, changedFiles[{path,status,staged}], mergeInProgress, conflicts[], githubUser}` ※status は `A`追加/未追跡 `M`変更 `D`削除 `R`リネーム `U`競合 |
+| `dx12_git_branches` | `{}` | `{current, branches[{name,current}]}` |
+| `dx12_git_checkout` | `{name:string, create?:bool=false}` | `{succeeded, exitCode, output, branch, created}` |
+| `dx12_git_merge` | `{name:string, noFastForward?:bool=true}` | `{succeeded, ..., mergedFrom, into, mergeInProgress, conflicts[]}` |
+| `dx12_git_merge_abort` | `{}` | `{succeeded, exitCode, output}` |
+| `dx12_git_commit` | `{message:string}` | `{succeeded, ..., branch}` |
+| `dx12_git_push` | `{}` | `{succeeded, ..., branch}` |
+| `dx12_git_pull` | `{}` | `{succeeded, ..., mergeInProgress, conflicts[]}` |
+| `dx12_git_fetch` | `{}` | `{succeeded, exitCode, output}` |
+
+**約束事**:
+
+- **まず `dx12_git_status` を読む。** 未コミットの変更があると `dx12_git_merge` は実行前に弾かれるし、
+  `mergeInProgress:true` の間にできるのは「マージを終わらせるコミット」だけ。
+- ブランチ名は `dx12_git_branches` から取る（推測しない）。
+- **`dx12_git_checkout` / `dx12_git_pull` はプロジェクトの assets を入れ替える。**
+  シーンや `.hlsl` が消える/増えるので、実行後は `dx12_list_scenes` と `dx12_git_status` を読み直す。
+  ★エディタで開いているシーンのファイルが消えたら、そのまま編集を続けないこと。
+- コンフリクトは `succeeded:false` + `conflicts[]` で返る（エラーではない＝作業ツリーが止まった状態）。
+  直して `dx12_git_commit` で完了させるか、`dx12_git_merge_abort` で取り消す。
+- **`dx12_git_push` は外向きの操作**（他人から見える場所へ出る）。ユーザーが明示的に頼んでいないなら撃たない。
+
+```
+dx12_git_status                                  # 汚れていないか / マージ中でないか
+dx12_git_branches                                # 取り込み元の正確な名前
+dx12_git_merge(name:"feature/x")                 # conflicts[] が空なら完了
+  └ 競合したら → 各ファイルを直す → dx12_git_commit(message:"...")
+  └ 諦めるなら → dx12_git_merge_abort
+```
 
 ---
 
