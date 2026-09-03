@@ -593,6 +593,33 @@ GitResult GitIntegration::RenameBranch(const std::string& workDir,
     return RunGit(workDir, "branch -m \"" + oldName + "\" \"" + newName + "\"");
 }
 
+GitResult GitIntegration::Merge(const std::string& workDir, const std::string& name, bool noFastForward)
+{
+    std::string args = "merge ";
+    if (noFastForward) args += "--no-ff ";
+    // --no-edit: エディタを開かせない。コンソールを持たない子プロセスなので、
+    // メッセージ編集を要求されると応答を待ったまま固まる。
+    args += "--no-edit \"" + name + "\"";
+    return RunGit(workDir, args);
+}
+
+GitResult GitIntegration::AbortMerge(const std::string& workDir)
+{
+    return RunGit(workDir, "merge --abort");
+}
+
+int GitIntegration::CommitsToMerge(const std::string& workDir, const std::string& target)
+{
+    const GitResult r = RunGit(workDir, "rev-list --count HEAD..\"" + target + "\"");
+    if (!r.ok()) return -1;
+    // 出力は数字 1 行だけ。前後の空白/改行を落として読む。
+    size_t b = r.output.find_first_of("0123456789");
+    if (b == std::string::npos) return -1;
+    size_t e = r.output.find_first_not_of("0123456789", b);
+    try { return std::stoi(r.output.substr(b, e == std::string::npos ? e : e - b)); }
+    catch (...) { return -1; }
+}
+
 GitResult GitIntegration::DeleteBranch(const std::string& workDir, const std::string& name, bool force)
 {
     // -d は未マージのブランチを git 自身が拒否する（＝作業が消えない安全側）。

@@ -104,6 +104,25 @@ public:
     // ブランチの削除。force=false は -d（未マージなら git が拒否する＝安全側）、true は -D（強制）。
     // 今いるブランチは削除できない（git がエラーにする）ので、呼ぶ側で先に切り替えること。
     static GitResult DeleteBranch(const std::string& workDir, const std::string& name, bool force);
+
+    // ---- マージ ----
+    // name を「今いるブランチ」へ取り込む（git merge）。
+    // noFastForward=true なら --no-ff ＝ 早送りできる場合でもマージコミットを必ず作る
+    // （どのブランチから来たかが履歴に残る。機能ブランチの取り込みではこちらが好まれる）。
+    // ★コンフリクトで止まった場合も ok()==false で返る。IsMergeInProgress が true の間は
+    //   ConflictedFiles / ResolveOurs / ResolveTheirs で解消し、コミットして完了させる。
+    static GitResult Merge(const std::string& workDir, const std::string& name, bool noFastForward);
+
+    // 進行中のマージを取り消して元の状態へ戻す（git merge --abort）。
+    // コンフリクトを解消しきれないときの逃げ道。マージ前の作業ツリーへ戻る。
+    static GitResult AbortMerge(const std::string& workDir);
+
+    // target を今いるブランチへ取り込むと何コミット入るか（git rev-list --count HEAD..target）。
+    // 取得できなければ -1、0 なら「取り込むものが無い＝既に最新」。
+    // ★押す前に「何も起きない」と分かるようにするためのもの。git を 1 回起動するので
+    //   毎フレームではなく、マージのダイアログを開く瞬間だけ呼ぶこと。
+    static int CommitsToMerge(const std::string& workDir, const std::string& target);
+
     // ブランチ名として git が受け付ける形か（空 / 空白 / 制御文字 / ~^:?*[ / .. / 先頭末尾の記号）。
     // git に投げる前に弾くのは、エラー出力より「なぜダメか」を UI で言える方が親切なため。
     static bool IsValidBranchName(const std::string& name);

@@ -976,7 +976,11 @@ private:
     // ポップアップはコンボを閉じてから開く必要があるので、対象と要求を 1 フレーム持ち越す。
     std::string              m_gitBranchOpTarget;    // 操作対象のブランチ名
     std::array<char, 128>    m_gitRenameBranchBuf{}; // 新しい名前の入力
-    int                      m_gitBranchOpRequest = 0; // 0=なし 1=名前変更 2=削除
+    int                      m_gitBranchOpRequest = 0; // 0=なし 1=名前変更 2=削除 3=マージ
+    // マージのダイアログ用。取り込むコミット数は git を 1 回起動して取るので、
+    // 毎フレームではなくダイアログを開く瞬間だけ計算してここに置く（-1=不明）。
+    bool                     m_gitMergeNoFF = true;   // --no-ff（マージコミットを必ず残す）
+    int                      m_gitMergeCount = -1;    // 取り込まれるコミット数
 
     // ---- 変更一覧の自動追従（ファイルを消したら即座にリストへ反映する）----
     // ★以前は「窓を開いた瞬間」と「git 操作の直後」と「更新ボタン」でしか取り直さなかったので、

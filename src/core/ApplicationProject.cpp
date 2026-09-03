@@ -978,6 +978,15 @@ void Application::RenderVersionControlWindow()
                                   b.c_str(), _TRUNCATE);
                         ImGui::CloseCurrentPopup();
                     }
+                    // 自分自身は取り込めない（git がエラーにする）ので出さない。
+                    ImGui::BeginDisabled(b == branch);
+                    if (ImGui::MenuItem("このブランチを取り込む（マージ）..."))
+                    {
+                        m_gitBranchOpTarget  = b;
+                        m_gitBranchOpRequest = 3;
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::EndDisabled();
                     // 今いるブランチは git が削除を拒否する。押させてエラーを見せるより出さない。
                     ImGui::BeginDisabled(b == branch);
                     if (ImGui::MenuItem("削除..."))
@@ -988,7 +997,7 @@ void Application::RenderVersionControlWindow()
                     }
                     ImGui::EndDisabled();
                     if (b == branch)
-                        ImGui::TextDisabled("(今いるブランチは削除できません)");
+                        ImGui::TextDisabled("(今いるブランチはマージ/削除できません)");
                     ImGui::EndPopup();
                 }
                 ImGui::PopID();
@@ -1014,6 +1023,56 @@ void Application::RenderVersionControlWindow()
     // コンボが閉じたあとのこの位置で OpenPopup する（コンボの中からは開けない）。
     if (m_gitBranchOpRequest == 1) { ImGui::OpenPopup("##branchRename"); m_gitBranchOpRequest = 0; }
     if (m_gitBranchOpRequest == 2) { ImGui::OpenPopup("##branchDelete"); m_gitBranchOpRequest = 0; }
+    if (m_gitBranchOpRequest == 3)
+    {
+        // ★取り込むコミット数はここで 1 回だけ数える（git のプロセス起動なので毎フレームは不可）。
+        m_gitMergeCount = GitIntegration::CommitsToMerge(root, m_gitBranchOpTarget);
+        ImGui::OpenPopup("##branchMerge");
+        m_gitBranchOpRequest = 0;
+    }
+
+    if (ImGui::BeginPopupModal("##branchMerge", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::Text("「%s」を今いるブランチ「%s」へ取り込みます",
+                    m_gitBranchOpTarget.c_str(), branch.c_str());
+        ImGui::Spacing();
+
+        if (m_gitMergeCount == 0)
+            ImGui::TextColored(th::Good, "取り込むコミットはありません（すでに最新です）");
+        else if (m_gitMergeCount > 0)
+            ImGui::Text("取り込まれるコミット: %d 件", m_gitMergeCount);
+        else
+            ImGui::TextDisabled("取り込まれるコミット数を取得できませんでした");
+
+        // ★未コミットの変更が残っていると git は merge を拒否することがある。
+        //   エラーを見せてから気づかせるより、押す前に言う。
+        if (!m_gitChanges.empty())
+            ImGui::TextColored(th::Warn,
+                "⚠ 未コミットの変更が %zu 件あります。先にコミットするか退避してください",
+                m_gitChanges.size());
+
+        ImGui::Spacing();
+        ImGui::Checkbox("マージコミットを必ず作る (--no-ff)", &m_gitMergeNoFF);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("ON: どのブランチから取り込んだかが履歴に残ります（機能ブランチ向け）\n"
+                              "OFF: 早送りできるときは履歴を一直線のままにします");
+        ImGui::TextDisabled("コンフリクトしたら下に一覧が出るので、そこで解消してコミットしてください");
+
+        ImGui::Spacing();
+        ImGui::BeginDisabled(busy);
+        if (ImGui::Button("マージ", ImVec2(120, 0)))
+        {
+            const std::string target = m_gitBranchOpTarget;
+            const bool        noff   = m_gitMergeNoFF;
+            RunGitAsync("マージ",
+                [root, target, noff]{ return GitIntegration::Merge(root, target, noff); });
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("キャンセル", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
 
     if (ImGui::BeginPopupModal("##branchRename", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
@@ -1143,6 +1202,15 @@ void Application::RenderVersionControlWindow()
             ImGui::EndDisabled();
             ImGui::PopID();
         }
+        // ★どうしても解消できないときの逃げ道。これが無いと、コンフリクトで止まった作業ツリーから
+        //   エディタだけでは抜けられず、コマンドラインを開く羽目になる。
+        ImGui::Separator();
+        ImGui::BeginDisabled(busy);
+        if (ImGui::SmallButton("マージを中止"))
+            RunGitAsync("マージ中止", [root]{ return GitIntegration::AbortMerge(root); });
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("マージを取り消して、始める前の状態へ戻します（git merge --abort）");
         ImGui::EndChild();
         ImGui::PopStyleColor();
         ImGui::Spacing();
@@ -1150,6 +1218,11 @@ void Application::RenderVersionControlWindow()
     else if (m_gitMergeInProgress)
     {
         ImGui::TextColored(th::Good, "✓ コンフリクトは全部解消したで。下でコミットしてマージを終わらせてや。");
+        ImGui::SameLine();
+        ImGui::BeginDisabled(busy);
+        if (ImGui::SmallButton("マージを中止"))
+            RunGitAsync("マージ中止", [root]{ return GitIntegration::AbortMerge(root); });
+        ImGui::EndDisabled();
         ImGui::Spacing();
     }
 
