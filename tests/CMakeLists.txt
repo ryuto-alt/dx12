@@ -140,6 +140,21 @@ if(TARGET Scene)
     add_test(NAME SerializeRoundtripTests COMMAND SerializeRoundtripTests)
 endif()
 
+# 名前付きシェーダーパラメーターの解決とトゥイーン（Trigger の SetShaderParam /
+# AnimShaderParam の土台）。「オフセット → 添字」を 1 つ間違えると静かに隣のスロットを
+# 壊し、症状は Play 中の見た目にしか出ないので機械で押さえる。
+# リフレクションは使わず Param を手で積むので DXC もデバイスも不要。
+if(TARGET Scene)
+    add_executable(ShaderParamTweenTests shader_param_tween_test.cpp)
+    target_link_libraries(ShaderParamTweenTests PRIVATE Scene)
+    target_include_directories(ShaderParamTweenTests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    if(MSVC)
+        target_compile_options(ShaderParamTweenTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(ShaderParamTweenTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME ShaderParamTweenTests COMMAND ShaderParamTweenTests)
+endif()
+
 # .dxmat(マテリアルアセット)JSON往復テスト。Resource(GPU非依存の純ロジック部分のみ使用)をリンクするため、
 # エンジン本体と一緒にビルドする構成でのみ有効(スタンドアロン構成では Resource が無いのでスキップ)。
 if(TARGET Resource)

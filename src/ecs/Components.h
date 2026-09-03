@@ -1360,6 +1360,13 @@ enum class TriggerActionType : uint8_t
     FadeToScene = 8,  // str のシーンへフェード切替（num=秒）
     SetProperty = 9,  // target の実行中スクリプトの self[str] = num
     EmitEvent   = 10, // Lua イベントバスへ events:emit(str, {value=num, target=...})
+    // ★11/12 は target のカスタムシェーダーの【名前付きパラメーター】(resource/ShaderParams.h)を
+    //   str の名前で引いて動かす。MeshRenderer::shaderPath と
+    //   CameraComponent::screenShaderPath の両方を対象にできる（実体は scene/ShaderParamTween.h）。
+    //   ベクトル型のパラメーターは先頭成分(.x)が対象。
+    SetShaderParam  = 11, // str のパラメーターへ num を即代入
+    AnimShaderParam = 12, // str のパラメーターを num → vec.x へ vec.y 秒かけて動かす
+                           // (vec.z = ShaderTweenEase。0=等速 1=減速 2=加速 3=両端ゆるめ)
 };
 
 struct TriggerAction

@@ -7,6 +7,7 @@
 #include <vector>
 #include "core/Types.h"
 #include "ecs/Components.h"   // ScriptProp / ScriptPropType
+#include "scene/ShaderParamTween.h"   // Trigger の SetShaderParam / AnimShaderParam
 #include <entt/entt.hpp>
 #include "engine/core/EventBus.h"   // C++ 汎用イベントバス（events バインドの実体）
 
@@ -231,6 +232,9 @@ private:
     UISystem*      m_uiSystem = nullptr;  // input:isUiCapturing* 用。null 許容
     EventBus*    m_eventBus = nullptr;   // Application が所有、null 許容（エディタ中は非使用）
     ActionMap*   m_actionMap = nullptr;  // Application が所有、null 許容
+    // Trigger の SetShaderParam / AnimShaderParam の実体。Play 停止で捨てる
+    // （進行中の値を残したままシーンを作り直すと、止めた瞬間の絵が焼き付く）。
+    ShaderParamTweens m_shaderTweens;
     std::string  m_assetsDir;
     std::string  m_lastError;
 

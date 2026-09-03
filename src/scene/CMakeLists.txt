@@ -5,6 +5,7 @@ add_library(Scene STATIC
     SceneFlow.cpp
     ComponentRegistry.cpp
     NavSceneGather.cpp
+    ShaderParamTween.cpp
 )
 
 target_include_directories(Scene PUBLIC

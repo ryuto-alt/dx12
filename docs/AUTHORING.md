@@ -151,9 +151,89 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 | 8 | FadeToScene | `str` のシーンへフェード切替 | str, num(秒) |
 | 9 | SetProperty | target の実行中スクリプトの `self[str] = num` | target, str, num |
 | 10 | EmitEvent | イベントバスへ `events:emit(str, {value=num, target=...})` | str, num, target |
+| 11 | SetShaderParam | target のシェーダーの `str` パラメーターへ `num` を即代入 | target, str, num |
+| 12 | AnimShaderParam | `str` パラメーターを `num` → `vec[0]` へ `vec[1]` 秒で動かす | target, str, num, vec |
 
 > ゲーム固有の処理（残り時間 +5、状態遷移 など）は **EmitEvent** で投げて、ゲーム側 Lua が
 > `events:on("addTime", fn)` で受ける。これでエンジンは汎用のまま、ゲーム差分は Lua に閉じる。
+
+### シェーダーを時間で動かす（`SetShaderParam` / `AnimShaderParam`）
+
+type 11 / 12 は、target のカスタムシェーダーの **名前付きパラメーター**（6章）を
+`str` の名前で引いて書き換える。**Lua を 1 行も書かずに「入った瞬間の演出」が組める**のがねらい。
+
+対象は 2 種類とも扱える：
+
+| target が持つもの | 動かせる枠 |
+|---|---|
+| `MeshRenderer` + `shaderPath` | 自由枠 8 個（`float` 8 個ぶん） |
+| `CameraComponent` + `screenShaderPath` | `ScreenShaderCB` の `params` = 4 個 |
+
+`str` は Inspector では**コンボから選ぶ**（対象のシェーダーが実際に宣言している名前しか出ない）。
+名前が引けなかった場合は「使える名前の一覧」付きの警告がコンソールに 1 回だけ出る。
+
+| フィールド | `SetShaderParam` (11) | `AnimShaderParam` (12) |
+|---|---|---|
+| `str` | パラメーター名 | パラメーター名 |
+| `num` | 代入する値 | **開始値**（発火した瞬間に書かれる） |
+| `vec[0]` | — | **終了値** |
+| `vec[1]` | — | **秒数**（0 なら即終了値） |
+| `vec[2]` | — | イージング 0=等速 1=減速 2=加速 3=両端ゆるめ |
+
+- ベクトル型（`float3` など）は**先頭成分（`.x`）**が対象。
+- 同じスロットに新しく発火すると、進行中のものは打ち切って差し替わる
+  （出入りを繰り返しても値が二重に動かない）。
+- `when=2`（Stay、居る間 毎フレーム）でも使える。**同じ指示のあいだは積み直さず走り続ける**
+  ので、範囲に入っている間ずっと 1 回ぶんのアニメが進む（値を変えれば頭から掛け直る）。
+- Play を止めると進行中のトゥイーンは捨てられる。
+
+#### 例: 部屋に入ったらまぶしい
+
+`assets/shaders/Flash.hlsl`（**画面シェーダー**の雛形から。`params` の位置に名前を付ける）:
+```hlsl
+cbuffer ScreenShaderCB : register(b0)
+{
+    float4 resolution;
+    float4 timeParams;
+    float  _Flash;         // @range(0,1)   ← ここが params.x。トリガーから動かす
+    float3 _FlashColor;    // @color        ← params.yzw
+    float4 cameraParams;
+    float4 uvOffsetScale;
+};
+
+float4 PSMain(VSOut i) : SV_TARGET
+{
+    float3 col = SampleScreen(i.uv);
+    col = lerp(col, _FlashColor, saturate(_Flash));   // _Flash=0 で素通し
+    return float4(col, 1.0);
+}
+```
+
+カメラの「画面シェーダー」に割り当てて、`_FlashColor` を白にしておく。
+あとは部屋の入口に Trigger を置くだけ：
+
+```json
+{
+  "name": "RoomEntrance",
+  "transform": { "position": [0, 1, 10], "rotation": [0,0,0], "scale": [1,1,1] },
+  "trigger": {
+    "shape": 0,
+    "halfExtents": [2.0, 2.0, 0.5],
+    "filter": "Player",
+    "once": true,
+    "actions": [
+      { "when": 0, "type": 12, "target": "MainCamera", "str": "_Flash",
+        "num": 1.0, "vec": [0.0, 0.6, 1.0] }
+    ]
+  }
+}
+```
+
+`num: 1.0` → `vec[0]: 0.0` へ `vec[1]: 0.6` 秒、`vec[2]: 1`（減速）で戻る＝
+入った瞬間に白く飛んで、0.6 秒かけて元の画面へ戻る。
+
+メッシュ単位（扉やクリスタルが光る）も同じ形で、`target` をそのメッシュにして
+`str` を `MeshRenderer` 側のシェーダーが宣言している名前にするだけ。
 
 ---
 

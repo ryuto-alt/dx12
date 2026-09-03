@@ -116,7 +116,11 @@ cbuffer ScreenShaderCB : register(b0)
 {
     float4 resolution;    // xy = 画面の px, zw = 1/px
     float4 timeParams;    // x = 経過秒, y = デルタ秒, z = アスペクト(W/H), w = フレーム番号
-    float4 params;        // Inspector の「パラメーター」float4（好きに使ってよい）
+    // ★この float 4 個分が「名前付きパラメーター」の枠です。好きな名前・型で宣言すると
+    //   その名前のまま Inspector に出て、Trigger の AnimShaderParam から
+    //   時間変化させられます（行末 // @range(min,max) でスライダー、// @color で色）。
+    float  _Strength;     // @range(0,1)  ←下の PSMain で使っている例
+    float3 _reserved;     // 残り 3 個。使うなら名前を付けてください
     float4 cameraParams;  // x = near, y = far, z = 垂直FOV(度), w = 正射なら 1
     float4 uvOffsetScale; // ★内部用。SampleScreen / SampleDepth が使う
 };
@@ -157,8 +161,8 @@ float4 PSMain(VSOut i) : SV_TARGET
     float3 col = SampleScreen(i.uv);
 
     // ── ここから下を書き換える ──
-    // 例: 走る走査線 + 周辺を少し暗く（params.x で強さを調整できる）
-    float strength = saturate(params.x > 0.0 ? params.x : 0.35);
+    // 例: 走る走査線 + 周辺を少し暗く（Inspector の「_Strength」で強さを調整）
+    float strength = saturate(_Strength > 0.0 ? _Strength : 0.35);
     float band = sin((i.uv.y + timeParams.x * 0.15) * resolution.y * 0.5) * 0.5 + 0.5;
     col *= lerp(1.0, band, strength * 0.35);
 

@@ -4390,6 +4390,9 @@ void ScriptEngine::OnPlayStart()
 void ScriptEngine::OnPlayStop()
 {
     auto& reg = m_scene->GetRegistry();
+    // 進行中の AnimShaderParam を捨てる。残したまま Play を止めると、シーンを作り直した
+    // 直後に途中の値が書かれて「止めた瞬間の絵が焼き付く」。
+    m_shaderTweens.Clear();
     auto view = reg.view<LuaScript>();
     for (auto e : view)
     {
@@ -4468,10 +4471,39 @@ void ScriptEngine::UpdateAttachedScripts(f32 dt)
     }
 }
 
-void ScriptEngine::UpdateTriggers(f32 /*dt*/)
+// SetShaderParam / AnimShaderParam の名前が引けなかったときの説明。
+// ★Stay アクションは毎フレーム撃たれるので、同じ組み合わせでは 1 回しか出さない。
+//   出さないとログが埋まって他のエラーが見えなくなる。
+static void WarnShaderParamMiss(const entt::registry& reg, entt::entity target,
+                                const std::string& name, const char* action)
+{
+    static std::set<std::string> warned;
+    const std::string key = std::to_string(static_cast<u32>(target)) + "/" + name + "/" + action;
+    if (!warned.insert(key).second) return;
+
+    const std::vector<shaderparams::Param> avail = ListShaderParams(reg, target);
+    std::string list;
+    for (const shaderparams::Param& p : avail)
+    {
+        if (!list.empty()) list += ", ";
+        list += p.name;
+    }
+    if (list.empty())
+        list = "(このエンティティにカスタムシェーダーが割り当てられていないか、"
+               "シェーダーが自由枠に変数を宣言していません)";
+
+    Logger::Warn("Trigger {}: パラメーター \"{}\" が見つかりません。使える名前: {}",
+                 action, name, list);
+}
+
+void ScriptEngine::UpdateTriggers(f32 dt)
 {
     if (!m_scene || !m_lua) return;
     auto& reg = m_scene->GetRegistry();
+
+    // 進行中の AnimShaderParam を進める。★アクションの評価より先に回す＝
+    //   同じフレームで新しく積まれたトゥイーンが 1 フレームぶん飛ばされない。
+    m_shaderTweens.Update(reg, dt);
 
     std::vector<entt::entity> toDestroy;
 
@@ -4543,6 +4575,30 @@ void ScriptEngine::UpdateTriggers(f32 /*dt*/)
                     auto* tbl = static_cast<sol::table*>(ls->self.get());
                     (*tbl)[a.str] = a.num;
                 }
+            }
+            break;
+        // ★カスタムシェーダーの名前付きパラメーターを動かす。名前(str)の解決は
+        //   ListShaderParams() 一本 = Inspector のコンボが出す候補と同じものを見るので、
+        //   UI で選べた名前は必ずここで見つかる。
+        case TriggerActionType::SetShaderParam:
+            if (at != entt::null && !a.str.empty())
+            {
+                if (!m_shaderTweens.SetNow(reg, at, a.str, static_cast<f32>(a.num)))
+                    WarnShaderParamMiss(reg, at, a.str, "SetShaderParam");
+            }
+            break;
+        case TriggerActionType::AnimShaderParam:
+            if (at != entt::null && !a.str.empty())
+            {
+                // num = 開始値 / vec.x = 終了値 / vec.y = 秒数 / vec.z = イージング
+                const f32 dur  = (a.vec.y > 0.0f) ? a.vec.y : 0.0f;
+                const int easeI = std::clamp(static_cast<int>(a.vec.z), 0,
+                                             static_cast<int>(ShaderTweenEase::Count) - 1);
+                // Stay は毎フレーム発火するので「同じ指示なら積み直さない」で走らせ続ける。
+                const bool keep = (a.when == static_cast<int>(TriggerWhen::Stay));
+                if (!m_shaderTweens.Start(reg, at, a.str, static_cast<f32>(a.num), a.vec.x,
+                                          dur, static_cast<ShaderTweenEase>(easeI), keep))
+                    WarnShaderParamMiss(reg, at, a.str, "AnimShaderParam");
             }
             break;
         case TriggerActionType::EmitEvent:

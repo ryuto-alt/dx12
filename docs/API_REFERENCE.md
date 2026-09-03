@@ -1007,6 +1007,8 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 | 8 | `FadeToScene` | str のシーンへフェード切替（num=秒） |
 | 9 | `SetProperty` | target の実行中スクリプトの `self[str] = num` |
 | 10 | `EmitEvent` | イベントバスへ `events:emit(str, {value=num, target=...})` |
+| 11 | `SetShaderParam` | target のカスタムシェーダーの `str` パラメーターへ `num` を即代入 |
+| 12 | `AnimShaderParam` | `str` パラメーターを `num` → `vec[0]` へ `vec[1]` 秒・`vec[2]`(イージング) で動かす |
 
 ### ScriptProp（プロパティ）型
 `Float`(0) / `Int`(1) / `Bool`(2) / `String`(3) / `Vec3`(4) / `Color`(5) / `Entity`(6)

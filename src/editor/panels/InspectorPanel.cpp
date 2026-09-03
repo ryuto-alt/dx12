@@ -24,6 +24,7 @@
 #include "resource/ShaderRegistry.h"
 #include "resource/ShaderDiagnostics.h"
 #include "resource/ShaderParams.h"
+#include "scene/ShaderParamTween.h"   // トリガーのパラメーター名コンボ
 #include "resource/MaterialAssetIO.h"
 #include "editor/panels/AssetBrowserPanel.h"
 
@@ -91,13 +92,21 @@ void WarnText(const char* fmt, ...)
 // 値の置き場は従来と同じ MeshRenderer の 8 float（CustomParamBase() が先頭）なので、
 // ルート定数もシーン JSON も変わらない。リフレクションが取れないとき（未コンパイル /
 // 配布ビルドで .cso しか無い等）は false を返し、呼び出し側が従来の固定 2 行へ落ちる。
-bool DrawNamedShaderParams(const std::string& shaderRel, float* base)
+// outChanged / outActive は Undo 用（呼び出し側が EndEdit に渡す）。
+// MeshRenderer 側はスナップショット比較で拾うので渡さなくてよいが、CameraComponent 側は
+// changed フラグでしか Undo を積まないので、渡さないと「編集したのに戻せない」になる。
+bool DrawNamedShaderParams(const std::string& shaderRel, float* base,
+                           dx12e::shaderparams::Space space,
+                           bool* outChanged = nullptr, bool* outActive = nullptr)
 {
     // この無名 namespace は dx12e の外なので、エンジン側の名前は明示的に引く。
     namespace sp = dx12e::shaderparams;
     namespace pg = dx12e::pg;
 
-    const std::vector<sp::Param> params = sp::Get(dx12e::shaderdiag::NormalizeKey(shaderRel));
+    // ★space で絞る。メッシュ用と画面用でオフセットの意味も書き込み先も違うので、
+    //   混ぜて描くと別の枠へ書き込んでしまう。
+    const std::vector<sp::Param> params =
+        sp::GetIn(dx12e::shaderdiag::NormalizeKey(shaderRel), space);
     if (params.empty()) return false;
 
     for (const sp::Param& p : params)
@@ -111,25 +120,69 @@ bool DrawNamedShaderParams(const std::string& shaderRel, float* base)
 
         const float mn = p.hasRange ? p.minV : 0.0f;
         const float mx = p.hasRange ? p.maxV : 0.0f;   // mn==mx==0 で DragFloat は無制限になる
+        bool ch = false;
         switch (p.kind)
         {
         case sp::Kind::Float:
-            if (p.hasRange) pg::SliderFloat(label, v, p.minV, p.maxV, "%.3f", nullptr, tip);
-            else            pg::Float(label, v, 0.005f, 0.0f, 0.0f, "%.3f", nullptr, tip);
+            if (p.hasRange) ch = pg::SliderFloat(label, v, p.minV, p.maxV, "%.3f", outActive, tip);
+            else            ch = pg::Float(label, v, 0.005f, 0.0f, 0.0f, "%.3f", outActive, tip);
             break;
-        case sp::Kind::Float2: pg::Float2(label, v, 0.01f, mn, mx, "%.3f", nullptr, tip); break;
-        case sp::Kind::Float3: pg::Float3(label, v, 0.01f, mn, mx, "%.3f", nullptr, tip); break;
-        case sp::Kind::Float4: pg::Float4(label, v, 0.01f, mn, mx, "%.3f", nullptr, tip); break;
-        case sp::Kind::Color3: pg::Color3(label, v); break;
-        case sp::Kind::Color4: pg::Color4(label, v); break;
+        case sp::Kind::Float2: ch = pg::Float2(label, v, 0.01f, mn, mx, "%.3f", outActive, tip); break;
+        case sp::Kind::Float3: ch = pg::Float3(label, v, 0.01f, mn, mx, "%.3f", outActive, tip); break;
+        case sp::Kind::Float4: ch = pg::Float4(label, v, 0.01f, mn, mx, "%.3f", outActive, tip); break;
+        case sp::Kind::Color3: ch = pg::Color3(label, v); break;
+        case sp::Kind::Color4: ch = pg::Color4(label, v); break;
         default:
             // int / bool / 行列 / 配列。値の実体が float なので編集させない（黙って壊すより出す）。
             pg::Text(label, "%s は編集非対応（float / float2 / float3 / float4 のみ）",
                      p.typeName.empty() ? "この型" : p.typeName.c_str());
             break;
         }
+        if (ch && outChanged) *outChanged = true;
     }
     return true;
+}
+
+// トリガーの SetShaderParam / AnimShaderParam 用の「パラメーター名」コンボ。
+// ★対象のシェーダーが実際に宣言している名前だけを出す。手打ちのタイポで
+//   「トリガーは動いているのに何も起きない」が起きないようにするためのもの。
+//   候補の出どころは ListShaderParams() で、実行時に名前を解決するのと同じ関数。
+// 対象が決まらない（Target 空 = 実行時の Filter 対象）ときは手打ちの入力欄へ落とす。
+void DrawShaderParamPicker(const entt::registry& reg, entt::entity target, std::string& name)
+{
+    namespace pg = dx12e::pg;
+    namespace sp = dx12e::shaderparams;
+
+    const std::vector<sp::Param> avail =
+        (target == entt::null) ? std::vector<sp::Param>{} : dx12e::ListShaderParams(reg, target);
+
+    if (avail.empty())
+    {
+        char buf[128] = {};
+        strncpy_s(buf, sizeof(buf), name.c_str(), _TRUNCATE);
+        if (pg::InputText("パラメーター名 Param", buf, sizeof(buf), 0, nullptr,
+                          "対象を選ぶと、そのシェーダーが宣言している名前から選べます"))
+            name = buf;
+        return;
+    }
+
+    pg::Label("パラメーター名 Param",
+              "対象のシェーダーが宣言している名前。HLSL に変数を足して保存すれば候補が増えます");
+    ImGui::PushID("shaderParamPick");
+    if (ImGui::BeginCombo("##v", name.empty() ? "(未選択)" : name.c_str()))
+    {
+        for (const sp::Param& p : avail)
+        {
+            // ベクトル型は先頭成分だけ動かすので、それが分かる形で出す。
+            std::string label = p.name;
+            if (p.ComponentCount() > 1)          label += "  (.x)";
+            if (p.space == sp::Space::Screen)     label += "  [画面シェーダー]";
+            if (!p.IsAnimatable())                label += "  ※型が非対応";
+            if (ImGui::Selectable(label.c_str(), p.name == name)) name = p.name;
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::PopID();
 }
 
 // ===== カスタムシェーダーの「なぜ効かないか」をその場に出す =====
@@ -2494,7 +2547,8 @@ void InspectorPanel::Render(entt::registry& reg,
                         pg::Combo("いつ When", &a.when, whens, IM_ARRAYSIZE(whens));
                         const char* types[] = { "Enable", "Disable", "Destroy", "Move", "PlayEffect",
                                                 "StopEffect", "PlaySound", "LoadScene", "FadeToScene",
-                                                "SetProperty", "EmitEvent" };
+                                                "SetProperty", "EmitEvent",
+                                                "SetShaderParam", "AnimShaderParam" };
                         pg::Combo("何を Type", &a.type, types, IM_ARRAYSIZE(types));
                         {
                             const char* cur = a.target.empty() ? "(なし=Filter対象)" : a.target.c_str();
@@ -2523,6 +2577,35 @@ void InspectorPanel::Render(entt::registry& reg,
                           const char* hint = a.type == 9 ? "プロパティ名 Prop" : "イベント名 Event";
                           if (pg::InputText(hint, buf, sizeof(buf))) a.str = buf;
                           float v = static_cast<float>(a.num); if (pg::Float("値 Value", &v, 0.05f)) a.num = v; }
+                        // カスタムシェーダーの名前付きパラメーターを動かす 2 種。
+                        // 名前は対象のシェーダーの宣言から選ぶ（DrawShaderParamPicker）。
+                        if (a.type == 11 || a.type == 12)
+                        {
+                            const entt::entity at = (a.targetGuid == 0 && a.target.empty())
+                                ? entt::null
+                                : dx12e::ResolveEntityRef(reg, a.targetGuid, a.target);
+                            DrawShaderParamPicker(reg, at, a.str);
+                            if (a.type == 11)
+                            {
+                                float v = static_cast<float>(a.num);
+                                if (pg::Float("値 Value", &v, 0.01f)) a.num = v;
+                            }
+                            else
+                            {
+                                float from = static_cast<float>(a.num);
+                                if (pg::Float("開始値 From", &from, 0.01f, 0.0f, 0.0f, "%.3f", nullptr,
+                                              "発火した瞬間に書き込まれる値")) a.num = from;
+                                pg::Float("終了値 To", &a.vec.x, 0.01f, 0.0f, 0.0f, "%.3f", nullptr,
+                                          "Duration 秒かけてここへ向かう");
+                                pg::Float("秒数 Duration", &a.vec.y, 0.01f, 0.0f, 10.0f, "%.2f", nullptr,
+                                          "0 なら即座に終了値になります");
+                                int ease = std::clamp(static_cast<int>(a.vec.z), 0, 3);
+                                const char* eases[] = { "等速 linear", "減速 out", "加速 in", "両端ゆるめ inOut" };
+                                if (pg::Combo("イージング Easing", &ease, eases, IM_ARRAYSIZE(eases),
+                                              "フラッシュが引くときは『減速 out』が定番"))
+                                    a.vec.z = static_cast<float>(ease);
+                            }
+                        }
                         pg::End();
                     }
                     if (ImGui::SmallButton("このアクションを削除")) removeIdx = static_cast<int>(i);
@@ -2648,9 +2731,17 @@ void InspectorPanel::Render(entt::registry& reg,
                         {
                             changed |= pg::Checkbox("\xe6\x9c\x89\xe5\x8a\xb9 Enabled", &cam.screenShaderEnabled,
                                 "\xe5\x89\xb2\xe3\x82\x8a\xe5\xbd\x93\xe3\x81\xa6\xe3\x81\x9f\xe3\x81\xbe\xe3\x81\xbe\xe4\xb8\x80\xe6\x99\x82\xe7\x9a\x84\xe3\x81\xab\xe5\x88\x87\xe3\x82\x8b");
-                            changed |= pg::Float4("\xe3\x83\x91\xe3\x83\xa9\xe3\x83\xa1\xe3\x83\xbc\xe3\x82\xbf\xe3\x83\xbc params",
-                                &cam.screenShaderParams.x, 0.01f, 0.0f, 0.0f, "%.3f", &active,
-                                "HLSL \xe5\x81\xb4\xe3\x81\xaf cbuffer ScreenShaderCB \xe3\x81\xae params \xe3\x81\xa7\xe8\xaa\xad\xe3\x82\x81\xe3\x81\xbe\xe3\x81\x99");
+                            // ★HLSL に書いた名前で並べる（メッシュ側と同じ仕組み）。
+                            //   ScreenShaderCB の params(float4) の位置に好きな名前・型で宣言すれば
+                            //   その名前で出る。取れなければ従来の 4 連スライダーへ落ちる。
+                            if (!DrawNamedShaderParams(cam.screenShaderPath, &cam.screenShaderParams.x,
+                                                       dx12e::shaderparams::Space::Screen,
+                                                       &changed, &active))
+                            {
+                                changed |= pg::Float4("\xe3\x83\x91\xe3\x83\xa9\xe3\x83\xa1\xe3\x83\xbc\xe3\x82\xbf\xe3\x83\xbc params",
+                                    &cam.screenShaderParams.x, 0.01f, 0.0f, 0.0f, "%.3f", &active,
+                                    "HLSL \xe5\x81\xb4\xe3\x81\xaf cbuffer ScreenShaderCB \xe3\x81\xae params \xe3\x81\xa7\xe8\xaa\xad\xe3\x82\x81\xe3\x81\xbe\xe3\x81\x99");
+                            }
                         }
                         pg::End();
                     }
@@ -3438,7 +3529,8 @@ void InspectorPanel::Render(entt::registry& reg,
                         //   `float _Glow;` と足して保存すれば、ホットリロードでこの欄に「_Glow」が生える。
                         //   リフレクションが取れないとき(未コンパイル / 配布ビルドで .cso しか無い)は
                         //   従来どおりの汎用 2 行へ落ちるので、既存シェーダーの操作感は変わらない。
-                        if (!DrawNamedShaderParams(mr.shaderPath, mr.CustomParamBase()))
+                        if (!DrawNamedShaderParams(mr.shaderPath, mr.CustomParamBase(),
+                                                   dx12e::shaderparams::Space::MeshObject))
                         {
                             pg::Float("エフェクト値 effectValue", &mr.effectValue, 0.005f, 0.0f, 1.0f, "%.3f", nullptr,
                                 "シェーダーへ渡す汎用の進捗/強度値(意味はシェーダー依存)。"

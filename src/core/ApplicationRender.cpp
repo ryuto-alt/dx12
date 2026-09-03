@@ -293,7 +293,7 @@ void Application::BuildDrawList()
             mix(bits(renderer.overrideRoughness));
             // ★カスタムシェーダーの自由枠 8 float を 1 つ残らず混ぜる。漏らすと「値だけ違う
             //   同じメッシュ」が同じバッチへ畳まれ、先頭の値で全部が描かれてしまう。
-            for (u32 i = 0; i < shaderparams::kFreeFloats; ++i)
+            for (u32 i = 0; i < shaderparams::kMeshFreeFloats; ++i)
                 mix(bits(renderer.CustomParamBase()[i]));
             // ★透明パラメータも混ぜる。混ぜないと「MASK と OPAQUE が同じバッチに入り、
             //   先頭のマテリアルの cutoff で全部描かれる」＝葉が抜けたり抜けなかったりする。
@@ -739,7 +739,7 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
                 //   (resource/ShaderParams.h)が使う枠なので MeshRenderer 側の値をそのまま送る。
                 //   既定シェーダーはここを読まないので、0 のままなら従来と同じ結果になる。
                 std::memcpy(&objData.effect, renderer.CustomParamBase(),
-                            shaderparams::kFreeFloats * sizeof(f32));
+                            shaderparams::kMeshFreeFloats * sizeof(f32));
             }
             m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 40, &objData);
 

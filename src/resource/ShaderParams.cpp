@@ -149,6 +149,24 @@ void ParseAnnotations(const std::wstring& hlslPath, std::unordered_map<std::stri
     }
 }
 
+// 変数のオフセットがどちらの契約の自由枠に載っているか。どちらでもなければ false。
+// ★2 つの範囲は重ならない（メッシュ側の 32..47 は mvp の内側で、行列の StartOffset は 0 の
+//   ため拾われない。画面側の cbuffer は 80 バイトしか無く 128 以降に変数を置けない）。
+bool ClassifySpace(u32 startOffset, u32 size, Space& out)
+{
+    if (startOffset >= kMeshFreeBegin && startOffset + size <= kMeshFreeEnd)
+    {
+        out = Space::MeshObject;
+        return true;
+    }
+    if (startOffset >= kScreenFreeBegin && startOffset + size <= kScreenFreeEnd)
+    {
+        out = Space::Screen;
+        return true;
+    }
+    return false;
+}
+
 // ---- b0 の cbuffer から自由枠の変数を拾う ----
 void ReflectOne(const void* bytecode, size_t size,
                 const std::unordered_map<std::string, Annot>& annots,
@@ -177,9 +195,9 @@ void ReflectOne(const void* bytecode, size_t size,
         {
             if (ib.Type != D3D_SIT_CBUFFER || ib.BindPoint != 0 || ib.Space != 0) continue;
         }
-        else if (bd.Size < kFreeEnd)
+        else if (bd.Size < kScreenFreeEnd)
         {
-            continue;
+            continue;   // バインド情報が引けないときは、せめて画面用の枠に届く大きさかで足切りする
         }
 
         for (u32 v = 0; v < bd.Variables; ++v)
@@ -190,9 +208,9 @@ void ReflectOne(const void* bytecode, size_t size,
             D3D12_SHADER_VARIABLE_DESC vd{};
             if (FAILED(var->GetDesc(&vd)) || !vd.Name) continue;
 
-            // ★自由枠(128..159)の外＝mvp/model なので触らせない。
-            if (vd.StartOffset < kFreeBegin) continue;
-            if (vd.StartOffset + vd.Size > kFreeEnd) continue;
+            // ★自由枠の外（mvp/model や、画面シェーダーの解像度・時刻など）は触らせない。
+            Space space = Space::MeshObject;
+            if (!ClassifySpace(vd.StartOffset, vd.Size, space)) continue;
 
             const std::string name = vd.Name;
             if (LooksLikePadding(name)) continue;
@@ -213,6 +231,7 @@ void ReflectOne(const void* bytecode, size_t size,
             p.name     = name;
             p.typeName = td.Name ? td.Name : "";
             p.offset   = vd.StartOffset;
+            p.space    = space;
             p.kind     = KindFrom(td, name, forceColor);
             if (it != annots.end() && it->second.hasRange)
             {
@@ -286,6 +305,31 @@ std::vector<Param> Get(const std::string& key)
     std::lock_guard<std::mutex> lock(StoreMutex());
     auto it = Store().find(key);
     return it == Store().end() ? std::vector<Param>{} : it->second;
+}
+
+std::vector<Param> GetIn(const std::string& key, Space space)
+{
+    std::vector<Param> out;
+    std::lock_guard<std::mutex> lock(StoreMutex());
+    auto it = Store().find(key);
+    if (it == Store().end()) return out;
+    for (const Param& p : it->second)
+        if (p.space == space) out.push_back(p);
+    return out;
+}
+
+bool Find(const std::string& key, const std::string& name, Param& out)
+{
+    std::lock_guard<std::mutex> lock(StoreMutex());
+    auto it = Store().find(key);
+    if (it == Store().end()) return false;
+    for (const Param& p : it->second)
+    {
+        if (p.name != name) continue;
+        out = p;
+        return true;
+    }
+    return false;
 }
 
 } // namespace dx12e::shaderparams
