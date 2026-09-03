@@ -7,6 +7,8 @@
 #include <vector>
 
 #include <directx/d3d12.h>
+#include <d3d12shader.h>
+#include <wrl/client.h>
 
 // ===== カスタムシェーダーの「なぜ動かないか」を人が読める形にする =====
 //
@@ -57,6 +59,12 @@ struct Contract
     const SlotNote* notes     = nullptr;
     size_t          noteCount = 0;
 };
+
+// DXIL コンテナから ID3D12ShaderReflection を作る。dxcompiler.dll が無い / リフレクション部が
+// 剥がされている等で失敗したら nullptr。
+// ★リフレクションの生成手順(IDxcUtils + DxcBuffer)はここに一本化する。ShaderParams など
+//   他のモジュールもこれを通すこと(DxcBuffer::Encoding の指定を誤ると黙って失敗する)。
+Microsoft::WRL::ComPtr<ID3D12ShaderReflection> CreateReflection(const void* bytecode, size_t size);
 
 // DXIL コンテナからリソース宣言を取り出す。dxcompiler.dll が無い等で失敗したら false。
 bool Reflect(const void* bytecode, size_t size, std::vector<Binding>& out);

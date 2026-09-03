@@ -297,6 +297,7 @@ struct MeshRendererLook
     std::string shaderPath;
     bool shaderAlphaBlend = false;
     f32  effectValue = 0.0f;
+    DirectX::XMFLOAT3 shaderParamsB{0, 0, 0};
     DirectX::XMFLOAT4 shaderParams{0, 0, 0, 0};
 
     static MeshRendererLook From(const MeshRenderer& mr);

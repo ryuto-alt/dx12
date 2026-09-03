@@ -76,6 +76,7 @@
 #include "renderer/SkyboxRenderer.h"
 #include "resource/ShaderCompiler.h"
 #include "resource/ShaderManager.h"
+#include "resource/ShaderParams.h"
 #include "resource/ModelLoader.h"
 #include "resource/ResourceManager.h"
 #include "resource/TextureLoader.h"

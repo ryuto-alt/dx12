@@ -23,6 +23,7 @@
 #include "scripting/ScriptEngine.h"
 #include "resource/ShaderRegistry.h"
 #include "resource/ShaderDiagnostics.h"
+#include "resource/ShaderParams.h"
 #include "resource/MaterialAssetIO.h"
 #include "editor/panels/AssetBrowserPanel.h"
 
@@ -78,6 +79,58 @@ void WarnText(const char* fmt, ...)
     va_list args; va_start(args, fmt); WarnTextV(fmt, args); va_end(args);
 }
 
+
+// ===== カスタムシェーダーの「名前付きパラメーター」を描く =====
+//
+// HLSL の cbuffer b0 の自由枠(オフセット 128..159 = float 8 個)に書かれた変数を、
+// DXIL リフレクションで拾った【本人が付けた名前】のまま並べる（resource/ShaderParams.h）。
+//
+//     float  _Glow;        // @range(0,4)   → 0..4 のスライダー「_Glow」
+//     float3 _TintColor;   // @color        → カラーピッカー「_TintColor」（名前でも自動判定）
+//
+// 値の置き場は従来と同じ MeshRenderer の 8 float（CustomParamBase() が先頭）なので、
+// ルート定数もシーン JSON も変わらない。リフレクションが取れないとき（未コンパイル /
+// 配布ビルドで .cso しか無い等）は false を返し、呼び出し側が従来の固定 2 行へ落ちる。
+bool DrawNamedShaderParams(const std::string& shaderRel, float* base)
+{
+    // この無名 namespace は dx12e の外なので、エンジン側の名前は明示的に引く。
+    namespace sp = dx12e::shaderparams;
+    namespace pg = dx12e::pg;
+
+    const std::vector<sp::Param> params = sp::Get(dx12e::shaderdiag::NormalizeKey(shaderRel));
+    if (params.empty()) return false;
+
+    for (const sp::Param& p : params)
+    {
+        float* v = base + p.Index();
+        const char* label = p.name.c_str();
+        // どの宣言から生えた行なのかが一目で分かるようにしておく（HLSL を見に行かなくて済む）。
+        char tip[192];
+        std::snprintf(tip, sizeof(tip), "HLSL: %s %s;  (cbuffer b0 の +%u バイト)",
+                      p.typeName.empty() ? "?" : p.typeName.c_str(), label, p.offset);
+
+        const float mn = p.hasRange ? p.minV : 0.0f;
+        const float mx = p.hasRange ? p.maxV : 0.0f;   // mn==mx==0 で DragFloat は無制限になる
+        switch (p.kind)
+        {
+        case sp::Kind::Float:
+            if (p.hasRange) pg::SliderFloat(label, v, p.minV, p.maxV, "%.3f", nullptr, tip);
+            else            pg::Float(label, v, 0.005f, 0.0f, 0.0f, "%.3f", nullptr, tip);
+            break;
+        case sp::Kind::Float2: pg::Float2(label, v, 0.01f, mn, mx, "%.3f", nullptr, tip); break;
+        case sp::Kind::Float3: pg::Float3(label, v, 0.01f, mn, mx, "%.3f", nullptr, tip); break;
+        case sp::Kind::Float4: pg::Float4(label, v, 0.01f, mn, mx, "%.3f", nullptr, tip); break;
+        case sp::Kind::Color3: pg::Color3(label, v); break;
+        case sp::Kind::Color4: pg::Color4(label, v); break;
+        default:
+            // int / bool / 行列 / 配列。値の実体が float なので編集させない（黙って壊すより出す）。
+            pg::Text(label, "%s は編集非対応（float / float2 / float3 / float4 のみ）",
+                     p.typeName.empty() ? "この型" : p.typeName.c_str());
+            break;
+        }
+    }
+    return true;
+}
 
 // ===== カスタムシェーダーの「なぜ効かないか」をその場に出す =====
 //
@@ -3381,13 +3434,20 @@ void InspectorPanel::Render(entt::registry& reg,
                         pg::Checkbox("アルファブレンド有効", &mr.shaderAlphaBlend,
                             "ON: シェーダーの alpha 出力を SrcAlpha/InvSrcAlpha でブレンド(DepthWrite OFF)。"
                             "OFF(既定): 不透明固定で alpha は無視される");
-                        pg::Float("エフェクト値 effectValue", &mr.effectValue, 0.005f, 0.0f, 1.0f, "%.3f", nullptr,
-                            "シェーダーへ渡す汎用の進捗/強度値(意味はシェーダー依存)。"
-                            "Luaの scene:setMeshEffect(e, value) で実行時にも変更可");
-                        pg::Float4("パラメーター shaderParams", &mr.shaderParams.x, 0.01f, 0.0f, 0.0f, "%.3f", nullptr,
-                            "シェーダーへ渡す汎用パラメーター4つ(意味はシェーダー依存)。HLSL側は cbuffer の "
-                            "effectValue の後ろに float4 shaderParams; を足して読む。"
-                            "Luaの scene:setMeshParams(e, x,y,z,w) でも変更可");
+                        // ★HLSL に書いた名前のままパラメーターを並べる。cbuffer b0 の自由枠に
+                        //   `float _Glow;` と足して保存すれば、ホットリロードでこの欄に「_Glow」が生える。
+                        //   リフレクションが取れないとき(未コンパイル / 配布ビルドで .cso しか無い)は
+                        //   従来どおりの汎用 2 行へ落ちるので、既存シェーダーの操作感は変わらない。
+                        if (!DrawNamedShaderParams(mr.shaderPath, mr.CustomParamBase()))
+                        {
+                            pg::Float("エフェクト値 effectValue", &mr.effectValue, 0.005f, 0.0f, 1.0f, "%.3f", nullptr,
+                                "シェーダーへ渡す汎用の進捗/強度値(意味はシェーダー依存)。"
+                                "Luaの scene:setMeshEffect(e, value) で実行時にも変更可");
+                            pg::Float4("パラメーター shaderParams", &mr.shaderParams.x, 0.01f, 0.0f, 0.0f, "%.3f", nullptr,
+                                "シェーダーへ渡す汎用パラメーター4つ(意味はシェーダー依存)。HLSL側は cbuffer の "
+                                "effectValue の後ろに float4 shaderParams; を足して読む。"
+                                "Luaの scene:setMeshParams(e, x,y,z,w) でも変更可");
+                        }
                     }
                     pg::End();
                 }

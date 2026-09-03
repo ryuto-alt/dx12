@@ -232,22 +232,29 @@ std::unordered_map<std::string, std::string>& IssueStore()
 
 } // namespace
 
-bool Reflect(const void* bytecode, size_t size, std::vector<Binding>& out)
+ComPtr<ID3D12ShaderReflection> CreateReflection(const void* bytecode, size_t size)
 {
-    if (!bytecode || size == 0) return false;
+    if (!bytecode || size == 0) return nullptr;
 
     ComPtr<IDxcUtils> utils;
     if (FAILED(DxcCreateInstance(CLSID_DxcUtils, IID_PPV_ARGS(&utils))) || !utils)
-        return false;
+        return nullptr;
 
     DxcBuffer buf{};
     buf.Ptr      = bytecode;
     buf.Size     = size;
-    buf.Encoding = 0;
+    buf.Encoding = 0;   // ★0(DXC_CP_ACP)=バイナリ。テキスト扱いにすると黙って失敗する
 
     ComPtr<ID3D12ShaderReflection> refl;
-    if (FAILED(utils->CreateReflection(&buf, IID_PPV_ARGS(&refl))) || !refl)
-        return false;   // リフレクション部が剥がされている等。診断は諦めて汎用文言へ。
+    if (FAILED(utils->CreateReflection(&buf, IID_PPV_ARGS(&refl))))
+        return nullptr;   // リフレクション部が剥がされている等
+    return refl;
+}
+
+bool Reflect(const void* bytecode, size_t size, std::vector<Binding>& out)
+{
+    ComPtr<ID3D12ShaderReflection> refl = CreateReflection(bytecode, size);
+    if (!refl) return false;   // 診断は諦めて汎用文言へ。
 
     D3D12_SHADER_DESC desc{};
     if (FAILED(refl->GetDesc(&desc))) return false;

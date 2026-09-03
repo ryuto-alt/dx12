@@ -23,15 +23,18 @@ cbuffer PerObjectConstants : register(b0)
 {
     float4x4 mvp;
     float4x4 model;
-    // ★エンジンは 40 DWORD 送っている。ここまで宣言すると
-    //   MeshRenderer の「効果値 / シェーダーパラメータ」が使える
-    //   （Inspector で編集でき、Lua からも書ける唯一の per-object の口）。
-    //   使わないなら消してよいが、オフセットがずれるので順番は変えないこと。
-    //   （カスタムシェーダーを割り当てた時点で自動インスタンシングの対象外になるので、
-    //     b0 は常に 40 DWORD ぶん書かれる。ここを読んで安全）
-    float  effectValue;     // MeshRenderer::effectValue（0..1 の汎用進捗値）
-    float3 _reserved;       // 予約（エンジンが一律色ティントに使う）
-    float4 shaderParams;    // MeshRenderer::shaderParams（汎用 float4）
+    // ★ここから下の float 8 個が「名前付きパラメーター」の枠です。
+    //   好きな名前・型で宣言すると、その名前のまま Inspector の Shader 欄に
+    //   ウィジェットが生えます（保存 → ホットリロード → 項目が増える）。
+    //   行末の注釈で見た目を指定できます:
+    //       // @range(min,max) … スライダーになる
+    //       // @color          … カラーピッカーになる（名前に Color/Tint を含めば自動）
+    //   使えるのは float / float2 / float3 / float4 の計 8 個ぶんまで。
+    //   （float3・float4 は HLSL の規則で 16 バイト境界から始まる点に注意）
+    float  effectValue;     // @range(0,1)  汎用進捗値。Lua: scene:setMeshEffect(e, v)
+    float  _glow;           // @range(0,4)  ★この行を真似すれば項目が増えます（下の PSMain で使用）
+    float2 _reserved;       // 未使用（名前が pad/reserved 等の変数は Inspector に出しません）
+    float4 shaderParams;    // 汎用 float4。Lua: scene:setMeshParams(e, x,y,z,w)
 };
 
 // PerFrame constants (b1) - 先頭部分だけ宣言(shaders/forward/Lighting.hlsli と同一オフセット厳守)
@@ -81,6 +84,7 @@ float4 PSMain(PSInput input) : SV_TARGET
     float  ndotl = max(dot(N, L), 0.0f);
 
     float3 color = albedo.rgb * (lightColor * ndotl + ambientStrength);
+    color += albedo.rgb * _glow;   // ← Inspector の「_glow」スライダーがそのままここに来る
     return float4(color, albedo.a);
 }
 )HLSL";

@@ -291,9 +291,10 @@ void Application::BuildDrawList()
             auto bits = [](f32 f) { u32 u; std::memcpy(&u, &f, 4); return static_cast<u64>(u); };
             mix(bits(renderer.overrideMetallic));
             mix(bits(renderer.overrideRoughness));
-            mix(bits(renderer.effectValue));
-            mix(bits(renderer.shaderParams.x)); mix(bits(renderer.shaderParams.y));
-            mix(bits(renderer.shaderParams.z)); mix(bits(renderer.shaderParams.w));
+            // ★カスタムシェーダーの自由枠 8 float を 1 つ残らず混ぜる。漏らすと「値だけ違う
+            //   同じメッシュ」が同じバッチへ畳まれ、先頭の値で全部が描かれてしまう。
+            for (u32 i = 0; i < shaderparams::kFreeFloats; ++i)
+                mix(bits(renderer.CustomParamBase()[i]));
             // ★透明パラメータも混ぜる。混ぜないと「MASK と OPAQUE が同じバッチに入り、
             //   先頭のマテリアルの cutoff で全部描かれる」＝葉が抜けたり抜けなかったりする。
             mix(item.alphaClass);
@@ -714,6 +715,9 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
 
             // pad は HLSL cbuffer のパッキング(float4 は 16 バイト境界)合わせ。RootSignature.cpp 参照。
             struct PerObjectData { XMMATRIX mvp; XMMATRIX mdl; float effect; XMFLOAT3 _pad; XMFLOAT4 params; } objData;
+            // 自由枠(effect + _pad + params)を 1 本の float[8] として扱うので詰め物が無いこと。
+            static_assert(sizeof(PerObjectData) == 40 * sizeof(float),
+                          "PerObjectData must be exactly 40 DWORDs (RootSignature slot0)");
             objData.mvp = XMMatrixTranspose(meshWorld * viewProj);
             objData.mdl = XMMatrixTranspose(meshWorld);
             if (terrainMat)
@@ -730,9 +734,12 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             }
             else
             {
-                objData.effect = renderer.effectValue;
-                objData._pad   = {};
-                objData.params = renderer.shaderParams;
+                // ★カスタムシェーダーの自由枠 8 float をまとめて転送する。
+                //   _pad(3) はかつて 0 埋めだったが、今は名前付きパラメーター
+                //   (resource/ShaderParams.h)が使う枠なので MeshRenderer 側の値をそのまま送る。
+                //   既定シェーダーはここを読まないので、0 のままなら従来と同じ結果になる。
+                std::memcpy(&objData.effect, renderer.CustomParamBase(),
+                            shaderparams::kFreeFloats * sizeof(f32));
             }
             m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 40, &objData);
 

@@ -20,6 +20,7 @@ add_library(Resource STATIC
     ShaderCompiler.cpp
     ShaderRuntimeCompiler.cpp
     ShaderDiagnostics.cpp
+    ShaderParams.cpp
     ShaderRegistry.cpp
     ShaderManager.cpp
     TextureLoader.cpp

@@ -1,5 +1,6 @@
 #include "resource/ShaderManager.h"
 #include "resource/ShaderDiagnostics.h"
+#include "resource/ShaderParams.h"
 #include "resource/ShaderRegistry.h"
 #include "core/Logger.h"
 #include "core/PathResolver.h"
@@ -455,6 +456,16 @@ bool ShaderManager::CompileCustomShader(const std::string& relPath)
         entry.ps    = std::move(psResult.dxil);
         entry.valid = true;
         entry.errorLog.clear();
+        // ★名前付きパラメーターを拾い直す（Inspector の Shader セクションが読む）。
+        //   コンパイルのたびに更新されるので、HLSL に変数を 1 行足して保存すれば
+        //   そのままインスペクターに項目が増える＝ホットリロードと同じ体験になる。
+        //   失敗しても（dxcompiler にリフレクションが無い等）シェーダー自体は動くので無視する。
+        {
+            std::vector<shaderparams::Param> params;
+            shaderparams::Reflect(entry.vs.data(), entry.vs.size(),
+                                  entry.ps.data(), entry.ps.size(), hlslPath, params);
+            shaderparams::Set(key, std::move(params));
+        }
         // 直前の失敗表示（Inspector の赤いボックス）を消す。PSO 生成はこの後で走り、
         // そこで落ちれば改めて理由が積まれる。
         shaderdiag::ClearIssue(key);

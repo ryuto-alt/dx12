@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <memory>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <DirectXMath.h>
@@ -202,11 +203,25 @@ struct MeshRenderer
     // (ルート定数なので毎フレーム呼んでも安価、VB再生成なし)。既定シェーダー(Forward)では未使用。
     float effectValue = 0.0f;
 
+    // 旧 `_pad`(3 float)。ルート定数では常に 0 埋めしていた詰め物だったが、HLSL のパッキング上
+    // ここも立派な自由枠なので、名前付きパラメーター(resource/ShaderParams.h)で使えるようにした。
+    // 既定シェーダー(Forward)はこの領域を読まないので、0 のままなら従来と完全に同じ結果になる
+    // (地形は POM 用に別の値を送る専用経路なので影響しない)。
+    // ★effectValue → shaderParamsB → shaderParams の 3 つは【この順で隙間なく】並んでいることが
+    //   CustomParamBase() の前提。間に別のメンバーを挟まないこと(struct 直後の static_assert が番人)。
+    DirectX::XMFLOAT3 shaderParamsB{0.0f, 0.0f, 0.0f};
+
     // カスタムシェーダーへ渡す汎用パラメーター4つ(意味はシェーダー依存。色/速度/しきい値等)。
     // HLSL側は cbuffer PerObjectConstants の effectValue の後ろに float4 shaderParams; を足して読む
     // (docs/AUTHORING.md 参照)。Inspector の Shader セクションで調整、Lua `scene:setMeshParams` でも
     // 書き換え可能(effectValue と同じルート定数経路 = 毎フレーム安価)。既定シェーダーでは未使用。
     DirectX::XMFLOAT4 shaderParams{0.0f, 0.0f, 0.0f, 0.0f};
+
+    // カスタムシェーダー自由枠(cbuffer PerObjectConstants のオフセット 128..159 = float 8 個)の先頭。
+    // shaderparams::Param::Index() の添字でそのまま引ける = リフレクションで得た
+    // 「名前付きパラメーターがどのスロットか」を、コンポーネント側で場合分けせずに触れる。
+    f32*       CustomParamBase()       { return &effectValue; }
+    const f32* CustomParamBase() const { return &effectValue; }
 
     // マテリアルのテクスチャ差し替え（アセットブラウザからテクスチャをドラッグ&ドロップして割当。
     // Unity/Unreal 風）。サブメッシュ単位（meshes[]と同じインデックス）。空文字列 = Material 既定の
@@ -272,6 +287,13 @@ struct MeshRenderer
     DirectX::XMFLOAT4 colorTint = {1.0f, 1.0f, 1.0f, 1.0f};
     bool hasColorTint = false;
 };
+
+// CustomParamBase() が返す先を float 8 個の連続領域として扱えることの番人。
+// ここが落ちたら effectValue / shaderParamsB / shaderParams の宣言順か型が壊れている。
+static_assert(offsetof(MeshRenderer, shaderParamsB) == offsetof(MeshRenderer, effectValue) + 4,
+              "shaderParamsB must directly follow effectValue (custom shader free slots)");
+static_assert(offsetof(MeshRenderer, shaderParams) == offsetof(MeshRenderer, effectValue) + 16,
+              "shaderParams must directly follow shaderParamsB (custom shader free slots)");
 
 struct SkeletalAnimation
 {

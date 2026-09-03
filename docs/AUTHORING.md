@@ -279,6 +279,44 @@ cbuffer PerObjectConstants : register(b0)
 Lua `scene:setMeshParams(entity, x, y, z, w)` で実行時にも書き換えられる（effectValue と同じ
 ルート定数経路 = 毎フレーム安価）。シーン JSON では `"shaderParams": [x, y, z, w]` で初期値を指定できる。
 
+**★名前を付けて Inspector に出す（名前付きパラメーター）**: 上の `effectValue` / `shaderParams` は
+「汎用スロット」なので、Inspector 側も汎用のラベルしか出せず、どのスロットが何を意味するかは
+書いた本人しか分からなかった。cbuffer b0 の**自由枠**（`mvp` / `model` の後ろ = float 8 個）に
+置いた変数は DXIL リフレクションで名前と型が読まれ、**書いた名前のまま Inspector にウィジェットが
+並ぶ**（保存 → ホットリロード → 項目が増える）。値の置き場は従来と同じ 8 float なので、
+ルート定数もシーン JSON も互換のまま。
+
+```hlsl
+cbuffer PerObjectConstants : register(b0)
+{
+    float4x4 mvp;
+    float4x4 model;
+    // ↓ここから float 8 個が自由枠。名前も型も自由に付けてよい
+    float  _Glow;        // @range(0,4)   → 0..4 のスライダー「_Glow」になる
+    float  _Speed;       // @range(0,10)
+    float2 _reserved;    // pad / reserved / dummy 等の名前は Inspector に出ない（詰め物扱い）
+    float3 _TintColor;   // @color        → カラーピッカー（名前に Color/Tint があれば注釈なしでも自動）
+};
+```
+
+| 行末の注釈 | 効果 |
+|---|---|
+| `// @range(min,max)` | DragFloat ではなくスライダーになる |
+| `// @color` | float3 / float4 をカラーピッカーにする |
+
+- 使える型は `float` / `float2` / `float3` / `float4` **のみ**。int・bool・行列・配列は行だけ出て
+  編集できない（値の実体が float 8 個なので、ビット列の意味が変わる型は扱わない）。
+- **合計 8 float まで**。ルート定数の予算が 61/64 DWORD で埋まっているので増やせない
+  （内訳は [`src/graphics/RootSignature.cpp`](../src/graphics/RootSignature.cpp) の先頭コメント）。
+- `float3` / `float4` は HLSL のパッキング規則で 16 バイト境界から始まる。宣言順に詰まるので、
+  端数が出るときは `float2 _pad;` などで埋める。
+- 名前を `effectValue` / `shaderParams` のままにしておけば表示も従来どおり。名前を変えても
+  **スロットは同じ**なので、Lua の `scene:setMeshEffect` / `scene:setMeshParams` は常に効く。
+- リフレクションが取れない場合（配布ビルドで `.cso` しか無い、まだコンパイルしていない等）は
+  従来の「エフェクト値 / パラメーター」の 2 行へ自動的に落ちる。
+- 旧 `_pad`（3 float）も自由枠として使えるようになった。シーン JSON にはその 3 つが
+  `"shaderParamsB": [x, y, z]` として保存される（全部 0 なら書かれない＝既存シーンの差分は増えない）。
+
 **MCP 経由（エディタ起動中、ファイル直書き不要）**: `dx12_create_shader({name, code})` で
 `assets/shaders/<name>.hlsl` を作成/上書きし、書き込み直後に実行時コンパイルを試して
 `{path, compiled, error?}` を返す（Lua の `dx12_create_lua_component` と違い書く前の静的検証は

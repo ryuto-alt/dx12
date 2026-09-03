@@ -503,6 +503,12 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                     || mr.shaderParams.z != 0.0f || mr.shaderParams.w != 0.0f)
                     ej["shaderParams"] = {mr.shaderParams.x, mr.shaderParams.y,
                                           mr.shaderParams.z, mr.shaderParams.w};
+                // 名前付きパラメーターで使えるようになった旧 _pad(3 float)。
+                // 全部 0（＝従来のシェーダー）なら書かないので、既存シーンの差分は増えない。
+                if (mr.shaderParamsB.x != 0.0f || mr.shaderParamsB.y != 0.0f
+                    || mr.shaderParamsB.z != 0.0f)
+                    ej["shaderParamsB"] = {mr.shaderParamsB.x, mr.shaderParamsB.y,
+                                           mr.shaderParamsB.z};
             }
 
             // マテリアルテクスチャ上書き（アセットブラウザからテクスチャをD&Dして割当、サブメッシュ単位）。
@@ -1740,6 +1746,13 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                     const auto& sp = ej["shaderParams"];
                     mrRestore.shaderParams = {sp[0].get<float>(), sp[1].get<float>(),
                                               sp[2].get<float>(), sp[3].get<float>()};
+                }
+                if (ej.contains("shaderParamsB") && ej["shaderParamsB"].is_array()
+                    && ej["shaderParamsB"].size() >= 3)
+                {
+                    const auto& sb = ej["shaderParamsB"];
+                    mrRestore.shaderParamsB = {sb[0].get<float>(), sb[1].get<float>(),
+                                               sb[2].get<float>()};
                 }
             }
 
