@@ -65,6 +65,13 @@ public:
     // すでに作った PSO があるか（無ければ呼び出し側がバイトコードを取りに行く）。
     ID3D12PipelineState* FindPso(const std::string& key) const;
 
+    // このキーの生成を【一度でも試したか】（失敗の記録込み）。
+    // ★呼び出し側は FindPso ではなくこちらで打ち切ること。失敗した entry は pso=null なので、
+    //   FindPso の結果だけで判定すると毎フレーム素通りし、バイトコード取得 →
+    //   再コンパイルまで走ってエラーログが数百行に膨れる（Entry::tried はそのために置いてある）。
+    //   InvalidatePso でこの記録が消えるので、.hlsl を保存し直せばちゃんと再試行される。
+    bool HasTriedPso(const std::string& key) const;
+
     // 1 パス発行。colorSrv/depthSrv は SRV ヒープ上のハンドル、rtv は出力先。
     // ビューポート/シザーは呼び出し側が張っておくこと（表示矩形へ描くため）。
     void Apply(ID3D12GraphicsCommandList* cmd,

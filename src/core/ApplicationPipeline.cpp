@@ -1258,7 +1258,13 @@ ID3D12PipelineState* Application::EnsureScreenShaderPso(const std::string& shade
     const std::string key = NormalizeCustomShaderKey(shaderRel);
 
     // 生成済み（失敗の記録込み）なら即返す＝毎フレームのコンパイル要求を出さない。
-    if (m_screenShaderPass->FindPso(key))
+    // ★ここは FindPso ではなく HasTriedPso で打ち切ること。失敗を記録した entry は
+    //   pso=null なので、FindPso の結果だけで判定すると毎フレーム素通りし、
+    //   下の FetchCustomShaderBytecode → CompileCustomShader（失敗時は Logger::Error）まで
+    //   走ってコンソールが数百行で埋まる＝他のエラーが見えなくなり作業が止まる。
+    //   メッシュ/スプライト側は m_customPsoCache に失敗を積んで打ち切っており、ここだけ
+    //   対称になっていなかった。
+    if (m_screenShaderPass->HasTriedPso(key))
         return m_screenShaderPass->FindPso(key);
 
     std::vector<u8> vsStorage, psStorage;

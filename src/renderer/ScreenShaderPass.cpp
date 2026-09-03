@@ -117,6 +117,12 @@ ID3D12PipelineState* ScreenShaderPass::FindPso(const std::string& key) const
     return (it != m_psos.end()) ? it->second.pso.Get() : nullptr;
 }
 
+bool ScreenShaderPass::HasTriedPso(const std::string& key) const
+{
+    auto it = m_psos.find(key);
+    return it != m_psos.end() && it->second.tried;
+}
+
 void ScreenShaderPass::InvalidatePso(const std::string& key)
 {
     if (key.empty()) m_psos.clear();
