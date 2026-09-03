@@ -4157,11 +4157,18 @@ void InspectorPanel::RenderEngineSettings(EditorContext& ctx,
             auto& flt = physicsDebugRenderer->Filter();
             auto swatch = [](ImVec4 c, const char* label, bool* on, const char* tip)
             {
-                ImGui::ColorButton(label, c, ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker,
+                // ★ImGui の ID はラベル文字列から作られる。色見本とチェックボックスに
+                //   同じ label を渡すと【同じ ID になって衝突し、クリックが色見本側に
+                //   取られてチェックボックスが反応しなくなる】。
+                //   PushID で行ごとに名前空間を切り、色見本は無名(##)にして分ける。
+                ImGui::PushID(label);
+                ImGui::ColorButton("##swatch", c,
+                                   ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker,
                                    ImVec2(12, 12));
                 ImGui::SameLine();
                 ImGui::Checkbox(label, on);
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+                ImGui::PopID();
             };
             swatch(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "動く (Dynamic)", &flt.showDynamic, "物理で動くコライダー");
             swatch(ImVec4(0.5f, 0.5f, 1.0f, 1.0f), "動かない (Static)", &flt.showStatic, "床や壁。★数が多くて線が埋まる原因はたいていこれ。まず切ってみるとよい");
