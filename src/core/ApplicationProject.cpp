@@ -1460,9 +1460,34 @@ void Application::RenderVersionControlWindow()
 }
 
 
-bool Application::BuildGameStandalone()
+bool Application::BuildGameStandalone(const std::string& projectRoot)
 {
+    namespace fs = std::filesystem;
+    // ★CLI(--build)はプロジェクトを【開かない】ので BeginProjectLoad を通らず、
+    //   buildConfig が空のまま来る。ここで build_settings.json を読まないと開始シーンが
+    //   既定の "scenes/default.json" になり、【存在しないシーンを指す配布物】ができる。
+    //   (Junction を --build したら startScene = scenes/default.json で焼かれていた)
+    if (m_editorCtx && !projectRoot.empty() && m_editorCtx->buildConfig.startScene.empty())
+    {
+        LoadProjectBuildConfig(*m_editorCtx, projectRoot);
+        if (m_editorCtx->buildConfig.startScene.empty())
+        {
+            // build_settings.json が無いプロジェクトは .dx12proj の defaultScene を使う
+            std::error_code ec;
+            for (const auto& de : fs::directory_iterator(projectRoot, ec))
+            {
+                if (de.path().extension() != ".dx12proj") continue;
+                ProjectInfo info;
+                if (Project::Load(de.path().string(), info) && !info.defaultScene.empty())
+                    m_editorCtx->buildConfig.startScene = info.defaultScene;
+                break;
+            }
+        }
+        if (!m_editorCtx->buildConfig.startScene.empty())
+            Logger::Info("ヘッドレスビルド: 開始シーン = {}", m_editorCtx->buildConfig.startScene);
+    }
     // 開始シーンを title.json に（あれば）。無ければ現在の currentScenePath を使う。
+    // ★buildConfig.startScene が決まっていれば BuildGame がそちらを優先する。
     std::string title = PathResolver::AssetsDir() + "scenes/title.json";
     if (std::filesystem::exists(title))
         m_editorCtx->currentScenePath = title;

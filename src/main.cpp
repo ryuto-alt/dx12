@@ -517,7 +517,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
             if (!buildProjectDir.empty())
                 dx12e::PathResolver::SetProjectRoot(buildProjectDir);
 #endif
-            const bool ok = app.BuildGameStandalone();
+            const bool ok = app.BuildGameStandalone(buildProjectDir);
             app.Shutdown();
             return ok ? EXIT_SUCCESS : EXIT_FAILURE;
         }

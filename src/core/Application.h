@@ -168,7 +168,8 @@ public:
 
     // ヘッドレスでゲームをビルド（--build CLI 用）。開始シーンは title.json があればそれ。
     // 成否を返す（CLI の終了コード / GUI の完了表示に使う）。
-    bool BuildGameStandalone();
+    // projectRoot: --build <dir> で指定されたプロジェクト(空可)。build_settings.json を読む
+    bool BuildGameStandalone(const std::string& projectRoot = std::string());
 
     enum class EngineMode { Editor, Playing };
 
