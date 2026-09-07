@@ -760,7 +760,8 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                 };
                 // レイヤー化で増えた分は「既定値なら書かない」。1 枚だけのエミッタの
                 // JSON が旧形式とバイト単位で同じになり、無関係な差分が git に出ない。
-                if (!pe.name.empty())    j["name"]    = pe.name;
+                if (!pe.name.empty())       j["name"]       = pe.name;
+                if (!pe.shaderPath.empty()) j["shaderPath"] = pe.shaderPath;
                 if (!pe.vfxPath.empty()) j["vfxPath"] = pe.vfxPath;
                 if (pe.offset.x != 0.0f || pe.offset.y != 0.0f || pe.offset.z != 0.0f)
                     j["offset"] = SerializeFloat3(pe.offset);
@@ -1654,6 +1655,7 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                 pe.flickerFreq  = pj.value("flickerFreq", 18.0f);
                 pe.gpu       = pj.value("gpu", false);
                 pe.texturePath = pj.value("texturePath", std::string());
+                pe.shaderPath  = pj.value("shaderPath", std::string());
                 emitter.layers.push_back(std::move(pe));
                 }   // レイヤーループ
                 reg.emplace_or_replace<ParticleEmitter>(e, std::move(emitter));

@@ -1310,6 +1310,12 @@ struct ParticleLayer
                                // distort/light/sizeMid/blend=α は非対応）
     std::string texturePath;  // assets 相対パス。空ならプロシージャル質感(kind依存)、指定時はテクスチャを貼る
 
+    // 自作パーティクルシェーダー（assets/shaders/ 相対の .hlsl）。空 = kind に応じた既定の見た目。
+    // ★粒子の contract はメッシュ用とは別物（b0 の中身も register も違う）。
+    //   describe_shader_contract kind=particle / create_shader template=particle_* を見ること。
+    //   GPU パーティクル(gpu=true)は compute 経路なので非対応（既定で描かれる）。
+    std::string shaderPath;
+
     // ランタイム専有（非シリアライズ）
     bool _active    = true;    // 放出中か（Play 時は playOnStart で初期化。エディタは常時プレビュー）
     f32  _emitAccum = 0.0f;    // 端数の放出量を溜める
@@ -1326,6 +1332,7 @@ struct ParticleLayer
             return a.x == b.x && a.y == b.y && a.z == b.z;
         };
         return name == o.name && vfxPath == o.vfxPath && texturePath == o.texturePath
+            && shaderPath == o.shaderPath
             && f3(offset, o.offset) && f3(dir, o.dir)
             && f3(color, o.color) && f3(colorMid, o.colorMid) && f3(colorEnd, o.colorEnd)
             && kind == o.kind && blend == o.blend && orient == o.orient

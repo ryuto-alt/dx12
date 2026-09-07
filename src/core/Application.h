@@ -674,6 +674,20 @@ private:
     std::unordered_map<std::string, CustomSpritePsos> m_customSpritePsoCache;  // key: shaderPath(小文字正規化)
     CustomSpritePsos* EnsureCustomSpritePso(const std::string& shaderRel);
 
+    // カスタムシェーダー(ParticleLayer::shaderPath)割当用の遅延生成PSOキャッシュ。
+    // 粒子はブレンド域(加算/前乗算α)で PSO が分かれるので 2 種類作る。
+    // PSO の中身（頂点レイアウト/深度/ブレンド）は ParticleSystem::CreateCustomPso が持つ。
+    // ★所有はここ。ParticleSystem へは生ポインタで渡すので、キャッシュを消すときは
+    //   その粒子が死にきってからにすること（ホットリロードはフレーム境界で行う）。
+    struct CustomParticlePsos
+    {
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> additive;  // blend=0
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> alpha;     // blend=1（前乗算α）
+        bool valid = false;
+    };
+    std::unordered_map<std::string, CustomParticlePsos> m_customParticlePsoCache;
+    CustomParticlePsos* EnsureCustomParticlePso(const std::string& shaderRel);
+
     // カスタムシェーダー(CameraComponent::screenShaderPath)= 画面全体に掛ける 1 パス。
     // PSO は ScreenShaderPass 側が抱える（ルートシグネチャが共有なので、ここは薄い橋渡しだけ）。
     // 取得できなければ nullptr（＝スクリーンシェーダーを飛ばして素通しで表示する）。

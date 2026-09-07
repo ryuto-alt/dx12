@@ -77,6 +77,10 @@ public:
         bool  light        = false;     // true で「明るい粒子上位N個のポイントライト化」候補
         float lightRange   = 3.0f;      // ポイントライト化時の到達距離
         std::string texturePath;        // 空=プロシージャル質感(kind依存)、指定時はテクスチャを貼る（assets絶対/相対いずれもResourceManagerに渡した値そのまま）
+        // 自作パーティクルシェーダーの PSO（CreateCustomPso の戻り値）。
+        // null なら kind に応じた既定の見た目。null でなければこの粒子だけ別 PSO で描く。
+        // ★所有はしない。呼び出し側（Application のキャッシュ）が生存を保証すること。
+        ID3D12PipelineState* customPso = nullptr;
     };
 
     // 連続ビーム（2点間カメラ向きquad）。レーザー/エネルギー線/火柱/稲妻。
@@ -121,6 +125,21 @@ public:
     // シェーダーホットリロード用。6 グラフィックス PSO(Add/Alpha/Beam/Distort/TrailAdd/TrailAlpha)
     // のみ作り直す(ルートシグネチャ/各種バッファは不変のため触らない)。
     void RecreatePipelines(GraphicsDevice& device);
+
+    // 自作パーティクルシェーダー用の PSO を作る。
+    //
+    // 頂点レイアウト・ブレンド・深度設定は既定の粒子 PSO と【完全に同じ】にして、
+    // VS/PS のバイトコードだけ差し替える。作者が気にするのはシェーダーの中身だけで、
+    // パイプラインの組み方まで真似させない（真似させると、ここを変えたときに
+    // 全カスタムシェーダーが静かに壊れる）。
+    //
+    // 呼び出し側(Application)が ShaderManager でコンパイルしたバイトコードを渡し、
+    // 戻り値の PSO を EmitParams::customPso に載せる。生成失敗時は nullptr。
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> CreateCustomPso(
+        GraphicsDevice& device,
+        const void* vsBytes, size_t vsSize,
+        const void* psBytes, size_t psSize,
+        bool alphaBlend) const;
 
     // onDeath: 粒子の死亡位置で子バーストを放出（サブエミッタ・1段のみ）。
     void Emit(const EmitParams& p, const EmitParams* onDeath = nullptr);
@@ -186,6 +205,8 @@ private:
         bool  hasMid = false;
         bool  alive = false;
         u32   texSlot = kNoTexture;     // m_texPaths の添字。kNoTexture ならプロシージャル質感
+        // 自作シェーダーの PSO（null = 既定）。所有しない。
+        ID3D12PipelineState* customPso = nullptr;
     };
 
     // シェーダのインスタンス入力レイアウトと一致（stride 68）。
@@ -279,6 +300,15 @@ private:
 
     std::vector<Particle>   m_particles;
     std::vector<GpuParticle> m_gpu;     // 毎フレーム再構築（加算→α→歪み の順に詰める）
+    // m_gpu と【同じ添字・同じ長さ】で並ぶ、粒子ごとの自作シェーダー PSO（null=既定）。
+    // ★頂点データには入れない。PSO は描画コールの属性であってインスタンス属性ではないので、
+    //   頂点に載せても切り替えられない（載せると帯域だけ食って何も変わらない）。
+    //   描画側はこの配列が同じ値の連続区間ごとに SetPipelineState する。
+    std::vector<ID3D12PipelineState*> m_gpuPso;
+    // m_gpu / m_gpuPso を組み立てる間だけ使う作業用（インスタンスと PSO を対で並べ替えるため）。
+    // メンバーに置いてあるのは毎フレームの確保を避けるため（最大 8000 要素）。
+    struct BuildItem { GpuParticle g; ID3D12PipelineState* pso; };
+    std::vector<BuildItem>  m_buildItems;
     std::vector<Beam>        m_beamPool;
     std::vector<GpuBeam>     m_gpuBeams;
     std::vector<u32>         m_freeList; // 空きスロットのスタック（O(1) 確保）

@@ -382,6 +382,7 @@ inline bool ApplyOrphanComponent(entt::registry& reg, entt::entity e,
         pe.flicker = d.value("flicker", pe.flicker); pe.flickerFreq = d.value("flickerFreq", pe.flickerFreq);
         pe.gpu = d.value("gpu", pe.gpu);
         pe.texturePath = d.value("texturePath", pe.texturePath);
+        pe.shaderPath  = d.value("shaderPath", pe.shaderPath);
         reg.emplace_or_replace<ParticleEmitter>(e, emitter);
         return true;
     }

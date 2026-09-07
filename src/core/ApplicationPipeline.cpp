@@ -1006,6 +1006,7 @@ void Application::RegisterShaderReloadHandlers()
         {
             m_customPsoCache.erase(relKey);
             m_customSpritePsoCache.erase(relKey);  // Sprite2D::shaderPath 用キャッシュも同じキーで破棄
+            m_customParticlePsoCache.erase(relKey); // ParticleLayer::shaderPath 用も同様
             // CameraComponent::screenShaderPath（画面全体のシェーダー）も同じキーで破棄する。
             // ここを足し忘れると「保存したのに画面が変わらない」＝ホットリロードが効かない。
             if (m_screenShaderPass) m_screenShaderPass->InvalidatePso(relKey);
@@ -1243,6 +1244,59 @@ Application::CustomSpritePsos* Application::EnsureCustomSpritePso(const std::str
     }
 
     auto& stored = m_customSpritePsoCache[key];
+    stored = std::move(entry);
+    return stored.valid ? &stored : nullptr;
+}
+
+// カスタムシェーダー(ParticleLayer::shaderPath)= 粒子 1 枚の見た目を差し替える PSO。
+// メッシュ/スプライトと同じ流儀（正規化キー → バイトコード → PSO をキャッシュ）。
+// 頂点レイアウトとブレンド設定は ParticleSystem 側に一本化してある（作者に真似させない）。
+Application::CustomParticlePsos* Application::EnsureCustomParticlePso(const std::string& shaderRel)
+{
+    if (!m_particleSystem || shaderRel.empty()) return nullptr;
+    const std::string key = NormalizeCustomShaderKey(shaderRel);
+
+    auto it = m_customParticlePsoCache.find(key);
+    if (it != m_customParticlePsoCache.end())
+        return it->second.valid ? &it->second : nullptr;
+
+    std::vector<u8> vsStorage, psStorage;
+    const std::vector<u8>* vsBytes = nullptr;
+    const std::vector<u8>* psBytes = nullptr;
+    FetchCustomShaderBytecode(shaderRel, vsStorage, psStorage, vsBytes, psBytes);
+
+    CustomParticlePsos entry;
+    if (vsBytes && psBytes && !vsBytes->empty() && !psBytes->empty())
+    {
+        entry.additive = m_particleSystem->CreateCustomPso(
+            *m_graphicsDevice, vsBytes->data(), vsBytes->size(),
+            psBytes->data(), psBytes->size(), /*alphaBlend=*/false);
+        entry.alpha = m_particleSystem->CreateCustomPso(
+            *m_graphicsDevice, vsBytes->data(), vsBytes->size(),
+            psBytes->data(), psBytes->size(), /*alphaBlend=*/true);
+        entry.valid = (entry.additive != nullptr && entry.alpha != nullptr);
+        if (entry.valid)
+            shaderdiag::ClearIssue(key);
+        else
+        {
+            std::string msg = "パーティクル用カスタムシェーダーの PSO 生成に失敗しました: " + shaderRel
+                            + "\nルートシグネチャに無い register を宣言していないか確認してください"
+                              "（粒子は b0 / t0=シーン深度 / t2=テクスチャ / s0 のみ）";
+            Logger::Error("{}", msg);
+            shaderdiag::SetIssue(key, std::move(msg));
+        }
+    }
+    else
+    {
+        // バイトコードが取れない（未コンパイル / リネーム / 削除）。
+        // 黙って既定へ落ちると「割り当てたのに何も変わらない」になるので必ず記録する。
+        std::string msg = DescribeMissingBytecode(m_shaderManager.get(), shaderRel,
+                                                   "パーティクル用カスタムシェーダー", shaderdiag::kIdMesh);
+        Logger::Warn("{}\n（既定の粒子シェーダーに戻します）", msg);
+        shaderdiag::SetIssue(key, std::move(msg));
+    }
+
+    auto& stored = m_customParticlePsoCache[key];
     stored = std::move(entry);
     return stored.valid ? &stored : nullptr;
 }

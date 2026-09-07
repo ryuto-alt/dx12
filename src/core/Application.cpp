@@ -2500,6 +2500,13 @@ void Application::Update()
             p.light = pe.light;     p.lightRange = pe.lightRange;
             p.flicker = pe.flicker; p.flickerFreq = pe.flickerFreq;
             p.texturePath = pe.texturePath;
+            // 自作パーティクルシェーダー。未コンパイル/生成失敗なら nullptr が返り、
+            // 既定の見た目で描かれる（黙って消えない）。
+            if (!pe.shaderPath.empty())
+            {
+                if (CustomParticlePsos* cps = EnsureCustomParticlePso(pe.shaderPath))
+                    p.customPso = (pe.blend != 0) ? cps->alpha.Get() : cps->additive.Get();
+            }
             m_particleSystem->Emit(p);
             }   // レイヤーループ
         }

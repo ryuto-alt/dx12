@@ -252,6 +252,68 @@ void ParticleSystem::Initialize(GraphicsDevice& device, DXGI_FORMAT rtvFormat,
                  kMaxParticles, kMaxBeams, kMaxTrails);
 }
 
+// 粒子インスタンスの頂点レイアウト。既定 PSO とカスタム PSO で必ず同じものを使う。
+// ★ここを変えたら GpuParticle 構造体（stride 68）も同時に直すこと。
+static const D3D12_INPUT_ELEMENT_DESC kParticleInputLayout[] = {
+    {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 0,  D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},
+    {"TEXCOORD", 0, DXGI_FORMAT_R32_FLOAT,          0, 12, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},
+    {"COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},
+    {"TEXCOORD", 1, DXGI_FORMAT_R32_FLOAT,          0, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},
+    {"TEXCOORD", 2, DXGI_FORMAT_R32_FLOAT,          0, 36, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // stretch
+    {"NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 40, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // vel
+    {"TEXCOORD", 3, DXGI_FORMAT_R32_FLOAT,          0, 52, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // age01
+    {"TEXCOORD", 4, DXGI_FORMAT_R32_UINT,           0, 56, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // kind
+    {"TEXCOORD", 5, DXGI_FORMAT_R32_FLOAT,          0, 60, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // seed
+    {"TEXCOORD", 6, DXGI_FORMAT_R32_UINT,           0, 64, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1},  // texIndex
+};
+
+Microsoft::WRL::ComPtr<ID3D12PipelineState> ParticleSystem::CreateCustomPso(
+    GraphicsDevice& device,
+    const void* vsBytes, size_t vsSize,
+    const void* psBytes, size_t psSize,
+    bool alphaBlend) const
+{
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> out;
+    if (!m_rootSig || !vsBytes || !psBytes || vsSize == 0 || psSize == 0) return out;
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
+    pso.pRootSignature        = m_rootSig.Get();
+    pso.VS                    = { vsBytes, vsSize };
+    pso.PS                    = { psBytes, psSize };
+    pso.InputLayout           = { kParticleInputLayout, _countof(kParticleInputLayout) };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+
+    pso.RasterizerState.FillMode        = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode        = D3D12_CULL_MODE_NONE;
+    pso.RasterizerState.DepthClipEnable = TRUE;
+
+    auto& rt = pso.BlendState.RenderTarget[0];
+    rt.BlendEnable           = TRUE;
+    rt.SrcBlend              = D3D12_BLEND_ONE;   // 前乗算
+    rt.DestBlend             = alphaBlend ? D3D12_BLEND_INV_SRC_ALPHA : D3D12_BLEND_ONE;
+    rt.BlendOp               = D3D12_BLEND_OP_ADD;
+    rt.SrcBlendAlpha         = D3D12_BLEND_ONE;
+    rt.DestBlendAlpha        = alphaBlend ? D3D12_BLEND_INV_SRC_ALPHA : D3D12_BLEND_ONE;
+    rt.BlendOpAlpha          = D3D12_BLEND_OP_ADD;
+    rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    pso.DepthStencilState.DepthEnable   = FALSE;  // DSV 無し（PS で深度SRVから手動オクルージョン）
+    pso.DepthStencilState.StencilEnable = FALSE;
+    pso.SampleMask       = UINT_MAX;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0]    = m_rtvFormat;
+    pso.DSVFormat        = DXGI_FORMAT_UNKNOWN;
+    pso.SampleDesc       = { 1, 0 };
+
+    if (FAILED(device.GetDevice()->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&out))))
+    {
+        Logger::Warn("カスタムパーティクルシェーダーの PSO 生成に失敗しました"
+                     "（ルートシグネチャに無い register を宣言していないか確認してください）");
+        out.Reset();
+    }
+    return out;
+}
+
 void ParticleSystem::RecreatePipelines(GraphicsDevice& device)
 {
     auto* dev = device.GetDevice();
@@ -529,6 +591,7 @@ void ParticleSystem::Emit(const EmitParams& p, const EmitParams* onDeath)
         pt.blend = p.blend;
         pt.orient = p.orient;
         pt.texSlot = texSlot;
+        pt.customPso = p.customPso;
         pt.alive = true;
     }
 }
@@ -798,27 +861,35 @@ void ParticleSystem::Render(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj,
     };
 
     // 加算 → α → 歪み の順に詰める（PSO 切替を最少に）。生存リストのみ走査（O(alive)）。
-    m_gpu.clear();
+    //
+    // ★自作シェーダー（customPso）が入ったので、インスタンスと PSO を対にして並べる。
+    //   PSO は「描画コールの属性」であってインスタンス属性ではないため頂点には載せられない。
+    //   ここで対のままソートし、最後に m_gpu / m_gpuPso へ同じ順序で流す。
+    //   別々にソートすると対応がズレて【他人のシェーダーで描かれる粒子】ができる。
+    m_buildItems.clear();
     for (u32 idx : m_live)
     {
         const Particle& pt = m_particles[idx];
-        if (pt.distort <= 0.0f && pt.blend == 0) m_gpu.push_back(makeGpu(pt));
+        if (pt.distort <= 0.0f && pt.blend == 0) m_buildItems.push_back({makeGpu(pt), pt.customPso});
     }
-    m_additiveCount = static_cast<u32>(m_gpu.size());
+    m_additiveCount = static_cast<u32>(m_buildItems.size());
     for (u32 idx : m_live)
     {
         const Particle& pt = m_particles[idx];
-        if (pt.distort <= 0.0f && pt.blend != 0) m_gpu.push_back(makeGpu(pt));
+        if (pt.distort <= 0.0f && pt.blend != 0) m_buildItems.push_back({makeGpu(pt), pt.customPso});
     }
-    m_alphaCount = static_cast<u32>(m_gpu.size()) - m_additiveCount;
+    m_alphaCount = static_cast<u32>(m_buildItems.size()) - m_additiveCount;
 
-    // テクスチャ切替（SetGraphicsRootDescriptorTable）を最少にするため各ブレンド域内で texIndex 昇順に
-    // 安定ソート（同一テクスチャが連続する。加算は描画順が結果に影響しないので無害。α域も従来から
-    // 深度ソート無し=既存挙動を大きく崩さない）。
-    std::sort(m_gpu.begin(), m_gpu.begin() + m_additiveCount,
-              [](const GpuParticle& a, const GpuParticle& b) { return a.texIndex < b.texIndex; });
-    std::sort(m_gpu.begin() + m_additiveCount, m_gpu.begin() + m_additiveCount + m_alphaCount,
-              [](const GpuParticle& a, const GpuParticle& b) { return a.texIndex < b.texIndex; });
+    // 状態切替（SetPipelineState / SetGraphicsRootDescriptorTable）を最少にするため、
+    // 各ブレンド域内を PSO → テクスチャの順で並べる（同じ組が連続する）。
+    // 加算は描画順が結果に影響しないので無害。α域も従来から深度ソート無し＝既存挙動を崩さない。
+    const auto byPsoThenTex = [](const BuildItem& a, const BuildItem& b) {
+        if (a.pso != b.pso) return a.pso < b.pso;
+        return a.g.texIndex < b.g.texIndex;
+    };
+    std::sort(m_buildItems.begin(), m_buildItems.begin() + m_additiveCount, byPsoThenTex);
+    std::sort(m_buildItems.begin() + m_additiveCount,
+              m_buildItems.begin() + m_additiveCount + m_alphaCount, byPsoThenTex);
 
     for (u32 idx : m_live)
     {
@@ -829,9 +900,20 @@ void ParticleSystem::Render(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj,
         g.color.x = pt.distort;
         g.color.y = 0.0f;
         g.color.z = 0.0f;
-        m_gpu.push_back(g);
+        // 歪みバッファは専用 PSO で描くので自作シェーダーの対象外
+        m_buildItems.push_back({g, nullptr});
     }
-    m_distortCount = static_cast<u32>(m_gpu.size()) - m_additiveCount - m_alphaCount;
+    m_distortCount = static_cast<u32>(m_buildItems.size()) - m_additiveCount - m_alphaCount;
+
+    m_gpu.clear();
+    m_gpuPso.clear();
+    m_gpu.reserve(m_buildItems.size());
+    m_gpuPso.reserve(m_buildItems.size());
+    for (const BuildItem& it : m_buildItems)
+    {
+        m_gpu.push_back(it.g);
+        m_gpuPso.push_back(it.pso);
+    }
     m_aliveCount = static_cast<int>(m_gpu.size());
 
     // 生きてるビーム → GpuBeam 変換
@@ -968,28 +1050,29 @@ void ParticleSystem::Render(ID3D12GraphicsCommandList* cmd, XMMATRIX viewProj,
 
         // texIndex が連続する区間ごとに t1 を張り替えて DrawInstanced（Sprite/世界スプライトと同じ
         // バッチ手法）。プロシージャル(kNoTexture)の連続区間は張り替えを省略する。
-        auto drawRange = [&](u32 start, u32 count) {
+        // (PSO, texIndex) が連続する区間ごとに状態を張り替えて DrawInstanced。
+        // 並べ替え済みなので、同じ組は必ず隣り合っている。
+        // defaultPso = そのブレンド域の既定 PSO（customPso が null の粒子はこれで描く）。
+        auto drawRange = [&](u32 start, u32 count, ID3D12PipelineState* defaultPso) {
+            ID3D12PipelineState* boundPso = nullptr;
             u32 i = 0;
             while (i < count)
             {
                 const u32 tex = m_gpu[start + i].texIndex;
+                ID3D12PipelineState* want = m_gpuPso[start + i] ? m_gpuPso[start + i] : defaultPso;
                 const u32 runStart = i;
-                while (i < count && m_gpu[start + i].texIndex == tex) ++i;
+                while (i < count && m_gpu[start + i].texIndex == tex
+                       && (m_gpuPso[start + i] ? m_gpuPso[start + i] : defaultPso) == want) ++i;
+                if (want != boundPso) { cmd->SetPipelineState(want); boundPso = want; }
                 if (tex != kNoTexture && m_srvHeap)
                     cmd->SetGraphicsRootDescriptorTable(2, m_srvHeap->GetGpuHandle(tex));
                 cmd->DrawInstanced(6, i - runStart, 0, start + runStart);
             }
         };
         if (m_additiveCount > 0)
-        {
-            cmd->SetPipelineState(m_psoAdd.Get());
-            drawRange(0, m_additiveCount);
-        }
+            drawRange(0, m_additiveCount, m_psoAdd.Get());
         if (m_alphaCount > 0)
-        {
-            cmd->SetPipelineState(m_psoAlpha.Get());
-            drawRange(m_additiveCount, m_alphaCount);
-        }
+            drawRange(m_additiveCount, m_alphaCount, m_psoAlpha.Get());
         // 歪み粒子（末尾 m_distortCount 個）はここでは描かない → RenderDistortion で歪みRTへ
     }
 

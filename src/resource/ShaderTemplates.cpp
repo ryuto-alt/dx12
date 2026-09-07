@@ -19,6 +19,10 @@ const std::vector<Info> kBuiltin = {
     {"ocean", "海（うねりと白波）",
      "長い波長のうねり 4 本 + 白波 + 遠景を大気色へ溶かす水平線。広い水面向け",
      "Ocean.hlsl"},
+    {"particle_ember", "パーティクル: 燃えさし",
+     "粒の中に温度勾配を持つ火の粉。芯が白熱し外へ向かって冷える。"
+     "ParticleLayer::shaderPath に割り当てる（メッシュ用とは別契約）",
+     "ParticleEmber.hlsl"},
 };
 
 std::filesystem::path TemplateDir()
@@ -60,6 +64,43 @@ nlohmann::json DescribeContract(const std::string& kind)
             {"entryPoints", {"VSMain", "PSMain"}},
             {"note", "頂点レイアウトとルートシグネチャがメッシュ用と異なる。"
                      "メッシュ用の雛形をそのまま貼っても動かない（docs/AUTHORING.md 6.1）"},
+        };
+    }
+    if (kind == "particle")
+    {
+        return json{
+            {"kind", "particle"},
+            {"assignTo", "ParticleLayer::shaderPath（set_component の shaderPath / layer 指定）"},
+            {"entryPoints", {"VSMain", "PSMain"}},
+            {"include",
+             {{"header", "UnoParticle.hlsli"},
+              {"usage", "#include \"UnoParticle.hlsli\""},
+              {"why", "定数・入出力・ビルボード展開・ソフトパーティクルが全部入る。"
+                      "メッシュ用の UnoCustom.hlsli とは別物なので取り違えないこと"}}},
+            {"constants",
+             {{"b0",
+               {{"viewProj", "float4x4"},
+                {"camRight", "float4  カメラ右ベクトル"},
+                {"camUp", "float4  カメラ上ベクトル"},
+                {"params", "float4  x=全体強度 y=グロー柔らかさ z=時間(秒) w=ソフトフェード距離"},
+                {"params2", "float4  x=projA y=projB z=1/RT幅 w=1/RT高（z<=0 でソフト無効）"}}}}},
+            {"textures",
+             {{"t0", "シーン深度（R32_FLOAT）。UnoSoftParticle() が使う"},
+              {"t2", "粒子テクスチャ（texIdx != kNoTexture のときだけ）"},
+              {"s0", "SamplerState（LINEAR CLAMP）"}}},
+            {"perParticleInput",
+             {"center/size/color/rot/stretch/vel/age01/kind/seed/texIdx",
+              "age01 は 0=生まれた瞬間 1=消える。色は放出器の color/colorEnd 補間済み"}},
+            {"gotchas",
+             {"出力は【前乗算アルファ】。色に α を掛けてから返すこと"
+              "（掛け忘れると加算でふちが四角く光る）",
+              "UnoSoftParticle() を最終アルファに掛けること。掛けないと床や壁に紙のように刺さり、"
+              "壁の向こうの粒子まで見える（手動オクルージョンも兼ねている）",
+              "使える register は b0 / t0 / t2 / s0 だけ。ほかを宣言すると"
+              "コンパイルは通っても PSO 生成で落ちる（t1 は GPU パーティクルが使用中）",
+              "GPU パーティクル(gpu=true)は compute 経路なので非対応。既定の見た目で描かれる",
+              "ブレンドは放出器の blend(0=加算 / 1=前乗算α)がそのまま PSO に反映される"}},
+            {"availableTemplates", {"particle_ember"}},
         };
     }
     if (kind == "screen")
