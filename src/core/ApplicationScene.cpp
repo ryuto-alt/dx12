@@ -352,9 +352,9 @@ void Application::PersistSet(const std::string& key, double v)
     SavePersistStore();
 }
 
-// 既定トランジション（Scene Flow 窓のプリセット）を settings.json から読み直す。
+// 既定トランジション（「トランジション」窓のプリセット）を settings.json から読み直す。
 // エディタは LoadProject（プロジェクトごとに settings.json が違う）、
-// ゲームは Initialize から呼ぶ。書き込みは Scene Flow 窓のタイル/スライダー。
+// ゲームは Initialize から呼ぶ。書き込みは「トランジション」窓のタイル/スライダーと Scene Flow 窓の長さスライダー。
 void Application::LoadTransitionPrefs()
 {
     const int t = static_cast<int>(PersistGet("scene_transition_type",
@@ -390,7 +390,7 @@ void Application::WireScriptCallbacks()
     m_scriptEngine->SetQuitCallback(
         [this]() { if (m_window) PostMessageW(m_window->GetHwnd(), WM_CLOSE, 0, 0); });
 
-    // type < 0 / dur <= 0 は「プロジェクトの既定（Scene Flow 窓のプリセット）を使う」の意。
+    // type < 0 / dur <= 0 は「プロジェクトの既定（「トランジション」窓のプリセット）を使う」の意。
     // 型を明示しない経路（Lua の sceneTransition、Trigger の FadeToScene）がこれを通る。
     m_scriptEngine->SetTransitionCallback(
         [this](const std::string& rel, int type, float dur) {

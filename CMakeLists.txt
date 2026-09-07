@@ -325,6 +325,10 @@ if(DXC_EXECUTABLE)
     set(SHADER_SPRITE        "${CMAKE_SOURCE_DIR}/shaders/sprite/Sprite.hlsl")
     set(SHADER_ICON_BB       "${CMAKE_SOURCE_DIR}/shaders/editor/IconBillboard.hlsl")
     set(SHADER_TRANSITION    "${CMAKE_SOURCE_DIR}/shaders/post/Transition.hlsl")
+    # トランジションの「形」の唯一の実装。実機(Transition.hlsl)とエディタのプレビュー窓/
+    # サムネイル(TransitionPreview.hlsl)が同じ関数を include する＝絵がズレない。
+    set(SHADER_TRANSITION_INC "${CMAKE_SOURCE_DIR}/shaders/post/TransitionCurtain.hlsli")
+    set(SHADER_TRANSITION_PREVIEW "${CMAKE_SOURCE_DIR}/shaders/post/TransitionPreview.hlsl")
     set(SHADER_PARTICLE      "${CMAKE_SOURCE_DIR}/shaders/particle/Particle.hlsl")
     set(SHADER_BEAM          "${CMAKE_SOURCE_DIR}/shaders/particle/Beam.hlsl")
     set(SHADER_TRAIL         "${CMAKE_SOURCE_DIR}/shaders/particle/Trail.hlsl")
@@ -425,6 +429,8 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/IconBillboard_PS.cso"
         "${SHADER_OUTPUT_DIR}/Transition_VS.cso"
         "${SHADER_OUTPUT_DIR}/Transition_PS.cso"
+        "${SHADER_OUTPUT_DIR}/TransitionPreview_VS.cso"
+        "${SHADER_OUTPUT_DIR}/TransitionPreview_PS.cso"
         "${SHADER_OUTPUT_DIR}/Emissive_VS.cso"
         "${SHADER_OUTPUT_DIR}/Emissive_PS.cso"
         "${SHADER_OUTPUT_DIR}/Particle_VS.cso"
@@ -912,15 +918,31 @@ if(DXC_EXECUTABLE)
     add_custom_command(
         OUTPUT "${SHADER_OUTPUT_DIR}/Transition_VS.cso"
         COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E FSTriVS -Fo "${SHADER_OUTPUT_DIR}/Transition_VS.cso" "${SHADER_TRANSITION}"
-        DEPENDS "${SHADER_TRANSITION}" "${SHADER_POST_INC}"
+        DEPENDS "${SHADER_TRANSITION}" "${SHADER_POST_INC}" "${SHADER_TRANSITION_INC}"
         COMMENT "Compiling Transition.hlsl -> Transition_VS.cso (vs_6_0)"
     )
 
     add_custom_command(
         OUTPUT "${SHADER_OUTPUT_DIR}/Transition_PS.cso"
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E TransPS -Fo "${SHADER_OUTPUT_DIR}/Transition_PS.cso" "${SHADER_TRANSITION}"
-        DEPENDS "${SHADER_TRANSITION}" "${SHADER_POST_INC}"
+        DEPENDS "${SHADER_TRANSITION}" "${SHADER_POST_INC}" "${SHADER_TRANSITION_INC}"
         COMMENT "Compiling Transition.hlsl -> Transition_PS.cso (ps_6_0)"
+    )
+
+    # エディタのトランジション窓（架空ゲーム画面 + 同じ暗幕関数）。
+    # 実機と同じ TransitionCurtain.hlsli を include するので、依存も同じものを並べる。
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/TransitionPreview_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E FSTriVS -Fo "${SHADER_OUTPUT_DIR}/TransitionPreview_VS.cso" "${SHADER_TRANSITION_PREVIEW}"
+        DEPENDS "${SHADER_TRANSITION_PREVIEW}" "${SHADER_POST_INC}" "${SHADER_TRANSITION_INC}"
+        COMMENT "Compiling TransitionPreview.hlsl -> TransitionPreview_VS.cso (vs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/TransitionPreview_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E TransPreviewPS -Fo "${SHADER_OUTPUT_DIR}/TransitionPreview_PS.cso" "${SHADER_TRANSITION_PREVIEW}"
+        DEPENDS "${SHADER_TRANSITION_PREVIEW}" "${SHADER_POST_INC}" "${SHADER_TRANSITION_INC}"
+        COMMENT "Compiling TransitionPreview.hlsl -> TransitionPreview_PS.cso (ps_6_0)"
     )
 
     add_custom_command(

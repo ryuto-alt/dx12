@@ -9,7 +9,6 @@
 #include "core/Profiler.h"
 #include "editor/PostPresets.h"
 #include "editor/PostPresetSwatch.h"
-#include "editor/TransitionSwatch.h"
 #include "renderer/TransitionPresets.h"
 #include "editor/AssetDrop.h"
 
@@ -5814,6 +5813,19 @@ void Application::Render()
         m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
     }
 
+    // ===== トランジションのプレビュー（専用オフスクリーンRT。UI本体は後段のImGuiパスで描く）=====
+    // 「トランジション」窓の大プレビューと、プリセット全件のサムネイルアトラスを焼く。
+    // Scene Flow 窓は選択中プリセットのサムネイルをアトラスから切り出すので、
+    // どちらかが開いていれば焼く必要がある。
+    if (m_transitionPreviewPanel
+        && (m_editorCtx->showTransitionPreview || m_editorCtx->showSceneFlow))
+    {
+        m_transitionPreviewPanel->RenderOffscreen(*m_commandList, m_gameClock.GetDeltaTime());
+        // プレビュー描画でRT/ビューポートを切り替えたので、バックバッファへ戻す。
+        m_commandList->SetRenderTarget(rtv);   // 深度は張らない（#16: メイン深度はレンダー解像度）
+        m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
+    }
+
     // ===== マテリアルエディタの3Dプレビュー（専用オフスクリーンRT。UI本体は後段のImGuiパスで描く）=====
     if (m_materialEditorPanel && m_editorCtx->showMaterialEditor)
     {
@@ -6698,109 +6710,64 @@ void Application::Render()
             if (ImGui::Button("Save sceneflow.json"))
                 m_sceneFlow->Save(PathResolver::AssetsDir() + "sceneflow.json");
 
-            // ---- 既定トランジション（プリセットをサムネイルで選ぶ）----
-            // ポストの「見た目プリセット」と同じ流儀のタイル。違いは【1 つだけ選ぶ】こと
-            // （トランジションは重ねられない）。選んだ結果は settings.json に入り、
-            // BuildGame が同梱するので配布ゲームでもそのまま出る。
+            // ---- 既定トランジション（現在の選択の確認 + 専用窓への入口）----
+            // ★以前はここに全プリセットのタイルを並べ、押すと**編集中のシーンの上で**
+            //   実物が再生された。作りかけのシーンと暗幕が混ざって形が読めず、
+            //   中間点で本当にシーンが切り替わるわけでもないので確認にならなかった。
+            //   選択とプレビューは「トランジション」窓（専用の架空ゲーム画面で再生する）へ移し、
+            //   ここには「いま何が選ばれているか」と入口だけを残す。
             ImGui::SeparatorText("トランジション（既定の演出）");
             ImGui::PushTextWrapPos(0.0f);
-            ImGui::TextDisabled("シーンを切り替えるときの演出。クリックで 1 つ選びます。");
             ImGui::TextDisabled("Trigger の「FadeToScene」と Lua の sceneTransition(rel) が"
                                 "これを使います。Lua で演出を指定したいときは "
                                 "transitionToScene(rel, \"iris\") のように ID を渡してください。");
             ImGui::PopTextWrapPos();
 
             {
-                const int selPreset = FindTransitionPresetIndexByType(
+                const int cur = FindTransitionPresetIndexByType(
                     static_cast<TransitionType>(m_defaultTransitionType));
 
-                ImDrawList*  dl      = ImGui::GetWindowDrawList();
-                const float  sp      = ImGui::GetStyle().ItemSpacing.x;
-                const ImVec2 tile(136.0f, 92.0f);
-                const float  swatchH = 62.0f;
-                const float  availW  = ImGui::GetContentRegionAvail().x;
-                float        lineW   = 0.0f;
-                bool         first   = true;
+                // 選択中プリセットのサムネイル（アトラスの切り出し＝実物と同じシェーダーの絵）
+                const ImVec2 p0 = ImGui::GetCursorScreenPos();
+                const ImVec2 thumb(160.0f, 90.0f);
+                ImGui::InvisibleButton("##transCurrent", thumb);
+                const bool thumbClicked = ImGui::IsItemClicked();
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                if (m_transitionPreviewPanel)
+                    m_transitionPreviewPanel->DrawPresetThumb(
+                        dl, p0, ImVec2(p0.x + thumb.x, p0.y + thumb.y), cur);
+                dl->AddRect(p0, ImVec2(p0.x + thumb.x, p0.y + thumb.y),
+                            IM_COL32(64, 65, 74, 200), 4.0f);
 
-                for (int i = 0; i < kTransitionPresetCount; ++i)
-                {
-                    const TransitionPreset& pr = kTransitionPresets[i];
-
-                    if (!first && lineW + sp + tile.x <= availW)
-                    { ImGui::SameLine(); lineW += sp + tile.x; }
-                    else
-                        lineW = tile.x;
-                    first = false;
-
-                    ImGui::PushID(i);
-                    const ImVec2 p0 = ImGui::GetCursorScreenPos();
-                    ImGui::InvisibleButton("##transtile", tile);
-                    const bool hovered = ImGui::IsItemHovered();
-                    const bool clicked = ImGui::IsItemClicked();
-                    const bool sel     = (i == selPreset);
-
-                    // サムネイル: 見本画の上に、その型の暗幕を途中まで閉じた状態で描く。
-                    // 形は Transition.hlsl と一対一（TransitionSwatch.h の対応表を参照）。
-                    const ImVec2 s0(p0.x + 3.0f, p0.y + 3.0f);
-                    const ImVec2 s1(p0.x + tile.x - 3.0f, p0.y + 3.0f + swatchH);
-                    transwatch::DrawSwatch(dl, s0, s1, pr.type);
-
-                    const ImVec2 ls = ImGui::CalcTextSize(pr.label);
-                    dl->AddText(ImVec2(p0.x + (tile.x - ls.x) * 0.5f, s1.y + 6.0f),
-                                sel ? IM_COL32(120, 190, 255, 255) : IM_COL32(205, 205, 212, 255),
-                                pr.label);
-
-                    dl->AddRect(p0, ImVec2(p0.x + tile.x, p0.y + tile.y),
-                                sel     ? IM_COL32(60, 140, 245, 255)
-                                : hovered ? IM_COL32(150, 152, 162, 220)
-                                          : IM_COL32(64, 65, 74, 180),
-                                4.0f, 0, sel ? 2.5f : 1.0f);
-
-                    if (hovered)
-                        ImGui::SetTooltip("%s\n\nID: \"%s\"  /  既定 %.1f 秒\n"
-                                          "クリックで選ぶとプレビューも再生します",
-                                          pr.tip, pr.id, static_cast<double>(pr.duration));
-                    if (clicked)
-                    {
-                        m_defaultTransitionType = static_cast<int>(pr.type);
-                        m_defaultTransitionDur  = pr.duration;
-                        PersistSet("scene_transition_type",
-                                   static_cast<double>(m_defaultTransitionType));
-                        PersistSet("scene_transition_dur",
+                ImGui::SameLine();
+                ImGui::BeginGroup();
+                ImGui::TextColored(ImVec4(0.47f, 0.75f, 1.0f, 1.0f), "%s（%.2f 秒）",
+                                   cur >= 0 ? kTransitionPresets[cur].label : "(不明)",
                                    static_cast<double>(m_defaultTransitionDur));
-                        // 選んだ瞬間にビューポートで実物を再生する（サムネイルは静止画なので、
-                        // 速さと動く向きはこちらでしか分からない）。切替先を空にしておくと
-                        // 中間点で何もロードしない＝ただの見本再生になる。
-                        if (m_sceneTransition)
-                        {
-                            m_transitionTargetScene.clear();
-                            m_sceneTransition->Start(pr.type, pr.duration);
-                        }
-                    }
-                    ImGui::PopID();
-                }
+                if (cur >= 0)
+                    ImGui::TextDisabled("ID: \"%s\"", kTransitionPresets[cur].id);
 
-                ImGui::SetNextItemWidth(220.0f);
-                ImGui::SliderFloat("長さ（秒）", &m_defaultTransitionDur, 0.1f, 3.0f, "%.2f");
+                ImGui::SetNextItemWidth(200.0f);
+                ImGui::SliderFloat("長さ（秒）", &m_defaultTransitionDur, 0.2f, 3.0f, "%.2f");
                 // スライダーは掴んでいる間ずっと値が変わる。PersistSet は毎回ディスクへ
                 // 書くので、離した時だけ保存する。
                 if (ImGui::IsItemDeactivatedAfterEdit())
                     PersistSet("scene_transition_dur", static_cast<double>(m_defaultTransitionDur));
-                ImGui::SameLine();
-                if (ImGui::Button("▶ プレビュー") && m_sceneTransition)
-                {
-                    m_transitionTargetScene.clear();
-                    m_sceneTransition->Start(static_cast<TransitionType>(m_defaultTransitionType),
-                                             m_defaultTransitionDur);
-                }
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("シーンビューで実物を再生します（シーンは切り替わりません）");
 
-                const int cur = FindTransitionPresetIndexByType(
-                    static_cast<TransitionType>(m_defaultTransitionType));
-                ImGui::TextColored(ImVec4(0.47f, 0.75f, 1.0f, 1.0f), "選択中: %s（%.2f 秒）",
-                                   cur >= 0 ? kTransitionPresets[cur].label : "(不明)",
-                                   static_cast<double>(m_defaultTransitionDur));
+                const bool openClicked = ImGui::Button("演出を選ぶ / プレビュー…");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("専用の「トランジション」窓を開きます。\n"
+                                      "編集中のシーンではなく架空のゲーム画面 2 枚で再生するので、\n"
+                                      "幕の形と、隠れている間にシーンが入れ替わる様子まで分かります。");
+                if (openClicked || thumbClicked)
+                {
+                    m_editorCtx->showTransitionPreview = true;
+                    if (m_transitionPreviewPanel)
+                        m_transitionPreviewPanel->Focus(m_defaultTransitionType,
+                                                        m_defaultTransitionDur);
+                    ImGui::SetWindowFocus("トランジション");
+                }
+                ImGui::EndGroup();
             }
 
             ImGui::End();
@@ -6938,6 +6905,15 @@ void Application::Render()
         if (m_vfxEditorPanel)
             m_vfxEditorPanel->RenderWindow(m_scene->GetRegistry(), *m_editorCtx, PathResolver::AssetsDir(),
                                            m_scene.get());
+        // トランジション窓。プリセットを選び直した / 長さを変えたら settings.json へ書く
+        // （＝ BuildGame が同梱する ＝ 配布ゲームでもそのまま出る）。
+        if (m_transitionPreviewPanel
+            && m_transitionPreviewPanel->RenderWindow(*m_editorCtx, m_defaultTransitionType,
+                                                      m_defaultTransitionDur))
+        {
+            PersistSet("scene_transition_type", static_cast<double>(m_defaultTransitionType));
+            PersistSet("scene_transition_dur",  static_cast<double>(m_defaultTransitionDur));
+        }
         if (m_uiEditorPanel)
             m_uiEditorPanel->RenderWindow(m_scene->GetRegistry(), *m_editorCtx, PathResolver::AssetsDir(),
                                           m_resourceManager.get(), m_srvHeap.get(), nativeCmdList);

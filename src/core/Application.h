@@ -98,6 +98,7 @@ namespace dx12e
     class EditorLayer;
     class ModelThumbnailRenderer;
     class VfxEditorPanel;
+    class TransitionPreviewPanel;
     class UiEditorPanel;
     class AnimationEditorPanel;
     class SpriteSheetEditorPanel;
@@ -1116,6 +1117,8 @@ private:
     std::unique_ptr<ScriptEngine>      m_scriptEngine;
     std::unique_ptr<McpBridge>         m_mcpBridge;   // エディタ専用 AI ブリッジ(TCP)。ゲームでは null。
     std::unique_ptr<VfxEditorPanel>    m_vfxEditorPanel;   // パーティクルエディタ（ツール窓）。ゲームでは null。
+    // トランジション窓（シーン切り替え演出の選択 + 専用プレビュー）。ゲームでは null。
+    std::unique_ptr<TransitionPreviewPanel> m_transitionPreviewPanel;
     std::unique_ptr<UiEditorPanel>     m_uiEditorPanel;    // UIエディタ（ゲーム内UIの2Dキャンバス編集）。ゲームでは null。
     std::unique_ptr<AnimationEditorPanel>   m_animEditorPanel;        // .uianim タイムライン。ゲームでは null。
     std::unique_ptr<SpriteSheetEditorPanel> m_spriteSheetEditorPanel; // .spranim シート編集。ゲームでは null。
@@ -1413,12 +1416,13 @@ private:
     std::string                      m_transitionTargetScene;  // 中間点でロードする assets 相対パス（空=ロード無し）
     std::vector<std::string>         m_pendingScenePreloads;   // Lua preloadScene の保留分（cmdList のあるフレーム境界で処理）
 
-    // プロジェクトの既定トランジション（エディタの Scene Flow 窓で選ぶプリセット）。
+    // プロジェクトの既定トランジション（エディタの「トランジション」窓で選ぶプリセット）。
     // settings.json の "scene_transition_type" / "scene_transition_dur" に保存され、
     // BuildGame が settings.json を配布物へ同梱するので配布ゲームでもそのまま出る。
     // 型を指定しない経路（Lua の sceneTransition / Trigger の FadeToScene）が参照する。
+    // ★既定秒は 1.0。0.6 秒では「切り替わった」と認識する前に終わり、演出の形も読み取れない。
     int m_defaultTransitionType = 0;      // TransitionType の値。既定 0 = 暗転
-    f32 m_defaultTransitionDur  = 0.6f;   // 「閉じる→開く」の合計秒
+    f32 m_defaultTransitionDur  = 1.0f;   // 「閉じる→開く」の合計秒
     void LoadTransitionPrefs();           // settings.json から上の 2 つを読み直す
 
     // シーンフロー（WP6）

@@ -1782,18 +1782,22 @@ void ScriptEngine::RegisterBindings()
     lua["nextScene"] = [this]() { if (m_nextSceneCb) m_nextSceneCb(); };
     lua["quit"]      = [this]() { if (m_quitCb) m_quitCb(); };
     // フェード等のトランジション付きシーン切替。
-    // type: 0=Fade, 1=Wipe, 2=Circle, 3=縦Wipe, 4=シークバー早送り,
-    //       5=ホワイトアウト, 6=ブラインド, 7=時計ワイプ, 8=菱形
+    // 型の一覧は renderer/SceneTransition.h（番号）と renderer/TransitionPresets.h（ID）。
+    // ★秒を省いたときの既定は kDefaultTransitionDuration = 1.0 秒。以前の 0.6 秒は
+    //   「切り替わった」と認識する前に終わってしまい、演出の形も読み取れなかった。
     lua["fadeToScene"] = [this](const std::string& rel, sol::optional<float> dur) {
-        if (m_transitionCb) m_transitionCb(rel, 0, dur.value_or(0.6f));
+        if (m_transitionCb) m_transitionCb(rel, 0, dur.value_or(kDefaultTransitionDuration));
     };
-    // エディタ（Scene Flow 窓）で選んだ既定プリセットで切り替える。
+    // エディタ（トランジション窓）で選んだ既定プリセットで切り替える。
     // type/dur を渡さない＝ -1 / 0 が「既定を使え」の合図（Application 側で解決する）。
     lua["sceneTransition"] = [this](const std::string& rel, sol::optional<float> dur) {
         if (m_transitionCb) m_transitionCb(rel, -1, dur.value_or(0.0f));
     };
-    // type は番号でもプリセット ID の文字列でも受ける
-    // （"fade" / "flash" / "wipe" / "wipe_v" / "iris" / "diamond" / "blinds" / "clock" / "seek"）。
+    // type は番号でもプリセット ID の文字列でも受ける。ID の一覧は TransitionPresets.h
+    // （"fade" / "flash" / "dissolve" / "mosaic" / "wipe" / "wipe_v" / "wipe_diag" /
+    //   "curtain" / "slide" / "blinds" / "blinds_v" / "clock" / "spiral" / "iris" /
+    //   "diamond" / "star" / "plus" / "heart" / "melt" / "shatter" / "glitch" / "hex" /
+    //   "checker" / "ripple" / "flood" / "burn" / "rush" / "seek"）。
     // 番号は enum の値と直結していて覚えられないので、Lua からは ID を勧める。
     lua["transitionToScene"] = [this](const std::string& rel, sol::object type,
                                       sol::optional<float> dur) {
@@ -1809,7 +1813,7 @@ void ScriptEngine::RegisterBindings()
             if (const TransitionPreset* p = FindTransitionPreset(id.c_str()))
             {
                 t = static_cast<int>(p->type);
-                // ID 指定で秒を省いたらプリセットの秒を使う（番号指定は従来どおり 0.6）
+                // ID 指定で秒を省いたらプリセットの秒を使う（番号指定は下の既定 1.0 秒）
                 if (!dur) { m_transitionCb(rel, t, p->duration); return; }
             }
             else
@@ -1818,7 +1822,7 @@ void ScriptEngine::RegisterBindings()
                              "（プロジェクトの既定プリセットで切り替えます）", id);
             }
         }
-        m_transitionCb(rel, t, dur.value_or(t < 0 ? 0.0f : 0.6f));
+        m_transitionCb(rel, t, dur.value_or(t < 0 ? 0.0f : kDefaultTransitionDuration));
     };
     // フォーカスナビ(矢印/D-pad + Enter/Space/A)へ初期フォーカスを与える。
     // Entity か数値 id を受ける。メニュー表示時に既定ボタンへ当ててパッド即操作可能にする用。
@@ -4614,7 +4618,7 @@ void ScriptEngine::UpdateTriggers(f32 dt)
             if (!a.str.empty() && m_loadSceneCb) m_loadSceneCb(a.str);
             break;
         case TriggerActionType::FadeToScene:
-            // 型は指定しない(-1)＝Scene Flow 窓で選んだプロジェクトの既定プリセットで切り替える。
+            // 型は指定しない(-1)＝「トランジション」窓で選んだプロジェクトの既定プリセットで切り替える。
             // 既定は「暗転 0.6 秒」なので、プリセットを触っていなければ従来と同じ絵になる。
             // num（秒）が 0 のときも既定へ倒す＝プリセットの秒がそのまま効く。
             if (!a.str.empty() && m_transitionCb)

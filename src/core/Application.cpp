@@ -120,7 +120,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     m_useVsync       = PersistGet("video_vsync", m_useVsync ? 1.0 : 0.0) != 0.0;
     m_persistedVsync = m_useVsync;   // 起動直後に同じ値を書き戻さないための基準
 
-    // 既定トランジション（Scene Flow 窓のプリセット）。エディタ・ゲームとも同じキーを見る。
+    // 既定トランジション（「トランジション」窓のプリセット）。エディタ・ゲームとも同じキーを見る。
     // エディタはこの後 LoadProject でプロジェクトの settings.json から読み直す。
     LoadTransitionPrefs();
 
@@ -1135,6 +1135,12 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             m_vfxEditorPanel = std::make_unique<VfxEditorPanel>();
             m_vfxEditorPanel->Initialize(*m_graphicsDevice, m_srvHeap.get(), m_resourceManager.get(),
                                         PathResolver::ShaderDirW());
+            // トランジション窓。専用のオフスクリーン(架空のゲーム画面 2 枚を描く大プレビュー +
+            // プリセット全件のサムネイルアトラス)を持つ。実機と同じ暗幕シェーダーを走らせるので、
+            // ここで見た絵がそのまま配布ゲームで出る。
+            m_transitionPreviewPanel = std::make_unique<TransitionPreviewPanel>();
+            m_transitionPreviewPanel->Initialize(*m_graphicsDevice, m_srvHeap.get(),
+                                                 PathResolver::ShaderDirW());
             // UIエディタ（ゲーム内UIの2Dキャンバス編集）。GPU リソースは持たない
             // （描画は UISystem::RenderPreview 経由で共有 SRV ヒープを借りるだけ）。
             m_uiEditorPanel = std::make_unique<UiEditorPanel>();

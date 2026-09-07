@@ -316,6 +316,7 @@ void ToolbarPanel::Render(bool isPlaying,
             ImGui::MenuItem("エンジン設定",            nullptr, &ctx.showEngineSettings);
             ImGui::MenuItem("ビルド設定",              nullptr, &ctx.showBuildSettings);
             ImGui::MenuItem("Scene Flow",              nullptr, &ctx.showSceneFlow);
+            ImGui::MenuItem("トランジション",          nullptr, &ctx.showTransitionPreview);
             ImGui::MenuItem("Project",                 nullptr, &ctx.showProject);
             ImGui::MenuItem("Git 変更",                nullptr, &ctx.showVersionControl);
             ImGui::EndMenu();
@@ -695,6 +696,7 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::MenuItem("UIエディタ",              nullptr, &ctx.showUiEditor);
         ImGui::MenuItem("UIアニメーション",        nullptr, &ctx.showAnimEditor);
         ImGui::MenuItem("スプライトシート",        nullptr, &ctx.showSpriteSheetEditor);
+        ImGui::MenuItem("トランジション",          nullptr, &ctx.showTransitionPreview);
         ImGui::Separator();
         if (ImGui::MenuItem("すべて閉じる"))
         {
@@ -704,7 +706,8 @@ void ToolbarPanel::Render(bool isPlaying,
                 ctx.showVersionControl = ctx.showMcpBridge = ctx.showBuildSettings =
                 ctx.showNetworkStatus = ctx.showNetworkSettings =
                 ctx.showVfxEditor = ctx.showUiEditor =
-                ctx.showAnimEditor = ctx.showSpriteSheetEditor = false;
+                ctx.showAnimEditor = ctx.showSpriteSheetEditor =
+                ctx.showTransitionPreview = false;
             ctx.showLighting = false;
         }
         ImGui::EndPopup();

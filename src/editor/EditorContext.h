@@ -302,6 +302,11 @@ public:
     // UIエディタ(ゲーム内UIの2Dキャンバス編集。UMGデザイナー相当)。広い面積が要るので
     // VfxEditor 同様の独立フローティング窓(AnyToolWindowOpen には含めない)。
     bool showUiEditor        = false;
+    // トランジション窓(シーン切り替え演出の選択 + 専用プレビュー)。
+    // ★編集中のシーンの上で再生すると形が読めないので、架空のゲーム画面 2 枚を描く
+    //   専用オフスクリーンを持つ。プレビュー枠 + 全プリセットのタイルで幅を食うため、
+    //   VfxEditor 同様の独立フローティング窓(AnyToolWindowOpen には含めない)。
+    bool showTransitionPreview = false;
     // UIアニメーションのタイムラインエディタ(.uianim のキーフレーム編集)。横に長い窓が要るので
     // これも独立フローティング(AnyToolWindowOpen には含めない)。
     bool showAnimEditor      = false;

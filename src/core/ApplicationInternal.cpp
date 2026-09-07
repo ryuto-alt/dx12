@@ -820,12 +820,13 @@ nlohmann::json McpLuaApi()
         "PAD_DPAD_UP/PAD_DPAD_DOWN/PAD_DPAD_LEFT/PAD_DPAD_RIGHT  (input:isPadButton* に渡す)",
         "loadScene(rel)", "nextScene()", "quit()", "fadeToScene(rel,dur?)",
         "preloadScene(rel)  (次シーンのテクスチャ/モデルを先読み。切替はしない=トランジションのカクつき対策)",
-        "sceneTransition(rel,dur?)  (エディタの Scene Flow 窓で選んだ既定プリセットで切替。"
+        "sceneTransition(rel,dur?)  (エディタの「トランジション」窓で選んだ既定プリセットで切替。"
         "秒を省くとプリセットの秒)",
         "transitionToScene(rel,typeOrId,dur?)  (第2引数はプリセットIDの文字列か型番号。"
-        "ID: fade/wipe/iris/wipe_v/seek/flash/blinds/clock/diamond = "
-        "番号: 0=Fade,1=横Wipe,2=Circle,3=縦Wipe,4=シークバー早送り,5=ホワイトアウト,"
-        "6=ブラインド,7=時計ワイプ,8=菱形)",
+        "ID(28種): fade/flash/dissolve/mosaic / wipe/wipe_v/wipe_diag/curtain/slide/"
+        "blinds/blinds_v/clock/spiral / iris/diamond/star/plus/heart / "
+        "melt/shatter/glitch/hex/checker/ripple/flood/burn/rush/seek。"
+        "番号は renderer/SceneTransition.h の enum と同じ 0..27。既定秒は 1.0)",
         "setUiFocus(entityOrId)  (フォーカスナビの初期フォーカス。メニュー表示時に既定ボタンへ)",
         "ASSETS, SCREEN_W, SCREEN_H, KEY_*(VK codes), MOTION_STATIC/KINEMATIC/DYNAMIC",
     })));

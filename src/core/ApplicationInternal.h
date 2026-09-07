@@ -132,6 +132,7 @@
 #include "editor/panels/McpBridgePanel.h"
 #include "editor/panels/NetworkPanel.h"
 #include "editor/panels/VfxEditorPanel.h"
+#include "editor/panels/TransitionPreviewPanel.h"
 #include "editor/panels/UiEditorPanel.h"
 #include "editor/panels/AnimationEditorPanel.h"
 #include "editor/panels/SpriteSheetEditorPanel.h"

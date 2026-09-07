@@ -447,7 +447,7 @@ void Application::LoadProject(const ProjectInfo& info)
     m_useVsync       = PersistGet("video_vsync", m_useVsync ? 1.0 : 0.0) != 0.0;
     m_persistedVsync = m_useVsync;
 
-    // 既定トランジション（Scene Flow 窓のプリセット）。プロジェクトごとの設定なので
+    // 既定トランジション（「トランジション」窓のプリセット）。プロジェクトごとの設定なので
     // ここで読み直さないと、前のプロジェクトで選んだ演出を引きずる。
     LoadTransitionPrefs();
 

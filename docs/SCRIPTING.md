@@ -398,8 +398,11 @@ local cam = scene:findEntity("MainCamera")
 cam:setFov(40)                           -- 構え/スコープのズーム(度・5〜150)。
                                          -- ★毎フレーム絶対値で書くこと(レンダラ側へ書いても翌フレームに戻る)
 
-fadeToScene("scenes/title.json", 0.5)    -- 低レベルの遷移
-transitionToScene("scenes/select.json", 4, 1.3)  -- 演出付き遷移(0=Fade 1=Wipe 2=Circle 3=縦Wipe 4=シークバー早送り)
+fadeToScene("scenes/title.json", 1.0)    -- 低レベルの遷移（秒を省くと 1.0）
+transitionToScene("scenes/select.json", "shatter")     -- 演出付き遷移（ID 指定。秒を省くとプリセットの秒）
+transitionToScene("scenes/select.json", "spiral", 1.3) -- 秒も指定する
+-- ID は 28 種類。一覧は docs/API_REFERENCE.md「トランジションのプリセット」を参照。
+-- 番号でも渡せるが（0=暗転 1=横ワイプ 2=アイリス …）覚えなくていい ID 文字列を推奨。
 loadScene("scenes/level1.json")          -- 即ロード（フェード無し）
 nextScene()                              -- sceneflow の次へ
 preloadScene("scenes/select.json")       -- 次シーンのテクスチャ/モデルを先読み(切替はしない。遷移カクつき対策)

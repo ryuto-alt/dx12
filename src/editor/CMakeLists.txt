@@ -51,3 +51,9 @@ target_sources(Editor PRIVATE
 target_sources(Editor PRIVATE
     panels/SculptPanel.cpp
 )
+
+# トランジション専用プレビュー窓（架空のゲーム画面 2 枚 + プリセット全件のサムネイルアトラス）。
+# 上と同じ理由で target_sources の末尾追記にしている。
+target_sources(Editor PRIVATE
+    panels/TransitionPreviewPanel.cpp
+)

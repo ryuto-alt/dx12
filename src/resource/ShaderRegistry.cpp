@@ -216,7 +216,18 @@ const std::vector<ShaderSource>& BuildRegistry()
                 { L"Transition_VS.cso", L"FSTriVS", L"vs_6_0" },
                 { L"Transition_PS.cso", L"TransPS", L"ps_6_0" },
             },
-            { "post/FullscreenTri.hlsli" },
+            // TransitionCurtain.hlsli = 暗幕の形の唯一の実装。実機とプレビューが共有するので、
+            // 保存したら両方（Transition / TransitionPreview）が焼き直される必要がある。
+            { "post/FullscreenTri.hlsli", "post/TransitionCurtain.hlsli" },
+        },
+        {
+            // エディタの「トランジション」窓（架空のゲーム画面 + 実機と同じ暗幕）。
+            "post/TransitionPreview.hlsl",
+            {
+                { L"TransitionPreview_VS.cso", L"FSTriVS",        L"vs_6_0" },
+                { L"TransitionPreview_PS.cso", L"TransPreviewPS", L"ps_6_0" },
+            },
+            { "post/FullscreenTri.hlsli", "post/TransitionCurtain.hlsli" },
         },
         {
             "forward/Emissive.hlsl",

@@ -484,6 +484,7 @@ void T_OpenAllToolWindows(ImGuiTestContext* ctx)
         { &EditorContext::showNetworkStatus,   "//Network",                 "Network",                false },
         { &EditorContext::showNetworkSettings, "//Network 設定",            "Network 設定",           false },
         { &EditorContext::showBuildSettings,   kWinBuild,                   "ビルド設定",             false },
+        { &EditorContext::showTransitionPreview, "//トランジション",        "トランジション",         false },
         // ※ 診断パネル自身はここに入れない。検査中にユーザーが見ている窓を勝手に開閉・
         //   フォーカス移動させると「検査の途中で UI が消えた」ように見えるため。
         //   パネルの描画自体は検査中ずっと画面に出ている＝毎フレーム検査されている。

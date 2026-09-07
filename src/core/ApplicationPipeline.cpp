@@ -947,6 +947,14 @@ void Application::RegisterShaderReloadHandlers()
             { L"Transition_VS.cso", L"Transition_PS.cso" },
             [this]() { m_sceneTransition->RecreatePipelines(*m_graphicsDevice); });
     }
+    // トランジション窓のプレビュー。実物と同じ TransitionCurtain.hlsli を include するので、
+    // 暗幕の式をいじると両方の .cso が焼き直される＝どちらもホットリロードで即反映される。
+    if (m_transitionPreviewPanel)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"TransitionPreview_VS.cso", L"TransitionPreview_PS.cso" },
+            [this]() { m_transitionPreviewPanel->RecreatePipelines(*m_graphicsDevice); });
+    }
     if (m_iblBaker)
     {
         m_shaderManager->RegisterReloadHandler(
