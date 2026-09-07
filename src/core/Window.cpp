@@ -1,5 +1,6 @@
 #include "Window.h"
 #include "Logger.h"
+#include "Version.h"   // kEngineNameW（ウィンドウタイトルの既定表示名）
 #include "input/InputSystem.h"
 
 #include <windowsx.h>   // GET_X_LPARAM / GET_Y_LPARAM
@@ -27,7 +28,7 @@ void Window::Initialize(HINSTANCE hInstance, int /*nCmdShow*/,
 {
     m_width = width;
     m_height = height;
-    m_title = title;
+    m_title = title ? title : kEngineNameW;   // 既定の表示名は Version.h で一元管理
     m_startMaximized = startMaximized;
 
     // exe に埋め込んだアプリアイコン（resources/app.ico, IDI_APPICON=101）を読む。

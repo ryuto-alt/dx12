@@ -1053,6 +1053,16 @@ private:
         // 「今なにをしているか」を画面に出すための現在処理中アセット（assets 相対）。
         // 総数と消化数だけだと、1 件に数秒かかる初回の BC 圧縮で固まったように見える。
         std::string              current;
+        // 大きいシーンは「UI を出してから」参照アセットを走査する。
+        // ★以前は kSceneLoadBigFileBytes を超えると走査そのものを諦めていた（assets が空）。
+        //   その結果、いちばん重いシーンに限って進捗が %表示にならず、往復するだけのバーになり、
+        //   実測 55 秒のロード中ずっと「フリーズしたのか判別できない」状態だった。
+        //   走査は 1MB のシーンで数十 ms しかかからないので、UI を 1 枚出した後に回せば
+        //   「固まって見える」ことなく件数が得られる。
+        bool                     needsScan = false;
+        // 経過時間と残り時間の推定（%だけだと 1 件が重いときに進んでいるか分からない）。
+        std::chrono::steady_clock::time_point warmStart{};
+        bool                     warmStarted = false;
     };
     std::unique_ptr<SceneLoadJob> m_sceneLoadJob;   // null = ロード中でない
     // 参照アセットがこれ以上あるシーンは分割ロード＋ローディング UI に切り替える。
@@ -1470,10 +1480,16 @@ private:
     // 最適化の効果測定(A/B)用。既定 ON。
     bool m_instancingEnabled = true;
     f32  m_fpsLimit = 144.0f;
-    bool m_useVsync = false;
+    // ★既定 ON。以前は false で、60Hz / 59Hz のノート液晶でも上限 144 まで描いていた。
+    //   表示されないフレームを 2 倍以上描くだけで CPU/GPU を焼き、消費電力の枠が
+    //   小さいノートではそのまま発熱 → クロック低下 → 「エンジンが重い」になる。
+    //   実測(GTX 1650 ノート / 59Hz): 137fps 出ていて GPU 実働 1.53ms・CPU 実働 3.46ms、
+    //   残りはリミッター待ち＝完全な無駄だった。settings.json に値があればそちらが勝つので、
+    //   明示的に OFF にしている人の設定は変わらない。
+    bool m_useVsync = true;
     // 直近 settings.json へ書いた VSync の値。エンジン設定のチェックボックスは
     // m_useVsync を参照で直接書くだけなので、変化を拾って保存するための基準。
-    bool m_persistedVsync = false;
+    bool m_persistedVsync = true;
     std::chrono::high_resolution_clock::time_point m_frameStart{};
 
     // ---- ユーザー設定の永続化（settings.json）----

@@ -13,6 +13,17 @@
 //   installer/build.ps1 が --write-version でパッケージ前に版の一致を検証する。
 namespace dx12e
 {
+// ユーザーに見せるエンジン名。ウィンドウタイトル / スプラッシュ / ランチャー /
+// アップデータのダイアログ / クラッシュレポートなど「人が読む文字列」はすべてここを使う。
+//
+// ★これは【表示名だけ】。次のものは識別子なので、この値とは無関係に固定しておくこと:
+//     - 実行ファイル名 DX12Engine.exe（Updater がリリース zip の中から探す名前）
+//     - 設定フォルダ %LOCALAPPDATA%\DX12Engine\（変えると既存ユーザーの設定が消える）
+//     - ログ名 / ウィンドウクラス名 / HTTP User-Agent
+//   表示名を変えたいだけで上記まで変えると、自動更新が壊れたり設定が失われたりする。
+extern const char* const    kEngineName;    // UTF-8
+extern const wchar_t* const kEngineNameW;   // Win32 API 用
+
 // セマンティックバージョン（"MAJOR.MINOR.PATCH"）。GitHub リリースのタグ（"v1.2.3" 等）と比較する。
 extern const char* const kEngineVersion;
 

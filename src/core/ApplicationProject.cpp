@@ -76,7 +76,7 @@ void Application::BeginProjectLoad(const ProjectInfo& info, bool isNew)
     // ローディングのくるくるは専用スレッドのスプラッシュ窓に任せる(起動時と同じ仕組み)。
     // メインスレッドがシーンロードやマテリアルサムネイル生成(同期テクスチャデコード)で
     // ブロックしてもアニメが止まらない(ImGui側の演出はフレームが止まると固まるため)。
-    SplashScreen::Show("DX12 Engine",
+    SplashScreen::Show(kEngineName,
                        std::string("v") + kEngineVersion,
                        PathResolver::AssetsDir() + "editor/icons/logo.png");
     SplashScreen::SetStatus(m_loadStatus);
@@ -146,8 +146,15 @@ void Application::UpdateProjectLoad(f32 dt)
             const size_t slash = job.current.find_last_of('/');
             const char* base = (slash == std::string::npos)
                              ? job.current.c_str() : job.current.c_str() + slash + 1;
-            snprintf(buf, sizeof(buf), "アセットを読み込み中... (%zu / %zu)  %s",
-                     job.next, job.assets.size(), base);
+            // %を先頭に出す。スプラッシュは横に長いので、割合 → 件数 → ファイル名の順。
+            const int pct = static_cast<int>(
+                static_cast<f64>(job.next) / static_cast<f64>(job.assets.size()) * 100.0 + 0.5);
+            snprintf(buf, sizeof(buf), "アセットを読み込み中... %d%%  (%zu / %zu)  %s",
+                     pct, job.next, job.assets.size(), base);
+        }
+        else if (job.needsScan)
+        {
+            snprintf(buf, sizeof(buf), "シーンを解析中...");
         }
         else
         {
@@ -412,7 +419,7 @@ void Application::LoadProject(const ProjectInfo& info)
     if (info.rootDir.empty())
     {
         Logger::Info("Using built-in default project (no project root)");
-        if (m_window) m_window->SetTitle(L"DX12 Engine");
+        if (m_window) m_window->SetTitle(kEngineNameW);
         return;
     }
 
@@ -540,7 +547,7 @@ void Application::LoadProject(const ProjectInfo& info)
     //    日本語等のマルチバイトが文字化けするので CP_UTF8 で正しく変換する。
     if (m_window)
     {
-        std::wstring title = L"DX12 Engine - ";
+        std::wstring title = std::wstring(kEngineNameW) + L" - ";
         if (!info.name.empty())
         {
             int wlen = MultiByteToWideChar(CP_UTF8, 0, info.name.c_str(),

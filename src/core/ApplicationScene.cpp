@@ -778,19 +778,29 @@ void Application::BeginSceneLoadJob(const std::string& fullPath, const std::stri
     const bool bigFile = !sizeEc && bytes >= kSceneLoadBigFileBytes;
 
     // 巨大な JSON では参照アセットの走査自体が重い（12MB で ~1 秒）。ここで走らせると
-    // ローディング UI が出る前に固まるので、大きいシーンは走査せずに UI を出して
-    // そのまま実体化へ回す（アセットは SceneSerializer::Load が構築中に読む）。
+    // ローディング UI が出る前に固まるので、大きいシーンでは【ここでは走査せず】
+    // needsScan を立てて UI を 1 枚出してから走査する（UpdateSceneLoadJob の頭）。
+    //
+    // ★以前はこの経路で走査を丸ごと諦めていた（assets が空のまま実体化へ）。
+    //   assets が空だと進捗バーは往復するだけになり %も件数も出ない。つまり
+    //   「いちばん重いシーンだけ、進んでいるのか固まったのか分からない」状態だった。
+    //   実測では 62 モデルのシーンがテクスチャ未圧縮の状態で 55 秒かかっており、
+    //   その 55 秒がまるごと無情報だった。走査を後ろへ回すだけで %が出せる。
     auto refs = bigFile ? std::vector<SceneAssetRef>{} : CollectSceneAssetRefs(rel);
 
     // 軽いシーンは分割しない（オーバーレイが1フレームだけ光って見えるのを避ける）
     if (!bigFile && refs.size() < kSceneLoadAsyncThreshold) return;
 
     m_sceneLoadJob = std::make_unique<SceneLoadJob>();
-    m_sceneLoadJob->fullPath = fullPath;
-    m_sceneLoadJob->rel      = rel;
-    m_sceneLoadJob->runtime  = runtime;
-    m_sceneLoadJob->assets   = std::move(refs);
-    Logger::Info("シーンを分割ロード: {} (アセット{}件)", rel, m_sceneLoadJob->assets.size());
+    m_sceneLoadJob->fullPath  = fullPath;
+    m_sceneLoadJob->rel       = rel;
+    m_sceneLoadJob->runtime   = runtime;
+    m_sceneLoadJob->assets    = std::move(refs);
+    m_sceneLoadJob->needsScan = bigFile;
+    if (bigFile)
+        Logger::Info("シーンを分割ロード: {} (大きいシーン: UI 表示後にアセットを走査)", rel);
+    else
+        Logger::Info("シーンを分割ロード: {} (アセット{}件)", rel, m_sceneLoadJob->assets.size());
 }
 
 void Application::UpdateSceneLoadJob(ID3D12GraphicsCommandList* cmdList)
@@ -808,8 +818,20 @@ void Application::UpdateSceneLoadJob(ID3D12GraphicsCommandList* cmdList)
         return;
     }
 
+    // 大きいシーンの参照アセット走査は【UI を 1 枚出した後】のここで行う。
+    // 走査中の 1 フレームは動かないが、オーバーレイは既に出ているので無情報の暗転にはならない。
+    // 走査が済めば以降は件数が分かる＝%表示になる。
+    if (job.needsScan)
+    {
+        job.needsScan = false;
+        job.assets    = CollectSceneAssetRefs(job.rel);
+        Logger::Info("シーンの参照アセット走査: {} ({}件)", job.rel, job.assets.size());
+        return;   // 走査に使ったフレームでは先読みしない（UI を必ず 1 回更新する）
+    }
+
     // 時間予算ぶんだけ進める。1件も進まないと永久に終わらないので必ず1件は処理してから測る。
     const auto t0 = std::chrono::steady_clock::now();
+    if (!job.warmStarted) { job.warmStarted = true; job.warmStart = t0; }
     while (job.next < job.assets.size())
     {
         // 先に current を更新してから読む。1 件に数秒かかる（初回の BC 圧縮など）
@@ -972,8 +994,22 @@ void Application::RenderSceneLoadingOverlay()
         dl->AddText(ImVec2(c.x - ts.x * 0.5f, c.y + dy), col, s);
     };
     const bool warming = job.next < job.assets.size();
-    centerText(warming ? "アセットを読み込み中..." : "シーンを構築中...",
-               r + 22.0f, IM_COL32(235, 235, 235, 255));
+    // 進捗率。%が出せるのは先読みフェーズだけなので、見出しにも同じ値を出す。
+    const float frac = job.assets.empty()
+                     ? 0.0f
+                     : static_cast<float>(job.next) / static_cast<float>(job.assets.size());
+
+    {
+        char head[128];
+        if (job.needsScan)
+            snprintf(head, sizeof(head), "シーンを解析中...");
+        else if (warming)
+            snprintf(head, sizeof(head), "アセットを読み込み中...  %d%%",
+                     static_cast<int>(frac * 100.0f + 0.5f));
+        else
+            snprintf(head, sizeof(head), "シーンを構築中...");
+        centerText(head, r + 22.0f, IM_COL32(235, 235, 235, 255));
+    }
     centerText(job.rel.c_str(), r + 44.0f, IM_COL32(140, 143, 152, 255));
 
     // 「今なにをしているか」。件数だけだと 1 件に数秒かかる初回 BC 圧縮で
@@ -986,18 +1022,38 @@ void Application::RenderSceneLoadingOverlay()
         const char* base = (slash == std::string::npos) ? cur.c_str() : cur.c_str() + slash + 1;
         snprintf(line, sizeof(line), "%zu / %zu   %s", job.next, job.assets.size(), base);
         centerText(line, r + 66.0f, IM_COL32(120, 124, 134, 255));
+
+        // 経過と残り時間の見込み。%が動かない時間が長い（1 枚の BC7 圧縮に数秒かかる）ので、
+        // 秒が増えていること自体が「生きている」証拠になる。
+        // 残りは「ここまでの平均 × 残件数」の素朴な推定。最初の数件は当てにならないので出さない。
+        if (job.warmStarted)
+        {
+            const f64 elapsed = std::chrono::duration<f64>(
+                std::chrono::steady_clock::now() - job.warmStart).count();
+            char timeLine[128];
+            if (job.next >= 3 && frac > 0.0f)
+            {
+                const f64 remain = elapsed / static_cast<f64>(job.next)
+                                 * static_cast<f64>(job.assets.size() - job.next);
+                snprintf(timeLine, sizeof(timeLine), "経過 %.0f 秒 / 残り約 %.0f 秒", elapsed, remain);
+            }
+            else
+            {
+                snprintf(timeLine, sizeof(timeLine), "経過 %.0f 秒", elapsed);
+            }
+            centerText(timeLine, r + 88.0f, IM_COL32(120, 124, 134, 255));
+        }
     }
 
     // 進捗バー（アセット先読みの消化率）。件数が分かるのは先読みフェーズだけなので、
     // 構築フェーズでは端から端へ往復するバーにする＝満タンのまま止まって見せない。
     const float barW = (std::min)(size.x * 0.5f, 320.0f), barH = 6.0f;
-    const float y    = c.y + r + 94.0f;
+    const float y    = c.y + r + 116.0f;   // 経過/残り時間の行(r+88)より下
     const float x0   = c.x - barW * 0.5f;
     dl->AddRectFilled(ImVec2(x0, y), ImVec2(x0 + barW, y + barH),
                       IM_COL32(40, 42, 50, 255), barH * 0.5f);
     if (!job.assets.empty())
     {
-        const float frac = static_cast<float>(job.next) / static_cast<float>(job.assets.size());
         dl->AddRectFilled(ImVec2(x0, y), ImVec2(x0 + barW * frac, y + barH),
                           IM_COL32(76, 141, 255, 255), barH * 0.5f);
     }

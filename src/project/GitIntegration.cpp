@@ -642,7 +642,7 @@ void GitIntegration::EnsureIdentity(const std::string& workDir)
 
     // gh のログインユーザーから推定。取れなければ汎用の noreply に倒す。
     std::string login = GitHubUser();   // 例: "ryuto-alt"（未ログインなら空）
-    std::string name  = login.empty() ? std::string("DX12 Engine User") : login;
+    std::string name  = login.empty() ? std::string("Uno Engine User") : login;
     std::string email = login.empty()
         ? std::string("dx12-engine@users.noreply.github.com")
         : login + "@users.noreply.github.com";
@@ -673,7 +673,7 @@ void GitIntegration::WriteGitignore(const std::string& workDir)
     {
         std::ofstream ofs(path);
         if (!ofs.is_open()) return;
-        ofs << "# DX12 Engine project\n";
+        ofs << "# Uno Engine project\n";
         for (const char* e : kEntries) ofs << e << "\n";
         Logger::Info("Wrote .gitignore to {}", workDir);
         return;
@@ -709,7 +709,7 @@ void GitIntegration::WriteGitignore(const std::string& workDir)
     std::ofstream ofs(path, std::ios::app | std::ios::binary);
     if (!ofs.is_open()) return;
     if (!existing.empty() && existing.back() != '\n') ofs << "\n";
-    ofs << "\n# DX12 Engine (追記)\n" << add;
+    ofs << "\n# Uno Engine (追記)\n" << add;
     Logger::Info("Appended {} entries to .gitignore in {}", added, workDir);
 }
 

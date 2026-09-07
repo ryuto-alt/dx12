@@ -419,7 +419,12 @@ void Application::RegisterMcpEntityMethods()
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot open scene while Playing; call dx12_stop first");
             // 単一スロット: 既に未処理の open_scene があれば 2件目を弾く(上書きで1件目が宙吊りになるのを防ぐ)。
-            if (m_mcpLoadReply.client != 0 || !m_editorCtx->pendingLoadPath.empty())
+            // ★m_sceneLoadJob も見ること。pendingLoadPath は「段階ロードのジョブを作った時点で」
+            //   空になるので、ジョブ進行中はここが素通りしていた。その状態で open_scene を受けると、
+            //   進行中だったジョブの FinishSceneLoad が【こちらの】遅延応答を消費してしまい、
+            //   要求したシーンがまだ読まれていないのに ok が返る（実際に踏んだ: 別シーンの
+            //   完了で 9 秒後に ok が返り、要求したシーンのロードはその後に始まっていた）。
+            if (m_mcpLoadReply.client != 0 || !m_editorCtx->pendingLoadPath.empty() || m_sceneLoadJob)
                 throw McpError(McpErr::ModeConflict, "a scene load is already in progress; retry after it completes");
             const std::string full = PathResolver::AssetsDir() + rel;
             if (!fs::exists(full)) throw McpError(McpErr::NotFound, "scene not found: " + rel);
@@ -440,7 +445,7 @@ void Application::RegisterMcpEntityMethods()
                 throw McpError(McpErr::ModeConflict, "cannot open project while Playing; call dx12_stop first");
             if (m_loading)
                 throw McpError(McpErr::ModeConflict, "a project load is already in progress; retry after it completes");
-            if (m_mcpLoadReply.client != 0 || !m_editorCtx->pendingLoadPath.empty())
+            if (m_mcpLoadReply.client != 0 || !m_editorCtx->pendingLoadPath.empty() || m_sceneLoadJob)
                 throw McpError(McpErr::ModeConflict, "a scene load is already in progress; retry after it completes");
             const std::string root = params.value("path", std::string());
             if (root.empty()) throw McpError(McpErr::InvalidParam, "missing 'path' (project root absolute path)");

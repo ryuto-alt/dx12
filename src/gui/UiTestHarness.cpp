@@ -2487,7 +2487,7 @@ std::string UiTestHarness::BuildReport() const
     ImVector<ImGuiTest*> tests;
     ImGuiTestEngine_GetTestList(m_engine, &tests);
 
-    std::string report = "==== DX12 Engine エンジン診断 結果 ====\n";
+    std::string report = "==== Uno Engine エンジン診断 結果 ====\n";
     report += "エンジン版: v" + std::string(kEngineVersion) + "\n";
     report += "結果: " + std::to_string(m_lastSuccess) + " / " + std::to_string(m_lastTested) + " 成功\n\n";
 

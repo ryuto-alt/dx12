@@ -17,7 +17,10 @@
 #include <cstring>     // ハッシュの memcpy
 #include <cwctype>     // 拡張子の小文字化
 #include <filesystem>  // .texcache の作成/存在確認
+#include <fstream>     // HashFileContents（中身を読んでハッシュする）
+#include <mutex>       // 同上（プリウォームのワーカースレッドと共有するメモ）
 #include <string>
+#include <unordered_map>
 
 namespace dx12e
 {
@@ -190,6 +193,59 @@ uint64_t HashBytes(const uint8_t* data, size_t len)
 uint64_t HashString(const std::string& s)
 {
     return HashBytes(reinterpret_cast<const uint8_t*>(s.data()), s.size());
+}
+
+// ファイルの【中身】のハッシュ。
+// ★ここは以前 "パス|サイズ|更新時刻" の文字列ハッシュだった。ファイルを開かずに済む代わりに
+//   git checkout に極端に弱い: git は書き出したファイルの mtime を「その時刻」にするので、
+//   ブランチを行き来してテクスチャが書き戻されるだけで、中身が 1 バイトも変わっていなくても
+//   キーが変わって全キャッシュがミスする。1 枚あたり数秒の BC7 圧縮がやり直しになり、
+//   「ブランチを切り替えるとシーンを開くのに数十秒かかる」の直接の原因だった。
+//   中身を読んで FNV-1a を回すコストは 1MB あたり 1ms 程度で、再圧縮に比べれば無視できる。
+//   LoadFromMemory 側は元から HashBytes(中身) を使っていたので、これで両経路の規則が揃う。
+//
+// 同一ファイルは (srgb, usage) の組み合わせ違いで何度も読まれるので、
+// (パス, サイズ, 更新時刻) をキーにプロセス内でメモ化して再読み込みを避ける。
+// プリウォーム用のワーカースレッドから同時に呼ばれるため mutex で保護する。
+uint64_t HashFileContents(const std::wstring& filePath)
+{
+    namespace fs = std::filesystem;
+
+    std::error_code ec;
+    const auto size  = fs::file_size(filePath, ec);
+    const auto mtime = fs::last_write_time(filePath, ec);
+    if (ec) return 0;   // 読めないものはキャッシュしない（0 = キー無効）
+
+    struct Stamp { uintmax_t size; int64_t mtime; uint64_t hash; };
+    static std::mutex                                s_memoMutex;
+    static std::unordered_map<std::wstring, Stamp>   s_memo;
+    const int64_t mt = static_cast<int64_t>(mtime.time_since_epoch().count());
+    {
+        std::lock_guard<std::mutex> lock(s_memoMutex);
+        auto it = s_memo.find(filePath);
+        if (it != s_memo.end() && it->second.size == size && it->second.mtime == mt)
+            return it->second.hash;
+    }
+
+    std::ifstream f(filePath, std::ios::binary);
+    if (!f) return 0;
+
+    uint64_t h = 1469598103934665603ull;
+    std::vector<uint8_t> buf(1u << 16);
+    while (f)
+    {
+        f.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
+        const std::streamsize got = f.gcount();
+        if (got <= 0) break;
+        // チャンク境界に依存しないよう、直前のハッシュを種にして連結していく。
+        h = HashBytes(buf.data(), static_cast<size_t>(got)) ^ (h * 1099511628211ull);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(s_memoMutex);
+        s_memo[filePath] = Stamp{size, mt, h};
+    }
+    return h;
 }
 
 // キャッシュ置き場（末尾 "/" 付き）。作成に失敗したら空文字を返す＝キャッシュ無しで動く。
@@ -396,6 +452,11 @@ void CompressInPlace(DirectX::ScratchImage& scratch, TextureUsage usage, bool sr
 
 } // namespace
 
+uint64_t TextureLoader::ContentHashForCacheKey(const std::wstring& filePath)
+{
+    return HashFileContents(filePath);
+}
+
 void TextureLoader::SetCompressionMode(int mode)
 {
     g_compressionMode.store((mode < 0) ? 0 : (mode > 2 ? 2 : mode));
@@ -588,18 +649,11 @@ std::unique_ptr<Texture> TextureLoader::LoadFromFile(
         }
     }
 
-    // キャッシュキー = パス + サイズ + 更新時刻。ファイルを開かずに計算できる。
+    // キャッシュキー = ファイルの中身のハッシュ。パスや更新時刻は混ぜない
+    //（混ぜると git checkout のたびに全ミスする。ContentHashForCacheKey のコメント参照）。
     uint64_t contentHash = 0;
     if (!isDds && usage != TextureUsage::Unknown)
-    {
-        std::error_code ec;
-        const auto sz = std::filesystem::file_size(filePath, ec);
-        const auto mt = std::filesystem::last_write_time(filePath, ec);
-        const std::string stamp = pathStr + "|" + (ec ? std::string("?") :
-            std::to_string(static_cast<unsigned long long>(sz)) + ":" +
-            std::to_string(mt.time_since_epoch().count()));
-        contentHash = HashString(stamp);
-    }
+        contentHash = TextureLoader::ContentHashForCacheKey(filePath);
 
     // ★ デコードより先に BC 圧縮キャッシュを引く（LoadFromMemory 側と同じ理由）。
     //   ヘッダだけ読めばキーが組めるので、ヒットすればデコードもミップ生成も不要。

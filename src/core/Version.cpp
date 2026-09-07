@@ -3,12 +3,15 @@
 // バージョン定数の唯一の実体。宣言・注意書きは Version.h を参照。
 namespace dx12e
 {
+const char* const    kEngineName  = "Uno Engine";
+const wchar_t* const kEngineNameW = L"Uno Engine";
+
 const char* const kEngineVersion = "1.12.9";
 
 const char* const kUpdateRepoOwner = "ryuto-alt";
 const char* const kUpdateRepoName  = "dx12";
 
-const char* const kWhatsNewTitle = "DX12 Engine v1.12.9 の更新内容";
+const char* const kWhatsNewTitle = "Uno Engine v1.12.9 の更新内容";
 
 const char* const kWhatsNewBody =
     "v1.12.9: 当たり判定フィルタのチェックボックスが反応しなかったのを直しました\n"

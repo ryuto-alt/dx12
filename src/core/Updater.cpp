@@ -249,7 +249,7 @@ struct ProgressUI
         // ※ 文字列は生の日本語ワイド文字リテラル。CMake で Core ターゲットに /utf-8 を渡しているので
         //   ソース(UTF-8)が正しく UTF-16 に変換される。以前は UTF-8 バイト列を \x で
         //   ワイド文字リテラルに直書きしていて 1 バイト＝1 wchar になり文字化けしていた。
-        hwnd = CreateWindowExW(WS_EX_TOPMOST, cls, L"DX12 Engine アップデート",
+        hwnd = CreateWindowExW(WS_EX_TOPMOST, cls, L"Uno Engine アップデート",
             WS_POPUP | WS_CAPTION | WS_BORDER, x, y, w, h,
             nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
         if (!hwnd) return false;
@@ -686,7 +686,7 @@ bool Updater::RunStartupCheck()
     msg +=
         L"今すぐダウンロードして更新しますか？\n"
         L"（更新後にエンジンが自動で再起動します）";
-    int r = MessageBoxW(nullptr, msg.c_str(), L"DX12 Engine アップデート",
+    int r = MessageBoxW(nullptr, msg.c_str(), L"Uno Engine アップデート",
         MB_YESNO | MB_ICONINFORMATION | MB_TOPMOST);
     if (r != IDYES)
     {
@@ -722,7 +722,7 @@ bool Updater::RunStartupCheck()
     {
         ui.Destroy();
         MessageBoxW(nullptr, L"アップデートのダウンロードに失敗しました。\n通常起動します。",
-            L"DX12 Engine アップデート", MB_OK | MB_ICONWARNING | MB_TOPMOST);
+            L"Uno Engine アップデート", MB_OK | MB_ICONWARNING | MB_TOPMOST);
         return false;
     }
 
@@ -734,7 +734,7 @@ bool Updater::RunStartupCheck()
     {
         ui.Destroy();
         MessageBoxW(nullptr, L"アップデートの展開に失敗しました。\n通常起動します。",
-            L"DX12 Engine アップデート", MB_OK | MB_ICONWARNING | MB_TOPMOST);
+            L"Uno Engine アップデート", MB_OK | MB_ICONWARNING | MB_TOPMOST);
         return false;
     }
     fs::path srcDir = FindEngineDir(extract);
@@ -742,7 +742,7 @@ bool Updater::RunStartupCheck()
     {
         ui.Destroy();
         MessageBoxW(nullptr, L"ダウンロードした更新に DX12Engine.exe が見つかりません。\n通常起動します。",
-            L"DX12 Engine アップデート", MB_OK | MB_ICONWARNING | MB_TOPMOST);
+            L"Uno Engine アップデート", MB_OK | MB_ICONWARNING | MB_TOPMOST);
         return false;
     }
 
@@ -757,7 +757,7 @@ bool Updater::RunStartupCheck()
     {
         ui.Destroy();
         MessageBoxW(nullptr, L"アップデータの起動に失敗しました。\n通常起動します。",
-            L"DX12 Engine アップデート", MB_OK | MB_ICONWARNING | MB_TOPMOST);
+            L"Uno Engine アップデート", MB_OK | MB_ICONWARNING | MB_TOPMOST);
         return false;
     }
 

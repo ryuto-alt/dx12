@@ -67,6 +67,18 @@ public:
     static bool ComputeDownscale(size_t width, size_t height, uint32_t maxDim,
                                  size_t& outWidth, size_t& outHeight);
 
+    // BC 圧縮ディスクキャッシュ（assets/.texcache/）のキーに使う「ファイルの中身」のハッシュ。
+    // 読めない/空なら 0（= キャッシュしない）。
+    //
+    // ★このキーに**パスや更新時刻を混ぜてはいけない**。git は checkout したファイルの
+    //   mtime をその時刻に書き換えるので、mtime が入っているとブランチを行き来するだけで
+    //   中身が同じでも全ミスし、1 枚あたり数秒の BC7 圧縮がやり直しになる。
+    //   （回帰テスト: tests/texture_compress_test.cpp の Test_CacheKeyIgnoresMtime）
+    //
+    // 同じファイルは (srgb, usage) 違いで何度も読まれるため、実装側で
+    // (パス, サイズ, 更新時刻) をキーにメモ化してある。スレッドセーフ。
+    static uint64_t ContentHashForCacheKey(const std::wstring& filePath);
+
     static TextureProbeInfo Probe(const std::wstring& filePath);
 
     // MCP read_texture 用: 対応形式(dds/tga/hdr/WIC 系)を PNG へ変換して保存する。

@@ -176,7 +176,7 @@ LONG WINAPI OnUnhandledException(EXCEPTION_POINTERS* ep)
         char exePath[MAX_PATH] = "?";
         GetModuleFileNameA(nullptr, exePath, MAX_PATH);
 
-        std::fprintf(out, "=== DX12 Engine クラッシュレポート ===\n");
+        std::fprintf(out, "=== Uno Engine クラッシュレポート ===\n");
         std::fprintf(out, "time    : %04u-%02u-%02u %02u:%02u:%02u\n",
                      st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
         std::fprintf(out, "version : v%s\n", kEngineVersion);

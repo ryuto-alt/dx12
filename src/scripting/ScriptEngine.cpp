@@ -2710,7 +2710,7 @@ void ScriptEngine::LoadPrelude()
     // 詳細リファレンス: docs/SCRIPTING.md
     static const char* kPrelude = R"LUA(
 -- ============================================================
---  DX12 Engine - High-level scripting helpers (auto-loaded)
+--  Uno Engine - High-level scripting helpers (auto-loaded)
 --  低レベルAPI(scene/input/transform...)を包んだ簡単API。
 -- ============================================================
 

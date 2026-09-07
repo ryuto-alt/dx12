@@ -14,9 +14,12 @@
 
 #include <DirectXTex.h>
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <vector>
 
 using namespace dx12e;
@@ -286,6 +289,65 @@ void Test_ComputeDownscale()
     CHECK(w == 256 && h <= 256 && h == 144);
 }
 
+// ---------------------------------------------------------------
+// 7. BC 圧縮ディスクキャッシュのキーが「中身だけ」で決まること
+//
+//    直したバグ: キーが "パス|サイズ|更新時刻" のハッシュだった。
+//    git は checkout したファイルの mtime を【その時刻】に書き換えるので、
+//    ブランチを行き来してテクスチャが書き戻されるだけで、中身が 1 バイトも
+//    変わっていなくてもキーが変わり、assets/.texcache/ が全ミスした。
+//    1 枚あたり数秒の BC7 圧縮がやり直しになるため、実プロジェクト(テクスチャ 42 枚)では
+//    「ブランチを切り替えるとシーンが開くまで数十秒〜数分」になっていた。
+//
+//    ここが赤くなったら、キーに mtime やパスが混ざっていないか疑うこと。
+// ---------------------------------------------------------------
+void Test_CacheKeyIgnoresMtime()
+{
+    namespace fs = std::filesystem;
+    using dx12e::TextureLoader;
+
+    const fs::path dir  = fs::temp_directory_path() / "dx12_texcache_key_test";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    const fs::path file = dir / "sample.bin";
+
+    auto write = [&](const std::vector<uint8_t>& bytes) {
+        std::ofstream f(file, std::ios::binary | std::ios::trunc);
+        f.write(reinterpret_cast<const char*>(bytes.data()),
+                static_cast<std::streamsize>(bytes.size()));
+    };
+
+    // 64KB のチャンク境界をまたぐ大きさにする（チャンク送りの実装ミスを拾うため）。
+    std::vector<uint8_t> data(200u * 1024u);
+    for (size_t i = 0; i < data.size(); ++i)
+        data[i] = static_cast<uint8_t>((i * 31u + 7u) & 0xFFu);
+
+    write(data);
+    const uint64_t h1 = TextureLoader::ContentHashForCacheKey(file.wstring());
+    CHECK(h1 != 0);
+
+    // ★git checkout 相当: 中身は同じまま更新時刻だけ未来へ動かす。
+    //   メモ化が (サイズ, 更新時刻) で効いているので、mtime を変えると
+    //   実際にファイルを読み直す経路が走る = 本番と同じ条件になる。
+    fs::last_write_time(file, fs::last_write_time(file, ec) + std::chrono::hours(50), ec);
+    CHECK(!ec);
+    const uint64_t h2 = TextureLoader::ContentHashForCacheKey(file.wstring());
+    CHECK(h2 == h1);   // ← 中身が同じならキーは動いてはいけない
+
+    // 中身が変わったら当然キーも変わる（キャッシュが古い絵を返さないこと）
+    data[data.size() / 2] ^= 0xFFu;
+    write(data);
+    const uint64_t h3 = TextureLoader::ContentHashForCacheKey(file.wstring());
+    CHECK(h3 != h1);
+
+    // 末尾 1 バイトの違いも拾う（先頭だけ読んで済ませる実装への退行を防ぐ）
+    data.back() ^= 0x01u;
+    write(data);
+    CHECK(TextureLoader::ContentHashForCacheKey(file.wstring()) != h3);
+
+    fs::remove_all(dir, ec);
+}
+
 int main()
 {
     Test_FormatSelection();
@@ -294,6 +356,7 @@ int main()
     Test_BC7Roundtrip();
     Test_BC5NormalRoundtrip();
     Test_ComputeDownscale();
+    Test_CacheKeyIgnoresMtime();
 
     std::printf("texture_compress: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

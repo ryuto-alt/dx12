@@ -34,7 +34,7 @@ public:
     // ScaleToFit がレターボックス（左右の余白）を作ってエディタの見え方と食い違うため。
     void Initialize(HINSTANCE hInstance, int nCmdShow,
                     u32 width = 1280, u32 height = 720,
-                    const wchar_t* title = L"DX12 Engine",
+                    const wchar_t* title = nullptr,   // null = kEngineNameW（表示名は Version.h 一元管理）
                     bool deferShow = false,
                     bool startMaximized = true);
 
@@ -94,7 +94,7 @@ private:
     HWND         m_hwnd = nullptr;
     u32          m_width = 1280;
     u32          m_height = 720;
-    std::wstring m_title = L"DX12 Engine";
+    std::wstring m_title;   // Initialize で kEngineNameW を既定にする
     bool         m_shouldClose = false;
     bool         m_resized = false;
     bool         m_fullscreen = false;   // m_mode != Windowed と同義（WndProc の既存判定用に維持）

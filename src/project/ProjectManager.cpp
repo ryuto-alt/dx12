@@ -2,6 +2,7 @@
 #include "project/GitIntegration.h"
 #include "core/Logger.h"
 #include "core/CrashHandler.h"
+#include "core/Version.h"   // kEngineName（ランチャーの見出し）
 
 #include <Windows.h>
 #include <atomic>
@@ -303,7 +304,7 @@ LauncherAction ProjectManager::RenderLauncher(ProjectInfo& outInfo, HWND hwnd,
             dl->AddImage(static_cast<ImTextureID>(icons.logo),
                          ImVec2(c.x + 24, c.y), ImVec2(c.x + 24 + logoSz, c.y + logoSz));
         dl->AddText(ImGui::GetFont(), 28.0f, ImVec2(c.x + 24 + logoSz + 16, c.y + 4),
-                    IM_COL32(255, 255, 255, 255), "DX12 Engine");
+                    IM_COL32(255, 255, 255, 255), kEngineName);
         dl->AddText(ImVec2(c.x + 24 + logoSz + 16, c.y + 36),
                     ImGui::GetColorU32(ImGuiCol_TextDisabled), "Game Engine v0.1");
         ImGui::Dummy(ImVec2(0, logoSz + 8));

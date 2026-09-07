@@ -483,7 +483,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         if (!gameMode && !buildMode)
         {
             dx12e::SplashScreen::Show(
-                "DX12 Engine",
+                dx12e::kEngineName,
                 std::string("v") + dx12e::kEngineVersion,
                 dx12e::PathResolver::AssetsDir() + "editor/icons/logo.png");
             dx12e::SplashScreen::SetStatus("アップデートを確認中...");

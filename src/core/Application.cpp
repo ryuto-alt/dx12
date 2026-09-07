@@ -64,7 +64,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
     // ウィンドウ作成（タイトルにエンジンのバージョンを表記＝更新の確認にも使える）
     m_window = std::make_unique<Window>();
-    std::wstring windowTitle = L"DX12 Engine v";
+    std::wstring windowTitle = std::wstring(kEngineNameW) + L" v";
     for (const char* vp = kEngineVersion; *vp; ++vp)
         windowTitle += static_cast<wchar_t>(*vp);  // kEngineVersion は ASCII
 
@@ -1299,7 +1299,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                     ImGui::Begin("##Loading", nullptr,
                         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                         ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize);
-                    ImGui::Text("DX12 Engine");
+                    ImGui::Text("%s", kEngineName);
                     ImGui::Separator();
                     ImGui::Text("Rendering thumbnails... (%zu / %zu)", completed, uncachedCount);
                     ImGui::ProgressBar(progress, ImVec2(-1, 24));
@@ -1790,15 +1790,32 @@ void Application::Run()
             auto elapsed = high_resolution_clock::now() - m_frameStart;
             auto remaining = targetDuration - elapsed;
 
-            // 1ms以上余裕があればSleepで待つ（CPU負荷軽減）
-            if (remaining > milliseconds(1))
+            // ★高分解能の待機可能タイマーで寝る。
+            //   旧実装は「1ms 残るまで Sleep → 残りは _mm_pause() でスピン」だった。
+            //   スピンは 1 コアを 100% 回し続けるだけで何も進めない。ノートでは
+            //   その発熱がクロック低下になって返ってくるので、待つなら本当に寝る。
+            //   CREATE_WAITABLE_TIMER_HIGH_RESOLUTION は Win10 1803+ で ~0.5ms 精度。
+            //   古い OS では作成に失敗するので、その時だけ従来の Sleep+スピンへ落ちる。
+            static HANDLE s_frameTimer = CreateWaitableTimerExW(
+                nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+            if (s_frameTimer && remaining > microseconds(0))
             {
-                std::this_thread::sleep_for(remaining - milliseconds(1));
+                // 100ns 単位・負値で「相対時間」を表す（Win32 の作法）。
+                LARGE_INTEGER due{};
+                due.QuadPart = -static_cast<LONGLONG>(
+                    duration_cast<nanoseconds>(remaining).count() / 100);
+                if (due.QuadPart < 0
+                    && SetWaitableTimerEx(s_frameTimer, &due, 0, nullptr, nullptr, nullptr, 0))
+                {
+                    WaitForSingleObject(s_frameTimer, INFINITE);
+                }
             }
-            // 残りはスピンウェイトで精密に待つ
-            while (high_resolution_clock::now() - m_frameStart < targetDuration)
+            else
             {
-                _mm_pause();
+                if (remaining > milliseconds(1))
+                    std::this_thread::sleep_for(remaining - milliseconds(1));
+                while (high_resolution_clock::now() - m_frameStart < targetDuration)
+                    _mm_pause();
             }
         }
 
