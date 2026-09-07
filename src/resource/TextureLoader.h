@@ -79,6 +79,28 @@ public:
     // (パス, サイズ, 更新時刻) をキーにメモ化してある。スレッドセーフ。
     static uint64_t ContentHashForCacheKey(const std::wstring& filePath);
 
+    // BC 圧縮ディスクキャッシュだけを先に作る（GPU リソースは作らない）。
+    //
+    // 「デコード → 縮小 → ミップ生成 → BC 圧縮 → assets/.texcache へ .dds を書く」までを
+    // 実行して結果を捨てる。D3D12 に一切触れないので【ワーカースレッドから呼べる】。
+    // これを事前に回しておくと、後から LoadFromFile が走ったときにキャッシュヒットになり、
+    // メインスレッドはアップロードだけで済む。
+    //
+    // 引数は LoadFromFile と同じ意味にすること。特に srgb / usage / maxDimension が
+    // 実際の読み込みとズレるとキャッシュキーが変わり、先読みが無駄になる。
+    //
+    // ★呼び出し側はスレッドごとに CoInitializeEx を済ませておくこと（WIC が要求する）。
+    // ★同じファイルを複数スレッドから同時に渡さないこと（同一 .dds へ同時に書き込む）。
+    enum class PrewarmResult
+    {
+        Compressed,     // 圧縮してキャッシュを作った（時間がかかったのはこれ）
+        AlreadyCached,  // 既にキャッシュがあった（何もしていない）
+        Skipped,        // 対象外（.dds / 用途不明）
+        Failed,         // 読めなかった
+    };
+    static PrewarmResult PrewarmCompressedCache(const std::wstring& filePath, bool srgb,
+                                                TextureUsage usage, uint32_t maxDimension = 0);
+
     static TextureProbeInfo Probe(const std::wstring& filePath);
 
     // MCP read_texture 用: 対応形式(dds/tga/hdr/WIC 系)を PNG へ変換して保存する。

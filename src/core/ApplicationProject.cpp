@@ -4,6 +4,7 @@
 // Application.cpp から機械分割した実装 TU。分割の全体像は ApplicationInternal.h。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "resource/AssetPrewarmer.h"   // BeginAssetPrewarm / Stop
 #include "core/CrashHandler.h"
 
 namespace dx12e
@@ -58,6 +59,10 @@ void Application::BeginProjectLoad(const ProjectInfo& info, bool isNew)
     // 直前のスレッドが残っていれば回収
     if (m_loadThread.joinable())
         m_loadThread.join();
+
+    // 前のプロジェクトの先読みは止める。assets ディレクトリが差し替わるので、
+    // 走らせたままだと存在しないパスを掴んだまま無駄に回り続ける。
+    if (m_assetPrewarmer) m_assetPrewarmer->Stop();
 
     m_loadInfo            = info;
     m_loadIsNew           = isNew;
@@ -191,6 +196,12 @@ void Application::UpdateProjectLoad(f32 dt)
         m_loading            = false;
         m_loadProjectStarted = false;
         m_editorCtx->buildCompleteFlash = 1.5f;
+
+        // ★ここから先はエディタが操作できる状態。プロジェクト内の全シーンのテクスチャを
+        //   バックグラウンドで圧縮しておく（優先度は BELOW_NORMAL なので操作の邪魔をしない）。
+        //   ロード画面を閉じた【後】に始めるのが要点で、ここより前に始めると
+        //   「起動が遅くなった」に見えてしまう。
+        BeginAssetPrewarm();
 
         // キー割り当てはプロジェクト単位（保存先が PathResolver::BaseDir() 基準なので、
         // プロジェクトルートが確定したここで読む）。無ければ既定のまま。

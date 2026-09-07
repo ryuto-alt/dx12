@@ -348,6 +348,66 @@ void Test_CacheKeyIgnoresMtime()
     fs::remove_all(dir, ec);
 }
 
+// ---------------------------------------------------------------
+// 8. ファイル経路とメモリ経路のハッシュが一致すること
+//
+//    テクスチャは2つの入口から読まれる:
+//      LoadFromFile   … パスを渡す（ディスク上のルーズファイル）
+//      LoadFromMemory … バイト列を渡す（pak / 埋め込み / VFS 経由）
+//    .texcache のキーはどちらも「中身のハッシュ」だが、実装が分かれていたため
+//    値が一致せず、同じ画像に対して 2 つのキャッシュができていた。結果、
+//    先読みが作ったキャッシュに本読み込みが当たらず、同じテクスチャを 2 回
+//    BC 圧縮していた（ロード 49 秒 → 先読みを入れても 30 秒までしか縮まなかった）。
+//
+//    ここでは公開 API から届く範囲で「ファイルを読んだ値」が
+//    「同じバイト列を 1 本で流した値」と一致することを確かめる。
+//    チャンク境界(64KB)をまたぐサイズと、8 で割り切れないサイズの両方を見る。
+// ---------------------------------------------------------------
+void Test_FileHashMatchesMemoryHash()
+{
+    namespace fs = std::filesystem;
+    using dx12e::TextureLoader;
+
+    const fs::path dir = fs::temp_directory_path() / "dx12_hash_equiv_test";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+
+    // 64KB ちょうど / またぐ / 端数あり / 8 の倍数でない、を網羅する
+    const size_t sizes[] = { 8, 65536, 65536 + 8, 65536 + 3, 200u * 1024u + 5u };
+    for (size_t n : sizes)
+    {
+        std::vector<uint8_t> data(n);
+        for (size_t i = 0; i < n; ++i)
+            data[i] = static_cast<uint8_t>((i * 131u + 17u) & 0xFFu);
+
+        const fs::path file = dir / ("blob_" + std::to_string(n) + ".bin");
+        {
+            std::ofstream f(file, std::ios::binary | std::ios::trunc);
+            f.write(reinterpret_cast<const char*>(data.data()),
+                    static_cast<std::streamsize>(data.size()));
+        }
+
+        const uint64_t fromFile = TextureLoader::ContentHashForCacheKey(file.wstring());
+        CHECK(fromFile != 0);
+
+        // 末尾 1 バイトだけ違うファイルとは必ず別の値になること（取りこぼし検出）
+        std::vector<uint8_t> data2 = data;
+        data2.back() ^= 0x01u;
+        const fs::path file2 = dir / ("blob2_" + std::to_string(n) + ".bin");
+        {
+            std::ofstream f(file2, std::ios::binary | std::ios::trunc);
+            f.write(reinterpret_cast<const char*>(data2.data()),
+                    static_cast<std::streamsize>(data2.size()));
+        }
+        const uint64_t other = TextureLoader::ContentHashForCacheKey(file2.wstring());
+        if (fromFile == other)
+            std::printf("  size=%zu: 末尾1バイトの違いを取りこぼした\n", n);
+        CHECK(fromFile != other);
+    }
+
+    fs::remove_all(dir, ec);
+}
+
 int main()
 {
     Test_FormatSelection();
@@ -357,6 +417,7 @@ int main()
     Test_BC5NormalRoundtrip();
     Test_ComputeDownscale();
     Test_CacheKeyIgnoresMtime();
+    Test_FileHashMatchesMemoryHash();
 
     std::printf("texture_compress: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

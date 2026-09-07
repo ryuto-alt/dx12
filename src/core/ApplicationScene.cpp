@@ -4,6 +4,7 @@
 // Application.cpp から機械分割した実装 TU。分割の全体像は ApplicationInternal.h。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "resource/AssetPrewarmer.h"   // BeginAssetPrewarm（バックグラウンドの BC 圧縮先読み）
 
 namespace dx12e
 {
@@ -761,6 +762,163 @@ void Application::DoScenePreload(const std::string& rel, ID3D12GraphicsCommandLi
     }
     for (const auto& s : refs) WarmSceneAssetRef(s, cmdList);
     Logger::Info("preloadScene: {} (アセット{}件)", rel, refs.size());
+}
+
+namespace
+{
+// glTF が参照するテクスチャを、ModelLoader と同じ (srgb, usage) で拾う。
+//
+// ★シーン JSON を見るだけでは足りない。実測(Junction)ではシーンから拾えるのは 12 枚で、
+//   時間を食っている大半は「モデルが持ち込むテクスチャ」だった（glTF 216 個が 26 枚を参照）。
+//   モデルの読み込みには cmdList が要るので先読みできないが、モデルが【どのテクスチャを
+//   どの用途で使うか】は .gltf が JSON なので読むだけで分かる。
+//
+// ★用途の対応は ModelLoader.cpp と必ず一致させること。ズレるとキャッシュキーが変わり、
+//   先読みが 1 件も当たらないうえ余計な .dds がゴミとして残る。
+//     baseColorTexture        -> srgb=true,  BaseColor   (ModelLoader: aiTextureType_BASE_COLOR/DIFFUSE)
+//     normalTexture           -> srgb=false, Normal      (aiTextureType_NORMALS)
+//     metallicRoughnessTexture-> srgb=false, NonColor    (aiTextureType_METALNESS)
+//   emissive/occlusion は ModelLoader が読まないのでここでも拾わない。
+void CollectGltfTextureRefs(const std::string& assetsDir,
+                            std::vector<AssetPrewarmer::Item>& out,
+                            std::unordered_set<std::string>& seen,
+                            size_t& gltfCount)
+{
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!fs::exists(assetsDir, ec)) return;
+
+    for (fs::recursive_directory_iterator it(assetsDir, fs::directory_options::skip_permission_denied, ec), end;
+         it != end && !ec; it.increment(ec))
+    {
+        if (!it->is_regular_file(ec)) continue;
+        const fs::path& p = it->path();
+        if (p.extension() != ".gltf") continue;   // .glb はバイナリなのでここでは扱わない
+        ++gltfCount;
+
+        std::ifstream f(p, std::ios::binary);
+        if (!f) continue;
+        nlohmann::json j = nlohmann::json::parse(f, nullptr, false);
+        if (j.is_discarded() || !j.contains("images") || !j.contains("materials")) continue;
+
+        const auto& images   = j["images"];
+        const auto& textures = j.contains("textures") ? j["textures"] : nlohmann::json::array();
+
+        // textures[i].source -> images の添字
+        auto imageOf = [&](int texIndex) -> int {
+            if (texIndex < 0 || texIndex >= static_cast<int>(textures.size())) return -1;
+            return textures[static_cast<size_t>(texIndex)].value("source", -1);
+        };
+
+        // images の添字 -> (srgb, usage)。同じ画像が複数の用途で使われることもあるので集合。
+        std::vector<std::pair<int, std::pair<bool, TextureUsage>>> wanted;
+        auto want = [&](int texIndex, bool srgb, TextureUsage usage) {
+            const int img = imageOf(texIndex);
+            if (img >= 0) wanted.emplace_back(img, std::make_pair(srgb, usage));
+        };
+
+        for (const auto& mat : j["materials"])
+        {
+            if (mat.contains("pbrMetallicRoughness"))
+            {
+                const auto& pbr = mat["pbrMetallicRoughness"];
+                if (pbr.contains("baseColorTexture"))
+                    want(pbr["baseColorTexture"].value("index", -1), true, TextureUsage::BaseColor);
+                if (pbr.contains("metallicRoughnessTexture"))
+                    want(pbr["metallicRoughnessTexture"].value("index", -1), false, TextureUsage::NonColor);
+            }
+            if (mat.contains("normalTexture"))
+                want(mat["normalTexture"].value("index", -1), false, TextureUsage::Normal);
+        }
+
+        const fs::path modelDir = p.parent_path();
+        for (const auto& [imgIdx, mode] : wanted)
+        {
+            if (imgIdx < 0 || imgIdx >= static_cast<int>(images.size())) continue;
+            const std::string uri = images[static_cast<size_t>(imgIdx)].value("uri", std::string());
+            if (uri.empty() || uri.rfind("data:", 0) == 0) continue;   // 埋め込みはファイルが無い
+
+            // ModelLoader::ResolveTexturePath と同じ探索順・同じ正規化にすること。
+            const fs::path raw = fs::path(PathResolver::Utf8ToWide(uri));
+            fs::path resolved;
+            for (const fs::path& cand : { modelDir / raw.filename(),
+                                          modelDir / raw,
+                                          modelDir / "textures" / raw.filename() })
+            {
+                std::error_code fec;
+                if (fs::exists(cand, fec)) { resolved = cand; break; }
+            }
+            if (resolved.empty()) continue;
+            const std::wstring abs = resolved.lexically_normal().generic_wstring();
+
+            AssetPrewarmer::Item item;
+            item.absPath = abs;
+            item.srgb    = mode.first;
+            item.usage   = mode.second;
+
+            const std::string key = PathResolver::WideToUtf8(abs) + "|"
+                                  + (item.srgb ? "s" : "l") + "|"
+                                  + std::to_string(static_cast<int>(item.usage));
+            if (!seen.insert(key).second) continue;
+            out.push_back(std::move(item));
+        }
+    }
+}
+} // namespace
+
+void Application::BeginAssetPrewarm()
+{
+    // 封印ランタイム(ゲーム)は pak 配布で .texcache も同梱される前提なので何もしない。
+    if (m_isGameMode) return;
+
+    const std::string scenesDir = PathResolver::AssetsDir() + "scenes/";
+    std::error_code ec;
+    if (!std::filesystem::exists(scenesDir, ec)) return;
+
+    // プロジェクト内の全シーンから参照テクスチャを集める。
+    // ★「今開くシーン」だけでは足りない。困っているのは “別のシーンに切り替えた瞬間” と
+    //   “ブランチを切り替えた後” なので、先に全部温めておく必要がある。
+    // ★(パス, srgb, usage) の 3 つでキャッシュキーが決まるので、3 つ揃えて重複除去する。
+    //   パスだけで潰すと、同じ画像を法線として使っている分の先読みが漏れる。
+    std::vector<AssetPrewarmer::Item> items;
+    std::unordered_set<std::string>   seen;
+    size_t sceneCount = 0;
+
+    for (const auto& entry : std::filesystem::directory_iterator(scenesDir, ec))
+    {
+        if (ec) break;
+        if (!entry.is_regular_file(ec)) continue;
+        if (entry.path().extension() != ".json") continue;
+
+        const std::string rel = "scenes/" + entry.path().filename().string();
+        ++sceneCount;
+        for (const SceneAssetRef& r : CollectSceneAssetRefs(rel))
+        {
+            if (!r.isTexture) continue;   // モデルは cmdList が要るので先読み対象外(かつ十分速い)
+            const std::string key = r.path + "|" + (r.srgb ? "s" : "l") + "|"
+                                  + std::to_string(static_cast<int>(r.usage));
+            if (!seen.insert(key).second) continue;
+
+            AssetPrewarmer::Item item;
+            item.absPath = PathResolver::Utf8ToWide(PathResolver::AssetsDir() + r.path);
+            item.srgb    = r.srgb;
+            item.usage   = r.usage;
+            items.push_back(std::move(item));
+        }
+    }
+
+    // モデル(.gltf)が持ち込むテクスチャも集める。実測ではこちらが本体で、
+    // シーン JSON からだけだと 12 件しか拾えず先読みの意味がほとんど無かった。
+    const size_t fromScenes = items.size();
+    size_t gltfCount = 0;
+    CollectGltfTextureRefs(PathResolver::AssetsDir(), items, seen, gltfCount);
+
+    if (items.empty()) return;
+
+    if (!m_assetPrewarmer) m_assetPrewarmer = std::make_unique<AssetPrewarmer>();
+    Logger::Info("AssetPrewarm start: シーン {} 件から {} 枚 / glTF {} 個から {} 枚 = 計 {} 枚",
+                 sceneCount, fromScenes, gltfCount, items.size() - fromScenes, items.size());
+    m_assetPrewarmer->Start(std::move(items));
 }
 
 // ===== 段階的シーンロード =====

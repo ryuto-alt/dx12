@@ -109,24 +109,40 @@ std::filesystem::path ResolveTexturePath(
         return std::filesystem::exists(candidate, ec);
     };
 
+    // ★見つかったパスは必ず正規化して返す。
+    //   glTF の uri は "../tex/wall_col.png" のような相対指定なので、素直に
+    //   modelDir / p を返すと "models/arch/wall/../tex/wall_col.png" のように
+    //   ".." を含んだ文字列がそのまま出る。テクスチャのキャッシュキーは
+    //   （メモリ側も .texcache のディスク側も）このパス文字列そのものなので、
+    //   同じ画像でもモデルの置き場所が違うだけで別物として扱われていた。
+    //   結果:
+    //     - 同一画像の BC7 圧縮が置き場所の数だけ繰り返される（1 枚数秒）
+    //     - 同一画像の GPU テクスチャが重複して VRAM に載る
+    //   実際 Junction では PNG 42 枚に対して .texcache が 52 個できていた。
+    //   lexically_normal() は純粋に文字列上の処理なので VFS(game.pak) 経路でも安全。
+    //   区切りは generic("/") に寄せる。エンジン内の他のパスも "/" 表記で統一されている。
+    auto normalize = [](const std::filesystem::path& in) {
+        return std::filesystem::path(in.lexically_normal().generic_wstring());
+    };
+
     // 1. 絶対パスがそのまま存在する
     if (p.is_absolute() && found(p))
-        return p;
+        return normalize(p);
 
     // 2. モデルと同じディレクトリにファイル名だけで探す
     auto byFilename = modelDir / p.filename();
     if (found(byFilename))
-        return byFilename;
+        return normalize(byFilename);
 
     // 3. モデルディレクトリからの相対パス
     auto relative = modelDir / p;
     if (found(relative))
-        return relative;
+        return normalize(relative);
 
     // 4. textures/ サブフォルダ
     auto inTextures = modelDir / "textures" / p.filename();
     if (found(inTextures))
-        return inTextures;
+        return normalize(inTextures);
 
     return {}; // 見つからない
 }

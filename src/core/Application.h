@@ -103,6 +103,7 @@ namespace dx12e
     class SpriteSheetEditorPanel;
     class NetworkPanel;
     class ShaderManager;
+    class AssetPrewarmer;
     class MaterialAssetManager;
     class TerrainLayerSetManager;
     class MaterialEditorPanel;
@@ -760,6 +761,10 @@ private:
     void FinishSceneLoad(const std::string& fullPath, const std::string& rel, bool runtime,
                          ID3D12GraphicsCommandList* cmdList);  // 実体化（同期/非同期の共通後段）
     bool IsSceneLoadJobActive() const { return m_sceneLoadJob != nullptr; }
+    // プロジェクト内の【全シーン】が参照するテクスチャを集め、BC 圧縮キャッシュ作りを
+    // バックグラウンドで始める。シーンを開くたびに圧縮待ちを食らうのをやめるための仕込み。
+    // エディタでプロジェクトを開き終わった直後に 1 回だけ呼ぶ。
+    void BeginAssetPrewarm();
     void RenderWhatsNewPopup();       // 版が変わった初回起動だけ「更新内容」モーダルを出す
     // エディタの「Project」「Version Control」ウィンドウ描画（ランチャー閉後）
     void RenderProjectWindow();
@@ -832,6 +837,9 @@ private:
     std::unique_ptr<PipelineState>     m_pipelineStateBlend;
     std::unique_ptr<DescriptorHeap>    m_srvHeap;
     std::unique_ptr<ResourceManager>   m_resourceManager;
+    // プロジェクト内テクスチャの BC 圧縮キャッシュをバックグラウンドで作る係（エディタのみ）。
+    // これが一周し終わっていれば、どのシーンを開いてもブランチを切り替えても圧縮待ちが出ない。
+    std::unique_ptr<AssetPrewarmer>    m_assetPrewarmer;
     // プロジェクト独自HLSL(上書き/自作)の実行時コンパイル+ホットリロード。エディタモードのみ生成。
     std::unique_ptr<ShaderManager>     m_shaderManager;
     f32                                m_shaderPollTimer = 0.0f;

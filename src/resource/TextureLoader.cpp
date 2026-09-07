@@ -12,6 +12,7 @@
 #include <vector>
 #include <algorithm>   // ConvertToPng の縮小サイズ計算
 #include <atomic>      // 圧縮モードのスイッチ
+#include <cassert>     // HashChunkInto のチャンク境界チェック
 #include <chrono>      // BC 圧縮の所要時間ログ
 #include <cstdio>      // Probe のエラーメッセージ整形
 #include <cstring>     // ハッシュの memcpy
@@ -174,19 +175,40 @@ std::string DxgiFormatName(DXGI_FORMAT f)
 // ─────────────────────────────────────────────────────────────────────────────
 
 // 64bit FNV-1a（8 バイトずつ回して大きな画像でも 1ms 前後で済ませる）。暗号強度は不要。
-uint64_t HashBytes(const uint8_t* data, size_t len)
+constexpr uint64_t kHashSeed  = 1469598103934665603ull;
+constexpr uint64_t kHashPrime = 1099511628211ull;
+
+// ハッシュの本体。チャンクに分けて呼べるように「状態 h を進める」形にしてある。
+//
+// ★ここを 1 つに保つことが重要。ファイル経路(HashFileContents)とメモリ経路(HashBytes)で
+//   別々の式を書いてしまうと、同じ画像なのに .texcache のキーが 2 種類でき、
+//   同じテクスチャが二度 BC 圧縮される（実際にそうなっていた: 先読みが作ったキャッシュに
+//   本読み込みが当たらず、49 秒のロードが 30 秒までしか縮まなかった）。
+//   tests/texture_compress_test.cpp の Test_FileHashMatchesMemoryHash が両者の一致を見張る。
+//
+// tailAllowed=false のチャンク（= 最後以外）は必ず 8 の倍数であること。
+// 8 バイト境界をまたいで状態を持ち越さない前提で、全体を 1 本で流したのと同じ値になる。
+void HashChunkInto(uint64_t& h, const uint8_t* data, size_t len, bool isLastChunk)
 {
-    uint64_t h = 1469598103934665603ull;
     size_t i = 0;
     for (; i + 8 <= len; i += 8)
     {
         uint64_t block = 0;
         std::memcpy(&block, data + i, 8);
-        h = (h ^ block) * 1099511628211ull;
+        h = (h ^ block) * kHashPrime;
         h ^= h >> 29;
     }
+    // 端数は最終チャンクにしか現れない（呼び出し側が 8 の倍数で刻む）。
+    assert(isLastChunk || i == len);
+    (void)isLastChunk;
     for (; i < len; ++i)
-        h = (h ^ data[i]) * 1099511628211ull;
+        h = (h ^ data[i]) * kHashPrime;
+}
+
+uint64_t HashBytes(const uint8_t* data, size_t len)
+{
+    uint64_t h = kHashSeed;
+    HashChunkInto(h, data, len, /*isLastChunk=*/true);
     return h;
 }
 
@@ -230,15 +252,32 @@ uint64_t HashFileContents(const std::wstring& filePath)
     std::ifstream f(filePath, std::ios::binary);
     if (!f) return 0;
 
-    uint64_t h = 1469598103934665603ull;
+    // ★チャンク幅は 8 の倍数であること（HashChunkInto の前提）。
+    //   これで「全バイトを 1 本で HashBytes した値」と必ず同じになる。
+    uint64_t h = kHashSeed;
     std::vector<uint8_t> buf(1u << 16);
+    static_assert((1u << 16) % 8 == 0, "chunk size must be a multiple of 8");
+    uintmax_t readTotal = 0;
     while (f)
     {
         f.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
         const std::streamsize got = f.gcount();
         if (got <= 0) break;
-        // チャンク境界に依存しないよう、直前のハッシュを種にして連結していく。
-        h = HashBytes(buf.data(), static_cast<size_t>(got)) ^ (h * 1099511628211ull);
+        readTotal += static_cast<uintmax_t>(got);
+        const bool isLast = (static_cast<size_t>(got) < buf.size());
+        HashChunkInto(h, buf.data(), static_cast<size_t>(got), isLast);
+    }
+
+    // ★最後まで読み切れなかったら「キー無効(0)」を返す。
+    //   途中までのバイト列でハッシュを作ると、同じファイルなのに読めた量によって
+    //   キーが変わり、キャッシュが当たらず毎回 BC 圧縮をやり直すことになる
+    //   （先読みと本読み込みで別々のキーができてしまい、実際にそうなっていた）。
+    //   0 を返せば「今回はキャッシュを使わない」だけで、絵は正しく出る。
+    if (readTotal != size)
+    {
+        Logger::Warn("テクスチャのハッシュ用読み込みが途中で終わりました（キャッシュ無しで続行）: "
+                     "{} / {} バイト", readTotal, static_cast<uintmax_t>(size));
+        return 0;
     }
 
     {
@@ -427,9 +466,14 @@ void CompressInPlace(DirectX::ScratchImage& scratch, TextureUsage usage, bool sr
     if (elapsedMs > 1000.0)
     {
         // 1 秒を超えたら必ず記録に残す（「初回ロードが固まった」の切り分けが一瞬で済む）。
-        Logger::Info("BC 圧縮 {:.1f}s: {}x{} {} q={} ({})", elapsedMs / 1000.0,
+        // usage とキャッシュ先も出す。同じ画像が二度圧縮されたときに「キーのどこが
+        // 違ったのか」をログだけで追えるようにするため（先読みの空振り調査で必要になった）。
+        Logger::Info("BC 圧縮 {:.1f}s: {}x{} {} usage={} q={} arr={} hash={:016x} -> {} ({})",
+                     elapsedMs / 1000.0,
                      static_cast<unsigned>(meta.width), static_cast<unsigned>(meta.height),
-                     DxgiFormatName(dst), quality, cacheKey);
+                     DxgiFormatName(dst), static_cast<int>(usage), quality,
+                     static_cast<unsigned>(meta.arraySize), contentHash,
+                     std::filesystem::path(cachePath).filename().string(), cacheKey);
     }
     if (FAILED(hr))
     {
@@ -455,6 +499,55 @@ void CompressInPlace(DirectX::ScratchImage& scratch, TextureUsage usage, bool sr
 uint64_t TextureLoader::ContentHashForCacheKey(const std::wstring& filePath)
 {
     return HashFileContents(filePath);
+}
+
+TextureLoader::PrewarmResult TextureLoader::PrewarmCompressedCache(
+    const std::wstring& filePath, bool srgb, TextureUsage usage, uint32_t maxDimension)
+{
+    // LoadFromFile の「デコード → 縮小 → ミップ生成 → BC 圧縮 → .texcache へ .dds を書く」
+    // までをそのままやって、結果を捨てる関数。D3D12 には一切触らないので
+    // どのスレッドからでも呼べる（ここが GPU リソースを作らないことがワーカー化の前提）。
+    // 実際の読み込みはこの後 LoadFromFile が走ったときにキャッシュヒットで済む。
+
+    const size_t dotPos = filePath.find_last_of(L'.');
+    const std::wstring ext = (dotPos != std::wstring::npos) ? filePath.substr(dotPos) : L"";
+    if (ext == L".dds" || ext == L".DDS") return PrewarmResult::Skipped;  // 既に BC
+    if (usage == TextureUsage::Unknown)   return PrewarmResult::Skipped;  // 圧縮対象外
+
+    std::string pathStr;
+    {
+        int sz = WideCharToMultiByte(CP_UTF8, 0, filePath.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        if (sz > 1)
+        {
+            pathStr.assign(static_cast<size_t>(sz), '\0');
+            WideCharToMultiByte(CP_UTF8, 0, filePath.c_str(), -1, pathStr.data(), sz, nullptr, nullptr);
+            pathStr.pop_back();
+        }
+    }
+    if (pathStr.empty()) return PrewarmResult::Failed;
+
+    const uint64_t contentHash = TextureLoader::ContentHashForCacheKey(filePath);
+    if (contentHash == 0) return PrewarmResult::Failed;
+
+    // 既にキャッシュがあるなら何もしない（起動のたびに全部を作り直さないための最重要分岐）。
+    {
+        DirectX::TexMetadata srcMeta{};
+        DirectX::ScratchImage probe;
+        if (SUCCEEDED(DirectX::GetMetadataFromWICFile(filePath.c_str(), DirectX::WIC_FLAGS_NONE, srcMeta))
+            && TryLoadCachedCompressed(srcMeta, usage, srgb, contentHash, pathStr, false, probe))
+        {
+            return PrewarmResult::AlreadyCached;
+        }
+    }
+
+    DirectX::ScratchImage scratch;
+    if (FAILED(DirectX::LoadFromWICFile(filePath.c_str(), DirectX::WIC_FLAGS_NONE, nullptr, scratch)))
+        return PrewarmResult::Failed;
+
+    DownscaleIfLarger(scratch, maxDimension);
+    EnsureMipChain(scratch, srgb);
+    CompressInPlace(scratch, usage, srgb, contentHash, pathStr);   // ここで .texcache へ書かれる
+    return PrewarmResult::Compressed;
 }
 
 void TextureLoader::SetCompressionMode(int mode)
@@ -685,7 +778,7 @@ std::unique_ptr<Texture> TextureLoader::LoadFromFile(
         // mip が無ければ生成（メタデータは生成後に取り直す）
         EnsureMipChain(scratchImage, srgb);
 
-        // BC 圧縮（キャッシュ経由）。キャッシュキーはパス + 更新時刻 + サイズ。
+        // BC 圧縮（キャッシュ経由）。キャッシュキーはファイルの中身のハッシュ。
         if (usage != TextureUsage::Unknown)
             CompressInPlace(scratchImage, usage, srgb, contentHash, pathStr);
     }

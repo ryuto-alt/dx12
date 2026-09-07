@@ -4,6 +4,7 @@
 // Application.cpp から機械分割した実装 TU。分割の全体像は ApplicationInternal.h。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "resource/AssetPrewarmer.h"   // unique_ptr のデストラクタに完全型が要る
 #include "core/Profiler.h"   // Tracy ゾーン（無効時は完全に消える）
 
 namespace dx12e
@@ -1839,6 +1840,9 @@ void Application::Shutdown()
 
     // ネットワーク接続を明示的に切る（ENetのソケット/ホストをデバイス解放より前に片付ける）。
     if (m_networkSystem) { m_networkSystem->Disconnect(); m_networkSystem.reset(); }
+
+    // バックグラウンドの BC 圧縮先読みを止める（ResourceManager/Logger より先に）。
+    if (m_assetPrewarmer) m_assetPrewarmer.reset();
 
     // 非同期ロードスレッドの回収
     if (m_loadThread.joinable())

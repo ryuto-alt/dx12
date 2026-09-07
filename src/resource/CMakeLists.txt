@@ -24,6 +24,7 @@ add_library(Resource STATIC
     ShaderRegistry.cpp
     ShaderManager.cpp
     TextureLoader.cpp
+    AssetPrewarmer.cpp
     ModelLoader.cpp
     ResourceManager.cpp
     VfsIOSystem.cpp
