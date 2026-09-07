@@ -273,7 +273,9 @@ static void Test_ParticleEmitter()
 {
     Case<ParticleEmitter>(
         [](entt::registry& r, entt::entity e) {
-            ParticleEmitter pe;
+            ParticleEmitter emitter;
+            emitter.layers.emplace_back();
+            ParticleLayer& pe = emitter.layers[0];
             pe.kind = 3;
             pe.blend = 1;
             pe.rate = 50.0f;
@@ -295,9 +297,12 @@ static void Test_ParticleEmitter()
             pe.drag = 0.8f;
             pe.up = 0.3f;
             pe.stretch = 0.6f;
-            r.emplace<ParticleEmitter>(e, pe);
+            r.emplace<ParticleEmitter>(e, emitter);
         },
-        [](const ParticleEmitter& pe) {
+        [](const ParticleEmitter& emitter) {
+            CHECK(emitter.layers.size() == 1);
+            if (emitter.layers.empty()) return;
+            const ParticleLayer& pe = emitter.layers[0];
             CHECK(pe.kind == 3);
             CHECK(pe.blend == 1);
             CHECK_F(pe.rate, 50.0f);
@@ -319,6 +324,63 @@ static void Test_ParticleEmitter()
             CHECK_F(pe.drag, 0.8f);
             CHECK_F(pe.up, 0.3f);
             CHECK_F(pe.stretch, 0.6f);
+        });
+}
+
+// 複数レイヤーの往復。
+// 1 エンティティに炎+煙+火の粉を重ねられるようにした（ParticleEmitter を
+// レイヤーの配列に変えた）ので、枚数・名前・オフセット・各レイヤー固有の値が
+// 保存して読み直しても崩れないことを固定する。
+static void Test_ParticleEmitterLayers()
+{
+    Case<ParticleEmitter>(
+        [](entt::registry& r, entt::entity e) {
+            ParticleEmitter emitter;
+
+            ParticleLayer fire;
+            fire.name   = "炎";
+            fire.kind   = 1;            // Fire
+            fire.offset = {0.0f, 1.5f, 0.0f};
+            fire.rate   = 40.0f;
+            emitter.layers.push_back(fire);
+
+            ParticleLayer smoke;
+            smoke.name   = "煙";
+            smoke.kind   = 2;           // Smoke
+            smoke.blend  = 1;           // アルファ
+            smoke.offset = {0.0f, 2.2f, 0.0f};
+            smoke.rate   = 12.0f;
+            emitter.layers.push_back(smoke);
+
+            ParticleLayer spark;
+            spark.name    = "火の粉";
+            spark.kind    = 3;          // Spark
+            spark.offset  = {0.0f, 1.6f, 0.0f};
+            spark.rate    = 6.0f;
+            spark.looping = false;      // イベントで鳴らす想定
+            spark.stretch = 0.8f;
+            emitter.layers.push_back(spark);
+
+            r.emplace<ParticleEmitter>(e, emitter);
+        },
+        [](const ParticleEmitter& emitter) {
+            CHECK(emitter.layers.size() == 3);
+            if (emitter.layers.size() != 3) return;
+
+            CHECK(emitter.layers[0].name == "炎");
+            CHECK(emitter.layers[0].kind == 1);
+            CHECK_V3(emitter.layers[0].offset, 0.0f, 1.5f, 0.0f);
+            CHECK_F(emitter.layers[0].rate, 40.0f);
+
+            CHECK(emitter.layers[1].name == "煙");
+            CHECK(emitter.layers[1].kind == 2);
+            CHECK(emitter.layers[1].blend == 1);
+            CHECK_V3(emitter.layers[1].offset, 0.0f, 2.2f, 0.0f);
+
+            CHECK(emitter.layers[2].name == "火の粉");
+            CHECK(emitter.layers[2].kind == 3);
+            CHECK(emitter.layers[2].looping == false);
+            CHECK_F(emitter.layers[2].stretch, 0.8f);
         });
 }
 
@@ -2057,6 +2119,7 @@ int main()
     Test_Gimmick();
     Test_AudioSource();
     Test_ParticleEmitter();
+    Test_ParticleEmitterLayers();
     Test_Trigger();
     Test_RigidBody();
     Test_NetworkIdentity();

@@ -1049,8 +1049,12 @@ DeepDiagReport DeepDiag::SceneAssets(Application& app)
 
     for (auto [e, pe] : reg.view<ParticleEmitter>().each())
     {
-        ++r.checked;
-        checkFile(pe.texturePath, nameOf(e), "パーティクル画像");
+        // レイヤーごとに画像を持つので全部見る（1 枚でも欠けたら参照切れとして拾う）
+        for (const auto& layer : pe.layers)
+        {
+            ++r.checked;
+            checkFile(layer.texturePath, nameOf(e), "パーティクル画像");
+        }
     }
 
     for (auto [e, ap] : reg.view<UIAnimPlayer>().each())

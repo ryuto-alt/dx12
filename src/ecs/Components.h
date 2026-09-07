@@ -1251,8 +1251,26 @@ struct LuaScript
 // 既存の即時放出パーティクル系（ParticleSystem::Emit）に毎フレーム乗せる薄いデータ。
 // Transform のワールド位置から放出する。Trigger の PlayEffect/StopEffect で発火/停止できる。
 // kind / blend は ParticleKind / ParticleBlend（renderer/ParticleSystem.h）の整数値。
-struct ParticleEmitter
+// 放出設定 1 つぶん。
+//
+// ★かつてはこの中身が ParticleEmitter そのものだった。entt は 1 エンティティに
+//   同じ型のコンポーネントを 1 つしか持てないので、その形だと
+//   「1 つのオブジェクトに炎と煙と火の粉を同時に付ける」ができなかった。
+//   ParticleEmitter を「レイヤーの配列」に変え、1 つぶんをこの型へ切り出した。
+//   旧シーン（フラットな形）は読み込み時に layers[0] へ入るので互換は保たれる。
+struct ParticleLayer
 {
+    // 表示名。Inspector の見出しと、Trigger/Lua から「どのレイヤーを鳴らすか」の
+    // 指定に使う。空なら "Layer N" として扱う。
+    std::string name;
+    // 元にした VFX アセット（assets/vfx/*.json）。表示専用の来歴で、値は下に展開済み。
+    // ★アセットを編集しても配置済みには自動反映されない（コピー方式）。
+    //   参照追従にすると「シーンを開くたびに見た目が変わる」ので、あえてコピーのまま。
+    std::string vfxPath;
+    // エンティティ原点からのローカルオフセット。複数レイヤーを別の位置から出すため
+    //（例: 松明の炎は先端、煙はその少し上）。
+    DirectX::XMFLOAT3 offset{0.0f, 0.0f, 0.0f};
+
     int  kind        = 0;      // 見た目（0=Glow,1=Fire,2=Smoke,3=Spark,4=Magic,5=Electric,6=Ring,7=Star）
     int  blend       = 0;      // 0=加算 Additive, 1=前乗算アルファ（煙）
     int  orient      = 0;      // 粒子の向き 0=ビルボード(常にカメラ正対) 1=水平(XZ地面向き) 2=垂直(XY,+Z正対)。
@@ -1296,6 +1314,61 @@ struct ParticleEmitter
     bool _active    = true;    // 放出中か（Play 時は playOnStart で初期化。エディタは常時プレビュー）
     f32  _emitAccum = 0.0f;    // 端数の放出量を溜める
     f32  _age       = 0.0f;    // ワンショット用の経過秒
+
+    // Undo のスナップショット比較用。
+    // ★std::string を含むので memcmp は使えない（中身ではなくポインタを見るため、
+    //   変わっていなくても「変わった」と判定して Undo を量産する）。
+    //   InspectorPanel の EndEdit は operator== があればそちらを使う。
+    //   ランタイム専有（_active/_emitAccum/_age）は編集内容ではないので比較しない。
+    bool operator==(const ParticleLayer& o) const
+    {
+        auto f3 = [](const DirectX::XMFLOAT3& a, const DirectX::XMFLOAT3& b) {
+            return a.x == b.x && a.y == b.y && a.z == b.z;
+        };
+        return name == o.name && vfxPath == o.vfxPath && texturePath == o.texturePath
+            && f3(offset, o.offset) && f3(dir, o.dir)
+            && f3(color, o.color) && f3(colorMid, o.colorMid) && f3(colorEnd, o.colorEnd)
+            && kind == o.kind && blend == o.blend && orient == o.orient
+            && rate == o.rate && playOnStart == o.playOnStart && looping == o.looping
+            && duration == o.duration && spread == o.spread && speed == o.speed
+            && speedVar == o.speedVar && size == o.size && sizeEnd == o.sizeEnd
+            && life == o.life && lifeVar == o.lifeVar && hasColorMid == o.hasColorMid
+            && intensity == o.intensity && gravity == o.gravity && drag == o.drag
+            && up == o.up && stretch == o.stretch && turbStrength == o.turbStrength
+            && turbFreq == o.turbFreq && sizeMid == o.sizeMid && distort == o.distort
+            && light == o.light && lightRange == o.lightRange && flicker == o.flicker
+            && flickerFreq == o.flickerFreq && gpu == o.gpu;
+    }
+    bool operator!=(const ParticleLayer& o) const { return !(*this == o); }
+};
+
+// 1 エンティティぶんの放出器。レイヤーを好きなだけ重ねられる。
+//
+// 使い方の例:
+//   松明   … layers[0]=Fire(先端), layers[1]=Smoke(少し上), layers[2]=Spark(たまに弾ける)
+//   魔法陣 … layers[0]=Magic(リング), layers[1]=Glow(中心)
+//
+// ★空の layers を持つ ParticleEmitter は「何も出さない」。コンポーネントを
+//   付けただけの状態を作らないよう、追加時は既定レイヤーを 1 枚入れること。
+struct ParticleEmitter
+{
+    std::vector<ParticleLayer> layers;
+
+    bool operator==(const ParticleEmitter& o) const { return layers == o.layers; }
+    bool operator!=(const ParticleEmitter& o) const { return !(*this == o); }
+
+    // 名前でレイヤーを引く（Trigger / Lua / MCP 用）。見つからなければ nullptr。
+    // 名前が空のレイヤーは "Layer N"（N は 1 始まり）でも引ける。
+    ParticleLayer* FindLayer(const std::string& layerName)
+    {
+        if (layerName.empty()) return layers.empty() ? nullptr : &layers[0];
+        for (auto& l : layers)
+            if (l.name == layerName) return &l;
+        for (size_t i = 0; i < layers.size(); ++i)
+            if (layers[i].name.empty() && layerName == ("Layer " + std::to_string(i + 1)))
+                return &layers[i];
+        return nullptr;
+    }
 };
 
 // 軌跡リボン（剣の残像/弾道/魔法の尾）。エンティティのワールド位置を毎フレーム記録し、

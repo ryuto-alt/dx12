@@ -104,7 +104,9 @@ private:
     void NewAsset();
     bool LoadAsset(const std::string& path);
     bool SaveAsset(const std::string& path);
-    void ApplyToSelected(entt::registry& reg, EditorContext& ctx);
+    // asNewLayer=false … 選択エンティティの 1 枚目を置き換える（従来の「適用」）
+    // asNewLayer=true  … レイヤーとして追加する（炎の上に煙を重ねる、等）
+    void ApplyToSelected(entt::registry& reg, EditorContext& ctx, bool asNewLayer = false);
     // Scene* と assetsDir は SpawnEntityCommand（Undo）に必要。
     // 無いと「新規エンティティとして配置」が Ctrl+Z で消えない。
     void SpawnEntity(entt::registry& reg, EditorContext& ctx,

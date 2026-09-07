@@ -4341,10 +4341,13 @@ void ScriptEngine::OnPlayStart()
         auto peView = reg.view<ParticleEmitter>();
         for (auto e : peView)
         {
-            auto& pe = peView.get<ParticleEmitter>(e);
-            pe._active    = pe.playOnStart;
-            pe._age       = 0.0f;
-            pe._emitAccum = 0.0f;
+            auto& emitter = peView.get<ParticleEmitter>(e);
+            for (auto& pe : emitter.layers)
+            {
+                pe._active    = pe.playOnStart;
+                pe._age       = 0.0f;
+                pe._emitAccum = 0.0f;
+            }
         }
     }
     // 連番アニメ(フリップブック)の再生位置を初期化。
@@ -4530,12 +4533,26 @@ void ScriptEngine::UpdateTriggers(f32 dt)
             if (at != entt::null) if (auto* tf = reg.try_get<Transform>(at))
             { tf->position.x += a.vec.x; tf->position.y += a.vec.y; tf->position.z += a.vec.z; }
             break;
+        // ★str にレイヤー名を書くと【そのレイヤーだけ】を鳴らす/止める。
+        //   空なら従来どおり全レイヤーが対象。
+        //   これで「松明の煙は出しっぱなしで、火の粉だけイベントで弾けさせる」ができる。
+        //   名前が無いレイヤーは "Layer 1" / "Layer 2"（1 始まり）でも指せる。
         case TriggerActionType::PlayEffect:
-            if (at != entt::null) if (auto* pe = reg.try_get<ParticleEmitter>(at))
-            { pe->_active = true; pe->_age = 0.0f; pe->_emitAccum = 0.0f; }
+            if (at != entt::null) if (auto* em = reg.try_get<ParticleEmitter>(at))
+            {
+                auto fire = [](ParticleLayer& l) { l._active = true; l._age = 0.0f; l._emitAccum = 0.0f; };
+                if (a.str.empty()) { for (auto& l : em->layers) fire(l); }
+                else if (ParticleLayer* l = em->FindLayer(a.str)) fire(*l);
+                else Logger::Warn("PlayEffect: レイヤー '{}' が見つかりません", a.str);
+            }
             break;
         case TriggerActionType::StopEffect:
-            if (at != entt::null) if (auto* pe = reg.try_get<ParticleEmitter>(at)) pe->_active = false;
+            if (at != entt::null) if (auto* em = reg.try_get<ParticleEmitter>(at))
+            {
+                if (a.str.empty()) { for (auto& l : em->layers) l._active = false; }
+                else if (ParticleLayer* l = em->FindLayer(a.str)) l->_active = false;
+                else Logger::Warn("StopEffect: レイヤー '{}' が見つかりません", a.str);
+            }
             break;
         case TriggerActionType::PlaySound:
             // ★AudioSource::spatial を見る。既定が true なうえ Inspector は spatial のときだけ

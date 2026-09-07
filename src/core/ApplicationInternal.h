@@ -334,7 +334,33 @@ inline bool ApplyOrphanComponent(entt::registry& reg, entt::entity e,
     if (comp == "particleEmitter")
     {
         // ★部分更新: 既存があればその写しから始める（未指定キーを既定値へ戻さない）
-        ParticleEmitter pe = reg.all_of<ParticleEmitter>(e) ? reg.get<ParticleEmitter>(e) : ParticleEmitter{};
+        ParticleEmitter emitter = reg.all_of<ParticleEmitter>(e) ? reg.get<ParticleEmitter>(e) : ParticleEmitter{};
+        // レイヤー化以降も、この経路は従来どおり「1 枚目を編集する」意味にしておく
+        // （既存の set_component 呼び出しをそのまま動かすため）。
+        // 別のレイヤーを触りたい場合は "layer" にレイヤー名か添字を渡す。
+        if (emitter.layers.empty()) emitter.layers.emplace_back();
+        ParticleLayer* target = nullptr;
+        if (d.contains("layer"))
+        {
+            if (d["layer"].is_number_integer())
+            {
+                const int idx = d["layer"].get<int>();
+                if (idx >= 0 && idx < static_cast<int>(emitter.layers.size()))
+                    target = &emitter.layers[static_cast<size_t>(idx)];
+            }
+            else if (d["layer"].is_string())
+            {
+                target = emitter.FindLayer(d["layer"].get<std::string>());
+            }
+            if (!target) return false;   // 指定したレイヤーが無い＝黙って 1 枚目を触らない
+        }
+        else
+        {
+            target = &emitter.layers[0];
+        }
+        ParticleLayer& pe = *target;
+        pe.name = d.value("name", pe.name);
+        if (d.contains("offset")) pe.offset = McpF3(d["offset"], {0.0f, 0.0f, 0.0f});
         pe.kind = d.value("kind", pe.kind); pe.blend = d.value("blend", pe.blend); pe.rate = d.value("rate", pe.rate);
         pe.orient = d.value("orient", pe.orient);   // ★抜けていた（get_entity には出るのに書けなかった）
         pe.playOnStart = d.value("playOnStart", pe.playOnStart); pe.looping = d.value("looping", pe.looping);
@@ -356,7 +382,7 @@ inline bool ApplyOrphanComponent(entt::registry& reg, entt::entity e,
         pe.flicker = d.value("flicker", pe.flicker); pe.flickerFreq = d.value("flickerFreq", pe.flickerFreq);
         pe.gpu = d.value("gpu", pe.gpu);
         pe.texturePath = d.value("texturePath", pe.texturePath);
-        reg.emplace_or_replace<ParticleEmitter>(e, pe);
+        reg.emplace_or_replace<ParticleEmitter>(e, emitter);
         return true;
     }
     if (comp == "trigger")

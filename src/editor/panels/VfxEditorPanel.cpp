@@ -255,31 +255,45 @@ bool VfxEditorPanel::SaveAsset(const std::string& path)
     return true;
 }
 
-void VfxEditorPanel::ApplyToSelected(entt::registry& reg, EditorContext& ctx)
+void VfxEditorPanel::ApplyToSelected(entt::registry& reg, EditorContext& ctx, bool asNewLayer)
 {
     entt::entity e = ctx.selectedEntity;
     if (e == entt::null || !reg.valid(e) || !reg.all_of<ParticleEmitter>(e)) return;
 
     const ParticleEmitter before = reg.get<ParticleEmitter>(e);
     ParticleEmitter after = before;
-    after.kind = m_current.kind;   after.blend = m_current.blend;
-    after.orient = m_current.orient;
-    after.rate = m_current.rate;   after.playOnStart = m_current.playOnStart;
-    after.looping = m_current.looping; after.duration = m_current.duration;
-    after.dir = m_current.dir;     after.spread = m_current.spread;
-    after.speed = m_current.speed; after.speedVar = m_current.speedVar;
-    after.size = m_current.size;   after.sizeEnd = m_current.sizeEnd; after.sizeMid = m_current.sizeMid;
-    after.life = m_current.life;   after.lifeVar = m_current.lifeVar;
-    after.color = m_current.color; after.colorMid = m_current.colorMid; after.colorEnd = m_current.colorEnd;
-    after.hasColorMid = m_current.hasColorMid;
-    after.intensity = m_current.intensity;
-    after.gravity = m_current.gravity; after.drag = m_current.drag; after.up = m_current.up;
-    after.stretch = m_current.stretch;
-    after.turbStrength = m_current.turbStrength; after.turbFreq = m_current.turbFreq;
-    after.distort = m_current.distort;
-    after.light = m_current.light; after.lightRange = m_current.lightRange;
-    after.flicker = m_current.flicker; after.flickerFreq = m_current.flickerFreq;
-    after.texturePath = m_current.texturePath;
+
+    // asNewLayer=false … 1 枚目を置き換える（従来の「適用」）
+    // asNewLayer=true  … レイヤーとして足す（炎の上に煙を重ねる、等）
+    if (asNewLayer || after.layers.empty())
+        after.layers.emplace_back();
+    ParticleLayer& dst = asNewLayer ? after.layers.back() : after.layers[0];
+
+    // どの VFX アセットから来たかを残す（表示専用の来歴。値はコピー済み）。
+    dst.vfxPath = m_currentPath.empty() ? std::string() : m_currentPath;
+    if (dst.name.empty()) dst.name = m_current.name;
+
+    ParticleEmitter& afterRef = after;   // 以下は dst に書く（変数名を保つための別名）
+    (void)afterRef;
+    ParticleLayer& target = dst;
+    target.kind = m_current.kind;   target.blend = m_current.blend;
+    target.orient = m_current.orient;
+    target.rate = m_current.rate;   target.playOnStart = m_current.playOnStart;
+    target.looping = m_current.looping; target.duration = m_current.duration;
+    target.dir = m_current.dir;     target.spread = m_current.spread;
+    target.speed = m_current.speed; target.speedVar = m_current.speedVar;
+    target.size = m_current.size;   target.sizeEnd = m_current.sizeEnd; target.sizeMid = m_current.sizeMid;
+    target.life = m_current.life;   target.lifeVar = m_current.lifeVar;
+    target.color = m_current.color; target.colorMid = m_current.colorMid; target.colorEnd = m_current.colorEnd;
+    target.hasColorMid = m_current.hasColorMid;
+    target.intensity = m_current.intensity;
+    target.gravity = m_current.gravity; target.drag = m_current.drag; target.up = m_current.up;
+    target.stretch = m_current.stretch;
+    target.turbStrength = m_current.turbStrength; target.turbFreq = m_current.turbFreq;
+    target.distort = m_current.distort;
+    target.light = m_current.light; target.lightRange = m_current.lightRange;
+    target.flicker = m_current.flicker; target.flickerFreq = m_current.flickerFreq;
+    target.texturePath = m_current.texturePath;
     // gpu はこのエディタの対象外（CPUパーティクルのまま据え置く）
 
     reg.get<ParticleEmitter>(e) = after;
@@ -292,7 +306,12 @@ void VfxEditorPanel::ApplyToSelected(entt::registry& reg, EditorContext& ctx)
 void VfxEditorPanel::SpawnEntity(entt::registry& reg, EditorContext& ctx,
                                  Scene* scene, const std::string& assetsDir)
 {
-    ParticleEmitter pe{};
+    // 新規エンティティは 1 枚だけのエミッタとして作る（Inspector から後で足せる）。
+    ParticleEmitter emitter{};
+    emitter.layers.emplace_back();
+    ParticleLayer& pe = emitter.layers[0];
+    pe.name    = m_current.name;
+    pe.vfxPath = m_currentPath;
     pe.kind = m_current.kind;   pe.blend = m_current.blend;
     pe.orient = m_current.orient;
     pe.rate = m_current.rate;   pe.playOnStart = m_current.playOnStart;
@@ -320,7 +339,7 @@ void VfxEditorPanel::SpawnEntity(entt::registry& reg, EditorContext& ctx,
     entt::entity e = reg.create();
     reg.emplace<NameTag>(e, NameTag{ m_current.name.empty() ? std::string("ParticleEmitter") : m_current.name });
     reg.emplace<Transform>(e, Transform{ spawnPos, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f} });
-    reg.emplace<ParticleEmitter>(e, pe);
+    reg.emplace<ParticleEmitter>(e, emitter);
     // ★Undo に積む。積まないと誤配置が Ctrl+Z で消えず、別の編集が代わりに戻る。
     if (scene)
         ctx.undoSystem.PushCommand(std::make_unique<SpawnEntityCommand>(scene, assetsDir, e));
@@ -713,7 +732,12 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
     const bool canApply = ctx.selectedEntity != entt::null && reg.valid(ctx.selectedEntity)
                         && reg.all_of<ParticleEmitter>(ctx.selectedEntity);
     if (!canApply) ImGui::BeginDisabled();
-    if (ImGui::Button("選択エンティティへ適用")) ApplyToSelected(reg, ctx);
+    if (ImGui::Button("選択エンティティへ適用")) ApplyToSelected(reg, ctx, /*asNewLayer=*/false);
+    ImGui::SetItemTooltip("選択中の放出器の 1 枚目を、このアセットの内容で置き換えます");
+    ImGui::SameLine();
+    if (ImGui::Button("レイヤーとして追加"))    ApplyToSelected(reg, ctx, /*asNewLayer=*/true);
+    ImGui::SetItemTooltip("既存のレイヤーを残したまま 1 枚足します。\n"
+                          "炎の上に煙、その上に火の粉、のように重ねられます");
     if (!canApply) ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button("新規エンティティとして配置")) SpawnEntity(reg, ctx, scene, assetsDir);

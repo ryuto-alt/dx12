@@ -208,6 +208,86 @@ void Application::RegisterMcpEntityMethods()
                                {"skinnedFallbackWarning", reg.all_of<SkeletalAnimation>(e) && !mr.shaderPath.empty()}};
         });
 
+    McpDefine("list_particle_layers", "entity:int,name:string", DX12E_MCP_HANDLER
+        {
+            // 放出器のレイヤー一覧。Trigger の PlayEffect/StopEffect に渡す名前もここで分かる。
+            const auto e = ResolveMcpEntity(*m_scene, params);
+            auto& reg = m_scene->GetRegistry();
+            if (!reg.all_of<ParticleEmitter>(e))
+                throw McpError(McpErr::NotFound, "entity has no ParticleEmitter");
+            const auto& em = reg.get<ParticleEmitter>(e);
+            json arr = json::array();
+            for (size_t i = 0; i < em.layers.size(); ++i)
+            {
+                const auto& l = em.layers[i];
+                arr.push_back({
+                    {"index", static_cast<int>(i)},
+                    // 名前が空でも Trigger から指せるように、実際に使える名前を返す
+                    {"name", l.name.empty() ? ("Layer " + std::to_string(i + 1)) : l.name},
+                    {"kind", l.kind}, {"rate", l.rate}, {"looping", l.looping},
+                    {"offset", {l.offset.x, l.offset.y, l.offset.z}},
+                    {"vfxPath", l.vfxPath},
+                });
+            }
+            resp["ok"] = true;
+            resp["result"] = {{"entityId", static_cast<u32>(e)}, {"layers", arr},
+                              {"count", static_cast<int>(em.layers.size())}};
+        });
+
+    McpDefine("add_particle_layer", "entity:int,layerName:string,name:string", DX12E_MCP_HANDLER
+        {
+            // レイヤーを 1 枚足す。中身は set_component の layer 指定で書く。
+            // ★これが無いと MCP からは 1 枚目しか触れない（set_component は既存レイヤーしか
+            //   対象にできないため）。「炎に煙を重ねる」が AI からできるようにするための入口。
+            const auto e = ResolveMcpEntity(*m_scene, params);
+            auto& reg = m_scene->GetRegistry();
+            if (!reg.all_of<ParticleEmitter>(e))
+                throw McpError(McpErr::NotFound, "entity has no ParticleEmitter");
+            auto& em = reg.get<ParticleEmitter>(e);
+            if (em.layers.size() >= 16)
+                throw McpError(McpErr::InvalidParam, "レイヤーが多すぎます（上限 16 枚）");
+            em.layers.emplace_back();
+            auto& l = em.layers.back();
+            l.name = params.value("layerName", std::string());
+            if (l.name.empty()) l.name = "Layer " + std::to_string(em.layers.size());
+            resp["ok"] = true;
+            resp["result"] = {{"entityId", static_cast<u32>(e)},
+                              {"index", static_cast<int>(em.layers.size() - 1)},
+                              {"name", l.name},
+                              {"count", static_cast<int>(em.layers.size())}};
+        });
+
+    McpDefine("remove_particle_layer", "entity:int,layer:any,name:string", DX12E_MCP_HANDLER
+        {
+            const auto e = ResolveMcpEntity(*m_scene, params);
+            auto& reg = m_scene->GetRegistry();
+            if (!reg.all_of<ParticleEmitter>(e))
+                throw McpError(McpErr::NotFound, "entity has no ParticleEmitter");
+            auto& em = reg.get<ParticleEmitter>(e);
+            // 最後の 1 枚は消せない（0 枚 = 付いているのに何も出ない状態を作らない）。
+            // 丸ごと消したいときは remove_component で ParticleEmitter を外すこと。
+            if (em.layers.size() <= 1)
+                throw McpError(McpErr::InvalidParam,
+                               "最後の 1 枚は削除できません",
+                               "放出器ごと消すなら remove_component component=particleEmitter");
+            int idx = -1;
+            if (params.contains("layer") && params["layer"].is_number_integer())
+                idx = params["layer"].get<int>();
+            else if (params.contains("layer") && params["layer"].is_string())
+            {
+                const std::string want = params["layer"].get<std::string>();
+                for (size_t i = 0; i < em.layers.size(); ++i)
+                    if (em.layers[i].name == want) { idx = static_cast<int>(i); break; }
+            }
+            if (idx < 0 || idx >= static_cast<int>(em.layers.size()))
+                throw McpError(McpErr::NotFound, "layer が見つかりません",
+                               "list_particle_layers で index / name を確認すること");
+            em.layers.erase(em.layers.begin() + idx);
+            resp["ok"] = true;
+            resp["result"] = {{"entityId", static_cast<u32>(e)},
+                              {"count", static_cast<int>(em.layers.size())}};
+        });
+
     McpDefine("set_mesh_shader_params", "effect:number,entity:int,name:string,params:any,paramsB:any",
               DX12E_MCP_HANDLER
         {
@@ -672,7 +752,8 @@ void Application::RegisterMcpEntityMethods()
             }
         });
 
-    McpDefine("set_component", "component:string,data:any,entity:int,name:string,values:any", DX12E_MCP_HANDLER
+    McpDefine("set_component", "component:string,data:any,entity:int,layer:any,name:string,values:any",
+              DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
@@ -687,6 +768,12 @@ void Application::RegisterMcpEntityMethods()
             if (!data.is_object() || data.empty())
                 throw McpError(McpErr::InvalidParam,
                     "missing component fields: pass a non-empty 'data' object");
+            // 'layer'（どのパーティクルレイヤーを編集するか）はデータではなく【選択子】なので
+            // params 直下に書けるほうが自然。実処理側は data の中しか見ないため、ここで移し替える。
+            // ★これをやらないと layer 指定が黙って無視され、常に 1 枚目が書き換わる
+            //   （実際に踏んだ: 3 枚のレイヤーを作ったのに全部 1 枚目へ上書きされた）。
+            if (params.contains("layer") && !data.contains("layer"))
+                data["layer"] = params["layer"];
             if (comp == "transform")
             {
                 // コア不変: 専用処理(set_transform 相当)

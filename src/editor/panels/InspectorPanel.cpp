@@ -2331,10 +2331,66 @@ void InspectorPanel::Render(entt::registry& reg,
             if (open && !removed)
             {
                 BeginEdit(reg, ctx.selectedEntity, m_emitterEdit);
-                auto& pe = reg.get<ParticleEmitter>(ctx.selectedEntity);
+                auto& emitter = reg.get<ParticleEmitter>(ctx.selectedEntity);
+                // レイヤーが 0 枚だと何も出ないので、最低 1 枚は必ず用意する。
+                if (emitter.layers.empty()) emitter.layers.emplace_back();
                 bool changed = false, active = false;
                 const char* kinds[] = { "Glow", "Fire", "Smoke", "Spark", "Magic", "Electric", "Ring", "Star" };
                 const char* blends[] = { "加算 Additive", "アルファ Alpha" };
+                // ── レイヤーの追加/削除 ──
+                // 1 つのオブジェクトに炎+煙+火の粉、のように重ねられる。
+                if (ImGui::SmallButton("＋ レイヤーを追加"))
+                {
+                    emitter.layers.emplace_back();
+                    emitter.layers.back().name = "Layer " + std::to_string(emitter.layers.size());
+                    changed = true;
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("%d 枚", static_cast<int>(emitter.layers.size()));
+
+                int layerToRemove = -1;
+                for (size_t li = 0; li < emitter.layers.size(); ++li)
+                {
+                ParticleLayer& pe = emitter.layers[li];
+                ImGui::PushID(static_cast<int>(li));
+
+                // レイヤーの見出し。名前が空なら "Layer N"（Trigger からもこの名前で指せる）。
+                const std::string layerLabel =
+                    pe.name.empty() ? ("Layer " + std::to_string(li + 1)) : pe.name;
+                const bool layerOpen =
+                    (emitter.layers.size() == 1)
+                        ? true   // 1 枚だけのときは折りたたまない（従来と同じ見た目）
+                        : ImGui::CollapsingHeader((layerLabel + "###peLayer").c_str(),
+                                                  ImGuiTreeNodeFlags_DefaultOpen);
+                if (emitter.layers.size() > 1)
+                {
+                    ImGui::SameLine(ImGui::GetContentRegionAvail().x - 20.0f);
+                    if (ImGui::SmallButton("×")) layerToRemove = static_cast<int>(li);
+                }
+                if (!layerOpen) { ImGui::PopID(); continue; }
+
+                if (emitter.layers.size() > 1)
+                {
+                    char nameBuf[64] = {};
+                    std::snprintf(nameBuf, sizeof(nameBuf), "%s", pe.name.c_str());
+                    if (ImGui::InputText("名前##peLayerName", nameBuf, sizeof(nameBuf)))
+                    {
+                        pe.name = nameBuf;
+                        changed = true;
+                    }
+                    ImGui::SetItemTooltip(
+                        "Trigger の PlayEffect / StopEffect の str にこの名前を書くと、\n"
+                        "このレイヤーだけを鳴らす/止められます（空なら全レイヤーが対象）");
+                    if (pg::Begin("ParticleLayerOffset"))
+                    {
+                        changed |= pg::Float3("位置ずらし Offset", &pe.offset.x, 0.01f, 0.0f, 0.0f,
+                                              "%.2f", &active,
+                                              "エンティティ原点からのローカルオフセット。\n"
+                                              "松明の炎は先端、煙はその少し上、のように分けられます");
+                    }
+                    pg::End();
+                }
+
                 if (pg::Begin("ParticleEmitter"))
                 {
                     changed |= pg::Combo("見た目 Kind", &pe.kind, kinds, IM_ARRAYSIZE(kinds));
@@ -2415,6 +2471,17 @@ void InspectorPanel::Render(entt::registry& reg,
                     if (pe.flicker > 0.0f)
                         changed |= pg::Float("明滅の速さ", &pe.flickerFreq, 0.2f, 0.1f, 60.0f, "%.1f", &active);
                     pg::End();
+                }
+                ImGui::PopID();
+                }   // レイヤーループ
+
+                // 削除は走査の外で行う（ループ中に vector を縮めると参照が壊れる）。
+                // 最後の 1 枚は消せない: 0 枚のエミッタは「付いているのに何も出ない」
+                // という分かりにくい状態になるため。丸ごと消すならコンポーネントごと削除する。
+                if (layerToRemove >= 0 && emitter.layers.size() > 1)
+                {
+                    emitter.layers.erase(emitter.layers.begin() + layerToRemove);
+                    changed = true;
                 }
                 ImGui::TextDisabled("エディタでもプレビュー表示されます。詳細な作成は ツール > パーティクルエディタ が便利です");
                 EndEdit(reg, ctx, ctx.selectedEntity, m_emitterEdit, changed, active, "Particle Emitter");

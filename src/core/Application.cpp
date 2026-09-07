@@ -2432,7 +2432,14 @@ void Application::Update()
         auto peView = peReg.view<ParticleEmitter, Transform>();
         for (auto pe_e : peView)
         {
-            auto& pe = peView.get<ParticleEmitter>(pe_e);
+            auto& emitter = peView.get<ParticleEmitter>(pe_e);
+            // ワールド行列はエンティティにつき 1 回だけ。レイヤーごとに取り直すと
+            // 親子を辿る walk がレイヤー数ぶん走る（松明を 100 本置くと効いてくる）。
+            const DirectX::XMMATRIX w = ComputeWorldMatrix(peReg, pe_e);
+
+            // ★レイヤーを 1 枚ずつ回す。1 エンティティに炎+煙+火の粉、が成立するのはここ。
+            for (ParticleLayer& pe : emitter.layers)
+            {
             const bool live = pedPlaying ? pe._active : true;  // エディタは常時プレビュー
             if (!live) continue;
             if (!pe.looping && pedPlaying)
@@ -2448,8 +2455,11 @@ void Application::Update()
             const int nCap = pe.gpu ? 8192 : 64;   // GPU は大量放出を許容
             if (n > nCap) n = nCap;
 
-            DirectX::XMMATRIX w = ComputeWorldMatrix(peReg, pe_e);
-            DirectX::XMFLOAT3 pos; DirectX::XMStoreFloat3(&pos, w.r[3]);
+            // レイヤーのローカルオフセットをワールドへ乗せる（松明の炎は先端、煙はその上）。
+            DirectX::XMFLOAT3 pos;
+            DirectX::XMStoreFloat3(&pos,
+                DirectX::XMVector3Transform(
+                    DirectX::XMVectorSet(pe.offset.x, pe.offset.y, pe.offset.z, 1.0f), w));
 
             // GPU パーティクル経路（compute シム。distort/light 等の CPU 専用機能は無視）
             if (pe.gpu && m_gpuParticles)
@@ -2491,6 +2501,7 @@ void Application::Update()
             p.flicker = pe.flicker; p.flickerFreq = pe.flickerFreq;
             p.texturePath = pe.texturePath;
             m_particleSystem->Emit(p);
+            }   // レイヤーループ
         }
 
         // トレイル（軌跡リボン）: エンティティのワールド位置を毎フレーム記録

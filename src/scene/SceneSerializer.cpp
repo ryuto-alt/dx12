@@ -737,24 +737,48 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
 
         if (reg.all_of<ParticleEmitter>(entity))
         {
-            const auto& pe = reg.get<ParticleEmitter>(entity);
-            ej["particleEmitter"] = {
-                {"kind", pe.kind}, {"blend", pe.blend}, {"orient", pe.orient}, {"rate", pe.rate},
-                {"playOnStart", pe.playOnStart}, {"looping", pe.looping}, {"duration", pe.duration},
-                {"dir", SerializeFloat3(pe.dir)}, {"spread", pe.spread},
-                {"speed", pe.speed}, {"speedVar", pe.speedVar},
-                {"size", pe.size}, {"sizeEnd", pe.sizeEnd},
-                {"life", pe.life}, {"lifeVar", pe.lifeVar},
-                {"color", SerializeFloat3(pe.color)}, {"colorEnd", SerializeFloat3(pe.colorEnd)},
-                {"colorMid", SerializeFloat3(pe.colorMid)}, {"hasColorMid", pe.hasColorMid},
-                {"intensity", pe.intensity}, {"gravity", pe.gravity},
-                {"drag", pe.drag}, {"up", pe.up}, {"stretch", pe.stretch},
-                {"turbStrength", pe.turbStrength}, {"turbFreq", pe.turbFreq},
-                {"sizeMid", pe.sizeMid}, {"distort", pe.distort},
-                {"light", pe.light}, {"lightRange", pe.lightRange},
-                {"flicker", pe.flicker}, {"flickerFreq", pe.flickerFreq},
-                {"gpu", pe.gpu}, {"texturePath", pe.texturePath}
+            const auto& emitter = reg.get<ParticleEmitter>(entity);
+            // レイヤー 1 枚を JSON へ。旧形式（フラット）とキー名は完全に同じにしてある。
+            // ★こうしておくと「1 枚だけのエミッタ」は旧エンジンでもそのまま読める。
+            auto layerJson = [](const ParticleLayer& pe) {
+                json j = {
+                    {"kind", pe.kind}, {"blend", pe.blend}, {"orient", pe.orient}, {"rate", pe.rate},
+                    {"playOnStart", pe.playOnStart}, {"looping", pe.looping}, {"duration", pe.duration},
+                    {"dir", SerializeFloat3(pe.dir)}, {"spread", pe.spread},
+                    {"speed", pe.speed}, {"speedVar", pe.speedVar},
+                    {"size", pe.size}, {"sizeEnd", pe.sizeEnd},
+                    {"life", pe.life}, {"lifeVar", pe.lifeVar},
+                    {"color", SerializeFloat3(pe.color)}, {"colorEnd", SerializeFloat3(pe.colorEnd)},
+                    {"colorMid", SerializeFloat3(pe.colorMid)}, {"hasColorMid", pe.hasColorMid},
+                    {"intensity", pe.intensity}, {"gravity", pe.gravity},
+                    {"drag", pe.drag}, {"up", pe.up}, {"stretch", pe.stretch},
+                    {"turbStrength", pe.turbStrength}, {"turbFreq", pe.turbFreq},
+                    {"sizeMid", pe.sizeMid}, {"distort", pe.distort},
+                    {"light", pe.light}, {"lightRange", pe.lightRange},
+                    {"flicker", pe.flicker}, {"flickerFreq", pe.flickerFreq},
+                    {"gpu", pe.gpu}, {"texturePath", pe.texturePath}
+                };
+                // レイヤー化で増えた分は「既定値なら書かない」。1 枚だけのエミッタの
+                // JSON が旧形式とバイト単位で同じになり、無関係な差分が git に出ない。
+                if (!pe.name.empty())    j["name"]    = pe.name;
+                if (!pe.vfxPath.empty()) j["vfxPath"] = pe.vfxPath;
+                if (pe.offset.x != 0.0f || pe.offset.y != 0.0f || pe.offset.z != 0.0f)
+                    j["offset"] = SerializeFloat3(pe.offset);
+                return j;
             };
+
+            if (emitter.layers.size() == 1)
+            {
+                // ★1 枚のときは旧形式のまま書く（前方互換 + 既存シーンの差分ゼロ）。
+                ej["particleEmitter"] = layerJson(emitter.layers[0]);
+            }
+            else
+            {
+                // 2 枚以上のときだけ layers 配列にする。
+                json arr = json::array();
+                for (const auto& l : emitter.layers) arr.push_back(layerJson(l));
+                ej["particleEmitter"] = json{{"layers", arr}};
+            }
         }
 
         if (reg.all_of<Trigger>(entity))
@@ -1577,8 +1601,25 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
 
             if (ej.contains("particleEmitter"))
             {
-                const auto& pj = ej["particleEmitter"];
-                ParticleEmitter pe;
+                const auto& pej = ej["particleEmitter"];
+                // ★後方互換: 旧形式はフラット（キーが直接並ぶ）、新形式は "layers" 配列。
+                //   旧シーンを開いたときはフラットな 1 枚を layers[0] として読む。
+                //   ここを両対応にしておかないと、レイヤー化した瞬間に
+                //   既存プロジェクトのエフェクトが全部消える。
+                ParticleEmitter emitter;
+                std::vector<const json*> layerNodes;
+                if (pej.contains("layers") && pej["layers"].is_array())
+                    for (const auto& lj : pej["layers"]) layerNodes.push_back(&lj);
+                else
+                    layerNodes.push_back(&pej);
+
+                for (const json* pjp : layerNodes)
+                {
+                const auto& pj = *pjp;
+                ParticleLayer pe;
+                pe.name    = pj.value("name", std::string());
+                pe.vfxPath = pj.value("vfxPath", std::string());
+                if (pj.contains("offset")) pe.offset = DeserializeFloat3(pj["offset"]);
                 pe.kind        = pj.value("kind", 0);
                 pe.blend       = pj.value("blend", 0);
                 pe.orient      = pj.value("orient", 0);
@@ -1613,7 +1654,9 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                 pe.flickerFreq  = pj.value("flickerFreq", 18.0f);
                 pe.gpu       = pj.value("gpu", false);
                 pe.texturePath = pj.value("texturePath", std::string());
-                reg.emplace_or_replace<ParticleEmitter>(e, pe);
+                emitter.layers.push_back(std::move(pe));
+                }   // レイヤーループ
+                reg.emplace_or_replace<ParticleEmitter>(e, std::move(emitter));
             }
 
             if (ej.contains("trigger"))
@@ -2664,7 +2707,11 @@ void ForEachAssetPathField(Scene& scene, Fn&& fn)
         fn(b.hoverSound, who, "hoverSound");
         fn(b.clickSound, who, "clickSound");
     }
-    for (auto [e, p]  : reg.view<ParticleEmitter>().each()) fn(p.texturePath, nameOf(e), "particle");
+    // レイヤーごとにテクスチャを持つので全部見る。
+    // ★fn は「参照を書き換える」用途にも使われる（アセット移動時のパス追従）ので
+    //   非 const 参照で渡すこと。const にすると書き換え経路が黙って効かなくなる。
+    for (auto [e, p]  : reg.view<ParticleEmitter>().each())
+        for (auto& l : p.layers) fn(l.texturePath, nameOf(e), "particle");
     for (auto [e, ap] : reg.view<UIAnimPlayer>().each())    fn(ap.clipPath,   nameOf(e), "uianim");
     for (auto [e, sa] : reg.view<SpriteAnimator>().each())  fn(sa.sheetPath,  nameOf(e), "spriteSheet");
     for (auto [e, ac] : reg.view<AnimatorController>().each()) fn(ac.graphPath, nameOf(e), "animGraph");
