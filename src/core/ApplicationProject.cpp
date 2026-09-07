@@ -1483,6 +1483,10 @@ bool Application::BuildGameStandalone(const std::string& projectRoot)
                 break;
             }
         }
+        // ★出力先だけは build_settings.json に従わない。CLI の --build は昔から
+        //   <projectDir>/build/game に出す約束で、CI もそこを見る。GUI の Build ボタンだけが
+        //   outputDir(ユーザーが選んだ配布先)を使う。
+        m_editorCtx->buildConfig.outputDir.clear();
         if (!m_editorCtx->buildConfig.startScene.empty())
             Logger::Info("ヘッドレスビルド: 開始シーン = {}", m_editorCtx->buildConfig.startScene);
     }
