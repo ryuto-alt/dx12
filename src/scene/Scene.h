@@ -78,10 +78,14 @@ public:
                  DirectX::XMFLOAT3 rotation = {0, 0, 0},
                  DirectX::XMFLOAT3 scale = {1, 1, 1});
 
+    // subdivisions: 一辺あたりの分割数。既定 1 = 4 頂点の板。
+    // ★頂点を動かすカスタムシェーダー（水/海/旗/布）を貼るなら必ず上げること。
+    //   4 頂点の板では波も変位も一切出ない。64〜128 が目安。
     Entity SpawnPlane(const std::string& name,
                       DirectX::XMFLOAT3 position,
                       f32 size = 50.0f,
-                      bool gridShader = false);
+                      bool gridShader = false,
+                      u32 subdivisions = 1);
 
     Entity SpawnBox(const std::string& name,
                     DirectX::XMFLOAT3 position,

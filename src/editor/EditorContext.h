@@ -56,6 +56,13 @@ struct PendingSpawnRequest
     // position(3D ワールド座標)とは別枠にしてあるのは、UI は Transform を使わへんため。
     bool placeInUiCanvas = false;
     DirectX::XMFLOAT2 uiCanvasPos{0.0f, 0.0f};
+
+    // 平面プリミティブの一辺あたり分割数（__primitive_plane__ のときだけ意味を持つ）。
+    // ★水/海など「頂点を動かすシェーダー」を貼る平面は、ここを上げないと
+    //   4 頂点の板のままで波が一切出ない。既定 1 = 従来どおり。
+    u32 planeSubdivisions = 1;
+    // 平面の一辺（m）。0 なら SpawnPlane の既定。
+    f32 planeSize = 0.0f;
 };
 
 // MCP 由来のエンティティ削除要求。フレーム境界でサブツリー削除後に deletedCount を送り返す。

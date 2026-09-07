@@ -470,6 +470,19 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                 {
                     ej["primitive"] = "plane";
                     if (pmesh) ej["primitiveSize"] = pmesh->GetAABBMax().x * 2.0f;   // 一辺
+                    // ★分割数も保存する。書かないと読み直したとき 4 頂点の板に戻り、
+                    //   水/海など「頂点を動かすシェーダー」を貼った平面が
+                    //   保存して開くだけで【波が消える】。
+                    //   一辺 n 分割の平面のインデックス数は n*n*6 なので、そこから戻す
+                    //   （primitiveSize を AABB から戻しているのと同じ流儀＝専用フィールドを増やさない）。
+                    if (pmesh)
+                    {
+                        const u32 idx = pmesh->GetIndexCountLod(0);
+                        const u32 sub = (idx >= 6)
+                            ? static_cast<u32>(std::llround(std::sqrt(static_cast<double>(idx) / 6.0)))
+                            : 1u;
+                        if (sub > 1) ej["primitiveSubdiv"] = sub;
+                    }
                 }
                 else
                 {
@@ -1514,7 +1527,8 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
         if (prim == "sphere")
             e = scene.SpawnSphere(name, pos, psize > 0.0f ? psize : 0.5f).GetHandle();
         else if (prim == "plane")
-            e = scene.SpawnPlane(name, pos, psize > 0.0f ? psize : 50.0f, false).GetHandle();
+            e = scene.SpawnPlane(name, pos, psize > 0.0f ? psize : 50.0f, false,
+                                 ej.value("primitiveSubdiv", 1u)).GetHandle();
         else
             e = scene.SpawnBox(name, pos, rot, scale).GetHandle();
         OutputDebugStringA(("[Load] SpawnPrimitive: " + name + " type=" + prim + "\n").c_str());

@@ -6,6 +6,7 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 #include "resource/ShaderDiagnostics.h"
+#include "resource/ShaderTemplates.h"
 
 #include <algorithm>
 #include <cctype>
@@ -73,17 +74,59 @@ void Application::RegisterMcpEntityMethods()
             resp["result"] = {{"path", rel}};
         });
 
-    McpDefine("create_shader", "code:string,name:string", DX12E_MCP_HANDLER
+    McpDefine("list_shader_templates", "", DX12E_MCP_HANDLER
+        {
+            // 同梱テンプレート(shaders-src/templates/*.hlsl)の一覧。
+            // create_shader の template 引数にここの name を渡すと、その中身から作れる。
+            // ★AI が「水を作って」と言われたときに、白紙から 200 行を書くのではなく
+            //   動くものから始められるようにするための入口。
+            json arr = json::array();
+            for (const auto& t : shadertemplates::List())
+                arr.push_back({{"name", t.name}, {"title", t.title}, {"summary", t.summary}});
+            resp["ok"] = true;
+            resp["result"] = {{"templates", arr},
+                              {"hint", "create_shader に template=<name> を渡すと雛形から作れる。"
+                                       "code を同時に渡した場合は code が優先される。"}};
+        });
+
+    McpDefine("describe_shader_contract", "kind:string", DX12E_MCP_HANDLER
+        {
+            // カスタムシェーダーが使える定数/テクスチャ/入出力の一覧を返す。
+            // ★これが無いと、AI は cbuffer のオフセットを推測で書くことになる。
+            //   cbuffer はオフセットで対応が決まるので、1 つズレても【エラーは出ず値だけ化ける】。
+            //   共通ヘッダ UnoCustom.hlsli を include すれば宣言は要らない、も併せて返す。
+            const std::string kind = params.value("kind", std::string("mesh"));
+            resp["ok"] = true;
+            resp["result"] = shadertemplates::DescribeContract(kind);
+        });
+
+    McpDefine("create_shader", "code:string,name:string,template:string", DX12E_MCP_HANDLER
         {
             // カスタムシェーダー(MeshRenderer::shaderPath 割当用)を assets/shaders/ に作成/上書きする。
             // Lua と違い、書く前の静的検証ができない(DXC はファイルからしかコンパイルできない)ため、
             // 先に書いてから即コンパイルを試み、成否をそのまま返す(失敗してもファイルは残す=
             // 反復修正前提。エンジン側も無効なカスタムシェーダーは既定 Forward へ安全にフォールバックする)。
             const std::string name = params.value("name", std::string());
-            const std::string code = params.value("code", std::string());
+            std::string code       = params.value("code", std::string());
+            const std::string tmpl = params.value("template", std::string());
             if (name.empty()) throw McpError(McpErr::InvalidParam, "missing 'name'");
             if (name.find_first_of("/\\:*?\"<>|") != std::string::npos)
                 throw McpError(McpErr::InvalidParam, "invalid shader name");
+
+            // code 未指定なら template から起こす。両方あれば code を優先（明示が勝つ）。
+            if (code.empty())
+            {
+                if (tmpl.empty())
+                    throw McpError(McpErr::InvalidParam, "missing 'code' (または template を指定する)",
+                                   "使えるテンプレートは list_shader_templates で取得できる");
+                if (!shadertemplates::Load(tmpl, code))
+                {
+                    std::vector<std::string> names;
+                    for (const auto& t : shadertemplates::List()) names.push_back(t.name);
+                    throw McpError(McpErr::NotFound, "unknown template: " + tmpl,
+                                   "list_shader_templates を参照", names);
+                }
+            }
 
             const std::string rel = name + ".hlsl";
             const fs::path full = fs::path(PathResolver::ProjectShaderDir()) / rel;
@@ -103,6 +146,8 @@ void Application::RegisterMcpEntityMethods()
             }
             resp["ok"] = true;
             resp["result"] = {{"path", rel}, {"compiled", compiled}};
+            if (!tmpl.empty() && params.value("code", std::string()).empty())
+                resp["result"]["fromTemplate"] = tmpl;
             if (!compiled) resp["result"]["error"] = error.empty() ? "shader manager unavailable" : error;
             // コンパイルが通っても PSO 生成で落ちることがある（ルートシグネチャに無い
             // register を宣言した等）。その診断文はここに出る＝AI も同じ理由を読める。
@@ -163,6 +208,55 @@ void Application::RegisterMcpEntityMethods()
                                {"skinnedFallbackWarning", reg.all_of<SkeletalAnimation>(e) && !mr.shaderPath.empty()}};
         });
 
+    McpDefine("set_mesh_shader_params", "effect:number,entity:int,name:string,params:any,paramsB:any",
+              DX12E_MCP_HANDLER
+        {
+            // カスタムシェーダーの自由枠（b0 の effectValue / shaderParamsB / shaderParams）を書く。
+            //
+            // ★これが無いと、AI はシェーダーを【割り当てられるが動かせない】。
+            //   set_mesh_shader で貼っても全パラメータが 0 のままなので、
+            //   波の大きさ 0・速度 0 の水面のように「貼ったのに何も起きない」状態になる
+            //   （実際に踏んだ: 海を貼っても真っ平らな板にしか見えなかった）。
+            //   意味付けは各シェーダーのヘッダコメントにある（read_shader で読める）。
+            //
+            // ルート定数なので毎フレーム呼んでも安価。頂点バッファの作り直しは起きない。
+            const auto e = ResolveMcpEntity(*m_scene, params);
+            auto& reg = m_scene->GetRegistry();
+            if (!reg.all_of<MeshRenderer>(e))
+                throw McpError(McpErr::NotFound, "entity has no MeshRenderer");
+            auto& mr = reg.get<MeshRenderer>(e);
+
+            if (params.contains("effect"))
+                mr.effectValue = params["effect"].get<float>();
+            if (params.contains("params"))
+            {
+                const auto v = params["params"].get<std::vector<float>>();
+                if (v.size() > 4) throw McpError(McpErr::InvalidParam, "params は最大 4 要素");
+                float* dst = &mr.shaderParams.x;
+                for (size_t i = 0; i < v.size(); ++i) dst[i] = v[i];
+            }
+            if (params.contains("paramsB"))
+            {
+                const auto v = params["paramsB"].get<std::vector<float>>();
+                if (v.size() > 3) throw McpError(McpErr::InvalidParam, "paramsB は最大 3 要素");
+                float* dst = &mr.shaderParamsB.x;
+                for (size_t i = 0; i < v.size(); ++i) dst[i] = v[i];
+            }
+
+            resp["ok"] = true;
+            resp["result"] = {
+                {"entityId", static_cast<u32>(e)},
+                {"shaderPath", mr.shaderPath},
+                {"effect", mr.effectValue},
+                {"params", {mr.shaderParams.x, mr.shaderParams.y, mr.shaderParams.z, mr.shaderParams.w}},
+                {"paramsB", {mr.shaderParamsB.x, mr.shaderParamsB.y, mr.shaderParamsB.z}},
+            };
+            if (mr.shaderPath.empty())
+                resp["result"]["warning"] =
+                    "このエンティティにはカスタムシェーダーが割り当てられていません"
+                    "（値は保存されますが既定シェーダーは読みません）。set_mesh_shader を先に呼ぶこと";
+        });
+
     McpDefine("set_sprite_shader", "alphaBlend:bool,entity:int,name:string,shaderPath:string", DX12E_MCP_HANDLER
         {
             // Sprite2D::shaderPath の割当/解除。set_mesh_shader と同型だが、対象はworld-spaceスプライトのみ
@@ -210,7 +304,9 @@ void Application::RegisterMcpEntityMethods()
             resp["ok"] = true;
         });
 
-    McpDefine("create_entity", "name:string,parent:any,parentName:any,position:any,type:string", DX12E_MCP_HANDLER
+    McpDefine("create_entity",
+              "name:string,parent:any,parentName:any,position:any,size:float,subdivisions:int,type:string",
+              DX12E_MCP_HANDLER
         {
             // 生成はメッシュ構築に cmdList が要るためフレーム境界で遅延処理。本物の entityId は
             // 生成後に SendToClient で返す(遅延同期)。Play 中は spawn キューが drain されないため拒否。
@@ -304,6 +400,10 @@ void Application::RegisterMcpEntityMethods()
                 sreq.name      = name;
                 sreq.mcp       = deferred;
                 sreq.parent    = uiParentOverride;
+                // 平面だけの追加指定。水/海のシェーダーを貼るなら subdivisions を
+                // 上げないと 4 頂点の板のままで波が出ない（describe_shader_contract の gotchas 参照）。
+                sreq.planeSubdivisions = (std::max)(1u, params.value("subdivisions", 1u));
+                sreq.planeSize         = params.value("size", 0.0f);
                 m_editorCtx->pendingSpawns.push_back(std::move(sreq));
                 isDeferred = true;
             }

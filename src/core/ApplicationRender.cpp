@@ -2176,7 +2176,9 @@ void Application::Render()
             }
             else if (req.modelPath == "__primitive_plane__")
             {
-                auto e = m_scene->SpawnPlane(name, req.position);
+                auto e = m_scene->SpawnPlane(name, req.position,
+                                             req.planeSize > 0.0f ? req.planeSize : 50.0f,
+                                             /*gridShader=*/false, req.planeSubdivisions);
                 spawnedEntity = e.GetHandle();
             }
             else if (req.modelPath == "__empty__")

@@ -217,7 +217,8 @@ Entity Scene::Spawn(const std::string& name,
 Entity Scene::SpawnPlane(const std::string& name,
                          DirectX::XMFLOAT3 position,
                          f32 size,
-                         bool gridShader)
+                         bool gridShader,
+                         u32 subdivisions)
 {
     Entity entity = CreateEntityWithTransform(name, position, {0, 0, 0}, {1, 1, 1});
 
@@ -225,7 +226,10 @@ Entity Scene::SpawnPlane(const std::string& name,
     MeshRenderer& renderer = entity.AddComponent<MeshRenderer>();
     renderer.modelPath = "__primitive_plane__";
     auto planeMesh = std::make_unique<Mesh>();
-    planeMesh->InitializeAsPlane(*m_device, size);
+    // ★分割数は「頂点を動かすシェーダー」に必須。既定の 1（＝4 頂点）では
+    //   波・うねり・変位が一切出ない（頂点が無いので動かしようがない）。
+    //   水/海のカスタムシェーダーを貼るなら 64 以上を目安にすること。
+    planeMesh->InitializeAsPlane(*m_device, size, (std::max)(1u, subdivisions));
     renderer.meshes.push_back(planeMesh.get());
     m_ownedMeshes.push_back(std::move(planeMesh));
 
@@ -234,7 +238,7 @@ Entity Scene::SpawnPlane(const std::string& name,
         entity.AddComponent<GridPlane>();
     }
 
-    Logger::Info("Spawned plane '{}' (size={:.0f})", name, size);
+    Logger::Info("Spawned plane '{}' (size={:.0f}, subdiv={})", name, size, subdivisions);
     return entity;
 }
 
