@@ -1413,6 +1413,14 @@ private:
     std::string                      m_transitionTargetScene;  // 中間点でロードする assets 相対パス（空=ロード無し）
     std::vector<std::string>         m_pendingScenePreloads;   // Lua preloadScene の保留分（cmdList のあるフレーム境界で処理）
 
+    // プロジェクトの既定トランジション（エディタの Scene Flow 窓で選ぶプリセット）。
+    // settings.json の "scene_transition_type" / "scene_transition_dur" に保存され、
+    // BuildGame が settings.json を配布物へ同梱するので配布ゲームでもそのまま出る。
+    // 型を指定しない経路（Lua の sceneTransition / Trigger の FadeToScene）が参照する。
+    int m_defaultTransitionType = 0;      // TransitionType の値。既定 0 = 暗転
+    f32 m_defaultTransitionDur  = 0.6f;   // 「閉じる→開く」の合計秒
+    void LoadTransitionPrefs();           // settings.json から上の 2 つを読み直す
+
     // シーンフロー（WP6）
     std::unique_ptr<SceneFlow> m_sceneFlow;
     GameClock                          m_gameClock;

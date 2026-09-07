@@ -10,6 +10,11 @@ namespace dx12e
 {
 class GraphicsDevice;
 
+// ★値は保存値（settings.json / シーン JSON）と Lua の transitionToScene(type) に直接出る。
+//   既存の 0〜4 は動かさないこと。新しい型は末尾へ足す。
+// ★分岐の中身は shaders/post/Transition.hlsl の TransPS と
+//   editor/TransitionSwatch.h（サムネイル）の 2 箇所に写しがある。片方だけ直すと
+//   「サムネイルと実物が違う」になる（3 ファイルの先頭に同じ対応表がある）。
 enum class TransitionType
 {
     FadeBlack    = 0,
@@ -17,7 +22,14 @@ enum class TransitionType
     Circle       = 2,   // 円（アイリス）
     WipeVertical = 3,
     Seek         = 4,   // シークバー早送り（プレイヘッド掃引+シークバー。動画モチーフのゲーム向け）
+    FadeWhite    = 5,   // ホワイトアウト（閃光・回想の入り）
+    Blinds       = 6,   // ブラインド（横帯が同時に閉じる）
+    RadialClock  = 7,   // 時計ワイプ（12時から時計回り）
+    Diamond      = 8,   // 菱形アイリス（Circle の角ばった版）
 };
+
+// TransitionType の個数。保存値の範囲チェックに使う。
+inline constexpr int kTransitionTypeCount = 9;
 
 // 画面遷移オーバーレイ。progress を 0→1→0 で動かし、中間点でシーンロードを発火させる。
 class SceneTransition

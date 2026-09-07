@@ -447,6 +447,10 @@ void Application::LoadProject(const ProjectInfo& info)
     m_useVsync       = PersistGet("video_vsync", m_useVsync ? 1.0 : 0.0) != 0.0;
     m_persistedVsync = m_useVsync;
 
+    // 既定トランジション（Scene Flow 窓のプリセット）。プロジェクトごとの設定なので
+    // ここで読み直さないと、前のプロジェクトで選んだ演出を引きずる。
+    LoadTransitionPrefs();
+
     // ★影の解像度と CSM の調整値。書き込み側（ApplicationRender.cpp）とセットで、
     //   これが無いと保存はされるのに読み出されない＝毎回既定に戻る。
     {

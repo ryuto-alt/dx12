@@ -120,6 +120,10 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     m_useVsync       = PersistGet("video_vsync", m_useVsync ? 1.0 : 0.0) != 0.0;
     m_persistedVsync = m_useVsync;   // 起動直後に同じ値を書き戻さないための基準
 
+    // 既定トランジション（Scene Flow 窓のプリセット）。エディタ・ゲームとも同じキーを見る。
+    // エディタはこの後 LoadProject でプロジェクトの settings.json から読み直す。
+    LoadTransitionPrefs();
+
     if (gameMode)
     {
         m_fpsLimit = static_cast<f32>(PersistGet("video_fps", m_fpsLimit));

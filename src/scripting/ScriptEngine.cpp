@@ -17,6 +17,7 @@
 #include "ecs/Components.h"
 #include "ui/UiRichText.h"   // isUiTypewriterDone: rich=true のタグ除去後文字数
 #include "renderer/Mesh.h"
+#include "renderer/TransitionPresets.h"   // transitionToScene がプリセット ID を受ける
 #include "renderer/SpriteAnim.h"   // isSpriteAnimDone/isUiAnimDone: 連番の単発終了判定
 #include "renderer/ParticleSystem.h"
 #include "renderer/GpuParticleSystem.h"
@@ -1780,12 +1781,44 @@ void ScriptEngine::RegisterBindings()
     lua["preloadScene"] = [this](const std::string& rel) { if (m_preloadSceneCb) m_preloadSceneCb(rel); };
     lua["nextScene"] = [this]() { if (m_nextSceneCb) m_nextSceneCb(); };
     lua["quit"]      = [this]() { if (m_quitCb) m_quitCb(); };
-    // フェード等のトランジション付きシーン切替（type: 0=Fade,1=Wipe,2=Circle,3=縦Wipe,4=シークバー早送り）
+    // フェード等のトランジション付きシーン切替。
+    // type: 0=Fade, 1=Wipe, 2=Circle, 3=縦Wipe, 4=シークバー早送り,
+    //       5=ホワイトアウト, 6=ブラインド, 7=時計ワイプ, 8=菱形
     lua["fadeToScene"] = [this](const std::string& rel, sol::optional<float> dur) {
         if (m_transitionCb) m_transitionCb(rel, 0, dur.value_or(0.6f));
     };
-    lua["transitionToScene"] = [this](const std::string& rel, int type, sol::optional<float> dur) {
-        if (m_transitionCb) m_transitionCb(rel, type, dur.value_or(0.6f));
+    // エディタ（Scene Flow 窓）で選んだ既定プリセットで切り替える。
+    // type/dur を渡さない＝ -1 / 0 が「既定を使え」の合図（Application 側で解決する）。
+    lua["sceneTransition"] = [this](const std::string& rel, sol::optional<float> dur) {
+        if (m_transitionCb) m_transitionCb(rel, -1, dur.value_or(0.0f));
+    };
+    // type は番号でもプリセット ID の文字列でも受ける
+    // （"fade" / "flash" / "wipe" / "wipe_v" / "iris" / "diamond" / "blinds" / "clock" / "seek"）。
+    // 番号は enum の値と直結していて覚えられないので、Lua からは ID を勧める。
+    lua["transitionToScene"] = [this](const std::string& rel, sol::object type,
+                                      sol::optional<float> dur) {
+        if (!m_transitionCb) return;
+        int t = -1;
+        if (type.is<int>())
+        {
+            t = type.as<int>();
+        }
+        else if (type.is<std::string>())
+        {
+            const std::string id = type.as<std::string>();
+            if (const TransitionPreset* p = FindTransitionPreset(id.c_str()))
+            {
+                t = static_cast<int>(p->type);
+                // ID 指定で秒を省いたらプリセットの秒を使う（番号指定は従来どおり 0.6）
+                if (!dur) { m_transitionCb(rel, t, p->duration); return; }
+            }
+            else
+            {
+                Logger::Warn("transitionToScene: 未知のトランジション ID \"{}\""
+                             "（プロジェクトの既定プリセットで切り替えます）", id);
+            }
+        }
+        m_transitionCb(rel, t, dur.value_or(t < 0 ? 0.0f : 0.6f));
     };
     // フォーカスナビ(矢印/D-pad + Enter/Space/A)へ初期フォーカスを与える。
     // Entity か数値 id を受ける。メニュー表示時に既定ボタンへ当ててパッド即操作可能にする用。
@@ -4581,8 +4614,11 @@ void ScriptEngine::UpdateTriggers(f32 dt)
             if (!a.str.empty() && m_loadSceneCb) m_loadSceneCb(a.str);
             break;
         case TriggerActionType::FadeToScene:
+            // 型は指定しない(-1)＝Scene Flow 窓で選んだプロジェクトの既定プリセットで切り替える。
+            // 既定は「暗転 0.6 秒」なので、プリセットを触っていなければ従来と同じ絵になる。
+            // num（秒）が 0 のときも既定へ倒す＝プリセットの秒がそのまま効く。
             if (!a.str.empty() && m_transitionCb)
-                m_transitionCb(a.str, 0, a.num > 0.0 ? static_cast<float>(a.num) : 0.6f);
+                m_transitionCb(a.str, -1, a.num > 0.0 ? static_cast<float>(a.num) : 0.0f);
             break;
         case TriggerActionType::SetProperty:
             if (at != entt::null && !a.str.empty()) if (auto* ls = reg.try_get<LuaScript>(at))

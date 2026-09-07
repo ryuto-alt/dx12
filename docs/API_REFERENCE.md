@@ -695,12 +695,39 @@ Lighting.pulse(alarm, 0.8, 0.5, 4.0)
 | `loadScene(rel)` | シーンを即切替 |
 | `nextScene()` | SceneFlow の次シーンへ |
 | `quit()` | ゲーム終了 |
-| `fadeToScene(rel, dur?=0.6)` | フェード切替 |
-| `transitionToScene(rel, type, dur?=0.6)` | トランジション切替（type: 0=Fade,1=Wipe,2=Circle,3=縦Wipe,4=シークバー早送り） |
+| `fadeToScene(rel, dur?=0.6)` | フェード切替（型は常に暗転） |
+| `sceneTransition(rel, dur?)` | **エディタで選んだ既定プリセット**で切替。秒を省くとプリセットの秒 |
+| `transitionToScene(rel, typeOrId, dur?)` | トランジション切替。第 2 引数は**プリセット ID の文字列**か型番号 |
 | `preloadScene(rel)` | シーンが参照するテクスチャ/モデルをキャッシュへ先読み（切替はしない）。タイトル等で次シーンを先読みしておくと遷移時のカクつきが消える |
 
-> type 4「シークバー早送り」は動画プレイヤー風の演出: 光るプレイヘッドが左→右へ2回掃き（閉じ/開き）、
-> 画面下のシークバーが遷移全体の進行と同期して伸びる。動画/時間モチーフのゲーム向け。
+#### トランジションのプリセット
+エディタの **Scene Flow 窓 >「トランジション（既定の演出）」** でサムネイルから 1 つ選ぶ。
+選んだ結果は `settings.json`（`scene_transition_type` / `scene_transition_dur`）に入り、
+**ビルドしたゲームにも同梱される**。型を指定しない経路——Lua の `sceneTransition(rel)` と
+Trigger の `FadeToScene` アクション——がこの既定を使う。
+
+| ID | 型番号 | 名前 | 既定秒 | 見た目 |
+|---|---|---|---|---|
+| `fade` | 0 | 暗転 | 0.6 | 画面が黒く沈んで戻る。どのジャンルでも外さない |
+| `wipe` | 1 | 横ワイプ | 0.5 | 左から右へ拭き取る。軽快でテンポの速いゲーム向け |
+| `iris` | 2 | アイリス | 0.7 | 四隅から円で閉じる。レトロ・アドベンチャーの定番 |
+| `wipe_v` | 3 | 縦ワイプ | 0.5 | 上から下へ拭き取る。章立て・見出しの切り替えに |
+| `seek` | 4 | シークバー早送り | 1.0 | 動画プレイヤー風。光るプレイヘッドが左→右へ2回掃き（閉じ/開き）、画面下のシークバーが遷移全体の進行と同期して伸びる |
+| `flash` | 5 | ホワイトアウト | 0.5 | 白く飛ばす。閃光・回想の入り・場面の飛躍に |
+| `blinds` | 6 | ブラインド | 0.6 | 横帯が同時に閉じる。機械的・SF・ハッキング演出に |
+| `clock` | 7 | 時計ワイプ | 0.8 | 12時から時計回りに扇が回る。時間・ターン制のモチーフに |
+| `diamond` | 8 | 菱形 | 0.6 | アイリスの角ばった版。カード・パズル系の硬い印象に |
+
+```lua
+sceneTransition("scenes/level2.json")            -- エディタで選んだ演出
+transitionToScene("scenes/boss.json", "iris")    -- この呼び出しだけアイリス（0.7秒）
+transitionToScene("scenes/boss.json", "iris", 1.5)  -- 秒も指定する
+```
+
+> 型番号（0〜8）は `settings.json` とシーン JSON に出る保存値なので値を動かさない。
+> Lua からは覚えなくていい ID 文字列を推奨。未知の ID は警告を出して既定プリセットへ倒す。
+> 演出の実体は `shaders/post/Transition.hlsl`、表は `src/renderer/TransitionPresets.h`、
+> エディタのサムネイルは `src/editor/TransitionSwatch.h`（3 ファイルの形は一対一で対応）。
 
 ### ゲーム内 UI フォーカスナビ
 | 関数 | 説明 |

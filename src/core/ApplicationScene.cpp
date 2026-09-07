@@ -352,6 +352,20 @@ void Application::PersistSet(const std::string& key, double v)
     SavePersistStore();
 }
 
+// 既定トランジション（Scene Flow 窓のプリセット）を settings.json から読み直す。
+// エディタは LoadProject（プロジェクトごとに settings.json が違う）、
+// ゲームは Initialize から呼ぶ。書き込みは Scene Flow 窓のタイル/スライダー。
+void Application::LoadTransitionPrefs()
+{
+    const int t = static_cast<int>(PersistGet("scene_transition_type",
+                                              static_cast<double>(m_defaultTransitionType)));
+    // 保存値が壊れていても（型を減らした・手で書き換えた）落とさない。範囲外は暗転へ倒す。
+    m_defaultTransitionType = (t >= 0 && t < kTransitionTypeCount) ? t : 0;
+    m_defaultTransitionDur  = std::clamp(
+        static_cast<f32>(PersistGet("scene_transition_dur",
+                                    static_cast<double>(m_defaultTransitionDur))), 0.1f, 5.0f);
+}
+
 void Application::WireScriptCallbacks()
 {
     if (!m_scriptEngine) return;
@@ -376,9 +390,13 @@ void Application::WireScriptCallbacks()
     m_scriptEngine->SetQuitCallback(
         [this]() { if (m_window) PostMessageW(m_window->GetHwnd(), WM_CLOSE, 0, 0); });
 
+    // type < 0 / dur <= 0 は「プロジェクトの既定（Scene Flow 窓のプリセット）を使う」の意。
+    // 型を明示しない経路（Lua の sceneTransition、Trigger の FadeToScene）がこれを通る。
     m_scriptEngine->SetTransitionCallback(
         [this](const std::string& rel, int type, float dur) {
             if (!m_sceneTransition) return;
+            if (type < 0 || type >= kTransitionTypeCount) type = m_defaultTransitionType;
+            if (dur <= 0.0f) dur = m_defaultTransitionDur;
             m_transitionTargetScene = rel;
             m_sceneTransition->Start(static_cast<TransitionType>(type), dur);
         });
@@ -1122,13 +1140,28 @@ void Application::RenderSceneLoadingOverlay()
     ImGui::SetNextWindowPos(pos);
     ImGui::SetNextWindowSize(size);
     ImGui::SetNextWindowViewport(vp->ID);
-    // 不透明: トランジション（ImGui より後に描かれる）をロード中は止めているので、
-    // 旧シーンを隠す役目はこのオーバーレイが全部持つ。
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.04f, 0.05f, 0.07f, 1.0f));
+    // 不透明: 旧シーン／構築途中の新シーンを隠す役目はこのオーバーレイが持つ。
+    // ゲームは純黒（トランジションの暗幕と地続きに見せる）、エディタは進捗 UI の下地。
+    ImGui::PushStyleColor(ImGuiCol_WindowBg,
+        m_isGameMode ? ImVec4(0.0f, 0.0f, 0.0f, 1.0f) : ImVec4(0.04f, 0.05f, 0.07f, 1.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::Begin("##SceneLoadingOverlay", nullptr,
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings
         | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing);
+
+    // 配布ゲーム(GameRuntime)は目隠しの一枚で終わる。スピナー・進捗%・アセット名・経過秒は
+    // どれも開発者向けの情報で、プレイヤーに見せる画面ではない。
+    // 目隠しそのものは残す必要がある: ここを素通りさせると、ロード中の旧シーンや
+    // 構築途中の新シーンがそのまま見えてしまう。
+    // トランジション中は、この黒の上から同じ矩形をトランジション自身が塗る
+    // （ApplicationRender.cpp の遷移オーバーレイ。ゲームでは段階ロード中も描く）。
+    if (m_isGameMode)
+    {
+        ImGui::End();
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor();
+        return;
+    }
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 c(pos.x + size.x * 0.5f, pos.y + size.y * 0.5f);

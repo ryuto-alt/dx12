@@ -9,6 +9,8 @@
 #include "core/Profiler.h"
 #include "editor/PostPresets.h"
 #include "editor/PostPresetSwatch.h"
+#include "editor/TransitionSwatch.h"
+#include "renderer/TransitionPresets.h"
 #include "editor/AssetDrop.h"
 
 namespace dx12e
@@ -6695,6 +6697,112 @@ void Application::Render()
 
             if (ImGui::Button("Save sceneflow.json"))
                 m_sceneFlow->Save(PathResolver::AssetsDir() + "sceneflow.json");
+
+            // ---- 既定トランジション（プリセットをサムネイルで選ぶ）----
+            // ポストの「見た目プリセット」と同じ流儀のタイル。違いは【1 つだけ選ぶ】こと
+            // （トランジションは重ねられない）。選んだ結果は settings.json に入り、
+            // BuildGame が同梱するので配布ゲームでもそのまま出る。
+            ImGui::SeparatorText("トランジション（既定の演出）");
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextDisabled("シーンを切り替えるときの演出。クリックで 1 つ選びます。");
+            ImGui::TextDisabled("Trigger の「FadeToScene」と Lua の sceneTransition(rel) が"
+                                "これを使います。Lua で演出を指定したいときは "
+                                "transitionToScene(rel, \"iris\") のように ID を渡してください。");
+            ImGui::PopTextWrapPos();
+
+            {
+                const int selPreset = FindTransitionPresetIndexByType(
+                    static_cast<TransitionType>(m_defaultTransitionType));
+
+                ImDrawList*  dl      = ImGui::GetWindowDrawList();
+                const float  sp      = ImGui::GetStyle().ItemSpacing.x;
+                const ImVec2 tile(136.0f, 92.0f);
+                const float  swatchH = 62.0f;
+                const float  availW  = ImGui::GetContentRegionAvail().x;
+                float        lineW   = 0.0f;
+                bool         first   = true;
+
+                for (int i = 0; i < kTransitionPresetCount; ++i)
+                {
+                    const TransitionPreset& pr = kTransitionPresets[i];
+
+                    if (!first && lineW + sp + tile.x <= availW)
+                    { ImGui::SameLine(); lineW += sp + tile.x; }
+                    else
+                        lineW = tile.x;
+                    first = false;
+
+                    ImGui::PushID(i);
+                    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+                    ImGui::InvisibleButton("##transtile", tile);
+                    const bool hovered = ImGui::IsItemHovered();
+                    const bool clicked = ImGui::IsItemClicked();
+                    const bool sel     = (i == selPreset);
+
+                    // サムネイル: 見本画の上に、その型の暗幕を途中まで閉じた状態で描く。
+                    // 形は Transition.hlsl と一対一（TransitionSwatch.h の対応表を参照）。
+                    const ImVec2 s0(p0.x + 3.0f, p0.y + 3.0f);
+                    const ImVec2 s1(p0.x + tile.x - 3.0f, p0.y + 3.0f + swatchH);
+                    transwatch::DrawSwatch(dl, s0, s1, pr.type);
+
+                    const ImVec2 ls = ImGui::CalcTextSize(pr.label);
+                    dl->AddText(ImVec2(p0.x + (tile.x - ls.x) * 0.5f, s1.y + 6.0f),
+                                sel ? IM_COL32(120, 190, 255, 255) : IM_COL32(205, 205, 212, 255),
+                                pr.label);
+
+                    dl->AddRect(p0, ImVec2(p0.x + tile.x, p0.y + tile.y),
+                                sel     ? IM_COL32(60, 140, 245, 255)
+                                : hovered ? IM_COL32(150, 152, 162, 220)
+                                          : IM_COL32(64, 65, 74, 180),
+                                4.0f, 0, sel ? 2.5f : 1.0f);
+
+                    if (hovered)
+                        ImGui::SetTooltip("%s\n\nID: \"%s\"  /  既定 %.1f 秒\n"
+                                          "クリックで選ぶとプレビューも再生します",
+                                          pr.tip, pr.id, static_cast<double>(pr.duration));
+                    if (clicked)
+                    {
+                        m_defaultTransitionType = static_cast<int>(pr.type);
+                        m_defaultTransitionDur  = pr.duration;
+                        PersistSet("scene_transition_type",
+                                   static_cast<double>(m_defaultTransitionType));
+                        PersistSet("scene_transition_dur",
+                                   static_cast<double>(m_defaultTransitionDur));
+                        // 選んだ瞬間にビューポートで実物を再生する（サムネイルは静止画なので、
+                        // 速さと動く向きはこちらでしか分からない）。切替先を空にしておくと
+                        // 中間点で何もロードしない＝ただの見本再生になる。
+                        if (m_sceneTransition)
+                        {
+                            m_transitionTargetScene.clear();
+                            m_sceneTransition->Start(pr.type, pr.duration);
+                        }
+                    }
+                    ImGui::PopID();
+                }
+
+                ImGui::SetNextItemWidth(220.0f);
+                ImGui::SliderFloat("長さ（秒）", &m_defaultTransitionDur, 0.1f, 3.0f, "%.2f");
+                // スライダーは掴んでいる間ずっと値が変わる。PersistSet は毎回ディスクへ
+                // 書くので、離した時だけ保存する。
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                    PersistSet("scene_transition_dur", static_cast<double>(m_defaultTransitionDur));
+                ImGui::SameLine();
+                if (ImGui::Button("▶ プレビュー") && m_sceneTransition)
+                {
+                    m_transitionTargetScene.clear();
+                    m_sceneTransition->Start(static_cast<TransitionType>(m_defaultTransitionType),
+                                             m_defaultTransitionDur);
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("シーンビューで実物を再生します（シーンは切り替わりません）");
+
+                const int cur = FindTransitionPresetIndexByType(
+                    static_cast<TransitionType>(m_defaultTransitionType));
+                ImGui::TextColored(ImVec4(0.47f, 0.75f, 1.0f, 1.0f), "選択中: %s（%.2f 秒）",
+                                   cur >= 0 ? kTransitionPresets[cur].label : "(不明)",
+                                   static_cast<double>(m_defaultTransitionDur));
+            }
+
             ImGui::End();
         }
 
@@ -6963,9 +7071,15 @@ void Application::Render()
     //   エディタ/Play 中 … 中央ビューポート矩形だけにスシザーを絞り、周りの
     //                      エディタUI（パネル/ツールバー）には掛からないようにする。
     //   ゲーム単体       … ウィンドウ全体。
-    // 段階ロード中は描かない: このオーバーレイは ImGui より後＝ローディング UI を塗り潰して
-    // しまう。ロード中の画面はローディング UI 自身が不透明に覆っているので目隠しは足りている。
-    if (m_sceneTransition && m_sceneTransition->IsActive() && !m_sceneLoadJob)
+    // 段階ロード中の扱いはモードで分かれる:
+    //   エディタ … 描かない。このオーバーレイは ImGui より後＝ローディング UI を塗り潰して
+    //              しまう。目隠しはローディング UI 自身の不透明な背景で足りている。
+    //   ゲーム   … 描く。ゲーム側の目隠しは黒一枚だけ（進捗 UI を出さない）なので、
+    //              トランジションの絵をそのまま出したままロードを終えられる。
+    //              ★Seek のように中間点が真っ黒でない型（紺地＋シークバー）があるため、
+    //                ここで止めると「遷移の絵 → 黒 → 遷移の絵」と一瞬戻って見える。
+    //              ロード中は SetHold で中間点に固定されている＝画面は覆われたまま。
+    if (m_sceneTransition && m_sceneTransition->IsActive() && (!m_sceneLoadJob || m_isGameMode))
     {
         u32 tLeft = 0, tTop = 0;
         u32 tW = m_window->GetWidth(), tH = m_window->GetHeight();
