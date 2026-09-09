@@ -819,7 +819,12 @@ nlohmann::json McpLuaApi()
         "PAD_A/PAD_B/PAD_X/PAD_Y/PAD_LB/PAD_RB/PAD_BACK/PAD_START/PAD_LSTICK/PAD_RSTICK/"
         "PAD_DPAD_UP/PAD_DPAD_DOWN/PAD_DPAD_LEFT/PAD_DPAD_RIGHT  (input:isPadButton* に渡す)",
         "loadScene(rel)", "nextScene()", "quit()", "fadeToScene(rel,dur?)",
-        "preloadScene(rel)  (次シーンのテクスチャ/モデルを先読み。切替はしない=トランジションのカクつき対策)",
+        "preloadScene(rel)  (次シーンのテクスチャ/モデルを先読み。切替はしない=トランジションのカクつき対策。"
+        "★同期＝読み終わるまで戻らない。重いシーンでは十数秒フリーズするのでロード画面からは使わないこと)",
+        "preloadSceneAsync(rel)  (preloadScene の非同期版。1フレーム 10ms ずつ読むので、"
+        "読んでいる間も OnUpdate と描画が回る＝ロード画面を動かしたままにできる。毎フレーム呼んでも安全)",
+        "scenePreloadProgress() -> 0..1  (preloadSceneAsync の進み具合。未要求/完了は 1)",
+        "scenePreloadCurrent() -> string  (いま読んでいる assets 相対パス。読んでいなければ \"\")",
         "sceneTransition(rel,dur?)  (エディタの「トランジション」窓で選んだ既定プリセットで切替。"
         "秒を省くとプリセットの秒)",
         "transitionToScene(rel,typeOrId,dur?)  (第2引数はプリセットIDの文字列か型番号。"

@@ -777,6 +777,14 @@ private:
     void FinishSceneLoad(const std::string& fullPath, const std::string& rel, bool runtime,
                          ID3D12GraphicsCommandList* cmdList);  // 実体化（同期/非同期の共通後段）
     bool IsSceneLoadJobActive() const { return m_sceneLoadJob != nullptr; }
+    // ---- 非同期シーン先読み（Lua: preloadSceneAsync / scenePreloadProgress）----
+    // シーンは切り替えず、参照アセットのキャッシュだけを毎フレーム数 ms ずつ温める。
+    // 進み具合を Lua から読めるので、ゲーム側のロード画面が実測で動かせる。
+    void UpdateScenePreloadJob(ID3D12GraphicsCommandList* cmdList);
+    void CancelScenePreloadJob();   // シーン切替が始まったら捨てる（読む意味が無くなるため）
+    f32  GetScenePreloadProgress() const { return m_scenePreloadProgress; }
+    std::string GetScenePreloadCurrent() const
+    { return m_scenePreloadJob ? m_scenePreloadJob->current : std::string(); }
     // プロジェクト内の【全シーン】が参照するテクスチャを集め、BC 圧縮キャッシュ作りを
     // バックグラウンドで始める。シーンを開くたびに圧縮待ちを食らうのをやめるための仕込み。
     // エディタでプロジェクトを開き終わった直後に 1 回だけ呼ぶ。
@@ -1097,6 +1105,42 @@ private:
     static constexpr uintmax_t kSceneLoadBigFileBytes = 512 * 1024;
     // 1フレームで先読みに使ってよい時間(ms)。超えたら残りは次フレームへ回す＝UIが動き続ける。
     static constexpr f64    kSceneLoadBudgetMs       = 6.0;
+
+    // ---- 非同期シーン先読み（Lua: preloadSceneAsync）----
+    // ★同期版 preloadScene は参照アセットを【1 フレームで全部】読む。重いシーンでは
+    //   十数秒メッセージポンプが止まり、ゲーム側のロード画面は 1 枚も更新されない
+    //   ＝「前の絵のまま固まった」＝Windows に「応答していません」と言われる。
+    //   こちらは SceneLoadJob と同じ「予算つきで少しずつ」の流儀で、シーンは切り替えずに
+    //   キャッシュだけ温める。読んでいる間もゲームの OnUpdate と描画が回り続ける。
+    struct ScenePreloadJob
+    {
+        std::string                rel;               // assets 相対のシーンパス
+        std::vector<SceneAssetRef> assets;            // 先読み対象（パス + 色空間/用途）
+        size_t                     next = 0;          // assets の消化位置
+        // 走査(CollectSceneAssetRefs)は 1.4MB のシーンで数十 ms 掛かる。要求されたフレームで
+        // 走らせるとゲーム側が「重い呼び出しの前に 1 枚描く」段取りを組めないので、
+        // UI が 1 枚出た次のフレームへ回す（SceneLoadJob の needsScan と同じ流儀）。
+        bool                       needsScan = true;
+        std::string                current;           // いま読んでいるファイル（表示用）
+        // ---- 段1: BC 圧縮だけ先にワーカーへ逃がす（キャッシュが冷たいとき用）----
+        // BC7 圧縮は 1 枚で数秒かかる。メインスレッドで踏むと予算を付けても【その 1 件】で
+        // 1 フレームが数秒になり、結局固まって見える。圧縮は AssetPrewarmer に任せ、
+        // 終わってから GPU アップロードだけメインで回す。
+        bool   prewarmStarted = false;
+        bool   prewarmDone    = false;
+        size_t prewarmTotal   = 0;   // ワーカーに渡した枚数（0 = 段1 なし）
+        std::chrono::steady_clock::time_point start{};
+    };
+    std::unique_ptr<ScenePreloadJob> m_scenePreloadJob;   // null = 先読みしていない
+    std::string m_pendingScenePreloadAsync;   // Lua preloadSceneAsync の保留分（同時に1本）
+    // 0..1。ジョブが無いときは 1（「読むものが無い」も「読み終わった」も 1）。
+    // ★要求を受けた瞬間に 0 へ落とすこと。ジョブはフレーム境界で作るので、
+    //   そうしないと要求直後の 1 回だけ 1 が返り、ゲーム側が「もう終わった」と誤解する。
+    f32 m_scenePreloadProgress = 1.0f;
+    // 1フレームで非同期先読みに使ってよい時間(ms)。SceneLoadJob より少し多めに取る。
+    // ロード画面は絵が軽い（黒地に線が数本）ので、10ms 使っても 60fps を保てる。
+    static constexpr f64 kScenePreloadBudgetMs = 10.0;
+
     std::unique_ptr<Camera>            m_camera;
     std::unique_ptr<ConstantBuffer>    m_perFrameCB;
     std::unique_ptr<CommandList>       m_commandList;

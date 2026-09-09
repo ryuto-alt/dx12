@@ -166,8 +166,19 @@ public:
     // ゲーム内 UI のフォーカスナビへ初期フォーカスを与える（Lua: setUiFocus(entity)）。id=entt id。
     using UiFocusCb = std::function<void(std::uint32_t id)>;
 
+    // 非同期シーン先読み（Lua: preloadSceneAsync / scenePreloadProgress / scenePreloadCurrent）。
+    // 同期版 preloadScene と違い、Application 側が毎フレーム数 ms ずつしか読まない。
+    // 進み具合を Lua から引けるので、ゲーム側のロード画面を実測で動かせる。
+    struct ScenePreloadCallbacks
+    {
+        std::function<void(const std::string&)> begin;      // 先読み開始（フレーム境界まで遅延）
+        std::function<float()>                  progress;   // 0..1（未要求/完了は 1）
+        std::function<std::string()>            current;    // いま読んでいるファイル（無ければ ""）
+    };
+
     void SetLoadSceneCallback(LoadSceneCb cb) { m_loadSceneCb = std::move(cb); }
     void SetPreloadSceneCallback(LoadSceneCb cb) { m_preloadSceneCb = std::move(cb); }
+    void SetScenePreloadCallbacks(ScenePreloadCallbacks cb) { m_scenePreloadCb = std::move(cb); }
     void SetNextSceneCallback(VoidCb cb)      { m_nextSceneCb = std::move(cb); }
     void SetQuitCallback(VoidCb cb)           { m_quitCb = std::move(cb); }
     void SetTransitionCallback(TransitionCb cb) { m_transitionCb = std::move(cb); }
@@ -262,6 +273,7 @@ private:
 
     LoadSceneCb  m_loadSceneCb;
     LoadSceneCb  m_preloadSceneCb;
+    ScenePreloadCallbacks m_scenePreloadCb;
     VoidCb       m_nextSceneCb;
     VoidCb       m_quitCb;
     VoidCb       m_actionSaveCb;

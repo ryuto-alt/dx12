@@ -21,6 +21,14 @@ void AssetPrewarmer::Start(std::vector<Item> items)
     if (m_running.load()) return;
     if (items.empty())    return;
 
+    // ★前回のワーカーを必ず回収してから作り直す。
+    //   m_running は Run() の末尾で false になるが、std::thread の実体はそのまま残って
+    //   joinable のままなので、そこへ新しい thread を代入すると std::terminate() が走る
+    //   （＝ログが 1 行も残らないまま落ちる）。Start が 2 回目以降に呼ばれるようになった
+    //   時点で必ず踏む地雷で、実際に preloadSceneAsync の実装中に踏んだ。
+    //   ここへ来た時点で前回のワーカーは終了済みなので join は即返る。
+    if (m_thread.joinable()) m_thread.join();
+
     m_abort.store(false);
     m_total.store(items.size());
     m_done.store(0);

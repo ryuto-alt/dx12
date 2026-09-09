@@ -406,6 +406,10 @@ transitionToScene("scenes/select.json", "spiral", 1.3) -- 秒も指定する
 loadScene("scenes/level1.json")          -- 即ロード（フェード無し）
 nextScene()                              -- sceneflow の次へ
 preloadScene("scenes/select.json")       -- 次シーンのテクスチャ/モデルを先読み(切替はしない。遷移カクつき対策)
+                                         -- ★同期。読み終わるまで戻らないのでロード画面では使わない
+preloadSceneAsync("scenes/select.json")  -- 非同期版。1フレーム10msずつ読むので絵が止まらない
+local p = scenePreloadProgress()         -- 0..1(未要求/完了は1)。ロード画面の帯はこれで動かす
+local f = scenePreloadCurrent()          -- いま読んでいるファイル(assets相対。無ければ "")
 
 -- メニュー表示時に既定ボタンへフォーカスを当てると、矢印/D-pad/スティックで移動・
 -- Enter/Space/A で決定のフォーカスナビが即使える(リングはエンジンが描画)
