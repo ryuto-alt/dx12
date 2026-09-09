@@ -1997,6 +1997,9 @@ void Application::Shutdown()
     // UITweenState には Lua の onComplete クロージャが入っていることがある（tweenUi）。
     // sol::function の unref が生きた lua_State を要求するため、Lua ステート破棄
     // （m_scriptEngine.reset）より先に必ず破棄する（m_scene.reset は後ろのため）
+    // ★同じ理由の後始末は ScriptEngine::Shutdown 側にもある（そちらは LuaScript の
+    //   env/self も落とす＝Play 停止やシーン切替の経路もまとめて守る本体）。
+    //   ここは「破棄順の危険がこの並びにある」という印として残してある。
     if (m_scene)
     {
         auto& reg = m_scene->GetRegistry();

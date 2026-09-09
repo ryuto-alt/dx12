@@ -4759,6 +4759,36 @@ void ScriptEngine::Shutdown()
     // キャプチャした購読ハンドラ）の dangling 参照を防ぐ。
     if (m_eventBus) m_eventBus->Clear();
 
+    // ★★ECS の中に残っている Lua 参照を【lua_State を壊す前に】全部落とす。
+    //   これを忘れると、あとで registry が壊れたときに LuaScript のデストラクタが
+    //   もう無い lua_State へ luaL_unref を撃って ACCESS_VIOLATION で落ちる。
+    //
+    //   2026-09-09 に配布ゲームで実際に踏んだ: Application::Shutdown は
+    //   m_scriptEngine.reset()（= ここ）を先に、m_scene.reset() を後に行う。
+    //   ゲームは Play を抜けずに終了する（OnPlayStop を通らない）ので、
+    //   env/self を握ったままの LuaScript が死んだ state を触り、
+    //   【タイトルの EXIT でも設定パネルの終了ボタンでも、終了のたびに】
+    //   クラッシュレポートが出ていた。
+    //   ★直し方は「Scene を先に壊す」でもよいが、Shutdown の破棄順は
+    //     GPU リソースの依存で組んであるので動かしたくない。参照を落とす側にした。
+    //     ここに置けば Play 停止・シーン切替（Shutdown→Initialize）の経路も
+    //     まとめて守れる（OnPlayStop と同じ操作なので二重に呼んでも無害）。
+    if (m_scene)
+    {
+        auto& reg = m_scene->GetRegistry();
+        for (auto [e, ls] : reg.view<LuaScript>().each())
+        {
+            ls.env.reset();     // sol::environment
+            ls.self.reset();    // sol::table
+            ls.started = false;
+            // loadError / errorMessage は残す（Inspector に見せるため）
+        }
+        // tweenUi の onComplete は sol::function をキャプチャした std::function。
+        // 中身だけ捨てる（コンポーネントごと消すと進行中の視覚値まで飛ぶ）。
+        for (auto [e, ts] : reg.view<UITweenState>().each())
+            for (auto& tw : ts.tweens) tw.onComplete = nullptr;
+    }
+
     m_propSchemaCache.clear();
     m_scriptMtimes.clear();   // 次の Play で mtime の基準を取り直す
     if (m_lua)
