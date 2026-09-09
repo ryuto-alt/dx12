@@ -698,7 +698,35 @@ Lighting.pulse(alarm, 0.8, 0.5, 4.0)
 | `fadeToScene(rel, dur?=1.0)` | フェード切替（型は常に暗転） |
 | `sceneTransition(rel, dur?)` | **エディタで選んだ既定プリセット**で切替。秒を省くとプリセットの秒 |
 | `transitionToScene(rel, typeOrId, dur?)` | トランジション切替。第 2 引数は**プリセット ID の文字列**か型番号 |
-| `preloadScene(rel)` | シーンが参照するテクスチャ/モデルをキャッシュへ先読み（切替はしない）。タイトル等で次シーンを先読みしておくと遷移時のカクつきが消える |
+| `preloadScene(rel)` | シーンが参照するテクスチャ/モデルをキャッシュへ先読み（切替はしない）。タイトル等で次シーンを先読みしておくと遷移時のカクつきが消える。**同期**（読み終わるまで戻らない） |
+| `preloadSceneAsync(rel)` | 上の**非同期版**。1 フレーム 10ms ずつしか読まないので、読んでいる間も `OnUpdate` と描画が回る。ロード画面はこちらを使う。毎フレーム呼んでも安全 |
+| `scenePreloadProgress()` | `preloadSceneAsync` の進み具合 `0..1`。未要求 / 読み終わりは `1` |
+| `scenePreloadCurrent()` | いま読んでいるアセットの assets 相対パス（読んでいなければ `""`） |
+
+#### 非同期先読み（ロード画面の作り方）
+`preloadScene` は**読み終わるまで戻ってこない**。参照アセットが多いシーンでは十数秒メッセージポンプが
+止まり、その間に描いた絵は 1 枚も画面に出ない ＝ 遊ぶ側には「前の絵のまま固まった」＝ハングに見える
+（Windows も「応答していません」を出す）。ロード画面から呼ぶなら必ず `preloadSceneAsync` を使う。
+
+```lua
+local NEXT = "scenes/stage1.json"
+
+function OnUpdate(self, dt)
+    ui:rect(0, 0, SCREEN_W, SCREEN_H, 0, 0, 0, 1, 0)   -- ★先に 1 枚描いてから読み始める
+
+    self.f = (self.f or 0) + 1
+    if self.f >= 2 then preloadSceneAsync(NEXT) end    -- 毎フレーム呼んでよい
+
+    local p = (self.f >= 2) and scenePreloadProgress() or 0.0
+    ui:rect(100, 500, 400 * p, 3, 1, 1, 1, 1, 0)       -- 実測の進捗で帯が動く
+
+    if p >= 1.0 then transitionToScene(NEXT, "curtain", 1.8) end
+end
+```
+
+エンジン側は「要求された次のフレームまで何もしない → 参照アセットを走査 → BC 圧縮だけワーカーへ
+逃がす → 予算ぶんずつキャッシュへ載せる」の 4 段で進む。最初の 2 段が別フレームなのは、
+**重い処理の前にゲーム側が必ず 1 枚描いて出せるようにする**ため。
 
 #### トランジションのプリセット（28 種類）
 エディタの **ツール >「トランジション」窓** でサムネイルから 1 つ選ぶ
