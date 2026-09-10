@@ -210,9 +210,22 @@ void Application::UpdateProjectLoad(f32 dt)
         // ロード完了: 隠していたメインウィンドウを出してからスプラッシュを閉じる
         // (順序を逆にすると一瞬何も表示されない空白ができる)。
         // 起動直後の遅延表示(--project直開き等でまだ未表示)もここで役目を引き継ぐ。
-        if (m_window) m_window->Show();
+        // ★ヘッドレスでは窓を出さない。ここを素通しにすると --headless でも窓が出て、
+        //   人が作業している画面を奪う（そもそもそれを避けるための機能）。
+        if (m_window && !m_headless) m_window->Show();
         m_deferredFirstShow = false;
         SplashScreen::Close();
+
+        // --scene: プロジェクトを開き終えた直後に指定シーンを開く。
+        // ★ここで直接ロードせず pending にする。この関数はロード完了処理の途中なので、
+        //   入れ子でロードを始めると currentScenePath とジョブの状態が食い違う。
+        if (!m_startupScene.empty() && !m_startupScenePending)
+        {
+            m_startupScenePending = true;
+            m_editorCtx->pendingLoadPath = PathResolver::AssetsDir() + m_startupScene;
+            m_editorCtx->pendingLoadSkipConfirm = true;   // 未保存モーダルを出さない（AI は押せない）
+            Logger::Info("起動シーンを開きます: {}", m_startupScene);
+        }
     }
 }
 

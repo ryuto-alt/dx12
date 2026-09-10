@@ -108,7 +108,7 @@ void WritePortFile(uint16_t port)
 }
 } // namespace
 
-bool McpBridge::Start(uint16_t preferredPort)
+bool McpBridge::Start(uint16_t preferredPort, bool writePortFile)
 {
     auto& s = *m_impl;
     if (s.running.load()) return true;
@@ -155,7 +155,10 @@ bool McpBridge::Start(uint16_t preferredPort)
     }
 
     s.port = chosen;          // 待受ポートを記録（パネル表示用）
-    WritePortFile(chosen);    // Node 側の自動検出用
+    // ★ポートを明示指定された場合はファイルを書かない。複数インスタンスを並べたとき、
+    //   後から起動した方がファイルを奪って「どのエンジンに繋がるか分からない」状態になる。
+    //   明示した側は自分でポートを知っているので、書く必要が無い。
+    if (writePortFile) WritePortFile(chosen);   // Node 側の自動検出用
     s.running.store(true);
     s.worker = std::thread([&s] { CrashHandler::PrepareThread(); s.AcceptLoop(); });
     Logger::Info("MCP bridge listening on 127.0.0.1:{}", chosen);

@@ -158,6 +158,31 @@ public:
     // 開いた後に自動Play=Join、単独指定なら開くだけ。Initialize() より前に呼ぶこと。
     void SetNetTestProject(const std::string& dir) { m_pendingNetClientProject = dir; }
 
+    // ── ヘッドレス実行（--headless）。Initialize より前に呼ぶ ──
+    //
+    // なぜ要るか（2026-09-10 にユーザーと合意）:
+    //   これまで「GUI エディタ 1 個・MCP クライアント 1 本」が全部の入口だった。そのせいで
+    //   ①人が遊んでいる最中にエディタが前へ出て邪魔をする ②ビルドのたびにエディタを落とす
+    //   ③CI でシーンを 1 つも検証できない ④エージェントを 2 人並べられない、が全部起きていた。
+    //   窓を出さずに MCP だけ開ける口を作ると、配置検査もテストプレイも「機械が必ず回す」側へ移せる。
+    //
+    // ★窓は作るが Show しない（隠し窓）。D3D12 のスワップチェーンは可視性を要求しないので、
+    //   描画・物理・Lua・スクショまで全部そのまま動く。窓ごと作らない設計にすると
+    //   スワップチェーンと ImGui のバックエンドを二重化することになり割に合わない。
+    void SetHeadless(bool on) { m_headless = on; }
+    bool IsHeadless() const   { return m_headless; }
+    // ★--headless は既定で**ディスクへ書かない**（MCP の自動保存を止める）。
+    //   CI がシーンを検証しただけでプロジェクトが書き換わるのは事故でしかない。
+    //   実際 navmesh_build は編集扱いなので、検証を回すだけで自動保存が走ってシーンが
+    //   書き直されていた。書きたいとき（背景でエージェントに作らせる等）だけ明示的に許す。
+    void SetHeadlessAllowSave(bool on) { m_headlessAllowSave = on; }
+    // MCP の待受ポートを固定する（0 = 既定の 8787 から順に探す）。
+    // ★明示指定したときは dx12_mcp.port を書かない。複数インスタンスが同じファイルを
+    //   奪い合って「どのエンジンに繋がるか分からない」状態になるのを防ぐため。
+    void SetMcpPort(int port) { m_mcpPortRequest = port; }
+    // 起動直後に開くシーン（assets 相対）。--project と併用する。
+    void SetStartupScene(const std::string& rel) { m_startupScene = rel; }
+
     // ImGuiTestEngine による UI 自動テスト(--ui-tests)。Initialize より前に呼ぶ。
     // runAll=true なら起動後に全テストを走らせ、完了したら終了する(終了コード=UiTestExitCode)。
     // deepOnly=true なら超詳細診断だけを走らせる(--ui-tests-deep。UI 操作をほぼ伴わない)。
@@ -1253,6 +1278,11 @@ private:
     std::unique_ptr<NetworkSystem>     m_networkSystem;   // マルチプレイ（GPU非依存、Play/Stopでも再構築しない）
     std::unique_ptr<NetworkPanel>      m_networkPanel;    // マルチプレイのエディタパネル（状態/設定窓）。ゲームでは null。
     std::string m_pendingNetClientJoin;     // SetNetTestClientJoin で受けた "ip:port"。Initialize 内で1回消費。
+    bool        m_headless = false;         // --headless: 窓を出さずに MCP だけ開ける
+    bool        m_headlessAllowSave = false;// --allow-autosave: ヘッドレスでも自動保存を許す
+    int         m_mcpPortRequest = 0;       // --mcp-port: 0 なら既定(8787 から探す)
+    std::string m_startupScene;             // --scene: プロジェクトロード後に開く assets 相対パス
+    bool        m_startupScenePending = false;
     std::string m_pendingNetClientProject;  // SetNetTestProject で受けたプロジェクトルート。同上。
     bool m_netClientAutoPlayPending = false; // --net-client: プロジェクトロード完了後にPlay(Join)する予約。
     std::unique_ptr<PhysicsDebugRenderer> m_physicsDebugRenderer;

@@ -1376,7 +1376,14 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     if (!m_isGameMode && !buildMode)
     {
         m_mcpBridge = std::make_unique<McpBridge>();
-        m_mcpBridge->Start(8787);   // 起点。衝突したら 8797 まで順に試し、確定値を dx12_mcp.port へ書く
+        // --mcp-port で明示指定されたらそこに固定し、dx12_mcp.port は書かない
+        //（複数インスタンスを並べたときに互いの検出ファイルを奪い合わないため）。
+        const uint16_t base = (m_mcpPortRequest > 0)
+            ? static_cast<uint16_t>(m_mcpPortRequest) : static_cast<uint16_t>(8787);
+        m_mcpBridge->Start(base, m_mcpPortRequest <= 0);
+        if (m_mcpPortRequest > 0)
+            Logger::Info("MCP ポートを固定しました: {}（dx12_mcp.port は更新しない）",
+                         m_mcpBridge->Port());
     }
 }
 
@@ -1682,6 +1689,7 @@ void Application::Run()
         // 遅延初回表示: 隠れたまま数フレーム描画して絵（ランチャー）が確定してから
         // ウィンドウを出し、スプラッシュを閉じる。表示された瞬間には既に描画済み＝
         // 「白いまま固まって見える/出るタイミングが不安定」が起きない。
+        if (m_headless) m_deferredFirstShow = false;   // 窓は出さない（隠したまま回す）
         if (m_deferredFirstShow && ++m_warmupFrames >= 3 && !m_loading)
         {
             // ロード中(--project直開き等)はまだ出さない。ロード完了時に
@@ -2986,6 +2994,9 @@ bool Application::SaveSceneForMcp()
 void Application::UpdateMcpAutoSave(f32 dt)
 {
     if (!m_editorCtx || !m_scene) return;
+    // ★ヘッドレスは既定で読み取り専用。CI が「検証しただけ」でプロジェクトを書き換えないため。
+    //   （navmesh_build のような検証手順自体が編集扱いになるので、ここで止めないと必ず書かれる）
+    if (m_headless && !m_headlessAllowSave) return;
     if (m_isGameMode || m_showLauncher || m_loading || m_sceneLoadJob) return;
     // Playing 中は書かない。Stop でスナップショットへ巻き戻る＝Play 中の状態は
     // 「保存されるべき編集」ではない（オートセーブ側と同じ判断）。
@@ -3083,6 +3094,8 @@ bool Application::ConfirmDiscardScene(bool& outCancelled)
     //   ＝どちらに転んでも作業は残り、モーダルは出ない。
     if (m_editorCtx->aiSessionEver)
     {
+        // ヘッドレスの読み取り専用モードでは何も書かずに進む（CI は捨てるだけ）
+        if (m_headless && !m_headlessAllowSave) return true;
         if (SaveSceneForMcp()) return true;
         if (WriteAutosave())
             Logger::Warn("保存に失敗したので退避しました。次回起動時に復旧できます");

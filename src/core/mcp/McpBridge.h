@@ -21,7 +21,10 @@ public:
     // preferredPort から最大 10 個まで順に bind を試し、最初に空いたポートで待ち受ける
     // (複数エンジン起動時の衝突を回避)。確定ポートは Port() と %TEMP%/dx12_mcp.port に記録。
     // 全滅(11 個すべて使用中)なら false。エディタ起動時に 1 回呼ぶ。
-    bool Start(uint16_t preferredPort);
+    // preferredPort から +10 まで順に bind する。
+    // writePortFile=false なら %TEMP%/dx12_mcp.port を書かない（複数インスタンスを立てるとき、
+    // 後から起動した方がファイルを奪って「どのエンジンに繋がるか分からない」のを防ぐ）。
+    bool Start(uint16_t preferredPort, bool writePortFile = true);
     void Stop();
 
     // メインスレッドから毎フレーム呼ぶ。handler(client, requestLine) -> responseLine。

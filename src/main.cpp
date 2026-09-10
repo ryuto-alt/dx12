@@ -288,6 +288,14 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         bool uiTestsRunAll = false;   // --ui-tests-run-all（全テストを自動実行して終了コードを返す）
         bool uiTestsDeep   = false;   // --ui-tests-deep（超詳細診断だけを自動実行。UI 操作をほぼ伴わない）
         int  uiTestsSpeed  = 0;       // --ui-tests-speed=N（0=Fast 1=Normal 2=Cinematic）
+        // --headless: 窓を出さずに MCP だけ開ける（CI / 並列実行 / 人の作業を邪魔しない検証）。
+        // --mcp-port N: 待受ポートを固定（複数インスタンスを立てるとき必須）。
+        // --scene <rel>: プロジェクトロード後に開くシーン（assets 相対）。
+        bool headless = false;
+        // --allow-autosave: ヘッドレスでもディスクへ書く（既定は読み取り専用）。
+        bool headlessAllowSave = false;
+        int  mcpPort  = 0;
+        std::string startupScene;
 #endif
 #ifndef DX12_GAME_RUNTIME
         if (lpCmdLine)
@@ -428,6 +436,14 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
                         { uiTests = true; uiTestsRunAll = true; uiTestsDeep = true; }
                     else if (wcsncmp(argv[i], L"--ui-tests-speed=", 17) == 0)
                         { uiTests = true; uiTestsSpeed = _wtoi(argv[i] + 17); }
+                    else if (wcscmp(argv[i], L"--headless") == 0)
+                        headless = true;
+                    else if (wcscmp(argv[i], L"--allow-autosave") == 0)
+                        headlessAllowSave = true;
+                    else if (wcscmp(argv[i], L"--mcp-port") == 0 && i + 1 < argc)
+                        mcpPort = _wtoi(argv[++i]);
+                    else if (wcscmp(argv[i], L"--scene") == 0 && i + 1 < argc)
+                        startupScene = toUtf8(argv[++i]);
                 }
                 LocalFree(argv);
             }
@@ -480,7 +496,9 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         // エディタ起動: 初期化が終わるまで枠なしスプラッシュ（Unity 風）を出す。
         // 専用スレッドで動くので、以降の同期処理（更新チェックの WinHTTP 数秒・
         // D3D12/シェーダ/アセット初期化）中も固まらずアニメし続ける。
-        if (!gameMode && !buildMode)
+        // ★--headless ではスプラッシュも出さない。窓を出さないための機能なのに
+        //   起動のたびにロゴが前面へ出てきては意味が無い。
+        if (!gameMode && !buildMode && !headless)
         {
             dx12e::SplashScreen::Show(
                 dx12e::kEngineName,
@@ -507,6 +525,22 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
             app.SetNetTestProject(netClientProject);   // --project 単独でもプロジェクトを開ける
         if (uiTests)
             app.EnableUiTests(uiTestsRunAll, uiTestsSpeed, uiTestsDeep);
+        if (headless)
+        {
+            // ★--headless は --project が要る。ランチャーは人が押す前提の UI なので、
+            //   窓を出さないまま出すと永久に何も起きない（＝MCP で繋いでも空のまま）。
+            if (netClientProject.empty())
+            {
+                // Logger はまだこの TU に入っていないので MessageBox は使わず終了コードで返す。
+                // （--headless は CLI/CI 用なので、出せるのは終了コードだけで十分）
+                OutputDebugStringW(L"--headless には --project <dir> が要ります\n");
+                return EXIT_FAILURE;
+            }
+            app.SetHeadless(true);
+            app.SetHeadlessAllowSave(headlessAllowSave);
+        }
+        if (mcpPort > 0)  app.SetMcpPort(mcpPort);
+        if (!startupScene.empty()) app.SetStartupScene(startupScene);
 #endif
         app.Initialize(hInstance, nCmdShow, gameMode, nullptr, buildMode);
 
