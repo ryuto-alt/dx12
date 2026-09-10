@@ -46,6 +46,7 @@ void Application::EnsureMcpMethodTable()
     RegisterMcpLightingMethods();
     RegisterMcpNavMethods();
     RegisterMcpGitMethods();
+    RegisterMcpValidateMethods();
 }
 
 
@@ -89,6 +90,30 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         if (it != m_mcpMethods.end())
         {
             it->second.fn(params, resp, method, deferred, isDeferred, busyPlaying);
+
+            // ★ハンドラが resp["result"] を作らず、resp へ直接キーを書く流儀のものを救う。
+            //
+            //   Node 側の engineClient は `msg.result ?? null` を返す契約なので、
+            //   result を作らないハンドラは **MCP から見ると戻り値ゼロ**になる。
+            //   これで navmesh 系 8 本（info / build / path / sample / raycast / clear /
+            //   debug / settings）が長らく null を返していた＝AI はナビメッシュを焼けても
+            //   ポリゴン数も経路も一切読めなかった（2026-09-10 に dx12_navmesh_info が
+            //   {"result":null} を返すのを見て発覚）。
+            //   ハンドラを 8 本書き換えるより、ここで 1 回畳む方が漏れない。
+            if (!isDeferred && resp.value("ok", true) && !resp.contains("result"))
+            {
+                static const std::unordered_set<std::string> kReserved = {
+                    "id", "ok", "error", "error_code", "error_hint", "error_values", "result",
+                };
+                json extra = json::object();
+                for (auto it2 = resp.begin(); it2 != resp.end(); ++it2)
+                    if (!kReserved.count(it2.key())) extra[it2.key()] = it2.value();
+                if (!extra.empty())
+                {
+                    for (auto it2 = extra.begin(); it2 != extra.end(); ++it2) resp.erase(it2.key());
+                    resp["result"] = std::move(extra);
+                }
+            }
 
             // ★シーンに属する描画設定は Play 中に変えても Stop で捨てられる
             //   （Stop は Play 開始時のシーン JSON から丸ごと復元する）。
@@ -169,7 +194,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             "move_asset", "delete_asset", "import_asset",
             "benchmark", "step_frames", "play", "stop", "save_scene", "select_entity",
             "focus_camera", "look_at", "set_editor_camera", "key_down",
-            "key_up", "key_press", "render_debug", "eval_lua",
+            "key_up", "key_press", "mouse_move", "render_debug", "eval_lua",
             // reload_scripts は env を作り直すだけでシーンのデータは変えない。
             // reload_assets も同じ（MeshRenderer の参照先を新しい実体へ差し替えるだけで、
             // シリアライズされる値は 1 つも変わらない＝未保存扱いにしてはいけない）。
@@ -179,7 +204,15 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         // 変えた場合は設定フィンガープリント（Run ループの定期比較）か、
         // ハンドラ内で積まれる Undo の側で拾われる。
         if (kReadOnly.find(method) == kReadOnly.end())
+        {
             m_editorCtx->undoSystem.MarkEdited();
+            // 最後の書き込みから kMcpAutoSaveDelay 秒アイドルしたらディスクへ本保存する
+            // （UpdateMcpAutoSave）。1 コールごとに書くと数百体の配置で I/O が詰まるので、
+            // 撃たれるたびにここで待ち時間を延ばし直す＝連続編集の間は書かない。
+            // ★これが「未保存の警告を必ず出さない」の本体。フラグを黙らせているのではなく、
+            //   未保存の状態そのものを残さないようにしている。
+            m_editorCtx->mcpSaveCountdown = kMcpAutoSaveDelay;
+        }
     }
     // 遅延応答は今は送らない(フレーム境界で SendToClient が送る)。Poll が空文字列をスキップ。
     if (isDeferred) return std::string();

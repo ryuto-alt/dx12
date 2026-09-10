@@ -2037,6 +2037,12 @@ void Application::Render()
         m_pendingScenePreloads.clear();
     }
 
+    // Lua preloadSceneAsync: 上と同じ先読みを【1フレーム数msずつ】進める非同期版。
+    // ★段階シーンロード中は回さない。同じフレームで両方が予算を使うと 1 フレームが
+    //   倍の長さになり、ロード画面のコマ落ちとして出る（どちらも「固まらせない」ための
+    //   仕組みなのに、重なると目的を潰し合う）。
+    if (!m_sceneLoadJob) UpdateScenePreloadJob(nativeCmdList);
+
     // Play 中のシーン切替（Lua loadScene/nextScene、またはトランジション中間点）
     {
         // トランジションが中間点に達したら、保留中のターゲットをロード対象にする

@@ -158,6 +158,31 @@ public:
     // 開いた後に自動Play=Join、単独指定なら開くだけ。Initialize() より前に呼ぶこと。
     void SetNetTestProject(const std::string& dir) { m_pendingNetClientProject = dir; }
 
+    // ── ヘッドレス実行（--headless）。Initialize より前に呼ぶ ──
+    //
+    // なぜ要るか（2026-09-10 にユーザーと合意）:
+    //   これまで「GUI エディタ 1 個・MCP クライアント 1 本」が全部の入口だった。そのせいで
+    //   ①人が遊んでいる最中にエディタが前へ出て邪魔をする ②ビルドのたびにエディタを落とす
+    //   ③CI でシーンを 1 つも検証できない ④エージェントを 2 人並べられない、が全部起きていた。
+    //   窓を出さずに MCP だけ開ける口を作ると、配置検査もテストプレイも「機械が必ず回す」側へ移せる。
+    //
+    // ★窓は作るが Show しない（隠し窓）。D3D12 のスワップチェーンは可視性を要求しないので、
+    //   描画・物理・Lua・スクショまで全部そのまま動く。窓ごと作らない設計にすると
+    //   スワップチェーンと ImGui のバックエンドを二重化することになり割に合わない。
+    void SetHeadless(bool on) { m_headless = on; }
+    bool IsHeadless() const   { return m_headless; }
+    // ★--headless は既定で**ディスクへ書かない**（MCP の自動保存を止める）。
+    //   CI がシーンを検証しただけでプロジェクトが書き換わるのは事故でしかない。
+    //   実際 navmesh_build は編集扱いなので、検証を回すだけで自動保存が走ってシーンが
+    //   書き直されていた。書きたいとき（背景でエージェントに作らせる等）だけ明示的に許す。
+    void SetHeadlessAllowSave(bool on) { m_headlessAllowSave = on; }
+    // MCP の待受ポートを固定する（0 = 既定の 8787 から順に探す）。
+    // ★明示指定したときは dx12_mcp.port を書かない。複数インスタンスが同じファイルを
+    //   奪い合って「どのエンジンに繋がるか分からない」状態になるのを防ぐため。
+    void SetMcpPort(int port) { m_mcpPortRequest = port; }
+    // 起動直後に開くシーン（assets 相対）。--project と併用する。
+    void SetStartupScene(const std::string& rel) { m_startupScene = rel; }
+
     // ImGuiTestEngine による UI 自動テスト(--ui-tests)。Initialize より前に呼ぶ。
     // runAll=true なら起動後に全テストを走らせ、完了したら終了する(終了コード=UiTestExitCode)。
     // deepOnly=true なら超詳細診断だけを走らせる(--ui-tests-deep。UI 操作をほぼ伴わない)。
@@ -168,7 +193,8 @@ public:
 
     // ヘッドレスでゲームをビルド（--build CLI 用）。開始シーンは title.json があればそれ。
     // 成否を返す（CLI の終了コード / GUI の完了表示に使う）。
-    bool BuildGameStandalone();
+    // projectRoot: --build <dir> で指定されたプロジェクト(空可)。build_settings.json を読む
+    bool BuildGameStandalone(const std::string& projectRoot = std::string());
 
     enum class EngineMode { Editor, Playing };
 
@@ -331,6 +357,35 @@ private:
     void RegisterMcpLightingMethods();    // ライティング / 診断
     void RegisterMcpNavMethods();         // ナビメッシュ（生成 / 設定 / 経路 / レイ / 可視化）
     void RegisterMcpGitMethods();         // Git / GitHub（状態 / ブランチ / マージ / コミット / プッシュ）
+    void RegisterMcpValidateMethods();    // 配置検査（埋まり / ちらつき / 二重 / 当たり無し）
+
+    // ---- 配置検査（dx12_validate_layout / play・save の要約）----------------
+    // AI が置いた物の「見れば分かるが AI は見ない」たぐいの破綻を数値で拾う。
+    // 実装は mcp/ApplicationMcpValidate.cpp。設計の理由はそのファイル冒頭。
+    struct LayoutIssue
+    {
+        std::string  kind;                     // BURIED / Z_FIGHT / DUPLICATE ...
+        int          level  = 1;               // 2=error / 1=warning
+        entt::entity entity = entt::null;
+        entt::entity other  = entt::null;      // ペアで語る種類のときの相方
+        std::string  text;                     // 日本語 1 行。次の一手まで書く
+        bool         fixed  = false;           // この呼び出しで自動修正したか
+    };
+    struct LayoutReport
+    {
+        int checked = 0, errors = 0, warnings = 0, fixed = 0;
+        std::vector<LayoutIssue> issues;
+    };
+    // fixMode: 0=検査のみ / 1=安全な修正だけ / 2=全部。tolerance は同一平面とみなす距離(m)。
+    LayoutReport   RunLayoutValidation(int fixMode, float tolerance);
+    // dx12_play の遅延応答へ持ち越す配置検査の要約（Play を撃った瞬間＝Editor で測る）。
+    nlohmann::json m_mcpPlayLayout;
+    // dx12_step_frames(deterministic:true) が固定 dt を掛けているか（完了時に必ず戻す）。
+    bool m_mcpStepFixedDt = false;
+    bool m_mcpStepHold = true;           // 決定論ステップの後に時間を止めるか（既定 true）
+    int  m_mcpStepFramesRequested = 0;   // 応答に simulatedSec を載せるため
+    // play / save_scene の返り値へ載せる要約（AI に必ず読ませるための仕掛け）。
+    nlohmann::json McpLayoutSummary();
     // 直近フレームのシーン描画(m_sceneRT)を PNG に書き出す。成功=絶対パス / 失敗=空文字列+err。
     // MCP の screenshot 用。同期 readback(WaitIdle×2)＝低頻度のエディタ操作として割り切る。
     // outPath が空なら従来どおり CWD の mcp_screenshot.png（後方互換）。
@@ -595,6 +650,23 @@ private:
     void UpdateAutosave(f32 dt);
     // オートセーブを間隔・未保存判定を通さずに今すぐ書く。書けたら true。
     bool WriteAutosave();
+
+    // ── MCP（AI）セッション中の自動保存 ──
+    // AI が編集した分を「未保存のまま置かない」ための機構。オートセーブ（退避）とは別で、
+    // こちらは**本体のシーン JSON をそのまま上書きする本保存**。これがあるおかげで
+    // 未保存の確認モーダルを一切出さずに済む。詳細な理由は EditorContext の aiSession* を見ること。
+    void UpdateMcpAutoSave(f32 dt);
+    // 現在シーンを保存する。保存先が未設定（未保存の新規シーン）なら自動命名して決める。
+    // AI は「名前を付けて保存」ダイアログを押せないので、ここで決めてやらないと永久に保存できない。
+    bool SaveSceneForMcp();
+    // AI が最初に上書きする前の内容を <project>/.dx12/backups/ へ 1 本だけ残す。
+    // 取れた/取る必要が無かったら true、書けなかったら false。
+    bool WriteMcpBackup();
+    static std::string McpBackupDir();
+    // 最後の MCP 書き込みから何秒待ってディスクへ書くか（デバウンス）。
+    static constexpr f32 kMcpAutoSaveDelay = 2.0f;
+    // .dx12/backups に残す世代数。古いものから消す。
+    static constexpr int kMcpBackupKeep = 20;
     // GPU デバイスが失われていたら退避して true（＝ループを畳む合図）。詳細は .cpp。
     bool HandleDeviceLoss();
     bool m_deviceLost = false;   // 一度立ったら描画へ戻らない
@@ -776,6 +848,14 @@ private:
     void FinishSceneLoad(const std::string& fullPath, const std::string& rel, bool runtime,
                          ID3D12GraphicsCommandList* cmdList);  // 実体化（同期/非同期の共通後段）
     bool IsSceneLoadJobActive() const { return m_sceneLoadJob != nullptr; }
+    // ---- 非同期シーン先読み（Lua: preloadSceneAsync / scenePreloadProgress）----
+    // シーンは切り替えず、参照アセットのキャッシュだけを毎フレーム数 ms ずつ温める。
+    // 進み具合を Lua から読めるので、ゲーム側のロード画面が実測で動かせる。
+    void UpdateScenePreloadJob(ID3D12GraphicsCommandList* cmdList);
+    void CancelScenePreloadJob();   // シーン切替が始まったら捨てる（読む意味が無くなるため）
+    f32  GetScenePreloadProgress() const { return m_scenePreloadProgress; }
+    std::string GetScenePreloadCurrent() const
+    { return m_scenePreloadJob ? m_scenePreloadJob->current : std::string(); }
     // プロジェクト内の【全シーン】が参照するテクスチャを集め、BC 圧縮キャッシュ作りを
     // バックグラウンドで始める。シーンを開くたびに圧縮待ちを食らうのをやめるための仕込み。
     // エディタでプロジェクトを開き終わった直後に 1 回だけ呼ぶ。
@@ -1096,6 +1176,42 @@ private:
     static constexpr uintmax_t kSceneLoadBigFileBytes = 512 * 1024;
     // 1フレームで先読みに使ってよい時間(ms)。超えたら残りは次フレームへ回す＝UIが動き続ける。
     static constexpr f64    kSceneLoadBudgetMs       = 6.0;
+
+    // ---- 非同期シーン先読み（Lua: preloadSceneAsync）----
+    // ★同期版 preloadScene は参照アセットを【1 フレームで全部】読む。重いシーンでは
+    //   十数秒メッセージポンプが止まり、ゲーム側のロード画面は 1 枚も更新されない
+    //   ＝「前の絵のまま固まった」＝Windows に「応答していません」と言われる。
+    //   こちらは SceneLoadJob と同じ「予算つきで少しずつ」の流儀で、シーンは切り替えずに
+    //   キャッシュだけ温める。読んでいる間もゲームの OnUpdate と描画が回り続ける。
+    struct ScenePreloadJob
+    {
+        std::string                rel;               // assets 相対のシーンパス
+        std::vector<SceneAssetRef> assets;            // 先読み対象（パス + 色空間/用途）
+        size_t                     next = 0;          // assets の消化位置
+        // 走査(CollectSceneAssetRefs)は 1.4MB のシーンで数十 ms 掛かる。要求されたフレームで
+        // 走らせるとゲーム側が「重い呼び出しの前に 1 枚描く」段取りを組めないので、
+        // UI が 1 枚出た次のフレームへ回す（SceneLoadJob の needsScan と同じ流儀）。
+        bool                       needsScan = true;
+        std::string                current;           // いま読んでいるファイル（表示用）
+        // ---- 段1: BC 圧縮だけ先にワーカーへ逃がす（キャッシュが冷たいとき用）----
+        // BC7 圧縮は 1 枚で数秒かかる。メインスレッドで踏むと予算を付けても【その 1 件】で
+        // 1 フレームが数秒になり、結局固まって見える。圧縮は AssetPrewarmer に任せ、
+        // 終わってから GPU アップロードだけメインで回す。
+        bool   prewarmStarted = false;
+        bool   prewarmDone    = false;
+        size_t prewarmTotal   = 0;   // ワーカーに渡した枚数（0 = 段1 なし）
+        std::chrono::steady_clock::time_point start{};
+    };
+    std::unique_ptr<ScenePreloadJob> m_scenePreloadJob;   // null = 先読みしていない
+    std::string m_pendingScenePreloadAsync;   // Lua preloadSceneAsync の保留分（同時に1本）
+    // 0..1。ジョブが無いときは 1（「読むものが無い」も「読み終わった」も 1）。
+    // ★要求を受けた瞬間に 0 へ落とすこと。ジョブはフレーム境界で作るので、
+    //   そうしないと要求直後の 1 回だけ 1 が返り、ゲーム側が「もう終わった」と誤解する。
+    f32 m_scenePreloadProgress = 1.0f;
+    // 1フレームで非同期先読みに使ってよい時間(ms)。SceneLoadJob より少し多めに取る。
+    // ロード画面は絵が軽い（黒地に線が数本）ので、10ms 使っても 60fps を保てる。
+    static constexpr f64 kScenePreloadBudgetMs = 10.0;
+
     std::unique_ptr<Camera>            m_camera;
     std::unique_ptr<ConstantBuffer>    m_perFrameCB;
     std::unique_ptr<CommandList>       m_commandList;
@@ -1163,6 +1279,11 @@ private:
     std::unique_ptr<NetworkSystem>     m_networkSystem;   // マルチプレイ（GPU非依存、Play/Stopでも再構築しない）
     std::unique_ptr<NetworkPanel>      m_networkPanel;    // マルチプレイのエディタパネル（状態/設定窓）。ゲームでは null。
     std::string m_pendingNetClientJoin;     // SetNetTestClientJoin で受けた "ip:port"。Initialize 内で1回消費。
+    bool        m_headless = false;         // --headless: 窓を出さずに MCP だけ開ける
+    bool        m_headlessAllowSave = false;// --allow-autosave: ヘッドレスでも自動保存を許す
+    int         m_mcpPortRequest = 0;       // --mcp-port: 0 なら既定(8787 から探す)
+    std::string m_startupScene;             // --scene: プロジェクトロード後に開く assets 相対パス
+    bool        m_startupScenePending = false;
     std::string m_pendingNetClientProject;  // SetNetTestProject で受けたプロジェクトルート。同上。
     bool m_netClientAutoPlayPending = false; // --net-client: プロジェクトロード完了後にPlay(Join)する予約。
     std::unique_ptr<PhysicsDebugRenderer> m_physicsDebugRenderer;

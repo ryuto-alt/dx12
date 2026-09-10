@@ -210,9 +210,22 @@ void Application::UpdateProjectLoad(f32 dt)
         // ロード完了: 隠していたメインウィンドウを出してからスプラッシュを閉じる
         // (順序を逆にすると一瞬何も表示されない空白ができる)。
         // 起動直後の遅延表示(--project直開き等でまだ未表示)もここで役目を引き継ぐ。
-        if (m_window) m_window->Show();
+        // ★ヘッドレスでは窓を出さない。ここを素通しにすると --headless でも窓が出て、
+        //   人が作業している画面を奪う（そもそもそれを避けるための機能）。
+        if (m_window && !m_headless) m_window->Show();
         m_deferredFirstShow = false;
         SplashScreen::Close();
+
+        // --scene: プロジェクトを開き終えた直後に指定シーンを開く。
+        // ★ここで直接ロードせず pending にする。この関数はロード完了処理の途中なので、
+        //   入れ子でロードを始めると currentScenePath とジョブの状態が食い違う。
+        if (!m_startupScene.empty() && !m_startupScenePending)
+        {
+            m_startupScenePending = true;
+            m_editorCtx->pendingLoadPath = PathResolver::AssetsDir() + m_startupScene;
+            m_editorCtx->pendingLoadSkipConfirm = true;   // 未保存モーダルを出さない（AI は押せない）
+            Logger::Info("起動シーンを開きます: {}", m_startupScene);
+        }
     }
 }
 
@@ -1460,9 +1473,38 @@ void Application::RenderVersionControlWindow()
 }
 
 
-bool Application::BuildGameStandalone()
+bool Application::BuildGameStandalone(const std::string& projectRoot)
 {
+    namespace fs = std::filesystem;
+    // ★CLI(--build)はプロジェクトを【開かない】ので BeginProjectLoad を通らず、
+    //   buildConfig が空のまま来る。ここで build_settings.json を読まないと開始シーンが
+    //   既定の "scenes/default.json" になり、【存在しないシーンを指す配布物】ができる。
+    //   (Junction を --build したら startScene = scenes/default.json で焼かれていた)
+    if (m_editorCtx && !projectRoot.empty() && m_editorCtx->buildConfig.startScene.empty())
+    {
+        LoadProjectBuildConfig(*m_editorCtx, projectRoot);
+        if (m_editorCtx->buildConfig.startScene.empty())
+        {
+            // build_settings.json が無いプロジェクトは .dx12proj の defaultScene を使う
+            std::error_code ec;
+            for (const auto& de : fs::directory_iterator(projectRoot, ec))
+            {
+                if (de.path().extension() != ".dx12proj") continue;
+                ProjectInfo info;
+                if (Project::Load(de.path().string(), info) && !info.defaultScene.empty())
+                    m_editorCtx->buildConfig.startScene = info.defaultScene;
+                break;
+            }
+        }
+        // ★出力先だけは build_settings.json に従わない。CLI の --build は昔から
+        //   <projectDir>/build/game に出す約束で、CI もそこを見る。GUI の Build ボタンだけが
+        //   outputDir(ユーザーが選んだ配布先)を使う。
+        m_editorCtx->buildConfig.outputDir.clear();
+        if (!m_editorCtx->buildConfig.startScene.empty())
+            Logger::Info("ヘッドレスビルド: 開始シーン = {}", m_editorCtx->buildConfig.startScene);
+    }
     // 開始シーンを title.json に（あれば）。無ければ現在の currentScenePath を使う。
+    // ★buildConfig.startScene が決まっていれば BuildGame がそちらを優先する。
     std::string title = PathResolver::AssetsDir() + "scenes/title.json";
     if (std::filesystem::exists(title))
         m_editorCtx->currentScenePath = title;

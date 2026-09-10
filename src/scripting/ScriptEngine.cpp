@@ -1779,6 +1779,23 @@ void ScriptEngine::RegisterBindings()
     // シーンが参照するテクスチャ/モデルをキャッシュへ先読み(シーン切替時のカクつき対策)。
     // シーン自体は切り替えない。例: title の OnStart で preloadScene("scenes/stage_select.json")
     lua["preloadScene"] = [this](const std::string& rel) { if (m_preloadSceneCb) m_preloadSceneCb(rel); };
+    // preloadScene の【非同期版】。エンジンが 1 フレーム数 ms ずつしか読まないので、
+    // 読んでいる間も OnUpdate と描画が回り続ける＝ロード画面を動かしたままにできる。
+    // ★同期版は「読み終わるまで戻ってこない」。重いシーンでは十数秒メッセージポンプが
+    //   止まり、その間に描いた絵は 1 枚も出ない＝遊ぶ側にはハングに見える。
+    // ★毎フレーム呼んでも安全（同じシーンの二重要求は Application 側で握り潰す）。
+    lua["preloadSceneAsync"] = [this](const std::string& rel) {
+        if (m_scenePreloadCb.begin) m_scenePreloadCb.begin(rel);
+    };
+    // 先読みの進み具合 0..1。要求していない / 読み終わったときは 1 が返る。
+    // ★要求した直後から 0 になる（ジョブはフレーム境界で作られるが、そこは埋めてある）。
+    lua["scenePreloadProgress"] = [this]() -> float {
+        return m_scenePreloadCb.progress ? m_scenePreloadCb.progress() : 1.0f;
+    };
+    // いま読んでいるアセットの assets 相対パス（表示用）。読んでいなければ ""。
+    lua["scenePreloadCurrent"] = [this]() -> std::string {
+        return m_scenePreloadCb.current ? m_scenePreloadCb.current() : std::string();
+    };
     lua["nextScene"] = [this]() { if (m_nextSceneCb) m_nextSceneCb(); };
     lua["quit"]      = [this]() { if (m_quitCb) m_quitCb(); };
     // フェード等のトランジション付きシーン切替。
@@ -4741,6 +4758,36 @@ void ScriptEngine::Shutdown()
     // Lua state リセット前に EventBus を Clear して、Lua ラムダ（sol::function を
     // キャプチャした購読ハンドラ）の dangling 参照を防ぐ。
     if (m_eventBus) m_eventBus->Clear();
+
+    // ★★ECS の中に残っている Lua 参照を【lua_State を壊す前に】全部落とす。
+    //   これを忘れると、あとで registry が壊れたときに LuaScript のデストラクタが
+    //   もう無い lua_State へ luaL_unref を撃って ACCESS_VIOLATION で落ちる。
+    //
+    //   2026-09-09 に配布ゲームで実際に踏んだ: Application::Shutdown は
+    //   m_scriptEngine.reset()（= ここ）を先に、m_scene.reset() を後に行う。
+    //   ゲームは Play を抜けずに終了する（OnPlayStop を通らない）ので、
+    //   env/self を握ったままの LuaScript が死んだ state を触り、
+    //   【タイトルの EXIT でも設定パネルの終了ボタンでも、終了のたびに】
+    //   クラッシュレポートが出ていた。
+    //   ★直し方は「Scene を先に壊す」でもよいが、Shutdown の破棄順は
+    //     GPU リソースの依存で組んであるので動かしたくない。参照を落とす側にした。
+    //     ここに置けば Play 停止・シーン切替（Shutdown→Initialize）の経路も
+    //     まとめて守れる（OnPlayStop と同じ操作なので二重に呼んでも無害）。
+    if (m_scene)
+    {
+        auto& reg = m_scene->GetRegistry();
+        for (auto [e, ls] : reg.view<LuaScript>().each())
+        {
+            ls.env.reset();     // sol::environment
+            ls.self.reset();    // sol::table
+            ls.started = false;
+            // loadError / errorMessage は残す（Inspector に見せるため）
+        }
+        // tweenUi の onComplete は sol::function をキャプチャした std::function。
+        // 中身だけ捨てる（コンポーネントごと消すと進行中の視覚値まで飛ぶ）。
+        for (auto [e, ts] : reg.view<UITweenState>().each())
+            for (auto& tw : ts.tweens) tw.onComplete = nullptr;
+    }
 
     m_propSchemaCache.clear();
     m_scriptMtimes.clear();   // 次の Play で mtime の基準を取り直す

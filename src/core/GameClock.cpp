@@ -26,6 +26,9 @@ void GameClock::Tick()
     m_deltaTime = (m_rawDeltaTime < 0.0f)             ? 0.0f
                 : (m_rawDeltaTime > kMaxDeltaTime)    ? kMaxDeltaTime
                                                       : m_rawDeltaTime;
+    // 決定論ステップ中はシミュレーションの dt を固定値へ差し替える。
+    // raw / total は実時間のまま（FPS 表示とヒッチ計測に嘘をつかない）。
+    if (m_fixedDelta > 0.0f) m_deltaTime = m_fixedDelta;
     m_totalTime = total.count();
     m_prevTime = now;
     m_frameCount++;

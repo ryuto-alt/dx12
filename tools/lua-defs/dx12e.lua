@@ -1494,8 +1494,23 @@ function loadScene(rel) end
 
 ---シーンが参照するテクスチャ/モデルをキャッシュへ先読み（シーン切替はしない）
 ---タイトル等で次シーンを先読みしておくと遷移時のカクつきが消える
+---★同期。読み終わるまで戻らないので、ロード画面からは preloadSceneAsync を使うこと
 ---@param rel string assets/ からの相対パス（例: "scenes/stage_select.json"）
 function preloadScene(rel) end
+
+---preloadScene の非同期版。1 フレーム 10ms ずつしか読まないので、
+---読んでいる間も OnUpdate と描画が回り続ける＝ロード画面を動かしたままにできる。
+---毎フレーム呼んでも安全（同じシーンの二重要求は無視される）
+---@param rel string assets/ からの相対パス（例: "scenes/stage1.json"）
+function preloadSceneAsync(rel) end
+
+---preloadSceneAsync の進み具合。未要求／読み終わったときは 1
+---@return number 0..1
+function scenePreloadProgress() end
+
+---preloadSceneAsync がいま読んでいるアセットの assets 相対パス（読んでいなければ ""）
+---@return string
+function scenePreloadCurrent() end
 
 ---SceneFlow（sceneflow.json）の「次のシーン」へ
 function nextScene() end

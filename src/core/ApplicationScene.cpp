@@ -405,6 +405,26 @@ void Application::WireScriptCallbacks()
     m_scriptEngine->SetPreloadSceneCallback(
         [this](const std::string& rel) { m_pendingScenePreloads.push_back(rel); });
 
+    // preloadSceneAsync / scenePreloadProgress / scenePreloadCurrent:
+    // 同期版と同じ「参照アセットを温める」だが、1 フレームに数 ms ずつしか進めない。
+    // 読んでいる間もゲームの OnUpdate と描画が回るので、ロード画面を動かしたままにできる。
+    {
+        ScriptEngine::ScenePreloadCallbacks spc;
+        spc.begin = [this](const std::string& rel) {
+            // 毎フレーム呼ばれても壊れないように、同じシーンの二重要求は無視する。
+            // （握り潰さないと進捗が毎フレーム 0 に戻り、帯が永久に動かない）
+            if (m_scenePreloadJob && m_scenePreloadJob->rel == rel) return;
+            if (m_pendingScenePreloadAsync == rel) return;
+            m_pendingScenePreloadAsync = rel;
+            // ★ジョブはフレーム境界で作る。ここで 0 にしておかないと、要求直後の
+            //   scenePreloadProgress() が 1 を返して「もう読み終わった」に見える。
+            m_scenePreloadProgress = 0.0f;
+        };
+        spc.progress = [this]() -> float { return m_scenePreloadProgress; };
+        spc.current  = [this]() -> std::string { return GetScenePreloadCurrent(); };
+        m_scriptEngine->SetScenePreloadCallbacks(std::move(spc));
+    }
+
     m_scriptEngine->SetUiFocusCallback(
         [this](std::uint32_t id) {
             if (m_uiSystem)
@@ -782,6 +802,130 @@ void Application::DoScenePreload(const std::string& rel, ID3D12GraphicsCommandLi
     Logger::Info("preloadScene: {} (アセット{}件)", rel, refs.size());
 }
 
+// ===== 非同期シーン先読み（Lua: preloadSceneAsync）=====
+// DoScenePreload と同じ仕事を【フレームに分けて】やる。1 フレームの持ち分は
+// kScenePreloadBudgetMs だけで、超えた分は次フレームへ回す＝その間ずっとゲームの
+// OnUpdate と描画が回り続ける。Lua は scenePreloadProgress() で 0..1 を読める。
+//
+// ★段取りは 3 段。順番に意味がある:
+//   0) 要求を受けた次のフレームまで何もしない  … ゲームがロード画面を 1 枚出せるように
+//   1) 参照アセットの走査                      … 1.4MB のシーンで数十 ms 掛かるので単独フレームで
+//   2) BC 圧縮だけワーカーへ逃がす             … 1 枚数秒の圧縮をメインで踏むと予算が効かない
+//   3) 予算ぶんずつキャッシュへ載せる          … ここは .texcache ヒット前提なので細かく刻める
+void Application::UpdateScenePreloadJob(ID3D12GraphicsCommandList* cmdList)
+{
+    if (!cmdList) return;
+
+    // ---- 段0: 保留中の要求を拾ってジョブにする（同時に 1 本だけ）----
+    if (!m_scenePreloadJob)
+    {
+        if (m_pendingScenePreloadAsync.empty()) return;
+        m_scenePreloadJob        = std::make_unique<ScenePreloadJob>();
+        m_scenePreloadJob->rel   = m_pendingScenePreloadAsync;
+        m_scenePreloadJob->start = std::chrono::steady_clock::now();
+        m_pendingScenePreloadAsync.clear();
+        m_scenePreloadProgress = 0.0f;
+        return;   // 走査すらしない。このフレームは呼び出し側に 1 枚描かせる
+    }
+
+    ScenePreloadJob& job = *m_scenePreloadJob;
+
+    // ---- 段1: 参照アセットの走査 ----
+    if (job.needsScan)
+    {
+        job.needsScan = false;
+        job.assets    = CollectSceneAssetRefs(job.rel);
+        if (job.assets.empty())
+        {
+            Logger::Warn("preloadSceneAsync: シーンが見つからないか参照アセットがありません: {}",
+                         job.rel);
+            m_scenePreloadJob.reset();
+            m_scenePreloadProgress = 1.0f;   // 待たせない（無いものは読み終わったのと同じ）
+            return;
+        }
+        Logger::Info("preloadSceneAsync 開始: {} (アセット{}件)", job.rel, job.assets.size());
+        return;   // 走査に使ったフレームでは読まない（絵を必ず 1 回更新する）
+    }
+
+    // ---- 段2: BC 圧縮キャッシュ作りをワーカーへ ----
+    if (!job.prewarmDone)
+    {
+        if (!job.prewarmStarted)
+        {
+            job.prewarmStarted = true;
+            // ゲーム(pak 配布)は .texcache 同梱が前提。ワーカーはディスクへ書くので回さない。
+            if (!m_isGameMode)
+            {
+                if (!m_assetPrewarmer) m_assetPrewarmer = std::make_unique<AssetPrewarmer>();
+                // ★起動時の全体先読みが走っている最中なら【何もしない】。
+                //   Stop() は圧縮 1 枚ぶんの join でメインスレッドを数秒止めるので、
+                //   割り込むために呼ぶのは本末転倒（それが直したかった症状そのもの）。
+                if (!m_assetPrewarmer->Running())
+                {
+                    std::vector<AssetPrewarmer::Item> items;
+                    for (const SceneAssetRef& r : job.assets)
+                    {
+                        if (!r.isTexture) continue;   // モデルは cmdList が要る＝段3 の仕事
+                        AssetPrewarmer::Item it;
+                        it.absPath = PathResolver::Utf8ToWide(PathResolver::AssetsDir() + r.path);
+                        it.srgb    = r.srgb;
+                        it.usage   = r.usage;
+                        items.push_back(std::move(it));
+                    }
+                    job.prewarmTotal = items.size();
+                    m_assetPrewarmer->Start(std::move(items));
+                }
+            }
+        }
+        if (job.prewarmTotal > 0 && m_assetPrewarmer && m_assetPrewarmer->Running())
+        {
+            const size_t total = job.prewarmTotal + job.assets.size();
+            m_scenePreloadProgress =
+                static_cast<f32>(m_assetPrewarmer->Done()) / static_cast<f32>(total);
+            job.current = m_assetPrewarmer->Current();
+            return;   // 圧縮中は段3 へ進まない（同じファイルを両側から触らない）
+        }
+        job.prewarmDone = true;
+    }
+
+    // ---- 段3: キャッシュへ載せる（1 フレームの予算ぶんだけ）----
+    const auto t0 = std::chrono::steady_clock::now();
+    while (job.next < job.assets.size())
+    {
+        // 先に current を更新してから読む。1 件で止まったときに
+        // 「どのファイルで止まっているか」が Lua 側から見えるようにするため。
+        job.current = job.assets[job.next].path;
+        WarmSceneAssetRef(job.assets[job.next++], cmdList);
+        const f64 ms = std::chrono::duration<f64, std::milli>(
+                           std::chrono::steady_clock::now() - t0).count();
+        if (ms >= kScenePreloadBudgetMs) break;   // 1件は必ず処理してから測る（進まないと終わらない）
+    }
+
+    const size_t total = job.prewarmTotal + job.assets.size();
+    m_scenePreloadProgress =
+        static_cast<f32>(job.prewarmTotal + job.next) / static_cast<f32>(total);
+
+    if (job.next < job.assets.size()) return;   // 続きは次フレーム（この間も絵は動く）
+
+    const f64 sec = std::chrono::duration<f64>(
+                        std::chrono::steady_clock::now() - job.start).count();
+    // 行頭の "preloadSceneAsync" は ASCII の目印（ログを機械的に追う計測用）。
+    Logger::Info("preloadSceneAsync done: {} (アセット{}件, {:.2f} 秒)",
+                 job.rel, job.assets.size(), sec);
+    m_scenePreloadJob.reset();
+    m_scenePreloadProgress = 1.0f;
+}
+
+// シーン切替が始まったら先読みは用済み（切替側が同じアセットを読む）。
+// 残しておくと切替後も無駄に予算を食い、Play 停止後もジョブが生き残る。
+void Application::CancelScenePreloadJob()
+{
+    m_pendingScenePreloadAsync.clear();
+    if (!m_scenePreloadJob) return;
+    m_scenePreloadJob.reset();
+    m_scenePreloadProgress = 1.0f;
+}
+
 namespace
 {
 // glTF が参照するテクスチャを、ModelLoader と同じ (srgb, usage) で拾う。
@@ -945,6 +1089,10 @@ void Application::BeginAssetPrewarm()
 void Application::BeginSceneLoadJob(const std::string& fullPath, const std::string& rel, bool runtime)
 {
     if (m_sceneLoadJob) return;   // 同時に1本だけ
+
+    // シーン切替が始まった＝非同期先読みは用済み（ここから先は切替側が同じ物を読む）。
+    // ★軽いシーンで BeginSceneLoadJob が何も作らずに戻る経路でも通るよう、先頭で捨てる。
+    CancelScenePreloadJob();
 
     // 「重い」の判定は参照アセット数だけでは足りない。エンティティが数万あるシーンは
     // 参照アセットが数件でも SceneSerializer::Load 自体に秒単位かかる（＝固まって見える）。
@@ -1696,6 +1844,9 @@ void Application::EnterEditorMode()
         m_sceneLoadJob.reset();
         m_editorCtx->sceneLoadProgress = -1.0f;
     }
+    // 非同期先読み（Lua の preloadSceneAsync）も同じ理由で捨てる。
+    // 切替はしないので編集内容は壊さないが、Stop 後もエディタの裏で予算を食い続ける。
+    CancelScenePreloadJob();
 
     // ★環境マップ / IBL はシーン JSON の復元では戻らない（ベイク結果は
     //   m_loadedSkyboxPath でキャッシュされ、m_skyboxDirty 経由でしか焼き直さない）。

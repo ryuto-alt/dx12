@@ -30,6 +30,7 @@ add_library(Core STATIC
     mcp/ApplicationMcpLighting.cpp
     mcp/ApplicationMcpNav.cpp
     mcp/ApplicationMcpGit.cpp
+    mcp/ApplicationMcpValidate.cpp   # 配置検査（埋まり / ちらつき / 二重 / 当たり無し）
     Window.cpp
     SplashScreen.cpp
     Logger.cpp

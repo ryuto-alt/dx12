@@ -15,6 +15,23 @@ import {
   DIAG_CHECKS, fastDiagnoseOnly, nonSettableComponentError, normalizeDiagnoseOnly,
   normalizeStrokePoints, renderDebugModeIssue, argError, v2, v3, v4,
 } from "./sceneTools.ts";
+import {
+  GROUPS, GROUP_ORDER, ROOT_TO_PREFIX, conventionText, findNameReferences, lintNames, planOrganize,
+  type EntityInfo, type GroupKey,
+} from "./sceneOrganize.ts";
+import {
+  analyzePath, capabilityWarnings, compileTimeline, danglingKeys, evaluate, mouseDeltaForYaw,
+  scriptDuration, wrapDeg, yawTowards,
+  type Expectation, type MovementCapability, type ScriptStep, type TraceSample,
+} from "./playtest.ts";
+import {
+  BLENDER_PORT, blenderCall, blenderCandidatePaths, buildExportScript, isPortOpen, modelBrief,
+  parseCodeResult, planImageRenames,
+} from "./blenderBridge.ts";
+import {
+  bakeGoldenRun, compareReplay, playtestDir, safeName, sessionToPlaytest, validatePlaytest,
+  type PlaytestFile,
+} from "./playtestStore.ts";
 import { compareLook, roundDelta, roundStats } from "./lookCompare.ts";
 import { buildContactSheet, planCameraPath, type PathMode } from "./contactSheet.ts";
 import {
@@ -477,6 +494,8 @@ reg(
     ...entityRef,
     component: z.string().describe("jsonKey。例: pointLight, directionalLight, spotLight, camera, rigidBody, boxCollider, transform, tags, data, particleEmitter, trailRenderer, decal, networkIdentity, networkTransform, sprite2d, audioSource, trigger, uiCanvas, uiRect, uiImage, uiText, uiButton, uiSlider, uiToggle, uiScrollView, uiAnimator"),
     data: z.union([z.record(z.any()), z.array(z.any())]).describe("コンポーネントの値。オブジェクト or 配列(tags は文字列配列)。dx12_describe_components の fields に合わせる。"),
+    layer: z.union([z.number().int(), z.string()]).optional()
+      .describe("particleEmitter のときだけ有効: 編集するレイヤーの index か名前。省略すると 1 枚目が書き換わる。一覧は dx12_list_particle_layers。"),
   },
   { idempotentHint: true },
   ({ entity, name, component, data }) =>
@@ -741,6 +760,8 @@ reg(
   {
     name: z.string().describe("シェーダー名(拡張子・パス区切りなし)。例: ToonShade"),
     code: z.string().describe("HLSL コード全体(VSMain/PSMain を含む)。dx12_read_shader で既存のテンプレ/ソースを読んでから書き換えるとよい。"),
+    template: z.string().optional()
+      .describe("雛形から起こす場合のテンプレート id（water / ocean / particle_ember。一覧は dx12_list_shader_templates）。code を省略したときだけ使われ、両方あれば code が勝つ。"),
   },
   {},
   ({ name, code }) => run(() => engine.call("create_shader", { name, code })),
@@ -776,6 +797,10 @@ reg(
     parent: z.number().int().optional().describe("UI 要素の親エンティティ id(ui_canvas 以外で有効)。parentName と排他。"),
     parentName: z.string().optional().describe("UI 要素の親エンティティ名(完全一致)。"),
     idempotency_key: z.string().optional().describe("再試行の重複防止キー。同じキーの再送は二重生成されない。"),
+    size: z.number().optional()
+      .describe("type:\"plane\" のときの一辺(m)。0/省略で既定。"),
+    subdivisions: z.number().int().optional()
+      .describe("type:\"plane\" の分割数(既定 1 = 4 頂点の板)。★水/海のカスタムシェーダーを貼るなら上げること。4 頂点のままだと頂点を動かす波が一切出ない。"),
   },
   {},
   ({ type, name, position, parent, parentName, idempotency_key }) =>
@@ -784,10 +809,35 @@ reg(
 
 // プリミティブを1コールで生成＋整形する合成ヘルパ(create_entity → set_transform/set_pbr/set_color)。
 // create_entity は遅延同期で本物の entityId を返すので、それを使って後段を適用する。
+/**
+ * 生成したエンティティを規約グループへ入れる。グループのルートが無ければ作る。
+ *
+ * ★グループのルートは必ず原点・無回転・スケール 1 の空エンティティ。
+ *   set_parent はワールド座標を保持しない（子はローカルとして解釈される）ので、
+ *   ルートが単位変換でないと**ぶら下げた瞬間に物がワープする**。
+ *   ここで作るルートは create_entity(type:"empty") の既定＝原点なので安全。
+ */
+async function ensureGroupRoot(group: GroupKey): Promise<number> {
+  const rootName = GROUPS[group].root;
+  const found = await engine.call("find_entity", { name: rootName });
+  if (found?.entityId != null) return found.entityId;
+  const made = await engine.call("create_entity", { type: "empty", name: rootName });
+  return made.entityId;
+}
+
+async function attachToGroup(entityId: number, group?: string): Promise<string | undefined> {
+  if (!group) return undefined;
+  const key = group.toUpperCase() as GroupKey;
+  if (!(key in GROUPS)) return `未知のグループ "${group}"（有効: ${GROUP_ORDER.join(" / ")}）`;
+  const parent = await ensureGroupRoot(key);
+  await engine.call("set_parent", { entity: entityId, parent });
+  return undefined;
+}
+
 async function spawnPrimitive(
   type: "box" | "sphere",
   a: { name?: string; position?: number[]; scale?: number[]; rotation?: number[];
-       color?: number[]; metallic?: number; roughness?: number },
+       color?: number[]; metallic?: number; roughness?: number; group?: string },
 ) {
   const r = await engine.call("create_entity", { type, name: a.name, position: a.position });
   const entity = r.entityId;
@@ -796,6 +846,8 @@ async function spawnPrimitive(
   if (a.metallic != null || a.roughness != null)
     await engine.call("set_pbr", { entity, metallic: a.metallic, roughness: a.roughness });
   if (a.color) await engine.call("set_color", { entity, color: a.color });
+  const warn = await attachToGroup(entity, a.group);
+  if (warn) r.groupWarning = warn; else if (a.group) r.group = a.group.toUpperCase();
   return r;
 }
 
@@ -811,6 +863,8 @@ reg(
     color: v3().optional().describe("[r,g,b] 0..1 基本色。"),
     metallic: z.number().optional().describe("金属度 0..1。"),
     roughness: z.number().optional().describe("粗さ 0..1。"),
+    group: z.enum(["ENV", "LVL", "LGT", "GP", "FX", "UI", "CAM"]).optional()
+      .describe("入れる規約グループ。LVL=床/壁/足場・ENV=背景装飾・GP=遊びに絡むもの。無ければルートを自動生成して親付けする(位置は変わらない)。"),
   },
   {},
   (a) => run(() => spawnPrimitive("box", a)),
@@ -828,6 +882,8 @@ reg(
     color: v3().optional().describe("[r,g,b] 0..1 基本色。"),
     metallic: z.number().optional().describe("金属度 0..1。"),
     roughness: z.number().optional().describe("粗さ 0..1。"),
+    group: z.enum(["ENV", "LVL", "LGT", "GP", "FX", "UI", "CAM"]).optional()
+      .describe("入れる規約グループ。LVL=床/壁/足場・ENV=背景装飾・GP=遊びに絡むもの。無ければルートを自動生成して親付けする(位置は変わらない)。"),
   },
   {},
   (a) => run(() => spawnPrimitive("sphere", a)),
@@ -994,12 +1050,29 @@ reg(
 );
 
 reg(
+  "dx12_mouse_move",
+  "マウス移動の注入",
+  "合成マウス移動を【次の 1 フレームぶん】注入する。一人称の視点操作はこれが唯一の口: ★camera:setYaw() では向きを変えられない(エンジン標準の FpsController は yaw を Lua のローカル変数で持っていて、毎フレーム cam.transform.rotation を上書きするため)。視点はどのゲームでも input:getMouseDeltaX() から作るので、そこへ raw の移動量として乗せる。押しっぱなしの概念は無いので、回し続けるには step_frames と交互に撃つこと。感度はゲームごとに違うため、目標角度へ向けたいなら dx12_play_script の yaw / dx12_autoplay を使う方が確実(そちらは実測して比例で詰める閉ループになっている)。",
+  {
+    dx: z.number().optional().describe("水平の移動量(生のピクセル相当)。正で右回り(実装依存)。"),
+    dy: z.number().optional().describe("垂直の移動量。正で下(実装依存)。"),
+  },
+  {},
+  ({ dx, dy }) => run(() => engine.call("mouse_move", { dx: dx ?? 0, dy: dy ?? 0 })),
+);
+
+reg(
   "dx12_step_frames",
   "Nフレーム進める",
-  "N フレーム経過してから応答する同期バリア。key_down/key_press の後に呼ぶと、入力がシミュレーションに効いてから dx12_get_entity / dx12_project_world_to_screen / dx12_screenshot で結果を観測できる。例: key_down('D') → step_frames(30) → get_entity(name:'Player') で右に動いたか確認 → key_up('D')。frames は 1..600(~10s)。※決定論ステッパではない(各フレーム dt は実時間)。",
-  { frames: z.number().int().optional().describe("進めるフレーム数(既定 1, 最大 600)。") },
+  "N フレーム経過してから応答する同期バリア。key_down/key_press の後に呼ぶと、入力がシミュレーションに効いてから dx12_get_entity / dx12_project_world_to_screen / dx12_screenshot で結果を観測できる。例: key_down('D') → step_frames(30) → get_entity(name:'Player') で右に動いたか確認 → key_up('D')。frames は 1..600(~10s)。★deterministic:true で dt を固定する(既定 1/60)。これを付けないと各フレームの dt は実時間なので、同じ入力を同じフレーム数だけ与えても進む距離が毎回変わる(ジャンプが届いたり届かなかったりする)。物理はもともと 60Hz 固定ステップなので dt=1/60 なら端数が出ない。応答に simulatedSec(= dt × frames)が付く。★deterministic:true は進めた後に【時間を止める】(次の step_frames まで進まない)。これが無いと、応答を待つ MCP の往復の間もエンジンが回り続けて不定な数のフレームが余計に進み、dt を固定しても再生が毎回 1〜2m ずれる(実測)。止まるのはシミュレーションだけなので、この間にスクショも設定の読み書きもできる。hold:false で従来どおり走らせ続ける。dx12_play / dx12_stop で必ず解除される。台本ごと流すなら dx12_play_script を使う方が速い。",
+  {
+    frames: z.number().int().optional().describe("進めるフレーム数(既定 1, 最大 600)。"),
+    deterministic: z.boolean().optional().describe("true で dt を固定し、再現するステップにする。"),
+    dt: z.number().optional().describe("固定 dt(秒)。既定 1/60 = 0.016667。deterministic:true のときだけ有効。"),
+    hold: z.boolean().optional().describe("進めた後に時間を止めるか(既定 true)。deterministic:true のときだけ有効。false で従来どおり走らせ続ける。"),
+  },
   {},
-  ({ frames }) => run(() => engine.call("step_frames", { frames })),
+  ({ frames, deterministic, dt, hold }) => run(() => engine.call("step_frames", { frames, deterministic, dt, hold })),
 );
 
 reg(
@@ -1680,6 +1753,983 @@ reg(
   { path: z.string().optional().describe("assets 相対パス。省略時は現在開いているシーン。") },
   { readOnlyHint: true },
   ({ path }) => run(() => engine.call("validate_scene", { path })),
+);
+
+// ════════════════════════════════════════════════════════════════
+//  グループ分けと命名規則（共同開発でシーンを読める形に保つ）
+// ════════════════════════════════════════════════════════════════
+
+/** list_entities + get_hierarchy から親付きのフラット一覧を作る。 */
+async function collectEntities(): Promise<EntityInfo[]> {
+  const list = await engine.call("list_entities", { verbose: true });
+  const hier = await engine.call("get_hierarchy", {});
+  const parentOf = new Map<number, number>();
+  const walk = (node: any, parent?: number) => {
+    if (parent != null) parentOf.set(node.entityId, parent);
+    for (const c of node.children ?? []) walk(c, node.entityId);
+  };
+  for (const r of hier.roots ?? []) walk(r);
+  return (list.entities ?? []).map((e: any) => ({
+    entityId: e.entityId,
+    name: e.name,
+    componentTypes: e.componentTypes ?? [],
+    parent: parentOf.get(e.entityId),
+  }));
+}
+
+/**
+ * プロジェクトの .lua を全部読む（改名してよいかの判定に使う）。
+ * 読めなければ空配列＝「参照が分からない」なので、呼び出し側は**改名を控える**方へ倒すこと。
+ */
+async function readProjectLuaSources(): Promise<string[]> {
+  const ping = await engine.call("ping", {});
+  const dirs = [ping?.scriptsDir, ping?.assetsDir].filter(Boolean) as string[];
+  const out: string[] = [];
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    if (depth > 6) return;
+    let names: fs.Dirent[];
+    try { names = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return; }
+    for (const d of names) {
+      const full = path.join(dir, d.name);
+      if (d.isDirectory()) {
+        if (d.name.startsWith(".")) continue;
+        await walk(full, depth + 1);
+      } else if (d.name.toLowerCase().endsWith(".lua")) {
+        try { out.push(await fs.promises.readFile(full, "utf8")); } catch { /* 読めないものは無視 */ }
+      }
+    }
+  };
+  for (const d of dirs) await walk(d, 0);
+  return out;
+}
+
+reg(
+  "dx12_scene_scaffold",
+  "シーン骨格の生成",
+  "共同開発用のグループ骨格（LVL / ENV / LIGHT / GAMEPLAY / FX / UI / CAMERA の空エンティティ）を作る。既にあるものは作らないので何度撃っても安全。★グループのルートは必ず原点・無回転・スケール1で作る(set_parent はワールド座標を保持しないため、単位変換でないルートにぶら下げると物がワープする)。返り値に命名規約の説明も入るので、シーンを作り始める前にこれを 1 回撃つのが既定の手順。{groups:[{key, root, entityId, created}], convention}。",
+  {
+    only: z.array(z.enum(["ENV", "LVL", "LGT", "GP", "FX", "UI", "CAM"])).optional()
+      .describe("作るグループを絞る。省略で 7 つ全部。"),
+  },
+  {},
+  ({ only }) =>
+    run(async () => {
+      const want = (only?.length ? only : GROUP_ORDER) as GroupKey[];
+      const groups = [];
+      for (const key of want) {
+        const rootName = GROUPS[key].root;
+        const found = await engine.call("find_entity", { name: rootName });
+        if (found?.entityId != null) {
+          groups.push({ key, root: rootName, entityId: found.entityId, created: false });
+          continue;
+        }
+        const made = await engine.call("create_entity", { type: "empty", name: rootName });
+        groups.push({ key, root: rootName, entityId: made.entityId, created: true });
+      }
+      return { groups, convention: conventionText() };
+    }),
+);
+
+reg(
+  "dx12_organize_scene",
+  "シーンの整理(グループ分け+改名)",
+  "既存シーンを命名規約に沿って整理する。各エンティティをコンポーネント(名前より優先)で分類し、規約グループへ親付けして <PREFIX>_<Kind>_<NN> に改名する。★既定は dryRun:true = 計画を返すだけで何も変えない。中身を確認してから dryRun:false で適用すること。連番は既存の規約名を見て衝突しないよう採番し、既に規約どおりのものは触らない(＝何度撃っても同じ結果に収束する)。子(グループ以外の親を持つもの)は親ごと動くので触らない。★プロジェクトの .lua を全部読み、文字列として出てくる名前は【改名しない】(Lua の scene:findEntity は名前で引くうえ、見つからなくても nil ではなく無効な Entity を返すので、改名すると『エラーも出ずに OnUpdate の残りが動かない』最悪の壊れ方をする)。その分はグループ分けだけ行い notes と protectedNames に出る。{applied, moves:[{entityId, oldName, newName, group, reparent, locked}], untouched, protectedNames, luaFilesScanned, convention}。",
+  {
+    dryRun: z.boolean().optional().describe("true(既定)=計画だけ返す / false=実際に適用する。"),
+    rename: z.boolean().optional().describe("false で改名せずグループ分けだけ行う。既定 true。"),
+  },
+  { destructiveHint: true },
+  ({ dryRun, rename }) =>
+    run(async () => {
+      const entities = await collectEntities();
+      // ★改名は Lua の findEntity を壊しうる。プロジェクトの .lua に文字列として
+      //   出てくる名前は改名対象から外す（外した分は notes に理由が出る）。
+      const luaSources = await readProjectLuaSources();
+      const protectedNames = findNameReferences(luaSources, entities.map((e) => e.name));
+      const plan = planOrganize(entities, { rename, protectedNames });
+      const guard = { luaFilesScanned: luaSources.length, protectedNames: [...protectedNames] };
+      if (dryRun !== false)
+        return { applied: false, dryRun: true, ...plan, ...guard, convention: conventionText(),
+                 next: "内容を確認したら dryRun:false で適用する" };
+
+      // 親付け先を先に用意する（無いグループだけ作る）
+      const rootIds = new Map<GroupKey, number>();
+      for (const g of plan.groupsNeeded) rootIds.set(g, await ensureGroupRoot(g));
+
+      let moved = 0, renamed = 0;
+      for (const m of plan.moves) {
+        if (m.reparent) {
+          const parent = rootIds.get(m.group) ?? (await ensureGroupRoot(m.group));
+          rootIds.set(m.group, parent);
+          await engine.call("set_parent", { entity: m.entityId, parent });
+          moved++;
+        }
+        if (m.newName !== m.oldName) {
+          await engine.call("rename_entity", { entity: m.entityId, name: m.newName });
+          renamed++;
+        }
+      }
+      return { applied: true, dryRun: false, moved, renamed, ...plan, ...guard,
+               convention: conventionText() };
+    }),
+);
+
+reg(
+  "dx12_validate_naming",
+  "命名規約の検査",
+  "命名とグループ分けの崩れを数える。DEFAULT_NAME(Box / Cube.001 のまま)・NO_PREFIX(役割の接頭辞が無い)・DUPLICATE_NAME(name 指定も Lua の findEntity も当たり先が不定になる)・BAD_CHARS(空白 / 非 ASCII)・NOT_IN_GROUP(ルート直下に浮いている)。直すのは dx12_organize_scene。{pass, issues:[{entityId, name, kind, text}], counts, convention}。",
+  {},
+  { readOnlyHint: true },
+  () =>
+    run(async () => {
+      const entities = await collectEntities();
+      const issues = lintNames(entities);
+      const counts: Record<string, number> = {};
+      for (const i of issues) counts[i.kind] = (counts[i.kind] ?? 0) + 1;
+      return { pass: issues.length === 0, checked: entities.length, issues, counts,
+               convention: conventionText() };
+    }),
+);
+
+// ════════════════════════════════════════════════════════════════
+//  テストプレイ（決定論ステップ + 台本 + 断言 + 移動能力の実測）
+// ════════════════════════════════════════════════════════════════
+
+const DEFAULT_DT = 1 / 60;
+
+/** プレイヤーらしきエンティティを探す。characterController 持ちが最優先。 */
+async function findPlayerName(explicit?: string): Promise<string> {
+  if (explicit) return explicit;
+  const cc = await engine.call("list_entities", { component_type: "characterController" });
+  if (cc?.entities?.length) return cc.entities[0].name;
+  const all = await engine.call("list_entities", {});
+  const byName = (all?.entities ?? []).find((e: any) => /player|プレイヤー/i.test(e.name));
+  if (byName) return byName.name;
+  throw new Error(
+    "プレイヤーが見つからない。characterController を持つエンティティも 'Player' も無い。" +
+    "player 引数で名前を指定すること");
+}
+
+/** 1 サンプル取る（位置 + 速度 + 接地 + カメラ yaw）。 */
+async function sampleState(name: string, t: number): Promise<TraceSample> {
+  const e = await engine.call("get_entity", { name });
+  const pos = e?.transform?.position ?? [0, 0, 0];
+  const s: TraceSample = { t, pos: [pos[0], pos[1], pos[2]] };
+  try {
+    const phys = await engine.call("get_physics_state", { name });
+    if (phys) {
+      if (Array.isArray(phys.velocity)) s.vel = [phys.velocity[0], phys.velocity[1], phys.velocity[2]];
+      if (typeof phys.isGrounded === "boolean") s.grounded = phys.isGrounded;
+    }
+  } catch { /* Editor 中など。位置だけで続ける */ }
+  return s;
+}
+
+/**
+ * アクティブなカメラの現在 yaw（度）を読む。
+ * ★プレイヤーの Transform ではなくカメラを見る。一人称のコントローラは
+ *   カメラの rotation に yaw を書くのが普通で、プレイヤー本体は回さないことが多い
+ *   （エンジン標準の FpsController がまさにそれ）。
+ */
+async function readCameraYaw(): Promise<{ name: string; yaw: number } | null> {
+  const cams = await engine.call("list_entities", { component_type: "camera" });
+  for (const c of cams?.entities ?? []) {
+    try {
+      const e = await engine.call("get_entity", { name: c.name });
+      if (e?.camera && e.camera.isActive === false) continue;
+      const rot = e?.transform?.rotation;
+      if (Array.isArray(rot)) return { name: c.name, yaw: rot[1] };
+    } catch { /* 次のカメラ */ }
+  }
+  return null;
+}
+
+/**
+ * マウス移動を注入して、カメラを目標 yaw へ向ける。
+ *
+ * ★`camera:setYaw()` では向けられない。エンジン標準の FpsController は yaw を
+ *   **Lua のローカル変数**で持っていて、毎フレーム `cam.transform.rotation` を
+ *   その値で上書きするため、外から書いても次のフレームで戻される（実測で確認）。
+ *   視点はどのゲームでも `input:getMouseDeltaX()` から作るので、そこへ注入するのが唯一の道。
+ *
+ * 感度はゲームごとに違ううえ外から読めないので、**少し回して測ってから比例で詰める**
+ * 閉ループにしてある。measured を持ち回せば 2 回目以降は 1〜2 フレームで合う。
+ */
+async function faceYaw(
+  targetYaw: number,
+  dt: number,
+  state: { degPerPixel: number | null },
+  toleranceDeg = 2,
+  maxIters = 8,
+): Promise<{ ok: boolean; finalYaw: number | null; iters: number }> {
+  let cam = await readCameraYaw();
+  if (!cam) return { ok: false, finalYaw: null, iters: 0 };
+
+  for (let i = 0; i < maxIters; i++) {
+    const err = wrapDeg(targetYaw - cam.yaw);
+    if (Math.abs(err) <= toleranceDeg) return { ok: true, finalYaw: cam.yaw, iters: i };
+
+    const dx = mouseDeltaForYaw(cam.yaw, targetYaw, state.degPerPixel);
+    const before = cam.yaw;
+    await engine.call("mouse_move", { dx, dy: 0 });
+    await engine.call("step_frames", { frames: 1, deterministic: true, dt });
+    const after = await readCameraYaw();
+    if (!after) return { ok: false, finalYaw: null, iters: i + 1 };
+
+    // 実際に何度回ったかから感度を測り直す（最初の 1 回が校正を兼ねる）
+    const moved = wrapDeg(after.yaw - before);
+    if (Math.abs(dx) > 1e-3 && Math.abs(moved) > 1e-3) state.degPerPixel = moved / dx;
+    cam = after;
+  }
+  return { ok: Math.abs(wrapDeg(targetYaw - cam.yaw)) <= toleranceDeg * 2, finalYaw: cam.yaw, iters: maxIters };
+}
+
+/** 押しっぱなしのキーを全部離す（次のテストへ入力を漏らさない）。 */
+async function releaseAll(keys: string[]): Promise<void> {
+  for (const k of keys) { try { await engine.call("key_up", { key: k }); } catch { /* 無視 */ } }
+}
+
+reg(
+  "dx12_play_script",
+  "台本プレイ(決定論)",
+  "入力タイムラインと合否条件を 1 コールで走らせる。★dt を 1/60 に固定して進めるので【同じ台本なら毎回同じ結果】になる(実時間 dt だと同じ入力・同じフレーム数でも進む距離が変わり、ジャンプが届いたり届かなかったりする)。key_down→step_frames→get_entity を数十往復する従来のやり方の置き換え。steps は {t 秒, down/up/press キー, yaw 度} の配列。yaw(度) はマウス移動の注入で合わせる(★camera:setYaw では向けられない。エンジン標準の FpsController は yaw を Lua のローカル変数で持っていて毎フレーム上書きするため)。感度はゲームごとに違うので『少し回して測ってから比例で詰める』閉ループで合わせる。+Z が前、右回りが正。expect は {at|by 秒, near:[x,y,z]+radius, yAbove, yBelow, grounded, movedAtLeast} で、落ちたら『最接近 2.3m』のように【どれだけ足りなかったか】が返る。走行後は押しっぱなしのキーを必ず離す。返り値 {pass, results[], trace[], durationSec}。",
+  {
+    steps: z.array(z.object({
+      t: z.number().describe("Play 開始からの秒。"),
+      down: z.union([z.string(), z.array(z.string())]).optional().describe("押しっぱなしにするキー。"),
+      up: z.union([z.string(), z.array(z.string())]).optional().describe("離すキー。"),
+      press: z.union([z.string(), z.array(z.string())]).optional().describe("1 フレームだけ押す。"),
+      yaw: z.number().optional().describe("カメラの yaw(度)。+Z が前、右回りが正。"),
+      note: z.string().optional(),
+    })).describe("入力タイムライン。順不同でよい。"),
+    expect: z.array(z.object({
+      at: z.number().optional().describe("この時刻ちょうどで満たすこと。"),
+      by: z.number().optional().describe("この時刻までのどこかで満たせばよい。"),
+      near: v3().optional().describe("この座標の radius 以内に居ること。"),
+      radius: z.number().optional(),
+      yAbove: z.number().optional(),
+      yBelow: z.number().optional(),
+      grounded: z.boolean().optional(),
+      movedAtLeast: z.number().optional().describe("開始位置からの水平移動距離(m)。"),
+      label: z.string().optional(),
+    })).optional().describe("合否条件。省略すると trace だけ返す。"),
+    player: z.string().optional().describe("追跡するエンティティ名。省略で characterController 持ちを自動選択。"),
+    until: z.number().optional().describe("走行時間(秒)。省略で台本の最終指示 + 1 秒。"),
+    sampleHz: z.number().optional().describe("トレースの取得頻度(既定 10Hz)。"),
+    dt: z.number().optional().describe("固定 dt(既定 1/60)。"),
+    autoPlay: z.boolean().optional().describe("Editor なら自動で Play する(既定 true)。"),
+  },
+  { destructiveHint: false },
+  ({ steps, expect, player, until, sampleHz, dt, autoPlay }) =>
+    run(async () => {
+      const step = dt ?? DEFAULT_DT;
+      const hz = sampleHz ?? 10;
+      const total = until ?? scriptDuration(steps as ScriptStep[]) + 1;
+      const name = await findPlayerName(player);
+
+      const mode = await engine.call("get_mode", {});
+      if (mode?.mode !== "Playing") {
+        if (autoPlay === false) throw new Error("Playing でない。先に dx12_play するか autoPlay:true にする");
+        await engine.call("play", {});
+      }
+
+      const events = compileTimeline(steps as ScriptStep[], step);
+      const totalFrames = Math.ceil(total / step);
+      const framesPerSample = Math.max(1, Math.round(1 / (hz * step)));
+
+      const trace: TraceSample[] = [];
+      const look = { degPerPixel: null as number | null };
+      const yawNotes: string[] = [];
+      let frame = 0;
+      let ei = 0;
+      trace.push(await sampleState(name, 0));
+
+      while (frame < totalFrames) {
+        // このフレームに来ている指示を全部適用する
+        while (ei < events.length && events[ei].frame <= frame) {
+          const ev = events[ei++];
+          for (const k of ev.downs) await engine.call("key_down", { key: k });
+          for (const k of ev.ups) await engine.call("key_up", { key: k });
+          for (const k of ev.presses) await engine.call("key_press", { key: k });
+          if (ev.yaw != null) {
+            const r = await faceYaw(ev.yaw, step, look);
+            if (!r.ok)
+              yawNotes.push(
+                `t=${ev.t.toFixed(2)}s: yaw ${ev.yaw} へ向けきれなかった` +
+                (r.finalYaw == null
+                  ? "（アクティブなカメラが見つからない）"
+                  : `（実際は ${r.finalYaw.toFixed(1)} 度で止まった）`));
+          }
+        }
+        // 次の指示かサンプル境界のどちらか早い方まで進める
+        const nextEvent = ei < events.length ? events[ei].frame : totalFrames;
+        const nextSample = frame + framesPerSample;
+        const to = Math.min(nextEvent, nextSample, totalFrames);
+        const n = Math.max(1, to - frame);
+        await engine.call("step_frames", { frames: n, deterministic: true, dt: step });
+        frame += n;
+        trace.push(await sampleState(name, frame * step));
+      }
+
+      await releaseAll(danglingKeys(steps as ScriptStep[]));
+
+      const results = expect?.length ? evaluate(trace, expect as Expectation[]) : [];
+      const pass = results.every((r) => r.pass);
+      const out: Record<string, unknown> = {
+        pass, player: name, durationSec: frame * step, dt: step,
+        results, trace, samples: trace.length,
+        ...(look.degPerPixel != null ? { mouseDegPerPixel: Number(look.degPerPixel.toFixed(4)) } : {}),
+        ...(yawNotes.length ? { yawWarnings: yawNotes } : {}),
+      };
+      if (!pass) out.next = "落ちた条件の detail に『どれだけ足りなかったか』が入っている。" +
+                            "配置が原因なら dx12_validate_layout、操作が原因なら台本の yaw / タイミングを疑う";
+      return out;
+    }),
+);
+
+reg(
+  "dx12_measure_player",
+  "移動能力の実測",
+  "プレイヤーを実際に歩かせ・跳ばせて【歩行速度 / ジャンプ高 / ジャンプ距離】を測る。characterController の宣言値(stepHeight / maxSlopeDeg)も一緒に返す。★ここで測った値が dx12_check_reachable の判定根拠になる。宣言値ではなく実測なのは、移動そのものは Lua が実装していてコンポーネントの値と一致しないため。結果は <project>/.dx12/movement.json に保存し、次回から使い回せる。{walkSpeed, jumpHeight, jumpDistance, stepHeight, maxSlopeDeg, warnings}。",
+  {
+    player: z.string().optional().describe("プレイヤーのエンティティ名。省略で自動選択。"),
+    forwardKey: z.string().optional().describe("前進キー(既定 W)。"),
+    jumpKey: z.string().optional().describe("ジャンプキー(既定 SPACE)。"),
+    save: z.boolean().optional().describe("false で .dx12/movement.json に保存しない。"),
+  },
+  { destructiveHint: false },
+  ({ player, forwardKey, jumpKey, save }) =>
+    run(async () => {
+      const fwd = forwardKey ?? "W";
+      const jmp = jumpKey ?? "SPACE";
+      const name = await findPlayerName(player);
+      const dt = DEFAULT_DT;
+
+      const mode = await engine.call("get_mode", {});
+      if (mode?.mode !== "Playing") await engine.call("play", {});
+      await engine.call("step_frames", { frames: 30, deterministic: true, dt });
+
+      const measure = async (fn: () => Promise<void>, sec: number) => {
+        const before = await sampleState(name, 0);
+        const samples: TraceSample[] = [before];
+        await fn();
+        const frames = Math.ceil(sec / dt);
+        const chunk = Math.max(1, Math.round(frames / 20));
+        for (let f = 0; f < frames; f += chunk) {
+          await engine.call("step_frames", { frames: Math.min(chunk, frames - f), deterministic: true, dt });
+          samples.push(await sampleState(name, (f + chunk) * dt));
+        }
+        return samples;
+      };
+
+      // ① 歩行速度: 前進 1 秒の水平距離
+      const walk = await measure(async () => { await engine.call("key_down", { key: fwd }); }, 1.0);
+      await engine.call("key_up", { key: fwd });
+      const w0 = walk[0].pos, w1 = walk[walk.length - 1].pos;
+      const walkSpeed = Math.hypot(w1[0] - w0[0], w1[2] - w0[2]);
+      await engine.call("step_frames", { frames: 30, deterministic: true, dt });
+
+      // ② ジャンプ高: その場で跳んで最高到達 - 開始 y
+      const jump = await measure(async () => { await engine.call("key_press", { key: jmp }); }, 1.5);
+      const baseY = jump[0].pos[1];
+      const jumpHeight = Math.max(0, Math.max(...jump.map((s) => s.pos[1])) - baseY);
+      await engine.call("step_frames", { frames: 30, deterministic: true, dt });
+
+      // ③ ジャンプ距離: 走りながら跳んで、接地するまでの水平距離
+      const start = await sampleState(name, 0);
+      await engine.call("key_down", { key: fwd });
+      await engine.call("step_frames", { frames: 20, deterministic: true, dt });
+      const liftoff = await sampleState(name, 0);
+      await engine.call("key_press", { key: jmp });
+      let landed = liftoff;
+      for (let f = 0; f < Math.ceil(2.0 / dt); f += 6) {
+        await engine.call("step_frames", { frames: 6, deterministic: true, dt });
+        const s = await sampleState(name, 0);
+        landed = s;
+        if (s.grounded === true && f > 12) break;      // 跳び上がってから再接地したら終わり
+      }
+      await engine.call("key_up", { key: fwd });
+      const jumpDistance = Math.hypot(landed.pos[0] - liftoff.pos[0], landed.pos[2] - liftoff.pos[2]);
+
+      // 宣言値（characterController）は実測できないものだけ拾う
+      let stepHeight = 0.3, maxSlopeDeg = 50;
+      try {
+        const ent = await engine.call("get_entity", { name });
+        const cc = ent?.characterController;
+        if (cc) {
+          if (typeof cc.stepHeight === "number") stepHeight = cc.stepHeight;
+          if (typeof cc.maxSlopeDeg === "number") maxSlopeDeg = cc.maxSlopeDeg;
+        }
+      } catch { /* 無ければ既定値 */ }
+
+      const cap: MovementCapability = {
+        walkSpeed, jumpHeight, jumpDistance, stepHeight, maxSlopeDeg,
+        measuredAt: new Date().toISOString(),
+        note: `player=${name} forward=${fwd} jump=${jmp}`,
+      };
+      const warnings = capabilityWarnings(cap);
+
+      let savedTo: string | undefined;
+      if (save !== false) {
+        try {
+          const ping = await engine.call("ping", {});
+          const dir = path.join(ping.baseDir, ".dx12");
+          await fs.promises.mkdir(dir, { recursive: true });
+          savedTo = path.join(dir, "movement.json");
+          await fs.promises.writeFile(savedTo, JSON.stringify(cap, null, 2), "utf8");
+        } catch (e) { warnings.push(`movement.json を保存できなかった: ${(e as Error).message}`); }
+      }
+      return { ...cap, warnings, savedTo, startPos: start.pos };
+    }),
+);
+
+reg(
+  "dx12_check_reachable",
+  "到達性の検査",
+  "ナビメッシュの経路と【実測した移動能力】で『そこへ行けるか』を判定する。Play しないので何度でも撃てる。経路が無ければその旨、あれば各区間の登り・隙間を移動能力と突き合わせて『LVL_Platform_07 まで水平 6.2m の跳び越しが要る。実測のジャンプ距離 4.1m では届かない』のように名指しで返す。★先に dx12_measure_player を撃つこと(実測値が無ければ .dx12/movement.json を読み、それも無ければ保守的な既定値を使い warning を出す)。ナビメッシュが無ければ dx12_navmesh_build。{reachable, pathPoints, issues[], capability}。",
+  {
+    from: v3().optional().describe("開始座標。省略でプレイヤーの現在地。"),
+    fromName: z.string().optional().describe("開始エンティティ名。"),
+    to: v3().optional().describe("目標座標。"),
+    toName: z.string().optional().describe("目標エンティティ名(ゴール・鍵・コイン等)。"),
+  },
+  { readOnlyHint: true },
+  ({ from, fromName, to, toName }) =>
+    run(async () => {
+      const warnings: string[] = [];
+      const posOf = async (name: string): Promise<[number, number, number]> => {
+        const b = await engine.call("get_bounds", { name, includeChildren: true });
+        if (b?.center) return [b.center[0], b.center[1], b.center[2]];
+        const e = await engine.call("get_entity", { name });
+        const p = e?.transform?.position ?? [0, 0, 0];
+        return [p[0], p[1], p[2]];
+      };
+      let start: [number, number, number];
+      if (from) start = [from[0], from[1], from[2]];
+      else start = await posOf(fromName ?? (await findPlayerName()));
+      if (!to && !toName) throw new Error("to か toName のどちらかが要る");
+      const goal: [number, number, number] = to ? [to[0], to[1], to[2]] : await posOf(toName!);
+
+      // 移動能力: 実測 → 保存値 → 保守的な既定
+      let cap: MovementCapability = {
+        walkSpeed: 4, jumpHeight: 1.0, jumpDistance: 3.0, stepHeight: 0.3, maxSlopeDeg: 50,
+      };
+      try {
+        const ping = await engine.call("ping", {});
+        const raw = await fs.promises.readFile(path.join(ping.baseDir, ".dx12", "movement.json"), "utf8");
+        cap = { ...cap, ...JSON.parse(raw) };
+      } catch {
+        warnings.push("移動能力の実測値が無いので保守的な既定値を使っている。" +
+                      "dx12_measure_player を先に撃つと判定が正確になる");
+      }
+
+      // ★統計は stats の下。エンジンの navmesh_info は {config, stats, debugDraw} を返す。
+      const info = await engine.call("navmesh_info", {});
+      const stats = info?.stats ?? {};
+      if (stats.built === false || (stats.polyCount ?? 0) === 0)
+        return { reachable: false, warnings,
+                 reason: "ナビメッシュが焼かれていない。先に dx12_navmesh_build を撃つこと",
+                 capability: cap };
+
+      // ★引数名は from / to（start / end ではない）。points で返る。
+      const pathRes = await engine.call("navmesh_path", { from: start, to: goal });
+      const pts: [number, number, number][] =
+        (pathRes?.points ?? []).map((p: number[]) => [p[0], p[1], p[2]]);
+      if (!pts.length)
+        return {
+          reachable: false, warnings, capability: cap, start, goal,
+          reason: "ナビメッシュ上に経路が無い。歩いて行ける床が繋がっていない" +
+                  "(穴・段差・ナビメッシュの焼き漏れのどれか)",
+          next: "dx12_navmesh_debug で焼けている面を見るか、間の足場を置き直すこと",
+        };
+      // ★reached=false は「目標へ行けないので一番近い所までを返した」意味。
+      //   これを見ないと、途中で切れた経路を「通れる」と誤って報告する。
+      if (pathRes?.reached === false)
+        return {
+          reachable: false, warnings, capability: cap, start, goal, pathPoints: pts,
+          reason: "経路が目標まで届いていない（navmesh の reached=false）。" +
+                  `一番近づけるのは [${pts[pts.length - 1].map((n) => n.toFixed(1)).join(",")}] まで`,
+          next: "そこから先が段差・隙間・未生成のどれかで分断されている。" +
+                "dx12_navmesh_debug で焼けている面を見ること",
+        };
+
+      const issues = analyzePath(pts, cap);
+      let length = 0;
+      for (let i = 0; i + 1 < pts.length; i++)
+        length += Math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][2] - pts[i][2]);
+      return {
+        reachable: issues.length === 0, warnings, capability: cap, start, goal,
+        pathPoints: pts, pathLength: Number(length.toFixed(2)), issues,
+        estimatedWalkSec: cap.walkSpeed > 0 ? Number((length / cap.walkSpeed).toFixed(1)) : null,
+        ...(issues.length ? { next: "issues の区間に足場を足すか、隙間を詰めること" } : {}),
+      };
+    }),
+);
+
+reg(
+  "dx12_autoplay",
+  "自動走破(クリアできるかの実証)",
+  "ナビメッシュの経路を【実際の入力】でなぞって、本当にゴールへ行けるかを確かめる。経路点ごとにマウス移動を注入してカメラを向け、前進キーを押す(このエンジンのテンプレートはカメラ相対 WASD)。詰まったら少し跳んで、それでも進まなければ『どこで詰まったか』を座標付きで返す。★これは dx12_check_reachable(静的判定)の実証版。静的に通っても実際は詰まる(見えない当たり判定・傾斜・キャラの幅)ことがあるので、クリア可能を主張する前にこれを通すこと。{cleared, stuckAt, progress, trace[]}。",
+  {
+    goal: v3().optional().describe("目標座標。"),
+    goalName: z.string().optional().describe("目標エンティティ名。"),
+    player: z.string().optional(),
+    forwardKey: z.string().optional().describe("前進キー(既定 W)。"),
+    jumpKey: z.string().optional().describe("ジャンプキー(既定 SPACE)。"),
+    arriveRadius: z.number().optional().describe("到達とみなす距離(既定 1.5m)。"),
+    timeoutSec: z.number().optional().describe("打ち切り時間(既定 60 秒ぶんのシミュレーション)。"),
+  },
+  { destructiveHint: false },
+  ({ goal, goalName, player, forwardKey, jumpKey, arriveRadius, timeoutSec }) =>
+    run(async () => {
+      const fwd = forwardKey ?? "W";
+      const jmp = jumpKey ?? "SPACE";
+      const radius = arriveRadius ?? 1.5;
+      const limit = timeoutSec ?? 60;
+      const dt = DEFAULT_DT;
+      const name = await findPlayerName(player);
+
+      const posOf = async (n: string): Promise<[number, number, number]> => {
+        const b = await engine.call("get_bounds", { name: n, includeChildren: true });
+        return [b.center[0], b.center[1], b.center[2]];
+      };
+      if (!goal && !goalName) throw new Error("goal か goalName のどちらかが要る");
+      const target: [number, number, number] = goal ? [goal[0], goal[1], goal[2]] : await posOf(goalName!);
+
+      const mode = await engine.call("get_mode", {});
+      if (mode?.mode !== "Playing") await engine.call("play", {});
+      await engine.call("step_frames", { frames: 30, deterministic: true, dt });
+
+      const here = await sampleState(name, 0);
+      // ★引数名は from / to。返りは points で、reached=false なら途中までの折れ線。
+      let pathRes: any = null;
+      try { pathRes = await engine.call("navmesh_path", { from: here.pos, to: target }); }
+      catch { /* ナビメッシュ未生成。直進で試す */ }
+      let waypoints: [number, number, number][] =
+        (pathRes?.points ?? []).map((p: number[]) => [p[0], p[1], p[2]]);
+      if (!waypoints.length) waypoints = [target];   // ナビメッシュが無くても直進は試す
+      const pathReached = pathRes?.reached !== false;
+
+      const trace: TraceSample[] = [here];
+      const look = { degPerPixel: null as number | null };
+      const notes: string[] = [];
+      if (!pathReached)
+        notes.push("ナビメッシュの経路が目標まで届いていない（reached=false）。" +
+                   "最後の点まで行っても届かない見込み。dx12_check_reachable で原因を見ること");
+      let yawFailed = false;
+      let t = 0;
+      let wi = 0;
+      let stuckFor = 0;
+      let last = here.pos;
+      await engine.call("key_down", { key: fwd });
+      try {
+        while (t < limit && wi < waypoints.length) {
+          const wp = waypoints[wi];
+          const cur = await sampleState(name, t);
+          const d = Math.hypot(cur.pos[0] - wp[0], cur.pos[2] - wp[2]);
+          if (d < radius) { wi++; stuckFor = 0; continue; }
+
+          const face = await faceYaw(yawTowards(cur.pos, wp), dt, look);
+          if (!face.ok && !yawFailed) {
+            yawFailed = true;
+            notes.push("カメラを目標方向へ向けきれなかった。" +
+                       "一人称でない / カメラが非アクティブ / 視点がマウス以外で作られている可能性");
+          }
+          await engine.call("step_frames", { frames: 12, deterministic: true, dt });
+          t += 12 * dt;
+          const after = await sampleState(name, t);
+          trace.push(after);
+
+          const moved = Math.hypot(after.pos[0] - last.pos[0], after.pos[2] - last.pos[2]);
+          last = after.pos;
+          if (moved < 0.05) {
+            stuckFor += 12 * dt;
+            // 段差かもしれないので跳んでみる
+            if (stuckFor > 0.4) { await engine.call("key_press", { key: jmp }); }
+            if (stuckFor > 3.0) {
+              await engine.call("key_up", { key: fwd });
+              return {
+                cleared: false, player: name, goal: target, notes,
+                stuckAt: after.pos, stuckAtWaypoint: wi, waypoints, trace,
+                elapsedSec: Number(t.toFixed(2)),
+                reason: `[${after.pos.map((n) => n.toFixed(1)).join(",")}] で 3 秒進めなくなった`,
+                next: "その座標を dx12_screenshot_from で見る。壁・段差・隙間のどれかが塞いでいる。" +
+                      "dx12_check_reachable で区間の登り/隙間も確認できる",
+              };
+            }
+          } else stuckFor = 0;
+        }
+      } finally {
+        await engine.call("key_up", { key: fwd });
+      }
+
+      const end = await sampleState(name, t);
+      const remain = Math.hypot(end.pos[0] - target[0], end.pos[2] - target[2]);
+      const cleared = remain < radius;
+      return {
+        cleared, player: name, goal: target, finalPos: end.pos, notes,
+        remainingDistance: Number(remain.toFixed(2)),
+        waypointsReached: wi, waypoints: waypoints.length, trace,
+        elapsedSec: Number(t.toFixed(2)),
+        ...(cleared ? {} : { reason: `打ち切り(${limit}s)までにゴールへ届かなかった`,
+                             next: "timeoutSec を伸ばすか、dx12_check_reachable で経路の問題を見る" }),
+      };
+    }),
+);
+
+// ════════════════════════════════════════════════════════════════
+//  人のプレイを回帰テストにする（記録 → 保存 → 再生 → 比較）
+// ════════════════════════════════════════════════════════════════
+
+/** .playtest の保存先。プロジェクト直下に固定して CI が拾えるようにする。 */
+async function playtestPaths(name?: string): Promise<{ dir: string; file?: string }> {
+  const ping = await engine.call("ping", {});
+  const dir = playtestDir(ping.baseDir);
+  return { dir, file: name ? path.join(dir, `${safeName(name)}.json`) : undefined };
+}
+
+/**
+ * .playtest を 1 本再生して結果を返す。
+ * ★キー列は記録どおり、向きは記録した yaw をマウス注入の閉ループで追いかける。
+ *   記録に残っているのは「10Hz の yaw の値」であって毎フレームのマウス移動量ではないので、
+ *   移動量をそのまま流し直すことはできない（感度も違う）。角度を目標にする方が確実。
+ */
+async function replayPlaytest(pt: PlaytestFile, dt = DEFAULT_DT) {
+  await engine.call("stop", {});
+  await engine.call("open_scene", { path: pt.scene });
+  await engine.call("play", {});
+  await engine.call("step_frames", { frames: 30, deterministic: true, dt });
+
+  const player = await findPlayerName();
+  const events = compileTimeline(pt.steps as ScriptStep[], dt);
+  const look = { degPerPixel: null as number | null };
+  // ★記録した長さ「ちょうど」で止める（余韻を足すと空中で終わったジャンプが着地してずれる）
+  const totalFrames = Math.ceil(pt.durationSec / dt);
+  const sampleFrames = Math.max(1, Math.round(0.1 / dt));   // 記録と同じ 10Hz
+
+  const trace: TraceSample[] = [await sampleState(player, 0)];
+  let frame = 0;
+  let ei = 0;
+  let li = 0;
+
+  while (frame < totalFrames) {
+    const t = frame * dt;
+    while (ei < events.length && events[ei].frame <= frame) {
+      const ev = events[ei++];
+      for (const k of ev.downs) await engine.call("key_down", { key: k });
+      for (const k of ev.ups) await engine.call("key_up", { key: k });
+      for (const k of ev.presses) await engine.call("key_press", { key: k });
+    }
+    // その時刻の yaw 目標へ向ける（追い越した分は捨てる）。
+    // ★向きを合わせるのに使ったフレームも数える。数えないとマウスを振った回数ぶん
+    //   余計にシミュレーションが進み、同じ入力なのに記録より遠くまで行ってしまう。
+    while (li + 1 < pt.look.length && pt.look[li + 1].t <= t) li++;
+    if (li < pt.look.length) frame += (await faceYaw(pt.look[li].yaw, dt, look, 3, 4)).iters;
+    if (frame >= totalFrames) break;
+
+    const nextEvent = ei < events.length ? events[ei].frame : totalFrames;
+    const to = Math.min(nextEvent, frame + sampleFrames, totalFrames);
+    const n = Math.max(1, to - frame);
+    await engine.call("step_frames", { frames: n, deterministic: true, dt });
+    frame += n;
+    trace.push(await sampleState(player, frame * dt));
+  }
+
+  await releaseAll(danglingKeys(pt.steps as ScriptStep[]));
+  let scriptErrors = 0;
+  try { scriptErrors = (await engine.call("get_script_errors", {}))?.count ?? 0; } catch { /* 無視 */ }
+  await engine.call("stop", {});
+
+  return { verdict: compareReplay(pt, trace, scriptErrors), trace, player };
+}
+
+reg(
+  "dx12_record_playtest",
+  "プレイを回帰テストとして保存",
+  "直前の 1 プレイ(dx12_get_play_session の記録)を .playtest として保存する。★人が 1 回遊べば回帰テストが 1 本増える、が狙い。コードは ctest で守られているのに遊びは誰も守っていない、という穴を埋めるための機能。保存先は <project>/.dx12/playtests/<name>.json で、キーの押し離しタイムライン・10Hz の yaw 目標・カメラ軌跡(基準)が入る。判定は『終点が endTolerance 以内・途中の経路が pathTolerance 以内・再生中に Lua が死なない』の 3 つだけ(経路をピクセル単位で一致させようとすると毎回落ちて誰も見なくなる)。★入力が 1 つも無い記録と、リング上限でこぼれた記録は拒否する。手順: dx12_play → 人に遊んでもらう → dx12_stop → これ。",
+  {
+    name: z.string().describe("テスト名(英数字。ファイル名になる)。"),
+    endTolerance: z.number().optional().describe("終点のずれの許容(m)。既定 1.0（実測のゆらぎは 0.002m）。"),
+    pathTolerance: z.number().optional().describe("経路のずれの許容(m)。既定 2.0。ランダム要素があるゲームは緩める。"),
+    note: z.string().optional().describe("何を確かめるテストかのメモ。"),
+  },
+  { destructiveHint: false },
+  ({ name, endTolerance, pathTolerance, note }) =>
+    run(async () => {
+      const ping = await engine.call("ping", {});
+      const session = await engine.call("get_play_session", { maxEvents: 8000, maxSamples: 4000 });
+      if (!session?.started)
+        throw new Error("記録がない。dx12_play で遊んでから撃つこと");
+
+      const draft = sessionToPlaytest(session, {
+        name, scene: ping.currentScene, endTolerance, pathTolerance, note,
+      });
+
+      // ★人の軌跡はそのまま基準にしない。人のプレイは実時間、再生は固定 dt なので、
+      //   入力のタイミングが同じでも軌跡は構造的にずれる（実測で 3m）。
+      //   ここで 1 回再生し、その結果を基準（ゴールデンラン）として焼き込む。
+      //   ＝以後の再生は「同じ仕組みで走らせた結果」と比べることになり、
+      //   ずれたら本当にゲーム側が変わったときだけになる。
+      const first = await replayPlaytest(draft);
+      const pt = bakeGoldenRun(draft, first.trace);
+
+      const warnings: string[] = [];
+      if ((pt.humanDrift ?? 0) > 8)
+        warnings.push(
+          `初回再生が人の軌跡から最大 ${pt.humanDrift}m 離れた。入力だけでは再現しきれていない` +
+          "（マウス視点を細かく振るプレイは再現性が落ちる）。基準は再生側なのでテストとしては" +
+          "成立するが、人の遊びを再現しているとは限らない");
+
+      const { dir, file } = await playtestPaths(name);
+      await fs.promises.mkdir(dir, { recursive: true });
+      await fs.promises.writeFile(file!, JSON.stringify(pt, null, 2), "utf8");
+      return {
+        saved: file, name: safeName(name), scene: pt.scene,
+        durationSec: Number(pt.durationSec.toFixed(2)),
+        inputs: pt.steps.length, samples: pt.reference.length,
+        humanDrift: pt.humanDrift, warnings,
+        next: "dx12_run_playtests で再生して確かめる。CI からは ciClient.ts --playtests で回る",
+      };
+    }),
+);
+
+reg(
+  "dx12_run_playtests",
+  "回帰テストの再生",
+  "保存済みの .playtest を再生して、記録どおりに動くか確かめる。キー列は記録どおり、向きは記録した yaw をマウス注入の閉ループで追いかける(記録にあるのは 10Hz の角度であって毎フレームのマウス移動量ではないため、移動量の流し直しはできない)。落ちたときは【いつ・どれだけ】ずれたかを返す: 『t=4.20s で経路が 6.10m ずれた』『終点が 8.30m ずれた(記録は [0,1.6,20]、今回は [3,0.1,12])』。ジャンプ力を変えた・コライダーをずらした・Lua を直した、でステージがクリアできなくなったのを機械が拾うための機能。name 省略で全部走らせる。",
+  {
+    name: z.string().optional().describe("走らせるテスト名。省略で全部。"),
+  },
+  { destructiveHint: false },
+  ({ name }) =>
+    run(async () => {
+      const { dir } = await playtestPaths();
+      let files: string[];
+      try {
+        files = (await fs.promises.readdir(dir))
+          .filter((f) => f.endsWith(".json"))
+          .filter((f) => !name || f === `${safeName(name)}.json`);
+      } catch {
+        return { ran: 0, results: [], note: `.playtest がまだ 1 本も無い（${dir}）`,
+                 next: "dx12_play → 遊ぶ → dx12_stop → dx12_record_playtest で作る" };
+      }
+      if (files.length === 0) throw new Error(`該当する .playtest が無い（${dir}）`);
+
+      const results = [];
+      for (const f of files) {
+        const raw = JSON.parse(await fs.promises.readFile(path.join(dir, f), "utf8"));
+        const bad = validatePlaytest(raw);
+        if (bad.length) {
+          results.push({ name: f, pass: false, reasons: bad });
+          continue;
+        }
+        const pt = raw as PlaytestFile;
+        const { verdict } = await replayPlaytest(pt);
+        results.push({
+          name: pt.name, scene: pt.scene, pass: verdict.pass,
+          endDistance: verdict.endDistance, maxDeviation: verdict.maxDeviation,
+          maxDeviationAt: verdict.maxDeviationAt, reasons: verdict.reasons,
+        });
+      }
+      const failed = results.filter((r) => !r.pass);
+      return {
+        ran: results.length, passed: results.length - failed.length, failed: failed.length,
+        results,
+        ...(failed.length ? { next: "reasons の『いつ・どれだけ』を見て、配置か操作かを切り分ける。" +
+                                    "配置なら dx12_validate_layout、到達性なら dx12_check_reachable" } : {}),
+      };
+    }),
+);
+
+// ════════════════════════════════════════════════════════════════
+//  Blender 連携（自動起動 → 規約どおりの書き出し → 取り込み → 実寸検証）
+// ════════════════════════════════════════════════════════════════
+
+reg(
+  "dx12_blender_ensure",
+  "Blenderの起動確認/起動",
+  "BlenderMCP アドオンのソケット(127.0.0.1:9876)が生きているか確かめ、死んでいたら Blender を起動してポートが開くまで待つ。アドオン側は自動でサーバーを開始する設定になっているので、起動さえすれば mcp__blender__* がそのまま使える。★モデリングを頼まれたら【まずこれを撃つ】。手で Blender を開いてもらう必要は無い。{running, started, port, blenderPath, waitedMs}。",
+  {
+    blenderPath: z.string().optional().describe("blender.exe の絶対パス。省略で既定の場所を新しい版から探す。"),
+    timeoutMs: z.number().optional().describe("起動を待つ上限(既定 60000)。"),
+  },
+  { destructiveHint: false },
+  ({ blenderPath, timeoutMs }) =>
+    run(async () => {
+      if (await isPortOpen(BLENDER_PORT))
+        return { running: true, started: false, port: BLENDER_PORT,
+                 note: "既に起動していて接続できる" };
+
+      let exe = blenderPath;
+      if (!exe) {
+        for (const c of blenderCandidatePaths()) {
+          try { await fs.promises.access(c); exe = c; break; } catch { /* 次の候補 */ }
+        }
+      }
+      if (!exe)
+        throw new Error("blender.exe が見つからない。blenderPath で絶対パスを指定すること " +
+                        `(探した場所: ${blenderCandidatePaths().slice(0, 3).join(" / ")} …)`);
+
+      const { spawn } = await import("node:child_process");
+      const child = spawn(exe, [], { detached: true, stdio: "ignore" });
+      child.unref();
+
+      const limit = timeoutMs ?? 60_000;
+      const t0 = Date.now();
+      while (Date.now() - t0 < limit) {
+        if (await isPortOpen(BLENDER_PORT))
+          return { running: true, started: true, port: BLENDER_PORT, blenderPath: exe,
+                   waitedMs: Date.now() - t0, pid: child.pid };
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      throw new Error(
+        `Blender は起動したがポート ${BLENDER_PORT} が ${limit}ms 開かなかった。` +
+        "アドオンの『Blender MCP』が有効か、サイドバー(N)の BlenderMCP パネルで自動開始が入っているか確認すること");
+    }),
+);
+
+reg(
+  "dx12_model_brief",
+  "モデリング規約",
+  "dx12 へ持ってくるモデルの作り方を返す。Blender で作り始める【前】に読む。ここに書いてあるのは全部『守らないと実際に壊れた』項目: ★単色マテリアル禁止(エンジンは glTF の baseColorFactor を読まないのでテクスチャ無しは真っ白になる) / ★アルファ抜きが無いので葉・枝カードは Blender で消してから出す / 単位はメートル・原点は底面中心・+Y が正面(Blender の -Y がエンジンの +Z) / テクセル密度 512〜1024 texel/m / ORM は G=roughness B=metallic / シェイプキーは捨てる。{rules, materials, gotchas}。",
+  { kind: z.string().optional().describe("用途(character / prop / level / 家具 等)。用途別の注意が増える。") },
+  { readOnlyHint: true },
+  ({ kind }) => run(async () => modelBrief(kind ?? "prop")),
+);
+
+reg(
+  "dx12_blender_export",
+  "Blenderから規約どおり書き出して取り込む",
+  "Blender の選択物(または名前指定)を dx12 の規約どおりに glTF で書き出し、assets へ取り込んで実寸まで検証する。踏んだ罠を全部埋めてあるので【手で export_scene.gltf を呼ばないこと】: 全シーンの全 view_layer で deselect してから対象だけ選ぶ(use_selection=False は .blend 内の全シーンを書き出す)/ シェイプキーを捨てる(実例では 75MB のうち 70MB がモーフだった)/ 画像テクスチャが 1 枚も無いマテリアルを警告する(エンジンでは真っ白になる)/ tmpXXXX.jpg という一時名の画像を意味のある名前へ直して uri も書き換える(直さないと再書き出しで前のモデルの参照が切れる)。取り込み後に dx12_asset_info で実寸を読んで返すので、cm/m の取り違えもその場で分かる。{destPath, exported[], warnings[], assetInfo}。",
+  {
+    objects: z.array(z.string()).optional().describe("書き出すオブジェクト名。省略で Blender の選択中(それも無ければ全メッシュ)。"),
+    destPath: z.string().describe("assets 相対の出力先。例 models/rock/rock.gltf（.glb も可）。"),
+    clearShapeKeys: z.boolean().optional().describe("false でシェイプキーを残す(既定 true=捨てる)。"),
+    applyModifiers: z.boolean().optional().describe("false でモディファイアを適用しない(既定 true)。"),
+  },
+  { destructiveHint: true },
+  ({ objects, destPath, clearShapeKeys, applyModifiers }) =>
+    run(async () => {
+      if (!(await isPortOpen(BLENDER_PORT)))
+        throw new Error("Blender に接続できない。先に dx12_blender_ensure を撃つこと");
+      const ping = await engine.call("ping", {});
+      const abs = path.join(ping.assetsDir, destPath);
+      await fs.promises.mkdir(path.dirname(abs), { recursive: true });
+
+      const code = buildExportScript({
+        objectNames: objects ?? [], outPath: abs,
+        clearShapeKeys, applyModifiers,
+      });
+      const resp = await blenderCall("execute_code", { code });
+      if (resp?.status && resp.status !== "success")
+        throw new Error(`Blender 側で失敗: ${resp.message ?? JSON.stringify(resp)}`);
+      const { json, stdout } = parseCodeResult(resp);
+      const report = (json ?? {}) as { exported?: string[]; warnings?: string[]; error?: string; size?: number };
+      if (report.error) throw new Error(`${report.error}（stdout: ${stdout.slice(0, 400)}）`);
+
+      const warnings = [...(report.warnings ?? [])];
+
+      // .gltf なら tmp 名の画像を直す（.glb は埋め込みなので対象外）
+      const renamed: { from: string; to: string }[] = [];
+      if (abs.toLowerCase().endsWith(".gltf")) {
+        try {
+          const raw = await fs.promises.readFile(abs, "utf8");
+          const doc = JSON.parse(raw);
+          const base = path.basename(abs, path.extname(abs));
+          const plan = planImageRenames(doc, base);
+          for (const r of plan) {
+            const dir = path.dirname(abs);
+            try {
+              await fs.promises.rename(path.join(dir, r.from), path.join(dir, r.to));
+              doc.images[r.index].uri = r.to;
+              renamed.push({ from: r.from, to: r.to });
+            } catch (e) { warnings.push(`画像の改名に失敗: ${r.from} → ${r.to}: ${(e as Error).message}`); }
+          }
+          if (renamed.length) await fs.promises.writeFile(abs, JSON.stringify(doc), "utf8");
+        } catch (e) { warnings.push(`.gltf の画像名の整理に失敗: ${(e as Error).message}`); }
+      }
+
+      // 実寸を読む（cm/m の取り違えはここで分かる）
+      let assetInfo: unknown;
+      try { assetInfo = await engine.call("asset_info", { path: destPath }); }
+      catch (e) { warnings.push(`asset_info を読めなかった: ${(e as Error).message}`); }
+
+      const info = assetInfo as { aabbMin?: number[]; aabbMax?: number[] } | undefined;
+      if (info?.aabbMin && info?.aabbMax) {
+        const size = [0, 1, 2].map((i) => info.aabbMax![i] - info.aabbMin![i]);
+        const big = Math.max(...size);
+        if (big > 100) warnings.push(`一辺 ${big.toFixed(0)}m ある。Blender 側の単位が cm になっていないか確認すること`);
+        if (big < 0.01) warnings.push(`一辺 ${(big * 1000).toFixed(1)}mm しかない。スケールの取り違えを疑う`);
+      }
+
+      return {
+        destPath, absPath: abs, exported: report.exported ?? [],
+        bytes: report.size, renamedImages: renamed, warnings, assetInfo,
+        next: "dx12_preview_model で見た目を確認し、dx12_spawn_model(scale は常に 1)で置く。" +
+              "置いた後は dx12_validate_layout で埋まり/ちらつきを確認すること",
+      };
+    }),
+);
+
+reg(
+  "dx12_asset_gap",
+  "足りないモデルの洗い出し",
+  "『何をモデリングすべきか』のリストを作る。シーンの参照切れ(modelPath があるのにファイルが無い)と、プリミティブの箱・球で代用しているだけの仮置き(名前が既定のまま/ENV_ 配下のプリミティブ)を集めて返す。Blender で作り始める前の入口。{missing[], placeholders[], count}。",
+  {
+    includePlaceholders: z.boolean().optional().describe("false で参照切れだけ返す(既定 true)。"),
+  },
+  { readOnlyHint: true },
+  ({ includePlaceholders }) =>
+    run(async () => {
+      const ping = await engine.call("ping", {});
+      const list = await engine.call("list_entities", { verbose: true });
+      const missing: { entityId: number; name: string; modelPath: string }[] = [];
+      const placeholders: { entityId: number; name: string; primitive: string; sizeHint?: number[] }[] = [];
+
+      for (const e of list?.entities ?? []) {
+        let ent: any;
+        try { ent = await engine.call("get_entity", { entity: e.entityId }); } catch { continue; }
+        const mp = ent?.meshRenderer?.modelPath ?? ent?.modelPath;
+        if (mp) {
+          try { await fs.promises.access(path.join(ping.assetsDir, mp)); }
+          catch { missing.push({ entityId: e.entityId, name: e.name, modelPath: mp }); }
+          continue;
+        }
+        if (includePlaceholders === false) continue;
+        const prim = ent?.primitive;
+        if (!prim || prim === "plane") continue;          // 床の板は仮置きではない
+        if (ent?.gridPlane) continue;                      // 編集用グリッド
+        // 仮置きの目印: 既定名のまま or ENV_ 配下（背景装飾をプリミティブで代用している）
+        const looksTemp = /^(box|cube|sphere|entity|object)(_\d+|\.\d+)?$/i.test(e.name)
+                       || /^ENV_(Prop|Block)_/i.test(e.name);
+        if (looksTemp)
+          placeholders.push({
+            entityId: e.entityId, name: e.name, primitive: prim,
+            sizeHint: ent?.transform?.scale,
+          });
+      }
+      return {
+        missing, placeholders,
+        count: missing.length + placeholders.length,
+        next: missing.length
+          ? "missing は参照切れ。パスを直すか、そのモデルを作ること（dx12_blender_ensure → モデリング → dx12_blender_export）"
+          : placeholders.length
+            ? "placeholders はプリミティブでの仮置き。dx12_model_brief を読んでから Blender で本物を作る"
+            : "足りないものは無い",
+      };
+    }),
+);
+
+reg(
+  "dx12_validate_layout",
+  "配置検査",
+  "置いた物の【見れば分かるが AI は見ない】破綻を数値で拾う。埋まり(BURIED)/浮き(FLOATING)/同一平面の重なり=ちらつき(Z_FIGHT)/深いめり込み(OVERLAP)/二重配置(DUPLICATE)/当たり判定の欠落(NO_COLLIDER・COLLIDER_WITHOUT_BODY)/スケール異常(SCALE_ANOMALY・NAN_TRANSFORM)。ワールド AABB と三角形精密レイキャストだけで判定するので Editor で動く(Playing 中は MODE_CONFLICT。物理が動かした後の位置を測っても意味が無いため)。★COLLIDER_WITHOUT_BODY はこのエンジン固有の罠: boxCollider だけでは Jolt に載らず、プレイヤーは床をすり抜けて落ち続ける。fix:'safe' で BURIED/FLOATING(接地)・Z_FIGHT(5mm 逃がす)・COLLIDER_WITHOUT_BODY(静的 rigidBody 付与)を自動修正する。DUPLICATE は消す判断が取り返しつかないので報告のみ(dx12_delete_entity で片方を消すこと)。返り値 {pass, checked, errors, warnings, fixed, issues[{kind, level, entityId, name, otherEntityId?, text, fixed}]}。★この検査の要約は dx12_play / dx12_save_scene の返り値にも layout として必ず載る。",
+  {
+    fix: z.enum(["none", "safe", "all"]).optional().describe("none(既定)=検査のみ / safe=安全な修正だけ / all=全部。"),
+    tolerance: z.number().optional().describe("同一平面とみなす距離(m)。既定 0.001(1mm)。"),
+  },
+  { destructiveHint: false },
+  ({ fix, tolerance }) => run(() => engine.call("validate_layout", { fix, tolerance })),
 );
 
 reg(
