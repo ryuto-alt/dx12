@@ -495,6 +495,29 @@ public:
     {
         return undoSystem.EditSeq() != sceneSavedSeq || settingsHash != savedSettingsHash;
     }
+
+    // ── AI（MCP）セッション ──
+    // MCP でゲームを作っている間、未保存の確認モーダルは**絶対に出してはいけない**。
+    // AI はモーダルを押せないので、出た瞬間にツール呼び出しが 8 秒でタイムアウトし、
+    // 人間から見ると「エディタがハングした」としか見えない（実際に何度も踏んだ）。
+    // 出さない代わりに Application が黙って本保存する（UpdateMcpAutoSave）。
+    //
+    // aiSessionActive … いま MCP クライアントが繋がっているか（毎フレーム更新）。
+    //                   自動保存を回すかの判断はこちら。
+    // aiSessionEver   … このエディタ起動中に一度でも繋がったか（切断しても落とさない）。
+    //                   モーダルを出さない判断は**必ずこちら**を使う。接続の瞬断や
+    //                   「Claude のセッションが終わった直後に人が窓を閉じる」で
+    //                   「必ず出ない」が崩れるのを防ぐため。
+    bool aiSessionActive = false;
+    bool aiSessionEver   = false;
+    // MCP の書き込み系が走ってからの残り秒。0 以下でディスクへ本保存する。負 = 保留なし。
+    // 1 コールごとに保存すると数百体の配置で I/O が詰まるので、最後の書き込みから
+    // 少し待ってまとめて書く（デバウンス）。
+    f32 mcpSaveCountdown = -1.0f;
+    // このセッションで退避（バックアップ）を取り終えたシーンのパス。
+    // ★AI が壊した状態をそのまま上書き保存する機構になるのを防ぐ最後の砦なので、
+    //   自動保存で最初に上書きする前に必ず 1 本残す。
+    std::string mcpBackupTakenFor;
     // ── 未保存の確認モーダル ──
     // showUnsavedConfirm が true の間 ToolbarPanel がモーダルを描く。
     // ユーザーが選ぶと unsavedChoice に入り、Application::ConfirmDiscardScene が消化する。

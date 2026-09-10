@@ -332,6 +332,34 @@ private:
     void RegisterMcpLightingMethods();    // ライティング / 診断
     void RegisterMcpNavMethods();         // ナビメッシュ（生成 / 設定 / 経路 / レイ / 可視化）
     void RegisterMcpGitMethods();         // Git / GitHub（状態 / ブランチ / マージ / コミット / プッシュ）
+    void RegisterMcpValidateMethods();    // 配置検査（埋まり / ちらつき / 二重 / 当たり無し）
+
+    // ---- 配置検査（dx12_validate_layout / play・save の要約）----------------
+    // AI が置いた物の「見れば分かるが AI は見ない」たぐいの破綻を数値で拾う。
+    // 実装は mcp/ApplicationMcpValidate.cpp。設計の理由はそのファイル冒頭。
+    struct LayoutIssue
+    {
+        std::string  kind;                     // BURIED / Z_FIGHT / DUPLICATE ...
+        int          level  = 1;               // 2=error / 1=warning
+        entt::entity entity = entt::null;
+        entt::entity other  = entt::null;      // ペアで語る種類のときの相方
+        std::string  text;                     // 日本語 1 行。次の一手まで書く
+        bool         fixed  = false;           // この呼び出しで自動修正したか
+    };
+    struct LayoutReport
+    {
+        int checked = 0, errors = 0, warnings = 0, fixed = 0;
+        std::vector<LayoutIssue> issues;
+    };
+    // fixMode: 0=検査のみ / 1=安全な修正だけ / 2=全部。tolerance は同一平面とみなす距離(m)。
+    LayoutReport   RunLayoutValidation(int fixMode, float tolerance);
+    // dx12_play の遅延応答へ持ち越す配置検査の要約（Play を撃った瞬間＝Editor で測る）。
+    nlohmann::json m_mcpPlayLayout;
+    // dx12_step_frames(deterministic:true) が固定 dt を掛けているか（完了時に必ず戻す）。
+    bool m_mcpStepFixedDt = false;
+    int  m_mcpStepFramesRequested = 0;   // 応答に simulatedSec を載せるため
+    // play / save_scene の返り値へ載せる要約（AI に必ず読ませるための仕掛け）。
+    nlohmann::json McpLayoutSummary();
     // 直近フレームのシーン描画(m_sceneRT)を PNG に書き出す。成功=絶対パス / 失敗=空文字列+err。
     // MCP の screenshot 用。同期 readback(WaitIdle×2)＝低頻度のエディタ操作として割り切る。
     // outPath が空なら従来どおり CWD の mcp_screenshot.png（後方互換）。
@@ -596,6 +624,23 @@ private:
     void UpdateAutosave(f32 dt);
     // オートセーブを間隔・未保存判定を通さずに今すぐ書く。書けたら true。
     bool WriteAutosave();
+
+    // ── MCP（AI）セッション中の自動保存 ──
+    // AI が編集した分を「未保存のまま置かない」ための機構。オートセーブ（退避）とは別で、
+    // こちらは**本体のシーン JSON をそのまま上書きする本保存**。これがあるおかげで
+    // 未保存の確認モーダルを一切出さずに済む。詳細な理由は EditorContext の aiSession* を見ること。
+    void UpdateMcpAutoSave(f32 dt);
+    // 現在シーンを保存する。保存先が未設定（未保存の新規シーン）なら自動命名して決める。
+    // AI は「名前を付けて保存」ダイアログを押せないので、ここで決めてやらないと永久に保存できない。
+    bool SaveSceneForMcp();
+    // AI が最初に上書きする前の内容を <project>/.dx12/backups/ へ 1 本だけ残す。
+    // 取れた/取る必要が無かったら true、書けなかったら false。
+    bool WriteMcpBackup();
+    static std::string McpBackupDir();
+    // 最後の MCP 書き込みから何秒待ってディスクへ書くか（デバウンス）。
+    static constexpr f32 kMcpAutoSaveDelay = 2.0f;
+    // .dx12/backups に残す世代数。古いものから消す。
+    static constexpr int kMcpBackupKeep = 20;
     // GPU デバイスが失われていたら退避して true（＝ループを畳む合図）。詳細は .cpp。
     bool HandleDeviceLoss();
     bool m_deviceLost = false;   // 一度立ったら描画へ戻らない

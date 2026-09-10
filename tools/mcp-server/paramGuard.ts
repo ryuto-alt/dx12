@@ -162,6 +162,13 @@ export const COMPOSITE_TOOLS: ReadonlySet<string> = new Set([
   "dx12_preview_model", "dx12_look_compare", "dx12_camera_path", "dx12_scene_write",
   // set_texture ×3 + set_pbr + get_entity を畳んだ合成ツール(engine に material_apply は無い)
   "dx12_material_apply",
+  // グループ分けと命名規約。判定は TS 側(sceneOrganize.ts)にあり、エンジンへは
+  // create_entity / set_parent / rename_entity / list_entities / get_hierarchy として届く。
+  "dx12_scene_scaffold", "dx12_organize_scene", "dx12_validate_naming",
+  // テストプレイ: engine へは key_* / step_frames / get_entity / navmesh_path として届く合成ツール。
+  "dx12_play_script", "dx12_measure_player", "dx12_check_reachable", "dx12_autoplay",
+  // Blender 連携: engine method ではなく Blender のソケットとファイル操作。
+  "dx12_blender_ensure", "dx12_model_brief", "dx12_blender_export", "dx12_asset_gap",
 ]);
 
 /**

@@ -73,6 +73,15 @@ public:
     // MCP の合成入力用: 次の Update() 直後の1フレームだけ「押下→離す」を発生させる。
     // フレーム先頭(Poll)で呼ばれても IsKeyPressed が立つよう、prevKeys スナップショット後に適用する。
     void InjectKeyPress(int vkCode) { if (vkCode >= 0 && vkCode < 256) m_synthPress[vkCode] = 2; }
+    // MCP の合成マウス移動: 次の Update() の 1 フレームだけ生の移動量として乗せる。
+    //
+    // なぜ要るか（2026-09-10）:
+    //   一人称の視点はどのゲームでも `input:getMouseDeltaX()` から作る。エンジン標準の
+    //   FpsController も yaw を **Lua のローカル変数**で持っていて、外から
+    //   `camera:setYaw()` を撃っても次のフレームで上書きされる（＝AI は前を向かせられない）。
+    //   ここに口を開けて初めて「AI が一人称ゲームを歩いて確かめる」が成立する。
+    //   キー合成（m_synthPress）と同じく、Update() の差分リセットの直後に載せる。
+    void InjectMouseDelta(f32 dx, f32 dy) { m_synthMouseX += dx; m_synthMouseY += dy; }
     void OnRawInput(LPARAM lParam);
     void OnMouseButton(bool rightDown);
     // フォーカス喪失時（他ウィンドウ/タブをクリック等）に呼ぶ。WM_KEYUP が
@@ -96,6 +105,9 @@ private:
 
     f32  m_mouseDeltaX = 0.0f;
     f32  m_mouseDeltaY = 0.0f;
+    // 合成マウス移動の貯め（MCP mouse_move 用）。Update() で 1 フレームぶん載せて 0 に戻す。
+    f32  m_synthMouseX = 0.0f;
+    f32  m_synthMouseY = 0.0f;
     bool m_mouseCaptured = false;   // 論理状態（Lua/エディタの意図）。フォーカス喪失では落とさない
     // フォーカス復帰フレームの生マウス移動を捨てるフラグ（復帰直後に視点が吹っ飛ぶのを防ぐ）。
     // Update() が毎フレーム先頭で false に戻すので、効くのは復帰したそのフレームだけ。

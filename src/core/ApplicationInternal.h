@@ -881,6 +881,23 @@ inline nlohmann::json McpComponentTypesOf(const entt::registry& reg, entt::entit
     if (reg.all_of<AnimatorController>(e))  a.push_back("animatorController");
     if (reg.all_of<FootIK>(e))              a.push_back("footIK");
     if (reg.all_of<PrefabLink>(e))          a.push_back("prefabLink");
+    // ★ゲーム内 UI と編集用グリッド。長らくここから漏れていて、
+    //   dx12_list_entities(verbose) では UI 要素が「transform だけの空エンティティ」に見えていた
+    //   （dx12_get_entity には出ていたので、2 つの答えが食い違っていた）。
+    //   グループ分け（dx12_organize_scene）が UI とグリッドを見分けるのにも要る。
+    if (reg.all_of<UICanvas>(e))            a.push_back("uiCanvas");
+    if (reg.all_of<UIRect>(e))              a.push_back("uiRect");
+    if (reg.all_of<UIImage>(e))             a.push_back("uiImage");
+    if (reg.all_of<UIText>(e))              a.push_back("uiText");
+    if (reg.all_of<UIButton>(e))            a.push_back("uiButton");
+    if (reg.all_of<UISlider>(e))            a.push_back("uiSlider");
+    if (reg.all_of<UIToggle>(e))            a.push_back("uiToggle");
+    if (reg.all_of<UIScrollView>(e))        a.push_back("uiScrollView");
+    if (reg.all_of<UILayout>(e))            a.push_back("uiLayout");
+    if (reg.all_of<UIAnimator>(e))          a.push_back("uiAnimator");
+    // gridPlane はエディタ内部用の床。編集対象ではないので、
+    // これが付いているものは整理ツールも検査ツールも触ってはいけない目印になる。
+    if (reg.all_of<GridPlane>(e))           a.push_back("gridPlane");
     return a;
 }
 

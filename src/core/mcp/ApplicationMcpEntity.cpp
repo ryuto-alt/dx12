@@ -586,6 +586,10 @@ void Application::RegisterMcpEntityMethods()
             if (rel.empty() && m_editorCtx) MarkSceneClean();
             resp["ok"] = true;
             resp["result"] = {{"path", rel.empty() ? m_editorCtx->currentScenePath : rel}};
+            // 保存のたびに配置検査の要約を返す。「置いて保存して終わり」を許さないための仕掛け
+            // （Editor 中だけ。Playing 中の位置を測っても物理が動かした後の値で意味が無い）。
+            if (m_engineMode != EngineMode::Playing)
+                resp["result"]["layout"] = McpLayoutSummary();
         });
 
     McpDefine("open_scene", "path:string", DX12E_MCP_HANDLER
@@ -1193,6 +1197,10 @@ void Application::RegisterMcpEntityMethods()
                 {"sceneGeneration", m_sceneGeneration},
                 {"currentScene", ToAssetRel(m_editorCtx->currentScenePath)},
                 {"sceneDirty", m_editorCtx->IsSceneDirty()},   // 未保存の変更があるか
+                // MCP セッション中は編集の 2 秒後に自動で本保存されるので、sceneDirty は
+                // 一瞬しか true にならない。未保存の確認モーダルも出ない（＝ここで止まらない）。
+                {"aiAutoSave", m_editorCtx->aiSessionEver},
+                {"savePending", m_editorCtx->mcpSaveCountdown >= 0.0f},
                 // ★TS 側はこれまで「エンジンログに混ざる絶対パス」から assets ディレクトリを
                 //   推定していた（#20-3）。ここで正確に返すので推定は不要。
                 {"assetsDir", PathResolver::AssetsDir()},

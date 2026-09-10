@@ -77,6 +77,17 @@ void InputSystem::Update(f32 dt)
     m_mouseDeltaY = 0.0f;
     m_dropMouseDelta = false;   // 捨てるのは復帰したフレームの分だけ
 
+    // 合成マウス移動（MCP mouse_move）。★リセットの【後】に載せること。
+    //   前に載せると、このリセットで毎回消えて何も起きない。
+    //   生の移動量と同じ扱いなので、この後の raw input 加算とも素直に合成される。
+    if (m_synthMouseX != 0.0f || m_synthMouseY != 0.0f)
+    {
+        m_mouseDeltaX += m_synthMouseX;
+        m_mouseDeltaY += m_synthMouseY;
+        m_synthMouseX = 0.0f;
+        m_synthMouseY = 0.0f;
+    }
+
     // キャプチャ中はカーソルをウィンドウ中央に固定 + カーソル非表示を維持。
     // ★前面にいるときだけ。ここでフォアグラウンドを見ないと、Alt+Tab して別アプリで
     //   作業している最中も毎フレーム SetCursorPos でカーソルを奪い返してしまう。

@@ -97,12 +97,17 @@ void Application::RegisterMcpEditorMethods()
             {
                 resp["ok"] = true;
                 resp["result"] = {{"mode", "Playing"}, {"sceneGeneration", m_sceneGeneration}};
+                if (!m_mcpPlayLayout.is_null()) resp["result"]["layout"] = m_mcpPlayLayout;
             }
             else
             {
                 // 単一スロット: 既にモード遷移待ちなら 2件目を弾く(上書きで1件目が宙吊りになるのを防ぐ)。
                 if (m_mcpModeReply.client != 0)
                     throw McpError(McpErr::ModeConflict, "a mode change is already pending; retry shortly");
+                // ★配置検査は「Editor の今」でやること。Play に入ってから測ると物理が
+                //   落とした後・押し出した後の位置を見ることになり、埋まりも浮きも嘘になる。
+                //   結果は遅延応答へ持ち越す（m_mcpPlayLayout）。
+                m_mcpPlayLayout = McpLayoutSummary();
                 // 実切替は EnterPlayMode(snapshot/script init/GPU) を伴うためフレーム境界で遅延。
                 // 遷移確定後に Run() のモード応答ブロックが本物のモード(or 失敗)を返す。
                 m_pendingMode = EngineMode::Playing;
@@ -639,17 +644,53 @@ void Application::RegisterMcpEditorMethods()
             isDeferred = true;
         });
 
-    McpDefine("step_frames", "frames:any,n:int", DX12E_MCP_HANDLER
+    McpDefine("mouse_move", "dx:number,dy:number", DX12E_MCP_HANDLER
+        {
+            // 合成マウス移動を 1 フレームぶん注入する。一人称の視点操作はこれが唯一の口。
+            // ★キー注入と違い「押しっぱなし」の概念は無い。回したいぶんだけ毎フレーム撃つ。
+            //   1 回の呼び出しは 1 フレームぶんなので、step_frames と交互に撃つのが正しい使い方。
+            const float dx = params.value("dx", 0.0f);
+            const float dy = params.value("dy", 0.0f);
+            if (!std::isfinite(dx) || !std::isfinite(dy))
+                throw McpError(McpErr::InvalidParam, "dx / dy が NaN か Inf");
+            if (!m_inputSystem) throw McpError(McpErr::Internal, "input system not ready");
+            m_inputSystem->InjectMouseDelta(dx, dy);
+            resp["ok"] = true;
+            resp["result"] = {
+                {"dx", dx}, {"dy", dy},
+                {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"},
+                {"note", "次の 1 フレームぶんだけ乗る。回し続けるには step_frames と交互に撃つこと"},
+            };
+        });
+
+    McpDefine("step_frames", "deterministic:bool,dt:number,frames:any,n:int", DX12E_MCP_HANDLER
         {
             // N フレーム進めてから応答する同期バリア(遅延応答)。key_down/press の後に呼ぶと
             // 入力がシミュレーションに効いてから get_entity/project_world_to_screen で結果を見られる。
-            // ※ 真の決定論ステッパではない(各フレーム dt は実時間)。エンジンは常時実時間で回る。
+            //
+            // deterministic:true で**固定 dt** に切り替える(既定 1/60 秒)。
+            // 実時間 dt のままだと、同じ入力を同じフレーム数だけ与えても進む距離が毎回変わる
+            // ＝テストプレイの結果が再現しない(ジャンプが届いたり届かなかったりする)。
+            // 物理はもともと 60Hz 固定ステップなので dt=1/60 なら端数が出ない。
             int n = params.value("frames", params.value("n", 1));
             if (n < 1) n = 1;
             if (n > 600) n = 600;   // ~10s 上限(クライアント timeout 対策)
             if (m_mcpStepReply.client != 0)
                 throw McpError(McpErr::ModeConflict, "a step is already pending; retry shortly");
+
+            const bool deterministic = params.value("deterministic", false);
+            if (deterministic)
+            {
+                float dt = params.value("dt", 1.0f / 60.0f);
+                if (!(dt > 0.0f) || dt > GameClock::kMaxDeltaTime)
+                    throw McpError(McpErr::InvalidParam,
+                        "dt は 0 より大きく " + std::to_string(GameClock::kMaxDeltaTime) + " 以下",
+                        "1/60 = 0.016667 を既定にしている。物理が 60Hz 固定ステップなので端数が出ない");
+                m_gameClock.SetFixedDelta(dt);
+                m_mcpStepFixedDt = true;
+            }
             m_mcpStepFramesLeft = n;
+            m_mcpStepFramesRequested = n;
             m_mcpStepReply = deferred;
             isDeferred = true;
         });

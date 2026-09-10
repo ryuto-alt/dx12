@@ -1498,11 +1498,18 @@ void Application::Run()
                     // scriptErrors: Play は Lua が全滅していても ok を返してしまうので、
                     // OnPlayStart 時点で死んでいるコンポーネント数をここで一緒に返す
                     // (中身は dx12_get_script_errors)。0 でないなら絵を見る前にそっちを疑う。
-                    CompleteMcp(m_mcpBridge.get(), m_mcpModeReply,
-                        nlohmann::json{{"mode", nowPlaying ? "Playing" : "Editor"},
-                                       {"sceneGeneration", m_sceneGeneration},
-                                       {"scriptErrors", m_scriptEngine
-                                            ? m_scriptEngine->CollectScriptErrors().size() : 0u}});
+                {
+                    nlohmann::json r{{"mode", nowPlaying ? "Playing" : "Editor"},
+                                     {"sceneGeneration", m_sceneGeneration},
+                                     {"scriptErrors", m_scriptEngine
+                                          ? m_scriptEngine->CollectScriptErrors().size() : 0u}};
+                    // 配置検査の要約（Play を撃った瞬間＝Editor の状態で測ったもの）。
+                    // ★AI は返り値に出ていないことは見ない。だから「検査ツールを用意する」だけでは
+                    //   効かず、Play の返り値へ混ぜて初めて埋まり/ちらつきが直るようになる。
+                    if (!m_mcpPlayLayout.is_null()) r["layout"] = m_mcpPlayLayout;
+                    m_mcpPlayLayout = nlohmann::json();
+                    CompleteMcp(m_mcpBridge.get(), m_mcpModeReply, std::move(r));
+                }
                 m_mcpModeReply = {};
             }
         }
@@ -1576,6 +1583,17 @@ void Application::Run()
             }
 
             UpdateAutosave(kScriptPollInterval);   // 中で 60 秒ぶん貯めてから書く
+
+            // MCP（AI）セッションの状態を更新して、溜まった編集をディスクへ落とす。
+            // ★aiSessionEver は一度立てたら落とさない。落とすと「Claude のセッションが
+            //   終わった直後に人が窓を閉じる」で未保存モーダルが復活する。
+            if (m_editorCtx)
+            {
+                const bool connected = m_mcpBridge && m_mcpBridge->IsConnected();
+                m_editorCtx->aiSessionActive = connected;
+                if (connected) m_editorCtx->aiSessionEver = true;
+            }
+            UpdateMcpAutoSave(kScriptPollInterval);
 
             // シーン設定（ポスト/SSAO/空/フォグ等）の変更検知。これらを触る窓は 20 箇所以上
             // あってどれも Undo を積まないので、1 箇所ずつフックする代わりに設定そのものを
@@ -1785,10 +1803,21 @@ void Application::Run()
         // MCP step_frames: 1フレーム回り切ったらカウントダウン。0 になったら遅延応答を返す。
         if (m_mcpStepFramesLeft > 0 && --m_mcpStepFramesLeft == 0 && m_mcpStepReply.client != 0)
         {
-            CompleteMcp(m_mcpBridge.get(), m_mcpStepReply,
-                nlohmann::json{{"stepped", true},
-                               {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"},
-                               {"sceneGeneration", m_sceneGeneration}});
+            // ★固定 dt は必ずここで戻す。戻し忘れるとエディタが以後ずっと
+            //   「実時間と無関係な速さ」で回り続ける（人が触ったときに一番分かりにくい壊れ方）。
+            const bool wasFixed = m_mcpStepFixedDt;
+            const f32  usedDt   = m_gameClock.FixedDelta();
+            if (m_mcpStepFixedDt) { m_gameClock.ClearFixedDelta(); m_mcpStepFixedDt = false; }
+            nlohmann::json r{{"stepped", true},
+                             {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"},
+                             {"sceneGeneration", m_sceneGeneration}};
+            if (wasFixed)
+            {
+                r["deterministic"]  = true;
+                r["dt"]             = usedDt;
+                r["simulatedSec"]   = usedDt * static_cast<f32>(m_mcpStepFramesRequested);
+            }
+            CompleteMcp(m_mcpBridge.get(), m_mcpStepReply, std::move(r));
             m_mcpStepReply = {};
         }
 
@@ -2828,6 +2857,9 @@ bool Application::WriteAutosave()
     nlohmann::json meta{
         {"originPath", m_editorCtx->currentScenePath},
         {"engineVersion", std::string(kEngineVersion)},
+        // AI セッション中の退避には印を付ける。復旧の確認モーダルも AI は押せないので、
+        // 次回起動時はこれを見て黙って捨てる（CheckAutosaveRecovery）。
+        {"aiSession", m_editorCtx->aiSessionEver},
         {"savedAtUnix", static_cast<long long>(
             std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count())},
@@ -2836,6 +2868,145 @@ bool Application::WriteAutosave()
     if (mf) mf << meta.dump(2);
     Logger::Info("オートセーブしました: {}", autosave::ScenePath(dir));
     return true;
+}
+
+// ============================================================================
+//  MCP（AI）セッション中の自動保存
+//
+//  なぜ要るか:
+//    MCP で編集すると HandleMcpCommand が書き込み系メソッドのたびに MarkEdited する。
+//    AI は保存を明示的に頼まない限り save_scene を撃たないので、未保存フラグが立ちっぱなしになり、
+//    ウィンドウを閉じた時・プロジェクトを閉じた時に「保存していない変更があります」が出る。
+//    そのモーダルは AI には押せないし、人間にとっても「AI が置いた物を保存するか」を
+//    毎回聞かれるだけの雑音でしかない。
+//
+//  方針（ユーザー合意 2026-09-10）:
+//    最後の MCP 書き込みから kMcpAutoSaveDelay 秒アイドルしたらディスクへ**本保存**する。
+//    ＝未保存フラグが立ちっぱなしにならないので、モーダルを出す理由そのものが消える。
+//    代償は「保存しなければ無かったことにできる」が使えなくなること。その代わりに
+//    セッション最初の上書きの前に .dx12/backups/ へ 1 本残す（WriteMcpBackup）。
+// ============================================================================
+
+std::string Application::McpBackupDir()
+{
+    // プロジェクトルート配下。assets/ の外に置くのは、これが「ゲームの素材」ではなく
+    // 「編集履歴の退避」だから（game.pak にも入らないし、assets 相対の参照解決も要らない）。
+    return PathResolver::BaseDir() + ".dx12/backups/";
+}
+
+bool Application::WriteMcpBackup()
+{
+    if (!m_editorCtx) return false;
+    const std::string scenePath = m_editorCtx->currentScenePath;
+    if (scenePath.empty()) return true;                            // ディスクに実体が無い＝壊す元が無い
+    if (m_editorCtx->mcpBackupTakenFor == scenePath) return true;  // このセッションでは取得済み
+
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!fs::exists(scenePath, ec))
+    {
+        m_editorCtx->mcpBackupTakenFor = scenePath;   // 新規シーンの初回保存。退避する中身が無い
+        return true;
+    }
+
+    const std::string dir = McpBackupDir();
+    fs::create_directories(dir, ec);
+    if (ec) { Logger::Warn("退避フォルダを作れませんでした: {}", dir); return false; }
+
+    const std::string stem = fs::path(scenePath).stem().string();
+    char stamp[32] = {};
+    {
+        const std::time_t t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        std::tm tmv{};
+        if (localtime_s(&tmv, &t) == 0) std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &tmv);
+    }
+    const std::string dst = dir + stem + "_" + stamp + ".json";
+    fs::copy_file(scenePath, dst, fs::copy_options::overwrite_existing, ec);
+    if (ec)
+    {
+        Logger::Warn("シーンの退避に失敗しました: {} -> {}", scenePath, dst);
+        return false;
+    }
+    m_editorCtx->mcpBackupTakenFor = scenePath;
+    Logger::Info("AI が編集する前のシーンを退避しました: {}", dst);
+
+    // 世代を間引く。名前に時刻が入っているので辞書順＝古い順。
+    // ★同じフォルダを複数シーンで共有するので、同じ stem のものだけ数えること。
+    std::vector<std::string> mine;
+    for (const auto& de : fs::directory_iterator(dir, ec))
+    {
+        if (ec) break;
+        if (!de.is_regular_file(ec)) continue;
+        const std::string fn = de.path().filename().string();
+        if (fn.rfind(stem + "_", 0) == 0) mine.push_back(de.path().string());
+    }
+    if (static_cast<int>(mine.size()) > kMcpBackupKeep)
+    {
+        std::sort(mine.begin(), mine.end());
+        const size_t drop = mine.size() - static_cast<size_t>(kMcpBackupKeep);
+        for (size_t i = 0; i < drop; ++i) fs::remove(mine[i], ec);
+    }
+    return true;
+}
+
+bool Application::SaveSceneForMcp()
+{
+    if (!m_editorCtx || !m_scene) return false;
+
+    if (m_editorCtx->currentScenePath.empty())
+    {
+        // 未保存の新規シーン。AI は「名前を付けて保存」ダイアログを押せないので、
+        // ここで保存先を決めてやらないと永久に保存できない＝必ず未保存のまま残る。
+        // 人が後から本来の名前で保存し直せるよう、時刻入りの明らかに仮の名前にする。
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        char stamp[32] = {};
+        const std::time_t t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        std::tm tmv{};
+        if (localtime_s(&tmv, &t) == 0) std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &tmv);
+        const std::string full = PathResolver::AssetsDir() + "scenes/_mcp_untitled_" + stamp + ".json";
+        fs::create_directories(fs::path(full).parent_path(), ec);
+        m_editorCtx->currentScenePath = full;
+        Logger::Info("未保存の新規シーンに保存先を割り当てました: {}", full);
+    }
+
+    // 退避に失敗しても保存は続ける。ここで止めると「保存されないまま編集が積み上がる」＝
+    // 未保存モーダルが復活する側に倒れるので、失敗はログに残すだけにする。
+    WriteMcpBackup();
+
+    if (!SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, PathResolver::AssetsDir()))
+    {
+        Logger::Warn("MCP 自動保存に失敗しました: {}", m_editorCtx->currentScenePath);
+        return false;
+    }
+    MarkSceneClean();
+    return true;
+}
+
+void Application::UpdateMcpAutoSave(f32 dt)
+{
+    if (!m_editorCtx || !m_scene) return;
+    if (m_isGameMode || m_showLauncher || m_loading || m_sceneLoadJob) return;
+    // Playing 中は書かない。Stop でスナップショットへ巻き戻る＝Play 中の状態は
+    // 「保存されるべき編集」ではない（オートセーブ側と同じ判断）。
+    if (m_engineMode != EngineMode::Editor) return;
+
+    // MCP の書き込み以外の経路（シーン設定の窓・Play/Stop でのフィンガープリント変化・
+    // 人が手でいじった分）で汚れることもある。AI が繋がっている間はそれも拾って書く。
+    // ここが無いと「MCP は撃っていないのに未保存」が残り、窓を閉じる時まで気づけない
+    // ＝「必ず出ない」の保証が閉じる瞬間の 1 経路だけに頼ることになる。
+    if (m_editorCtx->mcpSaveCountdown < 0.0f && m_editorCtx->aiSessionActive
+        && m_editorCtx->IsSceneDirty())
+        m_editorCtx->mcpSaveCountdown = kMcpAutoSaveDelay;
+
+    if (m_editorCtx->mcpSaveCountdown < 0.0f) return;
+
+    m_editorCtx->mcpSaveCountdown -= dt;
+    if (m_editorCtx->mcpSaveCountdown > 0.0f) return;
+    m_editorCtx->mcpSaveCountdown = -1.0f;
+
+    if (!m_editorCtx->IsSceneDirty()) return;
+    SaveSceneForMcp();
 }
 
 void Application::CheckAutosaveRecovery(const std::string& sceneFullPath)
@@ -2855,6 +3026,16 @@ void Application::CheckAutosaveRecovery(const std::string& sceneFullPath)
 
     // 別のシーンの退避なら関係ない
     if (!autosave::SamePath(meta.value("originPath", std::string()), sceneFullPath)) return;
+
+    // ★AI セッション中に書かれた退避、または今まさに MCP が繋がっている状態では聞かない。
+    //   「保存されていない自動保存が見つかりました」も AI には押せないモーダルで、
+    //   ここで止まると open_scene が永久に完了しない。AI の編集は自動保存で本体に
+    //   落ちているので、復旧候補として残す意味も無い。
+    if (meta.value("aiSession", false) || m_editorCtx->aiSessionActive)
+    {
+        DiscardAutosaveFor(sceneFullPath);
+        return;
+    }
 
     // 本体の方が新しければ復旧するものは無い（＝正常に保存して終えている）。
     const auto autoT   = fs::last_write_time(auto_, ec);
@@ -2894,6 +3075,22 @@ bool Application::ConfirmDiscardScene(bool& outCancelled)
     outCancelled = false;
     if (!m_editorCtx) return true;
     if (!m_editorCtx->IsSceneDirty()) return true;   // 汚れていないなら黙って進む
+
+    // ★AI（MCP）が絡んだセッションでは未保存モーダルを絶対に出さない。
+    //   AI はボタンを押せないので、出た瞬間にツール呼び出しがタイムアウトし、
+    //   人間からは「エディタがハングした」ようにしか見えない。
+    //   代わりに黙って本保存する。保存できなかった時だけ退避（オートセーブ）へ逃がす
+    //   ＝どちらに転んでも作業は残り、モーダルは出ない。
+    if (m_editorCtx->aiSessionEver)
+    {
+        if (SaveSceneForMcp()) return true;
+        if (WriteAutosave())
+            Logger::Warn("保存に失敗したので退避しました。次回起動時に復旧できます");
+        else
+            Logger::Error("保存にも退避にも失敗しました。この変更は失われます");
+        MarkSceneClean();   // 二度と聞かない（聞いても AI は答えられない）
+        return true;
+    }
 
     using Choice = EditorContext::UnsavedChoice;
     const Choice choice = m_editorCtx->unsavedChoice;
