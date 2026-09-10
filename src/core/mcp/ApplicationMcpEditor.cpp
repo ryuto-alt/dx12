@@ -93,6 +93,7 @@ void Application::RegisterMcpEditorMethods()
 
     McpDefine("play", "", DX12E_MCP_HANDLER
         {
+            if (m_editorCtx) m_editorCtx->paused = false;   // 前回の決定論ステップの停止を解除
             if (m_engineMode == EngineMode::Playing)
             {
                 resp["ok"] = true;
@@ -119,6 +120,8 @@ void Application::RegisterMcpEditorMethods()
 
     McpDefine("stop", "", DX12E_MCP_HANDLER
         {
+            // 決定論ステップで止めた時間をここで必ず戻す（止まったままにしない）
+            if (m_editorCtx) m_editorCtx->paused = false;
             if (m_engineMode == EngineMode::Editor)
             {
                 resp["ok"] = true;
@@ -663,7 +666,7 @@ void Application::RegisterMcpEditorMethods()
             };
         });
 
-    McpDefine("step_frames", "deterministic:bool,dt:number,frames:any,n:int", DX12E_MCP_HANDLER
+    McpDefine("step_frames", "deterministic:bool,dt:number,frames:any,hold:bool,n:int", DX12E_MCP_HANDLER
         {
             // N フレーム進めてから応答する同期バリア(遅延応答)。key_down/press の後に呼ぶと
             // 入力がシミュレーションに効いてから get_entity/project_world_to_screen で結果を見られる。
@@ -681,6 +684,19 @@ void Application::RegisterMcpEditorMethods()
             const bool deterministic = params.value("deterministic", false);
             if (deterministic)
             {
+                // ★N フレーム進めた「後」は時間を止める（次の step が来るまで進めない）。
+                //
+                //   なぜ要るか（2026-09-10 に実測して分かった）:
+                //   step_frames は「N フレーム進めてから応答」するが、**応答を待つ間も
+                //   エンジンは回り続ける**。MCP の往復には数 ms〜数十 ms かかるので、
+                //   1 回の往復ごとに不定な数のフレームが余計に進む。dt を固定しても
+                //   これが残るので「決定論ステップ」と言いながら再生が毎回 1〜2m ずれていた。
+                //   Play を止めずに時間だけ止める仕組み（F1 の一時停止 = EditorContext::paused）が
+                //   既にあるので、それを借りて往復の間を凍らせる。
+                //   ★止めるのはシミュレーションだけ。描画も MCP も動き続けるので、
+                //     この間にスクショも取れるし設定も読める。
+                if (m_editorCtx) m_editorCtx->paused = false;   // これから N フレーム進める
+                m_mcpStepHold = params.value("hold", true);
                 float dt = params.value("dt", 1.0f / 60.0f);
                 if (!(dt > 0.0f) || dt > GameClock::kMaxDeltaTime)
                     throw McpError(McpErr::InvalidParam,

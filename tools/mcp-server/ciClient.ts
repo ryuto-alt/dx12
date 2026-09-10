@@ -14,6 +14,7 @@
  *      → 空きポートを選んでヘッドレスで起動し、検査して、終了コードを返して engine も落とす
  *   ② 既に動いているエンジンへ繋ぐ（対話中のエディタでもよい）
  *      node ciClient.ts --port 8850 --scenes scenes/main.json
+ *   --playtests を足すと、保存済みの .playtest（人が遊んだ記録）も再生して突き合わせる
  *
  * 終了コード: 0 = 全シーン合格 / 1 = どれかに errors か到達不能があった
  */
@@ -23,7 +24,13 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { analyzePath, type MovementCapability } from "./playtest.ts";
+import {
+  analyzePath, compileTimeline, danglingKeys, mouseDeltaForYaw, wrapDeg,
+  type MovementCapability, type ScriptStep, type TraceSample,
+} from "./playtest.ts";
+import {
+  compareReplay, playtestDir, validatePlaytest, type PlaytestFile,
+} from "./playtestStore.ts";
 
 // ─── エンジンへの生接続（行 JSON） ───────────────────────────────────────
 
@@ -192,6 +199,168 @@ export async function validateScene(
   return report;
 }
 
+// ─── 回帰テスト（.playtest の再生） ──────────────────────────────────────
+
+export interface PlaytestResult {
+  name: string;
+  scene: string;
+  pass: boolean;
+  endDistance: number;
+  maxDeviation: number;
+  maxDeviationAt: number;
+  reasons: string[];
+}
+
+/** アクティブなカメラの yaw（度）。向きを合わせる閉ループの入力。 */
+async function cameraYaw(eng: EngineConn): Promise<number | null> {
+  const cams = await eng.call("list_entities", { component_type: "camera" });
+  for (const c of cams?.entities ?? []) {
+    const e = await eng.call("get_entity", { name: c.name });
+    if (e?.camera && e.camera.isActive === false) continue;
+    if (Array.isArray(e?.transform?.rotation)) return e.transform.rotation[1];
+  }
+  return null;
+}
+
+/**
+ * .playtest を 1 本再生する。
+ * ★向きはマウス注入の閉ループで合わせる。記録にあるのは 10Hz の角度であって
+ *   毎フレームのマウス移動量ではないし、感度もゲームごとに違う。
+ */
+export async function runPlaytest(
+  eng: EngineConn, pt: PlaytestFile, dt = 1 / 60,
+): Promise<PlaytestResult> {
+  await eng.call("stop", {});
+  await eng.call("open_scene", { path: pt.scene });
+  await eng.call("play", {});
+  await eng.call("step_frames", { frames: 30, deterministic: true, dt });
+
+  const cc = await eng.call("list_entities", { component_type: "characterController" });
+  const player = cc?.entities?.[0]?.name;
+  if (!player)
+    return { name: pt.name, scene: pt.scene, pass: false, endDistance: Infinity,
+             maxDeviation: Infinity, maxDeviationAt: 0,
+             reasons: ["プレイヤー(characterController)が居ない"] };
+
+  // ★測るのは【カメラ位置】。基準（PlaySession の camPos）がカメラなので、
+  //   プレイヤー本体を測ると目線オフセット（既定 0.6m）ぶん常にずれて、
+  //   何も壊れていないのに毎回落ちる（実際に落ちた）。比べる量は揃えること。
+  const camName = await (async () => {
+    const cams = await eng.call("list_entities", { component_type: "camera" });
+    for (const c of cams?.entities ?? []) {
+      const e = await eng.call("get_entity", { name: c.name });
+      if (e?.camera && e.camera.isActive === false) continue;
+      return c.name as string;
+    }
+    return null;
+  })();
+  if (!camName)
+    return { name: pt.name, scene: pt.scene, pass: false, endDistance: Infinity,
+             maxDeviation: Infinity, maxDeviationAt: 0,
+             reasons: ["アクティブなカメラが居ない（記録の基準がカメラ位置なので比べられない）"] };
+
+  const sample = async (t: number): Promise<TraceSample> => {
+    const e = await eng.call("get_entity", { name: camName });
+    const p = e?.transform?.position ?? [0, 0, 0];
+    const s: TraceSample = { t, pos: [p[0], p[1], p[2]] };
+    try {
+      const ph = await eng.call("get_physics_state", { name: player });
+      if (typeof ph?.isGrounded === "boolean") s.grounded = ph.isGrounded;
+    } catch { /* 位置だけで続ける */ }
+    return s;
+  };
+
+  let degPerPixel: number | null = null;
+  // ★向きを合わせるのに使ったフレーム数を返す。呼び出し側でこれも数えないと、
+  //   マウスを振った回数ぶんだけシミュレーション時間が余計に進み、
+  //   同じ入力なのに記録より遠くまで行ってしまう（記録との突き合わせが必ずずれる）。
+  const faceYaw = async (target: number): Promise<number> => {
+    let used = 0;
+    for (let i = 0; i < 4; i++) {
+      const cur = await cameraYaw(eng);
+      if (cur == null) return used;
+      if (Math.abs(wrapDeg(target - cur)) <= 3) return used;
+      const dx = mouseDeltaForYaw(cur, target, degPerPixel);
+      await eng.call("mouse_move", { dx, dy: 0 });
+      await eng.call("step_frames", { frames: 1, deterministic: true, dt });
+      used++;
+      const nx = await cameraYaw(eng);
+      if (nx != null && Math.abs(dx) > 1e-3) degPerPixel = wrapDeg(nx - cur) / dx;
+    }
+    return used;
+  };
+
+  const events = compileTimeline(pt.steps as ScriptStep[], dt);
+  // ★記録した長さ「ちょうど」で止める。余韻を足すと、記録が空中で終わっている
+  //   ジャンプが再生では着地してしまい、終点が必ずずれる（実際に 3m ずれた）。
+  const totalFrames = Math.ceil(pt.durationSec / dt);
+  const sampleFrames = Math.max(1, Math.round(0.1 / dt));
+  const trace: TraceSample[] = [await sample(0)];
+  let frame = 0, ei = 0, li = 0;
+
+  while (frame < totalFrames) {
+    const t = frame * dt;
+    while (ei < events.length && events[ei].frame <= frame) {
+      const ev = events[ei++];
+      for (const k of ev.downs) await eng.call("key_down", { key: k });
+      for (const k of ev.ups) await eng.call("key_up", { key: k });
+      for (const k of ev.presses) await eng.call("key_press", { key: k });
+    }
+    while (li + 1 < pt.look.length && pt.look[li + 1].t <= t) li++;
+    if (li < pt.look.length) frame += await faceYaw(pt.look[li].yaw);
+    if (frame >= totalFrames) break;
+
+    const nextEvent = ei < events.length ? events[ei].frame : totalFrames;
+    const to = Math.min(nextEvent, frame + sampleFrames, totalFrames);
+    const n = Math.max(1, to - frame);
+    await eng.call("step_frames", { frames: n, deterministic: true, dt });
+    frame += n;
+    trace.push(await sample(frame * dt));
+  }
+
+  for (const k of danglingKeys(pt.steps as ScriptStep[])) {
+    try { await eng.call("key_up", { key: k }); } catch { /* 無視 */ }
+  }
+  let scriptErrors = 0;
+  try { scriptErrors = (await eng.call("get_script_errors", {}))?.count ?? 0; } catch { /* 無視 */ }
+  await eng.call("stop", {});
+
+  const v = compareReplay(pt, trace, scriptErrors);
+  return {
+    name: pt.name, scene: pt.scene, pass: v.pass,
+    endDistance: v.endDistance, maxDeviation: v.maxDeviation,
+    maxDeviationAt: v.maxDeviationAt, reasons: v.reasons,
+  };
+}
+
+/** プロジェクトに保存されている .playtest を全部走らせる。 */
+export async function runAllPlaytests(
+  eng: EngineConn, baseDir: string,
+): Promise<PlaytestResult[]> {
+  const dir = playtestDir(baseDir);
+  let files: string[];
+  try { files = (await fs.promises.readdir(dir)).filter((f) => f.endsWith(".json")); }
+  catch { return []; }
+
+  const out: PlaytestResult[] = [];
+  for (const f of files) {
+    const raw = JSON.parse(await fs.promises.readFile(path.join(dir, f), "utf8"));
+    const bad = validatePlaytest(raw);
+    if (bad.length) {
+      out.push({ name: f, scene: "?", pass: false, endDistance: 0, maxDeviation: 0,
+                 maxDeviationAt: 0, reasons: bad });
+      continue;
+    }
+    out.push(await runPlaytest(eng, raw as PlaytestFile));
+  }
+  return out;
+}
+
+export function formatPlaytest(r: PlaytestResult): string {
+  const head = `${r.pass ? "ok  " : "FAIL"} playtest:${r.name}  (${r.scene})`;
+  return [head, ...r.reasons.map((x) => `       ${x}`)].join("\n");
+}
+
 // ─── ヘッドレス起動 ──────────────────────────────────────────────────────
 
 /** そのポートに誰か居るか。起動待ちに使う。 */
@@ -294,6 +463,7 @@ if (isMain) {
   }
 
   const reports: SceneReport[] = [];
+  let playtestFailures = 0;
   try {
     const eng = await connect(port);
     const ping = await eng.call("ping", {});
@@ -305,12 +475,23 @@ if (isMain) {
       reports.push(r);
       console.log(formatReport(r));
     }
+
+    // 保存済みの回帰テスト（人が遊んだ記録）を再生する
+    if (args.playtests === "true" || args.playtests) {
+      const results = await runAllPlaytests(eng, ping.baseDir);
+      if (results.length === 0) console.log("(.playtest はまだ 1 本も無い)");
+      for (const r of results) {
+        console.log(formatPlaytest(r));
+        if (!r.pass) playtestFailures++;
+      }
+    }
     eng.close();
   } finally {
     if (kill) kill();
   }
 
-  const failed = shouldFail(reports);
-  console.log(`\n${reports.length} シーン中 ${reports.filter((r) => r.failed).length} 件が不合格`);
+  const failed = shouldFail(reports) || playtestFailures > 0;
+  console.log(`\n${reports.length} シーン中 ${reports.filter((r) => r.failed).length} 件が不合格` +
+              (playtestFailures ? ` / 回帰テスト ${playtestFailures} 件が不合格` : ""));
   process.exit(failed ? 1 : 0);
 }

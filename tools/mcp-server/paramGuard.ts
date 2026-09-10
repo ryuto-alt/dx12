@@ -167,6 +167,7 @@ export const COMPOSITE_TOOLS: ReadonlySet<string> = new Set([
   "dx12_scene_scaffold", "dx12_organize_scene", "dx12_validate_naming",
   // テストプレイ: engine へは key_* / step_frames / get_entity / navmesh_path として届く合成ツール。
   "dx12_play_script", "dx12_measure_player", "dx12_check_reachable", "dx12_autoplay",
+  "dx12_record_playtest", "dx12_run_playtests",
   // Blender 連携: engine method ではなく Blender のソケットとファイル操作。
   "dx12_blender_ensure", "dx12_model_brief", "dx12_blender_export", "dx12_asset_gap",
 ]);

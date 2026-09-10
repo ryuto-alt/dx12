@@ -382,6 +382,7 @@ private:
     nlohmann::json m_mcpPlayLayout;
     // dx12_step_frames(deterministic:true) が固定 dt を掛けているか（完了時に必ず戻す）。
     bool m_mcpStepFixedDt = false;
+    bool m_mcpStepHold = true;           // 決定論ステップの後に時間を止めるか（既定 true）
     int  m_mcpStepFramesRequested = 0;   // 応答に simulatedSec を載せるため
     // play / save_scene の返り値へ載せる要約（AI に必ず読ませるための仕掛け）。
     nlohmann::json McpLayoutSummary();

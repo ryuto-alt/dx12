@@ -1816,6 +1816,10 @@ void Application::Run()
             const bool wasFixed = m_mcpStepFixedDt;
             const f32  usedDt   = m_gameClock.FixedDelta();
             if (m_mcpStepFixedDt) { m_gameClock.ClearFixedDelta(); m_mcpStepFixedDt = false; }
+            // 決定論ステップの既定は「進めたら止める」。次の step_frames が解除する。
+            // ★止めっぱなしで MCP が切れても、Play/Stop の遷移で必ず false へ戻る
+            //   （EnterPlayMode / ExitPlayMode が paused をリセットする既存の仕組み）。
+            if (wasFixed && m_mcpStepHold && m_editorCtx) m_editorCtx->paused = true;
             nlohmann::json r{{"stepped", true},
                              {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"},
                              {"sceneGeneration", m_sceneGeneration}};
@@ -1824,6 +1828,10 @@ void Application::Run()
                 r["deterministic"]  = true;
                 r["dt"]             = usedDt;
                 r["simulatedSec"]   = usedDt * static_cast<f32>(m_mcpStepFramesRequested);
+                r["held"]           = m_mcpStepHold;
+                if (m_mcpStepHold)
+                    r["note"] = "時間を止めた（次の step_frames まで進まない）。"
+                                "hold:false で止めずに走らせ続けられる";
             }
             CompleteMcp(m_mcpBridge.get(), m_mcpStepReply, std::move(r));
             m_mcpStepReply = {};

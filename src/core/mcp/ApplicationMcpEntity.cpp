@@ -1200,6 +1200,8 @@ void Application::RegisterMcpEntityMethods()
                 // MCP セッション中は編集の 2 秒後に自動で本保存されるので、sceneDirty は
                 // 一瞬しか true にならない。未保存の確認モーダルも出ない（＝ここで止まらない）。
                 {"aiAutoSave", m_editorCtx->aiSessionEver},
+                // 決定論ステップが時間を止めているか（true なら次の step_frames まで進まない）
+                {"paused", m_editorCtx->paused},
                 {"savePending", m_editorCtx->mcpSaveCountdown >= 0.0f},
                 // ★TS 側はこれまで「エンジンログに混ざる絶対パス」から assets ディレクトリを
                 //   推定していた（#20-3）。ここで正確に返すので推定は不要。
