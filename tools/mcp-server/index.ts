@@ -25,8 +25,8 @@ import {
   type Expectation, type MovementCapability, type ScriptStep, type TraceSample,
 } from "./playtest.ts";
 import {
-  BLENDER_PORT, blenderCall, blenderCandidatePaths, buildExportScript, isPortOpen, modelBrief,
-  parseCodeResult, planImageRenames,
+  BLENDER_PORT, blenderCall, blenderCandidatePaths, buildExportScript, buildMaterialScript,
+  buildPolishScript, isPortOpen, modelBrief, parseCodeResult, planImageRenames,
 } from "./blenderBridge.ts";
 import {
   bakeGoldenRun, compareReplay, playtestDir, safeName, sessionToPlaytest, validatePlaytest,
@@ -2545,6 +2545,171 @@ reg(
 //  Blender 連携（自動起動 → 規約どおりの書き出し → 取り込み → 実寸検証）
 // ════════════════════════════════════════════════════════════════
 
+/**
+ * PolyHaven を有効にする（CC0・API キー不要・テクスチャ 859 種 + HDRI）。
+ *
+ * ★アドオンの既定は **全部 OFF**。この状態だと AI は素材を一切持たずにプリミティブだけで
+ *   モデルを組むことになり、真っ白でのっぺりした物しか出てこない（実測で確認）。
+ *   キーが要る Hyper3D / Sketchfab は勝手に触らず、状態だけ報告する。
+ */
+async function enableAssetSources(): Promise<Record<string, unknown>> {
+  try {
+    const resp = await blenderCall("execute_code", {
+      code: [
+        "import bpy, json",
+        "sc = bpy.context.scene",
+        "sc.blendermcp_use_polyhaven = True",
+        "print(json.dumps({",
+        "  'polyhaven': sc.blendermcp_use_polyhaven,",
+        "  'hyper3d': getattr(sc, 'blendermcp_use_hyper3d', False),",
+        "  'sketchfab': getattr(sc, 'blendermcp_use_sketchfab', False),",
+        "  'blender': bpy.app.version_string}))",
+      ].join("\n"),
+    }, { timeoutMs: 30_000 });
+    const { json } = parseCodeResult(resp);
+    const st = (json ?? {}) as Record<string, unknown>;
+    const off: string[] = [];
+    if (!st.hyper3d) off.push("Hyper3D Rodin（テキスト→3D。API キーが要る）");
+    if (!st.sketchfab) off.push("Sketchfab（既存モデルの検索。API キーが要る）");
+    return {
+      assetSources: st,
+      ...(off.length ? { assetSourcesOff: off } : {}),
+      assetNote: "PolyHaven を有効にした（CC0・キー不要）。dx12_blender_material が使う",
+    };
+  } catch (e) {
+    return { assetSourcesError: (e as Error).message };
+  }
+}
+
+reg(
+  "dx12_blender_polish",
+  "モデルの仕上げ（うすぺらいを消す）",
+  "Blender のオブジェクトに『安っぽさを消す』処理を一括で掛ける。★AI が作ったモデルが『うすぺらい』のはほぼこれをやっていないから: ①スケール適用（★ベベルより先。非一様スケールのまま掛けると軸ごとに幅が変わり片側だけ角が丸い歪んだ形になる）②厚みゼロの板に Solidify ③UV を実寸で切り直す（プリミティブの既定 UV は【面ごとに 0..1】なので 60cm の箱にも 6m の壁にもテクスチャが 1 枚だけ貼られ、模様の大きさが物と合わず玩具に見える）④スムーズ+自動スムーズ ⑤ベベル 3mm/2 段/harden normals ⑥加重法線。★実測（木箱 60cm で比較）: ベベル無しの角は光を一切拾わず、どんなに良いテクスチャを貼っても紙細工に見える。4mm 入れると角にハイライトの線が走り固まりとして見える。書き出す前に必ず通すこと。",
+  {
+    objects: z.array(z.string()).optional().describe("対象のオブジェクト名。省略で選択中（それも無ければ全メッシュ）。"),
+    bevelWidth: z.number().optional().describe("ベベル幅 m（既定 0.003 = 3mm）。小物ほど効く。"),
+    bevelSegments: z.number().int().optional().describe("ベベルの段数（既定 2）。"),
+    smoothAngle: z.number().optional().describe("自動スムーズの角度（度、既定 30）。"),
+    uvMeters: z.number().optional().describe("1 UV = 何メートルで UV を切り直すか（既定 1.0）。0 で UV を触らない。"),
+    minThickness: z.number().optional().describe("これ以下の厚みなら Solidify する m（既定 0.004）。0 で無効。"),
+  },
+  { destructiveHint: true },
+  ({ objects, bevelWidth, bevelSegments, smoothAngle, uvMeters, minThickness }) =>
+    run(async () => {
+      if (!(await isPortOpen(BLENDER_PORT)))
+        throw new Error("Blender に接続できない。先に dx12_blender_ensure を撃つこと");
+      const code = buildPolishScript({
+        objectNames: objects ?? [], bevelWidth, bevelSegments, smoothAngle, uvMeters, minThickness,
+      });
+      const resp = await blenderCall("execute_code", { code }, { timeoutMs: 300_000 });
+      if (resp?.status && resp.status !== "success")
+        throw new Error(`Blender 側で失敗: ${resp.message ?? JSON.stringify(resp)}`);
+      const { json, stdout } = parseCodeResult(resp);
+      if (!json) throw new Error(`結果を読めなかった（stdout: ${stdout.slice(0, 400)}）`);
+      return { ...(json as object),
+               next: "素材は dx12_blender_material、書き出しは dx12_blender_export" };
+    }),
+);
+
+reg(
+  "dx12_blender_material",
+  "PolyHaven の PBR 素材を貼る",
+  "PolyHaven（CC0・API キー不要・テクスチャ 859 種）から素材を落として貼る。★エンジンは glTF の baseColorFactor を読まないので、テクスチャ無しのマテリアルは【真っ白】になる（茶色に設定した木箱が白い箱として出る。実測で確認）。単色で済ませたい物にも必ずこれを通すこと。★ORM は R=AO / G=roughness / B=metallic。PolyHaven の arm マップがあればそのまま使い、無ければ Rough から B=0 で合成する（rough 単体をそのまま metallicRoughness として出すと B に粗さが入り、木や布が金属として描かれる）。UV も実寸で切り直すのでテクセル密度が揃う。",
+  {
+    objects: z.array(z.string()).optional().describe("貼る対象。省略で選択中。"),
+    assetId: z.string().optional().describe("PolyHaven のアセット ID（例 brown_planks_05）。"),
+    keyword: z.string().optional().describe("ID が分からないときの検索語（wood / concrete / rust / fabric 等）。"),
+    resolution: z.enum(["1k", "2k", "4k"]).optional().describe("解像度（既定 2k）。"),
+    uvMeters: z.number().optional().describe("1 UV = 何メートル（既定 2.0。2k なら約 1024 texel/m）。"),
+  },
+  { destructiveHint: true },
+  ({ objects, assetId, keyword, resolution, uvMeters }) =>
+    run(async () => {
+      if (!(await isPortOpen(BLENDER_PORT)))
+        throw new Error("Blender に接続できない。先に dx12_blender_ensure を撃つこと");
+      if (!assetId && !keyword) throw new Error("assetId か keyword のどちらかが要る");
+      const code = buildMaterialScript({
+        objectNames: objects ?? [], assetId, keyword, resolution, uvMeters,
+      });
+      const resp = await blenderCall("execute_code", { code }, { timeoutMs: 600_000 });
+      if (resp?.status && resp.status !== "success")
+        throw new Error(`Blender 側で失敗: ${resp.message ?? JSON.stringify(resp)}`);
+      const { json, stdout } = parseCodeResult(resp);
+      if (!json) throw new Error(`結果を読めなかった（stdout: ${stdout.slice(0, 400)}）`);
+      const r = json as Record<string, unknown>;
+      if (r.error) throw new Error(String(r.error));
+      return { ...r, next: "dx12_blender_export で書き出す。置いた後の見栄えは dx12_scene_env で環境光を入れてから判断する" };
+    }),
+);
+
+reg(
+  "dx12_scene_env",
+  "環境光を HDRI にする",
+  "PolyHaven の HDRI（CC0・キー不要）を落としてシーンの環境マップにする。★既定の手続き空のままだと【全部に青が乗って彩度が落ちる】ので、モデルの見栄えを判断する前にこれを通すこと（実測: 同じ木箱が青灰色 → 本来の木の色になった）。金属と光沢は環境に映るものが無いと質感そのものが出ない。keyword で探すか assetId を直接指定する（studio_small_09 / kloofendal_48d_partly_cloudy_puresky 等）。★屋内シーンで環境光を効かせたくない場合は使わないこと（envMapPath があると DirectionalLight.ambient が無視される）。",
+  {
+    assetId: z.string().optional().describe("PolyHaven の HDRI ID。"),
+    keyword: z.string().optional().describe("検索語（studio / sunset / overcast / interior 等）。"),
+    resolution: z.enum(["1k", "2k", "4k"]).optional().describe("解像度（既定 2k）。"),
+    iblIntensity: z.number().optional().describe("環境光の強さ（既定 1.0）。"),
+    skyboxIntensity: z.number().optional().describe("背景として描く明るさ（既定 0.35）。"),
+    drawSkybox: z.boolean().optional().describe("背景に空を描くか（既定 true）。"),
+  },
+  { destructiveHint: true },
+  ({ assetId, keyword, resolution, iblIntensity, skyboxIntensity, drawSkybox }) =>
+    run(async () => {
+      if (!assetId && !keyword) throw new Error("assetId か keyword のどちらかが要る");
+      const res = resolution ?? "2k";
+      const ping = await engine.call("ping", {});
+
+      // PolyHaven の API を直接引く（Blender を起動していなくても使える）
+      const get = async (url: string): Promise<any> => {
+        const r = await fetch(url, { headers: { "User-Agent": "blender-mcp" } });
+        if (!r.ok) throw new Error(`PolyHaven: HTTP ${r.status} (${url})`);
+        return r.json();
+      };
+      let id = assetId;
+      if (!id) {
+        const list = await get("https://api.polyhaven.com/assets?t=hdris");
+        const kw = keyword!.toLowerCase();
+        const hits = Object.keys(list).filter((k) => k.toLowerCase().includes(kw));
+        const byTag = hits.length ? hits : Object.entries(list)
+          .filter(([, v]: [string, any]) =>
+            [...(v.tags ?? []), ...(v.categories ?? [])].some((t: string) => t.toLowerCase().includes(kw)))
+          .map(([k]) => k);
+        if (!byTag.length) throw new Error(`PolyHaven に該当する HDRI が無い: ${keyword}`);
+        id = byTag.sort()[0];
+      }
+      const files = await get(`https://api.polyhaven.com/files/${id}`);
+      const node = files.hdri?.[res] ?? Object.values(files.hdri ?? {})[0];
+      if (!node) throw new Error(`HDRI のファイルが見つからない: ${id}`);
+      const url = (node as any).hdr?.url ?? Object.values(node as any)[0].url;
+
+      const rel = `env/${id}_${res}.hdr`;
+      const abs = path.join(ping.assetsDir, rel);
+      await fs.promises.mkdir(path.dirname(abs), { recursive: true });
+      if (!fs.existsSync(abs)) {
+        const r = await fetch(url, { headers: { "User-Agent": "blender-mcp" } });
+        if (!r.ok) throw new Error(`HDRI の取得に失敗: HTTP ${r.status}`);
+        await fs.promises.writeFile(abs, Buffer.from(await r.arrayBuffer()));
+      }
+
+      await engine.call("set_scene_settings", {
+        skybox: {
+          envMapPath: rel,
+          drawSkybox: drawSkybox !== false,
+          iblIntensity: iblIntensity ?? 1.0,
+          skyboxIntensity: skyboxIntensity ?? 0.35,
+        },
+      });
+      const st = await engine.call("get_scene_settings", {});
+      return {
+        assetId: id, path: rel, bytes: fs.statSync(abs).size,
+        skybox: st?.skybox ?? st,
+        note: "環境光が入った。金属と光沢はこれが無いと質感が出ない",
+      };
+    }),
+);
+
 reg(
   "dx12_blender_ensure",
   "Blenderの起動確認/起動",
@@ -2558,7 +2723,7 @@ reg(
     run(async () => {
       if (await isPortOpen(BLENDER_PORT))
         return { running: true, started: false, port: BLENDER_PORT,
-                 note: "既に起動していて接続できる" };
+                 note: "既に起動していて接続できる", ...(await enableAssetSources()) };
 
       let exe = blenderPath;
       if (!exe) {
@@ -2579,7 +2744,8 @@ reg(
       while (Date.now() - t0 < limit) {
         if (await isPortOpen(BLENDER_PORT))
           return { running: true, started: true, port: BLENDER_PORT, blenderPath: exe,
-                   waitedMs: Date.now() - t0, pid: child.pid };
+                   waitedMs: Date.now() - t0, pid: child.pid,
+                   ...(await enableAssetSources()) };
         await new Promise((r) => setTimeout(r, 1000));
       }
       throw new Error(

@@ -331,41 +331,59 @@ dx12_autoplay(goalName:"GP_Goal")
 ```
 # ① 何が足りないか
 dx12_asset_gap()
-# → {missing:[{name:"ENV_Statue_01", modelPath:"models/statue.glb"}],
-#    placeholders:[{name:"ENV_Prop_03", primitive:"box"}]}
 
 # ② 規約を読む（作り始める前に必ず）
 dx12_model_brief(kind:"prop")
 
-# ③ Blender を起こす（人に開いてもらう必要は無い）
+# ③ Blender を起こす（人に開いてもらう必要は無い。PolyHaven も自動で有効になる）
 dx12_blender_ensure()
-# → {running:true, started:true, port:9876, waitedMs:8400}
 
-# ④ mcp__blender__* でモデリングする（execute_blender_code 等）
+# ④ 形を作る（mcp__blender__execute_blender_code 等）
 
-# ⑤ 規約どおりに書き出して取り込む（★手で export_scene.gltf を呼ばないこと）
-dx12_blender_export(objects:["Statue"], destPath:"models/statue/statue.gltf")
-# → {exported:["Statue"], renamedImages:[{from:"tmp8a3f.jpg", to:"statue_0.jpg"}],
-#    warnings:["Statue / Material: 画像テクスチャが 1 枚も無い → …真っ白になる"],
-#    assetInfo:{aabbMin:[...], aabbMax:[...]}}
+# ⑤ ★仕上げる ← ここを飛ばすと「うすぺらい」物ができる
+dx12_blender_polish(objects:["Barrel"])
 
-# ⑥ 置いて検査
-dx12_spawn_model(path:"models/statue/statue.gltf", group:"ENV")   # scale は常に 1
+# ⑥ ★素材を貼る ← ここを飛ばすと【真っ白】になる
+dx12_blender_material(objects:["Barrel"], keyword:"wood")
+
+# ⑦ 規約どおりに書き出して取り込む
+dx12_blender_export(objects:["Barrel"], destPath:"models/barrel/barrel.gltf")
+
+# ⑧ 置いて検査（見栄えを判断する前に環境光を入れる）
+dx12_scene_env(keyword:"studio")
+dx12_spawn_model(path:"models/barrel/barrel.gltf", group:"ENV")
 dx12_validate_layout(fix:"safe")
 ```
+
+### なぜ「うすぺらい」「安っぽい」のか（2026-09-11 に実物で確かめた）
+
+| 症状 | 原因 | 直し方 |
+|---|---|---|
+| 紙細工に見える | **角にベベルが無い**。完全に鋭い角は光を一切拾わない | `dx12_blender_polish`（3〜4mm / 2 段 / harden normals） |
+| 模様の大きさが物と合わない | **プリミティブの既定 UV は面ごとに 0..1**。60cm の箱にも 6m の壁にもテクスチャが 1 枚 | polish が実寸で切り直す（1 UV = 1m） |
+| 板が紙に見える / ちらつく | 厚みゼロの面 | polish が Solidify を掛ける |
+| **真っ白な物が出る** | エンジンは glTF の `baseColorFactor` を読まない。テクスチャ無しは白 | `dx12_blender_material`（PolyHaven の CC0 素材） |
+| 木や布が金属に見える | `rough` 単体を metallicRoughness として出すと **B（= metallic）に粗さが入る** | material が `arm` を優先、無ければ B=0 で合成 |
+| 全部に青が乗って彩度が低い | 環境光が既定の**手続き空** | `dx12_scene_env`（PolyHaven の HDRI） |
+| 仕上げてもシルエットが角ばる | **分割が足りない**。ベベルは角を丸めるだけ | 作る時点で 24〜32 分割にする（polish が面数を警告する） |
+
+★**素材の入手先は既定で全部 OFF だった**（PolyHaven / Hyper3D / Sketchfab / Hunyuan3D）。
+その状態だと AI は素材を一切持たずにプリミティブだけで組むことになる。
+`dx12_blender_ensure` が **PolyHaven（CC0・API キー不要・テクスチャ 859 種 + HDRI）を自動で有効にする**。
+Hyper3D と Sketchfab は API キーが要るので状態だけ報告する。
 
 **`dx12_blender_export` に埋めてある罠**（全部実際に踏んだもの。手で書き出すと再発する）:
 
 - `use_selection=False` は **.blend 内の全シーン**を書き出す（glTF の `scenes` は配列なので合法）。
-  → 全シーンの全 view_layer で deselect してから対象だけ選ぶ。
+- **`export_format` を渡さないと既定の GLB になる**。`models/rock.gltf` を頼んだのに `rock.glb` ができて、
+  参照が全部切れる（`spawn_model` が "model not found" で落ちる）。拡張子から決めて必ず渡し、
+  書き出し後に**頼んだパスに本当にできたか**を確かめる。
 - Blender 5.2 の glTF エクスポータは画像を **`tmpXXXX.jpg`** という一時名で出す。
   再書き出しで名前が変わり、**前に出したモデルの参照が切れる**（額縁が白・絨毯が黒になった）。
-  → 意味のある名前へ改名して `uri` も書き換える。
-- **エンジンは `baseColorFactor` を読まない**。画像テクスチャの無いマテリアルは**真っ白**になる。
-  → 単色で済ませたい物にも必ず col テクスチャを作る。書き出し時に警告が出る。
+- **エンジンは `baseColorFactor` を読まない**。画像テクスチャの無いマテリアルは**真っ白**になる
+  → 書き出し時に警告が出る。
 - シェイプキーが `.bin` の大半を占めることがある（実例: 75MB のうち 70MB）→ 既定で捨てる。
-- **アルファ抜きが無い**。葉・枝カード・角膜のような α 前提の面は Blender で消してから出す
-  （残すと不透明な板になる）。
+- **アルファ抜きが無い**。葉・枝カード・角膜のような α 前提の面は Blender で消してから出す。
 - 取り込み後に `dx12_asset_info` で実寸を読み返すので、**cm/m の取り違えはその場で分かる**。
 
 ---

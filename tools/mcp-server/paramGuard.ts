@@ -170,6 +170,7 @@ export const COMPOSITE_TOOLS: ReadonlySet<string> = new Set([
   "dx12_record_playtest", "dx12_run_playtests",
   // Blender 連携: engine method ではなく Blender のソケットとファイル操作。
   "dx12_blender_ensure", "dx12_model_brief", "dx12_blender_export", "dx12_asset_gap",
+  "dx12_blender_polish", "dx12_blender_material", "dx12_scene_env",
 ]);
 
 /**
