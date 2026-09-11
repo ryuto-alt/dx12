@@ -655,16 +655,15 @@ console.log("\n[docs] docs/MCP.md に載っているツールが本当に呼べ�
       missing.length === 0,
       missing.length ? `未登録: ${missing.join(", ")}\n      → index.ts に reg() を足すか、`
                        + `docs/MCP.md から消すこと（載せたまま呼べないのが最悪）` : undefined);
-    // 逆向き（登録済みなのに docs に無い）は**報告だけ**にしてある。
-    // AI は MCP のマニフェストからツールの説明を直接受け取るので呼ぶことはできる＝
-    // 害は「人間が docs を読んでも全体像が分からない」に留まる。
-    // 前向き（docs にあるのに呼べない）とは重さが違うので、こちらで CI を止めない。
+    // 逆向き（登録済みなのに docs に無い）も落とす。
+    // docs/MCP.md は「ツール全一覧」を名乗る人間向けリファレンスなので、
+    // 穴が開いていると全体像が掴めない。37 本の穴を埋めた時点で 202/202 が揃ったので、
+    // ここから先は**増やしたら必ず書く**を機械で守る。
     const undocumented = [...registered].filter((n) => !declared.has(n)).sort();
-    if (undocumented.length > 0)
-      console.log(`  --  docs/MCP.md 未記載が ${undocumented.length} 本（呼べるが人間が知れない）: `
-                  + undocumented.join(", "));
-    else
-      ok(`index.ts の全 ${registered.size} ツールが docs にも載っている`);
+    check(`index.ts の全 ${registered.size} ツールが docs にも載っている`,
+      undocumented.length === 0,
+      undocumented.length ? `docs/MCP.md 未記載: ${undocumented.join(", ")}\n      `
+                            + `→ ツールを足したら docs/MCP.md の表にも 1 行足すこと` : undefined);
   }
 }
 

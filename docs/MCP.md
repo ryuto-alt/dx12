@@ -165,6 +165,8 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_get_play_session` | `{maxEvents?:int=400, maxSamples?:int=200}` | `{started, recording, durationSec, frames, fpsMin, summary:{...}, events:[{t,kind,detail}], samples:[{t,fps,camPos,...}]}` ※**`dx12_play` を押した時点で自動的に記録が始まる**（開始ツールは無い）。人間に遊んでもらってから取りに来る用。`detail` のキー名は `dx12_key_press` にそのまま渡せる |
 | `dx12_read_lua_component` | `{path:string}` | `{path, code}` ※既存 .lua のソースをそのまま読む |
 | `dx12_read_shader` | `{path:string(assets/shaders相対)}` | `{path, code, compiled}` ※既存カスタムシェーダーのソースをそのまま読む(compiled は直近の既知のコンパイル成否) |
+| `dx12_list_shader_templates` | `{}` | `[{name, title, summary}]` ※同梱のシェーダー雛形(water / ocean / particle_ember 等)を列挙する。★白紙から 200 行の HLSL を書くのは失敗率が高い。まずこれで動くものを起こしてから削る方が確実 |
+| `dx12_describe_shader_contract` | `{kind?:"mesh"\|"particle"\|"sprite"\|"screen"(既定 mesh)}` | カスタムシェーダーが使える定数(b0/b1)・テクスチャ・入出力・注意点を kind ごとに返す ※★cbuffer はオフセットで対応が決まるので、1 つでもズレるとコンパイルは通るのに値だけ化ける(エラーが出ないので気付けない)。書き始める前に必ず読むこと |
 | `dx12_raycast` | `{origin:[x,y,z], direction:[x,y,z], maxDistance?:f}` | `{hit, distance?, point?, normal?, entityId?, name?}` ※Playing 中のみ意味のある結果 |
 | `dx12_overlap_box` | `{center:[x,y,z], halfExtents:[x,y,z], maxResults?:int}` | `{entities:[{entityId,name}], count}` ※Playing 中のみ |
 | `dx12_overlap_sphere` | `{center:[x,y,z], radius:f, maxResults?:int}` | `{entities:[{entityId,name}], count}` ※Playing 中のみ |
@@ -189,6 +191,7 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_view_texture` | `{path, maxSize?:int=1024}` | PNG 画像ブロック ※dds/tga/hdr も変換して見られる。キューブマップは先頭面のみ |
 | `dx12_pick` | `{x?,y?(px) \| u?,v?(0..1), all?:bool, maxHits?:int=16, includeIcons?:bool=true, trianglePrecise?:bool=true, maxCandidates?:int=64}` | `{hits:[{entityId,name,submeshIndex,distance,worldPos,worldNormal,isIcon}], count, totalHits, truncated, screen, viewport, mode}` ※**エディタの左クリック選択と同じ `RaycastScene`**。座標系は `dx12_screenshot` / `dx12_project_world_to_screen` と同じ |
 | `dx12_raycast_precise` | `{origin:[x,y,z], direction:[x,y,z], maxDistance?:f=1000, all?:bool, maxHits?:int=16, trianglePrecise?:bool=true, maxCandidates?:int=256}` | `dx12_pick` と同形式 + `{origin, direction, maxDistance}` ※**描画メッシュの三角形基準**。`dx12_raycast`(物理コライダー基準・Playing 限定)とは別物 |
+| `dx12_project_world_to_screen` | `{entity?/name?}` | `{x, y, visible, depth, w, width, height, mode}` ※エンティティのワールド座標を、今シーンビューを描いているカメラで画面ピクセルへ投影する(`dx12_screenshot` と同じカメラ。Playing 中はアクティブなゲームカメラ)。★`w<=0` はカメラ背面 |
 | `dx12_terrain_sample` | `{entity?/name?, points?:[[x,z]...] (最大512)}` | `{entityId, name, origin, resolution, worldSize, cellSize, boundsXZ, minHeight, maxHeight, samples:[{x,z,height,worldY,normal,slopeDeg,inside}], count}` |
 | `dx12_list_lights` | `{limit?:int=50, cursor?:int}` | `{lights:[{entityId,name,type,position,slot,color,intensity,range?,direction?,innerConeDeg?,outerConeDeg?,castShadows?,overBudget,effective}], count, total, cursor, nextCursor, has_more, budget:{total,perCluster,point,spot,directional,shadowSpot,shadowPoint}, warnings:[...]}` ※**上限超過は無言で描画されない**ので必ずここで確認する。クラスタードライティング(Forward+)で点/スポットの個別上限は撤廃され、**合計 1024 灯 / 1 クラスタ 128 灯**が上限。**影は spot 4 / point 2 のまま** |
 | `dx12_diagnose` | `{only?:string[], fast?:bool}` | `DeepDiag::RunAll` の JSON(`{version, engine, checks:[{id,title,checked,errors,warnings,infos,issues,omitted,skipped}], summary:{checks,errors,warnings,infos,ok,unknownIds}, checkIds, note}`) ※`summary.errors > 0` だけが失敗 |
@@ -207,6 +210,7 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_focus_camera` | `{entity:int}` | `{cameraPos:[x,y,z], target, distance}` |
 | `dx12_set_pbr` | `{entity:int, metallic?:f, roughness?:f, uvScaleU?:f, uvScaleV?:f, alphaMode?:"auto"|"opaque"|"mask"|"blend", alphaCutoff?:f, opacity?:f}` | `{entityId, metallic, roughness, uvScaleU, uvScaleV, alphaMode, alphaCutoff, opacity}` ※**透明**は `alphaMode`。既定の `auto` はモデル側（glTF の `alphaMode`）に従う。`mask` は `baseColor.a < alphaCutoff` を discard（葉・フェンス・角膜。**影も同じ形に抜ける**）、`blend` は半透明（不透明の後にカメラから遠い順で描く。深度を書かず影も落とさない）。`opacity` は 1 未満なら `alphaMode` を省いても半透明になる（ガラス・水面）。詳しくは docs/AUTHORING.md §7.5 |
 | `dx12_set_mesh_shader` | `{entity:int, shaderPath?:string(assets/shaders相対), alphaBlend?:bool}` | `{entityId, shaderPath, alphaBlend, skinnedFallbackWarning}` ※shaderPath省略/空文字で既定Forwardに戻す。alphaBlend省略時は既存値を維持、既定false(不透明固定でPSのalpha出力は無視される)。true でSrcAlpha/InvSrcAlphaブレンド(DepthWrite OFF) |
+| `dx12_set_mesh_shader_params` | `{entity?/name?, effect?:f, params?:f[](最大4), paramsB?:f[](最大3)}` | 適用後の現在値一式 ※カスタムシェーダーの自由枠(b0 の `effectValue`/`shaderParams`/`shaderParamsB`)へ値を書く。★これが無いとシェーダーは【貼れるが動かない】(割当直後は全パラメータ 0)。各値の意味はシェーダー自身のヘッダコメント(`dx12_read_shader` で読める)。ルート定数なので毎フレーム撃っても安い。時間で動かす(徐々に溶ける等)なら Trigger の AnimShaderParam を使うこと(Lua からの口はまだ無い) |
 | `dx12_set_sprite_shader` | `{entity:int, shaderPath?:string(assets/shaders相対), alphaBlend?:bool}` | `{entityId, shaderPath, alphaBlend, worldSpaceWarning}` ※Sprite2D専用・world-spaceのみ対応。MeshRendererのシェーダーとは頂点/ルートシグネチャの契約が異なる(docs/AUTHORING.md §6.1)。shaderPath省略/空文字で既定Spriteシェーダーに戻す |
 | `dx12_set_scene_settings` | `{skybox:{envMapPath?, iblIntensity?, skyboxIntensity?, drawSkybox?}}` | `{applied, envMapRebake}` |
 | `dx12_set_post_process` | 約25エフェクトの `<name>On`/パラメータ(指定分のみ適用) | `{applied}` |
@@ -226,6 +230,7 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_set_ssgi` | `{enabled?, intensity?, radius?, thickness?, rayCount?, stepCount?, clampValue?, feedback?, iblFallback?}` | `{applied}` ※スクリーン空間GI。前フレームカラーを間接光源にして IBL の拡散(irradiance)を置き換える。`iblFallback` を切るとカメラ回転で明るさが変動する。正射/2Dビューでは自動無効 |
 | `dx12_set_volumetric_fog` | `{enabled?, density?, albedo?, anisotropy?, heightFalloff?, heightRef?, distance?, depthDistribution?, ambient?, sunIntensity?, lightScattering?, temporal?, temporalBlend?, extendBeyondRange?, debugMode?}` | `{applied}` ※froxel ボリュメトリックフォグ。視錐台に沿った 3D テクスチャ(160x90x64)へ散乱を焼いて合成する＝光の筋が立体的に見える。有効にすると VRAM を 28MB 確保する。GodRays と同時に有効にすると太陽の散乱が二重計上される。正射/2Dビューでは自動無効 |
 | `dx12_get_occlusion` / `dx12_set_occlusion` | `{enabled:bool}` | `{enabled, active, ready, pyramid{width,height,mips}}` ※**Hi-Z オクルージョンカリング**。深度プリパスの深度から階層 Z ピラミッド（max 縮約）を作り、壁の裏に完全に隠れた描画を GPU 側で落とす。判定結果は D3D12 の**プレディケーション**へ直接渡すので読み戻しゼロ・遅延ゼロ（前フレームの結果を使う方式で起きる「速く振り向くと物が数フレーム消える」は構造的に起きない）。★**ON にすると深度プリパスも強制的に走る**。TAA/SSAO/SSR/DXR のどれかが有効なシーンではプリパスは元々走っているので追加コストは `gpuPassMs.hiZ`（実測 0.04ms）だけだが、**どれも無効なシーンで ON にするとプリパスぶんの描画コールが増えて遅くなることがある**。GPU 律速のときに効く機能で、CPU 律速のシーンでは fps は改善しない。既定 OFF、`settings.json` の `"render_occlusion_culling"` に保存。実際に何体隠れたかは `dx12_perf_stats` の `occlusion` ブロック（`occluded`/`tested`/`ratio`/`predicatedDraws`/`batches`）を見ること。正射/2Dビューでは自動無効 |
+| `dx12_set_occlusion` | `{enabled:bool}` | `{enabled, active, ready, pyramid{width,height,mips}}` ※Hi-Z オクルージョンカリングの ON/OFF。★ON にすると深度プリパスも強制的に走る。TAA/SSAO/SSR/DXR のどれかが有効なシーンでは追加コストは Hi-Z ぶん(実測 0.04ms)だけだが、どれも無効なシーンで ON にするとプリパスぶんの描画コールが増えて逆に遅くなることがある。GPU 律速のときに効く機能で、CPU 律速のシーンでは fps は改善しない。既定 OFF、`settings.json` の `render_occlusion_culling` に保存される |
 
 > **TAA の効果確認は `dx12_ui_screenshot` を使うこと。** `dx12_screenshot` はポスト前の `m_sceneRT` を読むので、TAA の解決結果も `debugVelocity` の可視化も写らない（どちらもその後段で出力される）。
 
@@ -354,7 +359,9 @@ OFF のときは TAA を一時的に ON にして撮る（`warnings` に出る�
 | ツール | params | 返り値 |
 |--------|--------|--------|
 | `dx12_key_down` / `dx12_key_up` | `{key:int(VK) \| string("W","SPACE","UP","F1"…)}` | `{key}` ※押しっぱなしの挙動確認。Lua の `input:isKeyDown` / `keyDown()` に効く（`GetAsyncKeyState` を直接読む経路には効かない）。ウィンドウがフォーカスを失うと合成キーはクリアされる |
+| `dx12_key_up` | `{key:int(VK) \| string}` | `{key}` ※`dx12_key_down` で押したキーを離す |
 | `dx12_key_press` | `{key}` | `{key}` ※1 フレームだけ押して離す（`isKeyPressed` / `keyPressed()` が 1 回立つ）|
+| `dx12_mouse_move` | `{dx?:f, dy?:f}` | `{dx, dy, mode, note}` ※合成マウス移動を次の 1 フレームぶんだけ注入する。一人称の視点操作はこれが唯一の口(★`camera:setYaw()` では向きを変えられない。エンジン標準の FpsController が yaw を Lua のローカル変数で持ち毎フレーム上書きするため)。押しっぱなしの概念は無いので、回し続けるには `dx12_step_frames` と交互に撃つこと。目標角度へ向けたいなら `dx12_play_script` の yaw や `dx12_autoplay` を使う方が確実(実測して比例で詰める閉ループになっている) |
 | `dx12_step_frames` | `{frames?:int=1(1..600)}` | `{frames}` ※**N フレーム進んでから応答する同期バリア**。入力がシミュレーションに効いてから観測するために挟む。※決定論ステッパではない（各フレームの dt は実時間）|
 | `dx12_perf_stats` | `{window?:int=60(..240)}` | `fps` / `frameMs{avg,min,max,p95}` / `cpu{workMs,fenceWaitMs,presentMs}` / `gpuPassMs{total,shadows,depthPrepass,prepassSsao,clusterCull,raytracing,rtScreen,ddgi,screenSpaceGi,volFog,hiZ,mainScene,particles,postFx,ui}` / `drawCalls` / `culled` / `triangles` / `occlusion{...}` / `analysis{verdict:"gpu-bound"\|"cpu-bound"\|"fps-limit-capped"…, notes}` ※**FPS が出ないときはまずこれで犯人を特定する** |
 | `dx12_benchmark` | `{...}` | 規模の梯子を測るベンチハーネス（同一シーンを条件を変えて回し、どこで折れるかを出す）|
@@ -409,6 +416,96 @@ dx12_git_merge(name:"feature/x")                 # conflicts[] が空なら完�
   └ 競合したら → 各ファイルを直す → dx12_git_commit(message:"...")
   └ 諦めるなら → dx12_git_merge_abort
 ```
+
+---
+
+### 4-8. VFX(パーティクル / トレイル)
+
+エンジンのパーティクルは 1 レイヤー 40 フィールド近くあり、生の数値を並べても「それらしく」ならない。
+①`dx12_vfx_library`(何が作れるか)→②`dx12_vfx_apply`(レシピ+倍率で複数レイヤーまとめて置く)→
+③`dx12_vfx_preview`(時間を進めながら連写して本当に出ているか確認)の順に使う。下 3 本の生レイヤー操作は
+レシピから外れた微調整用。
+
+| ツール | params | 返り値 |
+|--------|--------|--------|
+| `dx12_list_particle_layers` | `{entity?/name?}` | `{layers:[{index, name, kind, rate, looping, offset, vfxPath}], count}` ※放出器のレイヤー一覧。`dx12_set_component` の `layer` 引数(添字/名前)や Trigger の PlayEffect/StopEffect に渡すレイヤー名はここで分かる |
+| `dx12_add_particle_layer` | `{entity?/name?, layerName?:string}` | 追加後のレイヤー情報 ※放出器にレイヤーを 1 枚足す(上限 16 枚)。★これが無いと 1 枚目しか触れない=「炎に煙を重ねる」ができない。レシピから一気に組むなら `dx12_vfx_apply` の方が速い(内部でこれを呼ぶ) |
+| `dx12_remove_particle_layer` | `{entity?/name?, layer:int\|string}` | 削除結果 ※放出器のレイヤーを 1 枚消す。★最後の 1 枚は消せない。放出器ごと消すなら `dx12_remove_component(component:'particleEmitter')` |
+| `dx12_vfx_library` | `{tag?:string, id?:string}` | `id` 省略時 `{presets:[...], count, tags}`、`id` 指定時はそのレシピの全レイヤー実値と注意書き ※松明/焚き火/爆発/魔法陣/雨/雪/剣閃など。★どれも複数レイヤーの重ね合わせで作ってある(炎+煙+火の粉) |
+| `dx12_vfx_apply` | `{preset:string, entity?/name?, position?:[x,y,z], entityName?:string, parentName?:string, scale?:f, rate?:f, intensity?:f, color?:[r,g,b], oneShot?:bool, duration?:f, life?:f, light?:bool, replaceLayers?:bool, dryRun?:bool}` | `{applied, preset, title, entityId, name, created, layersApplied[], layersRemoved, trailApplied, current, estimatedLiveParticles, notes, lookHint, warnings, next}` ※レシピから複数レイヤーの放出器を 1 コールで組み立てる(新規作成 or 既存へ付与)。★Editor 限定(新規生成を伴うため)。置いた後は必ず `dx12_vfx_preview` で確認すること |
+| `dx12_vfx_preview` | `{entity?/name?, seconds?:f=1.5, frames?:int=6(2..12), distance?:f=3, height?:f=0.5, fire?:bool, columns?:int=3, additive?:bool=true, baseline?:bool=true}` | PNG 画像ブロック + text(計測値と助言) ※放出器に寄って時間を進めながら連写し、格子画像+計測値を返す。★静止画 1 枚では「たまたま写っていない」のか「そもそも出ていない」のか区別できない。ワンショットは `fire:true` で試し撃ちしてから撮る |
+
+### 4-9. ルック(絵作り)
+
+ポストは約 90 フィールドあり、1 つずつ触っても bloom と exposure だけ上げて終わりがち。
+光+空気+グレーディングを組み合わせで渡す。`dx12_apply_lighting_preset`(太陽+ごく一部のポスト)は土台、
+ここは土台の上に乗せる仕上げ(フォグ・トーンマッパー・ビネット・粒子・色収差まで)。
+
+| ツール | params | 返り値 |
+|--------|--------|--------|
+| `dx12_look_library` | `{tag?:string, id?:string}` | `id` 省略時 `{looks:[{id,title,summary,tags,touches,pairsWith}], count, tags}`、`id` 指定時は全フィールドの実値と注意書き ※ゴールデンアワー/ネオンノワール/ホラー/白黒/水中など |
+| `dx12_look_apply` | `{preset:string, strength?:f=1, parts?:("sun"\|"fog"\|"post"\|"sky")[], dryRun?:bool}` | `{applied, preset, title, parts, strength, sun, fog, sky, postRequested, currentPost, mismatched?, hint?, notes, pairsWith, warnings, next}` ※太陽+ボリュメトリックフォグ+背景の強さ+ポスト約 20 項目を 1 コールでまとめて当てる(冪等)。★`strength` はポストにだけ効く(0 で無味無臭の値に寄る)。`parts:['post']` で今の光を壊さずグレーディングだけ乗せる。★暗いルックは光源を置いてから当てること(真っ暗なシーンに当てても真っ黒になるだけ) |
+
+### 4-10. デカール(投影テクスチャ: 弾痕・焦げ・血・水たまり・苔・汚れ)
+
+「そこで何かが起きた」を語る唯一の安い手段。1 つも無い床はどれだけ光を凝ってもショールームに見える。
+
+| ツール | params | 返り値 |
+|--------|--------|--------|
+| `dx12_decal_library` | `{}` | `{decals:[{id,title,summary,defaultSize,surface,changes,notes}], count, atlas, next}` ※貼れる汚れ・傷の一覧。★水たまり/血だまり/油/雪はほぼ水平面専用(角度フェードが小さい)。壁には dirt / leak / blood_splatter を使う |
+| `dx12_decal_apply` | `{preset:string, position:[x,y,z], normal?:[x,y,z](既定[0,1,0]), size?:f, depth?:f, rotationDeg?:f, opacity?:f, tint?:[r,g,b], sortOrder?:int, count?:int(1..24), spread?:f, seed?:int, entityName?:string, parentName?:string, dryRun?:bool}` | 貼ったデカールの姿勢と値 ※面へ投影して DecalComponent 付きエンティティを作る。★初回はアトラス画像(`assets/textures/decals/atlas.png`)を手続き生成してシーンに設定する(無いと無言で何も出ない)。位置と法線は `dx12_raycast_precise`/`dx12_pick` の `worldPos`/`worldNormal` をそのまま渡すのが正確。★Editor 限定。`count>1` で散らして複数枚貼れる |
+
+### 4-11. 演出(カットシーン / シーケンス)
+
+カメラ・ポスト・時間・エフェクト・音が同じ時間軸で噛み合って初めて演出になる。宣言的な台本→生成コードに固定し、
+時間の扱いと後始末を 1 箇所で正しくする(AI に Lua を直接書かせると毎回ちがう自己流の状態機械が生える)。
+
+| ツール | params | 返り値 |
+|--------|--------|--------|
+| `dx12_sequence_author` | `{name:string, tracks:object[], camera?:string, loop?:bool, attachTo?:string, doneEvent?:string, activateCamera?:bool, dryRun?:bool}` | `{applied, name, path, camera, attachedTo, createdEntity, duration, trackCount, playEvent, stopEvent, doneEvent, referenced, vfx, warnings, next}` ※時間軸の台本(JSON)から Lua コンポーネントを生成して貼る。track の type: camera(位置移動+注視) / fade / post / timeScale(スローモ) / shake / vfx / sound / move・rotate / light / event / scene / log。★時計は実時間(タイムスケール非適用)で進むので、スローモを掛けても台本は実時間で流れる。終了時にタイムスケールを 1.0 へ戻す。★カメラを動かすには `camera` に CameraComponent 持ちのエンティティ名が要る(グローバルカメラは毎フレーム上書きされるため)。他スクリプトから `events:emit('<name>:play'/'stop')` で操作できる |
+| `dx12_sequence_preview` | `{seconds?:f=5, frames?:int=6(2..12), startDelay?:f=0, columns?:int=3, name?:string}` | PNG 画像ブロック + text(`{path, name, frames, secondsTotal, secondsPerFrame, frameDiffs, moved, recentLog, hint}`) ※Play して演出を実際に流し、ゲーム画面を時間で連写した格子画像を返す。撮影後は必ず Stop する。★撮る前に `dx12_set_editor_camera` の固定を自動解除する(残っていると演出が動いても絵が変わらない事故になる) |
+
+### 4-12. シーンの整理 / 命名規約
+
+| ツール | params | 返り値 |
+|--------|--------|--------|
+| `dx12_scene_scaffold` | `{only?:("ENV"\|"LVL"\|"LGT"\|"GP"\|"FX"\|"UI"\|"CAM")[]}` | `{groups:[{key, root, entityId, created}], convention}` ※共同開発用のグループ骨格(空エンティティ)を作る。既にあるものは作り直さない(何度撃っても安全)。★ルートは必ず原点・無回転・スケール 1(`set_parent` はワールド座標を保持しないため、単位変換でないルートにぶら下げると物がワープする) |
+| `dx12_organize_scene` | `{dryRun?:bool=true, rename?:bool=true}` | `{applied, moves:[{entityId, oldName, newName, group, reparent, locked}], untouched, protectedNames, luaFilesScanned, convention}` ※既存シーンを命名規約に沿って整理(コンポーネントで分類→規約グループへ親付け→`<PREFIX>_<Kind>_<NN>` に改名)。既定 `dryRun:true`=計画のみ。★プロジェクトの `.lua` を全部読み、文字列として出てくる名前は改名しない(`scene:findEntity` は名前で引くので改名すると『エラーも出ずに OnUpdate の残りが動かない』壊れ方をする) |
+| `dx12_validate_naming` | `{}` | `{pass, checked, issues:[{entityId, name, kind, text}], counts, convention}` ※命名とグループ分けの崩れ(DEFAULT_NAME/NO_PREFIX/DUPLICATE_NAME/BAD_CHARS/NOT_IN_GROUP)を数える。直すのは `dx12_organize_scene` |
+
+### 4-13. 品質検査(アセット欠落 / 配置 / 仕上がり)
+
+| ツール | params | 返り値 |
+|--------|--------|--------|
+| `dx12_asset_gap` | `{includePlaceholders?:bool=true}` | `{missing:[{entityId,name,modelPath}], placeholders:[{entityId,name,primitive,sizeHint}], count, next}` ※参照切れ(modelPath があるのにファイルが無い)と、プリミティブで代用しているだけの仮置きを集める。Blender で作り始める前の入口 |
+| `dx12_validate_layout` | `{fix?:"none"\|"safe"\|"all"(既定 none), tolerance?:f=0.001}` | `{pass, checked, errors, warnings, fixed, issues:[{kind, level, entityId, name, otherEntityId?, text, fixed}]}` ※埋まり(BURIED)/浮き(FLOATING)/ちらつき(Z_FIGHT)/深いめり込み(OVERLAP)/二重配置(DUPLICATE)/当たり判定欠落(NO_COLLIDER・COLLIDER_WITHOUT_BODY)/スケール異常(SCALE_ANOMALY・NAN_TRANSFORM)を数値で拾う。Editor 限定(Playing 中は MODE_CONFLICT)。★`COLLIDER_WITHOUT_BODY` はこのエンジン固有の罠(boxCollider だけでは Jolt に載らず床をすり抜ける)。`fix:'safe'` で BURIED/FLOATING・Z_FIGHT・COLLIDER_WITHOUT_BODY を自動修正。DUPLICATE は取り返しがつかないので報告のみ |
+| `dx12_polish_audit` | `{screenshot?:bool=true, only?:("light"\|"air"\|"grade"\|"motion"\|"material"\|"contact"\|"image")[], sampleMeshes?:int=24}` | `{score, verdict, findings:[{category, severity, what, why, fix}], facts}` ※高品質な絵に必ず入っている要素が揃っているかを測り、足りないものを効く順(光→空気→階調→動き→素材→接地)で返す。各指摘に「なぜ安っぽく見えるか」と「次に撃つコマンド」が付く。★`dx12_diagnose` は壊れているか、`dx12_look_compare` は参照画像との差を見る道具で、これは参照画像なしに「作りかけに見える理由」を言うためのもの |
+
+### 4-14. Blender 連携(自動起動 → PBR素材/仕上げ → 規約どおり書き出し → 実寸検証)
+
+アドオンの既定は全部 OFF なので、放っておくと AI はプリミティブだけで真っ白でのっぺりしたモデルを組む。
+
+| ツール | params | 返り値 |
+|--------|--------|--------|
+| `dx12_model_brief` | `{kind?:string(character/prop/level/家具等)}` | `{rules, materials, gotchas}` ※dx12 へ持ってくるモデルの作り方(Blender で作り始める前に読む)。★単色マテリアル禁止(glTF の baseColorFactor を読まないので真っ白になる)/アルファ抜きが無いので葉・枝カードは Blender で消してから出す/単位はメートル・原点は底面中心・+Y が正面/テクセル密度 512〜1024texel/m/ORM は G=roughness B=metallic/シェイプキーは捨てる |
+| `dx12_blender_ensure` | `{blenderPath?:string, timeoutMs?:f=60000}` | `{running, started, port, blenderPath?, waitedMs?, ...assetSources}` ※BlenderMCP アドオンのソケット(127.0.0.1:9876)が生きているか確かめ、死んでいたら Blender を起動してポートが開くまで待つ。PolyHaven も自動で有効化する。★モデリングを頼まれたらまずこれを撃つ(手で Blender を開いてもらう必要は無い) |
+| `dx12_blender_polish` | `{objects?:string[], bevelWidth?:f=0.003, bevelSegments?:int=2, smoothAngle?:f=30, uvMeters?:f=1.0, minThickness?:f=0.004}` | Blender 実行結果(処理内容の要約) ※「うすぺらい」を消す一括処理: ①スケール適用(★ベベルより先。非一様スケールのままだと角が歪む) ②厚みゼロの板に Solidify ③UV を実寸で切り直す ④スムーズ+自動スムーズ ⑤ベベル ⑥加重法線。書き出す前に必ず通すこと |
+| `dx12_blender_material` | `{objects?:string[], assetId?:string, keyword?:string, resolution?:"1k"\|"2k"\|"4k"(既定2k), uvMeters?:f=2.0}` | Blender 実行結果(貼った素材の情報) ※PolyHaven(CC0・API キー不要)から PBR 素材を落として貼る。★エンジンは glTF の baseColorFactor を読まないのでテクスチャ無しのマテリアルは真っ白になる。ORM は arm マップがあればそのまま、無ければ Rough から B=0 で合成(単体のまま出すと木や布が金属として描かれる) |
+| `dx12_blender_export` | `{objects?:string[], destPath:string, clearShapeKeys?:bool=true, applyModifiers?:bool=true}` | `{destPath, absPath, exported[], bytes, renamedImages[], warnings[], assetInfo, next}` ※Blender の選択物を dx12 の規約どおり glTF で書き出し assets へ取り込み実寸まで検証する。★シェイプキーを捨てる/画像テクスチャが 1 枚も無いマテリアルを警告/`tmpXXXX.jpg` 名の画像を意味のある名前へ直し uri も書き換える。取り込み後 `dx12_asset_info` で実寸を読むので cm/m の取り違えもその場で分かる |
+| `dx12_scene_env` | `{assetId?:string, keyword?:string, resolution?:"1k"\|"2k"\|"4k"(既定2k), iblIntensity?:f=1.0, skyboxIntensity?:f=0.35, drawSkybox?:bool=true}` | `{assetId, path, bytes, skybox, note}` ※PolyHaven の HDRI(CC0・API キー不要)を落としてシーンの環境マップにする。★既定の手続き空のままだと全部に青が乗って彩度が落ちる。金属と光沢は環境に映るものが無いと質感が出ない。★屋内シーンで環境光を効かせたくない場合は使わないこと(envMapPath があると DirectionalLight.ambient が無視される) |
+
+### 4-15. テストプレイ(決定論台本 / 移動能力の実測 / 到達性 / 回帰テスト)
+
+コードは ctest で守られているのに遊びは誰も守っていない、という穴を埋めるための一群。
+
+| ツール | params | 返り値 |
+|--------|--------|--------|
+| `dx12_play_script` | `{steps:[{t:f, down?:string\|string[], up?:string\|string[], press?:string\|string[], yaw?:f, note?:string}], expect?:[{at?:f, by?:f, near?:[x,y,z], radius?:f, yAbove?:f, yBelow?:f, grounded?:bool, movedAtLeast?:f, label?:string}], player?:string, until?:f, sampleHz?:f, dt?:f, autoPlay?:bool=true}` | `{pass, player, durationSec, dt, results[], trace[], samples, mouseDegPerPixel?, yawWarnings?, next?}` ※入力タイムラインと合否条件を 1 コールで走らせる(dt を 1/60 に固定=同じ台本なら毎回同じ結果になる)。yaw(度) はマウス移動注入の閉ループで合わせる(★`camera:setYaw()` では向けられない)。落ちた条件は「どれだけ足りなかったか」を返す |
+| `dx12_measure_player` | `{player?:string, forwardKey?:string=W, jumpKey?:string=SPACE, save?:bool=true}` | `{walkSpeed, jumpHeight, jumpDistance, stepHeight, maxSlopeDeg, measuredAt, warnings, savedTo?, startPos}` ※プレイヤーを実際に歩かせ・跳ばせて【歩行速度/ジャンプ高/ジャンプ距離】を実測する(宣言値ではなく Lua の実装値)。結果は `<project>/.dx12/movement.json` に保存され、`dx12_check_reachable` の判定根拠になる |
+| `dx12_check_reachable` | `{from?:[x,y,z], fromName?:string, to?:[x,y,z], toName?:string}` | `{reachable, warnings, capability, start?, goal?, pathPoints?, pathLength?, issues?, estimatedWalkSec?, reason?, next?}` ※ナビメッシュの経路と実測した移動能力で「そこへ行けるか」を判定する(Play しないので何度でも撃てる)。★先に `dx12_measure_player` を撃つこと(実測値が無ければ保存値→保守的な既定値の順にフォールバックし warning を出す) |
+| `dx12_autoplay` | `{goal?:[x,y,z], goalName?:string, player?:string, forwardKey?:string=W, jumpKey?:string=SPACE, arriveRadius?:f=1.5, timeoutSec?:f=60}` | `{cleared, player, goal, finalPos?, notes, remainingDistance?, waypointsReached?, waypoints?, trace, elapsedSec, stuckAt?, stuckAtWaypoint?, reason?, next?}` ※ナビメッシュの経路を実際の入力(マウス+WASD+ジャンプ)でなぞって本当にゴールへ行けるか確かめる。★`dx12_check_reachable`(静的判定)の実証版。詰まったら座標付きで返す |
+| `dx12_record_playtest` | `{name:string, endTolerance?:f=1.0, pathTolerance?:f=2.0, note?:string}` | `{saved, name, scene, durationSec, inputs, samples, humanDrift, warnings, next}` ※直前の 1 プレイ(`dx12_get_play_session`)を `.playtest` として保存する回帰テスト化。手順: `dx12_play`→人に遊んでもらう→`dx12_stop`→これ。★人の軌跡はそのまま基準にせず、1 回再生した結果をゴールデンランとして焼き込む(人のプレイは実時間・再生は固定 dt なので構造的にずれるため) |
+| `dx12_run_playtests` | `{name?:string}` | `{ran, passed, failed, results:[{name, scene, pass, endDistance, maxDeviation, maxDeviationAt, reasons}], next?}` ※保存済み `.playtest` を再生して記録どおり動くか確かめる。落ちたときは「いつ・どれだけ」ずれたかを返す。`name` 省略で全部走らせる |
 
 ---
 
