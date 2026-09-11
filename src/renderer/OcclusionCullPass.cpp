@@ -2,11 +2,13 @@
 
 #include "renderer/DrawItem.h"   // OcclusionBounds
 #include "graphics/GraphicsDevice.h"
+#include "graphics/DeferredRelease.h"
 #include "resource/ShaderCompiler.h"
 #include "core/Assert.h"
 #include "core/Logger.h"
 
 #include <cstring>
+#include <utility>
 
 namespace dx12e
 {
@@ -155,8 +157,22 @@ void OcclusionCullPass::EnsureCapacity(GraphicsDevice& device, u32 count)
 
     auto* dev = device.GetDevice();
 
+    // ★古いバッファを即座に Release してはいけない。
+    //   このパスは in-flight なフレームの真っ只中で呼ばれる（Dispatch の冒頭）。
+    //   m_visBuf は SetPredication で直接 GPU に握られており、m_boundsBuf[] も
+    //   まだ完了していないフレームのコンピュートシェーダが読んでいる可能性がある。
+    //   ComPtr への代入は旧リソースを Release するので、そのまま差し替えると
+    //   **GPU が読んでいる最中のリソースを解放する use-after-free** になる。
+    //   （しかも「描画物が増えて容量を跨いだ瞬間だけ」なので、再現しにくく、
+    //     症状は DEVICE_REMOVED や一見無関係な描画バグとして出る）
+    //   フェンス連動の DeferredRelease へ渡し、GPU が追いついてから解放させる。
     for (u32 f = 0; f < kFrameCount; ++f)
     {
+        if (m_boundsBuf[f])
+        {
+            m_boundsMapped[f] = nullptr;   // 解放待ちのリソースを指したままにしない
+            DeferredRelease::Defer(std::move(m_boundsBuf[f]), nullptr);
+        }
         m_boundsBuf[f] = MakeBuffer(dev, static_cast<u64>(cap) * sizeof(ItemBoundsGPU),
                                     D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_FLAG_NONE,
                                     D3D12_RESOURCE_STATE_GENERIC_READ);
@@ -166,6 +182,7 @@ void OcclusionCullPass::EnsureCapacity(GraphicsDevice& device, u32 count)
         m_boundsMapped[f] = static_cast<u8*>(p);
     }
 
+    if (m_visBuf) DeferredRelease::Defer(std::move(m_visBuf), nullptr);
     m_visBuf = MakeBuffer(dev, static_cast<u64>(cap) * kPredicateStride,
                           D3D12_HEAP_TYPE_DEFAULT,
                           D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
